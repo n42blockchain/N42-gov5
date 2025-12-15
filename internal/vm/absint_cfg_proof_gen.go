@@ -450,10 +450,9 @@ func (cfg *Cfg) Clear() {
 }
 
 func (cfg *Cfg) checkRep() {
-	if true {
-		return
-	}
-
+	// NOTE: checkRep is disabled for performance in production
+	// Uncomment the following for debugging:
+	/*
 	for pc1, pc0s := range cfg.PrevEdgeMap {
 		for pc0 := range pc0s {
 			s := cfg.Program.Stmts[pc0]
@@ -463,6 +462,7 @@ func (cfg *Cfg) checkRep() {
 			}
 		}
 	}
+	*/
 }
 
 func (cfg *Cfg) GetCoverageStats() CfgCoverageStats {

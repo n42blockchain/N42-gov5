@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
-	block2 "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/utils"
 	"time"
 
@@ -20,7 +20,7 @@ const (
 )
 
 // batchBlockReceiverFn defines batch receiving function.
-type batchBlockReceiverFn func(chain []block2.IBlock) (int, error)
+type batchBlockReceiverFn func(chain []block.IBlock) (int, error)
 
 // Round Robin sync looks at the latest peer statuses and syncs up to the highest known epoch.
 //
@@ -84,9 +84,9 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 		return 0, errors.New("0 blocks provided into method")
 	}
 
-	blocks := make([]block2.IBlock, 0, len(blks))
+	blocks := make([]block.IBlock, 0, len(blks))
 	for _, blk := range blks {
-		block := new(block2.Block)
+		block := new(block.Block)
 		if err := block.FromProtoMessage(blk); err != nil {
 			return 0, err
 		}

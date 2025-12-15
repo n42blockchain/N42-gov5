@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -39,7 +39,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/avm/common"
 	"github.com/n42blockchain/N42/internal/avm/rlp"
-	mvm_types "github.com/n42blockchain/N42/internal/avm/types"
+	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
 
 	"io"
 	"math/rand"
@@ -76,7 +76,7 @@ var (
 	nonceAuthVote = hexutil.MustDecode("0xffffffffffffffff") // Magic nonce number to vote on adding a new signer
 	nonceDropVote = hexutil.MustDecode("0x0000000000000000") // Magic nonce number to vote on removing a signer.
 
-	//uncleHash = mvm_types.CalcUncleHash(nil) // Always Keccak256(RLP([])) as uncles are meaningless outside of PoW.
+	//uncleHash = avmtypes.CalcUncleHash(nil) // Always Keccak256(RLP([])) as uncles are meaningless outside of PoW.
 
 	diffInTurn = uint256.NewInt(2) // Block difficulty for in-turn signatures
 	diffNoTurn = uint256.NewInt(1) // Block difficulty for out-of-turn signatures
@@ -860,7 +860,7 @@ func APosProto(header block.IHeader) []byte {
 }
 
 func encodeSigHeader(w io.Writer, iHeader block.IHeader) {
-	header := mvm_types.FromastHeader(iHeader)
+	header := avmtypes.FromastHeader(iHeader)
 	enc := []interface{}{
 		header.ParentHash,
 		header.UncleHash,

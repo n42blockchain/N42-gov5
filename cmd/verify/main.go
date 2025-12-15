@@ -1,4 +1,4 @@
-// Copyright 2023 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -16,39 +16,31 @@
 package main
 
 import (
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"github.com/go-kit/kit/transport/http/jsonrpc"
-	"github.com/gorilla/websocket"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/crypto/bls"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/api"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules/state"
-	"os"
-	"os/signal"
-	"syscall"
-)
-
-import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/go-kit/kit/transport/http/jsonrpc"
 	"github.com/gorilla/websocket"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/crypto/bls"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
-	"os"
-	"os/signal"
-	"syscall"
+)
+
+// Environment variable names for configuration
+const (
+	EnvPrivateKey  = "N42_VERIFY_PRIVATE_KEY"
+	EnvWebSocketURL = "N42_VERIFY_WS_URL"
+	DefaultWSURL   = "ws://127.0.0.1:20013"
 )
 
 var privateKey bls.SecretKey
@@ -75,29 +67,54 @@ func RootContext() (context.Context, context.CancelFunc) {
 }
 
 func main() {
+	// SECURITY: Read private key from environment variable instead of hardcoding
+	privateKeyHex := os.Getenv(EnvPrivateKey)
+	if privateKeyHex == "" {
+		log.Error("Private key not set. Please set environment variable: " + EnvPrivateKey)
+		os.Exit(1)
+	}
+
 	var err error
-	sByte, err := hex.DecodeString("2d09d9f4e166f35a4ab0a2edd599e2a23bbe86b312b2e05b34d9fbe5693b1e48")
-	if nil != err {
-		panic(err)
+	sByte, err := hex.DecodeString(privateKeyHex)
+	if err != nil {
+		log.Error("Failed to decode private key", "error", err)
+		os.Exit(1)
+	}
+
+	if len(sByte) != 32 {
+		log.Error("Invalid private key length, expected 32 bytes")
+		os.Exit(1)
 	}
 
 	var sb [32]byte
 	copy(sb[:], sByte)
 	privateKey, err = bls.SecretKeyFromRandom32Byte(sb)
-	if nil != err {
-		panic(err)
+	if err != nil {
+		log.Error("Failed to create BLS secret key", "error", err)
+		os.Exit(1)
 	}
 
-	ecdPk, err := crypto.HexToECDSA("2d09d9f4e166f35a4ab0a2edd599e2a23bbe86b312b2e05b34d9fbe5693b1e48")
-	if nil != err {
-		panic(err)
+	ecdPk, err := crypto.HexToECDSA(privateKeyHex)
+	if err != nil {
+		log.Error("Failed to create ECDSA private key", "error", err)
+		os.Exit(1)
 	}
 	addressKey = crypto.PubkeyToAddress(ecdPk.PublicKey)
 
-	ctx, cancle := RootContext()
-	defer cancle()
+	ctx, cancel := RootContext()
+	defer cancel()
 
-	con, _, err := websocket.DefaultDialer.DialContext(ctx, "ws://127.0.0.1:20013", nil)
+	// Get WebSocket URL from environment or use default
+	wsURL := os.Getenv(EnvWebSocketURL)
+	if wsURL == "" {
+		wsURL = DefaultWSURL
+	}
+
+	con, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
+	if err != nil {
+		log.Error("Failed to connect to WebSocket", "url", wsURL, "error", err)
+		os.Exit(1)
+	}
 	defer con.Close()
 
 	end := make(chan struct{})
@@ -136,8 +153,9 @@ func main() {
 					res.StateRoot = root
 					copy(res.Sign[:], privateKey.Sign(root[:]).Marshal())
 					in, err := json.Marshal(res)
-					if nil != err {
-						panic(err)
+					if err != nil {
+						log.Error("Failed to marshal response", "error", err)
+						continue
 					}
 
 					wrapRequest, _ := wrapJSONRPCRequest(in)
@@ -150,21 +168,24 @@ func main() {
 		}
 	}()
 
-	if err = con.PingHandler()(""); nil != err {
-		panic(err)
+	if err = con.PingHandler()(""); err != nil {
+		log.Error("Ping failed", "error", err)
+		os.Exit(1)
 	}
 
-	if err := con.WriteMessage(websocket.TextMessage, []byte(`{
+	subscribeMsg := fmt.Sprintf(`{
 		"jsonrpc": "2.0",
 		"method": "eth_subscribe",
 		"params": [
 		  "minedBlock",
-		  "`+addressKey.String()+`"
+		  "%s"
 		],
 		"id": 1
-	  }`)); err != nil {
+	  }`, addressKey.String())
 
-		cancle()
+	if err := con.WriteMessage(websocket.TextMessage, []byte(subscribeMsg)); err != nil {
+		log.Error("Failed to subscribe", "error", err)
+		cancel()
 	}
 
 	<-end

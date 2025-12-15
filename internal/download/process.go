@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -22,7 +22,7 @@ import (
 	"math/rand"
 	"time"
 
-	block2 "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -160,10 +160,10 @@ func (d *Downloader) processChain() error {
 			wantBlockNumber := new(uint256.Int).AddUint64(d.bc.CurrentBlock().Number64(), 1)
 			log.Tracef("want block %d have blocks count is %d", wantBlockNumber.Uint64(), len(d.bodyResultStore))
 
-			blocks := make([]block2.IBlock, 0)
+			blocks := make([]block.IBlock, 0)
 			for i := 0; i < maxResultsProcess; i++ {
 				if blockMsg, ok := d.bodyResultStore[*wantBlockNumber]; ok {
-					var block block2.Block
+					var block block.Block
 					err := block.FromProtoMessage(blockMsg)
 					if err != nil {
 						//todo
