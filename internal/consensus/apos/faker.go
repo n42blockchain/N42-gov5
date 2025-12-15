@@ -61,7 +61,7 @@ func (f Faker) VerifyHeaders(chain consensus.ChainHeaderReader, headers []block.
 	return abort, results
 }
 
-func (f Faker) VerifyUncles(chain consensus.ChainReader, blk block.IBlock) error {
+func (f Faker) VerifyUncles(chain consensus.ConsensusChainReader, blk block.IBlock) error {
 	// Faker accepts all uncles as valid
 	return nil
 }
@@ -106,7 +106,7 @@ func (f Faker) Type() params.ConsensusType {
 	return params.Faker
 }
 
-func (f Faker) APIs(chain consensus.ChainReader) []jsonrpc.API {
+func (f Faker) APIs(chain consensus.ConsensusChainReader) []jsonrpc.API {
 	return nil
 }
 

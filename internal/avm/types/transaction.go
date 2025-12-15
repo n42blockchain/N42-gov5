@@ -5,8 +5,8 @@ package types
 ////
 //// NOTE: In a future PR this will be removed.
 //type Message struct {
-//	to         *common.Address
-//	from       common.Address
+//	to         *avmutil.Address
+//	from       avmutil.Address
 //	nonce      uint64
 //	amount     *big.Int
 //	gasLimit   uint64
@@ -18,7 +18,7 @@ package types
 //	isFake     bool
 //}
 //
-//func NewMessage(from common.Address, to *common.Address, nonce uint64, amount *big.Int, gasLimit uint64, gasPrice, gasFeeCap, gasTipCap *big.Int, data []byte, accessList AccessList, isFake bool) Message {
+//func NewMessage(from avmutil.Address, to *avmutil.Address, nonce uint64, amount *big.Int, gasLimit uint64, gasPrice, gasFeeCap, gasTipCap *big.Int, data []byte, accessList AccessList, isFake bool) Message {
 //	return Message{
 //		from:       from,
 //		to:         to,
@@ -38,7 +38,7 @@ package types
 //func AsMessage(tx *transaction.Transaction, baseFee *big.Int, isFake bool) Message {
 //	f := tx.From()
 //
-//	from := &common.Address{}
+//	from := &avmutil.Address{}
 //	if tx.From() != nil {
 //		from = FromastAddress(f)
 //	}
@@ -79,8 +79,8 @@ package types
 //	return msg
 //}
 //
-//func (m Message) From() common.Address   { return m.from }
-//func (m Message) To() *common.Address    { return m.to }
+//func (m Message) From() avmutil.Address   { return m.from }
+//func (m Message) To() *avmutil.Address    { return m.to }
 //func (m Message) GasPrice() *big.Int     { return m.gasPrice }
 //func (m Message) GasFeeCap() *big.Int    { return m.gasFeeCap }
 //func (m Message) GasTipCap() *big.Int    { return m.gasTipCap }

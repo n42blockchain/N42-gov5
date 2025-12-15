@@ -27,7 +27,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/contracts/deposit"
-	"github.com/n42blockchain/N42/internal/metrics/prometheus"
+	"github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"google.golang.org/protobuf/proto"
 

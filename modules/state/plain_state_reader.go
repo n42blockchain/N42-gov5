@@ -25,8 +25,6 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-var _ StateReader = (*PlainStateReader)(nil)
-
 // PlainStateReader reads data from so called "plain state".
 // Data in the plain state is stored using un-hashed account/storage items
 // as opposed to the "normal" state that uses hashes of merkle paths to store items.

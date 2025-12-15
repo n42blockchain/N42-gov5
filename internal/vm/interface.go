@@ -17,50 +17,183 @@
 package vm
 
 import (
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/params"
-	"math/big"
-
-	"github.com/holiman/uint256"
-
-	"github.com/n42blockchain/N42/common/types"
 )
 
-// CallContext provides a basic interface for the EVM calling conventions. The EVM
-// depends on this context being implemented for doing subcalls and initialising new EVM contracts.
-type CallContext interface {
-	// Call another contract
-	Call(env *EVM, me ContractRef, addr types.Address, data []byte, gas, value *big.Int) ([]byte, error)
-	// Take another's contract code and execute within our own context
-	CallCode(env *EVM, me ContractRef, addr types.Address, data []byte, gas, value *big.Int) ([]byte, error)
-	// Same as CallCode except sender and value is propagated from parent to child scope
-	DelegateCall(env *EVM, me ContractRef, addr types.Address, data []byte, gas *big.Int) ([]byte, error)
-	// Create a new contract
-	Create(env *EVM, me ContractRef, data []byte, gas, value *big.Int) ([]byte, types.Address, error)
-}
-
-// VMInterface exposes the EVM interface for external callers.
-type VMInterface interface {
-	Reset(txCtx evmtypes.TxContext, ibs evmtypes.IntraBlockState)
-	Create(caller ContractRef, code []byte, gas uint64, value *uint256.Int) (ret []byte, contractAddr types.Address, leftOverGas uint64, err error)
-	Call(caller ContractRef, addr types.Address, input []byte, gas uint64, value *uint256.Int, bailout bool) (ret []byte, leftOverGas uint64, err error)
-	Cancel()
-	Config() Config
-	ChainConfig() *params.ChainConfig
-	ChainRules() *params.Rules
-	Context() evmtypes.BlockContext
-	IntraBlockState() evmtypes.IntraBlockState
-	TxContext() evmtypes.TxContext
-}
-
-// VMInterpreter exposes additional EVM methods for use in the interpreter.
+// VMInterpreter is the interface for EVM used by the interpreter.
+// This provides access to chain rules, state, and gas management.
 type VMInterpreter interface {
-	VMInterface
-	Cancelled() bool
+	// VMCaller provides call/create operations
+	VMCaller
+
+	// ChainRules returns the active chain rules
+	ChainRules() *params.Rules
+
+	// ChainConfig returns the chain configuration
+	ChainConfig() *params.ChainConfig
+
+	// IntraBlockState returns the state accessor
+	IntraBlockState() evmtypes.IntraBlockState
+
+	// Context returns the block context
+	Context() evmtypes.BlockContext
+
+	// TxContext returns the transaction context
+	TxContext() evmtypes.TxContext
+
+	// Config returns the VM configuration
+	Config() Config
+
+	// SetCallGasTemp sets the call gas temp
 	SetCallGasTemp(gas uint64)
+
+	// CallGasTemp returns the call gas temp
 	CallGasTemp() uint64
-	StaticCall(caller ContractRef, addr types.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error)
-	DelegateCall(caller ContractRef, addr types.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error)
+
+	// Cancelled returns true if the VM operation was cancelled
+	Cancelled() bool
+
+	// Reset resets the VM with a new transaction context
+	Reset(txCtx evmtypes.TxContext, ibs evmtypes.IntraBlockState)
+}
+
+// VMInterface is an alias for VMInterpreter used by tracers.
+// This maintains backward compatibility with existing tracer code.
+type VMInterface = VMInterpreter
+
+// VMCaller is the interface for EVM execution engine call operations.
+// This interface enables:
+//   - Dependency injection for testing
+//   - Future VM implementations (e.g., optimized VMs, alternative interpreters)
+//   - Instrumentation and tracing without modifying core EVM
+//
+// Architecture:
+//
+//	┌──────────────┐     ┌──────────────┐
+//	│  blockchain  │     │   tracers    │
+//	└──────┬───────┘     └──────┬───────┘
+//	       │                    │
+//	       ▼                    ▼
+//	┌──────────────────────────────────┐
+//	│          VMCaller Interface      │
+//	├──────────────────────────────────┤
+//	│  Call(), Create(), StaticCall()  │
+//	│  DelegateCall(), CallCode()      │
+//	└──────────────┬───────────────────┘
+//	               │ implements
+//	    ┌──────────┴──────────┐
+//	    ▼                     ▼
+//	┌──────────┐       ┌──────────────┐
+//	│   EVM    │       │InstrumentedVM│
+//	└──────────┘       └──────────────┘
+type VMCaller interface {
+	// Call executes a contract call.
+	// Parameters:
+	//   - caller: The account initiating the call
+	//   - addr: The contract address to call
+	//   - input: The call data (function selector + arguments)
+	//   - gas: Gas limit for the call
+	//   - value: Ether value to transfer
+	//   - bailout: If true, don't revert on insufficient balance (used for gas bailout)
+	// Returns:
+	//   - ret: Return data from the contract
+	//   - leftOverGas: Unused gas
+	//   - err: Error if execution failed
+	Call(caller ContractRef, addr types.Address, input []byte, gas uint64, value *uint256.Int, bailout bool) (ret []byte, leftOverGas uint64, err error)
+
+	// CallCode executes a contract's code in the caller's context.
+	// Similar to DELEGATECALL but with caller's address as msg.sender.
 	CallCode(caller ContractRef, addr types.Address, input []byte, gas uint64, value *uint256.Int) (ret []byte, leftOverGas uint64, err error)
+
+	// DelegateCall executes a contract's code with the caller's storage and context.
+	// msg.sender and msg.value are inherited from the caller.
+	DelegateCall(caller ContractRef, addr types.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error)
+
+	// StaticCall executes a read-only contract call.
+	// Any state modification will cause the call to fail.
+	StaticCall(caller ContractRef, addr types.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error)
+
+	// Create deploys a new contract.
+	// Parameters:
+	//   - caller: The account deploying the contract
+	//   - code: The contract deployment bytecode (init code)
+	//   - gas: Gas limit for deployment
+	//   - endowment: Ether value to transfer to the new contract
+	// Returns:
+	//   - ret: Runtime bytecode (after init code execution)
+	//   - contractAddr: The deployed contract's address
+	//   - leftOverGas: Unused gas
+	//   - err: Error if deployment failed
+	Create(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int) (ret []byte, contractAddr types.Address, leftOverGas uint64, err error)
+
+	// Create2 deploys a new contract using CREATE2 opcode.
+	// The address is deterministic based on sender, salt, and init code hash.
 	Create2(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int, salt *uint256.Int) (ret []byte, contractAddr types.Address, leftOverGas uint64, err error)
 }
+
+// VMContext provides read-only access to EVM execution context.
+// Use this interface when you only need to query VM state.
+type VMContext interface {
+	// Context returns the block context
+	Context() evmtypes.BlockContext
+
+	// TxContext returns the transaction context
+	TxContext() evmtypes.TxContext
+
+	// ChainConfig returns the chain configuration
+	ChainConfig() *params.ChainConfig
+
+	// ChainRules returns the active chain rules
+	ChainRules() *params.Rules
+
+	// IntraBlockState returns the state accessor
+	IntraBlockState() evmtypes.IntraBlockState
+}
+
+// VMExecutor combines VM execution with context access.
+// This is the full interface for EVM operations.
+type VMExecutor interface {
+	VMCaller
+	VMContext
+}
+
+// VMResetter allows resetting VM state between transactions.
+type VMResetter interface {
+	// Reset resets the VM with a new transaction context
+	Reset(txCtx evmtypes.TxContext, ibs evmtypes.IntraBlockState)
+
+	// ResetBetweenBlocks resets the VM for a new block
+	ResetBetweenBlocks(blockCtx evmtypes.BlockContext, txCtx evmtypes.TxContext, ibs evmtypes.IntraBlockState, vmConfig Config, chainRules *params.Rules)
+}
+
+// VMCanceller allows canceling VM execution.
+type VMCanceller interface {
+	// Cancel cancels any running EVM operation
+	Cancel()
+
+	// Cancelled returns true if Cancel has been called
+	Cancelled() bool
+}
+
+// FullVM is the complete EVM interface combining all capabilities.
+type FullVM interface {
+	VMExecutor
+	VMResetter
+	VMCanceller
+}
+
+// =============================================================================
+// Compile-time interface compliance checks
+// =============================================================================
+
+var (
+	_ VMCaller    = (*EVM)(nil)
+	_ VMContext   = (*EVM)(nil)
+	_ VMExecutor  = (*EVM)(nil)
+	_ VMResetter  = (*EVM)(nil)
+	_ VMCanceller = (*EVM)(nil)
+	_ FullVM      = (*EVM)(nil)
+)

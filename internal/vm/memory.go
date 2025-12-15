@@ -122,6 +122,16 @@ func (m *Memory) Data() []byte {
 	return m.store
 }
 
+// Copy copies data within memory from src to dst.
+// EIP-5656: MCOPY instruction
+func (m *Memory) Copy(dst, src, length uint64) {
+	if length == 0 {
+		return
+	}
+	// Use Go's built-in copy which handles overlapping regions correctly
+	copy(m.store[dst:dst+length], m.store[src:src+length])
+}
+
 // Print dumps the content of the memory.
 func (m *Memory) Print() {
 	fmt.Printf("### mem %d bytes ###\n", len(m.store))

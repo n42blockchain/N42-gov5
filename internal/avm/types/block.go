@@ -6,7 +6,7 @@ import (
 	"errors"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"math/big"
 	"reflect"
 )
@@ -39,12 +39,12 @@ func (n *BlockNonce) UnmarshalText(input []byte) error {
 }
 
 type Header struct {
-	ParentHash  common.Hash    `json:"parentHash"       gencodec:"required"`
-	UncleHash   common.Hash    `json:"sha3Uncles"       gencodec:"required"`
-	Coinbase    common.Address `json:"miner"`
-	Root        common.Hash    `json:"stateRoot"        gencodec:"required"`
-	TxHash      common.Hash    `json:"transactionsRoot" gencodec:"required"`
-	ReceiptHash common.Hash    `json:"receiptsRoot"     gencodec:"required"`
+	ParentHash  avmutil.Hash    `json:"parentHash"       gencodec:"required"`
+	UncleHash   avmutil.Hash    `json:"sha3Uncles"       gencodec:"required"`
+	Coinbase    avmutil.Address `json:"miner"`
+	Root        avmutil.Hash    `json:"stateRoot"        gencodec:"required"`
+	TxHash      avmutil.Hash    `json:"transactionsRoot" gencodec:"required"`
+	ReceiptHash avmutil.Hash    `json:"receiptsRoot"     gencodec:"required"`
 	Bloom       Bloom          `json:"logsBloom"        gencodec:"required"`
 	Difficulty  *big.Int       `json:"difficulty"       gencodec:"required"`
 	Number      *big.Int       `json:"number"           gencodec:"required"`
@@ -52,7 +52,7 @@ type Header struct {
 	GasUsed     uint64         `json:"gasUsed"          gencodec:"required"`
 	Time        uint64         `json:"timestamp"        gencodec:"required"`
 	Extra       []byte         `json:"extraData"        gencodec:"required"`
-	MixDigest   common.Hash    `json:"mixHash"`
+	MixDigest   avmutil.Hash    `json:"mixHash"`
 	Nonce       BlockNonce     `json:"nonce"`
 
 	// BaseFee was added by EIP-1559 and is ignored in legacy headers.
@@ -61,37 +61,37 @@ type Header struct {
 	/*
 		TODO (MariusVanDerWijden) Add this field once needed
 		// Random was added during the merge and contains the BeaconState randomness
-		Random common.Hash `json:"random" rlp:"optional"`
+		Random avmutil.Hash `json:"random" rlp:"optional"`
 	*/
 }
 
 // Hash returns the block hash of the header, which is simply the keccak256 hash of its
 // RLP encoding.
-func (h *Header) Hash() common.Hash {
+func (h *Header) Hash() avmutil.Hash {
 	return rlpHash(h)
 }
 
-var headerSize = common.StorageSize(reflect.TypeOf(Header{}).Size())
+var headerSize = avmutil.StorageSize(reflect.TypeOf(Header{}).Size())
 
 // Size returns the approximate memory used by all internal contents. It is used
 // to approximate and limit the memory consumption of various caches.
-func (h *Header) Size() common.StorageSize {
+func (h *Header) Size() avmutil.StorageSize {
 	var baseFeeBits int
 	if h.BaseFee != nil {
 		baseFeeBits = h.BaseFee.BitLen()
 	}
-	return headerSize + common.StorageSize(len(h.Extra)+(h.Difficulty.BitLen()+h.Number.BitLen()+baseFeeBits)/8)
+	return headerSize + avmutil.StorageSize(len(h.Extra)+(h.Difficulty.BitLen()+h.Number.BitLen()+baseFeeBits)/8)
 }
 
 // MarshalJSON marshals as JSON.
 func (h Header) MarshalJSON() ([]byte, error) {
 	type Header struct {
-		ParentHash  common.Hash    `json:"parentHash"       gencodec:"required"`
-		UncleHash   common.Hash    `json:"sha3Uncles"       gencodec:"required"`
-		Coinbase    common.Address `json:"miner"`
-		Root        common.Hash    `json:"stateRoot"        gencodec:"required"`
-		TxHash      common.Hash    `json:"transactionsRoot" gencodec:"required"`
-		ReceiptHash common.Hash    `json:"receiptsRoot"     gencodec:"required"`
+		ParentHash  avmutil.Hash    `json:"parentHash"       gencodec:"required"`
+		UncleHash   avmutil.Hash    `json:"sha3Uncles"       gencodec:"required"`
+		Coinbase    avmutil.Address `json:"miner"`
+		Root        avmutil.Hash    `json:"stateRoot"        gencodec:"required"`
+		TxHash      avmutil.Hash    `json:"transactionsRoot" gencodec:"required"`
+		ReceiptHash avmutil.Hash    `json:"receiptsRoot"     gencodec:"required"`
 		Bloom       Bloom          `json:"logsBloom"        gencodec:"required"`
 		Difficulty  *hexutil.Big   `json:"difficulty"       gencodec:"required"`
 		Number      *hexutil.Big   `json:"number"           gencodec:"required"`
@@ -99,10 +99,10 @@ func (h Header) MarshalJSON() ([]byte, error) {
 		GasUsed     hexutil.Uint64 `json:"gasUsed"          gencodec:"required"`
 		Time        hexutil.Uint64 `json:"timestamp"        gencodec:"required"`
 		Extra       hexutil.Bytes  `json:"extraData"        gencodec:"required"`
-		MixDigest   common.Hash    `json:"mixHash"`
+		MixDigest   avmutil.Hash    `json:"mixHash"`
 		Nonce       BlockNonce     `json:"nonce"`
 		BaseFee     *hexutil.Big   `json:"baseFeePerGas" rlp:"optional"`
-		Hash        common.Hash    `json:"hash"`
+		Hash        avmutil.Hash    `json:"hash"`
 	}
 	var enc Header
 	enc.ParentHash = h.ParentHash
@@ -128,12 +128,12 @@ func (h Header) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON unmarshals from JSON.
 func (h *Header) UnmarshalJSON(input []byte) error {
 	type Header struct {
-		ParentHash  *common.Hash    `json:"parentHash"       gencodec:"required"`
-		UncleHash   *common.Hash    `json:"sha3Uncles"       gencodec:"required"`
-		Coinbase    *common.Address `json:"miner"`
-		Root        *common.Hash    `json:"stateRoot"        gencodec:"required"`
-		TxHash      *common.Hash    `json:"transactionsRoot" gencodec:"required"`
-		ReceiptHash *common.Hash    `json:"receiptsRoot"     gencodec:"required"`
+		ParentHash  *avmutil.Hash    `json:"parentHash"       gencodec:"required"`
+		UncleHash   *avmutil.Hash    `json:"sha3Uncles"       gencodec:"required"`
+		Coinbase    *avmutil.Address `json:"miner"`
+		Root        *avmutil.Hash    `json:"stateRoot"        gencodec:"required"`
+		TxHash      *avmutil.Hash    `json:"transactionsRoot" gencodec:"required"`
+		ReceiptHash *avmutil.Hash    `json:"receiptsRoot"     gencodec:"required"`
 		Bloom       *Bloom          `json:"logsBloom"        gencodec:"required"`
 		Difficulty  *hexutil.Big    `json:"difficulty"       gencodec:"required"`
 		Number      *hexutil.Big    `json:"number"           gencodec:"required"`
@@ -141,7 +141,7 @@ func (h *Header) UnmarshalJSON(input []byte) error {
 		GasUsed     *hexutil.Uint64 `json:"gasUsed"          gencodec:"required"`
 		Time        *hexutil.Uint64 `json:"timestamp"        gencodec:"required"`
 		Extra       *hexutil.Bytes  `json:"extraData"        gencodec:"required"`
-		MixDigest   *common.Hash    `json:"mixHash"`
+		MixDigest   *avmutil.Hash    `json:"mixHash"`
 		Nonce       *BlockNonce     `json:"nonce"`
 		BaseFee     *hexutil.Big    `json:"baseFeePerGas" rlp:"optional"`
 	}

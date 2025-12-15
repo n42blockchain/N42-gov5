@@ -19,7 +19,7 @@ package types
 import (
 	"math/big"
 
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 )
 
 type DynamicFeeTx struct {
@@ -28,7 +28,7 @@ type DynamicFeeTx struct {
 	GasTipCap  *big.Int // a.k.a. maxPriorityFeePerGas
 	GasFeeCap  *big.Int // a.k.a. maxFeePerGas
 	Gas        uint64
-	To         *common.Address `rlp:"nil"` // nil means contract creation
+	To         *avmutil.Address `rlp:"nil"` // nil means contract creation
 	Value      *big.Int
 	Data       []byte
 	AccessList AccessList
@@ -44,7 +44,7 @@ func (tx *DynamicFeeTx) copy() TxData {
 	cpy := &DynamicFeeTx{
 		Nonce: tx.Nonce,
 		To:    copyAddressPtr(tx.To),
-		Data:  common.CopyBytes(tx.Data),
+		Data:  avmutil.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
 		// These are copied below.
 		AccessList: make(AccessList, len(tx.AccessList)),
@@ -92,7 +92,7 @@ func (tx *DynamicFeeTx) gasTipCap() *big.Int    { return tx.GasTipCap }
 func (tx *DynamicFeeTx) gasPrice() *big.Int     { return tx.GasFeeCap }
 func (tx *DynamicFeeTx) value() *big.Int        { return tx.Value }
 func (tx *DynamicFeeTx) nonce() uint64          { return tx.Nonce }
-func (tx *DynamicFeeTx) to() *common.Address    { return tx.To }
+func (tx *DynamicFeeTx) to() *avmutil.Address    { return tx.To }
 
 func (tx *DynamicFeeTx) rawSignatureValues() (v, r, s *big.Int) {
 	return tx.V, tx.R, tx.S

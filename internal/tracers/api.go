@@ -26,7 +26,7 @@ import (
 	common2 "github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/internal/api"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"time"
 

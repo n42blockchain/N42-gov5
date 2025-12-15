@@ -17,6 +17,8 @@
 package vm
 
 import (
+	"math"
+
 	"github.com/holiman/uint256"
 )
 
@@ -29,6 +31,32 @@ const (
 	GasSlowStep    uint64 = 10
 	GasExtStep     uint64 = 20
 )
+
+// safeMul multiplies two uint64 values and returns the result and a boolean
+// indicating whether overflow occurred.
+func safeMul(a, b uint64) (uint64, bool) {
+	if a == 0 || b == 0 {
+		return 0, false
+	}
+	c := a * b
+	return c, c/a != b
+}
+
+// safeAdd adds two uint64 values and returns the result and a boolean
+// indicating whether overflow occurred.
+func safeAdd(a, b uint64) (uint64, bool) {
+	c := a + b
+	return c, c < a
+}
+
+// toWordSize converts a size in bytes to the number of 32-byte words,
+// rounding up.
+func toWordSize(size uint64) uint64 {
+	if size > math.MaxUint64-31 {
+		return math.MaxUint64/32 + 1
+	}
+	return (size + 31) / 32
+}
 
 // callGas returns the actual gas cost of the call.
 //

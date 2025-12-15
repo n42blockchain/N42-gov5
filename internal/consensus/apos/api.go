@@ -30,8 +30,8 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/common"
-	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
+	"github.com/n42blockchain/N42/common/avmutil"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -56,7 +56,7 @@ type VerifiedBlockResponse struct {
 // API is a user facing jsonrpc API to allow controlling the signer and voting
 // mechanisms of the proof-of-authority scheme.
 type API struct {
-	chain consensus.ChainReader
+	chain consensus.ConsensusChainReader
 	apos  *APos
 }
 
@@ -86,7 +86,7 @@ func (api *API) GetSnapshotAtHash(hash types.Hash) (*Snapshot, error) {
 }
 
 // GetSigners retrieves the list of authorized signers at the specified block.
-func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]common.Address, error) {
+func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]avmutil.Address, error) {
 	// Retrieve the requested block number (or current if none requested)
 	var header block.IHeader
 	if number == nil || *number == jsonrpc.LatestBlockNumber {
@@ -104,7 +104,7 @@ func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]common.Address, error
 	}
 
 	signers := snap.signers()
-	ethSigners := make([]common.Address, len(signers))
+	ethSigners := make([]avmutil.Address, len(signers))
 	for i, signer := range signers {
 		ethSigners[i] = *avmtypes.FromastAddress(&signer)
 	}
@@ -112,7 +112,7 @@ func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]common.Address, error
 }
 
 // GetSignersAtHash retrieves the list of authorized signers at the specified block.
-func (api *API) GetSignersAtHash(hash types.Hash) ([]common.Address, error) {
+func (api *API) GetSignersAtHash(hash types.Hash) ([]avmutil.Address, error) {
 	header, _ := api.chain.GetHeaderByHash(hash)
 	if header == nil {
 		return nil, errUnknownBlock
@@ -122,7 +122,7 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]common.Address, error) {
 		return nil, err
 	}
 	signers := snap.signers()
-	ethSigners := make([]common.Address, len(signers))
+	ethSigners := make([]avmutil.Address, len(signers))
 	for i, signer := range signers {
 		ethSigners[i] = *avmtypes.FromastAddress(&signer)
 	}
@@ -130,11 +130,11 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]common.Address, error) {
 }
 
 // Proposals returns the current proposals the node tries to uphold and vote on.
-func (api *API) Proposals() map[common.Address]bool {
+func (api *API) Proposals() map[avmutil.Address]bool {
 	api.apos.lock.RLock()
 	defer api.apos.lock.RUnlock()
 
-	proposals := make(map[common.Address]bool)
+	proposals := make(map[avmutil.Address]bool)
 	for address, auth := range api.apos.proposals {
 		proposals[*avmtypes.FromastAddress(&address)] = auth
 	}
@@ -143,7 +143,7 @@ func (api *API) Proposals() map[common.Address]bool {
 
 // Propose injects a new authorization proposal that the signer will attempt to
 // push through.
-func (api *API) Propose(address common.Address, auth bool) {
+func (api *API) Propose(address avmutil.Address, auth bool) {
 	api.apos.lock.Lock()
 	defer api.apos.lock.Unlock()
 
@@ -152,7 +152,7 @@ func (api *API) Propose(address common.Address, auth bool) {
 
 // Discard drops a currently running proposal, stopping the signer from casting
 // further votes (either for or against).
-func (api *API) Discard(address common.Address) {
+func (api *API) Discard(address avmutil.Address) {
 	api.apos.lock.Lock()
 	defer api.apos.lock.Unlock()
 
@@ -265,7 +265,7 @@ func (api *API) GetSigner(rlpOrBlockNr *blockNumberOrHashOrRLP) (types.Address, 
 }
 
 // GetRewards
-func (api *API) GetRewards(address common.Address, from jsonrpc.BlockNumberOrHash, to jsonrpc.BlockNumberOrHash) (resp *RewardResponse, err error) {
+func (api *API) GetRewards(address avmutil.Address, from jsonrpc.BlockNumberOrHash, to jsonrpc.BlockNumberOrHash) (resp *RewardResponse, err error) {
 
 	var (
 		resolvedFromBlock *uint256.Int
@@ -289,7 +289,7 @@ func (api *API) GetRewards(address common.Address, from jsonrpc.BlockNumberOrHas
 }
 
 // GetRewards
-func (api *API) GetDepositInfo(address common.Address) (*deposit.Info, error) {
+func (api *API) GetDepositInfo(address avmutil.Address) (*deposit.Info, error) {
 
 	addr := *avmtypes.ToastAddress(&address)
 
@@ -347,7 +347,7 @@ func (api *API) getHeader(from jsonrpc.BlockNumberOrHash) (currentHeader block.I
 }
 
 // GetTasks
-func (api *API) GetMinedBlock(address common.Address, from jsonrpc.BlockNumberOrHash, wantCount uint64) (*MinedBlockResponse, error) {
+func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberOrHash, wantCount uint64) (*MinedBlockResponse, error) {
 
 	addr := *avmtypes.ToastAddress(&address)
 	var (
@@ -412,7 +412,7 @@ Finish:
 }
 
 // VerifiedBlock
-func (api *API) VerifiedBlock(address common.Address, from jsonrpc.BlockNumberOrHash, wantCount uint64, to *jsonrpc.BlockNumber) (*VerifiedBlockResponse, error) {
+func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberOrHash, wantCount uint64, to *jsonrpc.BlockNumber) (*VerifiedBlockResponse, error) {
 
 	addr := *avmtypes.ToastAddress(&address)
 	var (

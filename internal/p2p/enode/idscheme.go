@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/math"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"golang.org/x/crypto/sha3"
 	"io"

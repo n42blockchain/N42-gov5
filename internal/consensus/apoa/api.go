@@ -23,8 +23,8 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/common"
-	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
+	"github.com/n42blockchain/N42/common/avmutil"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -32,7 +32,7 @@ import (
 // API is a user facing jsonrpc API to allow controlling the signer and voting
 // mechanisms of the proof-of-authority scheme.
 type API struct {
-	chain consensus.ChainReader
+	chain consensus.ConsensusChainReader
 	apoa  *Apoa
 }
 
@@ -62,7 +62,7 @@ func (api *API) GetSnapshotAtHash(hash types.Hash) (*Snapshot, error) {
 }
 
 // GetSigners retrieves the list of authorized signers at the specified block.
-func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]common.Address, error) {
+func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]avmutil.Address, error) {
 	// Retrieve the requested block number (or current if none requested)
 	var header block.IHeader
 	if number == nil || *number == jsonrpc.LatestBlockNumber {
@@ -80,7 +80,7 @@ func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]common.Address, error
 	}
 
 	signers := snap.signers()
-	ethSigners := make([]common.Address, len(signers))
+	ethSigners := make([]avmutil.Address, len(signers))
 	for i, signer := range signers {
 		ethSigners[i] = *avmtypes.FromastAddress(&signer)
 	}
@@ -88,7 +88,7 @@ func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]common.Address, error
 }
 
 // GetSignersAtHash retrieves the list of authorized signers at the specified block.
-func (api *API) GetSignersAtHash(hash types.Hash) ([]common.Address, error) {
+func (api *API) GetSignersAtHash(hash types.Hash) ([]avmutil.Address, error) {
 	header, _ := api.chain.GetHeaderByHash(hash)
 	if header == nil {
 		return nil, errUnknownBlock
@@ -98,7 +98,7 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]common.Address, error) {
 		return nil, err
 	}
 	signers := snap.signers()
-	ethSigners := make([]common.Address, len(signers))
+	ethSigners := make([]avmutil.Address, len(signers))
 	for i, signer := range signers {
 		ethSigners[i] = *avmtypes.FromastAddress(&signer)
 	}
@@ -106,11 +106,11 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]common.Address, error) {
 }
 
 // Proposals returns the current proposals the node tries to uphold and vote on.
-func (api *API) Proposals() map[common.Address]bool {
+func (api *API) Proposals() map[avmutil.Address]bool {
 	api.apoa.lock.RLock()
 	defer api.apoa.lock.RUnlock()
 
-	proposals := make(map[common.Address]bool)
+	proposals := make(map[avmutil.Address]bool)
 	for address, auth := range api.apoa.proposals {
 		proposals[*avmtypes.FromastAddress(&address)] = auth
 	}
@@ -119,7 +119,7 @@ func (api *API) Proposals() map[common.Address]bool {
 
 // Propose injects a new authorization proposal that the signer will attempt to
 // push through.
-func (api *API) Propose(address common.Address, auth bool) {
+func (api *API) Propose(address avmutil.Address, auth bool) {
 	api.apoa.lock.Lock()
 	defer api.apoa.lock.Unlock()
 
@@ -128,7 +128,7 @@ func (api *API) Propose(address common.Address, auth bool) {
 
 // Discard drops a currently running proposal, stopping the signer from casting
 // further votes (either for or against).
-func (api *API) Discard(address common.Address) {
+func (api *API) Discard(address avmutil.Address) {
 	api.apoa.lock.Lock()
 	defer api.apoa.lock.Unlock()
 

@@ -25,7 +25,7 @@ import (
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -58,7 +58,7 @@ func NewChangeSetWriterPlain(db kv.RwTx, blockNumber uint64) *ChangeSetWriter {
 func (w *ChangeSetWriter) GetAccountChanges() (*changeset.ChangeSet, error) {
 	cs := changeset.NewAccountChangeSet()
 	for address, val := range w.accountChanges {
-		if err := cs.Add(common.CopyBytes(address[:]), val); err != nil {
+		if err := cs.Add(avmutil.CopyBytes(address[:]), val); err != nil {
 			return nil, err
 		}
 	}
