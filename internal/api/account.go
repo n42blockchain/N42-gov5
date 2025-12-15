@@ -19,7 +19,7 @@ package api
 import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 )
 
 type DumpAccount struct {
@@ -29,7 +29,7 @@ type DumpAccount struct {
 	CodeHash  hexutil.Bytes         `json:"codeHash"`
 	Code      hexutil.Bytes         `json:"code,omitempty"`
 	Storage   map[types.Hash]string `json:"storage,omitempty"`
-	Address   *common.Address       `json:"address,omitempty"` // Address only present in iterative (line-by-line) mode
+	Address   *avmutil.Address       `json:"address,omitempty"` // Address only present in iterative (line-by-line) mode
 	SecureKey hexutil.Bytes         `json:"key,omitempty"`     // If we don't have address, we can output the key
 
 }

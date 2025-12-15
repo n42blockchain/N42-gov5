@@ -69,6 +69,9 @@ const (
 	SHR
 	SAR
 
+	// CLZ counts leading zeros in a 256-bit value (EIP-7939)
+	CLZ OpCode = 0x1e
+
 	KECCAK256 OpCode = 0x20
 )
 
@@ -98,11 +101,13 @@ const (
 	COINBASE
 	TIMESTAMP
 	NUMBER
-	DIFFICULTY
+	DIFFICULTY // Renamed to PREVRANDAO post-merge, but keeping for compatibility
 	GASLIMIT
 	CHAINID     OpCode = 0x46
 	SELFBALANCE OpCode = 0x47
 	BASEFEE     OpCode = 0x48
+	BLOBHASH    OpCode = 0x49 // EIP-4844: Blob hash opcode
+	BLOBBASEFEE OpCode = 0x4a // EIP-7516: Blob base fee opcode
 )
 
 // 0x50 range - 'storage' and execution.
@@ -119,6 +124,9 @@ const (
 	MSIZE    OpCode = 0x59
 	GAS      OpCode = 0x5a
 	JUMPDEST OpCode = 0x5b
+	TLOAD    OpCode = 0x5c // EIP-1153: Transient storage load
+	TSTORE   OpCode = 0x5d // EIP-1153: Transient storage store
+	MCOPY    OpCode = 0x5e // EIP-5656: Memory copy instruction
 	PUSH0    OpCode = 0x5f
 )
 
@@ -242,6 +250,7 @@ var opCodeToString = map[OpCode]string{
 	SHL:    "SHL",
 	SHR:    "SHR",
 	SAR:    "SAR",
+	CLZ:    "CLZ",
 	ADDMOD: "ADDMOD",
 	MULMOD: "MULMOD",
 
@@ -276,6 +285,8 @@ var opCodeToString = map[OpCode]string{
 	CHAINID:     "CHAINID",
 	SELFBALANCE: "SELFBALANCE",
 	BASEFEE:     "BASEFEE",
+	BLOBHASH:    "BLOBHASH",
+	BLOBBASEFEE: "BLOBBASEFEE",
 
 	// 0x50 range - 'storage' and execution.
 	POP: "POP",
@@ -292,6 +303,9 @@ var opCodeToString = map[OpCode]string{
 	MSIZE:    "MSIZE",
 	GAS:      "GAS",
 	JUMPDEST: "JUMPDEST",
+	TLOAD:    "TLOAD",
+	TSTORE:   "TSTORE",
+	MCOPY:    "MCOPY",
 	PUSH0:    "PUSH0",
 
 	// 0x60 range - push.

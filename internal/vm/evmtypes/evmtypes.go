@@ -29,6 +29,10 @@ type BlockContext struct {
 	Difficulty  *big.Int          // Provides information for DIFFICULTY
 	BaseFee     *uint256.Int      // Provides information for BASEFEE
 	PrevRanDao  *libcommon.Hash   // Provides information for PREVRANDAO
+
+	// EIP-4844: Blob gas fields (Cancun)
+	BlobBaseFee *uint256.Int        // Provides information for BLOBBASEFEE
+	ExcessBlobGas uint64            // Excess blob gas for EIP-4844
 }
 
 // TxContext provides the EVM with information about a transaction.
@@ -38,6 +42,9 @@ type TxContext struct {
 	TxHash   libcommon.Hash
 	Origin   libcommon.Address // Provides information for ORIGIN
 	GasPrice *uint256.Int      // Provides information for GASPRICE
+
+	// EIP-4844: Blob transaction fields (Cancun)
+	BlobHashes []libcommon.Hash // Versioned blob hashes for BLOBHASH opcode
 }
 
 type (
@@ -98,4 +105,8 @@ type IntraBlockState interface {
 	Snapshot() int
 
 	AddLog(*block.Log)
+
+	// EIP-1153: Transient storage (Cancun)
+	GetTransientState(addr libcommon.Address, key libcommon.Hash) uint256.Int
+	SetTransientState(addr libcommon.Address, key libcommon.Hash, value uint256.Int)
 }

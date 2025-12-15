@@ -24,7 +24,7 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
-	"github.com/n42blockchain/N42/internal/metrics/prometheus"
+	"github.com/n42blockchain/N42/common/metrics"
 	"sort"
 	"sync"
 

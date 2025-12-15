@@ -19,7 +19,7 @@ package types
 import (
 	"math/big"
 
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 )
 
 // LegacyTx is the transaction data of regular Ethereum transactions.
@@ -27,7 +27,7 @@ type LegacyTx struct {
 	Nonce    uint64          // nonce of sender account
 	GasPrice *big.Int        // wei per gas
 	Gas      uint64          // gas limit
-	To       *common.Address `rlp:"nil"` // nil means contract creation
+	To       *avmutil.Address `rlp:"nil"` // nil means contract creation
 	Value    *big.Int        // wei amount
 	Data     []byte          // contract invocation input data
 	V, R, S  *big.Int        // signature values
@@ -35,7 +35,7 @@ type LegacyTx struct {
 
 // NewTransaction creates an unsigned legacy transaction.
 // Deprecated: use NewTx instead.
-func NewTransaction(nonce uint64, to common.Address, amount *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte) *Transaction {
+func NewTransaction(nonce uint64, to avmutil.Address, amount *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte) *Transaction {
 	return NewTx(&LegacyTx{
 		Nonce:    nonce,
 		To:       &to,
@@ -63,7 +63,7 @@ func (tx *LegacyTx) copy() TxData {
 	cpy := &LegacyTx{
 		Nonce: tx.Nonce,
 		To:    copyAddressPtr(tx.To),
-		Data:  common.CopyBytes(tx.Data),
+		Data:  avmutil.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
 		// These are initialized below.
 		Value:    new(big.Int),
@@ -101,7 +101,7 @@ func (tx *LegacyTx) gasTipCap() *big.Int    { return tx.GasPrice }
 func (tx *LegacyTx) gasFeeCap() *big.Int    { return tx.GasPrice }
 func (tx *LegacyTx) value() *big.Int        { return tx.Value }
 func (tx *LegacyTx) nonce() uint64          { return tx.Nonce }
-func (tx *LegacyTx) to() *common.Address    { return tx.To }
+func (tx *LegacyTx) to() *avmutil.Address    { return tx.To }
 
 func (tx *LegacyTx) rawSignatureValues() (v, r, s *big.Int) {
 	return tx.V, tx.R, tx.S

@@ -22,7 +22,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"math/bits"
 	"net"

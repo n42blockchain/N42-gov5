@@ -129,7 +129,10 @@ type IStateDB interface {
 
 	Error() error
 }
-type ChainStateReader interface {
+// AccountStateReader provides state reading methods for account derivation.
+// Note: This is different from N42.ChainStateReader which is the external API interface
+// using *big.Int for Ethereum compatibility.
+type AccountStateReader interface {
 	BalanceAt(ctx context.Context, account types.Address, blockNumber uint256.Int) (uint256.Int, error)
 	StorageAt(ctx context.Context, account types.Address, key types.Hash, blockNumber uint256.Int) ([]byte, error)
 	CodeAt(ctx context.Context, account types.Address, blockNumber uint256.Int) ([]byte, error)

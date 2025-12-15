@@ -90,6 +90,7 @@ func validateAndFillMaxStack(jt *JumpTable) {
 // cancun, and prague instructions.
 func newPragueInstructionSet() JumpTable {
 	instructionSet := newCancunInstructionSet()
+	enable7939(&instructionSet) // CLZ instruction (EIP-7939)
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }
@@ -99,6 +100,11 @@ func newPragueInstructionSet() JumpTable {
 // and cancun instructions.
 func newCancunInstructionSet() JumpTable {
 	instructionSet := newShanghaiInstructionSet()
+	enable1153(&instructionSet) // Transient storage (EIP-1153): TLOAD, TSTORE
+	enable5656(&instructionSet) // MCOPY instruction (EIP-5656)
+	enable4844(&instructionSet) // Blob transactions (EIP-4844): BLOBHASH
+	enable7516(&instructionSet) // BLOBBASEFEE opcode (EIP-7516)
+	enable6780(&instructionSet) // SELFDESTRUCT changes (EIP-6780)
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }

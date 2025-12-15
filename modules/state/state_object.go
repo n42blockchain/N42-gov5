@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/utils"
 	"io"
 	"math/big"

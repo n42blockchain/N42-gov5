@@ -30,8 +30,8 @@ import (
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	avmcommon "github.com/n42blockchain/N42/internal/avm/common"
-	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
+	avmcommon "github.com/n42blockchain/N42/common/avmutil"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 

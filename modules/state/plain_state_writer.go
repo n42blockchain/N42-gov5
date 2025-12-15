@@ -26,8 +26,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-var _ WriterWithChangeSets = (*PlainStateWriter)(nil)
-
 type putDel interface {
 	kv.Putter
 	kv.Deleter

@@ -31,9 +31,9 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/common"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
-	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/rlp"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -477,7 +477,7 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 
 // VerifyUncles implements consensus.Engine, always returning an error for any
 // uncles as this consensus mechanism doesn't permit uncles.
-func (c *Apoa) VerifyUncles(chain consensus.ChainReader, block block.IBlock) error {
+func (c *Apoa) VerifyUncles(chain consensus.ConsensusChainReader, block block.IBlock) error {
 	//if len(block.Uncles()) > 0 {
 	//	return errors.New("uncles not allowed")
 	//}
@@ -679,8 +679,8 @@ func (c *Apoa) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 		wiggle := time.Duration(len(snap.Signers)/2+1) * wiggleTime
 		delay += time.Duration(rand.Int63n(int64(wiggle)))
 
-		log.Infof("wiggle %s , time %s, number %d", common.PrettyDuration(wiggle), common.PrettyDuration(delay), header.Number.Uint64())
-		log.Debug("Out-of-turn signing requested", "wiggle", common.PrettyDuration(wiggle))
+		log.Infof("wiggle %s , time %s, number %d", avmutil.PrettyDuration(wiggle), avmutil.PrettyDuration(delay), header.Number.Uint64())
+		log.Debug("Out-of-turn signing requested", "wiggle", avmutil.PrettyDuration(wiggle))
 	}
 	// Sign all the things!
 	sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypeClique, ApoaProto(header))
@@ -690,7 +690,7 @@ func (c *Apoa) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 
 	copy(header.Extra[len(header.Extra)-extraSeal:], sighash)
 	// Wait until sealing is terminated or delay timeout.
-	log.Debug("Waiting for slot to sign and propagate", "delay", common.PrettyDuration(delay))
+	log.Debug("Waiting for slot to sign and propagate", "delay", avmutil.PrettyDuration(delay))
 	go func() {
 	reTimer:
 		select {
@@ -746,7 +746,7 @@ func (c *Apoa) Close() error {
 
 // APIs implements consensus.Engine, returning the user facing RPC API to allow
 // controlling the signer voting.
-func (c *Apoa) APIs(chain consensus.ChainReader) []jsonrpc.API {
+func (c *Apoa) APIs(chain consensus.ConsensusChainReader) []jsonrpc.API {
 	return []jsonrpc.API{{
 		Namespace: "apoa",
 		Service:   &API{chain: chain, apoa: c},
@@ -801,3 +801,6 @@ func encodeSigHeader(w io.Writer, iHeader block.IHeader) {
 func (c *Apoa) IsServiceTransaction(sender types.Address, syscall consensus.SystemCall) bool {
 	return false
 }
+
+// Compile-time interface compliance check
+var _ consensus.Engine = (*Apoa)(nil)

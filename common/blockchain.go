@@ -24,21 +24,21 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/modules/state"
-	"github.com/n42blockchain/N42/params"
 )
 
+// IHeaderChain provides header chain operations not covered by consensus.ChainHeaderReader.
+// Note: GetHeaderByNumber, GetHeaderByHash, and GetBlockByNumber are now in ChainHeaderReader.
 type IHeaderChain interface {
-	GetHeaderByNumber(number *uint256.Int) block.IHeader
-	GetHeaderByHash(h types.Hash) (block.IHeader, error)
 	InsertHeader(headers []block.IHeader) (int, error)
 	GetBlockByHash(h types.Hash) (block.IBlock, error)
-	GetBlockByNumber(number *uint256.Int) (block.IBlock, error)
 }
 
+// IBlockChain is the main blockchain interface that embeds consensus.ChainHeaderReader
+// to ensure compatibility with consensus engine requirements.
 type IBlockChain interface {
 	IHeaderChain
-	Config() *params.ChainConfig
-	CurrentBlock() block.IBlock
+	consensus.ChainHeaderReader // Embed consensus interface for type safety
+
 	Blocks() []block.IBlock
 	Start() error
 	GenesisBlock() block.IBlock
@@ -54,12 +54,10 @@ type IBlockChain interface {
 	SetHead(head uint64) error
 	AddFutureBlock(block block.IBlock) error
 
-	GetHeader(types.Hash, *uint256.Int) block.IHeader
-	// alias for GetBlocksFromHash?
+	// GetBlock retrieves a block by hash and number
 	GetBlock(hash types.Hash, number uint64) block.IBlock
 	StateAt(tx kv.Tx, blockNr uint64) *state.IntraBlockState
 
-	GetTd(hash types.Hash, number *uint256.Int) *uint256.Int
 	HasBlock(hash types.Hash, number uint64) bool
 
 	DB() kv.RwDB
@@ -68,9 +66,6 @@ type IBlockChain interface {
 	Close() error
 
 	WriteBlockWithState(block block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) error
-
-	GetDepositInfo(address types.Address) (*uint256.Int, *uint256.Int)
-	GetAccountRewardUnpaid(account types.Address) (*uint256.Int, error)
 }
 
 type IMiner interface {

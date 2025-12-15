@@ -28,7 +28,7 @@ import (
 	fujideposit "github.com/n42blockchain/N42/contracts/deposit/FUJI"
 	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/NFT"
 	"github.com/n42blockchain/N42/internal/debug"
-	"github.com/n42blockchain/N42/internal/metrics/prometheus"
+	"github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/internal/p2p"
 	astsync "github.com/n42blockchain/N42/internal/sync"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initial-sync"

@@ -24,7 +24,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	types2 "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
-	"github.com/n42blockchain/N42/internal/avm/types"
+	types "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"

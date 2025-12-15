@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"github.com/n42blockchain/N42/common/paths"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/params/networkname"
 	"golang.org/x/crypto/sha3"
 	"math/big"
@@ -213,7 +213,7 @@ func (b *APosConfig) String() string {
 type AuRaConfig struct {
 	DBPath    string
 	InMemory  bool
-	Etherbase common.Address // same as miner etherbase
+	Etherbase avmutil.Address // same as miner etherbase
 }
 
 // String implements the stringer interface, returning the consensus engine details.

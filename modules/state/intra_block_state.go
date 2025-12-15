@@ -26,7 +26,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/log"
 	"golang.org/x/crypto/sha3"
 	"sort"
@@ -98,6 +98,9 @@ type IntraBlockState struct {
 	snap    *Snapshot
 	codeMap map[types.Hash][]byte
 	height  uint64
+
+	// EIP-1153: Transient storage
+	transientStorage transientStorage
 }
 
 // Create a new state from a given trie
@@ -111,6 +114,7 @@ func New(stateReader StateReader) *IntraBlockState {
 		journal:           newJournal(),
 		accessList:        newAccessList(),
 		balanceInc:        map[types.Address]*BalanceIncrease{},
+		transientStorage:  newTransientStorage(),
 	}
 }
 
@@ -254,6 +258,25 @@ func (sdb *IntraBlockState) Logs() []*block.Log {
 		logs = append(logs, lgs...)
 	}
 	return logs
+}
+
+// GetTransientState gets a value from transient storage (EIP-1153).
+func (sdb *IntraBlockState) GetTransientState(addr types.Address, key types.Hash) uint256.Int {
+	return sdb.transientStorage.Get(addr, key)
+}
+
+// SetTransientState sets a value in transient storage (EIP-1153).
+func (sdb *IntraBlockState) SetTransientState(addr types.Address, key types.Hash, value uint256.Int) {
+	prev := sdb.transientStorage.Get(addr, key)
+	if prev == value {
+		return
+	}
+	sdb.journal.append(transientStorageChange{
+		account:  &addr,
+		key:      key,
+		prevalue: prev,
+	})
+	sdb.transientStorage.Set(addr, key, value)
 }
 
 // AddRefund adds gas to the refund counter

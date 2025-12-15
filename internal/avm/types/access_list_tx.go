@@ -1,7 +1,7 @@
 package types
 
 import (
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"math/big"
 )
 
@@ -24,7 +24,7 @@ type TxData interface {
 	gasFeeCap() *big.Int
 	value() *big.Int
 	nonce() uint64
-	to() *common.Address
+	to() *avmutil.Address
 
 	rawSignatureValues() (v, r, s *big.Int)
 	setSignatureValues(chainID, v, r, s *big.Int)
@@ -34,8 +34,8 @@ type AccessList []AccessTuple
 
 // AccessTuple is the element type of an access list.
 type AccessTuple struct {
-	Address     common.Address `json:"address"        gencodec:"required"`
-	StorageKeys []common.Hash  `json:"storageKeys"    gencodec:"required"`
+	Address     avmutil.Address `json:"address"        gencodec:"required"`
+	StorageKeys []avmutil.Hash  `json:"storageKeys"    gencodec:"required"`
 }
 
 // StorageKeys returns the total number of storage keys in the access list.
@@ -53,7 +53,7 @@ type AccessListTx struct {
 	Nonce      uint64          // nonce of sender account
 	GasPrice   *big.Int        // wei per gas
 	Gas        uint64          // gas limit
-	To         *common.Address `rlp:"nil"` // nil means contract creation
+	To         *avmutil.Address `rlp:"nil"` // nil means contract creation
 	Value      *big.Int        // wei amount
 	Data       []byte          // contract invocation input data
 	AccessList AccessList      // EIP-2930 access list
@@ -65,7 +65,7 @@ func (tx *AccessListTx) copy() TxData {
 	cpy := &AccessListTx{
 		Nonce: tx.Nonce,
 		To:    copyAddressPtr(tx.To),
-		Data:  common.CopyBytes(tx.Data),
+		Data:  avmutil.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
 		// These are copied below.
 		AccessList: make(AccessList, len(tx.AccessList)),
@@ -109,7 +109,7 @@ func (tx *AccessListTx) gasTipCap() *big.Int    { return tx.GasPrice }
 func (tx *AccessListTx) gasFeeCap() *big.Int    { return tx.GasPrice }
 func (tx *AccessListTx) value() *big.Int        { return tx.Value }
 func (tx *AccessListTx) nonce() uint64          { return tx.Nonce }
-func (tx *AccessListTx) to() *common.Address    { return tx.To }
+func (tx *AccessListTx) to() *avmutil.Address    { return tx.To }
 
 func (tx *AccessListTx) rawSignatureValues() (v, r, s *big.Int) {
 	return tx.V, tx.R, tx.S
@@ -119,7 +119,7 @@ func (tx *AccessListTx) setSignatureValues(chainID, v, r, s *big.Int) {
 	tx.ChainID, tx.V, tx.R, tx.S = chainID, v, r, s
 }
 
-func copyAddressPtr(a *common.Address) *common.Address {
+func copyAddressPtr(a *avmutil.Address) *avmutil.Address {
 	if a == nil {
 		return nil
 	}
