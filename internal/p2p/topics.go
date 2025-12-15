@@ -2,7 +2,7 @@ package p2p
 
 const (
 	// GossipProtocolAndDigest represents the protocol and fork digest prefix in a gossip topic.
-	GossipProtocolAndDigest = "/ast/%x/"
+	GossipProtocolAndDigest = "/n42/%x/"
 
 	// Message Types
 

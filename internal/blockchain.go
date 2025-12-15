@@ -20,15 +20,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/internal/metrics/prometheus"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"google.golang.org/protobuf/proto"
-	"sort"
-	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/n42blockchain/N42/modules/state"
@@ -133,10 +134,6 @@ type insertStats struct {
 	startTime                  time.Time
 }
 
-//func (bc *BlockChain) GetState() *statedb.StateDB {
-//	return bc.state
-//}
-
 func (bc *BlockChain) Engine() consensus.Engine {
 	return bc.engine
 }
@@ -196,22 +193,6 @@ func (bc *BlockChain) Config() *params.ChainConfig {
 	return bc.chainConfig
 }
 
-//func (bc *BlockChain) StateAt(root types.Hash) evmtypes.IntraBlockState {
-//	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-//	if nil != err {
-//		return nil
-//	}
-//
-//	blockNr := rawdb.ReadHeaderNumber(tx, root)
-//	if nil == blockNr {
-//		return nil
-//	}
-//
-//	stateReader := state.NewStateHistoryReader(tx, tx, *blockNr)
-//	return state.New(stateReader)
-//	//return statedb.NewStateDB(root, bc.chainDB)
-//}
-
 func (bc *BlockChain) CurrentBlock() block2.IBlock {
 	return bc.currentBlock.Load()
 }
@@ -221,8 +202,8 @@ func (bc *BlockChain) Blocks() []block2.IBlock {
 }
 
 func (bc *BlockChain) InsertHeader(headers []block2.IHeader) (int, error) {
-	//TODO implement me
-	panic("implement me")
+	// TODO: Implement header-only insertion for light client support
+	return 0, errors.New("InsertHeader not implemented")
 }
 
 func (bc *BlockChain) GenesisBlock() block2.IBlock {
@@ -230,27 +211,9 @@ func (bc *BlockChain) GenesisBlock() block2.IBlock {
 }
 
 func (bc *BlockChain) Start() error {
-	//if bc.pubsub == nil {
-	//	return ErrInvalidPubSub
-	//}
-
 	bc.wg.Add(3)
 	go bc.runLoop()
-	//go bc.newBlockLoop()
 	go bc.updateFutureBlocksLoop()
-
-	return nil
-}
-
-// verifyBody
-// Deprecated:
-func (bc *BlockChain) verifyBody(block block2.IBlock) error {
-	return nil
-}
-
-// verifyState
-// Deprecated:
-func (bc *BlockChain) verifyState(block block2.IBlock, state *state.IntraBlockState, receipts block2.Receipts, usedGas uint64) error {
 	return nil
 }
 
@@ -294,100 +257,10 @@ func (bc *BlockChain) GetLogs(blockHash types.Hash) ([][]*block2.Log, error) {
 	return logs, nil
 }
 
-// InsertBlock
-// Deprecated:
+// InsertBlock inserts blocks into the chain.
+// Deprecated: Use InsertChain instead. This method is kept for interface compatibility.
 func (bc *BlockChain) InsertBlock(blocks []block2.IBlock, isSync bool) (int, error) {
-	//bc.lock.Lock()
-	//defer bc.lock.Unlock()
-	//runBlock := func(b block2.IBlock) error {
-	//	//todo copy?
-	//	stateDB := statedb.NewStateDB(b.ParentHash(), bc.chainDB, bc.changeDB)
-	//
-	//	receipts, logs, usedGas, err := bc.process.Processor(b, stateDB)
-	//	if err != nil {
-	//		return err
-	//	}
-	//	//verify state
-	//	if err = bc.verifyState(b, stateDB, receipts, usedGas); err != nil {
-	//		return err
-	//	}
-	//	_, err = stateDB.Commit(b.Number64())
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	rawdb.StoreReceipts(bc.chainDB, b.Hash(), receipts)
-	//
-	//	if len(logs) > 0 {
-	//		event.GlobalEvent.Send(&common.NewLogsEvent{Logs: logs})
-	//	}
-	//	if len(receipts) > 0 {
-	//		log.Infof("Receipt len(%d), receipts: [%v]", len(receipts), receipts)
-	//	}
-	//	return nil
-	//}
-	//
-	//current := bc.CurrentBlock()
-	//var insertBlocks []block2.IBlock
-	//for i, block := range blocks {
-	//	if block.Number64() == current.Number64() && block.Difficulty().Compare(current.Difficulty()) == 1 {
-	//		if err := bc.engine.VerifyHeader(bc, block.Header(), false); err != nil {
-	//			log.Errorf("failed verify block err: %v", err)
-	//			continue
-	//		}
-	//		//verify body
-	//		if err := bc.verifyBody(block); err != nil {
-	//			log.Errorf("failed verify block err: %v", err)
-	//			continue
-	//		}
-	//		if err := runBlock(block); err != nil {
-	//			log.Errorf("failed runblock, err:%v", err)
-	//		}
-	//		insertBlocks = append(insertBlocks, block)
-	//		current = blocks[i]
-	//
-	//	} else if block.Number64().Equal(current.Number64().Add(uint256.NewInt(1))) && block.ParentHash().String() == current.Hash().String() {
-	//		if err := bc.engine.VerifyHeader(bc, block.Header(), false); err != nil {
-	//			log.Errorf("failed verify block err: %v", err)
-	//			continue
-	//		}
-	//
-	//		if err := runBlock(block); err != nil {
-	//			log.Errorf("failed runblock, err:%v", err)
-	//		} else {
-	//			insertBlocks = append(insertBlocks, block)
-	//			current = blocks[i]
-	//		}
-	//	} else {
-	//		author, _ := bc.engine.Author(block.Header())
-	//		log.Errorf("failed instert mew block, hash: %s, number: %s, diff: %s, miner: %s, txs: %d", block.Hash(), block.Number64().String(), block.Difficulty().String(), author.String(), len(block.Transactions()))
-	//		log.Errorf("failed instert cur block, hash: %s, number: %s, diff: %s, miner: %s, txs: %d", current.Hash(), current.Number64().String(), current.Difficulty().String(), author.String(), len(current.Transactions()))
-	//	}
-	//
-	//}
-	//
-	//if len(insertBlocks) > 0 {
-	//	if _, err := rawdb.SaveBlocks(bc.chainDB, insertBlocks); err != nil {
-	//		log.Errorf("failed to save blocks, err: %v", err)
-	//		return 0, err
-	//	}
-	//
-	//	if err := rawdb.SaveLatestBlock(bc.chainDB, current); err != nil {
-	//		log.Errorf("failed to save lates blocks, err: %v", err)
-	//		return 0, err
-	//	}
-	//	bc.currentBlock = current
-	//
-	//	if !isSync {
-	//		i := event.GlobalEvent.Send(&current)
-	//		author, _ := bc.engine.Author(current.Header())
-	//		log.Debugf("current number:%d, miner: %s, feed send count: %d", current.Number64().Uint64(), author, i)
-	//	}
-	//
-	//	return len(insertBlocks), nil
-	//}
-
-	return 0, fmt.Errorf("invalid block len(%d)", len(blocks))
+	return 0, fmt.Errorf("deprecated: use InsertChain instead, got %d blocks", len(blocks))
 }
 
 func (bc *BlockChain) LatestBlockCh() (block2.IBlock, error) {
@@ -937,37 +810,15 @@ func (bc *BlockChain) insertChain(chain []block2.IBlock) (int, error) {
 		return it.index, err
 	}
 
-	//wtx, err := bc.ChainDB.BeginRw(bc.ctx)
-	//if nil != err {
-	//	return it.index, err
-	//}
-	//defer wtx.Rollback()
-
-	//var batch ethdb.DbWithPendingMutations
-
-	// state is stored through ethdb batches
-	//batch = olddb.NewHashBatch(wtx, bc.Quit(), paths.DefaultDataDir())
-	//// avoids stacking defers within the loop
-	//defer func() {
-	//	batch.Rollback()
-	//}()
-
 	evmRecord := func(ctx context.Context, db kv.RwDB, blockNr uint64, f func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error)) (*state.IntraBlockState, map[types.Address]*uint256.Int, error) {
 		tx, err := db.BeginRo(ctx)
 		if nil != err {
 			return nil, nil, err
 		}
 		defer tx.Rollback()
-		//batch := olddb.NewHashBatch(tx, bc.Quit(), paths.DefaultDataDir())
-		//defer batch.Rollback()
-		//stateReader, stateWriter, err := NewStateReaderWriter(batch, tx, blockNr, true)
-		//if nil != err {
-		//	return err
-		//}
 
 		stateReader := state.NewPlainStateReader(tx)
 		ibs := state.New(stateReader)
-		//stateWriter := state.NewPlainStateWriter(tx, tx, block.Number64().Uint64())
 		stateWriter := state.NewNoopWriter()
 
 		var nopay map[types.Address]*uint256.Int
@@ -976,11 +827,7 @@ func (bc *BlockChain) insertChain(chain []block2.IBlock) (int, error) {
 			return nil, nil, err
 		}
 
-		//if err := batch.Commit(); nil != err {
-		//	return err
-		//}
 		return ibs, nopay, nil
-		// return tx.Commit()
 	}
 
 	for ; block != nil && err == nil || errors.Is(err, ErrKnownBlock); block, err = it.next() {
@@ -994,13 +841,6 @@ func (bc *BlockChain) insertChain(chain []block2.IBlock) (int, error) {
 			bc.CurrentBlock().Number64(), bc.CurrentBlock().Hash(), bc.CurrentBlock().Difficulty(), block.Number64(), block.Hash(), block.Difficulty())
 		// Retrieve the parent block and it's state to execute on top
 		start := time.Now()
-		// TODO
-		//stateDB := statedb.NewStateDB(block.ParentHash(), bc.chainDB, bc.changeDB)
-		//stateReader, stateWriter, err := NewStateReaderWriter(batch, wtx, block.Number64().Uint64(), true)
-		//if nil != err {
-		//	return it.index, err
-		//}
-		//ibs := state.New(stateReader)
 
 		var receipts block2.Receipts
 		var logs []*block2.Log
@@ -1018,7 +858,6 @@ func (bc *BlockChain) insertChain(chain []block2.IBlock) (int, error) {
 			receipts, nopay, logs, usedGas, err = bc.process.Process(block.(*block2.Block), ibs, reader, writer, blockHashFunc)
 			if err != nil {
 				bc.reportBlock(block, receipts, err)
-				//atomic.StoreUint32(&followupInterrupt, 1)
 				return nil, err
 			}
 			ptime := time.Since(pstart)
@@ -1026,7 +865,6 @@ func (bc *BlockChain) insertChain(chain []block2.IBlock) (int, error) {
 
 			if err := bc.validator.ValidateState(block, ibs, receipts, usedGas); err != nil {
 				bc.reportBlock(block, receipts, err)
-				//atomic.StoreUint32(&followupInterrupt, 1)
 				return nil, err
 			}
 			vtime := time.Since(vstart)
@@ -1038,34 +876,10 @@ func (bc *BlockChain) insertChain(chain []block2.IBlock) (int, error) {
 		if nil != err {
 			return it.index, err
 		}
-		//var followupInterrupt uint32
-		//receipts, logs, usedGas, err := bc.process.Process(block.(*block2.Block), ibs, stateReader, stateWriter, blockHashFunc)
-		//if err != nil {
-		//	bc.reportBlock(block, receipts, err)
-		//	//atomic.StoreUint32(&followupInterrupt, 1)
-		//	return it.index, err
-		//}
 
-		//if err := bc.validator.ValidateState(block, ibs, receipts, usedGas); err != nil {
-		//	bc.reportBlock(block, receipts, err)
-		//	//atomic.StoreUint32(&followupInterrupt, 1)
-		//	return it.index, err
-		//}
-
-		// write state
-		//if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-		//	stateWrite := state.NewPlainStateWriter(batch, tx, block.Number64().Uint64())
-		//	if err := ibs.CommitBlock(params.N42Config.Rules(block.Number64().Uint64()), stateWrite); nil != err {
-		//		return err
-		//	}
-		//	return nil
-		//}); nil != err {
-		//	return it.index, err
-		//}
 		wstart := time.Now()
 		var status WriteStatus
 		status, err = bc.writeBlockWithState(block, receipts, ibs, nopay)
-		//atomic.StoreUint32(&followupInterrupt, 1)
 		if err != nil {
 			return it.index, err
 		}

@@ -24,7 +24,7 @@ import (
 	"strings"
 )
 
-const dirname = "ast"
+const dirname = "n42"
 
 // DefaultDataDir is the default data directory to use for the databases and other
 // persistence requirements.

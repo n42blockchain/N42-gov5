@@ -27,7 +27,7 @@ func (s *Service) CanSubscribe(topic string) bool {
 	if parts[0] != "" {
 		return false
 	}
-	if parts[1] != "ast" {
+	if parts[1] != "n42" {
 		return false
 	}
 

@@ -291,7 +291,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Creates an empty AccountManager with no backends. Callers (e.g. cmd/ast)
+	// Creates an empty AccountManager with no backends. Callers (e.g. cmd/n42)
 	// are required to add the backends later on.
 	accman := accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: cfg.NodeCfg.InsecureUnlockAllowed})
 

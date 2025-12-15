@@ -30,7 +30,7 @@ var DefaultConfig = conf.Config{
 		HTTP:        true,
 		HTTPHost:    "127.0.0.1",
 		HTTPPort:    "8545",
-		IPCPath:     "ast.ipc",
+		IPCPath:     "n42.ipc",
 		Miner:       false,
 	},
 	NetworkCfg: conf.NetWorkConfig{
@@ -54,7 +54,7 @@ var DefaultConfig = conf.Config{
 	DatabaseCfg: conf.DatabaseConfig{
 		DBType:     "lmdb",
 		DBPath:     "chaindata",
-		DBName:     "ast",
+		DBName:     "n42",
 		SubDB:      []string{"chain"},
 		Debug:      false,
 		IsMem:      false,

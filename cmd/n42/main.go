@@ -48,7 +48,7 @@ func main() {
 	commands := rootCmd
 
 	app := &cli.App{
-		Name:     "ast",
+		Name:     "n42",
 		Usage:    "N42 system",
 		Flags:    flags,
 		Commands: commands,
@@ -60,6 +60,6 @@ func main() {
 
 	err := app.Run(os.Args)
 	if err != nil {
-		fmt.Printf("failed ast system setup %v", err)
+		fmt.Printf("failed n42 system setup %v", err)
 	}
 }

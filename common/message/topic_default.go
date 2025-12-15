@@ -23,7 +23,7 @@ var TopicMappings = map[string]interface{}{
 }
 
 const (
-	GossipPrefix             = "ast/1/"
+	GossipPrefix             = "n42/1/"
 	GossipBlockMessage       = GossipPrefix + "new_block"
 	GossipSyncState          = GossipPrefix + "sync_state"
 	GossipTransactionMessage = GossipPrefix + "new_transaction"

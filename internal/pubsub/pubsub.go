@@ -32,11 +32,11 @@ import (
 
 var (
 	errorInvalidTopic    = errors.New("invalid topic")
-	errorNotRunning      = errors.New("ast pubsub not run")
-	errorPubSubIsRunning = errors.New("ast pubsub is running")
+	errorNotRunning      = errors.New("n42 pubsub not run")
+	errorPubSubIsRunning = errors.New("n42 pubsub is running")
 )
 
-type astPubSub struct {
+type n42PubSub struct {
 	topicLock sync.Mutex
 	topicsMap map[string]*pubsub.Topic
 
@@ -53,7 +53,7 @@ type astPubSub struct {
 }
 
 func NewPubSub(ctx context.Context, p2pserver common.INetwork, chainid uint64) (common.IPubSub, error) {
-	ast := astPubSub{
+	ps := n42PubSub{
 		ctx:       ctx,
 		host:      p2pserver.Host(),
 		p2pserver: p2pserver,
@@ -62,10 +62,10 @@ func NewPubSub(ctx context.Context, p2pserver common.INetwork, chainid uint64) (
 		chainID:   chainid,
 	}
 
-	return &ast, nil
+	return &ps, nil
 }
 
-func (m *astPubSub) Start() error {
+func (m *n42PubSub) Start() error {
 	if m.isRunning() {
 		return errorPubSubIsRunning
 	}
@@ -97,7 +97,7 @@ func (m *astPubSub) Start() error {
 	return nil
 }
 
-func (m *astPubSub) JoinTopic(topic string) (*pubsub.Topic, error) {
+func (m *n42PubSub) JoinTopic(topic string) (*pubsub.Topic, error) {
 	if !m.isRunning() {
 		return nil, errorNotRunning
 	}
@@ -119,14 +119,14 @@ func (m *astPubSub) JoinTopic(topic string) (*pubsub.Topic, error) {
 	return nil, errorInvalidTopic
 }
 
-func (m *astPubSub) isRunning() bool {
+func (m *n42PubSub) isRunning() bool {
 	if atomic.LoadInt32(&m.running) <= 0 {
 		return false
 	}
 	return true
 }
 
-func (m *astPubSub) Publish(topic string, msg proto.Message) error {
+func (m *n42PubSub) Publish(topic string, msg proto.Message) error {
 	if !m.isRunning() {
 		return errorNotRunning
 	}
@@ -145,7 +145,7 @@ func (m *astPubSub) Publish(topic string, msg proto.Message) error {
 	return errorInvalidTopic
 }
 
-func (m *astPubSub) Subscription(topic string) (*pubsub.Subscription, error) {
+func (m *n42PubSub) Subscription(topic string) (*pubsub.Subscription, error) {
 	if !m.isRunning() {
 		return nil, errorNotRunning
 	}
@@ -158,7 +158,7 @@ func (m *astPubSub) Subscription(topic string) (*pubsub.Subscription, error) {
 	return nil, errorInvalidTopic
 }
 
-func (m *astPubSub) GetTopics() []string {
+func (m *n42PubSub) GetTopics() []string {
 	var topics []string
 	for k, _ := range m.topicsMap {
 		topics = append(topics, k)
