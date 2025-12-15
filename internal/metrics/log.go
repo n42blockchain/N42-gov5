@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -17,8 +17,10 @@
 package metrics
 
 import (
-	"github.com/c2h5oh/datasize"
 	"time"
+
+	"github.com/c2h5oh/datasize"
+	"github.com/rcrowley/go-metrics"
 )
 
 type Logger interface {

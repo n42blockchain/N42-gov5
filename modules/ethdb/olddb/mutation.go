@@ -13,6 +13,8 @@ import (
 	"github.com/google/btree"
 	"github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/ledgerwatch/log/v3"
+
 	"github.com/n42blockchain/N42/modules/ethdb"
 )
 

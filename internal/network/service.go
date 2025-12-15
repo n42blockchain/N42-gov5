@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -19,12 +19,23 @@ package network
 import (
 	"context"
 	"crypto/rand"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/libp2p/go-libp2p"
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
+	"github.com/multiformats/go-multiaddr"
+	"github.com/rcrowley/go-metrics"
+
 	"github.com/n42blockchain/N42/api/protocol/msg_proto"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/message"
@@ -32,11 +43,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/utils"
-	"os"
-	"os/signal"
-	"sync"
-	"syscall"
-	"time"
 )
 
 const (

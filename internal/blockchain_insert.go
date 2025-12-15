@@ -1,4 +1,4 @@
-// Copyright 2023 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -17,7 +17,7 @@
 package internal
 
 import (
-	block2 "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/block"
 	"time"
 )
 
@@ -71,7 +71,7 @@ const statsReportLimit = 8 * time.Second
 
 // insertIterator is a helper to assist during chain import.
 type insertIterator struct {
-	chain []block2.IBlock // Chain of blocks being iterated over
+	chain []block.IBlock // Chain of blocks being iterated over
 
 	results <-chan error // Verification result sink from the consensus engine
 	errors  []error      // Header verification errors for the blocks
@@ -82,7 +82,7 @@ type insertIterator struct {
 
 // newInsertIterator creates a new iterator based on the given blocks, which are
 // assumed to be a contiguous chain.
-func newInsertIterator(chain []block2.IBlock, results <-chan error, validator Validator) *insertIterator {
+func newInsertIterator(chain []block.IBlock, results <-chan error, validator Validator) *insertIterator {
 	return &insertIterator{
 		chain:     chain,
 		results:   results,
@@ -94,7 +94,7 @@ func newInsertIterator(chain []block2.IBlock, results <-chan error, validator Va
 
 // next returns the next block in the iterator, along with any potential validation
 // error for that block. When the end is reached, it will return (nil, nil).
-func (it *insertIterator) next() (block2.IBlock, error) {
+func (it *insertIterator) next() (block.IBlock, error) {
 	// If we reached the end of the chain, abort
 	if it.index+1 >= len(it.chain) {
 		it.index = len(it.chain)
@@ -117,7 +117,7 @@ func (it *insertIterator) next() (block2.IBlock, error) {
 //
 // Both header and body validation errors (nil too) is cached into the iterator
 // to avoid duplicating work on the following next() call.
-func (it *insertIterator) peek() (block2.IBlock, error) {
+func (it *insertIterator) peek() (block.IBlock, error) {
 	// If we reached the end of the chain, abort
 	if it.index+1 >= len(it.chain) {
 		return nil, nil
@@ -134,7 +134,7 @@ func (it *insertIterator) peek() (block2.IBlock, error) {
 }
 
 // previous returns the previous header that was being processed, or nil.
-func (it *insertIterator) previous() block2.IHeader {
+func (it *insertIterator) previous() block.IHeader {
 	if it.index < 1 {
 		return nil
 	}
@@ -142,7 +142,7 @@ func (it *insertIterator) previous() block2.IHeader {
 }
 
 // current returns the current header that is being processed, or nil.
-func (it *insertIterator) current() block2.IHeader {
+func (it *insertIterator) current() block.IHeader {
 	if it.index == -1 || it.index >= len(it.chain) {
 		return nil
 	}
@@ -150,7 +150,7 @@ func (it *insertIterator) current() block2.IHeader {
 }
 
 // first returns the first block in the it.
-func (it *insertIterator) first() block2.IBlock {
+func (it *insertIterator) first() block.IBlock {
 	return it.chain[0]
 }
 

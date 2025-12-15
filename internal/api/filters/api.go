@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
-	mvm_types "github.com/n42blockchain/N42/internal/avm/types"
+	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"sync"
 	"time"
@@ -194,7 +194,7 @@ func (filterApi *FilterAPI) NewHeads(ctx context.Context) (*jsonrpc.Subscription
 		for {
 			select {
 			case h := <-headers:
-				notifier.Notify(rpcSub.ID, mvm_types.FromastHeader(h))
+				notifier.Notify(rpcSub.ID, avmtypes.FromastHeader(h))
 			case <-rpcSub.Err():
 				headersSub.Unsubscribe()
 				return

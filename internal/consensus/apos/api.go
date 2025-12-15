@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -31,7 +31,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/avm/common"
-	mvm_types "github.com/n42blockchain/N42/internal/avm/types"
+	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -106,7 +106,7 @@ func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]common.Address, error
 	signers := snap.signers()
 	ethSigners := make([]common.Address, len(signers))
 	for i, signer := range signers {
-		ethSigners[i] = *mvm_types.FromastAddress(&signer)
+		ethSigners[i] = *avmtypes.FromastAddress(&signer)
 	}
 	return ethSigners, nil
 }
@@ -124,7 +124,7 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]common.Address, error) {
 	signers := snap.signers()
 	ethSigners := make([]common.Address, len(signers))
 	for i, signer := range signers {
-		ethSigners[i] = *mvm_types.FromastAddress(&signer)
+		ethSigners[i] = *avmtypes.FromastAddress(&signer)
 	}
 	return ethSigners, nil
 }
@@ -136,7 +136,7 @@ func (api *API) Proposals() map[common.Address]bool {
 
 	proposals := make(map[common.Address]bool)
 	for address, auth := range api.apos.proposals {
-		proposals[*mvm_types.FromastAddress(&address)] = auth
+		proposals[*avmtypes.FromastAddress(&address)] = auth
 	}
 	return proposals
 }
@@ -147,7 +147,7 @@ func (api *API) Propose(address common.Address, auth bool) {
 	api.apos.lock.Lock()
 	defer api.apos.lock.Unlock()
 
-	api.apos.proposals[*mvm_types.ToastAddress(&address)] = auth
+	api.apos.proposals[*avmtypes.ToastAddress(&address)] = auth
 }
 
 // Discard drops a currently running proposal, stopping the signer from casting
@@ -156,7 +156,7 @@ func (api *API) Discard(address common.Address) {
 	api.apos.lock.Lock()
 	defer api.apos.lock.Unlock()
 
-	delete(api.apos.proposals, *mvm_types.ToastAddress(&address))
+	delete(api.apos.proposals, *avmtypes.ToastAddress(&address))
 }
 
 type status struct {
@@ -283,7 +283,7 @@ func (api *API) GetRewards(address common.Address, from jsonrpc.BlockNumberOrHas
 	}
 
 	rewardService := newReward(api.apos.chainConfig)
-	resp, err = rewardService.GetRewards(*mvm_types.ToastAddress(&address), resolvedFromBlock, resolvedToBlock, api.chain.GetBlockByNumber)
+	resp, err = rewardService.GetRewards(*avmtypes.ToastAddress(&address), resolvedFromBlock, resolvedToBlock, api.chain.GetBlockByNumber)
 
 	return resp, err
 }
@@ -291,7 +291,7 @@ func (api *API) GetRewards(address common.Address, from jsonrpc.BlockNumberOrHas
 // GetRewards
 func (api *API) GetDepositInfo(address common.Address) (*deposit.Info, error) {
 
-	addr := *mvm_types.ToastAddress(&address)
+	addr := *avmtypes.ToastAddress(&address)
 
 	info := new(deposit.Info)
 	var err error
@@ -349,7 +349,7 @@ func (api *API) getHeader(from jsonrpc.BlockNumberOrHash) (currentHeader block.I
 // GetTasks
 func (api *API) GetMinedBlock(address common.Address, from jsonrpc.BlockNumberOrHash, wantCount uint64) (*MinedBlockResponse, error) {
 
-	addr := *mvm_types.ToastAddress(&address)
+	addr := *avmtypes.ToastAddress(&address)
 	var (
 		err           error
 		searchCount   int
@@ -376,7 +376,7 @@ func (api *API) GetMinedBlock(address common.Address, from jsonrpc.BlockNumberOr
 	currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
 	searchCount = 0
 	findCount = 0
-	minedBlocks := make([]MinedBlock, 0)
+	minedBlocks := make([]MinedBlock, 0, wantCount) // pre-allocate capacity
 
 	for i := currentHeader.Number64().Uint64(); i >= 0; i-- {
 		verifier := currentBlock.Body().Verifier()
@@ -414,7 +414,7 @@ Finish:
 // VerifiedBlock
 func (api *API) VerifiedBlock(address common.Address, from jsonrpc.BlockNumberOrHash, wantCount uint64, to *jsonrpc.BlockNumber) (*VerifiedBlockResponse, error) {
 
-	addr := *mvm_types.ToastAddress(&address)
+	addr := *avmtypes.ToastAddress(&address)
 	var (
 		err           error
 		searchCount   int
@@ -445,7 +445,7 @@ func (api *API) VerifiedBlock(address common.Address, from jsonrpc.BlockNumberOr
 	currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
 	searchCount = 0
 	findCount = 0
-	minedBlocks := make([]MinedBlock, 0)
+	minedBlocks := make([]MinedBlock, 0, wantCount) // pre-allocate capacity
 
 	for i := currentHeader.Number64().Uint64(); i >= 0; i-- {
 		verifier := currentBlock.Body().Verifier()

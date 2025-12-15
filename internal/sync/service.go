@@ -8,7 +8,7 @@ import (
 	"context"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/n42blockchain/N42/common"
-	block2 "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/utils"
@@ -70,7 +70,7 @@ type Service struct {
 	subHandler  *subTopicHandler
 	rateLimiter *limiter
 
-	seenBlockCache *lru.Cache[types.Hash, *block2.Block]
+	seenBlockCache *lru.Cache[types.Hash, *block.Block]
 	seenBlockLock  sync.RWMutex
 	badBlockLock   sync.RWMutex
 	badBlockCache  *lru.Cache[types.Hash, bool]
@@ -165,7 +165,7 @@ func (s *Service) Status() error {
 // and prevent DoS.
 func (s *Service) initCaches() {
 	s.badBlockCache, _ = lru.New[types.Hash, bool](seenBlockSize)
-	s.seenBlockCache, _ = lru.New[types.Hash, *block2.Block](badBlockSize)
+	s.seenBlockCache, _ = lru.New[types.Hash, *block.Block](badBlockSize)
 }
 
 // marks the chain as having started.
