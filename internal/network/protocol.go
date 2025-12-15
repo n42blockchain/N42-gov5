@@ -29,9 +29,9 @@ import (
 
 const (
 	DefaultP2PListenAddress = "/ip4/0.0.0.0/tcp/21324"
-	MSGProtocol             = protocol.ID("/ast/msg/1.0.0")
-	DiscoverProtocol        = "/ast/discover/1.0.0"
-	AppProtocol             = "/ast/app/1.0.0"
+	MSGProtocol             = protocol.ID("/n42/msg/1.0.0")
+	DiscoverProtocol        = "/n42/discover/1.0.0"
+	AppProtocol             = "/n42/app/1.0.0"
 	P2ProtocolVersion       = "0.0.1"
 )
 

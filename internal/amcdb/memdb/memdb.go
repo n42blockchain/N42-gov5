@@ -17,6 +17,7 @@
 package memdb
 
 import (
+	"errors"
 	"fmt"
 	"github.com/n42blockchain/N42/common/db"
 	"sync"
@@ -28,8 +29,8 @@ type MemoryDB struct {
 }
 
 func (m *MemoryDB) Snapshot() (db.ISnapshot, error) {
-	//TODO implement me
-	panic("implement me")
+	// TODO: Implement snapshot support for MemoryDB
+	return nil, errors.New("Snapshot not implemented for MemoryDB")
 }
 
 func NewMemDB() db.IDatabase {

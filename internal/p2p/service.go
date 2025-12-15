@@ -1,5 +1,5 @@
-// Package p2p defines the network protocol implementation for ast consensus
-// used by ast, including peer discovery using discv5, gossip-sub
+// Package p2p defines the network protocol implementation for N42 consensus
+// used by N42, including peer discovery using discv5, gossip-sub
 // using libp2p, and handing peer lifecycles + handshakes.
 package p2p
 

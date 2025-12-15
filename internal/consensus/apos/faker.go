@@ -28,61 +28,78 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
+// Faker is a testing consensus engine that accepts all blocks as valid.
+// It is useful for testing purposes where consensus validation should be bypassed.
 type Faker struct{}
 
+// NewFaker creates a new Faker consensus engine.
+func NewFaker() consensus.Engine {
+	return &Faker{}
+}
+
 func (f Faker) Author(header block.IHeader) (types.Address, error) {
-	//TODO implement me
-	panic("implement me")
+	return header.(*block.Header).Coinbase, nil
 }
 
 func (f Faker) VerifyHeader(chain consensus.ChainHeaderReader, header block.IHeader, seal bool) error {
-	//TODO implement me
-	panic("implement me")
+	// Faker accepts all headers as valid
+	return nil
 }
 
 func (f Faker) VerifyHeaders(chain consensus.ChainHeaderReader, headers []block.IHeader, seals []bool) (chan<- struct{}, <-chan error) {
-	//TODO implement me
-	panic("implement me")
+	abort := make(chan struct{})
+	results := make(chan error, len(headers))
+	go func() {
+		for range headers {
+			select {
+			case <-abort:
+				return
+			case results <- nil:
+			}
+		}
+	}()
+	return abort, results
 }
 
-func (f Faker) VerifyUncles(chain consensus.ChainReader, block block.IBlock) error {
-	//TODO implement me
-	panic("implement me")
+func (f Faker) VerifyUncles(chain consensus.ChainReader, blk block.IBlock) error {
+	// Faker accepts all uncles as valid
+	return nil
 }
 
 func (f Faker) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) error {
-	//TODO implement me
-	panic("implement me")
+	// No preparation needed for faker
+	return nil
 }
 
-func (f Faker) Finalize(chain consensus.ChainHeaderReader, header block.IHeader, state *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
-	//TODO implement me
-	panic("implement me")
+func (f Faker) Finalize(chain consensus.ChainHeaderReader, header block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+	// Faker does not issue rewards
+	return nil, nil, nil
 }
 
-func (f Faker) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header block.IHeader, state *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader, receipts []*block.Receipt) (block.IBlock, []*block.Reward, map[types.Address]*uint256.Int, error) {
-	//TODO implement me
-	panic("implement me")
+func (f Faker) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader, receipts []*block.Receipt) (block.IBlock, []*block.Reward, map[types.Address]*uint256.Int, error) {
+	return block.NewBlock(header, txs), nil, nil, nil
 }
 
-func (f Faker) Rewards(tx kv.RwTx, header block.IHeader, state *state.IntraBlockState, setRewards bool) ([]*block.Reward, error) {
-	//TODO implement me
-	panic("implement me")
+func (f Faker) Rewards(tx kv.RwTx, header block.IHeader, ibs *state.IntraBlockState, setRewards bool) ([]*block.Reward, error) {
+	// Faker does not issue rewards
+	return nil, nil
 }
 
-func (f Faker) Seal(chain consensus.ChainHeaderReader, block block.IBlock, results chan<- block.IBlock, stop <-chan struct{}) error {
-	//TODO implement me
-	panic("implement me")
+func (f Faker) Seal(chain consensus.ChainHeaderReader, blk block.IBlock, results chan<- block.IBlock, stop <-chan struct{}) error {
+	// Faker immediately returns the block without sealing
+	select {
+	case results <- blk:
+	case <-stop:
+	}
+	return nil
 }
 
 func (f Faker) SealHash(header block.IHeader) types.Hash {
-	//TODO implement me
-	panic("implement me")
+	return header.Hash()
 }
 
 func (f Faker) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent block.IHeader) *uint256.Int {
-	//TODO implement me
-	panic("implement me")
+	return uint256.NewInt(1)
 }
 
 func (f Faker) Type() params.ConsensusType {
@@ -90,17 +107,11 @@ func (f Faker) Type() params.ConsensusType {
 }
 
 func (f Faker) APIs(chain consensus.ChainReader) []jsonrpc.API {
-	//TODO implement me
-	panic("implement me")
+	return nil
 }
 
 func (f Faker) Close() error {
-	//TODO implement me
-	panic("implement me")
-}
-
-func NewFaker() consensus.Engine {
-	return &Faker{}
+	return nil
 }
 
 func (f Faker) IsServiceTransaction(sender types.Address, syscall consensus.SystemCall) bool {
