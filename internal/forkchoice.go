@@ -1,4 +1,4 @@
-// Copyright 2023 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -23,7 +23,7 @@ import (
 	"math/big"
 	mrand "math/rand"
 
-	block2 "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )
@@ -52,10 +52,10 @@ type ForkChoice struct {
 	// Miners will prefer to choose the local mined block if the
 	// local td is equal to the extern one. It can be nil for light
 	// client
-	preserve func(header block2.IHeader) bool
+	preserve func(header block.IHeader) bool
 }
 
-func NewForkChoice(chainReader ChainReader, preserve func(header block2.IHeader) bool) *ForkChoice {
+func NewForkChoice(chainReader ChainReader, preserve func(header block.IHeader) bool) *ForkChoice {
 	// Seed a fast but crypto originating random generator
 	seed, err := crand.Int(crand.Reader, big.NewInt(math.MaxInt64))
 	if err != nil {
@@ -73,7 +73,7 @@ func NewForkChoice(chainReader ChainReader, preserve func(header block2.IHeader)
 // In the td mode, the new head is chosen if the corresponding
 // total difficulty is higher. In the extern mode, the trusted
 // header is always selected as the head.
-func (f *ForkChoice) ReorgNeeded(current block2.IHeader, header block2.IHeader) (bool, error) {
+func (f *ForkChoice) ReorgNeeded(current block.IHeader, header block.IHeader) (bool, error) {
 	var (
 		localTD  = f.chain.GetTd(current.Hash(), current.Number64())
 		externTd = f.chain.GetTd(header.Hash(), header.Number64())

@@ -1,4 +1,4 @@
-// Copyright 2023 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -23,7 +23,7 @@ import (
 	"unsafe"
 
 	common2 "github.com/n42blockchain/N42/common"
-	block2 "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
@@ -68,51 +68,51 @@ func verify(ctx context.Context, msg *state.EntireCode) types.Hash {
 		txs = append(txs, tmp)
 	}
 
-	body := &block2.Body{
+	body := &block.Body{
 		Txs: txs,
 	}
 
-	block := block2.NewBlockFromStorage(msg.Entire.Header.Hash(), msg.Entire.Header, body)
+	blk := block.NewBlockFromStorage(msg.Entire.Header.Hash(), msg.Entire.Header, body)
 	batch := olddb.NewHashBatch(nil, ctx.Done(), "")
 	defer batch.Rollback()
 	old := make(map[string][]byte, len(msg.Entire.Snap.Items))
 	for _, v := range msg.Entire.Snap.Items {
 		old[*(*string)(unsafe.Pointer(&v.Key))] = v.Value
 	}
-	stateReader := olddb.NewStateReader(old, nil, batch, block.Number64().Uint64())
+	stateReader := olddb.NewStateReader(old, nil, batch, blk.Number64().Uint64())
 	stateReader.SetReadCodeF(readCodeF)
 	ibs := state.New(stateReader)
 	ibs.SetSnapshot(msg.Entire.Snap)
-	ibs.SetHeight(block.Number64().Uint64())
+	ibs.SetHeight(blk.Number64().Uint64())
 	ibs.SetGetOneFun(batch.GetOne)
 
-	root, err := checkBlock2(getNumberHash, block, ibs, msg.CoinBase, msg.Rewards)
+	root, err := checkBlock2(getNumberHash, blk, ibs, msg.CoinBase, msg.Rewards)
 	if nil != err {
 		panic(err)
 	}
 	return root
 }
 
-func checkBlock2(getHashF func(n uint64) types.Hash, block *block2.Block, ibs *state.IntraBlockState, coinbase types.Address, rewards []*block2.Reward) (types.Hash, error) {
-	header := block.Header().(*block2.Header)
+func checkBlock2(getHashF func(n uint64) types.Hash, blk *block.Block, ibs *state.IntraBlockState, coinbase types.Address, rewards []*block.Reward) (types.Hash, error) {
+	header := blk.Header().(*block.Header)
 	chainConfig := params.MainnetChainConfig
-	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(block.Number64().ToBig()) == 0 {
+	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(blk.Number64().ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibs)
 	}
 	noop := state.NewNoopWriter()
 
 	usedGas := new(uint64)
 	gp := new(common2.GasPool)
-	gp.AddGas(block.GasLimit())
+	gp.AddGas(blk.GasLimit())
 	cfg := vm.Config{}
 	//cfg := vm.Config{Debug: true, Tracer: logger.NewMarkdownLogger(nil, os.Stdout)}
 
 	engine := apos.NewFaker()
-	for i, tx := range block.Transactions() {
+	for i, tx := range blk.Transactions() {
 		//
 		simpleLog("apply transaction", "transactionIndex", i, "from", tx.From().Hex(), "to", tx.To().Hex(), "value", tx.Value().Uint64(), "data", hexutil.Encode(tx.Data()), "gas", tx.Gas(), "gasPrice", tx.GasPrice().Uint64())
 		//
-		ibs.Prepare(tx.Hash(), block.Hash(), i)
+		ibs.Prepare(tx.Hash(), blk.Hash(), i)
 		_, _, err := internal.ApplyTransaction(chainConfig, getHashF, engine, &coinbase, gp, ibs, noop, header, tx, usedGas, cfg)
 		if err != nil {
 

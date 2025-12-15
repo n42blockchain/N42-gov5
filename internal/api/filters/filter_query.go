@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	mvm_common "github.com/n42blockchain/N42/internal/avm/common"
-	mvm_types "github.com/n42blockchain/N42/internal/avm/types"
+	avmcommon "github.com/n42blockchain/N42/internal/avm/common"
+	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"math/big"
 )
@@ -36,7 +36,7 @@ type FilterCriteria struct {
 // UnmarshalJSON sets *args fields with given data.
 func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 	type input struct {
-		BlockHash *mvm_common.Hash     `json:"blockHash"`
+		BlockHash *avmcommon.Hash     `json:"blockHash"`
 		FromBlock *jsonrpc.BlockNumber `json:"fromBlock"`
 		ToBlock   *jsonrpc.BlockNumber `json:"toBlock"`
 		Addresses interface{}          `json:"address"`
@@ -53,7 +53,7 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 			// BlockHash is mutually exclusive with FromBlock/ToBlock criteria
 			return fmt.Errorf("cannot specify both BlockHash and FromBlock/ToBlock, choose one or the other")
 		}
-		args.BlockHash = mvm_types.ToastHash(*raw.BlockHash)
+		args.BlockHash = avmtypes.ToastHash(*raw.BlockHash)
 	} else {
 		if raw.FromBlock != nil {
 			args.FromBlock = big.NewInt(raw.FromBlock.Int64())
@@ -76,7 +76,7 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 					if err != nil {
 						return fmt.Errorf("invalid address at index %d: %v", i, err)
 					}
-					args.Addresses = append(args.Addresses, *mvm_types.ToastAddress(&addr))
+					args.Addresses = append(args.Addresses, *avmtypes.ToastAddress(&addr))
 				} else {
 					return fmt.Errorf("non-string address at index %d", i)
 				}
@@ -86,7 +86,7 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 			if err != nil {
 				return fmt.Errorf("invalid address: %v", err)
 			}
-			args.Addresses = []types.Address{*mvm_types.ToastAddress(&addr)}
+			args.Addresses = []types.Address{*avmtypes.ToastAddress(&addr)}
 		default:
 			return errors.New("invalid addresses in query")
 		}
@@ -107,7 +107,7 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 				if err != nil {
 					return err
 				}
-				args.Topics[i] = []types.Hash{mvm_types.ToastHash(top)}
+				args.Topics[i] = []types.Hash{avmtypes.ToastHash(top)}
 
 			case []interface{}:
 				// or case e.g. [null, "topic0", "topic1"]
@@ -122,7 +122,7 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 						if err != nil {
 							return err
 						}
-						args.Topics[i] = append(args.Topics[i], mvm_types.ToastHash(parsed))
+						args.Topics[i] = append(args.Topics[i], avmtypes.ToastHash(parsed))
 					} else {
 						return fmt.Errorf("invalid topic(s)")
 					}
@@ -136,18 +136,18 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func decodeAddress(s string) (mvm_common.Address, error) {
+func decodeAddress(s string) (avmcommon.Address, error) {
 	b, err := hexutil.Decode(s)
-	if err == nil && len(b) != mvm_common.AddressLength {
-		err = fmt.Errorf("hex has invalid length %d after decoding; expected %d for address", len(b), mvm_common.AddressLength)
+	if err == nil && len(b) != avmcommon.AddressLength {
+		err = fmt.Errorf("hex has invalid length %d after decoding; expected %d for address", len(b), avmcommon.AddressLength)
 	}
-	return mvm_common.BytesToAddress(b), err
+	return avmcommon.BytesToAddress(b), err
 }
 
-func decodeTopic(s string) (mvm_common.Hash, error) {
+func decodeTopic(s string) (avmcommon.Hash, error) {
 	b, err := hexutil.Decode(s)
-	if err == nil && len(b) != mvm_common.HashLength {
-		err = fmt.Errorf("hex has invalid length %d after decoding; expected %d for topic", len(b), mvm_common.HashLength)
+	if err == nil && len(b) != avmcommon.HashLength {
+		err = fmt.Errorf("hex has invalid length %d after decoding; expected %d for topic", len(b), avmcommon.HashLength)
 	}
-	return mvm_common.BytesToHash(b), err
+	return avmcommon.BytesToHash(b), err
 }

@@ -8,7 +8,6 @@ import (
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/n42blockchain/N42/common/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/log"
 	"github.com/pkg/errors"
 )
 
@@ -107,33 +106,31 @@ func (p *PublicKey) Aggregate(p2 common.PublicKey) common.PublicKey {
 }
 
 func (p *PublicKey) UnmarshalJSON(input []byte) error {
-	log.Infof(string(input))
-	log.Info("1111")
-	b := make([]byte, 0)
-	err := hexutil.UnmarshalFixedText("PublicKey", input, b[:])
+	b := make([]byte, BLSPubkeyLength)
+	err := hexutil.UnmarshalFixedText("PublicKey", input, b)
 	if err != nil {
 		return err
 	}
 	pubkey, err := PublicKeyFromBytes(b)
 	if err != nil {
-		p = pubkey.(*PublicKey)
+		return err
 	}
-	return err
+	*p = *pubkey.(*PublicKey)
+	return nil
 }
 
 func (p *PublicKey) UnmarshalText(input []byte) error {
-	log.Infof(string(input))
-	log.Info("1111")
-	b := make([]byte, 0)
-	err := hexutil.UnmarshalFixedText("PublicKey", input, b[:])
+	b := make([]byte, BLSPubkeyLength)
+	err := hexutil.UnmarshalFixedText("PublicKey", input, b)
 	if err != nil {
 		return err
 	}
 	pubkey, err := PublicKeyFromBytes(b)
 	if err != nil {
-		p = pubkey.(*PublicKey)
+		return err
 	}
-	return err
+	*p = *pubkey.(*PublicKey)
+	return nil
 }
 
 func (p *PublicKey) MarshalText() ([]byte, error) {

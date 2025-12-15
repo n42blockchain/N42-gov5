@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -37,7 +37,7 @@ import (
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 
-	block2 "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 )
@@ -68,7 +68,7 @@ type GenesisBlock struct {
 	//	ChainConfig *params.ChainConfig
 }
 
-func (g *GenesisBlock) Write(tx kv.RwTx) (*block2.Block, *state.IntraBlockState, error) {
+func (g *GenesisBlock) Write(tx kv.RwTx) (*block.Block, *state.IntraBlockState, error) {
 	block, statedb, err2 := g.WriteGenesisState(tx)
 	if err2 != nil {
 		return block, statedb, err2
@@ -104,7 +104,7 @@ func (g *GenesisBlock) Write(tx kv.RwTx) (*block2.Block, *state.IntraBlockState,
 	//}
 }
 
-func (g *GenesisBlock) ToBlock() (*block2.Block, *state.IntraBlockState, error) {
+func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	_ = g.GenesisConfig.Alloc //nil-check
 
 	var root types.Hash
@@ -178,7 +178,7 @@ func (g *GenesisBlock) ToBlock() (*block2.Block, *state.IntraBlockState, error) 
 		}
 	}
 
-	head := &block2.Header{
+	head := &block.Header{
 		ParentHash:  g.GenesisConfig.ParentHash,
 		Coinbase:    g.GenesisConfig.Coinbase,
 		Root:        root,
@@ -191,7 +191,7 @@ func (g *GenesisBlock) ToBlock() (*block2.Block, *state.IntraBlockState, error) 
 		Time:        uint64(g.GenesisConfig.Timestamp),
 		Extra:       g.GenesisConfig.ExtraData,
 		MixDigest:   g.GenesisConfig.Mixhash,
-		Nonce:       block2.EncodeNonce(g.GenesisConfig.Nonce),
+		Nonce:       block.EncodeNonce(g.GenesisConfig.Nonce),
 		BaseFee:     g.GenesisConfig.BaseFee,
 	}
 	head.Extra = ExtraData
@@ -210,10 +210,10 @@ func (g *GenesisBlock) ToBlock() (*block2.Block, *state.IntraBlockState, error) 
 		}
 	}
 
-	return block2.NewBlock(head, nil).(*block2.Block), statedb, nil
+	return block.NewBlock(head, nil).(*block.Block), statedb, nil
 }
 
-func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block2.Block, *state.IntraBlockState, error) {
+func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.IntraBlockState, error) {
 	block, statedb, err := g.ToBlock()
 	if err != nil {
 		return nil, nil, err

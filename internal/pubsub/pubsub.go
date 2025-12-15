@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -74,15 +74,7 @@ func (m *n42PubSub) Start() error {
 
 	var options []pubsub.Option
 
-	options = append(options, pubsub.WithRawTracer(newRawTracer()) /*, pubsub.WithMessageSignaturePolicy(pubsub.MessageSignaturePolicy(0))*/)
-	// todo for test
-	if false {
-		tracer, err := pubsub.NewJSONTracer("./trace.json")
-		if err != nil {
-			return err
-		}
-		options = append(options, pubsub.WithEventTracer(tracer))
-	}
+	options = append(options, pubsub.WithRawTracer(newRawTracer()))
 
 	gossip, err := pubsub.NewGossipSub(m.ctx, m.host, options...)
 	if err != nil {

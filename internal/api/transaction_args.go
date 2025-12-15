@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -30,15 +30,15 @@ import (
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	mvm_common "github.com/n42blockchain/N42/internal/avm/common"
-	mvm_types "github.com/n42blockchain/N42/internal/avm/types"
+	avmcommon "github.com/n42blockchain/N42/internal/avm/common"
+	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 
 // TransactionArgs represents
 type TransactionArgs struct {
-	From                 *mvm_common.Address `json:"from"`
-	To                   *mvm_common.Address `json:"to"`
+	From                 *avmcommon.Address `json:"from"`
+	To                   *avmcommon.Address `json:"to"`
 	Gas                  *hexutil.Uint64     `json:"gas"`
 	GasPrice             *hexutil.Big        `json:"gasPrice"`
 	MaxFeePerGas         *hexutil.Big        `json:"maxFeePerGas"`
@@ -50,27 +50,27 @@ type TransactionArgs struct {
 	Input *hexutil.Bytes `json:"input"`
 
 	// Introduced by AccessListTxType transaction.
-	AccessList *mvm_types.AccessList `json:"accessList,omitempty"`
+	AccessList *avmtypes.AccessList `json:"accessList,omitempty"`
 	ChainID    *hexutil.Big          `json:"chainId,omitempty"`
 }
 
 // RPCTransaction represents a transaction that will serialize to the RPC representation of a transaction
 type RPCTransaction struct {
-	BlockHash        *mvm_common.Hash      `json:"blockHash"`
+	BlockHash        *avmcommon.Hash      `json:"blockHash"`
 	BlockNumber      *hexutil.Big          `json:"blockNumber"`
-	From             mvm_common.Address    `json:"from"`
+	From             avmcommon.Address    `json:"from"`
 	Gas              hexutil.Uint64        `json:"gas"`
 	GasPrice         *hexutil.Big          `json:"gasPrice"`
 	GasFeeCap        *hexutil.Big          `json:"maxFeePerGas,omitempty"`
 	GasTipCap        *hexutil.Big          `json:"maxPriorityFeePerGas,omitempty"`
-	Hash             mvm_common.Hash       `json:"hash"`
+	Hash             avmcommon.Hash       `json:"hash"`
 	Input            hexutil.Bytes         `json:"input"`
 	Nonce            hexutil.Uint64        `json:"nonce"`
-	To               *mvm_common.Address   `json:"to"`
+	To               *avmcommon.Address   `json:"to"`
 	TransactionIndex *hexutil.Uint64       `json:"transactionIndex"`
 	Value            *hexutil.Big          `json:"value"`
 	Type             hexutil.Uint64        `json:"type"`
-	Accesses         *mvm_types.AccessList `json:"accessList,omitempty"`
+	Accesses         *avmtypes.AccessList `json:"accessList,omitempty"`
 	ChainID          *hexutil.Big          `json:"chainId,omitempty"`
 	V                *hexutil.Big          `json:"v"`
 	R                *hexutil.Big          `json:"r"`
@@ -82,7 +82,7 @@ func (args *TransactionArgs) from() types.Address {
 	if args.From == nil {
 		return types.Address{}
 	}
-	from := *mvm_types.ToastAddress(args.From)
+	from := *avmtypes.ToastAddress(args.From)
 	return from
 }
 
@@ -151,7 +151,7 @@ func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (t
 	//signer := transaction.MakeSigner(api.chainConfig, header.Number.ToBig())
 	//args.setDefaults(context.Background(), api)
 	//return args.toTransaction().AsMessage(signer, header.BaseFee)
-	// msg := mvm_types.AsMessage(, header.BaseFee.ToBig(), true)
+	// msg := avmtypes.AsMessage(, header.BaseFee.ToBig(), true)
 
 	// Reject invalid combinations of pre- and post-1559 fee styles
 	if args.GasPrice != nil && (args.MaxFeePerGas != nil || args.MaxPriorityFeePerGas != nil) {
@@ -214,7 +214,7 @@ func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (t
 	data := args.data()
 	var accessList transaction.AccessList
 	if args.AccessList != nil {
-		accessList = mvm_types.ToastAccessList(*args.AccessList)
+		accessList = avmtypes.ToastAccessList(*args.AccessList)
 	}
 	val, is1 := uint256.FromBig(value)
 	gp, is2 := uint256.FromBig(gasPrice)
@@ -223,7 +223,7 @@ func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (t
 	if is1 || is2 || is3 || is4 {
 		return transaction.Message{}, fmt.Errorf("args.Value higher than 2^256-1")
 	}
-	msg := transaction.NewMessage(addr, mvm_types.ToastAddress(args.To), 0, val, gas, gp, gfc, gtc, data, accessList, false, true)
+	msg := transaction.NewMessage(addr, avmtypes.ToastAddress(args.To), 0, val, gas, gp, gfc, gtc, data, accessList, false, true)
 	return msg, nil
 
 }
@@ -235,10 +235,10 @@ func (args *TransactionArgs) toTransaction() *transaction.Transaction {
 	case args.MaxFeePerGas != nil:
 		al := transaction.AccessList{}
 		if args.AccessList != nil {
-			al = mvm_types.ToastAccessList(*args.AccessList)
+			al = avmtypes.ToastAccessList(*args.AccessList)
 		}
 		dy := &transaction.DynamicFeeTx{
-			To:         mvm_types.ToastAddress(args.To),
+			To:         avmtypes.ToastAddress(args.To),
 			Nonce:      uint64(*args.Nonce),
 			Gas:        uint64(*args.Gas),
 			Data:       args.data(),
@@ -264,12 +264,12 @@ func (args *TransactionArgs) toTransaction() *transaction.Transaction {
 		data = dy
 	case args.AccessList != nil:
 		alt := &transaction.AccessListTx{
-			To:    mvm_types.ToastAddress(args.To),
+			To:    avmtypes.ToastAddress(args.To),
 			Nonce: uint64(*args.Nonce),
 			Gas:   uint64(*args.Gas),
 			Data:  args.data(),
 		}
-		alt.AccessList = mvm_types.ToastAccessList(*args.AccessList)
+		alt.AccessList = avmtypes.ToastAccessList(*args.AccessList)
 		var is bool
 		alt.GasPrice, is = uint256.FromBig((*big.Int)(args.GasPrice))
 		if is {
@@ -286,7 +286,7 @@ func (args *TransactionArgs) toTransaction() *transaction.Transaction {
 		data = alt
 	default:
 		lt := &transaction.LegacyTx{
-			To:    mvm_types.ToastAddress(args.To),
+			To:    avmtypes.ToastAddress(args.To),
 			Nonce: uint64(*args.Nonce),
 			Gas:   uint64(*args.Gas),
 			Data:  args.data(),
@@ -328,20 +328,20 @@ func newRPCTransaction(tx *transaction.Transaction, blockHash types.Hash, blockN
 	hash := tx.Hash()
 	result := &RPCTransaction{
 		Type:     hexutil.Uint64(tx.Type()),
-		From:     *mvm_types.FromastAddress(from),
+		From:     *avmtypes.FromastAddress(from),
 		Gas:      hexutil.Uint64(tx.Gas()),
 		GasPrice: (*hexutil.Big)(tx.GasPrice().ToBig()),
-		Hash:     mvm_types.FromastHash(hash),
+		Hash:     avmtypes.FromastHash(hash),
 		Input:    hexutil.Bytes(tx.Data()),
 		Nonce:    hexutil.Uint64(tx.Nonce()),
-		To:       mvm_types.FromastAddress(tx.To()),
+		To:       avmtypes.FromastAddress(tx.To()),
 		Value:    (*hexutil.Big)(tx.Value().ToBig()),
 		V:        (*hexutil.Big)(v.ToBig()),
 		R:        (*hexutil.Big)(r.ToBig()),
 		S:        (*hexutil.Big)(s.ToBig()),
 	}
 	if blockHash != (types.Hash{}) {
-		hash := mvm_types.FromastHash(blockHash)
+		hash := avmtypes.FromastHash(blockHash)
 		result.BlockHash = &hash
 		result.BlockNumber = (*hexutil.Big)(new(big.Int).SetUint64(blockNumber))
 		result.TransactionIndex = (*hexutil.Uint64)(&index)

@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -24,7 +24,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/avm/common"
-	mvm_types "github.com/n42blockchain/N42/internal/avm/types"
+	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -82,7 +82,7 @@ func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]common.Address, error
 	signers := snap.signers()
 	ethSigners := make([]common.Address, len(signers))
 	for i, signer := range signers {
-		ethSigners[i] = *mvm_types.FromastAddress(&signer)
+		ethSigners[i] = *avmtypes.FromastAddress(&signer)
 	}
 	return ethSigners, nil
 }
@@ -100,7 +100,7 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]common.Address, error) {
 	signers := snap.signers()
 	ethSigners := make([]common.Address, len(signers))
 	for i, signer := range signers {
-		ethSigners[i] = *mvm_types.FromastAddress(&signer)
+		ethSigners[i] = *avmtypes.FromastAddress(&signer)
 	}
 	return ethSigners, nil
 }
@@ -112,7 +112,7 @@ func (api *API) Proposals() map[common.Address]bool {
 
 	proposals := make(map[common.Address]bool)
 	for address, auth := range api.apoa.proposals {
-		proposals[*mvm_types.FromastAddress(&address)] = auth
+		proposals[*avmtypes.FromastAddress(&address)] = auth
 	}
 	return proposals
 }
@@ -123,7 +123,7 @@ func (api *API) Propose(address common.Address, auth bool) {
 	api.apoa.lock.Lock()
 	defer api.apoa.lock.Unlock()
 
-	api.apoa.proposals[*mvm_types.ToastAddress(&address)] = auth
+	api.apoa.proposals[*avmtypes.ToastAddress(&address)] = auth
 }
 
 // Discard drops a currently running proposal, stopping the signer from casting
@@ -132,7 +132,7 @@ func (api *API) Discard(address common.Address) {
 	api.apoa.lock.Lock()
 	defer api.apoa.lock.Unlock()
 
-	delete(api.apoa.proposals, *mvm_types.ToastAddress(&address))
+	delete(api.apoa.proposals, *avmtypes.ToastAddress(&address))
 }
 
 type status struct {

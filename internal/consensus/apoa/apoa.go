@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -33,7 +33,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/avm/common"
 	"github.com/n42blockchain/N42/internal/avm/rlp"
-	mvm_types "github.com/n42blockchain/N42/internal/avm/types"
+	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -772,7 +772,7 @@ func ApoaProto(header block.IHeader) []byte {
 }
 
 func encodeSigHeader(w io.Writer, iHeader block.IHeader) {
-	header := mvm_types.FromastHeader(iHeader)
+	header := avmtypes.FromastHeader(iHeader)
 	enc := []interface{}{
 		header.ParentHash,
 		header.UncleHash,

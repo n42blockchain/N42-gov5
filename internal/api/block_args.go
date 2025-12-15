@@ -1,4 +1,4 @@
-// Copyright 2022 The N42 Authors
+// Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -24,7 +24,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	mvm_types "github.com/n42blockchain/N42/internal/avm/types"
+	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
 	"math/big"
 )
 
@@ -34,7 +34,7 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, inclTx bool, 
 	if inclTx {
 		formatTx := func(tx *transaction.Transaction) (interface{}, error) {
 			hash := tx.Hash()
-			return mvm_types.FromastHash(hash), nil
+			return avmtypes.FromastHash(hash), nil
 		}
 		if fullTx {
 			formatTx = func(tx *transaction.Transaction) (interface{}, error) {
@@ -110,26 +110,26 @@ func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64) *RPCTransacti
 // RPCMarshalHeader converts the given header to the RPC output .
 func RPCMarshalHeader(head block.IHeader) map[string]interface{} {
 	header := head.(*block.Header)
-	ethHeader := mvm_types.FromastHeader(head)
+	ethHeader := avmtypes.FromastHeader(head)
 
 	result := map[string]interface{}{
 		"number":           (*hexutil.Big)(head.Number64().ToBig()),
-		"hash":             mvm_types.FromastHash(header.Hash()),
-		"parentHash":       mvm_types.FromastHash(header.ParentHash),
+		"hash":             avmtypes.FromastHash(header.Hash()),
+		"parentHash":       avmtypes.FromastHash(header.ParentHash),
 		"nonce":            header.Nonce,
-		"mixHash":          mvm_types.FromastHash(header.MixDigest),
-		"sha3Uncles":       mvm_types.FromastHash(hash.EmptyUncleHash),
-		"miner":            mvm_types.FromastAddress(&header.Coinbase),
+		"mixHash":          avmtypes.FromastHash(header.MixDigest),
+		"sha3Uncles":       avmtypes.FromastHash(hash.EmptyUncleHash),
+		"miner":            avmtypes.FromastAddress(&header.Coinbase),
 		"difficulty":       (*hexutil.Big)(header.Difficulty.ToBig()),
 		"extraData":        hexutil.Bytes(header.Extra),
 		"size":             hexutil.Uint64(ethHeader.Size()),
 		"gasLimit":         hexutil.Uint64(header.GasLimit),
 		"gasUsed":          hexutil.Uint64(header.GasUsed),
 		"timestamp":        hexutil.Uint64(header.Time),
-		"transactionsRoot": mvm_types.FromastHash(header.TxHash),
-		"receiptsRoot":     mvm_types.FromastHash(header.ReceiptHash),
+		"transactionsRoot": avmtypes.FromastHash(header.TxHash),
+		"receiptsRoot":     avmtypes.FromastHash(header.ReceiptHash),
 		"logsBloom":        ethHeader.Bloom,
-		"stateRoot":        mvm_types.FromastHash(header.Root),
+		"stateRoot":        avmtypes.FromastHash(header.Root),
 		"signature":        header.Signature,
 	}
 
