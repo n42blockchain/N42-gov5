@@ -19,7 +19,7 @@ package enr
 import (
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/rlp"
 	"io"
 	"net"
 )

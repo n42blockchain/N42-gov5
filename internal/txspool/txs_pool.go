@@ -24,7 +24,7 @@ import (
 	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
-	"github.com/n42blockchain/N42/internal/metrics/prometheus"
+	"github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/params"
 	"math"
 	"math/big"

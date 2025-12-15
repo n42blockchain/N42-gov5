@@ -29,7 +29,28 @@ import (
 // deployed contract addresses (relevant after the account abstraction).
 var emptyCodeHash = crypto.Keccak256Hash(nil)
 
+// PrecompileRegistry is the interface for precompile lookup.
+// Used for dependency injection to avoid global state.
+type PrecompileRegistry interface {
+	Lookup(addr types.Address) (PrecompiledContract, bool)
+}
+
+// precompile looks up a precompiled contract by address.
+// If registry is set (new approach), it uses the registry.
+// Otherwise falls back to legacy global maps (backward compatibility).
 func (evm *EVM) precompile(addr types.Address) (PrecompiledContract, bool) {
+	// Use registry if available (new approach)
+	if evm.precompileRegistry != nil {
+		return evm.precompileRegistry.Lookup(addr)
+	}
+
+	// Legacy fallback: use global maps
+	return evm.precompileLegacy(addr)
+}
+
+// precompileLegacy provides backward compatibility with global precompile maps.
+// This will be removed once migration to Registry is complete.
+func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool) {
 	var precompiles map[types.Address]PrecompiledContract
 	switch {
 	case evm.chainRules.IsMoran:
@@ -91,18 +112,31 @@ type EVM struct {
 	// available gas is calculated in gasCall* according to the 63/64 rule and later
 	// applied in opCall*.
 	callGasTemp uint64
+
+	// precompileRegistry provides precompile lookup (optional, for dependency injection).
+	// If nil, falls back to legacy global maps.
+	precompileRegistry PrecompileRegistry
 }
 
 // NewEVM returns a new EVM. The returned EVM is not thread safe and should
 // only ever be used *once*.
+// Uses legacy global precompile maps for backward compatibility.
 func NewEVM(blockCtx evmtypes.BlockContext, txCtx evmtypes.TxContext, state evmtypes.IntraBlockState, chainConfig *params.ChainConfig, vmConfig Config) *EVM {
+	return NewEVMWithPrecompiles(blockCtx, txCtx, state, chainConfig, vmConfig, nil)
+}
+
+// NewEVMWithPrecompiles returns a new EVM with an injected precompile registry.
+// If registry is nil, falls back to legacy global maps.
+// This is the recommended constructor for new code.
+func NewEVMWithPrecompiles(blockCtx evmtypes.BlockContext, txCtx evmtypes.TxContext, state evmtypes.IntraBlockState, chainConfig *params.ChainConfig, vmConfig Config, registry PrecompileRegistry) *EVM {
 	evm := &EVM{
-		context:         blockCtx,
-		txContext:       txCtx,
-		intraBlockState: state,
-		config:          vmConfig,
-		chainConfig:     chainConfig,
-		chainRules:      chainConfig.Rules(blockCtx.BlockNumber),
+		context:            blockCtx,
+		txContext:          txCtx,
+		intraBlockState:    state,
+		config:             vmConfig,
+		chainConfig:        chainConfig,
+		chainRules:         chainConfig.Rules(blockCtx.BlockNumber),
+		precompileRegistry: registry,
 	}
 
 	evm.interpreter = NewEVMInterpreter(evm, vmConfig)

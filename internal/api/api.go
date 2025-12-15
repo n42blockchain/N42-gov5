@@ -44,8 +44,8 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/avm/abi"
-	avmcommon "github.com/n42blockchain/N42/internal/avm/common"
-	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
+	avmcommon "github.com/n42blockchain/N42/common/avmutil"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -791,7 +791,7 @@ func DoEstimateGas(ctx context.Context, n *API, args TransactionArgs, blockNrOrH
 	} else if args.MaxFeePerGas != nil {
 		feeCap = args.MaxFeePerGas.ToInt()
 	} else {
-		feeCap = common.Big0
+		feeCap = avmcommon.Big0
 	}
 	// Recap the highest gas limit with account's available balance.
 	if feeCap.BitLen() != 0 {

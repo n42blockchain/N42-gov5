@@ -261,6 +261,37 @@ func opSAR(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte
 	return nil, nil
 }
 
+// opCLZ implements Count Leading Zeros (EIP-7939)
+// The CLZ instruction pops one value from the stack and pushes the count
+// of leading zero bits in its 256-bit representation.
+// For example: CLZ(0) = 256, CLZ(1) = 255, CLZ(0x8000...0000) = 0
+func opCLZ(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	value := scope.Stack.Peek()
+	// Count leading zeros in 256-bit number
+	// uint256 is stored as 4 uint64 limbs: [0] is low, [3] is high
+	lz := uint64(0)
+	if value.IsZero() {
+		lz = 256
+	} else {
+		// Check each limb from highest to lowest
+		bytes := value.Bytes32()
+		for i := 0; i < 32; i++ {
+			if bytes[i] != 0 {
+				// Count leading zeros in this byte
+				b := bytes[i]
+				for b&0x80 == 0 {
+					lz++
+					b <<= 1
+				}
+				break
+			}
+			lz += 8
+		}
+	}
+	value.SetUint64(lz)
+	return nil, nil
+}
+
 func opKeccak256(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	offset, size := scope.Stack.Pop(), scope.Stack.Peek()
 	data := scope.Memory.GetPtr(int64(offset.Uint64()), int64(size.Uint64()))

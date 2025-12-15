@@ -31,39 +31,51 @@ type Call func(contract types.Address, data []byte) ([]byte, error)
 
 // ChainHeaderReader defines a small collection of methods needed to access the local
 // blockchain during header verification.
+//
+// Note on signature consistency (tech debt):
+// - GetHeaderByNumber/GetHeader return nil on error (no error return)
+// - GetHeaderByHash/GetBlockByNumber return (nil, error)
+// This inconsistency should be unified in a future refactoring.
 type ChainHeaderReader interface {
 	// Config retrieves the blockchain's chain configuration.
 	Config() *params.ChainConfig
 
-	// CurrentBlock retrieves the current header from the local chain.
+	// CurrentBlock retrieves the current block from the local chain.
 	CurrentBlock() block.IBlock
 
 	// GetHeader retrieves a block header from the database by hash and number.
+	// Returns nil if not found or on error.
 	GetHeader(hash types.Hash, number *uint256.Int) block.IHeader
 
 	// GetHeaderByNumber retrieves a block header from the database by number.
+	// Returns nil if not found or on error.
 	GetHeaderByNumber(number *uint256.Int) block.IHeader
 
 	// GetHeaderByHash retrieves a block header from the database by its hash.
 	GetHeaderByHash(hash types.Hash) (block.IHeader, error)
 
 	// GetTd retrieves the total difficulty from the database by hash and number.
+	// Returns nil if not found.
 	GetTd(types.Hash, *uint256.Int) *uint256.Int
 
+	// GetBlockByNumber retrieves a block from the database by number.
 	GetBlockByNumber(number *uint256.Int) (block.IBlock, error)
 
+	// GetDepositInfo retrieves deposit information for an address.
 	GetDepositInfo(address types.Address) (*uint256.Int, *uint256.Int)
+
+	// GetAccountRewardUnpaid retrieves unpaid reward for an account.
 	GetAccountRewardUnpaid(account types.Address) (*uint256.Int, error)
 }
 
-// ChainReader defines a small collection of methods needed to access the local
-// blockchain during header and/or uncle verification.
-type ChainReader interface {
+// ConsensusChainReader defines methods needed to access the local blockchain
+// during header and/or uncle verification by the consensus engine.
+// Note: This is different from N42.ChainReader which is the external API interface.
+type ConsensusChainReader interface {
 	ChainHeaderReader
 
 	// GetBlock retrieves a block from the database by hash and number.
 	GetBlock(hash types.Hash, number uint64) block.IBlock
-	GetBlockByNumber(number *uint256.Int) (block.IBlock, error)
 }
 
 // Engine is an algorithm agnostic consensus engine.
@@ -88,7 +100,7 @@ type Engine interface {
 
 	// VerifyUncles verifies that the given block's uncles conform to the consensus
 	// rules of a given engine.
-	VerifyUncles(chain ChainReader, block block.IBlock) error
+	VerifyUncles(chain ConsensusChainReader, block block.IBlock) error
 
 	// Prepare initializes the consensus fields of a block header according to the
 	// rules of a particular engine. The changes are executed inline.
@@ -129,7 +141,7 @@ type Engine interface {
 	//Type() params.ConsensusType
 
 	// APIs returns the RPC APIs this consensus engine provides.
-	APIs(chain ChainReader) []jsonrpc.API
+	APIs(chain ConsensusChainReader) []jsonrpc.API
 
 	// Close terminates any background threads maintained by the consensus engine.
 	Close() error

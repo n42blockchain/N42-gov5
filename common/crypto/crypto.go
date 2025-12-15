@@ -29,7 +29,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/math"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/rlp"
 	"hash"
 	"io"
 	"os"

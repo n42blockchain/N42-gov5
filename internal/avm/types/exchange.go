@@ -8,8 +8,8 @@ import (
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/common"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 	"golang.org/x/crypto/sha3"
@@ -24,18 +24,18 @@ var hasherPool = sync.Pool{
 	New: func() interface{} { return sha3.NewLegacyKeccak256() },
 }
 
-type writeCounter common.StorageSize
+type writeCounter avmutil.StorageSize
 
 func (c *writeCounter) Write(b []byte) (int, error) {
 	*c += writeCounter(len(b))
 	return len(b), nil
 }
 
-func ToastAddress(addr *common.Address) *types.Address {
+func ToastAddress(addr *avmutil.Address) *types.Address {
 	if addr == nil {
 		return nil
 	}
-	nullAddress := common.Address{}
+	nullAddress := avmutil.Address{}
 	if bytes.Equal(addr[:], nullAddress[:]) {
 		return &types.Address{0}
 	}
@@ -70,23 +70,23 @@ func FromastAccessList(accessList transaction.AccessList) AccessList {
 	return txAccessList
 }
 
-func FromastAddress(address *types.Address) *common.Address {
+func FromastAddress(address *types.Address) *avmutil.Address {
 	if address == nil {
 		return nil
 	}
-	var a common.Address
+	var a avmutil.Address
 	copy(a[:], address[:])
 	return &a
 }
 
-func ToastHash(hash common.Hash) types.Hash {
+func ToastHash(hash avmutil.Hash) types.Hash {
 	var h types.Hash
 	copy(h[:], hash[:])
 	return h
 }
 
-func FromastHash(hash types.Hash) common.Hash {
-	var h common.Hash
+func FromastHash(hash types.Hash) avmutil.Hash {
+	var h avmutil.Hash
 	copy(h[:], hash[:])
 	return h
 }
@@ -119,7 +119,7 @@ func FromastLog(log *block.Log) *Log {
 		return nil
 	}
 
-	var topics []common.Hash
+	var topics []avmutil.Hash
 	for _, topic := range log.Topics {
 		topics = append(topics, FromastHash(topic))
 	}
@@ -171,12 +171,12 @@ func NewTx(inner TxData) *Transaction {
 }
 
 // Hash returns the transaction hash.
-func (tx *Transaction) Hash() common.Hash {
+func (tx *Transaction) Hash() avmutil.Hash {
 	if hash := tx.hash.Load(); hash != nil {
-		return hash.(common.Hash)
+		return hash.(avmutil.Hash)
 	}
 
-	var h common.Hash
+	var h avmutil.Hash
 	if tx.Type() == LegacyTxType {
 		h = rlpHash(tx.inner)
 	} else {
@@ -243,7 +243,7 @@ func (tx *Transaction) Nonce() uint64 { return tx.inner.nonce() }
 
 // To returns the recipient address of the transaction.
 // For contract-creation transactions, To returns nil.
-func (tx *Transaction) To() *common.Address {
+func (tx *Transaction) To() *avmutil.Address {
 	return copyAddressPtr(tx.inner.to())
 }
 
@@ -253,14 +253,14 @@ func (tx *Transaction) RawSignatureValues() (v, r, s *big.Int) {
 
 // Size returns the true RLP encoded storage size of the transaction, either by
 // encoding and returning it, or returning a previously cached value.
-func (tx *Transaction) Size() common.StorageSize {
+func (tx *Transaction) Size() avmutil.StorageSize {
 	if size := tx.size.Load(); size != nil {
-		return size.(common.StorageSize)
+		return size.(avmutil.StorageSize)
 	}
 	c := writeCounter(0)
 	rlp.Encode(&c, &tx.inner)
-	tx.size.Store(common.StorageSize(c))
-	return common.StorageSize(c)
+	tx.size.Store(avmutil.StorageSize(c))
+	return avmutil.StorageSize(c)
 }
 
 // WithSignature returns a new transaction with the given signature.
@@ -320,7 +320,7 @@ func (tx *Transaction) setDecoded(inner TxData, size int) {
 	tx.inner = inner
 	tx.time = time.Now()
 	if size > 0 {
-		tx.size.Store(common.StorageSize(size))
+		tx.size.Store(avmutil.StorageSize(size))
 	}
 }
 
@@ -355,7 +355,7 @@ func (tx *Transaction) ToastTransaction(chainConfig *params.ChainConfig, blockNu
 		inner = &transaction.LegacyTx{
 			Nonce:    tx.Nonce(),
 			Gas:      tx.Gas(),
-			Data:     common.CopyBytes(tx.Data()),
+			Data:     avmutil.CopyBytes(tx.Data()),
 			GasPrice: gasPrice,
 			Value:    vl,
 			To:       ToastAddress(tx.To()),
@@ -370,7 +370,7 @@ func (tx *Transaction) ToastTransaction(chainConfig *params.ChainConfig, blockNu
 		at := &transaction.AccessListTx{
 			Nonce:      tx.Nonce(),
 			Gas:        tx.Gas(),
-			Data:       common.CopyBytes(tx.Data()),
+			Data:       avmutil.CopyBytes(tx.Data()),
 			To:         ToastAddress(tx.To()),
 			GasPrice:   gasPrice,
 			Value:      vl,
@@ -388,7 +388,7 @@ func (tx *Transaction) ToastTransaction(chainConfig *params.ChainConfig, blockNu
 			Nonce:      tx.Nonce(),
 			Gas:        tx.Gas(),
 			To:         ToastAddress(tx.To()),
-			Data:       common.CopyBytes(tx.Data()),
+			Data:       avmutil.CopyBytes(tx.Data()),
 			AccessList: ToastAccessList(tx.AccessList()),
 			Value:      vl,
 			From:       ToastAddress(&from),
@@ -419,7 +419,7 @@ func (tx *Transaction) FromastTransaction(astTx *transaction.Transaction) {
 		inner = &LegacyTx{
 			Nonce:    astTx.Nonce(),
 			Gas:      astTx.Gas(),
-			Data:     common.CopyBytes(astTx.Data()),
+			Data:     avmutil.CopyBytes(astTx.Data()),
 			GasPrice: gasPrice,
 			Value:    vl,
 			To:       FromastAddress(astTx.To()),
@@ -429,7 +429,7 @@ func (tx *Transaction) FromastTransaction(astTx *transaction.Transaction) {
 		at := &AccessListTx{
 			Nonce:      astTx.Nonce(),
 			Gas:        astTx.Gas(),
-			Data:       common.CopyBytes(astTx.Data()),
+			Data:       avmutil.CopyBytes(astTx.Data()),
 			To:         FromastAddress(astTx.To()),
 			GasPrice:   gasPrice,
 			Value:      vl,
@@ -443,7 +443,7 @@ func (tx *Transaction) FromastTransaction(astTx *transaction.Transaction) {
 			Nonce:      astTx.Nonce(),
 			Gas:        astTx.Gas(),
 			To:         FromastAddress(astTx.To()),
-			Data:       common.CopyBytes(astTx.Data()),
+			Data:       avmutil.CopyBytes(astTx.Data()),
 			AccessList: FromastAccessList(astTx.AccessList()),
 			Value:      vl,
 		}
@@ -491,7 +491,7 @@ func FromastHeader(iHeader block.IHeader) *Header {
 	}
 }
 
-func rlpHash(x interface{}) (h common.Hash) {
+func rlpHash(x interface{}) (h avmutil.Hash) {
 	sha := hasherPool.Get().(crypto.KeccakState)
 	defer hasherPool.Put(sha)
 	sha.Reset()
@@ -502,7 +502,7 @@ func rlpHash(x interface{}) (h common.Hash) {
 
 // prefixedRlpHash writes the prefix into the hasher before rlp-encoding x.
 // It's used for typed transactions.
-func prefixedRlpHash(prefix byte, x interface{}) (h common.Hash) {
+func prefixedRlpHash(prefix byte, x interface{}) (h avmutil.Hash) {
 	sha := hasherPool.Get().(crypto.KeccakState)
 	defer hasherPool.Put(sha)
 	sha.Reset()

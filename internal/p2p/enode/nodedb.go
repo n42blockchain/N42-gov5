@@ -28,7 +28,7 @@ import (
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/mdbx"
 	"github.com/ledgerwatch/log/v3"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/rlp"
 	"net"
 	"os"
 	"sync"

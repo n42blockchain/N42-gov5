@@ -149,6 +149,13 @@ type (
 		address *types.Address
 		slot    *types.Hash
 	}
+
+	// EIP-1153: Transient storage changes
+	transientStorageChange struct {
+		account  *types.Address
+		key      types.Hash
+		prevalue uint256.Int
+	}
 )
 
 func (ch createObjectChange) revert(s *IntraBlockState) {
@@ -294,5 +301,13 @@ func (ch accessListAddSlotChange) revert(s *IntraBlockState) {
 }
 
 func (ch accessListAddSlotChange) dirtied() *types.Address {
+	return nil
+}
+
+func (ch transientStorageChange) revert(s *IntraBlockState) {
+	s.transientStorage.Set(*ch.account, ch.key, ch.prevalue)
+}
+
+func (ch transientStorageChange) dirtied() *types.Address {
 	return nil
 }

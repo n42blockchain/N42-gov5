@@ -30,28 +30,11 @@ const (
 	NonContractIncarnation = 0
 )
 
-type StateReader interface {
-	ReadAccountData(address types.Address) (*account.StateAccount, error)
-	ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error)
-	ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error)
-	ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error)
-	ReadAccountIncarnation(address types.Address) (uint16, error)
-}
+// Note: StateReader, StateWriter, and WriterWithChangeSets interfaces
+// are now defined in interfaces.go for better organization.
 
-type StateWriter interface {
-	UpdateAccountData(address types.Address, original, account *account.StateAccount) error
-	UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error
-	DeleteAccount(address types.Address, original *account.StateAccount) error
-	WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error
-	CreateContract(address types.Address) error
-}
-
-type WriterWithChangeSets interface {
-	StateWriter
-	WriteChangeSets() error
-	WriteHistory() error
-}
-
+// NoopWriter is a StateWriter implementation that does nothing.
+// Useful for testing or when state changes should be discarded.
 type NoopWriter struct {
 }
 

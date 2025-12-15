@@ -4,15 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 )
 
 type Log struct {
 	// Consensus fields:
 	// address of the contract that generated the event
-	Address common.Address `json:"address" gencodec:"required"`
+	Address avmutil.Address `json:"address" gencodec:"required"`
 	// list of topics provided by the contract.
-	Topics []common.Hash `json:"topics" gencodec:"required"`
+	Topics []avmutil.Hash `json:"topics" gencodec:"required"`
 	// supplied by the contract, usually ABI-encoded
 	Data []byte `json:"data" gencodec:"required"`
 
@@ -21,11 +21,11 @@ type Log struct {
 	// block in which the transaction was included
 	BlockNumber uint64 `json:"blockNumber"`
 	// hash of the transaction
-	TxHash common.Hash `json:"transactionHash" gencodec:"required"`
+	TxHash avmutil.Hash `json:"transactionHash" gencodec:"required"`
 	// index of the transaction in the block
 	TxIndex uint `json:"transactionIndex" gencodec:"required"`
 	// hash of the block in which the transaction was included
-	BlockHash common.Hash `json:"blockHash"`
+	BlockHash avmutil.Hash `json:"blockHash"`
 	// index of the log in the receipt
 	Index uint `json:"logIndex" gencodec:"required"`
 
@@ -37,13 +37,13 @@ type Log struct {
 // MarshalJSON marshals as JSON.
 func (l Log) MarshalJSON() ([]byte, error) {
 	type Log struct {
-		Address     common.Address `json:"address" gencodec:"required"`
-		Topics      []common.Hash  `json:"topics" gencodec:"required"`
+		Address     avmutil.Address `json:"address" gencodec:"required"`
+		Topics      []avmutil.Hash  `json:"topics" gencodec:"required"`
 		Data        hexutil.Bytes  `json:"data" gencodec:"required"`
 		BlockNumber hexutil.Uint64 `json:"blockNumber"`
-		TxHash      common.Hash    `json:"transactionHash" gencodec:"required"`
+		TxHash      avmutil.Hash    `json:"transactionHash" gencodec:"required"`
 		TxIndex     hexutil.Uint   `json:"transactionIndex"`
-		BlockHash   common.Hash    `json:"blockHash"`
+		BlockHash   avmutil.Hash    `json:"blockHash"`
 		Index       hexutil.Uint   `json:"logIndex"`
 		Removed     bool           `json:"removed"`
 	}
@@ -63,13 +63,13 @@ func (l Log) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON unmarshals from JSON.
 func (l *Log) UnmarshalJSON(input []byte) error {
 	type Log struct {
-		Address     *common.Address `json:"address" gencodec:"required"`
-		Topics      []common.Hash   `json:"topics" gencodec:"required"`
+		Address     *avmutil.Address `json:"address" gencodec:"required"`
+		Topics      []avmutil.Hash   `json:"topics" gencodec:"required"`
 		Data        *hexutil.Bytes  `json:"data" gencodec:"required"`
 		BlockNumber *hexutil.Uint64 `json:"blockNumber"`
-		TxHash      *common.Hash    `json:"transactionHash" gencodec:"required"`
+		TxHash      *avmutil.Hash    `json:"transactionHash" gencodec:"required"`
 		TxIndex     *hexutil.Uint   `json:"transactionIndex"`
-		BlockHash   *common.Hash    `json:"blockHash"`
+		BlockHash   *avmutil.Hash    `json:"blockHash"`
 		Index       *hexutil.Uint   `json:"logIndex"`
 		Removed     *bool           `json:"removed"`
 	}

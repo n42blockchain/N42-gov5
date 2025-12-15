@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
-	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"sync"
 	"time"

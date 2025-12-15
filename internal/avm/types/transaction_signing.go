@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/params"
 	"math/big"
 )
@@ -41,7 +41,7 @@ var (
 // the signer used to derive it.
 type sigCache struct {
 	signer Signer
-	from   common.Address
+	from   avmutil.Address
 }
 
 // MakeSigner returns a Signer based on the given chain blockchain and block number.
@@ -136,7 +136,7 @@ func MustSignNewTx(prv *ecdsa.PrivateKey, s Signer, txdata TxData) *Transaction 
 // Sender may cache the address, allowing it to be used regardless of
 // signing method. The cache is invalidated if the cached signer does
 // not match the signer used in the current call.
-func Sender(signer Signer, tx *Transaction) (common.Address, error) {
+func Sender(signer Signer, tx *Transaction) (avmutil.Address, error) {
 	if sc := tx.from.Load(); sc != nil {
 		sigCache := sc.(sigCache)
 		// If the signer used to derive from in a previous
@@ -149,7 +149,7 @@ func Sender(signer Signer, tx *Transaction) (common.Address, error) {
 
 	addr, err := signer.Sender(tx)
 	if err != nil {
-		return common.Address{}, err
+		return avmutil.Address{}, err
 	}
 	tx.from.Store(sigCache{signer: signer, from: addr})
 	return addr, nil
@@ -163,7 +163,7 @@ func Sender(signer Signer, tx *Transaction) (common.Address, error) {
 // new protocol rules.
 type Signer interface {
 	// Sender returns the sender address of the transaction.
-	Sender(tx *Transaction) (common.Address, error)
+	Sender(tx *Transaction) (avmutil.Address, error)
 
 	// SignatureValues returns the raw R, S, V values corresponding to the
 	// given signature.
@@ -172,7 +172,7 @@ type Signer interface {
 
 	// Hash returns 'signature hash', i.e. the transaction hash that is signed by the
 	// private key. This hash does not uniquely identify the transaction.
-	Hash(tx *Transaction) common.Hash
+	Hash(tx *Transaction) avmutil.Hash
 
 	// Equal returns true if the given signer is the same as the receiver.
 	Equal(Signer) bool
@@ -189,7 +189,7 @@ func NewLondonSigner(chainId *big.Int) Signer {
 	return londonSigner{eip2930Signer{NewEIP155Signer(chainId)}}
 }
 
-func (s londonSigner) Sender(tx *Transaction) (common.Address, error) {
+func (s londonSigner) Sender(tx *Transaction) (avmutil.Address, error) {
 	if tx.Type() != DynamicFeeTxType {
 		return s.eip2930Signer.Sender(tx)
 	}
@@ -198,7 +198,7 @@ func (s londonSigner) Sender(tx *Transaction) (common.Address, error) {
 	// id, add 27 to become equivalent to unprotected Homestead signatures.
 	V = new(big.Int).Add(V, big.NewInt(27))
 	if tx.ChainId().Cmp(s.chainId) != 0 {
-		return common.Address{}, ErrInvalidChainId
+		return avmutil.Address{}, ErrInvalidChainId
 	}
 	return recoverPlain(s.Hash(tx), R, S, V, true)
 }
@@ -225,7 +225,7 @@ func (s londonSigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
-func (s londonSigner) Hash(tx *Transaction) common.Hash {
+func (s londonSigner) Hash(tx *Transaction) avmutil.Hash {
 	if tx.Type() != DynamicFeeTxType {
 		return s.eip2930Signer.Hash(tx)
 	}
@@ -261,7 +261,7 @@ func (s eip2930Signer) Equal(s2 Signer) bool {
 	return ok && x.chainId.Cmp(s.chainId) == 0
 }
 
-func (s eip2930Signer) Sender(tx *Transaction) (common.Address, error) {
+func (s eip2930Signer) Sender(tx *Transaction) (avmutil.Address, error) {
 	V, R, S := tx.RawSignatureValues()
 	switch tx.Type() {
 	case LegacyTxType:
@@ -275,10 +275,10 @@ func (s eip2930Signer) Sender(tx *Transaction) (common.Address, error) {
 		// id, add 27 to become equivalent to unprotected Homestead signatures.
 		V = new(big.Int).Add(V, big.NewInt(27))
 	default:
-		return common.Address{}, ErrTxTypeNotSupported
+		return avmutil.Address{}, ErrTxTypeNotSupported
 	}
 	if tx.ChainId().Cmp(s.chainId) != 0 {
-		return common.Address{}, ErrInvalidChainId
+		return avmutil.Address{}, ErrInvalidChainId
 	}
 	return recoverPlain(s.Hash(tx), R, S, V, true)
 }
@@ -303,7 +303,7 @@ func (s eip2930Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *bi
 
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
-func (s eip2930Signer) Hash(tx *Transaction) common.Hash {
+func (s eip2930Signer) Hash(tx *Transaction) avmutil.Hash {
 	switch tx.Type() {
 	case LegacyTxType:
 		return rlpHash([]interface{}{
@@ -333,7 +333,7 @@ func (s eip2930Signer) Hash(tx *Transaction) common.Hash {
 		// json struct via RPC, it's probably more prudent to return an
 		// empty hash instead of killing the node with a panic
 		//panic("Unsupported transaction type: %d", tx.typ)
-		return common.Hash{}
+		return avmutil.Hash{}
 	}
 }
 
@@ -364,15 +364,15 @@ func (s EIP155Signer) Equal(s2 Signer) bool {
 
 var big8 = big.NewInt(8)
 
-func (s EIP155Signer) Sender(tx *Transaction) (common.Address, error) {
+func (s EIP155Signer) Sender(tx *Transaction) (avmutil.Address, error) {
 	if tx.Type() != LegacyTxType {
-		return common.Address{}, ErrTxTypeNotSupported
+		return avmutil.Address{}, ErrTxTypeNotSupported
 	}
 	if !tx.Protected() {
 		return HomesteadSigner{}.Sender(tx)
 	}
 	if tx.ChainId().Cmp(s.chainId) != 0 {
-		return common.Address{}, ErrInvalidChainId
+		return avmutil.Address{}, ErrInvalidChainId
 	}
 	V, R, S := tx.RawSignatureValues()
 	V = new(big.Int).Sub(V, s.chainIdMul)
@@ -396,7 +396,7 @@ func (s EIP155Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
-func (s EIP155Signer) Hash(tx *Transaction) common.Hash {
+func (s EIP155Signer) Hash(tx *Transaction) avmutil.Hash {
 	return rlpHash([]interface{}{
 		tx.Nonce(),
 		tx.GasPrice(),
@@ -427,9 +427,9 @@ func (hs HomesteadSigner) SignatureValues(tx *Transaction, sig []byte) (r, s, v 
 	return hs.FrontierSigner.SignatureValues(tx, sig)
 }
 
-func (hs HomesteadSigner) Sender(tx *Transaction) (common.Address, error) {
+func (hs HomesteadSigner) Sender(tx *Transaction) (avmutil.Address, error) {
 	if tx.Type() != LegacyTxType {
-		return common.Address{}, ErrTxTypeNotSupported
+		return avmutil.Address{}, ErrTxTypeNotSupported
 	}
 	v, r, s := tx.RawSignatureValues()
 	return recoverPlain(hs.Hash(tx), r, s, v, true)
@@ -446,9 +446,9 @@ func (s FrontierSigner) Equal(s2 Signer) bool {
 	return ok
 }
 
-func (fs FrontierSigner) Sender(tx *Transaction) (common.Address, error) {
+func (fs FrontierSigner) Sender(tx *Transaction) (avmutil.Address, error) {
 	if tx.Type() != LegacyTxType {
-		return common.Address{}, ErrTxTypeNotSupported
+		return avmutil.Address{}, ErrTxTypeNotSupported
 	}
 	v, r, s := tx.RawSignatureValues()
 	return recoverPlain(fs.Hash(tx), r, s, v, false)
@@ -466,7 +466,7 @@ func (fs FrontierSigner) SignatureValues(tx *Transaction, sig []byte) (r, s, v *
 
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
-func (fs FrontierSigner) Hash(tx *Transaction) common.Hash {
+func (fs FrontierSigner) Hash(tx *Transaction) avmutil.Hash {
 	return rlpHash([]interface{}{
 		tx.Nonce(),
 		tx.GasPrice(),
@@ -487,15 +487,15 @@ func decodeSignature(sig []byte) (r, s, v *big.Int) {
 	return r, s, v
 }
 
-func recoverPlain(sighash common.Hash, R, S, Vb *big.Int, homestead bool) (common.Address, error) {
+func recoverPlain(sighash avmutil.Hash, R, S, Vb *big.Int, homestead bool) (avmutil.Address, error) {
 	if Vb.BitLen() > 8 {
-		return common.Address{}, ErrInvalidSig
+		return avmutil.Address{}, ErrInvalidSig
 	}
 	V := byte(Vb.Uint64() - 27)
 	ir, _ := uint256.FromBig(R)
 	is, _ := uint256.FromBig(S)
 	if !crypto.ValidateSignatureValues(V, ir, is, homestead) {
-		return common.Address{}, ErrInvalidSig
+		return avmutil.Address{}, ErrInvalidSig
 	}
 	// encode the signature in uncompressed format
 	r, s := R.Bytes(), S.Bytes()
@@ -506,12 +506,12 @@ func recoverPlain(sighash common.Hash, R, S, Vb *big.Int, homestead bool) (commo
 	// recover the public key from the signature
 	pub, err := crypto.Ecrecover(sighash[:], sig)
 	if err != nil {
-		return common.Address{}, err
+		return avmutil.Address{}, err
 	}
 	if len(pub) == 0 || pub[0] != 4 {
-		return common.Address{}, errors.New("invalid public key")
+		return avmutil.Address{}, errors.New("invalid public key")
 	}
-	var addr common.Address
+	var addr avmutil.Address
 	copy(addr[:], crypto.Keccak256(pub[1:])[12:])
 	return addr, nil
 }

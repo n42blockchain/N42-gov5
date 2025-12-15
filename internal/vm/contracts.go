@@ -23,7 +23,7 @@ import (
 	"github.com/n42blockchain/N42/common/crypto/bls12381"
 	"github.com/n42blockchain/N42/common/crypto/bn256"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/common"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"math/big"
 
 	"github.com/holiman/uint256"
@@ -453,8 +453,8 @@ func (c *bigModExp) Run(input []byte) ([]byte, error) {
 	switch {
 	case mod.BitLen() == 0:
 		// Modulo 0 is undefined, return zero
-		return common.LeftPadBytes([]byte{}, int(modLen)), nil
-	case base.Cmp(common.Big1) == 0:
+		return avmutil.LeftPadBytes([]byte{}, int(modLen)), nil
+	case base.Cmp(avmutil.Big1) == 0:
 		//If base == 1, then we can just return base % mod (if mod >= 1, which it is)
 		v = base.Mod(base, mod).Bytes()
 	//case mod.Bit(0) == 0:
@@ -464,7 +464,7 @@ func (c *bigModExp) Run(input []byte) ([]byte, error) {
 		// Modulo is odd
 		v = base.Exp(base, exp, mod).Bytes()
 	}
-	return common.LeftPadBytes(v, int(modLen)), nil
+	return avmutil.LeftPadBytes(v, int(modLen)), nil
 }
 
 // newCurvePoint unmarshals a binary blob into a bn256 elliptic curve point,
@@ -1124,3 +1124,79 @@ func (c *bls12381MapG2) Run(input []byte) ([]byte, error) {
 	// Encode the G2 point to 256 bytes
 	return g.EncodePoint(r), nil
 }
+
+// =============================================================================
+// Precompile Getter Functions
+//
+// These functions provide access to precompile instances for the Registry.
+// They replace direct access to the global maps.
+// =============================================================================
+
+// GetEcrecover returns an ecrecover precompile instance.
+func GetEcrecover() PrecompiledContract { return &ecrecover{} }
+
+// GetSha256 returns a SHA256 precompile instance.
+func GetSha256() PrecompiledContract { return &sha256hash{} }
+
+// GetRipemd160 returns a RIPEMD160 precompile instance.
+func GetRipemd160() PrecompiledContract { return &ripemd160hash{} }
+
+// GetDataCopy returns a data copy precompile instance.
+func GetDataCopy() PrecompiledContract { return &dataCopy{} }
+
+// GetBigModExp returns a big modular exponentiation precompile instance.
+func GetBigModExp(eip2565 bool) PrecompiledContract { return &bigModExp{eip2565: eip2565} }
+
+// GetBn256Add returns a BN256 addition precompile instance.
+func GetBn256Add(istanbul bool) PrecompiledContract {
+	if istanbul {
+		return &bn256AddIstanbul{}
+	}
+	return &bn256AddByzantium{}
+}
+
+// GetBn256ScalarMul returns a BN256 scalar multiplication precompile instance.
+func GetBn256ScalarMul(istanbul bool) PrecompiledContract {
+	if istanbul {
+		return &bn256ScalarMulIstanbul{}
+	}
+	return &bn256ScalarMulByzantium{}
+}
+
+// GetBn256Pairing returns a BN256 pairing precompile instance.
+func GetBn256Pairing(istanbul bool) PrecompiledContract {
+	if istanbul {
+		return &bn256PairingIstanbul{}
+	}
+	return &bn256PairingByzantium{}
+}
+
+// GetBlake2F returns a BLAKE2b F compression function precompile instance.
+func GetBlake2F() PrecompiledContract { return &blake2F{} }
+
+// GetBls12381G1Add returns a BLS12-381 G1 addition precompile instance.
+func GetBls12381G1Add() PrecompiledContract { return &bls12381G1Add{} }
+
+// GetBls12381G1Mul returns a BLS12-381 G1 multiplication precompile instance.
+func GetBls12381G1Mul() PrecompiledContract { return &bls12381G1Mul{} }
+
+// GetBls12381G1MultiExp returns a BLS12-381 G1 multi-exponentiation precompile instance.
+func GetBls12381G1MultiExp() PrecompiledContract { return &bls12381G1MultiExp{} }
+
+// GetBls12381G2Add returns a BLS12-381 G2 addition precompile instance.
+func GetBls12381G2Add() PrecompiledContract { return &bls12381G2Add{} }
+
+// GetBls12381G2Mul returns a BLS12-381 G2 multiplication precompile instance.
+func GetBls12381G2Mul() PrecompiledContract { return &bls12381G2Mul{} }
+
+// GetBls12381G2MultiExp returns a BLS12-381 G2 multi-exponentiation precompile instance.
+func GetBls12381G2MultiExp() PrecompiledContract { return &bls12381G2MultiExp{} }
+
+// GetBls12381Pairing returns a BLS12-381 pairing precompile instance.
+func GetBls12381Pairing() PrecompiledContract { return &bls12381Pairing{} }
+
+// GetBls12381MapG1 returns a BLS12-381 map to G1 precompile instance.
+func GetBls12381MapG1() PrecompiledContract { return &bls12381MapG1{} }
+
+// GetBls12381MapG2 returns a BLS12-381 map to G2 precompile instance.
+func GetBls12381MapG2() PrecompiledContract { return &bls12381MapG2{} }

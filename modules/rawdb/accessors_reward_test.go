@@ -119,8 +119,8 @@ func OpenDatabase() (kv.RwDB, error) {
 			opts = opts.Exclusive()
 		}
 
-		modules.astInit()
-		kv.ChaindataTablesCfg = modules.astTableCfg
+		modules.AstInit()
+		kv.ChaindataTablesCfg = modules.AstTableCfg
 
 		opts = opts.MapSize(8 * datasize.TB)
 		return opts.Open()

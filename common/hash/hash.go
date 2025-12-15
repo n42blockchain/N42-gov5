@@ -20,7 +20,7 @@ import (
 	"bytes"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/avm/rlp"
+	"github.com/n42blockchain/N42/common/rlp"
 	"sync"
 
 	"golang.org/x/crypto/sha3"

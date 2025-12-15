@@ -24,7 +24,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	avmtypes "github.com/n42blockchain/N42/internal/avm/types"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"math/big"
 )
 
