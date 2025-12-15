@@ -211,7 +211,7 @@ var loggerFlag = []cli.Flag{
 	&cli.StringFlag{
 		Name:        "log.name",
 		Usage:       "logger file name and path",
-		Value:       "ast.log",
+		Value:       "n42.log",
 		Destination: &DefaultConfig.LoggerCfg.LogFile,
 	},
 
@@ -392,7 +392,7 @@ var (
 	DataDirFlag = &cli.StringFlag{
 		Name:        "data.dir",
 		Usage:       "data save dir",
-		Value:       "./ast/",
+		Value:       "./n42/",
 		Destination: &DefaultConfig.NodeCfg.DataDir,
 	}
 

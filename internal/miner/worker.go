@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/core"
+	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/metrics/prometheus"
@@ -30,7 +30,6 @@ import (
 
 	"github.com/n42blockchain/N42/modules/rawdb"
 
-	"github.com/n42blockchain/N42/internal"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/modules/state"
 
@@ -634,11 +633,11 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		_, err := miningCommitTx(tx, env.coinbase, &vm2.Config{}, w.chainConfig, ibs, env)
 
 		switch {
-		case errors.Is(err, core.ErrGasLimitReached):
+		case errors.Is(err, internal.ErrGasLimitReached):
 			continue
-		case errors.Is(err, core.ErrNonceTooHigh):
+		case errors.Is(err, internal.ErrNonceTooHigh):
 			continue
-		case errors.Is(err, core.ErrNonceTooLow):
+		case errors.Is(err, internal.ErrNonceTooLow):
 			continue
 		case errors.Is(err, nil):
 			env.tcount++

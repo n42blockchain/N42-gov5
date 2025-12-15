@@ -200,7 +200,7 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 					log.Warn("Already shutting down, interrupt more to panic.", "times", i-1)
 				}
 			}
-			panic("Panic closing the ast node")
+			panic("Panic closing the n42 node")
 		}
 
 		if isConsole {

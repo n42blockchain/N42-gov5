@@ -170,7 +170,7 @@ func ecrecover(iHeader block.IHeader, sigcache *lru.ARCCache) (types.Address, er
 	}
 	signature := header.Extra[len(header.Extra)-extraSeal:]
 
-	//Recover the public key and the Ethereum(ast) address
+	// Recover the public key and the N42 address
 	pubkey, err := crypto.Ecrecover(SealHash(header).Bytes(), signature)
 	if err != nil {
 		return types.Address{}, err

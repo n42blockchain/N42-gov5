@@ -1,4 +1,4 @@
-// Copyright 2023 The N42 Authors
+// Copyright 2024 The N42 Authors
 // This file is part of the N42 library.
 //
 // The N42 library is free software: you can redistribute it and/or modify
@@ -14,19 +14,23 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
-package core
+// Package errors defines common error types used throughout the N42 codebase.
+// This package provides a centralized location for error definitions to ensure
+// consistency and avoid duplication across modules.
+package errors
 
 import (
 	"errors"
 	"fmt"
 )
 
-var (
-	ErrInvalidBlock  = fmt.Errorf("invalid block")
-	ErrInvalidPubSub = fmt.Errorf("PubSub is nil")
-)
+// =====================
+// Block & Chain Errors
+// =====================
 
 var (
+	// ErrInvalidBlock is returned when a block fails validation.
+	ErrInvalidBlock = errors.New("invalid block")
 
 	// ErrBannedHash is returned if a block to import is on the banned list.
 	ErrBannedHash = errors.New("banned hash")
@@ -34,15 +38,23 @@ var (
 	// ErrNoGenesis is returned when there is no Genesis Block.
 	ErrNoGenesis = errors.New("genesis not found in chain")
 
-	errSideChainReceipts = errors.New("side blocks can't be accepted as ancient chain data")
+	// ErrGenesisNoConfig is returned when genesis has no chain configuration.
+	ErrGenesisNoConfig = errors.New("genesis has no chain configuration")
+
+	// ErrSideChainReceipts is returned when trying to accept side blocks as ancient chain data.
+	ErrSideChainReceipts = errors.New("side blocks can't be accepted as ancient chain data")
 )
 
-// List of evm-call-message pre-checking errors. All state transition messages will
+// =====================
+// Transaction Errors
+// =====================
+
+// Transaction pre-checking errors. All state transition messages will
 // be pre-checked before execution. If any invalidation detected, the corresponding
 // error should be returned which is defined here.
 //
 // - If the pre-checking happens in the miner, then the transaction won't be packed.
-// - If the pre-checking happens in the block processing procedure, then a "BAD BLOCk"
+// - If the pre-checking happens in the block processing procedure, then a "BAD BLOCK"
 // error should be emitted.
 var (
 	// ErrNonceTooLow is returned if the nonce of a transaction is lower than the
@@ -62,7 +74,7 @@ var (
 	ErrGasLimitReached = errors.New("gas limit reached")
 
 	// ErrInsufficientFundsForTransfer is returned if the transaction sender doesn't
-	// have enough funds for transfer(topmost call only).
+	// have enough funds for transfer (topmost call only).
 	ErrInsufficientFundsForTransfer = errors.New("insufficient funds for transfer")
 
 	// ErrInsufficientFunds is returned if the total cost of executing a transaction
@@ -98,4 +110,75 @@ var (
 
 	// ErrSenderNoEOA is returned if the sender of a transaction is a contract.
 	ErrSenderNoEOA = errors.New("sender not an eoa")
+
+	// ErrAlreadyDeposited is returned when trying to deposit again.
+	ErrAlreadyDeposited = errors.New("already deposited")
 )
+
+// =====================
+// PubSub & Network Errors
+// =====================
+
+var (
+	// ErrInvalidPubSub is returned when PubSub is nil.
+	ErrInvalidPubSub = errors.New("pubsub is nil")
+
+	// ErrMessageNotMapped is returned when message type is not mapped to a PubSub topic.
+	ErrMessageNotMapped = errors.New("message type is not mapped to a PubSub topic")
+
+	// ErrInvalidFetchedData is returned when invalid data is returned from peer.
+	ErrInvalidFetchedData = errors.New("invalid data returned from peer")
+)
+
+// =====================
+// Database Errors
+// =====================
+
+var (
+	// ErrKeyNotFound is returned when a key is not found in the database.
+	ErrKeyNotFound = errors.New("db: key not found")
+
+	// ErrInvalidSize is returned when a number has an invalid size.
+	ErrInvalidSize = errors.New("bit endian number has an invalid size")
+)
+
+// =====================
+// Helper Functions
+// =====================
+
+// Wrap wraps an error with additional context.
+func Wrap(err error, message string) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", message, err)
+}
+
+// Wrapf wraps an error with a formatted message.
+func Wrapf(err error, format string, args ...interface{}) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), err)
+}
+
+// Is reports whether any error in err's chain matches target.
+func Is(err, target error) bool {
+	return errors.Is(err, target)
+}
+
+// As finds the first error in err's chain that matches target.
+func As(err error, target interface{}) bool {
+	return errors.As(err, target)
+}
+
+// New returns an error that formats as the given text.
+func New(text string) error {
+	return errors.New(text)
+}
+
+// Errorf formats according to a format specifier and returns the string as a value that satisfies error.
+func Errorf(format string, a ...interface{}) error {
+	return fmt.Errorf(format, a...)
+}
+

@@ -19,6 +19,8 @@ package internal
 import (
 	"errors"
 	"fmt"
+
+	"github.com/n42blockchain/N42/common"
 )
 
 var (
@@ -59,7 +61,8 @@ var (
 
 	// ErrGasLimitReached is returned by the gas pool if the amount of gas required
 	// by a transaction is higher than what's left in the block.
-	ErrGasLimitReached = errors.New("gas limit reached")
+	// Alias to common.ErrGasLimitReached to avoid import cycles.
+	ErrGasLimitReached = common.ErrGasLimitReached
 
 	// ErrInsufficientFundsForTransfer is returned if the transaction sender doesn't
 	// have enough funds for transfer(topmost call only).
