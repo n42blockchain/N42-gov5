@@ -375,7 +375,7 @@ func (d *Downloader) synchronise() {
 	}
 }
 
-func (d Downloader) calculateHeight(peer2 common.Peer) error {
+func (d *Downloader) calculateHeight(peer2 common.Peer) error {
 	if d.bc.CurrentBlock().Number64().Uint64() == 0 {
 
 	}

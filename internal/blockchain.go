@@ -26,8 +26,7 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/contracts/deposit"
-	"github.com/n42blockchain/N42/common/metrics"
+	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"google.golang.org/protobuf/proto"
 
@@ -134,9 +133,7 @@ type insertStats struct {
 	startTime                  time.Time
 }
 
-func (bc *BlockChain) Engine() consensus.Engine {
-	return bc.engine
-}
+// Engine - see blockchain_reader.go
 
 func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consensus.Engine, db kv.RwDB, p2p p2p.P2P, config *params.ChainConfig) (common.IBlockChain, error) {
 	c, cancel := context.WithCancel(ctx)
@@ -189,26 +186,14 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	return bc, nil
 }
 
-func (bc *BlockChain) Config() *params.ChainConfig {
-	return bc.chainConfig
-}
-
-func (bc *BlockChain) CurrentBlock() block.IBlock {
-	return bc.currentBlock.Load()
-}
-
-func (bc *BlockChain) Blocks() []block.IBlock {
-	return bc.blocks
-}
+// Config, CurrentBlock, Blocks - see blockchain_reader.go
 
 func (bc *BlockChain) InsertHeader(headers []block.IHeader) (int, error) {
 	// TODO: Implement header-only insertion for light client support
 	return 0, errors.New("InsertHeader not implemented")
 }
 
-func (bc *BlockChain) GenesisBlock() block.IBlock {
-	return bc.genesisBlock
-}
+// GenesisBlock - see blockchain_reader.go
 
 func (bc *BlockChain) Start() error {
 	bc.wg.Add(3)
@@ -235,27 +220,7 @@ func (bc *BlockChain) AddPeer(hash string, remoteBlock uint64, peerID peer.ID) e
 	return nil
 }
 
-func (bc *BlockChain) GetReceipts(blockHash types.Hash) (block.Receipts, error) {
-	rtx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer rtx.Rollback()
-	return rawdb.ReadReceiptsByHash(rtx, blockHash)
-}
-
-func (bc *BlockChain) GetLogs(blockHash types.Hash) ([][]*block.Log, error) {
-	receipts, err := bc.GetReceipts(blockHash)
-	if err != nil {
-		return nil, err
-	}
-
-	logs := make([][]*block.Log, len(receipts))
-	for i, receipt := range receipts {
-		logs[i] = receipt.Logs
-	}
-	return logs, nil
-}
+// GetReceipts, GetLogs - see blockchain_reader.go
 
 // InsertBlock inserts blocks into the chain.
 // Deprecated: Use InsertChain instead. This method is kept for interface compatibility.
@@ -338,7 +303,7 @@ func (bc *BlockChain) updateFutureBlocksLoop() {
 }
 
 func (bc *BlockChain) runNewBlockMessage() {
-	newBlockCh := make(chan msg_proto.NewBlockMessageData, 10)
+	newBlockCh := make(chan *msg_proto.NewBlockMessageData, 10)
 	sub := event.GlobalEvent.Subscribe(newBlockCh)
 	defer sub.Unsubscribe()
 	db := bc.ChainDB
@@ -391,123 +356,8 @@ func (bc *BlockChain) syncChain(remoteBlock uint64, peerID peer.ID) {
 	log.Debugf("syncChain.......")
 }
 
-func (bc *BlockChain) GetHeader(h types.Hash, number *uint256.Int) block.IHeader {
-	// Short circuit if the header's already in the cache, retrieve otherwise
-	if header, ok := bc.headerCache.Get(h); ok {
-		return header
-	}
-
-	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
-		return nil
-	}
-	defer tx.Rollback()
-	header := rawdb.ReadHeader(tx, h, number.Uint64())
-	if nil == header {
-		return nil
-	}
-
-	bc.headerCache.Add(h, header)
-	return header
-}
-
-func (bc *BlockChain) GetHeaderByNumber(number *uint256.Int) block.IHeader {
-	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
-		log.Error("cannot open chain db", "err", err)
-		return nil
-	}
-	defer tx.Rollback()
-
-	hash, err := rawdb.ReadCanonicalHash(tx, number.Uint64())
-	if nil != err {
-		log.Error("cannot open chain db", "err", err)
-		return nil
-	}
-	if hash == (types.Hash{}) {
-		return nil
-	}
-
-	//return bc.GetHeader(hash, number)
-	if header, ok := bc.headerCache.Get(hash); ok {
-		return header
-	}
-	header := rawdb.ReadHeader(tx, hash, number.Uint64())
-	if nil == header {
-		return nil
-	}
-	bc.headerCache.Add(hash, header)
-	return header
-}
-
-func (bc *BlockChain) GetHeaderByHash(h types.Hash) (block.IHeader, error) {
-	number := bc.GetBlockNumber(h)
-	if number == nil {
-		return nil, nil
-	}
-
-	return bc.GetHeader(h, uint256.NewInt(*number)), nil
-}
-
-// GetCanonicalHash returns the canonical hash for a given block number
-func (bc *BlockChain) GetCanonicalHash(number *uint256.Int) types.Hash {
-	//block, err := bc.GetBlockByNumber(number)
-	//if nil != err {
-	//	return types.Hash{}
-	//}
-	//
-	//return block.Hash()
-	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
-		return types.Hash{}
-	}
-	defer tx.Rollback()
-
-	hash, err := rawdb.ReadCanonicalHash(tx, number.Uint64())
-	if nil != err {
-		return types.Hash{}
-	}
-	return hash
-}
-
-// GetBlockNumber retrieves the block number belonging to the given hash
-// from the cache or database
-func (bc *BlockChain) GetBlockNumber(hash types.Hash) *uint64 {
-	if cached, ok := bc.numberCache.Get(hash); ok {
-		return &cached
-	}
-	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
-		return nil
-	}
-	defer tx.Rollback()
-	number := rawdb.ReadHeaderNumber(tx, hash)
-	if number != nil {
-		bc.numberCache.Add(hash, *number)
-	}
-	return number
-}
-
-func (bc *BlockChain) GetBlockByHash(h types.Hash) (block.IBlock, error) {
-	number := bc.GetBlockNumber(h)
-	if nil == number {
-		return nil, errBlockDoesNotExist
-	}
-	return bc.GetBlock(h, *number), nil
-}
-
-func (bc *BlockChain) GetBlockByNumber(number *uint256.Int) (block.IBlock, error) {
-	var hash types.Hash
-	bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-		hash, _ = rawdb.ReadCanonicalHash(tx, number.Uint64())
-		return nil
-	})
-
-	if hash == (types.Hash{}) {
-		return nil, nil
-	}
-	return bc.GetBlock(hash, number.Uint64()), nil
-}
+// GetHeader, GetHeaderByNumber, GetHeaderByHash, GetCanonicalHash,
+// GetBlockNumber, GetBlockByHash, GetBlockByNumber - see blockchain_reader.go
 
 func (bc *BlockChain) NewBlockHandler(payload []byte, peer peer.ID) error {
 
@@ -524,76 +374,13 @@ func (bc *BlockChain) NewBlockHandler(payload []byte, peer peer.ID) error {
 	return nil
 }
 
-func (bc *BlockChain) SetEngine(engine consensus.Engine) {
-	bc.engine = engine
+func (bc *BlockChain) SetEngine(engine interface{}) {
+	if e, ok := engine.(consensus.Engine); ok {
+		bc.engine = e
+	}
 }
 
-func (bc *BlockChain) GetBlocksFromHash(hash types.Hash, n int) (blocks []block.IBlock) {
-	var number *uint64
-	if num, ok := bc.numberCache.Get(hash); ok {
-		number = &num
-	} else {
-		bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-			number = rawdb.ReadHeaderNumber(tx, hash)
-			return nil
-		})
-		if number == nil {
-			return nil
-		}
-		bc.numberCache.Add(hash, *number)
-	}
-
-	for i := 0; i < n; i++ {
-		blk := bc.GetBlock(hash, *number)
-		if blk == nil {
-			break
-		}
-
-		blocks = append(blocks, blk)
-		hash = blk.ParentHash()
-		*number--
-	}
-	return blocks
-}
-
-func (bc *BlockChain) GetBlock(hash types.Hash, number uint64) block.IBlock {
-	if hash == (types.Hash{}) {
-		return nil
-	}
-
-	if blk, ok := bc.blockCache.Get(hash); ok {
-		return blk
-	}
-
-	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
-		return nil
-	}
-	defer tx.Rollback()
-	blk := rawdb.ReadBlock(tx, hash, number)
-	if blk == nil {
-		return nil
-	}
-	bc.blockCache.Add(hash, blk)
-	return blk
-	//header, err := rawdb.ReadHeaderByHash(tx, hash)
-	//if err != nil {
-	//	return nil
-	//}
-	//
-	//if hash != header.Hash() {
-	//	log.Error("Failed to get block, the hash is differ", "hash", hash.String(), "headerHash", header.Hash().String())
-	//	return nil
-	//}
-	//
-	//body, err := rawdb.ReadBlockByHash(tx, header.Hash())
-	//if err != nil {
-	//	log.Error("Failed to get block body", "err", err)
-	//	return nil
-	//}
-
-	//return block.NewBlock(header, body.Transactions())
-}
+// GetBlocksFromHash, GetBlock - see blockchain_reader.go
 
 func (bc *BlockChain) SealedBlock(b block.IBlock) error {
 	pbBlock := b.ToProtoMessage()
@@ -611,64 +398,7 @@ func (bc *BlockChain) insertStopped() bool {
 	return atomic.LoadInt32(&bc.procInterrupt) == 1
 }
 
-// HasBlockAndState
-func (bc *BlockChain) HasBlockAndState(hash types.Hash, number uint64) bool {
-	blk := bc.GetBlock(hash, number)
-	if blk == nil {
-		return false
-	}
-	return bc.HasState(blk.Hash())
-}
-
-// HasState
-func (bc *BlockChain) HasState(hash types.Hash) bool {
-	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
-		return false
-	}
-	defer tx.Rollback()
-	is, err := rawdb.IsCanonicalHash(tx, hash)
-	if nil != err {
-		return false
-	}
-	return is
-}
-
-func (bc *BlockChain) HasBlock(hash types.Hash, number uint64) bool {
-	var flag bool
-	if bc.blockCache.Contains(hash) {
-		return true
-	}
-
-	bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-		flag = rawdb.HasHeader(tx, hash, number)
-		return nil
-	})
-
-	return flag
-}
-
-// GetTd
-func (bc *BlockChain) GetTd(hash types.Hash, number *uint256.Int) *uint256.Int {
-
-	if td, ok := bc.tdCache.Get(hash); ok {
-		return td
-	}
-
-	var td *uint256.Int
-	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-
-		ptd, err := rawdb.ReadTd(tx, hash, number.Uint64())
-		if nil != err {
-			return err
-		}
-		td = ptd
-		return nil
-	})
-
-	bc.tdCache.Add(hash, td)
-	return td
-}
+// HasBlockAndState, HasState, HasBlock, GetTd - see blockchain_reader.go
 
 func (bc *BlockChain) skipBlock(err error) bool {
 	if !errors.Is(err, ErrKnownBlock) {
@@ -1097,10 +827,15 @@ func (bc *BlockChain) WriteBlockWithoutState(blk block.IBlock) (err error) {
 	})
 }
 
-func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) error {
+func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs interface{}, nopay map[types.Address]*uint256.Int) error {
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
-	_, err := bc.writeBlockWithState(blk, receipts, ibs, nopay)
+	// Type assert to *state.IntraBlockState
+	stateDB, ok := ibs.(*state.IntraBlockState)
+	if !ok {
+		return fmt.Errorf("WriteBlockWithState: ibs must be *state.IntraBlockState")
+	}
+	_, err := bc.writeBlockWithState(blk, receipts, stateDB, nopay)
 	return err
 }
 
@@ -1316,7 +1051,14 @@ func (bc *BlockChain) writeKnownBlock(tx kv.RwTx, block block.IBlock) error {
 // potential missing transactions and post an event about them.
 // Note the new head block won't be processed here, callers need to handle it
 // externally.
+//
+// Audit: This function is instrumented with reorg audit logging.
+// See ReorgAudit for configuration and statistics.
 func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
+	// Start audit tracking
+	audit := GetReorgAudit()
+	auditEvent := audit.StartReorg(oldBlock, newBlock)
+
 	var (
 		newChain    block.Blocks
 		oldChain    block.Blocks
@@ -1325,6 +1067,12 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 		deletedTxs []types.Hash
 		addedTxs   []types.Hash
 	)
+
+	// Defer audit completion
+	defer func() {
+		audit.EndReorg(auditEvent, commonBlock, oldChain, newChain, len(deletedTxs), len(addedTxs), nil)
+	}()
+
 	// Reduce the longer chain to the same number as the shorter one
 	if oldBlock.Number64().Uint64() > newBlock.Number64().Uint64() {
 		// Old chain is longer, gather all transactions and logs as deleted ones
@@ -1455,37 +1203,4 @@ func (bc *BlockChain) Close() error {
 	return nil
 }
 
-func (bc *BlockChain) Quit() <-chan struct{} {
-	return bc.ctx.Done()
-}
-
-func (bc *BlockChain) DB() kv.RwDB {
-	return bc.ChainDB
-}
-
-func (bc *BlockChain) StateAt(tx kv.Tx, blockNr uint64) *state.IntraBlockState {
-	reader := state.NewPlainState(tx, blockNr+1)
-	return state.New(reader)
-}
-
-func (bc *BlockChain) GetDepositInfo(address types.Address) (*uint256.Int, *uint256.Int) {
-	var info *deposit.Info
-	bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-		info = deposit.GetDepositInfo(tx, address)
-		return nil
-	})
-	if nil == info {
-		return nil, nil
-	}
-	return info.RewardPerBlock, info.MaxRewardPerEpoch
-}
-
-func (bc *BlockChain) GetAccountRewardUnpaid(account types.Address) (*uint256.Int, error) {
-	var value *uint256.Int
-	var err error
-	bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-		value, err = rawdb.GetAccountReward(tx, account)
-		return nil
-	})
-	return value, err
-}
+// Quit, DB, StateAt, GetDepositInfo, GetAccountRewardUnpaid - see blockchain_reader.go

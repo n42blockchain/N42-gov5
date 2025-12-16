@@ -98,9 +98,11 @@ func (r *HistoryStateReader) ReadAccountCode(address types.Address, incarnation 
 	}
 	var val []byte
 	v, err := r.tx.GetOne(modules.Code, codeHash[:])
-	if err != nil || len(v) == 0 {
-		panic(err)
+	if err != nil {
 		return nil, err
+	}
+	if len(v) == 0 {
+		return nil, nil
 	}
 	val = types.CopyBytes(v)
 	return val, nil

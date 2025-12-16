@@ -24,9 +24,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
 )
 
 func tmpKeyStoreIface(t *testing.T, encrypted bool) (dir string, ks keyStore) {
@@ -135,7 +135,7 @@ func TestV3_PBKDF2_1(t *testing.T) {
 var testsSubmodule = filepath.Join("..", "..", "tests", "testdata", "KeyStoreTests")
 
 func skipIfSubmoduleMissing(t *testing.T) {
-	if !common.FileExist(testsSubmodule) {
+	if !avmutil.FileExist(testsSubmodule) {
 		t.Skipf("can't find JSON tests from submodule at %s", testsSubmodule)
 	}
 }
@@ -220,7 +220,7 @@ func testDecryptV1(test KeyStoreTestV1, t *testing.T) {
 
 func loadKeyStoreTestV3(file string, t *testing.T) map[string]KeyStoreTestV3 {
 	tests := make(map[string]KeyStoreTestV3)
-	err := common.LoadJSON(file, &tests)
+	err := avmutil.LoadJSON(file, &tests)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func loadKeyStoreTestV3(file string, t *testing.T) map[string]KeyStoreTestV3 {
 
 func loadKeyStoreTestV1(file string, t *testing.T) map[string]KeyStoreTestV1 {
 	tests := make(map[string]KeyStoreTestV1)
-	err := common.LoadJSON(file, &tests)
+	err := avmutil.LoadJSON(file, &tests)
 	if err != nil {
 		t.Fatal(err)
 	}

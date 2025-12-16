@@ -957,14 +957,20 @@ func (s *BlockChainAPI) MinedBlock(ctx context.Context, address types.Address) (
 		for {
 			select {
 			case b := <-entire:
+				// Type assert Entire from interface{} to *state.EntireCode
+				entireCode, ok := b.Entire.(state.EntireCode)
+				if !ok {
+					log.Warn("MinedEntireEvent.Entire is not state.EntireCode")
+					continue
+				}
 				var pushData state.EntireCode
-				pushData.Entire = b.Entire.Entire.Clone()
+				pushData.Entire = entireCode.Entire.Clone()
 				pushData.Entire.Header.Root = types.Hash{}
-				pushData.Headers = b.Entire.Headers
-				pushData.Codes = b.Entire.Codes
-				pushData.Rewards = b.Entire.Rewards
-				pushData.CoinBase = b.Entire.CoinBase
-				log.Trace("send mining block", "addr", address, "blockNr", b.Entire.Entire.Header.Number.Hex(), "blockTime", time.Unix(int64(b.Entire.Entire.Header.Time), 0).Format(time.RFC3339))
+				pushData.Headers = entireCode.Headers
+				pushData.Codes = entireCode.Codes
+				pushData.Rewards = entireCode.Rewards
+				pushData.CoinBase = entireCode.CoinBase
+				log.Trace("send mining block", "addr", address, "blockNr", entireCode.Entire.Header.Number.Hex(), "blockTime", time.Unix(int64(entireCode.Entire.Header.Time), 0).Format(time.RFC3339))
 				notifier.Notify(rpcSub.ID, pushData)
 			case <-rpcSub.Err():
 				blocksSub.Unsubscribe()

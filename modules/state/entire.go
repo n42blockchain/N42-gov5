@@ -109,10 +109,10 @@ type Item struct {
 type Snapshot struct {
 	Items     Items          `json:"items"`
 	OutHash   types.Hash     `json:"outHash"`
-	accounts  map[string]int `json:"accounts"`
-	storage   map[string]int `json:"storage"`
-	written   bool           `json:"written"`
-	getOneFun GetOneFun      `json:"getOneFun"`
+	accounts  map[string]int // internal use only
+	storage   map[string]int // internal use only
+	written   bool           // internal use only
+	getOneFun GetOneFun      // internal use only
 }
 
 func NewWritableSnapshot() *Snapshot {

@@ -20,7 +20,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
-	"github.com/n42blockchain/N42/modules/state"
 )
 
 // NewLocalTxsEvent local txs
@@ -54,6 +53,10 @@ type ChainHighestBlock struct {
 	Block    block.Block
 	Inserted bool
 }
+
+// MinedEntireEvent is sent when a block is mined with its entire state.
+// Entire field uses interface{} to avoid dependency on modules/state.
+// At runtime, this will be a *state.EntireCode from modules/state package.
 type MinedEntireEvent struct {
-	Entire state.EntireCode
+	Entire interface{}
 }

@@ -69,7 +69,7 @@ func (p *peersInfo) findPeers(number *uint256.Int, count int) common.PeerSet {
 	return set
 }
 
-func (p peersInfo) get(id peer.ID) (common.Peer, bool) {
+func (p *peersInfo) get(id peer.ID) (common.Peer, bool) {
 	peer, ok := p.peers[id]
 	return peer, ok
 }
