@@ -28,6 +28,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -251,7 +252,9 @@ func (b *API) GetEVM(ctx context.Context, msg *transaction.Message, state *state
 		h := b.bc.GetHeader(hash, uint256.NewInt(n))
 		return h.(*types.Header)
 	}
-	context := internal.NewEVMBlockContext(header, internal.GetHashFn(header, getHeader), b.bc.Engine(), nil)
+	// Type assert Engine from interface{} to consensus.Engine
+	engine, _ := b.bc.Engine().(consensus.Engine)
+	context := internal.NewEVMBlockContext(header, internal.GetHashFn(header, getHeader), engine, nil)
 	return vm.NewEVM(context, txContext, state, b.bc.Config(), *vmConfig), state.Error, nil
 }
 
@@ -517,7 +520,9 @@ func (eth *API) StateAtBlock(ctx context.Context, tx kv.Tx, blk *types.Block) (s
 	// The state is available in live database, create a reference
 	// on top to prevent garbage collection and return a release
 	// function to deref it.
-	statedb = eth.BlockChain().StateAt(tx, origin)
+	// Type assert StateAt result from interface{} to *state.IntraBlockState
+	stateIface := eth.BlockChain().StateAt(tx, origin)
+	statedb, _ = stateIface.(*state.IntraBlockState)
 	//statedb.Database().TrieDB().Reference(block.Root(), common.Hash{})
 	return statedb, nil
 	//}

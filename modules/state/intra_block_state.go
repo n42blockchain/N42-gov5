@@ -19,23 +19,27 @@ package state
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/hash"
-
-	"github.com/n42blockchain/N42/common/transaction"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/rlp"
-	"github.com/n42blockchain/N42/log"
-	"golang.org/x/crypto/sha3"
 	"sort"
 	"unsafe"
 
 	"github.com/holiman/uint256"
+	"golang.org/x/crypto/sha3"
 
+	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/hash"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 )
+
+// Compile-time check: IntraBlockState must implement common.StateDB
+// This ensures that IntraBlockState has all methods required by the EVM.
+var _ common.StateDB = (*IntraBlockState)(nil)
 
 type revision struct {
 	id           int

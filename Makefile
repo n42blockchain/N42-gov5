@@ -145,3 +145,187 @@ open-output:
 	open ./mobile
 
 #== mobiles end
+
+.PHONY: build test test-short race-core fmt vet lint bench-smoke ci
+.PHONY: race bench cover check install tidy help test-cover test-verbose
+
+# =============================================================================
+# 核心目标 (Core Targets)
+# =============================================================================
+
+# 全仓编译（不触发 go mod tidy）
+build: go-version
+	@echo "==> go build ./..."
+	$(GO) build $(GO_FLAGS) ./...
+
+# 全仓测试（不触发 go mod tidy）
+test: go-version
+	@echo "==> go test ./..."
+	$(GO) test ./...
+
+# 更快的单测（可选）
+test-short: go-version
+	@echo "==> go test -short ./..."
+	$(GO) test -short ./...
+
+# 详细测试输出
+test-verbose: go-version
+	@echo "==> go test -v ./..."
+	$(GO) test -v ./...
+
+# =============================================================================
+# Race 检测 (Race Detection)
+# =============================================================================
+
+# 核心包 race（可按需调整包名）
+RACE_PKGS ?= ./internal/vm ./modules/state ./internal ./internal/sync
+race-core: go-version
+	@echo "==> go test -race $(RACE_PKGS)"
+	$(GO) test -race $(RACE_PKGS)
+
+# 全仓 race 检测（较慢，用于全面检查）
+race: go-version
+	@echo "==> go test -race ./..."
+	$(GO) test -race -timeout 30m ./...
+
+# =============================================================================
+# 代码质量 (Code Quality)
+# =============================================================================
+
+# fmt/vet（轻量、强烈建议）
+fmt:
+	@echo "==> gofmt -w"
+	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
+
+vet:
+	@echo "==> go vet ./..."
+	$(GO) vet ./...
+
+# lint：如果没装 golangci-lint，就给出提示并退出 2（避免"假通过"）
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "golangci-lint not found. Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+		exit 2; \
+	}
+	golangci-lint run ./...
+
+# 组合检查：fmt + vet + lint
+check: fmt vet lint
+	@echo "==> All checks passed!"
+
+# =============================================================================
+# 基准测试 (Benchmarks)
+# =============================================================================
+
+# bench-smoke：最小可重复基线（即便没有 Benchmark 也会正常通过）
+BENCH_PKGS ?= ./modules/state ./internal/vm ./internal
+bench-smoke: go-version
+	@echo "==> go test -bench (smoke) $(BENCH_PKGS)"
+	$(GO) test $(BENCH_PKGS) -run ^$$ -bench . -benchmem -count=1
+
+# 完整基准测试
+bench: go-version
+	@echo "==> go test -bench ./..."
+	$(GO) test -run ^$$ -bench . -benchmem ./...
+
+# =============================================================================
+# 覆盖率 (Coverage)
+# =============================================================================
+
+COVER_PKGS ?= ./internal/... ./modules/... ./pkg/... ./log/... ./conf/...
+
+# 覆盖率测试
+cover: go-version
+	@echo "==> go test -cover $(COVER_PKGS)"
+	$(GO) test -cover $(COVER_PKGS)
+
+# 生成覆盖率报告 (HTML)
+test-cover: go-version
+	@echo "==> Generating coverage report..."
+	@mkdir -p build/coverage
+	$(GO) test -coverprofile=build/coverage/coverage.out $(COVER_PKGS)
+	$(GO) tool cover -html=build/coverage/coverage.out -o build/coverage/coverage.html
+	@echo "==> Coverage report: build/coverage/coverage.html"
+
+# =============================================================================
+# 其他工具 (Utilities)
+# =============================================================================
+
+# 整理依赖
+tidy:
+	@echo "==> go mod tidy"
+	$(GO) mod tidy
+
+# 安装到 $GOPATH/bin
+install: go-version
+	@echo "==> go install ./cmd/n42"
+	$(GO) install $(GO_FLAGS) ./cmd/n42
+
+# =============================================================================
+# CI 目标 (CI Targets)
+# =============================================================================
+
+# 推荐 CI 用这个
+ci: build test vet
+
+# 完整 CI（包含 lint 和 race）
+ci-full: build test vet lint race-core
+
+# =============================================================================
+# 帮助信息 (Help)
+# =============================================================================
+
+help:
+	@echo ""
+	@echo "N42 Makefile 目标:"
+	@echo ""
+	@echo "  构建 (Build):"
+	@echo "    n42           - 编译 n42 二进制文件 (带依赖检查)"
+	@echo "    build         - 全仓编译 (不触发 go mod tidy)"
+	@echo "    install       - 安装到 \$$GOPATH/bin"
+	@echo "    clean         - 清理构建产物"
+	@echo ""
+	@echo "  测试 (Test):"
+	@echo "    test          - 运行全部测试"
+	@echo "    test-short    - 快速测试 (-short 标志)"
+	@echo "    test-verbose  - 详细测试输出"
+	@echo "    test-cover    - 生成覆盖率报告 (HTML)"
+	@echo "    cover         - 显示覆盖率摘要"
+	@echo ""
+	@echo "  Race 检测:"
+	@echo "    race          - 全仓 race 检测 (较慢)"
+	@echo "    race-core     - 核心包 race 检测"
+	@echo ""
+	@echo "  代码质量:"
+	@echo "    fmt           - 格式化代码 (gofmt)"
+	@echo "    vet           - 静态分析 (go vet)"
+	@echo "    lint          - Lint 检查 (golangci-lint)"
+	@echo "    check         - 组合检查 (fmt + vet + lint)"
+	@echo ""
+	@echo "  基准测试:"
+	@echo "    bench         - 完整基准测试"
+	@echo "    bench-smoke   - 快速基准测试 (核心包)"
+	@echo ""
+	@echo "  CI:"
+	@echo "    ci            - 标准 CI (build + test + vet)"
+	@echo "    ci-full       - 完整 CI (+ lint + race)"
+	@echo ""
+	@echo "  其他:"
+	@echo "    deps          - 安装依赖 (go mod tidy)"
+	@echo "    tidy          - 整理依赖"
+	@echo "    devtools      - 安装开发工具"
+	@echo "    gen           - 生成代码"
+	@echo "    help          - 显示此帮助信息"
+	@echo ""
+	@echo "  Docker:"
+	@echo "    images        - 构建 Docker 镜像"
+	@echo "    up            - 启动 Docker Compose"
+	@echo "    down          - 停止并清理 Docker"
+	@echo "    stop          - 停止 Docker"
+	@echo "    start         - 启动 Docker"
+	@echo ""
+	@echo "  Mobile:"
+	@echo "    mobile        - 构建移动端 (Android + iOS)"
+	@echo "    android       - 构建 Android"
+	@echo "    ios           - 构建 iOS"
+	@echo ""

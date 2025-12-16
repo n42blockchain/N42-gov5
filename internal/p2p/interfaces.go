@@ -2,6 +2,7 @@ package p2p
 
 import (
 	"context"
+
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -17,6 +18,29 @@ import (
 )
 
 // P2P represents the full p2p interface composed of all of the sub-interfaces.
+// This is the main entry point for p2p functionality in the N42 node.
+//
+// Implementations:
+//   - *Service: The concrete p2p service implementation in service.go
+//
+// Sub-interfaces:
+//   - Broadcaster: Message broadcasting via gossipsub
+//   - SetStreamHandler: Stream protocol handling
+//   - PubSubProvider: Access to the underlying pubsub instance
+//   - PubSubTopicUser: Topic join/leave/publish/subscribe operations
+//   - SenderEncoder: Message encoding and sending to specific peers
+//   - PeerManager: Peer lifecycle management (disconnect, ENR, discovery)
+//   - ConnectionHandler: Connection/disconnection event handling
+//   - PeersProvider: Access to peer status information
+//   - PingProvider: Ping/pong protocol for liveness checking
+//
+// Usage:
+//
+//	p2pService, err := p2p.NewService(ctx, genesisHash, cfg, nodeCfg)
+//	p2pService.Start()
+//	defer p2pService.Stop()
+//
+// For sync-specific operations, use the SyncP2P interface instead.
 type P2P interface {
 	Broadcaster
 	SetStreamHandler
@@ -101,3 +125,10 @@ type PingProvider interface {
 	GetPing() *sync_pb.Ping
 	IncSeqNumber()
 }
+
+// =============================================================================
+// Compile-time interface checks
+// =============================================================================
+
+// Compile-time check: Service must implement P2P
+var _ P2P = (*Service)(nil)

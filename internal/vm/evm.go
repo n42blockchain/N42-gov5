@@ -31,8 +31,18 @@ var emptyCodeHash = crypto.Keccak256Hash(nil)
 
 // PrecompileRegistry is the interface for precompile lookup.
 // Used for dependency injection to avoid global state.
+//
+// Implementations:
+//   - precompiles.Registry (recommended): Full implementation with metrics
+//   - precompiles.FromLegacyMap: Adapter for legacy precompile maps
 type PrecompileRegistry interface {
+	// Lookup returns the precompiled contract at the given address.
+	// Returns nil, false if no precompile exists at that address.
 	Lookup(addr types.Address) (PrecompiledContract, bool)
+
+	// ActivePrecompiles returns the list of active precompile addresses.
+	// Used for preparing access lists (EIP-2930).
+	ActivePrecompiles() []types.Address
 }
 
 // precompile looks up a precompiled contract by address.

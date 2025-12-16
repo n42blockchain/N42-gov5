@@ -28,9 +28,9 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/accounts"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 )
 
@@ -62,7 +62,7 @@ func TestKeyStore(t *testing.T) {
 	if err := ks.Delete(a, "bar"); err != nil {
 		t.Errorf("Delete error: %v", err)
 	}
-	if common.FileExist(a.URL.Path) {
+	if avmutil.FileExist(a.URL.Path) {
 		t.Errorf("account file %s should be gone after Delete", a.URL)
 	}
 	if ks.HasAddress(a.Address) {

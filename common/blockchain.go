@@ -22,22 +22,24 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/consensus"
-	"github.com/n42blockchain/N42/modules/state"
 )
 
-// IHeaderChain provides header chain operations not covered by consensus.ChainHeaderReader.
-// Note: GetHeaderByNumber, GetHeaderByHash, and GetBlockByNumber are now in ChainHeaderReader.
+// IHeaderChain provides header chain operations not covered by ChainHeaderReader.
 type IHeaderChain interface {
 	InsertHeader(headers []block.IHeader) (int, error)
 	GetBlockByHash(h types.Hash) (block.IBlock, error)
 }
 
-// IBlockChain is the main blockchain interface that embeds consensus.ChainHeaderReader
-// to ensure compatibility with consensus engine requirements.
+// IBlockChain is the main blockchain interface.
+// It embeds ChainHeaderReader (defined in common/engine.go) to ensure
+// compatibility with consensus engine requirements.
+//
+// Note: This interface uses common layer types only, avoiding dependencies
+// on internal/consensus or modules/state packages. Engine-related methods
+// use interface{} to allow flexibility with different consensus implementations.
 type IBlockChain interface {
 	IHeaderChain
-	consensus.ChainHeaderReader // Embed consensus interface for type safety
+	ChainHeaderReader // Defined in common/engine.go
 
 	Blocks() []block.IBlock
 	Start() error
@@ -45,10 +47,20 @@ type IBlockChain interface {
 	NewBlockHandler(payload []byte, peer peer.ID) error
 	InsertChain(blocks []block.IBlock) (int, error)
 	InsertBlock(blocks []block.IBlock, isSync bool) (int, error)
-	SetEngine(engine consensus.Engine)
+	
+	// SetEngine sets the consensus engine.
+	// Accepts interface{} to avoid dependency on internal/consensus.
+	// At runtime, this should be a consensus.Engine from internal/consensus.
+	SetEngine(engine interface{})
+	
 	GetBlocksFromHash(hash types.Hash, n int) (blocks []block.IBlock)
 	SealedBlock(b block.IBlock) error
-	Engine() consensus.Engine
+	
+	// Engine returns the consensus engine.
+	// Returns interface{} to avoid dependency on internal/consensus.
+	// At runtime, this returns a consensus.Engine from internal/consensus.
+	Engine() interface{}
+	
 	GetReceipts(blockHash types.Hash) (block.Receipts, error)
 	GetLogs(blockHash types.Hash) ([][]*block.Log, error)
 	SetHead(head uint64) error
@@ -56,7 +68,11 @@ type IBlockChain interface {
 
 	// GetBlock retrieves a block by hash and number
 	GetBlock(hash types.Hash, number uint64) block.IBlock
-	StateAt(tx kv.Tx, blockNr uint64) *state.IntraBlockState
+
+	// StateAt returns the state database at a given block number.
+	// Returns interface{} to avoid dependency on modules/state.
+	// At runtime, this returns a *state.IntraBlockState from modules/state.
+	StateAt(tx kv.Tx, blockNr uint64) interface{}
 
 	HasBlock(hash types.Hash, number uint64) bool
 
@@ -65,9 +81,13 @@ type IBlockChain interface {
 
 	Close() error
 
-	WriteBlockWithState(block block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) error
+	// WriteBlockWithState writes a block with its state to the database.
+	// Uses interface{} to avoid dependency on modules/state.
+	// At runtime, ibs should be a *state.IntraBlockState from modules/state.
+	WriteBlockWithState(block block.IBlock, receipts []*block.Receipt, ibs interface{}, nopay map[types.Address]*uint256.Int) error
 }
 
+// IMiner defines the miner interface.
 type IMiner interface {
 	Start()
 	PendingBlockAndReceipts() (block.IBlock, block.Receipts)

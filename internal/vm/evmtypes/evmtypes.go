@@ -1,11 +1,12 @@
 package evmtypes
 
 import (
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/transaction"
 	"math/big"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	libcommon "github.com/n42blockchain/N42/common/types"
 )
 
@@ -31,8 +32,8 @@ type BlockContext struct {
 	PrevRanDao  *libcommon.Hash   // Provides information for PREVRANDAO
 
 	// EIP-4844: Blob gas fields (Cancun)
-	BlobBaseFee *uint256.Int        // Provides information for BLOBBASEFEE
-	ExcessBlobGas uint64            // Excess blob gas for EIP-4844
+	BlobBaseFee   *uint256.Int // Provides information for BLOBBASEFEE
+	ExcessBlobGas uint64       // Excess blob gas for EIP-4844
 }
 
 // TxContext provides the EVM with information about a transaction.
@@ -58,55 +59,38 @@ type (
 )
 
 // IntraBlockState is an EVM database for full state querying.
-type IntraBlockState interface {
-	CreateAccount(libcommon.Address, bool)
+// This is a type alias for common.StateDB to ensure consistency
+// across the codebase while maintaining backward compatibility.
+//
+// The actual implementation is modules/state.IntraBlockState.
+// All EVM operations should use this interface for state access.
+type IntraBlockState = common.StateDB
 
-	SubBalance(libcommon.Address, *uint256.Int)
-	AddBalance(libcommon.Address, *uint256.Int)
-	GetBalance(libcommon.Address) *uint256.Int
+// Deprecated type aliases for backward compatibility.
+// These ensure existing code continues to work without modification.
+// New code should use the types from common package directly.
+var (
+	_ IntraBlockState = (common.StateDB)(nil) // Type check
+)
 
-	GetNonce(libcommon.Address) uint64
-	SetNonce(libcommon.Address, uint64)
+// Legacy interface kept for documentation purposes.
+// The actual interface is now defined in common/state_types.go as StateDB.
+//
+// Methods include:
+//   - Account: CreateAccount, Exist, Empty
+//   - Balance: SubBalance, AddBalance, GetBalance
+//   - Nonce: GetNonce, SetNonce
+//   - Code: GetCodeHash, GetCode, SetCode, GetCodeSize
+//   - Refund: AddRefund, SubRefund, GetRefund
+//   - Storage: GetCommittedState, GetState, SetState
+//   - Self-destruct: Selfdestruct, HasSelfdestructed
+//   - Access List (EIP-2930): PrepareAccessList, AddressInAccessList, SlotInAccessList, AddAddressToAccessList, AddSlotToAccessList
+//   - Snapshot: Snapshot, RevertToSnapshot
+//   - Logging: AddLog
+//   - Transient Storage (EIP-1153): GetTransientState, SetTransientState
 
-	GetCodeHash(libcommon.Address) libcommon.Hash
-	GetCode(libcommon.Address) []byte
-	SetCode(libcommon.Address, []byte)
-	GetCodeSize(libcommon.Address) int
+// Re-export block.Log for convenience
+type Log = block.Log
 
-	AddRefund(uint64)
-	SubRefund(uint64)
-	GetRefund() uint64
-
-	GetCommittedState(libcommon.Address, *libcommon.Hash, *uint256.Int)
-	GetState(address libcommon.Address, slot *libcommon.Hash, outValue *uint256.Int)
-	SetState(libcommon.Address, *libcommon.Hash, uint256.Int)
-
-	Selfdestruct(libcommon.Address) bool
-	HasSelfdestructed(libcommon.Address) bool
-
-	// Exist reports whether the given account exists in state.
-	// Notably this should also return true for suicided accounts.
-	Exist(libcommon.Address) bool
-	// Empty returns whether the given account is empty. Empty
-	// is defined according to EIP161 (balance = nonce = code = 0).
-	Empty(libcommon.Address) bool
-
-	PrepareAccessList(sender libcommon.Address, dest *libcommon.Address, precompiles []libcommon.Address, txAccesses transaction.AccessList)
-	AddressInAccessList(addr libcommon.Address) bool
-	SlotInAccessList(addr libcommon.Address, slot libcommon.Hash) (addressOk bool, slotOk bool)
-	// AddAddressToAccessList adds the given address to the access list. This operation is safe to perform
-	// even if the feature/fork is not active yet
-	AddAddressToAccessList(addr libcommon.Address)
-	// AddSlotToAccessList adds the given (address,slot) to the access list. This operation is safe to perform
-	// even if the feature/fork is not active yet
-	AddSlotToAccessList(addr libcommon.Address, slot libcommon.Hash)
-
-	RevertToSnapshot(int)
-	Snapshot() int
-
-	AddLog(*block.Log)
-
-	// EIP-1153: Transient storage (Cancun)
-	GetTransientState(addr libcommon.Address, key libcommon.Hash) uint256.Int
-	SetTransientState(addr libcommon.Address, key libcommon.Hash, value uint256.Int)
-}
+// Re-export transaction.AccessList for convenience
+type AccessList = transaction.AccessList
