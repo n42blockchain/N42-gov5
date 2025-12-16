@@ -168,6 +168,22 @@ const (
 	// up to half the consumed gas could be refunded. Redefined as 1/5th in EIP-3529
 	RefundQuotient        uint64 = 2
 	RefundQuotientEIP3529 uint64 = 5
+
+	// EIP-7702: Set EOA account code (Pectra)
+	// https://eips.ethereum.org/EIPS/eip-7702
+	TxAuthTupleGas uint64 = 12500 // Per auth tuple in authorization list
+
+	// P256 verify precompile (EIP-7212)
+	P256VerifyGas uint64 = 3450 // Gas cost for P256 signature verification
+)
+
+// Pectra gas costs - mutable for testing
+var (
+	// PerAuthBaseCost is the base gas cost per authorization tuple in EIP-7702
+	PerAuthBaseCost uint64 = 2500
+
+	// PerEmptyAccountCost is the gas cost for each newly created account in EIP-7702
+	PerEmptyAccountCost uint64 = 25000
 )
 
 // Gas discount table for BLS12-381 G1 and G2 multi exponentiation operations

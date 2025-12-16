@@ -8,6 +8,111 @@
 
 ### 2024-12-16
 
+#### ✅ 完整账户抽象支持 (Pre-Pectra → Fusaka)
+
+**账户抽象演进路线**:
+| 阶段 | 特性 | 状态 |
+|------|------|------|
+| Pre-Pectra | ERC-4337 EntryPoint | ✅ 已实现 |
+| Pectra | EIP-7702 SetCodeTx | ✅ 已实现 |
+| Osaka | EOF (EVM Object Format) | ✅ 已实现 |
+| Fusaka | Native AA Framework | ✅ 已实现 |
+
+**ERC-4337 支持 (Pre-Pectra)**:
+| 组件 | 说明 |
+|------|------|
+| `EntryPointV06` | v0.6 EntryPoint 地址 |
+| `EntryPointV07` | v0.7 EntryPoint 地址 |
+| `UserOperation` | 用户操作结构 |
+| `UserOperationV07` | v0.7 用户操作结构 |
+| `AccountValidationResult` | 验证结果 |
+| Gas 计算函数 | `CalcPreVerificationGas`, `CalcRequiredPrefund` |
+
+**Pectra EIPs**:
+| EIP | 名称 | 状态 |
+|-----|------|------|
+| EIP-7702 | Set EOA account code | ✅ |
+| EIP-2935 | Historical block hashes | ✅ |
+| EIP-2537 | BLS12-381 precompiles | ✅ |
+| EIP-7251 | Increase MAX_EFFECTIVE_BALANCE | ✅ |
+| EIP-7685 | Execution layer requests | ✅ |
+| EIP-6110 | Validator deposits on chain | ✅ |
+
+**Osaka EOF 支持**:
+| EIP | 名称 | Opcodes |
+|-----|------|---------|
+| EIP-3540 | EOF v1 | Container format |
+| EIP-4200 | Static relative jumps | RJUMP, RJUMPI, RJUMPV |
+| EIP-4750 | Functions | CALLF, RETF, JUMPF |
+| EIP-7480 | Data section access | DATALOAD, DATALOADN, DATASIZE, DATACOPY |
+| EIP-663 | Unlimited SWAP/DUP | DUPN, SWAPN, EXCHANGE |
+| EIP-7620 | Contract creation | EOFCREATE, RETURNCONTRACT |
+
+**Fusaka Native AA**:
+| 组件 | 说明 |
+|------|------|
+| `AAAccount` | 原生 AA 账户结构 |
+| `AATransaction` | 原生 AA 交易结构 |
+| `ValidationRegistry` | 验证处理器注册表 |
+| Validation Modes | Standard, Custom, Multisig, SessionKey |
+| `ExecuteAATransaction` | AA 交易执行函数 |
+
+**新增文件**:
+| 文件 | 说明 |
+|------|------|
+| `internal/vm/erc4337.go` | ERC-4337 EntryPoint 支持 |
+| `internal/vm/erc4337_test.go` | ERC-4337 测试 |
+| `internal/vm/eof.go` | EOF 解析和验证 |
+| `internal/vm/eof_test.go` | EOF 测试 |
+| `internal/vm/eips_osaka.go` | Osaka EIPs 实现 |
+| `internal/vm/native_aa.go` | 原生 AA 框架 |
+| `common/transaction/setcode_tx.go` | EIP-7702 交易类型 |
+| `common/transaction/setcode_tx_test.go` | SetCodeTx 测试 |
+| `internal/vm/eips_pectra.go` | Pectra EIPs |
+| `internal/vm/eips_pectra_test.go` | Pectra 测试 |
+
+**修改文件**:
+| 文件 | 变更 |
+|------|------|
+| `params/config.go` | 添加 PectraTime, OsakaTime, FusakaTime |
+| `internal/vm/jump_table.go` | 添加 pectra, osaka 指令集 |
+| `internal/vm/interpreter.go` | 添加 Pectra, Osaka 选择 |
+| `internal/vm/contract.go` | 添加 EOF 字段 |
+
+**Gas 常量**:
+- `PerAuthBaseCost`: 2500 gas
+- `PerEmptyAccountCost`: 25000 gas
+- `AAValidationBaseGas`: 5000 gas
+- `AAExecutionBaseGas`: 21000 gas
+
+---
+
+#### ✅ VM 测试用例补充 (参考 geth/erigon)
+
+**新增测试文件**:
+| 文件 | 测试数 | 基准数 | 说明 |
+|------|--------|--------|------|
+| `internal/vm/memory_test.go` | 18 | 8 | Memory 结构单元测试 |
+| `internal/vm/contract_test.go` | 12 | 4 | Contract 结构单元测试 |
+| `internal/vm/opcodes_test.go` | 10 | 4 | OpCode 转换和属性测试 |
+| `internal/vm/instructions_test.go` | 25+ | 6 | EVM 指令操作测试 |
+| `internal/vm/interpreter_test.go` | 12 | 3 | 解释器和配置测试 |
+| `internal/vm/runtime/runtime_test.go` | 10 | 3 | 运行时配置测试 |
+
+**覆盖率变化**:
+| 包 | 变化前 | 变化后 |
+|----|--------|--------|
+| `internal/vm` | 8.8% | 14.4% |
+| `internal/vm/runtime` | 0.0% | 37.0% |
+| `internal/vm/stack` | 78.4% | 78.4% |
+| `internal/vm/precompiles` | 75.9% | 75.9% |
+
+**测试参考来源**:
+- go-ethereum/core/vm/*_test.go
+- erigon/core/vm/*_test.go
+
+---
+
 #### 📋 测试补充计划
 
 创建 `docs/TEST_PLAN.md`，包含：

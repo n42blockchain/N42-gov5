@@ -58,6 +58,10 @@ type Contract struct {
 
 	Gas   uint64
 	value *uint256.Int
+
+	// EOF fields
+	EOFContainer *EOFContainer // Parsed EOF container (nil for legacy code)
+	CodeSection  int           // Current code section index (for EOF)
 }
 
 // NewContract returns a new contract environment for the execution of EVM.
