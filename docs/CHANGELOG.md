@@ -6,7 +6,317 @@
 
 ## [未发布] - 开发中
 
+### 2024-12-16
+
+#### 📋 测试补充计划
+
+创建 `docs/TEST_PLAN.md`，包含：
+- 当前测试覆盖率分析
+- 8 阶段分步执行计划
+- 参考 geth/erigon 测试模式
+- 目标：整体覆盖率从 ~15% 提升至 50%+
+
+#### ✅ 补充 Phase 3 & 5: 缺失测试补齐
+
+**Phase 3 (block/tx 核心数据结构)**:
+| 文件 | 测试数 | 覆盖率 |
+|------|--------|--------|
+| `common/block/block_test.go` | 20+/6 | 6.4%→14.0% |
+| `common/transaction/transaction_test.go` | 12+/4 | 新增 |
+
+**Phase 5 (TxPool/Miner)**:
+| 文件 | 测试数 | 覆盖率 |
+|------|--------|--------|
+| `internal/txspool/txspool_test.go` | 10+/4 | 0%→2.0% |
+| `internal/miner/miner_test.go` | 8+/4 | 0%→3.8% |
+
+---
+
+#### ✅ Phase 8: 集成测试和最终覆盖率完成
+
+**新增测试文件**:
+| 文件 | 测试数 | 说明 |
+|------|--------|------|
+| `tests/integration_test.go` | 18+/4 | 跨模块集成测试 |
+
+**最终覆盖率排名 (Top 20)**:
+```
+pkg/errors                     100.0%
+common/crypto/blake2b           94.7%
+internal/p2p/types              94.1%
+common/crypto/bn256/google      91.6%
+common/rlp                      88.9%
+common/crypto/rand              88.9%
+internal/avm/rlp                88.8%
+common/prque                    88.2%
+common/hexutil                  83.5%
+common/crypto/ecies             82.6%
+internal/vm/stack               78.4%
+accounts/keystore               78.1%
+internal/vm/precompiles         75.9%
+common                          70.6%
+log                             69.1%
+internal/consensus              65.8%
+```
+
+**Benchmark 结果摘要**:
+```
+BenchmarkCrossModuleHashOperation    395 ns/op    1 allocs
+BenchmarkGasPoolCycle               0.32 ns/op    0 allocs
+BenchmarkUint256Operations          2.58 ns/op    0 allocs
+BenchmarkTypeConversions            0.32 ns/op    0 allocs
+```
+
+---
+
+#### ✅ Phase 7: 工具/通用测试完成
+
+**覆盖率提升**:
+- `common` 0% → **70.6%**
+- `utils` 6.1% → **31.3%**
+
+**新增测试文件**:
+| 文件 | 测试数 | 说明 |
+|------|--------|------|
+| `common/common_test.go` | 25+/7 | Big/GasPool/PrettyDuration 测试 |
+| `utils/utils_extra_test.go` | 30+/9 | ToBytes/Keccak256/Lock 测试 |
+
+**Benchmark 结果摘要**:
+```
+BenchmarkGasPoolAddGas              0.32 ns/op     0 allocs
+BenchmarkGasPoolString              66.3 ns/op     2 allocs
+BenchmarkPrettyDurationString        119 ns/op     3 allocs
+BenchmarkToBytes4                   0.32 ns/op     0 allocs
+BenchmarkKeccak256                   388 ns/op     1 allocs
+BenchmarkHexPrefix                  3.16 ns/op     0 allocs
+```
+
+---
+
+#### ✅ Phase 6: 核心层测试完成
+
+**覆盖率提升**:
+- `internal` 6.0% → 8.0%
+
+**新增测试文件**:
+| 文件 | 测试数 | 说明 |
+|------|--------|------|
+| `internal/blockchain_test.go` | 20+ | Error/DeriveSha/Pool 测试 |
+| `internal/forkchoice_test.go` | 10+ | ForkChoice/ChainReader 测试 |
+| `internal/evm_test.go` | 15+ | CanTransfer/Transfer 测试 |
+
+**Benchmark 结果摘要**:
+```
+BenchmarkDeriveSha                   10740 ns/op    101 allocs
+BenchmarkHasherPoolGetPut             8.24 ns/op      0 allocs
+BenchmarkCanTransfer                  27.3 ns/op      1 allocs
+BenchmarkTransfer                      220 ns/op      6 allocs
+BenchmarkNewForkChoice               11866 ns/op      6 allocs
+BenchmarkTDComparison                 1.25 ns/op      0 allocs
+```
+
+---
+
+#### ✅ Phase 5: P2P/同步层测试完成
+
+**覆盖率提升**:
+- `internal/p2p/types` 0% → 94.1%
+- `internal/sync` 13.7% → 13.8%
+- `internal/p2p` 8.0% (保持)
+
+**新增测试文件**:
+| 文件 | 测试数 | 说明 |
+|------|--------|------|
+| `internal/p2p/types/types_test.go` | 25+ | SSZ/Goodbye/Error 测试 |
+| `internal/sync/sync_test.go` | 5+ | Response Code 测试 |
+
+**Benchmark 结果摘要**:
+```
+BenchmarkSSZBytesHashTreeRoot        2694 ns/op    0 allocs
+BenchmarkBlockByRootsReqMarshalSSZ   489.8 ns/op   1 allocs
+BenchmarkErrorMessageMarshalSSZ      14.98 ns/op   1 allocs
+```
+
+---
+
+#### ✅ Phase 4: 共识层测试完成
+
+**覆盖率提升**:
+- `internal/consensus/misc` 25.5% → 30.7%
+- `internal/consensus/apoa` 0% → 测试结构
+- `internal/consensus/apos` 0% → 0.1%
+- `internal/consensus` 65.8% (保持)
+
+**新增测试文件**:
+| 文件 | 测试数 | 说明 |
+|------|--------|------|
+| `misc/consensus_misc_test.go` | 15+ | 常量/GasLimit/Error 测试 |
+| `apoa/apoa_test.go` | 15+ | Vote/Tally/Snapshot 测试 |
+| `apos/apos_test.go` | 15+ | Vote/Faker/API 测试 |
+
+**Benchmark 结果摘要**:
+```
+BenchmarkVoteCreation           0.32 ns/op   0 allocs
+BenchmarkSnapshotSignerLookup   8.59 ns/op   0 allocs
+BenchmarkVerifyGaslimitCheck    2.08 ns/op   0 allocs
+BenchmarkNewFaker               0.32 ns/op   0 allocs
+```
+
+---
+
+#### ✅ Phase 3: VM 层测试完成
+
+**覆盖率提升**:
+- `internal/vm` 7.6% → 8.8%
+- `internal/vm/stack` 0% → 78.4%
+- `internal/vm/precompiles` 75.9% (保持)
+
+**新增测试文件**:
+| 文件 | 测试数 | 说明 |
+|------|--------|------|
+| `internal/vm/vm_test.go` | 30+ | Gas/Memory/Data 测试 |
+| `internal/vm/stack/stack_test.go` | 20+ | Stack/ReturnStack 测试 |
+
+**Benchmark 结果摘要**:
+```
+BenchmarkStackPush             2.19 ns/op   0 allocs
+BenchmarkStackPop              4.71 ns/op   0 allocs
+BenchmarkStackPeek             0.37 ns/op   0 allocs
+BenchmarkCalcMemSize64         2.12 ns/op   0 allocs
+BenchmarkCallGasEIP150         2.14 ns/op   0 allocs
+```
+
+---
+
+#### ✅ Phase 2: 数据层测试完成
+
+**覆盖率提升**:
+- `modules/state` 6.7% → 10.3%
+- `modules/rawdb` 3.1% (schema/key 函数)
+
+**新增测试文件**:
+| 文件 | 测试数 | 说明 |
+|------|--------|------|
+| `modules/rawdb/accessors_test.go` | 12+ | Key 生成/一致性测试 |
+| `modules/rawdb/bench_test.go` | 11 | 性能基准测试 |
+| `modules/state/state_test.go` | 20+ | AccessList/Journal/Account 测试 |
+
+**Benchmark 结果摘要**:
+```
+BenchmarkHeaderKeyGen              0.39 ns/op   0 allocs
+BenchmarkAccessListAddAddress      8.57 ns/op   0 allocs
+BenchmarkTransientStorageSet      30.54 ns/op   0 allocs
+BenchmarkTransientStorageGet      23.80 ns/op   0 allocs
+```
+
+---
+
+#### ✅ Phase 1: API 层测试完成
+
+**覆盖率提升**: `internal/api` 2.5% → 5.5%
+
+**新增测试文件**:
+| 文件 | 测试数 | 说明 |
+|------|--------|------|
+| `eth_methods_test.go` | 20+ | eth 方法测试 |
+| `debug_trace_test.go` | 15+ | 追踪方法测试 |
+| `rpc_extra_test.go` | 25+ | 额外命名空间测试 |
+| `api_bench_test.go` | 26 | 性能基准测试 |
+
+**Benchmark 结果摘要**:
+```
+BenchmarkRPCTransactionMarshal     2351 ns/op
+BenchmarkAddrLockerLockUnlock      45.30 ns/op
+BenchmarkMemStats                  19967 ns/op
+BenchmarkNodeInfo                  45.37 ns/op
+```
+
+---
+
 ### 2024-12-15
+
+#### 🔌 RPC API 补齐 - 完整命名空间支持
+
+**RPC 计划全部完成 ✅**
+
+| Step | 内容 | 状态 |
+|------|------|------|
+| Step 1 | eth 基础方法 | ✅ 完成 |
+| Step 2 | eth 交易签名/原始数据 | ✅ 完成 |
+| Step 3 | eth 高级查询 | ✅ 完成 |
+| Step 4 | debug 追踪 | ✅ 完成 |
+| Step 5 | debug 辅助 | ✅ 完成 |
+| Step 6 | admin (PoA 适用部分) | ✅ 完成 |
+
+**新增命名空间 (rpc_extra.go)：**
+| 命名空间 | 方法 | 说明 |
+|----------|------|------|
+| `admin_*` | nodeInfo, peers, datadir, addPeer, removePeer | 节点管理 |
+| `personal_*` | listAccounts, listWallets | 账户管理 (默认禁用) |
+| `miner_*` | start, stop, mining, setEtherbase | 挖矿控制 (PoA 兼容) |
+| `rpc_*` | modules | RPC 模块信息 |
+| `txpool_*` | contentFrom | 按地址查询交易池 |
+| `eth_*` | protocolVersion | 协议版本 |
+| `web3_*` | version | 客户端版本 |
+
+**debug 方法 (debug_trace.go + rpc_extra.go)：**
+| 方法 | 说明 |
+|------|------|
+| `debug_traceTransaction` | 追踪交易执行 |
+| `debug_traceBlockByNumber/Hash` | 追踪区块 |
+| `debug_traceCall` | 追踪 call 执行 |
+| `debug_getBadBlocks` | 获取坏块列表 |
+| `debug_storageRangeAt` | 存储范围查询 |
+| `debug_accountRange` | 账户范围查询 |
+| `debug_getBlockRlp/getHeaderRlp` | 获取 RLP 数据 |
+| `debug_printBlock` | 打印区块信息 |
+| `debug_memStats/gcStats/stacks` | 运行时调试 |
+
+**新增文件：**
+- `internal/api/rpc_extra.go` (~430 行)
+- `internal/api/debug_trace.go` (~720 行)
+- `internal/api/eth_raw.go` (~330 行)
+
+**更新文件：**
+- `internal/api/router.go` - 注册新命名空间
+
+**跳过 (不适用于 N42 PoA)：**
+- `engine_*` - 仅 PoS 需要
+
+---
+
+#### 🔌 RPC API 补齐 - Step 1-2
+
+**目标：** 对照 geth/erigon 补齐标准 eth_* RPC 方法。
+
+**Step 1 (已存在于 blockscout.go)：**
+- ✅ `eth_syncing` - 同步状态
+- ✅ `eth_coinbase` - 挖矿地址
+- ✅ `eth_mining` - 是否挖矿
+- ✅ `eth_hashrate` - 算力 (PoA 返回 0)
+- ✅ `eth_accounts` - 账户列表
+- ✅ `eth_getBlockTransactionCountByNumber` - 区块交易数
+- ✅ `eth_getTransactionByBlockNumberAndIndex` - 按区块号获取交易
+- ✅ `eth_getUncleCountByBlockNumber` - 叔块数 (PoA 返回 0)
+- ✅ `eth_getBlockReceipts` - 批量收据
+
+**Step 2 (新增 eth_raw.go)：**
+| 方法 | 说明 |
+|------|------|
+| `eth_sign` | 消息签名 |
+| `eth_signTransaction` | 签名交易不发送 |
+| `eth_getRawTransactionByHash` | 原始交易数据 |
+| `eth_getRawTransactionByBlockHashAndIndex` | 按区块哈希获取原始交易 |
+| `eth_getRawTransactionByBlockNumberAndIndex` | 按区块号获取原始交易 |
+| `eth_pendingTransactions` | 待处理交易列表 |
+| `eth_resend` | 重发交易 (提高 gas) |
+
+**新增文件：**
+- `internal/api/eth_raw.go` (~280 行)
+
+**验收：** `make build && make test && make vet` 通过
+
+---
 
 #### 🏗️ Phase 10: init() 清理 + 指标基线 (模块化解耦)
 
