@@ -51,23 +51,31 @@ type Router struct {
 	metrics *RPCMetrics
 
 	// Feature flags for namespace enablement
-	enableEth    bool
-	enableN42    bool
-	enableDebug  bool
-	enableNet    bool
-	enableWeb3   bool
-	enableTxPool bool
+	enableEth      bool
+	enableN42      bool
+	enableDebug    bool
+	enableNet      bool
+	enableWeb3     bool
+	enableTxPool   bool
+	enableAdmin    bool
+	enablePersonal bool
+	enableMiner    bool
+	enableRPC      bool
 }
 
 // RouterConfig holds configuration for the API router.
 type RouterConfig struct {
 	// Feature flags
-	EnableEth    bool
-	EnableN42    bool
-	EnableDebug  bool
-	EnableNet    bool
-	EnableWeb3   bool
-	EnableTxPool bool
+	EnableEth      bool
+	EnableN42      bool
+	EnableDebug    bool
+	EnableNet      bool
+	EnableWeb3     bool
+	EnableTxPool   bool
+	EnableAdmin    bool
+	EnablePersonal bool
+	EnableMiner    bool
+	EnableRPC      bool
 
 	// Metrics configuration
 	MetricsLogInterval time.Duration
@@ -82,6 +90,10 @@ func DefaultRouterConfig() *RouterConfig {
 		EnableNet:          true,
 		EnableWeb3:         true,
 		EnableTxPool:       true,
+		EnableAdmin:        true,
+		EnablePersonal:     false, // Disabled by default for security
+		EnableMiner:        true,
+		EnableRPC:          true,
 		MetricsLogInterval: 60 * time.Second,
 	}
 }
@@ -93,14 +105,18 @@ func NewRouter(api *API, config *RouterConfig) *Router {
 	}
 
 	return &Router{
-		api:          api,
-		metrics:      NewRPCMetrics(),
-		enableEth:    config.EnableEth,
-		enableN42:    config.EnableN42,
-		enableDebug:  config.EnableDebug,
-		enableNet:    config.EnableNet,
-		enableWeb3:   config.EnableWeb3,
-		enableTxPool: config.EnableTxPool,
+		api:            api,
+		metrics:        NewRPCMetrics(),
+		enableEth:      config.EnableEth,
+		enableN42:      config.EnableN42,
+		enableDebug:    config.EnableDebug,
+		enableNet:      config.EnableNet,
+		enableWeb3:     config.EnableWeb3,
+		enableTxPool:   config.EnableTxPool,
+		enableAdmin:    config.EnableAdmin,
+		enablePersonal: config.EnablePersonal,
+		enableMiner:    config.EnableMiner,
+		enableRPC:      config.EnableRPC,
 	}
 }
 
@@ -169,6 +185,38 @@ func (r *Router) APIs() []jsonrpc.API {
 		})
 	}
 
+	// admin namespace (node info)
+	if r.enableAdmin {
+		apis = append(apis, jsonrpc.API{
+			Namespace: "admin",
+			Service:   NewAdminAPI(r.api),
+		})
+	}
+
+	// personal namespace (account management)
+	if r.enablePersonal {
+		apis = append(apis, jsonrpc.API{
+			Namespace: "personal",
+			Service:   NewPersonalAPI(r.api),
+		})
+	}
+
+	// miner namespace (mining control)
+	if r.enableMiner {
+		apis = append(apis, jsonrpc.API{
+			Namespace: "miner",
+			Service:   NewMinerAPI(r.api),
+		})
+	}
+
+	// rpc namespace (module info)
+	if r.enableRPC {
+		apis = append(apis, jsonrpc.API{
+			Namespace: "rpc",
+			Service:   NewRPCAPI(r.api),
+		})
+	}
+
 	return apis
 }
 
@@ -203,4 +251,3 @@ func (nc *NamespaceConfig) ToJSONRPCAPI() jsonrpc.API {
 		Service:   nc.Service,
 	}
 }
-
