@@ -138,6 +138,9 @@ type ChainConfig struct {
 	CancunBlock      *big.Int `json:"cancunTime,omitempty"`
 	ShardingForkTime *big.Int `json:"shardingForkTime,omitempty"`
 	PragueTime       *big.Int `json:"pragueTime,omitempty"`
+	PectraTime       *big.Int `json:"pectraTime,omitempty"`  // Pectra switch time (nil = no fork)
+	OsakaTime        *big.Int `json:"osakaTime,omitempty"`   // Osaka switch time (nil = no fork)
+	FusakaTime       *big.Int `json:"fusakaTime,omitempty"`  // Fusaka switch time (nil = no fork) - Native AA
 
 	// Parlia fork blocks
 	//RamanujanBlock  *big.Int    `json:"ramanujanBlock,omitempty" toml:",omitempty"`  // ramanujanBlock switch block (nil = no fork, 0 = already activated)
@@ -505,6 +508,23 @@ func (c *ChainConfig) IsPrague(time uint64) bool {
 	return isForked(c.PragueTime, time)
 }
 
+// IsPectra returns whether time is either equal to the Pectra fork time or greater.
+// Pectra includes EIP-7702 (Account Abstraction), EIP-2537 (BLS), EIP-2935 (Historical hashes)
+func (c *ChainConfig) IsPectra(time uint64) bool {
+	return isForked(c.PectraTime, time)
+}
+
+// IsOsaka returns whether time is either equal to the Osaka fork time or greater.
+func (c *ChainConfig) IsOsaka(time uint64) bool {
+	return isForked(c.OsakaTime, time)
+}
+
+// IsFusaka returns whether time is either equal to the Fusaka fork time or greater.
+// Fusaka enables native account abstraction with protocol-level transaction validation.
+func (c *ChainConfig) IsFusaka(time uint64) bool {
+	return isForked(c.FusakaTime, time)
+}
+
 // IsBeijing returns whether num is either equal to the IsBeijing fork block or greater.
 func (c *ChainConfig) IsBeijing(num uint64) bool {
 	return isForked(c.BeijingBlock, num)
@@ -752,6 +772,7 @@ type Rules struct {
 	IsHomestead, IsTangerineWhistle, IsSpuriousDragon       bool
 	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
 	IsBerlin, IsLondon, IsShanghai, IsCancun, IsPrague      bool
+	IsPectra, IsOsaka, IsFusaka                             bool // Pectra: EIP-7702, Osaka: EOF, Fusaka: Native AA
 	IsNano, IsMoran                                         bool
 	IsEip1559FeeCollector                                   bool
 	IsParlia, IsStarknet, IsAura, IsBeijing                 bool
@@ -777,6 +798,9 @@ func (c *ChainConfig) Rules(num uint64) *Rules {
 		IsShanghai:            c.IsShanghai(num),
 		IsCancun:              c.IsCancun(num),
 		IsPrague:              c.IsPrague(num),
+		IsPectra:              c.IsPectra(num),
+		IsOsaka:               c.IsOsaka(num),
+		IsFusaka:              c.IsFusaka(num),
 		IsNano:                c.IsNano(num),
 		IsMoran:               c.IsMoran(num),
 		IsEip1559FeeCollector: c.IsEip1559FeeCollector(num),

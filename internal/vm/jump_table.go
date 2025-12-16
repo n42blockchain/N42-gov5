@@ -62,6 +62,8 @@ var (
 	shanghaiInstructionSet         = newShanghaiInstructionSet()
 	cancunInstructionSet           = newCancunInstructionSet()
 	pragueInstructionSet           = newPragueInstructionSet()
+	pectraInstructionSet           = newPectraInstructionSet()
+	osakaInstructionSet            = newOsakaInstructionSet()
 )
 
 // JumpTable contains the EVM opcodes supported at a given fork.
