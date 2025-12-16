@@ -40,21 +40,24 @@ var rootCmd []*cli.Command
 var networkFlags = []cli.Flag{
 	&cli.StringSliceFlag{
 		Name:        "p2p.listen",
-		Usage:       "p2p listen address",
+		Usage:       "P2P 监听地址",
+		Category:    "P2P NETWORK",
 		Value:       cli.NewStringSlice(),
 		Destination: listenAddress,
 	},
 
 	&cli.StringSliceFlag{
 		Name:        "p2p.bootstrap",
-		Usage:       "bootstrap node info",
+		Usage:       "引导节点信息",
+		Category:    "P2P NETWORK",
 		Value:       cli.NewStringSlice(),
 		Destination: bootstraps,
 	},
 
 	&cli.StringFlag{
 		Name:        "p2p.key",
-		Usage:       "private key of p2p node",
+		Usage:       "P2P 节点私钥",
+		Category:    "P2P NETWORK",
 		Value:       "",
 		Destination: &DefaultConfig.NetworkCfg.LocalPeerKey,
 	},
@@ -63,103 +66,110 @@ var networkFlags = []cli.Flag{
 var nodeFlg = []cli.Flag{
 	&cli.StringFlag{
 		Name:        "node.key",
-		Usage:       "node private",
+		Usage:       "节点私钥",
+		Category:    "NODE",
 		Value:       "",
 		Destination: &DefaultConfig.NodeCfg.NodePrivate,
 	},
 }
 
 var rpcFlags = []cli.Flag{
-
+	// IPC 配置
 	&cli.StringFlag{
 		Name:        "ipcpath",
-		Usage:       "Filename for IPC socket/pipe within the data dir (explicit paths escape it)",
+		Usage:       "IPC socket 文件名",
+		Category:    "IPC",
 		Value:       DefaultConfig.NodeCfg.IPCPath,
 		Destination: &DefaultConfig.NodeCfg.IPCPath,
 	},
 
+	// HTTP RPC 配置
 	&cli.BoolFlag{
 		Name:        "http",
-		Usage:       "Enable the HTTP json-rpc server",
+		Usage:       "启用 HTTP JSON-RPC 服务",
+		Category:    "HTTP-RPC",
 		Value:       false,
 		Destination: &DefaultConfig.NodeCfg.HTTP,
 	},
 	&cli.StringFlag{
 		Name:        "http.addr",
-		Usage:       "HTTP server listening interface",
-		Value:       DefaultConfig.NodeCfg.HTTPHost,
+		Usage:       "HTTP-RPC 监听地址 (默认 127.0.0.1 仅本地访问)",
+		Category:    "HTTP-RPC",
+		Value:       "127.0.0.1",
 		Destination: &DefaultConfig.NodeCfg.HTTPHost,
 	},
 	&cli.StringFlag{
 		Name:        "http.port",
-		Usage:       "HTTP server listening port",
-		Value:       "20012",
+		Usage:       "HTTP-RPC 监听端口",
+		Category:    "HTTP-RPC",
+		Value:       "8545",
 		Destination: &DefaultConfig.NodeCfg.HTTPPort,
 	},
 	&cli.StringFlag{
 		Name:        "http.api",
-		Usage:       "API's offered over the HTTP-RPC interface",
-		Value:       "",
+		Usage:       "HTTP-RPC 开放的 API 模块 (eth,web3,net,debug,txpool)",
+		Category:    "HTTP-RPC",
+		Value:       "eth,web3,net",
 		Destination: &DefaultConfig.NodeCfg.HTTPApi,
 	},
-
 	&cli.StringFlag{
 		Name:        "http.corsdomain",
-		Usage:       "Comma separated list of domains from which to accept cross origin requests (browser enforced)",
+		Usage:       "允许跨域请求的域名 (逗号分隔，* 表示所有)",
+		Category:    "HTTP-RPC",
 		Value:       "",
 		Destination: &DefaultConfig.NodeCfg.HTTPCors,
 	},
 
+	// WebSocket RPC 配置
 	&cli.BoolFlag{
 		Name:        "ws",
-		Usage:       "Enable the WS-RPC server",
+		Usage:       "启用 WebSocket JSON-RPC 服务",
+		Category:    "WS-RPC",
 		Value:       false,
 		Destination: &DefaultConfig.NodeCfg.WS,
 	},
 	&cli.StringFlag{
 		Name:        "ws.addr",
-		Usage:       "WS-RPC server listening interface",
-		Value:       DefaultConfig.NodeCfg.WSHost,
+		Usage:       "WebSocket-RPC 监听地址",
+		Category:    "WS-RPC",
+		Value:       "127.0.0.1",
 		Destination: &DefaultConfig.NodeCfg.WSHost,
 	},
 	&cli.StringFlag{
 		Name:        "ws.port",
-		Usage:       "WS-RPC server listening port",
-		Value:       "20013",
+		Usage:       "WebSocket-RPC 监听端口",
+		Category:    "WS-RPC",
+		Value:       "8546",
 		Destination: &DefaultConfig.NodeCfg.WSPort,
 	},
-
 	&cli.StringFlag{
 		Name:        "ws.api",
-		Usage:       "API's offered over the WS-RPC interface",
-		Value:       "",
+		Usage:       "WebSocket-RPC 开放的 API 模块",
+		Category:    "WS-RPC",
+		Value:       "eth,web3,net",
 		Destination: &DefaultConfig.NodeCfg.WSApi,
 	},
-
 	&cli.StringFlag{
 		Name:        "ws.origins",
-		Usage:       "Origins from which to accept websockets requests",
+		Usage:       "允许 WebSocket 连接的来源域名",
+		Category:    "WS-RPC",
 		Value:       "",
 		Destination: &DefaultConfig.NodeCfg.WSOrigins,
 	},
 }
 
 var consensusFlag = []cli.Flag{
-	//&cli.StringFlag{
-	//	Name:        "engine.type",
-	//	Usage:       "consensus engine",
-	//	Value:       "APosEngine", //APoaEngine,APosEngine
-	//	Destination: &DefaultConfig.ChainCfg.Consensus,
-	//},
 	&cli.BoolFlag{
 		Name:        "engine.miner",
-		Usage:       "miner",
+		Usage:       "启用挖矿/验证",
+		Category:    "MINER",
 		Value:       false,
 		Destination: &DefaultConfig.NodeCfg.Miner,
 	},
 	&cli.StringFlag{
 		Name:        "engine.etherbase",
-		Usage:       "consensus etherbase",
+		Usage:       "挖矿奖励接收地址 (0x开头的以太坊地址)",
+		Category:    "MINER",
 		Value:       "",
 		Destination: &DefaultConfig.Miner.Etherbase,
 	},
@@ -167,8 +177,10 @@ var consensusFlag = []cli.Flag{
 
 var configFlag = []cli.Flag{
 	&cli.StringFlag{
-		Name:        "blockchain",
-		Usage:       "Loading a Configuration File",
+		Name:        "config",
+		Aliases:     []string{"c", "blockchain"},
+		Usage:       "配置文件路径 (TOML 或 YAML 格式)",
+		Category:    "CONFIG",
 		Destination: &cfgFile,
 	},
 }
@@ -176,75 +188,109 @@ var configFlag = []cli.Flag{
 var pprofCfg = []cli.Flag{
 	&cli.BoolFlag{
 		Name:        "pprof",
-		Usage:       "Enable the pprof HTTP server",
+		Usage:       "启用 pprof HTTP 性能分析服务",
+		Category:    "DEBUG",
 		Value:       false,
 		Destination: &DefaultConfig.PprofCfg.Pprof,
 	},
-
+	&cli.IntFlag{
+		Name:        "pprof.port",
+		Usage:       "pprof HTTP 服务端口",
+		Category:    "DEBUG",
+		Value:       6060,
+		Destination: &DefaultConfig.PprofCfg.Port,
+	},
 	&cli.BoolFlag{
 		Name:        "pprof.block",
-		Usage:       "Turn on block profiling",
+		Usage:       "启用阻塞分析",
+		Category:    "DEBUG",
 		Value:       false,
 		Destination: &DefaultConfig.PprofCfg.TraceBlock,
 	},
 	&cli.BoolFlag{
 		Name:        "pprof.mutex",
-		Usage:       "Turn on mutex profiling",
+		Usage:       "启用互斥锁分析",
+		Category:    "DEBUG",
 		Value:       false,
 		Destination: &DefaultConfig.PprofCfg.TraceMutex,
 	},
 	&cli.IntFlag{
 		Name:        "pprof.maxcpu",
-		Usage:       "setup number of cpu",
+		Usage:       "使用的 CPU 核心数 (0=全部)",
+		Category:    "DEBUG",
 		Value:       0,
 		Destination: &DefaultConfig.PprofCfg.MaxCpu,
-	},
-	&cli.IntFlag{
-		Name:        "pprof.port",
-		Usage:       "pprof HTTP server listening port",
-		Value:       0,
-		Destination: &DefaultConfig.PprofCfg.Port,
 	},
 }
 
 var loggerFlag = []cli.Flag{
 	&cli.StringFlag{
-		Name:        "log.name",
-		Usage:       "logger file name and path",
-		Value:       "n42.log",
-		Destination: &DefaultConfig.LoggerCfg.LogFile,
-	},
-
-	&cli.StringFlag{
 		Name:        "log.level",
-		Usage:       "logger output level (value:[debug,info,warn,error,dpanic,panic,fatal])",
-		Value:       "debug",
+		Aliases:     []string{"verbosity"},
+		Usage:       "日志级别 (trace, debug, info, warn, error, fatal)",
+		Category:    "LOGGING",
+		Value:       "info",
 		Destination: &DefaultConfig.LoggerCfg.Level,
 	},
-
+	&cli.StringFlag{
+		Name:        "log.file",
+		Aliases:     []string{"log.name"},
+		Usage:       "日志文件名 (留空仅输出到控制台)",
+		Category:    "LOGGING",
+		Value:       "",
+		Destination: &DefaultConfig.LoggerCfg.LogFile,
+	},
 	&cli.IntFlag{
-		Name:        "log.maxSize",
-		Usage:       "logger file max size M",
-		Value:       10,
+		Name:        "log.maxsize",
+		Aliases:     []string{"log.maxSize"},
+		Usage:       "单个日志文件最大大小 (MB)，超过自动切分",
+		Category:    "LOGGING",
+		Value:       100,
 		Destination: &DefaultConfig.LoggerCfg.MaxSize,
 	},
 	&cli.IntFlag{
-		Name:        "log.maxBackups",
-		Usage:       "logger file max backups",
+		Name:        "log.maxbackups",
+		Aliases:     []string{"log.maxBackups"},
+		Usage:       "保留的旧日志文件数量 (0=不限)",
+		Category:    "LOGGING",
 		Value:       10,
 		Destination: &DefaultConfig.LoggerCfg.MaxBackups,
 	},
 	&cli.IntFlag{
-		Name:        "log.maxAge",
-		Usage:       "logger file max age",
+		Name:        "log.maxage",
+		Aliases:     []string{"log.maxAge"},
+		Usage:       "日志文件保留天数 (0=不限)",
+		Category:    "LOGGING",
 		Value:       30,
 		Destination: &DefaultConfig.LoggerCfg.MaxAge,
 	},
 	&cli.BoolFlag{
 		Name:        "log.compress",
-		Usage:       "logger file compress",
-		Value:       false,
+		Usage:       "压缩旧日志文件 (节省约 90% 空间)",
+		Category:    "LOGGING",
+		Value:       true,
 		Destination: &DefaultConfig.LoggerCfg.Compress,
+	},
+	&cli.IntFlag{
+		Name:        "log.totalsize",
+		Usage:       "日志文件总大小上限 (MB)，超过自动删除最旧文件 (0=不限)",
+		Category:    "LOGGING",
+		Value:       0,
+		Destination: &DefaultConfig.LoggerCfg.TotalSizeCap,
+	},
+	&cli.BoolFlag{
+		Name:        "log.console",
+		Usage:       "同时输出到控制台 (即使指定了日志文件)",
+		Category:    "LOGGING",
+		Value:       true,
+		Destination: &DefaultConfig.LoggerCfg.Console,
+	},
+	&cli.BoolFlag{
+		Name:        "log.json",
+		Usage:       "使用 JSON 格式输出到文件 (便于日志分析)",
+		Category:    "LOGGING",
+		Value:       true,
+		Destination: &DefaultConfig.LoggerCfg.JSONFormat,
 	},
 }
 var (
@@ -391,30 +437,37 @@ var (
 var (
 	DataDirFlag = &cli.StringFlag{
 		Name:        "data.dir",
-		Usage:       "data save dir",
-		Value:       "./n42/",
+		Aliases:     []string{"datadir"},
+		Usage:       "数据存储目录",
+		Category:    "DATA",
+		Value:       "./n42data",
 		Destination: &DefaultConfig.NodeCfg.DataDir,
 	}
 
 	MinFreeDiskSpaceFlag = &cli.IntFlag{
-		Name:        "data.dir.minfreedisk",
-		Usage:       "Minimum free disk space in GB, once reached triggers auto shut down (default = 10GB, 0 = disabled)",
+		Name:        "data.minfreedisk",
+		Aliases:     []string{"data.dir.minfreedisk"},
+		Usage:       "最小剩余磁盘空间 (GB)，低于此值自动关闭节点",
+		Category:    "DATA",
 		Value:       10,
 		Destination: &DefaultConfig.NodeCfg.MinFreeDiskSpace,
 	}
 
 	FromDataDirFlag = &cli.StringFlag{
-		Name:  "chaindata.from",
-		Usage: "source data  dir",
+		Name:     "chaindata.from",
+		Usage:    "源数据目录 (用于数据迁移)",
+		Category: "DATA",
 	}
 	ToDataDirFlag = &cli.StringFlag{
-		Name:  "chaindata.to",
-		Usage: "to data  dir",
+		Name:     "chaindata.to",
+		Usage:    "目标数据目录 (用于数据迁移)",
+		Category: "DATA",
 	}
 
 	ChainFlag = &cli.StringFlag{
 		Name:        "chain",
-		Usage:       "Name of the testnet to join (value:[mainnet,testnet,private])",
+		Usage:       "区块链网络 (mainnet, testnet, private)",
+		Category:    "NETWORK",
 		Value:       networkname.MainnetChainName,
 		Destination: &DefaultConfig.NodeCfg.Chain,
 	}
@@ -423,84 +476,93 @@ var (
 var (
 	AuthRPCFlag = &cli.BoolFlag{
 		Name:        "authrpc",
-		Usage:       "Enable the AUTH-RPC server",
+		Usage:       "启用认证 RPC (Engine API，用于共识层通信)",
+		Category:    "AUTH-RPC",
 		Value:       false,
 		Destination: &DefaultConfig.NodeCfg.AuthRPC,
 	}
-	// Authenticated RPC HTTP settings
 	AuthRPCListenFlag = &cli.StringFlag{
 		Name:        "authrpc.addr",
-		Usage:       "Listening address for authenticated APIs",
-		Value:       "",
+		Usage:       "认证 RPC 监听地址",
+		Category:    "AUTH-RPC",
+		Value:       "127.0.0.1",
 		Destination: &DefaultConfig.NodeCfg.AuthAddr,
 	}
 	AuthRPCPortFlag = &cli.IntFlag{
 		Name:        "authrpc.port",
-		Usage:       "Listening port for authenticated APIs",
+		Usage:       "认证 RPC 监听端口",
+		Category:    "AUTH-RPC",
+		Value:       8551,
 		Destination: &DefaultConfig.NodeCfg.AuthPort,
 	}
 	JWTSecretFlag = &cli.StringFlag{
 		Name:        "authrpc.jwtsecret",
-		Usage:       "Path to a JWT secret to use for authenticated RPC endpoints",
+		Usage:       "JWT 密钥文件路径 (用于认证 RPC)",
+		Category:    "AUTH-RPC",
 		Value:       "",
 		Destination: &DefaultConfig.NodeCfg.JWTSecret,
 	}
 )
 
 var (
-	// Account settings
+	// 账户设置
 	UnlockedAccountFlag = &cli.StringFlag{
-		Name:  "account.unlock",
-		Usage: "Comma separated list of accounts to unlock",
-		Value: "",
+		Name:     "unlock",
+		Aliases:  []string{"account.unlock"},
+		Usage:    "启动时解锁的账户地址 (逗号分隔)",
+		Category: "ACCOUNT",
+		Value:    "",
 	}
 	PasswordFileFlag = &cli.PathFlag{
-		Name:        "account.password",
-		Usage:       "Password file to use for non-interactive password input",
+		Name:        "password",
+		Aliases:     []string{"account.password"},
+		Usage:       "密码文件路径 (用于解锁账户)",
+		Category:    "ACCOUNT",
 		Destination: &DefaultConfig.NodeCfg.PasswordFile,
 	}
 	LightKDFFlag = &cli.BoolFlag{
-		Name:  "account.lightkdf",
-		Usage: "Reduce key-derivation RAM & CPU usage at some expense of KDF strength",
+		Name:     "lightkdf",
+		Aliases:  []string{"account.lightkdf"},
+		Usage:    "降低密钥派生的资源消耗 (牺牲安全性)",
+		Category: "ACCOUNT",
 	}
 	KeyStoreDirFlag = &cli.PathFlag{
-		Name:        "account.keystore",
-		Usage:       "Directory for the keystore (default = inside the datadir)",
+		Name:        "keystore",
+		Aliases:     []string{"account.keystore"},
+		Usage:       "密钥库目录 (默认在数据目录内)",
+		Category:    "ACCOUNT",
 		TakesFile:   true,
 		Destination: &DefaultConfig.NodeCfg.KeyStoreDir,
 	}
 	InsecureUnlockAllowedFlag = &cli.BoolFlag{
-		Name:        "account.allow.insecure.unlock",
-		Usage:       "Allow insecure account unlocking when account-related RPCs are exposed by http",
+		Name:        "allow-insecure-unlock",
+		Aliases:     []string{"account.allow.insecure.unlock"},
+		Usage:       "允许通过 HTTP 解锁账户 (不安全，不推荐)",
+		Category:    "ACCOUNT",
 		Value:       false,
 		Destination: &DefaultConfig.NodeCfg.InsecureUnlockAllowed,
 	}
 
-	// MetricsEnabledFlag Metrics flags
+	// 指标收集设置
 	MetricsEnabledFlag = &cli.BoolFlag{
 		Name:        "metrics",
-		Usage:       "Enable metrics collection and reporting",
+		Usage:       "启用指标收集 (Prometheus 格式)",
+		Category:    "METRICS",
 		Value:       false,
 		Destination: &DefaultConfig.MetricsCfg.Enable,
 	}
-
-	// MetricsHTTPFlag defines the endpoint for a stand-alone metrics HTTP endpoint.
-	// Since the pprof service enables sensitive/vulnerable behavior, this allows a user
-	// to enable a public-OK metrics endpoint without having to worry about ALSO exposing
-	// other profiling behavior or information.
 	MetricsHTTPFlag = &cli.StringFlag{
-		Name:  "metrics.addr",
-		Usage: `Enable stand-alone metrics HTTP server listening interface.`,
-		//Category: flags.MetricsCategory,
+		Name:        "metrics.addr",
+		Usage:       "指标服务监听地址",
+		Category:    "METRICS",
 		Value:       "127.0.0.1",
 		Destination: &DefaultConfig.MetricsCfg.HTTP,
 	}
 	MetricsPortFlag = &cli.IntFlag{
-		Name: "metrics.port",
-		Usage: `Metrics HTTP server listening port.
-Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.`,
-		Value: 6060,
-		// Category: flags.MetricsCategory,
+		Name:        "metrics.port",
+		Usage:       "指标服务监听端口",
+		Category:    "METRICS",
+		Value:       6061,
 		Destination: &DefaultConfig.MetricsCfg.Port,
 	}
 )

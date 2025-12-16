@@ -18,11 +18,17 @@ package misc
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common"
+	"math/big"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/params"
-	"math/big"
+)
+
+// Local big.Int constants to avoid import cycle with common package
+var (
+	big0 = big.NewInt(0)
+	big1 = big.NewInt(1)
 )
 
 // VerifyEip1559Header verifies some header attributes which were changed in EIP-1559,
@@ -73,7 +79,7 @@ func CalcBaseFee(config *params.ChainConfig, parent *block.Header) *big.Int {
 		y := x.Div(x, parentGasTargetBig)
 		baseFeeDelta := math.BigMax(
 			x.Div(y, baseFeeChangeDenominator),
-			common.Big1,
+			big1,
 		)
 
 		return x.Add(parent.BaseFee.ToBig(), baseFeeDelta)
@@ -86,7 +92,7 @@ func CalcBaseFee(config *params.ChainConfig, parent *block.Header) *big.Int {
 
 		return math.BigMax(
 			x.Sub(parent.BaseFee.ToBig(), baseFeeDelta),
-			common.Big0,
+			big0,
 		)
 	}
 }

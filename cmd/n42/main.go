@@ -18,8 +18,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/urfave/cli/v2"
 	"os"
+
+	"github.com/urfave/cli/v2"
 
 	"github.com/n42blockchain/N42/params"
 	// Force-load the tracer engines to trigger registration
@@ -27,39 +28,78 @@ import (
 	_ "github.com/n42blockchain/N42/internal/tracers/native"
 )
 
+const banner = `
+ ███╗   ██╗██╗  ██╗██████╗ 
+ ████╗  ██║██║  ██║╚════██╗
+ ██╔██╗ ██║███████║ █████╔╝
+ ██║╚██╗██║╚════██║██╔═══╝ 
+ ██║ ╚████║     ██║███████╗
+ ╚═╝  ╚═══╝     ╚═╝╚══════╝
+`
+
+const usageText = `n42 [options] [command]
+
+快速启动：
+  n42                             启动主网全节点
+  n42 --testnet                   启动测试网节点
+  n42 --http                      启用 HTTP RPC (127.0.0.1:8545)
+  n42 --http --http.addr 0.0.0.0  对外开放 RPC
+
+数据同步：
+  n42 --data.dir /data/n42        指定数据目录
+
+挖矿/验证：
+  n42 --mine --etherbase 0x...    启用挖矿
+
+详细帮助：
+  n42 --help                      查看所有选项
+  n42 account --help              账户管理命令
+  n42 init --help                 初始化命令`
+
 func main() {
-	fmt.Printf("┏┓╻╻ ╻┏━┓\n")
-	fmt.Printf("┃┗┫┗━┫┏━┛\n")
-	fmt.Printf("╹ ╹  ╹┗━╸\n")
-	flags := append(networkFlags, consensusFlag...)
-	flags = append(flags, loggerFlag...)
-	flags = append(flags, pprofCfg...)
-	flags = append(flags, nodeFlg...)
-	flags = append(flags, rpcFlags...)
-	flags = append(flags, authRPCFlag...)
-	flags = append(flags, configFlag...)
-	flags = append(flags, settingFlag...)
-	flags = append(flags, accountFlag...)
-	flags = append(flags, metricsFlags...)
-	flags = append(flags, p2pFlags...)
-	flags = append(flags, p2pLimitFlags...)
+	fmt.Print(banner)
+
+	// 使用新的参数结构（已整合所有旧参数）
+	flags := AllFlags()
 
 	rootCmd = append(rootCmd, walletCommand, accountCommand, exportCommand, initCommand)
 	commands := rootCmd
 
 	app := &cli.App{
-		Name:     "n42",
-		Usage:    "N42 system",
-		Flags:    flags,
-		Commands: commands,
-		//Version:                version.FormatVersion(),
+		Name:                   "n42",
+		Usage:                  "N42 区块链节点",
+		UsageText:              usageText,
 		Version:                params.VersionWithCommit(params.GitCommit, ""),
+		Flags:                  flags,
+		Commands:               commands,
 		UseShortOptionHandling: true,
 		Action:                 appRun,
+		Suggest:                true,
+		EnableBashCompletion:   true,
+		Copyright:              "Copyright 2022-2026 The N42 Authors",
 	}
 
-	err := app.Run(os.Args)
-	if err != nil {
-		fmt.Printf("failed n42 system setup %v", err)
+	// 设置帮助模板
+	cli.AppHelpTemplate = `{{.Name}} - {{.Usage}}
+
+版本: {{.Version}}
+
+{{.UsageText}}
+
+选项:
+{{range .VisibleFlagCategories}}
+  {{.Name}}:
+  {{range .Flags}}  {{.}}
+  {{end}}{{end}}
+
+命令:{{range .VisibleCommands}}
+  {{.Name}}{{"\t"}}{{.Usage}}{{end}}
+
+{{.Copyright}}
+`
+
+	if err := app.Run(os.Args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }

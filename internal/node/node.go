@@ -130,6 +130,12 @@ const (
 func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	ctx, cancel := context.WithCancel(cliCtx.Context)
+	success := false
+	defer func() {
+		if !success {
+			cancel()
+		}
+	}()
 
 	var (
 		genesisBlock    block.IBlock
@@ -351,6 +357,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))
+	success = true
 	return &node, nil
 }
 
@@ -864,9 +871,8 @@ func WriteGenesisBlock(db kv.RwTx, genesis *conf.Genesis) (*block.Block, error) 
 	}
 
 	g := &internal.GenesisBlock{
-		"",
-		genesis,
-		//config,
+		Hash:          "",
+		GenesisConfig: genesis,
 	}
 	log.Info("Writing genesis block")
 	genBlock, _, err := g.Write(db)

@@ -167,7 +167,7 @@ func (n *Node) ProcessHandshake(h *msg_proto.ProtocolHandshakeMessage) error {
 		}
 
 		if msgType != message.MsgAppHandshake {
-			log.Errorf(badMsgTypeError.Error())
+			log.Errorf("%s", badMsgTypeError.Error())
 			errCh <- badMsgTypeError
 			return
 		}

@@ -259,6 +259,6 @@ func (e *outOfGasError) Error() string { return "out of gas" }
 // Interface compliance
 // =============================================================================
 
-// Verify Registry implements vm.PrecompileRegistry interface
-// Note: This is checked at compile time when used with EVM
-
+// Compile-time check: Registry must implement vm.PrecompileRegistry interface.
+// This ensures type safety when using Registry with EVM.
+var _ vm.PrecompileRegistry = (*Registry)(nil)

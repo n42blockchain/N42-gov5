@@ -82,11 +82,6 @@ type ConsensusChainReader interface {
 type Engine interface {
 	EngineReader
 
-	// Author retrieves the Ethereum address of the account that minted the given
-	// block, which may be different from the header's coinbase if a consensus
-	// engine is based on signatures.
-	//Author(header block.IHeader) (types.Address, error)
-
 	// VerifyHeader checks whether a header conforms to the consensus rules of a
 	// given engine. Verifying the seal may be done optionally here, or explicitly
 	// via the VerifySeal method.
@@ -122,8 +117,6 @@ type Engine interface {
 	FinalizeAndAssemble(chain ChainHeaderReader, header block.IHeader, state *state.IntraBlockState, txs []*transaction.Transaction,
 		uncles []block.IHeader, receipts []*block.Receipt) (block.IBlock, []*block.Reward, map[types.Address]*uint256.Int, error)
 
-	//Rewards(tx kv.RwTx, header block.IHeader, state *state.IntraBlockState, setRewards bool) ([]*block.Reward, error)
-
 	// Seal generates a new sealing request for the given input block and pushes
 	// the result into the given channel.
 	//
@@ -137,8 +130,6 @@ type Engine interface {
 	// CalcDifficulty is the difficulty adjustment algorithm. It returns the difficulty
 	// that a new block should have.
 	CalcDifficulty(chain ChainHeaderReader, time uint64, parent block.IHeader) *uint256.Int
-
-	//Type() params.ConsensusType
 
 	// APIs returns the RPC APIs this consensus engine provides.
 	APIs(chain ConsensusChainReader) []jsonrpc.API

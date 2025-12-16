@@ -265,9 +265,15 @@ func MachineVerify(ctx context.Context) error {
 	for {
 		select {
 		case b := <-entire:
-			log.Tracef("machine verify accept entire, number: %d", b.Entire.Entire.Header.Number.Uint64())
+			// Type assert Entire from interface{} to state.EntireCode
+			entireCode, ok := b.Entire.(state.EntireCode)
+			if !ok {
+				log.Warn("MinedEntireEvent.Entire is not state.EntireCode")
+				continue
+			}
+			log.Tracef("machine verify accept entire, number: %d", entireCode.Entire.Header.Number.Uint64())
 			for k, s := range validVerifers {
-				go func(seckey string, address string) {
+				go func(seckey string, address string, ec state.EntireCode) {
 					// recover private key
 					sByte, err := hex.DecodeString(seckey)
 					if nil != err {
@@ -283,13 +289,13 @@ func MachineVerify(ctx context.Context) error {
 					// before state verify
 					var hash types.Hash
 					hasher := sha3.NewLegacyKeccak256()
-					state.EncodeBeforeState(hasher, b.Entire.Entire.Snap.Items, b.Entire.Codes)
+					state.EncodeBeforeState(hasher, ec.Entire.Snap.Items, ec.Codes)
 					_, err = hasher.(crypto.KeccakState).Read(hash[:])
 					if err != nil {
 						return
 					}
-					if b.Entire.Entire.Header.MixDigest != hash {
-						log.Warn("misMatch before state hash", "want:", b.Entire.Entire.Header.MixDigest, "get:", hash, b.Entire.Entire.Header.Number.Uint64())
+					if ec.Entire.Header.MixDigest != hash {
+						log.Warn("misMatch before state hash", "want:", ec.Entire.Header.MixDigest, "get:", hash, ec.Entire.Header.Number.Uint64())
 						return
 					}
 
@@ -303,16 +309,16 @@ func MachineVerify(ctx context.Context) error {
 					}
 
 					// Signature
-					sign := pri.Sign(b.Entire.Entire.Header.Root[:])
-					tmp := AggSign{Number: b.Entire.Entire.Header.Number.Uint64()}
-					copy(tmp.StateRoot[:], b.Entire.Entire.Header.Root[:])
+					sign := pri.Sign(ec.Entire.Header.Root[:])
+					tmp := AggSign{Number: ec.Entire.Header.Number.Uint64()}
+					copy(tmp.StateRoot[:], ec.Entire.Header.Root[:])
 					copy(tmp.Sign[:], sign.Marshal())
 					copy(tmp.PublicKey[:], pri.PublicKey().Marshal())
 					tmp.Address = addr
 					// send res
 					sigChannel <- tmp
 					//log.Tracef("send verify sign, %+v", tmp)
-				}(s, k)
+				}(s, k, entireCode)
 			}
 		case <-ctx.Done():
 			return nil
