@@ -72,9 +72,10 @@ type Interpreter interface {
 // ScopeContext contains the things that are per-call, such as stack and memory,
 // but not transients like pc and gas
 type ScopeContext struct {
-	Memory   *Memory
-	Stack    *stack.Stack
-	Contract *Contract
+	Memory      *Memory
+	Stack       *stack.Stack
+	Contract    *Contract
+	ReturnStack *stack.ReturnStack // EOF function return stack
 }
 
 // keccakState wraps sha3.state. In addition to the usual hash methods, it also supports
@@ -121,6 +122,10 @@ func copyJumpTable(jt *JumpTable) *JumpTable {
 func NewEVMInterpreter(evm VMInterpreter, cfg Config) *EVMInterpreter {
 	var jt *JumpTable
 	switch {
+	case evm.ChainRules().IsOsaka:
+		jt = &osakaInstructionSet
+	case evm.ChainRules().IsPectra:
+		jt = &pectraInstructionSet
 	case evm.ChainRules().IsPrague:
 		jt = &pragueInstructionSet
 	case evm.ChainRules().IsCancun:
