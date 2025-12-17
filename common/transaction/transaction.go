@@ -460,6 +460,33 @@ func (tx *Transaction) Hash() types.Hash {
 	return h
 }
 
+// BlobHashes returns the blob hashes for EIP-4844 blob transactions
+// Returns nil for non-blob transactions
+func (tx *Transaction) BlobHashes() []types.Hash {
+	if blobTx, ok := tx.inner.(*BlobTx); ok {
+		return blobTx.BlobHashes
+	}
+	return nil
+}
+
+// BlobFeeCap returns the blob fee cap for EIP-4844 blob transactions
+// Returns nil for non-blob transactions
+func (tx *Transaction) BlobFeeCap() *uint256.Int {
+	if blobTx, ok := tx.inner.(*BlobTx); ok {
+		return blobTx.BlobFeeCap
+	}
+	return nil
+}
+
+// BlobGas returns the blob gas used by this transaction
+// Returns 0 for non-blob transactions
+func (tx *Transaction) BlobGas() uint64 {
+	if blobTx, ok := tx.inner.(*BlobTx); ok {
+		return blobTx.BlobGas()
+	}
+	return 0
+}
+
 // GasFeeCapCmp compares the fee cap of two transactions.
 func (tx *Transaction) GasFeeCapCmp(other *Transaction) int {
 	return tx.inner.gasFeeCap().Cmp(other.inner.gasFeeCap())

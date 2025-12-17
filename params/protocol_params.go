@@ -175,6 +175,16 @@ const (
 
 	// P256 verify precompile (EIP-7212)
 	P256VerifyGas uint64 = 3450 // Gas cost for P256 signature verification
+
+	// EIP-4844: Shard Blob Transactions (Cancun)
+	// https://eips.ethereum.org/EIPS/eip-4844
+	BlobTxBlobGasPerBlob            uint64 = 1 << 17 // 131072 - Gas consumed per blob
+	BlobTxMinBlobGasprice           uint64 = 1       // Minimum blob gas price
+	BlobTxBlobGaspriceUpdateFraction uint64 = 3338477 // Update fraction for blob gas price
+	BlobTxTargetBlobGasPerBlock     uint64 = 3 * BlobTxBlobGasPerBlob // 393216 - Target blob gas per block
+	MaxBlobGasPerBlock              uint64 = 6 * BlobTxBlobGasPerBlob // 786432 - Maximum blob gas per block
+	MaxBlobsPerBlock                uint64 = 6       // Maximum number of blobs per block
+	BlobTxPointEvaluationPrecompileGas uint64 = 50000 // Gas for point evaluation precompile
 )
 
 // Pectra gas costs - mutable for testing
