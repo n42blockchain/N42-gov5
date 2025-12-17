@@ -42,7 +42,6 @@ import (
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 
 	"io"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -568,7 +567,7 @@ func (c *APos) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 		}
 		// If there's pending proposals, cast a vote on them
 		if len(addresses) > 0 {
-			rawHeader.Coinbase = addresses[rand.Intn(len(addresses))]
+			rawHeader.Coinbase = addresses[misc.SecureIntn(len(addresses))]
 			if c.proposals[rawHeader.Coinbase] {
 				copy(rawHeader.Nonce[:], nonceAuthVote)
 			} else {
@@ -736,7 +735,7 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 	delay := time.Unix(int64(header.Time), 0).Sub(time.Now()) // nolint: gosimple
 	if header.Difficulty.Cmp(diffNoTurn) == 0 {
 		wiggle := time.Duration(len(snap.Signers)/2+1) * wiggleTime
-		delay += time.Duration(rand.Int63n(int64(wiggle)))
+		delay += time.Duration(misc.SecureInt63n(int64(wiggle)))
 
 		log.Infof("wiggle %s , time %s, number %d", avmutil.PrettyDuration(wiggle), avmutil.PrettyDuration(delay), header.Number.Uint64())
 		log.Trace("Out-of-turn signing requested", "wiggle", avmutil.PrettyDuration(wiggle))
