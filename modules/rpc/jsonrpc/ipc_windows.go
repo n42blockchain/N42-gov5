@@ -23,8 +23,6 @@ import (
 	"context"
 	"net"
 	"time"
-
-	"gopkg.in/natefinch/npipe.v2"
 )
 
 const defaultPipeDialTimeout = 2 * time.Second
