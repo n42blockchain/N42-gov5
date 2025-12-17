@@ -1,0 +1,15 @@
+N42 TPS Benchmark Results
+========================
+
+System: 10 CPU cores
+Date: 2025-12-16T16:08:56-05:00
+
+Simple Transfer Mode:
+  TPS: 92266.61
+  Duration: 1.08381575s
+  Transactions: 100000
+
+EVM Transfer Mode:
+  TPS: 9646185.63
+  Duration: 10.366792ms
+  Transactions: 100000

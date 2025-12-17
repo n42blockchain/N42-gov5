@@ -8,6 +8,240 @@
 
 ### 2024-12-16
 
+#### ✅ 全面 DApp 兼容性验证
+
+**新增测试文件**:
+| 文件 | 说明 |
+|------|------|
+| `tests/zk_evm_compat_test.go` | ZK-EVM 链下计算链上验证能力测试 |
+| `tests/dapp_compat_test.go` | Phase 1: Payment/NFT/DeFi 测试 |
+| `tests/dapp_compat_phase2_test.go` | Phase 2: DAO/DID/Gaming 测试 |
+| `tests/dapp_compat_phase3_test.go` | Phase 3: AI/Social/Metaverse/RWA/Supply Chain 测试 |
+| `tests/dapp_compat_phase4_test.go` | Phase 4: Carbon/DePIN/IoT/DeSci/Provenance 测试 |
+
+**验证的 DApp 类型 (19 个，全部通过)**:
+
+| 类别 | DApp 类型 | 状态 |
+|------|----------|------|
+| ZK-EVM | Groth16 (BN254), PLONK (BLS12-381) | ✅ 完全支持 |
+| Core Finance | Payment, NFT, DeFi | ✅ 完全支持 |
+| Governance | DAO, DID, Gaming | ✅ 完全支持 |
+| Emerging | AI/AI Agent, Social, Metaverse, RWA, Supply Chain | ✅ 完全支持 |
+| Vertical | Carbon Trading, DePIN, IoT, DeSci, Provenance | ✅ 完全支持 |
+| Previously | Prediction Market, ENS | ✅ 已验证 |
+
+**验证内容**:
+- ZK证明验证: BN254/BLS12-381 预编译合约
+- ERC标准: ERC-20/721/1155/2981/5192/725/735/998/3643
+- DeFi: AMM, Flash Loans, Oracles, Staking
+- 治理: Governor, Timelock, Multi-sig, Snapshot
+- 身份: DID Document, Verifiable Credentials, Revocation
+- 游戏: VRF, Commit-Reveal, State Channels
+- AI: Data Hashing, Model Verification, Agent Wallets
+- 垂直: Carbon Registry, Device Registration, IP Registry
+
+**运行命令**:
+```bash
+go test ./tests/... -run "ZK|DApp|Phase|Summary" -v
+```
+
+---
+
+#### ✅ TPS 极限性能测试工具
+
+**新增文件**:
+| 文件 | 说明 |
+|------|------|
+| `tools/tpsbench/tps_bench.go` | TPS 极限性能测试主程序 |
+| `tools/tpsbench/tps_bench_test.go` | 细粒度基准测试 |
+| `tools/tpsbench/README.md` | 使用文档 |
+
+**功能特性**:
+- 多核并行执行（自动检测 CPU 核心数）
+- 两种测试模式：Simple Transfer / EVM Transfer
+- 去除所有限制（gas/block size）
+- 预生成独立交易（无依赖关系）
+- 细粒度组件基准测试
+
+**测试结果 (Apple M1 Max, 10 cores, 100K txs)**:
+| 模式 | TPS | 耗时 |
+|------|-----|------|
+| Simple Transfer | ~92K | 1.08s |
+| EVM Transfer | ~9.6M | 10.4ms |
+
+**使用方法**:
+```bash
+# 运行 300 万交易测试
+go run ./tools/tpsbench/tps_bench.go -txcount=3000000 -workers=0
+
+# 运行基准测试
+go test ./tools/tpsbench/... -bench=. -benchtime=1s
+```
+
+---
+
+#### ✅ 预测市场兼容性验证
+
+**新增文件**:
+| 文件 | 说明 |
+|------|------|
+| `tests/prediction_market_compat_test.go` | 预测市场兼容性测试 |
+| `docs/PREDICTION_MARKET_GUIDE.md` | 预测市场部署指南 |
+
+**兼容性验证**:
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| ERC-1155 | ✅ | Conditional Tokens |
+| ERC-20 | ✅ | Collateral Tokens |
+| ERC-165 | ✅ | Interface Detection |
+| CREATE2 | ✅ | Deterministic Deployment |
+| DELEGATECALL | ✅ | Proxy Patterns |
+| LOG0-LOG4 | ✅ | Events |
+| Precompiles | ✅ | ecRecover, SHA256, bn256 等 |
+
+**支持的预测市场功能**:
+- Gnosis Conditional Token Framework (CTF)
+- Binary/Multi-outcome/Scalar Markets
+- AMM (CPMM/LMSR)
+- Oracle Integration (UMA/Chainlink/Custom)
+
+---
+
+#### ✅ Pectra Blob 升级支持
+
+**新增文件**:
+| 文件 | 说明 |
+|------|------|
+| `internal/vm/eips_pectra_blob.go` | Pectra Blob EIPs 实现 |
+| `internal/vm/eips_pectra_blob_test.go` | Pectra Blob 测试 |
+| `internal/api/engine_api_v4.go` | Engine API v4 |
+
+**EIP-7691: 增加 Blob 吞吐量**
+| 参数 | Cancun | Pectra |
+|------|--------|--------|
+| Target Blobs/Block | 3 | 6 |
+| Max Blobs/Block | 6 | 9 |
+| Target Blob Gas | 393,216 | 786,432 |
+| Max Blob Gas | 786,432 | 1,179,648 |
+
+**EIP-7623: 提高 Calldata 成本**
+| 类型 | 标准 | Floor (>4KB) |
+|------|------|--------------|
+| Non-zero byte | 16 gas | 68 gas |
+| Zero byte | 4 gas | 10 gas |
+
+**EIP-7840: Blob 调度配置**
+- `BlobSchedule` 结构 - 可配置的 blob 参数
+- `DefaultCancunBlobSchedule()` - Cancun 默认配置
+- `DefaultPectraBlobSchedule()` - Pectra 默认配置
+- `GetBlobSchedule(schedule, timestamp)` - 按时间戳获取参数
+- `ValidateBlobSchedule(schedule)` - 配置验证
+
+**Engine API v4**:
+- `engine_newPayloadV4` - Pectra 负载处理
+- `engine_getPayloadV4` - 获取 Pectra 负载
+- `engine_forkchoiceUpdatedV4` - Fork Choice V4
+- `engine_getBlobsV1` - 按哈希获取 Blob
+- `engine_getBlobScheduleV1` - 获取 Blob 调度
+- `engine_getClientCapabilitiesV1` - 客户端能力
+- `engine_getForkCandidatesV1` - Fork 候选管理
+
+**执行层请求 (EIP-7685)**:
+- `DepositRequest` (EIP-6110)
+- `WithdrawalRequest` (EIP-7002)
+- `ConsolidationRequest` (EIP-7251)
+
+---
+
+#### ✅ EIP-4844 Blob 交易支持 (Cancun/Dencun)
+
+**新增文件**:
+| 文件 | 说明 |
+|------|------|
+| `common/transaction/blob_tx.go` | Type 3 BlobTx 交易类型 |
+| `common/transaction/blob_tx_test.go` | BlobTx 单元测试 |
+| `common/crypto/kzg/kzg.go` | KZG 证明验证模块 |
+| `common/crypto/kzg/kzg_test.go` | KZG 单元测试 |
+| `internal/vm/contracts_eip4844.go` | Point Evaluation 预编译合约 |
+| `internal/api/engine_api_blob.go` | Engine API V3 扩展 |
+
+**核心功能**:
+| 功能 | 说明 |
+|------|------|
+| `BlobTx` | Type 3 交易类型 (EIP-4844) |
+| `BlobTxSidecar` | Blob 数据容器 |
+| `CalcBlobFee` | Blob Gas 价格计算 |
+| `CalcExcessBlobGas` | 累积 Blob Gas 计算 |
+| `KZGToVersionedHash` | 承诺→版本化哈希转换 |
+
+**KZG 模块**:
+| 功能 | 说明 |
+|------|------|
+| `BlobToCommitment` | Blob → KZG 承诺 |
+| `ComputeProof` | 计算 KZG 证明 |
+| `VerifyProof` | 验证 KZG 证明 |
+| `VerifyBlobProofBatch` | 批量验证 |
+| `ValidateBlobSidecar` | 验证 Sidecar |
+
+**预编译合约**:
+| 地址 | 功能 |
+|------|------|
+| `0x0a` | Point Evaluation (EIP-4844) |
+
+**Engine API V3**:
+- `engine_newPayloadV3` - 处理带 Blob 的 Payload
+- `engine_getPayloadV3` - 获取 Payload + BlobsBundle
+- `engine_forkchoiceUpdatedV3` - Fork Choice 更新
+- `engine_getBlobsBundleV1` - 获取 Blobs Bundle
+
+**常量定义 (params/protocol_params.go)**:
+| 常量 | 值 | 说明 |
+|------|------|------|
+| `BlobTxBlobGasPerBlob` | 131072 | 每 Blob Gas |
+| `MaxBlobGasPerBlock` | 786432 | 最大 Blob Gas/块 |
+| `MaxBlobsPerBlock` | 6 | 最大 Blob 数/块 |
+| `BlobTxPointEvaluationPrecompileGas` | 50000 | 预编译 Gas |
+
+---
+
+#### ✅ ENS (Ethereum Name Service) 支持
+
+**新增文件**:
+| 文件 | 说明 |
+|------|------|
+| `common/ens/ens.go` | ENS 核心实现 |
+| `common/ens/ens_test.go` | ENS 单元测试 |
+| `internal/api/ens_api.go` | ENS RPC API |
+
+**功能特性**:
+| 功能 | 说明 |
+|------|------|
+| `Namehash` | ENS 名称哈希计算 |
+| `LabelHash` | 标签哈希计算 |
+| `ReverseNode` | 反向解析节点计算 |
+| `DNSEncode/Decode` | DNS 线格式编码 |
+| `ContentHash` | 内容哈希编解码 |
+
+**合约地址**:
+| 合约 | 地址 |
+|------|------|
+| `MainnetRegistry` | `0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e` |
+| `PublicResolver` | `0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63` |
+| `UniversalResolver` | `0xc0497E381f536Be9ce14B0dD3817cBcAe57d2F62` |
+| `ReverseRegistrar` | `0xa58E81fe9b61B5c3fE2AFD33CF304c454AbFc7Cb` |
+
+**RPC API (ens 命名空间)**:
+- `ens_resolveName` - 正向解析：名称→地址
+- `ens_resolveAddress` - 反向解析：地址→名称
+- `ens_getContentHash` - 获取内容哈希
+- `ens_getTextRecord` - 获取文本记录
+- `ens_getOwner` - 获取所有者
+- `ens_getResolver` - 获取解析器地址
+- `ens_namehash` - 计算名称哈希
+- `ens_isValidName` - 验证名称有效性
+
+---
+
 #### ✅ 完整账户抽象支持 (Pre-Pectra → Fusaka)
 
 **账户抽象演进路线**:
