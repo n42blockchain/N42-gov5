@@ -18,11 +18,12 @@ package log
 
 import (
 	"fmt"
+	"os"
+	"sync"
+
 	"github.com/go-stack/stack"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/exp/maps"
-	"os"
-	"sync"
 )
 
 // Note: We only use the 'terminal' logger from root.go to avoid duplicate output.
@@ -68,9 +69,14 @@ func (l *logger) write(msg string, lvl Lvl, ctx []interface{}, skip int) {
 
 	// Only use terminal logger to avoid duplicate output
 	// terminal is the primary logger configured in Init()
-	if terminal.IsLevelEnabled(logrus.Level(lvl)) {
+	// Map LvlCrit (0) to FatalLevel (1) to avoid panic
+	logrusLvl := logrus.Level(lvl)
+	if lvl == LvlCrit {
+		logrusLvl = logrus.FatalLevel
+	}
+	if terminal.IsLevelEnabled(logrusLvl) {
 		prepareFields()
-		terminal.WithFields(field).Log(logrus.Level(lvl), msg)
+		terminal.WithFields(field).Log(logrusLvl, msg)
 	}
 }
 

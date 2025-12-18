@@ -104,26 +104,22 @@ func (f *Faker) Seal(chain consensus.ChainHeaderReader, blk block.IBlock, result
 	defer f.sealMu.Unlock()
 
 	blockNum := blk.Number64().Uint64()
-	
+
 	// Skip if we've already sealed this block number (prevent duplicate blocks)
 	if blockNum <= f.lastSealedNum && f.lastSealedNum > 0 {
-		return nil // Silently skip duplicate/old blocks
+		return nil
 	}
 
-	// Add a small delay to simulate block time and allow DB writes to complete
-	// This prevents race conditions in single-node dev mode
-	delay := time.NewTimer(200 * time.Millisecond)
+	// 2 second block time for dev mode
+	delay := time.NewTimer(2 * time.Second)
 	defer delay.Stop()
 
 	select {
 	case <-delay.C:
-		// Double-check after delay (another block might have been sealed)
 		if blockNum <= f.lastSealedNum && f.lastSealedNum > 0 {
 			return nil
 		}
-		// Update last sealed number
 		f.lastSealedNum = blockNum
-		// Delay complete, now seal the block
 		select {
 		case results <- blk:
 		case <-stop:
