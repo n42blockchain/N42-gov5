@@ -20,27 +20,28 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"hash/crc32"
+	"net"
+	"path"
+	"runtime"
+	"strings"
+
 	"github.com/gofrs/flock"
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/common/cmp"
 	"github.com/n42blockchain/N42/common/hexutil"
+	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/contracts/deposit"
 	amtdeposit "github.com/n42blockchain/N42/contracts/deposit/AMT"
 	fujideposit "github.com/n42blockchain/N42/contracts/deposit/FUJI"
 	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/NFT"
 	"github.com/n42blockchain/N42/internal/debug"
-	"github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/internal/p2p"
 	astsync "github.com/n42blockchain/N42/internal/sync"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initial-sync"
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
-	"hash/crc32"
-	"net"
-	"path"
-	"runtime"
-	"strings"
 
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
@@ -53,10 +54,13 @@ import (
 	"github.com/n42blockchain/N42/modules"
 	"golang.org/x/sync/semaphore"
 
-	"github.com/n42blockchain/N42/log"
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/n42blockchain/N42/log"
+
+	"sync"
 
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/keystore"
@@ -65,7 +69,6 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
-	"sync"
 
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
@@ -464,24 +467,16 @@ func (n *Node) startTxGenerator() {
 		Value:          1000,
 		FaucetAmount:   1000000000000000000, // 1 ETH per test account
 	}
-	
+
 	chainID, _ := uint256.FromBig(n.config.ChainCfg.ChainID)
-	
+
 	// Use etherbase (coinbase) as the faucet source
 	coinbase := n.etherbase
-	
+
 	n.txGenerator = txgen.New(n.ctx, txgenConfig, n.txspool, chainID, coinbase, n.accman)
-	
-	// Log test accounts info
+
 	n.txGenerator.FundAccounts()
-	
-	// Start the generator
 	n.txGenerator.Start()
-	
-	log.Info("Transaction generator started",
-		"maxTxsPerBlock", txgenConfig.MaxTxsPerBlock,
-		"interval", txgenConfig.Interval,
-		"coinbase", coinbase.Hex())
 }
 
 // getAPIs return two sets of APIs, both the ones that do not require

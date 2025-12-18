@@ -32,7 +32,6 @@ import (
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -53,36 +52,32 @@ func DefaultConfig() *Config {
 		Enabled:        false,
 		MaxTxsPerBlock: 10,
 		Interval:       time.Second,
-		GasPrice:       1000000000,        // 1 Gwei
-		GasLimit:       21000,             // Basic transfer
-		Value:          1000,              // 1000 wei
+		GasPrice:       1000000000,          // 1 Gwei
+		GasLimit:       21000,               // Basic transfer
+		Value:          1000,                // 1000 wei
 		FaucetAmount:   1000000000000000000, // 1 ETH per account
 	}
 }
 
 // Generator generates random transactions for development testing.
 type Generator struct {
-	config    *Config
-	txPool    common.ITxsPool
-	chainID   *uint256.Int
-	
+	config  *Config
+	txPool  common.ITxsPool
+	chainID *uint256.Int
+
 	// Coinbase (faucet source)
-	coinbase  types.Address
-	accman    *accounts.Manager
-	
+	coinbase types.Address
+	accman   *accounts.Manager
+
 	// Test accounts (generated at startup)
-	accounts  []*testAccount
-	funded    atomic.Bool // Whether test accounts have been funded
-	funding   atomic.Bool // Whether funding is in progress (prevent duplicate runs)
-	
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	running   atomic.Bool
-	
-	// Nonce tracking
-	nonceMu   sync.Mutex
-	nonces    map[types.Address]uint64
+	accounts []*testAccount
+	funded   atomic.Bool // Whether test accounts have been funded
+	funding  atomic.Bool // Whether funding is in progress (prevent duplicate runs)
+
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	running atomic.Bool
 }
 
 type testAccount struct {
@@ -94,7 +89,7 @@ type testAccount struct {
 func New(ctx context.Context, config *Config, txPool common.ITxsPool, chainID *uint256.Int, coinbase types.Address, accman *accounts.Manager) *Generator {
 	// Seed random number generator
 	mrand.Seed(time.Now().UnixNano())
-	
+
 	ctx, cancel := context.WithCancel(ctx)
 	g := &Generator{
 		config:   config,
@@ -104,12 +99,11 @@ func New(ctx context.Context, config *Config, txPool common.ITxsPool, chainID *u
 		accman:   accman,
 		ctx:      ctx,
 		cancel:   cancel,
-		nonces:   make(map[types.Address]uint64),
 	}
-	
+
 	// Generate test accounts
 	g.generateTestAccounts(10)
-	
+
 	return g
 }
 
@@ -122,16 +116,14 @@ func (g *Generator) generateTestAccounts(count int) {
 			log.Error("Failed to generate test account", "err", err)
 			continue
 		}
-		
+
 		pubKey := privateKey.PublicKey
 		addr := crypto.PubkeyToAddress(pubKey)
-		
+
 		g.accounts[i] = &testAccount{
 			privateKey: privateKey,
 			address:    addr,
 		}
-		g.nonces[addr] = 0
-		
 		log.Debug("Generated test account", "index", i, "address", addr.Hex())
 	}
 }
@@ -139,56 +131,36 @@ func (g *Generator) generateTestAccounts(count int) {
 // Start begins generating transactions.
 func (g *Generator) Start() {
 	if !g.config.Enabled {
-		log.Info("Transaction generator is disabled")
 		return
 	}
-	
+
 	if g.running.Load() {
 		return
 	}
 	g.running.Store(true)
-	
-	log.Info("Starting transaction generator",
-		"maxTxsPerBlock", g.config.MaxTxsPerBlock,
-		"interval", g.config.Interval,
-		"accounts", len(g.accounts),
-		"coinbase", g.coinbase.Hex())
-	
-	// Subscribe to new block events to trigger tx generation
-	blockCh := make(chan common.ChainHighestBlock, 10)
-	sub := event.GlobalEvent.Subscribe(blockCh)
-	
+
+	log.Info("TxGen started", "maxTx", g.config.MaxTxsPerBlock, "interval", g.config.Interval)
+
 	g.wg.Add(1)
 	go func() {
 		defer g.wg.Done()
-		defer sub.Unsubscribe()
-		
-		// Wait a bit for the first block to be mined
+
+		// Wait for miner to start
 		time.Sleep(3 * time.Second)
-		
+
 		ticker := time.NewTicker(g.config.Interval)
 		defer ticker.Stop()
-		
+
 		for {
 			select {
 			case <-g.ctx.Done():
-				log.Info("Transaction generator stopped")
 				return
-			case block := <-blockCh:
-				// New block sealed
-				// First, try to fund test accounts if not yet funded
-				if !g.funded.Load() && block.Block.Number64().Uint64() >= 1 {
-					g.fundTestAccounts()
-				}
-				// Then generate more transactions
-				if g.funded.Load() {
-					g.generateAndSubmitTxs()
-				}
 			case <-ticker.C:
-				// Periodic: try funding first, then generate
+				// Fund test accounts once
 				if !g.funded.Load() {
 					g.fundTestAccounts()
 				}
+				// Generate transactions after funding
 				if g.funded.Load() {
 					g.generateAndSubmitTxs()
 				}
@@ -205,95 +177,57 @@ func (g *Generator) Stop() {
 	g.running.Store(false)
 	g.cancel()
 	g.wg.Wait()
-	log.Info("Transaction generator stopped")
 }
 
 // fundTestAccounts sends funds from coinbase to all test accounts (auto faucet).
 func (g *Generator) fundTestAccounts() {
-	// Already funded or funding in progress
-	if g.funded.Load() || g.funding.Load() {
+	// Already funded or attempted
+	if g.funded.Load() {
 		return
 	}
 	
-	if g.coinbase == (types.Address{}) {
-		// Silent return - coinbase not set yet
+	// Only attempt once
+	if !g.funding.CompareAndSwap(false, true) {
 		return
 	}
 	
-	if g.accman == nil {
-		// Silent return - account manager not available yet
+	if g.coinbase == (types.Address{}) || g.accman == nil {
 		return
 	}
 	
 	// Find coinbase wallet
 	wallet, err := g.accman.Find(accounts.Account{Address: g.coinbase})
 	if err != nil || wallet == nil {
-		// Silent return - wallet not unlocked yet
 		return
 	}
 	
-	// Mark funding as in progress to prevent duplicate runs
-	if !g.funding.CompareAndSwap(false, true) {
-		return // Another goroutine started funding
-	}
-	defer func() {
-		if !g.funded.Load() {
-			g.funding.Store(false) // Reset if failed
-		}
-	}()
-	
-	// Only log once we're ready to proceed
-	log.Info("=== Auto Faucet: Funding test accounts from coinbase ===",
-		"coinbase", g.coinbase.Hex(),
-		"amount", g.config.FaucetAmount,
-		"accounts", len(g.accounts))
-	
-	// Get current nonce for coinbase
-	g.nonceMu.Lock()
-	nonce, exists := g.nonces[g.coinbase]
-	if !exists {
-		nonce = 0
-	}
-	g.nonceMu.Unlock()
-	
+	// Get current nonce from txpool
+	nonce := g.txPool.Nonce(g.coinbase)
+
 	successCount := 0
-	for i, acc := range g.accounts {
+	for _, acc := range g.accounts {
 		tx := g.createFundingTx(acc.address, nonce)
 		if tx == nil {
 			continue
 		}
 		
-		// Sign with coinbase wallet
 		signedTx, err := wallet.SignTx(accounts.Account{Address: g.coinbase}, tx, g.chainID.ToBig())
 		if err != nil {
-			log.Debug("Failed to sign funding tx", "err", err, "account", i)
 			continue
 		}
 		
-		// Submit to pool
 		if err := g.txPool.AddLocal(signedTx); err != nil {
-			log.Debug("Failed to submit funding tx", "err", err, "account", i)
 			continue
 		}
 		
 		nonce++
 		successCount++
-		log.Info("Funded test account",
-			"index", i,
-			"address", acc.address.Hex(),
-			"amount", g.config.FaucetAmount)
 	}
-	
-	// Update nonce
-	g.nonceMu.Lock()
-	g.nonces[g.coinbase] = nonce
-	g.nonceMu.Unlock()
-	
+
+	// Mark as funded regardless of success (only try once)
+	g.funded.Store(true)
 	if successCount > 0 {
-		g.funded.Store(true)
-		log.Info("=== Auto Faucet complete ===",
-			"funded", successCount,
-			"total", len(g.accounts))
+		log.Info("Auto-faucet complete", "funded", successCount)
 	}
 }
 
@@ -301,7 +235,7 @@ func (g *Generator) fundTestAccounts() {
 func (g *Generator) createFundingTx(to types.Address, nonce uint64) *transaction.Transaction {
 	gasPrice := uint256.NewInt(g.config.GasPrice)
 	value := uint256.NewInt(g.config.FaucetAmount)
-	
+
 	innerTx := &transaction.LegacyTx{
 		Nonce:    nonce,
 		GasPrice: gasPrice,
@@ -311,48 +245,38 @@ func (g *Generator) createFundingTx(to types.Address, nonce uint64) *transaction
 		Data:     nil,
 		From:     &g.coinbase,
 	}
-	
+
 	return transaction.NewTx(innerTx)
 }
 
 // generateAndSubmitTxs generates and submits a batch of transactions.
 func (g *Generator) generateAndSubmitTxs() {
 	if len(g.accounts) < 2 {
-		log.Warn("Not enough test accounts for transaction generation")
 		return
 	}
-	
-	// Random number of transactions (0 to maxTxsPerBlock)
-	numTxs := mrand.Intn(g.config.MaxTxsPerBlock + 1)
-	if numTxs == 0 {
-		return
-	}
-	
-	txs := make([]*transaction.Transaction, 0, numTxs)
-	
+
+	// Random number of transactions (1 to maxTxsPerBlock)
+	numTxs := mrand.Intn(g.config.MaxTxsPerBlock) + 1
+
+	successCount := 0
+	failCount := 0
 	for i := 0; i < numTxs; i++ {
 		tx := g.createRandomTx()
-		if tx != nil {
-			txs = append(txs, tx)
+		if tx == nil {
+			failCount++
+			continue
 		}
-	}
-	
-	if len(txs) == 0 {
-		return
-	}
-	
-	// Submit to transaction pool
-	successCount := 0
-	for _, tx := range txs {
-		if err := g.txPool.AddLocal(tx); err == nil {
+		if err := g.txPool.AddLocal(tx); err != nil {
+			failCount++
+			log.Debug("TxGen: AddLocal failed", "err", err)
+		} else {
 			successCount++
 		}
 	}
-	
-	log.Debug("Generated transactions",
-		"attempted", numTxs,
-		"submitted", len(txs),
-		"success", successCount)
+
+	if successCount > 0 || failCount > 0 {
+		log.Info("TxGen", "submitted", successCount, "failed", failCount)
+	}
 }
 
 // createRandomTx creates a random transaction between test accounts.
@@ -360,53 +284,36 @@ func (g *Generator) createRandomTx() *transaction.Transaction {
 	if len(g.accounts) < 2 {
 		return nil
 	}
-	
+
 	// Select random sender and receiver
 	senderIdx := mrand.Intn(len(g.accounts))
-	receiverIdx := mrand.Intn(len(g.accounts))
-	
-	// Ensure sender != receiver
-	for receiverIdx == senderIdx {
-		receiverIdx = mrand.Intn(len(g.accounts))
-	}
-	
+	receiverIdx := (senderIdx + 1 + mrand.Intn(len(g.accounts)-1)) % len(g.accounts)
+
 	sender := g.accounts[senderIdx]
 	receiver := g.accounts[receiverIdx]
-	
-	// Get and increment nonce
-	g.nonceMu.Lock()
-	nonce := g.nonces[sender.address]
-	g.nonces[sender.address]++
-	g.nonceMu.Unlock()
-	
-	// Create transaction
-	gasPrice := uint256.NewInt(g.config.GasPrice)
-	value := uint256.NewInt(g.config.Value)
-	
-	// Add some randomness to value
-	if mrand.Float32() > 0.5 {
-		value = uint256.NewInt(uint64(mrand.Intn(10000) + 1))
-	}
-	
+
+	// Get nonce from txpool (includes pending txs)
+	nonce := g.txPool.Nonce(sender.address)
+
+	// Small random value (avoid running out of funds)
+	value := uint256.NewInt(uint64(mrand.Intn(1000) + 1))
+
 	innerTx := &transaction.LegacyTx{
 		Nonce:    nonce,
-		GasPrice: gasPrice,
+		GasPrice: uint256.NewInt(g.config.GasPrice),
 		Gas:      g.config.GasLimit,
 		To:       &receiver.address,
 		Value:    value,
 		Data:     nil,
 		From:     &sender.address,
 	}
-	
+
 	tx := transaction.NewTx(innerTx)
-	
-	// Sign transaction
 	signedTx, err := g.signTx(tx, sender.privateKey)
 	if err != nil {
-		log.Debug("Failed to sign transaction", "err", err)
 		return nil
 	}
-	
+
 	return signedTx
 }
 
@@ -425,34 +332,7 @@ func (g *Generator) GetTestAccounts() []types.Address {
 	return addresses
 }
 
-// ResetNonces resets nonce tracking (useful after chain reset).
-func (g *Generator) ResetNonces() {
-	g.nonceMu.Lock()
-	defer g.nonceMu.Unlock()
-	
-	for addr := range g.nonces {
-		g.nonces[addr] = 0
-	}
-}
-
-// SetNonce sets the nonce for a specific address.
-func (g *Generator) SetNonce(addr types.Address, nonce uint64) {
-	g.nonceMu.Lock()
-	defer g.nonceMu.Unlock()
-	g.nonces[addr] = nonce
-}
-
-// FundAccounts logs the test account addresses.
-// With auto-faucet enabled, these will be automatically funded from coinbase.
+// FundAccounts logs the test account info.
 func (g *Generator) FundAccounts() {
-	log.Info("=== Transaction Generator Test Accounts ===")
-	log.Info("These accounts will be auto-funded from coinbase after first block")
-	log.Info("Coinbase (faucet source)", "address", g.coinbase.Hex())
-	log.Info("Faucet amount per account", "wei", g.config.FaucetAmount)
-	for i, acc := range g.accounts {
-		log.Debug("Test account", "index", i, "address", acc.address.Hex())
-	}
-	log.Info("Total test accounts", "count", len(g.accounts))
-	log.Info("============================================")
+	log.Info("TxGen ready", "accounts", len(g.accounts), "coinbase", g.coinbase.Hex())
 }
-
