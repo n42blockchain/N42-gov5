@@ -17,6 +17,9 @@
 package apos
 
 import (
+	"sync"
+	"time"
+
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/n42blockchain/N42/common/block"
@@ -30,23 +33,26 @@ import (
 
 // Faker is a testing consensus engine that accepts all blocks as valid.
 // It is useful for testing purposes where consensus validation should be bypassed.
-type Faker struct{}
+type Faker struct {
+	sealMu        sync.Mutex // Prevent concurrent sealing
+	lastSealedNum uint64     // Last sealed block number (prevent duplicate blocks)
+}
 
 // NewFaker creates a new Faker consensus engine.
 func NewFaker() consensus.Engine {
 	return &Faker{}
 }
 
-func (f Faker) Author(header block.IHeader) (types.Address, error) {
+func (f *Faker) Author(header block.IHeader) (types.Address, error) {
 	return header.(*block.Header).Coinbase, nil
 }
 
-func (f Faker) VerifyHeader(chain consensus.ChainHeaderReader, header block.IHeader, seal bool) error {
+func (f *Faker) VerifyHeader(chain consensus.ChainHeaderReader, header block.IHeader, seal bool) error {
 	// Faker accepts all headers as valid
 	return nil
 }
 
-func (f Faker) VerifyHeaders(chain consensus.ChainHeaderReader, headers []block.IHeader, seals []bool) (chan<- struct{}, <-chan error) {
+func (f *Faker) VerifyHeaders(chain consensus.ChainHeaderReader, headers []block.IHeader, seals []bool) (chan<- struct{}, <-chan error) {
 	abort := make(chan struct{})
 	results := make(chan error, len(headers))
 	go func() {
@@ -61,59 +67,95 @@ func (f Faker) VerifyHeaders(chain consensus.ChainHeaderReader, headers []block.
 	return abort, results
 }
 
-func (f Faker) VerifyUncles(chain consensus.ConsensusChainReader, blk block.IBlock) error {
+func (f *Faker) VerifyUncles(chain consensus.ConsensusChainReader, blk block.IBlock) error {
 	// Faker accepts all uncles as valid
 	return nil
 }
 
-func (f Faker) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) error {
-	// No preparation needed for faker
-	return nil
-}
-
-func (f Faker) Finalize(chain consensus.ChainHeaderReader, header block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
-	// Faker does not issue rewards
-	return nil, nil, nil
-}
-
-func (f Faker) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader, receipts []*block.Receipt) (block.IBlock, []*block.Reward, map[types.Address]*uint256.Int, error) {
-	return block.NewBlock(header, txs), nil, nil, nil
-}
-
-func (f Faker) Rewards(tx kv.RwTx, header block.IHeader, ibs *state.IntraBlockState, setRewards bool) ([]*block.Reward, error) {
-	// Faker does not issue rewards
-	return nil, nil
-}
-
-func (f Faker) Seal(chain consensus.ChainHeaderReader, blk block.IBlock, results chan<- block.IBlock, stop <-chan struct{}) error {
-	// Faker immediately returns the block without sealing
-	select {
-	case results <- blk:
-	case <-stop:
+func (f *Faker) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) error {
+	// Set difficulty for the block (required for ReorgNeeded to work correctly)
+	h := header.(*block.Header)
+	parent, _ := chain.GetHeaderByHash(h.ParentHash)
+	if parent != nil {
+		h.Difficulty = f.CalcDifficulty(chain, h.Time, parent)
+	} else {
+		h.Difficulty = uint256.NewInt(1)
 	}
 	return nil
 }
 
-func (f Faker) SealHash(header block.IHeader) types.Hash {
+func (f *Faker) Finalize(chain consensus.ChainHeaderReader, header block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+	// Faker does not issue rewards
+	return nil, nil, nil
+}
+
+func (f *Faker) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader, receipts []*block.Receipt) (block.IBlock, []*block.Reward, map[types.Address]*uint256.Int, error) {
+	return block.NewBlock(header, txs), nil, nil, nil
+}
+
+func (f *Faker) Rewards(tx kv.RwTx, header block.IHeader, ibs *state.IntraBlockState, setRewards bool) ([]*block.Reward, error) {
+	// Faker does not issue rewards
+	return nil, nil
+}
+
+func (f *Faker) Seal(chain consensus.ChainHeaderReader, blk block.IBlock, results chan<- block.IBlock, stop <-chan struct{}) error {
+	// Prevent concurrent sealing - only one block at a time
+	f.sealMu.Lock()
+	defer f.sealMu.Unlock()
+
+	blockNum := blk.Number64().Uint64()
+	
+	// Skip if we've already sealed this block number (prevent duplicate blocks)
+	if blockNum <= f.lastSealedNum && f.lastSealedNum > 0 {
+		return nil // Silently skip duplicate/old blocks
+	}
+
+	// Add a small delay to simulate block time and allow DB writes to complete
+	// This prevents race conditions in single-node dev mode
+	delay := time.NewTimer(200 * time.Millisecond)
+	defer delay.Stop()
+
+	select {
+	case <-delay.C:
+		// Double-check after delay (another block might have been sealed)
+		if blockNum <= f.lastSealedNum && f.lastSealedNum > 0 {
+			return nil
+		}
+		// Update last sealed number
+		f.lastSealedNum = blockNum
+		// Delay complete, now seal the block
+		select {
+		case results <- blk:
+		case <-stop:
+		}
+	case <-stop:
+		return nil
+	}
+	return nil
+}
+
+func (f *Faker) SealHash(header block.IHeader) types.Hash {
 	return header.Hash()
 }
 
-func (f Faker) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent block.IHeader) *uint256.Int {
-	return uint256.NewInt(1)
+func (f *Faker) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent block.IHeader) *uint256.Int {
+	// Return difficulty = parent.Number + 2 to ensure TD always increases
+	// This guarantees ReorgNeeded returns true for new blocks
+	return uint256.NewInt(0).Add(parent.Number64(), uint256.NewInt(2))
 }
 
-func (f Faker) Type() params.ConsensusType {
+func (f *Faker) Type() params.ConsensusType {
 	return params.Faker
 }
 
-func (f Faker) APIs(chain consensus.ConsensusChainReader) []jsonrpc.API {
+func (f *Faker) APIs(chain consensus.ConsensusChainReader) []jsonrpc.API {
 	return nil
 }
 
-func (f Faker) Close() error {
+func (f *Faker) Close() error {
 	return nil
 }
 
-func (f Faker) IsServiceTransaction(sender types.Address, syscall consensus.SystemCall) bool {
+func (f *Faker) IsServiceTransaction(sender types.Address, syscall consensus.SystemCall) bool {
 	return false
 }

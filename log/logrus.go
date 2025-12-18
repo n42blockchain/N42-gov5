@@ -25,9 +25,8 @@ import (
 	"sync"
 )
 
-var (
-	std = logrus.StandardLogger()
-)
+// Note: We only use the 'terminal' logger from root.go to avoid duplicate output.
+// The standard logger (logrus.StandardLogger()) is not used to prevent double logging.
 
 type logger struct {
 	ctx     []interface{}
@@ -67,35 +66,12 @@ func (l *logger) write(msg string, lvl Lvl, ctx []interface{}, skip int) {
 		}
 	}
 
+	// Only use terminal logger to avoid duplicate output
+	// terminal is the primary logger configured in Init()
 	if terminal.IsLevelEnabled(logrus.Level(lvl)) {
 		prepareFields()
 		terminal.WithFields(field).Log(logrus.Level(lvl), msg)
 	}
-
-	if std.IsLevelEnabled(logrus.Level(lvl)) {
-		prepareFields()
-		std.WithFields(field).Log(logrus.Level(lvl), msg)
-	}
-	//switch lvl {
-	//case LvlCrit:
-	//	terminal.WithFields(field).Panic(msg)
-	//	std.WithFields(field).Panic(msg)
-	//case LvlError:
-	//	terminal.WithFields(field).Error(msg)
-	//	std.WithFields(field).Error(msg)
-	//case LvlWarn:
-	//	terminal.WithFields(field).Warn(msg)
-	//	std.WithFields(field).Warn(msg)
-	//case LvlInfo:
-	//	terminal.WithFields(field).Info(msg)
-	//	std.WithFields(field).Info(msg)
-	//case LvlDebug:
-	//	terminal.WithFields(field).Debug(msg)
-	//	std.WithFields(field).Debug(msg)
-	//case LvlTrace:
-	//	terminal.WithFields(field).Trace(msg)
-	//	std.WithFields(field).Trace(msg)
-	//}
 }
 
 func (l *logger) New(ctx ...interface{}) Logger {

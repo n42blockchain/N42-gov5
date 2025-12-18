@@ -841,6 +841,9 @@ func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Re
 
 // writeBlockWithState
 func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) (status WriteStatus, err error) {
+	// Calculate externTd outside transaction to update cache after commit
+	var externTd *uint256.Int
+	
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		//ptd := bc.GetTd(blk.ParentHash(), blk.Number64().Sub(uint256.NewInt(1)))
 		ptd, err := rawdb.ReadTd(tx, blk.ParentHash(), uint256.NewInt(0).Sub(blk.Number64(), uint256.NewInt(1)).Uint64())
@@ -852,7 +855,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		}
 
 		//if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-		externTd := uint256.NewInt(0).Add(ptd, blk.Difficulty())
+		externTd = uint256.NewInt(0).Add(ptd, blk.Difficulty())
 		if err := rawdb.WriteTd(tx, blk.Hash(), blk.Number64().Uint64(), externTd); nil != err {
 			return err
 		}
@@ -890,6 +893,11 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		return nil
 	}); nil != err {
 		return NonStatTy, err
+	}
+
+	// Update TD cache after transaction commit (critical for ReorgNeeded to work correctly)
+	if externTd != nil {
+		bc.tdCache.Add(blk.Hash(), externTd)
 	}
 
 	reorg, err := bc.forker.ReorgNeeded(bc.CurrentBlock().Header(), blk.Header())

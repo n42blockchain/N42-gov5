@@ -617,4 +617,30 @@ var (
 		P2PBlockBatchLimitBurstFactor,
 		P2PBlockBatchLimiterPeriod,
 	}
+
+	// Development flags
+	devFlags = []cli.Flag{
+		DevTxGenFlag,
+		DevTxGenMaxFlag,
+	}
+)
+
+var (
+	// DevTxGenFlag enables automatic transaction generation for testing.
+	DevTxGenFlag = &cli.BoolFlag{
+		Name:        "dev.txgen",
+		Usage:       "启用自动交易生成器 (开发测试用)",
+		Category:    "DEVELOPMENT",
+		Value:       false,
+		Destination: &DefaultConfig.DevCfg.TxGenEnabled,
+	}
+
+	// DevTxGenMaxFlag sets the maximum transactions per block.
+	DevTxGenMaxFlag = &cli.IntFlag{
+		Name:        "dev.txgen.max",
+		Usage:       "每个块的最大交易数 (0-31)",
+		Category:    "DEVELOPMENT",
+		Value:       10,
+		Destination: &DefaultConfig.DevCfg.TxGenMaxPerBlock,
+	}
 )

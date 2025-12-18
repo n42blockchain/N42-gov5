@@ -29,14 +29,17 @@ var (
 	GitTag    string
 )
 
-// see https://calver.org
+// Version format: Major.Minor.Build
+// - Major: Annual release (5, 6, 7...)
+// - Minor: Feature release within year (5.1, 5.2...)
+// - Build: Auto-incremented on each build (486, 487, 488...)
 const (
-	VersionMajor       = 0  // Major version component of the current release
-	VersionMinor       = 1  // Minor version component of the current release
-	VersionMicro       = 1  // Patch version component of the current release
-	VersionModifier    = "" // Modifier component of the current release
-	VersionKeyCreated  = "astVersionCreated"
-	VersionKeyFinished = "astVersionFinished"
+	VersionMajor       = 5   // Major version - annual release
+	VersionMinor       = 1   // Minor version - feature release
+	VersionBuild       = 487 // Build number - auto-incremented
+	VersionModifier    = ""  // Modifier component (alpha, beta, stable)
+	VersionKeyCreated  = "n42VersionCreated"
+	VersionKeyFinished = "n42VersionFinished"
 )
 
 func withModifier(vsn string) string {
@@ -56,7 +59,7 @@ func isRelease() bool {
 
 // Version holds the textual version string.
 var Version = func() string {
-	return fmt.Sprintf("%d.%02d.%d", VersionMajor, VersionMinor, VersionMicro)
+	return fmt.Sprintf("%d.%d.%d", VersionMajor, VersionMinor, VersionBuild)
 }()
 
 // VersionWithMeta holds the textual version string including the metadata.

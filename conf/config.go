@@ -37,6 +37,8 @@ type Config struct {
 	// Gas Price Oracle options
 	GPO   GpoConfig   `json:"gpo" yaml:"gpo"`
 	Miner MinerConfig `json:"miner"`
+	// Development configuration
+	DevCfg DevConfig `json:"dev" yaml:"dev"`
 }
 
 func SaveConfigToFile(file string, config Config) error {
