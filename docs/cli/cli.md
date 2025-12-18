@@ -21,7 +21,7 @@ USAGE:
    ast [global options] command [command options] [arguments...]
 
 VERSION:
-   0.01.1-36074172
+   5.1.487-36074172
 
 COMMANDS:
    wallet   Manage N42 presale wallets

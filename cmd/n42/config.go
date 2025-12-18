@@ -126,4 +126,7 @@ var DefaultConfig = conf.Config{
 		GasPrice: big.NewInt(params.GWei),
 		Recommit: 4 * time.Second,
 	},
+
+	// 开发配置
+	DevCfg: conf.DefaultDevConfig(),
 }

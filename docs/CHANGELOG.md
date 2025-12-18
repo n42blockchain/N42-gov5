@@ -1625,7 +1625,7 @@ n42 --log.file n42.log --log.maxsize 50 --log.maxbackups 5 --log.maxage 7 --log.
 
 ## 版本历史
 
-### v0.01.1 (当前)
+### v5.1.487 (当前)
 
 - 初始重构版本
 - 接口统一化

@@ -161,6 +161,7 @@ func AllFlags() []cli.Flag {
 	flags = append(flags, metricsFlags...)
 	flags = append(flags, p2pFlags...)
 	flags = append(flags, p2pLimitFlags...)
+	flags = append(flags, devFlags...)
 
 	return flags
 }

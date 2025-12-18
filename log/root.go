@@ -194,11 +194,9 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 	formatter.TimestampFormat = "2006-01-02 15:04:05"
 	formatter.FullTimestamp = true
 	formatter.DisableColors = false
-	logrus.SetFormatter(formatter)
 
 	// 设置日志级别
 	lvl, _ := logrus.ParseLevel(config.Level)
-	logrus.SetLevel(lvl)
 
 	// 如果没有指定日志文件，只输出到控制台
 	if config.LogFile == "" {
@@ -287,7 +285,7 @@ func InitMobileLogger(filepath string, isDebug bool) {
 	formatter.TimestampFormat = "2006-01-02 15:04:05"
 	formatter.FullTimestamp = true
 	formatter.DisableColors = false
-	logrus.SetFormatter(formatter)
+	terminal.SetFormatter(formatter)
 	if isDebug {
 		terminal.SetLevel(logrus.DebugLevel)
 	} else {

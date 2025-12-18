@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"github.com/gofrs/flock"
+	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/common/cmp"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/contracts/deposit"
@@ -70,6 +71,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/miner"
+	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txspool"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -119,6 +121,8 @@ type Node struct {
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
 
+	// Development tools
+	txGenerator *txgen.Generator // Transaction generator for testing
 }
 
 const (
@@ -229,6 +233,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		engine = apoa.New(cfg.ChainCfg.Clique, chainKv)
 	case params.AposConsensu:
 		engine = apos.New(cfg.ChainCfg.Apos, chainKv, cfg.ChainCfg)
+	case params.Faker:
+		engine = apos.NewFaker()
 	default:
 		return nil, fmt.Errorf("invalid engine name %s", cfg.ChainCfg.Consensus)
 	}
@@ -437,9 +443,45 @@ func (n *Node) Start() error {
 
 	go n.is.Start()
 
+	// Start transaction generator if enabled
+	if n.config.DevCfg.TxGenEnabled {
+		n.startTxGenerator()
+	}
+
 	log.Debug("node setup success!")
 
 	return nil
+}
+
+// startTxGenerator initializes and starts the transaction generator for development testing.
+func (n *Node) startTxGenerator() {
+	txgenConfig := &txgen.Config{
+		Enabled:        n.config.DevCfg.TxGenEnabled,
+		MaxTxsPerBlock: n.config.DevCfg.TxGenMaxPerBlock,
+		Interval:       n.config.DevCfg.TxGenInterval,
+		GasPrice:       uint64(n.config.DevCfg.TxGenGasPrice),
+		GasLimit:       21000,
+		Value:          1000,
+		FaucetAmount:   1000000000000000000, // 1 ETH per test account
+	}
+	
+	chainID, _ := uint256.FromBig(n.config.ChainCfg.ChainID)
+	
+	// Use etherbase (coinbase) as the faucet source
+	coinbase := n.etherbase
+	
+	n.txGenerator = txgen.New(n.ctx, txgenConfig, n.txspool, chainID, coinbase, n.accman)
+	
+	// Log test accounts info
+	n.txGenerator.FundAccounts()
+	
+	// Start the generator
+	n.txGenerator.Start()
+	
+	log.Info("Transaction generator started",
+		"maxTxsPerBlock", txgenConfig.MaxTxsPerBlock,
+		"interval", txgenConfig.Interval,
+		"coinbase", coinbase.Hex())
 }
 
 // getAPIs return two sets of APIs, both the ones that do not require
@@ -652,6 +694,11 @@ func (n *Node) stopServices() []error {
 	var errs []error
 	n.stopRPC()
 
+	// Stop transaction generator if running
+	if n.txGenerator != nil {
+		n.txGenerator.Stop()
+	}
+
 	n.miner.Close()
 
 	if err := n.blockChain.Close(); err != nil {
@@ -666,8 +713,10 @@ func (n *Node) stopServices() []error {
 		errs = append(errs, err)
 	}
 
-	if err := n.depositContract.Stop(); err != nil {
-		errs = append(errs, err)
+	if n.depositContract != nil {
+		if err := n.depositContract.Stop(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	if err := n.is.Stop(); err != nil {
