@@ -111,8 +111,8 @@ devtools:
 PACKAGE_NAME          := github.com/WeAreAmaze/ast
 GOLANG_CROSS_VERSION  ?= v1.20.7
 
-.PHONY: release
-release:
+.PHONY: release-docker
+release-docker:
 	@docker run \
 		--rm \
 		--privileged \
@@ -148,6 +148,7 @@ open-output:
 
 .PHONY: build test test-short race-core fmt vet lint bench-smoke ci
 .PHONY: race bench cover check install tidy help test-cover test-verbose
+.PHONY: version version-bump version-minor version-major
 
 # =============================================================================
 # 核心目标 (Core Targets)
@@ -329,3 +330,37 @@ help:
 	@echo "    android       - 构建 Android"
 	@echo "    ios           - 构建 iOS"
 	@echo ""
+	@echo "  版本管理 (Version):"
+	@echo "    version       - 显示当前版本"
+	@echo "    version-bump  - 递增构建号 (5.1.486 -> 5.1.487)"
+	@echo "    version-minor - 递增小版本 (5.1.486 -> 5.2.0)"
+	@echo "    version-major - 递增大版本 (5.1.486 -> 6.0.0)"
+	@echo ""
+
+# =============================================================================
+# 版本管理 (Version Management)
+# =============================================================================
+
+# 显示当前版本
+version:
+	@cat VERSION 2>/dev/null || echo "VERSION file not found"
+	@echo "Git: $(GIT_COMMIT) ($(GIT_BRANCH))"
+
+# 递增构建号 (每次 build)
+version-bump:
+	@chmod +x scripts/bump_version.sh
+	@./scripts/bump_version.sh build
+
+# 递增小版本 (功能更新)
+version-minor:
+	@chmod +x scripts/bump_version.sh
+	@./scripts/bump_version.sh minor
+
+# 递增大版本 (年度更新)
+version-major:
+	@chmod +x scripts/bump_version.sh
+	@./scripts/bump_version.sh major
+
+# 带版本递增的发布构建
+release: version-bump build
+	@echo "==> Release build complete: $$(cat VERSION)"
