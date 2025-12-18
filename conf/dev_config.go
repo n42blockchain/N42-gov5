@@ -22,13 +22,13 @@ import "time"
 type DevConfig struct {
 	// TxGen enables automatic transaction generation for testing
 	TxGenEnabled bool `json:"tx_gen_enabled" yaml:"tx_gen_enabled"`
-	
+
 	// TxGenMaxPerBlock is the maximum number of transactions to generate per block (0-31)
 	TxGenMaxPerBlock int `json:"tx_gen_max_per_block" yaml:"tx_gen_max_per_block"`
-	
+
 	// TxGenInterval is the interval between transaction generation batches
 	TxGenInterval time.Duration `json:"tx_gen_interval" yaml:"tx_gen_interval"`
-	
+
 	// TxGenGasPrice is the gas price for generated transactions (in wei)
 	TxGenGasPrice uint64 `json:"tx_gen_gas_price" yaml:"tx_gen_gas_price"`
 }
@@ -38,8 +38,7 @@ func DefaultDevConfig() DevConfig {
 	return DevConfig{
 		TxGenEnabled:     false,
 		TxGenMaxPerBlock: 10,
-		TxGenInterval:    time.Second,
-		TxGenGasPrice:    1000000000, // 1 Gwei
+		TxGenInterval:    2 * time.Second, // Match 2s block time
+		TxGenGasPrice:    1000000000,      // 1 Gwei
 	}
 }
-
