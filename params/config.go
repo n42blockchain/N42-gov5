@@ -356,6 +356,9 @@ var NetworkNames = map[string]string{
 func (c *ChainConfig) Description() string {
 	var banner string
 
+	// Display version information
+	banner += fmt.Sprintf("Version:   %s\n", VersionWithMeta)
+
 	// Create some basinc network config output
 	network := NetworkNames[c.ChainID.String()]
 	if network == "" {
