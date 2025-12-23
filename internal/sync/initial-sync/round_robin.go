@@ -127,23 +127,89 @@ func (s *Service) updatePeerScorerStats(pid peer.ID, startBlockNr *uint256.Int) 
 }
 
 // logBatchSyncStatus and increments the block processing counter.
+// Throttled to log every 5 seconds or every 10000 blocks to reduce log spam.
 func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 	s.counter.Incr(int64(len(blks)))
+	
+	lastBlock := blks[len(blks)-1]
+	currentBlockNum := utils.ConvertH256ToUint256Int(lastBlock.Header.Number).Uint64()
+	
+	// Initialize sync tracking on first call
+	if s.syncStartTime.IsZero() {
+		s.syncStartTime = time.Now()
+		s.syncStartBlock = currentBlockNum
+		s.lastLogTime = time.Now()
+		s.lastLogBlock = currentBlockNum
+	}
+	
+	// Throttle logging: every 5 seconds or every 10000 blocks
+	now := time.Now()
+	blocksSinceLog := currentBlockNum - s.lastLogBlock
+	timeSinceLog := now.Sub(s.lastLogTime)
+	
+	if timeSinceLog < 5*time.Second && blocksSinceLog < 10000 {
+		return
+	}
+	
+	// Update last log markers
+	s.lastLogTime = now
+	s.lastLogBlock = currentBlockNum
+
 	rate := float64(s.counter.Rate()) / counterSeconds
 	if rate == 0 {
 		rate = 1
 	}
-	targetNumber, _ := s.cfg.P2P.Peers().BestPeers(1, s.cfg.Chain.CurrentBlock().Number64())
-	firstBlock := blks[0]
-	firstBlockNumber := utils.ConvertH256ToUint256Int(firstBlock.Header.Number)
-	log.Info(
-		fmt.Sprintf("Processing block batch of size %d starting from  %d - estimated block remaining %d",
-			len(blks),
-			firstBlockNumber.Uint64(),
-			new(uint256.Int).Sub(targetNumber, firstBlockNumber).Uint64(),
-		),
-		"peers", len(s.cfg.P2P.Peers().Connected()),
-		"blocksPerSecond", fmt.Sprintf("%.1f", rate),
-		"highestExpectedBlockNr", s.highestExpectedBlockNr.Uint64(),
-	)
+	
+	targetNum := s.highestExpectedBlockNr.Uint64()
+	remaining := targetNum - currentBlockNum
+	progress := float64(currentBlockNum) / float64(targetNum) * 100
+	
+	// Calculate ETA
+	eta := "calculating..."
+	if rate > 0 && remaining > 0 {
+		etaSecs := float64(remaining) / rate
+		eta = formatDuration(time.Duration(etaSecs) * time.Second)
+	}
+	
+	// Format: Syncing #175,000 → #10.88M (1.6%) ▸ 500 blk/s ▸ ETA 5h58m ▸ 1 peer
+	log.Info(fmt.Sprintf("Syncing #%s → #%s (%.1f%%) ▸ %.0f blk/s ▸ ETA %s ▸ %d peer(s)",
+		formatNumber(currentBlockNum),
+		formatNumber(targetNum),
+		progress,
+		rate,
+		eta,
+		len(s.cfg.P2P.Peers().Connected()),
+	))
+}
+
+// formatNumber formats large numbers with K/M suffixes for readability.
+func formatNumber(n uint64) string {
+	switch {
+	case n >= 1_000_000_000:
+		return fmt.Sprintf("%.2fB", float64(n)/1_000_000_000)
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.2fM", float64(n)/1_000_000)
+	case n >= 10_000:
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+// formatDuration formats a duration in a human-readable compact format.
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	if d < 24*time.Hour {
+		hours := int(d.Hours())
+		mins := int(d.Minutes()) % 60
+		return fmt.Sprintf("%dh%dm", hours, mins)
+	}
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	return fmt.Sprintf("%dd%dh", days, hours)
 }

@@ -33,6 +33,11 @@ type Service struct {
 	syncing                atomic.Bool
 	counter                *ratecounter.RateCounter
 	highestExpectedBlockNr *uint256.Int
+	// Log throttling
+	lastLogTime            time.Time
+	lastLogBlock           uint64
+	syncStartTime          time.Time
+	syncStartBlock         uint64
 }
 
 // NewService configures the initial sync service responsible for bringing the node up to the
