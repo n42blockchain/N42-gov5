@@ -687,45 +687,84 @@ func (n *Node) Close() error {
 // It is the inverse of Start.
 func (n *Node) stopServices() []error {
 	var errs []error
+	total := 9 // Total number of services to stop
+	current := 0
+	
+	logProgress := func(service string) {
+		current++
+		log.Info(fmt.Sprintf("  [%d/%d] Stopping %s...", current, total, service))
+	}
+	
+	logDone := func(service string, err error) {
+		if err != nil {
+			log.Warn(fmt.Sprintf("  [%d/%d] %s stopped with error", current, total, service), "err", err)
+		}
+	}
+	
+	// 1. Stop RPC services
+	logProgress("RPC services")
 	n.stopRPC()
-
-	// Stop transaction generator if running
+	
+	// 2. Stop transaction generator if running
+	logProgress("Transaction generator")
 	if n.txGenerator != nil {
 		n.txGenerator.Stop()
 	}
-
+	
+	// 3. Stop miner
+	logProgress("Miner")
 	n.miner.Close()
-
+	
+	// 4. Stop blockchain (this may take time to flush data)
+	logProgress("Blockchain (flushing data)")
 	if err := n.blockChain.Close(); err != nil {
 		errs = append(errs, err)
+		logDone("Blockchain", err)
 	}
-
+	
+	// 5. Stop consensus engine
+	logProgress("Consensus engine")
 	if err := n.engine.Close(); err != nil {
 		errs = append(errs, err)
+		logDone("Consensus engine", err)
 	}
-
+	
+	// 6. Stop transaction pool
+	logProgress("Transaction pool")
 	if err := n.txspool.Stop(); err != nil {
 		errs = append(errs, err)
+		logDone("Transaction pool", err)
 	}
-
+	
+	// 7. Stop deposit contract
+	logProgress("Deposit contract")
 	if n.depositContract != nil {
 		if err := n.depositContract.Stop(); err != nil {
 			errs = append(errs, err)
+			logDone("Deposit contract", err)
 		}
 	}
-
+	
+	// 8. Stop initial sync
+	logProgress("Initial sync")
 	if err := n.is.Stop(); err != nil {
 		errs = append(errs, err)
+		logDone("Initial sync", err)
 	}
-
+	
+	// 9. Stop P2P networking
+	logProgress("P2P network")
 	if err := n.p2p.Stop(); err != nil {
 		errs = append(errs, err)
+		logDone("P2P network", err)
 	}
-
+	
+	// Stop sync service (doesn't count towards total as it's auxiliary)
 	if err := n.sync.Stop(); err != nil {
 		errs = append(errs, err)
 	}
-
+	
+	log.Info("All services stopped")
 	return errs
 }
 

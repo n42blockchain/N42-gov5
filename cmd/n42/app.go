@@ -191,16 +191,56 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 			go monitorFreeDiskSpace(sigc, stack.InstanceDir(), uint64(minFreeDiskSpace)*1024*1024*1024)
 		}
 
-		shutdown := func() {
-			log.Info("Got interrupt, shutting down...")
-			go stack.Close()
-			for i := 10; i > 0; i-- {
-				<-sigc
-				if i > 1 {
-					log.Warn("Already shutting down, interrupt more to panic.", "times", i-1)
+		shutdown := func(sig os.Signal) {
+			log.Info("")
+			log.Info("╔════════════════════════════════════════════════════════════╗")
+			log.Info("║  Graceful shutdown initiated (Ctrl+C again to force quit)  ║")
+			log.Info("╚════════════════════════════════════════════════════════════╝")
+			log.Info("")
+			
+			// Create a done channel to track completion
+			done := make(chan struct{})
+			
+			go func() {
+				stack.Close()
+				close(done)
+			}()
+			
+			// Wait for shutdown with timeout, allow force quit
+			forceQuitCount := 3
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			
+			timeout := time.After(30 * time.Second)
+			elapsed := 0
+			
+			for {
+				select {
+				case <-done:
+					log.Info("")
+					log.Info("✓ Node stopped gracefully. Goodbye!")
+					log.Info("")
+					return
+					
+				case <-timeout:
+					log.Warn("Shutdown timeout (30s), forcing exit...")
+					os.Exit(1)
+					
+				case <-ticker.C:
+					elapsed++
+					if elapsed%5 == 0 {
+						log.Info("Still shutting down...", "elapsed", fmt.Sprintf("%ds", elapsed))
+					}
+					
+				case <-sigc:
+					forceQuitCount--
+					if forceQuitCount <= 0 {
+						log.Warn("Force quit requested, exiting immediately!")
+						os.Exit(1)
+					}
+					log.Warn(fmt.Sprintf("Press Ctrl+C %d more time(s) to force quit", forceQuitCount))
 				}
 			}
-			panic("Panic closing the n42 node")
 		}
 
 		if isConsole {
@@ -209,13 +249,13 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 			for {
 				sig := <-sigc
 				if sig == syscall.SIGTERM {
-					shutdown()
+					shutdown(sig)
 					return
 				}
 			}
 		} else {
-			<-sigc
-			shutdown()
+			sig := <-sigc
+			shutdown(sig)
 		}
 	}()
 }
