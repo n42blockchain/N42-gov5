@@ -355,13 +355,16 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		gpoParams.Default = cfg.Miner.GasPrice
 	}
 
-	//
+	// Print chain configuration banner
 	log.Info("")
-	log.Info(strings.Repeat("-", 153))
+	log.Info(strings.Repeat("-", 80))
 	for _, line := range strings.Split(cfg.ChainCfg.Description(), "\n") {
-		log.Info(line)
+		// Skip empty lines to avoid log spam
+		if strings.TrimSpace(line) != "" {
+			log.Info(line)
+		}
 	}
-	log.Info(strings.Repeat("-", 153))
+	log.Info(strings.Repeat("-", 80))
 	log.Info("")
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
