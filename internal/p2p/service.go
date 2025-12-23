@@ -15,7 +15,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
-	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
@@ -247,66 +246,37 @@ func (s *Service) Start() {
 	utils.RunEvery(s.ctx, 10*time.Second, s.updateMetrics)
 	utils.RunEvery(s.ctx, refreshRate, s.RefreshENR)
 	utils.RunEvery(s.ctx, 1*time.Minute, func() {
-		//utils.RunEvery(s.ctx, 5*time.Second, func() {
-		log.Info("Peer summary", "inbound", len(s.peers.InboundConnected()), "outbound", len(s.peers.OutboundConnected()), "activePeers", len(s.peers.Active()), "disconnectedPeers", len(s.peers.Disconnected()))
+		inbound := len(s.peers.InboundConnected())
+		outbound := len(s.peers.OutboundConnected())
+		active := len(s.peers.Active())
+		
+		// Compact summary: P2P ▸ 3 peers (in:1 out:2) ▸ active:2
+		log.Info(fmt.Sprintf("P2P ▸ %d peers (in:%d out:%d) ▸ active:%d",
+			inbound+outbound, inbound, outbound, active))
+		
+		// Detailed peer info only at Debug level
 		for _, p := range s.peers.All() {
-			//addr, _ := s.peers.Address(p)
-			//IP, _ := s.peers.IP(p)
-			//ENR, _ := s.peers.ENR(p)
-
 			params := make([]interface{}, 0)
-			params = append(params, "perrId", p)
+			params = append(params, "peer", p.String()[:16]+"...")
 
 			if dialArgs, err := s.peers.DialArgs(p); err == nil {
-				params = append(params, "dialArgs", dialArgs)
+				params = append(params, "addr", dialArgs)
 			}
 			if direction, err := s.peers.Direction(p); err == nil {
-				params = append(params, "Direction", direction)
-			}
-			if connState, err := s.peers.ConnState(p); err == nil {
-				params = append(params, "connState", connState)
+				params = append(params, "dir", direction)
 			}
 			if chainState, err := s.peers.ChainState(p); err == nil {
-				params = append(params, "currentHeight", utils.ConvertH256ToUint256Int(chainState.CurrentHeight).Uint64())
+				params = append(params, "height", utils.ConvertH256ToUint256Int(chainState.CurrentHeight).Uint64())
 			}
-			if nextValidTime, err := s.peers.NextValidTime(p); err == nil && time.Now().After(nextValidTime) == false {
-				params = append(params, "nextValidTime", common.PrettyDuration(time.Until(nextValidTime)))
-			}
-			if badResponses, err := s.peers.Scorers().BadResponsesScorer().Count(p); err == nil {
-				params = append(params, "badResponses", badResponses)
-			}
-			if validationError := s.peers.Scorers().ValidationError(p); validationError != nil {
-				params = append(params, "validationError", validationError)
-			}
-			if ping, err := s.peers.GetPing(p); err == nil && ping != nil {
-				params = append(params, "ping", ping.String())
-			}
+			params = append(params, "score", fmt.Sprintf("%.1f", s.peers.Scorers().Score(p)))
 
-			params = append(params, "processedBlocks", s.peers.Scorers().BlockProviderScorer().ProcessedBlocks(p))
-
-			// hexutil.Encode([]byte(p))
-			log.Info("Peer details", params...)
-
-			log.Info("Peer Score:",
-				"badResponsesScore", s.peers.Scorers().BadResponsesScorer().Score(p),
-				"blockProviderScore", s.peers.Scorers().BlockProviderScorer().Score(p),
-				"peerStatusScore", s.peers.Scorers().PeerStatusScorer().Score(p),
-				"gossipScore", s.peers.Scorers().GossipScorer().Score(p),
-				"Score", s.peers.Scorers().Score(p),
-			)
-			pids, _ := s.host.Peerstore().SupportsProtocols(p, s.host.Mux().Protocols()...)
-			for _, id := range pids {
-				log.Trace("Protocol details:", "ProtocolID", id)
-			}
+			log.Debug("Peer", params...)
 		}
 
-		// Only access discovery table if dv5Listener is initialized
+		// Discovery table info only at Trace level
 		if s.dv5Listener != nil {
 			allNodes := s.dv5Listener.AllNodes()
-			log.Trace("Nodes stored in the discovery table:")
-			for i, n := range allNodes {
-				log.Trace(fmt.Sprintf("P2P details %d", i), "ENR", n.String(), "Node ID", n.ID(), "IP", n.IP(), "UDP", n.UDP(), "TCP", n.TCP())
-			}
+			log.Trace("Discovery table", "nodes", len(allNodes))
 		}
 	})
 
