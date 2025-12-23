@@ -44,6 +44,14 @@ var (
 	errNoPeersWithAltBlocks  = errors.New("no peers with alternative blocks found")
 )
 
+// Error log throttling to prevent log spam
+var (
+	lastBlockRangeErrLog     time.Time
+	blockRangeErrCount       int
+	blockRangeErrLogInterval = 10 * time.Second
+	blockRangeErrLogMutex    sync.Mutex
+)
+
 // blocksFetcherConfig is a config to setup the block fetcher.
 type blocksFetcherConfig struct {
 	chain                    common.IBlockChain
@@ -271,10 +279,31 @@ func (f *blocksFetcher) fetchBlocksFromPeer(ctx context.Context, start *uint256.
 			f.p2p.Peers().Scorers().BlockProviderScorer().Touch(peers[i])
 			return blocks, peers[i], err
 		} else {
-			log.Warn("Could not request blocks by range", "err", err)
+			// Throttle error logging to prevent log spam
+			logBlockRangeError(err)
 		}
 	}
 	return nil, "", errNoPeersAvailable
+}
+
+// logBlockRangeError logs block range request errors with throttling.
+func logBlockRangeError(err error) {
+	blockRangeErrLogMutex.Lock()
+	defer blockRangeErrLogMutex.Unlock()
+	
+	blockRangeErrCount++
+	now := time.Now()
+	
+	// Log immediately for first error, then throttle to every 10 seconds
+	if lastBlockRangeErrLog.IsZero() || now.Sub(lastBlockRangeErrLog) >= blockRangeErrLogInterval {
+		if blockRangeErrCount > 1 {
+			log.Warn("Block range request errors", "err", err, "count", blockRangeErrCount, "interval", blockRangeErrLogInterval)
+		} else {
+			log.Warn("Could not request blocks by range", "err", err)
+		}
+		lastBlockRangeErrLog = now
+		blockRangeErrCount = 0
+	}
 }
 
 // requestBlocks is a wrapper for handling BeaconBlocksByRangeRequest requests/streams.
