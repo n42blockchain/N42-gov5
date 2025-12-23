@@ -33,3 +33,34 @@ ast
 genesis*.json
 
 ./deployments/
+
+# ===========================================
+# N42 Node Runtime Files
+# ===========================================
+
+# Compiled binary
+n42
+cmd/n42/n42
+
+# MDBX database files (runtime data)
+*.dat
+*.lck
+mdbx.dat
+mdbx.lck
+
+# Node data directories
+n42data/
+devtest/chaindata/
+devtest/nodedata/
+cmd/n42/mainnet/
+cmd/n42/testnet/
+
+# Runtime lock and key files
+LOCK
+network-keys
+network-seq
+jwtsecret
+
+# Keystore (optional - uncomment if you want to exclude)
+# devtest/keystore/
+# devtest/password.txt
