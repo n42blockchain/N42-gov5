@@ -11,7 +11,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-const amtENRKey = "astEnr"
+const n42ENRKey = "n42Enr"
 
 // ForkDigest returns the current fork digest of
 // the node according to the local clock.
@@ -23,7 +23,7 @@ func (s *Service) currentForkDigest() ([4]byte, error) {
 // local record values for current and next fork version/epoch.
 func (s *Service) compareForkENR(record *enr.Record) error {
 	remoteForkDigest := make([]byte, 4)
-	entry := enr.WithEntry(amtENRKey, &remoteForkDigest)
+	entry := enr.WithEntry(n42ENRKey, &remoteForkDigest)
 	err := record.Load(entry)
 	if err != nil {
 		return err
@@ -62,7 +62,7 @@ func addForkEntry(node *enode.LocalNode, genesisHash types.Hash) (*enode.LocalNo
 	if err != nil {
 		return nil, err
 	}
-	forkEntry := enr.WithEntry(amtENRKey, enc[:])
+	forkEntry := enr.WithEntry(n42ENRKey, enc[:])
 	node.Set(forkEntry)
 	return node, nil
 }

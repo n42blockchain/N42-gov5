@@ -1,8 +1,8 @@
 # JSON-RPC
 
-You can interact with ast over JSON-RPC. ast supports all standard Ethereum JSON-RPC API methods.
+You can interact with N42 over JSON-RPC. N42 supports all standard Ethereum JSON-RPC API methods.
 
-JSON-RPC is provided on multiple transports. ast supports HTTP, WebSocket and IPC (both UNIX sockets and Windows named pipes). Transports must be enabled through command-line flags.
+JSON-RPC is provided on multiple transports. N42 supports HTTP, WebSocket and IPC (both UNIX sockets and Windows named pipes). Transports must be enabled through command-line flags.
 
 The JSON-RPC APIs are grouped into namespaces, depending on their purpose. All method names are composed of their namespace and their name, separated by an underscore.
 
@@ -12,16 +12,21 @@ Each namespace must be explicitly enabled.
 
 The methods are grouped into namespaces, which are listed below:
 
-| Namespace               | Description                                                                                            | Sensitive |
-|-------------------------|--------------------------------------------------------------------------------------------------------|-----------|
-| [`eth`](./eth.md)       | The `eth` API allows you to interact with Ethereum.                                                    | Maybe     |
-| [`web3`](./web3.md)     | The `web3` API provides utility functions for the web3 client.                                         | No        |
-| [`net`](./net.md)       | The `net` API provides access to network information of the node.                                      | No        |
-| [`txpool`](./txpool.md) | The `txpool` API allows you to inspect the transaction pool.                                           | No        |
-| [`debug`](./debug.md)   | The `debug` API provides several methods to inspect the Ethereum state, including Geth-style traces.   | No        |
-| [`trace`](./trace.md)   | The `trace` API provides several methods to inspect the Ethereum state, including Parity-style traces. | No        |
-| [`admin`](./admin.md)   | The `admin` API allows you to configure your node.                                                     | **Yes**   |
-| [`rpc`](./rpc.md)       | The `rpc` API provides information about the RPC server and its modules.                               | No        |
+| Namespace                                             | Description                                                                                            | Sensitive |
+|-------------------------------------------------------|--------------------------------------------------------------------------------------------------------|-----------|
+| [`eth`](./eth.md)                                     | The `eth` API allows you to interact with Ethereum.                                                    | Maybe     |
+| [`web3`](./web3.md)                                   | The `web3` API provides utility functions for the web3 client.                                         | No        |
+| [`net`](./net.md)                                     | The `net` API provides access to network information of the node.                                      | No        |
+| [`txpool`](./txpool.md)                               | The `txpool` API allows you to inspect the transaction pool.                                           | No        |
+| [`debug`](./debug.md)                                 | The `debug` API provides several methods to inspect the Ethereum state, including Geth-style traces.   | No        |
+| [`trace`](./trace.md)                                 | The `trace` API provides several methods to inspect the Ethereum state, including Parity-style traces. | No        |
+| [`admin`](./admin.md)                                 | The `admin` API allows you to configure your node.                                                     | **Yes**   |
+| [`rpc`](./rpc.md)                                     | The `rpc` API provides information about the RPC server and its modules.                               | No        |
+| [`n42`](./reth.md)                                    | The `n42` API provides N42-specific methods.                                                           | No        |
+| [`ots`](./otterscan.md)                               | The `ots` API provides Otterscan-compatible methods.                                                   | No        |
+| [`miner`](./miner.md)                                 | The `miner` API provides mining-related methods.                                                       | No        |
+| [`flashbots`](./flashbots.md)                         | The `flashbots` API provides MEV bundle submission methods.                                            | No        |
+| [`consensusBeaconExt`](./consensus_beacon_ext.md)     | The `consensusBeaconExt` API provides N42 consensus extension methods.                                 | **Yes**   |
 
 Note that some APIs are sensitive, since they can be used to configure your node (admin), or access accounts stored on the node (eth).
 
@@ -30,7 +35,7 @@ Generally, it is advisable to not expose any JSONRPC namespace publicly, unless 
 
 ## Transports
 
-ast supports HTTP, WebSockets and IPC.
+N42 supports HTTP, WebSockets and IPC.
 
 ### HTTP
 
@@ -38,10 +43,10 @@ Using the HTTP transport, clients send a request to the server and immediately g
 
 Because HTTP is unidirectional, subscriptions are not supported.
 
-To start an HTTP server, pass --http to ast node:
+To start an HTTP server, pass --http to n42 node:
 
 ```bash
-ast --http
+n42 --http
 ```
 
 The default port is 8545, and the default listen address is localhost.
@@ -49,35 +54,31 @@ The default port is 8545, and the default listen address is localhost.
 You can configure the listen address and port using --http.addr and --http.port respectively:
 
 ```bash
-ast --http --http.addr 127.0.0.1 --http.port 12345
+n42 --http --http.addr 127.0.0.1 --http.port 12345
 ```
 
 To enable JSON-RPC namespaces on the HTTP server, pass each namespace separated by a comma to --http.api:
 
 ```bash
-ast --http --http.api eth,net,trace
+n42 --http --http.api eth,net,trace
 ```
 
-You can pass the `all` option, which is a convenient wrapper for the all the JSON-RPC namespaces `admin,debug,eth,net,trace,txpool,web3,rpc` on the HTTP server:
+You can pass the `all` option, which is a convenient wrapper for all the JSON-RPC namespaces on the HTTP server:
 
 ```bash
-ast --http --http.api all
-```
-
-```bash
-ast --http --http.api All
+n42 --http --http.api all
 ```
 
 You can also restrict who can access the HTTP server by specifying a domain for Cross-Origin requests. This is important, since any application local to your node will be able to access the RPC server:
 
 ```bash
-ast --http --http.corsdomain https://mycoolapp.rs
+n42 --http --http.corsdomain https://mycoolapp.rs
 ```
 
 Alternatively, if you want to allow any domain, you can pass `*`:
 
 ```bash
-ast --http --http.corsdomain "*"
+n42 --http --http.corsdomain "*"
 ```
 
 ### WebSockets
@@ -101,7 +102,7 @@ IPC is a simpler transport protocol for use in local environments where the node
 
 The IPC transport is enabled by default and has access to all namespaces, unless explicitly disabled with `--ipcdisable`.
 
-Reth creates a UNIX socket on Linux and macOS at `/tmp/ast.ipc`. On Windows, IPC is provided using named pipes at `\\.\pipe\ast.ipc`.
+N42 creates a UNIX socket on Linux and macOS at `/tmp/n42.ipc`. On Windows, IPC is provided using named pipes at `\\.\pipe\n42.ipc`.
 
 You can configure the IPC path using `--ipcpath`.
 
@@ -114,7 +115,7 @@ You can use `curl`, a programming language with a low-level library, or a tool l
 As a reminder, you need to run the command below to enable all of these APIs using an HTTP transport:
 
 ```bash
-RUST_LOG=info reth node --http --http.api "admin,debug,eth,net,trace,txpool,web3,rpc"
+n42 node --http --http.api "admin,debug,eth,net,trace,txpool,web3,rpc,n42,ots"
 ```
 
 This allows you to then call:

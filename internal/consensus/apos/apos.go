@@ -31,7 +31,7 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 
 	"github.com/n42blockchain/N42/accounts"
-	astCommon "github.com/n42blockchain/N42/common"
+	n42Common "github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -200,7 +200,7 @@ type APos struct {
 	// The fields below are for testing only
 	fakeDiff bool // Skip difficulty verifications
 
-	bc astCommon.IBlockChain
+	bc n42Common.IBlockChain
 }
 
 // New creates a APos proof-of-authority consensus engine with the initial
@@ -231,7 +231,7 @@ func (c *APos) Author(header block.IHeader) (types.Address, error) {
 	return ecrecover(header, c.signatures)
 }
 
-func (c *APos) SetBlockChain(bc astCommon.IBlockChain) {
+func (c *APos) SetBlockChain(bc n42Common.IBlockChain) {
 	c.bc = bc
 }
 
@@ -859,7 +859,7 @@ func APosProto(header block.IHeader) []byte {
 }
 
 func encodeSigHeader(w io.Writer, iHeader block.IHeader) {
-	header := avmtypes.FromastHeader(iHeader)
+	header := avmtypes.FromN42Header(iHeader)
 	enc := []interface{}{
 		header.ParentHash,
 		header.UncleHash,

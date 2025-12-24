@@ -192,7 +192,7 @@ var StateBuckets = []string{
 
 // ChainBuckets lists buckets that should only be accessed by modules/rawdb
 // Note: Some buckets (NonCanonicalTxs, MaxTxNum, LogTopicIndex, LogAddressIndex,
-// CallTraceSet, CallFromIndex, CallToIndex) are documented but not yet in AstTableCfg
+// CallTraceSet, CallFromIndex, CallToIndex) are documented but not yet in N42TableCfg
 var ChainBuckets = []string{
 	modules.Headers,
 	modules.HeaderNumber,

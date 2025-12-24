@@ -97,7 +97,7 @@ func (api *API) Apis() []jsonrpc.API {
 			Service:   NewBlockChainAPI(api),
 		}, {
 			Namespace: "eth",
-			Service:   NewastAPI(api),
+			Service:   NewN42API(api),
 		}, {
 			Namespace: "eth",
 			Service:   NewTransactionAPI(api, nonceLock),
@@ -166,18 +166,18 @@ func (n *API) RPCGasCap() uint64 {
 	return rpcGasCap
 }
 
-// astAPI provides an API to access metadata related information.
-type astAPI struct {
+// n42API provides an API to access metadata related information.
+type n42API struct {
 	api *API
 }
 
-// NewastAPI creates a new Meta protocol API.
-func NewastAPI(api *API) *astAPI {
-	return &astAPI{api}
+// NewN42API creates a new Meta protocol API.
+func NewN42API(api *API) *n42API {
+	return &n42API{api}
 }
 
 // GasPrice returns a suggestion for a gas price for legacy transactions.
-func (s *astAPI) GasPrice(ctx context.Context) (*hexutil.Big, error) {
+func (s *n42API) GasPrice(ctx context.Context) (*hexutil.Big, error) {
 	conf.LightClientGPO.Default = big.NewInt(params.GWei)
 	//oracle := NewOracle(s.api.BlockChain(), conf.LightClientGPO)
 	tipcap, err := s.api.gpo.SuggestTipCap(ctx, s.api.GetChainConfig())
@@ -194,7 +194,7 @@ func (s *astAPI) GasPrice(ctx context.Context) (*hexutil.Big, error) {
 }
 
 // MaxPriorityFeePerGas returns a suggestion for a gas tip cap for dynamic fee transactions.
-func (s *astAPI) MaxPriorityFeePerGas(ctx context.Context) (*hexutil.Big, error) {
+func (s *n42API) MaxPriorityFeePerGas(ctx context.Context) (*hexutil.Big, error) {
 	tipcap, err := s.api.gpo.SuggestTipCap(ctx, s.api.GetChainConfig())
 	if err != nil {
 		return nil, err
@@ -210,7 +210,7 @@ type feeHistoryResult struct {
 }
 
 // FeeHistory returns the fee market history.
-func (s *astAPI) FeeHistory(ctx context.Context, blockCount jsonrpc.DecimalOrHex, lastBlock jsonrpc.BlockNumber, rewardPercentiles []float64) (*feeHistoryResult, error) {
+func (s *n42API) FeeHistory(ctx context.Context, blockCount jsonrpc.DecimalOrHex, lastBlock jsonrpc.BlockNumber, rewardPercentiles []float64) (*feeHistoryResult, error) {
 
 	var (
 		resolvedLastBlock *uint256.Int

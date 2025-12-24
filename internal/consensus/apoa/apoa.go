@@ -769,7 +769,7 @@ func ApoaProto(header block.IHeader) []byte {
 }
 
 func encodeSigHeader(w io.Writer, iHeader block.IHeader) {
-	header := avmtypes.FromastHeader(iHeader)
+	header := avmtypes.FromN42Header(iHeader)
 	enc := []interface{}{
 		header.ParentHash,
 		header.UncleHash,

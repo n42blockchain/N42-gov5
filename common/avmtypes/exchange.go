@@ -459,7 +459,7 @@ func (tx *Transaction) FromastTransaction(astTx *transaction.Transaction) {
 	tx.setDecoded(inner.copy(), 0)
 }
 
-func FromastHeader(iHeader block.IHeader) *Header {
+func FromN42Header(iHeader block.IHeader) *Header {
 	header := iHeader.(*block.Header)
 	//author, _ := engine.Author(iHeader)
 

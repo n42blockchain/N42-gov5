@@ -61,15 +61,15 @@ contract Deposit is Ownable, IDeposit {
         require(amount == oneHundredDeposit || amount == fiveHundredDeposit || amount == fiftyDeposit, "DepositContract: payee is not allowed to deposit");
         //
         if (amount == fiftyDeposit) {
-            require(fiftyDepositLimit > fiftyDepositCount, "10 ast Deposit Limit has been reached");
+            require(fiftyDepositLimit > fiftyDepositCount, "50 N Deposit Limit has been reached");
         }
         //
         if (amount == oneHundredDeposit) {
-            require(oneHundredDepositLimit > oneHundredDepositCount , "100 ast Deposit Limit has been reached");
+            require(oneHundredDepositLimit > oneHundredDepositCount , "100 N Deposit Limit has been reached");
         }
         //
         if (amount == fiveHundredDeposit) {
-            require(fiveHundredDepositLimit > fiveHundredDepositCount, "500 ast Deposit Limit has been reached");
+            require(fiveHundredDepositLimit > fiveHundredDepositCount, "500 N Deposit Limit has been reached");
         }
         return true;
     }

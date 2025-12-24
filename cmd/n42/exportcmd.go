@@ -115,7 +115,7 @@ func exportTransactions(ctx *cli.Context) error {
 				transaction.From().Hex(),
 				transaction.Nonce(),
 				transaction.To().Hex(),
-				new(big.Float).Quo(new(big.Float).SetInt(transaction.Value().ToBig()), new(big.Float).SetInt(big.NewInt(params.AMT))),
+				new(big.Float).Quo(new(big.Float).SetInt(transaction.Value().ToBig()), new(big.Float).SetInt(big.NewInt(params.N))),
 			)
 		}
 	}
@@ -155,7 +155,7 @@ func exportBalance(ctx *cli.Context) error {
 
 		fmt.Printf("%x, %.2f\n",
 			k,
-			new(big.Float).Quo(new(big.Float).SetInt(acc.Balance.ToBig()), new(big.Float).SetInt(big.NewInt(params.AMT))),
+			new(big.Float).Quo(new(big.Float).SetInt(acc.Balance.ToBig()), new(big.Float).SetInt(big.NewInt(params.N))),
 		)
 	}
 
@@ -200,8 +200,8 @@ func exportDBState(ctx *cli.Context) error {
 
 func dbCopy(ctx *cli.Context) error {
 
-	modules.AstInit()
-	kv.ChaindataTablesCfg = modules.AstTableCfg
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
 
 	fromChaindata := ctx.String(FromDataDirFlag.Name)
 	toChaindata := ctx.String(ToDataDirFlag.Name)

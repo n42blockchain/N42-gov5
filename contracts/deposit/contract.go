@@ -50,13 +50,13 @@ const (
 	//
 	fujiMaxTaskPerEpoch = 50
 	//
-	fiftyDepositRewardPerMonth       = 0.375 * params.AMT
-	OneHundredDepositRewardPerMonth  = 1 * params.AMT
-	FiveHundredDepositRewardPerMonth = 6.25 * params.AMT //max uint64 = ^uint64(0) ≈ 18.44 AMT so 15 AMT is ok
+	fiftyDepositRewardPerMonth       = 0.375 * params.N
+	OneHundredDepositRewardPerMonth  = 1 * params.N
+	FiveHundredDepositRewardPerMonth = 6.25 * params.N //max uint64 = ^uint64(0) ≈ 18.44 N so 15 N is ok
 	//
-	fuji200RewardPerEpoch  = 0.025 * params.AMT
-	fuji800RewardPerEpoch  = 0.1 * params.AMT
-	fuji2000RewardPerMonth = 10 * params.AMT
+	fuji200RewardPerEpoch  = 0.025 * params.N
+	fuji800RewardPerEpoch  = 0.1 * params.N
+	fuji2000RewardPerMonth = 10 * params.N
 )
 
 // DepositContract d
@@ -78,7 +78,7 @@ func GetDepositInfo(tx kv.Tx, addr types.Address) *Info {
 		maxRewardPerEpoch *uint256.Int
 		rewardPerBlock    *uint256.Int
 	)
-	depositEther := new(uint256.Int).Div(depositAmount, uint256.NewInt(params.AMT)).Uint64()
+	depositEther := new(uint256.Int).Div(depositAmount, uint256.NewInt(params.N)).Uint64()
 	switch depositEther {
 	case fiftyDeposit:
 		rewardPerBlock = new(uint256.Int).Div(uint256.NewInt(fiftyDepositRewardPerMonth), uint256.NewInt(DayPerMonth*fiftyDepositMaxTaskPerEpoch))

@@ -32,12 +32,12 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/contracts/deposit"
-	amtdeposit "github.com/n42blockchain/N42/contracts/deposit/AMT"
+	n42deposit "github.com/n42blockchain/N42/contracts/deposit/AMT"
 	fujideposit "github.com/n42blockchain/N42/contracts/deposit/FUJI"
 	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/NFT"
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/p2p"
-	astsync "github.com/n42blockchain/N42/internal/sync"
+	n42sync "github.com/n42blockchain/N42/internal/sync"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initial-sync"
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/pkg/errors"
@@ -107,7 +107,7 @@ type Node struct {
 	txspool         common.ITxsPool
 	depositContract *deposit.Deposit
 	p2p             p2p.P2P
-	sync            *astsync.Service
+	sync            *n42sync.Service
 	is              *initialsync.Service
 	accman          *accounts.Manager
 
@@ -251,7 +251,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			if !addr.DecodeString(depositContractAddress) {
 				panic(fmt.Sprintf("cannot decode DepositContract address: %s", depositContractAddress))
 			}
-			depositContracts[addr] = new(amtdeposit.Contract)
+			depositContracts[addr] = new(n42deposit.Contract)
 		}
 		if depositNFTContractAddress := cfg.ChainCfg.Apos.DepositNFTContract; depositNFTContractAddress != "" {
 			var addr types.Address
@@ -278,11 +278,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		P2P:   p2p,
 	})
 
-	syncServer := astsync.NewService(
+	syncServer := n42sync.NewService(
 		ctx,
-		astsync.WithP2P(p2p),
-		astsync.WithChainService(bc),
-		astsync.WithInitialSync(is),
+		n42sync.WithP2P(p2p),
+		n42sync.WithChainService(bc),
+		n42sync.WithInitialSync(is),
 	)
 
 	//todo
@@ -932,8 +932,8 @@ func OpenDatabase(cfg *conf.Config, logger log2.Logger, name string) (kv.RwDB, e
 			opts = opts.Exclusive()
 		}
 
-		modules.AstInit()
-		kv.ChaindataTablesCfg = modules.AstTableCfg
+		modules.N42Init()
+		kv.ChaindataTablesCfg = modules.N42TableCfg
 
 		opts = opts.MapSize(8 * datasize.TB)
 		return opts.Open()
@@ -944,7 +944,7 @@ func OpenDatabase(cfg *conf.Config, logger log2.Logger, name string) (kv.RwDB, e
 	}
 
 	if err = chainKv.Update(context.Background(), func(tx kv.RwTx) (err error) {
-		return params.SetastVersion(tx, params.VersionKeyCreated)
+		return params.SetN42Version(tx, params.VersionKeyCreated)
 	}); err != nil {
 		return nil, err
 	}

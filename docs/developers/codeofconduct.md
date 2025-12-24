@@ -28,7 +28,7 @@ community include:
   and learning from the experience
 - Focusing on what is best not just for us as individuals, but for the overall
   community
-- Contributing to conversations about Amaze’s technology and ecosystem
+- Contributing to conversations about N42's technology and ecosystem
 
 Examples of unacceptable behavior include:
 
@@ -44,7 +44,7 @@ Examples of unacceptable behavior include:
 
 ## Enforcement Responsibilities
 
-Community leaders are responsible for articling and enforcing our standards of
+Community leaders are responsible for articulating and enforcing our standards of
 acceptable behavior and will take appropriate and fair corrective action for
 any behavior they deem inappropriate, threatening, offensive, or harmful.
 
