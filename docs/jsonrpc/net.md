@@ -1,6 +1,6 @@
 # `net` Namespace
 
-The `net` API provides information about the networking component of the node.
+The `net` API provides information about the networking component of the N42 node.
 
 ## `net_listening`
 

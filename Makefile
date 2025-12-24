@@ -108,7 +108,7 @@ devtools:
 	env GOBIN= go install github.com/prysmaticlabs/protoc-gen-go-cast@latest
 
 
-PACKAGE_NAME          := github.com/WeAreAmaze/ast
+PACKAGE_NAME          := github.com/n42blockchain/N42
 GOLANG_CROSS_VERSION  ?= v1.20.7
 
 .PHONY: release-docker
@@ -126,7 +126,7 @@ release-docker:
 		ghcr.io/goreleaser/goreleaser-cross:${GOLANG_CROSS_VERSION} \
 		--clean --skip-validate
 
-		@docker image push --all-tags N42/ast
+		@docker image push --all-tags n42blockchain/n42
 
 
 #== mobiles start

@@ -110,7 +110,7 @@ func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64) *RPCTransacti
 // RPCMarshalHeader converts the given header to the RPC output .
 func RPCMarshalHeader(head block.IHeader) map[string]interface{} {
 	header := head.(*block.Header)
-	ethHeader := avmtypes.FromastHeader(head)
+	ethHeader := avmtypes.FromN42Header(head)
 
 	result := map[string]interface{}{
 		"number":           (*hexutil.Big)(head.Number64().ToBig()),

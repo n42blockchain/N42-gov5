@@ -27,7 +27,7 @@ import (
 func TestBLS(t *testing.T) {
 	sig, _ := hexutil.Decode("0xab22c6b63e3595630ffe8ed2903dfeba2a781c2d33dc66f88442982b65c5fcce9a8078f9ae419c95eecd2a5546a06e371196855311a930a4ad404321083f4f058c41e2d6c2e1f2bf11b1cd9b73d65a0a169a81cc1e60b50164aa7b322396be67")
 	bp, _ := hexutil.Decode("0xa20699fa55487f79c1400e2be5bb6acf89b0c5880becfa4b0560b9994bd8050616886a8fb71bdf15065dd31dd2858c18")
-	msg := new(uint256.Int).Mul(uint256.NewInt(params.AMT), uint256.NewInt(50)) //50AMT
+	msg := new(uint256.Int).Mul(uint256.NewInt(params.N), uint256.NewInt(50)) //50 N
 	signature, err := bls.SignatureFromBytes(sig)
 	if err != nil {
 		t.Fatal("cannot unpack BLS signature", err)
@@ -46,20 +46,20 @@ func TestBLS(t *testing.T) {
 }
 
 func TestUint256(t *testing.T) {
-	amt50Hex, _ := hexutil.Decode("0x2B5E3AF16B1880000") // 50 AMT
-	amt50Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.AMT), uint256.NewInt(50))
+	n50Hex, _ := hexutil.Decode("0x2B5E3AF16B1880000") // 50 N
+	n50Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.N), uint256.NewInt(50))
 	//
-	t.Logf("50 AMT uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(amt50Uint256.Bytes()), hexutil.Encode(amt50Hex))
+	t.Logf("50 N uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(n50Uint256.Bytes()), hexutil.Encode(n50Hex))
 
-	amt500Hex, _ := hexutil.Decode("0x1B1AE4D6E2EF500000") // 500 AMT
-	amt500Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.AMT), uint256.NewInt(500))
+	n500Hex, _ := hexutil.Decode("0x1B1AE4D6E2EF500000") // 500 N
+	n500Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.N), uint256.NewInt(500))
 	//
-	t.Logf("500 AMT uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(amt500Uint256.Bytes()), hexutil.Encode(amt500Hex))
+	t.Logf("500 N uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(n500Uint256.Bytes()), hexutil.Encode(n500Hex))
 
-	amt100Hex, _ := hexutil.Decode("0x56BC75E2D63100000") // 100 AMT
-	amt100Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.AMT), uint256.NewInt(100))
+	n100Hex, _ := hexutil.Decode("0x56BC75E2D63100000") // 100 N
+	n100Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.N), uint256.NewInt(100))
 	//
-	t.Logf("100 AMT uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(amt100Uint256.Bytes()), hexutil.Encode(amt100Hex))
+	t.Logf("100 N uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(n100Uint256.Bytes()), hexutil.Encode(n100Hex))
 }
 
 //func TestPrivateKey(t *testing.T) {

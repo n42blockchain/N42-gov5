@@ -2,20 +2,20 @@ FROM alpine:3.15
 
 RUN apk add --no-cache ca-certificates curl tzdata
 
-COPY N42 /usr/local/bin/
+COPY n42 /usr/local/bin/
 
 ARG UID=1000
 ARG GID=1000
-RUN adduser -D -u $UID -g $GID ast
+RUN adduser -D -u $UID -g $GID n42
 
 
-ENV astDATA /home/ast/data
+ENV N42DATA /home/n42/data
 # this 777 will be replaced by 700 at runtime (allows semi-arbitrary "--user" values)
-RUN mkdir -p "$astDATA" && chown -R ast:ast "$astDATA" && chmod 777 "$astDATA"
-VOLUME /home/ast/data
+RUN mkdir -p "$N42DATA" && chown -R n42:n42 "$N42DATA" && chmod 777 "$N42DATA"
+VOLUME /home/n42/data
 
-USER ast
-WORKDIR /home/ast
+USER n42
+WORKDIR /home/n42
 
 EXPOSE 20012 20013 20014 61015/udp 61016  6060
-ENTRYPOINT ["N42"]
+ENTRYPOINT ["n42"]

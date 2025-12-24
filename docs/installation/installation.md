@@ -29,7 +29,7 @@ It is crucial to understand the difference between QLC and TLC NVMe drives when 
 
 QLC (Quad-Level Cell) NVMe drives utilize four bits of data per cell, allowing for higher storage density and lower manufacturing costs. However, this increased density comes at the expense of performance. QLC drives have slower read and write speeds compared to TLC drives. They also have a lower endurance, meaning they may have a shorter lifespan and be less suitable for heavy workloads or constant data rewriting.
 
-TLC (Triple-Level Cell) NVMe drives, on the other hand, use three bits of data per cell. While they have a slightly lower storage density compared to QLC drives, TLC drives offer fN42er performance. They typically have higher read and write speeds, making them more suitable for demanding tasks such as data-intensive applications, gaming, and multimedia editing. TLC drives also tend to have a higher endurance, making them more durable and longer-lN42ing.
+TLC (Triple-Level Cell) NVMe drives, on the other hand, use three bits of data per cell. While they have a slightly lower storage density compared to QLC drives, TLC drives offer faster performance. They typically have higher read and write speeds, making them more suitable for demanding tasks such as data-intensive applications, gaming, and multimedia editing. TLC drives also tend to have a higher endurance, making them more durable and longer-lasting.
 
 Prior to purchasing an NVMe drive, it is advisable to research and determine whether the disk will be based on QLC or TLC technology. An overview of recommended and not-so-recommended NVMe boards can be found at [here]( https://gist.github.com/yorickdowne/f3a3e79a573bf35767cd002cc977b038).
 
@@ -49,7 +49,7 @@ Therefore, the number of cores is less important, but generally higher clock spe
 
 ### Memory
 
-It is recommended to have at leN42 8GB of RAM.
+It is recommended to have at least 8GB of RAM.
 
 Unless you are under heavy RPC load, most of N42's components tend to consume a low amount of memory, so this should matter less than the other requirements.
 

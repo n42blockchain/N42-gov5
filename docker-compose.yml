@@ -1,7 +1,7 @@
 version: '3'
 services:
-  ast:
-    image: N42/ast:latest
+  n42:
+    image: n42blockchain/n42:latest
     command:
       - --data.dir
       - data
@@ -27,7 +27,7 @@ services:
         ipv4_address: 172.18.0.2
     user: 1000:1000
     volumes:
-      - ast:/home/ast/data
+      - n42data:/home/n42/data
     ports:
       - "20012:20012"
       - "20013:20013"
@@ -38,8 +38,8 @@ services:
     command: --log.level=warn --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=150d --web.console.libraries=/usr/share/prometheus/console_libraries --web.console.templates=/usr/share/prometheus/consoles
     ports: [ "9090:9090" ]
     volumes:
-      - ${ast_PROMETHEUS_CONFIG:-./deployments/prometheus/prometheus.yml}:/etc/prometheus/prometheus.yml
-      - ${XDG_DATA_HOME:-~/.local/share}/ast-prometheus:/prometheus
+      - ${N42_PROMETHEUS_CONFIG:-./deployments/prometheus/prometheus.yml}:/etc/prometheus/prometheus.yml
+      - ${XDG_DATA_HOME:-~/.local/share}/n42-prometheus:/prometheus
     restart: unless-stopped
     networks:
       network1:
@@ -50,10 +50,10 @@ services:
     user: "472:0" # required for grafana version >= 7.3
     ports: [ "3000:3000" ]
     volumes:
-      - ${ast_GRAFANA_CONFIG:-./deployments/prometheus/grafana.ini}:/etc/grafana/grafana.ini
+      - ${N42_GRAFANA_CONFIG:-./deployments/prometheus/grafana.ini}:/etc/grafana/grafana.ini
       - ./deployments/prometheus/datasources:/etc/grafana/provisioning/datasources
       - ./deployments/prometheus/dashboards:/etc/grafana/provisioning/dashboards
-      - ${XDG_DATA_HOME:-~/.local/share}/ast-grafana:/var/lib/grafana
+      - ${XDG_DATA_HOME:-~/.local/share}/n42-grafana:/var/lib/grafana
     restart: unless-stopped
     networks:
       network1:
@@ -66,5 +66,5 @@ networks:
       config:
         - subnet: 172.18.0.0/24
 volumes:
-  ast:
+  n42data:
     driver: local

@@ -9,7 +9,7 @@ import (
 	"github.com/n42blockchain/N42/common/crypto/rand"
 	"github.com/n42blockchain/N42/internal/p2p"
 	leakybucket "github.com/n42blockchain/N42/internal/p2p/leaky-bucket"
-	astsync "github.com/n42blockchain/N42/internal/sync"
+	n42sync "github.com/n42blockchain/N42/internal/sync"
 	"github.com/n42blockchain/N42/utils"
 	"sync"
 	"time"
@@ -330,7 +330,7 @@ func (f *blocksFetcher) requestBlocks(ctx context.Context, req *sync_pb.BodiesBy
 	}
 	f.rateLimiter.Add(pid.String(), int64(req.Count))
 	l.Unlock()
-	return astsync.SendBodiesByRangeRequest(ctx, f.chain, f.p2p, pid, req, nil)
+	return n42sync.SendBodiesByRangeRequest(ctx, f.chain, f.p2p, pid, req, nil)
 }
 
 // waitForBandwidth blocks up until peer's bandwidth is restored.

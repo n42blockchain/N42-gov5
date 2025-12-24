@@ -193,7 +193,7 @@ func TestBucketCategoriesAreDisjoint(t *testing.T) {
 
 func TestAllBucketsInTableConfig(t *testing.T) {
 	// Initialize the table config
-	modules.AstInit()
+	modules.N42Init()
 
 	allCategorizedBuckets := make([]string, 0)
 	allCategorizedBuckets = append(allCategorizedBuckets, StateBuckets...)
@@ -203,7 +203,7 @@ func TestAllBucketsInTableConfig(t *testing.T) {
 	allCategorizedBuckets = append(allCategorizedBuckets, ApplicationBuckets...)
 
 	for _, bucket := range allCategorizedBuckets {
-		if _, ok := modules.AstTableCfg[bucket]; !ok {
+		if _, ok := modules.N42TableCfg[bucket]; !ok {
 			t.Errorf("Bucket %q is not in AstTableCfg", bucket)
 		}
 	}

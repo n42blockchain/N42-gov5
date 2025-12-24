@@ -1,9 +1,10 @@
 # N42 DOCS
+
 Documentation provided for N42 users and developers.
 
 [![Telegram Chat][tg-badge]][tg-url]
 
-N42 (N42 Chain) is a blockchain full node implementation characterized by being user-friendly, highly modular, and fast and efficient.
+N42 is a blockchain full node implementation characterized by being user-friendly, highly modular, and fast and efficient.
 
 ## What is this about?
 
@@ -11,7 +12,7 @@ N42 is a node implementation compatible with all node protocols that support N42
 
 It was originally built and promoted by N42, licensed under Apache and MIT licenses.
 
-As a complete N42 Chain node, N42 allows users to connect to the N42 Chain network and interact with the N42 Chain blockchain.
+As a complete N42 Chain node, N42 allows users to connect to the N42 Chain network and interact with the N42 blockchain.
 
 This includes sending and receiving transactions, querying logs and traces, as well as accessing and interacting with smart contracts.
 
@@ -29,9 +30,9 @@ To achieve this, we are licensing N42 under the Apache/MIT permissive license.
 
 **2. Performance**
 
-N42 aims to be fast, so we used Golang and parallel virtual machine sync node architecture.
+N42 aims to be fast, so we used Go and a parallel virtual machine sync node architecture.
 
-We also used tested and optimized N42 Chain libraries.
+We also used tested and optimized Ethereum libraries.
 
 **3. Free for anyone to use any way they want**
 
@@ -45,7 +46,7 @@ The N42 Chain protocol becomes more antifragile when no node implementation domi
 
 **5. Used by a wide demographic**
 
-We aim to solve for node operators who care about fN42 historical queries, but also for hobbyists who cannot operate on large hardware.
+We aim to solve for node operators who care about fast historical queries, but also for hobbyists who cannot operate on large hardware.
 
 We also want to support teams and individuals who want both sync from genesis and via "fast sync".
 
@@ -53,7 +54,7 @@ We envision that N42 will be flexible enough for the trade-offs each team faces.
 
 ## Who is this for?
 
-N42 is a new N42 Chain full node allowing users to sync and interact with the entire blockchain, including its historical state if in archive mode.
+N42 is a N42 Chain full node allowing users to sync and interact with the entire blockchain, including its historical state if in archive mode.
 
 - Full node: It can be used as a full node, storing and processing the entire blockchain, validating blocks and transactions, and participating in the consensus process.
 
@@ -69,8 +70,6 @@ N42 implements the specification of N42 Chain as defined in the repository. To e
 4. We extensively unit test, fuzz test, and document all our code, while also restricting PRs with aggressive lint rules.
 5. We also plan to audit/fuzz the virtual machine & parts of the codebase. Please reach out if you're interested in collaborating on securing this codebase.
 
-We intend to also audit/fuzz the EVM & parts of the codebase. Please reach out if you're interested in collaborating on securing this codebase.
-
 ## Sections
 
 Here are some useful sections to jump to:
@@ -83,9 +82,9 @@ Here are some useful sections to jump to:
 
 > 📖 **About this book**
 >
-> The book is continuously rendered [here](https://github.com/WeAreN42/N42/docs)!
+> The book is continuously rendered [here](https://github.com/n42blockchain/N42)!
 > You can contribute to this book on [GitHub][gh-book].
 
-[tg-badge]: https://img.shields.io/endpoint?color=neon&logo=telegram&label=chat&url=https%3A%2F%2Ftg.sumanjay.workers.dev%2Fparadigm%5Freth
-[tg-url]: https://t.me/N42
-[gh-book]: https://github.com/WeAreN42/N42/docs
+[tg-badge]: https://img.shields.io/endpoint?color=neon&logo=telegram&label=chat&url=https%3A%2F%2Ftg.sumanjay.workers.dev%2FN42_official
+[tg-url]: https://t.me/N42_official
+[gh-book]: https://github.com/n42blockchain/N42/docs

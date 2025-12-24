@@ -25,7 +25,7 @@ Audit reports are published in the `docs` folder
 
 To find out how to disclose a vulnerability in N42 email support@N42.com. Please read the [disclosure page] for more information about publicly disclosed security vulnerabilities.
 
-Use the built-in `ast version-check` feature to check whether the software is affected by any known vulnerability. This command will fetch the latest [`vulnerabilities.json`] file which contains known security vulnerabilities concerning `ast`, and cross-check the data against its own version number.
+Use the built-in `n42 version-check` feature to check whether the software is affected by any known vulnerability. This command will fetch the latest [`vulnerabilities.json`] file which contains known security vulnerabilities concerning `n42`, and cross-check the data against its own version number.
 
 The following key may be used to communicate sensitive information to developers.
 

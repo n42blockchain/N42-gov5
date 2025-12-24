@@ -7,7 +7,7 @@ import (
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/p2p"
-	astsync "github.com/n42blockchain/N42/internal/sync"
+	n42sync "github.com/n42blockchain/N42/internal/sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -305,7 +305,7 @@ func (q *blocksQueue) onDataReceivedEvent(ctx context.Context) eventHandlerFn {
 						fsm.setState(stateNew)
 					}
 				}
-			case astsync.ErrInvalidFetchedData:
+			case n42sync.ErrInvalidFetchedData:
 				// Peer returned invalid data, penalize.
 				q.blocksFetcher.p2p.Peers().Scorers().BadResponsesScorer().Increment(m.pid)
 				log.Debug("Peer is penalized for invalid blocks", "pid", response.pid)

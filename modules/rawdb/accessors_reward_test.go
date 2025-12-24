@@ -119,8 +119,8 @@ func OpenDatabase() (kv.RwDB, error) {
 			opts = opts.Exclusive()
 		}
 
-		modules.AstInit()
-		kv.ChaindataTablesCfg = modules.AstTableCfg
+		modules.N42Init()
+		kv.ChaindataTablesCfg = modules.N42TableCfg
 
 		opts = opts.MapSize(8 * datasize.TB)
 		return opts.Open()
@@ -131,7 +131,7 @@ func OpenDatabase() (kv.RwDB, error) {
 	}
 
 	if err = chainKv.Update(context.Background(), func(tx kv.RwTx) (err error) {
-		return params.SetastVersion(tx, params.VersionKeyCreated)
+		return params.SetN42Version(tx, params.VersionKeyCreated)
 	}); err != nil {
 		return nil, err
 	}

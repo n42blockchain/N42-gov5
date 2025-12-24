@@ -2,6 +2,8 @@
 
 The `debug` API provides several methods to inspect the Ethereum state, including Geth-style traces.
 
+For Parity-style traces, see the [`trace`](./trace.md) namespace.
+
 ## `debug_getRawHeader`
 
 Returns an RLP-encoded header.

@@ -91,7 +91,7 @@ func VersionWithCommit(gitCommit, gitDate string) string {
 	return vsn
 }
 
-func SetastVersion(tx kv.RwTx, versionKey string) error {
+func SetN42Version(tx kv.RwTx, versionKey string) error {
 	versionKeyByte := []byte(versionKey)
 	hasVersion, err := tx.Has(modules.DatabaseInfo, versionKeyByte)
 	if err != nil {
