@@ -45,7 +45,7 @@ func init() {
 	}
 
 	if contractAbi, err = abi.JSON(bytes.NewReader(depositAbiCode)); err != nil {
-		panic("unable to parse AMT deposit contract abi")
+		panic("unable to parse N42 deposit contract abi")
 	}
 }
 

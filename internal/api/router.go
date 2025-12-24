@@ -136,7 +136,7 @@ func (r *Router) APIs() []jsonrpc.API {
 			},
 			jsonrpc.API{
 				Namespace: "eth",
-				Service:   NewastAPI(r.api),
+				Service:   NewN42API(r.api),
 			},
 			jsonrpc.API{
 				Namespace: "eth",

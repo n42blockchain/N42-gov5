@@ -119,7 +119,7 @@ const (
 	PoaSnapshot = "poaSnapshot"
 )
 
-var astTables = []string{
+var n42Tables = []string{
 	Code,
 	Account,
 	Storage,
@@ -160,7 +160,7 @@ var astTables = []string{
 	BlockRewards,
 }
 
-var AstTableCfg = kv.TableCfg{
+var N42TableCfg = kv.TableCfg{
 	AccountChangeSet: {Flags: kv.DupSort},
 	StorageChangeSet: {Flags: kv.DupSort},
 	Storage: {
@@ -171,14 +171,14 @@ var AstTableCfg = kv.TableCfg{
 	},
 }
 
-func AstInit() {
-	sort.SliceStable(astTables, func(i, j int) bool {
-		return strings.Compare(astTables[i], astTables[j]) < 0
+func N42Init() {
+	sort.SliceStable(n42Tables, func(i, j int) bool {
+		return strings.Compare(n42Tables[i], n42Tables[j]) < 0
 	})
-	for _, name := range astTables {
-		_, ok := AstTableCfg[name]
+	for _, name := range n42Tables {
+		_, ok := N42TableCfg[name]
 		if !ok {
-			AstTableCfg[name] = kv.TableCfgItem{}
+			N42TableCfg[name] = kv.TableCfgItem{}
 		}
 	}
 }

@@ -112,7 +112,7 @@ contract Staking is IDeposit, IERC1155Receiver, Initializable {
                 ++i;
             }
         }
-        require(msg.value >= totalAmount, "Insufficient AMT sent");
+        require(msg.value >= totalAmount, "Insufficient N sent");
         for (uint i = 0; i < recipients.length; i++) {
             recipients[i].transfer(amounts[i]);
         }

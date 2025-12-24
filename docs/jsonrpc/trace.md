@@ -11,7 +11,7 @@ The `trace` API gives deeper insight into transaction processing.
 There are two types of methods in this API:
 
 - **Ad-hoc tracing APIs** for performing diagnostics on calls or transactions (historical or hypothetical).
-- **Transaction-trace filtering APIs** for getting full externality traces on any transaction executed by reth.
+- **Transaction-trace filtering APIs** for getting full externality traces on any transaction executed by N42.
 
 ## Ad-hoc tracing APIs
 

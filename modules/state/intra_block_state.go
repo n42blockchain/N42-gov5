@@ -720,7 +720,7 @@ func (sdb *IntraBlockState) createObject(addr types.Address, previous *stateObje
 //  1. sends funds to sha(account ++ (nonce + 1))
 //  2. tx_create(sha(account ++ nonce)) (note that this gets the address of 1)
 //
-// Carrying over the balance ensures that AMT doesn't disappear.
+// Carrying over the balance ensures that N doesn't disappear.
 func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation bool) {
 	if sdb.tracer != nil {
 		err := sdb.tracer.CaptureAccountRead(addr)

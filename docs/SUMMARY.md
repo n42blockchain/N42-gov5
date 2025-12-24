@@ -1,4 +1,4 @@
-# N42 docs
+# N42 Docs
 
 1. [Introduction](./intro.md)
 1. [Installation](./installation/installation.md)
@@ -13,7 +13,7 @@
    1. [Transaction types](./run/transactions.md)
    1. [Ports](./run/ports.md)
    1. [Troubleshooting](./run/troubleshooting.md)
-1. [Interacting with astover JSON-RPC](./jsonrpc/intro.md)
+1. [Interacting with N42 over JSON-RPC](./jsonrpc/intro.md)
    1. [eth](./jsonrpc/eth.md)
    1. [web3](./jsonrpc/web3.md)
    1. [net](./jsonrpc/net.md)
@@ -22,6 +22,11 @@
    1. [trace](./jsonrpc/trace.md)
    1. [admin](./jsonrpc/admin.md)
    1. [rpc](./jsonrpc/rpc.md)
+   1. [n42](./jsonrpc/reth.md)
+   1. [otterscan](./jsonrpc/otterscan.md)
+   1. [miner](./jsonrpc/miner.md)
+   1. [flashbots](./jsonrpc/flashbots.md)
+   1. [consensusBeaconExt](./jsonrpc/consensus_beacon_ext.md)
 1. [CLI Reference](./cli/cli.md)   
 1. [Developers](./developers/developers.md)
    1. [Code Submission Standards](./developers/codesubmission.md)

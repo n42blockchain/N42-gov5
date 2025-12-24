@@ -1,6 +1,6 @@
 # Building for ARM devices
 
-ast can be built for and run on ARM devices, but there are several considerations to be taken into account beforehand.
+N42 can be built for and run on ARM devices, but there are several considerations to be taken into account beforehand.
 
 ## CPU Architecture
 
@@ -9,13 +9,13 @@ First, you must have a 64-bit CPU and Operating System, otherwise some of the pr
 ## Memory Layout on AArch64
 
 Then, you must setup the virtual memory layout in such a way that the user space is sufficiently large.
-From [the Linux Kernel documentation](https://www.kernel.org/doc/html/v5.3/arm64/memory.html#:~:text=AArch64%20Linux%20uses%20either%203,for%20both%20user%20and%20kernel.), you can see that the memory layout with 4KB pages and a level-3 translation table limits the user space to 512GB, which is too low for astto sync on Ethereum mainnet.
+From [the Linux Kernel documentation](https://www.kernel.org/doc/html/v5.3/arm64/memory.html#:~:text=AArch64%20Linux%20uses%20either%203,for%20both%20user%20and%20kernel.), you can see that the memory layout with 4KB pages and a level-3 translation table limits the user space to 512GB, which may be too low for N42 to sync on mainnet.
 
 ## ARM Board Virtual Memory Limitation
 
 ### Issue Description
 
-Some ARM boards are equipped with only 3-level paging, which imposes a virtual memory limitation of 256GB for user space on Linux. This limitation can be a challenge for running applications like "reth", as the MDBX (Memory-mapped Database eXtreme) library requires a larger virtual memory allocation by design.
+Some ARM boards are equipped with only 3-level paging, which imposes a virtual memory limitation of 256GB for user space on Linux. This limitation can be a challenge for running applications like N42, as the MDBX (Memory-mapped Database eXtreme) library requires a larger virtual memory allocation by design.
 
 ### Understanding the Limitation
 
@@ -29,7 +29,7 @@ To determine if a specific ARM board is affected by this virtual memory limitati
 
 ### Additional Context
 
-According to MDBX documentation, changing this upper bound, which dictates the maximum size the database can reach, is a costly operation. Therefore, a reasonably large value was chosen. Given that the upper bound is currently set to 4TB, the assumption was that growth to 3TB might occur relatively soon. If the upper bound size is set to only 342GB, then "reth" cannot store more than 342GB of data, which is insufficient for a full sync.
+According to MDBX documentation, changing this upper bound, which dictates the maximum size the database can reach, is a costly operation. Therefore, a reasonably large value was chosen. Given that the upper bound is currently set to 4TB, the assumption was that growth to 3TB might occur relatively soon. If the upper bound size is set to only 342GB, then N42 cannot store more than 342GB of data, which may be insufficient for a full sync.
 
 It's worth noting that on x86_64 architecture, there is a 48-bit address space divided in half between user space and the kernel, providing each with 128TB of address space. In contrast, AArch64 architecture features a user space address space of 512GB and a kernel address space of 256TB.
 
@@ -40,9 +40,9 @@ Some newer versions of ARM architecture offer support for Large Virtual Address 
 - [ARM developer documentation](https://developer.arm.com/documentation/ddi0406/cb/Appendixes/ARMv4-and-ARMv5-Differences/System-level-memory-model/Virtual-memory-support)
 - [ARM Community Forums](https://community.arm.com)
 
-## Build ast
+## Build N42
 
-If both your CPU architecture and memory layout are valid, the instructions for building ast will not differ from the standard process.
+If both your CPU architecture and memory layout are valid, the instructions for building N42 will not differ from the standard process.
 
 ## Troubleshooting
 
@@ -50,7 +50,7 @@ If both your CPU architecture and memory layout are valid, the instructions for 
 
 ### Failed to open database
 
-This error is raised whenever MBDX can not open a database due to the limitations imposed by the memory layout of your kernel. If the user space is limited to 512GB, the database will not be able to grow below this size.
+This error is raised whenever MDBX cannot open a database due to the limitations imposed by the memory layout of your kernel. If the user space is limited to 512GB, the database will not be able to grow beyond this size.
 
 You will need to recompile the Linux Kernel to fix the issue.
 
@@ -73,4 +73,4 @@ KERNEL_CONFIGURE=yes \
 CARD_DEVICE="/dev/sdX" # Replace sdX with your own storage device
 ```
 - From there, you will be able to select the target board, the OS release and branch. Then, once you get in the **Kernel Configuration** screen, select the **Kernel Features options** and set the previous values accordingly.
-- Wait for the process to finish, plug your storage device into your board and start it. You can now download or install astand it should work properly.
+- Wait for the process to finish, plug your storage device into your board and start it. You can now download or install N42 and it should work properly.

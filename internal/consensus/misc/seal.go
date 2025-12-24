@@ -49,7 +49,7 @@ func SealProto(header block.IHeader) []byte {
 // EncodeSigHeader encodes a header for signature.
 // It excludes the seal (last 65 bytes of extra-data).
 func EncodeSigHeader(w io.Writer, iHeader block.IHeader) {
-	header := avmtypes.FromastHeader(iHeader)
+	header := avmtypes.FromN42Header(iHeader)
 	enc := []interface{}{
 		header.ParentHash,
 		header.UncleHash,
