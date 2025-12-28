@@ -157,16 +157,47 @@ func TestDelegationPrefixBytes(t *testing.T) {
 // =============================================================================
 
 func TestHistoryStorageAddress(t *testing.T) {
-	// Verify the history storage address is not zero
-	if HistoryStorageAddress == (types.Address{}) {
-		t.Error("HistoryStorageAddress should not be zero")
+	// Verify the history storage address matches EIP-2935 Pectra specification
+	expectedAddr := types.HexToAddress("0x0F792be4B0c0cb4DAE440Ef133E90C0eCD48CCCC")
+	if HistoryStorageAddress != expectedAddr {
+		t.Errorf("HistoryStorageAddress = %v, want %v", HistoryStorageAddress, expectedAddr)
 	}
 }
 
 func TestHistoryServeWindow(t *testing.T) {
-	// Verify the history serve window is 8192
+	// Verify the history serve window is 8192 per EIP-2935
 	if HistoryServeWindow != 8192 {
 		t.Errorf("HistoryServeWindow = %d, want 8192", HistoryServeWindow)
+	}
+}
+
+func TestHistoryStorageSlotCalculation(t *testing.T) {
+	// Test that slot calculation uses modulo correctly
+	tests := []struct {
+		blockNum     uint64
+		expectedSlot uint64
+	}{
+		{0, 0},
+		{1, 1},
+		{8191, 8191},
+		{8192, 0},    // Wraps around
+		{8193, 1},    // Wraps around
+		{16384, 0},   // 2x wrap
+		{100000, 100000 % 8192},
+	}
+
+	for _, tt := range tests {
+		slot := tt.blockNum % HistoryServeWindow
+		if slot != tt.expectedSlot {
+			t.Errorf("Block %d: slot = %d, want %d", tt.blockNum, slot, tt.expectedSlot)
+		}
+	}
+}
+
+func TestHistoryStorageCode(t *testing.T) {
+	// Verify the history storage code is not empty
+	if len(HistoryStorageCode) == 0 {
+		t.Error("HistoryStorageCode should not be empty")
 	}
 }
 

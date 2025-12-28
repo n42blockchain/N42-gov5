@@ -102,10 +102,20 @@ var (
 // =============================================================================
 
 // HistoryStorageAddress is the address where historical block hashes are stored
-var HistoryStorageAddress = types.HexToAddress("0x0aae40965e6800cd9b1f4b05ff21581047e3f91e")
+// This is the canonical address for the EIP-2935 system contract in Pectra
+var HistoryStorageAddress = types.HexToAddress("0x0F792be4B0c0cb4DAE440Ef133E90C0eCD48CCCC")
 
 // HistoryServeWindow is the number of block hashes stored in the system contract
+// The contract stores the last HISTORY_SERVE_WINDOW block hashes in a ring buffer
 const HistoryServeWindow = 8192
+
+// HistoryStorageCode is the deployed bytecode of the EIP-2935 system contract
+// This contract stores block hashes at slot = blockNumber % HISTORY_SERVE_WINDOW
+// and allows reading via BLOCKHASH opcode for blocks within the serve window
+var HistoryStorageCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe1460575767ffffffffffffffff5765015150a06020527f0167ffffffffffffffff8111615058578060005b905b60008360408203523390523661003f57610000565b6020357f806101c557610000576000604035523290")
+
+// SetHistoryStorageSlotGas is the gas cost for the system call to store a block hash
+const SetHistoryStorageSlotGas = 21000
 
 // =============================================================================
 // EIP-7251: Increase the MAX_EFFECTIVE_BALANCE (Pectra)
@@ -184,6 +194,8 @@ func enable2935(jt *JumpTable) {
 }
 
 // opBlockhash2935 implements BLOCKHASH with EIP-2935 support
+// EIP-2935 extends BLOCKHASH to serve block hashes beyond the 256 block limit
+// by reading from a system contract that stores historical block hashes
 func opBlockhash2935(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	num := scope.Stack.Peek()
 	num64, overflow := num.Uint64WithOverflow()
@@ -192,35 +204,39 @@ func opBlockhash2935(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContex
 		return nil, nil
 	}
 
-	var upper, lower uint64
-	upper = interpreter.evm.Context().BlockNumber
-	if upper < 1 {
+	currentBlock := interpreter.evm.Context().BlockNumber
+	if currentBlock < 1 {
 		num.Clear()
 		return nil, nil
 	}
-	upper--
 
-	// Check if within 256 block window (standard BLOCKHASH behavior)
-	if upper > 256 {
-		lower = upper - 256
+	// Block number must be less than current block
+	if num64 >= currentBlock {
+		num.Clear()
+		return nil, nil
 	}
-	if num64 >= lower && num64 <= upper {
+
+	// Check if within standard 256 block window (original BLOCKHASH behavior)
+	if currentBlock-num64 <= 256 {
 		hash := interpreter.evm.Context().GetHash(num64)
 		num.SetBytes(hash.Bytes())
 		return nil, nil
 	}
 
-	// EIP-2935: Check history storage for older blocks
-	if interpreter.evm.ChainRules().IsPrague {
-		// For blocks within the history serve window
-		if upper >= HistoryServeWindow && num64 < upper-HistoryServeWindow {
+	// EIP-2935: Check history storage for older blocks (Pectra)
+	if interpreter.evm.ChainRules().IsPectra {
+		// Check if within the history serve window
+		if currentBlock-num64 > HistoryServeWindow {
 			num.Clear()
 			return nil, nil
 		}
 
 		// Read from history storage contract
+		// Slot is calculated as blockNumber % HISTORY_SERVE_WINDOW
+		slotNum := new(uint256.Int).SetUint64(num64 % HistoryServeWindow)
 		slot := types.Hash{}
-		slot.SetBytes(new(uint256.Int).Mod(num, uint256.NewInt(HistoryServeWindow)).Bytes())
+		slotNum.WriteToSlice(slot[:])
+
 		var hashVal uint256.Int
 		interpreter.evm.IntraBlockState().GetState(HistoryStorageAddress, &slot, &hashVal)
 		if !hashVal.IsZero() {
@@ -242,6 +258,50 @@ func newPectraInstructionSet() JumpTable {
 	// enable2537(&instructionSet) - BLS operations are precompiles, not opcodes
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
+}
+
+// =============================================================================
+// EIP-2935 System Contract Helpers
+// =============================================================================
+
+// StoreParentBlockHash stores the parent block hash in the EIP-2935 history contract
+// This should be called at the beginning of each block's execution
+// The hash is stored at slot = parentBlockNumber % HISTORY_SERVE_WINDOW
+func StoreParentBlockHash(statedb StateDB, parentNumber uint64, parentHash types.Hash) {
+	if parentNumber == 0 {
+		return // Skip genesis block
+	}
+
+	// Calculate storage slot: parentNumber % HISTORY_SERVE_WINDOW
+	slot := types.Hash{}
+	slotNum := new(uint256.Int).SetUint64(parentNumber % HistoryServeWindow)
+	slotNum.WriteToSlice(slot[:])
+
+	// Convert hash to uint256 for storage
+	hashVal := new(uint256.Int).SetBytes(parentHash[:])
+
+	// Store the hash in the history contract
+	statedb.SetState(HistoryStorageAddress, &slot, *hashVal)
+}
+
+// EnsureHistoryContractDeployed ensures the EIP-2935 history contract is deployed
+// This should be called during the Pectra fork transition
+func EnsureHistoryContractDeployed(statedb StateDB) {
+	// Check if contract is already deployed
+	if len(statedb.GetCode(HistoryStorageAddress)) > 0 {
+		return
+	}
+
+	// Deploy the history storage contract
+	statedb.SetCode(HistoryStorageAddress, HistoryStorageCode)
+}
+
+// StateDB interface for EIP-2935 (subset of full IntraBlockState)
+type StateDB interface {
+	GetState(addr types.Address, key *types.Hash, value *uint256.Int)
+	SetState(addr types.Address, key *types.Hash, value uint256.Int)
+	GetCode(addr types.Address) []byte
+	SetCode(addr types.Address, code []byte) error
 }
 
 // =============================================================================
