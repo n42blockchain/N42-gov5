@@ -137,6 +137,14 @@ func (r *Registry) registerForRules(rules *params.Rules) {
 		r.register(0x13, NewBls12381MapG2())      // BLS12_MAP_FP2_TO_G2
 	}
 
+	// Fusaka additions (EIP-7951: P-256/secp256r1 signature verification)
+	if rules.IsFusaka {
+		// P-256 precompile at address 0x0000...0100 (EIP-7951)
+		// Note: Some proposals use 0x0b, but 0x100 is the preferred address
+		p256Addr := types.HexToAddress("0x0000000000000000000000000000000000000100")
+		r.registerAt(p256Addr, NewP256Verify())
+	}
+
 	// Build sorted address list
 	r.addresses = make([]types.Address, 0, len(r.contracts))
 	for addr := range r.contracts {
