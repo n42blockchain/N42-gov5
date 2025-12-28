@@ -87,7 +87,8 @@ func (tx *DynamicFeeTx) copy() TxData {
 // accessors for innerTx.
 func (tx *DynamicFeeTx) txType() byte            { return DynamicFeeTxType }
 func (tx *DynamicFeeTx) chainID() *uint256.Int   { return tx.ChainID }
-func (tx *DynamicFeeTx) accessList() AccessList  { return tx.AccessList }
+func (tx *DynamicFeeTx) accessList() AccessList      { return tx.AccessList }
+func (tx *DynamicFeeTx) authList() AuthorizationList { return nil } // EIP-7702: Not supported for dynamic fee tx
 func (tx *DynamicFeeTx) data() []byte            { return tx.Data }
 func (tx *DynamicFeeTx) gas() uint64             { return tx.Gas }
 func (tx *DynamicFeeTx) gasFeeCap() *uint256.Int { return tx.GasFeeCap }

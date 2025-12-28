@@ -91,6 +91,7 @@ type Message interface {
 	CheckNonce() bool
 	Data() []byte
 	AccessList() transaction.AccessList
+	AuthList() transaction.AuthorizationList // EIP-7702: Authorization list
 
 	IsFree() bool
 }
@@ -398,6 +399,14 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		}
 	}
 
+	// EIP-7702: Process authorization list before execution
+	// This must happen before access list setup so authorized accounts are warmed
+	if rules.IsPectra && msg.AuthList() != nil {
+		if err := st.applyAuthorizations(msg.AuthList()); err != nil {
+			return nil, err
+		}
+	}
+
 	// Set up the initial access list.
 	if rules.IsBerlin {
 		st.state.PrepareAccessList(msg.From(), msg.To(), vm2.ActivePrecompiles(rules), msg.AccessList())
@@ -506,4 +515,64 @@ func toWordSize(size uint64) uint64 {
 	}
 
 	return (size + 31) / 32
+}
+
+// applyAuthorizations processes the EIP-7702 authorization list.
+// For each authorization:
+// 1. Verify the signature and recover the signer address
+// 2. Check chain ID matches (0 is wildcard)
+// 3. Check nonce matches the signer's current nonce
+// 4. Increment the signer's nonce
+// 5. Set the signer's code to delegation code (0xef0100 + target address)
+func (st *StateTransition) applyAuthorizations(authList transaction.AuthorizationList) error {
+	chainID := st.evm.ChainConfig().ChainID.Uint64()
+
+	for _, auth := range authList {
+		// Skip nil authorizations
+		if auth == nil {
+			continue
+		}
+
+		// Recover the signer address from the authorization signature
+		signer, err := auth.RecoverSigner()
+		if err != nil {
+			// Invalid signature - skip this authorization but don't fail the tx
+			continue
+		}
+
+		// Check chain ID: must match or be 0 (wildcard)
+		if auth.ChainID != 0 && auth.ChainID != chainID {
+			// Chain ID mismatch - skip this authorization
+			continue
+		}
+
+		// Check nonce: must match the signer's current nonce
+		signerNonce := st.state.GetNonce(signer)
+		if auth.Nonce != signerNonce {
+			// Nonce mismatch - skip this authorization
+			continue
+		}
+
+		// Check if signer already has code (not delegation code)
+		existingCode := st.state.GetCode(signer)
+		if len(existingCode) > 0 && !vm2.HasDelegation(existingCode) {
+			// Account already has non-delegation code - skip
+			continue
+		}
+
+		// Increment the signer's nonce
+		st.state.SetNonce(signer, signerNonce+1)
+
+		// Set delegation code: 0xef0100 + target address
+		delegationCode := vm2.AddressToDelegation(auth.Address)
+		st.state.SetCode(signer, delegationCode)
+
+		// Add signer to access list (warm the address)
+		st.state.AddAddressToAccessList(signer)
+
+		// Add target address to access list
+		st.state.AddAddressToAccessList(auth.Address)
+	}
+
+	return nil
 }

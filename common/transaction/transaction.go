@@ -48,6 +48,7 @@ type TxData interface {
 
 	chainID() *uint256.Int
 	accessList() AccessList
+	authList() AuthorizationList // EIP-7702: Authorization list
 	data() []byte
 	gas() uint64
 	gasPrice() *uint256.Int
@@ -385,6 +386,11 @@ func (tx *Transaction) AccessList() AccessList {
 	return tx.inner.accessList()
 }
 
+// AuthList returns the authorization list for EIP-7702 SetCode transactions
+func (tx *Transaction) AuthList() AuthorizationList {
+	return tx.inner.authList()
+}
+
 func (tx *Transaction) Gas() uint64 {
 	return tx.inner.gas()
 }
@@ -639,6 +645,7 @@ type Message struct {
 	tip        uint256.Int
 	data       []byte
 	accessList AccessList
+	authList   AuthorizationList // EIP-7702: Authorization list for SetCode transactions
 	checkNonce bool
 	isFree     bool
 }
@@ -681,6 +688,7 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 		amount:     *tx.Value(),
 		data:       tx.Data(),
 		accessList: tx.AccessList(),
+		authList:   tx.AuthList(), // EIP-7702
 		checkNonce: false,
 		//isFake:     false,
 	}
@@ -702,17 +710,18 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 
 	return msg, nil
 }
-func (m Message) From() types.Address    { return m.from }
-func (m Message) To() *types.Address     { return m.to }
-func (m Message) GasPrice() *uint256.Int { return &m.gasPrice }
-func (m Message) FeeCap() *uint256.Int   { return &m.feeCap }
-func (m Message) Tip() *uint256.Int      { return &m.tip }
-func (m Message) Value() *uint256.Int    { return &m.amount }
-func (m Message) Gas() uint64            { return m.gasLimit }
-func (m Message) Nonce() uint64          { return m.nonce }
-func (m Message) Data() []byte           { return m.data }
-func (m Message) AccessList() AccessList { return m.accessList }
-func (m Message) CheckNonce() bool       { return m.checkNonce }
+func (m Message) From() types.Address         { return m.from }
+func (m Message) To() *types.Address          { return m.to }
+func (m Message) GasPrice() *uint256.Int      { return &m.gasPrice }
+func (m Message) FeeCap() *uint256.Int        { return &m.feeCap }
+func (m Message) Tip() *uint256.Int           { return &m.tip }
+func (m Message) Value() *uint256.Int         { return &m.amount }
+func (m Message) Gas() uint64                 { return m.gasLimit }
+func (m Message) Nonce() uint64               { return m.nonce }
+func (m Message) Data() []byte                { return m.data }
+func (m Message) AccessList() AccessList      { return m.accessList }
+func (m Message) AuthList() AuthorizationList { return m.authList } // EIP-7702
+func (m Message) CheckNonce() bool            { return m.checkNonce }
 func (m *Message) SetCheckNonce(checkNonce bool) {
 	m.checkNonce = checkNonce
 }
