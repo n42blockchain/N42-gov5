@@ -103,7 +103,8 @@ func (tx *LegacyTx) txType() byte { return LegacyTxType }
 func (tx *LegacyTx) chainID() *uint256.Int {
 	return DeriveChainId(tx.V)
 }
-func (tx *LegacyTx) accessList() AccessList  { return nil }
+func (tx *LegacyTx) accessList() AccessList      { return nil }
+func (tx *LegacyTx) authList() AuthorizationList { return nil } // EIP-7702: Not supported for legacy tx
 func (tx *LegacyTx) data() []byte            { return tx.Data }
 func (tx *LegacyTx) gas() uint64             { return tx.Gas }
 func (tx *LegacyTx) gasPrice() *uint256.Int  { return tx.GasPrice }

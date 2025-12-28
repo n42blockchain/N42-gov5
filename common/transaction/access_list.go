@@ -95,7 +95,8 @@ func (tx *AccessListTx) copy() TxData {
 // accessors for innerTx.
 func (tx *AccessListTx) txType() byte            { return AccessListTxType }
 func (tx *AccessListTx) chainID() *uint256.Int   { return tx.ChainID }
-func (tx *AccessListTx) accessList() AccessList  { return tx.AccessList }
+func (tx *AccessListTx) accessList() AccessList      { return tx.AccessList }
+func (tx *AccessListTx) authList() AuthorizationList { return nil } // EIP-7702: Not supported for access list tx
 func (tx *AccessListTx) data() []byte            { return tx.Data }
 func (tx *AccessListTx) gas() uint64             { return tx.Gas }
 func (tx *AccessListTx) gasPrice() *uint256.Int  { return tx.GasPrice }
