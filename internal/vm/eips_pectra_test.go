@@ -207,9 +207,10 @@ func TestHistoryStorageCode(t *testing.T) {
 
 func TestMaxEffectiveBalanceEIP7251(t *testing.T) {
 	// Verify the max effective balance is 2048 ETH (2048 * 10^18 wei)
-	expectedStr := "2048000000000000000000"
-	if MaxEffectiveBalanceEIP7251.String() != expectedStr {
-		t.Errorf("MaxEffectiveBalanceEIP7251 = %s, want %s", MaxEffectiveBalanceEIP7251.String(), expectedStr)
+	// uint256 String() returns hex, so we compare with Dec()
+	expectedDec := "2048000000000000000000"
+	if MaxEffectiveBalanceEIP7251.Dec() != expectedDec {
+		t.Errorf("MaxEffectiveBalanceEIP7251 = %s, want %s", MaxEffectiveBalanceEIP7251.Dec(), expectedDec)
 	}
 }
 
@@ -337,6 +338,197 @@ func TestPectraInstructionSetIncludesPrague(t *testing.T) {
 		if prague[i] != nil && pectra[i] == nil {
 			t.Errorf("Pectra missing Prague op 0x%x", i)
 		}
+	}
+}
+
+// =============================================================================
+// EIP-6110 Deposit Request Tests
+// =============================================================================
+
+func TestDepositRequestSerialize(t *testing.T) {
+	deposit := &DepositRequest{
+		Amount: 32000000000, // 32 Gwei
+		Index:  12345,
+	}
+	copy(deposit.Pubkey[:], bytes.Repeat([]byte{0xaa}, 48))
+	copy(deposit.WithdrawalCredentials[:], bytes.Repeat([]byte{0xbb}, 32))
+	copy(deposit.Signature[:], bytes.Repeat([]byte{0xcc}, 96))
+
+	serialized := deposit.Serialize()
+	if len(serialized) != DepositRequestSize {
+		t.Errorf("Serialized deposit size = %d, want %d", len(serialized), DepositRequestSize)
+	}
+
+	// Verify pubkey
+	for i := 0; i < 48; i++ {
+		if serialized[i] != 0xaa {
+			t.Errorf("Pubkey byte %d = %x, want 0xaa", i, serialized[i])
+		}
+	}
+}
+
+func TestDepositEventSignature(t *testing.T) {
+	// Verify the deposit event signature is not zero
+	if DepositEventSignature == (types.Hash{}) {
+		t.Error("DepositEventSignature should not be zero")
+	}
+}
+
+func TestDepositContractAddress(t *testing.T) {
+	// Verify the deposit contract address matches the canonical address
+	expectedAddr := types.HexToAddress("0x00000000219ab540356cBB839Cbe05303d7705Fa")
+	if DepositContractAddress != expectedAddr {
+		t.Errorf("DepositContractAddress = %v, want %v", DepositContractAddress, expectedAddr)
+	}
+}
+
+// =============================================================================
+// EIP-7002 Withdrawal Request Tests
+// =============================================================================
+
+func TestWithdrawalRequestSerialize(t *testing.T) {
+	req := &WithdrawalRequest{
+		SourceAddress: types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Amount:        1000000000, // 1 Gwei
+	}
+	copy(req.ValidatorPubkey[:], bytes.Repeat([]byte{0xdd}, 48))
+
+	serialized := req.Serialize()
+	if len(serialized) != WithdrawalRequestSize {
+		t.Errorf("Serialized withdrawal request size = %d, want %d", len(serialized), WithdrawalRequestSize)
+	}
+}
+
+func TestWithdrawalRequestRoundTrip(t *testing.T) {
+	original := &WithdrawalRequest{
+		SourceAddress: types.HexToAddress("0xabcdef0123456789abcdef0123456789abcdef01"),
+		Amount:        500000000, // 0.5 Gwei
+	}
+	copy(original.ValidatorPubkey[:], bytes.Repeat([]byte{0xee}, 48))
+
+	serialized := original.Serialize()
+	decoded, err := DeserializeWithdrawalRequest(serialized)
+	if err != nil {
+		t.Fatalf("DeserializeWithdrawalRequest error: %v", err)
+	}
+
+	if decoded.SourceAddress != original.SourceAddress {
+		t.Errorf("SourceAddress mismatch: got %v, want %v", decoded.SourceAddress, original.SourceAddress)
+	}
+	if decoded.ValidatorPubkey != original.ValidatorPubkey {
+		t.Errorf("ValidatorPubkey mismatch")
+	}
+	if decoded.Amount != original.Amount {
+		t.Errorf("Amount mismatch: got %d, want %d", decoded.Amount, original.Amount)
+	}
+}
+
+func TestWithdrawalRequestsAddress(t *testing.T) {
+	// Verify the address is not zero
+	if WithdrawalRequestsAddress == (types.Address{}) {
+		t.Error("WithdrawalRequestsAddress should not be zero")
+	}
+}
+
+func TestMaxWithdrawalRequestsPerBlock(t *testing.T) {
+	if MaxWithdrawalRequestsPerBlock != 16 {
+		t.Errorf("MaxWithdrawalRequestsPerBlock = %d, want 16", MaxWithdrawalRequestsPerBlock)
+	}
+}
+
+// =============================================================================
+// EIP-7251 Consolidation Request Tests
+// =============================================================================
+
+func TestConsolidationRequestSerialize(t *testing.T) {
+	req := &ConsolidationRequest{
+		SourceAddress: types.HexToAddress("0x1234567890123456789012345678901234567890"),
+	}
+	copy(req.SourcePubkey[:], bytes.Repeat([]byte{0x11}, 48))
+	copy(req.TargetPubkey[:], bytes.Repeat([]byte{0x22}, 48))
+
+	serialized := req.Serialize()
+	if len(serialized) != ConsolidationRequestSize {
+		t.Errorf("Serialized consolidation request size = %d, want %d", len(serialized), ConsolidationRequestSize)
+	}
+}
+
+func TestConsolidationRequestRoundTrip(t *testing.T) {
+	original := &ConsolidationRequest{
+		SourceAddress: types.HexToAddress("0xfedcba9876543210fedcba9876543210fedcba98"),
+	}
+	copy(original.SourcePubkey[:], bytes.Repeat([]byte{0x33}, 48))
+	copy(original.TargetPubkey[:], bytes.Repeat([]byte{0x44}, 48))
+
+	serialized := original.Serialize()
+	decoded, err := DeserializeConsolidationRequest(serialized)
+	if err != nil {
+		t.Fatalf("DeserializeConsolidationRequest error: %v", err)
+	}
+
+	if decoded.SourceAddress != original.SourceAddress {
+		t.Errorf("SourceAddress mismatch")
+	}
+	if decoded.SourcePubkey != original.SourcePubkey {
+		t.Errorf("SourcePubkey mismatch")
+	}
+	if decoded.TargetPubkey != original.TargetPubkey {
+		t.Errorf("TargetPubkey mismatch")
+	}
+}
+
+func TestMaxEffectiveBalanceElectra(t *testing.T) {
+	// Verify the max effective balance is 2048 ETH
+	expectedDec := "2048000000000000000000"
+	if MaxEffectiveBalanceElectra.Dec() != expectedDec {
+		t.Errorf("MaxEffectiveBalanceElectra = %s, want %s", MaxEffectiveBalanceElectra.Dec(), expectedDec)
+	}
+}
+
+func TestMinActivationBalance(t *testing.T) {
+	// Verify the min activation balance is 32 ETH
+	expectedDec := "32000000000000000000"
+	if MinActivationBalance.Dec() != expectedDec {
+		t.Errorf("MinActivationBalance = %s, want %s", MinActivationBalance.Dec(), expectedDec)
+	}
+}
+
+func TestConsolidationRequestsAddress(t *testing.T) {
+	// Verify the address is not zero
+	if ConsolidationRequestsAddress == (types.Address{}) {
+		t.Error("ConsolidationRequestsAddress should not be zero")
+	}
+}
+
+// =============================================================================
+// EIP-7685 Execution Request Tests
+// =============================================================================
+
+func TestEncodeDecodeExecutionRequest(t *testing.T) {
+	testData := []byte{0x01, 0x02, 0x03, 0x04}
+	
+	// Test deposit request type
+	encoded := EncodeExecutionRequest(DepositRequestType, testData)
+	if encoded[0] != DepositRequestType {
+		t.Errorf("Encoded type = %d, want %d", encoded[0], DepositRequestType)
+	}
+
+	reqType, data, err := DecodeExecutionRequest(encoded)
+	if err != nil {
+		t.Fatalf("DecodeExecutionRequest error: %v", err)
+	}
+	if reqType != DepositRequestType {
+		t.Errorf("Decoded type = %d, want %d", reqType, DepositRequestType)
+	}
+	if !bytes.Equal(data, testData) {
+		t.Errorf("Decoded data mismatch")
+	}
+}
+
+func TestDecodeEmptyRequest(t *testing.T) {
+	_, _, err := DecodeExecutionRequest([]byte{})
+	if err == nil {
+		t.Error("DecodeExecutionRequest should fail on empty data")
 	}
 }
 

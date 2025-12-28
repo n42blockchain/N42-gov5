@@ -143,11 +143,121 @@ const (
 // SystemAddress is the system address that can make requests
 var SystemAddress = types.HexToAddress("0xfffffffffffffffffffffffffffffffffffffffe")
 
-// WithdrawalRequestsAddress is the address of the withdrawal requests contract
+// WithdrawalRequestsAddress is the address of the withdrawal requests contract (EIP-7002)
 var WithdrawalRequestsAddress = types.HexToAddress("0x00A3ca265EBcb825B45F985A16CEFB49958cE017")
 
-// ConsolidationRequestsAddress is the address of the consolidation requests contract
+// ConsolidationRequestsAddress is the address of the consolidation requests contract (EIP-7251)
 var ConsolidationRequestsAddress = types.HexToAddress("0x00b42dbF2194e931E80326D950320f7d9Dbeac02")
+
+// =============================================================================
+// EIP-7002: Execution Layer Triggerable Withdrawals (Pectra)
+// https://eips.ethereum.org/EIPS/eip-7002
+// =============================================================================
+
+// WithdrawalRequestFee is the base fee for withdrawal requests
+const WithdrawalRequestFee = 1 // 1 Gwei minimum fee
+
+// MaxWithdrawalRequestsPerBlock is the maximum withdrawal requests per block
+const MaxWithdrawalRequestsPerBlock = 16
+
+// WithdrawalRequest represents a validator withdrawal request (EIP-7002)
+type WithdrawalRequest struct {
+	SourceAddress   types.Address // Address that requested the withdrawal
+	ValidatorPubkey [48]byte      // BLS public key of the validator
+	Amount          uint64        // Amount to withdraw in Gwei (0 = full exit)
+}
+
+// WithdrawalRequestSize is the size of a serialized withdrawal request
+const WithdrawalRequestSize = 20 + 48 + 8 // 76 bytes
+
+// SerializeWithdrawalRequest serializes a withdrawal request
+func (w *WithdrawalRequest) Serialize() []byte {
+	buf := make([]byte, WithdrawalRequestSize)
+	copy(buf[0:20], w.SourceAddress[:])
+	copy(buf[20:68], w.ValidatorPubkey[:])
+	// Amount in little-endian
+	for i := 0; i < 8; i++ {
+		buf[68+i] = byte(w.Amount >> (8 * i))
+	}
+	return buf
+}
+
+// DeserializeWithdrawalRequest deserializes a withdrawal request
+func DeserializeWithdrawalRequest(data []byte) (*WithdrawalRequest, error) {
+	if len(data) != WithdrawalRequestSize {
+		return nil, errInvalidWithdrawalRequest
+	}
+	req := &WithdrawalRequest{}
+	copy(req.SourceAddress[:], data[0:20])
+	copy(req.ValidatorPubkey[:], data[20:68])
+	// Amount in little-endian
+	for i := 0; i < 8; i++ {
+		req.Amount |= uint64(data[68+i]) << (8 * i)
+	}
+	return req, nil
+}
+
+var errInvalidWithdrawalRequest = &pectraError{"invalid withdrawal request"}
+
+// =============================================================================
+// EIP-7251: Increase MAX_EFFECTIVE_BALANCE (Pectra)
+// https://eips.ethereum.org/EIPS/eip-7251
+// =============================================================================
+
+// ConsolidationRequest represents a validator consolidation request (EIP-7251)
+type ConsolidationRequest struct {
+	SourceAddress types.Address // Address initiating the consolidation
+	SourcePubkey  [48]byte      // Source validator BLS public key
+	TargetPubkey  [48]byte      // Target validator BLS public key
+}
+
+// ConsolidationRequestSize is the size of a serialized consolidation request
+const ConsolidationRequestSize = 20 + 48 + 48 // 116 bytes
+
+// MaxConsolidationRequestsPerBlock is the maximum consolidation requests per block
+const MaxConsolidationRequestsPerBlock = 1
+
+// SerializeConsolidationRequest serializes a consolidation request
+func (c *ConsolidationRequest) Serialize() []byte {
+	buf := make([]byte, ConsolidationRequestSize)
+	copy(buf[0:20], c.SourceAddress[:])
+	copy(buf[20:68], c.SourcePubkey[:])
+	copy(buf[68:116], c.TargetPubkey[:])
+	return buf
+}
+
+// DeserializeConsolidationRequest deserializes a consolidation request
+func DeserializeConsolidationRequest(data []byte) (*ConsolidationRequest, error) {
+	if len(data) != ConsolidationRequestSize {
+		return nil, errInvalidConsolidationRequest
+	}
+	req := &ConsolidationRequest{}
+	copy(req.SourceAddress[:], data[0:20])
+	copy(req.SourcePubkey[:], data[20:68])
+	copy(req.TargetPubkey[:], data[68:116])
+	return req, nil
+}
+
+var errInvalidConsolidationRequest = &pectraError{"invalid consolidation request"}
+
+// MIN_ACTIVATION_BALANCE is the minimum balance for validator activation (unchanged)
+var MinActivationBalance = new(uint256.Int).Mul(
+	uint256.NewInt(32),
+	uint256.NewInt(1e18),
+)
+
+// MAX_EFFECTIVE_BALANCE_ELECTRA is the new maximum effective balance (EIP-7251)
+// Increased from 32 ETH to 2048 ETH
+var MaxEffectiveBalanceElectra = new(uint256.Int).Mul(
+	uint256.NewInt(2048),
+	uint256.NewInt(1e18),
+)
+
+// MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA is the minimum churn limit per epoch
+const MinPerEpochChurnLimitElectra = 128_000_000_000 // 128 Gwei
+
+// MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT is the maximum churn for activations/exits
+const MaxPerEpochActivationExitChurnLimit = 256_000_000_000 // 256 Gwei
 
 // =============================================================================
 // EIP-6110: Supply validator deposits on chain (Pectra)
@@ -156,6 +266,133 @@ var ConsolidationRequestsAddress = types.HexToAddress("0x00b42dbF2194e931E80326D
 
 // DepositContractAddress is the address of the beacon chain deposit contract
 var DepositContractAddress = types.HexToAddress("0x00000000219ab540356cBB839Cbe05303d7705Fa")
+
+// Deposit event signature for EIP-6110
+// DepositEvent(bytes pubkey, bytes withdrawal_credentials, bytes amount, bytes signature, bytes index)
+var DepositEventSignature = types.HexToHash("0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5")
+
+// DepositRequest represents a validator deposit from logs (EIP-6110)
+type DepositRequest struct {
+	Pubkey                [48]byte // BLS public key
+	WithdrawalCredentials [32]byte // Withdrawal credentials
+	Amount                uint64   // Amount in Gwei
+	Signature             [96]byte // BLS signature
+	Index                 uint64   // Deposit index
+}
+
+// DepositRequestSize is the size of a serialized deposit request
+const DepositRequestSize = 48 + 32 + 8 + 96 + 8 // 192 bytes
+
+// ParseDepositLog parses a deposit log into a DepositRequest
+func ParseDepositLog(topics []types.Hash, data []byte) (*DepositRequest, error) {
+	// Verify event signature
+	if len(topics) < 1 || topics[0] != DepositEventSignature {
+		return nil, errInvalidDepositLog
+	}
+
+	// Minimum data length check
+	if len(data) < 576 { // 5 * 32 (offsets) + minimum data
+		return nil, errInvalidDepositLog
+	}
+
+	deposit := &DepositRequest{}
+
+	// Parse ABI-encoded data
+	// The deposit event is ABI-encoded with dynamic byte arrays
+	offset := 0
+
+	// Skip 5 offset values (32 bytes each)
+	offset = 160
+
+	// Parse pubkey (48 bytes)
+	if offset+32 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	pubkeyLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	offset += 32
+	if pubkeyLen != 48 || offset+48 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	copy(deposit.Pubkey[:], data[offset:offset+48])
+	offset += 48
+	// Align to 32 bytes
+	offset = ((offset + 31) / 32) * 32
+
+	// Parse withdrawal_credentials (32 bytes)
+	if offset+32 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	credLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	offset += 32
+	if credLen != 32 || offset+32 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	copy(deposit.WithdrawalCredentials[:], data[offset:offset+32])
+	offset += 32
+
+	// Parse amount (8 bytes, little-endian)
+	if offset+32 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	amountLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	offset += 32
+	if amountLen != 8 || offset+8 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	// Amount is little-endian in Gwei
+	for i := 0; i < 8; i++ {
+		deposit.Amount |= uint64(data[offset+i]) << (8 * i)
+	}
+	offset += 8
+	offset = ((offset + 31) / 32) * 32
+
+	// Parse signature (96 bytes)
+	if offset+32 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	sigLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	offset += 32
+	if sigLen != 96 || offset+96 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	copy(deposit.Signature[:], data[offset:offset+96])
+	offset += 96
+	offset = ((offset + 31) / 32) * 32
+
+	// Parse index (8 bytes, little-endian)
+	if offset+32 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	indexLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	offset += 32
+	if indexLen != 8 || offset+8 > len(data) {
+		return nil, errInvalidDepositLog
+	}
+	for i := 0; i < 8; i++ {
+		deposit.Index |= uint64(data[offset+i]) << (8 * i)
+	}
+
+	return deposit, nil
+}
+
+// SerializeDepositRequest serializes a deposit request for inclusion in block
+func (d *DepositRequest) Serialize() []byte {
+	buf := make([]byte, DepositRequestSize)
+	copy(buf[0:48], d.Pubkey[:])
+	copy(buf[48:80], d.WithdrawalCredentials[:])
+	// Amount in little-endian
+	for i := 0; i < 8; i++ {
+		buf[80+i] = byte(d.Amount >> (8 * i))
+	}
+	copy(buf[88:184], d.Signature[:])
+	// Index in little-endian
+	for i := 0; i < 8; i++ {
+		buf[184+i] = byte(d.Index >> (8 * i))
+	}
+	return buf
+}
+
+var errInvalidDepositLog = &pectraError{"invalid deposit log"}
 
 // =============================================================================
 // Pectra JumpTable modifications
@@ -329,4 +566,38 @@ func init() {
 	params.PerAuthBaseCost = PerAuthBaseCost
 	params.PerEmptyAccountCost = PerEmptyAccountCost
 }
+
+// =============================================================================
+// Pectra Error Types
+// =============================================================================
+
+type pectraError struct {
+	msg string
+}
+
+func (e *pectraError) Error() string {
+	return e.msg
+}
+
+// =============================================================================
+// Execution Requests Helpers (EIP-7685)
+// =============================================================================
+
+// EncodeExecutionRequest encodes a request with its type prefix
+func EncodeExecutionRequest(reqType byte, data []byte) []byte {
+	result := make([]byte, 1+len(data))
+	result[0] = reqType
+	copy(result[1:], data)
+	return result
+}
+
+// DecodeExecutionRequest decodes a request and returns its type and data
+func DecodeExecutionRequest(data []byte) (byte, []byte, error) {
+	if len(data) < 1 {
+		return 0, nil, errEmptyRequest
+	}
+	return data[0], data[1:], nil
+}
+
+var errEmptyRequest = &pectraError{"empty execution request"}
 
