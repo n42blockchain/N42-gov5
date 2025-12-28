@@ -81,50 +81,52 @@ func NewBlake2F() PrecompiledContract {
 }
 
 // =============================================================================
-// BLS12-381 Precompiles (EIP-2537)
+// BLS12-381 Precompiles (EIP-2537 Pectra)
+// https://eips.ethereum.org/EIPS/eip-2537
+// Addresses: 0x0b - 0x13
 // =============================================================================
 
-// NewBls12381G1Add creates a BLS12-381 G1 addition precompile (address 0x0a).
+// NewBls12381G1Add creates a BLS12-381 G1 addition precompile (address 0x0b).
 func NewBls12381G1Add() PrecompiledContract {
 	return vm.GetBls12381G1Add()
 }
 
-// NewBls12381G1Mul creates a BLS12-381 G1 multiplication precompile (address 0x0b).
+// NewBls12381G1Mul creates a BLS12-381 G1 multiplication precompile (address 0x0c).
 func NewBls12381G1Mul() PrecompiledContract {
 	return vm.GetBls12381G1Mul()
 }
 
-// NewBls12381G1MultiExp creates a BLS12-381 G1 multi-exponentiation precompile (address 0x0c).
+// NewBls12381G1MultiExp creates a BLS12-381 G1 multi-scalar multiplication precompile (address 0x0d).
 func NewBls12381G1MultiExp() PrecompiledContract {
 	return vm.GetBls12381G1MultiExp()
 }
 
-// NewBls12381G2Add creates a BLS12-381 G2 addition precompile (address 0x0d).
+// NewBls12381G2Add creates a BLS12-381 G2 addition precompile (address 0x0e).
 func NewBls12381G2Add() PrecompiledContract {
 	return vm.GetBls12381G2Add()
 }
 
-// NewBls12381G2Mul creates a BLS12-381 G2 multiplication precompile (address 0x0e).
+// NewBls12381G2Mul creates a BLS12-381 G2 multiplication precompile (address 0x0f).
 func NewBls12381G2Mul() PrecompiledContract {
 	return vm.GetBls12381G2Mul()
 }
 
-// NewBls12381G2MultiExp creates a BLS12-381 G2 multi-exponentiation precompile (address 0x0f).
+// NewBls12381G2MultiExp creates a BLS12-381 G2 multi-scalar multiplication precompile (address 0x10).
 func NewBls12381G2MultiExp() PrecompiledContract {
 	return vm.GetBls12381G2MultiExp()
 }
 
-// NewBls12381Pairing creates a BLS12-381 pairing precompile (address 0x10).
+// NewBls12381Pairing creates a BLS12-381 pairing precompile (address 0x11).
 func NewBls12381Pairing() PrecompiledContract {
 	return vm.GetBls12381Pairing()
 }
 
-// NewBls12381MapG1 creates a BLS12-381 map to G1 precompile (address 0x11).
+// NewBls12381MapG1 creates a BLS12-381 map FP to G1 precompile (address 0x12).
 func NewBls12381MapG1() PrecompiledContract {
 	return vm.GetBls12381MapG1()
 }
 
-// NewBls12381MapG2 creates a BLS12-381 map to G2 precompile (address 0x12).
+// NewBls12381MapG2 creates a BLS12-381 map FP2 to G2 precompile (address 0x13).
 func NewBls12381MapG2() PrecompiledContract {
 	return vm.GetBls12381MapG2()
 }

@@ -38,16 +38,17 @@ var (
 	// Blake2F precompile - Used for hashing
 	blake2FAddr = types.BytesToAddress([]byte{9})
 
-	// BLS12-381 precompiles - Used for PLONK/KZG
-	bls12381G1AddAddr      = types.BytesToAddress([]byte{10})
-	bls12381G1MulAddr      = types.BytesToAddress([]byte{11})
-	bls12381G1MultiExpAddr = types.BytesToAddress([]byte{12})
-	bls12381G2AddAddr      = types.BytesToAddress([]byte{13})
-	bls12381G2MulAddr      = types.BytesToAddress([]byte{14})
-	bls12381G2MultiExpAddr = types.BytesToAddress([]byte{15})
-	bls12381PairingAddr    = types.BytesToAddress([]byte{16})
-	bls12381MapG1Addr      = types.BytesToAddress([]byte{17})
-	bls12381MapG2Addr      = types.BytesToAddress([]byte{18})
+	// BLS12-381 precompiles - Used for PLONK/KZG (EIP-2537 Pectra)
+	// Addresses: 0x0b - 0x13 per EIP-2537 specification
+	bls12381G1AddAddr      = types.BytesToAddress([]byte{0x0b}) // BLS12_G1ADD
+	bls12381G1MulAddr      = types.BytesToAddress([]byte{0x0c}) // BLS12_G1MUL
+	bls12381G1MultiExpAddr = types.BytesToAddress([]byte{0x0d}) // BLS12_G1MSM
+	bls12381G2AddAddr      = types.BytesToAddress([]byte{0x0e}) // BLS12_G2ADD
+	bls12381G2MulAddr      = types.BytesToAddress([]byte{0x0f}) // BLS12_G2MUL
+	bls12381G2MultiExpAddr = types.BytesToAddress([]byte{0x10}) // BLS12_G2MSM
+	bls12381PairingAddr    = types.BytesToAddress([]byte{0x11}) // BLS12_PAIRING
+	bls12381MapG1Addr      = types.BytesToAddress([]byte{0x12}) // BLS12_MAP_FP_TO_G1
+	bls12381MapG2Addr      = types.BytesToAddress([]byte{0x13}) // BLS12_MAP_FP2_TO_G2
 
 	// KZG Point Evaluation (EIP-4844)
 	kzgPointEvalAddr = types.BytesToAddress([]byte{0x0a})
@@ -503,16 +504,16 @@ func TestZKEVMCompatibilitySummary(t *testing.T) {
 	t.Log("  ✓ ecMul (0x07)        - Scalar multiplication")
 	t.Log("  ✓ ecPairing (0x08)    - Pairing check")
 	t.Log("")
-	t.Log("PLONK/KZG Verification (BLS12-381):")
-	t.Log("  ✓ G1Add (0x0a)        - G1 point addition")
-	t.Log("  ✓ G1Mul (0x0b)        - G1 scalar multiplication")
-	t.Log("  ✓ G1MultiExp (0x0c)   - G1 multi-exponentiation")
-	t.Log("  ✓ G2Add (0x0d)        - G2 point addition")
-	t.Log("  ✓ G2Mul (0x0e)        - G2 scalar multiplication")
-	t.Log("  ✓ G2MultiExp (0x0f)   - G2 multi-exponentiation")
-	t.Log("  ✓ Pairing (0x10)      - Pairing check")
-	t.Log("  ✓ MapG1 (0x11)        - Map to G1")
-	t.Log("  ✓ MapG2 (0x12)        - Map to G2")
+	t.Log("PLONK/KZG Verification (BLS12-381 EIP-2537):")
+	t.Log("  ✓ G1Add (0x0b)        - G1 point addition")
+	t.Log("  ✓ G1Mul (0x0c)        - G1 scalar multiplication")
+	t.Log("  ✓ G1MultiExp (0x0d)   - G1 multi-exponentiation (MSM)")
+	t.Log("  ✓ G2Add (0x0e)        - G2 point addition")
+	t.Log("  ✓ G2Mul (0x0f)        - G2 scalar multiplication")
+	t.Log("  ✓ G2MultiExp (0x10)   - G2 multi-exponentiation (MSM)")
+	t.Log("  ✓ Pairing (0x11)      - Pairing check")
+	t.Log("  ✓ MapG1 (0x12)        - Map FP to G1")
+	t.Log("  ✓ MapG2 (0x13)        - Map FP2 to G2")
 	t.Log("")
 	t.Log("Supporting Operations:")
 	t.Log("  ✓ modExp (0x05)       - Modular exponentiation")
