@@ -388,7 +388,21 @@ go test ./tools/tpsbench/... -bench=. -benchtime=1s
 | EIP-663 | Unlimited SWAP/DUP | DUPN, SWAPN, EXCHANGE |
 | EIP-7620 | Contract creation | EOFCREATE, RETURNCONTRACT |
 
-**Fusaka Native AA**:
+**Fusaka EIPs**:
+| EIP | 名称 | 状态 |
+|-----|------|------|
+| EIP-7907 | Contract code size increase (48KB) | ✅ |
+| EIP-7823 | MODEXP upper bound | ✅ |
+| EIP-7883 | ModExp gas cost increase | ✅ |
+| EIP-7825 | Transaction gas limit | ✅ |
+| EIP-7892 | Blob-only parameter hard fork | ✅ |
+| EIP-7918 | Blob base fee cap | ✅ |
+| EIP-7935 | Default gas limit (60M) | ✅ |
+| EIP-7934 | RLP block size limit (10MB) | ✅ |
+| EIP-7939 | CLZ opcode | ✅ |
+| EIP-7951 | P-256 precompile | ✅ |
+
+**Fusaka Native AA Framework**:
 | 组件 | 说明 |
 |------|------|
 | `AAAccount` | 原生 AA 账户结构 |
