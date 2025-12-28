@@ -140,17 +140,18 @@ var PrecompiledContractsBerlin = map[types.Address]PrecompiledContract{
 }
 
 // PrecompiledContractsBLS contains the set of pre-compiled Ethereum
-// contracts specified in EIP-2537. These are exported for testing purposes.
+// contracts specified in EIP-2537 (Pectra). These are exported for testing purposes.
+// Addresses: 0x0b - 0x13 per EIP-2537 specification
 var PrecompiledContractsBLS = map[types.Address]PrecompiledContract{
-	types.BytesToAddress([]byte{10}): &bls12381G1Add{},
-	types.BytesToAddress([]byte{11}): &bls12381G1Mul{},
-	types.BytesToAddress([]byte{12}): &bls12381G1MultiExp{},
-	types.BytesToAddress([]byte{13}): &bls12381G2Add{},
-	types.BytesToAddress([]byte{14}): &bls12381G2Mul{},
-	types.BytesToAddress([]byte{15}): &bls12381G2MultiExp{},
-	types.BytesToAddress([]byte{16}): &bls12381Pairing{},
-	types.BytesToAddress([]byte{17}): &bls12381MapG1{},
-	types.BytesToAddress([]byte{18}): &bls12381MapG2{},
+	types.BytesToAddress([]byte{0x0b}): &bls12381G1Add{},      // BLS12_G1ADD
+	types.BytesToAddress([]byte{0x0c}): &bls12381G1Mul{},      // BLS12_G1MUL
+	types.BytesToAddress([]byte{0x0d}): &bls12381G1MultiExp{}, // BLS12_G1MSM
+	types.BytesToAddress([]byte{0x0e}): &bls12381G2Add{},      // BLS12_G2ADD
+	types.BytesToAddress([]byte{0x0f}): &bls12381G2Mul{},      // BLS12_G2MUL
+	types.BytesToAddress([]byte{0x10}): &bls12381G2MultiExp{}, // BLS12_G2MSM
+	types.BytesToAddress([]byte{0x11}): &bls12381Pairing{},    // BLS12_PAIRING
+	types.BytesToAddress([]byte{0x12}): &bls12381MapG1{},      // BLS12_MAP_FP_TO_G1
+	types.BytesToAddress([]byte{0x13}): &bls12381MapG2{},      // BLS12_MAP_FP2_TO_G2
 }
 
 var (

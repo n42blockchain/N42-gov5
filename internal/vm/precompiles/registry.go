@@ -123,6 +123,20 @@ func (r *Registry) registerForRules(rules *params.Rules) {
 		r.registerAt(p256Addr, NewP256Verify())
 	}
 
+	// Pectra additions (EIP-2537: BLS12-381 curve operations)
+	if rules.IsPectra {
+		// BLS12-381 precompiles at addresses 0x0b - 0x13
+		r.register(0x0b, NewBls12381G1Add())      // BLS12_G1ADD
+		r.register(0x0c, NewBls12381G1Mul())      // BLS12_G1MUL
+		r.register(0x0d, NewBls12381G1MultiExp()) // BLS12_G1MSM
+		r.register(0x0e, NewBls12381G2Add())      // BLS12_G2ADD
+		r.register(0x0f, NewBls12381G2Mul())      // BLS12_G2MUL
+		r.register(0x10, NewBls12381G2MultiExp()) // BLS12_G2MSM
+		r.register(0x11, NewBls12381Pairing())    // BLS12_PAIRING
+		r.register(0x12, NewBls12381MapG1())      // BLS12_MAP_FP_TO_G1
+		r.register(0x13, NewBls12381MapG2())      // BLS12_MAP_FP2_TO_G2
+	}
+
 	// Build sorted address list
 	r.addresses = make([]types.Address, 0, len(r.contracts))
 	for addr := range r.contracts {
