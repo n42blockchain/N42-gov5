@@ -2,12 +2,15 @@ package sync
 
 import (
 	"fmt"
+	"io"
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
 	types "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
+	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
 	"github.com/pkg/errors"
 )
@@ -56,38 +59,69 @@ func ReadChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, isFirs
 func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*types_pb.Block, error) {
 	code, errMsg, err := ReadStatusCode(stream, p2p.Encoding())
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to read status code from first chunk")
 	}
 	if code != 0 {
-		return nil, fmt.Errorf("%s", errMsg)
+		return nil, fmt.Errorf("remote returned error code %d: %s", code, errMsg)
 	}
-	_, err = readContextFromStream(stream)
+	ctx, err := readContextFromStream(stream)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to read context from stream")
 	}
+	log.Debug("First chunk context", "forkDigest", fmt.Sprintf("%x", ctx), "peer", stream.Conn().RemotePeer().String())
 	blk := &types_pb.Block{}
 	err = p2p.Encoding().DecodeWithMaxLength(stream, blk)
-	return blk, err
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
+	}
+	log.Debug("First chunk decoded successfully", "blockNumber", blk.Header.Number, "peer", stream.Conn().RemotePeer().String())
+	return blk, nil
 }
 
 // readResponseChunk reads the response from the stream and decodes it into the
 // provided message type.
 func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*types_pb.Block, error) {
 	SetStreamReadDeadline(stream, respTimeout)
-	code, errMsg, err := readStatusCodeNoDeadline(stream, p2p.Encoding())
+	
+	// Read status code first (1 byte)
+	statusBuf := make([]byte, 1)
+	n, err := io.ReadFull(stream, statusBuf)
 	if err != nil {
-		return nil, err
+		// If we get EOF here, no more chunks available
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return nil, io.EOF
+		}
+		return nil, errors.Wrapf(err, "failed to read status code (read %d bytes)", n)
 	}
+	
+	code := statusBuf[0]
 	if code != 0 {
-		return nil, errors.New(errMsg)
+		// Error response - try to decode error message
+		msg := &p2ptypes.ErrorMessage{}
+		if decErr := p2p.Encoding().DecodeWithMaxLength(stream, msg); decErr != nil {
+			return nil, errors.Errorf("remote returned error code %d (failed to decode message: %v)", code, decErr)
+		}
+		return nil, errors.Errorf("remote returned error code %d: %s", code, string(*msg))
 	}
-	// No-op for now with the rpc context. todo
-	_, err = readContextFromStream(stream)
+	
+	// Read fork digest (4 bytes)
+	forkDigest := make([]byte, 4)
+	n, err = io.ReadFull(stream, forkDigest)
 	if err != nil {
-		return nil, err
+		// If we get EOF after status code, stream ended unexpectedly
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			log.Debug("Stream ended after status code", "peer", stream.Conn().RemotePeer().String())
+			return nil, io.EOF
+		}
+		return nil, errors.Wrapf(err, "failed to read fork digest (read %d bytes)", n)
 	}
-
+	log.Debug("Received chunk context", "forkDigest", fmt.Sprintf("%x", forkDigest), "peer", stream.Conn().RemotePeer().String())
+	
+	// Decode the block
 	blk := &types_pb.Block{}
 	err = p2p.Encoding().DecodeWithMaxLength(stream, blk)
-	return blk, err
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to decode block from chunk (forkDigest=%x)", forkDigest)
+	}
+	return blk, nil
 }

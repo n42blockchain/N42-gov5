@@ -2,15 +2,16 @@ package sync
 
 import (
 	"context"
+	"io"
+
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
-	"io"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 )
 
@@ -54,6 +55,7 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 		isFirstChunk := i == 0
 		blk, err := ReadChunkedBlock(stream, p2pProvider, isFirstChunk)
 		if errors.Is(err, io.EOF) {
+			log.Debug("Received blocks from peer", "count", i, "requested", req.Count, "start", blockStart.Uint64(), "peer", pid.String())
 			break
 		}
 		if err != nil {
