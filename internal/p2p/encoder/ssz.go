@@ -106,7 +106,7 @@ func DecodeSnappy(msg []byte, maxSize uint64) ([]byte, error) {
 func (e SszNetworkEncoder) DecodeWithMaxLength(r io.Reader, to fastssz.Unmarshaler) error {
 	msgLen, err := readVarint(r)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to read varint")
 	}
 	if msgLen > MaxChunkSize {
 		return fmt.Errorf(
@@ -120,16 +120,16 @@ func (e SszNetworkEncoder) DecodeWithMaxLength(r io.Reader, to fastssz.Unmarshal
 		return err
 	}
 	limitedRdr := io.LimitReader(r, int64(msgMax))
-	r = newBufferedReader(limitedRdr)
-	defer bufReaderPool.Put(r)
+	snappyReader := newBufferedReader(limitedRdr)
+	defer bufReaderPool.Put(snappyReader)
 
 	buf := make([]byte, msgLen)
 	// Returns an error if less than msgLen bytes
 	// are read. This ensures we read exactly the
 	// required amount.
-	_, err = io.ReadFull(r, buf)
+	_, err = io.ReadFull(snappyReader, buf)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "failed to read snappy data (expected %d bytes, msgMax=%d)", msgLen, msgMax)
 	}
 	return doDecode(buf, to)
 }
