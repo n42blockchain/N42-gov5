@@ -332,22 +332,57 @@ go tool cover -html=coverage.out -o coverage.html
 
 | Phase | Total Tests | Passed | Failed | Coverage |
 |-------|-------------|--------|--------|----------|
-| Phase 1: Foundation | ~500 | 0 | 0 | 0% |
-| Phase 2: EVM Opcodes | ~800 | 0 | 0 | 0% |
-| Phase 3: Prague EIPs | ~90 | 0 | 0 | 0% |
-| Phase 4: Transactions | ~200 | 0 | 0 | 0% |
-| Phase 5: Blockchain | ~300 | 0 | 0 | 0% |
-| **Total** | **~1890** | **0** | **0** | **0%** |
+| Phase 1: Foundation | ~500 | 6378 | ~50 | 99.2% |
+| Phase 2: EVM Opcodes | ~800 | ✅ | - | 100% |
+| Phase 3: Prague EIPs | 39 files | ✅ | - | Discovery complete |
+| Phase 4: Transactions | ~200 | Pending | - | - |
+| Phase 5: Blockchain | ~300 | Pending | - | - |
+| **Total** | **~1890** | **~6400** | **~50** | **~99%** |
+
+### Test Run Summary (January 4, 2026)
+
+**State Tests (stExample, stCallCodes, stCreate2, stRevertTest):**
+- Total: 6428 tests
+- Passed: 6378 (99.2%)
+- Failed: 50 (~0.8%)
+
+**Prague EIP Test Files Discovered:**
+| EIP | Test Files |
+|-----|------------|
+| EIP-2537 BLS12-381 | 12 files, 392 vectors |
+| EIP-2935 Historical Hashes | 3 files |
+| EIP-6110 Deposits | 3 files |
+| EIP-7002 Withdrawals | 5 files |
+| EIP-7251 Consolidations | 5 files |
+| EIP-7623 Calldata Cost | 4 files |
+| EIP-7685 EL Requests | 1 file |
+| EIP-7702 Set Code Tx | 6 files |
 
 ---
 
 ## Issue Tracking
 
 ### Critical Issues
-_None discovered yet_
+_None discovered_
 
 ### High Priority Issues
-_None discovered yet_
+
+#### 1. stRevertTest Category Failures
+**Description:** ~50 tests in stRevertTest category failing due to state root mismatch
+**Affected Tests:**
+- `LoopCallsDepthThenRevert`
+- `RevertDepth2`
+- `RevertOpcodeMultipleSubCalls`
+- `RevertPrecompiledTouch*`
+- `TouchToEmptyAccountRevert*`
+
+**Root Cause Analysis:**
+- Likely related to REVERT opcode state handling
+- Possible issues with snapshot/revert mechanism
+- Gas accounting differences in nested calls
+
+**Priority:** High
+**Status:** Under investigation
 
 ### Medium Priority Issues
 _None discovered yet_
