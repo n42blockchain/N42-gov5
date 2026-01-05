@@ -449,6 +449,41 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 	// Create EVM
 	evm := vm.NewEVM(blockContext, txContext, stateDB, e.chainConfig, e.vmConfig)
 
+	// Calculate intrinsic gas
+	isContractCreation := to == nil
+	intrinsicGas, err := internal.IntrinsicGas(txData, nil, isContractCreation, 
+		rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate intrinsic gas: %w", err)
+	}
+
+	if txGasLimit < intrinsicGas {
+		// Not enough gas - but we still need to deduct what we can and increment nonce
+		result.Passed = false
+		result.Message = fmt.Sprintf("intrinsic gas too low: have %d, want %d", txGasLimit, intrinsicGas)
+		return result, nil
+	}
+
+	// Deduct gas cost from sender balance (gas * gasPrice)
+	gasCost := new(uint256.Int).Mul(uint256.NewInt(txGasLimit), gasPrice)
+	senderBalance := stateDB.GetBalance(sender)
+	if senderBalance.Cmp(gasCost) < 0 {
+		result.Passed = false
+		result.Message = fmt.Sprintf("insufficient balance for gas: have %s, need %s", 
+			senderBalance.String(), gasCost.String())
+		return result, nil
+	}
+	stateDB.SubBalance(sender, gasCost)
+
+	// Also check if sender has enough for value transfer
+	if txValue != nil && !txValue.IsZero() {
+		if stateDB.GetBalance(sender).Cmp(txValue) < 0 {
+			result.Passed = false
+			result.Message = "insufficient balance for value transfer"
+			return result, nil
+		}
+	}
+
 	// Execute transaction
 	var (
 		ret     []byte
@@ -456,18 +491,44 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 		vmErr   error
 	)
 
+	gasAfterIntrinsic := txGasLimit - intrinsicGas
+
 	if to == nil {
 		// Contract creation
 		// Nonce is incremented inside Create after computing contract address
-		ret, _, leftGas, vmErr = evm.Create(vm.AccountRef(sender), txData, txGasLimit, txValue)
+		ret, _, leftGas, vmErr = evm.Create(vm.AccountRef(sender), txData, gasAfterIntrinsic, txValue)
 	} else {
 		// Message call - increment nonce before execution (like TransitionDb does)
 		stateDB.SetNonce(sender, stateDB.GetNonce(sender)+1)
-		ret, leftGas, vmErr = evm.Call(vm.AccountRef(sender), *to, txData, txGasLimit, txValue, false)
+		ret, leftGas, vmErr = evm.Call(vm.AccountRef(sender), *to, txData, gasAfterIntrinsic, txValue, false)
+	}
+
+	// Calculate gas used
+	gasUsed := txGasLimit - leftGas - intrinsicGas + intrinsicGas // effectively txGasLimit - leftGas
+	gasUsed = txGasLimit - leftGas
+
+	// Refund unused gas to sender
+	gasRefund := new(uint256.Int).Mul(uint256.NewInt(leftGas), gasPrice)
+	stateDB.AddBalance(sender, gasRefund)
+
+	// Pay gas fees to coinbase (only the used gas amount)
+	if rules.IsLondon && baseFee != nil && !baseFee.IsZero() {
+		// EIP-1559: tip goes to coinbase, base fee is burned
+		effectiveGasPrice := gasPrice
+		tip := new(uint256.Int).Sub(effectiveGasPrice, baseFee)
+		if tip.Sign() < 0 {
+			tip = uint256.NewInt(0)
+		}
+		coinbaseReward := new(uint256.Int).Mul(uint256.NewInt(gasUsed), tip)
+		stateDB.AddBalance(coinbase, coinbaseReward)
+	} else {
+		// Pre-London: all gas fees go to coinbase
+		coinbaseReward := new(uint256.Int).Mul(uint256.NewInt(gasUsed), gasPrice)
+		stateDB.AddBalance(coinbase, coinbaseReward)
 	}
 
 	_ = ret
-	_ = leftGas
+	_ = vmErr
 
 	// Finalize state
 	if err := stateDB.FinalizeTx(rules, stateWriter); err != nil {
