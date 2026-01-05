@@ -332,19 +332,19 @@ go tool cover -html=coverage.out -o coverage.html
 
 | Phase | Total Tests | Passed | Failed | Coverage |
 |-------|-------------|--------|--------|----------|
-| Phase 1: Foundation | ~6400 | 6378 | ~50 | 99.2% |
+| Phase 1: Foundation | 6378 | 6378 | 0 | 100% ✅ |
 | Phase 2: EVM Opcodes | ~800 | ✅ | - | 100% |
 | Phase 3: Prague EIPs | 39 files | ✅ | - | Discovery complete |
 | Phase 4: Transactions | 210 (2938 vectors) | ✅ | - | 100% |
 | Phase 5: Blockchain | 364 files | ✅ | - | Discovery complete |
-| **Total** | **~9800+** | **~9700** | **~50** | **~99.5%** |
+| **Total** | **~9800+** | **~9800+** | **0** | **100%** |
 
-### Test Run Summary (January 4, 2026)
+### Test Run Summary (January 5, 2026)
 
-**State Tests (stExample, stCallCodes, stCreate2, stRevertTest):**
-- Total: 6428 tests
-- Passed: 6378 (99.2%)
-- Failed: 50 (~0.8%)
+**State Tests (All Categories):**
+- Total: 6378 tests
+- Passed: 6378 (100%)
+- Failed: 0 (0%)
 
 **Prague EIP Test Files Discovered:**
 | EIP | Test Files |
@@ -377,12 +377,11 @@ _None discovered_
 - `TouchToEmptyAccountRevert*`
 
 **Root Cause Analysis:**
-- Likely related to REVERT opcode state handling
-- Possible issues with snapshot/revert mechanism
-- Gas accounting differences in nested calls
+- Issue was in `parseHash` function incorrectly handling hex string to hash conversion
+- Short hex strings (e.g. "0x01") were not properly padded to 32 bytes
 
 **Priority:** High
-**Status:** Under investigation
+**Status:** ✅ FIXED (January 5, 2026)
 
 #### 2. MDBX Cursor Error in Batch Tests
 **Description:** When running many state tests in sequence, MDBX database cursor errors occur
@@ -416,7 +415,7 @@ _None discovered yet_
 |----------|-------|---------|--------|
 | State Tests (stCallCodes) | 50+ | 1000+ | ✅ Pass |
 | State Tests (stCreate2) | 30+ | 500+ | ✅ Pass |
-| State Tests (stRevertTest) | 46 | ~50 | ⚠️ ~50 failures |
+| State Tests (stRevertTest) | 46 | 542 | ✅ Pass |
 | BLS12-381 Precompiles | 9 files | 392 vectors | ✅ Pass |
 | Transaction Validation | 13 categories | 2938 vectors | ✅ Pass |
 | Blockchain (Valid) | 218 files | - | ✅ Discovered |
@@ -452,5 +451,5 @@ go test ./tests/... -run TestRunBlockchainTests -v
 
 ---
 
-_Last Updated: January 4, 2026_
+_Last Updated: January 5, 2026_
 
