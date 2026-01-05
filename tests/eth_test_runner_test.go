@@ -175,11 +175,21 @@ func parseAddress(s string) (types.Address, error) {
 }
 
 // parseHash parses a hex hash string
+// EVM storage keys are 32-byte big-endian values, so "0x01" should be 
+// 0x0000...0001 (value 1 in the last byte)
 func parseHash(s string) (types.Hash, error) {
 	if s == "" {
 		return types.Hash{}, nil
 	}
-	return types.HexToHash(s), nil
+	// Parse as big integer first to handle variable length hex
+	b, ok := new(big.Int).SetString(strings.TrimPrefix(s, "0x"), 16)
+	if !ok {
+		return types.Hash{}, fmt.Errorf("invalid hex hash: %s", s)
+	}
+	// Convert to 32-byte big-endian
+	var h types.Hash
+	b.FillBytes(h[:])
+	return h, nil
 }
 
 // ================================================================================
