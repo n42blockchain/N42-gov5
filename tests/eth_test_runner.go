@@ -585,8 +585,13 @@ func loadStateTest(path string) (map[string]EthStateTest, error) {
 
 // TestRunStateTests runs the official Ethereum state tests
 func TestRunStateTests(t *testing.T) {
+	// Try relative path first
 	testDir := "eth-tests/general-state-tests"
-	
+	if _, err := os.Stat(testDir); os.IsNotExist(err) {
+		// Try from tests directory
+		testDir = "../tests/eth-tests/general-state-tests"
+	}
+
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("State tests not found. Clone: https://github.com/ethereum/tests.git")
 	}
@@ -677,7 +682,12 @@ func TestRunStateTests(t *testing.T) {
 
 // TestRunBLSPrecompileTests runs EIP-2537 BLS12-381 precompile tests
 func TestRunBLSPrecompileTests(t *testing.T) {
+	// Try relative path first, then absolute path
 	vectorDir := "eth-tests/execution-spec-tests/tests/prague/eip2537_bls_12_381_precompiles/vectors"
+	if _, err := os.Stat(vectorDir); os.IsNotExist(err) {
+		// Try from tests directory
+		vectorDir = "../tests/eth-tests/execution-spec-tests/tests/prague/eip2537_bls_12_381_precompiles/vectors"
+	}
 	
 	if _, err := os.Stat(vectorDir); os.IsNotExist(err) {
 		t.Skip("BLS test vectors not found")
@@ -728,7 +738,11 @@ func TestRunBLSPrecompileTests(t *testing.T) {
 
 // TestRunPragueEIPTests runs Prague/Pectra EIP compliance tests
 func TestRunPragueEIPTests(t *testing.T) {
+	// Try relative path first, then absolute path
 	testDir := "eth-tests/execution-spec-tests/tests/prague"
+	if _, err := os.Stat(testDir); os.IsNotExist(err) {
+		testDir = "../tests/eth-tests/execution-spec-tests/tests/prague"
+	}
 	
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("Prague tests not found")
