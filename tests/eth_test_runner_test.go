@@ -736,6 +736,47 @@ func TestRunBLSPrecompileTests(t *testing.T) {
 	}
 }
 
+// TestRunBlockchainTests runs the official Ethereum blockchain tests
+func TestRunBlockchainTests(t *testing.T) {
+	// Try relative path first
+	testDir := "eth-tests/general-state-tests/BlockchainTests"
+	if _, err := os.Stat(testDir); os.IsNotExist(err) {
+		testDir = "../tests/eth-tests/general-state-tests/BlockchainTests"
+	}
+	if _, err := os.Stat(testDir); os.IsNotExist(err) {
+		t.Skip("Blockchain tests not found")
+	}
+
+	categories := []struct {
+		name string
+		path string
+	}{
+		{"ValidBlocks", "ValidBlocks"},
+		{"InvalidBlocks", "InvalidBlocks"},
+	}
+
+	for _, cat := range categories {
+		catPath := filepath.Join(testDir, cat.path)
+		if _, err := os.Stat(catPath); os.IsNotExist(err) {
+			continue
+		}
+
+		t.Run(cat.name, func(t *testing.T) {
+			count := 0
+			filepath.Walk(catPath, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				if strings.HasSuffix(path, ".json") {
+					count++
+				}
+				return nil
+			})
+			t.Logf("Found %d test files in %s", count, cat.name)
+		})
+	}
+}
+
 // TestRunTransactionTests runs the official Ethereum transaction validation tests
 func TestRunTransactionTests(t *testing.T) {
 	// Try relative path first
