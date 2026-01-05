@@ -19,19 +19,18 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"math/big"
+
+	gnarkbls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/crypto/blake2b"
 	"github.com/n42blockchain/N42/common/crypto/bls12381"
 	"github.com/n42blockchain/N42/common/crypto/bn256"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"math/big"
-
-	"github.com/holiman/uint256"
-
-	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/math"
-
-	//lint:ignore SA1019 Needed for precompile
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 	"golang.org/x/crypto/ripemd160"
 )
@@ -1059,29 +1058,23 @@ func (c *bls12381MapG1) RequiredGas(input []byte) uint64 {
 
 func (c *bls12381MapG1) Run(input []byte) ([]byte, error) {
 	// Implements EIP-2537 Map_To_G1 precompile.
-	// > Field-to-curve call expects `64` bytes an an input that is interpreted as a an element of the base field.
+	// > Field-to-curve call expects `64` bytes as an input that is interpreted as an element of the base field.
 	// > Output of this call is `128` bytes and is G1 point following respective encoding rules.
 	if len(input) != 64 {
 		return nil, errBLS12381InvalidInputLength
 	}
 
-	// Decode input field element
-	fe, err := decodeBLS12381FieldElement(input)
+	// Decode input field element using gnark-crypto
+	fe, err := decodeBLS12381FieldElementGnark(input)
 	if err != nil {
 		return nil, err
 	}
 
-	// Initialize G1
-	g := bls12381.NewG1()
-
-	// Compute mapping
-	r, err := g.MapToCurve(fe)
-	if err != nil {
-		return nil, err
-	}
+	// Compute mapping using gnark-crypto's MapToG1 (compliant with draft-irtf-cfrg-hash-to-curve-16)
+	r := gnarkbls12381.MapToG1(fe)
 
 	// Encode the G1 point to 128 bytes
-	return g.EncodePoint(r), nil
+	return encodePointG1Gnark(&r), nil
 }
 
 // bls12381MapG2 implements EIP-2537 MapG2 precompile.
@@ -1094,36 +1087,31 @@ func (c *bls12381MapG2) RequiredGas(input []byte) uint64 {
 
 func (c *bls12381MapG2) Run(input []byte) ([]byte, error) {
 	// Implements EIP-2537 Map_FP2_TO_G2 precompile logic.
-	// > Field-to-curve call expects `128` bytes an an input that is interpreted as a an element of the quadratic extension field.
+	// > Field-to-curve call expects `128` bytes as an input that is interpreted as an element of the quadratic extension field.
 	// > Output of this call is `256` bytes and is G2 point following respective encoding rules.
 	if len(input) != 128 {
 		return nil, errBLS12381InvalidInputLength
 	}
 
-	// Decode input field element
-	fe := make([]byte, 96)
-	c0, err := decodeBLS12381FieldElement(input[:64])
+	// Decode input field elements using gnark-crypto
+	// EIP-2537 encoding: first 64 bytes is c0, next 64 bytes is c1
+	c0, err := decodeBLS12381FieldElementGnark(input[:64])
 	if err != nil {
 		return nil, err
 	}
-	copy(fe[48:], c0)
-	c1, err := decodeBLS12381FieldElement(input[64:])
+	c1, err := decodeBLS12381FieldElementGnark(input[64:])
 	if err != nil {
 		return nil, err
 	}
-	copy(fe[:48], c1)
 
-	// Initialize G2
-	g := bls12381.NewG2()
+	// Create E2 element (gnark-crypto uses A0=c0, A1=c1)
+	fe := gnarkbls12381.E2{A0: c0, A1: c1}
 
-	// Compute mapping
-	r, err := g.MapToCurve(fe)
-	if err != nil {
-		return nil, err
-	}
+	// Compute mapping using gnark-crypto's MapToG2 (compliant with draft-irtf-cfrg-hash-to-curve-16)
+	r := gnarkbls12381.MapToG2(fe)
 
 	// Encode the G2 point to 256 bytes
-	return g.EncodePoint(r), nil
+	return encodePointG2Gnark(&r), nil
 }
 
 // =============================================================================
@@ -1201,3 +1189,44 @@ func GetBls12381MapG1() PrecompiledContract { return &bls12381MapG1{} }
 
 // GetBls12381MapG2 returns a BLS12-381 map to G2 precompile instance.
 func GetBls12381MapG2() PrecompiledContract { return &bls12381MapG2{} }
+
+// =============================================================================
+// gnark-crypto helper functions for EIP-2537 compliance
+// =============================================================================
+
+// decodeBLS12381FieldElementGnark decodes a BLS12-381 field element using gnark-crypto.
+// Input is 64 bytes with the first 16 bytes being zero padding.
+func decodeBLS12381FieldElementGnark(in []byte) (fp.Element, error) {
+	if len(in) != 64 {
+		return fp.Element{}, errors.New("invalid field element length")
+	}
+	// Check that the top 16 bytes are zero
+	for i := 0; i < 16; i++ {
+		if in[i] != byte(0x00) {
+			return fp.Element{}, errBLS12381InvalidFieldElementTopBytes
+		}
+	}
+	var res [48]byte
+	copy(res[:], in[16:])
+	return fp.BigEndian.Element(&res)
+}
+
+// encodePointG1Gnark encodes a G1 point into 128 bytes.
+func encodePointG1Gnark(p *gnarkbls12381.G1Affine) []byte {
+	out := make([]byte, 128)
+	fp.BigEndian.PutElement((*[fp.Bytes]byte)(out[16:64]), p.X)
+	fp.BigEndian.PutElement((*[fp.Bytes]byte)(out[64+16:128]), p.Y)
+	return out
+}
+
+// encodePointG2Gnark encodes a G2 point into 256 bytes.
+func encodePointG2Gnark(p *gnarkbls12381.G2Affine) []byte {
+	out := make([]byte, 256)
+	// Encode X (c0, c1)
+	fp.BigEndian.PutElement((*[fp.Bytes]byte)(out[16:64]), p.X.A0)
+	fp.BigEndian.PutElement((*[fp.Bytes]byte)(out[80:128]), p.X.A1)
+	// Encode Y (c0, c1)
+	fp.BigEndian.PutElement((*[fp.Bytes]byte)(out[144:192]), p.Y.A0)
+	fp.BigEndian.PutElement((*[fp.Bytes]byte)(out[208:256]), p.Y.A1)
+	return out
+}

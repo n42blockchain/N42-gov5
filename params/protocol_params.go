@@ -157,14 +157,14 @@ const (
 
 	// BLS12-381 gas costs (EIP-2537 Pectra)
 	// https://eips.ethereum.org/EIPS/eip-2537
-	Bls12381G1AddGas          uint64 = 500   // BLS12_G1ADD: G1 point addition
-	Bls12381G1MulGas          uint64 = 12000 // BLS12_G1MUL: G1 scalar multiplication
-	Bls12381G2AddGas          uint64 = 800   // BLS12_G2ADD: G2 point addition
-	Bls12381G2MulGas          uint64 = 45000 // BLS12_G2MUL: G2 scalar multiplication
-	Bls12381PairingBaseGas    uint64 = 43000 // BLS12_PAIRING: base gas
-	Bls12381PairingPerPairGas uint64 = 34000 // BLS12_PAIRING: per-pair gas
-	Bls12381MapG1Gas          uint64 = 5500  // BLS12_MAP_FP_TO_G1: map field element to G1
-	Bls12381MapG2Gas          uint64 = 23800 // BLS12_MAP_FP2_TO_G2: map field element to G2
+	Bls12381G1AddGas          uint64 = 375   // BLS12_G1ADD: G1 point addition (EIP-2537: 375)
+	Bls12381G1MulGas          uint64 = 12000 // BLS12_G1MUL: G1 scalar multiplication (EIP-2537: 12000)
+	Bls12381G2AddGas          uint64 = 600   // BLS12_G2ADD: G2 point addition (EIP-2537: 600)
+	Bls12381G2MulGas          uint64 = 22500 // BLS12_G2MUL: G2 scalar multiplication (EIP-2537: 22500)
+	Bls12381PairingBaseGas    uint64 = 43000 // BLS12_PAIRING: base gas (EIP-2537: 43000)
+	Bls12381PairingPerPairGas uint64 = 32000 // BLS12_PAIRING: per-pair gas (EIP-2537: 32000)
+	Bls12381MapG1Gas          uint64 = 5500  // BLS12_MAP_FP_TO_G1: map field element to G1 (EIP-2537: 5500)
+	Bls12381MapG2Gas          uint64 = 23800 // BLS12_MAP_FP2_TO_G2: map field element to G2 (EIP-2537: 23800)
 
 	// The Refund Quotient is the cap on how much of the used gas can be refunded. Before EIP-3529,
 	// up to half the consumed gas could be refunded. Redefined as 1/5th in EIP-3529
