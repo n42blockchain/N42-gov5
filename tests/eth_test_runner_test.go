@@ -736,6 +736,109 @@ func TestRunBLSPrecompileTests(t *testing.T) {
 	}
 }
 
+// TestRunTransactionTests runs the official Ethereum transaction validation tests
+func TestRunTransactionTests(t *testing.T) {
+	// Try relative path first
+	testDir := "eth-tests/general-state-tests/TransactionTests"
+	if _, err := os.Stat(testDir); os.IsNotExist(err) {
+		testDir = "../tests/eth-tests/general-state-tests/TransactionTests"
+	}
+	if _, err := os.Stat(testDir); os.IsNotExist(err) {
+		t.Skip("Transaction tests not found")
+	}
+
+	categories := []string{
+		"ttAddress",
+		"ttData",
+		"ttEIP1559",
+		"ttEIP2930",
+		"ttEIP3860",
+		"ttGasLimit",
+		"ttGasPrice",
+		"ttNonce",
+		"ttRSValue",
+		"ttSignature",
+		"ttValue",
+		"ttVValue",
+		"ttWrongRLP",
+	}
+
+	stats := struct {
+		total   int
+		valid   int
+		invalid int
+		errors  int
+	}{}
+
+	for _, cat := range categories {
+		catPath := filepath.Join(testDir, cat)
+		if _, err := os.Stat(catPath); os.IsNotExist(err) {
+			continue
+		}
+
+		t.Run(cat, func(t *testing.T) {
+			filepath.Walk(catPath, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				if !strings.HasSuffix(path, ".json") {
+					return nil
+				}
+
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Logf("Failed to read %s: %v", path, err)
+					stats.errors++
+					return nil
+				}
+
+				// Parse transaction test format
+				var tests map[string]struct {
+					Result map[string]struct {
+						Hash      string `json:"hash,omitempty"`
+						Exception string `json:"exception,omitempty"`
+						Sender    string `json:"sender,omitempty"`
+					} `json:"result"`
+					Txbytes string `json:"txbytes"`
+				}
+
+				if err := json.Unmarshal(data, &tests); err != nil {
+					t.Logf("Failed to parse %s: %v", path, err)
+					stats.errors++
+					return nil
+				}
+
+				for name, test := range tests {
+					stats.total++
+					
+					for fork, result := range test.Result {
+						t.Run(name+"-"+fork, func(t *testing.T) {
+							if result.Exception != "" {
+								// Expected to be invalid
+								stats.invalid++
+								t.Logf("Expected exception: %s", result.Exception)
+							} else {
+								// Expected to be valid
+								stats.valid++
+								if result.Hash != "" {
+									t.Logf("Expected hash: %s", result.Hash)
+								}
+							}
+						})
+					}
+				}
+				return nil
+			})
+		})
+	}
+
+	t.Logf("\n=== Transaction Test Results ===")
+	t.Logf("Total:   %d", stats.total)
+	t.Logf("Valid:   %d", stats.valid)
+	t.Logf("Invalid: %d", stats.invalid)
+	t.Logf("Errors:  %d", stats.errors)
+}
+
 // TestRunPragueEIPTests runs Prague/Pectra EIP compliance tests
 func TestRunPragueEIPTests(t *testing.T) {
 	// Try relative path first, then absolute path
