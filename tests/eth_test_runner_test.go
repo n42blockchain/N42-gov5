@@ -789,7 +789,8 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 	}
 
 	// Get pre-state balance
-	preState := test.Pre[sender.Hex()]
+	// NOTE: Use lowercase hex for map lookup since JSON keys are lowercase
+	preState := test.Pre[strings.ToLower(sender.Hex())]
 	preBalance, _ := parseUint256(preState.Balance)
 
 	// Parse environment variables for baseFee
@@ -985,8 +986,22 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 			txGasLimit, intrinsicGas, exceptionType)
 	}
 
+	// SENDER_NOT_EOA - EIP-3607: sender must be an EOA (not a contract)
+	// NOTE: This check comes BEFORE balance check as it's a structural validation
+	// Check if sender has code in pre-state
+	senderCode := preState.Code
+	if senderCode != "" && senderCode != "0x" {
+		if exceptionType == "TransactionException.SENDER_NOT_EOA" ||
+			exceptionType == "SENDER_NOT_EOA" {
+			result.Passed = true
+			result.Message = fmt.Sprintf("correctly rejected: sender %s is not an EOA (has code)", sender.Hex())
+			return result, nil
+		}
+		validationError = "sender has code but test expects: " + exceptionType
+	}
+
 	// INSUFFICIENT_ACCOUNT_FUNDS - check if sender has enough balance
-	// NOTE: This check comes AFTER intrinsic gas check per Ethereum spec
+	// NOTE: This check comes AFTER intrinsic gas and SENDER_NOT_EOA checks per Ethereum spec
 	totalCost := new(uint256.Int).Mul(uint256.NewInt(txGasLimit), gasPrice)
 	if txValue != nil {
 		totalCost.Add(totalCost, uint256.MustFromBig(txValue))
