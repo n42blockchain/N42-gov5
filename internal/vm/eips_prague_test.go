@@ -10,38 +10,47 @@ import (
 )
 
 // =============================================================================
-// EIP-7939: CLZ Tests
+// EIP-7939: CLZ Tests (Moved to Fusaka)
 // =============================================================================
 
-func TestEIP7939Enabled(t *testing.T) {
-	jt := newPragueInstructionSet()
-	
-	if jt[CLZ] == nil {
-		t.Error("CLZ should be enabled in Prague")
+// TestEIP7939NotInPrague verifies that CLZ is NOT enabled in Prague
+// CLZ (EIP-7939) is part of Fusaka, not Prague
+func TestEIP7939NotInPrague(t *testing.T) {
+	pragueJT := newPragueInstructionSet()
+
+	// In Prague, 0x1E should be an undefined opcode
+	if pragueJT[CLZ].execute != nil {
+		t.Error("CLZ (0x1E) should NOT be enabled in Prague - it's a Fusaka feature")
 	}
-	if jt[CLZ].execute == nil {
-		t.Error("CLZ execute function should be set")
-	}
-	
-	// Check stack requirements
-	if jt[CLZ].numPop != 1 {
-		t.Errorf("CLZ numPop: expected 1, got %d", jt[CLZ].numPop)
-	}
-	if jt[CLZ].numPush != 1 {
-		t.Errorf("CLZ numPush: expected 1, got %d", jt[CLZ].numPush)
-	}
-	
-	t.Log("✓ EIP-7939 CLZ enabled in Prague")
+
+	t.Log("✓ EIP-7939 CLZ correctly NOT enabled in Prague (it's in Fusaka)")
 }
 
-func TestCLZGasCost(t *testing.T) {
-	jt := newPragueInstructionSet()
-	
-	if jt[CLZ].constantGas != GasFastStep {
-		t.Errorf("CLZ gas: expected %d, got %d", GasFastStep, jt[CLZ].constantGas)
+// TestEIP7939EnabledInFusaka verifies that CLZ IS enabled in Fusaka
+func TestEIP7939EnabledInFusaka(t *testing.T) {
+	fusakaJT := newFusakaInstructionSet()
+
+	if fusakaJT[CLZ] == nil {
+		t.Error("CLZ should be enabled in Fusaka")
 	}
-	
-	t.Log("✓ CLZ gas cost is correct")
+	if fusakaJT[CLZ].execute == nil {
+		t.Error("CLZ execute function should be set in Fusaka")
+	}
+
+	// Check stack requirements
+	if fusakaJT[CLZ].numPop != 1 {
+		t.Errorf("CLZ numPop: expected 1, got %d", fusakaJT[CLZ].numPop)
+	}
+	if fusakaJT[CLZ].numPush != 1 {
+		t.Errorf("CLZ numPush: expected 1, got %d", fusakaJT[CLZ].numPush)
+	}
+
+	// Check gas cost
+	if fusakaJT[CLZ].constantGas != GasFastStep {
+		t.Errorf("CLZ gas: expected %d, got %d", GasFastStep, fusakaJT[CLZ].constantGas)
+	}
+
+	t.Log("✓ EIP-7939 CLZ correctly enabled in Fusaka")
 }
 
 func TestCLZOpcode(t *testing.T) {

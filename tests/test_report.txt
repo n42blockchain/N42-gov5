@@ -1,0 +1,132 @@
+
+╔══════════════════════════════════════════════════════════════════╗
+║           ETHEREUM EXECUTION LAYER TEST RESULTS                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║ Total Tests:        37724                                       ║
+║ Passed:             36992  ( 98.1%)                              ║
+║ Failed:               732  (  1.9%)                              ║
+║ Skipped:                0  (  0.0%)                              ║
+╠══════════════════════════════════════════════════════════════════╣
+║                    RESULTS BY FORK                               ║
+╠══════════════════════════════════════════════════════════════════╣
+║ Cancun           19522 passed /  19732 total ( 98.9%)              ║
+║ Prague           17470 passed /  17992 total ( 97.1%)              ║
+╠══════════════════════════════════════════════════════════════════╣
+║                  RESULTS BY CATEGORY                             ║
+╠══════════════════════════════════════════════════════════════════╣
+║ Cancun                      352/  354 ( 99.4%)                ║
+║ Shanghai                     53/   54 ( 98.1%)                ║
+║ VMTests                    1186/ 1190 ( 99.7%)                ║
+║ stArgsZeroOneBalance        190/  192 ( 99.0%)                ║
+║ stAttackTest                  4/    4 (100.0%)                ║
+║ stBadOpcode                8256/ 8268 ( 99.9%)                ║
+║ stBugs                       16/   16 (100.0%)                ║
+║ stCallCodes                 160/  172 ( 93.0%)                ║
+║ stCallCreateCallCodeTest    100/  112 ( 89.3%)                ║
+║ stCallDelegateCodesCallCo    96/  116 ( 82.8%)                ║
+║ stCallDelegateCodesHomest   104/  116 ( 89.7%)                ║
+║ stChainId                     4/    4 (100.0%)                ║
+║ stCodeCopyTest                4/    4 (100.0%)                ║
+║ stCodeSizeLimit              18/   18 (100.0%)                ║
+║ stCreate2                   348/  382 ( 91.1%)                ║
+║ stCreateTest                413/  418 ( 98.8%)                ║
+║ stDelegatecallTestHomeste    66/   66 (100.0%)                ║
+║ stEIP150Specific             50/   50 (100.0%)                ║
+║ stEIP150singleCodeGasPric   841/  900 ( 93.4%)                ║
+║ stEIP1559                  1942/ 1950 ( 99.6%)                ║
+║ stEIP158Specific             16/   16 (100.0%)                ║
+║ stEIP2930                   270/  280 ( 96.4%)                ║
+║ stEIP3607                    10/   24 ( 41.7%)                ║
+║ stExample                    78/   78 (100.0%)                ║
+║ stExpectSection              20/   20 (100.0%)                ║
+║ stExtCodeHash               120/  138 ( 87.0%)                ║
+║ stHomesteadSpecific          10/   10 (100.0%)                ║
+║ stInitCodeTest               44/   44 (100.0%)                ║
+║ stLogTests                   92/   92 (100.0%)                ║
+║ stMemExpandingEIP150Calls    28/   28 (100.0%)                ║
+║ stMemoryStressTest          164/  164 (100.0%)                ║
+║ stMemoryTest               1155/ 1156 ( 99.9%)                ║
+║ stNonZeroCallsTest           42/   48 ( 87.5%)                ║
+║ stPreCompiledContracts     1290/ 1488 ( 86.7%)                ║
+║ stPreCompiledContracts2     318/  320 ( 99.4%)                ║
+║ stQuadraticComplexityTest    68/   68 (100.0%)                ║
+║ stRandom                    572/  620 ( 92.3%)                ║
+║ stRandom2                   412/  442 ( 93.2%)                ║
+║ stRecursiveCreate             4/    4 (100.0%)                ║
+║ stRefundTest                 46/   52 ( 88.5%)                ║
+║ stReturnDataTest            546/  546 (100.0%)                ║
+║ stRevertTest                539/  542 ( 99.4%)                ║
+║ stSLoadTest                   2/    2 (100.0%)                ║
+║ stSStoreTest                942/  950 ( 99.2%)                ║
+║ stSelfBalance                82/   84 ( 97.6%)                ║
+║ stShift                      84/   84 (100.0%)                ║
+║ stSolidityTest               42/   46 ( 91.3%)                ║
+║ stSpecialTest                42/   44 ( 95.5%)                ║
+║ stStackTests                719/  750 ( 95.9%)                ║
+║ stStaticCall                944/  956 ( 98.7%)                ║
+║ stStaticFlagEnabled          68/   68 (100.0%)                ║
+║ stSystemOperationsTest      124/  166 ( 74.7%)                ║
+║ stTimeConsuming           10380/10380 (100.0%)                ║
+║ stTransactionTest           412/  518 ( 79.5%)                ║
+║ stTransitionTest             12/   12 (100.0%)                ║
+║ stWalletTest                 90/   92 ( 97.8%)                ║
+║ stZeroCallsRevert            32/   32 (100.0%)                ║
+║ stZeroCallsTest              44/   48 ( 91.7%)                ║
+║ stZeroKnowledge            1888/ 1888 (100.0%)                ║
+║ stZeroKnowledge2           1038/ 1038 (100.0%)                ║
+╚══════════════════════════════════════════════════════════════════╝
+
+=== FAILED TEST SUMMARY (first 50) ===
+Cancun/GeneralStateTests/Cancun/stEIP5656-MCOPY/MCOPY_memory_expansion_cost.json::MCOPY_memory_expansion_cost-fork_[Cancun-Prague]-d[0-21]g0v0[Prague][0] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3b9778e6, want 0x3b977030)
+Cancun/GeneralStateTests/Cancun/stEIP5656-MCOPY/MCOPY_memory_expansion_cost.json::MCOPY_memory_expansion_cost-fork_[Cancun-Prague]-d[0-21]g0v0[Prague][1] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3b975ae6, want 0x3b972530)
+Shanghai/GeneralStateTests/Shanghai/stEIP3860-limitmeterinitcode/creationTxInitCodeSizeLimit.json::creationTxInitCodeSizeLimit-fork_[Cancun-Prague]-d[0-1]g0v0[Prague][0] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xba82720, want 0xb562920)
+VMTests/GeneralStateTests/VMTests/vmTests/suicide.json::suicide-fork_[Cancun-Prague]-d[0-2]g0v0[Cancun][1] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x5af3107573cc, want 0x5af31071a33c)
+VMTests/GeneralStateTests/VMTests/vmTests/suicide.json::suicide-fork_[Cancun-Prague]-d[0-2]g0v0[Cancun][2] [Cancun]: state verification failed: 0x0000000000000000000000000000000000001002: balance mismatch (got 0x0, want 0x100000000000)
+VMTests/GeneralStateTests/VMTests/vmTests/suicide.json::suicide-fork_[Cancun-Prague]-d[0-2]g0v0[Prague][1] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x5af3107573cc, want 0x5af31071a33c)
+VMTests/GeneralStateTests/VMTests/vmTests/suicide.json::suicide-fork_[Cancun-Prague]-d[0-2]g0v0[Prague][2] [Prague]: state verification failed: 0x0000000000000000000000000000000000001002: balance mismatch (got 0x0, want 0x100000000000)
+stArgsZeroOneBalance/GeneralStateTests/stArgsZeroOneBalance/suicideNonConst.json::suicideNonConst-fork_[Cancun-Prague]-d0g0v[0-1][Cancun][1] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b3a7600459, want 0xde0b6b3a75c33c9)
+stArgsZeroOneBalance/GeneralStateTests/stArgsZeroOneBalance/suicideNonConst.json::suicideNonConst-fork_[Cancun-Prague]-d0g0v[0-1][Prague][1] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b3a7600459, want 0xde0b6b3a75c33c9)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc49DiffPlaces.json::opc49DiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Cancun][3] [Cancun]: state verification failed: 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x5091d84, want 0x8003d74); 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d9906820, want 0x3635c9adc5d69577a0) (vm error: execution reverted)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc49DiffPlaces.json::opc49DiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Prague][3] [Prague]: state verification failed: 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x5091d84, want 0x8003d74); 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d9906820, want 0x3635c9adc5d69577a0) (vm error: execution reverted)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc4ADiffPlaces.json::opc4ADiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Cancun][23] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d98cdde0, want 0x3635c9adc5d691ed60); 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x50ca33c, want 0x803c32c)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc4ADiffPlaces.json::opc4ADiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Prague][23] [Prague]: state verification failed: 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x50ca33c, want 0x803c32c); 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d98cdde0, want 0x3635c9adc5d691ed60)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc5CDiffPlaces.json::opc5CDiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Cancun][3] [Cancun]: state verification failed: 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x50f0190, want 0x8062180); 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d98a7c80, want 0x3635c9adc5d68f8c00) (vm error: execution reverted)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc5CDiffPlaces.json::opc5CDiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Prague][3] [Prague]: state verification failed: 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x50f0190, want 0x8062180); 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d98a7c80, want 0x3635c9adc5d68f8c00) (vm error: execution reverted)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc5DDiffPlaces.json::opc5DDiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Cancun][25] [Cancun]: state verification failed: 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x51296d4, want 0x809b6c4); 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d986e2a0, want 0x3635c9adc5d68bf220)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc5DDiffPlaces.json::opc5DDiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Prague][25] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d986e2a0, want 0x3635c9adc5d68bf220); 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x51296d4, want 0x809b6c4)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc5EDiffPlaces.json::opc5EDiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Cancun][23] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d98c9f60, want 0x3635c9adc5d691aee0); 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x50ce16c, want 0x804015c)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc5EDiffPlaces.json::opc5EDiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Prague][23] [Prague]: state verification failed: 0xa94f5PASS
+ok  	github.com/n42blockchain/N42/tests	190.503s
+(got 0x3635c9adc5d98c9f60, want 0x3635c9adc5d691aee0); 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x50ce16c, want 0x804015c)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc5FDiffPlaces.json::opc5FDiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Cancun][34] [Cancun]: state verification failed: 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x5090df8, want 0x8002de8); 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d99077c0, want 0x3635c9adc5d6958740) (vm error: execution reverted)
+stBadOpcode/GeneralStateTests/stBadOpcode/opc5FDiffPlaces.json::opc5FDiffPlaces-fork_[Cancun-Prague]-d[0-34]g0v0[Prague][34] [Prague]: state verification failed: 0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba: balance mismatch (got 0x5090df8, want 0x8002de8); 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0x3635c9adc5d99077c0, want 0x3635c9adc5d6958740) (vm error: execution reverted)
+stCallCodes/GeneralStateTests/stCallCodes/callcallcodecall_010_SuicideEnd.json::callcallcodecall_010_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0x1000000000000000000000000000000000000001: balance mismatch (got 0x0, want 0x2540be400)
+stCallCodes/GeneralStateTests/stCallCodes/callcallcodecall_010_SuicideEnd.json::callcallcodecall_010_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0x1000000000000000000000000000000000000001: balance mismatch (got 0x0, want 0x2540be400)
+stCallCodes/GeneralStateTests/stCallCodes/callcallcodecallcode_011_SuicideEnd.json::callcallcodecallcode_011_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0x1000000000000000000000000000000000000001: balance mismatch (got 0x0, want 0x2540be400)
+stCallCodes/GeneralStateTests/stCallCodes/callcallcodecallcode_011_SuicideEnd.json::callcallcodecallcode_011_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0x1000000000000000000000000000000000000001: balance mismatch (got 0x0, want 0x2540be400)
+stCallCodes/GeneralStateTests/stCallCodes/callcodecall_10_SuicideEnd.json::callcodecall_10_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallCodes/GeneralStateTests/stCallCodes/callcodecall_10_SuicideEnd.json::callcodecall_10_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallCodes/GeneralStateTests/stCallCodes/callcodecallcode_11_SuicideEnd.json::callcodecallcode_11_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallCodes/GeneralStateTests/stCallCodes/callcodecallcode_11_SuicideEnd.json::callcodecallcode_11_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallCodes/GeneralStateTests/stCallCodes/callcodecallcodecall_110_SuicideMiddle.json::callcodecallcodecall_110_SuicideMiddle-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallCodes/GeneralStateTests/stCallCodes/callcodecallcodecall_110_SuicideMiddle.json::callcodecallcodecall_110_SuicideMiddle-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallCodes/GeneralStateTests/stCallCodes/callcodecallcodecallcode_111_SuicideMiddle.json::callcodecallcodecallcode_111_SuicideMiddle-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallCodes/GeneralStateTests/stCallCodes/callcodecallcodecallcode_111_SuicideMiddle.json::callcodecallcodecallcode_111_SuicideMiddle-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createFailBalanceTooLow.json::createFailBalanceTooLow-fork_[Cancun-Prague]-d0g0v[0-1][Cancun][0] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b3a75abfd3, want 0xde0b6b3a756ef43)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createFailBalanceTooLow.json::createFailBalanceTooLow-fork_[Cancun-Prague]-d0g0v[0-1][Prague][0] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b3a75abfd3, want 0xde0b6b3a756ef43)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailBadJumpDestination.json::createInitFailBadJumpDestination-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailBadJumpDestination.json::createInitFailBadJumpDestination-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailBadJumpDestination2.json::createInitFailBadJumpDestination2-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailBadJumpDestination2.json::createInitFailBadJumpDestination2-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailStackSizeLargerThan1024.json::createInitFailStackSizeLargerThan1024-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailStackSizeLargerThan1024.json::createInitFailStackSizeLargerThan1024-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailStackUnderflow.json::createInitFailStackUnderflow-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailStackUnderflow.json::createInitFailStackUnderflow-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailUndefinedInstruction2.json::createInitFailUndefinedInstruction2-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallCreateCallCodeTest/GeneralStateTests/stCallCreateCallCodeTest/createInitFailUndefinedInstruction2.json::createInitFailUndefinedInstruction2-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b: balance mismatch (got 0xde0b6b36cb4d146, want 0xde0b6b36cb100b6)
+stCallDelegateCodesCallCodeHomestead/GeneralStateTests/stCallDelegateCodesCallCodeHomestead/callcallcallcode_001_SuicideMiddle.json::callcallcallcode_001_SuicideMiddle-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallDelegateCodesCallCodeHomestead/GeneralStateTests/stCallDelegateCodesCallCodeHomestead/callcallcallcode_001_SuicideMiddle.json::callcallcallcode_001_SuicideMiddle-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallDelegateCodesCallCodeHomestead/GeneralStateTests/stCallDelegateCodesCallCodeHomestead/callcallcode_01_SuicideEnd.json::callcallcode_01_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallDelegateCodesCallCodeHomestead/GeneralStateTests/stCallDelegateCodesCallCodeHomestead/callcallcode_01_SuicideEnd.json::callcallcode_01_SuicideEnd-fork_[Cancun-Prague]-d0g0v0[Prague][0] [Prague]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+stCallDelegateCodesCallCodeHomestead/GeneralStateTests/stCallDelegateCodesCallCodeHomestead/callcallcodecall_010_SuicideMiddle.json::callcallcodecall_010_SuicideMiddle-fork_[Cancun-Prague]-d0g0v0[Cancun][0] [Cancun]: state verification failed: 0x1000000000000000000000000000000000000000: balance mismatch (got 0x0, want 0xde0b6b3a7640000)
+... and 682 more failures

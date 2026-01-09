@@ -92,8 +92,13 @@ func opMcopy(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 		src    = scope.Stack.Pop()
 		length = scope.Stack.Pop()
 	)
-	// Copy data within memory
-	scope.Memory.Copy(dst.Uint64(), src.Uint64(), length.Uint64())
+	// Get length as uint64, checking for overflow
+	len64 := length.Uint64()
+	if len64 == 0 {
+		return nil, nil
+	}
+	// Copy data within memory (memory has been properly expanded by memoryMcopy)
+	scope.Memory.Copy(dst.Uint64(), src.Uint64(), len64)
 	return nil, nil
 }
 
@@ -119,20 +124,32 @@ func gasMcopy(evm VMInterpreter, contract *Contract, stk *stack.Stack, mem *Memo
 
 // memoryMcopy calculates the memory size for MCOPY
 func memoryMcopy(stk *stack.Stack) (uint64, bool) {
-	mStart := stk.Back(0)
-	mEnd := stk.Back(1)
-	mLength := stk.Back(2)
+	dst := stk.Back(0)
+	src := stk.Back(1)
+	length := stk.Back(2)
 
-	// Calculate destination end
-	dstEnd := new(uint256.Int).Add(mStart, mLength)
-	// Calculate source end
-	srcEnd := new(uint256.Int).Add(mEnd, mLength)
-
-	// Return the maximum of dst end and src end
-	if dstEnd.Cmp(srcEnd) > 0 {
-		return calcMemSize64(mStart, mLength)
+	// If length is zero, no memory expansion needed
+	if length.IsZero() {
+		return 0, false
 	}
-	return calcMemSize64(mEnd, mLength)
+
+	// Calculate required memory size for both dst and src regions
+	// The memory must be large enough to cover both the source and destination
+	dstSize, dstOverflow := calcMemSize64(dst, length)
+	if dstOverflow {
+		return 0, true
+	}
+
+	srcSize, srcOverflow := calcMemSize64(src, length)
+	if srcOverflow {
+		return 0, true
+	}
+
+	// Return the maximum of the two required sizes
+	if dstSize > srcSize {
+		return dstSize, false
+	}
+	return srcSize, false
 }
 
 // =============================================================================
