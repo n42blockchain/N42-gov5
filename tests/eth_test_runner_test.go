@@ -805,6 +805,22 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 	exceptionType := post.ExpectException
 	var validationError string
 
+	// Helper function to check if actual exception matches any expected alternative
+	// Expected exceptions can be OR-ed with | like "EX1|EX2"
+	matchesExpectedException := func(expectedTypes ...string) bool {
+		// Split exceptionType by | to handle OR logic
+		alternatives := strings.Split(exceptionType, "|")
+		for _, alt := range alternatives {
+			alt = strings.TrimSpace(alt)
+			for _, expected := range expectedTypes {
+				if alt == expected {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
 	// Parse blob transaction data (EIP-4844)
 	var blobHashes []types.Hash
 	hasBlobField := test.Transaction.BlobVersionedHashes != nil
@@ -823,8 +839,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 
 	// Check if blob transactions are supported in this fork
 	if hasBlobField && !rules.IsCancun {
-		if exceptionType == "TransactionException.TYPE_3_TX_PRE_FORK" ||
-			exceptionType == "TYPE_3_TX_PRE_FORK" {
+		if matchesExpectedException("TransactionException.TYPE_3_TX_PRE_FORK", "TYPE_3_TX_PRE_FORK") {
 			result.Passed = true
 			result.Message = "correctly rejected: blob transaction before Cancun fork"
 			return result, nil
@@ -833,8 +848,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 
 	// TYPE_3_TX_ZERO_BLOBS - Blob transaction has BlobVersionedHashes field but it's empty
 	if hasBlobField && len(blobHashes) == 0 {
-		if exceptionType == "TransactionException.TYPE_3_TX_ZERO_BLOBS" ||
-			exceptionType == "TYPE_3_TX_ZERO_BLOBS" {
+		if matchesExpectedException("TransactionException.TYPE_3_TX_ZERO_BLOBS", "TYPE_3_TX_ZERO_BLOBS") {
 			result.Passed = true
 			result.Message = "correctly rejected: blob transaction has no blobs"
 			return result, nil
@@ -847,8 +861,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 		txData, _ := hex.DecodeString(strings.TrimPrefix(test.Transaction.Data[post.Indexes.Data], "0x"))
 		const MaxInitCodeSize = 49152 // EIP-3860
 		if len(txData) > MaxInitCodeSize {
-			if exceptionType == "TransactionException.INITCODE_SIZE_EXCEEDED" ||
-				exceptionType == "INITCODE_SIZE_EXCEEDED" {
+			if matchesExpectedException("TransactionException.INITCODE_SIZE_EXCEEDED", "INITCODE_SIZE_EXCEEDED") {
 				result.Passed = true
 				result.Message = fmt.Sprintf("correctly rejected: initcode size %d exceeds limit %d", len(txData), MaxInitCodeSize)
 				return result, nil
@@ -869,8 +882,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 		}
 
 		if maxBlobs > 0 && len(blobHashes) > maxBlobs {
-			if exceptionType == "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED" ||
-				exceptionType == "TYPE_3_TX_BLOB_COUNT_EXCEEDED" {
+			if matchesExpectedException("TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED", "TYPE_3_TX_BLOB_COUNT_EXCEEDED") {
 				result.Passed = true
 				result.Message = fmt.Sprintf("correctly rejected: blob count %d exceeds limit %d", len(blobHashes), maxBlobs)
 				return result, nil
@@ -880,8 +892,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 
 		// TYPE_3_TX_CONTRACT_CREATION - Blob transaction cannot be contract creation
 		if test.Transaction.To == "" {
-			if exceptionType == "TransactionException.TYPE_3_TX_CONTRACT_CREATION" ||
-				exceptionType == "TYPE_3_TX_CONTRACT_CREATION" {
+			if matchesExpectedException("TransactionException.TYPE_3_TX_CONTRACT_CREATION", "TYPE_3_TX_CONTRACT_CREATION") {
 				result.Passed = true
 				result.Message = "correctly rejected: blob transaction cannot create contract"
 				return result, nil
@@ -893,8 +904,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 		const VersionedHashVersionKZG = 0x01
 		for i, hash := range blobHashes {
 			if hash[0] != VersionedHashVersionKZG {
-				if exceptionType == "TransactionException.TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH" ||
-					exceptionType == "TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH" {
+				if matchesExpectedException("TransactionException.TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH", "TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH") {
 					result.Passed = true
 					result.Message = fmt.Sprintf("correctly rejected: blob hash[%d] has invalid version 0x%02x (expected 0x01)", i, hash[0])
 					return result, nil
@@ -909,8 +919,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 	if maxFeePerGas != nil && maxPriorityFeePerGas != nil {
 		// PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS
 		if maxPriorityFeePerGas.Cmp(maxFeePerGas) > 0 {
-			if exceptionType == "TransactionException.PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS" ||
-				exceptionType == "PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS" {
+			if matchesExpectedException("TransactionException.PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS", "PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS") {
 				result.Passed = true
 				result.Message = "correctly rejected: priority fee > max fee"
 				return result, nil
@@ -920,8 +929,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 
 		// INSUFFICIENT_MAX_FEE_PER_GAS (maxFeePerGas < baseFee)
 		if rules.IsLondon && baseFee != nil && maxFeePerGas.Cmp(baseFee) < 0 {
-			if exceptionType == "TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS" ||
-				exceptionType == "INSUFFICIENT_MAX_FEE_PER_GAS" {
+			if matchesExpectedException("TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS", "INSUFFICIENT_MAX_FEE_PER_GAS") {
 				result.Passed = true
 				result.Message = "correctly rejected: max fee < base fee"
 				return result, nil
@@ -975,8 +983,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 	}
 
 	if txGasLimit < intrinsicGas {
-		if exceptionType == "TransactionException.INTRINSIC_GAS_TOO_LOW" ||
-			exceptionType == "INTRINSIC_GAS_TOO_LOW" {
+		if matchesExpectedException("TransactionException.INTRINSIC_GAS_TOO_LOW", "INTRINSIC_GAS_TOO_LOW") {
 			result.Passed = true
 			result.Message = fmt.Sprintf("correctly rejected: gas too low (have %d, need %d)",
 				txGasLimit, intrinsicGas)
@@ -991,8 +998,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 	// Check if sender has code in pre-state
 	senderCode := preState.Code
 	if senderCode != "" && senderCode != "0x" {
-		if exceptionType == "TransactionException.SENDER_NOT_EOA" ||
-			exceptionType == "SENDER_NOT_EOA" {
+		if matchesExpectedException("TransactionException.SENDER_NOT_EOA", "SENDER_NOT_EOA") {
 			result.Passed = true
 			result.Message = fmt.Sprintf("correctly rejected: sender %s is not an EOA (has code)", sender.Hex())
 			return result, nil
@@ -1000,16 +1006,31 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 		validationError = "sender has code but test expects: " + exceptionType
 	}
 
+	// GASLIMIT_PRICE_PRODUCT_OVERFLOW - check if gasLimit * gasPrice overflows uint256
+	// This must be checked BEFORE calculating totalCost
+	// Use big.Int to detect overflow beyond uint256 max (2^256 - 1)
+	gasCostBig := new(big.Int).Mul(big.NewInt(int64(txGasLimit)), gasPrice.ToBig())
+	maxUint256 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	if gasCostBig.Cmp(maxUint256) > 0 {
+		if matchesExpectedException("TransactionException.GASLIMIT_PRICE_PRODUCT_OVERFLOW", "GASLIMIT_PRICE_PRODUCT_OVERFLOW") {
+			result.Passed = true
+			result.Message = fmt.Sprintf("correctly rejected: gasLimit * gasPrice overflow uint256 (gasLimit=%d, gasPrice=%s)",
+				txGasLimit, gasPrice.String())
+			return result, nil
+		}
+	}
+
+	gasCost := new(uint256.Int).Mul(uint256.NewInt(txGasLimit), gasPrice)
+
 	// INSUFFICIENT_ACCOUNT_FUNDS - check if sender has enough balance
 	// NOTE: This check comes AFTER intrinsic gas and SENDER_NOT_EOA checks per Ethereum spec
-	totalCost := new(uint256.Int).Mul(uint256.NewInt(txGasLimit), gasPrice)
+	totalCost := gasCost
 	if txValue != nil {
 		totalCost.Add(totalCost, uint256.MustFromBig(txValue))
 	}
 
 	if preBalance.Cmp(totalCost) < 0 {
-		if exceptionType == "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS" ||
-			exceptionType == "INSUFFICIENT_ACCOUNT_FUNDS" {
+		if matchesExpectedException("TransactionException.INSUFFICIENT_ACCOUNT_FUNDS", "INSUFFICIENT_ACCOUNT_FUNDS") {
 			result.Passed = true
 			result.Message = fmt.Sprintf("correctly rejected: insufficient funds (have %s, need %s)",
 				preBalance.String(), totalCost.String())
@@ -1021,8 +1042,7 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 	// GAS_ALLOWANCE_EXCEEDED - gas limit exceeds block gas limit
 	blockGasLimit, _ := parseUint64(test.Env.CurrentGasLimit)
 	if txGasLimit > blockGasLimit {
-		if exceptionType == "TransactionException.GAS_ALLOWANCE_EXCEEDED" ||
-			exceptionType == "GAS_ALLOWANCE_EXCEEDED" {
+		if matchesExpectedException("TransactionException.GAS_ALLOWANCE_EXCEEDED", "GAS_ALLOWANCE_EXCEEDED") {
 			result.Passed = true
 			result.Message = fmt.Sprintf("correctly rejected: gas exceeds block limit (have %d, block limit %d)",
 				txGasLimit, blockGasLimit)
