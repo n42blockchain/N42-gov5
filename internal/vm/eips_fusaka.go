@@ -423,9 +423,9 @@ func enable7951(jt *JumpTable) {
 // Fusaka = Osaka + Fusaka EIPs
 func newFusakaInstructionSet() JumpTable {
 	instructionSet := newOsakaInstructionSet()
-	enable7907(&instructionSet)
-	enable7951(&instructionSet)
-	// CLZ (EIP-7939) is already enabled in Prague
+	enable7907(&instructionSet) // EIP-7907: Code size limit increase
+	enable7951(&instructionSet) // EIP-7951: Another Fusaka EIP
+	enable7939(&instructionSet) // EIP-7939: CLZ instruction (Count Leading Zeros)
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }

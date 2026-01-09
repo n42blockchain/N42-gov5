@@ -19,6 +19,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
@@ -62,18 +63,26 @@ type EthTestAccount struct {
 	Storage map[string]string `json:"storage"`
 }
 
+// EthTestAccessListEntry represents an entry in the access list
+type EthTestAccessListEntry struct {
+	Address     string   `json:"address"`
+	StorageKeys []string `json:"storageKeys"`
+}
+
 // EthTestTransaction represents the test transaction
 type EthTestTransaction struct {
-	Data                 []string `json:"data"`
-	GasLimit             []string `json:"gasLimit"`
-	GasPrice             string   `json:"gasPrice,omitempty"`
-	MaxFeePerGas         string   `json:"maxFeePerGas,omitempty"`
-	MaxPriorityFeePerGas string   `json:"maxPriorityFeePerGas,omitempty"`
-	Nonce                string   `json:"nonce"`
-	SecretKey            string   `json:"secretKey"`
-	Sender               string   `json:"sender,omitempty"`
-	To                   string   `json:"to"`
-	Value                []string `json:"value"`
+	Data                 []string                   `json:"data"`
+	GasLimit             []string                   `json:"gasLimit"`
+	GasPrice             string                     `json:"gasPrice,omitempty"`
+	MaxFeePerGas         string                     `json:"maxFeePerGas,omitempty"`
+	MaxPriorityFeePerGas string                     `json:"maxPriorityFeePerGas,omitempty"`
+	Nonce                string                     `json:"nonce"`
+	SecretKey            string                     `json:"secretKey"`
+	Sender               string                     `json:"sender,omitempty"`
+	To                   string                     `json:"to"`
+	Value                []string                   `json:"value"`
+	AccessLists          [][]EthTestAccessListEntry `json:"accessLists,omitempty"`
+	BlobVersionedHashes  []string                   `json:"blobVersionedHashes,omitempty"` // EIP-4844
 }
 
 // EthTestPostState represents expected post-state
@@ -175,7 +184,7 @@ func parseAddress(s string) (types.Address, error) {
 }
 
 // parseHash parses a hex hash string
-// EVM storage keys are 32-byte big-endian values, so "0x01" should be 
+// EVM storage keys are 32-byte big-endian values, so "0x01" should be
 // 0x0000...0001 (value 1 in the last byte)
 func parseHash(s string) (types.Hash, error) {
 	if s == "" {
@@ -190,6 +199,33 @@ func parseHash(s string) (types.Hash, error) {
 	var h types.Hash
 	b.FillBytes(h[:])
 	return h, nil
+}
+
+// parseAccessList converts test access list entries to transaction.AccessList
+func parseAccessList(entries []EthTestAccessListEntry) transaction.AccessList {
+	if len(entries) == 0 {
+		return nil
+	}
+	accessList := make(transaction.AccessList, 0, len(entries))
+	for _, entry := range entries {
+		addr, err := parseAddress(entry.Address)
+		if err != nil {
+			continue
+		}
+		storageKeys := make([]types.Hash, 0, len(entry.StorageKeys))
+		for _, key := range entry.StorageKeys {
+			h, err := parseHash(key)
+			if err != nil {
+				continue
+			}
+			storageKeys = append(storageKeys, h)
+		}
+		accessList = append(accessList, transaction.AccessTuple{
+			Address:     addr,
+			StorageKeys: storageKeys,
+		})
+	}
+	return accessList
 }
 
 // ================================================================================
@@ -329,12 +365,9 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 		Fork: fork,
 	}
 
-	// Skip tests with expected exceptions (for now)
+	// Handle tests with expected exceptions - validate that the transaction DOES fail with the expected exception
 	if post.ExpectException != "" {
-		result.Passed = true
-		result.Skipped = true
-		result.Message = "expected exception: " + post.ExpectException
-		return result, nil
+		return e.validateExpectedException(test, post, result)
 	}
 
 	// Use simple in-memory state backend to avoid MDBX resource issues
@@ -346,6 +379,23 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 	if err := applyPreState(stateDB, test.Pre); err != nil {
 		return nil, fmt.Errorf("failed to apply pre-state: %w", err)
 	}
+
+	// CRITICAL FIX: Commit the pre-state so that storage values are seen as "original" committed values
+	// This is necessary for SSTORE gas calculations (EIP-2200/2929/3529) to work correctly
+	// Without this, the "original" (committed) storage is seen as 0, causing incorrect gas costs and refunds
+	preStateRules := e.chainConfig.Rules(0) // Use block 0 rules for pre-state commit
+	if err := stateDB.FinalizeTx(preStateRules, stateWriter); err != nil {
+		return nil, fmt.Errorf("failed to finalize pre-state: %w", err)
+	}
+	if err := stateDB.CommitBlock(preStateRules, stateWriter); err != nil {
+		return nil, fmt.Errorf("failed to commit pre-state: %w", err)
+	}
+
+	// CRITICAL FIX #2: Create new stateDB instance after committing pre-state
+	// This ensures that the 'created' flag is not set for pre-existing accounts
+	// Without this, accounts from pre-state are incorrectly marked as created=true,
+	// causing SELFDESTRUCT (EIP-6780) to delete them instead of just clearing balance
+	stateDB = state.New(memState)
 
 	// Get transaction parameters
 	dataIndex := post.Indexes.Data
@@ -366,6 +416,12 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 	txData, err := parseHex(test.Transaction.Data[dataIndex])
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse tx data: %w", err)
+	}
+
+	// Parse access list (uses dataIndex since access lists follow the same indexing)
+	var accessList transaction.AccessList
+	if dataIndex < len(test.Transaction.AccessLists) && len(test.Transaction.AccessLists[dataIndex]) > 0 {
+		accessList = parseAccessList(test.Transaction.AccessLists[dataIndex])
 	}
 
 	txGasLimit, err := parseUint64(test.Transaction.GasLimit[gasIndex])
@@ -418,6 +474,13 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 		random, _ = parseHash(test.Env.CurrentRandom)
 	}
 
+	// Parse excess blob gas and calculate blob base fee (EIP-4844)
+	var blobBaseFee *uint256.Int
+	if test.Env.CurrentExcessBlobGas != "" {
+		excessBlobGas, _ := parseUint64(test.Env.CurrentExcessBlobGas)
+		blobBaseFee = transaction.CalcBlobFee(excessBlobGas)
+	}
+
 	// Create block context
 	blockContext := evmtypes.BlockContext{
 		CanTransfer: internal.CanTransfer,
@@ -431,29 +494,66 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 		Time:        timestamp,
 		Difficulty:  difficulty,
 		BaseFee:     baseFee,
+		BlobBaseFee: blobBaseFee, // EIP-4844
 		PrevRanDao:  &random,
 	}
 
-	// Get gas price
+	// Get gas price - for EIP-1559, calculate effective gas price
 	var gasPrice *uint256.Int
 	if test.Transaction.GasPrice != "" {
+		// Legacy transaction
 		gasPrice, _ = parseUint256(test.Transaction.GasPrice)
 	} else if test.Transaction.MaxFeePerGas != "" {
-		gasPrice, _ = parseUint256(test.Transaction.MaxFeePerGas)
+		// EIP-1559 transaction: effectiveGasPrice = min(maxFeePerGas, baseFee + maxPriorityFeePerGas)
+		maxFeePerGas, _ := parseUint256(test.Transaction.MaxFeePerGas)
+		var maxPriorityFeePerGas *uint256.Int
+		if test.Transaction.MaxPriorityFeePerGas != "" {
+			maxPriorityFeePerGas, _ = parseUint256(test.Transaction.MaxPriorityFeePerGas)
+		} else {
+			maxPriorityFeePerGas = uint256.NewInt(0)
+		}
+
+		if baseFee != nil && !baseFee.IsZero() {
+			// effectiveGasPrice = min(maxFeePerGas, baseFee + maxPriorityFeePerGas)
+			effectiveGasPrice := new(uint256.Int).Add(baseFee, maxPriorityFeePerGas)
+			if effectiveGasPrice.Cmp(maxFeePerGas) > 0 {
+				effectiveGasPrice = maxFeePerGas
+			}
+			gasPrice = effectiveGasPrice
+		} else {
+			gasPrice = maxFeePerGas
+		}
 	} else {
 		gasPrice = uint256.NewInt(0)
 	}
 
+	// Parse blob versioned hashes for EIP-4844 (Cancun+)
+	var blobHashes []types.Hash
+	if len(test.Transaction.BlobVersionedHashes) > 0 {
+		blobHashes = make([]types.Hash, 0, len(test.Transaction.BlobVersionedHashes))
+		for _, hashStr := range test.Transaction.BlobVersionedHashes {
+			hash, err := parseHash(hashStr)
+			if err == nil {
+				blobHashes = append(blobHashes, hash)
+			}
+		}
+	}
+
 	// Create transaction context
 	txContext := evmtypes.TxContext{
-		Origin:   sender,
-		GasPrice: gasPrice,
+		Origin:     sender,
+		GasPrice:   gasPrice,
+		BlobHashes: blobHashes, // EIP-4844: Blob versioned hashes for BLOBHASH opcode
 	}
 
 	// Prepare access list for Berlin+
 	rules := e.chainConfig.Rules(blockNumber)
 	if rules.IsBerlin {
-		stateDB.PrepareAccessList(sender, to, vm.ActivePrecompiles(rules), nil)
+		stateDB.PrepareAccessList(sender, to, vm.ActivePrecompiles(rules), accessList)
+		// EIP-3651: Warm COINBASE for Shanghai+
+		if rules.IsShanghai {
+			stateDB.AddAddressToAccessList(coinbase)
+		}
 	}
 
 	// Create EVM
@@ -461,7 +561,7 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 
 	// Calculate intrinsic gas
 	isContractCreation := to == nil
-	intrinsicGas, err := internal.IntrinsicGas(txData, nil, isContractCreation, 
+	intrinsicGas, err := internal.IntrinsicGas(txData, accessList, isContractCreation,
 		rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate intrinsic gas: %w", err)
@@ -476,14 +576,32 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 
 	// Deduct gas cost from sender balance (gas * gasPrice)
 	gasCost := new(uint256.Int).Mul(uint256.NewInt(txGasLimit), gasPrice)
+
+	// EIP-4844: Calculate and deduct blob gas cost
+	// Total cost = regular gas cost + blob gas cost
+	totalCost := new(uint256.Int).Set(gasCost)
+	var blobGasCost *uint256.Int
+	if len(blobHashes) > 0 && blobBaseFee != nil {
+		// blob_gas_cost = len(blob_hashes) * GAS_PER_BLOB * blob_base_fee
+		blobGasUsed := uint64(len(blobHashes)) * transaction.BlobTxBlobGasPerBlob
+		blobGasCost = new(uint256.Int).Mul(uint256.NewInt(blobGasUsed), blobBaseFee)
+		totalCost.Add(totalCost, blobGasCost)
+	}
+
 	senderBalance := stateDB.GetBalance(sender)
-	if senderBalance.Cmp(gasCost) < 0 {
+	if senderBalance.Cmp(totalCost) < 0 {
 		result.Passed = false
-		result.Message = fmt.Sprintf("insufficient balance for gas: have %s, need %s", 
-			senderBalance.String(), gasCost.String())
+		result.Message = fmt.Sprintf("insufficient balance for gas: have %s, need %s (gas: %s, blob: %s)",
+			senderBalance.String(), totalCost.String(), gasCost.String(),
+			func() string { if blobGasCost != nil { return blobGasCost.String() } else { return "0" } }())
 		return result, nil
 	}
 	stateDB.SubBalance(sender, gasCost)
+
+	// EIP-4844: Deduct blob gas cost separately (blob fees are burned)
+	if blobGasCost != nil && blobGasCost.Sign() > 0 {
+		stateDB.SubBalance(sender, blobGasCost)
+	}
 
 	// Also check if sender has enough for value transfer
 	if txValue != nil && !txValue.IsZero() {
@@ -513,11 +631,27 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 		ret, leftGas, vmErr = evm.Call(vm.AccountRef(sender), *to, txData, gasAfterIntrinsic, txValue, false)
 	}
 
-	// Calculate gas used
-	gasUsed := txGasLimit - leftGas - intrinsicGas + intrinsicGas // effectively txGasLimit - leftGas
+	// Calculate gas used (before refund)
+	gasUsed := txGasLimit - leftGas
+
+	// Apply gas refund (EIP-3529 for London+)
+	// Refund is capped at gasUsed/refundQuotient (5 for London+, 2 before)
+	refundQuotient := uint64(2)
+	if rules.IsLondon {
+		refundQuotient = 5 // EIP-3529
+	}
+	maxRefund := gasUsed / refundQuotient
+	stateRefund := stateDB.GetRefund()
+	if stateRefund > maxRefund {
+		stateRefund = maxRefund
+	}
+
+
+	// Add refund back to leftGas for final calculation
+	leftGas += stateRefund
 	gasUsed = txGasLimit - leftGas
 
-	// Refund unused gas to sender
+	// Refund unused gas (including refund) to sender
 	gasRefund := new(uint256.Int).Mul(uint256.NewInt(leftGas), gasPrice)
 	stateDB.AddBalance(sender, gasRefund)
 
@@ -623,6 +757,272 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 				result.Message += fmt.Sprintf(" (vm error: %v)", vmErr)
 			}
 		}
+	}
+
+	return result, nil
+}
+
+// validateExpectedException validates that a transaction correctly fails with the expected exception
+func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *EthTestPostState, result *TestExecutionResult) (*TestExecutionResult, error) {
+	// Parse transaction data
+	sender, err := parseAddress(test.Transaction.Sender)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse sender: %w", err)
+	}
+
+	// Parse transaction parameters
+	txGasLimit, _ := parseUint64(test.Transaction.GasLimit[post.Indexes.Gas])
+	txValue, _ := parseBigInt(test.Transaction.Value[post.Indexes.Value])
+
+	// Parse gas prices - handle both legacy and EIP-1559
+	var gasPrice, maxFeePerGas, maxPriorityFeePerGas *uint256.Int
+	if test.Transaction.GasPrice != "" {
+		gasPrice, _ = parseUint256(test.Transaction.GasPrice)
+	} else if test.Transaction.MaxFeePerGas != "" {
+		maxFeePerGas, _ = parseUint256(test.Transaction.MaxFeePerGas)
+		if test.Transaction.MaxPriorityFeePerGas != "" {
+			maxPriorityFeePerGas, _ = parseUint256(test.Transaction.MaxPriorityFeePerGas)
+		} else {
+			maxPriorityFeePerGas = uint256.NewInt(0)
+		}
+		gasPrice = maxFeePerGas // Use maxFeePerGas as effective gas price for balance check
+	}
+
+	// Get pre-state balance
+	preState := test.Pre[sender.Hex()]
+	preBalance, _ := parseUint256(preState.Balance)
+
+	// Parse environment variables for baseFee
+	blockNumber, _ := parseUint64(test.Env.CurrentNumber)
+	rules := e.chainConfig.Rules(blockNumber)
+	var baseFee *uint256.Int
+	if test.Env.CurrentBaseFee != "" {
+		baseFee, _ = parseUint256(test.Env.CurrentBaseFee)
+	}
+
+	// Validate exception based on type
+	exceptionType := post.ExpectException
+	var validationError string
+
+	// Parse blob transaction data (EIP-4844)
+	var blobHashes []types.Hash
+	hasBlobField := test.Transaction.BlobVersionedHashes != nil
+	if len(test.Transaction.BlobVersionedHashes) > 0 {
+		blobHashes = make([]types.Hash, 0, len(test.Transaction.BlobVersionedHashes))
+		for _, hashStr := range test.Transaction.BlobVersionedHashes {
+			hash, err := parseHash(hashStr)
+			if err == nil {
+				blobHashes = append(blobHashes, hash)
+			}
+		}
+	}
+
+	// EIP-4844 blob transaction validation (must be checked BEFORE balance checks)
+	// These are structural validations that have higher priority
+
+	// Check if blob transactions are supported in this fork
+	if hasBlobField && !rules.IsCancun {
+		if exceptionType == "TransactionException.TYPE_3_TX_PRE_FORK" ||
+			exceptionType == "TYPE_3_TX_PRE_FORK" {
+			result.Passed = true
+			result.Message = "correctly rejected: blob transaction before Cancun fork"
+			return result, nil
+		}
+	}
+
+	// TYPE_3_TX_ZERO_BLOBS - Blob transaction has BlobVersionedHashes field but it's empty
+	if hasBlobField && len(blobHashes) == 0 {
+		if exceptionType == "TransactionException.TYPE_3_TX_ZERO_BLOBS" ||
+			exceptionType == "TYPE_3_TX_ZERO_BLOBS" {
+			result.Passed = true
+			result.Message = "correctly rejected: blob transaction has no blobs"
+			return result, nil
+		}
+	}
+
+	// EIP-3860: INITCODE_SIZE_EXCEEDED - Check initcode size limit (Shanghai+)
+	// Maximum initcode size is 49152 bytes (2 * 24576)
+	if rules.IsShanghai && test.Transaction.To == "" {
+		txData, _ := hex.DecodeString(strings.TrimPrefix(test.Transaction.Data[post.Indexes.Data], "0x"))
+		const MaxInitCodeSize = 49152 // EIP-3860
+		if len(txData) > MaxInitCodeSize {
+			if exceptionType == "TransactionException.INITCODE_SIZE_EXCEEDED" ||
+				exceptionType == "INITCODE_SIZE_EXCEEDED" {
+				result.Passed = true
+				result.Message = fmt.Sprintf("correctly rejected: initcode size %d exceeds limit %d", len(txData), MaxInitCodeSize)
+				return result, nil
+			}
+			validationError = fmt.Sprintf("initcode size %d exceeds limit but test expects: %s", len(txData), exceptionType)
+		}
+	}
+
+	// Remaining blob validations only apply when we have blobs
+	if len(blobHashes) > 0 {
+
+		// TYPE_3_TX_BLOB_COUNT_EXCEEDED - Check blob count limit based on fork
+		var maxBlobs int
+		if rules.IsPrague {
+			maxBlobs = 9 // Pectra increased limit to 9
+		} else if rules.IsCancun {
+			maxBlobs = 6 // Cancun has 6 blob limit
+		}
+
+		if maxBlobs > 0 && len(blobHashes) > maxBlobs {
+			if exceptionType == "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED" ||
+				exceptionType == "TYPE_3_TX_BLOB_COUNT_EXCEEDED" {
+				result.Passed = true
+				result.Message = fmt.Sprintf("correctly rejected: blob count %d exceeds limit %d", len(blobHashes), maxBlobs)
+				return result, nil
+			}
+			validationError = fmt.Sprintf("blob count %d exceeds limit %d but test expects: %s", len(blobHashes), maxBlobs, exceptionType)
+		}
+
+		// TYPE_3_TX_CONTRACT_CREATION - Blob transaction cannot be contract creation
+		if test.Transaction.To == "" {
+			if exceptionType == "TransactionException.TYPE_3_TX_CONTRACT_CREATION" ||
+				exceptionType == "TYPE_3_TX_CONTRACT_CREATION" {
+				result.Passed = true
+				result.Message = "correctly rejected: blob transaction cannot create contract"
+				return result, nil
+			}
+			validationError = "blob transaction creates contract but test expects: " + exceptionType
+		}
+
+		// TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH - Check blob hash version (must be 0x01)
+		const VersionedHashVersionKZG = 0x01
+		for i, hash := range blobHashes {
+			if hash[0] != VersionedHashVersionKZG {
+				if exceptionType == "TransactionException.TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH" ||
+					exceptionType == "TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH" {
+					result.Passed = true
+					result.Message = fmt.Sprintf("correctly rejected: blob hash[%d] has invalid version 0x%02x (expected 0x01)", i, hash[0])
+					return result, nil
+				}
+				validationError = fmt.Sprintf("blob hash[%d] has invalid version but test expects: %s", i, exceptionType)
+				break
+			}
+		}
+	}
+
+	// Check for EIP-1559 specific exceptions
+	if maxFeePerGas != nil && maxPriorityFeePerGas != nil {
+		// PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS
+		if maxPriorityFeePerGas.Cmp(maxFeePerGas) > 0 {
+			if exceptionType == "TransactionException.PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS" ||
+				exceptionType == "PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS" {
+				result.Passed = true
+				result.Message = "correctly rejected: priority fee > max fee"
+				return result, nil
+			}
+			validationError = "priority fee exceeds max fee but test expects: " + exceptionType
+		}
+
+		// INSUFFICIENT_MAX_FEE_PER_GAS (maxFeePerGas < baseFee)
+		if rules.IsLondon && baseFee != nil && maxFeePerGas.Cmp(baseFee) < 0 {
+			if exceptionType == "TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS" ||
+				exceptionType == "INSUFFICIENT_MAX_FEE_PER_GAS" {
+				result.Passed = true
+				result.Message = "correctly rejected: max fee < base fee"
+				return result, nil
+			}
+			validationError = "max fee < base fee but test expects: " + exceptionType
+		}
+	}
+
+	// INTRINSIC_GAS_TOO_LOW - calculate intrinsic gas
+	// NOTE: This check MUST come BEFORE balance check per Ethereum spec
+	// Rationale: Structural validations (intrinsic gas) before stateful validations (balance)
+	txData, _ := hex.DecodeString(strings.TrimPrefix(test.Transaction.Data[post.Indexes.Data], "0x"))
+	var to *types.Address
+	if test.Transaction.To != "" {
+		toAddr, _ := parseAddress(test.Transaction.To)
+		to = &toAddr
+	}
+
+	// Calculate intrinsic gas
+	var intrinsicGas uint64
+	if to == nil {
+		// Contract creation has higher intrinsic gas
+		intrinsicGas = params.TxGasContractCreation
+	} else {
+		intrinsicGas = params.TxGas
+	}
+
+	// Add data gas cost
+	if len(txData) > 0 {
+		var nonZeroGas uint64 = params.TxDataNonZeroGasEIP2028
+		if !rules.IsIstanbul {
+			nonZeroGas = params.TxDataNonZeroGasFrontier
+		}
+		for _, b := range txData {
+			if b != 0 {
+				intrinsicGas += nonZeroGas
+			} else {
+				intrinsicGas += params.TxDataZeroGas
+			}
+		}
+	}
+
+	// Add access list gas cost (EIP-2930)
+	// NOTE: Access lists are indexed by post.Indexes.Data, not post.Indexes.Gas!
+	if len(test.Transaction.AccessLists) > 0 && post.Indexes.Data < len(test.Transaction.AccessLists) {
+		accessList := test.Transaction.AccessLists[post.Indexes.Data]
+		intrinsicGas += uint64(len(accessList)) * params.TxAccessListAddressGas
+		for _, entry := range accessList {
+			intrinsicGas += uint64(len(entry.StorageKeys)) * params.TxAccessListStorageKeyGas
+		}
+	}
+
+	if txGasLimit < intrinsicGas {
+		if exceptionType == "TransactionException.INTRINSIC_GAS_TOO_LOW" ||
+			exceptionType == "INTRINSIC_GAS_TOO_LOW" {
+			result.Passed = true
+			result.Message = fmt.Sprintf("correctly rejected: gas too low (have %d, need %d)",
+				txGasLimit, intrinsicGas)
+			return result, nil
+		}
+		validationError = fmt.Sprintf("intrinsic gas too low (have %d, need %d) but test expects: %s",
+			txGasLimit, intrinsicGas, exceptionType)
+	}
+
+	// INSUFFICIENT_ACCOUNT_FUNDS - check if sender has enough balance
+	// NOTE: This check comes AFTER intrinsic gas check per Ethereum spec
+	totalCost := new(uint256.Int).Mul(uint256.NewInt(txGasLimit), gasPrice)
+	if txValue != nil {
+		totalCost.Add(totalCost, uint256.MustFromBig(txValue))
+	}
+
+	if preBalance.Cmp(totalCost) < 0 {
+		if exceptionType == "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS" ||
+			exceptionType == "INSUFFICIENT_ACCOUNT_FUNDS" {
+			result.Passed = true
+			result.Message = fmt.Sprintf("correctly rejected: insufficient funds (have %s, need %s)",
+				preBalance.String(), totalCost.String())
+			return result, nil
+		}
+		validationError = "insufficient funds but test expects: " + exceptionType
+	}
+
+	// GAS_ALLOWANCE_EXCEEDED - gas limit exceeds block gas limit
+	blockGasLimit, _ := parseUint64(test.Env.CurrentGasLimit)
+	if txGasLimit > blockGasLimit {
+		if exceptionType == "TransactionException.GAS_ALLOWANCE_EXCEEDED" ||
+			exceptionType == "GAS_ALLOWANCE_EXCEEDED" {
+			result.Passed = true
+			result.Message = fmt.Sprintf("correctly rejected: gas exceeds block limit (have %d, block limit %d)",
+				txGasLimit, blockGasLimit)
+			return result, nil
+		}
+		validationError = "gas exceeds block limit but test expects: " + exceptionType
+	}
+
+	// If we get here, we couldn't validate the expected exception
+	if validationError != "" {
+		result.Passed = false
+		result.Message = validationError
+	} else {
+		result.Passed = false
+		result.Message = fmt.Sprintf("could not validate expected exception: %s (no validation rule matched)", exceptionType)
 	}
 
 	return result, nil

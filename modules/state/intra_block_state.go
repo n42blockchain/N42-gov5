@@ -1098,6 +1098,48 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 	return true
 }
 
+// Selfdestruct6780 implements EIP-6780 SELFDESTRUCT behavior for Cancun+.
+// It only deletes the account (code, storage, nonce) if it was created in the same transaction.
+// The balance is always sent to the beneficiary (handled by the caller).
+func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address) {
+	stateObject := sdb.getStateObject(addr)
+	if stateObject == nil || stateObject.deleted {
+		return
+	}
+
+	// DEBUG: Print created flag
+	// fmt.Printf("[DEBUG Selfdestruct6780] addr=%s, created=%v\n", addr.Hex(), stateObject.created)
+
+	// Only perform full selfdestruct if account was created in this transaction
+	if stateObject.created {
+		sdb.journal.append(selfdestructChange{
+			account:     &addr,
+			prev:        stateObject.selfdestructed,
+			prevbalance: *stateObject.Balance(),
+		})
+		stateObject.markSelfdestructed()
+		stateObject.created = false
+		stateObject.data.Balance.Clear()
+	} else {
+		// EIP-6780: Just clear the balance, don't delete the account
+		prevBalance := *stateObject.Balance()
+		sdb.journal.append(balanceChange{
+			account: &addr,
+			prev:    prevBalance,
+		})
+		stateObject.data.Balance.Clear()
+	}
+}
+
+// WasCreatedInCurrentTx returns whether the account was created in the current transaction.
+func (sdb *IntraBlockState) WasCreatedInCurrentTx(addr types.Address) bool {
+	stateObject := sdb.getStateObject(addr)
+	if stateObject == nil {
+		return false
+	}
+	return stateObject.created
+}
+
 // BeforeStateRoot calculate used state hash
 //
 // it should be invoked after all txs exec

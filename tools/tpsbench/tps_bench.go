@@ -159,7 +159,13 @@ func (m *MockStateDB) Selfdestruct(addr types.Address) bool {
 	return false
 }
 
+func (m *MockStateDB) Selfdestruct6780(addr types.Address) {}
+
 func (m *MockStateDB) HasSelfdestructed(addr types.Address) bool {
+	return false
+}
+
+func (m *MockStateDB) WasCreatedInCurrentTx(addr types.Address) bool {
 	return false
 }
 

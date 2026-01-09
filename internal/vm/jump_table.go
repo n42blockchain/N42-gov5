@@ -93,7 +93,8 @@ func validateAndFillMaxStack(jt *JumpTable) {
 // cancun, and prague instructions.
 func newPragueInstructionSet() JumpTable {
 	instructionSet := newCancunInstructionSet()
-	enable7939(&instructionSet) // CLZ instruction (EIP-7939)
+	// Prague fork has no new opcodes
+	// CLZ (EIP-7939) is activated in Fusaka, not Prague
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }
