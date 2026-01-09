@@ -153,9 +153,38 @@ var PrecompiledContractsBLS = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{0x13}): &bls12381MapG2{},      // BLS12_MAP_FP2_TO_G2
 }
 
+// PrecompiledContractsCancun contains the default set of pre-compiled Ethereum
+// contracts used in the Cancun release. Same as Berlin (no new precompiles in Cancun).
+var PrecompiledContractsCancun = PrecompiledContractsBerlin
+
+// PrecompiledContractsPrague contains the default set of pre-compiled Ethereum
+// contracts used in the Prague release. This includes Berlin precompiles + BLS (EIP-2537).
+var PrecompiledContractsPrague = map[types.Address]PrecompiledContract{
+	types.BytesToAddress([]byte{1}):    &ecrecover{},
+	types.BytesToAddress([]byte{2}):    &sha256hash{},
+	types.BytesToAddress([]byte{3}):    &ripemd160hash{},
+	types.BytesToAddress([]byte{4}):    &dataCopy{},
+	types.BytesToAddress([]byte{5}):    &bigModExp{eip2565: true},
+	types.BytesToAddress([]byte{6}):    &bn256AddIstanbul{},
+	types.BytesToAddress([]byte{7}):    &bn256ScalarMulIstanbul{},
+	types.BytesToAddress([]byte{8}):    &bn256PairingIstanbul{},
+	types.BytesToAddress([]byte{9}):    &blake2F{},
+	types.BytesToAddress([]byte{0x0b}): &bls12381G1Add{},
+	types.BytesToAddress([]byte{0x0c}): &bls12381G1Mul{},
+	types.BytesToAddress([]byte{0x0d}): &bls12381G1MultiExp{},
+	types.BytesToAddress([]byte{0x0e}): &bls12381G2Add{},
+	types.BytesToAddress([]byte{0x0f}): &bls12381G2Mul{},
+	types.BytesToAddress([]byte{0x10}): &bls12381G2MultiExp{},
+	types.BytesToAddress([]byte{0x11}): &bls12381Pairing{},
+	types.BytesToAddress([]byte{0x12}): &bls12381MapG1{},
+	types.BytesToAddress([]byte{0x13}): &bls12381MapG2{},
+}
+
 var (
 	PrecompiledAddressesMoran          []types.Address
 	PrecompiledAddressesNano           []types.Address
+	PrecompiledAddressesCancun         []types.Address
+	PrecompiledAddressesPrague         []types.Address
 	PrecompiledAddressesBerlin         []types.Address
 	PrecompiledAddressesIstanbul       []types.Address
 	PrecompiledAddressesIstanbulForBSC []types.Address
@@ -179,6 +208,12 @@ func init() {
 	for k := range PrecompiledContractsBerlin {
 		PrecompiledAddressesBerlin = append(PrecompiledAddressesBerlin, k)
 	}
+	for k := range PrecompiledContractsCancun {
+		PrecompiledAddressesCancun = append(PrecompiledAddressesCancun, k)
+	}
+	for k := range PrecompiledContractsPrague {
+		PrecompiledAddressesPrague = append(PrecompiledAddressesPrague, k)
+	}
 	for k := range PrecompiledContractsNano {
 		PrecompiledAddressesNano = append(PrecompiledAddressesNano, k)
 	}
@@ -194,6 +229,10 @@ func ActivePrecompiles(rules *params.Rules) []types.Address {
 		return PrecompiledAddressesMoran
 	case rules.IsNano:
 		return PrecompiledAddressesNano
+	case rules.IsPrague:
+		return PrecompiledAddressesPrague
+	case rules.IsCancun:
+		return PrecompiledAddressesCancun
 	case rules.IsBerlin:
 		return PrecompiledAddressesBerlin
 	case rules.IsIstanbul:
