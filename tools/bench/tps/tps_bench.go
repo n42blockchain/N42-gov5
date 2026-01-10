@@ -567,7 +567,9 @@ func (s *EVMStateAdapter) GetTransientState(types.Address, types.Hash) uint256.I
 func (s *EVMStateAdapter) SetTransientState(types.Address, types.Hash, uint256.Int) {}
 func (s *EVMStateAdapter) Selfdestruct(types.Address) bool { return false }
 func (s *EVMStateAdapter) HasSelfdestructed(types.Address) bool { return false }
-func (s *EVMStateAdapter) Selfdestruct6780(types.Address) {}
+func (s *EVMStateAdapter) Selfdestruct6780(types.Address, types.Address) {}
+func (s *EVMStateAdapter) WasCreatedInCurrentTx(types.Address) bool { return false }
+func (s *EVMStateAdapter) HasNonEmptyStorage(types.Address) bool { return false }
 func (s *EVMStateAdapter) Exist(types.Address) bool { return true }
 func (s *EVMStateAdapter) Empty(types.Address) bool { return false }
 func (s *EVMStateAdapter) Prepare(types.Hash, types.Hash, int) {}
