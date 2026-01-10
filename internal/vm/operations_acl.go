@@ -26,9 +26,9 @@ import (
 	"github.com/holiman/uint256"
 )
 
-// isStandardPrecompile checks if an address is a standard precompile (0x01-0x09).
+// IsStandardPrecompile checks if an address is a standard precompile (0x01-0x09).
 // Per EIP-2929: "The addresses of precompiles from 1 to 9 are always considered warm"
-func isStandardPrecompile(addr types.Address) bool {
+func IsStandardPrecompile(addr types.Address) bool {
 	// Check if address is 0x00...01 through 0x00...09
 	// All bytes except the last must be zero
 	for i := 0; i < 19; i++ {
@@ -147,7 +147,7 @@ func gasExtCodeCopyEIP2929(evm VMInterpreter, contract *Contract, stack *stack.S
 	addr := types.Address(stack.Peek().Bytes20())
 
 	// Per EIP-2929: precompiles 1-9 are always warm
-	if isStandardPrecompile(addr) {
+	if IsStandardPrecompile(addr) {
 		return gas, nil
 	}
 
@@ -175,7 +175,7 @@ func gasEip2929AccountCheck(evm VMInterpreter, contract *Contract, stack *stack.
 	addr := types.Address(stack.Peek().Bytes20())
 
 	// Per EIP-2929: precompiles 1-9 are always warm
-	if isStandardPrecompile(addr) {
+	if IsStandardPrecompile(addr) {
 		return 0, nil
 	}
 
@@ -193,24 +193,19 @@ func makeCallVariantGasCallEIP2929(oldCalculator gasFunc) gasFunc {
 	return func(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
 		addr := types.Address(stack.Back(1).Bytes20())
 
-		// Per EIP-2929: "The addresses of precompiles from 1 to 9 are always considered warm"
-		// Check if target is a standard precompile (addresses 0x01-0x09)
-		isPrecompile := isStandardPrecompile(addr)
-
 		// Check slot presence in the access list
+		// Note: Standard precompiles (0x01-0x09) are added to access list at transaction start
+		// via PrepareAccessList, so they will already be warm.
 		warmAccess := evm.IntraBlockState().AddressInAccessList(addr)
 		// The WarmStorageReadCostEIP2929 (100) is already deducted in the form of a constant cost, so
 		// the cost to charge for cold access, if any, is Cold - Warm
 		coldCost := params.ColdAccountAccessCostEIP2929 - params.WarmStorageReadCostEIP2929
 		if !warmAccess {
 			evm.IntraBlockState().AddAddressToAccessList(addr)
-			// Don't charge cold cost for precompiles (they're always warm)
-			if !isPrecompile {
-				// Charge the remaining difference here already, to correctly calculate available
-				// gas for call
-				if !contract.UseGas(coldCost) {
-					return 0, ErrOutOfGas
-				}
+			// Charge the remaining difference here already, to correctly calculate available
+			// gas for call
+			if !contract.UseGas(coldCost) {
+				return 0, ErrOutOfGas
 			}
 		}
 		// Now call the old calculator, which takes into account
@@ -219,7 +214,7 @@ func makeCallVariantGasCallEIP2929(oldCalculator gasFunc) gasFunc {
 		// - memory expansion
 		// - 63/64ths rule
 		gas, err := oldCalculator(evm, contract, stack, mem, memorySize)
-		if warmAccess || err != nil || isPrecompile {
+		if warmAccess || err != nil {
 			return gas, err
 		}
 		// In case of a cold access, we temporarily add the cold charge back, and also

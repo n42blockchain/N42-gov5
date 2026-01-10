@@ -220,6 +220,8 @@ func enable6780(jt *JumpTable) {
 }
 
 // gasSelfdestructEIP6780 calculates gas for SELFDESTRUCT under EIP-6780
+// This is similar to gasSelfdestructEIP3529 but without refunds (already removed in EIP-3529)
+// and with the CreateBySelfdestructGas charge if sending to a non-existent account.
 func gasSelfdestructEIP6780(evm VMInterpreter, contract *Contract, stk *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
 	var (
 		gas     uint64
@@ -230,6 +232,10 @@ func gasSelfdestructEIP6780(evm VMInterpreter, contract *Contract, stk *stack.St
 		gas = params.ColdAccountAccessCostEIP2929
 		// If the caller is charged, the warm storage read is already charged as constantGas
 		evm.IntraBlockState().AddAddressToAccessList(address)
+	}
+	// If the beneficiary is empty and value is being transferred, charge CreateBySelfdestructGas
+	if evm.IntraBlockState().Empty(address) && !evm.IntraBlockState().GetBalance(contract.Address()).IsZero() {
+		gas += params.CreateBySelfdestructGas
 	}
 	return gas, nil
 }

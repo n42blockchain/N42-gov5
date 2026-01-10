@@ -111,14 +111,20 @@ type StateDB interface {
 
 	// Selfdestruct6780 implements EIP-6780 SELFDESTRUCT behavior for Cancun+.
 	// It only deletes the account if it was created in the same transaction.
-	// Otherwise, it only sends the balance to the beneficiary.
-	Selfdestruct6780(addr types.Address)
+	// Otherwise, it only transfers the balance to the beneficiary.
+	// The beneficiary address is needed to handle the case where addr == beneficiary,
+	// which should result in no net balance change when the account wasn't created in the same tx.
+	Selfdestruct6780(addr types.Address, beneficiary types.Address)
 
 	// HasSelfdestructed returns whether the account has been self-destructed.
 	HasSelfdestructed(addr types.Address) bool
 
 	// WasCreatedInCurrentTx returns whether the account was created in the current transaction.
 	WasCreatedInCurrentTx(addr types.Address) bool
+
+	// HasNonEmptyStorage returns whether the account has any non-zero storage entries.
+	// Used for EIP-7610 style collision detection.
+	HasNonEmptyStorage(addr types.Address) bool
 
 	// ========== Access List (EIP-2930) ==========
 

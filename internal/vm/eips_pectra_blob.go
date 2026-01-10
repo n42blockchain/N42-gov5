@@ -146,19 +146,48 @@ const (
 	TxDataZeroGas           uint64 = 4  // Per byte of zero data
 
 	// Pectra calldata costs (EIP-7623)
-	// Floor calldata cost when transactions contain significant calldata
-	TxDataNonZeroGasEIP7623 uint64 = 68 // Increased cost per non-zero byte
-	TxDataZeroGasEIP7623    uint64 = 10 // Increased cost per zero byte
+	// EIP-7623 uses token-based pricing: tokens = zero_bytes + (nonzero_bytes * 4)
+	// Standard cost: tokens * 4 = zero_bytes*4 + nonzero_bytes*16 (same as EIP-2028)
+	// Floor cost: tokens * 10 = zero_bytes*10 + nonzero_bytes*40
+	StandardTokenCost      uint64 = 4  // Gas per token for standard cost
+	TotalCostFloorPerToken uint64 = 10 // Gas per token for floor cost
 
-	// Threshold for applying floor price
-	// If calldata cost > floor, use floor; otherwise use standard
-	CalldataFloorThreshold uint64 = 4 * 1024 // 4KB
+	// Calculated per-byte floor costs (for implementation convenience)
+	TxDataNonZeroGasEIP7623 uint64 = 40 // Floor cost per non-zero byte (10 * 4)
+	TxDataZeroGasEIP7623    uint64 = 10 // Floor cost per zero byte (10 * 1)
 )
 
+// FloorDataGas calculates the minimum gas required for a transaction based on EIP-7623.
+// This is used to ensure data-heavy transactions pay a minimum amount.
+// Formula: 21000 + tokens * TOTAL_COST_FLOOR_PER_TOKEN
+// where tokens = zero_bytes + (nonzero_bytes * 4)
+func FloorDataGas(data []byte) uint64 {
+	if len(data) == 0 {
+		return 21000 // TxGas
+	}
+
+	var zeroBytes, nonZeroBytes uint64
+	for _, b := range data {
+		if b == 0 {
+			zeroBytes++
+		} else {
+			nonZeroBytes++
+		}
+	}
+
+	// Calculate tokens: zero_bytes + nonzero_bytes * 4
+	tokens := zeroBytes + nonZeroBytes*StandardTokenCost
+
+	// Floor gas = base gas + tokens * floor cost per token
+	return 21000 + tokens*TotalCostFloorPerToken
+}
+
 // CalcCalldataCostEIP7623 calculates the calldata cost with EIP-7623 rules
-// The cost is max(standard_cost, floor_cost) where:
-// - standard_cost = 16 * nonzero_bytes + 4 * zero_bytes
-// - floor_cost = 68 * nonzero_bytes + 10 * zero_bytes (only for large calldata)
+// EIP-7623 specification: https://eips.ethereum.org/EIPS/eip-7623
+// Cost = max(standard_cost, floor_cost) where:
+// - tokens = zero_bytes + (nonzero_bytes * 4)
+// - standard_cost = tokens * STANDARD_TOKEN_COST = zero*4 + nonzero*16
+// - floor_cost = tokens * TOTAL_COST_FLOOR_PER_TOKEN = zero*10 + nonzero*40
 func CalcCalldataCostEIP7623(data []byte, isPectra bool) uint64 {
 	if len(data) == 0 {
 		return 0
@@ -173,23 +202,21 @@ func CalcCalldataCostEIP7623(data []byte, isPectra bool) uint64 {
 		}
 	}
 
-	// Standard cost (pre-Pectra or base cost)
+	// Standard cost (same as EIP-2028: zero*4 + nonzero*16)
 	standardCost := nonZeroBytes*TxDataNonZeroGasEIP2028 + zeroBytes*TxDataZeroGas
 
 	if !isPectra {
 		return standardCost
 	}
 
-	// EIP-7623: Apply floor cost for large calldata
-	totalBytes := uint64(len(data))
-	if totalBytes > CalldataFloorThreshold {
-		// Floor cost with increased rates
-		floorCost := nonZeroBytes*TxDataNonZeroGasEIP7623 + zeroBytes*TxDataZeroGasEIP7623
-		if floorCost > standardCost {
-			return floorCost
-		}
-	}
+	// EIP-7623: Always calculate floor cost and use max(standard, floor)
+	// Floor cost = zero*10 + nonzero*40
+	floorCost := nonZeroBytes*TxDataNonZeroGasEIP7623 + zeroBytes*TxDataZeroGasEIP7623
 
+	// Return the maximum of standard and floor costs
+	if floorCost > standardCost {
+		return floorCost
+	}
 	return standardCost
 }
 
@@ -205,6 +232,14 @@ func IntrinsicGasEIP7623(data []byte, accessList transaction.AccessList, isContr
 
 	// Calldata gas with EIP-7623
 	gas += CalcCalldataCostEIP7623(data, isPectra)
+
+	// EIP-3860: Initcode size limit and gas cost (Shanghai+, inherited by Prague)
+	if isContractCreation && len(data) > 0 {
+		// Prague inherits Shanghai's EIP-3860
+		dataLen := uint64(len(data))
+		lenWords := (dataLen + 31) / 32 // toWordSize
+		gas += lenWords * 2              // InitCodeWordGas = 2
+	}
 
 	// Access list gas (EIP-2930)
 	if len(accessList) > 0 {

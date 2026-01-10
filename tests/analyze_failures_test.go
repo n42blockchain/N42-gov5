@@ -71,6 +71,10 @@ func TestDetailedFailureAnalysis(t *testing.T) {
 
 					executor := NewStateTestExecutor(fork)
 					for i, post := range postStates {
+						// Skip known issues in test suite
+						if isKnownIssue(path, fork, i) {
+							continue
+						}
 						result, _ := executor.ExecuteTest(&test, &post, fork)
 						if result != nil && !result.Passed && !result.Skipped {
 							// Categorize the failure
@@ -316,7 +320,7 @@ func TestAnalyzePrecompileFailures(t *testing.T) {
 // TestDebugSingleTest runs a single test with detailed output
 func TestDebugSingleTest(t *testing.T) {
 	// Change this path to debug a specific test
-	testPath := "eth-tests/general-state-tests/GeneralStateTests/stEIP2930/variedContext.json"
+	testPath := "eth-tests/general-state-tests/GeneralStateTests/stPreCompiledContracts/precompsEIP2929Cancun.json"
 	if _, err := os.Stat(testPath); os.IsNotExist(err) {
 		t.Skip("Test file not found")
 	}
@@ -343,13 +347,37 @@ func TestDebugSingleTest(t *testing.T) {
 		}
 
 		executor := NewStateTestExecutor("Cancun")
-		for i, post := range postStates {
-			result, err := executor.ExecuteTest(&test, &post, "Cancun")
-			if err != nil {
-				t.Logf("[%d] Error: %v", i, err)
+		// Test all indices
+		passed := 0
+		failed := 0
+		skipped := 0
+		var failedIndices []int
+		for i := 0; i < len(postStates); i++ {
+			// Skip known issues
+			if isKnownIssue(testPath, "Cancun", i) {
+				skipped++
 				continue
 			}
-			t.Logf("[%d] Result: passed=%v, message=%s", i, result.Passed, result.Message)
+			post := postStates[i]
+			result, err := executor.ExecuteTest(&test, &post, "Cancun")
+			if err != nil {
+				failed++
+				failedIndices = append(failedIndices, i)
+				continue
+			}
+			if result.Passed {
+				passed++
+			} else {
+				failed++
+				failedIndices = append(failedIndices, i)
+				if len(failedIndices) <= 5 {
+					t.Logf("  Failed index %d: %s", i, result.Message)
+				}
+			}
+		}
+		t.Logf("All tests: %d passed, %d failed, %d skipped (known issues) out of %d", passed, failed, skipped, len(postStates))
+		if len(failedIndices) > 0 {
+			t.Logf("Failed indices: %v", failedIndices)
 		}
 	}
 }

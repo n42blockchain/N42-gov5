@@ -391,6 +391,17 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	}
 	st.gas -= gas
 
+	// EIP-7623: Check floor data gas for Prague/Pectra
+	// This ensures data-heavy transactions pay a minimum amount
+	var floorDataGas uint64
+	if rules.IsPrague {
+		floorDataGas = vm2.FloorDataGas(st.data)
+		// Check if transaction has enough gas limit to cover floor
+		if st.initialGas < floorDataGas {
+			return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.initialGas, floorDataGas)
+		}
+	}
+
 	var bailout bool
 	// Gas bailout (for trace_call) should only be applied if there is not sufficient balance to perform value transfer
 	if gasBailout {
@@ -440,6 +451,17 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 			st.refundGas(params.RefundQuotient)
 		}
 	}
+
+	// EIP-7623: Apply floor data gas after execution
+	// If gasUsed < floorDataGas, adjust remaining gas to ensure floor is consumed
+	if rules.IsPrague && floorDataGas > 0 {
+		gasUsed := st.gasUsed()
+		if gasUsed < floorDataGas {
+			// Adjust remaining gas to ensure total consumed equals floor
+			st.gas = st.initialGas - floorDataGas
+		}
+	}
+
 	effectiveTip := st.gasPrice
 	if rules.IsLondon {
 		if st.gasFeeCap.Gt(st.evm.Context().BaseFee) {

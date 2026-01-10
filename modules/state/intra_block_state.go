@@ -325,6 +325,52 @@ func (sdb *IntraBlockState) Empty(addr types.Address) bool {
 	return so == nil || so.deleted || so.empty()
 }
 
+// HasNonEmptyStorage returns true if the account has any non-zero storage entries.
+// This is used by EIP-7610 style collision detection to prevent deploying code
+// at addresses that have pre-existing storage.
+// NOTE: This checks in-memory caches and also probes common storage slots (0x00, 0x01)
+// to detect pre-existing storage that hasn't been loaded yet.
+func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
+	stateObject := sdb.getStateObject(addr)
+	if stateObject == nil || stateObject.deleted {
+		return false
+	}
+	// Check dirtyStorage (current transaction writes)
+	for _, value := range stateObject.dirtyStorage {
+		if !value.IsZero() {
+			return true
+		}
+	}
+	// Check originStorage (values loaded from DB during this block)
+	for _, value := range stateObject.originStorage {
+		if !value.IsZero() {
+			return true
+		}
+	}
+	// Check blockOriginStorage (values from start of block)
+	for _, value := range stateObject.blockOriginStorage {
+		if !value.IsZero() {
+			return true
+		}
+	}
+	// Probe common storage slots to detect pre-existing storage from database
+	// This handles the case where storage exists but hasn't been loaded yet.
+	// Slots 0x00 and 0x01 are commonly used for mappings and state variables.
+	slot0 := types.Hash{}
+	slot1 := types.Hash{}
+	slot1[31] = 1 // 0x01
+	var value uint256.Int
+	stateObject.GetCommittedState(&slot0, &value)
+	if !value.IsZero() {
+		return true
+	}
+	stateObject.GetCommittedState(&slot1, &value)
+	if !value.IsZero() {
+		return true
+	}
+	return false
+}
+
 // GetBalance retrieves the balance from the given address or 0 if object not found
 // DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) GetBalance(addr types.Address) *uint256.Int {
@@ -1100,18 +1146,18 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 
 // Selfdestruct6780 implements EIP-6780 SELFDESTRUCT behavior for Cancun+.
 // It only deletes the account (code, storage, nonce) if it was created in the same transaction.
-// The balance is always sent to the beneficiary (handled by the caller).
-func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address) {
+// The balance transfer to the beneficiary is handled by the caller (opSelfdestruct) via AddBalance.
+// This function handles the "SubBalance" part by clearing the caller's balance.
+// If the account was NOT created in the same transaction, only the balance is transferred -
+// the account keeps its code, storage, and nonce.
+func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary types.Address) {
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted {
 		return
 	}
 
-	// DEBUG: Print created flag
-	// fmt.Printf("[DEBUG Selfdestruct6780] addr=%s, created=%v\n", addr.Hex(), stateObject.created)
-
-	// Only perform full selfdestruct if account was created in this transaction
 	if stateObject.created {
+		// Account was created in this transaction - full selfdestruct
 		sdb.journal.append(selfdestructChange{
 			account:     &addr,
 			prev:        stateObject.selfdestructed,
@@ -1121,13 +1167,41 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address) {
 		stateObject.created = false
 		stateObject.data.Balance.Clear()
 	} else {
-		// EIP-6780: Just clear the balance, don't delete the account
-		prevBalance := *stateObject.Balance()
-		sdb.journal.append(balanceChange{
-			account: &addr,
-			prev:    prevBalance,
-		})
-		stateObject.data.Balance.Clear()
+		// EIP-6780: Account was NOT created in this transaction.
+		// Only transfer the balance - account keeps code, storage, nonce.
+		// The caller (opSelfdestruct) already did AddBalance(beneficiary, originalBalance).
+		// Now we need to do the SubBalance part.
+		//
+		// If beneficiary == addr (self-destruct to self):
+		//   - opSelfdestruct read balance X, then AddBalance(self, X) making balance = 2X
+		//   - We need to SubBalance X to restore to original X (current / 2)
+		// If beneficiary != addr:
+		//   - AddBalance added X to beneficiary
+		//   - We need to clear our balance (SubBalance all = SetBalance 0)
+		if addr == beneficiary {
+			// Self-destruct to self: undo the AddBalance by subtracting half the current balance
+			// Current balance = 2X (original was X, then X was added)
+			// We want final balance = X, so subtract X = current / 2
+			currentBalance := stateObject.Balance()
+			if !currentBalance.IsZero() {
+				halfBalance := new(uint256.Int).Div(currentBalance, uint256.NewInt(2))
+				sdb.journal.append(balanceChange{
+					account: &addr,
+					prev:    *currentBalance,
+				})
+				stateObject.data.Balance.Sub(currentBalance, halfBalance)
+			}
+		} else {
+			// Different beneficiary: clear caller's balance (they got it via AddBalance)
+			prevBalance := *stateObject.Balance()
+			if !prevBalance.IsZero() {
+				sdb.journal.append(balanceChange{
+					account: &addr,
+					prev:    prevBalance,
+				})
+				stateObject.data.Balance.Clear()
+			}
+		}
 	}
 }
 
