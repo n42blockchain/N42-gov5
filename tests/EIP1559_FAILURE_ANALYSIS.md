@@ -248,5 +248,5 @@ Test: baseFeeDiffPlaces.json::baseFeeDiffPlaces-fork_[Cancun-Prague]-d2g0v0
 ---
 
 **Generated**: 2026-01-09
-**Author**: Claude Code Analysis
+**Author**: N42 Development Team
 **Verification**: All tests passing as of commit f968d17

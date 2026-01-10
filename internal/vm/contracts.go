@@ -154,11 +154,22 @@ var PrecompiledContractsBLS = map[types.Address]PrecompiledContract{
 }
 
 // PrecompiledContractsCancun contains the default set of pre-compiled Ethereum
-// contracts used in the Cancun release. Same as Berlin (no new precompiles in Cancun).
-var PrecompiledContractsCancun = PrecompiledContractsBerlin
+// contracts used in the Cancun release. Includes Berlin precompiles + EIP-4844 point evaluation.
+var PrecompiledContractsCancun = map[types.Address]PrecompiledContract{
+	types.BytesToAddress([]byte{1}):    &ecrecover{},
+	types.BytesToAddress([]byte{2}):    &sha256hash{},
+	types.BytesToAddress([]byte{3}):    &ripemd160hash{},
+	types.BytesToAddress([]byte{4}):    &dataCopy{},
+	types.BytesToAddress([]byte{5}):    &bigModExp{eip2565: true},
+	types.BytesToAddress([]byte{6}):    &bn256AddIstanbul{},
+	types.BytesToAddress([]byte{7}):    &bn256ScalarMulIstanbul{},
+	types.BytesToAddress([]byte{8}):    &bn256PairingIstanbul{},
+	types.BytesToAddress([]byte{9}):    &blake2F{},
+	types.BytesToAddress([]byte{0x0a}): &pointEvaluationPrecompile{}, // EIP-4844
+}
 
 // PrecompiledContractsPrague contains the default set of pre-compiled Ethereum
-// contracts used in the Prague release. This includes Berlin precompiles + BLS (EIP-2537).
+// contracts used in the Prague release. This includes Cancun precompiles + BLS (EIP-2537).
 var PrecompiledContractsPrague = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{1}):    &ecrecover{},
 	types.BytesToAddress([]byte{2}):    &sha256hash{},
@@ -169,7 +180,8 @@ var PrecompiledContractsPrague = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{7}):    &bn256ScalarMulIstanbul{},
 	types.BytesToAddress([]byte{8}):    &bn256PairingIstanbul{},
 	types.BytesToAddress([]byte{9}):    &blake2F{},
-	types.BytesToAddress([]byte{0x0b}): &bls12381G1Add{},
+	types.BytesToAddress([]byte{0x0a}): &pointEvaluationPrecompile{}, // EIP-4844
+	types.BytesToAddress([]byte{0x0b}): &bls12381G1Add{},             // EIP-2537
 	types.BytesToAddress([]byte{0x0c}): &bls12381G1Mul{},
 	types.BytesToAddress([]byte{0x0d}): &bls12381G1MultiExp{},
 	types.BytesToAddress([]byte{0x0e}): &bls12381G2Add{},

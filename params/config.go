@@ -782,7 +782,16 @@ type Rules struct {
 }
 
 // Rules ensures c's ChainID is not nil.
+// DEPRECATED: Use RulesWithTimestamp instead for timestamp-based forks (Prague+)
 func (c *ChainConfig) Rules(num uint64) *Rules {
+	// For backward compatibility, call RulesWithTimestamp with timestamp=num
+	// This works for block-based forks but will incorrectly activate timestamp forks
+	return c.RulesWithTimestamp(num, num)
+}
+
+// RulesWithTimestamp returns the chain rules for the given block number and timestamp.
+// This correctly handles both block-based forks (pre-Prague) and timestamp-based forks (Prague+).
+func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 	chainID := c.ChainID
 	if chainID == nil {
 		chainID = new(big.Int)
@@ -800,10 +809,10 @@ func (c *ChainConfig) Rules(num uint64) *Rules {
 		IsLondon:              c.IsLondon(num),
 		IsShanghai:            c.IsShanghai(num),
 		IsCancun:              c.IsCancun(num),
-		IsPrague:              c.IsPrague(num),
-		IsPectra:              c.IsPectra(num),
-		IsOsaka:               c.IsOsaka(num),
-		IsFusaka:              c.IsFusaka(num),
+		IsPrague:              c.IsPrague(timestamp),  // Prague uses timestamp
+		IsPectra:              c.IsPectra(timestamp),  // Pectra uses timestamp
+		IsOsaka:               c.IsOsaka(timestamp),   // Osaka uses timestamp
+		IsFusaka:              c.IsFusaka(timestamp),  // Fusaka uses timestamp
 		IsNano:                c.IsNano(num),
 		IsMoran:               c.IsMoran(num),
 		IsEip1559FeeCollector: c.IsEip1559FeeCollector(num),

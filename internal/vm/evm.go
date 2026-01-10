@@ -67,6 +67,12 @@ func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool)
 		precompiles = PrecompiledContractsIsMoran
 	case evm.chainRules.IsNano:
 		precompiles = PrecompiledContractsNano
+	case evm.chainRules.IsPrague:
+		// Prague includes BLS precompiles (EIP-2537) + all Cancun precompiles
+		precompiles = PrecompiledContractsPrague
+	case evm.chainRules.IsCancun:
+		// Cancun includes point evaluation precompile (EIP-4844) + all Berlin precompiles
+		precompiles = PrecompiledContractsCancun
 	case evm.chainRules.IsBerlin:
 		precompiles = PrecompiledContractsBerlin
 	case evm.chainRules.IsIstanbul:
@@ -145,7 +151,7 @@ func NewEVMWithPrecompiles(blockCtx evmtypes.BlockContext, txCtx evmtypes.TxCont
 		intraBlockState:    state,
 		config:             vmConfig,
 		chainConfig:        chainConfig,
-		chainRules:         chainConfig.Rules(blockCtx.BlockNumber),
+		chainRules:         chainConfig.RulesWithTimestamp(blockCtx.BlockNumber, blockCtx.Time),
 		precompileRegistry: registry,
 	}
 
@@ -415,8 +421,14 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		evm.intraBlockState.AddAddressToAccessList(address)
 	}
 	// Ensure there's no existing contract already at the designated address
+	// EIP-684: Check nonce and code
+	// EIP-7610: Also check for non-empty storage (Cancun+)
 	contractHash := evm.intraBlockState.GetCodeHash(address)
-	if evm.intraBlockState.GetNonce(address) != 0 || (contractHash != (types.Hash{}) && contractHash != emptyCodeHash) {
+	hasCode := contractHash != (types.Hash{}) && contractHash != emptyCodeHash
+	hasNonce := evm.intraBlockState.GetNonce(address) != 0
+	// For Cancun+, also check for non-empty storage (EIP-7610 style behavior)
+	hasStorage := evm.chainRules.IsCancun && evm.intraBlockState.HasNonEmptyStorage(address)
+	if hasNonce || hasCode || hasStorage {
 		err = ErrContractAddressCollision
 		return nil, types.Address{}, 0, err
 	}

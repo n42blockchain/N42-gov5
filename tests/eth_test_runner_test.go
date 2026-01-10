@@ -100,6 +100,36 @@ type EthTestPostState struct {
 }
 
 // ================================================================================
+// Known Test Issues
+// ================================================================================
+
+// knownTestIssues contains tests that are known to have incorrect expectations
+// in the ethereum/tests suite. These are typically due to:
+// - Test expectations generated before a precompile was added
+// - Test expectations that don't account for fork-specific behavior
+//
+// Format: "testfile::testname::fork" -> list of post-state indices to skip
+// or "testfile::testname::fork::*" to skip all indices for that test+fork
+var knownTestIssues = map[string][]int{
+	// No known issues at this time.
+	// Previously had precompsEIP2929Cancun entries, but these were fixed by
+	// correcting the fork order in precompileLegacy() to check IsCancun before IsBerlin.
+}
+
+// isKnownIssue checks if a specific test case is a known issue that should be skipped
+func isKnownIssue(filename, fork string, postIndex int) bool {
+	key := fmt.Sprintf("%s::%s", filepath.Base(filename), fork)
+	if indices, ok := knownTestIssues[key]; ok {
+		for _, idx := range indices {
+			if idx == postIndex {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ================================================================================
 // Helper Functions
 // ================================================================================
 
@@ -353,7 +383,9 @@ func getChainConfigForFork(fork string) *params.ChainConfig {
 		config.MergeNetsplitBlock = big.NewInt(0)
 		config.ShanghaiBlock = big.NewInt(0)
 		config.CancunBlock = big.NewInt(0)
+		// Prague and Pectra are timestamp-based forks (not block-based)
 		config.PragueTime = big.NewInt(0)
+		config.PectraTime = big.NewInt(0)
 	}
 
 	return config
@@ -547,7 +579,7 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 	}
 
 	// Prepare access list for Berlin+
-	rules := e.chainConfig.Rules(blockNumber)
+	rules := e.chainConfig.RulesWithTimestamp(blockNumber, timestamp)
 	if rules.IsBerlin {
 		stateDB.PrepareAccessList(sender, to, vm.ActivePrecompiles(rules), accessList)
 		// EIP-3651: Warm COINBASE for Shanghai+
@@ -795,7 +827,8 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 
 	// Parse environment variables for baseFee
 	blockNumber, _ := parseUint64(test.Env.CurrentNumber)
-	rules := e.chainConfig.Rules(blockNumber)
+	timestamp, _ := parseUint64(test.Env.CurrentTimestamp)
+	rules := e.chainConfig.RulesWithTimestamp(blockNumber, timestamp)
 	var baseFee *uint256.Int
 	if test.Env.CurrentBaseFee != "" {
 		baseFee, _ = parseUint256(test.Env.CurrentBaseFee)
@@ -819,6 +852,20 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 			}
 		}
 		return false
+	}
+
+	// NONCE_IS_MAX - Check if transaction nonce is at maximum (2^64 - 1)
+	// This is a structural validation that must come very early
+	if test.Transaction.Nonce != "" {
+		txNonce, err := parseUint64(test.Transaction.Nonce)
+		if err == nil && txNonce == ^uint64(0) { // Max uint64 is 2^64 - 1
+			if matchesExpectedException("TransactionException.NONCE_IS_MAX", "NONCE_IS_MAX") {
+				result.Passed = true
+				result.Message = fmt.Sprintf("correctly rejected: transaction nonce is at maximum (2^64-1)")
+				return result, nil
+			}
+			validationError = fmt.Sprintf("nonce is at maximum (%d) but test expects: %s", txNonce, exceptionType)
+		}
 	}
 
 	// Parse blob transaction data (EIP-4844)
@@ -936,6 +983,19 @@ func (e *StateTestExecutor) validateExpectedException(test *EthStateTest, post *
 			}
 			validationError = "max fee < base fee but test expects: " + exceptionType
 		}
+	}
+
+	// INSUFFICIENT_MAX_FEE_PER_GAS for legacy transactions (gasPrice < baseFee)
+	// After London/EIP-1559, even legacy transactions must have gasPrice >= baseFee
+	if gasPrice != nil && rules.IsLondon && baseFee != nil && gasPrice.Cmp(baseFee) < 0 {
+		if matchesExpectedException("TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS", "INSUFFICIENT_MAX_FEE_PER_GAS") {
+			result.Passed = true
+			result.Message = fmt.Sprintf("correctly rejected: legacy tx gasPrice %s < baseFee %s",
+				gasPrice.String(), baseFee.String())
+			return result, nil
+		}
+		validationError = fmt.Sprintf("legacy tx gasPrice %s < baseFee %s but test expects: %s",
+			gasPrice.String(), baseFee.String(), exceptionType)
 	}
 
 	// INTRINSIC_GAS_TOO_LOW - calculate intrinsic gas
@@ -1214,8 +1274,14 @@ func TestRunStateTests(t *testing.T) {
 							}
 
 							executor := NewStateTestExecutor(fork)
-							
+
 							for i, post := range postStates {
+								// Skip known issues in test suite
+								if isKnownIssue(path, fork, i) {
+									stats.skipped++
+									continue
+								}
+
 								result, err := executor.ExecuteTest(&test, &post, fork)
 								if err != nil {
 									t.Errorf("[%s][%d] Execution error: %v", fork, i, err)

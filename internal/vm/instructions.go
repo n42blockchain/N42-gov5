@@ -915,7 +915,7 @@ func opSelfdestruct(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 	// Check if we're in Cancun+ for EIP-6780 behavior
 	if interpreter.evm.ChainRules().IsCancun {
 		// EIP-6780: Only delete account if created in same transaction
-		interpreter.evm.IntraBlockState().Selfdestruct6780(callerAddr)
+		interpreter.evm.IntraBlockState().Selfdestruct6780(callerAddr, beneficiaryAddr)
 	} else {
 		// Pre-Cancun: Full selfdestruct
 		interpreter.evm.IntraBlockState().Selfdestruct(callerAddr)
