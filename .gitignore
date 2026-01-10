@@ -112,7 +112,7 @@ SPECIFICATION_*.md
 tests/eth-devp2p/
 tests/eth-execution-apis/
 tests/eth-hive/
-tests/eth-tests/general-state-tests/
+tests/eth-tests/
 
 # Precompile test files
 tests/precompile_*.go
