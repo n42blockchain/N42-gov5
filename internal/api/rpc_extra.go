@@ -81,7 +81,7 @@ func (admin *AdminAPI) NodeInfo() *NodeInfo {
 		Ports:      &NodePorts{Discovery: 30303, Listener: 30303},
 		ListenAddr: ":30303",
 		Protocols: map[string]string{
-			"eth": "eth/68",
+			"eth": "eth/69",
 		},
 	}
 }
@@ -295,7 +295,9 @@ func (rpc *RPCAPI) Modules() map[string]string {
 // ProtocolVersion returns the current Ethereum protocol version.
 func (s *BlockChainAPI) ProtocolVersion() hexutil.Uint {
 	// Return the eth protocol version (execution layer)
-	return hexutil.Uint(68) // eth/68
+	// Note: N42 uses libp2p/gossipsub for P2P, not DevP2P/RLPx
+	// This version number is for RPC compatibility with Ethereum tools
+	return hexutil.Uint(69) // eth/69 (RPC compatibility declaration)
 }
 
 // =============================================================================
