@@ -64,3 +64,56 @@ jwtsecret
 # Keystore (optional - uncomment if you want to exclude)
 # devtest/keystore/
 # devtest/password.txt
+
+# ===========================================
+# Test Results and Temporary Files
+# ===========================================
+
+# Test output files
+*test_results*.txt
+*test_output*.txt
+*test_run*.txt
+*test_*.log
+full_test*.txt
+latest_full_test*.txt
+test_full_output.txt
+
+# Test analysis and reports
+tests/*_ANALYSIS.md
+tests/*_SUMMARY.md
+tests/*_REPORT.md
+tests/BASELINE_*.md
+tests/CURRENT_*.md
+tests/FINAL_*.md
+tests/ETHEREUM_*.md
+tests/RPC_*.md
+tests/*.md.bak
+
+# Chinese filename documents (legacy)
+tests/RPC测试*.md
+tests/*测试*.md
+
+# Test data files
+tests/*.json
+!tests/devtest.json
+tests/*.txt
+tests/*.bin
+tests/*.log
+
+# Temporary push/release documents
+PUSH_*.md
+RELEASE_*.md
+
+# EIP compliance temporary docs
+EIP_COMPLIANCE_*.md
+SPECIFICATION_*.md
+
+# Test suite directories (reference only, not for tracking)
+tests/eth-devp2p/
+tests/eth-execution-apis/
+tests/eth-hive/
+tests/eth-tests/general-state-tests/
+
+# Precompile test files
+tests/precompile_*.go
+tests/rpc_*.go
