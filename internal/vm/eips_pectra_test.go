@@ -157,8 +157,9 @@ func TestDelegationPrefixBytes(t *testing.T) {
 // =============================================================================
 
 func TestHistoryStorageAddress(t *testing.T) {
-	// Verify the history storage address matches EIP-2935 Pectra specification
-	expectedAddr := types.HexToAddress("0x0F792be4B0c0cb4DAE440Ef133E90C0eCD48CCCC")
+	// Verify the history storage address matches EIP-2935 official specification
+	// Address derived as: rlp([0xfffffffffffffffffffffffffffffffffffffffe, 0])
+	expectedAddr := types.HexToAddress("0x0000F90827F1C53a10CB7A02335B175320002935")
 	if HistoryStorageAddress != expectedAddr {
 		t.Errorf("HistoryStorageAddress = %v, want %v", HistoryStorageAddress, expectedAddr)
 	}

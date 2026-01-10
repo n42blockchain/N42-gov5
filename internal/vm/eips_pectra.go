@@ -103,7 +103,8 @@ var (
 
 // HistoryStorageAddress is the address where historical block hashes are stored
 // This is the canonical address for the EIP-2935 system contract in Pectra
-var HistoryStorageAddress = types.HexToAddress("0x0F792be4B0c0cb4DAE440Ef133E90C0eCD48CCCC")
+// Address derived as: rlp([0xfffffffffffffffffffffffffffffffffffffffe, 0])
+var HistoryStorageAddress = types.HexToAddress("0x0000F90827F1C53a10CB7A02335B175320002935")
 
 // HistoryServeWindow is the number of block hashes stored in the system contract
 // The contract stores the last HISTORY_SERVE_WINDOW block hashes in a ring buffer
