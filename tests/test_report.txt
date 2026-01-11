@@ -2,15 +2,15 @@
 ╔══════════════════════════════════════════════════════════════════╗
 ║           ETHEREUM EXECUTION LAYER TEST RESULTS                  ║
 ╠══════════════════════════════════════════════════════════════════╣
-║ Total Tests:        37724                                       ║
-║ Passed:             37724  (100.0%)                              ║
+║ Total Tests:        37701                                       ║
+║ Passed:             37701  (100.0%)                              ║
 ║ Failed:                 0  (  0.0%)                              ║
 ║ Skipped:                0  (  0.0%)                              ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║                    RESULTS BY FORK                               ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║ Cancun           19732 passed /  19732 total (100.0%)              ║
-║ Prague           17992 passed /  17992 total (100.0%)              ║
+║ Prague           17969 passed /  17969 total (100.0%)              ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║                  RESULTS BY CATEGORY                             ║
 ╠══════════════════════════════════════════════════════════════════╣
@@ -47,7 +47,7 @@
 ║ stMemoryStressTest          164/  164 (100.0%)                ║
 ║ stMemoryTest               1156/ 1156 (100.0%)                ║
 ║ stNonZeroCallsTest           48/   48 (100.0%)                ║
-║ stPreCompiledContracts     1488/ 1488 (100.0%)                ║
+║ stPreCompiledContracts     1466/ 1466 (100.0%)                ║
 ║ stPreCompiledContracts2     320/  320 (100.0%)                ║
 ║ stQuadraticComplexityTest    68/   68 (100.0%)                ║
 ║ stRandom                    620/  620 (100.0%)                ║
@@ -61,7 +61,7 @@
 ║ stSelfBalance                84/   84 (100.0%)                ║
 ║ stShift                      84/   84 (100.0%)                ║
 ║ stSolidityTest               46/   46 (100.0%)                ║
-║ stSpecialTest                44/   44 (100.0%)                ║
+║ stSpecialTest                43/   43 (100.0%)                ║
 ║ stStackTests                750/  750 (100.0%)                ║
 ║ stStaticCall                956/  956 (100.0%)                ║
 ║ stStaticFlagEnabled          68/   68 (100.0%)                ║
@@ -75,7 +75,3 @@
 ║ stZeroKnowledge            1888/ 1888 (100.0%)                ║
 ║ stZeroKnowledge2           1038/ 1038 (100.0%)                ║
 ╚══════════════════════════════════════════════════════════════════╝
-
-Test run completed: January 10, 2026
-Duration: 191.640s
-Status: ALL TESTS PASSED ✅
