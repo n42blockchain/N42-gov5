@@ -5,11 +5,11 @@ package logger
 import (
 	"encoding/json"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm"
-	"github.com/holiman/uint256"
 )
 
 var _ = (*structLogMarshaling)(nil)

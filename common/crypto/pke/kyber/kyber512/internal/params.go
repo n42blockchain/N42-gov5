@@ -2,10 +2,6 @@
 
 package internal
 
-import (
-	"github.com/n42blockchain/N42/common/crypto/pke/kyber/internal/common"
-)
-
 const (
 	K             = 2
 	Eta1          = 3

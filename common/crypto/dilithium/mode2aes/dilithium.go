@@ -9,10 +9,10 @@ package mode2aes
 import (
 	"crypto"
 	"errors"
-	"github.com/n42blockchain/N42/common/crypto/dilithium/internal/common"
-	"github.com/n42blockchain/N42/common/crypto/dilithium/mode2aes/internal"
 	"io"
 
+	"github.com/n42blockchain/N42/common/crypto/dilithium/internal/common"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode2aes/internal"
 )
 
 const (

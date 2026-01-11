@@ -31,11 +31,29 @@ message Ping {
   uint64 seq_number = 1;
 }
 
-//v2
+//v2 - eth/69 compatible Status message
 message Status {
   //  string version = 1;
-  types_pb.H256 genesisHash = 1;
-  types_pb.H256 currentHeight = 2;
+  uint32 protocolVersion = 1;  // eth protocol version (68 or 69)
+  uint64 networkID = 2;         // network identifier (mainnet=1, etc.)
+  types_pb.H256 genesisHash = 3;
+  types_pb.H256 currentHeight = 4;  // Latest block number for backward compatibility
+
+  // eth/69 specific fields - block range information
+  uint64 earliestBlock = 5;     // Earliest available block number
+  uint64 latestBlock = 6;       // Latest block number
+  types_pb.H256 latestBlockHash = 7;  // Hash of latest block
+
+  // Fork identification
+  bytes forkID = 8;             // EIP-2124 fork identifier
+}
+
+// eth/69 BlockRangeUpdate message (0x11)
+// Announces changes in the available block range
+message BlockRangeUpdate {
+  uint64 earliestBlock = 1;     // Earliest available block number
+  uint64 latestBlock = 2;       // Latest block number
+  types_pb.H256 latestBlockHash = 3;  // Hash of latest block
 }
 
 message ForkData {

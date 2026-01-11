@@ -4,10 +4,10 @@ package dilithium
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common/crypto/dilithium/internal/common"
-	"github.com/n42blockchain/N42/common/crypto/dilithium/mode2aes"
 	"io"
 
+	"github.com/n42blockchain/N42/common/crypto/dilithium/internal/common"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode2aes"
 )
 
 // implMode2AES implements the mode.Mode interface for Dilithium2-AES.
