@@ -9,10 +9,10 @@ package mode5aes
 import (
 	"crypto"
 	"errors"
-	"github.com/n42blockchain/N42/common/crypto/dilithium/internal/common"
-	"github.com/n42blockchain/N42/common/crypto/dilithium/mode5aes/internal"
 	"io"
 
+	"github.com/n42blockchain/N42/common/crypto/dilithium/internal/common"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode5aes/internal"
 )
 
 const (

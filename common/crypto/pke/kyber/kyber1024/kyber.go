@@ -9,9 +9,9 @@ package kyber1024
 
 import (
 	cryptoRand "crypto/rand"
-	"github.com/n42blockchain/N42/common/crypto/pke/kyber/kyber1024/internal"
 	"io"
 
+	"github.com/n42blockchain/N42/common/crypto/pke/kyber/kyber1024/internal"
 )
 
 const (

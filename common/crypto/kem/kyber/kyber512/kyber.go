@@ -11,8 +11,9 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"github.com/n42blockchain/N42/common/crypto/kem"
-	"io"
 	"github.com/n42blockchain/N42/common/crypto/sha3"
+	"io"
+
 	cryptoRand "crypto/rand"
 	cpapke "github.com/n42blockchain/N42/common/crypto/pke/kyber/kyber512"
 )

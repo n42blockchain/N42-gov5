@@ -4,10 +4,10 @@ package dilithium
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common/crypto/dilithium/internal/common"
-	"github.com/n42blockchain/N42/common/crypto/dilithium/mode3"
 	"io"
 
+	"github.com/n42blockchain/N42/common/crypto/dilithium/internal/common"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode3"
 )
 
 // implMode3 implements the mode.Mode interface for Dilithium3.
