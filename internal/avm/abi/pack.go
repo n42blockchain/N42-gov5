@@ -28,9 +28,12 @@ import (
 
 // packBytesSlice packs the given bytes as [L, V] as the canonical representation
 // bytes slice.
-func packBytesSlice(bytes []byte, l int) []byte {
-	len := packNum(reflect.ValueOf(l))
-	return append(len, common.RightPadBytes(bytes, (l+31)/32*32)...)
+func packBytesSlice(bytes []byte, l int) ([]byte, error) {
+	lenBytes, err := packNum(reflect.ValueOf(l))
+	if err != nil {
+		return nil, err
+	}
+	return append(lenBytes, common.RightPadBytes(bytes, (l+31)/32*32)...), nil
 }
 
 // packElement packs the given reflect value according to the abi specification in
@@ -38,9 +41,9 @@ func packBytesSlice(bytes []byte, l int) []byte {
 func packElement(t Type, reflectValue reflect.Value) ([]byte, error) {
 	switch t.T {
 	case IntTy, UintTy:
-		return packNum(reflectValue), nil
+		return packNum(reflectValue)
 	case StringTy:
-		return packBytesSlice([]byte(reflectValue.String()), reflectValue.Len()), nil
+		return packBytesSlice([]byte(reflectValue.String()), reflectValue.Len())
 	case AddressTy:
 		if reflectValue.Kind() == reflect.Array {
 			reflectValue = mustArrayToByteSlice(reflectValue)
@@ -59,7 +62,7 @@ func packElement(t Type, reflectValue reflect.Value) ([]byte, error) {
 		if reflectValue.Type() != reflect.TypeOf([]byte{}) {
 			return []byte{}, errors.New("Bytes type is neither slice nor array")
 		}
-		return packBytesSlice(reflectValue.Bytes(), reflectValue.Len()), nil
+		return packBytesSlice(reflectValue.Bytes(), reflectValue.Len())
 	case FixedBytesTy, FunctionTy:
 		if reflectValue.Kind() == reflect.Array {
 			reflectValue = mustArrayToByteSlice(reflectValue)
@@ -71,15 +74,15 @@ func packElement(t Type, reflectValue reflect.Value) ([]byte, error) {
 }
 
 // packNum packs the given number (using the reflect value) and will cast it to appropriate number representation.
-func packNum(value reflect.Value) []byte {
+func packNum(value reflect.Value) ([]byte, error) {
 	switch kind := value.Kind(); kind {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return math.U256Bytes(new(big.Int).SetUint64(value.Uint()))
+		return math.U256Bytes(new(big.Int).SetUint64(value.Uint())), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return math.U256Bytes(big.NewInt(value.Int()))
+		return math.U256Bytes(big.NewInt(value.Int())), nil
 	case reflect.Ptr:
-		return math.U256Bytes(new(big.Int).Set(value.Interface().(*big.Int)))
+		return math.U256Bytes(new(big.Int).Set(value.Interface().(*big.Int))), nil
 	default:
-		panic("abi: fatal error")
+		return nil, fmt.Errorf("abi: cannot pack unsupported type %v", kind)
 	}
 }

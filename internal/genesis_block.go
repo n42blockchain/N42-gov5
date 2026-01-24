@@ -24,11 +24,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/params/networkname"
 	"math/big"
-	"sync"
 
 	"github.com/c2h5oh/datasize"
+	"github.com/n42blockchain/N42/params/networkname"
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/mdbx"
@@ -47,19 +46,28 @@ var ErrGenesisNoConfig = errors.New("genesis has no chain configuration")
 //go:embed allocs
 var allocs embed.FS
 
-func readGenesisAlloc(filename string) conf.GenesisAlloc {
+func readGenesisAlloc(filename string) (conf.GenesisAlloc, error) {
 	f, err := allocs.Open(filename)
 	if err != nil {
-		panic(fmt.Sprintf("Could not open GenesisAlloc for %s: %v", filename, err))
+		return nil, fmt.Errorf("could not open GenesisAlloc for %s: %w", filename, err)
 	}
 	defer f.Close()
 	decoder := json.NewDecoder(f)
 	spec := conf.GenesisAlloc{}
 	err = decoder.Decode(&spec)
 	if err != nil {
-		panic(fmt.Sprintf("Could not parse GenesisAlloc for %s: %v", filename, err))
+		return nil, fmt.Errorf("could not parse GenesisAlloc for %s: %w", filename, err)
 	}
-	return spec
+	return spec, nil
+}
+
+// mustReadGenesisAlloc reads genesis alloc or panics. Used for embedded files that must exist.
+func mustReadGenesisAlloc(filename string) conf.GenesisAlloc {
+	alloc, err := readGenesisAlloc(filename)
+	if err != nil {
+		panic(err)
+	}
+	return alloc
 }
 
 type GenesisBlock struct {
@@ -109,16 +117,16 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 
 	var root types.Hash
 	var statedb *state.IntraBlockState
-	wg := sync.WaitGroup{}
-	wg.Add(1)
+	errCh := make(chan error, 1)
+
 	go func() { // we may run inside write tx, can't open 2nd write tx in same goroutine
-		defer wg.Done()
-		//TODO
+		defer close(errCh)
 		tmpDB := mdbx.NewMDBX(nil).InMem("").MapSize(2 * datasize.GB).MustOpen()
 		defer tmpDB.Close()
 		tx, err := tmpDB.BeginRw(context.Background())
 		if err != nil {
-			panic(err)
+			errCh <- fmt.Errorf("failed to begin genesis transaction: %w", err)
+			return
 		}
 		defer tx.Rollback()
 		r, w := state.NewPlainStateReader(tx), state.NewPlainStateWriter(tx, tx, 0)
@@ -126,10 +134,11 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 
 		for address, account := range g.GenesisConfig.Alloc {
 			b, ok := new(big.Int).SetString(account.Balance, 10)
-			balance, _ := uint256.FromBig(b)
 			if !ok {
-				panic("overflow at genesis allocs")
+				errCh <- fmt.Errorf("invalid balance for address %s: overflow", address.Hex())
+				return
 			}
+			balance, _ := uint256.FromBig(b)
 			statedb.AddBalance(address, balance)
 			statedb.SetCode(address, account.Code)
 			statedb.SetNonce(address, account.Nonce)
@@ -144,11 +153,16 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		}
 
 		if err := statedb.FinalizeTx(g.GenesisConfig.Config.Rules(0), w); err != nil {
-			panic(err)
+			errCh <- fmt.Errorf("failed to finalize genesis transaction: %w", err)
+			return
 		}
 		root = statedb.GenerateRootHash()
+		errCh <- nil
 	}()
-	wg.Wait()
+
+	if err := <-errCh; err != nil {
+		return nil, nil, err
+	}
 
 	var ExtraData []byte
 
@@ -257,12 +271,12 @@ func GenesisByChainName(chain string) *conf.Genesis {
 	}
 }
 
-// DefaultGenesisBlock returns the Ethereum main net genesis block.
+// mainnetGenesisBlock returns the N42 main net genesis block.
 func mainnetGenesisBlock() *conf.Genesis {
 	return &conf.Genesis{
 		Config:    params.MainnetChainConfig,
 		Nonce:     0,
-		Alloc:     readGenesisAlloc("allocs/mainnet.json"),
+		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
 		Timestamp: 1678174066,
 		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
 		Number:    0,
@@ -271,12 +285,12 @@ func mainnetGenesisBlock() *conf.Genesis {
 	}
 }
 
-// DefaultGenesisBlock returns the Ethereum main net genesis block.
+// testnetGenesisBlock returns the N42 test net genesis block.
 func testnetGenesisBlock() *conf.Genesis {
 	return &conf.Genesis{
 		Config:    params.TestnetChainConfig,
 		Nonce:     0,
-		Alloc:     readGenesisAlloc("allocs/testnet.json"),
+		Alloc:     mustReadGenesisAlloc("allocs/testnet.json"),
 		Number:    0,
 		Timestamp: 1678174066,
 		Miners:    []string{"0xAA824Bf8afa35061d5b9FeBD0AD47642Cd3b1d17"},

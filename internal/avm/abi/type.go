@@ -282,7 +282,11 @@ func (t Type) pack(v reflect.Value) ([]byte, error) {
 
 		if t.requiresLengthPrefix() {
 			// append length
-			ret = append(ret, packNum(reflect.ValueOf(v.Len()))...)
+			lenBytes, err := packNum(reflect.ValueOf(v.Len()))
+			if err != nil {
+				return nil, err
+			}
+			ret = append(ret, lenBytes...)
 		}
 
 		// calculate offset if any
@@ -301,7 +305,11 @@ func (t Type) pack(v reflect.Value) ([]byte, error) {
 				ret = append(ret, val...)
 				continue
 			}
-			ret = append(ret, packNum(reflect.ValueOf(offset))...)
+			offsetBytes, err := packNum(reflect.ValueOf(offset))
+			if err != nil {
+				return nil, err
+			}
+			ret = append(ret, offsetBytes...)
 			offset += len(val)
 			tail = append(tail, val...)
 		}
@@ -336,7 +344,11 @@ func (t Type) pack(v reflect.Value) ([]byte, error) {
 				return nil, err
 			}
 			if isDynamicType(*elem) {
-				ret = append(ret, packNum(reflect.ValueOf(offset))...)
+				offsetBytes, err := packNum(reflect.ValueOf(offset))
+				if err != nil {
+					return nil, err
+				}
+				ret = append(ret, offsetBytes...)
 				tail = append(tail, val...)
 				offset += len(val)
 			} else {
