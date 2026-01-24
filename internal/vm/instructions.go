@@ -304,7 +304,7 @@ func opKeccak256(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 	}
 	interpreter.hasher.Write(data)
 	if _, err := interpreter.hasher.Read(interpreter.hasherBuf[:]); err != nil {
-		panic(err)
+		return nil, fmt.Errorf("keccak256 read failed: %w", err)
 	}
 
 	size.SetBytes(interpreter.hasherBuf[:])
