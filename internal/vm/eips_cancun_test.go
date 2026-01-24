@@ -82,11 +82,13 @@ func TestEIP5656Enabled(t *testing.T) {
 func TestMemoryCopy(t *testing.T) {
 	mem := NewMemory()
 	mem.Resize(64)
-	
+
 	// Write test data
 	testData := []byte{1, 2, 3, 4, 5, 6, 7, 8}
-	mem.Set(0, 8, testData)
-	
+	if err := mem.Set(0, 8, testData); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
 	// Copy within memory
 	mem.Copy(32, 0, 8)
 	

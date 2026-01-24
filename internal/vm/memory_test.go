@@ -98,7 +98,9 @@ func TestMemorySet(t *testing.T) {
 
 	// Set some data
 	data := []byte{0x01, 0x02, 0x03, 0x04}
-	mem.Set(0, uint64(len(data)), data)
+	if err := mem.Set(0, uint64(len(data)), data); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
 
 	// Verify data was set
 	result := mem.GetCopy(0, int64(len(data)))
@@ -107,7 +109,9 @@ func TestMemorySet(t *testing.T) {
 	}
 
 	// Set at offset
-	mem.Set(32, uint64(len(data)), data)
+	if err := mem.Set(32, uint64(len(data)), data); err != nil {
+		t.Fatalf("Set at offset failed: %v", err)
+	}
 	result = mem.GetCopy(32, int64(len(data)))
 	if !bytes.Equal(result, data) {
 		t.Errorf("Set at offset mismatch: got %x, want %x", result, data)
@@ -121,7 +125,9 @@ func TestMemorySetZeroSize(t *testing.T) {
 	mem.Resize(32)
 
 	// Set with zero size should be no-op
-	mem.Set(100, 0, []byte{0x01, 0x02})
+	if err := mem.Set(100, 0, []byte{0x01, 0x02}); err != nil {
+		t.Fatalf("Set with zero size failed: %v", err)
+	}
 
 	// Memory should remain unchanged
 	if mem.Len() != 32 {
@@ -137,7 +143,9 @@ func TestMemorySet32(t *testing.T) {
 
 	// Set a uint256 value
 	val := uint256.NewInt(0x12345678)
-	mem.Set32(0, val)
+	if err := mem.Set32(0, val); err != nil {
+		t.Fatalf("Set32 failed: %v", err)
+	}
 
 	// Check that value was written correctly (right-padded/left-zeroed)
 	data := mem.GetPtr(0, 32)
@@ -161,7 +169,9 @@ func TestMemoryGetCopy(t *testing.T) {
 
 	// Set some data
 	data := []byte{0xAA, 0xBB, 0xCC, 0xDD}
-	mem.Set(10, uint64(len(data)), data)
+	if err := mem.Set(10, uint64(len(data)), data); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
 
 	// GetCopy returns a copy, not a reference
 	copy1 := mem.GetCopy(10, 4)
@@ -208,7 +218,9 @@ func TestMemoryGetPtr(t *testing.T) {
 	mem.Resize(64)
 
 	data := []byte{0x11, 0x22, 0x33, 0x44}
-	mem.Set(0, uint64(len(data)), data)
+	if err := mem.Set(0, uint64(len(data)), data); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
 
 	// GetPtr returns a pointer to internal storage
 	ptr := mem.GetPtr(0, 4)
@@ -263,7 +275,9 @@ func TestMemoryCopyBasic(t *testing.T) {
 
 	// Set source data
 	srcData := []byte{0x01, 0x02, 0x03, 0x04}
-	mem.Set(0, uint64(len(srcData)), srcData)
+	if err := mem.Set(0, uint64(len(srcData)), srcData); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
 
 	// Copy to destination
 	mem.Copy(32, 0, 4)
@@ -283,7 +297,9 @@ func TestMemoryCopyOverlapping(t *testing.T) {
 
 	// Set initial data
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
-	mem.Set(0, uint64(len(data)), data)
+	if err := mem.Set(0, uint64(len(data)), data); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
 
 	// Copy overlapping region (src=0, dst=2, len=4)
 	// Should correctly handle Go's copy semantics
@@ -304,7 +320,9 @@ func TestMemoryCopyZeroLength(t *testing.T) {
 	mem.Resize(32)
 
 	data := []byte{0x01, 0x02, 0x03, 0x04}
-	mem.Set(0, uint64(len(data)), data)
+	if err := mem.Set(0, uint64(len(data)), data); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
 
 	// Copy with zero length should be no-op
 	mem.Copy(16, 0, 0)
@@ -328,7 +346,7 @@ func TestMemoryCopyZeroLength(t *testing.T) {
 func TestMemoryReset(t *testing.T) {
 	mem := NewMemory()
 	mem.Resize(64)
-	mem.Set(0, 32, make([]byte, 32))
+	_ = mem.Set(0, 32, make([]byte, 32)) // Ignore error for test setup
 
 	mem.Reset()
 
@@ -367,7 +385,7 @@ func BenchmarkMemorySet(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		mem.Set(0, 32, data)
+		_ = mem.Set(0, 32, data)
 	}
 }
 
@@ -378,14 +396,14 @@ func BenchmarkMemorySet32(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		mem.Set32(0, val)
+		_ = mem.Set32(0, val)
 	}
 }
 
 func BenchmarkMemoryGetCopy(b *testing.B) {
 	mem := NewMemory()
 	mem.Resize(1024)
-	mem.Set(0, 32, make([]byte, 32))
+	_ = mem.Set(0, 32, make([]byte, 32))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -396,7 +414,7 @@ func BenchmarkMemoryGetCopy(b *testing.B) {
 func BenchmarkMemoryGetPtr(b *testing.B) {
 	mem := NewMemory()
 	mem.Resize(1024)
-	mem.Set(0, 32, make([]byte, 32))
+	_ = mem.Set(0, 32, make([]byte, 32))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -407,7 +425,7 @@ func BenchmarkMemoryGetPtr(b *testing.B) {
 func BenchmarkMemoryCopy(b *testing.B) {
 	mem := NewMemory()
 	mem.Resize(1024)
-	mem.Set(0, 32, make([]byte, 32))
+	_ = mem.Set(0, 32, make([]byte, 32))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

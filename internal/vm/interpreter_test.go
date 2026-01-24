@@ -327,7 +327,7 @@ func TestMemoryPool(t *testing.T) {
 
 	// Use memory
 	mem.Resize(64)
-	mem.Set(0, 32, make([]byte, 32))
+	_ = mem.Set(0, 32, make([]byte, 32)) // Ignore error for test
 
 	// Return to pool
 	mem.Reset()
