@@ -67,6 +67,15 @@ func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool)
 		precompiles = PrecompiledContractsIsMoran
 	case evm.chainRules.IsNano:
 		precompiles = PrecompiledContractsNano
+	case evm.chainRules.IsFusaka:
+		// Fusaka includes EIP-7823/7883 MODEXP updates + P-256 precompile (EIP-7951)
+		precompiles = PrecompiledContractsFusaka
+	case evm.chainRules.IsOsaka:
+		// Osaka includes EOF support (no new precompiles)
+		precompiles = PrecompiledContractsOsaka
+	case evm.chainRules.IsPectra:
+		// Pectra includes EIP-7702 (Account Abstraction) + all Prague precompiles
+		precompiles = PrecompiledContractsPectra
 	case evm.chainRules.IsPrague:
 		// Prague includes BLS precompiles (EIP-2537) + all Cancun precompiles
 		precompiles = PrecompiledContractsPrague

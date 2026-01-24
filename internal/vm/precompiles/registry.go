@@ -96,7 +96,7 @@ func (r *Registry) registerForRules(rules *params.Rules) {
 
 	// Byzantium additions
 	if rules.IsByzantium {
-		r.register(5, NewBigModExp(false))
+		r.register(5, NewBigModExp(false, false, false))
 		r.register(6, NewBn256Add(false))
 		r.register(7, NewBn256ScalarMul(false))
 		r.register(8, NewBn256Pairing(false))
@@ -104,8 +104,8 @@ func (r *Registry) registerForRules(rules *params.Rules) {
 
 	// Istanbul additions
 	if rules.IsIstanbul {
-		r.register(5, NewBigModExp(false))
-		r.register(6, NewBn256Add(true))      // Istanbul version
+		r.register(5, NewBigModExp(false, false, false))
+		r.register(6, NewBn256Add(true))       // Istanbul version
 		r.register(7, NewBn256ScalarMul(true)) // Istanbul version
 		r.register(8, NewBn256Pairing(true))   // Istanbul version
 		r.register(9, NewBlake2F())
@@ -113,18 +113,16 @@ func (r *Registry) registerForRules(rules *params.Rules) {
 
 	// Berlin changes (EIP-2565 modexp repricing)
 	if rules.IsBerlin {
-		r.register(5, NewBigModExp(true)) // EIP-2565 enabled
+		r.register(5, NewBigModExp(true, false, false)) // EIP-2565 enabled
 	}
 
-	// Prague additions (EIP-7212/EIP-7951: P-256 precompile)
-	if rules.IsPrague {
-		// P-256 precompile at address 0x0000...0100
-		p256Addr := types.BytesToAddress([]byte{0x01, 0x00})
-		r.registerAt(p256Addr, NewP256Verify())
+	// Cancun additions (EIP-4844: Point evaluation precompile)
+	if rules.IsCancun {
+		r.register(0x0a, NewPointEvaluation()) // EIP-4844
 	}
 
-	// Pectra additions (EIP-2537: BLS12-381 curve operations)
-	if rules.IsPectra {
+	// Prague/Pectra additions (EIP-2537: BLS12-381 curve operations)
+	if rules.IsPrague || rules.IsPectra {
 		// BLS12-381 precompiles at addresses 0x0b - 0x13
 		r.register(0x0b, NewBls12381G1Add())      // BLS12_G1ADD
 		r.register(0x0c, NewBls12381G1Mul())      // BLS12_G1MUL
@@ -137,10 +135,12 @@ func (r *Registry) registerForRules(rules *params.Rules) {
 		r.register(0x13, NewBls12381MapG2())      // BLS12_MAP_FP2_TO_G2
 	}
 
-	// Fusaka additions (EIP-7951: P-256/secp256r1 signature verification)
+	// Fusaka additions (EIP-7823/7883: MODEXP updates + EIP-7951: P-256 precompile)
 	if rules.IsFusaka {
+		// Update MODEXP with EIP-7823 (input size limits) and EIP-7883 (gas cost increase)
+		r.register(5, NewBigModExp(true, true, true))
+
 		// P-256 precompile at address 0x0000...0100 (EIP-7951)
-		// Note: Some proposals use 0x0b, but 0x100 is the preferred address
 		p256Addr := types.HexToAddress("0x0000000000000000000000000000000000000100")
 		r.registerAt(p256Addr, NewP256Verify())
 	}

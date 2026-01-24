@@ -51,9 +51,12 @@ func NewDataCopy() PrecompiledContract {
 }
 
 // NewBigModExp creates a big integer modular exponentiation precompile (address 0x05).
-// eip2565 enables the EIP-2565 gas repricing.
-func NewBigModExp(eip2565 bool) PrecompiledContract {
-	return vm.GetBigModExp(eip2565)
+// Parameters:
+//   - eip2565: enables EIP-2565 gas repricing (Berlin+)
+//   - eip7823: enables EIP-7823 input size limits (max 1024 bytes, Fusaka+)
+//   - eip7883: enables EIP-7883 gas cost increase (3x multiplier, min 500, Fusaka+)
+func NewBigModExp(eip2565, eip7823, eip7883 bool) PrecompiledContract {
+	return vm.GetBigModExp(eip2565, eip7823, eip7883)
 }
 
 // NewBn256Add creates a BN256 curve point addition precompile (address 0x06).
@@ -78,6 +81,12 @@ func NewBn256Pairing(istanbul bool) PrecompiledContract {
 // Added in Istanbul (EIP-152).
 func NewBlake2F() PrecompiledContract {
 	return vm.GetBlake2F()
+}
+
+// NewPointEvaluation creates a point evaluation precompile (address 0x0a).
+// Added in Cancun (EIP-4844).
+func NewPointEvaluation() PrecompiledContract {
+	return vm.GetPointEvaluationPrecompile()
 }
 
 // =============================================================================
