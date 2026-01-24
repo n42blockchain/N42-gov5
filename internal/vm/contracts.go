@@ -59,7 +59,7 @@ var PrecompiledContractsByzantium = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{2}): &sha256hash{},
 	types.BytesToAddress([]byte{3}): &ripemd160hash{},
 	types.BytesToAddress([]byte{4}): &dataCopy{},
-	types.BytesToAddress([]byte{5}): &bigModExp{eip2565: false},
+	types.BytesToAddress([]byte{5}): &bigModExp{eip2565: false, eip7823: false, eip7883: false},
 	types.BytesToAddress([]byte{6}): &bn256AddByzantium{},
 	types.BytesToAddress([]byte{7}): &bn256ScalarMulByzantium{},
 	types.BytesToAddress([]byte{8}): &bn256PairingByzantium{},
@@ -72,7 +72,7 @@ var PrecompiledContractsIstanbul = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{2}): &sha256hash{},
 	types.BytesToAddress([]byte{3}): &ripemd160hash{},
 	types.BytesToAddress([]byte{4}): &dataCopy{},
-	types.BytesToAddress([]byte{5}): &bigModExp{eip2565: false},
+	types.BytesToAddress([]byte{5}): &bigModExp{eip2565: false, eip7823: false, eip7883: false},
 	types.BytesToAddress([]byte{6}): &bn256AddIstanbul{},
 	types.BytesToAddress([]byte{7}): &bn256ScalarMulIstanbul{},
 	types.BytesToAddress([]byte{8}): &bn256PairingIstanbul{},
@@ -84,7 +84,7 @@ var PrecompiledContractsIstanbulForBSC = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{2}): &sha256hash{},
 	types.BytesToAddress([]byte{3}): &ripemd160hash{},
 	types.BytesToAddress([]byte{4}): &dataCopy{},
-	types.BytesToAddress([]byte{5}): &bigModExp{},
+	types.BytesToAddress([]byte{5}): &bigModExp{eip2565: false, eip7823: false, eip7883: false},
 	types.BytesToAddress([]byte{6}): &bn256AddIstanbul{},
 	types.BytesToAddress([]byte{7}): &bn256ScalarMulIstanbul{},
 	types.BytesToAddress([]byte{8}): &bn256PairingIstanbul{},
@@ -99,7 +99,7 @@ var PrecompiledContractsNano = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{2}): &sha256hash{},
 	types.BytesToAddress([]byte{3}): &ripemd160hash{},
 	types.BytesToAddress([]byte{4}): &dataCopy{},
-	types.BytesToAddress([]byte{5}): &bigModExp{},
+	types.BytesToAddress([]byte{5}): &bigModExp{eip2565: false, eip7823: false, eip7883: false},
 	types.BytesToAddress([]byte{6}): &bn256AddIstanbul{},
 	types.BytesToAddress([]byte{7}): &bn256ScalarMulIstanbul{},
 	types.BytesToAddress([]byte{8}): &bn256PairingIstanbul{},
@@ -114,7 +114,7 @@ var PrecompiledContractsIsMoran = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{2}): &sha256hash{},
 	types.BytesToAddress([]byte{3}): &ripemd160hash{},
 	types.BytesToAddress([]byte{4}): &dataCopy{},
-	types.BytesToAddress([]byte{5}): &bigModExp{},
+	types.BytesToAddress([]byte{5}): &bigModExp{eip2565: false, eip7823: false, eip7883: false},
 	types.BytesToAddress([]byte{6}): &bn256AddIstanbul{},
 	types.BytesToAddress([]byte{7}): &bn256ScalarMulIstanbul{},
 	types.BytesToAddress([]byte{8}): &bn256PairingIstanbul{},
@@ -131,7 +131,7 @@ var PrecompiledContractsBerlin = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{2}): &sha256hash{},
 	types.BytesToAddress([]byte{3}): &ripemd160hash{},
 	types.BytesToAddress([]byte{4}): &dataCopy{},
-	types.BytesToAddress([]byte{5}): &bigModExp{eip2565: true},
+	types.BytesToAddress([]byte{5}): &bigModExp{eip2565: true, eip7823: false, eip7883: false},
 	types.BytesToAddress([]byte{6}): &bn256AddIstanbul{},
 	types.BytesToAddress([]byte{7}): &bn256ScalarMulIstanbul{},
 	types.BytesToAddress([]byte{8}): &bn256PairingIstanbul{},
@@ -160,7 +160,7 @@ var PrecompiledContractsCancun = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{2}):    &sha256hash{},
 	types.BytesToAddress([]byte{3}):    &ripemd160hash{},
 	types.BytesToAddress([]byte{4}):    &dataCopy{},
-	types.BytesToAddress([]byte{5}):    &bigModExp{eip2565: true},
+	types.BytesToAddress([]byte{5}):    &bigModExp{eip2565: true, eip7823: false, eip7883: false},
 	types.BytesToAddress([]byte{6}):    &bn256AddIstanbul{},
 	types.BytesToAddress([]byte{7}):    &bn256ScalarMulIstanbul{},
 	types.BytesToAddress([]byte{8}):    &bn256PairingIstanbul{},
@@ -175,7 +175,7 @@ var PrecompiledContractsPrague = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{2}):    &sha256hash{},
 	types.BytesToAddress([]byte{3}):    &ripemd160hash{},
 	types.BytesToAddress([]byte{4}):    &dataCopy{},
-	types.BytesToAddress([]byte{5}):    &bigModExp{eip2565: true},
+	types.BytesToAddress([]byte{5}):    &bigModExp{eip2565: true, eip7823: false, eip7883: false},
 	types.BytesToAddress([]byte{6}):    &bn256AddIstanbul{},
 	types.BytesToAddress([]byte{7}):    &bn256ScalarMulIstanbul{},
 	types.BytesToAddress([]byte{8}):    &bn256PairingIstanbul{},
@@ -192,11 +192,49 @@ var PrecompiledContractsPrague = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{0x13}): &bls12381MapG2{},
 }
 
+// PrecompiledContractsPectra contains the default set of pre-compiled Ethereum
+// contracts used in the Pectra release. Same as Prague (BLS12-381 included).
+// Pectra = Prague + Electra consensus changes
+var PrecompiledContractsPectra = PrecompiledContractsPrague
+
+// PrecompiledContractsOsaka contains the default set of pre-compiled Ethereum
+// contracts used in the Osaka release. Same as Pectra (EOF support, no new precompiles).
+var PrecompiledContractsOsaka = PrecompiledContractsPectra
+
+// PrecompiledContractsFusaka contains the default set of pre-compiled Ethereum
+// contracts used in the Fusaka release. Includes Osaka precompiles + EIP-7823/7883 MODEXP
+// updates + P-256 precompile (EIP-7951).
+var PrecompiledContractsFusaka = map[types.Address]PrecompiledContract{
+	types.BytesToAddress([]byte{1}):    &ecrecover{},
+	types.BytesToAddress([]byte{2}):    &sha256hash{},
+	types.BytesToAddress([]byte{3}):    &ripemd160hash{},
+	types.BytesToAddress([]byte{4}):    &dataCopy{},
+	types.BytesToAddress([]byte{5}):    &bigModExp{eip2565: true, eip7823: true, eip7883: true}, // EIP-7823 + EIP-7883
+	types.BytesToAddress([]byte{6}):    &bn256AddIstanbul{},
+	types.BytesToAddress([]byte{7}):    &bn256ScalarMulIstanbul{},
+	types.BytesToAddress([]byte{8}):    &bn256PairingIstanbul{},
+	types.BytesToAddress([]byte{9}):    &blake2F{},
+	types.BytesToAddress([]byte{0x0a}): &pointEvaluationPrecompile{}, // EIP-4844
+	types.BytesToAddress([]byte{0x0b}): &bls12381G1Add{},             // EIP-2537
+	types.BytesToAddress([]byte{0x0c}): &bls12381G1Mul{},
+	types.BytesToAddress([]byte{0x0d}): &bls12381G1MultiExp{},
+	types.BytesToAddress([]byte{0x0e}): &bls12381G2Add{},
+	types.BytesToAddress([]byte{0x0f}): &bls12381G2Mul{},
+	types.BytesToAddress([]byte{0x10}): &bls12381G2MultiExp{},
+	types.BytesToAddress([]byte{0x11}): &bls12381Pairing{},
+	types.BytesToAddress([]byte{0x12}): &bls12381MapG1{},
+	types.BytesToAddress([]byte{0x13}): &bls12381MapG2{},
+	types.HexToAddress("0x0000000000000000000000000000000000000100"): &p256Verify{}, // EIP-7951: P-256 precompile
+}
+
 var (
 	PrecompiledAddressesMoran          []types.Address
 	PrecompiledAddressesNano           []types.Address
 	PrecompiledAddressesCancun         []types.Address
 	PrecompiledAddressesPrague         []types.Address
+	PrecompiledAddressesPectra         []types.Address
+	PrecompiledAddressesOsaka          []types.Address
+	PrecompiledAddressesFusaka         []types.Address
 	PrecompiledAddressesBerlin         []types.Address
 	PrecompiledAddressesIstanbul       []types.Address
 	PrecompiledAddressesIstanbulForBSC []types.Address
@@ -226,6 +264,15 @@ func init() {
 	for k := range PrecompiledContractsPrague {
 		PrecompiledAddressesPrague = append(PrecompiledAddressesPrague, k)
 	}
+	for k := range PrecompiledContractsPectra {
+		PrecompiledAddressesPectra = append(PrecompiledAddressesPectra, k)
+	}
+	for k := range PrecompiledContractsOsaka {
+		PrecompiledAddressesOsaka = append(PrecompiledAddressesOsaka, k)
+	}
+	for k := range PrecompiledContractsFusaka {
+		PrecompiledAddressesFusaka = append(PrecompiledAddressesFusaka, k)
+	}
 	for k := range PrecompiledContractsNano {
 		PrecompiledAddressesNano = append(PrecompiledAddressesNano, k)
 	}
@@ -241,6 +288,12 @@ func ActivePrecompiles(rules *params.Rules) []types.Address {
 		return PrecompiledAddressesMoran
 	case rules.IsNano:
 		return PrecompiledAddressesNano
+	case rules.IsFusaka:
+		return PrecompiledAddressesFusaka
+	case rules.IsOsaka:
+		return PrecompiledAddressesOsaka
+	case rules.IsPectra:
+		return PrecompiledAddressesPectra
 	case rules.IsPrague:
 		return PrecompiledAddressesPrague
 	case rules.IsCancun:
@@ -360,6 +413,8 @@ func (c *dataCopy) Run(in []byte) ([]byte, error) {
 // bigModExp implements a native big integer exponential modular operation.
 type bigModExp struct {
 	eip2565 bool
+	eip7823 bool // EIP-7823: MODEXP input size limit (max 1024 bytes for base, exp, mod)
+	eip7883 bool // EIP-7883: MODEXP gas cost increase (3x multiplier, min 500)
 }
 
 var (
@@ -377,6 +432,22 @@ var (
 	big1024   = big.NewInt(1024)
 	big3072   = big.NewInt(3072)
 	big199680 = big.NewInt(199680)
+)
+
+// EIP-7823: Maximum input size limits for MODEXP precompile
+const (
+	modexpMaxInputSize = 1024 // Max bytes for base, exponent, or modulus length
+)
+
+// EIP-7883: MODEXP gas cost parameters
+const (
+	modexpGasMultiplierEIP7883 = 3   // Gas multiplier for EIP-7883
+	modexpMinGasEIP7883        = 500 // Minimum gas cost for EIP-7883
+)
+
+var (
+	// errModExpInputTooLarge is returned when MODEXP input exceeds EIP-7823 limits
+	errModExpInputTooLarge = errors.New("modexp input size exceeds 1024 bytes")
 )
 
 // modexpMultComplexity implements bigModexp multComplexity formula, as defined in EIP-198
@@ -415,6 +486,16 @@ func (c *bigModExp) RequiredGas(input []byte) uint64 {
 		expLen  = new(big.Int).SetBytes(getData(input, 32, 32))
 		modLen  = new(big.Int).SetBytes(getData(input, 64, 32))
 	)
+
+	// EIP-7823: Check input size limits (max 1024 bytes for each)
+	if c.eip7823 {
+		maxSize := big.NewInt(modexpMaxInputSize)
+		if baseLen.Cmp(maxSize) > 0 || expLen.Cmp(maxSize) > 0 || modLen.Cmp(maxSize) > 0 {
+			// Return max gas to indicate invalid input
+			return math.MaxUint64
+		}
+	}
+
 	if len(input) > 96 {
 		input = input[96:]
 	} else {
@@ -463,11 +544,28 @@ func (c *bigModExp) RequiredGas(input []byte) uint64 {
 		if gas.BitLen() > 64 {
 			return math.MaxUint64
 		}
-		// 3. Minimum price of 200 gas
-		if gas.Uint64() < 200 {
+
+		gasVal := gas.Uint64()
+
+		// EIP-7883: Apply 3x multiplier for gas cost
+		if c.eip7883 {
+			// Check for overflow before multiplying
+			if gasVal > math.MaxUint64/modexpGasMultiplierEIP7883 {
+				return math.MaxUint64
+			}
+			gasVal *= modexpGasMultiplierEIP7883
+			// Apply minimum gas of 500
+			if gasVal < modexpMinGasEIP7883 {
+				return modexpMinGasEIP7883
+			}
+			return gasVal
+		}
+
+		// 3. Minimum price of 200 gas (EIP-2565)
+		if gasVal < 200 {
 			return 200
 		}
-		return gas.Uint64()
+		return gasVal
 	}
 	gas = modexpMultComplexity(gas)
 	gas.Mul(gas, math.BigMax(adjExpLen, big1))
@@ -485,6 +583,14 @@ func (c *bigModExp) Run(input []byte) ([]byte, error) {
 		expLen  = new(big.Int).SetBytes(getData(input, 32, 32)).Uint64()
 		modLen  = new(big.Int).SetBytes(getData(input, 64, 32)).Uint64()
 	)
+
+	// EIP-7823: Enforce input size limits (max 1024 bytes for each)
+	if c.eip7823 {
+		if baseLen > modexpMaxInputSize || expLen > modexpMaxInputSize || modLen > modexpMaxInputSize {
+			return nil, errModExpInputTooLarge
+		}
+	}
+
 	if len(input) > 96 {
 		input = input[96:]
 	} else {
@@ -1185,7 +1291,14 @@ func GetRipemd160() PrecompiledContract { return &ripemd160hash{} }
 func GetDataCopy() PrecompiledContract { return &dataCopy{} }
 
 // GetBigModExp returns a big modular exponentiation precompile instance.
-func GetBigModExp(eip2565 bool) PrecompiledContract { return &bigModExp{eip2565: eip2565} }
+// GetBigModExp returns a big modular exponentiation precompile instance.
+// Parameters:
+//   - eip2565: enables EIP-2565 gas repricing (Berlin+)
+//   - eip7823: enables EIP-7823 input size limits (max 1024 bytes, Fusaka+)
+//   - eip7883: enables EIP-7883 gas cost increase (3x multiplier, min 500, Fusaka+)
+func GetBigModExp(eip2565, eip7823, eip7883 bool) PrecompiledContract {
+	return &bigModExp{eip2565: eip2565, eip7823: eip7823, eip7883: eip7883}
+}
 
 // GetBn256Add returns a BN256 addition precompile instance.
 func GetBn256Add(istanbul bool) PrecompiledContract {
