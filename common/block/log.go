@@ -109,6 +109,7 @@ func (l *Logs) Unmarshal(data []byte) error {
 
 	body := make([]*Log, len(pb.Logs))
 	for i, p := range pb.Logs {
+		body[i] = new(Log)
 		if err := body[i].FromProtoMessage(p); nil != err {
 			return err
 		}

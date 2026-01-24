@@ -18,7 +18,9 @@ package miner
 
 import (
 	"testing"
+	"time"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -232,6 +234,294 @@ func BenchmarkCalcGasLimitIteration(b *testing.B) {
 		for j := 0; j < 100; j++ {
 			current = CalcGasLimit(current, desired)
 		}
+	}
+}
+
+// =============================================================================
+// signalToErr Tests
+// =============================================================================
+
+func TestSignalToErr(t *testing.T) {
+	tests := []struct {
+		name        string
+		signal      int32
+		expectedErr error
+	}{
+		{"commitInterruptNewHead", commitInterruptNewHead, errBlockInterruptedByNewHead},
+		{"commitInterruptResubmit", commitInterruptResubmit, errBlockInterruptedByRecommit},
+		{"commitInterruptTimeout", commitInterruptTimeout, errBlockInterruptedByTimeout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := signalToErr(tt.signal)
+			if err != tt.expectedErr {
+				t.Errorf("signalToErr(%d) = %v, want %v", tt.signal, err, tt.expectedErr)
+			}
+		})
+	}
+
+	t.Logf("✓ signalToErr handles known signals correctly")
+}
+
+func TestSignalToErrUnknown(t *testing.T) {
+	err := signalToErr(999)
+	if err == nil {
+		t.Error("signalToErr should return error for unknown signal")
+	}
+	if err == errBlockInterruptedByNewHead || err == errBlockInterruptedByRecommit || err == errBlockInterruptedByTimeout {
+		t.Error("signalToErr should not return known error for unknown signal")
+	}
+
+	t.Logf("✓ signalToErr handles unknown signals correctly: %v", err)
+}
+
+func TestSignalToErrNone(t *testing.T) {
+	err := signalToErr(commitInterruptNone)
+	if err == nil {
+		t.Error("signalToErr should return error for commitInterruptNone")
+	}
+
+	t.Logf("✓ signalToErr handles commitInterruptNone correctly: %v", err)
+}
+
+// =============================================================================
+// copyReceipts Tests
+// =============================================================================
+
+func TestCopyReceiptsEmpty(t *testing.T) {
+	receipts := []*block.Receipt{}
+	copied := copyReceipts(receipts)
+
+	if len(copied) != 0 {
+		t.Errorf("copyReceipts of empty slice should be empty, got length %d", len(copied))
+	}
+
+	t.Logf("✓ copyReceipts handles empty slice correctly")
+}
+
+func TestCopyReceiptsNil(t *testing.T) {
+	var receipts []*block.Receipt
+	copied := copyReceipts(receipts)
+
+	if copied == nil {
+		t.Error("copyReceipts should return empty slice, not nil")
+	}
+	if len(copied) != 0 {
+		t.Errorf("copyReceipts of nil should be empty, got length %d", len(copied))
+	}
+
+	t.Logf("✓ copyReceipts handles nil slice correctly")
+}
+
+func TestCopyReceiptsDeepCopy(t *testing.T) {
+	receipts := []*block.Receipt{
+		{
+			Status:            1,
+			CumulativeGasUsed: 21000,
+			GasUsed:           21000,
+		},
+		{
+			Status:            1,
+			CumulativeGasUsed: 42000,
+			GasUsed:           21000,
+		},
+	}
+
+	copied := copyReceipts(receipts)
+
+	// Verify length
+	if len(copied) != len(receipts) {
+		t.Fatalf("copyReceipts length mismatch: got %d, want %d", len(copied), len(receipts))
+	}
+
+	// Verify values
+	for i := range receipts {
+		if copied[i].Status != receipts[i].Status {
+			t.Errorf("Receipt[%d].Status mismatch", i)
+		}
+		if copied[i].CumulativeGasUsed != receipts[i].CumulativeGasUsed {
+			t.Errorf("Receipt[%d].CumulativeGasUsed mismatch", i)
+		}
+	}
+
+	// Verify deep copy (modifying copied doesn't affect original)
+	copied[0].Status = 0
+	if receipts[0].Status == 0 {
+		t.Error("copyReceipts should create deep copies")
+	}
+
+	t.Logf("✓ copyReceipts creates deep copies correctly")
+}
+
+// =============================================================================
+// Constants Tests
+// =============================================================================
+
+func TestCommitInterruptConstants(t *testing.T) {
+	// Verify constants are distinct
+	constants := map[int32]string{
+		commitInterruptNone:      "commitInterruptNone",
+		commitInterruptNewHead:   "commitInterruptNewHead",
+		commitInterruptResubmit:  "commitInterruptResubmit",
+		commitInterruptTimeout:   "commitInterruptTimeout",
+	}
+
+	values := make(map[int32]bool)
+	for val, name := range constants {
+		if values[val] {
+			t.Errorf("Duplicate constant value for %s: %d", name, val)
+		}
+		values[val] = true
+	}
+
+	// Verify ordering (None should be 0)
+	if commitInterruptNone != 0 {
+		t.Errorf("commitInterruptNone should be 0, got %d", commitInterruptNone)
+	}
+
+	t.Logf("✓ Commit interrupt constants are distinct and correctly ordered")
+}
+
+func TestIntervalConstants(t *testing.T) {
+	if minPeriodInterval <= 0 {
+		t.Error("minPeriodInterval should be positive")
+	}
+	if maxRecommitInterval <= 0 {
+		t.Error("maxRecommitInterval should be positive")
+	}
+	if maxRecommitInterval < minPeriodInterval {
+		t.Error("maxRecommitInterval should be >= minPeriodInterval")
+	}
+	if staleThreshold <= 0 {
+		t.Error("staleThreshold should be positive")
+	}
+
+	t.Logf("✓ Interval constants are valid: minPeriod=%v, maxRecommit=%v, staleThreshold=%d",
+		minPeriodInterval, maxRecommitInterval, staleThreshold)
+}
+
+// =============================================================================
+// Error Variables Tests
+// =============================================================================
+
+func TestErrorVariables(t *testing.T) {
+	errors := []error{
+		errBlockInterruptedByNewHead,
+		errBlockInterruptedByRecommit,
+		errBlockInterruptedByTimeout,
+	}
+
+	for _, err := range errors {
+		if err == nil {
+			t.Error("Error variable should not be nil")
+		}
+		if err.Error() == "" {
+			t.Error("Error message should not be empty")
+		}
+	}
+
+	t.Logf("✓ Error variables are properly defined")
+}
+
+// =============================================================================
+// recalcRecommit Tests
+// =============================================================================
+
+func TestRecalcRecommitIncrease(t *testing.T) {
+	minRecommit := time.Second
+	prev := time.Second * 2
+	target := float64(time.Second * 3)
+
+	result := recalcRecommit(minRecommit, prev, target, true)
+
+	// When increasing, result should be between prev and maxRecommitInterval
+	if result < prev {
+		t.Errorf("recalcRecommit with inc=true should not decrease, got %v < %v", result, prev)
+	}
+	if result > maxRecommitInterval {
+		t.Errorf("recalcRecommit should not exceed maxRecommitInterval, got %v > %v", result, maxRecommitInterval)
+	}
+
+	t.Logf("✓ recalcRecommit increases correctly: %v -> %v", prev, result)
+}
+
+func TestRecalcRecommitDecrease(t *testing.T) {
+	minRecommit := time.Second
+	prev := time.Second * 5
+	target := float64(time.Second * 2)
+
+	result := recalcRecommit(minRecommit, prev, target, false)
+
+	// When decreasing, result should be between minRecommit and prev
+	if result > prev {
+		t.Errorf("recalcRecommit with inc=false should not increase, got %v > %v", result, prev)
+	}
+	if result < minRecommit {
+		t.Errorf("recalcRecommit should not go below minRecommit, got %v < %v", result, minRecommit)
+	}
+
+	t.Logf("✓ recalcRecommit decreases correctly: %v -> %v", prev, result)
+}
+
+func TestRecalcRecommitBoundaryMax(t *testing.T) {
+	minRecommit := time.Second
+	prev := maxRecommitInterval - time.Millisecond
+	target := float64(maxRecommitInterval * 2)
+
+	result := recalcRecommit(minRecommit, prev, target, true)
+
+	if result > maxRecommitInterval {
+		t.Errorf("recalcRecommit should be capped at maxRecommitInterval, got %v", result)
+	}
+
+	t.Logf("✓ recalcRecommit respects max boundary: %v", result)
+}
+
+func TestRecalcRecommitBoundaryMin(t *testing.T) {
+	minRecommit := time.Second * 2
+	prev := minRecommit + time.Millisecond
+	target := float64(time.Millisecond)
+
+	result := recalcRecommit(minRecommit, prev, target, false)
+
+	if result < minRecommit {
+		t.Errorf("recalcRecommit should not go below minRecommit, got %v < %v", result, minRecommit)
+	}
+
+	t.Logf("✓ recalcRecommit respects min boundary: %v", result)
+}
+
+func TestRecalcRecommitStability(t *testing.T) {
+	// Test that recommit converges towards target
+	minRecommit := time.Second
+	target := float64(time.Second * 3)
+	prev := time.Second * 2
+
+	// Apply multiple iterations
+	for i := 0; i < 10; i++ {
+		prev = recalcRecommit(minRecommit, prev, target, true)
+	}
+
+	// Should converge towards target (with some tolerance due to bias)
+	diff := float64(prev.Nanoseconds()) - target
+	tolerance := target * 0.5 // 50% tolerance
+
+	if diff < -tolerance || diff > tolerance+float64(intervalAdjustBias) {
+		t.Errorf("recalcRecommit should converge towards target, got %v (target: %v)", prev, time.Duration(int64(target)))
+	}
+
+	t.Logf("✓ recalcRecommit converges: final=%v, target=%v", prev, time.Duration(int64(target)))
+}
+
+func BenchmarkRecalcRecommit(b *testing.B) {
+	minRecommit := time.Second
+	prev := time.Second * 2
+	target := float64(time.Second * 3)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		recalcRecommit(minRecommit, prev, target, i%2 == 0)
 	}
 }
 

@@ -27,16 +27,18 @@ func (d AbsValueKind) String() string {
 }
 
 func (d AbsValueKind) hash() uint64 {
-	if d == BotValue {
+	switch d {
+	case BotValue:
 		return 0
-	} else if d == TopValue {
+	case TopValue:
 		return 1
-	} else if d == InvalidValue {
+	case InvalidValue:
 		return 2
-	} else if d == ConcreteValue {
+	case ConcreteValue:
 		return 3
-	} else {
-		panic("no hash found")
+	default:
+		// Unknown AbsValueKind - return a distinct hash for safety
+		return 99
 	}
 }
 
