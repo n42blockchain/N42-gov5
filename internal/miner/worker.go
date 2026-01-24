@@ -739,7 +739,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 
 				txs[i], err = tx.Marshal()
 				if nil != err {
-					panic(err)
+					return fmt.Errorf("failed to marshal transaction %d: %w", i, err)
 				}
 			}
 
@@ -817,6 +817,6 @@ func signalToErr(signal int32) error {
 	case commitInterruptTimeout:
 		return errBlockInterruptedByTimeout
 	default:
-		panic(fmt.Errorf("undefined signal %d", signal))
+		return fmt.Errorf("undefined signal %d", signal)
 	}
 }
