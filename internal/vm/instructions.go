@@ -365,7 +365,9 @@ func opCallDataCopy(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 	// These values are checked for overflow during gas cost calculation
 	memOffset64 := memOffset.Uint64()
 	length64 := length.Uint64()
-	scope.Memory.Set(memOffset64, length64, getData(scope.Contract.Input, dataOffset64, length64))
+	if err := scope.Memory.Set(memOffset64, length64, getData(scope.Contract.Input, dataOffset64, length64)); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -396,7 +398,9 @@ func opReturnDataCopy(pc *uint64, interpreter *EVMInterpreter, scope *ScopeConte
 	if overflow || uint64(len(interpreter.returnData)) < end64 {
 		return nil, ErrReturnDataOutOfBounds
 	}
-	scope.Memory.Set(memOffset.Uint64(), length.Uint64(), interpreter.returnData[offset64:end64])
+	if err := scope.Memory.Set(memOffset.Uint64(), length.Uint64(), interpreter.returnData[offset64:end64]); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -424,7 +428,9 @@ func opCodeCopy(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 		uint64CodeOffset = 0xffffffffffffffff
 	}
 	codeCopy := getData(scope.Contract.Code, uint64CodeOffset, length.Uint64())
-	scope.Memory.Set(memOffset.Uint64(), length.Uint64(), codeCopy)
+	if err := scope.Memory.Set(memOffset.Uint64(), length.Uint64(), codeCopy); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -439,7 +445,9 @@ func opExtCodeCopy(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext)
 	addr := types.Address(a.Bytes20())
 	len64 := length.Uint64()
 	codeCopy := getDataBig(interpreter.evm.IntraBlockState().GetCode(addr), &codeOffset, len64)
-	scope.Memory.Set(memOffset.Uint64(), len64, codeCopy)
+	if err := scope.Memory.Set(memOffset.Uint64(), len64, codeCopy); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -570,7 +578,9 @@ func opMload(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 
 func opMstore(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	mStart, val := scope.Stack.Pop(), scope.Stack.Pop()
-	scope.Memory.Set32(mStart.Uint64(), &val)
+	if err := scope.Memory.Set32(mStart.Uint64(), &val); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -771,7 +781,9 @@ func opCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 	stack.Push(&temp)
 	if err == nil || err == ErrExecutionReverted {
 		ret = types.CopyBytes(ret)
-		scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
+		if memErr := scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret); memErr != nil {
+			return nil, memErr
+		}
 	}
 
 	scope.Contract.Gas += returnGas
@@ -805,7 +817,9 @@ func opCallCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	stack.Push(&temp)
 	if err == nil || err == ErrExecutionReverted {
 		ret = types.CopyBytes(ret)
-		scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
+		if memErr := scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret); memErr != nil {
+			return nil, memErr
+		}
 	}
 
 	scope.Contract.Gas += returnGas
@@ -835,7 +849,9 @@ func opDelegateCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 	stack.Push(&temp)
 	if err == nil || err == ErrExecutionReverted {
 		ret = types.CopyBytes(ret)
-		scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
+		if memErr := scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret); memErr != nil {
+			return nil, memErr
+		}
 	}
 
 	scope.Contract.Gas += returnGas
@@ -865,7 +881,9 @@ func opStaticCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) 
 	stack.Push(&temp)
 	if err == nil || err == ErrExecutionReverted {
 		ret = types.CopyBytes(ret)
-		scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
+		if memErr := scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret); memErr != nil {
+			return nil, memErr
+		}
 	}
 
 	scope.Contract.Gas += returnGas

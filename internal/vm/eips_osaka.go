@@ -249,7 +249,9 @@ func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	}
 
 	// Copy data to memory
-	scope.Memory.Set(memOffset.Uint64(), len64, data[dataOff64:end])
+	if err := scope.Memory.Set(memOffset.Uint64(), len64, data[dataOff64:end]); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 
