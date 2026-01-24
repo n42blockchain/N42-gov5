@@ -18,8 +18,11 @@ import (
 func TestEIP7939NotInPrague(t *testing.T) {
 	pragueJT := newPragueInstructionSet()
 
-	// In Prague, 0x1E should be an undefined opcode
-	if pragueJT[CLZ].execute != nil {
+	// In Prague, 0x1E should be an undefined opcode (filled with opUndefined)
+	// CLZ when enabled has constantGas=GasFastStep and numPop=1, numPush=1
+	// An undefined opcode has constantGas=0 and numPop=0, numPush=0
+	if pragueJT[CLZ] != nil && pragueJT[CLZ].constantGas == GasFastStep &&
+		pragueJT[CLZ].numPop == 1 && pragueJT[CLZ].numPush == 1 {
 		t.Error("CLZ (0x1E) should NOT be enabled in Prague - it's a Fusaka feature")
 	}
 
@@ -76,25 +79,29 @@ func TestCLZString(t *testing.T) {
 
 func TestPragueInstructionSet(t *testing.T) {
 	jt := newPragueInstructionSet()
-	
-	// Prague should have all Cancun opcodes plus Prague-specific ones
-	allOpcodes := []OpCode{
-		// Cancun
+
+	// Prague should have all Cancun opcodes (CLZ is in Fusaka, not Prague)
+	cancunOpcodes := []OpCode{
 		TLOAD,
 		TSTORE,
 		MCOPY,
 		BLOBHASH,
 		BLOBBASEFEE,
-		// Prague
-		CLZ,
 	}
-	
-	for _, op := range allOpcodes {
-		if jt[op] == nil {
+
+	for _, op := range cancunOpcodes {
+		if jt[op] == nil || jt[op].constantGas == 0 && jt[op].dynamicGas == nil {
 			t.Errorf("Opcode %s should be enabled in Prague", op.String())
 		}
 	}
-	
+
+	// CLZ should NOT be in Prague (it's in Fusaka)
+	// CLZ when enabled has constantGas=GasFastStep and specific stack requirements
+	if jt[CLZ] != nil && jt[CLZ].constantGas == GasFastStep &&
+		jt[CLZ].numPop == 1 && jt[CLZ].numPush == 1 {
+		t.Errorf("CLZ should NOT be enabled in Prague (it's a Fusaka feature)")
+	}
+
 	t.Log("✓ Prague instruction set includes all expected opcodes")
 }
 
@@ -120,16 +127,14 @@ func TestPragueEIPActivators(t *testing.T) {
 
 func TestCancunDoesNotHaveCLZ(t *testing.T) {
 	jt := newCancunInstructionSet()
-	
-	// CLZ should NOT be in Cancun (it's Prague-only)
-	// Note: The slot might exist but execute should be nil or it should be a different operation
-	if jt[CLZ] != nil && jt[CLZ].execute != nil {
-		// Check if it's actually the CLZ operation (look at gas cost)
-		if jt[CLZ].constantGas == GasFastStep {
-			t.Log("Note: CLZ appears to be enabled in Cancun instruction set")
-		}
+
+	// CLZ should NOT be in Cancun (it's Fusaka-only)
+	// Check if CLZ is actually enabled (has proper gas cost and stack requirements)
+	if jt[CLZ] != nil && jt[CLZ].constantGas == GasFastStep &&
+		jt[CLZ].numPop == 1 && jt[CLZ].numPush == 1 {
+		t.Error("CLZ should NOT be enabled in Cancun instruction set")
 	}
-	
+
 	t.Log("✓ Backward compatibility check completed")
 }
 

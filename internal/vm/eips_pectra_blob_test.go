@@ -153,14 +153,16 @@ func TestCalcCalldataCostEIP7623(t *testing.T) {
 		// Empty data
 		{"empty", []byte{}, false, 0},
 		{"empty_pectra", []byte{}, true, 0},
-		
-		// Small data (below threshold, standard pricing)
-		{"small_standard", make([]byte, 100), false, 400},        // 100 * 4 (zero bytes)
-		{"small_pectra", make([]byte, 100), true, 400},           // Below threshold, standard pricing
-		
-		// Non-zero data
-		{"nonzero_standard", []byte{1, 2, 3, 4}, false, 64},      // 4 * 16
-		{"nonzero_pectra", []byte{1, 2, 3, 4}, true, 64},         // Below threshold
+
+		// Small data - pre-Pectra uses standard pricing
+		{"small_standard", make([]byte, 100), false, 400}, // 100 * 4 (zero bytes)
+		// Pectra: max(standard=400, floor=1000) = 1000
+		{"small_pectra", make([]byte, 100), true, 1000}, // max(100*4, 100*10) = 1000
+
+		// Non-zero data - pre-Pectra uses standard pricing
+		{"nonzero_standard", []byte{1, 2, 3, 4}, false, 64}, // 4 * 16
+		// Pectra: max(standard=64, floor=160) = 160
+		{"nonzero_pectra", []byte{1, 2, 3, 4}, true, 160}, // max(4*16, 4*40) = 160
 	}
 
 	for _, tt := range tests {
@@ -174,7 +176,7 @@ func TestCalcCalldataCostEIP7623(t *testing.T) {
 }
 
 func TestCalcCalldataCostEIP7623_LargeData(t *testing.T) {
-	// Create large data (above 4KB threshold)
+	// Create large data
 	largeZeroData := make([]byte, 5000)
 	largeNonZeroData := make([]byte, 5000)
 	for i := range largeNonZeroData {
@@ -192,15 +194,18 @@ func TestCalcCalldataCostEIP7623_LargeData(t *testing.T) {
 		t.Errorf("Standard non-zero cost = %d, want 80000", standardNonZero)
 	}
 
-	// Pectra with floor: 5000 * 10 = 50000 (zero), 5000 * 68 = 340000 (non-zero)
+	// Pectra with floor (EIP-7623):
+	// floor = zero*10 + nonzero*40 (TOTAL_COST_FLOOR_PER_TOKEN=10 * tokens)
+	// 5000 zero bytes: max(standard=20000, floor=50000) = 50000
 	pectraZero := CalcCalldataCostEIP7623(largeZeroData, true)
 	if pectraZero != 50000 {
 		t.Errorf("Pectra zero cost = %d, want 50000 (floor)", pectraZero)
 	}
 
+	// 5000 non-zero bytes: max(standard=80000, floor=200000) = 200000
 	pectraNonZero := CalcCalldataCostEIP7623(largeNonZeroData, true)
-	if pectraNonZero != 340000 {
-		t.Errorf("Pectra non-zero cost = %d, want 340000 (floor)", pectraNonZero)
+	if pectraNonZero != 200000 {
+		t.Errorf("Pectra non-zero cost = %d, want 200000 (floor)", pectraNonZero)
 	}
 }
 

@@ -94,9 +94,12 @@ func (m *mockStateDB) AddLog(*block.Log)                                        
 func (m *mockStateDB) Exist(types.Address) bool                                 { return false }
 func (m *mockStateDB) Empty(types.Address) bool                                 { return true }
 func (m *mockStateDB) Selfdestruct(types.Address) bool                          { return false }
+func (m *mockStateDB) Selfdestruct6780(types.Address, types.Address)            {}
 func (m *mockStateDB) HasSelfdestructed(types.Address) bool                     { return false }
+func (m *mockStateDB) WasCreatedInCurrentTx(types.Address) bool                 { return false }
 func (m *mockStateDB) PrepareAccessList(types.Address, *types.Address, []types.Address, transaction.AccessList) {
 }
+func (m *mockStateDB) HasNonEmptyStorage(types.Address) bool { return false }
 
 // Ensure mockStateDB implements evmtypes.IntraBlockState
 var _ evmtypes.IntraBlockState = (*mockStateDB)(nil)
