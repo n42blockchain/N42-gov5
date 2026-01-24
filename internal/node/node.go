@@ -278,12 +278,15 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		P2P:   p2p,
 	})
 
-	syncServer := n42sync.NewService(
+	syncServer, err := n42sync.NewService(
 		ctx,
 		n42sync.WithP2P(p2p),
 		n42sync.WithChainService(bc),
 		n42sync.WithInitialSync(is),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sync service: %w", err)
+	}
 
 	//todo
 	var txs []*transaction.Transaction

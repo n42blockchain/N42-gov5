@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )
@@ -29,13 +30,13 @@ import (
 // BlockChainReader defines the minimal interface required to access blockchain data.
 type BlockChainReader interface {
 	// CurrentBlock retrieves the current head block of the canonical chain.
-	CurrentBlock() *types.Block
+	CurrentBlock() *block.Block
 
 	// GetBlockByNumber retrieves a block by number.
-	GetBlockByNumber(number uint64) *types.Block
+	GetBlockByNumber(number uint64) *block.Block
 
 	// GenesisBlock retrieves the genesis block.
-	GenesisBlock() *types.Block
+	GenesisBlock() *block.Block
 
 	// Config retrieves the blockchain's chain configuration.
 	// Config() *params.ChainConfig
@@ -86,7 +87,7 @@ func (h *Handler) MakeStatusPacket() *StatusPacket {
 	}
 
 	// Update local range
-	latestBlock := currentBlock.Number64()
+	latestBlock := currentBlock.Number64().Uint64()
 	h.peerTracker.UpdateLocalRange(h.earliestBlock, latestBlock, currentBlock.Hash())
 
 	return &StatusPacket{
@@ -109,7 +110,7 @@ func (h *Handler) MakeBlockRangeUpdatePacket() *BlockRangeUpdatePacket {
 
 	return &BlockRangeUpdatePacket{
 		EarliestBlock:   h.earliestBlock,
-		LatestBlock:     currentBlock.Number64(),
+		LatestBlock:     currentBlock.Number64().Uint64(),
 		LatestBlockHash: currentBlock.Hash(),
 	}
 }
@@ -181,8 +182,8 @@ func (h *Handler) HandleBlockRangeUpdate(peerID peer.ID, update *BlockRangeUpdat
 
 // OnNewBlock is called when a new block is imported.
 // It checks if a BlockRangeUpdate should be sent to peers.
-func (h *Handler) OnNewBlock(block *types.Block) {
-	blockNumber := block.Number64()
+func (h *Handler) OnNewBlock(block *block.Block) {
+	blockNumber := block.Number64().Uint64()
 
 	// Check if we should send an update
 	if !h.peerTracker.ShouldSendUpdate(blockNumber) {
@@ -256,6 +257,6 @@ func (h *Handler) SetEarliestBlock(earliest uint64) {
 
 	// Update local range
 	if current := h.chain.CurrentBlock(); current != nil {
-		h.peerTracker.UpdateLocalRange(earliest, current.Number64(), current.Hash())
+		h.peerTracker.UpdateLocalRange(earliest, current.Number64().Uint64(), current.Hash())
 	}
 }
