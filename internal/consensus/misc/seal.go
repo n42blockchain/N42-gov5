@@ -31,25 +31,46 @@ import (
 
 // SealHash returns the hash of a block header prior to it being sealed.
 // This is the hash that gets signed for PoA consensus.
-func SealHash(header block.IHeader) (hash types.Hash) {
+// Returns zero hash and error if encoding fails.
+func SealHash(header block.IHeader) (hash types.Hash, err error) {
 	hasher := sha3.NewLegacyKeccak256()
-	EncodeSigHeader(hasher, header)
+	if err = EncodeSigHeader(hasher, header); err != nil {
+		return types.Hash{}, err
+	}
 	hasher.(crypto.KeccakState).Read(hash[:])
+	return hash, nil
+}
+
+// MustSealHash returns the hash of a block header prior to it being sealed.
+// Panics if encoding fails. Use SealHash for error handling.
+func MustSealHash(header block.IHeader) types.Hash {
+	hash, err := SealHash(header)
+	if err != nil {
+		panic("seal hash: " + err.Error())
+	}
 	return hash
 }
 
 // SealProto returns the RLP-encoded header for signing.
 // Used for generating the signature in Seal().
-func SealProto(header block.IHeader) []byte {
+// Returns nil and error if encoding fails.
+func SealProto(header block.IHeader) ([]byte, error) {
 	b := new(bytes.Buffer)
-	EncodeSigHeader(b, header)
-	return b.Bytes()
+	if err := EncodeSigHeader(b, header); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
 }
 
 // EncodeSigHeader encodes a header for signature.
 // It excludes the seal (last 65 bytes of extra-data).
-func EncodeSigHeader(w io.Writer, iHeader block.IHeader) {
+// Returns error if encoding fails or extra data is too short.
+func EncodeSigHeader(w io.Writer, iHeader block.IHeader) error {
 	header := avmtypes.FromN42Header(iHeader)
+	// Validate extra data length before slicing
+	if len(header.Extra) < crypto.SignatureLength {
+		return ErrMissingSignature
+	}
 	enc := []interface{}{
 		header.ParentHash,
 		header.UncleHash,
@@ -70,9 +91,7 @@ func EncodeSigHeader(w io.Writer, iHeader block.IHeader) {
 	if header.BaseFee != nil {
 		enc = append(enc, header.BaseFee)
 	}
-	if err := rlp.Encode(w, enc); err != nil {
-		panic("can't encode: " + err.Error())
-	}
+	return rlp.Encode(w, enc)
 }
 
 // Ecrecover extracts the Ethereum account address from a signed header.
@@ -91,7 +110,11 @@ func Ecrecover(iHeader block.IHeader, sigcache *lru.ARCCache) (types.Address, er
 	signature := header.Extra[len(header.Extra)-ExtraSeal:]
 
 	// Recover the public key and the N42 address
-	pubkey, err := crypto.Ecrecover(SealHash(header).Bytes(), signature)
+	sealHash, err := SealHash(header)
+	if err != nil {
+		return types.Address{}, err
+	}
+	pubkey, err := crypto.Ecrecover(sealHash.Bytes(), signature)
 	if err != nil {
 		return types.Address{}, err
 	}

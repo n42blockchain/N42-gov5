@@ -67,8 +67,9 @@ func (s *Service) subscribe(topic string, validator wrappedVal, handle subHandle
 	//}
 	base := p2p.GossipTopicMappings(topic)
 	if base == nil {
-		// Impossible condition as it would mean topic does not exist.
-		panic(fmt.Sprintf("%s is not mapped to any message in GossipTopicMappings", topic))
+		// This indicates a configuration error - topic does not exist in GossipTopicMappings.
+		log.Crit("Topic is not mapped to any message in GossipTopicMappings", "topic", topic)
+		return nil
 	}
 	return s.subscribeWithBase(s.addDigestToTopic(topic, digest), validator, handle)
 }

@@ -847,19 +847,28 @@ func (c *APos) Type() params.ConsensusType {
 // SealHash returns the hash of a block prior to it being sealed.
 func SealHash(header block.IHeader) (hash types.Hash) {
 	hasher := sha3.NewLegacyKeccak256()
-	encodeSigHeader(hasher, header)
+	if err := encodeSigHeader(hasher, header); err != nil {
+		// This should not happen with valid headers
+		return types.Hash{}
+	}
 	hasher.(crypto.KeccakState).Read(hash[:])
 	return hash
 }
 
 func APosProto(header block.IHeader) []byte {
 	b := new(bytes.Buffer)
-	encodeSigHeader(b, header)
+	if err := encodeSigHeader(b, header); err != nil {
+		return nil
+	}
 	return b.Bytes()
 }
 
-func encodeSigHeader(w io.Writer, iHeader block.IHeader) {
+func encodeSigHeader(w io.Writer, iHeader block.IHeader) error {
 	header := avmtypes.FromN42Header(iHeader)
+	// Validate extra data length before slicing
+	if len(header.Extra) < crypto.SignatureLength {
+		return misc.ErrMissingSignature
+	}
 	enc := []interface{}{
 		header.ParentHash,
 		header.UncleHash,
@@ -873,16 +882,14 @@ func encodeSigHeader(w io.Writer, iHeader block.IHeader) {
 		header.GasLimit,
 		header.GasUsed,
 		header.Time,
-		header.Extra[:len(header.Extra)-crypto.SignatureLength], // Yes, this will panic if extra is too short
+		header.Extra[:len(header.Extra)-crypto.SignatureLength],
 		header.MixDigest,
 		header.Nonce,
 	}
 	if header.BaseFee != nil {
 		enc = append(enc, header.BaseFee)
 	}
-	if err := rlp.Encode(w, enc); err != nil {
-		panic("can't encode: " + err.Error())
-	}
+	return rlp.Encode(w, enc)
 }
 
 func (c *APos) CountDepositor() uint64 {

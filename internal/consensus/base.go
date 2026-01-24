@@ -175,7 +175,7 @@ func (b *BasePoA) Author(header block.IHeader) (types.Address, error) {
 
 // SealHash returns the hash of a block prior to it being sealed.
 func (b *BasePoA) SealHash(header block.IHeader) types.Hash {
-	return misc.SealHash(header)
+	return misc.MustSealHash(header)
 }
 
 // Close is a noop for PoA engines as there are no background threads.

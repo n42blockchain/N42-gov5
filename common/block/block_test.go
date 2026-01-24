@@ -409,3 +409,878 @@ func BenchmarkLogsBloom(b *testing.B) {
 		LogsBloom(logs)
 	}
 }
+
+// =============================================================================
+// BlockNonce Encode/Decode Tests
+// =============================================================================
+
+func TestEncodeNonce(t *testing.T) {
+	tests := []struct {
+		name  string
+		input uint64
+	}{
+		{"zero", 0},
+		{"one", 1},
+		{"max_uint64", ^uint64(0)},
+		{"typical", 12345678901234567890},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nonce := EncodeNonce(tt.input)
+			result := nonce.Uint64()
+			if result != tt.input {
+				t.Errorf("EncodeNonce(%d).Uint64() = %d, want %d", tt.input, result, tt.input)
+			}
+		})
+	}
+
+	t.Logf("✓ EncodeNonce/Uint64 roundtrip works correctly")
+}
+
+func TestBlockNonceMarshalText(t *testing.T) {
+	nonce := EncodeNonce(0x123456789ABCDEF0)
+
+	text, err := nonce.MarshalText()
+	if err != nil {
+		t.Fatalf("BlockNonce.MarshalText error: %v", err)
+	}
+	if len(text) == 0 {
+		t.Error("BlockNonce.MarshalText returned empty string")
+	}
+	// Should start with "0x"
+	if !bytes.HasPrefix(text, []byte("0x")) {
+		t.Error("BlockNonce.MarshalText should start with 0x")
+	}
+
+	t.Logf("✓ BlockNonce.MarshalText works correctly: %s", string(text))
+}
+
+func TestBlockNonceUnmarshalText(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected uint64
+	}{
+		{"zeros", "0x0000000000000000", 0},
+		{"ones", "0x0000000000000001", 1},
+		{"full", "0xffffffffffffffff", ^uint64(0)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var nonce BlockNonce
+			err := nonce.UnmarshalText([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("UnmarshalText error: %v", err)
+			}
+			if nonce.Uint64() != tt.expected {
+				t.Errorf("UnmarshalText(%s) = %d, want %d", tt.input, nonce.Uint64(), tt.expected)
+			}
+		})
+	}
+
+	t.Logf("✓ BlockNonce.UnmarshalText works correctly")
+}
+
+func TestBlockNonceMarshalUnmarshalRoundtrip(t *testing.T) {
+	original := EncodeNonce(0xDEADBEEFCAFEBABE)
+
+	text, err := original.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText error: %v", err)
+	}
+
+	var decoded BlockNonce
+	err = decoded.UnmarshalText(text)
+	if err != nil {
+		t.Fatalf("UnmarshalText error: %v", err)
+	}
+
+	if original != decoded {
+		t.Errorf("Roundtrip failed: original=%x, decoded=%x", original, decoded)
+	}
+
+	t.Logf("✓ BlockNonce marshal/unmarshal roundtrip works correctly")
+}
+
+// =============================================================================
+// Header Tests
+// =============================================================================
+
+func TestHeaderNumber64(t *testing.T) {
+	h := &Header{
+		Number: uint256.NewInt(12345),
+	}
+
+	if h.Number64().Uint64() != 12345 {
+		t.Errorf("Header.Number64() = %d, want 12345", h.Number64().Uint64())
+	}
+
+	t.Logf("✓ Header.Number64 works correctly")
+}
+
+func TestHeaderStateRoot(t *testing.T) {
+	expectedRoot := types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
+	h := &Header{
+		Root:   expectedRoot,
+		Number: uint256.NewInt(0),
+	}
+
+	if h.StateRoot() != expectedRoot {
+		t.Errorf("Header.StateRoot() = %v, want %v", h.StateRoot(), expectedRoot)
+	}
+
+	t.Logf("✓ Header.StateRoot works correctly")
+}
+
+func TestHeaderBaseFee64(t *testing.T) {
+	h := &Header{
+		BaseFee: uint256.NewInt(1000000000),
+		Number:  uint256.NewInt(0),
+	}
+
+	if h.BaseFee64().Uint64() != 1000000000 {
+		t.Errorf("Header.BaseFee64() = %d, want 1000000000", h.BaseFee64().Uint64())
+	}
+
+	t.Logf("✓ Header.BaseFee64 works correctly")
+}
+
+func TestHeaderBaseFee64Nil(t *testing.T) {
+	h := &Header{
+		Number: uint256.NewInt(0),
+	}
+
+	if h.BaseFee64() != nil {
+		t.Errorf("Header.BaseFee64() should be nil for header without BaseFee")
+	}
+
+	t.Logf("✓ Header.BaseFee64 handles nil correctly")
+}
+
+func TestHeaderHash(t *testing.T) {
+	h := Header{
+		ParentHash: types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Number:     uint256.NewInt(100),
+		GasLimit:   8000000,
+		GasUsed:    21000,
+		Time:       1234567890,
+	}
+
+	hash1 := h.Hash()
+	if hash1 == (types.Hash{}) {
+		t.Error("Header.Hash() should not return empty hash")
+	}
+
+	// Hash should be cached
+	hash2 := h.Hash()
+	if hash1 != hash2 {
+		t.Error("Header.Hash() should return cached value")
+	}
+
+	t.Logf("✓ Header.Hash works correctly: %v", hash1)
+}
+
+func TestHeaderHashDifferentHeaders(t *testing.T) {
+	h1 := Header{
+		ParentHash: types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Number:     uint256.NewInt(100),
+		GasLimit:   8000000,
+	}
+
+	h2 := Header{
+		ParentHash: types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
+		Number:     uint256.NewInt(100),
+		GasLimit:   8000000,
+	}
+
+	if h1.Hash() == h2.Hash() {
+		t.Error("Different headers should have different hashes")
+	}
+
+	t.Logf("✓ Different headers produce different hashes")
+}
+
+func TestHeaderHashNilFields(t *testing.T) {
+	// Test header with nil BaseFee and Difficulty (should be handled gracefully)
+	h := Header{
+		Number: uint256.NewInt(0),
+	}
+
+	hash := h.Hash()
+	if hash == (types.Hash{}) {
+		t.Error("Header.Hash() should not return empty hash even with nil fields")
+	}
+
+	t.Logf("✓ Header.Hash handles nil fields correctly")
+}
+
+func TestCopyHeader(t *testing.T) {
+	original := &Header{
+		ParentHash:  types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Coinbase:    types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Root:        types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
+		TxHash:      types.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111"),
+		ReceiptHash: types.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222"),
+		Difficulty:  uint256.NewInt(1000000),
+		Number:      uint256.NewInt(12345),
+		GasLimit:    8000000,
+		GasUsed:     5000000,
+		Time:        1234567890,
+		BaseFee:     uint256.NewInt(1000000000),
+		Extra:       []byte("test extra data"),
+		Nonce:       EncodeNonce(12345),
+	}
+
+	copied := CopyHeader(original)
+
+	// Verify fields are equal
+	if copied.ParentHash != original.ParentHash {
+		t.Error("CopyHeader: ParentHash mismatch")
+	}
+	if copied.Coinbase != original.Coinbase {
+		t.Error("CopyHeader: Coinbase mismatch")
+	}
+	if copied.Number.Cmp(original.Number) != 0 {
+		t.Error("CopyHeader: Number mismatch")
+	}
+	if copied.Difficulty.Cmp(original.Difficulty) != 0 {
+		t.Error("CopyHeader: Difficulty mismatch")
+	}
+	if copied.BaseFee.Cmp(original.BaseFee) != 0 {
+		t.Error("CopyHeader: BaseFee mismatch")
+	}
+	if !bytes.Equal(copied.Extra, original.Extra) {
+		t.Error("CopyHeader: Extra mismatch")
+	}
+
+	// Verify it's a deep copy (modifying copy doesn't affect original)
+	copied.Number = uint256.NewInt(99999)
+	if original.Number.Uint64() == 99999 {
+		t.Error("CopyHeader should create a deep copy")
+	}
+
+	copied.Extra[0] = 0xFF
+	if original.Extra[0] == 0xFF {
+		t.Error("CopyHeader should deep copy Extra data")
+	}
+
+	t.Logf("✓ CopyHeader works correctly")
+}
+
+func TestCopyHeaderNilFields(t *testing.T) {
+	original := &Header{
+		Number: uint256.NewInt(100),
+		// Difficulty, BaseFee, Extra are nil/empty
+	}
+
+	copied := CopyHeader(original)
+
+	if copied.Number.Uint64() != 100 {
+		t.Error("CopyHeader: Number mismatch")
+	}
+
+	t.Logf("✓ CopyHeader handles nil fields correctly")
+}
+
+func TestCopyReward(t *testing.T) {
+	rewards := []*Reward{
+		{
+			Address: types.HexToAddress("0x1234567890123456789012345678901234567890"),
+			Amount:  uint256.NewInt(1000000000000000000),
+		},
+		{
+			Address: types.HexToAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"),
+			Amount:  uint256.NewInt(2000000000000000000),
+		},
+	}
+
+	copied := CopyReward(rewards)
+
+	if len(copied) != len(rewards) {
+		t.Errorf("CopyReward length mismatch: got %d, want %d", len(copied), len(rewards))
+	}
+
+	for i := range rewards {
+		if copied[i].Address != rewards[i].Address {
+			t.Errorf("CopyReward[%d].Address mismatch", i)
+		}
+		if copied[i].Amount.Cmp(rewards[i].Amount) != 0 {
+			t.Errorf("CopyReward[%d].Amount mismatch", i)
+		}
+	}
+
+	// Verify deep copy
+	copied[0].Amount = uint256.NewInt(999)
+	if rewards[0].Amount.Cmp(uint256.NewInt(999)) == 0 {
+		t.Error("CopyReward should create a deep copy")
+	}
+
+	t.Logf("✓ CopyReward works correctly")
+}
+
+func TestCopyRewardEmpty(t *testing.T) {
+	rewards := []*Reward{}
+	copied := CopyReward(rewards)
+
+	if len(copied) != 0 {
+		t.Errorf("CopyReward of empty slice should return empty, got length %d", len(copied))
+	}
+
+	t.Logf("✓ CopyReward handles empty slice correctly")
+}
+
+func TestHeaderMarshalUnmarshal(t *testing.T) {
+	original := &Header{
+		ParentHash:  types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Coinbase:    types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Root:        types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
+		TxHash:      types.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111"),
+		ReceiptHash: types.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222"),
+		Difficulty:  uint256.NewInt(1000000),
+		Number:      uint256.NewInt(12345),
+		GasLimit:    8000000,
+		GasUsed:     5000000,
+		Time:        1234567890,
+		BaseFee:     uint256.NewInt(1000000000),
+		Extra:       []byte("test extra data"),
+		Nonce:       EncodeNonce(12345),
+		MixDigest:   types.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333"),
+	}
+
+	data, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Header.Marshal error: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("Header.Marshal returned empty data")
+	}
+
+	decoded := &Header{}
+	err = decoded.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Header.Unmarshal error: %v", err)
+	}
+
+	// Verify fields
+	if decoded.ParentHash != original.ParentHash {
+		t.Error("Marshal/Unmarshal: ParentHash mismatch")
+	}
+	if decoded.Coinbase != original.Coinbase {
+		t.Error("Marshal/Unmarshal: Coinbase mismatch")
+	}
+	if decoded.Number.Cmp(original.Number) != 0 {
+		t.Error("Marshal/Unmarshal: Number mismatch")
+	}
+	if decoded.GasLimit != original.GasLimit {
+		t.Error("Marshal/Unmarshal: GasLimit mismatch")
+	}
+	if decoded.GasUsed != original.GasUsed {
+		t.Error("Marshal/Unmarshal: GasUsed mismatch")
+	}
+	if decoded.Time != original.Time {
+		t.Error("Marshal/Unmarshal: Time mismatch")
+	}
+	if decoded.Nonce.Uint64() != original.Nonce.Uint64() {
+		t.Error("Marshal/Unmarshal: Nonce mismatch")
+	}
+	if !bytes.Equal(decoded.Extra, original.Extra) {
+		t.Error("Marshal/Unmarshal: Extra mismatch")
+	}
+
+	t.Logf("✓ Header.Marshal/Unmarshal roundtrip works correctly")
+}
+
+func TestHeaderUnmarshalInvalidData(t *testing.T) {
+	h := &Header{}
+	err := h.Unmarshal([]byte{0x00, 0x01, 0x02}) // Invalid protobuf data
+
+	if err == nil {
+		t.Error("Header.Unmarshal should fail with invalid data")
+	}
+
+	t.Logf("✓ Header.Unmarshal correctly rejects invalid data")
+}
+
+func TestHeaderToProtoMessage(t *testing.T) {
+	h := &Header{
+		ParentHash: types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Number:     uint256.NewInt(100),
+		GasLimit:   8000000,
+		Time:       1234567890,
+		Difficulty: uint256.NewInt(1000),
+		BaseFee:    uint256.NewInt(1000000000),
+	}
+
+	proto := h.ToProtoMessage()
+	if proto == nil {
+		t.Error("Header.ToProtoMessage should not return nil")
+	}
+
+	t.Logf("✓ Header.ToProtoMessage works correctly")
+}
+
+func TestHeaderFromProtoMessageTypeError(t *testing.T) {
+	h := &Header{}
+	// Pass wrong proto message type
+	err := h.FromProtoMessage(nil)
+	if err == nil {
+		t.Error("Header.FromProtoMessage should fail with nil message")
+	}
+
+	t.Logf("✓ Header.FromProtoMessage correctly rejects nil message")
+}
+
+// =============================================================================
+// Header Benchmark Tests
+// =============================================================================
+
+func BenchmarkHeaderHash(b *testing.B) {
+	h := Header{
+		ParentHash: types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Number:     uint256.NewInt(100),
+		GasLimit:   8000000,
+		GasUsed:    21000,
+		Time:       1234567890,
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Clear cached hash to force recalculation
+		h.hash.Store(nil)
+		h.Hash()
+	}
+}
+
+func BenchmarkCopyHeader(b *testing.B) {
+	h := &Header{
+		ParentHash: types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Number:     uint256.NewInt(100),
+		Difficulty: uint256.NewInt(1000000),
+		BaseFee:    uint256.NewInt(1000000000),
+		Extra:      make([]byte, 32),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		CopyHeader(h)
+	}
+}
+
+func BenchmarkHeaderMarshal(b *testing.B) {
+	h := &Header{
+		ParentHash: types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Number:     uint256.NewInt(100),
+		GasLimit:   8000000,
+		Difficulty: uint256.NewInt(1000000),
+		BaseFee:    uint256.NewInt(1000000000),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.Marshal()
+	}
+}
+
+func BenchmarkEncodeNonce(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		EncodeNonce(uint64(i))
+	}
+}
+
+// =============================================================================
+// Log Proto Tests
+// =============================================================================
+
+func TestLogFromProtoMessage(t *testing.T) {
+	original := &Log{
+		Address:     types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Topics:      []types.Hash{{0x01}, {0x02}},
+		Data:        []byte{0x03, 0x04},
+		BlockNumber: uint256.NewInt(100),
+		TxHash:      types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
+		TxIndex:     1,
+		BlockHash:   types.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111"),
+		Index:       0,
+		Removed:     false,
+	}
+
+	// Convert to proto
+	protoMsg := original.ToProtoMessage()
+
+	// Convert back
+	decoded := &Log{}
+	err := decoded.FromProtoMessage(protoMsg)
+	if err != nil {
+		t.Fatalf("Log.FromProtoMessage error: %v", err)
+	}
+
+	// Verify fields
+	if decoded.Address != original.Address {
+		t.Error("Log.FromProtoMessage: Address mismatch")
+	}
+	if len(decoded.Topics) != len(original.Topics) {
+		t.Error("Log.FromProtoMessage: Topics length mismatch")
+	}
+	if !bytes.Equal(decoded.Data, original.Data) {
+		t.Error("Log.FromProtoMessage: Data mismatch")
+	}
+	if decoded.TxIndex != original.TxIndex {
+		t.Error("Log.FromProtoMessage: TxIndex mismatch")
+	}
+	if decoded.Index != original.Index {
+		t.Error("Log.FromProtoMessage: Index mismatch")
+	}
+	if decoded.Removed != original.Removed {
+		t.Error("Log.FromProtoMessage: Removed mismatch")
+	}
+
+	t.Logf("✓ Log.FromProtoMessage works correctly")
+}
+
+func TestLogFromProtoMessageTypeError(t *testing.T) {
+	log := &Log{}
+	err := log.FromProtoMessage(nil)
+	if err == nil {
+		t.Error("Log.FromProtoMessage should fail with nil message")
+	}
+
+	t.Logf("✓ Log.FromProtoMessage correctly rejects nil message")
+}
+
+func TestLogsMarshalUnmarshal(t *testing.T) {
+	original := Logs{
+		&Log{
+			Address:     types.HexToAddress("0x1234567890123456789012345678901234567890"),
+			Topics:      []types.Hash{{0x01}},
+			Data:        []byte{0x02},
+			BlockNumber: uint256.NewInt(100),
+			TxHash:      types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
+			TxIndex:     1,
+		},
+		&Log{
+			Address:     types.HexToAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"),
+			Topics:      []types.Hash{{0x03}, {0x04}},
+			Data:        []byte{0x05, 0x06},
+			BlockNumber: uint256.NewInt(101),
+			TxIndex:     2,
+		},
+	}
+
+	data, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Logs.Marshal error: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("Logs.Marshal returned empty data")
+	}
+
+	// Test Unmarshal
+	var decoded Logs
+	err = decoded.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Logs.Unmarshal error: %v", err)
+	}
+
+	if len(decoded) != len(original) {
+		t.Fatalf("Logs.Unmarshal length mismatch: got %d, want %d", len(decoded), len(original))
+	}
+
+	// Verify first log
+	if decoded[0].Address != original[0].Address {
+		t.Error("Logs.Unmarshal: Address mismatch")
+	}
+	if decoded[0].TxIndex != original[0].TxIndex {
+		t.Error("Logs.Unmarshal: TxIndex mismatch")
+	}
+	if !bytes.Equal(decoded[0].Data, original[0].Data) {
+		t.Error("Logs.Unmarshal: Data mismatch")
+	}
+
+	t.Logf("✓ Logs.Marshal/Unmarshal roundtrip works correctly (size: %d bytes)", len(data))
+}
+
+func TestLogsUnmarshalEmpty(t *testing.T) {
+	original := Logs{}
+
+	data, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Logs.Marshal error: %v", err)
+	}
+
+	var decoded Logs
+	err = decoded.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Logs.Unmarshal error: %v", err)
+	}
+
+	if len(decoded) != 0 {
+		t.Errorf("Logs.Unmarshal of empty logs should be empty, got %d", len(decoded))
+	}
+
+	t.Logf("✓ Logs.Unmarshal handles empty logs correctly")
+}
+
+func TestLogsUnmarshalInvalidData(t *testing.T) {
+	var logs Logs
+	err := logs.Unmarshal([]byte{0x00, 0x01, 0x02}) // Invalid protobuf
+
+	if err == nil {
+		t.Error("Logs.Unmarshal should fail with invalid data")
+	}
+
+	t.Logf("✓ Logs.Unmarshal correctly rejects invalid data")
+}
+
+// =============================================================================
+// Receipt Tests
+// =============================================================================
+
+func TestReceiptStatusConstants(t *testing.T) {
+	if ReceiptStatusFailed != 0 {
+		t.Errorf("ReceiptStatusFailed = %d, want 0", ReceiptStatusFailed)
+	}
+	if ReceiptStatusSuccessful != 1 {
+		t.Errorf("ReceiptStatusSuccessful = %d, want 1", ReceiptStatusSuccessful)
+	}
+
+	t.Logf("✓ Receipt status constants are correct")
+}
+
+func TestReceiptMarshalUnmarshal(t *testing.T) {
+	original := &Receipt{
+		Type:              0,
+		PostState:         []byte{0x01},
+		Status:            ReceiptStatusSuccessful,
+		CumulativeGasUsed: 21000,
+		Logs: []*Log{
+			{
+				Address:     types.HexToAddress("0x1234567890123456789012345678901234567890"),
+				Topics:      []types.Hash{{0x01}},
+				Data:        []byte{0x02},
+				BlockNumber: uint256.NewInt(100),
+			},
+		},
+		TxHash:           types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
+		ContractAddress:  types.Address{},
+		GasUsed:          21000,
+		BlockHash:        types.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111"),
+		BlockNumber:      uint256.NewInt(100),
+		TransactionIndex: 0,
+	}
+
+	data, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Receipt.Marshal error: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("Receipt.Marshal returned empty data")
+	}
+
+	decoded := &Receipt{}
+	err = decoded.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Receipt.Unmarshal error: %v", err)
+	}
+
+	// Verify fields
+	if decoded.Status != original.Status {
+		t.Error("Receipt.Unmarshal: Status mismatch")
+	}
+	if decoded.CumulativeGasUsed != original.CumulativeGasUsed {
+		t.Error("Receipt.Unmarshal: CumulativeGasUsed mismatch")
+	}
+	if decoded.GasUsed != original.GasUsed {
+		t.Error("Receipt.Unmarshal: GasUsed mismatch")
+	}
+	if decoded.TransactionIndex != original.TransactionIndex {
+		t.Error("Receipt.Unmarshal: TransactionIndex mismatch")
+	}
+	if len(decoded.Logs) != len(original.Logs) {
+		t.Error("Receipt.Unmarshal: Logs length mismatch")
+	}
+
+	t.Logf("✓ Receipt.Marshal/Unmarshal roundtrip works correctly")
+}
+
+func TestReceiptUnmarshalInvalidData(t *testing.T) {
+	r := &Receipt{}
+	err := r.Unmarshal([]byte{0x00, 0x01, 0x02}) // Invalid protobuf
+
+	if err == nil {
+		t.Error("Receipt.Unmarshal should fail with invalid data")
+	}
+
+	t.Logf("✓ Receipt.Unmarshal correctly rejects invalid data")
+}
+
+func TestReceiptsLen(t *testing.T) {
+	rs := Receipts{
+		&Receipt{Status: ReceiptStatusSuccessful, BlockNumber: uint256.NewInt(1)},
+		&Receipt{Status: ReceiptStatusFailed, BlockNumber: uint256.NewInt(1)},
+		&Receipt{Status: ReceiptStatusSuccessful, BlockNumber: uint256.NewInt(1)},
+	}
+
+	if rs.Len() != 3 {
+		t.Errorf("Receipts.Len() = %d, want 3", rs.Len())
+	}
+
+	t.Logf("✓ Receipts.Len works correctly")
+}
+
+func TestReceiptsEncodeIndex(t *testing.T) {
+	rs := Receipts{
+		&Receipt{
+			Status:            ReceiptStatusSuccessful,
+			CumulativeGasUsed: 21000,
+			BlockNumber:       uint256.NewInt(100),
+			Logs: []*Log{
+				{
+					Address:     types.HexToAddress("0x1234567890123456789012345678901234567890"),
+					Topics:      []types.Hash{{0x01}},
+					Data:        []byte{0x02},
+					BlockNumber: uint256.NewInt(100),
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	rs.EncodeIndex(0, &buf)
+
+	if buf.Len() == 0 {
+		t.Error("Receipts.EncodeIndex produced empty output")
+	}
+
+	t.Logf("✓ Receipts.EncodeIndex works correctly (size: %d bytes)", buf.Len())
+}
+
+func TestReceiptsMarshalUnmarshal(t *testing.T) {
+	original := Receipts{
+		&Receipt{
+			Type:              0,
+			Status:            ReceiptStatusSuccessful,
+			CumulativeGasUsed: 21000,
+			GasUsed:           21000,
+			Logs: []*Log{
+				{
+					Address:     types.HexToAddress("0x1234567890123456789012345678901234567890"),
+					Topics:      []types.Hash{{0x01}},
+					Data:        []byte{0x02},
+					BlockNumber: uint256.NewInt(100),
+				},
+			},
+			TxHash:      types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
+			BlockNumber: uint256.NewInt(100),
+		},
+		&Receipt{
+			Type:              1,
+			Status:            ReceiptStatusFailed,
+			CumulativeGasUsed: 42000,
+			GasUsed:           21000,
+			Logs:              []*Log{},
+			TxHash:            types.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111"),
+			BlockNumber:       uint256.NewInt(100),
+		},
+	}
+
+	data, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Receipts.Marshal error: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("Receipts.Marshal returned empty data")
+	}
+
+	decoded := &Receipts{}
+	err = decoded.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Receipts.Unmarshal error: %v", err)
+	}
+
+	if len(*decoded) != len(original) {
+		t.Errorf("Receipts.Unmarshal length mismatch: got %d, want %d", len(*decoded), len(original))
+	}
+
+	t.Logf("✓ Receipts.Marshal/Unmarshal roundtrip works correctly")
+}
+
+func TestReceiptsUnmarshalInvalidData(t *testing.T) {
+	rs := &Receipts{}
+	err := rs.Unmarshal([]byte{0x00, 0x01, 0x02}) // Invalid protobuf
+
+	if err == nil {
+		t.Error("Receipts.Unmarshal should fail with invalid data")
+	}
+
+	t.Logf("✓ Receipts.Unmarshal correctly rejects invalid data")
+}
+
+func TestReceiptsToProtoMessage(t *testing.T) {
+	rs := Receipts{
+		&Receipt{
+			Status:            ReceiptStatusSuccessful,
+			CumulativeGasUsed: 21000,
+			GasUsed:           21000,
+			BlockNumber:       uint256.NewInt(100),
+		},
+	}
+
+	proto := rs.ToProtoMessage()
+	if proto == nil {
+		t.Error("Receipts.ToProtoMessage should not return nil")
+	}
+
+	t.Logf("✓ Receipts.ToProtoMessage works correctly")
+}
+
+// =============================================================================
+// Receipt Benchmark Tests
+// =============================================================================
+
+func BenchmarkReceiptMarshal(b *testing.B) {
+	r := &Receipt{
+		Status:            ReceiptStatusSuccessful,
+		CumulativeGasUsed: 21000,
+		GasUsed:           21000,
+		Logs: []*Log{
+			{
+				Address:     types.HexToAddress("0x1234567890123456789012345678901234567890"),
+				Topics:      []types.Hash{{0x01}},
+				Data:        []byte{0x02},
+				BlockNumber: uint256.NewInt(100),
+			},
+		},
+		BlockNumber: uint256.NewInt(100),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.Marshal()
+	}
+}
+
+func BenchmarkReceiptsEncodeIndex(b *testing.B) {
+	rs := Receipts{
+		&Receipt{
+			Status:            ReceiptStatusSuccessful,
+			CumulativeGasUsed: 21000,
+			BlockNumber:       uint256.NewInt(100),
+			Logs: []*Log{
+				{
+					Address:     types.HexToAddress("0x1234567890123456789012345678901234567890"),
+					Topics:      []types.Hash{{0x01}},
+					Data:        []byte{0x02},
+					BlockNumber: uint256.NewInt(100),
+				},
+			},
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		rs.EncodeIndex(0, &buf)
+	}
+}
