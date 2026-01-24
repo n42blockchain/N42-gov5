@@ -66,7 +66,11 @@ func NewKeyStoreTransactor(keystore *keystore.KeyStore, account accounts.Account
 			if address != account.Address {
 				return nil, ErrNotAuthorized
 			}
-			signature, err := keystore.SignHash(account, signer.Hash(tx).Bytes())
+			h, err := signer.Hash(tx)
+			if err != nil {
+				return nil, err
+			}
+			signature, err := keystore.SignHash(account, h.Bytes())
 			if err != nil {
 				return nil, err
 			}
@@ -90,7 +94,11 @@ func NewKeyedTransactor(key *ecdsa.PrivateKey) *TransactOpts {
 			if address != keyAddr {
 				return nil, ErrNotAuthorized
 			}
-			signature, err := crypto.Sign(signer.Hash(tx).Bytes(), key)
+			h, err := signer.Hash(tx)
+			if err != nil {
+				return nil, err
+			}
+			signature, err := crypto.Sign(h.Bytes(), key)
 			if err != nil {
 				return nil, err
 			}
@@ -127,7 +135,11 @@ func NewKeyStoreTransactorWithChainID(keystore *keystore.KeyStore, account accou
 			if address != account.Address {
 				return nil, ErrNotAuthorized
 			}
-			signature, err := keystore.SignHash(account, signer.Hash(tx).Bytes())
+			h, err := signer.Hash(tx)
+			if err != nil {
+				return nil, err
+			}
+			signature, err := keystore.SignHash(account, h.Bytes())
 			if err != nil {
 				return nil, err
 			}
@@ -151,7 +163,11 @@ func NewKeyedTransactorWithChainID(key *ecdsa.PrivateKey, chainID *big.Int) (*Tr
 			if address != keyAddr {
 				return nil, ErrNotAuthorized
 			}
-			signature, err := crypto.Sign(signer.Hash(tx).Bytes(), key)
+			h, err := signer.Hash(tx)
+			if err != nil {
+				return nil, err
+			}
+			signature, err := crypto.Sign(h.Bytes(), key)
 			if err != nil {
 				return nil, err
 			}

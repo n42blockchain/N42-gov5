@@ -66,7 +66,7 @@ func (s *Service) Start() {
 		if errors.Is(s.ctx.Err(), context.Canceled) {
 			return
 		}
-		panic(err)
+		log.Crit("Initial sync failed", "err", err)
 	}
 	log.Info(fmt.Sprintf("Synced up to blockNr: %d", s.cfg.Chain.CurrentBlock().Number64().Uint64()))
 	s.markSynced()

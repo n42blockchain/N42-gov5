@@ -588,6 +588,12 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	if pool.currentState.GetNonce(addr) > tx.Nonce() {
 		return ErrNonceTooLow
 	}
+	// Reject transactions with unreasonably high nonces to prevent nonce overflow attacks
+	// MaxNonce is set to 2^63-1 to provide a safe upper bound
+	const MaxNonce uint64 = 1<<63 - 1
+	if tx.Nonce() > MaxNonce {
+		return ErrNonceTooHigh
+	}
 	// Transactor should have enough funds to cover the costs
 	// cost == V + GP * GL
 	if pool.currentState.GetBalance(addr).Cmp(tx.Cost()) < 0 {

@@ -30,9 +30,10 @@ import (
 )
 
 var (
-	ErrInvalidSig         = errors.New("invalid transaction v, r, s values")
-	ErrTxTypeNotSupported = errors.New("transaction type not supported")
-	ErrInvalidChainId     = errors.New("invalid chain id for signer")
+	ErrInvalidSig           = errors.New("invalid transaction v, r, s values")
+	ErrTxTypeNotSupported   = errors.New("transaction type not supported")
+	ErrInvalidChainId       = errors.New("invalid chain id for signer")
+	ErrInvalidSignatureSize = errors.New("invalid signature size")
 )
 
 // sigCache is used to cache the derived sender and contains
@@ -77,7 +78,10 @@ func LatestSignerForChainID(chainID *big.Int) Signer {
 // SignNewTx creates a transaction and signs it.
 func SignNewTx(prv *ecdsa.PrivateKey, s Signer, txdata TxData) (*Transaction, error) {
 	tx := NewTx(txdata)
-	h := s.Hash(tx)
+	h, err := s.Hash(tx)
+	if err != nil {
+		return nil, err
+	}
 	sig, err := crypto.Sign(h[:], prv)
 	if err != nil {
 		return nil, err
@@ -87,7 +91,10 @@ func SignNewTx(prv *ecdsa.PrivateKey, s Signer, txdata TxData) (*Transaction, er
 
 // SignTx signs the transaction using the given signer and private key.
 func SignTx(tx *Transaction, s Signer, prv *ecdsa.PrivateKey) (*Transaction, error) {
-	h := s.Hash(tx)
+	h, err := s.Hash(tx)
+	if err != nil {
+		return nil, err
+	}
 	sig, err := crypto.Sign(h[:], prv)
 	if err != nil {
 		return nil, err
@@ -138,7 +145,8 @@ type Signer interface {
 
 	// Hash returns 'signature hash', i.e. the transaction hash that is signed by the
 	// private key. This hash does not uniquely identify the transaction.
-	Hash(tx *Transaction) types.Hash
+	// Returns an error if the transaction type is not supported by this signer.
+	Hash(tx *Transaction) (types.Hash, error)
 
 	// Equal returns true if the given signer is the same as the receiver.
 	Equal(Signer) bool
@@ -168,7 +176,11 @@ func (s londonSigner) Sender(tx *Transaction) (types.Address, error) {
 	if id.Cmp(chainId) != 0 {
 		return types.Address{}, ErrInvalidChainId
 	}
-	return recoverPlain(s.Hash(tx), R.ToBig(), S.ToBig(), V1, true)
+	h, err := s.Hash(tx)
+	if err != nil {
+		return types.Address{}, err
+	}
+	return recoverPlain(h, R.ToBig(), S.ToBig(), V1, true)
 }
 
 func (s londonSigner) Equal(s2 Signer) bool {
@@ -187,14 +199,17 @@ func (s londonSigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 	if txdata.ChainID.Sign() != 0 && txdata.ChainID.Cmp(chainId) != 0 {
 		return nil, nil, nil, ErrInvalidChainId
 	}
-	R, S, _ = decodeSignature(sig)
+	R, S, _, err = decodeSignature(sig)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	V = big.NewInt(int64(sig[64]))
 	return R, S, V, nil
 }
 
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
-func (s londonSigner) Hash(tx *Transaction) types.Hash {
+func (s londonSigner) Hash(tx *Transaction) (types.Hash, error) {
 	if tx.Type() != DynamicFeeTxType {
 		return s.eip2930Signer.Hash(tx)
 	}
@@ -210,7 +225,7 @@ func (s londonSigner) Hash(tx *Transaction) types.Hash {
 			tx.Value(),
 			tx.Data(),
 			tx.AccessList(),
-		})
+		}), nil
 }
 
 type eip2930Signer struct{ EIP155Signer }
@@ -252,7 +267,11 @@ func (s eip2930Signer) Sender(tx *Transaction) (types.Address, error) {
 	if id.Cmp(chainId) != 0 {
 		return types.Address{}, ErrInvalidChainId
 	}
-	return recoverPlain(s.Hash(tx), R.ToBig(), S.ToBig(), V1, true)
+	h, err := s.Hash(tx)
+	if err != nil {
+		return types.Address{}, err
+	}
+	return recoverPlain(h, R.ToBig(), S.ToBig(), V1, true)
 }
 
 func (s eip2930Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big.Int, err error) {
@@ -266,7 +285,10 @@ func (s eip2930Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *bi
 		if txdata.ChainID.Sign() != 0 && txdata.ChainID.Cmp(chainId) != 0 {
 			return nil, nil, nil, ErrInvalidChainId
 		}
-		R, S, _ = decodeSignature(sig)
+		R, S, _, err = decodeSignature(sig)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 		V = big.NewInt(int64(sig[64]))
 	default:
 		return nil, nil, nil, ErrTxTypeNotSupported
@@ -276,7 +298,8 @@ func (s eip2930Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *bi
 
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
-func (s eip2930Signer) Hash(tx *Transaction) types.Hash {
+// Returns ErrTxTypeNotSupported if the transaction type is not supported.
+func (s eip2930Signer) Hash(tx *Transaction) (types.Hash, error) {
 	switch tx.Type() {
 	case LegacyTxType:
 		return hash.RlpHash([]interface{}{
@@ -287,7 +310,7 @@ func (s eip2930Signer) Hash(tx *Transaction) types.Hash {
 			tx.Value(),
 			tx.Data(),
 			s.chainId, uint(0), uint(0),
-		})
+		}), nil
 	case AccessListTxType:
 		return hash.PrefixedRlpHash(
 			tx.Type(),
@@ -300,13 +323,9 @@ func (s eip2930Signer) Hash(tx *Transaction) types.Hash {
 				tx.Value(),
 				tx.Data(),
 				tx.AccessList(),
-			})
+			}), nil
 	default:
-		// This _should_ not happen, but in case someone sends in a bad
-		// json struct via RPC, it's probably more prudent to return an
-		// empty hash instead of killing the node with a panic
-		//panic("Unsupported transaction type: %d", tx.typ)
-		return types.Hash{}
+		return types.Hash{}, ErrTxTypeNotSupported
 	}
 }
 
@@ -353,7 +372,11 @@ func (s EIP155Signer) Sender(tx *Transaction) (types.Address, error) {
 	V1 := V.ToBig()
 	V1 = new(big.Int).Sub(V1, s.chainIdMul)
 	V1.Sub(V1, big8)
-	return recoverPlain(s.Hash(tx), R.ToBig(), S.ToBig(), V1, true)
+	h, err := s.Hash(tx)
+	if err != nil {
+		return types.Address{}, err
+	}
+	return recoverPlain(h, R.ToBig(), S.ToBig(), V1, true)
 }
 
 // SignatureValues returns signature values. This signature
@@ -362,7 +385,10 @@ func (s EIP155Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 	if tx.Type() != LegacyTxType {
 		return nil, nil, nil, ErrTxTypeNotSupported
 	}
-	R, S, V = decodeSignature(sig)
+	R, S, V, err = decodeSignature(sig)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	if s.chainId.Sign() != 0 {
 		V = big.NewInt(int64(sig[64] + 35))
 		V.Add(V, s.chainIdMul)
@@ -372,7 +398,7 @@ func (s EIP155Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
-func (s EIP155Signer) Hash(tx *Transaction) types.Hash {
+func (s EIP155Signer) Hash(tx *Transaction) (types.Hash, error) {
 	return hash.RlpHash([]interface{}{
 		tx.Nonce(),
 		tx.GasPrice(),
@@ -381,7 +407,7 @@ func (s EIP155Signer) Hash(tx *Transaction) types.Hash {
 		tx.Value(),
 		tx.Data(),
 		s.chainId, uint(0), uint(0),
-	})
+	}), nil
 }
 
 // HomesteadTransaction implements TransactionInterface using the
@@ -408,7 +434,11 @@ func (hs HomesteadSigner) Sender(tx *Transaction) (types.Address, error) {
 		return types.Address{}, ErrTxTypeNotSupported
 	}
 	v, r, s := tx.RawSignatureValues()
-	return recoverPlain(hs.Hash(tx), r.ToBig(), s.ToBig(), v.ToBig(), true)
+	h, err := hs.Hash(tx)
+	if err != nil {
+		return types.Address{}, err
+	}
+	return recoverPlain(h, r.ToBig(), s.ToBig(), v.ToBig(), true)
 }
 
 type FrontierSigner struct{}
@@ -427,7 +457,11 @@ func (fs FrontierSigner) Sender(tx *Transaction) (types.Address, error) {
 		return types.Address{}, ErrTxTypeNotSupported
 	}
 	v, r, s := tx.RawSignatureValues()
-	return recoverPlain(fs.Hash(tx), r.ToBig(), s.ToBig(), v.ToBig(), false)
+	h, err := fs.Hash(tx)
+	if err != nil {
+		return types.Address{}, err
+	}
+	return recoverPlain(h, r.ToBig(), s.ToBig(), v.ToBig(), false)
 }
 
 // SignatureValues returns signature values. This signature
@@ -436,13 +470,16 @@ func (fs FrontierSigner) SignatureValues(tx *Transaction, sig []byte) (r, s, v *
 	if tx.Type() != LegacyTxType {
 		return nil, nil, nil, ErrTxTypeNotSupported
 	}
-	r, s, v = decodeSignature(sig)
+	r, s, v, err = decodeSignature(sig)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	return r, s, v, nil
 }
 
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
-func (fs FrontierSigner) Hash(tx *Transaction) types.Hash {
+func (fs FrontierSigner) Hash(tx *Transaction) (types.Hash, error) {
 	return hash.RlpHash([]interface{}{
 		tx.Nonce(),
 		tx.GasPrice(),
@@ -450,17 +487,17 @@ func (fs FrontierSigner) Hash(tx *Transaction) types.Hash {
 		tx.To(),
 		tx.Value(),
 		tx.Data(),
-	})
+	}), nil
 }
 
-func decodeSignature(sig []byte) (r, s, v *big.Int) {
+func decodeSignature(sig []byte) (r, s, v *big.Int, err error) {
 	if len(sig) != crypto.SignatureLength {
-		panic(fmt.Sprintf("wrong size for signature: got %d, want %d", len(sig), crypto.SignatureLength))
+		return nil, nil, nil, fmt.Errorf("%w: got %d, want %d", ErrInvalidSignatureSize, len(sig), crypto.SignatureLength)
 	}
 	r = new(big.Int).SetBytes(sig[:32])
 	s = new(big.Int).SetBytes(sig[32:64])
 	v = new(big.Int).SetBytes([]byte{sig[64] + 27})
-	return r, s, v
+	return r, s, v, nil
 }
 
 func recoverPlain(sighash types.Hash, R, S, Vb *big.Int, homestead bool) (types.Address, error) {

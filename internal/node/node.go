@@ -249,14 +249,14 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		if depositContractAddress := cfg.ChainCfg.Apos.DepositContract; depositContractAddress != "" {
 			var addr types.Address
 			if !addr.DecodeString(depositContractAddress) {
-				panic(fmt.Sprintf("cannot decode DepositContract address: %s", depositContractAddress))
+				return nil, fmt.Errorf("cannot decode DepositContract address: %s", depositContractAddress)
 			}
 			depositContracts[addr] = new(n42deposit.Contract)
 		}
 		if depositNFTContractAddress := cfg.ChainCfg.Apos.DepositNFTContract; depositNFTContractAddress != "" {
 			var addr types.Address
 			if !addr.DecodeString(depositNFTContractAddress) {
-				panic(fmt.Sprintf("cannot decode DepositNFTContract address: %s", depositNFTContractAddress))
+				return nil, fmt.Errorf("cannot decode DepositNFTContract address: %s", depositNFTContractAddress)
 			}
 			depositContracts[addr] = new(nftdeposit.Contract)
 		}
@@ -264,7 +264,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		if depositFUJIContractAddress := cfg.ChainCfg.Apos.DepositFUJIContract; depositFUJIContractAddress != "" {
 			var addr types.Address
 			if !addr.DecodeString(depositFUJIContractAddress) {
-				panic(fmt.Sprintf("cannot decode DepositFUJIContract address: %s", depositFUJIContractAddress))
+				return nil, fmt.Errorf("cannot decode DepositFUJIContract address: %s", depositFUJIContractAddress)
 			}
 			depositContracts[addr] = new(fujideposit.Contract)
 		}
@@ -682,7 +682,7 @@ func (n *Node) Close() error {
 	case closedState:
 		return ErrNodeStopped
 	default:
-		panic(fmt.Sprintf("node is in unknown state %d", state))
+		return fmt.Errorf("node is in unknown state %d", state)
 	}
 }
 
