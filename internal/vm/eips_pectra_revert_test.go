@@ -257,18 +257,29 @@ func TestEIP7691BlobParamsConsistency(t *testing.T) {
 // TestEIP7623CalldataCostConsistency tests EIP-7623 calldata cost calculation
 // for state transition consistency.
 func TestEIP7623CalldataCostConsistency(t *testing.T) {
-	// Small data: should use standard pricing
-	smallData := make([]byte, 100)
+	// EIP-7623: Pectra always uses max(standard, floor)
+	// floor = zero*10 + nonzero*40
+
+	// Small zero data: standard=400, floor=1000 -> pectra=1000
+	smallData := make([]byte, 100) // All zeros
 	smallCostStandard := CalcCalldataCostEIP7623(smallData, false)
 	smallCostPectra := CalcCalldataCostEIP7623(smallData, true)
 
-	// Below threshold, both should be the same
-	if smallCostStandard != smallCostPectra {
-		t.Errorf("Small data cost should be same: standard=%d, pectra=%d",
+	// Pre-Pectra should use standard pricing (100 * 4 = 400)
+	if smallCostStandard != 400 {
+		t.Errorf("Small data standard cost = %d, want 400", smallCostStandard)
+	}
+	// Pectra uses max(standard=400, floor=100*10=1000) = 1000
+	if smallCostPectra != 1000 {
+		t.Errorf("Small data Pectra cost = %d, want 1000 (floor)", smallCostPectra)
+	}
+	// Pectra floor should be higher even for small data
+	if smallCostPectra <= smallCostStandard {
+		t.Errorf("Pectra floor cost should be >= standard: standard=%d, pectra=%d",
 			smallCostStandard, smallCostPectra)
 	}
 
-	// Large data: Pectra should use floor pricing
+	// Large non-zero data: standard=160000, floor=400000 -> pectra=400000
 	largeData := make([]byte, 10000)
 	for i := range largeData {
 		largeData[i] = 0xFF // Non-zero bytes
@@ -276,6 +287,14 @@ func TestEIP7623CalldataCostConsistency(t *testing.T) {
 	largeCostStandard := CalcCalldataCostEIP7623(largeData, false)
 	largeCostPectra := CalcCalldataCostEIP7623(largeData, true)
 
+	// Pre-Pectra: 10000 * 16 = 160000
+	if largeCostStandard != 160000 {
+		t.Errorf("Large data standard cost = %d, want 160000", largeCostStandard)
+	}
+	// Pectra: max(160000, 10000*40=400000) = 400000
+	if largeCostPectra != 400000 {
+		t.Errorf("Large data Pectra cost = %d, want 400000 (floor)", largeCostPectra)
+	}
 	// Pectra floor should be higher for large non-zero data
 	if largeCostPectra <= largeCostStandard {
 		t.Errorf("Pectra floor cost should be higher for large data: standard=%d, pectra=%d",
