@@ -17,68 +17,46 @@
 package eth69
 
 import (
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/utils"
 )
 
 // ConvertStatusToProtobuf converts an eth/69 StatusPacket to protobuf format.
+// Note: The current sync_pb.Status only has GenesisHash and CurrentHeight fields.
+// eth/69 specific fields (EarliestBlock, LatestBlock, etc.) are not included in the protobuf.
 func ConvertStatusToProtobuf(status *StatusPacket) *sync_pb.Status {
 	if status == nil {
 		return nil
 	}
 
 	return &sync_pb.Status{
-		ProtocolVersion: status.ProtocolVersion,
-		NetworkID:       status.NetworkID,
-		GenesisHash:     utils.ConvertHashToH256(status.Genesis),
-		CurrentHeight:   utils.ConvertUint256IntToH256(status.LatestBlock),
-		EarliestBlock:   status.EarliestBlock,
-		LatestBlock:     status.LatestBlock,
-		LatestBlockHash: utils.ConvertHashToH256(status.LatestBlockHash),
-		ForkID:          status.ForkID,
+		GenesisHash:   utils.ConvertHashToH256(status.Genesis),
+		CurrentHeight: utils.ConvertUint256IntToH256(uint256.NewInt(status.LatestBlock)),
 	}
 }
 
 // ConvertStatusFromProtobuf converts a protobuf Status message to eth/69 StatusPacket.
+// Note: Fields not in sync_pb.Status (ProtocolVersion, NetworkID, etc.) will be set to defaults.
 func ConvertStatusFromProtobuf(pbStatus *sync_pb.Status) *StatusPacket {
 	if pbStatus == nil {
 		return nil
 	}
 
+	// Convert CurrentHeight (H256) back to uint64
+	var latestBlock uint64
+	if pbStatus.CurrentHeight != nil {
+		latestBlock = utils.ConvertH256ToUint256Int(pbStatus.CurrentHeight).Uint64()
+	}
+
 	return &StatusPacket{
-		ProtocolVersion: pbStatus.ProtocolVersion,
-		NetworkID:       pbStatus.NetworkID,
+		ProtocolVersion: ETH69, // Default to ETH69
+		NetworkID:       0,     // Unknown from protobuf
 		Genesis:         utils.ConvertH256ToHash(pbStatus.GenesisHash),
-		ForkID:          pbStatus.ForkID,
-		EarliestBlock:   pbStatus.EarliestBlock,
-		LatestBlock:     pbStatus.LatestBlock,
-		LatestBlockHash: utils.ConvertH256ToHash(pbStatus.LatestBlockHash),
-	}
-}
-
-// ConvertBlockRangeUpdateToProtobuf converts a BlockRangeUpdatePacket to protobuf.
-func ConvertBlockRangeUpdateToProtobuf(update *BlockRangeUpdatePacket) *sync_pb.BlockRangeUpdate {
-	if update == nil {
-		return nil
-	}
-
-	return &sync_pb.BlockRangeUpdate{
-		EarliestBlock:   update.EarliestBlock,
-		LatestBlock:     update.LatestBlock,
-		LatestBlockHash: utils.ConvertHashToH256(update.LatestBlockHash),
-	}
-}
-
-// ConvertBlockRangeUpdateFromProtobuf converts a protobuf BlockRangeUpdate to native format.
-func ConvertBlockRangeUpdateFromProtobuf(pbUpdate *sync_pb.BlockRangeUpdate) *BlockRangeUpdatePacket {
-	if pbUpdate == nil {
-		return nil
-	}
-
-	return &BlockRangeUpdatePacket{
-		EarliestBlock:   pbUpdate.EarliestBlock,
-		LatestBlock:     pbUpdate.LatestBlock,
-		LatestBlockHash: utils.ConvertH256ToHash(pbUpdate.LatestBlockHash),
+		ForkID:          nil,
+		EarliestBlock:   0, // Unknown from protobuf
+		LatestBlock:     latestBlock,
+		LatestBlockHash: utils.ConvertH256ToHash(pbStatus.CurrentHeight), // Use CurrentHeight as a proxy
 	}
 }
 

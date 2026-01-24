@@ -6,6 +6,10 @@
 
 package internal
 
+import (
+	"github.com/n42blockchain/N42/common/crypto/pke/kyber/internal/common"
+)
+
 const (
 	K             = {{.K}}
 	Eta1          = {{.Eta1}}

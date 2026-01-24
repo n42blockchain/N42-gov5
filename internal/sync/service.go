@@ -6,18 +6,19 @@ package sync
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"time"
+
 	lru "github.com/hashicorp/golang-lru/v2"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/utils"
-	"sync"
-	"time"
-
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/pkg/errors"
 )
 
@@ -83,7 +84,7 @@ type Service struct {
 }
 
 // NewService initializes new regular sync service.
-func NewService(ctx context.Context, opts ...Option) *Service {
+func NewService(ctx context.Context, opts ...Option) (*Service, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	r := &Service{
 		ctx:    ctx,
@@ -93,7 +94,8 @@ func NewService(ctx context.Context, opts ...Option) *Service {
 
 	for _, opt := range opts {
 		if err := opt(r); err != nil {
-			return nil
+			cancel()
+			return nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
 
@@ -105,12 +107,13 @@ func NewService(ctx context.Context, opts ...Option) *Service {
 
 	digest, err := r.currentForkDigest()
 	if err != nil {
-		panic("Could not retrieve current fork digest")
+		cancel()
+		return nil, fmt.Errorf("failed to retrieve current fork digest: %w", err)
 	}
 	r.registerSubscribers(digest)
 	//go r.forkWatcher()
 
-	return r
+	return r, nil
 }
 
 // Start the regular sync service.
