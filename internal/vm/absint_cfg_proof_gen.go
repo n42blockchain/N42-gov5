@@ -1,17 +1,12 @@
 package vm
 
 import (
-	"bufio"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/emicklei/dot"
 	"github.com/holiman/uint256"
 )
 
@@ -495,93 +490,6 @@ func (cfg *Cfg) GetCoverageStats() CfgCoverageStats {
 	stats.Uncovered = stats.Instructions - stats.Covered
 	stats.Coverage = stats.Covered * 100 / stats.Instructions
 	return stats
-}
-
-func (cfg *Cfg) PrintAnlyState() {
-	//	es := make([]edge, len(edges))
-	//	copy(es, edges)
-	//	sortEdges(es)
-
-	var badJumpList []string
-	for pc, stmt := range cfg.Program.Stmts {
-		if stmt.inferredAsData {
-			//fmt.Printf("data: %v\n", stmt.inferredAsData)
-			continue
-		}
-
-		if stmt.opcode == JUMPDEST {
-			fmt.Println()
-		}
-
-		var valueStr string
-		if stmt.opcode.IsPush() {
-			valueStr = fmt.Sprintf("%v %v", stmt.opcode, stmt.value.Hex())
-		} else {
-			valueStr = fmt.Sprintf("%v", stmt.opcode)
-		}
-
-		pc0s := make([]string, 0)
-		for pc0 := range cfg.PrevEdgeMap[pc] {
-			pc0s = append(pc0s, strconv.Itoa(pc0))
-		}
-
-		if cfg.BadJumps[pc] {
-			out := fmt.Sprintf("[%5v] (w:%2v) %3v\t %-25v %-10v %v\n", cfg.D[pc].anlyCounter, cfg.D[pc].worklistLen, pc, valueStr, strings.Join(pc0s, ","), cfg.D[pc].String(false))
-			fmt.Print(out)
-			badJumpList = append(badJumpList, out)
-		} else if cfg.PrevEdgeMap[pc] != nil {
-			fmt.Printf("[%5v] (w:%2v) %3v\t %-25v %-10v %v\n", cfg.D[pc].anlyCounter, cfg.D[pc].worklistLen, pc, valueStr, strings.Join(pc0s, ","), cfg.D[pc].String(true))
-		} else {
-			fmt.Printf("[%5v] (w:%2v) %3v\t %-25v\n", cfg.D[pc].anlyCounter, cfg.D[pc].worklistLen, pc, valueStr)
-		}
-	}
-
-	print("\nFull list of bad jumps:\n")
-	for _, badJump := range badJumpList {
-		fmt.Println(badJump)
-	}
-
-	g := dot.NewGraph(dot.Directed)
-	block2node := make(map[*Block]*dot.Node)
-	for _, block := range cfg.Program.Blocks {
-		n := g.Node(fmt.Sprintf("%v\n%v", block.Entrypc, block.Exitpc)).Box()
-		block2node[block] = &n
-	}
-
-	for pc1 := range cfg.PrevEdgeMap {
-		for pc0 := range cfg.PrevEdgeMap[pc1] {
-			block1 := cfg.Program.Entry2block[pc1]
-
-			if block1 == nil {
-				continue
-			}
-
-			block0 := cfg.Program.Exit2block[pc0]
-			if block0 == nil {
-				continue
-			}
-
-			n0 := block2node[block0]
-			n1 := block2node[block1]
-			g.Edge(*n0, *n1)
-		}
-	}
-
-	path := "cfg.dot"
-	_ = os.Remove(path)
-
-	f, errcr := os.Create(path)
-	if errcr != nil {
-		panic(errcr)
-	}
-	defer f.Close()
-
-	w := bufio.NewWriter(f)
-	_, errwr := w.WriteString(g.String())
-	if errwr != nil {
-		panic(errwr)
-	}
-	_ = w.Flush()
 }
 
 func (metrics *CfgMetrics) GetBadJumpReason() string {
