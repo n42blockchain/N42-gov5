@@ -237,7 +237,7 @@ func TestBLS12381PairingPrecompile(t *testing.T) {
 
 // TestModExpPrecompile tests modular exponentiation
 func TestModExpPrecompile(t *testing.T) {
-	p := vm.GetBigModExp(true) // EIP-2565 version
+	p := vm.GetBigModExp(true, false, false) // EIP-2565 version
 
 	// Test: 2^3 mod 5 = 3
 	// Input format: base_len || exp_len || mod_len || base || exp || mod
@@ -268,7 +268,7 @@ func TestModExpPrecompile(t *testing.T) {
 
 // TestModExpLargeNumbers tests modexp with larger numbers
 func TestModExpLargeNumbers(t *testing.T) {
-	p := vm.GetBigModExp(true)
+	p := vm.GetBigModExp(true, false, false)
 
 	// Test: 3^5 mod 13 = 243 mod 13 = 9
 	input := make([]byte, 96+1+1+1)
@@ -562,7 +562,7 @@ func BenchmarkBN256ScalarMul(b *testing.B) {
 }
 
 func BenchmarkModExp(b *testing.B) {
-	p := vm.GetBigModExp(true)
+	p := vm.GetBigModExp(true, false, false)
 	input := make([]byte, 99)
 	input[31] = 1
 	input[63] = 1
