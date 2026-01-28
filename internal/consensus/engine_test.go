@@ -290,6 +290,8 @@ func (e *testEngine) Type() params.ConsensusType {
 }
 
 func (e *testEngine) VerifyHeader(chain consensus.ChainHeaderReader, header block.IHeader, seal bool) error {
+	// Small delay to ensure measurable timing in instrumentation tests
+	time.Sleep(time.Microsecond)
 	return nil
 }
 
