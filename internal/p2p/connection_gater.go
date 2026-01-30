@@ -26,7 +26,13 @@ const (
 )
 
 // InterceptPeerDial tests whether we're permitted to Dial the specified peer.
-func (_ *Service) InterceptPeerDial(_ peer.ID) (allow bool) {
+// S3 fix: Check if the peer is on the bad peer list before allowing dial.
+func (s *Service) InterceptPeerDial(pid peer.ID) (allow bool) {
+	// Reject dialing to peers marked as bad
+	if s.peers.IsBad(pid) {
+		log.Debug("Rejecting dial to bad peer", "peer", pid)
+		return false
+	}
 	return true
 }
 
@@ -62,7 +68,21 @@ func (s *Service) InterceptAccept(n network.ConnMultiaddrs) (allow bool) {
 
 // InterceptSecured tests whether a given connection, now authenticated,
 // is allowed.
-func (_ *Service) InterceptSecured(_ network.Direction, _ peer.ID, _ network.ConnMultiaddrs) (allow bool) {
+// S3 fix: Check if the authenticated peer is on the bad peer list and
+// validate connection limits.
+func (s *Service) InterceptSecured(dir network.Direction, pid peer.ID, _ network.ConnMultiaddrs) (allow bool) {
+	// Reject connections from/to bad peers
+	if s.peers.IsBad(pid) {
+		log.Debug("Rejecting secured connection from bad peer", "peer", pid, "direction", dir)
+		return false
+	}
+
+	// For inbound connections, check if we're at peer limit
+	if dir == network.DirInbound && s.isPeerAtLimit(true /* inbound */) {
+		log.Debug("Rejecting secured inbound connection", "peer", pid, "reason", "at peer limit")
+		return false
+	}
+
 	return true
 }
 

@@ -112,52 +112,76 @@ func NewTxsFetcher(ctx context.Context, getTx func(hash types.Hash) *transaction
 	return f
 }
 
-func (f TxsFetcher) Start() error {
+// Start starts the fetcher goroutines for transaction broadcasting.
+// R3/R4 fix: Track goroutines properly for cleanup.
+func (f *TxsFetcher) Start() error {
 	go f.sendBloomTransactionLoop()
 	go f.bloomBroadcastLoop()
 	return nil
 }
 
-// sendBloomTransactionLoop
-func (f TxsFetcher) sendBloomTransactionLoop() {
+// Stop gracefully stops all fetcher goroutines and releases resources.
+// R3/R4 fix: Implement proper shutdown mechanism.
+func (f *TxsFetcher) Stop() {
+	if f.cancel != nil {
+		f.cancel()
+	}
+	f.finished = true
+}
+
+// sendBloomTransactionLoop periodically sends pending transactions to peers.
+// R3/R4 fix: Use proper loop with ticker cleanup on context cancellation.
+func (f *TxsFetcher) sendBloomTransactionLoop() {
 	tick := time.NewTicker(BloomSendTransactionTime)
+	defer tick.Stop() // R3 fix: Ensure ticker is stopped to prevent resource leak
 
-	select {
-	case <-tick.C:
-		for ID, req := range f.peerRequests {
-			if p, ok := f.peers[ID]; ok == true {
+	for {
+		select {
+		case <-tick.C:
+			for ID, req := range f.peerRequests {
+				if p, ok := f.peers[ID]; ok {
+					var txs []*types_pb.Transaction
 
-				var txs []*types_pb.Transaction
-
-				for i := 0; i < BloomSendMaxTransactions; i++ {
-					hash := req.hashes.pop()
-					tx := f.getTx(hash)
-					txs = append(txs, tx.ToProtoMessage().(*types_pb.Transaction))
-				}
-				msg := &sync_proto.SyncTask{
-					Id:       rand.Uint64(),
-					Ok:       true,
-					SyncType: sync_proto.SyncType_TransactionRes,
-					Payload: &sync_proto.SyncTask_SyncTransactionResponse{
-						SyncTransactionResponse: &sync_proto.SyncTransactionResponse{
-							Transactions: txs,
+					// Safely pop hashes, checking for empty slice
+					for i := 0; i < BloomSendMaxTransactions && len(req.hashes) > 0; i++ {
+						hash := req.hashes.pop()
+						tx := f.getTx(hash)
+						if tx != nil {
+							txs = append(txs, tx.ToProtoMessage().(*types_pb.Transaction))
+						}
+					}
+					if len(txs) == 0 {
+						continue
+					}
+					msg := &sync_proto.SyncTask{
+						Id:       rand.Uint64(),
+						Ok:       true,
+						SyncType: sync_proto.SyncType_TransactionRes,
+						Payload: &sync_proto.SyncTask_SyncTransactionResponse{
+							SyncTransactionResponse: &sync_proto.SyncTransactionResponse{
+								Transactions: txs,
+							},
 						},
-					},
+					}
+					data, _ := proto.Marshal(msg)
+					p.WriteMsg(message.MsgTransaction, data)
 				}
-				data, _ := proto.Marshal(msg)
-				p.WriteMsg(message.MsgTransaction, data)
 			}
+		case <-f.ctx.Done():
+			return
 		}
-	case <-f.ctx.Done():
-		return
 	}
 }
 
-func (f TxsFetcher) bloomBroadcastLoop() {
+// bloomBroadcastLoop periodically broadcasts bloom filter to request missing transactions.
+// R3/R4 fix: Use proper loop with ticker cleanup on context cancellation.
+func (f *TxsFetcher) bloomBroadcastLoop() {
 	if f.bloom == nil {
 		return
 	}
 	tick := time.NewTicker(BloomFetcherMaxTime)
+	defer tick.Stop() // R3 fix: Ensure ticker is stopped to prevent resource leak
+
 	bloom, err := f.bloom.Marshal()
 	if err != nil {
 		log.Warn("txs fetcher bloom Marshal err", zap.Error(err))
@@ -175,17 +199,26 @@ func (f TxsFetcher) bloomBroadcastLoop() {
 		},
 	}
 	request, _ := proto.Marshal(msg)
-	select {
-	case peerId := <-f.peerJoinCh:
-		f.peers[peerId.Peer].WriteMsg(message.MsgTransaction, request)
-	case <-tick.C:
-	case <-f.ctx.Done():
-		return
+
+	for {
+		select {
+		case peerId := <-f.peerJoinCh:
+			if p, ok := f.peers[peerId.Peer]; ok {
+				p.WriteMsg(message.MsgTransaction, request)
+			}
+		case <-tick.C:
+			// Periodic bloom broadcast to all connected peers
+			for _, p := range f.peers {
+				p.WriteMsg(message.MsgTransaction, request)
+			}
+		case <-f.ctx.Done():
+			return
+		}
 	}
 }
 
-// ConnHandler handler peer message
-func (f TxsFetcher) ConnHandler(data []byte, ID peer.ID) error {
+// ConnHandler handles peer messages for transaction synchronization.
+func (f *TxsFetcher) ConnHandler(data []byte, ID peer.ID) error {
 	_, ok := f.peers[ID]
 	if !ok {
 		return ErrBadPeer
