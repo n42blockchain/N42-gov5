@@ -70,17 +70,18 @@ func (f *Feed) init(etype reflect.Type) {
 //
 // The channel should have ample buffer space to avoid blocking other subscribers.
 // Slow subscribers are not dropped.
-func (f *Feed) Subscribe(channel interface{}) Subscription {
+// Returns (Subscription, nil) on success, or (nil, error) if the channel is invalid.
+func (f *Feed) Subscribe(channel interface{}) (Subscription, error) {
 	chanval := reflect.ValueOf(channel)
 	chantyp := chanval.Type()
 	if chantyp.Kind() != reflect.Chan || chantyp.ChanDir()&reflect.SendDir == 0 {
-		panic(errBadChannel)
+		return nil, errBadChannel
 	}
 	sub := &feedSub{feed: f, channel: chanval, err: make(chan error, 1)}
 
 	f.once.Do(func() { f.init(chantyp.Elem()) })
 	if f.etype != chantyp.Elem() {
-		panic(feedTypeError{op: "Subscribe", got: chantyp, want: reflect.ChanOf(reflect.SendDir, f.etype)})
+		return nil, feedTypeError{op: "Subscribe", got: chantyp, want: reflect.ChanOf(reflect.SendDir, f.etype)}
 	}
 
 	f.mu.Lock()
@@ -89,7 +90,7 @@ func (f *Feed) Subscribe(channel interface{}) Subscription {
 	// The next Send will add it to f.sendCases.
 	cas := reflect.SelectCase{Dir: reflect.SelectSend, Chan: chanval}
 	f.inbox = append(f.inbox, cas)
-	return sub
+	return sub, nil
 }
 
 func (f *Feed) remove(sub *feedSub) {

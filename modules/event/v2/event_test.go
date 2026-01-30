@@ -60,8 +60,8 @@ func TestEvent_Send(t *testing.T) {
 	ch1 := make(chan int, 1)
 	ch2 := make(chan A, 1)
 
-	sub1 := feed.Subscribe(ch1)
-	sub2 := feed.Subscribe(ch2)
+	sub1, _ := feed.Subscribe(ch1)
+	sub2, _ := feed.Subscribe(ch2)
 
 	var wg sync.WaitGroup
 	wg.Add(2)

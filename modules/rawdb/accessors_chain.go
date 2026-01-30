@@ -253,6 +253,9 @@ func deleteHeader(db kv.Deleter, hash types.Hash, number uint64) {
 // ReadBodyRAW retrieves the block body (transactions and uncles) in encoding.
 func ReadBodyRAW(db kv.Tx, hash types.Hash, number uint64) []byte {
 	body := ReadCanonicalBodyWithTransactions(db, hash, number)
+	if body == nil {
+		return nil
+	}
 	pbBody := body.ToProtoMessage()
 
 	bodyRaw, err := proto.Marshal(pbBody)
@@ -444,6 +447,9 @@ func RawTransactionsRange(db kv.Getter, from, to uint64) (res [][]byte, err erro
 		if len(bodyRaw) == 0 {
 			continue
 		}
+		if len(bodyRaw) < 12 {
+			continue
+		}
 
 		baseTxId := binary.BigEndian.Uint64(bodyRaw[:8])
 		txAmount := binary.BigEndian.Uint32(bodyRaw[8:])
@@ -467,6 +473,9 @@ func ReadBodyForStorageByKey(db kv.Getter, k []byte) (*block.BodyForStorage, err
 	if len(bodyRaw) == 0 {
 		return nil, nil
 	}
+	if len(bodyRaw) < 12 {
+		return nil, fmt.Errorf("invalid body raw length: %d", len(bodyRaw))
+	}
 	bodyForStorage := new(block.BodyForStorage)
 	bodyForStorage.BaseTxId = binary.BigEndian.Uint64(bodyRaw[:8])
 	bodyForStorage.TxAmount = binary.BigEndian.Uint32(bodyRaw[8:])
@@ -478,13 +487,18 @@ func ReadBody(db kv.Getter, hash types.Hash, number uint64) (*block.Body, uint64
 	if len(data) == 0 {
 		return nil, 0, 0
 	}
+	if len(data) < 12 {
+		log.Error("ReadBody: invalid body raw length", "number", number, "hash", hash, "len", len(data))
+		return nil, 0, 0
+	}
 	bodyForStorage := new(block.BodyForStorage)
 	bodyForStorage.BaseTxId = binary.BigEndian.Uint64(data[:8])
 	bodyForStorage.TxAmount = binary.BigEndian.Uint32(data[8:])
 
 	body := new(block.Body)
 	if bodyForStorage.TxAmount < 2 {
-		panic(fmt.Sprintf("block body hash too few txs amount: %d, %d", number, bodyForStorage.TxAmount))
+		log.Error("ReadBody: block body has too few txs amount", "number", number, "txAmount", bodyForStorage.TxAmount)
+		return nil, 0, 0
 	}
 	return body, bodyForStorage.BaseTxId + 1, bodyForStorage.TxAmount - 2 // 1 system txn in the begining of block, and 1 at the end
 }

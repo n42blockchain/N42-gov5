@@ -102,8 +102,34 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 					//currentTime := prysmTime.Now()
 					currentTime := time.Now()
 
-					// Wait for peer to initiate handshake
-					time.Sleep(timeForStatus)
+					// Wait for peer to initiate handshake with timeout
+					statusReceived := make(chan struct{})
+					go func() {
+						ticker := time.NewTicker(100 * time.Millisecond)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-ticker.C:
+								if _, err := s.peers.ChainState(remotePeer); err == nil {
+									close(statusReceived)
+									return
+								}
+							case <-time.After(timeForStatus):
+								return
+							case <-s.ctx.Done():
+								return
+							}
+						}
+					}()
+
+					select {
+					case <-statusReceived:
+						// Status received, continue
+					case <-time.After(timeForStatus):
+						// Timeout waiting for status
+					case <-s.ctx.Done():
+						return
+					}
 
 					// Exit if we are disconnected with the peer.
 					if s.host.Network().Connectedness(remotePeer) != network.Connected {

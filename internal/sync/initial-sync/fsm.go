@@ -125,12 +125,17 @@ func (smm *stateMachineManager) findStateMachine(startSlot *uint256.Int) (*state
 }
 
 // highestStartSlot returns the start slot for the latest known state machine.
+// Fix: Return nil on error to force callers to check error properly.
 func (smm *stateMachineManager) highestStartSlot() (*uint256.Int, error) {
 	if len(smm.keys) == 0 {
-		return uint256.NewInt(0), errors.New("no state machine exist")
+		return nil, errors.New("no state machine exist")
 	}
 	key := smm.keys[len(smm.keys)-1]
-	return smm.machines[key.Uint64()].start, nil
+	machine, ok := smm.machines[key.Uint64()]
+	if !ok || machine == nil {
+		return nil, errors.New("state machine not found for key")
+	}
+	return machine.start.Clone(), nil
 }
 
 // allMachinesInState checks whether all registered state machines are in the same state.
@@ -177,13 +182,21 @@ func (m *stateMachine) trigger(event eventID, data interface{}) error {
 }
 
 // isFirst checks whether a given machine has the lowest start slot.
+// Fix: Use value comparison instead of pointer comparison for *uint256.Int.
 func (m *stateMachine) isFirst() bool {
-	return m.start == m.smm.keys[0]
+	if len(m.smm.keys) == 0 {
+		return false
+	}
+	return m.start.Cmp(m.smm.keys[0]) == 0
 }
 
 // isLast checks whether a given machine has the highest start slot.
+// Fix: Use value comparison instead of pointer comparison for *uint256.Int.
 func (m *stateMachine) isLast() bool {
-	return m.start == m.smm.keys[len(m.smm.keys)-1]
+	if len(m.smm.keys) == 0 {
+		return false
+	}
+	return m.start.Cmp(m.smm.keys[len(m.smm.keys)-1]) == 0
 }
 
 // String returns human-readable representation of a FSM state.

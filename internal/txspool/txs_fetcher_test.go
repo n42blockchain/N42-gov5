@@ -143,10 +143,6 @@ func TestNewTxsFetcher(t *testing.T) {
 		t.Error("peerRequests map should be initialized")
 	}
 
-	if fetcher.fetched == nil {
-		t.Error("fetched map should be initialized")
-	}
-
 	if fetcher.ctx == nil {
 		t.Error("context should be set")
 	}

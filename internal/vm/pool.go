@@ -31,7 +31,11 @@ var Uint256Pool = &sync.Pool{
 
 // GetUint256 gets a *uint256.Int from the pool.
 func GetUint256() *uint256.Int {
-	return Uint256Pool.Get().(*uint256.Int)
+	v, ok := Uint256Pool.Get().(*uint256.Int)
+	if !ok {
+		return new(uint256.Int)
+	}
+	return v
 }
 
 // PutUint256 returns a *uint256.Int to the pool after clearing it.

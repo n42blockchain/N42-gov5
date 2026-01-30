@@ -43,16 +43,18 @@ func (s *Service) Send(ctx context.Context, message interface{}, baseTopic strin
 	}
 	if _, err := s.Encoding().EncodeWithMaxLength(stream, castedMsg); err != nil {
 		//tracing.AnnotateError(span, err)
-		_err := stream.Reset()
-		_ = _err
+		if resetErr := stream.Reset(); resetErr != nil {
+			log.Debug("Failed to reset stream after encode error", "err", resetErr)
+		}
 		return nil, err
 	}
 
 	// Close stream for writing.
 	if err := stream.CloseWrite(); err != nil {
 		//tracing.AnnotateError(span, err)
-		_err := stream.Reset()
-		_ = _err
+		if resetErr := stream.Reset(); resetErr != nil {
+			log.Debug("Failed to reset stream after close write error", "err", resetErr)
+		}
 		return nil, err
 	}
 

@@ -46,7 +46,7 @@ func SaveConfigToFile(file string, config Config) error {
 		file = "./config2.yaml"
 	}
 
-	fd, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0777)
+	fd, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		//log.Errorf("filed open file %v, err %v", file, err)
 		return err

@@ -79,6 +79,7 @@ func (tx *DynamicFeeTx) copy() TxData {
 		cpy.S.Set(tx.S)
 	}
 	if tx.Sign != nil {
+		cpy.Sign = make([]byte, len(tx.Sign))
 		copy(cpy.Sign, tx.Sign)
 	}
 	return cpy

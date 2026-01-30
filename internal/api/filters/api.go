@@ -119,7 +119,10 @@ func (filterApi *FilterAPI) NewPendingTransactions(ctx context.Context) (*jsonrp
 		return &jsonrpc.Subscription{}, jsonrpc.ErrNotificationsUnsupported
 	}
 
-	rpcSub := notifier.CreateSubscription()
+	rpcSub, err := notifier.CreateSubscription()
+	if err != nil {
+		return &jsonrpc.Subscription{}, err
+	}
 
 	go func() {
 		txHashes := make(chan []types.Hash, 128)
@@ -186,7 +189,10 @@ func (filterApi *FilterAPI) NewHeads(ctx context.Context) (*jsonrpc.Subscription
 		return &jsonrpc.Subscription{}, jsonrpc.ErrNotificationsUnsupported
 	}
 
-	rpcSub := notifier.CreateSubscription()
+	rpcSub, err := notifier.CreateSubscription()
+	if err != nil {
+		return &jsonrpc.Subscription{}, err
+	}
 
 	go func() {
 		headers := make(chan block.IHeader)
@@ -215,10 +221,11 @@ func (filterApi *FilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*jso
 		return &jsonrpc.Subscription{}, jsonrpc.ErrNotificationsUnsupported
 	}
 
-	var (
-		rpcSub      = notifier.CreateSubscription()
-		matchedLogs = make(chan []*block.Log)
-	)
+	rpcSub, err := notifier.CreateSubscription()
+	if err != nil {
+		return &jsonrpc.Subscription{}, err
+	}
+	matchedLogs := make(chan []*block.Log)
 
 	logsSub, err := filterApi.events.SubscribeLogs(crit, matchedLogs)
 	if err != nil {

@@ -52,14 +52,22 @@ func (s *source) Int63() int64 {
 }
 
 // Uint64 returns uniformly-distributed random (as in CSPRNG) uint64 value within [0, 1<<64) range.
-// Panics if random generator reader cannot return data.
+// Retries up to 3 times on transient errors. Panics only if all retries are exhausted.
 func (_ *source) Uint64() (val uint64) {
 	lock.RLock()
 	defer lock.RUnlock()
-	if err := binary.Read(rand.Reader, binary.BigEndian, &val); err != nil {
-		panic(err)
+
+	const maxRetries = 3
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		if err := binary.Read(rand.Reader, binary.BigEndian, &val); err != nil {
+			lastErr = err
+			continue
+		}
+		return val
 	}
-	return
+	// Only panic after all retries are exhausted
+	panic("crypto/rand: failed to read random data after retries: " + lastErr.Error())
 }
 
 // Rand is alias for underlying random generator.

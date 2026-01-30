@@ -201,7 +201,15 @@ func (q *blocksQueue) loop() {
 						} else {
 							q.exitConditions.noRequiredPeersErrRetries++
 							log.Debug("Waiting for finalized peers")
-							time.Sleep(noRequiredPeersErrRefreshInterval)
+							// Fix: Use select + timer to allow context cancellation during wait
+							timer := time.NewTimer(noRequiredPeersErrRefreshInterval)
+							select {
+							case <-timer.C:
+								// Wait completed, continue
+							case <-q.ctx.Done():
+								timer.Stop()
+								return
+							}
 						}
 						continue
 					}

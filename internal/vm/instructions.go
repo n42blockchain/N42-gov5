@@ -802,7 +802,8 @@ func opCallCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	addr, value, inOffset, inSize, retOffset, retSize := stack.Pop(), stack.Pop(), stack.Pop(), stack.Pop(), stack.Pop(), stack.Pop()
 	toAddr := types.Address(addr.Bytes20())
 	// Get arguments from the memory.
-	args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
+	// Safe conversion: use MustSafeUint64ToInt64 to prevent overflow
+	args := scope.Memory.GetPtr(MustSafeUint64ToInt64(inOffset.Uint64()), MustSafeUint64ToInt64(inSize.Uint64()))
 
 	if !value.IsZero() {
 		gas += params.CallStipend

@@ -705,6 +705,9 @@ func (p *Status) HighestBlockNumber() *uint256.Int {
 			highestSlot = peerData.CurrentHeight()
 		}
 	}
+	if highestSlot == nil {
+		return uint256.NewInt(0)
+	}
 	return highestSlot.Clone()
 }
 

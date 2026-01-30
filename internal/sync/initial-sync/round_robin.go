@@ -102,6 +102,11 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 		firstBlock = blocks[0]
 	}
 
+	// Fix: Check if blocks is empty after skipping processed blocks
+	if len(blocks) == 0 {
+		return 0, errors.New("no unprocessed blocks remaining after filtering")
+	}
+
 	if !s.cfg.Chain.HasBlock(firstBlock.ParentHash(), firstBlock.Number64().Uint64()-1) {
 		return 0, fmt.Errorf("%w: %s (in processBatchedBlocks, Number=%d)", errParentDoesNotExist, firstBlock.ParentHash(), firstBlock.Number64().Uint64())
 	}
@@ -130,10 +135,10 @@ func (s *Service) updatePeerScorerStats(pid peer.ID, startBlockNr *uint256.Int) 
 // Throttled to log every 5 seconds or every 10000 blocks to reduce log spam.
 func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 	s.counter.Incr(int64(len(blks)))
-	
+
 	lastBlock := blks[len(blks)-1]
 	currentBlockNum := utils.ConvertH256ToUint256Int(lastBlock.Header.Number).Uint64()
-	
+
 	// Initialize sync tracking on first call
 	if s.syncStartTime.IsZero() {
 		s.syncStartTime = time.Now()
@@ -141,16 +146,16 @@ func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 		s.lastLogTime = time.Now()
 		s.lastLogBlock = currentBlockNum
 	}
-	
+
 	// Throttle logging: every 5 seconds or every 10000 blocks
 	now := time.Now()
 	blocksSinceLog := currentBlockNum - s.lastLogBlock
 	timeSinceLog := now.Sub(s.lastLogTime)
-	
+
 	if timeSinceLog < 5*time.Second && blocksSinceLog < 10000 {
 		return
 	}
-	
+
 	// Update last log markers
 	s.lastLogTime = now
 	s.lastLogBlock = currentBlockNum
@@ -159,18 +164,18 @@ func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 	if rate == 0 {
 		rate = 1
 	}
-	
+
 	targetNum := s.highestExpectedBlockNr.Uint64()
 	remaining := targetNum - currentBlockNum
 	progress := float64(currentBlockNum) / float64(targetNum) * 100
-	
+
 	// Calculate ETA
 	eta := "calculating..."
 	if rate > 0 && remaining > 0 {
 		etaSecs := float64(remaining) / rate
 		eta = formatDuration(time.Duration(etaSecs) * time.Second)
 	}
-	
+
 	// Format: Syncing #175,000 → #10.88M (1.6%) ▸ 500 blk/s ▸ ETA 5h58m ▸ 1 peer
 	log.Info(fmt.Sprintf("Syncing #%s → #%s (%.1f%%) ▸ %.0f blk/s ▸ ETA %s ▸ %d peer(s)",
 		formatNumber(currentBlockNum),

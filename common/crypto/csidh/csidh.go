@@ -1,6 +1,7 @@
 package csidh
 
 import (
+	"fmt"
 	"io"
 )
 
@@ -41,13 +42,15 @@ type PrivateKey struct {
 }
 
 // randFp generates random element from Fp.
-func (s *fpRngGen) randFp(v *fp, rng io.Reader) {
+// Returns error if random number generation fails.
+func (s *fpRngGen) randFp(v *fp, rng io.Reader) error {
 	mask := uint64(1<<(pbits%limbBitSize)) - 1
-	for {
+	const maxAttempts = 1000 // Prevent infinite loop
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		*v = fp{}
 		_, err := io.ReadFull(rng, s.wbuf[:])
 		if err != nil {
-			panic("Can't read random number")
+			return fmt.Errorf("failed to read random number: %w", err)
 		}
 
 		for i := 0; i < len(s.wbuf); i++ {
@@ -58,9 +61,10 @@ func (s *fpRngGen) randFp(v *fp, rng io.Reader) {
 
 		v[len(v)-1] &= mask
 		if isLess(v, &p) {
-			return
+			return nil
 		}
 	}
+	return fmt.Errorf("failed to generate valid random field element after %d attempts", maxAttempts)
 }
 
 // cofactorMul helper implements batch cofactor multiplication as described
@@ -118,7 +122,8 @@ func cofactorMul(p *point, a *coeff, halfL, halfR int, order *fp) (bool, bool) {
 // groupAction evaluates group action of prv.e on a Montgomery
 // curve represented by coefficient pub.A.
 // This is implementation of algorithm 2 from ia.cr/2018/383.
-func groupAction(pub *PublicKey, prv *PrivateKey, rng io.Reader) {
+// Returns error if random number generation fails.
+func groupAction(pub *PublicKey, prv *PrivateKey, rng io.Reader) error {
 	var k [2]fp
 	var e [2][primeCount]uint8
 	done := [2]bool{false, false}
@@ -148,7 +153,9 @@ func groupAction(pub *PublicKey, prv *PrivateKey, rng io.Reader) {
 	for {
 		var P point
 		var rhs fp
-		prv.randFp(&P.x, rng)
+		if err := prv.randFp(&P.x, rng); err != nil {
+			return fmt.Errorf("groupAction: %w", err)
+		}
 		P.z = one
 		montEval(&rhs, &A.a, &P.x)
 		sign := rhs.isNonQuadRes()
@@ -192,6 +199,7 @@ func groupAction(pub *PublicKey, prv *PrivateKey, rng io.Reader) {
 		}
 	}
 	pub.a = A.a
+	return nil
 }
 
 // PrivateKey operations
@@ -275,9 +283,9 @@ func (c *PublicKey) Export(out []byte) bool {
 	return true
 }
 
-func GeneratePublicKey(pub *PublicKey, prv *PrivateKey, rng io.Reader) {
+func GeneratePublicKey(pub *PublicKey, prv *PrivateKey, rng io.Reader) error {
 	pub.reset()
-	groupAction(pub, prv, rng)
+	return groupAction(pub, prv, rng)
 }
 
 // Validate returns true if 'pub' is a valid cSIDH public key,
@@ -287,15 +295,16 @@ func GeneratePublicKey(pub *PublicKey, prv *PrivateKey, rng io.Reader) {
 //	y^2 = x^3 + pub.a * x^2 + x
 //
 // is supersingular.
-func Validate(pub *PublicKey, rng io.Reader) bool {
+// Returns (valid, error) where error indicates RNG failure.
+func Validate(pub *PublicKey, rng io.Reader) (bool, error) {
 	// Check if in range
 	if !isLess(&pub.a, &p) {
-		return false
+		return false, nil
 	}
 
 	// Check if pub represents a smooth Montgomery curve.
 	if pub.a.equal(&two) || pub.a.equal(&twoNeg) {
-		return false
+		return false, nil
 	}
 
 	// Check if pub represents a supersingular curve.
@@ -307,7 +316,9 @@ func Validate(pub *PublicKey, rng io.Reader) bool {
 		// supersingularity. Probability of random P having big
 		// enough order is very high, as proven by W.Castryck et
 		// al. (ia.cr/2018/383, ch 5)
-		pub.randFp(&P.x, rng)
+		if err := pub.randFp(&P.x, rng); err != nil {
+			return false, fmt.Errorf("Validate: %w", err)
+		}
 		P.z = one
 
 		xDbl(&P, &P, &A)
@@ -315,7 +326,7 @@ func Validate(pub *PublicKey, rng io.Reader) bool {
 
 		done, res := cofactorMul(&P, &coeff{A.x, A.z}, 0, len(primes), &fp{1})
 		if done {
-			return res
+			return res, nil
 		}
 	}
 }
@@ -325,11 +336,18 @@ func Validate(pub *PublicKey, rng io.Reader) bool {
 // More precisely, shared secret is a Montgomery coefficient A of a secret
 // curve y^2 = x^3 + Ax^2 + x, computed by applying action of a prv.e
 // on a curve represented by pub.a.
-func DeriveSecret(out *[64]byte, pub *PublicKey, prv *PrivateKey, rng io.Reader) bool {
-	if !Validate(pub, rng) {
-		return false
+// Returns (success, error) where error indicates RNG failure.
+func DeriveSecret(out *[64]byte, pub *PublicKey, prv *PrivateKey, rng io.Reader) (bool, error) {
+	valid, err := Validate(pub, rng)
+	if err != nil {
+		return false, err
 	}
-	groupAction(pub, prv, rng)
+	if !valid {
+		return false, nil
+	}
+	if err := groupAction(pub, prv, rng); err != nil {
+		return false, err
+	}
 	pub.Export(out[:])
-	return true
+	return true, nil
 }

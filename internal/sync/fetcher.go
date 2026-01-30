@@ -312,7 +312,8 @@ func (f *BasicFetcher) FetchBlocks(ctx context.Context, start *uint256.Int, coun
 	// Get best peers
 	_, peers := f.p2p.Peers().BestPeers(f.config.MinPeers, f.blockchain.CurrentBlock().Number64())
 	if len(peers) == 0 {
-		f.metrics.RecordFetch("", count, 0, time.Since(startTime), false)
+		// Fix: Use special identifier for unknown peer instead of empty string
+		f.metrics.RecordFetch(peer.ID("unknown"), count, 0, time.Since(startTime), false)
 		return nil, fmt.Errorf("no peers available")
 	}
 
@@ -404,7 +405,8 @@ func (f *InstrumentedFetcher) FetchBlocks(ctx context.Context, start *uint256.In
 	duration := time.Since(startTime)
 
 	if err != nil {
-		f.metrics.RecordFetch("", count, 0, duration, false)
+		// Fix: Use special identifier for unknown peer instead of empty string
+		f.metrics.RecordFetch(peer.ID("unknown"), count, 0, duration, false)
 		log.Debug("Block fetch failed",
 			"start", start.Uint64(),
 			"count", count,

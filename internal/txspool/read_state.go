@@ -57,6 +57,7 @@ func (c *StateCli) GetNonce(addr types.Address) uint64 {
 // GetBalance retrieves the balance for the given address from the database.
 // R1 fix: Log database errors instead of silently ignoring them.
 // Returns 0 if the account doesn't exist or on error.
+// Fix: Return a clone of the balance to prevent callers from modifying internal state.
 func (c *StateCli) GetBalance(addr types.Address) *uint256.Int {
 	balance := uint256.NewInt(0)
 	err := c.db.View(c.ctx, func(tx kv.Tx) error {
@@ -71,7 +72,8 @@ func (c *StateCli) GetBalance(addr types.Address) *uint256.Int {
 		if err := sc.DecodeForStorage(v); nil != err {
 			return err
 		}
-		balance = &sc.Balance
+		// Clone the balance to prevent callers from modifying internal state
+		balance = sc.Balance.Clone()
 		return nil
 	})
 	if err != nil {
@@ -79,6 +81,7 @@ func (c *StateCli) GetBalance(addr types.Address) *uint256.Int {
 	}
 	return balance
 }
+
 // State retrieves the full state account for the given address.
 func (c *StateCli) State(addr types.Address) (*account.StateAccount, error) {
 	s := new(account.StateAccount)

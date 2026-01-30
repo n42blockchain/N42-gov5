@@ -249,6 +249,9 @@ type SyncStateMachine struct {
 	initialSyncHandler func(ctx context.Context, targetBlock *uint256.Int) error
 	catchUpHandler     func(ctx context.Context, targetBlock *uint256.Int) error
 
+	// Fix: WaitGroup to track goroutines for proper cleanup
+	wg sync.WaitGroup
+
 	mu sync.RWMutex
 }
 
@@ -342,8 +345,10 @@ func (sm *SyncStateMachine) Start() {
 }
 
 // Stop stops the state machine.
+// Fix: Wait for all tracked goroutines to complete before returning.
 func (sm *SyncStateMachine) Stop() {
 	sm.cancel()
+	sm.wg.Wait()
 }
 
 // run is the main state machine loop.
@@ -400,6 +405,7 @@ func (sm *SyncStateMachine) evaluate() {
 }
 
 // handleIdleState handles transitions from Idle state.
+// Fix: Track goroutines with WaitGroup to prevent goroutine leaks.
 func (sm *SyncStateMachine) handleIdleState(behindBy uint64, targetBlock *uint256.Int) {
 	if behindBy == 0 {
 		// Already synced
@@ -409,14 +415,23 @@ func (sm *SyncStateMachine) handleIdleState(behindBy uint64, targetBlock *uint25
 
 	if behindBy > sm.config.InitialSyncThreshold {
 		sm.transitionTo(SyncStateInitialSync)
-		go sm.performInitialSync(targetBlock)
+		sm.wg.Add(1)
+		go func() {
+			defer sm.wg.Done()
+			sm.performInitialSync(targetBlock)
+		}()
 	} else {
 		sm.transitionTo(SyncStateCatchUp)
-		go sm.performCatchUp(targetBlock)
+		sm.wg.Add(1)
+		go func() {
+			defer sm.wg.Done()
+			sm.performCatchUp(targetBlock)
+		}()
 	}
 }
 
 // handleInitialSyncState handles transitions from InitialSync state.
+// Fix: Track goroutines with WaitGroup to prevent goroutine leaks.
 func (sm *SyncStateMachine) handleInitialSyncState(behindBy uint64, targetBlock *uint256.Int) {
 	// InitialSync is handled by performInitialSync goroutine
 	// Check if we've caught up
@@ -425,29 +440,47 @@ func (sm *SyncStateMachine) handleInitialSyncState(behindBy uint64, targetBlock 
 	} else if behindBy <= sm.config.InitialSyncThreshold {
 		// Switch to catch-up mode
 		sm.transitionTo(SyncStateCatchUp)
-		go sm.performCatchUp(targetBlock)
+		sm.wg.Add(1)
+		go func() {
+			defer sm.wg.Done()
+			sm.performCatchUp(targetBlock)
+		}()
 	}
 }
 
 // handleCatchUpState handles transitions from CatchUp state.
+// Fix: Track goroutines with WaitGroup to prevent goroutine leaks.
 func (sm *SyncStateMachine) handleCatchUpState(behindBy uint64, targetBlock *uint256.Int) {
 	if behindBy == 0 {
 		sm.transitionTo(SyncStateSynced)
 	} else if behindBy > sm.config.InitialSyncThreshold {
 		// Fell too far behind, need initial sync
 		sm.transitionTo(SyncStateInitialSync)
-		go sm.performInitialSync(targetBlock)
+		sm.wg.Add(1)
+		go func() {
+			defer sm.wg.Done()
+			sm.performInitialSync(targetBlock)
+		}()
 	}
 }
 
 // handleSyncedState handles transitions from Synced state.
+// Fix: Track goroutines with WaitGroup to prevent goroutine leaks.
 func (sm *SyncStateMachine) handleSyncedState(behindBy uint64, targetBlock *uint256.Int) {
 	if behindBy > sm.config.InitialSyncThreshold {
 		sm.transitionTo(SyncStateInitialSync)
-		go sm.performInitialSync(targetBlock)
+		sm.wg.Add(1)
+		go func() {
+			defer sm.wg.Done()
+			sm.performInitialSync(targetBlock)
+		}()
 	} else if behindBy > 0 {
 		sm.transitionTo(SyncStateCatchUp)
-		go sm.performCatchUp(targetBlock)
+		sm.wg.Add(1)
+		go func() {
+			defer sm.wg.Done()
+			sm.performCatchUp(targetBlock)
+		}()
 	}
 }
 
@@ -590,4 +623,3 @@ func (sm *SyncStateMachine) Resync() error {
 // =============================================================================
 
 var _ Checker = (*SyncStateMachine)(nil)
-

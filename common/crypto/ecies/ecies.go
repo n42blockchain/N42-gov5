@@ -133,6 +133,12 @@ func (prv *PrivateKey) GenerateShared(pub *PublicKey, skLen, macLen int) (sk []b
 
 	sk = make([]byte, skLen+macLen)
 	skBytes := x.Bytes()
+	// Ensure skBytes is cleared on return to prevent key material leakage
+	defer func() {
+		for i := range skBytes {
+			skBytes[i] = 0
+		}
+	}()
 	copy(sk[len(sk)-len(skBytes):], skBytes)
 	return sk, nil
 }
@@ -212,6 +218,11 @@ func symEncrypt(rand io.Reader, params *ECIESParams, key, m []byte) (ct []byte, 
 // symDecrypt carries out CTR decryption using the block cipher specified in
 // the parameters
 func symDecrypt(params *ECIESParams, key, ct []byte) (m []byte, err error) {
+	// Validate ciphertext length before accessing
+	if len(ct) < params.BlockSize {
+		return nil, ErrInvalidMessage
+	}
+
 	c, err := params.Cipher(key)
 	if err != nil {
 		return

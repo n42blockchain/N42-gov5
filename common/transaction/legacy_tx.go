@@ -91,7 +91,8 @@ func (tx *LegacyTx) copy() TxData {
 	if tx.S != nil {
 		cpy.S.Set(tx.S)
 	}
-	if tx.sign() != nil {
+	if tx.Sign != nil {
+		cpy.Sign = make([]byte, len(tx.Sign))
 		copy(cpy.Sign, tx.Sign)
 	}
 

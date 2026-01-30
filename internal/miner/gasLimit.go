@@ -19,7 +19,14 @@ package miner
 import "github.com/n42blockchain/N42/params"
 
 func CalcGasLimit(parentGasLimit, desiredLimit uint64) uint64 {
-	delta := parentGasLimit/params.GasLimitBoundDivisor - 1
+	// Security: prevent underflow when parentGasLimit/GasLimitBoundDivisor is 0
+	divisorResult := parentGasLimit / params.GasLimitBoundDivisor
+	var delta uint64
+	if divisorResult > 0 {
+		delta = divisorResult - 1
+	} else {
+		delta = 0
+	}
 	limit := parentGasLimit
 	if desiredLimit < params.MinGasLimit {
 		desiredLimit = params.MinGasLimit
@@ -33,9 +40,14 @@ func CalcGasLimit(parentGasLimit, desiredLimit uint64) uint64 {
 		return limit
 	}
 	if limit > desiredLimit {
-		limit = parentGasLimit - delta
-		if limit < desiredLimit {
+		// Security: prevent underflow when delta > parentGasLimit
+		if delta > parentGasLimit {
 			limit = desiredLimit
+		} else {
+			limit = parentGasLimit - delta
+			if limit < desiredLimit {
+				limit = desiredLimit
+			}
 		}
 	}
 	return limit

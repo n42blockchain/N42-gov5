@@ -5,6 +5,7 @@ import (
 	"bytes"
 	cryptoRand "crypto/rand"
 	"crypto/subtle"
+	"fmt"
 	"github.com/n42blockchain/N42/common/crypto/kem"
 	"github.com/n42blockchain/N42/common/crypto/sha3"
 	"io"
@@ -76,13 +77,16 @@ type PrivateKey struct {
 	hpk [pkHashSize]byte
 }
 
+// ErrInvalidSeedSize is returned when the seed size is invalid.
+var ErrInvalidSeedSize = fmt.Errorf("seed must be of length %d", KeySeedSize)
+
 // NewKeyFromSeed derives a public/private keypair deterministically
 // from the given seed.
 //
-// Panics if seed is not of length KeySeedSize.
-func newKeyFromSeed(seed []byte) (*PublicKey, *PrivateKey) {
+// Returns error if seed is not of length KeySeedSize.
+func newKeyFromSeed(seed []byte) (*PublicKey, *PrivateKey, error) {
 	if len(seed) != KeySeedSize {
-		panic("seed must be of length KeySeedSize")
+		return nil, nil, ErrInvalidSeedSize
 	}
 
 	var sk PrivateKey
@@ -130,7 +134,7 @@ func newKeyFromSeed(seed []byte) (*PublicKey, *PrivateKey) {
 	_, _ = shake128.Write(ppk[:])
 	_, _ = shake128.Read(sk.hpk[:])
 
-	return &pk, &sk
+	return &pk, &sk, nil
 }
 
 // GenerateKeyPair generates public and private keys using entropy from rand.
@@ -144,8 +148,7 @@ func generateKeyPair(rand io.Reader) (*PublicKey, *PrivateKey, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	pk, sk := newKeyFromSeed(seed[:])
-	return pk, sk, err
+	return newKeyFromSeed(seed[:])
 }
 
 // EncapsulateTo generates a shared key and a ciphertext containing said key
@@ -454,12 +457,15 @@ func (pk *PublicKey) Equal(other kem.PublicKey) bool {
 		return false
 	}
 
+	// Use constant-time comparison to prevent timing side-channel attacks
+	// Compare matrixB using constant-time operations
+	var acc uint16
 	for i := range pk.matrixB {
-		if (pk.matrixB[i] & logQMask) != (oth.matrixB[i] & logQMask) {
-			return false
-		}
+		acc |= (pk.matrixB[i] & logQMask) ^ (oth.matrixB[i] & logQMask)
 	}
-	return bytes.Equal(pk.seedA[:], oth.seedA[:])
+	matrixEqual := subtle.ConstantTimeEq(int32(acc), 0)
+	seedEqual := subtle.ConstantTimeCompare(pk.seedA[:], oth.seedA[:])
+	return matrixEqual&seedEqual == 1
 }
 
 func (sk *PrivateKey) Public() kem.PublicKey {
@@ -480,7 +486,12 @@ func (*scheme) DeriveKeyPair(seed []byte) (kem.PublicKey, kem.PrivateKey) {
 	if len(seed) != KeySeedSize {
 		panic(kem.ErrSeedSize)
 	}
-	return newKeyFromSeed(seed[:])
+	pk, sk, err := newKeyFromSeed(seed[:])
+	if err != nil {
+		// This should not happen as we've already validated the seed size
+		panic(err)
+	}
+	return pk, sk
 }
 
 func (*scheme) Encapsulate(pk kem.PublicKey) (ct, ss []byte, err error) {

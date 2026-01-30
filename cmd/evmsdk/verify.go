@@ -19,8 +19,8 @@ package evmsdk
 import (
 	"context"
 	"fmt"
+
 	"github.com/n42blockchain/N42/common/hexutil"
-	"unsafe"
 
 	common2 "github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -35,7 +35,7 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-func verify(ctx context.Context, msg *state.EntireCode) types.Hash {
+func verify(ctx context.Context, msg *state.EntireCode) (types.Hash, error) {
 	codeMap := make(map[types.Hash][]byte)
 	for _, pair := range msg.Codes {
 		codeMap[pair.Hash] = pair.Code
@@ -63,7 +63,7 @@ func verify(ctx context.Context, msg *state.EntireCode) types.Hash {
 	for _, tByte := range msg.Entire.Transactions {
 		tmp := &transaction.Transaction{}
 		if err := tmp.Unmarshal(tByte); nil != err {
-			panic(err)
+			return types.Hash{}, fmt.Errorf("unmarshal transaction failed: %w", err)
 		}
 		txs = append(txs, tmp)
 	}
@@ -77,7 +77,7 @@ func verify(ctx context.Context, msg *state.EntireCode) types.Hash {
 	defer batch.Rollback()
 	old := make(map[string][]byte, len(msg.Entire.Snap.Items))
 	for _, v := range msg.Entire.Snap.Items {
-		old[*(*string)(unsafe.Pointer(&v.Key))] = v.Value
+		old[string(v.Key)] = v.Value
 	}
 	stateReader := olddb.NewStateReader(old, nil, batch, blk.Number64().Uint64())
 	stateReader.SetReadCodeF(readCodeF)
@@ -88,9 +88,9 @@ func verify(ctx context.Context, msg *state.EntireCode) types.Hash {
 
 	root, err := checkBlock2(getNumberHash, blk, ibs, msg.CoinBase, msg.Rewards)
 	if nil != err {
-		panic(err)
+		return types.Hash{}, fmt.Errorf("check block failed: %w", err)
 	}
-	return root
+	return root, nil
 }
 
 func checkBlock2(getHashF func(n uint64) types.Hash, blk *block.Block, ibs *state.IntraBlockState, coinbase types.Address, rewards []*block.Reward) (types.Hash, error) {

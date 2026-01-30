@@ -234,7 +234,10 @@ func (c *jsonCodec) closed() <-chan interface{} {
 func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool) {
 	if !isBatch(raw) {
 		msgs := []*jsonrpcMessage{{}}
-		json.Unmarshal(raw, &msgs[0])
+		if err := json.Unmarshal(raw, &msgs[0]); err != nil {
+			// Return an empty message on parse error, let caller handle validation
+			msgs[0] = &jsonrpcMessage{}
+		}
 		return msgs, false
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))

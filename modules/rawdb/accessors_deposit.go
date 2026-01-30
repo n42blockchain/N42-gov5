@@ -31,10 +31,12 @@ import (
 //}
 
 func PutDeposit(db kv.Putter, addr types.Address, pub types.PublicKey, amount uint256.Int) error {
-
-	data := make([]byte, types.PublicKeyLength+amount.ByteLen())
+	// Use fixed 32-byte length for amount to ensure consistent data format
+	const amountLen = 32
+	data := make([]byte, types.PublicKeyLength+amountLen)
 	copy(data[:types.PublicKeyLength], pub.Bytes())
-	copy(data[types.PublicKeyLength:], amount.Bytes())
+	amountBytes := amount.Bytes32()
+	copy(data[types.PublicKeyLength:], amountBytes[:])
 	//
 	if err := db.Put(modules.Deposit, addr[:], data); err != nil {
 		return fmt.Errorf("failed to store address Deposit: %w", err)
@@ -44,12 +46,13 @@ func PutDeposit(db kv.Putter, addr types.Address, pub types.PublicKey, amount ui
 
 // GetDeposit
 func GetDeposit(db kv.Getter, addr types.Address) (types.PublicKey, *uint256.Int, error) {
+	const amountLen = 32
 	valBytes, err := db.GetOne(modules.Deposit, addr[:])
 	if err != nil {
 		return types.PublicKey{}, nil, err
 	}
-	if len(valBytes) < types.PublicKeyLength {
-		return types.PublicKey{}, nil, fmt.Errorf("the data length wrong")
+	if len(valBytes) < types.PublicKeyLength+amountLen {
+		return types.PublicKey{}, nil, fmt.Errorf("the data length wrong: expected %d, got %d", types.PublicKeyLength+amountLen, len(valBytes))
 	}
 	_, err = bls.PublicKeyFromBytes(valBytes[:types.PublicKeyLength])
 	if err != nil {
@@ -59,7 +62,7 @@ func GetDeposit(db kv.Getter, addr types.Address) (types.PublicKey, *uint256.Int
 	if err = pubkey.SetBytes(valBytes[:types.PublicKeyLength]); err != nil {
 		return types.PublicKey{}, nil, fmt.Errorf("cannot unmarshal pubkey from bytes")
 	}
-	amount := uint256.NewInt(0).SetBytes(valBytes[types.PublicKeyLength:])
+	amount := uint256.NewInt(0).SetBytes(valBytes[types.PublicKeyLength : types.PublicKeyLength+amountLen])
 
 	return *pubkey, amount, nil
 }

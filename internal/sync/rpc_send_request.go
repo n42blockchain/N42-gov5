@@ -24,6 +24,14 @@ type BlockProcessor func(block *types_pb.Block) error
 
 // SendBodiesByRangeRequest sends BeaconBlocksByRange and returns fetched blocks, if any.
 func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2pProvider p2p.SenderEncoder, pid peer.ID, req *sync_pb.BodiesByRangeRequest, blockProcessor BlockProcessor) ([]*types_pb.Block, error) {
+	// Fix: Validate request parameters to prevent division by zero
+	if req.Step == 0 {
+		return nil, errors.New("request step cannot be zero")
+	}
+	if req.Count == 0 {
+		return nil, errors.New("request count cannot be zero")
+	}
+
 	topic, err := p2p.TopicFromMessage(p2p.BodiesByRangeMessageName)
 	if err != nil {
 		return nil, err

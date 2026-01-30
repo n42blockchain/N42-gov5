@@ -101,22 +101,34 @@ type Notifier struct {
 	activated    bool
 }
 
+// ErrMultipleSubscriptions is returned when attempting to create multiple subscriptions with a single Notifier
+var ErrMultipleSubscriptions = errors.New("can't create multiple subscriptions with Notifier")
+
+// ErrSubscriptionAfterReturn is returned when attempting to create a subscription after the subscribe call has returned
+var ErrSubscriptionAfterReturn = errors.New("can't create subscription after subscribe call has returned")
+
 // CreateSubscription returns a new subscription that is coupled to the
 // RPC connection. By default subscriptions are inactive and notifications
 // are dropped until the subscription is marked as active. This is done
 // by the RPC server after the subscription ID is send to the client.
-func (n *Notifier) CreateSubscription() *Subscription {
+func (n *Notifier) CreateSubscription() (*Subscription, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
 	if n.sub != nil {
-		panic("can't create multiple subscriptions with Notifier")
+		return nil, ErrMultipleSubscriptions
 	} else if n.callReturned {
-		panic("can't create subscription after subscribe call has returned")
+		return nil, ErrSubscriptionAfterReturn
 	}
 	n.sub = &Subscription{ID: n.h.idgen(), namespace: n.namespace, err: make(chan error, 1)}
-	return n.sub
+	return n.sub, nil
 }
+
+// ErrNotifyBeforeSubscription is returned when attempting to notify before subscription is created
+var ErrNotifyBeforeSubscription = errors.New("can't Notify before subscription is created")
+
+// ErrNotifyWrongID is returned when attempting to notify with wrong subscription ID
+var ErrNotifyWrongID = errors.New("Notify with wrong ID")
 
 // Notify sends a notification to the client with the given data as payload.
 // If an error occurs the RPC connection is closed and the error is returned.
@@ -130,9 +142,9 @@ func (n *Notifier) Notify(id ID, data interface{}) error {
 	defer n.mu.Unlock()
 
 	if n.sub == nil {
-		panic("can't Notify before subscription is created")
+		return ErrNotifyBeforeSubscription
 	} else if n.sub.ID != id {
-		panic("Notify with wrong ID")
+		return ErrNotifyWrongID
 	}
 	if n.activated {
 		return n.send(n.sub, enc)

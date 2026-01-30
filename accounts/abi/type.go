@@ -226,6 +226,7 @@ func NewType(t string, internalType string, components []ArgumentMarshaling) (ty
 }
 
 // GetType returns the reflection type of the ABI type.
+// Returns nil for unsupported types.
 func (t Type) GetType() reflect.Type {
 	switch t.T {
 	case IntTy:
@@ -237,9 +238,23 @@ func (t Type) GetType() reflect.Type {
 	case StringTy:
 		return reflect.TypeOf("")
 	case SliceTy:
-		return reflect.SliceOf(t.Elem.GetType())
+		if t.Elem == nil {
+			return nil
+		}
+		elemType := t.Elem.GetType()
+		if elemType == nil {
+			return nil
+		}
+		return reflect.SliceOf(elemType)
 	case ArrayTy:
-		return reflect.ArrayOf(t.Size, t.Elem.GetType())
+		if t.Elem == nil {
+			return nil
+		}
+		elemType := t.Elem.GetType()
+		if elemType == nil {
+			return nil
+		}
+		return reflect.ArrayOf(t.Size, elemType)
 	case TupleTy:
 		return t.TupleType
 	case AddressTy:
@@ -257,7 +272,7 @@ func (t Type) GetType() reflect.Type {
 	case FunctionTy:
 		return reflect.ArrayOf(24, reflect.TypeOf(byte(0)))
 	default:
-		panic("Invalid type")
+		return nil
 	}
 }
 

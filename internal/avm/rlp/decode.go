@@ -22,7 +22,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"io"
 	"math/big"
 	"reflect"
@@ -106,7 +105,8 @@ type Decoder interface {
 func Decode(r io.Reader, val interface{}) error {
 	stream, ok := streamPool.Get().(*Stream)
 	if !ok {
-		log.Warn("Failed to type convert to Stream pointer")
+		// Type assertion failed, create a new Stream to continue operation
+		stream = new(Stream)
 	}
 	defer streamPool.Put(stream)
 
@@ -121,7 +121,8 @@ func DecodeBytes(b []byte, val interface{}) error {
 
 	stream, ok := streamPool.Get().(*Stream)
 	if !ok {
-		log.Warn("Failed to type convert to Stream pointer")
+		// Type assertion failed, create a new Stream to continue operation
+		stream = new(Stream)
 	}
 	defer streamPool.Put(stream)
 

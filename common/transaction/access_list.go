@@ -87,6 +87,7 @@ func (tx *AccessListTx) copy() TxData {
 	}
 
 	if tx.Sign != nil {
+		cpy.Sign = make([]byte, len(tx.Sign))
 		copy(cpy.Sign, tx.Sign)
 	}
 	return cpy

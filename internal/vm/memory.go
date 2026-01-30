@@ -113,7 +113,8 @@ func (m *Memory) GetPtr(offset, size int64) []byte {
 		return nil
 	}
 
-	if len(m.store) > int(offset) {
+	// Security: check both offset and offset+size to prevent slice bounds out of range
+	if len(m.store) >= int(offset+size) {
 		return m.store[offset : offset+size]
 	}
 
@@ -134,6 +135,11 @@ func (m *Memory) Data() []byte {
 // EIP-5656: MCOPY instruction
 func (m *Memory) Copy(dst, src, length uint64) {
 	if length == 0 {
+		return
+	}
+	// Security: check bounds to prevent slice bounds out of range
+	storeLen := uint64(len(m.store))
+	if dst+length > storeLen || src+length > storeLen {
 		return
 	}
 	// Use Go's built-in copy which handles overlapping regions correctly

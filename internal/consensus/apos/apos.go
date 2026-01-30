@@ -619,8 +619,12 @@ func (c *APos) Rewards(tx kv.RwTx, header block.IHeader, state *state.IntraBlock
 	//calc rewards
 	var rewards []*block.Reward
 
-	beijing, _ := uint256.FromBig(c.chainConfig.BeijingBlock)
-	if new(uint256.Int).Mod(new(uint256.Int).Sub(header.Number64(), beijing), uint256.NewInt(c.config.RewardEpoch)).
+	beijing, overflow := uint256.FromBig(c.chainConfig.BeijingBlock)
+	if overflow {
+		return nil, errors.New("BeijingBlock overflows uint256")
+	}
+	// Security: ensure number >= beijing before subtraction to prevent underflow
+	if header.Number64().Cmp(beijing) >= 0 && new(uint256.Int).Mod(new(uint256.Int).Sub(header.Number64(), beijing), uint256.NewInt(c.config.RewardEpoch)).
 		Cmp(uint256.NewInt(0)) == 0 {
 		log.Info("begin setreward", "headnumber", header.Number64().ToBig().String())
 

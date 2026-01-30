@@ -103,7 +103,7 @@ func exportTransactions(ctx *cli.Context) error {
 
 		block, err := blockChain.GetBlockByNumber(uint256.NewInt(i + 1))
 		if err != nil {
-			panic("cannot get block")
+			return fmt.Errorf("cannot get block at height %d: %w", i+1, err)
 		}
 		for _, transaction := range block.Transactions() {
 			if transaction.To() == nil {

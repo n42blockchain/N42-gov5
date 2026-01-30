@@ -159,8 +159,8 @@ func NewDeposit(ctx context.Context, bc common.IBlockChain, db kv.RwDB, depositC
 		depositContracts: depositContracts,
 	}
 
-	d.logsSub = event.GlobalEvent.Subscribe(d.logsCh)
-	d.rmLogsSub = event.GlobalEvent.Subscribe(d.rmLogsCh)
+	d.logsSub, _ = event.GlobalEvent.Subscribe(d.logsCh)
+	d.rmLogsSub, _ = event.GlobalEvent.Subscribe(d.rmLogsCh)
 
 	if d.logsSub == nil || d.rmLogsSub == nil {
 		log.Error("Subscribe for event system failed")

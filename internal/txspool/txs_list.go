@@ -71,8 +71,13 @@ func (as *accountSet) empty() bool {
 
 // containsTx checks if the sender of a given tx is within the set. If the sender
 // cannot be derived, this method returns false.
+// Fix: Added nil check for tx.From() to prevent nil pointer dereference.
 func (as *accountSet) containsTx(tx *transaction.Transaction) bool {
-	return as.contains(*tx.From())
+	from := tx.From()
+	if from == nil {
+		return false
+	}
+	return as.contains(*from)
 }
 
 // add inserts a new address into the set to track.
@@ -82,8 +87,13 @@ func (as *accountSet) add(addr types.Address) {
 }
 
 // addTx adds the sender of tx into the set.
+// Fix: Added nil check for tx.From() to prevent nil pointer dereference.
 func (as *accountSet) addTx(tx *transaction.Transaction) {
-	as.add(*tx.From())
+	from := tx.From()
+	if from == nil {
+		return
+	}
+	as.add(*from)
 }
 
 // flatten returns the list of addresses within this set, also caching it for later
@@ -316,9 +326,14 @@ func (h *nonceHeap) Push(x interface{}) {
 	*h = append(*h, x.(uint64))
 }
 
+// Pop removes and returns the smallest element from the heap.
+// Fix: Added bounds check to prevent panic on empty heap.
 func (h *nonceHeap) Pop() interface{} {
 	old := *h
 	n := len(old)
+	if n == 0 {
+		return nil
+	}
 	x := old[n-1]
 	*h = old[0 : n-1]
 	return x
@@ -750,9 +765,14 @@ func (h *priceHeap) Push(x interface{}) {
 	h.list = append(h.list, tx)
 }
 
+// Pop removes and returns the smallest element from the heap.
+// Fix: Added bounds check to prevent panic on empty heap.
 func (h *priceHeap) Pop() interface{} {
 	old := h.list
 	n := len(old)
+	if n == 0 {
+		return nil
+	}
 	x := old[n-1]
 	old[n-1] = nil
 	h.list = old[0 : n-1]

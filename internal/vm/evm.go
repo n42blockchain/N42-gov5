@@ -418,7 +418,8 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	}
 	if incrementNonce {
 		nonce := evm.intraBlockState.GetNonce(caller.Address())
-		if nonce+1 < nonce {
+		// Security: explicit check for max uint64 to prevent overflow
+		if nonce == ^uint64(0) { // math.MaxUint64
 			err = ErrNonceUintOverflow
 			return nil, types.Address{}, gas, err
 		}

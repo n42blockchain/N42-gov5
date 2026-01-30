@@ -47,7 +47,7 @@ func (e *Event) initKey(key string) {
 	}
 }
 
-func (e *Event) Subscribe(channel interface{}) Subscription {
+func (e *Event) Subscribe(channel interface{}) (Subscription, error) {
 	e.once.Do(e.init)
 
 	key := reflect.TypeOf(channel).Elem().String()
@@ -55,9 +55,11 @@ func (e *Event) Subscribe(channel interface{}) Subscription {
 
 	e.feedsLock.RLock()
 	defer e.feedsLock.RUnlock()
-	sub := e.feedsScope[key].Track(e.feeds[key].Subscribe(channel))
-
-	return sub
+	sub, err := e.feeds[key].Subscribe(channel)
+	if err != nil {
+		return nil, err
+	}
+	return e.feedsScope[key].Track(sub), nil
 }
 
 func (e *Event) Send(value interface{}) int {

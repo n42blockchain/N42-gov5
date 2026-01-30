@@ -88,7 +88,11 @@ func (r AccountRewards) Swap(i, j int) {
 }
 
 func newReward(chainConfig *params.ChainConfig) *Reward {
-	rewardLimitBig, _ := uint256.FromBig(chainConfig.Apos.RewardLimit)
+	rewardLimitBig, overflow := uint256.FromBig(chainConfig.Apos.RewardLimit)
+	if overflow {
+		log.Error("RewardLimit overflows uint256, using max value")
+		rewardLimitBig = uint256.MustFromBig(chainConfig.Apos.RewardLimit)
+	}
 	return &Reward{
 		ctx: context.TODO(), chainConfig: chainConfig,
 		rewardLimit: rewardLimitBig,
@@ -151,6 +155,11 @@ func (r *Reward) SetRewards(tx kv.RwTx, number *uint256.Int, setRewards bool) (A
 
 func (r *Reward) buildRewards(tx kv.RwTx, number *uint256.Int, setRewards bool) (map[types.Address]*uint256.Int, error) {
 
+	// Security: prevent underflow when number < rewardEpoch
+	if number.Cmp(r.rewardEpoch) < 0 {
+		return make(map[types.Address]*uint256.Int), nil
+	}
+
 	endNumber := new(uint256.Int).Sub(number, r.rewardEpoch)
 
 	//calculate last batch but this one
@@ -167,7 +176,7 @@ func (r *Reward) buildRewards(tx kv.RwTx, number *uint256.Int, setRewards bool) 
 			return nil, err
 		}
 		if hash == (types.Hash{}) {
-			return nil, err
+			return nil, errors.New("canonical hash not found for block number")
 		}
 		header := rawdb.ReadHeader(tx, hash, currentNr.Uint64())
 		if header == nil {
@@ -196,7 +205,9 @@ func (r *Reward) buildRewards(tx kv.RwTx, number *uint256.Int, setRewards bool) 
 				addrReward = uint256.NewInt(0)
 			}
 
-			rewardMap[verifier.Address] = math.Min256(addrReward.Add(addrReward, depositInfo.RewardPerBlock), depositInfo.MaxRewardPerEpoch.Clone())
+			// Security: create new uint256.Int to avoid modifying the original pointer in map
+			sum := new(uint256.Int).Add(addrReward, depositInfo.RewardPerBlock)
+			rewardMap[verifier.Address] = math.Min256(sum, depositInfo.MaxRewardPerEpoch.Clone())
 		}
 
 		currentNr.SubUint64(currentNr, 1)

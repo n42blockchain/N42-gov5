@@ -18,11 +18,15 @@ package jsonrpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 var (
@@ -174,13 +178,13 @@ func (c *callback) call(ctx context.Context, method string, args []reflect.Value
 	fullargs = append(fullargs, args...)
 
 	defer func() {
-		// if err := recover(); err != nil {
-		// 	const size = 64 << 10
-		// 	buf := make([]byte, size)
-		// 	buf = buf[:runtime.Stack(buf, false)]
-		// 	log.Error("RPC method " + method + " crashed: " + fmt.Sprintf("%v\n%s", err, buf))
-		// 	errRes = errors.New("method handler crashed")
-		// }
+		if err := recover(); err != nil {
+			const size = 64 << 10
+			buf := make([]byte, size)
+			buf = buf[:runtime.Stack(buf, false)]
+			log.Error("RPC method " + method + " crashed: " + fmt.Sprintf("%v\n%s", err, buf))
+			errRes = errors.New("method handler crashed")
+		}
 	}()
 	results := c.fn.Call(fullargs)
 	if len(results) == 0 {

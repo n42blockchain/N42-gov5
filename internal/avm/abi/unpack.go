@@ -33,16 +33,29 @@ var (
 )
 
 // ReadInteger reads the integer based on its kind and returns the appropriate value.
+// Returns nil if input slice is too short for the requested type size.
 func ReadInteger(typ Type, b []byte) interface{} {
 	if typ.T == UintTy {
 		switch typ.Size {
 		case 8:
+			if len(b) < 1 {
+				return nil
+			}
 			return b[len(b)-1]
 		case 16:
+			if len(b) < 2 {
+				return nil
+			}
 			return binary.BigEndian.Uint16(b[len(b)-2:])
 		case 32:
+			if len(b) < 4 {
+				return nil
+			}
 			return binary.BigEndian.Uint32(b[len(b)-4:])
 		case 64:
+			if len(b) < 8 {
+				return nil
+			}
 			return binary.BigEndian.Uint64(b[len(b)-8:])
 		default:
 			// the only case left for unsigned integer is uint256.
@@ -51,12 +64,24 @@ func ReadInteger(typ Type, b []byte) interface{} {
 	}
 	switch typ.Size {
 	case 8:
+		if len(b) < 1 {
+			return nil
+		}
 		return int8(b[len(b)-1])
 	case 16:
+		if len(b) < 2 {
+			return nil
+		}
 		return int16(binary.BigEndian.Uint16(b[len(b)-2:]))
 	case 32:
+		if len(b) < 4 {
+			return nil
+		}
 		return int32(binary.BigEndian.Uint32(b[len(b)-4:]))
 	case 64:
+		if len(b) < 8 {
+			return nil
+		}
 		return int64(binary.BigEndian.Uint64(b[len(b)-8:]))
 	default:
 		// the only case left for integer is int256

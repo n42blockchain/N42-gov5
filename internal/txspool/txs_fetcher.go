@@ -75,8 +75,7 @@ type TxsFetcher struct {
 
 	peerRequests map[peer.ID]*txsRequest // other peer requests
 
-	bloom   *types.Bloom
-	fetched map[types.Hash]bool //
+	bloom *types.Bloom
 
 	getTx      func(hash types.Hash) *transaction.Transaction
 	addTxs     func([]*transaction.Transaction) []error
@@ -100,7 +99,6 @@ func NewTxsFetcher(ctx context.Context, getTx func(hash types.Hash) *transaction
 		quit:         make(chan struct{}),
 		peers:        peers,
 		peerRequests: make(map[peer.ID]*txsRequest),
-		fetched:      make(map[types.Hash]bool),
 		p2pServer:    p2pServer,
 		addTxs:       addTxs,
 		getTx:        getTx,
@@ -168,7 +166,12 @@ func (f *TxsFetcher) sendBloomTransactionLoop() {
 							},
 						},
 					}
-					data, _ := proto.Marshal(msg)
+					// Fix: Check and handle proto.Marshal error
+					data, err := proto.Marshal(msg)
+					if err != nil {
+						log.Warn("Failed to marshal transaction response", "peer", ID, "err", err)
+						continue
+					}
 					p.WriteMsg(message.MsgTransaction, data)
 				}
 			}
@@ -203,7 +206,12 @@ func (f *TxsFetcher) bloomBroadcastLoop() {
 			},
 		},
 	}
-	request, _ := proto.Marshal(msg)
+	// Fix: Check and handle proto.Marshal error
+	request, err := proto.Marshal(msg)
+	if err != nil {
+		log.Warn("Failed to marshal transaction request", "err", err)
+		return
+	}
 
 	for {
 		select {
@@ -231,7 +239,7 @@ func (f *TxsFetcher) ConnHandler(data []byte, ID peer.ID) error {
 
 	syncTask := sync_proto.SyncTask{}
 	if err := proto.Unmarshal(data, &syncTask); err != nil {
-		log.Errorf("receive sync task(headersResponse) msg err: %v", err)
+		log.Errorf("receive sync task msg err: %v", err)
 		return err
 	}
 
@@ -268,20 +276,7 @@ func (f *TxsFetcher) ConnHandler(data []byte, ID peer.ID) error {
 		}
 
 	case sync_proto.SyncType_TransactionRes:
-		//response := syncTask.Payload.(*sync_proto.SyncTask_SyncTransactionResponse).SyncTransactionResponse
-		//var txs []*transaction.Transaction
-		//for _, tranPb := range response.Transactions {
-		//if _, ok := f.fetched[utils.ConvertH256ToHash(tranPb.Hash)]; ok == false {
-		//	f.fetched[utils.ConvertH256ToHash(tranPb.Hash)] = true
-		//	tx, err := transaction.FromProtoMessage(tranPb)
-		//	if err == nil {
-		//		txs = append(txs, tx)
-		//	}
-		//}
-		//}
-		//if len(txs) > 0 {
-		//	f.addTxs(txs)
-		//}
+		// Transaction response handling - currently no-op
 	}
 	return nil
 }

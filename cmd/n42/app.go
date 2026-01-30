@@ -168,6 +168,7 @@ func MakePasswordList(ctx *cli.Context) []string {
 	text, err := os.ReadFile(path)
 	if err != nil {
 		log.Error("Failed to read password ", "file", err)
+		return nil
 	}
 	lines := strings.Split(string(text), "\n")
 	// Sanitise DOS line endings.
@@ -197,23 +198,23 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 			log.Info("║  Graceful shutdown initiated (Ctrl+C again to force quit)  ║")
 			log.Info("╚════════════════════════════════════════════════════════════╝")
 			log.Info("")
-			
+
 			// Create a done channel to track completion
 			done := make(chan struct{})
-			
+
 			go func() {
 				stack.Close()
 				close(done)
 			}()
-			
+
 			// Wait for shutdown with timeout, allow force quit
 			forceQuitCount := 3
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
-			
+
 			timeout := time.After(30 * time.Second)
 			elapsed := 0
-			
+
 			for {
 				select {
 				case <-done:
@@ -221,17 +222,17 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 					log.Info("✓ Node stopped gracefully. Goodbye!")
 					log.Info("")
 					return
-					
+
 				case <-timeout:
 					log.Warn("Shutdown timeout (30s), forcing exit...")
 					os.Exit(1)
-					
+
 				case <-ticker.C:
 					elapsed++
 					if elapsed%5 == 0 {
 						log.Info("Still shutting down...", "elapsed", fmt.Sprintf("%ds", elapsed))
 					}
-					
+
 				case <-sigc:
 					forceQuitCount--
 					if forceQuitCount <= 0 {

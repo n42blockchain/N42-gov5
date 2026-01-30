@@ -84,7 +84,11 @@ func (s *Service) PublishToTopic(ctx context.Context, topic string, data []byte,
 		return err
 	}
 
+	// Default timeout for waiting for peers
+	const defaultPeerWaitTimeout = 30 * time.Second
+
 	// Wait for at least 1 peer to be available to receive the published message.
+	timeout := time.After(defaultPeerWaitTimeout)
 	for {
 		if len(topicHandle.ListPeers()) > 0 || s.cfg.MinSyncPeers == 0 {
 			return topicHandle.Publish(ctx, data, opts...)
@@ -92,6 +96,8 @@ func (s *Service) PublishToTopic(ctx context.Context, topic string, data []byte,
 		select {
 		case <-ctx.Done():
 			return errors.Wrapf(ctx.Err(), "unable to find requisite number of peers for topic %s, 0 peers found to publish to", topic)
+		case <-timeout:
+			return errors.Errorf("timeout waiting for peers for topic %s after %v", topic, defaultPeerWaitTimeout)
 		default:
 			time.Sleep(100 * time.Millisecond)
 		}

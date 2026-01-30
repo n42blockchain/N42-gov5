@@ -188,7 +188,8 @@ func (ks *KeyStore) Subscribe(sink chan<- accounts.WalletEvent) event.Subscripti
 	defer ks.mu.Unlock()
 
 	// Subscribe the caller and track the subscriber count
-	sub := ks.updateScope.Track(ks.updateFeed.Subscribe(sink))
+	feedSub, _ := ks.updateFeed.Subscribe(sink)
+	sub := ks.updateScope.Track(feedSub)
 
 	// Subscribers require an active notification loop, start it
 	if !ks.updating {
@@ -424,6 +425,7 @@ func (ks *KeyStore) Export(a accounts.Account, passphrase, newPassphrase string)
 	if err != nil {
 		return nil, err
 	}
+	defer zeroKey(key.PrivateKey)
 	var N, P int
 	if store, ok := ks.storage.(*keyStorePassphrase); ok {
 		N, P = store.scryptN, store.scryptP
@@ -483,6 +485,7 @@ func (ks *KeyStore) Update(a accounts.Account, passphrase, newPassphrase string)
 	if err != nil {
 		return err
 	}
+	defer zeroKey(key.PrivateKey)
 	return ks.storage.StoreKey(a.URL.Path, key, newPassphrase)
 }
 

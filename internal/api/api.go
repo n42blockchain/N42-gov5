@@ -950,10 +950,10 @@ func (s *BlockChainAPI) MinedBlock(ctx context.Context, address types.Address) (
 		return &jsonrpc.Subscription{}, fmt.Errorf("unauthed address: %s", address)
 	}
 
-	rpcSub := notifier.CreateSubscription()
+	rpcSub, _ := notifier.CreateSubscription()
 	go func() {
 		entire := make(chan common.MinedEntireEvent, 20)
-		blocksSub := event.GlobalEvent.Subscribe(entire)
+		blocksSub, _ := event.GlobalEvent.Subscribe(entire)
 		for {
 			select {
 			case b := <-entire:

@@ -18,7 +18,7 @@ package evmsdk
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"runtime"
 
 	"github.com/gorilla/websocket"
@@ -39,7 +39,7 @@ func NewWebSocketService(addr, acc string) (*WebSocketService, error) {
 		return nil, err
 	}
 	if readResp != nil {
-		readRespBytes, err := ioutil.ReadAll(readResp.Body)
+		readRespBytes, err := io.ReadAll(readResp.Body)
 		if err != nil {
 			simpleLog("readresp error", "err", err)
 		}
@@ -55,7 +55,7 @@ func NewWebSocketService(addr, acc string) (*WebSocketService, error) {
 		return nil, err
 	}
 	if writeResp != nil {
-		readRespBytes, err := ioutil.ReadAll(writeResp.Body)
+		readRespBytes, err := io.ReadAll(writeResp.Body)
 		if err != nil {
 			simpleLog("writeresp error", "err", err)
 		}

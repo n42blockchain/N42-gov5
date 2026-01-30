@@ -295,6 +295,12 @@ func (n *Node) readData(stream network.Stream) error {
 				log.Error("failed read msg", "StreamID", stream.ID(), "PeerID", stream.Conn().RemotePeer().String(), "err", err)
 				return err
 			}
+
+			// Check payload size limit to prevent memory allocation attacks
+			if payloadLen < 0 || payloadLen > MaxPayloadSize {
+				log.Error("payload size exceeds limit", "StreamID", stream.ID(), "PeerID", stream.Conn().RemotePeer().String(), "payloadLen", payloadLen, "maxPayloadSize", MaxPayloadSize)
+				return fmt.Errorf("payload size %d exceeds maximum allowed size %d", payloadLen, MaxPayloadSize)
+			}
 			//
 			ingressTrafficMeter.Mark(int64(payloadLen))
 
@@ -341,19 +347,22 @@ func (n *Node) readData(stream network.Stream) error {
 	}
 }
 
-func (n *Node) makeMsg(payload []byte) proto.Message {
+var errMakeMsgSignFailed = fmt.Errorf("failed to sign message")
+var errMakeMsgPubKeyFailed = fmt.Errorf("failed to get public key")
+
+func (n *Node) makeMsg(payload []byte) (proto.Message, error) {
 	key := n.Peerstore().PrivKey(n.Host.ID())
 	//log.Errorf("id: %v", n.Host.ID())
 	sign, err := key.Sign(payload)
 	if err != nil {
 		log.Error("failed to sign ping msg", "err", err)
-		return nil
+		return nil, fmt.Errorf("%w: %v", errMakeMsgSignFailed, err)
 	}
 
 	nodePubKey, err := crypto.MarshalPublicKey(n.Peerstore().PubKey(n.Host.ID()))
 	if err != nil {
 		log.Errorf("failed to get public key for sender from local peer store id=%s", n.ID())
-		return nil
+		return nil, fmt.Errorf("%w: %v", errMakeMsgPubKeyFailed, err)
 	}
 
 	msg := msg_proto.MessageData{
@@ -367,7 +376,7 @@ func (n *Node) makeMsg(payload []byte) proto.Message {
 		Gossip:        false,
 	}
 
-	return &msg
+	return &msg, nil
 }
 
 func (n *Node) writeData(stream network.Stream) error {
@@ -392,24 +401,26 @@ func (n *Node) writeData(stream network.Stream) error {
 			log.Errorf("failed to encode msg")
 			return err
 		}
-		if msgData := n.makeMsg(payload); msgData != nil {
-			data, err := proto.Marshal(msgData)
-			if err != nil {
-				log.Errorf("failed marshal message data to byts")
-			} else {
-				if err := header.Encode(stream, msg.Type(), int32(len(data))); err != nil {
-					log.Error("failed to send header", msg.Type(), len(data), err)
-					return err
-				} else {
-					if _, err := stream.Write(data); err != nil {
-						log.Errorf("failed to send payload node:%s", stream.Conn().ID())
-					} else {
-						egressTrafficMeter.Mark(int64(len(data)))
-						//log.Debugf("send %d size to node:%s", c, stream.Conn().ID())
-					}
-				}
-			}
+		msgData, err := n.makeMsg(payload)
+		if err != nil {
+			log.Error("failed to make message", "err", err)
+			return err
 		}
+		data, err := proto.Marshal(msgData)
+		if err != nil {
+			log.Errorf("failed marshal message data to bytes")
+			return err
+		}
+		if err := header.Encode(stream, msg.Type(), int32(len(data))); err != nil {
+			log.Error("failed to send header", msg.Type(), len(data), err)
+			return err
+		}
+		if _, err := stream.Write(data); err != nil {
+			log.Errorf("failed to send payload node:%s", stream.Conn().ID())
+			return err
+		}
+		egressTrafficMeter.Mark(int64(len(data)))
+		//log.Debugf("send %d size to node:%s", c, stream.Conn().ID())
 		return nil
 	}
 
@@ -446,36 +457,47 @@ func (n *Node) writeMsg(stream network.Stream, msg message.IMessage) error {
 		log.Errorf("failed to encode msg")
 		return err
 	}
-	if msgData := n.makeMsg(payload); msgData != nil {
-		data, err := proto.Marshal(msgData)
-		if err != nil {
-			log.Errorf("failed marshal message data to byts")
-		} else {
-			var buf = new(bytes.Buffer)
-			if err := header.Encode(buf, msg.Type(), int32(len(data))); err != nil {
-				log.Error("failed to send header", msg.Type(), len(data))
-				return err
-			} else {
-				buf.Write(data)
-				if _, err := stream.Write(buf.Bytes()); err != nil {
-					log.Errorf("failed to send payload node:%s", stream.Conn().ID())
-				} else {
-					//Trace
-					log.Debug("send data to peer", "data", hexutil.Encode(buf.Bytes()), "PeerID", stream.Conn().RemotePeer(), "ProtocolID", stream.Protocol(), "StreamID", stream.Conn().ID(), "StreamDirection", stream.Stat().Direction)
-				}
-			}
-		}
+	msgData, err := n.makeMsg(payload)
+	if err != nil {
+		log.Error("failed to make message", "err", err)
+		return err
 	}
+	data, err := proto.Marshal(msgData)
+	if err != nil {
+		log.Errorf("failed marshal message data to bytes")
+		return err
+	}
+	var buf = new(bytes.Buffer)
+	if err := header.Encode(buf, msg.Type(), int32(len(data))); err != nil {
+		log.Error("failed to send header", msg.Type(), len(data))
+		return err
+	}
+	buf.Write(data)
+	if _, err := stream.Write(buf.Bytes()); err != nil {
+		log.Errorf("failed to send payload node:%s", stream.Conn().ID())
+		return err
+	}
+	//Trace
+	log.Debug("send data to peer", "data", hexutil.Encode(buf.Bytes()), "PeerID", stream.Conn().RemotePeer(), "ProtocolID", stream.Protocol(), "StreamID", stream.Conn().ID(), "StreamDirection", stream.Stat().Direction)
 	return nil
 }
+
+// writeTimeout is the maximum time to wait for a message to be written to the channel
+const writeTimeout = 5 * time.Second
 
 func (n *Node) Write(msg message.IMessage) error {
 	if !n.isOK {
 		return fmt.Errorf("node already closed")
 	}
 
-	n.msgCh <- msg
-	return nil
+	select {
+	case n.msgCh <- msg:
+		return nil
+	case <-time.After(writeTimeout):
+		return fmt.Errorf("write timeout: channel blocked for %v", writeTimeout)
+	case <-n.ctx.Done():
+		return n.ctx.Err()
+	}
 }
 
 func (n *Node) WriteMsg(messageType message.MessageType, payload []byte) error {
