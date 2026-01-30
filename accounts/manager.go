@@ -238,7 +238,8 @@ func (am *Manager) Find(account Account) (Wallet, error) {
 // Subscribe creates an async subscription to receive notifications when the
 // manager detects the arrival or departure of a wallet from any of its backends.
 func (am *Manager) Subscribe(sink chan<- WalletEvent) event.Subscription {
-	return event.GlobalEvent.Subscribe(sink)
+	sub, _ := event.GlobalEvent.Subscribe(sink)
+	return sub
 }
 
 // merge is a sorted analogue of append for wallets, where the ordering of the

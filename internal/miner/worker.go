@@ -243,7 +243,10 @@ func (w *worker) stop() {
 }
 
 func (w *worker) close() {
-
+	// Cancel context to signal all goroutines to stop
+	if w.cancel != nil {
+		w.cancel()
+	}
 }
 
 func (w *worker) isRunning() bool {
@@ -519,7 +522,7 @@ func (w *worker) workLoop(recommit time.Duration) error {
 	newBlockCh := make(chan common.ChainHighestBlock)
 	defer close(newBlockCh)
 
-	newBlockSub := event.GlobalEvent.Subscribe(newBlockCh)
+	newBlockSub, _ := event.GlobalEvent.Subscribe(newBlockCh)
 	defer newBlockSub.Unsubscribe()
 
 	timer := time.NewTimer(0)
@@ -605,10 +608,11 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		gasSnap := current.gasPool.Gas()
 		snap := ibs.Snapshot()
 		log.Debug("addTransactionsToMiningBlock", "txn hash", txn.Hash())
-		receipt, _, err := internal.ApplyTransaction(chainConfig, internal.GetHashFn(header, getHeader), w.engine, &coinbase, env.gasPool, ibs, noop, current.header, txn, &header.GasUsed, *vmConfig)
+		receipt, _, err := internal.ApplyTransaction(chainConfig, internal.GetHashFn(header, getHeader), w.engine, &coinbase, current.gasPool, ibs, noop, current.header, txn, &header.GasUsed, *vmConfig)
 		if err != nil {
 			ibs.RevertToSnapshot(snap)
-			env.gasPool = new(common.GasPool).AddGas(gasSnap) // restore gasPool as well as ibs
+			// Security: restore gasPool using the same variable (current.gasPool) for consistency
+			current.gasPool = new(common.GasPool).AddGas(gasSnap)
 			return nil, err
 		}
 

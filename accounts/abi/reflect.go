@@ -38,6 +38,8 @@ import (
 // into:
 //
 //	type TupleT struct { X *big.Int }
+//
+// Returns the converted value, or nil if conversion fails.
 func ConvertType(in interface{}, proto interface{}) interface{} {
 	protoType := reflect.TypeOf(proto)
 	if reflect.TypeOf(in).ConvertibleTo(protoType) {
@@ -45,9 +47,22 @@ func ConvertType(in interface{}, proto interface{}) interface{} {
 	}
 	// Use set as a last ditch effort
 	if err := set(reflect.ValueOf(proto), reflect.ValueOf(in)); err != nil {
-		panic(err)
+		return nil
 	}
 	return proto
+}
+
+// ConvertTypeWithError is like ConvertType but returns an error instead of nil on failure.
+func ConvertTypeWithError(in interface{}, proto interface{}) (interface{}, error) {
+	protoType := reflect.TypeOf(proto)
+	if reflect.TypeOf(in).ConvertibleTo(protoType) {
+		return reflect.ValueOf(in).Convert(protoType).Interface(), nil
+	}
+	// Use set as a last ditch effort
+	if err := set(reflect.ValueOf(proto), reflect.ValueOf(in)); err != nil {
+		return nil, err
+	}
+	return proto, nil
 }
 
 // indirect recursively dereferences the value until it either gets the value

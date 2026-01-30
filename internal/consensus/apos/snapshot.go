@@ -323,6 +323,10 @@ func (s *Snapshot) signers() []types.Address {
 // inturn returns if a signer at a given block height is in-turn or not.
 func (s *Snapshot) inturn(number uint64, signer types.Address) bool {
 	signers, offset := s.signers(), 0
+	// Security: prevent division by zero when signers list is empty
+	if len(signers) == 0 {
+		return false
+	}
 	for offset < len(signers) && signers[offset] != signer {
 		offset++
 	}

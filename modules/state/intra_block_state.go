@@ -175,6 +175,9 @@ func (sdb *IntraBlockState) WrittenSnapshot(hash types.Hash) []byte {
 }
 
 func (s *IntraBlockState) SetGetOneFun(f1 GetOneFun) {
+	if s.snap == nil {
+		return
+	}
 	s.snap.SetGetFun(f1)
 }
 
@@ -290,11 +293,12 @@ func (sdb *IntraBlockState) AddRefund(gas uint64) {
 }
 
 // SubRefund removes gas from the refund counter.
-// This method will panic if the refund counter goes below zero
+// This method will set an error if the refund counter goes below zero
 func (sdb *IntraBlockState) SubRefund(gas uint64) {
 	sdb.journal.append(refundChange{prev: sdb.refund})
 	if gas > sdb.refund {
-		sdb.setErrorUnsafe(fmt.Errorf("refund counter below zero"))
+		sdb.setErrorUnsafe(fmt.Errorf("refund counter below zero: gas=%d, refund=%d", gas, sdb.refund))
+		return
 	}
 	sdb.refund -= gas
 }

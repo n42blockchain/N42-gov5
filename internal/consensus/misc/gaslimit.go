@@ -27,12 +27,15 @@ import (
 // in relation to the parent gas limit.
 func VerifyGaslimit(parentGasLimit, headerGasLimit uint64) error {
 	// Verify that the gas limit remains within allowed bounds
-	diff := int64(parentGasLimit) - int64(headerGasLimit)
-	if diff < 0 {
-		diff *= -1
+	// Security: use unsigned arithmetic to avoid int64 overflow
+	var diff uint64
+	if parentGasLimit > headerGasLimit {
+		diff = parentGasLimit - headerGasLimit
+	} else {
+		diff = headerGasLimit - parentGasLimit
 	}
 	limit := parentGasLimit / params.GasLimitBoundDivisor
-	if uint64(diff) >= limit {
+	if diff >= limit {
 		return fmt.Errorf("invalid gas limit: have %d, want %d +-= %d", headerGasLimit, parentGasLimit, limit-1)
 	}
 	if headerGasLimit < params.MinGasLimit {

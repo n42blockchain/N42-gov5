@@ -35,4 +35,10 @@ func NewLegacyKeccak256() hash.Hash {
 	h.Reset()
 	return h
 }
-func ReturnToPoolKeccak256(h hash.Hash) { hasherPool.Put(h) }
+
+// ReturnToPoolKeccak256 returns a hasher to the pool.
+// The hasher is reset before being returned to ensure no state leakage.
+func ReturnToPoolKeccak256(h hash.Hash) {
+	h.Reset()
+	hasherPool.Put(h)
+}

@@ -28,6 +28,7 @@ import (
 	"go.opencensus.io/trace"
 	"google.golang.org/protobuf/proto"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -168,7 +169,7 @@ func (s *Service) GetPing() *sync_pb.Ping {
 }
 
 func (s *Service) IncSeqNumber() {
-	s.ping.SeqNumber++
+	atomic.AddUint64(&s.ping.SeqNumber, 1)
 }
 
 func (s *Service) GetConfig() *conf.P2PConfig {
@@ -297,8 +298,8 @@ func (s *Service) Start() {
 	}
 	//todo
 	//go s.forkWatcher()
-	go s.loop()
 	s.wg.Add(1)
+	go s.loop()
 }
 
 func (s *Service) loop() {

@@ -319,7 +319,12 @@ func Pair(g1 *G1, g2 *G2) *GT {
 }
 
 // PairingCheck calculates the Optimal Ate pairing for a set of points.
+// Returns false if input slices have different lengths.
 func PairingCheck(a []*G1, b []*G2) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
 	acc := new(gfP12)
 	acc.SetOne()
 

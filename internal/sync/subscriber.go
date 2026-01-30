@@ -23,6 +23,10 @@ import (
 
 const pubsubMessageTimeout = 30 * time.Second
 
+// maxConcurrentPipelines limits the number of concurrent message processing goroutines.
+// Fix: Prevent goroutine explosion by using a semaphore pattern.
+const maxConcurrentPipelines = 256
+
 // wrappedVal represents a gossip validator which also returns an error along with the result.
 type wrappedVal func(context.Context, peer.ID, *pubsub.Message) (pubsub.ValidationResult, error)
 
@@ -133,7 +137,11 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 	}
 
 	// The main message loop for receiving incoming messages from this subscription.
+	// Fix: Use semaphore to limit concurrent goroutines and prevent goroutine explosion.
 	messageLoop := func() {
+		// Semaphore to limit concurrent pipeline executions
+		sem := make(chan struct{}, maxConcurrentPipelines)
+
 		for {
 			msg, err := sub.Next(s.ctx)
 			if err != nil {
@@ -151,7 +159,16 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 				continue
 			}
 
-			go pipeline(msg)
+			// Acquire semaphore slot before starting goroutine
+			select {
+			case sem <- struct{}{}:
+				go func(m *pubsub.Message) {
+					defer func() { <-sem }() // Release semaphore slot when done
+					pipeline(m)
+				}(msg)
+			case <-s.ctx.Done():
+				return
+			}
 		}
 	}
 

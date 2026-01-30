@@ -1,6 +1,8 @@
 package apos
 
 import (
+	"errors"
+
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/math"
@@ -16,6 +18,11 @@ func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHead
 
 	rewardMap := make(map[types.Address]*uint256.Int, 0)
 	unpayMap := make(map[types.Address]*uint256.Int, 0)
+
+	// Security: prevent underflow when number < rewardEpoch
+	if number.Cmp(r.rewardEpoch) < 0 {
+		return nil, nil, nil
+	}
 
 	endNumber := new(uint256.Int).Sub(number, r.rewardEpoch)
 	//calculate last batch but this one
@@ -53,7 +60,9 @@ func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHead
 				addrReward = uint256.NewInt(0)
 			}
 
-			rewardMap[verifier.Address] = math.Min256(addrReward.Add(addrReward, depositeMap[verifier.Address].reward), depositeMap[verifier.Address].maxReward.Clone())
+			// Security: create new uint256.Int to avoid modifying the original pointer in map
+			sum := new(uint256.Int).Add(addrReward, depositeMap[verifier.Address].reward)
+			rewardMap[verifier.Address] = math.Min256(sum, depositeMap[verifier.Address].maxReward.Clone())
 		}
 
 		currentNr.SubUint64(currentNr, 1)
@@ -95,12 +104,16 @@ func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHead
 }
 
 func doReward(chainConf *params.ChainConfig, state *state.IntraBlockState, header *block.Header, chain consensus.ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
-	beijing, _ := uint256.FromBig(chainConf.BeijingBlock)
+	beijing, overflow := uint256.FromBig(chainConf.BeijingBlock)
+	if overflow {
+		return nil, nil, errors.New("BeijingBlock overflows uint256")
+	}
 	number := header.Number64()
 	var rewards block.Rewards
 	var upayMap map[types.Address]*uint256.Int
 
-	if chainConf.IsBeijing(number.Uint64()) && new(uint256.Int).Mod(new(uint256.Int).Sub(number, beijing), uint256.NewInt(chainConf.Apos.RewardEpoch)).
+	// Security: ensure number >= beijing before subtraction to prevent underflow
+	if chainConf.IsBeijing(number.Uint64()) && number.Cmp(beijing) >= 0 && new(uint256.Int).Mod(new(uint256.Int).Sub(number, beijing), uint256.NewInt(chainConf.Apos.RewardEpoch)).
 		Cmp(uint256.NewInt(0)) == 0 {
 		r := newReward(chainConf)
 		var (

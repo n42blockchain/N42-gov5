@@ -5,6 +5,7 @@ package internal
 import (
 	cryptoRand "crypto/rand"
 	"crypto/subtle"
+	"fmt"
 	"github.com/n42blockchain/N42/common/crypto/dilithium/internal/common"
 	"golang.org/x/crypto/sha3"
 	"io"
@@ -304,10 +305,17 @@ func Verify(pk *PublicKey, msg []byte, signature []byte) bool {
 	return sig.c == cp
 }
 
+// ErrSignatureBufferTooSmall is returned when the signature buffer is too small.
+var ErrSignatureBufferTooSmall = fmt.Errorf("signature buffer too small, need at least %d bytes", SignatureSize)
+
+// ErrSigningFailed is returned when signing fails after maximum attempts.
+var ErrSigningFailed = fmt.Errorf("signing failed after maximum attempts")
+
 // SignTo signs the given message and writes the signature into signature.
+// Returns error if signature buffer is too small or signing fails.
 //
 //nolint:funlen
-func SignTo(sk *PrivateKey, msg []byte, signature []byte) {
+func SignTo(sk *PrivateKey, msg []byte, signature []byte) error {
 	var mu, rhop [64]byte
 	var w1Packed [PolyW1Size * K]byte
 	var y, yh VecL
@@ -317,7 +325,7 @@ func SignTo(sk *PrivateKey, msg []byte, signature []byte) {
 	var sig unpackedSignature
 
 	if len(signature) < SignatureSize {
-		panic("Signature does not fit in that byteslice")
+		return ErrSignatureBufferTooSmall
 	}
 
 	//  μ = CRH(tr ‖ msg)
@@ -340,7 +348,7 @@ func SignTo(sk *PrivateKey, msg []byte, signature []byte) {
 			// Depending on the mode, one try has a chance between 1/7 and 1/4
 			// of succeeding.  Thus it is safe to say that 576 iterations
 			// are enough as (6/7)⁵⁷⁶ < 2⁻¹²⁸.
-			panic("This should only happen 1 in  2^{128}: something is wrong.")
+			return ErrSigningFailed
 		}
 
 		// y = ExpandMask(ρ', key)
@@ -434,6 +442,7 @@ func SignTo(sk *PrivateKey, msg []byte, signature []byte) {
 	}
 
 	sig.Pack(signature[:])
+	return nil
 }
 
 // Computes the public key corresponding to this private key.

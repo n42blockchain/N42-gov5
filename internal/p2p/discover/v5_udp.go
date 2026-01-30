@@ -680,8 +680,11 @@ func (t *UDPv5) readLoop() {
 
 // dispatchReadPacket sends a packet into the dispatch loop.
 func (t *UDPv5) dispatchReadPacket(from *net.UDPAddr, content []byte) bool {
+	// Copy the content to prevent data race since the caller may reuse the buffer
+	contentCopy := make([]byte, len(content))
+	copy(contentCopy, content)
 	select {
-	case t.packetInCh <- ReadPacket{content, from}:
+	case t.packetInCh <- ReadPacket{contentCopy, from}:
 		return true
 	case <-t.closeCtx.Done():
 		return false

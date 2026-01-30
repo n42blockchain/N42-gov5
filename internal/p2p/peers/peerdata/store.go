@@ -77,6 +77,9 @@ type PeerData struct {
 
 // todo
 func (s *PeerData) CurrentHeight() *uint256.Int {
+	if s.ChainState == nil {
+		return nil
+	}
 	return utils.ConvertH256ToUint256Int(s.ChainState.CurrentHeight)
 }
 

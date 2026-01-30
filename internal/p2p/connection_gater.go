@@ -96,12 +96,10 @@ func (s *Service) validateDial(addr multiaddr.Multiaddr) bool {
 	if err != nil {
 		return false
 	}
-	remaining := s.ipLimiter.Remaining(ip.String())
-	if remaining <= 0 {
-		return false
-	}
-	s.ipLimiter.Add(ip.String(), 1)
-	return true
+	// Add returns the amount actually added (0 if capacity reached)
+	// This is atomic because Add() uses internal locking
+	added := s.ipLimiter.Add(ip.String(), 1)
+	return added > 0
 }
 
 var privateCIDRList = []string{

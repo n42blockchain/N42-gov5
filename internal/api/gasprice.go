@@ -98,7 +98,7 @@ func NewOracle(backend common2.IBlockChain, miner common2.IMiner, chainConfig *p
 
 	highestBlockCh := make(chan common2.ChainHighestBlock)
 	defer close(highestBlockCh)
-	highestSub := event.GlobalEvent.Subscribe(highestBlockCh)
+	highestSub, _ := event.GlobalEvent.Subscribe(highestBlockCh)
 	defer highestSub.Unsubscribe()
 
 	go func() {

@@ -160,17 +160,22 @@ func VerifyBlobProofBatch(blobs []Blob, commitments []Commitment, proofs []Proof
 // =============================================================================
 
 // BlobToCommitment computes the KZG commitment for a blob
+//
+// WARNING: This is a PLACEHOLDER implementation using SHA256 for TESTING ONLY.
+// DO NOT USE IN PRODUCTION. A real KZG implementation requires:
+// 1. Converting blob to polynomial coefficients
+// 2. Evaluating polynomial commitment using BLS12-381 trusted setup
+// 3. Returning the commitment as a compressed G1 point
+//
+// TODO: Implement proper KZG commitment using BLS12-381 curve operations.
 func (c *Context) BlobToCommitment(blob *Blob) (Commitment, error) {
 	if !c.initialized {
 		return Commitment{}, ErrContextNotInitialized
 	}
 
-	// In a full implementation, this would:
-	// 1. Convert blob to polynomial coefficients
-	// 2. Evaluate polynomial commitment using trusted setup
-	// 3. Return the commitment as a compressed G1 point
-
-	// For now, return a placeholder based on blob hash
+	// WARNING: PLACEHOLDER IMPLEMENTATION - NOT CRYPTOGRAPHICALLY SECURE
+	// This uses SHA256 instead of actual KZG polynomial commitment.
+	// In production, this MUST be replaced with proper KZG implementation.
 	h := sha256.Sum256(blob[:])
 	var commitment Commitment
 	copy(commitment[:], h[:])

@@ -12,7 +12,17 @@ import (
 )
 
 var maxKeys = 1000000
-var pubkeyCache, _ = lru.New(maxKeys)
+var pubkeyCache *lru.Cache
+
+func init() {
+	var err error
+	pubkeyCache, err = lru.New(maxKeys)
+	if err != nil {
+		// This should never happen with a valid maxKeys value,
+		// but if it does, we need to know about it immediately
+		panic(fmt.Sprintf("failed to initialize pubkey cache: %v", err))
+	}
+}
 
 const (
 	BLSPubkeyLength = 48

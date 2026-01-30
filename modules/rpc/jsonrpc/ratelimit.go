@@ -19,6 +19,7 @@ package jsonrpc
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -137,7 +138,9 @@ func getClientIP(r *http.Request) string {
 	xff := r.Header.Get("X-Forwarded-For")
 	if xff != "" {
 		// X-Forwarded-For may contain multiple IPs, use the first one
-		if ip := net.ParseIP(xff); ip != nil {
+		ips := strings.Split(xff, ",")
+		firstIP := strings.TrimSpace(ips[0])
+		if ip := net.ParseIP(firstIP); ip != nil {
 			return ip.String()
 		}
 	}

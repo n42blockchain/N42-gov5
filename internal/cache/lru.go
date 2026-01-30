@@ -221,7 +221,7 @@ func (c *ARC[K, V]) Set(key K, value V) {
 		if c.b1.Len() > 0 && c.b2.Len() > c.b1.Len() {
 			delta = c.b2.Len() / c.b1.Len()
 		}
-		c.p = min(c.p+delta, c.capacity)
+		c.p = intMin(c.p+delta, c.capacity)
 		c.b1.Delete(key)
 		c.replace(key)
 		c.t2.Set(key, value)
@@ -235,7 +235,7 @@ func (c *ARC[K, V]) Set(key K, value V) {
 		if c.b2.Len() > 0 && c.b1.Len() > c.b2.Len() {
 			delta = c.b1.Len() / c.b2.Len()
 		}
-		c.p = max(c.p-delta, 0)
+		c.p = intMax(c.p-delta, 0)
 		c.b2.Delete(key)
 		c.replace(key)
 		c.t2.Set(key, value)
@@ -284,14 +284,14 @@ func (c *ARC[K, V]) Len() int {
 	return c.t1.Len() + c.t2.Len()
 }
 
-func min(a, b int) int {
+func intMin(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
 }
 
-func max(a, b int) int {
+func intMax(a, b int) int {
 	if a > b {
 		return a
 	}

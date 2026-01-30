@@ -72,8 +72,8 @@ func (m *Miner) runLoop() error {
 	defer m.cancel()
 	startCh := make(chan common.DownloaderFinishEvent)
 	doneCh := make(chan common.DownloaderStartEvent)
-	start := event.GlobalEvent.Subscribe(startCh)
-	done := event.GlobalEvent.Subscribe(doneCh)
+	start, _ := event.GlobalEvent.Subscribe(startCh)
+	done, _ := event.GlobalEvent.Subscribe(doneCh)
 
 	defer func() {
 		start.Unsubscribe()

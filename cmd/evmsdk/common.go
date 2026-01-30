@@ -24,13 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/crypto/ecies"
-	"github.com/n42blockchain/N42/common/hexutil"
-	"golang.org/x/crypto/sha3"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path"
@@ -43,11 +37,15 @@ import (
 
 	"github.com/go-kit/kit/transport/http/jsonrpc"
 	"github.com/gorilla/websocket"
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/crypto/bls"
+	"github.com/n42blockchain/N42/common/crypto/ecies"
+	"github.com/n42blockchain/N42/common/hexutil"
 	commTyp "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
-
-	"github.com/n42blockchain/N42/common/crypto/bls"
+	"golang.org/x/crypto/sha3"
 )
 
 const (
@@ -204,7 +202,7 @@ type Setting struct {
 	AppBasePath string
 	Account     string
 
-	PrivKey string
+	PrivKey string `json:"-"`
 }
 
 type EmitRequest struct {
@@ -637,7 +635,11 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 	}
 
 	entirecode := state.EntireCode(bean)
-	stateRoot := verify(e.ctx, &entirecode)
+	stateRoot, err := verify(e.ctx, &entirecode)
+	if err != nil {
+		simpleLog("verify failed", "err", err)
+		return nil, err
+	}
 
 	res := AggSign{}
 	//stateroot
@@ -832,12 +834,16 @@ func BackgroundLoop() string {
 
 func GetWebSocketConnect() string {
 	var sw strings.Builder
-	conn, connResp, err := websocket.DefaultDialer.Dial("ws://54.175.247.94:20013", nil)
+	wsServerURL := os.Getenv("WS_SERVER_URL")
+	if wsServerURL == "" {
+		wsServerURL = "ws://54.175.247.94:20013" // default for backward compatibility
+	}
+	conn, connResp, err := websocket.DefaultDialer.Dial(wsServerURL, nil)
 	if err != nil {
 		return fmt.Sprintf("dial error,err=%+v \r\n", err)
 	}
 	defer conn.Close()
-	connRespBytes, err := ioutil.ReadAll(connResp.Body)
+	connRespBytes, err := io.ReadAll(connResp.Body)
 	if err != nil {
 		return fmt.Sprintf("connresp return error,err=%+v", err)
 	}
@@ -860,7 +866,11 @@ func GetWebSocketConnect() string {
 	sw.WriteString("received message:" + string(msg))
 
 	go func() {
-		innerConn, _, err := websocket.DefaultDialer.Dial("ws://174.129.114.74:8546", nil)
+		wsServerURLSecondary := os.Getenv("WS_SERVER_URL_SECONDARY")
+		if wsServerURLSecondary == "" {
+			wsServerURLSecondary = "ws://174.129.114.74:8546" // default for backward compatibility
+		}
+		innerConn, _, err := websocket.DefaultDialer.Dial(wsServerURLSecondary, nil)
 		if err != nil {
 			fmt.Printf("bg dial error,err=%+v \r\n", err)
 			return

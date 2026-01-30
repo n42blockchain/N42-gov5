@@ -38,9 +38,9 @@ import (
 
 // Environment variable names for configuration
 const (
-	EnvPrivateKey  = "N42_VERIFY_PRIVATE_KEY"
+	EnvPrivateKey   = "N42_VERIFY_PRIVATE_KEY"
 	EnvWebSocketURL = "N42_VERIFY_WS_URL"
-	DefaultWSURL   = "ws://127.0.0.1:20013"
+	DefaultWSURL    = "ws://127.0.0.1:20013"
 )
 
 var privateKey bls.SecretKey
@@ -146,7 +146,11 @@ func main() {
 						continue
 					}
 
-					root := verify(ctx, bean)
+					root, err := verify(ctx, bean)
+					if err != nil {
+						log.Errorf("verify failed, %v", err)
+						continue
+					}
 					res := api.AggSign{}
 					res.Number = bean.Entire.Header.Number.Uint64()
 					res.Address = addressKey

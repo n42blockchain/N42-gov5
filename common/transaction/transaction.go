@@ -197,11 +197,11 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 		inner = &dftt
 	}
 
-	// todo
+	// Verify hash consistency between proto and inner hash
 	protoHash := utils.ConvertH256ToHash(pbTx.Hash)
 	innerHash := inner.hash()
 	if bytes.Compare(protoHash[:], innerHash[:]) != 0 {
-		//return nil, ErrUnmarshalHash
+		return nil, ErrUnmarshalHash
 	}
 
 	return inner, nil
@@ -283,10 +283,10 @@ func (tx *Transaction) RawSignatureValues() (v, r, s *uint256.Int) {
 	return tx.inner.rawSignatureValues()
 }
 
-// WithSignature todo
+// WithSignatureValues sets the signature values on the transaction.
+// It uses the transaction's existing chainID if available.
 func (tx *Transaction) WithSignatureValues(v, r, s *uint256.Int) (*Transaction, error) {
-	//todo
-	tx.inner.setSignatureValues(uint256.NewInt(100100100), v, r, s)
+	tx.inner.setSignatureValues(tx.inner.chainID(), v, r, s)
 	return tx, nil
 }
 
@@ -553,9 +553,9 @@ func (tx *Transaction) EffectiveGasTip(baseFee *uint256.Int) (*uint256.Int, erro
 
 func uint256Min(x, y *uint256.Int) *uint256.Int {
 	if x.Cmp(y) == 1 {
-		return x
+		return y
 	}
-	return y
+	return x
 }
 
 func isProtectedV(V *big.Int) bool {

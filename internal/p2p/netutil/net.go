@@ -24,6 +24,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 )
 
 var lan4, lan6, special4, special6 Netlist
@@ -221,6 +222,7 @@ type DistinctNetSet struct {
 	Subnet uint // number of common prefix bits
 	Limit  uint // maximum number of IPs in each subnet
 
+	mu      sync.RWMutex
 	members map[string]uint
 	buf     net.IP
 }
@@ -228,6 +230,8 @@ type DistinctNetSet struct {
 // Add adds an IP address to the set. It returns false (and doesn't add the IP) if the
 // number of existing IPs in the defined range exceeds the limit.
 func (s *DistinctNetSet) Add(ip net.IP) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key := s.key(ip)
 	n := s.members[string(key)]
 	if n < s.Limit {
@@ -239,6 +243,8 @@ func (s *DistinctNetSet) Add(ip net.IP) bool {
 
 // Remove removes an IP from the set.
 func (s *DistinctNetSet) Remove(ip net.IP) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key := s.key(ip)
 	if n, ok := s.members[string(key)]; ok {
 		if n == 1 {
@@ -250,14 +256,18 @@ func (s *DistinctNetSet) Remove(ip net.IP) {
 }
 
 // Contains whether the given IP is contained in the set.
-func (s DistinctNetSet) Contains(ip net.IP) bool {
+func (s *DistinctNetSet) Contains(ip net.IP) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	key := s.key(ip)
 	_, ok := s.members[string(key)]
 	return ok
 }
 
 // Len returns the number of tracked IPs.
-func (s DistinctNetSet) Len() int {
+func (s *DistinctNetSet) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	n := uint(0)
 	for _, i := range s.members {
 		n += i
@@ -296,7 +306,9 @@ func (s *DistinctNetSet) key(ip net.IP) net.IP {
 }
 
 // String implements fmt.Stringer
-func (s DistinctNetSet) String() string {
+func (s *DistinctNetSet) String() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var buf bytes.Buffer
 	buf.WriteString("{")
 	keys := make([]string, 0, len(s.members))

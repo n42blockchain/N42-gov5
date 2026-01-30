@@ -32,7 +32,7 @@ func codeBitmap(code []byte) []uint64 {
 			idx := pc / 64
 			shift := pc & 63
 			bits[idx] |= x << shift
-			if shift+shift > 64 {
+			if shift+numbits > 64 {
 				bits[idx+1] |= x >> (64 - shift)
 			}
 			pc += numbits

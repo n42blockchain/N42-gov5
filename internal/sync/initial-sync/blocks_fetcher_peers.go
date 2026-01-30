@@ -40,19 +40,27 @@ func (f *blocksFetcher) removeStalePeerLocks(age time.Duration) {
 }
 
 // selectFailOverPeer randomly selects fail over peer from the list of available peers.
+// Fix: Use iterative approach instead of recursion to prevent stack overflow.
 func (f *blocksFetcher) selectFailOverPeer(excludedPID peer.ID, peers []peer.ID) (peer.ID, error) {
 	if len(peers) == 0 {
 		return "", errNoPeersAvailable
 	}
-	if len(peers) == 1 && peers[0] == excludedPID {
+
+	// Filter out the excluded peer first
+	availablePeers := make([]peer.ID, 0, len(peers))
+	for _, p := range peers {
+		if p != excludedPID {
+			availablePeers = append(availablePeers, p)
+		}
+	}
+
+	if len(availablePeers) == 0 {
 		return "", errNoPeersAvailable
 	}
 
-	ind := f.rand.Int() % len(peers)
-	if peers[ind] == excludedPID {
-		return f.selectFailOverPeer(excludedPID, append(peers[:ind], peers[ind+1:]...))
-	}
-	return peers[ind], nil
+	// Select random peer from available peers
+	ind := f.rand.Int() % len(availablePeers)
+	return availablePeers[ind], nil
 }
 
 // waitForMinimumPeers spins and waits up until enough peers are available.
@@ -63,16 +71,16 @@ func (f *blocksFetcher) selectFailOverPeer(excludedPID peer.ID, peers []peer.ID)
 func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, error) {
 	cfg := f.p2p.GetConfig()
 	required := cfg.MinSyncPeers
-	
+
 	// Check if we should skip waiting for peers
 	if f.shouldSkipPeerWait() {
 		log.Info("Skipping peer wait in blocksFetcher (genesis node or standalone mode)")
 		return nil, nil
 	}
-	
+
 	waitCount := 0
 	maxWaitCount := 60 // Maximum ~5 minutes wait (60 * 5 seconds)
-	
+
 	for {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -81,13 +89,13 @@ func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, err
 		if len(peers) >= required {
 			return peers, nil
 		}
-		
+
 		waitCount++
-		log.Info("Waiting for enough suitable peers before syncing (blocksFetcher)", 
-			"suitable", len(peers), 
+		log.Info("Waiting for enough suitable peers before syncing (blocksFetcher)",
+			"suitable", len(peers),
 			"required", required,
 			"waitCount", waitCount)
-		
+
 		// After max wait, check if we should proceed anyway
 		if waitCount >= maxWaitCount {
 			if f.chain.CurrentBlock().Number64().IsZero() {
@@ -98,7 +106,7 @@ func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, err
 			log.Warn("Extended wait for peers in blocksFetcher, node may be partitioned from network")
 			waitCount = 0
 		}
-		
+
 		time.Sleep(handshakePollingInterval)
 	}
 }
@@ -106,21 +114,21 @@ func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, err
 // shouldSkipPeerWait returns true if the fetcher should skip waiting for peers.
 func (f *blocksFetcher) shouldSkipPeerWait() bool {
 	cfg := f.p2p.GetConfig()
-	
+
 	// If MinSyncPeers is 0, always skip (dev/standalone mode)
 	if cfg.MinSyncPeers == 0 {
 		return true
 	}
-	
+
 	// Check if we're at genesis block (block 0)
 	isGenesis := f.chain.CurrentBlock().Number64().IsZero()
 	if !isGenesis {
 		return false
 	}
-	
+
 	// Check if no bootstrap nodes are configured
 	noBootstrapNodes := len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0
-	
+
 	return noBootstrapNodes
 }
 

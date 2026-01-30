@@ -106,11 +106,11 @@ func NewEventSystem(api Api) *EventSystem {
 	}
 
 	// Subscribe events
-	m.txsSub = event.GlobalEvent.Subscribe(m.txsCh)
-	m.logsSub = event.GlobalEvent.Subscribe(m.logsCh)
-	m.rmLogsSub = event.GlobalEvent.Subscribe(m.rmLogsCh)
-	m.chainSub = event.GlobalEvent.Subscribe(m.chainCh)
-	m.pendingLogsSub = event.GlobalEvent.Subscribe(m.pendingLogsCh)
+	m.txsSub, _ = event.GlobalEvent.Subscribe(m.txsCh)
+	m.logsSub, _ = event.GlobalEvent.Subscribe(m.logsCh)
+	m.rmLogsSub, _ = event.GlobalEvent.Subscribe(m.rmLogsCh)
+	m.chainSub, _ = event.GlobalEvent.Subscribe(m.chainCh)
+	m.pendingLogsSub, _ = event.GlobalEvent.Subscribe(m.pendingLogsCh)
 
 	// Make sure none of the subscriptions are empty
 	if m.txsSub == nil || m.logsSub == nil || m.rmLogsSub == nil || m.chainSub == nil || m.pendingLogsSub == nil {

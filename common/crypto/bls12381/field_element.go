@@ -64,6 +64,9 @@ func (fe *fe) setBig(a *big.Int) *fe {
 }
 
 func (fe *fe) setString(s string) (*fe, error) {
+	if len(s) < 2 {
+		return nil, fmt.Errorf("input too short")
+	}
 	if s[:2] == "0x" {
 		s = s[2:]
 	}
@@ -168,7 +171,15 @@ func (fe *fe) cmp(fe2 *fe) int {
 }
 
 func (fe *fe) equal(fe2 *fe) bool {
-	return fe2[0] == fe[0] && fe2[1] == fe[1] && fe2[2] == fe[2] && fe2[3] == fe[3] && fe2[4] == fe[4] && fe2[5] == fe[5]
+	// Use constant-time comparison to prevent timing side-channel attacks
+	// XOR all words and accumulate - result is 0 only if all words are equal
+	acc := fe[0] ^ fe2[0]
+	acc |= fe[1] ^ fe2[1]
+	acc |= fe[2] ^ fe2[2]
+	acc |= fe[3] ^ fe2[3]
+	acc |= fe[4] ^ fe2[4]
+	acc |= fe[5] ^ fe2[5]
+	return acc == 0
 }
 
 func (e *fe) sign() bool {

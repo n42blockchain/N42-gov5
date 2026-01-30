@@ -280,11 +280,20 @@ func (api *API) GetRewards(address avmutil.Address, from jsonrpc.BlockNumberOrHa
 		resolvedToBlock   *uint256.Int
 	)
 
-	api.apos.db.View(context.Background(), func(tx kv.Tx) error {
-		resolvedFromBlock, _, err = rpchelper.GetCanonicalBlockNumber(from, tx)
-		resolvedToBlock, _, err = rpchelper.GetCanonicalBlockNumber(to, tx)
+	if dbErr := api.apos.db.View(context.Background(), func(tx kv.Tx) error {
+		var fromErr, toErr error
+		resolvedFromBlock, _, fromErr = rpchelper.GetCanonicalBlockNumber(from, tx)
+		if fromErr != nil {
+			return fromErr
+		}
+		resolvedToBlock, _, toErr = rpchelper.GetCanonicalBlockNumber(to, tx)
+		if toErr != nil {
+			return toErr
+		}
 		return nil
-	})
+	}); dbErr != nil {
+		return nil, dbErr
+	}
 
 	if err != nil {
 		return nil, err
@@ -386,7 +395,8 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	findCount = 0
 	minedBlocks := make([]MinedBlock, 0, wantCount) // pre-allocate capacity
 
-	for i := currentHeader.Number64().Uint64(); i >= 0; i-- {
+	for {
+		blockNum := currentHeader.Number64().Uint64()
 		verifier := currentBlock.Body().Verifier()
 		for _, verify := range verifier {
 			if addr == verify.Address {
@@ -403,6 +413,10 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		}
 		searchCount++
 		if searchCount >= maxSearchBlock {
+			break
+		}
+		// Security: prevent underflow - check if we've reached genesis block
+		if blockNum == 0 {
 			break
 		}
 		currentHeader = api.chain.GetHeaderByNumber(new(uint256.Int).SubUint64(currentBlock.Number64(), 1))
@@ -455,7 +469,8 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	findCount = 0
 	minedBlocks := make([]MinedBlock, 0, wantCount) // pre-allocate capacity
 
-	for i := currentHeader.Number64().Uint64(); i >= 0; i-- {
+	for {
+		blockNum := currentHeader.Number64().Uint64()
 		verifier := currentBlock.Body().Verifier()
 		for _, verify := range verifier {
 			if addr == verify.Address {
@@ -475,6 +490,10 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		}
 		searchCount++
 		if searchCount >= int(api.apos.config.RewardEpoch) {
+			break
+		}
+		// Security: prevent underflow - check if we've reached genesis block
+		if blockNum == 0 {
 			break
 		}
 		currentHeader = api.chain.GetHeaderByNumber(new(uint256.Int).SubUint64(currentBlock.Number64(), 1))

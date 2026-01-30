@@ -308,7 +308,7 @@ func (bc *BlockChain) updateFutureBlocksLoop() {
 
 func (bc *BlockChain) runNewBlockMessage() {
 	newBlockCh := make(chan *msg_proto.NewBlockMessageData, 10)
-	sub := event.GlobalEvent.Subscribe(newBlockCh)
+	sub, _ := event.GlobalEvent.Subscribe(newBlockCh)
 	defer sub.Unsubscribe()
 	db := bc.ChainDB
 	for {

@@ -155,7 +155,9 @@ func NewEVMInterpreter(evm VMInterpreter, cfg Config) *EVMInterpreter {
 	}
 	if len(cfg.ExtraEips) > 0 {
 		jt = copyJumpTable(jt)
-		for i, eip := range cfg.ExtraEips {
+		// Use reverse iteration to safely remove elements during iteration
+		for i := len(cfg.ExtraEips) - 1; i >= 0; i-- {
+			eip := cfg.ExtraEips[i]
 			if err := EnableEIP(eip, jt); err != nil {
 				// Disable it, so caller can check if it's activated or not
 				cfg.ExtraEips = append(cfg.ExtraEips[:i], cfg.ExtraEips[i+1:]...)

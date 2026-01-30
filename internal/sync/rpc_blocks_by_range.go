@@ -50,6 +50,11 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 	}
 	// initial batch start and end slots to be returned to remote peer.
 	startBlockNumber := utils.ConvertH256ToUint256Int(m.StartBlockNumber)
+	// Fix: Check for potential integer overflow before multiplication
+	if m.Step > 0 && count > 1 && m.Step > (^uint64(0))/(count-1) {
+		s.writeErrorResponseToStream(responseCodeInvalidRequest, "step*count overflow", stream)
+		return p2ptypes.ErrInvalidRequest
+	}
 	endBlockNumber := new(uint256.Int).AddUint64(startBlockNumber, m.Step*(count-1))
 
 	// The final requested slot from remote peer.

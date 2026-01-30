@@ -301,7 +301,7 @@ func (d *Downloader) pubSubLoop() {
 
 	highestBlockCh := make(chan common.ChainHighestBlock)
 	defer close(highestBlockCh)
-	highestSub := event.GlobalEvent.Subscribe(highestBlockCh)
+	highestSub, _ := event.GlobalEvent.Subscribe(highestBlockCh)
 	defer highestSub.Unsubscribe()
 
 	for {

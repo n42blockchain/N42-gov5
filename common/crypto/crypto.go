@@ -112,8 +112,14 @@ func Keccak512(data ...[]byte) []byte {
 
 // CreateAddress creates an ethereum address given the bytes and the nonce
 // DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// Panics if RLP encoding fails (should never happen with valid inputs).
 func CreateAddress(b types.Address, nonce uint64) types.Address {
-	data, _ := rlp.EncodeToBytes([]interface{}{b, nonce})
+	data, err := rlp.EncodeToBytes([]interface{}{b, nonce})
+	if err != nil {
+		// This should never happen with valid Address and uint64 inputs,
+		// but if it does, we need to know about it immediately
+		panic(fmt.Sprintf("CreateAddress: RLP encoding failed: %v", err))
+	}
 	return types.BytesToAddress(Keccak256(data)[12:])
 }
 

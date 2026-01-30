@@ -40,6 +40,8 @@ func New() *Stack {
 	stack, ok := stackPool.Get().(*Stack)
 	if !ok {
 		log.Error("Type assertion failure", "err", "cannot get Stack pointer from stackPool")
+		// Return a new Stack to prevent nil pointer dereference
+		return &Stack{Data: make([]uint256.Int, 0, 16)}
 	}
 	return stack
 }
@@ -57,7 +59,7 @@ func (st *Stack) PushN(ds ...uint256.Int) {
 func (st *Stack) Pop() (ret uint256.Int) {
 	// Security: bounds check before accessing - prevents panic on empty stack
 	if len(st.Data) == 0 {
-		log.Error("Stack underflow: Pop called on empty stack")
+		log.Error("Stack underflow: Pop called on empty stack", "len", 0)
 		return
 	}
 	ret = st.Data[len(st.Data)-1]
@@ -90,7 +92,7 @@ func (st *Stack) Dup(n int) {
 func (st *Stack) Peek() *uint256.Int {
 	// Security: bounds check before accessing - prevents panic on empty stack
 	if len(st.Data) == 0 {
-		log.Error("Stack underflow: Peek called on empty stack")
+		log.Error("Stack underflow: Peek called on empty stack", "len", 0)
 		return nil
 	}
 	return &st.Data[st.Len()-1]
@@ -152,6 +154,8 @@ func NewReturnStack() *ReturnStack {
 	rStack, ok := rStackPool.Get().(*ReturnStack)
 	if !ok {
 		log.Error("Type assertion failure", "err", "cannot get ReturnStack pointer from rStackPool")
+		// Return a new ReturnStack to prevent nil pointer dereference
+		return &ReturnStack{data: make([]uint32, 0, 10)}
 	}
 	return rStack
 }
@@ -164,7 +168,7 @@ func (st *ReturnStack) Push(d uint32) {
 func (st *ReturnStack) Pop() (ret uint32) {
 	// Security: bounds check before accessing - prevents panic on empty stack
 	if len(st.data) == 0 {
-		log.Error("ReturnStack underflow: Pop called on empty stack")
+		log.Error("ReturnStack underflow: Pop called on empty stack", "len", 0)
 		return
 	}
 	ret = st.data[len(st.data)-1]
