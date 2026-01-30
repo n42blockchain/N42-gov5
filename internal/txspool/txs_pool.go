@@ -709,12 +709,18 @@ func (pool *TxsPool) validateSender(tx *transaction.Transaction) bool {
 
 // requestReset requests a pool reset to the new head block.
 // The returned channel is closed when the reset has occurred.
+// R2 fix: Handle context cancellation during both send and receive phases.
 func (pool *TxsPool) requestReset(oldBlock block.IBlock, newBlock block.IBlock) <-chan struct{} {
 	select {
 	case pool.reqResetCh <- &txspoolResetRequest{oldBlock, newBlock}:
-		return <-pool.reorgDoneCh
-	//case <-pool.reorgShutdownCh:
-	//	return pool.reorgShutdownCh
+		// R2 fix: Also check ctx.Done() when waiting for response
+		// to prevent goroutine leak if scheduleLoop exits
+		select {
+		case done := <-pool.reorgDoneCh:
+			return done
+		case <-pool.ctx.Done():
+			return pool.ctx.Done()
+		}
 	case <-pool.ctx.Done():
 		return pool.ctx.Done()
 	}
@@ -722,10 +728,18 @@ func (pool *TxsPool) requestReset(oldBlock block.IBlock, newBlock block.IBlock) 
 
 // requestPromoteExecutables requests transaction promotion checks for the given addresses.
 // The returned channel is closed when the promotion checks have occurred.
+// R2 fix: Handle context cancellation during both send and receive phases.
 func (pool *TxsPool) requestPromoteExecutables(set *accountSet) <-chan struct{} {
 	select {
 	case pool.reqPromoteCh <- set:
-		return <-pool.reorgDoneCh
+		// R2 fix: Also check ctx.Done() when waiting for response
+		// to prevent goroutine leak if scheduleLoop exits
+		select {
+		case done := <-pool.reorgDoneCh:
+			return done
+		case <-pool.ctx.Done():
+			return pool.ctx.Done()
+		}
 	case <-pool.ctx.Done():
 		return pool.ctx.Done()
 	}
