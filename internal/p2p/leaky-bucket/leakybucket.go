@@ -86,6 +86,11 @@ func (b *LeakyBucket) Count() int64 {
 		return 0
 	}
 
+	// Security fix: Prevent division by zero
+	if b.rate == 0 {
+		return 0
+	}
+
 	nsRemaining := float64(b.p.Sub(now()))
 	nsPerDrip := float64(b.period) / b.rate
 	count := int64(math.Ceil(nsRemaining / nsPerDrip))
@@ -118,8 +123,13 @@ func (b *LeakyBucket) ChangeCapacity(capacity int64) {
 	if diff < 0 && b.Count() > capacity {
 		// We are shrinking the capacity and the new bucket size can't hold all
 		// the current contents. Dump the extra and adjust the time till empty.
-		nsPerDrip := float64(b.period) / b.rate
-		b.p = now().Add(time.Duration(nsPerDrip * float64(capacity)))
+		// Security fix: Prevent division by zero
+		if b.rate == 0 {
+			b.p = now()
+		} else {
+			nsPerDrip := float64(b.period) / b.rate
+			b.p = now().Add(time.Duration(nsPerDrip * float64(capacity)))
+		}
 	}
 	b.capacity = capacity
 }
@@ -133,6 +143,11 @@ func (b *LeakyBucket) TillEmpty() time.Duration {
 // was added to the bucket. If the return is less than 'amount', then the
 // bucket's capacity was reached.
 func (b *LeakyBucket) Add(amount int64) int64 {
+	// Security fix: Prevent division by zero and invalid state
+	if b.rate == 0 {
+		return 0
+	}
+
 	count := b.Count()
 	if count >= b.capacity {
 		// The bucket is full.

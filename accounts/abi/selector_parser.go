@@ -84,7 +84,10 @@ func parseElementaryType(unescapedSelector string) (string, string, error) {
 }
 
 func parseCompositeType(unescapedSelector string) ([]interface{}, string, error) {
-	if len(unescapedSelector) == 0 || unescapedSelector[0] != '(' {
+	if len(unescapedSelector) == 0 {
+		return nil, "", fmt.Errorf("expected '(', got empty string")
+	}
+	if unescapedSelector[0] != '(' {
 		return nil, "", fmt.Errorf("expected '(', got %c", unescapedSelector[0])
 	}
 	parsedType, rest, err := parseType(unescapedSelector[1:])

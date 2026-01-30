@@ -128,7 +128,14 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 			return
 		}
 
-		if err := handle(ctx, msg.ValidatorData.(proto.Message)); err != nil {
+		protoMsg, ok := msg.ValidatorData.(proto.Message)
+		if !ok {
+			log.Error("ValidatorData is not a proto.Message", "type", fmt.Sprintf("%T", msg.ValidatorData))
+			messageFailedProcessingCounter.WithLabelValues(topic).Inc()
+			return
+		}
+
+		if err := handle(ctx, protoMsg); err != nil {
 			//tracing.AnnotateError(span, err)
 			log.Error("Could not handle p2p pubsub", "err", err, "topic", topic)
 			messageFailedProcessingCounter.WithLabelValues(topic).Inc()

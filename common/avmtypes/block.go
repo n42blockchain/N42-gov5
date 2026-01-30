@@ -80,7 +80,14 @@ func (h *Header) Size() avmutil.StorageSize {
 	if h.BaseFee != nil {
 		baseFeeBits = h.BaseFee.BitLen()
 	}
-	return headerSize + avmutil.StorageSize(len(h.Extra)+(h.Difficulty.BitLen()+h.Number.BitLen()+baseFeeBits)/8)
+	var difficultyBits, numberBits int
+	if h.Difficulty != nil {
+		difficultyBits = h.Difficulty.BitLen()
+	}
+	if h.Number != nil {
+		numberBits = h.Number.BitLen()
+	}
+	return headerSize + avmutil.StorageSize(len(h.Extra)+(difficultyBits+numberBits+baseFeeBits)/8)
 }
 
 // MarshalJSON marshals as JSON.

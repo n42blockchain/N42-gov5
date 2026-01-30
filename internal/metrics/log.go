@@ -35,7 +35,12 @@ func Log(r metrics.Registry, freq time.Duration, l Logger) {
 // logger. Print timings in `scale` units (eg time.Millisecond) rather than nanos.
 func LogScaled(r metrics.Registry, freq time.Duration, scale time.Duration, l Logger) {
 	du := float64(scale)
-	duSuffix := scale.String()[1:]
+	// Security: ensure scale string is long enough before slicing
+	scaleStr := scale.String()
+	duSuffix := ""
+	if len(scaleStr) > 1 {
+		duSuffix = scaleStr[1:]
+	}
 
 	for range time.Tick(freq) {
 		r.Each(func(name string, i interface{}) {

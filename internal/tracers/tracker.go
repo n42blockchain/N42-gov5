@@ -55,7 +55,15 @@ func (t *stateTracker) releaseState(number uint64, release StateReleaseFunc) {
 	// Set the state as used, the corresponding flag is indexed by
 	// the distance between the specified state and the oldest state
 	// which is still using for trace.
-	t.used[int(number-t.oldest)] = true
+	// Bounds check to prevent negative index or out of range access
+	if number < t.oldest {
+		return
+	}
+	idx := int(number - t.oldest)
+	if idx >= len(t.used) {
+		return
+	}
+	t.used[idx] = true
 
 	// If the oldest state is used up, update the oldest marker by moving
 	// it to the next state which is not used up.

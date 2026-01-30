@@ -44,6 +44,17 @@ func (it *listIterator) Next() bool {
 		return false
 	}
 	_, t, c, err := readKind(it.data)
+	if err != nil {
+		it.err = err
+		it.next = nil
+		return false
+	}
+	// Bounds check to prevent slice out of range
+	if t+c > uint64(len(it.data)) {
+		it.err = ErrValueTooLarge
+		it.next = nil
+		return false
+	}
 	it.next = it.data[:t+c]
 	it.data = it.data[t+c:]
 	it.err = err

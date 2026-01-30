@@ -117,7 +117,10 @@ func BytesHash(b []byte) Hash {
 
 func BytesToHash(b []byte) Hash {
 	var h Hash
-	h.SetBytes(b)
+	if len(b) > HashLength {
+		b = b[len(b)-HashLength:]
+	}
+	copy(h[HashLength-len(b):], b)
 	return h
 }
 

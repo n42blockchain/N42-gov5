@@ -659,8 +659,12 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Security: validate private key length before copy
+	if len(privKeyBytes) != 32 {
+		return nil, fmt.Errorf("invalid private key length: expected 32 bytes, got %d", len(privKeyBytes))
+	}
 	arr := [32]byte{}
-	copy(arr[:], privKeyBytes[:])
+	copy(arr[:], privKeyBytes)
 	sk, err := bls.SecretKeyFromRandom32Byte(arr)
 	if err != nil {
 		return nil, err

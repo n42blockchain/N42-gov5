@@ -97,16 +97,24 @@ func (r *serviceRegistry) callback(method string) *callback {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// todo
-	//log.Info("meth %+v", r.services[elem[0]].callbacks)
-	return r.services[elem[0]].callbacks[elem[1]]
+	// Check if service exists before accessing callbacks
+	svc, ok := r.services[elem[0]]
+	if !ok {
+		return nil
+	}
+	return svc.callbacks[elem[1]]
 }
 
 // subscription returns a subscription callback in the given service.
 func (r *serviceRegistry) subscription(service, name string) *callback {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.services[service].subscriptions[name]
+	// Check if service exists before accessing subscriptions
+	svc, ok := r.services[service]
+	if !ok {
+		return nil
+	}
+	return svc.subscriptions[name]
 }
 
 func suitableCallbacks(receiver reflect.Value) map[string]*callback {

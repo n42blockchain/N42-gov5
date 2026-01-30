@@ -33,16 +33,29 @@ var (
 )
 
 // ReadInteger reads the integer based on its kind and returns the appropriate value.
+// Returns nil if the byte slice is too short for the requested type.
 func ReadInteger(typ Type, b []byte) interface{} {
 	if typ.T == UintTy {
 		switch typ.Size {
 		case 8:
+			if len(b) < 1 {
+				return nil
+			}
 			return b[len(b)-1]
 		case 16:
+			if len(b) < 2 {
+				return nil
+			}
 			return binary.BigEndian.Uint16(b[len(b)-2:])
 		case 32:
+			if len(b) < 4 {
+				return nil
+			}
 			return binary.BigEndian.Uint32(b[len(b)-4:])
 		case 64:
+			if len(b) < 8 {
+				return nil
+			}
 			return binary.BigEndian.Uint64(b[len(b)-8:])
 		default:
 			// the only case left for unsigned integer is uint256.
@@ -51,12 +64,24 @@ func ReadInteger(typ Type, b []byte) interface{} {
 	}
 	switch typ.Size {
 	case 8:
+		if len(b) < 1 {
+			return nil
+		}
 		return int8(b[len(b)-1])
 	case 16:
+		if len(b) < 2 {
+			return nil
+		}
 		return int16(binary.BigEndian.Uint16(b[len(b)-2:]))
 	case 32:
+		if len(b) < 4 {
+			return nil
+		}
 		return int32(binary.BigEndian.Uint32(b[len(b)-4:]))
 	case 64:
+		if len(b) < 8 {
+			return nil
+		}
 		return int64(binary.BigEndian.Uint64(b[len(b)-8:]))
 	default:
 		// the only case left for integer is int256
@@ -75,6 +100,9 @@ func ReadInteger(typ Type, b []byte) interface{} {
 
 // readBool reads a bool.
 func readBool(word []byte) (bool, error) {
+	if len(word) < 32 {
+		return false, fmt.Errorf("abi: insufficient bytes for bool, got %d need 32", len(word))
+	}
 	for _, b := range word[:31] {
 		if b != 0 {
 			return false, errBadBool
@@ -97,6 +125,9 @@ func readFunctionType(t Type, word []byte) (funcTy [24]byte, err error) {
 	if t.T != FunctionTy {
 		return [24]byte{}, fmt.Errorf("abi: invalid type in call to make function type byte array")
 	}
+	if len(word) < 32 {
+		return [24]byte{}, fmt.Errorf("abi: insufficient bytes for function type, got %d need 32", len(word))
+	}
 	if garbage := binary.BigEndian.Uint64(word[24:32]); garbage != 0 {
 		err = fmt.Errorf("abi: got improperly encoded function type, got %v", word)
 	} else {
@@ -109,6 +140,9 @@ func readFunctionType(t Type, word []byte) (funcTy [24]byte, err error) {
 func ReadFixedBytes(t Type, word []byte) (interface{}, error) {
 	if t.T != FixedBytesTy {
 		return nil, fmt.Errorf("abi: invalid type in call to make fixed byte array")
+	}
+	if t.Size < 0 || t.Size > len(word) {
+		return nil, fmt.Errorf("abi: invalid fixed bytes size %d, word length %d", t.Size, len(word))
 	}
 	// convert
 	array := reflect.New(t.GetType()).Elem()

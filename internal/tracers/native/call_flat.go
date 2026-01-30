@@ -186,15 +186,19 @@ func (t *flatCallTracer) CaptureExit(output []byte, gasUsed uint64, err error) {
 	if t.config.IncludePrecompiles {
 		return
 	}
-	var (
-		// call has been nested in parent
-		parent = t.tracer.callstack[len(t.tracer.callstack)-1]
-		call   = parent.Calls[len(parent.Calls)-1]
-		typ    = call.Type
-		to     = call.To
-	)
+	// Bounds check before accessing callstack and calls
+	if len(t.tracer.callstack) == 0 {
+		return
+	}
+	parent := t.tracer.callstack[len(t.tracer.callstack)-1]
+	if len(parent.Calls) == 0 {
+		return
+	}
+	call := parent.Calls[len(parent.Calls)-1]
+	typ := call.Type
+	to := call.To
 	if typ == vm.CALL || typ == vm.STATICCALL {
-		if t.isPrecompiled(*to) {
+		if to != nil && t.isPrecompiled(*to) {
 			t.tracer.callstack[len(t.tracer.callstack)-1].Calls = parent.Calls[:len(parent.Calls)-1]
 		}
 	}

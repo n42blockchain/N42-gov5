@@ -289,6 +289,7 @@ func (m *mapmutation) SetRwKV(kv kv.RwDB) {
 	hasRwKV, ok := m.db.(ethdb.HasRwKV)
 	if !ok {
 		log.Warn("Failed to convert mapmutation type to HasRwKV interface")
+		return
 	}
 	hasRwKV.SetRwKV(kv)
 }

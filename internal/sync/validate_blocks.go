@@ -99,7 +99,8 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 	}
 
 	// Handle block when the parent is unknown.
-	if !s.cfg.chain.HasBlock(header.ParentHash, header.Number.Uint64()-1) {
+	// Safety check: ensure block number is > 0 before subtracting to prevent underflow
+	if header.Number.Uint64() > 0 && !s.cfg.chain.HasBlock(header.ParentHash, header.Number.Uint64()-1) {
 		// todo feature?
 	}
 

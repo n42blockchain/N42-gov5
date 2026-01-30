@@ -71,10 +71,16 @@ func (d *Downloader) fetchHeaders(from uint256.Int, latest uint256.Int) error {
 
 				//
 				var fetchCount uint64
-				if latest.Uint64()-randTask.IndexBegin.Uint64() >= maxHeaderFetch-1 {
+				// Security: check for underflow before subtraction
+				latestVal := latest.Uint64()
+				beginVal := randTask.IndexBegin.Uint64()
+				if latestVal >= beginVal && latestVal-beginVal >= maxHeaderFetch-1 {
 					fetchCount = maxHeaderFetch
+				} else if latestVal >= beginVal {
+					fetchCount = latestVal - beginVal + 1
 				} else {
-					fetchCount = latest.Uint64() - randTask.IndexBegin.Uint64() + 1
+					// Edge case: latest < begin, skip this task
+					continue
 				}
 
 				msg := &sync_proto.SyncTask{

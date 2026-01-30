@@ -106,7 +106,12 @@ func (c *Contract) validJumpdest(dest *uint256.Int) (bool, bool) {
 }
 
 func isCodeFromAnalysis(analysis []uint64, udest uint64) bool {
-	return analysis[udest/64]&(uint64(1)<<(udest&63)) == 0
+	// Security: bounds check for analysis array access
+	idx := udest / 64
+	if idx >= uint64(len(analysis)) {
+		return false // Out of bounds, treat as data (not code)
+	}
+	return analysis[idx]&(uint64(1)<<(udest&63)) == 0
 }
 
 // isCode returns true if the provided PC location is an actual opcode, as

@@ -245,10 +245,20 @@ func UnpackRevert(data []byte) (string, error) {
 	if !bytes.Equal(data[:4], revertSelector) {
 		return "", errors.New("invalid data for unpacking")
 	}
-	typ, _ := NewType("string", "", nil)
+	typ, err := NewType("string", "", nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create string type: %w", err)
+	}
 	unpacked, err := (Arguments{{Type: typ}}).Unpack(data[4:])
 	if err != nil {
 		return "", err
 	}
-	return unpacked[0].(string), nil
+	if len(unpacked) == 0 {
+		return "", errors.New("no data unpacked")
+	}
+	str, ok := unpacked[0].(string)
+	if !ok {
+		return "", errors.New("unpacked value is not a string")
+	}
+	return str, nil
 }

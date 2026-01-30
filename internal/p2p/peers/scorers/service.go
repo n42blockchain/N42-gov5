@@ -205,5 +205,9 @@ func (s *Service) setScorerWeight(scorer Scorer, weight float64) {
 
 // scorerWeight calculates contribution percentage of a given scorer in total score.
 func (s *Service) scorerWeight(scorer Scorer) float64 {
+	// Security fix: Prevent division by zero
+	if s.totalWeight == 0 {
+		return 0
+	}
 	return s.weights[scorer] / s.totalWeight
 }

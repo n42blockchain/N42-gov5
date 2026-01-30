@@ -124,6 +124,10 @@ func (arguments Arguments) Copy(v interface{}, values []interface{}) error {
 	if arguments.isTuple() {
 		return arguments.copyTuple(v, values)
 	}
+	// Ensure values slice has at least one element for atomic copy
+	if len(values) < 1 {
+		return errors.New("abi: values slice is empty for atomic copy")
+	}
 	return arguments.copyAtomic(v, values[0])
 }
 
@@ -142,6 +146,11 @@ func (arguments Arguments) copyAtomic(v interface{}, marshalledValues interface{
 func (arguments Arguments) copyTuple(v interface{}, marshalledValues []interface{}) error {
 	value := reflect.ValueOf(v).Elem()
 	nonIndexedArgs := arguments.NonIndexed()
+
+	// Validate that we have enough marshalled values
+	if len(marshalledValues) < len(nonIndexedArgs) {
+		return fmt.Errorf("abi: insufficient marshalled values, got %d, need %d", len(marshalledValues), len(nonIndexedArgs))
+	}
 
 	switch value.Kind() {
 	case reflect.Struct:

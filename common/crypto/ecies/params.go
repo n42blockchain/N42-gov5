@@ -131,6 +131,9 @@ func ParamsFromCurve(curve elliptic.Curve) (params *ECIESParams) {
 }
 
 func pubkeyParams(key *PublicKey) (*ECIESParams, error) {
+	if key == nil {
+		return nil, ErrUnsupportedECIESParameters
+	}
 	params := key.Params
 	if params == nil {
 		if params = ParamsFromCurve(key.Curve); params == nil {

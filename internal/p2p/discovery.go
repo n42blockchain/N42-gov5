@@ -134,7 +134,10 @@ func (s *Service) createListener(
 	}
 	if s.cfg.HostAddress != "" {
 		hostIP := net.ParseIP(s.cfg.HostAddress)
-		if hostIP.To4() == nil && hostIP.To16() == nil {
+		// Security fix: Check for nil before calling methods on hostIP
+		if hostIP == nil {
+			log.Error(fmt.Sprintf("Invalid host address given: %s", s.cfg.HostAddress))
+		} else if hostIP.To4() == nil && hostIP.To16() == nil {
 			log.Error(fmt.Sprintf("Invalid host address given: %s", hostIP.String()))
 		} else {
 			localNode.SetFallbackIP(hostIP)

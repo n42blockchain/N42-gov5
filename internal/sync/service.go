@@ -167,8 +167,17 @@ func (s *Service) Status() error {
 // This initializes the caches to update seen beacon objects coming in from the wire
 // and prevent DoS.
 func (s *Service) initCaches() {
-	s.badBlockCache, _ = lru.New[types.Hash, bool](seenBlockSize)
-	s.seenBlockCache, _ = lru.New[types.Hash, *block.Block](badBlockSize)
+	var err error
+	s.badBlockCache, err = lru.New[types.Hash, bool](seenBlockSize)
+	if err != nil {
+		// This should never happen as seenBlockSize is a constant > 0
+		panic(fmt.Sprintf("failed to create bad block cache: %v", err))
+	}
+	s.seenBlockCache, err = lru.New[types.Hash, *block.Block](badBlockSize)
+	if err != nil {
+		// This should never happen as badBlockSize is a constant > 0
+		panic(fmt.Sprintf("failed to create seen block cache: %v", err))
+	}
 }
 
 // marks the chain as having started.

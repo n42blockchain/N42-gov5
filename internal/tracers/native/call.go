@@ -174,6 +174,12 @@ func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, sco
 		stack := scope.Stack
 		stackData := stack.Data
 
+		// Bounds check: need at least 2 + size elements on stack
+		// (offset, size, and 'size' number of topics)
+		if len(stackData) < 2+size {
+			return
+		}
+
 		// Don't modify the stack
 		mStart := stackData[len(stackData)-1]
 		mSize := stackData[len(stackData)-2]

@@ -107,8 +107,10 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 		return 0, errors.New("no unprocessed blocks remaining after filtering")
 	}
 
-	if !s.cfg.Chain.HasBlock(firstBlock.ParentHash(), firstBlock.Number64().Uint64()-1) {
-		return 0, fmt.Errorf("%w: %s (in processBatchedBlocks, Number=%d)", errParentDoesNotExist, firstBlock.ParentHash(), firstBlock.Number64().Uint64())
+	// Safety check: block 0 (genesis) has no parent to check
+	blockNum := firstBlock.Number64().Uint64()
+	if blockNum > 0 && !s.cfg.Chain.HasBlock(firstBlock.ParentHash(), blockNum-1) {
+		return 0, fmt.Errorf("%w: %s (in processBatchedBlocks, Number=%d)", errParentDoesNotExist, firstBlock.ParentHash(), blockNum)
 	}
 
 	s.logBatchSyncStatus(blks)

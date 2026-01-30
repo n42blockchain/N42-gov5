@@ -260,14 +260,15 @@ func (s *Service) connectBootsStraps(bootsStraps []peer.AddrInfo) {
 	var wg sync.WaitGroup
 	for _, peerInfo := range bootsStraps {
 		wg.Add(1)
-		go func() {
+		// Fix: Capture loop variable to prevent data race
+		go func(pi peer.AddrInfo) {
 			defer wg.Done()
-			if err := s.host.Connect(s.ctx, peerInfo); err != nil {
+			if err := s.host.Connect(s.ctx, pi); err != nil {
 				log.Warn("Connection bootnode failed", "err", err)
 			} else {
-				log.Info("Connection established with bootnode ", "PeerID", peerInfo.ID, "PeerAddress", peerInfo.Addrs)
+				log.Info("Connection established with bootnode ", "PeerID", pi.ID, "PeerAddress", pi.Addrs)
 			}
-		}()
+		}(peerInfo)
 	}
 	wg.Wait()
 }
@@ -288,10 +289,20 @@ func (s *Service) state() {
 	defer s.lock.Unlock()
 
 	for ID, p := range s.nodes {
-		log.Debug("Peer state:", "PeerID", ID, "PeerAddress", "peerCurrentNumber", p.CurrentHeight.Uint64(), p.IPeer.(*Node).Addrs(), "connectTime", common.PrettyDuration(time.Since(p.AddTimer)))
-		for protocolID, stream := range p.IPeer.(*Node).streams {
-			log.Debug("	stream state:", "protocolID", protocolID, "StreamID", stream.ID(), "connectTime", common.PrettyDuration(time.Since(stream.Stat().Opened)), "connectDirection", stream.Stat().Direction)
+		// Safety check: ensure IPeer is a *Node before type assertion
+		node, ok := p.IPeer.(*Node)
+		if !ok || node == nil {
+			log.Debug("Peer state:", "PeerID", ID, "error", "invalid node type")
+			continue
 		}
+		log.Debug("Peer state:", "PeerID", ID, "PeerAddress", "peerCurrentNumber", p.CurrentHeight.Uint64(), node.peer.Addrs, "connectTime", common.PrettyDuration(time.Since(p.AddTimer)))
+		node.RLock()
+		for protocolID, stream := range node.streams {
+			if stream != nil {
+				log.Debug("	stream state:", "protocolID", protocolID, "StreamID", stream.ID(), "connectTime", common.PrettyDuration(time.Since(stream.Stat().Opened)), "connectDirection", stream.Stat().Direction)
+			}
+		}
+		node.RUnlock()
 	}
 }
 

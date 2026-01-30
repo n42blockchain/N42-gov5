@@ -331,10 +331,20 @@ func bindBasicTypeGo(kind abi.Type) string {
 func bindTypeGo(kind abi.Type, structs map[string]*tmplStruct) string {
 	switch kind.T {
 	case abi.TupleTy:
-		return structs[kind.TupleRawName+kind.String()].Name
+		s := structs[kind.TupleRawName+kind.String()]
+		if s == nil {
+			return "interface{}"
+		}
+		return s.Name
 	case abi.ArrayTy:
+		if kind.Elem == nil {
+			return fmt.Sprintf("[%d]interface{}", kind.Size)
+		}
 		return fmt.Sprintf("[%d]", kind.Size) + bindTypeGo(*kind.Elem, structs)
 	case abi.SliceTy:
+		if kind.Elem == nil {
+			return "[]interface{}"
+		}
 		return "[]" + bindTypeGo(*kind.Elem, structs)
 	default:
 		return bindBasicTypeGo(kind)
@@ -408,8 +418,15 @@ func pluralizeJavaType(typ string) string {
 func bindTypeJava(kind abi.Type, structs map[string]*tmplStruct) string {
 	switch kind.T {
 	case abi.TupleTy:
-		return structs[kind.TupleRawName+kind.String()].Name
+		s := structs[kind.TupleRawName+kind.String()]
+		if s == nil {
+			return "Object"
+		}
+		return s.Name
 	case abi.ArrayTy, abi.SliceTy:
+		if kind.Elem == nil {
+			return "Object[]"
+		}
 		return pluralizeJavaType(bindTypeJava(*kind.Elem, structs))
 	default:
 		return bindBasicTypeJava(kind)
@@ -637,8 +654,14 @@ func structured(args abi.Arguments) bool {
 func hasStruct(t abi.Type) bool {
 	switch t.T {
 	case abi.SliceTy:
+		if t.Elem == nil {
+			return false
+		}
 		return hasStruct(*t.Elem)
 	case abi.ArrayTy:
+		if t.Elem == nil {
+			return false
+		}
 		return hasStruct(*t.Elem)
 	case abi.TupleTy:
 		return true

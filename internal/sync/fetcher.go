@@ -185,17 +185,45 @@ func (m *FetcherMetrics) BlocksPerSecond() float64 {
 // LogStats logs the current fetcher metrics.
 func (m *FetcherMetrics) LogStats() {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// Calculate metrics while holding the lock
+	fetchesTotal := m.fetchesTotal
+	fetchesSucceeded := m.fetchesSucceeded
+	fetchesFailed := m.fetchesFailed
+	blocksRequested := m.blocksRequested
+	blocksReceived := m.blocksReceived
+
+	// Calculate success rate inline to avoid nested lock
+	var successRate float64
+	if fetchesTotal > 0 {
+		successRate = float64(fetchesSucceeded) / float64(fetchesTotal)
+	}
+
+	// Calculate average batch latency inline
+	var avgLatency time.Duration
+	if len(m.batchLatencies) > 0 {
+		var total time.Duration
+		for _, l := range m.batchLatencies {
+			total += l
+		}
+		avgLatency = total / time.Duration(len(m.batchLatencies))
+	}
+
+	// Calculate blocks per second inline
+	var blocksPerSecond float64
+	if m.totalFetchTime > 0 {
+		blocksPerSecond = float64(blocksReceived) / m.totalFetchTime.Seconds()
+	}
+	m.mu.RUnlock()
 
 	log.Info("Fetcher metrics",
-		"fetches_total", m.fetchesTotal,
-		"fetches_succeeded", m.fetchesSucceeded,
-		"fetches_failed", m.fetchesFailed,
-		"success_rate", fmt.Sprintf("%.2f%%", m.SuccessRate()*100),
-		"blocks_requested", m.blocksRequested,
-		"blocks_received", m.blocksReceived,
-		"avg_batch_latency", m.AverageBatchLatency(),
-		"blocks_per_second", fmt.Sprintf("%.2f", m.BlocksPerSecond()),
+		"fetches_total", fetchesTotal,
+		"fetches_succeeded", fetchesSucceeded,
+		"fetches_failed", fetchesFailed,
+		"success_rate", fmt.Sprintf("%.2f%%", successRate*100),
+		"blocks_requested", blocksRequested,
+		"blocks_received", blocksReceived,
+		"avg_batch_latency", avgLatency,
+		"blocks_per_second", fmt.Sprintf("%.2f", blocksPerSecond),
 	)
 }
 

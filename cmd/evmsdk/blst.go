@@ -18,6 +18,7 @@ package evmsdk
 
 import (
 	"encoding/hex"
+	"fmt"
 
 	"github.com/n42blockchain/N42/common/crypto/bls"
 )
@@ -31,8 +32,12 @@ func BlsSign(privKey, msg string) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Security: validate private key length before copy
+	if len(privKeyBytes) != 32 {
+		return nil, fmt.Errorf("invalid private key length: expected 32 bytes, got %d", len(privKeyBytes))
+	}
 	arr := [32]byte{}
-	copy(arr[:], privKeyBytes[:])
+	copy(arr[:], privKeyBytes)
 	sk, err := bls.SecretKeyFromRandom32Byte(arr)
 	if err != nil {
 		return nil, err
@@ -46,8 +51,12 @@ func BlsPublicKey(privKey string) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Security: validate private key length before copy
+	if len(privKeyBytes) != 32 {
+		return nil, fmt.Errorf("invalid private key length: expected 32 bytes, got %d", len(privKeyBytes))
+	}
 	arr := [32]byte{}
-	copy(arr[:], privKeyBytes[:])
+	copy(arr[:], privKeyBytes)
 	sk, err := bls.SecretKeyFromRandom32Byte(arr)
 	if err != nil {
 		return nil, err

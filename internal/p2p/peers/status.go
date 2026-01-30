@@ -598,8 +598,16 @@ func (p *Status) BestPeers(wantPeers int, ourCurrentHeight *uint256.Int) (*uint2
 	potentialPIDs := make([]peer.ID, 0, len(connected))
 	for _, pid := range connected {
 		peerData, ok := p.store.PeerData(pid)
-		if ok && peerData.CurrentHeight().Cmp(ourCurrentHeight) == 1 {
-			pidHead[pid] = peerData.CurrentHeight()
+		if !ok {
+			continue
+		}
+		// Security fix: Check for nil CurrentHeight to prevent nil pointer dereference
+		peerHeight := peerData.CurrentHeight()
+		if peerHeight == nil {
+			continue
+		}
+		if peerHeight.Cmp(ourCurrentHeight) == 1 {
+			pidHead[pid] = peerHeight
 			potentialPIDs = append(potentialPIDs, pid)
 		}
 	}
@@ -701,8 +709,16 @@ func (p *Status) HighestBlockNumber() *uint256.Int {
 	defer p.store.RUnlock()
 	var highestSlot *uint256.Int
 	for _, peerData := range p.store.Peers() {
-		if peerData != nil && peerData.ChainState != nil && peerData.CurrentHeight().Cmp(highestSlot) == 1 {
-			highestSlot = peerData.CurrentHeight()
+		if peerData == nil || peerData.ChainState == nil {
+			continue
+		}
+		currentHeight := peerData.CurrentHeight()
+		if currentHeight == nil {
+			continue
+		}
+		// Security fix: Handle nil highestSlot correctly
+		if highestSlot == nil || currentHeight.Cmp(highestSlot) == 1 {
+			highestSlot = currentHeight
 		}
 	}
 	if highestSlot == nil {

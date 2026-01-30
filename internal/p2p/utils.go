@@ -56,11 +56,12 @@ func getSeqNumber(cfg *conf.P2PConfig) (*sync_pb.Ping, error) {
 			log.Error("Error reading network seqNumber from file", "err", err)
 			return nil, err
 		}
-		//dst := make([]byte, hex.DecodedLen(len(src)))
-		//_, err = hex.Decode(dst, src)
-		//if err != nil {
-		//	return nil, errors.Wrap(err, "failed to decode hex string")
-		//}
+
+		// Security fix: Check slice length before reading uint64 to prevent panic
+		if len(src) < 8 {
+			log.Warn("Invalid seq number file size", "size", len(src), "expected", 8)
+			return &sync_pb.Ping{SeqNumber: 0}, nil
+		}
 
 		seqNumber := binary.LittleEndian.Uint64(src)
 		if seqNumber > 0 {

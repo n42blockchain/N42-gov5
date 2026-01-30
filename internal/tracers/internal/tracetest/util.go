@@ -82,6 +82,10 @@ var makeTest = function(tx, rewind) {
 func camel(str string) string {
 	pieces := strings.Split(str, "_")
 	for i := 1; i < len(pieces); i++ {
+		// Skip empty pieces to avoid index out of bounds
+		if len(pieces[i]) == 0 {
+			continue
+		}
 		pieces[i] = string(unicode.ToUpper(rune(pieces[i][0]))) + pieces[i][1:]
 	}
 	return strings.Join(pieces, "")

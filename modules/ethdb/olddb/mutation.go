@@ -61,6 +61,7 @@ func (mi *MutationItem) Less(than btree.Item) bool {
 	i, ok := than.(*MutationItem)
 	if !ok {
 		log.Warn("Failed to convert btree.Item to MutationItem pointer")
+		return false
 	}
 	c := strings.Compare(mi.table, i.table)
 	if c != 0 {
@@ -341,5 +342,10 @@ func (m *mutation) panicOnEmptyDB() {
 }
 
 func (m *mutation) SetRwKV(kv kv.RwDB) {
-	m.db.(ethdb.HasRwKV).SetRwKV(kv)
+	hasRwKV, ok := m.db.(ethdb.HasRwKV)
+	if !ok {
+		log.Warn("Failed to convert mutation type to HasRwKV interface")
+		return
+	}
+	hasRwKV.SetRwKV(kv)
 }

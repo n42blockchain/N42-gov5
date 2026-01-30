@@ -42,7 +42,11 @@ func (p *Prque) Push(data interface{}, priority int64) {
 }
 
 // Peek returns the value with the greates priority but does not pop it off.
+// Returns (nil, 0) if the queue is empty.
 func (p *Prque) Peek() (interface{}, int64) {
+	if p.cont.Len() == 0 {
+		return nil, 0
+	}
 	item := p.cont.blocks[0][0]
 	return item.value, item.priority
 }

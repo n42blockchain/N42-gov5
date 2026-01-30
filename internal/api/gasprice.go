@@ -97,17 +97,26 @@ func NewOracle(backend common2.IBlockChain, miner common2.IMiner, chainConfig *p
 	cache, _ := lru.New(2048)
 
 	highestBlockCh := make(chan common2.ChainHighestBlock)
-	defer close(highestBlockCh)
 	highestSub, _ := event.GlobalEvent.Subscribe(highestBlockCh)
-	defer highestSub.Unsubscribe()
 
+	// Start goroutine to handle block updates for cache invalidation
+	// Note: The goroutine will exit when the subscription is closed
 	go func() {
+		defer close(highestBlockCh)
 		var lastHead types2.Hash
-		for ev := range highestBlockCh {
-			if ev.Block.ParentHash() != lastHead {
-				cache.Purge()
+		for {
+			select {
+			case ev, ok := <-highestBlockCh:
+				if !ok {
+					return
+				}
+				if ev.Block.ParentHash() != lastHead {
+					cache.Purge()
+				}
+				lastHead = ev.Block.Hash()
+			case <-highestSub.Err():
+				return
 			}
-			lastHead = ev.Block.Hash()
 		}
 	}()
 
@@ -133,10 +142,11 @@ func NewOracle(backend common2.IBlockChain, miner common2.IMiner, chainConfig *p
 // necessary to add the basefee to the returned number to fall back to the legacy
 // behavior.
 func (oracle *Oracle) SuggestTipCap(ctx context.Context, chainConfig *params.ChainConfig) (*big.Int, error) {
-	//var latestNumber jsonrpc.BlockNumber
-	//latestNumber = jsonrpc.LatestBlockNumber
-
-	head := oracle.backend.CurrentBlock().Header()
+	currentBlock := oracle.backend.CurrentBlock()
+	if currentBlock == nil {
+		return new(big.Int).Set(oracle.lastPrice), nil
+	}
+	head := currentBlock.Header()
 	var headHash types2.Hash
 	if head == nil {
 		headHash = types2.Hash{}

@@ -58,7 +58,11 @@ var ByteSlicePool = &sync.Pool{
 // GetByteSlice gets a byte slice from the pool with at least the given capacity.
 func GetByteSlice(size int) []byte {
 	if size <= 32 {
-		bp := ByteSlicePool.Get().(*[]byte)
+		bp, ok := ByteSlicePool.Get().(*[]byte)
+		if !ok || bp == nil {
+			// Type assertion failed, allocate new slice
+			return make([]byte, size)
+		}
 		return (*bp)[:size]
 	}
 	return make([]byte, size)
@@ -82,7 +86,13 @@ var HashPool = &sync.Pool{
 
 // GetHashBuffer gets a 32-byte buffer from the pool.
 func GetHashBuffer() *[]byte {
-	return HashPool.Get().(*[]byte)
+	bp, ok := HashPool.Get().(*[]byte)
+	if !ok || bp == nil {
+		// Type assertion failed, allocate new buffer
+		b := make([]byte, 32)
+		return &b
+	}
+	return bp
 }
 
 // PutHashBuffer returns a 32-byte buffer to the pool.
@@ -138,7 +148,11 @@ func GetMemory(size int) []byte {
 	if class < 0 {
 		return make([]byte, size)
 	}
-	bp := memPool.pools[class].Get().(*[]byte)
+	bp, ok := memPool.pools[class].Get().(*[]byte)
+	if !ok || bp == nil {
+		// Type assertion failed, allocate new memory
+		return make([]byte, size)
+	}
 	return (*bp)[:size]
 }
 

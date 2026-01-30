@@ -486,7 +486,14 @@ func (c *BoundContract) WatchLogs(opts *WatchOpts, name string, query ...[]inter
 
 // UnpackLog unpacks a retrieved log into the provided output structure.
 func (c *BoundContract) UnpackLog(out interface{}, event string, log block.Log) error {
-	if log.Topics[0] != c.abi.Events[event].ID {
+	if len(log.Topics) == 0 {
+		return fmt.Errorf("log has no topics")
+	}
+	eventABI, exists := c.abi.Events[event]
+	if !exists {
+		return fmt.Errorf("event %s not found in ABI", event)
+	}
+	if log.Topics[0] != eventABI.ID {
 		return fmt.Errorf("event signature mismatch")
 	}
 	if len(log.Data) > 0 {
@@ -495,7 +502,7 @@ func (c *BoundContract) UnpackLog(out interface{}, event string, log block.Log) 
 		}
 	}
 	var indexed abi.Arguments
-	for _, arg := range c.abi.Events[event].Inputs {
+	for _, arg := range eventABI.Inputs {
 		if arg.Indexed {
 			indexed = append(indexed, arg)
 		}
@@ -505,7 +512,14 @@ func (c *BoundContract) UnpackLog(out interface{}, event string, log block.Log) 
 
 // UnpackLogIntoMap unpacks a retrieved log into the provided map.
 func (c *BoundContract) UnpackLogIntoMap(out map[string]interface{}, event string, log block.Log) error {
-	if log.Topics[0] != c.abi.Events[event].ID {
+	if len(log.Topics) == 0 {
+		return fmt.Errorf("log has no topics")
+	}
+	eventABI, exists := c.abi.Events[event]
+	if !exists {
+		return fmt.Errorf("event %s not found in ABI", event)
+	}
+	if log.Topics[0] != eventABI.ID {
 		return fmt.Errorf("event signature mismatch")
 	}
 	if len(log.Data) > 0 {
@@ -514,7 +528,7 @@ func (c *BoundContract) UnpackLogIntoMap(out map[string]interface{}, event strin
 		}
 	}
 	var indexed abi.Arguments
-	for _, arg := range c.abi.Events[event].Inputs {
+	for _, arg := range eventABI.Inputs {
 		if arg.Indexed {
 			indexed = append(indexed, arg)
 		}
