@@ -402,7 +402,12 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 
 	case sync_proto.SyncType_HeaderRes:
 		headersResponse := syncTask.Payload.(*sync_proto.SyncTask_SyncHeaderResponse).SyncHeaderResponse
-		params = append(params, "headerCount", len(headersResponse.Headers), "headerNumberFrom", utils.ConvertH256ToUint256Int(headersResponse.Headers[0].Number).Uint64(), "headerNumberTo", utils.ConvertH256ToUint256Int(headersResponse.Headers[len(headersResponse.Headers)-1].Number).Uint64())
+		// Security: bounds check before accessing slice elements
+		if len(headersResponse.Headers) > 0 {
+			params = append(params, "headerCount", len(headersResponse.Headers), "headerNumberFrom", utils.ConvertH256ToUint256Int(headersResponse.Headers[0].Number).Uint64(), "headerNumberTo", utils.ConvertH256ToUint256Int(headersResponse.Headers[len(headersResponse.Headers)-1].Number).Uint64())
+		} else {
+			params = append(params, "headerCount", 0)
+		}
 		d.headerProcCh <- &headerResponse{taskID: taskID, ok: syncTask.Ok, headers: headersResponse.Headers}
 
 	case sync_proto.SyncType_HeaderReq:
@@ -412,12 +417,22 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 
 	case sync_proto.SyncType_BodyRes:
 		bodiesResponse := syncTask.Payload.(*sync_proto.SyncTask_SyncBlockResponse).SyncBlockResponse
-		params = append(params, "blocksCount", len(bodiesResponse.Blocks), "bodyNumberFrom", utils.ConvertH256ToUint256Int(bodiesResponse.Blocks[0].Header.Number).Uint64(), "bodyNumberTo", utils.ConvertH256ToUint256Int(bodiesResponse.Blocks[len(bodiesResponse.Blocks)-1].Header.Number).Uint64())
+		// Security: bounds check before accessing slice elements
+		if len(bodiesResponse.Blocks) > 0 {
+			params = append(params, "blocksCount", len(bodiesResponse.Blocks), "bodyNumberFrom", utils.ConvertH256ToUint256Int(bodiesResponse.Blocks[0].Header.Number).Uint64(), "bodyNumberTo", utils.ConvertH256ToUint256Int(bodiesResponse.Blocks[len(bodiesResponse.Blocks)-1].Header.Number).Uint64())
+		} else {
+			params = append(params, "blocksCount", 0)
+		}
 		d.blockProcCh <- &bodyResponse{taskID: taskID, ok: syncTask.Ok, bodies: bodiesResponse.Blocks}
 
 	case sync_proto.SyncType_BodyReq:
 		blockRequest := syncTask.Payload.(*sync_proto.SyncTask_SyncBlockRequest).SyncBlockRequest
-		params = append(params, "bodyNumberFrom", utils.ConvertH256ToUint256Int(blockRequest.Number[0]).Uint64(), "bodyNumberTo", utils.ConvertH256ToUint256Int(blockRequest.Number[len(blockRequest.Number)-1]).Uint64())
+		// Security: bounds check before accessing slice elements
+		if len(blockRequest.Number) > 0 {
+			params = append(params, "bodyNumberFrom", utils.ConvertH256ToUint256Int(blockRequest.Number[0]).Uint64(), "bodyNumberTo", utils.ConvertH256ToUint256Int(blockRequest.Number[len(blockRequest.Number)-1]).Uint64())
+		} else {
+			params = append(params, "bodyCount", 0)
+		}
 		go d.responseBlocks(taskID, p, blockRequest)
 
 	case sync_proto.SyncType_PeerInfoBroadcast:
