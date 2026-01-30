@@ -26,7 +26,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 // addressByHeartbeat is an account address tagged with its last activity timestamp.
@@ -284,9 +283,18 @@ func (t *txLookup) RemotesBelowTip(threshold uint256.Int) []*transaction.Transac
 }
 
 // numSlots calculates the number of slots needed for a single transaction.
+// C1 fix: Use actual serialized size instead of pointer size.
+// unsafe.Sizeof(tx) only returns pointer size (8 bytes), which is wrong.
 func numSlots(tx *transaction.Transaction) int {
-	//todo
-	return int((int(unsafe.Sizeof(tx)) + txSlotSize - 1) / txSlotSize)
+	// Get actual serialized size of the transaction
+	txData, err := tx.Marshal()
+	if err != nil {
+		// Fallback to a reasonable estimate if serialization fails
+		// Minimum 1 slot for any transaction
+		return 1
+	}
+	txSize := len(txData)
+	return int((txSize + txSlotSize - 1) / txSlotSize)
 }
 
 // TxByNonce implements the sort interface to allow sorting a list of transactions by their nonces.
@@ -423,22 +431,36 @@ func (m *txsSortedMap) Cap(threshold int) []*transaction.Transaction {
 	return drops
 }
 
-// Remove
+// Remove deletes a transaction with the given nonce from the map.
+// P2 note: Current implementation uses O(n) linear search to find heap index.
+// For large pools with frequent deletions, consider maintaining a nonce->index map
+// or batching deletions with reheap() for better performance.
 func (m *txsSortedMap) Remove(nonce uint64) bool {
 	// Short circuit if no transaction is present
 	_, ok := m.items[nonce]
 	if !ok {
 		return false
 	}
-	// Otherwise delete the transaction and fix the heap index
-	for i := 0; i < m.index.Len(); i++ {
-		if (*m.index)[i] == nonce {
-			heap.Remove(m.index, i)
-			break
-		}
-	}
+	// Delete from items map first
 	delete(m.items, nonce)
 	m.cache = nil
+
+	// Find and remove from heap index
+	// P2 optimization: For very large heaps, reheap might be more efficient
+	// than linear search + heap.Remove, especially for batch deletions.
+	heapLen := m.index.Len()
+	if heapLen > 256 {
+		// For large heaps, rebuild is more efficient than linear search
+		m.reheap()
+	} else {
+		// For smaller heaps, linear search is acceptable
+		for i := 0; i < heapLen; i++ {
+			if (*m.index)[i] == nonce {
+				heap.Remove(m.index, i)
+				break
+			}
+		}
+	}
 
 	return true
 }
@@ -496,9 +518,13 @@ func (m *txsSortedMap) Flatten() []*transaction.Transaction {
 }
 
 // LastElement returns the last element of a flattened list, thus, the
-// transaction with the highest nonce
+// transaction with the highest nonce.
+// C3 fix: Returns nil if the list is empty to prevent array index out of bounds panic.
 func (m *txsSortedMap) LastElement() *transaction.Transaction {
 	cache := m.flatten()
+	if len(cache) == 0 {
+		return nil
+	}
 	return cache[len(cache)-1]
 }
 
@@ -672,8 +698,12 @@ func (l *txsList) Flatten() []*transaction.Transaction {
 }
 
 // LastElement returns the last element of a flattened list, thus, the
-// transaction with the highest nonce
+// transaction with the highest nonce.
+// C3 fix: Returns nil if the list is empty to prevent panic.
 func (l *txsList) LastElement() *transaction.Transaction {
+	if l.Empty() {
+		return nil
+	}
 	return l.txs.LastElement()
 }
 

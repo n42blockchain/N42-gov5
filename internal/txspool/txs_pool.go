@@ -31,10 +31,10 @@ import (
 	"sort"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/prque"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -76,6 +76,9 @@ var (
 	// ErrTipAboveFeeCap is a sanity error to ensure no one is able to specify a
 	// transaction with a tip higher than the total fee cap.
 	ErrTipAboveFeeCap = fmt.Errorf("max priority fee per gas higher than max fee per gas")
+
+	// ErrInvalidSignature is returned when transaction signature validation fails
+	ErrInvalidSignature = fmt.Errorf("invalid transaction signature")
 
 	pendingGauge = prometheus.GetOrCreateCounter("txpool_pending", true)
 	queuedGauge  = prometheus.GetOrCreateCounter("txpool_queued", true)
@@ -269,20 +272,24 @@ func (pool *TxsPool) AddRemotes(txs []*transaction.Transaction) []error {
 
 // addTxs attempts to queue a batch of transactions if they are valid.
 func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []error {
-	// Filter out known ones without obtaining the pool lock or recovering signatures
+	// Filter out known ones without obtaining the pool lock or recovering signatures.
+	// C4 note: This initial check is a performance optimization using txLookup's internal lock.
+	// A second authoritative check happens inside add() under the pool lock to handle
+	// the race condition where a tx could be added between this check and the locked add.
 	var (
 		errs = make([]error, len(txs))
 		news = make([]*transaction.Transaction, 0, len(txs))
 	)
 	for i, tx := range txs {
 		// If the transaction is known, pre-set the error slot
+		// This check uses txLookup's internal RWMutex, providing thread-safety
+		// but not atomicity with the subsequent add operation.
 		hash := tx.Hash()
 		if pool.all.Get(hash) != nil {
 			errs[i] = ErrAlreadyKnown
-			//knownTxMeter.Mark(1)
 			continue
 		}
-		if pool.validateSender(tx) == false {
+		if !pool.validateSender(tx) {
 			errs[i] = ErrInvalidSender
 			continue
 		}
@@ -499,7 +506,12 @@ func (pool *TxsPool) add(tx *transaction.Transaction, local bool) (replaced bool
 // Note, this method assumes the pool lock is held!
 func (pool *TxsPool) enqueueTx(hash types.Hash, tx *transaction.Transaction, local bool, addAll bool) (bool, error) {
 	// Try to insert the transaction into the future queue
-	from := *tx.From() // already validated
+	// C2 fix: Check for nil From() before dereferencing
+	fromPtr := tx.From()
+	if fromPtr == nil {
+		return false, ErrInvalidSender
+	}
+	from := *fromPtr
 	if pool.queue[from] == nil {
 		pool.queue[from] = newTxsList(false)
 	}
@@ -551,9 +563,21 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	//}
 
 	gasPrice := tx.GasPrice()
-	addr := *tx.From()
 
-	if uint64(unsafe.Sizeof(tx)) > txMaxSize {
+	// C2 fix: Check for nil From() before dereferencing
+	fromPtr := tx.From()
+	if fromPtr == nil {
+		return ErrInvalidSender
+	}
+	addr := *fromPtr
+
+	// C1 fix: Use actual serialized size instead of pointer size
+	// unsafe.Sizeof(tx) only returns pointer size (8 bytes), not actual tx size
+	txData, err := tx.Marshal()
+	if err != nil {
+		return fmt.Errorf("failed to marshal transaction: %w", err)
+	}
+	if uint64(len(txData)) > txMaxSize {
 		return ErrOversizedData
 	}
 	// Transactions can't be negative. This may never happen using RLP decoded
@@ -625,8 +649,60 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	return nil
 }
 
-// validateSender verify todo
+// validateSender verifies that the transaction signature is valid and
+// the recovered sender address matches the declared From address.
+// S1/S2 fix: Implement actual signature and sender validation
 func (pool *TxsPool) validateSender(tx *transaction.Transaction) bool {
+	// Check if From is set
+	declaredFrom := tx.From()
+	if declaredFrom == nil {
+		log.Debug("Transaction has nil From address")
+		return false
+	}
+
+	// Validate signature values (R, S, V)
+	v, r, s := tx.RawSignatureValues()
+	if v == nil || r == nil || s == nil {
+		log.Debug("Transaction has nil signature values")
+		return false
+	}
+
+	// Check if R and S are non-zero
+	if r.IsZero() || s.IsZero() {
+		log.Debug("Transaction has zero R or S signature value")
+		return false
+	}
+
+	// Validate signature value ranges using crypto.ValidateSignatureValues
+	// V should be 0 or 1 for newer tx types, or 27/28 for legacy after adjustment
+	vByte := byte(v.Uint64())
+	// For EIP-155 and newer transactions, V is adjusted, so we need to normalize it
+	if vByte >= 27 {
+		vByte -= 27
+	}
+	if !crypto.ValidateSignatureValues(vByte, r, s, true) {
+		log.Debug("Transaction signature values are invalid")
+		return false
+	}
+
+	// Get appropriate signer based on chain config and recover sender
+	// Use LatestSignerForChainID for basic validation
+	signer := transaction.LatestSignerForChainID(pool.chainconfig.ChainID)
+
+	// Recover sender address from signature
+	recoveredAddr, err := transaction.Sender(signer, tx)
+	if err != nil {
+		log.Debug("Failed to recover sender from signature", "err", err)
+		return false
+	}
+
+	// Compare recovered address with declared From address
+	if recoveredAddr != *declaredFrom {
+		log.Debug("Recovered sender does not match declared From",
+			"recovered", recoveredAddr,
+			"declared", *declaredFrom)
+		return false
+	}
 
 	return true
 }
@@ -1058,7 +1134,10 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 		nonces := make(map[types.Address]uint64, len(pool.pending))
 		for addr, list := range pool.pending {
 			highestPending := list.LastElement()
-			nonces[addr] = highestPending.Nonce() + 1
+			// C3 fix: Check for nil before accessing Nonce()
+			if highestPending != nil {
+				nonces[addr] = highestPending.Nonce() + 1
+			}
 		}
 		pool.pendingNonces.setAll(nonces)
 	}
