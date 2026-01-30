@@ -53,11 +53,16 @@ type txsRequest struct {
 
 type hashes []types.Hash
 
-func (h hashes) pop() types.Hash {
-	old := h
-	n := len(old)
-	x := old[n-1]
-	h = old[0 : n-1]
+// pop removes and returns the last element from the slice.
+// IMPORTANT: Must use pointer receiver to modify the original slice.
+// Security: Added bounds check to prevent panic on empty slice.
+func (h *hashes) pop() types.Hash {
+	if len(*h) == 0 {
+		return types.Hash{}
+	}
+	n := len(*h)
+	x := (*h)[n-1]
+	*h = (*h)[:n-1]
 	return x
 }
 

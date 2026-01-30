@@ -72,10 +72,9 @@ func TestHashesPop(t *testing.T) {
 		t.Errorf("pop should return last hash, got %v, want %v", popped, h3)
 	}
 
-	// Original slice still contains elements (pop doesn't modify the original slice)
-	// This is because pop() returns a new slice assignment, not modifying in place
-	if len(hs) != 3 {
-		t.Logf("Note: pop() returns popped element but slice needs reassignment")
+	// After fix: pop() now modifies the original slice via pointer receiver
+	if len(hs) != 2 {
+		t.Errorf("pop should modify original slice, got len %d, want 2", len(hs))
 	}
 
 	t.Log("✓ hashes.pop works correctly")
@@ -88,14 +87,9 @@ func TestHashesPopMultiple(t *testing.T) {
 
 	hs := hashes{h1, h2, h3}
 
-	// Pop all elements
-	for i := 0; i < 3; i++ {
-		if len(hs) > 0 {
-			old := hs
-			n := len(old)
-			_ = old[n-1]
-			hs = old[0 : n-1]
-		}
+	// Pop all elements using the pop() method
+	for len(hs) > 0 {
+		hs.pop()
 	}
 
 	if len(hs) != 0 {
@@ -103,6 +97,22 @@ func TestHashesPopMultiple(t *testing.T) {
 	}
 
 	t.Log("✓ hashes multiple pop operations work correctly")
+}
+
+func TestHashesPopEmpty(t *testing.T) {
+	hs := hashes{}
+
+	// Pop on empty slice should return zero hash and not panic
+	popped := hs.pop()
+	if popped != (types.Hash{}) {
+		t.Errorf("pop on empty slice should return zero hash, got %v", popped)
+	}
+
+	if len(hs) != 0 {
+		t.Errorf("pop on empty slice should keep len 0, got %d", len(hs))
+	}
+
+	t.Log("✓ hashes.pop handles empty slice correctly")
 }
 
 // =============================================================================
