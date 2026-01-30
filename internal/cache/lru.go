@@ -217,7 +217,8 @@ func (c *ARC[K, V]) Set(key K, value V) {
 	// If in B1 ghost list, adjust p and add to T2
 	if c.b1.Contains(key) {
 		delta := 1
-		if c.b2.Len() > c.b1.Len() {
+		// Security: prevent division by zero
+		if c.b1.Len() > 0 && c.b2.Len() > c.b1.Len() {
 			delta = c.b2.Len() / c.b1.Len()
 		}
 		c.p = min(c.p+delta, c.capacity)
@@ -230,7 +231,8 @@ func (c *ARC[K, V]) Set(key K, value V) {
 	// If in B2 ghost list, adjust p and add to T2
 	if c.b2.Contains(key) {
 		delta := 1
-		if c.b1.Len() > c.b2.Len() {
+		// Security: prevent division by zero
+		if c.b2.Len() > 0 && c.b1.Len() > c.b2.Len() {
 			delta = c.b1.Len() / c.b2.Len()
 		}
 		c.p = max(c.p-delta, 0)

@@ -165,6 +165,14 @@ func (api *API) Status() (*status, error) {
 		start = 1
 		numBlocks = end - start
 	}
+	// Security: prevent division by zero when chain is at genesis or block 1
+	if numBlocks == 0 {
+		return &status{
+			InturnPercent: 0,
+			SigningStatus: make(map[types.Address]int),
+			NumBlocks:     0,
+		}, nil
+	}
 	signStatus := make(map[types.Address]int)
 	for _, s := range signers {
 		signStatus[s] = 0
