@@ -55,6 +55,11 @@ func (st *Stack) PushN(ds ...uint256.Int) {
 }
 
 func (st *Stack) Pop() (ret uint256.Int) {
+	// Security: bounds check before accessing - prevents panic on empty stack
+	if len(st.Data) == 0 {
+		log.Error("Stack underflow: Pop called on empty stack")
+		return
+	}
 	ret = st.Data[len(st.Data)-1]
 	st.Data = st.Data[:len(st.Data)-1]
 	return
@@ -65,19 +70,39 @@ func (st *Stack) Cap() int {
 }
 
 func (st *Stack) Swap(n int) {
+	// Security: bounds check before accessing - prevents panic on insufficient stack
+	if n < 1 || st.Len() < n {
+		log.Error("Stack underflow: Swap called with invalid n or insufficient stack", "n", n, "len", st.Len())
+		return
+	}
 	st.Data[st.Len()-n], st.Data[st.Len()-1] = st.Data[st.Len()-1], st.Data[st.Len()-n]
 }
 
 func (st *Stack) Dup(n int) {
+	// Security: bounds check before accessing - prevents panic on insufficient stack
+	if n < 1 || st.Len() < n {
+		log.Error("Stack underflow: Dup called with invalid n or insufficient stack", "n", n, "len", st.Len())
+		return
+	}
 	st.Push(&st.Data[st.Len()-n])
 }
 
 func (st *Stack) Peek() *uint256.Int {
+	// Security: bounds check before accessing - prevents panic on empty stack
+	if len(st.Data) == 0 {
+		log.Error("Stack underflow: Peek called on empty stack")
+		return nil
+	}
 	return &st.Data[st.Len()-1]
 }
 
 // Back returns the n'th item in stack
 func (st *Stack) Back(n int) *uint256.Int {
+	// Security: bounds check before accessing - prevents panic on insufficient stack
+	if n < 0 || st.Len() <= n {
+		log.Error("Stack underflow: Back called with invalid n or insufficient stack", "n", n, "len", st.Len())
+		return nil
+	}
 	return &st.Data[st.Len()-n-1]
 }
 
@@ -137,6 +162,11 @@ func (st *ReturnStack) Push(d uint32) {
 
 // A uint32 is sufficient as for code below 4.2G
 func (st *ReturnStack) Pop() (ret uint32) {
+	// Security: bounds check before accessing - prevents panic on empty stack
+	if len(st.data) == 0 {
+		log.Error("ReturnStack underflow: Pop called on empty stack")
+		return
+	}
 	ret = st.data[len(st.data)-1]
 	st.data = st.data[:len(st.data)-1]
 	return

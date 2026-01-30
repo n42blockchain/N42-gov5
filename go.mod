@@ -207,4 +207,9 @@ require (
 
 replace github.com/VictoriaMetrics/metrics => github.com/ledgerwatch/victoria-metrics v0.0.4
 
+// S4 SECURITY NOTE: This fork is required for iOS build compatibility.
+// The official elastic/gosigar PR #134 was declined. Consider:
+// 1. Migrating to organization fork (github.com/n42blockchain/gosigar)
+// 2. Using build tags to exclude on mobile platforms
+// Risk: Third-party maintainer could introduce malicious code.
 replace github.com/elastic/gosigar => github.com/Jackmeng1985/gosigar v0.14.2-fix-ios

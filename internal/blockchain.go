@@ -138,13 +138,17 @@ type insertStats struct {
 func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consensus.Engine, db kv.RwDB, p2p p2p.P2P, config *params.ChainConfig) (common.IBlockChain, error) {
 	c, cancel := context.WithCancel(ctx)
 	var current *block.Block
-	_ = db.View(c, func(tx kv.Tx) error {
+	// R5 fix: Log database errors during initialization
+	if err := db.View(c, func(tx kv.Tx) error {
 		current = rawdb.ReadCurrentBlock(tx)
 		if current == nil {
 			current = genesisBlock.(*block.Block)
 		}
 		return nil
-	})
+	}); err != nil {
+		log.Warnf("failed to read current block from database, using genesis: %v", err)
+		current = genesisBlock.(*block.Block)
+	}
 
 	blockCache, _ := lru.New[types.Hash, *block.Block](blockCacheLimit)
 	futureBlocks, _ := lru.New[types.Hash, *block.Block](maxFutureBlocks)
@@ -316,27 +320,31 @@ func (bc *BlockChain) runNewBlockMessage() {
 			return
 		case blk, ok := <-bc.chBlocks:
 			if ok {
-
-				//if err := bc.InsertBlock([]*block_proto.Block{blk}); err != nil {
-				//	log.Errorf("failed insert block into block chain, number:%d, err: %v", blk.Header.Number, err)
-				//}
-				_ = db.Update(bc.ctx, func(tx kv.RwTx) error {
-					rawdb.WriteBlock(tx, blk.(*block.Block))
+				// R5 fix: Log database errors instead of ignoring them
+				if err := db.Update(bc.ctx, func(tx kv.RwTx) error {
+					if err := rawdb.WriteBlock(tx, blk.(*block.Block)); err != nil {
+						return err
+					}
 					rawdb.WriteHeadBlockHash(tx, blk.Hash())
-					_ = rawdb.ReadCurrentBlock(tx)
 					return nil
-				})
+				}); err != nil {
+					log.Errorf("failed to write block from chBlocks: %v", err)
+				}
 			}
 		case msg, ok := <-newBlockCh:
 			if ok {
 				blk := block.Block{}
 				if err := blk.FromProtoMessage(msg.Block); err == nil {
-					_ = db.Update(bc.ctx, func(tx kv.RwTx) error {
-						rawdb.WriteBlock(tx, &blk)
+					// R5 fix: Log database errors instead of ignoring them
+					if err := db.Update(bc.ctx, func(tx kv.RwTx) error {
+						if err := rawdb.WriteBlock(tx, &blk); err != nil {
+							return err
+						}
 						rawdb.WriteHeadBlockHash(tx, blk.Hash())
-						_ = rawdb.ReadCurrentBlock(tx)
 						return nil
-					})
+					}); err != nil {
+						log.Errorf("failed to write block from newBlockCh: %v", err)
+					}
 				}
 			}
 		}
