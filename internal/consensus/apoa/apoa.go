@@ -413,6 +413,10 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 				rawCheckpoint := checkpoint.(*block.Header)
 				hash := checkpoint.Hash()
 
+				// Security: validate extra data length before calculating signers count
+				if len(rawCheckpoint.Extra) < extraVanity+extraSeal {
+					return nil, errMissingSignature
+				}
 				signers := make([]types.Address, (len(rawCheckpoint.Extra)-extraVanity-extraSeal)/types.AddressLength)
 				for i := 0; i < len(signers); i++ {
 					copy(signers[i][:], rawCheckpoint.Extra[extraVanity+i*types.AddressLength:])
@@ -685,6 +689,10 @@ func (c *Apoa) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 		return err
 	}
 
+	// Security: bounds check before copying signature to prevent panic
+	if len(header.Extra) < extraSeal {
+		return errMissingSignature
+	}
 	copy(header.Extra[len(header.Extra)-extraSeal:], sighash)
 	// Wait until sealing is terminated or delay timeout.
 	log.Debug("Waiting for slot to sign and propagate", "delay", avmutil.PrettyDuration(delay))

@@ -635,10 +635,13 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 
 	if pool.deposit != nil {
 		var depositInfo *deposit.Info
-		_ = pool.bc.DB().View(pool.ctx, func(tx kv.Tx) error {
+		// R1 fix: Log database errors instead of silently ignoring
+		if err := pool.bc.DB().View(pool.ctx, func(tx kv.Tx) error {
 			depositInfo = deposit.GetDepositInfo(tx, addr)
 			return nil
-		})
+		}); err != nil {
+			log.Warn("Failed to query deposit info from database", "addr", addr, "err", err)
+		}
 
 		if depositInfo != nil {
 			if pool.deposit.IsDepositAction(tx) {
