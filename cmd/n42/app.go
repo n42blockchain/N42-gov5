@@ -152,7 +152,12 @@ func unlockAccounts(ctx *cli.Context, stack *node.Node, cfg *conf.Config) {
 	if !cfg.NodeCfg.InsecureUnlockAllowed && cfg.NodeCfg.ExtRPCEnabled() {
 		utils.Fatalf("Account unlock with HTTP access is forbidden!")
 	}
-	ks := stack.AccountManager().Backends(keystore.KeyStoreType)[0].(*keystore.KeyStore)
+	// Security: check if keystore backend is available before accessing
+	backends := stack.AccountManager().Backends(keystore.KeyStoreType)
+	if len(backends) == 0 {
+		utils.Fatalf("No keystore backend available for unlocking accounts")
+	}
+	ks := backends[0].(*keystore.KeyStore)
 	passwords := MakePasswordList(ctx)
 	for i, account := range unlocks {
 		unlockAccount(ks, account, i, passwords)

@@ -179,27 +179,34 @@ func NewN42API(api *API) *n42API {
 // GasPrice returns a suggestion for a gas price for legacy transactions.
 func (s *n42API) GasPrice(ctx context.Context) (*hexutil.Big, error) {
 	conf.LightClientGPO.Default = big.NewInt(params.GWei)
-	//oracle := NewOracle(s.api.BlockChain(), conf.LightClientGPO)
+	// Nil check: ensure gpo is initialized
+	if s.api.gpo == nil {
+		return (*hexutil.Big)(big.NewInt(params.GWei)), nil
+	}
 	tipcap, err := s.api.gpo.SuggestTipCap(ctx, s.api.GetChainConfig())
 	if err != nil {
 		return nil, err
 	}
-	if head := s.api.BlockChain().CurrentBlock().Header(); head.BaseFee64() != uint256.NewInt(0) {
-		tipcap.Add(tipcap, head.BaseFee64().ToBig())
+	currentBlock := s.api.BlockChain().CurrentBlock()
+	if currentBlock != nil {
+		if head := currentBlock.Header(); head != nil && head.BaseFee64() != nil && head.BaseFee64().Cmp(uint256.NewInt(0)) != 0 {
+			tipcap.Add(tipcap, head.BaseFee64().ToBig())
+		}
 	}
 	return (*hexutil.Big)(tipcap), nil
-	//todo hardcode 13Gwei
-	//tipcap := 13000000000
-	//return (*hexutil.Big)(new(big.Int).SetUint64(uint64(tipcap))), nil
 }
 
 // MaxPriorityFeePerGas returns a suggestion for a gas tip cap for dynamic fee transactions.
 func (s *n42API) MaxPriorityFeePerGas(ctx context.Context) (*hexutil.Big, error) {
+	// Nil check: ensure gpo is initialized
+	if s.api.gpo == nil {
+		return (*hexutil.Big)(big.NewInt(params.GWei)), nil
+	}
 	tipcap, err := s.api.gpo.SuggestTipCap(ctx, s.api.GetChainConfig())
 	if err != nil {
 		return nil, err
 	}
-	return (*hexutil.Big)(tipcap), err
+	return (*hexutil.Big)(tipcap), nil
 }
 
 type feeHistoryResult struct {
@@ -346,8 +353,14 @@ func (s *BlockChainAPI) GetBalance(ctx context.Context, address avmcommon.Addres
 }
 
 func (s *BlockChainAPI) BlockNumber() hexutil.Uint64 {
-	//jsonrpc.LatestBlockNumber
-	header := s.api.BlockChain().CurrentBlock().Header() // latest header should always be available
+	currentBlock := s.api.BlockChain().CurrentBlock()
+	if currentBlock == nil {
+		return hexutil.Uint64(0)
+	}
+	header := currentBlock.Header()
+	if header == nil {
+		return hexutil.Uint64(0)
+	}
 	return hexutil.Uint64(header.Number64().Uint64())
 }
 
@@ -1033,14 +1046,22 @@ func (s *TransactionAPI) GetTransactionCount(ctx context.Context, address avmcom
 }
 
 func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.Bytes) (avmcommon.Hash, error) {
-
-	//log.Debugf("tx type is : %s", string(input[0]))
+	if len(input) == 0 {
+		return avmcommon.Hash{}, errors.New("empty transaction data")
+	}
 	tx := new(avmtypes.Transaction)
 	err := tx.UnmarshalBinary(input)
 	if err != nil {
 		return avmcommon.Hash{}, err
 	}
-	header := s.api.BlockChain().CurrentBlock().Header() // latest header should always be available
+	currentBlock := s.api.BlockChain().CurrentBlock()
+	if currentBlock == nil {
+		return avmcommon.Hash{}, errors.New("no current block available")
+	}
+	header := currentBlock.Header()
+	if header == nil {
+		return avmcommon.Hash{}, errors.New("no header available")
+	}
 	metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), header.Number64().ToBig())
 	if err != nil {
 		return avmcommon.Hash{}, err
@@ -1049,17 +1070,31 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 }
 
 func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexutil.Bytes) ([]avmcommon.Hash, error) {
+	if len(inputs) == 0 {
+		return []avmcommon.Hash{}, nil
+	}
 
-	//log.Debugf("tx type is : %s", string(input[0]))
+	currentBlock := s.api.BlockChain().CurrentBlock()
+	if currentBlock == nil {
+		return nil, errors.New("no current block available")
+	}
+	header := currentBlock.Header()
+	if header == nil {
+		return nil, errors.New("no header available")
+	}
+
 	hs := make([]avmcommon.Hash, len(inputs))
 	for i, t := range inputs {
+		if len(t) == 0 {
+			hs[i] = avmcommon.Hash{}
+			return hs, errors.New("empty transaction data")
+		}
 		tx := new(avmtypes.Transaction)
 		err := tx.UnmarshalBinary(t)
 		if err != nil {
 			hs[i] = avmcommon.Hash{}
 			return hs, err
 		}
-		header := s.api.BlockChain().CurrentBlock().Header() // latest header should always be available
 		metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), header.Number64().ToBig())
 		if err != nil {
 			hs[i] = avmcommon.Hash{}

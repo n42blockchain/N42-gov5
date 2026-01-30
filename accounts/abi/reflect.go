@@ -206,6 +206,10 @@ func mapArgNamesToStructFields(argNames []string, value reflect.Value) (map[stri
 	for i := 0; i < typ.NumField(); i++ {
 		structFieldName := typ.Field(i).Name
 
+		// skip empty field names (shouldn't happen but be safe)
+		if len(structFieldName) == 0 {
+			continue
+		}
 		// skip private struct fields.
 		if structFieldName[:1] != strings.ToUpper(structFieldName[:1]) {
 			continue

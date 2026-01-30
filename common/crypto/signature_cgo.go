@@ -45,6 +45,9 @@ func SigToPub(hash, sig []byte) (*ecdsa.PublicKey, error) {
 	}
 
 	x, y := elliptic.Unmarshal(S256(), s)
+	if x == nil {
+		return nil, fmt.Errorf("invalid public key recovered from signature")
+	}
 	return &ecdsa.PublicKey{Curve: S256(), X: x, Y: y}, nil
 }
 
@@ -57,6 +60,9 @@ func SigToPub(hash, sig []byte) (*ecdsa.PublicKey, error) {
 //
 // The produced signature is in the [R || S || V] format where V is 0 or 1.
 func Sign(digestHash []byte, prv *ecdsa.PrivateKey) (sig []byte, err error) {
+	if prv == nil {
+		return nil, fmt.Errorf("private key is nil")
+	}
 	if len(digestHash) != DigestLength {
 		return nil, fmt.Errorf("hash is required to be exactly %d bytes (%d)", DigestLength, len(digestHash))
 	}
@@ -82,7 +88,11 @@ func DecompressPubkey(pubkey []byte) (*ecdsa.PublicKey, error) {
 }
 
 // CompressPubkey encodes a public key to the 33-byte compressed format.
+// Returns nil if the public key is nil or has nil coordinates.
 func CompressPubkey(pubkey *ecdsa.PublicKey) []byte {
+	if pubkey == nil || pubkey.X == nil || pubkey.Y == nil {
+		return nil
+	}
 	return secp256k1.CompressPubkey(pubkey.X, pubkey.Y)
 }
 

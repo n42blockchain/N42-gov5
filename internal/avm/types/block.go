@@ -76,11 +76,17 @@ var headerSize = avmutil.StorageSize(reflect.TypeOf(Header{}).Size())
 // Size returns the approximate memory used by all internal contents. It is used
 // to approximate and limit the memory consumption of various caches.
 func (h *Header) Size() avmutil.StorageSize {
-	var baseFeeBits int
+	var baseFeeBits, difficultyBits, numberBits int
 	if h.BaseFee != nil {
 		baseFeeBits = h.BaseFee.BitLen()
 	}
-	return headerSize + avmutil.StorageSize(len(h.Extra)+(h.Difficulty.BitLen()+h.Number.BitLen()+baseFeeBits)/8)
+	if h.Difficulty != nil {
+		difficultyBits = h.Difficulty.BitLen()
+	}
+	if h.Number != nil {
+		numberBits = h.Number.BitLen()
+	}
+	return headerSize + avmutil.StorageSize(len(h.Extra)+(difficultyBits+numberBits+baseFeeBits)/8)
 }
 
 // MarshalJSON marshals as JSON.

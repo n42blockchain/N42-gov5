@@ -80,6 +80,11 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 	if batch {
 		h.handleBatch(reqs)
 	} else {
+		// Bounds check: ensure reqs is not empty before accessing
+		if len(reqs) == 0 {
+			codec.writeJSON(ctx, errorMessage(&invalidRequestError{"empty request"}))
+			return
+		}
 		h.handleMsg(reqs[0])
 	}
 }

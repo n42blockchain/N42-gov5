@@ -166,7 +166,11 @@ func (f *blocksFetcher) filterPeers(ctx context.Context, peers []peer.ID, peersP
 // trimPeers limits peer list, returning only specified percentage of peers.
 // Takes system constraints into account (min/max peers to sync).
 func trimPeers(peers []peer.ID, peersPercentage float64, MinSyncPeers int) []peer.ID {
-	// todo
+	// Safety check: return empty slice if no peers
+	if len(peers) == 0 {
+		return peers
+	}
+
 	required := MinSyncPeers
 	// Weak/slow peers will be pushed down the list and trimmed since only percentage of peers is selected.
 	limit := math.Round(float64(len(peers)) * peersPercentage)
@@ -177,5 +181,14 @@ func trimPeers(peers []peer.ID, peersPercentage float64, MinSyncPeers int) []pee
 
 	limit = math.Floor(limit)
 
-	return peers[:uint64(limit)]
+	// Safety check: ensure limit is within bounds
+	limitInt := int(limit)
+	if limitInt < 0 {
+		limitInt = 0
+	}
+	if limitInt > len(peers) {
+		limitInt = len(peers)
+	}
+
+	return peers[:limitInt]
 }

@@ -103,8 +103,12 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 					currentTime := time.Now()
 
 					// Wait for peer to initiate handshake with timeout
+					// Security fix: Use a shared timer to prevent goroutine leak
 					statusReceived := make(chan struct{})
+					timeoutCtx, timeoutCancel := context.WithTimeout(s.ctx, timeForStatus)
+
 					go func() {
+						defer timeoutCancel()
 						ticker := time.NewTicker(100 * time.Millisecond)
 						defer ticker.Stop()
 						for {
@@ -114,9 +118,7 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 									close(statusReceived)
 									return
 								}
-							case <-time.After(timeForStatus):
-								return
-							case <-s.ctx.Done():
+							case <-timeoutCtx.Done():
 								return
 							}
 						}
@@ -125,10 +127,8 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 					select {
 					case <-statusReceived:
 						// Status received, continue
-					case <-time.After(timeForStatus):
-						// Timeout waiting for status
-					case <-s.ctx.Done():
-						return
+					case <-timeoutCtx.Done():
+						// Timeout waiting for status or context cancelled
 					}
 
 					// Exit if we are disconnected with the peer.

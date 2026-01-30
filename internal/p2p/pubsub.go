@@ -178,6 +178,10 @@ func setPubSubParameters() {
 func convertTopicScores(topicMap map[string]*pubsub.TopicScoreSnapshot) map[string]*msg_proto.TopicScoreSnapshot {
 	newMap := make(map[string]*msg_proto.TopicScoreSnapshot, len(topicMap))
 	for t, s := range topicMap {
+		// Security fix: Check for nil snapshot to prevent nil pointer dereference
+		if s == nil {
+			continue
+		}
 		newMap[t] = &msg_proto.TopicScoreSnapshot{
 			TimeInMesh:               uint64(s.TimeInMesh.Milliseconds()),
 			FirstMessageDeliveries:   float32(s.FirstMessageDeliveries),

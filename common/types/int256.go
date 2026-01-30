@@ -22,6 +22,12 @@ import (
 )
 
 func Int256Min(a, b *uint256.Int) *uint256.Int {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
 	if a.Cmp(b) > 0 {
 		return b
 	}
@@ -30,4 +36,9 @@ func Int256Min(a, b *uint256.Int) *uint256.Int {
 
 // BigToHash sets byte representation of b to hash.
 // If b is larger than len(h), b will be cropped from the left.
-func BigToHash(b *big.Int) Hash { return BytesToHash(b.Bytes()) }
+func BigToHash(b *big.Int) Hash {
+	if b == nil {
+		return Hash{}
+	}
+	return BytesToHash(b.Bytes())
+}

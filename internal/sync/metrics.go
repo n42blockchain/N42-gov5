@@ -123,9 +123,15 @@ var (
 )
 
 func (s *Service) updateMetrics() {
-	// do not update metrics if genesis time
-	// has not been initialized
-	if s.cfg.chain.CurrentBlock().Header().Number64().IsZero() {
+	// do not update metrics if chain or current block is not initialized
+	if s.cfg.chain == nil {
+		return
+	}
+	currentBlock := s.cfg.chain.CurrentBlock()
+	if currentBlock == nil || currentBlock.Header() == nil {
+		return
+	}
+	if currentBlock.Header().Number64().IsZero() {
 		return
 	}
 	// We update the dynamic subnet topics.

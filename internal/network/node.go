@@ -535,6 +535,7 @@ func (n *Node) ClearHandler(msgType message.MessageType) error {
 	defer n.msgLock.Unlock()
 	if _, ok := n.msgCallback[msgType]; ok {
 		delete(n.msgCallback, msgType)
+		return nil
 	}
-	return fmt.Errorf("failed to remove connhanlder, msg type %v", msgType)
+	return fmt.Errorf("handler not found for message type %v", msgType)
 }

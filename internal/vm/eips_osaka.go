@@ -68,18 +68,36 @@ const (
 // opRJUMP implements RJUMP (0xE0) - unconditional relative jump
 func opRJUMP(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+3 > uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	offset := int16(binary.BigEndian.Uint16(code[*pc+1:]))
-	*pc = uint64(int64(*pc) + 3 + int64(offset) - 1) // -1 because pc is incremented after
+	newPC := int64(*pc) + 3 + int64(offset) - 1 // -1 because pc is incremented after
+	// Security: validate jump destination
+	if newPC < 0 || newPC >= int64(len(code)) {
+		return nil, ErrEOFInvalidJumpDest
+	}
+	*pc = uint64(newPC)
 	return nil, nil
 }
 
 // opRJUMPI implements RJUMPI (0xE1) - conditional relative jump
 func opRJUMPI(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	condition := scope.Stack.Pop()
+	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+3 > uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	if !condition.IsZero() {
-		code := scope.Contract.Code
 		offset := int16(binary.BigEndian.Uint16(code[*pc+1:]))
-		*pc = uint64(int64(*pc) + 3 + int64(offset) - 1)
+		newPC := int64(*pc) + 3 + int64(offset) - 1
+		// Security: validate jump destination
+		if newPC < 0 || newPC >= int64(len(code)) {
+			return nil, ErrEOFInvalidJumpDest
+		}
+		*pc = uint64(newPC)
 	} else {
 		*pc += 2 // Skip the 2-byte offset
 	}
@@ -89,8 +107,22 @@ func opRJUMPI(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 // opRJUMPV implements RJUMPV (0xE2) - jump table (switch)
 func opRJUMPV(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
+	// Security: bounds check for count byte
+	if *pc+2 > uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	count := int(code[*pc+1])
+	// Security: validate count is non-zero
+	if count == 0 {
+		return nil, ErrEOFInvalidRJUMPVCount
+	}
 	caseIndex := scope.Stack.Pop()
+
+	// Security: bounds check for entire jump table
+	tableEnd := *pc + 2 + uint64(count*2)
+	if tableEnd > uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 
 	if !caseIndex.IsUint64() || caseIndex.Uint64() >= uint64(count) {
 		// Jump to default case (after the jump table)
@@ -101,14 +133,28 @@ func opRJUMPV(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	idx := int(caseIndex.Uint64())
 	offsetPos := *pc + 2 + uint64(idx*2)
 	offset := int16(binary.BigEndian.Uint16(code[offsetPos:]))
-	*pc = uint64(int64(*pc) + 2 + int64(count*2) + int64(offset) - 1)
+	newPC := int64(*pc) + 2 + int64(count*2) + int64(offset) - 1
+	// Security: validate jump destination
+	if newPC < 0 || newPC >= int64(len(code)) {
+		return nil, ErrEOFInvalidJumpDest
+	}
+	*pc = uint64(newPC)
 	return nil, nil
 }
 
 // opCALLF implements CALLF (0xE3) - call function
 func opCALLF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+3 > uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	funcIdx := binary.BigEndian.Uint16(code[*pc+1:])
+
+	// Security: check ReturnStack is initialized
+	if scope.ReturnStack == nil {
+		return nil, ErrEOFInvalidCallF
+	}
 
 	// Push return address to return stack
 	returnAddr := uint32(*pc + 3)
@@ -149,6 +195,10 @@ func opRETF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 // opJUMPF implements JUMPF (0xE5) - tail call to function
 func opJUMPF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+3 > uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	funcIdx := binary.BigEndian.Uint16(code[*pc+1:])
 
 	// Get target code section
@@ -191,17 +241,23 @@ func opDATALOAD(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 // opDATALOADN implements DATALOADN (0xD1) - load 32 bytes with immediate offset
 func opDATALOADN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+3 > uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	offset := binary.BigEndian.Uint16(code[*pc+1:])
 
 	container := scope.Contract.EOFContainer
 	if container == nil {
 		scope.Stack.Push(new(uint256.Int))
+		*pc += 2 // Skip immediate even on error path
 		return nil, nil
 	}
 
 	data := container.GetData()
 	if int(offset)+32 > len(data) {
 		scope.Stack.Push(new(uint256.Int))
+		*pc += 2 // Skip immediate
 		return nil, nil
 	}
 
@@ -258,9 +314,17 @@ func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 // opDUPN implements DUPN (0xE6) - DUP with immediate operand
 func opDUPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+1 >= uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	n := int(code[*pc+1]) + 1 // n is 1-indexed in the opcode
 
 	value := scope.Stack.Back(n - 1)
+	// Security: Back() returns nil if out of bounds, handle nil case
+	if value == nil {
+		return nil, ErrEOFStackUnderflow
+	}
 	scope.Stack.Push(new(uint256.Int).Set(value))
 
 	*pc++ // Skip immediate
@@ -270,8 +334,16 @@ func opDUPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 // opSWAPN implements SWAPN (0xE7) - SWAP with immediate operand
 func opSWAPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+1 >= uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	n := int(code[*pc+1]) + 1 // n is 1-indexed
 
+	// Security: Swap() already has bounds check, but verify stack depth
+	if scope.Stack.Len() < n {
+		return nil, ErrEOFStackUnderflow
+	}
 	scope.Stack.Swap(n)
 
 	*pc++ // Skip immediate
@@ -281,13 +353,28 @@ func opSWAPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 // opEXCHANGE implements EXCHANGE (0xE8) - exchange two stack items
 func opEXCHANGE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+1 >= uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	imm := code[*pc+1]
 	n := int((imm >> 4) + 1)
 	m := int((imm & 0x0f) + 1)
 
+	// Security: check stack depth before access
+	requiredDepth := n + m
+	if scope.Stack.Len() < requiredDepth {
+		return nil, ErrEOFStackUnderflow
+	}
+
 	// Exchange stack[n] and stack[n+m]
 	a := scope.Stack.Back(n - 1)
 	b := scope.Stack.Back(n + m - 1)
+
+	// Security: handle nil case (should not happen after depth check, but defensive)
+	if a == nil || b == nil {
+		return nil, ErrEOFStackUnderflow
+	}
 
 	tmp := new(uint256.Int).Set(a)
 	a.Set(b)
@@ -302,6 +389,10 @@ func opEOFCREATE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 	// This is a simplified implementation
 	// Full implementation requires contract creation logic
 	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+1 >= uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	_ = code[*pc+1] // Container index
 
 	// Push failure (0) for now - full implementation needed
@@ -314,6 +405,10 @@ func opEOFCREATE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 // opRETURNCONTRACT implements RETURNCONTRACT (0xEE) - return new contract from initcode
 func opRETURNCONTRACT(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
+	// Security: bounds check for code access
+	if *pc+1 >= uint64(len(code)) {
+		return nil, ErrEOFTruncatedInstruction
+	}
 	_ = code[*pc+1] // Container index
 
 	// Implementation requires integration with contract creation

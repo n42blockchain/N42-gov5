@@ -148,7 +148,11 @@ func (p *PublicKey) MarshalText() ([]byte, error) {
 }
 
 // AggregateMultiplePubkeys aggregates the provided decompressed keys into a single key.
+// Returns nil if the input slice is empty.
 func AggregateMultiplePubkeys(pubkeys []common.PublicKey) common.PublicKey {
+	if len(pubkeys) == 0 {
+		return nil
+	}
 	mulP1 := make([]*blstPublicKey, 0, len(pubkeys))
 	for _, pubkey := range pubkeys {
 		mulP1 = append(mulP1, pubkey.(*PublicKey).p)

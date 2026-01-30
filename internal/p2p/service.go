@@ -258,7 +258,12 @@ func (s *Service) Start() {
 		// Detailed peer info only at Debug level
 		for _, p := range s.peers.All() {
 			params := make([]interface{}, 0)
-			params = append(params, "peer", p.String()[:16]+"...")
+			// Security fix: Check string length before slicing to prevent panic
+			peerStr := p.String()
+			if len(peerStr) > 16 {
+				peerStr = peerStr[:16] + "..."
+			}
+			params = append(params, "peer", peerStr)
 
 			if dialArgs, err := s.peers.DialArgs(p); err == nil {
 				params = append(params, "addr", dialArgs)

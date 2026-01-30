@@ -74,6 +74,10 @@ func (sc *splitCursor) Seek() (key1, key2, key3, val []byte, err error) {
 	if !sc.matchKey(k) {
 		return nil, nil, nil, nil, nil
 	}
+	// Bounds check to prevent slice out of range
+	if len(k) < sc.part1end || len(k) < sc.part2start || len(k) < sc.part3start {
+		return nil, nil, nil, nil, nil
+	}
 	return k[:sc.part1end], k[sc.part2start:sc.part3start], k[sc.part3start:], v, nil
 }
 
@@ -83,6 +87,10 @@ func (sc *splitCursor) Next() (key1, key2, key3, val []byte, err error) {
 		return nil, nil, nil, nil, err1
 	}
 	if !sc.matchKey(k) {
+		return nil, nil, nil, nil, nil
+	}
+	// Bounds check to prevent slice out of range
+	if len(k) < sc.part1end || len(k) < sc.part2start || len(k) < sc.part3start {
 		return nil, nil, nil, nil, nil
 	}
 	return k[:sc.part1end], k[sc.part2start:sc.part3start], k[sc.part3start:], v, nil

@@ -121,14 +121,23 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 		return
 	}
 
-	sorter := make(sortGasAndReward, len(bf.block.Transactions()))
-	for i, tx := range bf.block.Transactions() {
+	txs := bf.block.Transactions()
+	sorter := make(sortGasAndReward, len(txs))
+	for i, tx := range txs {
+		// Bounds check: ensure receipts index is valid
+		if i >= len(bf.receipts) {
+			break
+		}
 		reward, _ := tx.EffectiveGasTip(bf.header.BaseFee64())
 		sorter[i] = txGasAndReward{gasUsed: bf.receipts[i].GasUsed, reward: reward.ToBig()}
 	}
 	sort.Stable(sorter)
 
 	var txIndex int
+	// Bounds check: ensure sorter is not empty
+	if len(sorter) == 0 {
+		return
+	}
 	sumGasUsed := sorter[0].gasUsed
 
 	for i, p := range percentiles {
@@ -155,7 +164,14 @@ func (oracle *Oracle) resolveBlockRange(ctx context.Context, reqEnd jsonrpc.Bloc
 	)
 
 	// Get the chain's current head.
-	headBlock = oracle.backend.CurrentBlock().Header()
+	currentBlock := oracle.backend.CurrentBlock()
+	if currentBlock == nil {
+		return nil, nil, 0, 0, errors.New("current block not available")
+	}
+	headBlock = currentBlock.Header()
+	if headBlock == nil {
+		return nil, nil, 0, 0, errors.New("current block header not available")
+	}
 
 	head := jsonrpc.BlockNumber(headBlock.Number64().Uint64())
 

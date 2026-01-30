@@ -64,7 +64,11 @@ func (pub *PublicKey) ExportECDSA() *ecdsa.PublicKey {
 }
 
 // Import an ECDSA public key as an ECIES public key.
+// Returns nil if the input public key is nil.
 func ImportECDSAPublic(pub *ecdsa.PublicKey) *PublicKey {
+	if pub == nil {
+		return nil
+	}
 	return &PublicKey{
 		X:      pub.X,
 		Y:      pub.Y,
@@ -87,7 +91,11 @@ func (prv *PrivateKey) ExportECDSA() *ecdsa.PrivateKey {
 }
 
 // Import an ECDSA private key as an ECIES private key.
+// Returns nil if the input private key is nil.
 func ImportECDSA(prv *ecdsa.PrivateKey) *PrivateKey {
+	if prv == nil {
+		return nil
+	}
 	pub := ImportECDSAPublic(&prv.PublicKey)
 	return &PrivateKey{*pub, prv.D}
 }
@@ -112,13 +120,19 @@ func GenerateKey(rand io.Reader, curve elliptic.Curve, params *ECIESParams) (prv
 }
 
 // MaxSharedKeyLength returns the maximum length of the shared key the
-// public key can produce.
+// public key can produce. Returns 0 if pub or its curve is nil.
 func MaxSharedKeyLength(pub *PublicKey) int {
+	if pub == nil || pub.Curve == nil {
+		return 0
+	}
 	return (pub.Curve.Params().BitSize + 7) / 8
 }
 
 // ECDH key agreement method used to establish secret keys for encryption.
 func (prv *PrivateKey) GenerateShared(pub *PublicKey, skLen, macLen int) (sk []byte, err error) {
+	if pub == nil {
+		return nil, ErrInvalidPublicKey
+	}
 	if prv.PublicKey.Curve != pub.Curve {
 		return nil, ErrInvalidCurve
 	}
@@ -241,6 +255,9 @@ func symDecrypt(params *ECIESParams, key, ct []byte) (m []byte, err error) {
 // ciphertext. s1 is fed into key derivation, s2 is fed into the MAC. If the
 // shared information parameters aren't being used, they should be nil.
 func Encrypt(rand io.Reader, pub *PublicKey, m, s1, s2 []byte) (ct []byte, err error) {
+	if pub == nil {
+		return nil, ErrInvalidPublicKey
+	}
 	params, err := pubkeyParams(pub)
 	if err != nil {
 		return nil, err

@@ -78,15 +78,12 @@ func (p *peersInfo) update(id peer.ID, Number *uint256.Int, Difficulty *uint256.
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
-	if peer, ok := p.info[id]; ok {
-		peer.Number = Number
-		peer.Difficulty = Difficulty
-	} else {
-		p.info[id] = peerInfo{
-			ID:         id,
-			Difficulty: Difficulty,
-			Number:     Number,
-		}
+	// Always replace the entire struct to avoid partial updates
+	// This fixes a data race where the struct copy was being modified
+	p.info[id] = peerInfo{
+		ID:         id,
+		Difficulty: Difficulty,
+		Number:     Number,
 	}
 }
 

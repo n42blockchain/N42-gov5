@@ -120,11 +120,15 @@ func (e SszNetworkEncoder) DecodeWithMaxLength(r io.Reader, to fastssz.Unmarshal
 	if err != nil {
 		return err
 	}
+	// Security fix: Ensure msgLen fits in int for slice allocation
+	if msgLen > uint64(math.MaxInt) {
+		return fmt.Errorf("message length %d exceeds maximum int value", msgLen)
+	}
 	limitedRdr := io.LimitReader(r, int64(msgMax))
 	snappyReader := newBufferedReader(limitedRdr)
 	defer bufReaderPool.Put(snappyReader)
 
-	buf := make([]byte, msgLen)
+	buf := make([]byte, int(msgLen))
 	// Returns an error if less than msgLen bytes
 	// are read. This ensures we read exactly the
 	// required amount.

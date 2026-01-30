@@ -100,6 +100,9 @@ func ReadInteger(typ Type, b []byte) interface{} {
 
 // readBool reads a bool.
 func readBool(word []byte) (bool, error) {
+	if len(word) < 32 {
+		return false, fmt.Errorf("abi: insufficient data for bool, got %d bytes", len(word))
+	}
 	for _, b := range word[:31] {
 		if b != 0 {
 			return false, errBadBool

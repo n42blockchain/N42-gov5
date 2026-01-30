@@ -20,6 +20,7 @@ package tracers
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/big"
 
 	common "github.com/n42blockchain/N42/common/types"
@@ -83,6 +84,9 @@ func (d *directory) New(name string, ctx *Context, cfg json.RawMessage) (Tracer,
 		return elem.ctor(ctx, cfg)
 	}
 	// Assume JS code
+	if d.jsEval == nil {
+		return nil, fmt.Errorf("tracer not found: %s", name)
+	}
 	return d.jsEval(name, ctx, cfg)
 }
 

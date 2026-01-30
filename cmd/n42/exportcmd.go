@@ -184,6 +184,9 @@ func exportDBState(ctx *cli.Context) error {
 		return fmt.Errorf("cannot open db as BucketMigrator")
 	}
 	Buckets, err := migrator.ListBuckets()
+	if err != nil {
+		return fmt.Errorf("failed to list buckets: %w", err)
+	}
 	for _, Bucket := range Buckets {
 		size, _ := roTX.BucketSize(Bucket)
 		tsize += size

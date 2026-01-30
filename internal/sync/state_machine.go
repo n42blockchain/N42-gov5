@@ -179,17 +179,32 @@ func (m *SyncMetrics) StateDuration(state SyncState) time.Duration {
 // LogStats logs the current metrics.
 func (m *SyncMetrics) LogStats() {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// Copy values while holding lock to avoid nested lock issues
+	blocksProcessed := m.blocksProcessed
+	blocksFailed := m.blocksFailed
+	disconnectCount := m.disconnectCount
+	idleTime := m.stateDuration[SyncStateIdle]
+	initialSyncTime := m.stateDuration[SyncStateInitialSync]
+	catchupTime := m.stateDuration[SyncStateCatchUp]
+	syncedTime := m.stateDuration[SyncStateSynced]
+
+	// Calculate failure rate inline to avoid nested lock
+	var failureRate float64
+	total := blocksProcessed + blocksFailed
+	if total > 0 {
+		failureRate = float64(blocksFailed) / float64(total)
+	}
+	m.mu.RUnlock()
 
 	log.Info("Sync metrics",
-		"blocks_processed", m.blocksProcessed,
-		"blocks_failed", m.blocksFailed,
-		"failure_rate", fmt.Sprintf("%.2f%%", m.FailureRate()*100),
-		"disconnects", m.disconnectCount,
-		"idle_time", m.stateDuration[SyncStateIdle],
-		"initial_sync_time", m.stateDuration[SyncStateInitialSync],
-		"catchup_time", m.stateDuration[SyncStateCatchUp],
-		"synced_time", m.stateDuration[SyncStateSynced],
+		"blocks_processed", blocksProcessed,
+		"blocks_failed", blocksFailed,
+		"failure_rate", fmt.Sprintf("%.2f%%", failureRate*100),
+		"disconnects", disconnectCount,
+		"idle_time", idleTime,
+		"initial_sync_time", initialSyncTime,
+		"catchup_time", catchupTime,
+		"synced_time", syncedTime,
 	)
 }
 

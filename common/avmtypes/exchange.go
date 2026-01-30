@@ -460,7 +460,13 @@ func (tx *Transaction) FromastTransaction(astTx *transaction.Transaction) {
 }
 
 func FromN42Header(iHeader block.IHeader) *Header {
-	header := iHeader.(*block.Header)
+	if iHeader == nil {
+		return nil
+	}
+	header, ok := iHeader.(*block.Header)
+	if !ok {
+		return nil
+	}
 	//author, _ := engine.Author(iHeader)
 
 	var baseFee *big.Int

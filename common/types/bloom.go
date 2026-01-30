@@ -31,8 +31,16 @@ func (f hasher) Write(p []byte) (n int, err error) { panic("not implemented") }
 func (f hasher) Sum(b []byte) []byte               { panic("not implemented") }
 func (f hasher) Reset()                            { panic("not implemented") }
 func (f hasher) BlockSize() int                    { panic("not implemented") }
-func (f hasher) Size() int                         { return 8 }
-func (f hasher) Sum64() uint64                     { return binary.BigEndian.Uint64(f) }
+func (f hasher) Size() int { return 8 }
+func (f hasher) Sum64() uint64 {
+	if len(f) < 8 {
+		// Pad with zeros if the hasher is too short
+		padded := make([]byte, 8)
+		copy(padded[8-len(f):], f)
+		return binary.BigEndian.Uint64(padded)
+	}
+	return binary.BigEndian.Uint64(f)
+}
 
 type Bloom struct {
 	bloom *bloomfilter.Filter
@@ -47,11 +55,17 @@ func NewBloom(size uint64) (*Bloom, error) {
 }
 
 func (b *Bloom) UnMarshalBloom(data []byte) error {
+	if b.bloom == nil {
+		return fmt.Errorf("bloom filter is not initialized")
+	}
 	err := b.bloom.UnmarshalBinary(data)
 	return err
 }
 
 func (b *Bloom) Add(key []byte) error {
+	if b.bloom == nil {
+		return fmt.Errorf("bloom filter is not initialized")
+	}
 	if len(key) != HashLength {
 		return fmt.Errorf("key length is not 32 ")
 	}
@@ -63,9 +77,15 @@ func (b *Bloom) Add(key []byte) error {
 // - true maybe in the set
 // - false must not in the set
 func (b *Bloom) Contain(key []byte) bool {
+	if b.bloom == nil {
+		return false
+	}
 	return b.bloom.Contains(hasher(key))
 }
 
 func (b *Bloom) Marshal() ([]byte, error) {
+	if b.bloom == nil {
+		return nil, fmt.Errorf("bloom filter is not initialized")
+	}
 	return b.bloom.MarshalBinary()
 }

@@ -84,8 +84,11 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 		isSlotOutOfOrder := false
 		if prevBlockNr != nil && prevBlockNr.Cmp(blockNr) >= 0 {
 			isSlotOutOfOrder = true
-		} else if prevBlockNr != nil && req.Step != 0 && new(uint256.Int).Mod(new(uint256.Int).Sub(blockNr, prevBlockNr), uint256.NewInt(req.Step)).Uint64() != 0 {
-			isSlotOutOfOrder = true
+		} else if prevBlockNr != nil {
+			// req.Step is guaranteed to be > 0 (validated at function entry)
+			if new(uint256.Int).Mod(new(uint256.Int).Sub(blockNr, prevBlockNr), uint256.NewInt(req.Step)).Uint64() != 0 {
+				isSlotOutOfOrder = true
+			}
 		}
 		if !isFirstChunk && isSlotOutOfOrder {
 			return nil, ErrInvalidFetchedData

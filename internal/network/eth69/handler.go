@@ -117,6 +117,11 @@ func (h *Handler) MakeBlockRangeUpdatePacket() *BlockRangeUpdatePacket {
 
 // HandleStatusMessage processes an incoming Status message from a peer.
 func (h *Handler) HandleStatusMessage(peerID peer.ID, status *StatusPacket) error {
+	// Safety check: ensure status is not nil
+	if status == nil {
+		return ErrInvalidStatus
+	}
+
 	// Validate protocol version
 	if !IsProtocolVersionSupported(uint(status.ProtocolVersion)) {
 		return fmt.Errorf("unsupported protocol version: %d", status.ProtocolVersion)
@@ -158,6 +163,11 @@ func (h *Handler) HandleStatusMessage(peerID peer.ID, status *StatusPacket) erro
 
 // HandleBlockRangeUpdate processes an incoming BlockRangeUpdate message.
 func (h *Handler) HandleBlockRangeUpdate(peerID peer.ID, update *BlockRangeUpdatePacket) error {
+	// Safety check: ensure update is not nil
+	if update == nil {
+		return ErrInvalidBlockRangeUpdate
+	}
+
 	// Validate block range
 	if err := update.ValidateBlockRange(); err != nil {
 		return fmt.Errorf("invalid block range update: %w", err)
