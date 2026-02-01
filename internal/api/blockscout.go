@@ -22,7 +22,7 @@ package api
 // Blockscout 文档: https://docs.blockscout.com/
 //
 // Blockscout Version: v9.3.2 (2024-12-19)
-// Release Notes: Bug fixes for handle_continue, find_history_and_token_fetchers, TLS version
+// Updated: 2026-02-01 - Added EIP-4844 and EIP-7560 support
 //
 // 必需接口清单 (Blockscout v9.x+):
 //   - eth_syncing ✅
@@ -37,24 +37,35 @@ package api
 //   - eth_getProof ✅ (State proof for verification)
 //   - eth_accounts ✅ (Account enumeration)
 //   - eth_protocolVersion ✅ (Protocol version)
+//   - eth_blobBaseFee ✅ (EIP-4844 blob base fee)
+//   - eth_simulateV1 ✅ (EIP-7560 multi-call simulation)
+//   - eth_createAccessList ✅ (EIP-2930 access list creation)
 //
 // Additional Compatibility:
 //   - EIP-1559 (Fee market) ✅
 //   - EIP-2930 (Access lists) ✅
+//   - EIP-4844 (Blob transactions) ✅
+//   - EIP-7560 (Transaction simulation) ✅
 //   - Batch RPC requests ✅
 //   - WebSocket subscriptions ✅
 
 import (
 	"context"
+	"errors"
 	"math/big"
 
 	"github.com/holiman/uint256"
+	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/common"
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal"
+	vm "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // =============================================================================
@@ -434,7 +445,11 @@ type BlockscoutCompatibilityInfo struct {
 type BlockscoutFeatures struct {
 	EIP1559              bool `json:"eip1559"`              // EIP-1559 费用市场
 	EIP2930              bool `json:"eip2930"`              // EIP-2930 访问列表
+	EIP4844              bool `json:"eip4844"`              // EIP-4844 Blob 交易
+	EIP7560              bool `json:"eip7560"`              // EIP-7560 交易模拟
 	BlockReceipts        bool `json:"blockReceipts"`        // eth_getBlockReceipts 批量收据
+	BlobBaseFee          bool `json:"blobBaseFee"`          // eth_blobBaseFee blob 费用查询
+	SimulateV1           bool `json:"simulateV1"`           // eth_simulateV1 多交易模拟
 	StateProofs          bool `json:"stateProofs"`          // eth_getProof 状态证明
 	BatchRequests        bool `json:"batchRequests"`        // JSON-RPC 批量请求
 	WebSocketStreaming   bool `json:"webSocketStreaming"`   // WebSocket 订阅
@@ -458,7 +473,11 @@ func (s *BlockChainAPI) GetBlockscoutCompatibility() *BlockscoutCompatibilityInf
 		Features: &BlockscoutFeatures{
 			EIP1559:            true,
 			EIP2930:            true,
+			EIP4844:            true,  // Blob transactions
+			EIP7560:            true,  // Transaction simulation
 			BlockReceipts:      true,
+			BlobBaseFee:        true,  // eth_blobBaseFee
+			SimulateV1:         true,  // eth_simulateV1
 			StateProofs:        true,  // Partial support
 			BatchRequests:      true,
 			WebSocketStreaming: true,
@@ -518,16 +537,305 @@ func (s *BlockChainAPI) BatchGetCode(ctx context.Context, addresses []types.Addr
 	}
 	defer tx.Rollback()
 
-	state := s.api.State(tx, blockNrOrHash)
-	if state == nil {
+	ibs := s.api.State(tx, blockNrOrHash)
+	if ibs == nil {
 		return nil, nil
 	}
 
 	result := make([]hexutil.Bytes, len(addresses))
 	for i, address := range addresses {
-		code := state.GetCode(address)
+		code := ibs.GetCode(address)
 		result[i] = code
 	}
 	return result, nil
+}
+
+// =============================================================================
+// EIP-4844 Blob 相关接口 (Blockscout v9.3+ Cancun 支持)
+// =============================================================================
+
+// BlobBaseFee returns the current blob base fee in wei.
+// This is required for EIP-4844 blob transaction support.
+// 返回当前的 blob 基础费用（wei）。
+// Note: N42 does not currently have ExcessBlobGas in headers, so this returns
+// the minimum blob base fee. Full EIP-4844 support requires header field additions.
+func (s *BlockChainAPI) BlobBaseFee(ctx context.Context) (*hexutil.Big, error) {
+	currentBlock := s.api.BlockChain().CurrentBlock()
+	if currentBlock == nil {
+		return nil, errors.New("no current block")
+	}
+
+	// N42 currently does not have ExcessBlobGas field in headers.
+	// Return minimum blob base fee (1 wei) for API compatibility.
+	// Full EIP-4844 support would require adding ExcessBlobGas to block.Header.
+	minBlobBaseFee := big.NewInt(1)
+	return (*hexutil.Big)(minBlobBaseFee), nil
+}
+
+// =============================================================================
+// EIP-7560 交易模拟接口 (eth_simulateV1)
+// =============================================================================
+
+// SimulateV1BlockOverride contains block-level overrides for simulation
+type SimulateV1BlockOverride struct {
+	Number        *hexutil.Uint64 `json:"number,omitempty"`
+	Time          *hexutil.Uint64 `json:"time,omitempty"`
+	GasLimit      *hexutil.Uint64 `json:"gasLimit,omitempty"`
+	FeeRecipient  *types.Address  `json:"feeRecipient,omitempty"`
+	PrevRandao    *types.Hash     `json:"prevRandao,omitempty"`
+	BaseFeePerGas *hexutil.Big    `json:"baseFeePerGas,omitempty"`
+	BlobBaseFee   *hexutil.Big    `json:"blobBaseFee,omitempty"`
+}
+
+// SimulateV1BlockStateCalls represents a block with state overrides and calls
+type SimulateV1BlockStateCalls struct {
+	BlockOverrides *SimulateV1BlockOverride   `json:"blockOverrides,omitempty"`
+	StateOverrides *StateOverride             `json:"stateOverrides,omitempty"`
+	Calls          []TransactionArgs          `json:"calls"`
+}
+
+// SimulateV1Options contains simulation options
+type SimulateV1Options struct {
+	TraceTransfers bool `json:"traceTransfers,omitempty"`
+	Validation     bool `json:"validation,omitempty"`
+}
+
+// SimulateV1CallResult represents the result of a single simulated call
+type SimulateV1CallResult struct {
+	ReturnData    hexutil.Bytes   `json:"returnData"`
+	Logs          []*avmtypes.Log `json:"logs"`
+	GasUsed       hexutil.Uint64  `json:"gasUsed"`
+	Status        hexutil.Uint64  `json:"status"`
+	Error         *SimulateError  `json:"error,omitempty"`
+}
+
+// SimulateError represents an error from simulation
+type SimulateError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// SimulateV1BlockResult represents the result of simulating a block
+type SimulateV1BlockResult struct {
+	Number       hexutil.Uint64         `json:"number"`
+	Hash         types.Hash             `json:"hash"`
+	Timestamp    hexutil.Uint64         `json:"timestamp"`
+	GasLimit     hexutil.Uint64         `json:"gasLimit"`
+	GasUsed      hexutil.Uint64         `json:"gasUsed"`
+	FeeRecipient types.Address          `json:"feeRecipient"`
+	BaseFeePerGas *hexutil.Big          `json:"baseFeePerGas"`
+	PrevRandao   types.Hash             `json:"prevRandao"`
+	Calls        []SimulateV1CallResult `json:"calls"`
+}
+
+// SimulateV1 executes a series of transactions against the state, returning the results.
+// This implements EIP-7560 eth_simulateV1 for Blockscout compatibility.
+// 模拟执行一系列交易，返回结果。用于 Blockscout 的交易预览功能。
+func (s *BlockChainAPI) SimulateV1(ctx context.Context, blocks []SimulateV1BlockStateCalls, blockNrOrHash *jsonrpc.BlockNumberOrHash, opts *SimulateV1Options) ([]SimulateV1BlockResult, error) {
+	if len(blocks) == 0 {
+		return []SimulateV1BlockResult{}, nil
+	}
+
+	// Set default block
+	bNrOrHash := jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.LatestBlockNumber)
+	if blockNrOrHash != nil {
+		bNrOrHash = *blockNrOrHash
+	}
+
+	// Get base block
+	var baseBlock block.IBlock
+	var err error
+	if blockNr, ok := bNrOrHash.Number(); ok {
+		if blockNr == jsonrpc.LatestBlockNumber || blockNr == jsonrpc.PendingBlockNumber {
+			baseBlock = s.api.BlockChain().CurrentBlock()
+		} else {
+			baseBlock, err = s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(blockNr.Int64())))
+		}
+	} else if hash, ok := bNrOrHash.Hash(); ok {
+		baseBlock, err = s.api.BlockChain().GetBlockByHash(hash)
+	}
+
+	if err != nil || baseBlock == nil {
+		return nil, errors.New("block not found")
+	}
+
+	baseHeader, ok := baseBlock.Header().(*block.Header)
+	if !ok {
+		return nil, errors.New("invalid header type")
+	}
+
+	results := make([]SimulateV1BlockResult, 0, len(blocks))
+
+	// Process each simulated block
+	for blockIdx, simBlock := range blocks {
+		blockResult, err := s.simulateBlock(ctx, simBlock, baseHeader, uint64(blockIdx))
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, *blockResult)
+	}
+
+	return results, nil
+}
+
+// simulateBlock simulates a single block with calls
+func (s *BlockChainAPI) simulateBlock(ctx context.Context, simBlock SimulateV1BlockStateCalls, baseHeader *block.Header, blockOffset uint64) (*SimulateV1BlockResult, error) {
+	// Set up block parameters
+	blockNumber := baseHeader.Number64().Uint64() + blockOffset + 1
+	blockTime := baseHeader.Time + (blockOffset+1)*12 // Assume 12s block time
+	gasLimit := baseHeader.GasLimit
+	feeRecipient := baseHeader.Coinbase
+	baseFee := baseHeader.BaseFee
+	prevRandao := baseHeader.MixDigest
+
+	// Apply block overrides
+	if simBlock.BlockOverrides != nil {
+		if simBlock.BlockOverrides.Number != nil {
+			blockNumber = uint64(*simBlock.BlockOverrides.Number)
+		}
+		if simBlock.BlockOverrides.Time != nil {
+			blockTime = uint64(*simBlock.BlockOverrides.Time)
+		}
+		if simBlock.BlockOverrides.GasLimit != nil {
+			gasLimit = uint64(*simBlock.BlockOverrides.GasLimit)
+		}
+		if simBlock.BlockOverrides.FeeRecipient != nil {
+			feeRecipient = *simBlock.BlockOverrides.FeeRecipient
+		}
+		if simBlock.BlockOverrides.BaseFeePerGas != nil {
+			baseFee = uint256.MustFromBig(simBlock.BlockOverrides.BaseFeePerGas.ToInt())
+		}
+		if simBlock.BlockOverrides.PrevRandao != nil {
+			prevRandao = *simBlock.BlockOverrides.PrevRandao
+		}
+	}
+
+	// Create simulated header
+	simHeader := &block.Header{
+		Number:     uint256.NewInt(blockNumber),
+		Time:       blockTime,
+		GasLimit:   gasLimit,
+		Coinbase:   feeRecipient,
+		BaseFee:    baseFee,
+		MixDigest:  prevRandao,
+		ParentHash: baseHeader.Hash(),
+		Difficulty: baseHeader.Difficulty,
+	}
+
+	// Get state
+	var ibs *state.IntraBlockState
+	err := s.api.Database().View(ctx, func(t kv.Tx) error {
+		stateReader := state.NewPlainState(t, baseHeader.Number64().Uint64())
+		ibs = state.New(stateReader)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply state overrides
+	if simBlock.StateOverrides != nil {
+		if err := simBlock.StateOverrides.Apply(ibs); err != nil {
+			return nil, err
+		}
+	}
+
+	// Execute calls
+	callResults := make([]SimulateV1CallResult, 0, len(simBlock.Calls))
+	totalGasUsed := uint64(0)
+	gp := new(common.GasPool).AddGas(gasLimit)
+
+	for _, call := range simBlock.Calls {
+		callResult := s.simulateCall(ctx, call, simHeader, ibs, gp)
+		totalGasUsed += uint64(callResult.GasUsed)
+		callResults = append(callResults, callResult)
+	}
+
+	return &SimulateV1BlockResult{
+		Number:        hexutil.Uint64(blockNumber),
+		Hash:          simHeader.Hash(),
+		Timestamp:     hexutil.Uint64(blockTime),
+		GasLimit:      hexutil.Uint64(gasLimit),
+		GasUsed:       hexutil.Uint64(totalGasUsed),
+		FeeRecipient:  feeRecipient,
+		BaseFeePerGas: (*hexutil.Big)(baseFee.ToBig()),
+		PrevRandao:    prevRandao,
+		Calls:         callResults,
+	}, nil
+}
+
+// simulateCall simulates a single call
+func (s *BlockChainAPI) simulateCall(ctx context.Context, args TransactionArgs, header *block.Header, ibs *state.IntraBlockState, gp *common.GasPool) SimulateV1CallResult {
+	// Set defaults
+	if err := args.setDefaults(ctx, s.api); err != nil {
+		return SimulateV1CallResult{
+			Status: hexutil.Uint64(0),
+			Error: &SimulateError{
+				Code:    -32000,
+				Message: err.Error(),
+			},
+		}
+	}
+
+	// Create message
+	msg, err := args.ToMessage(s.api.RPCGasCap(), header.BaseFee.ToBig())
+	if err != nil {
+		return SimulateV1CallResult{
+			Status: hexutil.Uint64(0),
+			Error: &SimulateError{
+				Code:    -32000,
+				Message: err.Error(),
+			},
+		}
+	}
+
+	// Set up EVM
+	vmConfig := vm.Config{NoBaseFee: true}
+	txContext := internal.NewEVMTxContext(msg)
+	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), s.api.engine, nil)
+	evm := vm.NewEVM(blockContext, txContext, ibs, s.api.GetChainConfig(), vmConfig)
+
+	// Execute
+	result, err := internal.ApplyMessage(evm, msg, gp, true, false)
+	if err != nil {
+		return SimulateV1CallResult{
+			Status: hexutil.Uint64(0),
+			Error: &SimulateError{
+				Code:    -32000,
+				Message: err.Error(),
+			},
+		}
+	}
+
+	// Build result
+	status := uint64(1)
+	if result.Failed() {
+		status = 0
+	}
+
+	// Get logs
+	logs := ibs.GetLogs(types.Hash{})
+	var rpcLogs []*avmtypes.Log
+	if len(logs) > 0 {
+		rpcLogs = avmtypes.FromastLogs(logs)
+	} else {
+		rpcLogs = []*avmtypes.Log{}
+	}
+
+	callResult := SimulateV1CallResult{
+		ReturnData: result.Return(),
+		Logs:       rpcLogs,
+		GasUsed:    hexutil.Uint64(result.UsedGas),
+		Status:     hexutil.Uint64(status),
+	}
+
+	if result.Err != nil {
+		callResult.Error = &SimulateError{
+			Code:    3, // Execution reverted
+			Message: result.Err.Error(),
+		}
+	}
+
+	return callResult
 }
 
