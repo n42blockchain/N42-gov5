@@ -6,7 +6,8 @@ N42 blockchain now provides **full compatibility** with Blockscout v9.3.2, the l
 
 **Implementation Status**: ✅ **Production Ready**
 **Blockscout Version Supported**: v9.3.2 (Released: December 19, 2024)
-**Test Coverage**: 36+ Required Methods | 9+ Namespaces | 100% Core API Coverage
+**Last Updated**: 2026-02-01 (Added EIP-4844 and EIP-7560 support)
+**Test Coverage**: 40+ Required Methods | 9+ Namespaces | 100% Core API Coverage
 
 ---
 
@@ -49,9 +50,14 @@ N42 blockchain now provides **full compatibility** with Blockscout v9.3.2, the l
 - ✅ `eth_sendRawTransaction` - Send signed transaction
 - ✅ `eth_sendTransaction` - Send transaction (with account unlock)
 
-#### Call & Estimation Methods (2 methods)
+#### Call & Estimation Methods (4 methods)
 - ✅ `eth_call` - Execute call without creating transaction
 - ✅ `eth_estimateGas` - Estimate gas for transaction
+- ✅ `eth_createAccessList` - Create EIP-2930 access list for transaction
+- ✅ `eth_simulateV1` - EIP-7560 multi-transaction simulation
+
+#### EIP-4844 Blob Methods (1 method)
+- ✅ `eth_blobBaseFee` - Returns current blob base fee in wei
 
 #### Uncle Methods (4 methods - PoA Returns Empty)
 - ✅ `eth_getUncleCountByBlockNumber` - Always returns 0

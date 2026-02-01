@@ -57,6 +57,12 @@ Documentation for the standard Ethereum JSON-RPC API methods can be found on [et
 | `eth_createAccessList` | Creates an access list for a transaction |
 | `eth_simulateV1` | Simulates multiple transactions (EIP-7560) |
 
+### EIP-4844 Blob Transactions
+
+| Method | Description |
+|--------|-------------|
+| `eth_blobBaseFee` | Returns the current blob base fee in wei |
+
 ### Logs & Filters
 
 | Method | Description |
