@@ -18,13 +18,13 @@ package apos
 
 import (
 	"bytes"
-	"context"
 	"errors"
+	"sort"
+	"strings"
+
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/math"
-	"sort"
-	"strings"
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/contracts/deposit"
@@ -62,8 +62,6 @@ func (r RewardResponseValues) Swap(i, j int) {
 
 type Reward struct {
 	chainConfig *params.ChainConfig
-
-	ctx         context.Context
 	rewardLimit *uint256.Int
 	rewardEpoch *uint256.Int
 }
@@ -94,7 +92,7 @@ func newReward(chainConfig *params.ChainConfig) *Reward {
 		rewardLimitBig = uint256.MustFromBig(chainConfig.Apos.RewardLimit)
 	}
 	return &Reward{
-		ctx: context.TODO(), chainConfig: chainConfig,
+		chainConfig: chainConfig,
 		rewardLimit: rewardLimitBig,
 		rewardEpoch: uint256.NewInt(chainConfig.Apos.RewardEpoch),
 	}

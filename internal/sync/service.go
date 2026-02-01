@@ -27,11 +27,12 @@ const seenBlockSize = 1000
 const badBlockSize = 1000
 const syncMetricsInterval = 10 * time.Second
 
-// todo
-const ttfbTimeout = 10 * time.Second // TtfbTimeout is the maximum time to wait for first byte of request response (time-to-first-byte).
-const respTimeout = 20 * time.Second // RespTimeout is the maximum time for complete response transfer.
+// ttfbTimeout is the maximum time to wait for first byte of request response (time-to-first-byte).
+const ttfbTimeout = 10 * time.Second
+// respTimeout is the maximum time for complete response transfer.
+const respTimeout = 20 * time.Second
 
-// todo
+// maxRequestBlocks is the maximum number of blocks that can be requested in a single range request.
 const maxRequestBlocks = 1024
 
 const maintainPeerStatusesInterval = 2 * time.Minute
@@ -120,9 +121,7 @@ func NewService(ctx context.Context, opts ...Option) (*Service, error) {
 func (s *Service) Start() {
 	s.cfg.p2p.AddConnectionHandler(s.reValidatePeer, s.sendGoodbye)
 	s.cfg.p2p.AddDisconnectionHandler(func(_ context.Context, p peer.ID) error {
-		// no-op
-		//for no reason disconnect
-		//todo
+		// Rate limit reconnection attempts for disconnected peers
 		if nextValidTime, err := s.cfg.p2p.Peers().NextValidTime(p); err == nil && time.Now().After(nextValidTime) {
 			s.cfg.p2p.Peers().SetNextValidTime(p, time.Now().Add(10*time.Minute))
 		}

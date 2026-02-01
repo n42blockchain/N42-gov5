@@ -219,7 +219,7 @@ func (it *lookupIterator) Next() bool {
 		}
 		it.buffer = it.lookup.replyBuffer
 		retries++
-		//todo
+		// Limit retries to prevent infinite loops when no nodes are found
 		if retries > 10 {
 			return false
 		}

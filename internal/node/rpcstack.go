@@ -118,10 +118,10 @@ func (h *httpServer) start() error {
 
 	h.server = &http.Server{Handler: h}
 
-	//todo
-	h.server.ReadTimeout = time.Duration(60 * time.Second)
-	h.server.WriteTimeout = time.Duration(60 * time.Second)
-	h.server.IdleTimeout = time.Duration(60 * time.Second)
+	// Configure HTTP server timeouts
+	h.server.ReadTimeout = 60 * time.Second
+	h.server.WriteTimeout = 60 * time.Second
+	h.server.IdleTimeout = 60 * time.Second
 
 	listener, err := net.Listen("tcp", h.endpoint)
 	if err != nil {

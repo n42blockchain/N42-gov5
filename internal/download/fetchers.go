@@ -17,15 +17,15 @@
 package download
 
 import (
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/utils"
-	"google.golang.org/protobuf/proto"
-	"math/rand"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/api/protocol/sync_proto"
 	"github.com/n42blockchain/N42/common/message"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/utils"
+	"google.golang.org/protobuf/proto"
 )
 
 // fetchHeaders
@@ -41,7 +41,7 @@ func (d *Downloader) fetchHeaders(from uint256.Int, latest uint256.Int) error {
 
 	d.headerTaskLock.Lock()
 	for i := 1; i <= int(tasks.Uint64()); i++ {
-		taskID := rand.Uint64()
+		taskID := misc.SecureUint64()
 		d.headerTasks = append(d.headerTasks, Task{
 			taskID:     taskID,
 			IndexBegin: *begin,
@@ -93,8 +93,12 @@ func (d *Downloader) fetchHeaders(from uint256.Int, latest uint256.Int) error {
 						},
 					},
 				}
-				payload, _ := proto.Marshal(msg)
-				err := p.WriteMsg(message.MsgDownloader, payload)
+				payload, err := proto.Marshal(msg)
+				if err != nil {
+					log.Errorf("failed to marshal header request for peer %v: %v", p.ID(), err)
+					continue
+				}
+				err = p.WriteMsg(message.MsgDownloader, payload)
 
 				if err == nil {
 					randTask.TimeBegin = time.Now()
@@ -168,12 +172,16 @@ func (d *Downloader) fetchBodies(latest uint256.Int) error {
 					SyncType: sync_proto.SyncType_BodyReq,
 					Payload: &sync_proto.SyncTask_SyncBlockRequest{
 						SyncBlockRequest: &sync_proto.SyncBlockRequest{
-							Number: utils.Uint256sToH256(randTask.number), //todo task pool
+							Number: utils.Uint256sToH256(randTask.number),
 						},
 					},
 				}
-				payload, _ := proto.Marshal(msg)
-				err := p.WriteMsg(message.MsgDownloader, payload)
+				payload, err := proto.Marshal(msg)
+				if err != nil {
+					log.Errorf("failed to marshal body request for peer %v: %v", p.ID(), err)
+					continue
+				}
+				err = p.WriteMsg(message.MsgDownloader, payload)
 				if err == nil {
 					d.bodyTaskPool = append(d.bodyTaskPool[:randIndex], d.bodyTaskPool[randIndex+1:]...)
 					d.bodyProcessingTasks[randTask.taskID] = randTask

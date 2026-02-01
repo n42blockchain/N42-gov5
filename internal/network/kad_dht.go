@@ -74,12 +74,6 @@ func (k *KadDHT) Start() error {
 		return err
 	}
 
-	//todo
-	//if err := k.discoverLocal(); err != nil {
-	//	log.Error("setup mdns discover failed", err)
-	//	return err
-	//}
-
 	k.routingDiscovery.Advertise(k.ctx, DiscoverProtocol)
 	go k.loopDiscoverRemote()
 

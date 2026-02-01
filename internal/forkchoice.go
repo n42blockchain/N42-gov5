@@ -17,14 +17,11 @@
 package internal
 
 import (
-	crand "crypto/rand"
 	"github.com/holiman/uint256"
-	"math"
-	"math/big"
-	mrand "math/rand"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -46,7 +43,6 @@ type ChainReader interface {
 // for all other proof-of-work networks.
 type ForkChoice struct {
 	chain ChainReader
-	rand  *mrand.Rand
 
 	// preserve is a helper function used in td fork choice.
 	// Miners will prefer to choose the local mined block if the
@@ -56,14 +52,8 @@ type ForkChoice struct {
 }
 
 func NewForkChoice(chainReader ChainReader, preserve func(header block.IHeader) bool) *ForkChoice {
-	// Seed a fast but crypto originating random generator
-	seed, err := crand.Int(crand.Reader, big.NewInt(math.MaxInt64))
-	if err != nil {
-		log.Error("Failed to initialize random seed", "err", err)
-	}
 	return &ForkChoice{
 		chain:    chainReader,
-		rand:     mrand.New(mrand.NewSource(seed.Int64())),
 		preserve: preserve,
 	}
 }
@@ -101,7 +91,7 @@ func (f *ForkChoice) ReorgNeeded(current block.IHeader, header block.IHeader) (b
 			if f.preserve != nil {
 				currentPreserve, externPreserve = f.preserve(current), f.preserve(header)
 			}
-			reorg = !currentPreserve && (externPreserve || f.rand.Float64() < 0.5)
+			reorg = !currentPreserve && (externPreserve || misc.SecureFloat64() < 0.5)
 		}
 	}
 	return reorg, nil

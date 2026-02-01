@@ -287,7 +287,6 @@ func (p *Status) GetPing(pid peer.ID) (*sync_pb.Ping, error) {
 		if peerData.Ping == nil {
 			return nil, nil
 		}
-		//todo
 		return proto.Clone(peerData.Ping).(*sync_pb.Ping), nil
 	}
 	return nil, peerdata.ErrPeerUnknown

@@ -19,8 +19,6 @@ package txspool
 import (
 	"context"
 	"fmt"
-	"google.golang.org/protobuf/proto"
-	"math/rand"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -30,8 +28,10 @@ import (
 	"github.com/n42blockchain/N42/common/message"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -157,7 +157,7 @@ func (f *TxsFetcher) sendBloomTransactionLoop() {
 						continue
 					}
 					msg := &sync_proto.SyncTask{
-						Id:       rand.Uint64(),
+						Id:       misc.SecureUint64(),
 						Ok:       true,
 						SyncType: sync_proto.SyncType_TransactionRes,
 						Payload: &sync_proto.SyncTask_SyncTransactionResponse{
@@ -197,7 +197,7 @@ func (f *TxsFetcher) bloomBroadcastLoop() {
 	}
 
 	msg := &sync_proto.SyncTask{
-		Id:       rand.Uint64(),
+		Id:       misc.SecureUint64(),
 		Ok:       true,
 		SyncType: sync_proto.SyncType_TransactionReq,
 		Payload: &sync_proto.SyncTask_SyncTransactionRequest{

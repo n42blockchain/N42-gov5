@@ -36,7 +36,6 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 	if err != nil {
 		return nil, err
 	}
-	//todo
 	stream, err := p2pProvider.Send(ctx, &sync_pb.BodiesByRangeRequest{
 		StartBlockNumber: utils.ConvertUint256IntToH256(utils.ConvertH256ToUint256Int(req.StartBlockNumber)),
 		Count:            req.Count,

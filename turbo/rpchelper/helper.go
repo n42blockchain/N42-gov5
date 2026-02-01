@@ -69,7 +69,7 @@ func _GetBlockNumber(requireCanonical bool, blockNrOrHash jsonrpc.BlockNumberOrH
 				return nil, types.Hash{}, err
 			}
 		case jsonrpc.PendingBlockNumber:
-			//todo
+			// Pending block returns latest for now; proper pending state needs txpool integration
 			if blockNumber, err = GetLatestBlockNumber(tx); err != nil {
 				return nil, types.Hash{}, err
 			}

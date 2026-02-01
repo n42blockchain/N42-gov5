@@ -26,7 +26,7 @@ message HeadersByRangeRequest {
   uint64 step = 3;
 }
 
-// todo
+// Ping is used to check peer liveness and measure latency
 message Ping {
   uint64 seq_number = 1;
 }

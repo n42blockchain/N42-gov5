@@ -254,7 +254,7 @@ func (s *Service) checkBootsStrap(id string) bool {
 	return false
 }
 
-// todo
+// connectBootsStraps connects to the given bootstrap nodes concurrently.
 func (s *Service) connectBootsStraps(bootsStraps []peer.AddrInfo) {
 
 	var wg sync.WaitGroup

@@ -68,3 +68,33 @@ func SecureBytes(b []byte) {
 	}
 }
 
+// SecureFloat64 returns a cryptographically secure random float64 in [0.0, 1.0).
+func SecureFloat64() float64 {
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	// Use only 53 bits to ensure uniform distribution in float64
+	// (float64 mantissa is 52 bits + implicit leading 1)
+	u := binary.BigEndian.Uint64(b[:]) >> 11
+	return float64(u) / float64(1<<53)
+}
+
+// SecurePerm returns a cryptographically secure random permutation of [0, n).
+// It panics if n <= 0.
+func SecurePerm(n int) []int {
+	if n <= 0 {
+		panic("SecurePerm: invalid argument")
+	}
+	perm := make([]int, n)
+	for i := range perm {
+		perm[i] = i
+	}
+	// Fisher-Yates shuffle with secure random
+	for i := n - 1; i > 0; i-- {
+		j := SecureIntn(i + 1)
+		perm[i], perm[j] = perm[j], perm[i]
+	}
+	return perm
+}
+

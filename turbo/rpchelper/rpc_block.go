@@ -31,12 +31,14 @@ func GetLatestBlockNumber(tx kv.Tx) (*uint256.Int, error) {
 	return current.Number64(), nil
 }
 
+// GetFinalizedBlockNumber returns the finalized block number.
+// Currently returns latest block; proper finality tracking needs implementation.
 func GetFinalizedBlockNumber(tx kv.Tx) (*uint256.Int, error) {
-	//todo
 	return GetLatestBlockNumber(tx)
 }
 
+// GetSafeBlockNumber returns the safe block number.
+// Currently returns latest block; proper safe block tracking needs implementation.
 func GetSafeBlockNumber(tx kv.Tx) (*uint256.Int, error) {
-	//todo
 	return GetLatestBlockNumber(tx)
 }

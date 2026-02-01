@@ -96,3 +96,71 @@ func MustSafeUint64ToInt(v uint64) int {
 	return int(v)
 }
 
+// SafeIntToUint64 safely converts int to uint64.
+// Returns the value and true if conversion is safe, or 0 and false if the value is negative.
+func SafeIntToUint64(v int) (uint64, bool) {
+	if v < 0 {
+		return 0, false
+	}
+	return uint64(v), true
+}
+
+// SafeUint64ToUint8 safely converts uint64 to uint8.
+// Returns the value and true if conversion is safe, or 0 and false if overflow would occur.
+func SafeUint64ToUint8(v uint64) (uint8, bool) {
+	if v > math.MaxUint8 {
+		return 0, false
+	}
+	return uint8(v), true
+}
+
+// SafeUint64ToUint16 safely converts uint64 to uint16.
+// Returns the value and true if conversion is safe, or 0 and false if overflow would occur.
+func SafeUint64ToUint16(v uint64) (uint16, bool) {
+	if v > math.MaxUint16 {
+		return 0, false
+	}
+	return uint16(v), true
+}
+
+// SafeAddUint64 safely adds two uint64 values.
+// Returns the sum and true if no overflow, or 0 and false if overflow would occur.
+func SafeAddUint64(a, b uint64) (uint64, bool) {
+	sum := a + b
+	if sum < a { // overflow check
+		return 0, false
+	}
+	return sum, true
+}
+
+// SafeMulUint64 safely multiplies two uint64 values.
+// Returns the product and true if no overflow, or 0 and false if overflow would occur.
+func SafeMulUint64(a, b uint64) (uint64, bool) {
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	product := a * b
+	if product/a != b { // overflow check
+		return 0, false
+	}
+	return product, true
+}
+
+// SafeSubUint64 safely subtracts two uint64 values.
+// Returns the difference and true if no underflow, or 0 and false if underflow would occur.
+func SafeSubUint64(a, b uint64) (uint64, bool) {
+	if b > a {
+		return 0, false
+	}
+	return a - b, true
+}
+
+// SafeInt64ToUint64 safely converts int64 to uint64.
+// Returns the value and true if conversion is safe, or 0 and false if the value is negative.
+func SafeInt64ToUint64(v int64) (uint64, bool) {
+	if v < 0 {
+		return 0, false
+	}
+	return uint64(v), true
+}
+

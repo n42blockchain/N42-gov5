@@ -17,13 +17,13 @@
 package download
 
 import (
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/utils"
-	"math/rand"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/utils"
 )
 
 func (d *Downloader) processHeaders() error {
@@ -42,7 +42,7 @@ func (d *Downloader) processHeaders() error {
 			if len(headerNumberPool) > 0 {
 				d.bodyTaskPoolLock.Lock()
 				d.bodyTaskPool = append(d.bodyTaskPool, &blockTask{
-					taskID: rand.Uint64(),
+					taskID: misc.SecureUint64(),
 					number: headerNumberPool[:],
 				})
 				d.bodyTaskPoolLock.Unlock()
@@ -76,7 +76,7 @@ func (d *Downloader) processHeaders() error {
 					headerNumberPool = headerNumberPool[0:0]
 					//
 					d.bodyTaskPool = append(d.bodyTaskPool, &blockTask{
-						taskID: rand.Uint64(),
+						taskID: misc.SecureUint64(),
 						number: number,
 					})
 					d.bodyTaskPoolLock.Unlock()
@@ -166,7 +166,7 @@ func (d *Downloader) processChain() error {
 					var block block.Block
 					err := block.FromProtoMessage(blockMsg)
 					if err != nil {
-						//todo
+						log.Errorf("failed to parse block from proto message: %v", err)
 						break
 					}
 					delete(d.bodyResultStore, *wantBlockNumber)

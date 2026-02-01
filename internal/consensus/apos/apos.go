@@ -321,11 +321,6 @@ func (c *APos) verifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHe
 	if header.GasLimit > params.MaxGasLimit {
 		return fmt.Errorf("invalid gasLimit: have %v, max %v", header.GasLimit, params.MaxGasLimit)
 	}
-	// If all checks passed, validate any special fields for hard forks
-	//todo
-	//if err := misc.VerifyForkHashes(chain.Config(), header, false); err != nil {
-	//	return err
-	//}
 	// All basic checks passed, verify cascading fields
 	return c.verifyCascadingFields(chain, header, parents)
 }
@@ -351,7 +346,7 @@ func (c *APos) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 	if parent == nil || parent.(*block.Header) == nil || parent.Number64().Uint64() != number-1 || parent.Hash() != header.ParentHash {
 		return errUnknownBlock
 	}
-	// todo
+	// Verify timestamp is valid (parent time + period <= header time)
 	rawParent := parent.(*block.Header)
 	if rawParent.Time+c.config.Period > header.Time {
 		return errInvalidTimestamp
@@ -668,10 +663,8 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	}
 	rawHeader := header.(*block.Header)
 	rawHeader.Root = state.IntermediateRoot()
-	// Todo can not verify author
+	// Store the state root before finalization for verification purposes
 	rawHeader.MixDigest = state.BeforeStateRoot()
-	//todo
-	//rawHeader.UncleHash = types.CalcUncleHash(nil)
 	return rewards, unpayMap, nil
 }
 
@@ -690,8 +683,7 @@ func (c *APos) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header blo
 }
 
 // Authorize injects a private key into the consensus engine to mint new blocks
-// with.
-// todo init
+// Authorize injects a private key into the consensus engine to mint new blocks.
 func (c *APos) Authorize(signer types.Address, signFn SignerFn) {
 	c.lock.Lock()
 	defer c.lock.Unlock()

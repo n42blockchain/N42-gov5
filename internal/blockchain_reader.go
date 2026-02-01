@@ -91,8 +91,10 @@ func (bc *BlockChain) GetBlock(hash types.Hash, number uint64) block.IBlock {
 	}
 
 	if blk, ok := bc.blockCache.Get(hash); ok {
+		blockCacheHits.Inc()
 		return blk
 	}
+	blockCacheMisses.Inc()
 
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
 	if nil != err {
@@ -183,8 +185,10 @@ func (bc *BlockChain) HasBlock(hash types.Hash, number uint64) bool {
 func (bc *BlockChain) GetHeader(h types.Hash, number *uint256.Int) block.IHeader {
 	// Short circuit if the header's already in the cache, retrieve otherwise
 	if header, ok := bc.headerCache.Get(h); ok {
+		headerCacheHits.Inc()
 		return header
 	}
+	headerCacheMisses.Inc()
 
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
 	if nil != err {
@@ -274,8 +278,10 @@ func (bc *BlockChain) GetBlockNumber(hash types.Hash) *uint64 {
 // GetTd retrieves the total difficulty for a block.
 func (bc *BlockChain) GetTd(hash types.Hash, number *uint256.Int) *uint256.Int {
 	if td, ok := bc.tdCache.Get(hash); ok {
+		tdCacheHits.Inc()
 		return td
 	}
+	tdCacheMisses.Inc()
 
 	var td *uint256.Int
 	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {

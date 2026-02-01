@@ -34,7 +34,7 @@ const (
 	// misc
 	rSubD = 8 // random gossip target
 
-	//todo
+	// GossipMaxSize is the maximum size of a gossip message in bytes (10MB)
 	GossipMaxSize = 10000000
 )
 

@@ -250,3 +250,219 @@ func BenchmarkMustSafeUint64ToInt64(b *testing.B) {
 		MustSafeUint64ToInt64(uint64(i))
 	}
 }
+
+// Tests for new safe math functions added in security audit
+
+func TestSafeIntToUint64(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    int
+		expected uint64
+		ok       bool
+	}{
+		{"zero", 0, 0, true},
+		{"positive", 100, 100, true},
+		{"negative", -1, 0, false},
+		{"negative_large", -100, 0, false},
+		{"max_int", math.MaxInt, uint64(math.MaxInt), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := SafeIntToUint64(tt.input)
+			if ok != tt.ok {
+				t.Errorf("SafeIntToUint64(%d) ok = %v, want %v", tt.input, ok, tt.ok)
+			}
+			if ok && result != tt.expected {
+				t.Errorf("SafeIntToUint64(%d) = %d, want %d", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSafeUint64ToUint8(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    uint64
+		expected uint8
+		ok       bool
+	}{
+		{"zero", 0, 0, true},
+		{"one", 1, 1, true},
+		{"max_uint8", 255, 255, true},
+		{"max_uint8_plus_1", 256, 0, false},
+		{"large", math.MaxUint64, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := SafeUint64ToUint8(tt.input)
+			if ok != tt.ok {
+				t.Errorf("SafeUint64ToUint8(%d) ok = %v, want %v", tt.input, ok, tt.ok)
+			}
+			if ok && result != tt.expected {
+				t.Errorf("SafeUint64ToUint8(%d) = %d, want %d", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSafeUint64ToUint16(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    uint64
+		expected uint16
+		ok       bool
+	}{
+		{"zero", 0, 0, true},
+		{"one", 1, 1, true},
+		{"max_uint16", 65535, 65535, true},
+		{"max_uint16_plus_1", 65536, 0, false},
+		{"large", math.MaxUint64, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := SafeUint64ToUint16(tt.input)
+			if ok != tt.ok {
+				t.Errorf("SafeUint64ToUint16(%d) ok = %v, want %v", tt.input, ok, tt.ok)
+			}
+			if ok && result != tt.expected {
+				t.Errorf("SafeUint64ToUint16(%d) = %d, want %d", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSafeAddUint64(t *testing.T) {
+	tests := []struct {
+		name     string
+		a, b     uint64
+		expected uint64
+		ok       bool
+	}{
+		{"zero_plus_zero", 0, 0, 0, true},
+		{"one_plus_one", 1, 1, 2, true},
+		{"max_minus_1_plus_1", math.MaxUint64 - 1, 1, math.MaxUint64, true},
+		{"max_plus_1_overflow", math.MaxUint64, 1, 0, false},
+		{"large_plus_large_overflow", math.MaxUint64, math.MaxUint64, 0, false},
+		{"half_plus_half", math.MaxUint64 / 2, math.MaxUint64 / 2, math.MaxUint64 - 1, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := SafeAddUint64(tt.a, tt.b)
+			if ok != tt.ok {
+				t.Errorf("SafeAddUint64(%d, %d) ok = %v, want %v", tt.a, tt.b, ok, tt.ok)
+			}
+			if ok && result != tt.expected {
+				t.Errorf("SafeAddUint64(%d, %d) = %d, want %d", tt.a, tt.b, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSafeMulUint64(t *testing.T) {
+	tests := []struct {
+		name     string
+		a, b     uint64
+		expected uint64
+		ok       bool
+	}{
+		{"zero_mul_zero", 0, 0, 0, true},
+		{"one_mul_one", 1, 1, 1, true},
+		{"two_mul_three", 2, 3, 6, true},
+		{"max_mul_one", math.MaxUint64, 1, math.MaxUint64, true},
+		{"one_mul_max", 1, math.MaxUint64, math.MaxUint64, true},
+		{"zero_mul_max", 0, math.MaxUint64, 0, true},
+		{"large_mul_2_overflow", math.MaxUint64/2 + 1, 2, 0, false},
+		{"max_mul_2_overflow", math.MaxUint64, 2, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := SafeMulUint64(tt.a, tt.b)
+			if ok != tt.ok {
+				t.Errorf("SafeMulUint64(%d, %d) ok = %v, want %v", tt.a, tt.b, ok, tt.ok)
+			}
+			if ok && result != tt.expected {
+				t.Errorf("SafeMulUint64(%d, %d) = %d, want %d", tt.a, tt.b, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSafeSubUint64(t *testing.T) {
+	tests := []struct {
+		name     string
+		a, b     uint64
+		expected uint64
+		ok       bool
+	}{
+		{"zero_minus_zero", 0, 0, 0, true},
+		{"one_minus_one", 1, 1, 0, true},
+		{"ten_minus_three", 10, 3, 7, true},
+		{"zero_minus_one_underflow", 0, 1, 0, false},
+		{"five_minus_ten_underflow", 5, 10, 0, false},
+		{"max_minus_max", math.MaxUint64, math.MaxUint64, 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := SafeSubUint64(tt.a, tt.b)
+			if ok != tt.ok {
+				t.Errorf("SafeSubUint64(%d, %d) ok = %v, want %v", tt.a, tt.b, ok, tt.ok)
+			}
+			if ok && result != tt.expected {
+				t.Errorf("SafeSubUint64(%d, %d) = %d, want %d", tt.a, tt.b, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSafeInt64ToUint64(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    int64
+		expected uint64
+		ok       bool
+	}{
+		{"zero", 0, 0, true},
+		{"positive", 100, 100, true},
+		{"max_int64", math.MaxInt64, uint64(math.MaxInt64), true},
+		{"negative", -1, 0, false},
+		{"min_int64", math.MinInt64, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := SafeInt64ToUint64(tt.input)
+			if ok != tt.ok {
+				t.Errorf("SafeInt64ToUint64(%d) ok = %v, want %v", tt.input, ok, tt.ok)
+			}
+			if ok && result != tt.expected {
+				t.Errorf("SafeInt64ToUint64(%d) = %d, want %d", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// Benchmark tests for new functions
+
+func BenchmarkSafeAddUint64(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		SafeAddUint64(uint64(i), 1000)
+	}
+}
+
+func BenchmarkSafeMulUint64(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		SafeMulUint64(uint64(i), 1000)
+	}
+}
+
+func BenchmarkSafeSubUint64(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		SafeSubUint64(math.MaxUint64, uint64(i))
+	}
+}

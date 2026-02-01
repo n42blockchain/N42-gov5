@@ -32,9 +32,6 @@ import (
 	"time"
 )
 
-//todo
-//var _ runtime.Service = (*Service)(nil)
-
 // In the event that we are at our peer limit, we
 // stop looking for new peers and instead poll
 // for the current peer limit status for the time period
@@ -54,10 +51,10 @@ const pubsubQueueSize = 600
 // maxDialTimeout is the timeout for a single peer dial.
 const maxDialTimeout = 10 * time.Second
 
-// todo
-const ttfbTimeout = 10 * time.Second // TtfbTimeout is the maximum time to wait for first byte of request response (time-to-first-byte).
+// ttfbTimeout is the maximum time to wait for first byte of request response (time-to-first-byte).
+const ttfbTimeout = 10 * time.Second
 
-// todo
+// reconnectBootNode is the interval for reconnecting to bootstrap nodes.
 const reconnectBootNode = 1 * time.Minute
 
 // Service for managing peer to peer (p2p) networking.
@@ -122,7 +119,6 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 		log.Error("Failed to create address filter", "err", err)
 		return nil, err
 	}
-	//todo
 	s.ipLimiter = leakybucket.NewCollector(ipLimit, ipBurst, 30*time.Second, true /* deleteEmptyBuckets */)
 
 	opts := s.buildOptions(ipAddr, s.privKey)
@@ -301,8 +297,6 @@ func (s *Service) Start() {
 	if p2pHostDNS != "" {
 		logExternalDNSAddr(s.host.ID(), p2pHostDNS, p2pTCPPort)
 	}
-	//todo
-	//go s.forkWatcher()
 	s.wg.Add(1)
 	go s.loop()
 }

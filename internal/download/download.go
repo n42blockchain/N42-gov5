@@ -187,14 +187,12 @@ func (d *Downloader) waitAvailablePeer() {
 	}
 }
 
-// Start Downloader
+// Start starts the Downloader service.
 func (d *Downloader) Start() error {
-	//
 	go d.pubSubLoop()
-	//
+
+	// If this is a bootstrap node, signal completion immediately
 	if d.network.Bootstrapped() {
-		//todo
-		//log.Debugf("boot node")
 		event.GlobalEvent.Send(common.DownloaderFinishEvent{})
 		return nil
 	}
@@ -301,7 +299,11 @@ func (d *Downloader) pubSubLoop() {
 
 	highestBlockCh := make(chan common.ChainHighestBlock)
 	defer close(highestBlockCh)
-	highestSub, _ := event.GlobalEvent.Subscribe(highestBlockCh)
+	highestSub, err := event.GlobalEvent.Subscribe(highestBlockCh)
+	if err != nil || highestSub == nil {
+		log.Errorf("failed to subscribe to highest block events: %v", err)
+		return
+	}
 	defer highestSub.Unsubscribe()
 
 	for {

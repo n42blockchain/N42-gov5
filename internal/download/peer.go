@@ -18,17 +18,18 @@ package download
 
 import (
 	"context"
+	"sync"
+
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/api/protocol/sync_proto"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/message"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
-	"math/rand"
-	"sync"
 )
 
 // peerInfo
@@ -98,19 +99,22 @@ func (p *peersInfo) peerInfoBroadcast(Number *uint256.Int) {
 	log.Debugf("start to broadcast peer info , number is :%v , peer count is %v", Number.Uint64(), len(p.peers))
 	for _, peer := range p.peers {
 		msg := &sync_proto.SyncTask{
-			Id:       rand.Uint64(),
+			Id:       misc.SecureUint64(),
 			SyncType: sync_proto.SyncType_PeerInfoBroadcast,
 			Payload: &sync_proto.SyncTask_SyncPeerInfoBroadcast{
 				SyncPeerInfoBroadcast: &sync_proto.SyncPeerInfoBroadcast{
 					Number:     utils.ConvertUint256IntToH256(Number),
 					Difficulty: utils.ConvertUint256IntToH256(uint256.NewInt(0)),
-					//todo
 				},
 			},
 		}
 
-		payload, _ := proto.Marshal(msg)
-		err := peer.WriteMsg(message.MsgDownloader, payload)
+		payload, err := proto.Marshal(msg)
+		if err != nil {
+			log.Error("failed to marshal peer info broadcast", zap.String("peer id", peer.ID().String()), zap.Error(err))
+			continue
+		}
+		err = peer.WriteMsg(message.MsgDownloader, payload)
 
 		if err != nil {
 			log.Error("failed to sync peer info", zap.String("peer id", peer.ID().String()), zap.Error(err))

@@ -182,3 +182,145 @@ func Errorf(format string, a ...interface{}) error {
 	return fmt.Errorf(format, a...)
 }
 
+// =====================
+// Error Code System
+// =====================
+
+// ErrorCode represents a categorized error code for structured error handling.
+type ErrorCode int
+
+const (
+	// General errors (0-999)
+	CodeUnknown    ErrorCode = 0
+	CodeInternal   ErrorCode = 1
+	CodeInvalidArg ErrorCode = 2
+	CodeNotFound   ErrorCode = 3
+	CodeTimeout    ErrorCode = 4
+	CodeCancelled  ErrorCode = 5
+
+	// Validation errors (1000-1999)
+	CodeValidation       ErrorCode = 1000
+	CodeInvalidBlock     ErrorCode = 1001
+	CodeInvalidHeader    ErrorCode = 1002
+	CodeInvalidTx        ErrorCode = 1003
+	CodeInvalidSignature ErrorCode = 1004
+
+	// Consensus errors (2000-2999)
+	CodeConsensus        ErrorCode = 2000
+	CodeUnknownAncestor  ErrorCode = 2001
+	CodePrunedAncestor   ErrorCode = 2002
+	CodeFutureBlock      ErrorCode = 2003
+
+	// Execution errors (3000-3999)
+	CodeExecution         ErrorCode = 3000
+	CodeOutOfGas          ErrorCode = 3001
+	CodeDepth             ErrorCode = 3002
+	CodeInsufficientFunds ErrorCode = 3003
+
+	// Network errors (4000-4999)
+	CodeNetwork        ErrorCode = 4000
+	CodePeerDisconnect ErrorCode = 4001
+	CodePeerNotFound   ErrorCode = 4002
+
+	// Database errors (5000-5999)
+	CodeDatabase    ErrorCode = 5000
+	CodeDBRead      ErrorCode = 5001
+	CodeDBWrite     ErrorCode = 5002
+	CodeDBNotFound  ErrorCode = 5003
+)
+
+// String returns the string representation of the error code.
+func (c ErrorCode) String() string {
+	switch c {
+	case CodeUnknown:
+		return "UNKNOWN"
+	case CodeInternal:
+		return "INTERNAL"
+	case CodeInvalidArg:
+		return "INVALID_ARG"
+	case CodeNotFound:
+		return "NOT_FOUND"
+	case CodeTimeout:
+		return "TIMEOUT"
+	case CodeCancelled:
+		return "CANCELLED"
+	case CodeValidation:
+		return "VALIDATION"
+	case CodeConsensus:
+		return "CONSENSUS"
+	case CodeExecution:
+		return "EXECUTION"
+	case CodeNetwork:
+		return "NETWORK"
+	case CodeDatabase:
+		return "DATABASE"
+	default:
+		return fmt.Sprintf("CODE_%d", int(c))
+	}
+}
+
+// CodedError represents an error with an associated error code.
+type CodedError struct {
+	Code    ErrorCode
+	Message string
+	Cause   error
+	Context map[string]interface{}
+}
+
+// NewCoded creates a new CodedError with the given code and message.
+func NewCoded(code ErrorCode, msg string) *CodedError {
+	return &CodedError{
+		Code:    code,
+		Message: msg,
+	}
+}
+
+// WrapCoded wraps an existing error with a code.
+func WrapCoded(err error, code ErrorCode, msg string) *CodedError {
+	if err == nil {
+		return nil
+	}
+	return &CodedError{
+		Code:    code,
+		Message: msg,
+		Cause:   err,
+	}
+}
+
+// Error implements the error interface.
+func (e *CodedError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("[%s] %s: %v", e.Code.String(), e.Message, e.Cause)
+	}
+	return fmt.Sprintf("[%s] %s", e.Code.String(), e.Message)
+}
+
+// Unwrap returns the underlying cause for use with errors.Is and errors.As.
+func (e *CodedError) Unwrap() error {
+	return e.Cause
+}
+
+// WithContext adds context information to the error.
+func (e *CodedError) WithContext(key string, value interface{}) *CodedError {
+	if e.Context == nil {
+		e.Context = make(map[string]interface{})
+	}
+	e.Context[key] = value
+	return e
+}
+
+// GetCode extracts the error code from an error if it's a CodedError.
+// Returns CodeUnknown for other error types.
+func GetCode(err error) ErrorCode {
+	var e *CodedError
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	return CodeUnknown
+}
+
+// HasCode checks if an error has a specific error code.
+func HasCode(err error, code ErrorCode) bool {
+	return GetCode(err) == code
+}
+

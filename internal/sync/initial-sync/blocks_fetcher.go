@@ -341,11 +341,6 @@ func (f *blocksFetcher) waitForBandwidth(pid peer.ID, count uint64) error {
 		// Exit early if we have sufficient capacity
 		return nil
 	}
-	//todo
-	//intCount, err := math.Int(count)
-	//if err != nil {
-	//	return err
-	//}
 	toWait := timeToWait(int64(count), rem, f.rateLimiter.Capacity(), f.rateLimiter.TillEmpty(pid.String()))
 	timer := time.NewTimer(toWait)
 

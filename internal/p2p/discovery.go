@@ -58,7 +58,7 @@ func (s *Service) listenForNewNodes() {
 		if s.ctx.Err() != nil {
 			break
 		}
-		// todo
+		// Check if we've reached the peer limit
 		if s.isPeerAtLimit(false /* inbound */) {
 			// Pause the main loop for a period to stop looking
 			// for new peers.

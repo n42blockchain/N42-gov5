@@ -32,7 +32,7 @@ type eventID uint8
 
 // stateMachineManager is a collection of managed FSMs.
 type stateMachineManager struct {
-	// todo
+	// keys maintains sorted list of state machine start block numbers for ordered iteration
 	keys     []*uint256.Int
 	machines map[uint64]*stateMachine
 	handlers map[stateID]map[eventID]eventHandlerFn

@@ -108,7 +108,7 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 // https://gist.github.com/blacktemplar/5c1862cb3f0e32a1a7fb0b25e79e6e2c
 
 func defaultBlockTopicParams() *pubsub.TopicScoreParams {
-	//todo
+	// Decay epoch is the number of epochs for score decay
 	decayEpoch := time.Duration(5)
 	meshWeight := -0.717
 	if !meshDeliveryIsScored {
@@ -139,7 +139,7 @@ func defaultBlockTopicParams() *pubsub.TopicScoreParams {
 
 func defaultSyncContributionTopicParams() *pubsub.TopicScoreParams {
 	// Determine the expected message rate for the particular gossip topic.
-	//todo
+	// aggPerSlot is the expected number of sync contributions per slot
 	aggPerSlot := 2
 	firstMessageCap, err := decayLimit(scoreDecay(1*oneBlockDuration()), float64(aggPerSlot*2/gossipSubD))
 	if err != nil {
@@ -268,8 +268,9 @@ func defaultBlsToExecutionChangeTopicParams() *pubsub.TopicScoreParams {
 	}
 }
 
+// oneBlockDuration returns the expected duration between blocks.
+// This should be configured based on the consensus parameters.
 func oneBlockDuration() time.Duration {
-	//todo
 	return 8 * time.Second
 }
 
