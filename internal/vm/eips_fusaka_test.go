@@ -20,6 +20,8 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/internal/vm/stack"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -544,6 +546,142 @@ func BenchmarkCalcModExpGas7883(b *testing.B) {
 func BenchmarkCalcBlobBaseFeeFusaka(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		CalcBlobBaseFeeFusaka(1000000)
+	}
+}
+
+// =============================================================================
+// EIP-7939: CLZ (Count Leading Zeros) Execution Tests
+// =============================================================================
+
+func TestOpCLZExecution(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []byte // 32-byte big-endian value
+		expected uint64
+	}{
+		{
+			name:     "zero_value",
+			input:    make([]byte, 32), // All zeros
+			expected: 256,
+		},
+		{
+			name:     "one",
+			input:    append(make([]byte, 31), 1), // 0x00...01
+			expected: 255,
+		},
+		{
+			name:     "two",
+			input:    append(make([]byte, 31), 2), // 0x00...02
+			expected: 254,
+		},
+		{
+			name:     "max_byte",
+			input:    append(make([]byte, 31), 0xff), // 0x00...FF
+			expected: 248,
+		},
+		{
+			name:     "high_bit_set",
+			input:    append([]byte{0x80}, make([]byte, 31)...), // 0x80...00
+			expected: 0,
+		},
+		{
+			name:     "all_ones",
+			input:    func() []byte { b := make([]byte, 32); for i := range b { b[i] = 0xff }; return b }(),
+			expected: 0,
+		},
+		{
+			name:     "mid_value",
+			input:    append(make([]byte, 16), append([]byte{0x01}, make([]byte, 15)...)...), // 0x00..01..00
+			expected: 128 + 7, // 16 bytes of zeros + 7 leading zeros in 0x01
+		},
+		{
+			name:     "second_byte",
+			input:    append(make([]byte, 30), []byte{0x01, 0x00}...), // 0x00...0100
+			expected: 247,
+		},
+		{
+			name:     "power_of_two",
+			input:    append(make([]byte, 28), []byte{0x10, 0x00, 0x00, 0x00}...), // 0x10000000
+			expected: 224 + 3, // 28 bytes of zeros + 3 leading zeros in 0x10
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create scope with CLZ opcode
+			code := []byte{byte(CLZ)}
+			scope := &ScopeContext{
+				Stack:    stack.New(),
+				Memory:   NewMemory(),
+				Contract: &Contract{Code: code},
+			}
+
+			// Push input value
+			value := new(uint256.Int).SetBytes(tt.input)
+			scope.Stack.Push(value)
+
+			pc := uint64(0)
+			_, err := opCLZ(&pc, nil, scope)
+
+			if err != nil {
+				t.Fatalf("opCLZ returned error: %v", err)
+			}
+
+			result := scope.Stack.Pop()
+			if result.Uint64() != tt.expected {
+				t.Errorf("opCLZ(%x) = %d, want %d", tt.input, result.Uint64(), tt.expected)
+			}
+		})
+	}
+
+	t.Log("CLZ execution tests passed")
+}
+
+func TestOpCLZInstructionSet(t *testing.T) {
+	// Verify CLZ is properly configured in Fusaka
+	jt := newFusakaInstructionSet()
+
+	if jt[CLZ] == nil {
+		t.Fatal("CLZ not in Fusaka instruction set")
+	}
+
+	// Check execute function
+	if jt[CLZ].execute == nil {
+		t.Error("CLZ execute function is nil")
+	}
+
+	// Check stack requirements
+	if jt[CLZ].numPop != 1 {
+		t.Errorf("CLZ numPop = %d, want 1", jt[CLZ].numPop)
+	}
+	if jt[CLZ].numPush != 1 {
+		t.Errorf("CLZ numPush = %d, want 1", jt[CLZ].numPush)
+	}
+
+	// Check gas cost
+	if jt[CLZ].constantGas != GasFastStep {
+		t.Errorf("CLZ gas = %d, want %d", jt[CLZ].constantGas, GasFastStep)
+	}
+
+	t.Log("CLZ instruction set configuration verified")
+}
+
+func BenchmarkOpCLZ(b *testing.B) {
+	code := []byte{byte(CLZ)}
+	scope := &ScopeContext{
+		Stack:    stack.New(),
+		Memory:   NewMemory(),
+		Contract: &Contract{Code: code},
+	}
+
+	// Use a value that exercises the algorithm
+	value := new(uint256.Int).SetBytes(append(make([]byte, 16), make([]byte, 16)...))
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scope.Stack.Push(value.Clone())
+		pc := uint64(0)
+		opCLZ(&pc, nil, scope)
 	}
 }
 
