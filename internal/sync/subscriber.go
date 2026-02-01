@@ -62,13 +62,6 @@ func (s *Service) registerSubscribers(digest [4]byte) {
 // subscribe to a given topic with a given validator and subscription handler.
 // The base protobuf message is used to initialize new messages for decoding.
 func (s *Service) subscribe(topic string, validator wrappedVal, handle subHandler, digest [4]byte) *pubsub.Subscription {
-	//todo
-	//genRoot := s.chain.GenesisBlock().Hash()
-	//_, e, err := utils.RetrieveForkDataFromDigest(digest, genRoot[:])
-	//if err != nil {
-	//	// Impossible condition as it would mean digest does not exist.
-	//	panic(err)
-	//}
 	base := p2p.GossipTopicMappings(topic)
 	if base == nil {
 		// This indicates a configuration error - topic does not exist in GossipTopicMappings.

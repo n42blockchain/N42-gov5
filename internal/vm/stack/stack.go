@@ -52,7 +52,8 @@ func (st *Stack) Push(d *uint256.Int) {
 }
 
 func (st *Stack) PushN(ds ...uint256.Int) {
-	// FIXME: Is there a way to pass args by pointers.
+	// Note: variadic parameters are passed by value in Go.
+	// Changing to pointer-based approach would require API changes.
 	st.Data = append(st.Data, ds...)
 }
 

@@ -23,19 +23,17 @@
 package discover
 
 import (
-	crand "crypto/rand"
-	"encoding/binary"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/p2p/netutil"
-	"github.com/n42blockchain/N42/log"
-	mrand "math/rand"
 	"net"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
+	"github.com/n42blockchain/N42/internal/p2p/netutil"
+	"github.com/n42blockchain/N42/log"
 )
 
 const (
@@ -66,10 +64,9 @@ const (
 // itself up-to-date by verifying the liveness of neighbors and requesting their node
 // records when announcements of a new record version are received.
 type Table struct {
-	mutex   sync.Mutex        // protects buckets, bucket content, nursery, rand
+	mutex   sync.Mutex        // protects buckets, bucket content, nursery
 	buckets [nBuckets]*bucket // index of known nodes by distance
 	nursery []*node           // bootstrap nodes
-	rand    *mrand.Rand       // source of randomness, periodically reseeded
 	ips     netutil.DistinctNetSet
 
 	log        log.Logger
@@ -108,7 +105,6 @@ func newTable(t transport, db *enode.DB, bootnodes []*enode.Node, log log.Logger
 		initDone:   make(chan struct{}),
 		closeReq:   make(chan struct{}),
 		closed:     make(chan struct{}),
-		rand:       mrand.New(mrand.NewSource(0)),
 		ips:        netutil.DistinctNetSet{Subnet: tableSubnet, Limit: tableIPLimit},
 		log:        log,
 	}
@@ -120,7 +116,6 @@ func newTable(t transport, db *enode.DB, bootnodes []*enode.Node, log log.Logger
 			ips: netutil.DistinctNetSet{Subnet: bucketSubnet, Limit: bucketIPLimit},
 		}
 	}
-	tab.seedRand()
 	tab.loadSeedNodes()
 
 	return tab, nil
@@ -130,13 +125,10 @@ func (tab *Table) self() *enode.Node {
 	return tab.net.Self()
 }
 
+// seedRand is kept for backward compatibility but no longer needed
+// since we now use crypto/rand directly via misc.SecureIntn
 func (tab *Table) seedRand() {
-	var b [8]byte
-	crand.Read(b[:])
-
-	tab.mutex.Lock()
-	tab.rand.Seed(int64(binary.BigEndian.Uint64(b[:])))
-	tab.mutex.Unlock()
+	// No-op: using cryptographically secure random numbers directly
 }
 
 // ReadRandomNodes fills the given slice with random nodes from the table. The results
@@ -154,9 +146,9 @@ func (tab *Table) ReadRandomNodes(buf []*enode.Node) (n int) {
 			nodes = append(nodes, unwrapNode(n))
 		}
 	}
-	// Shuffle.
+	// Shuffle using cryptographically secure random numbers
 	for i := 0; i < len(nodes); i++ {
-		j := tab.rand.Intn(len(nodes))
+		j := misc.SecureIntn(len(nodes))
 		nodes[i], nodes[j] = nodes[j], nodes[i]
 	}
 	return copy(buf, nodes)
@@ -358,7 +350,7 @@ func (tab *Table) nodeToRevalidate() (n *node, bi int) {
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
 
-	for _, bi = range tab.rand.Perm(len(tab.buckets)) {
+	for _, bi = range misc.SecurePerm(len(tab.buckets)) {
 		b := tab.buckets[bi]
 		if len(b.entries) > 0 {
 			last := b.entries[len(b.entries)-1]
@@ -369,10 +361,7 @@ func (tab *Table) nodeToRevalidate() (n *node, bi int) {
 }
 
 func (tab *Table) nextRevalidateTime() time.Duration {
-	tab.mutex.Lock()
-	defer tab.mutex.Unlock()
-
-	return time.Duration(tab.rand.Int63n(int64(revalidateInterval)))
+	return time.Duration(misc.SecureInt63n(int64(revalidateInterval)))
 }
 
 // copyLiveNodes adds nodes from the table to the database if they have been in the table
@@ -595,7 +584,7 @@ func (tab *Table) replace(b *bucket, last *node) *node {
 		tab.deleteInBucket(b, last)
 		return nil
 	}
-	r := b.replacements[tab.rand.Intn(len(b.replacements))]
+	r := b.replacements[misc.SecureIntn(len(b.replacements))]
 	b.replacements = deleteNode(b.replacements, r)
 	b.entries[len(b.entries)-1] = r
 	tab.removeIP(b, last.IP())

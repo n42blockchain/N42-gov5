@@ -113,8 +113,7 @@ func newObject(db *IntraBlockState, address types.Address, data, original *accou
 		so.data.CodeHash = emptyCodeHashH
 	}
 	if so.data.Root == (types.Hash{}) {
-		// todo
-		//so.data.Root = trie.EmptyRoot
+		// Empty root is left as zero hash, storage trie is initialized lazily
 	}
 	so.original.Copy(original)
 

@@ -61,7 +61,7 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 				s.peers.SetConnectionState(remotePeer, peers.PeerDisconnecting)
 				// Only attempt a goodbye if we are still connected to the peer.
 				if s.host.Network().Connectedness(remotePeer) == network.Connected {
-					if err := goodByeFunc(context.TODO(), remotePeer); err != nil {
+					if err := goodByeFunc(s.ctx, remotePeer); err != nil {
 						log.Error("Unable to disconnect from peer", "err", err)
 					}
 				}
@@ -160,7 +160,7 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 				}
 
 				s.peers.SetConnectionState(conn.RemotePeer(), peers.PeerConnecting)
-				if err := reqFunc(context.TODO(), conn.RemotePeer()); err != nil && err != io.EOF {
+				if err := reqFunc(s.ctx, conn.RemotePeer()); err != nil && err != io.EOF {
 					log.Warn("Handshake failed", "err", err)
 					disconnectFromPeer()
 					return
@@ -188,7 +188,7 @@ func (s *Service) AddDisconnectionHandler(handler func(ctx context.Context, id p
 					priorState = peers.PeerDisconnected
 				}
 				s.peers.SetConnectionState(conn.RemotePeer(), peers.PeerDisconnecting)
-				if err := handler(context.TODO(), conn.RemotePeer()); err != nil {
+				if err := handler(s.ctx, conn.RemotePeer()); err != nil {
 					log.Error("Disconnect handler failed", "multiAddr", peerMultiaddrString(conn))
 				}
 				s.peers.SetConnectionState(conn.RemotePeer(), peers.PeerDisconnected)

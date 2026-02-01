@@ -22,10 +22,10 @@ type forkData struct {
 // non-skipped slot. This shouldn't be a problem, as in case of adversary peer, we might get incorrect
 // data anyway, so code that relies on this function must be robust enough to re-request, if no progress
 // is possible with a returned value.
+// nonSkippedSlotAfter is not implemented - returns nil.
 func (f *blocksFetcher) nonSkippedSlotAfter(ctx context.Context, blockNr *uint256.Int) (*uint256.Int, error) {
 	ctx, span := trace.StartSpan(ctx, "initialsync.nonSkippedSlotAfter")
 	defer span.End()
-	//todo
 	return nil, nil
 }
 

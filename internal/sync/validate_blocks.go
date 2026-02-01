@@ -67,9 +67,7 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 		return pubsub.ValidationReject, errors.New("msg.body is not types_pb.Block")
 	}
 
-	//todo
-	// Broadcast the block on a feed to notify other services in the beacon node
-	// of a received block (even if it does not process correctly through a state transition).
+	// Note: Block broadcast notification to other services could be added here
 
 	if s.cfg.chain.HasBlock(header.Root, header.Number.Uint64()) {
 		return pubsub.ValidationIgnore, nil

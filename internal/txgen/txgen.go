@@ -21,7 +21,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	crand "crypto/rand"
-	mrand "math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +31,7 @@ import (
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -87,9 +87,6 @@ type testAccount struct {
 
 // New creates a new transaction generator.
 func New(ctx context.Context, config *Config, txPool common.ITxsPool, chainID *uint256.Int, coinbase types.Address, accman *accounts.Manager) *Generator {
-	// Seed random number generator
-	mrand.Seed(time.Now().UnixNano())
-
 	ctx, cancel := context.WithCancel(ctx)
 	g := &Generator{
 		config:   config,
@@ -256,7 +253,7 @@ func (g *Generator) generateAndSubmitTxs() {
 	}
 
 	// Random number of transactions (1 to maxTxsPerBlock)
-	numTxs := mrand.Intn(g.config.MaxTxsPerBlock) + 1
+	numTxs := misc.SecureIntn(g.config.MaxTxsPerBlock) + 1
 
 	successCount := 0
 	failCount := 0
@@ -286,8 +283,8 @@ func (g *Generator) createRandomTx() *transaction.Transaction {
 	}
 
 	// Select random sender and receiver
-	senderIdx := mrand.Intn(len(g.accounts))
-	receiverIdx := (senderIdx + 1 + mrand.Intn(len(g.accounts)-1)) % len(g.accounts)
+	senderIdx := misc.SecureIntn(len(g.accounts))
+	receiverIdx := (senderIdx + 1 + misc.SecureIntn(len(g.accounts)-1)) % len(g.accounts)
 
 	sender := g.accounts[senderIdx]
 	receiver := g.accounts[receiverIdx]
@@ -296,7 +293,7 @@ func (g *Generator) createRandomTx() *transaction.Transaction {
 	nonce := g.txPool.Nonce(sender.address)
 
 	// Small random value (avoid running out of funds)
-	value := uint256.NewInt(uint64(mrand.Intn(1000) + 1))
+	value := uint256.NewInt(uint64(misc.SecureIntn(1000) + 1))
 
 	innerTx := &transaction.LegacyTx{
 		Nonce:    nonce,

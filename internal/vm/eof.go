@@ -462,93 +462,10 @@ func isValidEOFOpcode(op OpCode) bool {
 	return true
 }
 
-// eofOpcodeSize returns the total size of an instruction including operands
+// eofOpcodeSize returns the total size of an instruction including operands.
+// This function uses a lookup table (opcode_sizes.go) for improved performance.
 func eofOpcodeSize(op OpCode, code []byte) int {
-	switch op {
-	case PUSH1:
-		return 2
-	case PUSH2:
-		return 3
-	case PUSH3:
-		return 4
-	case PUSH4:
-		return 5
-	case PUSH5:
-		return 6
-	case PUSH6:
-		return 7
-	case PUSH7:
-		return 8
-	case PUSH8:
-		return 9
-	case PUSH9:
-		return 10
-	case PUSH10:
-		return 11
-	case PUSH11:
-		return 12
-	case PUSH12:
-		return 13
-	case PUSH13:
-		return 14
-	case PUSH14:
-		return 15
-	case PUSH15:
-		return 16
-	case PUSH16:
-		return 17
-	case PUSH17:
-		return 18
-	case PUSH18:
-		return 19
-	case PUSH19:
-		return 20
-	case PUSH20:
-		return 21
-	case PUSH21:
-		return 22
-	case PUSH22:
-		return 23
-	case PUSH23:
-		return 24
-	case PUSH24:
-		return 25
-	case PUSH25:
-		return 26
-	case PUSH26:
-		return 27
-	case PUSH27:
-		return 28
-	case PUSH28:
-		return 29
-	case PUSH29:
-		return 30
-	case PUSH30:
-		return 31
-	case PUSH31:
-		return 32
-	case PUSH32:
-		return 33
-	case RJUMP, RJUMPI:
-		return 3 // opcode + 2 byte offset
-	case RJUMPV:
-		if len(code) > 1 {
-			return 2 + int(code[1])*2 // opcode + count + count*2 bytes
-		}
-		return 2
-	case CALLF, JUMPF:
-		return 3 // opcode + 2 byte function index
-	case DATALOADN:
-		return 3 // opcode + 2 byte offset
-	case DUPN, SWAPN:
-		return 2 // opcode + 1 byte operand
-	case EXCHANGE:
-		return 2 // opcode + 1 byte operand
-	case EOFCREATE, RETURNCONTRACT:
-		return 2 // opcode + 1 byte container index
-	default:
-		return 1
-	}
+	return GetOpcodeSize(op, code)
 }
 
 // =============================================================================

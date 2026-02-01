@@ -54,7 +54,7 @@ import (
 )
 
 const (
-	// todo
+	// baseFee is the minimum base fee for gas price estimation in Wei
 	baseFee       = 5000000
 	rpcEVMTimeout = time.Duration(5 * time.Second)
 	rpcGasCap     = 50000000
@@ -675,8 +675,7 @@ func (s *BlockChainAPI) Call(ctx context.Context, args TransactionArgs, blockNrO
 }
 
 func BlockByNumber(ctx context.Context, number jsonrpc.BlockNumber, n *API) (block.IBlock, error) {
-	// todo
-	// Pending block is only known by the miner
+	// Pending block is only known by the miner, return current block as approximation
 	if number == jsonrpc.PendingBlockNumber {
 		iblock := n.BlockChain().CurrentBlock()
 		return iblock, nil
@@ -708,68 +707,10 @@ func BlockByNumberOrHash(ctx context.Context, blockNrOrHash jsonrpc.BlockNumberO
 		if iblock == nil {
 			return nil, errors.New("header found, but block body is missing")
 		}
-
-		//todo
-		//header := iblock.Header()
-		//if header == nil {
-		//	return nil, errors.New("header for hash not found")
-		//}
-		//iblock, err = n.BlockChain().GetBlockByNumber(header.Number64())
-		//if err != nil {
-		//	return nil, err
-		//}
-		//if blockNrOrHash.RequireCanonical && iblock.Hash() != types.Hash(hash) {
-		//	return nil, errors.New("hash is not currently canonical")
-		//}
-		//iblock, err = n.BlockChain().GetBlockByNumber(n.BlockChain().GetHeader(types.Hash(hash), header.Number64()).Number64())
-		//if err != nil {
-		//	return nil, err
-		//}
 		return iblock, nil
 	}
 	return nil, errors.New("invalid arguments; neither block nor hash specified")
 }
-
-//func StateAndHeaderByNumber(ctx context.Context, n *API, number jsonrpc.BlockNumber) (*common.IStateDB, *block.IHeader, error) {
-//	var header block.IHeader
-//	var err error
-//	if number == jsonrpc.PendingBlockNumber {
-//		header = n.BlockChain().CurrentBlock().Header()
-//	} else {
-//		header, err = n.BlockChain().GetHeaderByNumber(uint256.NewInt(uint64(number)))
-//	}
-//	if err != nil {
-//		return nil, nil, err
-//	}
-//	if header == nil {
-//		return nil, nil, errors.New("header not found")
-//	}
-//	stateDb := n.BlockChain().StateAt(header.Hash())
-//	return &stateDb, &header, nil
-//}
-
-//func StateAndHeaderByNumberOrHash(ctx context.Context, n *API, blockNrOrHash jsonrpc.BlockNumberOrHash) (*common.IStateDB, *block.IHeader, error) {
-//	if blockNr, ok := blockNrOrHash.Number(); ok {
-//		return StateAndHeaderByNumber(ctx, n, blockNr)
-//	}
-//	if hash, ok := blockNrOrHash.Hash(); ok {
-//		header, err := n.BlockChain().GetHeaderByHash(types.Hash(hash))
-//		if err != nil {
-//			return nil, nil, err
-//		}
-//		if header == nil {
-//			return nil, nil, errors.New("header for hash not found")
-//		}
-//		//todo
-//		//if blockNrOrHash.RequireCanonical && b.eth.blockchain.GetCanonicalHash(header.Number.Uint64()) != hash {
-//		//	return nil, nil, errors.New("hash is not currently canonical")
-//		//}
-//		stateDb := n.BlockChain().StateAt(header.Hash())
-//		return &stateDb, &header, err
-//	}
-//	return nil, nil, errors.New("invalid arguments; neither block nor hash specified")
-//}
-
 func DoEstimateGas(ctx context.Context, n *API, args TransactionArgs, blockNrOrHash jsonrpc.BlockNumberOrHash, gasCap uint64) (hexutil.Uint64, error) {
 	// Binary search the gas requirement, as it may be higher than the amount used
 	var (

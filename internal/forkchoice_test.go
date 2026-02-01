@@ -64,9 +64,7 @@ func TestNewForkChoice(t *testing.T) {
 	if fc.chain != chain {
 		t.Error("ForkChoice should store the chain reader")
 	}
-	if fc.rand == nil {
-		t.Error("ForkChoice should have initialized random generator")
-	}
+	// Note: rand field was removed in favor of using crypto/rand directly via misc.SecureFloat64()
 
 	t.Logf("✓ NewForkChoice creates valid instance")
 }

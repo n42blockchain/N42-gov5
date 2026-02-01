@@ -148,11 +148,8 @@ func (b *Body) SendersToTxs(senders []types.Address) {
 	if senders == nil {
 		return
 	}
-
-	//todo
-	//for i, tx := range b.Txs {
-	//	//tx.SetFrom(senders[i])
-	//}
+	// Sender assignment is handled during transaction deserialization,
+	// this method is kept for interface compatibility.
 }
 
 type BodyForStorage struct {

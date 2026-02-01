@@ -12,7 +12,7 @@ const rootLength = 32
 
 const maxErrorLength = 256
 
-// todo
+// maxRequestBlocks is the maximum number of blocks that can be requested in a single request.
 const maxRequestBlocks = 1024
 
 // SSZBytes is a bytes slice that satisfies the fast-ssz interface.

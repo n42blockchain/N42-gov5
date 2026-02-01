@@ -133,7 +133,6 @@ func (f *Filter) Logs(ctx context.Context) ([]*block.Log, error) {
 		logs           []*block.Log
 		err            error
 		size, sections = uint64(4096), uint64(10)
-		//todo
 	)
 	if indexed := sections * size; indexed > uint64(f.begin) {
 		if indexed > end {
@@ -269,16 +268,8 @@ func (f *Filter) checkMatches(ctx context.Context, header block.IHeader) (logs [
 }
 
 // pendingLogs returns the logs matching the filter criteria within the pending block.
+// Currently returns nil; pending block log filtering is not implemented.
 func (f *Filter) pendingLogs() ([]*block.Log, error) {
-	//todo
-	//pendingBlock, receipts := f.api.PendingBlockAndReceipts()
-	//if bloomFilter(pendingBlock.Bloom(), f.addresses, f.topics) {
-	//	var unfiltered []*block.Log
-	//	for _, r := range receipts {
-	//		unfiltered = append(unfiltered, r.Logs...)
-	//	}
-	//	return filterLogs(unfiltered, nil, nil, f.addresses, f.topics), nil
-	//}
 	return nil, nil
 }
 

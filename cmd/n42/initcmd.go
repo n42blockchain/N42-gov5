@@ -65,14 +65,14 @@ func initGenesis(cliCtx *cli.Context) error {
 	}
 	defer chaindb.Close()
 
-	if err := chaindb.Update(context.TODO(), func(tx kv.RwTx) error {
+	if err := chaindb.Update(context.Background(), func(tx kv.RwTx) error {
 		storedHash, err := rawdb.ReadCanonicalHash(tx, 0)
 		if err != nil {
 			return err
 		}
 
 		if storedHash != (types.Hash{}) {
-			return fmt.Errorf("genesis state are already exists")
+			return fmt.Errorf("genesis state already exists")
 
 		}
 		genesisBlock, err = node.WriteGenesisBlock(tx, genesis)

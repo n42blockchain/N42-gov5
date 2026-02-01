@@ -262,7 +262,8 @@ func (b *Block) FromProtoMessage(message proto.Message) error {
 }
 
 func (b *Block) SendersToTxs(senders []types.Address) {
-	//todo
+	// Sender assignment is handled during transaction deserialization,
+	// this method is kept for interface compatibility.
 }
 
 func (b *Block) Uncles() []*Header {

@@ -268,8 +268,7 @@ func (w *worker) runLoop() error {
 		case req := <-w.newWorkCh:
 			err := w.commitWork(req.interrupt, req.noempty, req.timestamp)
 			if err != nil {
-				log.Error("runLoop err:", err.Error())
-				//w.startCh <- struct{}{}
+				log.Error("runLoop error", "err", err)
 			}
 		}
 	}

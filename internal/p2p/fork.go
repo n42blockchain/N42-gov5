@@ -57,7 +57,6 @@ func (s *Service) compareForkENR(record *enr.Record) error {
 // epoch to create a fork digest, the next fork version,
 // and the next fork epoch.
 func addForkEntry(node *enode.LocalNode, genesisHash types.Hash) (*enode.LocalNode, error) {
-	//todo
 	enc, err := utils.CreateForkDigest(new(uint256.Int), genesisHash)
 	if err != nil {
 		return nil, err

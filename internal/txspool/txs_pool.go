@@ -174,9 +174,7 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 
 		bc:      bc,
 		deposit: depositContract,
-		// todo
-		//currentMaxGas: bc.CurrentBlock().GasLimit(),
-		//
+		// Gas limit is set dynamically during pool reset based on current block
 		locals: newAccountSet(),
 
 		pending: make(map[types.Address]*txsList),
@@ -549,7 +547,6 @@ func (pool *TxsPool) enqueueTx(hash types.Hash, tx *transaction.Transaction, loc
 // rules and adheres to some heuristic limits of the local node (price and size).
 func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	// Accept only legacy transactions until EIP-2718/2930 activates.
-	// todo
 	if !pool.eip2718 && tx.Type() != transaction.LegacyTxType {
 		return internal.ErrTxTypeNotSupported
 	}
@@ -1173,7 +1170,7 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 		}
 		events[addr].Put(tx)
 	}
-	// todo
+	// Broadcast promoted transactions to network subscribers
 	if len(events) > 0 {
 		var txs []*transaction.Transaction
 		for _, set := range events {

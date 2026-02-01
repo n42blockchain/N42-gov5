@@ -30,7 +30,7 @@ const (
 	// fetching).
 	DefaultBlockProviderStalePeerRefreshInterval = 5 * time.Minute
 
-	//todo
+	// BlockBatchLimit is the maximum number of blocks in a single batch request
 	BlockBatchLimit = 10
 )
 

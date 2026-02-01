@@ -75,7 +75,7 @@ type PeerData struct {
 	BehaviourPenalty float64
 }
 
-// todo
+// CurrentHeight returns the peer's current chain height from its chain state.
 func (s *PeerData) CurrentHeight() *uint256.Int {
 	if s.ChainState == nil {
 		return nil

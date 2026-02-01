@@ -288,7 +288,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, fmt.Errorf("failed to create sync service: %w", err)
 	}
 
-	//todo
+	// Initialize bloom filter with pending transactions
 	var txs []*transaction.Transaction
 	pending := pool.Pending(false)
 	for _, batch := range pending {
@@ -609,7 +609,6 @@ func (n *Node) startRPC() error {
 		if err := n.ws.setListenAddr(n.config.NodeCfg.WSHost, port); err != nil {
 			return err
 		}
-		//todo
 		config := wsConfig{
 			Modules:   utils.SplitAndTrim(n.config.NodeCfg.WSApi),
 			Origins:   utils.SplitAndTrim(n.config.NodeCfg.WSOrigins),

@@ -232,7 +232,6 @@ func (t *txLookup) Add(tx *transaction.Transaction, local bool) {
 	defer t.lock.Unlock()
 
 	t.slots += numSlots(tx)
-	//todo slotsGauge.Update(int64(t.slots))
 
 	hash := tx.Hash()
 	if local {
@@ -252,12 +251,10 @@ func (t *txLookup) Remove(hash types.Hash) {
 		tx, ok = t.remotes[hash]
 	}
 	if !ok {
-		//todo
-		//log.Error("No transaction found to be deleted", "hash", hash)
+		// Transaction not found in lookup - this is expected for already-removed transactions
 		return
 	}
 	t.slots -= numSlots(tx)
-	//todo slotsGauge.Update(int64(t.slots))
 
 	delete(t.locals, hash)
 	delete(t.remotes, hash)
@@ -937,8 +934,6 @@ func (l *txPricedList) Reheap() {
 		l.floating.list[i] = heap.Pop(&l.urgent).(*transaction.Transaction)
 	}
 	heap.Init(&l.floating)
-
-	//todo reheapTimer.Update(time.Since(start))
 }
 
 // SetBaseFee updates the base fee and triggers a re-heap. Note that Removed is not
