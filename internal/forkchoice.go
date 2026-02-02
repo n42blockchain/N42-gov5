@@ -17,6 +17,8 @@
 package internal
 
 import (
+	"errors"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -68,10 +70,12 @@ func (f *ForkChoice) ReorgNeeded(current block.IHeader, header block.IHeader) (b
 		localTD  = f.chain.GetTd(current.Hash(), current.Number64())
 		externTd = f.chain.GetTd(header.Hash(), header.Number64())
 	)
-	log.Tracef("ForkChoice.ReorgNeeded: localID = %d, externTd = %d", localTD.Uint64(), externTd.Uint64())
-	//if localTD == nil || externTd == nil {
-	//	return false, errors.New("missing td")
-	//}
+	if localTD == nil || externTd == nil {
+		log.Warnf("ForkChoice.ReorgNeeded: missing td, localTD=%v, externTd=%v, currentHash=%s, currentNum=%d, headerHash=%s, headerNum=%d",
+			localTD, externTd, current.Hash().String(), current.Number64().Uint64(), header.Hash().String(), header.Number64().Uint64())
+		return false, errors.New("missing td")
+	}
+	log.Tracef("ForkChoice.ReorgNeeded: localTD = %d, externTd = %d", localTD.Uint64(), externTd.Uint64())
 	// Accept the new header as the chain head if the transition
 	// is already triggered. We assume all the headers after the
 	// transition come from the trusted consensus layer.
