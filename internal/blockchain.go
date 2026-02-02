@@ -701,6 +701,10 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 				// we can get it directly, and not (like further below) use
 				// the parent and then add the block on top
 				pt := bc.GetTd(blk.Hash(), blk.Number64())
+				if pt == nil {
+					log.Warn("Missing td for canonical block, skipping sidechain processing", "hash", blk.Hash(), "number", blk.Number64())
+					return 0, nil
+				}
 				externTd = *pt
 				continue
 			}
@@ -721,7 +725,12 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 			}
 		}
 		if externTd.Cmp(uint256.NewInt(0)) == 0 {
-			externTd = *bc.GetTd(blk.ParentHash(), uint256.NewInt(0).Sub(blk.Number64(), uint256.NewInt(1)))
+			parentTd := bc.GetTd(blk.ParentHash(), uint256.NewInt(0).Sub(blk.Number64(), uint256.NewInt(1)))
+			if parentTd == nil {
+				log.Warn("Missing td for parent block, skipping sidechain processing", "parentHash", blk.ParentHash(), "number", blk.Number64())
+				return 0, nil
+			}
+			externTd = *parentTd
 		}
 		externTd = *externTd.Add(&externTd, blk.Difficulty())
 
