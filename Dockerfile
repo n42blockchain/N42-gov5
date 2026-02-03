@@ -7,6 +7,8 @@ RUN apk add --no-cache build-base  linux-headers git bash ca-certificates  libst
 WORKDIR /n42
 ADD . .
 ENV GO111MODULE="on"
+ENV GOPROXY="https://goproxy.cn,https://goproxy.io,direct"
+ENV GOTOOLCHAIN="auto"
 RUN go mod tidy && go build  -o ./build/bin/n42 ./cmd/n42
 
 

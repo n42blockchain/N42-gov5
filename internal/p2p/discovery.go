@@ -214,7 +214,11 @@ func (s *Service) startDiscoveryV5(
 		return nil, errors.Wrap(err, "could not create listener")
 	}
 	record := listener.Self()
-	log.Info("Started discovery v5", "ENR", record.String())
+	enrStr := record.String()
+	if len(enrStr) > 80 {
+		enrStr = enrStr[:77] + "..."
+	}
+	log.Info("Discovery v5 started", "enr", enrStr)
 	return listener, nil
 }
 

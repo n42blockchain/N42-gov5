@@ -81,7 +81,7 @@ func NewOracle(backend common2.IBlockChain, miner common2.IMiner, chainConfig *p
 		ignorePrice = conf.DefaultIgnorePrice
 		log.Warn("Sanitizing invalid gasprice oracle ignore price", "provided", params.IgnorePrice, "updated", ignorePrice)
 	} else if ignorePrice.Int64() > 0 {
-		log.Info("Gas price oracle configured with ignore threshold", "threshold", ignorePrice)
+		log.Debug("Gas oracle ignore threshold", "value", ignorePrice)
 	}
 	maxHeaderHistory := params.MaxHeaderHistory
 	if maxHeaderHistory < 1 {
