@@ -736,13 +736,16 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 
 		if !bc.HasBlock(blk.Hash(), blk.Number64().Uint64()) {
 			start := time.Now()
-			if err := bc.WriteBlockWithoutState(blk); err != nil {
+			if err := bc.writeBlockWithTd(blk, externTd.Clone()); err != nil {
 				return it.index, err
 			}
 			log.Debug("Injected sidechain block", "number", blk.Number64(), "hash", blk.Hash(),
 				"diff", blk.Difficulty(), "elapsed", time.Since(start).Seconds(),
 				"txs", len(blk.Transactions()), "gas", blk.GasUsed(),
 				"root", blk.StateRoot())
+		} else {
+			// Block already exists, but we still need to ensure td is written and cached
+			bc.tdCache.Add(blk.Hash(), externTd.Clone())
 		}
 		lastBlock = blk
 	}
@@ -839,15 +842,34 @@ func (bc *BlockChain) WriteBlockWithoutState(blk block.IBlock) (err error) {
 	if bc.insertStopped() {
 		return errInsertionInterrupted
 	}
-	//if err := bc.state.WriteTD(blk.Hash(), td); err != nil {
-	//	return err
-	//}
 	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		if err := rawdb.WriteBlock(tx, blk.(*block.Block)); err != nil {
 			return err
 		}
 		return nil
 	})
+}
+
+// writeBlockWithTd writes a block along with its total difficulty to the database.
+// This is used during sidechain insertion to ensure td is available for ReorgNeeded checks.
+func (bc *BlockChain) writeBlockWithTd(blk block.IBlock, td *uint256.Int) error {
+	if bc.insertStopped() {
+		return errInsertionInterrupted
+	}
+	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		if err := rawdb.WriteBlock(tx, blk.(*block.Block)); err != nil {
+			return err
+		}
+		if err := rawdb.WriteTd(tx, blk.Hash(), blk.Number64().Uint64(), td); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	// Update td cache after successful database write
+	bc.tdCache.Add(blk.Hash(), td)
+	return nil
 }
 
 func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs interface{}, nopay map[types.Address]*uint256.Int) error {
