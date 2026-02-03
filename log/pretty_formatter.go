@@ -24,19 +24,19 @@ import (
 
 // ANSI color codes
 const (
-	Reset      = "\033[0m"
-	Bold       = "\033[1m"
-	Dim        = "\033[2m"
+	Reset = "\033[0m"
+	Bold  = "\033[1m"
+	Dim   = "\033[2m"
 
 	// Foreground colors
-	Black      = "\033[30m"
-	Red        = "\033[31m"
-	Green      = "\033[32m"
-	Yellow     = "\033[33m"
-	Blue       = "\033[34m"
-	Magenta    = "\033[35m"
-	Cyan       = "\033[36m"
-	White      = "\033[37m"
+	Black   = "\033[30m"
+	Red     = "\033[31m"
+	Green   = "\033[32m"
+	Yellow  = "\033[33m"
+	Blue    = "\033[34m"
+	Magenta = "\033[35m"
+	Cyan    = "\033[36m"
+	White   = "\033[37m"
 
 	// Bright foreground colors
 	BrightBlack   = "\033[90m"
@@ -79,15 +79,15 @@ var moduleColors = map[string]string{
 
 // Symbols for visual hierarchy and log levels
 const (
-	DotSymbol    = "●"  // Info indicator
-	WarnSymbol   = "!"  // Warn indicator
-	ErrorSymbol  = "✖"  // Error indicator
-	DebugSymbol  = "·"  // Debug indicator
-	TraceSymbol  = "‥"  // Trace indicator
-	SubSymbol    = "⎿"  // Sub-item indicator
-	ArrowSymbol  = "→"  // Flow indicator
-	CheckSymbol  = "✓"  // Success
-	CrossSymbol  = "✗"  // Failure
+	DotSymbol   = "●" // Info indicator
+	WarnSymbol  = "!" // Warn indicator
+	ErrorSymbol = "✖" // Error indicator
+	DebugSymbol = "·" // Debug indicator
+	TraceSymbol = "‥" // Trace indicator
+	SubSymbol   = "⎿" // Sub-item indicator
+	ArrowSymbol = "→" // Flow indicator
+	CheckSymbol = "✓" // Success
+	CrossSymbol = "✗" // Failure
 )
 
 // PrettyFormatter implements a modern CLI style log formatter
@@ -488,10 +488,10 @@ func PrintWarning(message string) {
 // PrintShutdownBanner prints a graceful shutdown message
 func PrintShutdownBanner() {
 	fmt.Println()
-	fmt.Printf("  %s╭────────────────────────────────────────────────────────╮%s\n", BrightYellow, Reset)
+	fmt.Printf("  %s╭───────────────────────────────────────────────────────╮%s\n", BrightYellow, Reset)
 	fmt.Printf("  %s│%s  %sGraceful shutdown initiated%s %s(Ctrl+C to force quit)%s   %s│%s\n",
 		BrightYellow, Reset, BrightWhite, Reset, Dim, Reset, BrightYellow, Reset)
-	fmt.Printf("  %s╰────────────────────────────────────────────────────────╯%s\n", BrightYellow, Reset)
+	fmt.Printf("  %s╰───────────────────────────────────────────────────────╯%s\n", BrightYellow, Reset)
 	fmt.Println()
 }
 
