@@ -77,17 +77,20 @@ var moduleColors = map[string]string{
 	"downloader":   Green,
 }
 
-// Symbols for visual hierarchy
+// Symbols for visual hierarchy and log levels
 const (
-	DotSymbol    = "●"  // Main indicator
+	DotSymbol    = "●"  // Info indicator
+	WarnSymbol   = "!"  // Warn indicator
+	ErrorSymbol  = "✖"  // Error indicator
+	DebugSymbol  = "·"  // Debug indicator
+	TraceSymbol  = "‥"  // Trace indicator
 	SubSymbol    = "⎿"  // Sub-item indicator
 	ArrowSymbol  = "→"  // Flow indicator
 	CheckSymbol  = "✓"  // Success
-	CrossSymbol  = "✗"  // Error
-	WarnSymbol   = "!"  // Warning
+	CrossSymbol  = "✗"  // Failure
 )
 
-// PrettyFormatter implements a Claude Code style log formatter
+// PrettyFormatter implements a modern CLI style log formatter
 type PrettyFormatter struct {
 	// ForceColors forces colored output even when not a TTY
 	ForceColors bool
@@ -98,17 +101,14 @@ type PrettyFormatter struct {
 	// DisableTimestamp disables timestamp output
 	DisableTimestamp bool
 
-	// CompactMode uses more compact output
-	CompactMode bool
-
 	// ShowModule shows the module/prefix name
 	ShowModule bool
 
-	// RelativeTime shows relative time (e.g., "2s ago")
-	RelativeTime bool
-
 	// startTime for relative time calculation
 	startTime time.Time
+
+	// lastAbsoluteTime tracks when we last showed absolute time
+	lastAbsoluteTime time.Time
 
 	// isTerminal caches TTY check
 	isTerminal bool
@@ -118,11 +118,11 @@ type PrettyFormatter struct {
 
 // NewPrettyFormatter creates a new PrettyFormatter with sensible defaults
 func NewPrettyFormatter() *PrettyFormatter {
+	now := time.Now()
 	return &PrettyFormatter{
-		ShowModule:   true,
-		CompactMode:  true,
-		RelativeTime: true,
-		startTime:    time.Now(),
+		ShowModule:       true,
+		startTime:        now,
+		lastAbsoluteTime: now,
 	}
 }
 
@@ -142,6 +142,7 @@ func (f *PrettyFormatter) checkIfTerminal(w io.Writer) bool {
 }
 
 // Format implements logrus.Formatter
+// Format: ● module message key=value                    5s
 func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	f.Do(func() { f.init(entry) })
 
@@ -155,10 +156,7 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 		module = fmt.Sprintf("%v", prefix)
 	}
 
-	// Format timestamp
-	timestamp := f.formatTime(entry.Time, isColored)
-
-	// Format level indicator (colored dot)
+	// Format level indicator (colored symbol)
 	levelIndicator := f.formatLevelIndicator(entry.Level, module, isColored)
 
 	// Format message
@@ -167,12 +165,10 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	// Format fields
 	fields := f.formatFields(entry.Data, entry.Level, isColored)
 
-	// Build output
-	if !f.DisableTimestamp {
-		b.WriteString(timestamp)
-		b.WriteString(" ")
-	}
+	// Format timestamp (at the end, in blue)
+	timestamp := f.formatTime(entry.Time, isColored)
 
+	// Build output: symbol module message fields    timestamp
 	b.WriteString(levelIndicator)
 	b.WriteString(" ")
 	b.WriteString(message)
@@ -182,88 +178,112 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 		b.WriteString(fields)
 	}
 
+	// Add timestamp at the end
+	if !f.DisableTimestamp && timestamp != "" {
+		b.WriteString("  ")
+		b.WriteString(timestamp)
+	}
+
 	b.WriteString("\n")
 
 	return b.Bytes(), nil
 }
 
-// formatTime formats the timestamp in a friendly way
+// formatTime formats the timestamp - shown at end of line in blue
+// Shows relative time (5s, 2m30s) and absolute time every 10 minutes
 func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
-	var timeStr string
+	elapsed := t.Sub(f.startTime)
 
-	if f.RelativeTime {
-		timeStr = f.friendlyTime(t)
-	} else {
-		timeStr = t.Format("15:04:05")
+	// Build relative time string
+	relativeStr := f.formatDuration(elapsed)
+
+	// Check if we need to show absolute time (every 10 minutes)
+	var absoluteStr string
+	if t.Sub(f.lastAbsoluteTime) >= 10*time.Minute {
+		absoluteStr = t.Format("01-02 15:04:05")
+		f.lastAbsoluteTime = t
 	}
+
+	// Combine
+	var result string
+	if absoluteStr != "" {
+		result = absoluteStr + " "
+	}
+	result += relativeStr
 
 	if colored {
-		return fmt.Sprintf("%s%s%s", BrightBlack, timeStr, Reset)
+		return fmt.Sprintf("%s%s%s", BrightBlue, result, Reset)
 	}
-	return timeStr
+	return result
 }
 
-// friendlyTime returns a human-friendly relative time
-func (f *PrettyFormatter) friendlyTime(t time.Time) string {
-	elapsed := time.Since(f.startTime)
+// formatDuration formats a duration in compact form: 5s, 2m30s, 1h5m2s
+func (f *PrettyFormatter) formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return "0s"
+	}
 
-	if elapsed < time.Second {
-		return "now"
-	} else if elapsed < time.Minute {
-		return fmt.Sprintf("+%ds", int(elapsed.Seconds()))
-	} else if elapsed < time.Hour {
-		mins := int(elapsed.Minutes())
-		secs := int(elapsed.Seconds()) % 60
-		if secs == 0 {
-			return fmt.Sprintf("+%dm", mins)
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	secs := int(d.Seconds()) % 60
+
+	if hours > 0 {
+		if secs > 0 {
+			return fmt.Sprintf("%dh%dm%ds", hours, mins, secs)
+		} else if mins > 0 {
+			return fmt.Sprintf("%dh%dm", hours, mins)
 		}
-		return fmt.Sprintf("+%dm%ds", mins, secs)
-	} else {
-		return t.Format("15:04:05")
+		return fmt.Sprintf("%dh", hours)
+	} else if mins > 0 {
+		if secs > 0 {
+			return fmt.Sprintf("%dm%ds", mins, secs)
+		}
+		return fmt.Sprintf("%dm", mins)
 	}
+	return fmt.Sprintf("%ds", secs)
 }
 
-// formatLevelIndicator returns a colored dot based on level and module
+// formatLevelIndicator returns a colored symbol based on level and module
+// ● info (colored by module)
+// ✻ warn (yellow)
+// ✖ error (red)
+// · debug (dim)
+// ‥ trace (dim)
 func (f *PrettyFormatter) formatLevelIndicator(level logrus.Level, module string, colored bool) string {
-	if !colored {
-		switch level {
-		case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
-			return CrossSymbol
-		case logrus.WarnLevel:
-			return WarnSymbol
-		default:
-			return DotSymbol
-		}
-	}
-
-	// Get base color from level
-	var levelColor string
 	var symbol string
+	var levelColor string
 
 	switch level {
 	case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
+		symbol = ErrorSymbol
 		levelColor = BrightRed
-		symbol = DotSymbol
 	case logrus.WarnLevel:
+		symbol = WarnSymbol
 		levelColor = BrightYellow
-		symbol = DotSymbol
 	case logrus.InfoLevel:
+		symbol = DotSymbol
 		// Use module color for info level
 		if moduleColor, ok := moduleColors[module]; ok {
 			levelColor = moduleColor
 		} else {
 			levelColor = BrightCyan
 		}
-		symbol = DotSymbol
 	case logrus.DebugLevel:
+		symbol = DebugSymbol
 		levelColor = BrightBlack
-		symbol = DotSymbol
 	default:
+		symbol = TraceSymbol
 		levelColor = BrightBlack
-		symbol = DotSymbol
 	}
 
-	// Format: colored dot + module name
+	if !colored {
+		if f.ShowModule && module != "" {
+			return fmt.Sprintf("%s %s", symbol, module)
+		}
+		return symbol
+	}
+
+	// Format: colored symbol + module name
 	if f.ShowModule && module != "" {
 		return fmt.Sprintf("%s%s%s %s%s%s", levelColor, symbol, Reset, Dim, module, Reset)
 	}
