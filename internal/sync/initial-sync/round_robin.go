@@ -75,7 +75,7 @@ func (s *Service) processFetchedData(ctx context.Context, startBlockNr *uint256.
 
 	// Use Batch Block Verify to process and verify batches directly.
 	if _, err := s.processBatchedBlocks(ctx, data.blocks, s.cfg.Chain.InsertChain); err != nil {
-		log.Warn("Skip processing batched blocks", "err", err)
+		log.Warn("Skipped processing batched blocks", "err", err)
 	}
 }
 

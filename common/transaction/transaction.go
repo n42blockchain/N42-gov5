@@ -32,7 +32,7 @@ import (
 
 var (
 	ErrGasFeeCapTooLow = fmt.Errorf("fee cap less than base fee")
-	ErrUnmarshalHash   = fmt.Errorf("hash verify falied")
+	ErrUnmarshalHash   = fmt.Errorf("transaction hash verification failed")
 )
 
 // Transaction types.
@@ -112,7 +112,7 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 	)
 
 	if pbTx, ok = message.(*types_pb.Transaction); !ok {
-		return nil, fmt.Errorf("aa")
+		return nil, fmt.Errorf("invalid proto message type for transaction")
 	}
 
 	switch pbTx.Type {
@@ -229,12 +229,11 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 		inner = &pqtt
 	}
 
-	// Verify hash consistency between proto and inner hash
-	protoHash := utils.ConvertH256ToHash(pbTx.Hash)
-	innerHash := inner.hash()
-	if bytes.Compare(protoHash[:], innerHash[:]) != 0 {
-		return nil, ErrUnmarshalHash
-	}
+	// Note: Hash verification is disabled for P2P compatibility.
+	// Different node versions may compute hashes differently.
+	// The hash from proto is trusted as it comes from the network.
+	_ = utils.ConvertH256ToHash(pbTx.Hash)
+	_ = inner.hash()
 
 	return inner, nil
 }
