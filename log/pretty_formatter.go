@@ -191,7 +191,8 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 
 // formatTime formats the timestamp - shown at end of line
 // Shows relative time (5s, 2m30s) and absolute time every 10 minutes
-// First log always shows full absolute time: 2026-05-23 12:34:21
+// First log shows full time: 2026-01-02 15:04:05
+// Every 10 minutes shows short time: 02-03 15:23:03
 func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
 	elapsed := t.Sub(f.startTime)
 
@@ -201,7 +202,12 @@ func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
 	// Check if we need to show absolute time (every 10 minutes)
 	var absoluteStr string
 	if t.Sub(f.lastAbsoluteTime) >= 10*time.Minute {
-		absoluteStr = t.Format("2006-01-02 15:04:05")
+		// First time (elapsed < 1s) shows full format, subsequent shows short format
+		if elapsed < time.Second {
+			absoluteStr = t.Format("2006-01-02 15:04:05")
+		} else {
+			absoluteStr = t.Format("01-02 15:04:05")
+		}
 		f.lastAbsoluteTime = t
 	}
 
