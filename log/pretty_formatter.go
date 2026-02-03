@@ -386,53 +386,45 @@ func (f *PrettyFormatter) formatFields(data logrus.Fields, level logrus.Level, c
 	return strings.Join(parts, " ")
 }
 
-// PrintBanner prints a beautiful startup banner
+// PrintBanner prints a beautiful startup banner with logo on left, info on right
 func PrintBanner(version, chain, consensus, genesis string, blockNum uint64) {
-	// Colors
-	logoColor := BrightCyan
-	accentColor := BrightMagenta
+	// Colors - similar to Claude Code robot color (terracotta/brick red)
+	logoColor := "\033[38;5;173m" // Terracotta/brick color
 	dimColor := BrightBlack
 	valueColor := BrightWhite
 
-	// N42 ASCII Art - compact version
+	// N42 solid block logo (compact 4-line version)
 	logo := []string{
-		"     _   _  _  _  ____  ",
-		"    | \\ | || || ||___ \\ ",
-		"    |  \\| ||_   _| __) |",
-		"    | |\\  |  | | / __/ ",
-		"    |_| \\_|  |_||_____|",
+		"███╗   ██╗██╗  ██╗██████╗ ",
+		"████╗  ██║██║  ██║╚════██╗",
+		"██╔██╗ ██║███████║ █████╔╝",
+		"██║╚██╗██║╚════██║██╔═══╝ ",
+		"██║ ╚████║     ██║███████╗",
+		"╚═╝  ╚═══╝     ╚═╝╚══════╝",
+	}
+
+	// Info lines to display on right side of logo
+	infoLines := []string{
+		fmt.Sprintf("%sv%s%s %s·%s %s%s%s", valueColor, version, Reset, dimColor, Reset, dimColor, chain, Reset),
+		fmt.Sprintf("%s%s%s", dimColor, consensus, Reset),
+		fmt.Sprintf("%sGenesis %s%s", dimColor, truncateHash(genesis), Reset),
+		fmt.Sprintf("%sBlock   #%s%d%s", dimColor, valueColor, blockNum, Reset),
+		"",
+		"",
 	}
 
 	fmt.Println()
 
-	// Print logo
-	for _, line := range logo {
-		fmt.Printf("  %s%s%s\n", logoColor, line, Reset)
+	// Print logo with info on right side
+	for i, logoLine := range logo {
+		info := ""
+		if i < len(infoLines) {
+			info = infoLines[i]
+		}
+		fmt.Printf("  %s%s%s  %s\n", logoColor, logoLine, Reset, info)
 	}
 
 	fmt.Println()
-
-	// Info section with colored dots
-	printInfoLine := func(color, label, value string) {
-		fmt.Printf("  %s%s%s %s%-10s%s %s%s%s\n",
-			color, DotSymbol, Reset,
-			dimColor, label, Reset,
-			valueColor, value, Reset)
-	}
-
-	printInfoLine(BrightCyan, "Version", version)
-	printInfoLine(BrightGreen, "Chain", chain)
-	printInfoLine(BrightMagenta, "Consensus", consensus)
-	printInfoLine(BrightBlue, "Genesis", truncateHash(genesis))
-	printInfoLine(BrightYellow, "Block", fmt.Sprintf("#%d", blockNum))
-
-	fmt.Println()
-
-	// Separator
-	fmt.Printf("  %s%s%s\n", dimColor, strings.Repeat("─", 50), Reset)
-	fmt.Println()
-
-	_ = accentColor // Keep for potential future use
 }
 
 // PrintStartupProgress prints startup progress items
