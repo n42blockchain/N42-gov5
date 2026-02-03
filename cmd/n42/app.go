@@ -198,11 +198,8 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 		}
 
 		shutdown := func(sig os.Signal) {
-			log.Info("")
-			log.Info("╔════════════════════════════════════════════════════════════╗")
-			log.Info("║  Graceful shutdown initiated (Ctrl+C again to force quit)  ║")
-			log.Info("╚════════════════════════════════════════════════════════════╝")
-			log.Info("")
+			// Print beautiful shutdown banner
+			log.PrintShutdownBanner()
 
 			// Create a done channel to track completion
 			done := make(chan struct{})
@@ -223,28 +220,26 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 			for {
 				select {
 				case <-done:
-					log.Info("")
-					log.Info("✓ Node stopped gracefully. Goodbye!")
-					log.Info("")
+					log.PrintShutdownComplete()
 					return
 
 				case <-timeout:
-					log.Warn("Shutdown timeout (30s), forcing exit...")
+					log.PrintError("Shutdown timeout (30s), forcing exit...")
 					os.Exit(1)
 
 				case <-ticker.C:
 					elapsed++
 					if elapsed%5 == 0 {
-						log.Info("Still shutting down...", "elapsed", fmt.Sprintf("%ds", elapsed))
+						log.PrintWarning(fmt.Sprintf("Still shutting down... (%ds)", elapsed))
 					}
 
 				case <-sigc:
 					forceQuitCount--
 					if forceQuitCount <= 0 {
-						log.Warn("Force quit requested, exiting immediately!")
+						log.PrintError("Force quit requested, exiting immediately!")
 						os.Exit(1)
 					}
-					log.Warn(fmt.Sprintf("Press Ctrl+C %d more time(s) to force quit", forceQuitCount))
+					log.PrintWarning(fmt.Sprintf("Press Ctrl+C %d more time(s) to force quit", forceQuitCount))
 				}
 			}
 		}

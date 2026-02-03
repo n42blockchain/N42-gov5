@@ -182,25 +182,22 @@ func (m *LogManager) getLogFiles() ([]logFileInfo, error) {
 // Init 初始化日志系统
 //
 // 日志策略：
-//   - 当 LogFile 为空时，仅输出到控制台
+//   - 当 LogFile 为空时，仅输出到控制台（使用 Pretty 格式）
 //   - 当 LogFile 不为空时，输出到文件（可配置是否同时输出到控制台）
 //   - 日志文件自动按大小切分、按数量/时间清理、可选压缩
 func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 	// 验证配置
 	_ = config.Validate()
 
-	// 设置控制台输出格式
-	formatter := new(prefixed.TextFormatter)
-	formatter.TimestampFormat = "2006-01-02 15:04:05"
-	formatter.FullTimestamp = true
-	formatter.DisableColors = false
-
 	// 设置日志级别
 	lvl, _ := logrus.ParseLevel(config.Level)
 
-	// 如果没有指定日志文件，只输出到控制台
+	// 如果没有指定日志文件，只输出到控制台，使用漂亮格式
 	if config.LogFile == "" {
-		terminal.SetFormatter(formatter)
+		// 使用新的 Pretty 格式化器
+		prettyFormatter := NewPrettyFormatter()
+		prettyFormatter.ForceColors = true
+		terminal.SetFormatter(prettyFormatter)
 		terminal.SetLevel(lvl)
 		terminal.SetOutput(os.Stdout)
 		return
@@ -226,7 +223,7 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 		LocalTime:  config.LocalTime,
 	}
 
-	// 设置文件输出格式
+	// 设置文件输出格式（文件使用传统格式，便于解析）
 	var fileFormatter logrus.Formatter
 	if config.JSONFormat {
 		jsonFormatter := new(logrus.JSONFormatter)
@@ -236,19 +233,22 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 		textFormatter := new(prefixed.TextFormatter)
 		textFormatter.TimestampFormat = "2006-01-02 15:04:05"
 		textFormatter.FullTimestamp = true
-		textFormatter.DisableColors = true // 文件中不使用颜色
+		textFormatter.DisableColors = true
 		fileFormatter = textFormatter
 	}
 
-	terminal.SetFormatter(fileFormatter)
-	terminal.SetLevel(lvl)
-
-	// 设置输出目标
+	// 根据是否同时输出到控制台选择格式化器
 	if config.Console {
-		// 同时输出到文件和控制台
-		terminal.SetOutput(io.MultiWriter(lj, os.Stdout))
+		// 控制台使用漂亮格式，文件也使用 pretty 格式但无颜色
+		prettyFormatter := NewPrettyFormatter()
+		prettyFormatter.ForceColors = true
+		terminal.SetFormatter(prettyFormatter)
+		terminal.SetLevel(lvl)
+		terminal.SetOutput(io.MultiWriter(os.Stdout, lj))
 	} else {
-		// 仅输出到文件
+		// 仅输出到文件，使用传统格式
+		terminal.SetFormatter(fileFormatter)
+		terminal.SetLevel(lvl)
 		terminal.SetOutput(lj)
 	}
 
@@ -257,17 +257,6 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 		logManager = NewLogManager(logDir, config.TotalSizeCap)
 		logManager.Start()
 	}
-
-	// 打印日志配置信息
-	Info("Logger initialized",
-		"file", logPath,
-		"level", config.Level,
-		"max_size_mb", config.MaxSize,
-		"max_backups", config.MaxBackups,
-		"max_age_days", config.MaxAge,
-		"compress", config.Compress,
-		"total_size_cap_mb", config.TotalSizeCap,
-	)
 }
 
 // Close 关闭日志系统，停止后台任务
