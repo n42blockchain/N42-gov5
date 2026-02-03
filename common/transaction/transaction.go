@@ -40,6 +40,8 @@ const (
 	LegacyTxType = iota
 	AccessListTxType
 	DynamicFeeTxType
+	_              // Reserved for SetCodeTxType (EIP-7702) = 0x04
+	_              // PostQuantumTxType is defined in pq_transaction.go = 0x05
 )
 
 type TxData interface {
@@ -195,6 +197,36 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 		dftt.From = utils.ConvertH160ToPAddress(pbTx.From)
 		dftt.Sign = pbTx.Sign
 		inner = &dftt
+	case PostQuantumTxType:
+		var pqtt PostQuantumTx
+		pqtt.ChainID = uint256.NewInt(pbTx.ChainID)
+		pqtt.Nonce = pbTx.Nonce
+		pqtt.Gas = pbTx.Gas
+		pqtt.GasFeeCap = utils.ConvertH256ToUint256Int(pbTx.FeePerGas)
+		pqtt.GasTipCap = utils.ConvertH256ToUint256Int(pbTx.PriorityFeePerGas)
+		pqtt.Value = utils.ConvertH256ToUint256Int(pbTx.Value)
+		if nil != pbTx.V {
+			pqtt.V = utils.ConvertH256ToUint256Int(pbTx.V)
+		}
+		if nil != pbTx.R {
+			pqtt.R = utils.ConvertH256ToUint256Int(pbTx.R)
+		}
+		if nil != pbTx.S {
+			pqtt.S = utils.ConvertH256ToUint256Int(pbTx.S)
+		}
+		pqtt.Data = pbTx.Data
+		if nil != pbTx.To {
+			pqtt.To = utils.ConvertH160ToPAddress(pbTx.To)
+			if *pqtt.To == (types.Address{}) {
+				pqtt.To = nil
+			}
+		}
+		// Post-quantum specific fields
+		pqtt.SigAlgo = uint8(pbTx.PqSigAlgo)
+		pqtt.PubKeyMode = uint8(pbTx.PqPubKeyMode)
+		pqtt.PubKeyData = pbTx.PqPubKeyData
+		pqtt.PQSignature = pbTx.PqSignature
+		inner = &pqtt
 	}
 
 	// Verify hash consistency between proto and inner hash
@@ -250,6 +282,20 @@ func (tx *Transaction) ToProtoMessage() proto.Message {
 		pbTx.Sign = t.Sign
 		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
 		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+	case *PostQuantumTx:
+		pbTx.ChainID = t.ChainID.Uint64()
+		pbTx.Nonce = tx.Nonce()
+		pbTx.Gas = tx.Gas()
+		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
+		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.Data = tx.Data()
+		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
+		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+		// Post-quantum specific fields
+		pbTx.PqSigAlgo = uint32(t.SigAlgo)
+		pbTx.PqPubKeyMode = uint32(t.PubKeyMode)
+		pbTx.PqPubKeyData = t.PubKeyData
+		pbTx.PqSignature = t.PQSignature
 	}
 	if tx.To() != nil {
 		pbTx.To = utils.ConvertAddressToH160(*tx.To())
@@ -325,6 +371,20 @@ func (tx Transaction) Marshal() ([]byte, error) {
 		pbTx.Sign = t.Sign
 		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
 		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+	case *PostQuantumTx:
+		pbTx.ChainID = t.ChainID.Uint64()
+		pbTx.Nonce = tx.Nonce()
+		pbTx.Gas = tx.Gas()
+		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
+		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.Data = tx.Data()
+		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
+		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+		// Post-quantum specific fields
+		pbTx.PqSigAlgo = uint32(t.SigAlgo)
+		pbTx.PqPubKeyMode = uint32(t.PubKeyMode)
+		pbTx.PqPubKeyData = t.PubKeyData
+		pbTx.PqSignature = t.PQSignature
 	}
 	if tx.To() != nil {
 		pbTx.To = utils.ConvertAddressToH160(*tx.To())
@@ -431,6 +491,8 @@ func (tx *Transaction) SetFrom(addr types.Address) {
 		t.From = &addr
 	case *DynamicFeeTx:
 		t.From = &addr
+	case *PostQuantumTx:
+		// PostQuantumTx doesn't have a From field - address is derived from PQ public key
 	}
 }
 
@@ -441,6 +503,8 @@ func (tx *Transaction) SetNonce(nonce uint64) {
 	case *LegacyTx:
 		t.Nonce = nonce
 	case *DynamicFeeTx:
+		t.Nonce = nonce
+	case *PostQuantumTx:
 		t.Nonce = nonce
 	}
 }
@@ -569,9 +633,12 @@ func isProtectedV(V *big.Int) bool {
 
 // Protected says whether the transaction is replay-protected.
 func (tx *Transaction) Protected() bool {
-	switch tx := tx.inner.(type) {
+	switch inner := tx.inner.(type) {
 	case *LegacyTx:
-		return tx.V.ToBig() != nil && isProtectedV(tx.V.ToBig())
+		return inner.V.ToBig() != nil && isProtectedV(inner.V.ToBig())
+	case *PostQuantumTx:
+		// Post-quantum transactions are always protected via ChainID
+		return true
 	default:
 		return true
 	}
@@ -728,4 +795,49 @@ func (m *Message) SetCheckNonce(checkNonce bool) {
 func (m Message) IsFree() bool { return m.isFree }
 func (m *Message) SetIsFree(isFree bool) {
 	m.isFree = isFree
+}
+
+// =============================================================================
+// Post-Quantum Transaction Helper Methods
+// =============================================================================
+
+// IsPostQuantum returns true if the transaction is a post-quantum transaction
+func (tx *Transaction) IsPostQuantum() bool {
+	return tx.Type() == PostQuantumTxType
+}
+
+// GetPostQuantumTx returns the inner PostQuantumTx if this is a PQ transaction
+// Returns nil if this is not a PQ transaction
+func (tx *Transaction) GetPostQuantumTx() *PostQuantumTx {
+	if pqTx, ok := tx.inner.(*PostQuantumTx); ok {
+		return pqTx
+	}
+	return nil
+}
+
+// PQSigAlgo returns the post-quantum signature algorithm
+// Returns 0 for non-PQ transactions
+func (tx *Transaction) PQSigAlgo() uint8 {
+	if pqTx := tx.GetPostQuantumTx(); pqTx != nil {
+		return pqTx.SigAlgo
+	}
+	return 0
+}
+
+// PQSignature returns the post-quantum signature
+// Returns nil for non-PQ transactions
+func (tx *Transaction) PQSignature() []byte {
+	if pqTx := tx.GetPostQuantumTx(); pqTx != nil {
+		return pqTx.PQSignature
+	}
+	return nil
+}
+
+// PQPubKeyData returns the post-quantum public key data
+// Returns nil for non-PQ transactions
+func (tx *Transaction) PQPubKeyData() []byte {
+	if pqTx := tx.GetPostQuantumTx(); pqTx != nil {
+		return pqTx.PubKeyData
+	}
+	return nil
 }

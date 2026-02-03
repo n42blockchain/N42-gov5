@@ -894,6 +894,11 @@ type Transaction struct {
 	R                 *H256  `protobuf:"bytes,14,opt,name=r,proto3" json:"r,omitempty"`
 	S                 *H256  `protobuf:"bytes,15,opt,name=s,proto3" json:"s,omitempty"`
 	V                 *H256  `protobuf:"bytes,16,opt,name=v,proto3" json:"v,omitempty"`
+	// Post-Quantum transaction fields (Type 0x05)
+	PqSigAlgo    uint32 `protobuf:"varint,17,opt,name=pqSigAlgo,proto3" json:"pqSigAlgo,omitempty"`
+	PqPubKeyMode uint32 `protobuf:"varint,18,opt,name=pqPubKeyMode,proto3" json:"pqPubKeyMode,omitempty"`
+	PqPubKeyData []byte `protobuf:"bytes,19,opt,name=pqPubKeyData,proto3" json:"pqPubKeyData,omitempty" ssz-max:"2048"`
+	PqSignature  []byte `protobuf:"bytes,20,opt,name=pqSignature,proto3" json:"pqSignature,omitempty" ssz-max:"4096"`
 }
 
 func (x *Transaction) Reset() {
@@ -1036,6 +1041,34 @@ func (x *Transaction) GetS() *H256 {
 func (x *Transaction) GetV() *H256 {
 	if x != nil {
 		return x.V
+	}
+	return nil
+}
+
+func (x *Transaction) GetPqSigAlgo() uint32 {
+	if x != nil {
+		return x.PqSigAlgo
+	}
+	return 0
+}
+
+func (x *Transaction) GetPqPubKeyMode() uint32 {
+	if x != nil {
+		return x.PqPubKeyMode
+	}
+	return 0
+}
+
+func (x *Transaction) GetPqPubKeyData() []byte {
+	if x != nil {
+		return x.PqPubKeyData
+	}
+	return nil
+}
+
+func (x *Transaction) GetPqSignature() []byte {
+	if x != nil {
+		return x.PqSignature
 	}
 	return nil
 }
