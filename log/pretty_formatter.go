@@ -212,7 +212,8 @@ func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
 	result += relativeStr
 
 	if colored {
-		return fmt.Sprintf("%s%s%s", BrightBlue, result, Reset)
+		// Use dim gray color for timestamp (similar to modern CLI tools)
+		return fmt.Sprintf("%s%s%s", BrightBlack, result, Reset)
 	}
 	return result
 }
