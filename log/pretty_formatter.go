@@ -122,7 +122,7 @@ func NewPrettyFormatter() *PrettyFormatter {
 	return &PrettyFormatter{
 		ShowModule:       true,
 		startTime:        now,
-		lastAbsoluteTime: now,
+		lastAbsoluteTime: now.Add(-10 * time.Minute), // Force first log to show absolute time
 	}
 }
 
@@ -189,18 +189,19 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// formatTime formats the timestamp - shown at end of line in blue
+// formatTime formats the timestamp - shown at end of line
 // Shows relative time (5s, 2m30s) and absolute time every 10 minutes
+// First log always shows full absolute time: 2026-05-23 12:34:21
 func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
 	elapsed := t.Sub(f.startTime)
 
-	// Build relative time string
+	// Build relative time string (always show seconds precision)
 	relativeStr := f.formatDuration(elapsed)
 
 	// Check if we need to show absolute time (every 10 minutes)
 	var absoluteStr string
 	if t.Sub(f.lastAbsoluteTime) >= 10*time.Minute {
-		absoluteStr = t.Format("01-02 15:04:05")
+		absoluteStr = t.Format("2006-01-02 15:04:05")
 		f.lastAbsoluteTime = t
 	}
 
@@ -212,37 +213,38 @@ func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
 	result += relativeStr
 
 	if colored {
-		// Use muted blue-purple color for timestamp (similar to modern CLI tools)
+		// Use muted blue-purple color for timestamp
 		timeColor := "\033[38;5;60m" // Dark slate blue
 		return fmt.Sprintf("%s%s%s", timeColor, result, Reset)
 	}
 	return result
 }
 
-// formatDuration formats a duration in compact form: 5s, 2m30s, 1h5m2s
+// formatDuration formats a duration in compact form with seconds precision
+// Examples: 0s, 59s, 1m0s, 2m30s, 1h5m2s, 2d20h15m59s
 func (f *PrettyFormatter) formatDuration(d time.Duration) string {
 	if d < time.Second {
 		return "0s"
 	}
 
-	hours := int(d.Hours())
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
 	mins := int(d.Minutes()) % 60
 	secs := int(d.Seconds()) % 60
 
-	if hours > 0 {
-		if secs > 0 {
-			return fmt.Sprintf("%dh%dm%ds", hours, mins, secs)
-		} else if mins > 0 {
-			return fmt.Sprintf("%dh%dm", hours, mins)
-		}
-		return fmt.Sprintf("%dh", hours)
-	} else if mins > 0 {
-		if secs > 0 {
-			return fmt.Sprintf("%dm%ds", mins, secs)
-		}
-		return fmt.Sprintf("%dm", mins)
+	var result string
+	if days > 0 {
+		result += fmt.Sprintf("%dd", days)
 	}
-	return fmt.Sprintf("%ds", secs)
+	if hours > 0 || days > 0 {
+		result += fmt.Sprintf("%dh", hours)
+	}
+	if mins > 0 || hours > 0 || days > 0 {
+		result += fmt.Sprintf("%dm", mins)
+	}
+	result += fmt.Sprintf("%ds", secs)
+
+	return result
 }
 
 // formatLevelIndicator returns a colored symbol based on level and module
