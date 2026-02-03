@@ -1,0 +1,544 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+//
+// The N42 library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+package log
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/sirupsen/logrus"
+	sshterminal "golang.org/x/crypto/ssh/terminal"
+)
+
+// ANSI color codes
+const (
+	Reset      = "\033[0m"
+	Bold       = "\033[1m"
+	Dim        = "\033[2m"
+
+	// Foreground colors
+	Black      = "\033[30m"
+	Red        = "\033[31m"
+	Green      = "\033[32m"
+	Yellow     = "\033[33m"
+	Blue       = "\033[34m"
+	Magenta    = "\033[35m"
+	Cyan       = "\033[36m"
+	White      = "\033[37m"
+
+	// Bright foreground colors
+	BrightBlack   = "\033[90m"
+	BrightRed     = "\033[91m"
+	BrightGreen   = "\033[92m"
+	BrightYellow  = "\033[93m"
+	BrightBlue    = "\033[94m"
+	BrightMagenta = "\033[95m"
+	BrightCyan    = "\033[96m"
+	BrightWhite   = "\033[97m"
+
+	// Background colors
+	BgRed     = "\033[41m"
+	BgGreen   = "\033[42m"
+	BgYellow  = "\033[43m"
+	BgBlue    = "\033[44m"
+	BgMagenta = "\033[45m"
+	BgCyan    = "\033[46m"
+)
+
+// Module colors - Claude Code style colored dots
+var moduleColors = map[string]string{
+	"node":         BrightCyan,
+	"p2p":          BrightMagenta,
+	"sync":         BrightGreen,
+	"initial-sync": BrightGreen,
+	"api":          BrightBlue,
+	"rpc":          BrightBlue,
+	"txspool":      BrightYellow,
+	"miner":        Yellow,
+	"consensus":    Magenta,
+	"apos":         Magenta,
+	"deposit":      Cyan,
+	"enode":        BrightMagenta,
+	"main":         BrightWhite,
+	"blockchain":   BrightCyan,
+	"db":           Blue,
+	"downloader":   Green,
+}
+
+// Symbols for visual hierarchy
+const (
+	DotSymbol    = "●"  // Main indicator
+	SubSymbol    = "⎿"  // Sub-item indicator
+	ArrowSymbol  = "→"  // Flow indicator
+	CheckSymbol  = "✓"  // Success
+	CrossSymbol  = "✗"  // Error
+	WarnSymbol   = "!"  // Warning
+)
+
+// PrettyFormatter implements a Claude Code style log formatter
+type PrettyFormatter struct {
+	// ForceColors forces colored output even when not a TTY
+	ForceColors bool
+
+	// DisableColors disables colored output
+	DisableColors bool
+
+	// DisableTimestamp disables timestamp output
+	DisableTimestamp bool
+
+	// CompactMode uses more compact output
+	CompactMode bool
+
+	// ShowModule shows the module/prefix name
+	ShowModule bool
+
+	// RelativeTime shows relative time (e.g., "2s ago")
+	RelativeTime bool
+
+	// startTime for relative time calculation
+	startTime time.Time
+
+	// isTerminal caches TTY check
+	isTerminal bool
+
+	sync.Once
+}
+
+// NewPrettyFormatter creates a new PrettyFormatter with sensible defaults
+func NewPrettyFormatter() *PrettyFormatter {
+	return &PrettyFormatter{
+		ShowModule:   true,
+		CompactMode:  true,
+		RelativeTime: true,
+		startTime:    time.Now(),
+	}
+}
+
+func (f *PrettyFormatter) init(entry *logrus.Entry) {
+	if entry.Logger != nil {
+		f.isTerminal = f.checkIfTerminal(entry.Logger.Out)
+	}
+}
+
+func (f *PrettyFormatter) checkIfTerminal(w io.Writer) bool {
+	switch v := w.(type) {
+	case *os.File:
+		return sshterminal.IsTerminal(int(v.Fd()))
+	default:
+		return false
+	}
+}
+
+// Format implements logrus.Formatter
+func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	f.Do(func() { f.init(entry) })
+
+	var b bytes.Buffer
+
+	isColored := (f.ForceColors || f.isTerminal) && !f.DisableColors
+
+	// Get module/prefix
+	module := ""
+	if prefix, ok := entry.Data["prefix"]; ok {
+		module = fmt.Sprintf("%v", prefix)
+	}
+
+	// Format timestamp
+	timestamp := f.formatTime(entry.Time, isColored)
+
+	// Format level indicator (colored dot)
+	levelIndicator := f.formatLevelIndicator(entry.Level, module, isColored)
+
+	// Format message
+	message := f.formatMessage(entry.Message, entry.Level, isColored)
+
+	// Format fields
+	fields := f.formatFields(entry.Data, entry.Level, isColored)
+
+	// Build output
+	if !f.DisableTimestamp {
+		b.WriteString(timestamp)
+		b.WriteString(" ")
+	}
+
+	b.WriteString(levelIndicator)
+	b.WriteString(" ")
+	b.WriteString(message)
+
+	if fields != "" {
+		b.WriteString(" ")
+		b.WriteString(fields)
+	}
+
+	b.WriteString("\n")
+
+	return b.Bytes(), nil
+}
+
+// formatTime formats the timestamp in a friendly way
+func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
+	var timeStr string
+
+	if f.RelativeTime {
+		timeStr = f.friendlyTime(t)
+	} else {
+		timeStr = t.Format("15:04:05")
+	}
+
+	if colored {
+		return fmt.Sprintf("%s%s%s", BrightBlack, timeStr, Reset)
+	}
+	return timeStr
+}
+
+// friendlyTime returns a human-friendly relative time
+func (f *PrettyFormatter) friendlyTime(t time.Time) string {
+	elapsed := time.Since(f.startTime)
+
+	if elapsed < time.Second {
+		return "now"
+	} else if elapsed < time.Minute {
+		return fmt.Sprintf("+%ds", int(elapsed.Seconds()))
+	} else if elapsed < time.Hour {
+		mins := int(elapsed.Minutes())
+		secs := int(elapsed.Seconds()) % 60
+		if secs == 0 {
+			return fmt.Sprintf("+%dm", mins)
+		}
+		return fmt.Sprintf("+%dm%ds", mins, secs)
+	} else {
+		return t.Format("15:04:05")
+	}
+}
+
+// formatLevelIndicator returns a colored dot based on level and module
+func (f *PrettyFormatter) formatLevelIndicator(level logrus.Level, module string, colored bool) string {
+	if !colored {
+		switch level {
+		case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
+			return CrossSymbol
+		case logrus.WarnLevel:
+			return WarnSymbol
+		default:
+			return DotSymbol
+		}
+	}
+
+	// Get base color from level
+	var levelColor string
+	var symbol string
+
+	switch level {
+	case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
+		levelColor = BrightRed
+		symbol = DotSymbol
+	case logrus.WarnLevel:
+		levelColor = BrightYellow
+		symbol = DotSymbol
+	case logrus.InfoLevel:
+		// Use module color for info level
+		if moduleColor, ok := moduleColors[module]; ok {
+			levelColor = moduleColor
+		} else {
+			levelColor = BrightCyan
+		}
+		symbol = DotSymbol
+	case logrus.DebugLevel:
+		levelColor = BrightBlack
+		symbol = DotSymbol
+	default:
+		levelColor = BrightBlack
+		symbol = DotSymbol
+	}
+
+	// Format: colored dot + module name
+	if f.ShowModule && module != "" {
+		return fmt.Sprintf("%s%s%s %s%s%s", levelColor, symbol, Reset, Dim, module, Reset)
+	}
+	return fmt.Sprintf("%s%s%s", levelColor, symbol, Reset)
+}
+
+// formatMessage formats the log message
+func (f *PrettyFormatter) formatMessage(msg string, level logrus.Level, colored bool) string {
+	if !colored {
+		return msg
+	}
+
+	// Highlight certain keywords
+	msg = f.highlightKeywords(msg)
+
+	switch level {
+	case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
+		return fmt.Sprintf("%s%s%s", BrightRed, msg, Reset)
+	case logrus.WarnLevel:
+		return fmt.Sprintf("%s%s%s", BrightYellow, msg, Reset)
+	default:
+		return msg
+	}
+}
+
+// highlightKeywords highlights important keywords in messages
+func (f *PrettyFormatter) highlightKeywords(msg string) string {
+	// Highlight success keywords (green)
+	successKeywords := []string{"started", "connected", "initialized", "ready", "completed", "success", "synced", "stopped"}
+	for _, kw := range successKeywords {
+		if strings.Contains(strings.ToLower(msg), kw) {
+			msg = strings.ReplaceAll(msg, kw, fmt.Sprintf("%s%s%s", BrightGreen, kw, Reset))
+			msg = strings.ReplaceAll(msg, strings.Title(kw), fmt.Sprintf("%s%s%s", BrightGreen, strings.Title(kw), Reset))
+		}
+	}
+
+	// Highlight failure keywords (red) - these override success keywords if both present
+	failKeywords := []string{"failed", "error", "disconnected", "timeout", "mismatch"}
+	for _, kw := range failKeywords {
+		if strings.Contains(strings.ToLower(msg), kw) {
+			msg = strings.ReplaceAll(msg, kw, fmt.Sprintf("%s%s%s", BrightRed, kw, Reset))
+			msg = strings.ReplaceAll(msg, strings.Title(kw), fmt.Sprintf("%s%s%s", BrightRed, strings.Title(kw), Reset))
+		}
+	}
+
+	return msg
+}
+
+// formatFields formats the key-value fields
+func (f *PrettyFormatter) formatFields(data logrus.Fields, level logrus.Level, colored bool) string {
+	if len(data) == 0 {
+		return ""
+	}
+
+	// Sort keys for consistent output
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		if k != "prefix" { // Skip prefix as it's shown in the indicator
+			keys = append(keys, k)
+		}
+	}
+
+	if len(keys) == 0 {
+		return ""
+	}
+
+	sort.Strings(keys)
+
+	var parts []string
+	for _, k := range keys {
+		v := data[k]
+
+		// Format value
+		var valStr string
+		switch val := v.(type) {
+		case string:
+			// Truncate long strings
+			if len(val) > 60 {
+				valStr = val[:57] + "..."
+			} else {
+				valStr = val
+			}
+		case error:
+			valStr = val.Error()
+		default:
+			valStr = fmt.Sprintf("%v", val)
+		}
+
+		if colored {
+			// Special coloring for certain keys
+			var keyColor, valColor string
+			switch k {
+			case "err", "error":
+				keyColor = BrightRed
+				valColor = Red
+			case "peer", "peer_id", "id":
+				keyColor = BrightMagenta
+				valColor = Magenta
+			case "block", "blockNr", "number", "height":
+				keyColor = BrightCyan
+				valColor = Cyan
+			case "hash", "genesis":
+				keyColor = BrightBlue
+				valColor = Blue
+			default:
+				keyColor = Dim
+				valColor = ""
+			}
+
+			if valColor != "" {
+				parts = append(parts, fmt.Sprintf("%s%s%s=%s%s%s", keyColor, k, Reset, valColor, valStr, Reset))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s%s%s=%s", keyColor, k, Reset, valStr))
+			}
+		} else {
+			parts = append(parts, fmt.Sprintf("%s=%s", k, valStr))
+		}
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// PrintBanner prints a beautiful startup banner
+func PrintBanner(version, chain, consensus, genesis string, blockNum uint64) {
+	// Colors
+	logoColor := BrightCyan
+	accentColor := BrightMagenta
+	dimColor := BrightBlack
+	valueColor := BrightWhite
+
+	// N42 ASCII Art - compact version
+	logo := []string{
+		"     _   _  _  _  ____  ",
+		"    | \\ | || || ||___ \\ ",
+		"    |  \\| ||_   _| __) |",
+		"    | |\\  |  | | / __/ ",
+		"    |_| \\_|  |_||_____|",
+	}
+
+	fmt.Println()
+
+	// Print logo
+	for _, line := range logo {
+		fmt.Printf("  %s%s%s\n", logoColor, line, Reset)
+	}
+
+	fmt.Println()
+
+	// Info section with colored dots
+	printInfoLine := func(color, label, value string) {
+		fmt.Printf("  %s%s%s %s%-10s%s %s%s%s\n",
+			color, DotSymbol, Reset,
+			dimColor, label, Reset,
+			valueColor, value, Reset)
+	}
+
+	printInfoLine(BrightCyan, "Version", version)
+	printInfoLine(BrightGreen, "Chain", chain)
+	printInfoLine(BrightMagenta, "Consensus", consensus)
+	printInfoLine(BrightBlue, "Genesis", truncateHash(genesis))
+	printInfoLine(BrightYellow, "Block", fmt.Sprintf("#%d", blockNum))
+
+	fmt.Println()
+
+	// Separator
+	fmt.Printf("  %s%s%s\n", dimColor, strings.Repeat("─", 50), Reset)
+	fmt.Println()
+
+	_ = accentColor // Keep for potential future use
+}
+
+// PrintStartupProgress prints startup progress items
+func PrintStartupProgress(step int, total int, message string) {
+	fmt.Printf("  %s%s%s %s[%d/%d]%s %s\n",
+		BrightCyan, DotSymbol, Reset,
+		Dim, step, total, Reset,
+		message)
+}
+
+// PrintSubItem prints a sub-item with hierarchy indicator
+func PrintSubItem(message string) {
+	fmt.Printf("    %s%s%s %s\n", Dim, SubSymbol, Reset, message)
+}
+
+// PrintSuccess prints a success message
+func PrintSuccess(message string) {
+	fmt.Printf("  %s%s%s %s%s%s\n", BrightGreen, CheckSymbol, Reset, BrightGreen, message, Reset)
+}
+
+// PrintError prints an error message
+func PrintError(message string) {
+	fmt.Printf("  %s%s%s %s%s%s\n", BrightRed, CrossSymbol, Reset, BrightRed, message, Reset)
+}
+
+// PrintWarning prints a warning message
+func PrintWarning(message string) {
+	fmt.Printf("  %s%s%s %s%s%s\n", BrightYellow, WarnSymbol, Reset, BrightYellow, message, Reset)
+}
+
+// PrintShutdownBanner prints a graceful shutdown message
+func PrintShutdownBanner() {
+	fmt.Println()
+	fmt.Printf("  %s╭────────────────────────────────────────────────────────╮%s\n", BrightYellow, Reset)
+	fmt.Printf("  %s│%s  %sGraceful shutdown initiated%s %s(Ctrl+C to force quit)%s   %s│%s\n",
+		BrightYellow, Reset, BrightWhite, Reset, Dim, Reset, BrightYellow, Reset)
+	fmt.Printf("  %s╰────────────────────────────────────────────────────────╯%s\n", BrightYellow, Reset)
+	fmt.Println()
+}
+
+// PrintShutdownStep prints a shutdown progress step
+func PrintShutdownStep(step int, total int, service string) {
+	fmt.Printf("  %s%s%s %s[%d/%d]%s Stopping %s%s%s...\n",
+		BrightYellow, DotSymbol, Reset,
+		Dim, step, total, Reset,
+		BrightWhite, service, Reset)
+}
+
+// PrintShutdownComplete prints shutdown complete message
+func PrintShutdownComplete() {
+	fmt.Printf("  %s%s%s %sAll services stopped%s\n", BrightGreen, CheckSymbol, Reset, BrightGreen, Reset)
+	fmt.Println()
+}
+
+// truncateHash truncates a hash string for display
+func truncateHash(hash string) string {
+	if len(hash) <= 20 {
+		return hash
+	}
+	// Show first 8 and last 8 characters
+	return hash[:10] + "..." + hash[len(hash)-8:]
+}
+
+// FormatPeerID formats a peer ID for display
+func FormatPeerID(peerID string) string {
+	if len(peerID) <= 20 {
+		return peerID
+	}
+	return peerID[:16] + "..."
+}
+
+// FormatDuration formats a duration in a friendly way
+func FormatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	} else if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	} else if d < time.Hour {
+		mins := int(d.Minutes())
+		secs := int(d.Seconds()) % 60
+		return fmt.Sprintf("%dm%ds", mins, secs)
+	} else {
+		hours := int(d.Hours())
+		mins := int(d.Minutes()) % 60
+		return fmt.Sprintf("%dh%dm", hours, mins)
+	}
+}
+
+// FormatBytes formats bytes in a human-readable way
+func FormatBytes(bytes uint64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := uint64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// WaitingSpinner prints a waiting message with progress
+func PrintWaiting(message string, current, required int) {
+	fmt.Printf("\r  %s%s%s %s %s(%d/%d)%s",
+		BrightCyan, DotSymbol, Reset,
+		message,
+		Dim, current, required, Reset)
+}

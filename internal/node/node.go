@@ -356,26 +356,36 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		gpoParams.Default = cfg.Miner.GasPrice
 	}
 
-	// Print chain configuration banner
-	log.Info("")
-	log.Info("================================================================")
-	log.Info("")
-	log.Info("  _   _ _ _  ____  ")
-	log.Info(" | \\ | | | ||___ \\ ")
-	log.Info(" |  \\| | |_|  __) |")
-	log.Info(" | |\\  |___  / __/ ")
-	log.Info(" |_| \\_|   ||_____|")
-	log.Info("")
-	for _, line := range strings.Split(cfg.ChainCfg.Description(), "\n") {
-		if strings.TrimSpace(line) != "" {
-			log.Info("  " + line)
-		}
+	// Print beautiful startup banner
+	actualGenesisHash := genesisBlock.Hash()
+	expectedGenesisHash := params.MainnetGenesisHash
+	if cfg.NodeCfg.Chain == "testnet" {
+		expectedGenesisHash = params.TestnetGenesisHash
 	}
-	log.Info(fmt.Sprintf("  Genesis    %s", genesisBlock.Hash().String()[:16]+"..."))
-	log.Info(fmt.Sprintf("  Block      #%d", bc.CurrentBlock().Number64().Uint64()))
-	log.Info("")
-	log.Info("================================================================")
-	log.Info("")
+
+	// Get chain info from description
+	chainName := cfg.NodeCfg.Chain
+	if chainName == "" {
+		chainName = "mainnet"
+	}
+	consensusName := string(cfg.ChainCfg.Consensus)
+	if cfg.ChainCfg.Consensus == params.AposConsensu {
+		consensusName = "Mobile Consensus"
+	}
+
+	// Print the pretty banner
+	log.PrintBanner(
+		params.VersionWithMeta,
+		fmt.Sprintf("%s (ID: %s)", chainName, cfg.ChainCfg.ChainID.String()),
+		consensusName,
+		actualGenesisHash.String(),
+		bc.CurrentBlock().Number64().Uint64(),
+	)
+
+	// Check genesis hash mismatch
+	if actualGenesisHash != expectedGenesisHash {
+		log.PrintError(fmt.Sprintf("Genesis hash mismatch! Expected: %s", expectedGenesisHash.String()[:20]+"..."))
+	}
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))
@@ -701,82 +711,81 @@ func (n *Node) stopServices() []error {
 	var errs []error
 	total := 9 // Total number of services to stop
 	current := 0
-	
+
 	logProgress := func(service string) {
 		current++
-		log.Info(fmt.Sprintf("  [%d/%d] Stopping %s...", current, total, service))
+		log.PrintShutdownStep(current, total, service)
 	}
-	
-	logDone := func(service string, err error) {
+
+	logError := func(service string, err error) {
 		if err != nil {
-			log.Warn(fmt.Sprintf("  [%d/%d] %s stopped with error", current, total, service), "err", err)
+			log.PrintSubItem(fmt.Sprintf("%s stopped with error: %v", service, err))
 		}
 	}
-	
+
 	// 1. Stop RPC services
 	logProgress("RPC services")
 	n.stopRPC()
-	
+
 	// 2. Stop transaction generator if running
 	logProgress("Transaction generator")
 	if n.txGenerator != nil {
 		n.txGenerator.Stop()
 	}
-	
+
 	// 3. Stop miner
 	logProgress("Miner")
 	n.miner.Close()
-	
+
 	// 4. Stop blockchain (this may take time to flush data)
-	logProgress("Blockchain (flushing data)")
+	logProgress("Blockchain")
 	if err := n.blockChain.Close(); err != nil {
 		errs = append(errs, err)
-		logDone("Blockchain", err)
+		logError("Blockchain", err)
 	}
-	
+
 	// 5. Stop consensus engine
 	logProgress("Consensus engine")
 	if err := n.engine.Close(); err != nil {
 		errs = append(errs, err)
-		logDone("Consensus engine", err)
+		logError("Consensus", err)
 	}
-	
+
 	// 6. Stop transaction pool
 	logProgress("Transaction pool")
 	if err := n.txspool.Stop(); err != nil {
 		errs = append(errs, err)
-		logDone("Transaction pool", err)
+		logError("TxPool", err)
 	}
-	
+
 	// 7. Stop deposit contract
 	logProgress("Deposit contract")
 	if n.depositContract != nil {
 		if err := n.depositContract.Stop(); err != nil {
 			errs = append(errs, err)
-			logDone("Deposit contract", err)
+			logError("Deposit", err)
 		}
 	}
-	
+
 	// 8. Stop initial sync
 	logProgress("Initial sync")
 	if err := n.is.Stop(); err != nil {
 		errs = append(errs, err)
-		logDone("Initial sync", err)
+		logError("Sync", err)
 	}
-	
+
 	// 9. Stop P2P networking
 	logProgress("P2P network")
 	if err := n.p2p.Stop(); err != nil {
 		errs = append(errs, err)
-		logDone("P2P network", err)
+		logError("P2P", err)
 	}
-	
+
 	// Stop sync service (doesn't count towards total as it's auxiliary)
 	if err := n.sync.Stop(); err != nil {
 		errs = append(errs, err)
 	}
-	
-	log.Info("All services stopped")
+
 	return errs
 }
 
