@@ -358,24 +358,23 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	// Print chain configuration banner
 	log.Info("")
-	log.Info("╔════════════════════════════════════════════════════════════════════════════╗")
-	log.Info("║                                                                            ║")
-	log.Info("║   ███╗   ██╗██╗  ██╗██████╗                                                ║")
-	log.Info("║   ████╗  ██║██║  ██║╚════██╗                                               ║")
-	log.Info("║   ██╔██╗ ██║███████║ █████╔╝                                               ║")
-	log.Info("║   ██║╚██╗██║╚════██║██╔═══╝                                                ║")
-	log.Info("║   ██║ ╚████║     ██║███████╗                                               ║")
-	log.Info("║   ╚═╝  ╚═══╝     ╚═╝╚══════╝                                               ║")
-	log.Info("║                                                                            ║")
+	log.Info("================================================================")
+	log.Info("")
+	log.Info("  _   _ _ _  ____  ")
+	log.Info(" | \\ | | | ||___ \\ ")
+	log.Info(" |  \\| | |_|  __) |")
+	log.Info(" | |\\  |___  / __/ ")
+	log.Info(" |_| \\_|   ||_____|")
+	log.Info("")
 	for _, line := range strings.Split(cfg.ChainCfg.Description(), "\n") {
 		if strings.TrimSpace(line) != "" {
-			log.Info(fmt.Sprintf("║   %-72s║", line))
+			log.Info("  " + line)
 		}
 	}
-	log.Info(fmt.Sprintf("║   %-72s║", fmt.Sprintf("Genesis    %s", genesisBlock.Hash().String()[:16]+"...")))
-	log.Info(fmt.Sprintf("║   %-72s║", fmt.Sprintf("Block      #%d", bc.CurrentBlock().Number64().Uint64())))
-	log.Info("║                                                                            ║")
-	log.Info("╚════════════════════════════════════════════════════════════════════════════╝")
+	log.Info(fmt.Sprintf("  Genesis    %s", genesisBlock.Hash().String()[:16]+"..."))
+	log.Info(fmt.Sprintf("  Block      #%d", bc.CurrentBlock().Number64().Uint64()))
+	log.Info("")
+	log.Info("================================================================")
 	log.Info("")
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
