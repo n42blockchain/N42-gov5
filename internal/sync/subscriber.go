@@ -173,7 +173,12 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 	}
 
 	go messageLoop()
-	log.Info("Subscribed to topic", "topic", topic)
+	// Shorten topic for cleaner logging
+	shortTopic := topic
+	if len(topic) > 50 {
+		shortTopic = topic[:47] + "..."
+	}
+	log.Info("Subscribed to gossip topic", "topic", shortTopic)
 	return sub
 }
 

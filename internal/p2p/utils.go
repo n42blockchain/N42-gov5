@@ -125,7 +125,7 @@ func privKey(cfg *conf.P2PConfig) (*ecdsa.PrivateKey, error) {
 		if err := os.WriteFile(defaultKeyPath, dst, 0600); err != nil {
 			return nil, err
 		}
-		log.Info("Wrote network key to file")
+		log.Info("Generated new network key")
 		// Read the key from the defaultKeyPath file just written
 		// for the strongest guarantee that the next start will be the same as this one.
 		return privKeyFromFile(defaultKeyPath)

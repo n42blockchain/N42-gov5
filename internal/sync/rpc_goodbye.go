@@ -44,7 +44,11 @@ func (s *Service) goodbyeRPCHandler(_ context.Context, msg interface{}, stream l
 		return err
 	}
 	s.rateLimiter.add(stream, 1)
-	log.Info("Peer has sent a goodbye message", "peer", stream.Conn().RemotePeer(), "Reason", goodbyeMessage(*m))
+	peerID := stream.Conn().RemotePeer().String()
+	if len(peerID) > 16 {
+		peerID = peerID[:16] + "..."
+	}
+	log.Debug("Peer disconnecting", "peer", peerID, "reason", goodbyeMessage(*m))
 	s.cfg.p2p.Peers().SetNextValidTime(stream.Conn().RemotePeer(), goodByeBackoff(*m))
 	// closes all streams with the peer
 	return s.cfg.p2p.Disconnect(stream.Conn().RemotePeer())

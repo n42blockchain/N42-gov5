@@ -19,7 +19,7 @@ func logIPAddr(id peer.ID, addrs ...ma.Multiaddr) {
 		}
 	}
 	if correctAddr != nil {
-		log.Info("Node started p2p server", "multiAddr", correctAddr.String()+"/p2p/"+id.String())
+		log.Info("P2P server started", "addr", correctAddr.String(), "peer_id", id.String()[:16]+"...")
 	}
 }
 

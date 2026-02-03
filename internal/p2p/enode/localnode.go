@@ -313,7 +313,11 @@ func (ln *LocalNode) sign() {
 		panic(fmt.Errorf("enode: can't verify local record: %v", err))
 	}
 	ln.cur.Store(n)
-	log.Info("New local node record", "seq", ln.seq, "id", n.ID(), "ip", n.IP(), "udp", n.UDP(), "tcp", n.TCP())
+	nodeID := n.ID().String()
+	if len(nodeID) > 16 {
+		nodeID = nodeID[:16]
+	}
+	log.Info("Local ENR updated", "seq", ln.seq, "id", nodeID, "ip", n.IP(), "udp", n.UDP(), "tcp", n.TCP())
 }
 
 func (ln *LocalNode) bumpSeq() {

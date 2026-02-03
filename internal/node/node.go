@@ -313,8 +313,6 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// are required to add the backends later on.
 	accman := accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: cfg.NodeCfg.InsecureUnlockAllowed})
 
-	log.Info("new node", "GenesisHash", genesisBlock.Hash(), "CurrentBlockNr", bc.CurrentBlock().Number64().Uint64())
-
 	node = Node{
 		cliCtx:          cliCtx,
 		ctx:             ctx,
@@ -360,14 +358,24 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	// Print chain configuration banner
 	log.Info("")
-	log.Info(strings.Repeat("-", 80))
+	log.Info("╔══════════════════════════════════════════════════════════════════════════════╗")
+	log.Info("║                                                                              ║")
+	log.Info("║     ███╗   ██╗ ██╗  ██╗ ██████╗                                              ║")
+	log.Info("║     ████╗  ██║ ██║  ██║ ╚════██╗                                             ║")
+	log.Info("║     ██╔██╗ ██║ ███████║  █████╔╝                                             ║")
+	log.Info("║     ██║╚██╗██║      ██║ ██╔═══╝                                              ║")
+	log.Info("║     ██║ ╚████║      ██║ ███████╗                                             ║")
+	log.Info("║     ╚═╝  ╚═══╝      ╚═╝ ╚══════╝                                             ║")
+	log.Info("║                                                                              ║")
 	for _, line := range strings.Split(cfg.ChainCfg.Description(), "\n") {
-		// Skip empty lines to avoid log spam
 		if strings.TrimSpace(line) != "" {
-			log.Info(line)
+			log.Info(fmt.Sprintf("║     %-71s║", line))
 		}
 	}
-	log.Info(strings.Repeat("-", 80))
+	log.Info(fmt.Sprintf("║     %-71s║", fmt.Sprintf("Genesis    %s", genesisBlock.Hash().String()[:16]+"...")))
+	log.Info(fmt.Sprintf("║     %-71s║", fmt.Sprintf("Block      #%d", bc.CurrentBlock().Number64().Uint64())))
+	log.Info("║                                                                              ║")
+	log.Info("╚══════════════════════════════════════════════════════════════════════════════╝")
 	log.Info("")
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
@@ -920,7 +928,7 @@ func OpenDatabase(cfg *conf.Config, logger log2.Logger, name string) (kv.RwDB, e
 	dbPath := filepath.Join(cfg.NodeCfg.DataDir, name)
 
 	var openFunc func(exclusive bool) (kv.RwDB, error)
-	log.Info("Opening Database", "label", name, "path", dbPath)
+	log.Info("Opening database", "name", name, "path", dbPath)
 	openFunc = func(exclusive bool) (kv.RwDB, error) {
 		//if config.Http.DBReadConcurrency > 0 {
 		//	roTxLimit = int64(config.Http.DBReadConcurrency)
@@ -962,7 +970,7 @@ func WriteGenesisBlock(db kv.RwTx, genesis *conf.Genesis) (*block.Block, error) 
 		Hash:          "",
 		GenesisConfig: genesis,
 	}
-	log.Info("Writing genesis block")
+	log.Info("Initializing genesis block...")
 	genBlock, _, err := g.Write(db)
 	if nil != err {
 		return nil, err

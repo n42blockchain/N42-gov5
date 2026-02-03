@@ -60,15 +60,15 @@ func (s *Service) Start() {
 	event.GlobalEvent.Send(common.DownloaderStartEvent{})
 	defer event.GlobalEvent.Send(common.DownloaderFinishEvent{})
 
-	log.Info("Starting initial chain sync...")
+	log.Info("Starting chain synchronization...")
 	highestExpectedBlockNr := s.waitForMinimumPeers()
 	if err := s.roundRobinSync(highestExpectedBlockNr); err != nil {
 		if errors.Is(s.ctx.Err(), context.Canceled) {
 			return
 		}
-		log.Crit("Initial sync failed", "err", err)
+		log.Crit("Sync failed", "err", err)
 	}
-	log.Info(fmt.Sprintf("Synced up to blockNr: %d", s.cfg.Chain.CurrentBlock().Number64().Uint64()))
+	log.Info("Chain sync completed", "block", s.cfg.Chain.CurrentBlock().Number64().Uint64())
 	s.markSynced()
 }
 
@@ -126,41 +126,45 @@ func (s *Service) Resync() error {
 // 3. Enough peers are available
 func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 	required := s.cfg.P2P.GetConfig().MinSyncPeers
-	
+
 	// Check if we should skip waiting for peers
 	if s.shouldSkipPeerWait() {
-		log.Info("Skipping peer wait (genesis node or standalone mode)")
+		log.Info("Skipping peer discovery (genesis/standalone mode)")
 		return s.cfg.Chain.CurrentBlock().Number64()
 	}
-	
+
 	var peers []peer.ID
 	waitCount := 0
 	maxWaitCount := 60 // Maximum ~5 minutes wait (60 * 5 seconds)
-	
+
 	for {
 		highestExpectedBlockNr, peers = s.cfg.P2P.Peers().BestPeers(s.cfg.P2P.GetConfig().MinSyncPeers, s.cfg.Chain.CurrentBlock().Number64())
 		if len(peers) >= required {
+			log.Info("Found suitable peers for sync", "peers", len(peers), "required", required)
 			break
 		}
-		
+
 		waitCount++
-		log.Info("Waiting for enough suitable peers before syncing (initial-sync.Server)", 
-			"suitable", len(peers), 
-			"required", required,
-			"waitCount", waitCount,
-			"maxWait", maxWaitCount)
-		
+		// Only log every 5 iterations to reduce spam
+		if waitCount == 1 || waitCount%5 == 0 {
+			remaining := maxWaitCount - waitCount
+			log.Info("Waiting for peers...",
+				"found", len(peers),
+				"need", required,
+				"timeout", fmt.Sprintf("%ds", remaining*5))
+		}
+
 		// After max wait, check if we should proceed anyway
 		if waitCount >= maxWaitCount {
 			if s.cfg.Chain.CurrentBlock().Number64().IsZero() {
-				log.Warn("Timeout waiting for peers on genesis block, proceeding as genesis node")
+				log.Warn("Peer discovery timeout, starting as genesis node")
 				return s.cfg.Chain.CurrentBlock().Number64()
 			}
 			// For non-genesis nodes, continue waiting but log warning
-			log.Warn("Extended wait for peers, node may be partitioned from network")
+			log.Warn("Extended peer wait, node may be isolated from network")
 			waitCount = 0 // Reset counter to continue waiting
 		}
-		
+
 		time.Sleep(handshakePollingInterval)
 	}
 	return
