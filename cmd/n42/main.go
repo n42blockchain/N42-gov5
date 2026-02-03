@@ -28,15 +28,6 @@ import (
 	_ "github.com/n42blockchain/N42/internal/tracers/native"
 )
 
-const banner = `
- ███╗   ██╗██╗  ██╗██████╗ 
- ████╗  ██║██║  ██║╚════██╗
- ██╔██╗ ██║███████║ █████╔╝
- ██║╚██╗██║╚════██║██╔═══╝ 
- ██║ ╚████║     ██║███████╗
- ╚═╝  ╚═══╝     ╚═╝╚══════╝
-`
-
 const usageText = `n42 [options] [command]
 
 快速启动：
@@ -57,8 +48,6 @@ const usageText = `n42 [options] [command]
   n42 init --help                 初始化命令`
 
 func main() {
-	fmt.Print(banner)
-
 	// 使用新的参数结构（已整合所有旧参数）
 	flags := AllFlags()
 

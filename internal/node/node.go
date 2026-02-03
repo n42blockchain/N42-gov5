@@ -358,24 +358,24 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	// Print chain configuration banner
 	log.Info("")
-	log.Info("╔══════════════════════════════════════════════════════════════════════════════╗")
-	log.Info("║                                                                              ║")
-	log.Info("║     ███╗   ██╗ ██╗  ██╗ ██████╗                                              ║")
-	log.Info("║     ████╗  ██║ ██║  ██║ ╚════██╗                                             ║")
-	log.Info("║     ██╔██╗ ██║ ███████║  █████╔╝                                             ║")
-	log.Info("║     ██║╚██╗██║      ██║ ██╔═══╝                                              ║")
-	log.Info("║     ██║ ╚████║      ██║ ███████╗                                             ║")
-	log.Info("║     ╚═╝  ╚═══╝      ╚═╝ ╚══════╝                                             ║")
-	log.Info("║                                                                              ║")
+	log.Info("╔════════════════════════════════════════════════════════════════════════════╗")
+	log.Info("║                                                                            ║")
+	log.Info("║   ███╗   ██╗██╗  ██╗██████╗                                                ║")
+	log.Info("║   ████╗  ██║██║  ██║╚════██╗                                               ║")
+	log.Info("║   ██╔██╗ ██║███████║ █████╔╝                                               ║")
+	log.Info("║   ██║╚██╗██║╚════██║██╔═══╝                                                ║")
+	log.Info("║   ██║ ╚████║     ██║███████╗                                               ║")
+	log.Info("║   ╚═╝  ╚═══╝     ╚═╝╚══════╝                                               ║")
+	log.Info("║                                                                            ║")
 	for _, line := range strings.Split(cfg.ChainCfg.Description(), "\n") {
 		if strings.TrimSpace(line) != "" {
-			log.Info(fmt.Sprintf("║     %-71s║", line))
+			log.Info(fmt.Sprintf("║   %-72s║", line))
 		}
 	}
-	log.Info(fmt.Sprintf("║     %-71s║", fmt.Sprintf("Genesis    %s", genesisBlock.Hash().String()[:16]+"...")))
-	log.Info(fmt.Sprintf("║     %-71s║", fmt.Sprintf("Block      #%d", bc.CurrentBlock().Number64().Uint64())))
-	log.Info("║                                                                              ║")
-	log.Info("╚══════════════════════════════════════════════════════════════════════════════╝")
+	log.Info(fmt.Sprintf("║   %-72s║", fmt.Sprintf("Genesis    %s", genesisBlock.Hash().String()[:16]+"...")))
+	log.Info(fmt.Sprintf("║   %-72s║", fmt.Sprintf("Block      #%d", bc.CurrentBlock().Number64().Uint64())))
+	log.Info("║                                                                            ║")
+	log.Info("╚════════════════════════════════════════════════════════════════════════════╝")
 	log.Info("")
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
