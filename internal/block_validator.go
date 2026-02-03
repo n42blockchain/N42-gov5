@@ -73,11 +73,11 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 			return err
 		}
 		if !sig.FastAggregateVerify(ss, header.Root) {
-			log.Warn("AggSignature verify falied", "blockNr", b.Number64().Uint64(), "Signature", hexutil.Encode(header.Signature[:]), "Root", hexutil.Encode(header.Root[:]))
+			log.Warn("aggregate signature verification failed", "blockNr", b.Number64().Uint64(), "Signature", hexutil.Encode(header.Signature[:]), "Root", hexutil.Encode(header.Root[:]))
 			for i, addr := range addrs {
 				log.Warn("", "address", addr.String(), "publicKey", hexutil.Encode(ss[i].Marshal()))
 			}
-			return fmt.Errorf("AggSignature verify falied")
+			return fmt.Errorf("aggregate signature verification failed")
 		}
 	}
 

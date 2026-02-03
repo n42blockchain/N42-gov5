@@ -763,7 +763,7 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 			return err
 		}
 		if !sig.FastAggregateVerify(ss, header.Root) {
-			return fmt.Errorf("AggSignature verify falied")
+			return fmt.Errorf("aggregate signature verification failed")
 		}
 
 		header.Signature = aggSign

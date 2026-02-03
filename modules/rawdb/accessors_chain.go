@@ -405,13 +405,13 @@ func ReadCanonicalBodyWithTransactions(db kv.Getter, hash types.Hash, number uin
 	var err error
 	body.Txs, err = CanonicalTransactions(db, baseTxId, txAmount)
 	if err != nil {
-		log.Error("failed ReadTransactionByHash", "hash", hash, "block", number, "err", err)
+		log.Error("Failed to read transaction by hash", "hash", hash, "block", number, "err", err)
 		return nil
 	}
 
 	verifies, err := ReadVerifies(db, hash, number)
 	if nil != err {
-		log.Error("read verifier failed", err)
+		log.Error("Failed to read verifiers", "hash", hash, "block", number, "err", err)
 		return nil
 	}
 	body.Verifiers = verifies
