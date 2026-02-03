@@ -28,7 +28,7 @@ require (
 	github.com/hashicorp/golang-lru v1.0.2
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/holiman/bloomfilter/v2 v2.0.3
-	github.com/holiman/uint256 v1.3.2
+	github.com/holiman/uint256 v1.2.3
 	github.com/kr/pretty v0.3.1
 	github.com/ledgerwatch/erigon-lib v1.0.0
 	github.com/ledgerwatch/log/v3 v3.9.0
