@@ -497,8 +497,8 @@ func PrintShutdownBanner() {
 
 // PrintShutdownStep prints a shutdown progress step
 func PrintShutdownStep(step int, total int, service string) {
-	fmt.Printf("  %s%s%s %s[%d/%d]%s Stopping %s%s%s...\n",
-		BrightYellow, DotSymbol, Reset,
+	fmt.Printf("  %s-%s %s[%d/%d]%s Stopping %s%s%s...\n",
+		BrightYellow, Reset,
 		Dim, step, total, Reset,
 		BrightWhite, service, Reset)
 }
