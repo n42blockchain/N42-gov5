@@ -4,15 +4,41 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/internal/p2p/peers"
-	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/n42blockchain/N42/internal/p2p/peers"
+	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
+
+// isTransportError checks if the error is a common transport-level error
+// that should not be logged as a warning (e.g., connection closed, go away, reset)
+func isTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	transportErrors := []string{
+		"connection closed",
+		"transport error",
+		"go away",
+		"stream reset",
+		"connection reset",
+		"use of closed network connection",
+		"broken pipe",
+		"connection refused",
+	}
+	for _, te := range transportErrors {
+		if strings.Contains(strings.ToLower(errStr), te) {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	// The time to wait for a status request.
@@ -161,7 +187,13 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 
 				s.peers.SetConnectionState(conn.RemotePeer(), peers.PeerConnecting)
 				if err := reqFunc(s.ctx, conn.RemotePeer()); err != nil && err != io.EOF {
-					log.Warn("Handshake failed", "err", err)
+					// Transport errors (connection closed, go away, etc.) are common in P2P networks
+					// and should not be logged as warnings
+					if isTransportError(err) {
+						log.Debug("Handshake failed", "err", err)
+					} else {
+						log.Warn("Handshake failed", "err", err)
+					}
 					disconnectFromPeer()
 					return
 				}
