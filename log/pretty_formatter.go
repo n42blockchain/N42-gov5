@@ -194,7 +194,7 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 
 // formatTime formats the timestamp - shown at end of line
 // Shows relative time (5s, 2m30s) and absolute time every 10 minutes
-// Only shows timestamp when it differs from the last displayed time
+// Only shows relative time when it differs from the last displayed time
 // First log shows full time: 2026-01-02 15:04:05
 // Every 10 minutes shows short time: 02-03 15:23:03
 func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
@@ -215,18 +215,19 @@ func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
 		f.lastAbsoluteTime = t
 	}
 
-	// Combine
+	// Build result: absolute time always shown if present, relative time only if changed
 	var result string
 	if absoluteStr != "" {
-		result = absoluteStr + " "
+		result = absoluteStr + " " + relativeStr
+		f.lastTimeStr = relativeStr
+	} else if relativeStr != f.lastTimeStr {
+		result = relativeStr
+		f.lastTimeStr = relativeStr
 	}
-	result += relativeStr
 
-	// Only show if different from last time
-	if result == f.lastTimeStr {
+	if result == "" {
 		return ""
 	}
-	f.lastTimeStr = result
 
 	if colored {
 		// Use muted blue-purple color for timestamp
