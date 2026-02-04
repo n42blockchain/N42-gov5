@@ -110,6 +110,9 @@ type PrettyFormatter struct {
 	// lastAbsoluteTime tracks when we last showed absolute time
 	lastAbsoluteTime time.Time
 
+	// lastTimeStr tracks the last displayed timestamp to avoid duplicates
+	lastTimeStr string
+
 	// isTerminal caches TTY check
 	isTerminal bool
 
@@ -191,6 +194,7 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 
 // formatTime formats the timestamp - shown at end of line
 // Shows relative time (5s, 2m30s) and absolute time every 10 minutes
+// Only shows timestamp when it differs from the last displayed time
 // First log shows full time: 2026-01-02 15:04:05
 // Every 10 minutes shows short time: 02-03 15:23:03
 func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
@@ -217,6 +221,12 @@ func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
 		result = absoluteStr + " "
 	}
 	result += relativeStr
+
+	// Only show if different from last time
+	if result == f.lastTimeStr {
+		return ""
+	}
+	f.lastTimeStr = result
 
 	if colored {
 		// Use muted blue-purple color for timestamp
