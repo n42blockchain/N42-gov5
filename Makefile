@@ -69,7 +69,7 @@ deps: go-version
 	go mod tidy
 	@echo "deps done!"
 
-n42: deps
+n42: deps version-bump
 	@echo "start build $(APP_NAME)..."
 	#go build -v ${LDFLAGS} -o $(BUILD_PATH)$(APP_NAME)  ${APP_PATH}
 	$(GOBUILD) -o $(BUILD_PATH)$(APP_NAME)  ${APP_PATH}
@@ -154,8 +154,8 @@ open-output:
 # 核心目标 (Core Targets)
 # =============================================================================
 
-# 全仓编译（不触发 go mod tidy）
-build: go-version
+# 全仓编译（不触发 go mod tidy，自动递增 build 号）
+build: go-version version-bump
 	@echo "==> go build ./..."
 	$(GO) build $(GO_FLAGS) ./...
 
