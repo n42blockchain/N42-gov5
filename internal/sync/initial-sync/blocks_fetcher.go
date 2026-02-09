@@ -106,11 +106,16 @@ type fetchRequestResponse struct {
 // newBlocksFetcher creates ready to use fetcher.
 func newBlocksFetcher(ctx context.Context, cfg *blocksFetcherConfig) *blocksFetcher {
 
-	// Initialize block limits.
-	allowedBlocksPerSecond := float64(cfg.p2p.GetConfig().P2PLimit.BlockBatchLimit)
-	allowedBlocksBurst := int64(cfg.p2p.GetConfig().P2PLimit.BlockBatchLimitBurstFactor * cfg.p2p.GetConfig().P2PLimit.BlockBatchLimit)
+	// Initialize block limits with safe defaults (matching U13 fix in rate_limiter.go).
+	var allowedBlocksPerSecond float64 = 64
+	var allowedBlocksBurst int64 = 320
+	var blockLimiterPeriod = 10 * time.Second
 
-	blockLimiterPeriod := time.Duration(cfg.p2p.GetConfig().P2PLimit.BlockBatchLimiterPeriod) * time.Second
+	if p2pCfg := cfg.p2p.GetConfig(); p2pCfg != nil && p2pCfg.P2PLimit != nil {
+		allowedBlocksPerSecond = float64(p2pCfg.P2PLimit.BlockBatchLimit)
+		allowedBlocksBurst = int64(p2pCfg.P2PLimit.BlockBatchLimitBurstFactor * p2pCfg.P2PLimit.BlockBatchLimit)
+		blockLimiterPeriod = time.Duration(p2pCfg.P2PLimit.BlockBatchLimiterPeriod) * time.Second
+	}
 
 	// Allow fetcher to go almost to the full burst capacity (less a single batch).
 	//rateLimiter := leakybucket.NewCollector(allowedBlocksPerSecond, allowedBlocksBurst-allowedBlocksBurst, blockLimiterPeriod, false /* deleteEmptyBuckets */)
