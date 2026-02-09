@@ -68,6 +68,7 @@ type Service struct {
 	cfg    *config
 	ctx    context.Context
 	cancel context.CancelFunc
+	wg     sync.WaitGroup // tracks background goroutines (RunEveryWithWG)
 
 	subHandler  *subTopicHandler
 	rateLimiter *limiter
@@ -132,16 +133,17 @@ func (s *Service) Start() {
 	s.resyncIfBehind()
 
 	// Update sync metrics.
-	utils.RunEvery(s.ctx, syncMetricsInterval, s.updateMetrics)
+	s.wg.Add(1)
+	utils.RunEveryWithWG(s.ctx, syncMetricsInterval, s.updateMetrics, &s.wg)
 }
 
 // Stop the regular sync service.
 func (s *Service) Stop() error {
-	defer func() {
-		if s.rateLimiter != nil {
-			s.rateLimiter.free()
-		}
-	}()
+	// Cancel context first so all RunEveryWithWG goroutines begin exiting.
+	s.cancel()
+	// Wait for all background goroutines to finish.
+	s.wg.Wait()
+
 	// Removing RPC Stream handlers.
 	for _, p := range s.cfg.p2p.Host().Mux().Protocols() {
 		s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(p))
@@ -150,7 +152,9 @@ func (s *Service) Stop() error {
 	for _, t := range s.cfg.p2p.PubSub().GetTopics() {
 		s.unSubscribeFromTopic(t)
 	}
-	defer s.cancel()
+	if s.rateLimiter != nil {
+		s.rateLimiter.free()
+	}
 	return nil
 }
 

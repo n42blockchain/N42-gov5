@@ -33,6 +33,7 @@ type Service struct {
 	syncing                atomic.Bool
 	counter                *ratecounter.RateCounter
 	highestExpectedBlockNr *uint256.Int
+	done                   chan struct{} // closed when Start() returns
 	// Log throttling
 	lastLogTime            time.Time
 	lastLogBlock           uint64
@@ -49,6 +50,7 @@ func NewService(ctx context.Context, cfg *Config) *Service {
 		ctx:     ctx,
 		cancel:  cancel,
 		counter: ratecounter.NewRateCounter(counterSeconds * time.Second),
+		done:    make(chan struct{}),
 	}
 
 	return s
@@ -56,6 +58,7 @@ func NewService(ctx context.Context, cfg *Config) *Service {
 
 // Start the initial sync service.
 func (s *Service) Start() {
+	defer close(s.done)
 
 	event.GlobalEvent.Send(common.DownloaderStartEvent{})
 	defer event.GlobalEvent.Send(common.DownloaderFinishEvent{})
@@ -75,6 +78,11 @@ func (s *Service) Start() {
 // Stop initial sync.
 func (s *Service) Stop() error {
 	s.cancel()
+	select {
+	case <-s.done:
+	case <-time.After(10 * time.Second):
+		log.Warn("Timed out waiting for initial sync to stop")
+	}
 	log.Info("InitialSync stopped")
 	return nil
 }

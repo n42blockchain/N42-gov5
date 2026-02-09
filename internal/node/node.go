@@ -709,7 +709,7 @@ func (n *Node) Close() error {
 // It is the inverse of Start.
 func (n *Node) stopServices() []error {
 	var errs []error
-	total := 9 // Total number of services to stop
+	total := 10 // Total number of services to stop
 	current := 0
 
 	logProgress := func(service string) {
@@ -767,23 +767,25 @@ func (n *Node) stopServices() []error {
 		}
 	}
 
-	// 8. Stop initial sync
-	logProgress("Initial sync")
-	if err := n.is.Stop(); err != nil {
+	// 8. Stop sync service (prevents new Resync calls)
+	logProgress("Sync service")
+	if err := n.sync.Stop(); err != nil {
 		errs = append(errs, err)
 		logError("Sync", err)
 	}
 
-	// 9. Stop P2P networking
+	// 9. Stop initial sync (cancel + wait for goroutine)
+	logProgress("Initial sync")
+	if err := n.is.Stop(); err != nil {
+		errs = append(errs, err)
+		logError("InitialSync", err)
+	}
+
+	// 10. Stop P2P networking
 	logProgress("P2P network")
 	if err := n.p2p.Stop(); err != nil {
 		errs = append(errs, err)
 		logError("P2P", err)
-	}
-
-	// Stop sync service (doesn't count towards total as it's auxiliary)
-	if err := n.sync.Stop(); err != nil {
-		errs = append(errs, err)
 	}
 
 	return errs
