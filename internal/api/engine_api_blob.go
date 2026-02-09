@@ -196,11 +196,12 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	// 2. Verify state root
 	// 3. Execute transactions
 	// 4. Validate receipts root
-	
+
+	// Return SYNCING until payload processing is fully implemented.
+	// Returning VALID for an unverified payload would mislead the consensus layer.
 	return &NewPayloadResponseV3{
 		Status: PayloadStatusV1{
-			Status:          PayloadStatusValid,
-			LatestValidHash: &payload.BlockHash,
+			Status: PayloadStatusSyncing,
 		},
 	}, nil
 }
@@ -232,10 +233,12 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	// This would:
 	// 1. Update fork choice
 	// 2. Start payload building if attributes present
-	
+
+	// Return SYNCING until fork choice update is fully implemented.
+	// Returning VALID for an unprocessed fork choice would mislead the consensus layer.
 	return &ForkchoiceUpdatedResponseV3{
 		PayloadStatus: PayloadStatusV1{
-			Status: PayloadStatusValid,
+			Status: PayloadStatusSyncing,
 		},
 	}, nil
 }

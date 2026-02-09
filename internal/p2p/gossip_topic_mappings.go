@@ -19,6 +19,7 @@ package p2p
 import (
 	"reflect"
 	"sync"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"google.golang.org/protobuf/proto"
@@ -44,33 +45,44 @@ var globalGossipRegistry = &GossipTopicRegistry{
 	typeMapping: make(map[reflect.Type]string),
 }
 
-// initOnce ensures InitGossipTopics is called only once even in concurrent scenarios.
-var initOnce sync.Once
+// initDone tracks whether initialization has been performed (atomic for thread safety).
+var initDone atomic.Bool
+
+// initMu protects the initialization and reset logic.
+var initMu sync.Mutex
 
 // InitGossipTopics initializes the gossip topic registry with default topics.
 // This replaces the old init() function and should be called explicitly
 // during node startup.
 //
 // Safe to call multiple times - subsequent calls are no-ops.
-// Thread-safe via sync.Once.
+// Thread-safe via atomic check + mutex.
 func InitGossipTopics() {
-	initOnce.Do(func() {
-		globalGossipRegistry.mu.Lock()
-		defer globalGossipRegistry.mu.Unlock()
+	if initDone.Load() {
+		return
+	}
+	initMu.Lock()
+	defer initMu.Unlock()
+	if initDone.Load() {
+		return
+	}
 
-		// Register default topics
-		defaultTopics := map[string]proto.Message{
-			BlockTopicFormat:       &types_pb.Block{},
-			TransactionTopicFormat: &types_pb.Transaction{},
-		}
+	globalGossipRegistry.mu.Lock()
+	defer globalGossipRegistry.mu.Unlock()
 
-		for topic, msg := range defaultTopics {
-			globalGossipRegistry.topics[topic] = msg
-			globalGossipRegistry.typeMapping[reflect.TypeOf(msg)] = topic
-		}
+	// Register default topics
+	defaultTopics := map[string]proto.Message{
+		BlockTopicFormat:       &types_pb.Block{},
+		TransactionTopicFormat: &types_pb.Transaction{},
+	}
 
-		globalGossipRegistry.initialized = true
-	})
+	for topic, msg := range defaultTopics {
+		globalGossipRegistry.topics[topic] = msg
+		globalGossipRegistry.typeMapping[reflect.TypeOf(msg)] = topic
+	}
+
+	globalGossipRegistry.initialized = true
+	initDone.Store(true)
 }
 
 // RegisterGossipTopic registers a custom gossip topic.
@@ -128,9 +140,11 @@ func IsGossipTopicsInitialized() bool {
 }
 
 // ResetGossipTopics resets the registry (for testing only).
-// WARNING: This function is NOT thread-safe with concurrent access.
-// Only use in test setup/teardown when no other goroutines are accessing the registry.
+// Thread-safe: uses the same mutex as InitGossipTopics to prevent races.
 func ResetGossipTopics() {
+	initMu.Lock()
+	defer initMu.Unlock()
+
 	globalGossipRegistry.mu.Lock()
 	defer globalGossipRegistry.mu.Unlock()
 
@@ -138,9 +152,7 @@ func ResetGossipTopics() {
 	globalGossipRegistry.typeMapping = make(map[reflect.Type]string)
 	globalGossipRegistry.initialized = false
 
-	// Reset sync.Once by creating a new instance
-	// This is safe only in test scenarios
-	initOnce = sync.Once{}
+	initDone.Store(false)
 }
 
 // =============================================================================

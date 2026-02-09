@@ -109,7 +109,7 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 
 					go func() {
 						defer timeoutCancel()
-						ticker := time.NewTicker(100 * time.Millisecond)
+						ticker := time.NewTicker(500 * time.Millisecond)
 						defer ticker.Stop()
 						for {
 							select {

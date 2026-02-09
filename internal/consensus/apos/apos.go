@@ -63,6 +63,7 @@ const (
 
 	wiggleTime       = 500 * time.Millisecond // Random delay (per signer) to allow concurrent signers
 	mergeSignMinTime = 4                      // min time for merge sign
+	dbTimeout        = 5 * time.Second        // Timeout for DB operations
 )
 
 // APos proof-of-authority protocol constants.
@@ -188,6 +189,9 @@ type APos struct {
 	chainConfig *params.ChainConfig
 	db          kv.RwDB // Database to store and retrieve snapshot checkpoints
 
+	ctx    context.Context    // Lifecycle context for DB operations
+	cancel context.CancelFunc // Cancel function for ctx
+
 	recents    *lru.ARCCache // Snapshots for recent block to speed up reorgs
 	signatures *lru.ARCCache // Signatures of recent blocks to speed up mining
 
@@ -215,10 +219,14 @@ func New(config *params.APosConfig, db kv.RwDB, chainConfig *params.ChainConfig)
 	recents, _ := lru.NewARC(inmemorySnapshots)
 	signatures, _ := lru.NewARC(inmemorySignatures)
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &APos{
 		config:      &conf,
 		chainConfig: chainConfig,
 		db:          db,
+		ctx:         ctx,
+		cancel:      cancel,
 		recents:     recents,
 		signatures:  signatures,
 		proposals:   make(map[types.Address]bool),
@@ -402,7 +410,8 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 		}
 		// If an on-disk checkpoint snapshot can be found, use that
 		if number%checkpointInterval == 0 {
-			if err := c.db.View(context.Background(), func(tx kv.Tx) error {
+			dbCtx, dbCancel := context.WithTimeout(c.ctx, dbTimeout)
+			err := c.db.View(dbCtx, func(tx kv.Tx) error {
 				var err error
 				s, err := loadSnapshot(c.config, c.signatures, tx, hash)
 				if err == nil {
@@ -410,7 +419,9 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 					snap = s
 				}
 				return err
-			}); nil == err {
+			})
+			dbCancel()
+			if err == nil {
 				break
 			}
 		}
@@ -434,12 +445,12 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 					copy(signers[i][:], rawCheckpoint.Extra[extraVanity+i*types.AddressLength:])
 				}
 				snap = newSnapshot(c.config, c.signatures, number, hash, signers)
-				if err := c.db.Update(context.Background(), func(tx kv.RwTx) error {
-					if err := snap.store(tx); err != nil {
-						return err
-					}
-					return nil
-				}); nil != err {
+				dbCtx2, dbCancel2 := context.WithTimeout(c.ctx, dbTimeout)
+				err := c.db.Update(dbCtx2, func(tx kv.RwTx) error {
+					return snap.store(tx)
+				})
+				dbCancel2()
+				if err != nil {
 					return nil, err
 				}
 				log.Info("Stored checkpoint snapshot to disk", "number", number, "hash", hash)
@@ -477,12 +488,12 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 
 	// If we've generated a new checkpoint snapshot, save to disk
 	if snap.Number%checkpointInterval == 0 && len(headers) > 0 {
-		if err = c.db.Update(context.Background(), func(tx kv.RwTx) error {
-			if err := snap.store(tx); err != nil {
-				return err
-			}
-			return nil
-		}); nil != err {
+		dbCtx3, dbCancel3 := context.WithTimeout(c.ctx, dbTimeout)
+		err = c.db.Update(dbCtx3, func(tx kv.RwTx) error {
+			return snap.store(tx)
+		})
+		dbCancel3()
+		if err != nil {
 			return nil, err
 		}
 
@@ -742,7 +753,7 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 	}
 
 	if c.chainConfig.IsBeijing(header.Number.Uint64()) {
-		ctx, cancle := context.WithTimeout(context.Background(), delay)
+		ctx, cancle := context.WithTimeout(c.ctx, delay)
 		defer cancle()
 		member := c.CountDepositor()
 		aggSign, verifiers, err := api.SignMerge(ctx, header, member)
@@ -830,7 +841,22 @@ func (c *APos) SealHash(header block.IHeader) types.Hash {
 }
 
 // Close implements consensus.Engine. It's a noop for Apoa as there are no background threads.
+// dbView executes a read-only DB transaction with a timeout.
+func (c *APos) dbView(fn func(tx kv.Tx) error) error {
+	dbCtx, dbCancel := context.WithTimeout(c.ctx, dbTimeout)
+	defer dbCancel()
+	return c.db.View(dbCtx, fn)
+}
+
+// dbUpdate executes a read-write DB transaction with a timeout.
+func (c *APos) dbUpdate(fn func(tx kv.RwTx) error) error {
+	dbCtx, dbCancel := context.WithTimeout(c.ctx, dbTimeout)
+	defer dbCancel()
+	return c.db.Update(dbCtx, fn)
+}
+
 func (c *APos) Close() error {
+	c.cancel()
 	return nil
 }
 
@@ -898,7 +924,9 @@ func encodeSigHeader(w io.Writer, iHeader block.IHeader) error {
 
 func (c *APos) CountDepositor() uint64 {
 	var count uint64
-	if err := c.db.View(context.Background(), func(tx kv.Tx) error {
+	dbCtx, dbCancel := context.WithTimeout(c.ctx, dbTimeout)
+	defer dbCancel()
+	if err := c.db.View(dbCtx, func(tx kv.Tx) error {
 		var err error
 		count, err = rawdb.DepositNum(tx)
 		if nil != err {
