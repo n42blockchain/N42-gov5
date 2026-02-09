@@ -233,12 +233,16 @@ func (s *TransactionAPI) GetTransactionByBlockNumberAndIndex(ctx context.Context
 		return nil
 	}
 
+	headerBaseFee := blk.Header().BaseFee64()
+	if headerBaseFee == nil {
+		headerBaseFee = new(uint256.Int)
+	}
 	return newRPCTransaction(
 		txs[index],
 		blk.Hash(),
 		blk.Number64().Uint64(),
 		uint64(index),
-		blk.Header().BaseFee64().ToBig(),
+		headerBaseFee.ToBig(),
 	)
 }
 
@@ -305,7 +309,11 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 	header := blk.Header()
 	blockHash := blk.Hash()
 	blockNumber := blk.Number64().Uint64()
-	baseFee := header.BaseFee64().ToBig()
+	headerBaseFee := header.BaseFee64()
+	if headerBaseFee == nil {
+		headerBaseFee = new(uint256.Int)
+	}
+	baseFee := headerBaseFee.ToBig()
 
 	result := make([]*BlockReceipt, len(receipts))
 	for i, receipt := range receipts {

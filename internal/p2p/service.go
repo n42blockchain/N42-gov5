@@ -59,8 +59,8 @@ const reconnectBootNode = 1 * time.Minute
 
 // Service for managing peer to peer (p2p) networking.
 type Service struct {
-	started               bool
-	isPreGenesis          bool
+	started               atomic.Bool
+	isPreGenesis          atomic.Bool
 	pingMethod            func(ctx context.Context, id peer.ID) error
 	cancel                context.CancelFunc
 	cfg                   *conf.P2PConfig
@@ -73,6 +73,7 @@ type Service struct {
 	joinedTopicsLock      sync.Mutex
 	dv5Listener           Listener
 	startupErr            error
+	startupErrMu          sync.RWMutex
 	ctx                   context.Context
 	host                  host.Host
 	genesisHash           types.Hash
@@ -93,10 +94,10 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 		ctx:          ctx,
 		cancel:       cancel,
 		cfg:          cfg,
-		isPreGenesis: true,
 		joinedTopics: make(map[string]*pubsub.Topic, len(gossipTopicMappings)),
 		genesisHash:  genesisHash,
 	}
+	s.isPreGenesis.Store(true)
 
 	s.ping, err = getSeqNumber(s.cfg)
 	if err != nil {
@@ -174,12 +175,12 @@ func (s *Service) GetConfig() *conf.P2PConfig {
 
 // Start the p2p service.
 func (s *Service) Start() {
-	if s.started {
+	if s.started.Load() {
 		log.Error("Attempted to start p2p service when it was already started")
 		return
 	}
 
-	s.isPreGenesis = false
+	s.isPreGenesis.Store(false)
 
 	var peersToWatch []string
 	if s.cfg.RelayNodeAddr != "" {
@@ -197,18 +198,24 @@ func (s *Service) Start() {
 		)
 		if err != nil {
 			log.Crit("Failed to start discovery", "err", err)
+			s.startupErrMu.Lock()
 			s.startupErr = err
+			s.startupErrMu.Unlock()
 			return
 		}
 		bootnodes, err := s.bootnodes()
 		if err != nil {
+			s.startupErrMu.Lock()
 			s.startupErr = err
+			s.startupErrMu.Unlock()
 			return
 		}
 		err = s.connectToBootnodes(bootnodes)
 		if err != nil {
 			log.Error("Could not add bootnode to the exclusion list", "err", err)
+			s.startupErrMu.Lock()
 			s.startupErr = err
+			s.startupErrMu.Unlock()
 			return
 		}
 		s.dv5Listener = listener
@@ -219,7 +226,7 @@ func (s *Service) Start() {
 
 	}
 
-	s.started = true
+	s.started.Store(true)
 
 	if len(s.cfg.StaticPeers) > 0 {
 		addrs, err := PeersFromStringAddrs(s.cfg.StaticPeers)
@@ -321,7 +328,7 @@ func (s *Service) loop() {
 // Stop the p2p service and terminate all peer connections.
 func (s *Service) Stop() error {
 	s.cancel()
-	s.started = false
+	s.started.Store(false)
 	if s.dv5Listener != nil {
 		s.dv5Listener.Close()
 	}
@@ -333,21 +340,24 @@ func (s *Service) Stop() error {
 // Status of the p2p service. Will return an error if the service is considered unhealthy to
 // indicate that this node should not serve traffic until the issue has been resolved.
 func (s *Service) Status() error {
-	if s.isPreGenesis {
+	if s.isPreGenesis.Load() {
 		return nil
 	}
-	if !s.started {
+	if !s.started.Load() {
 		return errors.New("not running")
 	}
-	if s.startupErr != nil {
-		return s.startupErr
+	s.startupErrMu.RLock()
+	err := s.startupErr
+	s.startupErrMu.RUnlock()
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
 // Started returns true if the p2p service has successfully started.
 func (s *Service) Started() bool {
-	return s.started
+	return s.started.Load()
 }
 
 // Encoding returns the configured networking encoding.

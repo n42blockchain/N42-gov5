@@ -89,7 +89,15 @@ func (s sortGasAndReward) Less(i, j int) bool {
 // the block field filled in, retrieves the block from the backend if not present yet and
 // fills in the rest of the fields.
 func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
-	if bf.results.baseFee = bf.header.BaseFee64().ToBig(); bf.results.baseFee == nil {
+	if bf.header == nil {
+		bf.err = errors.New("header is nil in processBlock")
+		return
+	}
+	headerBaseFee := bf.header.BaseFee64()
+	if headerBaseFee != nil {
+		bf.results.baseFee = headerBaseFee.ToBig()
+	}
+	if bf.results.baseFee == nil {
 		bf.results.baseFee = new(big.Int)
 	}
 
@@ -128,7 +136,10 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 		if i >= len(bf.receipts) {
 			break
 		}
-		reward, _ := tx.EffectiveGasTip(bf.header.BaseFee64())
+		reward, err := tx.EffectiveGasTip(headerBaseFee)
+		if err != nil {
+			continue
+		}
 		sorter[i] = txGasAndReward{gasUsed: bf.receipts[i].GasUsed, reward: reward.ToBig()}
 	}
 	sort.Stable(sorter)
