@@ -128,15 +128,13 @@ func (n *API) BlockChain() common.IBlockChain { return n.bc }
 func (n *API) GetEvm(ctx context.Context, msg internal.Message, ibs evmtypes.IntraBlockState, header block.IHeader, vmConfig *vm2.Config) (*vm2.EVM, func() error, error) {
 	vmError := func() error { return nil }
 
+	concreteHeader, ok := header.(*block.Header)
+	if !ok {
+		return nil, nil, errors.New("GetEvm: invalid header type assertion")
+	}
+
 	txContext := internal.NewEVMTxContext(msg)
-	context := internal.NewEVMBlockContext(header.(*block.Header), internal.GetHashFn(header.(*block.Header), nil), n.engine, nil)
-	//tx, err := n.db.BeginRo(ctx)
-	//if nil != err {
-	//	return nil, nil, err
-	//}
-	//defer tx.Rollback()
-	//
-	//stateReader := state.NewPlainStateReader(tx)
+	context := internal.NewEVMBlockContext(concreteHeader, internal.GetHashFn(concreteHeader, nil), n.engine, nil)
 
 	return vm2.NewEVM(context, txContext, ibs, n.GetChainConfig(), *vmConfig), vmError, nil
 }
@@ -205,7 +203,11 @@ func (s *BlockChainAPI) BlockNumber() hexutil.Uint64 {
 	if header == nil {
 		return hexutil.Uint64(0)
 	}
-	return hexutil.Uint64(header.Number64().Uint64())
+	num := header.Number64()
+	if num == nil {
+		return hexutil.Uint64(0)
+	}
+	return hexutil.Uint64(num.Uint64())
 }
 
 // GetCode get code
@@ -255,18 +257,9 @@ func (s *BlockChainAPI) GetUncleCountByBlockHash(ctx context.Context, blockHash 
 }
 
 // GetUncleByBlockHashAndIndex returns the uncle block for the given block hash and index.
+// POA/POS consensus does not have uncle blocks, always returns nil.
 func (s *BlockChainAPI) GetUncleByBlockHashAndIndex(ctx context.Context, blockHash avmcommon.Hash, index hexutil.Uint) (map[string]interface{}, error) {
-	b, err := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(blockHash))
-	if b != nil {
-		//POA donot have Uncles
-		var uncles []struct{}
-		if index >= hexutil.Uint(len(uncles)) {
-			return nil, nil
-		}
-		block := block.NewBlock(&block.Header{}, nil)
-		return RPCMarshalBlock(block, s.api.BlockChain(), false, false)
-	}
-	return nil, err
+	return nil, nil
 }
 
 // Result structs for GetProof
@@ -422,8 +415,12 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 	if ibs == nil {
 		return nil, errors.New("cannot load state")
 	}
-	if err := overrides.Apply(ibs.(*state.IntraBlockState)); err != nil {
-		return nil, err
+	if concreteState, ok := ibs.(*state.IntraBlockState); ok {
+		if err := overrides.Apply(concreteState); err != nil {
+			return nil, err
+		}
+	} else if overrides != nil && len(*overrides) > 0 {
+		return nil, errors.New("state overrides require *state.IntraBlockState")
 	}
 	// Setup context so it may be cancelled the call has completed
 	// or, in case of unmetered gas, setup a context with a timeout.
@@ -759,10 +756,17 @@ func (s *BlockChainAPI) MinedBlock(ctx context.Context, address types.Address) (
 		return &jsonrpc.Subscription{}, fmt.Errorf("unauthed address: %s", address)
 	}
 
-	rpcSub, _ := notifier.CreateSubscription()
+	rpcSub, err := notifier.CreateSubscription()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create subscription: %w", err)
+	}
 	go func() {
 		entire := make(chan common.MinedEntireEvent, 20)
-		blocksSub, _ := event.GlobalEvent.Subscribe(entire)
+		blocksSub, err := event.GlobalEvent.Subscribe(entire)
+		if err != nil {
+			log.Error("failed to subscribe to MinedEntireEvent", "err", err)
+			return
+		}
 		for {
 			select {
 			case b := <-entire:
@@ -799,8 +803,10 @@ func (s *BlockChainAPI) SubmitSign(sign AggSign) error {
 		return fmt.Errorf("unauthed address: %s", sign.Address)
 	}
 	sign.PublicKey.SetBytes(info.PublicKey.Bytes())
-	go func() {
-		sigChannel <- sign
-	}()
+	select {
+	case sigChannel <- sign:
+	default:
+		return fmt.Errorf("sign channel is full, please retry later")
+	}
 	return nil
 }

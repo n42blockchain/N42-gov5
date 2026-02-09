@@ -36,11 +36,16 @@ func newRateLimiter(p2pProvider p2p.P2P) *limiter {
 		return topic + p2pProvider.Encoding().ProtocolSuffix()
 	}
 
-	// Initialize block limits.
-	allowedBlocksPerSecond := float64(p2pProvider.GetConfig().P2PLimit.BlockBatchLimit)
-	allowedBlocksBurst := int64(p2pProvider.GetConfig().P2PLimit.BlockBatchLimitBurstFactor * p2pProvider.GetConfig().P2PLimit.BlockBatchLimit)
+	// Initialize block limits with defaults for nil P2PLimit.
+	var allowedBlocksPerSecond float64 = 64
+	var allowedBlocksBurst int64 = 320
+	var blockLimiterPeriod = 10 * time.Second
 
-	blockLimiterPeriod := time.Duration(p2pProvider.GetConfig().P2PLimit.BlockBatchLimiterPeriod) * time.Second
+	if cfg := p2pProvider.GetConfig(); cfg != nil && cfg.P2PLimit != nil {
+		allowedBlocksPerSecond = float64(cfg.P2PLimit.BlockBatchLimit)
+		allowedBlocksBurst = int64(cfg.P2PLimit.BlockBatchLimitBurstFactor * cfg.P2PLimit.BlockBatchLimit)
+		blockLimiterPeriod = time.Duration(cfg.P2PLimit.BlockBatchLimiterPeriod) * time.Second
+	}
 
 	// Set topic map for all rpc topics.
 	topicMap := make(map[string]*leakybucket.Collector, len(p2p.RPCTopicMappings))

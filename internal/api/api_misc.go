@@ -7,10 +7,11 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/kv"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
@@ -77,7 +78,7 @@ func (s *n42API) FeeHistory(ctx context.Context, blockCount jsonrpc.DecimalOrHex
 
 	s.api.db.View(ctx, func(tx kv.Tx) error {
 		resolvedLastBlock, _, err = rpchelper.GetBlockNumber(jsonrpc.BlockNumberOrHashWithNumber(lastBlock), tx)
-		return nil
+		return err
 	})
 
 	if err != nil {
@@ -247,7 +248,10 @@ func (s *TxsPoolAPI) Content() map[string]map[string]map[string]*RPCTransaction 
 		"queued":  make(map[string]map[string]*RPCTransaction),
 	}
 	pending, queue := s.api.TxsPool().Content()
-	curHeader := s.api.BlockChain().CurrentBlock().Header()
+	var curHeader block.IHeader
+	if curBlock := s.api.BlockChain().CurrentBlock(); curBlock != nil {
+		curHeader = curBlock.Header()
+	}
 	// Flatten the pending transactions
 	for account, txs := range pending {
 		dump := make(map[string]*RPCTransaction)

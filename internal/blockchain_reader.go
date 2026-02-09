@@ -121,10 +121,13 @@ func (bc *BlockChain) GetBlockByHash(h types.Hash) (block.IBlock, error) {
 // GetBlockByNumber retrieves a block by its number.
 func (bc *BlockChain) GetBlockByNumber(number *uint256.Int) (block.IBlock, error) {
 	var hash types.Hash
-	bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-		hash, _ = rawdb.ReadCanonicalHash(tx, number.Uint64())
-		return nil
-	})
+	var hashErr error
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		hash, hashErr = rawdb.ReadCanonicalHash(tx, number.Uint64())
+		return hashErr
+	}); err != nil {
+		return nil, err
+	}
 
 	if hash == (types.Hash{}) {
 		return nil, nil
