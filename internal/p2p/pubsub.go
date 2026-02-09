@@ -34,8 +34,8 @@ const (
 	// misc
 	rSubD = 8 // random gossip target
 
-	// GossipMaxSize is the maximum size of a gossip message in bytes (10MB)
-	GossipMaxSize = 10000000
+	// GossipMaxSize is the maximum size of a gossip message in bytes (1MB)
+	GossipMaxSize = 1 << 20
 )
 
 var errInvalidTopic = errors.New("invalid topic format")

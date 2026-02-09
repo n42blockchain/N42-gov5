@@ -4,13 +4,14 @@ package blst
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/n42blockchain/N42/common/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/crypto/rand"
 
-	"github.com/pkg/errors"
+	pkgerrors "github.com/pkg/errors"
 	blst "github.com/supranational/blst/bindings/go"
 )
 
@@ -33,12 +34,12 @@ func SignatureFromBytes(sig []byte) (common.Signature, error) {
 	}
 	signature := new(blstSignature).Uncompress(sig)
 	if signature == nil {
-		return nil, errors.New("could not unmarshal bytes into signature")
+		return nil, pkgerrors.New("could not unmarshal bytes into signature")
 	}
 	// Group check signature. Do not check for infinity since an aggregated signature
 	// could be infinite.
 	if !signature.SigValidate(false) {
-		return nil, errors.New("signature not in group")
+		return nil, pkgerrors.New("signature not in group")
 	}
 	return &Signature{s: signature}, nil
 }
@@ -48,7 +49,7 @@ func AggregateCompressedSignatures(multiSigs [][]byte) (common.Signature, error)
 	signature := new(blstAggregateSignature)
 	valid := signature.AggregateCompressed(multiSigs, true)
 	if !valid {
-		return nil, errors.New("provided signatures fail the group check and cannot be compressed")
+		return nil, pkgerrors.New("provided signatures fail the group check and cannot be compressed")
 	}
 	return &Signature{s: signature.ToAffine()}, nil
 }
@@ -65,17 +66,17 @@ func MultipleSignaturesFromBytes(multiSigs [][]byte) ([]common.Signature, error)
 	}
 	multiSignatures := new(blstSignature).BatchUncompress(multiSigs)
 	if len(multiSignatures) == 0 {
-		return nil, errors.New("could not unmarshal bytes into signature")
+		return nil, pkgerrors.New("could not unmarshal bytes into signature")
 	}
 	if len(multiSignatures) != len(multiSigs) {
-		return nil, errors.Errorf("wanted %d decompressed signatures but got %d", len(multiSigs), len(multiSignatures))
+		return nil, pkgerrors.Errorf("wanted %d decompressed signatures but got %d", len(multiSigs), len(multiSignatures))
 	}
 	wrappedSigs := make([]common.Signature, len(multiSignatures))
 	for i, signature := range multiSignatures {
 		// Group check signature. Do not check for infinity since an aggregated signature
 		// could be infinite.
 		if !signature.SigValidate(false) {
-			return nil, errors.New("signature not in group")
+			return nil, pkgerrors.New("signature not in group")
 		}
 		copiedSig := signature
 		wrappedSigs[i] = &Signature{s: copiedSig}
@@ -213,7 +214,7 @@ func VerifyMultipleSignatures(sigs [][]byte, msgs [][32]byte, pubKeys []common.P
 
 	length := len(sigs)
 	if length != len(pubKeys) || length != len(msgs) {
-		return false, errors.Errorf("provided signatures, pubkeys and messages have differing lengths. S: %d, P: %d,M %d",
+		return false, pkgerrors.Errorf("provided signatures, pubkeys and messages have differing lengths. S: %d, P: %d,M %d",
 			length, len(pubKeys), len(msgs))
 	}
 	mulP1Aff := make([]*blstPublicKey, length)
@@ -227,17 +228,15 @@ func VerifyMultipleSignatures(sigs [][]byte, msgs [][32]byte, pubKeys []common.P
 	randGen := rand.NewGenerator()
 	randLock := new(sync.Mutex)
 
+	var randErr error
 	randFunc := func(scalar *blst.Scalar) {
 		var rbytes [scalarBytes]byte
 		randLock.Lock()
 		n, err := randGen.Read(rbytes[:])
 		randLock.Unlock()
-		// While math/rand.Read typically does not return errors, we check for safety
 		if err != nil || n != scalarBytes {
-			// Fill with deterministic but unique data as fallback
-			for i := range rbytes {
-				rbytes[i] = byte(i)
-			}
+			randErr = errors.New("failed to read random bytes for multi-signature verification")
+			return
 		}
 		// Protect against the generator returning 0. Since the scalar value is
 		// derived from a big endian byte slice, we take the last byte.
@@ -247,7 +246,11 @@ func VerifyMultipleSignatures(sigs [][]byte, msgs [][32]byte, pubKeys []common.P
 	dummySig := new(blstSignature)
 
 	// Validate signatures since we uncompress them here. Public keys should already be validated.
-	return dummySig.MultipleAggregateVerify(rawSigs, true, mulP1Aff, false, rawMsgs, dst, randFunc, randBitsEntropy), nil
+	result := dummySig.MultipleAggregateVerify(rawSigs, true, mulP1Aff, false, rawMsgs, dst, randFunc, randBitsEntropy)
+	if randErr != nil {
+		return false, randErr
+	}
+	return result, nil
 }
 
 // Marshal a signature into a LittleEndian byte slice.

@@ -72,12 +72,16 @@ func appRun(ctx *cli.Context) error {
 			runtime.SetBlockProfileRate(1)
 		}
 
+		pprofServer := &http.Server{
+			Addr:    fmt.Sprintf(":%d", DefaultConfig.PprofCfg.Port),
+			Handler: nil,
+		}
 		go func() {
-			if err := http.ListenAndServe(fmt.Sprintf(":%d", DefaultConfig.PprofCfg.Port), nil); err != nil {
+			if err := pprofServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Error("failed to setup go pprof", "err", err)
-				os.Exit(0)
 			}
 		}()
+		defer pprofServer.Close()
 	}
 
 	stack, err := node.NewNode(ctx, &DefaultConfig)

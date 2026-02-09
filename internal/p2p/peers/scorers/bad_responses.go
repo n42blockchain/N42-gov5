@@ -111,7 +111,9 @@ func (s *BadResponsesScorer) Increment(pid peer.ID) {
 		})
 		return
 	}
-	peerData.BadResponses++
+	if peerData.BadResponses < 1000 {
+		peerData.BadResponses++
+	}
 }
 
 // IsBadPeer states if the peer is to be considered bad.
