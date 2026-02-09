@@ -58,6 +58,9 @@ func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlo
 	}
 
 	for data := range queue.fetchedData {
+		if ctx.Err() != nil {
+			continue // drain channel but skip processing
+		}
 		s.processFetchedData(ctx, s.cfg.Chain.CurrentBlock().Number64(), data)
 	}
 
@@ -73,8 +76,15 @@ func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlo
 func (s *Service) processFetchedData(ctx context.Context, startBlockNr *uint256.Int, data *blocksQueueFetchedData) {
 	defer s.updatePeerScorerStats(data.pid, startBlockNr)
 
+	if ctx.Err() != nil {
+		return
+	}
+
 	// Use Batch Block Verify to process and verify batches directly.
 	if _, err := s.processBatchedBlocks(ctx, data.blocks, s.cfg.Chain.InsertChain); err != nil {
+		if ctx.Err() != nil {
+			return // suppress errors during shutdown
+		}
 		log.Warn("Skipped processing batched blocks", "err", err)
 	}
 }
@@ -114,6 +124,10 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 	blockNum := firstBlock.Number64().Uint64()
 	if blockNum > 0 && !s.cfg.Chain.HasBlock(firstBlock.ParentHash(), blockNum-1) {
 		return 0, fmt.Errorf("%w: %s (in processBatchedBlocks, Number=%d)", errParentDoesNotExist, firstBlock.ParentHash(), blockNum)
+	}
+
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
 	}
 
 	s.logBatchSyncStatus(blks)
