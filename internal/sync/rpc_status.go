@@ -22,7 +22,8 @@ import (
 // maintainPeerStatuses by infrequently polling peers for their latest status.
 func (s *Service) maintainPeerStatuses() {
 	// Run twice per epoch.
-	utils.RunEvery(s.ctx, maintainPeerStatusesInterval, func() {
+	s.wg.Add(1)
+	utils.RunEveryWithWG(s.ctx, maintainPeerStatusesInterval, func() {
 		wg := new(sync.WaitGroup)
 		for _, pid := range s.cfg.p2p.Peers().Connected() {
 			wg.Add(1)
@@ -66,13 +67,14 @@ func (s *Service) maintainPeerStatuses() {
 				log.Debug("Could not disconnect with peer", "peer", id, "err", err)
 			}
 		}
-	})
+	}, &s.wg)
 }
 
 // resyncIfBehind checks periodically to see if we are in normal sync but have fallen behind our peers
 // by more than an epoch, in which case we attempt a resync using the initial sync method to catch up.
 func (s *Service) resyncIfBehind() {
-	utils.RunEvery(s.ctx, resyncInterval, func() {
+	s.wg.Add(1)
+	utils.RunEveryWithWG(s.ctx, resyncInterval, func() {
 		//todo  header should > body ?
 		if s.cfg.initialSync != nil && !s.cfg.initialSync.Syncing() {
 			// Factor number of expected minimum sync peers, to make sure that enough peers are
@@ -91,7 +93,7 @@ func (s *Service) resyncIfBehind() {
 				}
 			}
 		}
-	})
+	}, &s.wg)
 }
 
 // sendRPCStatusRequest for a given topic with an expected protobuf message type.
