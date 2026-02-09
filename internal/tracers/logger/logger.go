@@ -362,12 +362,12 @@ func (t *mdLogger) captureStartOrEnter(from, to common.Address, create bool, inp
 `)
 }
 
-func (t *mdLogger) CaptureStart(env vm.VMInterface, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *uint256.Int) { //nolint:interfacer
+func (t *mdLogger) CaptureStart(env vm.VMInterface, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *uint256.Int) {
 	t.env = env
 	t.captureStartOrEnter(from, to, create, input, gas, value)
 }
 
-func (t *mdLogger) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *uint256.Int) { //nolint:interfacer
+func (t *mdLogger) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *uint256.Int) {
 	t.captureStartOrEnter(from, to, false, input, gas, value)
 }
 
