@@ -37,6 +37,7 @@ const (
 	unsubscribeMethodSuffix  = "_unsubscribe"
 
 	defaultWriteTimeout = 10 * time.Second
+	maxBatchSize        = 1000
 )
 
 var null = json.RawMessage("null")
@@ -196,7 +197,10 @@ func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, err err
 	if err := c.decode(&rawmsg); err != nil {
 		return nil, false, err
 	}
-	messages, batch = parseMessage(rawmsg)
+	messages, batch, err = parseMessage(rawmsg)
+	if err != nil {
+		return nil, false, err
+	}
 	for i, msg := range messages {
 		if msg == nil {
 			// Message is JSON 'null'. Replace with zero value so it
@@ -231,23 +235,26 @@ func (c *jsonCodec) closed() <-chan interface{} {
 	return c.closeCh
 }
 
-func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool) {
+func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool, error) {
 	if !isBatch(raw) {
 		msgs := []*jsonrpcMessage{{}}
 		if err := json.Unmarshal(raw, &msgs[0]); err != nil {
 			// Return an empty message on parse error, let caller handle validation
 			msgs[0] = &jsonrpcMessage{}
 		}
-		return msgs, false
+		return msgs, false, nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.Token() // skip '['
 	var msgs []*jsonrpcMessage
 	for dec.More() {
+		if len(msgs) >= maxBatchSize {
+			return nil, true, fmt.Errorf("batch request too large, max %d", maxBatchSize)
+		}
 		msgs = append(msgs, new(jsonrpcMessage))
 		dec.Decode(&msgs[len(msgs)-1])
 	}
-	return msgs, true
+	return msgs, true, nil
 }
 
 // isBatch returns true when the first non-whitespace characters is '['
