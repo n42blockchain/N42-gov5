@@ -53,6 +53,7 @@ func (s *Service) listenForNewNodes() {
 	iterator := s.dv5Listener.RandomNodes()
 	iterator = enode.Filter(iterator, s.filterPeer)
 	defer iterator.Close()
+	sem := make(chan struct{}, maxConcurrentPeerOps)
 	for {
 		// Exit if service's context is canceled
 		if s.ctx.Err() != nil {
@@ -78,11 +79,17 @@ func (s *Service) listenForNewNodes() {
 		}
 		// Make sure that peer is not dialed too often, for each connection attempt there's a backoff period.
 		s.Peers().RandomizeBackOff(peerInfo.ID)
-		go func(info *peer.AddrInfo) {
-			if err := s.connectWithPeer(s.ctx, *info); err != nil {
-				log.Warn(fmt.Sprintf("Could not connect with peer %s err: %s", info.String(), err))
-			}
-		}(peerInfo)
+		select {
+		case sem <- struct{}{}:
+			go func(info *peer.AddrInfo) {
+				defer func() { <-sem }()
+				if err := s.connectWithPeer(s.ctx, *info); err != nil {
+					log.Warn(fmt.Sprintf("Could not connect with peer %s err: %s", info.String(), err))
+				}
+			}(peerInfo)
+		case <-s.ctx.Done():
+			return
+		}
 	}
 }
 
