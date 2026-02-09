@@ -17,7 +17,6 @@
 package apos
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -280,7 +279,7 @@ func (api *API) GetRewards(address avmutil.Address, from jsonrpc.BlockNumberOrHa
 		resolvedToBlock   *uint256.Int
 	)
 
-	if dbErr := api.apos.db.View(context.Background(), func(tx kv.Tx) error {
+	if dbErr := api.apos.dbView(func(tx kv.Tx) error {
 		var fromErr, toErr error
 		resolvedFromBlock, _, fromErr = rpchelper.GetCanonicalBlockNumber(from, tx)
 		if fromErr != nil {
@@ -313,7 +312,7 @@ func (api *API) GetDepositInfo(address avmutil.Address) (*deposit.Info, error) {
 	info := new(deposit.Info)
 	var err error
 
-	api.apos.db.View(context.Background(), func(tx kv.Tx) error {
+	api.apos.dbView(func(tx kv.Tx) error {
 		info = deposit.GetDepositInfo(tx, addr)
 		return nil
 	})
@@ -327,7 +326,7 @@ func (api *API) GetBlockRewards(blockNr jsonrpc.BlockNumberOrHash) (resp []*bloc
 		resolvedBlockNr *uint256.Int
 		hash            types.Hash
 	)
-	api.apos.db.View(context.Background(), func(tx kv.Tx) error {
+	api.apos.dbView(func(tx kv.Tx) error {
 		resolvedBlockNr, hash, err = rpchelper.GetCanonicalBlockNumber(blockNr, tx)
 		if err != nil {
 			return err
@@ -376,7 +375,7 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		depositInfo   *deposit.Info
 	)
 
-	api.apos.db.View(context.Background(), func(tx kv.Tx) error {
+	api.apos.dbView(func(tx kv.Tx) error {
 		depositInfo = deposit.GetDepositInfo(tx, addr)
 		return nil
 	})
@@ -450,7 +449,7 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		return nil, fmt.Errorf("'To' block number must be greater than 0")
 	}
 
-	api.apos.db.View(context.Background(), func(tx kv.Tx) error {
+	api.apos.dbView(func(tx kv.Tx) error {
 		depositInfo = deposit.GetDepositInfo(tx, addr)
 		return nil
 	})
@@ -512,7 +511,7 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 func (api *API) GetAccountRewardUnpaid(address types.Address) (val *uint256.Int, err error) {
 	rewardService := newReward(api.apos.chainConfig)
 
-	api.apos.db.View(context.Background(), func(tx kv.Tx) error {
+	api.apos.dbView(func(tx kv.Tx) error {
 		val, err = rewardService.getAccountRewardUnpaid(tx, address)
 		return err
 	})

@@ -14,10 +14,8 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
-// Package kzg implements KZG commitment scheme for EIP-4844 blob transactions.
-//
-// KZG (Kate-Zaverucha-Goldberg) commitments are polynomial commitments that
-// allow verification of blob data without revealing the data itself.
+// Package kzg implements KZG commitment scheme for EIP-4844 blob transactions
+// using the go-kzg-4844 library with the Ethereum trusted setup.
 //
 // Reference: https://eips.ethereum.org/EIPS/eip-4844
 
@@ -26,8 +24,10 @@ package kzg
 import (
 	"crypto/sha256"
 	"errors"
+	"runtime"
 	"sync"
 
+	gokzg4844 "github.com/crate-crypto/go-kzg-4844"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -74,43 +74,40 @@ var (
 	gKZGCtxErr  error
 )
 
-// Context represents a KZG trusted setup context
+// Context wraps a go-kzg-4844 context with the Ethereum trusted setup.
 type Context struct {
-	// Trusted setup parameters (loaded from file or embedded)
-	initialized bool
-	
-	// BLS12-381 parameters would go here in a full implementation
-	// For now, we provide interface definitions
+	inner *gokzg4844.Context
 }
 
-// InitContext initializes the global KZG context with the trusted setup
+// InitContext initializes the global KZG context with the Ethereum trusted setup.
 func InitContext() error {
 	gKZGCtxOnce.Do(func() {
-		gKZGCtx = &Context{
-			initialized: true,
+		inner, err := gokzg4844.NewContext4096Secure()
+		if err != nil {
+			gKZGCtxErr = err
+			return
 		}
-		// In a full implementation, this would load the trusted setup
-		// from a file or embedded data
+		gKZGCtx = &Context{inner: inner}
 	})
 	return gKZGCtxErr
 }
 
-// GetContext returns the global KZG context
+// GetContext returns the global KZG context.
 func GetContext() (*Context, error) {
 	if err := InitContext(); err != nil {
 		return nil, err
 	}
-	if gKZGCtx == nil || !gKZGCtx.initialized {
+	if gKZGCtx == nil {
 		return nil, ErrContextNotInitialized
 	}
 	return gKZGCtx, nil
 }
 
 // =============================================================================
-// KZG Operations
+// KZG Operations (package-level convenience functions)
 // =============================================================================
 
-// BlobToCommitment computes the KZG commitment for a blob
+// BlobToCommitment computes the KZG commitment for a blob.
 func BlobToCommitment(blob *Blob) (Commitment, error) {
 	ctx, err := GetContext()
 	if err != nil {
@@ -119,7 +116,7 @@ func BlobToCommitment(blob *Blob) (Commitment, error) {
 	return ctx.BlobToCommitment(blob)
 }
 
-// ComputeProof computes a KZG proof for a blob at a given point
+// ComputeProof computes a KZG proof for a blob at a given evaluation point.
 func ComputeProof(blob *Blob, commitment Commitment, point [32]byte) (Proof, [32]byte, error) {
 	ctx, err := GetContext()
 	if err != nil {
@@ -128,7 +125,7 @@ func ComputeProof(blob *Blob, commitment Commitment, point [32]byte) (Proof, [32
 	return ctx.ComputeProof(blob, commitment, point)
 }
 
-// VerifyProof verifies a KZG proof
+// VerifyProof verifies a KZG proof at a given point.
 func VerifyProof(commitment Commitment, point, claim [32]byte, proof Proof) error {
 	ctx, err := GetContext()
 	if err != nil {
@@ -137,7 +134,7 @@ func VerifyProof(commitment Commitment, point, claim [32]byte, proof Proof) erro
 	return ctx.VerifyProof(commitment, point, claim, proof)
 }
 
-// VerifyBlobProof verifies a blob proof against a commitment
+// VerifyBlobProof verifies a blob proof against a commitment.
 func VerifyBlobProof(blob *Blob, commitment Commitment, proof Proof) error {
 	ctx, err := GetContext()
 	if err != nil {
@@ -146,7 +143,7 @@ func VerifyBlobProof(blob *Blob, commitment Commitment, proof Proof) error {
 	return ctx.VerifyBlobProof(blob, commitment, proof)
 }
 
-// VerifyBlobProofBatch verifies multiple blob proofs in batch
+// VerifyBlobProofBatch verifies multiple blob proofs in batch.
 func VerifyBlobProofBatch(blobs []Blob, commitments []Commitment, proofs []Proof) error {
 	ctx, err := GetContext()
 	if err != nil {
@@ -159,116 +156,87 @@ func VerifyBlobProofBatch(blobs []Blob, commitments []Commitment, proofs []Proof
 // Context Methods
 // =============================================================================
 
-// BlobToCommitment computes the KZG commitment for a blob
-//
-// WARNING: This is a PLACEHOLDER implementation using SHA256 for TESTING ONLY.
-// DO NOT USE IN PRODUCTION. A real KZG implementation requires:
-// 1. Converting blob to polynomial coefficients
-// 2. Evaluating polynomial commitment using BLS12-381 trusted setup
-// 3. Returning the commitment as a compressed G1 point
-//
-// TODO: Implement proper KZG commitment using BLS12-381 curve operations.
+// BlobToCommitment computes the KZG commitment for a blob using BLS12-381.
 func (c *Context) BlobToCommitment(blob *Blob) (Commitment, error) {
-	if !c.initialized {
-		return Commitment{}, ErrContextNotInitialized
+	gBlob := (*gokzg4844.Blob)(blob)
+	kzgCommitment, err := c.inner.BlobToKZGCommitment(gBlob, runtime.NumCPU())
+	if err != nil {
+		return Commitment{}, err
 	}
-
-	// WARNING: PLACEHOLDER IMPLEMENTATION - NOT CRYPTOGRAPHICALLY SECURE
-	// This uses SHA256 instead of actual KZG polynomial commitment.
-	// In production, this MUST be replaced with proper KZG implementation.
-	h := sha256.Sum256(blob[:])
 	var commitment Commitment
-	copy(commitment[:], h[:])
+	copy(commitment[:], kzgCommitment[:])
 	return commitment, nil
 }
 
-// ComputeProof computes a KZG proof for a blob at a given point
+// ComputeProof computes a KZG proof for a blob at a given evaluation point.
 func (c *Context) ComputeProof(blob *Blob, commitment Commitment, point [32]byte) (Proof, [32]byte, error) {
-	if !c.initialized {
-		return Proof{}, [32]byte{}, ErrContextNotInitialized
-	}
-
-	// In a full implementation, this would:
-	// 1. Evaluate the polynomial at the given point
-	// 2. Compute the quotient polynomial
-	// 3. Return the proof and claimed value
-
-	// Placeholder implementation
-	h := sha256.Sum256(append(blob[:], point[:]...))
-	var proof Proof
-	copy(proof[:], h[:])
-	
-	claim := sha256.Sum256(append(commitment[:], point[:]...))
-	return proof, claim, nil
-}
-
-// VerifyProof verifies a KZG proof
-func (c *Context) VerifyProof(commitment Commitment, point, claim [32]byte, proof Proof) error {
-	if !c.initialized {
-		return ErrContextNotInitialized
-	}
-
-	// In a full implementation, this would:
-	// 1. Verify the pairing equation:
-	//    e(C - [claim]G1, G2) = e(proof, [τ - point]G2)
-	// 2. Return error if verification fails
-
-	// Placeholder - always succeeds for valid format
-	if commitment == (Commitment{}) {
-		return ErrInvalidCommitment
-	}
-	return nil
-}
-
-// VerifyBlobProof verifies a blob proof against a commitment
-func (c *Context) VerifyBlobProof(blob *Blob, commitment Commitment, proof Proof) error {
-	if !c.initialized {
-		return ErrContextNotInitialized
-	}
-
-	// In a full implementation, this would:
-	// 1. Compute the challenge point from blob and commitment
-	// 2. Verify the proof at that point
-
-	// Verify commitment matches blob
-	expectedCommitment, err := c.BlobToCommitment(blob)
+	gBlob := (*gokzg4844.Blob)(blob)
+	kzgProof, claimedValue, err := c.inner.ComputeKZGProof(gBlob, gokzg4844.Scalar(point), runtime.NumCPU())
 	if err != nil {
-		return err
+		return Proof{}, [32]byte{}, err
 	}
-	if expectedCommitment != commitment {
-		return ErrCommitmentMismatch
-	}
-
-	return nil
+	var proof Proof
+	copy(proof[:], kzgProof[:])
+	return proof, [32]byte(claimedValue), nil
 }
 
-// VerifyBlobProofBatch verifies multiple blob proofs in batch
-func (c *Context) VerifyBlobProofBatch(blobs []Blob, commitments []Commitment, proofs []Proof) error {
-	if !c.initialized {
-		return ErrContextNotInitialized
+// ComputeBlobProof computes a KZG blob proof for a given blob and commitment.
+func (c *Context) ComputeBlobProof(blob *Blob, commitment Commitment) (Proof, error) {
+	gBlob := (*gokzg4844.Blob)(blob)
+	var kzgCommitment gokzg4844.KZGCommitment
+	copy(kzgCommitment[:], commitment[:])
+	kzgProof, err := c.inner.ComputeBlobKZGProof(gBlob, kzgCommitment, runtime.NumCPU())
+	if err != nil {
+		return Proof{}, err
 	}
+	var proof Proof
+	copy(proof[:], kzgProof[:])
+	return proof, nil
+}
 
-	// Validate input lengths
+// VerifyProof verifies a KZG proof at a given point.
+func (c *Context) VerifyProof(commitment Commitment, point, claim [32]byte, proof Proof) error {
+	var kzgCommitment gokzg4844.KZGCommitment
+	copy(kzgCommitment[:], commitment[:])
+	var kzgProof gokzg4844.KZGProof
+	copy(kzgProof[:], proof[:])
+	return c.inner.VerifyKZGProof(kzgCommitment, gokzg4844.Scalar(point), gokzg4844.Scalar(claim), kzgProof)
+}
+
+// VerifyBlobProof verifies a blob proof against a commitment.
+func (c *Context) VerifyBlobProof(blob *Blob, commitment Commitment, proof Proof) error {
+	gBlob := (*gokzg4844.Blob)(blob)
+	var kzgCommitment gokzg4844.KZGCommitment
+	copy(kzgCommitment[:], commitment[:])
+	var kzgProof gokzg4844.KZGProof
+	copy(kzgProof[:], proof[:])
+	return c.inner.VerifyBlobKZGProof(gBlob, kzgCommitment, kzgProof)
+}
+
+// VerifyBlobProofBatch verifies multiple blob proofs in batch.
+func (c *Context) VerifyBlobProofBatch(blobs []Blob, commitments []Commitment, proofs []Proof) error {
 	if len(blobs) != len(commitments) || len(blobs) != len(proofs) {
 		return ErrInputLengthMismatch
 	}
 
-	// In a full implementation, batch verification would be more efficient
-	// For now, verify each proof individually
+	gBlobs := make([]gokzg4844.Blob, len(blobs))
+	gCommitments := make([]gokzg4844.KZGCommitment, len(commitments))
+	gProofs := make([]gokzg4844.KZGProof, len(proofs))
+
 	for i := range blobs {
-		if err := c.VerifyBlobProof(&blobs[i], commitments[i], proofs[i]); err != nil {
-			return err
-		}
+		gBlobs[i] = gokzg4844.Blob(blobs[i])
+		copy(gCommitments[i][:], commitments[i][:])
+		copy(gProofs[i][:], proofs[i][:])
 	}
 
-	return nil
+	return c.inner.VerifyBlobKZGProofBatch(gBlobs, gCommitments, gProofs)
 }
 
 // =============================================================================
 // Versioned Hash
 // =============================================================================
 
-// CommitmentToVersionedHash converts a commitment to a versioned hash
+// CommitmentToVersionedHash converts a commitment to a versioned hash.
 func CommitmentToVersionedHash(commitment Commitment) types.Hash {
 	h := sha256.Sum256(commitment[:])
 	var versionedHash types.Hash
@@ -277,7 +245,7 @@ func CommitmentToVersionedHash(commitment Commitment) types.Hash {
 	return versionedHash
 }
 
-// IsValidVersionedHash checks if a hash has a valid KZG version
+// IsValidVersionedHash checks if a hash has a valid KZG version.
 func IsValidVersionedHash(h types.Hash) bool {
 	return h[0] == BlobCommitmentVersionKZG
 }
@@ -286,25 +254,18 @@ func IsValidVersionedHash(h types.Hash) bool {
 // Blob Validation
 // =============================================================================
 
-// ValidateBlob validates a blob's field elements
+// ValidateBlob validates a blob by attempting to deserialize its field elements.
+// Each 32-byte field element must be a canonical scalar (< BLS modulus).
 func ValidateBlob(blob *Blob) error {
-	// Each 32-byte field element must be < BLS modulus
-	// BLS12-381 scalar field modulus:
-	// 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
-	
-	// For efficiency, we just check the high bytes
-	for i := 0; i < FieldElementsPerBlob; i++ {
-		offset := i * BytesPerFieldElement
-		// Check if high byte indicates potential overflow
-		if blob[offset] >= 0x73 {
-			// More detailed check would be needed here
-			// For now, accept any value
-		}
+	gBlob := (*gokzg4844.Blob)(blob)
+	_, err := gokzg4844.DeserializeBlob(gBlob)
+	if err != nil {
+		return ErrFieldElementOverflow
 	}
 	return nil
 }
 
-// ValidateBlobSidecar validates a complete blob sidecar
+// ValidateBlobSidecar validates a complete blob sidecar.
 func ValidateBlobSidecar(sidecar *transaction.BlobTxSidecar, expectedHashes []types.Hash) error {
 	if sidecar == nil {
 		return ErrSidecarMissing
@@ -342,17 +303,16 @@ func ValidateBlobSidecar(sidecar *transaction.BlobTxSidecar, expectedHashes []ty
 // =============================================================================
 
 var (
-	ErrContextNotInitialized  = errors.New("kzg: context not initialized")
-	ErrInvalidCommitment      = errors.New("kzg: invalid commitment")
-	ErrCommitmentMismatch     = errors.New("kzg: commitment mismatch")
-	ErrInputLengthMismatch    = errors.New("kzg: input length mismatch")
-	ErrSidecarMissing         = errors.New("kzg: sidecar missing")
-	ErrNoBlobs                = errors.New("kzg: no blobs in sidecar")
+	ErrContextNotInitialized   = errors.New("kzg: context not initialized")
+	ErrInvalidCommitment       = errors.New("kzg: invalid commitment")
+	ErrCommitmentMismatch      = errors.New("kzg: commitment mismatch")
+	ErrInputLengthMismatch     = errors.New("kzg: input length mismatch")
+	ErrSidecarMissing          = errors.New("kzg: sidecar missing")
+	ErrNoBlobs                 = errors.New("kzg: no blobs in sidecar")
 	ErrCommitmentCountMismatch = errors.New("kzg: commitment count mismatch")
-	ErrProofCountMismatch     = errors.New("kzg: proof count mismatch")
-	ErrHashCountMismatch      = errors.New("kzg: hash count mismatch")
-	ErrVersionedHashMismatch  = errors.New("kzg: versioned hash mismatch")
-	ErrInvalidProof           = errors.New("kzg: invalid proof")
-	ErrFieldElementOverflow   = errors.New("kzg: field element overflow")
+	ErrProofCountMismatch      = errors.New("kzg: proof count mismatch")
+	ErrHashCountMismatch       = errors.New("kzg: hash count mismatch")
+	ErrVersionedHashMismatch   = errors.New("kzg: versioned hash mismatch")
+	ErrInvalidProof            = errors.New("kzg: invalid proof")
+	ErrFieldElementOverflow    = errors.New("kzg: field element overflow")
 )
-

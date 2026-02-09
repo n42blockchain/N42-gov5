@@ -28,7 +28,10 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 )
 
-const handshakeTimeout = time.Second
+const (
+	handshakeTimeout = time.Second
+	sessionTTL       = 24 * time.Hour // Sessions expire after 24h to force key refresh
+)
 
 // The SessionCache keeps negotiated encryption keys and
 // state for in-progress handshakes in the Discovery v5 wire protocol.
@@ -55,11 +58,12 @@ type session struct {
 	writeKey     []byte
 	readKey      []byte
 	nonceCounter uint32
+	createdAt    mclock.AbsTime
 }
 
 // keysFlipped returns a copy of s with the read and write keys flipped.
 func (s *session) keysFlipped() *session {
-	return &session{s.readKey, s.writeKey, s.nonceCounter}
+	return &session{s.readKey, s.writeKey, s.nonceCounter, s.createdAt}
 }
 
 func NewSessionCache(maxItems int, clock mclock.Clock) *SessionCache {
@@ -93,8 +97,16 @@ func (sc *SessionCache) nextNonce(s *session) (Nonce, error) {
 }
 
 // session returns the current session for the given node, if any.
+// Returns nil if the session has expired (older than sessionTTL).
 func (sc *SessionCache) session(id enode.ID, addr string) *session {
-	item, _ := sc.sessions.Get(sessionID{id, addr})
+	item, ok := sc.sessions.Get(sessionID{id, addr})
+	if !ok {
+		return nil
+	}
+	if sc.clock.Now().Add(-sessionTTL) > item.createdAt {
+		sc.sessions.Remove(sessionID{id, addr})
+		return nil
+	}
 	return item
 }
 
@@ -108,6 +120,7 @@ func (sc *SessionCache) readKey(id enode.ID, addr string) []byte {
 
 // storeNewSession stores new encryption keys in the cache.
 func (sc *SessionCache) storeNewSession(id enode.ID, addr string, s *session) {
+	s.createdAt = sc.clock.Now()
 	sc.sessions.Add(sessionID{id, addr}, s)
 }
 

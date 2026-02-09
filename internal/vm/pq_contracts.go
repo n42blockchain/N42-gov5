@@ -29,6 +29,8 @@ package vm
 import (
 	"errors"
 
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode2"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode3"
 	"github.com/n42blockchain/N42/common/crypto/falcon"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -177,13 +179,17 @@ func (c *dilithium2Verify) Run(input []byte) ([]byte, error) {
 	sigEnd := sigStart + Dilithium2SignatureSize
 	signature := input[sigStart:sigEnd]
 
-	// TODO: Implement Dilithium2 verification
-	// For now, return a placeholder error
-	_ = pubKeyData
-	_ = message
-	_ = signature
+	// Unpack public key from bytes
+	var pkBuf [mode2.PublicKeySize]byte
+	copy(pkBuf[:], pubKeyData)
+	var pk mode2.PublicKey
+	pk.Unpack(&pkBuf)
 
-	// Placeholder: return failure until Dilithium is integrated
+	// Verify signature
+	if mode2.Verify(&pk, message, signature) {
+		return success(), nil
+	}
+
 	return fail(), nil
 }
 
@@ -216,12 +222,17 @@ func (c *dilithium3Verify) Run(input []byte) ([]byte, error) {
 	sigEnd := sigStart + Dilithium3SignatureSize
 	signature := input[sigStart:sigEnd]
 
-	// TODO: Implement Dilithium3 verification
-	_ = pubKeyData
-	_ = message
-	_ = signature
+	// Unpack public key from bytes
+	var pkBuf [mode3.PublicKeySize]byte
+	copy(pkBuf[:], pubKeyData)
+	var pk mode3.PublicKey
+	pk.Unpack(&pkBuf)
 
-	// Placeholder: return failure until Dilithium is integrated
+	// Verify signature
+	if mode3.Verify(&pk, message, signature) {
+		return success(), nil
+	}
+
 	return fail(), nil
 }
 
@@ -239,29 +250,10 @@ func (c *sqisignVerify) RequiredGas(input []byte) uint64 {
 }
 
 func (c *sqisignVerify) Run(input []byte) ([]byte, error) {
-	// Expected input length: pubkey (64) + message (32) + signature (177) = 273 bytes
-	expectedLen := SQIsignPublicKeySize + FalconMessageSize + SQIsignSignatureSize
-	if len(input) < expectedLen {
-		return fail(), nil
-	}
-
-	// Parse input
-	pubKeyData := input[:SQIsignPublicKeySize]
-	msgStart := SQIsignPublicKeySize
-	msgEnd := SQIsignPublicKeySize + FalconMessageSize
-	message := input[msgStart:msgEnd]
-	sigStart := msgEnd
-	sigEnd := sigStart + SQIsignSignatureSize
-	signature := input[sigStart:sigEnd]
-
-	// TODO: Implement SQIsign verification
-	// SQIsign is still experimental; placeholder until stable implementation
-	_ = pubKeyData
-	_ = message
-	_ = signature
-
-	// Placeholder: return failure until SQIsign is integrated
-	return fail(), nil
+	// SQIsign has no stable Go implementation available.
+	// Return an explicit error so callers know this is not yet supported,
+	// rather than silently returning a verification failure.
+	return nil, errPQNotImplemented
 }
 
 // =============================================================================

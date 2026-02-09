@@ -22,7 +22,7 @@ type Collector struct {
 	rate     float64
 	capacity int64
 	period   time.Duration
-	lock     sync.Mutex
+	lock     sync.RWMutex
 	quit     chan bool
 }
 
@@ -91,8 +91,8 @@ func (c *Collector) Remaining(key string) int64 {
 // Count returns the count of the internal bucket associated with key. If key
 // is not associated with a bucket internally, it is treated as being empty.
 func (c *Collector) Count(key string) int64 {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.lock.RLock()
+	defer c.lock.RUnlock()
 
 	b, ok := c.buckets[key]
 	if !ok || b == nil {
@@ -106,8 +106,8 @@ func (c *Collector) Count(key string) int64 {
 // associated with key is empty. If key is not associated with a bucket
 // internally, it is treated as being empty.
 func (c *Collector) TillEmpty(key string) time.Duration {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.lock.RLock()
+	defer c.lock.RUnlock()
 
 	b, ok := c.buckets[key]
 	if !ok || b == nil {

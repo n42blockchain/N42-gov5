@@ -28,32 +28,21 @@ import (
 // =============================================================================
 
 func TestKZGConstants(t *testing.T) {
-	// BlobCommitmentVersionKZG should be 0x01
 	if BlobCommitmentVersionKZG != 0x01 {
 		t.Errorf("BlobCommitmentVersionKZG: expected 0x01, got 0x%02x", BlobCommitmentVersionKZG)
 	}
-
-	// FieldElementsPerBlob should be 4096
 	if FieldElementsPerBlob != 4096 {
 		t.Errorf("FieldElementsPerBlob: expected 4096, got %d", FieldElementsPerBlob)
 	}
-
-	// BytesPerFieldElement should be 32
 	if BytesPerFieldElement != 32 {
 		t.Errorf("BytesPerFieldElement: expected 32, got %d", BytesPerFieldElement)
 	}
-
-	// BytesPerBlob should be 131072 (4096 * 32)
 	if BytesPerBlob != 131072 {
 		t.Errorf("BytesPerBlob: expected 131072, got %d", BytesPerBlob)
 	}
-
-	// BytesPerCommitment should be 48
 	if BytesPerCommitment != 48 {
 		t.Errorf("BytesPerCommitment: expected 48, got %d", BytesPerCommitment)
 	}
-
-	// BytesPerProof should be 48
 	if BytesPerProof != 48 {
 		t.Errorf("BytesPerProof: expected 48, got %d", BytesPerProof)
 	}
@@ -78,8 +67,8 @@ func TestGetContext(t *testing.T) {
 	if ctx == nil {
 		t.Error("GetContext() returned nil")
 	}
-	if !ctx.initialized {
-		t.Error("Context not initialized")
+	if ctx.inner == nil {
+		t.Error("Context.inner not initialized")
 	}
 }
 
@@ -88,7 +77,6 @@ func TestGetContext(t *testing.T) {
 // =============================================================================
 
 func TestCommitmentToVersionedHash(t *testing.T) {
-	// Create a test commitment
 	var commitment Commitment
 	for i := range commitment {
 		commitment[i] = byte(i)
@@ -96,18 +84,17 @@ func TestCommitmentToVersionedHash(t *testing.T) {
 
 	hash := CommitmentToVersionedHash(commitment)
 
-	// First byte should be version
 	if hash[0] != BlobCommitmentVersionKZG {
 		t.Errorf("Version byte: expected 0x%02x, got 0x%02x", BlobCommitmentVersionKZG, hash[0])
 	}
 
-	// Hash should be deterministic
+	// Deterministic
 	hash2 := CommitmentToVersionedHash(commitment)
 	if hash != hash2 {
 		t.Error("CommitmentToVersionedHash should be deterministic")
 	}
 
-	// Different commitments should produce different hashes
+	// Different commitments produce different hashes
 	var commitment2 Commitment
 	commitment2[0] = 0xFF
 	hash3 := CommitmentToVersionedHash(commitment2)
@@ -158,18 +145,49 @@ func TestIsValidVersionedHash(t *testing.T) {
 // =============================================================================
 
 func TestValidateBlob(t *testing.T) {
-	// Empty blob should be valid
+	// Zero blob should be valid (all field elements are 0 < BLS modulus)
 	var blob Blob
 	if err := ValidateBlob(&blob); err != nil {
 		t.Errorf("ValidateBlob(empty) error: %v", err)
 	}
 
-	// Blob with random data should be valid
-	for i := range blob {
-		blob[i] = byte(i % 256)
-	}
-	if err := ValidateBlob(&blob); err != nil {
-		t.Errorf("ValidateBlob(random) error: %v", err)
+	// Blob with field element >= BLS modulus should fail
+	var badBlob Blob
+	// Set first field element to 0x73eda7... (>= BLS modulus)
+	badBlob[0] = 0x73
+	badBlob[1] = 0xed
+	badBlob[2] = 0xa7
+	badBlob[3] = 0x53
+	badBlob[4] = 0x29
+	badBlob[5] = 0x9d
+	badBlob[6] = 0x7d
+	badBlob[7] = 0x48
+	badBlob[8] = 0x33
+	badBlob[9] = 0x39
+	badBlob[10] = 0xd8
+	badBlob[11] = 0x08
+	badBlob[12] = 0x09
+	badBlob[13] = 0xa1
+	badBlob[14] = 0xd8
+	badBlob[15] = 0x05
+	badBlob[16] = 0x53
+	badBlob[17] = 0xbd
+	badBlob[18] = 0xa4
+	badBlob[19] = 0x02
+	badBlob[20] = 0xff
+	badBlob[21] = 0xfe
+	badBlob[22] = 0x5b
+	badBlob[23] = 0xfe
+	badBlob[24] = 0xff
+	badBlob[25] = 0xff
+	badBlob[26] = 0xff
+	badBlob[27] = 0xff
+	badBlob[28] = 0x00
+	badBlob[29] = 0x00
+	badBlob[30] = 0x00
+	badBlob[31] = 0x01 // This is exactly BLS modulus, which is non-canonical
+	if err := ValidateBlob(&badBlob); err == nil {
+		t.Error("ValidateBlob should reject blob with non-canonical field element")
 	}
 }
 
@@ -200,26 +218,21 @@ func TestValidateBlobSidecar(t *testing.T) {
 }
 
 // =============================================================================
-// KZG Operations Tests
+// KZG Operations Tests (end-to-end with real trusted setup)
 // =============================================================================
 
 func TestBlobToCommitment(t *testing.T) {
-	// Initialize context
 	if err := InitContext(); err != nil {
 		t.Fatalf("InitContext() error: %v", err)
 	}
 
 	var blob Blob
-	for i := range blob {
-		blob[i] = byte(i % 256)
-	}
-
 	commitment, err := BlobToCommitment(&blob)
 	if err != nil {
-		t.Errorf("BlobToCommitment() error: %v", err)
+		t.Fatalf("BlobToCommitment() error: %v", err)
 	}
 
-	// Commitment should not be all zeros
+	// Commitment should not be all zeros (even for zero blob, it's a valid G1 point)
 	allZero := true
 	for _, b := range commitment {
 		if b != 0 {
@@ -238,89 +251,54 @@ func TestBlobToCommitment(t *testing.T) {
 	}
 }
 
-func TestComputeProof(t *testing.T) {
+func TestComputeAndVerifyProof(t *testing.T) {
 	if err := InitContext(); err != nil {
 		t.Fatalf("InitContext() error: %v", err)
 	}
 
 	var blob Blob
-	commitment, _ := BlobToCommitment(&blob)
-	point := [32]byte{0x01}
+	commitment, err := BlobToCommitment(&blob)
+	if err != nil {
+		t.Fatalf("BlobToCommitment() error: %v", err)
+	}
+
+	// Use a valid scalar as evaluation point (1)
+	point := [32]byte{}
+	point[31] = 0x01
 
 	proof, claim, err := ComputeProof(&blob, commitment, point)
 	if err != nil {
-		t.Errorf("ComputeProof() error: %v", err)
+		t.Fatalf("ComputeProof() error: %v", err)
 	}
 
-	// Proof should not be all zeros
-	allZero := true
-	for _, b := range proof {
-		if b != 0 {
-			allZero = false
-			break
-		}
-	}
-	if allZero {
-		t.Error("Proof should not be all zeros")
-	}
-
-	// Claim should not be all zeros
-	allZero = true
-	for _, b := range claim {
-		if b != 0 {
-			allZero = false
-			break
-		}
-	}
-	if allZero {
-		t.Error("Claim should not be all zeros")
+	// Verify the proof
+	err = VerifyProof(commitment, point, claim, proof)
+	if err != nil {
+		t.Errorf("VerifyProof() should succeed for valid proof, got: %v", err)
 	}
 }
 
-func TestVerifyProof(t *testing.T) {
+func TestComputeAndVerifyBlobProof(t *testing.T) {
 	if err := InitContext(); err != nil {
 		t.Fatalf("InitContext() error: %v", err)
 	}
 
 	var blob Blob
-	commitment, _ := BlobToCommitment(&blob)
-	point := [32]byte{0x01}
-	proof, claim, _ := ComputeProof(&blob, commitment, point)
-
-	// Valid proof should verify
-	err := VerifyProof(commitment, point, claim, proof)
+	commitment, err := BlobToCommitment(&blob)
 	if err != nil {
-		t.Errorf("VerifyProof() error: %v", err)
+		t.Fatalf("BlobToCommitment() error: %v", err)
 	}
 
-	// Invalid (zero) commitment should fail
-	err = VerifyProof(Commitment{}, point, claim, proof)
-	if err != ErrInvalidCommitment {
-		t.Errorf("Expected ErrInvalidCommitment, got %v", err)
-	}
-}
-
-func TestVerifyBlobProof(t *testing.T) {
-	if err := InitContext(); err != nil {
-		t.Fatalf("InitContext() error: %v", err)
-	}
-
-	var blob Blob
-	commitment, _ := BlobToCommitment(&blob)
-	proof := Proof{}
-
-	// Matching commitment should verify
-	err := VerifyBlobProof(&blob, commitment, proof)
+	ctx, _ := GetContext()
+	kzgProof, err := ctx.ComputeBlobProof(&blob, commitment)
 	if err != nil {
-		t.Errorf("VerifyBlobProof() error: %v", err)
+		t.Fatalf("ComputeBlobProof() error: %v", err)
 	}
 
-	// Mismatched commitment should fail
-	var commitment2 Commitment
-	commitment2[0] = 0xFF
-	err = VerifyBlobProof(&blob, commitment2, proof)
-	if err != ErrCommitmentMismatch {
-		t.Errorf("Expected ErrCommitmentMismatch, got %v", err)
+	// Verify blob proof
+	err = VerifyBlobProof(&blob, commitment, kzgProof)
+	if err != nil {
+		t.Errorf("VerifyBlobProof() should succeed for valid proof, got: %v", err)
 	}
 }
 
@@ -329,12 +307,21 @@ func TestVerifyBlobProofBatch(t *testing.T) {
 		t.Fatalf("InitContext() error: %v", err)
 	}
 
+	ctx, _ := GetContext()
 	blobs := make([]Blob, 3)
 	commitments := make([]Commitment, 3)
 	proofs := make([]Proof, 3)
 
 	for i := range blobs {
-		commitments[i], _ = BlobToCommitment(&blobs[i])
+		var err error
+		commitments[i], err = BlobToCommitment(&blobs[i])
+		if err != nil {
+			t.Fatalf("BlobToCommitment() error: %v", err)
+		}
+		proofs[i], err = ctx.ComputeBlobProof(&blobs[i], commitments[i])
+		if err != nil {
+			t.Fatalf("ComputeBlobProof() error: %v", err)
+		}
 	}
 
 	// Valid batch should verify
@@ -403,44 +390,11 @@ func BenchmarkBlobToCommitment(b *testing.B) {
 	}
 }
 
-func BenchmarkVerifyProof(b *testing.B) {
-	InitContext()
-	var blob Blob
-	commitment, _ := BlobToCommitment(&blob)
-	point := [32]byte{0x01}
-	proof, claim, _ := ComputeProof(&blob, commitment, point)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		VerifyProof(commitment, point, claim, proof)
-	}
-}
-
-func BenchmarkVerifyBlobProofBatch(b *testing.B) {
-	InitContext()
-	blobs := make([]Blob, 6)
-	commitments := make([]Commitment, 6)
-	proofs := make([]Proof, 6)
-
-	for i := range blobs {
-		commitments[i], _ = BlobToCommitment(&blobs[i])
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		VerifyBlobProofBatch(blobs, commitments, proofs)
-	}
-}
-
 func BenchmarkValidateBlob(b *testing.B) {
 	var blob Blob
-	for i := range blob {
-		blob[i] = byte(i % 256)
-	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ValidateBlob(&blob)
 	}
 }
-

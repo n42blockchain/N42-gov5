@@ -20,7 +20,6 @@
 package vm
 
 import (
-	"crypto/sha256"
 	"errors"
 
 	"github.com/n42blockchain/N42/common/crypto/kzg"
@@ -242,11 +241,13 @@ func CreateMockBlob(data []byte) transaction.Blob {
 	return blob
 }
 
-// CreateMockCommitment creates a mock commitment for testing
+// CreateMockCommitment creates a commitment for testing using real KZG.
 func CreateMockCommitment(blob *transaction.Blob) transaction.Commitment {
-	h := sha256.Sum256(blob[:])
-	var commitment transaction.Commitment
-	copy(commitment[:], h[:])
+	commitment, err := kzg.BlobToCommitment(blob)
+	if err != nil {
+		// Fallback for tests where KZG context may not be available
+		return transaction.Commitment{}
+	}
 	return commitment
 }
 
