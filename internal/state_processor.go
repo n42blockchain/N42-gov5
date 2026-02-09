@@ -61,7 +61,11 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 // returns the amount of gas that was used in the process. If any of the
 // transactions failed to execute due to insufficient gas it will return an error.
 func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (block.Receipts, map[types.Address]*uint256.Int, []*block.Log, uint64, error) {
-	header := b.Header()
+	concreteHeader, ok := b.Header().(*block.Header)
+	if !ok {
+		return nil, nil, nil, 0, fmt.Errorf("Process: invalid header type assertion for block %v", b.Number64())
+	}
+
 	usedGas := new(uint64)
 	gp := new(common.GasPool)
 	gp.AddGas(b.GasLimit())
@@ -84,7 +88,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	//posa, isPoSA := p.engine.(*apoa.Apoa)
 	for i, tx := range b.Transactions() {
 		ibs.Prepare(tx.Hash(), b.Hash(), i)
-		receipt, _, err := ApplyTransaction(chainConfig, blockHashFunc, p.engine, nil, gp, ibs, noop, header.(*block.Header), tx, usedGas, cfg)
+		receipt, _, err := ApplyTransaction(chainConfig, blockHashFunc, p.engine, nil, gp, ibs, noop, concreteHeader, tx, usedGas, cfg)
 		if err != nil {
 			if !cfg.StatelessExec {
 				return nil, nil, nil, 0, fmt.Errorf("could not apply tx %d from block %d [%v]: %w", i, b.Number64(), tx.Hash().String(), err)
@@ -98,18 +102,15 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		}
 	}
 
-	if !cfg.StatelessExec && *usedGas != header.(*block.Header).GasUsed {
-		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, header.(*block.Header).GasUsed)
+	if !cfg.StatelessExec && *usedGas != concreteHeader.GasUsed {
+		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, concreteHeader.GasUsed)
 	}
 
 	var nopay map[types.Address]*uint256.Int
 	if !cfg.ReadOnly {
 		txs := b.Transactions()
-		//if _, _, _, err := FinalizeBlockExecution(tx, p.engine, b.Header().(*block.Header), txs, stateWriter, chainConfig, ibs, receipts, chainReader, false); err != nil {
-		//	return nil, nil, 0, err
-		//}
 		var err error
-		_, nopay, err = p.engine.Finalize(chainReader, b.Header().(*block.Header), ibs, txs, nil)
+		_, nopay, err = p.engine.Finalize(chainReader, concreteHeader, ibs, txs, nil)
 		if nil != err {
 			return nil, nil, nil, 0, err
 		}

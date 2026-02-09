@@ -233,7 +233,11 @@ func (s *TransactionAPI) GetTransactionByBlockNumberAndIndex(ctx context.Context
 		return nil
 	}
 
-	headerBaseFee := blk.Header().BaseFee64()
+	header := blk.Header()
+	if header == nil {
+		return nil
+	}
+	headerBaseFee := header.BaseFee64()
 	if headerBaseFee == nil {
 		headerBaseFee = new(uint256.Int)
 	}

@@ -153,7 +153,7 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 
 	for i, p := range percentiles {
 		thresholdGasUsed := uint64(float64(bf.block.GasUsed()) * p / 100)
-		for sumGasUsed < thresholdGasUsed && txIndex < len(bf.block.Transactions())-1 {
+		for sumGasUsed < thresholdGasUsed && txIndex < len(sorter)-1 {
 			txIndex++
 			sumGasUsed += sorter[txIndex].gasUsed
 		}

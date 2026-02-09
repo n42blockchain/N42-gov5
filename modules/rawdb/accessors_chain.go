@@ -583,7 +583,11 @@ func ReadVerifies(db kv.Getter, hash types.Hash, number uint64) ([]*block.Verify
 	if err != nil {
 		return nil, fmt.Errorf("ReadVerifies failed: %w", err)
 	}
-	verifies := make([]*block.Verify, len(data)/(types.PublicKeyLength+types.AddressLength))
+	recordSize := types.PublicKeyLength + types.AddressLength
+	if len(data) > 0 && len(data)%recordSize != 0 {
+		return nil, fmt.Errorf("ReadVerifies: invalid data length %d, not a multiple of %d", len(data), recordSize)
+	}
+	verifies := make([]*block.Verify, len(data)/recordSize)
 	for i := 0; i < len(verifies); i++ {
 		verifies[i] = &block.Verify{
 			Address:   types.Address{},

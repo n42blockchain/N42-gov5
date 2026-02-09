@@ -67,7 +67,10 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 	}
 
 	if v.config.IsBeijing(b.Number64().Uint64()) {
-		header := b.Header().(*block.Header)
+		header, ok := b.Header().(*block.Header)
+		if !ok {
+			return fmt.Errorf("ValidateBody: invalid header type assertion for block %v", b.Number64())
+		}
 		sig, err := bls.SignatureFromBytes(header.Signature[:])
 		if nil != err {
 			return err
@@ -104,7 +107,10 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 // itself. ValidateState returns a database batch if the validation was a success
 // otherwise nil and an error is returned.
 func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.IntraBlockState, receipts block.Receipts, usedGas uint64) error {
-	header := iBlock.Header().(*block.Header)
+	header, ok := iBlock.Header().(*block.Header)
+	if !ok {
+		return fmt.Errorf("ValidateState: invalid header type assertion for block %v", iBlock.Number64())
+	}
 	if header.GasUsed != usedGas {
 		return fmt.Errorf("invalid gas used (remote: %d local: %d)", header.GasUsed, usedGas)
 	}
@@ -117,11 +123,18 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 	receiptSha := DeriveSha(receipts)
 	if receiptSha != header.ReceiptHash {
 		for i, tx := range iBlock.Body().Transactions() {
-			log.Warn("tx", "index", i, "from", tx.From(), "GasUsed", receipts[i].GasUsed)
-			for index2, l := range receipts[i].Logs {
-				log.Warn("tx logs", "index", index2, "address", l.Address, "topic", l.Topics[0], "data", hexutil.Encode(l.Data))
+			if i < len(receipts) {
+				log.Warn("tx", "index", i, "from", tx.From(), "GasUsed", receipts[i].GasUsed)
+				for index2, l := range receipts[i].Logs {
+					topic := "none"
+					if len(l.Topics) > 0 {
+						topic = hexutil.Encode(l.Topics[0].Bytes())
+					}
+					log.Warn("tx logs", "index", index2, "address", l.Address, "topic", topic, "data", hexutil.Encode(l.Data))
+				}
+			} else {
+				log.Warn("tx", "index", i, "from", tx.From(), "receipt", "missing")
 			}
-
 		}
 		return fmt.Errorf("invalid receipt root hash (remote: %x local: %x)", header.ReceiptHash, receiptSha)
 	}

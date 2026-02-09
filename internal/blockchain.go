@@ -835,8 +835,10 @@ func (bc *BlockChain) recoverAncestors(blk block.IBlock) (types.Hash, error) {
 	for parent != nil && !bc.HasState(parent.Hash()) {
 		hashes = append(hashes, parent.Hash())
 		numbers = append(numbers, *parent.Number64())
+		if parent.Number64().IsZero() {
+			break
+		}
 		parent = bc.GetBlock(parent.ParentHash(), parent.Number64().Uint64()-1)
-
 	}
 	if parent == nil {
 		return types.Hash{}, errors.New("missing parent")
@@ -1156,11 +1158,17 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 				hash := tx.Hash()
 				deletedTxs = append(deletedTxs, hash)
 			}
+			if oldBlock.Number64().IsZero() {
+				break
+			}
 		}
 	} else {
 		// New chain is longer, stash all blocks away for subsequent insertion
 		for ; newBlock != nil && newBlock.Number64() != oldBlock.Number64(); newBlock = bc.GetBlock(newBlock.ParentHash(), newBlock.Number64().Uint64()-1) {
 			newChain = append(newChain, newBlock)
+			if newBlock.Number64().IsZero() {
+				break
+			}
 		}
 	}
 	if oldBlock == nil {
@@ -1199,12 +1207,13 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 		newChain = append(newChain, newBlock)
 
 		// Step back with both chains
-		//oldBlock = bc.GetBlock(oldBlock.ParentHash(), oldBlock.Number64().Uint64()-1)
+		if oldBlock.Number64().IsZero() || newBlock.Number64().IsZero() {
+			return fmt.Errorf("reached genesis without finding common ancestor")
+		}
 		oldBlock = rawdb.ReadBlock(tx, oldBlock.ParentHash(), oldBlock.Number64().Uint64()-1)
 		if oldBlock == nil {
 			return fmt.Errorf("invalid old chain")
 		}
-		//newBlock = bc.GetBlock(newBlock.ParentHash(), newBlock.Number64().Uint64()-1)
 		newBlock = rawdb.ReadBlock(tx, newBlock.ParentHash(), newBlock.Number64().Uint64()-1)
 		if newBlock == nil {
 			return fmt.Errorf("invalid new chain")

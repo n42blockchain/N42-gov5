@@ -151,6 +151,9 @@ func (it *insertIterator) current() block.IHeader {
 
 // first returns the first block in the it.
 func (it *insertIterator) first() block.IBlock {
+	if len(it.chain) == 0 {
+		return nil
+	}
 	return it.chain[0]
 }
 
