@@ -93,9 +93,6 @@ type EVMInterpreter struct {
 	depth int
 }
 
-// structcheck doesn't see embedding
-//
-//nolint:structcheck
 type VM struct {
 	evm VMInterpreter
 	cfg Config
