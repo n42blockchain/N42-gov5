@@ -181,6 +181,9 @@ func (s *Service) Start() {
 	}
 
 	s.isPreGenesis.Store(false)
+	// Mark as started early so InterceptAccept allows inbound connections
+	// during discovery and bootnode dialing, which can trigger peer callbacks.
+	s.started.Store(true)
 
 	var peersToWatch []string
 	if s.cfg.RelayNodeAddr != "" {
@@ -198,6 +201,7 @@ func (s *Service) Start() {
 		)
 		if err != nil {
 			log.Crit("Failed to start discovery", "err", err)
+			s.started.Store(false)
 			s.startupErrMu.Lock()
 			s.startupErr = err
 			s.startupErrMu.Unlock()
@@ -205,6 +209,7 @@ func (s *Service) Start() {
 		}
 		bootnodes, err := s.bootnodes()
 		if err != nil {
+			s.started.Store(false)
 			s.startupErrMu.Lock()
 			s.startupErr = err
 			s.startupErrMu.Unlock()
@@ -213,6 +218,7 @@ func (s *Service) Start() {
 		err = s.connectToBootnodes(bootnodes)
 		if err != nil {
 			log.Error("Could not add bootnode to the exclusion list", "err", err)
+			s.started.Store(false)
 			s.startupErrMu.Lock()
 			s.startupErr = err
 			s.startupErrMu.Unlock()
@@ -225,8 +231,6 @@ func (s *Service) Start() {
 		})
 
 	}
-
-	s.started.Store(true)
 
 	if len(s.cfg.StaticPeers) > 0 {
 		addrs, err := PeersFromStringAddrs(s.cfg.StaticPeers)
