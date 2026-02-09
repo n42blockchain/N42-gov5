@@ -589,12 +589,14 @@ func (sdb *IntraBlockState) SetBalance(addr types.Address, amount *uint256.Int) 
 	}
 }
 
+// SetNonce sets the nonce for the given address.
+// Note: nonce is uint64, so overflow is not practically possible (would require 2^64 transactions).
 // DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) SetNonce(addr types.Address, nonce uint64) {
 	if sdb.tracer != nil {
 		err := sdb.tracer.CaptureAccountWrite(addr)
 		if sdb.trace {
-			fmt.Println("CaptureAccountWrite err", err)
+			log.Trace("CaptureAccountWrite", "err", err)
 		}
 	}
 

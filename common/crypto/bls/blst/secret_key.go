@@ -55,7 +55,7 @@ func SecretKeyFromBytes(privKey []byte) (common.SecretKey, error) {
 		return nil, common.ErrSecretUnmarshal
 	}
 	wrappedKey := &bls12SecretKey{p: secKey}
-	if IsZero(privKey) {
+	if IsZero(wrappedKey.Marshal()) {
 		return nil, common.ErrZeroKey
 	}
 	return wrappedKey, nil

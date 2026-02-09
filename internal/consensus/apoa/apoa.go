@@ -187,6 +187,9 @@ type Apoa struct {
 	signFn SignerFn      // Signer function to authorize hashes with
 	lock   sync.RWMutex  // Protects the signer and proposals fields
 
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	// The fields below are for testing only
 	fakeDiff bool // Skip difficulty verifications
 }
@@ -203,12 +206,15 @@ func New(config *params.CliqueConfig, db kv.RwDB) consensus.Engine {
 	recents, _ := lru.NewARC(inmemorySnapshots)
 	signatures, _ := lru.NewARC(inmemorySignatures)
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Apoa{
 		config:     &conf,
 		db:         db,
 		recents:    recents,
 		signatures: signatures,
 		proposals:  make(map[types.Address]bool),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
@@ -377,13 +383,18 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 		headers []block.IHeader
 		snap    *Snapshot
 	)
-	tx, err := c.db.BeginRo(context.Background())
+	tx, err := c.db.BeginRo(c.ctx)
 	if nil != err {
 		return nil, err
 	}
 	defer tx.Rollback()
 
+	const maxSnapshotDepth = 256 * 1024
+
 	for snap == nil {
+		if len(headers) > maxSnapshotDepth {
+			return nil, fmt.Errorf("snapshot not found within %d blocks", maxSnapshotDepth)
+		}
 		// If an in-memory snapshot was found, use that
 		if s, ok := c.recents.Get(hash); ok {
 			snap = s.(*Snapshot)
@@ -417,7 +428,7 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 					copy(signers[i][:], rawCheckpoint.Extra[extraVanity+i*types.AddressLength:])
 				}
 				snap = newSnapshot(c.config, c.signatures, number, hash, signers)
-				if err := c.db.Update(context.Background(), func(tx kv.RwTx) error {
+				if err := c.db.Update(c.ctx, func(tx kv.RwTx) error {
 					if err := snap.store(tx); err != nil {
 						return err
 					}
@@ -460,7 +471,7 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 
 	// If we've generated a new checkpoint snapshot, save to disk
 	if snap.Number%checkpointInterval == 0 && len(headers) > 0 {
-		if err = c.db.Update(context.Background(), func(tx kv.RwTx) error {
+		if err = c.db.Update(c.ctx, func(tx kv.RwTx) error {
 			if err := snap.store(tx); err != nil {
 				return err
 			}
@@ -734,8 +745,9 @@ func (c *Apoa) SealHash(header block.IHeader) types.Hash {
 	return SealHash(header)
 }
 
-// Close implements consensus.Engine. It's a noop for Apoa as there are no background threads.
+// Close implements consensus.Engine.
 func (c *Apoa) Close() error {
+	c.cancel()
 	return nil
 }
 

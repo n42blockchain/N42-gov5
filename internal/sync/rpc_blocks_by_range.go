@@ -126,7 +126,7 @@ func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSl
 	defer span.End()
 
 	var blks = make([]types.IBlock, 0)
-	for ; startSlot.Cmp(endSlot) <= 0; startSlot = startSlot.AddUint64(startSlot, step) {
+	for ; startSlot.Cmp(endSlot) <= 0; startSlot = new(uint256.Int).AddUint64(startSlot, step) {
 		b, err := s.cfg.chain.GetBlockByNumber(startSlot)
 		if err != nil {
 			//tracing.AnnotateError(span, err)

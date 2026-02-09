@@ -114,27 +114,29 @@ func (m *LogManager) Stop() {
 // cleanup 执行清理
 func (m *LogManager) cleanup() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// 获取所有日志文件
 	files, err := m.getLogFiles()
 	if err != nil {
+		m.mu.Unlock()
 		return
 	}
 
-	// 计算总大小
 	var totalSize int64
 	for _, f := range files {
 		totalSize += f.size
 	}
 
-	// 如果超过限制，删除最旧的文件
+	var toDelete []logFileInfo
 	for totalSize > m.totalSizeCap && len(files) > 1 {
 		oldest := files[0]
-		if err := os.Remove(oldest.path); err == nil {
-			totalSize -= oldest.size
-			files = files[1:]
-			Info("Log cleanup: removed old file", "file", filepath.Base(oldest.path), "size_mb", oldest.size/1024/1024)
+		totalSize -= oldest.size
+		files = files[1:]
+		toDelete = append(toDelete, oldest)
+	}
+	m.mu.Unlock()
+
+	for _, f := range toDelete {
+		if err := os.Remove(f.path); err == nil {
+			Info("Log cleanup: removed old file", "file", filepath.Base(f.path), "size_mb", f.size/1024/1024)
 		}
 	}
 }

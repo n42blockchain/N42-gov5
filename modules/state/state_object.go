@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
 	"io"
 	"math/big"
@@ -286,7 +287,7 @@ func (so *stateObject) updateTrie(stateWriter StateWriter) error {
 }
 func (so *stateObject) printTrie() {
 	for key, value := range so.dirtyStorage {
-		fmt.Printf("WriteAccountStorage: %x,%x,%s\n", so.address, key, value.Hex())
+		log.Trace("WriteAccountStorage", "address", so.address, "key", key, "value", value.Hex())
 	}
 }
 
