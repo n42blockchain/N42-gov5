@@ -107,7 +107,8 @@ func GetDepositInfo(tx kv.Tx, addr types.Address) *Info {
 		// 10 deposit is reserved for testing purposes only
 		return nil
 	default:
-		panic("wrong deposit amount")
+		log.Warn("unknown deposit amount, skipping", "depositEther", depositEther, "addr", addr)
+		return nil
 	}
 
 	return &Info{
@@ -265,11 +266,11 @@ func (d *Deposit) handleDepositEvent(txHash types.Hash, data []byte, depositCont
 	if signature.Verify(publicKey, amount.Bytes()) {
 		var tx *transaction.Transaction
 		rwTx, err := d.db.BeginRw(d.ctx)
-		defer rwTx.Rollback()
 		if err != nil {
 			log.Error("cannot open db", "err", err)
 			return
 		}
+		defer rwTx.Rollback()
 
 		tx, _, _, _, err = rawdb.ReadTransactionByHash(rwTx, txHash)
 		if err != nil {
@@ -277,12 +278,17 @@ func (d *Deposit) handleDepositEvent(txHash types.Hash, data []byte, depositCont
 		}
 
 		if tx != nil {
-			log.Info("add Deposit info", "address", tx.From(), "amount", amount.String())
+			from := tx.From()
+			if from == nil {
+				log.Error("deposit tx has nil From address", "hash", txHash)
+				return
+			}
+			log.Info("add Deposit info", "address", from, "amount", amount.String())
 
 			var pub types.PublicKey
 			pub.SetBytes(publicKey.Marshal())
 			//
-			rawdb.PutDeposit(rwTx, *tx.From(), pub, *amount)
+			rawdb.PutDeposit(rwTx, *from, pub, *amount)
 			rwTx.Commit()
 		}
 	} else {
@@ -294,11 +300,12 @@ func (d *Deposit) handleWithdrawnEvent(txHash types.Hash, data []byte) {
 	var tx *transaction.Transaction
 
 	rwTx, err := d.db.BeginRw(d.ctx)
-	defer rwTx.Rollback()
 	if err != nil {
 		log.Error("cannot open db", "err", err)
 		return
 	}
+	defer rwTx.Rollback()
+
 	tx, _, _, _, err = rawdb.ReadTransactionByHash(rwTx, txHash)
 	if err != nil {
 		log.Error("rawdb.ReadTransactionByHash", "err", err, "hash", txHash)
@@ -309,7 +316,13 @@ func (d *Deposit) handleWithdrawnEvent(txHash types.Hash, data []byte) {
 		return
 	}
 
-	err = rawdb.DeleteDeposit(rwTx, *tx.From())
+	from := tx.From()
+	if from == nil {
+		log.Error("withdrawn tx has nil From address", "hash", txHash)
+		return
+	}
+
+	err = rawdb.DeleteDeposit(rwTx, *from)
 	if err != nil {
 		log.Error("cannot delete deposit", "err", err)
 		return

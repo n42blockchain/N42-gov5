@@ -293,9 +293,13 @@ func (f *blocksFetcher) fetchBlocksFromPeer(ctx context.Context, start *uint256.
 
 // logBlockRangeError logs block range request errors with throttling.
 func logBlockRangeError(err error) {
+	if err == errFetcherCtxIsDone || err == context.Canceled {
+		return
+	}
+
 	blockRangeErrLogMutex.Lock()
 	defer blockRangeErrLogMutex.Unlock()
-	
+
 	blockRangeErrCount++
 	now := time.Now()
 	

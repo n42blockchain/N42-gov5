@@ -85,12 +85,31 @@ func (Contract) UnpackDepositLogData(data []byte) (publicKey []byte, signature [
 		err = errors.Wrap(err, "unable to unpack logs")
 		return
 	}
+	if len(unpackedLogs) < 3 {
+		err = errors.New("unexpected number of log fields")
+		return
+	}
 	//
-	if depositAmount, overflow = uint256.FromBig(unpackedLogs[1].(*big.Int)); overflow {
+	bigAmount, ok := unpackedLogs[1].(*big.Int)
+	if !ok {
+		err = errors.New("unable to cast amount to *big.Int")
+		return
+	}
+	if depositAmount, overflow = uint256.FromBig(bigAmount); overflow {
 		err = errors.New("unable to unpack amount")
 		return
 	}
-	publicKey, signature = unpackedLogs[0].([]byte), unpackedLogs[2].([]byte)
-	log.Debug("unpacked DepositEvent Logs", "publicKey", hexutil.Encode(unpackedLogs[0].([]byte)), "signature", hexutil.Encode(unpackedLogs[2].([]byte)), "message", hexutil.Encode(depositAmount.Bytes()))
+	pubKeyBytes, ok := unpackedLogs[0].([]byte)
+	if !ok {
+		err = errors.New("unable to cast publicKey to []byte")
+		return
+	}
+	sigBytes, ok := unpackedLogs[2].([]byte)
+	if !ok {
+		err = errors.New("unable to cast signature to []byte")
+		return
+	}
+	publicKey, signature = pubKeyBytes, sigBytes
+	log.Debug("unpacked DepositEvent Logs", "publicKey", hexutil.Encode(pubKeyBytes), "signature", hexutil.Encode(sigBytes), "message", hexutil.Encode(depositAmount.Bytes()))
 	return
 }

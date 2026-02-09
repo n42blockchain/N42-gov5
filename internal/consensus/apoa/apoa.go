@@ -148,7 +148,10 @@ type SignerFn func(signer accounts.Account, mimeType string, message []byte) ([]
 
 // ecrecover extracts the Ethereum account address from a signed header.
 func ecrecover(iHeader block.IHeader, sigcache *lru.ARCCache) (types.Address, error) {
-	header := iHeader.(*block.Header)
+	header, ok := iHeader.(*block.Header)
+	if !ok {
+		return types.Address{}, errors.New("invalid header type: expected *block.Header")
+	}
 	// If the signature's already cached, return that
 	hash := header.Hash()
 	if address, known := sigcache.Get(hash); known {
@@ -255,7 +258,10 @@ func (c *Apoa) VerifyHeaders(chain consensus.ChainHeaderReader, headers []block.
 // looking those up from the database. This is useful for concurrently verifying
 // a batch of new headers.
 func (c *Apoa) verifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHeader, parents []block.IHeader) error {
-	header := iHeader.(*block.Header)
+	header, ok := iHeader.(*block.Header)
+	if !ok {
+		return errors.New("invalid header type: expected *block.Header")
+	}
 	if header.Number.IsZero() {
 		return errUnknownBlock
 	}
