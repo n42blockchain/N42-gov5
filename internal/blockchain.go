@@ -212,6 +212,7 @@ func (bc *BlockChain) Start() error {
 	bc.wg.Add(3)
 	go bc.runLoop()
 	go bc.updateFutureBlocksLoop()
+	go bc.runNewBlockMessage()
 	return nil
 }
 
@@ -219,6 +220,8 @@ func (bc *BlockChain) AddPeer(hash string, remoteBlock uint64, peerID peer.ID) e
 	if bc.genesisBlock.Hash().String() != hash {
 		return fmt.Errorf("failed to addPeer, err: genesis block different")
 	}
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
 	if _, ok := bc.peers[peerID]; ok {
 		return fmt.Errorf("failed to addPeer, err: the peer already exists")
 	}
@@ -316,8 +319,13 @@ func (bc *BlockChain) updateFutureBlocksLoop() {
 }
 
 func (bc *BlockChain) runNewBlockMessage() {
+	defer bc.wg.Done()
 	newBlockCh := make(chan *msg_proto.NewBlockMessageData, 10)
-	sub, _ := event.GlobalEvent.Subscribe(newBlockCh)
+	sub, err := event.GlobalEvent.Subscribe(newBlockCh)
+	if err != nil {
+		log.Error("failed to subscribe to NewBlockMessageData events", "err", err)
+		return
+	}
 	defer sub.Unsubscribe()
 	db := bc.ChainDB
 	for {
@@ -385,7 +393,11 @@ func (bc *BlockChain) NewBlockHandler(payload []byte, peer peer.ID) error {
 	} else {
 		var blk block.Block
 		if err := blk.FromProtoMessage(nweBlock.GetBlock()); err == nil {
-			bc.chBlocks <- &blk
+			select {
+			case bc.chBlocks <- &blk:
+			case <-bc.ctx.Done():
+				return bc.ctx.Err()
+			}
 		}
 	}
 	return nil

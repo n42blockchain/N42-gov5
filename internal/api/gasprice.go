@@ -97,28 +97,33 @@ func NewOracle(backend common2.IBlockChain, miner common2.IMiner, chainConfig *p
 	cache, _ := lru.New(2048)
 
 	highestBlockCh := make(chan common2.ChainHighestBlock)
-	highestSub, _ := event.GlobalEvent.Subscribe(highestBlockCh)
+	highestSub, err := event.GlobalEvent.Subscribe(highestBlockCh)
+	if err != nil {
+		log.Warn("failed to subscribe to ChainHighestBlock events for gas price cache invalidation", "err", err)
+	}
 
 	// Start goroutine to handle block updates for cache invalidation
 	// Note: The goroutine will exit when the subscription is closed
-	go func() {
-		defer close(highestBlockCh)
-		var lastHead types2.Hash
-		for {
-			select {
-			case ev, ok := <-highestBlockCh:
-				if !ok {
+	if highestSub != nil {
+		go func() {
+			defer close(highestBlockCh)
+			var lastHead types2.Hash
+			for {
+				select {
+				case ev, ok := <-highestBlockCh:
+					if !ok {
+						return
+					}
+					if ev.Block.ParentHash() != lastHead {
+						cache.Purge()
+					}
+					lastHead = ev.Block.Hash()
+				case <-highestSub.Err():
 					return
 				}
-				if ev.Block.ParentHash() != lastHead {
-					cache.Purge()
-				}
-				lastHead = ev.Block.Hash()
-			case <-highestSub.Err():
-				return
 			}
-		}
-	}()
+		}()
+	}
 
 	return &Oracle{
 		backend:          backend,

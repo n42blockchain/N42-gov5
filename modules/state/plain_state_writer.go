@@ -18,6 +18,7 @@ package state
 
 import (
 	"encoding/binary"
+	"fmt"
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/n42blockchain/N42/common/account"
@@ -64,7 +65,10 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 	//var value []byte
 	//account.EncodeForStorage(value)
 	pb := account.ToProtoMessage()
-	data, _ := proto.Marshal(pb)
+	data, err := proto.Marshal(pb)
+	if err != nil {
+		return fmt.Errorf("failed to marshal account data: %w", err)
+	}
 	//if w.accumulator != nil {
 	//	w.accumulator.ChangeAccount(address, account.Incarnation, value)
 	//}

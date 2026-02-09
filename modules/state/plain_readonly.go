@@ -50,10 +50,22 @@ type PlainState struct {
 }
 
 func NewPlainState(tx kv.Tx, blockNr uint64) *PlainState {
-	c1, _ := tx.Cursor(modules.AccountsHistory)
-	c2, _ := tx.Cursor(modules.StorageHistory)
-	c3, _ := tx.CursorDupSort(modules.AccountChangeSet)
-	c4, _ := tx.CursorDupSort(modules.StorageChangeSet)
+	c1, err := tx.Cursor(modules.AccountsHistory)
+	if err != nil {
+		log.Error("failed to create AccountsHistory cursor", "err", err)
+	}
+	c2, err := tx.Cursor(modules.StorageHistory)
+	if err != nil {
+		log.Error("failed to create StorageHistory cursor", "err", err)
+	}
+	c3, err := tx.CursorDupSort(modules.AccountChangeSet)
+	if err != nil {
+		log.Error("failed to create AccountChangeSet cursor", "err", err)
+	}
+	c4, err := tx.CursorDupSort(modules.StorageChangeSet)
+	if err != nil {
+		log.Error("failed to create StorageChangeSet cursor", "err", err)
+	}
 
 	return &PlainState{
 		tx:          tx,

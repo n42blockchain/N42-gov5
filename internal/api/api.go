@@ -29,7 +29,6 @@ import (
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/turbo/rpchelper"
 
-	"math"
 	"math/big"
 	"time"
 
@@ -55,6 +54,9 @@ const (
 	baseFee       = 5000000
 	rpcEVMTimeout = time.Duration(5 * time.Second)
 	rpcGasCap     = 50000000
+
+	// maxCallDataSize is the maximum allowed size for eth_call calldata (128KB).
+	maxCallDataSize = 128 * 1024
 )
 
 // API compatible EthereumAPI provides an API to access related information.
@@ -385,6 +387,11 @@ func (diff *BlockOverrides) Apply(blockCtx *evmtypes.BlockContext) {
 func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash jsonrpc.BlockNumberOrHash, overrides *StateOverride, timeout time.Duration, globalGasCap uint64) (*internal.ExecutionResult, error) {
 	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
+	// Reject oversized calldata to prevent memory abuse
+	if args.Data != nil && len(*args.Data) > maxCallDataSize {
+		return nil, fmt.Errorf("calldata size %d exceeds maximum allowed %d bytes", len(*args.Data), maxCallDataSize)
+	}
+
 	// header := api.BlockChain().CurrentBlock().Header()
 	//state := api.BlockChain().StateAt(header.Hash()).(*statedb.StateDB)
 	var header block.IHeader
@@ -449,7 +456,11 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 	}()
 
 	// Execute the message.
-	gp := new(common.GasPool).AddGas(math.MaxUint64)
+	gasCap := globalGasCap
+	if gasCap == 0 {
+		gasCap = rpcGasCap
+	}
+	gp := new(common.GasPool).AddGas(gasCap)
 	result, err := internal.ApplyMessage(evm, msg, gp, true, false)
 	if err := vmError(); err != nil {
 		return nil, err
@@ -702,9 +713,11 @@ func (s *BlockChainAPI) GetBlockByNumber(ctx context.Context, number jsonrpc.Blo
 		err   error
 	)
 	// header
-	if number == jsonrpc.LatestBlockNumber {
+	if number == jsonrpc.LatestBlockNumber || number == jsonrpc.PendingBlockNumber {
 		block = s.api.BlockChain().CurrentBlock()
 		err = nil
+	} else if number < 0 {
+		return nil, fmt.Errorf("invalid block number: %d", number)
 	} else {
 		block, err = s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number.Int64())))
 	}

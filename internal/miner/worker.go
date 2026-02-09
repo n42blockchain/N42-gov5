@@ -659,7 +659,15 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 
 	timestamp := param.timestamp
 
-	parent := w.chain.CurrentBlock().Header().(*block.Header)
+	currentBlock := w.chain.CurrentBlock()
+	if currentBlock == nil {
+		return nil, fmt.Errorf("current block is nil")
+	}
+	currentHeader := currentBlock.Header()
+	if currentHeader == nil {
+		return nil, fmt.Errorf("current block header is nil")
+	}
+	parent := currentHeader.(*block.Header)
 	if param.parentHash != (types.Hash{}) {
 		b, _ := w.chain.GetBlockByHash(param.parentHash)
 		if b == nil {

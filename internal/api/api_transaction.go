@@ -3,12 +3,12 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/n42blockchain/N42/accounts"
-	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
@@ -16,7 +16,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"github.com/n42blockchain/N42/params"
 )
 
 // TransactionAPI exposes methods for reading and creating transaction data.
@@ -77,9 +76,15 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	return SubmitTransaction(context.Background(), s.api, metaTx)
 }
 
+// MaxBatchSize is the maximum number of transactions allowed in a single batch request.
+const MaxBatchSize = 200
+
 func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexutil.Bytes) ([]avmcommon.Hash, error) {
 	if len(inputs) == 0 {
 		return []avmcommon.Hash{}, nil
+	}
+	if len(inputs) > MaxBatchSize {
+		return nil, fmt.Errorf("batch size %d exceeds maximum allowed %d", len(inputs), MaxBatchSize)
 	}
 
 	currentBlock := s.api.BlockChain().CurrentBlock()
@@ -162,7 +167,14 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 	if err != nil {
 		return nil, err
 	}
-	gasPrice := new(big.Int).Add(header.BaseFee64().ToBig(), tx.EffectiveGasTipValue(header.BaseFee64()).ToBig())
+	if header == nil {
+		return nil, errors.New("header not found for receipt")
+	}
+	headerBaseFee := header.BaseFee64()
+	if headerBaseFee == nil {
+		headerBaseFee = new(uint256.Int)
+	}
+	gasPrice := new(big.Int).Add(headerBaseFee.ToBig(), tx.EffectiveGasTipValue(headerBaseFee).ToBig())
 	fields["effectiveGasPrice"] = hexutil.Uint64(gasPrice.Uint64())
 	// Assign receipt status or post state.
 	if len(receipt.PostState) > 0 {
@@ -216,11 +228,19 @@ func (s *TransactionAPI) GetTransactionByHash(ctx context.Context, hash avmcommo
 		if header == nil {
 			return nil, nil
 		}
-		return newRPCTransaction(tx, blockHash, blockNumber, index, header.BaseFee64().ToBig()), nil
+		headerBaseFee := header.BaseFee64()
+		if headerBaseFee == nil {
+			headerBaseFee = new(uint256.Int)
+		}
+		return newRPCTransaction(tx, blockHash, blockNumber, index, headerBaseFee.ToBig()), nil
 	}
 
 	if tx := s.api.TxsPool().GetTx(avmtypes.ToastHash(hash)); tx != nil {
-		return newRPCPendingTransaction(tx, s.api.BlockChain().CurrentBlock().Header()), nil
+		currentBlock := s.api.BlockChain().CurrentBlock()
+		if currentBlock == nil {
+			return nil, nil
+		}
+		return newRPCPendingTransaction(tx, currentBlock.Header()), nil
 	}
 
 	return nil, nil
@@ -231,7 +251,11 @@ func (s *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, 
 	if block, _ := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(blockHash)); block != nil {
 		for i, tx := range block.Transactions() {
 			if i == int(index) {
-				return newRPCTransaction(tx, avmtypes.ToastHash(blockHash), block.Number64().Uint64(), uint64(index), block.Header().BaseFee64().ToBig())
+				headerBaseFee := block.Header().BaseFee64()
+				if headerBaseFee == nil {
+					headerBaseFee = new(uint256.Int)
+				}
+				return newRPCTransaction(tx, avmtypes.ToastHash(blockHash), block.Number64().Uint64(), uint64(index), headerBaseFee.ToBig())
 			}
 		}
 	}
@@ -280,8 +304,18 @@ func (s *TransactionAPI) SendTransaction(ctx context.Context, args TransactionAr
 	return SubmitTransaction(ctx, s.api, signed)
 }
 
-// checkTxFee validates the transaction fee.
+// checkTxFee validates the transaction fee to prevent unreasonably high gas prices.
+// maxGasPriceGwei is the maximum acceptable gas price (1000 Gwei).
+const maxGasPriceGwei = 1000_000_000_000 // 1000 Gwei in Wei
+
 func checkTxFee(gasPrice uint256.Int, gas uint64, cap float64) error {
+	if gasPrice.IsZero() {
+		return nil
+	}
+	maxGasPrice := uint256.NewInt(maxGasPriceGwei)
+	if gasPrice.Cmp(maxGasPrice) > 0 {
+		return fmt.Errorf("gas price %s exceeds maximum allowed %s", gasPrice.String(), maxGasPrice.String())
+	}
 	return nil
 }
 
@@ -294,33 +328,3 @@ func toHexSlice(b [][]byte) []string {
 	return r
 }
 
-func (api *TransactionAPI) TestBatchTxs(ctx context.Context) {
-	go batchTxs(api.api, 0, 1000000)
-}
-
-func batchTxs(api *API, start, end uint64) error {
-	var (
-		key, _  = crypto.HexToECDSA("d6d8d19bd786d6676819b806694b1100a4414a94e51e9a82a351bd8f7f3f3658")
-		addr    = crypto.PubkeyToAddress(key.PublicKey)
-		signer  = new(transaction.HomesteadSigner)
-		content = context.Background()
-	)
-
-	for i := start; i < end; i++ {
-		tx, _ := transaction.SignTx(transaction.NewTx(
-			&transaction.LegacyTx{
-				Nonce:    uint64(i),
-				Value:    uint256.NewInt(params.Wei),
-				Gas:      params.TxGas,
-				To:       &addr,
-				GasPrice: uint256.NewInt(params.GWei),
-				Data:     nil},
-		), signer, key)
-		tx.SetFrom(addr)
-		_, err := SubmitTransaction(content, api, tx)
-		if nil != err {
-			return err
-		}
-	}
-	return nil
-}
