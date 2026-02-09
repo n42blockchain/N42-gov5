@@ -107,7 +107,11 @@ func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, err
 			waitCount = 0
 		}
 
-		time.Sleep(handshakePollingInterval)
+		select {
+		case <-time.After(handshakePollingInterval):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 }
 

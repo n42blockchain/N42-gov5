@@ -108,6 +108,9 @@ func (s *Service) Synced() bool {
 // Resync allows a node to start syncing again if it has fallen
 // behind the current network head.
 func (s *Service) Resync() error {
+	if s.ctx.Err() != nil {
+		return s.ctx.Err()
+	}
 	// Set it to false since we are syncing again.
 	s.markSyncing()
 	event.GlobalEvent.Send(common.DownloaderStartEvent{})
@@ -173,7 +176,11 @@ func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 			waitCount = 0 // Reset counter to continue waiting
 		}
 
-		time.Sleep(handshakePollingInterval)
+		select {
+		case <-time.After(handshakePollingInterval):
+		case <-s.ctx.Done():
+			return s.cfg.Chain.CurrentBlock().Number64()
+		}
 	}
 	return
 }
