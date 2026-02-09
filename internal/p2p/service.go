@@ -314,17 +314,15 @@ func (s *Service) Start() {
 
 func (s *Service) loop() {
 	defer log.Debug("Context closed, exiting goroutine")
+	defer s.wg.Done()
 	for {
 		select {
 		case <-s.ctx.Done():
 			log.Info("start write seq number to file")
-			err := saveSeqNumber(s.cfg, s.GetPing())
-			if err != nil {
-				//log.Error("")
+			if err := saveSeqNumber(s.cfg, s.GetPing()); err != nil {
+				log.Error("Failed to save seq number", "err", err)
 			}
-			s.wg.Done()
 			return
-
 		}
 	}
 }
@@ -428,17 +426,28 @@ func (s *Service) AddPingMethod(reqFunc func(ctx context.Context, id peer.ID) er
 	s.pingMethod = reqFunc
 }
 
+// maxConcurrentPeerOps limits the number of concurrent goroutines for peer operations.
+const maxConcurrentPeerOps = 16
+
 func (s *Service) pingPeers() {
 	if s.pingMethod == nil {
 		return
 	}
-	for _, pid := range s.peers.Connected() {
+	connected := s.peers.Connected()
+	sem := make(chan struct{}, maxConcurrentPeerOps)
+	var wg sync.WaitGroup
+	for _, pid := range connected {
+		wg.Add(1)
+		sem <- struct{}{}
 		go func(id peer.ID) {
+			defer wg.Done()
+			defer func() { <-sem }()
 			if err := s.pingMethod(s.ctx, id); err != nil {
 				log.Debug("Failed to ping peer", "peer", id, "err", err)
 			}
 		}(pid)
 	}
+	wg.Wait()
 }
 
 func (s *Service) connectWithAllPeers(multiAddrs []multiaddr.Multiaddr) {
@@ -447,9 +456,12 @@ func (s *Service) connectWithAllPeers(multiAddrs []multiaddr.Multiaddr) {
 		log.Error("Could not convert to peer address info's from multiaddresses", "err", err)
 		return
 	}
+	sem := make(chan struct{}, maxConcurrentPeerOps)
 	for _, info := range addrInfos {
+		sem <- struct{}{}
 		// make each dial non-blocking
 		go func(info peer.AddrInfo) {
+			defer func() { <-sem }()
 			if err := s.connectWithPeer(s.ctx, info); err != nil {
 				log.Trace(fmt.Sprintf("Could not connect with peer %s", info.String()), "err", err)
 			}
@@ -506,12 +518,12 @@ func (s *Service) connectToBootnodes(nodes []multiaddr.Multiaddr) error {
 // ensureBootPeerConnections will attempt to reestablish connection to the peers
 // if there are currently no connections to that peer.
 func (s *Service) ensureBootPeerConnections(bootnodes []multiaddr.Multiaddr) {
-
 	addrInfos, err := peer.AddrInfosFromP2pAddrs(bootnodes...)
 	if err != nil {
 		log.Error("Could not convert to peer address info's from multiaddresses", "err", err)
 		return
 	}
+	sem := make(chan struct{}, maxConcurrentPeerOps)
 	for _, info := range addrInfos {
 		// make each dial non-blocking
 		if connState, err := s.peers.ConnState(info.ID); err != nil || connState != peers.PeerDisconnected {
@@ -520,7 +532,9 @@ func (s *Service) ensureBootPeerConnections(bootnodes []multiaddr.Multiaddr) {
 		if nextValidTime, err := s.peers.NextValidTime(info.ID); err != nil || !time.Now().After(nextValidTime) {
 			continue
 		}
+		sem <- struct{}{}
 		go func(info peer.AddrInfo) {
+			defer func() { <-sem }()
 			if err := s.connectWithPeer(s.ctx, info); err != nil {
 				log.Warn(fmt.Sprintf("Could not connect with bootnode %s", info.String()), "err", err)
 			}

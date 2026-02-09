@@ -298,6 +298,10 @@ func (bc *BlockChain) updateFutureBlocksLoop() {
 					return blocks[i].Number64().Cmp(blocks[j].Number64()) < 0
 				})
 
+				if len(blocks) == 0 {
+					continue
+				}
+
 				if blocks[0].Number64().Uint64() > bc.CurrentBlock().Number64().Uint64()+1 {
 					continue
 				}
@@ -308,7 +312,9 @@ func (bc *BlockChain) updateFutureBlocksLoop() {
 					for _, k := range bc.futureBlocks.Keys() {
 						bc.futureBlocks.Remove(k)
 					}
-					log.Infof("insert %d future block success, for %d to %d", n, blocks[0].Number64().Uint64(), blocks[n-1].Number64().Uint64())
+					if n > 0 {
+						log.Infof("insert %d future block success, for %d to %d", n, blocks[0].Number64().Uint64(), blocks[n-1].Number64().Uint64())
+					}
 				}
 
 			}
@@ -583,7 +589,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 		return ibs, nopay, nil
 	}
 
-	for ; blk != nil && err == nil || errors.Is(err, ErrKnownBlock); blk, err = it.next() {
+	for ; blk != nil && (err == nil || errors.Is(err, ErrKnownBlock)); blk, err = it.next() {
 		// If the chain is terminating, stop processing blocks
 		if bc.insertStopped() {
 			log.Debug("Abort during block processing")
@@ -1052,7 +1058,10 @@ func (bc *BlockChain) ReorgNeeded(current block.IBlock, header block.IBlock) boo
 func (bc *BlockChain) SetHead(head uint64) error {
 	newHeadBlock, err := bc.GetBlockByNumber(uint256.NewInt(head))
 	if err != nil {
-		return nil
+		return err
+	}
+	if newHeadBlock == nil {
+		return fmt.Errorf("block #%d not found", head)
 	}
 	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		return rawdb.WriteHeadHeaderHash(tx, newHeadBlock.Hash())
@@ -1169,7 +1178,8 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 			return err
 		}
 		defer tx.Rollback()
-		useExternalTx = false
+	} else {
+		useExternalTx = true
 	}
 
 	// Both sides of the reorg are at the same number, reduce both until the common
@@ -1224,7 +1234,9 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 	// taking care of the proper incremental order.
 	for i := len(newChain) - 1; i >= 1; i-- {
 		// Insert the block in the canonical way, re-writing history
-		bc.writeHeadBlock(tx, newChain[i])
+		if err := bc.writeHeadBlock(tx, newChain[i]); err != nil {
+			return fmt.Errorf("failed to write head block during reorg at %d: %w", newChain[i].Number64().Uint64(), err)
+		}
 
 		// Collect the new added transactions.
 		for _, t := range newChain[i].Transactions() {

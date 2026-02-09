@@ -157,6 +157,9 @@ func (bc *BlockChain) GetBlocksFromHash(hash types.Hash, n int) (blocks []block.
 
 		blocks = append(blocks, blk)
 		hash = blk.ParentHash()
+		if *number == 0 {
+			break
+		}
 		*number--
 	}
 	return blocks
@@ -293,7 +296,9 @@ func (bc *BlockChain) GetTd(hash types.Hash, number *uint256.Int) *uint256.Int {
 		return nil
 	})
 
-	bc.tdCache.Add(hash, td)
+	if td != nil {
+		bc.tdCache.Add(hash, td)
+	}
 	return td
 }
 

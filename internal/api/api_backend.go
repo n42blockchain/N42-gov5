@@ -51,7 +51,19 @@ func (b *API) ChainConfig() *params.ChainConfig {
 }
 
 func (b *API) CurrentBlock() *types.Header {
-	return b.bc.CurrentBlock().Header().(*types.Header)
+	blk := b.bc.CurrentBlock()
+	if blk == nil {
+		return nil
+	}
+	h := blk.Header()
+	if h == nil {
+		return nil
+	}
+	header, ok := h.(*types.Header)
+	if !ok {
+		return nil
+	}
+	return header
 }
 
 //func (b *API) SetHead(number uint64) {
@@ -67,7 +79,11 @@ func (b *API) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*type
 	//}
 	// Otherwise resolve and return the block
 	if number == rpc.LatestBlockNumber {
-		return b.bc.CurrentBlock().Header().(*types.Header), nil
+		header := b.CurrentBlock()
+		if header == nil {
+			return nil, errors.New("current block not available")
+		}
+		return header, nil
 	}
 	//if number == rpc.FinalizedBlockNumber {
 	//	if !b.eth.Merger().TDDReached() {
@@ -89,7 +105,15 @@ func (b *API) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*type
 	//	}
 	//	return nil, errors.New("safe block not found")
 	//}
-	return b.bc.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64()))).(*types.Header), nil
+	iHeader := b.bc.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
+	if iHeader == nil {
+		return nil, nil
+	}
+	header, ok := iHeader.(*types.Header)
+	if !ok {
+		return nil, errors.New("unexpected header type")
+	}
+	return header, nil
 }
 
 func (b *API) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*types.Header, error) {
@@ -104,14 +128,25 @@ func (b *API) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockN
 		if blockNrOrHash.RequireCanonical && b.bc.(*internal.BlockChain).GetCanonicalHash(header.Number64()) != hash {
 			return nil, errors.New("hash is not currently canonical")
 		}
-		return header.(*types.Header), nil
+		h, ok := header.(*types.Header)
+		if !ok {
+			return nil, errors.New("unexpected header type")
+		}
+		return h, nil
 	}
 	return nil, errors.New("invalid arguments; neither block nor hash specified")
 }
 
 func (b *API) HeaderByHash(ctx context.Context, hash common.Hash) (*types.Header, error) {
 	iHeader, _ := b.bc.GetHeaderByHash(hash)
-	return iHeader.(*types.Header), nil
+	if iHeader == nil {
+		return nil, nil
+	}
+	h, ok := iHeader.(*types.Header)
+	if !ok {
+		return nil, errors.New("unexpected header type")
+	}
+	return h, nil
 }
 
 func (b *API) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Block, error) {
@@ -123,7 +158,18 @@ func (b *API) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types
 	// Otherwise resolve and return the block
 	if number == rpc.LatestBlockNumber {
 		header := b.bc.CurrentBlock()
-		return b.bc.GetBlock(header.Hash(), header.Number64().Uint64()).(*types.Block), nil
+		if header == nil {
+			return nil, errors.New("current block not available")
+		}
+		iBlock := b.bc.GetBlock(header.Hash(), header.Number64().Uint64())
+		if iBlock == nil {
+			return nil, errors.New("current block body not found")
+		}
+		blk, ok := iBlock.(*types.Block)
+		if !ok {
+			return nil, errors.New("unexpected block type")
+		}
+		return blk, nil
 	}
 	//if number == rpc.FinalizedBlockNumber {
 	//	if !b.eth.Merger().TDDReached() {
@@ -143,12 +189,26 @@ func (b *API) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types
 	if nil != err {
 		return nil, err
 	}
-	return iBlock.(*types.Block), nil
+	if iBlock == nil {
+		return nil, nil
+	}
+	blk, ok := iBlock.(*types.Block)
+	if !ok {
+		return nil, errors.New("unexpected block type")
+	}
+	return blk, nil
 }
 
 func (b *API) BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error) {
 	iBlock, _ := b.bc.GetBlockByHash(hash)
-	return iBlock.(*types.Block), nil
+	if iBlock == nil {
+		return nil, nil
+	}
+	blk, ok := iBlock.(*types.Block)
+	if !ok {
+		return nil, errors.New("unexpected block type")
+	}
+	return blk, nil
 }
 
 // GetBody returns body of a block. It does not resolve special block numbers.
@@ -174,11 +234,15 @@ func (b *API) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNu
 		if blockNrOrHash.RequireCanonical && b.bc.(*internal.BlockChain).GetCanonicalHash(header.Number64()) != hash {
 			return nil, errors.New("hash is not currently canonical")
 		}
-		block := b.bc.GetBlock(hash, header.Number64().Uint64())
-		if block == nil {
+		iBlock := b.bc.GetBlock(hash, header.Number64().Uint64())
+		if iBlock == nil {
 			return nil, errors.New("header found, but block body is missing")
 		}
-		return block.(*types.Block), nil
+		blk, ok := iBlock.(*types.Block)
+		if !ok {
+			return nil, errors.New("unexpected block type")
+		}
+		return blk, nil
 	}
 	return nil, errors.New("invalid arguments; neither block nor hash specified")
 }
@@ -250,10 +314,20 @@ func (b *API) GetEVM(ctx context.Context, msg *transaction.Message, state *state
 	txContext := internal.NewEVMTxContext(msg)
 	getHeader := func(hash common.Hash, n uint64) *types.Header {
 		h := b.bc.GetHeader(hash, uint256.NewInt(n))
-		return h.(*types.Header)
+		if h == nil {
+			return nil
+		}
+		th, ok := h.(*types.Header)
+		if !ok {
+			return nil
+		}
+		return th
 	}
 	// Type assert Engine from interface{} to consensus.Engine
-	engine, _ := b.bc.Engine().(consensus.Engine)
+	engine, ok := b.bc.Engine().(consensus.Engine)
+	if !ok {
+		return nil, nil, errors.New("consensus engine not available")
+	}
 	context := internal.NewEVMBlockContext(header, internal.GetHashFn(header, getHeader), engine, nil)
 	return vm.NewEVM(context, txContext, state, b.bc.Config(), *vmConfig), state.Error, nil
 }
@@ -305,11 +379,13 @@ func (b *API) GetTransaction(ctx context.Context, txHash common.Hash) (*transact
 	var index uint64
 	var err error
 	var blockNumber uint64
-	b.db.View(ctx, func(tx kv.Tx) error {
+	if dbErr := b.db.View(ctx, func(tx kv.Tx) error {
 		t, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(tx, txHash)
 		return err
-	})
-	return t, blockHash, blockNumber, index, nil
+	}); dbErr != nil {
+		return nil, common.Hash{}, 0, 0, dbErr
+	}
+	return t, blockHash, blockNumber, index, err
 }
 
 //func (b *API) GetPoolNonce(ctx context.Context, addr common.Address) (uint64, error) {
@@ -392,7 +468,7 @@ func (b *API) AccountManager() *accounts.Manager {
 //}
 
 func (b *API) CurrentHeader() *types.Header {
-	return b.bc.CurrentBlock().Header().(*types.Header)
+	return b.CurrentBlock()
 }
 
 //func (b *API) Miner() *miner.Miner {
@@ -414,9 +490,13 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *types.B
 		return nil, evmtypes.BlockContext{}, nil, errors.New("no transaction in genesis")
 	}
 	// Create the parent state database
-	parent := eth.BlockChain().GetBlock(blk.ParentHash(), blk.Number64().Uint64()-1).(*types.Block)
-	if parent == nil {
+	iParent := eth.BlockChain().GetBlock(blk.ParentHash(), blk.Number64().Uint64()-1)
+	if iParent == nil {
 		return nil, evmtypes.BlockContext{}, nil, fmt.Errorf("parent %#x not found", blk.ParentHash())
+	}
+	parent, ok := iParent.(*types.Block)
+	if !ok {
+		return nil, evmtypes.BlockContext{}, nil, fmt.Errorf("unexpected parent block type for %#x", blk.ParentHash())
 	}
 	// Lookup the statedb of parent block from the live database,
 	// otherwise regenerate it on the flight.
@@ -433,7 +513,11 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *types.B
 	getHeader := func(hash common.Hash, number uint64) *types.Header {
 		return rawdb.ReadHeader(dbTx, hash, number)
 	}
-	blockContext := internal.NewEVMBlockContext(blk.Header().(*types.Header), internal.GetHashFn(blk.Header().(*types.Header), getHeader), eth.Engine(), nil)
+	blkHeader, ok := blk.Header().(*types.Header)
+	if !ok {
+		return nil, evmtypes.BlockContext{}, nil, errors.New("unexpected block header type")
+	}
+	blockContext := internal.NewEVMBlockContext(blkHeader, internal.GetHashFn(blkHeader, getHeader), eth.Engine(), nil)
 	vmenv := vm.NewEVM(blockContext, evmtypes.TxContext{}, statedb, eth.BlockChain().Config(), vm.Config{})
 	rules := vmenv.ChainRules()
 
@@ -460,7 +544,7 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *types.B
 		msg, _ := tx.AsMessage(signer, blk.BaseFee64())
 		if msg.FeeCap().IsZero() && eth.Engine() != nil {
 			syscall := func(contract common.Address, data []byte) ([]byte, error) {
-				return internal.SysCallContract(contract, data, *eth.BlockChain().Config(), statedb, blk.Header().(*types.Header), eth.Engine() /* constCall */)
+				return internal.SysCallContract(contract, data, *eth.BlockChain().Config(), statedb, blkHeader, eth.Engine() /* constCall */)
 			}
 			msg.SetIsFree(eth.Engine().IsServiceTransaction(msg.From(), syscall))
 		}
@@ -522,8 +606,11 @@ func (eth *API) StateAtBlock(ctx context.Context, tx kv.Tx, blk *types.Block) (s
 	// function to deref it.
 	// Type assert StateAt result from interface{} to *state.IntraBlockState
 	stateIface := eth.BlockChain().StateAt(tx, origin)
-	statedb, _ = stateIface.(*state.IntraBlockState)
-	//statedb.Database().TrieDB().Reference(block.Root(), common.Hash{})
+	var ok bool
+	statedb, ok = stateIface.(*state.IntraBlockState)
+	if !ok || statedb == nil {
+		return nil, errors.New("failed to retrieve state for block")
+	}
 	return statedb, nil
 	//}
 	//}

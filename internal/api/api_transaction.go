@@ -175,7 +175,7 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 		headerBaseFee = new(uint256.Int)
 	}
 	gasPrice := new(big.Int).Add(headerBaseFee.ToBig(), tx.EffectiveGasTipValue(headerBaseFee).ToBig())
-	fields["effectiveGasPrice"] = hexutil.Uint64(gasPrice.Uint64())
+	fields["effectiveGasPrice"] = (*hexutil.Big)(gasPrice)
 	// Assign receipt status or post state.
 	if len(receipt.PostState) > 0 {
 		fields["root"] = hexutil.Bytes(receipt.PostState)

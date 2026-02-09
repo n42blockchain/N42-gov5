@@ -106,6 +106,7 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 					// Security fix: Use a shared timer to prevent goroutine leak
 					statusReceived := make(chan struct{})
 					timeoutCtx, timeoutCancel := context.WithTimeout(s.ctx, timeForStatus)
+					var closeOnce sync.Once
 
 					go func() {
 						defer timeoutCancel()
@@ -115,7 +116,7 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 							select {
 							case <-ticker.C:
 								if _, err := s.peers.ChainState(remotePeer); err == nil {
-									close(statusReceived)
+									closeOnce.Do(func() { close(statusReceived) })
 									return
 								}
 							case <-timeoutCtx.Done():
