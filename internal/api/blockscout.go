@@ -21,8 +21,8 @@ package api
 // 本文件补充 Blockscout 区块链浏览器所需的 RPC 接口。
 // Blockscout 文档: https://docs.blockscout.com/
 //
-// Blockscout Version: v9.3.2 (2024-12-19)
-// Updated: 2026-02-01 - Added EIP-4844 and EIP-7560 support
+// Blockscout Version: v7.0.2 (2026-02-11)
+// Updated: 2026-02-11 - Added EIP-4844, EIP-7560, EIP-7702 support and Cancun fields
 //
 // 必需接口清单 (Blockscout v9.x+):
 //   - eth_syncing ✅
@@ -62,6 +62,7 @@ import (
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
 	vm "github.com/n42blockchain/N42/internal/vm"
@@ -280,6 +281,8 @@ type BlockReceipt struct {
 	EffectiveGasPrice hexutil.Uint64    `json:"effectiveGasPrice"`
 	Type              hexutil.Uint64    `json:"type"`
 	Root              hexutil.Bytes     `json:"root,omitempty"`
+	BlobGasUsed       *hexutil.Uint64   `json:"blobGasUsed,omitempty"`
+	BlobGasPrice      *hexutil.Big      `json:"blobGasPrice,omitempty"`
 }
 
 // GetBlockReceipts returns all transaction receipts for a given block.
@@ -369,6 +372,13 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 		// Post state root
 		if len(receipt.PostState) > 0 {
 			br.Root = receipt.PostState
+		}
+
+		// Blob gas fields for EIP-4844 blob transactions
+		if tx.Type() == transaction.BlobTxType {
+			blobGasUsed := hexutil.Uint64(tx.BlobGas())
+			br.BlobGasUsed = &blobGasUsed
+			br.BlobGasPrice = (*hexutil.Big)(big.NewInt(1)) // minimum blob gas price
 		}
 
 		result[i] = br
@@ -474,6 +484,7 @@ type BlockscoutFeatures struct {
 	TxPoolAPI            bool `json:"txPoolAPI"`            // txpool_* 交易池 API
 	AccountEnumeration   bool `json:"accountEnumeration"`   // eth_accounts 账户枚举
 	UncleBlocks          bool `json:"uncleBlocks"`          // Uncle 区块 (POA 不支持)
+	EIP7702              bool `json:"eip7702"`              // EIP-7702 SetCode 授权交易
 }
 
 // GetBlockscoutCompatibility 返回 Blockscout v9.3.2 兼容性信息
@@ -481,7 +492,7 @@ type BlockscoutFeatures struct {
 func (s *BlockChainAPI) GetBlockscoutCompatibility() *BlockscoutCompatibilityInfo {
 	return &BlockscoutCompatibilityInfo{
 		Compatible:        true,
-		BlockscoutVersion: "9.3.2",
+		BlockscoutVersion: "7.0.2",
 		NodeVersion:       "N42/v1.0.0",
 		SupportedAPIs: []string{
 			"eth", "web3", "net", "txpool", "debug",
@@ -502,6 +513,7 @@ func (s *BlockChainAPI) GetBlockscoutCompatibility() *BlockscoutCompatibilityInf
 			TxPoolAPI:          true,
 			AccountEnumeration: true,
 			UncleBlocks:        false, // POA/POS - no uncles
+			EIP7702:            true,  // EIP-7702 SetCode authorization
 		},
 	}
 }

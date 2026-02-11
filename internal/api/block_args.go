@@ -137,5 +137,14 @@ func RPCMarshalHeader(head block.IHeader) map[string]interface{} {
 		result["baseFeePerGas"] = (*hexutil.Big)(header.BaseFee.ToBig())
 	}
 
+	// Post-Merge/Cancun compatibility fields
+	// N42 is a POA/POS chain without beacon chain withdrawals or block-level blob gas,
+	// but Blockscout expects these fields to be present for proper parsing.
+	result["withdrawalsRoot"] = avmtypes.FromastHash(types.Hash{})
+	result["blobGasUsed"] = hexutil.Uint64(0)
+	result["excessBlobGas"] = hexutil.Uint64(0)
+	result["parentBeaconBlockRoot"] = avmtypes.FromastHash(types.Hash{})
+	result["withdrawals"] = []interface{}{}
+
 	return result
 }

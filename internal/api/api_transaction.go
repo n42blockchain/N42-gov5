@@ -176,6 +176,11 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 	}
 	gasPrice := new(big.Int).Add(headerBaseFee.ToBig(), tx.EffectiveGasTipValue(headerBaseFee).ToBig())
 	fields["effectiveGasPrice"] = (*hexutil.Big)(gasPrice)
+	// Add blob gas fields for EIP-4844 blob transactions
+	if tx.Type() == transaction.BlobTxType {
+		fields["blobGasUsed"] = hexutil.Uint64(tx.BlobGas())
+		fields["blobGasPrice"] = (*hexutil.Big)(big.NewInt(1)) // minimum blob gas price
+	}
 	// Assign receipt status or post state.
 	if len(receipt.PostState) > 0 {
 		fields["root"] = hexutil.Bytes(receipt.PostState)
