@@ -15,7 +15,7 @@ import (
 
 const (
 	// queueStopCallTimeout is time allowed for queue to release resources when quitting.
-	queueStopCallTimeout = 1 * time.Second
+	queueStopCallTimeout = 5 * time.Second
 	// pollingInterval defines how often state machine needs to check for new events.
 	pollingInterval = 200 * time.Millisecond
 	// staleEpochTimeout is an period after which epoch's state is considered stale.
@@ -255,6 +255,9 @@ func (q *blocksQueue) loop() {
 }
 
 func waitHighestExpectedBlockNr(q *blocksQueue) bool {
+	if q.ctx.Err() != nil {
+		return false
+	}
 	// Check highest expected blockNr when we approach chain's head slot.
 	if q.chain.CurrentBlock().Number64().Cmp(q.highestExpectedBlockNr) >= 0 {
 		// By the time initial sync is complete, highest slot may increase, re-check.

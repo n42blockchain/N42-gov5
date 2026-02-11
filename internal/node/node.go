@@ -723,7 +723,7 @@ func (n *Node) stopServices() []error {
 		}
 	}
 
-	// 1. Stop RPC services
+	// 1. Stop RPC services (depends on everything, stop first)
 	logProgress("RPC services")
 	n.stopRPC()
 
@@ -737,18 +737,18 @@ func (n *Node) stopServices() []error {
 	logProgress("Miner")
 	n.miner.Close()
 
-	// 4. Stop blockchain (this may take time to flush data)
-	logProgress("Blockchain")
-	if err := n.blockChain.Close(); err != nil {
+	// 4. Stop initial sync (depends on P2P + blockchain, must stop before blockchain closes)
+	logProgress("Initial sync")
+	if err := n.is.Stop(); err != nil {
 		errs = append(errs, err)
-		logError("Blockchain", err)
+		logError("InitialSync", err)
 	}
 
-	// 5. Stop consensus engine
-	logProgress("Consensus engine")
-	if err := n.engine.Close(); err != nil {
+	// 5. Stop sync service (depends on P2P + blockchain, must stop before blockchain closes)
+	logProgress("Sync service")
+	if err := n.sync.Stop(); err != nil {
 		errs = append(errs, err)
-		logError("Consensus", err)
+		logError("Sync", err)
 	}
 
 	// 6. Stop transaction pool
@@ -767,21 +767,21 @@ func (n *Node) stopServices() []error {
 		}
 	}
 
-	// 8. Stop sync service (prevents new Resync calls)
-	logProgress("Sync service")
-	if err := n.sync.Stop(); err != nil {
+	// 8. Stop consensus engine
+	logProgress("Consensus engine")
+	if err := n.engine.Close(); err != nil {
 		errs = append(errs, err)
-		logError("Sync", err)
+		logError("Consensus", err)
 	}
 
-	// 9. Stop initial sync (cancel + wait for goroutine)
-	logProgress("Initial sync")
-	if err := n.is.Stop(); err != nil {
+	// 9. Stop blockchain (flush and close DB, after all consumers stopped)
+	logProgress("Blockchain")
+	if err := n.blockChain.Close(); err != nil {
 		errs = append(errs, err)
-		logError("InitialSync", err)
+		logError("Blockchain", err)
 	}
 
-	// 10. Stop P2P networking
+	// 10. Stop P2P networking (transport layer, last to go)
 	logProgress("P2P network")
 	if err := n.p2p.Stop(); err != nil {
 		errs = append(errs, err)
