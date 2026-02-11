@@ -30,7 +30,7 @@ import (
 	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/params"
 
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"

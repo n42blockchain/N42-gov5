@@ -18,7 +18,7 @@ package params
 
 import (
 	"fmt"
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -35,8 +35,8 @@ var (
 // - Build: Auto-incremented on each build (486, 487, 488...)
 const (
 	VersionMajor       = 5   // Major version - annual release
-	VersionMinor       = 3   // Minor version - feature release
-	VersionBuild       = 524 // Build number - auto-incremented
+	VersionMinor       = 4   // Minor version - feature release
+	VersionBuild       = 600 // Build number - auto-incremented
 	VersionModifier    = ""  // Modifier component (alpha, beta, stable)
 	VersionKeyCreated  = "n42VersionCreated"
 	VersionKeyFinished = "n42VersionFinished"

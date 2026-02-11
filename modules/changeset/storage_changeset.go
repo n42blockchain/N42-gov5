@@ -24,10 +24,10 @@ import (
 	"github.com/n42blockchain/N42/modules"
 	"sort"
 
-	libcommon "github.com/ledgerwatch/erigon-lib/common"
-	"github.com/ledgerwatch/erigon-lib/common/length"
-	"github.com/ledgerwatch/erigon-lib/etl"
-	"github.com/ledgerwatch/erigon-lib/kv"
+	libcommon "github.com/n42blockchain/N42/lib/common"
+	"github.com/n42blockchain/N42/lib/common/length"
+	"github.com/n42blockchain/N42/lib/etl"
+	"github.com/n42blockchain/N42/lib/kv"
 )
 
 const (

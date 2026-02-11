@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/holiman/uint256"
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/misc"

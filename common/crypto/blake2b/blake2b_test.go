@@ -9,7 +9,7 @@ import (
 	"encoding"
 	"encoding/hex"
 	"fmt"
-	"github.com/ledgerwatch/log/v3"
+	"github.com/n42blockchain/N42/lib/log/v3"
 	"hash"
 	"io"
 	"testing"

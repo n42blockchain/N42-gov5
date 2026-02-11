@@ -27,8 +27,8 @@ import (
 	"github.com/RoaringBitmap/roaring"
 	"github.com/RoaringBitmap/roaring/roaring64"
 	"github.com/c2h5oh/datasize"
-	libcommon "github.com/ledgerwatch/erigon-lib/common"
-	"github.com/ledgerwatch/erigon-lib/kv"
+	libcommon "github.com/n42blockchain/N42/lib/common"
+	"github.com/n42blockchain/N42/lib/kv"
 )
 
 var roaringPool = sync.Pool{

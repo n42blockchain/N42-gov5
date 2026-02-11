@@ -28,7 +28,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/holiman/uint256"
-	"github.com/ledgerwatch/erigon-lib/common/cmp"
+	"github.com/n42blockchain/N42/lib/common/cmp"
 	"github.com/n42blockchain/N42/common/hexutil"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/contracts/deposit"
@@ -47,10 +47,10 @@ import (
 	"github.com/n42blockchain/N42/internal/api"
 
 	"github.com/c2h5oh/datasize"
-	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon-lib/kv/mdbx"
-	"github.com/ledgerwatch/erigon-lib/kv/memdb"
-	log2 "github.com/ledgerwatch/log/v3"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
+	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
 	"golang.org/x/sync/semaphore"
 
@@ -157,7 +157,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	)
 
 	//
-	chainKv, err = OpenDatabase(cfg, nil, kv.ChainDB.String())
+	chainKv, err = OpenDatabase(ctx, cfg, nil, kv.ChainDB.String())
 	if nil != err {
 		return nil, err
 	}
@@ -928,11 +928,16 @@ func (s *Node) Etherbase() (eb types.Address, err error) {
 	return types.Address{}, fmt.Errorf("etherbase must be explicitly specified")
 }
 
-func OpenDatabase(cfg *conf.Config, logger log2.Logger, name string) (kv.RwDB, error) {
-	var chainKv kv.RwDB
+func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, name string) (kv.RwDB, error) {
 	if cfg.NodeCfg.DataDir == "" {
-		chainKv = memdb.New("")
+		return memdb.New(""), nil
 	}
+
+	if logger == nil {
+		logger = log2.New()
+	}
+
+	var chainKv kv.RwDB
 	var err error
 
 	dbPath := filepath.Join(cfg.NodeCfg.DataDir, name)
@@ -940,9 +945,6 @@ func OpenDatabase(cfg *conf.Config, logger log2.Logger, name string) (kv.RwDB, e
 	var openFunc func(exclusive bool) (kv.RwDB, error)
 	log.Info("Opening database", "name", name, "path", dbPath)
 	openFunc = func(exclusive bool) (kv.RwDB, error) {
-		//if config.Http.DBReadConcurrency > 0 {
-		//	roTxLimit = int64(config.Http.DBReadConcurrency)
-		//}
 		roTxsLimiter := semaphore.NewWeighted(int64(cmp.Max(32, runtime.GOMAXPROCS(-1)*8))) // 1 less than max to allow unlocking to happen
 		opts := mdbx.NewMDBX(logger).
 			WriteMergeThreshold(4 * 8192).
@@ -956,14 +958,14 @@ func OpenDatabase(cfg *conf.Config, logger log2.Logger, name string) (kv.RwDB, e
 		kv.ChaindataTablesCfg = modules.N42TableCfg
 
 		opts = opts.MapSize(8 * datasize.TB)
-		return opts.Open()
+		return opts.Open(ctx)
 	}
 	chainKv, err = openFunc(false)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = chainKv.Update(context.Background(), func(tx kv.RwTx) (err error) {
+	if err = chainKv.Update(ctx, func(tx kv.RwTx) (err error) {
 		return params.SetN42Version(tx, params.VersionKeyCreated)
 	}); err != nil {
 		return nil, err

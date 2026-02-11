@@ -22,7 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/ethdb"
 )
 

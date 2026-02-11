@@ -19,7 +19,7 @@ package rpchelper
 import (
 	"fmt"
 	"github.com/holiman/uint256"
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 

@@ -19,7 +19,7 @@ package rawdb
 import (
 	"sync"
 
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/kv"
 )
 
 // BatchWriter provides efficient batch writing to the database.
