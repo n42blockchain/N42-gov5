@@ -390,7 +390,7 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 		snap    *Snapshot
 	)
 	tx, err := c.db.BeginRo(c.ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
@@ -439,7 +439,7 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 						return err
 					}
 					return nil
-				}); nil != err {
+				}); err != nil {
 					return nil, err
 				}
 				log.Info("Stored checkpoint snapshot to disk", "number", number, "hash", hash)
@@ -482,7 +482,7 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 				return err
 			}
 			return nil
-		}); nil != err {
+		}); err != nil {
 			return nil, err
 		}
 

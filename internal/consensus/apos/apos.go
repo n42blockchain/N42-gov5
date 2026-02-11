@@ -677,7 +677,7 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 func (c *APos) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header block.IHeader, state *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader, receipts []*block.Receipt) (block.IBlock, []*block.Reward, map[types.Address]*uint256.Int, error) {
 	// Finalize block
 	rewards, unpay, err := c.Finalize(chain, header, state, txs, uncles)
-	if nil != err {
+	if err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -750,24 +750,24 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 		defer cancle()
 		member := c.CountDepositor()
 		aggSign, verifiers, err := api.SignMerge(ctx, header, member)
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		ss := make([]bls.PublicKey, len(verifiers))
 		for i, p := range verifiers {
 			blsP, err := bls.PublicKeyFromBytes(p.PublicKey[:])
-			if nil != err {
+			if err != nil {
 				return err
 			}
 			ss[i] = blsP
 		}
 
 		sig, err := bls.SignatureFromBytes(aggSign[:])
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		if !sig.FastAggregateVerify(ss, header.Root) {
-			return fmt.Errorf("aggregate signature verification failed")
+			return errors.New("aggregate signature verification failed")
 		}
 
 		header.Signature = aggSign
@@ -917,11 +917,11 @@ func (c *APos) CountDepositor() uint64 {
 	if err := c.db.View(c.ctx, func(tx kv.Tx) error {
 		var err error
 		count, err = rawdb.DepositNum(tx)
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		return nil
-	}); nil != err {
+	}); err != nil {
 		log.Errorf("rawdb.DepositNum() failed, %v", err)
 		return 0
 	}

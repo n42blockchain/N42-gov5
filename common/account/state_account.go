@@ -635,7 +635,7 @@ func (a *StateAccount) Equals(acc *StateAccount) bool {
 func (a *StateAccount) Marshal() ([]byte, error) {
 	protoMsg := a.ToProtoMessage()
 	v, err := proto.Marshal(protoMsg)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -643,7 +643,7 @@ func (a *StateAccount) Marshal() ([]byte, error) {
 
 func (a *StateAccount) Unmarshal(v []byte) error {
 	var pAccount state.Account
-	if err := proto.Unmarshal(v, &pAccount); nil != err {
+	if err := proto.Unmarshal(v, &pAccount); err != nil {
 		return err
 	}
 	a.Initialised = pAccount.Initialised

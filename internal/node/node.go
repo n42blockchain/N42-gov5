@@ -19,6 +19,7 @@ package node
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"net"
@@ -40,7 +41,7 @@ import (
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initial-sync"
 	"github.com/n42blockchain/N42/internal/tracers"
-	"github.com/pkg/errors"
+	pkgerrors "github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 
 	"github.com/n42blockchain/N42/internal"
@@ -158,7 +159,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	//
 	chainKv, err = OpenDatabase(ctx, cfg, nil, kv.ChainDB.String())
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 
@@ -567,7 +568,7 @@ func (n *Node) obtainJWTSecret(cliParam string) ([]byte, error) {
 	if data, err := os.ReadFile(fileName); err == nil {
 		jwtSecret, err := hexutil.Decode(strings.TrimSpace(string(data)))
 		if err != nil {
-			return nil, errors.Wrap(err, fmt.Sprintf("failed to decode hex (%s) string", strings.TrimSpace(string(data))))
+			return nil, pkgerrors.Wrap(err, fmt.Sprintf("failed to decode hex (%s) string", strings.TrimSpace(string(data))))
 		}
 		if len(jwtSecret) == 32 {
 			log.Info("Loaded JWT secret file", "path", fileName, "crc32", fmt.Sprintf("%#x", crc32.ChecksumIEEE(jwtSecret)))
@@ -705,87 +706,58 @@ func (n *Node) Close() error {
 	}
 }
 
+// namedCloser pairs a human-readable service name with its shutdown function.
+// A nil return from closer indicates the service stopped without error.
+type namedCloser struct {
+	name   string
+	closer func() error
+}
+
 // stopServices terminates running services, RPC and p2p networking.
-// It is the inverse of Start.
+// It is the inverse of Start. Services are stopped in dependency order:
+// consumers first, then infrastructure layers (blockchain, P2P) last.
 func (n *Node) stopServices() []error {
 	var errs []error
-	total := 10 // Total number of services to stop
-	current := 0
 
-	logProgress := func(service string) {
-		current++
-		log.PrintShutdownStep(current, total, service)
+	services := []namedCloser{
+		// 1. RPC services (depends on everything, stop first)
+		{"RPC services", func() error { n.stopRPC(); return nil }},
+		// 2. Transaction generator
+		{"Transaction generator", func() error {
+			if n.txGenerator != nil {
+				n.txGenerator.Stop()
+			}
+			return nil
+		}},
+		// 3. Miner
+		{"Miner", func() error { n.miner.Close(); return nil }},
+		// 4. Initial sync (depends on P2P + blockchain, must stop before blockchain closes)
+		{"Initial sync", func() error { return n.is.Stop() }},
+		// 5. Sync service (depends on P2P + blockchain, must stop before blockchain closes)
+		{"Sync service", func() error { return n.sync.Stop() }},
+		// 6. Transaction pool
+		{"Transaction pool", func() error { return n.txspool.Stop() }},
+		// 7. Deposit contract
+		{"Deposit contract", func() error {
+			if n.depositContract != nil {
+				return n.depositContract.Stop()
+			}
+			return nil
+		}},
+		// 8. Consensus engine
+		{"Consensus engine", func() error { return n.engine.Close() }},
+		// 9. Blockchain (flush and close DB, after all consumers stopped)
+		{"Blockchain", func() error { return n.blockChain.Close() }},
+		// 10. P2P networking (transport layer, last to go)
+		{"P2P network", func() error { return n.p2p.Stop() }},
 	}
 
-	logError := func(service string, err error) {
-		if err != nil {
-			log.PrintSubItem(fmt.Sprintf("%s stopped with error: %v", service, err))
-		}
-	}
-
-	// 1. Stop RPC services (depends on everything, stop first)
-	logProgress("RPC services")
-	n.stopRPC()
-
-	// 2. Stop transaction generator if running
-	logProgress("Transaction generator")
-	if n.txGenerator != nil {
-		n.txGenerator.Stop()
-	}
-
-	// 3. Stop miner
-	logProgress("Miner")
-	n.miner.Close()
-
-	// 4. Stop initial sync (depends on P2P + blockchain, must stop before blockchain closes)
-	logProgress("Initial sync")
-	if err := n.is.Stop(); err != nil {
-		errs = append(errs, err)
-		logError("InitialSync", err)
-	}
-
-	// 5. Stop sync service (depends on P2P + blockchain, must stop before blockchain closes)
-	logProgress("Sync service")
-	if err := n.sync.Stop(); err != nil {
-		errs = append(errs, err)
-		logError("Sync", err)
-	}
-
-	// 6. Stop transaction pool
-	logProgress("Transaction pool")
-	if err := n.txspool.Stop(); err != nil {
-		errs = append(errs, err)
-		logError("TxPool", err)
-	}
-
-	// 7. Stop deposit contract
-	logProgress("Deposit contract")
-	if n.depositContract != nil {
-		if err := n.depositContract.Stop(); err != nil {
+	for i, svc := range services {
+		log.PrintShutdownStep(i+1, len(services), svc.name)
+		if err := svc.closer(); err != nil {
 			errs = append(errs, err)
-			logError("Deposit", err)
+			log.PrintSubItem(fmt.Sprintf("%s stopped with error: %v", svc.name, err))
 		}
-	}
-
-	// 8. Stop consensus engine
-	logProgress("Consensus engine")
-	if err := n.engine.Close(); err != nil {
-		errs = append(errs, err)
-		logError("Consensus", err)
-	}
-
-	// 9. Stop blockchain (flush and close DB, after all consumers stopped)
-	logProgress("Blockchain")
-	if err := n.blockChain.Close(); err != nil {
-		errs = append(errs, err)
-		logError("Blockchain", err)
-	}
-
-	// 10. Stop P2P networking (transport layer, last to go)
-	logProgress("P2P network")
-	if err := n.p2p.Stop(); err != nil {
-		errs = append(errs, err)
-		logError("P2P", err)
 	}
 
 	return errs
@@ -925,7 +897,7 @@ func (s *Node) Etherbase() (eb types.Address, err error) {
 			return etherbase, nil
 		}
 	}
-	return types.Address{}, fmt.Errorf("etherbase must be explicitly specified")
+	return types.Address{}, errors.New("etherbase must be explicitly specified")
 }
 
 func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, name string) (kv.RwDB, error) {
@@ -984,7 +956,7 @@ func WriteGenesisBlock(db kv.RwTx, genesis *conf.Genesis) (*block.Block, error) 
 	}
 	log.Info("Initializing genesis block...")
 	genBlock, _, err := g.Write(db)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 

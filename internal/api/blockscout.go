@@ -147,6 +147,23 @@ func (s *BlockChainAPI) Hashrate() hexutil.Uint64 {
 }
 
 // =============================================================================
+// 区块查找辅助方法
+// =============================================================================
+
+// getBlockByNumber resolves a block by its jsonrpc.BlockNumber.
+// PendingBlockNumber and LatestBlockNumber both return the current head block.
+// Negative numbers (other than the two special values above) are rejected.
+func (s *BlockChainAPI) getBlockByNumber(number jsonrpc.BlockNumber) (block.IBlock, error) {
+	if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+		return s.api.BlockChain().CurrentBlock(), nil
+	}
+	if number < 0 {
+		return nil, fmt.Errorf("invalid block number: %d", number)
+	}
+	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number.Int64())))
+}
+
+// =============================================================================
 // 区块交易数量接口
 // =============================================================================
 
@@ -154,15 +171,7 @@ func (s *BlockChainAPI) Hashrate() hexutil.Uint64 {
 // matching the given block number.
 // 返回指定区块号的区块中的交易数量。
 func (s *BlockChainAPI) GetBlockTransactionCountByNumber(ctx context.Context, blockNr jsonrpc.BlockNumber) (*hexutil.Uint, error) {
-	var blk block.IBlock
-	var err error
-
-	if blockNr == jsonrpc.PendingBlockNumber || blockNr == jsonrpc.LatestBlockNumber {
-		blk = s.api.BlockChain().CurrentBlock()
-	} else {
-		blk, err = s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(blockNr.Int64())))
-	}
-
+	blk, err := s.getBlockByNumber(blockNr)
 	if err != nil {
 		return nil, err
 	}
@@ -182,15 +191,7 @@ func (s *BlockChainAPI) GetBlockTransactionCountByNumber(ctx context.Context, bl
 // 返回指定区块号的区块中的 Uncle 数量。
 // 注意：N42 使用 POA/POS 共识，没有 Uncle 区块。
 func (s *BlockChainAPI) GetUncleCountByBlockNumber(ctx context.Context, blockNr jsonrpc.BlockNumber) (*hexutil.Uint, error) {
-	var blk block.IBlock
-	var err error
-
-	if blockNr == jsonrpc.PendingBlockNumber || blockNr == jsonrpc.LatestBlockNumber {
-		blk = s.api.BlockChain().CurrentBlock()
-	} else {
-		blk, err = s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(blockNr.Int64())))
-	}
-
+	blk, err := s.getBlockByNumber(blockNr)
 	if err != nil {
 		return nil, err
 	}
@@ -215,18 +216,23 @@ func (s *BlockChainAPI) GetUncleByBlockNumberAndIndex(ctx context.Context, block
 // 交易查询接口
 // =============================================================================
 
+// getBlockByNumber resolves a block by its jsonrpc.BlockNumber for TransactionAPI.
+// PendingBlockNumber and LatestBlockNumber both return the current head block.
+// Negative numbers (other than the two special values above) are rejected.
+func (s *TransactionAPI) getBlockByNumber(number jsonrpc.BlockNumber) (block.IBlock, error) {
+	if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+		return s.api.BlockChain().CurrentBlock(), nil
+	}
+	if number < 0 {
+		return nil, fmt.Errorf("invalid block number: %d", number)
+	}
+	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number.Int64())))
+}
+
 // GetTransactionByBlockNumberAndIndex returns the transaction for the given block number and index.
 // 返回指定区块号和交易索引的交易。
 func (s *TransactionAPI) GetTransactionByBlockNumberAndIndex(ctx context.Context, blockNr jsonrpc.BlockNumber, index hexutil.Uint) *RPCTransaction {
-	var blk block.IBlock
-	var err error
-
-	if blockNr == jsonrpc.PendingBlockNumber || blockNr == jsonrpc.LatestBlockNumber {
-		blk = s.api.BlockChain().CurrentBlock()
-	} else {
-		blk, err = s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(blockNr.Int64())))
-	}
-
+	blk, err := s.getBlockByNumber(blockNr)
 	if err != nil || blk == nil {
 		return nil
 	}
@@ -285,11 +291,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 
 	// 获取区块
 	if blockNr, ok := blockNrOrHash.Number(); ok {
-		if blockNr == jsonrpc.PendingBlockNumber || blockNr == jsonrpc.LatestBlockNumber {
-			blk = s.api.BlockChain().CurrentBlock()
-		} else {
-			blk, err = s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(blockNr.Int64())))
-		}
+		blk, err = s.getBlockByNumber(blockNr)
 	} else if hash, ok := blockNrOrHash.Hash(); ok {
 		blk, err = s.api.BlockChain().GetBlockByHash(types.Hash(hash))
 	}
@@ -529,7 +531,7 @@ func (s *BlockChainAPI) BatchGetBalance(ctx context.Context, addresses []types.A
 		return nil, fmt.Errorf("batch size %d exceeds maximum of %d", len(addresses), maxBatchAddresses)
 	}
 	tx, err := s.api.db.BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
@@ -553,7 +555,7 @@ func (s *BlockChainAPI) BatchGetCode(ctx context.Context, addresses []types.Addr
 		return nil, fmt.Errorf("batch size %d exceeds maximum of %d", len(addresses), maxBatchAddresses)
 	}
 	tx, err := s.api.db.BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
@@ -667,11 +669,7 @@ func (s *BlockChainAPI) SimulateV1(ctx context.Context, blocks []SimulateV1Block
 	var baseBlock block.IBlock
 	var err error
 	if blockNr, ok := bNrOrHash.Number(); ok {
-		if blockNr == jsonrpc.LatestBlockNumber || blockNr == jsonrpc.PendingBlockNumber {
-			baseBlock = s.api.BlockChain().CurrentBlock()
-		} else {
-			baseBlock, err = s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(blockNr.Int64())))
-		}
+		baseBlock, err = s.getBlockByNumber(blockNr)
 	} else if hash, ok := bNrOrHash.Hash(); ok {
 		baseBlock, err = s.api.BlockChain().GetBlockByHash(hash)
 	}

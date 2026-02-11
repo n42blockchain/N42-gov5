@@ -51,7 +51,7 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 	if raw.BlockHash != nil {
 		if raw.FromBlock != nil || raw.ToBlock != nil {
 			// BlockHash is mutually exclusive with FromBlock/ToBlock criteria
-			return fmt.Errorf("cannot specify both BlockHash and FromBlock/ToBlock, choose one or the other")
+			return errors.New("cannot specify both BlockHash and FromBlock/ToBlock, choose one or the other")
 		}
 		args.BlockHash = avmtypes.ToastHash(*raw.BlockHash)
 	} else {
@@ -124,11 +124,11 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 						}
 						args.Topics[i] = append(args.Topics[i], avmtypes.ToastHash(parsed))
 					} else {
-						return fmt.Errorf("invalid topic(s)")
+						return errors.New("invalid topic(s)")
 					}
 				}
 			default:
-				return fmt.Errorf("invalid topic(s)")
+				return errors.New("invalid topic(s)")
 			}
 		}
 	}

@@ -17,6 +17,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/crypto/bls"
@@ -60,7 +61,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 	for i, p := range vfs {
 		addrs[i] = p.Address
 		blsP, err := bls.PublicKeyFromBytes(p.PublicKey[:])
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		ss[i] = blsP
@@ -72,7 +73,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 			return fmt.Errorf("ValidateBody: invalid header type assertion for block %v", b.Number64())
 		}
 		sig, err := bls.SignatureFromBytes(header.Signature[:])
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		if !sig.FastAggregateVerify(ss, header.Root) {
@@ -80,7 +81,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 			for i, addr := range addrs {
 				log.Warn("", "address", addr.String(), "publicKey", hexutil.Encode(ss[i].Marshal()))
 			}
-			return fmt.Errorf("aggregate signature verification failed")
+			return errors.New("aggregate signature verification failed")
 		}
 	}
 

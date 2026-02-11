@@ -18,6 +18,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -313,7 +314,7 @@ func NewBasicFetcher(
 // Start starts the fetcher.
 func (f *BasicFetcher) Start() error {
 	if !atomic.CompareAndSwapInt32(&f.running, 0, 1) {
-		return fmt.Errorf("fetcher already running")
+		return errors.New("fetcher already running")
 	}
 	log.Info("Block fetcher started")
 	return nil
@@ -322,7 +323,7 @@ func (f *BasicFetcher) Start() error {
 // Stop stops the fetcher.
 func (f *BasicFetcher) Stop() error {
 	if !atomic.CompareAndSwapInt32(&f.running, 1, 0) {
-		return fmt.Errorf("fetcher not running")
+		return errors.New("fetcher not running")
 	}
 	f.cancel()
 	log.Info("Block fetcher stopped")
@@ -332,7 +333,7 @@ func (f *BasicFetcher) Stop() error {
 // FetchBlocks fetches a range of blocks.
 func (f *BasicFetcher) FetchBlocks(ctx context.Context, start *uint256.Int, count uint64) (*FetchResult, error) {
 	if atomic.LoadInt32(&f.running) == 0 {
-		return nil, fmt.Errorf("fetcher not running")
+		return nil, errors.New("fetcher not running")
 	}
 
 	startTime := time.Now()
@@ -342,7 +343,7 @@ func (f *BasicFetcher) FetchBlocks(ctx context.Context, start *uint256.Int, coun
 	if len(peers) == 0 {
 		// Fix: Use special identifier for unknown peer instead of empty string
 		f.metrics.RecordFetch(peer.ID("unknown"), count, 0, time.Since(startTime), false)
-		return nil, fmt.Errorf("no peers available")
+		return nil, errors.New("no peers available")
 	}
 
 	// Try each peer until one succeeds
@@ -373,7 +374,7 @@ func (f *BasicFetcher) FetchBlocks(ctx context.Context, start *uint256.Int, coun
 // FetchBlocksByHash fetches blocks by hash.
 func (f *BasicFetcher) FetchBlocksByHash(ctx context.Context, hashes [][]byte) (*FetchResult, error) {
 	// TODO: Implement block-by-hash fetching
-	return nil, fmt.Errorf("FetchBlocksByHash not implemented")
+	return nil, errors.New("FetchBlocksByHash not implemented")
 }
 
 // fetchFromPeer fetches blocks from a specific peer.
@@ -394,7 +395,7 @@ func (f *BasicFetcher) fetchFromPeer(ctx context.Context, pid peer.ID, start *ui
 	// For now, we return a placeholder to show the interface works
 	// The actual implementation would use SendBodiesByRangeRequest or similar
 
-	return nil, fmt.Errorf("fetch from peer not fully implemented - use existing initialsync")
+	return nil, errors.New("fetch from peer not fully implemented - use existing initialsync")
 }
 
 // Metrics returns the fetcher metrics.

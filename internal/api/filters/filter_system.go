@@ -2,7 +2,7 @@ package filters
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -202,7 +202,7 @@ func (es *EventSystem) SubscribeLogs(crit FilterCriteria, logs chan []*block.Log
 	if from >= 0 && to == jsonrpc.LatestBlockNumber {
 		return es.subscribeLogs(crit, logs), nil
 	}
-	return nil, fmt.Errorf("invalid from and to block combination: from > to")
+	return nil, errors.New("invalid from and to block combination: from > to")
 }
 
 // subscribeMinedPendingLogs creates a subscription that returned mined and

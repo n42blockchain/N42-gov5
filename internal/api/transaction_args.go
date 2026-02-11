@@ -221,7 +221,7 @@ func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (t
 	gfc, is3 := uint256.FromBig(gasFeeCap)
 	gtc, is4 := uint256.FromBig(gasTipCap)
 	if is1 || is2 || is3 || is4 {
-		return transaction.Message{}, fmt.Errorf("args.Value higher than 2^256-1")
+		return transaction.Message{}, errors.New("args.Value higher than 2^256-1")
 	}
 	msg := transaction.NewMessage(addr, avmtypes.ToastAddress(args.To), 0, val, gas, gp, gfc, gtc, data, accessList, false, true)
 	return msg, nil
@@ -402,7 +402,7 @@ func (args *TransactionArgs) setFeeDefaults(ctx context.Context, b *API) error {
 		}
 	} else {
 		if args.MaxFeePerGas != nil || args.MaxPriorityFeePerGas != nil {
-			return fmt.Errorf("maxFeePerGas and maxPriorityFeePerGas are not valid before London is active")
+			return errors.New("maxFeePerGas and maxPriorityFeePerGas are not valid before London is active")
 		}
 		// London not active, set gas price.
 		price, err := b.gpo.SuggestTipCap(ctx, b.chainConfig)

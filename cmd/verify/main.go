@@ -128,14 +128,14 @@ func main() {
 				return
 			default:
 				typ, msg, err := con.ReadMessage()
-				if nil != err {
+				if err != nil {
 					log.Errorf("read msg failed: %v", err)
 					continue
 				}
 				if typ == websocket.TextMessage {
 					fmt.Println("read msg: ", string(msg))
 					params, err := unwrapJSONRPC(msg)
-					if nil != err {
+					if err != nil {
 						log.Warn(err.Error())
 						continue
 					}
@@ -163,7 +163,7 @@ func main() {
 					}
 
 					wrapRequest, _ := wrapJSONRPCRequest(in)
-					if err := con.WriteMessage(websocket.TextMessage, wrapRequest); nil != err {
+					if err := con.WriteMessage(websocket.TextMessage, wrapRequest); err != nil {
 						log.Error("write msg failed: ", err)
 					}
 					log.Infof("write msg: %s", wrapRequest)

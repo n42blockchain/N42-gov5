@@ -18,14 +18,13 @@ package internal
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/n42blockchain/N42/common"
 )
 
 var (
-	ErrInvalidBlock  = fmt.Errorf("invalid block")
-	ErrInvalidPubSub = fmt.Errorf("PubSub is nil")
+	ErrInvalidBlock  = errors.New("invalid block")
+	ErrInvalidPubSub = errors.New("PubSub is nil")
 )
 
 var (

@@ -186,7 +186,7 @@ func (b *API) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types
 	//	return b.eth.blockchain.GetBlock(header.Hash(), header.Number.Uint64()), nil
 	//}
 	iBlock, err := b.bc.GetBlockByNumber(uint256.NewInt(uint64(number)))
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	if iBlock == nil {

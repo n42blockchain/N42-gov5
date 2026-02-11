@@ -111,7 +111,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		txs := b.Transactions()
 		var err error
 		_, nopay, err = p.engine.Finalize(chainReader, concreteHeader, ibs, txs, nil)
-		if nil != err {
+		if err != nil {
 			return nil, nil, nil, 0, err
 		}
 	}

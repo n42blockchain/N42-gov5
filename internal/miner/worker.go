@@ -423,7 +423,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	start := time.Now()
 	if w.isRunning() {
 		if w.coinbase == (types.Address{}) {
-			return fmt.Errorf("coinbase is empty")
+			return errors.New("coinbase is empty")
 		}
 	}
 
@@ -434,7 +434,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	}
 
 	tx, err := w.chain.DB().BeginRo(w.ctx)
-	if nil != err {
+	if err != nil {
 		log.Error("work.commitWork failed", err)
 		return err
 	}
@@ -471,15 +471,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		}
 	}
 
-	//var rewards []*block.Reward
-	//if w.chainConfig.IsBeijing(current.header.Number.Uint64()) {
-	//	rewards, err = w.engine.Rewards(tx, block.CopyHeader(current.header), ibs, false)
-	//	if err != nil {
-	//		return err
-	//	}
-	//}
-
-	if err = w.commit(current, stateWriter, ibs, start, headers); nil != err {
+	if err = w.commit(current, stateWriter, ibs, start, headers); err != nil {
 		log.Errorf("w.commit failed, error %v\n", err)
 		return err
 	}
@@ -571,10 +563,6 @@ func (w *worker) workLoop(recommit time.Duration) error {
 		case <-timer.C:
 			// If sealing is running resubmit a new work cycle periodically to pull in
 			// higher priced transactions. Disable this overhead for pending blocks.
-			//if w.isRunning() && (w.chainConfig.Apos == nil && w.chainConfig.Clique == nil) {
-			//	continue
-			//	commit(false, commitInterruptResubmit)
-			//}
 		case adjust := <-w.resubmitAdjustCh:
 			// Adjust resubmit interval by feedback.
 			if adjust.inc {
@@ -661,17 +649,17 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 
 	currentBlock := w.chain.CurrentBlock()
 	if currentBlock == nil {
-		return nil, fmt.Errorf("current block is nil")
+		return nil, errors.New("current block is nil")
 	}
 	currentHeader := currentBlock.Header()
 	if currentHeader == nil {
-		return nil, fmt.Errorf("current block header is nil")
+		return nil, errors.New("current block header is nil")
 	}
 	parent := currentHeader.(*block.Header)
 	if param.parentHash != (types.Hash{}) {
 		b, _ := w.chain.GetBlockByHash(param.parentHash)
 		if b == nil {
-			return nil, fmt.Errorf("missing parent")
+			return nil, errors.New("missing parent")
 		}
 		parent = b.Header().(*block.Header)
 	}
@@ -709,11 +697,6 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 }
 
 func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase types.Address) *environment {
-	//rtx, err := w.chain.DB().BeginRo(context.Background())
-	//if nil != err {
-	//	return nil
-	//}
-	//defer rtx.Rollback()
 	env := &environment{
 		ancestors: mapset.NewSet(),
 		family:    mapset.NewSet(),
@@ -739,7 +722,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	if w.isRunning() {
 		env := env.copy()
 		iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, env.header, ibs, env.txs, nil, env.receipts)
-		if nil != err {
+		if err != nil {
 			return err
 		}
 
@@ -749,7 +732,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 				var err error
 
 				txs[i], err = tx.Marshal()
-				if nil != err {
+				if err != nil {
 					return fmt.Errorf("failed to marshal transaction %d: %w", i, err)
 				}
 			}

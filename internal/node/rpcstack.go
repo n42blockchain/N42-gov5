@@ -19,6 +19,7 @@ package node
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/n42blockchain/N42/log"
 	"github.com/rs/cors"
@@ -199,7 +200,7 @@ func (h *httpServer) enableWS(apis []jsonrpc.API, config wsConfig) error {
 	defer h.mu.Unlock()
 
 	if h.wsAllowed() {
-		return fmt.Errorf("JSON-RPC over WebSocket is already enabled")
+		return errors.New("JSON-RPC over WebSocket is already enabled")
 	}
 	// Create RPC server and handler.
 	srv := jsonrpc.NewServer()
@@ -294,7 +295,7 @@ func (h *httpServer) enableRPC(apis []jsonrpc.API, config httpConfig) error {
 	defer h.mu.Unlock()
 
 	if h.rpcAllowed() {
-		return fmt.Errorf("JSON-RPC over HTTP is already enabled")
+		return errors.New("JSON-RPC over HTTP is already enabled")
 	}
 
 	srv := jsonrpc.NewServer()

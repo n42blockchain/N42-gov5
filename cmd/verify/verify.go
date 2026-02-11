@@ -60,7 +60,7 @@ func verify(ctx context.Context, msg *state.EntireCode) (types.Hash, error) {
 	var txs transaction.Transactions
 	for _, tByte := range msg.Entire.Transactions {
 		tmp := &transaction.Transaction{}
-		if err := tmp.Unmarshal(tByte); nil != err {
+		if err := tmp.Unmarshal(tByte); err != nil {
 			return types.Hash{}, fmt.Errorf("unmarshal transaction failed: %w", err)
 		}
 		txs = append(txs, tmp)
@@ -85,7 +85,7 @@ func verify(ctx context.Context, msg *state.EntireCode) (types.Hash, error) {
 	ibs.SetGetOneFun(batch.GetOne)
 
 	root, err := checkBlock(getNumberHash, blk, ibs, msg.CoinBase, msg.Rewards)
-	if nil != err {
+	if err != nil {
 		return types.Hash{}, fmt.Errorf("check block failed: %w", err)
 	}
 	return root, nil

@@ -268,7 +268,7 @@ func (api *API) GetSigner(rlpOrBlockNr *blockNumberOrHashOrRLP) (types.Address, 
 		return api.apos.Author(header)
 	}
 
-	return types.Address{}, fmt.Errorf("do not support rlp")
+	return types.Address{}, errors.New("do not support rlp")
 }
 
 // GetRewards
@@ -380,7 +380,7 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		return nil
 	})
 	if depositInfo == nil {
-		return nil, fmt.Errorf("address do not have depositInfo")
+		return nil, errors.New("address do not have depositInfo")
 	}
 	//
 	currentHeader = api.getHeader(from)
@@ -446,7 +446,7 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	)
 
 	if to.Int64() <= 0 {
-		return nil, fmt.Errorf("'To' block number must be greater than 0")
+		return nil, errors.New("'To' block number must be greater than 0")
 	}
 
 	api.apos.dbView(func(tx kv.Tx) error {
@@ -454,7 +454,7 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		return nil
 	})
 	if depositInfo == nil {
-		return nil, fmt.Errorf("address do not have depositInfo")
+		return nil, errors.New("address do not have depositInfo")
 	}
 	//
 	currentHeader = api.getHeader(from)

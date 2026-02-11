@@ -602,7 +602,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 	//}
 
 	rtx, err := api.backend.ChainDb().BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer rtx.Rollback()
@@ -884,7 +884,7 @@ func (api *API) TraceTransaction(ctx context.Context, hash common.Hash, config *
 	}
 
 	dbTx, err := api.backend.ChainDb().BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer dbTx.Rollback()
@@ -938,7 +938,7 @@ func (api *API) TraceCall(ctx context.Context, args api.TransactionArgs, blockNr
 	//}
 
 	rtx, err := api.backend.ChainDb().BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer rtx.Rollback()

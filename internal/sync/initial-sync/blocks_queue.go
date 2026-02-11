@@ -34,10 +34,6 @@ const (
 	noRequiredPeersErrRefreshInterval = 15 * time.Second
 	// maxResetAttempts number of times stale FSM is reset, before backtracking is triggered.
 	maxResetAttempts = 4
-	// startBackSlots defines number of slots before the current head, which defines a start position
-	// of the initial machine. This allows more robustness in case of normal sync sets head to some
-	// orphaned block: in that case starting earlier and re-fetching blocks allows to reorganize chain.
-	//startBackSlots = 32
 )
 
 var (
@@ -403,15 +399,12 @@ func (q *blocksQueue) onProcessSkippedEvent(ctx context.Context) eventHandlerFn 
 		}
 
 		// Check if we have enough peers to progress, or sync needs to halt (due to no peers available).
-		//bestFinalizedSlot := q.blocksFetcher.bestFinalizedBlockNr()
 		if q.blocksFetcher.bestFinalizedBlockNr().Cmp(q.chain.CurrentBlock().Number64()) >= 0 {
 			return stateSkipped, errNoRequiredPeers
 		}
 
 		// All machines are skipped, FSMs need reset.
 		startBlockNr := new(uint256.Int).AddUint64(q.chain.CurrentBlock().Number64(), 1)
-
-		//todo q.blocksFetcher.findFork(ctx, startSlot)
 
 		return stateSkipped, q.resetFromBlockNr(ctx, startBlockNr)
 	}

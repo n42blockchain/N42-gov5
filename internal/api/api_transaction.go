@@ -38,7 +38,7 @@ func (s *TransactionAPI) GetTransactionCount(ctx context.Context, address avmcom
 	}
 
 	tx, err := s.api.db.BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
@@ -114,7 +114,7 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 			return hs, err
 		}
 
-		if hs[i], err = SubmitTransaction(context.Background(), s.api, metaTx); nil != err {
+		if hs[i], err = SubmitTransaction(context.Background(), s.api, metaTx); err != nil {
 			return hs, err
 		}
 	}
@@ -215,11 +215,8 @@ func (s *TransactionAPI) GetTransactionByHash(ctx context.Context, hash avmcommo
 	)
 	if err := s.api.Database().View(ctx, func(t kv.Tx) error {
 		tx, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(t, avmtypes.ToastHash(hash))
-		if err != nil {
-			return err
-		}
-		return nil
-	}); nil != err {
+		return err
+	}); err != nil {
 		return nil, err
 	}
 

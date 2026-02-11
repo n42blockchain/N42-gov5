@@ -18,7 +18,7 @@ package api
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"strings"
 
 	"github.com/n42blockchain/N42/common/ens"
@@ -311,7 +311,7 @@ func (e *ENSAPI) getTextRecord(ctx context.Context, resolverAddr types.Address, 
 func (e *ENSAPI) ethCall(ctx context.Context, to types.Address, data []byte) ([]byte, error) {
 	// This would use the underlying eth_call implementation
 	// For now, return an error indicating the feature needs blockchain integration
-	return nil, fmt.Errorf("ENS resolution requires blockchain state access - ensure node is synced")
+	return nil, errors.New("ENS resolution requires blockchain state access - ensure node is synced")
 }
 
 // =============================================================================
