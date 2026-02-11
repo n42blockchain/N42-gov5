@@ -933,6 +933,10 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		return memdb.New(""), nil
 	}
 
+	if logger == nil {
+		logger = log2.New()
+	}
+
 	var chainKv kv.RwDB
 	var err error
 
