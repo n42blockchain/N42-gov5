@@ -194,6 +194,9 @@ func (t *UDPv5) Close() {
 		t.talk.wait()
 		t.wg.Wait()
 		t.tab.close()
+		if t.db != nil {
+			t.db.Close()
+		}
 	})
 }
 

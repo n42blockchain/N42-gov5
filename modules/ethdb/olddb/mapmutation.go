@@ -8,9 +8,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/ledgerwatch/erigon-lib/etl"
-	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/log/v3"
+	"github.com/n42blockchain/N42/lib/etl"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/log/v3"
 
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/ethdb"

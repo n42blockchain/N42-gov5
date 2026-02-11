@@ -33,8 +33,8 @@ import (
 	"math"
 	"time"
 
-	common2 "github.com/ledgerwatch/erigon-lib/common"
-	"github.com/ledgerwatch/erigon-lib/kv"
+	common2 "github.com/n42blockchain/N42/lib/common"
+	"github.com/n42blockchain/N42/lib/kv"
 )
 
 // ReadCanonicalHash retrieves the hash assigned to a canonical block number.

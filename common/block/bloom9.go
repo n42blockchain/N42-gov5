@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ledgerwatch/erigon-lib/common/hexutility"
+	"github.com/n42blockchain/N42/lib/common/hexutility"
 
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/crypto/cryptopool"
