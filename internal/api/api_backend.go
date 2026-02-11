@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/holiman/uint256"
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/accounts"
 	common2 "github.com/n42blockchain/N42/common"
 	types "github.com/n42blockchain/N42/common/block"

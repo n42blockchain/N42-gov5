@@ -24,8 +24,8 @@ import (
 	"github.com/n42blockchain/N42/modules"
 	"sort"
 
-	"github.com/ledgerwatch/erigon-lib/common/length"
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/common/length"
+	"github.com/n42blockchain/N42/lib/kv"
 )
 
 type Encoder func(blockN uint64, s *ChangeSet, f func(k, v []byte) error) error

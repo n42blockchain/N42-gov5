@@ -19,15 +19,15 @@ package rawdb
 import (
 	"context"
 	"github.com/c2h5oh/datasize"
-	"github.com/ledgerwatch/erigon-lib/common/cmp"
-	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon-lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/common/cmp"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/params"
 	"golang.org/x/sync/semaphore"
 	"runtime"
 
-	log2 "github.com/ledgerwatch/log/v3"
+	log2 "github.com/n42blockchain/N42/lib/log/v3"
 )
 
 //func TestPutReward(t *testing.T) {
@@ -123,7 +123,7 @@ func OpenDatabase() (kv.RwDB, error) {
 		kv.ChaindataTablesCfg = modules.N42TableCfg
 
 		opts = opts.MapSize(8 * datasize.TB)
-		return opts.Open()
+		return opts.Open(context.Background())
 	}
 	chainKv, err = openFunc(false)
 	if err != nil {
