@@ -164,11 +164,11 @@ func (e *EngineAPIv4) NewPayloadV4(
 		return invalidPayloadResponse(err.Error()), nil
 	}
 
-	// TODO: Implement full payload processing
+	// Return SYNCING until payload processing is fully implemented.
+	// Returning VALID for an unverified payload would mislead the consensus layer.
 	return &NewPayloadResponseV3{
 		Status: PayloadStatusV1{
-			Status:          PayloadStatusValid,
-			LatestValidHash: &payload.BlockHash,
+			Status: PayloadStatusSyncing,
 		},
 	}, nil
 }
@@ -203,10 +203,11 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 		}
 	}
 
-	// TODO: Implement fork choice update
+	// Return SYNCING until fork choice update is fully implemented.
+	// Returning VALID for an unprocessed fork choice would mislead the consensus layer.
 	return &ForkchoiceUpdatedResponseV3{
 		PayloadStatus: PayloadStatusV1{
-			Status: PayloadStatusValid,
+			Status: PayloadStatusSyncing,
 		},
 	}, nil
 }

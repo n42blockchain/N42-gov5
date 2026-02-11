@@ -52,6 +52,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/holiman/uint256"
@@ -67,6 +68,8 @@ import (
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 )
+
+const maxBatchAddresses = 1000
 
 // =============================================================================
 // 同步状态接口
@@ -522,6 +525,9 @@ func (s *BlockChainAPI) GetBlockscoutCompatibility() *BlockscoutCompatibilityInf
 // BatchGetBalance 批量获取多个地址的余额
 // 这是 Blockscout 用于提高性能的优化接口
 func (s *BlockChainAPI) BatchGetBalance(ctx context.Context, addresses []types.Address, blockNrOrHash jsonrpc.BlockNumberOrHash) ([]*hexutil.Big, error) {
+	if len(addresses) > maxBatchAddresses {
+		return nil, fmt.Errorf("batch size %d exceeds maximum of %d", len(addresses), maxBatchAddresses)
+	}
 	tx, err := s.api.db.BeginRo(ctx)
 	if nil != err {
 		return nil, err
@@ -543,6 +549,9 @@ func (s *BlockChainAPI) BatchGetBalance(ctx context.Context, addresses []types.A
 
 // BatchGetCode 批量获取多个地址的代码
 func (s *BlockChainAPI) BatchGetCode(ctx context.Context, addresses []types.Address, blockNrOrHash jsonrpc.BlockNumberOrHash) ([]hexutil.Bytes, error) {
+	if len(addresses) > maxBatchAddresses {
+		return nil, fmt.Errorf("batch size %d exceeds maximum of %d", len(addresses), maxBatchAddresses)
+	}
 	tx, err := s.api.db.BeginRo(ctx)
 	if nil != err {
 		return nil, err

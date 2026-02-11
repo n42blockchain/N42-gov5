@@ -29,7 +29,7 @@ RUN adduser -D -u $UID -g $GID n42
 
 ENV DATA /home/n42
 # this 777 will be replaced by 700 at runtime (allows semi-arbitrary "--user" values)
-RUN mkdir -p "$DATA" && chown -R n42:n42 "$DATA" && chmod 777 "$DATA"
+RUN mkdir -p "$DATA" && chown -R n42:n42 "$DATA" && chmod 700 "$DATA"
 VOLUME /home/n42
 
 USER n42

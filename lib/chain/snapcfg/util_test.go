@@ -20,7 +20,7 @@ func TestNameToParts(t *testing.T) {
 			"happy pass",
 			args{
 				name: "v1-asd-12-d",
-				v:    0,
+				v:    snaptype.Version{},
 			},
 			12,
 			false,
@@ -29,7 +29,7 @@ func TestNameToParts(t *testing.T) {
 			"happy pass with version",
 			args{
 				name: "v2-asd-12-d",
-				v:    2,
+				v:    snaptype.Version{Major: 2},
 			},
 			12,
 			false,
@@ -38,7 +38,7 @@ func TestNameToParts(t *testing.T) {
 			"happy pass && block in the end",
 			args{
 				name: "v1-asd-12",
-				v:    0,
+				v:    snaptype.Version{},
 			},
 			12,
 			false,
@@ -47,7 +47,7 @@ func TestNameToParts(t *testing.T) {
 			"version mismatch",
 			args{
 				name: "v1-asd-12",
-				v:    2,
+				v:    snaptype.Version{Major: 2},
 			},
 			0,
 			true,
@@ -56,7 +56,7 @@ func TestNameToParts(t *testing.T) {
 			"block parse error",
 			args{
 				name: "v1-asd-dd12",
-				v:    0,
+				v:    snaptype.Version{},
 			},
 			0,
 			true,
@@ -65,7 +65,7 @@ func TestNameToParts(t *testing.T) {
 			"bad name",
 			args{
 				name: "v1-dd12",
-				v:    0,
+				v:    snaptype.Version{},
 			},
 			0,
 			true,

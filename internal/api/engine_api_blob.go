@@ -21,6 +21,7 @@ package api
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -186,7 +187,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	// Validate versioned hashes format
 	for i, hash := range expectedBlobVersionedHashes {
 		if !transaction.IsValidVersionedHash(hash) {
-			return invalidPayloadResponse("invalid versioned hash at index " + string(rune(i))), nil
+			return invalidPayloadResponse("invalid versioned hash at index " + strconv.Itoa(i)), nil
 		}
 	}
 	
