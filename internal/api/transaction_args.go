@@ -54,6 +54,17 @@ type TransactionArgs struct {
 	ChainID    *hexutil.Big          `json:"chainId,omitempty"`
 }
 
+// RPCAuthorization represents an EIP-7702 authorization for RPC serialization
+type RPCAuthorization struct {
+	ChainID hexutil.Uint64   `json:"chainId"`
+	Address avmcommon.Address `json:"address"`
+	Nonce   hexutil.Uint64   `json:"nonce"`
+	V       *hexutil.Big     `json:"v"`
+	R       *hexutil.Big     `json:"r"`
+	S       *hexutil.Big     `json:"s"`
+	YParity *hexutil.Uint64  `json:"yParity,omitempty"`
+}
+
 // RPCTransaction represents a transaction that will serialize to the RPC representation of a transaction
 type RPCTransaction struct {
 	BlockHash        *avmcommon.Hash      `json:"blockHash"`
@@ -75,6 +86,13 @@ type RPCTransaction struct {
 	V                *hexutil.Big          `json:"v"`
 	R                *hexutil.Big          `json:"r"`
 	S                *hexutil.Big          `json:"s"`
+	// EIP-4844 Blob transaction fields
+	MaxFeePerBlobGas    *hexutil.Big       `json:"maxFeePerBlobGas,omitempty"`
+	BlobVersionedHashes []avmcommon.Hash   `json:"blobVersionedHashes,omitempty"`
+	// EIP-7702 SetCode authorization list
+	AuthorizationList   []RPCAuthorization `json:"authorizationList,omitempty"`
+	// YParity for EIP-2718+ typed transactions
+	YParity *hexutil.Uint64 `json:"yParity,omitempty"`
 }
 
 // from retrieves the transaction sender address.
@@ -319,6 +337,37 @@ func newRPCPendingTransaction(tx *transaction.Transaction, current block.IHeader
 	return newRPCTransaction(tx, types.Hash{}, blockNumber, 0, big.NewInt(baseFee))
 }
 
+// yparity converts a V signature value to a YParity value for EIP-2718+ typed transactions.
+func yparity(v *uint256.Int) *hexutil.Uint64 {
+	if v == nil {
+		return nil
+	}
+	parity := hexutil.Uint64(v.Uint64())
+	return &parity
+}
+
+// setDynamicFeeFields sets the common fields shared by all EIP-1559+ typed transactions
+// (DynamicFee, Blob, SetCode, PostQuantum): AccessList, ChainID, GasFeeCap, GasTipCap,
+// YParity, and effective gas price computation.
+func setDynamicFeeFields(result *RPCTransaction, tx *transaction.Transaction, v *uint256.Int, baseFee *big.Int, blockHash types.Hash) {
+	al := avmtypes.FromastAccessList(tx.AccessList())
+	if al == nil {
+		al = avmtypes.AccessList{}
+	}
+	result.Accesses = &al
+	result.ChainID = (*hexutil.Big)(tx.ChainId().ToBig())
+	result.GasFeeCap = (*hexutil.Big)(tx.GasFeeCap().ToBig())
+	result.GasTipCap = (*hexutil.Big)(tx.GasTipCap().ToBig())
+	result.YParity = yparity(v)
+	// compute effective gas price: min(tip + baseFee, gasFeeCap) for mined transactions
+	if baseFee != nil && blockHash != (types.Hash{}) {
+		price := math.BigMin(new(big.Int).Add(tx.GasTipCap().ToBig(), baseFee), tx.GasFeeCap().ToBig())
+		result.GasPrice = (*hexutil.Big)(price)
+	} else {
+		result.GasPrice = (*hexutil.Big)(tx.GasFeeCap().ToBig())
+	}
+}
+
 // newRPCTransaction returns a transaction that will serialize to the RPC
 // representation, with the given location metadata set (if available).
 func newRPCTransaction(tx *transaction.Transaction, blockHash types.Hash, blockNumber uint64, index uint64, baseFee *big.Int) *RPCTransaction {
@@ -352,26 +401,62 @@ func newRPCTransaction(tx *transaction.Transaction, blockHash types.Hash, blockN
 		if id := tx.ChainId(); id.Sign() != 0 {
 			result.ChainID = (*hexutil.Big)(id.ToBig())
 		}
+
 	case transaction.AccessListTxType:
-		// todo copy al
-		//al := tx.AccessList()
-		//result.Accesses = &al
-		result.ChainID = (*hexutil.Big)(tx.ChainId().ToBig())
-	case transaction.DynamicFeeTxType:
-		// todo copy al
-		//al := tx.AccessList()
-		//result.Accesses = &al
-		result.ChainID = (*hexutil.Big)(tx.ChainId().ToBig())
-		result.GasFeeCap = (*hexutil.Big)(tx.GasFeeCap().ToBig())
-		result.GasTipCap = (*hexutil.Big)(tx.GasTipCap().ToBig())
-		// if the transaction has been mined, compute the effective gas price
-		if baseFee != nil && blockHash != (types.Hash{}) {
-			// price = min(tip, gasFeeCap - baseFee) + baseFee
-			price := math.BigMin(new(big.Int).Add(tx.GasTipCap().ToBig(), baseFee), tx.GasFeeCap().ToBig())
-			result.GasPrice = (*hexutil.Big)(price)
-		} else {
-			result.GasPrice = (*hexutil.Big)(tx.GasFeeCap().ToBig())
+		al := avmtypes.FromastAccessList(tx.AccessList())
+		if al == nil {
+			al = avmtypes.AccessList{}
 		}
+		result.Accesses = &al
+		result.ChainID = (*hexutil.Big)(tx.ChainId().ToBig())
+		result.YParity = yparity(v)
+
+	case transaction.DynamicFeeTxType:
+		setDynamicFeeFields(result, tx, v, baseFee, blockHash)
+
+	case transaction.BlobTxType:
+		setDynamicFeeFields(result, tx, v, baseFee, blockHash)
+		if blobFeeCap := tx.BlobFeeCap(); blobFeeCap != nil {
+			result.MaxFeePerBlobGas = (*hexutil.Big)(blobFeeCap.ToBig())
+		}
+		blobHashes := tx.BlobHashes()
+		if len(blobHashes) > 0 {
+			result.BlobVersionedHashes = make([]avmcommon.Hash, len(blobHashes))
+			for i, h := range blobHashes {
+				result.BlobVersionedHashes[i] = avmtypes.FromastHash(h)
+			}
+		}
+
+	case transaction.SetCodeTxType:
+		setDynamicFeeFields(result, tx, v, baseFee, blockHash)
+		authList := tx.AuthList()
+		if len(authList) > 0 {
+			result.AuthorizationList = make([]RPCAuthorization, 0, len(authList))
+			for _, auth := range authList {
+				if auth == nil {
+					continue
+				}
+				rpcAuth := RPCAuthorization{
+					ChainID: hexutil.Uint64(auth.ChainID),
+					Address: *avmtypes.FromastAddress(&auth.Address),
+					Nonce:   hexutil.Uint64(auth.Nonce),
+				}
+				if auth.V != nil {
+					rpcAuth.V = (*hexutil.Big)(auth.V.ToBig())
+					rpcAuth.YParity = yparity(auth.V)
+				}
+				if auth.R != nil {
+					rpcAuth.R = (*hexutil.Big)(auth.R.ToBig())
+				}
+				if auth.S != nil {
+					rpcAuth.S = (*hexutil.Big)(auth.S.ToBig())
+				}
+				result.AuthorizationList = append(result.AuthorizationList, rpcAuth)
+			}
+		}
+
+	case transaction.PostQuantumTxType:
+		setDynamicFeeFields(result, tx, v, baseFee, blockHash)
 	}
 	return result
 }
