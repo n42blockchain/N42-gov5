@@ -256,12 +256,21 @@ func (oracle *Oracle) getBlockValues(ctx context.Context, signer types.Signer, b
 
 	var prices []*big.Int
 	for _, tx := range sorter.txs {
-		tip, _ := tx.EffectiveGasTip(block.BaseFee64())
-		ignoreUnderx, _ := uint256.FromBig(ignoreUnder)
-		if ignoreUnder != nil && tip.Cmp(ignoreUnderx) == -1 {
+		tip, err := tx.EffectiveGasTip(block.BaseFee64())
+		if err != nil || tip == nil {
 			continue
 		}
-		if *tx.From() != block.Coinbase() {
+		if ignoreUnder != nil {
+			ignoreUnderx, overflow := uint256.FromBig(ignoreUnder)
+			if !overflow && tip.Cmp(ignoreUnderx) == -1 {
+				continue
+			}
+		}
+		sender := tx.From()
+		if sender == nil {
+			continue
+		}
+		if *sender != block.Coinbase() {
 			prices = append(prices, tip.ToBig())
 			if len(prices) >= limit {
 				break

@@ -1051,7 +1051,7 @@ func (bc *BlockChain) ReorgNeeded(current block.IBlock, header block.IBlock) boo
 	case 1:
 		return false
 	case 0:
-		return current.Difficulty().Cmp(uint256.NewInt(2)) != 0
+		return current.Difficulty().Cmp(header.Difficulty()) < 0
 	}
 	return true
 }

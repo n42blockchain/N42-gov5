@@ -354,7 +354,11 @@ func (pool *TxsPool) removeTx(hash types.Hash, outofbound bool) {
 		return
 	}
 
-	addr := *tx.From() // already verify
+	from := tx.From()
+	if from == nil {
+		return
+	}
+	addr := *from
 
 	// Remove it from the list of known transactions
 	pool.all.Remove(hash)
@@ -458,7 +462,11 @@ func (pool *TxsPool) add(tx *transaction.Transaction, local bool) (replaced bool
 		}
 	}
 	// Try to replace an existing transaction in the pending pool
-	from := *tx.From() //
+	fromPtr := tx.From()
+	if fromPtr == nil {
+		return false, fmt.Errorf("transaction sender is nil")
+	}
+	from := *fromPtr
 	if list := pool.pending[from]; list != nil && list.Overlaps(tx) {
 		// Nonce already pending, check if required price bump is met
 		inserted, old := list.Add(tx, pool.config.PriceBump)
@@ -1164,7 +1172,11 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 
 	// Notify subsystems for newly added transactions
 	for _, tx := range promoted {
-		addr := *tx.From()
+		sender := tx.From()
+		if sender == nil {
+			continue
+		}
+		addr := *sender
 		if _, ok := events[addr]; !ok {
 			events[addr] = newTxSortedMap()
 		}
@@ -1230,7 +1242,11 @@ func (pool *TxsPool) scheduleLoop() {
 		case tx := <-pool.queueTxEventCh:
 			// Queue up the event, but don't schedule a reorg. It's up to the caller to
 			// request one later if they want the events sent.
-			addr := *tx.From()
+			sender := tx.From()
+			if sender == nil {
+				continue
+			}
+			addr := *sender
 			if _, ok := queuedEvents[addr]; !ok {
 				queuedEvents[addr] = newTxSortedMap()
 			}
