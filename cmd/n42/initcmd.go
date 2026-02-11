@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/cmd/utils"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -59,7 +59,7 @@ func initGenesis(cliCtx *cli.Context) error {
 		utils.Fatalf("invalid genesis file: %v", err)
 	}
 
-	chaindb, err := node.OpenDatabase(&DefaultConfig, nil, kv.ChainDB.String())
+	chaindb, err := node.OpenDatabase(cliCtx.Context, &DefaultConfig, nil, kv.ChainDB.String())
 	if err != nil {
 		utils.Fatalf("Failed to open database: %v", err)
 	}

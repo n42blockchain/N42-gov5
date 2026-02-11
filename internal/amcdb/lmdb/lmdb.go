@@ -54,9 +54,10 @@ func NewLMDB(c context.Context, nodeConfig *conf.NodeConfig, config *conf.Databa
 	if _lmdb.running {
 		return &_lmdb, nil
 	}
-	env, err := mdbx.NewEnv()
+	env, err := mdbx.NewEnv(mdbx.Label(config.DBName))
 	if err != nil {
 		log.Errorf("failed to create lmdb, err %v", err)
+		return nil, err
 	}
 
 	if config.Debug {

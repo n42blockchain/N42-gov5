@@ -11,9 +11,9 @@ import (
 	"unsafe"
 
 	"github.com/google/btree"
-	"github.com/ledgerwatch/erigon-lib/common"
-	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/log/v3"
+	"github.com/n42blockchain/N42/lib/common"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/log/v3"
 
 	"github.com/n42blockchain/N42/modules/ethdb"
 )

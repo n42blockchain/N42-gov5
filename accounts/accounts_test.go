@@ -18,7 +18,7 @@ package accounts
 
 import (
 	"bytes"
-	"github.com/ledgerwatch/secp256k1"
+	"github.com/erigontech/secp256k1"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/math"
 	"testing"

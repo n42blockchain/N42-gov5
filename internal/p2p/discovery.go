@@ -188,7 +188,7 @@ func (s *Service) createLocalNode(
 	ipAddr net.IP,
 	udpPort, tcpPort int,
 ) (*enode.LocalNode, error) {
-	db, err := enode.OpenDB(filepath.Join(s.cfg.DataDir, "nodedata"), "")
+	db, err := enode.OpenDB(s.ctx, filepath.Join(s.cfg.DataDir, "nodedata"), "")
 	if err != nil {
 		return nil, errors.Wrap(err, "could not open node's peer database")
 	}

@@ -30,7 +30,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 

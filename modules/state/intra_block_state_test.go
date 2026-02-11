@@ -32,7 +32,7 @@ import (
 	"testing/quick"
 
 	"github.com/holiman/uint256"
-	"github.com/ledgerwatch/erigon-lib/kv/memdb"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/common/types"
 )
 
