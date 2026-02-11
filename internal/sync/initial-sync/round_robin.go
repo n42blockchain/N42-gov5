@@ -110,6 +110,9 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 
 	firstBlock := blocks[0]
 	for s.cfg.Chain.CurrentBlock().Number64().Uint64() >= firstBlock.Number64().Uint64() {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
 		if len(blocks) == 1 {
 			log.Debug("All blocks in batch already processed, skipping",
 				"currentBlock", s.cfg.Chain.CurrentBlock().Number64().Uint64(),
