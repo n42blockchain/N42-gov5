@@ -18,6 +18,7 @@ package apoa
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
@@ -245,5 +246,5 @@ func (api *API) GetSigner(rlpOrBlockNr *blockNumberOrHashOrRLP) (types.Address, 
 		return api.apoa.Author(header)
 	}
 
-	return types.Address{}, fmt.Errorf("do not support rlp")
+	return types.Address{}, errors.New("do not support rlp")
 }

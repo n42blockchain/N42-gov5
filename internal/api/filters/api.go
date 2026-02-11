@@ -2,7 +2,7 @@ package filters
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
@@ -346,7 +346,7 @@ func (filterApi *FilterAPI) GetFilterLogs(ctx context.Context, id jsonrpc.ID) ([
 	filterApi.filtersMu.Unlock()
 
 	if !found || f.typ != LogsSubscription {
-		return nil, fmt.Errorf("filter not found")
+		return nil, errors.New("filter not found")
 	}
 
 	var filter *Filter
@@ -403,7 +403,7 @@ func (filterApi *FilterAPI) GetFilterChanges(id jsonrpc.ID) (interface{}, error)
 		}
 	}
 
-	return []interface{}{}, fmt.Errorf("filter not found")
+	return []interface{}{}, errors.New("filter not found")
 }
 
 // returnHashes is a helper that will return an empty hash array case the given hash array is nil,

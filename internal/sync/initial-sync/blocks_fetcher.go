@@ -118,7 +118,6 @@ func newBlocksFetcher(ctx context.Context, cfg *blocksFetcherConfig) *blocksFetc
 	}
 
 	// Allow fetcher to go almost to the full burst capacity (less a single batch).
-	//rateLimiter := leakybucket.NewCollector(allowedBlocksPerSecond, allowedBlocksBurst-allowedBlocksBurst, blockLimiterPeriod, false /* deleteEmptyBuckets */)
 	rateLimiter := leakybucket.NewCollector(allowedBlocksPerSecond, allowedBlocksBurst, blockLimiterPeriod, false /* deleteEmptyBuckets */)
 
 	capacityWeight := cfg.peerFilterCapacityWeight

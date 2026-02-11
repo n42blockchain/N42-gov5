@@ -243,7 +243,7 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 		}
 	}
 	if block.Number64().Uint64() != 0 {
-		return nil, statedb, fmt.Errorf("can't commit genesis block with number > 0")
+		return nil, statedb, errors.New("can't commit genesis block with number > 0")
 	}
 
 	blockWriter := state.NewPlainStateWriter(tx, tx, g.GenesisConfig.Number)

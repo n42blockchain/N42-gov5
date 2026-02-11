@@ -44,7 +44,7 @@ func (rs *Receipts) Marshal() ([]byte, error) {
 
 func (rs *Receipts) Unmarshal(data []byte) error {
 	pb := new(types_pb.Receipts)
-	if err := proto.Unmarshal(data, pb); nil != err {
+	if err := proto.Unmarshal(data, pb); err != nil {
 		return err
 	}
 

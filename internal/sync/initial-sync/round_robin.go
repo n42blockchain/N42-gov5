@@ -33,10 +33,7 @@ func (s *Service) roundRobinSync(highestExpectedBlockNr *uint256.Int) error {
 	s.counter = ratecounter.NewRateCounter(counterSeconds * time.Second)
 	s.highestExpectedBlockNr = highestExpectedBlockNr.Clone()
 	// Step 1 - Sync to end of finalized BlockNr.
-	if err := s.syncToFinalizedBlockNr(ctx, highestExpectedBlockNr); err != nil {
-		return err
-	}
-	return nil
+	return s.syncToFinalizedBlockNr(ctx, highestExpectedBlockNr)
 }
 
 // syncToFinalizedBlockNr sync from head to best known finalized epoch.
@@ -108,27 +105,16 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 		blocks = append(blocks, block)
 	}
 
-	firstBlock := blocks[0]
-	for s.cfg.Chain.CurrentBlock().Number64().Uint64() >= firstBlock.Number64().Uint64() {
-		if ctx.Err() != nil {
-			return 0, ctx.Err()
-		}
-		if len(blocks) == 1 {
-			log.Debug("All blocks in batch already processed, skipping",
-				"currentBlock", s.cfg.Chain.CurrentBlock().Number64().Uint64(),
-				"batchBlock", firstBlock.Number64().Uint64())
-			return 0, nil
-		}
-		blocks = blocks[1:]
-		firstBlock = blocks[0]
+	blocks, err := s.skipProcessedBlocks(ctx, blocks)
+	if err != nil {
+		return 0, err
 	}
-
-	// Fix: Check if blocks is empty after skipping processed blocks
 	if len(blocks) == 0 {
-		return 0, errors.New("no unprocessed blocks remaining after filtering")
+		return 0, nil
 	}
 
 	// Safety check: block 0 (genesis) has no parent to check
+	firstBlock := blocks[0]
 	blockNum := firstBlock.Number64().Uint64()
 	if blockNum > 0 && !s.cfg.Chain.HasBlock(firstBlock.ParentHash(), blockNum-1) {
 		return 0, fmt.Errorf("%w: %s (in processBatchedBlocks, Number=%d)", errParentDoesNotExist, firstBlock.ParentHash(), blockNum)
@@ -141,6 +127,33 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 	s.logBatchSyncStatus(blks)
 
 	return bFunc(blocks)
+}
+
+// skipProcessedBlocks filters out blocks that have already been processed by the chain.
+// It removes leading blocks whose number is at or below the chain's current head,
+// returning the remaining unprocessed blocks. Returns an empty slice if all blocks
+// have already been processed.
+func (s *Service) skipProcessedBlocks(ctx context.Context, blocks []block.IBlock) ([]block.IBlock, error) {
+	if len(blocks) == 0 {
+		return blocks, nil
+	}
+
+	firstBlock := blocks[0]
+	for s.cfg.Chain.CurrentBlock().Number64().Uint64() >= firstBlock.Number64().Uint64() {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if len(blocks) == 1 {
+			log.Debug("All blocks in batch already processed, skipping",
+				"currentBlock", s.cfg.Chain.CurrentBlock().Number64().Uint64(),
+				"batchBlock", firstBlock.Number64().Uint64())
+			return nil, nil
+		}
+		blocks = blocks[1:]
+		firstBlock = blocks[0]
+	}
+
+	return blocks, nil
 }
 
 // updatePeerScorerStats adjusts monitored metrics for a peer.

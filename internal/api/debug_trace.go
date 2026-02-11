@@ -652,11 +652,11 @@ func (debug *DebugAPI) StorageRangeAt(ctx context.Context, blockHashOrNumber int
 	case float64:
 		blk, err = debug.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(v)))
 	default:
-		return nil, fmt.Errorf("invalid block identifier type")
+		return nil, errors.New("invalid block identifier type")
 	}
 
 	if err != nil || blk == nil {
-		return nil, fmt.Errorf("block not found")
+		return nil, errors.New("block not found")
 	}
 
 	// Get state at the block
@@ -672,7 +672,7 @@ func (debug *DebugAPI) StorageRangeAt(ctx context.Context, blockHashOrNumber int
 	}
 
 	if stateDB == nil {
-		return nil, fmt.Errorf("state not available")
+		return nil, errors.New("state not available")
 	}
 
 	// Note: Full storage iteration requires trie access

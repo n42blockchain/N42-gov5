@@ -18,7 +18,7 @@ package txspool
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -41,7 +41,7 @@ const (
 )
 
 var (
-	ErrBadPeer = fmt.Errorf("bad peer error")
+	ErrBadPeer = errors.New("bad peer error")
 )
 
 // txsRequest

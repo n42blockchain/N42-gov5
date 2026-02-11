@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -209,7 +210,7 @@ func (n *Node) ProcessHandshake(h *msg_proto.ProtocolHandshakeMessage) error {
 		}
 	}
 
-	return fmt.Errorf("unknown cause failure")
+	return errors.New("unknown cause failure")
 }
 
 func (n *Node) AcceptHandshake(h *msg_proto.ProtocolHandshakeMessage, version string, genesisHash types.Hash, currentHeight *uint256.Int) error {
@@ -347,8 +348,8 @@ func (n *Node) readData(stream network.Stream) error {
 	}
 }
 
-var errMakeMsgSignFailed = fmt.Errorf("failed to sign message")
-var errMakeMsgPubKeyFailed = fmt.Errorf("failed to get public key")
+var errMakeMsgSignFailed = errors.New("failed to sign message")
+var errMakeMsgPubKeyFailed = errors.New("failed to get public key")
 
 func (n *Node) makeMsg(payload []byte) (proto.Message, error) {
 	key := n.Peerstore().PrivKey(n.Host.ID())
@@ -435,7 +436,7 @@ func (n *Node) writeData(stream network.Stream) error {
 				}
 			} else {
 				log.Error("chan was closed")
-				return fmt.Errorf("chan ws closed")
+				return errors.New("chan ws closed")
 			}
 		case <-ticker.C:
 			msg := P2PMessage{
@@ -487,7 +488,7 @@ const writeTimeout = 5 * time.Second
 
 func (n *Node) Write(msg message.IMessage) error {
 	if !n.isOK {
-		return fmt.Errorf("node already closed")
+		return errors.New("node already closed")
 	}
 
 	select {
@@ -502,7 +503,7 @@ func (n *Node) Write(msg message.IMessage) error {
 
 func (n *Node) WriteMsg(messageType message.MessageType, payload []byte) error {
 	if !n.isOK {
-		return fmt.Errorf("node already closed")
+		return errors.New("node already closed")
 	}
 	//n.msgLock.Lock()
 	//defer n.msgLock.Unlock()

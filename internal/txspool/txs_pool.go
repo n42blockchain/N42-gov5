@@ -18,6 +18,7 @@ package txspool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -57,28 +58,28 @@ const (
 )
 
 var (
-	ErrAlreadyKnown       = fmt.Errorf("already known")
-	ErrInvalidSender      = fmt.Errorf("invalid sender")
-	ErrOversizedData      = fmt.Errorf("oversized data")
-	ErrNegativeValue      = fmt.Errorf("negative value")
-	ErrGasLimit           = fmt.Errorf("exceeds block gas limit")
-	ErrUnderpriced        = fmt.Errorf("transaction underpriced")
-	ErrTxPoolOverflow     = fmt.Errorf("txpool is full")
-	ErrReplaceUnderpriced = fmt.Errorf("replacement transaction underpriced")
+	ErrAlreadyKnown       = errors.New("already known")
+	ErrInvalidSender      = errors.New("invalid sender")
+	ErrOversizedData      = errors.New("oversized data")
+	ErrNegativeValue      = errors.New("negative value")
+	ErrGasLimit           = errors.New("exceeds block gas limit")
+	ErrUnderpriced        = errors.New("transaction underpriced")
+	ErrTxPoolOverflow     = errors.New("txpool is full")
+	ErrReplaceUnderpriced = errors.New("replacement transaction underpriced")
 
-	ErrFeeCapVeryHigh = fmt.Errorf("max fee per gas higher than 2^256-1")
+	ErrFeeCapVeryHigh = errors.New("max fee per gas higher than 2^256-1")
 
-	ErrNonceTooLow  = fmt.Errorf("nonce too low")
-	ErrNonceTooHigh = fmt.Errorf("nonce too high")
+	ErrNonceTooLow  = errors.New("nonce too low")
+	ErrNonceTooHigh = errors.New("nonce too high")
 
-	ErrInsufficientFunds = fmt.Errorf("insufficient funds for gas * price + value")
+	ErrInsufficientFunds = errors.New("insufficient funds for gas * price + value")
 
 	// ErrTipAboveFeeCap is a sanity error to ensure no one is able to specify a
 	// transaction with a tip higher than the total fee cap.
-	ErrTipAboveFeeCap = fmt.Errorf("max priority fee per gas higher than max fee per gas")
+	ErrTipAboveFeeCap = errors.New("max priority fee per gas higher than max fee per gas")
 
 	// ErrInvalidSignature is returned when transaction signature validation fails
-	ErrInvalidSignature = fmt.Errorf("invalid transaction signature")
+	ErrInvalidSignature = errors.New("invalid transaction signature")
 
 	pendingGauge = prometheus.GetOrCreateCounter("txpool_pending", true)
 	queuedGauge  = prometheus.GetOrCreateCounter("txpool_queued", true)
@@ -464,7 +465,7 @@ func (pool *TxsPool) add(tx *transaction.Transaction, local bool) (replaced bool
 	// Try to replace an existing transaction in the pending pool
 	fromPtr := tx.From()
 	if fromPtr == nil {
-		return false, fmt.Errorf("transaction sender is nil")
+		return false, errors.New("transaction sender is nil")
 	}
 	from := *fromPtr
 	if list := pool.pending[from]; list != nil && list.Overlaps(tx) {
@@ -562,11 +563,6 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	if !pool.eip1559 && tx.Type() == transaction.DynamicFeeTxType {
 		return internal.ErrTxTypeNotSupported
 	}
-	// Reject transactions over defined size to prevent DOS attacks
-	//if tx.Size() > txMaxSize {
-	//	return ErrOversizedData
-	//}
-
 	gasPrice := tx.GasPrice()
 
 	// C2 fix: Check for nil From() before dereferencing
@@ -833,11 +829,6 @@ func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 		newBlock = pool.bc.CurrentBlock() // Special case during testing
 	}
 
-	//if err := pool.ResetState(newBlock.Header().Hash()); nil != err {
-	//	log.Errorf("reset current state faild, %v", err)
-	//	return
-	//}
-	// pool.pendingNonces = newTxNoncer(pool.currentState) //newTxNoncer(statedb)
 	pool.currentMaxGas = newBlock.GasLimit()
 
 	// Inject any transactions discarded due to reorgs
@@ -1255,13 +1246,6 @@ func (pool *TxsPool) scheduleLoop() {
 		case <-curDone:
 			curDone = nil
 
-		//case <-pool.reorgShutdownCh:
-		//	// Wait for current run to finish.
-		//	if curDone != nil {
-		//		<-curDone
-		//	}
-		//	close(nextDone)
-		//	return
 		case <-pool.ctx.Done():
 			// Wait for current run to finish.
 			if curDone != nil {
@@ -1430,24 +1414,5 @@ func (pool *TxsPool) Stats() (int, int, int, int) {
 }
 
 func (pool *TxsPool) ResetState(blockHash types.Hash) error {
-	//if pool.currentState != nil {
-	//	reader := pool.currentState.GetStateReader()
-	//	if reader != nil {
-	//		if hreader, ok := reader.(*state.HistoryStateReader); ok {
-	//			hreader.Rollback()
-	//		}
-	//	}
-	//}
-	//
-	//tx, err := pool.bc.DB().BeginRo(pool.ctx)
-	//if nil != err {
-	//	return err
-	//}
-	//blockNr := rawdb.ReadHeaderNumber(tx, blockHash)
-	//if nil == blockNr {
-	//	return fmt.Errorf("invaild block hash")
-	//}
-	//stateReader := state.NewStateHistoryReader(tx, tx, *blockNr+1)
-	//pool.currentState = state.New(stateReader)
 	return nil
 }

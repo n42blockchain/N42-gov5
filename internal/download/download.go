@@ -18,7 +18,7 @@ package download
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/utils"
 	"google.golang.org/protobuf/proto"
@@ -37,13 +37,13 @@ import (
 )
 
 var (
-	ErrBusy          = fmt.Errorf("busy")
-	ErrCanceled      = fmt.Errorf("syncing canceled (requested)")
-	ErrSyncBlock     = fmt.Errorf("err sync block")
-	ErrTimeout       = fmt.Errorf("timeout")
-	ErrBadPeer       = fmt.Errorf("bad peer error")
-	ErrNoPeers       = fmt.Errorf("no peers to download")
-	ErrInvalidPubSub = fmt.Errorf("PubSub is nil")
+	ErrBusy          = errors.New("busy")
+	ErrCanceled      = errors.New("syncing canceled (requested)")
+	ErrSyncBlock     = errors.New("err sync block")
+	ErrTimeout       = errors.New("timeout")
+	ErrBadPeer       = errors.New("bad peer error")
+	ErrNoPeers       = errors.New("no peers to download")
+	ErrInvalidPubSub = errors.New("PubSub is nil")
 )
 
 const (

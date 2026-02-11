@@ -218,12 +218,12 @@ func (bc *BlockChain) Start() error {
 
 func (bc *BlockChain) AddPeer(hash string, remoteBlock uint64, peerID peer.ID) error {
 	if bc.genesisBlock.Hash().String() != hash {
-		return fmt.Errorf("failed to addPeer, err: genesis block different")
+		return errors.New("failed to addPeer, err: genesis block different")
 	}
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
 	if _, ok := bc.peers[peerID]; ok {
-		return fmt.Errorf("failed to addPeer, err: the peer already exists")
+		return errors.New("failed to addPeer, err: the peer already exists")
 	}
 
 	log.Debugf("local heigth:%d --> remote height: %d", bc.CurrentBlock().Number64(), remoteBlock)
@@ -247,10 +247,10 @@ func (bc *BlockChain) InsertBlock(blocks []block.IBlock, isSync bool) (int, erro
 func (bc *BlockChain) LatestBlockCh() (block.IBlock, error) {
 	select {
 	case <-bc.ctx.Done():
-		return nil, fmt.Errorf("the main chain is closed")
+		return nil, errors.New("the main chain is closed")
 	case blk, ok := <-bc.latestBlockCh:
 		if !ok {
-			return nil, fmt.Errorf("the main chain is closed")
+			return nil, errors.New("the main chain is closed")
 		}
 
 		return blk, nil
@@ -306,7 +306,7 @@ func (bc *BlockChain) updateFutureBlocksLoop() {
 					continue
 				}
 
-				if n, err := bc.InsertChain(blocks); nil != err {
+				if n, err := bc.InsertChain(blocks); err != nil {
 					log.Warn("insert future block failed", err)
 				} else {
 					for _, k := range bc.futureBlocks.Keys() {
@@ -435,10 +435,7 @@ func (bc *BlockChain) insertStopped() bool {
 // HasBlockAndState, HasState, HasBlock, GetTd - see blockchain_reader.go
 
 func (bc *BlockChain) skipBlock(err error) bool {
-	if !errors.Is(err, ErrKnownBlock) {
-		return false
-	}
-	return true
+	return errors.Is(err, ErrKnownBlock)
 }
 
 // InsertChain
@@ -571,7 +568,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 
 	evmRecord := func(ctx context.Context, db kv.RwDB, blockNr uint64, f func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error)) (*state.IntraBlockState, map[types.Address]*uint256.Int, error) {
 		tx, err := db.BeginRo(ctx)
-		if nil != err {
+		if err != nil {
 			return nil, nil, err
 		}
 		defer tx.Rollback()
@@ -582,7 +579,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 
 		var nopay map[types.Address]*uint256.Int
 		nopay, err = f(tx, ibs, stateReader, stateWriter)
-		if nil != err {
+		if err != nil {
 			return nil, nil, err
 		}
 
@@ -632,7 +629,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			blockValidationTimer.Observe(float64(vtime))
 			return nopay, nil
 		})
-		if nil != err {
+		if err != nil {
 			return it.index, err
 		}
 
@@ -708,7 +705,7 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 		// Check the canonical state root for that number
 		if number := blk.Number64(); current.Number64().Cmp(number) >= 0 {
 			canonical, err := bc.GetBlockByNumber(number)
-			if nil != err {
+			if err != nil {
 				return 0, err
 			}
 
@@ -898,7 +895,7 @@ func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Re
 	// Type assert to *state.IntraBlockState
 	stateDB, ok := ibs.(*state.IntraBlockState)
 	if !ok {
-		return fmt.Errorf("WriteBlockWithState: ibs must be *state.IntraBlockState")
+		return errors.New("WriteBlockWithState: ibs must be *state.IntraBlockState")
 	}
 	_, err := bc.writeBlockWithState(blk, receipts, stateDB, nopay)
 	return err
@@ -912,7 +909,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		//ptd := bc.GetTd(blk.ParentHash(), blk.Number64().Sub(uint256.NewInt(1)))
 		ptd, err := rawdb.ReadTd(tx, blk.ParentHash(), uint256.NewInt(0).Sub(blk.Number64(), uint256.NewInt(1)).Uint64())
-		if nil != err {
+		if err != nil {
 			log.Errorf("ReadTd failed err: %v", err)
 		}
 		if ptd == nil {
@@ -921,13 +918,13 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 
 		//if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		externTd = uint256.NewInt(0).Add(ptd, blk.Difficulty())
-		if err := rawdb.WriteTd(tx, blk.Hash(), blk.Number64().Uint64(), externTd); nil != err {
+		if err := rawdb.WriteTd(tx, blk.Hash(), blk.Number64().Uint64(), externTd); err != nil {
 			return err
 		}
 		log.Trace("writeTd:", "number", blk.Number64().Uint64(), "hash", blk.Hash(), "td", externTd.Uint64())
 		if len(receipts) > 0 {
 			//if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-			if err := rawdb.AppendReceipts(tx, blk.Number64().Uint64(), receipts); nil != err {
+			if err := rawdb.AppendReceipts(tx, blk.Number64().Uint64(), receipts); err != nil {
 				log.Errorf("rawdb.AppendReceipts failed err= %v", err)
 				return err
 			}
@@ -937,7 +934,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		}
 
 		stateWriter := state.NewPlainStateWriter(tx, tx, blk.Number64().Uint64())
-		if err := ibs.CommitBlock(bc.chainConfig.Rules(blk.Number64().Uint64()), stateWriter); nil != err {
+		if err := ibs.CommitBlock(bc.chainConfig.Rules(blk.Number64().Uint64()), stateWriter); err != nil {
 			return err
 		}
 
@@ -956,7 +953,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		}
 
 		return nil
-	}); nil != err {
+	}); err != nil {
 		return NonStatTy, err
 	}
 
@@ -966,7 +963,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 	}
 
 	reorg, err := bc.forker.ReorgNeeded(bc.CurrentBlock().Header(), blk.Header())
-	if nil != err {
+	if err != nil {
 		return NonStatTy, err
 	}
 	if reorg {
@@ -982,7 +979,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 	}
 	// Set new head.
 	if status == CanonStatTy {
-		if err := bc.writeHeadBlock(nil, blk); nil != err {
+		if err := bc.writeHeadBlock(nil, blk); err != nil {
 			log.Errorf("failed to save lates blocks, err: %v", err)
 			return NonStatTy, err
 		}
@@ -1000,7 +997,7 @@ func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
 	var notExternalTx bool
 	if nil == tx {
 		tx, err = bc.ChainDB.BeginRw(bc.ctx)
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		defer tx.Rollback()
@@ -1010,14 +1007,14 @@ func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
 	rawdb.WriteHeadBlockHash(tx, blk.Hash())
 	rawdb.WriteTxLookupEntries(tx, blk.(*block.Block))
 
-	if err = rawdb.WriteCanonicalHash(tx, blk.Hash(), blk.Number64().Uint64()); nil != err {
+	if err = rawdb.WriteCanonicalHash(tx, blk.Hash(), blk.Number64().Uint64()); err != nil {
 		return err
 	}
 
 	bc.currentBlock.Store(blk.(*block.Block))
 	headBlockGauge.Set(blk.Number64().Uint64())
 	if notExternalTx {
-		if err = tx.Commit(); nil != err {
+		if err = tx.Commit(); err != nil {
 			return err
 		}
 	}
@@ -1098,7 +1095,7 @@ func (bc *BlockChain) writeKnownBlock(tx kv.RwTx, block block.IBlock) error {
 	var err error
 	if nil == tx {
 		tx, err = bc.ChainDB.BeginRw(bc.ctx)
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		defer tx.Rollback()
@@ -1111,11 +1108,11 @@ func (bc *BlockChain) writeKnownBlock(tx kv.RwTx, block block.IBlock) error {
 			return err
 		}
 	}
-	if err = bc.writeHeadBlock(tx, block); nil != err {
+	if err = bc.writeHeadBlock(tx, block); err != nil {
 		return err
 	}
 	if notExternalTx {
-		if err = tx.Commit(); nil != err {
+		if err = tx.Commit(); err != nil {
 			return err
 		}
 	}
@@ -1172,17 +1169,17 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 		}
 	}
 	if oldBlock == nil {
-		return fmt.Errorf("invalid old chain")
+		return errors.New("invalid old chain")
 	}
 	if newBlock == nil {
-		return fmt.Errorf("invalid new chain")
+		return errors.New("invalid new chain")
 	}
 
 	var useExternalTx bool
 	var err error
 	if tx == nil {
 		tx, err = bc.ChainDB.BeginRw(bc.ctx)
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		defer tx.Rollback()
@@ -1208,15 +1205,15 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 
 		// Step back with both chains
 		if oldBlock.Number64().IsZero() || newBlock.Number64().IsZero() {
-			return fmt.Errorf("reached genesis without finding common ancestor")
+			return errors.New("reached genesis without finding common ancestor")
 		}
 		oldBlock = rawdb.ReadBlock(tx, oldBlock.ParentHash(), oldBlock.Number64().Uint64()-1)
 		if oldBlock == nil {
-			return fmt.Errorf("invalid old chain")
+			return errors.New("invalid old chain")
 		}
 		newBlock = rawdb.ReadBlock(tx, newBlock.ParentHash(), newBlock.Number64().Uint64()-1)
 		if newBlock == nil {
-			return fmt.Errorf("invalid new chain")
+			return errors.New("invalid new chain")
 		}
 	}
 
@@ -1277,7 +1274,7 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 	}
 
 	if !useExternalTx {
-		if err = tx.Commit(); nil != err {
+		if err = tx.Commit(); err != nil {
 			return err
 		}
 	}

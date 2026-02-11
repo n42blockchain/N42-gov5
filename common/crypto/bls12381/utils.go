@@ -24,7 +24,7 @@ import (
 
 func bigFromHex(hex string) *big.Int {
 	i256, err := uint256.FromHex(hex)
-	if nil != err {
+	if err != nil {
 		return uint256.NewInt(0).ToBig()
 	}
 	return i256.ToBig()

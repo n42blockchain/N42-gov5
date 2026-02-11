@@ -178,13 +178,13 @@ func TestAddressMarshal(t *testing.T) {
 	aa[a2] = uint256.NewInt(2)
 
 	b, err := json.Marshal(aa)
-	if nil != err {
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	bb := make(map[Address]*uint256.Int)
 
-	if err := json.Unmarshal(b, &bb); nil != err {
+	if err := json.Unmarshal(b, &bb); err != nil {
 		t.Fatal(err)
 	}
 

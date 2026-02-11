@@ -238,7 +238,7 @@ func EncodeBeforeState(w io.Writer, list Items, codeHash HashCodes) {
 	for _, h := range codeHash {
 		enc = append(enc, h.Hash, h.Code)
 	}
-	if err := rlp.Encode(w, enc); nil != err {
+	if err := rlp.Encode(w, enc); err != nil {
 		panic("before state encode failed:" + err.Error())
 	}
 }

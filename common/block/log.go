@@ -103,14 +103,14 @@ func (l *Logs) Marshal() ([]byte, error) {
 
 func (l *Logs) Unmarshal(data []byte) error {
 	pb := new(types_pb.Logs)
-	if err := proto.Unmarshal(data, pb); nil != err {
+	if err := proto.Unmarshal(data, pb); err != nil {
 		return err
 	}
 
 	body := make([]*Log, len(pb.Logs))
 	for i, p := range pb.Logs {
 		body[i] = new(Log)
-		if err := body[i].FromProtoMessage(p); nil != err {
+		if err := body[i].FromProtoMessage(p); err != nil {
 			return err
 		}
 	}

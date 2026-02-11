@@ -42,7 +42,7 @@ func (c *StateCli) GetNonce(addr types.Address) uint64 {
 			return nil
 		}
 		sc := new(account.StateAccount)
-		if err := sc.DecodeForStorage(v); nil != err {
+		if err := sc.DecodeForStorage(v); err != nil {
 			return err
 		}
 		nonce = uint64(sc.Nonce)
@@ -69,7 +69,7 @@ func (c *StateCli) GetBalance(addr types.Address) *uint256.Int {
 			return nil
 		}
 		sc := new(account.StateAccount)
-		if err := sc.DecodeForStorage(v); nil != err {
+		if err := sc.DecodeForStorage(v); err != nil {
 			return err
 		}
 		// Clone the balance to prevent callers from modifying internal state
@@ -94,7 +94,7 @@ func (c *StateCli) State(addr types.Address) (*account.StateAccount, error) {
 			return nil
 		}
 
-		if err := s.DecodeForStorage(v); nil != err {
+		if err := s.DecodeForStorage(v); err != nil {
 			return err
 		}
 		return nil

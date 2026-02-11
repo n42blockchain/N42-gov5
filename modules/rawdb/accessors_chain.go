@@ -210,7 +210,7 @@ func ReadHeadersByNumber(db kv.Tx, number uint64) ([]*block.Header, error) {
 		if err := proto.Unmarshal(v, pbHeader); err != nil {
 			return nil, fmt.Errorf("invalid block header RAW: hash=%x, err=%w", k[8:], err)
 		}
-		if err := header.FromProtoMessage(pbHeader); nil != err {
+		if err := header.FromProtoMessage(pbHeader); err != nil {
 			return nil, fmt.Errorf("invalid block pbHeader: hash=%x, err =%w", k[8:], err)
 		}
 		res = append(res, header)
@@ -226,13 +226,13 @@ func WriteHeader(db kv.Putter, header *block.Header) {
 		number = header.Number.Uint64()
 	)
 
-	if err := WriteHeaderNumber(db, hash, number); nil != err {
+	if err := WriteHeaderNumber(db, hash, number); err != nil {
 		log.Crit("Failed to store hash to number mapping", "err", err)
 	}
 
 	// Write the encoded header
 	data, err := header.Marshal()
-	if nil != err {
+	if err != nil {
 		log.Crit("failed to Marshal header", "err", err)
 	}
 	if err := db.Put(modules.Headers, modules.HeaderKey(number, hash), data); err != nil {
@@ -296,7 +296,7 @@ func CanonicalTxnByID(db kv.Getter, id uint64) (*transaction.Transaction, error)
 	}
 
 	tx := new(transaction.Transaction)
-	if err := tx.Unmarshal(v); nil != err {
+	if err := tx.Unmarshal(v); err != nil {
 		return nil, err
 	}
 
@@ -410,14 +410,14 @@ func ReadCanonicalBodyWithTransactions(db kv.Getter, hash types.Hash, number uin
 	}
 
 	verifies, err := ReadVerifies(db, hash, number)
-	if nil != err {
+	if err != nil {
 		log.Error("Failed to read verifiers", "hash", hash, "block", number, "err", err)
 		return nil
 	}
 	body.Verifiers = verifies
 
 	rewards, err := ReadRewards(db, hash, number)
-	if nil != err {
+	if err != nil {
 		log.Error("read reward failed", err)
 		return nil
 	}
@@ -565,12 +565,12 @@ func WriteBody(db kv.RwTx, hash types.Hash, number uint64, body *block.Body) err
 	}
 
 	if len(body.Verifiers) > 0 {
-		if err := WriteVerifies(db, hash, number, body.Verifiers); nil != err {
+		if err := WriteVerifies(db, hash, number, body.Verifiers); err != nil {
 			return err
 		}
 	}
 	if len(body.Rewards) > 0 {
-		if err := WriteRewards(db, hash, number, body.Rewards); nil != err {
+		if err := WriteRewards(db, hash, number, body.Rewards); err != nil {
 			return err
 		}
 	}
@@ -712,7 +712,7 @@ func ReadRawReceipts(db kv.Tx, blockNum uint64) block.Receipts {
 	}
 	var receipts block.Receipts
 
-	if err := receipts.Unmarshal(data); nil != err {
+	if err := receipts.Unmarshal(data); err != nil {
 		log.Error("ReadRawReceipts failed", "err", err)
 		return nil
 	}
@@ -823,7 +823,7 @@ func AppendReceipts(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.R
 		var logs block.Logs
 		logs = r.Logs
 		v, err := logs.Marshal()
-		if nil != err {
+		if err != nil {
 			return err
 		}
 

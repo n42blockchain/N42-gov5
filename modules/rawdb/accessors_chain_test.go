@@ -64,12 +64,12 @@ func TestTdStorage(t *testing.T) {
 	}
 
 	gHash, gTd := types.Hash{}, uint256.NewInt(0)
-	if err := WriteTd(tx, gHash, 100, gTd); nil != err {
+	if err := WriteTd(tx, gHash, 100, gTd); err != nil {
 		t.Fatalf("WriteTd failed: %v", err)
 	}
 
 	entryE, errE := ReadTd(tx, gHash, 101)
-	if nil != errE {
+	if errE != nil {
 		t.Fatalf("ReadTd failed: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestTdStorage(t *testing.T) {
 	}
 
 	entryg, errg := ReadTd(tx, gHash, 100)
-	if nil != errg {
+	if errg != nil {
 		t.Fatalf("ReadTd failed: %v", err)
 	}
 

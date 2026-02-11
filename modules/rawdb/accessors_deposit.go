@@ -80,7 +80,7 @@ func IsDeposit(db kv.Getter, addr types.Address) bool {
 
 func DepositNum(tx kv.Tx) (uint64, error) {
 	cur, err := tx.Cursor(modules.Deposit)
-	if nil != err {
+	if err != nil {
 		return 0, err
 	}
 	defer cur.Close()

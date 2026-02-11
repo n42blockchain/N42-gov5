@@ -97,7 +97,7 @@ func (bc *BlockChain) GetBlock(hash types.Hash, number uint64) block.IBlock {
 	blockCacheMisses.Inc()
 
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
+	if err != nil {
 		return nil
 	}
 	defer tx.Rollback()
@@ -197,7 +197,7 @@ func (bc *BlockChain) GetHeader(h types.Hash, number *uint256.Int) block.IHeader
 	headerCacheMisses.Inc()
 
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
+	if err != nil {
 		return nil
 	}
 	defer tx.Rollback()
@@ -213,14 +213,14 @@ func (bc *BlockChain) GetHeader(h types.Hash, number *uint256.Int) block.IHeader
 // GetHeaderByNumber retrieves a block header by number.
 func (bc *BlockChain) GetHeaderByNumber(number *uint256.Int) block.IHeader {
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
+	if err != nil {
 		log.Error("cannot open chain db", "err", err)
 		return nil
 	}
 	defer tx.Rollback()
 
 	hash, err := rawdb.ReadCanonicalHash(tx, number.Uint64())
-	if nil != err {
+	if err != nil {
 		log.Error("cannot open chain db", "err", err)
 		return nil
 	}
@@ -252,13 +252,13 @@ func (bc *BlockChain) GetHeaderByHash(h types.Hash) (block.IHeader, error) {
 // GetCanonicalHash returns the canonical hash for a given block number.
 func (bc *BlockChain) GetCanonicalHash(number *uint256.Int) types.Hash {
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
+	if err != nil {
 		return types.Hash{}
 	}
 	defer tx.Rollback()
 
 	hash, err := rawdb.ReadCanonicalHash(tx, number.Uint64())
-	if nil != err {
+	if err != nil {
 		return types.Hash{}
 	}
 	return hash
@@ -270,7 +270,7 @@ func (bc *BlockChain) GetBlockNumber(hash types.Hash) *uint64 {
 		return &cached
 	}
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
+	if err != nil {
 		return nil
 	}
 	defer tx.Rollback()
@@ -292,7 +292,7 @@ func (bc *BlockChain) GetTd(hash types.Hash, number *uint256.Int) *uint256.Int {
 	var td *uint256.Int
 	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
 		ptd, err := rawdb.ReadTd(tx, hash, number.Uint64())
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		td = ptd
@@ -347,12 +347,12 @@ func (bc *BlockChain) StateAt(tx kv.Tx, blockNr uint64) interface{} {
 // HasState checks if the state for a block exists.
 func (bc *BlockChain) HasState(hash types.Hash) bool {
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
-	if nil != err {
+	if err != nil {
 		return false
 	}
 	defer tx.Rollback()
 	is, err := rawdb.IsCanonicalHash(tx, hash)
-	if nil != err {
+	if err != nil {
 		return false
 	}
 	return is

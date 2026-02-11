@@ -169,7 +169,7 @@ func (r *Reward) buildRewards(tx kv.RwTx, number *uint256.Int, setRewards bool) 
 	for currentNr.Cmp(endNumber) >= 0 {
 		// Todo use cache instead ?
 		hash, err := rawdb.ReadCanonicalHash(tx, currentNr.Uint64())
-		if nil != err {
+		if err != nil {
 			log.Error("cannot open chain db", "err", err)
 			return nil, err
 		}

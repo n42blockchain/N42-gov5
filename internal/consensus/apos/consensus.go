@@ -35,7 +35,7 @@ func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHead
 	}{}
 	for currentNr.Cmp(endNumber) >= 0 {
 		block, err := chain.GetBlockByNumber(currentNr)
-		if nil != err {
+		if err != nil {
 			return nil, nil, err
 		}
 
@@ -121,7 +121,7 @@ func doReward(chainConf *params.ChainConfig, state *state.IntraBlockState, heade
 			payMap map[types.Address]*uint256.Int
 		)
 		payMap, upayMap, err = AccumulateRewards(r, number, chain)
-		if nil != err {
+		if err != nil {
 			return nil, nil, err
 		}
 		for addr, value := range payMap {

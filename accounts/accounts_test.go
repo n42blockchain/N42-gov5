@@ -36,7 +36,7 @@ func TestTextHash(t *testing.T) {
 
 func TestSign(t *testing.T) {
 	private, err := crypto.HexToECDSA("DEBF9EAE7820E23201EEE9D51413B6D2CDF06C320D7152C2D3BC1FB6C42DA23D")
-	if nil != err {
+	if err != nil {
 		t.Error(err)
 	}
 	seckey := math.PaddedBigBytes(private.D, private.Params().BitSize/8)

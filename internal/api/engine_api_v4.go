@@ -24,7 +24,6 @@ import (
 	"math/big"
 
 	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm"
 )
@@ -129,34 +128,16 @@ func (e *EngineAPIv4) NewPayloadV4(
 	parentBeaconBlockRoot *types.Hash,
 	executionRequests []hexutil.Bytes,
 ) (*NewPayloadResponseV3, error) {
-	// Validate Pectra-specific fields
-	if payload.BlobGasUsed == nil || payload.ExcessBlobGas == nil {
-		return invalidPayloadResponse("missing blob gas fields"), nil
-	}
-
-	// Validate blob gas with Pectra limits (EIP-7691)
-	blobGasUsed := uint64(*payload.BlobGasUsed)
-	if err := vm.VerifyBlobGasEIP7691(blobGasUsed, true); err != nil {
-		return invalidPayloadResponse("blob gas exceeds Pectra limit"), nil
-	}
-
-	// Validate blob count
-	expectedBlobCount := len(expectedBlobVersionedHashes)
-	if uint64(expectedBlobCount) > vm.PectraMaxBlobsPerBlock {
-		return invalidPayloadResponse("too many blobs for Pectra"), nil
-	}
-
-	// Verify blob gas matches expected
-	expectedBlobGas := uint64(expectedBlobCount) * vm.PectraBlobGasPerBlob
-	if blobGasUsed != expectedBlobGas {
-		return invalidPayloadResponse("blob gas mismatch"), nil
-	}
-
-	// Validate versioned hashes
-	for _, hash := range expectedBlobVersionedHashes {
-		if !transaction.IsValidVersionedHash(hash) {
-			return invalidPayloadResponse("invalid versioned hash"), nil
-		}
+	// Validate blob gas and versioned hashes for Pectra (EIP-7691)
+	if resp := validateBlobGasAndHashes(
+		payload.BlobGasUsed,
+		payload.ExcessBlobGas,
+		expectedBlobVersionedHashes,
+		vm.PectraMaxBlobGasPerBlock,
+		vm.PectraMaxBlobsPerBlock,
+		vm.PectraBlobGasPerBlob,
+	); resp != nil {
+		return resp, nil
 	}
 
 	// Validate execution requests (EIP-7685)

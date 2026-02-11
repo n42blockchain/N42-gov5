@@ -166,29 +166,16 @@ func NewEngineAPIBlob(api *BlockChainAPI) *EngineAPIBlob {
 // NewPayloadV3 processes a new execution payload with blob support
 // engine_newPayloadV3
 func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayloadV3, expectedBlobVersionedHashes []types.Hash, parentBeaconBlockRoot *types.Hash) (*NewPayloadResponseV3, error) {
-	// Validate blob gas fields are present for Cancun
-	if payload.BlobGasUsed == nil || payload.ExcessBlobGas == nil {
-		return invalidPayloadResponse("missing blob gas fields"), nil
-	}
-	
-	// Validate blob gas used is within limits
-	if uint64(*payload.BlobGasUsed) > transaction.MaxBlobGasPerBlock {
-		return invalidPayloadResponse("blob gas used exceeds maximum"), nil
-	}
-	
-	// Count expected blobs from versioned hashes
-	expectedBlobCount := len(expectedBlobVersionedHashes)
-	expectedBlobGas := uint64(expectedBlobCount) * transaction.BlobTxBlobGasPerBlob
-	
-	if uint64(*payload.BlobGasUsed) != expectedBlobGas {
-		return invalidPayloadResponse("blob gas mismatch"), nil
-	}
-	
-	// Validate versioned hashes format
-	for i, hash := range expectedBlobVersionedHashes {
-		if !transaction.IsValidVersionedHash(hash) {
-			return invalidPayloadResponse("invalid versioned hash at index " + strconv.Itoa(i)), nil
-		}
+	// Validate blob gas and versioned hashes for Cancun
+	if resp := validateBlobGasAndHashes(
+		payload.BlobGasUsed,
+		payload.ExcessBlobGas,
+		expectedBlobVersionedHashes,
+		transaction.MaxBlobGasPerBlock,
+		transaction.MaxBlobsPerBlock,
+		transaction.BlobTxBlobGasPerBlob,
+	); resp != nil {
+		return resp, nil
 	}
 	
 	// TODO: Implement actual payload processing
@@ -282,6 +269,63 @@ func invalidForkchoiceResponse(reason string) *ForkchoiceUpdatedResponseV3 {
 			ValidationError: &reason,
 		},
 	}
+}
+
+// =============================================================================
+// Shared Blob Gas & Versioned Hash Validation
+// =============================================================================
+
+// validateBlobGasAndHashes validates blob gas fields and versioned hashes
+// against the given fork-specific parameters. This logic is shared between
+// engine_newPayloadV3 (Cancun) and engine_newPayloadV4 (Pectra).
+//
+// It performs the following checks in order:
+//  1. BlobGasUsed and ExcessBlobGas must be non-nil.
+//  2. BlobGasUsed must not exceed maxBlobGas.
+//  3. The number of versioned hashes must not exceed maxBlobs.
+//  4. BlobGasUsed must equal len(expectedHashes) * gasPerBlob.
+//  5. Each versioned hash must have a valid version byte.
+//
+// Returns nil if all checks pass, or an invalid payload response on the first
+// failing check.
+func validateBlobGasAndHashes(
+	blobGasUsed *hexutil.Uint64,
+	excessBlobGas *hexutil.Uint64,
+	expectedHashes []types.Hash,
+	maxBlobGas uint64,
+	maxBlobs uint64,
+	gasPerBlob uint64,
+) *NewPayloadResponseV3 {
+	// 1. Validate blob gas fields are present
+	if blobGasUsed == nil || excessBlobGas == nil {
+		return invalidPayloadResponse("missing blob gas fields")
+	}
+
+	// 2. Validate blob gas used is within limits
+	if uint64(*blobGasUsed) > maxBlobGas {
+		return invalidPayloadResponse("blob gas exceeds maximum")
+	}
+
+	// 3. Validate blob count
+	expectedBlobCount := uint64(len(expectedHashes))
+	if expectedBlobCount > maxBlobs {
+		return invalidPayloadResponse("too many blobs")
+	}
+
+	// 4. Verify blob gas matches expected
+	expectedBlobGas := expectedBlobCount * gasPerBlob
+	if uint64(*blobGasUsed) != expectedBlobGas {
+		return invalidPayloadResponse("blob gas mismatch")
+	}
+
+	// 5. Validate versioned hashes format
+	for i, hash := range expectedHashes {
+		if !transaction.IsValidVersionedHash(hash) {
+			return invalidPayloadResponse("invalid versioned hash at index " + strconv.Itoa(i))
+		}
+	}
+
+	return nil
 }
 
 // =============================================================================

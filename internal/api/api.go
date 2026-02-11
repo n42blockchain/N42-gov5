@@ -181,7 +181,7 @@ func (api *BlockChainAPI) ChainId() *hexutil.Big {
 // GetBalance get balance
 func (s *BlockChainAPI) GetBalance(ctx context.Context, address avmcommon.Address, blockNrOrHash jsonrpc.BlockNumberOrHash) (*hexutil.Big, error) {
 	tx, err := s.api.db.BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
@@ -213,7 +213,7 @@ func (s *BlockChainAPI) BlockNumber() hexutil.Uint64 {
 // GetCode get code
 func (s *BlockChainAPI) GetCode(ctx context.Context, address avmcommon.Address, blockNrOrHash jsonrpc.BlockNumberOrHash) (hexutil.Bytes, error) {
 	tx, err := s.api.db.BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
@@ -231,7 +231,7 @@ func (s *BlockChainAPI) GetCode(ctx context.Context, address avmcommon.Address, 
 // numbers are also allowed.
 func (s *BlockChainAPI) GetStorageAt(ctx context.Context, address types.Address, key string, blockNrOrHash jsonrpc.BlockNumberOrHash) (hexutil.Bytes, error) {
 	tx, err := s.api.db.BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
@@ -404,7 +404,7 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 	}
 	//state := api.State(blockNrOrHash).(*statedb.StateDB)
 	tx, err := api.db.BeginRo(ctx)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
@@ -474,7 +474,7 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 
 func newRevertError(result *internal.ExecutionResult) *revertError {
 	reason, errUnpack := abi.UnpackRevert(result.Revert())
-	err := fmt.Errorf("execution reverted")
+	err := errors.New("execution reverted")
 	if errUnpack == nil {
 		err = fmt.Errorf("execution reverted: %v", reason)
 	}
@@ -600,7 +600,7 @@ func DoEstimateGas(ctx context.Context, n *API, args TransactionArgs, blockNrOrH
 	// Recap the highest gas limit with account's available balance.
 	if feeCap.BitLen() != 0 {
 		tx, err := n.db.BeginRo(ctx)
-		if nil != err {
+		if err != nil {
 			return 0, err
 		}
 		defer tx.Rollback()
@@ -704,21 +704,7 @@ func (s *BlockChainAPI) EstimateGas(ctx context.Context, args TransactionArgs, b
 //   - When fullTx is true all transactions in the block are returned, otherwise
 //     only the transaction hash is returned.
 func (s *BlockChainAPI) GetBlockByNumber(ctx context.Context, number jsonrpc.BlockNumber, fullTx bool) (map[string]interface{}, error) {
-
-	var (
-		block block.IBlock
-		err   error
-	)
-	// header
-	if number == jsonrpc.LatestBlockNumber || number == jsonrpc.PendingBlockNumber {
-		block = s.api.BlockChain().CurrentBlock()
-		err = nil
-	} else if number < 0 {
-		return nil, fmt.Errorf("invalid block number: %d", number)
-	} else {
-		block, err = s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number.Int64())))
-	}
-
+	block, err := s.getBlockByNumber(number)
 	if block != nil && err == nil {
 		response, err := RPCMarshalBlock(block, s.api.BlockChain(), true, fullTx)
 		if err == nil && number == jsonrpc.PendingBlockNumber {
@@ -749,8 +735,8 @@ func (s *BlockChainAPI) MinedBlock(ctx context.Context, address types.Address) (
 		return &jsonrpc.Subscription{}, jsonrpc.ErrNotificationsUnsupported
 	}
 
-	if is, err := IsDeposit(s.api.db, address); nil != err || !is {
-		if nil != err {
+	if is, err := IsDeposit(s.api.db, address); err != nil || !is {
+		if err != nil {
 			log.Errorf("IsDeposit(%s) failed, err= %v", address, err)
 		}
 		return &jsonrpc.Subscription{}, fmt.Errorf("unauthed address: %s", address)
@@ -806,7 +792,7 @@ func (s *BlockChainAPI) SubmitSign(sign AggSign) error {
 	select {
 	case sigChannel <- sign:
 	default:
-		return fmt.Errorf("sign channel is full, please retry later")
+		return errors.New("sign channel is full, please retry later")
 	}
 	return nil
 }

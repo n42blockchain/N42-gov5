@@ -19,7 +19,7 @@ package api
 import (
 	"context"
 	"encoding/hex"
-	"fmt"
+	"errors"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -172,12 +172,12 @@ func (s *AggSign) Check(root types.Hash) bool {
 		return false
 	}
 	sig, err := bls.SignatureFromBytes(s.Sign[:])
-	if nil != err {
+	if err != nil {
 		return false
 	}
 
 	pub, err := bls.PublicKeyFromBytes(s.PublicKey[:])
-	if nil != err {
+	if err != nil {
 		return false
 	}
 	return sig.Verify(pub, s.StateRoot[:])
@@ -194,7 +194,7 @@ func DepositInfo(db kv.RwDB, key types.Address) *deposit.Info {
 
 func IsDeposit(db kv.RwDB, addr types.Address) (bool, error) {
 	tx, err := db.BeginRo(context.Background())
-	if nil != err {
+	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
@@ -226,7 +226,7 @@ LOOP:
 				continue
 			}
 			sig, err := bls.SignatureFromBytes(s.Sign[:])
-			if nil != err {
+			if err != nil {
 				return types.Signature{}, nil, err
 			}
 
@@ -276,13 +276,13 @@ func MachineVerify(ctx context.Context) error {
 				go func(seckey string, address string, ec state.EntireCode) {
 					// recover private key
 					sByte, err := hex.DecodeString(seckey)
-					if nil != err {
+					if err != nil {
 						errs <- err
 						return
 					}
 					var addr types.Address
 					if !addr.DecodeString(address) {
-						errs <- fmt.Errorf("unvalid address")
+						errs <- errors.New("unvalid address")
 						return
 					}
 
@@ -303,7 +303,7 @@ func MachineVerify(ctx context.Context) error {
 					var bs [32]byte
 					copy(bs[:], sByte)
 					pri, err := bls.SecretKeyFromRandom32Byte(bs)
-					if nil != err {
+					if err != nil {
 						errs <- err
 						return
 					}
