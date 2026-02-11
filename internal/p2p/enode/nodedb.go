@@ -420,13 +420,16 @@ func (db *DB) expirer() {
 }
 
 // expireNodes iterates over the database and deletes all nodes that have not
-// been seen (i.e. received a pong from) for some time.
+// been seen (i.e. received a pong from) for some time. It also resets the
+// FindFails counter for active nodes to prevent permanently penalizing nodes
+// that have recovered from temporary failures.
 func (db *DB) expireNodes() {
 	var (
 		threshold    = time.Now().Add(-dbNodeExpiration).Unix()
 		youngestPong int64
 	)
 	var toDelete [][]byte
+	var toResetFails [][]byte
 	if err := db.kv.View(context.Background(), func(tx kv.Tx) error {
 		c, err := tx.Cursor(kv.Inodes)
 		if err != nil {
@@ -448,6 +451,15 @@ func (db *DB) expireNodes() {
 				if time < threshold {
 					// Last pong from this IP older than threshold, remove fields belonging to it.
 					toDelete = append(toDelete, nodeItemKey(id, ip, ""))
+				} else if ip != nil {
+					// Node is active (recent pong). Reset FindFails if accumulated,
+					// so recovered nodes are not permanently penalized.
+					failKey := nodeItemKey(id, ip, dbNodeFindFails)
+					if failBlob, errGet := tx.GetOne(kv.Inodes, failKey); errGet == nil && failBlob != nil {
+						if fails, read := binary.Varint(failBlob); read > 0 && fails > 0 {
+							toResetFails = append(toResetFails, failKey)
+						}
+					}
 				}
 			}
 			if id != prevId {
@@ -471,6 +483,21 @@ func (db *DB) expireNodes() {
 	}
 	for _, td := range toDelete {
 		deleteRange(db.kv, td)
+	}
+	// Reset FindFails for active nodes that have accumulated failures.
+	if len(toResetFails) > 0 {
+		zeroBlob := make([]byte, binary.MaxVarintLen64)
+		zeroBlob = zeroBlob[:binary.PutVarint(zeroBlob, 0)]
+		if err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
+			for _, key := range toResetFails {
+				if err := tx.Put(kv.Inodes, key, zeroBlob); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			log.Warn("nodeDB.expireNodes: failed to reset FindFails", "err", err)
+		}
 	}
 }
 
