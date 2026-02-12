@@ -68,6 +68,7 @@ import (
 	vm "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
 )
 
 const maxBatchAddresses = 1000
@@ -493,7 +494,7 @@ func (s *BlockChainAPI) GetBlockscoutCompatibility() *BlockscoutCompatibilityInf
 	return &BlockscoutCompatibilityInfo{
 		Compatible:        true,
 		BlockscoutVersion: "9.3.3",
-		NodeVersion:       "N42/v1.0.0",
+		NodeVersion:       "N42/v" + params.Version,
 		SupportedAPIs: []string{
 			"eth", "web3", "net", "txpool", "debug",
 			"admin", "personal", "miner", "rpc",
