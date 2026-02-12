@@ -19,10 +19,10 @@ package olddb
 import (
 	"context"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/log"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/ethdb"
 )
 

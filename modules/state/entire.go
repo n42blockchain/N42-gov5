@@ -18,14 +18,15 @@ package state
 
 import (
 	"bytes"
-	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/rlp"
-	types2 "github.com/n42blockchain/N42/common/avmtypes"
-	"github.com/n42blockchain/N42/modules"
 	"io"
 	"unsafe"
+
+	"github.com/n42blockchain/N42/common/account"
+	types2 "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/modules"
 )
 
 type GetOneFun func(table string, key []byte) ([]byte, error)

@@ -8,7 +8,7 @@ import (
 var (
 	rpcMetricsLabels   = map[bool]map[string]string{}
 	rpcRequestGauge    = prometheus.GetOrCreateCounter("rpc_total")
-	failedReqeustGauge = prometheus.GetOrCreateCounter("rpc_failure")
+	failedRequestGauge = prometheus.GetOrCreateCounter("rpc_failure")
 )
 
 func createRPCMetricsLabel(method string, valid bool) string {

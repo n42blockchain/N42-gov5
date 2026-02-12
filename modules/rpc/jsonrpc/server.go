@@ -18,10 +18,11 @@ package jsonrpc
 
 import (
 	"context"
-	mapset "github.com/deckarep/golang-set"
-	"github.com/n42blockchain/N42/log"
 	"io"
 	"sync/atomic"
+
+	mapset "github.com/deckarep/golang-set"
+	"github.com/n42blockchain/N42/log"
 )
 
 const JSONRPCApi = "rpc"

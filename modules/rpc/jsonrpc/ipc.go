@@ -18,8 +18,9 @@ package jsonrpc
 
 import (
 	"context"
-	"github.com/n42blockchain/N42/log"
 	"net"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 func (s *Server) ServeListener(l net.Listener) error {

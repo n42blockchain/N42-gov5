@@ -19,10 +19,11 @@ package state
 import (
 	"encoding/binary"
 	"fmt"
+
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 	"google.golang.org/protobuf/proto"
 )

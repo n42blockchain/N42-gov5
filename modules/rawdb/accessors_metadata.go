@@ -19,11 +19,11 @@ package rawdb
 import (
 	"encoding/json"
 	"fmt"
+
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
-
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -31,10 +31,10 @@ import (
 func ReadChainConfig(db kv.Getter, hash types.Hash) (*params.ChainConfig, error) {
 	data, err := db.GetOne(modules.ChainConfig, modules.ConfigKey(hash))
 	if err != nil {
-		return nil, fmt.Errorf("fetch ChainConfig from db ,error: %v", err)
+		return nil, fmt.Errorf("fetch ChainConfig from db, error: %w", err)
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("ChainConfig are empty")
+		return nil, fmt.Errorf("ChainConfig is empty")
 	}
 	var config params.ChainConfig
 	if err := json.Unmarshal(data, &config); err != nil {

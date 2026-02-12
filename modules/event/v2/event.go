@@ -17,9 +17,10 @@
 package v2
 
 import (
-	"github.com/n42blockchain/N42/log"
 	"reflect"
 	"sync"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 var GlobalEvent Event

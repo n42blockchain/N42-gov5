@@ -2,13 +2,13 @@ package olddb
 
 import (
 	"bytes"
+	"unsafe"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/modules"
-	"unsafe"
-
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules"
 )
 
 type StateReader struct {

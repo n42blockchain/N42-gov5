@@ -18,10 +18,10 @@ package rawdb
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 )
@@ -44,7 +44,6 @@ func ReadTxLookupEntry(db kv.Getter, txnHash types.Hash) (*uint64, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
-	// number := new(big.Int).SetBytes(data).Uint64()
 	number := uint256.NewInt(0).SetBytes(data).Uint64()
 	return &number, nil
 }

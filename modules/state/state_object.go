@@ -19,15 +19,15 @@ package state
 import (
 	"bytes"
 	"fmt"
-	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/rlp"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
 	"io"
 	"math/big"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/utils"
 )
 
 // var emptyCodeHash = crypto.Keccak256(nil)

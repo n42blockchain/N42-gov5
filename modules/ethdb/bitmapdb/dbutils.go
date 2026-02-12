@@ -19,7 +19,6 @@ package bitmapdb
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/n42blockchain/N42/modules/ethdb"
 	"math"
 	"sort"
 	"sync"
@@ -29,6 +28,7 @@ import (
 	"github.com/c2h5oh/datasize"
 	libcommon "github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/ethdb"
 )
 
 var roaringPool = sync.Pool{

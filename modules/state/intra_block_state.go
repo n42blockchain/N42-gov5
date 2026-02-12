@@ -211,7 +211,7 @@ func (sdb *IntraBlockState) SetTrace(trace bool) {
 	sdb.trace = trace
 }
 
-// setErrorUnsafe sets error but should be called in medhods that already have locks
+// setErrorUnsafe sets error but should be called in methods that already have locks
 func (sdb *IntraBlockState) setErrorUnsafe(err error) {
 	if sdb.savedErr == nil {
 		sdb.savedErr = err
