@@ -2,15 +2,15 @@ package scorers
 
 import (
 	"errors"
+	"math"
+	"time"
+
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
 	"github.com/n42blockchain/N42/utils"
-	"math"
-	"time"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 var _ Scorer = (*PeerStatusScorer)(nil)

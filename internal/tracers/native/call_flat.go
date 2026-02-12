@@ -20,10 +20,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
 	"math/big"
 	"strings"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/hexutil"
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/tracers"

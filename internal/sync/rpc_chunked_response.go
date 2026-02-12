@@ -3,6 +3,7 @@ package sync
 import (
 	"fmt"
 	"io"
+
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"

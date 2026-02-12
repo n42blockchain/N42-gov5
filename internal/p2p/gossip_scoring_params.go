@@ -332,7 +332,7 @@ func logGossipParameters(topic string, params *pubsub.TopicScoreParams) {
 	rawParams := reflect.ValueOf(params).Elem()
 	numOfFields := rawParams.NumField()
 
-	fields := make([]interface{}, numOfFields*2)
+	fields := make([]interface{}, 0, numOfFields*2)
 	for i := 0; i < numOfFields; i++ {
 		fields = append(fields, reflect.TypeOf(params).Elem().Field(i).Name, rawParams.Field(i).Interface())
 	}

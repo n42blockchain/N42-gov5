@@ -75,7 +75,7 @@ func (mode *SyncMode) UnmarshalText(text []byte) error {
 	case "header":
 		*mode = HeaderSync
 	default:
-		return fmt.Errorf(`unknown sync mode %q, want "full", "snap" or "light"`, text)
+		return fmt.Errorf(`unknown sync mode %q, want "full", "snap", "light" or "header"`, text)
 	}
 	return nil
 }

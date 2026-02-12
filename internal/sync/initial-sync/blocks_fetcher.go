@@ -2,7 +2,11 @@ package initialsync
 
 import (
 	"context"
+	"sync"
+	"time"
+
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
@@ -11,10 +15,6 @@ import (
 	leakybucket "github.com/n42blockchain/N42/internal/p2p/leaky-bucket"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	"github.com/n42blockchain/N42/utils"
-	"sync"
-	"time"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
 )

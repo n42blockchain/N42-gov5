@@ -62,7 +62,7 @@ func NewLMDB(c context.Context, nodeConfig *conf.NodeConfig, config *conf.Databa
 
 	if config.Debug {
 		if err := env.SetDebug(mdbx.LogLvlDebug, mdbx.DbgDoNotChange, mdbx.LoggerDoNotChange); err != nil {
-			log.Errorf("failed to set lmdb with deubg, err: %v", err)
+			log.Errorf("failed to set lmdb with debug, err: %v", err)
 			return nil, err
 		}
 	}
@@ -132,9 +132,7 @@ func (m *Lmdb) Open(dbName string) (rw db.IDatabaseWriterReader, err error) {
 	return m.openDBI(dbName)
 }
 
-/*
-Snapshot:
-*/
+// Snapshot creates a database snapshot for consistent reads.
 func (m *Lmdb) Snapshot() (db.ISnapshot, error) {
 	return newSnapshot(m.ctx, nil, m.Env)
 }

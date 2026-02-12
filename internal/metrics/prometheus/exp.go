@@ -2,8 +2,9 @@ package prometheus
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"net/http"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 var EnabledExpensive = false

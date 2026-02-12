@@ -21,9 +21,10 @@ package debug
 
 import (
 	"errors"
-	"github.com/n42blockchain/N42/log"
 	"os"
 	"runtime/trace"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 // StartGoTrace turns on tracing, writing to the given file.

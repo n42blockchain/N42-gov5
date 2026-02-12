@@ -3,6 +3,7 @@ package p2p
 import (
 	"bytes"
 	"fmt"
+
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p/enode"

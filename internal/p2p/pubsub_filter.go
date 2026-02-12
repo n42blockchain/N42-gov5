@@ -2,12 +2,12 @@ package p2p
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"strings"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	pubsubpb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/n42blockchain/N42/internal/p2p/encoder"
 )
 
 // It is set at this limit to handle the possibility

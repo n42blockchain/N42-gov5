@@ -26,11 +26,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
+
 	"github.com/n42blockchain/N42/common/mclock"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"hash"
 )
 
 // TODO concurrent WHOAREYOU tie-breaker

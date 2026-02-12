@@ -19,8 +19,9 @@ package memdb
 import (
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/db"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/db"
 )
 
 type MemoryDB struct {
@@ -58,8 +59,7 @@ func (m *MemoryDB) Close() error {
 func (m *MemoryDB) Get(key []byte) ([]byte, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
-	if _, ok := m.db[string(key)]; ok {
-		v := m.db[string(key)]
+	if v, ok := m.db[string(key)]; ok {
 		return v, nil
 	}
 
@@ -73,15 +73,6 @@ func (m *MemoryDB) Gets(key []byte, count uint) ([][]byte, [][]byte, error) {
 func (m *MemoryDB) GetIterator(key []byte) (db.IIterator, error) {
 	return nil, nil
 }
-
-/*
-type IDBWriter interface {
-	Put(key []byte, value []byte) (err error)
-	Puts(keys [][]byte, values [][]byte) (err error)
-	Delete(key []byte) (err error)
-	Drop() (err error)
-}
-*/
 
 func (m *MemoryDB) Put(key []byte, value []byte) error {
 	m.lock.Lock()

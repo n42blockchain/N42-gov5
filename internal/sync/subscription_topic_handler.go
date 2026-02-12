@@ -1,11 +1,11 @@
 package sync
 
 import (
-	"github.com/n42blockchain/N42/internal/p2p"
-	"github.com/n42blockchain/N42/log"
 	"sync"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/log"
 )
 
 // This is a subscription topic handler that is used to handle basic

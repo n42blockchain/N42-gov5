@@ -18,9 +18,10 @@ package network
 
 import (
 	"bytes"
+	"io"
+
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/common/message"
-	"io"
 )
 
 const (

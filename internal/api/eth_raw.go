@@ -38,10 +38,9 @@ import (
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-
-	"github.com/n42blockchain/N42/lib/kv"
 )
 
 // =============================================================================
@@ -231,10 +230,6 @@ func (s *TransactionAPI) GetRawTransactionByBlockHashAndIndex(ctx context.Contex
 // Returns:
 //   - The RLP-encoded transaction bytes
 func (s *TransactionAPI) GetRawTransactionByBlockNumberAndIndex(ctx context.Context, blockNr jsonrpc.BlockNumber, index hexutil.Uint) (hexutil.Bytes, error) {
-	var block interface {
-		Transactions() interface{ Len() int }
-	}
-
 	if blockNr == jsonrpc.PendingBlockNumber || blockNr == jsonrpc.LatestBlockNumber {
 		blk := s.api.BlockChain().CurrentBlock()
 		if blk == nil {
@@ -255,8 +250,6 @@ func (s *TransactionAPI) GetRawTransactionByBlockNumberAndIndex(ctx context.Cont
 	if err != nil || blk == nil {
 		return nil, err
 	}
-	_ = block // silence unused variable
-
 	txs := blk.Transactions()
 	if int(index) >= len(txs) {
 		return nil, nil

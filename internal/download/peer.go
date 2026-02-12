@@ -66,7 +66,7 @@ func (p *peersInfo) findPeers(number *uint256.Int, count int) common.PeerSet {
 			}
 		}
 	}
-	log.Tracef("finded great than number %v peers count: %v, limit: %v", number.Uint64(), len(set), count)
+	log.Tracef("found peers greater than number %v, count: %v, limit: %v", number.Uint64(), len(set), count)
 	return set
 }
 

@@ -18,10 +18,10 @@ package native
 
 import (
 	"encoding/json"
-	"github.com/holiman/uint256"
 	"strconv"
 	"sync/atomic"
 
+	"github.com/holiman/uint256"
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/vm"

@@ -19,12 +19,12 @@ package network
 import (
 	"context"
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"time"
 
 	kademliaDHT "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/peer"
 	discovery "github.com/libp2p/go-libp2p/p2p/discovery/routing"
+	"github.com/n42blockchain/N42/log"
 )
 
 type KadDHT struct {
@@ -106,22 +106,6 @@ func (k *KadDHT) loopDiscoverRemote() {
 	}
 }
 
-//func (k *KadDHT) findPeers() []peer.AddrInfo {
-//peers, err := k.routingDiscovery.FindPeers(k.ctx, DiscoverProtocol)
-//if err != nil {
-//	return nil
-//} else {
-//	return peers
-//}
-//}
-
 func (k *KadDHT) discoverLocal() error {
-
-	//m := mdns.NewMdnsService(k.service.host, "", k.service.HandlePeerFound)
-	//if err := m.Start(); err != nil {
-	//	log.Error("mdns start failed", err)
-	//	return err
-	//}
-	//
 	return nil
 }

@@ -18,6 +18,8 @@ package miner
 
 import (
 	"context"
+	"time"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -26,7 +28,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"golang.org/x/sync/errgroup"
-	"time"
 )
 
 type Miner struct {
@@ -125,15 +126,11 @@ func (m *Miner) runLoop() error {
 			if m.Mining() {
 				m.worker.stop()
 			}
-		case <-m.ctx.Done():
-			return m.ctx.Err()
 		}
 	}
 }
 
 func (miner *Miner) Close() {
-	//close(miner.exitCh)
-	//miner.wg.Wait()
 }
 
 func (m *Miner) Mining() bool {

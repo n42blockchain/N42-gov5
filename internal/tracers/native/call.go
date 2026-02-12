@@ -19,10 +19,10 @@ package native
 import (
 	"encoding/json"
 	"errors"
-	"github.com/holiman/uint256"
 	"math/big"
 	"sync/atomic"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/accounts/abi"
 	"github.com/n42blockchain/N42/common/hexutil"
 	common "github.com/n42blockchain/N42/common/types"

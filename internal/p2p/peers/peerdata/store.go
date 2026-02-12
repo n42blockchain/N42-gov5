@@ -3,6 +3,9 @@ package peerdata
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
+
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -11,8 +14,6 @@ import (
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/utils"
-	"sync"
-	"time"
 )
 
 var (

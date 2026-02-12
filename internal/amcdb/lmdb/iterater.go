@@ -17,13 +17,13 @@
 package lmdb
 
 import (
+	"runtime"
+
 	"github.com/erigontech/mdbx-go/mdbx"
 	"github.com/n42blockchain/N42/common/db"
-	"runtime"
 )
 
-/*
- */
+// Iterator wraps an mdbx cursor for iterating over key-value pairs.
 type Iterator struct {
 	*mdbx.Cursor
 	txn *mdbx.Txn

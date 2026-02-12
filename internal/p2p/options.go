@@ -3,16 +3,16 @@ package p2p
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"github.com/libp2p/go-libp2p"
-	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
-	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/utils"
 	"net"
 
+	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	ma "github.com/multiformats/go-multiaddr"
+	"github.com/n42blockchain/N42/params"
+	"github.com/n42blockchain/N42/utils"
 	"github.com/pkg/errors"
 )
 

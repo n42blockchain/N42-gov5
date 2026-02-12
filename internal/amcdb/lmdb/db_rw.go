@@ -19,9 +19,10 @@ package lmdb
 import (
 	"context"
 	"fmt"
+	"sync"
+
 	"github.com/erigontech/mdbx-go/mdbx"
 	"github.com/n42blockchain/N42/common/db"
-	"sync"
 )
 
 type DBI struct {

@@ -17,10 +17,11 @@
 package download
 
 import (
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"hash"
 	"sync"
 	"time"
+
+	"github.com/n42blockchain/N42/api/protocol/types_pb"
 )
 
 var (

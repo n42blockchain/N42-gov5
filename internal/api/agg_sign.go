@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/crypto"
@@ -29,6 +29,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -38,126 +39,7 @@ import (
 
 var sigChannel = make(chan AggSign, 10)
 
-var validVerifers = map[string]string{
-	//"astb9e94477f5f88b5e8da2e97e8506d6e4fcf04e5b": "2c02dd3cf600af9a8567e5cc5ff158c1b89e1f3ea21bff61f505d141a96a60ee",
-}
-
-//type WithCodeAndHash struct {
-//	CodeIndex []byte `json:"codeIndex"`
-//	Code      []byte `json:"code"`
-//	Hash      []byte `json:"hash"`
-//}
-
-//func ExportCodeAndHash(ctx context.Context, db kv.RwDB) (WithCodeAndHash, error) {
-//	var result WithCodeAndHash
-//	var err error
-//	errs := make(chan error, 1)
-//	ctx, cancel := context.WithCancel(ctx)
-//	defer cancel()
-//
-//	var wg sync.WaitGroup
-//	wg.Add(2)
-//	// export header hash
-//	go func(ctx context.Context) {
-//		defer wg.Done()
-//		rtx, err := db.BeginRo(ctx)
-//		if nil != err {
-//			errs <- err
-//			return
-//		}
-//		defer rtx.Rollback()
-//
-//		buf := new(bytes.Buffer)
-//		hashW := zlib.NewWriter(buf)
-//		defer hashW.Close()
-//
-//		cur, err := rtx.Cursor(modules.HeaderCanonical)
-//		if nil != err {
-//			errs <- err
-//			return
-//		}
-//		defer cur.Close()
-//
-//		select {
-//		case <-ctx.Done():
-//			return
-//		default:
-//			for k, v, err := cur.First(); k != nil; k, v, err = cur.Next() {
-//				if nil != err {
-//					errs <- err
-//					return
-//				}
-//				//b, _ := modules.DecodeBlockNumber(k)
-//				//h := types.Hash{}
-//				//h.SetBytes(v)
-//				//log.Tracef("read hash, %d, %v", b, h)
-//				hashW.Write(v)
-//			}
-//
-//			if err := hashW.Flush(); nil != err {
-//				errs <- err
-//				return
-//			}
-//			result.Hash = buf.Bytes()
-//		}
-//	}(ctx)
-//
-//	// export code
-//	go func(ctx context.Context) {
-//		defer wg.Done()
-//		rtx, err := db.BeginRo(ctx)
-//		if nil != err {
-//			errs <- err
-//			return
-//		}
-//		defer rtx.Rollback()
-//
-//		cur, err := rtx.Cursor(modules.Code)
-//		if nil != err {
-//			errs <- err
-//			return
-//		}
-//		defer cur.Close()
-//
-//		indBuf := new(bytes.Buffer)
-//		indW := zlib.NewWriter(indBuf)
-//		defer indW.Close()
-//		codeBuf := new(bytes.Buffer)
-//		codeW := zlib.NewWriter(codeBuf)
-//		defer codeW.Close()
-//		index := uint64(0)
-//
-//		select {
-//		case <-ctx.Done():
-//			return
-//		default:
-//			for k, v, err := cur.First(); k != nil; k, v, err = cur.Next() {
-//				if nil != err {
-//					errs <- err
-//					return
-//				}
-//				indW.Write(k)
-//				indW.Write(modules.EncodeBlockNumber(index))
-//				index += uint64(len(v))
-//				indW.Write(modules.EncodeBlockNumber(index))
-//				codeW.Write(v)
-//			}
-//			result.CodeIndex = indBuf.Bytes()
-//			result.Code = codeBuf.Bytes()
-//		}
-//	}(ctx)
-//
-//	select {
-//	case e := <-errs:
-//		err = e
-//		cancel()
-//	default:
-//		wg.Wait()
-//	}
-//	close(errs)
-//	log.Tracef("export code and hash: %+v", result)
-//	return result, err
-//}
+var validVerifers = map[string]string{}
 
 type AggSign struct {
 	Number    uint64          `json:"number"`
@@ -282,7 +164,7 @@ func MachineVerify(ctx context.Context) error {
 					}
 					var addr types.Address
 					if !addr.DecodeString(address) {
-						errs <- errors.New("unvalid address")
+						errs <- errors.New("invalid address")
 						return
 					}
 

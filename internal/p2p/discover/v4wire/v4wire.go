@@ -23,14 +23,15 @@ import (
 	"crypto/elliptic"
 	"errors"
 	"fmt"
+	"math/big"
+	"net"
+	"time"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"math/big"
-	"net"
-	"time"
 )
 
 // RPC packet types

@@ -17,6 +17,7 @@
 package download
 
 import (
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/api/protocol/sync_proto"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
@@ -24,8 +25,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
 	"google.golang.org/protobuf/proto"
-
-	"github.com/holiman/uint256"
 )
 
 // responseHeaders

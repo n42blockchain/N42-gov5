@@ -20,12 +20,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"github.com/holiman/uint256"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -180,8 +181,11 @@ func (api *API) Status() (*status, error) {
 	}
 	for n := start; n < end; n++ {
 		h := api.chain.GetHeaderByNumber(uint256.NewInt(n))
-		block := api.chain.GetBlock(h.Hash(), n)
 		if h == nil {
+			return nil, fmt.Errorf("missing block %d", n)
+		}
+		block := api.chain.GetBlock(h.Hash(), n)
+		if block == nil {
 			return nil, fmt.Errorf("missing block %d", n)
 		}
 		if block.Difficulty().Cmp(diffInTurn) == 0 {

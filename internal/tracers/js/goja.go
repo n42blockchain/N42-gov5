@@ -20,18 +20,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"math/big"
 
 	"github.com/dop251/goja"
-
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/tracers"
 	jsassets "github.com/n42blockchain/N42/internal/tracers/js/internal/tracers"
 	"github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/internal/vm/stack"
 )
 

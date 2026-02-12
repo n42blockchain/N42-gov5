@@ -7,6 +7,10 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -27,9 +31,6 @@ import (
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
 	"google.golang.org/protobuf/proto"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 // In the event that we are at our peer limit, we

@@ -19,9 +19,6 @@ package debug
 import (
 	"bytes"
 	"errors"
-	"github.com/hashicorp/go-bexpr"
-	"github.com/n42blockchain/N42/log"
-	rpc "github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"io"
 	"os"
 	"os/user"
@@ -33,6 +30,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/go-bexpr"
+	"github.com/n42blockchain/N42/log"
+	rpc "github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 
 // Handler is the global debugging handler.

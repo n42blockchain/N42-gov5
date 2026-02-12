@@ -187,17 +187,11 @@ func (d *Downloader) processChain() error {
 			)
 
 			if index, err := d.bc.InsertChain(blocks); err != nil {
-				//inserted = false
 				if index < len(blocks) {
-					log.Errorf("downloader failed to inster new block in blockchain, err:%v", err)
-				} else {
+					log.Errorf("downloader failed to insert new block in blockchain, err:%v", err)
 				}
 				d.bodyTaskPoolLock.Unlock()
 				return err
-
-			} else {
-				//inserted = true
-
 			}
 			d.bodyTaskPoolLock.Unlock()
 		}

@@ -20,34 +20,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/internal"
-	"github.com/n42blockchain/N42/internal/api"
-	"github.com/n42blockchain/N42/internal/consensus/misc"
-	"github.com/n42blockchain/N42/common/metrics"
 	"sort"
 	"sync"
-
-	"github.com/n42blockchain/N42/modules/rawdb"
-
-	vm2 "github.com/n42blockchain/N42/internal/vm"
-	"github.com/n42blockchain/N42/modules/state"
-
 	"sync/atomic"
 	"time"
 
+	mapset "github.com/deckarep/golang-set"
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
-
+	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
+	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
+	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
-
-	mapset "github.com/deckarep/golang-set"
 	"golang.org/x/sync/errgroup"
 )
 

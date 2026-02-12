@@ -19,15 +19,15 @@ package js
 import (
 	"encoding/json"
 	"errors"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"math/big"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/holiman/uint256"
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/tracers"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"

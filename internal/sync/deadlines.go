@@ -1,11 +1,11 @@
 package sync
 
 import (
-	"github.com/n42blockchain/N42/log"
 	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/n42blockchain/N42/log"
 )
 
 var defaultReadDuration = ttfbTimeout

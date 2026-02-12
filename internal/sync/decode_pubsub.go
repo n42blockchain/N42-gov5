@@ -1,10 +1,10 @@
 package sync
 
 import (
-	"github.com/n42blockchain/N42/internal/p2p"
 	"strings"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/pkg/errors"
 	ssz "github.com/prysmaticlabs/fastssz"
 	"google.golang.org/protobuf/proto"

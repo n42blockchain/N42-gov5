@@ -2,10 +2,10 @@ package sync
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/internal/p2p"
-	"github.com/n42blockchain/N42/log"
 	"strings"
 
+	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )

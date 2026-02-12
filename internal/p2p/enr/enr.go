@@ -37,9 +37,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/rlp"
 	"io"
 	"sort"
+
+	"github.com/n42blockchain/N42/common/rlp"
 )
 
 const SizeLimit = 300 // maximum encoded size of a node record in bytes

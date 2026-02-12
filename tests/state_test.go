@@ -20,6 +20,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+
 	"github.com/n42blockchain/N42/conf"
 )
 
@@ -29,7 +30,7 @@ var allocs embed.FS
 func ReadGenesis(filename string) *conf.Genesis {
 	f, err := allocs.Open(filename)
 	if err != nil {
-		panic("%s not found, use default genesis")
+		panic(filename + " not found, use default genesis")
 	}
 	defer f.Close()
 
@@ -41,54 +42,3 @@ func ReadGenesis(filename string) *conf.Genesis {
 	}
 	return gc
 }
-
-//func TestStateRoot(t *testing.T) {
-//
-//	tmpDB := mdbx.NewMDBX(nil).InMem("").MapSize(2 * datasize.GB).MustOpen()
-//	defer tmpDB.Close()
-//	tx, err := tmpDB.BeginRw(context.Background())
-//	if err != nil {
-//		panic(err)
-//	}
-//	defer tx.Rollback()
-//
-//	r, roop := state.NewPlainStateReader(tx), state.NewNoopWriter()
-//	statedb := state.New(r)
-//
-//	Genesis := ReadGenesis("allocs/genesis_inline.json")
-//	for _, a := range Genesis.Alloc {
-//		addr, err := types.HexToString(a.Address)
-//		if err != nil {
-//			panic(err)
-//		}
-//
-//		b, ok := new(big.Int).SetString(a.Balance, 10)
-//		balance, _ := uint256.FromBig(b)
-//		if !ok {
-//			panic("overflow at genesis allocs")
-//		}
-//
-//		statedb.AddBalance(addr, balance)
-//		statedb.SetCode(addr, a.Code)
-//		statedb.SetNonce(addr, a.Nonce)
-//		for key, value := range a.Storage {
-//			k := key
-//			val := uint256.NewInt(0).SetBytes(value.Bytes())
-//			statedb.SetState(addr, &k, *val)
-//		}
-//		if len(a.Code) > 0 || len(a.Storage) > 0 {
-//			statedb.SetIncarnation(addr, state.FirstContractIncarnation)
-//		}
-//	}
-//
-//	if err := statedb.FinalizeTx(Genesis.Config.Rules(0), roop); err != nil {
-//		panic(err)
-//	}
-//
-//	//for i := 0; i < 1000; i++ {
-//	//	root := statedb.GenerateRootHash().Hex()
-//	//	if root != "0x1995d438cfe70662e278ed8b0d92c154f152e418b7d86c616fc538d969ba5eca" {
-//	//		t.Error("not same", root)
-//	//	}
-//	//}
-//}

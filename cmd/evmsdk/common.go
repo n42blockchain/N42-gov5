@@ -55,7 +55,7 @@ const (
 
 	RequestPath = ""
 	ConfigPath  = "evm"
-	LogFile     = "vertification_debug_log.txt"
+	LogFile     = "verification_debug_log.txt"
 )
 
 var (
@@ -435,7 +435,7 @@ func (e *EvmEngine) verificationTaskBg() error {
 			if err := recover(); err != nil {
 				buf := make([]byte, 4096)
 				runtime.Stack(buf, true)
-				simpleLog("vertification task down", "err", err)
+				simpleLog("verification task down", "err", err)
 				simpleLog(string(buf))
 				// simpleLogf("vertification task down,err=%+v,stk:%s:%d", err, f, l)
 			}
@@ -508,7 +508,7 @@ func (e *EvmEngine) Decrypt(req *EmitRequest) (interface{}, error) {
 		return nil, fmt.Errorf("msg type is not string")
 	}
 	if messageBytes, err = hex.DecodeString(message); err != nil {
-		return nil, fmt.Errorf("msg cannote decode to bytes")
+		return nil, fmt.Errorf("msg cannot decode to bytes")
 	}
 
 	priKey := ecies.ImportECDSA(privateKey)
@@ -545,7 +545,7 @@ func (e *EvmEngine) Encrypt(req *EmitRequest) (interface{}, error) {
 	}
 
 	if publicKeyBytes, err = hex.DecodeString(publicKeyString); err != nil {
-		return nil, fmt.Errorf("public_key cannote decode to bytes")
+		return nil, fmt.Errorf("public_key cannot decode to bytes")
 	}
 
 	if publicKey, err = crypto.DecompressPubkey(publicKeyBytes); err != nil {
@@ -560,7 +560,7 @@ func (e *EvmEngine) Encrypt(req *EmitRequest) (interface{}, error) {
 	}
 
 	if messageBytes, err = hex.DecodeString(message); err != nil {
-		return nil, fmt.Errorf("msg cannote decode to bytes")
+		return nil, fmt.Errorf("msg cannot decode to bytes")
 	}
 
 	pubKey := ecies.ImportECDSAPublic(publicKey)
@@ -569,53 +569,10 @@ func (e *EvmEngine) Encrypt(req *EmitRequest) (interface{}, error) {
 	return hex.EncodeToString(ct), err
 }
 
-//type innerEntireCode state.EntireCode
-//
-//func (h *innerEntireCode) UnmarshalJSON(in []byte) error {
-//	m := map[string]json.RawMessage{}
-//	if err := json.Unmarshal(in, &m); err != nil {
-//		return err
-//	}
-//
-//	if err := json.Unmarshal(m["coinBase"], &h.CoinBase); err != nil {
-//		return err
-//	}
-//	if err := json.Unmarshal(m["codes"], &h.Codes); err != nil {
-//		return err
-//	}
-//	if rewardsBytes, ok := m["rewards"]; ok {
-//		m := []json.RawMessage{}
-//		if err := json.Unmarshal(rewardsBytes, &m); err == nil && len(m) != 0 {
-//			h.Rewards = make([]block.Reward, len(m))
-//			for i, _ := range h.Rewards {
-//				rewardBean := block.Reward{
-//					Amount: commTyp.NewInt64(0),
-//				}
-//				json.Unmarshal(m[i], &rewardBean)
-//				h.Rewards[i] = rewardBean
-//			}
-//		}
-//	}
-//	// if err := json.Unmarshal(m["rewards"], &h.Rewards); err != nil {
-//	// 	return err
-//	// }
-//
-//	h.Entire.Header = &block.Header{
-//		Difficulty: commTyp.NewInt64(0),
-//		Number:     commTyp.NewInt64(0),
-//		BaseFee:    commTyp.NewInt64(0),
-//	}
-//	if err := json.Unmarshal(m["entire"], &h.Entire); err != nil {
-//		return err
-//	}
-//
-//	return nil
-//}
-
 func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 	var bean state.EntireCode
 	if err := json.Unmarshal(in, &bean); err != nil {
-		simpleLog("unmarshal vertify input error,err=", err)
+		simpleLog("unmarshal verify input error,err=", err)
 		return nil, err
 	}
 
@@ -713,7 +670,7 @@ func (e *EvmEngine) unwrapJSONRPC(in []byte) ([]byte, error) {
 	return innerReq.Result, nil
 }
 
-//======test methods
+// ======test methods
 
 func Test() string {
 	var sw strings.Builder

@@ -17,8 +17,9 @@
 package discover
 
 import (
-	"github.com/rcrowley/go-metrics"
 	"net"
+
+	"github.com/rcrowley/go-metrics"
 )
 
 const (

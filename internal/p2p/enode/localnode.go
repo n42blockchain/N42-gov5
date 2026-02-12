@@ -19,15 +19,16 @@ package enode
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"github.com/n42blockchain/N42/internal/p2p/netutil"
-	"github.com/n42blockchain/N42/log"
 	"net"
 	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/n42blockchain/N42/internal/p2p/enr"
+	"github.com/n42blockchain/N42/internal/p2p/netutil"
+	"github.com/n42blockchain/N42/log"
 )
 
 const (

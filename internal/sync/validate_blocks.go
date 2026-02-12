@@ -3,16 +3,16 @@ package sync
 import (
 	"context"
 	"fmt"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/log"
-	"go.opencensus.io/trace"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 	"github.com/pkg/errors"
+	"go.opencensus.io/trace"
 )
 
 var (
@@ -133,39 +133,13 @@ func (s *Service) setBadBlock(ctx context.Context, root types.Hash) {
 func captureArrivalTimeMetric(headerTime uint64) error {
 	startTime := time.Unix(int64(headerTime), 0)
 	//todo future block
-	if time.Now().Sub(startTime) < 0 {
+	if time.Since(startTime) < 0 {
 		return fmt.Errorf("the block is future block time is %s", startTime.Format(time.RFC3339))
 	}
-	ms := time.Now().Sub(startTime) / time.Millisecond
+	ms := time.Since(startTime) / time.Millisecond
 	arrivalBlockPropagationHistogram.Observe(float64(ms))
 	arrivalBlockPropagationGauge.Set(float64(ms))
 
 	return nil
 }
 
-// isBlockQueueable checks if the slot_time in the block is greater than
-// current_time +  MAXIMUM_GOSSIP_CLOCK_DISPARITY. in short, this function
-// returns true if the corresponding block should be queued and false if
-// the block should be processed immediately.
-//func isBlockQueueable(genesisTime uint64, slot primitives.Slot, receivedTime time.Time) bool {
-//	slotTime, err := slots.ToTime(genesisTime, slot)
-//	if err != nil {
-//		return false
-//	}
-//
-//	currentTimeWithDisparity := receivedTime.Add(params.BeaconNetworkConfig().MaximumGossipClockDisparity)
-//	return currentTimeWithDisparity.Unix() < slotTime.Unix()
-//}
-
-//func getBlockFields(b interfaces.ReadOnlySignedBeaconBlock) logrus.Fields {
-//	if consensusblocks.BeaconBlockIsNil(b) != nil {
-//		return logrus.Fields{}
-//	}
-//	graffiti := b.Block().Body().Graffiti()
-//	return logrus.Fields{
-//		"slot":          b.Block().Slot(),
-//		"proposerIndex": b.Block().ProposerIndex(),
-//		"graffiti":      string(graffiti[:]),
-//		"version":       b.Block().Version(),
-//	}
-//}

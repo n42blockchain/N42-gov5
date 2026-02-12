@@ -19,21 +19,21 @@ package download
 import (
 	"context"
 	"errors"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/utils"
-	"google.golang.org/protobuf/proto"
 	"hash"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/api/protocol/sync_proto"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
+	"github.com/n42blockchain/N42/utils"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -201,7 +201,7 @@ func (d *Downloader) Start() error {
 	return nil
 }
 
-// Start
+// doSync performs the actual synchronization with the given mode.
 func (d *Downloader) doSync(mode SyncMode) error {
 
 	log.Info("do sync", zap.Int("SyncMode", int(mode)))
@@ -248,8 +248,6 @@ func (d *Downloader) spawnSync(fetchers []func() error) error {
 	}
 	var err error
 	for i := 0; i < len(fetchers); i++ {
-		if i == len(fetchers)-1 {
-		}
 		if err = <-errc; err != nil {
 			break
 		}
@@ -363,24 +361,12 @@ func (d *Downloader) synchronise() {
 				}
 				return
 			}
-			//if d.highestNumber.Uint64() != 0 && difference.Uint64() ==0 {
-			//	return
-			//}
-			//} else {
-			//	if checked >= syncCheckTimes {
-			//		return
-			//	}
-			//	checked++
-			//}
 			tick.Reset(syncTimeTick)
 		}
 	}
 }
 
 func (d *Downloader) calculateHeight(peer2 common.Peer) error {
-	if d.bc.CurrentBlock().Number64().Uint64() == 0 {
-
-	}
 	return nil
 }
 
