@@ -609,7 +609,7 @@ func (p *TxPool) getRlpLocked(tx kv.Tx, hash []byte) (rlpTxn []byte, sender comm
 	if err != nil {
 		return nil, common.Address{}, false, err
 	}
-	if v == nil {
+	if len(v) < 20 {
 		return nil, common.Address{}, false, nil
 	}
 	return v[20:], *(*[20]byte)(v[:20]), txn != nil && txn.subPool&IsLocal > 0, nil
@@ -728,7 +728,9 @@ func (p *TxPool) getCachedBlobTxnLocked(tx kv.Tx, hash []byte) (*metaTx, error) 
 	parseCtx := types.NewTxParseContext(p.chainID)
 	parseCtx.WithSender(false)
 	txSlot := &types.TxSlot{}
-	parseCtx.ParseTransaction(txRlp, 0, txSlot, nil, false, true, nil)
+	if _, err := parseCtx.ParseTransaction(txRlp, 0, txSlot, nil, false, true, nil); err != nil {
+		return nil, fmt.Errorf("getCachedBlobTxnLocked: parse transaction: %w", err)
+	}
 	return newMetaTx(txSlot, false, 0), nil
 }
 

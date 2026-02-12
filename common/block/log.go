@@ -74,7 +74,7 @@ func (l *Log) FromProtoMessage(message proto.Message) error {
 	)
 
 	if pLog, ok = message.(*types_pb.Log); !ok {
-		return fmt.Errorf("type conversion failure")
+		return fmt.Errorf("type conversion failure: expected *types_pb.Log, got %T", message)
 	}
 
 	l.Address = utils.ConvertH160toAddress(pLog.Address)
@@ -93,7 +93,9 @@ func (l *Log) FromProtoMessage(message proto.Message) error {
 type Logs []*Log
 
 func (l *Logs) Marshal() ([]byte, error) {
-	pb := new(types_pb.Logs)
+	pb := &types_pb.Logs{
+		Logs: make([]*types_pb.Log, 0, len(*l)),
+	}
 	for _, log := range *l {
 		pb.Logs = append(pb.Logs, log.ToProtoMessage().(*types_pb.Log))
 	}

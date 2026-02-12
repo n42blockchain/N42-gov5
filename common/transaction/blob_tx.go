@@ -314,7 +314,10 @@ func CalcBlobFee(excessBlobGas uint64) *uint256.Int {
 	)
 }
 
-// CalcExcessBlobGas calculates the excess blob gas for a block
+// CalcExcessBlobGas calculates the excess blob gas for a block.
+// The addition is safe from overflow because both inputs are bounded:
+// parentExcessBlobGas is capped by prior block validation and
+// parentBlobGasUsed <= MaxBlobGasPerBlock.
 func CalcExcessBlobGas(parentExcessBlobGas, parentBlobGasUsed uint64) uint64 {
 	excessBlobGas := parentExcessBlobGas + parentBlobGasUsed
 	if excessBlobGas < BlobTxTargetBlobGasPerBlock {

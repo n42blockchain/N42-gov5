@@ -435,8 +435,11 @@ func SaveHeapProfileNearOOM(opts ...SaveHeapOption) {
 	}
 
 	f, err := os.Create(filePath)
-	if err != nil && logger != nil {
-		logger.Warn("[Experiment] could not create heap profile file", "err", err)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("[Experiment] could not create heap profile file", "err", err)
+		}
+		return
 	}
 
 	defer func() {

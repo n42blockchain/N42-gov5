@@ -92,7 +92,9 @@ func (h *Header) BaseFee64() *uint256.Int {
 
 func (h Header) Hash() types.Hash {
 	if hash := h.hash.Load(); hash != nil {
-		return hash.(types.Hash)
+		if hv, ok := hash.(types.Hash); ok {
+			return hv
+		}
 	}
 
 	if h.BaseFee == nil {
@@ -141,7 +143,7 @@ func (h *Header) FromProtoMessage(message proto.Message) error {
 	)
 
 	if pbHeader, ok = message.(*types_pb.Header); !ok {
-		return fmt.Errorf("type conversion failure")
+		return fmt.Errorf("type conversion failure: expected *types_pb.Header, got %T", message)
 	}
 
 	h.ParentHash = utils.ConvertH256ToHash(pbHeader.ParentHash)
@@ -201,7 +203,10 @@ func CopyHeader(h *Header) *Header {
 }
 
 func CopyReward(rewards []*Reward) []*Reward {
-	var cpyReward []*Reward
+	if len(rewards) == 0 {
+		return nil
+	}
+	cpyReward := make([]*Reward, 0, len(rewards))
 
 	for _, reward := range rewards {
 		addr, amount := types.Address{}, uint256.Int{}

@@ -61,6 +61,7 @@ func DefaultPageSize() uint64 {
 // BigChunks - read `table` by big chunks - restart read transaction after each 1 minutes
 func BigChunks(db RoDB, table string, from []byte, walker func(tx Tx, k, v []byte) (bool, error)) error {
 	rollbackEvery := time.NewTicker(1 * time.Minute)
+	defer rollbackEvery.Stop()
 
 	var stop bool
 	for !stop {

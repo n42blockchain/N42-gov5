@@ -926,6 +926,7 @@ func OpenBtreeIndexWithDecompressor(indexPath string, M uint64, kv *seg.Decompre
 
 	idx.m, err = mmap.MapRegion(idx.file, int(idx.size), mmap.RDONLY, 0, 0)
 	if err != nil {
+		idx.file.Close()
 		return nil, err
 	}
 	idx.data = idx.m[:idx.size]
@@ -946,7 +947,7 @@ func OpenBtreeIndexWithDecompressor(indexPath string, M uint64, kv *seg.Decompre
 	if idx.alloc != nil {
 		idx.alloc.dataLookup = idx.dataLookup
 		idx.alloc.traverseDfs()
-		defer idx.decompressor.EnableReadAhead().DisableReadAhead()
+		defer kv.EnableReadAhead().DisableReadAhead()
 		idx.alloc.fillSearchMx()
 	}
 	return idx, nil
@@ -972,6 +973,7 @@ func OpenBtreeIndex(indexPath, dataPath string, M uint64) (*BtIndex, error) {
 
 	idx.m, err = mmap.MapRegion(idx.file, int(idx.size), mmap.RDONLY, 0, 0)
 	if err != nil {
+		idx.file.Close()
 		return nil, err
 	}
 	idx.data = idx.m[:idx.size]

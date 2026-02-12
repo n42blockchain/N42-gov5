@@ -840,6 +840,7 @@ func (a *Aggregator) LogStats(tx kv.Tx, tx2block func(endTxNumMinimax uint64) ui
 		// TODO pass error properly around
 		panic(err)
 	}
+	defer c.Close()
 	_, v, err := c.First()
 	if err != nil {
 		// TODO pass error properly around

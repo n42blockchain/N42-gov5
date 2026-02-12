@@ -46,10 +46,11 @@ func ToastAddress(addr *avmutil.Address) *types.Address {
 }
 
 func ToastAccessList(accessList AccessList) transaction.AccessList {
-	var txAccessList transaction.AccessList
+	txAccessList := make(transaction.AccessList, 0, len(accessList))
 	for _, accessTuple := range accessList {
 		txAccessTuple := new(transaction.AccessTuple)
 		txAccessTuple.Address = *ToastAddress(&accessTuple.Address)
+		txAccessTuple.StorageKeys = make([]types.Hash, 0, len(accessTuple.StorageKeys))
 		for _, hash := range accessTuple.StorageKeys {
 			txAccessTuple.StorageKeys = append(txAccessTuple.StorageKeys, ToastHash(hash))
 		}
@@ -59,10 +60,11 @@ func ToastAccessList(accessList AccessList) transaction.AccessList {
 }
 
 func FromastAccessList(accessList transaction.AccessList) AccessList {
-	var txAccessList AccessList
+	txAccessList := make(AccessList, 0, len(accessList))
 	for _, accessTuple := range accessList {
 		txAccessTuple := new(AccessTuple)
 		txAccessTuple.Address = *FromastAddress(&accessTuple.Address)
+		txAccessTuple.StorageKeys = make([]avmutil.Hash, 0, len(accessTuple.StorageKeys))
 		for _, hash := range accessTuple.StorageKeys {
 			txAccessTuple.StorageKeys = append(txAccessTuple.StorageKeys, FromastHash(hash))
 		}
@@ -97,7 +99,7 @@ func ToastLog(log *Log) *block.Log {
 		return nil
 	}
 
-	var topics []types.Hash
+	topics := make([]types.Hash, 0, len(log.Topics))
 	for _, topic := range log.Topics {
 		topics = append(topics, ToastHash(topic))
 	}
@@ -120,16 +122,21 @@ func FromastLog(log *block.Log) *Log {
 		return nil
 	}
 
-	var topics []avmutil.Hash
+	topics := make([]avmutil.Hash, 0, len(log.Topics))
 	for _, topic := range log.Topics {
 		topics = append(topics, FromastHash(topic))
+	}
+
+	var blockNumber uint64
+	if log.BlockNumber != nil {
+		blockNumber = log.BlockNumber.Uint64()
 	}
 
 	return &Log{
 		Address:     *FromastAddress(&log.Address),
 		Topics:      topics,
 		Data:        log.Data,
-		BlockNumber: log.BlockNumber.Uint64(),
+		BlockNumber: blockNumber,
 		TxHash:      FromastHash(log.TxHash),
 		TxIndex:     log.TxIndex,
 		BlockHash:   FromastHash(log.BlockHash),
@@ -139,7 +146,7 @@ func FromastLog(log *block.Log) *Log {
 }
 
 func ToastLogs(logs []*Log) []*block.Log {
-	var astLogs []*block.Log
+	astLogs := make([]*block.Log, 0, len(logs))
 	for _, log := range logs {
 		astLogs = append(astLogs, ToastLog(log))
 	}
@@ -147,7 +154,7 @@ func ToastLogs(logs []*Log) []*block.Log {
 }
 
 func FromastLogs(astLogs []*block.Log) []*Log {
-	var logs []*Log
+	logs := make([]*Log, 0, len(astLogs))
 	for _, log := range astLogs {
 		logs = append(logs, FromastLog(log))
 	}
@@ -174,7 +181,9 @@ func NewTx(inner TxData) *Transaction {
 // Hash returns the transaction hash.
 func (tx *Transaction) Hash() avmutil.Hash {
 	if hash := tx.hash.Load(); hash != nil {
-		return hash.(avmutil.Hash)
+		if h, ok := hash.(avmutil.Hash); ok {
+			return h
+		}
 	}
 
 	var h avmutil.Hash
@@ -256,7 +265,9 @@ func (tx *Transaction) RawSignatureValues() (v, r, s *big.Int) {
 // encoding and returning it, or returning a previously cached value.
 func (tx *Transaction) Size() avmutil.StorageSize {
 	if size := tx.size.Load(); size != nil {
-		return size.(avmutil.StorageSize)
+		if s, ok := size.(avmutil.StorageSize); ok {
+			return s
+		}
 	}
 	c := writeCounter(0)
 	rlp.Encode(&c, &tx.inner)
@@ -300,7 +311,7 @@ func (tx *Transaction) UnmarshalBinary(b []byte) error {
 // decodeTyped decodes a typed transaction from the canonical format.
 func (tx *Transaction) decodeTyped(b []byte) (TxData, error) {
 	if len(b) <= 1 {
-		return nil, fmt.Errorf("typed transaction too short")
+		return nil, errShortTypedTx
 	}
 	switch b[0] {
 	case AccessListTxType:
@@ -312,7 +323,7 @@ func (tx *Transaction) decodeTyped(b []byte) (TxData, error) {
 		err := rlp.DecodeBytes(b[1:], &inner)
 		return &inner, err
 	default:
-		return nil, fmt.Errorf("transaction type not valid in this context")
+		return nil, ErrInvalidTxType
 	}
 }
 

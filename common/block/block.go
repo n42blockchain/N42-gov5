@@ -233,7 +233,7 @@ func (b *Block) FromProtoMessage(message proto.Message) error {
 	)
 
 	if pBlock, ok = message.(*types_pb.Block); !ok {
-		return fmt.Errorf("type conversion failure")
+		return fmt.Errorf("type conversion failure: expected *types_pb.Block, got %T", message)
 	}
 
 	if err := header.FromProtoMessage(pBlock.Header); err != nil {

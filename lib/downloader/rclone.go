@@ -118,13 +118,17 @@ func (c *RCloneClient) start(logger log.Logger) error {
 		go func() {
 			signalCh := make(chan os.Signal, 1)
 			signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
+			defer signal.Stop(signalCh)
 
 			for {
 				select {
+				case <-ctx.Done():
+					return
 				case s := <-signalCh:
 					switch s {
 					case syscall.SIGTERM, syscall.SIGINT:
 						cancel()
+						return
 					}
 				case o := <-c.optionsQueue:
 					c.setOptions(ctx, o)
@@ -275,6 +279,7 @@ func retry(ctx context.Context, op func(context.Context) error, isRecoverableErr
 	case <-delayTimer.C:
 		return retry(ctx, op, isRecoverableError, delay, err)
 	case <-ctx.Done():
+		delayTimer.Stop()
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return err
 		}
@@ -382,16 +387,20 @@ func NewRCloneClient(logger log.Logger) (*RCloneClient, error) {
 }
 
 func freePort() (port int, err error) {
-	if a, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0"); err != nil {
+	a, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
+	if err != nil {
 		return 0, err
-	} else {
-		if l, err := net.ListenTCP("tcp", a); err != nil {
-			return 0, err
-		} else {
-			defer l.Close()
-			return l.Addr().(*net.TCPAddr).Port, nil
-		}
 	}
+	l, err := net.ListenTCP("tcp", a)
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	tcpAddr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("unexpected address type: %T", l.Addr())
+	}
+	return tcpAddr.Port, nil
 }
 
 func (c *RCloneClient) NewSession(ctx context.Context, localFs string, remoteFs string, headers http.Header) (*RCloneSession, error) {
@@ -838,7 +847,8 @@ func (c *RCloneSession) syncFiles(ctx context.Context) {
 			request.retryTime = maxRetryTime
 		}
 
-		retryTimer := time.NewTicker(request.retryTime)
+		retryTimer := time.NewTimer(request.retryTime)
+		defer retryTimer.Stop()
 
 		select {
 		case <-request.ctx.Done():
@@ -862,25 +872,27 @@ func (c *RCloneSession) syncFiles(ctx context.Context) {
 		logEvery := time.NewTicker(20 * time.Second)
 		defer logEvery.Stop()
 
-		select {
-		case <-gctx.Done():
-			if syncCount := int(c.activeSyncCount.Load()) + len(c.syncQueue); syncCount > 0 {
-				log.Debug("[rclone] Synced files", "processed", fmt.Sprintf("%d/%d", c.activeSyncCount.Load(), syncCount))
-			}
+		for {
+			select {
+			case <-gctx.Done():
+				if syncCount := int(c.activeSyncCount.Load()) + len(c.syncQueue); syncCount > 0 {
+					log.Debug("[rclone] Synced files", "processed", fmt.Sprintf("%d/%d", c.activeSyncCount.Load(), syncCount))
+				}
 
-			c.Lock()
-			syncQueue := c.syncQueue
-			c.syncQueue = nil
-			c.Unlock()
+				c.Lock()
+				syncQueue := c.syncQueue
+				c.syncQueue = nil
+				c.Unlock()
 
-			if syncQueue != nil {
-				close(syncQueue)
-			}
+				if syncQueue != nil {
+					close(syncQueue)
+				}
 
-			return
-		case <-logEvery.C:
-			if syncCount := int(c.activeSyncCount.Load()) + len(c.syncQueue); syncCount > 0 {
-				log.Debug("[rclone] Syncing files", "progress", fmt.Sprintf("%d/%d", c.activeSyncCount.Load(), syncCount))
+				return
+			case <-logEvery.C:
+				if syncCount := int(c.activeSyncCount.Load()) + len(c.syncQueue); syncCount > 0 {
+					log.Debug("[rclone] Syncing files", "progress", fmt.Sprintf("%d/%d", c.activeSyncCount.Load(), syncCount))
+				}
 			}
 		}
 	}()
@@ -951,7 +963,10 @@ func (c *RCloneSession) syncFiles(ctx context.Context) {
 					}
 
 					for _, info := range req.info {
-						localInfo, _ := os.Stat(filepath.Join(c.localFs, info.file))
+						localInfo, err := os.Stat(filepath.Join(c.localFs, info.file))
+						if err != nil {
+							continue
+						}
 
 						info.Lock()
 						info.localInfo = localInfo

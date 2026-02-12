@@ -179,7 +179,7 @@ func (a *StateAccount) ToProtoMessage() proto.Message {
 func (a *StateAccount) FromProtoMessage(msg proto.Message) error {
 	pAccount, ok := msg.(*state.Account)
 	if !ok {
-		return fmt.Errorf("impossible type assert ")
+		return fmt.Errorf("type conversion failure: expected *state.Account, got %T", msg)
 	}
 
 	a.Initialised = pAccount.Initialised

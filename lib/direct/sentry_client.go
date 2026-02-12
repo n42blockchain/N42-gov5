@@ -320,7 +320,10 @@ func (c *SentryMessagesStreamC) RecvMsg(anyMessage interface{}) error {
 	if err != nil {
 		return err
 	}
-	outMessage := anyMessage.(*sentry.InboundMessage)
+	outMessage, ok := anyMessage.(*sentry.InboundMessage)
+	if !ok {
+		return fmt.Errorf("expected *sentry.InboundMessage, got %T", anyMessage)
+	}
 	proto.Merge(outMessage, m)
 	return nil
 }
@@ -389,7 +392,10 @@ func (c *SentryPeersStreamC) RecvMsg(anyMessage interface{}) error {
 	if err != nil {
 		return err
 	}
-	outMessage := anyMessage.(*sentry.PeerEvent)
+	outMessage, ok := anyMessage.(*sentry.PeerEvent)
+	if !ok {
+		return fmt.Errorf("expected *sentry.PeerEvent, got %T", anyMessage)
+	}
 	proto.Merge(outMessage, m)
 	return nil
 }

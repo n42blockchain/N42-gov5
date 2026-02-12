@@ -32,9 +32,9 @@ type Body struct {
 }
 
 func (b *Body) ToProtoMessage() proto.Message {
-	var pbTxs []*types_pb.Transaction
-	var pbVerifiers []*types_pb.Verifier
-	var pbRewards []*types_pb.Reward
+	pbTxs := make([]*types_pb.Transaction, 0, len(b.Txs))
+	pbVerifiers := make([]*types_pb.Verifier, 0, len(b.Verifiers))
+	pbRewards := make([]*types_pb.Reward, 0, len(b.Rewards))
 
 	for _, v := range b.Txs {
 		pbTx := v.ToProtoMessage()
@@ -73,11 +73,10 @@ func (b *Body) FromProtoMessage(message proto.Message) error {
 	)
 
 	if pBody, ok = message.(*types_pb.Body); !ok {
-		return fmt.Errorf("type conversion failure")
+		return fmt.Errorf("type conversion failure: expected *types_pb.Body, got %T", message)
 	}
 
-	var txs []*transaction.Transaction
-	//
+	txs := make([]*transaction.Transaction, 0, len(pBody.Txs))
 	for _, v := range pBody.Txs {
 		tx, err := transaction.FromProtoMessage(v)
 		if err != nil {
@@ -85,19 +84,16 @@ func (b *Body) FromProtoMessage(message proto.Message) error {
 		}
 		txs = append(txs, tx)
 	}
-	//
 	b.Txs = txs
 
-	//verifiers
-	var verifiers []*Verify
+	verifiers := make([]*Verify, 0, len(pBody.Verifiers))
 	for _, v := range pBody.Verifiers {
 		verify := new(Verify).FromProtoMessage(v)
 		verifiers = append(verifiers, verify)
 	}
 	b.Verifiers = verifiers
 
-	//Reward
-	var rewards []*Reward
+	rewards := make([]*Reward, 0, len(pBody.Rewards))
 	for _, v := range pBody.Rewards {
 		reward := new(Reward).FromProtoMessage(v)
 		rewards = append(rewards, reward)
@@ -119,21 +115,22 @@ func (b *Body) Reward() []*Reward {
 }
 
 func (b *Body) reward() []*types_pb.H256 {
-	var rewardAmount []*types_pb.H256
-	if len(b.Rewards) > 0 {
-		for _, reward := range b.Rewards {
-			rewardAmount = append(rewardAmount, utils.ConvertUint256IntToH256(reward.Amount))
-		}
+	if len(b.Rewards) == 0 {
+		return nil
+	}
+	rewardAmount := make([]*types_pb.H256, 0, len(b.Rewards))
+	for _, reward := range b.Rewards {
+		rewardAmount = append(rewardAmount, utils.ConvertUint256IntToH256(reward.Amount))
 	}
 	return rewardAmount
 }
 
 func (b *Body) rewardAddress() []types.Address {
-	var rewardAddress []types.Address
+	rewardAddr := make([]types.Address, 0, len(b.Rewards))
 	for _, reward := range b.Rewards {
-		rewardAddress = append(rewardAddress, reward.Address)
+		rewardAddr = append(rewardAddr, reward.Address)
 	}
-	return rewardAddress
+	return rewardAddr
 }
 
 func (b *Body) SendersFromTxs() []types.Address {

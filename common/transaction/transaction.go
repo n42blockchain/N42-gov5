@@ -112,7 +112,7 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 	)
 
 	if pbTx, ok = message.(*types_pb.Transaction); !ok {
-		return nil, fmt.Errorf("invalid proto message type for transaction")
+		return nil, fmt.Errorf("invalid proto message type for transaction: expected *types_pb.Transaction, got %T", message)
 	}
 
 	switch pbTx.Type {
@@ -519,7 +519,9 @@ func (tx *Transaction) Cost() *uint256.Int {
 
 func (tx *Transaction) Hash() types.Hash {
 	if hash := tx.hash.Load(); hash != nil {
-		return hash.(types.Hash)
+		if h, ok := hash.(types.Hash); ok {
+			return h
+		}
 	}
 	h := tx.inner.hash()
 	tx.hash.Store(h)

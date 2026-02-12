@@ -118,6 +118,7 @@ func initSequences(db kv.Tx, memTx kv.RwTx) error {
 	if err != nil {
 		return err
 	}
+	defer cursor.Close()
 	for k, v, err := cursor.First(); k != nil; k, v, err = cursor.Next() {
 		if err != nil {
 			return err
@@ -577,43 +578,53 @@ func (m *MemoryMutation) Diff() (*MemoryDiff, error) {
 	// Iterate over each bucket and apply changes accordingly.
 	for _, bucket := range buckets {
 		if isTablePurelyDupsort(bucket) {
-			cbucket, err := m.memTx.CursorDupSort(bucket)
-			if err != nil {
-				return nil, err
-			}
-			defer cbucket.Close()
-
-			t := table{
-				name:    bucket,
-				dupsort: true,
-			}
-			for k, v, err := cbucket.First(); k != nil; k, v, err = cbucket.Next() {
+			if err := func() error {
+				cbucket, err := m.memTx.CursorDupSort(bucket)
 				if err != nil {
-					return nil, err
+					return err
 				}
-				memDiff.diff[t] = append(memDiff.diff[t], entry{
-					k: common.Copy(k),
-					v: common.Copy(v),
-				})
+				defer cbucket.Close()
+
+				t := table{
+					name:    bucket,
+					dupsort: true,
+				}
+				for k, v, err := cbucket.First(); k != nil; k, v, err = cbucket.Next() {
+					if err != nil {
+						return err
+					}
+					memDiff.diff[t] = append(memDiff.diff[t], entry{
+						k: common.Copy(k),
+						v: common.Copy(v),
+					})
+				}
+				return nil
+			}(); err != nil {
+				return nil, err
 			}
 		} else {
-			cbucket, err := m.memTx.Cursor(bucket)
-			if err != nil {
-				return nil, err
-			}
-			defer cbucket.Close()
-			t := table{
-				name:    bucket,
-				dupsort: false,
-			}
-			for k, v, err := cbucket.First(); k != nil; k, v, err = cbucket.Next() {
+			if err := func() error {
+				cbucket, err := m.memTx.Cursor(bucket)
 				if err != nil {
-					return nil, err
+					return err
 				}
-				memDiff.diff[t] = append(memDiff.diff[t], entry{
-					k: common.Copy(k),
-					v: common.Copy(v),
-				})
+				defer cbucket.Close()
+				t := table{
+					name:    bucket,
+					dupsort: false,
+				}
+				for k, v, err := cbucket.First(); k != nil; k, v, err = cbucket.Next() {
+					if err != nil {
+						return err
+					}
+					memDiff.diff[t] = append(memDiff.diff[t], entry{
+						k: common.Copy(k),
+						v: common.Copy(v),
+					})
+				}
+				return nil
+			}(); err != nil {
+				return nil, err
 			}
 		}
 	}
