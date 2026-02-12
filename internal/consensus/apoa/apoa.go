@@ -325,7 +325,10 @@ func (c *Apoa) verifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHe
 // in a batch of parents (ascending order) to avoid looking those up from the
 // database. This is useful for concurrently verifying a batch of new headers.
 func (c *Apoa) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader block.IHeader, parents []block.IHeader) error {
-	header := iHeader.(*block.Header)
+	header, ok := iHeader.(*block.Header)
+	if !ok {
+		return errors.New("invalid header type: expected *block.Header")
+	}
 	// The genesis block is the always valid dead-end
 	number := header.Number.Uint64()
 	if number == 0 {
@@ -342,7 +345,10 @@ func (c *Apoa) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 		return errUnknownBlock
 	}
 	// Verify timestamp is valid (parent time + period <= header time)
-	rawParent := parent.(*block.Header)
+	rawParent, ok := parent.(*block.Header)
+	if !ok {
+		return errors.New("invalid parent header type: expected *block.Header")
+	}
 	if rawParent.Time+c.config.Period > header.Time {
 		return errInvalidTimestamp
 	}
@@ -422,7 +428,10 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 		if number == 0 || (number%c.config.Epoch == 0 && (len(headers) > params.FullImmutabilityThreshold || h == nil)) {
 			checkpoint := chain.GetHeaderByNumber(uint256.NewInt(number))
 			if checkpoint != nil {
-				rawCheckpoint := checkpoint.(*block.Header)
+				rawCheckpoint, ok := checkpoint.(*block.Header)
+				if !ok {
+					return nil, errors.New("invalid checkpoint header type: expected *block.Header")
+				}
 				hash := checkpoint.Hash()
 
 				// Security: validate extra data length before calculating signers count
@@ -463,7 +472,11 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 			}
 		}
 		headers = append(headers, header)
-		number, hash = number-1, header.(*block.Header).ParentHash
+		rawHdr, ok := header.(*block.Header)
+		if !ok {
+			return nil, errors.New("invalid header type: expected *block.Header")
+		}
+		number, hash = number-1, rawHdr.ParentHash
 	}
 	// Previous snapshot found, apply any pending headers on top of it
 	for i := 0; i < len(headers)/2; i++ {
@@ -506,7 +519,10 @@ func (c *Apoa) VerifyUncles(chain consensus.ConsensusChainReader, block block.IB
 // from.
 func (c *Apoa) verifySeal(snap *Snapshot, h block.IHeader, parents []block.IHeader) error {
 	// Verifying the genesis block is not supported
-	header := h.(*block.Header)
+	header, ok := h.(*block.Header)
+	if !ok {
+		return errors.New("invalid header type: expected *block.Header")
+	}
 	number := header.Number.Uint64()
 	if number == 0 {
 		return errUnknownBlock
@@ -543,7 +559,10 @@ func (c *Apoa) verifySeal(snap *Snapshot, h block.IHeader, parents []block.IHead
 // Prepare implements consensus.Engine, preparing all the consensus fields of the
 // header for running the transactions on top.
 func (c *Apoa) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) error {
-	rawHeader := header.(*block.Header)
+	rawHeader, ok := header.(*block.Header)
+	if !ok {
+		return errors.New("invalid header type: expected *block.Header")
+	}
 	// If the block isn't a checkpoint, cast a random vote (good enough for now)
 	rawHeader.Coinbase = types.Address{}
 	rawHeader.Nonce = block.BlockNonce{}
@@ -598,11 +617,17 @@ func (c *Apoa) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	rawHeader.MixDigest = types.Hash{}
 
 	// Ensure the timestamp has the correct delay
-	parent := chain.GetHeader(rawHeader.ParentHash, rawHeader.Number.Sub(rawHeader.Number, uint256.NewInt(1)))
+	// Security: use a temporary variable to avoid mutating rawHeader.Number in place
+	parentNumber := new(uint256.Int).Sub(rawHeader.Number, uint256.NewInt(1))
+	parent := chain.GetHeader(rawHeader.ParentHash, parentNumber)
 	if parent == nil {
 		return errors.New("unknown ancestor")
 	}
-	rawHeader.Time = parent.(*block.Header).Time + c.config.Period
+	rawParentHeader, ok := parent.(*block.Header)
+	if !ok {
+		return errors.New("invalid parent header type: expected *block.Header")
+	}
+	rawHeader.Time = rawParentHeader.Time + c.config.Period
 	if rawHeader.Time < uint64(time.Now().Unix()) {
 		rawHeader.Time = uint64(time.Now().Unix())
 	}
@@ -618,7 +643,10 @@ func (c *Apoa) Rewards(tx kv.RwTx, header block.IHeader, state *state.IntraBlock
 func (c *Apoa) Finalize(chain consensus.ChainHeaderReader, header block.IHeader, state *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
 	// No block rewards in PoA, so the state remains as is and uncles are dropped
 	//chain.Config().IsEIP158(header.Number)
-	rawHeader := header.(*block.Header)
+	rawHeader, ok := header.(*block.Header)
+	if !ok {
+		return nil, nil, errors.New("invalid header type: expected *block.Header")
+	}
 	rawHeader.Root = state.IntermediateRoot()
 	return nil, nil, nil
 }
@@ -645,7 +673,10 @@ func (c *Apoa) Authorize(signer types.Address, signFn SignerFn) {
 // Seal implements consensus.Engine, attempting to create a sealed block using
 // the local signing credentials.
 func (c *Apoa) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results chan<- block.IBlock, stop <-chan struct{}) error {
-	header := b.Header().(*block.Header)
+	header, ok := b.Header().(*block.Header)
+	if !ok {
+		return errors.New("invalid header type: expected *block.Header")
+	}
 
 	// Sealing the genesis block is not supported
 	number := header.Number.Uint64()

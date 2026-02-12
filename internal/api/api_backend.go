@@ -88,8 +88,14 @@ func (b *API) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockN
 		if header == nil {
 			return nil, errors.New("header for hash not found")
 		}
-		if blockNrOrHash.RequireCanonical && b.bc.(*internal.BlockChain).GetCanonicalHash(header.Number64()) != hash {
-			return nil, errors.New("hash is not currently canonical")
+		if blockNrOrHash.RequireCanonical {
+			bc, ok := b.bc.(*internal.BlockChain)
+			if !ok {
+				return nil, errors.New("blockchain type assertion failed")
+			}
+			if bc.GetCanonicalHash(header.Number64()) != hash {
+				return nil, errors.New("hash is not currently canonical")
+			}
 		}
 		h, ok := header.(*types.Header)
 		if !ok {
@@ -164,8 +170,14 @@ func (b *API) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNu
 		if header == nil {
 			return nil, errors.New("header for hash not found")
 		}
-		if blockNrOrHash.RequireCanonical && b.bc.(*internal.BlockChain).GetCanonicalHash(header.Number64()) != hash {
-			return nil, errors.New("hash is not currently canonical")
+		if blockNrOrHash.RequireCanonical {
+			bc, ok := b.bc.(*internal.BlockChain)
+			if !ok {
+				return nil, errors.New("blockchain type assertion failed")
+			}
+			if bc.GetCanonicalHash(header.Number64()) != hash {
+				return nil, errors.New("hash is not currently canonical")
+			}
 		}
 		iBlock := b.bc.GetBlock(hash, header.Number64().Uint64())
 		if iBlock == nil {
@@ -305,7 +317,11 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *types.B
 		}
 		// Ensure any modifications are committed to the state
 		// Only delete empty objects if EIP161 (part of Spurious Dragon) is in effect
-		_ = statedb.FinalizeTx(rules, statedb.GetStateReader().(*state.PlainState))
+		plainState, ok := statedb.GetStateReader().(*state.PlainState)
+		if !ok {
+			return nil, evmtypes.BlockContext{}, nil, errors.New("unexpected state reader type")
+		}
+		_ = statedb.FinalizeTx(rules, plainState)
 
 		if idx+1 == len(blk.Transactions()) {
 			// Return the state from evaluating all txs in the block, note no msg or TxContext in this case

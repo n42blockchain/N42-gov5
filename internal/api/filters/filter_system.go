@@ -106,15 +106,31 @@ func NewEventSystem(api Api) *EventSystem {
 	}
 
 	// Subscribe events
-	m.txsSub, _ = event.GlobalEvent.Subscribe(m.txsCh)
-	m.logsSub, _ = event.GlobalEvent.Subscribe(m.logsCh)
-	m.rmLogsSub, _ = event.GlobalEvent.Subscribe(m.rmLogsCh)
-	m.chainSub, _ = event.GlobalEvent.Subscribe(m.chainCh)
-	m.pendingLogsSub, _ = event.GlobalEvent.Subscribe(m.pendingLogsCh)
+	var subErr error
+	m.txsSub, subErr = event.GlobalEvent.Subscribe(m.txsCh)
+	if subErr != nil {
+		log.Error("Failed to subscribe to txs events", "err", subErr)
+	}
+	m.logsSub, subErr = event.GlobalEvent.Subscribe(m.logsCh)
+	if subErr != nil {
+		log.Error("Failed to subscribe to logs events", "err", subErr)
+	}
+	m.rmLogsSub, subErr = event.GlobalEvent.Subscribe(m.rmLogsCh)
+	if subErr != nil {
+		log.Error("Failed to subscribe to removed logs events", "err", subErr)
+	}
+	m.chainSub, subErr = event.GlobalEvent.Subscribe(m.chainCh)
+	if subErr != nil {
+		log.Error("Failed to subscribe to chain events", "err", subErr)
+	}
+	m.pendingLogsSub, subErr = event.GlobalEvent.Subscribe(m.pendingLogsCh)
+	if subErr != nil {
+		log.Error("Failed to subscribe to pending logs events", "err", subErr)
+	}
 
 	// Make sure none of the subscriptions are empty
 	if m.txsSub == nil || m.logsSub == nil || m.rmLogsSub == nil || m.chainSub == nil || m.pendingLogsSub == nil {
-		log.Error("Subscribe for event system failed")
+		log.Error("Subscribe for event system failed: one or more subscriptions are nil")
 	}
 
 	go m.eventLoop()
@@ -361,16 +377,27 @@ func (es *EventSystem) lightFilterNewHead(newHeader block.IHeader, callBack func
 	for oldh.Hash() != newh.Hash() {
 		if oldh.Number64().Uint64() >= newh.Number64().Uint64() {
 			oldHeaders = append(oldHeaders, oldh)
-			pHash := oldh.(*block.Header).ParentHash
+			oldHeader, ok := oldh.(*block.Header)
+			if !ok {
+				return
+			}
+			pHash := oldHeader.ParentHash
 			es.api.Database().View(context.Background(), func(tx kv.Tx) error {
 				var err error
 				oldh, err = rawdb.ReadHeaderByHash(tx, pHash)
 				return err
 			})
+			if oldh == nil {
+				return
+			}
 		}
 		if oldh.Number64().Uint64() < newh.Number64().Uint64() {
 			newHeaders = append(newHeaders, newh)
-			pHash := newh.(*block.Header).ParentHash
+			newHeader, ok := newh.(*block.Header)
+			if !ok {
+				return
+			}
+			pHash := newHeader.ParentHash
 			es.api.Database().View(context.Background(), func(tx kv.Tx) error {
 				newh, _ = rawdb.ReadHeaderByHash(tx, pHash)
 				if newh == nil {
@@ -398,8 +425,9 @@ func (es *EventSystem) lightFilterLogs(header block.IHeader, addresses []types.A
 	bloom, _ := types.NewBloom(100)
 	if bloomFilter(bloom, addresses, topics) {
 		// Get the logs of the block
-		_, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
+		_ = ctx // context used for timeout scope
 		logsList, err := es.api.BlockChain().GetLogs(header.Hash())
 		if err != nil {
 			return nil

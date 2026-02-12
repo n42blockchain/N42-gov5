@@ -188,12 +188,25 @@ func exportDBState(ctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to list buckets: %w", err)
 	}
+	// R2 fix: check errors instead of silently dropping them
 	for _, Bucket := range Buckets {
-		size, _ := roTX.BucketSize(Bucket)
+		size, err := roTX.BucketSize(Bucket)
+		if err != nil {
+			log.Warn("Failed to get bucket size", "bucket", Bucket, "err", err)
+			continue
+		}
 		tsize += size
-		Cursor, _ := roTX.Cursor(Bucket)
-		count, _ := Cursor.Count()
+		Cursor, err := roTX.Cursor(Bucket)
+		if err != nil {
+			log.Warn("Failed to open cursor", "bucket", Bucket, "err", err)
+			continue
+		}
+		count, err := Cursor.Count()
 		Cursor.Close()
+		if err != nil {
+			log.Warn("Failed to get count", "bucket", Bucket, "err", err)
+			continue
+		}
 		if count != 0 {
 			fmt.Printf("%30v count %10d size: %s \r\n", Bucket, count, common.StorageSize(size))
 		}
@@ -224,10 +237,14 @@ func dbCopy(ctx *cli.Context) error {
 	}
 
 	from, to := backup.OpenPair(fromChaindata, toChaindata, kv.ChainDB, 0)
+	// R2 fix: close database handles when done
+	defer from.Close()
+	defer to.Close()
 	err := backup.Kv2kv(ctx.Context, from, to, nil, backup.ReadAheadThreads)
+	// R2 fix: return actual error instead of swallowing it
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Error(err.Error())
-		return nil
+		return err
 	}
 
 	return nil

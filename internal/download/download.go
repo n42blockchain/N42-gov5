@@ -19,6 +19,7 @@ package download
 import (
 	"context"
 	"errors"
+	"fmt"
 	"hash"
 	"sync"
 	"sync/atomic"
@@ -389,7 +390,11 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 	switch syncTask.SyncType {
 
 	case sync_proto.SyncType_HeaderRes:
-		headersResponse := syncTask.Payload.(*sync_proto.SyncTask_SyncHeaderResponse).SyncHeaderResponse
+		payload, ok := syncTask.Payload.(*sync_proto.SyncTask_SyncHeaderResponse)
+		if !ok || payload.SyncHeaderResponse == nil {
+			return fmt.Errorf("invalid payload type for HeaderRes from peer %s", ID)
+		}
+		headersResponse := payload.SyncHeaderResponse
 		// Security: bounds check before accessing slice elements
 		if len(headersResponse.Headers) > 0 {
 			params = append(params, "headerCount", len(headersResponse.Headers), "headerNumberFrom", utils.ConvertH256ToUint256Int(headersResponse.Headers[0].Number).Uint64(), "headerNumberTo", utils.ConvertH256ToUint256Int(headersResponse.Headers[len(headersResponse.Headers)-1].Number).Uint64())
@@ -399,12 +404,20 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 		d.headerProcCh <- &headerResponse{taskID: taskID, ok: syncTask.Ok, headers: headersResponse.Headers}
 
 	case sync_proto.SyncType_HeaderReq:
-		headerRequest := syncTask.Payload.(*sync_proto.SyncTask_SyncHeaderRequest).SyncHeaderRequest
+		payload, ok := syncTask.Payload.(*sync_proto.SyncTask_SyncHeaderRequest)
+		if !ok || payload.SyncHeaderRequest == nil {
+			return fmt.Errorf("invalid payload type for HeaderReq from peer %s", ID)
+		}
+		headerRequest := payload.SyncHeaderRequest
 		params = append(params, "Amount", utils.ConvertH256ToUint256Int(headerRequest.Amount).Uint64(), "headerNumberFrom", utils.ConvertH256ToUint256Int(headerRequest.Number).Uint64())
 		go d.responseHeaders(taskID, p, headerRequest)
 
 	case sync_proto.SyncType_BodyRes:
-		bodiesResponse := syncTask.Payload.(*sync_proto.SyncTask_SyncBlockResponse).SyncBlockResponse
+		payload, ok := syncTask.Payload.(*sync_proto.SyncTask_SyncBlockResponse)
+		if !ok || payload.SyncBlockResponse == nil {
+			return fmt.Errorf("invalid payload type for BodyRes from peer %s", ID)
+		}
+		bodiesResponse := payload.SyncBlockResponse
 		// Security: bounds check before accessing slice elements
 		if len(bodiesResponse.Blocks) > 0 {
 			params = append(params, "blocksCount", len(bodiesResponse.Blocks), "bodyNumberFrom", utils.ConvertH256ToUint256Int(bodiesResponse.Blocks[0].Header.Number).Uint64(), "bodyNumberTo", utils.ConvertH256ToUint256Int(bodiesResponse.Blocks[len(bodiesResponse.Blocks)-1].Header.Number).Uint64())
@@ -414,7 +427,11 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 		d.blockProcCh <- &bodyResponse{taskID: taskID, ok: syncTask.Ok, bodies: bodiesResponse.Blocks}
 
 	case sync_proto.SyncType_BodyReq:
-		blockRequest := syncTask.Payload.(*sync_proto.SyncTask_SyncBlockRequest).SyncBlockRequest
+		payload, ok := syncTask.Payload.(*sync_proto.SyncTask_SyncBlockRequest)
+		if !ok || payload.SyncBlockRequest == nil {
+			return fmt.Errorf("invalid payload type for BodyReq from peer %s", ID)
+		}
+		blockRequest := payload.SyncBlockRequest
 		// Security: bounds check before accessing slice elements
 		if len(blockRequest.Number) > 0 {
 			params = append(params, "bodyNumberFrom", utils.ConvertH256ToUint256Int(blockRequest.Number[0]).Uint64(), "bodyNumberTo", utils.ConvertH256ToUint256Int(blockRequest.Number[len(blockRequest.Number)-1]).Uint64())
@@ -424,7 +441,11 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 		go d.responseBlocks(taskID, p, blockRequest)
 
 	case sync_proto.SyncType_PeerInfoBroadcast:
-		peerInfoBroadcast := syncTask.Payload.(*sync_proto.SyncTask_SyncPeerInfoBroadcast).SyncPeerInfoBroadcast
+		payload, ok := syncTask.Payload.(*sync_proto.SyncTask_SyncPeerInfoBroadcast)
+		if !ok || payload.SyncPeerInfoBroadcast == nil {
+			return fmt.Errorf("invalid payload type for PeerInfoBroadcast from peer %s", ID)
+		}
+		peerInfoBroadcast := payload.SyncPeerInfoBroadcast
 		//
 		currentNumber := utils.ConvertH256ToUint256Int(peerInfoBroadcast.Number)
 		currentDifficulty := utils.ConvertH256ToUint256Int(peerInfoBroadcast.Difficulty)

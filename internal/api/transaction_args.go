@@ -493,7 +493,11 @@ func (args *TransactionArgs) setFeeDefaults(ctx context.Context, b *API) error {
 	head := b.BlockChain().CurrentBlock()
 	if b.chainConfig.IsLondon(head.Number64().Uint64()) {
 		// London is active, set maxPriorityFeePerGas and maxFeePerGas.
-		if err := args.setLondonFeeDefaults(ctx, head.Header().(*block.Header), b); err != nil {
+		headHeader, ok := head.Header().(*block.Header)
+		if !ok {
+			return errors.New("unexpected header type in setFeeDefaults")
+		}
+		if err := args.setLondonFeeDefaults(ctx, headHeader, b); err != nil {
 			return err
 		}
 	} else {

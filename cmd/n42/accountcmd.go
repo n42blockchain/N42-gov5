@@ -211,7 +211,11 @@ func importWallet(ctx *cli.Context) error {
 	if len(backends) == 0 {
 		utils.Fatalf("No keystore backend available")
 	}
-	ks := backends[0].(*keystore.KeyStore)
+	// R2 fix: safe type assertion to prevent panic
+	ks, ok := backends[0].(*keystore.KeyStore)
+	if !ok {
+		utils.Fatalf("Backend is not a KeyStore")
+	}
 	acct, err := ks.ImportPreSaleKey(keyJSON, passphrase)
 	if err != nil {
 		utils.Fatalf("%v", err)
@@ -354,7 +358,11 @@ func accountUpdate(ctx *cli.Context) error {
 	if len(backends) == 0 {
 		utils.Fatalf("No keystore backend available")
 	}
-	ks := backends[0].(*keystore.KeyStore)
+	// R2 fix: safe type assertion to prevent panic
+	ks, ok := backends[0].(*keystore.KeyStore)
+	if !ok {
+		utils.Fatalf("Backend is not a KeyStore")
+	}
 
 	for _, addr := range ctx.Args().Slice() {
 		account, oldPassword := unlockAccount(ks, addr, 0, nil)
@@ -387,7 +395,11 @@ func accountImport(ctx *cli.Context) error {
 	if len(backends) == 0 {
 		utils.Fatalf("No keystore backend available")
 	}
-	ks := backends[0].(*keystore.KeyStore)
+	// R2 fix: safe type assertion to prevent panic
+	ks, ok := backends[0].(*keystore.KeyStore)
+	if !ok {
+		utils.Fatalf("Backend is not a KeyStore")
+	}
 	acct, err := ks.ImportECDSA(key, passphrase)
 	if err != nil {
 		utils.Fatalf("Could not create the account: %v", err)

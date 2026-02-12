@@ -354,9 +354,17 @@ func (sm *SyncStateMachine) transitionTo(newState SyncState) {
 }
 
 // Start begins the state machine loop.
+// Fix: Track goroutines with WaitGroup so Stop() can wait for them.
 func (sm *SyncStateMachine) Start() {
-	go sm.run()
-	go sm.metricsLogger()
+	sm.wg.Add(2)
+	go func() {
+		defer sm.wg.Done()
+		sm.run()
+	}()
+	go func() {
+		defer sm.wg.Done()
+		sm.metricsLogger()
+	}()
 }
 
 // Stop stops the state machine.

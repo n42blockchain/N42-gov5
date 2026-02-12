@@ -17,6 +17,7 @@
 package apos
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -44,7 +45,11 @@ func NewFaker() consensus.Engine {
 }
 
 func (f *Faker) Author(header block.IHeader) (types.Address, error) {
-	return header.(*block.Header).Coinbase, nil
+	h, ok := header.(*block.Header)
+	if !ok {
+		return types.Address{}, errors.New("invalid header type: expected *block.Header")
+	}
+	return h.Coinbase, nil
 }
 
 func (f *Faker) VerifyHeader(chain consensus.ChainHeaderReader, header block.IHeader, seal bool) error {
@@ -74,7 +79,10 @@ func (f *Faker) VerifyUncles(chain consensus.ConsensusChainReader, blk block.IBl
 
 func (f *Faker) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) error {
 	// Set difficulty for the block (required for ReorgNeeded to work correctly)
-	h := header.(*block.Header)
+	h, ok := header.(*block.Header)
+	if !ok {
+		return errors.New("invalid header type: expected *block.Header")
+	}
 	parent, _ := chain.GetHeaderByHash(h.ParentHash)
 	if parent != nil {
 		h.Difficulty = f.CalcDifficulty(chain, h.Time, parent)

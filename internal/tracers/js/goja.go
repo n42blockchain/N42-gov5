@@ -92,8 +92,12 @@ func fromBuf(vm *goja.Runtime, bufType goja.Value, buf goja.Value, allowString b
 		if !obj.Get("constructor").SameAs(bufType) {
 			break
 		}
-		b := obj.Get("buffer").Export().(goja.ArrayBuffer).Bytes()
-		return b, nil
+		exported := obj.Get("buffer").Export()
+		ab, ok := exported.(goja.ArrayBuffer)
+		if !ok {
+			break
+		}
+		return ab.Bytes(), nil
 	}
 	return nil, fmt.Errorf("invalid buffer type")
 }
@@ -230,7 +234,12 @@ func (t *jsTracer) CaptureTxEnd(restGas uint64) {
 
 // CaptureStart implements the Tracer interface to initialize the tracing operation.
 func (t *jsTracer) CaptureStart(env vm.VMInterface, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *uint256.Int) {
-	t.env = env.(*vm.EVM)
+	evm, ok := env.(*vm.EVM)
+	if !ok {
+		t.err = errors.New("unexpected EVM type in CaptureStart")
+		return
+	}
+	t.env = evm
 	db := &dbObj{db: env.IntraBlockState(), vm: t.vm, toBig: t.toBig, toBuf: t.toBuf, fromBuf: t.fromBuf}
 	t.dbValue = db.setupObject()
 	if create {
@@ -370,7 +379,7 @@ func (t *jsTracer) onError(context string, err error) {
 }
 
 func wrapError(context string, err error) error {
-	return fmt.Errorf("%v    in server-side tracer function '%v'", err, context)
+	return fmt.Errorf("%w    in server-side tracer function '%v'", err, context)
 }
 
 // setBuiltinFunctions injects Go functions which are available to tracers into the environment.

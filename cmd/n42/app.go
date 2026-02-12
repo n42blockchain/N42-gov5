@@ -159,7 +159,11 @@ func unlockAccounts(ctx *cli.Context, stack *node.Node, cfg *conf.Config) {
 	if len(backends) == 0 {
 		utils.Fatalf("No keystore backend available for unlocking accounts")
 	}
-	ks := backends[0].(*keystore.KeyStore)
+	// R2 fix: safe type assertion to prevent panic
+	ks, ok := backends[0].(*keystore.KeyStore)
+	if !ok {
+		utils.Fatalf("Backend is not a KeyStore")
+	}
 	passwords := MakePasswordList(ctx)
 	for i, account := range unlocks {
 		unlockAccount(ks, account, i, passwords)

@@ -664,7 +664,11 @@ func (debug *DebugAPI) StorageRangeAt(ctx context.Context, blockHashOrNumber int
 	if err := debug.api.Database().View(ctx, func(tx kv.Tx) error {
 		ibs := debug.api.State(tx, jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.BlockNumber(blk.Number64().Uint64())))
 		if ibs != nil {
-			stateDB = ibs.(*state.IntraBlockState)
+			var ok bool
+			stateDB, ok = ibs.(*state.IntraBlockState)
+			if !ok {
+				return errors.New("unexpected state type")
+			}
 		}
 		return nil
 	}); err != nil {

@@ -140,7 +140,11 @@ func (l *StructLogger) Reset() {
 
 // CaptureStart implements the EVMLogger interface to initialize the tracing operation.
 func (l *StructLogger) CaptureStart(env vm.VMInterface, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *uint256.Int) {
-	l.env = env.(*vm.EVM)
+	evm, ok := env.(*vm.EVM)
+	if !ok {
+		return
+	}
+	l.env = evm
 }
 
 // CaptureState logs a new structured log message and pushes it out to the environment

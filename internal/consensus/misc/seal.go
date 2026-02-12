@@ -18,6 +18,7 @@ package misc
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
 	lru "github.com/hashicorp/golang-lru"
@@ -97,7 +98,10 @@ func EncodeSigHeader(w io.Writer, iHeader block.IHeader) error {
 // Ecrecover extracts the Ethereum account address from a signed header.
 // The result is cached in sigcache for performance.
 func Ecrecover(iHeader block.IHeader, sigcache *lru.ARCCache) (types.Address, error) {
-	header := iHeader.(*block.Header)
+	header, ok := iHeader.(*block.Header)
+	if !ok {
+		return types.Address{}, fmt.Errorf("invalid header type: expected *block.Header, got %T", iHeader)
+	}
 	// If the signature's already cached, return that
 	hash := header.Hash()
 	if address, known := sigcache.Get(hash); known {

@@ -106,17 +106,31 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 	bf.results.nextBaseFee = new(big.Int)
 
 	if oracle.chainConfig.IsLondon(bf.blockNumber + 1) {
-		bf.results.nextBaseFee = misc.CalcBaseFee(oracle.chainConfig, bf.header.(*block.Header))
+		h, ok := bf.header.(*block.Header)
+		if !ok {
+			bf.err = errors.New("unexpected header type in processBlock")
+			return
+		}
+		bf.results.nextBaseFee = misc.CalcBaseFee(oracle.chainConfig, h)
 	} else {
 		bf.results.nextBaseFee = new(big.Int)
 	}
 
-	bf.results.gasUsedRatio = float64(bf.block.GasUsed()) / float64(bf.block.GasLimit())
+	if bf.block == nil {
+		bf.err = errors.New("block is nil in processBlock")
+		return
+	}
+	gasLimit := bf.block.GasLimit()
+	if gasLimit == 0 {
+		bf.results.gasUsedRatio = 0
+	} else {
+		bf.results.gasUsedRatio = float64(bf.block.GasUsed()) / float64(gasLimit)
+	}
 	if len(percentiles) == 0 {
 		// rewards were not requested, return null
 		return
 	}
-	if bf.block == nil || (bf.receipts == nil && len(bf.block.Transactions()) != 0) {
+	if bf.receipts == nil && len(bf.block.Transactions()) != 0 {
 		log.Error("Block or receipts are missing while reward percentiles are requested")
 		return
 	}

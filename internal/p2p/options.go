@@ -19,6 +19,9 @@ import (
 // MultiAddressBuilder takes in an ip address string and port to produce a go multiaddr format.
 func MultiAddressBuilder(ipAddr string, port uint) (ma.Multiaddr, error) {
 	parsedIP := net.ParseIP(ipAddr)
+	if parsedIP == nil {
+		return nil, errors.Errorf("invalid ip address provided: %s", ipAddr)
+	}
 	if parsedIP.To4() == nil && parsedIP.To16() == nil {
 		return nil, errors.Errorf("invalid ip address provided: %s", ipAddr)
 	}
@@ -104,6 +107,9 @@ func (s *Service) buildOptions(ip net.IP, priKey *ecdsa.PrivateKey) []libp2p.Opt
 
 func multiAddressBuilderWithID(ipAddr, protocol string, port uint, id peer.ID) (ma.Multiaddr, error) {
 	parsedIP := net.ParseIP(ipAddr)
+	if parsedIP == nil {
+		return nil, errors.Errorf("invalid ip address provided: %s", ipAddr)
+	}
 	if parsedIP.To4() == nil && parsedIP.To16() == nil {
 		return nil, errors.Errorf("invalid ip address provided: %s", ipAddr)
 	}

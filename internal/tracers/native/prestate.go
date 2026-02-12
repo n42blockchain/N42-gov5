@@ -91,7 +91,11 @@ func newPrestateTracer(ctx *tracers.Context, cfg json.RawMessage) (tracers.Trace
 
 // CaptureStart implements the EVMLogger interface to initialize the tracing operation.
 func (t *prestateTracer) CaptureStart(env vm.VMInterface, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *uint256.Int) {
-	t.env = env.(*vm.EVM)
+	evm, ok := env.(*vm.EVM)
+	if !ok {
+		return
+	}
+	t.env = evm
 	t.create = create
 	t.to = to
 
