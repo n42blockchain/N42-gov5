@@ -52,6 +52,9 @@ func NewService(ctx context.Context, cfg *Config) *Service {
 		counter: ratecounter.NewRateCounter(counterSeconds * time.Second),
 		done:    make(chan struct{}),
 	}
+	// Mark as syncing immediately to prevent block topic subscriber
+	// from processing blocks before initial sync completes
+	s.syncing.Store(true)
 
 	return s
 }
@@ -61,7 +64,10 @@ func (s *Service) Start() {
 	defer close(s.done)
 
 	event.GlobalEvent.Send(common.DownloaderStartEvent{})
-	defer event.GlobalEvent.Send(common.DownloaderFinishEvent{})
+	defer func() {
+		s.markSynced()
+		event.GlobalEvent.Send(common.DownloaderFinishEvent{})
+	}()
 
 	log.Info("Starting chain synchronization...")
 	highestExpectedBlockNr := s.waitForMinimumPeers()
@@ -72,7 +78,6 @@ func (s *Service) Start() {
 		log.Crit("Sync failed", "err", err)
 	}
 	log.Info("Chain sync completed", "block", s.cfg.Chain.CurrentBlock().Number64().Uint64())
-	s.markSynced()
 }
 
 // Stop initial sync.
@@ -95,9 +100,35 @@ func (s *Service) Status() error {
 	return nil
 }
 
-// Syncing returns true if initial sync is still running.
+// nearSyncedThreshold defines how many blocks before target to start accepting gossip blocks.
+// This allows smooth transition from initial-sync to regular sync.
+const nearSyncedThreshold = 64
+
+// Syncing returns true if initial sync is still running and not near completion.
+// Returns false when sync is complete OR when approaching sync target (within nearSyncedThreshold blocks).
 func (s *Service) Syncing() bool {
-	return s.syncing.Load()
+	if !s.syncing.Load() {
+		return false
+	}
+	// If approaching sync target, return false to allow block topic processing
+	if s.isNearingSynced() {
+		return false
+	}
+	return true
+}
+
+// isNearingSynced returns true if we're within nearSyncedThreshold blocks of the target.
+func (s *Service) isNearingSynced() bool {
+	if s.highestExpectedBlockNr == nil || s.highestExpectedBlockNr.IsZero() {
+		return false
+	}
+	currentBlock := s.cfg.Chain.CurrentBlock().Number64().Uint64()
+	targetBlock := s.highestExpectedBlockNr.Uint64()
+	if currentBlock >= targetBlock {
+		return true
+	}
+	remaining := targetBlock - currentBlock
+	return remaining < nearSyncedThreshold
 }
 
 // Synced returns true if initial sync has been completed.
