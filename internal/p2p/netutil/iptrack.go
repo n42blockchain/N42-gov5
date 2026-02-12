@@ -17,8 +17,9 @@
 package netutil
 
 import (
-	"github.com/n42blockchain/N42/common/mclock"
 	"time"
+
+	"github.com/n42blockchain/N42/common/mclock"
 )
 
 // IPTracker predicts the external endpoint, i.e. IP address and port, of the local host

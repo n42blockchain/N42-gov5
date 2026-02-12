@@ -3,14 +3,14 @@ package p2p
 import (
 	"context"
 	"encoding/hex"
-	"github.com/n42blockchain/N42/api/protocol/msg_proto"
-	"github.com/n42blockchain/N42/utils"
 	"strings"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	pubsubpb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/n42blockchain/N42/api/protocol/msg_proto"
+	"github.com/n42blockchain/N42/utils"
 	"github.com/pkg/errors"
 )
 

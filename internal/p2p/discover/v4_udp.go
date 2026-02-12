@@ -24,15 +24,16 @@ import (
 	crand "crypto/rand"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"sync"
+	"time"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/internal/p2p/discover/v4wire"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/netutil"
 	"github.com/n42blockchain/N42/log"
-	"io"
-	"net"
-	"sync"
-	"time"
 )
 
 // Errors

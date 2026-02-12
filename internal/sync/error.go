@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+
+	libp2pcore "github.com/libp2p/go-libp2p/core"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
 	"github.com/n42blockchain/N42/log"
-
-	libp2pcore "github.com/libp2p/go-libp2p/core"
-	"github.com/libp2p/go-libp2p/core/network"
 )
 
 var responseCodeSuccess = byte(0x00)

@@ -17,9 +17,9 @@
 package logger
 
 import (
-	"github.com/n42blockchain/N42/common/transaction"
 	"math/big"
 
+	"github.com/n42blockchain/N42/common/transaction"
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm"
 )

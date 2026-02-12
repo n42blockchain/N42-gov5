@@ -2,6 +2,7 @@ package apos
 
 import (
 	"errors"
+	"sort"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
@@ -11,7 +12,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
-	"sort"
 )
 
 func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHeaderReader) (map[types.Address]*uint256.Int, map[types.Address]*uint256.Int, error) {

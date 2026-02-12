@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/log"
 	"google.golang.org/protobuf/proto"

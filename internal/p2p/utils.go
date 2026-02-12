@@ -8,16 +8,16 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
-	"github.com/n42blockchain/N42/conf"
-	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"github.com/n42blockchain/N42/utils"
 	"net"
 	"os"
 	"path"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/p2p/enr"
+	"github.com/n42blockchain/N42/utils"
 	"github.com/pkg/errors"
 )
 

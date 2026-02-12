@@ -19,13 +19,13 @@ package prometheus
 
 import (
 	"fmt"
+	"net/http"
+	"sort"
+
 	metrics2 "github.com/VictoriaMetrics/metrics"
 	"github.com/n42blockchain/N42/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
-
-	"net/http"
-	"sort"
 )
 
 // Handler returns an HTTP handler which dump metrics in Prometheus format.

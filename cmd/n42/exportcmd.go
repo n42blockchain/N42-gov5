@@ -20,19 +20,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
+	"os"
+	"time"
+
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common/account"
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/node"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/turbo/backup"
 	"github.com/urfave/cli/v2"
-	"math/big"
-	"os"
-	"time"
 )
 
 var (
@@ -209,21 +210,23 @@ func dbCopy(ctx *cli.Context) error {
 	fromChaindata := ctx.String(FromDataDirFlag.Name)
 	toChaindata := ctx.String(ToDataDirFlag.Name)
 
-	if f, err := os.Stat(fromChaindata); err != nil || !f.IsDir() {
-		log.Errorf("fromChaindata do not exists or is not a dir, err: %s", err)
+	if f, err := os.Stat(fromChaindata); err != nil {
+		log.Errorf("fromChaindata does not exist, err: %s", err)
 		return err
+	} else if !f.IsDir() {
+		return fmt.Errorf("fromChaindata is not a directory: %s", fromChaindata)
 	}
-	if f, err := os.Stat(toChaindata); err != nil || !f.IsDir() {
-		log.Errorf("toChaindata do not exists or is not a dir, err: %s", err)
+	if f, err := os.Stat(toChaindata); err != nil {
+		log.Errorf("toChaindata does not exist, err: %s", err)
 		return err
+	} else if !f.IsDir() {
+		return fmt.Errorf("toChaindata is not a directory: %s", toChaindata)
 	}
 
 	from, to := backup.OpenPair(fromChaindata, toChaindata, kv.ChainDB, 0)
 	err := backup.Kv2kv(ctx.Context, from, to, nil, backup.ReadAheadThreads)
 	if err != nil && !errors.Is(err, context.Canceled) {
-		if !errors.Is(err, context.Canceled) {
-			log.Error(err.Error())
-		}
+		log.Error(err.Error())
 		return nil
 	}
 

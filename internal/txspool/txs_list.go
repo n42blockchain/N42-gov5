@@ -18,14 +18,15 @@ package txspool
 
 import (
 	"container/heap"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/transaction"
-	"github.com/n42blockchain/N42/common/types"
 	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // addressByHeartbeat is an account address tagged with its last activity timestamp.

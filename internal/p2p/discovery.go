@@ -3,13 +3,6 @@ package p2p
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"github.com/n42blockchain/N42/conf"
-	"github.com/n42blockchain/N42/internal/p2p/discover"
-	"github.com/n42blockchain/N42/internal/p2p/enode"
-	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/params/networkname"
-	"github.com/n42blockchain/N42/utils"
 	"net"
 	"path/filepath"
 	"time"
@@ -17,6 +10,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
+	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/p2p/discover"
+	"github.com/n42blockchain/N42/internal/p2p/enode"
+	"github.com/n42blockchain/N42/internal/p2p/enr"
+	"github.com/n42blockchain/N42/params"
+	"github.com/n42blockchain/N42/params/networkname"
+	"github.com/n42blockchain/N42/utils"
 	"github.com/pkg/errors"
 )
 

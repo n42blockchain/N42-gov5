@@ -2,13 +2,13 @@ package scorers
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	"math"
 	"math/rand"
 	"sort"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
 
 var _ Scorer = (*BlockProviderScorer)(nil)

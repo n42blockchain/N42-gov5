@@ -2,12 +2,12 @@ package initialsync
 
 import (
 	"context"
-	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
 	"math"
 	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
 	"go.opencensus.io/trace"
 )
 

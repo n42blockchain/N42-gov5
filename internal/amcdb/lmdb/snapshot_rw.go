@@ -18,8 +18,9 @@ package lmdb
 
 import (
 	"context"
-	"github.com/erigontech/mdbx-go/mdbx"
 	"sync"
+
+	"github.com/erigontech/mdbx-go/mdbx"
 )
 
 type DBISnapshot struct {
@@ -66,19 +67,6 @@ func (db *DBISnapshot) Get(dbName string, key []byte) (value []byte, err error) 
 
 	return db.txn.Get(*dbi, key)
 }
-
-//func (db *DBISnapshot) GetIterator(dbName string, key []byte) (iterator db.IIterator, err error) {
-//	if !db.IsRunning() {
-//		return nil, errorSnapshotIsClose
-//	}
-//
-//	dbi, err := db.openDBI(dbName)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	return newIterator(dbi, key)
-//}
 
 func (db *DBISnapshot) Put(dbName string, key []byte, value []byte) (err error) {
 	if !db.IsRunning() {

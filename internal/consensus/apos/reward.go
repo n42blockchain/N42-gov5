@@ -24,16 +24,14 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/math"
-
 	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/contracts/deposit"
-	"github.com/n42blockchain/N42/params"
-
-	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/contracts/deposit"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/params"
 )
 
 type RewardResponse struct {
@@ -245,22 +243,6 @@ func (r *Reward) buildRewards(tx kv.RwTx, number *uint256.Int, setRewards bool) 
 
 	return rewardMap, nil
 }
-
-//func (r *Reward) setRewardByEpochPaid(tx kv.RwTx, epoch *uint256.Int, rewardMap map[types.Address]*uint256.Int) error {
-//	if tx == nil {
-//		return errors.New("setrewardepoch tx nil")
-//	}
-//	if len(rewardMap) == 0 {
-//		return nil
-//	}
-//	key := fmt.Sprintf("epoch:%s", epoch.String())
-//	err := rawdb.PutEpochReward(tx, key, rewardMap)
-//	if err != nil {
-//		return err
-//	}
-//
-//	return nil
-//}
 
 func (r *Reward) getAccountRewardUnpaid(tx kv.Getter, account types.Address) (*uint256.Int, error) {
 	value, err := rawdb.GetAccountReward(tx, account)

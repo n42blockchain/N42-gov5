@@ -23,27 +23,19 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/c2h5oh/datasize"
-	libcommon "github.com/n42blockchain/N42/lib/common"
-	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/kv/mdbx"
-	"github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/n42blockchain/N42/common/rlp"
 	"net"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/c2h5oh/datasize"
 	mdbx1 "github.com/erigontech/mdbx-go/mdbx"
-	/*
-		"github.com/syndtr/goleveldb/leveldb"
-		"github.com/syndtr/goleveldb/leveldb/errors"
-		"github.com/syndtr/goleveldb/leveldb/iterator"
-		"github.com/syndtr/goleveldb/leveldb/opt"
-		"github.com/syndtr/goleveldb/leveldb/storage"
-		"github.com/syndtr/goleveldb/leveldb/util"
-
-	*/)
+	"github.com/n42blockchain/N42/common/rlp"
+	libcommon "github.com/n42blockchain/N42/lib/common"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/log/v3"
+)
 
 // Keys in the node database.
 const (

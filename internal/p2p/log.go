@@ -1,11 +1,12 @@
 package p2p
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	astLog "github.com/n42blockchain/N42/log"
-	"strconv"
-	"strings"
 )
 
 var log = astLog.New("prefix", "p2p")

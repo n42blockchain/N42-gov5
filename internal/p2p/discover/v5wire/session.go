@@ -20,10 +20,10 @@ import (
 	"crypto/ecdsa"
 	crand "crypto/rand"
 	"encoding/binary"
-	lru "github.com/hashicorp/golang-lru/v2"
-	"github.com/n42blockchain/N42/common/crypto"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/mclock"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 )

@@ -22,15 +22,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
-	"google.golang.org/protobuf/proto"
 	"io"
 	"sync"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -38,8 +34,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/n42blockchain/N42/api/protocol/msg_proto"
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/message"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/utils"
+	"google.golang.org/protobuf/proto"
 )
 
 var (

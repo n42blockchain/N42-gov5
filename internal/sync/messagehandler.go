@@ -5,11 +5,11 @@ package sync
 import (
 	"context"
 	"fmt"
-	astLog "github.com/n42blockchain/N42/log"
-	"go.opencensus.io/trace"
 	"runtime/debug"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	astLog "github.com/n42blockchain/N42/log"
+	"go.opencensus.io/trace"
 )
 
 const noMsgData = "message contains no data"

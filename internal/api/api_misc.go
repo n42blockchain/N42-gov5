@@ -76,10 +76,12 @@ func (s *n42API) FeeHistory(ctx context.Context, blockCount jsonrpc.DecimalOrHex
 		err               error
 	)
 
-	s.api.db.View(ctx, func(tx kv.Tx) error {
+	if dbErr := s.api.db.View(ctx, func(tx kv.Tx) error {
 		resolvedLastBlock, _, err = rpchelper.GetBlockNumber(jsonrpc.BlockNumberOrHashWithNumber(lastBlock), tx)
 		return err
-	})
+	}); dbErr != nil {
+		return nil, dbErr
+	}
 
 	if err != nil {
 		return nil, err

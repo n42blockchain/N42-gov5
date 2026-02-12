@@ -6,15 +6,15 @@ package initialsync
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
+	"time"
+
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/p2p"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/paulbellamy/ratecounter"
-	"sync/atomic"
-	"time"
-
 	"github.com/pkg/errors"
 )
 

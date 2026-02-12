@@ -19,18 +19,17 @@ package apos
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/n42blockchain/N42/params"
 	"sort"
 	"time"
 
-	"github.com/n42blockchain/N42/lib/kv"
+	lru "github.com/hashicorp/golang-lru"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
-
-	lru "github.com/hashicorp/golang-lru"
+	"github.com/n42blockchain/N42/params"
 )
 
 // Vote represents a single vote that an authorized signer made to modify the

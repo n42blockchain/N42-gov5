@@ -19,7 +19,6 @@ package pubsub
 import (
 	"context"
 	"errors"
-	"google.golang.org/protobuf/proto"
 	"sync"
 	"sync/atomic"
 
@@ -28,6 +27,7 @@ import (
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/message"
 	"github.com/n42blockchain/N42/log"
+	"google.golang.org/protobuf/proto"
 )
 
 var (

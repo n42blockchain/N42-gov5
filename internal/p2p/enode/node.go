@@ -22,11 +22,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/rlp"
-	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"math/bits"
 	"net"
 	"strings"
+
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/internal/p2p/enr"
 )
 
 var errMissingPrefix = errors.New("missing 'enr:' prefix for base64-encoded record")

@@ -23,11 +23,11 @@ import (
 	"crypto/elliptic"
 	"errors"
 	"fmt"
+	"hash"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
-	"hash"
-
 	"golang.org/x/crypto/hkdf"
 )
 

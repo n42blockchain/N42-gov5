@@ -1,10 +1,10 @@
 package scorers
 
 import (
-	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
 
 var _ Scorer = (*BadResponsesScorer)(nil)

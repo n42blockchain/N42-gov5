@@ -18,12 +18,13 @@ package discover
 
 import (
 	"crypto/ecdsa"
+	"net"
+
 	"github.com/n42blockchain/N42/common/mclock"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/internal/p2p/netutil"
 	"github.com/n42blockchain/N42/log"
-	"net"
 )
 
 // UDPConn is a network connection on which discovery can operate.

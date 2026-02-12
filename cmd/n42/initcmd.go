@@ -4,16 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/n42blockchain/N42/lib/kv"
+	"os"
+
 	"github.com/n42blockchain/N42/cmd/utils"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/node"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/urfave/cli/v2"
-	"os"
 )
 
 var (
@@ -84,7 +85,7 @@ func initGenesis(cliCtx *cli.Context) error {
 		}
 		return nil
 	}); err != nil {
-		utils.Fatalf("Failed to wrote genesis state to database: %w", err)
+		utils.Fatalf("Failed to write genesis state to database: %v", err)
 	}
 	log.Info("Successfully wrote genesis state", "hash", genesisBlock.Hash())
 	return nil

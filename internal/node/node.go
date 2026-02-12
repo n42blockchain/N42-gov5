@@ -23,65 +23,58 @@ import (
 	"fmt"
 	"hash/crc32"
 	"net"
-	"path"
-	"runtime"
-	"strings"
-
-	"github.com/gofrs/flock"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/common/cmp"
-	"github.com/n42blockchain/N42/common/hexutil"
-	prometheus "github.com/n42blockchain/N42/common/metrics"
-	"github.com/n42blockchain/N42/contracts/deposit"
-	n42deposit "github.com/n42blockchain/N42/contracts/deposit/AMT"
-	fujideposit "github.com/n42blockchain/N42/contracts/deposit/FUJI"
-	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/NFT"
-	"github.com/n42blockchain/N42/internal/debug"
-	"github.com/n42blockchain/N42/internal/p2p"
-	n42sync "github.com/n42blockchain/N42/internal/sync"
-	initialsync "github.com/n42blockchain/N42/internal/sync/initial-sync"
-	"github.com/n42blockchain/N42/internal/tracers"
-	pkgerrors "github.com/pkg/errors"
-	"github.com/urfave/cli/v2"
-
-	"github.com/n42blockchain/N42/internal"
-	"github.com/n42blockchain/N42/internal/api"
-
-	"github.com/c2h5oh/datasize"
-	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/kv/mdbx"
-	"github.com/n42blockchain/N42/lib/kv/memdb"
-	log2 "github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/n42blockchain/N42/modules"
-	"golang.org/x/sync/semaphore"
-
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
-
-	"github.com/n42blockchain/N42/log"
-
+	"strings"
 	"sync"
 
+	"github.com/c2h5oh/datasize"
+	"github.com/gofrs/flock"
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
+	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
-
+	"github.com/n42blockchain/N42/contracts/deposit"
+	n42deposit "github.com/n42blockchain/N42/contracts/deposit/AMT"
+	fujideposit "github.com/n42blockchain/N42/contracts/deposit/FUJI"
+	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/NFT"
+	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
+	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/miner"
+	"github.com/n42blockchain/N42/internal/p2p"
+	n42sync "github.com/n42blockchain/N42/internal/sync"
+	initialsync "github.com/n42blockchain/N42/internal/sync/initial-sync"
+	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txspool"
+	"github.com/n42blockchain/N42/lib/common/cmp"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
+	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/utils"
+	pkgerrors "github.com/pkg/errors"
+	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
+	"golang.org/x/sync/semaphore"
 )
 
 const datadirJWTKey = "jwtsecret" // Path within the datadir to the node's jwt secret
@@ -807,7 +800,7 @@ func (n *Node) AccountManager() *accounts.Manager {
 	return n.accman
 }
 
-// AccountManager retrieves the account manager used by the protocol stack.
+// BlockChain retrieves the blockchain instance used by the protocol stack.
 func (n *Node) BlockChain() common.IBlockChain {
 	return n.blockChain
 }

@@ -18,20 +18,21 @@ package api
 
 import (
 	"context"
+	"math/big"
+	"sort"
+	"sync"
+
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
 	common2 "github.com/n42blockchain/N42/common"
+	types "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/transaction"
 	types2 "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
-	types "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
-	"math/big"
-	"sort"
-	"sync"
 )
 
 const sampleNumber = 3 // Number of transactions sampled in a block

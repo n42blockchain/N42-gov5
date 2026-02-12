@@ -21,17 +21,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/log"
 	"math/big"
 
+	"github.com/holiman/uint256"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	avmcommon "github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 

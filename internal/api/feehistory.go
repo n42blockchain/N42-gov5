@@ -21,16 +21,17 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
+	"sort"
+	"sync/atomic"
+
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"math"
-	"math/big"
-	"sort"
-	"sync/atomic"
 )
 
 var (

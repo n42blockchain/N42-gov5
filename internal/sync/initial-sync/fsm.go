@@ -3,12 +3,12 @@ package initialsync
 import (
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"sort"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/n42blockchain/N42/api/protocol/types_pb"
 )
 
 const (

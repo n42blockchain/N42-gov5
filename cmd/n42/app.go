@@ -18,9 +18,6 @@ package main
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/log"
-	"github.com/urfave/cli/v2"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -31,12 +28,13 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/accounts"
-
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/cmd/utils"
-
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/node"
+	"github.com/n42blockchain/N42/log"
+	"github.com/urfave/cli/v2"
 )
 
 func appRun(ctx *cli.Context) error {
@@ -276,11 +274,11 @@ func monitorFreeDiskSpace(sigc chan os.Signal, path string, freeDiskSpaceCritica
 			break
 		}
 		if freeSpace < freeDiskSpaceCritical {
-			log.Error("Low disk space. Gracefully shutting down Geth to prevent database corruption.", "available", types.StorageSize(freeSpace), "path", path)
+			log.Error("Low disk space. Gracefully shutting down N42 to prevent database corruption.", "available", types.StorageSize(freeSpace), "path", path)
 			sigc <- syscall.SIGTERM
 			break
 		} else if freeSpace < 2*freeDiskSpaceCritical {
-			log.Warn("Disk space is running low. Geth will shutdown if disk space runs below critical level.", "available", types.StorageSize(freeSpace), "critical_level", types.StorageSize(freeDiskSpaceCritical), "path", path)
+			log.Warn("Disk space is running low. N42 will shutdown if disk space runs below critical level.", "available", types.StorageSize(freeSpace), "critical_level", types.StorageSize(freeDiskSpaceCritical), "path", path)
 		}
 		time.Sleep(30 * time.Second)
 	}

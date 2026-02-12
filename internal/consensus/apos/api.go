@@ -20,19 +20,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/contracts/deposit"
-	"github.com/n42blockchain/N42/modules/rawdb"
-	"github.com/n42blockchain/N42/turbo/rpchelper"
 
+	"github.com/holiman/uint256"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/turbo/rpchelper"
 )
 
 const maxSearchBlock = 1000
@@ -202,8 +202,11 @@ func (api *API) Status() (*status, error) {
 	}
 	for n := start; n < end; n++ {
 		h := api.chain.GetHeaderByNumber(uint256.NewInt(n))
-		block := api.chain.GetBlock(h.Hash(), n)
 		if h == nil {
+			return nil, fmt.Errorf("missing block %d", n)
+		}
+		block := api.chain.GetBlock(h.Hash(), n)
+		if block == nil {
 			return nil, fmt.Errorf("missing block %d", n)
 		}
 		if block.Difficulty().Cmp(diffInTurn) == 0 {
@@ -294,25 +297,20 @@ func (api *API) GetRewards(address avmutil.Address, from jsonrpc.BlockNumberOrHa
 		return nil, dbErr
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
 	rewardService := newReward(api.apos.chainConfig)
 	resp, err = rewardService.GetRewards(*avmtypes.ToastAddress(&address), resolvedFromBlock, resolvedToBlock, api.chain.GetBlockByNumber)
 
 	return resp, err
 }
 
-// GetRewards
+// GetDepositInfo retrieves deposit information for an address.
 func (api *API) GetDepositInfo(address avmutil.Address) (*deposit.Info, error) {
 
 	addr := *avmtypes.ToastAddress(&address)
 
 	info := new(deposit.Info)
-	var err error
 
-	api.apos.dbView(func(tx kv.Tx) error {
+	err := api.apos.dbView(func(tx kv.Tx) error {
 		info = deposit.GetDepositInfo(tx, addr)
 		return nil
 	})

@@ -21,10 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/log"
-	"github.com/rs/cors"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"sort"
@@ -34,7 +31,9 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/rs/cors"
 )
 
 type httpConfig struct {
@@ -403,7 +402,7 @@ func (h *virtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 var gzPool = sync.Pool{
 	New: func() interface{} {
-		w := gzip.NewWriter(ioutil.Discard)
+		w := gzip.NewWriter(io.Discard)
 		return w
 	},
 }

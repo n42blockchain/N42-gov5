@@ -25,7 +25,16 @@ package peers
 import (
 	"context"
 	"fmt"
+	"math"
+	"net"
+	"sort"
+	"time"
+
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
+	manet "github.com/multiformats/go-multiaddr/net"
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/common/crypto/rand"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
@@ -33,15 +42,6 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
 	"github.com/n42blockchain/N42/log"
 	"google.golang.org/protobuf/proto"
-	"math"
-	"net"
-	"sort"
-	"time"
-
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
-	manet "github.com/multiformats/go-multiaddr/net"
 )
 
 const (

@@ -20,33 +20,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/internal"
-	"github.com/n42blockchain/N42/internal/api/filters"
-	vm2 "github.com/n42blockchain/N42/internal/vm"
-	"github.com/n42blockchain/N42/internal/vm/evmtypes"
-	event "github.com/n42blockchain/N42/modules/event/v2"
-	"github.com/n42blockchain/N42/modules/state"
-	"github.com/n42blockchain/N42/turbo/rpchelper"
-
 	"math/big"
 	"time"
 
-	"github.com/n42blockchain/N42/lib/kv"
-
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/common"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/api/filters"
 	"github.com/n42blockchain/N42/internal/avm/abi"
-	avmcommon "github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/internal/consensus"
+	vm2 "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
+	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
+	"github.com/n42blockchain/N42/turbo/rpchelper"
 )
 
 const (
@@ -484,7 +482,7 @@ func newRevertError(result *internal.ExecutionResult) *revertError {
 	}
 }
 
-// revertError is an API error that encompassas an EVM revertal with JSON error
+// revertError is an API error that encompasses an EVM revertal with JSON error
 // code and a binary data blob.
 type revertError struct {
 	error
