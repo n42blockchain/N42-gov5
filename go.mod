@@ -1,6 +1,6 @@
 module github.com/n42blockchain/N42
 
-go 1.24.9
+go 1.25.0
 
 require (
 	github.com/RoaringBitmap/roaring v1.9.4
@@ -36,9 +36,9 @@ require (
 	github.com/libp2p/go-libp2p-pubsub v0.15.0
 	github.com/mgutz/ansi v0.0.0-20200706080929-d51e80ef957d
 	github.com/multiformats/go-multiaddr v0.16.1
-	github.com/nsf/jsondiff v0.0.0-20230430225905-43f6cf3098c1
+	github.com/nsf/jsondiff v0.0.0-20260207060731-8e8d90c4c0ac
 	github.com/onsi/ginkgo v1.16.5
-	github.com/onsi/gomega v1.38.2
+	github.com/onsi/gomega v1.39.1
 	github.com/paulbellamy/ratecounter v0.2.0
 	github.com/peterh/liner v1.2.2
 	github.com/pkg/errors v0.9.1
@@ -58,7 +58,7 @@ require (
 	go.opencensus.io v0.24.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.48.0
-	golang.org/x/exp v0.0.0-20260209203927-2842357ff358
+	golang.org/x/exp v0.0.0-20260211191109-2735e65f0518
 	golang.org/x/sync v0.19.0
 	golang.org/x/sys v0.41.0
 	google.golang.org/protobuf v1.36.11
@@ -195,7 +195,6 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/nxadm/tail v1.4.11 // indirect
-	github.com/onsi/ginkgo/v2 v2.27.3 // indirect
 	github.com/opencontainers/runtime-spec v1.3.0 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
