@@ -41,16 +41,16 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/order"
 )
 
-// MaxTxTTL - kv interface provide high-consistancy guaranties: Serializable Isolations Level https://en.wikipedia.org/wiki/Isolation_(database_systems)
+// MaxTxTTL - kv interface provide high-consistency guarantees: Serializable Isolations Level https://en.wikipedia.org/wiki/Isolation_(database_systems)
 // But it comes with cost: DB will start grow if run too long read transactions (hours)
 // We decided limit TTL of transaction to `MaxTxTTL`
 //
-// It means you sill have `Serializable` if tx living < `MaxTxTTL`
+// It means you still have `Serializable` if tx living < `MaxTxTTL`
 // You start have Read Committed Level if tx living > `MaxTxTTL`
 //
 // It's done by `renew` method: after `renew` call reader will see all changes committed after last `renew` call.
 //
-// Erigon has much Historical data - which is immutable: reading of historical data for hours still gives you consistant data.
+// Erigon has much Historical data - which is immutable: reading of historical data for hours still gives you consistent data.
 const MaxTxTTL = 60 * time.Second
 
 // KvServiceAPIVersion - use it to track changes in API
@@ -160,7 +160,7 @@ func (s *KvServer) renew(ctx context.Context, id uint64) (err error) {
 	}
 	newTx, errBegin := s.kv.BeginRo(ctx) //nolint:gocritic
 	if errBegin != nil {
-		return fmt.Errorf("kvserver: %w", err)
+		return fmt.Errorf("kvserver: %w", errBegin)
 	}
 	s.txs[id] = &threadSafeTx{Tx: newTx}
 	return nil
@@ -394,16 +394,6 @@ func handleOp(c kv.Cursor, stream remote.KV_TxServer, in *remote.Cursor) error {
 		k, v, err = c.(kv.CursorDupSort).NextNoDup()
 	case remote.Op_PREV:
 		k, v, err = c.Prev()
-	//case remote.Op_PREV_DUP:
-	//	k, v, err = c.(ethdb.CursorDupSort).Prev()
-	//	if err != nil {
-	//		return err
-	//	}
-	//case remote.Op_PREV_NO_DUP:
-	//	k, v, err = c.Prev()
-	//	if err != nil {
-	//		return err
-	//	}
 	case remote.Op_SEEK_EXACT:
 		k, v, err = c.SeekExact(in.K)
 	case remote.Op_SEEK_BOTH_EXACT:

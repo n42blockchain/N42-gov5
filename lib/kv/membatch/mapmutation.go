@@ -252,7 +252,6 @@ func (m *Mapmutation) Close() {
 	m.puts = map[string]map[string][]byte{}
 	m.size = 0
 	m.count = 0
-	m.size = 0
 
 	m.clean()
 	m.clean = nil

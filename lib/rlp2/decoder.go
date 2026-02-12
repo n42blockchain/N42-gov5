@@ -105,10 +105,10 @@ func (d *Decoder) RawElem() ([]byte, Token, error) {
 		}
 		_, err = nextFull(w, sz)
 	case TokenShortBlob:
-		sz := int(token.Diff(prefix))
+		sz = int(token.Diff(prefix))
 		_, err = nextFull(w, sz)
 	case TokenLongBlob:
-		lenSz := int(token.Diff(prefix))
+		lenSz = int(token.Diff(prefix))
 		sz, err = nextBeInt(w, lenSz)
 		if err != nil {
 			return nil, token, err
@@ -118,7 +118,6 @@ func (d *Decoder) RawElem() ([]byte, Token, error) {
 		return nil, token, fmt.Errorf("%w: unknown token", ErrDecode)
 	}
 	stop := w.Offset()
-	//log.Printf("%x %s\n", buf, token)
 	if err != nil {
 		return nil, token, err
 	}
@@ -155,10 +154,10 @@ func (d *Decoder) Elem() ([]byte, Token, error) {
 		}
 		buf, err = nextFull(w, sz)
 	case TokenShortBlob:
-		sz := int(token.Diff(prefix))
+		sz = int(token.Diff(prefix))
 		buf, err = nextFull(w, sz)
 	case TokenLongBlob:
-		lenSz := int(token.Diff(prefix))
+		lenSz = int(token.Diff(prefix))
 		sz, err = nextBeInt(w, lenSz)
 		if err != nil {
 			return nil, token, err
@@ -167,7 +166,6 @@ func (d *Decoder) Elem() ([]byte, Token, error) {
 	default:
 		return nil, token, fmt.Errorf("%w: unknown token", ErrDecode)
 	}
-	//log.Printf("%x %s\n", buf, token)
 	if err != nil {
 		return nil, token, fmt.Errorf("read data: %w", err)
 	}

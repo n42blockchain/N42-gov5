@@ -40,10 +40,10 @@ func ParseHashesCount(payload []byte, pos int) (count int, dataPos int, err erro
 	return dataLen / 33, dataPos, nil
 }
 
-// EncodeHashes produces RLP encoding of given number of hashes, as RLP list
-// It appends encoding to the given given slice (encodeBuf), reusing the space
-// there is there is enough capacity.
-// The first returned value is the slice where encodinfg
+// EncodeHashes produces RLP encoding of given number of hashes, as RLP list.
+// It appends encoding to the given slice (encodeBuf), reusing the space
+// if there is enough capacity.
+// The first returned value is the slice where encoding
 func EncodeHashes(hashes []byte, encodeBuf []byte) []byte {
 	hashesLen := len(hashes) / length.Hash * 33
 	dataLen := hashesLen

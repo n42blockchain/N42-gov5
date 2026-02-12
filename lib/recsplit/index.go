@@ -52,10 +52,10 @@ const (
 	//   It makes .seg files "warm" - which is bad because they are big and
 	//      data-locality of touches is bad (and maybe need visit a lot of shards to find key).
 	//   Can add build-in "existence filter" (like bloom/cucko/ribbon/xor-filter/fuse-filter) it will improve
-	//      data-locality - filters are small-enough and existance-chekcs will be co-located on disk.
+	//      data-locality - filters are small-enough and existence-chekcs will be co-located on disk.
 	//   But there are 2 additional properties we have in our data:
 	//      "keys are known", "keys are hashed" (.idx works on murmur3), ".idx can calc key-number by key".
-	//   It means: if we rely on this properties then we can do better than general-purpose-existance-filter.
+	//   It means: if we rely on this properties then we can do better than general-purpose-existence-filter.
 	//   Seems just an "array of 1-st bytes of key-hashes" is great alternative:
 	//      general-purpose-filter: 9bits/key, 0.3% false-positives, 3 mem access
 	//      first-bytes-array: 8bits/key, 1/256=0.4% false-positives, 1 mem access
@@ -64,7 +64,7 @@ const (
 	LessFalsePositives Features = 0b10 //
 )
 
-// SupportedFeaturs - if see feature not from this list (likely after downgrade) - return IncompatibleErr and recommend for user manually delete file
+// SupportedFeatures - if see feature not from this list (likely after downgrade) - return IncompatibleErr and recommend for user manually delete file
 var SupportedFeatures = []Features{Enums, LessFalsePositives}
 var IncompatibleErr = errors.New("incompatible. can re-build such files by command 'erigon snapshots index'")
 

@@ -27,9 +27,9 @@ const MaxMapSize = 0xFFFFFFFFFFFF
 
 func Mmap(f *os.File, size int) ([]byte, *[MaxMapSize]byte, error) {
 	// Open a file mapping handle.
-	sizelo := uint32(size >> 32)
-	sizehi := uint32(size) & 0xffffffff
-	h, errno := windows.CreateFileMapping(windows.Handle(f.Fd()), nil, windows.PAGE_READONLY, sizelo, sizehi, nil)
+	sizehi := uint32(size >> 32)
+	sizelo := uint32(size) & 0xffffffff
+	h, errno := windows.CreateFileMapping(windows.Handle(f.Fd()), nil, windows.PAGE_READONLY, sizehi, sizelo, nil)
 	if h == 0 {
 		return nil, nil, os.NewSyscallError("CreateFileMapping", errno)
 	}

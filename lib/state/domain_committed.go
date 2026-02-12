@@ -314,7 +314,7 @@ type commitmentState struct {
 
 func (cs *commitmentState) Decode(buf []byte) error {
 	if len(buf) < 10 {
-		return fmt.Errorf("ivalid commitment state buffer size")
+		return fmt.Errorf("invalid commitment state buffer size")
 	}
 	pos := 0
 	cs.txNum = binary.BigEndian.Uint64(buf[pos : pos+8])

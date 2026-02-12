@@ -87,13 +87,12 @@ func (mf MergedFiles) Close() {
 		mf.storage, mf.storageIdx, mf.storageHist,
 		mf.code, mf.codeIdx, mf.codeHist,
 		mf.commitment, mf.commitmentIdx, mf.commitmentHist,
-		//mf.logAddrs, mf.logTopics, mf.tracesFrom, mf.tracesTo,
 	} {
 		if item != nil {
 			if item.decompressor != nil {
 				item.decompressor.Close()
 			}
-			if item.decompressor != nil {
+			if item.index != nil {
 				item.index.Close()
 			}
 			if item.bindex != nil {

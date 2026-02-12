@@ -157,7 +157,7 @@ func Send[I Info](info I) {
 			case *c <- info:
 			default:
 				// drop the diagnostic message if the receiver is busy
-				// so the sender is not blocked on non critcal actions
+				// so the sender is not blocked on non critical actions
 			}
 		}
 	} else {

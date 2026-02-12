@@ -85,8 +85,8 @@ func HashData(kh KeccakState, data []byte) (h libcommon.Hash) {
 func Keccak256(data ...[]byte) []byte {
 	b := make([]byte, 32)
 	d := NewKeccakState()
-	for _, b := range data {
-		d.Write(b)
+	for _, chunk := range data {
+		d.Write(chunk)
 	}
 	d.Read(b) //nolint:errcheck
 	cryptopool.ReturnToPoolKeccak256(d)
@@ -97,8 +97,8 @@ func Keccak256(data ...[]byte) []byte {
 // converting it to an internal Hash data structure.
 func Keccak256Hash(data ...[]byte) (h libcommon.Hash) {
 	d := NewKeccakState()
-	for _, b := range data {
-		d.Write(b)
+	for _, chunk := range data {
+		d.Write(chunk)
 	}
 	d.Read(h[:]) //nolint:errcheck
 	cryptopool.ReturnToPoolKeccak256(d)
@@ -108,8 +108,8 @@ func Keccak256Hash(data ...[]byte) (h libcommon.Hash) {
 // Keccak512 calculates and returns the Keccak512 hash of the input data.
 func Keccak512(data ...[]byte) []byte {
 	d := sha3.NewLegacyKeccak512()
-	for _, b := range data {
-		d.Write(b)
+	for _, chunk := range data {
+		d.Write(chunk)
 	}
 	return d.Sum(nil)
 }

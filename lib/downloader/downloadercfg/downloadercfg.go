@@ -62,11 +62,6 @@ type Cfg struct {
 
 func Default() *torrent.ClientConfig {
 	torrentConfig := torrent.NewDefaultClientConfig()
-	// better don't increase because erigon periodically producing "new seedable files" - and adding them to downloader.
-	// it must not impact chain tip sync - so, limit resources to minimum by default.
-	// but when downloader is started as a separated process - rise it to max
-	//torrentConfig.PieceHashersPerTorrent = cmp.Max(1, runtime.NumCPU()-1)
-
 	torrentConfig.MinDialTimeout = 6 * time.Second    //default: 3s
 	torrentConfig.HandshakesTimeout = 8 * time.Second //default: 4s
 
@@ -74,21 +69,7 @@ func Default() *torrent.ClientConfig {
 	//   *torrent.PeerConn: waiting for alloc limit reservation: reservation for 1802972 exceeds limiter max 1048576
 	torrentConfig.MaxAllocPeerRequestDataPerConn = int64(DefaultPieceSize)
 
-	// enable dht
 	torrentConfig.NoDHT = true
-	//torrentConfig.DisableTrackers = true
-	//torrentConfig.DisableWebtorrent = true
-
-	// Reduce defaults - to avoid peers with very bad geography
-	//torrentConfig.MinDialTimeout = 1 * time.Second      // default: 3sec
-	//torrentConfig.NominalDialTimeout = 10 * time.Second // default: 20sec
-	//torrentConfig.HandshakesTimeout = 1 * time.Second   // default: 4sec
-
-	// see: https://en.wikipedia.org/wiki/TCP_half-open
-	//torrentConfig.TotalHalfOpenConns = 100     // default: 100
-	//torrentConfig.HalfOpenConnsPerTorrent = 25 // default: 25
-	//torrentConfig.TorrentPeersHighWater = 500 // default: 500
-	//torrentConfig.TorrentPeersLowWater = 50   // default: 50
 
 	torrentConfig.Seed = true
 	torrentConfig.UpnpID = torrentConfig.UpnpID + "leecher"
@@ -121,14 +102,11 @@ func New(dirs datadir.Dirs, version string, verbosity lg.Level, downloadRate, up
 		torrentConfig.DownloadRateLimiter = rate.NewLimiter(rate.Limit(downloadRate.Bytes()), DefaultNetworkChunkSize) // default: unlimited
 	}
 
-	// debug
-	//torrentConfig.Debug = true
 	torrentConfig.Logger = torrentConfig.Logger.WithFilterLevel(verbosity)
 	torrentConfig.Logger.SetHandlers(adapterHandler{})
 
 	if len(staticPeers) > 0 {
 		torrentConfig.NoDHT = false
-		//defaultNodes := torrentConfig.DhtStartingNodes
 		torrentConfig.DhtStartingNodes = func(network string) dht.StartingNodesGetter {
 			return func() ([]dht.Addr, error) {
 				addrs, err := dht.GlobalBootstrapAddrs(network)
@@ -159,7 +137,6 @@ func New(dirs datadir.Dirs, version string, verbosity lg.Level, downloadRate, up
 				return addrs, nil
 			}
 		}
-		//staticPeers
 	}
 
 	webseedUrlsOrFiles := webseeds

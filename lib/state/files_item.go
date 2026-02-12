@@ -10,13 +10,13 @@ import (
 )
 
 // filesItem is "dirty" file - means file which can be:
-//   - uncomplete
+//   - incomplete
 //   - not_indexed
-//   - overlaped_by_bigger_file
+//   - overlapped_by_bigger_file
 //   - marked_as_ready_for_delete
 //   - can also be "good" file
 //
-// such files must be hiddend from user (reader), but may be useful for background merging process, etc...
+// such files must be hidden from user (reader), but may be useful for background merging process, etc...
 // list of filesItem must be represented as Tree - because they may overlap
 
 // ctxItem - class is used for good/visible files
@@ -58,7 +58,7 @@ func filesItemLess(i, j *filesItem) bool {
 func (i *filesItem) closeFilesAndRemove() {
 	if i.decompressor != nil {
 		i.decompressor.Close()
-		// paranoic-mode on: don't delete frozen files
+		// paranoid-mode on: don't delete frozen files
 		if !i.frozen {
 			if err := os.Remove(i.decompressor.FilePath()); err != nil {
 				log.Trace("close", "err", err, "file", i.decompressor.FileName())
@@ -68,7 +68,7 @@ func (i *filesItem) closeFilesAndRemove() {
 	}
 	if i.index != nil {
 		i.index.Close()
-		// paranoic-mode on: don't delete frozen files
+		// paranoid-mode on: don't delete frozen files
 		if !i.frozen {
 			if err := os.Remove(i.index.FilePath()); err != nil {
 				log.Trace("close", "err", err, "file", i.index.FileName())

@@ -532,7 +532,7 @@ func generateRandWords() {
 	for i := 0; i < N-2; i++ {
 		WORDS[i] = randWord()
 	}
-	// make sure we have at least 2 emtpy []byte
+	// make sure we have at least 2 empty []byte
 	WORDS[N-2] = []byte{}
 	WORDS[N-1] = []byte{}
 }

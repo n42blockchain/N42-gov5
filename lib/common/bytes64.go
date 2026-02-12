@@ -79,10 +79,10 @@ func (b Bytes64) String() string {
 // If b is larger than len(h), b will be cropped from the left.
 func (b *Bytes64) SetBytes(i []byte) {
 	if len(i) > len(b) {
-		i = i[len(i)-length.Hash:]
+		i = i[len(i)-length.Bytes64:]
 	}
 
-	copy(b[length.Hash-len(i):], i)
+	copy(b[length.Bytes64-len(i):], i)
 }
 
 // Value implements valuer for database/sql.

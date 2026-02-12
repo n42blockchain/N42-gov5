@@ -73,7 +73,7 @@ func (d *DiagnosticClient) addOrUpdateSegmentIndexingState(upd SnapshotIndexingS
 		}
 	}
 
-	// If elapsed time is equal to minus one it menas that indexing took less than main loop update and we should not update it
+	// If elapsed time is equal to minus one it means that indexing took less than main loop update and we should not update it
 	if upd.TimeElapsed != -1 {
 		d.syncStats.SnapshotIndexing.TimeElapsed = upd.TimeElapsed
 	}
@@ -92,7 +92,12 @@ func (d *DiagnosticClient) updateIndexingStatus() (indexingFinished bool) {
 		totalProgressPercent += seg.Percent
 	}
 
-	totalProgress := totalProgressPercent / len(d.syncStats.SnapshotIndexing.Segments)
+	segmentCount := len(d.syncStats.SnapshotIndexing.Segments)
+	if segmentCount == 0 {
+		return false
+	}
+
+	totalProgress := totalProgressPercent / segmentCount
 
 	d.updateSnapshotStageStats(SyncStageStats{
 		TimeElapsed: SecondsToHHMMString(uint64(d.syncStats.SnapshotIndexing.TimeElapsed)),

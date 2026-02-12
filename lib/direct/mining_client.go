@@ -43,7 +43,7 @@ func (s *MiningClient) Version(ctx context.Context, in *emptypb.Empty, opts ...g
 // -- start OnPendingBlock
 
 func (s *MiningClient) OnPendingBlock(ctx context.Context, in *txpool_proto.OnPendingBlockRequest, opts ...grpc.CallOption) (txpool_proto.Mining_OnPendingBlockClient, error) {
-	ch := make(chan *onPendigBlockReply, 16384)
+	ch := make(chan *onPendingBlockReply, 16384)
 	streamServer := &MiningOnPendingBlockS{ch: ch, ctx: ctx}
 	go func() {
 		defer close(ch)
@@ -52,19 +52,19 @@ func (s *MiningClient) OnPendingBlock(ctx context.Context, in *txpool_proto.OnPe
 	return &MiningOnPendingBlockC{ch: ch, ctx: ctx}, nil
 }
 
-type onPendigBlockReply struct {
+type onPendingBlockReply struct {
 	r   *txpool_proto.OnPendingBlockReply
 	err error
 }
 
 type MiningOnPendingBlockS struct {
-	ch  chan *onPendigBlockReply
+	ch  chan *onPendingBlockReply
 	ctx context.Context
 	grpc.ServerStream
 }
 
 func (s *MiningOnPendingBlockS) Send(m *txpool_proto.OnPendingBlockReply) error {
-	s.ch <- &onPendigBlockReply{r: m}
+	s.ch <- &onPendingBlockReply{r: m}
 	return nil
 }
 func (s *MiningOnPendingBlockS) Context() context.Context { return s.ctx }
@@ -72,11 +72,11 @@ func (s *MiningOnPendingBlockS) Err(err error) {
 	if err == nil {
 		return
 	}
-	s.ch <- &onPendigBlockReply{err: err}
+	s.ch <- &onPendingBlockReply{err: err}
 }
 
 type MiningOnPendingBlockC struct {
-	ch  chan *onPendigBlockReply
+	ch  chan *onPendingBlockReply
 	ctx context.Context
 	grpc.ClientStream
 }
@@ -142,7 +142,7 @@ func (c *MiningOnMinedBlockC) Recv() (*txpool_proto.OnMinedBlockReply, error) {
 func (c *MiningOnMinedBlockC) Context() context.Context { return c.ctx }
 
 // -- end OnMinedBlock
-// -- end OnPendingLogs
+// -- start OnPendingLogs
 
 func (s *MiningClient) OnPendingLogs(ctx context.Context, in *txpool_proto.OnPendingLogsRequest, opts ...grpc.CallOption) (txpool_proto.Mining_OnPendingLogsClient, error) {
 	ch := make(chan *onPendingLogsReply, 16384)

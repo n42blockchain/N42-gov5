@@ -44,12 +44,10 @@ func SmlinkForDirPath(dirPath string) string {
 		if err != nil {
 			log.Debug("[diskutils] Error getting target path for symlink:", dirPath, "Error:", err)
 			return dirPath
-		} else {
-			return targetPath
 		}
-	} else {
-		return dirPath
+		return targetPath
 	}
+	return dirPath
 }
 
 func DiskInfo(disk string) (string, error) {

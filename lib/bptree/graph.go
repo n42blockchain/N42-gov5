@@ -123,19 +123,16 @@ func (g *Node23Graph) saveDot(filename string, debug bool) {
 			treeRight = n.children[2]
 		}
 		if treeLeft != nil {
-			//if _, err := f.WriteString(fmt.Sprintln(n.rawPointer(), ":L -> ", treeLeft.rawPointer(), ":C;")); err != nil {
 			if _, err := f.WriteString(fmt.Sprintf("%d:L -> %d:C;\n", n.rawPointer(), treeLeft.rawPointer())); err != nil {
 				log.Fatal(err)
 			}
 		}
 		if treeDown != nil {
-			//if _, err := f.WriteString(fmt.Sprintln(n.rawPointer(), ":D -> ", treeDown.rawPointer(), ":C;")); err != nil {
 			if _, err := f.WriteString(fmt.Sprintf("%d:D -> %d:C;\n", n.rawPointer(), treeDown.rawPointer())); err != nil {
 				log.Fatal(err)
 			}
 		}
 		if treeRight != nil {
-			//if _, err := f.WriteString(fmt.Sprintln(n.rawPointer(), ":R -> ", treeRight.rawPointer(), ":C;")); err != nil {
 			if _, err := f.WriteString(fmt.Sprintf("%d:R -> %d:C;\n", n.rawPointer(), treeRight.rawPointer())); err != nil {
 				log.Fatal(err)
 			}

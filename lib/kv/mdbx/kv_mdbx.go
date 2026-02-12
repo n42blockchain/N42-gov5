@@ -293,13 +293,6 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 	// erigon using big transactions
 	// increase "page measured" options. need do it after env.Open() because default are depend on pageSize known only after env.Open()
 	if !opts.HasFlag(mdbx.Readonly) {
-		// 1/8 is good for transactions with a lot of modifications - to reduce invalidation size.
-		// But Erigon app now using Batch and etl.Collectors to avoid writing to DB frequently changing data.
-		// It means most of our writes are: APPEND or "single UPSERT per key during transaction"
-		//if err = env.SetOption(mdbx.OptSpillMinDenominator, 8); err != nil {
-		//	return nil, err
-		//}
-
 		txnDpInitial, err := env.GetOption(mdbx.OptTxnDpInitial)
 		if err != nil {
 			return nil, err
@@ -382,10 +375,6 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 			return nil, err
 		}
 	}
-	//if err := env.SetOption(mdbx.OptSyncBytes, uint64(math2.MaxUint64)); err != nil {
-	//	return nil, err
-	//}
-
 	if opts.roTxsLimiter == nil {
 		targetSemCount := int64(runtime.GOMAXPROCS(-1) * 16)
 		opts.roTxsLimiter = semaphore.NewWeighted(targetSemCount) // 1 less than max to allow unlocking to happen
@@ -471,7 +460,7 @@ type MdbxKV struct {
 	log          log.Logger
 	env          *mdbx.Env
 	buckets      kv.TableCfg
-	roTxsLimiter *semaphore.Weighted // does limit amount of concurrent Ro transactions - in most casess runtime.NumCPU() is good value for this channel capacity - this channel can be shared with other components (like Decompressor)
+	roTxsLimiter *semaphore.Weighted // does limit amount of concurrent Ro transactions - in most cases runtime.NumCPU() is good value for this channel capacity - this channel can be shared with other components (like Decompressor)
 	opts         MdbxOpts
 	txSize       uint64
 	closed       atomic.Bool
@@ -814,7 +803,7 @@ func (db *MdbxKV) beginRw(ctx context.Context, flags uint) (txn kv.RwTx, err err
 	if err != nil {
 		runtime.UnlockOSThread() // unlock only in case of error. normal flow is "defer .Rollback()"
 		db.trackTxEnd()
-		return nil, fmt.Errorf("%w, lable: %s, trace: %s", err, db.opts.label.String(), stack2.Trace().String())
+		return nil, fmt.Errorf("%w, label: %s, trace: %s", err, db.opts.label.String(), stack2.Trace().String())
 	}
 
 	return &MdbxTx{
@@ -1071,14 +1060,6 @@ func (tx *MdbxTx) Commit() error {
 	}()
 	tx.closeCursors()
 
-	//slowTx := 10 * time.Second
-	//if debug.SlowCommit() > 0 {
-	//	slowTx = debug.SlowCommit()
-	//}
-	//
-	//if debug.BigRoTxKb() > 0 || debug.BigRwTxKb() > 0 {
-	//	tx.PrintDebugInfo()
-	//}
 	tx.CollectMetrics()
 
 	latency, err := tx.tx.Commit()
@@ -1088,19 +1069,10 @@ func (tx *MdbxTx) Commit() error {
 
 	if tx.db.opts.label == kv.ChainDB {
 		kv.DbCommitPreparation.Observe(latency.Preparation.Seconds())
-		//kv.DbCommitAudit.Update(latency.Audit.Seconds())
 		kv.DbCommitWrite.Observe(latency.Write.Seconds())
 		kv.DbCommitSync.Observe(latency.Sync.Seconds())
 		kv.DbCommitEnding.Observe(latency.Ending.Seconds())
 		kv.DbCommitTotal.Observe(latency.Whole.Seconds())
-
-		//kv.DbGcWorkPnlMergeTime.Update(latency.GCDetails.WorkPnlMergeTime.Seconds())
-		//kv.DbGcWorkPnlMergeVolume.Set(uint64(latency.GCDetails.WorkPnlMergeVolume))
-		//kv.DbGcWorkPnlMergeCalls.Set(uint64(latency.GCDetails.WorkPnlMergeCalls))
-		//
-		//kv.DbGcSelfPnlMergeTime.Update(latency.GCDetails.SelfPnlMergeTime.Seconds())
-		//kv.DbGcSelfPnlMergeVolume.Set(uint64(latency.GCDetails.SelfPnlMergeVolume))
-		//kv.DbGcSelfPnlMergeCalls.Set(uint64(latency.GCDetails.SelfPnlMergeCalls))
 	}
 
 	return nil
@@ -1121,7 +1093,6 @@ func (tx *MdbxTx) Rollback() {
 		tx.db.leakDetector.Del(tx.id)
 	}()
 	tx.closeCursors()
-	//tx.printDebugInfo()
 	tx.tx.Abort()
 }
 
@@ -1135,27 +1106,6 @@ func (tx *MdbxTx) SpaceDirty() (uint64, uint64, error) {
 }
 
 func (tx *MdbxTx) PrintDebugInfo() {
-	/*
-		txInfo, err := tx.tx.Info(true)
-		if err != nil {
-			panic(err)
-		}
-
-		txSize := uint(txInfo.SpaceDirty / 1024)
-		doPrint := debug.BigRoTxKb() == 0 && debug.BigRwTxKb() == 0 ||
-			tx.readOnly && debug.BigRoTxKb() > 0 && txSize > debug.BigRoTxKb() ||
-			(!tx.readOnly && debug.BigRwTxKb() > 0 && txSize > debug.BigRwTxKb())
-		if doPrint {
-			tx.db.log.Info("Tx info",
-				"id", txInfo.Id,
-				"read_lag", txInfo.ReadLag,
-				"ro", tx.readOnly,
-				//"space_retired_mb", txInfo.SpaceRetired/1024/1024,
-				"space_dirty_mb", txInfo.SpaceDirty/1024/1024,
-				//"callers", debug.Callers(7),
-			)
-		}
-	*/
 }
 
 func (tx *MdbxTx) closeCursors() {

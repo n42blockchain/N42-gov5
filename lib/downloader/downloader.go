@@ -801,8 +801,8 @@ type seedHash struct {
 
 func (d *Downloader) mainLoop(silent bool) error {
 	if d.webseedsDiscover {
-		// CornerCase: no peers -> no anoncments to trackers -> no magnetlink resolution (but magnetlink has filename)
-		// means we can start adding weebseeds without waiting for `<-t.GotInfo()`
+		// CornerCase: no peers -> no announcements to trackers -> no magnetlink resolution (but magnetlink has filename)
+		// means we can start adding webseeds without waiting for `<-t.GotInfo()`
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
@@ -839,8 +839,6 @@ func (d *Downloader) mainLoop(silent bool) error {
 
 	var sem = semaphore.NewWeighted(int64(d.cfg.DownloadSlots))
 
-	//TODO: feature is not ready yet
-	//d.webDownloadClient, _ = NewRCloneClient(d.logger)
 	d.webDownloadClient = nil
 
 	d.wg.Add(1)
@@ -2411,7 +2409,6 @@ func (d *Downloader) AddMagnetLink(ctx context.Context, infoHash metainfo.Hash, 
 			t.AddWebSeeds(urls)
 		}
 	}(t)
-	//log.Debug("[downloader] downloaded both seg and torrent files", "hash", infoHash)
 	return nil
 }
 
@@ -2450,7 +2447,7 @@ func (d *Downloader) addTorrentFilesFromDisk(quiet bool) error {
 		return err
 	}
 
-	// reduce mutex contention inside torrentClient - by enabling in/out peers connection after addig all files
+	// reduce mutex contention inside torrentClient - by enabling in/out peers connection after adding all files
 	for _, ts := range files {
 		ts.Trackers = nil
 		ts.DisallowDataDownload = true
@@ -2575,17 +2572,13 @@ func openClient(ctx context.Context, dbDir, snapDir string, cfg *torrent.ClientC
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("torrentcfg.openClient: %w", err)
 	}
-	//c, err = NewMdbxPieceCompletion(db)
 	c, err = NewMdbxPieceCompletionBatch(db)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("torrentcfg.NewMdbxPieceCompletion: %w", err)
 	}
 
-	// Use file-based storage instead of MMAP to avoid data loss on shutdown
-	// MMAP can lose data if msync is not called before close
-	// File-based storage is safer as it syncs data to disk on each write
-	// See also: https://github.com/erigontech/erigon/pull/10074
-	//m = storage.NewMMapWithCompletion(snapDir, c)
+	// Use file-based storage instead of MMAP to avoid data loss on shutdown.
+	// File-based storage is safer as it syncs data to disk on each write.
 	m = storage.NewFileOpts(storage.NewFileClientOpts{
 		ClientBaseDir:   snapDir,
 		PieceCompletion: c,

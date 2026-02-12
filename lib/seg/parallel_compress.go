@@ -243,7 +243,7 @@ func compressWithPatternCandidates(ctx context.Context, trace bool, logPrefix, s
 	logEvery := time.NewTicker(60 * time.Second)
 	defer logEvery.Stop()
 
-	// DictionaryBuilder is for sorting words by their freuency (to assign codes)
+	// DictionaryBuilder is for sorting words by their frequency (to assign codes)
 	var pt patricia.PatriciaTree
 	code2pattern := make([]*Pattern, 0, 256)
 	dictBuilder.ForEach(func(score uint64, word []byte) {
@@ -452,16 +452,12 @@ func compressWithPatternCandidates(ctx context.Context, trace bool, logPrefix, s
 		return fmt.Errorf("return to the start of intermediate file: %w", err)
 	}
 
-	//var m runtime.MemStats
-	//common.ReadMemStats(&m)
-	//logger.Info(fmt.Sprintf("[%s] Dictionary build done", logPrefix), "input", common.ByteCount(inputSize.Load()), "output", common.ByteCount(outputSize.Load()), "alloc", common.ByteCount(m.Alloc), "sys", common.ByteCount(m.Sys))
 	posMap := make(map[uint64]uint64)
 	for _, m := range posMaps {
 		for l, c := range m {
 			posMap[l] += c
 		}
 	}
-	//fmt.Printf("posMap = %v\n", posMap)
 	var patternList PatternList
 	distribution := make([]int, maxPatternLen+1)
 	for _, p := range code2pattern {

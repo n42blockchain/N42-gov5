@@ -41,7 +41,7 @@ import (
 //Methods Naming:
 //  Prune: delete old data
 //  Unwind: delete recent data
-//  Get: exact match of criterias
+//  Get: exact match of criteria
 //  Range: [from, to). from=nil means StartOfTable, to=nil means EndOfTable, rangeLimit=-1 means Unlimited
 //      Range is analog of SQL's: SELECT * FROM Table WHERE k>=from AND k<to ORDER BY k ASC/DESC LIMIT n
 //  Prefix: `Range(Table, prefix, kv.NextSubtree(prefix))`
@@ -90,10 +90,7 @@ var (
 	TxDirty   = metrics.GetOrCreateGauge(`tx_dirty`)   //nolint
 
 	DbCommitPreparation = metrics.GetOrCreateSummary(`db_commit_seconds{phase="preparation"}`) //nolint
-	//DbGCWallClock       = metrics.GetOrCreateSummary(`db_commit_seconds{phase="gc_wall_clock"}`) //nolint
-	//DbGCCpuTime         = metrics.GetOrCreateSummary(`db_commit_seconds{phase="gc_cpu_time"}`)   //nolint
-	//DbCommitAudit       = metrics.GetOrCreateSummary(`db_commit_seconds{phase="audit"}`)         //nolint
-	DbCommitWrite  = metrics.GetOrCreateSummary(`db_commit_seconds{phase="write"}`)  //nolint
+	DbCommitWrite       = metrics.GetOrCreateSummary(`db_commit_seconds{phase="write"}`)       //nolint
 	DbCommitSync   = metrics.GetOrCreateSummary(`db_commit_seconds{phase="sync"}`)   //nolint
 	DbCommitEnding = metrics.GetOrCreateSummary(`db_commit_seconds{phase="ending"}`) //nolint
 	DbCommitTotal  = metrics.GetOrCreateSummary(`db_commit_seconds{phase="total"}`)  //nolint
@@ -106,38 +103,6 @@ var (
 	DbPgopsSpill   = metrics.GetOrCreateGauge(`db_pgops{phase="spill"}`)   //nolint
 	DbPgopsUnspill = metrics.GetOrCreateGauge(`db_pgops{phase="unspill"}`) //nolint
 	DbPgopsWops    = metrics.GetOrCreateGauge(`db_pgops{phase="wops"}`)    //nolint
-	/*
-		DbPgopsPrefault = metrics.NewCounter(`db_pgops{phase="prefault"}`) //nolint
-		DbPgopsMinicore = metrics.NewCounter(`db_pgops{phase="minicore"}`) //nolint
-		DbPgopsMsync    = metrics.NewCounter(`db_pgops{phase="msync"}`)    //nolint
-		DbPgopsFsync    = metrics.NewCounter(`db_pgops{phase="fsync"}`)    //nolint
-		DbMiLastPgNo    = metrics.NewCounter(`db_mi_last_pgno`)            //nolint
-
-		DbGcWorkRtime    = metrics.GetOrCreateSummary(`db_gc_seconds{phase="work_rtime"}`) //nolint
-		DbGcWorkRsteps   = metrics.NewCounter(`db_gc{phase="work_rsteps"}`)                //nolint
-		DbGcWorkRxpages  = metrics.NewCounter(`db_gc{phase="work_rxpages"}`)               //nolint
-		DbGcSelfRtime    = metrics.GetOrCreateSummary(`db_gc_seconds{phase="self_rtime"}`) //nolint
-		DbGcSelfXtime    = metrics.GetOrCreateSummary(`db_gc_seconds{phase="self_xtime"}`) //nolint
-		DbGcWorkXtime    = metrics.GetOrCreateSummary(`db_gc_seconds{phase="work_xtime"}`) //nolint
-		DbGcSelfRsteps   = metrics.NewCounter(`db_gc{phase="self_rsteps"}`)                //nolint
-		DbGcWloops       = metrics.NewCounter(`db_gc{phase="wloop"}`)                      //nolint
-		DbGcCoalescences = metrics.NewCounter(`db_gc{phase="coalescences"}`)               //nolint
-		DbGcWipes        = metrics.NewCounter(`db_gc{phase="wipes"}`)                      //nolint
-		DbGcFlushes      = metrics.NewCounter(`db_gc{phase="flushes"}`)                    //nolint
-		DbGcKicks        = metrics.NewCounter(`db_gc{phase="kicks"}`)                      //nolint
-		DbGcWorkMajflt   = metrics.NewCounter(`db_gc{phase="work_majflt"}`)                //nolint
-		DbGcSelfMajflt   = metrics.NewCounter(`db_gc{phase="self_majflt"}`)                //nolint
-		DbGcWorkCounter  = metrics.NewCounter(`db_gc{phase="work_counter"}`)               //nolint
-		DbGcSelfCounter  = metrics.NewCounter(`db_gc{phase="self_counter"}`)               //nolint
-		DbGcSelfXpages   = metrics.NewCounter(`db_gc{phase="self_xpages"}`)                //nolint
-	*/
-
-	//DbGcWorkPnlMergeTime   = metrics.GetOrCreateSummary(`db_gc_pnl_seconds{phase="work_merge_time"}`) //nolint
-	//DbGcWorkPnlMergeVolume = metrics.NewCounter(`db_gc_pnl{phase="work_merge_volume"}`)               //nolint
-	//DbGcWorkPnlMergeCalls  = metrics.NewCounter(`db_gc{phase="work_merge_calls"}`)                    //nolint
-	//DbGcSelfPnlMergeTime   = metrics.GetOrCreateSummary(`db_gc_pnl_seconds{phase="slef_merge_time"}`) //nolint
-	//DbGcSelfPnlMergeVolume = metrics.NewCounter(`db_gc_pnl{phase="self_merge_volume"}`)               //nolint
-	//DbGcSelfPnlMergeCalls  = metrics.NewCounter(`db_gc_pnl{phase="slef_merge_calls"}`)                //nolint
 
 	GcLeafMetric     = metrics.GetOrCreateGauge(`db_gc_leaf`)     //nolint
 	GcOverflowMetric = metrics.GetOrCreateGauge(`db_gc_overflow`) //nolint
@@ -392,7 +357,7 @@ type Tx interface {
 	// Limit -1 means Unlimited
 	RangeAscend(table string, fromPrefix, toPrefix []byte, limit int) (iter.KV, error)
 	//StreamAscend(table string, fromPrefix, toPrefix []byte, limit int) (iter.KV, error)
-	// RangeDescend - is like Range [from, to), but expecing `from`<`to`
+	// RangeDescend - is like Range [from, to), but expecting `from`<`to`
 	// example: RangeDescend("Table", "B", "A", -1)
 	RangeDescend(table string, fromPrefix, toPrefix []byte, limit int) (iter.KV, error)
 	//StreamDescend(table string, fromPrefix, toPrefix []byte, limit int) (iter.KV, error)

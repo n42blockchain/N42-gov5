@@ -58,16 +58,9 @@ func NewServer(rateLimit uint32, creds credentials.TransportCredentials) *grpc.S
 	streamInterceptors = append(streamInterceptors, grpc_recovery.StreamServerInterceptor())
 	unaryInterceptors = append(unaryInterceptors, grpc_recovery.UnaryServerInterceptor())
 
-	//if metrics.Enabled {
-	//	streamInterceptors = append(streamInterceptors, grpc_prometheus.StreamServerInterceptor)
-	//	unaryInterceptors = append(unaryInterceptors, grpc_prometheus.UnaryServerInterceptor)
-	//}
-
-	//cpus := uint32(runtime.GOMAXPROCS(-1))
 	opts := []grpc.ServerOption{
-		//grpc.NumStreamWorkers(cpus), // reduce amount of goroutines
 		grpc.MaxConcurrentStreams(rateLimit), // to force clients reduce concurrency level
-		// Don't drop the connection, settings accordign to this comment on GitHub
+		// Don't drop the connection, settings according to this comment on GitHub
 		// https://github.com/grpc/grpc-go/issues/3171#issuecomment-552796779
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             10 * time.Second,
@@ -79,10 +72,6 @@ func NewServer(rateLimit uint32, creds credentials.TransportCredentials) *grpc.S
 	}
 	grpcServer := grpc.NewServer(opts...)
 	reflection.Register(grpcServer)
-
-	//if metrics.Enabled {
-	//	grpc_prometheus.Register(grpcServer)
-	//}
 
 	return grpcServer
 }
@@ -103,12 +92,6 @@ func Connect(creds credentials.TransportCredentials, dialAddress string) (*grpc.
 	} else {
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
 	}
-
-	//if opts.inMemConn != nil {
-	//	dialOpts = append(dialOpts, grpc.WithContextDialer(func(ctx context.Context, url string) (net.Conn, error) {
-	//		return opts.inMemConn.Dial()
-	//	}))
-	//}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

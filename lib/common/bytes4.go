@@ -80,10 +80,10 @@ func (b Bytes4) String() string {
 // If b is larger than len(h), b will be cropped from the left.
 func (b *Bytes4) SetBytes(i []byte) {
 	if len(i) > len(b) {
-		i = i[len(i)-length.Hash:]
+		i = i[len(i)-length.Bytes4:]
 	}
 
-	copy(b[length.Hash-len(i):], i)
+	copy(b[length.Bytes4-len(i):], i)
 }
 
 // Generate implements testing/quick.Generator.

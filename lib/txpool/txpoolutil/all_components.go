@@ -152,8 +152,6 @@ func AllComponents(ctx context.Context, cfg txpoolcfg.Config, cache kvcache.Cach
 	}
 
 	fetch := txpool.NewFetch(ctx, sentryClients, txPool, stateChangesClient, chainDB, txPoolDB, *chainID, logger)
-	//fetch.ConnectCore()
-	//fetch.ConnectSentries()
 
 	send := txpool.NewSend(ctx, sentryClients, txPool, logger)
 	txpoolGrpcServer := txpool.NewGrpcServer(ctx, txPool, txPoolDB, *chainID, logger)

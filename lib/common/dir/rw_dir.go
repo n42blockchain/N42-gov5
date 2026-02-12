@@ -81,7 +81,7 @@ func WriteFileWithFsync(name string, data []byte, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	return err
+	return nil
 }
 
 func Recreate(dir string) {

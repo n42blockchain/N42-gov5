@@ -31,8 +31,8 @@ type StateDiffClient interface {
 
 var _ StateDiffClient = (*StateDiffClientDirect)(nil) // compile-time interface check
 
-// SentryClientDirect implements SentryClient interface by connecting the instance of the client directly with the corresponding
-// instance of SentryServer
+// StateDiffClientDirect implements StateDiffClient interface by connecting the instance of the client directly with the corresponding
+// instance of KVServer
 type StateDiffClientDirect struct {
 	server remote.KVServer
 }

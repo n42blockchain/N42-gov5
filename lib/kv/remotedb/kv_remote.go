@@ -376,11 +376,6 @@ func (tx *tx) ListBuckets() ([]string, error) {
 	return nil, fmt.Errorf("function ListBuckets is not implemented for remoteTx")
 }
 
-// func (c *remoteCursor) Put(k []byte, v []byte) error            { panic("not supported") }
-// func (c *remoteCursor) PutNoOverwrite(k []byte, v []byte) error { panic("not supported") }
-// func (c *remoteCursor) Append(k []byte, v []byte) error         { panic("not supported") }
-// func (c *remoteCursor) Delete(k []byte) error                   { panic("not supported") }
-// func (c *remoteCursor) DeleteCurrent() error                    { panic("not supported") }
 func (c *remoteCursor) Count() (uint64, error) {
 	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_COUNT}); err != nil {
 		return 0, err

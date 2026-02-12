@@ -152,7 +152,7 @@ type HistoryIteratorInc struct {
 	compressVals bool
 }
 
-func (hs *HistoryStep) interateHistoryBeforeTxNum(txNum uint64) *HistoryIteratorInc {
+func (hs *HistoryStep) iterateHistoryBeforeTxNum(txNum uint64) *HistoryIteratorInc {
 	var hii HistoryIteratorInc
 	hii.indexG = hs.indexFile.getter
 	hii.historyG = hs.historyFile.getter

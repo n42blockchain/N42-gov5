@@ -12,7 +12,7 @@ type Histogram interface {
 }
 
 type histogram struct {
-	prometheus.Summary
+	prometheus.Histogram
 }
 
 func (h *histogram) ObserveDuration(start time.Time) {

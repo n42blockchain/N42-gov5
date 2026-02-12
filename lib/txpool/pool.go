@@ -293,11 +293,9 @@ func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, 
 		unprocessedRemoteByHash: map[string]int{},
 		minedBlobTxsByBlock:     map[uint64][]*metaTx{},
 		minedBlobTxsByHash:      map[string]*metaTx{},
-		blobSchedule:            blobSchedule,
-		feeCalculator:           feeCalculator,
-		// builderNotifyNewTxns:    builderNotifyNewTxns,
-		// newSlotsStreams:         newSlotsStreams,
-		logger: logger,
+		blobSchedule:  blobSchedule,
+		feeCalculator: feeCalculator,
+		logger:        logger,
 		auths:  map[common.Address]*metaTx{},
 	}
 
@@ -369,7 +367,6 @@ func (p *TxPool) Start(ctx context.Context, db kv.RwDB) error {
 
 func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChangeBatch, unwindTxs, unwindBlobTxs, minedTxs types.TxSlots, tx kv.Tx) error {
 	defer newBlockTimer.ObserveDuration(time.Now())
-	//t := time.Now()
 
 	coreDB, cache := p.coreDBWithCache()
 	cache.OnNewBlock(stateChanges)
@@ -563,7 +560,6 @@ func (p *TxPool) processRemoteTxs(ctx context.Context) error {
 		return err
 	}
 
-	//t := time.Now()
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
@@ -602,7 +598,6 @@ func (p *TxPool) processRemoteTxs(ctx context.Context) error {
 	p.unprocessedRemoteTxs.Resize(0)
 	p.unprocessedRemoteByHash = map[string]int{}
 
-	//p.logger.Info("[txpool] on new txs", "amount", len(newPendingTxs.txs), "in", time.Since(t))
 	return nil
 }
 func (p *TxPool) getRlpLocked(tx kv.Tx, hash []byte) (rlpTxn []byte, sender common.Address, isLocal bool, err error) {
@@ -1960,7 +1955,7 @@ func MainLoop(ctx context.Context, db kv.RwDB, p *TxPool, newTxs chan types.Anno
 							continue
 						}
 						// Strip away blob wrapper, if applicable
-						slotRlp, err2 := types2.UnwrapTxPlayloadRlp(slotRlp)
+						slotRlp, err2 := types2.UnwrapTxPayloadRlp(slotRlp)
 						if err2 != nil {
 							continue
 						}
@@ -2096,7 +2091,6 @@ func (p *TxPool) flushLocked(tx kv.RwTx) (err error) {
 				delete(p.senders.senderIDs, addr)
 			}
 		}
-		//fmt.Printf("del:%d,%d,%d\n", mt.Tx.senderID, mt.Tx.nonce, mt.Tx.tip)
 		has, err := tx.Has(kv.PoolTransaction, idHash)
 		if err != nil {
 			return err
@@ -2385,7 +2379,6 @@ func (p *TxPool) printDebug(prefix string) {
 }
 func (p *TxPool) logStats() {
 	if !p.Started() {
-		//p.logger.Info("[txpool] Not started yet, waiting for new blocks...")
 		return
 	}
 
@@ -2395,7 +2388,6 @@ func (p *TxPool) logStats() {
 	var m runtime.MemStats
 	dbg.ReadMemStats(&m)
 	ctx := []interface{}{
-		//"block", p.lastSeenBlock.Load(),
 		"pending", p.pending.Len(),
 		"baseFee", p.baseFee.Len(),
 		"queued", p.queued.Len(),
@@ -2469,9 +2461,6 @@ func (l *recentlyConnectedPeers) GetAndClean() []types.PeerID {
 // nolint
 func (sc *sendersBatch) printDebug(prefix string) {
 	fmt.Printf("%s.sendersBatch.sender\n", prefix)
-	//for i, j := range sc.senderInfo {
-	//	fmt.Printf("\tid=%d,nonce=%d,balance=%d\n", i, j.nonce, j.balance.Uint64())
-	//}
 }
 
 // sendersBatch stores in-memory senders-related objects - which are different from DB (updated/dirty)

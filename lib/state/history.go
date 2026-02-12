@@ -165,7 +165,7 @@ Loop:
 		for _, ext := range h.integrityFileExtensions {
 			requiredFile := fmt.Sprintf("%s.%d-%d.%s", h.filenameBase, startStep, endStep, ext)
 			if !dir.FileExist(filepath.Join(h.dir, requiredFile)) {
-				h.logger.Debug(fmt.Sprintf("[snapshots] skip %s because %s doesn't exists", name, requiredFile))
+				h.logger.Debug(fmt.Sprintf("[snapshots] skip %s because %s doesn't exist", name, requiredFile))
 				garbageFiles = append(garbageFiles, newFile)
 				continue Loop
 			}
@@ -1248,7 +1248,7 @@ func (ht *HistoryRoTx) GetNoState(key []byte, txNum uint64) ([]byte, bool, error
 		return true
 	}
 
-	// -- LocaliyIndex opimization --
+	// -- LocalityIndex optimization --
 	// check up to 2 exact files
 	if foundExactShard1 {
 		from, to := exactStep1*ht.h.aggregationStep, (exactStep1+StepsInBiggestFile)*ht.h.aggregationStep
@@ -1256,15 +1256,6 @@ func (ht *HistoryRoTx) GetNoState(key []byte, txNum uint64) ([]byte, bool, error
 		if ok {
 			findInFile(item)
 		}
-		//for _, item := range ht.invIndexFiles {
-		//	if item.startTxNum == from && item.endTxNum == to {
-		//		findInFile(item)
-		//	}
-		//}
-		//exactShard1, ok := ht.invIndexFiles.Get(ctxItem{startTxNum: exactStep1 * ht.h.aggregationStep, endTxNum: (exactStep1 + StepsInBiggestFile) * ht.h.aggregationStep})
-		//if ok {
-		//	findInFile(exactShard1)
-		//}
 	}
 	if !found && foundExactShard2 {
 		from, to := exactStep2*ht.h.aggregationStep, (exactStep2+StepsInBiggestFile)*ht.h.aggregationStep
@@ -1412,7 +1403,7 @@ func (ht *HistoryRoTx) getNoStateFromDB(key []byte, txNum uint64, tx kv.Tx) ([]b
 		if kAndTxNum == nil || !bytes.Equal(kAndTxNum[:len(kAndTxNum)-8], key) {
 			return nil, false, nil
 		}
-		// val == []byte{},m eans key was created in this txNum and doesn't exists before.
+		// val == []byte{} means key was created in this txNum and doesn't exist before.
 		return val, true, nil
 	}
 	c, err := tx.CursorDupSort(ht.h.historyValsTable)
@@ -1430,7 +1421,7 @@ func (ht *HistoryRoTx) getNoStateFromDB(key []byte, txNum uint64, tx kv.Tx) ([]b
 	if val == nil {
 		return nil, false, nil
 	}
-	// `val == []byte{}` means key was created in this txNum and doesn't exists before.
+	// `val == []byte{}` means key was created in this txNum and doesn't exist before.
 	return val[8:], true, nil
 }
 
@@ -1877,9 +1868,6 @@ func (hi *HistoryChangesIterFiles) HasNext() bool {
 		return false
 	}
 	return true
-	//if hi.toPrefix == nil { // s.nextK == nil check is above
-	//	return true
-	//}
 }
 
 func (hi *HistoryChangesIterFiles) Next() ([]byte, []byte, error) {
@@ -2096,7 +2084,7 @@ func (h *History) EnableMadvNormalReadAhead() *History {
 	return h
 }
 
-// HistoryStep used for incremental state reconsitution, it isolates only one snapshot interval
+// HistoryStep used for incremental state reconstitution, it isolates only one snapshot interval
 type HistoryStep struct {
 	compressVals bool
 	indexItem    *filesItem

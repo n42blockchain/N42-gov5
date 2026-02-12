@@ -83,7 +83,7 @@ type CacheView interface {
 // mechanism is broken and cache is likely invalidated).
 //
 
-// Pair.Value == nil - is a marker of absense key in db
+// Pair.Value == nil - is a marker of absence key in db
 
 // Coherent
 // High-level guaranties:

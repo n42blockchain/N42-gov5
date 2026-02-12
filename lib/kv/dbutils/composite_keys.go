@@ -18,7 +18,7 @@ func EncodeBlockNumber(number uint64) []byte {
 	return enc
 }
 
-var ErrInvalidSize = errors.New("bit endian number has an invalid size")
+var ErrInvalidSize = errors.New("big endian number has an invalid size")
 
 func DecodeBlockNumber(number []byte) (uint64, error) {
 	if len(number) != NumberLength {

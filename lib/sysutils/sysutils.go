@@ -53,17 +53,17 @@ const (
 func GetProcessesInfo() []*ProcessInfo {
 	procs, err := process.Processes()
 	if err != nil {
-		log.Debug("[Sysutil] Error retrieving processes: %v", err)
+		log.Debug("[Sysutil] Error retrieving processes", "err", err)
 	}
 
-	return averageProceses(procs)
+	return averageProcesses(procs)
 }
 
-func AverageProceses(procs []*process.Process) []*ProcessInfo {
-	return averageProceses(procs)
+func AverageProcesses(procs []*process.Process) []*ProcessInfo {
+	return averageProcesses(procs)
 }
 
-func averageProceses(procs []*process.Process) []*ProcessInfo {
+func averageProcesses(procs []*process.Process) []*ProcessInfo {
 	// Collect processes and calculate average stats.
 	allProcsRepeats := make([][]*ProcessInfo, 0, iterations)
 
@@ -81,15 +81,15 @@ func averageProceses(procs []*process.Process) []*ProcessInfo {
 	return averageProcs
 }
 
-func RemoveProcessesBelowThreshold(processes []*ProcessInfo, treshold float64) []*ProcessInfo {
-	return removeProcessesBelowThreshold(processes, treshold)
+func RemoveProcessesBelowThreshold(processes []*ProcessInfo, threshold float64) []*ProcessInfo {
+	return removeProcessesBelowThreshold(processes, threshold)
 }
 
-func removeProcessesBelowThreshold(processes []*ProcessInfo, treshold float64) []*ProcessInfo {
+func removeProcessesBelowThreshold(processes []*ProcessInfo, threshold float64) []*ProcessInfo {
 	// remove processes with CPU or Memory usage less than threshold
 	filtered := make([]*ProcessInfo, 0, len(processes))
 	for _, p := range processes {
-		if p.CPUUsage >= treshold || p.Memory >= float32(treshold) {
+		if p.CPUUsage >= threshold || p.Memory >= float32(threshold) {
 			filtered = append(filtered, p)
 		}
 	}
@@ -154,20 +154,20 @@ func allProcesses(procs []*process.Process) []*ProcessInfo {
 			name = "Unknown"
 		}
 
-		//remove gopls process as it is what we use to get info
+		// skip gopls process
 		if name == "gopls" {
 			continue
 		}
 
 		cpuPercent, err := proc.CPUPercent()
 		if err != nil {
-			log.Trace("[Sysutil] Error retrieving CPU percent for PID %d: %v Name: %s", pid, err, name)
+			log.Trace("[Sysutil] Error retrieving CPU percent", "pid", pid, "err", err, "name", name)
 			continue
 		}
 
 		memPercent, err := proc.MemoryPercent()
 		if err != nil {
-			log.Trace("[Sysutil] Error retrieving memory percent for PID %d: %v Name: %s", pid, err, name)
+			log.Trace("[Sysutil] Error retrieving memory percent", "pid", pid, "err", err, "name", name)
 			continue
 		}
 
@@ -180,7 +180,11 @@ func allProcesses(procs []*process.Process) []*ProcessInfo {
 func TotalCPUUsage() float64 {
 	totalCPUPercent, err := cpu.Percent(time.Second, false)
 	if err != nil {
-		log.Debug("[Sysutil] Error retrieving total CPU usage: %v", err)
+		log.Debug("[Sysutil] Error retrieving total CPU usage", "err", err)
+		return 0
+	}
+	if len(totalCPUPercent) == 0 {
+		return 0
 	}
 
 	return float64(totalCPUPercent[0])
@@ -189,7 +193,8 @@ func TotalCPUUsage() float64 {
 func CPUUsageByCores() []float64 {
 	cpuPercent, err := cpu.Percent(time.Second, true)
 	if err != nil {
-		log.Debug("[Sysutil] Error retrieving CPU usage by cores: %v", err)
+		log.Debug("[Sysutil] Error retrieving CPU usage by cores", "err", err)
+		return nil
 	}
 
 	return cpuPercent
@@ -205,7 +210,11 @@ func CPUUsage() CPUUsageInfo {
 func TotalMemoryUsage() float64 {
 	totalMemory, err := mem.VirtualMemory()
 	if err != nil {
-		log.Debug("[Sysutil] Error retrieving total memory usage: %v", err)
+		log.Debug("[Sysutil] Error retrieving total memory usage", "err", err)
+		return 0
+	}
+	if totalMemory == nil {
+		return 0
 	}
 
 	return float64(totalMemory.UsedPercent)

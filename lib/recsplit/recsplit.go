@@ -129,7 +129,7 @@ type RecSplitArgs struct {
 
 	IndexFile   string // File name where the index and the minimal perfect hash function will be written to
 	TmpDir      string
-	StartSeed   []uint64 // For each level of recursive split, the hash seed (salt) used for that level - need to be generated randomly and be large enough to accomodate all the levels
+	StartSeed   []uint64 // For each level of recursive split, the hash seed (salt) used for that level - need to be generated randomly and be large enough to accommodate all the levels
 	KeyCount    int
 	BucketSize  int
 	BaseDataID  uint64
@@ -170,7 +170,7 @@ func NewRecSplit(args RecSplitArgs, logger log.Logger) (*RecSplit, error) {
 		// reduce ram pressure, because:
 		//   - indexing done in background or in many workers (building many indices in-parallel)
 		//   - `recsplit` has 2 etl collectors
-		//   - `rescplit` building is cpu-intencive and bottleneck is not in etl loading
+		//   - `recsplit` building is cpu-intensive and bottleneck is not in etl loading
 		rs.etlBufLimit = etl.BufferOptimalSize / 8
 	}
 	rs.bucketCollector = etl.NewCollector(RecSplitLogPrefix+" "+fname, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), logger)
@@ -338,7 +338,7 @@ func (rs *RecSplit) golombParam(m uint16) int {
 }
 
 // Add key to the RecSplit. There can be many more keys than what fits in RAM, and RecSplit
-// spills data onto disk to accomodate that. The key gets copied by the collector, therefore
+// spills data onto disk to accommodate that. The key gets copied by the collector, therefore
 // the slice underlying key is not getting accessed by RecSplit after this invocation.
 func (rs *RecSplit) AddKey(key []byte, offset uint64) error {
 	if rs.built {
@@ -395,7 +395,7 @@ func (rs *RecSplit) AddOffset(offset uint64) error {
 }
 
 func (rs *RecSplit) recsplitCurrentBucket() error {
-	// Extend rs.bucketSizeAcc to accomodate current bucket index + 1
+	// Extend rs.bucketSizeAcc to accommodate current bucket index + 1
 	for len(rs.bucketSizeAcc) <= int(rs.currentBucketIdx)+1 {
 		rs.bucketSizeAcc = append(rs.bucketSizeAcc, rs.bucketSizeAcc[len(rs.bucketSizeAcc)-1])
 	}
@@ -434,7 +434,7 @@ func (rs *RecSplit) recsplitCurrentBucket() error {
 			}
 		}
 	}
-	// Extend rs.bucketPosAcc to accomodate current bucket index + 1
+	// Extend rs.bucketPosAcc to accommodate current bucket index + 1
 	for len(rs.bucketPosAcc) <= int(rs.currentBucketIdx)+1 {
 		rs.bucketPosAcc = append(rs.bucketPosAcc, rs.bucketPosAcc[len(rs.bucketPosAcc)-1])
 	}

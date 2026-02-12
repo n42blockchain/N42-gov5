@@ -26,7 +26,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// WebSeeds - allow use HTTP-based infrastrucutre to support Bittorrent network
+// WebSeeds - allow use HTTP-based infrastructure to support Bittorrent network
 // it allows download .torrent files and data files from trusted url's (for example: S3 signed url)
 type WebSeeds struct {
 	lock sync.Mutex

@@ -83,7 +83,7 @@ func NewTxParseContext(chainID uint256.Int) *TxParseContext {
 }
 
 // TxSlot contains information extracted from an Ethereum transaction, which is enough to manage it inside the transaction.
-// Also, it contains some auxillary information, like ephemeral fields, and indices within priority queues
+// Also, it contains some auxiliary information, like ephemeral fields, and indices within priority queues
 type TxSlot struct {
 	Rlp            []byte      // Is set to nil after flushing to db, frees memory, later we look for it in the db, if needed
 	Value          uint256.Int // Value transferred by the transaction
@@ -335,7 +335,7 @@ func parseSignature(payload []byte, pos int, legacy bool, cfgChainId *uint256.In
 	if err != nil {
 		return 0, 0, fmt.Errorf("r: %w", err)
 	}
-	// New follows S of the signature
+	// Next follows S of the signature
 	p, err = rlp.U256(payload, p, &sig.S)
 	if err != nil {
 		return 0, 0, fmt.Errorf("s: %w", err)
@@ -606,7 +606,6 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 			return 0, fmt.Errorf("%w: computing IdHash: %s", ErrParseTxn, err) //nolint
 		}
 	}
-	//ctx.keccak1.Sum(slot.IdHash[:0])
 	_, _ = ctx.Keccak1.(io.Reader).Read(slot.IDHash[:32])
 	if validateHash != nil {
 		if err := validateHash(slot.IDHash[:32]); err != nil {
@@ -667,7 +666,6 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 	}
 	// Squeeze Sighash
 	_, _ = ctx.Keccak2.(io.Reader).Read(ctx.Sighash[:32])
-	//ctx.keccak2.Sum(ctx.Sighash[:0])
 	binary.BigEndian.PutUint64(ctx.Sig[0:8], ctx.R[3])
 	binary.BigEndian.PutUint64(ctx.Sig[8:16], ctx.R[2])
 	binary.BigEndian.PutUint64(ctx.Sig[16:24], ctx.R[1])
@@ -687,9 +685,8 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 		return 0, fmt.Errorf("%w: computing sender from public key: %s", ErrParseTxn, err) //nolint
 	}
 	// squeeze the hash of the public key
-	//ctx.keccak2.Sum(ctx.buf[:0])
 	_, _ = ctx.Keccak2.(io.Reader).Read(ctx.buf[:32])
-	//take last 20 bytes as address
+	// take last 20 bytes as address
 	copy(sender, ctx.buf[12:32])
 
 	return p, nil
@@ -901,7 +898,6 @@ func (s *TxSlots) Resize(targetSize uint) {
 	for uint(len(s.IsLocal)) < targetSize {
 		s.IsLocal = append(s.IsLocal, false)
 	}
-	//todo: set nil to overflow txs
 	oldLen := uint(len(s.Txs))
 	s.Txs = s.Txs[:targetSize]
 	for i := oldLen; i < targetSize; i++ {
@@ -941,7 +937,6 @@ func (s *TxsRlp) Resize(targetSize uint) {
 	for uint(len(s.IsLocal)) < targetSize {
 		s.IsLocal = append(s.IsLocal, false)
 	}
-	//todo: set nil to overflow txs
 	s.Txs = s.Txs[:targetSize]
 	s.Senders = s.Senders[:length.Addr*targetSize]
 	s.IsLocal = s.IsLocal[:targetSize]
@@ -968,10 +963,10 @@ func EncodeSender(nonce uint64, balance uint256.Int, buffer []byte) {
 		fieldSet = 1
 		nonceBytes := common.BitLenToByteLen(bits.Len64(nonce))
 		buffer[pos] = byte(nonceBytes)
-		var nonce = nonce
+		n := nonce
 		for i := nonceBytes; i > 0; i-- {
-			buffer[pos+i] = byte(nonce)
-			nonce >>= 8
+			buffer[pos+i] = byte(n)
+			n >>= 8
 		}
 		pos += nonceBytes + 1
 	}
@@ -1038,7 +1033,6 @@ func bytesToUint64(buf []byte) (x uint64) {
 // nolint
 func (tx *TxSlot) PrintDebug(prefix string) {
 	fmt.Printf("%s: senderID=%d,nonce=%d,tip=%d,v=%d\n", prefix, tx.SenderID, tx.Nonce, tx.Tip, tx.Value.Uint64())
-	//fmt.Printf("%s: senderID=%d,nonce=%d,tip=%d,hash=%x\n", prefix, tx.senderID, tx.nonce, tx.tip, tx.IdHash)
 }
 
 // AccessList is an EIP-2930 access list.
@@ -1070,7 +1064,7 @@ func (al AccessList) HasAddr(addr common.Address) bool {
 
 // Removes everything but the payload body from blob tx and prepends 0x3 at the beginning - no copy
 // Doesn't change non-blob tx
-func UnwrapTxPlayloadRlp(blobTxRlp []byte) ([]byte, error) {
+func UnwrapTxPayloadRlp(blobTxRlp []byte) ([]byte, error) {
 	if blobTxRlp[0] != BlobTxType {
 		return blobTxRlp, nil
 	}

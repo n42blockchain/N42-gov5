@@ -58,15 +58,15 @@ func TestCalculateTime(t *testing.T) {
 	require.Equal(t, "1h:40m", diagnostics.CalculateTime(6000, 1))
 }
 
-// Test GetShanpshotsPercentDownloaded function
-func TestGetShanpshotsPercentDownloaded(t *testing.T) {
-	require.Equal(t, "0%", diagnostics.GetShanpshotsPercentDownloaded(0, 0, 0, 0))
-	require.Equal(t, "0%", diagnostics.GetShanpshotsPercentDownloaded(0, 1, 0, 0))
-	require.Equal(t, "100%", diagnostics.GetShanpshotsPercentDownloaded(1, 1, 1, 1))
-	require.Equal(t, "50%", diagnostics.GetShanpshotsPercentDownloaded(1, 2, 1, 1))
+// Test GetSnapshotsPercentDownloaded function
+func TestGetSnapshotsPercentDownloaded(t *testing.T) {
+	require.Equal(t, "0%", diagnostics.GetSnapshotsPercentDownloaded(0, 0, 0, 0))
+	require.Equal(t, "0%", diagnostics.GetSnapshotsPercentDownloaded(0, 1, 0, 0))
+	require.Equal(t, "100%", diagnostics.GetSnapshotsPercentDownloaded(1, 1, 1, 1))
+	require.Equal(t, "50%", diagnostics.GetSnapshotsPercentDownloaded(1, 2, 1, 1))
 
-	require.Equal(t, "50.01%", diagnostics.GetShanpshotsPercentDownloaded(5001, 10000, 1, 1))
-	require.Equal(t, "50.5%", diagnostics.GetShanpshotsPercentDownloaded(5050, 10000, 1, 1))
+	require.Equal(t, "50.01%", diagnostics.GetSnapshotsPercentDownloaded(5001, 10000, 1, 1))
+	require.Equal(t, "50.5%", diagnostics.GetSnapshotsPercentDownloaded(5050, 10000, 1, 1))
 
-	require.Equal(t, "calculating...", diagnostics.GetShanpshotsPercentDownloaded(10000, 10000, 0, 1))
+	require.Equal(t, "calculating...", diagnostics.GetSnapshotsPercentDownloaded(10000, 10000, 0, 1))
 }
