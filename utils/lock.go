@@ -109,17 +109,17 @@ func getChan(key string) chan byte {
 	return locks.list[key]
 }
 
-// Return a new string with unique elements.
+// unique returns a new string slice with duplicate elements removed.
 func unique(arr []string) []string {
-	if arr == nil || len(arr) <= 1 {
+	if len(arr) <= 1 {
 		return arr
 	}
 
-	found := map[string]bool{}
+	seen := make(map[string]struct{}, len(arr))
 	result := make([]string, 0, len(arr))
 	for _, v := range arr {
-		if !found[v] {
-			found[v] = true
+		if _, exists := seen[v]; !exists {
+			seen[v] = struct{}{}
 			result = append(result, v)
 		}
 	}

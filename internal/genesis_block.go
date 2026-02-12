@@ -167,7 +167,7 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	var ExtraData []byte
 
 	switch g.GenesisConfig.Config.Consensus {
-	case params.CliqueConsensus, params.AposConsensu:
+	case params.CliqueConsensus, params.AposConsensus:
 
 		var signers []types.Address
 

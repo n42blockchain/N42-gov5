@@ -61,7 +61,6 @@ func StringToHash(s string) Hash {
 	var h Hash
 	b, err := hex.DecodeString(s)
 	if err == nil {
-		//copy(h[:], b[:HashLength])
 		return BytesToHash(b)
 	}
 
@@ -237,7 +236,7 @@ func IsHexAddress(s string) bool {
 	return len(s) == 2*AddressLength && isHex(s)
 }
 
-// Bytes gets the string representation of the underlying address.
+// Bytes gets the byte representation of the underlying address.
 func (a Address) Bytes() []byte { return a[:] }
 
 // Hash converts an address to a hash by left-padding it with zeros.

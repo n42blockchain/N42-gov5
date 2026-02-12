@@ -172,7 +172,7 @@ func (a *Address) DecodeString(s string) bool {
 
 	b, err := hex.DecodeString(s[len(prefixAddress):])
 	if err != nil {
-		a = &Address{0}
+		*a = Address{0}
 		return false
 	}
 

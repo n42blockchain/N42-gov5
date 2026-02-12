@@ -58,12 +58,16 @@ var byteSlicePool = &ByteSlicePool{
 func init() {
 	for i := range byteSlicePool.pools {
 		size := 64 << uint(i) // Start at 64 bytes
-		byteSlicePool.pools[i] = &sync.Pool{
-			New: func() interface{} {
-				b := make([]byte, size)
-				return &b
-			},
-		}
+		byteSlicePool.pools[i] = newByteSlicePool(size)
+	}
+}
+
+func newByteSlicePool(size int) *sync.Pool {
+	return &sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, size)
+			return &b
+		},
 	}
 }
 

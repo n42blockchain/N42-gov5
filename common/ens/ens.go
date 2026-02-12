@@ -156,6 +156,7 @@ func Namehash(name string) types.Hash {
 
 	// Calculate namehash from right to left
 	node := types.Hash{}
+	var buf [64]byte // pre-allocated buffer for node + labelHash concatenation
 	for i := len(labels) - 1; i >= 0; i-- {
 		label := labels[i]
 		if label == "" {
@@ -165,8 +166,10 @@ func Namehash(name string) types.Hash {
 		// Hash the label
 		labelHash := keccak256([]byte(label))
 
-		// Hash node + labelHash
-		node = keccak256(append(node[:], labelHash[:]...))
+		// Hash node + labelHash using pre-allocated buffer
+		copy(buf[:32], node[:])
+		copy(buf[32:], labelHash[:])
+		node = keccak256(buf[:])
 	}
 
 	return node

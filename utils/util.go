@@ -17,25 +17,17 @@
 package utils
 
 import (
-	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
+	"os"
+	"strings"
+
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common/types"
 	"golang.org/x/crypto/sha3"
-	"os"
-	"strings"
 )
-
-func Hash256toS(data []byte) string {
-	h := sha3.NewLegacyKeccak256()
-	h.Write(data)
-	hash := h.Sum(nil)
-	return hex.EncodeToString(hash)
-}
 
 func Keccak256(data ...[]byte) []byte {
 	d := sha3.NewLegacyKeccak256()
@@ -55,7 +47,7 @@ func Keccak256Hash(data ...[]byte) (h types.Hash) {
 	for _, b := range data {
 		d.Write(b)
 	}
-	d.Sum(h[:])
+	d.Sum(h[:0])
 	return h
 }
 
@@ -96,14 +88,7 @@ func StringToPublic(s string) (crypto.PubKey, error) {
 
 func Exists(path string) bool {
 	_, err := os.Stat(path)
-	if err != nil {
-		if os.IsExist(err) {
-			return true
-		}
-		return false
-	}
-
-	return true
+	return err == nil
 }
 func MkdirAll(path string, perm os.FileMode) error {
 	if err := os.MkdirAll(path, perm); err != nil {
@@ -126,27 +111,6 @@ func HexPrefix(a, b []byte) ([]byte, int) {
 	}
 
 	return a[:i], i
-}
-
-type appKey struct{}
-
-type AppInfo interface {
-	ID() string
-	Name() string
-	Version() string
-	astdata() map[string]string
-	Endpoint() []string
-}
-
-// NewContext returns a new Context that carries value.
-func NewContext(ctx context.Context, s AppInfo) context.Context {
-	return context.WithValue(ctx, appKey{}, s)
-}
-
-// FromContext returns the Transport value stored in ctx, if any.
-func FromContext(ctx context.Context) (s AppInfo, ok bool) {
-	s, ok = ctx.Value(appKey{}).(AppInfo)
-	return
 }
 
 func ByteCount(b uint64) string {

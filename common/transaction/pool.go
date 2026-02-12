@@ -47,11 +47,13 @@ func PutPooledLegacyTx(tx *LegacyTx) {
 	tx.GasPrice.Clear()
 	tx.Gas = 0
 	tx.To = nil
+	tx.From = nil
 	tx.Value.Clear()
 	tx.Data = nil
 	tx.V = nil
 	tx.R = nil
 	tx.S = nil
+	tx.Sign = nil
 	TxDataPool.Put(tx)
 }
 
@@ -82,9 +84,11 @@ func PutPooledDynamicFeeTx(tx *DynamicFeeTx) {
 	tx.GasFeeCap.Clear()
 	tx.Gas = 0
 	tx.To = nil
+	tx.From = nil
 	tx.Value.Clear()
 	tx.Data = nil
 	tx.AccessList = nil
+	tx.Sign = nil
 	tx.V = nil
 	tx.R = nil
 	tx.S = nil

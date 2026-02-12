@@ -152,9 +152,7 @@ type Stoppable interface {
 }
 
 var (
-	DefaultRegistry    = NewRegistry()
-	EphemeralRegistry  = NewRegistry()
-	AccountingRegistry = NewRegistry() // registry used in swarm
+	DefaultRegistry = NewRegistry()
 )
 
 // Get the metric by the given name or nil if none is registered.

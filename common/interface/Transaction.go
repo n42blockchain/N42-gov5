@@ -15,20 +15,3 @@
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
 package _interface
-
-//import (
-//	"github.com/n42blockchain/N42/common/types"
-//	"github.com/gogo/protobuf/proto"
-//)
-//
-//type ITransaction interface {
-//	MarshalTo(data []byte) (n int, err error)
-//	ToProtoMessage() proto.Message
-//	Unmarshal(data []byte) error
-//	Marshal() ([]byte, error)
-//	Type() uint8
-//	ChainId() uint256.Int
-//	Data() []byte
-//}
-//
-//type Transactions []ITransaction

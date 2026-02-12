@@ -30,13 +30,6 @@ import (
 	"time"
 )
 
-//type writeCounter types.StorageSize
-//
-//func (c *writeCounter) Write(b []byte) (int, error) {
-//	*c += writeCounter(len(b))
-//	return len(b), nil
-//}
-
 type Block struct {
 	header *Header
 	body   *Body
@@ -156,10 +149,6 @@ func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, uncles []IHe
 		ReceiveAt:    time.Now(),
 		ReceivedFrom: nil,
 	}
-	//if len(receipts) > 0 {
-	//	print(receipts)
-	//}
-
 	block.header.Bloom = CreateBloom(receipts)
 	block.header.TxHash = hash.DeriveSha(transaction.Transactions(txs))
 	block.header.ReceiptHash = hash.DeriveSha(Receipts(receipts))

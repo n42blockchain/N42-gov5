@@ -269,9 +269,6 @@ func Close() {
 }
 
 func InitMobileLogger(filepath string, isDebug bool) {
-	if !isDebug {
-		return
-	}
 	formatter := new(prefixed.TextFormatter)
 	formatter.TimestampFormat = "2006-01-02 15:04:05"
 	formatter.FullTimestamp = true
@@ -284,7 +281,7 @@ func InitMobileLogger(filepath string, isDebug bool) {
 	}
 	terminal.SetOutput(&lumberjack.Logger{
 		Filename:   filepath,
-		MaxSize:    10, //10MB
+		MaxSize:    10, // MB
 		MaxBackups: 2,
 		LocalTime:  false,
 		Compress:   false,

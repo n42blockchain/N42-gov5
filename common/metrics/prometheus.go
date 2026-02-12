@@ -19,13 +19,13 @@ package prometheus
 
 import (
 	"fmt"
+	"net/http"
+	"sort"
+
 	metrics2 "github.com/VictoriaMetrics/metrics"
 	"github.com/n42blockchain/N42/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
-
-	"net/http"
-	"sort"
 )
 
 // Handler returns an HTTP handler which dump metrics in Prometheus format.
@@ -49,10 +49,13 @@ func Handler(reg Registry) http.Handler {
 		enc := expfmt.NewEncoder(w, contentType)
 		mf, err := prometheus.DefaultGatherer.Gather()
 		if err != nil {
+			log.Warn("Failed to gather Prometheus metrics", "err", err)
 			return
 		}
 		for _, m := range mf {
-			enc.Encode(m)
+			if err := enc.Encode(m); err != nil {
+				log.Warn("Failed to encode Prometheus metric", "err", err)
+			}
 		}
 
 		// Aggregate all the metris into a Prometheus collector

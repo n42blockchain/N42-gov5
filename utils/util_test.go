@@ -19,23 +19,11 @@ package utils
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"testing"
+
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/n42blockchain/N42/common/types"
-	"testing"
 )
-
-func TestHash256toS(t *testing.T) {
-	data := []byte("123aaaaa")
-	s := Hash256toS(data)
-	t.Log(s)
-	s1 := Hash256toS(data)
-	t.Log(s1)
-	s2 := Hash256toS(data)
-	t.Log(s2)
-	s3 := Hash256toS(data)
-	t.Log(s3)
-
-}
 
 func TestKeccak256(t *testing.T) {
 	data := []byte("123aaaaa")

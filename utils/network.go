@@ -6,12 +6,12 @@ import (
 )
 
 // IPAddr gets the external ipv4 address and converts into a libp2p formatted value.
-func IPAddr() net.IP {
+func IPAddr() (net.IP, error) {
 	ip, err := ExternalIP()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	return net.ParseIP(ip)
+	return net.ParseIP(ip), nil
 }
 
 // ExternalIPv4 returns the first IPv4 available.

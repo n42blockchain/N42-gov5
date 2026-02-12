@@ -83,8 +83,8 @@ func (s Transactions) Len() int { return len(s) }
 // constructed by decoding or via public API in this package.
 func (s Transactions) EncodeIndex(i int, w *bytes.Buffer) {
 	tx := s[i]
-	proto, _ := tx.Marshal()
-	w.Write(proto)
+	data, _ := tx.Marshal()
+	w.Write(data)
 }
 
 type Transaction struct {
@@ -319,9 +319,6 @@ func (tx *Transaction) ToProtoMessage() proto.Message {
 func (tx *Transaction) setDecoded(inner TxData, size int) {
 	tx.inner = inner
 	tx.time = time.Now()
-	//if size > 0 {
-	//	tx.size.Store(common.StorageSize(size))
-	//}
 }
 
 func (tx *Transaction) RawSignatureValues() (v, r, s *uint256.Int) {
@@ -665,32 +662,6 @@ func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, e
 	return &Transaction{inner: cpy, time: tx.time}, nil
 }
 
-//type Transaction struct {
-//	to        types.Address
-//	from      types.Address
-//	nonce     uint64
-//	amount    uint256.Int
-//	gasLimit  uint64
-//	gasPrice  uint256.Int
-//	gasFeeCap uint256.Int
-//	payload   []byte
-//}
-
-//func (t *Transaction) ToProtoMessage() proto.Message {
-//	pbTx := types_pb.Transaction{
-//		From:  types.Address(t.from),
-//		To:    types.Address(t.to),
-//		Value: t.amount,
-//		Data:  t.payload,
-//		Nonce: t.nonce,
-//		S:     nil,
-//		V:     nil,
-//		R:     nil,
-//	}
-//
-//	return &pbTx
-//}
-
 func copyAddressPtr(a *types.Address) *types.Address {
 	if a == nil {
 		return nil
@@ -743,20 +714,17 @@ func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uin
 // AsMessage returns the transaction as a core.Message.
 func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error) {
 	msg := Message{
-		nonce:    tx.Nonce(),
-		gasLimit: tx.Gas(),
-		gasPrice: *new(uint256.Int).Set(tx.GasPrice()),
-		feeCap:   *new(uint256.Int).Set(tx.GasFeeCap()),
-		tip:      *new(uint256.Int).Set(tx.GasTipCap()),
-		//gasFeeCap:  new(big.Int).Set(tx.GasFeeCap()),
-		//gasTipCap:  new(big.Int).Set(tx.GasTipCap()),
+		nonce:      tx.Nonce(),
+		gasLimit:   tx.Gas(),
+		gasPrice:   *new(uint256.Int).Set(tx.GasPrice()),
+		feeCap:     *new(uint256.Int).Set(tx.GasFeeCap()),
+		tip:        *new(uint256.Int).Set(tx.GasTipCap()),
 		to:         tx.To(),
 		amount:     *tx.Value(),
 		data:       tx.Data(),
 		accessList: tx.AccessList(),
 		authList:   tx.AuthList(), // EIP-7702
 		checkNonce: false,
-		//isFake:     false,
 	}
 
 	// If baseFee provided, set gasPrice to effectiveGasPrice.
@@ -767,11 +735,6 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 			msg.gasPrice = msg.feeCap
 		}
 	}
-	//var err error
-	//msg.from, err = Sender(s, tx)
-	//if nil != err {
-	//	return msg, err
-	//}
 	msg.from = *tx.From()
 
 	return msg, nil

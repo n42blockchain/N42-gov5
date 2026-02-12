@@ -69,18 +69,16 @@ func (rs Receipts) EncodeIndex(i int, w *bytes.Buffer) {
 	}
 	data := &storedReceipt{r.Status, r.CumulativeGasUsed, logs}
 
-	rlp.Encode(w, data)
-	//byte, _ := json.Marshal(data)
-	//w.Write(byte)
+	rlp.Encode(w, data) //nolint:errcheck
 }
 
 func (rs *Receipts) FromProtoMessage(receipts *types_pb.Receipts) error {
 	for _, receipt := range receipts.Receipts {
 		var rec Receipt
-		err := rec.fromProtoMessage(receipt)
-		if err == nil {
-			*rs = append(*rs, &rec)
+		if err := rec.fromProtoMessage(receipt); err != nil {
+			return err
 		}
+		*rs = append(*rs, &rec)
 	}
 	return nil
 }
@@ -135,8 +133,6 @@ func (r *Receipt) Unmarshal(data []byte) error {
 }
 
 func (r *Receipt) toProtoMessage() proto.Message {
-	//bloom, _ := r.Bloom.Marshal()
-
 	var logs []*types_pb.Log
 	for _, log := range r.Logs {
 		logs = append(logs, log.ToProtoMessage().(*types_pb.Log))
@@ -167,12 +163,6 @@ func (r *Receipt) fromProtoMessage(message proto.Message) error {
 	if pReceipt, ok = message.(*types_pb.Receipt); !ok {
 		return fmt.Errorf("type conversion failure")
 	}
-
-	//bloom := new(types.Bloom)
-	//err := bloom.UnMarshalBloom(pReceipt.Bloom)
-	//if err != nil {
-	//	return fmt.Errorf("type conversion failure bloom")
-	//}
 
 	var logs []*Log
 	for _, logMessage := range pReceipt.Logs {

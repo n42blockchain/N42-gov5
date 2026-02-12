@@ -20,11 +20,12 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/params"
 	"math/big"
+
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/params"
 )
 
 var (
@@ -53,8 +54,6 @@ func MakeSigner(config *params.ChainConfig, blockNumber *big.Int) Signer {
 		signer = NewLondonSigner(config.ChainID)
 	case config.IsBerlin(blockNumber.Uint64()):
 		signer = NewEIP2930Signer(config.ChainID)
-	//case config.IsEIP155(blockNumber):
-	//	signer = NewEIP155Signer(config.ChainID)
 	case config.IsHomestead(blockNumber.Uint64()):
 		signer = HomesteadSigner{}
 	default:
@@ -78,9 +77,6 @@ func LatestSigner(config *params.ChainConfig) Signer {
 		if config.BerlinBlock != nil {
 			return NewEIP2930Signer(config.ChainID)
 		}
-		//if config.EIP155Block != nil {
-		//	return NewEIP155Signer(config.ChainID)
-		//}
 	}
 	return HomesteadSigner{}
 }

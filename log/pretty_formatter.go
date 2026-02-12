@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	sshterminal "golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 // ANSI color codes
@@ -138,7 +138,7 @@ func (f *PrettyFormatter) init(entry *logrus.Entry) {
 func (f *PrettyFormatter) checkIfTerminal(w io.Writer) bool {
 	switch v := w.(type) {
 	case *os.File:
-		return sshterminal.IsTerminal(int(v.Fd()))
+		return term.IsTerminal(int(v.Fd()))
 	default:
 		return false
 	}
@@ -330,14 +330,23 @@ func (f *PrettyFormatter) formatMessage(msg string, level logrus.Level, colored 
 	}
 }
 
+// capitalize returns the string with the first letter uppercased.
+func capitalize(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
 // highlightKeywords highlights important keywords in messages
 func (f *PrettyFormatter) highlightKeywords(msg string) string {
 	// Highlight success keywords (green)
 	successKeywords := []string{"started", "connected", "initialized", "ready", "completed", "success", "synced", "stopped"}
 	for _, kw := range successKeywords {
 		if strings.Contains(strings.ToLower(msg), kw) {
+			titled := capitalize(kw)
 			msg = strings.ReplaceAll(msg, kw, fmt.Sprintf("%s%s%s", BrightGreen, kw, Reset))
-			msg = strings.ReplaceAll(msg, strings.Title(kw), fmt.Sprintf("%s%s%s", BrightGreen, strings.Title(kw), Reset))
+			msg = strings.ReplaceAll(msg, titled, fmt.Sprintf("%s%s%s", BrightGreen, titled, Reset))
 		}
 	}
 
@@ -345,8 +354,9 @@ func (f *PrettyFormatter) highlightKeywords(msg string) string {
 	failKeywords := []string{"failed", "error", "disconnected", "timeout", "mismatch"}
 	for _, kw := range failKeywords {
 		if strings.Contains(strings.ToLower(msg), kw) {
+			titled := capitalize(kw)
 			msg = strings.ReplaceAll(msg, kw, fmt.Sprintf("%s%s%s", BrightRed, kw, Reset))
-			msg = strings.ReplaceAll(msg, strings.Title(kw), fmt.Sprintf("%s%s%s", BrightRed, strings.Title(kw), Reset))
+			msg = strings.ReplaceAll(msg, titled, fmt.Sprintf("%s%s%s", BrightRed, titled, Reset))
 		}
 	}
 

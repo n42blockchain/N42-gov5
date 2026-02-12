@@ -1,7 +1,7 @@
 package utils
 
 // These methods use copy() to convert a byte slice to a fixed size array.
-// This approach is used for go1.19 and below.
+// They safely handle inputs of any length by truncating or zero-padding.
 
 // ToBytes4 is a convenience method for converting a byte slice to a fix
 // sized 4 byte array. This method will truncate the input if it is larger
