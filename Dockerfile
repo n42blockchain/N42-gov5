@@ -1,15 +1,13 @@
 # Build
-FROM golang:1.22.8-alpine3.20 AS builder
+FROM golang:1.24-alpine AS builder
 
-# RUN apk add --no-cache gcc musl-dev linux-headers git make
-RUN apk add --no-cache build-base  linux-headers git bash ca-certificates  libstdc++
+RUN apk add --no-cache build-base linux-headers git bash ca-certificates libstdc++
 
 WORKDIR /n42
 ADD . .
 ENV GO111MODULE="on"
-ENV GOPROXY="https://goproxy.cn,https://goproxy.io,direct"
 ENV GOTOOLCHAIN="auto"
-RUN go mod tidy && go build  -o ./build/bin/n42 ./cmd/n42
+RUN go mod tidy && go build -o ./build/bin/n42 ./cmd/n42
 
 
 FROM alpine:3.20
