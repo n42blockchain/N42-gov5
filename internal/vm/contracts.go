@@ -1108,7 +1108,7 @@ func (c *bls12381G2MultiExp) Run(input []byte) ([]byte, error) {
 	for i := 0; i < k; i++ {
 		off := 288 * i
 		t0, t1, t2 := off, off+256, off+288
-		// Decode G1 point
+		// Decode G2 point
 		if points[i], err = g.DecodePoint(input[t0:t1]); err != nil {
 			return nil, err
 		}

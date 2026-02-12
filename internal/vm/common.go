@@ -17,9 +17,8 @@ package vm
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/types"
-
 	"github.com/n42blockchain/N42/common/math"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // calcMemSize64 calculates the required memory size, and returns

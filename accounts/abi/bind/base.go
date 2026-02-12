@@ -20,6 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
+
 	"github.com/holiman/uint256"
 	N42 "github.com/n42blockchain/N42"
 	"github.com/n42blockchain/N42/accounts/abi"
@@ -28,8 +31,6 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	event "github.com/n42blockchain/N42/modules/event/v2"
-	"strings"
-	"sync"
 )
 
 const basefeeWiggleMultiplier = 2

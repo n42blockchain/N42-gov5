@@ -18,6 +18,7 @@ package vm
 
 import (
 	"fmt"
+
 	"github.com/n42blockchain/N42/internal/vm/stack"
 	"github.com/n42blockchain/N42/params"
 )

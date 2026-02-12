@@ -24,13 +24,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/accounts/abi"
-	"github.com/n42blockchain/N42/log"
 	"go/format"
 	"regexp"
 	"strings"
 	"text/template"
 	"unicode"
+
+	"github.com/n42blockchain/N42/accounts/abi"
+	"github.com/n42blockchain/N42/log"
 )
 
 // Lang is a target programming language selector to generate bindings for.

@@ -19,12 +19,13 @@ package bind
 import (
 	"context"
 	"errors"
+	"math/big"
+
 	"github.com/holiman/uint256"
 	N42 "github.com/n42blockchain/N42"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	"math/big"
 )
 
 var (

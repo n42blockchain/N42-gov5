@@ -16,13 +16,14 @@
 package vm
 
 import (
+	"hash"
+	"sync"
+
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm/stack"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
-	"hash"
-	"sync"
 )
 
 // Config are the configuration options for the Interpreter

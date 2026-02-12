@@ -18,12 +18,12 @@ package vm
 
 import (
 	"errors"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/vm/stack"
-	"github.com/n42blockchain/N42/params"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/math"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/vm/stack"
+	"github.com/n42blockchain/N42/params"
 )
 
 // memoryGasCost calculates the quadratic gas for memory expansion. It does so
@@ -62,7 +62,7 @@ func memoryGasCost(mem *Memory, newMemSize uint64) (uint64, error) {
 // as argument:
 // CALLDATACOPY (stack position 2)
 // CODECOPY (stack position 2)
-// EXTCODECOPY (stack poition 3)
+// EXTCODECOPY (stack position 3)
 // RETURNDATACOPY (stack position 2)
 func memoryCopierGas(stackpos int) gasFunc {
 	return func(_ VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {

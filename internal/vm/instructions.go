@@ -18,12 +18,12 @@ package vm
 
 import (
 	"fmt"
+
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
-
-	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
 )
 

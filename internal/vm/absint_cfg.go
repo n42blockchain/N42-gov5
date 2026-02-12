@@ -106,7 +106,7 @@ func (c0 AbsValue) Stringify() string {
 	} else if c0.kind == ConcreteValue {
 		b, err := c0.value.MarshalText()
 		if err != nil {
-			log.Fatal("Can't unmarshall")
+			log.Fatal("Can't unmarshal")
 		}
 		return string(b)
 	}
@@ -124,7 +124,7 @@ func AbsValueDestringify(s string) AbsValue {
 		var i uint256.Int
 		err := i.UnmarshalText([]byte(s))
 		if err != nil {
-			log.Fatal("Can't unmarshall")
+			log.Fatal("Can't unmarshal")
 		}
 		return AbsValueConcrete(i)
 	}
@@ -153,7 +153,7 @@ func (s *astack) Copy() *astack {
 }
 
 func uint256Hash(e *uint256.Int) uint64 {
-	return 19*e[0] + 23*e[1] + 29*e[2]*37*e[3]
+	return 19*e[0] + 23*e[1] + 29*e[2] + 37*e[3]
 }
 
 func (s *astack) updateHash() {

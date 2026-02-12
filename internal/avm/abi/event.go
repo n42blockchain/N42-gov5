@@ -18,10 +18,10 @@ package abi
 
 import (
 	"fmt"
-	types2 "github.com/n42blockchain/N42/common/types"
 	"strings"
 
 	"github.com/n42blockchain/N42/common/crypto"
+	types2 "github.com/n42blockchain/N42/common/types"
 )
 
 // Event is an event potentially triggered by the EVM's LOG mechanism. The Event
