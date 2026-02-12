@@ -157,35 +157,8 @@ func toProgram(code []byte) *Program {
 		}
 	}
 
-	/*
-		epilogue := []byte{0xa1, 0x65, 0x62, 0x7a, 0x7a, 0x72}
-
-		for i := 0; i < len(program.Stmts) - len(epilogue) + 1; i++ {
-			match := true
-			for e := 0; e < len(epilogue); e++ {
-				if byte(program.Stmts[i+e].opcode) != epilogue[e] {
-					match = false
-					break
-				}
-			}
-			if match {
-				for j := i; j < len(program.Stmts); j++ {
-					program.Stmts[j].inferredAsData = true
-					program.Stmts[j].epilogue = true
-				}
-				break
-			}
-		}*/
-
 	return program
 }
-
-/*
-func printStmts(stmts []*Astmt) {
-	for i, stmt := range stmts {
-		fmt.Printf("%v %v\n", i, stmt)
-	}
-}*/
 
 ////////////////////////
 
@@ -202,7 +175,7 @@ func (e edge) String() string {
 
 // resolve analyses given executable instruction at given program counter in the context of given state
 // It either concludes that the execution of the instruction may result in a jump to an unpredictable
-// destination (in this case, attrubute resolved will be false), or returns one (for a non-JUMPI) or two (for JUMPI)
+// destination (in this case, attribute resolved will be false), or returns one (for a non-JUMPI) or two (for JUMPI)
 // edges that contain program counters of destinations where the executions can possibly come next
 func resolve(cfg *Cfg, pc0 int) ([]edge, error) {
 	st0 := cfg.D[pc0]
@@ -289,7 +262,7 @@ func sortAndUnique(edges []edge) []edge {
 	}
 
 	sort.SliceStable(uedges, func(i, j int) bool {
-		return uedges[i].pc0 < uedges[j].pc1
+		return uedges[i].pc0 < uedges[j].pc0
 	})
 
 	return uedges
@@ -586,13 +559,8 @@ func GenCfg(code []byte, anlyCounterLimit int, maxStackLen int, maxStackCount in
 			cfg.D[e.pc1] = postDpc1
 
 			if len(postDpc1.stackset) > maxStackCount {
-				//fmt.Printf("stacklen: %v %v\n", len(postDpc1.stackset), maxStackCount)
-				//fmt.Println(postDpc1.String(false))
-				//for _, stack := range postDpc1.stackset {
-				//	fmt.Printf("%v\n", stack.String(false))
-				//}
 				cfg.Metrics.StackCountLimitReached = true
-				return cfg, errors.New("stack count limit reach")
+				return cfg, errors.New("stack count limit reached")
 			}
 
 			edgesR2, errR2 := resolve(cfg, e.pc1)

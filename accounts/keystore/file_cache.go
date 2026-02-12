@@ -17,7 +17,6 @@
 package keystore
 
 import (
-	"github.com/n42blockchain/N42/log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +24,7 @@ import (
 	"time"
 
 	mapset "github.com/deckarep/golang-set/v2"
+	"github.com/n42blockchain/N42/log"
 )
 
 // fileCache is a cache of files seen during scan of keystore.

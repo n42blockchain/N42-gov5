@@ -4,11 +4,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
 	"math/big"
 	"reflect"
+
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // var EmptyUncleHash = rlpHash([]*Header(nil))

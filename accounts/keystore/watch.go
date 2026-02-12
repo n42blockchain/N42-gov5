@@ -20,9 +20,9 @@
 package keystore
 
 import (
-	"github.com/fsnotify/fsnotify"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -122,7 +122,7 @@ func (w *watcher) loop() {
 			if !ok {
 				return
 			}
-			log.Info("Filsystem watcher error", "err", err)
+			log.Info("Filesystem watcher error", "err", err)
 		case <-debounce.C:
 			w.ac.scanAccounts()
 			rescanTriggered = false

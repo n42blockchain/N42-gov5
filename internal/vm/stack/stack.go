@@ -17,10 +17,10 @@ package stack
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"sync"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/log"
 )
 
 var stackPool = sync.Pool{

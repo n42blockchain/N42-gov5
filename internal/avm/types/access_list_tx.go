@@ -1,8 +1,9 @@
 package types
 
 import (
-	"github.com/n42blockchain/N42/common/avmutil"
 	"math/big"
+
+	"github.com/n42blockchain/N42/common/avmutil"
 )
 
 const (

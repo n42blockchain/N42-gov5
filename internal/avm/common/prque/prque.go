@@ -41,7 +41,7 @@ func (p *Prque) Push(data interface{}, priority int64) {
 	heap.Push(p.cont, &item{data, priority})
 }
 
-// Peek returns the value with the greates priority but does not pop it off.
+// Peek returns the value with the greatest priority but does not pop it off.
 // Returns (nil, 0) if the queue is empty.
 func (p *Prque) Peek() (interface{}, int64) {
 	if p.cont.Len() == 0 {
@@ -51,7 +51,7 @@ func (p *Prque) Peek() (interface{}, int64) {
 	return item.value, item.priority
 }
 
-// Pops the value with the greates priority off the stack and returns it.
+// Pops the value with the greatest priority off the stack and returns it.
 // Currently no shrinking is done.
 func (p *Prque) Pop() (interface{}, int64) {
 	item := heap.Pop(p.cont).(*item)

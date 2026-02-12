@@ -20,11 +20,12 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/params"
 	"math/big"
+
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/params"
 )
 
 var (

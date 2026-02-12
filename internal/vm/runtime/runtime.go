@@ -17,15 +17,15 @@
 package runtime
 
 import (
-	"github.com/n42blockchain/N42/common/types"
-	vm2 "github.com/n42blockchain/N42/internal/vm"
-	"github.com/n42blockchain/N42/modules/state"
 	"math"
 	"math/big"
 	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/types"
+	vm2 "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -110,14 +110,6 @@ func Execute(code, input []byte, cfg *Config, bn uint64) ([]byte, *state.IntraBl
 	}
 	setDefaults(cfg)
 
-	//if cfg.State == nil {
-	//	db := olddb.NewObjectDatabase(memdb.New())
-	//	defer db.Close()
-	//	cfg.r = state.NewDbStateReader(db)
-	//	cfg.w = state.NewDbStateWriter(db, 0)
-	//	cfg.kv = db
-	//	cfg.State = state.New(cfg.r)
-	//}
 	var (
 		address = types.BytesToAddress([]byte("contract"))
 		vmenv   = NewEnv(cfg)
@@ -149,14 +141,6 @@ func Create(input []byte, cfg *Config, blockNr uint64) ([]byte, types.Address, u
 	}
 	setDefaults(cfg)
 
-	//if cfg.State == nil {
-	//	db := olddb.NewObjectDatabase(memdb.New())
-	//	defer db.Close()
-	//	cfg.r = state.NewPlainStateReader(db)
-	//	cfg.w = state.NewPlainStateWriter(db, ,0)
-	//	cfg.kv = db
-	//	cfg.State = state.New(cfg.r)
-	//}
 	var (
 		vmenv  = NewEnv(cfg)
 		sender = vm2.AccountRef(cfg.Origin)

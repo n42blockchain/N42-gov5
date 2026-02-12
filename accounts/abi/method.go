@@ -18,8 +18,9 @@ package abi
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common/crypto"
 	"strings"
+
+	"github.com/n42blockchain/N42/common/crypto"
 )
 
 // FunctionType represents different types of functions a contract might have.

@@ -19,11 +19,12 @@ package bind
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
-	"time"
 )
 
 // NotFound is returned by API methods if the requested item does not exist.
