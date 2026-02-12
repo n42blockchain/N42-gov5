@@ -33,8 +33,12 @@ type Progress struct {
 }
 
 func (p *Progress) percent() int {
+	total := p.Total.Load()
+	if total == 0 {
+		return 0
+	}
 	return int(
-		(float64(p.Processed.Load()) / float64(p.Total.Load())) * 100,
+		(float64(p.Processed.Load()) / float64(total)) * 100,
 	)
 }
 
@@ -69,8 +73,8 @@ func (s *ProgressSet) Delete(p *Progress) {
 	s.list.Delete(p.i)
 }
 func (s *ProgressSet) Has() bool {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.lock.RLock()
+	defer s.lock.RUnlock()
 	return s.list.Len() > 0
 }
 

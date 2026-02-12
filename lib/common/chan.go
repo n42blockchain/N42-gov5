@@ -72,6 +72,11 @@ func PrioritizedSend[t any](ch chan t, msg t) {
 			default:
 			}
 		}
-		ch <- msg
+		select {
+		case ch <- msg:
+		default:
+			// Channel was refilled by another goroutine between drain and send;
+			// drop message rather than block indefinitely.
+		}
 	}
 }

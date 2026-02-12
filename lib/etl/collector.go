@@ -244,7 +244,11 @@ func (c *Collector) Load(db kv.RwTx, toBucket string, loadFunc LoadFunc, args Tr
 		}
 		if canUseAppend {
 			if isDupSort {
-				if err := cursor.(kv.RwCursorDupSort).AppendDup(k, v); err != nil {
+				dupCursor, ok := cursor.(kv.RwCursorDupSort)
+				if !ok {
+					return fmt.Errorf("%s: bucket: %s, cursor does not support DupSort", c.logPrefix, bucket)
+				}
+				if err := dupCursor.AppendDup(k, v); err != nil {
 					return fmt.Errorf("%s: bucket: %s, appendDup: k=%x, %w", c.logPrefix, bucket, k, err)
 				}
 			} else {
@@ -358,7 +362,11 @@ func mergeSortFiles(logPrefix string, providers []dataProvider, loadFunc simpleL
 				prevK = common.Copy(element.Key)
 				prevV = common.Copy(element.Value)
 			} else {
-				prevV = buf.(*oldestMergedEntrySortableBuffer).merge(prevV, element.Value)
+				mergeBuf, ok := buf.(*oldestMergedEntrySortableBuffer)
+				if !ok {
+					return fmt.Errorf("%s: SortableMergeBuffer expected *oldestMergedEntrySortableBuffer, got %T", logPrefix, buf)
+				}
+				prevV = mergeBuf.merge(prevV, element.Value)
 			}
 		} else {
 			if err = loadFunc(element.Key, element.Value); err != nil {

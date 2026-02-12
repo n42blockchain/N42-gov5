@@ -73,18 +73,20 @@ func (rs Receipts) EncodeIndex(i int, w *bytes.Buffer) {
 }
 
 func (rs *Receipts) FromProtoMessage(receipts *types_pb.Receipts) error {
+	result := make(Receipts, 0, len(receipts.Receipts))
 	for _, receipt := range receipts.Receipts {
 		var rec Receipt
 		if err := rec.fromProtoMessage(receipt); err != nil {
 			return err
 		}
-		*rs = append(*rs, &rec)
+		result = append(result, &rec)
 	}
+	*rs = result
 	return nil
 }
 
 func (rs *Receipts) ToProtoMessage() proto.Message {
-	var receipts []*types_pb.Receipt
+	receipts := make([]*types_pb.Receipt, 0, len(*rs))
 	for _, receipt := range *rs {
 		pReceipt := receipt.toProtoMessage()
 		receipts = append(receipts, pReceipt.(*types_pb.Receipt))
@@ -133,7 +135,7 @@ func (r *Receipt) Unmarshal(data []byte) error {
 }
 
 func (r *Receipt) toProtoMessage() proto.Message {
-	var logs []*types_pb.Log
+	logs := make([]*types_pb.Log, 0, len(r.Logs))
 	for _, log := range r.Logs {
 		logs = append(logs, log.ToProtoMessage().(*types_pb.Log))
 	}
@@ -161,15 +163,15 @@ func (r *Receipt) fromProtoMessage(message proto.Message) error {
 	)
 
 	if pReceipt, ok = message.(*types_pb.Receipt); !ok {
-		return fmt.Errorf("type conversion failure")
+		return fmt.Errorf("type conversion failure: expected *types_pb.Receipt, got %T", message)
 	}
 
-	var logs []*Log
+	logs := make([]*Log, 0, len(pReceipt.Logs))
 	for _, logMessage := range pReceipt.Logs {
 		log := new(Log)
 
 		if err := log.FromProtoMessage(logMessage); err != nil {
-			return fmt.Errorf("type conversion failure log %s", err)
+			return fmt.Errorf("type conversion failure for log: %w", err)
 		}
 		logs = append(logs, log)
 	}

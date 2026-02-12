@@ -19,6 +19,7 @@ package downloader
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
@@ -124,7 +125,11 @@ type mdbxPieceCompletionBatch struct {
 var _ storage.PieceCompletion = (*mdbxPieceCompletionBatch)(nil)
 
 func NewMdbxPieceCompletionBatch(db kv.RwDB) (ret storage.PieceCompletion, err error) {
-	ret = &mdbxPieceCompletionBatch{db: db.(*mdbx.MdbxKV)}
+	mdbxDB, ok := db.(*mdbx.MdbxKV)
+	if !ok {
+		return nil, fmt.Errorf("expected *mdbx.MdbxKV, got %T", db)
+	}
+	ret = &mdbxPieceCompletionBatch{db: mdbxDB}
 	return
 }
 
