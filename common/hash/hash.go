@@ -18,11 +18,11 @@ package hash
 
 import (
 	"bytes"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/rlp"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/types"
 	"golang.org/x/crypto/sha3"
 )
 

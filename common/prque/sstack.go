@@ -116,5 +116,5 @@ func (s *sstack) Swap(i, j int) {
 
 // Resets the stack, effectively clearing its contents.
 func (s *sstack) Reset() {
-	*s = *newSstack(s.setIndex, false)
+	*s = *newSstack(s.setIndex, s.wrapAround)
 }

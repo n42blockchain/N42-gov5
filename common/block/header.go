@@ -108,10 +108,6 @@ func (h Header) Hash() types.Hash {
 		return types.Hash{}
 	}
 
-	if h.Number.Uint64() == 0 {
-		//log.Tracef("genesis header json Marshal: %s", string(buf))
-	}
-
 	hash := types.BytesHash(buf)
 	h.hash.Store(hash)
 	return hash

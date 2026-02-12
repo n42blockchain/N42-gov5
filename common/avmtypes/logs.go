@@ -3,8 +3,9 @@ package avmtypes
 import (
 	"encoding/json"
 	"errors"
-	"github.com/n42blockchain/N42/common/hexutil"
+
 	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/hexutil"
 )
 
 type Log struct {

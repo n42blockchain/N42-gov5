@@ -17,11 +17,12 @@
 package prque
 
 import (
-	"github.com/n42blockchain/N42/common/mclock"
 	"math/rand"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/n42blockchain/N42/common/mclock"
 )
 
 const (
@@ -55,7 +56,6 @@ func testSetIndex(a interface{}, i int) {
 }
 
 func TestLazyQueue(t *testing.T) {
-	rand.Seed(time.Now().UnixNano())
 	clock := &mclock.Simulated{}
 	q := NewLazyQueue(testSetIndex, testPriority, testMaxPriority, clock, testQueueRefresh)
 

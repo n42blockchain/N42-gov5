@@ -57,7 +57,7 @@ func (l *logger) write(msg string, lvl Lvl, ctx []interface{}, skip int) {
 		for i := 0; i < len(ctx); i += 2 {
 			k, ok := ctx[i].(string)
 			if !ok {
-
+				k = fmt.Sprintf("%v", ctx[i])
 			}
 			if s, ok := ctx[i+1].(TerminalStringer); ok {
 				field[k] = s.TerminalString()
@@ -81,7 +81,7 @@ func (l *logger) write(msg string, lvl Lvl, ctx []interface{}, skip int) {
 }
 
 func (l *logger) New(ctx ...interface{}) Logger {
-	child := &logger{ctx: newContext(l.ctx, ctx)}
+	child := &logger{ctx: newContext(l.ctx, ctx), mapPool: l.mapPool}
 	return child
 }
 

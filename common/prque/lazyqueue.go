@@ -18,8 +18,9 @@ package prque
 
 import (
 	"container/heap"
-	"github.com/n42blockchain/N42/common/mclock"
 	"time"
+
+	"github.com/n42blockchain/N42/common/mclock"
 )
 
 // LazyQueue is a priority queue data structure where priorities can change over

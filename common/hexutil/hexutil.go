@@ -245,6 +245,9 @@ func mapError(err error) error {
 // HI_NIBBLE(b) = (b >> 4) & 0x0F
 // LO_NIBBLE(b) = b & 0x0F
 func CompressNibbles(nibbles []byte, out *[]byte) {
+	if len(nibbles)%2 != 0 {
+		panic("CompressNibbles: odd number of nibbles")
+	}
 	tmp := (*out)[:0]
 	for i := 0; i < len(nibbles); i += 2 {
 		tmp = append(tmp, nibbles[i]<<4|nibbles[i+1])

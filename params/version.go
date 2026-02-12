@@ -43,18 +43,10 @@ const (
 )
 
 func withModifier(vsn string) string {
-	if !isStable() {
+	if VersionModifier != "" {
 		vsn += "-" + VersionModifier
 	}
 	return vsn
-}
-
-func isStable() bool {
-	return VersionModifier == "stable"
-}
-
-func isRelease() bool {
-	return isStable() || VersionModifier == "alpha" || VersionModifier == "beta"
 }
 
 // Version holds the textual version string.

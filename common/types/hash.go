@@ -39,7 +39,6 @@ const (
 var (
 	hashT    = reflect.TypeOf(Hash{})
 	addressT = reflect.TypeOf(Address{})
-	//addressSt = reflect.TypeOf(Address32{})
 )
 
 type Hash [HashLength]byte
@@ -128,7 +127,6 @@ func StringToHash(s string) Hash {
 	var h Hash
 	b, err := hex.DecodeString(s)
 	if err == nil {
-		//copy(h[:], b[:HashLength])
 		return BytesToHash(b)
 	}
 
@@ -259,7 +257,6 @@ func ReturnHasherToPool(h *Hasher) {
 	select {
 	case hasherPools <- h:
 	default:
-		fmt.Printf("Allowing Hasher to be garbage collected, pool is full\n")
 	}
 }
 

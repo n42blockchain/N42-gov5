@@ -423,12 +423,15 @@ func (s *Set) NewSummary(name string, help ...string) (prometheus.Summary, error
 	if err != nil {
 		return nil, err
 	}
+	if _, _, err := parseMetric(name); err != nil {
+		panic(fmt.Errorf("BUG: invalid metric name %q: %s", name, err))
+	}
 	s.mu.Lock()
 	// defer will unlock in case of panic
 	// checks in tests
 	defer s.mu.Unlock()
 
-	s.registerMetric(name, sm)
+	s.mustRegisterLocked(name, sm)
 	return sm, nil
 }
 

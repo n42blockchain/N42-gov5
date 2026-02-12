@@ -109,7 +109,11 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 	//
 	cfg.Discv5BootStrapAddr = dv5Nodes
 
-	ipAddr := utils.IPAddr()
+	ipAddr, err := utils.IPAddr()
+	if err != nil {
+		log.Error("Failed to get external IP address", "err", err)
+		return nil, err
+	}
 	s.privKey, err = privKey(s.cfg)
 	if err != nil {
 		log.Error("Failed to generate p2p private key", "err", err)
@@ -194,7 +198,12 @@ func (s *Service) Start() {
 	}
 
 	if !s.cfg.NoDiscovery {
-		ipAddr := utils.IPAddr()
+		ipAddr, err := utils.IPAddr()
+		if err != nil {
+			log.Error("Failed to get external IP address", "err", err)
+			s.started.Store(false)
+			return
+		}
 		listener, err := s.startDiscoveryV5(
 			ipAddr,
 			s.privKey,

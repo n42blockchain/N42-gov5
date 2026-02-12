@@ -83,8 +83,8 @@ func HashData(kh KeccakState, data []byte) (h types.Hash) {
 func Keccak256(data ...[]byte) []byte {
 	b := make([]byte, 32)
 	d := NewKeccakState()
-	for _, b := range data {
-		d.Write(b)
+	for _, chunk := range data {
+		d.Write(chunk)
 	}
 	d.Read(b) //nolint:errcheck
 	return b
@@ -215,14 +215,6 @@ func MarshalPubkeyStd(pub *ecdsa.PublicKey) []byte {
 	}
 	return elliptic.Marshal(S256(), pub.X, pub.Y)
 }
-
-// UnmarshalPubkey parses a public key from the given bytes in the 64 bytes "uncompressed" format.
-// The input slice must be 64 bytes long and have this format: [X..., Y...]
-// See MarshalPubkey.
-//func UnmarshalPubkey(keyBytes []byte) (*ecdsa.PublicKey, error) {
-//	keyBytes = append([]byte{0x4}, keyBytes...)
-//	return UnmarshalPubkeyStd(keyBytes)
-//}
 
 // MarshalPubkey converts a public key into a 64 bytes "uncompressed" format.
 // It returns a 64 bytes long slice that contains: [X..., Y...]

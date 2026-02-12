@@ -73,7 +73,7 @@ func (i *HexOrDecimal256) MarshalText() ([]byte, error) {
 // it however accepts either "0x"-prefixed (hex encoded) or non-prefixed (decimal)
 type Decimal256 big.Int
 
-// NewHexOrDecimal256 creates a new Decimal256
+// NewDecimal256 creates a new Decimal256
 func NewDecimal256(x int64) *Decimal256 {
 	b := big.NewInt(x)
 	d := Decimal256(*b)
@@ -147,14 +147,6 @@ func BigMax(x, y *big.Int) *big.Int {
 
 // BigMin returns the smaller of x or y.
 func BigMin(x, y *big.Int) *big.Int {
-	if x.Cmp(y) > 0 {
-		return y
-	}
-	return x
-}
-
-// U256Min returns the smaller of x or y.
-func U256Min(x, y *uint256.Int) *uint256.Int {
 	if x.Cmp(y) > 0 {
 		return y
 	}

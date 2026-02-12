@@ -236,24 +236,6 @@ func TestKeccak256Hash(t *testing.T) {
 	t.Logf("✓ Keccak256Hash works correctly")
 }
 
-func TestHash256toS_Extended(t *testing.T) {
-	data := []byte("hello")
-	hexHash := Hash256toS(data)
-
-	if len(hexHash) != 64 { // 32 bytes = 64 hex chars
-		t.Errorf("Hash256toS length = %d, want 64", len(hexHash))
-	}
-
-	// Should be valid hex
-	for _, c := range hexHash {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			t.Errorf("Hash256toS contains invalid hex char: %c", c)
-		}
-	}
-
-	t.Logf("✓ Hash256toS works correctly")
-}
-
 // =============================================================================
 // HexPrefix Tests
 // =============================================================================
@@ -423,14 +405,6 @@ func BenchmarkKeccak256Hash(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		Keccak256Hash(data)
-	}
-}
-
-func BenchmarkHash256toS(b *testing.B) {
-	data := []byte("hello world benchmark test")
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		Hash256toS(data)
 	}
 }
 

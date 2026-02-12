@@ -223,24 +223,6 @@ func TestBigMin(t *testing.T) {
 	}
 }
 
-func TestU256Min(t *testing.T) {
-	tests := []struct {
-		x, y *uint256.Int
-		want *uint256.Int
-	}{
-		{uint256.NewInt(1), uint256.NewInt(2), uint256.NewInt(1)},
-		{uint256.NewInt(10), uint256.NewInt(5), uint256.NewInt(5)},
-		{uint256.NewInt(7), uint256.NewInt(7), uint256.NewInt(7)},
-	}
-
-	for _, tt := range tests {
-		got := U256Min(tt.x, tt.y)
-		if got.Cmp(tt.want) != 0 {
-			t.Errorf("U256Min(%v, %v) = %v, want %v", tt.x, tt.y, got, tt.want)
-		}
-	}
-}
-
 func TestMin256(t *testing.T) {
 	tests := []struct {
 		x, y *uint256.Int

@@ -53,8 +53,14 @@ func (mt MessageType) String() string {
 		return "AppHandshake"
 	case MsgApplication:
 		return "MsgApplication"
+	case MsgSystem:
+		return "MsgSystem"
 	case MsgDownloader:
 		return "MsgDownloader"
+	case MsgNewBlock:
+		return "MsgNewBlock"
+	case MsgDisconnect:
+		return "MsgDisconnect"
 	case MsgTransaction:
 		return "MsgTransaction"
 	default:

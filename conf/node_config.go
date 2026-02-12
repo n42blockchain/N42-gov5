@@ -43,7 +43,7 @@ type NodeConfig struct {
 	// WSOrigins is the list of domain to accept websocket requests from. Please be
 	// aware that the server can only act upon the HTTP request the client sends and
 	// cannot verify the validity of the request header.
-	WSOrigins        string `toml:",omitempty"`
+	WSOrigins        string `json:"ws_origins" yaml:"ws_origins" toml:",omitempty"`
 	IPCPath          string `json:"ipc_path" yaml:"ipc_path"`
 	DataDir          string `json:"data_dir" yaml:"data_dir"`
 	MinFreeDiskSpace int    `json:"min_free_disk_space" yaml:"min_free_disk_space"`

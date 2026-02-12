@@ -32,9 +32,7 @@ type Genesis struct {
 	Difficulty *uint256.Int        `json:"difficulty" gencodec:"required"`
 	Mixhash    types.Hash          `json:"mixHash"`
 	Coinbase   types.Address       `json:"coinbase"`
-
-	//Engine *ConsensusConfig `json:"engine" yaml:"engine"`
-	Miners []string     `json:"miners" yaml:"miners"`
+	Miners     []string            `json:"miners" yaml:"miners"`
 	Alloc  GenesisAlloc `json:"alloc" yaml:"alloc"  gencodec:"required"`
 
 	// These fields are used for consensus tests. Please don't use them
@@ -49,7 +47,6 @@ type Genesis struct {
 type GenesisAlloc map[types.Address]GenesisAccount
 
 type GenesisAccount struct {
-	//Address string                    `json:"address" toml:"address"`
 	Balance string                    `json:"balance"`
 	Code    []byte                    `json:"code,omitempty"`
 	Storage map[types.Hash]types.Hash `json:"storage,omitempty"`

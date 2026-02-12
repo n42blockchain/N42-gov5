@@ -235,7 +235,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	switch cfg.ChainCfg.Consensus {
 	case params.CliqueConsensus:
 		engine = apoa.New(cfg.ChainCfg.Clique, chainKv)
-	case params.AposConsensu:
+	case params.AposConsensus:
 		engine = apos.New(cfg.ChainCfg.Apos, chainKv, cfg.ChainCfg)
 	case params.Faker:
 		engine = apos.NewFaker()
@@ -370,7 +370,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		chainName = "mainnet"
 	}
 	consensusName := string(cfg.ChainCfg.Consensus)
-	if cfg.ChainCfg.Consensus == params.AposConsensu {
+	if cfg.ChainCfg.Consensus == params.AposConsensus {
 		consensusName = "Mobile Consensus"
 	}
 
