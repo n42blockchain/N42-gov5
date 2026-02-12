@@ -25,6 +25,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/params"
 )
 
 // =============================================================================
@@ -586,7 +587,7 @@ func TestBlockscoutCompatibilityInfo(t *testing.T) {
 	info := &BlockscoutCompatibilityInfo{
 		Compatible:        true,
 		BlockscoutVersion: "9.3.3",
-		NodeVersion:       "N42/v1.0.0",
+		NodeVersion:       "N42/v" + params.Version,
 		SupportedAPIs: []string{
 			"eth", "web3", "net", "txpool", "debug",
 			"admin", "personal", "miner", "rpc",
