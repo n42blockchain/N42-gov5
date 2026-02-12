@@ -278,7 +278,7 @@ type BlockReceipt struct {
 	Logs              []*avmtypes.Log   `json:"logs"`
 	LogsBloom         block.Bloom       `json:"logsBloom"`
 	Status            hexutil.Uint64    `json:"status"`
-	EffectiveGasPrice hexutil.Uint64    `json:"effectiveGasPrice"`
+	EffectiveGasPrice *hexutil.Big      `json:"effectiveGasPrice"`
 	Type              hexutil.Uint64    `json:"type"`
 	Root              hexutil.Bytes     `json:"root,omitempty"`
 	BlobGasUsed       *hexutil.Uint64   `json:"blobGasUsed,omitempty"`
@@ -333,7 +333,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 		from := tx.From()
 
 		// 计算有效 gas 价格
-		gasPrice := new(big.Int).Add(baseFee, tx.EffectiveGasTipValue(header.BaseFee64()).ToBig())
+		gasPrice := new(big.Int).Add(baseFee, tx.EffectiveGasTipValue(headerBaseFee).ToBig())
 
 		// 构建收据
 		br := &BlockReceipt{
@@ -346,7 +346,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 			CumulativeGasUsed: hexutil.Uint64(receipt.CumulativeGasUsed),
 			LogsBloom:         receipt.Bloom,
 			Status:            hexutil.Uint64(receipt.Status),
-			EffectiveGasPrice: hexutil.Uint64(gasPrice.Uint64()),
+			EffectiveGasPrice: (*hexutil.Big)(gasPrice),
 			Type:              hexutil.Uint64(tx.Type()),
 		}
 
@@ -456,7 +456,7 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 }
 
 // =============================================================================
-// Blockscout v9.3.2 特定接口
+// Blockscout v7.0.2 特定接口
 // =============================================================================
 
 // BlockscoutCompatibilityInfo 返回 Blockscout 兼容性信息
@@ -487,7 +487,7 @@ type BlockscoutFeatures struct {
 	EIP7702              bool `json:"eip7702"`              // EIP-7702 SetCode 授权交易
 }
 
-// GetBlockscoutCompatibility 返回 Blockscout v9.3.2 兼容性信息
+// GetBlockscoutCompatibility 返回 Blockscout v7.0.2 兼容性信息
 // 这个方法可以通过 eth_call 或自定义 RPC 端点调用
 func (s *BlockChainAPI) GetBlockscoutCompatibility() *BlockscoutCompatibilityInfo {
 	return &BlockscoutCompatibilityInfo{

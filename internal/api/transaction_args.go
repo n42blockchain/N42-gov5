@@ -356,15 +356,26 @@ func setDynamicFeeFields(result *RPCTransaction, tx *transaction.Transaction, v 
 	}
 	result.Accesses = &al
 	result.ChainID = (*hexutil.Big)(tx.ChainId().ToBig())
-	result.GasFeeCap = (*hexutil.Big)(tx.GasFeeCap().ToBig())
-	result.GasTipCap = (*hexutil.Big)(tx.GasTipCap().ToBig())
 	result.YParity = yparity(v)
-	// compute effective gas price: min(tip + baseFee, gasFeeCap) for mined transactions
-	if baseFee != nil && blockHash != (types.Hash{}) {
-		price := math.BigMin(new(big.Int).Add(tx.GasTipCap().ToBig(), baseFee), tx.GasFeeCap().ToBig())
-		result.GasPrice = (*hexutil.Big)(price)
-	} else {
-		result.GasPrice = (*hexutil.Big)(tx.GasFeeCap().ToBig())
+
+	gasFeeCap := tx.GasFeeCap()
+	gasTipCap := tx.GasTipCap()
+	if gasFeeCap != nil {
+		gasFeeCapBig := gasFeeCap.ToBig()
+		result.GasFeeCap = (*hexutil.Big)(gasFeeCapBig)
+		if gasTipCap != nil {
+			gasTipCapBig := gasTipCap.ToBig()
+			result.GasTipCap = (*hexutil.Big)(gasTipCapBig)
+			// compute effective gas price: min(tip + baseFee, gasFeeCap) for mined transactions
+			if baseFee != nil && blockHash != (types.Hash{}) {
+				price := math.BigMin(new(big.Int).Add(gasTipCapBig, baseFee), gasFeeCapBig)
+				result.GasPrice = (*hexutil.Big)(price)
+			} else {
+				result.GasPrice = (*hexutil.Big)(gasFeeCapBig)
+			}
+		} else {
+			result.GasPrice = (*hexutil.Big)(gasFeeCapBig)
+		}
 	}
 }
 
