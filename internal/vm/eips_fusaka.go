@@ -181,14 +181,14 @@ func CalcModExpGas7883(baseLen, expLen, modLen *big.Int, expHead *big.Int) uint6
 	gas.Mul(gas, big.NewInt(ModExpGasMultiplier7883Num))
 	gas.Div(gas, big.NewInt(ModExpGasMultiplier7883Den))
 
+	// Enforce maximum gas (EIP-7823) - check IsUint64 first to avoid panic
+	if !gas.IsUint64() || gas.Uint64() > ModExpMaxGas {
+		return ModExpMaxGas
+	}
+
 	// Enforce minimum gas
 	if gas.Uint64() < ModExpMinGas7883 {
 		return ModExpMinGas7883
-	}
-
-	// Enforce maximum gas (EIP-7823)
-	if !gas.IsUint64() || gas.Uint64() > ModExpMaxGas {
-		return ModExpMaxGas
 	}
 
 	return gas.Uint64()

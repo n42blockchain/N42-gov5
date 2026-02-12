@@ -299,6 +299,9 @@ func (m *mutation) doCommit(tx kv.RwTx) error {
 		}
 		return true
 	})
+	if c != nil {
+		c.Close()
+	}
 	tx.CollectMetrics()
 	return innerErr
 }

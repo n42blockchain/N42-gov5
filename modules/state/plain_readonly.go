@@ -214,13 +214,16 @@ func (s *PlainState) ReadAccountCode(address types.Address, incarnation uint16, 
 		return nil, nil
 	}
 	code, err := s.tx.GetOne(modules.Code, codeHash[:])
+	if err != nil {
+		return nil, err
+	}
 	if s.trace {
 		fmt.Printf("ReadAccountCode [%x %x] => [%x]\n", address, codeHash, code)
 	}
 	if len(code) == 0 {
 		return nil, nil
 	}
-	return code, err
+	return code, nil
 }
 
 func (s *PlainState) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {

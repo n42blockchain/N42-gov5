@@ -38,7 +38,7 @@ func ReadChainConfig(db kv.Getter, hash types.Hash) (*params.ChainConfig, error)
 	}
 	var config params.ChainConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("invalid chain config JSON err: %v", err)
+		return nil, fmt.Errorf("invalid chain config JSON: %w", err)
 	}
 	return &config, nil
 }

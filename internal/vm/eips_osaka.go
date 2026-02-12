@@ -300,7 +300,7 @@ func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 
 	len64 := length.Uint64()
 	end := dataOff64 + len64
-	if end > uint64(len(data)) {
+	if end < dataOff64 || end > uint64(len(data)) { // overflow check + bounds check
 		end = uint64(len(data))
 	}
 
@@ -562,9 +562,16 @@ func gasDataCopy(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem 
 		return 0, err
 	}
 
-	// Add copy cost
-	words := toWordSize(stack.Back(2).Uint64())
-	copyGas := 3 * words
+	// Add copy cost - use Uint64WithOverflow to safely handle large values
+	length, overflow := stack.Back(2).Uint64WithOverflow()
+	if overflow {
+		return 0, ErrGasUintOverflow
+	}
+	words := toWordSize(length)
+	copyGas, overflow := safeMul(3, words)
+	if overflow {
+		return 0, ErrGasUintOverflow
+	}
 	totalGas, overflow := safeAdd(gas, copyGas)
 	if overflow {
 		return 0, ErrGasUintOverflow

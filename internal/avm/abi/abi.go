@@ -249,7 +249,14 @@ func UnpackRevert(data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return unpacked[0].(string), nil
+	if len(unpacked) == 0 {
+		return "", errors.New("abi: revert reason unpacking returned no values")
+	}
+	reason, ok := unpacked[0].(string)
+	if !ok {
+		return "", errors.New("abi: revert reason is not a string")
+	}
+	return reason, nil
 }
 
 // overloadedName returns the next available name for a given thing.

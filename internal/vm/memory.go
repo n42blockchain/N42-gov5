@@ -75,11 +75,11 @@ var zeroes = make([]byte, 4*4096)
 
 // Resize resizes the memory to size
 func (m *Memory) Resize(size uint64) {
-	l := int(size) - m.Len()
-	if l <= 0 {
+	if size <= uint64(len(m.store)) {
 		return
 	}
-	if l >= len(zeroes) {
+	l := size - uint64(len(m.store))
+	if l >= uint64(len(zeroes)) {
 		m.store = append(m.store, make([]byte, l)...)
 		return
 	}

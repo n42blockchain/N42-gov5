@@ -150,7 +150,14 @@ func (c *Contract) isCode(udest uint64) bool {
 func (c *Contract) AsDelegate() *Contract {
 	// NOTE: caller must, at all times be a contract. It should never happen
 	// that caller is something other than a Contract.
-	parent := c.caller.(*Contract)
+	parent, ok := c.caller.(*Contract)
+	if !ok {
+		// Defensive: if caller is not a Contract (e.g., AccountRef), fall back
+		// to using the caller's address directly. This prevents a panic from
+		// an unchecked type assertion.
+		c.CallerAddress = c.caller.Address()
+		return c
+	}
 	c.CallerAddress = parent.CallerAddress
 	c.value = parent.value
 

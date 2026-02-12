@@ -60,7 +60,11 @@ func (m *TxDb) cursor(bucket string) (kv.Cursor, error) {
 }
 
 func (m *TxDb) IncrementSequence(bucket string, amount uint64) (res uint64, err error) {
-	return m.tx.(kv.RwTx).IncrementSequence(bucket, amount)
+	rwTx, ok := m.tx.(kv.RwTx)
+	if !ok {
+		return 0, fmt.Errorf("IncrementSequence: transaction is not writable (type %T)", m.tx)
+	}
+	return rwTx.IncrementSequence(bucket, amount)
 }
 
 func (m *TxDb) ReadSequence(bucket string) (res uint64, err error) {
@@ -73,7 +77,11 @@ func (m *TxDb) Put(table string, k, v []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.(kv.RwCursor).Put(k, v)
+	rwc, ok := c.(kv.RwCursor)
+	if !ok {
+		return fmt.Errorf("Put: cursor for table %q is not writable (type %T)", table, c)
+	}
+	return rwc.Put(k, v)
 }
 
 func (m *TxDb) Append(bucket string, key []byte, value []byte) error {
@@ -82,7 +90,11 @@ func (m *TxDb) Append(bucket string, key []byte, value []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.(kv.RwCursor).Append(key, value)
+	rwc, ok := c.(kv.RwCursor)
+	if !ok {
+		return fmt.Errorf("Append: cursor for bucket %q is not writable (type %T)", bucket, c)
+	}
+	return rwc.Append(key, value)
 }
 
 func (m *TxDb) AppendDup(bucket string, key []byte, value []byte) error {
@@ -91,7 +103,11 @@ func (m *TxDb) AppendDup(bucket string, key []byte, value []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.(kv.RwCursorDupSort).AppendDup(key, value)
+	rwc, ok := c.(kv.RwCursorDupSort)
+	if !ok {
+		return fmt.Errorf("AppendDup: cursor for bucket %q is not RwCursorDupSort (type %T)", bucket, c)
+	}
+	return rwc.AppendDup(key, value)
 }
 
 func (m *TxDb) Delete(table string, k []byte) error {
@@ -100,11 +116,19 @@ func (m *TxDb) Delete(table string, k []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.(kv.RwCursor).Delete(k)
+	rwc, ok := c.(kv.RwCursor)
+	if !ok {
+		return fmt.Errorf("Delete: cursor for table %q is not writable (type %T)", table, c)
+	}
+	return rwc.Delete(k)
 }
 
 func (m *TxDb) begin(ctx context.Context, flags ethdb.TxFlags) error {
-	db := m.db.(ethdb.HasRwKV).RwKV()
+	hasRwKV, ok := m.db.(ethdb.HasRwKV)
+	if !ok {
+		return fmt.Errorf("begin: db does not implement HasRwKV (type %T)", m.db)
+	}
+	db := hasRwKV.RwKV()
 
 	var tx kv.Tx
 	var err error
