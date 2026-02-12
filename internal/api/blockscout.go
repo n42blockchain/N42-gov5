@@ -21,7 +21,7 @@ package api
 // 本文件补充 Blockscout 区块链浏览器所需的 RPC 接口。
 // Blockscout 文档: https://docs.blockscout.com/
 //
-// Blockscout Version: v7.0.2 (2026-02-11)
+// Blockscout Version: v9.3.3 (2026-02-06)
 // Updated: 2026-02-11 - Added EIP-4844, EIP-7560, EIP-7702 support and Cancun fields
 //
 // 必需接口清单 (Blockscout v9.x+):
@@ -456,7 +456,7 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 }
 
 // =============================================================================
-// Blockscout v7.0.2 特定接口
+// Blockscout v9.3.3 特定接口
 // =============================================================================
 
 // BlockscoutCompatibilityInfo 返回 Blockscout 兼容性信息
@@ -487,12 +487,12 @@ type BlockscoutFeatures struct {
 	EIP7702              bool `json:"eip7702"`              // EIP-7702 SetCode 授权交易
 }
 
-// GetBlockscoutCompatibility 返回 Blockscout v7.0.2 兼容性信息
+// GetBlockscoutCompatibility 返回 Blockscout v9.3.3 兼容性信息
 // 这个方法可以通过 eth_call 或自定义 RPC 端点调用
 func (s *BlockChainAPI) GetBlockscoutCompatibility() *BlockscoutCompatibilityInfo {
 	return &BlockscoutCompatibilityInfo{
 		Compatible:        true,
-		BlockscoutVersion: "7.0.2",
+		BlockscoutVersion: "9.3.3",
 		NodeVersion:       "N42/v1.0.0",
 		SupportedAPIs: []string{
 			"eth", "web3", "net", "txpool", "debug",
