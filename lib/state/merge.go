@@ -256,8 +256,8 @@ func (h *History) findMergeRange(maxEndTxNum, maxSpan uint64) HistoryRanges {
 
 	if r.history && r.index {
 		// history is behind idx: then merge only history
-		historyIsAgead := r.historyEndTxNum > r.indexEndTxNum
-		if historyIsAgead {
+		historyIsAhead := r.historyEndTxNum > r.indexEndTxNum
+		if historyIsAhead {
 			r.history, r.historyStartTxNum, r.historyEndTxNum = false, 0, 0
 			return r
 		}
@@ -347,7 +347,7 @@ func (ht *HistoryRoTx) staticFilesInRange(r HistoryRanges) (indexFiles, historyF
 	}
 
 	if r.history {
-		// Get history files from HistoryRoTx (no "garbage/overalps"), but index files not from InvertedIndexRoTx
+		// Get history files from HistoryRoTx (no "garbage/overlaps"), but index files not from InvertedIndexRoTx
 		// because index files may already be merged (before `kill -9`) and it means not visible in InvertedIndexRoTx
 		startJ = 0
 		for _, item := range ht.files {
@@ -492,7 +492,7 @@ func (d *Domain) mergeFiles(ctx context.Context, valuesFiles, indexFiles, histor
 		if d.noFsync {
 			comp.DisableFsync()
 		}
-		p := ps.AddNew("merege "+datFileName, 1)
+		p := ps.AddNew("merge "+datFileName, 1)
 		defer ps.Delete(p)
 
 		var cp CursorHeap
@@ -677,7 +677,6 @@ func (ii *InvertedIndex) mergeFiles(ctx context.Context, files []*filesItem, sta
 		if g.HasNext() {
 			key, _ := g.Next(nil)
 			val, _ := g.Next(nil)
-			//fmt.Printf("heap push %s [%d] %x\n", item.decompressor.FilePath(), item.endTxNum, key)
 			heap.Push(&cp, &CursorItem{
 				t:        FILE_CURSOR,
 				dg:       g,
@@ -711,11 +710,9 @@ func (ii *InvertedIndex) mergeFiles(ctx context.Context, files []*filesItem, sta
 			} else {
 				mergedOnce = true
 			}
-			//fmt.Printf("multi-way %s [%d] %x\n", ii.indexKeysTable, ci1.endTxNum, ci1.key)
 			if ci1.dg.HasNext() {
 				ci1.key, _ = ci1.dg.NextUncompressed()
 				ci1.val, _ = ci1.dg.NextUncompressed()
-				//fmt.Printf("heap next push %s [%d] %x\n", ii.indexKeysTable, ci1.endTxNum, ci1.key)
 				heap.Fix(&cp, 0)
 			} else {
 				heap.Pop(&cp)
@@ -1141,9 +1138,6 @@ func (h *History) cleanAfterFreeze(frozenTo uint64) { //nolint
 	if frozenTo == 0 {
 		return
 	}
-	//if h.filenameBase == "accounts" {
-	//	log.Warn("[history] History.cleanAfterFreeze", "frozenTo", frozenTo/h.aggregationStep, "stack", dbg.Stack())
-	//}
 	var outs []*filesItem
 	// `kill -9` may leave some garbage
 	// but it may be useful for merges, until merge `frozen` file
@@ -1162,16 +1156,6 @@ func (h *History) cleanAfterFreeze(frozenTo uint64) { //nolint
 			panic("must not happen: " + h.filenameBase)
 		}
 		out.canDelete.Store(true)
-
-		//if out.refcount.Load() == 0 {
-		//	if h.filenameBase == "accounts" {
-		//		log.Warn("[history] History.cleanAfterFreeze: immediately delete", "name", out.decompressor.FileName())
-		//	}
-		//} else {
-		//	if h.filenameBase == "accounts" {
-		//		log.Warn("[history] History.cleanAfterFreeze: mark as 'canDelete=true'", "name", out.decompressor.FileName())
-		//	}
-		//}
 
 		// if it has no readers (invisible even for us) - it's safe to remove file right here
 		if out.refcount.Load() == 0 {
@@ -1216,7 +1200,7 @@ func (ii *InvertedIndex) cleanAfterFreeze(frozenTo uint64) {
 // nolint
 func (d *Domain) deleteGarbageFiles() {
 	for _, item := range d.garbageFiles {
-		// paranoic-mode: don't delete frozen files
+		// paranoid-mode: don't delete frozen files
 		steps := item.endTxNum/d.aggregationStep - item.startTxNum/d.aggregationStep
 		if steps%StepsInBiggestFile == 0 {
 			continue
@@ -1233,7 +1217,7 @@ func (d *Domain) deleteGarbageFiles() {
 }
 func (h *History) deleteGarbageFiles() {
 	for _, item := range h.garbageFiles {
-		// paranoic-mode: don't delete frozen files
+		// paranoid-mode: don't delete frozen files
 		if item.endTxNum/h.aggregationStep-item.startTxNum/h.aggregationStep == StepsInBiggestFile {
 			continue
 		}
@@ -1249,7 +1233,7 @@ func (h *History) deleteGarbageFiles() {
 }
 func (ii *InvertedIndex) deleteGarbageFiles() {
 	for _, item := range ii.garbageFiles {
-		// paranoic-mode: don't delete frozen files
+		// paranoid-mode: don't delete frozen files
 		if item.endTxNum/ii.aggregationStep-item.startTxNum/ii.aggregationStep == StepsInBiggestFile {
 			continue
 		}

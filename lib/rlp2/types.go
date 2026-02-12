@@ -54,6 +54,6 @@ func BlobLength(dst *int, src []byte) error {
 	return nil
 }
 
-func Skip(dst *int, src []byte) error {
+func Skip(_ *int, _ []byte) error {
 	return nil
 }

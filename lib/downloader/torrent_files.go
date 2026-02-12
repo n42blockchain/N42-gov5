@@ -169,7 +169,7 @@ const ProhibitNewDownloadsFileName = "prohibit_new_downloads.lock"
 
 // Erigon "download once" - means restart/upgrade/downgrade will not download files (and will be fast)
 // After "download once" - Erigon will produce and seed new files
-// Downloader will able: seed new files (already existing on FS), download uncomplete parts of existing files (if Verify found some bad parts)
+// Downloader will able: seed new files (already existing on FS), download incomplete parts of existing files (if Verify found some bad parts)
 func (tf *AtomicTorrentFS) ProhibitNewDownloads(t string) error {
 	tf.lock.Lock()
 	defer tf.lock.Unlock()

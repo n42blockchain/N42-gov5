@@ -146,15 +146,6 @@ func backupTable(ctx context.Context, src kv.RoDB, srcTx kv.Tx, dst kv.RwDB, tab
 			}
 		}
 	}
-	// migrate bucket sequences to native mdbx implementation
-	//currentID, err := srcTx.Sequence(name, 0)
-	//if err != nil {
-	//	return err
-	//}
-	//_, err = dstTx.Sequence(name, currentID)
-	//if err != nil {
-	//	return err
-	//}
 	if err2 := dstTx.Commit(); err2 != nil {
 		return err2
 	}

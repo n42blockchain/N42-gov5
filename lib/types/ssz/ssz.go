@@ -206,7 +206,7 @@ func DecodeNumbersList(bytes []byte, start, end uint32, max uint64) ([]uint64, e
 	return objs, nil
 }
 
-func CalculateIndiciesLimit(maxCapacity, numItems, size uint64) uint64 {
+func CalculateIndicesLimit(maxCapacity, numItems, size uint64) uint64 {
 	limit := (maxCapacity*size + 31) / 32
 	if limit != 0 {
 		return limit

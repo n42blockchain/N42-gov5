@@ -80,8 +80,6 @@ func (b adapterHandler) Handle(r lg.Record) {
 	case lg.Info:
 		str := r.String()
 		skip := strings.Contains(str, "EOF")
-		//strings.Contains(str, "banning ip <nil>") ||
-		//strings.Contains(str, "spurious timer") { // suppress useless errors
 		if skip {
 			log.Trace(str, "lvl", lvl.LogString())
 			break

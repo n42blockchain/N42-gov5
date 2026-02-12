@@ -110,7 +110,7 @@ func Prefix(payload []byte, pos int) (dataPos int, dataLen int, isList bool, err
 		dataLen, err = BeInt(payload, pos+1, beLen)
 		isList = true
 		if dataLen < 56 {
-			err = fmt.Errorf("%w: : non-canonical size information", ErrParse)
+			err = fmt.Errorf("%w: non-canonical size information", ErrParse)
 		}
 	}
 	if err == nil {
@@ -177,7 +177,7 @@ func U64(payload []byte, pos int) (int, uint64, error) {
 	return dataPos + dataLen, r, nil
 }
 
-// U32 parses uint64 number from given payload at given position
+// U32 parses uint32 number from given payload at given position
 func U32(payload []byte, pos int) (int, uint32, error) {
 	dataPos, dataLen, isList, err := Prefix(payload, pos)
 	if err != nil {

@@ -38,25 +38,25 @@ type BinaryFile struct {
 	opened    bool
 }
 
-// RandomBinaryReader reads data chuncks randomly from a binary file.
+// RandomBinaryReader reads data chunks randomly from a binary file.
 type RandomBinaryReader struct {
 	sourceFile *BinaryFile
-	chunckSize int
+	chunkSize  int
 }
 
 func (r RandomBinaryReader) Read(b []byte) (n int, err error) {
-	numKeys := len(b) / r.chunckSize
+	numKeys := len(b) / r.chunkSize
 	for i := 0; i < numKeys; i++ {
-		bytesRead, err := r.readAtRandomOffset(b[i*r.chunckSize : i*r.chunckSize+r.chunckSize])
+		bytesRead, err := r.readAtRandomOffset(b[i*r.chunkSize : i*r.chunkSize+r.chunkSize])
 		if err != nil {
-			return i*r.chunckSize + bytesRead, fmt.Errorf("cannot random read at iteration %d: %w", i, err)
+			return i*r.chunkSize + bytesRead, fmt.Errorf("cannot random read at iteration %d: %w", i, err)
 		}
 		n += bytesRead
 	}
-	remainderSize := len(b) % r.chunckSize
-	bytesRead, err := r.readAtRandomOffset(b[numKeys*r.chunckSize : numKeys*r.chunckSize+remainderSize])
+	remainderSize := len(b) % r.chunkSize
+	bytesRead, err := r.readAtRandomOffset(b[numKeys*r.chunkSize : numKeys*r.chunkSize+remainderSize])
 	if err != nil {
-		return numKeys*r.chunckSize + bytesRead, fmt.Errorf("cannot random read remainder %d: %w", remainderSize, err)
+		return numKeys*r.chunkSize + bytesRead, fmt.Errorf("cannot random read remainder %d: %w", remainderSize, err)
 	}
 	n += bytesRead
 	return n, nil

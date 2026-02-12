@@ -180,7 +180,7 @@ func EncodeBranch(bitmap, touchMap, afterMap uint16, retriveCell func(nibble int
 }
 
 // ExtractPlainKeys parses branchData and extract the plain keys for accounts and storage in the same order
-// they appear witjin the branchData
+// they appear within the branchData
 func (branchData BranchData) ExtractPlainKeys() (accountPlainKeys [][]byte, storagePlainKeys [][]byte, err error) {
 	touchMap := binary.BigEndian.Uint16(branchData[0:])
 	afterMap := binary.BigEndian.Uint16(branchData[2:])
@@ -447,7 +447,7 @@ func (branchData BranchData) DecodeCells() (touchMap, afterMap uint16, row [16]*
 			pos++
 			row[nibble] = new(Cell)
 			if pos, err = row[nibble].fillFromFields(branchData, pos, fieldBits); err != nil {
-				err = fmt.Errorf("faield to fill cell at nibble %x: %w", nibble, err)
+				err = fmt.Errorf("failed to fill cell at nibble %x: %w", nibble, err)
 				return
 			}
 		}

@@ -46,7 +46,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 )
 
-// udpOrHttpTrackers - torrent library spawning several goroutines and producing many requests for each tracker. So we limit amout of trackers by 8
+// udpOrHttpTrackers - torrent library spawning several goroutines and producing many requests for each tracker. So we limit amount of trackers by 8
 var udpOrHttpTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",
 	"udp://tracker.openbittorrent.com:6969/announce",
@@ -63,7 +63,6 @@ var websocketTrackers = []string{
 // Trackers - break down by priority tier
 var Trackers = [][]string{
 	udpOrHttpTrackers,
-	//websocketTrackers // TODO: Ws protocol producing too many errors and flooding logs. But it's also very fast and reactive.
 }
 
 type torrentInfo struct {

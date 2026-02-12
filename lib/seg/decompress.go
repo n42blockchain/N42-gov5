@@ -144,7 +144,7 @@ const (
 
 // Tables with bitlen greater than threshold will be condensed.
 // Condensing reduces size of decompression table but leads to slower reads.
-// To disable condesning at all set to 9 (we dont use tables larger than 2^9)
+// To disable condensing at all set to 9 (we dont use tables larger than 2^9)
 // To enable condensing for tables of size larger 64 = 6
 // for all tables                                    = 0
 // There is no sense to condense tables of size [1 - 64] in terms of performance
@@ -493,7 +493,6 @@ func (d *Decompressor) WithReadAhead(f func() error) error {
 		return nil
 	}
 	_ = mmap.MadviseSequential(d.mmapHandle1)
-	//_ = mmap.MadviseWillNeed(d.mmapHandle1)
 	defer mmap.MadviseRandom(d.mmapHandle1)
 	return f()
 }
@@ -1095,12 +1094,6 @@ func (g *Getter) MatchPrefixUncompressed(prefix []byte) int {
 
 	g.nextPos(true)
 
-	// if prefixLen > int(wordLen) {
-	// 	// TODO(racytech): handle this case
-	// 	// e.g: prefix = 'aaacb'
-	// 	// 		word = 'aaa'
-	// }
-
 	return bytes.Compare(prefix, g.data[g.dataP:g.dataP+wordLen])
 }
 
@@ -1118,7 +1111,6 @@ func (g *Getter) FastNext(buf []byte) ([]byte, uint64) {
 	savePos := g.dataP
 	wordLen := g.nextPos(true)
 	wordLen-- // because when create huffman tree we do ++ , because 0 is terminator
-	// decoded := make([]byte, wordLen)
 	if wordLen == 0 {
 		if g.dataBit > 0 {
 			g.dataP++
@@ -1129,10 +1121,6 @@ func (g *Getter) FastNext(buf []byte) ([]byte, uint64) {
 	bufPos := 0 // Tracking position in buf where to insert part of the word
 	lastUncovered := 0
 
-	// if int(wordLen) > cap(buf) {
-	// 	newBuf := make([]byte, int(wordLen))
-	// 	buf = newBuf
-	// }
 	// Loop below fills in the patterns
 	for pos := g.nextPos(false /* clean */); pos != 0; pos = g.nextPos(false) {
 		bufPos += int(pos) - 1 // Positions where to insert patterns are encoded relative to one another

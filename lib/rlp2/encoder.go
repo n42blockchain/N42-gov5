@@ -48,7 +48,7 @@ func (e *Encoder) LongString(str []byte) *Encoder {
 	e.Byte(byte(TokenLongBlob))
 	// write the integer, knowing that we appended n bytes
 	n := putUint(e, len(str))
-	// so we knw the indicator token was n+1 bytes ago.
+	// so we know the indicator token was n+1 bytes ago.
 	e.buf[len(e.buf)-(int(n)+1)] += n
 	// and now add the actual length
 	e.buf = append(e.buf, str...)
@@ -72,7 +72,7 @@ func (e *Encoder) LongList(items ...EncoderFunc) *Encoder {
 
 // writeList will first attempt to write a long list with the dat
 // if validate is false, it will just format it like the length is above 55
-// if validate is true, it will format it like it is a shrot list
+// if validate is true, it will format it like it is a short list
 func (e *Encoder) writeList(validate bool, items ...EncoderFunc) *Encoder {
 	// write the indicator token
 	e = e.Byte(byte(TokenLongList))

@@ -52,7 +52,7 @@ type Collector struct {
 	logger        log.Logger
 
 	// sortAndFlushInBackground increase insert performance, but make RAM use less-predictable:
-	//   - if disk is over-loaded - app may have much background threads which waiting for flush - and each thread whill hold own `buf` (can't free RAM until flush is done)
+	//   - if disk is over-loaded - app may have much background threads which waiting for flush - and each thread will hold own `buf` (can't free RAM until flush is done)
 	//   - enable it only when writing to `etl` is a bottleneck and unlikely to have many parallel collectors (to not overload CPU/Disk)
 	sortAndFlushInBackground bool
 }
@@ -268,7 +268,6 @@ func (c *Collector) Load(db kv.RwTx, toBucket string, loadFunc LoadFunc, args Tr
 	if err := mergeSortFiles(c.logPrefix, c.dataProviders, simpleLoad, args, c.buf); err != nil {
 		return fmt.Errorf("loadIntoTable %s: %w", toBucket, err)
 	}
-	//logger.Trace(fmt.Sprintf("[%s] ETL Load done", c.logPrefix), "bucket", bucket, "records", i)
 	return nil
 }
 
@@ -374,7 +373,7 @@ func mergeSortFiles(logPrefix string, providers []dataProvider, loadFunc simpleL
 		}
 	}
 
-	if args.BufferType == SortableAppendBuffer {
+	if args.BufferType == SortableAppendBuffer || args.BufferType == SortableMergeBuffer {
 		if prevK != nil {
 			if err = loadFunc(prevK, prevV); err != nil {
 				return err

@@ -1058,7 +1058,7 @@ func (bph *BinPatriciaHashed) fold() (branchData BranchData, updateKey []byte, e
 			if row == 0 {
 				bph.rootTouched = true
 			} else {
-				// Modifiction is propagated upwards
+				// Modification is propagated upwards
 				bph.touchMap[row-1] |= uint16(1) << col
 			}
 		}
@@ -1068,7 +1068,6 @@ func (bph *BinPatriciaHashed) fold() (branchData BranchData, updateKey []byte, e
 		upBinaryCell.fillFromLowerBinaryCell(cell, depth, bph.currentKey[upDepth:bph.currentKeyLen], nibble)
 		// Delete if it existed
 		if bph.branchBefore[row] {
-			//branchData, _, err = bph.EncodeBranchDirectAccess(0, row, depth)
 			branchData, _, err = EncodeBranch(0, bph.touchMap[row], 0, func(nibble int, skip bool) (*Cell, error) { return nil, nil })
 			if err != nil {
 				return nil, updateKey, fmt.Errorf("failed to encode leaf node update: %w", err)
@@ -1087,7 +1086,7 @@ func (bph *BinPatriciaHashed) fold() (branchData BranchData, updateKey []byte, e
 			if row == 0 {
 				bph.rootTouched = true
 			} else {
-				// Modifiction is propagated upwards
+				// Modification is propagated upwards
 				bph.touchMap[row-1] |= uint16(1) << col
 			}
 		}
@@ -1144,7 +1143,6 @@ func (bph *BinPatriciaHashed) fold() (branchData BranchData, updateKey []byte, e
 		var err error
 		_ = cellGetter
 
-		//branchData, lastNibble, err = bph.EncodeBranchDirectAccess(bitmap, row, depth, branchData)
 		branchData, lastNibble, err = EncodeBranch(bitmap, bph.touchMap[row], bph.afterMap[row], cellGetter)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to encode branch update: %w", err)

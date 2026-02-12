@@ -32,7 +32,7 @@ func Ecrecover(hash, sig []byte) ([]byte, error) {
 	return secp256k1.RecoverPubkey(hash, sig)
 }
 
-// Ecrecover returns the uncompressed public key that created the given signature.
+// EcrecoverWithContext returns the uncompressed public key that created the given signature using the provided context.
 func EcrecoverWithContext(context *secp256k1.Context, hash, sig []byte) ([]byte, error) {
 	return secp256k1.RecoverPubkeyWithContext(context, hash, sig, nil)
 }
@@ -52,7 +52,7 @@ func SigToPub(hash, sig []byte) (*ecdsa.PublicKey, error) {
 //
 // This function is susceptible to chosen plaintext attacks that can leak
 // information about the private key that is used for signing. Callers must
-// be aware that the given digest cannot be chosen by an adversery. Common
+// be aware that the given digest cannot be chosen by an adversary. Common
 // solution is to hash any input before calculating the signature.
 //
 // The produced signature is in the [R || S || V] format where V is 0 or 1.

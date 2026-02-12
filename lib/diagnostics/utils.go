@@ -90,7 +90,6 @@ func CalculateTime(amountLeft, rate uint64) string {
 	if hours == 0 && minutes == 0 {
 		return fmt.Sprintf("%ds", timeLeftInSeconds)
 	} else if hours == 0 {
-		//sec := timeLeftInSeconds % 60
 		return fmt.Sprintf("%dm:%ds", minutes, timeLeftInSeconds%60)
 	}
 
@@ -120,7 +119,7 @@ func ParseData(data []byte, v interface{}) {
 }
 
 func CalculateSyncStageStats(info SnapshotDownloadStatistics) SyncStageStats {
-	downloadedPercent := GetShanpshotsPercentDownloaded(info.Downloaded, info.Total, info.TorrentMetadataReady, info.Files)
+	downloadedPercent := GetSnapshotsPercentDownloaded(info.Downloaded, info.Total, info.TorrentMetadataReady, info.Files)
 	remainingBytes := info.Total - info.Downloaded
 	downloadTimeLeft := CalculateTime(remainingBytes, info.DownloadRate)
 	totalDownloadTimeString := time.Duration(info.TotalTime) * time.Second
@@ -132,7 +131,7 @@ func CalculateSyncStageStats(info SnapshotDownloadStatistics) SyncStageStats {
 	}
 }
 
-func GetShanpshotsPercentDownloaded(downloaded uint64, total uint64, torrentMetadataReady int32, files int32) string {
+func GetSnapshotsPercentDownloaded(downloaded uint64, total uint64, torrentMetadataReady int32, files int32) string {
 	if torrentMetadataReady < files {
 		return "calculating..."
 	}

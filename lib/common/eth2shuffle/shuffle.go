@@ -200,7 +200,7 @@ func innerShuffleList[T any](hashFn HashFn, input []T, rounds uint8, seed [32]by
 		// - mix in the position for randomness, except the last byte of it,
 		//     which will be used later to select a bit from the resulting hash.
 		// We start from the pivot position, and work back to the mirror position (of the part left to the pivot).
-		// This makes us process each pear exactly once (instead of unnecessarily twice, like in the spec)
+		// This makes us process each pair exactly once (instead of unnecessarily twice, like in the spec)
 		binary.LittleEndian.PutUint32(buf[hPivotViewSize:], uint32(pivot>>8))
 		source := hashFn(buf)
 		byteV := source[(pivot&0xff)>>3]
@@ -228,7 +228,7 @@ func innerShuffleList[T any](hashFn HashFn, input []T, rounds uint8, seed [32]by
 		end := listSize - 1
 		// Again, seed and round input is in place, just update the position.
 		// We start at the end, and work back to the mirror point.
-		// This makes us process each pear exactly once (instead of unnecessarily twice, like in the spec)
+		// This makes us process each pair exactly once (instead of unnecessarily twice, like in the spec)
 		binary.LittleEndian.PutUint32(buf[hPivotViewSize:], uint32(end>>8))
 		source = hashFn(buf)
 		byteV = source[(end&0xff)>>3]

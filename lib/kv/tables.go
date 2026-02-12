@@ -33,7 +33,7 @@ var DBSchemaVersion = types.VersionReply{Major: 6, Minor: 1, Patch: 0}
 // ChaindataTables
 
 // Dictionary:
-// "Plain State" - state where keys arent' hashed. "CurrentState" - same, but keys are hashed. "PlainState" used for blocks execution. "CurrentState" used mostly for Merkle root calculation.
+// "Plain State" - state where keys aren't hashed. "CurrentState" - same, but keys are hashed. "PlainState" used for blocks execution. "CurrentState" used mostly for Merkle root calculation.
 // "incarnation" - uint64 number - how much times given account was SelfDestruct'ed.
 
 /*
@@ -372,9 +372,9 @@ const (
 	BittorrentCompletion = "BittorrentCompletion"
 	BittorrentInfo       = "BittorrentInfo"
 
-	// Domains/Histry/InvertedIndices
-	// Contants have "Tbl" prefix, to avoid collision with actual Domain names
-	// This constants is very rarely used in APP, but Domain/History/Idx names are widely used
+	// Domains/History/InvertedIndices
+	// Constants have "Tbl" prefix, to avoid collision with actual Domain names
+	// These constants are very rarely used in APP, but Domain/History/Idx names are widely used
 	TblAccountKeys        = "AccountKeys"
 	TblAccountVals        = "AccountVals"
 	TblAccountHistoryKeys = "AccountHistoryKeys"
@@ -420,7 +420,7 @@ const (
 	RCodeIdx     = "RCodeIdx"
 
 	PlainStateR    = "PlainStateR"    // temporary table for PlainState reconstitution
-	PlainStateD    = "PlainStateD"    // temporary table for PlainStare reconstitution, deletes
+	PlainStateD    = "PlainStateD"    // temporary table for PlainState reconstitution, deletes
 	CodeR          = "CodeR"          // temporary table for Code reconstitution
 	CodeD          = "CodeD"          // temporary table for Code reconstitution, deletes
 	PlainContractR = "PlainContractR" // temporary table for PlainContract reconstitution

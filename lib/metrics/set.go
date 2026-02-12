@@ -52,12 +52,15 @@ func (s *Set) Describe(ch chan<- *prometheus.Desc) {
 	lessFunc := func(i, j int) bool {
 		return s.a[i].name < s.a[j].name
 	}
+	lessFuncVec := func(i, j int) bool {
+		return s.av[i].name < s.av[j].name
+	}
 	s.mu.Lock()
 	if !sort.SliceIsSorted(s.a, lessFunc) {
 		sort.Slice(s.a, lessFunc)
 	}
-	if !sort.SliceIsSorted(s.av, lessFunc) {
-		sort.Slice(s.av, lessFunc)
+	if !sort.SliceIsSorted(s.av, lessFuncVec) {
+		sort.Slice(s.av, lessFuncVec)
 	}
 	sa := append([]*namedMetric(nil), s.a...)
 	sav := append([]*namedMetricVec(nil), s.av...)
@@ -74,12 +77,15 @@ func (s *Set) Collect(ch chan<- prometheus.Metric) {
 	lessFunc := func(i, j int) bool {
 		return s.a[i].name < s.a[j].name
 	}
+	lessFuncVec := func(i, j int) bool {
+		return s.av[i].name < s.av[j].name
+	}
 	s.mu.Lock()
 	if !sort.SliceIsSorted(s.a, lessFunc) {
 		sort.Slice(s.a, lessFunc)
 	}
-	if !sort.SliceIsSorted(s.av, lessFunc) {
-		sort.Slice(s.av, lessFunc)
+	if !sort.SliceIsSorted(s.av, lessFuncVec) {
+		sort.Slice(s.av, lessFuncVec)
 	}
 	sa := append([]*namedMetric(nil), s.a...)
 	sav := append([]*namedMetricVec(nil), s.av...)

@@ -25,8 +25,14 @@ func reverseHexEndianRepresentation(s string) string {
 }
 
 func Hash(input1, input2 string) (string, error) {
-	input1Dec, _ := hex.DecodeString(reverseHexEndianRepresentation(input1))
-	input2Dec, _ := hex.DecodeString(reverseHexEndianRepresentation(input2))
+	input1Dec, err := hex.DecodeString(reverseHexEndianRepresentation(input1))
+	if err != nil {
+		return "", fmt.Errorf("failed to decode input1 hex: %w", err)
+	}
+	input2Dec, err := hex.DecodeString(reverseHexEndianRepresentation(input2))
+	if err != nil {
+		return "", fmt.Errorf("failed to decode input2 hex: %w", err)
+	}
 	in1 := C.CBytes(input1Dec)
 	in2 := C.CBytes(input2Dec)
 	var o [1024]byte

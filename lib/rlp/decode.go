@@ -66,7 +66,6 @@ func IsInvalidRLPError(err error) bool {
 	return errors.Is(err, ErrExpectedString) ||
 		errors.Is(err, ErrExpectedList) ||
 		errors.Is(err, ErrCanonInt) ||
-		errors.Is(err, ErrCanonInt) ||
 		errors.Is(err, ErrCanonSize) ||
 		errors.Is(err, ErrElemTooLarge) ||
 		errors.Is(err, ErrValueTooLarge) ||

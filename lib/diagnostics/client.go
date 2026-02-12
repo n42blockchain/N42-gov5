@@ -120,8 +120,6 @@ func (d *DiagnosticClient) Setup() {
 	d.setupResourcesUsageDiagnostics(rootCtx)
 	d.setupSpeedtestDiagnostics(rootCtx)
 	d.runSaveProcess(rootCtx)
-
-	//d.logDiagMsgs()
 }
 
 // Save diagnostic data by time interval to reduce save events
@@ -163,35 +161,6 @@ func (d *DiagnosticClient) SaveData() {
 		log.Warn("Failed to save diagnostics data", "err", err)
 	}
 }
-
-/*func (d *DiagnosticClient) logDiagMsgs() {
-	ticker := time.NewTicker(20 * time.Second)
-	quit := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				d.logStr()
-			case <-quit:
-				ticker.Stop()
-				return
-			}
-		}
-	}()
-}
-func (d *DiagnosticClient) logStr() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	log.Info("SyncStatistics", "stats", interfaceToJSONString(d.syncStats))
-}
-
-func interfaceToJSONString(i interface{}) string {
-	b, err := json.Marshal(i)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}*/
 
 func ReadSavedData(db kv.RoDB) (hinfo HardwareInfo, ssinfo []SyncStage, snpdwl SnapshotDownloadStatistics, snpidx SnapshotIndexingStatistics, snpfd SnapshotFillDBStatistics) {
 	var ramBytes []byte
