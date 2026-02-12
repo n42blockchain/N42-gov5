@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,6 +29,7 @@ import (
 
 	mapset "github.com/deckarep/golang-set"
 	"github.com/gorilla/websocket"
+	"github.com/n42blockchain/N42/log"
 )
 
 const (

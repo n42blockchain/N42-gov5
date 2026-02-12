@@ -22,10 +22,11 @@ package jsonrpc
 import (
 	"context"
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"net"
 	"os"
 	"path/filepath"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 func ipcListen(endpoint string) (net.Listener, error) {

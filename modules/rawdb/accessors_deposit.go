@@ -18,17 +18,13 @@ package rawdb
 
 import (
 	"fmt"
+
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common/crypto/bls"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
-
-//// PutDeposit
-//func PutDeposit(db kv.Putter, key []byte, val []byte) error {
-//	return db.Put(modules.Deposit, key, val)
-//}
 
 func PutDeposit(db kv.Putter, addr types.Address, pub types.PublicKey, amount uint256.Int) error {
 	// Use fixed 32-byte length for amount to ensure consistent data format

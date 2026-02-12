@@ -20,12 +20,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/modules"
 	"sort"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules"
 )
 
 type Encoder func(blockN uint64, s *ChangeSet, f func(k, v []byte) error) error

@@ -283,7 +283,7 @@ func (h *handler) handleCall(cp *callProc, msg *jsonrpcMessage) *jsonrpcMessage 
 	if callb != h.unsubscribeCb {
 		rpcRequestGauge.Inc()
 		if answer != nil && answer.Error != nil {
-			failedReqeustGauge.Inc()
+			failedRequestGauge.Inc()
 		}
 		newRPCServingTimerMS(msg.Method, answer == nil || answer.Error == nil).UpdateDuration(start)
 	}

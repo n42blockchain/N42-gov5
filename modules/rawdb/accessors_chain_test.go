@@ -17,10 +17,11 @@
 package rawdb
 
 import (
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv/memdb"
-	"github.com/n42blockchain/N42/common/types"
 	"testing"
+
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
 )
 
 // Tests block total difficulty storage and retrieval operations.
@@ -70,19 +71,19 @@ func TestTdStorage(t *testing.T) {
 
 	entryE, errE := ReadTd(tx, gHash, 101)
 	if errE != nil {
-		t.Fatalf("ReadTd failed: %v", err)
+		t.Fatalf("ReadTd failed: %v", errE)
 	}
 
 	if entryE != nil {
-		t.Fatal("ReadTd returned nil")
+		t.Fatal("ReadTd expected nil for non-existent block")
 	}
 
 	entryg, errg := ReadTd(tx, gHash, 100)
 	if errg != nil {
-		t.Fatalf("ReadTd failed: %v", err)
+		t.Fatalf("ReadTd failed: %v", errg)
 	}
 
 	if entryg.Cmp(gTd) != 0 {
-		t.Fatal("ReadTd returned nil")
+		t.Fatalf("ReadTd mismatch: have %v, want %v", entryg, gTd)
 	}
 }

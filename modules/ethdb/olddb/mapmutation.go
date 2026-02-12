@@ -169,15 +169,15 @@ func (m *mapmutation) Put(table string, k, v []byte) error {
 
 	stringKey := string(k)
 
-	var ok bool
-	if _, ok = m.puts[table][stringKey]; !ok {
-		m.size += len(v) - len(m.puts[table][stringKey])
-		m.puts[table][stringKey] = v
-		return nil
+	if oldV, ok := m.puts[table][stringKey]; ok {
+		// Key exists: adjust size by the difference in value lengths
+		m.size += len(v) - len(oldV)
+	} else {
+		// New key: add full key + value size
+		m.size += len(k) + len(v)
+		m.count++
 	}
 	m.puts[table][stringKey] = v
-	m.size += len(k) + len(v)
-	m.count++
 
 	return nil
 }
@@ -267,7 +267,6 @@ func (m *mapmutation) Rollback() {
 	m.puts = map[string]map[string][]byte{}
 	m.size = 0
 	m.count = 0
-	m.size = 0
 	m.clean()
 }
 

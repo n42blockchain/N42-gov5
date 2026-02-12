@@ -18,86 +18,17 @@ package rawdb
 
 import (
 	"context"
+	"runtime"
+
 	"github.com/c2h5oh/datasize"
 	"github.com/n42blockchain/N42/lib/common/cmp"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/params"
 	"golang.org/x/sync/semaphore"
-	"runtime"
-
-	log2 "github.com/n42blockchain/N42/lib/log/v3"
 )
-
-//func TestPutReward(t *testing.T) {
-//	db, err := OpenDatabase()
-//	if err != nil {
-//		t.Error(err)
-//	}
-//	tx, err := db.BeginRw(context.TODO())
-//	if err != nil {
-//		t.Error(err)
-//	}
-//	if err := tx.CreateBucket("Reward"); err != nil {
-//		t.Error(err)
-//	}
-//	type args struct {
-//		key string
-//		val *RewardEntry
-//	}
-//	tests := []struct {
-//		name    string
-//		args    args
-//		wantErr bool
-//	}{{
-//		name: "t1",
-//		args: args{
-//			key: "qwe123",
-//			val: &RewardEntry{
-//				Address:   []byte("123"),
-//				Value:     uint256.NewInt(123),
-//				Sediment:  uint256.NewInt(123),
-//				Timestamp: 123,
-//			},
-//		},
-//	}, {
-//		name: "t2",
-//		args: args{
-//			key: "qwe456",
-//			val: &RewardEntry{
-//				Address:   []byte("456"),
-//				Value:     uint256.NewInt(456),
-//				Sediment:  uint256.NewInt(456),
-//				Timestamp: 456,
-//			},
-//		}}, {
-//		name: "t3",
-//		args: args{
-//			key: "qwe789",
-//			val: &RewardEntry{
-//				Address:   []byte("789"),
-//				Value:     uint256.NewInt(789),
-//				Sediment:  uint256.NewInt(789),
-//				Timestamp: 789,
-//			},
-//		},
-//	}}
-//
-//	for _, tt := range tests {
-//		if err := PutEpochReward(tx, tt.args.key, tt.args.val); (err != nil) != tt.wantErr {
-//			t.Errorf("PutReward() error = %v, wantErr %v", err, tt.wantErr)
-//		}
-//	}
-//
-//	m, err := GetRewards(tx, "qwe")
-//	if err != nil {
-//		t.Error(err)
-//	}
-//
-//	fmt.Println(m)
-//	t.Log(m)
-//}
 
 func OpenDatabase() (kv.RwDB, error) {
 	var chainKv kv.RwDB
@@ -107,9 +38,6 @@ func OpenDatabase() (kv.RwDB, error) {
 	dbPath := "./mdbx.db"
 
 	var openFunc = func(exclusive bool) (kv.RwDB, error) {
-		//if config.Http.DBReadConcurrency > 0 {
-		//	roTxLimit = int64(config.Http.DBReadConcurrency)
-		//}
 		roTxsLimiter := semaphore.NewWeighted(int64(cmp.Max(32, runtime.GOMAXPROCS(-1)*8))) // 1 less than max to allow unlocking to happen
 		opts := mdbx.NewMDBX(logger).
 			WriteMergeThreshold(4 * 8192).
