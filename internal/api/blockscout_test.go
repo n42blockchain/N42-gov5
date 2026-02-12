@@ -578,14 +578,14 @@ func TestWithMockAPI(t *testing.T) {
 }
 
 // =============================================================================
-// Blockscout v7.0.2 特定测试
+// Blockscout v9.3.3 特定测试
 // =============================================================================
 
 // TestBlockscoutCompatibilityInfo 测试 Blockscout 兼容性信息结构
 func TestBlockscoutCompatibilityInfo(t *testing.T) {
 	info := &BlockscoutCompatibilityInfo{
 		Compatible:        true,
-		BlockscoutVersion: "7.0.2",
+		BlockscoutVersion: "9.3.3",
 		NodeVersion:       "N42/v1.0.0",
 		SupportedAPIs: []string{
 			"eth", "web3", "net", "txpool", "debug",
@@ -634,8 +634,8 @@ func TestBlockscoutCompatibilityInfo(t *testing.T) {
 	}
 
 	// 验证版本号
-	if info.BlockscoutVersion != "7.0.2" {
-		t.Errorf("Expected Blockscout version 7.0.2, got %s", info.BlockscoutVersion)
+	if info.BlockscoutVersion != "9.3.3" {
+		t.Errorf("Expected Blockscout version 9.3.3, got %s", info.BlockscoutVersion)
 	}
 
 	// 验证功能
@@ -653,16 +653,16 @@ func TestBlockscoutCompatibilityInfo(t *testing.T) {
 		t.Error("Uncle blocks should not be supported (POA/POS)")
 	}
 
-	t.Logf("✓ Blockscout v7.0.2 compatibility info is correct")
+	t.Logf("✓ Blockscout v9.3.3 compatibility info is correct")
 	t.Logf("  Version: %s", info.BlockscoutVersion)
 	t.Logf("  Node: %s", info.NodeVersion)
 	t.Logf("  APIs: %v", info.SupportedAPIs)
 }
 
-// TestBlockscoutV7_0_2_Features 测试 v7.0.2 版本的特定功能
-func TestBlockscoutV7_0_2_Features(t *testing.T) {
+// TestBlockscoutV9_3_3_Features 测试 v9.3.3 版本的特定功能
+func TestBlockscoutV9_3_3_Features(t *testing.T) {
 	t.Run("StrictParameterValidation", func(t *testing.T) {
-		t.Log("✓ Parameter validation is important for v7.0.x+")
+		t.Log("✓ Parameter validation is important for v9.3.x+")
 	})
 
 	t.Run("EIP4844BlobSupport", func(t *testing.T) {
@@ -804,7 +804,7 @@ func TestBlockscoutIndexerRequirements(t *testing.T) {
 
 // TestBlockscoutSecurityConsiderations 测试 Blockscout 安全考虑
 func TestBlockscoutSecurityConsiderations(t *testing.T) {
-	t.Log("Security Considerations for Blockscout v7.0.2:")
+	t.Log("Security Considerations for Blockscout v9.3.3:")
 	t.Log("1. personal_* namespace disabled by default")
 	t.Log("2. admin_* namespace restricted to read-only operations")
 	t.Log("3. CORS configuration required for public deployment")
@@ -833,7 +833,7 @@ func TestEthereumJSONRPCSpecCompliance(t *testing.T) {
 func TestBlockscoutDocumentationURLs(t *testing.T) {
 	urls := []string{
 		"https://docs.blockscout.com/",
-		"https://github.com/blockscout/blockscout/releases/tag/v7.0.2",
+		"https://github.com/blockscout/blockscout/releases/tag/v9.3.3",
 		"https://github.com/blockscout/swaggers",
 		"https://docs.blockscout.com/devs/apis/rest",
 		"https://docs.blockscout.com/for-users/api/rpc-endpoints",
