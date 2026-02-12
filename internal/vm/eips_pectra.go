@@ -23,6 +23,7 @@ import (
 	"bytes"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 )
@@ -546,11 +547,22 @@ type StateDB interface {
 // Gas calculation helpers for EIP-7702
 // =============================================================================
 
-// CalcAuthorizationGas calculates the gas cost for authorization list processing
+// CalcAuthorizationGas calculates the gas cost for authorization list processing.
+// Returns math.MaxUint64 on overflow to signal that gas cannot be represented.
 func CalcAuthorizationGas(authCount int, newAccountCount int) uint64 {
-	gas := uint64(authCount) * PerAuthBaseCost
-	gas += uint64(newAccountCount) * PerEmptyAccountCost
-	return gas
+	authGas, overflow := math.SafeMul(uint64(authCount), PerAuthBaseCost)
+	if overflow {
+		return math.MaxUint64
+	}
+	accountGas, overflow := math.SafeMul(uint64(newAccountCount), PerEmptyAccountCost)
+	if overflow {
+		return math.MaxUint64
+	}
+	total, overflow := math.SafeAdd(authGas, accountGas)
+	if overflow {
+		return math.MaxUint64
+	}
+	return total
 }
 
 // =============================================================================

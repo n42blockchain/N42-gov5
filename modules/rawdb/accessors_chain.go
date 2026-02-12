@@ -576,8 +576,12 @@ func ReadRewards(db kv.Getter, hash types.Hash, number uint64) ([]*block.Reward,
 	if err != nil {
 		return nil, fmt.Errorf("ReadBlockRewards failed: %w", err)
 	}
+	recordSize := 32 + types.AddressLength
+	if len(data) > 0 && len(data)%recordSize != 0 {
+		return nil, fmt.Errorf("ReadBlockRewards: invalid data length %d, not a multiple of %d", len(data), recordSize)
+	}
 
-	reward := make([]*block.Reward, len(data)/(32+types.AddressLength))
+	reward := make([]*block.Reward, len(data)/recordSize)
 	for i := 0; i < len(reward); i++ {
 		reward[i] = &block.Reward{
 			Address: *new(types.Address).SetBytes(data[i*(32+types.AddressLength) : i*(32+types.AddressLength)+types.AddressLength]),
@@ -862,13 +866,17 @@ func ReadBlockWithSenders(db kv.Getter, hash types.Hash, number uint64) (*block.
 // WriteBlock serializes a block into the database, header and body separately.
 func WriteBlock(db kv.RwTx, b *block.Block) error {
 	iBody := b.Body()
-	if err := WriteBody(db, b.Hash(), b.Number64().Uint64(), iBody.(*block.Body)); err != nil {
+	body, ok := iBody.(*block.Body)
+	if !ok {
+		return fmt.Errorf("WriteBlock: failed to assert body to *block.Body, got %T", iBody)
+	}
+	if err := WriteBody(db, b.Hash(), b.Number64().Uint64(), body); err != nil {
 		return err
 	}
 	iHeader := b.Header()
 	header, ok := iHeader.(*block.Header)
 	if !ok {
-		return fmt.Errorf("illegal: assert header")
+		return fmt.Errorf("WriteBlock: failed to assert header to *block.Header, got %T", iHeader)
 	}
 	WriteHeader(db, header)
 	return nil

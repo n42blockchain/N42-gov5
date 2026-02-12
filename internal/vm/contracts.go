@@ -243,39 +243,51 @@ var (
 )
 
 func init() {
+	PrecompiledAddressesHomestead = make([]types.Address, 0, len(PrecompiledContractsHomestead))
 	for k := range PrecompiledContractsHomestead {
 		PrecompiledAddressesHomestead = append(PrecompiledAddressesHomestead, k)
 	}
+	PrecompiledAddressesByzantium = make([]types.Address, 0, len(PrecompiledContractsByzantium))
 	for k := range PrecompiledContractsByzantium {
 		PrecompiledAddressesByzantium = append(PrecompiledAddressesByzantium, k)
 	}
+	PrecompiledAddressesIstanbul = make([]types.Address, 0, len(PrecompiledContractsIstanbul))
 	for k := range PrecompiledContractsIstanbul {
 		PrecompiledAddressesIstanbul = append(PrecompiledAddressesIstanbul, k)
 	}
+	PrecompiledAddressesIstanbulForBSC = make([]types.Address, 0, len(PrecompiledContractsIstanbulForBSC))
 	for k := range PrecompiledContractsIstanbulForBSC {
 		PrecompiledAddressesIstanbulForBSC = append(PrecompiledAddressesIstanbulForBSC, k)
 	}
+	PrecompiledAddressesBerlin = make([]types.Address, 0, len(PrecompiledContractsBerlin))
 	for k := range PrecompiledContractsBerlin {
 		PrecompiledAddressesBerlin = append(PrecompiledAddressesBerlin, k)
 	}
+	PrecompiledAddressesCancun = make([]types.Address, 0, len(PrecompiledContractsCancun))
 	for k := range PrecompiledContractsCancun {
 		PrecompiledAddressesCancun = append(PrecompiledAddressesCancun, k)
 	}
+	PrecompiledAddressesPrague = make([]types.Address, 0, len(PrecompiledContractsPrague))
 	for k := range PrecompiledContractsPrague {
 		PrecompiledAddressesPrague = append(PrecompiledAddressesPrague, k)
 	}
+	PrecompiledAddressesPectra = make([]types.Address, 0, len(PrecompiledContractsPectra))
 	for k := range PrecompiledContractsPectra {
 		PrecompiledAddressesPectra = append(PrecompiledAddressesPectra, k)
 	}
+	PrecompiledAddressesOsaka = make([]types.Address, 0, len(PrecompiledContractsOsaka))
 	for k := range PrecompiledContractsOsaka {
 		PrecompiledAddressesOsaka = append(PrecompiledAddressesOsaka, k)
 	}
+	PrecompiledAddressesFusaka = make([]types.Address, 0, len(PrecompiledContractsFusaka))
 	for k := range PrecompiledContractsFusaka {
 		PrecompiledAddressesFusaka = append(PrecompiledAddressesFusaka, k)
 	}
+	PrecompiledAddressesNano = make([]types.Address, 0, len(PrecompiledContractsNano))
 	for k := range PrecompiledContractsNano {
 		PrecompiledAddressesNano = append(PrecompiledAddressesNano, k)
 	}
+	PrecompiledAddressesMoran = make([]types.Address, 0, len(PrecompiledContractsIsMoran))
 	for k := range PrecompiledContractsIsMoran {
 		PrecompiledAddressesMoran = append(PrecompiledAddressesMoran, k)
 	}
@@ -579,10 +591,19 @@ func (c *bigModExp) RequiredGas(input []byte) uint64 {
 
 func (c *bigModExp) Run(input []byte) ([]byte, error) {
 	var (
-		baseLen = new(big.Int).SetBytes(getData(input, 0, 32)).Uint64()
-		expLen  = new(big.Int).SetBytes(getData(input, 32, 32)).Uint64()
-		modLen  = new(big.Int).SetBytes(getData(input, 64, 32)).Uint64()
+		baseLenBig = new(big.Int).SetBytes(getData(input, 0, 32))
+		expLenBig  = new(big.Int).SetBytes(getData(input, 32, 32))
+		modLenBig  = new(big.Int).SetBytes(getData(input, 64, 32))
 	)
+
+	// Safety: ensure lengths fit in uint64 before conversion to prevent silent truncation
+	if !baseLenBig.IsUint64() || !expLenBig.IsUint64() || !modLenBig.IsUint64() {
+		return nil, errors.New("modexp input length exceeds uint64")
+	}
+
+	baseLen := baseLenBig.Uint64()
+	expLen := expLenBig.Uint64()
+	modLen := modLenBig.Uint64()
 
 	// EIP-7823: Enforce input size limits (max 1024 bytes for each)
 	if c.eip7823 {
@@ -743,10 +764,9 @@ func runBn256Pairing(input []byte) ([]byte, error) {
 		return nil, errBadPairingInput
 	}
 	// Convert the input into a set of coordinates
-	var (
-		cs []*bn256.G1
-		ts []*bn256.G2
-	)
+	k := len(input) / 192
+	cs := make([]*bn256.G1, 0, k)
+	ts := make([]*bn256.G2, 0, k)
 	for i := 0; i < len(input); i += 192 {
 		c, err := newCurvePoint(input[i : i+64])
 		if err != nil {

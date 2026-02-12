@@ -79,8 +79,10 @@ func (r *HistoryStateReader) ReadAccountData(address types.Address) (*account.St
 	acc := new(account.StateAccount)
 	// defer fmt.Printf("ReadAccount address: %s, account: %+v \n", address, acc)
 	v, err := r.db.GetOne(modules.Account, address[:])
-	if err == nil && len(v) > 0 {
-		//var acc account.StateAccount
+	if err != nil {
+		return nil, err
+	}
+	if len(v) > 0 {
 		if err := acc.DecodeForStorage(v); err != nil {
 			return nil, err
 		}
@@ -100,7 +102,10 @@ func (r *HistoryStateReader) ReadAccountData(address types.Address) (*account.St
 func (r *HistoryStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
 	v, err := r.db.GetOne(modules.Storage, compositeKey)
-	if err == nil && len(v) > 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(v) > 0 {
 		return v, nil
 	}
 	return GetAsOf(r.tx, r.storageHistoryC, r.storageChangesC, true /* storage */, compositeKey, r.blockNr)

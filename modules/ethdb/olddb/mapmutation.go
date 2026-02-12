@@ -223,7 +223,6 @@ func (m *mapmutation) doCommit(tx kv.RwTx) error {
 	for table, bucket := range m.puts {
 		logger := log.New()
 		collector := etl.NewCollector("", m.tmpdir, etl.NewSortableBuffer(etl.BufferOptimalSize), logger)
-		defer collector.Close()
 		for key, value := range bucket {
 			collector.Collect([]byte(key), value)
 			count++
@@ -236,8 +235,10 @@ func (m *mapmutation) doCommit(tx kv.RwTx) error {
 			}
 		}
 		if err := collector.Load(m.db, table, etl.IdentityLoadFunc, etl.TransformArgs{Quit: m.quit}); err != nil {
+			collector.Close()
 			return err
 		}
+		collector.Close()
 	}
 
 	tx.CollectMetrics()

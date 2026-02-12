@@ -42,6 +42,7 @@ func newIterator(dbi *DBI, key []byte) (db.IIterator, error) {
 	}
 	cur, err := txn.OpenCursor(*dbi.DBI)
 	if err != nil {
+		txn.Abort()
 		runtime.UnlockOSThread()
 		return nil, err
 	}

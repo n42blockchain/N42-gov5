@@ -88,6 +88,8 @@ func (db *DBI) Gets(key []byte, count uint) (keys [][]byte, values [][]byte, err
 			return err
 		}
 
+		keys = make([][]byte, 0, count)
+		values = make([][]byte, 0, count)
 		keys = append(keys, k)
 		values = append(values, v)
 		for {

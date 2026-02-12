@@ -88,6 +88,7 @@ func (db *DBISnapshot) Commit() error {
 	db.once.Do(func() {
 		if !db.IsRunning() {
 			err = errorSnapshotIsClose
+			return
 		}
 		db.lock.Lock()
 		defer db.lock.Unlock()

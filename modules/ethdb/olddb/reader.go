@@ -43,8 +43,11 @@ func (dbr *StateReader) GetOne(bucket string, key []byte) ([]byte, error) {
 		return nil, nil
 	}
 	b, err := dbr.db.GetOne(bucket, key[:])
-	if err == nil && len(b) > 0 {
-		return b, err
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > 0 {
+		return b, nil
 	}
 	v, ok := dbr.data[*(*string)(unsafe.Pointer(&key))]
 	if !ok {
@@ -55,7 +58,10 @@ func (dbr *StateReader) GetOne(bucket string, key []byte) ([]byte, error) {
 
 func (r *StateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	v, err := r.db.GetOne(modules.Account, address[:])
-	if err == nil && len(v) > 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(v) > 0 {
 		var acc account.StateAccount
 		if err := acc.DecodeForStorage(v); err != nil {
 			return nil, err
@@ -80,7 +86,10 @@ func (r *StateReader) ReadAccountData(address types.Address) (*account.StateAcco
 func (r *StateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
 	v, err := r.db.GetOne(modules.Storage, compositeKey)
-	if err == nil && len(v) > 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(v) > 0 {
 		return v, nil
 	}
 	vv, ok := r.data[*(*string)(unsafe.Pointer(&compositeKey))]
