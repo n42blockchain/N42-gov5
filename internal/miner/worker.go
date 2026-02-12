@@ -355,7 +355,12 @@ func (w *worker) resultLoop() error {
 				log.Error("Failed Broadcast block to p2p network", "err", err)
 				continue
 			}
-			event.GlobalEvent.Send(common.ChainHighestBlock{Block: *blk.(*block.Block), Inserted: true})
+			// R2 fix: safe type assertion to prevent panic
+		if concreteBlock, ok := blk.(*block.Block); ok {
+			event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concreteBlock, Inserted: true})
+		} else {
+			log.Error("Failed to cast block to *block.Block", "number", blk.Number64().Uint64())
+		}
 		}
 	}
 }
@@ -508,7 +513,11 @@ func (w *worker) workLoop(recommit time.Duration) error {
 	newBlockCh := make(chan common.ChainHighestBlock)
 	defer close(newBlockCh)
 
-	newBlockSub, _ := event.GlobalEvent.Subscribe(newBlockCh)
+	// R2 fix: check subscription error instead of dropping it
+	newBlockSub, err := event.GlobalEvent.Subscribe(newBlockCh)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to ChainHighestBlock: %w", err)
+	}
 	defer newBlockSub.Unsubscribe()
 
 	timer := time.NewTimer(0)
@@ -650,13 +659,21 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 	if currentHeader == nil {
 		return nil, errors.New("current block header is nil")
 	}
-	parent := currentHeader.(*block.Header)
+	// R2 fix: safe type assertion to prevent panic
+	parent, ok := currentHeader.(*block.Header)
+	if !ok {
+		return nil, errors.New("current block header is not *block.Header")
+	}
 	if param.parentHash != (types.Hash{}) {
 		b, _ := w.chain.GetBlockByHash(param.parentHash)
 		if b == nil {
 			return nil, errors.New("missing parent")
 		}
-		parent = b.Header().(*block.Header)
+		// R2 fix: safe type assertion to prevent panic
+		parent, ok = b.Header().(*block.Header)
+		if !ok {
+			return nil, errors.New("parent block header is not *block.Header")
+		}
 	}
 
 	if parent.Time >= param.timestamp {
@@ -706,7 +723,10 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 	//}
 
 	for _, ancestor := range w.chain.GetBlocksFromHash(parent.ParentHash, 3) {
-		env.family.Add(ancestor.(*block.Block).Hash())
+		// R2 fix: safe type assertion to prevent panic
+		if concreteAncestor, ok := ancestor.(*block.Block); ok {
+			env.family.Add(concreteAncestor.Hash())
+		}
 		env.ancestors.Add(ancestor.Hash())
 	}
 
@@ -732,7 +752,12 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 				}
 			}
 
-			entri := state.Entire{Header: iblock.Header().(*block.Header), Uncles: nil, Transactions: txs, Senders: nil, Snap: ibs.Snap(), Proof: types.Hash{}}
+			// R2 fix: safe type assertion to prevent panic
+		iblockHeader, ok := iblock.Header().(*block.Header)
+		if !ok {
+			return errors.New("iblock header is not *block.Header")
+		}
+		entri := state.Entire{Header: iblockHeader, Uncles: nil, Transactions: txs, Senders: nil, Snap: ibs.Snap(), Proof: types.Hash{}}
 			cs := ibs.CodeHashes()
 			hs := make(state.HashCodes, 0, len(cs))
 			for k, v := range cs {

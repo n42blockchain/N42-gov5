@@ -281,7 +281,10 @@ func (h *httpServer) doStop() {
 		h.httpHandler.Store((*rpcHandler)(nil))
 		httpHandler.server.Stop()
 	}
-	h.server.Shutdown(context.Background())
+	// R2 fix: add timeout to prevent indefinite hang during shutdown
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h.server.Shutdown(shutdownCtx)
 	h.listener.Close()
 	log.Info("HTTP server stopped", "endpoint", h.listener.Addr())
 

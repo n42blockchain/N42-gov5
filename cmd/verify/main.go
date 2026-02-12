@@ -121,53 +121,62 @@ func main() {
 	defer close(end)
 
 	go func() {
+		// R2 fix: removed busy-loop default case, ReadMessage blocks naturally
 		for {
-			select {
-			case <-ctx.Done():
+			// Check context cancellation before blocking read
+			if ctx.Err() != nil {
 				end <- struct{}{}
 				return
-			default:
-				typ, msg, err := con.ReadMessage()
+			}
+			typ, msg, err := con.ReadMessage()
+			if err != nil {
+				if ctx.Err() != nil {
+					end <- struct{}{}
+					return
+				}
+				log.Errorf("read msg failed: %v", err)
+				continue
+			}
+			if typ == websocket.TextMessage {
+				fmt.Println("read msg: ", string(msg))
+				params, err := unwrapJSONRPC(msg)
 				if err != nil {
-					log.Errorf("read msg failed: %v", err)
+					log.Warn(err.Error())
 					continue
 				}
-				if typ == websocket.TextMessage {
-					fmt.Println("read msg: ", string(msg))
-					params, err := unwrapJSONRPC(msg)
-					if err != nil {
-						log.Warn(err.Error())
-						continue
-					}
 
-					bean := new(state.EntireCode)
-					if err := json.Unmarshal(params, bean); err != nil {
-						log.Errorf("unmarshal entire failed, %v", err)
-						continue
-					}
-
-					root, err := verify(ctx, bean)
-					if err != nil {
-						log.Errorf("verify failed, %v", err)
-						continue
-					}
-					res := api.AggSign{}
-					res.Number = bean.Entire.Header.Number.Uint64()
-					res.Address = addressKey
-					res.StateRoot = root
-					copy(res.Sign[:], privateKey.Sign(root[:]).Marshal())
-					in, err := json.Marshal(res)
-					if err != nil {
-						log.Error("Failed to marshal response", "error", err)
-						continue
-					}
-
-					wrapRequest, _ := wrapJSONRPCRequest(in)
-					if err := con.WriteMessage(websocket.TextMessage, wrapRequest); err != nil {
-						log.Error("write msg failed: ", err)
-					}
-					log.Infof("write msg: %s", wrapRequest)
+				bean := new(state.EntireCode)
+				if err := json.Unmarshal(params, bean); err != nil {
+					log.Errorf("unmarshal entire failed, %v", err)
+					continue
 				}
+
+				root, err := verify(ctx, bean)
+				if err != nil {
+					log.Errorf("verify failed, %v", err)
+					continue
+				}
+				res := api.AggSign{}
+				res.Number = bean.Entire.Header.Number.Uint64()
+				res.Address = addressKey
+				res.StateRoot = root
+				copy(res.Sign[:], privateKey.Sign(root[:]).Marshal())
+				in, err := json.Marshal(res)
+				if err != nil {
+					log.Error("Failed to marshal response", "error", err)
+					continue
+				}
+
+				// R2 fix: check wrapJSONRPCRequest error
+				wrapRequest, err := wrapJSONRPCRequest(in)
+				if err != nil {
+					log.Error("Failed to wrap JSONRPC request", "error", err)
+					continue
+				}
+				if err := con.WriteMessage(websocket.TextMessage, wrapRequest); err != nil {
+					log.Error("write msg failed: ", err)
+				}
+				log.Infof("write msg: %s", wrapRequest)
 			}
 		}
 	}()

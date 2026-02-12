@@ -324,7 +324,7 @@ func (api *API) GetBlockRewards(blockNr jsonrpc.BlockNumberOrHash) (resp []*bloc
 		resolvedBlockNr *uint256.Int
 		hash            types.Hash
 	)
-	api.apos.dbView(func(tx kv.Tx) error {
+	if dbErr := api.apos.dbView(func(tx kv.Tx) error {
 		resolvedBlockNr, hash, err = rpchelper.GetCanonicalBlockNumber(blockNr, tx)
 		if err != nil {
 			return err
@@ -337,7 +337,9 @@ func (api *API) GetBlockRewards(blockNr jsonrpc.BlockNumberOrHash) (resp []*bloc
 		}
 		resp = body.Body().Reward()
 		return nil
-	})
+	}); dbErr != nil {
+		return nil, dbErr
+	}
 	return resp, err
 }
 
@@ -365,7 +367,6 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 
 	addr := *avmtypes.ToastAddress(&address)
 	var (
-		err           error
 		searchCount   int
 		findCount     uint64
 		currentHeader block.IHeader
@@ -383,11 +384,14 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	//
 	currentHeader = api.getHeader(from)
 	if currentHeader == nil {
-		return nil, err
+		return nil, errors.New("header not found")
 	}
 
 	//
 	currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+	if currentBlock == nil {
+		return nil, errors.New("block not found")
+	}
 	searchCount = 0
 	findCount = 0
 	minedBlocks := make([]MinedBlock, 0, wantCount) // pre-allocate capacity
@@ -421,6 +425,9 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 			break
 		}
 		currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+		if currentBlock == nil {
+			break
+		}
 	}
 
 Finish:
@@ -435,7 +442,6 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 
 	addr := *avmtypes.ToastAddress(&address)
 	var (
-		err           error
 		searchCount   int
 		findCount     uint64
 		currentHeader block.IHeader
@@ -443,6 +449,9 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		depositInfo   *deposit.Info
 	)
 
+	if to == nil {
+		return nil, errors.New("'To' block number must not be nil")
+	}
 	if to.Int64() <= 0 {
 		return nil, errors.New("'To' block number must be greater than 0")
 	}
@@ -457,11 +466,14 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	//
 	currentHeader = api.getHeader(from)
 	if currentHeader == nil {
-		return nil, err
+		return nil, errors.New("header not found")
 	}
 
 	//
 	currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+	if currentBlock == nil {
+		return nil, errors.New("block not found")
+	}
 	searchCount = 0
 	findCount = 0
 	minedBlocks := make([]MinedBlock, 0, wantCount) // pre-allocate capacity
@@ -498,6 +510,9 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 			break
 		}
 		currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+		if currentBlock == nil {
+			break
+		}
 	}
 
 	return &VerifiedBlockResponse{

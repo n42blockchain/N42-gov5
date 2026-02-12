@@ -576,11 +576,12 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	simpleLog("start verify ", "blockNr", bean.Entire.Header.Number.Uint64())
-
+	// R2 fix: nil check must happen BEFORE accessing Header fields
 	if bean.Entire.Header == nil {
 		return nil, errors.New("nil pointer found")
 	}
+
+	simpleLog("start verify ", "blockNr", bean.Entire.Header.Number.Uint64())
 	// before state verify
 	var hash commTyp.Hash
 	hasher := sha3.NewLegacyKeccak256()
@@ -762,6 +763,8 @@ func GetNetInfos() string {
 	if err != nil {
 		return err.Error()
 	}
+	// R2 fix: close response body to prevent resource leak
+	defer resp.Body.Close()
 	htmlBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err.Error()
@@ -804,6 +807,10 @@ func GetWebSocketConnect() string {
 		return fmt.Sprintf("dial error,err=%+v \r\n", err)
 	}
 	defer conn.Close()
+	// R2 fix: close connResp.Body to prevent resource leak
+	if connResp != nil && connResp.Body != nil {
+		defer connResp.Body.Close()
+	}
 	connRespBytes, err := io.ReadAll(connResp.Body)
 	if err != nil {
 		return fmt.Sprintf("connresp return error,err=%+v", err)

@@ -236,7 +236,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, fmt.Errorf("invalid engine name %s", cfg.ChainCfg.Consensus)
 	}
 
-	bc, _ := internal.NewBlockChain(ctx, genesisBlock, engine, chainKv, p2p, cfg.ChainCfg)
+	// R2 fix: check error instead of dropping it
+	bc, err := internal.NewBlockChain(ctx, genesisBlock, engine, chainKv, p2p, cfg.ChainCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create blockchain: %w", err)
+	}
 
 	if cfg.ChainCfg.Apos != nil {
 		depositContracts := make(map[types.Address]deposit.DepositContract, 0)
@@ -265,7 +269,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		depositContract = deposit.NewDeposit(ctx, bc, chainKv, depositContracts)
 	}
 
-	pool, _ := txspool.NewTxsPool(ctx, bc, depositContract)
+	// R2 fix: check error instead of dropping it
+	pool, err := txspool.NewTxsPool(ctx, bc, depositContract)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction pool: %w", err)
+	}
 
 	is := initialsync.NewService(ctx, &initialsync.Config{
 		Chain: bc,
@@ -485,7 +493,11 @@ func (n *Node) startTxGenerator() {
 		FaucetAmount:   1000000000000000000, // 1 ETH per test account
 	}
 
-	chainID, _ := uint256.FromBig(n.config.ChainCfg.ChainID)
+	// R2 fix: check for overflow on conversion
+	chainID, overflow := uint256.FromBig(n.config.ChainCfg.ChainID)
+	if overflow {
+		log.Error("ChainID overflows uint256, transaction generator may not work correctly")
+	}
 
 	// Use etherbase (coinbase) as the faucet source
 	coinbase := n.etherbase
@@ -572,7 +584,10 @@ func (n *Node) obtainJWTSecret(cliParam string) ([]byte, error) {
 	}
 	// Need to generate one
 	jwtSecret := make([]byte, 32)
-	rand.Read(jwtSecret)
+	// R2 fix: check error from rand.Read for security
+	if _, err := rand.Read(jwtSecret); err != nil {
+		return nil, fmt.Errorf("failed to generate JWT secret: %w", err)
+	}
 
 	if err := os.WriteFile(fileName, []byte(hexutil.Encode(jwtSecret)), 0600); err != nil {
 		return nil, err
@@ -602,7 +617,11 @@ func (n *Node) startRPC() error {
 			Modules:            utils.SplitAndTrim(n.config.NodeCfg.HTTPApi),
 			prefix:             "",
 		}
-		port, _ := strconv.Atoi(n.config.NodeCfg.HTTPPort)
+		// R2 fix: check port parsing error
+		port, err := strconv.Atoi(n.config.NodeCfg.HTTPPort)
+		if err != nil {
+			return fmt.Errorf("invalid HTTP port %q: %w", n.config.NodeCfg.HTTPPort, err)
+		}
 		if err := n.http.setListenAddr(n.config.NodeCfg.HTTPHost, port); err != nil {
 			return err
 		}
@@ -616,7 +635,11 @@ func (n *Node) startRPC() error {
 
 	// Configure WebSocket.
 	if n.config.NodeCfg.WS {
-		port, _ := strconv.Atoi(n.config.NodeCfg.WSPort)
+		// R2 fix: check port parsing error
+		port, err := strconv.Atoi(n.config.NodeCfg.WSPort)
+		if err != nil {
+			return fmt.Errorf("invalid WebSocket port %q: %w", n.config.NodeCfg.WSPort, err)
+		}
 		if err := n.ws.setListenAddr(n.config.NodeCfg.WSHost, port); err != nil {
 			return err
 		}

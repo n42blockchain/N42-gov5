@@ -19,6 +19,7 @@ package apos
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"sort"
 	"time"
 
@@ -191,11 +192,20 @@ func (s *Snapshot) apply(headers []block.IHeader) (*Snapshot, error) {
 	}
 	// Sanity check that the headers can be applied
 	for i := 0; i < len(headers)-1; i++ {
-		if headers[i+1].(*block.Header).Number.Uint64() != headers[i].(*block.Header).Number.Uint64()+1 {
+		h1, ok1 := headers[i+1].(*block.Header)
+		h0, ok0 := headers[i].(*block.Header)
+		if !ok1 || !ok0 {
+			return nil, errors.New("invalid header type: expected *block.Header")
+		}
+		if h1.Number.Uint64() != h0.Number.Uint64()+1 {
 			return nil, errInvalidVotingChain
 		}
 	}
-	if headers[0].(*block.Header).Number.Uint64() != s.Number+1 {
+	first, ok := headers[0].(*block.Header)
+	if !ok {
+		return nil, errors.New("invalid header type: expected *block.Header")
+	}
+	if first.Number.Uint64() != s.Number+1 {
 		return nil, errInvalidVotingChain
 	}
 	// Iterate through the headers and create a new snapshot
@@ -206,7 +216,10 @@ func (s *Snapshot) apply(headers []block.IHeader) (*Snapshot, error) {
 		logged = time.Now()
 	)
 	for i, iHeader := range headers {
-		header := iHeader.(*block.Header)
+		header, ok := iHeader.(*block.Header)
+		if !ok {
+			return nil, errors.New("invalid header type: expected *block.Header")
+		}
 		// Remove any votes on checkpoint blocks
 		number := header.Number.Uint64()
 		if number%s.config.Epoch == 0 {

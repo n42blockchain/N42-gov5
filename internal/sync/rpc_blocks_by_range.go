@@ -135,9 +135,10 @@ func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSl
 			return err
 		}
 		if b == nil {
-			log.Warn("Could not retrieve blocks", "err", fmt.Errorf("block #%d not found", startSlot.Uint64()))
+			blockNotFoundErr := fmt.Errorf("block #%d not found", startSlot.Uint64())
+			log.Warn("Could not retrieve blocks", "err", blockNotFoundErr)
 			s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrInvalidBlockNr.Error(), stream)
-			return err
+			return blockNotFoundErr
 		}
 
 		blks = append(blks, b)

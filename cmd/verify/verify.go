@@ -92,7 +92,11 @@ func verify(ctx context.Context, msg *state.EntireCode) (types.Hash, error) {
 }
 
 func checkBlock(getHashF func(n uint64) types.Hash, blk *block.Block, ibs *state.IntraBlockState, coinbase types.Address, rewards []*block.Reward) (types.Hash, error) {
-	header := blk.Header().(*block.Header)
+	// R2 fix: safe type assertion to prevent panic
+	header, ok := blk.Header().(*block.Header)
+	if !ok {
+		return types.Hash{}, fmt.Errorf("block header is not *block.Header")
+	}
 	chainConfig := params.MainnetChainConfig
 	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(blk.Number64().ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibs)

@@ -38,8 +38,10 @@ func NewWebSocketService(addr, acc string) (*WebSocketService, error) {
 		simpleLog("init ws read conn error,err=%+v", err)
 		return nil, err
 	}
-	if readResp != nil {
+	// R2 fix: close response body to prevent resource leak
+	if readResp != nil && readResp.Body != nil {
 		readRespBytes, err := io.ReadAll(readResp.Body)
+		readResp.Body.Close()
 		if err != nil {
 			simpleLog("readresp error", "err", err)
 		}
@@ -51,15 +53,19 @@ func NewWebSocketService(addr, acc string) (*WebSocketService, error) {
 
 	writeConn, writeResp, err := websocket.DefaultDialer.Dial(addr, nil)
 	if err != nil {
+		// R2 fix: close readConn if writeConn dial fails to prevent resource leak
+		readConn.Close()
 		simpleLog("init ws write conn error,err=%+v", err)
 		return nil, err
 	}
-	if writeResp != nil {
-		readRespBytes, err := io.ReadAll(writeResp.Body)
+	// R2 fix: close response body to prevent resource leak
+	if writeResp != nil && writeResp.Body != nil {
+		writeRespBytes, err := io.ReadAll(writeResp.Body)
+		writeResp.Body.Close()
 		if err != nil {
 			simpleLog("writeresp error", "err", err)
 		}
-		simpleLog("writeresp", "writeRespBytes", string(readRespBytes))
+		simpleLog("writeresp", "writeRespBytes", string(writeRespBytes))
 	}
 	writeConn.SetPongHandler(func(appData string) error { simpleLog("write pong", appData); return nil })
 	writeConn.SetPingHandler(func(appData string) error { simpleLog("write ping", appData); return nil })
@@ -109,8 +115,10 @@ func (ws *WebSocketService) Chans(pubk string) (<-chan []byte, chan<- []byte, er
 	if msg0bean.Error != nil {
 		if msgCode := msg0bean.Error["code"]; msgCode != nil {
 			if msgCodeFloat, ok := msgCode.(float64); ok && msgCodeFloat != 0 {
-				simpleLogf("init read conn error,code=%+v ,message=%+v", msgCodeFloat, msg0bean.Error["message"])
-				return nil, nil, &InnerError{Code: int(msgCodeFloat), Msg: msg0bean.Error["message"].(string)}
+				// R2 fix: safe type assertion to prevent panic
+				errMsg, _ := msg0bean.Error["message"].(string)
+				simpleLogf("init read conn error,code=%+v ,message=%+v", msgCodeFloat, errMsg)
+				return nil, nil, &InnerError{Code: int(msgCodeFloat), Msg: errMsg}
 			}
 		}
 	}

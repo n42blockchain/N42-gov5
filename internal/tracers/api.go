@@ -244,7 +244,7 @@ func (api *API) TraceBlockByHash(ctx context.Context, hash common.Hash, config *
 func (api *API) TraceBlock(ctx context.Context, blob hexutil.Bytes, config *TraceConfig) ([]*txTraceResult, error) {
 	block := new(types.Block)
 	if err := rlp.Decode(bytes.NewReader(blob), block); err != nil {
-		return nil, fmt.Errorf("could not decode block: %v", err)
+		return nil, fmt.Errorf("could not decode block: %w", err)
 	}
 	return api.traceBlock(ctx, block, config)
 }
@@ -288,11 +288,14 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 	//}
 
 	// Native tracers have low overhead
+	txs := block.Transactions()
+	blockHash := block.Hash()
+	blockHeader, ok := block.Header().(*types.Header)
+	if !ok {
+		return nil, errors.New("unexpected block header type")
+	}
 	var (
-		txs       = block.Transactions()
-		blockHash = block.Hash()
-		//is158     = api.backend.ChainConfig().IsSpuriousDragon(block.Number64().Uint64())
-		blockCtx = core.NewEVMBlockContext(block.Header().(*types.Header), core.GetHashFn(block.Header().(*types.Header), api.chainContext(ctx).GetHeader), api.chainContext(ctx).Engine(), nil)
+		blockCtx = core.NewEVMBlockContext(blockHeader, core.GetHashFn(blockHeader, api.chainContext(ctx).GetHeader), api.chainContext(ctx).Engine(), nil)
 		signer   = transaction.MakeSigner(api.backend.ChainConfig(), block.Number64().ToBig())
 		results  = make([]*txTraceResult, len(txs))
 	)
@@ -424,7 +427,11 @@ func (api *API) TraceCall(ctx context.Context, args api.TransactionArgs, blockNr
 		return nil, err
 	}
 
-	vmctx := core.NewEVMBlockContext(block.Header().(*types.Header), core.GetHashFn(block.Header().(*types.Header), api.chainContext(ctx).GetHeader), api.backend.Engine(), nil)
+	traceHeader, ok := block.Header().(*types.Header)
+	if !ok {
+		return nil, errors.New("unexpected block header type")
+	}
+	vmctx := core.NewEVMBlockContext(traceHeader, core.GetHashFn(traceHeader, api.chainContext(ctx).GetHeader), api.backend.Engine(), nil)
 	// Apply the customization rules if required.
 	if config != nil {
 		if err := config.StateOverrides.Apply(statedb); err != nil {

@@ -135,9 +135,10 @@ func (c *StateCli) GetAccountsInfo(addrs []types.Address) map[types.Address]*Acc
 				log.Warn("Failed to decode account state", "address", addr, "err", err)
 				continue
 			}
+			// R2 fix: clone balance to prevent callers from modifying internal state
 			result[addr] = &AccountInfo{
 				Nonce:   uint64(sc.Nonce),
-				Balance: &sc.Balance,
+				Balance: sc.Balance.Clone(),
 			}
 		}
 		return nil

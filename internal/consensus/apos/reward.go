@@ -117,11 +117,15 @@ func (r *Reward) GetRewards(addr types.Address, from *uint256.Int, to *uint256.I
 			return nil, err
 		}
 
+		blkHeader, ok := blk.Header().(*block.Header)
+		if !ok {
+			return nil, errors.New("invalid header type: expected *block.Header")
+		}
 		for _, reward := range blk.Body().Reward() {
 			if bytes.Compare(reward.Address[:], addr[:]) == 0 {
 				resp.Data = append(resp.Data, &RewardResponseValue{
 					Value:       *reward.Amount,
-					Timestamp:   hexutil.Uint64(blk.Header().(*block.Header).Time),
+					Timestamp:   hexutil.Uint64(blkHeader.Time),
 					BlockNumber: blockNr.String(),
 				})
 				resp.Total = resp.Total.Add(resp.Total, reward.Amount)
@@ -259,6 +263,10 @@ func (r *Reward) setAccountRewardUnpaid(tx kv.Putter, account types.Address, val
 func (r *Reward) number2epoch(number *uint256.Int) *uint256.Int {
 	beijingBlock, _ := uint256.FromBig(r.chainConfig.BeijingBlock)
 	if beijingBlock.Cmp(number) == 1 {
+		return uint256.NewInt(0)
+	}
+	// Security: prevent division by zero
+	if r.rewardEpoch.IsZero() {
 		return uint256.NewInt(0)
 	}
 	return new(uint256.Int).Div(new(uint256.Int).Sub(number, beijingBlock), r.rewardEpoch)

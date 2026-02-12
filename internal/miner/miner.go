@@ -18,6 +18,7 @@ package miner
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/n42blockchain/N42/common"
@@ -70,11 +71,22 @@ func (m *Miner) Start() {
 }
 
 func (m *Miner) runLoop() error {
-	defer m.cancel()
+	// R2 fix: cancel is set from errgroup context, guard against nil
+	if m.cancel != nil {
+		defer m.cancel()
+	}
 	startCh := make(chan common.DownloaderFinishEvent)
 	doneCh := make(chan common.DownloaderStartEvent)
-	start, _ := event.GlobalEvent.Subscribe(startCh)
-	done, _ := event.GlobalEvent.Subscribe(doneCh)
+	// R2 fix: check subscription errors instead of dropping them
+	start, err := event.GlobalEvent.Subscribe(startCh)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to DownloaderFinishEvent: %w", err)
+	}
+	done, err := event.GlobalEvent.Subscribe(doneCh)
+	if err != nil {
+		start.Unsubscribe()
+		return fmt.Errorf("failed to subscribe to DownloaderStartEvent: %w", err)
+	}
 
 	defer func() {
 		start.Unsubscribe()
