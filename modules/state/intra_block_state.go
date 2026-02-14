@@ -1086,7 +1086,11 @@ func (s *IntraBlockState) GenerateRootHash() types.Hash {
 	sha.Reset()
 
 	for _, address := range sortAds {
-		stateObject := s.getStateObject(address).data
+		obj := s.getStateObject(address)
+		if obj == nil {
+			continue
+		}
+		stateObject := obj.data
 		err := rlp.Encode(sha, []interface{}{
 			stateObject.Incarnation,
 			stateObject.Balance,

@@ -197,7 +197,9 @@ func (ch touchChange) dirtied() *types.Address {
 }
 
 func (ch balanceChange) revert(s *IntraBlockState) {
-	s.getStateObject(*ch.account).setBalance(&ch.prev)
+	if obj := s.getStateObject(*ch.account); obj != nil {
+		obj.setBalance(&ch.prev)
+	}
 }
 
 func (ch balanceChange) dirtied() *types.Address {
@@ -226,7 +228,9 @@ func (ch balanceIncreaseTransfer) revert(s *IntraBlockState) {
 	ch.bi.transferred = false
 }
 func (ch nonceChange) revert(s *IntraBlockState) {
-	s.getStateObject(*ch.account).setNonce(ch.prev)
+	if obj := s.getStateObject(*ch.account); obj != nil {
+		obj.setNonce(ch.prev)
+	}
 }
 
 func (ch nonceChange) dirtied() *types.Address {
@@ -234,7 +238,9 @@ func (ch nonceChange) dirtied() *types.Address {
 }
 
 func (ch codeChange) revert(s *IntraBlockState) {
-	s.getStateObject(*ch.account).setCode(ch.prevhash, ch.prevcode)
+	if obj := s.getStateObject(*ch.account); obj != nil {
+		obj.setCode(ch.prevhash, ch.prevcode)
+	}
 }
 
 func (ch codeChange) dirtied() *types.Address {
@@ -242,7 +248,9 @@ func (ch codeChange) dirtied() *types.Address {
 }
 
 func (ch storageChange) revert(s *IntraBlockState) {
-	s.getStateObject(*ch.account).setState(&ch.key, ch.prevalue)
+	if obj := s.getStateObject(*ch.account); obj != nil {
+		obj.setState(&ch.key, ch.prevalue)
+	}
 }
 
 func (ch storageChange) dirtied() *types.Address {
@@ -250,7 +258,9 @@ func (ch storageChange) dirtied() *types.Address {
 }
 
 func (ch fakeStorageChange) revert(s *IntraBlockState) {
-	s.getStateObject(*ch.account).fakeStorage[ch.key] = ch.prevalue
+	if obj := s.getStateObject(*ch.account); obj != nil {
+		obj.fakeStorage[ch.key] = ch.prevalue
+	}
 }
 
 func (ch fakeStorageChange) dirtied() *types.Address {

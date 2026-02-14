@@ -874,6 +874,9 @@ func (l *txPricedList) Discard(slots int, force bool) ([]*transaction.Transactio
 	drop := make([]*transaction.Transaction, 0, slots) // Remote underpriced transactions to drop
 	for slots > 0 {
 		if len(l.urgent.list)*floatingRatio > len(l.floating.list)*urgentRatio || floatingRatio == 0 {
+			if len(l.urgent.list) == 0 {
+				break
+			}
 			// Discard stale transactions if found during cleanup
 			tx := heap.Pop(&l.urgent).(*transaction.Transaction)
 			hash := tx.Hash()
