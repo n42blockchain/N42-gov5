@@ -287,9 +287,6 @@ func (e *EvmEngine) Stop() error {
 	if e.cancelFunc != nil {
 		e.cancelFunc()
 	}
-	if e.ctx != nil {
-		e.ctx.Done()
-	}
 	e.mu.Unlock()
 	return nil
 }
@@ -619,11 +616,11 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	simpleLog("start verify ", "blockNr", bean.Entire.Header.Number.Uint64())
-
 	if bean.Entire.Header == nil {
 		return nil, errors.New("nil pointer found")
 	}
+
+	simpleLog("start verify ", "blockNr", bean.Entire.Header.Number.Uint64())
 	// before state verify
 	var hash commTyp.Hash
 	hasher := sha3.NewLegacyKeccak256()
@@ -646,8 +643,10 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 	copy(res.StateRoot[:], stateRoot[:])
 	if pubkIfce, err := BlsPublicKey(e.PrivKey); err == nil {
 		if pubkStr, ok := pubkIfce.(string); ok {
-			//publickey
-			copy(res.PublicKey[:], []byte(pubkStr))
+			pubkBytes, err := hex.DecodeString(pubkStr)
+			if err == nil {
+				copy(res.PublicKey[:], pubkBytes)
+			}
 		}
 	}
 
@@ -805,6 +804,7 @@ func GetNetInfos() string {
 	if err != nil {
 		return err.Error()
 	}
+	defer resp.Body.Close()
 	htmlBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err.Error()

@@ -84,7 +84,7 @@ func initGenesis(cliCtx *cli.Context) error {
 		}
 		return nil
 	}); err != nil {
-		utils.Fatalf("Failed to wrote genesis state to database: %w", err)
+		utils.Fatalf("Failed to write genesis state to database: %v", err)
 	}
 	log.Info("Successfully wrote genesis state", "hash", genesisBlock.Hash())
 	return nil

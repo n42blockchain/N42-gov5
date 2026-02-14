@@ -73,7 +73,7 @@ func appRun(ctx *cli.Context) error {
 		}
 
 		pprofServer := &http.Server{
-			Addr:    fmt.Sprintf(":%d", DefaultConfig.PprofCfg.Port),
+			Addr:    fmt.Sprintf("127.0.0.1:%d", DefaultConfig.PprofCfg.Port),
 			Handler: nil,
 		}
 		go func() {
@@ -97,7 +97,8 @@ func appRun(ctx *cli.Context) error {
 
 	// Register wallet event handlers to open and auto-derive wallets
 	events := make(chan accounts.WalletEvent, 16)
-	stack.AccountManager().Subscribe(events)
+	sub := stack.AccountManager().Subscribe(events)
+	defer sub.Unsubscribe()
 
 	go func() {
 		// Open any wallets already attached
@@ -198,7 +199,11 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 
 		if ctx.IsSet(MinFreeDiskSpaceFlag.Name) {
 			minFreeDiskSpace := ctx.Int(MinFreeDiskSpaceFlag.Name)
-			go monitorFreeDiskSpace(sigc, stack.InstanceDir(), uint64(minFreeDiskSpace)*1024*1024*1024)
+			if minFreeDiskSpace <= 0 {
+				log.Warn("Invalid MinFreeDiskSpace value, ignoring", "value", minFreeDiskSpace)
+			} else {
+				go monitorFreeDiskSpace(sigc, stack.InstanceDir(), uint64(minFreeDiskSpace)*1024*1024*1024)
+			}
 		}
 
 		shutdown := func(sig os.Signal) {
@@ -273,7 +278,8 @@ func monitorFreeDiskSpace(sigc chan os.Signal, path string, freeDiskSpaceCritica
 		freeSpace, err := getFreeDiskSpace(path)
 		if err != nil {
 			log.Warn("Failed to get free disk space", "path", path, "err", err)
-			break
+			time.Sleep(30 * time.Second)
+			continue
 		}
 		if freeSpace < freeDiskSpaceCritical {
 			log.Error("Low disk space. Gracefully shutting down Geth to prevent database corruption.", "available", types.StorageSize(freeSpace), "path", path)

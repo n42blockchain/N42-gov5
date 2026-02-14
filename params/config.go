@@ -135,7 +135,7 @@ type ChainConfig struct {
 	MergeNetsplitBlock            *big.Int `json:"mergeNetsplitBlock,omitempty"`            // Virtual fork after The Merge to use as a network splitter; see FORK_NEXT_VALUE in EIP-3675
 
 	ShanghaiBlock    *big.Int `json:"shanghaiBlock,omitempty"` // Shanghai switch block (nil = no fork, 0 = already activated)
-	CancunBlock      *big.Int `json:"cancunTime,omitempty"`
+	CancunBlock      *big.Int `json:"cancunBlock,omitempty"`
 	ShardingForkTime *big.Int `json:"shardingForkTime,omitempty"`
 	PragueTime       *big.Int `json:"pragueTime,omitempty"`
 	PectraTime       *big.Int `json:"pectraTime,omitempty"`  // Pectra switch time (nil = no fork)
@@ -277,6 +277,9 @@ func (c *BorConfig) IsJaipur(number uint64) bool {
 }
 
 func (c *BorConfig) calculateBorConfigHelper(field map[string]uint64, number uint64) uint64 {
+	if len(field) == 0 {
+		return 0
+	}
 	keys := make([]string, 0, len(field))
 	for k := range field {
 		keys = append(keys, k)
@@ -285,7 +288,7 @@ func (c *BorConfig) calculateBorConfigHelper(field map[string]uint64, number uin
 	for i := 0; i < len(keys)-1; i++ {
 		valUint, _ := strconv.ParseUint(keys[i], 10, 64)
 		valUintNext, _ := strconv.ParseUint(keys[i+1], 10, 64)
-		if number > valUint && number < valUintNext {
+		if number >= valUint && number < valUintNext {
 			return field[keys[i]]
 		}
 	}
@@ -564,6 +567,9 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "mergeNetsplitBlock", block: c.MergeNetsplitBlock, optional: true},
 		{name: "shanghaiBlock", block: c.ShanghaiBlock},
 		{name: "cancunBlock", block: c.CancunBlock},
+		{name: "pectraTime", block: c.PectraTime, optional: true},
+		{name: "osakaTime", block: c.OsakaTime, optional: true},
+		{name: "fusakaTime", block: c.FusakaTime, optional: true},
 	} {
 		if lastFork.name != "" {
 			// Next one must be higher number
@@ -645,6 +651,15 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head uint64) *ConfigC
 	}
 	if isForkIncompatible(c.CancunBlock, newcfg.CancunBlock, head) {
 		return newCompatError("Cancun fork block", c.CancunBlock, newcfg.CancunBlock)
+	}
+	if isForkIncompatible(c.PectraTime, newcfg.PectraTime, head) {
+		return newCompatError("Pectra fork time", c.PectraTime, newcfg.PectraTime)
+	}
+	if isForkIncompatible(c.OsakaTime, newcfg.OsakaTime, head) {
+		return newCompatError("Osaka fork time", c.OsakaTime, newcfg.OsakaTime)
+	}
+	if isForkIncompatible(c.FusakaTime, newcfg.FusakaTime, head) {
+		return newCompatError("Fusaka fork time", c.FusakaTime, newcfg.FusakaTime)
 	}
 
 	// Parlia forks

@@ -52,6 +52,7 @@ func NewWebSocketService(addr, acc string) (*WebSocketService, error) {
 	writeConn, writeResp, err := websocket.DefaultDialer.Dial(addr, nil)
 	if err != nil {
 		simpleLog("init ws write conn error,err=%+v", err)
+		readConn.Close()
 		return nil, err
 	}
 	if writeResp != nil {
@@ -110,7 +111,8 @@ func (ws *WebSocketService) Chans(pubk string) (<-chan []byte, chan<- []byte, er
 		if msgCode := msg0bean.Error["code"]; msgCode != nil {
 			if msgCodeFloat, ok := msgCode.(float64); ok && msgCodeFloat != 0 {
 				simpleLogf("init read conn error,code=%+v ,message=%+v", msgCodeFloat, msg0bean.Error["message"])
-				return nil, nil, &InnerError{Code: int(msgCodeFloat), Msg: msg0bean.Error["message"].(string)}
+				msgStr, _ := msg0bean.Error["message"].(string)
+				return nil, nil, &InnerError{Code: int(msgCodeFloat), Msg: msgStr}
 			}
 		}
 	}
