@@ -16,7 +16,7 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 
 	blocks := []block.IBlock{iBlock}
 
-	log.Info("Subscriber new Block", "hash", iBlock.Header().Hash(), "blockNr", iBlock.Header().Number64().Uint64())
+	log.Info("Subscriber new Block", "blockNr", iBlock.Header().Number64().Uint64(), "hash", iBlock.Header().Hash(), "stateRoot", iBlock.Header().StateRoot(), "txs", len(iBlock.Transactions()))
 
 	if iBlock.Number64().Uint64() > s.cfg.chain.CurrentBlock().Number64().Uint64()+1 {
 		if err := s.cfg.chain.AddFutureBlock(iBlock); err != nil {
