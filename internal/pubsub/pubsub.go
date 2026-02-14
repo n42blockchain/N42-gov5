@@ -151,10 +151,11 @@ func (m *n42PubSub) Subscription(topic string) (*pubsub.Subscription, error) {
 }
 
 func (m *n42PubSub) GetTopics() []string {
-	var topics []string
-	for k, _ := range m.topicsMap {
+	m.topicLock.Lock()
+	defer m.topicLock.Unlock()
+	topics := make([]string, 0, len(m.topicsMap))
+	for k := range m.topicsMap {
 		topics = append(topics, k)
 	}
-
 	return topics
 }

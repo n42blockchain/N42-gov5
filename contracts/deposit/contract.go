@@ -289,7 +289,9 @@ func (d *Deposit) handleDepositEvent(txHash types.Hash, data []byte, depositCont
 			pub.SetBytes(publicKey.Marshal())
 			//
 			rawdb.PutDeposit(rwTx, *from, pub, *amount)
-			rwTx.Commit()
+			if err := rwTx.Commit(); err != nil {
+				log.Error("failed to commit deposit", "from", from, "err", err)
+			}
 		}
 	} else {
 		log.Error("DepositEvent cannot Verify signature", "signature", hexutil.Encode(sig), "publicKey", hexutil.Encode(pb), "message", hexutil.Encode(amount.Bytes()), "err", err)
@@ -327,5 +329,7 @@ func (d *Deposit) handleWithdrawnEvent(txHash types.Hash, data []byte) {
 		log.Error("cannot delete deposit", "err", err)
 		return
 	}
-	rwTx.Commit()
+	if err = rwTx.Commit(); err != nil {
+		log.Error("failed to commit withdrawal", "from", from, "err", err)
+	}
 }
