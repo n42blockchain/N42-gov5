@@ -128,13 +128,18 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 	var index uint64
 	var blockNumber uint64
 	var err error
-	s.api.Database().View(ctx, func(t kv.Tx) error {
+	if dbErr := s.api.Database().View(ctx, func(t kv.Tx) error {
 		tx, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(t, avmtypes.ToastHash(hash))
-		if err != nil || tx == nil {
-			log.Tracef("rawdb.ReadTransactionByHash, err = %v, txhash = %v \n", err, hash)
+		if err != nil {
+			return err
+		}
+		if tx == nil {
+			log.Tracef("rawdb.ReadTransactionByHash, txhash = %v not found\n", hash)
 		}
 		return nil
-	})
+	}); dbErr != nil {
+		return nil, dbErr
+	}
 	if tx == nil {
 		return nil, nil
 	}
