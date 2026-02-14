@@ -96,8 +96,9 @@ type Downloader struct {
 	isDownloading int32
 
 	highestNumber uint256.Int
+	highestMu     sync.RWMutex
 
-	ctx        context.Context
+	ctx context.Context
 	cancel     context.CancelFunc
 	cancelLock sync.RWMutex
 	cancelWg   sync.WaitGroup //
@@ -285,9 +286,8 @@ func (d *Downloader) findAncestor() (uint256.Int, error) {
 }
 
 func (d *Downloader) findHead() (uint256.Int, error) {
-	//if d.highestNumber.IsEmpty {
-	//	return d.highestNumber, ErrSyncBlock
-	//}
+	d.highestMu.RLock()
+	defer d.highestMu.RUnlock()
 	return d.highestNumber, nil
 }
 
@@ -314,9 +314,14 @@ func (d *Downloader) pubSubLoop() {
 			log.Debugf("receive a err from highestSub %v", err)
 			return
 		case highestBlock, ok := <-highestBlockCh:
-			if ok && highestBlock.Block.Number64().Uint64() > d.highestNumber.Uint64() {
+			d.highestMu.RLock()
+			curHighest := d.highestNumber.Uint64()
+			d.highestMu.RUnlock()
+			if ok && highestBlock.Block.Number64().Uint64() > curHighest {
 				log.Debugf("receive a new highestBlock block number: %d", highestBlock.Block.Number64().Uint64())
+				d.highestMu.Lock()
 				d.highestNumber = *highestBlock.Block.Number64()
+				d.highestMu.Unlock()
 				if highestBlock.Inserted {
 					d.peersInfo.peerInfoBroadcast(highestBlock.Block.Number64())
 				}
@@ -353,10 +358,13 @@ func (d *Downloader) synchronise() {
 			}
 			return
 		case <-tick.C:
-			difference := new(uint256.Int).Sub(&d.highestNumber, d.bc.CurrentBlock().Number64())
-			log.Tracef("highest: %d, current: %d", d.highestNumber.Uint64(), d.bc.CurrentBlock().Number64().Uint64())
+			d.highestMu.RLock()
+			highest := d.highestNumber.Clone()
+			d.highestMu.RUnlock()
+			difference := new(uint256.Int).Sub(highest, d.bc.CurrentBlock().Number64())
+			log.Tracef("highest: %d, current: %d", highest.Uint64(), d.bc.CurrentBlock().Number64().Uint64())
 			if difference.Uint64() > 1 {
-				log.Infof("start downloader Compare Loop remote  highestNumber: %d, current number: %d, difference: %d", d.highestNumber.Uint64(), d.bc.CurrentBlock().Number64().Uint64(), difference.Uint64())
+				log.Infof("start downloader Compare Loop remote  highestNumber: %d, current number: %d, difference: %d", highest.Uint64(), d.bc.CurrentBlock().Number64().Uint64(), difference.Uint64())
 				err := d.doSync(d.getMode())
 				if err != nil {
 					log.Errorf("failed to running downloader, err:%v", err)
@@ -444,9 +452,11 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 		currentDifficulty := utils.ConvertH256ToUint256Int(peerInfoBroadcast.Difficulty)
 		params = append(params, "Number", currentNumber, "Difficulty", currentDifficulty)
 		//
+		d.highestMu.Lock()
 		if currentNumber.Uint64() > d.highestNumber.Uint64() {
 			d.highestNumber.Set(currentNumber.Clone())
 		}
+		d.highestMu.Unlock()
 		d.peersInfo.update(p.ID(), currentNumber, currentDifficulty)
 	}
 
