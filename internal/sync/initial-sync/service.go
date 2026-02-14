@@ -70,13 +70,33 @@ func (s *Service) Start() {
 	}()
 
 	log.Info("Starting chain synchronization...")
-	highestExpectedBlockNr := s.waitForMinimumPeers()
-	if err := s.roundRobinSync(highestExpectedBlockNr); err != nil {
-		if errors.Is(s.ctx.Err(), context.Canceled) {
-			return
+
+	// Loop until fully caught up to handle case where chain advances during sync
+	for {
+		highestExpectedBlockNr := s.waitForMinimumPeers()
+		if err := s.roundRobinSync(highestExpectedBlockNr); err != nil {
+			if errors.Is(s.ctx.Err(), context.Canceled) {
+				return
+			}
+			log.Crit("Sync failed", "err", err)
 		}
-		log.Crit("Sync failed", "err", err)
+
+		// Check if we're still behind after sync completed
+		currentBlock := s.cfg.Chain.CurrentBlock().Number64()
+		newHighest, peers := s.cfg.P2P.Peers().BestPeers(1, currentBlock)
+
+		// If no peers or caught up (within 5 blocks), we're done
+		// Future blocks + gossip will handle small gaps
+		if len(peers) == 0 || newHighest.Cmp(currentBlock) <= 0 ||
+			newHighest.Uint64() <= currentBlock.Uint64()+5 {
+			break
+		}
+
+		log.Info("Still behind peers after sync, continuing...",
+			"currentBlock", currentBlock.Uint64(),
+			"peersBlock", newHighest.Uint64())
 	}
+
 	log.Info("Chain sync completed", "block", s.cfg.Chain.CurrentBlock().Number64().Uint64())
 }
 

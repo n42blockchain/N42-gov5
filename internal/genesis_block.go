@@ -27,10 +27,11 @@ import (
 	"math/big"
 
 	"github.com/c2h5oh/datasize"
-	"github.com/n42blockchain/N42/params/networkname"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/params/networkname"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -121,7 +122,7 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 
 	go func() { // we may run inside write tx, can't open 2nd write tx in same goroutine
 		defer close(errCh)
-		tmpDB := mdbx.NewMDBX(nil).InMem("").MapSize(2 * datasize.GB).MustOpen()
+		tmpDB := mdbx.NewMDBX(log.Root()).InMem("").MapSize(2 * datasize.GB).MustOpen()
 		defer tmpDB.Close()
 		tx, err := tmpDB.BeginRw(context.Background())
 		if err != nil {
