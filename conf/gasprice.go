@@ -27,13 +27,13 @@ var (
 )
 
 type GpoConfig struct {
-	Blocks           int
-	Percentile       int
-	MaxHeaderHistory int
-	MaxBlockHistory  int
-	Default          *big.Int `toml:",omitempty"`
-	MaxPrice         *big.Int `toml:",omitempty"`
-	IgnorePrice      *big.Int `toml:",omitempty"`
+	Blocks           int      `json:"blocks" yaml:"blocks"`
+	Percentile       int      `json:"percentile" yaml:"percentile"`
+	MaxHeaderHistory int      `json:"maxHeaderHistory" yaml:"maxHeaderHistory"`
+	MaxBlockHistory  int      `json:"maxBlockHistory" yaml:"maxBlockHistory"`
+	Default          *big.Int `json:"default,omitempty" yaml:"default,omitempty"`
+	MaxPrice         *big.Int `json:"maxPrice,omitempty" yaml:"maxPrice,omitempty"`
+	IgnorePrice      *big.Int `json:"ignorePrice,omitempty" yaml:"ignorePrice,omitempty"`
 }
 
 // FullNodeGPO contains default gasprice oracle settings for full node.

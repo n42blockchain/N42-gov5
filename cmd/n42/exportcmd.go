@@ -190,9 +190,13 @@ func exportDBState(ctx *cli.Context) error {
 	for _, Bucket := range Buckets {
 		size, _ := roTX.BucketSize(Bucket)
 		tsize += size
-		Cursor, _ := roTX.Cursor(Bucket)
-		count, _ := Cursor.Count()
-		Cursor.Close()
+		cursor, err := roTX.Cursor(Bucket)
+		if err != nil {
+			log.Warn("Failed to create cursor", "bucket", Bucket, "err", err)
+			continue
+		}
+		count, _ := cursor.Count()
+		cursor.Close()
 		if count != 0 {
 			fmt.Printf("%30v count %10d size: %s \r\n", Bucket, count, common.StorageSize(size))
 		}
@@ -209,22 +213,23 @@ func dbCopy(ctx *cli.Context) error {
 	fromChaindata := ctx.String(FromDataDirFlag.Name)
 	toChaindata := ctx.String(ToDataDirFlag.Name)
 
-	if f, err := os.Stat(fromChaindata); err != nil || !f.IsDir() {
-		log.Errorf("fromChaindata do not exists or is not a dir, err: %s", err)
-		return err
+	if f, err := os.Stat(fromChaindata); err != nil {
+		return fmt.Errorf("fromChaindata error: %w", err)
+	} else if !f.IsDir() {
+		return fmt.Errorf("fromChaindata is not a directory: %s", fromChaindata)
 	}
-	if f, err := os.Stat(toChaindata); err != nil || !f.IsDir() {
-		log.Errorf("toChaindata do not exists or is not a dir, err: %s", err)
-		return err
+	if f, err := os.Stat(toChaindata); err != nil {
+		return fmt.Errorf("toChaindata error: %w", err)
+	} else if !f.IsDir() {
+		return fmt.Errorf("toChaindata is not a directory: %s", toChaindata)
 	}
 
 	from, to := backup.OpenPair(fromChaindata, toChaindata, kv.ChainDB, 0)
+	defer from.Close()
+	defer to.Close()
 	err := backup.Kv2kv(ctx.Context, from, to, nil, backup.ReadAheadThreads)
 	if err != nil && !errors.Is(err, context.Canceled) {
-		if !errors.Is(err, context.Canceled) {
-			log.Error(err.Error())
-		}
-		return nil
+		return err
 	}
 
 	return nil

@@ -36,7 +36,7 @@ type Config struct {
 	P2PCfg      *P2PConfig          `json:"p2p" yaml:"p2p"`
 	// Gas Price Oracle options
 	GPO   GpoConfig   `json:"gpo" yaml:"gpo"`
-	Miner MinerConfig `json:"miner"`
+	Miner MinerConfig `json:"miner" yaml:"miner"`
 	// Development configuration
 	DevCfg DevConfig `json:"dev" yaml:"dev"`
 }
@@ -52,7 +52,9 @@ func SaveConfigToFile(file string, config Config) error {
 		return err
 	}
 	defer fd.Close()
-	return yaml.NewEncoder(fd).Encode(config)
+	enc := yaml.NewEncoder(fd)
+	defer enc.Close()
+	return enc.Encode(config)
 	//return toml.NewEncoder(fd).Encode(blockchain)
 }
 
