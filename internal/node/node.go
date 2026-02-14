@@ -243,7 +243,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, fmt.Errorf("invalid engine name %s", cfg.ChainCfg.Consensus)
 	}
 
-	bc, _ := internal.NewBlockChain(ctx, genesisBlock, engine, chainKv, p2p, cfg.ChainCfg)
+	bc, err := internal.NewBlockChain(ctx, genesisBlock, engine, chainKv, p2p, cfg.ChainCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create blockchain: %w", err)
+	}
 
 	if cfg.ChainCfg.Apos != nil {
 		depositContracts := make(map[types.Address]deposit.DepositContract, 0)
@@ -272,7 +275,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		depositContract = deposit.NewDeposit(ctx, bc, chainKv, depositContracts)
 	}
 
-	pool, _ := txspool.NewTxsPool(ctx, bc, depositContract)
+	pool, err := txspool.NewTxsPool(ctx, bc, depositContract)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction pool: %w", err)
+	}
 
 	is := initialsync.NewService(ctx, &initialsync.Config{
 		Chain: bc,
@@ -579,7 +585,9 @@ func (n *Node) obtainJWTSecret(cliParam string) ([]byte, error) {
 	}
 	// Need to generate one
 	jwtSecret := make([]byte, 32)
-	rand.Read(jwtSecret)
+	if _, err := rand.Read(jwtSecret); err != nil {
+		return nil, fmt.Errorf("failed to generate JWT secret: %w", err)
+	}
 
 	if err := os.WriteFile(fileName, []byte(hexutil.Encode(jwtSecret)), 0600); err != nil {
 		return nil, err

@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -256,7 +257,10 @@ LOOP:
 
 func MachineVerify(ctx context.Context) error {
 	entire := make(chan common.MinedEntireEvent)
-	blocksSub, _ := event.GlobalEvent.Subscribe(entire)
+	blocksSub, err := event.GlobalEvent.Subscribe(entire)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to MinedEntireEvent: %w", err)
+	}
 	defer blocksSub.Unsubscribe()
 
 	errs := make(chan error)
