@@ -650,7 +650,7 @@ func (n *Node) startRPC() error {
 		config := httpConfig{
 			CorsAllowedOrigins: utils.SplitAndTrim(n.config.NodeCfg.HTTPCors),
 			Vhosts:             []string{"*"},
-			Modules:            []string{"admin", "apos"},
+			Modules:            []string{"apos"},
 			prefix:             "",
 			jwtSecret:          jwtSecret,
 		}
