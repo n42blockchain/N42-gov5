@@ -70,10 +70,13 @@ func (r *PlainStateReader) ReadAccountCode(address types.Address, incarnation ui
 		return nil, nil
 	}
 	code, err := r.db.GetOne(modules.Code, codeHash.Bytes())
+	if err != nil {
+		return nil, err
+	}
 	if len(code) == 0 {
 		return nil, nil
 	}
-	return code, err
+	return code, nil
 }
 
 func (r *PlainStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {

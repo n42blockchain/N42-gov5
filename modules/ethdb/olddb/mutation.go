@@ -251,6 +251,7 @@ func (m *mutation) doCommit(tx kv.RwTx) error {
 		if mi.table != prevTable {
 			if c != nil {
 				c.Close()
+				c = nil
 			}
 			var err error
 			c, err = tx.RwCursor(mi.table)
@@ -299,6 +300,9 @@ func (m *mutation) doCommit(tx kv.RwTx) error {
 		}
 		return true
 	})
+	if c != nil {
+		c.Close()
+	}
 	tx.CollectMetrics()
 	return innerErr
 }
