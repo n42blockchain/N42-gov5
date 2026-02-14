@@ -94,8 +94,12 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", hash, b.TxHash())
 	}
 
-	if !v.bc.HasBlockAndState(b.ParentHash(), b.Number64().Uint64()-1) {
-		if !v.bc.HasBlock(b.ParentHash(), b.Number64().Uint64()-1) {
+	blockNum := b.Number64().Uint64()
+	if blockNum == 0 {
+		return nil
+	}
+	if !v.bc.HasBlockAndState(b.ParentHash(), blockNum-1) {
+		if !v.bc.HasBlock(b.ParentHash(), blockNum-1) {
 			return ErrUnknownAncestor
 		}
 		return ErrPrunedAncestor

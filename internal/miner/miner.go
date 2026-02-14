@@ -18,6 +18,9 @@ package miner
 
 import (
 	"context"
+	"sync"
+	"time"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -26,10 +29,10 @@ import (
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"golang.org/x/sync/errgroup"
-	"time"
 )
 
 type Miner struct {
+	mu       sync.RWMutex
 	coinbase types.Address
 	engine   consensus.Engine
 	worker   *worker
@@ -38,8 +41,7 @@ type Miner struct {
 	startCh chan types.Address
 	stopCh  chan struct{}
 
-	ctx context.Context
-	//errCtx context.Context
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	group *errgroup.Group
@@ -47,25 +49,30 @@ type Miner struct {
 
 func NewMiner(ctx context.Context, cfg *conf.Config, bc common.IBlockChain, engine consensus.Engine, txsPool common.ITxsPool, isLocalBlock func(header *block.Header) bool) *Miner {
 	group, errCtx := errgroup.WithContext(ctx)
+	cancelCtx, cancel := context.WithCancel(errCtx)
 	miner := &Miner{
 		engine:  engine,
 		txsPool: txsPool,
 		startCh: make(chan types.Address),
 		stopCh:  make(chan struct{}),
 		group:   group,
-		ctx:     errCtx,
-		worker:  newWorker(errCtx, group, cfg.ChainCfg, engine, bc, txsPool, isLocalBlock, false, cfg.Miner),
+		ctx:     cancelCtx,
+		cancel:  cancel,
+		worker:  newWorker(cancelCtx, group, cfg.ChainCfg, engine, bc, txsPool, isLocalBlock, false, cfg.Miner),
 	}
 
 	return miner
 }
 
 func (m *Miner) Start() {
-	log.Info("start miner", "coinbase", m.coinbase)
+	m.mu.RLock()
+	cb := m.coinbase
+	m.mu.RUnlock()
+	log.Info("start miner", "coinbase", cb)
 	m.group.Go(func() error {
 		return m.runLoop()
 	})
-	m.startCh <- m.coinbase
+	m.startCh <- cb
 }
 
 func (m *Miner) runLoop() error {
@@ -92,13 +99,16 @@ func (m *Miner) runLoop() error {
 	for {
 		select {
 		case <-m.ctx.Done():
-			return nil
+			return m.ctx.Err()
 		case _, ok := <-startCh:
 			if ok {
 				canStart = true
 				if !m.Mining() && shouldStart {
 					time.Sleep(5 * time.Second)
-					m.SetCoinbase(m.coinbase)
+					m.mu.RLock()
+					cb := m.coinbase
+					m.mu.RUnlock()
+					m.SetCoinbase(cb)
 					m.worker.start()
 				}
 			}
@@ -125,15 +135,13 @@ func (m *Miner) runLoop() error {
 			if m.Mining() {
 				m.worker.stop()
 			}
-		case <-m.ctx.Done():
-			return m.ctx.Err()
 		}
 	}
 }
 
 func (miner *Miner) Close() {
-	//close(miner.exitCh)
-	//miner.wg.Wait()
+	miner.cancel()
+	miner.worker.close()
 }
 
 func (m *Miner) Mining() bool {
@@ -141,7 +149,9 @@ func (m *Miner) Mining() bool {
 }
 
 func (m *Miner) SetCoinbase(addr types.Address) {
+	m.mu.Lock()
 	m.coinbase = addr
+	m.mu.Unlock()
 	m.worker.setCoinbase(addr)
 }
 

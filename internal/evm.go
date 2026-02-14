@@ -85,12 +85,18 @@ func GetHashFn(ref *block.Header, getHeader func(hash types.Hash, number uint64)
 	var cache []types.Hash
 
 	return func(n uint64) types.Hash {
+		if n >= ref.Number.Uint64() {
+			return types.Hash{}
+		}
 		// If there's no hash cache yet, make one
 		if len(cache) == 0 {
 			cache = append(cache, ref.ParentHash)
 		}
 		if idx := ref.Number.Uint64() - n - 1; idx < uint64(len(cache)) {
 			return cache[idx]
+		}
+		if getHeader == nil {
+			return types.Hash{}
 		}
 		// No luck in the cache, but we can start iterating from the last element we already know
 		lastKnownHash := cache[len(cache)-1]
