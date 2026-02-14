@@ -99,7 +99,7 @@ func (env *environment) copy() *environment {
 		tcount:    env.tcount,
 		coinbase:  env.coinbase,
 		header:    block.CopyHeader(env.header),
-		receipts:  env.receipts,
+		receipts:  copyReceipts(env.receipts),
 	}
 	if env.gasPool != nil {
 		gasPool := *env.gasPool
@@ -323,11 +323,11 @@ func (w *worker) resultLoop() error {
 				// Update the block hash in all logs since it is now available and not when the
 				// receipt/log of individual transactions were created.
 				receipt.Logs = make([]*block.Log, len(taskReceipt.Logs))
-				for i, taskLog := range taskReceipt.Logs {
-					log := new(block.Log)
-					receipt.Logs[i] = log
-					*log = *taskLog
-					log.BlockHash = hash
+				for j, taskLog := range taskReceipt.Logs {
+					lg := new(block.Log)
+					receipt.Logs[j] = lg
+					*lg = *taskLog
+					lg.BlockHash = hash
 				}
 				logs = append(logs, receipt.Logs...)
 			}
@@ -421,13 +421,16 @@ func (w *worker) taskLoop() error {
 
 func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64) error {
 	start := time.Now()
+	w.mu.RLock()
+	coinbase := w.coinbase
+	w.mu.RUnlock()
 	if w.isRunning() {
-		if w.coinbase == (types.Address{}) {
+		if coinbase == (types.Address{}) {
 			return errors.New("coinbase is empty")
 		}
 	}
 
-	current, err := w.prepareWork(&generateParams{timestamp: uint64(timestamp), coinbase: w.coinbase})
+	current, err := w.prepareWork(&generateParams{timestamp: uint64(timestamp), coinbase: coinbase})
 	if err != nil {
 		log.Error("cannot prepare work", "err", err)
 		return err

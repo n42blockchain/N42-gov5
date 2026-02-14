@@ -259,11 +259,9 @@ func (bc *BlockChain) LatestBlockCh() (block.IBlock, error) {
 
 func (bc *BlockChain) runLoop() {
 	defer func() {
-		bc.wg.Done()
 		bc.cancel()
 		bc.StopInsert()
-		close(bc.errorCh)
-		bc.wg.Wait()
+		bc.wg.Done()
 	}()
 
 	for {
@@ -1011,13 +1009,14 @@ func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
 		return err
 	}
 
-	bc.currentBlock.Store(blk.(*block.Block))
-	headBlockGauge.Set(blk.Number64().Uint64())
 	if notExternalTx {
 		if err = tx.Commit(); err != nil {
 			return err
 		}
 	}
+	// Update in-memory state after successful persistence
+	bc.currentBlock.Store(blk.(*block.Block))
+	headBlockGauge.Set(blk.Number64().Uint64())
 	return nil
 }
 
@@ -1282,7 +1281,8 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 	return nil
 }
 func (bc *BlockChain) Close() error {
-	bc.Quit()
+	bc.cancel()
+	bc.wg.Wait()
 	return nil
 }
 

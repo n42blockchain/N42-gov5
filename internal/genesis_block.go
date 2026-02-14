@@ -139,7 +139,11 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 				errCh <- fmt.Errorf("invalid balance for address %s: overflow", address.Hex())
 				return
 			}
-			balance, _ := uint256.FromBig(b)
+			balance, overflow := uint256.FromBig(b)
+		if overflow {
+			errCh <- fmt.Errorf("balance overflow for address %s", address.Hex())
+			return
+		}
 			statedb.AddBalance(address, balance)
 			statedb.SetCode(address, account.Code)
 			statedb.SetNonce(address, account.Nonce)
@@ -209,7 +213,9 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		Nonce:       block.EncodeNonce(g.GenesisConfig.Nonce),
 		BaseFee:     g.GenesisConfig.BaseFee,
 	}
-	head.Extra = ExtraData
+	if len(ExtraData) > 0 {
+		head.Extra = ExtraData
+	}
 
 	if g.GenesisConfig.GasLimit == 0 {
 		head.GasLimit = params.GenesisGasLimit
