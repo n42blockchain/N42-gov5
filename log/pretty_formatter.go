@@ -389,8 +389,8 @@ func (f *PrettyFormatter) formatFields(data logrus.Fields, level logrus.Level, c
 		var valStr string
 		switch val := v.(type) {
 		case string:
-			// Don't truncate important fields like enr, multiAddr
-			noTruncate := k == "enr" || k == "multiAddr" || k == "enode"
+			// Don't truncate important fields like multiAddr
+			noTruncate := k == "multiAddr" || k == "enode"
 			// Truncate long strings (except important fields)
 			if len(val) > 60 && !noTruncate {
 				valStr = val[:57] + "..."
