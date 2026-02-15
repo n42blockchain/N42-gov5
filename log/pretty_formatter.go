@@ -793,11 +793,11 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 		timeStr = "  " + timeStr
 	}
 
-	line := fmt.Sprintf("%s%s%s %s  %s%s%s  %s%.1f%%%s  %s▸%s %.0f blk/s  %s▸%s ETA %s  %s▸%s %d %s%s%s",
+	line := fmt.Sprintf("%s%s%s %s  %s%s%s  %s%.1f%%%s #%d  %s▸%s %.0f blk/s  %s▸%s ETA %s  %s▸%s %d %s%s%s",
 		color, DotSymbol, Reset,
 		label,
 		Cyan, bar, Reset,
-		BrightWhite, pct, Reset,
+		BrightWhite, pct, Reset, current,
 		Dim, Reset,
 		rate,
 		Dim, Reset,
