@@ -380,17 +380,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		consensusName = "Mobile Consensus"
 	}
 
-	// Print the pretty banner
+	// Print the pretty banner with system info
 	log.PrintBanner(
 		params.VersionWithMeta,
 		fmt.Sprintf("%s (ID: %s)", chainName, cfg.ChainCfg.ChainID.String()),
 		consensusName,
 		actualGenesisHash.String(),
 		bc.CurrentBlock().Number64().Uint64(),
-	)
-
-	// Print system information
-	log.PrintSystemInfo(
 		fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
 		runtime.Version(),
 		runtime.NumCPU(),
