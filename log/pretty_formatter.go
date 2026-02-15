@@ -122,11 +122,13 @@ type PrettyFormatter struct {
 // NewPrettyFormatter creates a new PrettyFormatter with sensible defaults
 func NewPrettyFormatter() *PrettyFormatter {
 	now := time.Now()
-	return &PrettyFormatter{
+	f := &PrettyFormatter{
 		ShowModule:       true,
 		startTime:        now,
 		lastAbsoluteTime: now.Add(-10 * time.Minute), // Force first log to show absolute time
 	}
+	activeFormatter = f
+	return f
 }
 
 func (f *PrettyFormatter) init(entry *logrus.Entry) {
@@ -621,84 +623,10 @@ func PrintWaiting(message string, current, required int) {
 var printMu sync.Mutex
 
 // progressActive tracks whether the last output was a \r progress bar line.
-// Other Print* functions check this to emit a \n first, avoiding collisions.
 var progressActive bool
 
-// Package-level time tracker for progress bar (mirrors PrettyFormatter rules).
-var (
-	progStartTime    time.Time
-	progLastAbsTime  time.Time
-	progLastTimeStr  string
-)
-
-// formatProgressTime formats a timestamp for the progress bar, following
-// the same rules as PrettyFormatter.formatTime: relative time shown when
-// it changes (per-second), absolute time appended every 10 minutes.
-func formatProgressTime() string {
-	now := time.Now()
-
-	// Initialize on first call
-	if progStartTime.IsZero() {
-		progStartTime = now
-		progLastAbsTime = now.Add(-10 * time.Minute) // force first absolute
-	}
-
-	elapsed := now.Sub(progStartTime)
-
-	// Relative time
-	relativeStr := formatCompactDuration(elapsed)
-
-	// Absolute time every 10 minutes
-	var absoluteStr string
-	if now.Sub(progLastAbsTime) >= 10*time.Minute {
-		if elapsed < time.Second {
-			absoluteStr = now.Format("2006-01-02 15:04:05")
-		} else {
-			absoluteStr = now.Format("01-02 15:04:05")
-		}
-		progLastAbsTime = now
-	}
-
-	var result string
-	if absoluteStr != "" {
-		result = absoluteStr + " " + relativeStr
-		progLastTimeStr = relativeStr
-	} else if relativeStr != progLastTimeStr {
-		result = relativeStr
-		progLastTimeStr = relativeStr
-	}
-
-	if result == "" {
-		return ""
-	}
-
-	timeColor := "\033[38;5;60m"
-	return fmt.Sprintf("  %s%s%s", timeColor, result, Reset)
-}
-
-// formatCompactDuration formats a duration identically to PrettyFormatter.formatDuration.
-func formatCompactDuration(d time.Duration) string {
-	if d < time.Second {
-		return "0s"
-	}
-	days := int(d.Hours()) / 24
-	hours := int(d.Hours()) % 24
-	mins := int(d.Minutes()) % 60
-	secs := int(d.Seconds()) % 60
-
-	var result string
-	if days > 0 {
-		result += fmt.Sprintf("%dd", days)
-	}
-	if hours > 0 || days > 0 {
-		result += fmt.Sprintf("%dh", hours)
-	}
-	if mins > 0 || hours > 0 || days > 0 {
-		result += fmt.Sprintf("%dm", mins)
-	}
-	result += fmt.Sprintf("%ds", secs)
-	return result
-}
+// activeFormatter holds the PrettyFormatter instance for reuse by Print* functions.
+var activeFormatter *PrettyFormatter
 
 // clearProgressLine prints a newline if a \r progress bar is active,
 // so subsequent output starts on a clean line. Caller must hold printMu.
@@ -838,7 +766,13 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 		peerWord = "peer"
 	}
 
-	timeStr := formatProgressTime()
+	timeStr := ""
+	if activeFormatter != nil {
+		timeStr = activeFormatter.formatTime(time.Now(), true)
+	}
+	if timeStr != "" {
+		timeStr = "  " + timeStr
+	}
 
 	line := fmt.Sprintf("%s%s%s %s  %s%s%s  %s%.1f%%%s  %s▸%s %.0f blk/s  %s▸%s ETA %s  %s▸%s %d %s%s",
 		color, DotSymbol, Reset,
