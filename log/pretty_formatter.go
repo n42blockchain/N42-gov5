@@ -153,9 +153,19 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 
 	var b bytes.Buffer
 
-	// If a progress bar is active, push it down with a newline first
+	// When progress bar is active, aggregate deposit/reward into counters
 	printMu.Lock()
 	if progressActive {
+		if strings.Contains(entry.Message, "add Deposit info") {
+			syncDepositCount++
+			printMu.Unlock()
+			return nil, nil
+		}
+		if strings.Contains(entry.Message, "set account reward") {
+			syncRewardCount++
+			printMu.Unlock()
+			return nil, nil
+		}
 		b.WriteString("\n")
 		progressActive = false
 	}
@@ -628,6 +638,9 @@ var progressActive bool
 // activeFormatter holds the PrettyFormatter instance for reuse by Print* functions.
 var activeFormatter *PrettyFormatter
 
+// Sync-time aggregate counters — shown in progress bar instead of individual log lines.
+var syncDepositCount, syncRewardCount uint64
+
 // clearProgressLine prints a newline if a \r progress bar is active,
 // so subsequent output starts on a clean line. Caller must hold printMu.
 func clearProgressLine() {
@@ -766,6 +779,12 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 		peerWord = "peer"
 	}
 
+	// Aggregate stats suffix
+	stats := ""
+	if syncDepositCount > 0 || syncRewardCount > 0 {
+		stats = fmt.Sprintf("  🔒 %d  🔨 %d", syncDepositCount, syncRewardCount)
+	}
+
 	timeStr := ""
 	if activeFormatter != nil {
 		timeStr = activeFormatter.formatTime(time.Now(), true)
@@ -774,7 +793,7 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 		timeStr = "  " + timeStr
 	}
 
-	line := fmt.Sprintf("%s%s%s %s  %s%s%s  %s%.1f%%%s  %s▸%s %.0f blk/s  %s▸%s ETA %s  %s▸%s %d %s%s",
+	line := fmt.Sprintf("%s%s%s %s  %s%s%s  %s%.1f%%%s  %s▸%s %.0f blk/s  %s▸%s ETA %s  %s▸%s %d %s%s%s",
 		color, DotSymbol, Reset,
 		label,
 		Cyan, bar, Reset,
@@ -785,7 +804,7 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 		eta,
 		Dim, Reset,
 		peers, peerWord,
-		timeStr,
+		stats, timeStr,
 	)
 
 	if isTerminalOut() {
