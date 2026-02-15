@@ -577,3 +577,197 @@ func PrintWaiting(message string, current, required int) {
 		message,
 		Dim, current, required, Reset)
 }
+
+// printMu protects all Print* functions for concurrent safety.
+var printMu sync.Mutex
+
+// getTerminalWidth returns the current terminal width, defaulting to 70.
+func getTerminalWidth() int {
+	w, _, err := sshterminal.GetSize(int(os.Stdout.Fd()))
+	if err != nil || w <= 0 {
+		return 70
+	}
+	return w
+}
+
+// isTerminalOut returns true if stdout is a terminal.
+func isTerminalOut() bool {
+	return sshterminal.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// PrintSection prints a section title with a decorative line.
+// Example: ── Blockchain ──────────────────────────────
+func PrintSection(title string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+
+	w := getTerminalWidth()
+	prefix := "── "
+	suffix := " "
+	// remaining width for dashes after title
+	used := 2 + len(prefix) + len(title) + len(suffix) // 2 for leading spaces
+	remaining := w - used
+	if remaining < 4 {
+		remaining = 4
+	}
+	dashes := strings.Repeat("─", remaining)
+
+	fmt.Printf("\n  %s%s%s%s%s %s%s%s\n",
+		Dim, prefix, Reset,
+		BrightWhite, title, Reset,
+		Dim, dashes+Reset)
+}
+
+// PrintDivider prints a horizontal divider line.
+func PrintDivider() {
+	printMu.Lock()
+	defer printMu.Unlock()
+
+	w := getTerminalWidth()
+	lineLen := w - 4
+	if lineLen < 10 {
+		lineLen = 10
+	}
+	fmt.Printf("  %s%s%s\n", Dim, strings.Repeat("─", lineLen), Reset)
+}
+
+// PrintKeyValue prints aligned key-value pairs.
+func PrintKeyValue(pairs [][2]string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+
+	// Find max key width for alignment
+	maxKey := 0
+	for _, p := range pairs {
+		if len(p[0]) > maxKey {
+			maxKey = len(p[0])
+		}
+	}
+
+	for _, p := range pairs {
+		padding := strings.Repeat(" ", maxKey-len(p[0])+2)
+		fmt.Printf("    %s%s%s%s%s%s%s\n",
+			Dim, p[0], Reset,
+			padding,
+			BrightWhite, p[1], Reset)
+	}
+}
+
+// PrintSystemInfo prints a system information block with section header.
+func PrintSystemInfo(osInfo, goVersion string, cpuCores int, dataDir string) {
+	PrintSection("System")
+	PrintKeyValue([][2]string{
+		{"OS", osInfo},
+		{"Go", goVersion},
+		{"CPU Cores", fmt.Sprintf("%d", cpuCores)},
+		{"Data Dir", dataDir},
+	})
+}
+
+// PrintProgressBar prints a progress bar that refreshes in-place on terminals.
+// Example: ● Syncing  ████████████░░░░░░░░░░░░░░░░░░  42.3%  ▸ 500 blk/s  ▸ ETA 5h58m  ▸ 3 peers
+func PrintProgressBar(label string, current, total uint64, rate float64, eta string, peers int) {
+	printMu.Lock()
+	defer printMu.Unlock()
+
+	const barWidth = 30
+
+	progress := float64(0)
+	if total > 0 {
+		progress = float64(current) / float64(total)
+	}
+	if progress > 1 {
+		progress = 1
+	}
+
+	filled := int(progress * barWidth)
+	empty := barWidth - filled
+
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", empty)
+	pct := progress * 100
+
+	// Use module color for sync
+	color := BrightGreen
+	if c, ok := moduleColors["sync"]; ok {
+		color = c
+	}
+
+	line := fmt.Sprintf("  %s%s%s %s  %s%s%s  %s%.1f%%%s  %s▸%s %.0f blk/s  %s▸%s ETA %s  %s▸%s %d peers",
+		color, DotSymbol, Reset,
+		label,
+		Cyan, bar, Reset,
+		BrightWhite, pct, Reset,
+		Dim, Reset,
+		rate,
+		Dim, Reset,
+		eta,
+		Dim, Reset,
+		peers,
+	)
+
+	if isTerminalOut() {
+		fmt.Printf("\r%s", line)
+	} else {
+		fmt.Printf("%s\n", line)
+	}
+}
+
+// PrintStatusLine prints a compact status line for a module.
+// Example: ● p2p  3 peers (in:1 out:2) ▸ active:2
+func PrintStatusLine(module, metrics string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+
+	color := BrightCyan
+	if c, ok := moduleColors[module]; ok {
+		color = c
+	}
+
+	fmt.Printf("  %s%s%s %s%s%s  %s\n",
+		color, DotSymbol, Reset,
+		Dim, module, Reset,
+		metrics)
+}
+
+// PrintErrorBox prints an error message in a bordered box.
+func PrintErrorBox(title string, details []string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+
+	// Calculate box width
+	maxLen := len(title) + 4 // "  ✖ " prefix
+	for _, d := range details {
+		if len(d)+4 > maxLen {
+			maxLen = len(d) + 4
+		}
+	}
+	boxWidth := maxLen + 6 // padding
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
+
+	hLine := strings.Repeat("─", boxWidth-2)
+	emptyLine := strings.Repeat(" ", boxWidth-2)
+
+	fmt.Println()
+	fmt.Printf("  %s╭%s╮%s\n", BrightRed, hLine, Reset)
+	fmt.Printf("  %s│%s  %s%s %s%s%s%s│%s\n",
+		BrightRed, Reset,
+		BrightRed, ErrorSymbol, BrightWhite, title,
+		strings.Repeat(" ", boxWidth-2-4-len(title)),
+		BrightRed, Reset)
+	fmt.Printf("  %s│%s%s%s│%s\n", BrightRed, Reset, emptyLine, BrightRed, Reset)
+	for _, d := range details {
+		padding := boxWidth - 2 - 4 - len(d)
+		if padding < 0 {
+			padding = 0
+		}
+		fmt.Printf("  %s│%s    %s%s%s%s│%s\n",
+			BrightRed, Reset,
+			Red, d,
+			strings.Repeat(" ", padding),
+			BrightRed, Reset)
+	}
+	fmt.Printf("  %s╰%s╯%s\n", BrightRed, hLine, Reset)
+	fmt.Println()
+}
