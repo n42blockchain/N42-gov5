@@ -437,8 +437,9 @@ func (f *PrettyFormatter) formatFields(data logrus.Fields, level logrus.Level, c
 	return strings.Join(parts, " ")
 }
 
-// PrintBanner prints a beautiful startup banner with logo on left, info on right
-func PrintBanner(version, chain, consensus, genesis string, blockNum uint64) {
+// PrintBanner prints a beautiful startup banner with logo on left, info on right.
+// System info (os, go, cpu, dataDir) is displayed compactly on the last two logo lines.
+func PrintBanner(version, chain, consensus, genesis string, blockNum uint64, osInfo, goVersion string, cpuCores int, dataDir string) {
 	printMu.Lock()
 	defer printMu.Unlock()
 	clearProgressLine()
@@ -463,8 +464,8 @@ func PrintBanner(version, chain, consensus, genesis string, blockNum uint64) {
 		fmt.Sprintf("%s%s%s", dimColor, consensus, Reset),
 		fmt.Sprintf("%sGenesis %s%s", dimColor, truncateHash(genesis), Reset),
 		fmt.Sprintf("%sBlock   #%s%d%s", dimColor, valueColor, blockNum, Reset),
-		"",
-		"",
+		fmt.Sprintf("%s%s %s·%s %s %s·%s %d cores", dimColor, osInfo, dimColor, Reset+dimColor, goVersion, dimColor, Reset+dimColor, cpuCores),
+		fmt.Sprintf("%s%s%s", dimColor, dataDir, Reset),
 	}
 
 	fmt.Println()
