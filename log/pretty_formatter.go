@@ -487,10 +487,10 @@ func PrintStartupProgress(step int, total int, message string) {
 	printMu.Lock()
 	defer printMu.Unlock()
 	clearProgressLine()
-	fmt.Printf("  %s%s%s %s[%d/%d]%s %s\n",
-		BrightCyan, DotSymbol, Reset,
+	fmt.Printf("  %s-%s %s[%d/%d]%s Starting %s%s%s...\n",
+		BrightCyan, Reset,
 		Dim, step, total, Reset,
-		message)
+		BrightWhite, message, Reset)
 }
 
 // PrintSubItem prints a sub-item with hierarchy indicator

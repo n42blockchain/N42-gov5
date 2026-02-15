@@ -423,7 +423,7 @@ func (n *Node) Start() error {
 	n.state = runningState
 	n.lock.Unlock()
 
-	log.PrintStartupProgress(1, 6, "Starting blockchain service...")
+	log.PrintStartupProgress(1, 6, "Blockchain")
 	if err := n.blockChain.Start(); err != nil {
 		log.Errorf("failed setup blockChain service, err: %v", err)
 		return err
@@ -462,7 +462,7 @@ func (n *Node) Start() error {
 		pos.SetBlockChain(n.blockChain)
 	}
 
-	log.PrintStartupProgress(2, 6, "Starting JSON-RPC services...")
+	log.PrintStartupProgress(2, 6, "JSON-RPC services")
 
 	n.rpcAPIs = append(n.rpcAPIs, n.engine.APIs(n.blockChain)...)
 	n.rpcAPIs = append(n.rpcAPIs, n.api.Apis()...)
@@ -474,17 +474,17 @@ func (n *Node) Start() error {
 		return err
 	}
 
-	log.PrintStartupProgress(3, 6, "Starting P2P networking...")
+	log.PrintStartupProgress(3, 6, "P2P networking")
 	//n.p2p.AddConnectionHandler()
 	n.p2p.Start()
 
-	log.PrintStartupProgress(4, 6, "Starting sync service...")
+	log.PrintStartupProgress(4, 6, "Sync service")
 	n.sync.Start()
 
-	log.PrintStartupProgress(5, 6, "Setting up metrics...")
+	log.PrintStartupProgress(5, 6, "Metrics")
 	n.SetupMetrics(n.config.MetricsCfg)
 
-	log.PrintStartupProgress(6, 6, "Starting deposit contract...")
+	log.PrintStartupProgress(6, 6, "Deposit contract")
 	if n.depositContract != nil {
 		n.depositContract.Start()
 	}
