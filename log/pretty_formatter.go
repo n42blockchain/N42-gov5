@@ -151,6 +151,14 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 
 	var b bytes.Buffer
 
+	// If a progress bar is active, push it down with a newline first
+	printMu.Lock()
+	if progressActive {
+		b.WriteString("\n")
+		progressActive = false
+	}
+	printMu.Unlock()
+
 	isColored := (f.ForceColors || f.isTerminal) && !f.DisableColors
 
 	// Get module/prefix
@@ -431,6 +439,9 @@ func (f *PrettyFormatter) formatFields(data logrus.Fields, level logrus.Level, c
 
 // PrintBanner prints a beautiful startup banner with logo on left, info on right
 func PrintBanner(version, chain, consensus, genesis string, blockNum uint64) {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	// Colors - similar to Claude Code robot color (terracotta/brick red)
 	logoColor := "\033[38;5;173m" // Terracotta/brick color
 	dimColor := BrightBlack
@@ -472,6 +483,9 @@ func PrintBanner(version, chain, consensus, genesis string, blockNum uint64) {
 
 // PrintStartupProgress prints startup progress items
 func PrintStartupProgress(step int, total int, message string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	fmt.Printf("  %s%s%s %s[%d/%d]%s %s\n",
 		BrightCyan, DotSymbol, Reset,
 		Dim, step, total, Reset,
@@ -480,26 +494,41 @@ func PrintStartupProgress(step int, total int, message string) {
 
 // PrintSubItem prints a sub-item with hierarchy indicator
 func PrintSubItem(message string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	fmt.Printf("    %s%s%s %s\n", Dim, SubSymbol, Reset, message)
 }
 
 // PrintSuccess prints a success message
 func PrintSuccess(message string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	fmt.Printf("  %s%s%s %s%s%s\n", BrightGreen, CheckSymbol, Reset, BrightGreen, message, Reset)
 }
 
 // PrintError prints an error message
 func PrintError(message string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	fmt.Printf("  %s%s%s %s%s%s\n", BrightRed, CrossSymbol, Reset, BrightRed, message, Reset)
 }
 
 // PrintWarning prints a warning message
 func PrintWarning(message string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	fmt.Printf("  %s%s%s %s%s%s\n", BrightYellow, WarnSymbol, Reset, BrightYellow, message, Reset)
 }
 
 // PrintShutdownBanner prints a graceful shutdown message
 func PrintShutdownBanner() {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	fmt.Println()
 	fmt.Printf("  %s╭───────────────────────────────────────────────────────╮%s\n", BrightYellow, Reset)
 	fmt.Printf("  %s│%s  %sGraceful shutdown initiated%s %s(Ctrl+C to force quit)%s   %s│%s\n",
@@ -510,6 +539,9 @@ func PrintShutdownBanner() {
 
 // PrintShutdownStep prints a shutdown progress step
 func PrintShutdownStep(step int, total int, service string) {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	fmt.Printf("  %s-%s %s[%d/%d]%s Stopping %s%s%s...\n",
 		BrightYellow, Reset,
 		Dim, step, total, Reset,
@@ -518,6 +550,9 @@ func PrintShutdownStep(step int, total int, service string) {
 
 // PrintShutdownComplete prints shutdown complete message
 func PrintShutdownComplete() {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	fmt.Printf("  %s%s%s %sAll services stopped%s\n", BrightGreen, CheckSymbol, Reset, BrightGreen, Reset)
 	fmt.Println()
 }
@@ -572,6 +607,9 @@ func FormatBytes(bytes uint64) string {
 
 // WaitingSpinner prints a waiting message with progress
 func PrintWaiting(message string, current, required int) {
+	printMu.Lock()
+	defer printMu.Unlock()
+	clearProgressLine()
 	fmt.Printf("\r  %s%s%s %s %s(%d/%d)%s",
 		BrightCyan, DotSymbol, Reset,
 		message,
@@ -581,11 +619,30 @@ func PrintWaiting(message string, current, required int) {
 // printMu protects all Print* functions for concurrent safety.
 var printMu sync.Mutex
 
-// getTerminalWidth returns the current terminal width, defaulting to 70.
+// progressActive tracks whether the last output was a \r progress bar line.
+// Other Print* functions check this to emit a \n first, avoiding collisions.
+var progressActive bool
+
+// clearProgressLine prints a newline if a \r progress bar is active,
+// so subsequent output starts on a clean line. Caller must hold printMu.
+func clearProgressLine() {
+	if progressActive {
+		fmt.Println()
+		progressActive = false
+	}
+}
+
+// maxDisplayWidth caps the visual width for dividers and sections.
+const maxDisplayWidth = 80
+
+// getTerminalWidth returns a capped terminal width for visual elements.
 func getTerminalWidth() int {
 	w, _, err := sshterminal.GetSize(int(os.Stdout.Fd()))
 	if err != nil || w <= 0 {
 		return 70
+	}
+	if w > maxDisplayWidth {
+		return maxDisplayWidth
 	}
 	return w
 }
@@ -600,6 +657,7 @@ func isTerminalOut() bool {
 func PrintSection(title string) {
 	printMu.Lock()
 	defer printMu.Unlock()
+	clearProgressLine()
 
 	w := getTerminalWidth()
 	prefix := "── "
@@ -622,6 +680,7 @@ func PrintSection(title string) {
 func PrintDivider() {
 	printMu.Lock()
 	defer printMu.Unlock()
+	clearProgressLine()
 
 	w := getTerminalWidth()
 	lineLen := w - 4
@@ -635,6 +694,7 @@ func PrintDivider() {
 func PrintKeyValue(pairs [][2]string) {
 	printMu.Lock()
 	defer printMu.Unlock()
+	clearProgressLine()
 
 	// Find max key width for alignment
 	maxKey := 0
@@ -681,6 +741,10 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 	}
 
 	filled := int(progress * barWidth)
+	// Show at least 1 filled block when there is any progress
+	if current > 0 && filled == 0 {
+		filled = 1
+	}
 	empty := barWidth - filled
 
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", empty)
@@ -707,6 +771,7 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 
 	if isTerminalOut() {
 		fmt.Printf("\r%s", line)
+		progressActive = true
 	} else {
 		fmt.Printf("%s\n", line)
 	}
@@ -717,6 +782,7 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 func PrintStatusLine(module, metrics string) {
 	printMu.Lock()
 	defer printMu.Unlock()
+	clearProgressLine()
 
 	color := BrightCyan
 	if c, ok := moduleColors[module]; ok {
@@ -733,6 +799,7 @@ func PrintStatusLine(module, metrics string) {
 func PrintErrorBox(title string, details []string) {
 	printMu.Lock()
 	defer printMu.Unlock()
+	clearProgressLine()
 
 	// Calculate box width
 	maxLen := len(title) + 4 // "  ✖ " prefix
