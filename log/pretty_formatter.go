@@ -498,7 +498,7 @@ func PrintSubItem(message string) {
 	printMu.Lock()
 	defer printMu.Unlock()
 	clearProgressLine()
-	fmt.Printf("    %s%s%s %s\n", Dim, SubSymbol, Reset, message)
+	fmt.Printf("  %s%s%s %s\n", Dim, SubSymbol, Reset, message)
 }
 
 // PrintSuccess prints a success message
@@ -757,7 +757,12 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 		color = c
 	}
 
-	line := fmt.Sprintf("  %s%s%s %s  %s%s%s  %s%.1f%%%s  %s▸%s %.0f blk/s  %s▸%s ETA %s  %s▸%s %d peers",
+	peerWord := "peers"
+	if peers == 1 {
+		peerWord = "peer"
+	}
+
+	line := fmt.Sprintf("%s%s%s %s  %s%s%s  %s%.1f%%%s  %s▸%s %.0f blk/s  %s▸%s ETA %s  %s▸%s %d %s",
 		color, DotSymbol, Reset,
 		label,
 		Cyan, bar, Reset,
@@ -767,11 +772,12 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 		Dim, Reset,
 		eta,
 		Dim, Reset,
-		peers,
+		peers, peerWord,
 	)
 
 	if isTerminalOut() {
-		fmt.Printf("\r%s", line)
+		// \033[K clears from cursor to end of line, preventing leftover characters
+		fmt.Printf("\r%s\033[K", line)
 		progressActive = true
 	} else {
 		fmt.Printf("%s\n", line)
@@ -783,14 +789,18 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 func PrintStatusLine(module, metrics string) {
 	printMu.Lock()
 	defer printMu.Unlock()
-	clearProgressLine()
+
+	// Skip when progress bar is active — peer info is already shown there
+	if progressActive {
+		return
+	}
 
 	color := BrightCyan
 	if c, ok := moduleColors[module]; ok {
 		color = c
 	}
 
-	fmt.Printf("  %s%s%s %s%s%s  %s\n",
+	fmt.Printf("%s%s%s %s%s%s  %s\n",
 		color, DotSymbol, Reset,
 		Dim, module, Reset,
 		metrics)
