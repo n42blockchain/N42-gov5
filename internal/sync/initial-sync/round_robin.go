@@ -7,6 +7,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common/block"
+	astLog "github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
 	"time"
 
@@ -207,7 +208,6 @@ func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 
 	targetNum := s.highestExpectedBlockNr.Uint64()
 	remaining := targetNum - currentBlockNum
-	progress := float64(currentBlockNum) / float64(targetNum) * 100
 
 	// Calculate ETA
 	eta := "calculating..."
@@ -216,15 +216,7 @@ func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 		eta = formatDuration(time.Duration(etaSecs) * time.Second)
 	}
 
-	// Format: Syncing #175,000 → #10.88M (1.6%) ▸ 500 blk/s ▸ ETA 5h58m ▸ 1 peer
-	log.Info(fmt.Sprintf("Syncing #%s → #%s (%.1f%%) ▸ %.0f blk/s ▸ ETA %s ▸ %d peer(s)",
-		formatNumber(currentBlockNum),
-		formatNumber(targetNum),
-		progress,
-		rate,
-		eta,
-		len(s.cfg.P2P.Peers().Connected()),
-	))
+	astLog.PrintProgressBar("Syncing", currentBlockNum, targetNum, rate, eta, len(s.cfg.P2P.Peers().Connected()))
 }
 
 // formatNumber formats large numbers with K/M suffixes for readability.

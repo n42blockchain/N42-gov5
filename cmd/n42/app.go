@@ -86,7 +86,7 @@ func appRun(ctx *cli.Context) error {
 
 	stack, err := node.NewNode(ctx, &DefaultConfig)
 	if err != nil {
-		log.Error("Failed start Node", "err", err)
+		log.PrintErrorBox("Node Startup Failed", []string{err.Error()})
 		return err
 	}
 

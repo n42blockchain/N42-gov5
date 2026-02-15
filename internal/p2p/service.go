@@ -17,6 +17,7 @@ import (
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	astLog "github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
@@ -258,8 +259,7 @@ func (s *Service) Start() {
 		outbound := len(s.peers.OutboundConnected())
 		active := len(s.peers.Active())
 		
-		// Compact summary: P2P ▸ 3 peers (in:1 out:2) ▸ active:2
-		log.Info(fmt.Sprintf("P2P ▸ %d peers (in:%d out:%d) ▸ active:%d",
+		astLog.PrintStatusLine("p2p", fmt.Sprintf("%d peers (in:%d out:%d) ▸ active:%d",
 			inbound+outbound, inbound, outbound, active))
 		
 		// Detailed peer info only at Debug level
