@@ -16,6 +16,7 @@ package membatchwithdb
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"unsafe"
 
 	"github.com/c2h5oh/datasize"
@@ -36,6 +37,7 @@ type MemoryMutation struct {
 	clearedTables    map[string]struct{}
 	db               kv.Tx
 	statelessCursors map[string]kv.RwCursor
+	appendKeys       map[string][]byte
 }
 
 // NewMemoryBatch - starts in-mem batch
@@ -207,7 +209,19 @@ func (m *MemoryMutation) Put(table string, k, v []byte) error {
 }
 
 func (m *MemoryMutation) Append(table string, key []byte, value []byte) error {
-	return m.memTx.Append(table, key, value)
+	if m.appendKeys == nil {
+		m.appendKeys = make(map[string][]byte)
+	}
+	if lastKey, ok := m.appendKeys[table]; ok {
+		if bytes.Compare(key, lastKey) <= 0 {
+			return fmt.Errorf("append out of order in table %s: new key %x <= last key %x", table, key, lastKey)
+		}
+	}
+	if err := m.memTx.Append(table, key, value); err != nil {
+		return err
+	}
+	m.appendKeys[table] = common.Copy(key)
+	return nil
 }
 
 func (m *MemoryMutation) AppendDup(table string, key []byte, value []byte) error {

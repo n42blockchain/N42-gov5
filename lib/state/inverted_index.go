@@ -1010,6 +1010,12 @@ func (it *InvertedIterator1) advanceInDb() {
 				return
 			}
 		}
+		// SeekBothRange with no matching value leaves the DupSort cursor's inner
+		// dup-cursor in an indeterminate state. Re-seek to restore a valid cursor
+		// position before calling NextNoDup.
+		if k, _, err = it.cursor.Seek(k); err != nil {
+			panic(err)
+		}
 		if k, _, err = it.cursor.NextNoDup(); err != nil {
 			panic(err)
 		}

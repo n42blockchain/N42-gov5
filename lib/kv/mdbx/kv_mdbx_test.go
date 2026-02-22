@@ -76,13 +76,25 @@ func iteration(t *testing.T, c kv.RwCursorDupSort, start []byte, val []byte) ([]
 	var values []string
 	var err error
 	i := 0
+	lastKeyCount := 0
+	var lastKey string
 	for k, v, err := start, val, err; k != nil; k, v, err = c.Next() {
 		require.Nil(t, err)
 		keys = append(keys, string(k))
 		values = append(values, string(v))
-		i += 1
+		if string(k) == lastKey {
+			lastKeyCount++
+		} else {
+			lastKey = string(k)
+			lastKeyCount = 1
+		}
+		i++
 	}
-	for ind := i; ind > 1; ind-- {
+	// After Next()→nil on a DupSort cursor, MDBX's first Prev() skips past
+	// all remaining dups of the last key, jumping to the last dup of the
+	// previous key. To restore the cursor to the starting position, only
+	// the items before the last key group need Prev() calls.
+	for n := 0; n < i-lastKeyCount; n++ {
 		c.Prev()
 	}
 

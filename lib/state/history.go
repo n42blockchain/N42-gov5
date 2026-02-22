@@ -1916,19 +1916,30 @@ func (hi *HistoryChangesIterDB) advanceSmallVals() (err error) {
 			return err
 		}
 	}
-	for ; k != nil; k, _, err = hi.valsCDup.NextNoDup() {
-		if err != nil {
-			return err
-		}
+	for k != nil {
 		v, err := hi.valsCDup.SeekBothRange(k, hi.startTxKey[:])
 		if err != nil {
 			return err
 		}
 		if v == nil {
+			// SeekBothRange with no matching value leaves the DupSort cursor's
+			// inner dup-cursor in an indeterminate state. Re-seek to the current
+			// key to restore a valid cursor position before calling NextNoDup.
+			if k, _, err = hi.valsCDup.Seek(k); err != nil {
+				return err
+			}
+			k, _, err = hi.valsCDup.NextNoDup()
+			if err != nil {
+				return err
+			}
 			continue
 		}
 		foundTxNumVal := v[:8]
 		if hi.endTxNum >= 0 && int(binary.BigEndian.Uint64(foundTxNumVal)) >= hi.endTxNum {
+			k, _, err = hi.valsCDup.NextNoDup()
+			if err != nil {
+				return err
+			}
 			continue
 		}
 		hi.nextKey = k
