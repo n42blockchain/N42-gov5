@@ -29,7 +29,6 @@ import (
 	"github.com/n42blockchain/N42/internal/avm/common"
 )
 
-// TestPack tests the general pack/unpack tests in packing_test.go
 func TestPack(t *testing.T) {
 	for i, test := range packUnpackTests {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
@@ -42,9 +41,7 @@ func TestPack(t *testing.T) {
 			if err != nil {
 				t.Fatalf("invalid ABI definition %s, %v", inDef, err)
 			}
-			var packed []byte
-			packed, err = inAbi.Pack("method", test.unpacked)
-
+			packed, err := inAbi.Pack("method", test.unpacked)
 			if err != nil {
 				t.Fatalf("test %d (%v) failed: %v", i, test.def, err)
 			}
@@ -54,126 +51,6 @@ func TestPack(t *testing.T) {
 		})
 	}
 }
-
-//func TestMethodPack(t *testing.T) {
-//	abi, err := JSON(strings.NewReader(jsondata))
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//
-//	sig := abi.Methods["slice"].ID
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//
-//	packed, err := abi.Pack("slice", []uint32{1, 2})
-//	if err != nil {
-//		t.Error(err)
-//	}
-//
-//	if !bytes.Equal(packed, sig) {
-//		t.Errorf("expected %x got %x", sig, packed)
-//	}
-//
-//	var addrA, addrB = common.Address{1}, common.Address{2}
-//	sig = abi.Methods["sliceAddress"].ID
-//	sig = append(sig, common.LeftPadBytes([]byte{32}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//	sig = append(sig, common.LeftPadBytes(addrA[:], 32)...)
-//	sig = append(sig, common.LeftPadBytes(addrB[:], 32)...)
-//
-//	packed, err = abi.Pack("sliceAddress", []common.Address{addrA, addrB})
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	if !bytes.Equal(packed, sig) {
-//		t.Errorf("expected %x got %x", sig, packed)
-//	}
-//
-//	var addrC, addrD = common.Address{3}, common.Address{4}
-//	sig = abi.Methods["sliceMultiAddress"].ID
-//	sig = append(sig, common.LeftPadBytes([]byte{64}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{160}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//	sig = append(sig, common.LeftPadBytes(addrA[:], 32)...)
-//	sig = append(sig, common.LeftPadBytes(addrB[:], 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//	sig = append(sig, common.LeftPadBytes(addrC[:], 32)...)
-//	sig = append(sig, common.LeftPadBytes(addrD[:], 32)...)
-//
-//	packed, err = abi.Pack("sliceMultiAddress", []common.Address{addrA, addrB}, []common.Address{addrC, addrD})
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	if !bytes.Equal(packed, sig) {
-//		t.Errorf("expected %x got %x", sig, packed)
-//	}
-//
-//	sig = abi.Methods["slice256"].ID
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//
-//	packed, err = abi.Pack("slice256", []*big.Int{big.NewInt(1), big.NewInt(2)})
-//	if err != nil {
-//		t.Error(err)
-//	}
-//
-//	if !bytes.Equal(packed, sig) {
-//		t.Errorf("expected %x got %x", sig, packed)
-//	}
-//
-//	a := [2][2]*big.Int{{big.NewInt(1), big.NewInt(1)}, {big.NewInt(2), big.NewInt(0)}}
-//	sig = abi.Methods["nestedArray"].ID
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{0}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{0xa0}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//	sig = append(sig, common.LeftPadBytes(addrC[:], 32)...)
-//	sig = append(sig, common.LeftPadBytes(addrD[:], 32)...)
-//	packed, err = abi.Pack("nestedArray", a, []common.Address{addrC, addrD})
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	if !bytes.Equal(packed, sig) {
-//		t.Errorf("expected %x got %x", sig, packed)
-//	}
-//
-//	sig = abi.Methods["nestedArray2"].ID
-//	sig = append(sig, common.LeftPadBytes([]byte{0x20}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{0x40}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{0x80}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	packed, err = abi.Pack("nestedArray2", [2][]uint8{{1}, {1}})
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	if !bytes.Equal(packed, sig) {
-//		t.Errorf("expected %x got %x", sig, packed)
-//	}
-//
-//	sig = abi.Methods["nestedSlice"].ID
-//	sig = append(sig, common.LeftPadBytes([]byte{0x20}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{0x02}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{0x40}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{0xa0}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{1}, 32)...)
-//	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
-//	packed, err = abi.Pack("nestedSlice", [][]uint8{{1, 2}, {1, 2}})
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	if !bytes.Equal(packed, sig) {
-//		t.Errorf("expected %x got %x", sig, packed)
-//	}
-//}
 
 func TestPackNumber(t *testing.T) {
 	tests := []struct {

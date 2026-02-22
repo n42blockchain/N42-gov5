@@ -13,8 +13,6 @@ import (
 	"github.com/holiman/uint256"
 )
 
-////////////////////////
-
 const (
 	BotValue AbsValueKind = iota
 	TopValue
@@ -42,28 +40,28 @@ func (d AbsValueKind) hash() uint64 {
 	}
 }
 
-//////////////////////////////////////////////////
-
+// AbsValue represents an abstract value in the abstract interpretation domain.
 type AbsValue struct {
 	kind  AbsValueKind
-	value *uint256.Int //only when kind=ConcreteValue
-	pc    int          //only when kind=TopValue
+	value *uint256.Int // set only when kind == ConcreteValue
+	pc    int          // set only when kind == TopValue
 }
 
 func (c0 AbsValue) String(abbrev bool) string {
-	if c0.kind == InvalidValue {
+	switch c0.kind {
+	case InvalidValue, BotValue:
 		return c0.kind.String()
-	} else if c0.kind == BotValue {
-		return c0.kind.String()
-	} else if c0.kind == TopValue {
+	case TopValue:
 		if !abbrev {
 			return fmt.Sprintf("%v%v", c0.kind.String(), c0.pc)
 		}
 		return c0.kind.String()
-	} else if c0.value.IsUint64() {
-		return strconv.FormatUint(c0.value.Uint64(), 10)
+	default:
+		if c0.value.IsUint64() {
+			return strconv.FormatUint(c0.value.Uint64(), 10)
+		}
+		return "256bit"
 	}
-	return "256bit"
 }
 
 func AbsValueTop(pc int) AbsValue {
@@ -101,39 +99,41 @@ func (c0 AbsValue) hash() uint64 {
 }
 
 func (c0 AbsValue) Stringify() string {
-	if c0.kind == InvalidValue || c0.kind == TopValue {
+	switch c0.kind {
+	case InvalidValue, TopValue:
 		return c0.kind.String()
-	} else if c0.kind == ConcreteValue {
+	case ConcreteValue:
 		b, err := c0.value.MarshalText()
 		if err != nil {
 			log.Fatal("Can't unmarshall")
 		}
 		return string(b)
+	default:
+		log.Fatal("Invalid abs value kind")
+		return ""
 	}
-
-	log.Fatal("Invalid abs value kind")
-	return ""
 }
 
 func AbsValueDestringify(s string) AbsValue {
-	if s == "⊤" {
+	switch {
+	case s == "⊤":
 		return AbsValueTop(-1)
-	} else if s == "x" {
+	case s == "x":
 		return AbsValueInvalid()
-	} else if strings.HasPrefix(s, "0x") {
+	case strings.HasPrefix(s, "0x"):
 		var i uint256.Int
 		err := i.UnmarshalText([]byte(s))
 		if err != nil {
 			log.Fatal("Can't unmarshall")
 		}
 		return AbsValueConcrete(i)
+	default:
+		log.Fatal("Invalid abs value kind")
+		return AbsValue{}
 	}
-
-	log.Fatal("Invalid abs value kind")
-	return AbsValue{}
 }
 
-// ////////////////////////////////////////////////
+// astack is the abstract interpretation stack.
 type astack struct {
 	values []AbsValue
 	hash   uint64
@@ -164,23 +164,19 @@ func (s *astack) updateHash() {
 }
 
 func (s *astack) Push(value AbsValue) {
-	rest := s.values
-	s.values = nil
-	s.values = append(s.values, value)
-	s.values = append(s.values, rest...)
+	s.values = append([]AbsValue{value}, s.values...)
 	s.updateHash()
 }
 
-func (s *astack) Pop(pc int) AbsValue {
+func (s *astack) Pop(_ int) AbsValue {
 	res := s.values[0]
-	s.values = s.values[1:len(s.values)]
-	//s.values = append(s.values, AbsValueTop(pc, true))
+	s.values = s.values[1:]
 	s.updateHash()
 	return res
 }
 
 func (s *astack) String(abbrev bool) string {
-	strs := make([]string, 0)
+	strs := make([]string, 0, len(s.values))
 	for _, c := range s.values {
 		strs = append(strs, c.String(abbrev))
 	}
@@ -204,17 +200,16 @@ func (s *astack) Eq(s1 *astack) bool {
 	return true
 }
 
-func (s *astack) hasIndices(i ...int) bool {
-	for _, i := range i {
-		if !(i < len(s.values)) {
+func (s *astack) hasIndices(indices ...int) bool {
+	for _, idx := range indices {
+		if idx >= len(s.values) {
 			return false
 		}
 	}
 	return true
 }
 
-//////////////////////////////////////////////////
-
+// astate represents a set of possible abstract stacks at a program point.
 type astate struct {
 	stackset    []*astack
 	anlyCounter int
@@ -295,9 +290,8 @@ func (state *astate) Add(stack *astack) {
 	state.stackset = append(state.stackset, stack)
 }
 
-//////////////////////////////////////////////////
-
-// -1 block id is invalid jump
+// CfgProofState represents the state at a CFG proof point.
+// A block id of -1 indicates an invalid jump.
 type CfgProofState struct {
 	Pc     int
 	Stacks [][]string
@@ -377,16 +371,14 @@ func (proof *CfgProof) isValid() bool {
 }
 
 func StringifyAState(st *astate) [][]string {
-	stacks := make([][]string, 0)
-
-	for _, astack := range st.stackset {
-		var stack []string
-		for _, v := range astack.values {
+	stacks := make([][]string, 0, len(st.stackset))
+	for _, s := range st.stackset {
+		stack := make([]string, 0, len(s.values))
+		for _, v := range s.values {
 			stack = append(stack, v.Stringify())
 		}
 		stacks = append(stacks, stack)
 	}
-
 	return stacks
 }
 

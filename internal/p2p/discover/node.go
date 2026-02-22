@@ -20,12 +20,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"errors"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/math"
 	"math/big"
 	"net"
 	"time"
 
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 )
 

@@ -36,7 +36,6 @@ type PeerStats struct {
 func NewPeerStats(peerLimit int) *PeerStats {
 	return &PeerStats{
 		peersInfo:     &sync.Map{},
-		recordsCount:  0,
 		lastUpdateMap: make(map[string]time.Time),
 		limit:         peerLimit,
 	}
@@ -94,35 +93,24 @@ func PeerStatisticsFromMsgUpdate(msg PeerStatisticMsgUpdate, prevValue any) Peer
 func peerStatisticsFromMsgUpdate(msg PeerStatisticMsgUpdate, prevValue any) PeerStatistics {
 	ps := PeerStatistics{
 		PeerType:     msg.PeerType,
-		BytesIn:      0,
-		BytesOut:     0,
 		CapBytesIn:   make(map[string]uint64),
 		CapBytesOut:  make(map[string]uint64),
 		TypeBytesIn:  make(map[string]uint64),
 		TypeBytesOut: make(map[string]uint64),
 	}
 
-	if stats, ok := prevValue.(PeerStatistics); ok {
-		if msg.Inbound {
-			ps.BytesIn = stats.BytesIn + uint64(msg.Bytes)
-			ps.CapBytesIn[msg.MsgCap] = stats.CapBytesIn[msg.MsgCap] + uint64(msg.Bytes)
-			ps.TypeBytesIn[msg.MsgType] = stats.TypeBytesIn[msg.MsgType] + uint64(msg.Bytes)
-		} else {
-			ps.BytesOut = stats.BytesOut + uint64(msg.Bytes)
-			ps.CapBytesOut[msg.MsgCap] = stats.CapBytesOut[msg.MsgCap] + uint64(msg.Bytes)
-			ps.TypeBytesOut[msg.MsgType] = stats.TypeBytesOut[msg.MsgType] + uint64(msg.Bytes)
-		}
-	} else {
-		if msg.Inbound {
-			ps.BytesIn += uint64(msg.Bytes)
-			ps.CapBytesIn[msg.MsgCap] += uint64(msg.Bytes)
-			ps.TypeBytesIn[msg.MsgType] += uint64(msg.Bytes)
-		} else {
-			ps.BytesOut += uint64(msg.Bytes)
-			ps.CapBytesOut[msg.MsgCap] += uint64(msg.Bytes)
-			ps.TypeBytesOut[msg.MsgType] += uint64(msg.Bytes)
-		}
+	// Carry over previous statistics if available
+	prev, _ := prevValue.(PeerStatistics)
 
+	bytes := uint64(msg.Bytes)
+	if msg.Inbound {
+		ps.BytesIn = prev.BytesIn + bytes
+		ps.CapBytesIn[msg.MsgCap] = prev.CapBytesIn[msg.MsgCap] + bytes
+		ps.TypeBytesIn[msg.MsgType] = prev.TypeBytesIn[msg.MsgType] + bytes
+	} else {
+		ps.BytesOut = prev.BytesOut + bytes
+		ps.CapBytesOut[msg.MsgCap] = prev.CapBytesOut[msg.MsgCap] + bytes
+		ps.TypeBytesOut[msg.MsgType] = prev.TypeBytesOut[msg.MsgType] + bytes
 	}
 
 	return ps
@@ -220,9 +208,8 @@ func (p *PeerStats) getOldestUpdatedPeersWithSize(size int) []PeerUpdTime {
 
 	if len(timeArray) < size {
 		return timeArray
-	} else {
-		return timeArray[:size]
 	}
+	return timeArray[:size]
 }
 
 func (p *PeerStats) RemovePeersWhichExceedLimit(limit int) {

@@ -382,16 +382,16 @@ func NewRCloneClient(logger log.Logger) (*RCloneClient, error) {
 }
 
 func freePort() (port int, err error) {
-	if a, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0"); err != nil {
+	a, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
+	if err != nil {
 		return 0, err
-	} else {
-		if l, err := net.ListenTCP("tcp", a); err != nil {
-			return 0, err
-		} else {
-			defer l.Close()
-			return l.Addr().(*net.TCPAddr).Port, nil
-		}
 	}
+	l, err := net.ListenTCP("tcp", a)
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
 func (c *RCloneClient) NewSession(ctx context.Context, localFs string, remoteFs string, headers http.Header) (*RCloneSession, error) {

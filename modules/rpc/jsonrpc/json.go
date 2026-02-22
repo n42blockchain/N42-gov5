@@ -191,8 +191,6 @@ func (c *jsonCodec) remoteAddr() string {
 }
 
 func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, err error) {
-	// Decode the next JSON object in the input stream.
-	// This verifies basic syntax, etc.
 	var rawmsg json.RawMessage
 	if err := c.decode(&rawmsg); err != nil {
 		return nil, false, err
@@ -230,7 +228,6 @@ func (c *jsonCodec) close() {
 	})
 }
 
-// Closed returns a channel which will be closed when Close is called
 func (c *jsonCodec) closed() <-chan interface{} {
 	return c.closeCh
 }
@@ -257,10 +254,9 @@ func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool, error) {
 	return msgs, true, nil
 }
 
-// isBatch returns true when the first non-whitespace characters is '['
 func isBatch(raw json.RawMessage) bool {
 	for _, c := range raw {
-		// skip insignificant whitespace (http://www.ietf.org/rfc/rfc4627.txt)
+		// Skip insignificant whitespace per RFC 4627.
 		if c == 0x20 || c == 0x09 || c == 0x0a || c == 0x0d {
 			continue
 		}

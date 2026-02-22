@@ -18,24 +18,19 @@ package block
 
 import (
 	"fmt"
+	"strings"
+	"sync/atomic"
+	"time"
+
 	"github.com/holiman/uint256"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/utils"
-	"google.golang.org/protobuf/proto"
-	"strings"
-	"sync/atomic"
-	"time"
 )
-
-//type writeCounter types.StorageSize
-//
-//func (c *writeCounter) Write(b []byte) (int, error) {
-//	*c += writeCounter(len(b))
-//	return len(b), nil
-//}
 
 type Block struct {
 	header *Header
@@ -54,10 +49,10 @@ type Verify struct {
 }
 
 func (v *Verify) ToProtoMessage() proto.Message {
-	var pbVerifier types_pb.Verifier
-	pbVerifier.Address = utils.ConvertAddressToH160(v.Address)
-	pbVerifier.PublicKey = utils.ConvertPublicKeyToH384(v.PublicKey)
-	return &pbVerifier
+	return &types_pb.Verifier{
+		Address:   utils.ConvertAddressToH160(v.Address),
+		PublicKey: utils.ConvertPublicKeyToH384(v.PublicKey),
+	}
 }
 
 func (v *Verify) FromProtoMessage(pbVerifier *types_pb.Verifier) *Verify {
@@ -86,10 +81,10 @@ func (r Rewards) Swap(i, j int) {
 }
 
 func (r *Reward) ToProtoMessage() proto.Message {
-	var pbReward types_pb.Reward
-	pbReward.Address = utils.ConvertAddressToH160(r.Address)
-	pbReward.Amount = utils.ConvertUint256IntToH256(r.Amount)
-	return &pbReward
+	return &types_pb.Reward{
+		Address: utils.ConvertAddressToH160(r.Address),
+		Amount:  utils.ConvertUint256IntToH256(r.Amount),
+	}
 }
 
 func (r *Reward) FromProtoMessage(pbReward *types_pb.Reward) *Reward {
@@ -115,8 +110,7 @@ func (b *Block) Hash() types.Hash {
 }
 
 func (b *Block) Marshal() ([]byte, error) {
-	bpBlock := b.ToProtoMessage()
-	return proto.Marshal(bpBlock)
+	return proto.Marshal(b.ToProtoMessage())
 }
 
 func (b *Block) Unmarshal(data []byte) error {
@@ -124,10 +118,7 @@ func (b *Block) Unmarshal(data []byte) error {
 	if err := proto.Unmarshal(data, &pBlock); err != nil {
 		return err
 	}
-	if err := b.FromProtoMessage(&pBlock); err != nil {
-		return err
-	}
-	return nil
+	return b.FromProtoMessage(&pBlock)
 }
 
 // NewBlock creates a new block. The input data is copied,
@@ -138,27 +129,19 @@ func (b *Block) Unmarshal(data []byte) error {
 // are ignored and set to values derived from the given txs, uncles
 // and receipts.
 func NewBlock(h IHeader, txs []*transaction.Transaction) IBlock {
-
-	block := &Block{
-		header:       CopyHeader(h.(*Header)),
-		body:         &Body{Txs: txs},
-		ReceiveAt:    time.Now(),
-		ReceivedFrom: nil,
+	return &Block{
+		header:    CopyHeader(h.(*Header)),
+		body:      &Body{Txs: txs},
+		ReceiveAt: time.Now(),
 	}
-	return block
 }
 
-func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, uncles []IHeader, receipts []*Receipt, reward []*Reward) IBlock {
-
+func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, _ []IHeader, receipts []*Receipt, reward []*Reward) IBlock {
 	block := &Block{
-		header:       CopyHeader(h.(*Header)),
-		body:         &Body{Txs: txs, Rewards: CopyReward(reward)},
-		ReceiveAt:    time.Now(),
-		ReceivedFrom: nil,
+		header:    CopyHeader(h.(*Header)),
+		body:      &Body{Txs: txs, Rewards: CopyReward(reward)},
+		ReceiveAt: time.Now(),
 	}
-	//if len(receipts) > 0 {
-	//	print(receipts)
-	//}
 
 	block.header.Bloom = CreateBloom(receipts)
 	block.header.TxHash = hash.DeriveSha(transaction.Transactions(txs))
@@ -225,32 +208,24 @@ func (b *Block) Transaction(hash types.Hash) *transaction.Transaction {
 }
 
 func (b *Block) ToProtoMessage() proto.Message {
-	pbHeader := b.header.ToProtoMessage()
-	pbBody := b.body.ToProtoMessage()
-	pBlock := types_pb.Block{
-		Header: pbHeader.(*types_pb.Header),
-		Body:   pbBody.(*types_pb.Body),
+	return &types_pb.Block{
+		Header: b.header.ToProtoMessage().(*types_pb.Header),
+		Body:   b.body.ToProtoMessage().(*types_pb.Body),
 	}
-
-	return &pBlock
 }
 
 func (b *Block) FromProtoMessage(message proto.Message) error {
-	var (
-		pBlock *types_pb.Block
-		header Header
-		body   Body
-		ok     bool
-	)
-
-	if pBlock, ok = message.(*types_pb.Block); !ok {
+	pBlock, ok := message.(*types_pb.Block)
+	if !ok {
 		return fmt.Errorf("type conversion failure")
 	}
 
+	var header Header
 	if err := header.FromProtoMessage(pBlock.Header); err != nil {
 		return err
 	}
 
+	var body Body
 	if err := body.FromProtoMessage(pBlock.Body); err != nil {
 		return err
 	}

@@ -115,14 +115,10 @@ type filterIter struct {
 }
 
 func (f *filterIter) Next() bool {
-	for f.Iterator.Next() {
-		if f.check(f.Node()) {
-			return true
-		}
-		// Node failed filter check, stop iteration
+	if !f.Iterator.Next() {
 		return false
 	}
-	return false
+	return f.check(f.Node())
 }
 
 // FairMix aggregates multiple node iterators. The mixer itself is an iterator which ends

@@ -35,11 +35,11 @@ import (
 // =============================================================================
 
 var (
-	ErrNoSignatures         = errors.New("no signatures to aggregate")
+	ErrNoSignatures          = errors.New("no signatures to aggregate")
 	ErrAggregationInProgress = errors.New("aggregation already in progress")
-	ErrAggregationCanceled  = errors.New("aggregation was canceled")
-	ErrInvalidValidator     = errors.New("invalid validator")
-	ErrSignatureTimeout     = errors.New("signature collection timeout")
+	ErrAggregationCanceled   = errors.New("aggregation was canceled")
+	ErrInvalidValidator      = errors.New("invalid validator")
+	ErrSignatureTimeout      = errors.New("signature collection timeout")
 )
 
 // =============================================================================
@@ -298,15 +298,15 @@ func (a *STARKAggregator) VerifyWithMessage(aggSig *STARKAggregatedSignature, me
 
 // STARKSignMergeRequest represents a request to aggregate signatures
 type STARKSignMergeRequest struct {
-	Message    types.Hash            `json:"message"`
-	Signatures []ValidatorSignature  `json:"signatures"`
+	Message    types.Hash           `json:"message"`
+	Signatures []ValidatorSignature `json:"signatures"`
 }
 
 // STARKSignMergeResponse represents the aggregation response
 type STARKSignMergeResponse struct {
-	Success      bool                      `json:"success"`
+	Success       bool                      `json:"success"`
 	AggregatedSig *STARKAggregatedSignature `json:"aggregatedSig,omitempty"`
-	Error        string                    `json:"error,omitempty"`
+	Error         string                    `json:"error,omitempty"`
 }
 
 // STARKVerifyRequest represents a verification request

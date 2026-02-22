@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 )
 
+// NewEnv creates a new EVM instance configured with the given runtime Config.
 func NewEnv(cfg *Config) *vm.EVM {
 	txContext := evmtypes.TxContext{
 		Origin:   cfg.Origin,

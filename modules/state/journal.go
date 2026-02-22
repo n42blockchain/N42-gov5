@@ -80,8 +80,7 @@ func (j *journal) dirty(addr types.Address) {
 
 // length returns the current number of entries in the journal.
 func (j *journal) length() int {
-	n := len(j.entries)
-	return n
+	return len(j.entries)
 }
 
 type (

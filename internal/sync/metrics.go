@@ -2,12 +2,13 @@ package sync
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/internal/p2p"
-	"github.com/n42blockchain/N42/log"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/log"
 )
 
 var (
@@ -123,32 +124,26 @@ var (
 )
 
 func (s *Service) updateMetrics() {
-	// do not update metrics if chain or current block is not initialized
 	if s.cfg.chain == nil {
 		return
 	}
 	currentBlock := s.cfg.chain.CurrentBlock()
-	if currentBlock == nil || currentBlock.Header() == nil {
+	if currentBlock == nil || currentBlock.Header() == nil || currentBlock.Header().Number64().IsZero() {
 		return
 	}
-	if currentBlock.Header().Number64().IsZero() {
-		return
-	}
-	// We update the dynamic subnet topics.
+
 	digest, err := s.currentForkDigest()
 	if err != nil {
 		log.Debug("Could not compute fork digest", "err", err)
 	}
 
-	// We update all other gossip topics.
+	suffix := s.cfg.p2p.Encoding().ProtocolSuffix()
 	for _, topic := range p2p.AllTopics() {
-		topic += s.cfg.p2p.Encoding().ProtocolSuffix()
-		if !strings.Contains(topic, "%x") {
-			topicPeerCount.WithLabelValues(topic).Set(float64(len(s.cfg.p2p.PubSub().ListPeers(topic))))
-			continue
+		topic += suffix
+		if strings.Contains(topic, "%x") {
+			topic = fmt.Sprintf(topic, digest)
 		}
-		formattedTopic := fmt.Sprintf(topic, digest)
-		topicPeerCount.WithLabelValues(formattedTopic).Set(float64(len(s.cfg.p2p.PubSub().ListPeers(formattedTopic))))
+		topicPeerCount.WithLabelValues(topic).Set(float64(len(s.cfg.p2p.PubSub().ListPeers(topic))))
 	}
 
 	for _, topic := range s.cfg.p2p.PubSub().GetTopics() {

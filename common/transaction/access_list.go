@@ -110,7 +110,7 @@ func (tx *AccessListTx) from() *types.Address    { return tx.From }
 func (tx *AccessListTx) sign() []byte            { return tx.Sign }
 
 func (tx *AccessListTx) hash() types.Hash {
-	hash := hash.PrefixedRlpHash(AccessListTxType, []interface{}{
+	return hash.PrefixedRlpHash(AccessListTxType, []interface{}{
 		tx.ChainID,
 		tx.Nonce,
 		tx.GasPrice,
@@ -121,7 +121,6 @@ func (tx *AccessListTx) hash() types.Hash {
 		tx.AccessList,
 		tx.V, tx.R, tx.S,
 	})
-	return hash
 }
 
 func (tx *AccessListTx) rawSignatureValues() (v, r, s *uint256.Int) {

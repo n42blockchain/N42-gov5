@@ -18,25 +18,26 @@ package rawdb
 
 import (
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/types"
 
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
 
-// PutAccountReward
+// PutAccountReward stores the accumulated reward for an account.
 func PutAccountReward(db kv.Putter, account types.Address, val *uint256.Int) error {
 	key := fmt.Sprintf("account:%s", account.String())
 	return db.Put(modules.Reward, []byte(key), val.Bytes())
 }
 
-// GetAccountReward
+// GetAccountReward retrieves the accumulated reward for an account.
 func GetAccountReward(db kv.Getter, account types.Address) (*uint256.Int, error) {
 	key := fmt.Sprintf("account:%s", account.String())
 	val, err := db.GetOne(modules.Reward, []byte(key))
 	if err != nil {
 		return uint256.NewInt(0), err
 	}
-	return uint256.NewInt(0).SetBytes(val), nil
+	return new(uint256.Int).SetBytes(val), nil
 }

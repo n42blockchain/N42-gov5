@@ -97,7 +97,7 @@ func Clean() []string {
 	return toDelete
 }
 
-// Create and get the channel for the specified key.
+// getChan creates or retrieves the channel for the specified key.
 func getChan(key string) chan byte {
 	locks.lock <- 1
 	defer func() { <-locks.lock }()
@@ -109,7 +109,7 @@ func getChan(key string) chan byte {
 	return locks.list[key]
 }
 
-// Return a new string with unique elements.
+// unique returns a new slice containing only the unique elements from arr.
 func unique(arr []string) []string {
 	if arr == nil || len(arr) <= 1 {
 		return arr

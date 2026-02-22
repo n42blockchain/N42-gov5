@@ -178,8 +178,6 @@ func BuildTorrentFilesIfNeed(ctx context.Context, dirs datadir.Dirs, torrentFile
 	var createdAmount atomic.Int32
 
 	for _, file := range files {
-		file := file
-
 		if ignore.Contains(file) {
 			i.Add(1)
 			continue
@@ -461,7 +459,6 @@ func ScheduleVerifyFile(ctx context.Context, t *torrent.Torrent, completePieces 
 	for i := 0; i < t.NumPieces(); i++ {
 		inprogress[i] = struct{}{}
 
-		i := i
 		wg.Go(func() error {
 			t.Piece(i).VerifyData()
 			return nil

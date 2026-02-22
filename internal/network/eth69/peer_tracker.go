@@ -56,9 +56,7 @@ func NewPeerRangeTracker() *PeerRangeTracker {
 	return &PeerRangeTracker{
 		ranges: make(map[peer.ID]*PeerBlockRange),
 		localRange: &PeerBlockRange{
-			EarliestBlock: 0,
-			LatestBlock:   0,
-			LastUpdated:   time.Now(),
+			LastUpdated: time.Now(),
 		},
 	}
 }
@@ -77,21 +75,20 @@ func (t *PeerRangeTracker) UpdatePeerRange(peerID peer.ID, earliest, latest uint
 }
 
 // GetPeerRange retrieves the block range information for a peer.
+// Returns a copy to prevent external modification.
 func (t *PeerRangeTracker) GetPeerRange(peerID peer.ID) (*PeerBlockRange, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	range_, ok := t.ranges[peerID]
+	pr, ok := t.ranges[peerID]
 	if !ok {
 		return nil, false
 	}
-
-	// Return a copy to prevent external modification
 	return &PeerBlockRange{
-		EarliestBlock:   range_.EarliestBlock,
-		LatestBlock:     range_.LatestBlock,
-		LatestBlockHash: range_.LatestBlockHash,
-		LastUpdated:     range_.LastUpdated,
+		EarliestBlock:   pr.EarliestBlock,
+		LatestBlock:     pr.LatestBlock,
+		LatestBlockHash: pr.LatestBlockHash,
+		LastUpdated:     pr.LastUpdated,
 	}, true
 }
 
@@ -109,22 +106,22 @@ func (t *PeerRangeTracker) GetPeersWithBlock(blockNumber uint64) []peer.ID {
 	defer t.mu.RUnlock()
 
 	var peers []peer.ID
-	for peerID, range_ := range t.ranges {
-		if blockNumber >= range_.EarliestBlock && blockNumber <= range_.LatestBlock {
+	for peerID, pr := range t.ranges {
+		if blockNumber >= pr.EarliestBlock && blockNumber <= pr.LatestBlock {
 			peers = append(peers, peerID)
 		}
 	}
 	return peers
 }
 
-// GetPeersWithBlockRange returns peers that have all blocks in a range.
+// GetPeersWithBlockRange returns peers that have all blocks in the given range.
 func (t *PeerRangeTracker) GetPeersWithBlockRange(start, end uint64) []peer.ID {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
 	var peers []peer.ID
-	for peerID, range_ := range t.ranges {
-		if start >= range_.EarliestBlock && end <= range_.LatestBlock {
+	for peerID, pr := range t.ranges {
+		if start >= pr.EarliestBlock && end <= pr.LatestBlock {
 			peers = append(peers, peerID)
 		}
 	}
@@ -191,22 +188,21 @@ func (t *PeerRangeTracker) MarkUpdateSent(blockNumber uint64) {
 	t.lastUpdateTime = time.Now()
 }
 
-// GetAllPeerRanges returns all peer ranges (for debugging/monitoring).
+// GetAllPeerRanges returns a copy of all peer ranges (for debugging/monitoring).
 func (t *PeerRangeTracker) GetAllPeerRanges() map[peer.ID]*PeerBlockRange {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	// Return a copy to prevent external modification
-	ranges := make(map[peer.ID]*PeerBlockRange, len(t.ranges))
-	for peerID, range_ := range t.ranges {
-		ranges[peerID] = &PeerBlockRange{
-			EarliestBlock:   range_.EarliestBlock,
-			LatestBlock:     range_.LatestBlock,
-			LatestBlockHash: range_.LatestBlockHash,
-			LastUpdated:     range_.LastUpdated,
+	result := make(map[peer.ID]*PeerBlockRange, len(t.ranges))
+	for peerID, pr := range t.ranges {
+		result[peerID] = &PeerBlockRange{
+			EarliestBlock:   pr.EarliestBlock,
+			LatestBlock:     pr.LatestBlock,
+			LatestBlockHash: pr.LatestBlockHash,
+			LastUpdated:     pr.LastUpdated,
 		}
 	}
-	return ranges
+	return result
 }
 
 // PeerCount returns the number of peers being tracked.

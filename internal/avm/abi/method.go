@@ -117,8 +117,8 @@ func NewMethod(name string, rawName string, funType FunctionType, mutability str
 		sig = fmt.Sprintf("%v(%v)", rawName, strings.Join(types, ","))
 		id = crypto.Keccak256([]byte(sig))[:4]
 	}
-	// Extract meaningful state mutability of solidity method.
-	// If it's default value, never print it.
+	// Format state mutability for string representation.
+	// "nonpayable" is the default and omitted from the output.
 	state := mutability
 	if state == "nonpayable" {
 		state = ""
@@ -126,13 +126,16 @@ func NewMethod(name string, rawName string, funType FunctionType, mutability str
 	if state != "" {
 		state = state + " "
 	}
-	identity := fmt.Sprintf("function %v", rawName)
-	if funType == Fallback {
+	var identity string
+	switch funType {
+	case Fallback:
 		identity = "fallback"
-	} else if funType == Receive {
+	case Receive:
 		identity = "receive"
-	} else if funType == Constructor {
+	case Constructor:
 		identity = "constructor"
+	default:
+		identity = fmt.Sprintf("function %v", rawName)
 	}
 	str := fmt.Sprintf("%v(%v) %sreturns(%v)", identity, strings.Join(inputNames, ", "), state, strings.Join(outputNames, ", "))
 

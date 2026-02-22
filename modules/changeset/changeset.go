@@ -20,13 +20,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/modules"
-	"github.com/n42blockchain/N42/modules/ethdb"
 	"math"
 	"reflect"
+	"strings"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/ethdb"
 )
 
 func NewChangeSet() *ChangeSet {
@@ -48,7 +49,7 @@ type ChangeSet struct {
 	keyLen  int
 }
 
-// BEGIN sort.Interface
+// sort.Interface implementation
 
 func (s *ChangeSet) Len() int {
 	return len(s.Changes)
@@ -66,29 +67,29 @@ func (s *ChangeSet) Less(i, j int) bool {
 	return cmp < 0
 }
 
-// END sort.Interface
 func (s *ChangeSet) KeySize() int {
 	if s.keyLen != 0 {
 		return s.keyLen
 	}
-	for _, c := range s.Changes {
-		return len(c.Key)
+	if len(s.Changes) > 0 {
+		return len(s.Changes[0].Key)
 	}
 	return 0
 }
 
 func (s *ChangeSet) checkKeySize(key []byte) error {
-	if (s.Len() == 0 && s.KeySize() == 0) || (len(key) == s.KeySize() && len(key) > 0) {
+	if s.Len() == 0 && s.KeySize() == 0 {
 		return nil
 	}
-
-	return fmt.Errorf("wrong key size in AccountChangeSet: expected %d, actual %d", s.KeySize(), len(key))
+	if len(key) > 0 && len(key) == s.KeySize() {
+		return nil
+	}
+	return fmt.Errorf("wrong key size in ChangeSet: expected %d, actual %d", s.KeySize(), len(key))
 }
 
-// Add adds a new entry to the AccountChangeSet.
-// One must not add an existing key
-// and may add keys only of the same size.
-func (s *ChangeSet) Add(key []byte, value []byte) error {
+// Add appends a new entry to the ChangeSet.
+// All keys must be the same size; adding an existing key is not allowed.
+func (s *ChangeSet) Add(key, value []byte) error {
 	if err := s.checkKeySize(key); err != nil {
 		return err
 	}
@@ -113,39 +114,34 @@ func (s *ChangeSet) Equals(s2 *ChangeSet) bool {
 }
 
 func (s *ChangeSet) String() string {
-	str := ""
-	for _, v := range s.Changes {
-		str += fmt.Sprintf("%v %s : %s\n", len(v.Key), types.Bytes2Hex(v.Key), string(v.Value))
+	var b strings.Builder
+	for _, c := range s.Changes {
+		fmt.Fprintf(&b, "%d %s : %s\n", len(c.Key), types.Bytes2Hex(c.Key), string(c.Value))
 	}
-	return str
+	return b.String()
 }
 
-// Encoded Method
+// FromDBFormat decodes a changeset entry from its database representation.
+// Account keys are 8 bytes (block number only); storage keys are longer.
 func FromDBFormat(dbKey, dbValue []byte) (uint64, []byte, []byte, error) {
 	if len(dbKey) == 8 {
 		return DecodeAccounts(dbKey, dbValue)
-	} else {
-		return DecodeStorage(dbKey, dbValue)
 	}
+	return DecodeStorage(dbKey, dbValue)
 }
 
+// AvailableFrom returns the earliest block number in the account changeset.
 func AvailableFrom(tx kv.Tx) (uint64, error) {
-	c, err := tx.Cursor(modules.AccountChangeSet)
-	if err != nil {
-		return math.MaxUint64, err
-	}
-	defer c.Close()
-	k, _, err := c.First()
-	if err != nil {
-		return math.MaxUint64, err
-	}
-	if len(k) == 0 {
-		return math.MaxUint64, nil
-	}
-	return binary.BigEndian.Uint64(k), nil
+	return availableFrom(tx, modules.AccountChangeSet)
 }
+
+// AvailableStorageFrom returns the earliest block number in the storage changeset.
 func AvailableStorageFrom(tx kv.Tx) (uint64, error) {
-	c, err := tx.Cursor(modules.StorageChangeSet)
+	return availableFrom(tx, modules.StorageChangeSet)
+}
+
+func availableFrom(tx kv.Tx, bucket string) (uint64, error) {
+	c, err := tx.Cursor(bucket)
 	if err != nil {
 		return math.MaxUint64, err
 	}
@@ -160,17 +156,15 @@ func AvailableStorageFrom(tx kv.Tx) (uint64, error) {
 	return binary.BigEndian.Uint64(k), nil
 }
 
-// [from:to)
+// ForRange iterates over changeset entries in the half-open block range [from, to).
 func ForRange(db kv.Tx, bucket string, from, to uint64, walker func(blockN uint64, k, v []byte) error) error {
-	var blockN uint64
 	c, err := db.Cursor(bucket)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	return ethdb.Walk(c, modules.EncodeBlockNumber(from), 0, func(k, v []byte) (bool, error) {
-		var err error
-		blockN, k, v, err = FromDBFormat(k, v)
+		blockN, k, v, err := FromDBFormat(k, v)
 		if err != nil {
 			return false, err
 		}
@@ -183,22 +177,11 @@ func ForRange(db kv.Tx, bucket string, from, to uint64, walker func(blockN uint6
 		return true, nil
 	})
 }
+
+// ForEach iterates over all changeset entries starting from startkey.
 func ForEach(db kv.Tx, bucket string, startkey []byte, walker func(blockN uint64, k, v []byte) error) error {
-	var blockN uint64
 	return db.ForEach(bucket, startkey, func(k, v []byte) error {
-		var err error
-		blockN, k, v, err = FromDBFormat(k, v)
-		if err != nil {
-			return err
-		}
-		return walker(blockN, k, v)
-	})
-}
-func ForPrefix(db kv.Tx, bucket string, startkey []byte, walker func(blockN uint64, k, v []byte) error) error {
-	var blockN uint64
-	return db.ForPrefix(bucket, startkey, func(k, v []byte) error {
-		var err error
-		blockN, k, v, err = FromDBFormat(k, v)
+		blockN, k, v, err := FromDBFormat(k, v)
 		if err != nil {
 			return err
 		}
@@ -206,39 +189,38 @@ func ForPrefix(db kv.Tx, bucket string, startkey []byte, walker func(blockN uint
 	})
 }
 
+// ForPrefix iterates over changeset entries matching a key prefix.
+func ForPrefix(db kv.Tx, bucket string, startkey []byte, walker func(blockN uint64, k, v []byte) error) error {
+	return db.ForPrefix(bucket, startkey, func(k, v []byte) error {
+		blockN, k, v, err := FromDBFormat(k, v)
+		if err != nil {
+			return err
+		}
+		return walker(blockN, k, v)
+	})
+}
+
+// Truncate removes all changeset entries at or after the given block number.
 func Truncate(tx kv.RwTx, from uint64) error {
 	keyStart := modules.EncodeBlockNumber(from)
-
-	{
-		c, err := tx.RwCursorDupSort(modules.AccountChangeSet)
-		if err != nil {
-			return err
-		}
-		defer c.Close()
-		for k, _, err := c.Seek(keyStart); k != nil; k, _, err = c.NextNoDup() {
-			if err != nil {
-				return err
-			}
-			err = c.DeleteCurrentDuplicates()
-			if err != nil {
-				return err
-			}
-		}
+	if err := truncateBucket(tx, modules.AccountChangeSet, keyStart); err != nil {
+		return err
 	}
-	{
-		c, err := tx.RwCursorDupSort(modules.StorageChangeSet)
+	return truncateBucket(tx, modules.StorageChangeSet, keyStart)
+}
+
+func truncateBucket(tx kv.RwTx, bucket string, keyStart []byte) error {
+	c, err := tx.RwCursorDupSort(bucket)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	for k, _, err := c.Seek(keyStart); k != nil; k, _, err = c.NextNoDup() {
 		if err != nil {
 			return err
 		}
-		defer c.Close()
-		for k, _, err := c.Seek(keyStart); k != nil; k, _, err = c.NextNoDup() {
-			if err != nil {
-				return err
-			}
-			err = c.DeleteCurrentDuplicates()
-			if err != nil {
-				return err
-			}
+		if err = c.DeleteCurrentDuplicates(); err != nil {
+			return err
 		}
 	}
 	return nil

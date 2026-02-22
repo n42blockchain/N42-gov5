@@ -154,14 +154,16 @@ func (f *PrettyFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	var b bytes.Buffer
 
 	// When progress bar is active, aggregate deposit/reward into counters
+	// instead of printing individual log lines
 	printMu.Lock()
 	if progressActive {
-		if strings.Contains(entry.Message, "add Deposit info") {
+		msg := entry.Message
+		if strings.Contains(msg, "add Deposit info") {
 			syncDepositCount++
 			printMu.Unlock()
 			return nil, nil
 		}
-		if strings.Contains(entry.Message, "set account reward") {
+		if strings.Contains(msg, "set account reward") {
 			syncRewardCount++
 			printMu.Unlock()
 			return nil, nil
@@ -223,29 +225,25 @@ func (f *PrettyFormatter) formatTime(t time.Time, colored bool) string {
 	// Build relative time string (always show seconds precision)
 	relativeStr := f.formatDuration(elapsed)
 
-	// Check if we need to show absolute time (every 10 minutes)
-	var absoluteStr string
-	if t.Sub(f.lastAbsoluteTime) >= 10*time.Minute {
-		// First time (elapsed < 1s) shows full format, subsequent shows short format
-		if elapsed < time.Second {
-			absoluteStr = t.Format("2006-01-02 15:04:05")
-		} else {
-			absoluteStr = t.Format("01-02 15:04:05")
-		}
-		f.lastAbsoluteTime = t
-	}
-
-	// Build result: absolute time always shown if present, relative time only if changed
+	// Show absolute time every 10 minutes:
+	//   First log (elapsed < 1s): full format "2006-01-02 15:04:05"
+	//   Subsequent: short format  "01-02 15:04:05"
+	showAbsolute := t.Sub(f.lastAbsoluteTime) >= 10*time.Minute
 	var result string
-	if absoluteStr != "" {
-		result = absoluteStr + " " + relativeStr
+
+	switch {
+	case showAbsolute && elapsed < time.Second:
+		result = t.Format("2006-01-02 15:04:05") + " " + relativeStr
+		f.lastAbsoluteTime = t
 		f.lastTimeStr = relativeStr
-	} else if relativeStr != f.lastTimeStr {
+	case showAbsolute:
+		result = t.Format("01-02 15:04:05") + " " + relativeStr
+		f.lastAbsoluteTime = t
+		f.lastTimeStr = relativeStr
+	case relativeStr != f.lastTimeStr:
 		result = relativeStr
 		f.lastTimeStr = relativeStr
-	}
-
-	if result == "" {
+	default:
 		return ""
 	}
 
@@ -350,23 +348,35 @@ func (f *PrettyFormatter) formatMessage(msg string, level logrus.Level, colored 
 	}
 }
 
+// titleCase returns the string with its first letter uppercased.
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
 // highlightKeywords highlights important keywords in messages
 func (f *PrettyFormatter) highlightKeywords(msg string) string {
+	lower := strings.ToLower(msg)
+
 	// Highlight success keywords (green)
-	successKeywords := []string{"started", "connected", "initialized", "ready", "completed", "success", "synced", "stopped"}
-	for _, kw := range successKeywords {
-		if strings.Contains(strings.ToLower(msg), kw) {
-			msg = strings.ReplaceAll(msg, kw, fmt.Sprintf("%s%s%s", BrightGreen, kw, Reset))
-			msg = strings.ReplaceAll(msg, strings.Title(kw), fmt.Sprintf("%s%s%s", BrightGreen, strings.Title(kw), Reset))
+	for _, kw := range []string{"started", "connected", "initialized", "ready", "completed", "success", "synced", "stopped"} {
+		if strings.Contains(lower, kw) {
+			colored := fmt.Sprintf("%s%s%s", BrightGreen, kw, Reset)
+			coloredTitle := fmt.Sprintf("%s%s%s", BrightGreen, titleCase(kw), Reset)
+			msg = strings.ReplaceAll(msg, kw, colored)
+			msg = strings.ReplaceAll(msg, titleCase(kw), coloredTitle)
 		}
 	}
 
 	// Highlight failure keywords (red) - these override success keywords if both present
-	failKeywords := []string{"failed", "error", "disconnected", "timeout", "mismatch"}
-	for _, kw := range failKeywords {
-		if strings.Contains(strings.ToLower(msg), kw) {
-			msg = strings.ReplaceAll(msg, kw, fmt.Sprintf("%s%s%s", BrightRed, kw, Reset))
-			msg = strings.ReplaceAll(msg, strings.Title(kw), fmt.Sprintf("%s%s%s", BrightRed, strings.Title(kw), Reset))
+	for _, kw := range []string{"failed", "error", "disconnected", "timeout", "mismatch"} {
+		if strings.Contains(lower, kw) {
+			colored := fmt.Sprintf("%s%s%s", BrightRed, kw, Reset)
+			coloredTitle := fmt.Sprintf("%s%s%s", BrightRed, titleCase(kw), Reset)
+			msg = strings.ReplaceAll(msg, kw, colored)
+			msg = strings.ReplaceAll(msg, titleCase(kw), coloredTitle)
 		}
 	}
 
@@ -589,18 +599,15 @@ func FormatPeerID(peerID string) string {
 
 // FormatDuration formats a duration in a friendly way
 func FormatDuration(d time.Duration) string {
-	if d < time.Second {
+	switch {
+	case d < time.Second:
 		return fmt.Sprintf("%dms", d.Milliseconds())
-	} else if d < time.Minute {
+	case d < time.Minute:
 		return fmt.Sprintf("%.1fs", d.Seconds())
-	} else if d < time.Hour {
-		mins := int(d.Minutes())
-		secs := int(d.Seconds()) % 60
-		return fmt.Sprintf("%dm%ds", mins, secs)
-	} else {
-		hours := int(d.Hours())
-		mins := int(d.Minutes()) % 60
-		return fmt.Sprintf("%dh%dm", hours, mins)
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 	}
 }
 
@@ -768,11 +775,7 @@ func PrintProgressBar(label string, current, total uint64, rate float64, eta str
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", empty)
 	pct := progress * 100
 
-	// Use module color for sync
-	color := BrightGreen
-	if c, ok := moduleColors["sync"]; ok {
-		color = c
-	}
+	color := moduleColors["sync"]
 
 	peerWord := "peers"
 	if peers == 1 {

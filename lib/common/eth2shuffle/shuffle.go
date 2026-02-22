@@ -42,7 +42,7 @@ func innerPermuteIndex(hashFn HashFn, rounds uint8, index uint64, listSize uint6
 	if rounds == 0 {
 		return index
 	}
-	buf := make([]byte, hTotalSize, hTotalSize)
+	buf := make([]byte, hTotalSize)
 	r := uint8(0)
 	if !dir {
 		// Start at last round.
@@ -53,18 +53,14 @@ func innerPermuteIndex(hashFn HashFn, rounds uint8, index uint64, listSize uint6
 	copy(buf[:hSeedSize], seed[:])
 	for {
 		// spec: pivot = bytes_to_int(hash(seed + int_to_bytes1(round))[0:8]) % list_size
-		// This is the "int_to_bytes1(round)", appended to the seed.
 		buf[hSeedSize] = r
 		// Seed is already in place, now just hash the correct part of the buffer, and take a uint64 from it,
 		//  and modulo it to get a pivot within range.
 		pivot := binary.LittleEndian.Uint64(hashFn(buf[:hPivotViewSize])[:8]) % listSize
 		// spec: flip = (pivot - index) % list_size
 		// Add extra list_size to prevent underflows.
-		// "flip" will be the other side of the pair
 		flip := (pivot + (listSize - index)) % listSize
 		// spec: position = max(index, flip)
-		// Why? Don't do double work: we consider every pair only once.
-		// (Otherwise we would swap it back in place)
 		// Pick the highest index of the pair as position to retrieve randomness with.
 		position := index
 		if flip > position {
@@ -165,7 +161,7 @@ func innerShuffleList[T any](hashFn HashFn, input []T, rounds uint8, seed [32]by
 		return
 	}
 	listSize := uint64(len(input))
-	buf := make([]byte, hTotalSize, hTotalSize)
+	buf := make([]byte, hTotalSize)
 	r := uint8(0)
 	if !dir {
 		// Start at last round.

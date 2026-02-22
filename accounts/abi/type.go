@@ -19,13 +19,14 @@ package abi
 import (
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // Type enumerator

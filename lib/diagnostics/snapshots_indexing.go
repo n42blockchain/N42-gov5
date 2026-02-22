@@ -56,24 +56,25 @@ func (d *DiagnosticClient) addOrUpdateSegmentIndexingState(upd SnapshotIndexingS
 		d.syncStats.SnapshotIndexing.Segments = []SnapshotSegmentIndexingStatistics{}
 	}
 
-	for i := range upd.Segments {
+	existing := d.syncStats.SnapshotIndexing.Segments
+	for _, updSeg := range upd.Segments {
 		found := false
-		for j := range d.syncStats.SnapshotIndexing.Segments {
-			if d.syncStats.SnapshotIndexing.Segments[j].SegmentName == upd.Segments[i].SegmentName {
-				d.syncStats.SnapshotIndexing.Segments[j].Percent = upd.Segments[i].Percent
-				d.syncStats.SnapshotIndexing.Segments[j].Alloc = upd.Segments[i].Alloc
-				d.syncStats.SnapshotIndexing.Segments[j].Sys = upd.Segments[i].Sys
+		for j := range existing {
+			if existing[j].SegmentName == updSeg.SegmentName {
+				existing[j].Percent = updSeg.Percent
+				existing[j].Alloc = updSeg.Alloc
+				existing[j].Sys = updSeg.Sys
 				found = true
 				break
 			}
 		}
-
 		if !found {
-			d.syncStats.SnapshotIndexing.Segments = append(d.syncStats.SnapshotIndexing.Segments, upd.Segments[i])
+			existing = append(existing, updSeg)
 		}
 	}
+	d.syncStats.SnapshotIndexing.Segments = existing
 
-	// If elapsed time is equal to minus one it menas that indexing took less than main loop update and we should not update it
+	// TimeElapsed == -1 means indexing took less than main loop interval; skip update
 	if upd.TimeElapsed != -1 {
 		d.syncStats.SnapshotIndexing.TimeElapsed = upd.TimeElapsed
 	}

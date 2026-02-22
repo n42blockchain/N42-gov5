@@ -27,23 +27,15 @@ import (
 )
 
 func ReadDataFromTable(tx kv.Tx, table string, key []byte) ([]byte, error) {
-	bytes, err := tx.GetOne(table, key)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return bytes, nil
+	return tx.GetOne(table, key)
 }
 
 func PutDataToTable(table string, key []byte, info any) func(tx kv.RwTx) error {
 	return func(tx kv.RwTx) error {
 		infoBytes, err := json.Marshal(info)
-
 		if err != nil {
 			return err
 		}
-
 		return tx.Put(table, key, infoBytes)
 	}
 }
@@ -87,14 +79,14 @@ func CalculateTime(amountLeft, rate uint64) string {
 	hours := timeLeftInSeconds / 3600
 	minutes := (timeLeftInSeconds / 60) % 60
 
-	if hours == 0 && minutes == 0 {
+	switch {
+	case hours == 0 && minutes == 0:
 		return fmt.Sprintf("%ds", timeLeftInSeconds)
-	} else if hours == 0 {
-		//sec := timeLeftInSeconds % 60
+	case hours == 0:
 		return fmt.Sprintf("%dm:%ds", minutes, timeLeftInSeconds%60)
+	default:
+		return fmt.Sprintf("%dh:%dm", hours, minutes)
 	}
-
-	return fmt.Sprintf("%dh:%dm", hours, minutes)
 }
 
 func SecondsToHHMMString(seconds uint64) string {
@@ -141,24 +133,17 @@ func GetShanpshotsPercentDownloaded(downloaded uint64, total uint64, torrentMeta
 		return "0%"
 	}
 
-	fd := float32(downloaded)
-	t100 := float32(total) / 100
-	ft := float32(t100)
-	percent := fd / ft
-
+	percent := float32(downloaded) / (float32(total) / 100)
 	if percent > 100 {
 		percent = 100
 	}
 
-	// return the percentage with 2 decimal places if it's not .00
-	if percent == float32(int(percent)) {
+	switch {
+	case percent == float32(int(percent)):
 		return fmt.Sprintf("%.0f%%", percent)
-	}
-
-	// return the percentage with 1 decimal places if it has only one decimal place like  (50.5% or  23.7%)
-	if percent == float32(int(percent*10))/10 {
+	case percent == float32(int(percent*10))/10:
 		return fmt.Sprintf("%.1f%%", percent)
+	default:
+		return fmt.Sprintf("%.2f%%", percent)
 	}
-
-	return fmt.Sprintf("%.2f%%", percent)
 }

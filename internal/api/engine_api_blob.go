@@ -34,22 +34,22 @@ import (
 
 // ExecutionPayloadV3 extends ExecutionPayloadV2 with blob fields
 type ExecutionPayloadV3 struct {
-	ParentHash    types.Hash    `json:"parentHash"`
-	FeeRecipient  types.Address `json:"feeRecipient"`
-	StateRoot     types.Hash    `json:"stateRoot"`
-	ReceiptsRoot  types.Hash    `json:"receiptsRoot"`
-	LogsBloom     hexutil.Bytes `json:"logsBloom"`
-	PrevRandao    types.Hash    `json:"prevRandao"`
-	BlockNumber   hexutil.Uint64 `json:"blockNumber"`
-	GasLimit      hexutil.Uint64 `json:"gasLimit"`
-	GasUsed       hexutil.Uint64 `json:"gasUsed"`
-	Timestamp     hexutil.Uint64 `json:"timestamp"`
-	ExtraData     hexutil.Bytes  `json:"extraData"`
-	BaseFeePerGas hexutil.Uint64 `json:"baseFeePerGas"`
-	BlockHash     types.Hash     `json:"blockHash"`
+	ParentHash    types.Hash      `json:"parentHash"`
+	FeeRecipient  types.Address   `json:"feeRecipient"`
+	StateRoot     types.Hash      `json:"stateRoot"`
+	ReceiptsRoot  types.Hash      `json:"receiptsRoot"`
+	LogsBloom     hexutil.Bytes   `json:"logsBloom"`
+	PrevRandao    types.Hash      `json:"prevRandao"`
+	BlockNumber   hexutil.Uint64  `json:"blockNumber"`
+	GasLimit      hexutil.Uint64  `json:"gasLimit"`
+	GasUsed       hexutil.Uint64  `json:"gasUsed"`
+	Timestamp     hexutil.Uint64  `json:"timestamp"`
+	ExtraData     hexutil.Bytes   `json:"extraData"`
+	BaseFeePerGas hexutil.Uint64  `json:"baseFeePerGas"`
+	BlockHash     types.Hash      `json:"blockHash"`
 	Transactions  []hexutil.Bytes `json:"transactions"`
 	Withdrawals   []*Withdrawal   `json:"withdrawals"`
-	
+
 	// EIP-4844 fields
 	BlobGasUsed   *hexutil.Uint64 `json:"blobGasUsed"`
 	ExcessBlobGas *hexutil.Uint64 `json:"excessBlobGas"`
@@ -64,19 +64,19 @@ type BlobsBundleV1 struct {
 
 // PayloadAttributesV3 extends PayloadAttributesV2 with parent beacon block root
 type PayloadAttributesV3 struct {
-	Timestamp             hexutil.Uint64  `json:"timestamp"`
-	PrevRandao            types.Hash      `json:"prevRandao"`
-	SuggestedFeeRecipient types.Address   `json:"suggestedFeeRecipient"`
-	Withdrawals           []*Withdrawal   `json:"withdrawals"`
-	ParentBeaconBlockRoot *types.Hash     `json:"parentBeaconBlockRoot"`
+	Timestamp             hexutil.Uint64 `json:"timestamp"`
+	PrevRandao            types.Hash     `json:"prevRandao"`
+	SuggestedFeeRecipient types.Address  `json:"suggestedFeeRecipient"`
+	Withdrawals           []*Withdrawal  `json:"withdrawals"`
+	ParentBeaconBlockRoot *types.Hash    `json:"parentBeaconBlockRoot"`
 }
 
 // GetPayloadResponseV3 is the response for engine_getPayloadV3
 type GetPayloadResponseV3 struct {
-	ExecutionPayload *ExecutionPayloadV3 `json:"executionPayload"`
-	BlockValue       hexutil.Uint64      `json:"blockValue"`
-	BlobsBundle      *BlobsBundleV1      `json:"blobsBundle"`
-	ShouldOverrideBuilder bool            `json:"shouldOverrideBuilder"`
+	ExecutionPayload      *ExecutionPayloadV3 `json:"executionPayload"`
+	BlockValue            hexutil.Uint64      `json:"blockValue"`
+	BlobsBundle           *BlobsBundleV1      `json:"blobsBundle"`
+	ShouldOverrideBuilder bool                `json:"shouldOverrideBuilder"`
 }
 
 // ForkchoiceUpdatedResponseV3 includes blob-related validation status
@@ -87,9 +87,9 @@ type ForkchoiceUpdatedResponseV3 struct {
 
 // NewPayloadResponseV3 includes validation status
 type NewPayloadResponseV3 struct {
-	Status          PayloadStatusV1  `json:"status"`
-	LatestValidHash *types.Hash      `json:"latestValidHash"`
-	ValidationError *string          `json:"validationError"`
+	Status          PayloadStatusV1 `json:"status"`
+	LatestValidHash *types.Hash     `json:"latestValidHash"`
+	ValidationError *string         `json:"validationError"`
 }
 
 // PayloadStatusV1 represents the status of payload validation
@@ -135,16 +135,16 @@ type Withdrawal struct {
 const (
 	// PayloadStatusValid indicates the payload is valid
 	PayloadStatusValid = "VALID"
-	
+
 	// PayloadStatusInvalid indicates the payload is invalid
 	PayloadStatusInvalid = "INVALID"
-	
+
 	// PayloadStatusSyncing indicates the client is syncing
 	PayloadStatusSyncing = "SYNCING"
-	
+
 	// PayloadStatusAccepted indicates the payload was accepted for processing
 	PayloadStatusAccepted = "ACCEPTED"
-	
+
 	// PayloadStatusInvalidBlockHash indicates the block hash is invalid
 	PayloadStatusInvalidBlockHash = "INVALID_BLOCK_HASH"
 )
@@ -177,7 +177,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	); resp != nil {
 		return resp, nil
 	}
-	
+
 	// TODO: Implement actual payload processing
 	// This would:
 	// 1. Decode and validate transactions
@@ -202,7 +202,7 @@ func (e *EngineAPIBlob) GetPayloadV3(ctx context.Context, payloadID PayloadID) (
 	// 1. Look up payload by ID
 	// 2. Retrieve blob sidecar
 	// 3. Build response with execution payload and blobs bundle
-	
+
 	return nil, errPayloadNotFound
 }
 
@@ -216,7 +216,7 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 			return invalidForkchoiceResponse("missing parent beacon block root"), nil
 		}
 	}
-	
+
 	// TODO: Implement fork choice update
 	// This would:
 	// 1. Update fork choice
@@ -335,31 +335,31 @@ func validateBlobGasAndHashes(
 // ValidateBlobTransactions validates blob transactions in a payload
 func ValidateBlobTransactions(txs []hexutil.Bytes, expectedHashes []types.Hash) error {
 	var actualHashes []types.Hash
-	
+
 	for _, txBytes := range txs {
 		if len(txBytes) == 0 {
 			continue
 		}
-		
+
 		// Check if this is a blob transaction (type 0x03)
 		if txBytes[0] == transaction.BlobTxType {
 			// TODO: Decode transaction and extract blob hashes
 			// For now, skip validation
 		}
 	}
-	
+
 	// Verify hash counts match
 	if len(actualHashes) != len(expectedHashes) {
 		return errBlobHashCountMismatch
 	}
-	
+
 	// Verify each hash matches
 	for i, hash := range actualHashes {
 		if hash != expectedHashes[i] {
 			return errBlobHashMismatch
 		}
 	}
-	
+
 	return nil
 }
 
@@ -378,10 +378,10 @@ func CalcBlobFee(excessBlobGas uint64) uint64 {
 // =============================================================================
 
 var (
-	errPayloadNotFound      = &engineError{"payload not found"}
+	errPayloadNotFound       = &engineError{"payload not found"}
 	errBlobHashCountMismatch = &engineError{"blob hash count mismatch"}
-	errBlobHashMismatch     = &engineError{"blob hash mismatch"}
-	errInvalidPayloadID     = &engineError{"invalid payload ID"}
+	errBlobHashMismatch      = &engineError{"blob hash mismatch"}
+	errInvalidPayloadID      = &engineError{"invalid payload ID"}
 )
 
 type engineError struct {
@@ -391,4 +391,3 @@ type engineError struct {
 func (e *engineError) Error() string {
 	return e.msg
 }
-

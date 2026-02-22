@@ -37,9 +37,7 @@ var (
 	useAVX2 bool
 	useAVX  bool
 	useSSE4 bool
-)
 
-var (
 	errKeySize  = errors.New("blake2b: invalid key size")
 	errHashSize = errors.New("blake2b: invalid hash size")
 )
@@ -193,12 +191,11 @@ func (d *digest) MarshalBinary() ([]byte, error) {
 	}
 	b := make([]byte, 0, marshaledSize)
 	b = append(b, magic...)
-	for i := 0; i < 8; i++ {
-		b = appendUint64(b, d.h[i])
+	for _, v := range d.h {
+		b = appendUint64(b, v)
 	}
 	b = appendUint64(b, d.c[0])
 	b = appendUint64(b, d.c[1])
-	// Maximum value for size is 64
 	b = append(b, byte(d.size))
 	b = append(b, d.block[:]...)
 	b = append(b, byte(d.offset))
@@ -213,7 +210,7 @@ func (d *digest) UnmarshalBinary(b []byte) error {
 		return errors.New("crypto/blake2b: invalid hash state size")
 	}
 	b = b[len(magic):]
-	for i := 0; i < 8; i++ {
+	for i := range d.h {
 		b, d.h[i] = consumeUint64(b)
 	}
 	b, d.c[0] = consumeUint64(b)

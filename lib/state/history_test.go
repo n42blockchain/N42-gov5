@@ -45,7 +45,7 @@ func testDbAndHistory(tb testing.TB, _ bool, logger log.Logger) (string, kv.RwDB
 	keysTable := "AccountKeys"
 	indexTable := "AccountIndex"
 	valsTable := "AccountVals"
-	settingsTable := "Settings" //nolint
+	settingsTable := "Settings"
 	db := mdbx.NewMDBX(logger).InMem(path).WithTableCfg(func(defaultBuckets kv.TableCfg) kv.TableCfg {
 		return kv.TableCfg{
 			keysTable:     kv.TableCfgItem{Flags: kv.DupSort},
@@ -314,12 +314,10 @@ func checkHistoryHistory(t *testing.T, h *History, txs uint64) {
 			var k [8]byte
 			var v [8]byte
 			label := fmt.Sprintf("txNum=%d, keyNum=%d", txNum, keyNum)
-			//fmt.Printf("label=%s\n", label)
 			binary.BigEndian.PutUint64(k[:], keyNum)
 			binary.BigEndian.PutUint64(v[:], valNum)
 			k[0], v[0] = 0x01, 0xff
 			val, ok, err := hc.GetNoState(k[:], txNum+1)
-			//require.Equal(t, ok, txNum < 976)
 			if ok {
 				require.NoError(t, err, label)
 				if txNum >= keyNum {

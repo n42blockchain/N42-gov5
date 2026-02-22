@@ -39,11 +39,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
-// =============================================================================
-// Post-Quantum Mode Constants
-// =============================================================================
-
-// PostQuantumMode defines the PQ signature mode for consensus
+// PostQuantumMode defines the PQ signature mode for consensus.
 type PostQuantumMode uint8
 
 const (
@@ -57,10 +53,7 @@ const (
 	PQModeOnly PostQuantumMode = 2
 )
 
-// =============================================================================
-// Errors
-// =============================================================================
-
+// Post-quantum consensus errors.
 var (
 	errMissingSTARKProof      = errors.New("apos: missing STARK proof")
 	errInvalidSTARKProof      = errors.New("apos: invalid STARK proof")
@@ -69,11 +62,7 @@ var (
 	errSTARKAggregationFailed = errors.New("apos: STARK aggregation failed")
 )
 
-// =============================================================================
-// Post-Quantum Configuration
-// =============================================================================
-
-// PostQuantumConfig holds configuration for PQ consensus
+// PostQuantumConfig holds configuration for PQ consensus.
 type PostQuantumConfig struct {
 	// Mode determines the post-quantum operating mode
 	Mode PostQuantumMode
@@ -108,11 +97,7 @@ func (c *PostQuantumConfig) ShouldUsePQ(blockHeight uint64) bool {
 	return c.IsEnabled() && blockHeight >= c.ForkHeight
 }
 
-// =============================================================================
-// STARK Aggregated Signature for Block Headers
-// =============================================================================
-
-// STARKBlockSignature represents a STARK aggregated signature for a block
+// STARKBlockSignature represents a STARK aggregated signature for a block.
 type STARKBlockSignature struct {
 	// Proof is the STARK aggregated proof
 	Proof []byte
@@ -137,11 +122,7 @@ func (s *STARKBlockSignature) Size() int {
 	return len(s.Proof)
 }
 
-// =============================================================================
-// STARK Consensus Manager
-// =============================================================================
-
-// STARKConsensusManager manages STARK signature aggregation for consensus
+// STARKConsensusManager manages STARK signature aggregation for consensus.
 type STARKConsensusManager struct {
 	config     *PostQuantumConfig
 	aggregator *api.STARKAggregator
@@ -215,11 +196,7 @@ func (m *STARKConsensusManager) VerifySTARKSignature(
 	return nil
 }
 
-// =============================================================================
-// Hybrid Seal Support
-// =============================================================================
-
-// HybridBlockSignature contains both BLS and STARK signatures
+// HybridBlockSignature contains both BLS and STARK signatures.
 type HybridBlockSignature struct {
 	// BLSSignature is the traditional BLS aggregate signature
 	BLSSignature [96]byte
@@ -238,11 +215,7 @@ func (h *HybridBlockSignature) HasSTARK() bool {
 	return h.STARKSignature != nil && len(h.STARKSignature.Proof) > 0
 }
 
-// =============================================================================
-// Seal Verification Helpers
-// =============================================================================
-
-// VerifySealPQ verifies a block seal with post-quantum support
+// VerifySealPQ verifies a block seal with post-quantum support.
 func (m *STARKConsensusManager) VerifySealPQ(
 	blsSig []byte,
 	starkSig *STARKBlockSignature,
@@ -285,11 +258,7 @@ func (m *STARKConsensusManager) verifyBLSSeal(sig []byte) error {
 	return nil
 }
 
-// =============================================================================
-// Consensus Integration Helpers
-// =============================================================================
-
-// GetPQMode returns the current post-quantum mode
+// GetPQMode returns the current post-quantum mode.
 func (m *STARKConsensusManager) GetPQMode() PostQuantumMode {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -317,10 +286,6 @@ func (m *STARKConsensusManager) GetMinValidators() int {
 	return m.config.MinValidators
 }
 
-// =============================================================================
-// Global Manager Instance
-// =============================================================================
-
 var (
 	globalSTARKManager     *STARKConsensusManager
 	globalSTARKManagerOnce sync.Once
@@ -339,11 +304,7 @@ func InitGlobalSTARKManager(config *PostQuantumConfig) {
 	globalSTARKManager = NewSTARKConsensusManager(config)
 }
 
-// =============================================================================
-// Utility Functions
-// =============================================================================
-
-// EstimateSTARKProofSize estimates the proof size for a given number of validators
+// EstimateSTARKProofSize estimates the proof size for a given number of validators.
 func EstimateSTARKProofSize(validatorCount int) int {
 	return stark.EstimateProofSize(validatorCount, false)
 }

@@ -18,12 +18,13 @@ package block
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
-	"github.com/n42blockchain/N42/common/types"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/utils"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/utils"
 )
 
 type Log struct {
@@ -68,12 +69,8 @@ func (l *Log) ToProtoMessage() proto.Message {
 }
 
 func (l *Log) FromProtoMessage(message proto.Message) error {
-	var (
-		pLog *types_pb.Log
-		ok   bool
-	)
-
-	if pLog, ok = message.(*types_pb.Log); !ok {
+	pLog, ok := message.(*types_pb.Log)
+	if !ok {
 		return fmt.Errorf("type conversion failure")
 	}
 
@@ -93,12 +90,11 @@ func (l *Log) FromProtoMessage(message proto.Message) error {
 type Logs []*Log
 
 func (l *Logs) Marshal() ([]byte, error) {
-	pb := new(types_pb.Logs)
-	for _, log := range *l {
-		pb.Logs = append(pb.Logs, log.ToProtoMessage().(*types_pb.Log))
+	pbLogs := make([]*types_pb.Log, len(*l))
+	for i, log := range *l {
+		pbLogs[i] = log.ToProtoMessage().(*types_pb.Log)
 	}
-
-	return proto.Marshal(pb)
+	return proto.Marshal(&types_pb.Logs{Logs: pbLogs})
 }
 
 func (l *Logs) Unmarshal(data []byte) error {

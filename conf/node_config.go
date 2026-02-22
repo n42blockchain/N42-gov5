@@ -86,29 +86,22 @@ type NodeConfig struct {
 	PasswordFile string `json:"password_file" yaml:"password_file"`
 }
 
-// KeyDirConfig determines the settings for keydirectory
+// KeyDirConfig determines the settings for the key directory.
 func (c *NodeConfig) KeyDirConfig() (string, error) {
-	var (
-		keydir string
-		err    error
-	)
 	switch {
 	case filepath.IsAbs(c.KeyStoreDir):
-		keydir = c.KeyStoreDir
-	case c.DataDir != "":
-		if c.KeyStoreDir == "" {
-			keydir = filepath.Join(c.DataDir, datadirDefaultKeyStore)
-		} else {
-			keydir, err = filepath.Abs(c.KeyStoreDir)
-		}
+		return c.KeyStoreDir, nil
+	case c.DataDir != "" && c.KeyStoreDir == "":
+		return filepath.Join(c.DataDir, datadirDefaultKeyStore), nil
 	case c.KeyStoreDir != "":
-		keydir, err = filepath.Abs(c.KeyStoreDir)
+		return filepath.Abs(c.KeyStoreDir)
+	default:
+		return "", nil
 	}
-	return keydir, err
 }
 
 // getKeyStoreDir retrieves the key directory and will create
-// and ephemeral one if necessary.
+// an ephemeral one if necessary.
 func getKeyStoreDir(conf *NodeConfig) (string, bool, error) {
 	keydir, err := conf.KeyDirConfig()
 	if err != nil {

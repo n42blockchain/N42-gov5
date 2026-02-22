@@ -97,7 +97,6 @@ func (r *serviceRegistry) callback(method string) *callback {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Check if service exists before accessing callbacks
 	svc, ok := r.services[elem[0]]
 	if !ok {
 		return nil
@@ -109,7 +108,6 @@ func (r *serviceRegistry) callback(method string) *callback {
 func (r *serviceRegistry) subscription(service, name string) *callback {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Check if service exists before accessing subscriptions
 	svc, ok := r.services[service]
 	if !ok {
 		return nil
@@ -140,18 +138,15 @@ func newCallback(receiver, fn reflect.Value) *callback {
 	c := &callback{fn: fn, rcvr: receiver, errPos: -1, isSubscribe: isPubSub(fntype)}
 	c.makeArgTypes()
 
-	outs := make([]reflect.Type, fntype.NumOut())
-	for i := 0; i < fntype.NumOut(); i++ {
-		outs[i] = fntype.Out(i)
-	}
-	if len(outs) > 2 {
+	numOut := fntype.NumOut()
+	if numOut > 2 {
 		return nil
 	}
 	switch {
-	case len(outs) == 1 && isErrorType(outs[0]):
+	case numOut == 1 && isErrorType(fntype.Out(0)):
 		c.errPos = 0
-	case len(outs) == 2:
-		if isErrorType(outs[0]) || !isErrorType(outs[1]) {
+	case numOut == 2:
+		if isErrorType(fntype.Out(0)) || !isErrorType(fntype.Out(1)) {
 			return nil
 		}
 		c.errPos = 1
@@ -205,7 +200,7 @@ func (c *callback) call(ctx context.Context, method string, args []reflect.Value
 	return results[0].Interface(), nil
 }
 
-// Is t context.Context or *context.Context?
+// isContextType reports whether t is context.Context or *context.Context.
 func isContextType(t reflect.Type) bool {
 	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -220,7 +215,7 @@ func isErrorType(t reflect.Type) bool {
 	return t.Implements(errorType)
 }
 
-// Is t Subscription or *Subscription?
+// isSubscriptionType reports whether t is Subscription or *Subscription.
 func isSubscriptionType(t reflect.Type) bool {
 	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -228,8 +223,8 @@ func isSubscriptionType(t reflect.Type) bool {
 	return t == subscriptionType
 }
 
-// isPubSub tests whether the given method has as as first argument a context.Context and
-// returns the pair (Subscription, error).
+// isPubSub reports whether the given method has context.Context as its first argument
+// and returns the pair (Subscription, error).
 func isPubSub(methodType reflect.Type) bool {
 	// numIn(0) is the receiver type
 	if methodType.NumIn() < 2 || methodType.NumOut() != 2 {

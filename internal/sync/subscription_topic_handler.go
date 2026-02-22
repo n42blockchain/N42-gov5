@@ -1,16 +1,16 @@
 package sync
 
 import (
-	"github.com/n42blockchain/N42/internal/p2p"
-	"github.com/n42blockchain/N42/log"
 	"sync"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+
+	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/log"
 )
 
-// This is a subscription topic handler that is used to handle basic
-// CRUD operations on the topic map. All operations are thread safe
-// so they can be called from multiple routines.
+// subTopicHandler provides thread-safe CRUD operations on the
+// subscription topic map and tracks per-digest subscription counts.
 type subTopicHandler struct {
 	sync.RWMutex
 	subTopics map[string]*pubsub.Subscription
@@ -19,8 +19,8 @@ type subTopicHandler struct {
 
 func newSubTopicHandler() *subTopicHandler {
 	return &subTopicHandler{
-		subTopics: map[string]*pubsub.Subscription{},
-		digestMap: map[[4]byte]int{},
+		subTopics: make(map[string]*pubsub.Subscription),
+		digestMap: make(map[[4]byte]int),
 	}
 }
 
@@ -33,7 +33,7 @@ func (s *subTopicHandler) addTopic(topic string, sub *pubsub.Subscription) {
 		log.Error("Could not retrieve digest", "err", err)
 		return
 	}
-	s.digestMap[digest] += 1
+	s.digestMap[digest]++
 }
 
 func (s *subTopicHandler) topicExists(topic string) bool {
@@ -52,14 +52,12 @@ func (s *subTopicHandler) removeTopic(topic string) {
 		log.Error("Could not retrieve digest", "err", err)
 		return
 	}
-	currAmt, ok := s.digestMap[digest]
-	// Should never be possible, is a
-	// defensive check.
-	if !ok || currAmt <= 0 {
+	// Defensive: ensure digest count is valid before decrementing.
+	if count, ok := s.digestMap[digest]; !ok || count <= 0 {
 		delete(s.digestMap, digest)
 		return
 	}
-	s.digestMap[digest] -= 1
+	s.digestMap[digest]--
 	if s.digestMap[digest] == 0 {
 		delete(s.digestMap, digest)
 	}
@@ -68,7 +66,6 @@ func (s *subTopicHandler) removeTopic(topic string) {
 func (s *subTopicHandler) digestExists(digest [4]byte) bool {
 	s.RLock()
 	defer s.RUnlock()
-
 	count, ok := s.digestMap[digest]
 	return ok && count > 0
 }
@@ -76,10 +73,9 @@ func (s *subTopicHandler) digestExists(digest [4]byte) bool {
 func (s *subTopicHandler) allTopics() []string {
 	s.RLock()
 	defer s.RUnlock()
-	var topics []string
+	topics := make([]string, 0, len(s.subTopics))
 	for t := range s.subTopics {
-		copiedTopic := t
-		topics = append(topics, copiedTopic)
+		topics = append(topics, t)
 	}
 	return topics
 }

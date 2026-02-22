@@ -36,7 +36,6 @@ type ShardedAddressMap[V any] struct {
 	}
 }
 
-// NewShardedAddressMap creates a new sharded address map.
 func NewShardedAddressMap[V any]() *ShardedAddressMap[V] {
 	m := &ShardedAddressMap[V]{}
 	for i := range m.shards {
@@ -45,13 +44,12 @@ func NewShardedAddressMap[V any]() *ShardedAddressMap[V] {
 	return m
 }
 
-// getShard returns the shard index for an address.
+// getShard returns the shard index using first and last bytes of the address
+// XORed together for better distribution across shards.
 func (m *ShardedAddressMap[V]) getShard(addr types.Address) uint8 {
-	// Use first byte XOR with a hash of last bytes for better distribution
 	return addr[0] ^ addr[19]
 }
 
-// Get retrieves a value by address.
 func (m *ShardedAddressMap[V]) Get(addr types.Address) (V, bool) {
 	shard := &m.shards[m.getShard(addr)]
 	shard.RLock()
@@ -60,7 +58,6 @@ func (m *ShardedAddressMap[V]) Get(addr types.Address) (V, bool) {
 	return v, ok
 }
 
-// Set stores a value by address.
 func (m *ShardedAddressMap[V]) Set(addr types.Address, value V) {
 	shard := &m.shards[m.getShard(addr)]
 	shard.Lock()
@@ -68,7 +65,6 @@ func (m *ShardedAddressMap[V]) Set(addr types.Address, value V) {
 	shard.Unlock()
 }
 
-// Delete removes a value by address.
 func (m *ShardedAddressMap[V]) Delete(addr types.Address) {
 	shard := &m.shards[m.getShard(addr)]
 	shard.Lock()
@@ -76,7 +72,6 @@ func (m *ShardedAddressMap[V]) Delete(addr types.Address) {
 	shard.Unlock()
 }
 
-// Has checks if an address exists.
 func (m *ShardedAddressMap[V]) Has(addr types.Address) bool {
 	shard := &m.shards[m.getShard(addr)]
 	shard.RLock()
@@ -85,7 +80,7 @@ func (m *ShardedAddressMap[V]) Has(addr types.Address) bool {
 	return ok
 }
 
-// Len returns the total number of entries.
+// Len returns the total number of entries across all shards.
 func (m *ShardedAddressMap[V]) Len() int {
 	total := 0
 	for i := range m.shards {
@@ -97,6 +92,7 @@ func (m *ShardedAddressMap[V]) Len() int {
 }
 
 // Range iterates over all entries. The callback should not modify the map.
+// Returning false from the callback stops the iteration early.
 func (m *ShardedAddressMap[V]) Range(f func(addr types.Address, value V) bool) {
 	for i := range m.shards {
 		m.shards[i].RLock()
@@ -118,7 +114,6 @@ type ShardedHashMap[V any] struct {
 	}
 }
 
-// NewShardedHashMap creates a new sharded hash map.
 func NewShardedHashMap[V any]() *ShardedHashMap[V] {
 	m := &ShardedHashMap[V]{}
 	for i := range m.shards {
@@ -127,12 +122,10 @@ func NewShardedHashMap[V any]() *ShardedHashMap[V] {
 	return m
 }
 
-// getShard returns the shard index for a hash.
 func (m *ShardedHashMap[V]) getShard(hash types.Hash) uint8 {
 	return hash[0]
 }
 
-// Get retrieves a value by hash.
 func (m *ShardedHashMap[V]) Get(hash types.Hash) (V, bool) {
 	shard := &m.shards[m.getShard(hash)]
 	shard.RLock()
@@ -141,7 +134,6 @@ func (m *ShardedHashMap[V]) Get(hash types.Hash) (V, bool) {
 	return v, ok
 }
 
-// Set stores a value by hash.
 func (m *ShardedHashMap[V]) Set(hash types.Hash, value V) {
 	shard := &m.shards[m.getShard(hash)]
 	shard.Lock()
@@ -149,7 +141,6 @@ func (m *ShardedHashMap[V]) Set(hash types.Hash, value V) {
 	shard.Unlock()
 }
 
-// Delete removes a value by hash.
 func (m *ShardedHashMap[V]) Delete(hash types.Hash) {
 	shard := &m.shards[m.getShard(hash)]
 	shard.Lock()
@@ -165,7 +156,6 @@ type ShardedStringMap[V any] struct {
 	}
 }
 
-// NewShardedStringMap creates a new sharded string map.
 func NewShardedStringMap[V any]() *ShardedStringMap[V] {
 	m := &ShardedStringMap[V]{}
 	for i := range m.shards {
@@ -174,14 +164,13 @@ func NewShardedStringMap[V any]() *ShardedStringMap[V] {
 	return m
 }
 
-// getShard returns the shard index for a string key.
+// getShard uses FNV-1a hash to distribute string keys across shards.
 func (m *ShardedStringMap[V]) getShard(key string) uint8 {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return uint8(h.Sum32())
 }
 
-// Get retrieves a value by key.
 func (m *ShardedStringMap[V]) Get(key string) (V, bool) {
 	shard := &m.shards[m.getShard(key)]
 	shard.RLock()
@@ -190,7 +179,6 @@ func (m *ShardedStringMap[V]) Get(key string) (V, bool) {
 	return v, ok
 }
 
-// Set stores a value by key.
 func (m *ShardedStringMap[V]) Set(key string, value V) {
 	shard := &m.shards[m.getShard(key)]
 	shard.Lock()
@@ -198,11 +186,9 @@ func (m *ShardedStringMap[V]) Set(key string, value V) {
 	shard.Unlock()
 }
 
-// Delete removes a value by key.
 func (m *ShardedStringMap[V]) Delete(key string) {
 	shard := &m.shards[m.getShard(key)]
 	shard.Lock()
 	delete(shard.data, key)
 	shard.Unlock()
 }
-

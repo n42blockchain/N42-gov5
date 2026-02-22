@@ -25,30 +25,25 @@ import (
 // DummyCache - doesn't remember anything - can be used when service is not remote
 type DummyCache struct{}
 
-var _ Cache = (*DummyCache)(nil)    // compile-time interface check
-var _ CacheView = (*DummyView)(nil) // compile-time interface check
+var (
+	_ Cache     = (*DummyCache)(nil)
+	_ CacheView = (*DummyView)(nil)
+)
 
 func NewDummy() *DummyCache { return &DummyCache{} }
+
 func (c *DummyCache) View(_ context.Context, tx kv.Tx) (CacheView, error) {
-	return &DummyView{cache: c, tx: tx}, nil
+	return &DummyView{tx: tx}, nil
 }
-func (c *DummyCache) OnNewBlock(sc *remote.StateChangeBatch) {}
-func (c *DummyCache) Evict() int                             { return 0 }
-func (c *DummyCache) Len() int                               { return 0 }
-func (c *DummyCache) Get(k []byte, tx kv.Tx, id uint64) ([]byte, error) {
-	return tx.GetOne(kv.PlainState, k)
-}
-func (c *DummyCache) GetCode(k []byte, tx kv.Tx, id uint64) ([]byte, error) {
-	return tx.GetOne(kv.Code, k)
-}
+func (c *DummyCache) OnNewBlock(_ *remote.StateChangeBatch) {}
+func (c *DummyCache) Len() int                              { return 0 }
 func (c *DummyCache) ValidateCurrentRoot(_ context.Context, _ kv.Tx) (*CacheValidationResult, error) {
 	return &CacheValidationResult{Enabled: false}, nil
 }
 
 type DummyView struct {
-	cache *DummyCache
-	tx    kv.Tx
+	tx kv.Tx
 }
 
-func (c *DummyView) Get(k []byte) ([]byte, error)     { return c.cache.Get(k, c.tx, 0) }
-func (c *DummyView) GetCode(k []byte) ([]byte, error) { return c.cache.GetCode(k, c.tx, 0) }
+func (v *DummyView) Get(k []byte) ([]byte, error)     { return v.tx.GetOne(kv.PlainState, k) }
+func (v *DummyView) GetCode(k []byte) ([]byte, error) { return v.tx.GetOne(kv.Code, k) }

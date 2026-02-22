@@ -18,12 +18,13 @@ package vm
 
 import (
 	"errors"
+
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm/stack"
 	"github.com/n42blockchain/N42/params"
-
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/math"
 )
 
 // memoryGasCost calculates the quadratic gas for memory expansion. It does so

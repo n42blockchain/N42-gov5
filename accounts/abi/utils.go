@@ -16,7 +16,42 @@
 
 package abi
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// sanitizeInputs fills in default names for unnamed arguments and builds
+// string and signature representations. This logic is shared by NewEvent
+// and NewError to avoid duplication.
+func sanitizeInputs(inputs Arguments) (names []string, types []string) {
+	names = make([]string, len(inputs))
+	types = make([]string, len(inputs))
+	for i, input := range inputs {
+		if input.Name == "" {
+			inputs[i] = Argument{
+				Name:    fmt.Sprintf("arg%d", i),
+				Indexed: input.Indexed,
+				Type:    input.Type,
+			}
+		} else {
+			inputs[i] = input
+		}
+		if input.Indexed {
+			names[i] = fmt.Sprintf("%v indexed %v", input.Type, inputs[i].Name)
+		} else {
+			names[i] = fmt.Sprintf("%v %v", input.Type, inputs[i].Name)
+		}
+		types[i] = input.Type.String()
+	}
+	return names, types
+}
+
+// buildSignature constructs a function/event/error signature string from
+// a name and a list of type strings (e.g. "foo(uint32,int256)").
+func buildSignature(name string, typeStrings []string) string {
+	return fmt.Sprintf("%v(%v)", name, strings.Join(typeStrings, ","))
+}
 
 // ResolveNameConflict returns the next available name for a given thing.
 // This helper can be used for lots of purposes:

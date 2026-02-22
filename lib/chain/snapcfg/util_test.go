@@ -1,8 +1,9 @@
 package snapcfg
 
 import (
-	"github.com/n42blockchain/N42/lib/downloader/snaptype"
 	"testing"
+
+	"github.com/n42blockchain/N42/lib/downloader/snaptype"
 )
 
 func TestNameToParts(t *testing.T) {

@@ -16,14 +16,14 @@
 
 package dbg
 
-import (
-	stack2 "github.com/go-stack/stack"
-)
+import "github.com/go-stack/stack"
 
-// Stack returns stack-trace in logger-friendly compact formatting
+// Stack returns a stack trace in logger-friendly compact formatting.
 func Stack() string {
-	return stack2.Trace().TrimBelow(stack2.Caller(1)).String()
+	return stack.Trace().TrimBelow(stack.Caller(1)).String()
 }
+
+// StackSkip returns a stack trace, skipping the given number of frames.
 func StackSkip(skip int) string {
-	return stack2.Trace().TrimBelow(stack2.Caller(skip)).String()
+	return stack.Trace().TrimBelow(stack.Caller(skip)).String()
 }

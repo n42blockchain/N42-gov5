@@ -112,7 +112,6 @@ func (h *History) OpenList(fNames []string) error {
 		return err
 	}
 	return h.openList(fNames)
-
 }
 func (h *History) openList(fNames []string) error {
 	h.closeWhatNotInList(fNames)
@@ -325,8 +324,6 @@ func (h *History) buildVi(ctx context.Context, item *filesItem, p *background.Pr
 	fName := fmt.Sprintf("%s.%d-%d.vi", h.filenameBase, fromStep, toStep)
 	idxPath := filepath.Join(h.dir, fName)
 
-	//h.logger.Info("[snapshots] build idx", "file", fName)
-
 	p.Name.Store(&fName)
 	p.Total.Store(uint64(iiItem.decompressor.Count()) * 2)
 
@@ -380,7 +377,6 @@ func iterateForVi(historyItem, iiItem *filesItem, p *background.Progress, compre
 	for cp.Len() > 0 {
 		lastKey := common.Copy(cp[0].key)
 		// Advance all the items that have this key (including the top)
-		//var mergeOnce bool
 		for cp.Len() > 0 && bytes.Equal(cp[0].key, lastKey) {
 			ci1 := cp[0]
 			keysCount := eliasfano32.Count(ci1.val)
@@ -518,10 +514,7 @@ func (f historyFlusher) Flush(ctx context.Context, tx kv.RwTx) error {
 	if err := f.i.Flush(ctx, tx); err != nil {
 		return err
 	}
-	if err := f.h.flush(ctx, tx); err != nil {
-		return err
-	}
-	return nil
+	return f.h.flush(ctx, tx)
 }
 
 type historyWAL struct {
@@ -543,7 +536,7 @@ type historyWAL struct {
 }
 
 func (h *historyWAL) close() {
-	if h == nil { // allow dobule-close
+	if h == nil { // allow double-close
 		return
 	}
 	if h.historyVals != nil {
@@ -1006,9 +999,6 @@ func (h *History) warmup(ctx context.Context, txFrom, limit uint64, tx kv.Tx) er
 	}
 	keyBuf := make([]byte, 256)
 	for ; err == nil && k != nil; k, v, err = historyKeysCursor.Next() {
-		if err != nil {
-			return err
-		}
 		txNum := binary.BigEndian.Uint64(k)
 		if txNum >= txTo {
 			break
@@ -1031,17 +1021,6 @@ func (h *History) warmup(ctx context.Context, txFrom, limit uint64, tx kv.Tx) er
 }
 
 func (h *History) isEmpty(tx kv.Tx) (bool, error) {
-	if h.largeValues {
-		k, err := kv.FirstKey(tx, h.historyValsTable)
-		if err != nil {
-			return false, err
-		}
-		k2, err := kv.FirstKey(tx, h.indexKeysTable)
-		if err != nil {
-			return false, err
-		}
-		return k == nil && k2 == nil, nil
-	}
 	k, err := kv.FirstKey(tx, h.historyValsTable)
 	if err != nil {
 		return false, err
@@ -1133,7 +1112,6 @@ type HistoryRoTx struct {
 }
 
 func (h *History) BeginFilesRo() *HistoryRoTx {
-
 	var hc = HistoryRoTx{
 		h:     h,
 		iit:   h.InvertedIndex.BeginFilesRo(),
@@ -1180,10 +1158,7 @@ func (ht *HistoryRoTx) Close() {
 			continue
 		}
 		refCnt := item.src.refcount.Add(-1)
-		//if ht.h.filenameBase == "accounts" && item.src.canDelete.Load() {
-		//	log.Warn("[history] HistoryRoTx.Close: check file to remove", "refCnt", refCnt, "name", item.src.decompressor.FileName())
-		//}
-		//GC: last reader responsible to remove useles files: close it and delete
+		// GC: last reader responsible to remove useless files: close it and delete
 		if refCnt == 0 && item.src.canDelete.Load() {
 			item.src.closeFilesAndRemove()
 		}
@@ -1204,9 +1179,6 @@ func (ht *HistoryRoTx) getFile(from, to uint64) (it ctxItem, ok bool) {
 }
 
 func (ht *HistoryRoTx) GetNoState(key []byte, txNum uint64) ([]byte, bool, error) {
-	exactStep1, exactStep2, lastIndexedTxNum, foundExactShard1, foundExactShard2 := uint64(0), uint64(0), uint64(0), false, false
-
-	//fmt.Printf("GetNoState [%x] %d\n", key, txNum)
 	var foundTxNum uint64
 	var foundEndTxNum uint64
 	var foundStartTxNum uint64
@@ -1225,9 +1197,6 @@ func (ht *HistoryRoTx) GetNoState(key []byte, txNum uint64) ([]byte, bool, error
 		k, _ := g.NextUncompressed()
 
 		if !bytes.Equal(k, key) {
-			//if bytes.Equal(key, hex.MustDecodeString("009ba32869045058a3f05d6f3dd2abb967e338f6")) {
-			//	fmt.Printf("not in this shard: %x, %d, %d-%d\n", k, txNum, item.startTxNum/ht.h.aggregationStep, item.endTxNum/ht.h.aggregationStep)
-			//}
 			return true
 		}
 		eliasVal, _ := g.NextUncompressed()
@@ -1248,50 +1217,10 @@ func (ht *HistoryRoTx) GetNoState(key []byte, txNum uint64) ([]byte, bool, error
 		return true
 	}
 
-	// -- LocaliyIndex opimization --
-	// check up to 2 exact files
-	if foundExactShard1 {
-		from, to := exactStep1*ht.h.aggregationStep, (exactStep1+StepsInBiggestFile)*ht.h.aggregationStep
-		item, ok := ht.iit.getFile(from, to)
-		if ok {
-			findInFile(item)
+	for _, item := range ht.iit.files {
+		if !findInFile(item) {
+			break
 		}
-		//for _, item := range ht.invIndexFiles {
-		//	if item.startTxNum == from && item.endTxNum == to {
-		//		findInFile(item)
-		//	}
-		//}
-		//exactShard1, ok := ht.invIndexFiles.Get(ctxItem{startTxNum: exactStep1 * ht.h.aggregationStep, endTxNum: (exactStep1 + StepsInBiggestFile) * ht.h.aggregationStep})
-		//if ok {
-		//	findInFile(exactShard1)
-		//}
-	}
-	if !found && foundExactShard2 {
-		from, to := exactStep2*ht.h.aggregationStep, (exactStep2+StepsInBiggestFile)*ht.h.aggregationStep
-		item, ok := ht.iit.getFile(from, to)
-		if ok {
-			findInFile(item)
-		}
-		//exactShard2, ok := ht.invIndexFiles.Get(ctxItem{startTxNum: exactStep2 * ht.h.aggregationStep, endTxNum: (exactStep2 + StepsInBiggestFile) * ht.h.aggregationStep})
-		//if ok {
-		//	findInFile(exactShard2)
-		//}
-	}
-	// otherwise search in recent non-fully-merged files (they are out of LocalityIndex scope)
-	// searchFrom - variable already set for this
-	// if there is no LocaliyIndex available
-	// -- LocaliyIndex opimization End --
-
-	if !found {
-		for _, item := range ht.iit.files {
-			if item.endTxNum <= lastIndexedTxNum {
-				continue
-			}
-			if !findInFile(item) {
-				break
-			}
-		}
-		//ht.invIndexFiles.AscendGreaterOrEqual(ctxItem{startTxNum: lastIndexedTxNum, endTxNum: lastIndexedTxNum}, findInFile)
 	}
 
 	if found {
@@ -1306,7 +1235,6 @@ func (ht *HistoryRoTx) GetNoState(key []byte, txNum uint64) ([]byte, bool, error
 		if !ok {
 			return nil, false, nil
 		}
-		//fmt.Printf("offset = %d, txKey=[%x], key=[%x]\n", offset, txKey[:], key)
 		g := ht.statelessGetter(historyItem.i)
 		g.Reset(offset)
 		if ht.h.compressVals {
@@ -1320,7 +1248,6 @@ func (ht *HistoryRoTx) GetNoState(key []byte, txNum uint64) ([]byte, bool, error
 }
 
 func (hs *HistoryStep) GetNoState(key []byte, txNum uint64) ([]byte, bool, uint64) {
-	//fmt.Printf("GetNoState [%x] %d\n", key, txNum)
 	if hs.indexFile.reader.Empty() {
 		return nil, false, txNum
 	}
@@ -1334,7 +1261,6 @@ func (hs *HistoryStep) GetNoState(key []byte, txNum uint64) ([]byte, bool, uint6
 	if !bytes.Equal(k, key) {
 		return nil, false, txNum
 	}
-	//fmt.Printf("Found key=%x\n", k)
 	eliasVal, _ := g.NextUncompressed()
 	ef, _ := eliasfano32.ReadEliasFano(eliasVal)
 	n, ok := ef.Search(txNum)
@@ -1347,7 +1273,6 @@ func (hs *HistoryStep) GetNoState(key []byte, txNum uint64) ([]byte, bool, uint6
 	if !ok {
 		return nil, false, txNum
 	}
-	//fmt.Printf("offset = %d, txKey=[%x], key=[%x]\n", offset, txKey[:], key)
 	g = hs.historyFile.getter
 	g.Reset(offset)
 	if hs.compressVals {
@@ -1372,7 +1297,6 @@ func (hs *HistoryStep) MaxTxNum(key []byte) (bool, uint64) {
 	if !bytes.Equal(k, key) {
 		return false, 0
 	}
-	//fmt.Printf("Found key=%x\n", k)
 	eliasVal, _ := g.NextUncompressed()
 	return true, eliasfano32.Max(eliasVal)
 }
@@ -1412,7 +1336,7 @@ func (ht *HistoryRoTx) getNoStateFromDB(key []byte, txNum uint64, tx kv.Tx) ([]b
 		if kAndTxNum == nil || !bytes.Equal(kAndTxNum[:len(kAndTxNum)-8], key) {
 			return nil, false, nil
 		}
-		// val == []byte{},m eans key was created in this txNum and doesn't exists before.
+		// val == []byte{} means key was created in this txNum and doesn't exist before.
 		return val, true, nil
 	}
 	c, err := tx.CursorDupSort(ht.h.historyValsTable)
@@ -1430,7 +1354,7 @@ func (ht *HistoryRoTx) getNoStateFromDB(key []byte, txNum uint64, tx kv.Tx) ([]b
 	if val == nil {
 		return nil, false, nil
 	}
-	// `val == []byte{}` means key was created in this txNum and doesn't exists before.
+	// `val == []byte{}` means key was created in this txNum and doesn't exist before.
 	return val[8:], true, nil
 }
 
@@ -1711,7 +1635,7 @@ func (hi *StateAsOfIterDB) Next() ([]byte, []byte, error) {
 }
 
 func (ht *HistoryRoTx) iterateChangedFrozen(fromTxNum, toTxNum int, asc order.By, limit int) (iter.KV, error) {
-	if asc == false {
+	if !asc {
 		panic("not supported yet")
 	}
 	if len(ht.iit.files) == 0 {
@@ -1877,9 +1801,6 @@ func (hi *HistoryChangesIterFiles) HasNext() bool {
 		return false
 	}
 	return true
-	//if hi.toPrefix == nil { // s.nextK == nil check is above
-	//	return true
-	//}
 }
 
 func (hi *HistoryChangesIterFiles) Next() ([]byte, []byte, error) {

@@ -80,7 +80,6 @@ func (d *DiagnosticClient) setFillDBInfo(info SnapshotFillDBStage) {
 	if d.syncStats.SnapshotFillDB.Stages == nil {
 		d.syncStats.SnapshotFillDB.Stages = []SnapshotFillDBStage{info}
 	} else {
-
 		for idx, stg := range d.syncStats.SnapshotFillDB.Stages {
 			if stg.StageName == info.StageName {
 				d.syncStats.SnapshotFillDB.Stages[idx] = info
@@ -98,17 +97,10 @@ func (d *DiagnosticClient) SaveSnapshotStageStatsToDB() {
 
 func (d *DiagnosticClient) saveSnapshotStageStatsToDB() {
 	err := d.db.Update(d.ctx, func(tx kv.RwTx) error {
-		err := SnapshotFillDBUpdater(d.syncStats.SnapshotFillDB)(tx)
-		if err != nil {
+		if err := SnapshotFillDBUpdater(d.syncStats.SnapshotFillDB)(tx); err != nil {
 			return err
 		}
-
-		err = StagesListUpdater(d.syncStages)(tx)
-		if err != nil {
-			return err
-		}
-
-		return nil
+		return StagesListUpdater(d.syncStages)(tx)
 	})
 	if err != nil {
 		log.Debug("[Diagnostics] Failed to update snapshot download info", "err", err)

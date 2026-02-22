@@ -126,7 +126,7 @@ func (tx *LegacyTx) setSignatureValues(chainID, v, r, s *uint256.Int) {
 }
 
 func (tx *LegacyTx) hash() types.Hash {
-	hash := hash.RlpHash([]interface{}{
+	return hash.RlpHash([]interface{}{
 		tx.Nonce,
 		tx.GasPrice,
 		tx.Gas,
@@ -135,5 +135,4 @@ func (tx *LegacyTx) hash() types.Hash {
 		tx.Data,
 		tx.V, tx.R, tx.S,
 	})
-	return hash
 }

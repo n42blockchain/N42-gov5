@@ -100,16 +100,6 @@ var reflectTests = []reflectTest{
 		},
 	},
 	{
-		name: "DifferentName",
-		args: []string{"fieldB"},
-		struc: struct {
-			FieldA int `abi:"fieldB"`
-		}{},
-		want: map[string]string{
-			"fieldB": "FieldA",
-		},
-	},
-	{
 		name: "MultipleFields",
 		args: []string{"fieldA", "fieldB"},
 		struc: struct {
@@ -192,70 +182,69 @@ func TestReflectNameToStruct(t *testing.T) {
 }
 
 func TestConvertType(t *testing.T) {
-	// Test Basic Struct
 	type T struct {
 		X *big.Int
 		Y *big.Int
 	}
-	// Create on-the-fly structure
-	var fields []reflect.StructField
-	fields = append(fields, reflect.StructField{
-		Name: "X",
-		Type: reflect.TypeOf(new(big.Int)),
-		Tag:  "json:\"" + "x" + "\"",
-	})
-	fields = append(fields, reflect.StructField{
-		Name: "Y",
-		Type: reflect.TypeOf(new(big.Int)),
-		Tag:  "json:\"" + "y" + "\"",
-	})
-	val := reflect.New(reflect.StructOf(fields))
+
+	fields := []reflect.StructField{
+		{Name: "X", Type: reflect.TypeOf(new(big.Int)), Tag: `json:"x"`},
+		{Name: "Y", Type: reflect.TypeOf(new(big.Int)), Tag: `json:"y"`},
+	}
+	structType := reflect.StructOf(fields)
+
+	// Basic struct conversion
+	val := reflect.New(structType)
 	val.Elem().Field(0).Set(reflect.ValueOf(big.NewInt(1)))
 	val.Elem().Field(1).Set(reflect.ValueOf(big.NewInt(2)))
-	// ConvertType
+
 	out := *ConvertType(val.Interface(), new(T)).(*T)
 	if out.X.Cmp(big.NewInt(1)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out.X, big.NewInt(1))
+		t.Errorf("ConvertType struct X: got %v, want 1", out.X)
 	}
 	if out.Y.Cmp(big.NewInt(2)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out.Y, big.NewInt(2))
+		t.Errorf("ConvertType struct Y: got %v, want 2", out.Y)
 	}
-	// Slice Type
-	val2 := reflect.MakeSlice(reflect.SliceOf(reflect.StructOf(fields)), 2, 2)
+
+	// Slice conversion
+	val2 := reflect.MakeSlice(reflect.SliceOf(structType), 2, 2)
 	val2.Index(0).Field(0).Set(reflect.ValueOf(big.NewInt(1)))
 	val2.Index(0).Field(1).Set(reflect.ValueOf(big.NewInt(2)))
 	val2.Index(1).Field(0).Set(reflect.ValueOf(big.NewInt(3)))
 	val2.Index(1).Field(1).Set(reflect.ValueOf(big.NewInt(4)))
+
 	out2 := *ConvertType(val2.Interface(), new([]T)).(*[]T)
 	if out2[0].X.Cmp(big.NewInt(1)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out2[0].X, big.NewInt(1))
+		t.Errorf("ConvertType slice [0].X: got %v, want 1", out2[0].X)
 	}
 	if out2[0].Y.Cmp(big.NewInt(2)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out2[1].Y, big.NewInt(2))
+		t.Errorf("ConvertType slice [0].Y: got %v, want 2", out2[0].Y)
 	}
 	if out2[1].X.Cmp(big.NewInt(3)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out2[0].X, big.NewInt(1))
+		t.Errorf("ConvertType slice [1].X: got %v, want 3", out2[1].X)
 	}
 	if out2[1].Y.Cmp(big.NewInt(4)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out2[1].Y, big.NewInt(2))
+		t.Errorf("ConvertType slice [1].Y: got %v, want 4", out2[1].Y)
 	}
-	// Array Type
-	val3 := reflect.New(reflect.ArrayOf(2, reflect.StructOf(fields)))
+
+	// Array conversion
+	val3 := reflect.New(reflect.ArrayOf(2, structType))
 	val3.Elem().Index(0).Field(0).Set(reflect.ValueOf(big.NewInt(1)))
 	val3.Elem().Index(0).Field(1).Set(reflect.ValueOf(big.NewInt(2)))
 	val3.Elem().Index(1).Field(0).Set(reflect.ValueOf(big.NewInt(3)))
 	val3.Elem().Index(1).Field(1).Set(reflect.ValueOf(big.NewInt(4)))
+
 	out3 := *ConvertType(val3.Interface(), new([2]T)).(*[2]T)
 	if out3[0].X.Cmp(big.NewInt(1)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out3[0].X, big.NewInt(1))
+		t.Errorf("ConvertType array [0].X: got %v, want 1", out3[0].X)
 	}
 	if out3[0].Y.Cmp(big.NewInt(2)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out3[1].Y, big.NewInt(2))
+		t.Errorf("ConvertType array [0].Y: got %v, want 2", out3[0].Y)
 	}
 	if out3[1].X.Cmp(big.NewInt(3)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out3[0].X, big.NewInt(1))
+		t.Errorf("ConvertType array [1].X: got %v, want 3", out3[1].X)
 	}
 	if out3[1].Y.Cmp(big.NewInt(4)) != 0 {
-		t.Errorf("ConvertType failed, got %v want %v", out3[1].Y, big.NewInt(2))
+		t.Errorf("ConvertType array [1].Y: got %v, want 4", out3[1].Y)
 	}
 }

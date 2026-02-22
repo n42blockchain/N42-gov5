@@ -23,65 +23,58 @@ import (
 	"fmt"
 	"hash/crc32"
 	"net"
+	"os"
 	"path"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
-
-	"github.com/gofrs/flock"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/common/cmp"
-	"github.com/n42blockchain/N42/common/hexutil"
-	prometheus "github.com/n42blockchain/N42/common/metrics"
-	"github.com/n42blockchain/N42/contracts/deposit"
-	n42deposit "github.com/n42blockchain/N42/contracts/deposit/AMT"
-	fujideposit "github.com/n42blockchain/N42/contracts/deposit/FUJI"
-	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/NFT"
-	"github.com/n42blockchain/N42/internal/debug"
-	"github.com/n42blockchain/N42/internal/p2p"
-	n42sync "github.com/n42blockchain/N42/internal/sync"
-	initialsync "github.com/n42blockchain/N42/internal/sync/initial-sync"
-	"github.com/n42blockchain/N42/internal/tracers"
-	pkgerrors "github.com/pkg/errors"
-	"github.com/urfave/cli/v2"
-
-	"github.com/n42blockchain/N42/internal"
-	"github.com/n42blockchain/N42/internal/api"
+	"sync"
 
 	"github.com/c2h5oh/datasize"
-	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/kv/mdbx"
-	"github.com/n42blockchain/N42/lib/kv/memdb"
-	log2 "github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/n42blockchain/N42/modules"
+	"github.com/gofrs/flock"
+	"github.com/holiman/uint256"
+	pkgerrors "github.com/pkg/errors"
+	"github.com/urfave/cli/v2"
+	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
-
-	"os"
-	"path/filepath"
-	"strconv"
-
-	"github.com/n42blockchain/N42/log"
-
-	"sync"
 
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/hexutil"
+	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
-
+	"github.com/n42blockchain/N42/contracts/deposit"
+	n42deposit "github.com/n42blockchain/N42/contracts/deposit/AMT"
+	fujideposit "github.com/n42blockchain/N42/contracts/deposit/FUJI"
+	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/NFT"
+	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
+	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/miner"
+	"github.com/n42blockchain/N42/internal/p2p"
+	n42sync "github.com/n42blockchain/N42/internal/sync"
+	initialsync "github.com/n42blockchain/N42/internal/sync/initial-sync"
+	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txspool"
+	"github.com/n42blockchain/N42/lib/common/cmp"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
+	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/utils"
-	"go.uber.org/zap"
 )
 
 const datadirJWTKey = "jwtsecret" // Path within the datadir to the node's jwt secret
@@ -100,7 +93,6 @@ type Node struct {
 	shutDown      chan struct{} // Channel to wait for termination notifications
 	dirLock       *flock.Flock  // prevents concurrent use of instance directory
 
-	// s
 	miner           *miner.Miner
 	blockChain      common.IBlockChain
 	engine          consensus.Engine
@@ -118,8 +110,8 @@ type Node struct {
 	http          *httpServer
 	ipc           *ipcServer
 	ws            *httpServer
-	httpAuth      *httpServer //
-	wsAuth        *httpServer //
+	httpAuth      *httpServer
+	wsAuth        *httpServer
 	inprocHandler *jsonrpc.Server
 
 	keyDir     string // key store directory
@@ -136,7 +128,6 @@ const (
 )
 
 func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
-
 	ctx, cancel := context.WithCancel(cliCtx.Context)
 	success := false
 	defer func() {
@@ -157,30 +148,26 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		err             error
 	)
 
-	//
 	chainKv, err = OpenDatabase(ctx, cfg, nil, kv.ChainDB.String())
 	if err != nil {
 		return nil, err
 	}
 
 	if err := chainKv.View(ctx, func(tx kv.Tx) error {
-		//
 		genesisHash, err = rawdb.ReadCanonicalHash(tx, 0)
-		//
 		if genesisHash == (types.Hash{}) && err != nil {
-			//return fmt.Errorf("GenesisHash is missing err:%w", err)
 			return internal.ErrGenesisNoConfig
 		}
-		if genesisHash == (types.Hash{}) && err == nil {
-			//needs WriteGenesisBlock
+		if genesisHash == (types.Hash{}) {
+			// No genesis stored yet; caller will write it below.
 			return nil
 		}
-		//
+
 		chainConfig, err = rawdb.ReadChainConfig(tx, genesisHash)
 		if err != nil {
 			return err
 		}
-		//
+
 		if genesisBlock, err = rawdb.ReadBlockByHash(tx, genesisHash); genesisBlock == nil {
 			return fmt.Errorf("genesisBlock is missing err:%w", err)
 		}
@@ -195,26 +182,20 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		genesisConfig = internal.GenesisByChainName(cfg.NodeCfg.Chain)
 		chainConfig = params.ChainConfigByChainName(cfg.NodeCfg.Chain)
 		if err := chainKv.Update(ctx, func(tx kv.RwTx) error {
-			var genesisErr error
-			genesisBlock, genesisErr = WriteGenesisBlock(tx, genesisConfig)
-			if nil != genesisErr {
-				return genesisErr
-			}
-			return nil
+			var writeErr error
+			genesisBlock, writeErr = WriteGenesisBlock(tx, genesisConfig)
+			return writeErr
 		}); err != nil {
 			return nil, err
 		}
 	}
 
-	// update ChainConfig everytime
+	// Update ChainConfig on every startup for non-private chains.
 	if cfg.NodeCfg.Chain != "private" {
 		if err := chainKv.Update(ctx, func(tx kv.RwTx) error {
 			genesisHash = *params.GenesisHashByChainName(cfg.NodeCfg.Chain)
 			genesisConfig = internal.GenesisByChainName(cfg.NodeCfg.Chain)
-			if err := WriteChainConfig(tx, genesisHash, genesisConfig); err != nil {
-				return err
-			}
-			return nil
+			return WriteChainConfig(tx, genesisHash, genesisConfig)
 		}); err != nil {
 			return nil, err
 		}
@@ -249,28 +230,25 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	if cfg.ChainCfg.Apos != nil {
-		depositContracts := make(map[types.Address]deposit.DepositContract, 0)
-		if depositContractAddress := cfg.ChainCfg.Apos.DepositContract; depositContractAddress != "" {
-			var addr types.Address
-			if !addr.DecodeString(depositContractAddress) {
-				return nil, fmt.Errorf("cannot decode DepositContract address: %s", depositContractAddress)
-			}
-			depositContracts[addr] = new(n42deposit.Contract)
+		depositContracts := make(map[types.Address]deposit.DepositContract)
+		entries := []struct {
+			addr     string
+			name     string
+			contract deposit.DepositContract
+		}{
+			{cfg.ChainCfg.Apos.DepositContract, "DepositContract", new(n42deposit.Contract)},
+			{cfg.ChainCfg.Apos.DepositNFTContract, "DepositNFTContract", new(nftdeposit.Contract)},
+			{cfg.ChainCfg.Apos.DepositFUJIContract, "DepositFUJIContract", new(fujideposit.Contract)},
 		}
-		if depositNFTContractAddress := cfg.ChainCfg.Apos.DepositNFTContract; depositNFTContractAddress != "" {
-			var addr types.Address
-			if !addr.DecodeString(depositNFTContractAddress) {
-				return nil, fmt.Errorf("cannot decode DepositNFTContract address: %s", depositNFTContractAddress)
+		for _, e := range entries {
+			if e.addr == "" {
+				continue
 			}
-			depositContracts[addr] = new(nftdeposit.Contract)
-		}
-
-		if depositFUJIContractAddress := cfg.ChainCfg.Apos.DepositFUJIContract; depositFUJIContractAddress != "" {
 			var addr types.Address
-			if !addr.DecodeString(depositFUJIContractAddress) {
-				return nil, fmt.Errorf("cannot decode DepositFUJIContract address: %s", depositFUJIContractAddress)
+			if !addr.DecodeString(e.addr) {
+				return nil, fmt.Errorf("cannot decode %s address: %s", e.name, e.addr)
 			}
-			depositContracts[addr] = new(fujideposit.Contract)
+			depositContracts[addr] = e.contract
 		}
 		depositContract = deposit.NewDeposit(ctx, bc, chainKv, depositContracts)
 	}
@@ -293,21 +271,6 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sync service: %w", err)
-	}
-
-	// Initialize bloom filter with pending transactions
-	var txs []*transaction.Transaction
-	pending := pool.Pending(false)
-	for _, batch := range pending {
-		txs = append(txs, batch...)
-	}
-	var bloom *types.Bloom
-	if len(txs) > 0 {
-		bloom, _ = types.NewBloom(uint64(len(txs)))
-		for _, tx := range txs {
-			hash := tx.Hash()
-			bloom.Add(hash.Bytes())
-		}
 	}
 
 	miner := miner.NewMiner(ctx, cfg, bc, engine, pool, nil)
@@ -351,9 +314,6 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		is:   is,
 	}
 
-	// Apply flags.
-	//SetNodeConfig(ctx, &cfg)
-	// Node doesn't by default populate account manager backends
 	if err = setAccountManagerBackends(&node, &cfg.NodeCfg); err != nil {
 		log.Errorf("Failed to set account manager backends: %v", err)
 	}
@@ -430,26 +390,25 @@ func (n *Node) Start() error {
 	}
 
 	if n.config.NodeCfg.Miner {
-
-		// Configure the local mining address
 		eb, err := n.Etherbase()
 		if err != nil {
 			log.Error("Cannot start mining without etherbase", "err", err)
 			return fmt.Errorf("etherbase missing: %v", err)
 		}
 
+		// Authorize the consensus engine with the miner's signing function.
 		if poa, ok := n.engine.(*apoa.Apoa); ok {
-			wallet, err := n.accman.Find(accounts.Account{Address: eb})
-			if wallet == nil || err != nil {
-				log.Error("Etherbase account unavailable locally", "err", err)
-				return fmt.Errorf("signer missing: %v", err)
+			wallet, findErr := n.accman.Find(accounts.Account{Address: eb})
+			if wallet == nil || findErr != nil {
+				log.Error("Etherbase account unavailable locally", "err", findErr)
+				return fmt.Errorf("signer missing: %v", findErr)
 			}
 			poa.Authorize(eb, wallet.SignData)
 		} else if pos, ok := n.engine.(*apos.APos); ok {
-			wallet, err := n.accman.Find(accounts.Account{Address: eb})
-			if wallet == nil || err != nil {
-				log.Error("Etherbase account unavailable locally", "err", err)
-				return fmt.Errorf("signer missing: %v", err)
+			wallet, findErr := n.accman.Find(accounts.Account{Address: eb})
+			if wallet == nil || findErr != nil {
+				log.Error("Etherbase account unavailable locally", "err", findErr)
+				return fmt.Errorf("signer missing: %v", findErr)
 			}
 			pos.Authorize(eb, wallet.SignData)
 		}
@@ -475,7 +434,6 @@ func (n *Node) Start() error {
 	}
 
 	log.PrintStartupProgress(3, 6, "P2P networking")
-	//n.p2p.AddConnectionHandler()
 	n.p2p.Start()
 
 	log.PrintStartupProgress(4, 6, "Sync service")
@@ -612,20 +570,13 @@ func (n *Node) obtainJWTSecret(cliParam string) ([]byte, error) {
 }
 
 func (n *Node) startRPC() error {
-
 	openAPIs, allAPIs := n.getAPIs()
 
 	if err := n.startInProc(); err != nil {
 		return err
 	}
 
-	if n.ipc.endpoint != "" {
-		//if err := n.ipc.start(n.rpcAPIs); err != nil {
-		//	return err
-		//}
-	}
 	if n.config.NodeCfg.HTTP {
-		//todo []string{"eth", "web3", "debug", "net", "apoa", "txpool", "apos"}
 		config := httpConfig{
 			CorsAllowedOrigins: utils.SplitAndTrim(n.config.NodeCfg.HTTPCors),
 			Vhosts:             []string{"*"},
@@ -810,15 +761,7 @@ func (n *Node) doClose(errs []error) error {
 	// Unblock n.Wait.
 	close(n.shutDown)
 
-	// Report any errors that might have occurred.
-	switch len(errs) {
-	case 0:
-		return nil
-	case 1:
-		return errs[0]
-	default:
-		return fmt.Errorf("%v", errs)
-	}
+	return errors.Join(errs...)
 }
 
 func (n *Node) Wait() {
@@ -830,7 +773,7 @@ func (n *Node) AccountManager() *accounts.Manager {
 	return n.accman
 }
 
-// AccountManager retrieves the account manager used by the protocol stack.
+// BlockChain returns the blockchain instance managed by this node.
 func (n *Node) BlockChain() common.IBlockChain {
 	return n.blockChain
 }
@@ -888,16 +831,16 @@ func (n *Node) KeyStoreDir() string {
 }
 
 func (n *Node) SetupMetrics(config conf.MetricsConfig) {
-	if config.Enable {
-		if config.HTTP != "" {
-			address := net.JoinHostPort(config.HTTP, fmt.Sprintf("%d", config.Port))
-			log.Info("Enabling stand-alone metrics HTTP endpoint", "address", address)
-			prometheus.Setup(address, log.Root())
-		} else if config.Port != 0 {
-			log.Warn(fmt.Sprintf("--%s specified without --%s, metrics server will not start.", "metrics.port", "metrics.addr"))
-		}
+	if !config.Enable {
+		return
 	}
-
+	if config.HTTP != "" {
+		address := net.JoinHostPort(config.HTTP, strconv.Itoa(config.Port))
+		log.Info("Enabling stand-alone metrics HTTP endpoint", "address", address)
+		prometheus.Setup(address, log.Root())
+	} else if config.Port != 0 {
+		log.Warn("--metrics.port specified without --metrics.addr, metrics server will not start.")
+	}
 }
 
 func (s *Node) Etherbase() (eb types.Address, err error) {
@@ -932,35 +875,25 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		logger = log2.New()
 	}
 
-	var chainKv kv.RwDB
-	var err error
-
 	dbPath := filepath.Join(cfg.NodeCfg.DataDir, name)
-
-	var openFunc func(exclusive bool) (kv.RwDB, error)
 	log.Info("Opening database", "name", name, "path", dbPath)
-	openFunc = func(exclusive bool) (kv.RwDB, error) {
-		roTxsLimiter := semaphore.NewWeighted(int64(cmp.Max(32, runtime.GOMAXPROCS(-1)*8))) // 1 less than max to allow unlocking to happen
-		opts := mdbx.NewMDBX(logger).
-			WriteMergeThreshold(4 * 8192).
-			Path(dbPath).Label(kv.ChainDB).
-			DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter)
-		if exclusive {
-			opts = opts.Exclusive()
-		}
 
-		modules.N42Init()
-		kv.ChaindataTablesCfg = modules.N42TableCfg
+	roTxsLimiter := semaphore.NewWeighted(int64(cmp.Max(32, runtime.GOMAXPROCS(-1)*8)))
 
-		opts = opts.MapSize(8 * datasize.TB)
-		return opts.Open(ctx)
-	}
-	chainKv, err = openFunc(false)
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+
+	chainKv, err := mdbx.NewMDBX(logger).
+		WriteMergeThreshold(4 * 8192).
+		Path(dbPath).Label(kv.ChainDB).
+		DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter).
+		MapSize(8 * datasize.TB).
+		Open(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = chainKv.Update(ctx, func(tx kv.RwTx) (err error) {
+	if err = chainKv.Update(ctx, func(tx kv.RwTx) error {
 		return params.SetN42Version(tx, params.VersionKeyCreated)
 	}); err != nil {
 		return nil, err
@@ -982,14 +915,12 @@ func WriteGenesisBlock(db kv.RwTx, genesis *conf.Genesis) (*block.Block, error) 
 	if err != nil {
 		return nil, err
 	}
-
 	return genBlock, nil
-
 }
 
 func WriteChainConfig(db kv.RwTx, genesisHash types.Hash, genesis *conf.Genesis) error {
 	if err := rawdb.WriteChainConfig(db, genesisHash, genesis.Config); err != nil {
-		log.Error("cannot get chain config from db", "err", err)
+		log.Error("failed to write chain config", "err", err)
 		return err
 	}
 	return nil

@@ -29,9 +29,7 @@ import (
 	"github.com/n42blockchain/N42/lib/crypto/cryptopool"
 )
 
-var (
-	addressT = reflect.TypeOf(Address{})
-)
+var addressT = reflect.TypeOf(Address{})
 
 // Address represents the 20 byte address of an Ethereum account.
 type Address [length.Addr]byte
@@ -109,7 +107,7 @@ func (a Address) hex() []byte {
 }
 
 // Format implements fmt.Formatter.
-// Address supports the %v, %s, %v, %x, %X and %d format verbs.
+// Address supports the %v, %s, %q, %x, %X and %d format verbs.
 func (a Address) Format(s fmt.State, c rune) {
 	switch c {
 	case 'v', 's':
@@ -147,10 +145,9 @@ func (a *Address) SetBytes(b []byte) {
 
 // MarshalText returns the hex representation of a.
 func (a Address) MarshalText() ([]byte, error) {
-	b := a[:]
-	result := make([]byte, len(b)*2+2)
+	result := make([]byte, len(a)*2+2)
 	copy(result, hexPrefix)
-	hex.Encode(result[2:], b)
+	hex.Encode(result[2:], a[:])
 	return result, nil
 }
 
@@ -165,7 +162,7 @@ func (a *Address) UnmarshalJSON(input []byte) error {
 }
 
 // Scan implements Scanner for database/sql.
-func (a *Address) Scan(src interface{}) error {
+func (a *Address) Scan(src any) error {
 	srcB, ok := src.([]byte)
 	if !ok {
 		return fmt.Errorf("can't scan %T into Address", src)

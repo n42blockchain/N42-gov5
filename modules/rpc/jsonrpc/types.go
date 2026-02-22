@@ -20,11 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/n42blockchain/N42/common/hexutil"
 	"math"
 	"strconv"
 	"strings"
 
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -136,24 +136,22 @@ func (bnh *BlockNumberOrHash) UnmarshalJSON(data []byte) error {
 	default:
 		if len(input) == 66 {
 			hash := types.Hash{}
-			err := UnmarshalText(hash, []byte(input))
-			if err != nil {
+			if err := UnmarshalText(hash, []byte(input)); err != nil {
 				return err
 			}
 			bnh.BlockHash = &hash
 			return nil
-		} else {
-			blckNum, err := DecodeUint64(input)
-			if err != nil {
-				return err
-			}
-			if blckNum > math.MaxInt64 {
-				return fmt.Errorf("blocknumber too high")
-			}
-			bn := BlockNumber(blckNum)
-			bnh.BlockNumber = &bn
-			return nil
 		}
+		blckNum, err := DecodeUint64(input)
+		if err != nil {
+			return err
+		}
+		if blckNum > math.MaxInt64 {
+			return fmt.Errorf("blocknumber too high")
+		}
+		bn := BlockNumber(blckNum)
+		bnh.BlockNumber = &bn
+		return nil
 	}
 }
 
@@ -172,16 +170,11 @@ func (bnh *BlockNumberOrHash) Hash() (types.Hash, bool) {
 }
 
 func BlockNumberOrHashWithNumber(blockNr BlockNumber) BlockNumberOrHash {
-	return BlockNumberOrHash{
-		BlockNumber:      &blockNr,
-		BlockHash:        nil,
-		RequireCanonical: false,
-	}
+	return BlockNumberOrHash{BlockNumber: &blockNr}
 }
 
 func BlockNumberOrHashWithHash(hash types.Hash, canonical bool) BlockNumberOrHash {
 	return BlockNumberOrHash{
-		BlockNumber:      nil,
 		BlockHash:        &hash,
 		RequireCanonical: canonical,
 	}

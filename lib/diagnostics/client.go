@@ -89,8 +89,8 @@ func NewDiagnosticClient(ctx context.Context, metricsMux *http.ServeMux, dataDir
 	}, nil
 }
 
-func createDb(ctx context.Context, dbDir string) (db kv.RwDB, err error) {
-	db, err = mdbx.NewMDBX(log.New()).
+func createDb(ctx context.Context, dbDir string) (kv.RwDB, error) {
+	return mdbx.NewMDBX(log.New()).
 		Label(kv.DiagnosticsDB).
 		WithTableCfg(func(defaultBuckets kv.TableCfg) kv.TableCfg { return kv.DiagnosticsTablesCfg }).
 		GrowthStep(4 * datasize.MB).
@@ -99,15 +99,9 @@ func createDb(ctx context.Context, dbDir string) (db kv.RwDB, err error) {
 		RoTxsLimiter(semaphore.NewWeighted(9_000)).
 		Path(dbDir).
 		Open(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return db, nil
 }
 
 func (d *DiagnosticClient) Setup() {
-
 	rootCtx, _ := common.RootContext()
 
 	d.setupSnapshotDiagnostics(rootCtx)
@@ -120,8 +114,6 @@ func (d *DiagnosticClient) Setup() {
 	d.setupResourcesUsageDiagnostics(rootCtx)
 	d.setupSpeedtestDiagnostics(rootCtx)
 	d.runSaveProcess(rootCtx)
-
-	//d.logDiagMsgs()
 }
 
 // Save diagnostic data by time interval to reduce save events
@@ -145,111 +137,59 @@ func (d *DiagnosticClient) SaveData() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	var funcs []func(tx kv.RwTx) error
-	funcs = append(funcs, SnapshotDownloadUpdater(d.syncStats.SnapshotDownload), StagesListUpdater(d.syncStages), SnapshotIndexingUpdater(d.syncStats.SnapshotIndexing))
+	updaters := []func(tx kv.RwTx) error{
+		SnapshotDownloadUpdater(d.syncStats.SnapshotDownload),
+		StagesListUpdater(d.syncStages),
+		SnapshotIndexingUpdater(d.syncStats.SnapshotIndexing),
+	}
 
 	err := d.db.Update(d.ctx, func(tx kv.RwTx) error {
-		for _, updater := range funcs {
-			updErr := updater(tx)
-			if updErr != nil {
-				return updErr
+		for _, updater := range updaters {
+			if err := updater(tx); err != nil {
+				return err
 			}
 		}
-
 		return nil
 	})
-
 	if err != nil {
 		log.Warn("Failed to save diagnostics data", "err", err)
 	}
 }
 
-/*func (d *DiagnosticClient) logDiagMsgs() {
-	ticker := time.NewTicker(20 * time.Second)
-	quit := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				d.logStr()
-			case <-quit:
-				ticker.Stop()
-				return
-			}
-		}
-	}()
-}
-func (d *DiagnosticClient) logStr() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	log.Info("SyncStatistics", "stats", interfaceToJSONString(d.syncStats))
-}
-
-func interfaceToJSONString(i interface{}) string {
-	b, err := json.Marshal(i)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}*/
-
 func ReadSavedData(db kv.RoDB) (hinfo HardwareInfo, ssinfo []SyncStage, snpdwl SnapshotDownloadStatistics, snpidx SnapshotIndexingStatistics, snpfd SnapshotFillDBStatistics) {
-	var ramBytes []byte
-	var cpuBytes []byte
-	var diskBytes []byte
-	var ssinfoData []byte
-	var snpdwlData []byte
-	var snpidxData []byte
-	var snpfdData []byte
-	var err error
+	type readFunc func(kv.Tx) ([]byte, error)
+
+	readers := []readFunc{
+		ReadRAMInfoFromTx,
+		ReadCPUInfoFromTx,
+		ReadDiskInfoFromTx,
+		SyncStagesFromTX,
+		SnapshotDownloadInfoFromTx,
+		SnapshotIndexingInfoFromTx,
+		SnapshotFillDBInfoFromTx,
+	}
+
+	results := make([][]byte, len(readers))
 
 	if err := db.View(context.Background(), func(tx kv.Tx) error {
-		ramBytes, err = ReadRAMInfoFromTx(tx)
-		if err != nil {
-			return err
+		for i, read := range readers {
+			data, err := read(tx)
+			if err != nil {
+				return err
+			}
+			results[i] = data
 		}
-
-		cpuBytes, err = ReadCPUInfoFromTx(tx)
-		if err != nil {
-			return err
-		}
-
-		diskBytes, err = ReadDiskInfoFromTx(tx)
-		if err != nil {
-			return err
-		}
-
-		ssinfoData, err = SyncStagesFromTX(tx)
-		if err != nil {
-			return err
-		}
-
-		snpdwlData, err = SnapshotDownloadInfoFromTx(tx)
-		if err != nil {
-			return err
-		}
-
-		snpidxData, err = SnapshotIndexingInfoFromTx(tx)
-		if err != nil {
-			return err
-		}
-
-		snpfdData, err = SnapshotFillDBInfoFromTx(tx)
-		if err != nil {
-			return err
-		}
-
 		return nil
 	}); err != nil {
-		return HardwareInfo{}, []SyncStage{}, SnapshotDownloadStatistics{}, SnapshotIndexingStatistics{}, SnapshotFillDBStatistics{}
+		return HardwareInfo{}, nil, SnapshotDownloadStatistics{}, SnapshotIndexingStatistics{}, SnapshotFillDBStatistics{}
 	}
 
 	var ramInfo RAMInfo
 	var cpuInfo []CPUInfo
 	var diskInfo DiskInfo
-	ParseData(ramBytes, &ramInfo)
-	ParseData(cpuBytes, &cpuInfo)
-	ParseData(diskBytes, &diskInfo)
+	ParseData(results[0], &ramInfo)
+	ParseData(results[1], &cpuInfo)
+	ParseData(results[2], &diskInfo)
 
 	hinfo = HardwareInfo{
 		RAM:  ramInfo,
@@ -257,10 +197,10 @@ func ReadSavedData(db kv.RoDB) (hinfo HardwareInfo, ssinfo []SyncStage, snpdwl S
 		Disk: diskInfo,
 	}
 
-	ParseData(ssinfoData, &ssinfo)
-	ParseData(snpdwlData, &snpdwl)
-	ParseData(snpidxData, &snpidx)
-	ParseData(snpfdData, &snpfd)
+	ParseData(results[3], &ssinfo)
+	ParseData(results[4], &snpdwl)
+	ParseData(results[5], &snpidx)
+	ParseData(results[6], &snpfd)
 
 	return hinfo, ssinfo, snpdwl, snpidx, snpfd
 }

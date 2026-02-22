@@ -58,8 +58,7 @@ func (b *Bloom) UnMarshalBloom(data []byte) error {
 	if b.bloom == nil {
 		return fmt.Errorf("bloom filter is not initialized")
 	}
-	err := b.bloom.UnmarshalBinary(data)
-	return err
+	return b.bloom.UnmarshalBinary(data)
 }
 
 func (b *Bloom) Add(key []byte) error {

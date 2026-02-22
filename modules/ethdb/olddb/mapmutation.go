@@ -81,7 +81,7 @@ func (m *mapmutation) IncrementSequence(bucket string, amount uint64) (res uint6
 		}
 	}
 
-	var currentV uint64 = 0
+	var currentV uint64
 	if len(v) > 0 {
 		currentV = binary.BigEndian.Uint64(v)
 	}
@@ -102,7 +102,7 @@ func (m *mapmutation) ReadSequence(bucket string) (res uint64, err error) {
 			return 0, err
 		}
 	}
-	var currentV uint64 = 0
+	var currentV uint64
 	if len(v) > 0 {
 		currentV = binary.BigEndian.Uint64(v)
 	}
@@ -110,23 +110,18 @@ func (m *mapmutation) ReadSequence(bucket string) (res uint64, err error) {
 	return currentV, nil
 }
 
-// Can only be called from the worker thread
+// GetOne can only be called from the worker thread.
 func (m *mapmutation) GetOne(table string, key []byte) ([]byte, error) {
 	if value, ok := m.getMem(table, key); ok {
 		return value, nil
 	}
 	if m.db != nil {
-		// TODO: simplify when tx can no longer be parent of mutation
-		value, err := m.db.GetOne(table, key)
-		if err != nil {
-			return nil, err
-		}
-		return value, nil
+		return m.db.GetOne(table, key)
 	}
 	return nil, nil
 }
 
-// Can only be called from the worker thread
+// Get can only be called from the worker thread.
 func (m *mapmutation) Get(table string, key []byte) ([]byte, error) {
 	value, err := m.GetOne(table, key)
 	if err != nil {
@@ -159,7 +154,8 @@ func (m *mapmutation) Has(table string, key []byte) (bool, error) {
 	return false, nil
 }
 
-// puts a table key with a value and if the table is not found then it appends a table
+// Put inserts or updates a key-value pair in the in-memory table.
+// If the table does not exist yet, it is created.
 func (m *mapmutation) Put(table string, k, v []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -169,15 +165,13 @@ func (m *mapmutation) Put(table string, k, v []byte) error {
 
 	stringKey := string(k)
 
-	var ok bool
-	if _, ok = m.puts[table][stringKey]; !ok {
-		m.size += len(v) - len(m.puts[table][stringKey])
-		m.puts[table][stringKey] = v
-		return nil
+	if oldValue, exists := m.puts[table][stringKey]; exists {
+		m.size += len(v) - len(oldValue)
+	} else {
+		m.size += len(k) + len(v)
+		m.count++
 	}
 	m.puts[table][stringKey] = v
-	m.size += len(k) + len(v)
-	m.count++
 
 	return nil
 }
@@ -267,7 +261,6 @@ func (m *mapmutation) Rollback() {
 	m.puts = map[string]map[string][]byte{}
 	m.size = 0
 	m.count = 0
-	m.size = 0
 	m.clean()
 }
 

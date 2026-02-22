@@ -14,9 +14,6 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
-// Tests adapted from go-ethereum and erigon runtime test suites.
-// Reference: go-ethereum/core/vm/runtime/runtime_test.go
-
 package runtime
 
 import (
@@ -25,6 +22,7 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 )
@@ -37,95 +35,66 @@ func TestSetDefaults(t *testing.T) {
 	cfg := &Config{}
 	setDefaults(cfg)
 
-	// ChainConfig should be set
 	if cfg.ChainConfig == nil {
 		t.Error("ChainConfig should be set")
 	}
-
-	// Difficulty should be set
 	if cfg.Difficulty == nil {
 		t.Error("Difficulty should be set")
 	}
-
-	// Time should be set
 	if cfg.Time == nil {
 		t.Error("Time should be set")
 	}
-
-	// GasLimit should be set
 	if cfg.GasLimit == 0 {
 		t.Error("GasLimit should be set")
 	}
-
-	// GasPrice should be set
 	if cfg.GasPrice == nil {
 		t.Error("GasPrice should be set")
 	}
-
-	// Value should be set
 	if cfg.Value == nil {
 		t.Error("Value should be set")
 	}
-
-	// BlockNumber should be set
 	if cfg.BlockNumber == nil {
 		t.Error("BlockNumber should be set")
 	}
-
-	// GetHashFn should be set
 	if cfg.GetHashFn == nil {
 		t.Error("GetHashFn should be set")
 	}
-
-	t.Logf("✓ setDefaults sets all required fields")
 }
 
 func TestSetDefaultsChainConfig(t *testing.T) {
 	cfg := &Config{}
 	setDefaults(cfg)
 
-	// Verify chain config has all forks set
 	if cfg.ChainConfig.ChainID == nil || cfg.ChainConfig.ChainID.Cmp(big.NewInt(1)) != 0 {
 		t.Error("ChainID should be 1")
 	}
-
 	if cfg.ChainConfig.HomesteadBlock == nil {
 		t.Error("HomesteadBlock should be set")
 	}
-
 	if cfg.ChainConfig.ByzantiumBlock == nil {
 		t.Error("ByzantiumBlock should be set")
 	}
-
 	if cfg.ChainConfig.ConstantinopleBlock == nil {
 		t.Error("ConstantinopleBlock should be set")
 	}
-
 	if cfg.ChainConfig.IstanbulBlock == nil {
 		t.Error("IstanbulBlock should be set")
 	}
-
 	if cfg.ChainConfig.BerlinBlock == nil {
 		t.Error("BerlinBlock should be set")
 	}
-
 	if cfg.ChainConfig.LondonBlock == nil {
 		t.Error("LondonBlock should be set")
 	}
-
 	if cfg.ChainConfig.ShanghaiBlock == nil {
 		t.Error("ShanghaiBlock should be set")
 	}
-
 	if cfg.ChainConfig.CancunBlock == nil {
 		t.Error("CancunBlock should be set")
 	}
-
 	if cfg.ChainConfig.PragueTime == nil {
 		t.Error("PragueTime should be set")
 	}
-
-	t.Logf("✓ ChainConfig has all fork blocks set")
 }
 
 func TestSetDefaultsPreservesExisting(t *testing.T) {
@@ -141,20 +110,15 @@ func TestSetDefaultsPreservesExisting(t *testing.T) {
 
 	setDefaults(cfg)
 
-	// Custom values should be preserved
 	if cfg.ChainConfig.ChainID.Cmp(customChainID) != 0 {
 		t.Error("Custom ChainID should be preserved")
 	}
-
 	if cfg.Difficulty.Cmp(customDifficulty) != 0 {
 		t.Error("Custom Difficulty should be preserved")
 	}
-
 	if cfg.GasLimit != customGasLimit {
 		t.Error("Custom GasLimit should be preserved")
 	}
-
-	t.Logf("✓ setDefaults preserves existing values")
 }
 
 func TestSetDefaultsTime(t *testing.T) {
@@ -167,30 +131,24 @@ func TestSetDefaultsTime(t *testing.T) {
 	if timeVal < before || timeVal > after {
 		t.Errorf("Time should be around current time, got %d, expected between %d and %d", timeVal, before, after)
 	}
-
-	t.Logf("✓ setDefaults sets time to current time")
 }
 
 func TestGetHashFn(t *testing.T) {
 	cfg := &Config{}
 	setDefaults(cfg)
 
-	// Test that GetHashFn returns deterministic results
+	// GetHashFn must be deterministic.
 	hash1 := cfg.GetHashFn(100)
 	hash2 := cfg.GetHashFn(100)
-
 	if hash1 != hash2 {
 		t.Error("GetHashFn should return same hash for same input")
 	}
 
-	// Different inputs should give different hashes
+	// Different inputs should produce different hashes.
 	hash3 := cfg.GetHashFn(101)
 	if hash1 == hash3 {
 		t.Error("GetHashFn should return different hash for different input")
 	}
-
-	t.Logf("Hash for block 100: %x", hash1)
-	t.Logf("✓ GetHashFn works correctly")
 }
 
 // =============================================================================
@@ -215,36 +173,27 @@ func TestConfigFields(t *testing.T) {
 	if cfg.Origin != origin {
 		t.Error("Origin mismatch")
 	}
-
 	if cfg.Coinbase != coinbase {
 		t.Error("Coinbase mismatch")
 	}
-
 	if cfg.BlockNumber.Cmp(big.NewInt(100)) != 0 {
 		t.Error("BlockNumber mismatch")
 	}
-
 	if cfg.Time.Cmp(big.NewInt(1234567890)) != 0 {
 		t.Error("Time mismatch")
 	}
-
 	if cfg.GasLimit != 10000000 {
 		t.Error("GasLimit mismatch")
 	}
-
 	if cfg.GasPrice.Cmp(uint256.NewInt(1000000000)) != 0 {
 		t.Error("GasPrice mismatch")
 	}
-
 	if cfg.Value.Cmp(uint256.NewInt(100)) != 0 {
 		t.Error("Value mismatch")
 	}
-
 	if cfg.BaseFee.Cmp(uint256.NewInt(50000000)) != 0 {
 		t.Error("BaseFee mismatch")
 	}
-
-	t.Logf("✓ Config fields store values correctly")
 }
 
 // =============================================================================
@@ -258,16 +207,12 @@ func TestEVMConfigDefaults(t *testing.T) {
 	if cfg.EVMConfig.Debug {
 		t.Error("EVMConfig.Debug should default to false")
 	}
-
 	if cfg.EVMConfig.Tracer != nil {
 		t.Error("EVMConfig.Tracer should default to nil")
 	}
-
 	if cfg.EVMConfig.NoRecursion {
 		t.Error("EVMConfig.NoRecursion should default to false")
 	}
-
-	t.Logf("✓ EVMConfig has correct defaults")
 }
 
 // =============================================================================
@@ -275,26 +220,13 @@ func TestEVMConfigDefaults(t *testing.T) {
 // =============================================================================
 
 func TestNilConfigHandling(t *testing.T) {
-	// These functions should handle nil config gracefully
-	// by calling setDefaults internally
-
-	// Note: Execute, Create, Call require State to be set,
-	// so we can't fully test them without mocking.
-	// Here we just verify the config setup logic.
-
-	cfg := (*Config)(nil)
-	if cfg != nil {
-		t.Error("Nil config check failed")
-	}
-
-	// Create new config and set defaults
-	cfg2 := new(Config)
-	setDefaults(cfg2)
-	if cfg2.ChainConfig == nil {
+	// Execute, Create, and Call handle nil config by allocating a new one
+	// internally. Here we verify setDefaults works on a zero-value Config.
+	cfg := new(Config)
+	setDefaults(cfg)
+	if cfg.ChainConfig == nil {
 		t.Error("setDefaults should work on new(Config)")
 	}
-
-	t.Logf("✓ Nil config handling works")
 }
 
 // =============================================================================
@@ -302,7 +234,6 @@ func TestNilConfigHandling(t *testing.T) {
 // =============================================================================
 
 func TestContractAddressGeneration(t *testing.T) {
-	// Test that BytesToAddress works as expected
 	contractBytes := []byte("contract")
 	addr := types.BytesToAddress(contractBytes)
 
@@ -310,14 +241,11 @@ func TestContractAddressGeneration(t *testing.T) {
 		t.Error("Generated address should not be zero")
 	}
 
-	// Same input should give same address
+	// Same input must produce the same address (deterministic).
 	addr2 := types.BytesToAddress(contractBytes)
 	if addr != addr2 {
 		t.Error("Same bytes should give same address")
 	}
-
-	t.Logf("Contract address: %s", addr.Hex())
-	t.Logf("✓ Contract address generation works")
 }
 
 // =============================================================================
@@ -358,7 +286,7 @@ func TestChainConfigAllForksEnabled(t *testing.T) {
 	cfg := &Config{}
 	setDefaults(cfg)
 
-	// All forks should be at block 0 (enabled from genesis)
+	// All forks should be at block 0 (enabled from genesis).
 	zeroBlock := new(big.Int)
 
 	checks := []struct {
@@ -386,7 +314,4 @@ func TestChainConfigAllForksEnabled(t *testing.T) {
 			t.Errorf("%s should be at block 0, got %v", check.name, check.block)
 		}
 	}
-
-	t.Logf("✓ All forks enabled at block 0")
 }
-

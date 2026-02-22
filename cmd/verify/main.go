@@ -196,8 +196,6 @@ func main() {
 }
 
 func unwrapJSONRPC(in []byte) ([]byte, error) {
-	//"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"unauthed address: 0xeB156a42dcaFcf155B07f3638892440C7dE5d564\"}}\n"
-	//ws consumer received msg:%!(EXTRA string=ws consumer received msg:, string={"jsonrpc":"2.0","id":1,"result":"0x96410b68a9f8875bb20fde06823eb861"}
 	req := new(jsonrpc.Request)
 	if err := json.Unmarshal(in, req); err != nil {
 		return nil, err
@@ -206,9 +204,6 @@ func unwrapJSONRPC(in []byte) ([]byte, error) {
 		return []byte{}, errors.New("empty request params")
 	}
 
-	//type innerProtocolEntire struct {
-	//	Entire json.RawMessage `json:"Entire"`
-	//}
 	type innerProtocol struct {
 		Subscription string          `json:"subscription"`
 		Result       json.RawMessage `json:"result"`

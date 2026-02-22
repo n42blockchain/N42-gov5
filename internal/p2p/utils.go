@@ -8,79 +8,66 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
-	"github.com/n42blockchain/N42/conf"
-	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"github.com/n42blockchain/N42/utils"
 	"net"
 	"os"
-	"path"
+	"path/filepath"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/pkg/errors"
+
+	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/p2p/enr"
+	"github.com/n42blockchain/N42/utils"
 )
 
-const keyPath = "network-keys"
-
-const seqPath = "network-seq"
-
-const dialTimeout = 1 * time.Second
+const (
+	keyPath     = "network-keys"
+	seqPath     = "network-seq"
+	dialTimeout = 1 * time.Second
+)
 
 // SerializeENR takes the enr record in its key-value form and serializes it.
 func SerializeENR(record *enr.Record) (string, error) {
 	if record == nil {
 		return "", errors.New("could not serialize nil record")
 	}
-	buf := bytes.NewBuffer([]byte{})
+	buf := new(bytes.Buffer)
 	if err := record.EncodeRLP(buf); err != nil {
 		return "", errors.Wrap(err, "could not encode ENR record to bytes")
 	}
-	enrString := base64.RawURLEncoding.EncodeToString(buf.Bytes())
-	return enrString, nil
+	return base64.RawURLEncoding.EncodeToString(buf.Bytes()), nil
 }
 
 func getSeqNumber(cfg *conf.P2PConfig) (*sync_pb.Ping, error) {
-	defaultSeqPath := path.Join(cfg.DataDir, seqPath)
+	seqFilePath := filepath.Join(cfg.DataDir, seqPath)
 
-	_, err := os.Stat(defaultSeqPath)
-	defaultKeysExist := !os.IsNotExist(err)
-	if err != nil && defaultKeysExist {
+	src, err := os.ReadFile(seqFilePath) // #nosec G304
+	if os.IsNotExist(err) {
+		return &sync_pb.Ping{SeqNumber: 0}, nil
+	}
+	if err != nil {
 		log.Error("Error reading network seqNumber from file", "err", err)
 		return nil, err
 	}
-
-	if defaultKeysExist {
-		src, err := os.ReadFile(defaultSeqPath) // #nosec G304
-		if err != nil {
-			log.Error("Error reading network seqNumber from file", "err", err)
-			return nil, err
-		}
-
-		// Security fix: Check slice length before reading uint64 to prevent panic
-		if len(src) < 8 {
-			log.Warn("Invalid seq number file size", "size", len(src), "expected", 8)
-			return &sync_pb.Ping{SeqNumber: 0}, nil
-		}
-
-		seqNumber := binary.LittleEndian.Uint64(src)
-		if seqNumber > 0 {
-			log.Info("Load seq number from file", "seqNumber", seqNumber)
-			return &sync_pb.Ping{SeqNumber: seqNumber}, nil
-		}
-
+	if len(src) < 8 {
+		log.Warn("Invalid seq number file size", "size", len(src), "expected", 8)
+		return &sync_pb.Ping{SeqNumber: 0}, nil
 	}
-	return &sync_pb.Ping{SeqNumber: 0}, nil
+
+	seqNumber := binary.LittleEndian.Uint64(src)
+	if seqNumber > 0 {
+		log.Info("Load seq number from file", "seqNumber", seqNumber)
+	}
+	return &sync_pb.Ping{SeqNumber: seqNumber}, nil
 }
 
 func saveSeqNumber(cfg *conf.P2PConfig, seqNumber *sync_pb.Ping) error {
-
-	defaultSeqPath := path.Join(cfg.DataDir, seqPath)
-
+	seqFilePath := filepath.Join(cfg.DataDir, seqPath)
 	b := make([]byte, 8)
 	binary.LittleEndian.PutUint64(b, seqNumber.SeqNumber)
-
-	if err := os.WriteFile(defaultSeqPath, b, 0600); err != nil {
+	if err := os.WriteFile(seqFilePath, b, 0600); err != nil {
 		log.Error("Failed to save p2p seq number", "err", err)
 		return err
 	}
@@ -88,33 +75,28 @@ func saveSeqNumber(cfg *conf.P2PConfig, seqNumber *sync_pb.Ping) error {
 	return nil
 }
 
-// Determines a private key for p2p networking from the p2p service's
-// configuration struct. If no key is found, it generates a new one.
+// privKey determines a private key for p2p networking from the service's
+// configuration. Priority: CLI flag > existing file > generated key.
 func privKey(cfg *conf.P2PConfig) (*ecdsa.PrivateKey, error) {
-	defaultKeyPath := path.Join(cfg.DataDir, keyPath)
-	privateKeyPath := cfg.PrivateKey
+	defaultKeyPath := filepath.Join(cfg.DataDir, keyPath)
 
-	// PrivateKey cli flag takes highest precedence.
-	if privateKeyPath != "" {
+	// CLI-specified private key takes highest precedence.
+	if cfg.PrivateKey != "" {
 		return privKeyFromFile(cfg.PrivateKey)
 	}
 
-	_, err := os.Stat(defaultKeyPath)
-	defaultKeysExist := !os.IsNotExist(err)
-	if err != nil && defaultKeysExist {
+	if _, err := os.Stat(defaultKeyPath); err == nil {
+		return privKeyFromFile(defaultKeyPath)
+	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	// Default keys have the next highest precedence, if they exist.
-	if defaultKeysExist {
-		return privKeyFromFile(defaultKeyPath)
-	}
-	// There are no keys on the filesystem, so we need to generate one.
+
+	// No keys on the filesystem; generate a new one.
 	priv, _, err := crypto.GenerateSecp256k1Key(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	// If the StaticPeerID flag is set, save the generated key as the default
-	// key, so that it will be used by default on the next node start.
+	// When StaticPeerID is set, persist the key so subsequent starts reuse it.
 	if cfg.StaticPeerID {
 		rawbytes, err := priv.Raw()
 		if err != nil {
@@ -126,14 +108,13 @@ func privKey(cfg *conf.P2PConfig) (*ecdsa.PrivateKey, error) {
 			return nil, err
 		}
 		log.Info("Generated new network key")
-		// Read the key from the defaultKeyPath file just written
-		// for the strongest guarantee that the next start will be the same as this one.
+		// Re-read from file to guarantee consistency with future starts.
 		return privKeyFromFile(defaultKeyPath)
 	}
 	return utils.ConvertFromInterfacePrivKey(priv)
 }
 
-// Retrieves a p2p networking private key from a file path.
+// privKeyFromFile reads a hex-encoded secp256k1 private key from the given path.
 func privKeyFromFile(path string) (*ecdsa.PrivateKey, error) {
 	src, err := os.ReadFile(path) // #nosec G304
 	if err != nil {
@@ -141,8 +122,7 @@ func privKeyFromFile(path string) (*ecdsa.PrivateKey, error) {
 		return nil, err
 	}
 	dst := make([]byte, hex.DecodedLen(len(src)))
-	_, err = hex.Decode(dst, src)
-	if err != nil {
+	if _, err = hex.Decode(dst, src); err != nil {
 		return nil, errors.Wrap(err, "failed to decode hex string")
 	}
 	unmarshalledKey, err := crypto.UnmarshalSecp256k1PrivateKey(dst)
@@ -152,18 +132,18 @@ func privKeyFromFile(path string) (*ecdsa.PrivateKey, error) {
 	return utils.ConvertFromInterfacePrivKey(unmarshalledKey)
 }
 
-// Attempt to dial an address to verify its connectivity
+// verifyConnectivity attempts to dial an address to confirm it is reachable.
 func verifyConnectivity(addr string, port int, protocol string) {
-	if addr != "" {
-		a := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
-
-		conn, err := net.DialTimeout(protocol, a, dialTimeout)
-		if err != nil {
-			log.Warn("IP address is not accessible", "err", err, "protocol", protocol, "address", a)
-			return
-		}
-		if err := conn.Close(); err != nil {
-			log.Debug("Could not close connection", "err", err)
-		}
+	if addr == "" {
+		return
+	}
+	hostPort := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
+	conn, err := net.DialTimeout(protocol, hostPort, dialTimeout)
+	if err != nil {
+		log.Warn("IP address is not accessible", "err", err, "protocol", protocol, "address", hostPort)
+		return
+	}
+	if err := conn.Close(); err != nil {
+		log.Debug("Could not close connection", "err", err)
 	}
 }

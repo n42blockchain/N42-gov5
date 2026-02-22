@@ -16,18 +16,16 @@
 
 package network
 
-import (
-	"errors"
-)
+import "errors"
 
 var (
-	badMsgTypeError        = errors.New("p2p: message type is invalid")
-	badLengthEncodingError = errors.New("p2p: remaining length field exceeded maximum of 4 bytes")
-	badReturnCodeError     = errors.New("p2p: is invalid")
-	dataExceedsPacketError = errors.New("p2p: data exceeds packet length")
-	msgTooLongError        = errors.New("p2p: message is too long")
-	packageMsgError        = errors.New("p2p: package message error")
-	notFoundPeer           = errors.New("p2p: not found peer info")
+	errBadMsgType        = errors.New("p2p: message type is invalid")
+	errBadLengthEncoding = errors.New("p2p: remaining length field exceeded maximum of 4 bytes")
+	errBadReturnCode     = errors.New("p2p: return code is invalid")
+	errDataExceedsPacket = errors.New("p2p: data exceeds packet length")
+	errMsgTooLong        = errors.New("p2p: message is too long")
+	errPackageMsg        = errors.New("p2p: package message error")
+	errPeerNotFound      = errors.New("p2p: peer not found")
 )
 
 type panicErr struct {
@@ -42,13 +40,12 @@ func raiseError(err error) {
 	panic(panicErr{err})
 }
 
-func recoverError(existingErr error, recovered interface{}) error {
-	if recovered != nil {
-		if pErr, ok := recovered.(panicErr); ok {
-			return pErr.err
-		} else {
-			panic(recovered)
-		}
+func recoverError(existingErr error, recovered any) error {
+	if recovered == nil {
+		return existingErr
 	}
-	return existingErr
+	if pErr, ok := recovered.(panicErr); ok {
+		return pErr.err
+	}
+	panic(recovered)
 }

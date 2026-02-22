@@ -42,14 +42,13 @@ const (
 	Dilithium3PubKeySize = 1952
 )
 
-// Errors
 var (
-	ErrInvalidAlgorithm    = errors.New("pqregistry: invalid algorithm")
-	ErrInvalidPubKeySize   = errors.New("pqregistry: invalid public key size")
-	ErrKeyAlreadyExists    = errors.New("pqregistry: key already registered")
-	ErrKeyNotFound         = errors.New("pqregistry: key not found")
-	ErrKeyRevoked          = errors.New("pqregistry: key has been revoked")
-	ErrNotKeyOwner         = errors.New("pqregistry: caller is not key owner")
+	ErrInvalidAlgorithm  = errors.New("pqregistry: invalid algorithm")
+	ErrInvalidPubKeySize = errors.New("pqregistry: invalid public key size")
+	ErrKeyAlreadyExists  = errors.New("pqregistry: key already registered")
+	ErrKeyNotFound       = errors.New("pqregistry: key not found")
+	ErrKeyRevoked        = errors.New("pqregistry: key has been revoked")
+	ErrNotKeyOwner       = errors.New("pqregistry: caller is not key owner")
 )
 
 // KeyData represents the data stored for a registered key
@@ -78,46 +77,39 @@ func NewRegistry() *Registry {
 	}
 }
 
-// RegisterKey registers a public key and returns its hash
+// RegisterKey registers a public key and returns its hash.
 func (r *Registry) RegisterKey(pubKey []byte, algorithm uint8, owner types.Address) (types.Hash, error) {
-	// Validate algorithm
 	if algorithm > AlgoDilithium3 {
 		return types.Hash{}, ErrInvalidAlgorithm
 	}
 
-	// Validate public key size
 	expectedSize := GetExpectedKeySize(algorithm)
 	if len(pubKey) != expectedSize {
 		return types.Hash{}, ErrInvalidPubKeySize
 	}
 
-	// Compute key hash
 	keyHash := hash.Hash(pubKey)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Check if key already exists
 	if _, exists := r.keys[keyHash]; exists {
 		return types.Hash{}, ErrKeyAlreadyExists
 	}
 
-	// Store key data
 	r.keys[keyHash] = &KeyData{
-		PubKey:       append([]byte{}, pubKey...), // Deep copy
+		PubKey:       append([]byte{}, pubKey...), // deep copy
 		Owner:        owner,
 		Algorithm:    algorithm,
-		RegisteredAt: 0, // Would be block.timestamp in contract
+		RegisteredAt: 0, // would be block.timestamp in on-chain contract
 		Revoked:      false,
 	}
-
-	// Update address mapping
 	r.addressToKeyHash[owner] = keyHash
 
 	return keyHash, nil
 }
 
-// RevokeKey revokes a registered key
+// RevokeKey revokes a registered key. Only the key owner can revoke it.
 func (r *Registry) RevokeKey(keyHash types.Hash, caller types.Address) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -126,18 +118,14 @@ func (r *Registry) RevokeKey(keyHash types.Hash, caller types.Address) error {
 	if !exists {
 		return ErrKeyNotFound
 	}
-
 	if keyData.Owner != caller {
 		return ErrNotKeyOwner
 	}
-
 	if keyData.Revoked {
 		return ErrKeyRevoked
 	}
 
 	keyData.Revoked = true
-
-	// Clear address mapping if this was the active key
 	if r.addressToKeyHash[caller] == keyHash {
 		delete(r.addressToKeyHash, caller)
 	}
@@ -145,7 +133,7 @@ func (r *Registry) RevokeKey(keyHash types.Hash, caller types.Address) error {
 	return nil
 }
 
-// GetPublicKey retrieves a public key by its hash
+// GetPublicKey retrieves a public key by its hash. Returns an error if revoked.
 func (r *Registry) GetPublicKey(keyHash types.Hash) ([]byte, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -154,15 +142,14 @@ func (r *Registry) GetPublicKey(keyHash types.Hash) ([]byte, error) {
 	if !exists {
 		return nil, ErrKeyNotFound
 	}
-
 	if keyData.Revoked {
 		return nil, ErrKeyRevoked
 	}
 
-	return append([]byte{}, keyData.PubKey...), nil // Return copy
+	return append([]byte{}, keyData.PubKey...), nil
 }
 
-// GetKeyHashByAddress gets the key hash for an address
+// GetKeyHashByAddress returns the key hash associated with an address.
 func (r *Registry) GetKeyHashByAddress(account types.Address) (types.Hash, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -171,7 +158,7 @@ func (r *Registry) GetKeyHashByAddress(account types.Address) (types.Hash, bool)
 	return keyHash, exists
 }
 
-// GetKeyByAddress gets the full public key for an address
+// GetKeyByAddress returns the full public key for an address.
 func (r *Registry) GetKeyByAddress(account types.Address) ([]byte, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -189,7 +176,7 @@ func (r *Registry) GetKeyByAddress(account types.Address) ([]byte, error) {
 	return append([]byte{}, keyData.PubKey...), nil
 }
 
-// HasKey checks if a key hash exists and is not revoked
+// HasKey reports whether a key hash exists and is not revoked.
 func (r *Registry) HasKey(keyHash types.Hash) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -198,7 +185,7 @@ func (r *Registry) HasKey(keyHash types.Hash) bool {
 	return exists && !keyData.Revoked
 }
 
-// HasKeyForAddress checks if an address has an active registered key
+// HasKeyForAddress reports whether an address has an active (non-revoked) registered key.
 func (r *Registry) HasKeyForAddress(account types.Address) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -212,7 +199,7 @@ func (r *Registry) HasKeyForAddress(account types.Address) bool {
 	return keyData != nil && !keyData.Revoked
 }
 
-// GetAlgorithm gets the algorithm for a key
+// GetAlgorithm returns the algorithm identifier for a registered key.
 func (r *Registry) GetAlgorithm(keyHash types.Hash) (uint8, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -225,7 +212,7 @@ func (r *Registry) GetAlgorithm(keyHash types.Hash) (uint8, error) {
 	return keyData.Algorithm, nil
 }
 
-// GetKeyOwner gets the owner of a key
+// GetKeyOwner returns the owner address of a registered key.
 func (r *Registry) GetKeyOwner(keyHash types.Hash) (types.Address, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -238,7 +225,7 @@ func (r *Registry) GetKeyOwner(keyHash types.Hash) (types.Address, error) {
 	return keyData.Owner, nil
 }
 
-// GetKeyData gets all data for a key
+// GetKeyData returns a deep copy of all data for a registered key.
 func (r *Registry) GetKeyData(keyHash types.Hash) (*KeyData, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -248,7 +235,6 @@ func (r *Registry) GetKeyData(keyHash types.Hash) (*KeyData, error) {
 		return nil, ErrKeyNotFound
 	}
 
-	// Return a copy
 	return &KeyData{
 		PubKey:       append([]byte{}, keyData.PubKey...),
 		Owner:        keyData.Owner,
@@ -308,10 +294,6 @@ func ValidatePublicKey(pubKey []byte, algorithm uint8) error {
 
 	return nil
 }
-
-// =============================================================================
-// Global Registry Instance
-// =============================================================================
 
 var (
 	globalRegistry     *Registry

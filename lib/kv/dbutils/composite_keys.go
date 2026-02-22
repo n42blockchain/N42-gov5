@@ -37,36 +37,31 @@ func HeaderKey(number uint64, hash libcommon.Hash) []byte {
 
 // BlockBodyKey = num (uint64 big endian) + hash
 func BlockBodyKey(number uint64, hash libcommon.Hash) []byte {
-	k := make([]byte, NumberLength+length.Hash)
-	binary.BigEndian.PutUint64(k, number)
-	copy(k[NumberLength:], hash[:])
-	return k
+	return HeaderKey(number, hash)
 }
 
 // LogKey = blockN (uint64 big endian) + txId (uint32 big endian)
 func LogKey(blockNumber uint64, txId uint32) []byte {
-	newK := make([]byte, 8+4)
-	binary.BigEndian.PutUint64(newK, blockNumber)
-	binary.BigEndian.PutUint32(newK[8:], txId)
-	return newK
+	k := make([]byte, NumberLength+4)
+	binary.BigEndian.PutUint64(k, blockNumber)
+	binary.BigEndian.PutUint32(k[NumberLength:], txId)
+	return k
 }
 
-// bloomBitsKey = bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash
+// BloomBitsKey = bit (uint16 big endian) + section (uint64 big endian) + hash
 func BloomBitsKey(bit uint, section uint64, hash libcommon.Hash) []byte {
-	key := append(make([]byte, 10), hash.Bytes()...)
-
-	binary.BigEndian.PutUint16(key[0:], uint16(bit))
+	key := make([]byte, 2+NumberLength+length.Hash)
+	binary.BigEndian.PutUint16(key, uint16(bit))
 	binary.BigEndian.PutUint64(key[2:], section)
-
+	copy(key[2+NumberLength:], hash[:])
 	return key
 }
 
-// AddrHash + KeyHash
-// Only for trie
+// GenerateCompositeTrieKey = AddrHash + KeyHash (only for trie)
 func GenerateCompositeTrieKey(addressHash libcommon.Hash, seckey libcommon.Hash) []byte {
-	compositeKey := make([]byte, 0, length.Hash+length.Hash)
-	compositeKey = append(compositeKey, addressHash[:]...)
-	compositeKey = append(compositeKey, seckey[:]...)
+	compositeKey := make([]byte, length.Hash+length.Hash)
+	copy(compositeKey, addressHash[:])
+	copy(compositeKey[length.Hash:], seckey[:])
 	return compositeKey
 }
 
@@ -156,21 +151,19 @@ func CompositeKeySuffix(key []byte, timestamp uint64) (composite, encodedTS []by
 
 // encodeTimestamp has the property: if a < b, then Encoding(a) < Encoding(b) lexicographically
 func encodeTimestamp(timestamp uint64) []byte {
-	var suffix []byte
-	var limit uint64 = 32
-
+	limit := uint64(32)
 	for bytecount := 1; bytecount <= 8; bytecount++ {
 		if timestamp < limit {
-			suffix = make([]byte, bytecount)
+			suffix := make([]byte, bytecount)
 			b := timestamp
 			for i := bytecount - 1; i > 0; i-- {
 				suffix[i] = byte(b & 0xff)
 				b >>= 8
 			}
 			suffix[0] = byte(b) | (byte(bytecount) << 5) // 3 most significant bits of the first byte are bytecount
-			break
+			return suffix
 		}
 		limit <<= 8
 	}
-	return suffix
+	return nil
 }

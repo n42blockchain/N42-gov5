@@ -4,9 +4,7 @@
 
 package bn256
 
-import (
-	"math/big"
-)
+import "math/big"
 
 // curvePoint implements the elliptic curve y²=x³+3. Points are kept in
 // Jacobian form and t=z² when valid. G₁ is the set of points of this curve on

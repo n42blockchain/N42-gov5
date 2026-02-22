@@ -3,13 +3,6 @@ package sync
 import (
 	"context"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/p2p"
-	"github.com/n42blockchain/N42/internal/p2p/peers"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -19,12 +12,20 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.opencensus.io/trace"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/p2p/peers"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/utils"
 )
 
 const pubsubMessageTimeout = 30 * time.Second
 
-// maxConcurrentPipelines limits the number of concurrent message processing goroutines.
-// Fix: Prevent goroutine explosion by using a semaphore pattern.
+// maxConcurrentPipelines limits the number of concurrent message processing
+// goroutines per subscription topic, using a semaphore pattern.
 const maxConcurrentPipelines = 256
 
 // wrappedVal represents a gossip validator which also returns an error along with the result.
@@ -73,11 +74,8 @@ func (s *Service) subscribe(topic string, validator wrappedVal, handle subHandle
 
 func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle subHandler) *pubsub.Subscription {
 	topic += s.cfg.p2p.Encoding().ProtocolSuffix()
-	//log := log.WithField("topic", topic)
 
-	// Do not resubscribe already seen subscriptions.
-	ok := s.subHandler.topicExists(topic)
-	if ok {
+	if ok := s.subHandler.topicExists(topic); ok {
 		log.Debug(fmt.Sprintf("Provided topic already has an active subscription running: %s", topic), "topic", topic)
 		return nil
 	}
@@ -107,7 +105,6 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 
 		defer func() {
 			if r := recover(); r != nil {
-				//tracing.AnnotateError(span, fmt.Errorf("panic occurred: %v", r))
 				log.Error("Panic occurred", "err", r, "topic", topic)
 				debug.PrintStack()
 			}
@@ -129,17 +126,15 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 		}
 
 		if err := handle(ctx, protoMsg); err != nil {
-			//tracing.AnnotateError(span, err)
 			log.Error("Could not handle p2p pubsub", "err", err, "topic", topic)
 			messageFailedProcessingCounter.WithLabelValues(topic).Inc()
 			return
 		}
 	}
 
-	// The main message loop for receiving incoming messages from this subscription.
-	// Fix: Use semaphore to limit concurrent goroutines and prevent goroutine explosion.
+	// messageLoop receives incoming messages from this subscription and dispatches
+	// them to pipeline goroutines, bounded by a semaphore.
 	messageLoop := func() {
-		// Semaphore to limit concurrent pipeline executions
 		sem := make(chan struct{}, maxConcurrentPipelines)
 
 		for {
@@ -211,12 +206,13 @@ func (s *Service) wrapAndReportValidation(topic string, v wrappedVal) (string, p
 		}
 		b, err := v(ctx, pid, msg)
 
-		var fields = make([]interface{}, 0)
-		fields = append(fields, "topic", topic)
-		fields = append(fields, "peer id", pid.String())
-		fields = append(fields, "multiaddress", multiAddr(pid, s.cfg.p2p.Peers()))
-		fields = append(fields, "agent", agentString(pid, s.cfg.p2p.Host()))
-		fields = append(fields, "gossip score", s.cfg.p2p.Peers().Scorers().GossipScorer().Score(pid))
+		fields := []interface{}{
+			"topic", topic,
+			"peer_id", pid.String(),
+			"multiaddress", multiAddr(pid, s.cfg.p2p.Peers()),
+			"agent", agentString(pid, s.cfg.p2p.Host()),
+			"gossip_score", s.cfg.p2p.Peers().Scorers().GossipScorer().Score(pid),
+		}
 
 		if b == pubsub.ValidationReject {
 			if enableFullSSZDataLogging {
@@ -271,16 +267,16 @@ func (s *Service) unSubscribeFromTopic(topic string) {
 	}
 }
 
-// Add fork digest to topic.
-func (_ *Service) addDigestToTopic(topic string, digest [4]byte) string {
+// addDigestToTopic formats the topic string with the given fork digest.
+func (*Service) addDigestToTopic(topic string, digest [4]byte) string {
 	if !strings.Contains(topic, "%x") {
 		log.Crit("Topic does not have appropriate formatter for digest")
 	}
 	return fmt.Sprintf(topic, digest)
 }
 
-// Add the digest and index to subnet topic.
-func (_ *Service) addDigestAndIndexToTopic(topic string, digest [4]byte, idx uint64) string {
+// addDigestAndIndexToTopic formats the topic string with the fork digest and subnet index.
+func (*Service) addDigestAndIndexToTopic(topic string, digest [4]byte, idx uint64) string {
 	if !strings.Contains(topic, "%x") {
 		log.Crit("Topic does not have appropriate formatter for digest")
 	}
@@ -292,29 +288,26 @@ func (s *Service) currentForkDigest() ([4]byte, error) {
 	return utils.CreateForkDigest(s.cfg.chain.CurrentBlock().Number64(), genRoot)
 }
 
-// Checks if the provided digest matches up with the current supposed digest.
+// isDigestValid checks if the provided digest matches the expected digest
+// computed from the given block number and genesis validator root.
 func isDigestValid(digest [4]byte, blockNr *uint256.Int, genValRoot types.Hash) (bool, error) {
-	retDigest, err := utils.CreateForkDigest(blockNr, genValRoot)
+	computed, err := utils.CreateForkDigest(blockNr, genValRoot)
 	if err != nil {
 		return false, err
 	}
-	//isNextEpoch, err := utils.CreateForkDigest(new(uint256.Int).AddUint64(blockNr, 1), genValRoot)
-	//if err != nil {
-	//	return false, err
-	//}
-
-	return retDigest == digest, nil
+	return computed == digest, nil
 }
 
 func agentString(pid peer.ID, hst host.Host) string {
-	agString := ""
-	ok := false
-	rawVersion, storeErr := hst.Peerstore().Get(pid, "AgentVersion")
-	agString, ok = rawVersion.(string)
-	if storeErr != nil || !ok {
-		agString = ""
+	rawVersion, err := hst.Peerstore().Get(pid, "AgentVersion")
+	if err != nil {
+		return ""
 	}
-	return agString
+	s, ok := rawVersion.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }
 
 func multiAddr(pid peer.ID, stat *peers.Status) string {

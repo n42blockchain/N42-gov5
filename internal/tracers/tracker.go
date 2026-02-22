@@ -21,6 +21,10 @@ import (
 	"sync"
 )
 
+// StateReleaseFunc is used to deallocate resources held by constructing a
+// historical state for tracing purposes.
+type StateReleaseFunc func()
+
 // stateTracker is an auxiliary tool used to cache the release functions of all
 // used trace states, and to determine whether the creation of trace state needs
 // to be paused in case there are too many states waiting for tracing.
@@ -52,9 +56,6 @@ func (t *stateTracker) releaseState(number uint64, release StateReleaseFunc) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	// Set the state as used, the corresponding flag is indexed by
-	// the distance between the specified state and the oldest state
-	// which is still using for trace.
 	// Bounds check to prevent negative index or out of range access
 	if number < t.oldest {
 		return
@@ -65,24 +66,21 @@ func (t *stateTracker) releaseState(number uint64, release StateReleaseFunc) {
 	}
 	t.used[idx] = true
 
-	// If the oldest state is used up, update the oldest marker by moving
-	// it to the next state which is not used up.
+	// Advance the oldest marker past consecutive used-up states.
 	if number == t.oldest {
 		var count int
 		for _, used := range t.used {
 			if !used {
 				break
 			}
-			count += 1
+			count++
 		}
 		t.oldest += uint64(count)
 		copy(t.used, t.used[count:])
 
-		// Clean up the array tail since they are useless now.
 		for i := t.limit - count; i < t.limit; i++ {
 			t.used[i] = false
 		}
-		// Fire the signal to all waiters that oldest marker is updated.
 		t.cond.Broadcast()
 	}
 	t.releases = append(t.releases, release)

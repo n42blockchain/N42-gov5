@@ -20,8 +20,9 @@ import (
 	"bytes"
 	"slices"
 
-	"github.com/n42blockchain/N42/lib/kv/order"
 	"golang.org/x/exp/constraints"
+
+	"github.com/n42blockchain/N42/lib/kv/order"
 )
 
 type Closer interface {
@@ -50,9 +51,7 @@ type ArrStream[V any] struct {
 
 func ReverseArray[V any](arr []V) *ArrStream[V] {
 	arr = slices.Clone(arr)
-	for i, j := 0, len(arr)-1; i < j; i, j = i+1, j-1 {
-		arr[i], arr[j] = arr[j], arr[i]
-	}
+	slices.Reverse(arr)
 	return Array(arr)
 }
 func Array[V any](arr []V) *ArrStream[V] { return &ArrStream[V]{arr: arr} }
@@ -115,7 +114,7 @@ func UnionKV(x, y KV, limit int) KV {
 	return m
 }
 func (m *UnionKVIter) HasNext() bool {
-	return m.err != nil || (m.limit != 0 && m.xHasNext) || (m.limit != 0 && m.yHasNext)
+	return m.err != nil || (m.limit != 0 && (m.xHasNext || m.yHasNext))
 }
 func (m *UnionKVIter) advanceX() {
 	if m.err != nil {
@@ -142,31 +141,28 @@ func (m *UnionKVIter) Next() ([]byte, []byte, error) {
 	m.limit--
 	if m.xHasNext && m.yHasNext {
 		cmp := bytes.Compare(m.xNextK, m.yNextK)
-		if cmp < 0 {
-			k, v, err := m.xNextK, m.xNextV, m.err
+		if cmp <= 0 {
+			k, v := m.xNextK, m.xNextV
 			m.advanceX()
-			return k, v, err
-		} else if cmp == 0 {
-			k, v, err := m.xNextK, m.xNextV, m.err
-			m.advanceX()
-			m.advanceY()
-			return k, v, err
+			if cmp == 0 {
+				m.advanceY()
+			}
+			return k, v, nil
 		}
-		k, v, err := m.yNextK, m.yNextV, m.err
+		k, v := m.yNextK, m.yNextV
 		m.advanceY()
-		return k, v, err
+		return k, v, nil
 	}
 	if m.xHasNext {
-		k, v, err := m.xNextK, m.xNextV, m.err
+		k, v := m.xNextK, m.xNextV
 		m.advanceX()
-		return k, v, err
+		return k, v, nil
 	}
-	k, v, err := m.yNextK, m.yNextV, m.err
+	k, v := m.yNextK, m.yNextV
 	m.advanceY()
-	return k, v, err
+	return k, v, nil
 }
 
-// func (m *UnionKVIter) ToArray() (keys, values [][]byte, err error) { return ToKVArray(m) }
 func (m *UnionKVIter) Close() {
 	if x, ok := m.x.(Closer); ok {
 		x.Close()
@@ -209,7 +205,7 @@ func Union[T constraints.Ordered](x, y Unary[T], asc order.By, limit int) Unary[
 }
 
 func (m *UnionUnary[T]) HasNext() bool {
-	return m.err != nil || (m.limit != 0 && m.xHas) || (m.limit != 0 && m.yHas)
+	return m.err != nil || (m.limit != 0 && (m.xHas || m.yHas))
 }
 func (m *UnionUnary[T]) advanceX() {
 	if m.err != nil {
@@ -241,27 +237,28 @@ func (m *UnionUnary[T]) Next() (res T, err error) {
 	m.limit--
 	if m.xHas && m.yHas {
 		if m.less() {
-			k, err := m.xNextK, m.err
+			k := m.xNextK
 			m.advanceX()
-			return k, err
-		} else if m.xNextK == m.yNextK {
-			k, err := m.xNextK, m.err
+			return k, nil
+		}
+		if m.xNextK == m.yNextK {
+			k := m.xNextK
 			m.advanceX()
 			m.advanceY()
-			return k, err
+			return k, nil
 		}
-		k, err := m.yNextK, m.err
+		k := m.yNextK
 		m.advanceY()
-		return k, err
+		return k, nil
 	}
 	if m.xHas {
-		k, err := m.xNextK, m.err
+		k := m.xNextK
 		m.advanceX()
-		return k, err
+		return k, nil
 	}
-	k, err := m.yNextK, m.err
+	k := m.yNextK
 	m.advanceY()
-	return k, err
+	return k, nil
 }
 func (m *UnionUnary[T]) Close() {
 	if x, ok := m.x.(Closer); ok {
@@ -295,18 +292,13 @@ func (m *IntersectIter[T]) HasNext() bool {
 func (m *IntersectIter[T]) advance() {
 	m.advanceX()
 	m.advanceY()
-	for m.xHasNext && m.yHasNext {
-		if m.err != nil {
-			break
-		}
+	for m.xHasNext && m.yHasNext && m.err == nil {
 		if m.xNextK < m.yNextK {
 			m.advanceX()
-			continue
 		} else if m.xNextK == m.yNextK {
 			return
 		} else {
 			m.advanceY()
-			continue
 		}
 	}
 	m.xHasNext = false

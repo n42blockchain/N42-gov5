@@ -21,9 +21,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
-	"io"
 )
 
 // The ABI holds information about a contract's context and available
@@ -62,11 +63,7 @@ func (abi ABI) Pack(name string, args ...interface{}) ([]byte, error) {
 	// Fetch the ABI of the requested method
 	if name == "" {
 		// constructor
-		arguments, err := abi.Constructor.Inputs.Pack(args...)
-		if err != nil {
-			return nil, err
-		}
-		return arguments, nil
+		return abi.Constructor.Inputs.Pack(args...)
 	}
 	method, exist := abi.Methods[name]
 	if !exist {

@@ -17,8 +17,9 @@
 package api
 
 import (
-	"github.com/n42blockchain/N42/common/types"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/types"
 )
 
 type AddrLocker struct {

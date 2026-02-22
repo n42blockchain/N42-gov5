@@ -63,7 +63,7 @@ func BenchmarkShuffleList(b *testing.B) {
 
 	for _, listSize := range listSizes {
 		// list to test
-		testIndices := make([]uint64, listSize, listSize)
+		testIndices := make([]uint64, listSize)
 		// fill
 		for i := uint64(0); i < listSize; i++ {
 			testIndices[i] = i
@@ -76,9 +76,3 @@ func BenchmarkShuffleList(b *testing.B) {
 		})
 	}
 }
-
-//// TODO optimize memory allocations even more by analysis of statistics
-//func BenchmarkShuffleListWithAllocsReport(b *testing.B) {
-//	b.ReportAllocs()
-//	BenchmarkShuffleList(b)
-//}

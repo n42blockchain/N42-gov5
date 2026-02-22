@@ -18,6 +18,7 @@ package native
 
 import (
 	"encoding/json"
+
 	"github.com/holiman/uint256"
 
 	common "github.com/n42blockchain/N42/common/types"
@@ -60,56 +61,56 @@ func newMuxTracer(ctx *tracers.Context, cfg json.RawMessage) (tracers.Tracer, er
 
 // CaptureStart implements the EVMLogger interface to initialize the tracing operation.
 func (t *muxTracer) CaptureStart(env vm.VMInterface, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *uint256.Int) {
-	for _, t := range t.tracers {
-		t.CaptureStart(env, from, to, create, input, gas, value)
+	for _, tr := range t.tracers {
+		tr.CaptureStart(env, from, to, create, input, gas, value)
 	}
 }
 
 // CaptureEnd is called after the call finishes to finalize the tracing.
 func (t *muxTracer) CaptureEnd(output []byte, gasUsed uint64, err error) {
-	for _, t := range t.tracers {
-		t.CaptureEnd(output, gasUsed, err)
+	for _, tr := range t.tracers {
+		tr.CaptureEnd(output, gasUsed, err)
 	}
 }
 
 // CaptureState implements the EVMLogger interface to trace a single step of VM execution.
 func (t *muxTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
-	for _, t := range t.tracers {
-		t.CaptureState(pc, op, gas, cost, scope, rData, depth, err)
+	for _, tr := range t.tracers {
+		tr.CaptureState(pc, op, gas, cost, scope, rData, depth, err)
 	}
 }
 
 // CaptureFault implements the EVMLogger interface to trace an execution fault.
 func (t *muxTracer) CaptureFault(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
-	for _, t := range t.tracers {
-		t.CaptureFault(pc, op, gas, cost, scope, depth, err)
+	for _, tr := range t.tracers {
+		tr.CaptureFault(pc, op, gas, cost, scope, depth, err)
 	}
 }
 
 // CaptureEnter is called when EVM enters a new scope (via call, create or selfdestruct).
 func (t *muxTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *uint256.Int) {
-	for _, t := range t.tracers {
-		t.CaptureEnter(typ, from, to, input, gas, value)
+	for _, tr := range t.tracers {
+		tr.CaptureEnter(typ, from, to, input, gas, value)
 	}
 }
 
 // CaptureExit is called when EVM exits a scope, even if the scope didn't
 // execute any code.
 func (t *muxTracer) CaptureExit(output []byte, gasUsed uint64, err error) {
-	for _, t := range t.tracers {
-		t.CaptureExit(output, gasUsed, err)
+	for _, tr := range t.tracers {
+		tr.CaptureExit(output, gasUsed, err)
 	}
 }
 
 func (t *muxTracer) CaptureTxStart(gasLimit uint64) {
-	for _, t := range t.tracers {
-		t.CaptureTxStart(gasLimit)
+	for _, tr := range t.tracers {
+		tr.CaptureTxStart(gasLimit)
 	}
 }
 
 func (t *muxTracer) CaptureTxEnd(restGas uint64) {
-	for _, t := range t.tracers {
-		t.CaptureTxEnd(restGas)
+	for _, tr := range t.tracers {
+		tr.CaptureTxEnd(restGas)
 	}
 }
 
@@ -132,7 +133,7 @@ func (t *muxTracer) GetResult() (json.RawMessage, error) {
 
 // Stop terminates execution of the tracer at the first opportune moment.
 func (t *muxTracer) Stop(err error) {
-	for _, t := range t.tracers {
-		t.Stop(err)
+	for _, tr := range t.tracers {
+		tr.Stop(err)
 	}
 }

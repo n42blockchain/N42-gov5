@@ -20,14 +20,15 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/utils"
-	"google.golang.org/protobuf/proto"
 	"sync/atomic"
+
+	"github.com/holiman/uint256"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/utils"
 )
 
 type BlockNonce [8]byte
@@ -44,7 +45,7 @@ func (n BlockNonce) Uint64() uint64 {
 	return binary.BigEndian.Uint64(n[:])
 }
 
-// MarshalText todo copy eth
+// MarshalText encodes n as a hex string with 0x prefix.
 func (n BlockNonce) MarshalText() ([]byte, error) {
 	return hexutil.Bytes(n[:]).MarshalText()
 }
@@ -108,10 +109,6 @@ func (h Header) Hash() types.Hash {
 		return types.Hash{}
 	}
 
-	if h.Number.Uint64() == 0 {
-		//log.Tracef("genesis header json Marshal: %s", string(buf))
-	}
-
 	hash := types.BytesHash(buf)
 	h.hash.Store(hash)
 	return hash
@@ -139,12 +136,8 @@ func (h *Header) ToProtoMessage() proto.Message {
 }
 
 func (h *Header) FromProtoMessage(message proto.Message) error {
-	var (
-		pbHeader *types_pb.Header
-		ok       bool
-	)
-
-	if pbHeader, ok = message.(*types_pb.Header); !ok {
+	pbHeader, ok := message.(*types_pb.Header)
+	if !ok {
 		return fmt.Errorf("type conversion failure")
 	}
 
@@ -168,8 +161,7 @@ func (h *Header) FromProtoMessage(message proto.Message) error {
 }
 
 func (h *Header) Marshal() ([]byte, error) {
-	pbHeader := h.ToProtoMessage()
-	return proto.Marshal(pbHeader)
+	return proto.Marshal(h.ToProtoMessage())
 }
 
 func (h *Header) Unmarshal(data []byte) error {
@@ -177,24 +169,24 @@ func (h *Header) Unmarshal(data []byte) error {
 	if err := proto.Unmarshal(data, &pbHeader); err != nil {
 		return err
 	}
-	if err := h.FromProtoMessage(&pbHeader); err != nil {
-		return err
-	}
-	return nil
+	return h.FromProtoMessage(&pbHeader)
 }
 
 func CopyHeader(h *Header) *Header {
 	cpy := *h
 
-	if cpy.Difficulty = uint256.NewInt(0); h.Difficulty != nil {
-		cpy.Difficulty.SetBytes(h.Difficulty.Bytes())
+	cpy.Difficulty = uint256.NewInt(0)
+	if h.Difficulty != nil {
+		cpy.Difficulty.Set(h.Difficulty)
 	}
-	if cpy.Number = uint256.NewInt(0); h.Number != nil {
-		cpy.Number.SetBytes(h.Number.Bytes())
+
+	cpy.Number = uint256.NewInt(0)
+	if h.Number != nil {
+		cpy.Number.Set(h.Number)
 	}
 
 	if h.BaseFee != nil {
-		cpy.BaseFee = uint256.NewInt(0).SetBytes(h.BaseFee.Bytes())
+		cpy.BaseFee = new(uint256.Int).Set(h.BaseFee)
 	}
 
 	if len(h.Extra) > 0 {
@@ -205,17 +197,12 @@ func CopyHeader(h *Header) *Header {
 }
 
 func CopyReward(rewards []*Reward) []*Reward {
-	var cpyReward []*Reward
-
-	for _, reward := range rewards {
-		addr, amount := types.Address{}, uint256.Int{}
-
-		addr.SetBytes(reward.Address[:])
-		cpyReward = append(cpyReward, &Reward{
-			Address: addr,
-			Amount:  amount.SetBytes(reward.Amount.Bytes()),
-		})
+	cpyReward := make([]*Reward, len(rewards))
+	for i, reward := range rewards {
+		cpyReward[i] = &Reward{
+			Address: reward.Address,
+			Amount:  new(uint256.Int).Set(reward.Amount),
+		}
 	}
-
 	return cpyReward
 }

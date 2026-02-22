@@ -688,61 +688,13 @@ func makeEncoderWriter(typ reflect.Type) writer {
 
 // putint writes i to the beginning of b in big endian byte
 // order, using the least number of bytes needed to represent i.
+// b must be at least 8 bytes long.
 func putint(b []byte, i uint64) (size int) {
-	switch {
-	case i < (1 << 8):
-		b[0] = byte(i)
-		return 1
-	case i < (1 << 16):
-		b[0] = byte(i >> 8)
-		b[1] = byte(i)
-		return 2
-	case i < (1 << 24):
-		b[0] = byte(i >> 16)
-		b[1] = byte(i >> 8)
-		b[2] = byte(i)
-		return 3
-	case i < (1 << 32):
-		b[0] = byte(i >> 24)
-		b[1] = byte(i >> 16)
-		b[2] = byte(i >> 8)
-		b[3] = byte(i)
-		return 4
-	case i < (1 << 40):
-		b[0] = byte(i >> 32)
-		b[1] = byte(i >> 24)
-		b[2] = byte(i >> 16)
-		b[3] = byte(i >> 8)
-		b[4] = byte(i)
-		return 5
-	case i < (1 << 48):
-		b[0] = byte(i >> 40)
-		b[1] = byte(i >> 32)
-		b[2] = byte(i >> 24)
-		b[3] = byte(i >> 16)
-		b[4] = byte(i >> 8)
-		b[5] = byte(i)
-		return 6
-	case i < (1 << 56):
-		b[0] = byte(i >> 48)
-		b[1] = byte(i >> 40)
-		b[2] = byte(i >> 32)
-		b[3] = byte(i >> 24)
-		b[4] = byte(i >> 16)
-		b[5] = byte(i >> 8)
-		b[6] = byte(i)
-		return 7
-	default:
-		b[0] = byte(i >> 56)
-		b[1] = byte(i >> 48)
-		b[2] = byte(i >> 40)
-		b[3] = byte(i >> 32)
-		b[4] = byte(i >> 24)
-		b[5] = byte(i >> 16)
-		b[6] = byte(i >> 8)
-		b[7] = byte(i)
-		return 8
-	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], i)
+	size = intsize(i)
+	copy(b, buf[8-size:])
+	return size
 }
 
 // intsize computes the minimum number of bytes required to store i.
@@ -813,13 +765,13 @@ func EncodeBigInt(i *big.Int, w io.Writer, buffer []byte) error {
 func EncodeString(s []byte, w io.Writer, buffer []byte) error {
 	switch len(s) {
 	case 0:
-		buffer[0] = 128
+		buffer[0] = EmptyStringCode
 		if _, err := w.Write(buffer[:1]); err != nil {
 			return err
 		}
 	case 1:
-		if s[0] >= 128 {
-			buffer[0] = 129
+		if s[0] >= 0x80 {
+			buffer[0] = EmptyStringCode + 1
 			if _, err := w.Write(buffer[:1]); err != nil {
 				return err
 			}
@@ -842,12 +794,12 @@ func EncodeStringSizePrefix(size int, w io.Writer, buffer []byte) error {
 	if size >= 56 {
 		beSize := (bits.Len(uint(size)) + 7) / 8
 		binary.BigEndian.PutUint64(buffer[1:], uint64(size))
-		buffer[8-beSize] = byte(beSize) + 183
+		buffer[8-beSize] = 0xB7 + byte(beSize) // 0xB7 = long string tag base
 		if _, err := w.Write(buffer[8-beSize : 9]); err != nil {
 			return err
 		}
 	} else {
-		buffer[0] = byte(size) + 128
+		buffer[0] = EmptyStringCode + byte(size)
 		if _, err := w.Write(buffer[:1]); err != nil {
 			return err
 		}

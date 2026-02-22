@@ -138,9 +138,9 @@ func TestEOFOpcodeSize(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := eofOpcodeSize(tt.op, tt.code)
+		got := GetOpcodeSize(tt.op, tt.code)
 		if got != tt.want {
-			t.Errorf("eofOpcodeSize(%v) = %d, want %d", tt.op, got, tt.want)
+			t.Errorf("GetOpcodeSize(%v) = %d, want %d", tt.op, got, tt.want)
 		}
 	}
 }
@@ -148,10 +148,10 @@ func TestEOFOpcodeSize(t *testing.T) {
 func TestEOFOpcodeSizeRJUMPV(t *testing.T) {
 	// RJUMPV with 3 cases: 2 (header) + 3*2 (offsets) = 8
 	code := []byte{byte(RJUMPV), 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	got := eofOpcodeSize(RJUMPV, code)
+	got := GetOpcodeSize(RJUMPV, code)
 	want := 2 + 3*2
 	if got != want {
-		t.Errorf("eofOpcodeSize(RJUMPV) = %d, want %d", got, want)
+		t.Errorf("GetOpcodeSize(RJUMPV) = %d, want %d", got, want)
 	}
 }
 
@@ -342,7 +342,7 @@ func BenchmarkEOFOpcodeSize(b *testing.B) {
 	code = append(code, make([]byte, 32)...)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		eofOpcodeSize(PUSH32, code)
+		GetOpcodeSize(PUSH32, code)
 	}
 }
 

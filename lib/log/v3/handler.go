@@ -53,8 +53,8 @@ func StreamHandler(wr io.Writer, fmtr Format) Handler {
 func SyncHandler(h Handler) Handler {
 	var mu sync.Mutex
 	return FuncHandler(func(r *Record) error {
-		defer mu.Unlock()
 		mu.Lock()
+		defer mu.Unlock()
 		return h.Log(r)
 	})
 }
@@ -119,9 +119,8 @@ func NetHandler(network, addr string, fmtr Format) (Handler, error) {
 	return closingHandler{conn, StreamHandler(conn, fmtr)}, nil
 }
 
-// XXX: closingHandler is essentially unused at the moment
-// it's meant for a future time when the Handler interface supports
-// a possible Close() operation
+// closingHandler wraps a Handler with an io.WriteCloser, enabling
+// resource cleanup when the handler's underlying writer supports Close().
 type closingHandler struct {
 	io.WriteCloser
 	Handler
@@ -192,7 +191,7 @@ func FilterHandler(fn func(r *Record) bool, h Handler) Handler {
 //
 //	log.MatchFilterHandler("pkg", "app/ui", log.StdoutHandler)
 func MatchFilterHandler(key string, value interface{}, h Handler) Handler {
-	return FilterHandler(func(r *Record) (pass bool) {
+	return FilterHandler(func(r *Record) bool {
 		switch key {
 		case r.KeyNames.Lvl:
 			return r.Lvl == value
@@ -218,7 +217,7 @@ func MatchFilterHandler(key string, value interface{}, h Handler) Handler {
 //
 //	log.LvlFilterHandler(log.LvlError, log.StdoutHandler)
 func LvlFilterHandler(maxLvl Lvl, h Handler) Handler {
-	return FilterHandler(func(r *Record) (pass bool) {
+	return FilterHandler(func(r *Record) bool {
 		return r.Lvl <= maxLvl
 	}, h)
 }
@@ -234,7 +233,6 @@ func LvlFilterHandler(maxLvl Lvl, h Handler) Handler {
 func MultiHandler(hs ...Handler) Handler {
 	return FuncHandler(func(r *Record) error {
 		for _, h := range hs {
-			// what to do about failures?
 			h.Log(r)
 		}
 		return nil
@@ -301,23 +299,22 @@ func BufferedHandler(bufSize int, h Handler) Handler {
 // it if you write your own Handler.
 func LazyHandler(h Handler) Handler {
 	return FuncHandler(func(r *Record) error {
-		// go through the values (odd indices) and reassign
-		// the values of any lazy fn to the result of its execution
 		hadErr := false
 		for i := 1; i < len(r.Ctx); i += 2 {
 			lz, ok := r.Ctx[i].(Lazy)
-			if ok {
-				v, err := evaluateLazy(lz)
-				if err != nil {
-					hadErr = true
-					r.Ctx[i] = err
-				} else {
-					if cs, ok := v.(stack.CallStack); ok {
-						v = cs.TrimBelow(r.Call).TrimRuntime()
-					}
-					r.Ctx[i] = v
-				}
+			if !ok {
+				continue
 			}
+			v, err := evaluateLazy(lz)
+			if err != nil {
+				hadErr = true
+				r.Ctx[i] = err
+				continue
+			}
+			if cs, ok := v.(stack.CallStack); ok {
+				v = cs.TrimBelow(r.Call).TrimRuntime()
+			}
+			r.Ctx[i] = v
 		}
 
 		if hadErr {
@@ -344,7 +341,7 @@ func evaluateLazy(lz Lazy) (interface{}, error) {
 	}
 
 	value := reflect.ValueOf(lz.Fn)
-	results := value.Call([]reflect.Value{})
+	results := value.Call(nil)
 	if len(results) == 1 {
 		return results[0].Interface(), nil
 	}

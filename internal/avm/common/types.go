@@ -26,7 +26,6 @@ import (
 	"math/big"
 	"math/rand"
 	"reflect"
-	"strings"
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"golang.org/x/crypto/sha3"
@@ -58,14 +57,11 @@ func BytesToHash(b []byte) Hash {
 }
 
 func StringToHash(s string) Hash {
-	var h Hash
 	b, err := hex.DecodeString(s)
-	if err == nil {
-		//copy(h[:], b[:HashLength])
-		return BytesToHash(b)
+	if err != nil {
+		return Hash{}
 	}
-
-	return h
+	return BytesToHash(b)
 }
 
 // BigToHash sets byte representation of b to hash.
@@ -184,14 +180,12 @@ func (Hash) ImplementsGraphQLType(name string) bool { return name == "Bytes32" }
 
 // UnmarshalGraphQL unmarshals the provided GraphQL query data.
 func (h *Hash) UnmarshalGraphQL(input interface{}) error {
-	var err error
 	switch input := input.(type) {
 	case string:
-		err = h.UnmarshalText([]byte(input))
+		return h.UnmarshalText([]byte(input))
 	default:
-		err = fmt.Errorf("unexpected type %T for Hash", input)
+		return fmt.Errorf("unexpected type %T for Hash", input)
 	}
-	return err
 }
 
 // UnprefixedHash allows marshaling a Hash without 0x prefix.
@@ -206,8 +200,6 @@ func (h *UnprefixedHash) UnmarshalText(input []byte) error {
 func (h UnprefixedHash) MarshalText() ([]byte, error) {
 	return []byte(hex.EncodeToString(h[:])), nil
 }
-
-/////////// Address
 
 // Address represents the 20 byte address of an Ethereum account.
 type Address [AddressLength]byte
@@ -360,14 +352,12 @@ func (a Address) ImplementsGraphQLType(name string) bool { return name == "Addre
 
 // UnmarshalGraphQL unmarshals the provided GraphQL query data.
 func (a *Address) UnmarshalGraphQL(input interface{}) error {
-	var err error
 	switch input := input.(type) {
 	case string:
-		err = a.UnmarshalText([]byte(input))
+		return a.UnmarshalText([]byte(input))
 	default:
-		err = fmt.Errorf("unexpected type %T for Address", input)
+		return fmt.Errorf("unexpected type %T for Address", input)
 	}
-	return err
 }
 
 // UnprefixedAddress allows marshaling an Address without 0x prefix.
@@ -414,10 +404,10 @@ func (ma *MixedcaseAddress) UnmarshalJSON(input []byte) error {
 
 // MarshalJSON marshals the original value
 func (ma *MixedcaseAddress) MarshalJSON() ([]byte, error) {
-	if strings.HasPrefix(ma.original, "0x") || strings.HasPrefix(ma.original, "0X") {
-		return json.Marshal(fmt.Sprintf("0x%s", ma.original[2:]))
+	if has0xPrefix(ma.original) {
+		return json.Marshal("0x" + ma.original[2:])
 	}
-	return json.Marshal(fmt.Sprintf("0x%s", ma.original))
+	return json.Marshal("0x" + ma.original)
 }
 
 // Address returns the address

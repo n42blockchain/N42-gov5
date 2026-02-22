@@ -18,9 +18,11 @@ package network
 
 import (
 	"bytes"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/n42blockchain/N42/common/message"
 	"io"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+
+	"github.com/n42blockchain/N42/common/message"
 )
 
 const (
@@ -77,7 +79,7 @@ func (hdr *Header) Encode(w io.Writer, msgType message.MessageType, remainingLen
 
 func (hdr *Header) encodeInto(buf *bytes.Buffer, msgType message.MessageType, remainingLength int32) error {
 	if !msgType.IsValid() {
-		return badMsgTypeError
+		return errBadMsgType
 	}
 
 	val := byte(msgType) << 4
@@ -137,7 +139,7 @@ func decodeLength(r io.Reader) int32 {
 		shift += 7
 	}
 
-	raiseError(badLengthEncodingError)
+	raiseError(errBadLengthEncoding)
 	panic("unreachable")
 }
 

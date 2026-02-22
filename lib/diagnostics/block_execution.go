@@ -50,11 +50,10 @@ func (b *BlockEexcStatsData) SetData(d BlockExecutionStatistics) {
 	b.data = d
 }
 
-func (b *BlockEexcStatsData) Data() (d BlockExecutionStatistics) {
+func (b *BlockEexcStatsData) Data() BlockExecutionStatistics {
 	b.mu.Lock()
-	d = b.data
-	b.mu.Unlock()
-	return
+	defer b.mu.Unlock()
+	return b.data
 }
 
 func (d *DiagnosticClient) setupBlockExecutionDiagnostics(rootCtx context.Context) {

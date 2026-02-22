@@ -18,7 +18,6 @@
 package netutil
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -74,7 +73,7 @@ type Netlist []net.IPNet
 func ParseNetlist(s string) (*Netlist, error) {
 	ws := strings.NewReplacer(" ", "", "\n", "", "\t", "")
 	masks := strings.Split(ws.Replace(s), ",")
-	l := make(Netlist, 0)
+	var l Netlist
 	for _, mask := range masks {
 		if mask == "" {
 			continue
@@ -91,8 +90,8 @@ func ParseNetlist(s string) (*Netlist, error) {
 // MarshalTOML implements toml.MarshalerRec.
 func (l Netlist) MarshalTOML() interface{} {
 	list := make([]string, 0, len(l))
-	for _, net := range l {
-		list = append(list, net.String())
+	for _, ipnet := range l {
+		list = append(list, ipnet.String())
 	}
 	return list
 }
@@ -128,8 +127,8 @@ func (l *Netlist) Contains(ip net.IP) bool {
 	if l == nil {
 		return false
 	}
-	for _, net := range *l {
-		if net.Contains(ip) {
+	for _, ipnet := range *l {
+		if ipnet.Contains(ip) {
 			return true
 		}
 	}
@@ -232,10 +231,10 @@ type DistinctNetSet struct {
 func (s *DistinctNetSet) Add(ip net.IP) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := s.key(ip)
-	n := s.members[string(key)]
+	k := string(s.key(ip))
+	n := s.members[k]
 	if n < s.Limit {
-		s.members[string(key)] = n + 1
+		s.members[k] = n + 1
 		return true
 	}
 	return false
@@ -245,22 +244,22 @@ func (s *DistinctNetSet) Add(ip net.IP) bool {
 func (s *DistinctNetSet) Remove(ip net.IP) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := s.key(ip)
-	if n, ok := s.members[string(key)]; ok {
+	k := string(s.key(ip))
+	if n, ok := s.members[k]; ok {
 		if n == 1 {
-			delete(s.members, string(key))
+			delete(s.members, k)
 		} else {
-			s.members[string(key)] = n - 1
+			s.members[k] = n - 1
 		}
 	}
 }
 
-// Contains whether the given IP is contained in the set.
+// Contains reports whether the given IP is contained in the set.
 func (s *DistinctNetSet) Contains(ip net.IP) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	key := s.key(ip)
-	_, ok := s.members[string(key)]
+	k := string(s.key(ip))
+	_, ok := s.members[k]
 	return ok
 }
 
@@ -305,12 +304,12 @@ func (s *DistinctNetSet) key(ip net.IP) net.IP {
 	return buf
 }
 
-// String implements fmt.Stringer
+// String implements fmt.Stringer.
 func (s *DistinctNetSet) String() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var buf bytes.Buffer
-	buf.WriteString("{")
+	var b strings.Builder
+	b.WriteString("{")
 	keys := make([]string, 0, len(s.members))
 	for k := range s.members {
 		keys = append(keys, k)
@@ -324,11 +323,11 @@ func (s *DistinctNetSet) String() string {
 			ip = make(net.IP, 16)
 		}
 		copy(ip, k[1:])
-		fmt.Fprintf(&buf, "%v×%d", ip, s.members[k])
+		fmt.Fprintf(&b, "%v×%d", ip, s.members[k])
 		if i != len(keys)-1 {
-			buf.WriteString(" ")
+			b.WriteString(" ")
 		}
 	}
-	buf.WriteString("}")
-	return buf.String()
+	b.WriteString("}")
+	return b.String()
 }

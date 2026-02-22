@@ -17,8 +17,9 @@
 package rlp
 
 import (
-	"github.com/n42blockchain/N42/common/hexutil"
 	"testing"
+
+	"github.com/n42blockchain/N42/common/hexutil"
 )
 
 // TestIterator tests some basic things about the ListIterator. A more
@@ -45,14 +46,14 @@ func TestIterator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var i = 0
+	i := 0
 	for txit.Next() {
-		if txit.err != nil {
-			t.Fatal(txit.err)
+		if txit.Err() != nil {
+			t.Fatal(txit.Err())
 		}
 		i++
 	}
-	if exp := 2; i != exp {
-		t.Errorf("count wrong, expected %d got %d", i, exp)
+	if i != 2 {
+		t.Errorf("count wrong, expected 2 got %d", i)
 	}
 }

@@ -41,7 +41,7 @@ type sstack struct {
 	active []*item
 }
 
-// Creates a new, empty stack.
+// newSstack creates a new, empty stack.
 func newSstack(setIndex SetIndexCallback, wrapAround bool) *sstack {
 	result := new(sstack)
 	result.setIndex = setIndex
@@ -52,7 +52,7 @@ func newSstack(setIndex SetIndexCallback, wrapAround bool) *sstack {
 	return result
 }
 
-// Pushes a value onto the stack, expanding it if necessary. Required by
+// Push adds a value onto the stack, expanding it if necessary. Required by
 // heap.Interface.
 func (s *sstack) Push(data interface{}) {
 	if s.size == s.capacity {
@@ -72,28 +72,29 @@ func (s *sstack) Push(data interface{}) {
 	s.size++
 }
 
-// Pops a value off the stack and returns it. Currently no shrinking is done.
+// Pop removes a value from the stack and returns it. Currently no shrinking is done.
 // Required by heap.Interface.
-func (s *sstack) Pop() (res interface{}) {
+func (s *sstack) Pop() interface{} {
 	s.size--
 	s.offset--
 	if s.offset < 0 {
 		s.offset = blockSize - 1
 		s.active = s.blocks[s.size/blockSize]
 	}
-	res, s.active[s.offset] = s.active[s.offset], nil
+	res := s.active[s.offset]
+	s.active[s.offset] = nil
 	if s.setIndex != nil {
-		s.setIndex(res.(*item).value, -1)
+		s.setIndex(res.value, -1)
 	}
-	return
+	return res
 }
 
-// Returns the length of the stack. Required by sort.Interface.
+// Len returns the length of the stack. Required by sort.Interface.
 func (s *sstack) Len() int {
 	return s.size
 }
 
-// Compares the priority of two elements of the stack (higher is first).
+// Less compares the priority of two elements of the stack (higher is first).
 // Required by sort.Interface.
 func (s *sstack) Less(i, j int) bool {
 	a, b := s.blocks[i/blockSize][i%blockSize].priority, s.blocks[j/blockSize][j%blockSize].priority
@@ -103,7 +104,7 @@ func (s *sstack) Less(i, j int) bool {
 	return a > b
 }
 
-// Swaps two elements in the stack. Required by sort.Interface.
+// Swap exchanges two elements in the stack. Required by sort.Interface.
 func (s *sstack) Swap(i, j int) {
 	ib, io, jb, jo := i/blockSize, i%blockSize, j/blockSize, j%blockSize
 	a, b := s.blocks[jb][jo], s.blocks[ib][io]
@@ -114,7 +115,7 @@ func (s *sstack) Swap(i, j int) {
 	s.blocks[ib][io], s.blocks[jb][jo] = a, b
 }
 
-// Resets the stack, effectively clearing its contents.
+// Reset clears the contents of the stack.
 func (s *sstack) Reset() {
 	*s = *newSstack(s.setIndex, false)
 }

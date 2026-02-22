@@ -2,14 +2,10 @@
 
 package mem
 
-import (
-	"errors"
-
-	"github.com/shirou/gopsutil/v4/process"
-)
+import "github.com/shirou/gopsutil/v4/process"
 
 func ReadVirtualMemStats() (process.MemoryMapsStat, error) {
-	return process.MemoryMapsStat{}, errors.New("unsupported platform")
+	return process.MemoryMapsStat{}, ErrorUnsupportedPlatform
 }
 
 func UpdatePrometheusVirtualMemStats(p process.MemoryMapsStat) {}

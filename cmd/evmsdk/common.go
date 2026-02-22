@@ -58,9 +58,7 @@ const (
 	LogFile     = "vertification_debug_log.txt"
 )
 
-var (
-	IS_DEBUG = true
-)
+var isDebug = true
 
 var EE *EvmEngine = &EvmEngine{}
 
@@ -158,30 +156,27 @@ func emitJSON(j interface{}) string {
 }
 
 func (e *EvmEngine) initLogger(lvl string) {
-	IS_DEBUG = lvl == "debug"
+	isDebug = lvl == "debug"
 	if len(lvl) != 0 {
 		ensureLogFileExisted()
-		log.InitMobileLogger(filepath.Join(EE.AppBasePath, LogFile), IS_DEBUG)
+		log.InitMobileLogger(filepath.Join(EE.AppBasePath, LogFile), isDebug)
 	}
 }
 
 func ensureLogFileExisted() {
 	logFilePath := path.Join(EE.AppBasePath, LogFile)
-	f, err := os.Open(logFilePath)
+	f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		f, err = os.Create(logFilePath)
-		if err != nil {
-			fmt.Printf("create log file error,err=%+v\n", err)
-			return
-		}
+		fmt.Printf("create log file error,err=%+v\n", err)
+		return
 	}
 	if err = f.Close(); err != nil {
-		fmt.Printf("log file close error,err=%+v", err)
+		fmt.Printf("log file close error,err=%+v\n", err)
 	}
 }
 
 func simpleLog(txt string, params ...interface{}) {
-	if IS_DEBUG {
+	if isDebug {
 		ifces := make([]interface{}, 0, len(params)+1)
 		ifces = append(ifces, txt)
 		ifces = append(ifces, params...)
@@ -191,7 +186,7 @@ func simpleLog(txt string, params ...interface{}) {
 }
 
 func simpleLogf(txt string, params ...interface{}) {
-	if IS_DEBUG {
+	if isDebug {
 		fmt.Printf(txt+"\n", params...)
 		log.Debugf(txt, params...)
 	}
@@ -296,9 +291,8 @@ func (e *EvmEngine) State() string {
 	defer e.mu.Unlock()
 	if e.EngineState == EngineStateRunning {
 		return "started"
-	} else {
-		return "stopped"
 	}
+	return "stopped"
 }
 
 /*
@@ -432,9 +426,8 @@ func (e *EvmEngine) verificationTaskBg() error {
 			if err := recover(); err != nil {
 				buf := make([]byte, 4096)
 				runtime.Stack(buf, true)
-				simpleLog("vertification task down", "err", err)
+				simpleLog("verification task down", "err", err)
 				simpleLog(string(buf))
-				// simpleLogf("vertification task down,err=%+v,stk:%s:%d", err, f, l)
 			}
 			e.mu.Lock()
 			e.EngineState = EngineStateStopped
@@ -505,7 +498,7 @@ func (e *EvmEngine) Decrypt(req *EmitRequest) (interface{}, error) {
 		return nil, fmt.Errorf("msg type is not string")
 	}
 	if messageBytes, err = hex.DecodeString(message); err != nil {
-		return nil, fmt.Errorf("msg cannote decode to bytes")
+		return nil, fmt.Errorf("msg cannot decode to bytes")
 	}
 
 	priKey := ecies.ImportECDSA(privateKey)
@@ -542,7 +535,7 @@ func (e *EvmEngine) Encrypt(req *EmitRequest) (interface{}, error) {
 	}
 
 	if publicKeyBytes, err = hex.DecodeString(publicKeyString); err != nil {
-		return nil, fmt.Errorf("public_key cannote decode to bytes")
+		return nil, fmt.Errorf("public_key cannot decode to bytes")
 	}
 
 	if publicKey, err = crypto.DecompressPubkey(publicKeyBytes); err != nil {
@@ -557,7 +550,7 @@ func (e *EvmEngine) Encrypt(req *EmitRequest) (interface{}, error) {
 	}
 
 	if messageBytes, err = hex.DecodeString(message); err != nil {
-		return nil, fmt.Errorf("msg cannote decode to bytes")
+		return nil, fmt.Errorf("msg cannot decode to bytes")
 	}
 
 	pubKey := ecies.ImportECDSAPublic(publicKey)
@@ -565,49 +558,6 @@ func (e *EvmEngine) Encrypt(req *EmitRequest) (interface{}, error) {
 
 	return hex.EncodeToString(ct), err
 }
-
-//type innerEntireCode state.EntireCode
-//
-//func (h *innerEntireCode) UnmarshalJSON(in []byte) error {
-//	m := map[string]json.RawMessage{}
-//	if err := json.Unmarshal(in, &m); err != nil {
-//		return err
-//	}
-//
-//	if err := json.Unmarshal(m["coinBase"], &h.CoinBase); err != nil {
-//		return err
-//	}
-//	if err := json.Unmarshal(m["codes"], &h.Codes); err != nil {
-//		return err
-//	}
-//	if rewardsBytes, ok := m["rewards"]; ok {
-//		m := []json.RawMessage{}
-//		if err := json.Unmarshal(rewardsBytes, &m); err == nil && len(m) != 0 {
-//			h.Rewards = make([]block.Reward, len(m))
-//			for i, _ := range h.Rewards {
-//				rewardBean := block.Reward{
-//					Amount: commTyp.NewInt64(0),
-//				}
-//				json.Unmarshal(m[i], &rewardBean)
-//				h.Rewards[i] = rewardBean
-//			}
-//		}
-//	}
-//	// if err := json.Unmarshal(m["rewards"], &h.Rewards); err != nil {
-//	// 	return err
-//	// }
-//
-//	h.Entire.Header = &block.Header{
-//		Difficulty: commTyp.NewInt64(0),
-//		Number:     commTyp.NewInt64(0),
-//		BaseFee:    commTyp.NewInt64(0),
-//	}
-//	if err := json.Unmarshal(m["entire"], &h.Entire); err != nil {
-//		return err
-//	}
-//
-//	return nil
-//}
 
 func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 	var bean state.EntireCode
@@ -639,7 +589,6 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 	}
 
 	res := AggSign{}
-	//stateroot
 	copy(res.StateRoot[:], stateRoot[:])
 	if pubkIfce, err := BlsPublicKey(e.PrivKey); err == nil {
 		if pubkStr, ok := pubkIfce.(string); ok {
@@ -652,29 +601,16 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 
 	simpleLog("calculated stateRoot:", "stateRoot", hexutil.Encode(res.StateRoot[:]))
 
-	//privkey
 	res.Number = bean.Entire.Header.Number.Uint64()
-	privKeyBytes, err := hex.DecodeString(e.PrivKey)
-	if err != nil {
-		return nil, err
-	}
-	// Security: validate private key length before copy
-	if len(privKeyBytes) != 32 {
-		return nil, fmt.Errorf("invalid private key length: expected 32 bytes, got %d", len(privKeyBytes))
-	}
-	arr := [32]byte{}
-	copy(arr[:], privKeyBytes)
-	sk, err := bls.SecretKeyFromRandom32Byte(arr)
+	sk, err := decodeSecretKey(e.PrivKey)
 	if err != nil {
 		return nil, err
 	}
 
-	//sign
 	copy(res.Sign[:], sk.Sign(res.StateRoot[:]).Marshal())
 
 	simpleLog("sign stateRoot:", "Sign", hexutil.Encode(res.Sign[:]))
 
-	//address
 	res.Address = commTyp.HexToAddress(e.Account)
 
 	resBytes, err := json.Marshal(res)
@@ -686,8 +622,6 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 }
 
 func (e *EvmEngine) unwrapJSONRPC(in []byte) ([]byte, error) {
-	//"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"unauthed address: 0xeB156a42dcaFcf155B07f3638892440C7dE5d564\"}}\n"
-	//ws consumer received msg:%!(EXTRA string=ws consumer received msg:, string={"jsonrpc":"2.0","id":1,"result":"0x96410b68a9f8875bb20fde06823eb861"}
 	req := new(jsonrpc.Request)
 	if err := json.Unmarshal(in, req); err != nil {
 		return nil, err
@@ -696,9 +630,6 @@ func (e *EvmEngine) unwrapJSONRPC(in []byte) ([]byte, error) {
 		return []byte{}, errors.New("empty request params")
 	}
 
-	//type innerProtocolEntire struct {
-	//	Entire json.RawMessage `json:"Entire"`
-	//}
 	type innerProtocol struct {
 		Subscription string          `json:"subscription"`
 		Result       json.RawMessage `json:"result"`
@@ -711,8 +642,6 @@ func (e *EvmEngine) unwrapJSONRPC(in []byte) ([]byte, error) {
 
 	return innerReq.Result, nil
 }
-
-//======test methods
 
 func Test() string {
 	var sw strings.Builder
@@ -907,62 +836,26 @@ func GetWebSocketConnect() string {
 func BlsTest() string {
 	var sw strings.Builder
 
-	var err error
-	err = bls.TestSignVerify2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
+	blsTests := []func() error{
+		bls.TestSignVerify2,
+		bls.TestAggregateVerify2,
+		bls.TestAggregateVerify_CompressedSignatures2,
+		bls.TestFastAggregateVerify2,
+		bls.TestVerifyCompressed2,
+		bls.TestMultipleSignatureVerification2,
+		bls.TestFastAggregateVerify_ReturnsFalseOnEmptyPubKeyList2,
+		bls.TestEth2FastAggregateVerify2,
+		bls.TestEth2FastAggregateVerify_ReturnsFalseOnEmptyPubKeyList2,
+		bls.TestEth2FastAggregateVerify_ReturnsTrueOnG2PointAtInfinity2,
+		bls.TestSignatureFromBytes2,
+		bls.TestMultipleSignatureFromBytes2,
+		bls.TestCopy2,
+		bls.TestSecretKeyFromBytes2,
 	}
-	err = bls.TestAggregateVerify2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestAggregateVerify_CompressedSignatures2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestFastAggregateVerify2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestVerifyCompressed2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestMultipleSignatureVerification2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestFastAggregateVerify_ReturnsFalseOnEmptyPubKeyList2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestEth2FastAggregateVerify2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestEth2FastAggregateVerify_ReturnsFalseOnEmptyPubKeyList2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestEth2FastAggregateVerify_ReturnsTrueOnG2PointAtInfinity2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestSignatureFromBytes2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestMultipleSignatureFromBytes2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestCopy2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
-	}
-	err = bls.TestSecretKeyFromBytes2()
-	if err != nil {
-		sw.WriteString(err.Error() + "\r\n")
+	for _, testFn := range blsTests {
+		if err := testFn(); err != nil {
+			sw.WriteString(err.Error() + "\r\n")
+		}
 	}
 
 	sw.WriteString("bls test done.")

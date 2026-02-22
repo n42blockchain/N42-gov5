@@ -20,13 +20,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/math"
 	"io"
 	"math/big"
 	"sync"
 	"testing"
 
 	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/math"
 )
 
 type testEncoder struct {

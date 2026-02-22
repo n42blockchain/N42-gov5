@@ -124,10 +124,6 @@ func (arguments Arguments) Copy(v interface{}, values []interface{}) error {
 	if arguments.isTuple() {
 		return arguments.copyTuple(v, values)
 	}
-	// Ensure values slice has at least one element for atomic copy
-	if len(values) < 1 {
-		return errors.New("abi: values slice is empty for atomic copy")
-	}
 	return arguments.copyAtomic(v, values[0])
 }
 

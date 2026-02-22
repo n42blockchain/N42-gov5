@@ -2,12 +2,10 @@
 
 package blake2b
 
-import (
-	"encoding/binary"
-)
+import "encoding/binary"
 
 func Fuzz(data []byte) int {
-	// Make sure the data confirms to the input model
+	// Make sure the data conforms to the input model
 	if len(data) != 211 {
 		return 0
 	}

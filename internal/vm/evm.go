@@ -16,13 +16,15 @@
 package vm
 
 import (
+	"sync/atomic"
+
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/u256"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/params"
-	"sync/atomic"
 )
 
 // emptyCodeHash is used by create to ensure deployment is disallowed to already
@@ -169,7 +171,7 @@ func NewEVMWithPrecompiles(blockCtx evmtypes.BlockContext, txCtx evmtypes.TxCont
 	return evm
 }
 
-// Reset resets the EVM with a new transaction context.Reset
+// Reset resets the EVM with a new transaction context.
 // This is not threadsafe and should only be done very cautiously.
 func (evm *EVM) Reset(txCtx evmtypes.TxContext, ibs evmtypes.IntraBlockState) {
 	evm.txContext = txCtx
@@ -248,16 +250,13 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 		if !evm.intraBlockState.Exist(addr) {
 			if !isPrecompile && evm.chainRules.IsSpuriousDragon && value.IsZero() {
 				if evm.config.Debug {
-					v := value
-					if typ == STATICCALL {
-						v = nil
-					}
-					// Calling a non existing account, don't do anything, but ping the tracer
+					// Calling a non-existing account, don't do anything, but ping the tracer.
+					// typ is always CALL here, so value is passed directly.
 					if depth == 0 {
-						evm.config.Tracer.CaptureStart(evm, caller.Address(), addr, false /* create */, input, gas, v)
+						evm.config.Tracer.CaptureStart(evm, caller.Address(), addr, false /* create */, input, gas, value)
 						evm.config.Tracer.CaptureEnd(ret, 0, nil)
 					} else {
-						evm.config.Tracer.CaptureEnter(typ, caller.Address(), addr, input /* create */, gas, v)
+						evm.config.Tracer.CaptureEnter(typ, caller.Address(), addr, input, gas, value)
 						evm.config.Tracer.CaptureExit(ret, 0, nil)
 					}
 				}
@@ -315,11 +314,7 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 			contract = NewContract(caller, AccountRef(addrCopy), value, gas, evm.config.SkipAnalysis)
 		}
 		contract.SetCallCode(&addrCopy, codeHash, code)
-		readOnly := false
-		if typ == STATICCALL {
-			readOnly = true
-		}
-		ret, err = run(evm, contract, input, readOnly)
+		ret, err = run(evm, contract, input, typ == STATICCALL)
 		gas = contract.Gas
 	}
 	// When an error was returned by the EVM or when setting the creation code
@@ -528,12 +523,12 @@ func (evm *EVM) SysCreate(caller ContractRef, code []byte, gas uint64, endowment
 	return
 }
 
-// ChainConfig returns the environment's chain configuration
+// Config returns the VM configuration options.
 func (evm *EVM) Config() Config {
 	return evm.config
 }
 
-// ChainConfig returns the environment's chain configuration
+// ChainConfig returns the environment's chain configuration.
 func (evm *EVM) ChainConfig() *params.ChainConfig {
 	return evm.chainConfig
 }

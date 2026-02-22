@@ -8,27 +8,25 @@ func ToSuffix(b []byte) Suffix {
 	return b
 }
 
-func (s Suffix) Add(key []byte) Suffix {
-	var l int
+func (s Suffix) baseLen() int {
 	if s == nil {
-		l = 4
-	} else {
-		l = len(s)
+		return 4
 	}
+	return len(s)
+}
+
+func (s Suffix) Add(key []byte) Suffix {
+	l := s.baseLen()
 	dv := make([]byte, l+1+len(key))
 	copy(dv, s)
-	binary.BigEndian.PutUint32(dv, 1+s.KeyCount()) // Increment the counter of keys
+	binary.BigEndian.PutUint32(dv, 1+s.KeyCount())
 	dv[l] = byte(len(key))
 	copy(dv[l+1:], key)
 	return dv
 }
+
 func (s Suffix) MultiAdd(keys [][]byte) Suffix {
-	var l int
-	if s == nil {
-		l = 4
-	} else {
-		l = len(s)
-	}
+	l := s.baseLen()
 	newLen := len(keys)
 	for _, key := range keys {
 		newLen += len(key)

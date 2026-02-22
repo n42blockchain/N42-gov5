@@ -18,13 +18,15 @@ package vm
 
 import (
 	"fmt"
+	"math/bits"
+
+	"github.com/holiman/uint256"
+	"golang.org/x/crypto/sha3"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
-
-	"github.com/holiman/uint256"
-	"golang.org/x/crypto/sha3"
 )
 
 func opAdd(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
@@ -196,9 +198,7 @@ func opByte(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 
 func opAddmod(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	x, y, z := scope.Stack.Pop(), scope.Stack.Pop(), scope.Stack.Peek()
-	if z.IsZero() {
-		z.Clear()
-	} else {
+	if !z.IsZero() {
 		z.AddMod(&x, &y, z)
 	}
 	return nil, nil
@@ -206,9 +206,7 @@ func opAddmod(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 
 func opMulmod(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	x, y, z := scope.Stack.Pop(), scope.Stack.Pop(), scope.Stack.Peek()
-	if z.IsZero() {
-		z.Clear()
-	} else {
+	if !z.IsZero() {
 		z.MulMod(&x, &y, z)
 	}
 	return nil, nil
@@ -261,34 +259,26 @@ func opSAR(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte
 	return nil, nil
 }
 
-// opCLZ implements Count Leading Zeros (EIP-7939)
-// The CLZ instruction pops one value from the stack and pushes the count
-// of leading zero bits in its 256-bit representation.
-// For example: CLZ(0) = 256, CLZ(1) = 255, CLZ(0x8000...0000) = 0
+// opCLZ implements Count Leading Zeros (EIP-7939).
+// Pushes the count of leading zero bits in the 256-bit value on top of stack.
+// CLZ(0) = 256, CLZ(1) = 255, CLZ(0x8000...0000) = 0.
 func opCLZ(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	value := scope.Stack.Peek()
-	// Count leading zeros in 256-bit number
-	// uint256 is stored as 4 uint64 limbs: [0] is low, [3] is high
-	lz := uint64(0)
-	if value.IsZero() {
+	// uint256.Int is [4]uint64 in little-endian: [3] is most significant
+	var lz int
+	switch {
+	case value[3] != 0:
+		lz = bits.LeadingZeros64(value[3])
+	case value[2] != 0:
+		lz = 64 + bits.LeadingZeros64(value[2])
+	case value[1] != 0:
+		lz = 128 + bits.LeadingZeros64(value[1])
+	case value[0] != 0:
+		lz = 192 + bits.LeadingZeros64(value[0])
+	default:
 		lz = 256
-	} else {
-		// Check each limb from highest to lowest
-		bytes := value.Bytes32()
-		for i := 0; i < 32; i++ {
-			if bytes[i] != 0 {
-				// Count leading zeros in this byte
-				b := bytes[i]
-				for b&0x80 == 0 {
-					lz++
-					b <<= 1
-				}
-				break
-			}
-			lz += 8
-		}
 	}
-	value.SetUint64(lz)
+	value.SetUint64(uint64(lz))
 	return nil, nil
 }
 
@@ -310,6 +300,7 @@ func opKeccak256(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 	size.SetBytes(interpreter.hasherBuf[:])
 	return nil, nil
 }
+
 func opAddress(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	scope.Stack.Push(new(uint256.Int).SetBytes(scope.Contract.Address().Bytes()))
 	return nil, nil
@@ -326,6 +317,7 @@ func opOrigin(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	scope.Stack.Push(new(uint256.Int).SetBytes(interpreter.evm.TxContext().Origin.Bytes()))
 	return nil, nil
 }
+
 func opCaller(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	scope.Stack.Push(new(uint256.Int).SetBytes(scope.Contract.Caller().Bytes()))
 	return nil, nil
@@ -411,9 +403,7 @@ func opExtCodeSize(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext)
 }
 
 func opCodeSize(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	l := new(uint256.Int)
-	l.SetUint64(uint64(len(scope.Contract.Code)))
-	scope.Stack.Push(l)
+	scope.Stack.Push(new(uint256.Int).SetUint64(uint64(len(scope.Contract.Code))))
 	return nil, nil
 }
 
@@ -608,21 +598,25 @@ func opSstore(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	return nil, nil
 }
 
+// logInvalidJumpBitmap logs a warning when a code bitmap was used to detect an invalid jump destination.
+func logInvalidJumpBitmap(interpreter *EVMInterpreter) {
+	if interpreter.cfg.TraceJumpDest {
+		log.Warn("Code Bitmap used for detecting invalid jump",
+			"tx", fmt.Sprintf("0x%x", interpreter.evm.TxContext().TxHash),
+			"block_num", interpreter.evm.Context().BlockNumber,
+		)
+	} else {
+		log.Warn("Code Bitmap used for detecting invalid jump",
+			"block_num", interpreter.evm.Context().BlockNumber,
+		)
+	}
+}
+
 func opJump(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	pos := scope.Stack.Pop()
 	if valid, usedBitmap := scope.Contract.validJumpdest(&pos); !valid {
 		if usedBitmap {
-			if interpreter.cfg.TraceJumpDest {
-				log.Warn("Code Bitmap used for detecting invalid jump",
-					"tx", fmt.Sprintf("0x%x", interpreter.evm.TxContext().TxHash),
-					"block_num", interpreter.evm.Context().BlockNumber,
-				)
-			} else {
-				// This is "cheaper" version because it does not require calculation of txHash for each transaction
-				log.Warn("Code Bitmap used for detecting invalid jump",
-					"block_num", interpreter.evm.Context().BlockNumber,
-				)
-			}
+			logInvalidJumpBitmap(interpreter)
 		}
 		return nil, ErrInvalidJump
 	}
@@ -635,17 +629,7 @@ func opJumpi(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 	if !cond.IsZero() {
 		if valid, usedBitmap := scope.Contract.validJumpdest(&pos); !valid {
 			if usedBitmap {
-				if interpreter.cfg.TraceJumpDest {
-					log.Warn("Code Bitmap used for detecting invalid jump",
-						"tx", fmt.Sprintf("0x%x", interpreter.evm.TxContext().TxHash),
-						"block_num", interpreter.evm.Context().BlockNumber,
-					)
-				} else {
-					// This is "cheaper" version because it does not require calculation of txHash for each transaction
-					log.Warn("Code Bitmap used for detecting invalid jump",
-						"block_num", interpreter.evm.Context().BlockNumber,
-					)
-				}
+				logInvalidJumpBitmap(interpreter)
 			}
 			return nil, ErrInvalidJump
 		}
@@ -698,9 +682,7 @@ func opCreate(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	// homestead we must check for CodeStoreOutOfGasError (homestead only
 	// rule) and treat as an error, if the ruleset is frontier we must
 	// ignore this error and pretend the operation was successful.
-	if interpreter.evm.ChainRules().IsHomestead && suberr == ErrCodeStoreOutOfGas {
-		stackvalue.Clear()
-	} else if suberr != nil && suberr != ErrCodeStoreOutOfGas {
+	if suberr != nil && (suberr != ErrCodeStoreOutOfGas || interpreter.evm.ChainRules().IsHomestead) {
 		stackvalue.Clear()
 	} else {
 		stackvalue.SetBytes(addr.Bytes())

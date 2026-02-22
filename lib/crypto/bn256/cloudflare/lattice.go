@@ -1,8 +1,6 @@
 package bn256
 
-import (
-	"math/big"
-)
+import "math/big"
 
 var half = new(big.Int).Rsh(Order, 1)
 
@@ -109,7 +107,7 @@ func round(num, denom *big.Int) {
 	r := new(big.Int)
 	num.DivMod(num, denom, r)
 
-	if r.Cmp(half) == 1 {
+	if r.Cmp(half) > 0 {
 		num.Add(num, big.NewInt(1))
 	}
 }

@@ -26,349 +26,82 @@ import (
 	"sync"
 	"time"
 
-	"github.com/n42blockchain/N42/lib/log/v3"
-
 	libcommon "github.com/n42blockchain/N42/lib/common"
+	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/mmap"
 )
 
 var (
-	// force skipping of any non-Erigon2 .torrent files
+	// DownloaderOnlyBlocks forces skipping of any non-Erigon2 .torrent files.
 	DownloaderOnlyBlocks = EnvBool("DOWNLOADER_ONLY_BLOCKS", false)
 	saveHeapProfile      = EnvBool("SAVE_HEAP_PROFILE", false)
 	heapProfileFilePath  = EnvString("HEAP_PROFILE_FILE_PATH", "")
-	// CaplinSyncedDataMangerDeadlockDetection enables deadlock detection in Caplin synced data manager
+	// CaplinSyncedDataMangerDeadlockDetection enables deadlock detection in Caplin synced data manager.
 	CaplinSyncedDataMangerDeadlockDetection = EnvBool("CAPLIN_DEADLOCK_DETECTION", false)
 )
 
 var StagesOnlyBlocks = EnvBool("STAGES_ONLY_BLOCKS", false)
 
-var doMemstat = true
-
-func init() {
+var doMemstat = func() bool {
 	_, ok := os.LookupEnv("NO_MEMSTAT")
-	if ok {
-		doMemstat = false
-	}
-}
+	return !ok
+}()
 
 func DoMemStat() bool { return doMemstat }
+
 func ReadMemStats(m *runtime.MemStats) {
 	if doMemstat {
 		runtime.ReadMemStats(m)
 	}
 }
 
+// Lazy-loaded experiment flags using sync.OnceValue to eliminate boilerplate.
+// Each function reads its environment variable exactly once on first call.
 var (
-	writeMap     bool
-	writeMapOnce sync.Once
+	WriteMap             = lazyEnvBool("WRITE_MAP")
+	NoSync               = lazyEnvBool("NO_SYNC")
+	MdbxReadAhead        = lazyEnvBool("MDBX_READAHEAD")
+	DiscardHistory       = lazyEnvBool("DISCARD_HISTORY")
+	StopAfterReconst     = lazyEnvBool("STOP_AFTER_RECONSTITUTE")
+	LogHashMismatchReason = lazyEnvBool("LOG_HASH_MISMATCH_REASON")
+	SkipBlobGasValidation = lazyEnvBool("SKIP_BLOB_GAS_VALIDATION")
+
+	StopBeforeStage = lazyEnvString("STOP_BEFORE_STAGE")
+	// TODO(allada) Consider removing STOP_BEFORE_STAGE, as STOP_AFTER_STAGE can
+	// perform the same functionality. Kept for backward compatibility.
+	StopAfterStage = lazyEnvString("STOP_AFTER_STAGE")
+
+	// BigRoTxKb logs info about large read-only transactions.
+	BigRoTxKb = lazyEnvUint("DEBUG_BIG_RO_TX_KB")
+	// BigRwTxKb logs info about large read-write transactions.
+	BigRwTxKb = lazyEnvUint("DEBUG_BIG_RW_TX_KB")
+
+	SlowCommit = lazyEnvDuration("SLOW_COMMIT")
+	SlowTx     = lazyEnvDuration("SLOW_TX")
+
+	MergeTr = lazyEnvIntBounded("MERGE_THRESHOLD")
+
+	SnapshotVersion = lazyEnvUint8("SNAPSHOT_VERSION")
+
+	// DebugBlockExecution returns the block number to debug (0 means disabled).
+	// Set DEBUG_BLOCK_EXECUTION=<block_number> to enable detailed execution logging.
+	DebugBlockExecution = lazyEnvUint64("DEBUG_BLOCK_EXECUTION")
 )
 
-func WriteMap() bool {
-	writeMapOnce.Do(func() {
-		v, _ := os.LookupEnv("WRITE_MAP")
-		if v == "true" {
-			writeMap = true
-			log.Info("[Experiment]", "WRITE_MAP", writeMap)
+// DirtySpace reads MDBX_DIRTY_SPACE_MB and converts MB to bytes.
+var DirtySpace = sync.OnceValue(func() uint64 {
+	v, _ := os.LookupEnv("MDBX_DIRTY_SPACE_MB")
+	if v != "" {
+		i, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
 		}
-	})
-	return writeMap
-}
-
-var (
-	dirtySace     uint64
-	dirtySaceOnce sync.Once
-)
-
-func DirtySpace() uint64 {
-	dirtySaceOnce.Do(func() {
-		v, _ := os.LookupEnv("MDBX_DIRTY_SPACE_MB")
-		if v != "" {
-			i, err := strconv.Atoi(v)
-			if err != nil {
-				panic(err)
-			}
-			dirtySace = uint64(i * 1024 * 1024)
-			log.Info("[Experiment]", "MDBX_DIRTY_SPACE_MB", dirtySace)
-		}
-	})
-	return dirtySace
-}
-
-var (
-	noSync     bool
-	noSyncOnce sync.Once
-)
-
-func NoSync() bool {
-	noSyncOnce.Do(func() {
-		v, _ := os.LookupEnv("NO_SYNC")
-		if v == "true" {
-			noSync = true
-			log.Info("[Experiment]", "NO_SYNC", noSync)
-		}
-	})
-	return noSync
-}
-
-var (
-	mergeTr     int
-	mergeTrOnce sync.Once
-)
-
-func MergeTr() int {
-	mergeTrOnce.Do(func() {
-		v, _ := os.LookupEnv("MERGE_THRESHOLD")
-		if v != "" {
-			i, err := strconv.Atoi(v)
-			if err != nil {
-				panic(err)
-			}
-			if i < 0 || i > 4 {
-				panic(i)
-			}
-			mergeTr = i
-			log.Info("[Experiment]", "MERGE_THRESHOLD", mergeTr)
-		}
-	})
-	return mergeTr
-}
-
-var (
-	mdbxReadahead     bool
-	mdbxReadaheadOnce sync.Once
-)
-
-func MdbxReadAhead() bool {
-	mdbxReadaheadOnce.Do(func() {
-		v, _ := os.LookupEnv("MDBX_READAHEAD")
-		if v == "true" {
-			mdbxReadahead = true
-			log.Info("[Experiment]", "MDBX_READAHEAD", mdbxReadahead)
-		}
-	})
-	return mdbxReadahead
-}
-
-var (
-	discardHistory     bool
-	discardHistoryOnce sync.Once
-)
-
-func DiscardHistory() bool {
-	discardHistoryOnce.Do(func() {
-		v, _ := os.LookupEnv("DISCARD_HISTORY")
-		if v == "true" {
-			discardHistory = true
-			log.Info("[Experiment]", "DISCARD_HISTORY", discardHistory)
-		}
-	})
-	return discardHistory
-}
-
-var (
-	bigRoTx    uint
-	getBigRoTx sync.Once
-)
-
-// DEBUG_BIG_RO_TX_KB - print logs with info about large read-only transactions
-// DEBUG_BIG_RW_TX_KB - print logs with info about large read-write transactions
-// DEBUG_SLOW_COMMIT_MS - print logs with commit timing details if commit is slower than this threshold
-func BigRoTxKb() uint {
-	getBigRoTx.Do(func() {
-		v, _ := os.LookupEnv("DEBUG_BIG_RO_TX_KB")
-		if v != "" {
-			i, err := strconv.Atoi(v)
-			if err != nil {
-				panic(err)
-			}
-			bigRoTx = uint(i)
-			log.Info("[Experiment]", "DEBUG_BIG_RO_TX_KB", bigRoTx)
-		}
-	})
-	return bigRoTx
-}
-
-var (
-	bigRwTx    uint
-	getBigRwTx sync.Once
-)
-
-func BigRwTxKb() uint {
-	getBigRwTx.Do(func() {
-		v, _ := os.LookupEnv("DEBUG_BIG_RW_TX_KB")
-		if v != "" {
-			i, err := strconv.Atoi(v)
-			if err != nil {
-				panic(err)
-			}
-			bigRwTx = uint(i)
-			log.Info("[Experiment]", "DEBUG_BIG_RW_TX_KB", bigRwTx)
-		}
-	})
-	return bigRwTx
-}
-
-var (
-	slowCommit     time.Duration
-	slowCommitOnce sync.Once
-)
-
-func SlowCommit() time.Duration {
-	slowCommitOnce.Do(func() {
-		v, _ := os.LookupEnv("SLOW_COMMIT")
-		if v != "" {
-			var err error
-			slowCommit, err = time.ParseDuration(v)
-			if err != nil {
-				panic(err)
-			}
-			log.Info("[Experiment]", "SLOW_COMMIT", slowCommit.String())
-		}
-	})
-	return slowCommit
-}
-
-var (
-	slowTx     time.Duration
-	slowTxOnce sync.Once
-)
-
-func SlowTx() time.Duration {
-	slowTxOnce.Do(func() {
-		v, _ := os.LookupEnv("SLOW_TX")
-		if v != "" {
-			var err error
-			slowTx, err = time.ParseDuration(v)
-			if err != nil {
-				panic(err)
-			}
-			log.Info("[Experiment]", "SLOW_TX", slowTx.String())
-		}
-	})
-	return slowTx
-}
-
-var (
-	stopBeforeStage     string
-	stopBeforeStageFlag sync.Once
-	stopAfterStage      string
-	stopAfterStageFlag  sync.Once
-)
-
-func StopBeforeStage() string {
-	f := func() {
-		v, _ := os.LookupEnv("STOP_BEFORE_STAGE") // see names in eth/stagedsync/stages/stages.go
-		if v != "" {
-			stopBeforeStage = v
-			log.Info("[Experiment]", "STOP_BEFORE_STAGE", stopBeforeStage)
-		}
+		bytes := uint64(i * 1024 * 1024)
+		log.Info("[Experiment]", "MDBX_DIRTY_SPACE_MB", bytes)
+		return bytes
 	}
-	stopBeforeStageFlag.Do(f)
-	return stopBeforeStage
-}
-
-// TODO(allada) We should possibly consider removing `STOP_BEFORE_STAGE`, as `STOP_AFTER_STAGE` can
-// perform all same the functionality, but due to reverse compatibility reasons we are going to
-// leave it.
-func StopAfterStage() string {
-	f := func() {
-		v, _ := os.LookupEnv("STOP_AFTER_STAGE") // see names in eth/stagedsync/stages/stages.go
-		if v != "" {
-			stopAfterStage = v
-			log.Info("[Experiment]", "STOP_AFTER_STAGE", stopAfterStage)
-		}
-	}
-	stopAfterStageFlag.Do(f)
-	return stopAfterStage
-}
-
-var (
-	stopAfterReconst     bool
-	stopAfterReconstOnce sync.Once
-)
-
-func StopAfterReconst() bool {
-	stopAfterReconstOnce.Do(func() {
-		v, _ := os.LookupEnv("STOP_AFTER_RECONSTITUTE")
-		if v == "true" {
-			stopAfterReconst = true
-			log.Info("[Experiment]", "STOP_AFTER_RECONSTITUTE", stopAfterReconst)
-		}
-	})
-	return stopAfterReconst
-}
-
-var (
-	snapshotVersion     uint8
-	snapshotVersionOnce sync.Once
-)
-
-func SnapshotVersion() uint8 {
-	snapshotVersionOnce.Do(func() {
-		v, _ := os.LookupEnv("SNAPSHOT_VERSION")
-		if i, _ := strconv.ParseUint(v, 10, 8); i > 0 {
-			snapshotVersion = uint8(i)
-			log.Info("[Experiment]", "SNAPSHOT_VERSION", snapshotVersion)
-		}
-	})
-	return snapshotVersion
-}
-
-var (
-	logHashMismatchReason     bool
-	logHashMismatchReasonOnce sync.Once
-)
-
-func LogHashMismatchReason() bool {
-	logHashMismatchReasonOnce.Do(func() {
-		v, _ := os.LookupEnv("LOG_HASH_MISMATCH_REASON")
-		if v == "true" {
-			logHashMismatchReason = true
-			log.Info("[Experiment]", "LOG_HASH_MISMATCH_REASON", logHashMismatchReason)
-		}
-	})
-	return logHashMismatchReason
-}
-
-var (
-	debugBlockExecution     uint64
-	debugBlockExecutionOnce sync.Once
-)
-
-// DebugBlockExecution returns the block number to debug (0 means disabled)
-// Set DEBUG_BLOCK_EXECUTION=<block_number> to enable detailed execution logging for a specific block
-func DebugBlockExecution() uint64 {
-	debugBlockExecutionOnce.Do(func() {
-		v, _ := os.LookupEnv("DEBUG_BLOCK_EXECUTION")
-		if v != "" {
-			if n, err := strconv.ParseUint(v, 10, 64); err == nil {
-				debugBlockExecution = n
-				log.Info("[Experiment]", "DEBUG_BLOCK_EXECUTION", debugBlockExecution)
-			}
-		}
-	})
-	return debugBlockExecution
-}
-
-var (
-	skipBlobGasValidation     bool
-	skipBlobGasValidationOnce sync.Once
-)
-
-// SkipBlobGasValidation returns whether to skip blob gas price validation
-// Set SKIP_BLOB_GAS_VALIDATION=true to skip validation (useful for syncing historical data from snapshots)
-// WARNING: Only use this when syncing already-validated historical blocks from trusted snapshots
-func SkipBlobGasValidation() bool {
-	skipBlobGasValidationOnce.Do(func() {
-		v, _ := os.LookupEnv("SKIP_BLOB_GAS_VALIDATION")
-		if v == "true" {
-			skipBlobGasValidation = true
-			log.Info("[Experiment]", "SKIP_BLOB_GAS_VALIDATION", skipBlobGasValidation)
-		}
-	})
-	return skipBlobGasValidation
-}
+	return 0
+})
 
 type saveHeapOptions struct {
 	memStats *runtime.MemStats
@@ -423,12 +156,9 @@ func SaveHeapProfileNearOOM(opts ...SaveHeapOption) {
 		return
 	}
 
-	// above 45%
-	var filePath string
-	if heapProfileFilePath == "" {
+	filePath := heapProfileFilePath
+	if filePath == "" {
 		filePath = filepath.Join(os.TempDir(), "erigon-mem.prof")
-	} else {
-		filePath = heapProfileFilePath
 	}
 	if logger != nil {
 		logger.Info("[Experiment] saving heap profile as near OOM", "filePath", filePath)
@@ -440,16 +170,14 @@ func SaveHeapProfileNearOOM(opts ...SaveHeapOption) {
 	}
 
 	defer func() {
-		err := f.Close()
-		if err != nil && logger != nil {
-			logger.Warn("[Experiment] could not close heap profile file", "err", err)
+		if closeErr := f.Close(); closeErr != nil && logger != nil {
+			logger.Warn("[Experiment] could not close heap profile file", "err", closeErr)
 		}
 	}()
 
 	runtime.GC()
-	err = pprof.WriteHeapProfile(f)
-	if err != nil && logger != nil {
-		logger.Warn("[Experiment] could not write heap profile file", "err", err)
+	if writeErr := pprof.WriteHeapProfile(f); writeErr != nil && logger != nil {
+		logger.Warn("[Experiment] could not write heap profile file", "err", writeErr)
 	}
 }
 

@@ -21,10 +21,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"time"
+
+	"github.com/erigontech/speedtest/speedtest"
 
 	"github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/erigontech/speedtest/speedtest"
 )
 
 var cloudflareHeaders = http.Header{
@@ -43,10 +43,7 @@ func (d *DiagnosticClient) setupSpeedtestDiagnostics(rootCtx context.Context) {
 
 func (d *DiagnosticClient) runSpeedTest(rootCtx context.Context) NetworkSpeedTestResult {
 	result := NetworkSpeedTestResult{
-		Latency:       time.Duration(0),
-		DownloadSpeed: float64(0),
-		UploadSpeed:   float64(0),
-		PacketLoss:    float64(-1),
+		PacketLoss: -1,
 	}
 
 	urlstr, err := speedtest.SelectSegmentFromWebseeds(d.webseedsList, cloudflareHeaders)

@@ -14,16 +14,14 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
-//go:build go1.5
-// +build go1.5
-
 package debug
 
 import (
 	"errors"
-	"github.com/n42blockchain/N42/log"
 	"os"
 	"runtime/trace"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 // StartGoTrace turns on tracing, writing to the given file.

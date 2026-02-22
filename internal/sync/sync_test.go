@@ -20,62 +20,38 @@ import (
 	"testing"
 )
 
-// =============================================================================
-// Response Code Tests
-// =============================================================================
-
 func TestResponseCodes(t *testing.T) {
-	// Verify response codes
-	if responseCodeSuccess != 0x00 {
-		t.Errorf("responseCodeSuccess should be 0x00, got %x", responseCodeSuccess)
-	}
-	if responseCodeInvalidRequest != 0x01 {
-		t.Errorf("responseCodeInvalidRequest should be 0x01, got %x", responseCodeInvalidRequest)
-	}
-	if responseCodeServerError != 0x02 {
-		t.Errorf("responseCodeServerError should be 0x02, got %x", responseCodeServerError)
+	tests := []struct {
+		name string
+		code byte
+		want byte
+	}{
+		{"success", responseCodeSuccess, 0x00},
+		{"invalidRequest", responseCodeInvalidRequest, 0x01},
+		{"serverError", responseCodeServerError, 0x02},
 	}
 
-	t.Logf("✓ Response codes are correct")
+	for _, tt := range tests {
+		if tt.code != tt.want {
+			t.Errorf("%s: got %#x, want %#x", tt.name, tt.code, tt.want)
+		}
+	}
 }
 
 func TestResponseCodeUniqueness(t *testing.T) {
 	codes := []byte{responseCodeSuccess, responseCodeInvalidRequest, responseCodeServerError}
-	seen := make(map[byte]bool)
+	seen := make(map[byte]bool, len(codes))
 
 	for _, code := range codes {
 		if seen[code] {
-			t.Errorf("Duplicate response code: %x", code)
+			t.Errorf("duplicate response code: %#x", code)
 		}
 		seen[code] = true
 	}
-
-	t.Logf("✓ Response codes are unique")
 }
-
-// =============================================================================
-// Stream Error Validation Tests
-// =============================================================================
 
 func TestIsValidStreamErrorNil(t *testing.T) {
-	result := isValidStreamError(nil)
-	if result {
+	if isValidStreamError(nil) {
 		t.Error("isValidStreamError(nil) should return false")
 	}
-
-	t.Logf("✓ isValidStreamError handles nil correctly")
 }
-
-// =============================================================================
-// Benchmark Tests
-// =============================================================================
-
-func BenchmarkResponseCodeCheck(b *testing.B) {
-	code := responseCodeSuccess
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = code == responseCodeSuccess
-	}
-}
-

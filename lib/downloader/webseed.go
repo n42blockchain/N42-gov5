@@ -319,6 +319,15 @@ func (d *WebSeeds) Discover(ctx context.Context, files []string, rootDir string)
 	d.makeWebSeedUrls(listsOfFiles, webSeedMap)
 }
 
+func (d *WebSeeds) filterProhibitedDownloads(response snaptype.WebSeedsFromProvider) {
+	for name := range response {
+		prohibited, err := d.torrentFiles.NewDownloadsAreProhibited(name)
+		if prohibited || err != nil {
+			delete(response, name)
+		}
+	}
+}
+
 func (d *WebSeeds) constructListsOfFiles(ctx context.Context, httpProviders []*url.URL, diskProviders []string) []snaptype.WebSeedsFromProvider {
 	log.Debug("[snapshots.webseed] providers", "http", len(httpProviders), "disk", len(diskProviders))
 	listsOfFiles := make([]snaptype.WebSeedsFromProvider, 0, len(httpProviders)+len(diskProviders))
@@ -334,14 +343,7 @@ func (d *WebSeeds) constructListsOfFiles(ctx context.Context, httpProviders []*u
 			d.logger.Debug("[snapshots.webseed] get from HTTP provider", "err", err, "url", webSeedProviderURL.EscapedPath())
 			continue
 		}
-		// check if we need to prohibit new downloads for some files
-		for name := range manifestResponse {
-			prohibited, err := d.torrentFiles.NewDownloadsAreProhibited(name)
-			if prohibited || err != nil {
-				delete(manifestResponse, name)
-			}
-		}
-
+		d.filterProhibitedDownloads(manifestResponse)
 		listsOfFiles = append(listsOfFiles, manifestResponse)
 	}
 
@@ -352,13 +354,7 @@ func (d *WebSeeds) constructListsOfFiles(ctx context.Context, httpProviders []*u
 			d.logger.Debug("[snapshots.webseed] get from File provider", "err", err)
 			continue
 		}
-		// check if we need to prohibit new downloads for some files
-		for name := range response {
-			prohibited, err := d.torrentFiles.NewDownloadsAreProhibited(name)
-			if prohibited || err != nil {
-				delete(response, name)
-			}
-		}
+		d.filterProhibitedDownloads(response)
 		listsOfFiles = append(listsOfFiles, response)
 	}
 	return listsOfFiles

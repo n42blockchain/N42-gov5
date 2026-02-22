@@ -21,6 +21,7 @@ package vm
 
 import (
 	"bytes"
+	"errors"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/types"
@@ -41,7 +42,7 @@ const (
 	// PerAuthBaseCost is the base gas cost per authorization tuple
 	PerAuthBaseCost = 2500
 
-	// PER_EMPTY_ACCOUNT_COST is the gas cost for each newly created account
+	// PerEmptyAccountCost is the gas cost for each newly created account
 	PerEmptyAccountCost = 25000
 )
 
@@ -198,7 +199,7 @@ func DeserializeWithdrawalRequest(data []byte) (*WithdrawalRequest, error) {
 	return req, nil
 }
 
-var errInvalidWithdrawalRequest = &pectraError{"invalid withdrawal request"}
+var errInvalidWithdrawalRequest = errors.New("invalid withdrawal request")
 
 // =============================================================================
 // EIP-7251: Increase MAX_EFFECTIVE_BALANCE (Pectra)
@@ -239,20 +240,16 @@ func DeserializeConsolidationRequest(data []byte) (*ConsolidationRequest, error)
 	return req, nil
 }
 
-var errInvalidConsolidationRequest = &pectraError{"invalid consolidation request"}
+var errInvalidConsolidationRequest = errors.New("invalid consolidation request")
 
-// MIN_ACTIVATION_BALANCE is the minimum balance for validator activation (unchanged)
+// MinActivationBalance is the minimum balance for validator activation (32 ETH)
 var MinActivationBalance = new(uint256.Int).Mul(
 	uint256.NewInt(32),
 	uint256.NewInt(1e18),
 )
 
-// MAX_EFFECTIVE_BALANCE_ELECTRA is the new maximum effective balance (EIP-7251)
-// Increased from 32 ETH to 2048 ETH
-var MaxEffectiveBalanceElectra = new(uint256.Int).Mul(
-	uint256.NewInt(2048),
-	uint256.NewInt(1e18),
-)
+// MaxEffectiveBalanceElectra is an alias for MaxEffectiveBalanceEIP7251 (2048 ETH)
+var MaxEffectiveBalanceElectra = MaxEffectiveBalanceEIP7251
 
 // MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA is the minimum churn limit per epoch
 const MinPerEpochChurnLimitElectra = 128_000_000_000 // 128 Gwei
@@ -298,12 +295,8 @@ func ParseDepositLog(topics []types.Hash, data []byte) (*DepositRequest, error) 
 
 	deposit := &DepositRequest{}
 
-	// Parse ABI-encoded data
-	// The deposit event is ABI-encoded with dynamic byte arrays
-	offset := 0
-
-	// Skip 5 offset values (32 bytes each)
-	offset = 160
+	// ABI-encoded data: skip 5 offset values (32 bytes each)
+	offset := 160
 
 	// Parse pubkey (48 bytes)
 	if offset+32 > len(data) {
@@ -393,7 +386,7 @@ func (d *DepositRequest) Serialize() []byte {
 	return buf
 }
 
-var errInvalidDepositLog = &pectraError{"invalid deposit log"}
+var errInvalidDepositLog = errors.New("invalid deposit log")
 
 // =============================================================================
 // Pectra JumpTable modifications
@@ -569,18 +562,6 @@ func init() {
 }
 
 // =============================================================================
-// Pectra Error Types
-// =============================================================================
-
-type pectraError struct {
-	msg string
-}
-
-func (e *pectraError) Error() string {
-	return e.msg
-}
-
-// =============================================================================
 // Execution Requests Helpers (EIP-7685)
 // =============================================================================
 
@@ -600,5 +581,5 @@ func DecodeExecutionRequest(data []byte) (byte, []byte, error) {
 	return data[0], data[1:], nil
 }
 
-var errEmptyRequest = &pectraError{"empty execution request"}
+var errEmptyRequest = errors.New("empty execution request")
 

@@ -133,7 +133,7 @@ func NewStructLogger(cfg *Config) *StructLogger {
 // Reset clears the data held by the logger.
 func (l *StructLogger) Reset() {
 	l.storage = make(map[common.Address]Storage)
-	l.output = make([]byte, 0)
+	l.output = nil
 	l.logs = l.logs[:0]
 	l.err = nil
 }
@@ -143,15 +143,12 @@ func (l *StructLogger) CaptureStart(env vm.VMInterface, from common.Address, to 
 	l.env = env.(*vm.EVM)
 }
 
-// CaptureState logs a new structured log message and pushes it out to the environment
-//
-// CaptureState also tracks SLOAD/SSTORE ops to track storage change.
+// CaptureState logs a new structured log message and pushes it out to the environment.
+// It also tracks SLOAD/SSTORE ops for storage change tracking.
 func (l *StructLogger) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
-	// If tracing was interrupted, set the error and stop
 	if atomic.LoadUint32(&l.interrupt) > 0 {
 		return
 	}
-	// check if already accumulated the specified number of logs
 	if l.cfg.Limit != 0 && l.cfg.Limit <= len(l.logs) {
 		return
 	}
@@ -159,57 +156,66 @@ func (l *StructLogger) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, s
 	memory := scope.Memory
 	stack := scope.Stack
 	contract := scope.Contract
-	// Copy a snapshot of the current memory state to a new buffer
+
 	var mem []byte
 	if l.cfg.EnableMemory {
 		mem = make([]byte, len(memory.Data()))
 		copy(mem, memory.Data())
 	}
-	// Copy a snapshot of the current stack state to a new buffer
+
 	var stck []uint256.Int
 	if !l.cfg.DisableStack {
 		stck = make([]uint256.Int, len(stack.Data))
-		for i, item := range stack.Data {
-			stck[i] = item
-		}
+		copy(stck, stack.Data)
 	}
+
 	stackData := stack.Data
 	stackLen := len(stackData)
-	// Copy a snapshot of the current storage to a new container
+	contractAddr := contract.Address()
+
 	var storage Storage
 	if !l.cfg.DisableStorage && (op == vm.SLOAD || op == vm.SSTORE) {
-		// initialise new changed values storage container for this contract
-		// if not present.
-		if l.storage[contract.Address()] == nil {
-			l.storage[contract.Address()] = make(Storage)
+		if l.storage[contractAddr] == nil {
+			l.storage[contractAddr] = make(Storage)
 		}
-		// capture SLOAD opcodes and record the read entry in the local storage
 		if op == vm.SLOAD && stackLen >= 1 {
 			var (
 				address = common.Hash(stackData[stackLen-1].Bytes32())
 				value   uint256.Int
 			)
-			l.env.IntraBlockState().GetState(contract.Address(), &address, &value)
-			l.storage[contract.Address()][address] = value.Bytes32()
-			storage = l.storage[contract.Address()].Copy()
+			l.env.IntraBlockState().GetState(contractAddr, &address, &value)
+			l.storage[contractAddr][address] = value.Bytes32()
+			storage = l.storage[contractAddr].Copy()
 		} else if op == vm.SSTORE && stackLen >= 2 {
-			// capture SSTORE opcodes and record the written entry in the local storage.
 			var (
 				value   = common.Hash(stackData[stackLen-2].Bytes32())
 				address = common.Hash(stackData[stackLen-1].Bytes32())
 			)
-			l.storage[contract.Address()][address] = value
-			storage = l.storage[contract.Address()].Copy()
+			l.storage[contractAddr][address] = value
+			storage = l.storage[contractAddr].Copy()
 		}
 	}
+
 	var rdata []byte
 	if l.cfg.EnableReturnData {
 		rdata = make([]byte, len(rData))
 		copy(rdata, rData)
 	}
-	// create a new snapshot of the EVM.
-	log := StructLog{pc, op, gas, cost, mem, memory.Len(), stck, rdata, storage, depth, l.env.IntraBlockState().GetRefund(), err}
-	l.logs = append(l.logs, log)
+
+	l.logs = append(l.logs, StructLog{
+		Pc:            pc,
+		Op:            op,
+		Gas:           gas,
+		GasCost:       cost,
+		Memory:        mem,
+		MemorySize:    memory.Len(),
+		Stack:         stck,
+		ReturnData:    rdata,
+		Storage:       storage,
+		Depth:         depth,
+		RefundCounter: l.env.IntraBlockState().GetRefund(),
+		Err:           err,
+	})
 }
 
 // CaptureFault implements the EVMLogger interface to trace an execution fault
@@ -346,15 +352,13 @@ func (t *mdLogger) CaptureTxStart(gasLimit uint64) {}
 func (t *mdLogger) CaptureTxEnd(restGas uint64) {}
 
 func (t *mdLogger) captureStartOrEnter(from, to common.Address, create bool, input []byte, gas uint64, value *uint256.Int) {
-	if !create {
-		fmt.Fprintf(t.out, "From: `%v`\nTo: `%v`\nData: `0x%x`\nGas: `%d`\nValue `%v` wei\n",
-			from.String(), to.String(),
-			input, gas, value)
-	} else {
-		fmt.Fprintf(t.out, "From: `%v`\nCreate at: `%v`\nData: `0x%x`\nGas: `%d`\nValue `%v` wei\n",
-			from.String(), to.String(),
-			input, gas, value)
+	toLabel := "To"
+	if create {
+		toLabel = "Create at"
 	}
+	fmt.Fprintf(t.out, "From: `%v`\n%s: `%v`\nData: `0x%x`\nGas: `%d`\nValue `%v` wei\n",
+		from.String(), toLabel, to.String(),
+		input, gas, value)
 
 	fmt.Fprintf(t.out, `
 |  Pc   |      Op     | Cost |   Stack   |   RStack  |  Refund |
@@ -372,21 +376,17 @@ func (t *mdLogger) CaptureEnter(typ vm.OpCode, from common.Address, to common.Ad
 }
 
 func (t *mdLogger) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
-	stack := scope.Stack
-
 	fmt.Fprintf(t.out, "| %4d  | %10v  |  %3d |", pc, op, cost)
 
 	if !t.cfg.DisableStack {
-		// format stack
-		var a []string
-		for _, elem := range stack.Data {
-			a = append(a, fmt.Sprintf("%v", elem.String()))
+		elems := make([]string, len(scope.Stack.Data))
+		for i, elem := range scope.Stack.Data {
+			elems[i] = elem.String()
 		}
-		b := fmt.Sprintf("[%v]", strings.Join(a, ","))
-		fmt.Fprintf(t.out, "%10v |", b)
+		fmt.Fprintf(t.out, "%10v |", "["+strings.Join(elems, ",")+"]")
 	}
 	fmt.Fprintf(t.out, "%10v |", t.env.IntraBlockState().GetRefund())
-	fmt.Fprintln(t.out, "")
+	fmt.Fprintln(t.out)
 	if err != nil {
 		fmt.Fprintf(t.out, "Error: %v\n", err)
 	}

@@ -19,17 +19,18 @@ package prometheus
 
 import (
 	"fmt"
+	"net/http"
+	"sort"
+
 	metrics2 "github.com/VictoriaMetrics/metrics"
-	"github.com/n42blockchain/N42/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
 
-	"net/http"
-	"sort"
+	"github.com/n42blockchain/N42/log"
 )
 
-// Handler returns an HTTP handler which dump metrics in Prometheus format.
-// Output format can be cheched here: https://o11y.tools/metricslint/
+// Handler returns an HTTP handler that dumps metrics in Prometheus format.
+// Output format can be checked here: https://o11y.tools/metricslint/
 func Handler(reg Registry) http.Handler {
 	prometheus.DefaultRegisterer.MustRegister(defaultSet)
 
@@ -55,39 +56,38 @@ func Handler(reg Registry) http.Handler {
 			enc.Encode(m)
 		}
 
-		// Aggregate all the metris into a Prometheus collector
+		// Aggregate all the metrics into a Prometheus collector
 		c := newCollector()
 		c.buff.WriteRune('\n')
 
-		var typeName string
 		var prevTypeName string
-
 		for _, name := range names {
 			i := reg.Get(name)
-
-			typeName = stripLabels(name)
+			typeName := stripLabels(name)
+			newType := typeName != prevTypeName
 
 			switch m := i.(type) {
 			case *metrics2.Counter:
 				if m.IsGauge() {
-					c.writeGauge(name, m.Get(), typeName != prevTypeName)
+					c.writeGauge(name, m.Get(), newType)
 				} else {
-					c.writeCounter(name, m.Get(), typeName != prevTypeName)
+					c.writeCounter(name, m.Get(), newType)
 				}
 			case *metrics2.Gauge:
-				c.writeGauge(name, m, typeName != prevTypeName)
+				c.writeGauge(name, m, newType)
 			case *metrics2.FloatCounter:
-				c.writeFloatCounter(name, m, typeName != prevTypeName)
+				c.writeFloatCounter(name, m, newType)
 			case *metrics2.Histogram:
-				c.writeHistogram(name, m, typeName != prevTypeName)
+				c.writeHistogram(name, m, newType)
 			case *metrics2.Summary:
-				c.writeTimer(name, m, typeName != prevTypeName)
+				c.writeTimer(name, m, newType)
 			default:
 				log.Warn("Unknown Prometheus metric type", "type", fmt.Sprintf("%T", i))
 			}
 
 			prevTypeName = typeName
 		}
+
 		w.Header().Add("Content-Type", "text/plain")
 		w.Header().Add("Content-Length", fmt.Sprint(c.buff.Len()))
 		w.Write(c.buff.Bytes())

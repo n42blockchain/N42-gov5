@@ -31,5 +31,4 @@ type DumpAccount struct {
 	Storage   map[types.Hash]string `json:"storage,omitempty"`
 	Address   *avmutil.Address       `json:"address,omitempty"` // Address only present in iterative (line-by-line) mode
 	SecureKey hexutil.Bytes         `json:"key,omitempty"`     // If we don't have address, we can output the key
-
 }

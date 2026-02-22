@@ -17,13 +17,12 @@
 package lmdb
 
 import (
+	"runtime"
+
 	"github.com/erigontech/mdbx-go/mdbx"
 	"github.com/n42blockchain/N42/common/db"
-	"runtime"
 )
 
-/*
- */
 type Iterator struct {
 	*mdbx.Cursor
 	txn *mdbx.Txn
@@ -46,10 +45,7 @@ func newIterator(dbi *DBI, key []byte) (db.IIterator, error) {
 		return nil, err
 	}
 
-	var (
-		k, v []byte
-	)
-
+	var k, v []byte
 	if key != nil {
 		k, v, err = cur.Get(key, nil, mdbx.SetKey)
 	} else {
@@ -63,14 +59,12 @@ func newIterator(dbi *DBI, key []byte) (db.IIterator, error) {
 		return nil, err
 	}
 
-	it := Iterator{
+	return &Iterator{
 		Cursor: cur,
 		txn:    txn,
 		key:    k,
 		value:  v,
-		err:    nil,
-	}
-	return &it, nil
+	}, nil
 }
 
 func (it *Iterator) Next() error {
@@ -90,6 +84,7 @@ func (it *Iterator) Prev() error {
 func (it *Iterator) Value() ([]byte, error) {
 	return it.value, it.err
 }
+
 func (it *Iterator) Close() {
 	it.Cursor.Close()
 	it.txn.Abort()

@@ -18,6 +18,7 @@ package p2ptypes
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -30,15 +31,11 @@ func TestSSZBytesHashTreeRoot(t *testing.T) {
 
 	root, err := data.HashTreeRoot()
 	if err != nil {
-		t.Errorf("HashTreeRoot should not return error: %v", err)
+		t.Fatalf("HashTreeRoot returned error: %v", err)
 	}
-
-	// Root should be 32 bytes
 	if len(root) != 32 {
-		t.Errorf("Root should be 32 bytes, got %d", len(root))
+		t.Errorf("root should be 32 bytes, got %d", len(root))
 	}
-
-	t.Logf("✓ SSZBytes.HashTreeRoot works correctly")
 }
 
 func TestSSZBytesHashTreeRootConsistency(t *testing.T) {
@@ -50,8 +47,6 @@ func TestSSZBytesHashTreeRootConsistency(t *testing.T) {
 	if root1 != root2 {
 		t.Error("HashTreeRoot should be deterministic")
 	}
-
-	t.Logf("✓ SSZBytes.HashTreeRoot is deterministic")
 }
 
 // =============================================================================
@@ -60,21 +55,19 @@ func TestSSZBytesHashTreeRootConsistency(t *testing.T) {
 
 func TestBlockByRootsReqMarshalSSZ(t *testing.T) {
 	roots := BlockByRootsReq{
-		{0x01, 0x02, 0x03}, // 32 bytes each
+		{0x01, 0x02, 0x03},
 		{0x04, 0x05, 0x06},
 	}
 
 	data, err := roots.MarshalSSZ()
 	if err != nil {
-		t.Errorf("MarshalSSZ should not return error: %v", err)
+		t.Fatalf("MarshalSSZ returned error: %v", err)
 	}
 
 	expectedLen := len(roots) * 32
 	if len(data) != expectedLen {
-		t.Errorf("Marshalled data should be %d bytes, got %d", expectedLen, len(data))
+		t.Errorf("marshalled data length = %d, want %d", len(data), expectedLen)
 	}
-
-	t.Logf("✓ BlockByRootsReq.MarshalSSZ works correctly")
 }
 
 func TestBlockByRootsReqMarshalSSZTo(t *testing.T) {
@@ -85,15 +78,11 @@ func TestBlockByRootsReqMarshalSSZTo(t *testing.T) {
 	dst := []byte{0xff, 0xff}
 	result, err := roots.MarshalSSZTo(dst)
 	if err != nil {
-		t.Errorf("MarshalSSZTo should not return error: %v", err)
+		t.Fatalf("MarshalSSZTo returned error: %v", err)
 	}
-
-	// Should have prefix + marshalled data
 	if !bytes.HasPrefix(result, dst) {
 		t.Error("MarshalSSZTo should preserve destination prefix")
 	}
-
-	t.Logf("✓ BlockByRootsReq.MarshalSSZTo works correctly")
 }
 
 func TestBlockByRootsReqSizeSSZ(t *testing.T) {
@@ -111,18 +100,14 @@ func TestBlockByRootsReqSizeSSZ(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			roots := make(BlockByRootsReq, tt.count)
-			size := roots.SizeSSZ()
-			if size != tt.expected {
+			if size := roots.SizeSSZ(); size != tt.expected {
 				t.Errorf("SizeSSZ() = %d, want %d", size, tt.expected)
 			}
 		})
 	}
-
-	t.Logf("✓ BlockByRootsReq.SizeSSZ works correctly")
 }
 
 func TestBlockByRootsReqUnmarshalSSZ(t *testing.T) {
-	// Create original
 	original := BlockByRootsReq{
 		{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
 			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
@@ -130,49 +115,35 @@ func TestBlockByRootsReqUnmarshalSSZ(t *testing.T) {
 			0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20},
 	}
 
-	// Marshal
 	data, err := original.MarshalSSZ()
 	if err != nil {
 		t.Fatalf("MarshalSSZ failed: %v", err)
 	}
 
-	// Unmarshal
 	var decoded BlockByRootsReq
-	err = decoded.UnmarshalSSZ(data)
-	if err != nil {
-		t.Errorf("UnmarshalSSZ should not return error: %v", err)
+	if err = decoded.UnmarshalSSZ(data); err != nil {
+		t.Fatalf("UnmarshalSSZ returned error: %v", err)
 	}
-
 	if len(decoded) != len(original) {
-		t.Errorf("Decoded length = %d, want %d", len(decoded), len(original))
+		t.Errorf("decoded length = %d, want %d", len(decoded), len(original))
 	}
-
-	t.Logf("✓ BlockByRootsReq.UnmarshalSSZ works correctly")
 }
 
 func TestBlockByRootsReqUnmarshalSSZInvalidLength(t *testing.T) {
-	// Not a multiple of 32
 	invalidData := make([]byte, 33)
 	var req BlockByRootsReq
 
-	err := req.UnmarshalSSZ(invalidData)
-	if err == nil {
+	if err := req.UnmarshalSSZ(invalidData); err == nil {
 		t.Error("UnmarshalSSZ should return error for invalid length")
 	}
-
-	t.Logf("✓ BlockByRootsReq.UnmarshalSSZ validates length correctly")
 }
 
 func TestBlockByRootsReqMarshalSSZTooLarge(t *testing.T) {
-	// Create more than maxRequestBlocks roots
 	roots := make(BlockByRootsReq, 1025)
 
-	_, err := roots.MarshalSSZ()
-	if err == nil {
+	if _, err := roots.MarshalSSZ(); err == nil {
 		t.Error("MarshalSSZ should return error for too many roots")
 	}
-
-	t.Logf("✓ BlockByRootsReq.MarshalSSZ validates max size correctly")
 }
 
 // =============================================================================
@@ -184,14 +155,11 @@ func TestErrorMessageMarshalSSZ(t *testing.T) {
 
 	data, err := msg.MarshalSSZ()
 	if err != nil {
-		t.Errorf("MarshalSSZ should not return error: %v", err)
+		t.Fatalf("MarshalSSZ returned error: %v", err)
 	}
-
 	if !bytes.Equal(data, []byte(msg)) {
-		t.Error("Marshalled data should match original message")
+		t.Error("marshalled data should match original message")
 	}
-
-	t.Logf("✓ ErrorMessage.MarshalSSZ works correctly")
 }
 
 func TestErrorMessageMarshalSSZTo(t *testing.T) {
@@ -200,14 +168,11 @@ func TestErrorMessageMarshalSSZTo(t *testing.T) {
 
 	result, err := msg.MarshalSSZTo(dst)
 	if err != nil {
-		t.Errorf("MarshalSSZTo should not return error: %v", err)
+		t.Fatalf("MarshalSSZTo returned error: %v", err)
 	}
-
 	if !bytes.HasPrefix(result, dst) {
 		t.Error("MarshalSSZTo should preserve destination prefix")
 	}
-
-	t.Logf("✓ ErrorMessage.MarshalSSZTo works correctly")
 }
 
 func TestErrorMessageSizeSSZ(t *testing.T) {
@@ -224,57 +189,41 @@ func TestErrorMessageSizeSSZ(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			msg := ErrorMessage(tt.msg)
-			size := msg.SizeSSZ()
-			if size != tt.expected {
+			if size := msg.SizeSSZ(); size != tt.expected {
 				t.Errorf("SizeSSZ() = %d, want %d", size, tt.expected)
 			}
 		})
 	}
-
-	t.Logf("✓ ErrorMessage.SizeSSZ works correctly")
 }
 
 func TestErrorMessageUnmarshalSSZ(t *testing.T) {
 	original := ErrorMessage("test error")
-
 	data, _ := original.MarshalSSZ()
 
 	var decoded ErrorMessage
-	err := decoded.UnmarshalSSZ(data)
-	if err != nil {
-		t.Errorf("UnmarshalSSZ should not return error: %v", err)
+	if err := decoded.UnmarshalSSZ(data); err != nil {
+		t.Fatalf("UnmarshalSSZ returned error: %v", err)
 	}
-
 	if string(decoded) != string(original) {
-		t.Errorf("Decoded = %s, want %s", decoded, original)
+		t.Errorf("decoded = %s, want %s", decoded, original)
 	}
-
-	t.Logf("✓ ErrorMessage.UnmarshalSSZ works correctly")
 }
 
 func TestErrorMessageMarshalSSZTooLarge(t *testing.T) {
-	// Create message longer than maxErrorLength (256)
 	msg := ErrorMessage(make([]byte, 257))
 
-	_, err := msg.MarshalSSZ()
-	if err == nil {
+	if _, err := msg.MarshalSSZ(); err == nil {
 		t.Error("MarshalSSZ should return error for too long message")
 	}
-
-	t.Logf("✓ ErrorMessage.MarshalSSZ validates max length correctly")
 }
 
 func TestErrorMessageUnmarshalSSZTooLarge(t *testing.T) {
-	// Create buffer longer than maxErrorLength
 	data := make([]byte, 257)
 	var msg ErrorMessage
 
-	err := msg.UnmarshalSSZ(data)
-	if err == nil {
+	if err := msg.UnmarshalSSZ(data); err == nil {
 		t.Error("UnmarshalSSZ should return error for too long buffer")
 	}
-
-	t.Logf("✓ ErrorMessage.UnmarshalSSZ validates max length correctly")
 }
 
 // =============================================================================
@@ -282,7 +231,6 @@ func TestErrorMessageUnmarshalSSZTooLarge(t *testing.T) {
 // =============================================================================
 
 func TestConstants(t *testing.T) {
-	// Verify constants are correctly defined
 	if rootLength != 32 {
 		t.Errorf("rootLength should be 32, got %d", rootLength)
 	}
@@ -292,8 +240,6 @@ func TestConstants(t *testing.T) {
 	if maxRequestBlocks != 1024 {
 		t.Errorf("maxRequestBlocks should be 1024, got %d", maxRequestBlocks)
 	}
-
-	t.Logf("✓ Constants are correctly defined")
 }
 
 // =============================================================================
@@ -301,7 +247,6 @@ func TestConstants(t *testing.T) {
 // =============================================================================
 
 func TestGoodbyeCodeValues(t *testing.T) {
-	// Verify spec-defined codes
 	if GoodbyeCodeClientShutdown != 1 {
 		t.Errorf("GoodbyeCodeClientShutdown should be 1, got %d", GoodbyeCodeClientShutdown)
 	}
@@ -311,8 +256,6 @@ func TestGoodbyeCodeValues(t *testing.T) {
 	if GoodbyeCodeGenericError != 3 {
 		t.Errorf("GoodbyeCodeGenericError should be 3, got %d", GoodbyeCodeGenericError)
 	}
-
-	// Verify extended codes
 	if GoodbyeCodeUnableToVerifyNetwork != 128 {
 		t.Errorf("GoodbyeCodeUnableToVerifyNetwork should be 128, got %d", GoodbyeCodeUnableToVerifyNetwork)
 	}
@@ -325,12 +268,9 @@ func TestGoodbyeCodeValues(t *testing.T) {
 	if GoodbyeCodeBanned != 251 {
 		t.Errorf("GoodbyeCodeBanned should be 251, got %d", GoodbyeCodeBanned)
 	}
-
-	t.Logf("✓ Goodbye codes are correct")
 }
 
 func TestGoodbyeCodeMessages(t *testing.T) {
-	// All codes should have a message
 	codes := []RPCGoodbyeCode{
 		GoodbyeCodeClientShutdown,
 		GoodbyeCodeWrongNetwork,
@@ -344,14 +284,12 @@ func TestGoodbyeCodeMessages(t *testing.T) {
 	for _, code := range codes {
 		msg, ok := GoodbyeCodeMessages[code]
 		if !ok {
-			t.Errorf("Missing message for goodbye code %d", code)
+			t.Errorf("missing message for goodbye code %d", code)
 		}
 		if msg == "" {
-			t.Errorf("Empty message for goodbye code %d", code)
+			t.Errorf("empty message for goodbye code %d", code)
 		}
 	}
-
-	t.Logf("✓ All goodbye codes have messages")
 }
 
 func TestErrToGoodbyeCode(t *testing.T) {
@@ -367,14 +305,11 @@ func TestErrToGoodbyeCode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code := ErrToGoodbyeCode(tt.err)
-			if code != tt.expected {
+			if code := ErrToGoodbyeCode(tt.err); code != tt.expected {
 				t.Errorf("ErrToGoodbyeCode() = %d, want %d", code, tt.expected)
 			}
 		})
 	}
-
-	t.Logf("✓ ErrToGoodbyeCode works correctly")
 }
 
 // =============================================================================
@@ -382,7 +317,7 @@ func TestErrToGoodbyeCode(t *testing.T) {
 // =============================================================================
 
 func TestRPCErrorsExist(t *testing.T) {
-	errors := []error{
+	allErrors := []error{
 		ErrWrongForkDigestVersion,
 		ErrInvalidBlockNr,
 		ErrInvalidFinalizedRoot,
@@ -394,16 +329,14 @@ func TestRPCErrorsExist(t *testing.T) {
 		ErrInvalidRequest,
 	}
 
-	for i, err := range errors {
+	for i, err := range allErrors {
 		if err == nil {
-			t.Errorf("Error %d should not be nil", i)
+			t.Errorf("error at index %d should not be nil", i)
 		}
 		if err.Error() == "" {
-			t.Errorf("Error %d should have a message", i)
+			t.Errorf("error at index %d should have a message", i)
 		}
 	}
-
-	t.Logf("✓ All RPC errors are defined correctly")
 }
 
 func TestRPCErrorMessages(t *testing.T) {
@@ -420,13 +353,11 @@ func TestRPCErrorMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.err.Error(), func(t *testing.T) {
-			if !bytes.Contains([]byte(tt.err.Error()), []byte(tt.contains)) {
-				t.Logf("Warning: Error message '%s' might not contain '%s'", tt.err.Error(), tt.contains)
+			if !strings.Contains(tt.err.Error(), tt.contains) {
+				t.Errorf("error message %q should contain %q", tt.err.Error(), tt.contains)
 			}
 		})
 	}
-
-	t.Logf("✓ RPC error messages are informative")
 }
 
 // =============================================================================

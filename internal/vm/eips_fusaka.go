@@ -234,14 +234,9 @@ func bigMax(a, b *big.Int) *big.Int {
 // excessively large transactions from consuming too much block space.
 // =============================================================================
 
-const (
-	// TxGasLimitFusaka is the maximum gas limit for a single transaction
-	// Set to 30 million gas (half of typical block gas limit)
-	TxGasLimitFusaka = 30_000_000
-
-	// TxGasLimitDefault is the default transaction gas limit before Fusaka
-	TxGasLimitDefault = 0 // No explicit limit
-)
+// TxGasLimitFusaka is the maximum gas limit for a single transaction
+// Set to 30 million gas (half of typical block gas limit)
+const TxGasLimitFusaka = 30_000_000
 
 // ValidateTxGasLimit validates transaction gas limit (EIP-7825)
 func ValidateTxGasLimit(gasLimit uint64, isFusaka bool) error {
@@ -281,11 +276,6 @@ func DefaultFusakaBlobParams() FusakaBlobParams {
 	}
 }
 
-// GetBlobParamsFusaka returns blob parameters for Fusaka
-func GetBlobParamsFusaka() FusakaBlobParams {
-	return DefaultFusakaBlobParams()
-}
-
 // =============================================================================
 // EIP-7918: Blob base fee execution cost cap (Fusaka)
 // https://eips.ethereum.org/EIPS/eip-7918
@@ -294,14 +284,9 @@ func GetBlobParamsFusaka() FusakaBlobParams {
 // when blob demand is high.
 // =============================================================================
 
-const (
-	// BlobBaseFeeCapFusaka is the maximum blob base fee (EIP-7918)
-	// Cap at 2^13 = 8192 Gwei to prevent excessive costs
-	BlobBaseFeeCapFusaka = 1 << 13 // 8192
-
-	// BlobBaseFeeCap7918 is the explicit value from EIP-7918
-	BlobBaseFeeCap7918 = 8192
-)
+// BlobBaseFeeCap7918 is the maximum blob base fee in Gwei (EIP-7918)
+// Cap at 2^13 = 8192 Gwei to prevent excessive costs
+const BlobBaseFeeCap7918 = 8192
 
 // CalcBlobBaseFeeFusaka calculates blob base fee with EIP-7918 cap
 func CalcBlobBaseFeeFusaka(excessBlobGas uint64) *big.Int {
@@ -367,14 +352,8 @@ func GetDefaultBlockGasLimit(isFusaka bool) uint64 {
 // to prevent DoS attacks through oversized blocks.
 // =============================================================================
 
-const (
-	// MaxRLPBlockSizeFusaka is the maximum RLP-encoded block size
-	// Set to 10MB to handle large blocks with many transactions
-	MaxRLPBlockSizeFusaka = 10 * 1024 * 1024 // 10MB
-
-	// MaxRLPBlockSizeDefault is the default before Fusaka (no explicit limit)
-	MaxRLPBlockSizeDefault = 0
-)
+// MaxRLPBlockSizeFusaka is the maximum RLP-encoded block size (10MB)
+const MaxRLPBlockSizeFusaka = 10 * 1024 * 1024
 
 // ValidateRLPBlockSize validates RLP block size (EIP-7934)
 func ValidateRLPBlockSize(size uint64, isFusaka bool) error {
@@ -424,8 +403,8 @@ func enable7951(jt *JumpTable) {
 func newFusakaInstructionSet() JumpTable {
 	instructionSet := newOsakaInstructionSet()
 	enable7907(&instructionSet) // EIP-7907: Code size limit increase
-	enable7951(&instructionSet) // EIP-7951: Another Fusaka EIP
-	enable7939(&instructionSet) // EIP-7939: CLZ instruction (Count Leading Zeros)
+	enable7951(&instructionSet) // EIP-7951: P-256 precompile
+	enable7939(&instructionSet) // EIP-7939: CLZ instruction
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }
@@ -490,8 +469,4 @@ func DefaultFusakaConfig() FusakaConfig {
 	}
 }
 
-// IsFusakaEnabled returns true if Fusaka is enabled for the given rules
-func IsFusakaEnabled(rules params.Rules) bool {
-	return rules.IsFusaka
-}
 

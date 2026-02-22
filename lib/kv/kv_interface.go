@@ -27,57 +27,36 @@ import (
 	"github.com/n42blockchain/N42/lib/metrics"
 )
 
-//Variables Naming:
-//  tx - Database Transaction
-//  txn - Ethereum Transaction (and TxNum - is also number of Ethereum Transaction)
-//  blockNum - Ethereum block number - same across all nodes. blockID - auto-increment ID - which can be different across all nodes
-//  txNum/txID - same
-//  RoTx - Read-Only Database Transaction. RwTx - read-write
-//  k, v - key, value
-//  ts - TimeStamp. Usually it's Ethereum's TransactionNumber (auto-increment ID). Or BlockNumber.
-//  Cursor - low-level mdbx-tide api to navigate over Table
-//  Iter - high-level iterator-like api over Table/InvertedIndex/History/Domain. Has less features than Cursor. See package `iter`.
-
-//Methods Naming:
-//  Prune: delete old data
-//  Unwind: delete recent data
-//  Get: exact match of criterias
-//  Range: [from, to). from=nil means StartOfTable, to=nil means EndOfTable, rangeLimit=-1 means Unlimited
-//      Range is analog of SQL's: SELECT * FROM Table WHERE k>=from AND k<to ORDER BY k ASC/DESC LIMIT n
-//  Prefix: `Range(Table, prefix, kv.NextSubtree(prefix))`
-
-//Abstraction Layers:
-// LowLevel:
-//    1. DB/Tx - low-level key-value database
-//    2. Snapshots/FrozenData - immutable files with historical data. May be downloaded at first App
-//         start or auto-generate by moving old data from DB to Snapshots.
-//         Most important difference between DB and Snapshots: creation of
-//         snapshot files (build/merge) doesn't mutate any existing files - only producing new one!
-//         It means we don't need concept of "RwTx" for Snapshots.
-//         Files can become useless/garbage (merged to bigger file) - last reader of this file will
-//         remove it from FileSystem on tx.Rollback().
-//         Invariant: existing readers can't see new files, new readers can't see garbage files
+// Variable naming conventions:
+//   tx       - Database Transaction
+//   txn      - Ethereum Transaction (TxNum is also number of Ethereum Transaction)
+//   blockNum - Ethereum block number - same across all nodes. blockID - auto-increment ID - can differ across nodes
+//   txNum/txID - same
+//   RoTx     - Read-Only Database Transaction. RwTx - read-write
+//   k, v     - key, value
+//   ts       - TimeStamp. Usually Ethereum's TransactionNumber (auto-increment ID) or BlockNumber.
+//   Cursor   - low-level mdbx API to navigate over Table
+//   Iter     - high-level iterator API over Table/InvertedIndex/History/Domain. See package `iter`.
 //
-// MediumLevel:
-//    1. TemporalDB - abstracting DB+Snapshots. Target is:
-//         - provide 'time-travel' API for data: consistent snapshot of data as of given Timestamp.
-//         - auto-close iterators on Commit/Rollback
-//         - auto-open/close agg.BeginFilesRo() on Begin/Commit/Rollback
-//         - to keep DB small - only for Hot/Recent data (can be update/delete by re-org).
-//         - And TemporalRoTx/TemporalRwTx actually open Read-Only files view (BeginFilesRo) - no concept of "Read-Write view of snapshot files".
-//         - using next entities:
-//               - InvertedIndex: supports range-scans
-//               - History: can return value of key K as of given TimeStamp. Doesn't know about latest/current
-//                   value of key K. Returns NIL if K not changed after TimeStamp.
-//               - Domain: as History but also aware about latest/current value of key K. Can move
-//                   cold (updated long time ago) parts of state from db to snapshots.
-
-// HighLevel:
-//      1. Application - rely on TemporalDB (Ex: ExecutionLayer) or just DB (Ex: TxPool, Sentry, Downloader).
+// Method naming conventions:
+//   Prune:  delete old data
+//   Unwind: delete recent data
+//   Get:    exact match of criteria
+//   Range:  [from, to). from=nil means StartOfTable, to=nil means EndOfTable, limit=-1 means Unlimited
+//           Analog of SQL: SELECT * FROM Table WHERE k>=from AND k<to ORDER BY k ASC/DESC LIMIT n
+//   Prefix: Range(Table, prefix, kv.NextSubtree(prefix))
+//
+// Abstraction layers:
+//   LowLevel:
+//     1. DB/Tx - low-level key-value database
+//     2. Snapshots/FrozenData - immutable files with historical data
+//   MediumLevel:
+//     1. TemporalDB - abstracting DB+Snapshots with time-travel API
+//   HighLevel:
+//     1. Application - relies on TemporalDB (e.g. ExecutionLayer) or just DB (e.g. TxPool, Sentry)
 
 const ReadersLimit = 32000 // MDBX_READERS_LIMIT=32767
 
-// const Unbounded []byte = nil
 const Unlim int = -1
 
 var (
@@ -90,13 +69,10 @@ var (
 	TxDirty   = metrics.GetOrCreateGauge(`tx_dirty`)   //nolint
 
 	DbCommitPreparation = metrics.GetOrCreateSummary(`db_commit_seconds{phase="preparation"}`) //nolint
-	//DbGCWallClock       = metrics.GetOrCreateSummary(`db_commit_seconds{phase="gc_wall_clock"}`) //nolint
-	//DbGCCpuTime         = metrics.GetOrCreateSummary(`db_commit_seconds{phase="gc_cpu_time"}`)   //nolint
-	//DbCommitAudit       = metrics.GetOrCreateSummary(`db_commit_seconds{phase="audit"}`)         //nolint
-	DbCommitWrite  = metrics.GetOrCreateSummary(`db_commit_seconds{phase="write"}`)  //nolint
-	DbCommitSync   = metrics.GetOrCreateSummary(`db_commit_seconds{phase="sync"}`)   //nolint
-	DbCommitEnding = metrics.GetOrCreateSummary(`db_commit_seconds{phase="ending"}`) //nolint
-	DbCommitTotal  = metrics.GetOrCreateSummary(`db_commit_seconds{phase="total"}`)  //nolint
+	DbCommitWrite       = metrics.GetOrCreateSummary(`db_commit_seconds{phase="write"}`)       //nolint
+	DbCommitSync        = metrics.GetOrCreateSummary(`db_commit_seconds{phase="sync"}`)        //nolint
+	DbCommitEnding      = metrics.GetOrCreateSummary(`db_commit_seconds{phase="ending"}`)      //nolint
+	DbCommitTotal       = metrics.GetOrCreateSummary(`db_commit_seconds{phase="total"}`)       //nolint
 
 	DbPgopsNewly   = metrics.GetOrCreateGauge(`db_pgops{phase="newly"}`)   //nolint
 	DbPgopsCow     = metrics.GetOrCreateGauge(`db_pgops{phase="cow"}`)     //nolint
@@ -106,38 +82,6 @@ var (
 	DbPgopsSpill   = metrics.GetOrCreateGauge(`db_pgops{phase="spill"}`)   //nolint
 	DbPgopsUnspill = metrics.GetOrCreateGauge(`db_pgops{phase="unspill"}`) //nolint
 	DbPgopsWops    = metrics.GetOrCreateGauge(`db_pgops{phase="wops"}`)    //nolint
-	/*
-		DbPgopsPrefault = metrics.NewCounter(`db_pgops{phase="prefault"}`) //nolint
-		DbPgopsMinicore = metrics.NewCounter(`db_pgops{phase="minicore"}`) //nolint
-		DbPgopsMsync    = metrics.NewCounter(`db_pgops{phase="msync"}`)    //nolint
-		DbPgopsFsync    = metrics.NewCounter(`db_pgops{phase="fsync"}`)    //nolint
-		DbMiLastPgNo    = metrics.NewCounter(`db_mi_last_pgno`)            //nolint
-
-		DbGcWorkRtime    = metrics.GetOrCreateSummary(`db_gc_seconds{phase="work_rtime"}`) //nolint
-		DbGcWorkRsteps   = metrics.NewCounter(`db_gc{phase="work_rsteps"}`)                //nolint
-		DbGcWorkRxpages  = metrics.NewCounter(`db_gc{phase="work_rxpages"}`)               //nolint
-		DbGcSelfRtime    = metrics.GetOrCreateSummary(`db_gc_seconds{phase="self_rtime"}`) //nolint
-		DbGcSelfXtime    = metrics.GetOrCreateSummary(`db_gc_seconds{phase="self_xtime"}`) //nolint
-		DbGcWorkXtime    = metrics.GetOrCreateSummary(`db_gc_seconds{phase="work_xtime"}`) //nolint
-		DbGcSelfRsteps   = metrics.NewCounter(`db_gc{phase="self_rsteps"}`)                //nolint
-		DbGcWloops       = metrics.NewCounter(`db_gc{phase="wloop"}`)                      //nolint
-		DbGcCoalescences = metrics.NewCounter(`db_gc{phase="coalescences"}`)               //nolint
-		DbGcWipes        = metrics.NewCounter(`db_gc{phase="wipes"}`)                      //nolint
-		DbGcFlushes      = metrics.NewCounter(`db_gc{phase="flushes"}`)                    //nolint
-		DbGcKicks        = metrics.NewCounter(`db_gc{phase="kicks"}`)                      //nolint
-		DbGcWorkMajflt   = metrics.NewCounter(`db_gc{phase="work_majflt"}`)                //nolint
-		DbGcSelfMajflt   = metrics.NewCounter(`db_gc{phase="self_majflt"}`)                //nolint
-		DbGcWorkCounter  = metrics.NewCounter(`db_gc{phase="work_counter"}`)               //nolint
-		DbGcSelfCounter  = metrics.NewCounter(`db_gc{phase="self_counter"}`)               //nolint
-		DbGcSelfXpages   = metrics.NewCounter(`db_gc{phase="self_xpages"}`)                //nolint
-	*/
-
-	//DbGcWorkPnlMergeTime   = metrics.GetOrCreateSummary(`db_gc_pnl_seconds{phase="work_merge_time"}`) //nolint
-	//DbGcWorkPnlMergeVolume = metrics.NewCounter(`db_gc_pnl{phase="work_merge_volume"}`)               //nolint
-	//DbGcWorkPnlMergeCalls  = metrics.NewCounter(`db_gc{phase="work_merge_calls"}`)                    //nolint
-	//DbGcSelfPnlMergeTime   = metrics.GetOrCreateSummary(`db_gc_pnl_seconds{phase="slef_merge_time"}`) //nolint
-	//DbGcSelfPnlMergeVolume = metrics.NewCounter(`db_gc_pnl{phase="self_merge_volume"}`)               //nolint
-	//DbGcSelfPnlMergeCalls  = metrics.NewCounter(`db_gc_pnl{phase="slef_merge_calls"}`)                //nolint
 
 	GcLeafMetric     = metrics.GetOrCreateGauge(`db_gc_leaf`)     //nolint
 	GcOverflowMetric = metrics.GetOrCreateGauge(`db_gc_overflow`) //nolint
@@ -178,6 +122,7 @@ func (l Label) String() string {
 		return "unknown"
 	}
 }
+
 func UnmarshalLabel(s string) Label {
 	switch s {
 	case "chaindata":

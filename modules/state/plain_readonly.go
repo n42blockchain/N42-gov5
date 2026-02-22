@@ -20,11 +20,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+
 	"github.com/google/btree"
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 )
@@ -130,7 +132,6 @@ func (s *PlainState) ForEachStorage(addr types.Address, startLocation types.Hash
 		if err1 != nil {
 			return false, err1
 		}
-		//fmt.Printf("seckey: %x\n", seckey)
 		si := storageItem{}
 		copy(si.key[:], kLoc)
 		copy(si.seckey[:], keyHash[:])
@@ -177,7 +178,8 @@ func (s *PlainState) ReadAccountData(address types.Address) (*account.StateAccou
 	if err = a.DecodeForStorage(enc); err != nil {
 		return nil, err
 	}
-	//restore codehash
+	// Restore codeHash from PlainContractCode if the account has an incarnation
+	// but the stored encoding omitted the hash (omitHashes optimization).
 	if a.Incarnation > 0 && a.IsEmptyCodeHash() {
 		if codeHash, err1 := s.tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:], a.Incarnation)); err1 == nil {
 			if len(codeHash) > 0 {

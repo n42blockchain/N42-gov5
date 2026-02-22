@@ -6,16 +6,17 @@ package initialsync
 import (
 	"context"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/internal/p2p"
-	event "github.com/n42blockchain/N42/modules/event/v2"
-	"github.com/paulbellamy/ratecounter"
 	"sync/atomic"
 	"time"
 
+	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/paulbellamy/ratecounter"
 	"github.com/pkg/errors"
+
+	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/internal/p2p"
+	event "github.com/n42blockchain/N42/modules/event/v2"
 )
 
 // Config to set up the initial sync service.
@@ -114,7 +115,7 @@ func (s *Service) Stop() error {
 
 // Status of initial sync.
 func (s *Service) Status() error {
-	if s.syncing.Load() == true {
+	if s.syncing.Load() {
 		return errors.New("syncing")
 	}
 	return nil
@@ -127,14 +128,7 @@ const nearSyncedThreshold = 64
 // Syncing returns true if initial sync is still running and not near completion.
 // Returns false when sync is complete OR when approaching sync target (within nearSyncedThreshold blocks).
 func (s *Service) Syncing() bool {
-	if !s.syncing.Load() {
-		return false
-	}
-	// If approaching sync target, return false to allow block topic processing
-	if s.isNearingSynced() {
-		return false
-	}
-	return true
+	return s.syncing.Load() && !s.isNearingSynced()
 }
 
 // isNearingSynced returns true if we're within nearSyncedThreshold blocks of the target.
@@ -168,15 +162,15 @@ func (s *Service) Resync() error {
 	defer func() {
 		s.markSynced()
 		event.GlobalEvent.Send(common.DownloaderFinishEvent{})
-	}() // Reset it at the end of the method.
-	//
+	}()
+
 	beforeBlockNr := s.cfg.Chain.CurrentBlock().Number64()
 	highestExpectedBlockNr := s.waitForMinimumPeers()
 	if err := s.roundRobinSync(highestExpectedBlockNr); err != nil {
 		log.Error("Resync fail", "err", err, "highestExpectedBlockNr", highestExpectedBlockNr, "currentNr", s.cfg.Chain.CurrentBlock().Number64(), "beforeResyncBlockNr", beforeBlockNr)
 		return err
 	}
-	//
+
 	log.Info("Resync attempt complete", "highestExpectedBlockNr", highestExpectedBlockNr, "currentNr", s.cfg.Chain.CurrentBlock().Number64(), "beforeResyncBlockNr", beforeBlockNr)
 	return nil
 }
@@ -260,13 +254,13 @@ func (s *Service) shouldSkipPeerWait() bool {
 	return noBootstrapNodes
 }
 
-// markSynced marks node as synced and notifies feed listeners.
+// markSyncing marks node as currently syncing.
 func (s *Service) markSyncing() {
-	s.syncing.Swap(true)
+	s.syncing.Store(true)
 }
 
-// markSynced marks node as synced and notifies feed listeners.
+// markSynced marks node as synced and no longer syncing.
 func (s *Service) markSynced() {
-	s.syncing.Swap(false)
-	s.synced.Swap(true)
+	s.syncing.Store(false)
+	s.synced.Store(true)
 }

@@ -29,10 +29,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
-// =============================================================================
-// Sync State Definitions
-// =============================================================================
-
 // SyncState represents the current synchronization state of the node.
 type SyncState int32
 
@@ -68,10 +64,6 @@ func (s SyncState) String() string {
 		return fmt.Sprintf("Unknown(%d)", s)
 	}
 }
-
-// =============================================================================
-// Sync State Machine Metrics
-// =============================================================================
 
 // SyncMetrics collects synchronization metrics.
 type SyncMetrics struct {
@@ -208,10 +200,6 @@ func (m *SyncMetrics) LogStats() {
 	)
 }
 
-// =============================================================================
-// Sync State Machine Configuration
-// =============================================================================
-
 // SyncStateMachineConfig holds configuration for the state machine.
 type SyncStateMachineConfig struct {
 	// MinSyncPeers is the minimum number of peers required to start syncing.
@@ -242,10 +230,6 @@ func DefaultSyncStateMachineConfig() *SyncStateMachineConfig {
 	}
 }
 
-// =============================================================================
-// Sync State Machine
-// =============================================================================
-
 // SyncStateMachine manages the synchronization state transitions.
 type SyncStateMachine struct {
 	state      int32 // atomic, use SyncState
@@ -257,16 +241,11 @@ type SyncStateMachine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// State transition callbacks
-	onStateChange func(from, to SyncState)
-
-	// Sync handlers (to be injected)
+	onStateChange      func(from, to SyncState)
 	initialSyncHandler func(ctx context.Context, targetBlock *uint256.Int) error
 	catchUpHandler     func(ctx context.Context, targetBlock *uint256.Int) error
 
-	// Fix: WaitGroup to track goroutines for proper cleanup
 	wg sync.WaitGroup
-
 	mu sync.RWMutex
 }
 
@@ -355,15 +334,24 @@ func (sm *SyncStateMachine) transitionTo(newState SyncState) {
 
 // Start begins the state machine loop.
 func (sm *SyncStateMachine) Start() {
-	go sm.run()
-	go sm.metricsLogger()
+	sm.goTrack(sm.run)
+	sm.goTrack(sm.metricsLogger)
 }
 
-// Stop stops the state machine.
-// Fix: Wait for all tracked goroutines to complete before returning.
+// Stop stops the state machine and waits for all tracked goroutines to finish.
 func (sm *SyncStateMachine) Stop() {
 	sm.cancel()
 	sm.wg.Wait()
+}
+
+// goTrack launches fn in a goroutine tracked by the WaitGroup so that
+// Stop() can wait for it to complete.
+func (sm *SyncStateMachine) goTrack(fn func()) {
+	sm.wg.Add(1)
+	go func() {
+		defer sm.wg.Done()
+		fn()
+	}()
 }
 
 // run is the main state machine loop.
@@ -419,83 +407,50 @@ func (sm *SyncStateMachine) evaluate() {
 	}
 }
 
-// handleIdleState handles transitions from Idle state.
-// Fix: Track goroutines with WaitGroup to prevent goroutine leaks.
+// handleIdleState handles transitions from the Idle state.
 func (sm *SyncStateMachine) handleIdleState(behindBy uint64, targetBlock *uint256.Int) {
 	if behindBy == 0 {
-		// Already synced
 		sm.transitionTo(SyncStateSynced)
 		return
 	}
 
 	if behindBy > sm.config.InitialSyncThreshold {
 		sm.transitionTo(SyncStateInitialSync)
-		sm.wg.Add(1)
-		go func() {
-			defer sm.wg.Done()
-			sm.performInitialSync(targetBlock)
-		}()
+		sm.goTrack(func() { sm.performInitialSync(targetBlock) })
 	} else {
 		sm.transitionTo(SyncStateCatchUp)
-		sm.wg.Add(1)
-		go func() {
-			defer sm.wg.Done()
-			sm.performCatchUp(targetBlock)
-		}()
+		sm.goTrack(func() { sm.performCatchUp(targetBlock) })
 	}
 }
 
-// handleInitialSyncState handles transitions from InitialSync state.
-// Fix: Track goroutines with WaitGroup to prevent goroutine leaks.
+// handleInitialSyncState handles transitions from the InitialSync state.
 func (sm *SyncStateMachine) handleInitialSyncState(behindBy uint64, targetBlock *uint256.Int) {
-	// InitialSync is handled by performInitialSync goroutine
-	// Check if we've caught up
 	if behindBy == 0 {
 		sm.transitionTo(SyncStateSynced)
 	} else if behindBy <= sm.config.InitialSyncThreshold {
-		// Switch to catch-up mode
 		sm.transitionTo(SyncStateCatchUp)
-		sm.wg.Add(1)
-		go func() {
-			defer sm.wg.Done()
-			sm.performCatchUp(targetBlock)
-		}()
+		sm.goTrack(func() { sm.performCatchUp(targetBlock) })
 	}
 }
 
-// handleCatchUpState handles transitions from CatchUp state.
-// Fix: Track goroutines with WaitGroup to prevent goroutine leaks.
+// handleCatchUpState handles transitions from the CatchUp state.
 func (sm *SyncStateMachine) handleCatchUpState(behindBy uint64, targetBlock *uint256.Int) {
 	if behindBy == 0 {
 		sm.transitionTo(SyncStateSynced)
 	} else if behindBy > sm.config.InitialSyncThreshold {
-		// Fell too far behind, need initial sync
 		sm.transitionTo(SyncStateInitialSync)
-		sm.wg.Add(1)
-		go func() {
-			defer sm.wg.Done()
-			sm.performInitialSync(targetBlock)
-		}()
+		sm.goTrack(func() { sm.performInitialSync(targetBlock) })
 	}
 }
 
-// handleSyncedState handles transitions from Synced state.
-// Fix: Track goroutines with WaitGroup to prevent goroutine leaks.
+// handleSyncedState handles transitions from the Synced state.
 func (sm *SyncStateMachine) handleSyncedState(behindBy uint64, targetBlock *uint256.Int) {
 	if behindBy > sm.config.InitialSyncThreshold {
 		sm.transitionTo(SyncStateInitialSync)
-		sm.wg.Add(1)
-		go func() {
-			defer sm.wg.Done()
-			sm.performInitialSync(targetBlock)
-		}()
+		sm.goTrack(func() { sm.performInitialSync(targetBlock) })
 	} else if behindBy > 0 {
 		sm.transitionTo(SyncStateCatchUp)
-		sm.wg.Add(1)
-		go func() {
-			defer sm.wg.Done()
-			sm.performCatchUp(targetBlock)
-		}()
+		sm.goTrack(func() { sm.performCatchUp(targetBlock) })
 	}
 }
 
@@ -505,41 +460,7 @@ func (sm *SyncStateMachine) performInitialSync(targetBlock *uint256.Int) {
 	handler := sm.initialSyncHandler
 	sm.mu.RUnlock()
 
-	if handler == nil {
-		log.Warn("No initial sync handler configured")
-		return
-	}
-
-	startTime := time.Now()
-	var startBlock uint64
-	if sm.blockchain != nil {
-		startBlock = sm.blockchain.CurrentBlock().Number64().Uint64()
-	}
-
-	log.Info("Starting initial sync",
-		"current_block", startBlock,
-		"target_block", targetBlock.Uint64(),
-	)
-
-	if err := handler(sm.ctx, targetBlock); err != nil {
-		log.Error("Initial sync failed", "err", err)
-		sm.metrics.RecordBlocksFailed(1)
-		sm.transitionTo(SyncStateIdle)
-		return
-	}
-
-	var endBlock uint64
-	if sm.blockchain != nil {
-		endBlock = sm.blockchain.CurrentBlock().Number64().Uint64()
-	}
-	blocksProcessed := endBlock - startBlock
-	sm.metrics.RecordBlocksProcessed(blocksProcessed)
-
-	log.Info("Initial sync completed",
-		"blocks_synced", blocksProcessed,
-		"duration", time.Since(startTime),
-		"current_block", endBlock,
-	)
+	sm.performSync("initial sync", handler, targetBlock, true)
 }
 
 // performCatchUp executes the catch-up sync process.
@@ -548,8 +469,20 @@ func (sm *SyncStateMachine) performCatchUp(targetBlock *uint256.Int) {
 	handler := sm.catchUpHandler
 	sm.mu.RUnlock()
 
+	sm.performSync("catch-up sync", handler, targetBlock, false)
+}
+
+// performSync is the shared implementation for both initial sync and catch-up.
+// The label parameter is used for log messages. When transitionOnFail is true,
+// the state machine transitions back to Idle on failure (used for initial sync).
+func (sm *SyncStateMachine) performSync(
+	label string,
+	handler func(ctx context.Context, targetBlock *uint256.Int) error,
+	targetBlock *uint256.Int,
+	transitionOnFail bool,
+) {
 	if handler == nil {
-		log.Warn("No catch-up handler configured")
+		log.Warn("No sync handler configured", "type", label)
 		return
 	}
 
@@ -559,14 +492,18 @@ func (sm *SyncStateMachine) performCatchUp(targetBlock *uint256.Int) {
 		startBlock = sm.blockchain.CurrentBlock().Number64().Uint64()
 	}
 
-	log.Debug("Starting catch-up sync",
+	log.Info("Starting sync",
+		"type", label,
 		"current_block", startBlock,
 		"target_block", targetBlock.Uint64(),
 	)
 
 	if err := handler(sm.ctx, targetBlock); err != nil {
-		log.Error("Catch-up sync failed", "err", err)
+		log.Error("Sync failed", "type", label, "err", err)
 		sm.metrics.RecordBlocksFailed(1)
+		if transitionOnFail {
+			sm.transitionTo(SyncStateIdle)
+		}
 		return
 	}
 
@@ -577,9 +514,11 @@ func (sm *SyncStateMachine) performCatchUp(targetBlock *uint256.Int) {
 	blocksProcessed := endBlock - startBlock
 	sm.metrics.RecordBlocksProcessed(blocksProcessed)
 
-	log.Debug("Catch-up sync completed",
+	log.Info("Sync completed",
+		"type", label,
 		"blocks_synced", blocksProcessed,
 		"duration", time.Since(startTime),
+		"current_block", endBlock,
 	)
 }
 
@@ -602,10 +541,6 @@ func (sm *SyncStateMachine) metricsLogger() {
 func (sm *SyncStateMachine) Metrics() *SyncMetrics {
 	return sm.metrics
 }
-
-// =============================================================================
-// Checker Interface Implementation
-// =============================================================================
 
 // Syncing returns true if the node is currently syncing.
 func (sm *SyncStateMachine) Syncing() bool {
@@ -632,9 +567,5 @@ func (sm *SyncStateMachine) Resync() error {
 	sm.evaluate()
 	return nil
 }
-
-// =============================================================================
-// Compile-time interface check
-// =============================================================================
 
 var _ Checker = (*SyncStateMachine)(nil)

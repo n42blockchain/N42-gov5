@@ -1,23 +1,20 @@
 package dbg
 
-import (
-	"context"
-)
+import "context"
 
 type debugContextKey struct{}
 
-// Enabling detailed debugging logs for given context
+// ContextWithDebug attaches a debug flag to the given context.
 func ContextWithDebug(ctx context.Context, v bool) context.Context {
 	return context.WithValue(ctx, debugContextKey{}, v)
 }
+
+// Enabled returns whether debug logging is enabled in the given context.
 func Enabled(ctx context.Context) bool {
-	v := ctx.Value(debugContextKey{})
-	if v == nil {
-		return false
-	}
-	return v.(bool)
+	v, _ := ctx.Value(debugContextKey{}).(bool)
+	return v
 }
 
-// https://stackoverflow.com/a/3561399 -> https://www.rfc-editor.org/rfc/rfc6648
-// https://stackoverflow.com/a/65241869 -> https://www.odata.org/documentation/odata-version-3-0/abnf/ -> https://docs.oasis-open.org/odata/odata/v4.01/cs01/abnf/odata-abnf-construction-rules.txt
-var HTTPHeader = "dbg" // curl --header "dbg: true" www.google.com
+// HTTPHeader is the HTTP header name used to enable debug mode.
+// Usage: curl --header "dbg: true" <url>
+var HTTPHeader = "dbg"

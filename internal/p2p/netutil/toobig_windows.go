@@ -15,13 +15,11 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 //go:build windows
-// +build windows
 
 package netutil
 
 import (
-	"net"
-	"os"
+	"errors"
 	"syscall"
 )
 
@@ -31,11 +29,5 @@ const _WSAEMSGSIZE = syscall.Errno(10040)
 // fit the receive buffer. On Windows, WSARecvFrom returns
 // code WSAEMSGSIZE and no data if this happens.
 func isPacketTooBig(err error) bool {
-	if opErr, ok := err.(*net.OpError); ok {
-		if scErr, ok := opErr.Err.(*os.SyscallError); ok {
-			return scErr.Err == _WSAEMSGSIZE
-		}
-		return opErr.Err == _WSAEMSGSIZE
-	}
-	return false
+	return errors.Is(err, _WSAEMSGSIZE)
 }

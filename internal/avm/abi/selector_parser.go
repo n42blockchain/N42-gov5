@@ -120,9 +120,8 @@ func parseType(unescapedSelector string) (interface{}, string, error) {
 	}
 	if unescapedSelector[0] == '(' {
 		return parseCompositeType(unescapedSelector)
-	} else {
-		return parseElementaryType(unescapedSelector)
 	}
+	return parseElementaryType(unescapedSelector)
 }
 
 func assembleArgs(args []interface{}) ([]ArgumentMarshaling, error) {
@@ -172,7 +171,7 @@ func ParseSelector(unescapedSelector string) (SelectorMarshaling, error) {
 		return SelectorMarshaling{}, fmt.Errorf("failed to parse selector '%s': unexpected string '%s'", unescapedSelector, rest)
 	}
 
-	// Reassemble the fake ABI and constuct the JSON
+	// Reassemble the fake ABI and construct the JSON
 	fakeArgs, err := assembleArgs(args)
 	if err != nil {
 		return SelectorMarshaling{}, fmt.Errorf("failed to parse selector: %v", err)

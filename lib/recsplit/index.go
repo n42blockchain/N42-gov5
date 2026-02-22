@@ -29,10 +29,9 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/dbg"
 	"github.com/n42blockchain/N42/lib/log/v3"
-
-	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/mmap"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano16"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
@@ -212,7 +211,7 @@ func OpenIndex(indexFilePath string) (*Index, error) {
 	idx.ef.Read(idx.data[offset:])
 
 	idx.readers = &sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			return NewIndexReader(idx)
 		},
 	}

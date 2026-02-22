@@ -23,16 +23,17 @@ import (
 	crand "crypto/rand"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"sync"
+	"time"
+
 	"github.com/n42blockchain/N42/common/mclock"
 	"github.com/n42blockchain/N42/internal/p2p/discover/v5wire"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/internal/p2p/netutil"
 	"github.com/n42blockchain/N42/log"
-	"io"
-	"net"
-	"sync"
-	"time"
 )
 
 const (
@@ -857,11 +858,10 @@ func (t *UDPv5) handleFindnode(p *v5wire.Findnode, fromID enode.ID, fromAddr *ne
 // collectTableNodes creates a FINDNODE result set for the given distances.
 func (t *UDPv5) collectTableNodes(rip net.IP, distances []uint, limit int) []*enode.Node {
 	var nodes []*enode.Node
-	var processed = make(map[uint]struct{})
+	processed := make(map[uint]struct{})
 	for _, dist := range distances {
 		// Reject duplicate / invalid distances.
-		_, seen := processed[dist]
-		if seen || dist > 256 {
+		if _, seen := processed[dist]; seen || dist > 256 {
 			continue
 		}
 
@@ -869,7 +869,7 @@ func (t *UDPv5) collectTableNodes(rip net.IP, distances []uint, limit int) []*en
 		var bn []*enode.Node
 		if dist == 0 {
 			bn = []*enode.Node{t.Self()}
-		} else if dist <= 256 {
+		} else {
 			t.tab.mutex.Lock()
 			bn = unwrapNodes(t.tab.bucketAtDistance(int(dist)).entries)
 			t.tab.mutex.Unlock()

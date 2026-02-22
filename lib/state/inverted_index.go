@@ -183,27 +183,17 @@ Loop:
 		}
 
 		addNewFile := true
-		var subSets []*filesItem
 		ii.dirtyFiles.Walk(func(items []*filesItem) bool {
 			for _, item := range items {
-				if item.isSubsetOf(newFile) {
-					subSets = append(subSets, item)
-					continue
-				}
-
 				if newFile.isSubsetOf(item) {
 					if item.frozen {
 						addNewFile = false
 						garbageFiles = append(garbageFiles, newFile)
 					}
-					continue
 				}
 			}
 			return true
 		})
-		//for _, subSet := range subSets {
-		//	ii.files.Delete(subSet)
-		//}
 		if addNewFile {
 			ii.dirtyFiles.Set(newFile)
 		}
@@ -265,7 +255,6 @@ func (ii *InvertedIndex) buildEfi(ctx context.Context, item *filesItem, p *backg
 	idxPath := filepath.Join(ii.dir, fName)
 	p.Name.Store(&fName)
 	p.Total.Store(uint64(item.decompressor.Count()))
-	//ii.logger.Info("[snapshots] build idx", "file", fName)
 	return buildIndex(ctx, item.decompressor, idxPath, ii.tmpdir, item.decompressor.Count()/2, false, p, ii.logger, ii.noFsync)
 }
 
@@ -273,7 +262,6 @@ func (ii *InvertedIndex) buildEfi(ctx context.Context, item *filesItem, p *backg
 func (ii *InvertedIndex) BuildMissedIndices(ctx context.Context, g *errgroup.Group, ps *background.ProgressSet) {
 	missedFiles := ii.missedIdxFiles()
 	for _, item := range missedFiles {
-		item := item
 		g.Go(func() error {
 			p := &background.Progress{}
 			ps.Add(p)

@@ -16,18 +16,8 @@
 
 package vm
 
-// =============================================================================
-// Precompiles Initialization Helpers
-// =============================================================================
-//
 // This file provides helper functions for precompiled contracts initialization.
-//
-// The actual initialization happens in contracts.go via init(), which is the
-// standard Go pattern for populating address slices from contract maps.
-// These helpers are provided for:
-//   - Documentation of initialization behavior
-//   - Testing utilities
-//   - Explicit initialization verification
+// The actual initialization happens in contracts.go via init().
 
 import (
 	"github.com/n42blockchain/N42/common/types"
@@ -52,6 +42,11 @@ func PrecompileCount() map[string]int {
 		"Istanbul":       len(PrecompiledAddressesIstanbul),
 		"IstanbulForBSC": len(PrecompiledAddressesIstanbulForBSC),
 		"Berlin":         len(PrecompiledAddressesBerlin),
+		"Cancun":         len(PrecompiledAddressesCancun),
+		"Prague":         len(PrecompiledAddressesPrague),
+		"Pectra":         len(PrecompiledAddressesPectra),
+		"Osaka":          len(PrecompiledAddressesOsaka),
+		"Fusaka":         len(PrecompiledAddressesFusaka),
 		"Nano":           len(PrecompiledAddressesNano),
 		"Moran":          len(PrecompiledAddressesMoran),
 	}
@@ -76,6 +71,7 @@ func IsPrecompiled(addr types.Address, rules *params.Rules) bool {
 
 // GetPrecompiledContract returns the precompiled contract at the given address
 // for the specified rules, or nil if not found.
+// The switch order mirrors ActivePrecompiles in contracts.go.
 func GetPrecompiledContract(addr types.Address, rules *params.Rules) PrecompiledContract {
 	var precompiles map[types.Address]PrecompiledContract
 	switch {
@@ -83,10 +79,24 @@ func GetPrecompiledContract(addr types.Address, rules *params.Rules) Precompiled
 		precompiles = PrecompiledContractsIsMoran
 	case rules.IsNano:
 		precompiles = PrecompiledContractsNano
+	case rules.IsFusaka:
+		precompiles = PrecompiledContractsFusaka
+	case rules.IsOsaka:
+		precompiles = PrecompiledContractsOsaka
+	case rules.IsPectra:
+		precompiles = PrecompiledContractsPectra
+	case rules.IsPrague:
+		precompiles = PrecompiledContractsPrague
+	case rules.IsCancun:
+		precompiles = PrecompiledContractsCancun
 	case rules.IsBerlin:
 		precompiles = PrecompiledContractsBerlin
 	case rules.IsIstanbul:
-		precompiles = PrecompiledContractsIstanbul
+		if rules.IsParlia {
+			precompiles = PrecompiledContractsIstanbulForBSC
+		} else {
+			precompiles = PrecompiledContractsIstanbul
+		}
 	case rules.IsByzantium:
 		precompiles = PrecompiledContractsByzantium
 	default:

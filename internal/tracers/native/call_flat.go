@@ -20,9 +20,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
 	"math/big"
 	"strings"
+
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	common "github.com/n42blockchain/N42/common/types"
@@ -183,24 +184,17 @@ func (t *flatCallTracer) CaptureExit(output []byte, gasUsed uint64, err error) {
 
 	// Parity traces don't include CALL/STATICCALLs to precompiles.
 	// By default we remove them from the callstack.
-	if t.config.IncludePrecompiles {
+	if t.config.IncludePrecompiles || len(t.tracer.callstack) == 0 {
 		return
 	}
-	// Bounds check before accessing callstack and calls
-	if len(t.tracer.callstack) == 0 {
-		return
-	}
-	parent := t.tracer.callstack[len(t.tracer.callstack)-1]
+	parent := &t.tracer.callstack[len(t.tracer.callstack)-1]
 	if len(parent.Calls) == 0 {
 		return
 	}
-	call := parent.Calls[len(parent.Calls)-1]
-	typ := call.Type
-	to := call.To
-	if typ == vm.CALL || typ == vm.STATICCALL {
-		if to != nil && t.isPrecompiled(*to) {
-			t.tracer.callstack[len(t.tracer.callstack)-1].Calls = parent.Calls[:len(parent.Calls)-1]
-		}
+	lastCall := parent.Calls[len(parent.Calls)-1]
+	if (lastCall.Type == vm.CALL || lastCall.Type == vm.STATICCALL) &&
+		lastCall.To != nil && t.isPrecompiled(*lastCall.To) {
+		parent.Calls = parent.Calls[:len(parent.Calls)-1]
 	}
 }
 
@@ -273,16 +267,14 @@ func flatFromNested(input *callFrame, traceAddress []int, convertErrs bool, ctx 
 	}
 
 	output = append(output, *frame)
-	if len(input.Calls) > 0 {
-		for i, childCall := range input.Calls {
-			childAddr := childTraceAddress(traceAddress, i)
-			childCallCopy := childCall
-			flat, err := flatFromNested(&childCallCopy, childAddr, convertErrs, ctx)
-			if err != nil {
-				return nil, err
-			}
-			output = append(output, flat...)
+	for i, childCall := range input.Calls {
+		childAddr := childTraceAddress(traceAddress, i)
+		childCallCopy := childCall
+		flat, err := flatFromNested(&childCallCopy, childAddr, convertErrs, ctx)
+		if err != nil {
+			return nil, err
 		}
+		output = append(output, flat...)
 	}
 
 	return output, nil

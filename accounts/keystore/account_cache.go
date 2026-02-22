@@ -52,14 +52,11 @@ type AmbiguousAddrError struct {
 }
 
 func (err *AmbiguousAddrError) Error() string {
-	files := ""
+	paths := make([]string, len(err.Matches))
 	for i, a := range err.Matches {
-		files += a.URL.Path
-		if i < len(err.Matches)-1 {
-			files += ", "
-		}
+		paths[i] = a.URL.Path
 	}
-	return fmt.Sprintf("multiple keys match address (%s)", files)
+	return fmt.Sprintf("multiple keys match address (%s)", strings.Join(paths, ", "))
 }
 
 // accountCache is a live index of all accounts in the keystore.
@@ -220,10 +217,7 @@ func (ac *accountCache) maybeReload() {
 	ac.watcher.start()
 	ac.throttle.Reset(minReloadInterval)
 	ac.mu.Unlock()
-	err := ac.scanAccounts()
-	if err != nil {
-		return
-	}
+	ac.scanAccounts()
 }
 
 func (ac *accountCache) close() {
@@ -261,16 +255,10 @@ func (ac *accountCache) scanAccounts() error {
 	readAccount := func(path string) *accounts.Account {
 		fd, err := os.Open(path)
 		if err != nil {
-			//log.Trace("Failed to open keystore file", "path", path, "err", err)
 			log.Debug("Failed to open keystore file", "path", path, "err", err)
 			return nil
 		}
-		defer func(fd *os.File) {
-			err := fd.Close()
-			if err != nil {
-				return
-			}
-		}(fd)
+		defer fd.Close()
 		buf.Reset(fd)
 		// Parse the address.
 		key.Address = ""
@@ -291,7 +279,6 @@ func (ac *accountCache) scanAccounts() error {
 	}
 	// Process all the file diffs
 	start := time.Now()
-
 	for _, path := range creates.ToSlice() {
 		if a := readAccount(path); a != nil {
 			ac.add(*a)
@@ -306,12 +293,10 @@ func (ac *accountCache) scanAccounts() error {
 			ac.add(*a)
 		}
 	}
-	end := time.Now()
-
 	select {
 	case ac.notify <- struct{}{}:
 	default:
 	}
-	log.Trace("Handled keystore changes", "time", end.Sub(start))
+	log.Trace("Handled keystore changes", "time", time.Since(start))
 	return nil
 }

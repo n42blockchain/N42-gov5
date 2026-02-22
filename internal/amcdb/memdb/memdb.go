@@ -19,8 +19,9 @@ package memdb
 import (
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/db"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/db"
 )
 
 type MemoryDB struct {
@@ -28,10 +29,7 @@ type MemoryDB struct {
 	lock sync.RWMutex
 }
 
-func (m *MemoryDB) Snapshot() (db.ISnapshot, error) {
-	// TODO: Implement snapshot support for MemoryDB
-	return nil, errors.New("Snapshot not implemented for MemoryDB")
-}
+var errSnapshotNotSupported = errors.New("snapshot not implemented for MemoryDB")
 
 func NewMemDB() db.IDatabase {
 	return &MemoryDB{
@@ -51,6 +49,10 @@ func (m *MemoryDB) Open(dbName string) (db.IDatabaseWriterReader, error) {
 	return nil, nil
 }
 
+func (m *MemoryDB) Snapshot() (db.ISnapshot, error) {
+	return nil, errSnapshotNotSupported
+}
+
 func (m *MemoryDB) Close() error {
 	return nil
 }
@@ -58,12 +60,11 @@ func (m *MemoryDB) Close() error {
 func (m *MemoryDB) Get(key []byte) ([]byte, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
-	if _, ok := m.db[string(key)]; ok {
-		v := m.db[string(key)]
+
+	if v, ok := m.db[string(key)]; ok {
 		return v, nil
 	}
-
-	return nil, fmt.Errorf("invalid key")
+	return nil, fmt.Errorf("key not found")
 }
 
 func (m *MemoryDB) Gets(key []byte, count uint) ([][]byte, [][]byte, error) {
@@ -74,34 +75,24 @@ func (m *MemoryDB) GetIterator(key []byte) (db.IIterator, error) {
 	return nil, nil
 }
 
-/*
-type IDBWriter interface {
-	Put(key []byte, value []byte) (err error)
-	Puts(keys [][]byte, values [][]byte) (err error)
-	Delete(key []byte) (err error)
-	Drop() (err error)
-}
-*/
-
 func (m *MemoryDB) Put(key []byte, value []byte) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	if _, ok := m.db[string(key)]; ok {
-		return fmt.Errorf("already add")
+
+	k := string(key)
+	if _, ok := m.db[k]; ok {
+		return fmt.Errorf("key already exists")
 	}
-
-	m.db[string(key)] = value
-
+	m.db[k] = value
 	return nil
 }
 
 func (m *MemoryDB) Puts(keys [][]byte, values [][]byte) error {
-	for i := 0; i < len(keys); i++ {
+	for i := range keys {
 		if err := m.Put(keys[i], values[i]); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -109,12 +100,12 @@ func (m *MemoryDB) Delete(key []byte) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	if _, ok := m.db[string(key)]; ok {
-		delete(m.db, string(key))
-		return nil
+	k := string(key)
+	if _, ok := m.db[k]; !ok {
+		return fmt.Errorf("key not found")
 	}
-
-	return fmt.Errorf("invalid key")
+	delete(m.db, k)
+	return nil
 }
 
 func (m *MemoryDB) Drop() error {

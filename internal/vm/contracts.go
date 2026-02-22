@@ -242,43 +242,28 @@ var (
 	PrecompiledAddressesHomestead      []types.Address
 )
 
+// collectAddresses extracts all keys from a precompile contract map into a slice.
+func collectAddresses(contracts map[types.Address]PrecompiledContract) []types.Address {
+	addrs := make([]types.Address, 0, len(contracts))
+	for k := range contracts {
+		addrs = append(addrs, k)
+	}
+	return addrs
+}
+
 func init() {
-	for k := range PrecompiledContractsHomestead {
-		PrecompiledAddressesHomestead = append(PrecompiledAddressesHomestead, k)
-	}
-	for k := range PrecompiledContractsByzantium {
-		PrecompiledAddressesByzantium = append(PrecompiledAddressesByzantium, k)
-	}
-	for k := range PrecompiledContractsIstanbul {
-		PrecompiledAddressesIstanbul = append(PrecompiledAddressesIstanbul, k)
-	}
-	for k := range PrecompiledContractsIstanbulForBSC {
-		PrecompiledAddressesIstanbulForBSC = append(PrecompiledAddressesIstanbulForBSC, k)
-	}
-	for k := range PrecompiledContractsBerlin {
-		PrecompiledAddressesBerlin = append(PrecompiledAddressesBerlin, k)
-	}
-	for k := range PrecompiledContractsCancun {
-		PrecompiledAddressesCancun = append(PrecompiledAddressesCancun, k)
-	}
-	for k := range PrecompiledContractsPrague {
-		PrecompiledAddressesPrague = append(PrecompiledAddressesPrague, k)
-	}
-	for k := range PrecompiledContractsPectra {
-		PrecompiledAddressesPectra = append(PrecompiledAddressesPectra, k)
-	}
-	for k := range PrecompiledContractsOsaka {
-		PrecompiledAddressesOsaka = append(PrecompiledAddressesOsaka, k)
-	}
-	for k := range PrecompiledContractsFusaka {
-		PrecompiledAddressesFusaka = append(PrecompiledAddressesFusaka, k)
-	}
-	for k := range PrecompiledContractsNano {
-		PrecompiledAddressesNano = append(PrecompiledAddressesNano, k)
-	}
-	for k := range PrecompiledContractsIsMoran {
-		PrecompiledAddressesMoran = append(PrecompiledAddressesMoran, k)
-	}
+	PrecompiledAddressesHomestead = collectAddresses(PrecompiledContractsHomestead)
+	PrecompiledAddressesByzantium = collectAddresses(PrecompiledContractsByzantium)
+	PrecompiledAddressesIstanbul = collectAddresses(PrecompiledContractsIstanbul)
+	PrecompiledAddressesIstanbulForBSC = collectAddresses(PrecompiledContractsIstanbulForBSC)
+	PrecompiledAddressesBerlin = collectAddresses(PrecompiledContractsBerlin)
+	PrecompiledAddressesCancun = collectAddresses(PrecompiledContractsCancun)
+	PrecompiledAddressesPrague = collectAddresses(PrecompiledContractsPrague)
+	PrecompiledAddressesPectra = collectAddresses(PrecompiledContractsPectra)
+	PrecompiledAddressesOsaka = collectAddresses(PrecompiledContractsOsaka)
+	PrecompiledAddressesFusaka = collectAddresses(PrecompiledContractsFusaka)
+	PrecompiledAddressesNano = collectAddresses(PrecompiledContractsNano)
+	PrecompiledAddressesMoran = collectAddresses(PrecompiledContractsIsMoran)
 }
 
 // ActivePrecompiles returns the precompiles enabled with the current configuration.
@@ -726,7 +711,7 @@ func (c *bn256ScalarMulByzantium) Run(input []byte) ([]byte, error) {
 
 var (
 	// true32Byte is returned if the bn256 pairing check succeeds.
-	true32Byte = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	true32Byte = types.LeftPadBytes([]byte{1}, 32)
 
 	// false32Byte is returned if the bn256 pairing check fails.
 	false32Byte = make([]byte, 32)
@@ -1108,7 +1093,7 @@ func (c *bls12381G2MultiExp) Run(input []byte) ([]byte, error) {
 	for i := 0; i < k; i++ {
 		off := 288 * i
 		t0, t1, t2 := off, off+256, off+288
-		// Decode G1 point
+		// Decode G2 point
 		if points[i], err = g.DecodePoint(input[t0:t1]); err != nil {
 			return nil, err
 		}
@@ -1188,23 +1173,6 @@ func (c *bls12381Pairing) Run(input []byte) ([]byte, error) {
 	return out, nil
 }
 
-// decodeBLS12381FieldElement decodes BLS12-381 elliptic curve field element.
-// Removes top 16 bytes of 64 byte input.
-func decodeBLS12381FieldElement(in []byte) ([]byte, error) {
-	if len(in) != 64 {
-		return nil, errors.New("invalid field element length")
-	}
-	// check top bytes
-	for i := 0; i < 16; i++ {
-		if in[i] != byte(0x00) {
-			return nil, errBLS12381InvalidFieldElementTopBytes
-		}
-	}
-	out := make([]byte, 48)
-	copy(out, in[16:])
-	return out, nil
-}
-
 // bls12381MapG1 implements EIP-2537 MapG1 precompile.
 type bls12381MapG1 struct{}
 
@@ -1271,12 +1239,7 @@ func (c *bls12381MapG2) Run(input []byte) ([]byte, error) {
 	return encodePointG2Gnark(&r), nil
 }
 
-// =============================================================================
-// Precompile Getter Functions
-//
-// These functions provide access to precompile instances for the Registry.
-// They replace direct access to the global maps.
-// =============================================================================
+// Precompile getter functions provide access to precompile instances for the Registry.
 
 // GetEcrecover returns an ecrecover precompile instance.
 func GetEcrecover() PrecompiledContract { return &ecrecover{} }
@@ -1290,7 +1253,6 @@ func GetRipemd160() PrecompiledContract { return &ripemd160hash{} }
 // GetDataCopy returns a data copy precompile instance.
 func GetDataCopy() PrecompiledContract { return &dataCopy{} }
 
-// GetBigModExp returns a big modular exponentiation precompile instance.
 // GetBigModExp returns a big modular exponentiation precompile instance.
 // Parameters:
 //   - eip2565: enables EIP-2565 gas repricing (Berlin+)
@@ -1353,10 +1315,6 @@ func GetBls12381MapG1() PrecompiledContract { return &bls12381MapG1{} }
 
 // GetBls12381MapG2 returns a BLS12-381 map to G2 precompile instance.
 func GetBls12381MapG2() PrecompiledContract { return &bls12381MapG2{} }
-
-// =============================================================================
-// gnark-crypto helper functions for EIP-2537 compliance
-// =============================================================================
 
 // decodeBLS12381FieldElementGnark decodes a BLS12-381 field element using gnark-crypto.
 // Input is 64 bytes with the first 16 bytes being zero padding.

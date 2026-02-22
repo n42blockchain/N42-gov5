@@ -3,12 +3,13 @@ package initialsync
 import (
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"sort"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"github.com/n42blockchain/N42/api/protocol/types_pb"
 )
 
 const (
@@ -86,11 +87,13 @@ func (smm *stateMachineManager) addStateMachine(startBlockNr *uint256.Int) *stat
 
 // removeStateMachine frees memory of a processed/finished FSM.
 func (smm *stateMachineManager) removeStateMachine(startSlot *uint256.Int) error {
-	if _, ok := smm.machines[startSlot.Uint64()]; !ok {
+	key := startSlot.Uint64()
+	m, ok := smm.machines[key]
+	if !ok {
 		return fmt.Errorf("state for machine %v is not found", startSlot)
 	}
-	smm.machines[startSlot.Uint64()].blocks = nil
-	delete(smm.machines, startSlot.Uint64())
+	m.blocks = nil
+	delete(smm.machines, key)
 	smm.recalculateMachineAttribs()
 	return nil
 }
@@ -113,7 +116,7 @@ func (smm *stateMachineManager) recalculateMachineAttribs() {
 		keys = append(keys, uint256.NewInt(key))
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		return keys[i].Cmp(keys[j]) == -1
+		return keys[i].Lt(keys[j])
 	})
 	smm.keys = keys
 }
@@ -125,7 +128,7 @@ func (smm *stateMachineManager) findStateMachine(startSlot *uint256.Int) (*state
 }
 
 // highestStartSlot returns the start slot for the latest known state machine.
-// Fix: Return nil on error to force callers to check error properly.
+// Returns nil on error to force callers to check the error properly.
 func (smm *stateMachineManager) highestStartSlot() (*uint256.Int, error) {
 	if len(smm.keys) == 0 {
 		return nil, errors.New("no state machine exist")
@@ -182,7 +185,6 @@ func (m *stateMachine) trigger(event eventID, data interface{}) error {
 }
 
 // isFirst checks whether a given machine has the lowest start slot.
-// Fix: Use value comparison instead of pointer comparison for *uint256.Int.
 func (m *stateMachine) isFirst() bool {
 	if len(m.smm.keys) == 0 {
 		return false
@@ -191,7 +193,6 @@ func (m *stateMachine) isFirst() bool {
 }
 
 // isLast checks whether a given machine has the highest start slot.
-// Fix: Use value comparison instead of pointer comparison for *uint256.Int.
 func (m *stateMachine) isLast() bool {
 	if len(m.smm.keys) == 0 {
 		return false
@@ -206,27 +207,30 @@ func (m *stateMachine) String() string {
 
 // String returns human-readable representation of a state.
 func (s stateID) String() string {
-	states := map[stateID]string{
-		stateNew:        "new",
-		stateScheduled:  "scheduled",
-		stateDataParsed: "dataParsed",
-		stateSkipped:    "skipped",
-		stateSent:       "sent",
-	}
-	if _, ok := states[s]; !ok {
+	switch s {
+	case stateNew:
+		return "new"
+	case stateScheduled:
+		return "scheduled"
+	case stateDataParsed:
+		return "dataParsed"
+	case stateSkipped:
+		return "skipped"
+	case stateSent:
+		return "sent"
+	default:
 		return "stateUnknown"
 	}
-	return states[s]
 }
 
 // String returns human-readable representation of an event.
 func (e eventID) String() string {
-	events := map[eventID]string{
-		eventTick:         "tick",
-		eventDataReceived: "dataReceived",
-	}
-	if _, ok := events[e]; !ok {
+	switch e {
+	case eventTick:
+		return "tick"
+	case eventDataReceived:
+		return "dataReceived"
+	default:
 		return "eventUnknown"
 	}
-	return events[e]
 }

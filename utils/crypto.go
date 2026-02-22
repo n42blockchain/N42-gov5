@@ -2,10 +2,11 @@ package utils
 
 import (
 	"crypto/ecdsa"
+	"math/big"
+
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/pkg/errors"
-	"math/big"
 
 	n42_crypto "github.com/n42blockchain/N42/common/crypto"
 )

@@ -18,14 +18,16 @@ package rpchelper
 
 import (
 	"fmt"
+
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 
-// unable to decode supplied params, or an invalid number of parameters
+// nonCanonocalHashError is returned when a block hash is not currently canonical.
 type nonCanonocalHashError struct{ hash types.Hash }
 
 func (e nonCanonocalHashError) ErrorCode() int { return -32603 }
@@ -38,15 +40,14 @@ func GetBlockNumber(blockNrOrHash jsonrpc.BlockNumberOrHash, tx kv.Tx) (*uint256
 	if tx == nil {
 		return nil, types.Hash{}, fmt.Errorf("transaction is nil")
 	}
-	return _GetBlockNumber(blockNrOrHash.RequireCanonical, blockNrOrHash, tx)
+	return getBlockNumber(blockNrOrHash.RequireCanonical, blockNrOrHash, tx)
 }
 
 func GetCanonicalBlockNumber(blockNrOrHash jsonrpc.BlockNumberOrHash, tx kv.Tx) (*uint256.Int, types.Hash, error) {
-	return _GetBlockNumber(true, blockNrOrHash, tx)
+	return getBlockNumber(true, blockNrOrHash, tx)
 }
 
-func _GetBlockNumber(requireCanonical bool, blockNrOrHash jsonrpc.BlockNumberOrHash, tx kv.Tx) (blockNumber *uint256.Int, hash types.Hash, err error) {
-
+func getBlockNumber(requireCanonical bool, blockNrOrHash jsonrpc.BlockNumberOrHash, tx kv.Tx) (blockNumber *uint256.Int, hash types.Hash, err error) {
 	var ok bool
 	hash, ok = blockNrOrHash.Hash()
 	if !ok {

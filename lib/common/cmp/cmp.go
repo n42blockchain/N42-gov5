@@ -16,9 +16,7 @@
 
 package cmp
 
-import (
-	"golang.org/x/exp/constraints"
-)
+import "golang.org/x/exp/constraints"
 
 // InRange - ensure val is in [min,max] range
 func InRange[T constraints.Ordered](min, max, val T) T {

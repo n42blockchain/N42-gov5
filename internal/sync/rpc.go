@@ -2,9 +2,6 @@ package sync
 
 import (
 	"context"
-	"github.com/n42blockchain/N42/internal/p2p"
-	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
-	"github.com/n42blockchain/N42/log"
 	"reflect"
 	"runtime/debug"
 	"time"
@@ -14,55 +11,40 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	ssz "github.com/prysmaticlabs/fastssz"
 	"go.opencensus.io/trace"
+
+	"github.com/n42blockchain/N42/internal/p2p"
+	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
+	"github.com/n42blockchain/N42/log"
 )
-
-// Time to first byte timeout. The maximum time to wait for first byte of
-// request response (time-to-first-byte). The client is expected to give up if
-// they don't receive the first byte within 5 seconds.
-//var ttfbTimeout = ttfbTimeout
-
-// respTimeout is the maximum time for complete response transfer.
-//var respTimeout = params.BeaconNetworkConfig().RespTimeout
 
 // rpcHandler is responsible for handling and responding to any incoming message.
 // This method may return an error to internal monitoring, but the error will
 // not be relayed to the peer.
 type rpcHandler func(context.Context, interface{}, libp2pcore.Stream) error
 
-// registerRPCHandlers for p2p RPC.
+// registerRPCHandlers registers all p2p RPC stream handlers.
 func (s *Service) registerRPCHandlers() {
-	s.registerRPC(
-		p2p.RPCStatusTopicV1,
-		s.statusRPCHandler,
-	)
-	s.registerRPC(
-		p2p.RPCGoodByeTopicV1,
-		s.goodbyeRPCHandler,
-	)
-	s.registerRPC(
-		p2p.RPCPingTopicV1,
-		s.pingHandler,
-	)
-	s.registerRPC(
-		p2p.RPCBodiesDataTopicV1,
-		s.bodiesByRangeRPCHandler,
-	)
+	s.registerRPC(p2p.RPCStatusTopicV1, s.statusRPCHandler)
+	s.registerRPC(p2p.RPCGoodByeTopicV1, s.goodbyeRPCHandler)
+	s.registerRPC(p2p.RPCPingTopicV1, s.pingHandler)
+	s.registerRPC(p2p.RPCBodiesDataTopicV1, s.bodiesByRangeRPCHandler)
 }
 
-// Remove all Stream handlers
+// unregisterHandlers removes all registered RPC stream handlers.
 func (s *Service) unregisterHandlers() {
-	fullBodiesRangeTopic := p2p.RPCBodiesDataTopicV1 + s.cfg.p2p.Encoding().ProtocolSuffix()
-	fullStatusTopic := p2p.RPCStatusTopicV1 + s.cfg.p2p.Encoding().ProtocolSuffix()
-	fullGoodByeTopic := p2p.RPCGoodByeTopicV1 + s.cfg.p2p.Encoding().ProtocolSuffix()
-	fullPingTopic := p2p.RPCPingTopicV1 + s.cfg.p2p.Encoding().ProtocolSuffix()
-
-	s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(fullBodiesRangeTopic))
-	s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(fullStatusTopic))
-	s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(fullGoodByeTopic))
-	s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(fullPingTopic))
+	suffix := s.cfg.p2p.Encoding().ProtocolSuffix()
+	topics := []string{
+		p2p.RPCBodiesDataTopicV1,
+		p2p.RPCStatusTopicV1,
+		p2p.RPCGoodByeTopicV1,
+		p2p.RPCPingTopicV1,
+	}
+	for _, t := range topics {
+		s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(t + suffix))
+	}
 }
 
-// registerRPC for a given topic with an expected protobuf message type.
+// registerRPC registers a stream handler for a given topic with an expected protobuf message type.
 func (s *Service) registerRPC(baseTopic string, handle rpcHandler) {
 	topic := baseTopic + s.cfg.p2p.Encoding().ProtocolSuffix()
 	s.cfg.p2p.SetStreamHandler(topic, func(stream network.Stream) {
@@ -72,33 +54,34 @@ func (s *Service) registerRPC(baseTopic string, handle rpcHandler) {
 				log.Errorf("%s", debug.Stack())
 			}
 		}()
+
 		ctx, cancel := context.WithTimeout(s.ctx, ttfbTimeout)
 		defer cancel()
 
 		// Resetting after closing is a no-op so defer a reset in case something goes wrong.
-		// It's up to the handler to Close the stream (send an EOF) if
-		// it successfully writes a response. We don't blindly call
-		// Close here because we may have only written a partial
-		// response.
+		// It's up to the handler to Close the stream (send an EOF) if it successfully writes
+		// a response. We don't blindly call Close here because we may have only written a
+		// partial response.
 		defer func() {
-			_err := stream.Reset()
-			_ = _err
+			_ = stream.Reset()
 		}()
 
 		ctx, span := trace.StartSpan(ctx, "sync.rpc")
 		defer span.End()
-		span.AddAttributes(trace.StringAttribute("topic", topic))
-		span.AddAttributes(trace.StringAttribute("peer", stream.Conn().RemotePeer().String()))
-		//log := log.WithField("peer", stream.Conn().RemotePeer().Pretty()).WithField("topic", string(stream.Protocol()))
+		span.AddAttributes(
+			trace.StringAttribute("topic", topic),
+			trace.StringAttribute("peer", stream.Conn().RemotePeer().String()),
+		)
 
-		// Check before hand that peer is valid.
+		// Check that the peer is not banned before processing.
 		if s.cfg.p2p.Peers().IsBad(stream.Conn().RemotePeer()) {
 			if err := s.sendGoodByeAndDisconnect(ctx, p2ptypes.GoodbyeCodeBanned, stream.Conn().RemotePeer()); err != nil {
 				log.Debug("Could not disconnect from peer", "peer", stream.Conn().RemotePeer().String(), "topic", stream.Protocol(), "err", err)
 			}
 			return
 		}
-		// Validate request according to peer limits.
+
+		// Validate request according to peer rate limits.
 		if err := s.rateLimiter.validateRawRpcRequest(stream); err != nil {
 			log.Debug("Could not validate rpc request from peer", "peer", stream.Conn().RemotePeer().String(), "topic", stream.Protocol(), "err", err)
 			return
@@ -115,55 +98,53 @@ func (s *Service) registerRPC(baseTopic string, handle rpcHandler) {
 			log.Errorf("Could not retrieve base message for topic %s", baseTopic)
 			return
 		}
-		t := reflect.TypeOf(base)
-		// Copy Base
-		base = reflect.New(t)
 
-		// Increment message received counter.
+		// Decode the incoming message based on whether the registered type is a pointer or value.
+		t := reflect.TypeOf(base)
+		msg, handlerArg := s.decodeRPCMessage(t, stream, topic)
+		if msg == nil {
+			return
+		}
+
 		messageReceivedCounter.WithLabelValues(topic).Inc()
 
-		// Given we have an input argument that can be pointer or the actual object, this gives us
-		// a way to check for its reflect.Kind and based on the result, we can decode
-		// accordingly.
-		if t.Kind() == reflect.Ptr {
-			msg, ok := reflect.New(t.Elem()).Interface().(ssz.Unmarshaler)
-			if !ok {
-				log.Errorf("message of %T does not support marshaller interface", msg)
-				return
-			}
-			if err := s.cfg.p2p.Encoding().DecodeWithMaxLength(stream, msg); err != nil {
-				log.Debug("Could not decode stream message", "topic", topic, "err", err)
-				//tracing.AnnotateError(span, err)
-				s.cfg.p2p.Peers().Scorers().BadResponsesScorer().Increment(stream.Conn().RemotePeer())
-				return
-			}
-			if err := handle(ctx, msg, stream); err != nil {
-				messageFailedProcessingCounter.WithLabelValues(topic).Inc()
-				if err != p2ptypes.ErrWrongForkDigestVersion {
-					log.Debug("Could not handle p2p RPC", "err", err)
-				}
-				//tracing.AnnotateError(span, err)
-			}
-		} else {
-			nTyp := reflect.New(t)
-			msg, ok := nTyp.Interface().(ssz.Unmarshaler)
-			if !ok {
-				log.Errorf("message of %T does not support marshaller interface", msg)
-				return
-			}
-			if err := s.cfg.p2p.Encoding().DecodeWithMaxLength(stream, msg); err != nil {
-				log.Debug("Could not decode stream message", "topic", topic, "err", err)
-				//tracing.AnnotateError(span, err)
-				s.cfg.p2p.Peers().Scorers().BadResponsesScorer().Increment(stream.Conn().RemotePeer())
-				return
-			}
-			if err := handle(ctx, nTyp.Elem().Interface(), stream); err != nil {
-				messageFailedProcessingCounter.WithLabelValues(topic).Inc()
-				if err != p2ptypes.ErrWrongForkDigestVersion {
-					log.Debug("Could not handle p2p RPC", "topic", topic, "err", err)
-				}
-				//tracing.AnnotateError(span, err)
+		if err := handle(ctx, handlerArg, stream); err != nil {
+			messageFailedProcessingCounter.WithLabelValues(topic).Inc()
+			if err != p2ptypes.ErrWrongForkDigestVersion {
+				log.Debug("Could not handle p2p RPC", "topic", topic, "err", err)
 			}
 		}
 	})
+}
+
+// decodeRPCMessage decodes the stream into an SSZ message. It returns the decoded message
+// (as ssz.Unmarshaler) and the value to pass to the handler. Returns (nil, nil) on failure.
+func (s *Service) decodeRPCMessage(t reflect.Type, stream network.Stream, topic string) (ssz.Unmarshaler, interface{}) {
+	isPtr := t.Kind() == reflect.Ptr
+
+	var elemType reflect.Type
+	if isPtr {
+		elemType = t.Elem()
+	} else {
+		elemType = t
+	}
+
+	msg, ok := reflect.New(elemType).Interface().(ssz.Unmarshaler)
+	if !ok {
+		log.Errorf("message of %T does not support marshaller interface", msg)
+		return nil, nil
+	}
+
+	if err := s.cfg.p2p.Encoding().DecodeWithMaxLength(stream, msg); err != nil {
+		log.Debug("Could not decode stream message", "topic", topic, "err", err)
+		s.cfg.p2p.Peers().Scorers().BadResponsesScorer().Increment(stream.Conn().RemotePeer())
+		return nil, nil
+	}
+
+	// For pointer types, the handler receives the pointer directly.
+	// For value types, the handler receives the dereferenced value.
+	if isPtr {
+		return msg, msg
+	}
+	return msg, reflect.ValueOf(msg).Elem().Interface()
 }

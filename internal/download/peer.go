@@ -32,7 +32,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// peerInfo
 type peerInfo struct {
 	ID         peer.ID
 	Number     *uint256.Int
@@ -51,22 +50,21 @@ type peersInfo struct {
 func (p *peersInfo) findPeers(number *uint256.Int, count int) common.PeerSet {
 	p.lock.RLock()
 	defer p.lock.RUnlock()
-	set := common.PeerSet{}
+	var set common.PeerSet
 	ids := make(map[peer.ID]struct{}, count)
 	for i := 0; i < len(p.peers) && i < count; i++ {
-		for id, _ := range p.peers {
+		for id := range p.peers {
 			if _, ok := ids[id]; ok {
 				continue
 			}
-			//p.log.Infof("Compare downloader number : %v, peer id : %v, remote peer number: %v", number.Uint64(), id.String(), p.info[id].Number.Uint64())
-			//  Add 2 number as network delay
-			if peerInfo, ok := p.info[id]; ok && new(uint256.Int).AddUint64(peerInfo.Number, 2).Cmp(number) >= 0 {
+			// Allow 2 blocks tolerance for network delay
+			if info, ok := p.info[id]; ok && new(uint256.Int).AddUint64(info.Number, 2).Cmp(number) >= 0 {
 				ids[id] = struct{}{}
 				set = append(set, p.peers[id])
 			}
 		}
 	}
-	log.Tracef("finded great than number %v peers count: %v, limit: %v", number.Uint64(), len(set), count)
+	log.Tracef("found peers with number >= %v: count=%v, limit=%v", number.Uint64(), len(set), count)
 	return set
 }
 
@@ -94,9 +92,9 @@ func (p *peersInfo) drop(id peer.ID) {
 	delete(p.info, id)
 }
 
-// peerInfoBroadcastLoop
+// peerInfoBroadcast sends current block height to all connected peers.
 func (p *peersInfo) peerInfoBroadcast(Number *uint256.Int) {
-	log.Debugf("start to broadcast peer info , number is :%v , peer count is %v", Number.Uint64(), len(p.peers))
+	log.Debugf("start to broadcast peer info, number is: %v, peer count is %v", Number.Uint64(), len(p.peers))
 	for _, peer := range p.peers {
 		msg := &sync_proto.SyncTask{
 			Id:       misc.SecureUint64(),
@@ -108,15 +106,12 @@ func (p *peersInfo) peerInfoBroadcast(Number *uint256.Int) {
 				},
 			},
 		}
-
 		payload, err := proto.Marshal(msg)
 		if err != nil {
 			log.Error("failed to marshal peer info broadcast", zap.String("peer id", peer.ID().String()), zap.Error(err))
 			continue
 		}
-		err = peer.WriteMsg(message.MsgDownloader, payload)
-
-		if err != nil {
+		if err = peer.WriteMsg(message.MsgDownloader, payload); err != nil {
 			log.Error("failed to sync peer info", zap.String("peer id", peer.ID().String()), zap.Error(err))
 		}
 	}

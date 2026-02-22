@@ -26,10 +26,10 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-// Local big.Int constants to avoid import cycle with common package
+// bigZero and bigOne are reusable big.Int constants for base fee calculation.
 var (
-	big0 = big.NewInt(0)
-	big1 = big.NewInt(1)
+	bigZero = big.NewInt(0)
+	bigOne  = big.NewInt(1)
 )
 
 // VerifyEip1559Header verifies some header attributes which were changed in EIP-1559,
@@ -80,20 +80,20 @@ func CalcBaseFee(config *params.ChainConfig, parent *block.Header) *big.Int {
 		y := x.Div(x, parentGasTargetBig)
 		baseFeeDelta := math.BigMax(
 			x.Div(y, baseFeeChangeDenominator),
-			big1,
+			bigOne,
 		)
 
 		return x.Add(parent.BaseFee.ToBig(), baseFeeDelta)
-	} else {
-		// Otherwise if the parent block used less gas than its target, the baseFee should decrease.
-		gasUsedDelta := new(big.Int).SetUint64(parentGasTarget - parent.GasUsed)
-		x := new(big.Int).Mul(parent.BaseFee.ToBig(), gasUsedDelta)
-		y := x.Div(x, parentGasTargetBig)
-		baseFeeDelta := x.Div(y, baseFeeChangeDenominator)
-
-		return math.BigMax(
-			x.Sub(parent.BaseFee.ToBig(), baseFeeDelta),
-			big0,
-		)
 	}
+
+	// The parent block used less gas than its target, the baseFee should decrease.
+	gasUsedDelta := new(big.Int).SetUint64(parentGasTarget - parent.GasUsed)
+	x := new(big.Int).Mul(parent.BaseFee.ToBig(), gasUsedDelta)
+	y := x.Div(x, parentGasTargetBig)
+	baseFeeDelta := x.Div(y, baseFeeChangeDenominator)
+
+	return math.BigMax(
+		x.Sub(parent.BaseFee.ToBig(), baseFeeDelta),
+		bigZero,
+	)
 }

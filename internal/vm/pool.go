@@ -24,7 +24,7 @@ import (
 
 // Uint256Pool is a pool of *uint256.Int to reduce allocations in hot paths.
 var Uint256Pool = &sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new(uint256.Int)
 	},
 }
@@ -48,7 +48,7 @@ func PutUint256(v *uint256.Int) {
 
 // ByteSlicePool is a pool for byte slices used in memory operations.
 var ByteSlicePool = &sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		// Default to 32 bytes (common size for words)
 		b := make([]byte, 32)
 		return &b
@@ -78,7 +78,7 @@ func PutByteSlice(b []byte) {
 
 // HashPool is a pool for hash results (32 bytes).
 var HashPool = &sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		b := make([]byte, 32)
 		return &b
 	},
@@ -116,7 +116,7 @@ func init() {
 	for i := range memPool.pools {
 		size := 1 << uint(i)
 		memPool.pools[i] = &sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				b := make([]byte, size)
 				return &b
 			},

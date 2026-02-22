@@ -1,16 +1,16 @@
 package p2p
 
 import (
-	"fmt"
-	"github.com/multiformats/go-multiaddr"
-	"github.com/n42blockchain/N42/conf"
 	"net"
 	"runtime"
 
 	"github.com/libp2p/go-libp2p/core/control"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
+
+	"github.com/n42blockchain/N42/conf"
 )
 
 const (
@@ -26,9 +26,7 @@ const (
 )
 
 // InterceptPeerDial tests whether we're permitted to Dial the specified peer.
-// S3 fix: Check if the peer is on the bad peer list before allowing dial.
 func (s *Service) InterceptPeerDial(pid peer.ID) (allow bool) {
-	// Reject dialing to peers marked as bad
 	if s.peers.IsBad(pid) {
 		log.Debug("Rejecting dial to bad peer", "peer", pid)
 		return false
@@ -39,7 +37,6 @@ func (s *Service) InterceptPeerDial(pid peer.ID) (allow bool) {
 // InterceptAddrDial tests whether we're permitted to dial the specified
 // multiaddr for the given peer.
 func (s *Service) InterceptAddrDial(pid peer.ID, m multiaddr.Multiaddr) (allow bool) {
-	// Disallow bad peers from dialing in.
 	if s.peers.IsBad(pid) {
 		return false
 	}
@@ -67,22 +64,16 @@ func (s *Service) InterceptAccept(n network.ConnMultiaddrs) (allow bool) {
 }
 
 // InterceptSecured tests whether a given connection, now authenticated,
-// is allowed.
-// S3 fix: Check if the authenticated peer is on the bad peer list and
-// validate connection limits.
+// is allowed. Rejects bad peers and inbound connections at peer limit.
 func (s *Service) InterceptSecured(dir network.Direction, pid peer.ID, _ network.ConnMultiaddrs) (allow bool) {
-	// Reject connections from/to bad peers
 	if s.peers.IsBad(pid) {
 		log.Debug("Rejecting secured connection from bad peer", "peer", pid, "direction", dir)
 		return false
 	}
-
-	// For inbound connections, check if we're at peer limit
 	if dir == network.DirInbound && s.isPeerAtLimit(true /* inbound */) {
 		log.Debug("Rejecting secured inbound connection", "peer", pid, "reason", "at peer limit")
 		return false
 	}
-
 	return true
 }
 
@@ -96,10 +87,7 @@ func (s *Service) validateDial(addr multiaddr.Multiaddr) bool {
 	if err != nil {
 		return false
 	}
-	// Add returns the amount actually added (0 if capacity reached)
-	// This is atomic because Add() uses internal locking
-	added := s.ipLimiter.Add(ip.String(), 1)
-	return added > 0
+	return s.ipLimiter.Add(ip.String(), 1) > 0
 }
 
 var privateCIDRList = []string{
@@ -120,16 +108,18 @@ var privateCIDRList = []string{
 // deny lists to appropriately create a filter.
 func configureFilter(cfg *conf.P2PConfig) (*multiaddr.Filters, error) {
 	addrFilter := multiaddr.NewFilters()
-	var privErr error
-	switch {
-	case cfg.AllowListCIDR == "public":
+
+	switch cfg.AllowListCIDR {
+	case "public":
 		cfg.DenyListCIDR = append(cfg.DenyListCIDR, privateCIDRList...)
-	case cfg.AllowListCIDR == "private":
-		addrFilter, privErr = privateCIDRFilter(addrFilter, multiaddr.ActionAccept)
-		if privErr != nil {
-			return nil, privErr
+	case "private":
+		var err error
+		if addrFilter, err = privateCIDRFilter(addrFilter, multiaddr.ActionAccept); err != nil {
+			return nil, err
 		}
-	case cfg.AllowListCIDR != "":
+	case "":
+		// No allow list configured.
+	default:
 		_, ipnet, err := net.ParseCIDR(cfg.AllowListCIDR)
 		if err != nil {
 			return nil, err
@@ -137,36 +127,25 @@ func configureFilter(cfg *conf.P2PConfig) (*multiaddr.Filters, error) {
 		addrFilter.AddFilter(*ipnet, multiaddr.ActionAccept)
 	}
 
-	// Configure from provided deny list in the config.
-	if len(cfg.DenyListCIDR) > 0 {
-		for _, cidr := range cfg.DenyListCIDR {
-			// If an entry in the deny list is "private", we iterate through the
-			// private addresses and add them to the filter. Likewise, if the deny
-			// list is "public", then we add all private address to the accept filter,
-			switch {
-			case cidr == "private":
-				addrFilter, privErr = privateCIDRFilter(addrFilter, multiaddr.ActionDeny)
-				if privErr != nil {
-					return nil, privErr
-				}
-				continue
-			case cidr == "public":
-				addrFilter, privErr = privateCIDRFilter(addrFilter, multiaddr.ActionAccept)
-				if privErr != nil {
-					return nil, privErr
-				}
-				continue
+	for _, cidr := range cfg.DenyListCIDR {
+		switch cidr {
+		case "private":
+			var err error
+			if addrFilter, err = privateCIDRFilter(addrFilter, multiaddr.ActionDeny); err != nil {
+				return nil, err
 			}
+		case "public":
+			var err error
+			if addrFilter, err = privateCIDRFilter(addrFilter, multiaddr.ActionAccept); err != nil {
+				return nil, err
+			}
+		default:
 			_, ipnet, err := net.ParseCIDR(cidr)
 			if err != nil {
 				return nil, err
 			}
-			// Check if the address already has an action associated with it
-			// If this address was previously accepted, log a warning before placing
-			// it in the deny filter
-			action, _ := addrFilter.ActionForFilter(*ipnet)
-			if action == multiaddr.ActionAccept {
-				log.Warn(fmt.Sprintf("Address %s is in conflict with previous rule.", ipnet.String()))
+			if action, _ := addrFilter.ActionForFilter(*ipnet); action == multiaddr.ActionAccept {
+				log.Warn("Address is in conflict with previous rule", "address", ipnet.String())
 			}
 			addrFilter.AddFilter(*ipnet, multiaddr.ActionDeny)
 		}
@@ -174,59 +153,40 @@ func configureFilter(cfg *conf.P2PConfig) (*multiaddr.Filters, error) {
 	return addrFilter, nil
 }
 
-// helper function to either accept or deny all private addresses
-// if a new rule for a private address is in conflict with a previous one, log a warning
+// privateCIDRFilter applies the given action to all private CIDR ranges.
+// It logs a warning if a new rule conflicts with a previously applied rule.
 func privateCIDRFilter(addrFilter *multiaddr.Filters, action multiaddr.Action) (*multiaddr.Filters, error) {
 	for _, privCidr := range privateCIDRList {
 		_, ipnet, err := net.ParseCIDR(privCidr)
 		if err != nil {
 			return nil, err
 		}
-		// Get the current filter action for the address
-		// If it conflicts with the action given by the function call,
-		// log a warning
-		curAction, _ := addrFilter.ActionForFilter(*ipnet)
-		switch {
-		case action == multiaddr.ActionAccept:
-			if curAction == multiaddr.ActionDeny {
-				log.Warn(fmt.Sprintf("Address %s is in conflict with previous rule.", ipnet.String()))
-			}
-		case action == multiaddr.ActionDeny:
-			if curAction == multiaddr.ActionAccept {
-				log.Warn(fmt.Sprintf("Address %s is in conflict with previous rule.", ipnet.String()))
-			}
+		if curAction, found := addrFilter.ActionForFilter(*ipnet); found && curAction != action {
+			log.Warn("Address is in conflict with previous rule", "address", ipnet.String())
 		}
 		addrFilter.AddFilter(*ipnet, action)
 	}
 	return addrFilter, nil
 }
 
-// filterConnections checks the appropriate ip subnets from our
-// filter and decides what to do with them. By default libp2p
-// accepts all incoming dials, so if we have an allow list
-// we will reject all inbound dials except for those in the
-// appropriate ip subnets.
+// filterConnections checks IP subnets against the filter. When an allow list
+// is configured, only connections from those subnets are permitted. Otherwise,
+// connections are allowed unless explicitly blocked.
 func filterConnections(f *multiaddr.Filters, a multiaddr.Multiaddr) bool {
 	acceptedNets := f.FiltersForAction(multiaddr.ActionAccept)
-	restrictConns := len(acceptedNets) != 0
-
-	// If we have an allow list added in, we by default reject all
-	// connection attempts except for those coming in from the
-	// appropriate ip subnets.
-	if restrictConns {
-		ip, err := manet.ToIP(a)
-		if err != nil {
-			log.Trace(fmt.Sprintf("Multiaddress has invalid ip: %v", err))
-			return false
-		}
-		found := false
-		for _, ipnet := range acceptedNets {
-			if ipnet.Contains(ip) {
-				found = true
-				break
-			}
-		}
-		return found
+	if len(acceptedNets) == 0 {
+		return !f.AddrBlocked(a)
 	}
-	return !f.AddrBlocked(a)
+
+	ip, err := manet.ToIP(a)
+	if err != nil {
+		log.Trace("Multiaddress has invalid ip", "err", err)
+		return false
+	}
+	for _, ipnet := range acceptedNets {
+		if ipnet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

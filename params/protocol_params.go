@@ -17,14 +17,14 @@
 package params
 
 import (
-	"github.com/holiman/uint256"
 	"math/big"
+
+	"github.com/holiman/uint256"
 )
 
-// GasLimitBoundDivisor it can be changed by BSC
-var (
-	GasLimitBoundDivisor uint64 = 1024 // The bound divisor of the gas limit, used in update calculations.
-)
+// GasLimitBoundDivisor is the bound divisor of the gas limit, used in update calculations.
+// Declared as var because it can be overridden (e.g., by BSC-compatible chains).
+var GasLimitBoundDivisor uint64 = 1024
 
 const (
 	MinGasLimit     uint64 = 5000               // Minimum the gas limit may ever be.

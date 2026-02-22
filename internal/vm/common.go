@@ -17,9 +17,9 @@ package vm
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/types"
 
 	"github.com/n42blockchain/N42/common/math"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // calcMemSize64 calculates the required memory size, and returns
@@ -45,7 +45,7 @@ func calcMemSize64WithUint(off *uint256.Int, length64 uint64) (uint64, bool) {
 		return 0, true
 	}
 	val := offset64 + length64
-	// if value < either of it's parts, then it overflowed
+	// if value < either of its parts, then it overflowed
 	return val, val < offset64
 }
 
@@ -83,8 +83,8 @@ func ToWordSize(size uint64) uint64 {
 }
 
 func allZero(b []byte) bool {
-	for _, byte := range b {
-		if byte != 0 {
+	for _, v := range b {
+		if v != 0 {
 			return false
 		}
 	}

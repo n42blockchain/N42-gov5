@@ -48,7 +48,7 @@ func NewID() ID {
 	return globalGen()
 }
 
-// randomIDGenerator returns a function generates a random IDs.
+// randomIDGenerator returns a function that generates random IDs.
 func randomIDGenerator() func() ID {
 	var buf = make([]byte, 8)
 	var seed int64
@@ -117,7 +117,8 @@ func (n *Notifier) CreateSubscription() (*Subscription, error) {
 
 	if n.sub != nil {
 		return nil, ErrMultipleSubscriptions
-	} else if n.callReturned {
+	}
+	if n.callReturned {
 		return nil, ErrSubscriptionAfterReturn
 	}
 	n.sub = &Subscription{ID: n.h.idgen(), namespace: n.namespace, err: make(chan error, 1)}
@@ -143,7 +144,8 @@ func (n *Notifier) Notify(id ID, data interface{}) error {
 
 	if n.sub == nil {
 		return ErrNotifyBeforeSubscription
-	} else if n.sub.ID != id {
+	}
+	if n.sub.ID != id {
 		return ErrNotifyWrongID
 	}
 	if n.activated {

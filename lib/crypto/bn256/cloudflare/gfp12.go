@@ -4,9 +4,7 @@ package bn256
 // Pairing-Friendly Fields, Devegili et al.
 // http://eprint.iacr.org/2006/471.pdf.
 
-import (
-	"math/big"
-)
+import "math/big"
 
 // gfP12 implements the field of size p¹² as a quadratic extension of gfP6
 // where ω²=τ.

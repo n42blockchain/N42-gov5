@@ -6,13 +6,14 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/pkg/errors"
+
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
-	"github.com/pkg/errors"
 )
 
 // ErrInvalidFetchedData is thrown if stream fails to provide requested blocks.
@@ -24,7 +25,6 @@ type BlockProcessor func(block *types_pb.Block) error
 
 // SendBodiesByRangeRequest sends BeaconBlocksByRange and returns fetched blocks, if any.
 func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2pProvider p2p.SenderEncoder, pid peer.ID, req *sync_pb.BodiesByRangeRequest, blockProcessor BlockProcessor) ([]*types_pb.Block, error) {
-	// Fix: Validate request parameters to prevent division by zero
 	if req.Step == 0 {
 		return nil, errors.New("request step cannot be zero")
 	}
@@ -41,13 +41,11 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 		Count:            req.Count,
 		Step:             req.Step,
 	}, topic, pid)
-
 	if err != nil {
 		return nil, err
 	}
 	defer closeStream(stream)
 
-	// Augment block processing function, if non-nil block processor is provided.
 	blocks := make([]*types_pb.Block, 0, req.Count)
 	process := func(blk *types_pb.Block) error {
 		blocks = append(blocks, blk)
@@ -56,8 +54,11 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 		}
 		return nil
 	}
+
 	var prevBlockNr *uint256.Int
 	blockStart := utils.ConvertH256ToUint256Int(req.StartBlockNumber)
+	blockEnd := new(uint256.Int).AddUint64(blockStart, req.Count*req.Step)
+
 	for i := uint64(0); ; i++ {
 		isFirstChunk := i == 0
 		blk, err := ReadChunkedBlock(stream, p2pProvider, isFirstChunk)
@@ -68,30 +69,31 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 		if err != nil {
 			return nil, err
 		}
+
 		// The response MUST contain no more than `count` blocks, and no more than
 		// MAX_REQUEST_BLOCKS blocks.
 		if i >= req.Count || i >= maxRequestBlocks {
 			return nil, ErrInvalidFetchedData
 		}
+
 		blockNr := utils.ConvertH256ToUint256Int(blk.Header.Number)
+
 		// Returned blocks MUST be in the slot range [start_slot, start_slot + count * step).
-		if blockNr.Cmp(blockStart) == -1 || blockNr.Cmp(new(uint256.Int).AddUint64(blockStart, req.Count*req.Step)) >= 0 {
+		if blockNr.Cmp(blockStart) < 0 || blockNr.Cmp(blockEnd) >= 0 {
 			return nil, ErrInvalidFetchedData
 		}
-		// Returned blocks, where they exist, MUST be sent in a consecutive order.
-		// Consecutive blocks MUST have values in `step` increments (slots may be skipped in between).
-		isSlotOutOfOrder := false
-		if prevBlockNr != nil && prevBlockNr.Cmp(blockNr) >= 0 {
-			isSlotOutOfOrder = true
-		} else if prevBlockNr != nil {
-			// req.Step is guaranteed to be > 0 (validated at function entry)
-			if new(uint256.Int).Mod(new(uint256.Int).Sub(blockNr, prevBlockNr), uint256.NewInt(req.Step)).Uint64() != 0 {
-				isSlotOutOfOrder = true
+
+		// Returned blocks must be in consecutive order with values in `step` increments.
+		if !isFirstChunk && prevBlockNr != nil {
+			if prevBlockNr.Cmp(blockNr) >= 0 {
+				return nil, ErrInvalidFetchedData
+			}
+			offset := new(uint256.Int).Sub(blockNr, prevBlockNr)
+			if new(uint256.Int).Mod(offset, uint256.NewInt(req.Step)).Sign() != 0 {
+				return nil, ErrInvalidFetchedData
 			}
 		}
-		if !isFirstChunk && isSlotOutOfOrder {
-			return nil, ErrInvalidFetchedData
-		}
+
 		prevBlockNr = blockNr.Clone()
 		if err := process(blk); err != nil {
 			return nil, err

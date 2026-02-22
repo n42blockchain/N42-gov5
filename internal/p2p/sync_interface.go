@@ -201,6 +201,9 @@ func (m *P2PMetrics) AverageRequestLatency() time.Duration {
 
 // LogStats logs the current P2P metrics.
 func (m *P2PMetrics) LogStats() {
+	failureRate := m.RequestFailureRate()
+	avgLatency := m.AverageRequestLatency()
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -210,8 +213,8 @@ func (m *P2PMetrics) LogStats() {
 		"peers_banned", atomic.LoadInt64(&m.peersBanned),
 		"requests_total", m.requestsTotal,
 		"requests_failed", m.requestsFailed,
-		"failure_rate", fmt.Sprintf("%.2f%%", m.RequestFailureRate()*100),
-		"avg_latency", m.AverageRequestLatency(),
+		"failure_rate", fmt.Sprintf("%.2f%%", failureRate*100),
+		"avg_latency", avgLatency,
 		"blocks_received", atomic.LoadUint64(&m.blocksReceived),
 		"bytes_received", atomic.LoadUint64(&m.bytesReceived),
 	)

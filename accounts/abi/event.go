@@ -18,9 +18,10 @@ package abi
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
-	"strings"
 )
 
 // Event is an event potentially triggered by the EVM's LOG mechanism. The Event
@@ -59,31 +60,10 @@ type Event struct {
 // It also precomputes the id, signature and string representation
 // of the event.
 func NewEvent(name, rawName string, anonymous bool, inputs Arguments) Event {
-	// sanitize inputs to remove inputs without names
-	// and precompute string and sig representation.
-	names := make([]string, len(inputs))
-	typess := make([]string, len(inputs))
-	for i, input := range inputs {
-		if input.Name == "" {
-			inputs[i] = Argument{
-				Name:    fmt.Sprintf("arg%d", i),
-				Indexed: input.Indexed,
-				Type:    input.Type,
-			}
-		} else {
-			inputs[i] = input
-		}
-		// string representation
-		names[i] = fmt.Sprintf("%v %v", input.Type, inputs[i].Name)
-		if input.Indexed {
-			names[i] = fmt.Sprintf("%v indexed %v", input.Type, inputs[i].Name)
-		}
-		// sig representation
-		typess[i] = input.Type.String()
-	}
+	names, typess := sanitizeInputs(inputs)
 
 	str := fmt.Sprintf("event %v(%v)", rawName, strings.Join(names, ", "))
-	sig := fmt.Sprintf("%v(%v)", rawName, strings.Join(typess, ","))
+	sig := buildSignature(rawName, typess)
 	id := types.BytesToHash(crypto.Keccak256([]byte(sig)))
 
 	return Event{

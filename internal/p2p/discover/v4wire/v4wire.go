@@ -23,14 +23,15 @@ import (
 	"crypto/elliptic"
 	"errors"
 	"fmt"
+	"math/big"
+	"net"
+	"time"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"math/big"
-	"net"
-	"time"
 )
 
 // RPC packet types
@@ -104,27 +105,6 @@ type (
 // MaxNeighbors is the maximum number of neighbor nodes in a Neighbors packet.
 const MaxNeighbors = 12
 
-// This code computes the MaxNeighbors constant value.
-
-// func init() {
-// 	var maxNeighbors int
-// 	p := Neighbors{Expiration: ^uint64(0)}
-// 	maxSizeNode := Node{IP: make(net.IP, 16), UDP: ^uint16(0), TCP: ^uint16(0)}
-// 	for n := 0; ; n++ {
-// 		p.Nodes = append(p.Nodes, maxSizeNode)
-// 		size, _, err := rlp.EncodeToReader(p)
-// 		if err != nil {
-// 			// If this ever happens, it will be caught by the unit tests.
-// 			panic("cannot encode: " + err.Error())
-// 		}
-// 		if headSize+size+1 >= 1280 {
-// 			maxNeighbors = n
-// 			break
-// 		}
-// 	}
-// 	fmt.Println("maxNeighbors", maxNeighbors)
-// }
-
 // Pubkey represents an encoded 64-byte secp256k1 public key.
 type Pubkey [64]byte
 
@@ -160,9 +140,9 @@ func NewEndpoint(addr *net.UDPAddr, tcpPort uint16) Endpoint {
 }
 
 type Packet interface {
-	// Name is the name of the package, for logging purposes.
+	// Name is the name of the packet, for logging purposes.
 	Name() string
-	// Kind is the packet type, for logging purposes.
+	// Kind is the packet type identifier.
 	Kind() byte
 }
 

@@ -26,11 +26,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
+
 	"github.com/n42blockchain/N42/common/mclock"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"hash"
 )
 
 // TODO concurrent WHOAREYOU tie-breaker
@@ -306,7 +307,6 @@ func (c *Codec) encodeWhoareyou(toID enode.ID, packet *Whoareyou) (Header, error
 
 	// Create header.
 	head := c.makeHeader(toID, flagWhoareyou, 0)
-	head.AuthData = bytesCopy(&c.buf)
 	head.Nonce = packet.Nonce
 
 	// Encode auth data.
@@ -354,7 +354,7 @@ func (c *Codec) encodeHandshakeHeader(toID enode.ID, addr string, challenge *Who
 	c.headbuf.Write(auth.record)
 	head.AuthData = c.headbuf.Bytes()
 	head.Nonce = nonce
-	return head, session, err
+	return head, session, nil
 }
 
 // makeHandshakeAuth creates the auth header on a request packet following WHOAREYOU.
@@ -364,7 +364,7 @@ func (c *Codec) makeHandshakeAuth(toID enode.ID, addr string, challenge *Whoarey
 
 	// Create the ephemeral key. This needs to be first because the
 	// key is part of the ID nonce signature.
-	var remotePubkey = new(ecdsa.PublicKey)
+	remotePubkey := new(ecdsa.PublicKey)
 	if err := challenge.Node.Load((*enode.Secp256k1)(remotePubkey)); err != nil {
 		return nil, nil, fmt.Errorf("can't find secp256k1 key for recipient")
 	}
@@ -373,12 +373,12 @@ func (c *Codec) makeHandshakeAuth(toID enode.ID, addr string, challenge *Whoarey
 		return nil, nil, fmt.Errorf("can't generate ephemeral key")
 	}
 	ephpubkey := EncodePubkey(&ephkey.PublicKey)
-	auth.pubkey = ephpubkey[:]
+	auth.pubkey = ephpubkey
 	auth.h.PubkeySize = byte(len(auth.pubkey))
 
 	// Add ID nonce signature to response.
 	cdata := challenge.ChallengeData
-	idsig, err := makeIDSignature(c.sha256, c.privkey, cdata, ephpubkey[:], toID)
+	idsig, err := makeIDSignature(c.sha256, c.privkey, cdata, ephpubkey, toID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("can't sign: %v", err)
 	}
@@ -396,24 +396,23 @@ func (c *Codec) makeHandshakeAuth(toID enode.ID, addr string, challenge *Whoarey
 	if sec == nil {
 		return nil, nil, fmt.Errorf("key derivation failed")
 	}
-	return auth, sec, err
+	return auth, sec, nil
 }
 
 // encodeMessageHeader encodes an encrypted message packet.
 func (c *Codec) encodeMessageHeader(toID enode.ID, s *session) (Header, error) {
 	head := c.makeHeader(toID, flagMessage, 0)
 
-	// Create the header.
 	nonce, err := c.sc.nextNonce(s)
 	if err != nil {
 		return Header{}, fmt.Errorf("can't generate nonce: %v", err)
 	}
 	auth := messageAuthData{SrcID: c.localnode.ID()}
-	c.buf.Reset()
-	binary.Write(&c.buf, binary.BigEndian, &auth)
-	head.AuthData = bytesCopy(&c.buf)
+	c.headbuf.Reset()
+	binary.Write(&c.headbuf, binary.BigEndian, &auth)
+	head.AuthData = bytesCopy(&c.headbuf)
 	head.Nonce = nonce
-	return head, err
+	return head, nil
 }
 
 func (c *Codec) encryptMessage(s *session, p Packet, head *Header, headerData []byte) ([]byte, error) {

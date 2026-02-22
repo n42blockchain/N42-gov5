@@ -15,9 +15,7 @@ limitations under the License.
 */
 package bitutil
 
-import (
-	"math/bits"
-)
+import "math/bits"
 
 // Required by select64
 var kSelectInByte = [2048]byte{
@@ -64,42 +62,20 @@ const (
 	kOnesStep8xF = 0xF * kOnesStep8
 )
 
-/** Returns the index of the k-th 1-bit in the 64-bit word x.
- * @param x 64-bit word.
- * @param k 0-based rank (`k = 0` returns the position of the first 1-bit).
- *
- * Uses the broadword selection algorithm by Vigna [1], improved by Gog and Petri [2] and Vigna [3].
- * Facebook's Folly implementation [4].
- *
- * [1] Sebastiano Vigna. Broadword Implementation of Rank/Select Queries. WEA, 2008
- *
- * [2] Simon Gog, Matthias Petri. Optimized succinct data structures for massive data. Softw. Pract.
- * Exper., 2014
- *
- * [3] Sebastiano Vigna. MG4J 5.2.1. http://mg4j.di.unimi.it/
- *
- * [4] Facebook Folly library: https://github.com/facebook/folly
- *
- */
-
-func Select64(x uint64, k int) (place int) {
-	/* Original implementation - a bit obfuscated to satisfy Golang's inlining costs
-	s := x
-	s = s - ((s & (0xA * kOnesStep4)) >> 1)
-	s = (s & (0x3 * kOnesStep4)) + ((s >> 2) & (0x3 * kOnesStep4))
-	s = (s + (s >> 4)) & (0xF * kOnesStep8)
-	byteSums := s * kOnesStep8
-	*/
+// Select64 returns the index of the k-th 1-bit in the 64-bit word x.
+// k is 0-based: k=0 returns the position of the first 1-bit.
+//
+// Uses the broadword selection algorithm by Vigna, improved by Gog/Petri.
+// References:
+//   - Vigna. Broadword Implementation of Rank/Select Queries. WEA, 2008
+//   - Gog, Petri. Optimized succinct data structures for massive data. Softw. Pract. Exper., 2014
+//   - Facebook Folly: https://github.com/facebook/folly
+func Select64(x uint64, k int) int {
 	s := x - ((x & kOnesStep4xA) >> 1)
 	s = (s & kOnesStep4x3) + ((s >> 2) & kOnesStep4x3)
 	byteSums := ((s + (s >> 4)) & kOnesStep8xF) * kOnesStep8
-	/* Original implementaiton:
-	kStep8 := uint64(k) * kOnesStep8
-	geqKStep8 := ((kStep8 | kLAMBDAsStep8) - byteSums) & kLAMBDAsStep8
-	place = bits.OnesCount64(geqKStep8) * 8
-	byteRank := uint64(k) - (((byteSums << 8) >> place) & uint64(0xFF))
-	*/
-	place = bits.OnesCount64((((uint64(k)*kOnesStep8)|kLAMBDAsStep8)-byteSums)&kLAMBDAsStep8) * 8
+
+	place := bits.OnesCount64((((uint64(k)*kOnesStep8)|kLAMBDAsStep8)-byteSums)&kLAMBDAsStep8) * 8
 	byteRank := uint64(k) - (((byteSums << 8) >> place) & uint64(0xFF))
 	return place + int(kSelectInByte[((x>>place)&0xFF)|(byteRank<<8)])
 }

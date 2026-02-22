@@ -3,16 +3,16 @@ package mem
 import (
 	"context"
 	"errors"
-
 	"reflect"
 	"runtime"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/process"
 
 	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/dbg"
 	"github.com/n42blockchain/N42/lib/diagnostics"
 	"github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/shirou/gopsutil/v4/process"
 )
 
 var ErrorUnsupportedPlatform = errors.New("unsupported platform")

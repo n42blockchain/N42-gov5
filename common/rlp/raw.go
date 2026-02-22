@@ -28,36 +28,38 @@ type RawValue []byte
 
 var rawValueType = reflect.TypeOf(RawValue{})
 
+// stringEncodedSize computes the RLP-encoded size of a string/byte value
+// given its length and the value of the first byte (only meaningful when length == 1).
+func stringEncodedSize(length int, firstByte byte) uint64 {
+	switch {
+	case length == 0:
+		return 1
+	case length == 1:
+		if firstByte <= 0x7f {
+			return 1
+		}
+		return 2
+	default:
+		return uint64(headsize(uint64(length)) + length)
+	}
+}
+
 // StringSize returns the encoded size of a string.
 func StringSize(s string) uint64 {
-	switch {
-	case len(s) == 0:
-		return 1
-	case len(s) == 1:
-		if s[0] <= 0x7f {
-			return 1
-		} else {
-			return 2
-		}
-	default:
-		return uint64(headsize(uint64(len(s))) + len(s))
+	var first byte
+	if len(s) > 0 {
+		first = s[0]
 	}
+	return stringEncodedSize(len(s), first)
 }
 
 // BytesSize returns the encoded size of a byte slice.
 func BytesSize(b []byte) uint64 {
-	switch {
-	case len(b) == 0:
-		return 1
-	case len(b) == 1:
-		if b[0] <= 0x7f {
-			return 1
-		} else {
-			return 2
-		}
-	default:
-		return uint64(headsize(uint64(len(b))) + len(b))
+	var first byte
+	if len(b) > 0 {
+		first = b[0]
 	}
+	return stringEncodedSize(len(b), first)
 }
 
 // ListSize returns the encoded size of an RLP list with the given
@@ -195,23 +197,8 @@ func readSize(b []byte, slen byte) (uint64, error) {
 		return 0, io.ErrUnexpectedEOF
 	}
 	var s uint64
-	switch slen {
-	case 1:
-		s = uint64(b[0])
-	case 2:
-		s = uint64(b[0])<<8 | uint64(b[1])
-	case 3:
-		s = uint64(b[0])<<16 | uint64(b[1])<<8 | uint64(b[2])
-	case 4:
-		s = uint64(b[0])<<24 | uint64(b[1])<<16 | uint64(b[2])<<8 | uint64(b[3])
-	case 5:
-		s = uint64(b[0])<<32 | uint64(b[1])<<24 | uint64(b[2])<<16 | uint64(b[3])<<8 | uint64(b[4])
-	case 6:
-		s = uint64(b[0])<<40 | uint64(b[1])<<32 | uint64(b[2])<<24 | uint64(b[3])<<16 | uint64(b[4])<<8 | uint64(b[5])
-	case 7:
-		s = uint64(b[0])<<48 | uint64(b[1])<<40 | uint64(b[2])<<32 | uint64(b[3])<<24 | uint64(b[4])<<16 | uint64(b[5])<<8 | uint64(b[6])
-	case 8:
-		s = uint64(b[0])<<56 | uint64(b[1])<<48 | uint64(b[2])<<40 | uint64(b[3])<<32 | uint64(b[4])<<24 | uint64(b[5])<<16 | uint64(b[6])<<8 | uint64(b[7])
+	for i := byte(0); i < slen; i++ {
+		s = s<<8 | uint64(b[i])
 	}
 	// Reject sizes < 56 (shouldn't have separate size) and sizes with
 	// leading zero bytes.
@@ -228,66 +215,8 @@ func AppendUint64(b []byte, i uint64) []byte {
 	} else if i < 128 {
 		return append(b, byte(i))
 	}
-	switch {
-	case i < (1 << 8):
-		return append(b, 0x81, byte(i))
-	case i < (1 << 16):
-		return append(b, 0x82,
-			byte(i>>8),
-			byte(i),
-		)
-	case i < (1 << 24):
-		return append(b, 0x83,
-			byte(i>>16),
-			byte(i>>8),
-			byte(i),
-		)
-	case i < (1 << 32):
-		return append(b, 0x84,
-			byte(i>>24),
-			byte(i>>16),
-			byte(i>>8),
-			byte(i),
-		)
-	case i < (1 << 40):
-		return append(b, 0x85,
-			byte(i>>32),
-			byte(i>>24),
-			byte(i>>16),
-			byte(i>>8),
-			byte(i),
-		)
-
-	case i < (1 << 48):
-		return append(b, 0x86,
-			byte(i>>40),
-			byte(i>>32),
-			byte(i>>24),
-			byte(i>>16),
-			byte(i>>8),
-			byte(i),
-		)
-	case i < (1 << 56):
-		return append(b, 0x87,
-			byte(i>>48),
-			byte(i>>40),
-			byte(i>>32),
-			byte(i>>24),
-			byte(i>>16),
-			byte(i>>8),
-			byte(i),
-		)
-
-	default:
-		return append(b, 0x88,
-			byte(i>>56),
-			byte(i>>48),
-			byte(i>>40),
-			byte(i>>32),
-			byte(i>>24),
-			byte(i>>16),
-			byte(i>>8),
-			byte(i),
-		)
-	}
+	var buf [9]byte
+	size := putint(buf[1:], i)
+	buf[0] = 0x80 + byte(size)
+	return append(b, buf[:size+1]...)
 }

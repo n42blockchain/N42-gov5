@@ -653,16 +653,8 @@ func structured(args abi.Arguments) bool {
 // or struct array.
 func hasStruct(t abi.Type) bool {
 	switch t.T {
-	case abi.SliceTy:
-		if t.Elem == nil {
-			return false
-		}
-		return hasStruct(*t.Elem)
-	case abi.ArrayTy:
-		if t.Elem == nil {
-			return false
-		}
-		return hasStruct(*t.Elem)
+	case abi.SliceTy, abi.ArrayTy:
+		return t.Elem != nil && hasStruct(*t.Elem)
 	case abi.TupleTy:
 		return true
 	default:

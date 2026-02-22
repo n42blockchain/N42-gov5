@@ -23,8 +23,9 @@ import (
 	"crypto/elliptic"
 	"fmt"
 
-	"github.com/n42blockchain/N42/lib/common/math"
 	"github.com/erigontech/secp256k1"
+
+	"github.com/n42blockchain/N42/lib/common/math"
 )
 
 // Ecrecover returns the uncompressed public key that created the given signature.
@@ -32,7 +33,8 @@ func Ecrecover(hash, sig []byte) ([]byte, error) {
 	return secp256k1.RecoverPubkey(hash, sig)
 }
 
-// Ecrecover returns the uncompressed public key that created the given signature.
+// EcrecoverWithContext returns the uncompressed public key that created the given signature
+// using a pre-allocated secp256k1 context for better performance in batch operations.
 func EcrecoverWithContext(context *secp256k1.Context, hash, sig []byte) ([]byte, error) {
 	return secp256k1.RecoverPubkeyWithContext(context, hash, sig, nil)
 }

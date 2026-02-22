@@ -3,16 +3,18 @@ package peerdata
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
+
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
+
 	"github.com/n42blockchain/N42/api/protocol/msg_proto"
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/utils"
-	"sync"
-	"time"
 )
 
 var (
@@ -25,6 +27,8 @@ var (
 )
 
 // PeerConnectionState is the state of the connection.
+// Concrete state constants (PeerDisconnected, etc.) are defined in the peers
+// package using iota, starting from 0 in declaration order.
 type PeerConnectionState int
 
 // StoreConfig holds peer store parameters.
@@ -32,19 +36,26 @@ type StoreConfig struct {
 	MaxPeers int
 }
 
-func (c PeerConnectionState) String() string {
-	str := [...]string{"PeerDisconnected", "PeerDisconnecting", "PeerConnected", "PeerConnecting"}
-	if c < 0 || int(c) >= len(str) {
-		return "(unrecognized)"
-	}
-	return str[c]
+// peerConnectionStateNames maps PeerConnectionState values to their string
+// representation. Order must match the iota constants in peers/status.go:
+// PeerDisconnected=0, PeerDisconnecting=1, PeerConnected=2, PeerConnecting=3.
+var peerConnectionStateNames = [...]string{
+	"PeerDisconnected",
+	"PeerDisconnecting",
+	"PeerConnected",
+	"PeerConnecting",
 }
 
-// Store is a container for various peer related data (both protocol and app level).
-// Container implements RWMutex, so data access can be restricted on the container level. This allows
-// different components rely on the very same peer map container.
-// Note: access to data is controlled by clients i.e. client code is responsible for locking/unlocking
-// the mutex when accessing data.
+func (c PeerConnectionState) String() string {
+	if c < 0 || int(c) >= len(peerConnectionStateNames) {
+		return "(unrecognized)"
+	}
+	return peerConnectionStateNames[c]
+}
+
+// Store is a container for peer-related data at both the protocol and
+// application level. It embeds sync.RWMutex; callers are responsible for
+// acquiring the appropriate lock before accessing data.
 type Store struct {
 	sync.RWMutex
 	ctx    context.Context
@@ -83,7 +94,7 @@ func (s *PeerData) CurrentHeight() *uint256.Int {
 	return utils.ConvertH256ToUint256Int(s.ChainState.CurrentHeight)
 }
 
-// NewStore creates new peer data store.
+// NewStore creates a new peer data store.
 func NewStore(ctx context.Context, config *StoreConfig) *Store {
 	return &Store{
 		ctx:    ctx,
@@ -93,42 +104,42 @@ func NewStore(ctx context.Context, config *StoreConfig) *Store {
 }
 
 // PeerData returns data associated with a given peer, if any.
-// Important: it is assumed that store mutex is locked when calling this method.
+// Caller must hold at least a read lock.
 func (s *Store) PeerData(pid peer.ID) (*PeerData, bool) {
 	peerData, ok := s.peers[pid]
 	return peerData, ok
 }
 
-// PeerDataGetOrCreate returns data associated with a given peer.
-// If no data has been associated yet, newly created and associated data object is returned.
-// Important: it is assumed that store mutex is locked when calling this method.
+// PeerDataGetOrCreate returns existing data for pid, or creates and stores a
+// new empty PeerData if none exists. Caller must hold a write lock.
 func (s *Store) PeerDataGetOrCreate(pid peer.ID) *PeerData {
 	if peerData, ok := s.peers[pid]; ok {
 		return peerData
 	}
-	s.peers[pid] = &PeerData{}
-	return s.peers[pid]
+	peerData := &PeerData{}
+	s.peers[pid] = peerData
+	return peerData
 }
 
 // SetPeerData updates data associated with a given peer.
-// Important: it is assumed that store mutex is locked when calling this method.
+// Caller must hold a write lock.
 func (s *Store) SetPeerData(pid peer.ID, data *PeerData) {
 	s.peers[pid] = data
 }
 
 // DeletePeerData removes data associated with a given peer.
-// Important: it is assumed that store mutex is locked when calling this method.
+// Caller must hold a write lock.
 func (s *Store) DeletePeerData(pid peer.ID) {
 	delete(s.peers, pid)
 }
 
-// Peers returns map of peer data objects.
-// Important: it is assumed that store mutex is locked when calling this method.
+// Peers returns the underlying peer data map.
+// Caller must hold at least a read lock.
 func (s *Store) Peers() map[peer.ID]*PeerData {
 	return s.peers
 }
 
-// Config exposes store configuration params.
+// Config returns the store's configuration.
 func (s *Store) Config() *StoreConfig {
 	return s.config
 }

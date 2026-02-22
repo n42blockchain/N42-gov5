@@ -19,7 +19,6 @@ package vm
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"errors"
 	"math/big"
 )
 
@@ -50,20 +49,11 @@ const (
 )
 
 var (
-	// p256Curve is the secp256r1 curve
+	// p256Curve is the secp256r1 curve.
 	p256Curve = elliptic.P256()
 
-	// p256N is the order of the curve
+	// p256N is the order of the curve.
 	p256N = p256Curve.Params().N
-
-	// p256HalfN is N/2, used for malleability check
-	p256HalfN = new(big.Int).Rsh(p256N, 1)
-
-	// errP256InvalidSignature is returned for invalid signatures
-	errP256InvalidSignature = errors.New("invalid P-256 signature")
-
-	// errP256InvalidPublicKey is returned for invalid public keys
-	errP256InvalidPublicKey = errors.New("invalid P-256 public key")
 )
 
 // p256Verify implements the secp256r1 signature verification precompile.

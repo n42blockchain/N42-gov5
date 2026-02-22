@@ -2,8 +2,10 @@ package apos
 
 import (
 	"errors"
+	"sort"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
@@ -11,13 +13,11 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
-	"sort"
 )
 
 func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHeaderReader) (map[types.Address]*uint256.Int, map[types.Address]*uint256.Int, error) {
-
-	rewardMap := make(map[types.Address]*uint256.Int, 0)
-	unpayMap := make(map[types.Address]*uint256.Int, 0)
+	rewardMap := make(map[types.Address]*uint256.Int)
+	unpayMap := make(map[types.Address]*uint256.Int)
 
 	// Security: prevent underflow when number < rewardEpoch
 	if number.Cmp(r.rewardEpoch) < 0 {
@@ -91,14 +91,6 @@ func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHead
 		rewardMap[addr] = payAmount
 		unpayMap[addr] = unpayAmount
 	}
-
-	//log.Debug("buildrewards maps", "rewardMap", rewardMap, "rewardmap len", len(rewardMap), "issetreward", setRewards)
-	//
-	//if setRewards {
-	//	if err := r.setRewardByEpochPaid(tx, epoch, rewardMap); err != nil {
-	//		return nil, err
-	//	}
-	//}
 
 	return rewardMap, unpayMap, nil
 }

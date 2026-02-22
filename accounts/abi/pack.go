@@ -19,11 +19,12 @@ package abi
 import (
 	"errors"
 	"fmt"
+	"math/big"
+	"reflect"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
-	"math/big"
-	"reflect"
 )
 
 // packBytesSlice packs the given bytes as [L, V] as the canonical representation

@@ -205,6 +205,12 @@ func NewInstrumentedEngine(inner Engine, enabled bool) *InstrumentedEngine {
 	}
 }
 
+// recordOp increments the count and accumulates elapsed nanoseconds for an operation.
+func (e *InstrumentedEngine) recordOp(count, timeNs *uint64, start time.Time) {
+	atomic.AddUint64(count, 1)
+	atomic.AddUint64(timeNs, uint64(time.Since(start).Nanoseconds()))
+}
+
 // =============================================================================
 // EngineReader Implementation
 // =============================================================================
@@ -216,10 +222,7 @@ func (e *InstrumentedEngine) Author(header block.IHeader) (types.Address, error)
 
 	start := time.Now()
 	addr, err := e.inner.Author(header)
-	elapsed := uint64(time.Since(start).Nanoseconds())
-
-	atomic.AddUint64(&e.authorCount, 1)
-	atomic.AddUint64(&e.authorTimeNs, elapsed)
+	e.recordOp(&e.authorCount, &e.authorTimeNs, start)
 
 	return addr, err
 }
@@ -243,10 +246,7 @@ func (e *InstrumentedEngine) VerifyHeader(chain ChainHeaderReader, header block.
 
 	start := time.Now()
 	err := e.inner.VerifyHeader(chain, header, seal)
-	elapsed := uint64(time.Since(start).Nanoseconds())
-
-	atomic.AddUint64(&e.verifyHeaderCount, 1)
-	atomic.AddUint64(&e.verifyHeaderTimeNs, elapsed)
+	e.recordOp(&e.verifyHeaderCount, &e.verifyHeaderTimeNs, start)
 
 	return err
 }
@@ -285,10 +285,7 @@ func (e *InstrumentedEngine) Prepare(chain ChainHeaderReader, header block.IHead
 
 	start := time.Now()
 	err := e.inner.Prepare(chain, header)
-	elapsed := uint64(time.Since(start).Nanoseconds())
-
-	atomic.AddUint64(&e.prepareCount, 1)
-	atomic.AddUint64(&e.prepareTimeNs, elapsed)
+	e.recordOp(&e.prepareCount, &e.prepareTimeNs, start)
 
 	return err
 }
@@ -300,10 +297,7 @@ func (e *InstrumentedEngine) Finalize(chain ChainHeaderReader, header block.IHea
 
 	start := time.Now()
 	rewards, balanceChanges, err := e.inner.Finalize(chain, header, state, txs, uncles)
-	elapsed := uint64(time.Since(start).Nanoseconds())
-
-	atomic.AddUint64(&e.finalizeCount, 1)
-	atomic.AddUint64(&e.finalizeTimeNs, elapsed)
+	e.recordOp(&e.finalizeCount, &e.finalizeTimeNs, start)
 
 	return rewards, balanceChanges, err
 }
@@ -315,10 +309,7 @@ func (e *InstrumentedEngine) FinalizeAndAssemble(chain ChainHeaderReader, header
 
 	start := time.Now()
 	b, rewards, balanceChanges, err := e.inner.FinalizeAndAssemble(chain, header, state, txs, uncles, receipts)
-	elapsed := uint64(time.Since(start).Nanoseconds())
-
-	atomic.AddUint64(&e.finalizeCount, 1)
-	atomic.AddUint64(&e.finalizeTimeNs, elapsed)
+	e.recordOp(&e.finalizeCount, &e.finalizeTimeNs, start)
 
 	return b, rewards, balanceChanges, err
 }
@@ -330,10 +321,7 @@ func (e *InstrumentedEngine) Seal(chain ChainHeaderReader, b block.IBlock, resul
 
 	start := time.Now()
 	err := e.inner.Seal(chain, b, results, stop)
-	elapsed := uint64(time.Since(start).Nanoseconds())
-
-	atomic.AddUint64(&e.sealCount, 1)
-	atomic.AddUint64(&e.sealTimeNs, elapsed)
+	e.recordOp(&e.sealCount, &e.sealTimeNs, start)
 
 	return err
 }
@@ -400,19 +388,22 @@ func (e *InstrumentedEngine) LogStats() {
 
 // ResetStats clears all counters.
 func (e *InstrumentedEngine) ResetStats() {
-	atomic.StoreUint64(&e.verifyHeaderCount, 0)
-	atomic.StoreUint64(&e.verifyHeaderTimeNs, 0)
-	atomic.StoreUint64(&e.verifyHeadersCount, 0)
-	atomic.StoreUint64(&e.verifyHeadersTimeNs, 0)
-	atomic.StoreUint64(&e.prepareCount, 0)
-	atomic.StoreUint64(&e.prepareTimeNs, 0)
-	atomic.StoreUint64(&e.finalizeCount, 0)
-	atomic.StoreUint64(&e.finalizeTimeNs, 0)
-	atomic.StoreUint64(&e.sealCount, 0)
-	atomic.StoreUint64(&e.sealTimeNs, 0)
-	atomic.StoreUint64(&e.authorCount, 0)
-	atomic.StoreUint64(&e.authorTimeNs, 0)
-	atomic.StoreUint64(&e.apiCallCount, 0)
+	for _, p := range e.allCounters() {
+		atomic.StoreUint64(p, 0)
+	}
+}
+
+// allCounters returns pointers to all metric counters for bulk operations.
+func (e *InstrumentedEngine) allCounters() []*uint64 {
+	return []*uint64{
+		&e.verifyHeaderCount, &e.verifyHeaderTimeNs,
+		&e.verifyHeadersCount, &e.verifyHeadersTimeNs,
+		&e.prepareCount, &e.prepareTimeNs,
+		&e.finalizeCount, &e.finalizeTimeNs,
+		&e.sealCount, &e.sealTimeNs,
+		&e.authorCount, &e.authorTimeNs,
+		&e.apiCallCount,
+	}
 }
 
 // Inner returns the underlying Engine.

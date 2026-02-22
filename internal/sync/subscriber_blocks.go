@@ -2,30 +2,37 @@ package sync
 
 import (
 	"context"
+
+	"google.golang.org/protobuf/proto"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/log"
-	"google.golang.org/protobuf/proto"
 )
 
+// blockSubscriber handles incoming block messages from gossip.
+// Future blocks (ahead of the current chain tip) are queued; all others
+// are inserted immediately.
 func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error {
-
-	iBlock := new(block.Block)
-	if err := iBlock.FromProtoMessage(msg); err != nil {
+	blk := new(block.Block)
+	if err := blk.FromProtoMessage(msg); err != nil {
 		return err
 	}
 
-	blocks := []block.IBlock{iBlock}
+	header := blk.Header()
+	log.Info("Subscriber received new block",
+		"number", header.Number64().Uint64(),
+		"hash", header.Hash(),
+		"stateRoot", header.StateRoot(),
+		"txs", len(blk.Transactions()),
+	)
 
-	log.Info("Subscriber new Block", "blockNr", iBlock.Header().Number64().Uint64(), "hash", iBlock.Header().Hash(), "stateRoot", iBlock.Header().StateRoot(), "txs", len(iBlock.Transactions()))
+	currentHeight := s.cfg.chain.CurrentBlock().Number64().Uint64()
+	if blk.Number64().Uint64() > currentHeight+1 {
+		return s.cfg.chain.AddFutureBlock(blk)
+	}
 
-	if iBlock.Number64().Uint64() > s.cfg.chain.CurrentBlock().Number64().Uint64()+1 {
-		if err := s.cfg.chain.AddFutureBlock(iBlock); err != nil {
-			return err
-		}
-	} else if _, err := s.cfg.chain.InsertChain(blocks); err != nil {
-		// todo bad block
-		//if errors.Is(err, Badblock) {
-		s.setBadBlock(ctx, iBlock.Hash())
+	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
+		s.setBadBlock(ctx, blk.Hash())
 		return err
 	}
 	return nil

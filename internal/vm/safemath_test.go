@@ -198,8 +198,7 @@ func TestMustSafeUint64ToInt64(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := MustSafeUint64ToInt64(tt.input)
-			if result != tt.expected {
+			if result := MustSafeUint64ToInt64(tt.input); result != tt.expected {
 				t.Errorf("MustSafeUint64ToInt64(%d) = %d, want %d", tt.input, result, tt.expected)
 			}
 		})
@@ -221,37 +220,12 @@ func TestMustSafeUint64ToInt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := MustSafeUint64ToInt(tt.input)
-			if result != tt.expected {
+			if result := MustSafeUint64ToInt(tt.input); result != tt.expected {
 				t.Errorf("MustSafeUint64ToInt(%d) = %d, want %d", tt.input, result, tt.expected)
 			}
 		})
 	}
 }
-
-// Benchmark tests
-
-func BenchmarkSafeUint64ToInt64(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		SafeUint64ToInt64(uint64(i))
-	}
-}
-
-func BenchmarkSafeUint256ToInt64(b *testing.B) {
-	v := uint256.NewInt(1000000)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		SafeUint256ToInt64(v)
-	}
-}
-
-func BenchmarkMustSafeUint64ToInt64(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		MustSafeUint64ToInt64(uint64(i))
-	}
-}
-
-// Tests for new safe math functions added in security audit
 
 func TestSafeIntToUint64(t *testing.T) {
 	tests := []struct {
@@ -447,7 +421,29 @@ func TestSafeInt64ToUint64(t *testing.T) {
 	}
 }
 
-// Benchmark tests for new functions
+// =============================================================================
+// Benchmarks
+// =============================================================================
+
+func BenchmarkSafeUint64ToInt64(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		SafeUint64ToInt64(uint64(i))
+	}
+}
+
+func BenchmarkSafeUint256ToInt64(b *testing.B) {
+	v := uint256.NewInt(1000000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		SafeUint256ToInt64(v)
+	}
+}
+
+func BenchmarkMustSafeUint64ToInt64(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		MustSafeUint64ToInt64(uint64(i))
+	}
+}
 
 func BenchmarkSafeAddUint64(b *testing.B) {
 	for i := 0; i < b.N; i++ {

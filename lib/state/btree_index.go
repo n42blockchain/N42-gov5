@@ -32,12 +32,6 @@ func logBase(n, base uint64) uint64 {
 	return uint64(math.Ceil(math.Log(float64(n)) / math.Log(float64(base))))
 }
 
-func min64(a, b uint64) uint64 {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 type markupCursor struct {
 	l  uint64 //l - level
@@ -142,26 +136,18 @@ func newBtAlloc(k, M uint64, trace bool) *btAlloc {
 		return a
 	}
 
-	//nnc := func(vx uint64) uint64 {
-	//	return uint64(math.Ceil(float64(vx) / float64(M)))
-	//}
 	nvc := func(vx uint64) uint64 {
 		return uint64(math.Ceil(float64(vx) / float64(M>>1)))
 	}
 
 	for i := a.d - 1; i > 0; i-- {
 		nnc := uint64(math.Ceil(float64(a.vx[i+1]) / float64(M)))
-		//nvc := uint64(math.Floor(float64(a.vx[i+1]) / float64(m))-1)
-		//nnc := a.vx[i+1] / M
-		//nvc := a.vx[i+1] / m
-		//bvc := a.vx[i+1] / (m + (m >> 1))
-		a.vx[i] = min64(uint64(math.Pow(float64(M), float64(i))), nnc)
+		a.vx[i] = min(uint64(math.Pow(float64(M), float64(i))), nnc)
 	}
 
 	ncount := uint64(0)
 	pnv := uint64(0)
 	for l := a.d - 1; l > 0; l-- {
-		//s := nnc(a.vx[l+1])
 		sh := nvc(a.vx[l+1])
 
 		if sh&1 == 1 {
@@ -690,22 +676,9 @@ func NewBtIndexWriter(args BtIndexWriterArgs, logger log.Logger) (*BtIndexWriter
 
 // loadFuncBucket is required to satisfy the type etl.LoadFunc type, to use with collector.Load
 func (btw *BtIndexWriter) loadFuncBucket(k, v []byte, _ etl.CurrentTableReader, _ etl.LoadNextFunc) error {
-	// k is the BigEndian encoding of the bucket number, and the v is the key that is assigned into that bucket
-	//if uint64(len(btw.vals)) >= btw.batchSizeLimit {
-	//	if err := btw.drainBatch(); err != nil {
-	//		return err
-	//	}
-	//}
-
-	// if _, err := btw.indexW.Write(k); err != nil {
-	// 	return err
-	// }
 	if _, err := btw.indexW.Write(v[8-btw.bytesPerRec:]); err != nil {
 		return err
 	}
-
-	//btw.keys = append(btw.keys, binary.BigEndian.Uint64(k), binary.BigEndian.Uint64(k[8:]))
-	//btw.vals = append(btw.vals, binary.BigEndian.Uint64(v))
 	return nil
 }
 
@@ -715,9 +688,6 @@ func (btw *BtIndexWriter) Build() error {
 	if btw.built {
 		return fmt.Errorf("already built")
 	}
-	//if btw.keysAdded != btw.keyCount {
-	//	return fmt.Errorf("expected keys %d, got %d", btw.keyCount, btw.keysAdded)
-	//}
 	var err error
 	if btw.indexF, err = os.Create(btw.tmpFilePath); err != nil {
 		return fmt.Errorf("create index file %s: %w", btw.indexFile, err)
@@ -783,9 +753,6 @@ func (btw *BtIndexWriter) Close() {
 	if btw.bucketCollector != nil {
 		btw.bucketCollector.Close()
 	}
-	//if btw.offsetCollector != nil {
-	//	btw.offsetCollector.Close()
-	//}
 }
 
 func (btw *BtIndexWriter) AddKey(key []byte, offset uint64) error {
@@ -863,25 +830,18 @@ func BuildBtreeIndexWithDecompressor(indexPath string, kv *seg.Decompressor, p *
 	getter.Reset(0)
 
 	key := make([]byte, 0, 64)
-	ks := make(map[int]int)
 
-	var pos, kp uint64
-	emptys := 0
+	var pos uint64
 	for getter.HasNext() {
 		p.Processed.Add(1)
-		key, kp = getter.Next(key[:0])
+		key, _ = getter.Next(key[:0])
 		err = iw.AddKey(key, pos)
 		if err != nil {
 			return err
 		}
 
 		pos, _ = getter.Skip()
-		if pos-kp == 1 {
-			ks[len(key)]++
-			emptys++
-		}
 	}
-	//fmt.Printf("emptys %d %#+v\n", emptys, ks)
 
 	if err := iw.Build(); err != nil {
 		return err
@@ -966,10 +926,7 @@ func OpenBtreeIndexWithDecompressor(indexPath string, M uint64, kv *seg.Decompre
 		return idx, nil
 	}
 	idx.bytesPerRec = int(idx.data[pos])
-	pos += 1
-
-	//p := (*[]byte)(unsafe.Pointer(&idx.data[pos]))
-	//l := int(idx.keyCount)*idx.bytesPerRec + (16 * int(idx.keyCount))
+	pos++
 
 	idx.getter = kv.MakeGetter()
 
@@ -1012,15 +969,7 @@ func OpenBtreeIndex(indexPath, dataPath string, M uint64) (*BtIndex, error) {
 	pos := 8
 	idx.keyCount = binary.BigEndian.Uint64(idx.data[:pos])
 	idx.bytesPerRec = int(idx.data[pos])
-	pos += 1
-
-	// offset := int(idx.keyCount) * idx.bytesPerRec //+ (idx.keySize * int(idx.keyCount))
-	// if offset < 0 {
-	// 	return nil, fmt.Errorf("offset is: %d which is below zero, the file: %s is broken", offset, indexPath)
-	// }
-
-	//p := (*[]byte)(unsafe.Pointer(&idx.data[pos]))
-	//l := int(idx.keyCount)*idx.bytesPerRec + (16 * int(idx.keyCount))
+	pos++
 
 	idx.decompressor, err = seg.NewDecompressor(dataPath)
 	if err != nil {
@@ -1063,13 +1012,12 @@ func (b *BtIndex) dataLookup(di uint64) ([]byte, []byte, error) {
 		return nil, nil, fmt.Errorf("pair %d not found. keyCount=%d. file: %s", di, b.keyCount, b.FileName())
 	}
 
-	key, kp := b.getter.Next(nil)
+	key, _ := b.getter.Next(nil)
 
 	if !b.getter.HasNext() {
 		return nil, nil, fmt.Errorf("pair %d not found. keyCount=%d. file: %s", di, b.keyCount, b.FileName())
 	}
-	val, vp := b.getter.Next(nil)
-	_, _ = kp, vp
+	val, _ := b.getter.Next(nil)
 	return key, val, nil
 }
 

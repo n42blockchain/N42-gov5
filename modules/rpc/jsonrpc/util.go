@@ -19,8 +19,9 @@ package jsonrpc
 import (
 	"encoding/hex"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
 	"strconv"
+
+	"github.com/n42blockchain/N42/common/types"
 )
 
 const uintBits = 32 << (uint64(^uint(0)) >> 63)
@@ -151,5 +152,5 @@ func IsTemporaryError(err error) bool {
 	tempErr, ok := err.(interface {
 		Temporary() bool
 	})
-	return ok && tempErr.Temporary() || isPacketTooBig(err)
+	return (ok && tempErr.Temporary()) || isPacketTooBig(err)
 }

@@ -11,20 +11,21 @@ import (
 	"time"
 
 	"github.com/c2h5oh/datasize"
-	common2 "github.com/n42blockchain/N42/lib/common"
-	"github.com/n42blockchain/N42/lib/common/dbg"
-	"github.com/n42blockchain/N42/lib/kv"
-	mdbx2 "github.com/n42blockchain/N42/lib/kv/mdbx"
-	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/erigontech/mdbx-go/mdbx"
 	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
+
+	"github.com/n42blockchain/N42/lib/common"
+	"github.com/n42blockchain/N42/lib/common/dbg"
+	"github.com/n42blockchain/N42/lib/kv"
+	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
 func OpenPair(from, to string, label kv.Label, targetPageSize datasize.ByteSize, logger log.Logger) (kv.RoDB, kv.RwDB) {
 	const ThreadsHardLimit = 9_000
-	src := mdbx2.NewMDBX(logger).Path(from).
+	src := mdbxkv.NewMDBX(logger).Path(from).
 		Label(label).
 		RoTxsLimiter(semaphore.NewWeighted(ThreadsHardLimit)).
 		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return kv.TablesCfgByLabel(label) }).
@@ -33,11 +34,11 @@ func OpenPair(from, to string, label kv.Label, targetPageSize datasize.ByteSize,
 	if targetPageSize <= 0 {
 		targetPageSize = datasize.ByteSize(src.PageSize())
 	}
-	info, err := src.(*mdbx2.MdbxKV).Env().Info(nil)
+	info, err := src.(*mdbxkv.MdbxKV).Env().Info(nil)
 	if err != nil {
 		panic(err)
 	}
-	dst := mdbx2.NewMDBX(logger).Path(to).
+	dst := mdbxkv.NewMDBX(logger).Path(to).
 		Label(label).
 		PageSize(targetPageSize.Bytes()).
 		MapSize(datasize.ByteSize(info.Geo.Upper)).
@@ -83,7 +84,7 @@ func Kv2kv(ctx context.Context, src kv.RoDB, dst kv.RwDB, tables []string, readA
 
 func backupTable(ctx context.Context, src kv.RoDB, srcTx kv.Tx, dst kv.RwDB, table string, readAheadThreads int, logEvery *time.Ticker, logger log.Logger) error {
 	var total uint64
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 	defer wg.Wait()
 	warmupCtx, warmupCancel := context.WithCancel(ctx)
 	defer warmupCancel()
@@ -141,30 +142,17 @@ func backupTable(ctx context.Context, src kv.RoDB, srcTx kv.Tx, dst kv.RwDB, tab
 				var m runtime.MemStats
 				dbg.ReadMemStats(&m)
 				logger.Info("Progress", "table", table, "progress", fmt.Sprintf("%.1fm/%.1fm", float64(i)/1_000_000, float64(total)/1_000_000), "key", hex.EncodeToString(k),
-					"alloc", common2.ByteCount(m.Alloc), "sys", common2.ByteCount(m.Sys))
+					"alloc", common.ByteCount(m.Alloc), "sys", common.ByteCount(m.Sys))
 			default:
 			}
 		}
 	}
-	// migrate bucket sequences to native mdbx implementation
-	//currentID, err := srcTx.Sequence(name, 0)
-	//if err != nil {
-	//	return err
-	//}
-	//_, err = dstTx.Sequence(name, currentID)
-	//if err != nil {
-	//	return err
-	//}
-	if err2 := dstTx.Commit(); err2 != nil {
-		return err2
-	}
-	return nil
+	return dstTx.Commit()
 }
 
 const ReadAheadThreads = 1024
 
 func WarmupTable(ctx context.Context, db kv.RoDB, bucket string, lvl log.Lvl, readAheadThreads int) {
-	var ThreadsLimit = readAheadThreads
 	var total uint64
 	db.View(ctx, func(tx kv.Tx) error {
 		c, _ := tx.Cursor(bucket)
@@ -180,11 +168,9 @@ func WarmupTable(ctx context.Context, db kv.RoDB, bucket string, lvl log.Lvl, re
 	defer logEvery.Stop()
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(ThreadsLimit)
+	g.SetLimit(readAheadThreads)
 	for i := 0; i < 256; i++ {
 		for j := 0; j < 256; j++ {
-			i := i
-			j := j
 			g.Go(func() error {
 				return db.View(ctx, func(tx kv.Tx) error {
 					it, err := tx.Prefix(bucket, []byte{byte(i), byte(j)})
@@ -217,7 +203,6 @@ func WarmupTable(ctx context.Context, db kv.RoDB, bucket string, lvl log.Lvl, re
 		}
 	}
 	for i := 0; i < 1_000; i++ {
-		i := i
 		g.Go(func() error {
 			return db.View(ctx, func(tx kv.Tx) error {
 				seek := make([]byte, 8)
@@ -273,7 +258,7 @@ func ClearTable(ctx context.Context, db kv.RoDB, tx kv.RwTx, table string) error
 }
 
 func warmup(ctx context.Context, db kv.RoDB, bucket string) func() {
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

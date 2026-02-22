@@ -334,35 +334,12 @@ func GetAccountType(state IntraBlockState, addr types.Address) int {
 // CalcAATransactionGas calculates the total gas for an AA transaction
 func CalcAATransactionGas(tx *AATransaction, hasPaymaster bool) uint64 {
 	gas := AAValidationBaseGas + AAExecutionBaseGas
+	gas += calldataGasForBytes(tx.CallData)
+	gas += calldataGasForBytes(tx.ValidationData)
 
-	// Add calldata gas
-	for _, b := range tx.CallData {
-		if b == 0 {
-			gas += 4
-		} else {
-			gas += 16
-		}
-	}
-
-	// Add validation data gas
-	for _, b := range tx.ValidationData {
-		if b == 0 {
-			gas += 4
-		} else {
-			gas += 16
-		}
-	}
-
-	// Add paymaster gas
 	if hasPaymaster {
 		gas += AAPaymasterValidationGas
-		for _, b := range tx.PaymasterData {
-			if b == 0 {
-				gas += 4
-			} else {
-				gas += 16
-			}
-		}
+		gas += calldataGasForBytes(tx.PaymasterData)
 	}
 
 	return gas

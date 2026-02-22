@@ -22,10 +22,11 @@ import (
 
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
+	"github.com/n42blockchain/N42/lib/kv"
 )
 
 // BasePoA contains common fields and logic for PoA consensus engines.
@@ -125,7 +126,7 @@ func (b *BasePoA) Validator() *misc.HeaderValidator {
 	return b.validator
 }
 
-// WithLock executes a function while holding the read lock.
+// WithLock executes a function while holding the write lock.
 func (b *BasePoA) WithLock(fn func()) {
 	b.lock.Lock()
 	defer b.lock.Unlock()

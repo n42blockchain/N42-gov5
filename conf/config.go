@@ -17,11 +17,12 @@
 package conf
 
 import (
-	"bufio"
 	"fmt"
-	"github.com/n42blockchain/N42/params"
-	"gopkg.in/yaml.v2"
 	"os"
+
+	"gopkg.in/yaml.v2"
+
+	"github.com/n42blockchain/N42/params"
 )
 
 type Config struct {
@@ -42,33 +43,31 @@ type Config struct {
 }
 
 func SaveConfigToFile(file string, config Config) error {
-	if len(file) == 0 {
+	if file == "" {
 		file = "./config2.yaml"
 	}
 
 	fd, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-		//log.Errorf("filed open file %v, err %v", file, err)
 		return err
 	}
 	defer fd.Close()
+
 	enc := yaml.NewEncoder(fd)
 	defer enc.Close()
 	return enc.Encode(config)
-	//return toml.NewEncoder(fd).Encode(blockchain)
 }
 
 func LoadConfigFromFile(file string, config *Config) error {
-	if len(file) <= 0 {
-		return fmt.Errorf("failed to load blockchain from file, file is nil")
+	if file == "" {
+		return fmt.Errorf("failed to load config from file: file path is empty")
 	}
-	//_, err := toml.DecodeFile(file, blockchain)
+
 	fd, err := os.Open(file)
 	if err != nil {
 		return err
 	}
 	defer fd.Close()
-	reader := bufio.NewReader(fd)
-	//return toml.NewDecoder(reader).Decode(blockchain)
-	return yaml.NewDecoder(reader).Decode(config)
+
+	return yaml.NewDecoder(fd).Decode(config)
 }

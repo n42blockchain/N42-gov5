@@ -20,28 +20,32 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/contracts/deposit"
-	"github.com/n42blockchain/N42/modules/rawdb"
-	"github.com/n42blockchain/N42/turbo/rpchelper"
 
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/turbo/rpchelper"
 )
 
 const maxSearchBlock = 1000
 
+// MinedBlock represents a single block mined by a validator.
 type MinedBlock struct {
 	BlockNumber *uint256.Int `json:"blockNumber"`
 	Timestamp   uint64       `json:"timestamp"`
 	Reward      *uint256.Int `json:"reward"`
 }
+
+// MinedBlockResponse is the response for GetMinedBlock queries.
 type MinedBlockResponse struct {
 	MinedBlocks        []MinedBlock `json:"minedBlocks"`
 	CurrentBlockNumber *uint256.Int `json:"currentBlockNumber"`
@@ -61,14 +65,7 @@ type API struct {
 
 // GetSnapshot retrieves the state snapshot at a given block.
 func (api *API) GetSnapshot(number *jsonrpc.BlockNumber) (*Snapshot, error) {
-	// Retrieve the requested block number (or current if none requested)
-	var header block.IHeader
-	if number == nil || *number == jsonrpc.LatestBlockNumber {
-		header = api.chain.CurrentBlock().Header()
-	} else {
-		header = api.chain.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
-	}
-	// Ensure we have an actually valid block and return its snapshot
+	header := api.resolveHeader(number)
 	if header == nil {
 		return nil, errUnknownBlock
 	}
@@ -86,28 +83,11 @@ func (api *API) GetSnapshotAtHash(hash types.Hash) (*Snapshot, error) {
 
 // GetSigners retrieves the list of authorized signers at the specified block.
 func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]avmutil.Address, error) {
-	// Retrieve the requested block number (or current if none requested)
-	var header block.IHeader
-	if number == nil || *number == jsonrpc.LatestBlockNumber {
-		header = api.chain.CurrentBlock().Header()
-	} else {
-		header = api.chain.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
-	}
-	// Ensure we have an actually valid block and return the signers from its snapshot
+	header := api.resolveHeader(number)
 	if header == nil {
 		return nil, errUnknownBlock
 	}
-	snap, err := api.apos.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	signers := snap.signers()
-	ethSigners := make([]avmutil.Address, len(signers))
-	for i, signer := range signers {
-		ethSigners[i] = *avmtypes.FromastAddress(&signer)
-	}
-	return ethSigners, nil
+	return api.snapshotSigners(header)
 }
 
 // GetSignersAtHash retrieves the list of authorized signers at the specified block.
@@ -116,6 +96,19 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]avmutil.Address, error) {
 	if header == nil {
 		return nil, errUnknownBlock
 	}
+	return api.snapshotSigners(header)
+}
+
+// resolveHeader returns the header for the given block number, defaulting to the current block.
+func (api *API) resolveHeader(number *jsonrpc.BlockNumber) block.IHeader {
+	if number == nil || *number == jsonrpc.LatestBlockNumber {
+		return api.chain.CurrentBlock().Header()
+	}
+	return api.chain.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
+}
+
+// snapshotSigners retrieves the snapshot at the given header and returns the signer list.
+func (api *API) snapshotSigners(header block.IHeader) ([]avmutil.Address, error) {
 	snap, err := api.apos.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
 	if err != nil {
 		return nil, err
@@ -271,48 +264,35 @@ func (api *API) GetSigner(rlpOrBlockNr *blockNumberOrHashOrRLP) (types.Address, 
 	return types.Address{}, errors.New("do not support rlp")
 }
 
-// GetRewards
-func (api *API) GetRewards(address avmutil.Address, from jsonrpc.BlockNumberOrHash, to jsonrpc.BlockNumberOrHash) (resp *RewardResponse, err error) {
-
+// GetRewards retrieves reward history for the given address within a block range.
+func (api *API) GetRewards(address avmutil.Address, from jsonrpc.BlockNumberOrHash, to jsonrpc.BlockNumberOrHash) (*RewardResponse, error) {
 	var (
 		resolvedFromBlock *uint256.Int
 		resolvedToBlock   *uint256.Int
 	)
 
-	if dbErr := api.apos.dbView(func(tx kv.Tx) error {
-		var fromErr, toErr error
-		resolvedFromBlock, _, fromErr = rpchelper.GetCanonicalBlockNumber(from, tx)
-		if fromErr != nil {
-			return fromErr
+	if err := api.apos.dbView(func(tx kv.Tx) error {
+		var err error
+		resolvedFromBlock, _, err = rpchelper.GetCanonicalBlockNumber(from, tx)
+		if err != nil {
+			return err
 		}
-		resolvedToBlock, _, toErr = rpchelper.GetCanonicalBlockNumber(to, tx)
-		if toErr != nil {
-			return toErr
-		}
-		return nil
-	}); dbErr != nil {
-		return nil, dbErr
-	}
-
-	if err != nil {
+		resolvedToBlock, _, err = rpchelper.GetCanonicalBlockNumber(to, tx)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 
 	rewardService := newReward(api.apos.chainConfig)
-	resp, err = rewardService.GetRewards(*avmtypes.ToastAddress(&address), resolvedFromBlock, resolvedToBlock, api.chain.GetBlockByNumber)
-
-	return resp, err
+	return rewardService.GetRewards(*avmtypes.ToastAddress(&address), resolvedFromBlock, resolvedToBlock, api.chain.GetBlockByNumber)
 }
 
-// GetRewards
+// GetDepositInfo retrieves deposit information for the given address.
 func (api *API) GetDepositInfo(address avmutil.Address) (*deposit.Info, error) {
-
 	addr := *avmtypes.ToastAddress(&address)
+	var info *deposit.Info
 
-	info := new(deposit.Info)
-	var err error
-
-	api.apos.dbView(func(tx kv.Tx) error {
+	err := api.apos.dbView(func(tx kv.Tx) error {
 		info = deposit.GetDepositInfo(tx, addr)
 		return nil
 	})
@@ -320,84 +300,70 @@ func (api *API) GetDepositInfo(address avmutil.Address) (*deposit.Info, error) {
 	return info, err
 }
 
-// GetRewards todo:needs check
+// GetBlockRewards retrieves the rewards for a specific block.
 func (api *API) GetBlockRewards(blockNr jsonrpc.BlockNumberOrHash) (resp []*block.Reward, err error) {
-	var (
-		resolvedBlockNr *uint256.Int
-		hash            types.Hash
-	)
 	api.apos.dbView(func(tx kv.Tx) error {
-		resolvedBlockNr, hash, err = rpchelper.GetCanonicalBlockNumber(blockNr, tx)
-		if err != nil {
-			return err
+		resolvedBlockNr, hash, resolveErr := rpchelper.GetCanonicalBlockNumber(blockNr, tx)
+		if resolveErr != nil {
+			err = resolveErr
+			return resolveErr
 		}
-		//header := rawdb.ReadHeader(tx, hash, resolvedBlockNr.Uint64())
-		body := rawdb.ReadBlock(tx, hash, resolvedBlockNr.Uint64())
-		if body == nil {
+		blk := rawdb.ReadBlock(tx, hash, resolvedBlockNr.Uint64())
+		if blk == nil {
 			err = errors.New("cannot find block body")
 			return err
 		}
-		resp = body.Body().Reward()
+		resp = blk.Body().Reward()
 		return nil
 	})
 	return resp, err
 }
 
-// getHeader search header by BlockNumberOrHash
-func (api *API) getHeader(from jsonrpc.BlockNumberOrHash) (currentHeader block.IHeader) {
-	//
+// getHeader resolves a header from a BlockNumberOrHash reference.
+func (api *API) getHeader(from jsonrpc.BlockNumberOrHash) block.IHeader {
 	if blockNr, ok := from.Number(); ok {
-		if blockNr == jsonrpc.LatestBlockNumber || blockNr == jsonrpc.PendingBlockNumber {
-			currentHeader = api.chain.CurrentBlock().Header()
-		} else if blockNr < jsonrpc.EarliestBlockNumber {
-			currentHeader = api.chain.GetHeaderByNumber(uint256.NewInt(0))
-		} else {
-			currentHeader = api.chain.GetHeaderByNumber(uint256.NewInt(uint64(blockNr.Int64())))
+		switch {
+		case blockNr == jsonrpc.LatestBlockNumber || blockNr == jsonrpc.PendingBlockNumber:
+			return api.chain.CurrentBlock().Header()
+		case blockNr < jsonrpc.EarliestBlockNumber:
+			return api.chain.GetHeaderByNumber(uint256.NewInt(0))
+		default:
+			return api.chain.GetHeaderByNumber(uint256.NewInt(uint64(blockNr.Int64())))
 		}
-	} else if hash, ok := from.Hash(); ok {
-		currentHeader, _ = api.chain.GetHeaderByHash(hash)
-	} else {
-		currentHeader = api.chain.CurrentBlock().Header()
 	}
-	return
+	if hash, ok := from.Hash(); ok {
+		header, _ := api.chain.GetHeaderByHash(hash)
+		return header
+	}
+	return api.chain.CurrentBlock().Header()
 }
 
-// GetTasks
+// GetMinedBlock retrieves blocks mined by the given address, searching backward from the specified block.
 func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberOrHash, wantCount uint64) (*MinedBlockResponse, error) {
-
 	addr := *avmtypes.ToastAddress(&address)
-	var (
-		err           error
-		searchCount   int
-		findCount     uint64
-		currentHeader block.IHeader
-		currentBlock  block.IBlock
-		depositInfo   *deposit.Info
-	)
 
+	var depositInfo *deposit.Info
 	api.apos.dbView(func(tx kv.Tx) error {
 		depositInfo = deposit.GetDepositInfo(tx, addr)
 		return nil
 	})
 	if depositInfo == nil {
-		return nil, errors.New("address do not have depositInfo")
-	}
-	//
-	currentHeader = api.getHeader(from)
-	if currentHeader == nil {
-		return nil, err
+		return nil, errors.New("address does not have deposit info")
 	}
 
-	//
-	currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
-	searchCount = 0
-	findCount = 0
-	minedBlocks := make([]MinedBlock, 0, wantCount) // pre-allocate capacity
+	currentHeader := api.getHeader(from)
+	if currentHeader == nil {
+		return nil, errUnknownBlock
+	}
+
+	currentBlock := api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+	minedBlocks := make([]MinedBlock, 0, wantCount)
+	var searchCount int
+	var findCount uint64
 
 	for {
 		blockNum := currentHeader.Number64().Uint64()
-		verifier := currentBlock.Body().Verifier()
-		for _, verify := range verifier {
+		for _, verify := range currentBlock.Body().Verifier() {
 			if addr == verify.Address {
 				minedBlocks = append(minedBlocks, MinedBlock{
 					BlockNumber: currentBlock.Number64(),
@@ -414,7 +380,7 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		if searchCount >= maxSearchBlock {
 			break
 		}
-		// Security: prevent underflow - check if we've reached genesis block
+		// Prevent underflow at genesis block
 		if blockNum == 0 {
 			break
 		}
@@ -432,46 +398,36 @@ Finish:
 	}, nil
 }
 
-// VerifiedBlock
+// VerifiedBlock retrieves blocks verified by the given address within a range.
 func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberOrHash, wantCount uint64, to *jsonrpc.BlockNumber) (*VerifiedBlockResponse, error) {
-
 	addr := *avmtypes.ToastAddress(&address)
-	var (
-		err           error
-		searchCount   int
-		findCount     uint64
-		currentHeader block.IHeader
-		currentBlock  block.IBlock
-		depositInfo   *deposit.Info
-	)
 
 	if to.Int64() <= 0 {
 		return nil, errors.New("'To' block number must be greater than 0")
 	}
 
+	var depositInfo *deposit.Info
 	api.apos.dbView(func(tx kv.Tx) error {
 		depositInfo = deposit.GetDepositInfo(tx, addr)
 		return nil
 	})
 	if depositInfo == nil {
-		return nil, errors.New("address do not have depositInfo")
-	}
-	//
-	currentHeader = api.getHeader(from)
-	if currentHeader == nil {
-		return nil, err
+		return nil, errors.New("address does not have deposit info")
 	}
 
-	//
-	currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
-	searchCount = 0
-	findCount = 0
-	minedBlocks := make([]MinedBlock, 0, wantCount) // pre-allocate capacity
+	currentHeader := api.getHeader(from)
+	if currentHeader == nil {
+		return nil, errUnknownBlock
+	}
+
+	currentBlock := api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+	minedBlocks := make([]MinedBlock, 0, wantCount)
+	var searchCount int
+	var findCount uint64
 
 	for {
 		blockNum := currentHeader.Number64().Uint64()
-		verifier := currentBlock.Body().Verifier()
-		for _, verify := range verifier {
+		for _, verify := range currentBlock.Body().Verifier() {
 			if addr == verify.Address {
 				minedBlocks = append(minedBlocks, MinedBlock{
 					BlockNumber: currentBlock.Number64(),
@@ -491,7 +447,7 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		if searchCount >= int(api.apos.config.RewardEpoch) {
 			break
 		}
-		// Security: prevent underflow - check if we've reached genesis block
+		// Prevent underflow at genesis block
 		if blockNum == 0 {
 			break
 		}

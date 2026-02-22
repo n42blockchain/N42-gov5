@@ -47,7 +47,7 @@ import (
 	"context"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -56,6 +56,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/kv"
 	rpc "github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -123,15 +124,6 @@ type StateBackend interface {
 type TxPoolBackend interface {
 	// TxsPool returns the transaction pool interface
 	TxsPool() common.ITxsPool
-
-	// SendTx submits a transaction to the pool
-	// SendTx(ctx context.Context, signedTx *transaction.Transaction) error
-
-	// GetPoolTransaction returns a transaction from the pool by hash
-	// GetPoolTransaction(hash types.Hash) *transaction.Transaction
-
-	// GetPoolNonce returns the nonce for an account in the pool
-	// GetPoolNonce(ctx context.Context, addr types.Address) (uint64, error)
 }
 
 // AccountBackend provides account management access.
@@ -147,15 +139,6 @@ type ConfigBackend interface {
 
 	// GetChainConfig is an alias for ChainConfig (for compatibility)
 	GetChainConfig() *params.ChainConfig
-
-	// RPCGasCap returns the gas cap for RPC calls
-	// RPCGasCap() uint64
-
-	// RPCEVMTimeout returns the EVM timeout for RPC calls
-	// RPCEVMTimeout() time.Duration
-
-	// RPCTxFeeCap returns the transaction fee cap for RPC calls
-	// RPCTxFeeCap() float64
 }
 
 // Compile-time verification that API implements Backend
@@ -193,4 +176,3 @@ var (
 	_ HeaderReader = (*API)(nil)
 	_ StateReader  = (*API)(nil)
 )
-

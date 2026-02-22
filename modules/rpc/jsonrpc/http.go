@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"mime"
 	"net/http"
 	"net/url"
@@ -120,7 +119,7 @@ func (c *Client) sendBatchHTTP(ctx context.Context, op *requestOp, msgs []*jsonr
 	if err := json.NewDecoder(respBody).Decode(&respmsgs); err != nil {
 		return err
 	}
-	for i := 0; i < len(respmsgs); i++ {
+	for i := range respmsgs {
 		op.resp <- &respmsgs[i]
 	}
 	return nil
@@ -131,7 +130,7 @@ func (hc *httpConn) doRequest(ctx context.Context, msg interface{}) (io.ReadClos
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", hc.url, ioutil.NopCloser(bytes.NewReader(body)))
+	req, err := http.NewRequestWithContext(ctx, "POST", hc.url, io.NopCloser(bytes.NewReader(body)))
 	if err != nil {
 		return nil, err
 	}
@@ -146,12 +145,8 @@ func (hc *httpConn) doRequest(ctx context.Context, msg interface{}) (io.ReadClos
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var buf bytes.Buffer
-		var body []byte
-		if _, err := buf.ReadFrom(resp.Body); err == nil {
-			body = buf.Bytes()
-		}
-
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return nil, HTTPError{
 			Status:     resp.Status,
 			StatusCode: resp.StatusCode,

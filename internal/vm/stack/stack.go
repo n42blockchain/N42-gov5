@@ -17,14 +17,15 @@ package stack
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"sync"
 
 	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 var stackPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &Stack{Data: make([]uint256.Int, 0, 16)}
 	},
 }
@@ -136,7 +137,7 @@ func ReturnNormalStack(s *Stack) {
 }
 
 var rStackPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &ReturnStack{data: make([]uint32, 0, 10)}
 	},
 }

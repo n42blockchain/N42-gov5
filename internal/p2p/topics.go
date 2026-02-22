@@ -4,24 +4,13 @@ const (
 	// GossipProtocolAndDigest represents the protocol and fork digest prefix in a gossip topic.
 	GossipProtocolAndDigest = "/n42/%x/"
 
-	// Message Types
-
-	// GossipBlockMessage is the name for the block message type.
-	GossipBlockMessage = "block"
-	// GossipExitMessage is the name for the voluntary exit message type.
-	GossipExitMessage = "voluntary_exit"
-	// GossipTransactionMessage is the name for the transaction message type.
+	// Message types used as suffixes in gossip topic strings.
+	GossipBlockMessage       = "block"
+	GossipExitMessage        = "voluntary_exit"
 	GossipTransactionMessage = "transaction"
 
-	// Topic Formats
-
-	// BlockTopicFormat is the topic format for the block subnet.
-	BlockTopicFormat = GossipProtocolAndDigest + GossipBlockMessage
-	// ExitBlockTopicFormat is the topic format for the voluntary exit.
-	ExitBlockTopicFormat = GossipProtocolAndDigest + GossipExitMessage
-
-	// TransactionTopicFormat is the topic format for the block subnet.
+	// Topic format strings combining the protocol prefix with message type.
+	BlockTopicFormat       = GossipProtocolAndDigest + GossipBlockMessage
+	ExitBlockTopicFormat   = GossipProtocolAndDigest + GossipExitMessage
 	TransactionTopicFormat = GossipProtocolAndDigest + GossipTransactionMessage
-	//ExitTransactionTopicFormat is the topic format for the voluntary exit.
-	//ExitTransactionTopicFormat = GossipProtocolAndDigest + GossipExitMessage
 )

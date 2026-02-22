@@ -31,7 +31,8 @@ var GoodbyeCodeMessages = map[RPCGoodbyeCode]string{
 	GoodbyeCodeBanned:                "client banned this node",
 }
 
-// ErrToGoodbyeCode converts given error to RPC goodbye code.
+// ErrToGoodbyeCode maps an error to the appropriate RPC goodbye code.
+// Unrecognized errors default to GoodbyeCodeGenericError.
 func ErrToGoodbyeCode(err error) RPCGoodbyeCode {
 	switch err {
 	case ErrWrongForkDigestVersion:

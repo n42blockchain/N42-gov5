@@ -3,16 +3,17 @@ package filters
 import (
 	"context"
 	"errors"
-	"github.com/n42blockchain/N42/lib/kv"
+	"sync"
+	"time"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"sync"
-	"time"
 )
 
 // Type determines the kind of filter and is used to put the filter in to
@@ -394,12 +395,9 @@ func (es *EventSystem) lightFilterNewHead(newHeader block.IHeader, callBack func
 
 // filter logs of a single header in light client mode
 func (es *EventSystem) lightFilterLogs(header block.IHeader, addresses []types.Address, topics [][]types.Hash, remove bool) []*block.Log {
-	//todo header.Bloom
+	// TODO: use header.Bloom when available
 	bloom, _ := types.NewBloom(100)
 	if bloomFilter(bloom, addresses, topics) {
-		// Get the logs of the block
-		_, cancel := context.WithTimeout(context.Background(), time.Second*5)
-		defer cancel()
 		logsList, err := es.api.BlockChain().GetLogs(header.Hash())
 		if err != nil {
 			return nil

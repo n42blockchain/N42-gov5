@@ -19,9 +19,10 @@ package logger
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/holiman/uint256"
 	"math/big"
 	"testing"
+
+	"github.com/holiman/uint256"
 
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"

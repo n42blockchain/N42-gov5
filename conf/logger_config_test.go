@@ -5,6 +5,7 @@ package conf
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v2"
@@ -251,25 +252,12 @@ func TestLoggerConfigJSONTags(t *testing.T) {
 	}
 
 	for _, tag := range expectedTags {
-		if !containsString(jsonStr, tag) {
+		if !strings.Contains(jsonStr, tag) {
 			t.Errorf("Expected JSON tag %s not found in %s", tag, jsonStr)
 		}
 	}
 
 	t.Log("✓ JSON tags are correct")
-}
-
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStringHelper(s, substr))
-}
-
-func containsStringHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 // TestLoggerConfigDocumentation 测试配置文档注释

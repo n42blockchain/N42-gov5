@@ -14,10 +14,8 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
 
-const (
-	// The time to wait for a status request.
-	timeForStatus = 10 * time.Second
-)
+// timeForStatus is the maximum time to wait for a status request from an inbound peer.
+const timeForStatus = 10 * time.Second
 
 func peerMultiaddrString(conn network.Conn) string {
 	return fmt.Sprintf("%s/p2p/%s", conn.RemoteMultiaddr().String(), conn.RemotePeer().String())
@@ -89,8 +87,7 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 					return
 				}
 				validPeerConnection := func() {
-					s.peers.SetConnectionState(conn.RemotePeer(), peers.PeerConnected)
-					// Go through the handshake process.
+					s.peers.SetConnectionState(remotePeer, peers.PeerConnected)
 					log.Debug("Peer connected", "direction", conn.Stat().Direction, "multiAddr", peerMultiaddrString(conn), "activePeers", len(s.peers.Active()))
 				}
 
@@ -98,38 +95,38 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 				if conn.Stat().Direction == network.DirInbound {
 					_, err := s.peers.ChainState(remotePeer)
 					peerExists := err == nil
-
-					//currentTime := prysmTime.Now()
 					currentTime := time.Now()
 
-					// Wait for peer to initiate handshake with timeout
-					// Security fix: Use a shared timer to prevent goroutine leak
-					statusReceived := make(chan struct{})
+					// Wait for peer to initiate handshake with timeout.
 					timeoutCtx, timeoutCancel := context.WithTimeout(s.ctx, timeForStatus)
-					var closeOnce sync.Once
-
-					go func() {
-						defer timeoutCancel()
-						ticker := time.NewTicker(500 * time.Millisecond)
-						defer ticker.Stop()
-						for {
-							select {
-							case <-ticker.C:
-								if _, err := s.peers.ChainState(remotePeer); err == nil {
-									closeOnce.Do(func() { close(statusReceived) })
-									return
-								}
-							case <-timeoutCtx.Done():
-								return
+					ticker := time.NewTicker(500 * time.Millisecond)
+					received := false
+				waitLoop:
+					for {
+						select {
+						case <-ticker.C:
+							if _, err := s.peers.ChainState(remotePeer); err == nil {
+								received = true
+								break waitLoop
 							}
+						case <-timeoutCtx.Done():
+							break waitLoop
 						}
-					}()
+					}
+					ticker.Stop()
+					timeoutCancel()
 
-					select {
-					case <-statusReceived:
-						// Status received, continue
-					case <-timeoutCtx.Done():
-						// Timeout waiting for status or context cancelled
+					if !received {
+						// Exit if we are disconnected with the peer.
+						if s.host.Network().Connectedness(remotePeer) != network.Connected {
+							return
+						}
+						// If peer hasn't sent a status request, disconnect.
+						if _, err := s.peers.ChainState(remotePeer); errors.Is(err, peerdata.ErrPeerUnknown) || errors.Is(err, peerdata.ErrNoPeerStatus) {
+							statusMessageMissing.Inc()
+							disconnectFromPeer()
+							return
+						}
 					}
 
 					// Exit if we are disconnected with the peer.
@@ -137,20 +134,12 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 						return
 					}
 
-					// If peer hasn't sent a status request, we disconnect with them
-					if _, err := s.peers.ChainState(remotePeer); errors.Is(err, peerdata.ErrPeerUnknown) || errors.Is(err, peerdata.ErrNoPeerStatus) {
-						statusMessageMissing.Inc()
-						disconnectFromPeer()
-						return
-					}
 					if peerExists {
 						updated, err := s.peers.ChainStateLastUpdated(remotePeer)
 						if err != nil {
 							disconnectFromPeer()
 							return
 						}
-						// exit if we don't receive any current status messages from
-						// peer.
 						if updated.IsZero() || !updated.After(currentTime) {
 							disconnectFromPeer()
 							return
@@ -160,8 +149,8 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 					return
 				}
 
-				s.peers.SetConnectionState(conn.RemotePeer(), peers.PeerConnecting)
-				if err := reqFunc(s.ctx, conn.RemotePeer()); err != nil && err != io.EOF {
+				s.peers.SetConnectionState(remotePeer, peers.PeerConnecting)
+				if err := reqFunc(s.ctx, remotePeer); err != nil && err != io.EOF {
 					log.Warn("Handshake failed", "err", err)
 					disconnectFromPeer()
 					return
@@ -172,8 +161,8 @@ func (s *Service) AddConnectionHandler(reqFunc, goodByeFunc func(ctx context.Con
 	})
 }
 
-// AddDisconnectionHandler disconnects from peers.  It handles updating the peer status.
-// This also calls the handler responsible for maintaining other parts of the sync or p2p system.
+// AddDisconnectionHandler registers a callback for peer disconnection events.
+// It updates peer status and delegates to the provided handler for cleanup.
 func (s *Service) AddDisconnectionHandler(handler func(ctx context.Context, id peer.ID) error) {
 	s.host.Network().Notify(&network.NotifyBundle{
 		DisconnectedF: func(net network.Network, conn network.Conn) {

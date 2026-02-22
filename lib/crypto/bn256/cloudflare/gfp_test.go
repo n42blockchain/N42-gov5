@@ -1,8 +1,6 @@
 package bn256
 
-import (
-	"testing"
-)
+import "testing"
 
 // Tests that negation works the same way on both assembly-optimized and pure Go
 // implementation.

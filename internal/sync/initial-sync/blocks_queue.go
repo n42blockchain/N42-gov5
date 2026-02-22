@@ -3,14 +3,15 @@ package initialsync
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/peer"
+
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/p2p"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
-	"time"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
@@ -49,7 +50,7 @@ const (
 	modeNonConstrained
 )
 
-// syncMode specifies sync mod type.
+// syncMode specifies sync mode type.
 type syncMode uint8
 
 // blocksQueueConfig is a config to setup block queue service.
@@ -157,8 +158,7 @@ func (q *blocksQueue) loop() {
 		log.Debug("Can not start blocks provider", "err", err)
 	}
 
-	// Define initial state machines.
-	// currentblock update?
+	// Define initial state machines starting from the block after current head.
 	startBlockNr := new(uint256.Int).AddUint64(q.chain.CurrentBlock().Number64(), 1)
 	blocksPerRequest := q.blocksFetcher.blocksPerPeriod
 	for i := startBlockNr.Clone(); i.Cmp(new(uint256.Int).AddUint64(startBlockNr, blocksPerRequest*lookaheadSteps)) == -1; i = i.AddUint64(i, blocksPerRequest) {
@@ -168,7 +168,7 @@ func (q *blocksQueue) loop() {
 	ticker := time.NewTicker(pollingInterval)
 	defer ticker.Stop()
 	for {
-		if waitHighestExpectedBlockNr(q) {
+		if q.waitHighestExpectedBlockNr() {
 			continue
 		}
 
@@ -250,7 +250,10 @@ func (q *blocksQueue) loop() {
 	}
 }
 
-func waitHighestExpectedBlockNr(q *blocksQueue) bool {
+// waitHighestExpectedBlockNr checks whether the chain has reached the expected
+// target block number, updating the target if peers report a higher finalized
+// block. Returns true if the target was updated and the caller should re-check.
+func (q *blocksQueue) waitHighestExpectedBlockNr() bool {
 	if q.ctx.Err() != nil {
 		return false
 	}
@@ -412,7 +415,7 @@ func (q *blocksQueue) onProcessSkippedEvent(ctx context.Context) eventHandlerFn 
 
 // onCheckStaleEvent is an event that allows to mark stale epochs,
 // so that they can be re-processed.
-func (_ *blocksQueue) onCheckStaleEvent(ctx context.Context) eventHandlerFn {
+func (q *blocksQueue) onCheckStaleEvent(ctx context.Context) eventHandlerFn {
 	return func(m *stateMachine, in interface{}) (stateID, error) {
 		if ctx.Err() != nil {
 			return m.state, ctx.Err()

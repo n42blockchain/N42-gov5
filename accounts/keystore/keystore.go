@@ -114,8 +114,8 @@ func (ks *KeyStore) init(keydir string) {
 	// Create the initial list of wallets from the cache
 	accs := ks.cache.accounts()
 	ks.wallets = make([]accounts.Wallet, len(accs))
-	for i := 0; i < len(accs); i++ {
-		ks.wallets[i] = &keystoreWallet{account: accs[i], keystore: ks}
+	for i, acc := range accs {
+		ks.wallets[i] = &keystoreWallet{account: acc, keystore: ks}
 	}
 }
 
@@ -322,11 +322,11 @@ func (ks *KeyStore) Unlock(a accounts.Account, passphrase string) error {
 // Lock removes the private key with the given address from memory.
 func (ks *KeyStore) Lock(addr types.Address) error {
 	ks.mu.Lock()
-	if unl, found := ks.unlocked[addr]; found {
-		ks.mu.Unlock()
-		ks.expire(addr, unl, time.Duration(0)*time.Nanosecond)
-	} else {
-		ks.mu.Unlock()
+	unl, found := ks.unlocked[addr]
+	ks.mu.Unlock()
+
+	if found {
+		ks.expire(addr, unl, 0)
 	}
 	return nil
 }

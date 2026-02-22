@@ -19,17 +19,18 @@ package apoa
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules/rawdb"
-	"github.com/n42blockchain/N42/params"
 	"sort"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru"
+
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/params"
 )
 
 // Vote represents a single vote that an authorized signer made to modify the
@@ -141,8 +142,8 @@ func (s *Snapshot) copy() *Snapshot {
 // validVote returns whether it makes sense to cast the specified vote in the
 // given snapshot context (e.g. don't try to add an already authorized signer).
 func (s *Snapshot) validVote(address types.Address, authorize bool) bool {
-	_, signer := s.Signers[address]
-	return (signer && !authorize) || (!signer && authorize)
+	_, isSigner := s.Signers[address]
+	return isSigner != authorize
 }
 
 // cast adds a new vote into the tally.
@@ -299,9 +300,6 @@ func (s *Snapshot) apply(headers []block.IHeader) (*Snapshot, error) {
 			log.Info("Reconstructing voting history", "processed", i, "total", len(headers), "elapsed", avmutil.PrettyDuration(time.Since(start)))
 			logged = time.Now()
 		}
-	}
-	if time.Since(start) > 8*time.Second {
-		//log.Info("Reconstructed voting history", "processed", len(headers), "elapsed", avmutil.PrettyDuration(time.Since(start)))
 	}
 	snap.Number += uint64(len(headers))
 	snap.Hash = headers[len(headers)-1].Hash()

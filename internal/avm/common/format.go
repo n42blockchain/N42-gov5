@@ -73,7 +73,8 @@ func (t PrettyAge) String() string {
 			result = fmt.Sprintf("%s%d%s", result, diff/unit.Size, unit.Symbol)
 			diff %= unit.Size
 
-			if prec += 1; prec >= 3 {
+			prec++
+			if prec >= 3 {
 				break
 			}
 		}

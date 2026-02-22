@@ -20,12 +20,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/modules"
 	"sort"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules"
 )
 
 type Encoder func(blockN uint64, s *ChangeSet, f func(k, v []byte) error) error
@@ -78,11 +78,10 @@ func FindAccount(c kv.CursorDupSort, blockNumber uint64, key []byte) ([]byte, er
 	return v, nil
 }
 
-// GetModifiedAccounts returns a list of addresses that were modified in the block range
-// [startNum:endNum)
+// GetModifiedAccounts returns a list of addresses modified in the block range [startNum, endNum).
 func GetModifiedAccounts(db kv.Tx, startNum, endNum uint64) ([]types.Address, error) {
 	changedAddrs := make(map[types.Address]struct{})
-	if err := ForRange(db, modules.AccountChangeSet, startNum, endNum, func(blockN uint64, k, v []byte) error {
+	if err := ForRange(db, modules.AccountChangeSet, startNum, endNum, func(_ uint64, k, _ []byte) error {
 		changedAddrs[types.BytesToAddress(k)] = struct{}{}
 		return nil
 	}); err != nil {
@@ -93,12 +92,9 @@ func GetModifiedAccounts(db kv.Tx, startNum, endNum uint64) ([]types.Address, er
 		return nil, nil
 	}
 
-	idx := 0
-	result := make([]types.Address, len(changedAddrs))
+	result := make([]types.Address, 0, len(changedAddrs))
 	for addr := range changedAddrs {
-		copy(result[idx][:], addr[:])
-		idx++
+		result = append(result, addr)
 	}
-
 	return result, nil
 }

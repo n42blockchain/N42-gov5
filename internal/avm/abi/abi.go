@@ -21,9 +21,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/utils"
-	"io"
 )
 
 // The ABI holds information about a contract's context and available
@@ -59,14 +60,8 @@ func JSON(reader io.Reader) (ABI, error) {
 // Method ids are created from the first 4 bytes of the hash of the
 // methods string signature. (signature = baz(uint32,string32))
 func (abi ABI) Pack(name string, args ...interface{}) ([]byte, error) {
-	// Fetch the ABI of the requested method
 	if name == "" {
-		// constructor
-		arguments, err := abi.Constructor.Inputs.Pack(args...)
-		if err != nil {
-			return nil, err
-		}
-		return arguments, nil
+		return abi.Constructor.Inputs.Pack(args...)
 	}
 	method, exist := abi.Methods[name]
 	if !exist {
@@ -81,22 +76,16 @@ func (abi ABI) Pack(name string, args ...interface{}) ([]byte, error) {
 }
 
 func (abi ABI) getArguments(name string, data []byte) (Arguments, error) {
-	// since there can't be naming collisions with contracts and events,
-	// we need to decide whether we're calling a method or an event
-	var args Arguments
 	if method, ok := abi.Methods[name]; ok {
 		if len(data)%32 != 0 {
 			return nil, fmt.Errorf("abi: improperly formatted output: %s - Bytes: [%+v]", string(data), data)
 		}
-		args = method.Outputs
+		return method.Outputs, nil
 	}
 	if event, ok := abi.Events[name]; ok {
-		args = event.Inputs
+		return event.Inputs, nil
 	}
-	if args == nil {
-		return nil, errors.New("abi: could not locate named method or event")
-	}
-	return args, nil
+	return nil, errors.New("abi: could not locate named method or event")
 }
 
 // Unpack unpacks the output according to the abi specification.
@@ -258,12 +247,10 @@ func UnpackRevert(data []byte) (string, error) {
 // overloadedName would return send2 for input send.
 //
 // overloadedName works for methods, events and errors.
-func overloadedName(rawName string, isAvail func(string) bool) string {
+func overloadedName(rawName string, exists func(string) bool) string {
 	name := rawName
-	ok := isAvail(name)
-	for idx := 0; ok; idx++ {
+	for idx := 0; exists(name); idx++ {
 		name = fmt.Sprintf("%s%d", rawName, idx)
-		ok = isAvail(name)
 	}
 	return name
 }

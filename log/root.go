@@ -30,7 +30,7 @@ import (
 	prefixed "github.com/n42blockchain/N42/log/logrus-prefixed-formatter"
 	"github.com/sirupsen/logrus"
 
-	lumberjack "gopkg.in/natefinch/lumberjack.v2"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
@@ -225,31 +225,16 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 		LocalTime:  config.LocalTime,
 	}
 
-	// 设置文件输出格式（文件使用传统格式，便于解析）
-	var fileFormatter logrus.Formatter
-	if config.JSONFormat {
-		jsonFormatter := new(logrus.JSONFormatter)
-		jsonFormatter.TimestampFormat = "2006-01-02 15:04:05"
-		fileFormatter = jsonFormatter
-	} else {
-		textFormatter := new(prefixed.TextFormatter)
-		textFormatter.TimestampFormat = "2006-01-02 15:04:05"
-		textFormatter.FullTimestamp = true
-		textFormatter.DisableColors = true
-		fileFormatter = textFormatter
-	}
-
-	// 根据是否同时输出到控制台选择格式化器
+	// 根据是否同时输出到控制台选择格式化器和输出目标
 	if config.Console {
-		// 控制台使用漂亮格式，文件也使用 pretty 格式但无颜色
 		prettyFormatter := NewPrettyFormatter()
 		prettyFormatter.ForceColors = true
 		terminal.SetFormatter(prettyFormatter)
 		terminal.SetLevel(lvl)
 		terminal.SetOutput(io.MultiWriter(os.Stdout, lj))
 	} else {
-		// 仅输出到文件，使用传统格式
-		terminal.SetFormatter(fileFormatter)
+		// 仅输出到文件，使用传统格式便于解析
+		terminal.SetFormatter(newFileFormatter(config.JSONFormat))
 		terminal.SetLevel(lvl)
 		terminal.SetOutput(lj)
 	}
@@ -261,6 +246,20 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 	}
 }
 
+// newFileFormatter creates a logrus.Formatter suitable for file output.
+func newFileFormatter(jsonFormat bool) logrus.Formatter {
+	if jsonFormat {
+		return &logrus.JSONFormatter{
+			TimestampFormat: "2006-01-02 15:04:05",
+		}
+	}
+	return &prefixed.TextFormatter{
+		TimestampFormat: "2006-01-02 15:04:05",
+		FullTimestamp:   true,
+		DisableColors:   true,
+	}
+}
+
 // Close 关闭日志系统，停止后台任务
 func Close() {
 	if logManager != nil {
@@ -268,23 +267,21 @@ func Close() {
 	}
 }
 
-func InitMobileLogger(filepath string, isDebug bool) {
+func InitMobileLogger(path string, isDebug bool) {
 	if !isDebug {
 		return
 	}
+
 	formatter := new(prefixed.TextFormatter)
 	formatter.TimestampFormat = "2006-01-02 15:04:05"
 	formatter.FullTimestamp = true
 	formatter.DisableColors = false
+
 	terminal.SetFormatter(formatter)
-	if isDebug {
-		terminal.SetLevel(logrus.DebugLevel)
-	} else {
-		terminal.SetLevel(logrus.InfoLevel)
-	}
+	terminal.SetLevel(logrus.DebugLevel)
 	terminal.SetOutput(&lumberjack.Logger{
-		Filename:   filepath,
-		MaxSize:    10, //10MB
+		Filename:   path,
+		MaxSize:    10, // MB
 		MaxBackups: 2,
 		LocalTime:  false,
 		Compress:   false,

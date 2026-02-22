@@ -199,11 +199,11 @@ func TestPackUnpackValidationData(t *testing.T) {
 }
 
 func TestSigValidationConstants(t *testing.T) {
-	if SIG_VALIDATION_SUCCEEDED != 0 {
-		t.Errorf("SIG_VALIDATION_SUCCEEDED = %d, want 0", SIG_VALIDATION_SUCCEEDED)
+	if SigValidationSucceeded != 0 {
+		t.Errorf("SigValidationSucceeded = %d, want 0", SigValidationSucceeded)
 	}
-	if SIG_VALIDATION_FAILED != 1 {
-		t.Errorf("SIG_VALIDATION_FAILED = %d, want 1", SIG_VALIDATION_FAILED)
+	if SigValidationFailed != 1 {
+		t.Errorf("SigValidationFailed = %d, want 1", SigValidationFailed)
 	}
 }
 

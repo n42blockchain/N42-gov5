@@ -14,17 +14,13 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
-// Tests adapted from go-ethereum and erigon VM test suites.
+// Reference: go-ethereum/core/vm/opcodes_test.go
 
 package vm
 
 import (
 	"testing"
 )
-
-// =============================================================================
-// OpCode Tests (Reference: go-ethereum/core/vm/opcodes_test.go)
-// =============================================================================
 
 func TestOpCodeString(t *testing.T) {
 	tests := []struct {
@@ -129,20 +125,13 @@ func TestOpCodeString(t *testing.T) {
 			}
 		})
 	}
-
-	t.Logf("✓ All opcode strings match expected values")
 }
 
 func TestOpCodeStringUndefined(t *testing.T) {
-	// Test undefined opcode
-	undefinedOp := OpCode(0x21) // Not defined
-	str := undefinedOp.String()
-	if str == "" {
-		t.Error("Undefined opcode should have non-empty string")
+	undefinedOp := OpCode(0x21)
+	if str := undefinedOp.String(); str == "" {
+		t.Error("undefined opcode should have non-empty string")
 	}
-	t.Logf("Undefined opcode string: %s", str)
-
-	t.Logf("✓ Undefined opcodes return informative strings")
 }
 
 func TestStringToOp(t *testing.T) {
@@ -173,18 +162,12 @@ func TestStringToOp(t *testing.T) {
 			}
 		})
 	}
-
-	t.Logf("✓ StringToOp converts strings to opcodes correctly")
 }
 
 func TestStringToOpUnknown(t *testing.T) {
-	// Unknown string should return 0 (STOP)
-	result := StringToOp("UNKNOWN_OPCODE")
-	if result != STOP {
-		t.Errorf("StringToOp for unknown string = %#x, want %#x (STOP)", byte(result), byte(STOP))
+	if result := StringToOp("UNKNOWN_OPCODE"); result != STOP {
+		t.Errorf("StringToOp for unknown = %#x, want %#x (STOP)", byte(result), byte(STOP))
 	}
-
-	t.Logf("✓ StringToOp returns STOP for unknown strings")
 }
 
 func TestOpCodeIsPush(t *testing.T) {
@@ -207,8 +190,6 @@ func TestOpCodeIsPush(t *testing.T) {
 			t.Errorf("%s.IsPush() = true, want false", op)
 		}
 	}
-
-	t.Logf("✓ IsPush correctly identifies PUSH opcodes")
 }
 
 func TestOpCodeIsStaticJump(t *testing.T) {
@@ -222,12 +203,9 @@ func TestOpCodeIsStaticJump(t *testing.T) {
 			t.Errorf("%s.IsStaticJump() = true, want false", op)
 		}
 	}
-
-	t.Logf("✓ IsStaticJump correctly identifies JUMP opcode")
 }
 
 func TestOpCodeValues(t *testing.T) {
-	// Test that opcode byte values match Ethereum Yellow Paper
 	tests := []struct {
 		op       OpCode
 		expected byte
@@ -327,12 +305,9 @@ func TestOpCodeValues(t *testing.T) {
 			t.Errorf("%s = 0x%02x, want 0x%02x", tt.op, byte(tt.op), tt.expected)
 		}
 	}
-
-	t.Logf("✓ All opcode byte values match expected values")
 }
 
 func TestPushOpCodeRange(t *testing.T) {
-	// Verify PUSH opcodes are sequential
 	for i := 0; i < 32; i++ {
 		expected := OpCode(0x60 + i)
 		actual := PUSH1 + OpCode(i)
@@ -340,12 +315,9 @@ func TestPushOpCodeRange(t *testing.T) {
 			t.Errorf("PUSH%d: got 0x%02x, want 0x%02x", i+1, byte(actual), byte(expected))
 		}
 	}
-
-	t.Logf("✓ PUSH opcodes are sequential from 0x60 to 0x7f")
 }
 
 func TestDupOpCodeRange(t *testing.T) {
-	// Verify DUP opcodes are sequential
 	dups := []OpCode{
 		DUP1, DUP2, DUP3, DUP4, DUP5, DUP6, DUP7, DUP8,
 		DUP9, DUP10, DUP11, DUP12, DUP13, DUP14, DUP15, DUP16,
@@ -357,12 +329,9 @@ func TestDupOpCodeRange(t *testing.T) {
 			t.Errorf("DUP%d: got 0x%02x, want 0x%02x", i+1, byte(dup), byte(expected))
 		}
 	}
-
-	t.Logf("✓ DUP opcodes are sequential from 0x80 to 0x8f")
 }
 
 func TestSwapOpCodeRange(t *testing.T) {
-	// Verify SWAP opcodes are sequential
 	swaps := []OpCode{
 		SWAP1, SWAP2, SWAP3, SWAP4, SWAP5, SWAP6, SWAP7, SWAP8,
 		SWAP9, SWAP10, SWAP11, SWAP12, SWAP13, SWAP14, SWAP15, SWAP16,
@@ -374,12 +343,9 @@ func TestSwapOpCodeRange(t *testing.T) {
 			t.Errorf("SWAP%d: got 0x%02x, want 0x%02x", i+1, byte(swap), byte(expected))
 		}
 	}
-
-	t.Logf("✓ SWAP opcodes are sequential from 0x90 to 0x9f")
 }
 
 func TestLogOpCodeRange(t *testing.T) {
-	// Verify LOG opcodes are sequential
 	logs := []OpCode{LOG0, LOG1, LOG2, LOG3, LOG4}
 
 	for i, log := range logs {
@@ -388,12 +354,10 @@ func TestLogOpCodeRange(t *testing.T) {
 			t.Errorf("LOG%d: got 0x%02x, want 0x%02x", i, byte(log), byte(expected))
 		}
 	}
-
-	t.Logf("✓ LOG opcodes are sequential from 0xa0 to 0xa4")
 }
 
 // =============================================================================
-// OpCode Benchmark Tests
+// Benchmarks
 // =============================================================================
 
 func BenchmarkOpCodeString(b *testing.B) {
@@ -405,10 +369,9 @@ func BenchmarkOpCodeString(b *testing.B) {
 }
 
 func BenchmarkStringToOp(b *testing.B) {
-	name := "ADD"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = StringToOp(name)
+		_ = StringToOp("ADD")
 	}
 }
 
@@ -427,4 +390,3 @@ func BenchmarkOpCodeIsStaticJump(b *testing.B) {
 		_ = op.IsStaticJump()
 	}
 }
-

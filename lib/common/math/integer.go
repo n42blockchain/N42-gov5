@@ -29,19 +29,21 @@ import (
 )
 
 // Integer limit values.
+// Deprecated: Use the equivalent constants from the standard library math package
+// (e.g., math.MaxInt8, math.MinInt8). These are retained for backward compatibility.
 const (
-	MaxInt8   = 1<<7 - 1
-	MinInt8   = -1 << 7
-	MaxInt16  = 1<<15 - 1
-	MinInt16  = -1 << 15
-	MaxInt32  = 1<<31 - 1
-	MinInt32  = -1 << 31
-	MaxInt64  = 1<<63 - 1
-	MinInt64  = -1 << 63
-	MaxUint8  = 1<<8 - 1
-	MaxUint16 = 1<<16 - 1
-	MaxUint32 = 1<<32 - 1
-	MaxUint64 = 1<<64 - 1
+	MaxInt8   = math.MaxInt8
+	MinInt8   = math.MinInt8
+	MaxInt16  = math.MaxInt16
+	MinInt16  = math.MinInt16
+	MaxInt32  = math.MaxInt32
+	MinInt32  = math.MinInt32
+	MaxInt64  = math.MaxInt64
+	MinInt64  = math.MinInt64
+	MaxUint8  = math.MaxUint8
+	MaxUint16 = math.MaxUint16
+	MaxUint32 = math.MaxUint32
+	MaxUint64 = math.MaxUint64
 )
 
 // HexOrDecimal64 marshals uint64 as hex or decimal.

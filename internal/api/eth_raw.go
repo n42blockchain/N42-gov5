@@ -32,16 +32,14 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/accounts"
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-
-	"github.com/n42blockchain/N42/lib/kv"
 )
 
 // =============================================================================
@@ -231,43 +229,18 @@ func (s *TransactionAPI) GetRawTransactionByBlockHashAndIndex(ctx context.Contex
 // Returns:
 //   - The RLP-encoded transaction bytes
 func (s *TransactionAPI) GetRawTransactionByBlockNumberAndIndex(ctx context.Context, blockNr jsonrpc.BlockNumber, index hexutil.Uint) (hexutil.Bytes, error) {
-	var block interface {
-		Transactions() interface{ Len() int }
-	}
-
-	if blockNr == jsonrpc.PendingBlockNumber || blockNr == jsonrpc.LatestBlockNumber {
-		blk := s.api.BlockChain().CurrentBlock()
-		if blk == nil {
-			return nil, nil
-		}
-		txs := blk.Transactions()
-		if int(index) >= len(txs) {
-			return nil, nil
-		}
-		raw, err := txs[index].Marshal()
-		if err != nil {
-			return nil, err
-		}
-		return raw, nil
-	}
-
-	blk, err := s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(blockNr.Int64())))
-	if err != nil || blk == nil {
+	blk, err := BlockByNumber(ctx, blockNr, s.api)
+	if err != nil {
 		return nil, err
 	}
-	_ = block // silence unused variable
-
+	if blk == nil {
+		return nil, nil
+	}
 	txs := blk.Transactions()
 	if int(index) >= len(txs) {
 		return nil, nil
 	}
-
-	raw, err := txs[index].Marshal()
-	if err != nil {
-		return nil, err
-	}
-
-	return raw, nil
+	return txs[index].Marshal()
 }
 
 // =============================================================================

@@ -47,7 +47,6 @@ func (d *DiagnosticClient) runBodiesBlockDownloadListener(rootCtx context.Contex
 				d.bodiesMutex.Unlock()
 			}
 		}
-
 	}()
 }
 
@@ -67,7 +66,6 @@ func (d *DiagnosticClient) runBodiesBlockWriteListener(rootCtx context.Context) 
 				d.bodiesMutex.Unlock()
 			}
 		}
-
 	}()
 }
 
@@ -87,7 +85,6 @@ func (d *DiagnosticClient) runBodiesProcessedListener(rootCtx context.Context) {
 				d.bodiesMutex.Unlock()
 			}
 		}
-
 	}()
 }
 
@@ -107,7 +104,6 @@ func (d *DiagnosticClient) runBodiesProcessingListener(rootCtx context.Context) 
 				d.bodiesMutex.Unlock()
 			}
 		}
-
 	}()
 }
 

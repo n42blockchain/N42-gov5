@@ -64,7 +64,6 @@ func IsInvalidRLPError(err error) bool {
 	return errors.Is(err, ErrExpectedString) ||
 		errors.Is(err, ErrExpectedList) ||
 		errors.Is(err, ErrCanonInt) ||
-		errors.Is(err, ErrCanonInt) ||
 		errors.Is(err, ErrCanonSize) ||
 		errors.Is(err, ErrElemTooLarge) ||
 		errors.Is(err, ErrValueTooLarge) ||
@@ -1054,9 +1053,7 @@ func (s *Stream) readUint(size byte) (uint64, error) {
 		return uint64(b), err
 	default:
 		buffer := s.uintbuf[:8]
-		for i := range buffer {
-			buffer[i] = 0
-		}
+		clear(buffer)
 		start := int(8 - size)
 		if err := s.readFull(buffer[start:]); err != nil {
 			return 0, err

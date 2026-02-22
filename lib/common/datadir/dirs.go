@@ -23,8 +23,9 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/n42blockchain/N42/lib/common/dir"
 	"github.com/gofrs/flock"
+
+	"github.com/n42blockchain/N42/lib/common/dir"
 )
 
 // Dirs is the file system folder the node should use for any data storage
@@ -126,11 +127,7 @@ func ApplyMigrations(dirs Dirs) error {
 	defer lock.Unlock()
 
 	// add your migration here
-
-	if err := downloaderV2Migration(dirs); err != nil {
-		return err
-	}
-	return nil
+	return downloaderV2Migration(dirs)
 }
 
 func downloaderV2MigrationNeeded(dirs Dirs) bool {

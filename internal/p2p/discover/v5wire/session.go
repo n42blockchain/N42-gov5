@@ -20,10 +20,11 @@ import (
 	"crypto/ecdsa"
 	crand "crypto/rand"
 	"encoding/binary"
-	lru "github.com/hashicorp/golang-lru/v2"
-	"github.com/n42blockchain/N42/common/crypto"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
+
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/mclock"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 )
@@ -33,10 +34,9 @@ const (
 	sessionTTL       = 24 * time.Hour // Sessions expire after 24h to force key refresh
 )
 
-// The SessionCache keeps negotiated encryption keys and
+// SessionCache keeps negotiated encryption keys and
 // state for in-progress handshakes in the Discovery v5 wire protocol.
 type SessionCache struct {
-	//sessions   lru.BasicLRU[sessionID, *session]
 	sessions   *lru.Cache[sessionID, *session]
 	handshakes map[sessionID]*Whoareyou
 	clock      mclock.Clock
@@ -53,7 +53,7 @@ type sessionID struct {
 	addr string
 }
 
-// session contains session information
+// session holds the encryption keys and nonce state for a peer connection.
 type session struct {
 	writeKey     []byte
 	readKey      []byte
@@ -63,13 +63,17 @@ type session struct {
 
 // keysFlipped returns a copy of s with the read and write keys flipped.
 func (s *session) keysFlipped() *session {
-	return &session{s.readKey, s.writeKey, s.nonceCounter, s.createdAt}
+	return &session{
+		writeKey:     s.readKey,
+		readKey:      s.writeKey,
+		nonceCounter: s.nonceCounter,
+		createdAt:    s.createdAt,
+	}
 }
 
 func NewSessionCache(maxItems int, clock mclock.Clock) *SessionCache {
 	sessions, _ := lru.New[sessionID, *session](maxItems)
 	return &SessionCache{
-		//sessions:        lru.NewBasicLRU[sessionID, *session](maxItems),
 		sessions:        sessions,
 		handshakes:      make(map[sessionID]*Whoareyou),
 		clock:           clock,
@@ -103,7 +107,7 @@ func (sc *SessionCache) session(id enode.ID, addr string) *session {
 	if !ok {
 		return nil
 	}
-	if sc.clock.Now().Add(-sessionTTL) > item.createdAt {
+	if sc.clock.Now().Sub(item.createdAt) > sessionTTL {
 		sc.sessions.Remove(sessionID{id, addr})
 		return nil
 	}

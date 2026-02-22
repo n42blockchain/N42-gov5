@@ -23,19 +23,17 @@ import (
 )
 
 const (
-	//FirstContractIncarnation - first incarnation for contract accounts. After 1 it increases by 1.
+	// FirstContractIncarnation is the first incarnation for contract accounts.
+	// After 1, it increases by 1 on each contract recreation.
 	FirstContractIncarnation = 1
-	//NonContractIncarnation incarnation for non contracts
+
+	// NonContractIncarnation is the incarnation for non-contract (EOA) accounts.
 	NonContractIncarnation = 0
 )
 
-// Note: StateReader, StateWriter, and WriterWithChangeSets interfaces
-// are now defined in interfaces.go for better organization.
-
 // NoopWriter is a StateWriter implementation that does nothing.
 // Useful for testing or when state changes should be discarded.
-type NoopWriter struct {
-}
+type NoopWriter struct{}
 
 var noopWriter = &NoopWriter{}
 

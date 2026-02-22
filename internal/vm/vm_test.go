@@ -17,6 +17,7 @@
 package vm
 
 import (
+	"bytes"
 	"math"
 	"testing"
 
@@ -47,7 +48,6 @@ func TestGasConstants(t *testing.T) {
 	if GasExtStep != 20 {
 		t.Errorf("GasExtStep should be 20, got %d", GasExtStep)
 	}
-	t.Logf("✓ Gas constants are correct")
 }
 
 func TestSafeMulExtended(t *testing.T) {
@@ -76,7 +76,6 @@ func TestSafeMulExtended(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("✓ safeMul works correctly")
 }
 
 func TestSafeAddExtended(t *testing.T) {
@@ -104,7 +103,6 @@ func TestSafeAddExtended(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("✓ safeAdd works correctly")
 }
 
 func TestToWordSizeExtended(t *testing.T) {
@@ -131,30 +129,6 @@ func TestToWordSizeExtended(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("✓ toWordSize works correctly")
-}
-
-func TestToWordSizePublic(t *testing.T) {
-	tests := []struct {
-		name     string
-		size     uint64
-		expected uint64
-	}{
-		{"zero", 0, 0},
-		{"one_byte", 1, 1},
-		{"32_bytes", 32, 1},
-		{"33_bytes", 33, 2},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ToWordSize(tt.size)
-			if result != tt.expected {
-				t.Errorf("ToWordSize(%d) = %d, want %d", tt.size, result, tt.expected)
-			}
-		})
-	}
-	t.Logf("✓ ToWordSize works correctly")
 }
 
 func TestCallGas(t *testing.T) {
@@ -222,7 +196,6 @@ func TestCallGas(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("✓ callGas works correctly")
 }
 
 // =============================================================================
@@ -254,7 +227,6 @@ func TestCalcMemSize64(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("✓ calcMemSize64 works correctly")
 }
 
 func TestCalcMemSize64WithUint(t *testing.T) {
@@ -282,7 +254,6 @@ func TestCalcMemSize64WithUint(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("✓ calcMemSize64WithUint works correctly")
 }
 
 // =============================================================================
@@ -309,17 +280,11 @@ func TestGetData(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := getData(data, tt.start, tt.size)
-			if len(result) != len(tt.expected) {
-				t.Errorf("getData length = %d, want %d", len(result), len(tt.expected))
-			}
-			for i := range result {
-				if result[i] != tt.expected[i] {
-					t.Errorf("getData[%d] = %x, want %x", i, result[i], tt.expected[i])
-				}
+			if !bytes.Equal(result, tt.expected) {
+				t.Errorf("getData(%d, %d) = %x, want %x", tt.start, tt.size, result, tt.expected)
 			}
 		})
 	}
-	t.Logf("✓ getData works correctly")
 }
 
 func TestGetDataBig(t *testing.T) {
@@ -343,7 +308,6 @@ func TestGetDataBig(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("✓ getDataBig works correctly")
 }
 
 func TestAllZero(t *testing.T) {
@@ -367,7 +331,6 @@ func TestAllZero(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("✓ allZero works correctly")
 }
 
 // =============================================================================

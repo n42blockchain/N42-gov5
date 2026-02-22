@@ -24,15 +24,16 @@ import (
 	crand "crypto/rand"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"sync"
+	"time"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/internal/p2p/discover/v4wire"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/netutil"
 	"github.com/n42blockchain/N42/log"
-	"io"
-	"net"
-	"sync"
-	"time"
 )
 
 // Errors
@@ -289,10 +290,9 @@ func (t *UDPv4) newRandomLookup(ctx context.Context) *lookup {
 func (t *UDPv4) newLookup(ctx context.Context, targetKey encPubkey) *lookup {
 	target := enode.ID(crypto.Keccak256Hash(targetKey[:]))
 	ekey := v4wire.Pubkey(targetKey)
-	it := newLookup(ctx, t.tab, target, func(n *node) ([]*node, error) {
+	return newLookup(ctx, t.tab, target, func(n *node) ([]*node, error) {
 		return t.findnode(n.ID(), n.addr(), ekey)
 	})
-	return it
 }
 
 // findnode sends a findnode request to the given node and waits until
@@ -477,7 +477,7 @@ func (t *UDPv4) loop() {
 			// Notify and remove callbacks whose deadline is in the past.
 			for el := plist.Front(); el != nil; el = el.Next() {
 				p := el.Value.(*replyMatcher)
-				if now.After(p.deadline) || now.Equal(p.deadline) {
+				if !p.deadline.After(now) {
 					p.errc <- errTimeout
 					plist.Remove(el)
 					contTimeouts++
@@ -547,7 +547,7 @@ func (t *UDPv4) handlePacket(from *net.UDPAddr, buf []byte) error {
 	}
 	packet := t.wrapPacket(rawpacket)
 	fromID := fromKey.ID()
-	if err == nil && packet.preverify != nil {
+	if packet.preverify != nil {
 		err = packet.preverify(packet, from, fromID, fromKey)
 	}
 	t.log.Trace("<< "+packet.Name(), "id", fromID, "addr", from, "err", err)

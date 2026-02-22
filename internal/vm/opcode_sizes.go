@@ -28,39 +28,10 @@ func init() {
 		opcodeSizes[i] = 1
 	}
 
-	// PUSH1 through PUSH32: opcode + N bytes
-	opcodeSizes[PUSH1] = 2
-	opcodeSizes[PUSH2] = 3
-	opcodeSizes[PUSH3] = 4
-	opcodeSizes[PUSH4] = 5
-	opcodeSizes[PUSH5] = 6
-	opcodeSizes[PUSH6] = 7
-	opcodeSizes[PUSH7] = 8
-	opcodeSizes[PUSH8] = 9
-	opcodeSizes[PUSH9] = 10
-	opcodeSizes[PUSH10] = 11
-	opcodeSizes[PUSH11] = 12
-	opcodeSizes[PUSH12] = 13
-	opcodeSizes[PUSH13] = 14
-	opcodeSizes[PUSH14] = 15
-	opcodeSizes[PUSH15] = 16
-	opcodeSizes[PUSH16] = 17
-	opcodeSizes[PUSH17] = 18
-	opcodeSizes[PUSH18] = 19
-	opcodeSizes[PUSH19] = 20
-	opcodeSizes[PUSH20] = 21
-	opcodeSizes[PUSH21] = 22
-	opcodeSizes[PUSH22] = 23
-	opcodeSizes[PUSH23] = 24
-	opcodeSizes[PUSH24] = 25
-	opcodeSizes[PUSH25] = 26
-	opcodeSizes[PUSH26] = 27
-	opcodeSizes[PUSH27] = 28
-	opcodeSizes[PUSH28] = 29
-	opcodeSizes[PUSH29] = 30
-	opcodeSizes[PUSH30] = 31
-	opcodeSizes[PUSH31] = 32
-	opcodeSizes[PUSH32] = 33
+	// PUSH1 through PUSH32: opcode + N bytes (PUSH1=2, PUSH2=3, ..., PUSH32=33)
+	for op := PUSH1; op <= PUSH32; op++ {
+		opcodeSizes[op] = int8(op-PUSH1) + 2
+	}
 
 	// EOF-specific opcodes with immediate operands
 	// RJUMP, RJUMPI: opcode + 2 byte offset

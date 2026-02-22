@@ -18,20 +18,22 @@ package api
 
 import (
 	"context"
+	"math/big"
+	"sort"
+	"sync"
+
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
-	common2 "github.com/n42blockchain/N42/common"
+
+	"github.com/n42blockchain/N42/common"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/transaction"
-	types2 "github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
-	types "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
-	"math/big"
-	"sort"
-	"sync"
 )
 
 const sampleNumber = 3 // Number of transactions sampled in a block
@@ -39,9 +41,9 @@ const sampleNumber = 3 // Number of transactions sampled in a block
 // Oracle recommends gas prices based on the content of recent
 // blocks. Suitable for both light and full clients.
 type Oracle struct {
-	backend     common2.IBlockChain
-	miner       common2.IMiner
-	lastHead    types2.Hash
+	backend     common.IBlockChain
+	miner       common.IMiner
+	lastHead    types.Hash
 	lastPrice   *big.Int
 	maxPrice    *big.Int
 	ignorePrice *big.Int
@@ -57,7 +59,7 @@ type Oracle struct {
 
 // NewOracle returns a new gasprice oracle which can recommend suitable
 // gasprice for newly created transaction.
-func NewOracle(backend common2.IBlockChain, miner common2.IMiner, chainConfig *params.ChainConfig, params conf.GpoConfig) *Oracle {
+func NewOracle(backend common.IBlockChain, miner common.IMiner, chainConfig *params.ChainConfig, params conf.GpoConfig) *Oracle {
 	blocks := params.Blocks
 	if blocks < 1 {
 		blocks = 1
@@ -96,7 +98,7 @@ func NewOracle(backend common2.IBlockChain, miner common2.IMiner, chainConfig *p
 
 	cache, _ := lru.New(2048)
 
-	highestBlockCh := make(chan common2.ChainHighestBlock)
+	highestBlockCh := make(chan common.ChainHighestBlock)
 	highestSub, err := event.GlobalEvent.Subscribe(highestBlockCh)
 	if err != nil {
 		log.Warn("failed to subscribe to ChainHighestBlock events for gas price cache invalidation", "err", err)
@@ -107,7 +109,7 @@ func NewOracle(backend common2.IBlockChain, miner common2.IMiner, chainConfig *p
 	if highestSub != nil {
 		go func() {
 			defer close(highestBlockCh)
-			var lastHead types2.Hash
+			var lastHead types.Hash
 			for {
 				select {
 				case ev, ok := <-highestBlockCh:
@@ -152,11 +154,11 @@ func (oracle *Oracle) SuggestTipCap(ctx context.Context, chainConfig *params.Cha
 		return new(big.Int).Set(oracle.lastPrice), nil
 	}
 	head := currentBlock.Header()
-	var headHash types2.Hash
+	var headHash types.Hash
 	if head == nil {
-		headHash = types2.Hash{}
+		headHash = types.Hash{}
 	} else {
-		headHash = types2.Hash(head.Hash())
+		headHash = types.Hash(head.Hash())
 	}
 
 	// If the latest gasprice is still available, return it.
@@ -179,12 +181,12 @@ func (oracle *Oracle) SuggestTipCap(ctx context.Context, chainConfig *params.Cha
 	var (
 		sent, exp int
 		number    = head.Number64().Uint64()
-		result    = make(chan results, oracle.checkBlocks)
+		result    = make(chan blockResult, oracle.checkBlocks)
 		quit      = make(chan struct{})
 		results   []*big.Int
 	)
 	for sent < oracle.checkBlocks && number > 0 {
-		go oracle.getBlockValues(ctx, types.MakeSigner(chainConfig, big.NewInt(int64(number))), number, sampleNumber, oracle.ignorePrice, result, quit)
+		go oracle.getBlockValues(ctx, avmtypes.MakeSigner(chainConfig, big.NewInt(int64(number))), number, sampleNumber, oracle.ignorePrice, result, quit)
 		sent++
 		exp++
 		number--
@@ -207,7 +209,7 @@ func (oracle *Oracle) SuggestTipCap(ctx context.Context, chainConfig *params.Cha
 		// meaningful returned, try to query more blocks. But the maximum
 		// is 2*checkBlocks.
 		if len(res.values) == 1 && len(results)+1+exp < oracle.checkBlocks*2 && number > 0 {
-			go oracle.getBlockValues(ctx, types.MakeSigner(chainConfig, big.NewInt(int64(number))), number, sampleNumber, oracle.ignorePrice, result, quit)
+			go oracle.getBlockValues(ctx, avmtypes.MakeSigner(chainConfig, big.NewInt(int64(number))), number, sampleNumber, oracle.ignorePrice, result, quit)
 			sent++
 			exp++
 			number--
@@ -230,7 +232,7 @@ func (oracle *Oracle) SuggestTipCap(ctx context.Context, chainConfig *params.Cha
 	return new(big.Int).Set(price), nil
 }
 
-type results struct {
+type blockResult struct {
 	values []*big.Int
 	err    error
 }
@@ -239,11 +241,11 @@ type results struct {
 // and sends it to the result channel. If the block is empty or all transactions
 // are sent by the miner itself(it doesn't make any sense to include this kind of
 // transaction prices for sampling), nil gasprice is returned.
-func (oracle *Oracle) getBlockValues(ctx context.Context, signer types.Signer, blockNum uint64, limit int, ignoreUnder *big.Int, result chan results, quit chan struct{}) {
+func (oracle *Oracle) getBlockValues(ctx context.Context, signer avmtypes.Signer, blockNum uint64, limit int, ignoreUnder *big.Int, result chan blockResult, quit chan struct{}) {
 	block, err := oracle.backend.GetBlockByNumber(uint256.NewInt(uint64(jsonrpc.BlockNumber(blockNum))))
 	if block == nil {
 		select {
-		case result <- results{nil, err}:
+		case result <- blockResult{nil, err}:
 		case <-quit:
 		}
 		return
@@ -278,7 +280,7 @@ func (oracle *Oracle) getBlockValues(ctx context.Context, signer types.Signer, b
 		}
 	}
 	select {
-	case result <- results{prices, nil}:
+	case result <- blockResult{prices, nil}:
 	case <-quit:
 	}
 }

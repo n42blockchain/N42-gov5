@@ -19,7 +19,6 @@ package kv
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/n42blockchain/N42/lib/gointerfaces/types"
 )
@@ -878,10 +877,13 @@ func TablesCfgByLabel(label Label) TableCfg {
 		panic(fmt.Sprintf("unexpected label: %s", label))
 	}
 }
-func sortBuckets() {
-	sort.SliceStable(ChaindataTables, func(i, j int) bool {
-		return strings.Compare(ChaindataTables[i], ChaindataTables[j]) < 0
-	})
+// ensureTableDefaults populates cfg with default entries for any tables not already present.
+func ensureTableDefaults(cfg TableCfg, tables []string) {
+	for _, name := range tables {
+		if _, ok := cfg[name]; !ok {
+			cfg[name] = TableCfgItem{}
+		}
+	}
 }
 
 func init() {
@@ -889,18 +891,14 @@ func init() {
 }
 
 func reinit() {
-	sortBuckets()
+	sort.SliceStable(ChaindataTables, func(i, j int) bool {
+		return ChaindataTables[i] < ChaindataTables[j]
+	})
 
-	for _, name := range ChaindataTables {
-		_, ok := ChaindataTablesCfg[name]
-		if !ok {
-			ChaindataTablesCfg[name] = TableCfgItem{}
-		}
-	}
+	ensureTableDefaults(ChaindataTablesCfg, ChaindataTables)
 
 	for _, name := range ChaindataDeprecatedTables {
-		_, ok := ChaindataTablesCfg[name]
-		if !ok {
+		if _, ok := ChaindataTablesCfg[name]; !ok {
 			ChaindataTablesCfg[name] = TableCfgItem{}
 		}
 		tmp := ChaindataTablesCfg[name]
@@ -908,40 +906,11 @@ func reinit() {
 		ChaindataTablesCfg[name] = tmp
 	}
 
-	for _, name := range TxPoolTables {
-		_, ok := TxpoolTablesCfg[name]
-		if !ok {
-			TxpoolTablesCfg[name] = TableCfgItem{}
-		}
-	}
-
-	for _, name := range SentryTables {
-		_, ok := SentryTablesCfg[name]
-		if !ok {
-			SentryTablesCfg[name] = TableCfgItem{}
-		}
-	}
-
-	for _, name := range DownloaderTables {
-		_, ok := DownloaderTablesCfg[name]
-		if !ok {
-			DownloaderTablesCfg[name] = TableCfgItem{}
-		}
-	}
-
-	for _, name := range ReconTables {
-		_, ok := ReconTablesCfg[name]
-		if !ok {
-			ReconTablesCfg[name] = TableCfgItem{}
-		}
-	}
-
-	for _, name := range DiagnosticsTables {
-		_, ok := DiagnosticsTablesCfg[name]
-		if !ok {
-			DiagnosticsTablesCfg[name] = TableCfgItem{}
-		}
-	}
+	ensureTableDefaults(TxpoolTablesCfg, TxPoolTables)
+	ensureTableDefaults(SentryTablesCfg, SentryTables)
+	ensureTableDefaults(DownloaderTablesCfg, DownloaderTables)
+	ensureTableDefaults(ReconTablesCfg, ReconTables)
+	ensureTableDefaults(DiagnosticsTablesCfg, DiagnosticsTables)
 }
 
 // Temporal

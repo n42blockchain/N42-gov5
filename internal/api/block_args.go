@@ -17,15 +17,17 @@
 package api
 
 import (
+	"math/big"
+
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
-	"math/big"
 )
 
 func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, inclTx bool, fullTx bool) (map[string]interface{}, error) {

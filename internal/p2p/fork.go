@@ -3,29 +3,29 @@ package p2p
 import (
 	"bytes"
 	"fmt"
+
 	"github.com/holiman/uint256"
+	"github.com/pkg/errors"
+
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/utils"
-	"github.com/pkg/errors"
 )
 
 const n42ENRKey = "n42Enr"
 
-// ForkDigest returns the current fork digest of
-// the node according to the local clock.
+// currentForkDigest returns the current fork digest of the node.
 func (s *Service) currentForkDigest() ([4]byte, error) {
 	return utils.CreateForkDigest(new(uint256.Int), s.genesisHash)
 }
 
-// Compares fork ENRs between an incoming peer's record and our node's
-// local record values for current and next fork version/epoch.
+// compareForkENR compares fork ENRs between an incoming peer's record and our
+// node's local record values.
 func (s *Service) compareForkENR(record *enr.Record) error {
 	remoteForkDigest := make([]byte, 4)
 	entry := enr.WithEntry(n42ENRKey, &remoteForkDigest)
-	err := record.Load(entry)
-	if err != nil {
+	if err := record.Load(entry); err != nil {
 		return err
 	}
 	enrString, err := SerializeENR(record)
@@ -35,9 +35,7 @@ func (s *Service) compareForkENR(record *enr.Record) error {
 
 	currentForkDigest, err := s.currentForkDigest()
 	if err != nil {
-		err := errors.Wrap(err, "could not retrieve fork digest")
-		//tracing.AnnotateError(span, err)
-		return err
+		return errors.Wrap(err, "could not retrieve fork digest")
 	}
 
 	if !bytes.Equal(remoteForkDigest, currentForkDigest[:]) {
@@ -51,11 +49,7 @@ func (s *Service) compareForkENR(record *enr.Record) error {
 	return nil
 }
 
-// Adds a fork entry as an ENR record under the Ethereum consensus EnrKey for
-// the local node. The fork entry is an ssz-encoded enrForkID type
-// which takes into account the current fork version from the current
-// epoch to create a fork digest, the next fork version,
-// and the next fork epoch.
+// addForkEntry adds a fork digest as an ENR record entry for the local node.
 func addForkEntry(node *enode.LocalNode, genesisHash types.Hash) (*enode.LocalNode, error) {
 	enc, err := utils.CreateForkDigest(new(uint256.Int), genesisHash)
 	if err != nil {

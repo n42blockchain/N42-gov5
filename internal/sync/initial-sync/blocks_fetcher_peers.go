@@ -2,13 +2,13 @@ package initialsync
 
 import (
 	"context"
-	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.opencensus.io/trace"
+
+	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
 )
 
 // peerLock returns peer lock for a given peer. If lock is not found, it is created.
@@ -20,7 +20,6 @@ func (f *blocksFetcher) peerLock(pid peer.ID) *peerLock {
 		return lock
 	}
 	f.peerLocks[pid] = &peerLock{
-		Mutex:    sync.Mutex{},
 		accessed: time.Now(),
 	}
 	return f.peerLocks[pid]
@@ -169,13 +168,12 @@ func (f *blocksFetcher) filterPeers(ctx context.Context, peers []peer.ID, peersP
 
 // trimPeers limits peer list, returning only specified percentage of peers.
 // Takes system constraints into account (min/max peers to sync).
-func trimPeers(peers []peer.ID, peersPercentage float64, MinSyncPeers int) []peer.ID {
-	// Safety check: return empty slice if no peers
+func trimPeers(peers []peer.ID, peersPercentage float64, minSyncPeers int) []peer.ID {
 	if len(peers) == 0 {
 		return peers
 	}
 
-	required := MinSyncPeers
+	required := minSyncPeers
 	// Weak/slow peers will be pushed down the list and trimmed since only percentage of peers is selected.
 	limit := math.Round(float64(len(peers)) * peersPercentage)
 	// Limit cannot be less that minimum peers required by sync mechanism.
@@ -183,10 +181,8 @@ func trimPeers(peers []peer.ID, peersPercentage float64, MinSyncPeers int) []pee
 	// Limit cannot be higher than number of peers available (safe-guard).
 	limit = math.Min(limit, float64(len(peers)))
 
-	limit = math.Floor(limit)
-
-	// Safety check: ensure limit is within bounds
-	limitInt := int(limit)
+	// Defensive bounds check against float64 edge cases (NaN, overflow).
+	limitInt := int(math.Floor(limit))
 	if limitInt < 0 {
 		limitInt = 0
 	}

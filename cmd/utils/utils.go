@@ -18,8 +18,6 @@ package utils
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/log"
 	"io"
 	"os"
 	"runtime"
@@ -28,6 +26,8 @@ import (
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 )
 
 // MakeAddress converts an account specified directly as a hex encoded string or

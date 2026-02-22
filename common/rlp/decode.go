@@ -22,7 +22,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"io"
 	"math/big"
 	"reflect"
@@ -30,6 +29,8 @@ import (
 	"sync"
 
 	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 //lint:ignore ST1012 EOL is not an error.
@@ -64,7 +65,6 @@ var (
 func IsInvalidRLPError(err error) bool {
 	return errors.Is(err, ErrExpectedString) ||
 		errors.Is(err, ErrExpectedList) ||
-		errors.Is(err, ErrCanonInt) ||
 		errors.Is(err, ErrCanonInt) ||
 		errors.Is(err, ErrCanonSize) ||
 		errors.Is(err, ErrElemTooLarge) ||

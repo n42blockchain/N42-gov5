@@ -31,6 +31,15 @@ import (
 // BUG(agl): this implementation is not constant time.
 // TODO(agl): keep GF(p²) elements in Mongomery form.
 
+func randomK(r io.Reader) (k *big.Int, err error) {
+	for {
+		k, err = rand.Int(r, Order)
+		if err != nil || k.Sign() > 0 {
+			return
+		}
+	}
+}
+
 // G1 is an abstract cyclic group. The zero value is suitable for use as the
 // output of an operation, but cannot be used as an input.
 type G1 struct {
@@ -39,19 +48,10 @@ type G1 struct {
 
 // RandomG1 returns x and g₁ˣ where x is a random, non-zero number read from r.
 func RandomG1(r io.Reader) (*big.Int, *G1, error) {
-	var k *big.Int
-	var err error
-
-	for {
-		k, err = rand.Int(r, Order)
-		if err != nil {
-			return nil, nil, err
-		}
-		if k.Sign() > 0 {
-			break
-		}
+	k, err := randomK(r)
+	if err != nil {
+		return nil, nil, err
 	}
-
 	return k, new(G1).ScalarBaseMult(k), nil
 }
 
@@ -166,21 +166,12 @@ type G2 struct {
 	p *twistPoint
 }
 
-// RandomG1 returns x and g₂ˣ where x is a random, non-zero number read from r.
+// RandomG2 returns x and g₂ˣ where x is a random, non-zero number read from r.
 func RandomG2(r io.Reader) (*big.Int, *G2, error) {
-	var k *big.Int
-	var err error
-
-	for {
-		k, err = rand.Int(r, Order)
-		if err != nil {
-			return nil, nil, err
-		}
-		if k.Sign() > 0 {
-			break
-		}
+	k, err := randomK(r)
+	if err != nil {
+		return nil, nil, err
 	}
-
 	return k, new(G2).ScalarBaseMult(k), nil
 }
 
@@ -412,11 +403,11 @@ func PairingCheck(a []*G1, b []*G2) bool {
 	acc := newGFp12(pool)
 	acc.SetOne()
 
-	for i := 0; i < len(a); i++ {
-		if a[i].p.IsInfinity() || b[i].p.IsInfinity() {
+	for i, g1 := range a {
+		if g1.p.IsInfinity() || b[i].p.IsInfinity() {
 			continue
 		}
-		acc.Mul(acc, miller(b[i].p, a[i].p, pool), pool)
+		acc.Mul(acc, miller(b[i].p, g1.p, pool), pool)
 	}
 	ret := finalExponentiation(acc, pool)
 	acc.Put(pool)

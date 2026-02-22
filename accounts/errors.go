@@ -21,28 +21,30 @@ import (
 	"fmt"
 )
 
-// ErrUnknownAccount is returned for any requested operation for which no backend
-// provides the specified account.
-var ErrUnknownAccount = errors.New("unknown account")
+var (
+	// ErrUnknownAccount is returned for any requested operation for which no backend
+	// provides the specified account.
+	ErrUnknownAccount = errors.New("unknown account")
 
-// ErrUnknownWallet is returned for any requested operation for which no backend
-// provides the specified wallet.
-var ErrUnknownWallet = errors.New("unknown wallet")
+	// ErrUnknownWallet is returned for any requested operation for which no backend
+	// provides the specified wallet.
+	ErrUnknownWallet = errors.New("unknown wallet")
 
-// ErrNotSupported is returned when an operation is requested from an account
-// backend that it does not support.
-var ErrNotSupported = errors.New("not supported")
+	// ErrNotSupported is returned when an operation is requested from an account
+	// backend that it does not support.
+	ErrNotSupported = errors.New("not supported")
 
-// ErrInvalidPassphrase is returned when a decryption operation receives a bad
-// passphrase.
-var ErrInvalidPassphrase = errors.New("invalid password")
+	// ErrInvalidPassphrase is returned when a decryption operation receives a bad
+	// passphrase.
+	ErrInvalidPassphrase = errors.New("invalid password")
 
-// ErrWalletAlreadyOpen is returned if a wallet is attempted to be opened the
-// second time.
-var ErrWalletAlreadyOpen = errors.New("wallet already open")
+	// ErrWalletAlreadyOpen is returned if a wallet is attempted to be opened the
+	// second time.
+	ErrWalletAlreadyOpen = errors.New("wallet already open")
 
-// ErrWalletClosed is returned if a wallet is offline.
-var ErrWalletClosed = errors.New("wallet closed")
+	// ErrWalletClosed is returned if a wallet is offline.
+	ErrWalletClosed = errors.New("wallet closed")
+)
 
 // AuthNeededError is returned by backends for signing requests where the user
 // is required to provide further authentication before signing can succeed.

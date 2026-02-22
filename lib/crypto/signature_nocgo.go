@@ -34,8 +34,7 @@ func Ecrecover(hash, sig []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	bytes := pub.SerializeUncompressed()
-	return bytes, err
+	return pub.SerializeUncompressed(), nil
 }
 
 func sigToPub(hash, sig []byte) (*btcec.PublicKey, error) {
@@ -69,8 +68,8 @@ func SigToPub(hash, sig []byte) (*ecdsa.PublicKey, error) {
 //
 // The produced signature is in the [R || S || V] format where V is 0 or 1.
 func Sign(hash []byte, prv *ecdsa.PrivateKey) ([]byte, error) {
-	if len(hash) != 32 {
-		return nil, fmt.Errorf("hash is required to be exactly 32 bytes (%d)", len(hash))
+	if len(hash) != DigestLength {
+		return nil, fmt.Errorf("hash is required to be exactly %d bytes (%d)", DigestLength, len(hash))
 	}
 	if prv.Curve != btcec.S256() {
 		return nil, fmt.Errorf("private key curve is not secp256k1")

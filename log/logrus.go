@@ -23,7 +23,6 @@ import (
 
 	"github.com/go-stack/stack"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/exp/maps"
 )
 
 // Note: We only use the 'terminal' logger from root.go to avoid duplicate output.
@@ -44,45 +43,43 @@ func (l *logger) newMap() map[string]interface{} {
 }
 
 func (l *logger) returnMap(m map[string]interface{}) {
-	maps.Clear(m)
+	clear(m)
 	l.mapPool.Put(m)
 }
 
 func (l *logger) write(msg string, lvl Lvl, ctx []interface{}, skip int) {
-	field := l.newMap()
-	defer l.returnMap(field)
-	var prepareFields = func() {
-		field["prefix"] = fmt.Sprintf("%k", stack.Caller(skip))
-		ctx = newContext(l.ctx, ctx)
-		for i := 0; i < len(ctx); i += 2 {
-			k, ok := ctx[i].(string)
-			if !ok {
-
-			}
-			if s, ok := ctx[i+1].(TerminalStringer); ok {
-				field[k] = s.TerminalString()
-			} else {
-				field[k] = ctx[i+1]
-			}
-		}
-	}
-
-	// Only use terminal logger to avoid duplicate output
-	// terminal is the primary logger configured in Init()
-	// Map LvlCrit (0) to FatalLevel (1) to avoid panic
+	// Map LvlCrit (0) to FatalLevel (1) to avoid logrus panic behavior
 	logrusLvl := logrus.Level(lvl)
 	if lvl == LvlCrit {
 		logrusLvl = logrus.FatalLevel
 	}
-	if terminal.IsLevelEnabled(logrusLvl) {
-		prepareFields()
-		terminal.WithFields(field).Log(logrusLvl, msg)
+
+	if !terminal.IsLevelEnabled(logrusLvl) {
+		return
 	}
+
+	field := l.newMap()
+	defer l.returnMap(field)
+
+	field["prefix"] = fmt.Sprintf("%k", stack.Caller(skip))
+	merged := newContext(l.ctx, ctx)
+	for i := 0; i < len(merged); i += 2 {
+		k, ok := merged[i].(string)
+		if !ok {
+			continue
+		}
+		if s, ok := merged[i+1].(TerminalStringer); ok {
+			field[k] = s.TerminalString()
+		} else {
+			field[k] = merged[i+1]
+		}
+	}
+
+	terminal.WithFields(field).Log(logrusLvl, msg)
 }
 
 func (l *logger) New(ctx ...interface{}) Logger {
-	child := &logger{ctx: newContext(l.ctx, ctx)}
-	return child
+	return &logger{ctx: newContext(l.ctx, ctx)}
 }
 
 func newContext(prefix []interface{}, suffix []interface{}) []interface{} {

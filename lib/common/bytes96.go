@@ -12,9 +12,7 @@ import (
 	"github.com/n42blockchain/N42/lib/common/length"
 )
 
-var (
-	blsSignatureT = reflect.TypeOf(Bytes96{})
-)
+var blsSignatureT = reflect.TypeOf(Bytes96{})
 
 type Bytes96 [length.Bytes96]byte
 
@@ -31,17 +29,16 @@ func (b *Bytes96) UnmarshalText(input []byte) error {
 	return hexutility.UnmarshalFixedText("BLSSignature", input, b[:])
 }
 
-// MarshalText returns the hex representation of a.
+// MarshalText returns the hex representation of b.
 func (b Bytes96) MarshalText() ([]byte, error) {
-	bl := b[:]
 	result := make([]byte, len(b)*2+2)
 	copy(result, hexPrefix)
-	hex.Encode(result[2:], bl)
+	hex.Encode(result[2:], b[:])
 	return result, nil
 }
 
 // Format implements fmt.Formatter.
-// Hash supports the %v, %s, %v, %x, %X and %d format verbs.
+// Bytes96 supports the %v, %s, %q, %x, %X and %d format verbs.
 func (b Bytes96) Format(s fmt.State, c rune) {
 	hexb := make([]byte, 2+len(b)*2)
 	copy(hexb, "0x")

@@ -535,8 +535,7 @@ func TestDomain_MergeFiles(t *testing.T) {
 
 func TestDomain_ScanFiles(t *testing.T) {
 	logger := log.New()
-	path, db, d, txs := filledDomain(t, logger)
-	_ = path
+	_, db, d, txs := filledDomain(t, logger)
 	collateAndMerge(t, db, nil, d, txs)
 	// Recreate domain and re-scan the files
 	txNum := d.txNum
@@ -577,20 +576,9 @@ func TestDomain_Delete(t *testing.T) {
 	defer dc.Close()
 	for txNum := uint64(0); txNum < 1000; txNum++ {
 		label := fmt.Sprintf("txNum=%d", txNum)
-		//val, ok, err := dc.GetBeforeTxNum([]byte("key1"), txNum+1, tx)
-		//require.NoError(err)
-		//require.True(ok)
-		//if txNum%2 == 0 {
-		//	require.Equal([]byte("value1"), val, label)
-		//} else {
-		//	require.Nil(val, label)
-		//}
-		//if txNum == 976 {
 		val, err := dc.GetBeforeTxNum([]byte("key2"), txNum+1, tx)
 		require.NoError(err)
-		//require.False(ok, label)
 		require.Nil(val, label)
-		//}
 	}
 }
 

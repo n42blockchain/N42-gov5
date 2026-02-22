@@ -26,14 +26,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"github.com/c2h5oh/datasize"
-	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/erigontech/mdbx-go/mdbx"
 	stack2 "github.com/go-stack/stack"
 	"golang.org/x/exp/maps"
@@ -44,6 +42,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/iter"
 	"github.com/n42blockchain/N42/lib/kv/order"
+	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/mmap"
 )
 
@@ -246,7 +245,7 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 	if dbg.MdbxReadAhead() {
 		opts = opts.Flags(func(u uint) uint { return u &^ mdbx.NoReadahead }) //nolint
 	}
-	if opts.flags&mdbx.Accede != 0 || opts.flags&mdbx.Readonly != 0 {
+	if opts.HasFlag(mdbx.Accede) || opts.HasFlag(mdbx.Readonly) {
 		for retry := 0; ; retry++ {
 			exists := dir.FileExist(filepath.Join(opts.path, "mdbx.dat"))
 			if exists {
@@ -261,7 +260,6 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 				return nil, ctx.Err()
 			}
 		}
-
 	}
 
 	env, err := mdbx.NewEnv(mdbx.Label(opts.label.String()))
@@ -290,16 +288,9 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 		}
 	}
 
-	// erigon using big transactions
-	// increase "page measured" options. need do it after env.Open() because default are depend on pageSize known only after env.Open()
+	// Increase "page measured" options for large transactions.
+	// Must be called before env.Open() because after that they require rwtx-lock.
 	if !opts.HasFlag(mdbx.Readonly) {
-		// 1/8 is good for transactions with a lot of modifications - to reduce invalidation size.
-		// But Erigon app now using Batch and etl.Collectors to avoid writing to DB frequently changing data.
-		// It means most of our writes are: APPEND or "single UPSERT per key during transaction"
-		//if err = env.SetOption(mdbx.OptSpillMinDenominator, 8); err != nil {
-		//	return nil, err
-		//}
-
 		txnDpInitial, err := env.GetOption(mdbx.OptTxnDpInitial)
 		if err != nil {
 			return nil, err
@@ -382,9 +373,6 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 			return nil, err
 		}
 	}
-	//if err := env.SetOption(mdbx.OptSyncBytes, uint64(math2.MaxUint64)); err != nil {
-	//	return nil, err
-	//}
 
 	if opts.roTxsLimiter == nil {
 		targetSemCount := int64(runtime.GOMAXPROCS(-1) * 16)
@@ -452,7 +440,6 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 		} else if staleReaders > 0 {
 			db.log.Info("cleared reader slots from dead processes", "amount", staleReaders)
 		}
-
 	}
 	db.path = opts.path
 	addToPathDbMap(opts.path, db)
@@ -615,7 +602,7 @@ func (db *MdbxKV) Batch(fn func(tx kv.RwTx) error) error {
 	errCh := make(chan error, 1)
 
 	db.batchMu.Lock()
-	if (db.batch == nil) || (db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize) {
+	if db.batch == nil || len(db.batch.calls) >= db.MaxBatchSize {
 		// There is no existing batch, or the existing batch is full; start a new one.
 		db.batch = &batch{
 			db: db,
@@ -649,30 +636,29 @@ func (db *MdbxKV) CHandle() unsafe.Pointer {
 // otherwise re-try by RW transaction
 // it allow open DB from another process - even if main process holding long RW transaction
 func (db *MdbxKV) openDBIs(buckets []string) error {
+	createAll := func(migrator kv.BucketMigrator) error {
+		for _, name := range buckets {
+			if db.buckets[name].IsDeprecated {
+				continue
+			}
+			if err := migrator.CreateBucket(name); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	if db.ReadOnly() || db.Accede() {
 		return db.View(context.Background(), func(tx kv.Tx) error {
-			for _, name := range buckets {
-				if db.buckets[name].IsDeprecated {
-					continue
-				}
-				if err := tx.(kv.BucketMigrator).CreateBucket(name); err != nil {
-					return err
-				}
+			if err := createAll(tx.(kv.BucketMigrator)); err != nil {
+				return err
 			}
 			return tx.Commit() // when open db as read-only, commit of this RO transaction is required
 		})
 	}
 
 	return db.Update(context.Background(), func(tx kv.RwTx) error {
-		for _, name := range buckets {
-			if db.buckets[name].IsDeprecated {
-				continue
-			}
-			if err := tx.(kv.BucketMigrator).CreateBucket(name); err != nil {
-				return err
-			}
-		}
-		return nil
+		return createAll(tx.(kv.BucketMigrator))
 	})
 }
 
@@ -928,38 +914,24 @@ func (db *MdbxKV) View(ctx context.Context, f func(tx kv.Tx) error) (err error) 
 	return f(tx)
 }
 
-func (db *MdbxKV) UpdateNosync(ctx context.Context, f func(tx kv.RwTx) error) (err error) {
-	tx, err := db.BeginRwNosync(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	err = f(tx)
-	if err != nil {
-		return err
-	}
-	err = tx.Commit()
-	if err != nil {
-		return err
-	}
-	return nil
+func (db *MdbxKV) UpdateNosync(ctx context.Context, f func(tx kv.RwTx) error) error {
+	return db.update(ctx, f, db.BeginRwNosync)
 }
 
-func (db *MdbxKV) Update(ctx context.Context, f func(tx kv.RwTx) error) (err error) {
-	tx, err := db.BeginRw(ctx)
+func (db *MdbxKV) Update(ctx context.Context, f func(tx kv.RwTx) error) error {
+	return db.update(ctx, f, db.BeginRw)
+}
+
+func (db *MdbxKV) update(ctx context.Context, f func(tx kv.RwTx) error, begin func(ctx context.Context) (kv.RwTx, error)) error {
+	tx, err := begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	err = f(tx)
-	if err != nil {
+	if err = f(tx); err != nil {
 		return err
 	}
-	err = tx.Commit()
-	if err != nil {
-		return err
-	}
-	return nil
+	return tx.Commit()
 }
 
 func (tx *MdbxTx) CreateBucket(name string) error {
@@ -1070,15 +1042,6 @@ func (tx *MdbxTx) Commit() error {
 		tx.db.leakDetector.Del(tx.id)
 	}()
 	tx.closeCursors()
-
-	//slowTx := 10 * time.Second
-	//if debug.SlowCommit() > 0 {
-	//	slowTx = debug.SlowCommit()
-	//}
-	//
-	//if debug.BigRoTxKb() > 0 || debug.BigRwTxKb() > 0 {
-	//	tx.PrintDebugInfo()
-	//}
 	tx.CollectMetrics()
 
 	latency, err := tx.tx.Commit()
@@ -1088,19 +1051,10 @@ func (tx *MdbxTx) Commit() error {
 
 	if tx.db.opts.label == kv.ChainDB {
 		kv.DbCommitPreparation.Observe(latency.Preparation.Seconds())
-		//kv.DbCommitAudit.Update(latency.Audit.Seconds())
 		kv.DbCommitWrite.Observe(latency.Write.Seconds())
 		kv.DbCommitSync.Observe(latency.Sync.Seconds())
 		kv.DbCommitEnding.Observe(latency.Ending.Seconds())
 		kv.DbCommitTotal.Observe(latency.Whole.Seconds())
-
-		//kv.DbGcWorkPnlMergeTime.Update(latency.GCDetails.WorkPnlMergeTime.Seconds())
-		//kv.DbGcWorkPnlMergeVolume.Set(uint64(latency.GCDetails.WorkPnlMergeVolume))
-		//kv.DbGcWorkPnlMergeCalls.Set(uint64(latency.GCDetails.WorkPnlMergeCalls))
-		//
-		//kv.DbGcSelfPnlMergeTime.Update(latency.GCDetails.SelfPnlMergeTime.Seconds())
-		//kv.DbGcSelfPnlMergeVolume.Set(uint64(latency.GCDetails.SelfPnlMergeVolume))
-		//kv.DbGcSelfPnlMergeCalls.Set(uint64(latency.GCDetails.SelfPnlMergeCalls))
 	}
 
 	return nil
@@ -1121,7 +1075,6 @@ func (tx *MdbxTx) Rollback() {
 		tx.db.leakDetector.Del(tx.id)
 	}()
 	tx.closeCursors()
-	//tx.printDebugInfo()
 	tx.tx.Abort()
 }
 
@@ -1135,27 +1088,7 @@ func (tx *MdbxTx) SpaceDirty() (uint64, uint64, error) {
 }
 
 func (tx *MdbxTx) PrintDebugInfo() {
-	/*
-		txInfo, err := tx.tx.Info(true)
-		if err != nil {
-			panic(err)
-		}
-
-		txSize := uint(txInfo.SpaceDirty / 1024)
-		doPrint := debug.BigRoTxKb() == 0 && debug.BigRwTxKb() == 0 ||
-			tx.readOnly && debug.BigRoTxKb() > 0 && txSize > debug.BigRoTxKb() ||
-			(!tx.readOnly && debug.BigRwTxKb() > 0 && txSize > debug.BigRwTxKb())
-		if doPrint {
-			tx.db.log.Info("Tx info",
-				"id", txInfo.Id,
-				"read_lag", txInfo.ReadLag,
-				"ro", tx.readOnly,
-				//"space_retired_mb", txInfo.SpaceRetired/1024/1024,
-				"space_dirty_mb", txInfo.SpaceDirty/1024/1024,
-				//"callers", debug.Callers(7),
-			)
-		}
-	*/
+	// no-op: reserved for future debug instrumentation
 }
 
 func (tx *MdbxTx) closeCursors() {
@@ -1311,7 +1244,7 @@ func (tx *MdbxTx) DBSize() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return info.Geo.Current, err
+	return info.Geo.Current, nil
 }
 
 func (tx *MdbxTx) RwCursor(bucket string) (kv.RwCursor, error) {
@@ -1641,14 +1574,13 @@ func (c *MdbxCursor) PutNoOverwrite(key []byte, value []byte) error {
 }
 
 func (c *MdbxCursor) Put(key []byte, value []byte) error {
-	b := c.bucketCfg
-	if b.AutoDupSortKeysConversion {
-		if err := c.putDupSort(key, value); err != nil {
-			return fmt.Errorf("label: %s, table: %s, err: %w", c.tx.db.opts.label, c.bucketName, err)
-		}
-		return nil
+	var err error
+	if c.bucketCfg.AutoDupSortKeysConversion {
+		err = c.putDupSort(key, value)
+	} else {
+		err = c.put(key, value)
 	}
-	if err := c.put(key, value); err != nil {
+	if err != nil {
 		return fmt.Errorf("label: %s, table: %s, err: %w", c.tx.db.opts.label, c.bucketName, err)
 	}
 	return nil
@@ -1914,9 +1846,7 @@ func bucketSlice(b kv.TableCfg) []string {
 	for name := range b {
 		buckets = append(buckets, name)
 	}
-	sort.Slice(buckets, func(i, j int) bool {
-		return strings.Compare(buckets[i], buckets[j]) < 0
-	})
+	sort.Strings(buckets)
 	return buckets
 }
 

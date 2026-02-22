@@ -10,12 +10,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/n42blockchain/N42/lib/common/background"
-
 	"github.com/n42blockchain/N42/lib/common"
+	"github.com/n42blockchain/N42/lib/common/background"
+	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/seg"
 )
 
@@ -86,23 +85,22 @@ func pivotKeysFromKV(dataPath string) ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer decomp.Close()
 
 	getter := decomp.MakeGetter()
 	getter.Reset(0)
 
 	key := make([]byte, 0, 64)
-
 	listing := make([][]byte, 0, 1000)
 
 	for getter.HasNext() {
 		if len(listing) > 100000 {
 			break
 		}
-		key, _ := getter.Next(key[:0])
+		key, _ = getter.Next(key[:0])
 		listing = append(listing, common.Copy(key))
 		getter.Skip()
 	}
-	decomp.Close()
 
 	return listing, nil
 }

@@ -16,8 +16,11 @@
 
 package download
 
-import "time"
-import "github.com/libp2p/go-libp2p/core/peer"
+import (
+	"time"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+)
 
 type Request struct {
 	peer *peer.ID

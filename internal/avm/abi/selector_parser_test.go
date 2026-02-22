@@ -18,7 +18,6 @@ package abi
 
 import (
 	"fmt"
-	"log"
 	"reflect"
 	"testing"
 )
@@ -28,18 +27,20 @@ func TestParseSelector(t *testing.T) {
 		var result []ArgumentMarshaling
 		for i, typeOrComponents := range types {
 			name := fmt.Sprintf("name%d", i)
-			if typeName, ok := typeOrComponents.(string); ok {
-				result = append(result, ArgumentMarshaling{name, typeName, typeName, nil, false})
-			} else if components, ok := typeOrComponents.([]ArgumentMarshaling); ok {
-				result = append(result, ArgumentMarshaling{name, "tuple", "tuple", components, false})
-			} else if components, ok := typeOrComponents.([][]ArgumentMarshaling); ok {
-				result = append(result, ArgumentMarshaling{name, "tuple[]", "tuple[]", components[0], false})
-			} else {
-				log.Fatalf("unexpected type %T", typeOrComponents)
+			switch v := typeOrComponents.(type) {
+			case string:
+				result = append(result, ArgumentMarshaling{name, v, v, nil, false})
+			case []ArgumentMarshaling:
+				result = append(result, ArgumentMarshaling{name, "tuple", "tuple", v, false})
+			case [][]ArgumentMarshaling:
+				result = append(result, ArgumentMarshaling{name, "tuple[]", "tuple[]", v[0], false})
+			default:
+				t.Fatalf("unexpected type %T", typeOrComponents)
 			}
 		}
 		return result
 	}
+
 	tests := []struct {
 		input string
 		name  string
@@ -60,20 +61,22 @@ func TestParseSelector(t *testing.T) {
 		{"singleArrayNestWithArrayAndArray((uint256[],address[2],uint8[4][][5])[],bytes32[])", "singleArrayNestWithArrayAndArray",
 			mkType([][]ArgumentMarshaling{mkType("uint256[]", "address[2]", "uint8[4][][5]")}, "bytes32[]")},
 	}
-	for i, tt := range tests {
-		selector, err := ParseSelector(tt.input)
-		if err != nil {
-			t.Errorf("test %d: failed to parse selector '%v': %v", i, tt.input, err)
-		}
-		if selector.Name != tt.name {
-			t.Errorf("test %d: unexpected function name: '%s' != '%s'", i, selector.Name, tt.name)
-		}
 
-		if selector.Type != "function" {
-			t.Errorf("test %d: unexpected type: '%s' != '%s'", i, selector.Type, "function")
-		}
-		if !reflect.DeepEqual(selector.Inputs, tt.args) {
-			t.Errorf("test %d: unexpected args: '%v' != '%v'", i, selector.Inputs, tt.args)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			selector, err := ParseSelector(tt.input)
+			if err != nil {
+				t.Fatalf("failed to parse selector '%v': %v", tt.input, err)
+			}
+			if selector.Name != tt.name {
+				t.Errorf("unexpected function name: got %q, want %q", selector.Name, tt.name)
+			}
+			if selector.Type != "function" {
+				t.Errorf("unexpected type: got %q, want %q", selector.Type, "function")
+			}
+			if !reflect.DeepEqual(selector.Inputs, tt.args) {
+				t.Errorf("unexpected args: got %v, want %v", selector.Inputs, tt.args)
+			}
+		})
 	}
 }

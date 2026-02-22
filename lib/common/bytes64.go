@@ -11,9 +11,7 @@ import (
 	"github.com/n42blockchain/N42/lib/common/length"
 )
 
-var (
-	bytes64T = reflect.TypeOf(Bytes64{})
-)
+var bytes64T = reflect.TypeOf(Bytes64{})
 
 type Bytes64 [length.Bytes64]byte
 
@@ -30,17 +28,16 @@ func (b *Bytes64) UnmarshalText(input []byte) error {
 	return hexutility.UnmarshalFixedText("Bytes64", input, b[:])
 }
 
-// MarshalText returns the hex representation of a.
+// MarshalText returns the hex representation of b.
 func (b Bytes64) MarshalText() ([]byte, error) {
-	bl := b[:]
 	result := make([]byte, len(b)*2+2)
 	copy(result, hexPrefix)
-	hex.Encode(result[2:], bl)
+	hex.Encode(result[2:], b[:])
 	return result, nil
 }
 
 // Format implements fmt.Formatter.
-// Hash supports the %v, %s, %v, %x, %X and %d format verbs.
+// Bytes64 supports the %v, %s, %q, %x, %X and %d format verbs.
 func (b Bytes64) Format(s fmt.State, c rune) {
 	hexb := make([]byte, 2+len(b)*2)
 	copy(hexb, "0x")

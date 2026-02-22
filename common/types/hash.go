@@ -21,15 +21,14 @@ import (
 	"database/sql/driver"
 	"encoding/hex"
 	"fmt"
-
-	"github.com/n42blockchain/N42/common/hexutil"
-
 	"hash"
 	"math/big"
 	"math/rand"
 	"reflect"
 
 	"golang.org/x/crypto/sha3"
+
+	"github.com/n42blockchain/N42/common/hexutil"
 )
 
 const (
@@ -39,7 +38,6 @@ const (
 var (
 	hashT    = reflect.TypeOf(Hash{})
 	addressT = reflect.TypeOf(Address{})
-	//addressSt = reflect.TypeOf(Address32{})
 )
 
 type Hash [HashLength]byte
@@ -109,9 +107,8 @@ func (h Hash) Value() (driver.Value, error) {
 func BytesHash(b []byte) Hash {
 	h3 := sha3.New256()
 	h3.Write(b)
-	r := h3.Sum(nil)
 	var h Hash
-	copy(h[:], r[:HashLength])
+	copy(h[:], h3.Sum(nil))
 	return h
 }
 
@@ -125,14 +122,11 @@ func BytesToHash(b []byte) Hash {
 }
 
 func StringToHash(s string) Hash {
-	var h Hash
 	b, err := hex.DecodeString(s)
-	if err == nil {
-		//copy(h[:], b[:HashLength])
-		return BytesToHash(b)
+	if err != nil {
+		return Hash{}
 	}
-
-	return h
+	return BytesToHash(b)
 }
 
 func (h Hash) String() string {
@@ -140,8 +134,7 @@ func (h Hash) String() string {
 }
 
 func (h Hash) HexBytes() []byte {
-	s := h.String()
-	return []byte(s)
+	return []byte(h.String())
 }
 
 func (h *Hash) SetString(s string) error {
@@ -162,8 +155,8 @@ func (h Hash) Marshal() ([]byte, error) {
 }
 
 func (h *Hash) MarshalTo(data []byte) (n int, err error) {
-	copy(data, h.Bytes())
-	return len(h.Bytes()), err
+	copy(data, h[:])
+	return HashLength, nil
 }
 
 func (h *Hash) Unmarshal(data []byte) error {
@@ -171,7 +164,7 @@ func (h *Hash) Unmarshal(data []byte) error {
 }
 
 func (h *Hash) Size() int {
-	return len(h.Bytes())
+	return HashLength
 }
 
 // Format implements fmt.Formatter.
@@ -210,7 +203,7 @@ func (h *Hash) UnmarshalJSON(input []byte) error {
 }
 
 func (h Hash) Equal(other Hash) bool {
-	return bytes.Equal(h.Bytes(), other.Bytes())
+	return bytes.Equal(h[:], other[:])
 }
 
 // HashDifference returns a new set which is the difference between a and b.
@@ -290,16 +283,12 @@ func Bytes2Hex(d []byte) string {
 // If b is larger than len(h), b will be cropped from the left.
 func HexToHash(s string) Hash { return BytesToHash(FromHex2Bytes(s)) }
 
-// FromHex returns the bytes represented by the hexadecimal string s.
+// FromHex2Bytes returns the bytes represented by the hexadecimal string s.
 // s may be prefixed with "0x".
+// This is functionally identical to FromHex1 in bytes.go but retained
+// for backward compatibility with existing callers.
 func FromHex2Bytes(s string) []byte {
-	if has0xPrefix(s) {
-		s = s[2:]
-	}
-	if len(s)%2 == 1 {
-		s = "0" + s
-	}
-	return Hex2Bytes(s)
+	return FromHex1(s)
 }
 
 // Hashes is a slice of common.Hash, implementing sort.Interface

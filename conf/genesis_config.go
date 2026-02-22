@@ -33,7 +33,6 @@ type Genesis struct {
 	Mixhash    types.Hash          `json:"mixHash"`
 	Coinbase   types.Address       `json:"coinbase"`
 
-	//Engine *ConsensusConfig `json:"engine" yaml:"engine"`
 	Miners []string     `json:"miners" yaml:"miners"`
 	Alloc  GenesisAlloc `json:"alloc" yaml:"alloc"  gencodec:"required"`
 
@@ -49,7 +48,6 @@ type Genesis struct {
 type GenesisAlloc map[types.Address]GenesisAccount
 
 type GenesisAccount struct {
-	//Address string                    `json:"address" toml:"address"`
 	Balance string                    `json:"balance"`
 	Code    []byte                    `json:"code,omitempty"`
 	Storage map[types.Hash]types.Hash `json:"storage,omitempty"`

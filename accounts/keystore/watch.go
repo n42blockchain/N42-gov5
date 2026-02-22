@@ -20,8 +20,9 @@
 package keystore
 
 import (
-	"github.com/fsnotify/fsnotify"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 
 	"github.com/n42blockchain/N42/log"
 )
@@ -44,8 +45,7 @@ func newWatcher(ac *accountCache) *watcher {
 // enabled returns false on systems not supported.
 func (*watcher) enabled() bool { return true }
 
-// starts the watcher loop in the background.
-// Start a watcher in the background if that's not already in progress.
+// start launches the watcher loop in the background if not already in progress.
 // The caller must hold w.ac.mu.
 func (w *watcher) start() {
 	if w.starting || w.running {
@@ -122,7 +122,7 @@ func (w *watcher) loop() {
 			if !ok {
 				return
 			}
-			log.Info("Filsystem watcher error", "err", err)
+			log.Info("Filesystem watcher error", "err", err)
 		case <-debounce.C:
 			w.ac.scanAccounts()
 			rescanTriggered = false

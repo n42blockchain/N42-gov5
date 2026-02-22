@@ -23,6 +23,7 @@
 package vm
 
 import (
+	"errors"
 	"math/big"
 
 	"github.com/holiman/uint256"
@@ -385,19 +386,5 @@ func fakeExponentialEIP7691(factor, numerator, denominator *uint256.Int) *uint25
 	return output.Div(output, denominator)
 }
 
-// =============================================================================
-// Errors
-// =============================================================================
-
-var (
-	errInvalidBlobSchedule = &blobScheduleError{"invalid blob schedule configuration"}
-)
-
-type blobScheduleError struct {
-	msg string
-}
-
-func (e *blobScheduleError) Error() string {
-	return e.msg
-}
+var errInvalidBlobSchedule = errors.New("invalid blob schedule configuration")
 

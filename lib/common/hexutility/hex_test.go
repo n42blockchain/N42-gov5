@@ -16,9 +16,7 @@
 
 package hexutility
 
-import (
-	"testing"
-)
+import "testing"
 
 type marshalTest struct {
 	input interface{}

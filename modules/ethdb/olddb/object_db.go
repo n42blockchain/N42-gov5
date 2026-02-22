@@ -19,10 +19,10 @@ package olddb
 import (
 	"context"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/log"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/ethdb"
 )
 
@@ -41,34 +41,31 @@ func NewObjectDatabase(kv kv.RwDB) *ObjectDatabase {
 
 // Put inserts or updates a single entry.
 func (db *ObjectDatabase) Put(table string, k, v []byte) error {
-	err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
+	return db.kv.Update(context.Background(), func(tx kv.RwTx) error {
 		return tx.Put(table, k, v)
 	})
-	return err
 }
 
 // Append appends a single entry to the end of the bucket.
 func (db *ObjectDatabase) Append(bucket string, key []byte, value []byte) error {
-	err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
+	return db.kv.Update(context.Background(), func(tx kv.RwTx) error {
 		c, err := tx.RwCursor(bucket)
 		if err != nil {
 			return err
 		}
 		return c.Append(key, value)
 	})
-	return err
 }
 
 // AppendDup appends a single entry to the end of the bucket.
 func (db *ObjectDatabase) AppendDup(bucket string, key []byte, value []byte) error {
-	err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
+	return db.kv.Update(context.Background(), func(tx kv.RwTx) error {
 		c, err := tx.RwCursorDupSort(bucket)
 		if err != nil {
 			return err
 		}
 		return c.AppendDup(key, value)
 	})
-	return err
 }
 
 func (db *ObjectDatabase) Has(bucket string, key []byte) (bool, error) {
@@ -159,27 +156,22 @@ func (db *ObjectDatabase) ForPrefix(bucket string, prefix []byte, walker func(k,
 	})
 }
 
-// Delete deletes the key from the queue and database
+// Delete deletes the key from the queue and database.
 func (db *ObjectDatabase) Delete(table string, k []byte) error {
-	// Execute the actual operation
-	err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
+	return db.kv.Update(context.Background(), func(tx kv.RwTx) error {
 		return tx.Delete(table, k)
 	})
-	return err
 }
 
 func (db *ObjectDatabase) BucketExists(name string) (bool, error) {
-	exists := false
+	var exists bool
 	if err := db.kv.View(context.Background(), func(tx kv.Tx) (err error) {
 		migrator, ok := tx.(kv.BucketMigrator)
 		if !ok {
 			return fmt.Errorf("%T doesn't implement ethdb.TxMigrator interface", db.kv)
 		}
 		exists, err = migrator.ExistsBucket(name)
-		if err != nil {
-			return err
-		}
-		return nil
+		return err
 	}); err != nil {
 		return false, err
 	}
@@ -187,38 +179,29 @@ func (db *ObjectDatabase) BucketExists(name string) (bool, error) {
 }
 
 func (db *ObjectDatabase) ClearBuckets(buckets ...string) error {
-	for i := range buckets {
-		name := buckets[i]
+	for _, name := range buckets {
 		if err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
 			migrator, ok := tx.(kv.BucketMigrator)
 			if !ok {
 				return fmt.Errorf("%T doesn't implement ethdb.TxMigrator interface", db.kv)
 			}
-			if err := migrator.ClearBucket(name); err != nil {
-				return err
-			}
-			return nil
+			return migrator.ClearBucket(name)
 		}); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
 func (db *ObjectDatabase) DropBuckets(buckets ...string) error {
-	for i := range buckets {
-		name := buckets[i]
+	for _, name := range buckets {
 		log.Info("Dropping bucket", "name", name)
 		if err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
 			migrator, ok := tx.(kv.BucketMigrator)
 			if !ok {
 				return fmt.Errorf("%T doesn't implement ethdb.TxMigrator interface", db.kv)
 			}
-			if err := migrator.DropBucket(name); err != nil {
-				return err
-			}
-			return nil
+			return migrator.DropBucket(name)
 		}); err != nil {
 			return err
 		}

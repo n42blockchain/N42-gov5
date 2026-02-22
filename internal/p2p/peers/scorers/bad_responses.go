@@ -1,10 +1,11 @@
 package scorers
 
 import (
-	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
 
 var _ Scorer = (*BadResponsesScorer)(nil)
@@ -64,18 +65,12 @@ func (s *BadResponsesScorer) score(pid peer.ID) float64 {
 	if s.isBadPeer(pid) {
 		return BadPeerScore
 	}
-	score := float64(0)
 	peerData, ok := s.store.PeerData(pid)
-	if !ok {
-		return score
+	if !ok || peerData.BadResponses <= 0 {
+		return 0
 	}
-	if peerData.BadResponses > 0 {
-		score = float64(peerData.BadResponses) / float64(s.config.Threshold)
-		// Since score represents a penalty, negate it and multiply
-		// it by a factor.
-		score *= -DefaultBadResponsesPenaltyFactor
-	}
-	return score
+	// Score represents a penalty: negate the ratio and scale by the penalty factor.
+	return -float64(peerData.BadResponses) / float64(s.config.Threshold) * DefaultBadResponsesPenaltyFactor
 }
 
 // Params exposes scorer's parameters.

@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	lg "github.com/anacrolix/log"
+	"github.com/stretchr/testify/require"
+
 	"github.com/n42blockchain/N42/lib/common/datadir"
 	downloadercfg2 "github.com/n42blockchain/N42/lib/downloader/downloadercfg"
 	"github.com/n42blockchain/N42/lib/downloader/snaptype"
 	"github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/stretchr/testify/require"
 )
 
 func TestChangeInfoHashOfSameFile(t *testing.T) {

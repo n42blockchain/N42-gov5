@@ -4,9 +4,7 @@
 
 package bn256
 
-import (
-	"math/big"
-)
+import "math/big"
 
 func bigFromBase10(s string) *big.Int {
 	n, _ := new(big.Int).SetString(s, 10)

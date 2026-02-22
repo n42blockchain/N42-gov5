@@ -19,12 +19,14 @@ package block
 import (
 	"bytes"
 	"fmt"
+
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/rlp"
-	"github.com/n42blockchain/N42/utils"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/utils"
 )
 
 const (
@@ -38,8 +40,7 @@ const (
 type Receipts []*Receipt
 
 func (rs *Receipts) Marshal() ([]byte, error) {
-	pb := rs.ToProtoMessage()
-	return proto.Marshal(pb)
+	return proto.Marshal(rs.ToProtoMessage())
 }
 
 func (rs *Receipts) Unmarshal(data []byte) error {
@@ -68,10 +69,7 @@ func (rs Receipts) EncodeIndex(i int, w *bytes.Buffer) {
 		}
 	}
 	data := &storedReceipt{r.Status, r.CumulativeGasUsed, logs}
-
 	rlp.Encode(w, data)
-	//byte, _ := json.Marshal(data)
-	//w.Write(byte)
 }
 
 func (rs *Receipts) FromProtoMessage(receipts *types_pb.Receipts) error {
@@ -86,14 +84,11 @@ func (rs *Receipts) FromProtoMessage(receipts *types_pb.Receipts) error {
 }
 
 func (rs *Receipts) ToProtoMessage() proto.Message {
-	var receipts []*types_pb.Receipt
-	for _, receipt := range *rs {
-		pReceipt := receipt.toProtoMessage()
-		receipts = append(receipts, pReceipt.(*types_pb.Receipt))
+	receipts := make([]*types_pb.Receipt, len(*rs))
+	for i, receipt := range *rs {
+		receipts[i] = receipt.toProtoMessage().(*types_pb.Receipt)
 	}
-	return &types_pb.Receipts{
-		Receipts: receipts,
-	}
+	return &types_pb.Receipts{Receipts: receipts}
 }
 
 type Receipt struct {
@@ -119,8 +114,7 @@ type Receipt struct {
 }
 
 func (r *Receipt) Marshal() ([]byte, error) {
-	bpBlock := r.toProtoMessage()
-	return proto.Marshal(bpBlock)
+	return proto.Marshal(r.toProtoMessage())
 }
 
 func (r *Receipt) Unmarshal(data []byte) error {
@@ -128,20 +122,15 @@ func (r *Receipt) Unmarshal(data []byte) error {
 	if err := proto.Unmarshal(data, &pReceipt); err != nil {
 		return err
 	}
-	if err := r.fromProtoMessage(&pReceipt); err != nil {
-		return err
-	}
-	return nil
+	return r.fromProtoMessage(&pReceipt)
 }
 
 func (r *Receipt) toProtoMessage() proto.Message {
-	//bloom, _ := r.Bloom.Marshal()
-
-	var logs []*types_pb.Log
-	for _, log := range r.Logs {
-		logs = append(logs, log.ToProtoMessage().(*types_pb.Log))
+	logs := make([]*types_pb.Log, len(r.Logs))
+	for i, log := range r.Logs {
+		logs[i] = log.ToProtoMessage().(*types_pb.Log)
 	}
-	pb := &types_pb.Receipt{
+	return &types_pb.Receipt{
 		Type:              uint32(r.Type),
 		PostState:         r.PostState,
 		Status:            r.Status,
@@ -155,29 +144,17 @@ func (r *Receipt) toProtoMessage() proto.Message {
 		TransactionIndex:  uint64(r.TransactionIndex),
 		Bloom:             utils.ConvertBytesToH2048(r.Bloom[:]),
 	}
-	return pb
 }
 
 func (r *Receipt) fromProtoMessage(message proto.Message) error {
-	var (
-		pReceipt *types_pb.Receipt
-		ok       bool
-	)
-
-	if pReceipt, ok = message.(*types_pb.Receipt); !ok {
+	pReceipt, ok := message.(*types_pb.Receipt)
+	if !ok {
 		return fmt.Errorf("type conversion failure")
 	}
 
-	//bloom := new(types.Bloom)
-	//err := bloom.UnMarshalBloom(pReceipt.Bloom)
-	//if err != nil {
-	//	return fmt.Errorf("type conversion failure bloom")
-	//}
-
-	var logs []*Log
+	logs := make([]*Log, 0, len(pReceipt.Logs))
 	for _, logMessage := range pReceipt.Logs {
 		log := new(Log)
-
 		if err := log.FromProtoMessage(logMessage); err != nil {
 			return fmt.Errorf("type conversion failure log %s", err)
 		}

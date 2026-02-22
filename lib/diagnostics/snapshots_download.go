@@ -52,18 +52,9 @@ func (d *DiagnosticClient) SetSnapshotDownloadInfo(info SnapshotDownloadStatisti
 }
 
 func (d *DiagnosticClient) setSnapshotDownloadInfo(info SnapshotDownloadStatistics) {
-	d.syncStats.SnapshotDownload.Downloaded = info.Downloaded
-	d.syncStats.SnapshotDownload.Total = info.Total
-	d.syncStats.SnapshotDownload.TotalTime = info.TotalTime
-	d.syncStats.SnapshotDownload.DownloadRate = info.DownloadRate
-	d.syncStats.SnapshotDownload.UploadRate = info.UploadRate
-	d.syncStats.SnapshotDownload.Peers = info.Peers
-	d.syncStats.SnapshotDownload.Files = info.Files
-	d.syncStats.SnapshotDownload.Connections = info.Connections
-	d.syncStats.SnapshotDownload.Alloc = info.Alloc
-	d.syncStats.SnapshotDownload.Sys = info.Sys
-	d.syncStats.SnapshotDownload.DownloadFinished = info.DownloadFinished
-	d.syncStats.SnapshotDownload.TorrentMetadataReady = info.TorrentMetadataReady
+	// Preserve the existing SegmentsDownloading map; update all other fields.
+	info.SegmentsDownloading = d.syncStats.SnapshotDownload.SegmentsDownloading
+	d.syncStats.SnapshotDownload = info
 }
 
 func (d *DiagnosticClient) runSegmentDownloadingListener(rootCtx context.Context) {
@@ -94,16 +85,13 @@ func (d *DiagnosticClient) setDownloadSegments(info SegmentDownloadStatistics) {
 		d.syncStats.SnapshotDownload.SegmentsDownloading = map[string]SegmentDownloadStatistics{}
 	}
 
-	if val, ok := d.syncStats.SnapshotDownload.SegmentsDownloading[info.Name]; ok {
-		val.TotalBytes = info.TotalBytes
-		val.DownloadedBytes = info.DownloadedBytes
-		val.Webseeds = info.Webseeds
-		val.Peers = info.Peers
-
-		d.syncStats.SnapshotDownload.SegmentsDownloading[info.Name] = val
-	} else {
-		d.syncStats.SnapshotDownload.SegmentsDownloading[info.Name] = info
-	}
+	val := d.syncStats.SnapshotDownload.SegmentsDownloading[info.Name]
+	val.Name = info.Name
+	val.TotalBytes = info.TotalBytes
+	val.DownloadedBytes = info.DownloadedBytes
+	val.Webseeds = info.Webseeds
+	val.Peers = info.Peers
+	d.syncStats.SnapshotDownload.SegmentsDownloading[info.Name] = val
 }
 
 func (d *DiagnosticClient) runSnapshotFilesListListener(rootCtx context.Context) {
@@ -166,35 +154,15 @@ func (d *DiagnosticClient) updateFileDownloadedStatistics(downloadedInfo *FileDo
 	}
 
 	if downloadedInfo != nil {
-		dwStats := FileDownloadedStatistics{
+		val := d.syncStats.SnapshotDownload.SegmentsDownloading[downloadedInfo.FileName]
+		val.Name = downloadedInfo.FileName
+		val.DownloadedStats = FileDownloadedStatistics{
 			TimeTook:    downloadedInfo.TimeTook,
 			AverageRate: downloadedInfo.AverageRate,
 		}
-		if val, ok := d.syncStats.SnapshotDownload.SegmentsDownloading[downloadedInfo.FileName]; ok {
-			val.DownloadedStats = dwStats
-
-			d.syncStats.SnapshotDownload.SegmentsDownloading[downloadedInfo.FileName] = val
-		} else {
-			d.syncStats.SnapshotDownload.SegmentsDownloading[downloadedInfo.FileName] = SegmentDownloadStatistics{
-				Name:            downloadedInfo.FileName,
-				TotalBytes:      0,
-				DownloadedBytes: 0,
-				Webseeds:        make([]SegmentPeer, 0),
-				Peers:           make([]SegmentPeer, 0),
-				DownloadedStats: dwStats,
-			}
-		}
+		d.syncStats.SnapshotDownload.SegmentsDownloading[downloadedInfo.FileName] = val
 	} else {
-		if val, ok := d.syncStats.SnapshotDownload.SegmentsDownloading[downloadingInfo.Name]; ok {
-			val.TotalBytes = downloadingInfo.TotalBytes
-			val.DownloadedBytes = downloadingInfo.DownloadedBytes
-			val.Webseeds = downloadingInfo.Webseeds
-			val.Peers = downloadingInfo.Peers
-
-			d.syncStats.SnapshotDownload.SegmentsDownloading[downloadingInfo.Name] = val
-		} else {
-			d.syncStats.SnapshotDownload.SegmentsDownloading[downloadingInfo.Name] = *downloadingInfo
-		}
+		d.setDownloadSegments(*downloadingInfo)
 	}
 }
 

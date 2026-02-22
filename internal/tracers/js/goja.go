@@ -20,11 +20,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"math/big"
+	"slices"
 
 	"github.com/dop251/goja"
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -32,12 +32,11 @@ import (
 	"github.com/n42blockchain/N42/internal/tracers"
 	jsassets "github.com/n42blockchain/N42/internal/tracers/js/internal/tracers"
 	"github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/internal/vm/stack"
 )
 
-const (
-	memoryPadLimit = 1024 * 1024
-)
+const memoryPadLimit = 1024 * 1024
 
 var assetTracers = make(map[string]string)
 
@@ -48,14 +47,12 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-	type ctorFn = func(*tracers.Context, json.RawMessage) (tracers.Tracer, error)
-	lookup := func(code string) ctorFn {
-		return func(ctx *tracers.Context, cfg json.RawMessage) (tracers.Tracer, error) {
+	for name, code := range assetTracers {
+		code := code // capture loop variable for closure
+		ctor := func(ctx *tracers.Context, cfg json.RawMessage) (tracers.Tracer, error) {
 			return newJsTracer(code, ctx, cfg)
 		}
-	}
-	for name, code := range assetTracers {
-		tracers.DefaultDirectory.Register(name, lookup(code), true)
+		tracers.DefaultDirectory.Register(name, ctor, true)
 	}
 	tracers.DefaultDirectory.RegisterJSEval(newJsTracer)
 }
@@ -160,7 +157,9 @@ func newJsTracer(code string, ctx *tracers.Context, cfg json.RawMessage) (tracer
 		}
 	}
 
-	t.setTypeConverters()
+	if err := t.setTypeConverters(); err != nil {
+		return nil, err
+	}
 	t.setBuiltinFunctions()
 	ret, err := vm.RunString("(" + code + ")")
 	if err != nil {
@@ -234,11 +233,12 @@ func (t *jsTracer) CaptureStart(env vm.VMInterface, from common.Address, to comm
 	t.env = env.(*vm.EVM)
 	db := &dbObj{db: env.IntraBlockState(), vm: t.vm, toBig: t.toBig, toBuf: t.toBuf, fromBuf: t.fromBuf}
 	t.dbValue = db.setupObject()
+
+	callType := "CALL"
 	if create {
-		t.ctx["type"] = t.vm.ToValue("CREATE")
-	} else {
-		t.ctx["type"] = t.vm.ToValue("CALL")
+		callType = "CREATE"
 	}
+	t.ctx["type"] = t.vm.ToValue(callType)
 	t.ctx["from"] = t.vm.ToValue(from.Bytes())
 	t.ctx["to"] = t.vm.ToValue(to.Bytes())
 	t.ctx["input"] = t.vm.ToValue(input)
@@ -251,17 +251,14 @@ func (t *jsTracer) CaptureStart(env vm.VMInterface, from common.Address, to comm
 	}
 	t.ctx["value"] = valueBig
 	t.ctx["block"] = t.vm.ToValue(env.Context().BlockNumber)
-	// Update list of precompiles based on current block
+
 	rules := env.ChainConfig().Rules(env.Context().BlockNumber)
 	t.activePrecompiles = vm.ActivePrecompiles(rules)
 }
 
 // CaptureState implements the Tracer interface to trace a single step of VM execution.
 func (t *jsTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
-	if !t.traceStep {
-		return
-	}
-	if t.err != nil {
+	if !t.traceStep || t.err != nil {
 		return
 	}
 
@@ -303,10 +300,7 @@ func (t *jsTracer) CaptureEnd(output []byte, gasUsed uint64, err error) {
 
 // CaptureEnter is called when EVM enters a new scope (via call, create or selfdestruct).
 func (t *jsTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *uint256.Int) {
-	if !t.traceFrame {
-		return
-	}
-	if t.err != nil {
+	if !t.traceFrame || t.err != nil {
 		return
 	}
 
@@ -315,9 +309,10 @@ func (t *jsTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Ad
 	t.frame.to = to
 	t.frame.input = common.CopyBytes(input)
 	t.frame.gas = uint(gas)
-	t.frame.value = nil
 	if value != nil {
-		t.frame.value = new(big.Int).SetBytes(value.ToBig().Bytes())
+		t.frame.value = value.ToBig()
+	} else {
+		t.frame.value = nil
 	}
 
 	if _, err := t.enter(t.obj, t.frameValue); err != nil {
@@ -459,13 +454,7 @@ func (t *jsTracer) setBuiltinFunctions() {
 			vm.Interrupt(err)
 			return false
 		}
-		addr := common.BytesToAddress(a)
-		for _, p := range t.activePrecompiles {
-			if p == addr {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(t.activePrecompiles, common.BytesToAddress(a))
 	})
 	vm.Set("slice", func(slice goja.Value, start, end int) goja.Value {
 		b, err := t.fromBuf(vm, slice, false)
@@ -495,28 +484,23 @@ func (t *jsTracer) setTypeConverters() error {
 	if err != nil {
 		return err
 	}
-	// Used to create JS bigint objects from go.
 	toBigFn, ok := goja.AssertFunction(toBigCode)
 	if !ok {
 		return errors.New("failed to bind bigInt func")
 	}
-	toBigWrapper := func(vm *goja.Runtime, val string) (goja.Value, error) {
-		return toBigFn(goja.Undefined(), vm.ToValue(val))
+	t.toBig = func(rt *goja.Runtime, val string) (goja.Value, error) {
+		return toBigFn(goja.Undefined(), rt.ToValue(val))
 	}
-	t.toBig = toBigWrapper
-	// NOTE: We need this workaround to create JS buffers because
-	// goja doesn't at the moment expose constructors for typed arrays.
-	//
-	// Cache uint8ArrayType once to be used every time for less overhead.
+	// Cache Uint8Array constructor once for buffer conversions.
+	// This workaround is needed because goja doesn't expose constructors
+	// for typed arrays directly.
 	uint8ArrayType := t.vm.Get("Uint8Array")
-	toBufWrapper := func(vm *goja.Runtime, val []byte) (goja.Value, error) {
-		return toBuf(vm, uint8ArrayType, val)
+	t.toBuf = func(rt *goja.Runtime, val []byte) (goja.Value, error) {
+		return toBuf(rt, uint8ArrayType, val)
 	}
-	t.toBuf = toBufWrapper
-	fromBufWrapper := func(vm *goja.Runtime, buf goja.Value, allowString bool) ([]byte, error) {
-		return fromBuf(vm, uint8ArrayType, buf, allowString)
+	t.fromBuf = func(rt *goja.Runtime, buf goja.Value, allowString bool) ([]byte, error) {
+		return fromBuf(rt, uint8ArrayType, buf, allowString)
 	}
-	t.fromBuf = fromBufWrapper
 	return nil
 }
 
@@ -611,11 +595,11 @@ func (mo *memoryObj) Length() int {
 	return mo.memory.Len()
 }
 
-func (m *memoryObj) setupObject() *goja.Object {
-	o := m.vm.NewObject()
-	o.Set("slice", m.vm.ToValue(m.Slice))
-	o.Set("getUint", m.vm.ToValue(m.GetUint))
-	o.Set("length", m.vm.ToValue(m.Length))
+func (mo *memoryObj) setupObject() *goja.Object {
+	o := mo.vm.NewObject()
+	o.Set("slice", mo.vm.ToValue(mo.Slice))
+	o.Set("getUint", mo.vm.ToValue(mo.GetUint))
+	o.Set("length", mo.vm.ToValue(mo.Length))
 	return o
 }
 
@@ -799,12 +783,12 @@ func (co *contractObj) GetInput() goja.Value {
 	return res
 }
 
-func (c *contractObj) setupObject() *goja.Object {
-	o := c.vm.NewObject()
-	o.Set("getCaller", c.vm.ToValue(c.GetCaller))
-	o.Set("getAddress", c.vm.ToValue(c.GetAddress))
-	o.Set("getValue", c.vm.ToValue(c.GetValue))
-	o.Set("getInput", c.vm.ToValue(c.GetInput))
+func (co *contractObj) setupObject() *goja.Object {
+	o := co.vm.NewObject()
+	o.Set("getCaller", co.vm.ToValue(co.GetCaller))
+	o.Set("getAddress", co.vm.ToValue(co.GetAddress))
+	o.Set("getValue", co.vm.ToValue(co.GetValue))
+	o.Set("getInput", co.vm.ToValue(co.GetInput))
 	return o
 }
 
@@ -846,8 +830,7 @@ func (f *callframe) GetTo() goja.Value {
 }
 
 func (f *callframe) GetInput() goja.Value {
-	input := f.input
-	res, err := f.toBuf(f.vm, input)
+	res, err := f.toBuf(f.vm, f.input)
 	if err != nil {
 		f.vm.Interrupt(err)
 		return nil
@@ -963,11 +946,4 @@ func (l *steplog) setupObject() *goja.Object {
 	o.Set("memory", l.memory.setupObject())
 	o.Set("contract", l.contract.setupObject())
 	return o
-}
-
-func min(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
 }

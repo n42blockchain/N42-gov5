@@ -20,9 +20,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strings"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
-	"strings"
 )
 
 type Error struct {
@@ -41,31 +42,10 @@ type Error struct {
 }
 
 func NewError(name string, inputs Arguments) Error {
-	// sanitize inputs to remove inputs without names
-	// and precompute string and sig representation.
-	names := make([]string, len(inputs))
-	typess := make([]string, len(inputs))
-	for i, input := range inputs {
-		if input.Name == "" {
-			inputs[i] = Argument{
-				Name:    fmt.Sprintf("arg%d", i),
-				Indexed: input.Indexed,
-				Type:    input.Type,
-			}
-		} else {
-			inputs[i] = input
-		}
-		// string representation
-		names[i] = fmt.Sprintf("%v %v", input.Type, inputs[i].Name)
-		if input.Indexed {
-			names[i] = fmt.Sprintf("%v indexed %v", input.Type, inputs[i].Name)
-		}
-		// sig representation
-		typess[i] = input.Type.String()
-	}
+	names, typess := sanitizeInputs(inputs)
 
 	str := fmt.Sprintf("error %v(%v)", name, strings.Join(names, ", "))
-	sig := fmt.Sprintf("%v(%v)", name, strings.Join(typess, ","))
+	sig := buildSignature(name, typess)
 	id := types.BytesToHash(crypto.Keccak256([]byte(sig)))
 
 	return Error{

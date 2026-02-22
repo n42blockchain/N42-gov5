@@ -60,45 +60,12 @@ type CacheView interface {
 	GetCode(k []byte) ([]byte, error)
 }
 
-// Coherent works on top of Database Transaction and pair Coherent+ReadTransaction must
-// provide "Serializable Isolation Level" semantic: all data form consistent db view at moment
-// when read transaction started, read data are immutable until end of read transaction, reader can't see newer updates
+// Coherent cache provides serializable isolation for read transactions.
+// It maintains versioned roots keyed by state version ID, cloning the previous
+// canonical view on each new block. Cache misses fall through to the database.
 //
-// Every time a new state change comes, we do the following:
-// - Check that prevBlockHeight and prevBlockHash match what is the top values we have, and if they don't we
-// invalidate the cache, because we missed some messages and cannot consider the cache coherent anymore.
-// - Clone the cache pointer (such that the previous pointer is still accessible, but new one shared the content with it),
-// apply state updates to the cloned cache pointer and save under the new identified made from blockHeight and blockHash.
-// - If there is a conditional variable corresponding to the identifier, remove it from the map and notify conditional
-// variable, waking up the read-only transaction waiting on it.
-//
-// On the other hand, whenever we have a cache miss (by looking at the top cache), we do the following:
-// - Once read the current block height and block hash (canonical) from underlying db transaction
-// - Construct the identifier from the current block height and block hash
-// - Look for the constructed identifier in the cache. If the identifier is found, use the corresponding
-// cache in conjunction with this read-only transaction (it will be consistent with it). If the identifier is
-// not found, it means that the transaction has been committed in Erigon, but the state update has not
-// arrived yet (as shown in the picture on the right). Insert conditional variable for this identifier and wait on
-// it until either cache with the given identifier appears, or timeout (indicating that the cache update
-// mechanism is broken and cache is likely invalidated).
-//
-
-// Pair.Value == nil - is a marker of absense key in db
-
-// Coherent
-// High-level guaranties:
-// - Keys/Values returned by cache are valid/immutable until end of db transaction
-// - CacheView is always coherent with given db transaction -
-//
-// Rules of set view.isCanonical value:
-//   - method View can't parent.Clone() - because parent view is not coherent with current kv.Tx
-//   - only OnNewBlock method may do parent.Clone() and apply StateChanges to create coherent view of kv.Tx
-//   - parent.Clone() can't be caled if parent.isCanonical=false
-//   - only OnNewBlock method can set view.isCanonical=true
-//
-// Rules of filling cache.stateEvict:
-//   - changes in Canonical View SHOULD reflect in stateEvict
-//   - changes in Non-Canonical View SHOULD NOT reflect in stateEvict
+// Canonical views: only OnNewBlock may clone parent and set isCanonical=true.
+// Eviction: only changes in canonical views are tracked in stateEvict.
 type Coherent struct {
 	hasher               hash.Hash
 	codeEvictLen         metrics.Gauge
@@ -146,8 +113,10 @@ func (c *CoherentView) GetCode(k []byte) ([]byte, error) {
 	return c.cache.GetCode(k, c.tx, c.stateVersionID)
 }
 
-var _ Cache = (*Coherent)(nil)         // compile-time interface check
-var _ CacheView = (*CoherentView)(nil) // compile-time interface check
+var (
+	_ Cache     = (*Coherent)(nil)
+	_ CacheView = (*CoherentView)(nil)
+)
 
 const (
 	DEGREE    = 32
@@ -197,6 +166,17 @@ func New(cfg CoherentConfig) *Coherent {
 	}
 }
 
+func (c *Coherent) readStateVersionID(tx kv.Tx) (uint64, error) {
+	idBytes, err := tx.GetOne(kv.Sequence, kv.PlainStateVersion)
+	if err != nil {
+		return 0, err
+	}
+	if len(idBytes) == 0 {
+		return 0, nil
+	}
+	return binary.BigEndian.Uint64(idBytes), nil
+}
+
 // selectOrCreateRoot - used for usual getting root
 func (c *Coherent) selectOrCreateRoot(versionID uint64) *CoherentRoot {
 	c.lock.Lock()
@@ -230,14 +210,12 @@ func (c *Coherent) advanceRoot(stateVersionID uint64) (r *CoherentRoot) {
 	}
 
 	if prevView, ok := c.roots[stateVersionID-1]; ok && prevView.isCanonical {
-		//log.Info("advance: clone", "from", viewID-1, "to", viewID)
 		r.cache = prevView.cache.Copy()
 		r.codeCache = prevView.codeCache.Copy()
 	} else {
 		c.stateEvict.Init()
 		c.codeEvict.Init()
 		if r.cache == nil {
-			//log.Info("advance: new", "to", viewID)
 			r.cache = btree2.NewBTreeG[*Element](Less)
 			r.codeCache = btree2.NewBTreeG[*Element](Less)
 		} else {
@@ -268,6 +246,14 @@ func (c *Coherent) advanceRoot(stateVersionID uint64) (r *CoherentRoot) {
 	return r
 }
 
+// codeHash computes keccak256 of code and returns the 32-byte hash.
+func (c *Coherent) codeHash(code []byte) []byte {
+	c.hasher.Reset()
+	c.hasher.Write(code)
+	k := make([]byte, 0, 32)
+	return c.hasher.Sum(k)
+}
+
 func (c *Coherent) OnNewBlock(stateChanges *remote.StateChangeBatch) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -276,66 +262,45 @@ func (c *Coherent) OnNewBlock(stateChanges *remote.StateChangeBatch) {
 	r := c.advanceRoot(id)
 	for _, sc := range stateChanges.ChangeBatch {
 		for i := range sc.Changes {
-			switch sc.Changes[i].Action {
+			change := sc.Changes[i]
+			addr := gointerfaces.ConvertH160toAddress(change.Address)
+			switch change.Action {
 			case remote.Action_UPSERT:
-				addr := gointerfaces.ConvertH160toAddress(sc.Changes[i].Address)
-				v := sc.Changes[i].Data
-				//fmt.Printf("set: %x,%x\n", addr, v)
-				c.add(addr[:], v, r, id)
+				c.add(addr[:], change.Data, r, id)
 			case remote.Action_UPSERT_CODE:
-				addr := gointerfaces.ConvertH160toAddress(sc.Changes[i].Address)
-				v := sc.Changes[i].Data
-				c.add(addr[:], v, r, id)
-				c.hasher.Reset()
-				c.hasher.Write(sc.Changes[i].Code)
-				k := make([]byte, 32)
-				c.hasher.Sum(k)
-				c.addCode(k, sc.Changes[i].Code, r, id)
+				c.add(addr[:], change.Data, r, id)
+				c.addCode(c.codeHash(change.Code), change.Code, r, id)
 			case remote.Action_REMOVE:
-				addr := gointerfaces.ConvertH160toAddress(sc.Changes[i].Address)
 				c.add(addr[:], nil, r, id)
 			case remote.Action_STORAGE:
-				//skip, will check later
+				// handled below via StorageChanges
 			case remote.Action_CODE:
-				c.hasher.Reset()
-				c.hasher.Write(sc.Changes[i].Code)
-				k := make([]byte, 32)
-				c.hasher.Sum(k)
-				c.addCode(k, sc.Changes[i].Code, r, id)
+				c.addCode(c.codeHash(change.Code), change.Code, r, id)
 			default:
 				panic("not implemented yet")
 			}
-			if c.cfg.WithStorage && len(sc.Changes[i].StorageChanges) > 0 {
-				addr := gointerfaces.ConvertH160toAddress(sc.Changes[i].Address)
-				for _, change := range sc.Changes[i].StorageChanges {
-					loc := gointerfaces.ConvertH256ToHash(change.Location)
+			if c.cfg.WithStorage && len(change.StorageChanges) > 0 {
+				for _, sc := range change.StorageChanges {
+					loc := gointerfaces.ConvertH256ToHash(sc.Location)
 					k := make([]byte, 20+8+32)
 					copy(k, addr[:])
-					binary.BigEndian.PutUint64(k[20:], sc.Changes[i].Incarnation)
+					binary.BigEndian.PutUint64(k[20:], change.Incarnation)
 					copy(k[20+8:], loc[:])
-					c.add(k, change.Data, r, id)
+					c.add(k, sc.Data, r, id)
 				}
 			}
 		}
 	}
 
-	switched := r.readyChanClosed.CompareAndSwap(false, true)
-	if switched {
-		close(r.ready) //broadcast
+	if r.readyChanClosed.CompareAndSwap(false, true) {
+		close(r.ready)
 	}
-	//log.Info("on new block handled", "viewID", stateChanges.StateVersionID)
 }
 
 func (c *Coherent) View(ctx context.Context, tx kv.Tx) (CacheView, error) {
-	idBytes, err := tx.GetOne(kv.Sequence, kv.PlainStateVersion)
+	id, err := c.readStateVersionID(tx)
 	if err != nil {
 		return nil, err
-	}
-	var id uint64
-	if len(idBytes) == 0 {
-		id = 0
-	} else {
-		id = binary.BigEndian.Uint64(idBytes)
 	}
 	r := c.selectOrCreateRoot(id)
 
@@ -345,27 +310,23 @@ func (c *Coherent) View(ctx context.Context, tx kv.Tx) (CacheView, error) {
 
 	select { // fast non-blocking path
 	case <-r.ready:
-		//fmt.Printf("recv broadcast: %d\n", id)
 		return &CoherentView{stateVersionID: id, tx: tx, cache: c}, nil
 	default:
 	}
 
 	select { // slow blocking path
 	case <-r.ready:
-		//fmt.Printf("recv broadcast2: %d\n", tx.ViewID())
 	case <-ctx.Done():
 		return nil, fmt.Errorf("kvcache rootNum=%x, %w", tx.ViewID(), ctx.Err())
-	case <-time.After(c.cfg.NewBlockWait): //TODO: switch to timer to save resources
+	case <-time.After(c.cfg.NewBlockWait):
 		c.timeout.Inc()
 		c.waitExceededCount.Add(1)
-		//log.Info("timeout", "db_id", id, "has_btree", r.cache != nil)
 	}
 	return &CoherentView{stateVersionID: id, tx: tx, cache: c}, nil
 }
 
+// getFromCache uses full lock (not RLock) because RLock causes excessive runtime.usleep under load.
 func (c *Coherent) getFromCache(k []byte, id uint64, code bool) (*Element, *CoherentRoot, error) {
-	// using the full lock here rather than RLock as RLock causes a lot of calls to runtime.usleep degrading
-	// performance under load
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	r, ok := c.roots[id]
@@ -393,7 +354,6 @@ func (c *Coherent) Get(k []byte, tx kv.Tx, id uint64) ([]byte, error) {
 	}
 
 	if it != nil {
-		//fmt.Printf("from cache:  %#x,%x\n", k, it.(*Element).V)
 		c.hits.Inc()
 		return it.V, nil
 	}
@@ -403,7 +363,6 @@ func (c *Coherent) Get(k []byte, tx kv.Tx, id uint64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Printf("from db: %#x,%x\n", k, v)
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -418,7 +377,6 @@ func (c *Coherent) GetCode(k []byte, tx kv.Tx, id uint64) ([]byte, error) {
 	}
 
 	if it != nil {
-		//fmt.Printf("from cache:  %#x,%x\n", k, it.(*Element).V)
 		c.codeHits.Inc()
 		return it.V, nil
 	}
@@ -428,7 +386,6 @@ func (c *Coherent) GetCode(k []byte, tx kv.Tx, id uint64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Printf("from db: %#x,%x\n", k, v)
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -453,7 +410,6 @@ func (c *Coherent) add(k, v []byte, r *CoherentRoot, id uint64) *Element {
 	it := &Element{K: k, V: v}
 	replaced, _ := r.cache.Set(it)
 	if c.latestStateVersionID != id {
-		//fmt.Printf("add to non-last viewID: %d<%d\n", c.latestViewID, id)
 		return it
 	}
 	if replaced != nil {
@@ -472,7 +428,6 @@ func (c *Coherent) addCode(k, v []byte, r *CoherentRoot, id uint64) *Element {
 	it := &Element{K: k, V: v}
 	replaced, _ := r.codeCache.Set(it)
 	if c.latestStateVersionID != id {
-		//fmt.Printf("add to non-last viewID: %d<%d\n", c.latestViewID, id)
 		return it
 	}
 	if replaced != nil {
@@ -490,8 +445,7 @@ func (c *Coherent) addCode(k, v []byte, r *CoherentRoot, id uint64) *Element {
 func (c *Coherent) ValidateCurrentRoot(ctx context.Context, tx kv.Tx) (*CacheValidationResult, error) {
 
 	result := &CacheValidationResult{
-		Enabled:          true,
-		RequestCancelled: false,
+		Enabled: true,
 	}
 
 	select {
@@ -534,8 +488,7 @@ func (c *Coherent) ValidateCurrentRoot(ctx context.Context, tx kv.Tx) (*CacheVal
 	clearCache := false
 
 	compare := func(cache *btree2.BTreeG[*Element], bucket string) (bool, [][]byte, error) {
-		keys := make([][]byte, 0)
-
+		var keys [][]byte
 		for {
 			val, ok := cache.PopMax()
 			if !ok {
@@ -615,12 +568,12 @@ type Stat struct {
 }
 
 func DebugStats(cache Cache) []Stat {
-	res := []Stat{}
 	casted, ok := cache.(*Coherent)
 	if !ok {
-		return res
+		return nil
 	}
 	casted.lock.Lock()
+	res := make([]Stat, 0, len(casted.roots))
 	for root, r := range casted.roots {
 		res = append(res, Stat{
 			BlockNum: root,
@@ -648,7 +601,6 @@ func AssertCheckValues(ctx context.Context, tx kv.Tx, cache Cache) (int, error) 
 	checked := 0
 	casted.lock.Lock()
 	defer casted.lock.Unlock()
-	//log.Info("AssertCheckValues start", "db_id", tx.ViewID(), "mem_id", casted.id.Load(), "len", casted.cache.Len())
 	root, ok := casted.roots[castedView.stateVersionID]
 	if !ok {
 		return 0, nil
@@ -679,16 +631,10 @@ func (c *Coherent) evictRoots() {
 		return
 	}
 	to := c.latestStateVersionID - c.cfg.KeepViews
-	toDel := make([]uint64, 0, len(c.roots))
 	for txID := range c.roots {
-		if txID > to {
-			continue
+		if txID <= to {
+			delete(c.roots, txID)
 		}
-		toDel = append(toDel, txID)
-	}
-	//log.Info("forget old roots", "list", fmt.Sprintf("%d", toDel))
-	for _, txID := range toDel {
-		delete(c.roots, txID)
 	}
 }
 func (c *Coherent) Len() int {
@@ -697,7 +643,7 @@ func (c *Coherent) Len() int {
 	if c.latestStateView == nil {
 		return 0
 	}
-	return c.latestStateView.cache.Len() //todo: is it same with cache.len()?
+	return c.latestStateView.cache.Len()
 }
 
 // Element is an element of a linked list.
@@ -849,11 +795,6 @@ func (l *List) insert(e, at *Element) *Element {
 	return e
 }
 
-// insertValue is a convenience wrapper for insert(&Element{Value: v}, at).
-func (l *List) insertValue(e, at *Element) *Element {
-	return l.insert(e, at)
-}
-
 // remove removes e from its list, decrements l.len, and returns e.
 func (l *List) remove(e *Element) *Element {
 	e.prev.next = e.next
@@ -897,13 +838,13 @@ func (l *List) Remove(e *Element) ([]byte, []byte) {
 // PushFront inserts a new element e with value v at the front of list l and returns e.
 func (l *List) PushFront(e *Element) *Element {
 	l.lazyInit()
-	return l.insertValue(e, &l.root)
+	return l.insert(e, &l.root)
 }
 
 // PushBack inserts a new element e with value v at the back of list l and returns e.
 func (l *List) PushBack(e *Element) *Element {
 	l.lazyInit()
-	return l.insertValue(e, l.root.prev)
+	return l.insert(e, l.root.prev)
 }
 
 // InsertBefore inserts a new element e with value v immediately before mark and returns e.
@@ -914,7 +855,7 @@ func (l *List) InsertBefore(e *Element, mark *Element) *Element {
 		return nil
 	}
 	// see comment in List.Remove about initialization of l
-	return l.insertValue(e, mark.prev)
+	return l.insert(e, mark.prev)
 }
 
 // InsertAfter inserts a new element e with value v immediately after mark and returns e.
@@ -925,7 +866,7 @@ func (l *List) InsertAfter(e *Element, mark *Element) *Element {
 		return nil
 	}
 	// see comment in List.Remove about initialization of l
-	return l.insertValue(e, mark)
+	return l.insert(e, mark)
 }
 
 // MoveToFront moves element e to the front of list l.

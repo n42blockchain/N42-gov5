@@ -28,28 +28,25 @@ import (
 	"github.com/holiman/uint256"
 )
 
-// responseHeaders
+// responseHeaders responds to a header sync request by fetching headers from the local chain.
 func (d *Downloader) responseHeaders(taskID uint64, p common.Peer, task *sync_proto.SyncHeaderRequest) {
-
-	headers := make([]*types_pb.Header, 0, utils.ConvertH256ToUint256Int(task.Amount).Uint64())
+	amount := utils.ConvertH256ToUint256Int(task.Amount).Uint64()
+	headers := make([]*types_pb.Header, 0, amount)
 	ok := true
 
-	origin := task.Number
-	for i := 0; i < int(utils.ConvertH256ToUint256Int(task.Amount).Uint64()); i++ {
-		fullHeader := d.bc.GetHeaderByNumber(utils.ConvertH256ToUint256Int(origin))
-		var header *types_pb.Header
+	originNum := utils.ConvertH256ToUint256Int(task.Number)
+	for i := uint64(0); i < amount; i++ {
+		fullHeader := d.bc.GetHeaderByNumber(originNum)
 		if fullHeader == nil {
-			log.Warnf("cannot fetch header from db the number is:%v", utils.ConvertH256ToUint256Int(origin).Uint64())
-			headers = headers[0:0]
+			log.Warnf("cannot fetch header from db the number is:%v", originNum.Uint64())
+			headers = headers[:0]
 			ok = false
 			break
-		} else {
-			header = fullHeader.ToProtoMessage().(*types_pb.Header)
-			log.Tracef("fetch header from db the number is:%v", utils.ConvertH256ToUint256Int(header.Number).Uint64())
 		}
-
+		header := fullHeader.ToProtoMessage().(*types_pb.Header)
+		log.Tracef("fetch header from db the number is:%v", originNum.Uint64())
 		headers = append(headers, header)
-		origin = utils.ConvertUint256IntToH256(uint256.NewInt(0).Add(utils.ConvertH256ToUint256Int(origin), uint256.NewInt(1)))
+		originNum = new(uint256.Int).AddUint64(originNum, 1)
 	}
 
 	log.Tracef("fetch all header from db the count is:%v", len(headers))
@@ -65,33 +62,29 @@ func (d *Downloader) responseHeaders(taskID uint64, p common.Peer, task *sync_pr
 		},
 	}
 	payload, err := proto.Marshal(msg)
-
 	if err != nil {
 		log.Errorf("proto Marshal err: %v", err)
 		return
 	}
-
 	p.WriteMsg(message.MsgDownloader, payload)
-	log.Debugf("response sync task(headersRequest) ok: %v , taskID: %v, header count: %v", ok, taskID, len(headers))
+	log.Debugf("response sync task(headersRequest) ok: %v, taskID: %v, header count: %v", ok, taskID, len(headers))
 }
 
-// responseHeaders body
+// responseBlocks responds to a block body sync request by fetching blocks from the local chain.
 func (d *Downloader) responseBlocks(taskID uint64, p common.Peer, task *sync_proto.SyncBlockRequest) {
-
 	blocks := make([]*types_pb.Block, 0, len(task.Number))
-
 	ok := true
 
 	for _, number := range task.Number {
-		block, err := d.bc.GetBlockByNumber(utils.ConvertH256ToUint256Int(number))
+		blk, err := d.bc.GetBlockByNumber(utils.ConvertH256ToUint256Int(number))
 		if err != nil {
 			log.Infof("cannot fetch block from db the number is:%d, err: %v", utils.ConvertH256ToUint256Int(number).Uint64(), err)
-			blocks = blocks[0:0]
+			blocks = blocks[:0]
 			ok = false
 			break
 		}
-		if PBlock, ok := block.ToProtoMessage().(*types_pb.Block); ok {
-			blocks = append(blocks, PBlock)
+		if pbBlock, typeOk := blk.ToProtoMessage().(*types_pb.Block); typeOk {
+			blocks = append(blocks, pbBlock)
 			log.Tracef("fetch body from db the number is:%v", utils.ConvertH256ToUint256Int(number).Uint64())
 		}
 	}
@@ -109,12 +102,10 @@ func (d *Downloader) responseBlocks(taskID uint64, p common.Peer, task *sync_pro
 		},
 	}
 	payload, err := proto.Marshal(msg)
-
 	if err != nil {
 		log.Errorf("proto Marshal err: %v", err)
 		return
 	}
-
 	p.WriteMsg(message.MsgDownloader, payload)
-	log.Debugf("response sync task(blockRequest) ok: %v , taskID: %v, block count: %v", ok, taskID, len(task.Number))
+	log.Debugf("response sync task(blockRequest) ok: %v, taskID: %v, block count: %v", ok, taskID, len(task.Number))
 }

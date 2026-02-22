@@ -7,33 +7,30 @@ import (
 	"sync"
 
 	"github.com/golang/snappy"
-	"github.com/pkg/errors"
 	fastssz "github.com/prysmaticlabs/fastssz"
 )
 
 var _ NetworkEncoding = (*SszNetworkEncoder)(nil)
 
-// MaxGossipSize allowed for gossip messages.
-var MaxGossipSize = uint64(1 << 20) // 1 MiB
-var MaxChunkSize = uint64(1 << 20)  // 1 Mib.
+// MaxGossipSize is the maximum allowed size for gossip messages (1 MiB).
+var MaxGossipSize = uint64(1 << 20)
 
-// This pool defines the sync pool for our buffered snappy writers, so that they
-// can be constantly reused.
+// MaxChunkSize is the maximum allowed size for a single chunk (1 MiB).
+var MaxChunkSize = uint64(1 << 20)
+
 var bufWriterPool = new(sync.Pool)
-
-// This pool defines the sync pool for our buffered snappy readers, so that they
-// can be constantly reused.
 var bufReaderPool = new(sync.Pool)
 
-// SszNetworkEncoder supports p2p networking encoding using SimpleSerialize
-// with snappy compression (if enabled).
+// SszNetworkEncoder supports p2p networking encoding using SSZ
+// with snappy compression.
 type SszNetworkEncoder struct{}
 
-// ProtocolSuffixSSZSnappy is the last part of the topic string to identify the encoding protocol.
+// ProtocolSuffixSSZSnappy is the suffix appended to protocol IDs to identify SSZ+snappy encoding.
 const ProtocolSuffixSSZSnappy = "ssz_snappy"
 
-// EncodeGossip the proto gossip message to the io.Writer.
-func (_ SszNetworkEncoder) EncodeGossip(w io.Writer, msg fastssz.Marshaler) (int, error) {
+// EncodeGossip serializes msg via SSZ, validates the size, compresses with
+// snappy, and writes the result to w.
+func (SszNetworkEncoder) EncodeGossip(w io.Writer, msg fastssz.Marshaler) (int, error) {
 	if msg == nil {
 		return 0, nil
 	}
@@ -42,15 +39,16 @@ func (_ SszNetworkEncoder) EncodeGossip(w io.Writer, msg fastssz.Marshaler) (int
 		return 0, err
 	}
 	if uint64(len(b)) > MaxGossipSize {
-		return 0, errors.Errorf("gossip message exceeds max gossip size: %d bytes > %d bytes", len(b), MaxGossipSize)
+		return 0, fmt.Errorf("gossip message exceeds max gossip size: %d bytes > %d bytes", len(b), MaxGossipSize)
 	}
-	b = snappy.Encode(nil /*dst*/, b)
+	b = snappy.Encode(nil, b)
 	return w.Write(b)
 }
 
-// EncodeWithMaxLength the proto message to the io.Writer. This encoding prefixes the byte slice with a protobuf varint
-// to indicate the size of the message. This checks that the encoded message isn't larger than the provided max limit.
-func (_ SszNetworkEncoder) EncodeWithMaxLength(w io.Writer, msg fastssz.Marshaler) (int, error) {
+// EncodeWithMaxLength serializes msg via SSZ, prefixes the stream with a
+// varint-encoded length, and writes snappy-compressed data to w.
+// Returns an error if the serialized message exceeds MaxChunkSize.
+func (SszNetworkEncoder) EncodeWithMaxLength(w io.Writer, msg fastssz.Marshaler) (int, error) {
 	if msg == nil {
 		return 0, nil
 	}
@@ -59,146 +57,116 @@ func (_ SszNetworkEncoder) EncodeWithMaxLength(w io.Writer, msg fastssz.Marshale
 		return 0, err
 	}
 	if uint64(len(b)) > MaxChunkSize {
-		return 0, fmt.Errorf(
-			"size of encoded message is %d which is larger than the provided max limit of %d",
-			len(b),
-			MaxChunkSize,
-		)
+		return 0, fmt.Errorf("encoded message size %d exceeds max chunk size %d", len(b), MaxChunkSize)
 	}
-	// write varint first
-	_, err = w.Write(EncodeVarint(uint64(len(b))))
-	if err != nil {
+	if _, err = w.Write(EncodeVarint(uint64(len(b)))); err != nil {
 		return 0, err
 	}
 	return writeSnappyBuffer(w, b)
 }
 
-func doDecode(b []byte, to fastssz.Unmarshaler) error {
-	return to.UnmarshalSSZ(b)
-}
-
-// DecodeGossip decodes the bytes to the protobuf gossip message provided.
-func (_ SszNetworkEncoder) DecodeGossip(b []byte, to fastssz.Unmarshaler) error {
-	b, err := DecodeSnappy(b, MaxGossipSize)
+// DecodeGossip decompresses a snappy-encoded gossip message and unmarshals
+// the result via SSZ into dst.
+func (SszNetworkEncoder) DecodeGossip(b []byte, dst fastssz.Unmarshaler) error {
+	decoded, err := DecodeSnappy(b, MaxGossipSize)
 	if err != nil {
 		return err
 	}
-	return doDecode(b, to)
+	return dst.UnmarshalSSZ(decoded)
 }
 
-// DecodeSnappy decodes a snappy compressed message.
+// DecodeSnappy decompresses a snappy message, returning an error if the
+// decoded size exceeds maxSize.
 func DecodeSnappy(msg []byte, maxSize uint64) ([]byte, error) {
 	size, err := snappy.DecodedLen(msg)
 	if err != nil {
 		return nil, err
 	}
 	if uint64(size) > maxSize {
-		return nil, errors.Errorf("snappy message exceeds max size: %d bytes > %d bytes", size, maxSize)
+		return nil, fmt.Errorf("snappy message exceeds max size: %d bytes > %d bytes", size, maxSize)
 	}
-	msg, err = snappy.Decode(nil /*dst*/, msg)
-	if err != nil {
-		return nil, err
-	}
-	return msg, nil
+	return snappy.Decode(nil, msg)
 }
 
-// DecodeWithMaxLength the bytes from io.Reader to the protobuf message provided.
-// This checks that the decoded message isn't larger than the provided max limit.
-func (e SszNetworkEncoder) DecodeWithMaxLength(r io.Reader, to fastssz.Unmarshaler) error {
+// DecodeWithMaxLength reads a varint length prefix from r, then reads and
+// decompresses the snappy-encoded payload, and unmarshals it via SSZ into dst.
+// Returns an error if the declared message length exceeds MaxChunkSize.
+func (e SszNetworkEncoder) DecodeWithMaxLength(r io.Reader, dst fastssz.Unmarshaler) error {
 	msgLen, err := readVarint(r)
 	if err != nil {
-		return errors.Wrap(err, "failed to read varint")
+		return fmt.Errorf("failed to read varint: %w", err)
 	}
 	if msgLen > MaxChunkSize {
-		return fmt.Errorf(
-			"remaining bytes %d goes over the provided max limit of %d",
-			msgLen,
-			MaxChunkSize,
-		)
+		return fmt.Errorf("message length %d exceeds max chunk size %d", msgLen, MaxChunkSize)
 	}
+	if msgLen > uint64(math.MaxInt) {
+		return fmt.Errorf("message length %d exceeds maximum int value", msgLen)
+	}
+
 	msgMax, err := e.MaxLength(msgLen)
 	if err != nil {
 		return err
 	}
-	// Security fix: Ensure msgLen fits in int for slice allocation
-	if msgLen > uint64(math.MaxInt) {
-		return fmt.Errorf("message length %d exceeds maximum int value", msgLen)
-	}
-	limitedRdr := io.LimitReader(r, int64(msgMax))
-	snappyReader := newBufferedReader(limitedRdr)
+
+	snappyReader := newBufferedReader(io.LimitReader(r, int64(msgMax)))
 	defer bufReaderPool.Put(snappyReader)
 
 	buf := make([]byte, int(msgLen))
-	// Returns an error if less than msgLen bytes
-	// are read. This ensures we read exactly the
-	// required amount.
-	_, err = io.ReadFull(snappyReader, buf)
-	if err != nil {
-		return errors.Wrapf(err, "failed to read snappy data (expected %d bytes, msgMax=%d)", msgLen, msgMax)
+	if _, err = io.ReadFull(snappyReader, buf); err != nil {
+		return fmt.Errorf("failed to read snappy data (expected %d bytes, msgMax=%d): %w", msgLen, msgMax, err)
 	}
-	return doDecode(buf, to)
+	return dst.UnmarshalSSZ(buf)
 }
 
-// ProtocolSuffix returns the appropriate suffix for protocol IDs.
-func (_ SszNetworkEncoder) ProtocolSuffix() string {
+// ProtocolSuffix returns the protocol ID suffix for SSZ+snappy encoding.
+func (SszNetworkEncoder) ProtocolSuffix() string {
 	return "/" + ProtocolSuffixSSZSnappy
 }
 
-// MaxLength specifies the maximum possible length of an encoded
-// chunk of data.
-func (_ SszNetworkEncoder) MaxLength(length uint64) (int, error) {
-	// Check for uint64 to int overflow
+// MaxLength returns the maximum possible snappy-encoded length for the given
+// uncompressed payload size.
+func (SszNetworkEncoder) MaxLength(length uint64) (int, error) {
 	if length > uint64(math.MaxInt) {
-		return 0, errors.Errorf("length %d exceeds maximum int value", length)
+		return 0, fmt.Errorf("length %d exceeds maximum int value", length)
 	}
 	maxLen := snappy.MaxEncodedLen(int(length))
 	if maxLen < 0 {
-		return 0, errors.Errorf("max encoded length is negative: %d", maxLen)
+		return 0, fmt.Errorf("max encoded length is negative: %d", maxLen)
 	}
 	return maxLen, nil
 }
 
-// Writes a bytes value through a snappy buffered writer.
+// writeSnappyBuffer writes b through a pooled snappy buffered writer.
 func writeSnappyBuffer(w io.Writer, b []byte) (int, error) {
 	bufWriter := newBufferedWriter(w)
 	defer bufWriterPool.Put(bufWriter)
+
 	num, err := bufWriter.Write(b)
 	if err != nil {
-		// Close buf writer in the event of an error.
-		if err := bufWriter.Close(); err != nil {
-			return 0, err
-		}
+		_ = bufWriter.Close()
 		return 0, err
 	}
 	return num, bufWriter.Close()
 }
 
-// Instantiates a new instance of the snappy buffered reader
-// using our sync pool.
+// newBufferedReader returns a snappy.Reader from the pool, or creates a new one.
 func newBufferedReader(r io.Reader) *snappy.Reader {
-	rawReader := bufReaderPool.Get()
-	if rawReader == nil {
-		return snappy.NewReader(r)
+	if v := bufReaderPool.Get(); v != nil {
+		if reader, ok := v.(*snappy.Reader); ok {
+			reader.Reset(r)
+			return reader
+		}
 	}
-	bufR, ok := rawReader.(*snappy.Reader)
-	if !ok {
-		return snappy.NewReader(r)
-	}
-	bufR.Reset(r)
-	return bufR
+	return snappy.NewReader(r)
 }
 
-// Instantiates a new instance of the snappy buffered writer
-// using our sync pool.
+// newBufferedWriter returns a snappy.Writer from the pool, or creates a new one.
 func newBufferedWriter(w io.Writer) *snappy.Writer {
-	rawBufWriter := bufWriterPool.Get()
-	if rawBufWriter == nil {
-		return snappy.NewBufferedWriter(w)
+	if v := bufWriterPool.Get(); v != nil {
+		if writer, ok := v.(*snappy.Writer); ok {
+			writer.Reset(w)
+			return writer
+		}
 	}
-	bufW, ok := rawBufWriter.(*snappy.Writer)
-	if !ok {
-		return snappy.NewBufferedWriter(w)
-	}
-	bufW.Reset(w)
-	return bufW
+	return snappy.NewBufferedWriter(w)
 }

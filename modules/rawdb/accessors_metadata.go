@@ -19,11 +19,10 @@ package rawdb
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -31,14 +30,14 @@ import (
 func ReadChainConfig(db kv.Getter, hash types.Hash) (*params.ChainConfig, error) {
 	data, err := db.GetOne(modules.ChainConfig, modules.ConfigKey(hash))
 	if err != nil {
-		return nil, fmt.Errorf("fetch ChainConfig from db ,error: %v", err)
+		return nil, fmt.Errorf("failed to fetch ChainConfig from db: %w", err)
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("ChainConfig are empty")
+		return nil, fmt.Errorf("ChainConfig is empty")
 	}
 	var config params.ChainConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("invalid chain config JSON err: %v", err)
+		return nil, fmt.Errorf("invalid chain config JSON: %w", err)
 	}
 	return &config, nil
 }
@@ -46,16 +45,14 @@ func ReadChainConfig(db kv.Getter, hash types.Hash) (*params.ChainConfig, error)
 // WriteChainConfig writes the chain config settings to the database.
 func WriteChainConfig(db kv.RwTx, hash types.Hash, cfg *params.ChainConfig) error {
 	if cfg == nil {
-		return fmt.Errorf("invalid cfg")
+		return fmt.Errorf("chain config is nil")
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
-		log.Error("Failed to JSON encode chain config", "err", err)
-		return err
+		return fmt.Errorf("failed to JSON encode chain config: %w", err)
 	}
 	if err := db.Put(modules.ChainConfig, modules.ConfigKey(hash), data); err != nil {
-		log.Error("Failed to store chain config", "err", err)
-		return err
+		return fmt.Errorf("failed to store chain config: %w", err)
 	}
 	return nil
 }

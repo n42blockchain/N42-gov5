@@ -23,7 +23,7 @@ import (
 	"strings"
 
 	"github.com/n42blockchain/N42/common/crypto"
-	types2 "github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 type Error struct {
@@ -36,14 +36,12 @@ type Error struct {
 	Sig string
 	// ID returns the canonical representation of the event's signature used by the
 	// abi definition to identify event names and types.
-	ID types2.Hash
+	ID types.Hash
 }
 
 func NewError(name string, inputs Arguments) Error {
-	// sanitize inputs to remove inputs without names
-	// and precompute string and sig representation.
 	names := make([]string, len(inputs))
-	types := make([]string, len(inputs))
+	typeStrs := make([]string, len(inputs))
 	for i, input := range inputs {
 		if input.Name == "" {
 			inputs[i] = Argument{
@@ -51,21 +49,18 @@ func NewError(name string, inputs Arguments) Error {
 				Indexed: input.Indexed,
 				Type:    input.Type,
 			}
-		} else {
-			inputs[i] = input
 		}
-		// string representation
-		names[i] = fmt.Sprintf("%v %v", input.Type, inputs[i].Name)
 		if input.Indexed {
 			names[i] = fmt.Sprintf("%v indexed %v", input.Type, inputs[i].Name)
+		} else {
+			names[i] = fmt.Sprintf("%v %v", input.Type, inputs[i].Name)
 		}
-		// sig representation
-		types[i] = input.Type.String()
+		typeStrs[i] = input.Type.String()
 	}
 
 	str := fmt.Sprintf("error %v(%v)", name, strings.Join(names, ", "))
-	sig := fmt.Sprintf("%v(%v)", name, strings.Join(types, ","))
-	id := types2.BytesToHash(crypto.Keccak256([]byte(sig)))
+	sig := fmt.Sprintf("%v(%v)", name, strings.Join(typeStrs, ","))
+	id := types.BytesToHash(crypto.Keccak256([]byte(sig)))
 
 	return Error{
 		Name:   name,

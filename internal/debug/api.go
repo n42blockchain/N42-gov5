@@ -19,9 +19,6 @@ package debug
 import (
 	"bytes"
 	"errors"
-	"github.com/hashicorp/go-bexpr"
-	"github.com/n42blockchain/N42/log"
-	rpc "github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"io"
 	"os"
 	"os/user"
@@ -33,14 +30,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/go-bexpr"
+
+	"github.com/n42blockchain/N42/log"
+	rpc "github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 
 // Handler is the global debugging handler.
 var Handler = new(HandlerT)
 
-// APIs return the collection of RPC services the tracer package offers.
+// APIs returns the collection of RPC services the debug package offers.
 func APIs() []rpc.API {
-	// Append all the local APIs and return
 	return []rpc.API{
 		{
 			Namespace: "debug",

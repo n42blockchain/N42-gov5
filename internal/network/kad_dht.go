@@ -19,12 +19,13 @@ package network
 import (
 	"context"
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"time"
 
 	kademliaDHT "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/peer"
 	discovery "github.com/libp2p/go-libp2p/p2p/discovery/routing"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 type KadDHT struct {
@@ -39,51 +40,48 @@ type KadDHT struct {
 }
 
 func NewKadDht(ctx context.Context, s *Service, isServer bool, bootstrappers ...peer.AddrInfo) (*KadDHT, error) {
-
 	c, cancel := context.WithCancel(ctx)
-	var mode kademliaDHT.ModeOpt
+
+	mode := kademliaDHT.ModeClient
 	if isServer {
 		mode = kademliaDHT.ModeServer
-	} else {
-		mode = kademliaDHT.ModeClient
 	}
 
 	dht, err := kademliaDHT.New(c, s.host, kademliaDHT.Mode(mode), kademliaDHT.BootstrapPeers(bootstrappers...))
-
 	if err != nil {
-		log.Error("create dht failed", err)
+		log.Error("failed to create DHT", "err", err)
 		cancel()
 		return nil, err
 	}
 
-	kDHT := &KadDHT{
+	return &KadDHT{
 		IpfsDHT:          dht,
 		routingDiscovery: discovery.NewRoutingDiscovery(dht),
 		ctx:              c,
 		cancel:           cancel,
 		service:          s,
-	}
-
-	return kDHT, nil
+	}, nil
 }
 
 func (k *KadDHT) Start() error {
-	err := k.Bootstrap(k.ctx)
-	if err != nil {
-		log.Error("setup bootstrap failed", err)
+	if err := k.Bootstrap(k.ctx); err != nil {
+		log.Error("failed to bootstrap DHT", "err", err)
 		return err
 	}
 
 	k.routingDiscovery.Advertise(k.ctx, DiscoverProtocol)
 	go k.loopDiscoverRemote()
-
 	return nil
 }
 
 func (k *KadDHT) loopDiscoverRemote() {
+	// Start with a short initial interval, then switch to a longer one.
+	const initialInterval = 10 * time.Second
+	const steadyInterval = 60 * time.Second
 
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(initialInterval)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-k.ctx.Done():
@@ -91,37 +89,16 @@ func (k *KadDHT) loopDiscoverRemote() {
 		case <-ticker.C:
 			peerChan, err := k.routingDiscovery.FindPeers(k.ctx, DiscoverProtocol)
 			if err != nil {
-				log.Warn("find peers failed", err)
+				log.Warn("failed to find peers", "err", err)
 			} else {
 				for p := range peerChan {
 					if p.ID != k.service.host.ID() {
-						log.Tracef("find peer %s", fmt.Sprintf("info: %s", p.String()))
+						log.Trace("found peer", "info", fmt.Sprintf("%s", p.String()))
 						k.service.HandlePeerFound(p)
 					}
 				}
 			}
-
-			ticker.Reset(60 * time.Second)
+			ticker.Reset(steadyInterval)
 		}
 	}
-}
-
-//func (k *KadDHT) findPeers() []peer.AddrInfo {
-//peers, err := k.routingDiscovery.FindPeers(k.ctx, DiscoverProtocol)
-//if err != nil {
-//	return nil
-//} else {
-//	return peers
-//}
-//}
-
-func (k *KadDHT) discoverLocal() error {
-
-	//m := mdns.NewMdnsService(k.service.host, "", k.service.HandlePeerFound)
-	//if err := m.Start(); err != nil {
-	//	log.Error("mdns start failed", err)
-	//	return err
-	//}
-	//
-	return nil
 }

@@ -19,9 +19,10 @@ package native
 import (
 	"encoding/json"
 	"errors"
-	"github.com/holiman/uint256"
 	"math/big"
 	"sync/atomic"
+
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/accounts/abi"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -64,7 +65,7 @@ func (f callFrame) TypeString() string {
 }
 
 func (f callFrame) failed() bool {
-	return len(f.Error) > 0
+	return f.Error != ""
 }
 
 func (f *callFrame) processOutput(output []byte, err error) {
@@ -128,23 +129,24 @@ func newCallTracer(ctx *tracers.Context, cfg json.RawMessage) (tracers.Tracer, e
 
 // CaptureStart implements the EVMLogger interface to initialize the tracing operation.
 func (t *callTracer) CaptureStart(env vm.VMInterface, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *uint256.Int) {
-
 	var v *big.Int
 	if value != nil {
 		v = value.ToBig()
 	}
 
+	typ := vm.CALL
+	if create {
+		typ = vm.CREATE
+	}
+
 	toCopy := to
 	t.callstack[0] = callFrame{
-		Type:  vm.CALL,
+		Type:  typ,
 		From:  from,
 		To:    &toCopy,
 		Input: common.CopyBytes(input),
 		Gas:   gas,
 		Value: v,
-	}
-	if create {
-		t.callstack[0].Type = vm.CREATE
 	}
 }
 
@@ -155,38 +157,30 @@ func (t *callTracer) CaptureEnd(output []byte, gasUsed uint64, err error) {
 
 // CaptureState implements the EVMLogger interface to trace a single step of VM execution.
 func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
-	// Only logs need to be captured via opcode processing
 	if !t.config.WithLog {
 		return
 	}
-	// Avoid processing nested calls when only caring about top call
 	if t.config.OnlyTopCall && depth > 0 {
 		return
 	}
-	// Skip if tracing was interrupted
 	if atomic.LoadUint32(&t.interrupt) > 0 {
 		return
 	}
 	switch op {
 	case vm.LOG0, vm.LOG1, vm.LOG2, vm.LOG3, vm.LOG4:
-		size := int(op - vm.LOG0)
+		topicCount := int(op - vm.LOG0)
+		stackData := scope.Stack.Data
 
-		stack := scope.Stack
-		stackData := stack.Data
-
-		// Bounds check: need at least 2 + size elements on stack
-		// (offset, size, and 'size' number of topics)
-		if len(stackData) < 2+size {
+		// Need at least offset + size + topicCount elements on the stack
+		if len(stackData) < 2+topicCount {
 			return
 		}
 
-		// Don't modify the stack
 		mStart := stackData[len(stackData)-1]
 		mSize := stackData[len(stackData)-2]
-		topics := make([]common.Hash, size)
-		for i := 0; i < size; i++ {
-			topic := stackData[len(stackData)-2-(i+1)]
-			topics[i] = common.Hash(topic.Bytes32())
+		topics := make([]common.Hash, topicCount)
+		for i := 0; i < topicCount; i++ {
+			topics[i] = common.Hash(stackData[len(stackData)-3-i].Bytes32())
 		}
 
 		data := scope.Memory.GetCopy(int64(mStart.Uint64()), int64(mSize.Uint64()))
@@ -200,7 +194,6 @@ func (t *callTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.
 	if t.config.OnlyTopCall {
 		return
 	}
-	// Skip if tracing was interrupted
 	if atomic.LoadUint32(&t.interrupt) > 0 {
 		return
 	}
@@ -211,15 +204,14 @@ func (t *callTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.
 	}
 
 	toCopy := to
-	call := callFrame{
+	t.callstack = append(t.callstack, callFrame{
 		Type:  typ,
 		From:  from,
 		To:    &toCopy,
 		Input: common.CopyBytes(input),
 		Gas:   gas,
 		Value: v,
-	}
-	t.callstack = append(t.callstack, call)
+	})
 }
 
 // CaptureExit is called when EVM exits a scope, even if the scope didn't
@@ -228,18 +220,17 @@ func (t *callTracer) CaptureExit(output []byte, gasUsed uint64, err error) {
 	if t.config.OnlyTopCall {
 		return
 	}
-	size := len(t.callstack)
-	if size <= 1 {
+	if len(t.callstack) <= 1 {
 		return
 	}
-	// pop call
-	call := t.callstack[size-1]
-	t.callstack = t.callstack[:size-1]
-	size -= 1
+	// Pop the completed call frame
+	last := len(t.callstack) - 1
+	call := t.callstack[last]
+	t.callstack = t.callstack[:last]
 
 	call.GasUsed = gasUsed
 	call.processOutput(output, err)
-	t.callstack[size-1].Calls = append(t.callstack[size-1].Calls, call)
+	t.callstack[last-1].Calls = append(t.callstack[last-1].Calls, call)
 }
 
 func (t *callTracer) CaptureTxStart(gasLimit uint64) {

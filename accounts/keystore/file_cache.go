@@ -17,7 +17,6 @@
 package keystore
 
 import (
-	"github.com/n42blockchain/N42/log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +24,8 @@ import (
 	"time"
 
 	mapset "github.com/deckarep/golang-set/v2"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 // fileCache is a cache of files seen during scan of keystore.
@@ -58,7 +59,6 @@ func (fc *fileCache) scan(keyDir string) (mapset.Set[string], mapset.Set[string]
 		path := filepath.Join(keyDir, fi.Name())
 		// Skip any non-key files from the folder
 		if nonKeyFile(fi) {
-			//log.Trace("Ignoring file on account scan", "path", path)
 			log.Debug("Ignoring file on account scan", "path", path)
 			continue
 		}
@@ -99,8 +99,5 @@ func nonKeyFile(fi os.DirEntry) bool {
 		return true
 	}
 	// Skip misc special files, directories (yes, symlinks too).
-	if fi.IsDir() || !fi.Type().IsRegular() {
-		return true
-	}
-	return false
+	return fi.IsDir() || !fi.Type().IsRegular()
 }
