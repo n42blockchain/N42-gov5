@@ -3,8 +3,10 @@ package filters
 import (
 	"context"
 	"errors"
+	"math/big"
+
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -12,8 +14,8 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"math/big"
 )
 
 type Api interface {
@@ -34,40 +36,14 @@ type Filter struct {
 
 	block      types.Hash // Block hash if filtering a single block
 	begin, end int64      // Range interval if filtering multiple blocks
-
-	//matcher *bloombits.Matcher
 }
 
 // NewRangeFilter creates a new filter which uses a bloom filter on blocks to
 // figure out whether a particular block is interesting or not.
 func NewRangeFilter(api Api, begin, end int64, addresses []types.Address, topics [][]types.Hash) *Filter {
-	// Flatten the address and topic filter clauses into a single bloombits filter
-	// system. Since the bloombits are not positional, nil topics are permitted,
-	// which get flattened into a nil byte slice.
-	var filters [][][]byte
-	if len(addresses) > 0 {
-		filter := make([][]byte, len(addresses))
-		for i, address := range addresses {
-			filter[i] = address.Bytes()
-		}
-		filters = append(filters, filter)
-	}
-	for _, topicList := range topics {
-		filter := make([][]byte, len(topicList))
-		for i, topic := range topicList {
-			filter[i] = topic.Bytes()
-		}
-		filters = append(filters, filter)
-	}
-	//size, _ := api.BloomStatus()
-
-	// Create a generic filter and convert it into a range filter
 	filter := newFilter(api, addresses, topics)
-
-	//filter.matcher = bloombits.NewMatcher(size, filters)
 	filter.begin = begin
 	filter.end = end
-
 	return filter
 }
 
@@ -159,29 +135,17 @@ func (f *Filter) Logs(ctx context.Context) ([]*block.Log, error) {
 // indexedLogs returns the logs matching the filter criteria based on the bloom
 // bits indexed available locally or via the network.
 func (f *Filter) indexedLogs(ctx context.Context, end uint64) ([]*block.Log, error) {
-	// Create a matcher session and request servicing from the backend
 	matches := make(chan uint64, 64)
 
-	//session, err := f.matcher.Start(ctx, uint64(f.begin), end, matches)
-	//if err != nil {
-	//	return nil, err
-	//}
-	//defer session.Close()
+	// TODO: integrate bloombits matcher for indexed log filtering.
+	// Currently this returns immediately since no matches are produced.
 
-	//f.api.ServiceFilter(ctx, session)
-
-	// Iterate over the matches until exhausted or context closed
 	var logs []*block.Log
 
 	for {
 		select {
 		case number, ok := <-matches:
-			// Abort if all matches have been fulfilled
 			if !ok {
-				//err := session.Error()
-				//if err == nil {
-				//	f.begin = int64(end) + 1
-				//}
 				return logs, nil
 			}
 			f.begin = int64(number) + 1
@@ -224,7 +188,7 @@ func (f *Filter) unindexedLogs(ctx context.Context, end uint64) ([]*block.Log, e
 
 // blockLogs returns the logs matching the filter criteria within a single block.
 func (f *Filter) blockLogs(ctx context.Context, header block.IHeader) (logs []*block.Log, err error) {
-	//todo header.Bloom
+	// TODO: use header.Bloom when available
 	bloom, _ := types.NewBloom(100)
 	if bloomFilter(bloom, f.addresses, f.topics) {
 		found, err := f.checkMatches(ctx, header)

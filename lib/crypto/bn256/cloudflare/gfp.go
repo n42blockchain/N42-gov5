@@ -37,9 +37,9 @@ func (e *gfP) Invert(f *gfP) {
 	sum.Set(rN1)
 	power.Set(f)
 
-	for word := 0; word < 4; word++ {
+	for _, word := range bits {
 		for bit := uint(0); bit < 64; bit++ {
-			if (bits[word]>>bit)&1 == 1 {
+			if (word>>bit)&1 == 1 {
 				gfpMul(sum, sum, power)
 			}
 			gfpMul(power, power, power)

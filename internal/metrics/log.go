@@ -76,7 +76,7 @@ func LogScaled(r metrics.Registry, freq time.Duration, scale time.Duration, l Lo
 				m := metric.Snapshot()
 				l.Printf("meter %s", name)
 				l.Printf("  count:       %.2fMB", datasize.ByteSize(m.Count()).MBytes())
-				l.Printf("  1-min rat:  %.2fKB/s", datasize.ByteSize(m.Rate1()).KBytes())
+				l.Printf("  1-min rate:  %.2fKB/s", datasize.ByteSize(m.Rate1()).KBytes())
 				l.Printf("  5-min rate:  %.2fKB/s", datasize.ByteSize(m.Rate5()).KBytes())
 				l.Printf("  15-min rate: %.2fKB/s", datasize.ByteSize(m.Rate15()).KBytes())
 				l.Printf("  mean rate:   %.2fKB/s", datasize.ByteSize(m.RateMean()).KBytes())

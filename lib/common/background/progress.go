@@ -22,7 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	btree2 "github.com/tidwall/btree"
+	"github.com/tidwall/btree"
 )
 
 // Progress - tracks background job progress
@@ -40,13 +40,13 @@ func (p *Progress) percent() int {
 
 // ProgressSet - tracks multiple background job progress
 type ProgressSet struct {
-	list *btree2.Map[int, *Progress]
+	list *btree.Map[int, *Progress]
 	i    int
 	lock sync.RWMutex
 }
 
 func NewProgressSet() *ProgressSet {
-	return &ProgressSet{list: btree2.NewMap[int, *Progress](128)}
+	return &ProgressSet{list: btree.NewMap[int, *Progress](128)}
 }
 func (s *ProgressSet) AddNew(fName string, total uint64) *Progress {
 	p := &Progress{}
@@ -69,8 +69,8 @@ func (s *ProgressSet) Delete(p *Progress) {
 	s.list.Delete(p.i)
 }
 func (s *ProgressSet) Has() bool {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.lock.RLock()
+	defer s.lock.RUnlock()
 	return s.list.Len() > 0
 }
 
@@ -97,7 +97,7 @@ func (s *ProgressSet) String() string {
 	return sb.String()
 }
 
-func (s *ProgressSet) DiagnossticsData() map[string]int {
+func (s *ProgressSet) DiagnosticsData() map[string]int {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	var arr = make(map[string]int, s.list.Len())

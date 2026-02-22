@@ -19,21 +19,22 @@ package download
 import (
 	"context"
 	"errors"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/utils"
-	"google.golang.org/protobuf/proto"
 	"hash"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/n42blockchain/N42/api/protocol/sync_proto"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
-	"go.uber.org/zap"
+	"github.com/n42blockchain/N42/utils"
 )
 
 var (
@@ -47,17 +48,13 @@ var (
 )
 
 const (
-	maxHeaderFetch          = 192             //Get the number of headers at a time
-	maxBodiesFetch          = 128             // Get the number of bodies at a time
-	maxResultsProcess       = 2048            // Number of content download results to import at once into the chain
-	headerDownloadInterval  = 3 * time.Second // header download interval
+	maxHeaderFetch          = 192            // Maximum number of headers per request
+	maxBodiesFetch          = 128            // Maximum number of bodies per request
+	maxResultsProcess       = 2048           // Maximum number of results to import at once
 	syncPeerCount           = 6
-	syncTimeTick            = time.Duration(10 * time.Second)
-	syncCheckTimes          = 1
-	syncTimeOutPerRequest   = time.Duration(1 * time.Minute)
-	syncPeerIntervalRequest = time.Duration(3 * time.Second)
-	syncPeerInfoTimeTick    = time.Duration(10 * time.Second)
-	maxDifferenceNumber     = 2
+	syncTimeTick            = 10 * time.Second
+	syncTimeOutPerRequest   = 1 * time.Minute
+	syncPeerIntervalRequest = 3 * time.Second
 )
 
 type headerResponse struct {
@@ -89,7 +86,7 @@ type Task struct {
 }
 
 type Downloader struct {
-	mode uint32 // sync mode , use d.getMode() to get the SyncMode
+	mode uint32 // sync mode; use d.getMode() to get the SyncMode
 
 	bc            common.IBlockChain
 	network       common.INetwork
@@ -101,7 +98,7 @@ type Downloader struct {
 	ctx context.Context
 	cancel     context.CancelFunc
 	cancelLock sync.RWMutex
-	cancelWg   sync.WaitGroup //
+	cancelWg   sync.WaitGroup
 	once       sync.Once
 
 	errorCh chan error
@@ -113,11 +110,8 @@ type Downloader struct {
 	headerProcessingTasks map[uint64]Task
 	headerResultStore     map[uint256.Int]*types_pb.Header
 	headerTaskLock        sync.Mutex
-	//
-	headerProcCh chan *headerResponse
+	headerProcCh          chan *headerResponse
 
-	//
-	//bodyTaskCh  chan *blockTask
 	blockProcCh chan *bodyResponse
 
 	bodyTaskPoolLock    sync.Mutex
@@ -202,44 +196,40 @@ func (d *Downloader) Start() error {
 	return nil
 }
 
-// Start
+// doSync performs the actual synchronization using the specified mode.
 func (d *Downloader) doSync(mode SyncMode) error {
-
 	log.Info("do sync", zap.Int("SyncMode", int(mode)))
 	if !atomic.CompareAndSwapInt32(&d.isDownloading, 0, 1) {
 		return ErrBusy
 	}
 	defer atomic.StoreInt32(&d.isDownloading, 0)
 
-	// blockChain current block height
 	origin, err := d.findAncestor()
 	if err != nil {
 		return err
 	}
-	// downloader current height
 	latest, err := d.findHead()
 	if err != nil {
 		return err
 	}
 
 	var fetchers []func() error
-
-	switch mode {
-	case HeaderSync:
-	default:
-		fetchers = append(fetchers, func() error { return d.fetchHeaders(origin, latest) })
-		fetchers = append(fetchers, func() error { return d.fetchBodies(latest) })
-		fetchers = append(fetchers, func() error { return d.processHeaders() })
+	if mode != HeaderSync {
+		fetchers = append(fetchers,
+			func() error { return d.fetchHeaders(origin, latest) },
+			func() error { return d.fetchBodies(latest) },
+			func() error { return d.processHeaders() },
+		)
 	}
-
-	// assemble
-	fetchers = append(fetchers, func() error { return d.processBodies() })
-	fetchers = append(fetchers, func() error { return d.processChain() })
+	fetchers = append(fetchers,
+		func() error { return d.processBodies() },
+		func() error { return d.processChain() },
+	)
 
 	return d.spawnSync(fetchers)
 }
 
-// spawnSync
+// spawnSync launches all fetcher goroutines and waits for completion or error.
 func (d *Downloader) spawnSync(fetchers []func() error) error {
 	errc := make(chan error, len(fetchers))
 	d.cancelWg.Add(len(fetchers))
@@ -249,8 +239,6 @@ func (d *Downloader) spawnSync(fetchers []func() error) error {
 	}
 	var err error
 	for i := 0; i < len(fetchers); i++ {
-		if i == len(fetchers)-1 {
-		}
 		if err = <-errc; err != nil {
 			break
 		}
@@ -272,13 +260,7 @@ func (d *Downloader) SyncTx() error {
 }
 
 func (d *Downloader) IsDownloading() bool {
-	ok := atomic.LoadInt32(&d.isDownloading)
-	if ok == 1 {
-		return true
-	} else if ok == 0 {
-		return false
-	}
-	return true
+	return atomic.LoadInt32(&d.isDownloading) != 0
 }
 
 func (d *Downloader) findAncestor() (uint256.Int, error) {
@@ -292,9 +274,7 @@ func (d *Downloader) findHead() (uint256.Int, error) {
 }
 
 func (d *Downloader) pubSubLoop() {
-	defer func() {
-		close(d.errorCh)
-	}()
+	defer close(d.errorCh)
 	defer d.cancel()
 
 	highestBlockCh := make(chan common.ChainHighestBlock)
@@ -325,28 +305,23 @@ func (d *Downloader) pubSubLoop() {
 				if highestBlock.Inserted {
 					d.peersInfo.peerInfoBroadcast(highestBlock.Block.Number64())
 				}
-				//else {
-				//	d.bodyResultStore[*highestBlock.Block.Number64()] = highestBlock.Block.ToProtoMessage().(*types_pb.PBlock)
-				//}
 			}
 		}
 	}
 }
 
-// runLoop
 func (d *Downloader) synchronise() {
 	log.Info("start downloader")
 	defer log.Info("downloader finished")
-	//
+
 	d.waitAvailablePeer()
-	//
+
 	event.GlobalEvent.Send(common.DownloaderStartEvent{})
 	defer event.GlobalEvent.Send(common.DownloaderFinishEvent{})
-
 	defer d.cancel()
+
 	tick := time.NewTicker(syncTimeTick)
 	defer tick.Stop()
-	// checked := 1
 
 	for {
 		select {
@@ -364,32 +339,15 @@ func (d *Downloader) synchronise() {
 			difference := new(uint256.Int).Sub(highest, d.bc.CurrentBlock().Number64())
 			log.Tracef("highest: %d, current: %d", highest.Uint64(), d.bc.CurrentBlock().Number64().Uint64())
 			if difference.Uint64() > 1 {
-				log.Infof("start downloader Compare Loop remote  highestNumber: %d, current number: %d, difference: %d", highest.Uint64(), d.bc.CurrentBlock().Number64().Uint64(), difference.Uint64())
-				err := d.doSync(d.getMode())
-				if err != nil {
+				log.Infof("start downloader Compare Loop remote highestNumber: %d, current number: %d, difference: %d", highest.Uint64(), d.bc.CurrentBlock().Number64().Uint64(), difference.Uint64())
+				if err := d.doSync(d.getMode()); err != nil {
 					log.Errorf("failed to running downloader, err:%v", err)
 				}
 				return
 			}
-			//if d.highestNumber.Uint64() != 0 && difference.Uint64() ==0 {
-			//	return
-			//}
-			//} else {
-			//	if checked >= syncCheckTimes {
-			//		return
-			//	}
-			//	checked++
-			//}
 			tick.Reset(syncTimeTick)
 		}
 	}
-}
-
-func (d *Downloader) calculateHeight(peer2 common.Peer) error {
-	if d.bc.CurrentBlock().Number64().Uint64() == 0 {
-
-	}
-	return nil
 }
 
 func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
@@ -398,15 +356,14 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 		return ErrBadPeer
 	}
 
-	syncTask := sync_proto.SyncTask{}
+	var syncTask sync_proto.SyncTask
 	if err := proto.Unmarshal(data, &syncTask); err != nil {
-		log.Errorf("receive sync task(headersResponse) msg err: %v", err)
+		log.Errorf("receive sync task msg unmarshal err: %v", err)
 		return err
 	}
 
 	taskID := syncTask.Id
-	params := make([]interface{}, 0)
-	params = append(params, "peerID", ID, "taskType", syncTask.SyncType, "taskID", taskID, "isOK", syncTask.Ok)
+	params := []interface{}{"peerID", ID, "taskType", syncTask.SyncType, "taskID", taskID, "isOK", syncTask.Ok}
 
 	switch syncTask.SyncType {
 
@@ -447,11 +404,9 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 
 	case sync_proto.SyncType_PeerInfoBroadcast:
 		peerInfoBroadcast := syncTask.Payload.(*sync_proto.SyncTask_SyncPeerInfoBroadcast).SyncPeerInfoBroadcast
-		//
 		currentNumber := utils.ConvertH256ToUint256Int(peerInfoBroadcast.Number)
 		currentDifficulty := utils.ConvertH256ToUint256Int(peerInfoBroadcast.Difficulty)
 		params = append(params, "Number", currentNumber, "Difficulty", currentDifficulty)
-		//
 		d.highestMu.Lock()
 		if currentNumber.Uint64() > d.highestNumber.Uint64() {
 			d.highestNumber.Set(currentNumber.Clone())

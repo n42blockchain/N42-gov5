@@ -31,15 +31,14 @@ func (r *Buffer[T]) grow() {
 	}
 
 	buf := make([]T, size)
-	copy(buf, r.buf[r.head:])
-	copy(buf[len(r.buf[r.head:]):], r.buf[:r.head])
+	n := copy(buf, r.buf[r.head:])
+	copy(buf[n:], r.buf[:r.head])
 	r.head = 0
 	r.tail = r.length
 	r.buf = buf
 }
 
 func (r *Buffer[T]) incHead() {
-	// resize
 	if r.length == 0 {
 		panic("smashing detected")
 	}
@@ -52,7 +51,6 @@ func (r *Buffer[T]) incHead() {
 }
 
 func (r *Buffer[T]) decHead() {
-	// resize
 	if r.length == len(r.buf) {
 		r.grow()
 	}
@@ -65,7 +63,6 @@ func (r *Buffer[T]) decHead() {
 }
 
 func (r *Buffer[T]) incTail() {
-	// resize
 	if r.length == len(r.buf) {
 		r.grow()
 	}
@@ -78,7 +75,6 @@ func (r *Buffer[T]) incTail() {
 }
 
 func (r *Buffer[T]) decTail() {
-	// resize
 	if r.length == 0 {
 		panic("smashing detected")
 	}
@@ -99,24 +95,26 @@ func (r *Buffer[T]) tailSub1() int {
 }
 
 func (r *Buffer[T]) PopFront() (T, bool) {
+	var zero T
 	if r.length == 0 {
-		return *new(T), false
+		return zero, false
 	}
 
 	front := r.buf[r.head]
-	r.buf[r.head] = *new(T)
+	r.buf[r.head] = zero
 	r.incHead()
 	return front, true
 }
 
 func (r *Buffer[T]) PopBack() (T, bool) {
+	var zero T
 	if r.length == 0 {
-		return *new(T), false
+		return zero, false
 	}
 
 	r.decTail()
 	back := r.buf[r.tail]
-	r.buf[r.tail] = *new(T)
+	r.buf[r.tail] = zero
 	return back, true
 }
 

@@ -4,16 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/n42blockchain/N42/lib/kv"
+	"os"
+
+	"github.com/urfave/cli/v2"
+
 	"github.com/n42blockchain/N42/cmd/utils"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/node"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
-	"github.com/urfave/cli/v2"
-	"os"
 )
 
 var (
@@ -76,7 +78,7 @@ func initGenesis(cliCtx *cli.Context) error {
 
 		}
 		genesisBlock, err = node.WriteGenesisBlock(tx, genesis)
-		if nil != err {
+		if err != nil {
 			return err
 		}
 		if err := node.WriteChainConfig(tx, genesisBlock.Hash(), genesis); err != nil {

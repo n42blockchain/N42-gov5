@@ -67,12 +67,10 @@ func ActivateableEips() []string {
 // - Increase cost of SLOAD to 800
 // - Define SELFBALANCE, with cost GasFastStep (5)
 func enable1884(jt *JumpTable) {
-	// Gas cost changes
 	jt[SLOAD].constantGas = params.SloadGasEIP1884
 	jt[BALANCE].constantGas = params.BalanceGasEIP1884
 	jt[EXTCODEHASH].constantGas = params.ExtcodeHashGasEIP1884
 
-	// New opcode
 	jt[SELFBALANCE] = &operation{
 		execute:     opSelfBalance,
 		constantGas: GasFastStep,
@@ -90,7 +88,6 @@ func opSelfBalance(pc *uint64, interpreter *EVMInterpreter, callContext *ScopeCo
 // enable1344 applies EIP-1344 (ChainID Opcode)
 // - Adds an opcode that returns the current chain’s EIP-155 unique identifier
 func enable1344(jt *JumpTable) {
-	// New opcode
 	jt[CHAINID] = &operation{
 		execute:     opChainID,
 		constantGas: GasQuickStep,
@@ -101,8 +98,8 @@ func enable1344(jt *JumpTable) {
 
 // opChainID implements CHAINID opcode
 func opChainID(pc *uint64, interpreter *EVMInterpreter, callContext *ScopeContext) ([]byte, error) {
-	chainId, _ := uint256.FromBig(interpreter.evm.ChainRules().ChainID)
-	callContext.Stack.Push(chainId)
+	chainID, _ := uint256.FromBig(interpreter.evm.ChainRules().ChainID)
+	callContext.Stack.Push(chainID)
 	return nil, nil
 }
 
@@ -158,7 +155,6 @@ func enable3529(jt *JumpTable) {
 // enable3198 applies EIP-3198 (BASEFEE Opcode)
 // - Adds an opcode that returns the current block's base fee.
 func enable3198(jt *JumpTable) {
-	// New opcode
 	jt[BASEFEE] = &operation{
 		execute:     opBaseFee,
 		constantGas: GasQuickStep,
@@ -176,7 +172,6 @@ func opBaseFee(pc *uint64, interpreter *EVMInterpreter, callContext *ScopeContex
 
 // enable3855 applies EIP-3855 (PUSH0 opcode)
 func enable3855(jt *JumpTable) {
-	// New opcode
 	jt[PUSH0] = &operation{
 		execute:     opPush0,
 		constantGas: GasQuickStep,

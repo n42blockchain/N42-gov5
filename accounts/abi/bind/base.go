@@ -95,11 +95,11 @@ func (m *MetaData) GetAbi() (*abi.ABI, error) {
 	if m.ab != nil {
 		return m.ab, nil
 	}
-	if parsed, err := abi.JSON(strings.NewReader(m.ABI)); err != nil {
+	parsed, err := abi.JSON(strings.NewReader(m.ABI))
+	if err != nil {
 		return nil, err
-	} else {
-		m.ab = &parsed
 	}
+	m.ab = &parsed
 	return m.ab, nil
 }
 
@@ -352,9 +352,8 @@ func (c *BoundContract) estimateGasLimit(opts *TransactOpts, contract *types.Add
 func (c *BoundContract) getNonce(opts *TransactOpts) (uint64, error) {
 	if opts.Nonce == nil {
 		return c.transactor.PendingNonceAt(ensureContext(opts.Context), opts.From)
-	} else {
-		return *opts.Nonce, nil
 	}
+	return *opts.Nonce, nil
 }
 
 // transact executes an actual transaction invocation, first deriving any missing

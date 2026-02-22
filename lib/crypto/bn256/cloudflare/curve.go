@@ -1,8 +1,6 @@
 package bn256
 
-import (
-	"math/big"
-)
+import "math/big"
 
 // curvePoint implements the elliptic curve y²=x³+3. Points are kept in Jacobian
 // form and t=z² when valid. G₁ is the set of points of this curve on GF(p).
@@ -52,14 +50,14 @@ func (c *curvePoint) IsOnCurve() bool {
 }
 
 func (c *curvePoint) SetInfinity() {
-	c.x = gfP{0}
+	c.x = gfP{}
 	c.y = *newGFp(1)
-	c.z = gfP{0}
-	c.t = gfP{0}
+	c.z = gfP{}
+	c.t = gfP{}
 }
 
 func (c *curvePoint) IsInfinity() bool {
-	return c.z == gfP{0}
+	return c.z == (gfP{})
 }
 
 func (c *curvePoint) Add(a, b *curvePoint) {
@@ -102,7 +100,7 @@ func (c *curvePoint) Add(a, b *curvePoint) {
 	// with the notations below.
 	h := &gfP{}
 	gfpSub(h, u2, u1)
-	xEqual := *h == gfP{0}
+	xEqual := *h == (gfP{})
 
 	gfpAdd(t, h, h)
 	// i = 4h²
@@ -113,7 +111,7 @@ func (c *curvePoint) Add(a, b *curvePoint) {
 	gfpMul(j, h, i)
 
 	gfpSub(t, s2, s1)
-	yEqual := *t == gfP{0}
+	yEqual := *t == (gfP{})
 	if xEqual && yEqual {
 		c.Double(a)
 		return
@@ -209,10 +207,11 @@ func (c *curvePoint) Mul(a *curvePoint, scalar *big.Int) {
 func (c *curvePoint) MakeAffine() {
 	if c.z == *newGFp(1) {
 		return
-	} else if c.z == *newGFp(0) {
-		c.x = gfP{0}
+	}
+	if c.z == (gfP{}) {
+		c.x = gfP{}
 		c.y = *newGFp(1)
-		c.t = gfP{0}
+		c.t = gfP{}
 		return
 	}
 
@@ -234,5 +233,5 @@ func (c *curvePoint) Neg(a *curvePoint) {
 	c.x.Set(&a.x)
 	gfpNeg(&c.y, &a.y)
 	c.z.Set(&a.z)
-	c.t = gfP{0}
+	c.t = gfP{}
 }

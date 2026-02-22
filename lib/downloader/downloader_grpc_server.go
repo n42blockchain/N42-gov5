@@ -24,17 +24,15 @@ import (
 	"time"
 
 	"github.com/anacrolix/torrent/metainfo"
-	"github.com/n42blockchain/N42/lib/log/v3"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/n42blockchain/N42/lib/gointerfaces"
 	proto_downloader "github.com/n42blockchain/N42/lib/gointerfaces/downloader"
 	prototypes "github.com/n42blockchain/N42/lib/gointerfaces/types"
+	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
-var (
-	_ proto_downloader.DownloaderServer = &GrpcServer{}
-)
+var _ proto_downloader.DownloaderServer = &GrpcServer{}
 
 func NewGrpcServer(d *Downloader) (*GrpcServer, error) {
 	return &GrpcServer{d: d}, nil

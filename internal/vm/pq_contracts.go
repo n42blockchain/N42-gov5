@@ -65,29 +65,28 @@ const (
 
 // Key and signature size constants
 const (
+	// PQMessageSize is the fixed message length (hash) for all PQ signature verification.
+	PQMessageSize = 32
+
 	// Falcon-512
-	FalconPublicKeySize  = 897
+	FalconPublicKeySize    = 897
 	FalconMaxSignatureSize = 690
-	FalconMessageSize    = 32
 
 	// Dilithium2
-	Dilithium2PublicKeySize  = 1312
-	Dilithium2SignatureSize  = 2420
+	Dilithium2PublicKeySize = 1312
+	Dilithium2SignatureSize = 2420
 
 	// Dilithium3
-	Dilithium3PublicKeySize  = 1952
-	Dilithium3SignatureSize  = 3293
+	Dilithium3PublicKeySize = 1952
+	Dilithium3SignatureSize = 3293
 
 	// SQIsign-I
-	SQIsignPublicKeySize  = 64
-	SQIsignSignatureSize  = 177
+	SQIsignPublicKeySize = 64
+	SQIsignSignatureSize = 177
 )
 
-// Error definitions
 var (
-	errPQInvalidInput    = errors.New("pq: invalid input length")
-	errPQVerifyFailed    = errors.New("pq: signature verification failed")
-	errPQNotImplemented  = errors.New("pq: algorithm not yet implemented")
+	errPQNotImplemented = errors.New("pq: algorithm not yet implemented")
 )
 
 // PrecompiledContractsPQ contains the post-quantum precompiled contracts
@@ -98,11 +97,7 @@ var PrecompiledContractsPQ = map[types.Address]PrecompiledContract{
 	PQSQIsignVerifyAddr:    &sqisignVerify{},
 }
 
-// =============================================================================
-// Falcon-512 Verification Precompile (0x14)
-// =============================================================================
-
-// falconVerify implements Falcon-512 signature verification as a precompile
+// falconVerify implements Falcon-512 signature verification as a precompile.
 // Input format: pubkey (897B) || message (32B) || signature (variable, max 690B)
 // Output: 0x01 (32 bytes, left-padded) if valid, 0x00 otherwise
 type falconVerify struct{}
@@ -114,7 +109,7 @@ func (c *falconVerify) RequiredGas(input []byte) uint64 {
 func (c *falconVerify) Run(input []byte) ([]byte, error) {
 	// Minimum input length: pubkey (897) + message (32) = 929 bytes
 	// Maximum input length: pubkey (897) + message (32) + signature (690) = 1619 bytes
-	minLen := FalconPublicKeySize + FalconMessageSize
+	minLen := FalconPublicKeySize + PQMessageSize
 	if len(input) < minLen {
 		return fail(), nil
 	}
@@ -122,7 +117,7 @@ func (c *falconVerify) Run(input []byte) ([]byte, error) {
 	// Parse input
 	pubKeyData := input[:FalconPublicKeySize]
 	msgStart := FalconPublicKeySize
-	msgEnd := FalconPublicKeySize + FalconMessageSize
+	msgEnd := FalconPublicKeySize + PQMessageSize
 	message := input[msgStart:msgEnd]
 
 	// Signature is the remaining bytes
@@ -150,11 +145,7 @@ func (c *falconVerify) Run(input []byte) ([]byte, error) {
 	return fail(), nil
 }
 
-// =============================================================================
-// Dilithium2 Verification Precompile (0x15)
-// =============================================================================
-
-// dilithium2Verify implements Dilithium2 signature verification as a precompile
+// dilithium2Verify implements Dilithium2 signature verification as a precompile.
 // Input format: pubkey (1312B) || message (32B) || signature (2420B)
 // Output: 0x01 (32 bytes, left-padded) if valid, 0x00 otherwise
 type dilithium2Verify struct{}
@@ -165,7 +156,7 @@ func (c *dilithium2Verify) RequiredGas(input []byte) uint64 {
 
 func (c *dilithium2Verify) Run(input []byte) ([]byte, error) {
 	// Expected input length: pubkey (1312) + message (32) + signature (2420) = 3764 bytes
-	expectedLen := Dilithium2PublicKeySize + FalconMessageSize + Dilithium2SignatureSize
+	expectedLen := Dilithium2PublicKeySize + PQMessageSize + Dilithium2SignatureSize
 	if len(input) < expectedLen {
 		return fail(), nil
 	}
@@ -173,7 +164,7 @@ func (c *dilithium2Verify) Run(input []byte) ([]byte, error) {
 	// Parse input
 	pubKeyData := input[:Dilithium2PublicKeySize]
 	msgStart := Dilithium2PublicKeySize
-	msgEnd := Dilithium2PublicKeySize + FalconMessageSize
+	msgEnd := Dilithium2PublicKeySize + PQMessageSize
 	message := input[msgStart:msgEnd]
 	sigStart := msgEnd
 	sigEnd := sigStart + Dilithium2SignatureSize
@@ -193,11 +184,7 @@ func (c *dilithium2Verify) Run(input []byte) ([]byte, error) {
 	return fail(), nil
 }
 
-// =============================================================================
-// Dilithium3 Verification Precompile (0x16)
-// =============================================================================
-
-// dilithium3Verify implements Dilithium3 signature verification as a precompile
+// dilithium3Verify implements Dilithium3 signature verification as a precompile.
 // Input format: pubkey (1952B) || message (32B) || signature (3293B)
 // Output: 0x01 (32 bytes, left-padded) if valid, 0x00 otherwise
 type dilithium3Verify struct{}
@@ -208,7 +195,7 @@ func (c *dilithium3Verify) RequiredGas(input []byte) uint64 {
 
 func (c *dilithium3Verify) Run(input []byte) ([]byte, error) {
 	// Expected input length: pubkey (1952) + message (32) + signature (3293) = 5277 bytes
-	expectedLen := Dilithium3PublicKeySize + FalconMessageSize + Dilithium3SignatureSize
+	expectedLen := Dilithium3PublicKeySize + PQMessageSize + Dilithium3SignatureSize
 	if len(input) < expectedLen {
 		return fail(), nil
 	}
@@ -216,7 +203,7 @@ func (c *dilithium3Verify) Run(input []byte) ([]byte, error) {
 	// Parse input
 	pubKeyData := input[:Dilithium3PublicKeySize]
 	msgStart := Dilithium3PublicKeySize
-	msgEnd := Dilithium3PublicKeySize + FalconMessageSize
+	msgEnd := Dilithium3PublicKeySize + PQMessageSize
 	message := input[msgStart:msgEnd]
 	sigStart := msgEnd
 	sigEnd := sigStart + Dilithium3SignatureSize
@@ -236,11 +223,7 @@ func (c *dilithium3Verify) Run(input []byte) ([]byte, error) {
 	return fail(), nil
 }
 
-// =============================================================================
-// SQIsign-I Verification Precompile (0x17)
-// =============================================================================
-
-// sqisignVerify implements SQIsign-I signature verification as a precompile
+// sqisignVerify implements SQIsign-I signature verification as a precompile.
 // Input format: pubkey (64B) || message (32B) || signature (177B)
 // Output: 0x01 (32 bytes, left-padded) if valid, 0x00 otherwise
 type sqisignVerify struct{}
@@ -256,28 +239,17 @@ func (c *sqisignVerify) Run(input []byte) ([]byte, error) {
 	return nil, errPQNotImplemented
 }
 
-// =============================================================================
-// Helper Functions
-// =============================================================================
-
-// success returns a 32-byte value with 1 in the last byte (left-padded)
-// Indicates successful verification
+// success returns a 32-byte value with 1 in the last byte (left-padded).
 func success() []byte {
 	return types.LeftPadBytes([]byte{1}, 32)
 }
 
-// fail returns a 32-byte value with 0 (all zeros)
-// Indicates failed verification
+// fail returns a 32-byte zero value (all zeros).
 func fail() []byte {
 	return make([]byte, 32)
 }
 
-// =============================================================================
-// PQ Precompile Registration
-// =============================================================================
-
-// GetPQPrecompiles returns the PQ precompiled contracts map
-// This can be merged with other precompile sets when enabling PQ support
+// GetPQPrecompiles returns the PQ precompiled contracts map.
 func GetPQPrecompiles() map[types.Address]PrecompiledContract {
 	return PrecompiledContractsPQ
 }

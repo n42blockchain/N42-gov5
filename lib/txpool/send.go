@@ -166,28 +166,26 @@ func (f *Send) AnnouncePooledTxs(types []byte, sizes []uint32, hashes types2.Has
 						}
 					}
 				}
-		case direct.ETH68, direct.ETH69:
-
-			if j > prevJ {
-				req := &sentry.SendMessageToRandomPeersRequest{
-					Data: &sentry.OutboundMessageData{
-						Id:   sentry.MessageId_NEW_POOLED_TRANSACTION_HASHES_68,
-						Data: jData,
-					},
-					MaxPeers: maxPeers,
-				}
-				peers, err := sentryClient.SendMessageToRandomPeers(f.ctx, req)
-				if err != nil {
-					f.logger.Debug("[txpool.send] AnnouncePooledTxs68", "err", err)
-				}
-				if peers != nil {
-					for k := prevJ; k < j; k++ {
-						hashSentTo[k] += len(peers.Peers)
+			case direct.ETH68, direct.ETH69:
+				if j > prevJ {
+					req := &sentry.SendMessageToRandomPeersRequest{
+						Data: &sentry.OutboundMessageData{
+							Id:   sentry.MessageId_NEW_POOLED_TRANSACTION_HASHES_68,
+							Data: jData,
+						},
+						MaxPeers: maxPeers,
+					}
+					peers, err := sentryClient.SendMessageToRandomPeers(f.ctx, req)
+					if err != nil {
+						f.logger.Debug("[txpool.send] AnnouncePooledTxs68", "err", err)
+					}
+					if peers != nil {
+						for k := prevJ; k < j; k++ {
+							hashSentTo[k] += len(peers.Peers)
+						}
 					}
 				}
 			}
-
-		}
 		}
 		prevI = i
 		prevJ = j
@@ -205,7 +203,7 @@ func (f *Send) PropagatePooledTxsToPeersList(peers []types2.PeerID, types []byte
 	prevI := 0
 	prevJ := 0
 	for prevI < len(hashes) || prevJ < len(types) {
-		// Prepare two versions of the annoucement message, one for pre-eth/68 peers, another for post-eth/68 peers
+		// Prepare two versions of the announcement message, one for pre-eth/68 peers, another for post-eth/68 peers
 		i := prevI
 		for i < len(hashes) && rlp.HashesLen(hashes[prevI:i+32]) < p2pTxPacketLimit {
 			i += 32
@@ -222,7 +220,7 @@ func (f *Send) PropagatePooledTxsToPeersList(peers []types2.PeerID, types []byte
 			panic(fmt.Sprintf("Serialised hashes encoding len mismatch, expected %d, got %d", iSize, s))
 		}
 		if s := rlp.EncodeAnnouncements(types[prevJ:j], sizes[prevJ:j], hashes[32*prevJ:32*j], jData); s != jSize {
-			panic(fmt.Sprintf("Serialised annoucements encoding len mismatch, expected %d, got %d", jSize, s))
+			panic(fmt.Sprintf("Serialised announcements encoding len mismatch, expected %d, got %d", jSize, s))
 		}
 
 		for _, sentryClient := range f.sentryClients {
@@ -246,7 +244,6 @@ func (f *Send) PropagatePooledTxsToPeersList(peers []types2.PeerID, types []byte
 						}
 					}
 				case direct.ETH68, direct.ETH69:
-
 					if j > prevJ {
 						req := &sentry.SendMessageByIdRequest{
 							PeerId: peer,
@@ -259,7 +256,6 @@ func (f *Send) PropagatePooledTxsToPeersList(peers []types2.PeerID, types []byte
 							f.logger.Debug("[txpool.send] PropagatePooledTxsToPeersList68", "err", err)
 						}
 					}
-
 				}
 			}
 		}

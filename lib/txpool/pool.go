@@ -40,17 +40,15 @@ import (
 	"github.com/hashicorp/golang-lru/v2/simplelru"
 	"github.com/holiman/uint256"
 
-	"github.com/n42blockchain/N42/lib/common/hexutility"
-	"github.com/n42blockchain/N42/lib/crypto"
-	"github.com/n42blockchain/N42/lib/log/v3"
-
 	"github.com/n42blockchain/N42/lib/chain"
 	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/assert"
 	"github.com/n42blockchain/N42/lib/common/cmp"
 	"github.com/n42blockchain/N42/lib/common/dbg"
 	"github.com/n42blockchain/N42/lib/common/fixedgas"
+	"github.com/n42blockchain/N42/lib/common/hexutility"
 	"github.com/n42blockchain/N42/lib/common/u256"
+	"github.com/n42blockchain/N42/lib/crypto"
 	libkzg "github.com/n42blockchain/N42/lib/crypto/kzg"
 	"github.com/n42blockchain/N42/lib/gointerfaces"
 	"github.com/n42blockchain/N42/lib/gointerfaces/grpcutil"
@@ -59,10 +57,10 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/kvcache"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/metrics"
 	"github.com/n42blockchain/N42/lib/txpool/txpoolcfg"
 	"github.com/n42blockchain/N42/lib/types"
-	types2 "github.com/n42blockchain/N42/lib/types"
 )
 
 const DefaultBlockGasLimit = uint64(30000000)
@@ -246,6 +244,17 @@ type FeeCalculator interface {
 	CurrentFees(chainConfig *chain.Config, db kv.Getter) (baseFee uint64, blobFee uint64, minBlobGasPrice, blockGasLimit uint64, err error)
 }
 
+func bigIntToUint64Ptr(v *big.Int, name string) (*uint64, error) {
+	if v == nil {
+		return nil, nil
+	}
+	if !v.IsUint64() {
+		return nil, fmt.Errorf("%s overflow", name)
+	}
+	u := v.Uint64()
+	return &u, nil
+}
+
 func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, cache kvcache.Cache,
 	chainID uint256.Int, shanghaiTime, agraBlock, cancunTime, pragueTime, osakaTime *big.Int, blobSchedule *chain.BlobSchedule,
 	feeCalculator FeeCalculator, logger log.Logger,
@@ -295,46 +304,28 @@ func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, 
 		minedBlobTxsByHash:      map[string]*metaTx{},
 		blobSchedule:            blobSchedule,
 		feeCalculator:           feeCalculator,
-		// builderNotifyNewTxns:    builderNotifyNewTxns,
-		// newSlotsStreams:         newSlotsStreams,
-		logger: logger,
-		auths:  map[common.Address]*metaTx{},
+		logger:                  logger,
+		auths:                   map[common.Address]*metaTx{},
 	}
 
-	if shanghaiTime != nil {
-		if !shanghaiTime.IsUint64() {
-			return nil, errors.New("shanghaiTime overflow")
-		}
-		shanghaiTimeU64 := shanghaiTime.Uint64()
-		res.shanghaiTime = &shanghaiTimeU64
+	// Convert fork activation parameters from *big.Int to *uint64
+	forkParams := []struct {
+		value *big.Int
+		name  string
+		dest  **uint64
+	}{
+		{shanghaiTime, "shanghaiTime", &res.shanghaiTime},
+		{agraBlock, "agraBlock", &res.agraBlock},
+		{cancunTime, "cancunTime", &res.cancunTime},
+		{pragueTime, "pragueTime", &res.pragueTime},
+		{osakaTime, "osakaTime", &res.osakaTime},
 	}
-	if agraBlock != nil {
-		if !agraBlock.IsUint64() {
-			return nil, errors.New("agraBlock overflow")
+	for _, fp := range forkParams {
+		ptr, err := bigIntToUint64Ptr(fp.value, fp.name)
+		if err != nil {
+			return nil, err
 		}
-		agraBlockU64 := agraBlock.Uint64()
-		res.agraBlock = &agraBlockU64
-	}
-	if cancunTime != nil {
-		if !cancunTime.IsUint64() {
-			return nil, errors.New("cancunTime overflow")
-		}
-		cancunTimeU64 := cancunTime.Uint64()
-		res.cancunTime = &cancunTimeU64
-	}
-	if pragueTime != nil {
-		if !pragueTime.IsUint64() {
-			return nil, errors.New("pragueTime overflow")
-		}
-		pragueTimeU64 := pragueTime.Uint64()
-		res.pragueTime = &pragueTimeU64
-	}
-	if osakaTime != nil {
-		if !osakaTime.IsUint64() {
-			return nil, errors.New("osakaTime overflow")
-		}
-		osakaTimeU64 := osakaTime.Uint64()
-		res.osakaTime = &osakaTimeU64
+		*fp.dest = ptr
 	}
 
 	return res, nil
@@ -369,8 +360,6 @@ func (p *TxPool) Start(ctx context.Context, db kv.RwDB) error {
 
 func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChangeBatch, unwindTxs, unwindBlobTxs, minedTxs types.TxSlots, tx kv.Tx) error {
 	defer newBlockTimer.ObserveDuration(time.Now())
-	//t := time.Now()
-
 	coreDB, cache := p.coreDBWithCache()
 	cache.OnNewBlock(stateChanges)
 	coreTx, err := coreDB.BeginRo(ctx)
@@ -505,7 +494,7 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 
 	// remove auths from pool map
 	for _, mt := range minedTxs.Txs {
-		if mt.Type == types2.SetCodeTxType {
+		if mt.Type == types.SetCodeTxType {
 			numAuths := len(mt.AuthRaw)
 			for i := range numAuths {
 				signature := mt.Authorizations[i]
@@ -563,7 +552,6 @@ func (p *TxPool) processRemoteTxs(ctx context.Context) error {
 		return err
 	}
 
-	//t := time.Now()
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
@@ -602,7 +590,6 @@ func (p *TxPool) processRemoteTxs(ctx context.Context) error {
 	p.unprocessedRemoteTxs.Resize(0)
 	p.unprocessedRemoteByHash = map[string]int{}
 
-	//p.logger.Info("[txpool] on new txs", "amount", len(newPendingTxs.txs), "in", time.Since(t))
 	return nil
 }
 func (p *TxPool) getRlpLocked(tx kv.Tx, hash []byte) (rlpTxn []byte, sender common.Address, isLocal bool, err error) {
@@ -849,9 +836,6 @@ func (p *TxPool) CountContent() (int, int, int) {
 }
 func (p *TxPool) AddRemoteTxs(_ context.Context, newTxs types.TxSlots) {
 	if p.cfg.NoGossip {
-		// if no gossip, then
-		// disable adding remote transactions
-		// consume remote tx from fetch
 		return
 	}
 
@@ -1488,7 +1472,7 @@ func (p *TxPool) addLocked(mt *metaTx, announcements *types.Announcements) txpoo
 	}
 
 	// Check if we have txn with same authorization in the pool
-	if mt.Tx.Type == types2.SetCodeTxType {
+	if mt.Tx.Type == types.SetCodeTxType {
 		numAuths := len(mt.Tx.AuthRaw)
 		foundDuplicate := false
 		for i := range numAuths {
@@ -1547,7 +1531,7 @@ func (p *TxPool) discardLocked(mt *metaTx, reason txpoolcfg.DiscardReason) {
 		t := p.totalBlobsInPool.Load()
 		p.totalBlobsInPool.Store(t - uint64(len(mt.Tx.BlobHashes)))
 	}
-	if mt.Tx.Type == types2.SetCodeTxType {
+	if mt.Tx.Type == types.SetCodeTxType {
 		numAuths := len(mt.Tx.AuthRaw)
 		for i := range numAuths {
 			signature := mt.Tx.Authorizations[i]
@@ -1844,7 +1828,7 @@ func (p *TxPool) promote(pendingBaseFee uint64, pendingBlobFee uint64, announcem
 	}
 
 	// Discard worst transactions from the queued sub pool until it is within its capacity limits
-	for _ = p.queued.Worst(); p.queued.Len() > p.queued.limit; _ = p.queued.Worst() {
+	for p.queued.Len() > p.queued.limit {
 		p.discardLocked(p.queued.PopWorst(), txpoolcfg.QueuedPoolOverflow)
 	}
 }
@@ -1960,7 +1944,7 @@ func MainLoop(ctx context.Context, db kv.RwDB, p *TxPool, newTxs chan types.Anno
 							continue
 						}
 						// Strip away blob wrapper, if applicable
-						slotRlp, err2 := types2.UnwrapTxPlayloadRlp(slotRlp)
+						slotRlp, err2 := types.UnwrapTxPlayloadRlp(slotRlp)
 						if err2 != nil {
 							continue
 						}
@@ -2238,7 +2222,6 @@ func (p *TxPool) fromDB(ctx context.Context, tx kv.Tx, coreTx kv.Tx) error {
 		txn.Rlp = nil // means that we don't need store it in db anymore
 
 		txn.SenderID, txn.Traced = p.senders.getOrCreateID(addr, p.logger)
-		binary.BigEndian.Uint64(v) // TODO - unnecessary line, remove
 
 		isLocalTx := p.isLocalLRU.Contains(string(k))
 
@@ -2335,11 +2318,7 @@ func LastSeenBlock(tx kv.Getter) (uint64, error) {
 func PutLastSeenBlock(tx kv.Putter, n uint64, buf []byte) error {
 	buf = common.EnsureEnoughSize(buf, 8)
 	binary.BigEndian.PutUint64(buf, n)
-	err := tx.Put(kv.PoolInfo, PoolLastSeenBlockKey, buf)
-	if err != nil {
-		return err
-	}
-	return nil
+	return tx.Put(kv.PoolInfo, PoolLastSeenBlockKey, buf)
 }
 func ChainConfig(tx kv.Getter) (*chain.Config, error) {
 	v, err := tx.GetOne(kv.PoolInfo, PoolChainConfigKey)
@@ -2360,10 +2339,7 @@ func PutChainConfig(tx kv.Putter, cc *chain.Config, buf []byte) error {
 	if err := json.NewEncoder(wr).Encode(cc); err != nil {
 		return fmt.Errorf("invalid chain config JSON in pool db: %w", err)
 	}
-	if err := tx.Put(kv.PoolInfo, PoolChainConfigKey, wr.Bytes()); err != nil {
-		return err
-	}
-	return nil
+	return tx.Put(kv.PoolInfo, PoolChainConfigKey, wr.Bytes())
 }
 
 // nolint
@@ -2385,7 +2361,6 @@ func (p *TxPool) printDebug(prefix string) {
 }
 func (p *TxPool) logStats() {
 	if !p.Started() {
-		//p.logger.Info("[txpool] Not started yet, waiting for new blocks...")
 		return
 	}
 
@@ -2395,7 +2370,6 @@ func (p *TxPool) logStats() {
 	var m runtime.MemStats
 	dbg.ReadMemStats(&m)
 	ctx := []interface{}{
-		//"block", p.lastSeenBlock.Load(),
 		"pending", p.pending.Len(),
 		"baseFee", p.baseFee.Len(),
 		"queued", p.queued.Len(),
@@ -3013,10 +2987,9 @@ func (p WorstQueue) Swap(i, j int) {
 	p.ms[j].worstIndex = j
 }
 func (p *WorstQueue) Push(x interface{}) {
-	n := len(p.ms)
 	item := x.(*metaTx)
-	item.worstIndex = n
-	p.ms = append(p.ms, x.(*metaTx))
+	item.worstIndex = len(p.ms)
+	p.ms = append(p.ms, item)
 }
 func (p *WorstQueue) Pop() interface{} {
 	old := p.ms
@@ -3038,8 +3011,8 @@ func RecoverSignerFromRLP(rlp []byte, yParity uint8, r uint256.Int, s uint256.In
 	var sig [65]byte
 	rBytes := r.Bytes()
 	sBytes := s.Bytes()
-	copy(sig[32-len(r):32], rBytes)
-	copy(sig[64-len(s):64], sBytes)
+	copy(sig[32-len(rBytes):32], rBytes)
+	copy(sig[64-len(sBytes):64], sBytes)
 
 	if yParity == 0 || yParity == 1 {
 		sig[64] = yParity

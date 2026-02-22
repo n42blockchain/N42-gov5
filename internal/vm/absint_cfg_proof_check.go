@@ -29,19 +29,18 @@ func NewCfgAbsSem() *CfgAbsSem {
 		if op == nil {
 			continue
 		}
-		opsem := CfgOpSem{}
-		opsem.isPush = op.isPush
-		opsem.isDup = op.isDup
-		opsem.isSwap = op.isSwap
-		opsem.opNum = op.opNum
-		opsem.numPush = op.numPush
-		opsem.numPop = op.numPop
-
-		if opsem.isPush {
-			opsem.numBytes = op.opNum + 1
-		} else {
-			opsem.numBytes = 1
-
+		numBytes := 1
+		if op.isPush {
+			numBytes = op.opNum + 1
+		}
+		opsem := CfgOpSem{
+			isPush:   op.isPush,
+			isDup:    op.isDup,
+			isSwap:   op.isSwap,
+			opNum:    op.opNum,
+			numPush:  op.numPush,
+			numPop:   op.numPop,
+			numBytes: numBytes,
 		}
 		sem[OpCode(opcode)] = &opsem
 	}
@@ -93,12 +92,13 @@ func resolveCheck(sem *CfgAbsSem, code []byte, st0 *astate, pc0 int) (map[int]bo
 		if opcode == JUMP || opcode == JUMPI {
 			if stack.hasIndices(0) {
 				jumpDest := stack.values[0]
-				if jumpDest.kind == InvalidValue {
-					//program terminates, don't add edges
-				} else if jumpDest.kind == TopValue {
+				switch jumpDest.kind {
+				case InvalidValue:
+					// Program terminates, don't add edges
+				case TopValue:
 					empty := make(map[int]bool)
 					return empty, empty, errors.New("unresolvable jumps found")
-				} else if jumpDest.kind == ConcreteValue {
+				case ConcreteValue:
 					if isJumpDest(code, jumpDest.value) {
 						pc1 := int(jumpDest.value.Uint64())
 						succs[pc1] = true
@@ -109,7 +109,7 @@ func resolveCheck(sem *CfgAbsSem, code []byte, st0 *astate, pc0 int) (map[int]bo
 		}
 	}
 
-	//fall-thru edge
+	// Fall-through edge
 	if opcode != JUMP {
 		if pc0 < codeLen-opsem.numBytes {
 			succs[pc0+opsem.numBytes] = true
@@ -138,40 +138,33 @@ func postCheck(sem *CfgAbsSem, code []byte, st0 *astate, pc0 int, pc1 int, isJum
 
 		stack1 := stack0.Copy()
 
-		if opsem0.isPush {
+		switch {
+		case opsem0.isPush:
 			pushValue := getPushValue(code, pc0, opsem0)
 			if isJumpDest(code, &pushValue) || isFF(&pushValue) {
 				stack1.Push(AbsValueConcrete(pushValue))
 			} else {
 				stack1.Push(AbsValueInvalid())
 			}
-		} else if opsem0.isDup {
+
+		case opsem0.isDup:
 			if !stack0.hasIndices(opsem0.opNum - 1) {
 				continue
 			}
+			stack1.Push(stack1.values[opsem0.opNum-1])
 
-			value := stack1.values[opsem0.opNum-1]
-			stack1.Push(value)
-		} else if opsem0.isSwap {
-			opNum := opsem0.opNum
-
-			if !stack0.hasIndices(0, opNum) {
+		case opsem0.isSwap:
+			if !stack0.hasIndices(0, opsem0.opNum) {
 				continue
 			}
+			stack1.values[0], stack1.values[opsem0.opNum] = stack1.values[opsem0.opNum], stack1.values[0]
 
-			a := stack1.values[0]
-			b := stack1.values[opNum]
-			stack1.values[0] = b
-			stack1.values[opNum] = a
-
-		} else if op0 == AND {
+		case op0 == AND:
 			if !stack0.hasIndices(0, 1) {
 				continue
 			}
-
 			a := stack1.Pop(pc0)
 			b := stack1.Pop(pc0)
-
 			if a.kind == ConcreteValue && b.kind == ConcreteValue {
 				v := uint256.NewInt(0)
 				v.And(a.value, b.value)
@@ -179,19 +172,19 @@ func postCheck(sem *CfgAbsSem, code []byte, st0 *astate, pc0 int, pc1 int, isJum
 			} else {
 				stack1.Push(AbsValueTop(pc0))
 			}
-		} else if op0 == PC {
+
+		case op0 == PC:
 			v := uint256.NewInt(0)
 			v.SetUint64(uint64(pc0))
 			stack1.Push(AbsValueConcrete(*v))
-		} else {
+
+		default:
 			if !stack0.hasIndices(opsem0.numPop - 1) {
 				continue
 			}
-
 			for i := 0; i < opsem0.numPop; i++ {
 				stack1.Pop(pc0)
 			}
-
 			for i := 0; i < opsem0.numPush; i++ {
 				stack1.Push(AbsValueTop(pc0))
 			}

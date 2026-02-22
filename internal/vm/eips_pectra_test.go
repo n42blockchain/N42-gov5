@@ -23,9 +23,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
-// =============================================================================
 // EIP-7702 Delegation Tests
-// =============================================================================
 
 func TestHasDelegation(t *testing.T) {
 	tests := []struct {
@@ -33,37 +31,16 @@ func TestHasDelegation(t *testing.T) {
 		code   []byte
 		expect bool
 	}{
-		{
-			name:   "empty code",
-			code:   []byte{},
-			expect: false,
-		},
-		{
-			name:   "too short",
-			code:   []byte{0xef, 0x01, 0x00},
-			expect: false,
-		},
-		{
-			name:   "wrong prefix",
-			code:   append([]byte{0xef, 0x02, 0x00}, make([]byte, 20)...),
-			expect: false,
-		},
-		{
-			name:   "valid delegation",
-			code:   append(DelegationPrefix, make([]byte, 20)...),
-			expect: true,
-		},
-		{
-			name:   "too long",
-			code:   append(DelegationPrefix, make([]byte, 21)...),
-			expect: false,
-		},
+		{"empty code", []byte{}, false},
+		{"too short", []byte{0xef, 0x01, 0x00}, false},
+		{"wrong prefix", append([]byte{0xef, 0x02, 0x00}, make([]byte, 20)...), false},
+		{"valid delegation", append(DelegationPrefix, make([]byte, 20)...), true},
+		{"too long", append(DelegationPrefix, make([]byte, 21)...), false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := HasDelegation(tt.code)
-			if got != tt.expect {
+			if got := HasDelegation(tt.code); got != tt.expect {
 				t.Errorf("HasDelegation() = %v, want %v", got, tt.expect)
 			}
 		})
@@ -80,24 +57,14 @@ func TestParseDelegation(t *testing.T) {
 		wantAddr  types.Address
 		wantValid bool
 	}{
-		{
-			name:      "empty code",
-			code:      []byte{},
-			wantAddr:  types.Address{},
-			wantValid: false,
-		},
-		{
-			name:      "valid delegation",
-			code:      delegationCode,
-			wantAddr:  addr,
-			wantValid: true,
-		},
-		{
-			name:      "invalid prefix",
-			code:      append([]byte{0xff, 0x01, 0x00}, addr.Bytes()...),
-			wantAddr:  types.Address{},
-			wantValid: false,
-		},
+		{"nil code", nil, types.Address{}, false},
+		{"empty code", []byte{}, types.Address{}, false},
+		{"too short", []byte{0xef, 0x01}, types.Address{}, false},
+		{"valid delegation", delegationCode, addr, true},
+		{"wrong prefix byte 0", append([]byte{0xff, 0x01, 0x00}, addr.Bytes()...), types.Address{}, false},
+		{"wrong prefix byte 1", append([]byte{0xef, 0x02, 0x00}, addr.Bytes()...), types.Address{}, false},
+		{"wrong prefix byte 2", append([]byte{0xef, 0x01, 0x01}, addr.Bytes()...), types.Address{}, false},
+		{"too long", append(DelegationPrefix, make([]byte, 21)...), types.Address{}, false},
 	}
 
 	for _, tt := range tests {
@@ -117,22 +84,17 @@ func TestAddressToDelegation(t *testing.T) {
 	addr := types.HexToAddress("0xabcdef0123456789abcdef0123456789abcdef01")
 	code := AddressToDelegation(addr)
 
-	// Verify prefix
 	if !bytes.HasPrefix(code, DelegationPrefix) {
-		t.Errorf("AddressToDelegation() should have delegation prefix")
+		t.Error("AddressToDelegation() should have delegation prefix")
 	}
-
-	// Verify length
 	if len(code) != 23 {
 		t.Errorf("AddressToDelegation() len = %d, want 23", len(code))
 	}
-
-	// Verify address bytes
 	if !bytes.Equal(code[3:], addr.Bytes()) {
-		t.Errorf("AddressToDelegation() address mismatch")
+		t.Error("AddressToDelegation() address mismatch")
 	}
 
-	// Verify round-trip
+	// Round-trip
 	parsedAddr, valid := ParseDelegation(code)
 	if !valid {
 		t.Error("Round-trip: ParseDelegation() returned invalid")
@@ -143,7 +105,6 @@ func TestAddressToDelegation(t *testing.T) {
 }
 
 func TestDelegationPrefixBytes(t *testing.T) {
-	// Verify the delegation prefix is exactly 0xef0100
 	if len(DelegationPrefix) != 3 {
 		t.Errorf("DelegationPrefix length = %d, want 3", len(DelegationPrefix))
 	}
@@ -152,13 +113,9 @@ func TestDelegationPrefixBytes(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // EIP-2935 History Storage Tests
-// =============================================================================
 
 func TestHistoryStorageAddress(t *testing.T) {
-	// Verify the history storage address matches EIP-2935 official specification
-	// Address derived as: rlp([0xfffffffffffffffffffffffffffffffffffffffe, 0])
 	expectedAddr := types.HexToAddress("0x0000F90827F1C53a10CB7A02335B175320002935")
 	if HistoryStorageAddress != expectedAddr {
 		t.Errorf("HistoryStorageAddress = %v, want %v", HistoryStorageAddress, expectedAddr)
@@ -166,14 +123,12 @@ func TestHistoryStorageAddress(t *testing.T) {
 }
 
 func TestHistoryServeWindow(t *testing.T) {
-	// Verify the history serve window is 8192 per EIP-2935
 	if HistoryServeWindow != 8192 {
 		t.Errorf("HistoryServeWindow = %d, want 8192", HistoryServeWindow)
 	}
 }
 
 func TestHistoryStorageSlotCalculation(t *testing.T) {
-	// Test that slot calculation uses modulo correctly
 	tests := []struct {
 		blockNum     uint64
 		expectedSlot uint64
@@ -181,9 +136,9 @@ func TestHistoryStorageSlotCalculation(t *testing.T) {
 		{0, 0},
 		{1, 1},
 		{8191, 8191},
-		{8192, 0},    // Wraps around
-		{8193, 1},    // Wraps around
-		{16384, 0},   // 2x wrap
+		{8192, 0},
+		{8193, 1},
+		{16384, 0},
 		{100000, 100000 % 8192},
 	}
 
@@ -196,28 +151,21 @@ func TestHistoryStorageSlotCalculation(t *testing.T) {
 }
 
 func TestHistoryStorageCode(t *testing.T) {
-	// Verify the history storage code is not empty
 	if len(HistoryStorageCode) == 0 {
 		t.Error("HistoryStorageCode should not be empty")
 	}
 }
 
-// =============================================================================
 // EIP-7251 Max Effective Balance Tests
-// =============================================================================
 
 func TestMaxEffectiveBalanceEIP7251(t *testing.T) {
-	// Verify the max effective balance is 2048 ETH (2048 * 10^18 wei)
-	// uint256 String() returns hex, so we compare with Dec()
 	expectedDec := "2048000000000000000000"
 	if MaxEffectiveBalanceEIP7251.Dec() != expectedDec {
 		t.Errorf("MaxEffectiveBalanceEIP7251 = %s, want %s", MaxEffectiveBalanceEIP7251.Dec(), expectedDec)
 	}
 }
 
-// =============================================================================
 // EIP-7685 Request Types Tests
-// =============================================================================
 
 func TestRequestTypes(t *testing.T) {
 	if DepositRequestType != 0x00 {
@@ -232,27 +180,26 @@ func TestRequestTypes(t *testing.T) {
 }
 
 func TestSystemAddresses(t *testing.T) {
-	// Verify system addresses are not zero
-	if SystemAddress == (types.Address{}) {
-		t.Error("SystemAddress should not be zero")
+	addresses := []struct {
+		name string
+		addr types.Address
+	}{
+		{"SystemAddress", SystemAddress},
+		{"WithdrawalRequestsAddress", WithdrawalRequestsAddress},
+		{"ConsolidationRequestsAddress", ConsolidationRequestsAddress},
+		{"DepositContractAddress", DepositContractAddress},
 	}
-	if WithdrawalRequestsAddress == (types.Address{}) {
-		t.Error("WithdrawalRequestsAddress should not be zero")
-	}
-	if ConsolidationRequestsAddress == (types.Address{}) {
-		t.Error("ConsolidationRequestsAddress should not be zero")
-	}
-	if DepositContractAddress == (types.Address{}) {
-		t.Error("DepositContractAddress should not be zero")
+
+	for _, a := range addresses {
+		if a.addr == (types.Address{}) {
+			t.Errorf("%s should not be zero", a.name)
+		}
 	}
 }
 
-// =============================================================================
 // EIP-2537 BLS Precompile Addresses Tests
-// =============================================================================
 
 func TestBLSPrecompileAddresses(t *testing.T) {
-	// Verify BLS precompile addresses are sequential from 0x0b to 0x13
 	expectedAddrs := []struct {
 		name string
 		addr types.Address
@@ -277,9 +224,7 @@ func TestBLSPrecompileAddresses(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Gas Calculation Tests
-// =============================================================================
 
 func TestCalcAuthorizationGas(t *testing.T) {
 	tests := []struct {
@@ -303,26 +248,11 @@ func TestCalcAuthorizationGas(t *testing.T) {
 	}
 }
 
-func TestPerAuthBaseCost(t *testing.T) {
-	if PerAuthBaseCost != 2500 {
-		t.Errorf("PerAuthBaseCost = %d, want 2500", PerAuthBaseCost)
-	}
-}
-
-func TestPerEmptyAccountCost(t *testing.T) {
-	if PerEmptyAccountCost != 25000 {
-		t.Errorf("PerEmptyAccountCost = %d, want 25000", PerEmptyAccountCost)
-	}
-}
-
-// =============================================================================
 // Pectra Instruction Set Tests
-// =============================================================================
 
 func TestNewPectraInstructionSet(t *testing.T) {
 	jt := newPectraInstructionSet()
 
-	// Verify the instruction set is not nil
 	for i := 0; i < 256; i++ {
 		if jt[i] == nil {
 			t.Errorf("Pectra instruction set op 0x%x is nil", i)
@@ -334,7 +264,6 @@ func TestPectraInstructionSetIncludesPrague(t *testing.T) {
 	pectra := newPectraInstructionSet()
 	prague := newPragueInstructionSet()
 
-	// Verify that all Prague instructions are present in Pectra
 	for i := 0; i < 256; i++ {
 		if prague[i] != nil && pectra[i] == nil {
 			t.Errorf("Pectra missing Prague op 0x%x", i)
@@ -342,13 +271,11 @@ func TestPectraInstructionSetIncludesPrague(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // EIP-6110 Deposit Request Tests
-// =============================================================================
 
 func TestDepositRequestSerialize(t *testing.T) {
 	deposit := &DepositRequest{
-		Amount: 32000000000, // 32 Gwei
+		Amount: 32000000000,
 		Index:  12345,
 	}
 	copy(deposit.Pubkey[:], bytes.Repeat([]byte{0xaa}, 48))
@@ -360,50 +287,33 @@ func TestDepositRequestSerialize(t *testing.T) {
 		t.Errorf("Serialized deposit size = %d, want %d", len(serialized), DepositRequestSize)
 	}
 
-	// Verify pubkey
 	for i := 0; i < 48; i++ {
 		if serialized[i] != 0xaa {
 			t.Errorf("Pubkey byte %d = %x, want 0xaa", i, serialized[i])
+			break
 		}
 	}
 }
 
 func TestDepositEventSignature(t *testing.T) {
-	// Verify the deposit event signature is not zero
 	if DepositEventSignature == (types.Hash{}) {
 		t.Error("DepositEventSignature should not be zero")
 	}
 }
 
 func TestDepositContractAddress(t *testing.T) {
-	// Verify the deposit contract address matches the canonical address
 	expectedAddr := types.HexToAddress("0x00000000219ab540356cBB839Cbe05303d7705Fa")
 	if DepositContractAddress != expectedAddr {
 		t.Errorf("DepositContractAddress = %v, want %v", DepositContractAddress, expectedAddr)
 	}
 }
 
-// =============================================================================
 // EIP-7002 Withdrawal Request Tests
-// =============================================================================
-
-func TestWithdrawalRequestSerialize(t *testing.T) {
-	req := &WithdrawalRequest{
-		SourceAddress: types.HexToAddress("0x1234567890123456789012345678901234567890"),
-		Amount:        1000000000, // 1 Gwei
-	}
-	copy(req.ValidatorPubkey[:], bytes.Repeat([]byte{0xdd}, 48))
-
-	serialized := req.Serialize()
-	if len(serialized) != WithdrawalRequestSize {
-		t.Errorf("Serialized withdrawal request size = %d, want %d", len(serialized), WithdrawalRequestSize)
-	}
-}
 
 func TestWithdrawalRequestRoundTrip(t *testing.T) {
 	original := &WithdrawalRequest{
 		SourceAddress: types.HexToAddress("0xabcdef0123456789abcdef0123456789abcdef01"),
-		Amount:        500000000, // 0.5 Gwei
+		Amount:        500000000,
 	}
 	copy(original.ValidatorPubkey[:], bytes.Repeat([]byte{0xee}, 48))
 
@@ -417,17 +327,10 @@ func TestWithdrawalRequestRoundTrip(t *testing.T) {
 		t.Errorf("SourceAddress mismatch: got %v, want %v", decoded.SourceAddress, original.SourceAddress)
 	}
 	if decoded.ValidatorPubkey != original.ValidatorPubkey {
-		t.Errorf("ValidatorPubkey mismatch")
+		t.Error("ValidatorPubkey mismatch")
 	}
 	if decoded.Amount != original.Amount {
-		t.Errorf("Amount mismatch: got %d, want %d", decoded.Amount, original.Amount)
-	}
-}
-
-func TestWithdrawalRequestsAddress(t *testing.T) {
-	// Verify the address is not zero
-	if WithdrawalRequestsAddress == (types.Address{}) {
-		t.Error("WithdrawalRequestsAddress should not be zero")
+		t.Errorf("Amount = %d, want %d", decoded.Amount, original.Amount)
 	}
 }
 
@@ -437,22 +340,7 @@ func TestMaxWithdrawalRequestsPerBlock(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // EIP-7251 Consolidation Request Tests
-// =============================================================================
-
-func TestConsolidationRequestSerialize(t *testing.T) {
-	req := &ConsolidationRequest{
-		SourceAddress: types.HexToAddress("0x1234567890123456789012345678901234567890"),
-	}
-	copy(req.SourcePubkey[:], bytes.Repeat([]byte{0x11}, 48))
-	copy(req.TargetPubkey[:], bytes.Repeat([]byte{0x22}, 48))
-
-	serialized := req.Serialize()
-	if len(serialized) != ConsolidationRequestSize {
-		t.Errorf("Serialized consolidation request size = %d, want %d", len(serialized), ConsolidationRequestSize)
-	}
-}
 
 func TestConsolidationRequestRoundTrip(t *testing.T) {
 	original := &ConsolidationRequest{
@@ -468,18 +356,17 @@ func TestConsolidationRequestRoundTrip(t *testing.T) {
 	}
 
 	if decoded.SourceAddress != original.SourceAddress {
-		t.Errorf("SourceAddress mismatch")
+		t.Error("SourceAddress mismatch")
 	}
 	if decoded.SourcePubkey != original.SourcePubkey {
-		t.Errorf("SourcePubkey mismatch")
+		t.Error("SourcePubkey mismatch")
 	}
 	if decoded.TargetPubkey != original.TargetPubkey {
-		t.Errorf("TargetPubkey mismatch")
+		t.Error("TargetPubkey mismatch")
 	}
 }
 
 func TestMaxEffectiveBalanceElectra(t *testing.T) {
-	// Verify the max effective balance is 2048 ETH
 	expectedDec := "2048000000000000000000"
 	if MaxEffectiveBalanceElectra.Dec() != expectedDec {
 		t.Errorf("MaxEffectiveBalanceElectra = %s, want %s", MaxEffectiveBalanceElectra.Dec(), expectedDec)
@@ -487,42 +374,43 @@ func TestMaxEffectiveBalanceElectra(t *testing.T) {
 }
 
 func TestMinActivationBalance(t *testing.T) {
-	// Verify the min activation balance is 32 ETH
 	expectedDec := "32000000000000000000"
 	if MinActivationBalance.Dec() != expectedDec {
 		t.Errorf("MinActivationBalance = %s, want %s", MinActivationBalance.Dec(), expectedDec)
 	}
 }
 
-func TestConsolidationRequestsAddress(t *testing.T) {
-	// Verify the address is not zero
-	if ConsolidationRequestsAddress == (types.Address{}) {
-		t.Error("ConsolidationRequestsAddress should not be zero")
-	}
-}
-
-// =============================================================================
 // EIP-7685 Execution Request Tests
-// =============================================================================
 
 func TestEncodeDecodeExecutionRequest(t *testing.T) {
-	testData := []byte{0x01, 0x02, 0x03, 0x04}
-	
-	// Test deposit request type
-	encoded := EncodeExecutionRequest(DepositRequestType, testData)
-	if encoded[0] != DepositRequestType {
-		t.Errorf("Encoded type = %d, want %d", encoded[0], DepositRequestType)
+	requestTypes := []struct {
+		name    string
+		reqType byte
+		data    []byte
+	}{
+		{"deposit", DepositRequestType, []byte{0x01, 0x02, 0x03}},
+		{"withdrawal", WithdrawalRequestType, []byte{0x04, 0x05, 0x06}},
+		{"consolidation", ConsolidationRequestType, []byte{0x07, 0x08, 0x09}},
 	}
 
-	reqType, data, err := DecodeExecutionRequest(encoded)
-	if err != nil {
-		t.Fatalf("DecodeExecutionRequest error: %v", err)
-	}
-	if reqType != DepositRequestType {
-		t.Errorf("Decoded type = %d, want %d", reqType, DepositRequestType)
-	}
-	if !bytes.Equal(data, testData) {
-		t.Errorf("Decoded data mismatch")
+	for _, rt := range requestTypes {
+		t.Run(rt.name, func(t *testing.T) {
+			encoded := EncodeExecutionRequest(rt.reqType, rt.data)
+			if encoded[0] != rt.reqType {
+				t.Errorf("Encoded type = %d, want %d", encoded[0], rt.reqType)
+			}
+
+			decodedType, decodedData, err := DecodeExecutionRequest(encoded)
+			if err != nil {
+				t.Fatalf("DecodeExecutionRequest error: %v", err)
+			}
+			if decodedType != rt.reqType {
+				t.Errorf("Decoded type = %d, want %d", decodedType, rt.reqType)
+			}
+			if !bytes.Equal(decodedData, rt.data) {
+				t.Error("Decoded data mismatch")
+			}
+		})
 	}
 }
 
@@ -533,9 +421,7 @@ func TestDecodeEmptyRequest(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Benchmarks
-// =============================================================================
 
 func BenchmarkHasDelegation(b *testing.B) {
 	code := AddressToDelegation(types.HexToAddress("0x1234567890123456789012345678901234567890"))
@@ -572,4 +458,3 @@ func BenchmarkNewPectraInstructionSet(b *testing.B) {
 		newPectraInstructionSet()
 	}
 }
-

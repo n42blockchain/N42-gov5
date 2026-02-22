@@ -13,8 +13,6 @@ import (
 	"hash"
 	"io"
 	"testing"
-
-	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
 func TestHashes(t *testing.T) {
@@ -90,7 +88,7 @@ func TestMarshal(t *testing.T) {
 			}
 			binUnmarshaler, ok := h2.(encoding.BinaryUnmarshaler)
 			if !ok {
-				log.Warn("Failed to type convert h2 to encoding.BinaryUnmarshaler")
+				t.Fatalf("size=%d, len(input)=%d: h2 does not implement encoding.BinaryUnmarshaler", size, i)
 			}
 			err = binUnmarshaler.UnmarshalBinary(halfstate)
 			if err != nil {

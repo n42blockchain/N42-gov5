@@ -35,29 +35,29 @@ import (
 // ExecutionPayloadV4 extends ExecutionPayloadV3 with Pectra fields
 type ExecutionPayloadV4 struct {
 	// Base fields from V3
-	ParentHash    types.Hash     `json:"parentHash"`
-	FeeRecipient  types.Address  `json:"feeRecipient"`
-	StateRoot     types.Hash     `json:"stateRoot"`
-	ReceiptsRoot  types.Hash     `json:"receiptsRoot"`
-	LogsBloom     hexutil.Bytes  `json:"logsBloom"`
-	PrevRandao    types.Hash     `json:"prevRandao"`
-	BlockNumber   hexutil.Uint64 `json:"blockNumber"`
-	GasLimit      hexutil.Uint64 `json:"gasLimit"`
-	GasUsed       hexutil.Uint64 `json:"gasUsed"`
-	Timestamp     hexutil.Uint64 `json:"timestamp"`
-	ExtraData     hexutil.Bytes  `json:"extraData"`
-	BaseFeePerGas hexutil.Uint64 `json:"baseFeePerGas"`
-	BlockHash     types.Hash     `json:"blockHash"`
+	ParentHash    types.Hash      `json:"parentHash"`
+	FeeRecipient  types.Address   `json:"feeRecipient"`
+	StateRoot     types.Hash      `json:"stateRoot"`
+	ReceiptsRoot  types.Hash      `json:"receiptsRoot"`
+	LogsBloom     hexutil.Bytes   `json:"logsBloom"`
+	PrevRandao    types.Hash      `json:"prevRandao"`
+	BlockNumber   hexutil.Uint64  `json:"blockNumber"`
+	GasLimit      hexutil.Uint64  `json:"gasLimit"`
+	GasUsed       hexutil.Uint64  `json:"gasUsed"`
+	Timestamp     hexutil.Uint64  `json:"timestamp"`
+	ExtraData     hexutil.Bytes   `json:"extraData"`
+	BaseFeePerGas hexutil.Uint64  `json:"baseFeePerGas"`
+	BlockHash     types.Hash      `json:"blockHash"`
 	Transactions  []hexutil.Bytes `json:"transactions"`
 	Withdrawals   []*Withdrawal   `json:"withdrawals"`
-	
+
 	// Cancun fields
 	BlobGasUsed   *hexutil.Uint64 `json:"blobGasUsed"`
 	ExcessBlobGas *hexutil.Uint64 `json:"excessBlobGas"`
-	
+
 	// Pectra fields (EIP-7685: Execution layer requests)
-	DepositRequests    []DepositRequest    `json:"depositRequests,omitempty"`
-	WithdrawalRequests []WithdrawalRequest `json:"withdrawalRequests,omitempty"`
+	DepositRequests       []DepositRequest       `json:"depositRequests,omitempty"`
+	WithdrawalRequests    []WithdrawalRequest    `json:"withdrawalRequests,omitempty"`
 	ConsolidationRequests []ConsolidationRequest `json:"consolidationRequests,omitempty"`
 }
 
@@ -91,7 +91,7 @@ type PayloadAttributesV4 struct {
 	SuggestedFeeRecipient types.Address  `json:"suggestedFeeRecipient"`
 	Withdrawals           []*Withdrawal  `json:"withdrawals"`
 	ParentBeaconBlockRoot *types.Hash    `json:"parentBeaconBlockRoot"`
-	
+
 	// Pectra additions
 	TargetBlobsPerBlock *hexutil.Uint64 `json:"targetBlobsPerBlock,omitempty"` // EIP-7840
 }
@@ -285,10 +285,10 @@ type BlobScheduleResponse struct {
 
 // ClientCapabilities represents client capabilities for fork management
 type ClientCapabilities struct {
-	SupportedForks      []string `json:"supportedForks"`      // List of supported forks
-	SupportedMethods    []string `json:"supportedMethods"`    // List of supported Engine API methods
-	ProtocolVersion     string   `json:"protocolVersion"`     // Protocol version
-	CanCancelFork       bool     `json:"canCancelFork"`       // Whether fork can be cancelled
+	SupportedForks   []string `json:"supportedForks"`   // List of supported forks
+	SupportedMethods []string `json:"supportedMethods"` // List of supported Engine API methods
+	ProtocolVersion  string   `json:"protocolVersion"`  // Protocol version
+	CanCancelFork    bool     `json:"canCancelFork"`    // Whether fork can be cancelled
 }
 
 // GetClientCapabilitiesV1 returns the client's capabilities
@@ -328,18 +328,18 @@ func (e *EngineAPIv4) GetClientCapabilitiesV1(ctx context.Context) (*ClientCapab
 
 // ForkCandidate represents a candidate fork for activation
 type ForkCandidate struct {
-	Name            string         `json:"name"`            // Fork name (e.g., "pectra")
-	ActivationTime  *big.Int       `json:"activationTime"`  // Activation timestamp
-	ConfigHash      types.Hash     `json:"configHash"`      // Hash of fork configuration
-	Status          string         `json:"status"`          // "candidate", "scheduled", "active", "cancelled"
-	Cancellable     bool           `json:"cancellable"`     // Whether fork can be cancelled
+	Name           string     `json:"name"`           // Fork name (e.g., "pectra")
+	ActivationTime *big.Int   `json:"activationTime"` // Activation timestamp
+	ConfigHash     types.Hash `json:"configHash"`     // Hash of fork configuration
+	Status         string     `json:"status"`         // "candidate", "scheduled", "active", "cancelled"
+	Cancellable    bool       `json:"cancellable"`    // Whether fork can be cancelled
 }
 
 // ForkCandidateStatus represents the status of fork candidates
 type ForkCandidateStatus struct {
-	Candidates      []ForkCandidate `json:"candidates"`
-	ActiveFork      string          `json:"activeFork"`
-	NextScheduled   *ForkCandidate  `json:"nextScheduled,omitempty"`
+	Candidates    []ForkCandidate `json:"candidates"`
+	ActiveFork    string          `json:"activeFork"`
+	NextScheduled *ForkCandidate  `json:"nextScheduled,omitempty"`
 }
 
 // GetForkCandidatesV1 returns the current fork candidates
@@ -363,16 +363,7 @@ func (e *EngineAPIv4) GetForkCandidatesV1(ctx context.Context) (*ForkCandidateSt
 // =============================================================================
 
 var (
-	errBlobNotFound        = &engineErrorV4{"blob not found"}
-	errUnknownRequestType  = &engineErrorV4{"unknown request type"}
-	errRequestCountMismatch = &engineErrorV4{"request count mismatch"}
+	errBlobNotFound         = &engineError{"blob not found"}
+	errUnknownRequestType   = &engineError{"unknown request type"}
+	errRequestCountMismatch = &engineError{"request count mismatch"}
 )
-
-type engineErrorV4 struct {
-	msg string
-}
-
-func (e *engineErrorV4) Error() string {
-	return e.msg
-}
-

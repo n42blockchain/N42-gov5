@@ -17,11 +17,13 @@
 package deposit
 
 import (
+	"testing"
+
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/crypto/bls"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/params"
-	"testing"
 )
 
 func TestBLS(t *testing.T) {
@@ -34,7 +36,6 @@ func TestBLS(t *testing.T) {
 	}
 
 	publicKey, err := bls.PublicKeyFromBytes(bp)
-
 	if err != nil {
 		t.Fatal("cannot unpack BLS publicKey", err)
 	}
@@ -42,38 +43,18 @@ func TestBLS(t *testing.T) {
 	if !signature.Verify(publicKey, msg.Bytes()) {
 		t.Fatal("bls cannot verify signature")
 	}
-
 }
 
 func TestUint256(t *testing.T) {
 	n50Hex, _ := hexutil.Decode("0x2B5E3AF16B1880000") // 50 N
 	n50Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.N), uint256.NewInt(50))
-	//
 	t.Logf("50 N uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(n50Uint256.Bytes()), hexutil.Encode(n50Hex))
 
 	n500Hex, _ := hexutil.Decode("0x1B1AE4D6E2EF500000") // 500 N
 	n500Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.N), uint256.NewInt(500))
-	//
 	t.Logf("500 N uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(n500Uint256.Bytes()), hexutil.Encode(n500Hex))
 
 	n100Hex, _ := hexutil.Decode("0x56BC75E2D63100000") // 100 N
 	n100Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.N), uint256.NewInt(100))
-	//
 	t.Logf("100 N uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(n100Uint256.Bytes()), hexutil.Encode(n100Hex))
 }
-
-//func TestPrivateKey(t *testing.T) {
-//	private, _ := hexutil.Decode("0xde4b76c3dca3d8e10aea7644f77b316a68a6476fbd119d441ead5c6131aa42a7")
-//
-//	p, err := bls.SecretKeyFromBytes(private)
-//	if err != nil {
-//		t.Fatal("bls cannot import private key", err)
-//	}
-//
-//	pub, err := p.PublicKey().MarshalText()
-//
-//	if err != nil {
-//		t.Fatal("bls public key cannot MarshalText ", err)
-//	}
-//	t.Logf("pubkey %s", string(pub))
-//}

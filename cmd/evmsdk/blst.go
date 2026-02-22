@@ -23,22 +23,28 @@ import (
 	"github.com/n42blockchain/N42/common/crypto/bls"
 )
 
+// decodeSecretKey decodes a hex-encoded private key string and returns the
+// corresponding BLS secret key. It validates that the decoded key is exactly
+// 32 bytes.
+func decodeSecretKey(privKeyHex string) (bls.SecretKey, error) {
+	privKeyBytes, err := hex.DecodeString(privKeyHex)
+	if err != nil {
+		return nil, err
+	}
+	if len(privKeyBytes) != 32 {
+		return nil, fmt.Errorf("invalid private key length: expected 32 bytes, got %d", len(privKeyBytes))
+	}
+	var arr [32]byte
+	copy(arr[:], privKeyBytes)
+	return bls.SecretKeyFromRandom32Byte(arr)
+}
+
 func BlsSign(privKey, msg string) (interface{}, error) {
 	msgBytes, err := hex.DecodeString(msg)
 	if err != nil {
 		return nil, err
 	}
-	privKeyBytes, err := hex.DecodeString(privKey)
-	if err != nil {
-		return nil, err
-	}
-	// Security: validate private key length before copy
-	if len(privKeyBytes) != 32 {
-		return nil, fmt.Errorf("invalid private key length: expected 32 bytes, got %d", len(privKeyBytes))
-	}
-	arr := [32]byte{}
-	copy(arr[:], privKeyBytes)
-	sk, err := bls.SecretKeyFromRandom32Byte(arr)
+	sk, err := decodeSecretKey(privKey)
 	if err != nil {
 		return nil, err
 	}
@@ -47,17 +53,7 @@ func BlsSign(privKey, msg string) (interface{}, error) {
 }
 
 func BlsPublicKey(privKey string) (interface{}, error) {
-	privKeyBytes, err := hex.DecodeString(privKey)
-	if err != nil {
-		return nil, err
-	}
-	// Security: validate private key length before copy
-	if len(privKeyBytes) != 32 {
-		return nil, fmt.Errorf("invalid private key length: expected 32 bytes, got %d", len(privKeyBytes))
-	}
-	arr := [32]byte{}
-	copy(arr[:], privKeyBytes)
-	sk, err := bls.SecretKeyFromRandom32Byte(arr)
+	sk, err := decodeSecretKey(privKey)
 	if err != nil {
 		return nil, err
 	}

@@ -3,8 +3,6 @@ package p2p
 import (
 	"context"
 	"encoding/hex"
-	"github.com/n42blockchain/N42/api/protocol/msg_proto"
-	"github.com/n42blockchain/N42/utils"
 	"strings"
 	"time"
 
@@ -12,41 +10,34 @@ import (
 	pubsubpb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
+
+	"github.com/n42blockchain/N42/api/protocol/msg_proto"
+	"github.com/n42blockchain/N42/utils"
 )
 
 const (
-	// overlay parameters
-	gossipSubD   = 8  // topic stable mesh target count
-	gossipSubDlo = 6  // topic stable mesh low watermark
-	gossipSubDhi = 12 // topic stable mesh high watermark
+	// Overlay parameters.
+	gossipSubD   = 8
+	gossipSubDlo = 6
 
-	// gossip parameters
-	gossipSubMcacheLen    = 6   // number of windows to retain full messages in cache for `IWANT` responses
-	gossipSubMcacheGossip = 3   // number of windows to gossip about
-	gossipSubSeenTTL      = 550 // number of heartbeat intervals to retain message IDs
+	// Gossip parameters.
+	gossipSubMcacheLen    = 6
+	gossipSubMcacheGossip = 3
 
-	// fanout ttl
-	gossipSubFanoutTTL = 60000000000 // TTL for fanout maps for topics we are not subscribed to but have published to, in nano seconds
+	gossipSubHeartbeatInterval = 700 * time.Millisecond
 
-	// heartbeat interval
-	gossipSubHeartbeatInterval = 700 * time.Millisecond // frequency of heartbeat, milliseconds
-
-	// misc
-	rSubD = 8 // random gossip target
-
-	// GossipMaxSize is the maximum size of a gossip message in bytes (1MB)
+	// GossipMaxSize is the maximum allowed gossip message size (1 MiB).
 	GossipMaxSize = 1 << 20
+
+	digestLength      = 4
+	gossipTopicPrefix = "/n42/"
+
+	defaultPeerWaitTimeout = 30 * time.Second
 )
 
 var errInvalidTopic = errors.New("invalid topic format")
 
-// Specifies the fixed size context length.
-const digestLength = 4
-
-// Specifies the prefix for any pubsub topic.
-const gossipTopicPrefix = "/n42/"
-
-// JoinTopic will join PubSub topic, if not already joined.
+// JoinTopic joins a PubSub topic, returning the existing handle if already joined.
 func (s *Service) JoinTopic(topic string, opts ...pubsub.TopicOpt) (*pubsub.Topic, error) {
 	s.joinedTopicsLock.Lock()
 	defer s.joinedTopicsLock.Unlock()
@@ -62,8 +53,8 @@ func (s *Service) JoinTopic(topic string, opts ...pubsub.TopicOpt) (*pubsub.Topi
 	return s.joinedTopics[topic], nil
 }
 
-// LeaveTopic closes topic and removes corresponding handler from list of joined topics.
-// This method will return error if there are outstanding event handlers or subscriptions.
+// LeaveTopic closes a topic and removes it from the joined topics map.
+// Returns an error if there are outstanding event handlers or subscriptions.
 func (s *Service) LeaveTopic(topic string) error {
 	s.joinedTopicsLock.Lock()
 	defer s.joinedTopicsLock.Unlock()
@@ -78,16 +69,13 @@ func (s *Service) LeaveTopic(topic string) error {
 }
 
 // PublishToTopic joins (if necessary) and publishes a message to a PubSub topic.
+// It waits up to defaultPeerWaitTimeout for at least one peer to be available.
 func (s *Service) PublishToTopic(ctx context.Context, topic string, data []byte, opts ...pubsub.PubOpt) error {
 	topicHandle, err := s.JoinTopic(topic)
 	if err != nil {
 		return err
 	}
 
-	// Default timeout for waiting for peers
-	const defaultPeerWaitTimeout = 30 * time.Second
-
-	// Wait for at least 1 peer to be available to receive the published message.
 	timeout := time.After(defaultPeerWaitTimeout)
 	for {
 		if len(topicHandle.ListPeers()) > 0 || s.cfg.MinSyncPeers == 0 {
@@ -104,9 +92,9 @@ func (s *Service) PublishToTopic(ctx context.Context, topic string, data []byte,
 	}
 }
 
-// SubscribeToTopic joins (if necessary) and subscribes to PubSub topic.
+// SubscribeToTopic joins (if necessary) and subscribes to a PubSub topic,
+// applying scoring parameters.
 func (s *Service) SubscribeToTopic(topic string, opts ...pubsub.SubOpt) (*pubsub.Subscription, error) {
-
 	topicHandle, err := s.JoinTopic(topic)
 	if err != nil {
 		return nil, err
@@ -115,30 +103,24 @@ func (s *Service) SubscribeToTopic(topic string, opts ...pubsub.SubOpt) (*pubsub
 	if err != nil {
 		return nil, err
 	}
-
-	if scoringParams != nil {
-		if err := topicHandle.SetScoreParams(scoringParams); err != nil {
-			return nil, err
-		}
-		logGossipParameters(topic, scoringParams)
+	if err := topicHandle.SetScoreParams(scoringParams); err != nil {
+		return nil, err
 	}
+	logGossipParameters(topic, scoringParams)
 	return topicHandle.Subscribe(opts...)
 }
 
-// peerInspector will scrape all the relevant scoring data and add it to our
-// peer handler.
+// peerInspector scrapes peer scoring data and feeds it to the gossip scorer.
 func (s *Service) peerInspector(peerMap map[peer.ID]*pubsub.PeerScoreSnapshot) {
-	// Iterate through all the connected peers and through any of their
-	// relevant topics.
 	for pid, snap := range peerMap {
 		s.peers.Scorers().GossipScorer().SetGossipData(pid, snap.Score,
 			snap.BehaviourPenalty, convertTopicScores(snap.Topics))
 	}
 }
 
-// Creates a list of pubsub options to configure out router with.
+// pubsubOptions returns the PubSub configuration options for the GossipSub router.
 func (s *Service) pubsubOptions() []pubsub.Option {
-	psOpts := []pubsub.Option{
+	return []pubsub.Option{
 		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
 		pubsub.WithNoAuthor(),
 		pubsub.WithMessageIdFn(func(pmsg *pubsubpb.Message) string {
@@ -153,32 +135,26 @@ func (s *Service) pubsubOptions() []pubsub.Option {
 		pubsub.WithGossipSubParams(pubsubGossipParam()),
 		pubsub.WithRawTracer(gossipTracer{host: s.host}),
 	}
-	return psOpts
 }
 
-// creates a custom gossipsub parameter set.
 func pubsubGossipParam() pubsub.GossipSubParams {
-	gParams := pubsub.DefaultGossipSubParams()
-	gParams.Dlo = gossipSubDlo
-	gParams.D = gossipSubD
-	gParams.HeartbeatInterval = gossipSubHeartbeatInterval
-	gParams.HistoryLength = gossipSubMcacheLen
-	gParams.HistoryGossip = gossipSubMcacheGossip
-	return gParams
+	p := pubsub.DefaultGossipSubParams()
+	p.D = gossipSubD
+	p.Dlo = gossipSubDlo
+	p.HeartbeatInterval = gossipSubHeartbeatInterval
+	p.HistoryLength = gossipSubMcacheLen
+	p.HistoryGossip = gossipSubMcacheGossip
+	return p
 }
 
-// We have to unfortunately set this globally in order
-// to configure our message id time-cache rather than instantiating
-// it with a router instance.
 func setPubSubParameters() {
 	pubsub.TimeCacheDuration = 550 * gossipSubHeartbeatInterval
 }
 
-// convert from libp2p's internal schema to a compatible prysm protobuf format.
+// convertTopicScores converts libp2p topic score snapshots to the protobuf format.
 func convertTopicScores(topicMap map[string]*pubsub.TopicScoreSnapshot) map[string]*msg_proto.TopicScoreSnapshot {
 	newMap := make(map[string]*msg_proto.TopicScoreSnapshot, len(topicMap))
 	for t, s := range topicMap {
-		// Security fix: Check for nil snapshot to prevent nil pointer dereference
 		if s == nil {
 			continue
 		}
@@ -192,22 +168,21 @@ func convertTopicScores(topicMap map[string]*pubsub.TopicScoreSnapshot) map[stri
 	return newMap
 }
 
-// ExtractGossipDigest extracts the relevant fork digest from the gossip topic.
-// Topics are in the form of /eth2/{fork-digest}/{topic} and this method extracts the
-// fork digest from the topic string to a 4 byte array.
+// ExtractGossipDigest extracts the fork digest from a gossip topic string.
+// Topics follow the format /n42/{fork-digest}/{topic} and this method
+// extracts the fork digest as a 4-byte array.
 func ExtractGossipDigest(topic string) ([4]byte, error) {
-	// Ensure the topic prefix is correct.
 	if len(topic) < len(gossipTopicPrefix)+1 || topic[:len(gossipTopicPrefix)] != gossipTopicPrefix {
 		return [4]byte{}, errInvalidTopic
 	}
 	start := len(gossipTopicPrefix)
 	end := strings.Index(topic[start:], "/")
-	if end == -1 { // Ensure a topic suffix exists.
+	if end == -1 {
 		return [4]byte{}, errInvalidTopic
 	}
 	end += start
-	strDigest := topic[start:end]
-	digest, err := hex.DecodeString(strDigest)
+
+	digest, err := hex.DecodeString(topic[start:end])
 	if err != nil {
 		return [4]byte{}, err
 	}

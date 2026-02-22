@@ -25,97 +25,88 @@ import (
 )
 
 func TestNewHybridHandshake(t *testing.T) {
-	// Test enabled handshake
-	h, err := NewHybridHandshake(true)
-	if err != nil {
-		t.Fatalf("NewHybridHandshake(true) failed: %v", err)
-	}
-	if !h.IsEnabled() {
-		t.Error("Handshake should be enabled")
-	}
-	if h.ECDHPublicKey() == nil {
-		t.Error("ECDH public key should not be nil")
-	}
-	if h.KyberPublicKey() == nil {
-		t.Error("Kyber public key should not be nil")
-	}
-	if len(h.KyberPublicKey()) != KyberPublicKeySize {
-		t.Errorf("Kyber public key size = %d, want %d", len(h.KyberPublicKey()), KyberPublicKeySize)
-	}
+	t.Run("enabled", func(t *testing.T) {
+		h, err := NewHybridHandshake(true)
+		if err != nil {
+			t.Fatalf("NewHybridHandshake(true) failed: %v", err)
+		}
+		if !h.IsEnabled() {
+			t.Error("expected handshake to be enabled")
+		}
+		if h.ECDHPublicKey() == nil {
+			t.Error("ECDH public key should not be nil")
+		}
+		if h.KyberPublicKey() == nil {
+			t.Error("Kyber public key should not be nil")
+		}
+		if len(h.KyberPublicKey()) != KyberPublicKeySize {
+			t.Errorf("Kyber public key size = %d, want %d", len(h.KyberPublicKey()), KyberPublicKeySize)
+		}
+	})
 
-	// Test disabled handshake
-	h2, err := NewHybridHandshake(false)
-	if err != nil {
-		t.Fatalf("NewHybridHandshake(false) failed: %v", err)
-	}
-	if h2.IsEnabled() {
-		t.Error("Handshake should be disabled")
-	}
+	t.Run("disabled", func(t *testing.T) {
+		h, err := NewHybridHandshake(false)
+		if err != nil {
+			t.Fatalf("NewHybridHandshake(false) failed: %v", err)
+		}
+		if h.IsEnabled() {
+			t.Error("expected handshake to be disabled")
+		}
+	})
 }
 
 func TestHybridHandshakeKeyExchange(t *testing.T) {
-	// Create two handshake instances (Alice and Bob)
 	alice, err := NewHybridHandshake(true)
 	if err != nil {
-		t.Fatalf("Failed to create Alice's handshake: %v", err)
+		t.Fatalf("failed to create Alice handshake: %v", err)
 	}
 
 	bob, err := NewHybridHandshake(true)
 	if err != nil {
-		t.Fatalf("Failed to create Bob's handshake: %v", err)
+		t.Fatalf("failed to create Bob handshake: %v", err)
 	}
 
-	// Create hybrid public keys
 	alicePubKey := &HybridPublicKey{
 		ECDH:  alice.ECDHPublicKey(),
 		Kyber: alice.kyberPK,
 	}
-
 	bobPubKey := &HybridPublicKey{
 		ECDH:  bob.ECDHPublicKey(),
 		Kyber: bob.kyberPK,
 	}
 
-	// Alice encapsulates to Bob
+	// Alice encapsulates to Bob, Bob decapsulates.
 	ciphertext, aliceSecret, err := alice.Encapsulate(bobPubKey)
 	if err != nil {
-		t.Fatalf("Alice's encapsulation failed: %v", err)
+		t.Fatalf("Alice encapsulation failed: %v", err)
 	}
-
-	if len(ciphertext) != 65+KyberCiphertextSize {
-		t.Errorf("Ciphertext size = %d, want %d", len(ciphertext), 65+KyberCiphertextSize)
+	if len(ciphertext) != ecdhUncompressedPubLen+KyberCiphertextSize {
+		t.Errorf("ciphertext size = %d, want %d", len(ciphertext), ecdhUncompressedPubLen+KyberCiphertextSize)
 	}
-
 	if len(aliceSecret) != 32 {
-		t.Errorf("Shared secret size = %d, want 32", len(aliceSecret))
+		t.Errorf("shared secret size = %d, want 32", len(aliceSecret))
 	}
 
-	// Bob decapsulates
 	bobSecret, err := bob.Decapsulate(ciphertext)
 	if err != nil {
-		t.Fatalf("Bob's decapsulation failed: %v", err)
+		t.Fatalf("Bob decapsulation failed: %v", err)
 	}
-
-	// Verify shared secrets match
 	if !bytes.Equal(aliceSecret, bobSecret) {
-		t.Error("Shared secrets don't match")
-		t.Logf("Alice: %x", aliceSecret)
-		t.Logf("Bob:   %x", bobSecret)
+		t.Errorf("shared secrets mismatch:\n  alice: %x\n  bob:   %x", aliceSecret, bobSecret)
 	}
 
-	// Also test Bob encapsulating to Alice
+	// Reverse direction: Bob encapsulates to Alice, Alice decapsulates.
 	ciphertext2, bobSecret2, err := bob.Encapsulate(alicePubKey)
 	if err != nil {
-		t.Fatalf("Bob's encapsulation failed: %v", err)
+		t.Fatalf("Bob encapsulation failed: %v", err)
 	}
 
 	aliceSecret2, err := alice.Decapsulate(ciphertext2)
 	if err != nil {
-		t.Fatalf("Alice's decapsulation failed: %v", err)
+		t.Fatalf("Alice decapsulation failed: %v", err)
 	}
-
 	if !bytes.Equal(aliceSecret2, bobSecret2) {
-		t.Error("Reverse key exchange: shared secrets don't match")
+		t.Error("reverse key exchange: shared secrets mismatch")
 	}
 }
 
@@ -124,22 +115,21 @@ func TestHybridHandshakeDisabled(t *testing.T) {
 
 	_, _, err := h.Encapsulate(nil)
 	if err != ErrHybridHandshakeDisabled {
-		t.Errorf("Expected ErrHybridHandshakeDisabled, got %v", err)
+		t.Errorf("Encapsulate: got %v, want ErrHybridHandshakeDisabled", err)
 	}
 
 	_, err = h.Decapsulate(nil)
 	if err != ErrHybridHandshakeDisabled {
-		t.Errorf("Expected ErrHybridHandshakeDisabled, got %v", err)
+		t.Errorf("Decapsulate: got %v, want ErrHybridHandshakeDisabled", err)
 	}
 }
 
 func TestHybridHandshakeInvalidCiphertext(t *testing.T) {
 	h, _ := NewHybridHandshake(true)
 
-	// Too short ciphertext
 	_, err := h.Decapsulate([]byte{1, 2, 3})
-	if err == nil {
-		t.Error("Should fail with short ciphertext")
+	if err != ErrCiphertextTooShort {
+		t.Errorf("got %v, want ErrCiphertextTooShort", err)
 	}
 }
 
@@ -148,12 +138,11 @@ func TestKyberKeyGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKyberKeyPair failed: %v", err)
 	}
-
 	if pk == nil || sk == nil {
-		t.Fatal("Keys should not be nil")
+		t.Fatal("keys should not be nil")
 	}
 
-	// Test marshaling
+	// Round-trip: pack then parse the public key.
 	pkBytes := make([]byte, KyberPublicKeySize)
 	pk.Pack(pkBytes)
 
@@ -162,7 +151,7 @@ func TestKyberKeyGeneration(t *testing.T) {
 		t.Fatalf("ParseKyberPublicKey failed: %v", err)
 	}
 
-	// Verify encapsulation works with parsed key
+	// Encapsulate with the parsed key, decapsulate with the original secret key.
 	ct, ss1, err := KyberEncapsulate(pk2)
 	if err != nil {
 		t.Fatalf("KyberEncapsulate failed: %v", err)
@@ -174,52 +163,46 @@ func TestKyberKeyGeneration(t *testing.T) {
 	}
 
 	if !bytes.Equal(ss1, ss2) {
-		t.Error("Kyber shared secrets don't match")
+		t.Error("Kyber shared secrets mismatch after public key round-trip")
 	}
 }
 
 func TestKyberEncapsulateDecapsulate(t *testing.T) {
 	pk, sk, _ := kyber768.GenerateKeyPair(rand.Reader)
 
-	// Encapsulate
 	ct, ss1, err := KyberEncapsulate(pk)
 	if err != nil {
 		t.Fatalf("KyberEncapsulate failed: %v", err)
 	}
-
 	if len(ct) != KyberCiphertextSize {
-		t.Errorf("Ciphertext size = %d, want %d", len(ct), KyberCiphertextSize)
+		t.Errorf("ciphertext size = %d, want %d", len(ct), KyberCiphertextSize)
 	}
-
 	if len(ss1) != KyberSharedKeySize {
-		t.Errorf("Shared secret size = %d, want %d", len(ss1), KyberSharedKeySize)
+		t.Errorf("shared secret size = %d, want %d", len(ss1), KyberSharedKeySize)
 	}
 
-	// Decapsulate
 	ss2, err := KyberDecapsulate(sk, ct)
 	if err != nil {
 		t.Fatalf("KyberDecapsulate failed: %v", err)
 	}
-
 	if !bytes.Equal(ss1, ss2) {
-		t.Error("Shared secrets don't match")
+		t.Error("shared secrets mismatch")
 	}
 }
 
 func TestKyberDecapsulateInvalidCiphertext(t *testing.T) {
 	_, sk, _ := kyber768.GenerateKeyPair(rand.Reader)
 
-	// Wrong size ciphertext
 	_, err := KyberDecapsulate(sk, []byte{1, 2, 3})
 	if err != ErrInvalidKyberCiphertext {
-		t.Errorf("Expected ErrInvalidKyberCiphertext, got %v", err)
+		t.Errorf("got %v, want ErrInvalidKyberCiphertext", err)
 	}
 }
 
 func TestParseKyberPublicKeyInvalid(t *testing.T) {
 	_, err := ParseKyberPublicKey([]byte{1, 2, 3})
 	if err != ErrInvalidKyberPublicKey {
-		t.Errorf("Expected ErrInvalidKyberPublicKey, got %v", err)
+		t.Errorf("got %v, want ErrInvalidKyberPublicKey", err)
 	}
 }
 
@@ -227,11 +210,10 @@ func TestDefaultHybridConfig(t *testing.T) {
 	cfg := DefaultHybridConfig()
 
 	if !cfg.Enabled {
-		t.Error("Default config should have Enabled=true")
+		t.Error("default config should have Enabled=true")
 	}
-
 	if !cfg.FallbackToECDH {
-		t.Error("Default config should have FallbackToECDH=true")
+		t.Error("default config should have FallbackToECDH=true")
 	}
 }
 
@@ -239,11 +221,9 @@ func TestHybridConstants(t *testing.T) {
 	if KyberPublicKeySize != 1184 {
 		t.Errorf("KyberPublicKeySize = %d, want 1184", KyberPublicKeySize)
 	}
-
 	if KyberCiphertextSize != 1088 {
 		t.Errorf("KyberCiphertextSize = %d, want 1088", KyberCiphertextSize)
 	}
-
 	if KyberSharedKeySize != 32 {
 		t.Errorf("KyberSharedKeySize = %d, want 32", KyberSharedKeySize)
 	}

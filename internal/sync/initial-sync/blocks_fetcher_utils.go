@@ -2,11 +2,13 @@ package initialsync
 
 import (
 	"context"
+
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
+
+	"github.com/n42blockchain/N42/api/protocol/types_pb"
 )
 
 // forkData represents alternative chain path supported by a given peer.
@@ -40,15 +42,14 @@ func (f *blocksFetcher) findFork(ctx context.Context, blockNr *uint256.Int) (*fo
 }
 
 // findForkWithPeer loads some blocks from a peer in an attempt to find alternative blocks.
+// Not yet implemented -- returns error unconditionally.
 func (f *blocksFetcher) findForkWithPeer(ctx context.Context, pid peer.ID, blockNr *uint256.Int) (*forkData, error) {
-
-	//fork, err := f.findAncestor(ctx, pid, blockNr)
 	return nil, errors.New("no alternative blocks exist within scanned range")
 }
 
 // findAncestor tries to figure out common ancestor slot that connects a given root to known block.
+// Not yet implemented -- returns error unconditionally.
 func (f *blocksFetcher) findAncestor(ctx context.Context, pid peer.ID, b *types_pb.Block) (*forkData, error) {
-
 	return nil, errors.New("no common ancestor found")
 }
 

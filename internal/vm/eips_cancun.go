@@ -199,11 +199,11 @@ func enable7516(jt *JumpTable) {
 // opBlobBaseFee implements BLOBBASEFEE (0x4a)
 func opBlobBaseFee(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	blobBaseFee := interpreter.evm.Context().BlobBaseFee
-	if blobBaseFee == nil {
-		scope.Stack.Push(new(uint256.Int))
-	} else {
-		scope.Stack.Push(new(uint256.Int).Set(blobBaseFee))
+	val := new(uint256.Int)
+	if blobBaseFee != nil {
+		val.Set(blobBaseFee)
 	}
+	scope.Stack.Push(val)
 	return nil, nil
 }
 

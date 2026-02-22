@@ -19,9 +19,10 @@ package state
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -66,10 +67,10 @@ func (r *PlainStateReader) ReadAccountStorage(address types.Address, incarnation
 }
 
 func (r *PlainStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
-	if bytes.Equal(codeHash.Bytes(), emptyCodeHash) {
+	if bytes.Equal(codeHash[:], emptyCodeHash) {
 		return nil, nil
 	}
-	code, err := r.db.GetOne(modules.Code, codeHash.Bytes())
+	code, err := r.db.GetOne(modules.Code, codeHash[:])
 	if err != nil {
 		return nil, err
 	}

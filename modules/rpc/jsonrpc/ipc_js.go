@@ -19,6 +19,12 @@
 
 package jsonrpc
 
+import (
+	"context"
+	"errors"
+	"net"
+)
+
 var errNotSupported = errors.New("rpc: not supported")
 
 func ipcListen(endpoint string) (net.Listener, error) {

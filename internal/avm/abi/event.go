@@ -18,10 +18,10 @@ package abi
 
 import (
 	"fmt"
-	types2 "github.com/n42blockchain/N42/common/types"
 	"strings"
 
 	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // Event is an event potentially triggered by the EVM's LOG mechanism. The Event
@@ -49,7 +49,7 @@ type Event struct {
 	Sig string
 	// ID returns the canonical representation of the event's signature used by the
 	// abi definition to identify event names and types.
-	ID types2.Hash
+	ID types.Hash
 }
 
 // NewEvent creates a new Event.
@@ -57,10 +57,8 @@ type Event struct {
 // It also precomputes the id, signature and string representation
 // of the event.
 func NewEvent(name, rawName string, anonymous bool, inputs Arguments) Event {
-	// sanitize inputs to remove inputs without names
-	// and precompute string and sig representation.
 	names := make([]string, len(inputs))
-	types := make([]string, len(inputs))
+	typeStrs := make([]string, len(inputs))
 	for i, input := range inputs {
 		if input.Name == "" {
 			inputs[i] = Argument{
@@ -68,21 +66,18 @@ func NewEvent(name, rawName string, anonymous bool, inputs Arguments) Event {
 				Indexed: input.Indexed,
 				Type:    input.Type,
 			}
-		} else {
-			inputs[i] = input
 		}
-		// string representation
-		names[i] = fmt.Sprintf("%v %v", input.Type, inputs[i].Name)
 		if input.Indexed {
 			names[i] = fmt.Sprintf("%v indexed %v", input.Type, inputs[i].Name)
+		} else {
+			names[i] = fmt.Sprintf("%v %v", input.Type, inputs[i].Name)
 		}
-		// sig representation
-		types[i] = input.Type.String()
+		typeStrs[i] = input.Type.String()
 	}
 
 	str := fmt.Sprintf("event %v(%v)", rawName, strings.Join(names, ", "))
-	sig := fmt.Sprintf("%v(%v)", rawName, strings.Join(types, ","))
-	id := types2.BytesToHash(crypto.Keccak256([]byte(sig)))
+	sig := fmt.Sprintf("%v(%v)", rawName, strings.Join(typeStrs, ","))
+	id := types.BytesToHash(crypto.Keccak256([]byte(sig)))
 
 	return Event{
 		Name:      name,

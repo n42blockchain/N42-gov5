@@ -24,8 +24,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/n42blockchain/N42/lib/log/v3"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
 type dataProvider interface {
@@ -116,7 +117,6 @@ func (p *fileDataProvider) Next(keyBuf, valBuf []byte) ([]byte, []byte, error) {
 		r := bufio.NewReaderSize(p.file, BufIOSize)
 		p.reader = r
 		p.byteReader = r
-
 	}
 	return readElementFromDisk(p.reader, p.byteReader, keyBuf, valBuf)
 }

@@ -21,10 +21,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
 	"github.com/RoaringBitmap/roaring/roaring64"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/changeset"
 	"github.com/n42blockchain/N42/modules/ethdb"
@@ -92,16 +94,14 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 		return nil, ethdb.ErrKeyNotFound
 	}
 
-	//restore codehash
+	// Restore codehash for account data.
 	if !storage {
 		var acc account.StateAccount
 		if err := acc.DecodeForStorage(data); err != nil {
 			return nil, err
 		}
 		if acc.Incarnation > 0 && acc.IsEmptyCodeHash() {
-			var codeHash []byte
-			var err error
-			codeHash, err = tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(key, acc.Incarnation))
+			codeHash, err := tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(key, acc.Incarnation))
 			if err != nil {
 				return nil, err
 			}
@@ -111,7 +111,6 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 			data = make([]byte, acc.EncodingLengthForStorage())
 			acc.EncodeForStorage(data)
 		}
-		return data, nil
 	}
 
 	return data, nil
@@ -128,7 +127,7 @@ func WalkAsOfStorage(tx kv.Tx, address types.Address, incarnation uint16, startL
 	copy(startkeyNoInc, address.Bytes())
 	copy(startkeyNoInc[types.AddressLength:], startLocation.Bytes())
 
-	//for storage
+	// Main cursor for current storage state.
 	mCursor, err := tx.Cursor(modules.Storage)
 	if err != nil {
 		return err
@@ -143,7 +142,7 @@ func WalkAsOfStorage(tx kv.Tx, address types.Address, incarnation uint16, startL
 		types.AddressLength+types.IncarnationLength+types.HashLength, /* part3start */
 	)
 
-	//for historic data
+	// History cursor for historic data.
 	shCursor, err := tx.Cursor(modules.StorageHistory)
 	if err != nil {
 		return err
@@ -190,7 +189,7 @@ func WalkAsOfStorage(tx kv.Tx, address types.Address, incarnation uint16, startL
 			break
 		}
 
-		//next key in state
+		// Next key in current state is before the history cursor.
 		if cmp < 0 {
 			goOn, err = walker(addr, loc, v)
 		} else {
@@ -293,7 +292,7 @@ func WalkAsOfAccounts(tx kv.Tx, startAddress types.Address, timestamp uint64, wa
 
 	goOn := true
 	for goOn {
-		//exit or next conditions
+		// Compare current state key with history key to determine merge order.
 		cmp, br := types.KeyCmp(k, hK)
 		if br {
 			break

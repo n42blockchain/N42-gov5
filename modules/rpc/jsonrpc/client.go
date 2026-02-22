@@ -21,12 +21,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"net/url"
 	"reflect"
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 var (
@@ -144,6 +145,7 @@ func DialContext(ctx context.Context, rawurl string) (*Client, error) {
 		return nil, fmt.Errorf("no known transport for URL scheme %q", u.Scheme)
 	}
 }
+
 func ClientFromContext(ctx context.Context) (*Client, bool) {
 	client, ok := ctx.Value(clientContextKey{}).(*Client)
 	return client, ok

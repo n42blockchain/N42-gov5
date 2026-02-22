@@ -24,9 +24,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
 func TestReWriteIndex(t *testing.T) {

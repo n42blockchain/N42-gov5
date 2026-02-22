@@ -552,12 +552,11 @@ func (d *Domain) mergeFiles(ctx context.Context, valuesFiles, indexFiles, histor
 						return nil, nil, nil, err
 					}
 					keyCount++ // Only counting keys, not values
-					switch d.compressVals {
-					case true:
+					if d.compressVals {
 						if err = comp.AddWord(valBuf); err != nil {
 							return nil, nil, nil, err
 						}
-					default:
+					} else {
 						if err = comp.AddUncompressedWord(valBuf); err != nil {
 							return nil, nil, nil, err
 						}
@@ -597,9 +596,7 @@ func (d *Domain) mergeFiles(ctx context.Context, valuesFiles, indexFiles, histor
 		idxPath := filepath.Join(d.dir, idxFileName)
 		p = ps.AddNew("merge "+idxFileName, uint64(keyCount*2))
 		defer ps.Delete(p)
-		ps.Delete(p)
 
-		//		if valuesIn.index, err = buildIndex(valuesIn.decompressor, idxPath, d.dir, keyCount, false /* values */); err != nil {
 		if valuesIn.index, err = buildIndexThenOpen(ctx, valuesIn.decompressor, idxPath, d.tmpdir, keyCount, false /* values */, p, d.logger, d.noFsync); err != nil {
 			return nil, nil, nil, fmt.Errorf("merge %s buildIndex [%d-%d]: %w", d.filenameBase, r.valuesStartTxNum, r.valuesEndTxNum, err)
 		}
@@ -677,7 +674,6 @@ func (ii *InvertedIndex) mergeFiles(ctx context.Context, files []*filesItem, sta
 		if g.HasNext() {
 			key, _ := g.Next(nil)
 			val, _ := g.Next(nil)
-			//fmt.Printf("heap push %s [%d] %x\n", item.decompressor.FilePath(), item.endTxNum, key)
 			heap.Push(&cp, &CursorItem{
 				t:        FILE_CURSOR,
 				dg:       g,
@@ -711,11 +707,9 @@ func (ii *InvertedIndex) mergeFiles(ctx context.Context, files []*filesItem, sta
 			} else {
 				mergedOnce = true
 			}
-			//fmt.Printf("multi-way %s [%d] %x\n", ii.indexKeysTable, ci1.endTxNum, ci1.key)
 			if ci1.dg.HasNext() {
 				ci1.key, _ = ci1.dg.NextUncompressed()
 				ci1.val, _ = ci1.dg.NextUncompressed()
-				//fmt.Printf("heap next push %s [%d] %x\n", ii.indexKeysTable, ci1.endTxNum, ci1.key)
 				heap.Fix(&cp, 0)
 			} else {
 				heap.Pop(&cp)
@@ -1141,9 +1135,6 @@ func (h *History) cleanAfterFreeze(frozenTo uint64) { //nolint
 	if frozenTo == 0 {
 		return
 	}
-	//if h.filenameBase == "accounts" {
-	//	log.Warn("[history] History.cleanAfterFreeze", "frozenTo", frozenTo/h.aggregationStep, "stack", dbg.Stack())
-	//}
 	var outs []*filesItem
 	// `kill -9` may leave some garbage
 	// but it may be useful for merges, until merge `frozen` file
@@ -1162,17 +1153,6 @@ func (h *History) cleanAfterFreeze(frozenTo uint64) { //nolint
 			panic("must not happen: " + h.filenameBase)
 		}
 		out.canDelete.Store(true)
-
-		//if out.refcount.Load() == 0 {
-		//	if h.filenameBase == "accounts" {
-		//		log.Warn("[history] History.cleanAfterFreeze: immediately delete", "name", out.decompressor.FileName())
-		//	}
-		//} else {
-		//	if h.filenameBase == "accounts" {
-		//		log.Warn("[history] History.cleanAfterFreeze: mark as 'canDelete=true'", "name", out.decompressor.FileName())
-		//	}
-		//}
-
 		// if it has no readers (invisible even for us) - it's safe to remove file right here
 		if out.refcount.Load() == 0 {
 			out.closeFilesAndRemove()

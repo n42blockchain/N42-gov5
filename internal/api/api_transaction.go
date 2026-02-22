@@ -29,9 +29,8 @@ func NewTransactionAPI(api *API, nonceLock *AddrLocker) *TransactionAPI {
 	return &TransactionAPI{api, nonceLock}
 }
 
-// GetTransactionCount returns the number of transactions the given address has sent for the given block number
+// GetTransactionCount returns the number of transactions the given address has sent for the given block number.
 func (s *TransactionAPI) GetTransactionCount(ctx context.Context, address avmcommon.Address, blockNrOrHash jsonrpc.BlockNumberOrHash) (*hexutil.Uint64, error) {
-
 	if blockNr, ok := blockNrOrHash.Number(); ok && blockNr == jsonrpc.PendingBlockNumber {
 		nonce := s.api.TxsPool().Nonce(*avmtypes.ToastAddress(&address))
 		return (*hexutil.Uint64)(&nonce), nil
@@ -123,11 +122,13 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 
 // GetTransactionReceipt returns the transaction receipt for the given transaction hash.
 func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcommon.Hash) (map[string]interface{}, error) {
-	var tx *transaction.Transaction
-	var blockHash = avmtypes.ToastHash(avmcommon.Hash{})
-	var index uint64
-	var blockNumber uint64
-	var err error
+	var (
+		tx          *transaction.Transaction
+		blockHash   = avmtypes.ToastHash(avmcommon.Hash{})
+		blockNumber uint64
+		index       uint64
+		err         error
+	)
 	if dbErr := s.api.Database().View(ctx, func(t kv.Tx) error {
 		tx, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(t, avmtypes.ToastHash(hash))
 		if err != nil {
@@ -255,36 +256,34 @@ func (s *TransactionAPI) GetTransactionByHash(ctx context.Context, hash avmcommo
 
 // GetTransactionByBlockHashAndIndex returns the transaction for the given block hash and index.
 func (s *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, blockHash avmcommon.Hash, index hexutil.Uint) *RPCTransaction {
-	if block, _ := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(blockHash)); block != nil {
-		for i, tx := range block.Transactions() {
-			if i == int(index) {
-				headerBaseFee := block.Header().BaseFee64()
-				if headerBaseFee == nil {
-					headerBaseFee = new(uint256.Int)
-				}
-				return newRPCTransaction(tx, avmtypes.ToastHash(blockHash), block.Number64().Uint64(), uint64(index), headerBaseFee.ToBig())
-			}
-		}
+	blk, _ := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(blockHash))
+	if blk == nil {
+		return nil
 	}
-	return nil
+	txs := blk.Transactions()
+	if int(index) >= len(txs) {
+		return nil
+	}
+	headerBaseFee := blk.Header().BaseFee64()
+	if headerBaseFee == nil {
+		headerBaseFee = new(uint256.Int)
+	}
+	return newRPCTransaction(txs[index], avmtypes.ToastHash(blockHash), blk.Number64().Uint64(), uint64(index), headerBaseFee.ToBig())
 }
 
 // SubmitTransaction submits a transaction to the transaction pool.
 func SubmitTransaction(ctx context.Context, api *API, tx *transaction.Transaction) (avmcommon.Hash, error) {
-
 	if err := checkTxFee(*tx.GasPrice(), tx.Gas(), baseFee); err != nil {
 		return avmcommon.Hash{}, err
 	}
-
 	if err := api.TxsPool().AddLocal(tx); err != nil {
 		return avmcommon.Hash{}, err
 	}
-
 	hash := tx.Hash()
 	return avmtypes.FromastHash(hash), nil
 }
 
-// SendTransaction Send Transaction
+// SendTransaction creates a transaction for the given argument, signs it and submits it to the transaction pool.
 func (s *TransactionAPI) SendTransaction(ctx context.Context, args TransactionArgs) (avmcommon.Hash, error) {
 	// Look up the wallet containing the requested signer
 	account := accounts.Account{Address: args.from()}

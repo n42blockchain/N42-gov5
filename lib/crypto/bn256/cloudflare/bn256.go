@@ -136,7 +136,7 @@ func (e *G1) Unmarshal(m []byte) ([]byte, error) {
 	if e.p == nil {
 		e.p = &curvePoint{}
 	} else {
-		e.p.x, e.p.y = gfP{0}, gfP{0}
+		e.p.x, e.p.y = gfP{}, gfP{}
 	}
 	var err error
 	if err = e.p.x.Unmarshal(m); err != nil {
@@ -149,12 +149,11 @@ func (e *G1) Unmarshal(m []byte) ([]byte, error) {
 	montEncode(&e.p.x, &e.p.x)
 	montEncode(&e.p.y, &e.p.y)
 
-	zero := gfP{0}
-	if e.p.x == zero && e.p.y == zero {
+	if e.p.x == (gfP{}) && e.p.y == (gfP{}) {
 		// This is the point at infinity.
 		e.p.y = *newGFp(1)
-		e.p.z = gfP{0}
-		e.p.t = gfP{0}
+		e.p.z = gfP{}
+		e.p.t = gfP{}
 	} else {
 		e.p.z = *newGFp(1)
 		e.p.t = *newGFp(1)
@@ -323,11 +322,11 @@ func PairingCheck(a []*G1, b []*G2) bool {
 	acc := new(gfP12)
 	acc.SetOne()
 
-	for i := 0; i < len(a); i++ {
-		if a[i].p.IsInfinity() || b[i].p.IsInfinity() {
+	for i, g1 := range a {
+		if g1.p.IsInfinity() || b[i].p.IsInfinity() {
 			continue
 		}
-		acc.Mul(acc, miller(b[i].p, a[i].p))
+		acc.Mul(acc, miller(b[i].p, g1.p))
 	}
 	return finalExponentiation(acc).IsOne()
 }

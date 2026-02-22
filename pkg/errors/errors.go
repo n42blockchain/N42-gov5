@@ -155,7 +155,7 @@ func Wrap(err error, message string) error {
 }
 
 // Wrapf wraps an error with a formatted message.
-func Wrapf(err error, format string, args ...interface{}) error {
+func Wrapf(err error, format string, args ...any) error {
 	if err == nil {
 		return nil
 	}
@@ -168,7 +168,7 @@ func Is(err, target error) bool {
 }
 
 // As finds the first error in err's chain that matches target.
-func As(err error, target interface{}) bool {
+func As(err error, target any) bool {
 	return errors.As(err, target)
 }
 
@@ -178,7 +178,7 @@ func New(text string) error {
 }
 
 // Errorf formats according to a format specifier and returns the string as a value that satisfies error.
-func Errorf(format string, a ...interface{}) error {
+func Errorf(format string, a ...any) error {
 	return fmt.Errorf(format, a...)
 }
 
@@ -264,7 +264,7 @@ type CodedError struct {
 	Code    ErrorCode
 	Message string
 	Cause   error
-	Context map[string]interface{}
+	Context map[string]any
 }
 
 // NewCoded creates a new CodedError with the given code and message.
@@ -301,9 +301,9 @@ func (e *CodedError) Unwrap() error {
 }
 
 // WithContext adds context information to the error.
-func (e *CodedError) WithContext(key string, value interface{}) *CodedError {
+func (e *CodedError) WithContext(key string, value any) *CodedError {
 	if e.Context == nil {
-		e.Context = make(map[string]interface{})
+		e.Context = make(map[string]any)
 	}
 	e.Context[key] = value
 	return e

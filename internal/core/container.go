@@ -178,7 +178,7 @@ func (c *ServiceContainer) StopAll(ctx context.Context) error {
 	c.cancel()
 	c.mu.Unlock()
 
-	// Create a list of all service names in reverse order
+	// Snapshot the service order for safe iteration
 	names := make([]string, len(c.order))
 	copy(names, c.order)
 

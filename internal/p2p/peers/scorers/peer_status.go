@@ -2,18 +2,26 @@ package scorers
 
 import (
 	"errors"
+	"math"
+	"time"
+
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/peer"
+
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
 	"github.com/n42blockchain/N42/utils"
-	"math"
-	"time"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 var _ Scorer = (*PeerStatusScorer)(nil)
+
+// terminalErrors lists the errors that cause a peer to be marked as bad.
+var terminalErrors = []error{
+	p2ptypes.ErrWrongForkDigestVersion,
+	p2ptypes.ErrInvalidFinalizedRoot,
+	p2ptypes.ErrInvalidRequest,
+}
 
 // PeerStatusScorer represents scorer that evaluates peers based on their statuses.
 // Peer statuses are updated by regularly polling peers (see sync/rpc_status.go).
@@ -50,22 +58,22 @@ func (s *PeerStatusScorer) score(pid peer.ID) float64 {
 	if s.isBadPeer(pid) {
 		return BadPeerScore
 	}
-	score := float64(0)
 	peerData, ok := s.store.PeerData(pid)
 	if !ok || peerData.ChainState == nil {
-		return score
+		return 0
 	}
-	// Skip peers that are behind our current height
-	if s.ourCurrentHeight != nil && peerData.CurrentHeight().Cmp(s.ourCurrentHeight) == -1 {
-		return score
+	peerHeight := peerData.CurrentHeight()
+	// Skip peers that are behind our current height.
+	if s.ourCurrentHeight != nil && peerHeight.Cmp(s.ourCurrentHeight) < 0 {
+		return 0
 	}
 	// Calculate score as a ratio to the known maximum head slot.
 	// The closer the current peer's head slot to the maximum, the higher is the calculated score.
-	if s.highestPeerHeadSlot.Uint64() > 0 {
-		score = float64(peerData.CurrentHeight().Uint64()) / float64(s.highestPeerHeadSlot.Uint64())
-		return math.Round(score*ScoreRoundingFactor) / ScoreRoundingFactor
+	if s.highestPeerHeadSlot == nil || s.highestPeerHeadSlot.Uint64() == 0 {
+		return 0
 	}
-	return score
+	score := float64(peerHeight.Uint64()) / float64(s.highestPeerHeadSlot.Uint64())
+	return math.Round(score*ScoreRoundingFactor) / ScoreRoundingFactor
 }
 
 // IsBadPeer states if the peer is to be considered bad.
@@ -81,13 +89,7 @@ func (s *PeerStatusScorer) isBadPeer(pid peer.ID) bool {
 	if !ok {
 		return false
 	}
-	// Mark peer as bad, if the latest error is one of the terminal ones.
-	terminalErrs := []error{
-		p2ptypes.ErrWrongForkDigestVersion,
-		p2ptypes.ErrInvalidFinalizedRoot,
-		p2ptypes.ErrInvalidRequest,
-	}
-	for _, err := range terminalErrs {
+	for _, err := range terminalErrors {
 		if errors.Is(peerData.ChainStateValidationError, err) {
 			return true
 		}
@@ -119,9 +121,13 @@ func (s *PeerStatusScorer) SetPeerStatus(pid peer.ID, chainState *sync_pb.Status
 	peerData.ChainStateLastUpdated = time.Now()
 	peerData.ChainStateValidationError = validationError
 
+	if chainState == nil {
+		return
+	}
+
 	// Update maximum known head slot (scores will be calculated with respect to that maximum value).
 	currentHeight := utils.ConvertH256ToUint256Int(chainState.CurrentHeight)
-	if chainState != nil && s.highestPeerHeadSlot == nil || currentHeight.Cmp(s.highestPeerHeadSlot) == 1 {
+	if s.highestPeerHeadSlot == nil || currentHeight.Cmp(s.highestPeerHeadSlot) == 1 {
 		s.highestPeerHeadSlot = currentHeight
 	}
 }
@@ -146,7 +152,7 @@ func (s *PeerStatusScorer) peerStatus(pid peer.ID) (*sync_pb.Status, error) {
 	return nil, peerdata.ErrPeerUnknown
 }
 
-// SetCurrentHeight updates known head slot. todo
+// SetCurrentHeight updates the node's own current height used for peer scoring comparison.
 func (s *PeerStatusScorer) SetCurrentHeight(currentHeight *uint256.Int) {
 	s.store.Lock()
 	defer s.store.Unlock()

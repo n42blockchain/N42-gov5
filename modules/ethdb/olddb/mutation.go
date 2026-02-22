@@ -98,7 +98,7 @@ func (m *mutation) IncrementSequence(bucket string, amount uint64) (res uint64, 
 		}
 	}
 
-	var currentV uint64 = 0
+	var currentV uint64
 	if len(v) > 0 {
 		currentV = binary.BigEndian.Uint64(v)
 	}
@@ -119,7 +119,7 @@ func (m *mutation) ReadSequence(bucket string) (res uint64, err error) {
 			return 0, err
 		}
 	}
-	var currentV uint64 = 0
+	var currentV uint64
 	if len(v) > 0 {
 		currentV = binary.BigEndian.Uint64(v)
 	}
@@ -127,27 +127,18 @@ func (m *mutation) ReadSequence(bucket string) (res uint64, err error) {
 	return currentV, nil
 }
 
-// Can only be called from the worker thread
+// GetOne can only be called from the worker thread.
 func (m *mutation) GetOne(table string, key []byte) ([]byte, error) {
 	if value, ok := m.getMem(table, key); ok {
-		if value == nil {
-			return nil, nil
-		}
 		return value, nil
 	}
 	if m.db != nil {
-		// TODO: simplify when tx can no longer be parent of mutation
-		value, err := m.db.GetOne(table, key)
-		if err != nil {
-			return nil, err
-		}
-
-		return value, nil
+		return m.db.GetOne(table, key)
 	}
 	return nil, nil
 }
 
-// Can only be called from the worker thread
+// Get can only be called from the worker thread.
 func (m *mutation) Get(table string, key []byte) ([]byte, error) {
 	value, err := m.GetOne(table, key)
 	if err != nil {
@@ -232,7 +223,6 @@ func (m *mutation) ForAmount(bucket string, prefix []byte, amount uint32, walker
 }
 
 func (m *mutation) Delete(table string, k []byte) error {
-	//m.puts.Delete(table, k)
 	return m.Put(table, k, nil)
 }
 

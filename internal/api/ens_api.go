@@ -358,4 +358,3 @@ func decodeABIBytes(data []byte) ([]byte, error) {
 	copy(result, data[64:64+length])
 	return result, nil
 }
-

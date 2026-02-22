@@ -131,18 +131,10 @@ func (s *Service) updateMetrics() {
 	store := s.Host().Peerstore()
 	numConnectedPeersByClient := make(map[string]float64)
 	peerScoresByClient := make(map[string][]float64)
-	for i := 0; i < len(connectedPeers); i++ {
-		p := connectedPeers[i]
-		pid, err := peer.Decode(p.String())
-		if err != nil {
-			log.Debug("Could not decode peer string", "err", err)
-			continue
-		}
-
+	for _, pid := range connectedPeers {
 		foundName := agentFromPid(pid, store)
-		numConnectedPeersByClient[foundName] += 1
+		numConnectedPeersByClient[foundName]++
 
-		// Get peer scoring data.
 		overallScore := s.peers.Scorers().Score(pid)
 		peerScoresByClient[foundName] = append(peerScoresByClient[foundName], overallScore)
 	}
@@ -167,19 +159,16 @@ func average(xs []float64) float64 {
 }
 
 func agentFromPid(pid peer.ID, store peerstore.Peerstore) string {
-	// Get the agent data.
 	rawAgent, err := store.Get(pid, "AgentVersion")
 	agent, ok := rawAgent.(string)
 	if err != nil || !ok {
 		return "unknown"
 	}
-	foundName := "unknown"
+	agentLower := strings.ToLower(agent)
 	for _, knownAgent := range knownAgentVersions {
-		// If the agent string matches one of our known agents, we set
-		// the value to our own, sanitized string.
-		if strings.Contains(strings.ToLower(agent), knownAgent) {
-			foundName = knownAgent
+		if strings.Contains(agentLower, knownAgent) {
+			return knownAgent
 		}
 	}
-	return foundName
+	return "unknown"
 }

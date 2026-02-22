@@ -29,12 +29,12 @@ import (
 	"path/filepath"
 
 	"github.com/c2h5oh/datasize"
-	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/spaolacci/murmur3"
 
 	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/assert"
 	"github.com/n42blockchain/N42/lib/etl"
+	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano16"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
 )
@@ -191,7 +191,6 @@ func NewRecSplit(args RecSplitArgs, logger log.Logger) (*RecSplit, error) {
 	}
 	rs.currentBucket = make([]uint64, 0, args.BucketSize)
 	rs.currentBucketOffs = make([]uint64, 0, args.BucketSize)
-	rs.maxOffset = 0
 	rs.bucketSizeAcc = make([]uint64, 1, bucketCount+1)
 	rs.bucketPosAcc = make([]uint64, 1, bucketCount+1)
 	if args.LeafSize > MaxLeafSize {

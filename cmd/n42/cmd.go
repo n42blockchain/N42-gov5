@@ -22,8 +22,7 @@ import (
 )
 
 var (
-	privateKey string
-	miner         bool
+	privateKey    string
 	listenAddress = cli.NewStringSlice()
 	bootstraps    = cli.NewStringSlice()
 	cfgFile       string

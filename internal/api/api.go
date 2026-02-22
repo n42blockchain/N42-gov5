@@ -20,46 +20,45 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/internal"
-	"github.com/n42blockchain/N42/internal/api/filters"
-	vm2 "github.com/n42blockchain/N42/internal/vm"
-	"github.com/n42blockchain/N42/internal/vm/evmtypes"
-	event "github.com/n42blockchain/N42/modules/event/v2"
-	"github.com/n42blockchain/N42/modules/state"
-	"github.com/n42blockchain/N42/turbo/rpchelper"
-
 	"math/big"
 	"time"
 
-	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/common"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/api/filters"
 	"github.com/n42blockchain/N42/internal/avm/abi"
-	avmcommon "github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/internal/consensus"
+	vm2 "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
+	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
+	"github.com/n42blockchain/N42/turbo/rpchelper"
 )
 
 const (
 	// baseFee is the minimum base fee for gas price estimation in Wei
 	baseFee       = 5000000
-	rpcEVMTimeout = time.Duration(5 * time.Second)
+	rpcEVMTimeout = 5 * time.Second
 	rpcGasCap     = 50000000
 
 	// maxCallDataSize is the maximum allowed size for eth_call calldata (128KB).
 	maxCallDataSize = 128 * 1024
 )
 
-// API compatible EthereumAPI provides an API to access related information.
+// API provides an Ethereum-compatible JSON-RPC API to access blockchain data.
 type API struct {
 	db      kv.RwDB
 	bc      common.IBlockChain
@@ -140,7 +139,6 @@ func (n *API) GetEvm(ctx context.Context, msg internal.Message, ibs evmtypes.Int
 }
 
 func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.IntraBlockState {
-
 	_, blockHash, err := rpchelper.GetCanonicalBlockNumber(blockNrOrHash, tx)
 	if err != nil {
 		return nil
@@ -168,17 +166,17 @@ type BlockChainAPI struct {
 	api *API
 }
 
-// NewBlockChainAPI creates a new  blockchain API.
+// NewBlockChainAPI creates a new blockchain API.
 func NewBlockChainAPI(api *API) *BlockChainAPI {
 	return &BlockChainAPI{api}
 }
 
-// ChainId get Chain ID
+// ChainId returns the chain ID used for signing replay-protected transactions.
 func (api *BlockChainAPI) ChainId() *hexutil.Big {
 	return (*hexutil.Big)(api.api.GetChainConfig().ChainID)
 }
 
-// GetBalance get balance
+// GetBalance returns the amount of wei for the given address at the given block.
 func (s *BlockChainAPI) GetBalance(ctx context.Context, address avmcommon.Address, blockNrOrHash jsonrpc.BlockNumberOrHash) (*hexutil.Big, error) {
 	tx, err := s.api.db.BeginRo(ctx)
 	if err != nil {
@@ -210,7 +208,7 @@ func (s *BlockChainAPI) BlockNumber() hexutil.Uint64 {
 	return hexutil.Uint64(num.Uint64())
 }
 
-// GetCode get code
+// GetCode returns the code stored at the given address in the state for the given block.
 func (s *BlockChainAPI) GetCode(ctx context.Context, address avmcommon.Address, blockNrOrHash jsonrpc.BlockNumberOrHash) (hexutil.Bytes, error) {
 	tx, err := s.api.db.BeginRo(ctx)
 	if err != nil {
@@ -249,7 +247,7 @@ func (s *BlockChainAPI) GetStorageAt(ctx context.Context, address types.Address,
 // GetUncleCountByBlockHash returns number of uncles in the block for the given block hash
 func (s *BlockChainAPI) GetUncleCountByBlockHash(ctx context.Context, blockHash avmcommon.Hash) *hexutil.Uint {
 	if block, _ := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(blockHash)); block != nil {
-		//POA donot have Uncles
+		// POA/POS consensus does not have uncles
 		n := hexutil.Uint(0)
 		return &n
 	}
@@ -279,12 +277,12 @@ type StorageResult struct {
 	Proof []string     `json:"proof"`
 }
 
-// // OverrideAccount indicates the overriding fields of account during the execution
-// // of a message call.
-// // Note, state and stateDiff can't be specified at the same time. If state is
-// // set, message execution will only use the data in the given state. Otherwise
-// // if statDiff is set, all diff will be applied first and then execute the call
-// // message.
+// OverrideAccount indicates the overriding fields of account during the execution
+// of a message call.
+// Note, state and stateDiff can't be specified at the same time. If state is
+// set, message execution will only use the data in the given state. Otherwise
+// if stateDiff is set, all diff will be applied first and then execute the call
+// message.
 type OverrideAccount struct {
 	Nonce      *hexutil.Uint64                      `json:"nonce"`
 	Code       *hexutil.Bytes                       `json:"code"`
@@ -385,8 +383,6 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 		return nil, fmt.Errorf("calldata size %d exceeds maximum allowed %d bytes", len(*args.Data), maxCallDataSize)
 	}
 
-	// header := api.BlockChain().CurrentBlock().Header()
-	//state := api.BlockChain().StateAt(header.Hash()).(*statedb.StateDB)
 	var header block.IHeader
 	var err error
 	if blockNr, ok := blockNrOrHash.Number(); ok {
@@ -402,15 +398,12 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 	if err != nil {
 		return nil, err
 	}
-	//state := api.State(blockNrOrHash).(*statedb.StateDB)
 	tx, err := api.db.BeginRo(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
-	//reader := state.NewPlainStateReader(tx)
-	//ibs := state.New(reader)
 	ibs := api.State(tx, blockNrOrHash)
 	if ibs == nil {
 		return nil, errors.New("cannot load state")
@@ -440,7 +433,6 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 		return nil, err
 	}
 
-	//todo debug: , Debug: true, Tracer: vm.NewMarkdownLogger(os.Stdout)
 	evm, vmError, err := api.GetEvm(ctx, msg, ibs, header, &vm2.Config{NoBaseFee: true})
 	if err != nil {
 		return nil, err
@@ -484,14 +476,14 @@ func newRevertError(result *internal.ExecutionResult) *revertError {
 	}
 }
 
-// revertError is an API error that encompassas an EVM revertal with JSON error
+// revertError is an API error that encompasses an EVM revert with JSON error
 // code and a binary data blob.
 type revertError struct {
 	error
 	reason string // revert reason hex encoded
 }
 
-// ErrorCode returns the JSON error code for a revertal.
+// ErrorCode returns the JSON error code for a revert.
 // See: https://github.com/ethereum/wiki/wiki/JSON-RPC-Error-Codes-Improvement-Proposal
 func (e *revertError) ErrorCode() int {
 	return 3
@@ -506,13 +498,9 @@ func (e *revertError) ErrorData() interface{} {
 //
 // Additionally, the caller can specify a batch of contract for fields overriding.
 //
-// Note, this function doesn't make and changes in the state/blockchain and is
+// Note, this function doesn't make any changes in the state/blockchain and is
 // useful to execute and retrieve values.
 func (s *BlockChainAPI) Call(ctx context.Context, args TransactionArgs, blockNrOrHash jsonrpc.BlockNumberOrHash, overrides *StateOverride) (hexutil.Bytes, error) {
-
-	//b, _ := json.Marshal(args)
-	//log.Info("TransactionArgs %s", string(b))
-
 	result, err := DoCall(ctx, s.api, args, blockNrOrHash, overrides, rpcEVMTimeout, rpcGasCap)
 	if err != nil {
 		return nil, err
@@ -525,21 +513,11 @@ func (s *BlockChainAPI) Call(ctx context.Context, args TransactionArgs, blockNrO
 }
 
 func BlockByNumber(ctx context.Context, number jsonrpc.BlockNumber, n *API) (block.IBlock, error) {
-	// Pending block is only known by the miner, return current block as approximation
-	if number == jsonrpc.PendingBlockNumber {
-		iblock := n.BlockChain().CurrentBlock()
-		return iblock, nil
+	// Pending and latest both resolve to the current block
+	if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+		return n.BlockChain().CurrentBlock(), nil
 	}
-	// Otherwise resolve and return the block
-	if number == jsonrpc.LatestBlockNumber {
-		iblock := n.BlockChain().CurrentBlock()
-		return iblock, nil
-	}
-	iblock, err := n.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number)))
-	if err != nil {
-		return nil, err
-	}
-	return iblock, nil
+	return n.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number)))
 }
 
 func BlockByNumberOrHash(ctx context.Context, blockNrOrHash jsonrpc.BlockNumberOrHash, api *API) (block.IBlock, error) {
@@ -685,7 +663,6 @@ func DoEstimateGas(ctx context.Context, n *API, args TransactionArgs, blockNrOrH
 		}
 	}
 	return hexutil.Uint64(hi), nil
-	//return hexutil.Uint64(baseFee), nil
 }
 
 // EstimateGas returns an estimate of the amount of gas needed to execute the
@@ -719,7 +696,7 @@ func (s *BlockChainAPI) GetBlockByNumber(ctx context.Context, number jsonrpc.Blo
 	return nil, err
 }
 
-// GetBlockByHash get block by hash
+// GetBlockByHash returns the requested block by hash, with full or hash-only transactions.
 func (s *BlockChainAPI) GetBlockByHash(ctx context.Context, hash avmcommon.Hash, fullTx bool) (map[string]interface{}, error) {
 	block, err := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(hash))
 

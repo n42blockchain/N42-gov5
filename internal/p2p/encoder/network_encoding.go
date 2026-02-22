@@ -6,18 +6,19 @@ import (
 	ssz "github.com/prysmaticlabs/fastssz"
 )
 
-// NetworkEncoding represents an encoder compatible with Ethereum consensus p2p.
+// NetworkEncoding defines the interface for P2P network message encoding,
+// compatible with Ethereum consensus layer protocols.
 type NetworkEncoding interface {
-	// DecodeGossip to the provided gossip message. The interface must be a pointer to the decoding destination.
+	// DecodeGossip decompresses and unmarshals a gossip message into dst.
 	DecodeGossip([]byte, ssz.Unmarshaler) error
-	// DecodeWithMaxLength a bytes from a reader with a varint length prefix. The interface must be a pointer to the
-	// decoding destination. The length of the message should not be more than the provided limit.
+	// DecodeWithMaxLength reads a varint-prefixed message from r and
+	// unmarshals it into dst, rejecting messages that exceed MaxChunkSize.
 	DecodeWithMaxLength(io.Reader, ssz.Unmarshaler) error
-	// EncodeGossip an arbitrary gossip message to the provided writer. The interface must be a pointer object to encode.
+	// EncodeGossip serializes and compresses msg, then writes it to w.
 	EncodeGossip(io.Writer, ssz.Marshaler) (int, error)
-	// EncodeWithMaxLength an arbitrary message to the provided writer with a varint length prefix. The interface must be
-	// a pointer object to encode. The encoded message should not be bigger than the provided limit.
+	// EncodeWithMaxLength serializes msg with a varint length prefix and
+	// writes the compressed result to w, rejecting messages that exceed MaxChunkSize.
 	EncodeWithMaxLength(io.Writer, ssz.Marshaler) (int, error)
-	// ProtocolSuffix returns the last part of the protocol ID to indicate the encoding scheme.
+	// ProtocolSuffix returns the encoding scheme suffix for protocol IDs.
 	ProtocolSuffix() string
 }

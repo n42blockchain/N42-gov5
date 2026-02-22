@@ -21,17 +21,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/log"
 	"math/big"
 
+	"github.com/holiman/uint256"
+
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	avmcommon "github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 
@@ -115,11 +116,8 @@ func (args *TransactionArgs) data() []byte {
 	return nil
 }
 
-// setDefaults
+// setDefaults fills in default values for unspecified transaction fields.
 func (args *TransactionArgs) setDefaults(ctx context.Context, api *API) error {
-	//if args.GasPrice != nil && (args.MaxFeePerGas != nil || args.MaxPriorityFeePerGas != nil) {
-	//	return errors.New("both gasPrice and (maxFeePerGas or maxPriorityFeePerGas) specified")
-	//}
 	if err := args.setFeeDefaults(ctx, api); err != nil {
 		return err
 	}
@@ -149,8 +147,7 @@ func (args *TransactionArgs) setDefaults(ctx context.Context, api *API) error {
 			Data:                 (*hexutil.Bytes)(&data),
 		}
 		pendingBlockNr := jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.PendingBlockNumber)
-		//todo gasCap
-		estimated, err := DoEstimateGas(ctx, api, callArgs, pendingBlockNr, 50000000)
+		estimated, err := DoEstimateGas(ctx, api, callArgs, pendingBlockNr, rpcGasCap)
 		if err != nil {
 			return err
 		}
@@ -163,14 +160,8 @@ func (args *TransactionArgs) setDefaults(ctx context.Context, api *API) error {
 	return nil
 }
 
-// ToMessage to evm message
+// ToMessage converts TransactionArgs to an EVM message.
 func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (transaction.Message, error) {
-	//header := api.BlockChain().CurrentBlock().Header().(*block.Header)
-	//signer := transaction.MakeSigner(api.chainConfig, header.Number.ToBig())
-	//args.setDefaults(context.Background(), api)
-	//return args.toTransaction().AsMessage(signer, header.BaseFee)
-	// msg := avmtypes.AsMessage(, header.BaseFee.ToBig(), true)
-
 	// Reject invalid combinations of pre- and post-1559 fee styles
 	if args.GasPrice != nil && (args.MaxFeePerGas != nil || args.MaxPriorityFeePerGas != nil) {
 		return transaction.Message{}, errors.New("both gasPrice and (maxFeePerGas or maxPriorityFeePerGas) specified")
@@ -323,18 +314,9 @@ func (args *TransactionArgs) toTransaction() *transaction.Transaction {
 	return transaction.NewTx(data)
 }
 
-// ToTransaction
-//func (args *TransactionArgs) ToTransaction() *transaction.Transaction {
-//	return args.toTransaction()
-//}
-
-// LrpLegacyTx is the transaction data of regular Ethereum transactions.
-
-// newRPCPendingTransaction returns a pending transaction that will serialize to the RPC representation
+// newRPCPendingTransaction returns a pending transaction that will serialize to the RPC representation.
 func newRPCPendingTransaction(tx *transaction.Transaction, current block.IHeader) *RPCTransaction {
-	blockNumber := uint64(0)
-	//todo baseFee
-	return newRPCTransaction(tx, types.Hash{}, blockNumber, 0, big.NewInt(baseFee))
+	return newRPCTransaction(tx, types.Hash{}, 0, 0, big.NewInt(baseFee))
 }
 
 // yparity converts a V signature value to a YParity value for EIP-2718+ typed transactions.

@@ -12,21 +12,7 @@ import (
 )
 
 func init() {
-	newHash256 := func() hash.Hash {
-		h, _ := New256(nil)
-		return h
-	}
-	newHash384 := func() hash.Hash {
-		h, _ := New384(nil)
-		return h
-	}
-
-	newHash512 := func() hash.Hash {
-		h, _ := New512(nil)
-		return h
-	}
-
-	crypto.RegisterHash(crypto.BLAKE2b_256, newHash256)
-	crypto.RegisterHash(crypto.BLAKE2b_384, newHash384)
-	crypto.RegisterHash(crypto.BLAKE2b_512, newHash512)
+	crypto.RegisterHash(crypto.BLAKE2b_256, func() hash.Hash { h, _ := New256(nil); return h })
+	crypto.RegisterHash(crypto.BLAKE2b_384, func() hash.Hash { h, _ := New384(nil); return h })
+	crypto.RegisterHash(crypto.BLAKE2b_512, func() hash.Hash { h, _ := New512(nil); return h })
 }

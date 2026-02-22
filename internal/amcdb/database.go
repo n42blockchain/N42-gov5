@@ -45,15 +45,3 @@ func ToDBType(name string) DBType {
 		return DBUnknown
 	}
 }
-
-//func OpenDB(ctx context.Context, nodeConfig *conf.NodeConfig, config *conf.DatabaseConfig) (ethdb.Database, error) {
-//	dType := ToDBType(config.DBType)
-//	switch dType {
-//	case DBLmdb:
-//		return lmdb.NewLMDB(ctx, nodeConfig, config)
-//	case DBMem:
-//		return memdb.NewMemDB(), nil
-//	default:
-//		return nil, fmt.Errorf("failed open db, err: invalid db type")
-//	}
-//}

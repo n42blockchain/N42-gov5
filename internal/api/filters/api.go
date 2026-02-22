@@ -3,12 +3,13 @@ package filters
 import (
 	"context"
 	"errors"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/types"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
-	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"sync"
 	"time"
+
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 
 // filter is a helper struct that holds metadata information over the filter type

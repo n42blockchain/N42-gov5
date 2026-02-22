@@ -34,7 +34,6 @@ func TestEncodeBlockNumber(t *testing.T) {
 			t.Errorf("EncodeBlockNumber(%d) = %v, want %v", tt.number, result, tt.expected)
 		}
 	}
-	t.Log("✓ EncodeBlockNumber works correctly")
 }
 
 func TestDecodeBlockNumber(t *testing.T) {
@@ -54,7 +53,6 @@ func TestDecodeBlockNumber(t *testing.T) {
 			t.Errorf("DecodeBlockNumber(%v) = %d, want %d", tt.data, result, tt.expected)
 		}
 	}
-	t.Log("✓ DecodeBlockNumber works correctly")
 }
 
 func TestEncodeDecodeRoundTrip(t *testing.T) {
@@ -66,43 +64,34 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 			t.Errorf("Round trip failed: %d -> %v -> %d", n, encoded, decoded)
 		}
 	}
-	t.Log("✓ Encode/Decode round trip works correctly")
 }
 
 func TestHeaderKey(t *testing.T) {
 	hash := types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
 	key := HeaderKey(100, hash)
 
-	// Should be 8 bytes for number + 32 bytes for hash
 	if len(key) != 40 {
 		t.Errorf("HeaderKey length = %d, want 40", len(key))
 	}
 
-	// Check number encoding
 	decodedNumber := DecodeBlockNumber(key[:8])
 	if decodedNumber != 100 {
 		t.Errorf("HeaderKey number = %d, want 100", decodedNumber)
 	}
 
-	// Check hash
 	decodedHash := types.BytesToHash(key[8:])
 	if decodedHash != hash {
 		t.Errorf("HeaderKey hash = %s, want %s", decodedHash.Hex(), hash.Hex())
 	}
-
-	t.Log("✓ HeaderKey format is correct")
 }
 
 func TestBlockBodyKey(t *testing.T) {
 	hash := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 	key := BlockBodyKey(200, hash)
 
-	// Should be same format as HeaderKey
 	if len(key) != 40 {
 		t.Errorf("BlockBodyKey length = %d, want 40", len(key))
 	}
-
-	t.Log("✓ BlockBodyKey format is correct")
 }
 
 func TestTxLookupKey(t *testing.T) {
@@ -112,12 +101,9 @@ func TestTxLookupKey(t *testing.T) {
 	if len(key) != 32 {
 		t.Errorf("TxLookupKey length = %d, want 32", len(key))
 	}
-
 	if !bytes.Equal(key, hash.Bytes()) {
 		t.Errorf("TxLookupKey = %x, want %x", key, hash.Bytes())
 	}
-
-	t.Log("✓ TxLookupKey format is correct")
 }
 
 func TestReceiptKey(t *testing.T) {
@@ -131,8 +117,6 @@ func TestReceiptKey(t *testing.T) {
 	if decoded != 12345 {
 		t.Errorf("ReceiptKey decoded = %d, want 12345", decoded)
 	}
-
-	t.Log("✓ ReceiptKey format is correct")
 }
 
 // =============================================================================
@@ -145,7 +129,7 @@ func TestStateBucketsExist(t *testing.T) {
 			t.Error("Empty bucket name in StateBuckets")
 		}
 	}
-	t.Logf("✓ StateBuckets contains %d buckets", len(StateBuckets))
+	t.Logf("StateBuckets contains %d buckets", len(StateBuckets))
 }
 
 func TestChainBucketsExist(t *testing.T) {
@@ -154,7 +138,7 @@ func TestChainBucketsExist(t *testing.T) {
 			t.Error("Empty bucket name in ChainBuckets")
 		}
 	}
-	t.Logf("✓ ChainBuckets contains %d buckets", len(ChainBuckets))
+	t.Logf("ChainBuckets contains %d buckets", len(ChainBuckets))
 }
 
 func TestConsensusBucketsExist(t *testing.T) {
@@ -163,7 +147,7 @@ func TestConsensusBucketsExist(t *testing.T) {
 			t.Error("Empty bucket name in ConsensusBuckets")
 		}
 	}
-	t.Logf("✓ ConsensusBuckets contains %d buckets", len(ConsensusBuckets))
+	t.Logf("ConsensusBuckets contains %d buckets", len(ConsensusBuckets))
 }
 
 func TestBucketCategoriesAreDisjoint(t *testing.T) {
@@ -183,8 +167,6 @@ func TestBucketCategoriesAreDisjoint(t *testing.T) {
 	checkAndAdd(ConsensusBuckets, "ConsensusBuckets")
 	checkAndAdd(MetadataBuckets, "MetadataBuckets")
 	checkAndAdd(ApplicationBuckets, "ApplicationBuckets")
-
-	t.Log("✓ All bucket categories are disjoint")
 }
 
 // =============================================================================
@@ -192,10 +174,11 @@ func TestBucketCategoriesAreDisjoint(t *testing.T) {
 // =============================================================================
 
 func TestAllBucketsInTableConfig(t *testing.T) {
-	// Initialize the table config
 	modules.N42Init()
 
-	allCategorizedBuckets := make([]string, 0)
+	allCategorizedBuckets := make([]string, 0,
+		len(StateBuckets)+len(ChainBuckets)+len(ConsensusBuckets)+len(MetadataBuckets)+len(ApplicationBuckets),
+	)
 	allCategorizedBuckets = append(allCategorizedBuckets, StateBuckets...)
 	allCategorizedBuckets = append(allCategorizedBuckets, ChainBuckets...)
 	allCategorizedBuckets = append(allCategorizedBuckets, ConsensusBuckets...)
@@ -204,11 +187,11 @@ func TestAllBucketsInTableConfig(t *testing.T) {
 
 	for _, bucket := range allCategorizedBuckets {
 		if _, ok := modules.N42TableCfg[bucket]; !ok {
-			t.Errorf("Bucket %q is not in AstTableCfg", bucket)
+			t.Errorf("Bucket %q is not in N42TableCfg", bucket)
 		}
 	}
 
-	t.Logf("✓ All %d categorized buckets are in AstTableCfg", len(allCategorizedBuckets))
+	t.Logf("All %d categorized buckets are in N42TableCfg", len(allCategorizedBuckets))
 }
 
 func TestSchemaVersion(t *testing.T) {
@@ -218,6 +201,5 @@ func TestSchemaVersion(t *testing.T) {
 	if SchemaVersionKey == "" {
 		t.Error("SchemaVersionKey should not be empty")
 	}
-	t.Logf("✓ Schema version: %d", SchemaVersion)
+	t.Logf("Schema version: %d", SchemaVersion)
 }
-

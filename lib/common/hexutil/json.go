@@ -117,7 +117,7 @@ func (b *Big) String() string {
 }
 
 func (b *Big) Uint64() uint64 {
-	return ((*big.Int)(b)).Uint64()
+	return (*big.Int)(b).Uint64()
 }
 
 // Uint64 marshals/unmarshals as a JSON string with 0x prefix.
@@ -150,8 +150,8 @@ func (b *Uint64) UnmarshalText(input []byte) error {
 		return ErrUint64Range
 	}
 	var dec uint64
-	for _, byte := range raw {
-		nib := decodeNibble(byte)
+	for _, c := range raw {
+		nib := decodeNibble(c)
 		if nib == badNibble {
 			return ErrSyntax
 		}
@@ -168,7 +168,7 @@ func (b Uint64) String() string {
 }
 
 func (b Uint64) Uint64() uint64 {
-	return (uint64)(b)
+	return uint64(b)
 }
 
 // Uint marshals/unmarshals as a JSON string with 0x prefix.
@@ -247,7 +247,7 @@ func checkNumberText(input []byte) (raw []byte, err error) {
 }
 
 func wrapTypeError(err error, typ reflect.Type) error {
-	// keeping compatiblity with go ethereum tests
+	// keeping compatibility with go ethereum tests
 	// nolint:errorlint
 	if _, ok := err.(*decError); ok {
 		return &json.UnmarshalTypeError{Value: err.Error(), Type: typ}

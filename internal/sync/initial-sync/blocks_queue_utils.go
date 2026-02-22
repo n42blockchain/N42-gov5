@@ -3,7 +3,9 @@ package initialsync
 import (
 	"context"
 	"errors"
+
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/utils"
 )
 

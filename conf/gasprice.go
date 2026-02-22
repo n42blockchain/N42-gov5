@@ -17,8 +17,9 @@
 package conf
 
 import (
-	"github.com/n42blockchain/N42/params"
 	"math/big"
+
+	"github.com/n42blockchain/N42/params"
 )
 
 var (

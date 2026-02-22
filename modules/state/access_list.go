@@ -108,11 +108,10 @@ func (al *accessList) AddSlot(address types.Address, slot types.Hash) (addrChang
 
 // DeleteSlot removes an (address, slot)-tuple from the access list.
 // This operation needs to be performed in the same order as the addition happened.
-// This method is meant to be used  by the journal, which maintains ordering of
+// This method is meant to be used by the journal, which maintains ordering of
 // operations.
 func (al *accessList) DeleteSlot(address types.Address, slot types.Hash) {
 	idx, addrOk := al.addresses[address]
-	// There are two ways this can fail
 	if !addrOk {
 		panic("reverting slot change, address not present in list")
 	}
@@ -129,7 +128,7 @@ func (al *accessList) DeleteSlot(address types.Address, slot types.Hash) {
 
 // DeleteAddress removes an address from the access list. This operation
 // needs to be performed in the same order as the addition happened.
-// This method is meant to be used  by the journal, which maintains ordering of
+// This method is meant to be used by the journal, which maintains ordering of
 // operations.
 func (al *accessList) DeleteAddress(address types.Address) {
 	delete(al.addresses, address)

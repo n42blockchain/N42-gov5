@@ -23,12 +23,13 @@ import (
 	"crypto/elliptic"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/math"
-	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"hash"
 
 	"golang.org/x/crypto/hkdf"
+
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/math"
+	"github.com/n42blockchain/N42/internal/p2p/enode"
 )
 
 const (
@@ -116,7 +117,7 @@ type hashFn func() hash.Hash
 // deriveKeys creates the session keys.
 func deriveKeys(hash hashFn, priv *ecdsa.PrivateKey, pub *ecdsa.PublicKey, n1, n2 enode.ID, challenge []byte) *session {
 	const text = "discovery v5 key agreement"
-	var info = make([]byte, 0, len(text)+len(n1)+len(n2))
+	info := make([]byte, 0, len(text)+len(n1)+len(n2))
 	info = append(info, text...)
 	info = append(info, n1[:]...)
 	info = append(info, n2[:]...)
@@ -125,13 +126,12 @@ func deriveKeys(hash hashFn, priv *ecdsa.PrivateKey, pub *ecdsa.PublicKey, n1, n
 	if eph == nil {
 		return nil
 	}
+	defer zeroBytes(eph)
+
 	kdf := hkdf.New(hash, eph, challenge, info)
 	sec := session{writeKey: make([]byte, aesKeySize), readKey: make([]byte, aesKeySize)}
 	kdf.Read(sec.writeKey)
 	kdf.Read(sec.readKey)
-	for i := range eph {
-		eph[i] = 0
-	}
 	return &sec
 }
 

@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package common
 
 import (
@@ -28,13 +29,9 @@ import (
 	"github.com/n42blockchain/N42/lib/common/length"
 )
 
-var (
-	hashT = reflect.TypeOf(Hash{})
-)
+var hashT = reflect.TypeOf(Hash{})
 
-const (
-	hexPrefix = `0x`
-)
+const hexPrefix = "0x"
 
 // Hash represents the 32 byte Keccak256 hash of arbitrary data.
 type Hash [length.Hash]byte
@@ -83,7 +80,7 @@ func (h Hash) String() string {
 }
 
 // Format implements fmt.Formatter.
-// Hash supports the %v, %s, %v, %x, %X and %d format verbs.
+// Hash supports the %v, %s, %q, %x, %X and %d format verbs.
 func (h Hash) Format(s fmt.State, c rune) {
 	hexb := make([]byte, 2+len(h)*2)
 	copy(hexb, "0x")
@@ -124,10 +121,9 @@ func (h *Hash) UnmarshalJSON(input []byte) error {
 
 // MarshalText returns the hex representation of h.
 func (h Hash) MarshalText() ([]byte, error) {
-	b := h[:]
-	result := make([]byte, len(b)*2+2)
+	result := make([]byte, len(h)*2+2)
 	copy(result, hexPrefix)
-	hex.Encode(result[2:], b)
+	hex.Encode(result[2:], h[:])
 	return result, nil
 }
 
@@ -151,7 +147,7 @@ func (h Hash) Generate(rand *rand.Rand, size int) reflect.Value {
 }
 
 // Scan implements Scanner for database/sql.
-func (h *Hash) Scan(src interface{}) error {
+func (h *Hash) Scan(src any) error {
 	srcB, ok := src.([]byte)
 	if !ok {
 		return fmt.Errorf("can't scan %T into Hash", src)

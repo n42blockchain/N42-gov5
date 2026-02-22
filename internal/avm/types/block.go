@@ -4,14 +4,14 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
 	"math/big"
 	"reflect"
+
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
 )
 
-// var EmptyUncleHash = rlpHash([]*Header(nil))
 var EmptyUncleHash = types.HexToHash("0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347")
 
 type BlockNonce [8]byte
@@ -57,12 +57,6 @@ type Header struct {
 
 	// BaseFee was added by EIP-1559 and is ignored in legacy headers.
 	BaseFee *big.Int `json:"baseFeePerGas" rlp:"optional"`
-
-	/*
-		TODO (MariusVanDerWijden) Add this field once needed
-		// Random was added during the merge and contains the BeaconState randomness
-		Random avmutil.Hash `json:"random" rlp:"optional"`
-	*/
 }
 
 // Hash returns the block hash of the header, which is simply the keccak256 hash of its

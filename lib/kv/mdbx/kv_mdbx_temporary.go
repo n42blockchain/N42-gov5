@@ -33,12 +33,12 @@ type TemporaryMdbx struct {
 func NewTemporaryMdbx(ctx context.Context, tempdir string) (kv.RwDB, error) {
 	path, err := os.MkdirTemp(tempdir, "mdbx-temp")
 	if err != nil {
-		return &TemporaryMdbx{}, err
+		return nil, err
 	}
 
 	db, err := NewMDBX(log.New()).Label(kv.InMem).Path(path).Open(ctx)
 	if err != nil {
-		return &TemporaryMdbx{}, err
+		return nil, err
 	}
 
 	return &TemporaryMdbx{

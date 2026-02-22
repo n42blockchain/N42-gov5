@@ -7,6 +7,10 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -14,78 +18,63 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/pkg/errors"
+	"go.opencensus.io/trace"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
-	astLog "github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	leakybucket "github.com/n42blockchain/N42/internal/p2p/leaky-bucket"
 	"github.com/n42blockchain/N42/internal/p2p/peers"
 	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
+	astLog "github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
-	"github.com/pkg/errors"
-	"go.opencensus.io/trace"
-	"google.golang.org/protobuf/proto"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
-// In the event that we are at our peer limit, we
-// stop looking for new peers and instead poll
-// for the current peer limit status for the time period
-// defined below.
-var pollingPeriod = 6 * time.Second
+var (
+	pollingPeriod = 6 * time.Second
+	refreshRate   = 16 * time.Second
+)
 
-// Refresh rate of ENR set at twice per block.
-var refreshRate = 16 * time.Second
-
-// maxBadResponses is the maximum number of bad responses from a peer before we stop talking to it.
-const maxBadResponses = 5
-
-// pubsubQueueSize is the size that we assign to our validation queue and outbound message queue for
-// gossipsub.
-const pubsubQueueSize = 600
-
-// maxDialTimeout is the timeout for a single peer dial.
-const maxDialTimeout = 10 * time.Second
-
-// ttfbTimeout is the maximum time to wait for first byte of request response (time-to-first-byte).
-const ttfbTimeout = 10 * time.Second
-
-// reconnectBootNode is the interval for reconnecting to bootstrap nodes.
-const reconnectBootNode = 1 * time.Minute
+const (
+	maxBadResponses      = 5
+	pubsubQueueSize      = 600
+	maxDialTimeout       = 10 * time.Second
+	ttfbTimeout          = 10 * time.Second
+	reconnectBootNode    = 1 * time.Minute
+	maxConcurrentPeerOps = 16
+)
 
 // Service for managing peer to peer (p2p) networking.
 type Service struct {
-	started               atomic.Bool
-	isPreGenesis          atomic.Bool
-	pingMethod            func(ctx context.Context, id peer.ID) error
-	cancel                context.CancelFunc
-	cfg                   *conf.P2PConfig
-	peers                 *peers.Status
-	addrFilter            *multiaddr.Filters
-	ipLimiter             *leakybucket.Collector
-	privKey               *ecdsa.PrivateKey
-	pubsub                *pubsub.PubSub
-	joinedTopics          map[string]*pubsub.Topic
-	joinedTopicsLock      sync.Mutex
-	dv5Listener           Listener
-	startupErr            error
-	startupErrMu          sync.RWMutex
-	ctx                   context.Context
-	host                  host.Host
-	genesisHash           types.Hash
-	genesisValidatorsRoot []byte
-	activeValidatorCount  uint64
-	ping                  *sync_pb.Ping
-	wg                    sync.WaitGroup
+	started          atomic.Bool
+	isPreGenesis     atomic.Bool
+	pingMethod       func(ctx context.Context, id peer.ID) error
+	cancel           context.CancelFunc
+	cfg              *conf.P2PConfig
+	peers            *peers.Status
+	addrFilter       *multiaddr.Filters
+	ipLimiter        *leakybucket.Collector
+	privKey          *ecdsa.PrivateKey
+	pubsub           *pubsub.PubSub
+	joinedTopics     map[string]*pubsub.Topic
+	joinedTopicsLock sync.Mutex
+	dv5Listener      Listener
+	startupErr       error
+	startupErrMu     sync.RWMutex
+	ctx              context.Context
+	host             host.Host
+	genesisHash      types.Hash
+	ping             *sync_pb.Ping
+	wg               sync.WaitGroup
 }
 
-// NewService initializes a new p2p service compatible with shared.Service interface. No
-// connections are made until the Start function is called during the service registry startup.
+// NewService initializes a new p2p service. No connections are made until
+// Start is called during the service registry startup.
 func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig, nodeCfg conf.NodeConfig) (*Service, error) {
 	var err error
 	ctx, cancel := context.WithCancel(ctx)
@@ -106,9 +95,7 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 		return nil, err
 	}
 
-	dv5Nodes := parseBootStrapAddrs(cfg.BootstrapNodeAddr, nodeCfg)
-	//
-	cfg.Discv5BootStrapAddr = dv5Nodes
+	cfg.Discv5BootStrapAddr = parseBootStrapAddrs(cfg.BootstrapNodeAddr, nodeCfg)
 
 	ipAddr := utils.IPAddr()
 	s.privKey, err = privKey(s.cfg)
@@ -131,12 +118,9 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 	}
 
 	s.host = h
-	// Gossipsub registration is done before we add in any new peers
-	// due to libp2p's gossipsub implementation not taking into
-	// account previously added peers when creating the gossipsub
-	// object.
+	// Gossipsub must be initialized before adding peers, as libp2p's
+	// implementation ignores previously added peers.
 	psOpts := s.pubsubOptions()
-	// Set the pubsub global parameters that we require.
 	setPubSubParameters()
 
 	gs, err := pubsub.NewGossipSub(s.ctx, s.host, psOpts...)
@@ -155,9 +139,6 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 			},
 		},
 	})
-
-	// Initialize Data maps.
-	//types.InitializeDataMaps()
 
 	return s, nil
 }
@@ -196,41 +177,23 @@ func (s *Service) Start() {
 
 	if !s.cfg.NoDiscovery {
 		ipAddr := utils.IPAddr()
-		listener, err := s.startDiscoveryV5(
-			ipAddr,
-			s.privKey,
-		)
+		listener, err := s.startDiscoveryV5(ipAddr, s.privKey)
 		if err != nil {
 			log.Crit("Failed to start discovery", "err", err)
-			s.started.Store(false)
-			s.startupErrMu.Lock()
-			s.startupErr = err
-			s.startupErrMu.Unlock()
+			s.recordStartupError(err)
 			return
 		}
 		bootnodes, err := s.bootnodes()
 		if err != nil {
-			s.started.Store(false)
-			s.startupErrMu.Lock()
-			s.startupErr = err
-			s.startupErrMu.Unlock()
+			s.recordStartupError(err)
 			return
 		}
-		err = s.connectToBootnodes(bootnodes)
-		if err != nil {
-			log.Error("Could not add bootnode to the exclusion list", "err", err)
-			s.started.Store(false)
-			s.startupErrMu.Lock()
-			s.startupErr = err
-			s.startupErrMu.Unlock()
-			return
-		}
+		s.connectWithAllPeers(bootnodes)
 		s.dv5Listener = listener
 		go s.listenForNewNodes()
 		utils.RunEvery(s.ctx, reconnectBootNode, func() {
 			s.ensureBootPeerConnections(bootnodes)
 		})
-
 	}
 
 	if len(s.cfg.StaticPeers) > 0 {
@@ -240,8 +203,6 @@ func (s *Service) Start() {
 		}
 		s.connectWithAllPeers(addrs)
 	}
-	// Initialize metadata according to the
-	// current epoch.
 	s.RefreshENR()
 
 	// Periodic functions.
@@ -254,59 +215,16 @@ func (s *Service) Start() {
 	utils.RunEvery(s.ctx, 30*time.Minute, s.Peers().Prune)
 	utils.RunEvery(s.ctx, 10*time.Second, s.updateMetrics)
 	utils.RunEvery(s.ctx, refreshRate, s.RefreshENR)
-	utils.RunEvery(s.ctx, 1*time.Minute, func() {
-		inbound := len(s.peers.InboundConnected())
-		outbound := len(s.peers.OutboundConnected())
-		active := len(s.peers.Active())
-		
-		astLog.PrintStatusLine("p2p", fmt.Sprintf("%d peers (in:%d out:%d) ▸ active:%d",
-			inbound+outbound, inbound, outbound, active))
-		
-		// Detailed peer info only at Debug level
-		for _, p := range s.peers.All() {
-			params := make([]interface{}, 0)
-			// Security fix: Check string length before slicing to prevent panic
-			peerStr := p.String()
-			if len(peerStr) > 16 {
-				peerStr = peerStr[:16] + "..."
-			}
-			params = append(params, "peer", peerStr)
+	utils.RunEvery(s.ctx, 1*time.Minute, s.logPeerStatus)
 
-			if dialArgs, err := s.peers.DialArgs(p); err == nil {
-				params = append(params, "addr", dialArgs)
-			}
-			if direction, err := s.peers.Direction(p); err == nil {
-				params = append(params, "dir", direction)
-			}
-			if chainState, err := s.peers.ChainState(p); err == nil {
-				params = append(params, "height", utils.ConvertH256ToUint256Int(chainState.CurrentHeight).Uint64())
-			}
-			params = append(params, "score", fmt.Sprintf("%.1f", s.peers.Scorers().Score(p)))
+	logIPAddr(s.host.ID(), s.host.Network().ListenAddresses()...)
 
-			log.Debug("Peer", params...)
-		}
-
-		// Discovery table info only at Trace level
-		if s.dv5Listener != nil {
-			allNodes := s.dv5Listener.AllNodes()
-			log.Trace("Discovery table", "nodes", len(allNodes))
-		}
-	})
-
-	multiAddrs := s.host.Network().ListenAddresses()
-	logIPAddr(s.host.ID(), multiAddrs...)
-
-	p2pHostAddress := s.cfg.HostAddress
-	p2pTCPPort := s.cfg.TCPPort
-
-	if p2pHostAddress != "" {
-		logExternalIPAddr(s.host.ID(), p2pHostAddress, p2pTCPPort)
-		verifyConnectivity(p2pHostAddress, p2pTCPPort, "tcp")
+	if s.cfg.HostAddress != "" {
+		logExternalIPAddr(s.host.ID(), s.cfg.HostAddress, s.cfg.TCPPort)
+		verifyConnectivity(s.cfg.HostAddress, s.cfg.TCPPort, "tcp")
 	}
-
-	p2pHostDNS := s.cfg.HostDNS
-	if p2pHostDNS != "" {
-		logExternalDNSAddr(s.host.ID(), p2pHostDNS, p2pTCPPort)
+	if s.cfg.HostDNS != "" {
+		logExternalDNSAddr(s.host.ID(), s.cfg.HostDNS, s.cfg.TCPPort)
 	}
 	s.wg.Add(1)
 	go s.loop()
@@ -315,15 +233,10 @@ func (s *Service) Start() {
 func (s *Service) loop() {
 	defer log.Debug("Context closed, exiting goroutine")
 	defer s.wg.Done()
-	for {
-		select {
-		case <-s.ctx.Done():
-			log.Info("start write seq number to file")
-			if err := saveSeqNumber(s.cfg, s.GetPing()); err != nil {
-				log.Error("Failed to save seq number", "err", err)
-			}
-			return
-		}
+	<-s.ctx.Done()
+	log.Info("Saving seq number to file")
+	if err := saveSeqNumber(s.cfg, s.GetPing()); err != nil {
+		log.Error("Failed to save seq number", "err", err)
 	}
 }
 
@@ -339,8 +252,7 @@ func (s *Service) Stop() error {
 	return nil
 }
 
-// Status of the p2p service. Will return an error if the service is considered unhealthy to
-// indicate that this node should not serve traffic until the issue has been resolved.
+// Status returns an error if the service is unhealthy.
 func (s *Service) Status() error {
 	if s.isPreGenesis.Load() {
 		return nil
@@ -349,12 +261,8 @@ func (s *Service) Status() error {
 		return errors.New("not running")
 	}
 	s.startupErrMu.RLock()
-	err := s.startupErr
-	s.startupErrMu.RUnlock()
-	if err != nil {
-		return err
-	}
-	return nil
+	defer s.startupErrMu.RUnlock()
+	return s.startupErr
 }
 
 // Started returns true if the p2p service has successfully started.
@@ -372,14 +280,12 @@ func (s *Service) PubSub() *pubsub.PubSub {
 	return s.pubsub
 }
 
-// Host returns the currently running libp2p
-// host of the service.
+// Host returns the currently running libp2p host.
 func (s *Service) Host() host.Host {
 	return s.host
 }
 
 // SetStreamHandler sets the protocol handler on the p2p host multiplexer.
-// This method is a pass through to libp2pcore.Host.SetStreamHandler.
 func (s *Service) SetStreamHandler(topic string, handler network.StreamHandler) {
 	s.host.SetStreamHandler(protocol.ID(topic), handler)
 }
@@ -412,7 +318,7 @@ func (s *Service) ENR() *enr.Record {
 	return s.dv5Listener.Self().Record()
 }
 
-// DiscoveryAddresses represents our enr addresses as multiaddresses.
+// DiscoveryAddresses returns ENR addresses as multiaddresses.
 func (s *Service) DiscoveryAddresses() ([]multiaddr.Multiaddr, error) {
 	if s.dv5Listener == nil {
 		return nil, nil
@@ -420,14 +326,43 @@ func (s *Service) DiscoveryAddresses() ([]multiaddr.Multiaddr, error) {
 	return convertToUdpMultiAddr(s.dv5Listener.Self())
 }
 
-// AddPingMethod adds the metadata ping rpc method to the p2p service, so that it can
-// be used to refresh ENR.
+// AddPingMethod registers the metadata ping RPC method for ENR refresh.
 func (s *Service) AddPingMethod(reqFunc func(ctx context.Context, id peer.ID) error) {
 	s.pingMethod = reqFunc
 }
 
-// maxConcurrentPeerOps limits the number of concurrent goroutines for peer operations.
-const maxConcurrentPeerOps = 16
+// logPeerStatus logs periodic peer connection statistics.
+func (s *Service) logPeerStatus() {
+	inbound := len(s.peers.InboundConnected())
+	outbound := len(s.peers.OutboundConnected())
+	active := len(s.peers.Active())
+
+	astLog.PrintStatusLine("p2p", fmt.Sprintf("%d peers (in:%d out:%d) ▸ active:%d",
+		inbound+outbound, inbound, outbound, active))
+
+	for _, p := range s.peers.All() {
+		peerStr := p.String()
+		if len(peerStr) > 16 {
+			peerStr = peerStr[:16] + "..."
+		}
+		fields := []interface{}{"peer", peerStr}
+		if dialArgs, err := s.peers.DialArgs(p); err == nil {
+			fields = append(fields, "addr", dialArgs)
+		}
+		if direction, err := s.peers.Direction(p); err == nil {
+			fields = append(fields, "dir", direction)
+		}
+		if chainState, err := s.peers.ChainState(p); err == nil {
+			fields = append(fields, "height", utils.ConvertH256ToUint256Int(chainState.CurrentHeight).Uint64())
+		}
+		fields = append(fields, "score", fmt.Sprintf("%.1f", s.peers.Scorers().Score(p)))
+		log.Debug("Peer", fields...)
+	}
+
+	if s.dv5Listener != nil {
+		log.Trace("Discovery table", "nodes", len(s.dv5Listener.AllNodes()))
+	}
+}
 
 func (s *Service) pingPeers() {
 	if s.pingMethod == nil {
@@ -459,11 +394,10 @@ func (s *Service) connectWithAllPeers(multiAddrs []multiaddr.Multiaddr) {
 	sem := make(chan struct{}, maxConcurrentPeerOps)
 	for _, info := range addrInfos {
 		sem <- struct{}{}
-		// make each dial non-blocking
 		go func(info peer.AddrInfo) {
 			defer func() { <-sem }()
 			if err := s.connectWithPeer(s.ctx, info); err != nil {
-				log.Trace(fmt.Sprintf("Could not connect with peer %s", info.String()), "err", err)
+				log.Trace("Could not connect with peer", "peer", info.String(), "err", err)
 			}
 		}(info)
 	}
@@ -496,9 +430,8 @@ func (s *Service) bootnodes() ([]multiaddr.Multiaddr, error) {
 	for _, addr := range s.cfg.Discv5BootStrapAddr {
 		bootNode, err := enode.Parse(enode.ValidSchemes, addr)
 		if err != nil {
-			return []multiaddr.Multiaddr{}, err
+			return nil, err
 		}
-		// do not dial bootnodes with their tcp ports not set
 		if err := bootNode.Record().Load(enr.WithEntry("tcp", new(enr.TCP))); err != nil {
 			if !enr.IsNotFound(err) {
 				log.Error("Could not retrieve tcp port", "err", err)
@@ -510,13 +443,15 @@ func (s *Service) bootnodes() ([]multiaddr.Multiaddr, error) {
 	return convertToMultiAddr(nodes), nil
 }
 
-func (s *Service) connectToBootnodes(nodes []multiaddr.Multiaddr) error {
-	s.connectWithAllPeers(nodes)
-	return nil
+// recordStartupError records a startup failure and marks the service as not started.
+func (s *Service) recordStartupError(err error) {
+	s.started.Store(false)
+	s.startupErrMu.Lock()
+	s.startupErr = err
+	s.startupErrMu.Unlock()
 }
 
-// ensureBootPeerConnections will attempt to reestablish connection to the peers
-// if there are currently no connections to that peer.
+// ensureBootPeerConnections reconnects to disconnected bootnodes.
 func (s *Service) ensureBootPeerConnections(bootnodes []multiaddr.Multiaddr) {
 	addrInfos, err := peer.AddrInfosFromP2pAddrs(bootnodes...)
 	if err != nil {
@@ -525,7 +460,6 @@ func (s *Service) ensureBootPeerConnections(bootnodes []multiaddr.Multiaddr) {
 	}
 	sem := make(chan struct{}, maxConcurrentPeerOps)
 	for _, info := range addrInfos {
-		// make each dial non-blocking
 		if connState, err := s.peers.ConnState(info.ID); err != nil || connState != peers.PeerDisconnected {
 			continue
 		}
@@ -536,7 +470,7 @@ func (s *Service) ensureBootPeerConnections(bootnodes []multiaddr.Multiaddr) {
 		go func(info peer.AddrInfo) {
 			defer func() { <-sem }()
 			if err := s.connectWithPeer(s.ctx, info); err != nil {
-				log.Warn(fmt.Sprintf("Could not connect with bootnode %s", info.String()), "err", err)
+				log.Warn("Could not connect with bootnode", "peer", info.String(), "err", err)
 			}
 		}(info)
 	}

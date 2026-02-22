@@ -2,7 +2,14 @@ package initialsync
 
 import (
 	"context"
+	"sync"
+	"time"
+
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/pkg/errors"
+	"go.opencensus.io/trace"
+
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common"
@@ -11,12 +18,6 @@ import (
 	leakybucket "github.com/n42blockchain/N42/internal/p2p/leaky-bucket"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	"github.com/n42blockchain/N42/utils"
-	"sync"
-	"time"
-
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/pkg/errors"
-	"go.opencensus.io/trace"
 )
 
 const (
@@ -105,7 +106,6 @@ type fetchRequestResponse struct {
 
 // newBlocksFetcher creates ready to use fetcher.
 func newBlocksFetcher(ctx context.Context, cfg *blocksFetcherConfig) *blocksFetcher {
-
 	// Initialize block limits with safe defaults (matching U13 fix in rate_limiter.go).
 	var allowedBlocksPerSecond float64 = 64
 	var allowedBlocksBurst int64 = 320
@@ -198,7 +198,7 @@ func (f *blocksFetcher) loop() {
 
 	// Main loop.
 	for {
-		// Make sure there is are available peers before processing requests.
+		// Make sure there are available peers before processing requests.
 		if _, err := f.waitForMinimumPeers(f.ctx); err != nil {
 			log.Error("cannot wait peers", "err", err)
 		}
@@ -248,7 +248,6 @@ func (f *blocksFetcher) handleRequest(ctx context.Context, start *uint256.Int, c
 		start:  start,
 		count:  count,
 		blocks: []*types_pb.Block{},
-		err:    nil,
 	}
 
 	if ctx.Err() != nil {
@@ -279,13 +278,12 @@ func (f *blocksFetcher) fetchBlocksFromPeer(ctx context.Context, start *uint256.
 	}
 	for i := 0; i < len(peers); i++ {
 		blocks, err := f.requestBlocks(ctx, req, peers[i])
-		if err == nil {
-			f.p2p.Peers().Scorers().BlockProviderScorer().Touch(peers[i])
-			return blocks, peers[i], err
-		} else {
-			// Throttle error logging to prevent log spam
+		if err != nil {
 			logBlockRangeError(err)
+			continue
 		}
+		f.p2p.Peers().Scorers().BlockProviderScorer().Touch(peers[i])
+		return blocks, peers[i], nil
 	}
 	return nil, "", errNoPeersAvailable
 }

@@ -3,9 +3,9 @@ package dbutils
 import (
 	"testing"
 
-	"github.com/n42blockchain/N42/lib/common"
-	libcommon "github.com/n42blockchain/N42/lib/common"
 	"github.com/stretchr/testify/assert"
+
+	libcommon "github.com/n42blockchain/N42/lib/common"
 )
 
 func TestPlainParseStoragePrefix(t *testing.T) {
@@ -47,7 +47,7 @@ func TestParseStoragePrefix(t *testing.T) {
 }
 
 func TestParseCompositeStorageKey(t *testing.T) {
-	expectedAddrHash, _ := common.HashData(libcommon.HexToAddress("0x5A0b54D5dc17e0AadC383d2db43B0a0D3E029c4c").Bytes())
+	expectedAddrHash, _ := libcommon.HashData(libcommon.HexToAddress("0x5A0b54D5dc17e0AadC383d2db43B0a0D3E029c4c").Bytes())
 	expectedIncarnation := uint64(999000999)
 	expectedKey := libcommon.HexToHash("0x58833f949125129fb8c6c93d2c6003c5bab7c0b116d695f4ca137b1debf4e472")
 

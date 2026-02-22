@@ -33,9 +33,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
-const (
-	version = 3
-)
+const version = 3
 
 type Key struct {
 	Id uuid.UUID // Version 4 "random" for unique id not derived from key data
@@ -89,30 +87,25 @@ type cipherparamsJSON struct {
 	IV string `json:"iv"`
 }
 
-func (k *Key) MarshalJSON() (j []byte, err error) {
+func (k *Key) MarshalJSON() ([]byte, error) {
 	jStruct := plainKeyJSON{
 		hex.EncodeToString(k.Address[:]),
 		hex.EncodeToString(crypto.FromECDSA(k.PrivateKey)),
 		k.Id.String(),
 		version,
 	}
-	j, err = json.Marshal(jStruct)
-	return j, err
+	return json.Marshal(jStruct)
 }
 
-func (k *Key) UnmarshalJSON(j []byte) (err error) {
-	keyJSON := new(plainKeyJSON)
-	err = json.Unmarshal(j, &keyJSON)
+func (k *Key) UnmarshalJSON(j []byte) error {
+	var keyJSON plainKeyJSON
+	if err := json.Unmarshal(j, &keyJSON); err != nil {
+		return err
+	}
+	id, err := uuid.Parse(keyJSON.Id)
 	if err != nil {
 		return err
 	}
-
-	u := new(uuid.UUID)
-	*u, err = uuid.Parse(keyJSON.Id)
-	if err != nil {
-		return err
-	}
-	k.Id = *u
 	addr, err := hex.DecodeString(keyJSON.Address)
 	if err != nil {
 		return err
@@ -121,10 +114,9 @@ func (k *Key) UnmarshalJSON(j []byte) (err error) {
 	if err != nil {
 		return err
 	}
-
+	k.Id = id
 	k.Address = types.BytesToAddress(addr)
 	k.PrivateKey = privkey
-
 	return nil
 }
 
@@ -133,27 +125,23 @@ func newKeyFromECDSA(privateKeyECDSA *ecdsa.PrivateKey) *Key {
 	if err != nil {
 		panic(fmt.Sprintf("Could not create random uuid: %v", err))
 	}
-	key := &Key{
+	return &Key{
 		Id:         id,
 		Address:    crypto.PubkeyToAddress(privateKeyECDSA.PublicKey),
 		PrivateKey: privateKeyECDSA,
 	}
-	return key
 }
 
 // NewKeyForDirectICAP generates a key whose address fits into < 155 bits so it can fit
 // into the Direct ICAP spec. for simplicity and easier compatibility with other libs, we
 // retry until the first byte is 0.
 func NewKeyForDirectICAP(rand io.Reader) *Key {
-	const maxAttempts = 10000
-	for i := 0; i < maxAttempts; i++ {
-		randBytes := make([]byte, 64)
-		_, err := rand.Read(randBytes)
-		if err != nil {
+	randBytes := make([]byte, 64)
+	for range 10000 {
+		if _, err := rand.Read(randBytes); err != nil {
 			panic("key generation: could not read from random source: " + err.Error())
 		}
-		reader := bytes.NewReader(randBytes)
-		privateKeyECDSA, err := ecdsa.GenerateKey(crypto.S256(), reader)
+		privateKeyECDSA, err := ecdsa.GenerateKey(crypto.S256(), bytes.NewReader(randBytes))
 		if err != nil {
 			panic("key generation: ecdsa.GenerateKey failed: " + err.Error())
 		}

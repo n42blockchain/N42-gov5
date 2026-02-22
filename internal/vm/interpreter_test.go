@@ -14,7 +14,6 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
-// Tests adapted from go-ethereum and erigon VM test suites.
 // Reference: go-ethereum/core/vm/interpreter_test.go
 
 package vm
@@ -33,22 +32,20 @@ func TestConfigDefaults(t *testing.T) {
 	cfg := Config{}
 
 	if cfg.Debug {
-		t.Error("Default Debug should be false")
+		t.Error("default Debug should be false")
 	}
 	if cfg.Tracer != nil {
-		t.Error("Default Tracer should be nil")
+		t.Error("default Tracer should be nil")
 	}
 	if cfg.NoRecursion {
-		t.Error("Default NoRecursion should be false")
+		t.Error("default NoRecursion should be false")
 	}
 	if cfg.NoBaseFee {
-		t.Error("Default NoBaseFee should be false")
+		t.Error("default NoBaseFee should be false")
 	}
 	if cfg.SkipAnalysis {
-		t.Error("Default SkipAnalysis should be false")
+		t.Error("default SkipAnalysis should be false")
 	}
-
-	t.Logf("✓ Config defaults are correct")
 }
 
 func TestConfigHasEip3860(t *testing.T) {
@@ -59,31 +56,29 @@ func TestConfigHasEip3860(t *testing.T) {
 		expected  bool
 	}{
 		{
-			name:      "no_extra_eips_pre_shanghai",
-			extraEips: nil,
-			rules:     &params.Rules{IsShanghai: false},
-			expected:  false,
+			name:     "pre_shanghai_no_extra_eips",
+			rules:    &params.Rules{IsShanghai: false},
+			expected: false,
 		},
 		{
-			name:      "no_extra_eips_shanghai",
-			extraEips: nil,
-			rules:     &params.Rules{IsShanghai: true},
-			expected:  true,
+			name:     "shanghai",
+			rules:    &params.Rules{IsShanghai: true},
+			expected: true,
 		},
 		{
-			name:      "with_eip3860",
+			name:      "extra_eip_3860",
 			extraEips: []int{3860},
 			rules:     &params.Rules{IsShanghai: false},
 			expected:  true,
 		},
 		{
-			name:      "with_other_eips",
+			name:      "other_eips_only",
 			extraEips: []int{1234, 5678},
 			rules:     &params.Rules{IsShanghai: false},
 			expected:  false,
 		},
 		{
-			name:      "with_eip3860_and_others",
+			name:      "eip3860_among_others",
 			extraEips: []int{1234, 3860, 5678},
 			rules:     &params.Rules{IsShanghai: false},
 			expected:  true,
@@ -93,14 +88,11 @@ func TestConfigHasEip3860(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &Config{ExtraEips: tt.extraEips}
-			result := cfg.HasEip3860(tt.rules)
-			if result != tt.expected {
-				t.Errorf("HasEip3860() = %v, want %v", result, tt.expected)
+			if got := cfg.HasEip3860(tt.rules); got != tt.expected {
+				t.Errorf("HasEip3860() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
-
-	t.Logf("✓ Config.HasEip3860 works correctly")
 }
 
 // =============================================================================
@@ -113,10 +105,9 @@ func TestCopyJumpTable(t *testing.T) {
 	copied := copyJumpTable(original)
 
 	if copied == original {
-		t.Error("Copy should be a different pointer")
+		t.Error("copy should be a different pointer")
 	}
 
-	// Verify copy has same content
 	for i := 0; i < 256; i++ {
 		origOp := original[i]
 		copyOp := copied[i]
@@ -124,102 +115,73 @@ func TestCopyJumpTable(t *testing.T) {
 		if origOp == nil && copyOp == nil {
 			continue
 		}
-
 		if (origOp == nil) != (copyOp == nil) {
-			t.Errorf("Mismatch at opcode %d: orig=%v, copy=%v", i, origOp, copyOp)
+			t.Errorf("mismatch at opcode %d: orig=%v, copy=%v", i, origOp, copyOp)
 			continue
 		}
-
 		if copyOp == origOp {
-			t.Errorf("Operation at %d should be a copy, not same pointer", i)
+			t.Errorf("operation at %d should be a deep copy, not same pointer", i)
 		}
-
 		if copyOp.constantGas != origOp.constantGas {
-			t.Errorf("ConstantGas mismatch at %d", i)
+			t.Errorf("constantGas mismatch at opcode %d", i)
 		}
 	}
-
-	t.Logf("✓ copyJumpTable creates independent copy")
 }
 
 func TestJumpTableInstructionSets(t *testing.T) {
-	instructionSets := []*JumpTable{
-		&frontierInstructionSet,
-		&homesteadInstructionSet,
-		&tangerineWhistleInstructionSet,
-		&spuriousDragonInstructionSet,
-		&byzantiumInstructionSet,
-		&constantinopleInstructionSet,
-		&istanbulInstructionSet,
-		&berlinInstructionSet,
-		&londonInstructionSet,
-		&shanghaiInstructionSet,
-		&cancunInstructionSet,
-		&pragueInstructionSet,
+	sets := map[string]*JumpTable{
+		"frontier":         &frontierInstructionSet,
+		"homestead":        &homesteadInstructionSet,
+		"tangerineWhistle": &tangerineWhistleInstructionSet,
+		"spuriousDragon":   &spuriousDragonInstructionSet,
+		"byzantium":        &byzantiumInstructionSet,
+		"constantinople":   &constantinopleInstructionSet,
+		"istanbul":         &istanbulInstructionSet,
+		"berlin":           &berlinInstructionSet,
+		"london":           &londonInstructionSet,
+		"shanghai":         &shanghaiInstructionSet,
+		"cancun":           &cancunInstructionSet,
+		"prague":           &pragueInstructionSet,
 	}
 
-	names := []string{
-		"frontier",
-		"homestead",
-		"tangerineWhistle",
-		"spuriousDragon",
-		"byzantium",
-		"constantinople",
-		"istanbul",
-		"berlin",
-		"london",
-		"shanghai",
-		"cancun",
-		"prague",
-	}
+	basicOps := []OpCode{STOP, ADD, MUL, SUB, DIV, PUSH1, POP, JUMP, JUMPI, JUMPDEST}
 
-	for i, jt := range instructionSets {
-		t.Run(names[i], func(t *testing.T) {
-			// Basic operations should always be defined
-			basicOps := []OpCode{STOP, ADD, MUL, SUB, DIV, PUSH1, POP, JUMP, JUMPI, JUMPDEST}
+	for name, jt := range sets {
+		t.Run(name, func(t *testing.T) {
 			for _, op := range basicOps {
 				if jt[op] == nil {
-					t.Errorf("%s: Operation %s should be defined", names[i], op)
+					t.Errorf("operation %s should be defined", op)
 				}
 			}
 		})
 	}
-
-	t.Logf("✓ All instruction sets have basic operations")
 }
 
 func TestJumpTableShanghaiPush0(t *testing.T) {
-	// PUSH0 should be defined in Shanghai and later
-	if shanghaiInstructionSet[PUSH0] == nil {
-		t.Error("PUSH0 should be defined in Shanghai")
-	}
-	if cancunInstructionSet[PUSH0] == nil {
-		t.Error("PUSH0 should be defined in Cancun")
-	}
-	if pragueInstructionSet[PUSH0] == nil {
-		t.Error("PUSH0 should be defined in Prague")
+	forks := map[string]*JumpTable{
+		"shanghai": &shanghaiInstructionSet,
+		"cancun":   &cancunInstructionSet,
+		"prague":   &pragueInstructionSet,
 	}
 
-	// Note: PUSH0 availability in pre-Shanghai forks depends on implementation
-	// Some implementations may include it with a higher gas cost or as undefined
-	// The important check is that Shanghai+ definitely has it
-	t.Logf("✓ PUSH0 defined in Shanghai+")
+	for name, jt := range forks {
+		if jt[PUSH0] == nil {
+			t.Errorf("PUSH0 should be defined in %s", name)
+		}
+	}
 }
 
 func TestJumpTableCancunOperations(t *testing.T) {
-	// Cancun-specific operations
 	cancunOps := []OpCode{TLOAD, TSTORE, MCOPY, BLOBHASH, BLOBBASEFEE}
 
 	for _, op := range cancunOps {
 		if cancunInstructionSet[op] == nil {
-			t.Errorf("Operation %s should be defined in Cancun", op)
+			t.Errorf("%s should be defined in Cancun", op)
 		}
 		if pragueInstructionSet[op] == nil {
-			t.Errorf("Operation %s should be defined in Prague", op)
+			t.Errorf("%s should be defined in Prague", op)
 		}
 	}
-
-	t.Logf("✓ Cancun operations (TLOAD, TSTORE, MCOPY, BLOBHASH, BLOBBASEFEE) defined")
 }
 
 // =============================================================================
@@ -228,15 +190,11 @@ func TestJumpTableCancunOperations(t *testing.T) {
 
 func TestScopeContextFields(t *testing.T) {
 	mem := NewMemory()
-	stk := &ScopeContext{
-		Memory: mem,
-	}
+	ctx := &ScopeContext{Memory: mem}
 
-	if stk.Memory != mem {
+	if ctx.Memory != mem {
 		t.Error("Memory field mismatch")
 	}
-
-	t.Logf("✓ ScopeContext fields work correctly")
 }
 
 // =============================================================================
@@ -246,72 +204,55 @@ func TestScopeContextFields(t *testing.T) {
 func TestVMReadOnlyMode(t *testing.T) {
 	vm := &VM{}
 
-	// Default should be false
 	if vm.getReadonly() {
-		t.Error("Default readOnly should be false")
+		t.Error("default readOnly should be false")
 	}
 
-	// Set to true
 	cleanup := vm.setReadonly(true)
 	if !vm.getReadonly() {
 		t.Error("readOnly should be true after setReadonly(true)")
 	}
 
-	// Cleanup should reset
 	cleanup()
 	if vm.getReadonly() {
 		t.Error("readOnly should be false after cleanup")
 	}
-
-	t.Logf("✓ VM readOnly mode works correctly")
 }
 
 func TestVMSetReadonlyNested(t *testing.T) {
 	vm := &VM{}
 
-	// First set
 	cleanup1 := vm.setReadonly(true)
-
-	// Second set (already read-only)
 	cleanup2 := vm.setReadonly(true)
 
-	// Should still be read-only
 	if !vm.getReadonly() {
-		t.Error("Should be read-only")
+		t.Error("should be read-only")
 	}
 
-	// Second cleanup (should be no-op since outer set it)
+	// Inner cleanup should be a no-op since outer set it first.
 	cleanup2()
 	if !vm.getReadonly() {
-		t.Error("Should still be read-only after inner cleanup")
+		t.Error("should still be read-only after inner cleanup")
 	}
 
-	// First cleanup
 	cleanup1()
 	if vm.getReadonly() {
-		t.Error("Should not be read-only after outer cleanup")
+		t.Error("should not be read-only after outer cleanup")
 	}
-
-	t.Logf("✓ VM nested readOnly works correctly")
 }
 
 func TestVMDisableReadonly(t *testing.T) {
 	vm := &VM{readOnly: true}
-
 	vm.disableReadonly()
 
 	if vm.getReadonly() {
 		t.Error("readOnly should be false after disableReadonly")
 	}
-
-	t.Logf("✓ VM disableReadonly works correctly")
 }
 
 func TestVMNoop(t *testing.T) {
 	vm := &VM{}
-	// noop should not panic
-	vm.noop()
-	t.Logf("✓ VM noop works correctly")
+	vm.noop() // should not panic
 }
 
 // =============================================================================
@@ -319,34 +260,26 @@ func TestVMNoop(t *testing.T) {
 // =============================================================================
 
 func TestMemoryPool(t *testing.T) {
-	// Get memory from pool
 	mem := pool.Get().(*Memory)
 	if mem == nil {
-		t.Fatal("Pool returned nil")
+		t.Fatal("pool returned nil")
 	}
 
-	// Use memory
 	mem.Resize(64)
-	_ = mem.Set(0, 32, make([]byte, 32)) // Ignore error for test
+	_ = mem.Set(0, 32, make([]byte, 32))
 
-	// Return to pool
 	mem.Reset()
 	pool.Put(mem)
 
-	// Get again (may be same instance)
 	mem2 := pool.Get().(*Memory)
 	if mem2 == nil {
-		t.Fatal("Pool returned nil on second get")
+		t.Fatal("pool returned nil on second get")
 	}
-
-	// Should be clean
 	if mem2.Len() != 0 {
-		t.Error("Memory from pool should be reset")
+		t.Error("memory from pool should be reset")
 	}
 
 	pool.Put(mem2)
-
-	t.Logf("✓ Memory pool works correctly")
 }
 
 // =============================================================================
@@ -354,14 +287,11 @@ func TestMemoryPool(t *testing.T) {
 // =============================================================================
 
 func TestInterpreterInterface(t *testing.T) {
-	// Verify EVMInterpreter implements Interpreter interface
 	var _ Interpreter = (*EVMInterpreter)(nil)
-
-	t.Logf("✓ EVMInterpreter implements Interpreter interface")
 }
 
 // =============================================================================
-// Benchmark Tests
+// Benchmarks
 // =============================================================================
 
 func BenchmarkCopyJumpTable(b *testing.B) {
@@ -391,4 +321,3 @@ func BenchmarkVMSetReadonly(b *testing.B) {
 		cleanup()
 	}
 }
-

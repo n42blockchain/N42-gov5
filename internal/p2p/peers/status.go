@@ -25,23 +25,24 @@ package peers
 import (
 	"context"
 	"fmt"
+	"math"
+	"net"
+	"sort"
+	"time"
+
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
+	manet "github.com/multiformats/go-multiaddr/net"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/common/crypto/rand"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
 	"github.com/n42blockchain/N42/log"
-	"google.golang.org/protobuf/proto"
-	"math"
-	"net"
-	"sort"
-	"time"
-
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
-	manet "github.com/multiformats/go-multiaddr/net"
 )
 
 const (
@@ -213,7 +214,8 @@ func (p *Status) DialArgs(pid peer.ID) (string, error) {
 	return "", peerdata.ErrPeerUnknown
 }
 
-// ConnState
+// ConnState returns the connection state of the given remote peer.
+// This will error if the peer does not exist.
 func (p *Status) ConnState(pid peer.ID) (peerdata.PeerConnectionState, error) {
 	p.store.RLock()
 	defer p.store.RUnlock()
@@ -254,7 +256,7 @@ func (p *Status) IsAboveInboundLimit() bool {
 	for _, peerData := range p.store.Peers() {
 		if peerData.ConnState == PeerConnected &&
 			peerData.Direction == network.DirInbound {
-			totalInbound += 1
+			totalInbound++
 		}
 	}
 	inboundLimit := int(float64(p.ConnectedPeerLimit()) * InboundRatio)
@@ -269,7 +271,7 @@ func (p *Status) InboundLimit() int {
 	return int(float64(p.ConnectedPeerLimit()) * InboundRatio)
 }
 
-// SetMetadata
+// SetPing sets the ping data for the given remote peer.
 func (p *Status) SetPing(pid peer.ID, ping *sync_pb.Ping) {
 	p.store.Lock()
 	defer p.store.Unlock()
@@ -278,7 +280,8 @@ func (p *Status) SetPing(pid peer.ID, ping *sync_pb.Ping) {
 	peerData.Ping = ping
 }
 
-// GetSeqNumber
+// GetPing returns the ping data for the given remote peer.
+// This will error if the peer does not exist.
 func (p *Status) GetPing(pid peer.ID) (*sync_pb.Ping, error) {
 	p.store.RLock()
 	defer p.store.RUnlock()
@@ -377,150 +380,102 @@ func (p *Status) RandomizeBackOff(pid peer.ID) {
 	peerData.NextValidTime = time.Now().Add(duration)
 }
 
-// IsReadyToDial checks where the given peer is ready to be
-// dialed again.
+// IsReadyToDial checks whether the given peer is ready to be dialed again.
 func (p *Status) IsReadyToDial(pid peer.ID) bool {
 	p.store.RLock()
 	defer p.store.RUnlock()
 
-	if peerData, ok := p.store.PeerData(pid); ok {
-		timeIsZero := peerData.NextValidTime.IsZero()
-		isInvalidTime := peerData.NextValidTime.After(time.Now())
-		return timeIsZero || !isInvalidTime
+	peerData, ok := p.store.PeerData(pid)
+	if !ok {
+		// If no record exists, we don't restrict dials to the peer.
+		return true
 	}
-	// If no record exists, we don't restrict dials to the
-	// peer.
-	return true
+	// Peer is ready if backoff time is zero or has already elapsed.
+	return peerData.NextValidTime.IsZero() || !peerData.NextValidTime.After(time.Now())
+}
+
+// filterPeers returns all peer IDs matching the given predicate.
+// The caller must NOT hold the store lock; this method acquires a read lock internally.
+func (p *Status) filterPeers(match func(*peerdata.PeerData) bool) []peer.ID {
+	p.store.RLock()
+	defer p.store.RUnlock()
+	peers := make([]peer.ID, 0)
+	for pid, peerData := range p.store.Peers() {
+		if match(peerData) {
+			peers = append(peers, pid)
+		}
+	}
+	return peers
 }
 
 // Connecting returns the peers that are connecting.
 func (p *Status) Connecting() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.ConnState == PeerConnecting {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.ConnState == PeerConnecting
+	})
 }
 
 // Connected returns the peers that are connected.
 func (p *Status) Connected() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.ConnState == PeerConnected {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.ConnState == PeerConnected
+	})
 }
 
 // Inbound returns the current batch of inbound peers.
 func (p *Status) Inbound() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.Direction == network.DirInbound {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.Direction == network.DirInbound
+	})
 }
 
 // InboundConnected returns the current batch of inbound peers that are connected.
 func (p *Status) InboundConnected() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.ConnState == PeerConnected && peerData.Direction == network.DirInbound {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.ConnState == PeerConnected && d.Direction == network.DirInbound
+	})
 }
 
 // Outbound returns the current batch of outbound peers.
 func (p *Status) Outbound() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.Direction == network.DirOutbound {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.Direction == network.DirOutbound
+	})
 }
 
 // OutboundConnected returns the current batch of outbound peers that are connected.
 func (p *Status) OutboundConnected() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.ConnState == PeerConnected && peerData.Direction == network.DirOutbound {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.ConnState == PeerConnected && d.Direction == network.DirOutbound
+	})
 }
 
 // Active returns the peers that are connecting or connected.
 func (p *Status) Active() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.ConnState == PeerConnecting || peerData.ConnState == PeerConnected {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.ConnState == PeerConnecting || d.ConnState == PeerConnected
+	})
 }
 
 // Disconnecting returns the peers that are disconnecting.
 func (p *Status) Disconnecting() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.ConnState == PeerDisconnecting {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.ConnState == PeerDisconnecting
+	})
 }
 
 // Disconnected returns the peers that are disconnected.
 func (p *Status) Disconnected() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.ConnState == PeerDisconnected {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.ConnState == PeerDisconnected
+	})
 }
 
 // Inactive returns the peers that are disconnecting or disconnected.
 func (p *Status) Inactive() []peer.ID {
-	p.store.RLock()
-	defer p.store.RUnlock()
-	peers := make([]peer.ID, 0)
-	for pid, peerData := range p.store.Peers() {
-		if peerData.ConnState == PeerDisconnecting || peerData.ConnState == PeerDisconnected {
-			peers = append(peers, pid)
-		}
-	}
-	return peers
+	return p.filterPeers(func(d *peerdata.PeerData) bool {
+		return d.ConnState == PeerDisconnecting || d.ConnState == PeerDisconnected
+	})
 }
 
 // Bad returns the peers that are bad.
@@ -624,12 +579,9 @@ func (p *Status) BestPeers(wantPeers int, ourCurrentHeight *uint256.Int) (*uint2
 		return uint256.NewInt(0), []peer.ID{}
 	}
 
-	// Select the target epoch, which has enough peers' votes (>= minPeers).
-	var targetBlockNumber *uint256.Int
-	targetBlockNumber = pidHead[potentialPIDs[len(potentialPIDs)-1]]
-
+	// Select the target block number from the lowest-ranked peer in the selected set.
+	targetBlockNumber := pidHead[potentialPIDs[len(potentialPIDs)-1]]
 	return targetBlockNumber, potentialPIDs
-
 }
 
 // PeersToPrune selects the most suitable inbound peers
@@ -736,67 +688,43 @@ func (p *Status) ConnectedPeerLimit() uint64 {
 	return uint64(maxLim) - maxLimitBuffer
 }
 
-// this method assumes the store lock is acquired before
-// executing the method.
+// isfromBadIP checks if the peer originates from an IP that exceeds the colocation limit.
+// This method assumes the store lock is already held.
 func (p *Status) isfromBadIP(pid peer.ID) bool {
 	peerData, ok := p.store.PeerData(pid)
-	if !ok {
-		return false
-	}
-	if peerData.Address == nil {
+	if !ok || peerData.Address == nil {
 		return false
 	}
 	ip, err := manet.ToIP(peerData.Address)
 	if err != nil {
 		return true
 	}
-	if val, ok := p.ipTracker[ip.String()]; ok {
-		if val > ColocationLimit {
-			return true
-		}
-	}
-	return false
+	return p.ipTracker[ip.String()] > ColocationLimit
 }
 
 func (p *Status) addIpToTracker(pid peer.ID) {
 	data, ok := p.store.PeerData(pid)
-	if !ok {
-		return
-	}
-	if data.Address == nil {
+	if !ok || data.Address == nil {
 		return
 	}
 	ip, err := manet.ToIP(data.Address)
-	if err != nil {
-		// Should never happen, it is
-		// assumed every IP coming in
-		// is a valid ip.
+	if err != nil || ip.IsLoopback() {
 		return
 	}
-	// Ignore loopback addresses.
-	if ip.IsLoopback() {
-		return
-	}
-	stringIP := ip.String()
-	p.ipTracker[stringIP] += 1
+	p.ipTracker[ip.String()]++
 }
 
 func (p *Status) tallyIPTracker() {
-	tracker := map[string]uint64{}
-	// Iterate through all peers.
+	tracker := make(map[string]uint64)
 	for _, peerData := range p.store.Peers() {
 		if peerData.Address == nil {
 			continue
 		}
 		ip, err := manet.ToIP(peerData.Address)
 		if err != nil {
-			// Should never happen, it is
-			// assumed every IP coming in
-			// is a valid ip.
 			continue
 		}
-		stringIP := ip.String()
-		tracker[stringIP] += 1
+		tracker[ip.String()]++
 	}
 	p.ipTracker = tracker
 }

@@ -87,13 +87,12 @@ func (mf MergedFiles) Close() {
 		mf.storage, mf.storageIdx, mf.storageHist,
 		mf.code, mf.codeIdx, mf.codeHist,
 		mf.commitment, mf.commitmentIdx, mf.commitmentHist,
-		//mf.logAddrs, mf.logTopics, mf.tracesFrom, mf.tracesTo,
 	} {
 		if item != nil {
 			if item.decompressor != nil {
 				item.decompressor.Close()
 			}
-			if item.decompressor != nil {
+			if item.index != nil {
 				item.index.Close()
 			}
 			if item.bindex != nil {
@@ -123,8 +122,8 @@ func DecodeAccountBytes(enc []byte) (nonce uint64, balance *uint256.Int, hash []
 		codeHashBytes := int(enc[pos])
 		pos++
 		if codeHashBytes > 0 {
-			codeHash := make([]byte, length.Hash)
-			copy(codeHash, enc[pos:pos+codeHashBytes])
+			hash = make([]byte, length.Hash)
+			copy(hash, enc[pos:pos+codeHashBytes])
 		}
 	}
 	return
@@ -156,10 +155,10 @@ func EncodeAccountBytes(nonce uint64, balance *uint256.Int, hash []byte, incarna
 	} else {
 		nonceBytes := common.BitLenToByteLen(bits.Len64(nonce))
 		value[pos] = byte(nonceBytes)
-		var nonce = nonce
+		n := nonce
 		for i := nonceBytes; i > 0; i-- {
-			value[pos+i] = byte(nonce)
-			nonce >>= 8
+			value[pos+i] = byte(n)
+			n >>= 8
 		}
 		pos += nonceBytes + 1
 	}
@@ -187,10 +186,10 @@ func EncodeAccountBytes(nonce uint64, balance *uint256.Int, hash []byte, incarna
 	} else {
 		incBytes := common.BitLenToByteLen(bits.Len64(incarnation))
 		value[pos] = byte(incBytes)
-		var inc = incarnation
+		v := incarnation
 		for i := incBytes; i > 0; i-- {
-			value[pos+i] = byte(inc)
-			inc >>= 8
+			value[pos+i] = byte(v)
+			v >>= 8
 		}
 	}
 	return value

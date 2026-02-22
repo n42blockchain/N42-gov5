@@ -1,8 +1,6 @@
 package bn256
 
-import (
-	"math/big"
-)
+import "math/big"
 
 // twistPoint implements the elliptic curve y²=x³+3/ξ over GF(p²). Points are
 // kept in Jacobian form and t=z² when valid. The group G₂ is the set of
@@ -179,7 +177,8 @@ func (c *twistPoint) Mul(a *twistPoint, scalar *big.Int) {
 func (c *twistPoint) MakeAffine() {
 	if c.z.IsOne() {
 		return
-	} else if c.z.IsZero() {
+	}
+	if c.z.IsZero() {
 		c.x.SetZero()
 		c.y.SetOne()
 		c.t.SetZero()

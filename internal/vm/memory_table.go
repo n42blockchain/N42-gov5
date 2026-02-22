@@ -74,6 +74,7 @@ func memoryCall(stack *stack.Stack) (uint64, bool) {
 	}
 	return y, false
 }
+
 func memoryDelegateCall(stack *stack.Stack) (uint64, bool) {
 	x, overflow := calcMemSize64(stack.Back(4), stack.Back(5))
 	if overflow {

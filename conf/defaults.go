@@ -91,14 +91,16 @@ func ApplyDefaults(cfg *Config) {
 	}
 
 	// Dev config defaults
-	if cfg.DevCfg.TxGenEnabled && cfg.DevCfg.TxGenInterval == 0 {
-		cfg.DevCfg.TxGenInterval = time.Second
-	}
-	if cfg.DevCfg.TxGenEnabled && cfg.DevCfg.TxGenMaxPerBlock == 0 {
-		cfg.DevCfg.TxGenMaxPerBlock = 10
-	}
-	if cfg.DevCfg.TxGenEnabled && cfg.DevCfg.TxGenGasPrice == 0 {
-		cfg.DevCfg.TxGenGasPrice = DefaultGasPrice
+	if cfg.DevCfg.TxGenEnabled {
+		if cfg.DevCfg.TxGenInterval == 0 {
+			cfg.DevCfg.TxGenInterval = time.Second
+		}
+		if cfg.DevCfg.TxGenMaxPerBlock == 0 {
+			cfg.DevCfg.TxGenMaxPerBlock = 10
+		}
+		if cfg.DevCfg.TxGenGasPrice == 0 {
+			cfg.DevCfg.TxGenGasPrice = DefaultGasPrice
+		}
 	}
 }
 

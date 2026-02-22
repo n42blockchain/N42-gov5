@@ -1,55 +1,56 @@
 package encoder
 
 import (
+	"errors"
+	"fmt"
 	"io"
-
-	"github.com/pkg/errors"
 )
 
-const maxVarintLength = 10
+// maxVarintLen is the maximum number of bytes in a varint-encoded uint64.
+const maxVarintLen = 10
 
-var errExcessMaxLength = errors.Errorf("provided header exceeds the max varint length of %d bytes", maxVarintLength)
+var errExcessMaxLength = fmt.Errorf("provided header exceeds the max varint length of %d bytes", maxVarintLen)
 
-// readVarint at the beginning of a byte slice. This varint may be used to indicate
-// the length of the remaining bytes in the reader.
+// readVarint reads a varint-encoded uint64 from r. The varint indicates the
+// length of the remaining payload in the stream.
 func readVarint(r io.Reader) (uint64, error) {
-	b := make([]byte, 0, maxVarintLength)
-	for i := 0; i < maxVarintLength; i++ {
-		b1 := make([]byte, 1)
-		n, err := r.Read(b1)
+	var (
+		buf  [maxVarintLen]byte
+		read int
+		oneByte [1]byte
+	)
+	for i := 0; i < maxVarintLen; i++ {
+		n, err := r.Read(oneByte[:])
 		if err != nil {
 			return 0, err
 		}
 		if n != 1 {
 			return 0, errors.New("did not read a byte from stream")
 		}
-		b = append(b, b1[0])
+		buf[i] = oneByte[0]
+		read++
 
-		// If most significant bit is not set, we have reached the end of the Varint.
-		if b1[0]&0x80 == 0 {
+		// MSB not set means this is the final byte of the varint.
+		if oneByte[0]&0x80 == 0 {
 			break
 		}
 
-		// If the varint is larger than 10 bytes, it is invalid as it would
-		// exceed the size of MaxUint64.
-		if i+1 >= maxVarintLength {
+		// Still have continuation bits after reading the maximum number of bytes.
+		if i+1 >= maxVarintLen {
 			return 0, errExcessMaxLength
 		}
 	}
 
-	vi, n := DecodeVarint(b)
-	if n != len(b) {
+	vi, n := DecodeVarint(buf[:read])
+	if n != read {
 		return 0, errors.New("varint did not decode entire byte slice")
 	}
 	return vi, nil
 }
 
-// DecodeVarint reads a varint-encoded integer from the slice.
-// It returns the integer and the number of bytes consumed, or
-// zero if there is not enough.
-// This is the format for the
-// int32, int64, uint32, uint64, bool, and enum
-// protocol buffer types.
+// DecodeVarint reads a varint-encoded integer from buf.
+// It returns the decoded value and the number of bytes consumed,
+// or (0, 0) if buf is incomplete or the value overflows uint64.
 func DecodeVarint(buf []byte) (x uint64, n int) {
 	for shift := uint(0); shift < 64; shift += 7 {
 		if n >= len(buf) {
@@ -62,21 +63,12 @@ func DecodeVarint(buf []byte) (x uint64, n int) {
 			return x, n
 		}
 	}
-
-	// The number is too large to represent in a 64-bit value.
 	return 0, 0
 }
 
-const maxVarintBytes = 10 // maximum length of a varint
-
 // EncodeVarint returns the varint encoding of x.
-// This is the format for the
-// int32, int64, uint32, uint64, bool, and enum
-// protocol buffer types.
-// Not used by the package itself, but helpful to clients
-// wishing to use the same encoding.
 func EncodeVarint(x uint64) []byte {
-	var buf [maxVarintBytes]byte
+	var buf [maxVarintLen]byte
 	var n int
 	for n = 0; x > 127; n++ {
 		buf[n] = 0x80 | uint8(x&0x7F)
@@ -84,5 +76,5 @@ func EncodeVarint(x uint64) []byte {
 	}
 	buf[n] = uint8(x)
 	n++
-	return buf[0:n]
+	return buf[:n]
 }

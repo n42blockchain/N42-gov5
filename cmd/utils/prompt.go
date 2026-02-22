@@ -54,6 +54,5 @@ func GetPassPhraseWithList(text string, confirmation bool, index int, passwords 
 		return passwords[len(passwords)-1]
 	}
 	// Otherwise prompt the user for the password
-	password := GetPassPhrase(text, confirmation)
-	return password
+	return GetPassPhrase(text, confirmation)
 }

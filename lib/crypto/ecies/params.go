@@ -29,9 +29,6 @@
 
 package ecies
 
-// This file contains parameters for ECIES encryption, specifying the
-// symmetric encryption and HMAC parameters.
-
 import (
 	"crypto"
 	"crypto/aes"
@@ -117,8 +114,8 @@ func AddParamsForCurve(curve elliptic.Curve, params *ECIESParams) {
 }
 
 // ParamsFromCurve selects parameters optimal for the selected elliptic curve.
-// Only the curves P256, P384, and P512 are supported.
-func ParamsFromCurve(curve elliptic.Curve) (params *ECIESParams) {
+// Only the curves P256, P384, and P521 are supported.
+func ParamsFromCurve(curve elliptic.Curve) *ECIESParams {
 	return paramsFromCurve[curve]
 }
 

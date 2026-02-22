@@ -17,9 +17,10 @@
 package jsonrpc
 
 import (
-	"github.com/n42blockchain/N42/log"
 	"net"
 	"strings"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 func StartIPCEndpoint(ipcEndpoint string, apis []API) (net.Listener, *Server, error) {

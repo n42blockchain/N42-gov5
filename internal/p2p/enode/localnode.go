@@ -19,15 +19,16 @@ package enode
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"github.com/n42blockchain/N42/internal/p2p/netutil"
-	"github.com/n42blockchain/N42/log"
 	"net"
 	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/n42blockchain/N42/internal/p2p/enr"
+	"github.com/n42blockchain/N42/internal/p2p/netutil"
+	"github.com/n42blockchain/N42/log"
 )
 
 const (
@@ -325,11 +326,3 @@ func (ln *LocalNode) bumpSeq() {
 	ln.db.storeLocalSeq(ln.id, ln.seq)
 }
 
-// nowMilliseconds gives the current timestamp at millisecond precision.
-func nowMilliseconds() uint64 {
-	ns := time.Now().UnixNano()
-	if ns < 0 {
-		return 0
-	}
-	return uint64(ns / 1000 / 1000)
-}

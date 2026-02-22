@@ -24,52 +24,47 @@ import (
 )
 
 func TestInitGossipTopics(t *testing.T) {
-	// Reset first
 	ResetGossipTopics()
 
 	if IsGossipTopicsInitialized() {
-		t.Error("Should not be initialized after reset")
+		t.Error("should not be initialized after reset")
 	}
 
 	InitGossipTopics()
 
 	if !IsGossipTopicsInitialized() {
-		t.Error("Should be initialized after InitGossipTopics()")
+		t.Error("should be initialized after InitGossipTopics()")
 	}
 
-	// Second call should be a no-op
+	// Second call should be a no-op.
 	InitGossipTopics()
 	if !IsGossipTopicsInitialized() {
-		t.Error("Should still be initialized")
+		t.Error("should still be initialized")
 	}
 }
 
 func TestGossipTopicMappings(t *testing.T) {
-	// Ensure initialized
 	InitGossipTopics()
 
-	// Test block topic
 	blockMsg := GossipTopicMappings(BlockTopicFormat)
 	if blockMsg == nil {
-		t.Error("Block topic mapping should not be nil")
+		t.Fatal("block topic mapping should not be nil")
 	}
 	if _, ok := blockMsg.(*types_pb.Block); !ok {
-		t.Error("Block topic should map to types_pb.Block")
+		t.Error("block topic should map to types_pb.Block")
 	}
 
-	// Test transaction topic
 	txMsg := GossipTopicMappings(TransactionTopicFormat)
 	if txMsg == nil {
-		t.Error("Transaction topic mapping should not be nil")
+		t.Fatal("transaction topic mapping should not be nil")
 	}
 	if _, ok := txMsg.(*types_pb.Transaction); !ok {
-		t.Error("Transaction topic should map to types_pb.Transaction")
+		t.Error("transaction topic should map to types_pb.Transaction")
 	}
 
-	// Test non-existent topic
 	nilMsg := GossipTopicMappings("non-existent")
 	if nilMsg != nil {
-		t.Error("Non-existent topic should return nil")
+		t.Error("non-existent topic should return nil")
 	}
 }
 
@@ -81,7 +76,6 @@ func TestAllTopics(t *testing.T) {
 		t.Errorf("AllTopics() should return at least 2 topics, got %d", len(topics))
 	}
 
-	// Check that required topics are present
 	hasBlock := false
 	hasTx := false
 	for _, topic := range topics {
@@ -94,26 +88,24 @@ func TestAllTopics(t *testing.T) {
 	}
 
 	if !hasBlock {
-		t.Error("Block topic not found in AllTopics()")
+		t.Error("block topic not found in AllTopics()")
 	}
 	if !hasTx {
-		t.Error("Transaction topic not found in AllTopics()")
+		t.Error("transaction topic not found in AllTopics()")
 	}
 }
 
 func TestGossipTypeToTopic(t *testing.T) {
 	InitGossipTopics()
 
-	// Test block type
 	blockTopic := GossipTypeToTopic(&types_pb.Block{})
 	if blockTopic != BlockTopicFormat {
-		t.Errorf("Block type should map to %s, got %s", BlockTopicFormat, blockTopic)
+		t.Errorf("block type should map to %s, got %s", BlockTopicFormat, blockTopic)
 	}
 
-	// Test transaction type
 	txTopic := GossipTypeToTopic(&types_pb.Transaction{})
 	if txTopic != TransactionTopicFormat {
-		t.Errorf("Transaction type should map to %s, got %s", TransactionTopicFormat, txTopic)
+		t.Errorf("transaction type should map to %s, got %s", TransactionTopicFormat, txTopic)
 	}
 }
 
@@ -121,19 +113,14 @@ func TestRegisterGossipTopic(t *testing.T) {
 	ResetGossipTopics()
 	InitGossipTopics()
 
-	// Register a custom topic
 	customTopic := "/n42/custom/1"
-	customMsg := &types_pb.Block{} // Using existing type for simplicity
+	RegisterGossipTopic(customTopic, &types_pb.Block{})
 
-	RegisterGossipTopic(customTopic, customMsg)
-
-	// Verify registration
 	retrieved := GossipTopicMappings(customTopic)
 	if retrieved == nil {
-		t.Error("Custom topic should be registered")
+		t.Error("custom topic should be registered")
 	}
 
-	// Verify in AllTopics
 	found := false
 	for _, topic := range AllTopics() {
 		if topic == customTopic {
@@ -142,7 +129,7 @@ func TestRegisterGossipTopic(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("Custom topic should appear in AllTopics()")
+		t.Error("custom topic should appear in AllTopics()")
 	}
 }
 
@@ -150,13 +137,10 @@ func TestGossipTopicsConcurrency(t *testing.T) {
 	ResetGossipTopics()
 
 	var wg sync.WaitGroup
-
-	// Concurrent initialization and access
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-
 			if i%3 == 0 {
 				InitGossipTopics()
 			}
@@ -168,51 +152,41 @@ func TestGossipTopicsConcurrency(t *testing.T) {
 			_ = IsGossipTopicsInitialized()
 		}(i)
 	}
-
 	wg.Wait()
-	t.Log("✓ Gossip topics concurrent operations completed without race")
 }
 
 func TestAutoInitialization(t *testing.T) {
 	ResetGossipTopics()
-
-	// Without explicit init, should auto-initialize on first access
 	msg := GossipTopicMappings(BlockTopicFormat)
 	if msg == nil {
-		t.Error("Auto-initialization should work for GossipTopicMappings")
+		t.Error("auto-initialization should work for GossipTopicMappings")
 	}
 
 	ResetGossipTopics()
-
-	// Same for AllTopics
 	topics := AllTopics()
 	if len(topics) == 0 {
-		t.Error("Auto-initialization should work for AllTopics")
+		t.Error("auto-initialization should work for AllTopics")
 	}
 
 	ResetGossipTopics()
-
-	// Same for GossipTypeToTopic
 	topic := GossipTypeToTopic(&types_pb.Block{})
 	if topic == "" {
-		t.Error("Auto-initialization should work for GossipTypeToTopic")
+		t.Error("auto-initialization should work for GossipTypeToTopic")
 	}
 }
 
 func TestLegacyCompatibility(t *testing.T) {
-	// Test that legacy global maps are still populated
 	if len(gossipTopicMappings) < 2 {
-		t.Error("Legacy gossipTopicMappings should be populated")
+		t.Error("legacy gossipTopicMappings should be populated")
 	}
 	if len(GossipTypeMapping) < 2 {
-		t.Error("Legacy GossipTypeMapping should be populated")
+		t.Error("legacy GossipTypeMapping should be populated")
 	}
 
-	// Check specific mappings
 	if _, ok := gossipTopicMappings[BlockTopicFormat]; !ok {
-		t.Error("Legacy block topic mapping missing")
+		t.Error("legacy block topic mapping missing")
 	}
 	if _, ok := gossipTopicMappings[TransactionTopicFormat]; !ok {
-		t.Error("Legacy transaction topic mapping missing")
+		t.Error("legacy transaction topic mapping missing")
 	}
 }

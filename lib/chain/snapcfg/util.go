@@ -10,12 +10,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/n42blockchain/N42/lib/chain/networkname"
-	"github.com/n42blockchain/N42/lib/downloader/snaptype"
 	snapshothashes "github.com/erigontech/erigon-snapshot"
 	"github.com/erigontech/erigon-snapshot/webseed"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tidwall/btree"
+
+	"github.com/n42blockchain/N42/lib/chain/networkname"
+	"github.com/n42blockchain/N42/lib/downloader/snaptype"
 )
 
 var (
@@ -65,6 +66,29 @@ func (p Preverified) Contains(name string, ignoreVersion ...bool) bool {
 	return i < len(p) && p[i].Name == name
 }
 
+// collectBestVersions converts a btree map of best-versioned items into a Preverified slice.
+func collectBestVersions(m *btree.Map[string, PreverifiedItem]) Preverified {
+	var result Preverified
+	m.Scan(func(_ string, value PreverifiedItem) bool {
+		result = append(result, value)
+		return true
+	})
+	return result
+}
+
+// updateBestVersion inserts item into the map if its version is newer than the existing entry for the same name.
+func updateBestVersion(m *btree.Map[string, PreverifiedItem], name string, version snaptype.Version, item PreverifiedItem) {
+	if current, ok := m.Get(name); ok {
+		v, _, _ := strings.Cut(current.Name, "-")
+		cv, _ := snaptype.ParseVersion(v)
+		if cv.Less(version) {
+			m.Set(name, item)
+		}
+	} else {
+		m.Set(name, item)
+	}
+}
+
 func (p Preverified) Typed(types []snaptype.Type) Preverified {
 	var bestVersions btree.Map[string, PreverifiedItem]
 
@@ -112,34 +136,14 @@ func (p Preverified) Typed(types []snaptype.Type) Preverified {
 			continue
 		}
 
-		if version.Less(minVersion) {
+		if version.Less(minVersion) || preferredVersion.Less(version) {
 			continue
 		}
 
-		if preferredVersion.Less(version) {
-			continue
-		}
-
-		if current, ok := bestVersions.Get(name); ok {
-			v, _, _ := strings.Cut(current.Name, "-")
-			cv, _ := snaptype.ParseVersion(v)
-
-			if cv.Less(version) {
-				bestVersions.Set(name, p)
-			}
-		} else {
-			bestVersions.Set(name, p)
-		}
+		updateBestVersion(&bestVersions, name, version, p)
 	}
 
-	var versioned Preverified
-
-	bestVersions.Scan(func(key string, value PreverifiedItem) bool {
-		versioned = append(versioned, value)
-		return true
-	})
-
-	return versioned
+	return collectBestVersions(&bestVersions)
 }
 
 func (p Preverified) Versioned(preferredVersion snaptype.Version, minVersion snaptype.Version, types ...snaptype.Enum) Preverified {
@@ -147,62 +151,39 @@ func (p Preverified) Versioned(preferredVersion snaptype.Version, minVersion sna
 
 	for _, p := range p {
 		v, name, ok := strings.Cut(p.Name, "-")
-
 		if !ok {
 			continue
 		}
 
 		parts := strings.Split(name, "-")
 		typeName, _ := strings.CutSuffix(parts[2], filepath.Ext(parts[2]))
-		include := false
 
 		if len(types) > 0 {
+			include := false
 			for _, typ := range types {
 				if typeName == typ.String() {
 					include = true
 					break
 				}
 			}
-
 			if !include {
 				continue
 			}
 		}
 
 		version, err := snaptype.ParseVersion(v)
-
 		if err != nil {
 			continue
 		}
 
-		if version.Less(minVersion) {
+		if version.Less(minVersion) || preferredVersion.Less(version) {
 			continue
 		}
 
-		if preferredVersion.Less(version) {
-			continue
-		}
-
-		if current, ok := bestVersions.Get(name); ok {
-			v, _, _ := strings.Cut(current.Name, "-")
-			cv, _ := snaptype.ParseVersion(v)
-
-			if cv.Less(version) {
-				bestVersions.Set(name, p)
-			}
-		} else {
-			bestVersions.Set(name, p)
-		}
+		updateBestVersion(&bestVersions, name, version, p)
 	}
 
-	var versioned Preverified
-
-	bestVersions.Scan(func(key string, value PreverifiedItem) bool {
-		versioned = append(versioned, value)
-		return true
-	})
-
-	return versioned
+	return collectBestVersions(&bestVersions)
 }
 
 func (p Preverified) MaxBlock(version snaptype.Version) (uint64, error) {

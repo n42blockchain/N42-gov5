@@ -23,29 +23,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/accounts"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/common/transaction"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/common/rlp"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
-	"github.com/n42blockchain/N42/internal/consensus"
-	"github.com/n42blockchain/N42/internal/consensus/misc"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"github.com/n42blockchain/N42/modules/state"
-	"github.com/n42blockchain/N42/params"
 	"io"
 	"sync"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru"
+	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
+
+	"github.com/n42blockchain/N42/accounts"
+	"github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
 )
 
 const (
@@ -65,8 +66,6 @@ var (
 
 	nonceAuthVote = hexutil.MustDecode("0xffffffffffffffff") // Magic nonce number to vote on adding a new signer
 	nonceDropVote = hexutil.MustDecode("0x0000000000000000") // Magic nonce number to vote on removing a signer.
-
-	//uncleHash = types.CalcUncleHash(nil) // Always Keccak256(RLP([])) as uncles are meaningless outside of PoW.
 
 	diffInTurn = uint256.NewInt(2) // Block difficulty for in-turn signatures
 	diffNoTurn = uint256.NewInt(1) // Block difficulty for out-of-turn signatures
@@ -116,9 +115,6 @@ var (
 	// errInvalidMixDigest is returned if a block's mix digest is non-zero.
 	errInvalidMixDigest = errors.New("non-zero mix digest")
 
-	// errInvalidUncleHash is returned if a block contains an non-empty uncle list.
-	errInvalidUncleHash = errors.New("non empty uncle hash")
-
 	// errInvalidDifficulty is returned if the difficulty of a block neither 1 or 2.
 	errInvalidDifficulty = errors.New("invalid difficulty")
 
@@ -143,7 +139,6 @@ var (
 )
 
 // SignerFn hashes and signs the data to be signed by a backing account.
-// todo types.address to  account
 type SignerFn func(signer accounts.Account, mimeType string, message []byte) ([]byte, error)
 
 // ecrecover extracts the Ethereum account address from a signed header.
@@ -175,8 +170,7 @@ func ecrecover(iHeader block.IHeader, sigcache *lru.ARCCache) (types.Address, er
 	return signer, nil
 }
 
-// Apoa is the proof-of-authority consensus engine proposed to support the
-// Ethereum testnet following the Ropsten attacks.
+// Apoa is the proof-of-authority consensus engine.
 type Apoa struct {
 	config *params.CliqueConfig // Consensus engine configuration parameters
 	db     kv.RwDB              // Database to store and retrieve snapshot checkpoints
@@ -205,7 +199,7 @@ func New(config *params.CliqueConfig, db kv.RwDB) consensus.Engine {
 	if conf.Epoch == 0 {
 		conf.Epoch = epochLength
 	}
-	// GenesisAlloc the snapshot caches and create the engine
+	// Allocate the snapshot caches and create the engine
 	recents, _ := lru.NewARC(inmemorySnapshots)
 	signatures, _ := lru.NewARC(inmemorySignatures)
 
@@ -302,10 +296,6 @@ func (c *Apoa) verifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHe
 	if header.MixDigest != (types.Hash{}) {
 		return errInvalidMixDigest
 	}
-	// Ensure that the block doesn't contain any uncles which are meaningless in PoA
-	//if header.UncleHash != uncleHash {
-	//	return errInvalidUncleHash
-	//}
 	// Ensure that the block's difficulty is meaningful (may not be correct at this point)
 	if number > 0 {
 		if header.Difficulty.IsZero() || (header.Difficulty.Cmp(diffInTurn) != 0 && header.Difficulty.Cmp(diffNoTurn) != 0) {
@@ -350,18 +340,6 @@ func (c *Apoa) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 	if header.GasUsed > header.GasLimit {
 		return fmt.Errorf("invalid gasUsed: have %d, gasLimit %d", header.GasUsed, header.GasLimit)
 	}
-	//if !chain.Config().IsLondon(header.Number) {
-	//	// Verify BaseFee not present before EIP-1559 fork.
-	//	if header.BaseFee != nil {
-	//		return fmt.Errorf("invalid baseFee before fork: have %d, want <nil>", header.BaseFee)
-	//	}
-	//	if err := misc.VerifyGaslimit(parent.GasLimit, header.GasLimit); err != nil {
-	//		return err
-	//	}
-	//} else if err := misc.VerifyEip1559Header(chain.Config(), parent, header); err != nil {
-	//	// Verify the header's EIP-1559 attributes.
-	//	return err
-	//}
 	// Retrieve the snapshot needed to verify this header and cache it
 	snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
 	if err != nil {
@@ -435,10 +413,7 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 				}
 				snap = newSnapshot(c.config, c.signatures, number, hash, signers)
 				if err := c.db.Update(c.ctx, func(tx kv.RwTx) error {
-					if err := snap.store(tx); err != nil {
-						return err
-					}
-					return nil
+					return snap.store(tx)
 				}); err != nil {
 					return nil, err
 				}
@@ -478,25 +453,17 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 	// If we've generated a new checkpoint snapshot, save to disk
 	if snap.Number%checkpointInterval == 0 && len(headers) > 0 {
 		if err = c.db.Update(c.ctx, func(tx kv.RwTx) error {
-			if err := snap.store(tx); err != nil {
-				return err
-			}
-			return nil
+			return snap.store(tx)
 		}); err != nil {
 			return nil, err
 		}
-
 		log.Debug("Stored voting snapshot to disk", "number", snap.Number, "hash", snap.Hash)
 	}
 	return snap, err
 }
 
-// VerifyUncles implements consensus.Engine, always returning an error for any
-// uncles as this consensus mechanism doesn't permit uncles.
+// VerifyUncles implements consensus.Engine. PoA does not use uncles.
 func (c *Apoa) VerifyUncles(chain consensus.ConsensusChainReader, block block.IBlock) error {
-	//if len(block.Uncles()) > 0 {
-	//	return errors.New("uncles not allowed")
-	//}
 	return nil
 }
 
@@ -617,7 +584,6 @@ func (c *Apoa) Rewards(tx kv.RwTx, header block.IHeader, state *state.IntraBlock
 // rewards given.
 func (c *Apoa) Finalize(chain consensus.ChainHeaderReader, header block.IHeader, state *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
 	// No block rewards in PoA, so the state remains as is and uncles are dropped
-	//chain.Config().IsEIP158(header.Number)
 	rawHeader := header.(*block.Header)
 	rawHeader.Root = state.IntermediateRoot()
 	return nil, nil, nil

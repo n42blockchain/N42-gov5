@@ -42,7 +42,7 @@ func DefaultRateLimitConfig() *RateLimitConfig {
 		RequestsPerSecond: 100,
 		BurstSize:         200,
 		CleanupInterval:   time.Minute,
-		EntryTTL:          time.Minute * 5,
+		EntryTTL:          5 * time.Minute,
 	}
 }
 
@@ -184,4 +184,3 @@ func RateLimitHandlerFunc(rl *RateLimiter, handler http.HandlerFunc) http.Handle
 		handler(w, r)
 	}
 }
-

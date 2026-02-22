@@ -51,7 +51,6 @@ const (
 	bucketIPLimit, bucketSubnet = 2, 24 // at most 2 addresses from the same /24
 	tableIPLimit, tableSubnet   = 10, 24
 
-	// refreshInterval 5分钟一刷新。
 	refreshInterval    = 5 * time.Minute
 	revalidateInterval = 10 * time.Second
 	copyNodesInterval  = 30 * time.Second
@@ -123,12 +122,6 @@ func newTable(t transport, db *enode.DB, bootnodes []*enode.Node, log log.Logger
 
 func (tab *Table) self() *enode.Node {
 	return tab.net.Self()
-}
-
-// seedRand is kept for backward compatibility but no longer needed
-// since we now use crypto/rand directly via misc.SecureIntn
-func (tab *Table) seedRand() {
-	// No-op: using cryptographically secure random numbers directly
 }
 
 // ReadRandomNodes fills the given slice with random nodes from the table. The results
@@ -228,7 +221,6 @@ loop:
 	for {
 		select {
 		case <-refresh.C:
-			tab.seedRand()
 			if refreshDone == nil {
 				refreshDone = make(chan struct{})
 				go tab.doRefresh(refreshDone)
@@ -296,8 +288,7 @@ func (tab *Table) doRefresh(done chan struct{}) {
 func (tab *Table) loadSeedNodes() {
 	seeds := wrapNodes(tab.db.QuerySeeds(seedCount, seedMaxAge))
 	seeds = append(seeds, tab.nursery...)
-	for i := range seeds {
-		seed := seeds[i]
+	for _, seed := range seeds {
 		tab.addSeenNode(seed)
 	}
 }

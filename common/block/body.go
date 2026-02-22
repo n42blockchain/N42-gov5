@@ -18,11 +18,13 @@ package block
 
 import (
 	"fmt"
+
+	"google.golang.org/protobuf/proto"
+
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/utils"
-	"google.golang.org/protobuf/proto"
 )
 
 type Body struct {
@@ -32,52 +34,35 @@ type Body struct {
 }
 
 func (b *Body) ToProtoMessage() proto.Message {
-	var pbTxs []*types_pb.Transaction
-	var pbVerifiers []*types_pb.Verifier
-	var pbRewards []*types_pb.Reward
-
+	pbTxs := make([]*types_pb.Transaction, 0, len(b.Txs))
 	for _, v := range b.Txs {
-		pbTx := v.ToProtoMessage()
-		if pbTx != nil {
-			pbTxs = append(pbTxs, pbTx.(*types_pb.Transaction))
-		}
+		pbTxs = append(pbTxs, v.ToProtoMessage().(*types_pb.Transaction))
 	}
 
+	pbRewards := make([]*types_pb.Reward, 0, len(b.Rewards))
 	for _, reward := range b.Rewards {
-		pbReward := reward.ToProtoMessage()
-		if pbReward != nil {
-			pbRewards = append(pbRewards, pbReward.(*types_pb.Reward))
-		}
+		pbRewards = append(pbRewards, reward.ToProtoMessage().(*types_pb.Reward))
 	}
 
+	pbVerifiers := make([]*types_pb.Verifier, 0, len(b.Verifiers))
 	for _, verifier := range b.Verifiers {
-		pbVerifier := verifier.ToProtoMessage()
-		if pbVerifier != nil {
-			pbVerifiers = append(pbVerifiers, pbVerifier.(*types_pb.Verifier))
-		}
+		pbVerifiers = append(pbVerifiers, verifier.ToProtoMessage().(*types_pb.Verifier))
 	}
 
-	pBody := types_pb.Body{
+	return &types_pb.Body{
 		Txs:       pbTxs,
 		Verifiers: pbVerifiers,
 		Rewards:   pbRewards,
 	}
-
-	return &pBody
 }
 
 func (b *Body) FromProtoMessage(message proto.Message) error {
-	var (
-		pBody *types_pb.Body
-		ok    bool
-	)
-
-	if pBody, ok = message.(*types_pb.Body); !ok {
+	pBody, ok := message.(*types_pb.Body)
+	if !ok {
 		return fmt.Errorf("type conversion failure")
 	}
 
-	var txs []*transaction.Transaction
-	//
+	txs := make([]*transaction.Transaction, 0, len(pBody.Txs))
 	for _, v := range pBody.Txs {
 		tx, err := transaction.FromProtoMessage(v)
 		if err != nil {
@@ -85,22 +70,17 @@ func (b *Body) FromProtoMessage(message proto.Message) error {
 		}
 		txs = append(txs, tx)
 	}
-	//
 	b.Txs = txs
 
-	//verifiers
-	var verifiers []*Verify
+	verifiers := make([]*Verify, 0, len(pBody.Verifiers))
 	for _, v := range pBody.Verifiers {
-		verify := new(Verify).FromProtoMessage(v)
-		verifiers = append(verifiers, verify)
+		verifiers = append(verifiers, new(Verify).FromProtoMessage(v))
 	}
 	b.Verifiers = verifiers
 
-	//Reward
-	var rewards []*Reward
+	rewards := make([]*Reward, 0, len(pBody.Rewards))
 	for _, v := range pBody.Rewards {
-		reward := new(Reward).FromProtoMessage(v)
-		rewards = append(rewards, reward)
+		rewards = append(rewards, new(Reward).FromProtoMessage(v))
 	}
 	b.Rewards = rewards
 
@@ -119,21 +99,19 @@ func (b *Body) Reward() []*Reward {
 }
 
 func (b *Body) reward() []*types_pb.H256 {
-	var rewardAmount []*types_pb.H256
-	if len(b.Rewards) > 0 {
-		for _, reward := range b.Rewards {
-			rewardAmount = append(rewardAmount, utils.ConvertUint256IntToH256(reward.Amount))
-		}
+	rewardAmount := make([]*types_pb.H256, 0, len(b.Rewards))
+	for _, reward := range b.Rewards {
+		rewardAmount = append(rewardAmount, utils.ConvertUint256IntToH256(reward.Amount))
 	}
 	return rewardAmount
 }
 
 func (b *Body) rewardAddress() []types.Address {
-	var rewardAddress []types.Address
-	for _, reward := range b.Rewards {
-		rewardAddress = append(rewardAddress, reward.Address)
+	addrs := make([]types.Address, len(b.Rewards))
+	for i, reward := range b.Rewards {
+		addrs[i] = reward.Address
 	}
-	return rewardAddress
+	return addrs
 }
 
 func (b *Body) SendersFromTxs() []types.Address {

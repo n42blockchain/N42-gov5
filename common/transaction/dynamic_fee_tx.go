@@ -101,9 +101,8 @@ func (tx *DynamicFeeTx) to() *types.Address      { return tx.To }
 func (tx *DynamicFeeTx) from() *types.Address    { return tx.From }
 func (tx *DynamicFeeTx) sign() []byte            { return tx.Sign }
 
-// Hash computes the hash (but not for signatures!)
 func (tx *DynamicFeeTx) hash() types.Hash {
-	hash := hash.PrefixedRlpHash(DynamicFeeTxType, []interface{}{
+	return hash.PrefixedRlpHash(DynamicFeeTxType, []interface{}{
 		tx.ChainID,
 		tx.Nonce,
 		tx.GasTipCap,
@@ -115,7 +114,6 @@ func (tx *DynamicFeeTx) hash() types.Hash {
 		tx.AccessList,
 		tx.V, tx.R, tx.S,
 	})
-	return hash
 }
 
 func (tx *DynamicFeeTx) rawSignatureValues() (v, r, s *uint256.Int) {

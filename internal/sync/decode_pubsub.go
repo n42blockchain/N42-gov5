@@ -1,29 +1,32 @@
 package sync
 
 import (
-	"github.com/n42blockchain/N42/internal/p2p"
 	"strings"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/pkg/errors"
 	ssz "github.com/prysmaticlabs/fastssz"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/n42blockchain/N42/internal/p2p"
 )
 
-var errNilPubsubMessage = errors.New("nil pubsub message")
-var errInvalidTopic = errors.New("invalid topic format")
+var (
+	errNilPubsubMessage = errors.New("nil pubsub message")
+	errInvalidTopic     = errors.New("invalid topic format")
+)
 
 func (s *Service) decodePubsubMessage(msg *pubsub.Message) (ssz.Unmarshaler, error) {
 	if msg == nil || msg.Topic == nil || *msg.Topic == "" {
 		return nil, errNilPubsubMessage
 	}
 	topic := *msg.Topic
-	_, err := p2p.ExtractGossipDigest(topic)
-	if err != nil {
+	if _, err := p2p.ExtractGossipDigest(topic); err != nil {
 		return nil, errors.Wrapf(err, "extraction failed for topic: %s", topic)
 	}
+
 	topic = strings.TrimSuffix(topic, s.cfg.p2p.Encoding().ProtocolSuffix())
-	topic, err = s.replaceForkDigest(topic)
+	topic, err := s.replaceForkDigest(topic)
 	if err != nil {
 		return nil, err
 	}
@@ -36,14 +39,13 @@ func (s *Service) decodePubsubMessage(msg *pubsub.Message) (ssz.Unmarshaler, err
 	if !ok {
 		return nil, errors.Errorf("message of %T does not support marshaller interface", base)
 	}
-
 	if err := s.cfg.p2p.Encoding().DecodeGossip(msg.Data, m); err != nil {
 		return nil, err
 	}
 	return m, nil
 }
 
-// Replaces our fork digest with the formatter.
+// replaceForkDigest replaces the fork digest in a topic path with a format placeholder.
 func (_ *Service) replaceForkDigest(topic string) (string, error) {
 	subStrings := strings.Split(topic, "/")
 	if len(subStrings) != 4 {

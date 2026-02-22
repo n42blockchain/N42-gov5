@@ -239,11 +239,7 @@ func mapError(err error) error {
 	return err
 }
 
-// CompressNibbles - supports only even number of nibbles
-// This method supports only arrays of even nibbles
-//
-// HI_NIBBLE(b) = (b >> 4) & 0x0F
-// LO_NIBBLE(b) = b & 0x0F
+// CompressNibbles packs pairs of nibbles into bytes. Supports only even-length input.
 func CompressNibbles(nibbles []byte, out *[]byte) {
 	tmp := (*out)[:0]
 	for i := 0; i < len(nibbles); i += 2 {
@@ -252,10 +248,7 @@ func CompressNibbles(nibbles []byte, out *[]byte) {
 	*out = tmp
 }
 
-// DecompressNibbles - supports only even number of nibbles
-//
-// HI_NIBBLE(b) = (b >> 4) & 0x0F
-// LO_NIBBLE(b) = b & 0x0F
+// DecompressNibbles unpacks each byte into two nibbles. Output length is 2x input length.
 func DecompressNibbles(in []byte, out *[]byte) {
 	tmp := (*out)[:0]
 	for i := 0; i < len(in); i++ {

@@ -27,14 +27,12 @@ import (
 )
 
 func (d *Downloader) processHeaders() error {
-
 	defer log.Info("Headers process Finished")
 	var (
 		headerNumberPool []uint256.Int
 		startProcess     = false
 	)
-
-	tick := time.NewTicker(time.Duration(1 * time.Second))
+	tick := time.NewTicker(1 * time.Second)
 	defer tick.Stop()
 
 	for {
@@ -54,48 +52,43 @@ func (d *Downloader) processHeaders() error {
 		case <-d.ctx.Done():
 			return ErrCanceled
 		case task := <-d.headerProcCh:
-
 			d.once.Do(func() {
 				startProcess = true
 				log.Info("Starting body downloads")
 			})
 
 			d.headerTaskLock.Lock()
-			if _, ok := d.headerProcessingTasks[task.taskID]; ok {
-				delete(d.headerProcessingTasks, task.taskID)
-			}
-			log.Tracef("received headers from remote peers  , the header counts is %v", len(task.headers))
+			delete(d.headerProcessingTasks, task.taskID)
+			log.Tracef("received headers from remote peers, the header count is %v", len(task.headers))
 			for _, header := range task.headers {
-				headerNumberPool = append(headerNumberPool, *utils.ConvertH256ToUint256Int(header.Number))
+				headerNum := *utils.ConvertH256ToUint256Int(header.Number)
+				headerNumberPool = append(headerNumberPool, headerNum)
 				if len(headerNumberPool) >= maxBodiesFetch {
-					d.bodyTaskPoolLock.Lock()
-					//
 					number := make([]uint256.Int, len(headerNumberPool))
 					copy(number, headerNumberPool)
-					//d.log.Infof("copy count %d", c)
-					headerNumberPool = headerNumberPool[0:0]
-					//
+					headerNumberPool = headerNumberPool[:0]
+
+					d.bodyTaskPoolLock.Lock()
 					d.bodyTaskPool = append(d.bodyTaskPool, &blockTask{
 						taskID: misc.SecureUint64(),
 						number: number,
 					})
 					d.bodyTaskPoolLock.Unlock()
 				}
-				d.headerResultStore[*utils.ConvertH256ToUint256Int(header.Number)] = header
-				//d.log.Infof("process header %v", header)
+				d.headerResultStore[headerNum] = header
 			}
 			d.headerTaskLock.Unlock()
 		case <-tick.C:
-			tick.Reset(time.Duration(3 * time.Second))
+			tick.Reset(3 * time.Second)
 			continue
 		}
 	}
 	return nil
 }
 
-// processBodies
+// processBodies collects downloaded block bodies and stores them for chain assembly.
 func (d *Downloader) processBodies() error {
-	tick := time.NewTicker(time.Duration(1 * time.Second))
+	tick := time.NewTicker(1 * time.Second)
 	defer tick.Stop()
 	defer log.Info("Process bodies finished")
 	startProcess := false
@@ -109,26 +102,20 @@ func (d *Downloader) processBodies() error {
 		case <-d.ctx.Done():
 			return ErrCanceled
 		case response := <-d.blockProcCh:
-
 			d.once.Do(func() {
 				startProcess = true
 				log.Info("Starting process bodies")
 			})
 
-			//d.log.Infof("processing body task id is %v, response is: %v", response.taskID, response)
-
 			d.bodyTaskPoolLock.Lock()
-			if _, ok := d.bodyProcessingTasks[response.taskID]; ok {
-				delete(d.bodyProcessingTasks, response.taskID)
-			}
-
-			log.Debugf("received block from remote peers  , the block counts is  %v", len(response.bodies))
+			delete(d.bodyProcessingTasks, response.taskID)
+			log.Debugf("received block from remote peers, the block count is %v", len(response.bodies))
 			for _, body := range response.bodies {
 				d.bodyResultStore[*utils.ConvertH256ToUint256Int(body.Header.Number)] = body
 			}
 			d.bodyTaskPoolLock.Unlock()
 		case <-tick.C:
-			tick.Reset(time.Duration(3 * time.Second))
+			tick.Reset(3 * time.Second)
 			continue
 		}
 	}
@@ -136,16 +123,15 @@ func (d *Downloader) processBodies() error {
 }
 
 func (d *Downloader) processChain() error {
-	tick := time.NewTicker(time.Duration(1 * time.Second))
+	tick := time.NewTicker(1 * time.Second)
 	defer tick.Stop()
-	startProcess := false
 	defer log.Info("Process chain Finished")
+	startProcess := false
 
 	for {
 		if startProcess && len(d.bodyResultStore) == 0 && len(d.bodyTaskPool) == 0 && len(d.bodyProcessingTasks) == 0 && len(d.headerTasks) == 0 && len(d.headerProcessingTasks) == 0 {
 			break
 		}
-		//
 		d.once.Do(func() {
 			startProcess = true
 			log.Info("Starting process chain")
@@ -155,22 +141,20 @@ func (d *Downloader) processChain() error {
 		case <-d.ctx.Done():
 			return ErrCanceled
 		case <-tick.C:
-
 			d.bodyTaskPoolLock.Lock()
 			wantBlockNumber := new(uint256.Int).AddUint64(d.bc.CurrentBlock().Number64(), 1)
 			log.Tracef("want block %d have blocks count is %d", wantBlockNumber.Uint64(), len(d.bodyResultStore))
 
-			blocks := make([]block.IBlock, 0)
+			var blocks []block.IBlock
 			for i := 0; i < maxResultsProcess; i++ {
 				if blockMsg, ok := d.bodyResultStore[*wantBlockNumber]; ok {
-					var block block.Block
-					err := block.FromProtoMessage(blockMsg)
-					if err != nil {
+					var b block.Block
+					if err := b.FromProtoMessage(blockMsg); err != nil {
 						log.Errorf("failed to parse block from proto message: %v", err)
 						break
 					}
 					delete(d.bodyResultStore, *wantBlockNumber)
-					blocks = append(blocks, &block)
+					blocks = append(blocks, &b)
 				}
 				wantBlockNumber.AddUint64(wantBlockNumber, 1)
 			}
@@ -186,18 +170,10 @@ func (d *Downloader) processChain() error {
 				"lastnum", last.Number64().Uint64(), "lasthash", last.Hash(),
 			)
 
-			if index, err := d.bc.InsertChain(blocks); err != nil {
-				//inserted = false
-				if index < len(blocks) {
-					log.Errorf("downloader failed to inster new block in blockchain, err:%v", err)
-				} else {
-				}
+			if _, err := d.bc.InsertChain(blocks); err != nil {
+				log.Errorf("downloader failed to insert new block in blockchain, err:%v", err)
 				d.bodyTaskPoolLock.Unlock()
 				return err
-
-			} else {
-				//inserted = true
-
 			}
 			d.bodyTaskPoolLock.Unlock()
 		}

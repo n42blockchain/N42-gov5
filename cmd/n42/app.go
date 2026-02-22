@@ -18,9 +18,6 @@ package main
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/log"
-	"github.com/urfave/cli/v2"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -30,13 +27,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/n42blockchain/N42/accounts"
+	"github.com/urfave/cli/v2"
 
+	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/cmd/utils"
-
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/node"
+	"github.com/n42blockchain/N42/log"
 )
 
 func appRun(ctx *cli.Context) error {
@@ -54,8 +53,6 @@ func appRun(ctx *cli.Context) error {
 		DefaultConfig.P2PCfg.StaticPeers = p2pStaticPeers.Value()
 		DefaultConfig.P2PCfg.BootstrapNodeAddr = p2pBootstrapNode.Value()
 		DefaultConfig.P2PCfg.DenyListCIDR = p2pDenyList.Value()
-
-		//
 		DefaultConfig.P2PCfg.DataDir = DefaultConfig.NodeCfg.DataDir
 	}
 

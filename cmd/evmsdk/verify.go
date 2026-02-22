@@ -105,8 +105,6 @@ func checkBlock2(getHashF func(n uint64) types.Hash, blk *block.Block, ibs *stat
 	gp := new(common2.GasPool)
 	gp.AddGas(blk.GasLimit())
 	cfg := vm.Config{}
-	//cfg := vm.Config{Debug: true, Tracer: logger.NewMarkdownLogger(nil, os.Stdout)}
-
 	engine := apos.NewFaker()
 	for i, tx := range blk.Transactions() {
 		// Security: handle nil To() for contract creation transactions
@@ -119,7 +117,6 @@ func checkBlock2(getHashF func(n uint64) types.Hash, blk *block.Block, ibs *stat
 		ibs.Prepare(tx.Hash(), blk.Hash(), i)
 		_, _, err := internal.ApplyTransaction(chainConfig, getHashF, engine, &coinbase, gp, ibs, noop, header, tx, usedGas, cfg)
 		if err != nil {
-
 			return types.Hash{}, err
 		}
 	}

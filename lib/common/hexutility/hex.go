@@ -22,7 +22,9 @@ import (
 )
 
 func MustDecodeHex(in string) []byte {
-	in = strip0x(in)
+	if Has0xPrefix(in) {
+		in = in[2:]
+	}
 	if len(in)%2 == 1 {
 		in = "0" + in
 	}
@@ -31,13 +33,6 @@ func MustDecodeHex(in string) []byte {
 		panic(err)
 	}
 	return payload
-}
-
-func strip0x(str string) string {
-	if len(str) >= 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X') {
-		return str[2:]
-	}
-	return str
 }
 
 // EncodeTs encodes a TimeStamp (BlockNumber or TxNumber or other uin64) as big endian
@@ -62,7 +57,8 @@ func FromHex(s string) []byte {
 	if len(s)%2 == 1 {
 		s = "0" + s
 	}
-	return Hex2Bytes(s)
+	b, _ := hex.DecodeString(s)
+	return b
 }
 
 // Has0xPrefix validates str begins with '0x' or '0X'.

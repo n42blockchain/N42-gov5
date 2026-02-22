@@ -42,17 +42,18 @@ func (d *DiagnosticClient) setupSysInfoDiagnostics() {
 
 	sysInfo := GetSysInfo(d.dataDirPath)
 
-	var funcs []func(tx kv.RwTx) error
-	funcs = append(funcs, RAMInfoUpdater(sysInfo.RAM), CPUInfoUpdater(sysInfo.CPU), DiskInfoUpdater(sysInfo.Disk))
+	updaters := []func(tx kv.RwTx) error{
+		RAMInfoUpdater(sysInfo.RAM),
+		CPUInfoUpdater(sysInfo.CPU),
+		DiskInfoUpdater(sysInfo.Disk),
+	}
 
 	err := d.db.Update(d.ctx, func(tx kv.RwTx) error {
-		for _, updater := range funcs {
-			updErr := updater(tx)
-			if updErr != nil {
-				return updErr
+		for _, updater := range updaters {
+			if err := updater(tx); err != nil {
+				return err
 			}
 		}
-
 		return nil
 	})
 	if err != nil {
@@ -70,9 +71,7 @@ func (d *DiagnosticClient) HardwareInfoJson(w io.Writer) {
 }
 
 func findNodeDisk(dirPath string) string {
-	mountPoint := diskutils.MountPointForDirPath(dirPath)
-
-	return mountPoint
+	return diskutils.MountPointForDirPath(dirPath)
 }
 
 func GetSysInfo(dirPath string) HardwareInfo {
@@ -90,80 +89,64 @@ func GetSysInfo(dirPath string) HardwareInfo {
 }
 
 func GetRAMInfo() RAMInfo {
-	rmi := RAMInfo{
-		Total:       0,
-		Available:   0,
-		Used:        0,
-		UsedPercent: 0,
-	}
-
 	vmStat, err := mem.VirtualMemory()
-	if err == nil {
-		rmi.Total = vmStat.Total
-		rmi.Available = vmStat.Available
-		rmi.Used = vmStat.Used
-		rmi.UsedPercent = vmStat.UsedPercent
+	if err != nil {
+		return RAMInfo{}
 	}
-
-	return rmi
+	return RAMInfo{
+		Total:       vmStat.Total,
+		Available:   vmStat.Available,
+		Used:        vmStat.Used,
+		UsedPercent: vmStat.UsedPercent,
+	}
 }
 
 func GetDiskInfo(nodeDisk string) DiskInfo {
-	fsType := ""
-	total := uint64(0)
-	free := uint64(0)
-	mountPoint := "/"
-	device := "/"
+	di := DiskInfo{
+		MountPoint: "/",
+		Device:     "/",
+	}
 
 	partitions, err := disk.Partitions(false)
-
 	if err == nil {
 		for _, partition := range partitions {
 			if partition.Mountpoint == nodeDisk {
-				iocounters, err := disk.Usage(partition.Mountpoint)
+				usage, err := disk.Usage(partition.Mountpoint)
 				if err == nil {
-					fsType = partition.Fstype
-					total = iocounters.Total
-					free = iocounters.Free
-					mountPoint = partition.Mountpoint
-					device = partition.Device
-
-					break
+					di.FsType = partition.Fstype
+					di.Total = usage.Total
+					di.Free = usage.Free
+					di.MountPoint = partition.Mountpoint
+					di.Device = partition.Device
 				}
+				break
 			}
 		}
 	}
 
-	diskDetails, err := diskutils.DiskInfo(device)
+	di.Details, err = diskutils.DiskInfo(di.Device)
 	if err != nil {
 		log.Debug("[diagnostics] Failed to get disk info", "err", err)
 	}
 
-	return DiskInfo{
-		FsType:     fsType,
-		Total:      total,
-		Free:       free,
-		MountPoint: mountPoint,
-		Device:     device,
-		Details:    diskDetails,
-	}
+	return di
 }
 
 func GetCPUInfo() []CPUInfo {
-	cpuinfo := make([]CPUInfo, 0)
-
 	cpuInfo, err := cpu.Info()
-	if err == nil {
-		for _, info := range cpuInfo {
-			cpuinfo = append(cpuinfo, CPUInfo{
-				ModelName: info.ModelName,
-				Cores:     info.Cores,
-				Mhz:       info.Mhz,
-			})
-		}
+	if err != nil {
+		return nil
 	}
 
-	return cpuinfo
+	result := make([]CPUInfo, 0, len(cpuInfo))
+	for _, info := range cpuInfo {
+		result = append(result, CPUInfo{
+			ModelName: info.ModelName,
+			Cores:     info.Cores,
+			Mhz:       info.Mhz,
+		})
+	}
+	return result
 }
 
 func ReadRAMInfoFromTx(tx kv.Tx) ([]byte, error) {

@@ -31,9 +31,7 @@ import (
 	"github.com/n42blockchain/N42/utils"
 )
 
-var (
-	_lmdb Lmdb
-)
+var _lmdb Lmdb
 
 type Lmdb struct {
 	*mdbx.Env
@@ -50,7 +48,7 @@ type Lmdb struct {
 	mDBI map[string]*DBI
 }
 
-func NewLMDB(c context.Context, nodeConfig *conf.NodeConfig, config *conf.DatabaseConfig) (*Lmdb, error) { //ethdb.Database
+func NewLMDB(c context.Context, nodeConfig *conf.NodeConfig, config *conf.DatabaseConfig) (*Lmdb, error) {
 	if _lmdb.running {
 		return &_lmdb, nil
 	}
@@ -62,7 +60,7 @@ func NewLMDB(c context.Context, nodeConfig *conf.NodeConfig, config *conf.Databa
 
 	if config.Debug {
 		if err := env.SetDebug(mdbx.LogLvlDebug, mdbx.DbgDoNotChange, mdbx.LoggerDoNotChange); err != nil {
-			log.Errorf("failed to set lmdb with deubg, err: %v", err)
+			log.Errorf("failed to set lmdb with debug, err: %v", err)
 			return nil, err
 		}
 	}
@@ -81,12 +79,12 @@ func NewLMDB(c context.Context, nodeConfig *conf.NodeConfig, config *conf.Databa
 		log.Errorf("failed to set geometry, err: %v", err)
 		return nil, err
 	}
+	dbPath := strings.TrimSuffix(config.DBPath, "/")
 	var file string
-	//todo how deal with windows?
-	if strings.HasSuffix(config.DBPath, "/") {
-		file = fmt.Sprintf("%s/%s%s", nodeConfig.DataDir, config.DBPath, config.DBName)
+	if dbPath == "" {
+		file = fmt.Sprintf("%s/%s", nodeConfig.DataDir, config.DBName)
 	} else {
-		file = fmt.Sprintf("%s/%s/%s", nodeConfig.DataDir, config.DBPath, config.DBName)
+		file = fmt.Sprintf("%s/%s/%s", nodeConfig.DataDir, dbPath, config.DBName)
 	}
 
 	if !utils.Exists(file) {
@@ -120,26 +118,23 @@ func NewLMDB(c context.Context, nodeConfig *conf.NodeConfig, config *conf.Databa
 	return &_lmdb, nil
 }
 
-func (m *Lmdb) OpenReader(dbName string) (reader db.IDatabaseReader, err error) {
+func (m *Lmdb) OpenReader(dbName string) (db.IDatabaseReader, error) {
 	return m.openDBI(dbName)
 }
 
-func (m *Lmdb) OpenWriter(dbName string) (writer db.IDatabaseWriter, err error) {
+func (m *Lmdb) OpenWriter(dbName string) (db.IDatabaseWriter, error) {
 	return m.openDBI(dbName)
 }
 
-func (m *Lmdb) Open(dbName string) (rw db.IDatabaseWriterReader, err error) {
+func (m *Lmdb) Open(dbName string) (db.IDatabaseWriterReader, error) {
 	return m.openDBI(dbName)
 }
 
-/*
-Snapshot:
-*/
 func (m *Lmdb) Snapshot() (db.ISnapshot, error) {
 	return newSnapshot(m.ctx, nil, m.Env)
 }
 
-func (m *Lmdb) openDBI(dbName string) (rw db.IDatabaseWriterReader, err error) {
+func (m *Lmdb) openDBI(dbName string) (db.IDatabaseWriterReader, error) {
 	m.mu.RLock()
 	if dbi, ok := m.mDBI[dbName]; ok {
 		m.mu.RUnlock()
@@ -149,20 +144,25 @@ func (m *Lmdb) openDBI(dbName string) (rw db.IDatabaseWriterReader, err error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Double-check after acquiring write lock.
+	if dbi, ok := m.mDBI[dbName]; ok {
+		return dbi, nil
+	}
+
 	dbi, err := newDBI(m.ctx, m.Env, dbName)
 	if err != nil {
 		return nil, err
 	}
-
 	m.mDBI[dbName] = dbi
 	return dbi, nil
 }
 
-func (m *Lmdb) Close() (err error) {
+func (m *Lmdb) Close() error {
 	m.once.Do(func() {
 		m.running = false
 		m.cancel()
 		m.Env.Close()
 	})
-	return
+	return nil
 }

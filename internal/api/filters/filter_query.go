@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
+
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	avmcommon "github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"math/big"
 )
 
 // FilterCriteria contains options for contract log filtering.
@@ -36,7 +37,7 @@ type FilterCriteria struct {
 // UnmarshalJSON sets *args fields with given data.
 func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 	type input struct {
-		BlockHash *avmcommon.Hash     `json:"blockHash"`
+		BlockHash *avmcommon.Hash      `json:"blockHash"`
 		FromBlock *jsonrpc.BlockNumber `json:"fromBlock"`
 		ToBlock   *jsonrpc.BlockNumber `json:"toBlock"`
 		Addresses interface{}          `json:"address"`

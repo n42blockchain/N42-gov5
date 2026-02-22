@@ -35,46 +35,19 @@ const methoddata = `
 ]`
 
 func TestMethodString(t *testing.T) {
-	var table = []struct {
-		method      string
-		expectation string
+	tests := []struct {
+		method string
+		want   string
 	}{
-		{
-			method:      "balance",
-			expectation: "function balance() view returns()",
-		},
-		{
-			method:      "send",
-			expectation: "function send(uint256 amount) returns()",
-		},
-		{
-			method:      "transfer",
-			expectation: "function transfer(address from, address to, uint256 value) returns(bool success)",
-		},
-		{
-			method:      "tuple",
-			expectation: "function tuple((uint256,uint256) a) returns()",
-		},
-		{
-			method:      "tupleArray",
-			expectation: "function tupleArray((uint256,uint256)[5] a) returns()",
-		},
-		{
-			method:      "tupleSlice",
-			expectation: "function tupleSlice((uint256,uint256)[] a) returns()",
-		},
-		{
-			method:      "complexTuple",
-			expectation: "function complexTuple((uint256,uint256)[5][] a) returns()",
-		},
-		{
-			method:      "fallback",
-			expectation: "fallback() returns()",
-		},
-		{
-			method:      "receive",
-			expectation: "receive() payable returns()",
-		},
+		{"balance", "function balance() view returns()"},
+		{"send", "function send(uint256 amount) returns()"},
+		{"transfer", "function transfer(address from, address to, uint256 value) returns(bool success)"},
+		{"tuple", "function tuple((uint256,uint256) a) returns()"},
+		{"tupleArray", "function tupleArray((uint256,uint256)[5] a) returns()"},
+		{"tupleSlice", "function tupleSlice((uint256,uint256)[] a) returns()"},
+		{"complexTuple", "function complexTuple((uint256,uint256)[5][] a) returns()"},
+		{"fallback", "fallback() returns()"},
+		{"receive", "receive() payable returns()"},
 	}
 
 	abi, err := JSON(strings.NewReader(methoddata))
@@ -82,64 +55,49 @@ func TestMethodString(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, test := range table {
-		var got string
-		if test.method == "fallback" {
-			got = abi.Fallback.String()
-		} else if test.method == "receive" {
-			got = abi.Receive.String()
-		} else {
-			got = abi.Methods[test.method].String()
-		}
-		if got != test.expectation {
-			t.Errorf("expected string to be %s, got %s", test.expectation, got)
-		}
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			var got string
+			switch tt.method {
+			case "fallback":
+				got = abi.Fallback.String()
+			case "receive":
+				got = abi.Receive.String()
+			default:
+				got = abi.Methods[tt.method].String()
+			}
+			if got != tt.want {
+				t.Errorf("expected %s, got %s", tt.want, got)
+			}
+		})
 	}
 }
 
 func TestMethodSig(t *testing.T) {
-	var cases = []struct {
+	tests := []struct {
 		method string
-		expect string
+		want   string
 	}{
-		{
-			method: "balance",
-			expect: "balance()",
-		},
-		{
-			method: "send",
-			expect: "send(uint256)",
-		},
-		{
-			method: "transfer",
-			expect: "transfer(address,address,uint256)",
-		},
-		{
-			method: "tuple",
-			expect: "tuple((uint256,uint256))",
-		},
-		{
-			method: "tupleArray",
-			expect: "tupleArray((uint256,uint256)[5])",
-		},
-		{
-			method: "tupleSlice",
-			expect: "tupleSlice((uint256,uint256)[])",
-		},
-		{
-			method: "complexTuple",
-			expect: "complexTuple((uint256,uint256)[5][])",
-		},
+		{"balance", "balance()"},
+		{"send", "send(uint256)"},
+		{"transfer", "transfer(address,address,uint256)"},
+		{"tuple", "tuple((uint256,uint256))"},
+		{"tupleArray", "tupleArray((uint256,uint256)[5])"},
+		{"tupleSlice", "tupleSlice((uint256,uint256)[])"},
+		{"complexTuple", "complexTuple((uint256,uint256)[5][])"},
 	}
+
 	abi, err := JSON(strings.NewReader(methoddata))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	for _, test := range cases {
-		got := abi.Methods[test.method].Sig
-		if got != test.expect {
-			t.Errorf("expected string to be %s, got %s", test.expect, got)
-		}
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			got := abi.Methods[tt.method].Sig
+			if got != tt.want {
+				t.Errorf("expected %s, got %s", tt.want, got)
+			}
+		})
 	}
 }

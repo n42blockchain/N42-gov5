@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,6 +29,7 @@ import (
 
 	mapset "github.com/deckarep/golang-set"
 	"github.com/gorilla/websocket"
+	"github.com/n42blockchain/N42/log"
 )
 
 const (
@@ -81,7 +81,7 @@ func wsHandshakeValidator(allowedOrigins []string) func(*http.Request) bool {
 		}
 	}
 	// allow localhost if no allowedOrigins are specified.
-	if len(origins.ToSlice()) == 0 {
+	if origins.Cardinality() == 0 {
 		origins.Add("http://localhost")
 		if hostname, err := os.Hostname(); err == nil {
 			origins.Add("http://" + hostname)
@@ -89,7 +89,7 @@ func wsHandshakeValidator(allowedOrigins []string) func(*http.Request) bool {
 	}
 	log.Debug(fmt.Sprintf("Allowed origin(s) for WS RPC interface %v", origins.ToSlice()))
 
-	f := func(req *http.Request) bool {
+	return func(req *http.Request) bool {
 		// Skip origin verification if no Origin header is present. The origin check
 		// is supposed to protect against browser based attacks. Browsers always set
 		// Origin. Non-browser software can put anything in origin and checking it doesn't
@@ -97,7 +97,6 @@ func wsHandshakeValidator(allowedOrigins []string) func(*http.Request) bool {
 		if _, ok := req.Header["Origin"]; !ok {
 			return true
 		}
-		// Verify origin against allow list.
 		origin := strings.ToLower(req.Header.Get("Origin"))
 		if allowAllOrigins || originIsAllowed(origins, origin) {
 			return true
@@ -105,8 +104,6 @@ func wsHandshakeValidator(allowedOrigins []string) func(*http.Request) bool {
 		log.Warn("Rejected WebSocket connection", "origin", origin)
 		return false
 	}
-
-	return f
 }
 
 type wsHandshakeError struct {
@@ -132,18 +129,13 @@ func originIsAllowed(allowedOrigins mapset.Set, browserOrigin string) bool {
 	return false
 }
 
-func ruleAllowsOrigin(allowedOrigin string, browserOrigin string) bool {
-	var (
-		allowedScheme, allowedHostname, allowedPort string
-		browserScheme, browserHostname, browserPort string
-		err                                         error
-	)
-	allowedScheme, allowedHostname, allowedPort, err = parseOriginURL(allowedOrigin)
+func ruleAllowsOrigin(allowedOrigin, browserOrigin string) bool {
+	allowedScheme, allowedHostname, allowedPort, err := parseOriginURL(allowedOrigin)
 	if err != nil {
 		log.Warn("Error parsing allowed origin specification", "spec", allowedOrigin, "error", err)
 		return false
 	}
-	browserScheme, browserHostname, browserPort, err = parseOriginURL(browserOrigin)
+	browserScheme, browserHostname, browserPort, err := parseOriginURL(browserOrigin)
 	if err != nil {
 		log.Warn("Error parsing browser 'Origin' field", "Origin", browserOrigin, "error", err)
 		return false
@@ -160,25 +152,19 @@ func ruleAllowsOrigin(allowedOrigin string, browserOrigin string) bool {
 	return true
 }
 
-func parseOriginURL(origin string) (string, string, string, error) {
+func parseOriginURL(origin string) (scheme, hostname, port string, err error) {
 	parsedURL, err := url.Parse(strings.ToLower(origin))
 	if err != nil {
 		return "", "", "", err
 	}
-	var scheme, hostname, port string
 	if strings.Contains(origin, "://") {
-		scheme = parsedURL.Scheme
-		hostname = parsedURL.Hostname()
-		port = parsedURL.Port()
-	} else {
-		scheme = ""
-		hostname = parsedURL.Scheme
-		port = parsedURL.Opaque
-		if hostname == "" {
-			hostname = origin
-		}
+		return parsedURL.Scheme, parsedURL.Hostname(), parsedURL.Port(), nil
 	}
-	return scheme, hostname, port, nil
+	hostname = parsedURL.Scheme
+	if hostname == "" {
+		hostname = origin
+	}
+	return "", hostname, parsedURL.Opaque, nil
 }
 
 // DialWebsocketWithDialer creates a new RPC client that communicates with a JSON-RPC server
@@ -234,9 +220,7 @@ func wsClientHeaders(endpoint, origin string) (string, http.Header, error) {
 
 type websocketCodec struct {
 	*jsonCodec
-	conn *websocket.Conn
-	//info PeerInfo
-
+	conn      *websocket.Conn
 	wg        sync.WaitGroup
 	pingReset chan struct{}
 }
@@ -251,16 +235,7 @@ func newWebsocketCodec(conn *websocket.Conn, host string, req http.Header) Serve
 		jsonCodec: NewFuncCodec(conn, conn.WriteJSON, conn.ReadJSON).(*jsonCodec),
 		conn:      conn,
 		pingReset: make(chan struct{}, 1),
-		//info: PeerInfo{
-		//	Transport:  "ws",
-		//	RemoteAddr: conn.RemoteAddr().String(),
-		//},
 	}
-	// Fill in connection details.
-	//wc.info.HTTP.Host = host
-	//wc.info.HTTP.Origin = req.Get("Origin")
-	//wc.info.HTTP.UserAgent = req.Get("User-Agent")
-	// Start pinger.
 	wc.wg.Add(1)
 	go wc.pingLoop()
 	return wc
@@ -270,10 +245,6 @@ func (wc *websocketCodec) close() {
 	wc.jsonCodec.close()
 	wc.wg.Wait()
 }
-
-//func (wc *websocketCodec) peerInfo() PeerInfo {
-//	return wc.info
-//}
 
 func (wc *websocketCodec) writeJSON(ctx context.Context, v interface{}) error {
 	err := wc.jsonCodec.writeJSON(ctx, v)

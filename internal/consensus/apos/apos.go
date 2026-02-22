@@ -23,37 +23,34 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/internal/consensus/misc"
-
-	"github.com/n42blockchain/N42/common/crypto/bls"
-	"github.com/n42blockchain/N42/internal/api"
-	"github.com/n42blockchain/N42/modules/rawdb"
-
-	"github.com/n42blockchain/N42/accounts"
-	n42Common "github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/common/transaction"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/common/rlp"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
-
 	"io"
 	"sync"
 	"time"
 
-	"github.com/n42blockchain/N42/lib/kv"
+	lru "github.com/hashicorp/golang-lru"
+	"github.com/holiman/uint256"
+	"golang.org/x/crypto/sha3"
+
+	"github.com/n42blockchain/N42/accounts"
+	n42Common "github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/crypto/bls"
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
-
-	lru "github.com/hashicorp/golang-lru"
-	"golang.org/x/crypto/sha3"
 )
 
 const (
@@ -74,8 +71,6 @@ var (
 
 	nonceAuthVote = hexutil.MustDecode("0xffffffffffffffff") // Magic nonce number to vote on adding a new signer
 	nonceDropVote = hexutil.MustDecode("0x0000000000000000") // Magic nonce number to vote on removing a signer.
-
-	//uncleHash = avmtypes.CalcUncleHash(nil) // Always Keccak256(RLP([])) as uncles are meaningless outside of PoW.
 
 	diffInTurn = uint256.NewInt(2) // Block difficulty for in-turn signatures
 	diffNoTurn = uint256.NewInt(1) // Block difficulty for out-of-turn signatures
@@ -152,7 +147,6 @@ var (
 )
 
 // SignerFn hashes and signs the data to be signed by a backing account.
-// todo types.address to  account
 type SignerFn func(signer accounts.Account, mimeType string, message []byte) ([]byte, error)
 
 // ecrecover extracts the Ethereum account address from a signed header.
@@ -310,14 +304,6 @@ func (c *APos) verifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHe
 	if checkpoint && signersBytes%types.AddressLength != 0 {
 		return errInvalidCheckpointSigners
 	}
-	// Ensure that the mix digest is zero as we don't have fork protection currently
-	//if header.MixDigest != (types.Hash{}) {
-	//	return errInvalidMixDigest
-	//}
-	// Ensure that the block doesn't contain any uncles which are meaningless in PoA
-	//if header.UncleHash != uncleHash {
-	//	return errInvalidUncleHash
-	//}
 	// Ensure that the block's difficulty is meaningful (may not be correct at this point)
 	if number > 0 {
 		if header.Difficulty.IsZero() || (header.Difficulty.Cmp(diffInTurn) != 0 && header.Difficulty.Cmp(diffNoTurn) != 0) {
@@ -495,12 +481,8 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 	return snap, err
 }
 
-// VerifyUncles implements consensus.Engine, always returning an error for any
-// uncles as this consensus mechanism doesn't permit uncles.
+// VerifyUncles implements consensus.Engine. Uncles are not used in PoA.
 func (c *APos) VerifyUncles(chain consensus.ConsensusChainReader, block block.IBlock) error {
-	//if len(block.Uncles()) > 0 {
-	//	return errors.New("uncles not allowed")
-	//}
 	return nil
 }
 
@@ -658,9 +640,6 @@ func (c *APos) Rewards(tx kv.RwTx, header block.IHeader, state *state.IntraBlock
 // Finalize implements consensus.Engine, ensuring no uncles are set, nor block
 // rewards given.
 func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader, state *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
-	// No block rewards in PoA, so the state remains as is and uncles are dropped
-	//chain.Config().IsEIP158(header.Number)
-
 	rewards, unpayMap, err := doReward(c.chainConfig, state, header.(*block.Header), chain)
 	if err != nil {
 		return nil, nil, err
@@ -686,7 +665,6 @@ func (c *APos) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header blo
 	return block, rewards, unpay, nil
 }
 
-// Authorize injects a private key into the consensus engine to mint new blocks
 // Authorize injects a private key into the consensus engine to mint new blocks.
 func (c *APos) Authorize(signer types.Address, signFn SignerFn) {
 	c.lock.Lock()
@@ -746,8 +724,8 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 	}
 
 	if c.chainConfig.IsBeijing(header.Number.Uint64()) {
-		ctx, cancle := context.WithTimeout(c.ctx, delay)
-		defer cancle()
+		ctx, cancel := context.WithTimeout(c.ctx, delay)
+		defer cancel()
 		member := c.CountDepositor()
 		aggSign, verifiers, err := api.SignMerge(ctx, header, member)
 		if err != nil {
@@ -917,10 +895,7 @@ func (c *APos) CountDepositor() uint64 {
 	if err := c.db.View(c.ctx, func(tx kv.Tx) error {
 		var err error
 		count, err = rawdb.DepositNum(tx)
-		if err != nil {
-			return err
-		}
-		return nil
+		return err
 	}); err != nil {
 		log.Errorf("rawdb.DepositNum() failed, %v", err)
 		return 0

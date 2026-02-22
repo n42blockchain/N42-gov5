@@ -33,10 +33,7 @@ func (k ConfigKey) FromDB(db kv.RoDB) (enabled bool) {
 	if err := db.View(context.Background(), func(tx kv.Tx) error {
 		var err error
 		enabled, err = k.Enabled(tx)
-		if err != nil {
-			return err
-		}
-		return nil
+		return err
 	}); err != nil {
 		panic(err)
 	}
@@ -50,14 +47,9 @@ func (k ConfigKey) EnsureNotChanged(tx kv.RwTx, value bool) (ok, enabled bool, e
 	return kv.EnsureNotChangedBool(tx, kv.DatabaseInfo, k, value)
 }
 func (k ConfigKey) ForceWrite(tx kv.RwTx, enabled bool) error {
+	v := byte(0)
 	if enabled {
-		if err := tx.Put(kv.DatabaseInfo, k, []byte{1}); err != nil {
-			return err
-		}
-	} else {
-		if err := tx.Put(kv.DatabaseInfo, k, []byte{0}); err != nil {
-			return err
-		}
+		v = 1
 	}
-	return nil
+	return tx.Put(kv.DatabaseInfo, k, []byte{v})
 }

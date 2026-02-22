@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+
 func TestExamplePair(t *testing.T) {
 	// This implements the tripartite Diffie-Hellman algorithm from "A One
 	// Round Protocol for Tripartite Diffie-Hellman", A. Joux.

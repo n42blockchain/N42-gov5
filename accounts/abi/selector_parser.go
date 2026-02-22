@@ -117,9 +117,8 @@ func parseType(unescapedSelector string) (interface{}, string, error) {
 	}
 	if unescapedSelector[0] == '(' {
 		return parseCompositeType(unescapedSelector)
-	} else {
-		return parseElementaryType(unescapedSelector)
 	}
+	return parseElementaryType(unescapedSelector)
 }
 
 func assembleArgs(args []interface{}) ([]ArgumentMarshaling, error) {

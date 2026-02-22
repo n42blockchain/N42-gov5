@@ -33,10 +33,6 @@ import (
 
 const MaxUint32 = 1<<32 - 1
 
-type ToBitamp interface {
-	ToBitmap() (*roaring64.Bitmap, error)
-}
-
 var roaringPool = sync.Pool{
 	New: func() any {
 		return roaring.New()
@@ -213,8 +209,6 @@ func Get(db kv.Tx, bucket string, key []byte, from, to uint32) (*roaring.Bitmap,
 }
 
 // SeekInBitmap - returns value in bitmap which is >= n
-//
-//nolint:deadcode
 func SeekInBitmap(m *roaring.Bitmap, n uint32) (found uint32, ok bool) {
 	i := m.Iterator()
 	i.AdvanceIfNeeded(n)
@@ -225,7 +219,7 @@ func SeekInBitmap(m *roaring.Bitmap, n uint32) (found uint32, ok bool) {
 	return found, ok
 }
 
-// CutLeft - cut from bitmap `targetSize` bytes from left
+// CutLeft64 - cut from bitmap `targetSize` bytes from left
 // removing lft part from `bm`
 // returns nil on zero cardinality
 func CutLeft64(bm *roaring64.Bitmap, sizeLimit uint64) *roaring64.Bitmap {
@@ -388,11 +382,22 @@ func SeekInBitmap64(m *roaring64.Bitmap, n uint64) (found uint64, ok bool) {
 
 func Walk(c kv.Cursor, startkey []byte, fixedbits int, walker func(k, v []byte) (bool, error)) error {
 	fixedbytes, mask := Bytesmask(fixedbits)
+	matchesPrefix := func(k []byte) bool {
+		if len(k) < fixedbytes {
+			return false
+		}
+		if fixedbits == 0 {
+			return true
+		}
+		return bytes.Equal(k[:fixedbytes-1], startkey[:fixedbytes-1]) &&
+			(k[fixedbytes-1]&mask) == (startkey[fixedbytes-1]&mask)
+	}
+
 	k, v, err := c.Seek(startkey)
 	if err != nil {
 		return err
 	}
-	for k != nil && len(k) >= fixedbytes && (fixedbits == 0 || bytes.Equal(k[:fixedbytes-1], startkey[:fixedbytes-1]) && (k[fixedbytes-1]&mask) == (startkey[fixedbytes-1]&mask)) {
+	for k != nil && matchesPrefix(k) {
 		goOn, err := walker(k, v)
 		if err != nil {
 			return err

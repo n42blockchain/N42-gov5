@@ -25,8 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/n42blockchain/N42/lib/common"
 	"github.com/erigontech/mdbx-go/mdbx"
+
+	"github.com/n42blockchain/N42/lib/common"
 )
 
 // Adapts an RoDB to the RwDB interface (invoking write operations results in error)
@@ -61,6 +62,7 @@ func DefaultPageSize() uint64 {
 // BigChunks - read `table` by big chunks - restart read transaction after each 1 minutes
 func BigChunks(db RoDB, table string, from []byte, walker func(tx Tx, k, v []byte) (bool, error)) error {
 	rollbackEvery := time.NewTicker(1 * time.Minute)
+	defer rollbackEvery.Stop()
 
 	var stop bool
 	for !stop {
@@ -128,7 +130,7 @@ var ErrChanged = fmt.Errorf("key must not change")
 func EnsureNotChangedBool(tx GetPut, bucket string, k []byte, value bool) (ok, enabled bool, err error) {
 	vBytes, err := tx.GetOne(bucket, k)
 	if err != nil {
-		return false, enabled, err
+		return false, false, err
 	}
 	if vBytes == nil {
 		if value {
@@ -137,7 +139,7 @@ func EnsureNotChangedBool(tx GetPut, bucket string, k []byte, value bool) (ok, e
 			vBytes = bytesFalse
 		}
 		if err := tx.Put(bucket, k, vBytes); err != nil {
-			return false, enabled, err
+			return false, false, err
 		}
 	}
 
@@ -154,11 +156,9 @@ func GetBool(tx Getter, bucket string, k []byte) (enabled bool, err error) {
 }
 
 func ReadAhead(ctx context.Context, db RoDB, progress *atomic.Bool, table string, from []byte, amount uint32) (clean func()) {
-	if db == nil {
-		return func() {}
-	}
-	if ok := progress.CompareAndSwap(false, true); !ok {
-		return func() {}
+	noop := func() {}
+	if db == nil || !progress.CompareAndSwap(false, true) {
+		return noop
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	wg := sync.WaitGroup{}

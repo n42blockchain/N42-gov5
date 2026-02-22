@@ -4,15 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/paulbellamy/ratecounter"
+
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common/block"
 	astLog "github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
-	"time"
-
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/paulbellamy/ratecounter"
 )
 
 const (
@@ -39,7 +40,6 @@ func (s *Service) roundRobinSync(highestExpectedBlockNr *uint256.Int) error {
 
 // syncToFinalizedBlockNr sync from head to best known finalized epoch.
 func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlockNr *uint256.Int) error {
-
 	if s.cfg.Chain.CurrentBlock().Number64().Cmp(highestExpectedBlockNr) >= 0 {
 		// No need to sync, already synced to the finalized slot.
 		log.Debug("Already synced to finalized block number")
@@ -132,29 +132,29 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 
 // skipProcessedBlocks filters out blocks that have already been processed by the chain.
 // It removes leading blocks whose number is at or below the chain's current head,
-// returning the remaining unprocessed blocks. Returns an empty slice if all blocks
+// returning the remaining unprocessed blocks. Returns nil if all blocks
 // have already been processed.
 func (s *Service) skipProcessedBlocks(ctx context.Context, blocks []block.IBlock) ([]block.IBlock, error) {
-	if len(blocks) == 0 {
-		return blocks, nil
-	}
+	headNum := s.cfg.Chain.CurrentBlock().Number64().Uint64()
 
-	firstBlock := blocks[0]
-	for s.cfg.Chain.CurrentBlock().Number64().Uint64() >= firstBlock.Number64().Uint64() {
+	skip := 0
+	for skip < len(blocks) && headNum >= blocks[skip].Number64().Uint64() {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if len(blocks) == 1 {
-			log.Debug("All blocks in batch already processed, skipping",
-				"currentBlock", s.cfg.Chain.CurrentBlock().Number64().Uint64(),
-				"batchBlock", firstBlock.Number64().Uint64())
-			return nil, nil
-		}
-		blocks = blocks[1:]
-		firstBlock = blocks[0]
+		skip++
 	}
 
-	return blocks, nil
+	if skip == 0 {
+		return blocks, nil
+	}
+	if skip == len(blocks) {
+		log.Debug("All blocks in batch already processed, skipping",
+			"currentBlock", headNum,
+			"batchBlock", blocks[len(blocks)-1].Number64().Uint64())
+		return nil, nil
+	}
+	return blocks[skip:], nil
 }
 
 // updatePeerScorerStats adjusts monitored metrics for a peer.
@@ -162,17 +162,16 @@ func (s *Service) updatePeerScorerStats(pid peer.ID, startBlockNr *uint256.Int) 
 	if pid == "" {
 		return
 	}
-	headBlockNr := s.cfg.Chain.CurrentBlock().Number64()
-	if startBlockNr.Uint64() >= headBlockNr.Uint64() {
+	headNum := s.cfg.Chain.CurrentBlock().Number64().Uint64()
+	startNum := startBlockNr.Uint64()
+	if startNum >= headNum {
 		return
 	}
-	if diff := headBlockNr.Uint64() - startBlockNr.Uint64(); diff > 0 {
-		scorer := s.cfg.P2P.Peers().Scorers().BlockProviderScorer()
-		scorer.IncrementProcessedBlocks(pid, diff)
-	}
+	scorer := s.cfg.P2P.Peers().Scorers().BlockProviderScorer()
+	scorer.IncrementProcessedBlocks(pid, headNum-startNum)
 }
 
-// logBatchSyncStatus and increments the block processing counter.
+// logBatchSyncStatus increments the block processing counter and logs sync progress.
 // Throttled to log every 5 seconds or every 10000 blocks to reduce log spam.
 func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 	s.counter.Incr(int64(len(blks)))
@@ -217,20 +216,6 @@ func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 	}
 
 	astLog.PrintProgressBar("Syncing", currentBlockNum, targetNum, rate, eta, len(s.cfg.P2P.Peers().Connected()))
-}
-
-// formatNumber formats large numbers with K/M suffixes for readability.
-func formatNumber(n uint64) string {
-	switch {
-	case n >= 1_000_000_000:
-		return fmt.Sprintf("%.2fB", float64(n)/1_000_000_000)
-	case n >= 1_000_000:
-		return fmt.Sprintf("%.2fM", float64(n)/1_000_000)
-	case n >= 10_000:
-		return fmt.Sprintf("%.1fK", float64(n)/1_000)
-	default:
-		return fmt.Sprintf("%d", n)
-	}
 }
 
 // formatDuration formats a duration in a human-readable compact format.

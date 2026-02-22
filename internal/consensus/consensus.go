@@ -138,20 +138,21 @@ type Engine interface {
 	Close() error
 }
 
-// EngineReader are read-only methods of the consensus engine
-// All of these methods should have thread-safe implementations
+// EngineReader defines the read-only methods of the consensus engine.
+// All implementations must be thread-safe.
 type EngineReader interface {
 	// Author retrieves the Ethereum address of the account that minted the given
 	// block, which may be different from the header's coinbase if a consensus
 	// engine is based on signatures.
 	Author(header block.IHeader) (types.Address, error)
 
-	// Service transactions are free and don't pay baseFee after EIP-1559
+	// IsServiceTransaction returns true if the sender is a service transaction
+	// (free, no baseFee after EIP-1559).
 	IsServiceTransaction(sender types.Address, syscall SystemCall) bool
 
+	// Type returns the consensus engine type.
 	Type() params.ConsensusType
 }
 
-var (
-	SystemAddress = types.HexToAddress("0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE")
-)
+// SystemAddress is the reserved system contract address used for consensus operations.
+var SystemAddress = types.HexToAddress("0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE")

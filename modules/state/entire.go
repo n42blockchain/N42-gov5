@@ -18,14 +18,15 @@ package state
 
 import (
 	"bytes"
-	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/rlp"
-	types2 "github.com/n42blockchain/N42/common/avmtypes"
-	"github.com/n42blockchain/N42/modules"
 	"io"
 	"unsafe"
+
+	"github.com/n42blockchain/N42/common/account"
+	types2 "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/modules"
 )
 
 type GetOneFun func(table string, key []byte) ([]byte, error)
@@ -59,27 +60,10 @@ type Entire struct {
 }
 
 func (e Entire) Clone() Entire {
-	var c Entire
-	//c.Header = &types2.Header{
-	//	ParentHash:  e.Header.ParentHash,
-	//	UncleHash:   e.Header.UncleHash,
-	//	Coinbase:    e.Header.Coinbase,
-	//	Root:        e.Header.Root,
-	//	TxHash:      e.Header.TxHash,
-	//	ReceiptHash: e.Header.ReceiptHash,
-	//	Bloom:       e.Header.Bloom,
-	//	Difficulty:  e.Header.Difficulty,
-	//	Number:      e.Header.Number,
-	//	GasLimit:    e.Header.GasLimit,
-	//	GasUsed:     e.Header.GasUsed,
-	//	Time:        e.Header.Time,
-	//	Extra:       e.Header.Extra,
-	//	MixDigest:   e.Header.MixDigest,
-	//	Nonce:       e.Header.Nonce,
-	//	BaseFee:     e.Header.BaseFee,
-	//}
 	copyHeader := *e.Header
-	c.Header = &copyHeader
+	c := Entire{
+		Header: &copyHeader,
+	}
 	c.Uncles = e.Uncles
 	c.Transactions = e.Transactions
 	c.Proof = e.Proof
@@ -214,9 +198,8 @@ func (s *Snapshot) AddAccount(address types.Address, account *account.StateAccou
 	value := make([]byte, account.EncodingLengthForStorage())
 	account.EncodeForStorage(value)
 	s.Items = append(s.Items, &Item{Key: address[:], Value: value})
-	ss := address[:]
-	//fmt.Println("address", address.Hex())
-	s.accounts[*(*string)(unsafe.Pointer(&ss))] = len(s.Items)
+	addrBytes := address[:]
+	s.accounts[*(*string)(unsafe.Pointer(&addrBytes))] = len(s.Items)
 }
 
 func (s *Snapshot) AddStorage(address types.Address, key *types.Hash, incarnation uint16, value []byte) {
@@ -225,7 +208,6 @@ func (s *Snapshot) AddStorage(address types.Address, key *types.Hash, incarnatio
 	}
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
 	s.Items = append(s.Items, &Item{Key: compositeKey, Value: value})
-	//fmt.Println("address", address.Hex(), key.Hex())
 	s.storage[*(*string)(unsafe.Pointer(&compositeKey))] = len(s.storage)
 }
 

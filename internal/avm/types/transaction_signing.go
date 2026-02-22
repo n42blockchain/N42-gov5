@@ -20,11 +20,13 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/params"
 	"math/big"
+
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/params"
 )
 
 var (
@@ -33,7 +35,6 @@ var (
 	ErrInvalidTxType        = errors.New("transaction type not valid in this context")
 	ErrTxTypeNotSupported   = errors.New("transaction type not supported")
 	ErrGasFeeCapTooLow      = errors.New("fee cap less than base fee")
-	errShortTypedTx         = errors.New("typed transaction too short")
 	ErrInvalidChainId       = errors.New("invalid chain id for signer")
 	ErrInvalidSignatureSize = errors.New("invalid signature size")
 )
@@ -47,20 +48,16 @@ type sigCache struct {
 
 // MakeSigner returns a Signer based on the given chain blockchain and block number.
 func MakeSigner(config *params.ChainConfig, blockNumber *big.Int) Signer {
-	var signer Signer
 	switch {
 	case config.IsLondon(blockNumber.Uint64()):
-		signer = NewLondonSigner(config.ChainID)
+		return NewLondonSigner(config.ChainID)
 	case config.IsBerlin(blockNumber.Uint64()):
-		signer = NewEIP2930Signer(config.ChainID)
-	//case config.IsEIP155(blockNumber):
-	//	signer = NewEIP155Signer(config.ChainID)
+		return NewEIP2930Signer(config.ChainID)
 	case config.IsHomestead(blockNumber.Uint64()):
-		signer = HomesteadSigner{}
+		return HomesteadSigner{}
 	default:
-		signer = FrontierSigner{}
+		return FrontierSigner{}
 	}
-	return signer
 }
 
 // LatestSigner returns the 'most permissive' Signer available for the given chain
@@ -78,9 +75,6 @@ func LatestSigner(config *params.ChainConfig) Signer {
 		if config.BerlinBlock != nil {
 			return NewEIP2930Signer(config.ChainID)
 		}
-		//if config.EIP155Block != nil {
-		//	return NewEIP155Signer(config.ChainID)
-		//}
 	}
 	return HomesteadSigner{}
 }

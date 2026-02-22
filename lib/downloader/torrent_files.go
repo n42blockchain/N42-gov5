@@ -176,40 +176,48 @@ func (tf *AtomicTorrentFS) ProhibitNewDownloads(t string) error {
 	return tf.prohibitNewDownloads(t)
 }
 
-func (tf *AtomicTorrentFS) prohibitNewDownloads(t string) error {
-	// open or create file ProhibitNewDownloadsFileName
+func (tf *AtomicTorrentFS) readProhibitedList() ([]string, error) {
 	f, err := os.OpenFile(filepath.Join(tf.dir, ProhibitNewDownloadsFileName), os.O_CREATE|os.O_RDONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("open file: %w", err)
+		return nil, fmt.Errorf("open file: %w", err)
 	}
 	defer f.Close()
-	var prohibitedList []string
-	torrentListJsonBytes, err := io.ReadAll(f)
+
+	data, err := io.ReadAll(f)
 	if err != nil {
-		return fmt.Errorf("read file: %w", err)
+		return nil, fmt.Errorf("read file: %w", err)
 	}
-	if len(torrentListJsonBytes) > 0 {
-		if err := json.Unmarshal(torrentListJsonBytes, &prohibitedList); err != nil {
-			return fmt.Errorf("unmarshal: %w", err)
+
+	var list []string
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &list); err != nil {
+			return nil, fmt.Errorf("unmarshal: %w", err)
 		}
+	}
+	return list, nil
+}
+
+func (tf *AtomicTorrentFS) prohibitNewDownloads(t string) error {
+	prohibitedList, err := tf.readProhibitedList()
+	if err != nil {
+		return err
 	}
 	if slices.Contains(prohibitedList, t) {
 		return nil
 	}
 	prohibitedList = append(prohibitedList, t)
-	f.Close()
 
 	// write new prohibited list by opening the file in truncate mode
-	f, err = os.OpenFile(filepath.Join(tf.dir, ProhibitNewDownloadsFileName), os.O_TRUNC|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(filepath.Join(tf.dir, ProhibitNewDownloadsFileName), os.O_TRUNC|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("open file for writing: %w", err)
 	}
 	defer f.Close()
-	prohibitedListJsonBytes, err := json.Marshal(prohibitedList)
+	data, err := json.Marshal(prohibitedList)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if _, err := f.Write(prohibitedListJsonBytes); err != nil {
+	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
 
@@ -223,20 +231,9 @@ func (tf *AtomicTorrentFS) NewDownloadsAreProhibited(name string) (bool, error) 
 }
 
 func (tf *AtomicTorrentFS) newDownloadsAreProhibited(name string) (bool, error) {
-	f, err := os.OpenFile(filepath.Join(tf.dir, ProhibitNewDownloadsFileName), os.O_CREATE|os.O_RDONLY, 0644)
+	prohibitedList, err := tf.readProhibitedList()
 	if err != nil {
 		return false, err
-	}
-	defer f.Close()
-	var prohibitedList []string
-	torrentListJsonBytes, err := io.ReadAll(f)
-	if err != nil {
-		return false, fmt.Errorf("NewDownloadsAreProhibited: read file: %w", err)
-	}
-	if len(torrentListJsonBytes) > 0 {
-		if err := json.Unmarshal(torrentListJsonBytes, &prohibitedList); err != nil {
-			return false, fmt.Errorf("NewDownloadsAreProhibited: unmarshal: %w", err)
-		}
 	}
 	for _, p := range prohibitedList {
 		if strings.Contains(name, p) {

@@ -232,23 +232,26 @@ func (h *handler) handleResponse(msg *jsonrpcMessage) {
 	op.resp <- msg
 }
 
-func (h *handler) handleCallMsg(ctx *callProc, msg *jsonrpcMessage) *jsonrpcMessage {
+func (h *handler) handleCallMsg(cp *callProc, msg *jsonrpcMessage) *jsonrpcMessage {
 	start := time.Now()
 	switch {
-	//case msg.isNotification():
 	case msg.isCall():
 		h.log.Trace("begin "+msg.Method, "p", string(msg.Params))
-		resp := h.handleCall(ctx, msg)
-		var ctx []interface{}
-		ctx = append(ctx, "reqid", idForLog{msg.ID}, "t", time.Since(start), "p", string(msg.Params), "r", string(resp.Result))
+		resp := h.handleCall(cp, msg)
+		logFields := []interface{}{
+			"reqid", idForLog{msg.ID},
+			"t", time.Since(start),
+			"p", string(msg.Params),
+			"r", string(resp.Result),
+		}
 		if resp.Error != nil {
-			ctx = append(ctx, "err", resp.Error.Message)
+			logFields = append(logFields, "err", resp.Error.Message)
 			if resp.Error.Data != nil {
-				ctx = append(ctx, "errdata", resp.Error.Data)
+				logFields = append(logFields, "errdata", resp.Error.Data)
 			}
-			h.log.Warn("Served "+msg.Method, ctx...)
+			h.log.Warn("Served "+msg.Method, logFields...)
 		} else {
-			h.log.Trace("Served "+msg.Method, ctx...)
+			h.log.Trace("Served "+msg.Method, logFields...)
 		}
 		return resp
 	case msg.hasValidID():
@@ -278,12 +281,11 @@ func (h *handler) handleCall(cp *callProc, msg *jsonrpcMessage) *jsonrpcMessage 
 	start := time.Now()
 	answer := h.runMethod(cp.ctx, msg, callb, args)
 
-	// Collect the statistics for RPC calls if metrics is enabled.
-	// We only care about pure rpc call. Filter out subscription.
+	// Collect metrics for RPC calls, excluding unsubscribe operations.
 	if callb != h.unsubscribeCb {
 		rpcRequestGauge.Inc()
 		if answer != nil && answer.Error != nil {
-			failedReqeustGauge.Inc()
+			failedRequestGauge.Inc()
 		}
 		newRPCServingTimerMS(msg.Method, answer == nil || answer.Error == nil).UpdateDuration(start)
 	}

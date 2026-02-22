@@ -18,17 +18,17 @@ package main
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/log"
-	"github.com/urfave/cli/v2"
 	"os"
 
-	"github.com/n42blockchain/N42/cmd/utils"
+	"github.com/urfave/cli/v2"
 
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/keystore"
+	"github.com/n42blockchain/N42/cmd/utils"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/node"
+	"github.com/n42blockchain/N42/log"
 )
 
 var (

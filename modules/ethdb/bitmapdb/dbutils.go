@@ -19,7 +19,6 @@ package bitmapdb
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/n42blockchain/N42/modules/ethdb"
 	"math"
 	"sort"
 	"sync"
@@ -27,8 +26,10 @@ import (
 	"github.com/RoaringBitmap/roaring"
 	"github.com/RoaringBitmap/roaring/roaring64"
 	"github.com/c2h5oh/datasize"
+
 	libcommon "github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/ethdb"
 )
 
 var roaringPool = sync.Pool{
@@ -214,7 +215,7 @@ func SeekInBitmap(m *roaring.Bitmap, n uint32) (found uint32, ok bool) {
 	return found, ok
 }
 
-// CutLeft - cut from bitmap `targetSize` bytes from left
+// CutLeft64 - cut from bitmap `targetSize` bytes from left
 // removing lft part from `bm`
 // returns nil on zero cardinality
 func CutLeft64(bm *roaring64.Bitmap, sizeLimit uint64) *roaring64.Bitmap {

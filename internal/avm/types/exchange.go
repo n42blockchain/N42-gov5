@@ -1,22 +1,23 @@
 package types
 
 import (
-	"bytes"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/transaction"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/common/rlp"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/params"
-	"golang.org/x/crypto/sha3"
 	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/holiman/uint256"
+	"golang.org/x/crypto/sha3"
+
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/params"
 )
 
 // hasherPool holds LegacyKeccak256 hashers for rlpHash.
@@ -35,8 +36,7 @@ func ToastAddress(addr *avmutil.Address) *types.Address {
 	if addr == nil {
 		return nil
 	}
-	nullAddress := avmutil.Address{}
-	if bytes.Equal(addr[:], nullAddress[:]) {
+	if *addr == (avmutil.Address{}) {
 		return &types.Address{0}
 	}
 	var a types.Address
@@ -45,27 +45,31 @@ func ToastAddress(addr *avmutil.Address) *types.Address {
 }
 
 func ToastAccessList(accessList AccessList) transaction.AccessList {
-	var txAccessList transaction.AccessList
-	for _, accessTuple := range accessList {
-		txAccessTuple := new(transaction.AccessTuple)
-		txAccessTuple.Address = *ToastAddress(&accessTuple.Address)
-		for _, hash := range accessTuple.StorageKeys {
-			txAccessTuple.StorageKeys = append(txAccessTuple.StorageKeys, ToastHash(hash))
+	txAccessList := make(transaction.AccessList, len(accessList))
+	for i, accessTuple := range accessList {
+		storageKeys := make([]types.Hash, len(accessTuple.StorageKeys))
+		for j, hash := range accessTuple.StorageKeys {
+			storageKeys[j] = ToastHash(hash)
 		}
-		txAccessList = append(txAccessList, *txAccessTuple)
+		txAccessList[i] = transaction.AccessTuple{
+			Address:     *ToastAddress(&accessTuple.Address),
+			StorageKeys: storageKeys,
+		}
 	}
 	return txAccessList
 }
 
 func FromastAccessList(accessList transaction.AccessList) AccessList {
-	var txAccessList AccessList
-	for _, accessTuple := range accessList {
-		txAccessTuple := new(AccessTuple)
-		txAccessTuple.Address = *FromastAddress(&accessTuple.Address)
-		for _, hash := range accessTuple.StorageKeys {
-			txAccessTuple.StorageKeys = append(txAccessTuple.StorageKeys, FromastHash(hash))
+	txAccessList := make(AccessList, len(accessList))
+	for i, accessTuple := range accessList {
+		storageKeys := make([]avmutil.Hash, len(accessTuple.StorageKeys))
+		for j, hash := range accessTuple.StorageKeys {
+			storageKeys[j] = FromastHash(hash)
 		}
-		txAccessList = append(txAccessList, *txAccessTuple)
+		txAccessList[i] = AccessTuple{
+			Address:     *FromastAddress(&accessTuple.Address),
+			StorageKeys: storageKeys,
+		}
 	}
 	return txAccessList
 }
@@ -96,9 +100,9 @@ func ToastLog(log *Log) *block.Log {
 		return nil
 	}
 
-	var topics []types.Hash
-	for _, topic := range log.Topics {
-		topics = append(topics, ToastHash(topic))
+	topics := make([]types.Hash, len(log.Topics))
+	for i, topic := range log.Topics {
+		topics[i] = ToastHash(topic)
 	}
 
 	return &block.Log{
@@ -119,9 +123,9 @@ func FromastLog(log *block.Log) *Log {
 		return nil
 	}
 
-	var topics []avmutil.Hash
-	for _, topic := range log.Topics {
-		topics = append(topics, FromastHash(topic))
+	topics := make([]avmutil.Hash, len(log.Topics))
+	for i, topic := range log.Topics {
+		topics[i] = FromastHash(topic)
 	}
 
 	return &Log{
@@ -138,19 +142,19 @@ func FromastLog(log *block.Log) *Log {
 }
 
 func ToastLogs(logs []*Log) []*block.Log {
-	var astLogs []*block.Log
-	for _, log := range logs {
-		astLogs = append(astLogs, ToastLog(log))
+	result := make([]*block.Log, len(logs))
+	for i, l := range logs {
+		result[i] = ToastLog(l)
 	}
-	return astLogs
+	return result
 }
 
 func FromastLogs(astLogs []*block.Log) []*Log {
-	var logs []*Log
-	for _, log := range astLogs {
-		logs = append(logs, FromastLog(log))
+	result := make([]*Log, len(astLogs))
+	for i, l := range astLogs {
+		result[i] = FromastLog(l)
 	}
-	return logs
+	return result
 }
 
 type Transaction struct {
@@ -275,7 +279,7 @@ func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, e
 	return &Transaction{inner: cpy, time: tx.time}, nil
 }
 
-// UnmarshalBinary
+// UnmarshalBinary decodes the canonical encoding of a transaction.
 func (tx *Transaction) UnmarshalBinary(b []byte) error {
 	if len(b) > 0 && b[0] > 0x7f {
 		// It's a legacy transaction.
@@ -325,7 +329,6 @@ func (tx *Transaction) setDecoded(inner TxData, size int) {
 }
 
 func (tx *Transaction) ToastTransaction(chainConfig *params.ChainConfig, blockNumber *big.Int) (*transaction.Transaction, error) {
-
 	var inner transaction.TxData
 	gasPrice, overflow := uint256.FromBig(tx.GasPrice())
 	if overflow {
@@ -403,14 +406,11 @@ func (tx *Transaction) ToastTransaction(chainConfig *params.ChainConfig, blockNu
 		log.Debug("tx type is DynamicFeeTxType")
 	}
 
-	astTx := transaction.NewTx(inner)
-	return astTx, nil
+	return transaction.NewTx(inner), nil
 }
 
 func (tx *Transaction) FromastTransaction(astTx *transaction.Transaction) {
-
 	var inner TxData
-
 	gasPrice := astTx.GasPrice().ToBig()
 	vl := astTx.Value().ToBig()
 
@@ -461,7 +461,6 @@ func (tx *Transaction) FromastTransaction(astTx *transaction.Transaction) {
 
 func FromN42Header(iHeader block.IHeader) *Header {
 	header := iHeader.(*block.Header)
-	//author, _ := engine.Author(iHeader)
 
 	var baseFee *big.Int
 	if header.BaseFee != nil {

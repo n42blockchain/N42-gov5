@@ -18,15 +18,15 @@ package state
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/modules/changeset"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/changeset"
 )
 
 // ChangeSetWriter is a mock StateWriter that accumulates changes in-memory into ChangeSets.
@@ -58,7 +58,7 @@ func NewChangeSetWriterPlain(db kv.RwTx, blockNumber uint64) *ChangeSetWriter {
 func (w *ChangeSetWriter) GetAccountChanges() (*changeset.ChangeSet, error) {
 	cs := changeset.NewAccountChangeSet()
 	for address, val := range w.accountChanges {
-		if err := cs.Add(avmutil.CopyBytes(address[:]), val); err != nil {
+		if err := cs.Add(types.CopyBytes(address[:]), val); err != nil {
 			return nil, err
 		}
 	}
@@ -78,29 +78,22 @@ func accountsEqual(a1, a2 *account.StateAccount) bool {
 	if a1.Nonce != a2.Nonce {
 		return false
 	}
-	if !a1.Initialised {
-		if a2.Initialised {
-			return false
-		}
-	} else if !a2.Initialised {
-		return false
-	} else if a1.Balance.Cmp(&a2.Balance) != 0 {
+	if a1.Initialised != a2.Initialised {
 		return false
 	}
-	if a1.IsEmptyCodeHash() {
-		if !a2.IsEmptyCodeHash() {
-			return false
-		}
-	} else if a2.IsEmptyCodeHash() {
+	if a1.Initialised && a1.Balance.Cmp(&a2.Balance) != 0 {
 		return false
-	} else if a1.CodeHash != a2.CodeHash {
+	}
+	if a1.IsEmptyCodeHash() != a2.IsEmptyCodeHash() {
+		return false
+	}
+	if !a1.IsEmptyCodeHash() && a1.CodeHash != a2.CodeHash {
 		return false
 	}
 	return true
 }
 
 func (w *ChangeSetWriter) UpdateAccountData(address types.Address, original, account *account.StateAccount) error {
-	//fmt.Printf("balance,%x,%d\n", address, &account.Balance)
 	if !accountsEqual(original, account) || w.storageChanged[address] {
 		w.accountChanges[address] = originalAccountData(original, true /*omitHashes*/)
 	}
@@ -108,12 +101,10 @@ func (w *ChangeSetWriter) UpdateAccountData(address types.Address, original, acc
 }
 
 func (w *ChangeSetWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
-	//fmt.Printf("code,%x,%x\n", address, code)
 	return nil
 }
 
 func (w *ChangeSetWriter) DeleteAccount(address types.Address, original *account.StateAccount) error {
-	//fmt.Printf("delete,%x\n", address)
 	if original == nil || !original.Initialised {
 		return nil
 	}
@@ -122,7 +113,6 @@ func (w *ChangeSetWriter) DeleteAccount(address types.Address, original *account
 }
 
 func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
-	//fmt.Printf("storage,%x,%x,%x\n", address, *key, value.Bytes())
 	if *original == *value {
 		return nil
 	}
@@ -140,18 +130,12 @@ func (w *ChangeSetWriter) CreateContract(address types.Address) error {
 }
 
 func (w *ChangeSetWriter) WriteChangeSets() error {
-	//if w.blockNumber == 547600 {
-	//	changeset.Truncate(w.db, 547600)
-	//}
 	accountChanges, err := w.GetAccountChanges()
 	if err != nil {
 		return err
 	}
 	if err = changeset.Mapper[modules.AccountChangeSet].Encode(w.blockNumber, accountChanges, func(k, v []byte) error {
-		if err = w.db.AppendDup(modules.AccountChangeSet, k, v); err != nil {
-			return err
-		}
-		return nil
+		return w.db.AppendDup(modules.AccountChangeSet, k, v)
 	}); err != nil {
 		return err
 	}
@@ -163,15 +147,9 @@ func (w *ChangeSetWriter) WriteChangeSets() error {
 	if storageChanges.Len() == 0 {
 		return nil
 	}
-	if err = changeset.Mapper[modules.StorageChangeSet].Encode(w.blockNumber, storageChanges, func(k, v []byte) error {
-		if err = w.db.AppendDup(modules.StorageChangeSet, k, v); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	return changeset.Mapper[modules.StorageChangeSet].Encode(w.blockNumber, storageChanges, func(k, v []byte) error {
+		return w.db.AppendDup(modules.StorageChangeSet, k, v)
+	})
 }
 
 func (w *ChangeSetWriter) WriteHistory() error {
@@ -179,8 +157,7 @@ func (w *ChangeSetWriter) WriteHistory() error {
 	if err != nil {
 		return err
 	}
-	err = writeIndex(w.blockNumber, accountChanges, modules.AccountsHistory, w.db)
-	if err != nil {
+	if err = writeIndex(w.blockNumber, accountChanges, modules.AccountsHistory, w.db); err != nil {
 		return err
 	}
 
@@ -188,12 +165,7 @@ func (w *ChangeSetWriter) WriteHistory() error {
 	if err != nil {
 		return err
 	}
-	err = writeIndex(w.blockNumber, storageChanges, modules.StorageHistory, w.db)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return writeIndex(w.blockNumber, storageChanges, modules.StorageHistory, w.db)
 }
 
 func (w *ChangeSetWriter) PrintChangedAccounts() {

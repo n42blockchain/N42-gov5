@@ -38,7 +38,7 @@ func Raise(max uint64) (uint64, error) {
 	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
 		return 0, err
 	}
-	// MacOS can silently apply further caps, so retrieve the actually set limit
+	// Retrieve the actually set limit (may differ from requested)
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
 		return 0, err
 	}

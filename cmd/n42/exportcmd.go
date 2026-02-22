@@ -20,19 +20,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
+	"os"
+	"time"
+
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/urfave/cli/v2"
+
 	"github.com/n42blockchain/N42/common/account"
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/node"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/turbo/backup"
-	"github.com/urfave/cli/v2"
-	"math/big"
-	"os"
-	"time"
 )
 
 var (
@@ -88,7 +90,6 @@ var (
 )
 
 func exportTransactions(ctx *cli.Context) error {
-
 	stack, err := node.NewNode(ctx, &DefaultConfig)
 	if err != nil {
 		return err
@@ -124,7 +125,6 @@ func exportTransactions(ctx *cli.Context) error {
 }
 
 func exportBalance(ctx *cli.Context) error {
-
 	stack, err := node.NewNode(ctx, &DefaultConfig)
 	if err != nil {
 		return err
@@ -137,8 +137,6 @@ func exportBalance(ctx *cli.Context) error {
 		return err
 	}
 	defer roTX.Rollback()
-	//kv.ReadAhead(ctx.Context, roTX.(kv.RoDB), atomic.NewBool(false), name, nil, 1<<32-1) // MaxUint32
-	//
 	srcC, err := roTX.Cursor("Account")
 	if err != nil {
 		return err
@@ -163,7 +161,6 @@ func exportBalance(ctx *cli.Context) error {
 }
 
 func exportDBState(ctx *cli.Context) error {
-
 	stack, err := node.NewNode(ctx, &DefaultConfig)
 	if err != nil {
 		return err
@@ -206,22 +203,17 @@ func exportDBState(ctx *cli.Context) error {
 }
 
 func dbCopy(ctx *cli.Context) error {
-
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
 
 	fromChaindata := ctx.String(FromDataDirFlag.Name)
 	toChaindata := ctx.String(ToDataDirFlag.Name)
 
-	if f, err := os.Stat(fromChaindata); err != nil {
-		return fmt.Errorf("fromChaindata error: %w", err)
-	} else if !f.IsDir() {
-		return fmt.Errorf("fromChaindata is not a directory: %s", fromChaindata)
+	if err := validateDirectory(fromChaindata, "fromChaindata"); err != nil {
+		return err
 	}
-	if f, err := os.Stat(toChaindata); err != nil {
-		return fmt.Errorf("toChaindata error: %w", err)
-	} else if !f.IsDir() {
-		return fmt.Errorf("toChaindata is not a directory: %s", toChaindata)
+	if err := validateDirectory(toChaindata, "toChaindata"); err != nil {
+		return err
 	}
 
 	from, to := backup.OpenPair(fromChaindata, toChaindata, kv.ChainDB, 0)
@@ -232,5 +224,16 @@ func dbCopy(ctx *cli.Context) error {
 		return err
 	}
 
+	return nil
+}
+
+func validateDirectory(path, name string) error {
+	f, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s error: %w", name, err)
+	}
+	if !f.IsDir() {
+		return fmt.Errorf("%s is not a directory: %s", name, path)
+	}
 	return nil
 }

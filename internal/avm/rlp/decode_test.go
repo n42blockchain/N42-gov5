@@ -13,6 +13,7 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+
 package rlp
 
 import (
@@ -1010,7 +1011,6 @@ func TestInvalidOptionalField(t *testing.T) {
 			t.Errorf("wrong error for %T: %v", test.v, err.Error())
 		}
 	}
-
 }
 
 func ExampleDecode() {

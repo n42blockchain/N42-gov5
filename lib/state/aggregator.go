@@ -68,7 +68,6 @@ type Aggregator struct {
 	mergeingFiles           atomic.Bool
 	buildingOptionalIndices atomic.Bool
 
-	//warmupWorking          atomic.Bool
 	ctx       context.Context
 	ctxCancel context.CancelFunc
 
@@ -134,26 +133,26 @@ func (a *Aggregator) OnFreeze(f OnFreezeFunc) { a.onFreeze = f }
 func (a *Aggregator) OpenFolder() error {
 	a.filesMutationLock.Lock()
 	defer a.filesMutationLock.Unlock()
-	var err error
-	if err = a.accounts.OpenFolder(); err != nil {
+
+	if err := a.accounts.OpenFolder(); err != nil {
 		return fmt.Errorf("OpenFolder: %w", err)
 	}
-	if err = a.storage.OpenFolder(); err != nil {
+	if err := a.storage.OpenFolder(); err != nil {
 		return fmt.Errorf("OpenFolder: %w", err)
 	}
-	if err = a.code.OpenFolder(); err != nil {
+	if err := a.code.OpenFolder(); err != nil {
 		return fmt.Errorf("OpenFolder: %w", err)
 	}
-	if err = a.logAddrs.OpenFolder(); err != nil {
+	if err := a.logAddrs.OpenFolder(); err != nil {
 		return fmt.Errorf("OpenFolder: %w", err)
 	}
-	if err = a.logTopics.OpenFolder(); err != nil {
+	if err := a.logTopics.OpenFolder(); err != nil {
 		return fmt.Errorf("OpenFolder: %w", err)
 	}
-	if err = a.tracesFrom.OpenFolder(); err != nil {
+	if err := a.tracesFrom.OpenFolder(); err != nil {
 		return fmt.Errorf("OpenFolder: %w", err)
 	}
-	if err = a.tracesTo.OpenFolder(); err != nil {
+	if err := a.tracesTo.OpenFolder(); err != nil {
 		return fmt.Errorf("OpenFolder: %w", err)
 	}
 	a.recalcMaxTxNum()
@@ -163,26 +162,25 @@ func (a *Aggregator) OpenList(fNames []string) error {
 	a.filesMutationLock.Lock()
 	defer a.filesMutationLock.Unlock()
 
-	var err error
-	if err = a.accounts.OpenList(fNames); err != nil {
+	if err := a.accounts.OpenList(fNames); err != nil {
 		return err
 	}
-	if err = a.storage.OpenList(fNames); err != nil {
+	if err := a.storage.OpenList(fNames); err != nil {
 		return err
 	}
-	if err = a.code.OpenList(fNames); err != nil {
+	if err := a.code.OpenList(fNames); err != nil {
 		return err
 	}
-	if err = a.logAddrs.OpenList(fNames); err != nil {
+	if err := a.logAddrs.OpenList(fNames); err != nil {
 		return err
 	}
-	if err = a.logTopics.OpenList(fNames); err != nil {
+	if err := a.logTopics.OpenList(fNames); err != nil {
 		return err
 	}
-	if err = a.tracesFrom.OpenList(fNames); err != nil {
+	if err := a.tracesFrom.OpenList(fNames); err != nil {
 		return err
 	}
-	if err = a.tracesTo.OpenList(fNames); err != nil {
+	if err := a.tracesTo.OpenList(fNames); err != nil {
 		return err
 	}
 	a.recalcMaxTxNum()
@@ -387,11 +385,6 @@ func (c AggV3Collation) Close() {
 }
 
 func (a *Aggregator) buildFiles(ctx context.Context, step, txFrom, txTo uint64) (AggV3StaticFiles, error) {
-	//logEvery := time.NewTicker(60 * time.Second)
-	//defer logEvery.Stop()
-	//defer func(t time.Time) {
-	//	log.Info(fmt.Sprintf("[snapshot] build %d-%d", step, step+1), "took", time.Since(t))
-	//}(time.Now())
 	var sf AggV3StaticFiles
 	var ac AggV3Collation
 	closeColl := true
@@ -400,135 +393,79 @@ func (a *Aggregator) buildFiles(ctx context.Context, step, txFrom, txTo uint64) 
 			ac.Close()
 		}
 	}()
-	//var wg sync.WaitGroup
-	//wg.Add(7)
-	//errCh := make(chan error, 7)
-	//go func() {
-	//	defer wg.Done()
+
 	var err error
 	if err = a.db.View(ctx, func(tx kv.Tx) error {
 		ac.accounts, err = a.accounts.collate(step, txFrom, txTo, tx)
 		return err
 	}); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-
 	if sf.accounts, err = a.accounts.buildFiles(ctx, step, ac.accounts, a.ps); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-	//}()
-	//
-	//go func() {
-	//	defer wg.Done()
-	//	var err error
+
 	if err = a.db.View(ctx, func(tx kv.Tx) error {
 		ac.storage, err = a.storage.collate(step, txFrom, txTo, tx)
 		return err
 	}); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-
 	if sf.storage, err = a.storage.buildFiles(ctx, step, ac.storage, a.ps); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-	//}()
-	//go func() {
-	//	defer wg.Done()
-	//	var err error
+
 	if err = a.db.View(ctx, func(tx kv.Tx) error {
 		ac.code, err = a.code.collate(step, txFrom, txTo, tx)
 		return err
 	}); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-
 	if sf.code, err = a.code.buildFiles(ctx, step, ac.code, a.ps); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-	//}()
-	//go func() {
-	//	defer wg.Done()
-	//	var err error
+
 	if err = a.db.View(ctx, func(tx kv.Tx) error {
 		ac.logAddrs, err = a.logAddrs.collate(ctx, txFrom, txTo, tx)
 		return err
 	}); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-
 	if sf.logAddrs, err = a.logAddrs.buildFiles(ctx, step, ac.logAddrs, a.ps); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-	//}()
-	//go func() {
-	//	defer wg.Done()
-	//	var err error
+
 	if err = a.db.View(ctx, func(tx kv.Tx) error {
 		ac.logTopics, err = a.logTopics.collate(ctx, txFrom, txTo, tx)
 		return err
 	}); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-
 	if sf.logTopics, err = a.logTopics.buildFiles(ctx, step, ac.logTopics, a.ps); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-	//}()
-	//go func() {
-	//	defer wg.Done()
-	//	var err error
+
 	if err = a.db.View(ctx, func(tx kv.Tx) error {
 		ac.tracesFrom, err = a.tracesFrom.collate(ctx, txFrom, txTo, tx)
 		return err
 	}); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-
 	if sf.tracesFrom, err = a.tracesFrom.buildFiles(ctx, step, ac.tracesFrom, a.ps); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-	//}()
-	//go func() {
-	//	defer wg.Done()
-	//	var err error
+
 	if err = a.db.View(ctx, func(tx kv.Tx) error {
 		ac.tracesTo, err = a.tracesTo.collate(ctx, txFrom, txTo, tx)
 		return err
 	}); err != nil {
 		return sf, err
-		//errCh <- err
 	}
-
 	if sf.tracesTo, err = a.tracesTo.buildFiles(ctx, step, ac.tracesTo, a.ps); err != nil {
 		return sf, err
-		//		errCh <- err
 	}
-	//}()
-	//go func() {
-	//	wg.Wait()
-	//close(errCh)
-	//}()
-	//var lastError error
-	//for err := range errCh {
-	//	if err != nil {
-	//		lastError = err
-	//	}
-	//}
-	//if lastError == nil {
+
 	closeColl = false
-	//}
 	return sf, nil
 }
 
@@ -580,7 +517,6 @@ Loop:
 
 func (a *Aggregator) buildFilesInBackground(ctx context.Context, step uint64) (err error) {
 	closeAll := true
-	//log.Info("[snapshots] history build", "step", fmt.Sprintf("%d-%d", step, step+1))
 	sf, err := a.buildFiles(ctx, step, step*a.aggregationStep, (step+1)*a.aggregationStep)
 	if err != nil {
 		return err
@@ -591,7 +527,6 @@ func (a *Aggregator) buildFilesInBackground(ctx context.Context, step uint64) (e
 		}
 	}()
 	a.integrateFiles(sf, step*a.aggregationStep, (step+1)*a.aggregationStep)
-	//a.notifyAboutNewSnapshots()
 
 	closeAll = false
 	return nil
@@ -721,7 +656,6 @@ func (a *Aggregator) Warmup(ctx context.Context, txFrom, limit uint64) error {
 	return e.Wait()
 }
 
-// StartWrites - pattern: `defer agg.StartWrites().FinishWrites()`
 func (a *Aggregator) DiscardHistory() *Aggregator {
 	a.accounts.DiscardHistory()
 	a.storage.DiscardHistory()
@@ -747,16 +681,7 @@ func (a *Aggregator) StartWrites() *Aggregator {
 	return a
 }
 func (a *Aggregator) StartUnbufferedWrites() *Aggregator {
-	a.walLock.Lock()
-	defer a.walLock.Unlock()
-	a.accounts.StartWrites()
-	a.storage.StartWrites()
-	a.code.StartWrites()
-	a.logAddrs.StartWrites()
-	a.logTopics.StartWrites()
-	a.tracesFrom.StartWrites()
-	a.tracesTo.StartWrites()
-	return a
+	return a.StartWrites()
 }
 func (a *Aggregator) FinishWrites() {
 	a.walLock.Lock()
@@ -835,16 +760,6 @@ func (a *Aggregator) StepsRangeInDBAsStr(tx kv.Tx) string {
 }
 
 func (a *Aggregator) Prune(ctx context.Context, limit uint64) error {
-	//if limit/a.aggregationStep > StepsInBiggestFile {
-	//	ctx, cancel := context.WithCancel(ctx)
-	//	defer cancel()
-	//
-	//	a.wg.Add(1)
-	//	go func() {
-	//		defer a.wg.Done()
-	//		_ = a.Warmup(ctx, 0, cmp.Max(a.aggregationStep, limit)) // warmup is asyn and moving faster than data deletion
-	//	}()
-	//}
 	return a.prune(ctx, 0, a.minimaxTxNumInFiles.Load(), limit)
 }
 
@@ -926,24 +841,12 @@ func (a *Aggregator) EndTxNumFrozenAndIndexed() uint64 {
 }
 func (a *Aggregator) recalcMaxTxNum() {
 	min := a.accounts.endTxNumMinimax()
-	if txNum := a.storage.endTxNumMinimax(); txNum < min {
-		min = txNum
-	}
-	if txNum := a.code.endTxNumMinimax(); txNum < min {
-		min = txNum
-	}
-	if txNum := a.logAddrs.endTxNumMinimax(); txNum < min {
-		min = txNum
-	}
-	if txNum := a.logTopics.endTxNumMinimax(); txNum < min {
-		min = txNum
-	}
-	if txNum := a.tracesFrom.endTxNumMinimax(); txNum < min {
-		min = txNum
-	}
-	if txNum := a.tracesTo.endTxNumMinimax(); txNum < min {
-		min = txNum
-	}
+	min = cmp.Min(min, a.storage.endTxNumMinimax())
+	min = cmp.Min(min, a.code.endTxNumMinimax())
+	min = cmp.Min(min, a.logAddrs.endTxNumMinimax())
+	min = cmp.Min(min, a.logTopics.endTxNumMinimax())
+	min = cmp.Min(min, a.tracesFrom.endTxNumMinimax())
+	min = cmp.Min(min, a.tracesTo.endTxNumMinimax())
 	a.minimaxTxNumInFiles.Store(min)
 }
 
@@ -978,7 +881,6 @@ func (ac *AggregatorRoTx) findMergeRange(maxEndTxNum, maxSpan uint64) RangesV3 {
 	r.logTopics, r.logTopicsStartTxNum, r.logTopicsEndTxNum = ac.a.logTopics.findMergeRange(maxEndTxNum, maxSpan)
 	r.tracesFrom, r.tracesFromStartTxNum, r.tracesFromEndTxNum = ac.a.tracesFrom.findMergeRange(maxEndTxNum, maxSpan)
 	r.tracesTo, r.tracesToStartTxNum, r.tracesToEndTxNum = ac.a.tracesTo.findMergeRange(maxEndTxNum, maxSpan)
-	//log.Info(fmt.Sprintf("findMergeRange(%d, %d)=%+v\n", maxEndTxNum, maxSpan, r))
 	return r
 }
 
@@ -1003,7 +905,7 @@ type SelectedStaticFilesV3 struct {
 }
 
 func (sf SelectedStaticFilesV3) Close() {
-	for _, group := range [][]*filesItem{sf.accountsIdx, sf.accountsHist, sf.storageIdx, sf.accountsHist, sf.codeIdx, sf.codeHist,
+	for _, group := range [][]*filesItem{sf.accountsIdx, sf.accountsHist, sf.storageIdx, sf.storageHist, sf.codeIdx, sf.codeHist,
 		sf.logAddrs, sf.logTopics, sf.tracesFrom, sf.tracesTo} {
 		for _, item := range group {
 			if item != nil {
@@ -1049,7 +951,7 @@ func (ac *AggregatorRoTx) staticFilesInRange(r RangesV3) (sf SelectedStaticFiles
 	if r.tracesTo {
 		sf.tracesTo, sf.tracesToI = ac.tracesTo.staticFilesInRange(r.tracesToStartTxNum, r.tracesToEndTxNum)
 	}
-	return sf, err
+	return sf, nil
 }
 
 type MergedFilesV3 struct {
@@ -1179,7 +1081,7 @@ func (ac *AggregatorRoTx) mergeFiles(ctx context.Context, files SelectedStaticFi
 	return mf, err
 }
 
-func (a *Aggregator) integrateMergedFiles(outs SelectedStaticFilesV3, in MergedFilesV3) (frozen []string) {
+func (a *Aggregator) integrateMergedFiles(outs SelectedStaticFilesV3, in MergedFilesV3) {
 	a.filesMutationLock.Lock()
 	defer a.filesMutationLock.Unlock()
 	defer a.needSaveFilesListInDB.Store(true)
@@ -1192,7 +1094,6 @@ func (a *Aggregator) integrateMergedFiles(outs SelectedStaticFilesV3, in MergedF
 	a.tracesFrom.integrateMergedFiles(outs.tracesFrom, in.tracesFrom)
 	a.tracesTo.integrateMergedFiles(outs.tracesTo, in.tracesTo)
 	a.cleanAfterNewFreeze(in)
-	return frozen
 }
 func (a *Aggregator) cleanAfterNewFreeze(in MergedFilesV3) {
 	if in.accountsHist != nil && in.accountsHist.frozen {

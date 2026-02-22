@@ -33,7 +33,6 @@ func TestGCReadAfterRemoveFile(t *testing.T) {
 			// - open new view
 			// - make sure there is no canDelete file
 			hc := h.BeginFilesRo()
-			_ = hc
 			lastOnFs, _ := h.dirtyFiles.Max()
 			require.False(lastOnFs.frozen) // prepared dataset must have some non-frozen files. or it's bad dataset.
 			h.integrateMergedFiles(nil, []*filesItem{lastOnFs}, nil, nil)
@@ -116,7 +115,6 @@ func TestDomainGCReadAfterRemoveFile(t *testing.T) {
 			// - open new view
 			// - make sure there is no canDelete file
 			hc := h.BeginFilesRo()
-			_ = hc
 			lastOnFs, _ := h.dirtyFiles.Max()
 			require.False(lastOnFs.frozen) // prepared dataset must have some non-frozen files. or it's bad dataset.
 			h.integrateMergedFiles([]*filesItem{lastOnFs}, nil, nil, nil, nil, nil)

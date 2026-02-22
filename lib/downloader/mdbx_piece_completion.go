@@ -32,6 +32,33 @@ const (
 	incomplete = "i"
 )
 
+func pieceCompletionKey(pk metainfo.PieceKey) [infohash.Size + 4]byte {
+	var key [infohash.Size + 4]byte
+	copy(key[:], pk.InfoHash[:])
+	binary.BigEndian.PutUint32(key[infohash.Size:], uint32(pk.Index))
+	return key
+}
+
+func decodePieceCompletion(v []byte) storage.Completion {
+	cn := storage.Completion{Ok: true}
+	switch string(v) {
+	case complete:
+		cn.Complete = true
+	case incomplete:
+		cn.Complete = false
+	default:
+		cn.Ok = false
+	}
+	return cn
+}
+
+func encodePieceCompletion(b bool) []byte {
+	if b {
+		return []byte(complete)
+	}
+	return []byte(incomplete)
+}
+
 type mdbxPieceCompletion struct {
 	db kv.RwDB
 }
@@ -44,23 +71,13 @@ func NewMdbxPieceCompletion(db kv.RwDB) (ret storage.PieceCompletion, err error)
 }
 
 func (m mdbxPieceCompletion) Get(pk metainfo.PieceKey) (cn storage.Completion, err error) {
+	key := pieceCompletionKey(pk)
 	err = m.db.View(context.Background(), func(tx kv.Tx) error {
-		var key [infohash.Size + 4]byte
-		copy(key[:], pk.InfoHash[:])
-		binary.BigEndian.PutUint32(key[infohash.Size:], uint32(pk.Index))
-		cn.Ok = true
 		v, err := tx.GetOne(kv.BittorrentCompletion, key[:])
 		if err != nil {
 			return err
 		}
-		switch string(v) {
-		case complete:
-			cn.Complete = true
-		case incomplete:
-			cn.Complete = false
-		default:
-			cn.Ok = false
-		}
+		cn = decodePieceCompletion(v)
 		return nil
 	})
 	return
@@ -71,8 +88,6 @@ func (m mdbxPieceCompletion) Set(pk metainfo.PieceKey, b bool) error {
 		return nil
 	}
 
-	var tx kv.RwTx
-	var err error
 	// On power-off recent "no-sync" txs may be lost.
 	// It will cause 2 cases of in-consistency between files on disk and db metadata:
 	//  - Good piece on disk and recent "complete"   db marker lost. Self-Heal by re-download.
@@ -83,29 +98,20 @@ func (m mdbxPieceCompletion) Set(pk metainfo.PieceKey, b bool) error {
 	//  call amount 2 minutes complete=100K vs incomple=1K
 	//  1K fsyncs/2minutes it's quite expensive, but even on cloud (high latency) drive it allow download 100mb/s
 	//  and Erigon doesn't do anything when downloading snapshots
+	var tx kv.RwTx
+	var err error
 	if b {
 		tx, err = m.db.BeginRwNosync(context.Background())
-		if err != nil {
-			return err
-		}
 	} else {
 		tx, err = m.db.BeginRw(context.Background())
-		if err != nil {
-			return err
-		}
+	}
+	if err != nil {
+		return err
 	}
 	defer tx.Rollback()
 
-	var key [infohash.Size + 4]byte
-	copy(key[:], pk.InfoHash[:])
-	binary.BigEndian.PutUint32(key[infohash.Size:], uint32(pk.Index))
-
-	v := []byte(incomplete)
-	if b {
-		v = []byte(complete)
-	}
-	err = tx.Put(kv.BittorrentCompletion, key[:], v)
-	if err != nil {
+	key := pieceCompletionKey(pk)
+	if err = tx.Put(kv.BittorrentCompletion, key[:], encodePieceCompletion(b)); err != nil {
 		return err
 	}
 
@@ -129,23 +135,13 @@ func NewMdbxPieceCompletionBatch(db kv.RwDB) (ret storage.PieceCompletion, err e
 }
 
 func (m *mdbxPieceCompletionBatch) Get(pk metainfo.PieceKey) (cn storage.Completion, err error) {
+	key := pieceCompletionKey(pk)
 	err = m.db.View(context.Background(), func(tx kv.Tx) error {
-		var key [infohash.Size + 4]byte
-		copy(key[:], pk.InfoHash[:])
-		binary.BigEndian.PutUint32(key[infohash.Size:], uint32(pk.Index))
-		cn.Ok = true
 		v, err := tx.GetOne(kv.BittorrentCompletion, key[:])
 		if err != nil {
 			return err
 		}
-		switch string(v) {
-		case complete:
-			cn.Complete = true
-		case incomplete:
-			cn.Complete = false
-		default:
-			cn.Ok = false
-		}
+		cn = decodePieceCompletion(v)
 		return nil
 	})
 	return
@@ -155,16 +151,9 @@ func (m *mdbxPieceCompletionBatch) Set(pk metainfo.PieceKey, b bool) error {
 	if c, err := m.Get(pk); err == nil && c.Ok && c.Complete == b {
 		return nil
 	}
-	var key [infohash.Size + 4]byte
-	copy(key[:], pk.InfoHash[:])
-	binary.BigEndian.PutUint32(key[infohash.Size:], uint32(pk.Index))
-
-	v := []byte(incomplete)
-	if b {
-		v = []byte(complete)
-	}
+	key := pieceCompletionKey(pk)
 	return m.db.Batch(func(tx kv.RwTx) error {
-		return tx.Put(kv.BittorrentCompletion, key[:], v)
+		return tx.Put(kv.BittorrentCompletion, key[:], encodePieceCompletion(b))
 	})
 }
 

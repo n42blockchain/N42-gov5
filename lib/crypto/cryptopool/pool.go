@@ -23,9 +23,8 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// pool holds LegacyKeccak hashers.
 var pool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return sha3.NewLegacyKeccak256()
 	},
 }

@@ -107,7 +107,7 @@ type IntraBlockState struct {
 	transientStorage transientStorage
 }
 
-// Create a new state from a given trie
+// New creates a new IntraBlockState with the given state reader.
 func New(stateReader StateReader) *IntraBlockState {
 	return &IntraBlockState{
 		stateReader:       stateReader,
@@ -127,11 +127,11 @@ func (sdb *IntraBlockState) BeginWriteSnapshot() {
 }
 
 func (sdb *IntraBlockState) BeginWriteCodes() {
-	sdb.codeMap = make(map[types.Hash][]byte, 0)
+	sdb.codeMap = make(map[types.Hash][]byte)
 }
 
+// CodeHashes returns a map of code hashes to code. Must be called at the end of block execution.
 func (sdb *IntraBlockState) CodeHashes() map[types.Hash][]byte {
-	// it should be called end of block execute
 	for addr, stateObject := range sdb.stateObjects {
 		_, isDirty := sdb.stateObjectsDirty[addr]
 		if isDirty && (stateObject.created || !stateObject.selfdestructed) && stateObject.code != nil && stateObject.dirtyCode {
@@ -211,7 +211,25 @@ func (sdb *IntraBlockState) SetTrace(trace bool) {
 	sdb.trace = trace
 }
 
-// setErrorUnsafe sets error but should be called in medhods that already have locks
+// traceAccountRead logs a tracer read event for the given address, if a tracer is set.
+func (sdb *IntraBlockState) traceAccountRead(addr types.Address) {
+	if sdb.tracer != nil {
+		if err := sdb.tracer.CaptureAccountRead(addr); err != nil && sdb.trace {
+			log.Trace("CaptureAccountRead", "addr", addr, "err", err)
+		}
+	}
+}
+
+// traceAccountWrite logs a tracer write event for the given address, if a tracer is set.
+func (sdb *IntraBlockState) traceAccountWrite(addr types.Address) {
+	if sdb.tracer != nil {
+		if err := sdb.tracer.CaptureAccountWrite(addr); err != nil && sdb.trace {
+			log.Trace("CaptureAccountWrite", "addr", addr, "err", err)
+		}
+	}
+}
+
+// setErrorUnsafe sets error but should be called in methods that already have locks.
 func (sdb *IntraBlockState) setErrorUnsafe(err error) {
 	if sdb.savedErr == nil {
 		sdb.savedErr = err
@@ -306,12 +324,7 @@ func (sdb *IntraBlockState) SubRefund(gas uint64) {
 // Exist reports whether the given account address exists in the state.
 // Notably this also returns true for suicided accounts.
 func (sdb *IntraBlockState) Exist(addr types.Address) bool {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountRead(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountRead err", err)
-		}
-	}
+	sdb.traceAccountRead(addr)
 	s := sdb.getStateObject(addr)
 	return s != nil && !s.deleted
 }
@@ -319,12 +332,7 @@ func (sdb *IntraBlockState) Exist(addr types.Address) bool {
 // Empty returns whether the state object is either non-existent
 // or empty according to the EIP161 specification (balance = nonce = code = 0)
 func (sdb *IntraBlockState) Empty(addr types.Address) bool {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountRead(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountRead err", err)
-		}
-	}
+	sdb.traceAccountRead(addr)
 	so := sdb.getStateObject(addr)
 	return so == nil || so.deleted || so.empty()
 }
@@ -375,15 +383,9 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 	return false
 }
 
-// GetBalance retrieves the balance from the given address or 0 if object not found
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// GetBalance retrieves the balance from the given address or 0 if object not found.
 func (sdb *IntraBlockState) GetBalance(addr types.Address) *uint256.Int {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountRead(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountRead err", err)
-		}
-	}
+	sdb.traceAccountRead(addr)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
 		return stateObject.Balance()
@@ -391,14 +393,9 @@ func (sdb *IntraBlockState) GetBalance(addr types.Address) *uint256.Int {
 	return uint256.NewInt(0)
 }
 
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// GetNonce returns the nonce for the given address.
 func (sdb *IntraBlockState) GetNonce(addr types.Address) uint64 {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountRead(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountRead err", err)
-		}
-	}
+	sdb.traceAccountRead(addr)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
 		return stateObject.Nonce()
@@ -412,14 +409,9 @@ func (sdb *IntraBlockState) TxIndex() int {
 	return sdb.txIndex
 }
 
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// GetCode returns the contract code for the given address.
 func (sdb *IntraBlockState) GetCode(addr types.Address) []byte {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountRead(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountRead err", err)
-		}
-	}
+	sdb.traceAccountRead(addr)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
 		if sdb.trace {
@@ -437,14 +429,9 @@ func (sdb *IntraBlockState) GetCode(addr types.Address) []byte {
 	return nil
 }
 
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// GetCodeSize returns the size of the contract code for the given address.
 func (sdb *IntraBlockState) GetCodeSize(addr types.Address) int {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountRead(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountRead err", err)
-		}
-	}
+	sdb.traceAccountRead(addr)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted {
 		return 0
@@ -452,25 +439,21 @@ func (sdb *IntraBlockState) GetCodeSize(addr types.Address) int {
 	if stateObject.code != nil {
 		return len(stateObject.code)
 	}
-	len, err := sdb.stateReader.ReadAccountCodeSize(addr, stateObject.data.Incarnation, stateObject.data.CodeHash)
+	codeSize, err := sdb.stateReader.ReadAccountCodeSize(addr, stateObject.data.Incarnation, stateObject.data.CodeHash)
 	if err != nil {
 		sdb.setErrorUnsafe(err)
 	}
-	if len > 0 && sdb.codeMap != nil {
-		code, _ := sdb.stateReader.ReadAccountCode(addr, stateObject.data.Incarnation, types.BytesToHash(stateObject.CodeHash()))
-		sdb.codeMap[types.BytesToHash(stateObject.CodeHash())] = code
+	if codeSize > 0 && sdb.codeMap != nil {
+		codeHash := types.BytesToHash(stateObject.CodeHash())
+		code, _ := sdb.stateReader.ReadAccountCode(addr, stateObject.data.Incarnation, codeHash)
+		sdb.codeMap[codeHash] = code
 	}
-	return len
+	return codeSize
 }
 
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// GetCodeHash returns the code hash for the given address.
 func (sdb *IntraBlockState) GetCodeHash(addr types.Address) types.Hash {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountRead(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountRead err", err)
-		}
-	}
+	sdb.traceAccountRead(addr)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted {
 		return types.Hash{}
@@ -479,7 +462,6 @@ func (sdb *IntraBlockState) GetCodeHash(addr types.Address) types.Hash {
 }
 
 // GetState retrieves a value from the given account's storage trie.
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) GetState(addr types.Address, key *types.Hash, value *uint256.Int) {
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
@@ -490,7 +472,6 @@ func (sdb *IntraBlockState) GetState(addr types.Address, key *types.Hash, value 
 }
 
 // GetCommittedState retrieves a value from the given account's committed storage trie.
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) GetCommittedState(addr types.Address, key *types.Hash, value *uint256.Int) {
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
@@ -500,36 +481,20 @@ func (sdb *IntraBlockState) GetCommittedState(addr types.Address, key *types.Has
 	}
 }
 
+// HasSuicided is a legacy alias for HasSelfdestructed.
+// Retained for compatibility with the common.StateDB interface.
 func (sdb *IntraBlockState) HasSuicided(addr types.Address) bool {
-	stateObject := sdb.getStateObject(addr)
-	if stateObject == nil {
-		return false
-	}
-	if stateObject.deleted {
-		return false
-	}
-	if stateObject.created {
-		return false
-	}
-	return stateObject.selfdestructed
+	return sdb.HasSelfdestructed(addr)
 }
 
-/*
- * SETTERS
- */
+// --- Setters ---
 
 // AddBalance adds amount to the account associated with addr.
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) {
 	if sdb.trace {
 		fmt.Printf("AddBalance %x, %d\n", addr, amount)
 	}
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountWrite(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountWrite err", err)
-		}
-	}
+	sdb.traceAccountWrite(addr)
 	// If this account has not been read, add to the balance increment map
 	_, needAccount := sdb.stateObjects[addr]
 	if !needAccount && addr == ripemd && amount.IsZero() {
@@ -555,34 +520,20 @@ func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) 
 }
 
 // SubBalance subtracts amount from the account associated with addr.
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) SubBalance(addr types.Address, amount *uint256.Int) {
 	if sdb.trace {
 		fmt.Printf("SubBalance %x, %d\n", addr, amount)
 	}
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountWrite(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountWrite err", err)
-		}
-
-	}
-
+	sdb.traceAccountWrite(addr)
 	stateObject := sdb.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SubBalance(amount)
 	}
 }
 
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// SetBalance sets the balance for the given address.
 func (sdb *IntraBlockState) SetBalance(addr types.Address, amount *uint256.Int) {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountWrite(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountWrite err", err)
-		}
-	}
-
+	sdb.traceAccountWrite(addr)
 	stateObject := sdb.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetBalance(amount)
@@ -590,39 +541,24 @@ func (sdb *IntraBlockState) SetBalance(addr types.Address, amount *uint256.Int) 
 }
 
 // SetNonce sets the nonce for the given address.
-// Note: nonce is uint64, so overflow is not practically possible (would require 2^64 transactions).
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) SetNonce(addr types.Address, nonce uint64) {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountWrite(addr)
-		if sdb.trace {
-			log.Trace("CaptureAccountWrite", "err", err)
-		}
-	}
-
+	sdb.traceAccountWrite(addr)
 	stateObject := sdb.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetNonce(nonce)
 	}
 }
 
-// DESCRIBED: docs/programmers_guide/guide.md#code-hash
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// SetCode sets the contract code for the given address.
 func (sdb *IntraBlockState) SetCode(addr types.Address, code []byte) {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountWrite(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountWrite err", err)
-		}
-	}
-
+	sdb.traceAccountWrite(addr)
 	stateObject := sdb.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetCode(crypto.Keccak256Hash(code), code)
 	}
 }
 
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// SetState sets a storage value for the given address.
 func (sdb *IntraBlockState) SetState(addr types.Address, key *types.Hash, value uint256.Int) {
 	stateObject := sdb.GetOrNewStateObject(addr)
 	if stateObject != nil {
@@ -655,36 +591,10 @@ func (sdb *IntraBlockState) GetIncarnation(addr types.Address) uint16 {
 	return 0
 }
 
-// Suicide marks the given account as suicided.
-// This clears the account balance.
-//
-// The account's state object is still available until the state is committed,
-// getStateObject will return a non-nil account after Suicide.
+// Suicide is a legacy alias for Selfdestruct.
+// Retained for compatibility with the common.StateDB interface.
 func (sdb *IntraBlockState) Suicide(addr types.Address) bool {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountRead(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountRead err", err)
-		}
-		err = sdb.tracer.CaptureAccountWrite(addr)
-		if sdb.trace {
-			fmt.Println("CaptureAccountWrite err", err)
-		}
-	}
-	stateObject := sdb.getStateObject(addr)
-	if stateObject == nil || stateObject.deleted {
-		return false
-	}
-	sdb.journal.append(selfdestructChange{
-		account:     &addr,
-		prev:        stateObject.selfdestructed,
-		prevbalance: *stateObject.Balance(),
-	})
-	stateObject.markSelfdestructed()
-	stateObject.created = false
-	stateObject.data.Balance.Clear()
-
-	return true
+	return sdb.Selfdestruct(addr)
 }
 
 func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *stateObject) {
@@ -774,17 +684,8 @@ func (sdb *IntraBlockState) createObject(addr types.Address, previous *stateObje
 //
 // Carrying over the balance ensures that N doesn't disappear.
 func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation bool) {
-	if sdb.tracer != nil {
-		err := sdb.tracer.CaptureAccountRead(addr)
-		if sdb.trace && err != nil {
-			log.Error("error while CaptureAccountRead", "err", err)
-		}
-
-		err = sdb.tracer.CaptureAccountWrite(addr)
-		if sdb.trace && err != nil {
-			log.Error("error while CaptureAccountWrite", "err", err)
-		}
-	}
+	sdb.traceAccountRead(addr)
+	sdb.traceAccountWrite(addr)
 
 	var prevInc uint16
 	previous := sdb.getStateObject(addr)
@@ -909,12 +810,8 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 	for addr := range sdb.journal.dirties {
 		so, exist := sdb.stateObjects[addr]
 		if !exist {
-			// ripeMD is 'touched' at block 1714175, in tx 0x1237f737031e40bcde4a8b7e717b2d15e3ecadfe49bb1bbc71ee9deb09c6fcf2
-			// That tx goes out of gas, and although the notion of 'touched' does not exist there, the
-			// touch-event will still be recorded in the journal. Since ripeMD is a special snowflake,
-			// it will persist in the journal even though the journal is reverted. In this special circumstance,
-			// it may exist in `sdb.journal.dirties` but not in `sdb.stateObjects`.
-			// Thus, we can safely ignore it here
+			// Dirty entry may exist without a stateObject due to the ripeMD precompile
+			// edge case (block 1714175). Safe to ignore.
 			continue
 		}
 
@@ -931,14 +828,9 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 
 func (sdb *IntraBlockState) SoftFinalise() {
 	for addr := range sdb.journal.dirties {
-		_, exist := sdb.stateObjects[addr]
-		if !exist {
-			// ripeMD is 'touched' at block 1714175, in tx 0x1237f737031e40bcde4a8b7e717b2d15e3ecadfe49bb1bbc71ee9deb09c6fcf2
-			// That tx goes out of gas, and although the notion of 'touched' does not exist there, the
-			// touch-event will still be recorded in the journal. Since ripeMD is a special snowflake,
-			// it will persist in the journal even though the journal is reverted. In this special circumstance,
-			// it may exist in `sdb.journal.dirties` but not in `sdb.stateObjects`.
-			// Thus, we can safely ignore it here
+		if _, exist := sdb.stateObjects[addr]; !exist {
+			// Dirty entry may exist without a stateObject due to the ripeMD precompile
+			// edge case (block 1714175). Safe to ignore.
 			continue
 		}
 		sdb.stateObjectsDirty[addr] = struct{}{}
@@ -1001,7 +893,7 @@ func (sdb *IntraBlockState) Prepare(thash, bhash types.Hash, ti int) {
 	sdb.accessList = newAccessList()
 }
 
-// no not lock
+// clearJournalAndRefund resets the journal, valid revisions, and refund counter.
 func (sdb *IntraBlockState) clearJournalAndRefund() {
 	sdb.journal = newJournal()
 	sdb.validRevisions = sdb.validRevisions[:0]
@@ -1069,51 +961,46 @@ func (sdb *IntraBlockState) SlotInAccessList(addr types.Address, slot types.Hash
 	return sdb.accessList.Contains(addr, slot)
 }
 
-// GenerateRootHash calculate root hash
+// GenerateRootHash computes a root hash from all dirty state objects.
 func (s *IntraBlockState) GenerateRootHash() types.Hash {
 	if len(s.stateObjectsDirty) == 0 {
 		return hash.NilHash
 	}
 
-	sortAds := make(types.Addresses, 0, len(s.stateObjectsDirty))
+	sortedAddrs := make(types.Addresses, 0, len(s.stateObjectsDirty))
 	for a := range s.stateObjectsDirty {
-		sortAds = append(sortAds, a)
+		sortedAddrs = append(sortedAddrs, a)
 	}
-	sort.Sort(sortAds)
-	//
+	sort.Sort(sortedAddrs)
+
 	sha := hash.HasherPool.Get().(crypto.KeccakState)
 	defer hash.HasherPool.Put(sha)
 	sha.Reset()
 
-	for _, address := range sortAds {
+	for _, address := range sortedAddrs {
 		obj := s.getStateObject(address)
 		if obj == nil {
 			continue
 		}
-		stateObject := obj.data
-		err := rlp.Encode(sha, []interface{}{
-			stateObject.Incarnation,
-			stateObject.Balance,
-			stateObject.Nonce,
-			stateObject.Initialised,
-			stateObject.CodeHash,
-			stateObject.Root,
-		})
-		if err != nil {
+		data := obj.data
+		if err := rlp.Encode(sha, []interface{}{
+			data.Incarnation,
+			data.Balance,
+			data.Nonce,
+			data.Initialised,
+			data.CodeHash,
+			data.Root,
+		}); err != nil {
 			panic("can't encode: " + err.Error())
 		}
-		//log.Info("GenerateRootHash", "address", address)
 	}
 
 	var root types.Hash
 	sha.Read(root[:])
-
-	//log.Info("GenerateRootHash ", "root", root.Hex())
-
 	return root
 }
 
-// IntermediateRoot root
+// IntermediateRoot returns the current root hash by delegating to GenerateRootHash.
 func (s *IntraBlockState) IntermediateRoot() types.Hash {
 	return s.GenerateRootHash()
 }
@@ -1224,9 +1111,7 @@ func (sdb *IntraBlockState) WasCreatedInCurrentTx(addr types.Address) bool {
 	return stateObject.created
 }
 
-// BeforeStateRoot calculate used state hash
-//
-// it should be invoked after all txs exec
+// BeforeStateRoot computes a hash of the used state. Must be called after all transactions execute.
 func (sdb *IntraBlockState) BeforeStateRoot() (hash types.Hash) {
 	if sdb.snap == nil {
 		return types.Hash{}

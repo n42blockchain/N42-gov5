@@ -28,11 +28,7 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-// =============================================================================
-// Point Evaluation Precompile (EIP-4844)
-// =============================================================================
-
-// PointEvaluationPrecompileAddress is the address of the point evaluation precompile
+// PointEvaluationPrecompileAddress is the address of the point evaluation precompile.
 var PointEvaluationPrecompileAddress = types.HexToAddress("0x000000000000000000000000000000000000000a")
 
 // Point evaluation input sizes
@@ -133,10 +129,6 @@ func verifyVersionedHash(versionedHash types.Hash, commitment transaction.Commit
 	return nil
 }
 
-// =============================================================================
-// Precompile Errors
-// =============================================================================
-
 var (
 	errBlobVerifyInputLength = errors.New("invalid input length for point evaluation")
 	errBlobVerifyVersionHash = errors.New("invalid versioned hash version")
@@ -144,26 +136,12 @@ var (
 	errBlobVerifyKZGProof    = errors.New("kzg proof verification failed")
 )
 
-// =============================================================================
-// Precompile Registration
-// =============================================================================
-
-// init registers the point evaluation precompile for Cancun
-func init() {
-	// The precompile is registered in the Cancun precompile set
-	// See PrecompiledContractsCancun in contracts.go
-}
-
-// GetPointEvaluationPrecompile returns the point evaluation precompile instance
+// GetPointEvaluationPrecompile returns the point evaluation precompile instance.
 func GetPointEvaluationPrecompile() PrecompiledContract {
 	return &pointEvaluationPrecompile{}
 }
 
-// =============================================================================
-// Blob Hash Computation (for BLOBHASH opcode)
-// =============================================================================
-
-// ComputeBlobHash computes the versioned hash for a blob
+// ComputeBlobHash computes the versioned hash for a blob.
 func ComputeBlobHash(blob *transaction.Blob) (types.Hash, error) {
 	// Compute commitment
 	commitment, err := kzg.BlobToCommitment(blob)
@@ -198,11 +176,7 @@ func VerifyBlobHashes(expectedHashes []types.Hash, sidecar *transaction.BlobTxSi
 	return nil
 }
 
-// =============================================================================
-// EIP-4844 Header Fields
-// =============================================================================
-
-// BlobGasUsed returns the blob gas used by transactions in a block
+// BlobGasUsed returns the blob gas used by transactions in a block.
 func BlobGasUsed(txs []*transaction.Transaction) uint64 {
 	var total uint64
 	for _, tx := range txs {
@@ -230,11 +204,7 @@ func ValidateBlobGasUsed(blobGasUsed uint64, txs []*transaction.Transaction) err
 	return nil
 }
 
-// =============================================================================
-// Fake/Mock Blob Functions (for testing)
-// =============================================================================
-
-// CreateMockBlob creates a mock blob for testing
+// CreateMockBlob creates a mock blob for testing.
 func CreateMockBlob(data []byte) transaction.Blob {
 	var blob transaction.Blob
 	copy(blob[:], data)

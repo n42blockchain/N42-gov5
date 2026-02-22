@@ -46,8 +46,7 @@ type HexOrDecimal256 big.Int
 
 // NewHexOrDecimal256 creates a new HexOrDecimal256
 func NewHexOrDecimal256(x int64) *HexOrDecimal256 {
-	b := big.NewInt(x)
-	h := HexOrDecimal256(*b)
+	h := HexOrDecimal256(*big.NewInt(x))
 	return &h
 }
 
@@ -84,10 +83,9 @@ func (i *HexOrDecimal256) MarshalText() ([]byte, error) {
 // it however accepts either "0x"-prefixed (hex encoded) or non-prefixed (decimal)
 type Decimal256 big.Int
 
-// NewHexOrDecimal256 creates a new Decimal256
+// NewDecimal256 creates a new Decimal256
 func NewDecimal256(x int64) *Decimal256 {
-	b := big.NewInt(x)
-	d := Decimal256(*b)
+	d := Decimal256(*big.NewInt(x))
 	return &d
 }
 
@@ -164,20 +162,17 @@ func BigMin(x, y *big.Int) *big.Int {
 	return x
 }
 
-// U256Min returns the smaller of x or y.
-func U256Min(x, y *uint256.Int) *uint256.Int {
-	if x.Cmp(y) > 0 {
-		return y
-	}
-	return x
-}
-
 // Min256 returns the smaller of x or y.
 func Min256(x, y *uint256.Int) *uint256.Int {
 	if x.Cmp(y) > 0 {
 		return y
 	}
 	return x
+}
+
+// U256Min is an alias for Min256 for backward compatibility.
+func U256Min(x, y *uint256.Int) *uint256.Int {
+	return Min256(x, y)
 }
 
 // FirstBitSet returns the index of the first 1 bit in v, counting from LSB.

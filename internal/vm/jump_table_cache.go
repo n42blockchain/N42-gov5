@@ -17,6 +17,7 @@
 package vm
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/n42blockchain/N42/params"
@@ -63,51 +64,36 @@ func GetCachedJumpTable(chainID uint64, rules *params.Rules) JumpTable {
 
 // jumpTableCacheKey generates a cache key for the given chain rules.
 func jumpTableCacheKey(rules *params.Rules) string {
-	// Build key based on relevant rule flags
-	key := ""
-	if rules.IsHomestead {
-		key += "H"
+	type forkFlag struct {
+		enabled bool
+		tag     string
 	}
-	if rules.IsTangerineWhistle {
-		key += "TW"
+	flags := []forkFlag{
+		{rules.IsHomestead, "H"},
+		{rules.IsTangerineWhistle, "TW"},
+		{rules.IsSpuriousDragon, "SD"},
+		{rules.IsByzantium, "B"},
+		{rules.IsConstantinople, "C"},
+		{rules.IsPetersburg, "P"},
+		{rules.IsIstanbul, "I"},
+		{rules.IsBerlin, "Be"},
+		{rules.IsLondon, "L"},
+		{rules.IsShanghai, "S"},
+		{rules.IsCancun, "Ca"},
+		{rules.IsPectra, "Pe"},
+		{rules.IsOsaka, "O"},
 	}
-	if rules.IsSpuriousDragon {
-		key += "SD"
+
+	var b strings.Builder
+	for _, f := range flags {
+		if f.enabled {
+			b.WriteString(f.tag)
+		}
 	}
-	if rules.IsByzantium {
-		key += "B"
+	if b.Len() == 0 {
+		return "frontier"
 	}
-	if rules.IsConstantinople {
-		key += "C"
-	}
-	if rules.IsPetersburg {
-		key += "P"
-	}
-	if rules.IsIstanbul {
-		key += "I"
-	}
-	if rules.IsBerlin {
-		key += "Be"
-	}
-	if rules.IsLondon {
-		key += "L"
-	}
-	if rules.IsShanghai {
-		key += "S"
-	}
-	if rules.IsCancun {
-		key += "Ca"
-	}
-	if rules.IsPectra {
-		key += "Pe"
-	}
-	if rules.IsOsaka {
-		key += "O"
-	}
-	if key == "" {
-		key = "frontier"
-	}
-	return key
+	return b.String()
 }
 
 // newJumpTableForRules creates a new jump table for the given rules.

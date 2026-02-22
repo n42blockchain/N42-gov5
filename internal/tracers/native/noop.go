@@ -18,6 +18,7 @@ package native
 
 import (
 	"encoding/json"
+
 	"github.com/holiman/uint256"
 
 	common "github.com/n42blockchain/N42/common/types"

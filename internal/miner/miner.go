@@ -77,21 +77,18 @@ func (m *Miner) Start() {
 
 func (m *Miner) runLoop() error {
 	defer m.cancel()
-	startCh := make(chan common.DownloaderFinishEvent)
-	doneCh := make(chan common.DownloaderStartEvent)
-	start, _ := event.GlobalEvent.Subscribe(startCh)
-	done, _ := event.GlobalEvent.Subscribe(doneCh)
-
-	defer func() {
-		start.Unsubscribe()
-		done.Unsubscribe()
-	}()
-
 	defer func() {
 		if m.Mining() {
 			m.worker.close()
 		}
 	}()
+
+	downloaderFinishCh := make(chan common.DownloaderFinishEvent)
+	downloaderStartCh := make(chan common.DownloaderStartEvent)
+	finishSub, _ := event.GlobalEvent.Subscribe(downloaderFinishCh)
+	startSub, _ := event.GlobalEvent.Subscribe(downloaderStartCh)
+	defer finishSub.Unsubscribe()
+	defer startSub.Unsubscribe()
 
 	canStart := false
 	shouldStart := false
@@ -100,7 +97,8 @@ func (m *Miner) runLoop() error {
 		select {
 		case <-m.ctx.Done():
 			return m.ctx.Err()
-		case _, ok := <-startCh:
+
+		case _, ok := <-downloaderFinishCh:
 			if ok {
 				canStart = true
 				if !m.Mining() && shouldStart {
@@ -112,16 +110,17 @@ func (m *Miner) runLoop() error {
 					m.worker.start()
 				}
 			}
-		case _, ok := <-doneCh:
-			if ok {
-				if m.Mining() {
-					m.worker.stop()
-				}
+
+		case _, ok := <-downloaderStartCh:
+			if ok && m.Mining() {
+				m.worker.stop()
 			}
-		case err := <-start.Err():
+
+		case err := <-finishSub.Err():
 			return err
-		case err := <-done.Err():
+		case err := <-startSub.Err():
 			return err
+
 		case addr, ok := <-m.startCh:
 			if ok {
 				m.SetCoinbase(addr)
@@ -130,6 +129,7 @@ func (m *Miner) runLoop() error {
 				}
 				shouldStart = true
 			}
+
 		case <-m.stopCh:
 			shouldStart = false
 			if m.Mining() {

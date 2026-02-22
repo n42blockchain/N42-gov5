@@ -203,6 +203,28 @@ func (f *Fetch) receiveMessage(ctx context.Context, sentryClient sentry.SentryCl
 	}
 }
 
+// requestUnknownHashes filters out known hashes and requests the unknown ones from the peer.
+func (f *Fetch) requestUnknownHashes(tx kv.Tx, hashes []byte, sentryClient sentry.SentryClient, peerID types2.PeerID) error {
+	unknownHashes, err := f.pool.FilterKnownIdHashes(tx, hashes)
+	if err != nil {
+		return err
+	}
+	if len(unknownHashes) == 0 {
+		return nil
+	}
+	encodedRequest, err := types2.EncodeGetPooledTransactions66(unknownHashes, uint64(1), nil)
+	if err != nil {
+		return err
+	}
+	if _, err = sentryClient.SendMessageById(f.ctx, &sentry.SendMessageByIdRequest{
+		Data:   &sentry.OutboundMessageData{Id: sentry.MessageId_GET_POOLED_TRANSACTIONS_66, Data: encodedRequest},
+		PeerId: peerID,
+	}, &grpc.EmptyCallOption{}); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (f *Fetch) handleInboundMessage(ctx context.Context, req *sentry.InboundMessage, sentryClient sentry.SentryClient) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -231,47 +253,16 @@ func (f *Fetch) handleInboundMessage(ctx context.Context, req *sentry.InboundMes
 				return err
 			}
 		}
-		unknownHashes, err := f.pool.FilterKnownIdHashes(tx, hashes)
-		if err != nil {
+		if err := f.requestUnknownHashes(tx, hashes, sentryClient, req.PeerId); err != nil {
 			return err
-		}
-		if len(unknownHashes) > 0 {
-			var encodedRequest []byte
-			var messageID sentry.MessageId
-			if encodedRequest, err = types2.EncodeGetPooledTransactions66(unknownHashes, uint64(1), nil); err != nil {
-				return err
-			}
-			messageID = sentry.MessageId_GET_POOLED_TRANSACTIONS_66
-			if _, err = sentryClient.SendMessageById(f.ctx, &sentry.SendMessageByIdRequest{
-				Data:   &sentry.OutboundMessageData{Id: messageID, Data: encodedRequest},
-				PeerId: req.PeerId,
-			}, &grpc.EmptyCallOption{}); err != nil {
-				return err
-			}
 		}
 	case sentry.MessageId_NEW_POOLED_TRANSACTION_HASHES_68:
 		_, _, hashes, _, err := rlp.ParseAnnouncements(req.Data, 0)
 		if err != nil {
-			return fmt.Errorf("parsing NewPooledTransactionHashes88: %w", err)
+			return fmt.Errorf("parsing NewPooledTransactionHashes68: %w", err)
 		}
-		unknownHashes, err := f.pool.FilterKnownIdHashes(tx, hashes)
-		if err != nil {
+		if err := f.requestUnknownHashes(tx, hashes, sentryClient, req.PeerId); err != nil {
 			return err
-		}
-
-		if len(unknownHashes) > 0 {
-			var encodedRequest []byte
-			var messageID sentry.MessageId
-			if encodedRequest, err = types2.EncodeGetPooledTransactions66(unknownHashes, uint64(1), nil); err != nil {
-				return err
-			}
-			messageID = sentry.MessageId_GET_POOLED_TRANSACTIONS_66
-			if _, err = sentryClient.SendMessageById(f.ctx, &sentry.SendMessageByIdRequest{
-				Data:   &sentry.OutboundMessageData{Id: messageID, Data: encodedRequest},
-				PeerId: req.PeerId,
-			}, &grpc.EmptyCallOption{}); err != nil {
-				return err
-			}
 		}
 	case sentry.MessageId_GET_POOLED_TRANSACTIONS_66:
 		//TODO: handleInboundMessage is single-threaded - means it can accept as argument couple buffers (or analog of txParseContext). Protobuf encoding will copy data anyway, but DirectClient doesn't
@@ -324,12 +315,6 @@ func (f *Fetch) handleInboundMessage(ctx context.Context, req *sentry.InboundMes
 		}
 	case sentry.MessageId_POOLED_TRANSACTIONS_66, sentry.MessageId_TRANSACTIONS_66:
 		txs := types2.TxSlots{}
-		if err := f.threadSafeParsePooledTxn(func(parseContext *types2.TxParseContext) error {
-			return nil
-		}); err != nil {
-			return err
-		}
-
 		switch req.Id {
 		case sentry.MessageId_TRANSACTIONS_66:
 			if err := f.threadSafeParsePooledTxn(func(parseContext *types2.TxParseContext) error {

@@ -1,10 +1,10 @@
-// Package types contains all the respective p2p types that are required for sync
-// but cannot be represented as a protobuf schema. This package also contains those
-// types associated fast ssz methods.
+// Package p2ptypes contains P2P types required for sync that cannot be
+// represented as a protobuf schema, along with their fast-ssz methods.
 package p2ptypes
 
 import (
-	"github.com/pkg/errors"
+	"fmt"
+
 	ssz "github.com/prysmaticlabs/fastssz"
 )
 
@@ -12,18 +12,18 @@ const rootLength = 32
 
 const maxErrorLength = 256
 
-// maxRequestBlocks is the maximum number of blocks that can be requested in a single request.
+// maxRequestBlocks is the maximum number of blocks in a single request.
 const maxRequestBlocks = 1024
 
-// SSZBytes is a bytes slice that satisfies the fast-ssz interface.
+// SSZBytes is a byte slice that implements the fast-ssz Hasher interface.
 type SSZBytes []byte
 
-// HashTreeRoot hashes the uint64 object following the SSZ standard.
+// HashTreeRoot computes the SSZ hash tree root of the byte slice.
 func (b *SSZBytes) HashTreeRoot() ([32]byte, error) {
 	return ssz.HashWithDefaultHasher(b)
 }
 
-// HashTreeRootWith hashes the uint64 object with the given hasher.
+// HashTreeRootWith computes the hash tree root using the provided hasher.
 func (b *SSZBytes) HashTreeRootWith(hh *ssz.Hasher) error {
 	indx := hh.Index()
 	hh.PutBytes(*b)
@@ -31,94 +31,86 @@ func (b *SSZBytes) HashTreeRootWith(hh *ssz.Hasher) error {
 	return nil
 }
 
-// BlockByRootsReq specifies the block by roots request type.
+// BlockByRootsReq is a request for blocks identified by their roots.
 type BlockByRootsReq [][rootLength]byte
 
-// MarshalSSZTo marshals the block by roots request with the provided byte slice.
+// MarshalSSZTo appends the SSZ-encoded request to dst.
 func (r *BlockByRootsReq) MarshalSSZTo(dst []byte) ([]byte, error) {
-	marshalledObj, err := r.MarshalSSZ()
+	encoded, err := r.MarshalSSZ()
 	if err != nil {
 		return nil, err
 	}
-	return append(dst, marshalledObj...), nil
+	return append(dst, encoded...), nil
 }
 
-// MarshalSSZ Marshals the block by roots request type into the serialized object.
+// MarshalSSZ serializes the block-by-roots request.
 func (r *BlockByRootsReq) MarshalSSZ() ([]byte, error) {
 	if len(*r) > maxRequestBlocks {
-		return nil, errors.Errorf("block by roots request exceeds max size: %d > %d", len(*r), maxRequestBlocks)
+		return nil, fmt.Errorf("block by roots request exceeds max size: %d > %d", len(*r), maxRequestBlocks)
 	}
 	buf := make([]byte, 0, r.SizeSSZ())
-	for _, r := range *r {
-		buf = append(buf, r[:]...)
+	for _, root := range *r {
+		buf = append(buf, root[:]...)
 	}
 	return buf, nil
 }
 
-// SizeSSZ returns the size of the serialized representation.
+// SizeSSZ returns the size of the SSZ-encoded representation.
 func (r *BlockByRootsReq) SizeSSZ() int {
 	return len(*r) * rootLength
 }
 
-// UnmarshalSSZ unmarshals the provided bytes buffer into the
-// block by roots request object.
+// UnmarshalSSZ deserializes a block-by-roots request from buf.
 func (r *BlockByRootsReq) UnmarshalSSZ(buf []byte) error {
-	bufLen := len(buf)
-	maxLength := maxRequestBlocks * rootLength
-	if bufLen > maxLength {
-		return errors.Errorf("expected buffer with length of upto %d but received length %d", maxLength, bufLen)
+	if len(buf) > maxRequestBlocks*rootLength {
+		return fmt.Errorf("expected buffer with length up to %d but received %d", maxRequestBlocks*rootLength, len(buf))
 	}
-	if bufLen%rootLength != 0 {
+	if len(buf)%rootLength != 0 {
 		return ssz.ErrIncorrectByteSize
 	}
-	numOfRoots := bufLen / rootLength
-	roots := make([][rootLength]byte, 0, numOfRoots)
-	for i := 0; i < numOfRoots; i++ {
-		var rt [rootLength]byte
-		copy(rt[:], buf[i*rootLength:(i+1)*rootLength])
-		roots = append(roots, rt)
+	numRoots := len(buf) / rootLength
+	roots := make([][rootLength]byte, numRoots)
+	for i := range roots {
+		copy(roots[i][:], buf[i*rootLength:(i+1)*rootLength])
 	}
 	*r = roots
 	return nil
 }
 
-// ErrorMessage describes the error message type.
+// ErrorMessage is an SSZ-serializable RPC error message.
 type ErrorMessage []byte
 
-// MarshalSSZTo marshals the error message with the provided byte slice.
+// MarshalSSZTo appends the SSZ-encoded error message to dst.
 func (m *ErrorMessage) MarshalSSZTo(dst []byte) ([]byte, error) {
-	marshalledObj, err := m.MarshalSSZ()
+	encoded, err := m.MarshalSSZ()
 	if err != nil {
 		return nil, err
 	}
-	return append(dst, marshalledObj...), nil
+	return append(dst, encoded...), nil
 }
 
-// MarshalSSZ Marshals the error message into the serialized object.
+// MarshalSSZ serializes the error message.
 func (m *ErrorMessage) MarshalSSZ() ([]byte, error) {
 	if len(*m) > maxErrorLength {
-		return nil, errors.Errorf("error message exceeds max size: %d > %d", len(*m), maxErrorLength)
+		return nil, fmt.Errorf("error message exceeds max size: %d > %d", len(*m), maxErrorLength)
 	}
 	buf := make([]byte, m.SizeSSZ())
 	copy(buf, *m)
 	return buf, nil
 }
 
-// SizeSSZ returns the size of the serialized representation.
+// SizeSSZ returns the size of the SSZ-encoded representation.
 func (m *ErrorMessage) SizeSSZ() int {
 	return len(*m)
 }
 
-// UnmarshalSSZ unmarshals the provided bytes buffer into the
-// error message object.
+// UnmarshalSSZ deserializes an error message from buf.
 func (m *ErrorMessage) UnmarshalSSZ(buf []byte) error {
-	bufLen := len(buf)
-	maxLength := maxErrorLength
-	if bufLen > maxLength {
-		return errors.Errorf("expected buffer with length of upto %d but received length %d", maxLength, bufLen)
+	if len(buf) > maxErrorLength {
+		return fmt.Errorf("expected buffer with length up to %d but received %d", maxErrorLength, len(buf))
 	}
-	errMsg := make([]byte, bufLen)
-	copy(errMsg, buf)
-	*m = errMsg
+	msg := make([]byte, len(buf))
+	copy(msg, buf)
+	*m = msg
 	return nil
 }

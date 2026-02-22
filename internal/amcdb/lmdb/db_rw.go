@@ -19,9 +19,10 @@ package lmdb
 import (
 	"context"
 	"fmt"
+	"sync"
+
 	"github.com/erigontech/mdbx-go/mdbx"
 	"github.com/n42blockchain/N42/common/db"
-	"sync"
 )
 
 type DBI struct {
@@ -32,43 +33,37 @@ type DBI struct {
 
 	lock sync.RWMutex
 	name string
-
-	//log *zap.SugaredLogger
 }
 
 func newDBI(ctx context.Context, env *mdbx.Env, name string) (*DBI, error) {
-	var (
-		mdb mdbx.DBI
-		err error
-	)
-	err = env.Update(func(txn *mdbx.Txn) error {
-		mdb, err = txn.OpenDBI(name, mdbx.Create, nil, nil)
-		return err
+	var mdb mdbx.DBI
+	err := env.Update(func(txn *mdbx.Txn) error {
+		var txnErr error
+		mdb, txnErr = txn.OpenDBI(name, mdbx.Create, nil, nil)
+		return txnErr
 	})
-
 	if err != nil {
 		return nil, err
 	}
+
 	c, cancel := context.WithCancel(ctx)
-	dbi := DBI{
+	return &DBI{
 		DBI:    &mdb,
 		env:    env,
 		ctx:    c,
 		cancel: cancel,
 		name:   name,
-	}
-
-	return &dbi, nil
+	}, nil
 }
 
 func (db *DBI) Get(key []byte) (value []byte, err error) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
+
 	err = db.env.View(func(txn *mdbx.Txn) error {
 		value, err = txn.Get(*db.DBI, key)
 		return err
 	})
-
 	return value, err
 }
 
@@ -82,7 +77,7 @@ func (db *DBI) Gets(key []byte, count uint) (keys [][]byte, values [][]byte, err
 		}
 		defer cur.Close()
 
-		k, v, err := cur.Get(key, nil, mdbx.Set) //SetRange
+		k, v, err := cur.Get(key, nil, mdbx.Set)
 		if err != nil {
 			return err
 		}
@@ -111,49 +106,47 @@ func (db *DBI) Gets(key []byte, count uint) (keys [][]byte, values [][]byte, err
 	return keys, values, err
 }
 
-func (db *DBI) GetIterator(key []byte) (iterator db.IIterator, err error) {
-	//panic(fmt.Errorf("don`t support Iterator current"))
+func (db *DBI) GetIterator(key []byte) (db.IIterator, error) {
 	return newIterator(db, key)
 }
 
-func (db *DBI) Put(key []byte, value []byte) (err error) {
-	err = db.env.Update(func(txn *mdbx.Txn) error {
-		return txn.Put(*db.DBI, key, value, 0) //mdbx.NoOverwrite
+func (db *DBI) Put(key []byte, value []byte) error {
+	return db.env.Update(func(txn *mdbx.Txn) error {
+		return txn.Put(*db.DBI, key, value, 0)
 	})
-
-	return err
 }
 
-func (db *DBI) Puts(keys [][]byte, values [][]byte) (err error) {
+func (db *DBI) Puts(keys [][]byte, values [][]byte) error {
 	db.lock.Lock()
 	defer db.lock.Unlock()
+
 	if len(keys) != len(values) {
-		return fmt.Errorf("failed the number of keys and values is inconsistent")
+		return fmt.Errorf("keys and values length mismatch: %d vs %d", len(keys), len(values))
 	}
-	err = db.env.Update(func(txn *mdbx.Txn) error {
-		for i := 0; i < len(keys); i++ {
-			err = txn.Put(*db.DBI, keys[i], values[i], 0)
-			if err != nil {
+
+	return db.env.Update(func(txn *mdbx.Txn) error {
+		for i := range keys {
+			if err := txn.Put(*db.DBI, keys[i], values[i], 0); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-
-	return err
 }
 
-func (db *DBI) Drop() (err error) {
+func (db *DBI) Drop() error {
 	db.lock.Lock()
 	defer db.lock.Unlock()
+
 	return db.env.Update(func(txn *mdbx.Txn) error {
 		return txn.Drop(*db.DBI, true)
 	})
 }
 
-func (db *DBI) Delete(key []byte) (err error) {
+func (db *DBI) Delete(key []byte) error {
 	db.lock.Lock()
 	defer db.lock.Unlock()
+
 	return db.env.Update(func(txn *mdbx.Txn) error {
 		return txn.Del(*db.DBI, key, nil)
 	})

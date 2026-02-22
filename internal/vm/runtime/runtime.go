@@ -17,20 +17,20 @@
 package runtime
 
 import (
-	"github.com/n42blockchain/N42/common/types"
-	vm2 "github.com/n42blockchain/N42/internal/vm"
-	"github.com/n42blockchain/N42/modules/state"
 	"math"
 	"math/big"
 	"time"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
 
-// Config is a basic type specifying certain configuration flags for running
-// the EVM.
+// Config specifies configuration flags for running the EVM.
 type Config struct {
 	ChainConfig *params.ChainConfig
 	Difficulty  *big.Int
@@ -42,16 +42,14 @@ type Config struct {
 	GasPrice    *uint256.Int
 	Value       *uint256.Int
 	Debug       bool
-	EVMConfig   vm2.Config
+	EVMConfig   vm.Config
 	BaseFee     *uint256.Int
 
 	State     *state.IntraBlockState
-	r         state.StateReader
-	w         state.StateWriter
 	GetHashFn func(n uint64) types.Hash
 }
 
-// sets defaults on the config
+// setDefaults populates zero-valued fields in cfg with sensible defaults.
 func setDefaults(cfg *Config) {
 	if cfg.ChainConfig == nil {
 		cfg.ChainConfig = &params.ChainConfig{
@@ -110,69 +108,44 @@ func Execute(code, input []byte, cfg *Config, bn uint64) ([]byte, *state.IntraBl
 	}
 	setDefaults(cfg)
 
-	//if cfg.State == nil {
-	//	db := olddb.NewObjectDatabase(memdb.New())
-	//	defer db.Close()
-	//	cfg.r = state.NewDbStateReader(db)
-	//	cfg.w = state.NewDbStateWriter(db, 0)
-	//	cfg.kv = db
-	//	cfg.State = state.New(cfg.r)
-	//}
 	var (
 		address = types.BytesToAddress([]byte("contract"))
 		vmenv   = NewEnv(cfg)
-		sender  = vm2.AccountRef(cfg.Origin)
+		sender  = vm.AccountRef(cfg.Origin)
 	)
 	if rules := cfg.ChainConfig.Rules(vmenv.Context().BlockNumber); rules.IsBerlin {
-		cfg.State.PrepareAccessList(cfg.Origin, &address, vm2.ActivePrecompiles(rules), nil)
+		cfg.State.PrepareAccessList(cfg.Origin, &address, vm.ActivePrecompiles(rules), nil)
 	}
 	cfg.State.CreateAccount(address, true)
-	// set the receiver's (the executing contract) code for execution.
 	cfg.State.SetCode(address, code)
-	// Call the code with the given configuration.
+
 	ret, _, err := vmenv.Call(
 		sender,
-		types.BytesToAddress([]byte("contract")),
+		address,
 		input,
 		cfg.GasLimit,
 		cfg.Value,
 		false, /* bailout */
 	)
-
 	return ret, cfg.State, err
 }
 
-// Create executes the code using the EVM create method
+// Create executes the code using the EVM create method.
 func Create(input []byte, cfg *Config, blockNr uint64) ([]byte, types.Address, uint64, error) {
 	if cfg == nil {
 		cfg = new(Config)
 	}
 	setDefaults(cfg)
 
-	//if cfg.State == nil {
-	//	db := olddb.NewObjectDatabase(memdb.New())
-	//	defer db.Close()
-	//	cfg.r = state.NewPlainStateReader(db)
-	//	cfg.w = state.NewPlainStateWriter(db, ,0)
-	//	cfg.kv = db
-	//	cfg.State = state.New(cfg.r)
-	//}
 	var (
 		vmenv  = NewEnv(cfg)
-		sender = vm2.AccountRef(cfg.Origin)
+		sender = vm.AccountRef(cfg.Origin)
 	)
 	if rules := cfg.ChainConfig.Rules(vmenv.Context().BlockNumber); rules.IsBerlin {
-		cfg.State.PrepareAccessList(cfg.Origin, nil, vm2.ActivePrecompiles(rules), nil)
+		cfg.State.PrepareAccessList(cfg.Origin, nil, vm.ActivePrecompiles(rules), nil)
 	}
 
-	// Call the code with the given configuration.
-	code, address, leftOverGas, err := vmenv.Create(
-		sender,
-		input,
-		cfg.GasLimit,
-		cfg.Value,
-	)
-	return code, address, leftOverGas, err
+	return vmenv.Create(sender, input, cfg.GasLimit, cfg.Value)
 }
 
 // Call executes the code given by the contract's address. It will return the
@@ -184,15 +157,13 @@ func Call(address types.Address, input []byte, cfg *Config) ([]byte, uint64, err
 	setDefaults(cfg)
 
 	vmenv := NewEnv(cfg)
-
 	sender := cfg.State.GetOrNewStateObject(cfg.Origin)
-	statedb := cfg.State
+
 	if rules := cfg.ChainConfig.Rules(vmenv.Context().BlockNumber); rules.IsBerlin {
-		statedb.PrepareAccessList(cfg.Origin, &address, vm2.ActivePrecompiles(rules), nil)
+		cfg.State.PrepareAccessList(cfg.Origin, &address, vm.ActivePrecompiles(rules), nil)
 	}
 
-	// Call the code with the given configuration.
-	ret, leftOverGas, err := vmenv.Call(
+	return vmenv.Call(
 		sender,
 		address,
 		input,
@@ -200,6 +171,4 @@ func Call(address types.Address, input []byte, cfg *Config) ([]byte, uint64, err
 		cfg.Value,
 		false, /* bailout */
 	)
-
-	return ret, leftOverGas, err
 }

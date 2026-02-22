@@ -26,29 +26,15 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"
 )
 
-// =============================================================================
-// Fetcher Interface
-// =============================================================================
-
 // BlockFetcher defines the interface for fetching blocks from peers.
-// This abstraction allows different fetching strategies (round-robin, parallel, etc.)
+// It abstracts different fetching strategies (round-robin, parallel, etc.)
 // and enables easy testing with mock implementations.
-//
-// Implementations:
-//   - BasicFetcher: Simple single-peer fetching
-//   - InstrumentedFetcher: Wraps any fetcher with metrics collection
-//
-// Usage:
-//
-//	fetcher := sync.NewBasicFetcher(ctx, blockchain, p2p, config)
-//	fetcher.Start()
-//	defer fetcher.Stop()
-//	result, err := fetcher.FetchBlocks(ctx, startBlock, count)
 type BlockFetcher interface {
 	// FetchBlocks fetches a range of blocks starting from the given block number.
 	// Returns the fetched blocks as raw bytes and any error encountered.
@@ -85,28 +71,19 @@ type FetchResult struct {
 	Duration time.Duration
 }
 
-// =============================================================================
-// Fetcher Metrics
-// =============================================================================
-
 // FetcherMetrics collects metrics for fetch operations.
 type FetcherMetrics struct {
 	mu sync.RWMutex
 
-	// Fetch operation counts
 	fetchesTotal     uint64
 	fetchesSucceeded uint64
 	fetchesFailed    uint64
+	blocksRequested  uint64
+	blocksReceived   uint64
 
-	// Block counts
-	blocksRequested uint64
-	blocksReceived  uint64
-
-	// Timing
 	totalFetchTime time.Duration
 	batchLatencies []time.Duration
 
-	// Peer tracking
 	peerFetches map[peer.ID]uint64
 	peerErrors  map[peer.ID]uint64
 }
@@ -183,54 +160,48 @@ func (m *FetcherMetrics) BlocksPerSecond() float64 {
 	return float64(m.blocksReceived) / m.totalFetchTime.Seconds()
 }
 
-// LogStats logs the current fetcher metrics.
+// LogStats logs the current fetcher metrics. It snapshots all values under a
+// single read-lock to avoid calling locking methods from within the lock.
 func (m *FetcherMetrics) LogStats() {
 	m.mu.RLock()
-	// Calculate metrics while holding the lock
-	fetchesTotal := m.fetchesTotal
-	fetchesSucceeded := m.fetchesSucceeded
-	fetchesFailed := m.fetchesFailed
-	blocksRequested := m.blocksRequested
-	blocksReceived := m.blocksReceived
-
-	// Calculate success rate inline to avoid nested lock
-	var successRate float64
-	if fetchesTotal > 0 {
-		successRate = float64(fetchesSucceeded) / float64(fetchesTotal)
+	snap := struct {
+		total, succeeded, failed  uint64
+		requested, received       uint64
+		successRate, blocksPerSec float64
+		avgLatency                time.Duration
+	}{
+		total:     m.fetchesTotal,
+		succeeded: m.fetchesSucceeded,
+		failed:    m.fetchesFailed,
+		requested: m.blocksRequested,
+		received:  m.blocksReceived,
 	}
-
-	// Calculate average batch latency inline
-	var avgLatency time.Duration
+	if snap.total > 0 {
+		snap.successRate = float64(snap.succeeded) / float64(snap.total)
+	}
 	if len(m.batchLatencies) > 0 {
-		var total time.Duration
+		var sum time.Duration
 		for _, l := range m.batchLatencies {
-			total += l
+			sum += l
 		}
-		avgLatency = total / time.Duration(len(m.batchLatencies))
+		snap.avgLatency = sum / time.Duration(len(m.batchLatencies))
 	}
-
-	// Calculate blocks per second inline
-	var blocksPerSecond float64
 	if m.totalFetchTime > 0 {
-		blocksPerSecond = float64(blocksReceived) / m.totalFetchTime.Seconds()
+		snap.blocksPerSec = float64(snap.received) / m.totalFetchTime.Seconds()
 	}
 	m.mu.RUnlock()
 
 	log.Info("Fetcher metrics",
-		"fetches_total", fetchesTotal,
-		"fetches_succeeded", fetchesSucceeded,
-		"fetches_failed", fetchesFailed,
-		"success_rate", fmt.Sprintf("%.2f%%", successRate*100),
-		"blocks_requested", blocksRequested,
-		"blocks_received", blocksReceived,
-		"avg_batch_latency", avgLatency,
-		"blocks_per_second", fmt.Sprintf("%.2f", blocksPerSecond),
+		"fetches_total", snap.total,
+		"fetches_succeeded", snap.succeeded,
+		"fetches_failed", snap.failed,
+		"success_rate", fmt.Sprintf("%.2f%%", snap.successRate*100),
+		"blocks_requested", snap.requested,
+		"blocks_received", snap.received,
+		"avg_batch_latency", snap.avgLatency,
+		"blocks_per_second", fmt.Sprintf("%.2f", snap.blocksPerSec),
 	)
 }
-
-// =============================================================================
-// Fetcher Configuration
-// =============================================================================
 
 // FetcherConfig holds configuration for the block fetcher.
 type FetcherConfig struct {
@@ -269,10 +240,6 @@ func DefaultFetcherConfig() *FetcherConfig {
 	}
 }
 
-// =============================================================================
-// Basic Fetcher Implementation
-// =============================================================================
-
 // BasicFetcher is a simple implementation of the BlockFetcher interface.
 // It wraps the existing P2P layer and provides metrics collection.
 type BasicFetcher struct {
@@ -285,7 +252,6 @@ type BasicFetcher struct {
 	cancel context.CancelFunc
 
 	running int32 // atomic
-	mu      sync.RWMutex
 }
 
 // NewBasicFetcher creates a new BasicFetcher.
@@ -338,15 +304,12 @@ func (f *BasicFetcher) FetchBlocks(ctx context.Context, start *uint256.Int, coun
 
 	startTime := time.Now()
 
-	// Get best peers
 	_, peers := f.p2p.Peers().BestPeers(f.config.MinPeers, f.blockchain.CurrentBlock().Number64())
 	if len(peers) == 0 {
-		// Fix: Use special identifier for unknown peer instead of empty string
 		f.metrics.RecordFetch(peer.ID("unknown"), count, 0, time.Since(startTime), false)
 		return nil, errors.New("no peers available")
 	}
 
-	// Try each peer until one succeeds
 	var lastErr error
 	for _, pid := range peers {
 		blocks, err := f.fetchFromPeer(ctx, pid, start, count)
@@ -378,22 +341,16 @@ func (f *BasicFetcher) FetchBlocksByHash(ctx context.Context, hashes [][]byte) (
 }
 
 // fetchFromPeer fetches blocks from a specific peer.
+// TODO: Wire into the actual P2P block request method (e.g. SendBodiesByRangeRequest).
 func (f *BasicFetcher) fetchFromPeer(ctx context.Context, pid peer.ID, start *uint256.Int, count uint64) ([][]byte, error) {
-	// Create timeout context
 	ctx, cancel := context.WithTimeout(ctx, f.config.RequestTimeout)
 	defer cancel()
 
-	// Use existing P2P infrastructure to request blocks
-	// This delegates to the actual implementation
 	log.Debug("Fetching blocks from peer",
 		"peer", pid.String(),
 		"start", start.Uint64(),
 		"count", count,
 	)
-
-	// Note: In a real implementation, this would call the actual P2P block request method
-	// For now, we return a placeholder to show the interface works
-	// The actual implementation would use SendBodiesByRangeRequest or similar
 
 	return nil, errors.New("fetch from peer not fully implemented - use existing initialsync")
 }
@@ -402,10 +359,6 @@ func (f *BasicFetcher) fetchFromPeer(ctx context.Context, pid peer.ID, start *ui
 func (f *BasicFetcher) Metrics() *FetcherMetrics {
 	return f.metrics
 }
-
-// =============================================================================
-// Instrumented Fetcher (Wrapper with metrics)
-// =============================================================================
 
 // InstrumentedFetcher wraps a BlockFetcher with additional instrumentation.
 type InstrumentedFetcher struct {
@@ -434,7 +387,6 @@ func (f *InstrumentedFetcher) FetchBlocks(ctx context.Context, start *uint256.In
 	duration := time.Since(startTime)
 
 	if err != nil {
-		// Fix: Use special identifier for unknown peer instead of empty string
 		f.metrics.RecordFetch(peer.ID("unknown"), count, 0, duration, false)
 		log.Debug("Block fetch failed",
 			"start", start.Uint64(),
@@ -480,10 +432,6 @@ func (f *InstrumentedFetcher) Metrics() *FetcherMetrics {
 func (f *InstrumentedFetcher) LogStats() {
 	f.metrics.LogStats()
 }
-
-// =============================================================================
-// Compile-time interface checks
-// =============================================================================
 
 var (
 	_ BlockFetcher = (*BasicFetcher)(nil)

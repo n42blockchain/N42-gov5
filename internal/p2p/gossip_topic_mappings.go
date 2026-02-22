@@ -19,74 +19,59 @@ package p2p
 import (
 	"reflect"
 	"sync"
-	"sync/atomic"
+
+	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
-	"google.golang.org/protobuf/proto"
 )
 
-// =============================================================================
-// Gossip Topic Registry (explicit registration, no init())
-// =============================================================================
-
-// GossipTopicRegistry manages gossip topic mappings without using init().
-// This provides explicit control over when topics are registered.
+// GossipTopicRegistry manages gossip topic mappings with thread-safe access.
 type GossipTopicRegistry struct {
 	mu          sync.RWMutex
 	topics      map[string]proto.Message
 	typeMapping map[reflect.Type]string
-	initialized bool
 }
 
-// globalGossipRegistry is the singleton registry instance.
-// Call InitGossipTopics() to initialize it.
-var globalGossipRegistry = &GossipTopicRegistry{
-	topics:      make(map[string]proto.Message),
-	typeMapping: make(map[reflect.Type]string),
+var (
+	globalGossipRegistry = &GossipTopicRegistry{
+		topics:      make(map[string]proto.Message),
+		typeMapping: make(map[reflect.Type]string),
+	}
+	initOnce sync.Once
+)
+
+// gossipTopicMappings defines the canonical topic-to-message-type mappings.
+// Referenced by pubsub_filter.go, service.go, and the registry.
+var gossipTopicMappings = map[string]proto.Message{
+	BlockTopicFormat:       &types_pb.Block{},
+	TransactionTopicFormat: &types_pb.Transaction{},
 }
 
-// initDone tracks whether initialization has been performed (atomic for thread safety).
-var initDone atomic.Bool
+// GossipTypeMapping is the inverse mapping (message type -> topic) used by broadcaster.go.
+var GossipTypeMapping = make(map[reflect.Type]string, len(gossipTopicMappings))
 
-// initMu protects the initialization and reset logic.
-var initMu sync.Mutex
+func init() {
+	for k, v := range gossipTopicMappings {
+		GossipTypeMapping[reflect.TypeOf(v)] = k
+	}
+	InitGossipTopics()
+}
 
 // InitGossipTopics initializes the gossip topic registry with default topics.
-// This replaces the old init() function and should be called explicitly
-// during node startup.
-//
-// Safe to call multiple times - subsequent calls are no-ops.
-// Thread-safe via atomic check + mutex.
+// Safe to call multiple times; subsequent calls are no-ops.
 func InitGossipTopics() {
-	if initDone.Load() {
-		return
-	}
-	initMu.Lock()
-	defer initMu.Unlock()
-	if initDone.Load() {
-		return
-	}
+	initOnce.Do(func() {
+		globalGossipRegistry.mu.Lock()
+		defer globalGossipRegistry.mu.Unlock()
 
-	globalGossipRegistry.mu.Lock()
-	defer globalGossipRegistry.mu.Unlock()
-
-	// Register default topics
-	defaultTopics := map[string]proto.Message{
-		BlockTopicFormat:       &types_pb.Block{},
-		TransactionTopicFormat: &types_pb.Transaction{},
-	}
-
-	for topic, msg := range defaultTopics {
-		globalGossipRegistry.topics[topic] = msg
-		globalGossipRegistry.typeMapping[reflect.TypeOf(msg)] = topic
-	}
-
-	globalGossipRegistry.initialized = true
-	initDone.Store(true)
+		for topic, msg := range gossipTopicMappings {
+			globalGossipRegistry.topics[topic] = msg
+			globalGossipRegistry.typeMapping[reflect.TypeOf(msg)] = topic
+		}
+	})
 }
 
-// RegisterGossipTopic registers a custom gossip topic.
-// This allows extensions to add new topics without modifying this file.
+// RegisterGossipTopic registers a custom gossip topic mapping.
 func RegisterGossipTopic(topic string, msg proto.Message) {
 	globalGossipRegistry.mu.Lock()
 	defer globalGossipRegistry.mu.Unlock()
@@ -95,9 +80,8 @@ func RegisterGossipTopic(topic string, msg proto.Message) {
 	globalGossipRegistry.typeMapping[reflect.TypeOf(msg)] = topic
 }
 
-// GossipTopicMappings returns the message type for a topic.
+// GossipTopicMappings returns the protobuf message type for a gossip topic.
 func GossipTopicMappings(topic string) proto.Message {
-	// Ensure initialized (safe via sync.Once)
 	InitGossipTopics()
 
 	globalGossipRegistry.mu.RLock()
@@ -106,9 +90,8 @@ func GossipTopicMappings(topic string) proto.Message {
 	return globalGossipRegistry.topics[topic]
 }
 
-// AllTopics returns all registered topic names.
+// AllTopics returns all registered gossip topic names.
 func AllTopics() []string {
-	// Ensure initialized (safe via sync.Once)
 	InitGossipTopics()
 
 	globalGossipRegistry.mu.RLock()
@@ -121,9 +104,8 @@ func AllTopics() []string {
 	return topics
 }
 
-// GossipTypeToTopic returns the topic for a message type.
+// GossipTypeToTopic returns the gossip topic for a given protobuf message type.
 func GossipTypeToTopic(msg proto.Message) string {
-	// Ensure initialized (safe via sync.Once)
 	InitGossipTopics()
 
 	globalGossipRegistry.mu.RLock()
@@ -132,51 +114,20 @@ func GossipTypeToTopic(msg proto.Message) string {
 	return globalGossipRegistry.typeMapping[reflect.TypeOf(msg)]
 }
 
-// IsInitialized returns whether the registry has been initialized.
+// IsGossipTopicsInitialized reports whether the registry has been initialized.
 func IsGossipTopicsInitialized() bool {
 	globalGossipRegistry.mu.RLock()
 	defer globalGossipRegistry.mu.RUnlock()
-	return globalGossipRegistry.initialized
+	return len(globalGossipRegistry.topics) > 0
 }
 
-// ResetGossipTopics resets the registry (for testing only).
-// Thread-safe: uses the same mutex as InitGossipTopics to prevent races.
+// ResetGossipTopics resets the registry state. Intended for testing only.
 func ResetGossipTopics() {
-	initMu.Lock()
-	defer initMu.Unlock()
+	initOnce = sync.Once{}
 
 	globalGossipRegistry.mu.Lock()
 	defer globalGossipRegistry.mu.Unlock()
 
 	globalGossipRegistry.topics = make(map[string]proto.Message)
 	globalGossipRegistry.typeMapping = make(map[reflect.Type]string)
-	globalGossipRegistry.initialized = false
-
-	initDone.Store(false)
-}
-
-// =============================================================================
-// Legacy compatibility (deprecated, use the above functions)
-// =============================================================================
-
-// gossipTopicMappings is kept for backward compatibility.
-// Deprecated: Use GossipTopicMappings() function instead.
-var gossipTopicMappings = map[string]proto.Message{
-	BlockTopicFormat:       &types_pb.Block{},
-	TransactionTopicFormat: &types_pb.Transaction{},
-}
-
-// GossipTypeMapping is the inverse mapping.
-// Deprecated: Use GossipTypeToTopic() function instead.
-var GossipTypeMapping = make(map[reflect.Type]string, len(gossipTopicMappings))
-
-// init is kept for backward compatibility but only initializes the legacy maps.
-// The new registry should be initialized explicitly via InitGossipTopics().
-func init() {
-	// Initialize legacy maps for backward compatibility
-	for k, v := range gossipTopicMappings {
-		GossipTypeMapping[reflect.TypeOf(v)] = k
-	}
-	// Also initialize the new registry
-	InitGossipTopics()
 }

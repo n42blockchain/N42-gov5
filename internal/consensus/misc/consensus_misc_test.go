@@ -54,7 +54,6 @@ func TestPoAConstantsValues(t *testing.T) {
 		t.Errorf("WiggleTime should be 500ms, got %v", WiggleTime)
 	}
 
-	t.Logf("✓ PoA constants are correct")
 }
 
 func TestNonceVotesValues(t *testing.T) {
@@ -80,7 +79,6 @@ func TestNonceVotesValues(t *testing.T) {
 		}
 	}
 
-	t.Logf("✓ Nonce votes are correct")
 }
 
 func TestDifficultyConstantsValues(t *testing.T) {
@@ -94,7 +92,6 @@ func TestDifficultyConstantsValues(t *testing.T) {
 		t.Errorf("DiffNoTurn should be 1, got %d", DiffNoTurn.Uint64())
 	}
 
-	t.Logf("✓ Difficulty constants are correct")
 }
 
 // =============================================================================
@@ -132,7 +129,6 @@ func TestVerifyGaslimitValues(t *testing.T) {
 		})
 	}
 
-	t.Logf("✓ VerifyGaslimit works correctly")
 }
 
 // =============================================================================
@@ -140,7 +136,6 @@ func TestVerifyGaslimitValues(t *testing.T) {
 // =============================================================================
 
 func TestErrorTypesExist(t *testing.T) {
-	// Verify core error types exist and are non-nil
 	errors := []error{
 		ErrInvalidDifficulty,
 		ErrWrongDifficulty,
@@ -154,8 +149,6 @@ func TestErrorTypesExist(t *testing.T) {
 			t.Errorf("Error %d should not be nil", i)
 		}
 	}
-
-	t.Logf("✓ Error types are correctly defined")
 }
 
 // =============================================================================

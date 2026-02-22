@@ -56,20 +56,16 @@ func NewClient(ctx context.Context, downloaderAddr string) (proto_downloader.Dow
 
 func InfoHashes2Proto(in []metainfo.Hash) []*prototypes.H160 {
 	infoHashes := make([]*prototypes.H160, len(in))
-	i := 0
-	for _, h := range in {
+	for i, h := range in {
 		infoHashes[i] = gointerfaces.ConvertAddressToH160(h)
-		i++
 	}
 	return infoHashes
 }
 
 func Strings2Proto(in []string) []*prototypes.H160 {
 	infoHashes := make([]*prototypes.H160, len(in))
-	i := 0
-	for _, h := range in {
+	for i, h := range in {
 		infoHashes[i] = String2Proto(h)
-		i++
 	}
 	return infoHashes
 }

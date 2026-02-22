@@ -32,13 +32,7 @@ func VersionFromProto(r *types.VersionReply) Version {
 
 // EnsureVersion - Default policy: allow only patch difference
 func EnsureVersion(local Version, remote *types.VersionReply) bool {
-	if remote.Major != local.Major {
-		return false
-	}
-	if remote.Minor != local.Minor {
-		return false
-	}
-	return true
+	return remote.Major == local.Major && remote.Minor == local.Minor
 }
 
 func (v Version) String() string {

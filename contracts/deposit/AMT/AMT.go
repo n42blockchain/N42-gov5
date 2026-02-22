@@ -19,14 +19,16 @@ package amtdeposit
 import (
 	"bytes"
 	"embed"
+	"math/big"
+
 	"github.com/holiman/uint256"
+	"github.com/pkg/errors"
+
 	"github.com/n42blockchain/N42/accounts/abi"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
-	"github.com/pkg/errors"
-	"math/big"
 )
 
 //go:embed abi.json
@@ -60,55 +62,49 @@ func (Contract) DepositSignature() types.Hash {
 	return depositSignature
 }
 
-func (c Contract) IsDepositAction(sigdata [4]byte) bool {
-	var (
-		method *abi.Method
-		err    error
-	)
-	if method, err = contractAbi.MethodById(sigdata[:]); err != nil {
+func (Contract) IsDepositAction(sigdata [4]byte) bool {
+	method, err := contractAbi.MethodById(sigdata[:])
+	if err != nil {
 		return false
 	}
-
-	if !bytes.Equal(method.ID, contractAbi.Methods["deposit"].ID) {
-		return false
-	}
-	return true
+	return bytes.Equal(method.ID, contractAbi.Methods["deposit"].ID)
 }
 
 func (Contract) UnpackDepositLogData(data []byte) (publicKey []byte, signature []byte, depositAmount *uint256.Int, err error) {
-	var (
-		unpackedLogs []interface{}
-		overflow     bool
-	)
-	//
-	if unpackedLogs, err = contractAbi.Unpack("DepositEvent", data); err != nil {
-		err = errors.Wrap(err, "unable to unpack logs")
+	unpackedLogs, unpackErr := contractAbi.Unpack("DepositEvent", data)
+	if unpackErr != nil {
+		err = errors.Wrap(unpackErr, "unable to unpack logs")
 		return
 	}
 	if len(unpackedLogs) < 3 {
 		err = errors.New("unexpected number of log fields")
 		return
 	}
-	//
+
 	bigAmount, ok := unpackedLogs[1].(*big.Int)
 	if !ok {
 		err = errors.New("unable to cast amount to *big.Int")
 		return
 	}
+
+	var overflow bool
 	if depositAmount, overflow = uint256.FromBig(bigAmount); overflow {
-		err = errors.New("unable to unpack amount")
+		err = errors.New("unable to unpack amount: overflow")
 		return
 	}
+
 	pubKeyBytes, ok := unpackedLogs[0].([]byte)
 	if !ok {
 		err = errors.New("unable to cast publicKey to []byte")
 		return
 	}
+
 	sigBytes, ok := unpackedLogs[2].([]byte)
 	if !ok {
 		err = errors.New("unable to cast signature to []byte")
 		return
 	}
+
 	publicKey, signature = pubKeyBytes, sigBytes
 	log.Debug("unpacked DepositEvent Logs", "publicKey", hexutil.Encode(pubKeyBytes), "signature", hexutil.Encode(sigBytes), "message", hexutil.Encode(depositAmount.Bytes()))
 	return

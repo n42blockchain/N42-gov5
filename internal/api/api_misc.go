@@ -31,7 +31,6 @@ func NewN42API(api *API) *n42API {
 // GasPrice returns a suggestion for a gas price for legacy transactions.
 func (s *n42API) GasPrice(ctx context.Context) (*hexutil.Big, error) {
 	conf.LightClientGPO.Default = big.NewInt(params.GWei)
-	// Nil check: ensure gpo is initialized
 	if s.api.gpo == nil {
 		return (*hexutil.Big)(big.NewInt(params.GWei)), nil
 	}
@@ -41,7 +40,7 @@ func (s *n42API) GasPrice(ctx context.Context) (*hexutil.Big, error) {
 	}
 	currentBlock := s.api.BlockChain().CurrentBlock()
 	if currentBlock != nil {
-		if head := currentBlock.Header(); head != nil && head.BaseFee64() != nil && head.BaseFee64().Cmp(uint256.NewInt(0)) != 0 {
+		if head := currentBlock.Header(); head != nil && head.BaseFee64() != nil && !head.BaseFee64().IsZero() {
 			tipcap.Add(tipcap, head.BaseFee64().ToBig())
 		}
 	}
@@ -50,7 +49,6 @@ func (s *n42API) GasPrice(ctx context.Context) (*hexutil.Big, error) {
 
 // MaxPriorityFeePerGas returns a suggestion for a gas tip cap for dynamic fee transactions.
 func (s *n42API) MaxPriorityFeePerGas(ctx context.Context) (*hexutil.Big, error) {
-	// Nil check: ensure gpo is initialized
 	if s.api.gpo == nil {
 		return (*hexutil.Big)(big.NewInt(params.GWei)), nil
 	}
@@ -70,7 +68,6 @@ type feeHistoryResult struct {
 
 // FeeHistory returns the fee market history.
 func (s *n42API) FeeHistory(ctx context.Context, blockCount jsonrpc.DecimalOrHex, lastBlock jsonrpc.BlockNumber, rewardPercentiles []float64) (*feeHistoryResult, error) {
-
 	var (
 		resolvedLastBlock *uint256.Int
 		err               error
@@ -113,7 +110,7 @@ func (s *n42API) FeeHistory(ctx context.Context, blockCount jsonrpc.DecimalOrHex
 	return results, nil
 }
 
-// TxPoolAPI offers and API for the transaction pool. It only operates on data that is non confidential.
+// TxPoolAPI offers an API for the transaction pool. It only operates on data that is non-confidential.
 type TxPoolAPI struct {
 	api *API
 }
@@ -171,7 +168,6 @@ func NewAccountAPI() *AccountAPI {
 
 // Accounts returns the collection of accounts this node manages.
 func (s *AccountAPI) Accounts() []types.Address {
-	//return s.am.Accounts()
 	return nil
 }
 
@@ -221,19 +217,17 @@ func (s *NetAPI) Listening() bool {
 	return true // always listening
 }
 
-// PeerCount returns the number of connected peers
+// PeerCount returns the number of connected peers.
 func (s *NetAPI) PeerCount() hexutil.Uint {
-	//return hexutil.Uint(s.api.P2pServer().PeerCount())
 	return 0
 }
 
 // Version returns the current ethereum protocol version.
 func (s *NetAPI) Version() string {
-	//todo networkID == chainID？ s.api.GetChainConfig().ChainID
 	return fmt.Sprintf("%d", s.networkVersion)
 }
 
-// TxsPoolAPI offers and API for the transaction pool. It only operates on data that is non confidential.
+// TxsPoolAPI offers an API for the transaction pool. It only operates on data that is non-confidential.
 type TxsPoolAPI struct {
 	api *API
 }

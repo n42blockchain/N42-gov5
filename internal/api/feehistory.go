@@ -21,16 +21,18 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
+	"sort"
+	"sync/atomic"
+
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"math"
-	"math/big"
-	"sort"
-	"sync/atomic"
 )
 
 var (
@@ -171,7 +173,6 @@ func (oracle *Oracle) resolveBlockRange(ctx context.Context, reqEnd jsonrpc.Bloc
 		headBlock       block.IHeader
 		pendingBlock    block.IBlock
 		pendingReceipts block.Receipts
-		//err             error
 	)
 
 	// Get the chain's current head.
@@ -209,10 +210,7 @@ func (oracle *Oracle) resolveBlockRange(ctx context.Context, reqEnd jsonrpc.Bloc
 				blocks--
 			}
 		case jsonrpc.LatestBlockNumber:
-			// Retrieved above.
 			resolved = headBlock
-		//case jsonrpc.SafeBlockNumber:
-		//case jsonrpc.FinalizedBlockNumber:
 		case jsonrpc.EarliestBlockNumber:
 			resolved = oracle.backend.GetHeaderByNumber(uint256.NewInt(0))
 		}

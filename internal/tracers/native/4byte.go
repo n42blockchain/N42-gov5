@@ -18,9 +18,10 @@ package native
 
 import (
 	"encoding/json"
-	"github.com/holiman/uint256"
 	"strconv"
 	"sync/atomic"
+
+	"github.com/holiman/uint256"
 
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/tracers"
@@ -75,7 +76,7 @@ func (t *fourByteTracer) isPrecompiled(addr common.Address) bool {
 // store saves the given identifier and datasize.
 func (t *fourByteTracer) store(id []byte, size int) {
 	key := bytesToHex(id) + "-" + strconv.Itoa(size)
-	t.ids[key] += 1
+	t.ids[key]++
 }
 
 // CaptureStart implements the EVMLogger interface to initialize the tracing operation.
@@ -92,19 +93,18 @@ func (t *fourByteTracer) CaptureStart(env vm.VMInterface, from common.Address, t
 
 // CaptureEnter is called when EVM enters a new scope (via call, create or selfdestruct).
 func (t *fourByteTracer) CaptureEnter(op vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *uint256.Int) {
-	// Skip if tracing was interrupted
 	if atomic.LoadUint32(&t.interrupt) > 0 {
 		return
 	}
 	if len(input) < 4 {
 		return
 	}
-	// primarily we want to avoid CREATE/CREATE2/SELFDESTRUCT
+	// Only track CALL-type opcodes; skip CREATE/CREATE2/SELFDESTRUCT
 	if op != vm.DELEGATECALL && op != vm.STATICCALL &&
 		op != vm.CALL && op != vm.CALLCODE {
 		return
 	}
-	// Skip any pre-compile invocations, those are just fancy opcodes
+	// Precompile invocations are just fancy opcodes, not real calls
 	if t.isPrecompiled(to) {
 		return
 	}

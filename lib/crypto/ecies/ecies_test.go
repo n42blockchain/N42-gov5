@@ -315,7 +315,7 @@ func testParamSelection(t *testing.T, c testCase) {
 	params := ParamsFromCurve(c.Curve)
 	if params == nil {
 		t.Fatal("ParamsFromCurve returned nil")
-	} else if params != nil && !cmpParams(params, c.Expected) {
+	} else if !cmpParams(params, c.Expected) {
 		t.Fatalf("ecies: parameters should be invalid (%s)\n", c.Name)
 	}
 
@@ -348,7 +348,6 @@ func testParamSelection(t *testing.T, c testCase) {
 	if err == nil {
 		t.Fatalf("ecies: encryption should not have succeeded (%s)\n", c.Name)
 	}
-
 }
 
 // Ensure that the basic public key validation in the decryption operation

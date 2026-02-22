@@ -1,8 +1,6 @@
 package dbutils
 
-import (
-	"github.com/n42blockchain/N42/lib/common/length"
-)
+import "github.com/n42blockchain/N42/lib/common/length"
 
 func CompositeKeyWithoutIncarnation(key []byte) []byte {
 	if len(key) == length.Hash*2+length.Incarnation {

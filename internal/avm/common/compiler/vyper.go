@@ -34,10 +34,7 @@ type Vyper struct {
 }
 
 func (s *Vyper) makeArgs() []string {
-	p := []string{
-		"-f", "combined_json",
-	}
-	return p
+	return []string{"-f", "combined_json"}
 }
 
 // VyperVersion runs vyper and parses its version output.
@@ -116,15 +113,19 @@ func ParseVyperJSON(combinedJSON []byte, source string, languageVersion string, 
 	// Compilation succeeded, assemble and return the contracts.
 	contracts := make(map[string]*Contract)
 	for name, info := range output {
-		// Parse the individual compilation results.
 		if name == "version" {
 			continue
 		}
-		c := info.(map[string]interface{})
+		c, ok := info.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("vyper: invalid contract data for %q", name)
+		}
+		bytecode, _ := c["bytecode"].(string)
+		bytecodeRuntime, _ := c["bytecode_runtime"].(string)
 
 		contracts[name] = &Contract{
-			Code:        c["bytecode"].(string),
-			RuntimeCode: c["bytecode_runtime"].(string),
+			Code:        bytecode,
+			RuntimeCode: bytecodeRuntime,
 			Info: ContractInfo{
 				Source:          source,
 				Language:        "Vyper",
@@ -132,11 +133,7 @@ func ParseVyperJSON(combinedJSON []byte, source string, languageVersion string, 
 				CompilerVersion: compilerVersion,
 				CompilerOptions: compilerOptions,
 				SrcMap:          c["source_map"],
-				SrcMapRuntime:   "",
 				AbiDefinition:   c["abi"],
-				UserDoc:         "",
-				DeveloperDoc:    "",
-				Metadata:        "",
 			},
 		}
 	}

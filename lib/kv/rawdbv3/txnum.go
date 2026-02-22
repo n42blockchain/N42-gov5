@@ -28,7 +28,7 @@ type txNums struct{}
 
 var TxNums txNums
 
-// Min - returns maxTxNum in given block. If block not found - return last available value (`latest`/`pending` state)
+// Max returns maxTxNum in given block. If block not found - return last available value (`latest`/`pending` state).
 func (txNums) Max(tx kv.Tx, blockNum uint64) (maxTxNum uint64, err error) {
 	var k [8]byte
 	binary.BigEndian.PutUint64(k[:], blockNum)
@@ -53,8 +53,8 @@ func (txNums) Max(tx kv.Tx, blockNum uint64) (maxTxNum uint64, err error) {
 	return binary.BigEndian.Uint64(v), nil
 }
 
-// Min = `max(blockNum-1)+1` returns minTxNum in given block. If block not found - return last available value (`latest`/`pending` state)
-func (txNums) Min(tx kv.Tx, blockNum uint64) (maxTxNum uint64, err error) {
+// Min returns minTxNum in given block: `max(blockNum-1)+1`. If block not found - return last available value (`latest`/`pending` state).
+func (txNums) Min(tx kv.Tx, blockNum uint64) (minTxNum uint64, err error) {
 	if blockNum == 0 {
 		return 0, nil
 	}
@@ -97,10 +97,7 @@ func (txNums) Append(tx kv.RwTx, blockNum, maxTxNum uint64) (err error) {
 	var k, v [8]byte
 	binary.BigEndian.PutUint64(k[:], blockNum)
 	binary.BigEndian.PutUint64(v[:], maxTxNum)
-	if err := tx.Append(kv.MaxTxNum, k[:], v[:]); err != nil {
-		return err
-	}
-	return nil
+	return tx.Append(kv.MaxTxNum, k[:], v[:])
 }
 func (txNums) WriteForGenesis(tx kv.RwTx, maxTxNum uint64) (err error) {
 	var k, v [8]byte
@@ -123,7 +120,6 @@ func (txNums) Truncate(tx kv.RwTx, blockNum uint64) (err error) {
 		if err = c.DeleteCurrent(); err != nil {
 			return err
 		}
-
 	}
 	return nil
 }

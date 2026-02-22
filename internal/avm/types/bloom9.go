@@ -13,14 +13,16 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+
 package types
 
 import (
 	"encoding/binary"
 	"fmt"
+	"math/big"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
-	"math/big"
 )
 
 type bytesBacked interface {
@@ -93,25 +95,10 @@ func (b Bloom) MarshalText() ([]byte, error) {
 	return hexutil.Bytes(b[:]).MarshalText()
 }
 
-// UnmarshalText b as a hex string with 0x prefix.
+// UnmarshalText decodes b from a hex string with 0x prefix.
 func (b *Bloom) UnmarshalText(input []byte) error {
 	return hexutil.UnmarshalFixedText("Bloom", input, b[:])
 }
-
-//// CreateBloom creates a bloom filter out of the give Receipts (+Logs)
-//func CreateBloom(receipts Receipts) Bloom {
-//	buf := make([]byte, 6)
-//	var bin Bloom
-//	for _, receipt := range receipts {
-//		for _, log := range receipt.Logs {
-//			bin.add(log.Address.Bytes(), buf)
-//			for _, b := range log.Topics {
-//				bin.add(b[:], buf)
-//			}
-//		}
-//	}
-//	return bin
-//}
 
 // LogsBloom returns the bloom bytes for the given logs
 func LogsBloom(logs []*Log) []byte {

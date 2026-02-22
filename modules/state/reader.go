@@ -19,10 +19,10 @@ package state
 import (
 	"bytes"
 	"fmt"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -71,45 +71,51 @@ func (dbr *HistoryStateReader) GetOne(bucket string, key []byte) ([]byte, error)
 	if len(bucket) == 0 {
 		return nil, nil
 	}
-	return dbr.db.GetOne(bucket, key[:])
+	return dbr.db.GetOne(bucket, key)
 }
 
 func (r *HistoryStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
-	acc := new(account.StateAccount)
-	// defer fmt.Printf("ReadAccount address: %s, account: %+v \n", address, acc)
+	// Try current state first.
 	v, err := r.db.GetOne(modules.Account, address[:])
-	if err == nil && len(v) > 0 {
-		//var acc account.StateAccount
+	if err != nil {
+		return nil, err
+	}
+	if len(v) > 0 {
+		var acc account.StateAccount
 		if err := acc.DecodeForStorage(v); err != nil {
 			return nil, err
 		}
-		return acc, nil
+		return &acc, nil
 	}
+
+	// Fall back to historical state.
 	enc, err := GetAsOf(r.tx, r.accHistoryC, r.accChangesC, false /* storage */, address[:], r.blockNr)
-	if err != nil || enc == nil || len(enc) == 0 {
+	if err != nil || len(enc) == 0 {
 		return nil, nil
 	}
-	//var acc account.StateAccount
+	var acc account.StateAccount
 	if err := acc.DecodeForStorage(enc); err != nil {
 		return nil, err
 	}
-	return acc, nil
+	return &acc, nil
 }
 
 func (r *HistoryStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
 	v, err := r.db.GetOne(modules.Storage, compositeKey)
-	if err == nil && len(v) > 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(v) > 0 {
 		return v, nil
 	}
 	return GetAsOf(r.tx, r.storageHistoryC, r.storageChangesC, true /* storage */, compositeKey, r.blockNr)
 }
 
 func (r *HistoryStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
-	if bytes.Equal(codeHash[:], crypto.Keccak256(nil)) {
+	if bytes.Equal(codeHash[:], emptyCodeHash) {
 		return nil, nil
 	}
-	var val []byte
 	v, err := r.tx.GetOne(modules.Code, codeHash[:])
 	if err != nil {
 		return nil, err
@@ -117,8 +123,7 @@ func (r *HistoryStateReader) ReadAccountCode(address types.Address, incarnation 
 	if len(v) == 0 {
 		return nil, nil
 	}
-	val = types.CopyBytes(v)
-	return val, nil
+	return types.CopyBytes(v), nil
 }
 
 func (r *HistoryStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {

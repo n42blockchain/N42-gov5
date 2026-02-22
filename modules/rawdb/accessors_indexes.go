@@ -18,10 +18,11 @@ package rawdb
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 )
@@ -44,8 +45,7 @@ func ReadTxLookupEntry(db kv.Getter, txnHash types.Hash) (*uint64, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
-	// number := new(big.Int).SetBytes(data).Uint64()
-	number := uint256.NewInt(0).SetBytes(data).Uint64()
+	number := new(uint256.Int).SetBytes(data).Uint64()
 	return &number, nil
 }
 
@@ -88,14 +88,13 @@ func ReadTransactionByHash(db kv.Tx, hash types.Hash) (*transaction.Transaction,
 		log.Error("Transaction referenced missing", "number", blockNumber, "hash", blockHash)
 		return nil, types.Hash{}, 0, 0, nil
 	}
-	senders, err1 := ReadSenders(db, blockHash, *blockNumber)
-	if err1 != nil {
-		return nil, types.Hash{}, 0, 0, err1
+	senders, err := ReadSenders(db, blockHash, *blockNumber)
+	if err != nil {
+		return nil, types.Hash{}, 0, 0, err
 	}
 	body.SendersToTxs(senders)
 	for txIndex, tx := range body.Txs {
-		h := tx.Hash()
-		if h == hash {
+		if tx.Hash() == hash {
 			return tx, blockHash, *blockNumber, uint64(txIndex), nil
 		}
 	}
@@ -118,14 +117,13 @@ func ReadTransaction(db kv.Tx, hash types.Hash, blockNumber uint64) (*transactio
 		log.Error("Transaction referenced missing", "number", blockNumber, "hash", blockHash)
 		return nil, types.Hash{}, 0, 0, nil
 	}
-	senders, err1 := ReadSenders(db, blockHash, blockNumber)
-	if err1 != nil {
-		return nil, types.Hash{}, 0, 0, err1
+	senders, err := ReadSenders(db, blockHash, blockNumber)
+	if err != nil {
+		return nil, types.Hash{}, 0, 0, err
 	}
 	body.SendersToTxs(senders)
 	for txIndex, tx := range body.Txs {
-		h := tx.Hash()
-		if h == hash {
+		if tx.Hash() == hash {
 			return tx, blockHash, blockNumber, uint64(txIndex), nil
 		}
 	}

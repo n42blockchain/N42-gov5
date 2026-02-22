@@ -16,10 +16,6 @@
 
 package lmdb
 
-import (
-	"errors"
-)
+import "errors"
 
-var (
-	errorSnapshotIsClose = errors.New("snapshot already closed")
-)
+var errSnapshotClosed = errors.New("snapshot already closed")

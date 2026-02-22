@@ -63,8 +63,7 @@ func lineFunctionAdd(r, p *twistPoint, q *curvePoint, r2 *gfP2, pool *bnPool) (a
 	c.Add(c, c)
 
 	b = newGFp2(pool)
-	b.SetZero()
-	b.Sub(b, L1)
+	b.Negative(L1)
 	b.MulScalar(b, q.x)
 	b.Add(b, b)
 
@@ -122,8 +121,7 @@ func lineFunctionDouble(r *twistPoint, q *curvePoint, pool *bnPool) (a, b, c *gf
 	t.Mul(E, r.t, pool)
 	t.Add(t, t)
 	b = newGFp2(pool)
-	b.SetZero()
-	b.Sub(b, t)
+	b.Negative(t)
 	b.MulScalar(b, q.x)
 
 	a = newGFp2(pool)

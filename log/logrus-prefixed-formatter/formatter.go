@@ -120,14 +120,11 @@ type TextFormatter struct {
 	TimestampFormat string
 }
 
-func getCompiledColor(main string, fallback string) func(string) string {
-	var style string
-	if main != "" {
-		style = main
-	} else {
-		style = fallback
+func getCompiledColor(main, fallback string) func(string) string {
+	if main == "" {
+		return ansi.ColorFunc(fallback)
 	}
-	return ansi.ColorFunc(style)
+	return ansi.ColorFunc(main)
 }
 
 func compileColorScheme(s *ColorScheme) *compiledColorScheme {
@@ -144,7 +141,7 @@ func compileColorScheme(s *ColorScheme) *compiledColorScheme {
 }
 
 func (f *TextFormatter) init(entry *logrus.Entry) {
-	if len(f.QuoteCharacter) == 0 {
+	if f.QuoteCharacter == "" {
 		f.QuoteCharacter = "\""
 	}
 	if entry.Logger != nil {
@@ -234,9 +231,8 @@ func (f *TextFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-func (f *TextFormatter) printColored(b *bytes.Buffer, entry *logrus.Entry, keys []string, timestampFormat string, colorScheme *compiledColorScheme) (err error) {
+func (f *TextFormatter) printColored(b *bytes.Buffer, entry *logrus.Entry, keys []string, timestampFormat string, colorScheme *compiledColorScheme) error {
 	var levelColor func(string) string
-	var levelText string
 	switch entry.Level {
 	case logrus.InfoLevel:
 		levelColor = colorScheme.InfoLevelColor
@@ -252,12 +248,10 @@ func (f *TextFormatter) printColored(b *bytes.Buffer, entry *logrus.Entry, keys 
 		levelColor = colorScheme.DebugLevelColor
 	}
 
-	if entry.Level != logrus.WarnLevel {
-		levelText = entry.Level.String()
-	} else {
+	levelText := entry.Level.String()
+	if entry.Level == logrus.WarnLevel {
 		levelText = "warn"
 	}
-
 	if !f.DisableUppercase {
 		levelText = strings.ToUpper(levelText)
 	}
@@ -281,6 +275,7 @@ func (f *TextFormatter) printColored(b *bytes.Buffer, entry *logrus.Entry, keys 
 		messageFormat = fmt.Sprintf("%%-%ds", f.SpacePadding)
 	}
 
+	var err error
 	if f.DisableTimestamp {
 		_, err = fmt.Fprintf(b, "%s%s "+messageFormat, level, prefix, message)
 	} else {
@@ -292,21 +287,26 @@ func (f *TextFormatter) printColored(b *bytes.Buffer, entry *logrus.Entry, keys 
 		}
 		_, err = fmt.Fprintf(b, "%s %s%s "+messageFormat, colorScheme.TimestampColor(timestamp), level, prefix, message)
 	}
+	if err != nil {
+		return err
+	}
+
 	for _, k := range keys {
-		if k != "prefix" {
-			v := entry.Data[k]
+		if k == "prefix" {
+			continue
+		}
 
-			format := "%+v"
-			if k == logrus.ErrorKey {
-				format = "%v" // To avoid printing stack traces for errors
-			}
+		format := "%+v"
+		if k == logrus.ErrorKey {
+			format = "%v"
+		}
 
-			// Sanitize field values to remove new lines and other control characters.
-			s := sanitize(fmt.Sprintf(format, v))
-			_, err = fmt.Fprintf(b, " %s=%s", levelColor(k), s)
+		s := sanitize(fmt.Sprintf(format, entry.Data[k]))
+		if _, err = fmt.Fprintf(b, " %s=%s", levelColor(k), s); err != nil {
+			return err
 		}
 	}
-	return
+	return nil
 }
 
 func sanitize(s string) string {
@@ -333,14 +333,14 @@ func (f *TextFormatter) needsQuoting(text string) bool {
 	return false
 }
 
+var prefixRegex = regexp.MustCompile(`^\\[(.*?)\\]`)
+
 func extractPrefix(msg string) (string, string) {
-	prefix := ""
-	regex := regexp.MustCompile(`^\\[(.*?)\\]`)
-	if regex.MatchString(msg) {
-		match := regex.FindString(msg)
-		prefix, msg = match[1:len(match)-1], strings.TrimSpace(msg[len(match):])
+	match := prefixRegex.FindString(msg)
+	if match == "" {
+		return "", msg
 	}
-	return prefix, msg
+	return match[1 : len(match)-1], strings.TrimSpace(msg[len(match):])
 }
 
 func (f *TextFormatter) appendKeyValue(b *bytes.Buffer, key string, value interface{}, appendSpace bool) error {

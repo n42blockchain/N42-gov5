@@ -2,13 +2,14 @@ package scorers
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	"math"
 	"math/rand"
 	"sort"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
 
 var _ Scorer = (*BlockProviderScorer)(nil)
@@ -85,13 +86,8 @@ func newBlockProviderScorer(store *peerdata.Store, config *BlockProviderScorerCo
 	if scorer.config.StalePeerRefreshInterval == 0 {
 		scorer.config.StalePeerRefreshInterval = DefaultBlockProviderStalePeerRefreshInterval
 	}
-	batchSize := uint64(BlockBatchLimit)
-	scorer.maxScore = 1.0
-	if batchSize > 0 {
-		totalBatches := float64(scorer.config.ProcessedBlocksCap / batchSize)
-		scorer.maxScore = totalBatches * scorer.config.ProcessedBatchWeight
-		scorer.maxScore = math.Round(scorer.maxScore*ScoreRoundingFactor) / ScoreRoundingFactor
-	}
+	totalBatches := float64(scorer.config.ProcessedBlocksCap / uint64(BlockBatchLimit))
+	scorer.maxScore = math.Round(totalBatches*scorer.config.ProcessedBatchWeight*ScoreRoundingFactor) / ScoreRoundingFactor
 	return scorer
 }
 
@@ -104,17 +100,13 @@ func (s *BlockProviderScorer) Score(pid peer.ID) float64 {
 
 // score is a lock-free version of Score.
 func (s *BlockProviderScorer) score(pid peer.ID) float64 {
-	score := float64(0)
 	peerData, ok := s.store.PeerData(pid)
 	// Boost score of new peers or peers that haven't been accessed for too long.
 	if !ok || time.Since(peerData.BlockProviderUpdated) >= s.config.StalePeerRefreshInterval {
 		return s.maxScore
 	}
-	batchSize := uint64(BlockBatchLimit)
-	if batchSize > 0 {
-		processedBatches := float64(peerData.ProcessedBlocks / batchSize)
-		score += processedBatches * s.config.ProcessedBatchWeight
-	}
+	processedBatches := float64(peerData.ProcessedBlocks / uint64(BlockBatchLimit))
+	score := processedBatches * s.config.ProcessedBatchWeight
 	return math.Round(score*ScoreRoundingFactor) / ScoreRoundingFactor
 }
 
@@ -129,16 +121,14 @@ func (s *BlockProviderScorer) IncrementProcessedBlocks(pid peer.ID, cnt uint64) 
 	defer s.store.Unlock()
 	defer s.touch(pid)
 
-	if cnt <= 0 {
+	if cnt == 0 {
 		return
 	}
 	peerData := s.store.PeerDataGetOrCreate(pid)
 	if peerData.ProcessedBlocks+cnt > s.config.ProcessedBlocksCap {
 		cnt = s.config.ProcessedBlocksCap - peerData.ProcessedBlocks
 	}
-	if cnt > 0 {
-		peerData.ProcessedBlocks += cnt
-	}
+	peerData.ProcessedBlocks += cnt
 }
 
 // Touch updates last access time for a given peer. This allows to detect peers that are
@@ -178,13 +168,13 @@ func (s *BlockProviderScorer) processedBlocks(pid peer.ID) uint64 {
 // Block provider scorer cannot guarantee that lower score of a peer is indeed a sign of a bad peer.
 // Therefore this scorer never marks peers as bad, and relies on scores to probabilistically sort
 // out low-scorers (see WeightSorted method).
-func (_ *BlockProviderScorer) IsBadPeer(_ peer.ID) bool {
+func (s *BlockProviderScorer) IsBadPeer(_ peer.ID) bool {
 	return false
 }
 
 // BadPeers returns the peers that are considered bad.
 // No peers are considered bad by block providers scorer.
-func (_ *BlockProviderScorer) BadPeers() []peer.ID {
+func (s *BlockProviderScorer) BadPeers() []peer.ID {
 	return []peer.ID{}
 }
 

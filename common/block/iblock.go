@@ -58,8 +58,6 @@ type IBlock interface {
 	ParentHash() types.Hash
 	TxHash() types.Hash
 	WithSeal(header IHeader) *Block
-	//ToProtoMessage() proto.Message
-	//FromProtoMessage(message proto.Message) error
 }
 
 type Blocks []IBlock

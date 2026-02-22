@@ -93,24 +93,21 @@ func decryptPreSaleKey(fileContent []byte, password string) (key *Key, err error
 		Address:    crypto.PubkeyToAddress(ecKey.PublicKey),
 		PrivateKey: ecKey,
 	}
-	derivedAddr := hex.EncodeToString(key.Address.Bytes()) // needed because .Hex() gives leading "0x"
-	expectedAddr := preSaleKeyStruct.EthAddr
-	if derivedAddr != expectedAddr {
-		err = fmt.Errorf("decrypted addr '%s' not equal to expected addr '%s'", derivedAddr, expectedAddr)
+	derivedAddr := hex.EncodeToString(key.Address.Bytes()) // .Hex() adds leading "0x"
+	if derivedAddr != preSaleKeyStruct.EthAddr {
+		return key, fmt.Errorf("decrypted addr '%s' not equal to expected addr '%s'", derivedAddr, preSaleKeyStruct.EthAddr)
 	}
-	return key, err
+	return key, nil
 }
 
 func aesCTRXOR(key, inText, iv []byte) ([]byte, error) {
-	// AES-128 is selected due to size of encryptKey.
 	aesBlock, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	stream := cipher.NewCTR(aesBlock, iv)
 	outText := make([]byte, len(inText))
-	stream.XORKeyStream(outText, inText)
-	return outText, err
+	cipher.NewCTR(aesBlock, iv).XORKeyStream(outText, inText)
+	return outText, nil
 }
 
 func aesCBCDecrypt(key, cipherText, iv []byte) ([]byte, error) {
@@ -118,14 +115,13 @@ func aesCBCDecrypt(key, cipherText, iv []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	decrypter := cipher.NewCBCDecrypter(aesBlock, iv)
 	paddedPlaintext := make([]byte, len(cipherText))
-	decrypter.CryptBlocks(paddedPlaintext, cipherText)
+	cipher.NewCBCDecrypter(aesBlock, iv).CryptBlocks(paddedPlaintext, cipherText)
 	plaintext := pkcs7Unpad(paddedPlaintext)
 	if plaintext == nil {
 		return nil, ErrDecrypt
 	}
-	return plaintext, err
+	return plaintext, nil
 }
 
 // From https://leanpub.com/gocrypto/read#leanpub-auto-block-cipher-modes
@@ -135,9 +131,7 @@ func pkcs7Unpad(in []byte) []byte {
 	}
 
 	padding := in[len(in)-1]
-	if int(padding) > len(in) || padding > aes.BlockSize {
-		return nil
-	} else if padding == 0 {
+	if padding == 0 || int(padding) > len(in) || padding > aes.BlockSize {
 		return nil
 	}
 

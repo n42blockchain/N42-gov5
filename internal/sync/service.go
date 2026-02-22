@@ -1,7 +1,6 @@
 // Package sync includes all chain-synchronization logic for the N42 node,
-// including gossip-sub blocks, txs, and other p2p
-// messages, as well as ability to process and respond to block requests
-// by peers.
+// including gossip-sub blocks, txs, and other p2p messages, as well as
+// the ability to process and respond to block requests by peers.
 package sync
 
 import (
@@ -14,55 +13,49 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/pkg/errors"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/utils"
-	"github.com/pkg/errors"
 )
 
-const rangeLimit = 1024
-const seenBlockSize = 1000
-const badBlockSize = 1000
-const syncMetricsInterval = 10 * time.Second
+const (
+	rangeLimit       = 1024
+	seenBlockSize    = 1000
+	badBlockSize     = 1000
+	maxRequestBlocks = 1024
 
-// ttfbTimeout is the maximum time to wait for first byte of request response (time-to-first-byte).
-const ttfbTimeout = 10 * time.Second
-// respTimeout is the maximum time for complete response transfer.
-const respTimeout = 20 * time.Second
+	syncMetricsInterval          = 10 * time.Second
+	maintainPeerStatusesInterval = 2 * time.Minute
+	resyncInterval               = 1 * time.Minute
 
-// maxRequestBlocks is the maximum number of blocks that can be requested in a single range request.
-const maxRequestBlocks = 1024
+	enableFullSSZDataLogging = false
 
-const maintainPeerStatusesInterval = 2 * time.Minute
-
-const resyncInterval = 1 * time.Minute
-
-const enableFullSSZDataLogging = false
+	// ttfbTimeout is the maximum time to wait for the first byte of a request response.
+	ttfbTimeout = 10 * time.Second
+	// respTimeout is the maximum time for complete response transfer.
+	respTimeout = 20 * time.Second
+)
 
 var (
-	// Seconds in one block.
-	pendingBlockExpTime = 8 * time.Second
-	errWrongMessage     = errors.New("wrong pubsub message")
-	errNilMessage       = errors.New("nil pubsub message")
+	errWrongMessage = errors.New("wrong pubsub message")
+	errNilMessage   = errors.New("nil pubsub message")
 )
 
-// Common type for functional p2p validation options.
+// validationFn is a functional type for p2p validation options.
 type validationFn func(ctx context.Context) (pubsub.ValidationResult, error)
 
-// config to hold dependencies for the sync service.
+// config holds dependencies for the sync service.
 type config struct {
 	p2p         p2p.P2P
 	chain       common.IBlockChain
 	initialSync Checker
 }
 
-// This defines the interface for interacting with block chain service
-type blockchainService interface {
-}
-
-// Service is responsible for handling all run time p2p related operations as the
+// Service is responsible for handling all runtime p2p related operations as the
 // main entry point for network messages.
 type Service struct {
 	cfg    *config
@@ -78,11 +71,7 @@ type Service struct {
 	badBlockLock   sync.RWMutex
 	badBlockCache  *lru.Cache[types.Hash, bool]
 
-	validateBlockLock               sync.RWMutex
-	seenExitLock                    sync.RWMutex
-	seenSyncMessageLock             sync.RWMutex
-	seenSyncContributionLock        sync.RWMutex
-	syncContributionBitsOverlapLock sync.RWMutex
+	validateBlockLock sync.RWMutex
 }
 
 // NewService initializes new regular sync service.
@@ -167,29 +156,22 @@ func (s *Service) Status() error {
 	return nil
 }
 
-// This initializes the caches to update seen beacon objects coming in from the wire
-// and prevent DoS.
+// initCaches initializes LRU caches used to deduplicate incoming blocks
+// and track bad blocks to prevent DoS.
 func (s *Service) initCaches() {
 	var err error
-	s.badBlockCache, err = lru.New[types.Hash, bool](seenBlockSize)
+	s.badBlockCache, err = lru.New[types.Hash, bool](badBlockSize)
 	if err != nil {
-		// This should never happen as seenBlockSize is a constant > 0
 		panic(fmt.Sprintf("failed to create bad block cache: %v", err))
 	}
-	s.seenBlockCache, err = lru.New[types.Hash, *block.Block](badBlockSize)
+	s.seenBlockCache, err = lru.New[types.Hash, *block.Block](seenBlockSize)
 	if err != nil {
-		// This should never happen as badBlockSize is a constant > 0
 		panic(fmt.Sprintf("failed to create seen block cache: %v", err))
 	}
 }
 
-// marks the chain as having started.
-func (s *Service) markForChainStart() {
-	//s.chainStarted.Set()
-}
-
-// Checker defines a struct which can verify whether a node is currently
-// synchronizing a chain with the rest of peers in the network.
+// Checker defines an interface for verifying whether a node is currently
+// synchronizing its chain with the rest of the peers in the network.
 type Checker interface {
 	Syncing() bool
 	Synced() bool

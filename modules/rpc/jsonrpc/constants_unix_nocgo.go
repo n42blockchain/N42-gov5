@@ -19,7 +19,6 @@
 
 package jsonrpc
 
-var (
-	// http://man7.org/linux/man-pages/man7/unix.7.html
-	max_path_size = 108
-)
+// maxPathSize is the maximum Unix socket path length.
+// See http://man7.org/linux/man-pages/man7/unix.7.html
+var max_path_size = 108

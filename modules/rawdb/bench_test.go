@@ -22,40 +22,44 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
+// benchHash is a shared hash used across all benchmarks.
+var benchHash = types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
+
 // =============================================================================
 // Key Generation Benchmarks
 // =============================================================================
 
 func BenchmarkHeaderKeyGen(b *testing.B) {
-	hash := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
+	b.ReportAllocs()
 	number := uint64(12345)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		HeaderKey(number, hash)
+		HeaderKey(number, benchHash)
 	}
 }
 
 func BenchmarkBlockBodyKeyGen(b *testing.B) {
-	hash := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
+	b.ReportAllocs()
 	number := uint64(12345)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		BlockBodyKey(number, hash)
+		BlockBodyKey(number, benchHash)
 	}
 }
 
 func BenchmarkTxLookupKeyGen(b *testing.B) {
-	hash := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
+	b.ReportAllocs()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		TxLookupKey(hash)
+		TxLookupKey(benchHash)
 	}
 }
 
 func BenchmarkReceiptKeyGen(b *testing.B) {
+	b.ReportAllocs()
 	number := uint64(12345)
 
 	b.ResetTimer()
@@ -64,7 +68,8 @@ func BenchmarkReceiptKeyGen(b *testing.B) {
 	}
 }
 
-func BenchmarkEncodeBlockNumberGen(b *testing.B) {
+func BenchmarkEncodeBlockNumber(b *testing.B) {
+	b.ReportAllocs()
 	number := uint64(12345)
 
 	b.ResetTimer()
@@ -74,65 +79,23 @@ func BenchmarkEncodeBlockNumberGen(b *testing.B) {
 }
 
 // =============================================================================
-// Memory Allocation Benchmarks
-// =============================================================================
-
-func BenchmarkHeaderKeyAlloc(b *testing.B) {
-	b.ReportAllocs()
-
-	hash := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
-	number := uint64(12345)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = HeaderKey(number, hash)
-	}
-}
-
-func BenchmarkBlockBodyKeyAlloc(b *testing.B) {
-	b.ReportAllocs()
-
-	hash := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
-	number := uint64(12345)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = BlockBodyKey(number, hash)
-	}
-}
-
-func BenchmarkTxLookupKeyAlloc(b *testing.B) {
-	b.ReportAllocs()
-
-	hash := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = TxLookupKey(hash)
-	}
-}
-
-// =============================================================================
 // Parallel Benchmarks
 // =============================================================================
 
 func BenchmarkHeaderKeyParallel(b *testing.B) {
-	hash := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 	number := uint64(12345)
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			HeaderKey(number, hash)
+			HeaderKey(number, benchHash)
 		}
 	})
 }
 
 func BenchmarkTxLookupKeyParallel(b *testing.B) {
-	hash := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
-
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			TxLookupKey(hash)
+			TxLookupKey(benchHash)
 		}
 	})
 }

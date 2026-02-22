@@ -32,11 +32,10 @@ type PeerSet []Peer
 type PeerMap map[peer.ID]Peer
 
 func (pm PeerMap) ToSlice() PeerSet {
-	peerSet := PeerSet{}
-	for k, _ := range pm {
-		peerSet = append(peerSet, pm[k])
+	peerSet := make(PeerSet, 0, len(pm))
+	for _, p := range pm {
+		peerSet = append(peerSet, p)
 	}
-
 	return peerSet
 }
 
@@ -45,10 +44,7 @@ func (ps PeerSet) Len() int {
 }
 
 func (ps PeerSet) Less(i, j int) bool {
-	if ps[i].CurrentHeight.Cmp(ps[j].CurrentHeight) == 1 {
-		return true
-	}
-	return false
+	return ps[i].CurrentHeight.Cmp(ps[j].CurrentHeight) == 1
 }
 
 func (ps PeerSet) Swap(i, j int) {

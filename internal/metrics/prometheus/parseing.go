@@ -8,18 +8,24 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// identRegexp validates Prometheus metric and label identifiers.
+var identRegexp = regexp.MustCompile(`^[a-zA-Z_:.][a-zA-Z0-9_:.]*$`)
+
+// parseMetric parses a Prometheus metric string into its name and optional labels.
+// For example, "foo{bar=\"baz\"}" returns ("foo", {"bar": "baz"}, nil).
 func parseMetric(s string) (string, prometheus.Labels, error) {
 	if len(s) == 0 {
 		return "", nil, fmt.Errorf("metric cannot be empty")
 	}
+
 	n := strings.IndexByte(s, '{')
 	if n < 0 {
 		if err := validateIdent(s); err != nil {
 			return "", nil, err
 		}
-
 		return s, nil, nil
 	}
+
 	ident := s[:n]
 	s = s[n+1:]
 	if err := validateIdent(ident); err != nil {
@@ -30,14 +36,13 @@ func parseMetric(s string) (string, prometheus.Labels, error) {
 	}
 
 	tags, err := parseTags(s[:len(s)-1])
-
 	if err != nil {
 		return "", nil, err
 	}
-
 	return ident, tags, nil
 }
 
+// parseTags parses a comma-separated key="value" label string.
 func parseTags(s string) (prometheus.Labels, error) {
 	if len(s) == 0 {
 		return nil, nil
@@ -60,23 +65,24 @@ func parseTags(s string) (prometheus.Labels, error) {
 		}
 		s = s[1:]
 
-		value := ""
-
+		var value string
 		for {
 			n = strings.IndexByte(s, '"')
 			if n < 0 {
 				return nil, fmt.Errorf("missing trailing `\"` for %q value; tail=%q", ident, s)
 			}
+			// Count consecutive backslashes before the quote
 			m := n
 			for m > 0 && s[m-1] == '\\' {
 				m--
 			}
+			// Odd number of backslashes means the quote is escaped
 			if (n-m)%2 == 1 {
-				value = value + s[:n]
+				value += s[:n]
 				s = s[n+1:]
 				continue
 			}
-			value = value + s[:n]
+			value += s[:n]
 			if labels == nil {
 				labels = prometheus.Labels{}
 			}
@@ -85,20 +91,13 @@ func parseTags(s string) (prometheus.Labels, error) {
 			if len(s) == 0 {
 				return labels, nil
 			}
-			if !strings.HasPrefix(s, ",") {
+			if s[0] != ',' {
 				return nil, fmt.Errorf("missing `,` after %q value; tail=%q", ident, s)
 			}
-			s = skipSpace(s[1:])
+			s = strings.TrimLeft(s[1:], " ")
 			break
 		}
 	}
-}
-
-func skipSpace(s string) string {
-	for len(s) > 0 && s[0] == ' ' {
-		s = s[1:]
-	}
-	return s
 }
 
 func validateIdent(s string) error {
@@ -107,5 +106,3 @@ func validateIdent(s string) error {
 	}
 	return nil
 }
-
-var identRegexp = regexp.MustCompile("^[a-zA-Z_:.][a-zA-Z0-9_:.]*$")

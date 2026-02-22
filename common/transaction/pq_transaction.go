@@ -310,34 +310,12 @@ func (tx *PostQuantumTx) SetPubKey(pubKey []byte, useHash bool) {
 
 // GetExpectedPubKeySize returns the expected public key size for the algorithm
 func (tx *PostQuantumTx) GetExpectedPubKeySize() int {
-	switch tx.SigAlgo {
-	case PQAlgoFalcon512:
-		return Falcon512PublicKeySize
-	case PQAlgoSQIsign:
-		return SQIsignPublicKeySize
-	case PQAlgoDilithium2:
-		return Dilithium2PublicKeySize
-	case PQAlgoDilithium3:
-		return Dilithium3PublicKeySize
-	default:
-		return 0
-	}
+	return GetExpectedPubKeySize(tx.SigAlgo)
 }
 
 // GetExpectedSignatureSize returns the expected signature size for the algorithm
 func (tx *PostQuantumTx) GetExpectedSignatureSize() int {
-	switch tx.SigAlgo {
-	case PQAlgoFalcon512:
-		return Falcon512SignatureSize
-	case PQAlgoSQIsign:
-		return SQIsignSignatureSize
-	case PQAlgoDilithium2:
-		return Dilithium2SignatureSize
-	case PQAlgoDilithium3:
-		return Dilithium3SignatureSize
-	default:
-		return 0
-	}
+	return GetExpectedSignatureSize(tx.SigAlgo)
 }
 
 // EstimatedSize returns the estimated transaction size in bytes

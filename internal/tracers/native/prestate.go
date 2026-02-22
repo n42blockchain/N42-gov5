@@ -19,9 +19,10 @@ package native
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/holiman/uint256"
 	"math/big"
 	"sync/atomic"
+
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -177,7 +178,7 @@ func (t *prestateTracer) CaptureTxEnd(restGas uint64) {
 		return
 	}
 
-	for addr, state := range t.pre {
+	for addr, preAcct := range t.pre {
 		// The deleted account's state is pruned from `post` but kept in `pre`
 		if _, ok := t.deleted[addr]; ok {
 			continue
@@ -188,21 +189,21 @@ func (t *prestateTracer) CaptureTxEnd(restGas uint64) {
 		newNonce := t.env.IntraBlockState().GetNonce(addr)
 		newCode := t.env.IntraBlockState().GetCode(addr)
 
-		if newBalance.ToBig().Cmp(t.pre[addr].Balance) != 0 {
+		if newBalance.ToBig().Cmp(preAcct.Balance) != 0 {
 			modified = true
 			postAccount.Balance = newBalance.ToBig()
 		}
-		if newNonce != t.pre[addr].Nonce {
+		if newNonce != preAcct.Nonce {
 			modified = true
 			postAccount.Nonce = newNonce
 		}
-		if !bytes.Equal(newCode, t.pre[addr].Code) {
+		if !bytes.Equal(newCode, preAcct.Code) {
 			modified = true
 			postAccount.Code = newCode
 		}
 
-		for key, val := range state.Storage {
-			// don't include the empty slot
+		for key, val := range preAcct.Storage {
+			// Don't include the empty slot
 			if val == (common.Hash{}) {
 				delete(t.pre[addr].Storage, key)
 			}
@@ -210,7 +211,6 @@ func (t *prestateTracer) CaptureTxEnd(restGas uint64) {
 			var newVal uint256.Int
 			t.env.IntraBlockState().GetState(addr, &key, &newVal)
 			if val == newVal.Bytes32() {
-				// Omit unchanged slots
 				delete(t.pre[addr].Storage, key)
 			} else {
 				modified = true
@@ -223,7 +223,6 @@ func (t *prestateTracer) CaptureTxEnd(restGas uint64) {
 		if modified {
 			t.post[addr] = postAccount
 		} else {
-			// if state is not modified, then no need to include into the pre state
 			delete(t.pre, addr)
 		}
 	}

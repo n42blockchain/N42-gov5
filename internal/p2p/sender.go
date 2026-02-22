@@ -8,18 +8,16 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-	"github.com/pkg/errors"
 	ssz "github.com/prysmaticlabs/fastssz"
 	"go.opencensus.io/trace"
 )
 
-// Send a message to a specific peer. The returned stream may be used for reading, but has been
-// closed for writing.
-//
-// When done, the caller must Close or Reset on the stream.
-func (s *Service) Send(ctx context.Context, message interface{}, baseTopic string, pid peer.ID) (network.Stream, error) {
+// Send a message to a specific peer. The returned stream may be used for reading,
+// but has been closed for writing. The caller must Close or Reset the stream when done.
+func (s *Service) Send(ctx context.Context, message any, baseTopic string, pid peer.ID) (network.Stream, error) {
 	ctx, span := trace.StartSpan(ctx, "p2p.Send")
 	defer span.End()
+
 	if err := VerifyTopicMapping(baseTopic, message); err != nil {
 		return nil, err
 	}
@@ -28,30 +26,25 @@ func (s *Service) Send(ctx context.Context, message interface{}, baseTopic strin
 
 	log.Trace(fmt.Sprintf("Sending RPC request to peer %s", pid.String()), "topic", topic, "request", pretty.Sprint(message))
 
-	// Apply max dial timeout when opening a new stream.
 	ctx, cancel := context.WithTimeout(ctx, maxDialTimeout)
 	defer cancel()
 
 	stream, err := s.host.NewStream(ctx, pid, protocol.ID(topic))
 	if err != nil {
-		//tracing.AnnotateError(span, err)
 		return nil, err
 	}
+
 	castedMsg, ok := message.(ssz.Marshaler)
 	if !ok {
-		return nil, errors.Errorf("%T does not support the ssz marshaller interface", message)
+		return nil, fmt.Errorf("%T does not support the ssz marshaller interface", message)
 	}
 	if _, err := s.Encoding().EncodeWithMaxLength(stream, castedMsg); err != nil {
-		//tracing.AnnotateError(span, err)
 		if resetErr := stream.Reset(); resetErr != nil {
 			log.Debug("Failed to reset stream after encode error", "err", resetErr)
 		}
 		return nil, err
 	}
-
-	// Close stream for writing.
 	if err := stream.CloseWrite(); err != nil {
-		//tracing.AnnotateError(span, err)
 		if resetErr := stream.Reset(); resetErr != nil {
 			log.Debug("Failed to reset stream after close write error", "err", resetErr)
 		}

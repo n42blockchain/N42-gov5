@@ -21,58 +21,54 @@ import (
 	"testing"
 )
 
-// =============================================================================
-// EIP-7691 Tests: Blob Throughput Increase
-// =============================================================================
+// EIP-7691: Blob Throughput Increase
 
 func TestCancunBlobParams(t *testing.T) {
-	params := CancunBlobParams()
+	p := CancunBlobParams()
 
-	if params.TargetBlobsPerBlock != 3 {
-		t.Errorf("Cancun target blobs: expected 3, got %d", params.TargetBlobsPerBlock)
+	if p.TargetBlobsPerBlock != 3 {
+		t.Errorf("Cancun target blobs = %d, want 3", p.TargetBlobsPerBlock)
 	}
-	if params.MaxBlobsPerBlock != 6 {
-		t.Errorf("Cancun max blobs: expected 6, got %d", params.MaxBlobsPerBlock)
+	if p.MaxBlobsPerBlock != 6 {
+		t.Errorf("Cancun max blobs = %d, want 6", p.MaxBlobsPerBlock)
 	}
-	if params.BlobGasPerBlob != 131072 {
-		t.Errorf("Cancun blob gas per blob: expected 131072, got %d", params.BlobGasPerBlob)
+	if p.BlobGasPerBlob != 131072 {
+		t.Errorf("Cancun blob gas per blob = %d, want 131072", p.BlobGasPerBlob)
 	}
-	if params.TargetBlobGasPerBlock != 393216 {
-		t.Errorf("Cancun target blob gas: expected 393216, got %d", params.TargetBlobGasPerBlock)
+	if p.TargetBlobGasPerBlock != 393216 {
+		t.Errorf("Cancun target blob gas = %d, want 393216", p.TargetBlobGasPerBlock)
 	}
-	if params.MaxBlobGasPerBlock != 786432 {
-		t.Errorf("Cancun max blob gas: expected 786432, got %d", params.MaxBlobGasPerBlock)
+	if p.MaxBlobGasPerBlock != 786432 {
+		t.Errorf("Cancun max blob gas = %d, want 786432", p.MaxBlobGasPerBlock)
 	}
 }
 
 func TestPectraBlobParams(t *testing.T) {
-	params := PectraBlobParams()
+	p := PectraBlobParams()
 
-	if params.TargetBlobsPerBlock != 6 {
-		t.Errorf("Pectra target blobs: expected 6, got %d", params.TargetBlobsPerBlock)
+	if p.TargetBlobsPerBlock != 6 {
+		t.Errorf("Pectra target blobs = %d, want 6", p.TargetBlobsPerBlock)
 	}
-	if params.MaxBlobsPerBlock != 9 {
-		t.Errorf("Pectra max blobs: expected 9, got %d", params.MaxBlobsPerBlock)
+	if p.MaxBlobsPerBlock != 9 {
+		t.Errorf("Pectra max blobs = %d, want 9", p.MaxBlobsPerBlock)
 	}
-	if params.BlobGasPerBlob != 131072 {
-		t.Errorf("Pectra blob gas per blob: expected 131072, got %d", params.BlobGasPerBlob)
+	if p.BlobGasPerBlob != 131072 {
+		t.Errorf("Pectra blob gas per blob = %d, want 131072", p.BlobGasPerBlob)
 	}
-	if params.TargetBlobGasPerBlock != 786432 {
-		t.Errorf("Pectra target blob gas: expected 786432, got %d", params.TargetBlobGasPerBlock)
+	if p.TargetBlobGasPerBlock != 786432 {
+		t.Errorf("Pectra target blob gas = %d, want 786432", p.TargetBlobGasPerBlock)
 	}
-	if params.MaxBlobGasPerBlock != 1179648 {
-		t.Errorf("Pectra max blob gas: expected 1179648, got %d", params.MaxBlobGasPerBlock)
+	if p.MaxBlobGasPerBlock != 1179648 {
+		t.Errorf("Pectra max blob gas = %d, want 1179648", p.MaxBlobGasPerBlock)
 	}
 }
 
 func TestGetBlobParams(t *testing.T) {
-	// Cancun
 	cancun := GetBlobParams(false)
 	if cancun.MaxBlobsPerBlock != 6 {
 		t.Error("GetBlobParams(false) should return Cancun params")
 	}
 
-	// Pectra
 	pectra := GetBlobParams(true)
 	if pectra.MaxBlobsPerBlock != 9 {
 		t.Error("GetBlobParams(true) should return Pectra params")
@@ -81,19 +77,16 @@ func TestGetBlobParams(t *testing.T) {
 
 func TestCalcExcessBlobGasEIP7691(t *testing.T) {
 	tests := []struct {
-		name             string
-		parentExcess     uint64
-		parentUsed       uint64
-		isPectra         bool
-		expectedExcess   uint64
+		name           string
+		parentExcess   uint64
+		parentUsed     uint64
+		isPectra       bool
+		expectedExcess uint64
 	}{
-		// Cancun tests (target = 393216)
 		{"cancun_zero", 0, 0, false, 0},
 		{"cancun_below_target", 0, 393215, false, 0},
 		{"cancun_at_target", 0, 393216, false, 0},
 		{"cancun_above_target", 0, 500000, false, 106784},
-		
-		// Pectra tests (target = 786432)
 		{"pectra_zero", 0, 0, true, 0},
 		{"pectra_below_target", 0, 786431, true, 0},
 		{"pectra_at_target", 0, 786432, true, 0},
@@ -113,16 +106,13 @@ func TestCalcExcessBlobGasEIP7691(t *testing.T) {
 
 func TestVerifyBlobGasEIP7691(t *testing.T) {
 	tests := []struct {
-		name       string
-		blobGas    uint64
-		isPectra   bool
-		shouldFail bool
+		name     string
+		blobGas  uint64
+		isPectra bool
+		wantErr  bool
 	}{
-		// Cancun (max = 786432)
 		{"cancun_valid", 786432, false, false},
 		{"cancun_invalid", 786433, false, true},
-		
-		// Pectra (max = 1179648)
 		{"pectra_valid_old_max", 786432, true, false},
 		{"pectra_valid_new_max", 1179648, true, false},
 		{"pectra_invalid", 1179649, true, true},
@@ -131,52 +121,42 @@ func TestVerifyBlobGasEIP7691(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := VerifyBlobGasEIP7691(tt.blobGas, tt.isPectra)
-			if (err != nil) != tt.shouldFail {
-				t.Errorf("VerifyBlobGasEIP7691(%d, %v) error = %v, shouldFail = %v",
-					tt.blobGas, tt.isPectra, err, tt.shouldFail)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("VerifyBlobGasEIP7691(%d, %v) error = %v, wantErr %v",
+					tt.blobGas, tt.isPectra, err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// =============================================================================
-// EIP-7623 Tests: Increase Calldata Cost
-// =============================================================================
+// EIP-7623: Increase Calldata Cost
 
 func TestCalcCalldataCostEIP7623(t *testing.T) {
 	tests := []struct {
-		name       string
-		data       []byte
-		isPectra   bool
-		expectCost uint64
+		name     string
+		data     []byte
+		isPectra bool
+		wantCost uint64
 	}{
-		// Empty data
 		{"empty", []byte{}, false, 0},
 		{"empty_pectra", []byte{}, true, 0},
-
-		// Small data - pre-Pectra uses standard pricing
-		{"small_standard", make([]byte, 100), false, 400}, // 100 * 4 (zero bytes)
-		// Pectra: max(standard=400, floor=1000) = 1000
-		{"small_pectra", make([]byte, 100), true, 1000}, // max(100*4, 100*10) = 1000
-
-		// Non-zero data - pre-Pectra uses standard pricing
-		{"nonzero_standard", []byte{1, 2, 3, 4}, false, 64}, // 4 * 16
-		// Pectra: max(standard=64, floor=160) = 160
-		{"nonzero_pectra", []byte{1, 2, 3, 4}, true, 160}, // max(4*16, 4*40) = 160
+		{"small_standard", make([]byte, 100), false, 400},
+		{"small_pectra", make([]byte, 100), true, 1000},
+		{"nonzero_standard", []byte{1, 2, 3, 4}, false, 64},
+		{"nonzero_pectra", []byte{1, 2, 3, 4}, true, 160},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := CalcCalldataCostEIP7623(tt.data, tt.isPectra)
-			if got != tt.expectCost {
-				t.Errorf("CalcCalldataCostEIP7623 = %d, want %d", got, tt.expectCost)
+			if got != tt.wantCost {
+				t.Errorf("CalcCalldataCostEIP7623 = %d, want %d", got, tt.wantCost)
 			}
 		})
 	}
 }
 
 func TestCalcCalldataCostEIP7623_LargeData(t *testing.T) {
-	// Create large data
 	largeZeroData := make([]byte, 5000)
 	largeNonZeroData := make([]byte, 5000)
 	for i := range largeNonZeroData {
@@ -184,28 +164,21 @@ func TestCalcCalldataCostEIP7623_LargeData(t *testing.T) {
 	}
 
 	// Standard (pre-Pectra): 5000 * 4 = 20000 (zero), 5000 * 16 = 80000 (non-zero)
-	standardZero := CalcCalldataCostEIP7623(largeZeroData, false)
-	if standardZero != 20000 {
-		t.Errorf("Standard zero cost = %d, want 20000", standardZero)
+	if got := CalcCalldataCostEIP7623(largeZeroData, false); got != 20000 {
+		t.Errorf("Standard zero cost = %d, want 20000", got)
+	}
+	if got := CalcCalldataCostEIP7623(largeNonZeroData, false); got != 80000 {
+		t.Errorf("Standard non-zero cost = %d, want 80000", got)
 	}
 
-	standardNonZero := CalcCalldataCostEIP7623(largeNonZeroData, false)
-	if standardNonZero != 80000 {
-		t.Errorf("Standard non-zero cost = %d, want 80000", standardNonZero)
+	// Pectra with floor:
+	// 5000 zero: max(20000, 50000) = 50000
+	if got := CalcCalldataCostEIP7623(largeZeroData, true); got != 50000 {
+		t.Errorf("Pectra zero cost = %d, want 50000 (floor)", got)
 	}
-
-	// Pectra with floor (EIP-7623):
-	// floor = zero*10 + nonzero*40 (TOTAL_COST_FLOOR_PER_TOKEN=10 * tokens)
-	// 5000 zero bytes: max(standard=20000, floor=50000) = 50000
-	pectraZero := CalcCalldataCostEIP7623(largeZeroData, true)
-	if pectraZero != 50000 {
-		t.Errorf("Pectra zero cost = %d, want 50000 (floor)", pectraZero)
-	}
-
-	// 5000 non-zero bytes: max(standard=80000, floor=200000) = 200000
-	pectraNonZero := CalcCalldataCostEIP7623(largeNonZeroData, true)
-	if pectraNonZero != 200000 {
-		t.Errorf("Pectra non-zero cost = %d, want 200000 (floor)", pectraNonZero)
+	// 5000 non-zero: max(80000, 200000) = 200000
+	if got := CalcCalldataCostEIP7623(largeNonZeroData, true); got != 200000 {
+		t.Errorf("Pectra non-zero cost = %d, want 200000 (floor)", got)
 	}
 }
 
@@ -233,40 +206,15 @@ func TestIntrinsicGasEIP7623(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// EIP-7840 Tests: Blob Schedule Configuration
-// =============================================================================
-
-func TestDefaultCancunBlobSchedule(t *testing.T) {
-	schedule := DefaultCancunBlobSchedule()
-
-	if schedule.TargetBlobsPerBlock != 3 {
-		t.Errorf("Target blobs: expected 3, got %d", schedule.TargetBlobsPerBlock)
-	}
-	if schedule.MaxBlobsPerBlock != 6 {
-		t.Errorf("Max blobs: expected 6, got %d", schedule.MaxBlobsPerBlock)
-	}
-}
-
-func TestDefaultPectraBlobSchedule(t *testing.T) {
-	schedule := DefaultPectraBlobSchedule()
-
-	if schedule.TargetBlobsPerBlock != 6 {
-		t.Errorf("Target blobs: expected 6, got %d", schedule.TargetBlobsPerBlock)
-	}
-	if schedule.MaxBlobsPerBlock != 9 {
-		t.Errorf("Max blobs: expected 9, got %d", schedule.MaxBlobsPerBlock)
-	}
-}
+// EIP-7840: Blob Schedule Configuration
 
 func TestGetBlobSchedule(t *testing.T) {
-	// Nil schedule should return Cancun params
-	params := GetBlobSchedule(nil, 0)
-	if params.MaxBlobsPerBlock != 6 {
+	// Nil schedule returns Cancun params
+	p := GetBlobSchedule(nil, 0)
+	if p.MaxBlobsPerBlock != 6 {
 		t.Error("Nil schedule should return Cancun params")
 	}
 
-	// Schedule with Pectra time
 	schedule := &BlobSchedule{
 		TargetBlobsPerBlock:    6,
 		MaxBlobsPerBlock:       9,
@@ -279,23 +227,21 @@ func TestGetBlobSchedule(t *testing.T) {
 	}
 
 	// Before Pectra
-	params = GetBlobSchedule(schedule, 999)
-	if params.MaxBlobsPerBlock != 6 {
+	if p := GetBlobSchedule(schedule, 999); p.MaxBlobsPerBlock != 6 {
 		t.Error("Before Pectra should return Cancun params")
 	}
 
 	// At Pectra
-	params = GetBlobSchedule(schedule, 1000)
-	if params.MaxBlobsPerBlock != 9 {
+	if p := GetBlobSchedule(schedule, 1000); p.MaxBlobsPerBlock != 9 {
 		t.Error("At Pectra should return Pectra params")
 	}
 }
 
 func TestValidateBlobSchedule(t *testing.T) {
 	tests := []struct {
-		name       string
-		schedule   *BlobSchedule
-		shouldFail bool
+		name     string
+		schedule *BlobSchedule
+		wantErr  bool
 	}{
 		{"nil_schedule", nil, false},
 		{
@@ -323,7 +269,7 @@ func TestValidateBlobSchedule(t *testing.T) {
 				TargetBlobsPerBlock:   3,
 				MaxBlobsPerBlock:      6,
 				BlobGasPerBlob:        131072,
-				TargetBlobGasPerBlock: 100000, // Wrong
+				TargetBlobGasPerBlock: 100000, // Incorrect
 				MaxBlobGasPerBlock:    786432,
 			},
 			true,
@@ -333,16 +279,14 @@ func TestValidateBlobSchedule(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateBlobSchedule(tt.schedule)
-			if (err != nil) != tt.shouldFail {
-				t.Errorf("ValidateBlobSchedule() error = %v, shouldFail = %v", err, tt.shouldFail)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateBlobSchedule() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// =============================================================================
-// Blob Fee Calculation Tests
-// =============================================================================
+// Blob Fee Calculation
 
 func TestCalcBlobFeeEIP7691(t *testing.T) {
 	tests := []struct {
@@ -368,12 +312,9 @@ func TestCalcBlobFeeEIP7691(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Constants Tests
-// =============================================================================
+// Constants
 
 func TestEIP7691Constants(t *testing.T) {
-	// Verify constant relationships
 	if CancunTargetBlobGasPerBlock != CancunTargetBlobsPerBlock*CancunBlobGasPerBlob {
 		t.Error("Cancun target blob gas calculation mismatch")
 	}
@@ -389,7 +330,6 @@ func TestEIP7691Constants(t *testing.T) {
 }
 
 func TestEIP7623Constants(t *testing.T) {
-	// Verify floor costs are higher than standard
 	if TxDataNonZeroGasEIP7623 <= TxDataNonZeroGasEIP2028 {
 		t.Error("EIP-7623 non-zero cost should be higher than EIP-2028")
 	}
@@ -398,9 +338,7 @@ func TestEIP7623Constants(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Benchmarks
-// =============================================================================
 
 func BenchmarkCalcExcessBlobGasEIP7691_Cancun(b *testing.B) {
 	for i := 0; i < b.N; i++ {
@@ -443,4 +381,3 @@ func BenchmarkIntrinsicGasEIP7623(b *testing.B) {
 		IntrinsicGasEIP7623(data, nil, false, true)
 	}
 }
-

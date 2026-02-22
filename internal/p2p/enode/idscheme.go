@@ -19,12 +19,14 @@ package enode
 import (
 	"crypto/ecdsa"
 	"fmt"
+	"io"
+
+	"golang.org/x/crypto/sha3"
+
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"golang.org/x/crypto/sha3"
-	"io"
 )
 
 // ValidSchemes is a List of known secure identity schemes.
@@ -79,8 +81,7 @@ func (V4ID) Verify(r *enr.Record, sig []byte) error {
 
 func (V4ID) NodeAddr(r *enr.Record) []byte {
 	var pubkey Secp256k1
-	err := r.Load(&pubkey)
-	if err != nil {
+	if err := r.Load(&pubkey); err != nil {
 		return nil
 	}
 	buf := make([]byte, 64)

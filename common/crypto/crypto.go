@@ -23,19 +23,19 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/u256"
-	"math/big"
-
-	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/common/math"
-	"github.com/n42blockchain/N42/common/rlp"
 	"hash"
 	"io"
+	"math/big"
 	"os"
 
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
+
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/math"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/u256"
 )
 
 // SignatureLength indicates the byte length required to carry a signature with recovery id.
@@ -198,11 +198,7 @@ func FromECDSAPub(pub *ecdsa.PublicKey) []byte {
 // The input slice must be 65 bytes long and have this format: [4, X..., Y...]
 // See MarshalPubkeyStd.
 func UnmarshalPubkeyStd(pub []byte) (*ecdsa.PublicKey, error) {
-	x, y := elliptic.Unmarshal(S256(), pub)
-	if x == nil {
-		return nil, errInvalidPubkey
-	}
-	return &ecdsa.PublicKey{Curve: S256(), X: x, Y: y}, nil
+	return UnmarshalPubkey(pub)
 }
 
 // MarshalPubkeyStd converts a public key into the standard "uncompressed" format.
@@ -210,19 +206,8 @@ func UnmarshalPubkeyStd(pub []byte) (*ecdsa.PublicKey, error) {
 // Returns nil if the given public key is not initialized.
 // See UnmarshalPubkeyStd.
 func MarshalPubkeyStd(pub *ecdsa.PublicKey) []byte {
-	if pub == nil || pub.X == nil || pub.Y == nil {
-		return nil
-	}
-	return elliptic.Marshal(S256(), pub.X, pub.Y)
+	return FromECDSAPub(pub)
 }
-
-// UnmarshalPubkey parses a public key from the given bytes in the 64 bytes "uncompressed" format.
-// The input slice must be 64 bytes long and have this format: [X..., Y...]
-// See MarshalPubkey.
-//func UnmarshalPubkey(keyBytes []byte) (*ecdsa.PublicKey, error) {
-//	keyBytes = append([]byte{0x4}, keyBytes...)
-//	return UnmarshalPubkeyStd(keyBytes)
-//}
 
 // MarshalPubkey converts a public key into a 64 bytes "uncompressed" format.
 // It returns a 64 bytes long slice that contains: [X..., Y...]

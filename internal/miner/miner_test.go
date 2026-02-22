@@ -42,7 +42,7 @@ func TestCalcGasLimitIncrease(t *testing.T) {
 		t.Errorf("CalcGasLimit should not exceed desired, got %d > %d", result, desired)
 	}
 
-	t.Logf("✓ CalcGasLimit increases correctly: %d -> %d (desired: %d)", parent, result, desired)
+	t.Logf("CalcGasLimit increases correctly: %d -> %d (desired: %d)", parent, result, desired)
 }
 
 func TestCalcGasLimitDecrease(t *testing.T) {
@@ -59,7 +59,7 @@ func TestCalcGasLimitDecrease(t *testing.T) {
 		t.Errorf("CalcGasLimit should not go below desired, got %d < %d", result, desired)
 	}
 
-	t.Logf("✓ CalcGasLimit decreases correctly: %d -> %d (desired: %d)", parent, result, desired)
+	t.Logf("CalcGasLimit decreases correctly: %d -> %d (desired: %d)", parent, result, desired)
 }
 
 func TestCalcGasLimitEqual(t *testing.T) {
@@ -73,7 +73,7 @@ func TestCalcGasLimitEqual(t *testing.T) {
 		t.Errorf("CalcGasLimit should equal desired when parent == desired, got %d", result)
 	}
 
-	t.Logf("✓ CalcGasLimit handles equal values correctly")
+	t.Logf("CalcGasLimit handles equal values correctly")
 }
 
 func TestCalcGasLimitMinGasLimit(t *testing.T) {
@@ -87,7 +87,7 @@ func TestCalcGasLimitMinGasLimit(t *testing.T) {
 		t.Errorf("CalcGasLimit should not go below MinGasLimit, got %d < %d", result, params.MinGasLimit)
 	}
 
-	t.Logf("✓ CalcGasLimit respects MinGasLimit: %d (min: %d)", result, params.MinGasLimit)
+	t.Logf("CalcGasLimit respects MinGasLimit: %d (min: %d)", result, params.MinGasLimit)
 }
 
 func TestCalcGasLimitDelta(t *testing.T) {
@@ -104,7 +104,7 @@ func TestCalcGasLimitDelta(t *testing.T) {
 		t.Errorf("CalcGasLimit exceeded max delta, got %d > %d", result, expectedMax)
 	}
 
-	t.Logf("✓ CalcGasLimit delta calculation correct: delta=%d", expectedDelta)
+	t.Logf("CalcGasLimit delta calculation correct: delta=%d", expectedDelta)
 }
 
 func TestCalcGasLimitGradualIncrease(t *testing.T) {
@@ -130,7 +130,7 @@ func TestCalcGasLimitGradualIncrease(t *testing.T) {
 		t.Logf("Warning: Did not reach desired in %d iterations (current: %d, desired: %d)", maxIterations, current, desired)
 	}
 
-	t.Logf("✓ CalcGasLimit increases gradually over %d iterations", iterations)
+	t.Logf("CalcGasLimit increases gradually over %d iterations", iterations)
 }
 
 func TestCalcGasLimitGradualDecrease(t *testing.T) {
@@ -156,7 +156,7 @@ func TestCalcGasLimitGradualDecrease(t *testing.T) {
 		t.Logf("Warning: Did not reach desired in %d iterations (current: %d, desired: %d)", maxIterations, current, desired)
 	}
 
-	t.Logf("✓ CalcGasLimit decreases gradually over %d iterations", iterations)
+	t.Logf("CalcGasLimit decreases gradually over %d iterations", iterations)
 }
 
 func TestCalcGasLimitBoundary(t *testing.T) {
@@ -187,7 +187,7 @@ func TestCalcGasLimitBoundary(t *testing.T) {
 		})
 	}
 
-	t.Logf("✓ CalcGasLimit handles boundary cases correctly")
+	t.Logf("CalcGasLimit handles boundary cases correctly")
 }
 
 // =============================================================================
@@ -261,7 +261,7 @@ func TestSignalToErr(t *testing.T) {
 		})
 	}
 
-	t.Logf("✓ signalToErr handles known signals correctly")
+	t.Logf("signalToErr handles known signals correctly")
 }
 
 func TestSignalToErrUnknown(t *testing.T) {
@@ -273,7 +273,7 @@ func TestSignalToErrUnknown(t *testing.T) {
 		t.Error("signalToErr should not return known error for unknown signal")
 	}
 
-	t.Logf("✓ signalToErr handles unknown signals correctly: %v", err)
+	t.Logf("signalToErr handles unknown signals correctly: %v", err)
 }
 
 func TestSignalToErrNone(t *testing.T) {
@@ -282,7 +282,7 @@ func TestSignalToErrNone(t *testing.T) {
 		t.Error("signalToErr should return error for commitInterruptNone")
 	}
 
-	t.Logf("✓ signalToErr handles commitInterruptNone correctly: %v", err)
+	t.Logf("signalToErr handles commitInterruptNone correctly: %v", err)
 }
 
 // =============================================================================
@@ -297,7 +297,7 @@ func TestCopyReceiptsEmpty(t *testing.T) {
 		t.Errorf("copyReceipts of empty slice should be empty, got length %d", len(copied))
 	}
 
-	t.Logf("✓ copyReceipts handles empty slice correctly")
+	t.Logf("copyReceipts handles empty slice correctly")
 }
 
 func TestCopyReceiptsNil(t *testing.T) {
@@ -311,7 +311,7 @@ func TestCopyReceiptsNil(t *testing.T) {
 		t.Errorf("copyReceipts of nil should be empty, got length %d", len(copied))
 	}
 
-	t.Logf("✓ copyReceipts handles nil slice correctly")
+	t.Logf("copyReceipts handles nil slice correctly")
 }
 
 func TestCopyReceiptsDeepCopy(t *testing.T) {
@@ -351,7 +351,7 @@ func TestCopyReceiptsDeepCopy(t *testing.T) {
 		t.Error("copyReceipts should create deep copies")
 	}
 
-	t.Logf("✓ copyReceipts creates deep copies correctly")
+	t.Logf("copyReceipts creates deep copies correctly")
 }
 
 // =============================================================================
@@ -361,10 +361,10 @@ func TestCopyReceiptsDeepCopy(t *testing.T) {
 func TestCommitInterruptConstants(t *testing.T) {
 	// Verify constants are distinct
 	constants := map[int32]string{
-		commitInterruptNone:      "commitInterruptNone",
-		commitInterruptNewHead:   "commitInterruptNewHead",
-		commitInterruptResubmit:  "commitInterruptResubmit",
-		commitInterruptTimeout:   "commitInterruptTimeout",
+		commitInterruptNone:     "commitInterruptNone",
+		commitInterruptNewHead:  "commitInterruptNewHead",
+		commitInterruptResubmit: "commitInterruptResubmit",
+		commitInterruptTimeout:  "commitInterruptTimeout",
 	}
 
 	values := make(map[int32]bool)
@@ -380,7 +380,7 @@ func TestCommitInterruptConstants(t *testing.T) {
 		t.Errorf("commitInterruptNone should be 0, got %d", commitInterruptNone)
 	}
 
-	t.Logf("✓ Commit interrupt constants are distinct and correctly ordered")
+	t.Logf("Commit interrupt constants are distinct and correctly ordered")
 }
 
 func TestIntervalConstants(t *testing.T) {
@@ -397,7 +397,7 @@ func TestIntervalConstants(t *testing.T) {
 		t.Error("staleThreshold should be positive")
 	}
 
-	t.Logf("✓ Interval constants are valid: minPeriod=%v, maxRecommit=%v, staleThreshold=%d",
+	t.Logf("Interval constants are valid: minPeriod=%v, maxRecommit=%v, staleThreshold=%d",
 		minPeriodInterval, maxRecommitInterval, staleThreshold)
 }
 
@@ -421,7 +421,7 @@ func TestErrorVariables(t *testing.T) {
 		}
 	}
 
-	t.Logf("✓ Error variables are properly defined")
+	t.Logf("Error variables are properly defined")
 }
 
 // =============================================================================
@@ -443,7 +443,7 @@ func TestRecalcRecommitIncrease(t *testing.T) {
 		t.Errorf("recalcRecommit should not exceed maxRecommitInterval, got %v > %v", result, maxRecommitInterval)
 	}
 
-	t.Logf("✓ recalcRecommit increases correctly: %v -> %v", prev, result)
+	t.Logf("recalcRecommit increases correctly: %v -> %v", prev, result)
 }
 
 func TestRecalcRecommitDecrease(t *testing.T) {
@@ -461,7 +461,7 @@ func TestRecalcRecommitDecrease(t *testing.T) {
 		t.Errorf("recalcRecommit should not go below minRecommit, got %v < %v", result, minRecommit)
 	}
 
-	t.Logf("✓ recalcRecommit decreases correctly: %v -> %v", prev, result)
+	t.Logf("recalcRecommit decreases correctly: %v -> %v", prev, result)
 }
 
 func TestRecalcRecommitBoundaryMax(t *testing.T) {
@@ -475,7 +475,7 @@ func TestRecalcRecommitBoundaryMax(t *testing.T) {
 		t.Errorf("recalcRecommit should be capped at maxRecommitInterval, got %v", result)
 	}
 
-	t.Logf("✓ recalcRecommit respects max boundary: %v", result)
+	t.Logf("recalcRecommit respects max boundary: %v", result)
 }
 
 func TestRecalcRecommitBoundaryMin(t *testing.T) {
@@ -489,7 +489,7 @@ func TestRecalcRecommitBoundaryMin(t *testing.T) {
 		t.Errorf("recalcRecommit should not go below minRecommit, got %v < %v", result, minRecommit)
 	}
 
-	t.Logf("✓ recalcRecommit respects min boundary: %v", result)
+	t.Logf("recalcRecommit respects min boundary: %v", result)
 }
 
 func TestRecalcRecommitStability(t *testing.T) {
@@ -511,7 +511,7 @@ func TestRecalcRecommitStability(t *testing.T) {
 		t.Errorf("recalcRecommit should converge towards target, got %v (target: %v)", prev, time.Duration(int64(target)))
 	}
 
-	t.Logf("✓ recalcRecommit converges: final=%v, target=%v", prev, time.Duration(int64(target)))
+	t.Logf("recalcRecommit converges: final=%v, target=%v", prev, time.Duration(int64(target)))
 }
 
 func BenchmarkRecalcRecommit(b *testing.B) {
@@ -524,4 +524,3 @@ func BenchmarkRecalcRecommit(b *testing.B) {
 		recalcRecommit(minRecommit, prev, target, i%2 == 0)
 	}
 }
-

@@ -165,7 +165,7 @@ func (ws *WebSocketService) Chans(pubk string) (<-chan []byte, chan<- []byte, er
 					"id":1
 				}
 			*/
-			wrappedRequest, err := ws.unwrapJSONRPCRequest(msg)
+			wrappedRequest, err := ws.wrapJSONRPCRequest(msg)
 			if err != nil {
 				simpleLog("wrapJSONRPCRequest error,err=", err)
 				continue
@@ -188,7 +188,7 @@ type JSONRPCRequest struct {
 	Error   map[string]interface{} `json:"error"`
 }
 
-func (ws *WebSocketService) unwrapJSONRPCRequest(in []byte) ([]byte, error) {
+func (ws *WebSocketService) wrapJSONRPCRequest(in []byte) ([]byte, error) {
 	d := &JSONRPCRequest{
 		JsonRpc: "2.0",
 		Method:  "eth_submitSign",

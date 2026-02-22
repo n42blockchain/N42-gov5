@@ -40,6 +40,8 @@ var (
 	// ErrInvalidNumber is returned if a block's number doesn't equal its parent's
 	// plus one.
 	ErrInvalidNumber = errors.New("invalid block number")
-	// ErrNotEnoughSign bls Sign
+
+	// ErrNotEnoughSign is returned when there are insufficient BLS signatures
+	// to meet the consensus threshold.
 	ErrNotEnoughSign = errors.New("not enough sign")
 )

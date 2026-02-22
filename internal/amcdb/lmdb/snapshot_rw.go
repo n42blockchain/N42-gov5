@@ -18,8 +18,9 @@ package lmdb
 
 import (
 	"context"
-	"github.com/erigontech/mdbx-go/mdbx"
 	"sync"
+
+	"github.com/erigontech/mdbx-go/mdbx"
 )
 
 type DBISnapshot struct {
@@ -52,9 +53,9 @@ func (db *DBISnapshot) IsRunning() bool {
 	return db.ok
 }
 
-func (db *DBISnapshot) Get(dbName string, key []byte) (value []byte, err error) {
+func (db *DBISnapshot) Get(dbName string, key []byte) ([]byte, error) {
 	if !db.IsRunning() {
-		return nil, errorSnapshotIsClose
+		return nil, errSnapshotClosed
 	}
 	db.lock.RLock()
 	defer db.lock.RUnlock()
@@ -67,22 +68,9 @@ func (db *DBISnapshot) Get(dbName string, key []byte) (value []byte, err error) 
 	return db.txn.Get(*dbi, key)
 }
 
-//func (db *DBISnapshot) GetIterator(dbName string, key []byte) (iterator db.IIterator, err error) {
-//	if !db.IsRunning() {
-//		return nil, errorSnapshotIsClose
-//	}
-//
-//	dbi, err := db.openDBI(dbName)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	return newIterator(dbi, key)
-//}
-
-func (db *DBISnapshot) Put(dbName string, key []byte, value []byte) (err error) {
+func (db *DBISnapshot) Put(dbName string, key []byte, value []byte) error {
 	if !db.IsRunning() {
-		return errorSnapshotIsClose
+		return errSnapshotClosed
 	}
 	db.lock.RLock()
 	defer db.lock.RUnlock()
@@ -99,14 +87,14 @@ func (db *DBISnapshot) Commit() error {
 	var err error
 	db.once.Do(func() {
 		if !db.IsRunning() {
-			err = errorSnapshotIsClose
+			err = errSnapshotClosed
+			return
 		}
 		db.lock.Lock()
 		defer db.lock.Unlock()
 		db.ok = false
 		_, err = db.txn.Commit()
 	})
-
 	return err
 }
 
@@ -123,7 +111,7 @@ func (db *DBISnapshot) Rollback() {
 
 func (db *DBISnapshot) openDBI(name string) (*mdbx.DBI, error) {
 	if !db.IsRunning() {
-		return nil, errorSnapshotIsClose
+		return nil, errSnapshotClosed
 	}
 
 	db.dbiLock.Lock()

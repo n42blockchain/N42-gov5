@@ -17,6 +17,7 @@
 package common
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,11 +34,7 @@ func MakeName(name, version string) string {
 // FileExist checks if a file exists at filePath.
 func FileExist(filePath string) bool {
 	_, err := os.Stat(filePath)
-	if err != nil && os.IsNotExist(err) {
-		return false
-	}
-
-	return true
+	return !errors.Is(err, os.ErrNotExist)
 }
 
 // AbsolutePath returns datadir + filename, or filename if it is absolute.

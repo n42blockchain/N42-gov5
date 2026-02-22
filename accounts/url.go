@@ -77,16 +77,14 @@ func (u URL) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON parses url.
 func (u *URL) UnmarshalJSON(input []byte) error {
 	var textURL string
-	err := json.Unmarshal(input, &textURL)
-	if err != nil {
+	if err := json.Unmarshal(input, &textURL); err != nil {
 		return err
 	}
 	url, err := parseURL(textURL)
 	if err != nil {
 		return err
 	}
-	u.Scheme = url.Scheme
-	u.Path = url.Path
+	*u = url
 	return nil
 }
 

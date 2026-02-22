@@ -19,10 +19,11 @@ package abi
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/common/types"
 	"math/big"
 	"reflect"
+
+	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 var (

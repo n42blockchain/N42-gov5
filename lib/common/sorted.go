@@ -17,28 +17,15 @@
 package common
 
 import (
+	"cmp"
+	"maps"
 	"slices"
-
-	"golang.org/x/exp/constraints"
 )
 
-func SortedKeys[K constraints.Ordered, V any](m map[K]V) []K {
-	keys := make([]K, len(m))
-	i := 0
-	for k := range m {
-		keys[i] = k
-		i++
-	}
-	slices.Sort(keys)
-	return keys
+func SortedKeys[K cmp.Ordered, V any](m map[K]V) []K {
+	return slices.Sorted(maps.Keys(m))
 }
 
-func RemoveDuplicatesFromSorted[T constraints.Ordered](slice []T) []T {
-	for i := 1; i < len(slice); i++ {
-		if slice[i] == slice[i-1] {
-			slice = append(slice[:i], slice[i+1:]...)
-			i--
-		}
-	}
-	return slice
+func RemoveDuplicatesFromSorted[T cmp.Ordered](slice []T) []T {
+	return slices.Compact(slice)
 }

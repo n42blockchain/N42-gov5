@@ -8,10 +8,12 @@ import (
 	"github.com/go-stack/stack"
 )
 
-const timeKey = "t"
-const lvlKey = "lvl"
-const msgKey = "msg"
-const errorKey = "LOG15_ERROR"
+const (
+	timeKey  = "t"
+	lvlKey   = "lvl"
+	msgKey   = "msg"
+	errorKey = "LOG15_ERROR"
+)
 
 // Lvl is a type for predefined log levels.
 type Lvl int
@@ -49,7 +51,7 @@ func (l Lvl) String() string {
 // LvlFromString returns the appropriate Lvl from a string name.
 // Useful for parsing command line args and configuration files.
 func LvlFromString(lvlString string) (Lvl, error) {
-	switch lvlString {
+	switch strings.ToLower(lvlString) {
 	case "trace":
 		return LvlTrace, nil
 	case "debug", "dbug":
@@ -63,11 +65,6 @@ func LvlFromString(lvlString string) (Lvl, error) {
 	case "crit":
 		return LvlCrit, nil
 	default:
-		// try to catch e.g. "INFO", "WARN" without slowing down the fast path
-		lower := strings.ToLower(lvlString)
-		if lower != lvlString {
-			return LvlFromString(lower)
-		}
 		return LvlDebug, fmt.Errorf("log15: unknown level: %v", lvlString)
 	}
 }

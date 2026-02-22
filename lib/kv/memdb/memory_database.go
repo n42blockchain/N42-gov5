@@ -39,13 +39,28 @@ func NewSentryDB(tmpDir string) kv.RwDB {
 	return mdbx.NewMDBX(log.New()).InMem(tmpDir).Label(kv.SentryDB).WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return kv.SentryTablesCfg }).MustOpen()
 }
 
-func NewTestDB(tb testing.TB) kv.RwDB {
+// newTestDB creates a test database with cleanup registered on tb.
+func newTestDB(tb testing.TB, open func(string) kv.RwDB) kv.RwDB {
 	tb.Helper()
-	tmpDir := tb.TempDir()
-	tb.Helper()
-	db := New(tmpDir)
+	db := open(tb.TempDir())
 	tb.Cleanup(db.Close)
 	return db
+}
+
+// newTestTx creates a test database and begins an RwTx, both with cleanup registered on tb.
+func newTestTx(tb testing.TB, db kv.RwDB) (kv.RwDB, kv.RwTx) {
+	tb.Helper()
+	tx, err := db.BeginRw(context.Background()) //nolint:gocritic
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(tx.Rollback)
+	return db, tx
+}
+
+func NewTestDB(tb testing.TB) kv.RwDB {
+	tb.Helper()
+	return newTestDB(tb, New)
 }
 
 func BeginRw(tb testing.TB, db kv.RwDB) kv.RwTx {
@@ -70,63 +85,30 @@ func BeginRo(tb testing.TB, db kv.RoDB) kv.Tx {
 
 func NewTestPoolDB(tb testing.TB) kv.RwDB {
 	tb.Helper()
-	tmpDir := tb.TempDir()
-	db := NewPoolDB(tmpDir)
-	tb.Cleanup(db.Close)
-	return db
+	return newTestDB(tb, NewPoolDB)
 }
 
 func NewTestDownloaderDB(tb testing.TB) kv.RwDB {
 	tb.Helper()
-	tmpDir := tb.TempDir()
-	db := NewDownloaderDB(tmpDir)
-	tb.Cleanup(db.Close)
-	return db
+	return newTestDB(tb, NewDownloaderDB)
 }
 
-func NewTestSentrylDB(tb testing.TB) kv.RwDB {
+func NewTestSentryDB(tb testing.TB) kv.RwDB {
 	tb.Helper()
-	tmpDir := tb.TempDir()
-	db := NewPoolDB(tmpDir)
-	tb.Cleanup(db.Close)
-	return db
+	return newTestDB(tb, NewSentryDB)
 }
 
 func NewTestTx(tb testing.TB) (kv.RwDB, kv.RwTx) {
 	tb.Helper()
-	tmpDir := tb.TempDir()
-	db := New(tmpDir)
-	tb.Cleanup(db.Close)
-	tx, err := db.BeginRw(context.Background()) //nolint:gocritic
-	if err != nil {
-		tb.Fatal(err)
-	}
-	tb.Cleanup(tx.Rollback)
-	return db, tx
+	return newTestTx(tb, NewTestDB(tb))
 }
 
 func NewTestPoolTx(tb testing.TB) (kv.RwDB, kv.RwTx) {
 	tb.Helper()
-	db := NewTestPoolDB(tb)
-	tx, err := db.BeginRw(context.Background()) //nolint
-	if err != nil {
-		tb.Fatal(err)
-	}
-	if tb != nil {
-		tb.Cleanup(tx.Rollback)
-	}
-	return db, tx
+	return newTestTx(tb, NewTestPoolDB(tb))
 }
 
 func NewTestSentryTx(tb testing.TB) (kv.RwDB, kv.RwTx) {
 	tb.Helper()
-	db := NewTestSentrylDB(tb)
-	tx, err := db.BeginRw(context.Background()) //nolint
-	if err != nil {
-		tb.Fatal(err)
-	}
-	if tb != nil {
-		tb.Cleanup(tx.Rollback)
-	}
-	return db, tx
+	return newTestTx(tb, NewTestSentryDB(tb))
 }

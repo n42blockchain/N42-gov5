@@ -18,10 +18,11 @@ package common
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/libp2p/go-libp2p/core/peer"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 )
 
 // IHeaderChain provides header chain operations not covered by ChainHeaderReader.

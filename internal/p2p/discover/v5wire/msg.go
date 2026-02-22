@@ -18,9 +18,9 @@ package v5wire
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/common/hexutil"
 	"net"
 
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/mclock"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/internal/p2p/enode"

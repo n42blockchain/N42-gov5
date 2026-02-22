@@ -31,14 +31,11 @@ func (s *Service) Broadcast(ctx context.Context, msg proto.Message) error {
 
 	forkDigest, err := s.currentForkDigest()
 	if err != nil {
-		err := errors.Wrap(err, "could not retrieve fork digest")
-		//tracing.AnnotateError(span, err)
-		return err
+		return errors.Wrap(err, "could not retrieve fork digest")
 	}
 
 	topic, ok := GossipTypeMapping[reflect.TypeOf(msg)]
 	if !ok {
-		//tracing.AnnotateError(span, ErrMessageNotMapped)
 		return ErrMessageNotMapped
 	}
 	castMsg, ok := msg.(ssz.Marshaler)
@@ -48,7 +45,7 @@ func (s *Service) Broadcast(ctx context.Context, msg proto.Message) error {
 	return s.broadcastObject(ctx, castMsg, fmt.Sprintf(topic, forkDigest))
 }
 
-// method to broadcast messages to other peers in our gossip mesh.
+// broadcastObject broadcasts messages to other peers in our gossip mesh.
 func (s *Service) broadcastObject(ctx context.Context, obj ssz.Marshaler, topic string) error {
 	ctx, span := trace.StartSpan(ctx, "p2p.broadcastObject")
 	defer span.End()
@@ -57,15 +54,11 @@ func (s *Service) broadcastObject(ctx context.Context, obj ssz.Marshaler, topic 
 
 	buf := new(bytes.Buffer)
 	if _, err := s.Encoding().EncodeGossip(buf, obj); err != nil {
-		err := errors.Wrap(err, "could not encode message")
-		//tracing.AnnotateError(span, err)
-		return err
+		return errors.Wrap(err, "could not encode message")
 	}
 
 	if err := s.PublishToTopic(ctx, topic+s.Encoding().ProtocolSuffix(), buf.Bytes()); err != nil {
-		err := errors.Wrap(err, "could not publish message")
-		//tracing.AnnotateError(span, err)
-		return err
+		return errors.Wrap(err, "could not publish message")
 	}
 	return nil
 }

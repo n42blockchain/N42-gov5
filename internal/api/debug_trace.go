@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -44,6 +43,7 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/tracers/logger"
 	"github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
@@ -102,15 +102,14 @@ type StructLogRes struct {
 func (debug *DebugAPI) TraceTransaction(ctx context.Context, hash types.Hash, config *TraceConfig) (interface{}, error) {
 	// Find the transaction
 	var (
-		tx          *transaction.Transaction
-		blockHash   types.Hash
-		blockNumber uint64
-		index       uint64
+		tx        *transaction.Transaction
+		blockHash types.Hash
+		index     uint64
 	)
 
 	err := debug.api.Database().View(ctx, func(t kv.Tx) error {
 		var err error
-		tx, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(t, hash)
+		tx, blockHash, _, index, err = rawdb.ReadTransactionByHash(t, hash)
 		return err
 	})
 	if err != nil {
@@ -119,7 +118,6 @@ func (debug *DebugAPI) TraceTransaction(ctx context.Context, hash types.Hash, co
 	if tx == nil {
 		return nil, errors.New("transaction not found")
 	}
-	_ = blockNumber // Used for context
 
 	// Get the block
 	blk, err := debug.api.BlockChain().GetBlockByHash(blockHash)
@@ -195,12 +193,10 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 		evm := vm.NewEVM(blockContext, txContext, ibs, debug.api.GetChainConfig(), vmConfig)
 
 		gp := new(common.GasPool).AddGas(header.GasLimit)
-		result, err := internal.ApplyMessage(evm, msg, gp, true, false)
-		if err != nil {
+		if _, err := internal.ApplyMessage(evm, msg, gp, true, false); err != nil {
 			return nil, err
 		}
 		ibs.FinalizeTx(debug.api.GetChainConfig().Rules(header.Number64().Uint64()), state.NewNoopWriter())
-		_ = result
 	}
 
 	// Execute the target transaction with tracing

@@ -20,12 +20,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -37,16 +39,33 @@ type API struct {
 	apoa  *Apoa
 }
 
+// resolveHeader returns the header for the given block number, or the current
+// block header when number is nil or LatestBlockNumber.
+func (api *API) resolveHeader(number *jsonrpc.BlockNumber) block.IHeader {
+	if number == nil || *number == jsonrpc.LatestBlockNumber {
+		return api.chain.CurrentBlock().Header()
+	}
+	return api.chain.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
+}
+
+// snapshotSigners returns the authorized signer list (as avmutil.Address) from
+// the snapshot at the given block number and hash.
+func (api *API) snapshotSigners(number uint64, hash types.Hash) ([]avmutil.Address, error) {
+	snap, err := api.apoa.snapshot(api.chain, number, hash, nil)
+	if err != nil {
+		return nil, err
+	}
+	signers := snap.signers()
+	result := make([]avmutil.Address, len(signers))
+	for i, signer := range signers {
+		result[i] = *avmtypes.FromastAddress(&signer)
+	}
+	return result, nil
+}
+
 // GetSnapshot retrieves the state snapshot at a given block.
 func (api *API) GetSnapshot(number *jsonrpc.BlockNumber) (*Snapshot, error) {
-	// Retrieve the requested block number (or current if none requested)
-	var header block.IHeader
-	if number == nil || *number == jsonrpc.LatestBlockNumber {
-		header = api.chain.CurrentBlock().Header()
-	} else {
-		header = api.chain.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
-	}
-	// Ensure we have an actually valid block and return its snapshot
+	header := api.resolveHeader(number)
 	if header == nil {
 		return nil, errUnknownBlock
 	}
@@ -64,28 +83,11 @@ func (api *API) GetSnapshotAtHash(hash types.Hash) (*Snapshot, error) {
 
 // GetSigners retrieves the list of authorized signers at the specified block.
 func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]avmutil.Address, error) {
-	// Retrieve the requested block number (or current if none requested)
-	var header block.IHeader
-	if number == nil || *number == jsonrpc.LatestBlockNumber {
-		header = api.chain.CurrentBlock().Header()
-	} else {
-		header = api.chain.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
-	}
-	// Ensure we have an actually valid block and return the signers from its snapshot
+	header := api.resolveHeader(number)
 	if header == nil {
 		return nil, errUnknownBlock
 	}
-	snap, err := api.apoa.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	signers := snap.signers()
-	ethSigners := make([]avmutil.Address, len(signers))
-	for i, signer := range signers {
-		ethSigners[i] = *avmtypes.FromastAddress(&signer)
-	}
-	return ethSigners, nil
+	return api.snapshotSigners(header.Number64().Uint64(), header.Hash())
 }
 
 // GetSignersAtHash retrieves the list of authorized signers at the specified block.
@@ -94,16 +96,7 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]avmutil.Address, error) {
 	if header == nil {
 		return nil, errUnknownBlock
 	}
-	snap, err := api.apoa.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
-	if err != nil {
-		return nil, err
-	}
-	signers := snap.signers()
-	ethSigners := make([]avmutil.Address, len(signers))
-	for i, signer := range signers {
-		ethSigners[i] = *avmtypes.FromastAddress(&signer)
-	}
-	return ethSigners, nil
+	return api.snapshotSigners(header.Number64().Uint64(), header.Hash())
 }
 
 // Proposals returns the current proposals the node tries to uphold and vote on.
@@ -180,14 +173,14 @@ func (api *API) Status() (*status, error) {
 	}
 	for n := start; n < end; n++ {
 		h := api.chain.GetHeaderByNumber(uint256.NewInt(n))
-		block := api.chain.GetBlock(h.Hash(), n)
 		if h == nil {
 			return nil, fmt.Errorf("missing block %d", n)
 		}
-		if block.Difficulty().Cmp(diffInTurn) == 0 {
+		blk := api.chain.GetBlock(h.Hash(), n)
+		if blk.Difficulty().Cmp(diffInTurn) == 0 {
 			optimals++
 		}
-		diff += block.Difficulty().Uint64()
+		diff += blk.Difficulty().Uint64()
 		sealer, err := api.apoa.Author(h)
 		if err != nil {
 			return nil, err

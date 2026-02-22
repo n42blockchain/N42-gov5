@@ -51,23 +51,16 @@ func TLS(tlsCACert, tlsCertFile, tlsKeyFile string) (credentials.TransportCreden
 }
 
 func NewServer(rateLimit uint32, creds credentials.TransportCredentials) *grpc.Server {
-	var (
-		streamInterceptors []grpc.StreamServerInterceptor
-		unaryInterceptors  []grpc.UnaryServerInterceptor
-	)
-	streamInterceptors = append(streamInterceptors, grpc_recovery.StreamServerInterceptor())
-	unaryInterceptors = append(unaryInterceptors, grpc_recovery.UnaryServerInterceptor())
+	streamInterceptors := []grpc.StreamServerInterceptor{
+		grpc_recovery.StreamServerInterceptor(),
+	}
+	unaryInterceptors := []grpc.UnaryServerInterceptor{
+		grpc_recovery.UnaryServerInterceptor(),
+	}
 
-	//if metrics.Enabled {
-	//	streamInterceptors = append(streamInterceptors, grpc_prometheus.StreamServerInterceptor)
-	//	unaryInterceptors = append(unaryInterceptors, grpc_prometheus.UnaryServerInterceptor)
-	//}
-
-	//cpus := uint32(runtime.GOMAXPROCS(-1))
 	opts := []grpc.ServerOption{
-		//grpc.NumStreamWorkers(cpus), // reduce amount of goroutines
 		grpc.MaxConcurrentStreams(rateLimit), // to force clients reduce concurrency level
-		// Don't drop the connection, settings accordign to this comment on GitHub
+		// Don't drop the connection, settings according to this comment on GitHub
 		// https://github.com/grpc/grpc-go/issues/3171#issuecomment-552796779
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             10 * time.Second,
@@ -80,20 +73,14 @@ func NewServer(rateLimit uint32, creds credentials.TransportCredentials) *grpc.S
 	grpcServer := grpc.NewServer(opts...)
 	reflection.Register(grpcServer)
 
-	//if metrics.Enabled {
-	//	grpc_prometheus.Register(grpcServer)
-	//}
-
 	return grpcServer
 }
 
 func Connect(creds credentials.TransportCredentials, dialAddress string) (*grpc.ClientConn, error) {
-	var dialOpts []grpc.DialOption
-
 	backoffCfg := backoff.DefaultConfig
 	backoffCfg.BaseDelay = 500 * time.Millisecond
 	backoffCfg.MaxDelay = 10 * time.Second
-	dialOpts = []grpc.DialOption{
+	dialOpts := []grpc.DialOption{
 		grpc.WithConnectParams(grpc.ConnectParams{Backoff: backoffCfg, MinConnectTimeout: 10 * time.Minute}),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(int(200 * datasize.MB))),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{}),
@@ -104,12 +91,6 @@ func Connect(creds credentials.TransportCredentials, dialAddress string) (*grpc.
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
 	}
 
-	//if opts.inMemConn != nil {
-	//	dialOpts = append(dialOpts, grpc.WithContextDialer(func(ctx context.Context, url string) (net.Conn, error) {
-	//		return opts.inMemConn.Dial()
-	//	}))
-	//}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -117,11 +98,12 @@ func Connect(creds credentials.TransportCredentials, dialAddress string) (*grpc.
 }
 
 func IsRetryLater(err error) bool {
-	if s, ok := status.FromError(err); ok {
-		code := s.Code()
-		return code == codes.Unavailable || code == codes.Canceled || code == codes.ResourceExhausted
+	s, ok := status.FromError(err)
+	if !ok {
+		return false
 	}
-	return false
+	code := s.Code()
+	return code == codes.Unavailable || code == codes.Canceled || code == codes.ResourceExhausted
 }
 
 func IsEndOfStream(err error) bool {

@@ -18,6 +18,7 @@ package params
 
 import (
 	"fmt"
+
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
@@ -36,7 +37,7 @@ var (
 const (
 	VersionMajor       = 5   // Major version - annual release
 	VersionMinor       = 4   // Minor version - feature release
-	VersionBuild       = 628 // Build number - auto-incremented
+	VersionBuild       = 633 // Build number - auto-incremented
 	VersionModifier    = ""  // Modifier component (alpha, beta, stable)
 	VersionKeyCreated  = "n42VersionCreated"
 	VersionKeyFinished = "n42VersionFinished"
@@ -100,9 +101,5 @@ func SetN42Version(tx kv.RwTx, versionKey string) error {
 	if hasVersion {
 		return nil
 	}
-	// Save version if it does not exist
-	if err := tx.Put(modules.DatabaseInfo, versionKeyByte, []byte(Version)); err != nil {
-		return err
-	}
-	return nil
+	return tx.Put(modules.DatabaseInfo, versionKeyByte, []byte(Version))
 }

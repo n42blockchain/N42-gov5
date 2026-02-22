@@ -3,33 +3,27 @@ package sync
 import (
 	"context"
 	"fmt"
-	ssztype "github.com/n42blockchain/N42/common/types/ssz"
-	"github.com/n42blockchain/N42/internal/p2p"
-	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
 	"time"
 
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	ssztype "github.com/n42blockchain/N42/common/types/ssz"
+	"github.com/n42blockchain/N42/internal/p2p"
+	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/utils"
 )
 
 var backOffTime = map[ssztype.SSZUint64]time.Duration{
-	// Do not dial peers which are from a different/unverifiable
-	// network.
 	p2ptypes.GoodbyeCodeWrongNetwork:          24 * time.Hour,
 	p2ptypes.GoodbyeCodeUnableToVerifyNetwork: 24 * time.Hour,
-	// If local peer is banned, we back off for
-	// 2 hours to let the remote peer score us
-	// back up again.
-	p2ptypes.GoodbyeCodeBadScore:       2 * time.Hour,
-	p2ptypes.GoodbyeCodeBanned:         1 * time.Hour,
-	p2ptypes.GoodbyeCodeClientShutdown: 1 * time.Hour,
-	// Wait 5 minutes before dialing a peer who is
-	// 'full'
-	p2ptypes.GoodbyeCodeTooManyPeers: 5 * time.Minute,
-	p2ptypes.GoodbyeCodeGenericError: 2 * time.Minute,
+	p2ptypes.GoodbyeCodeBadScore:              2 * time.Hour,
+	p2ptypes.GoodbyeCodeBanned:                1 * time.Hour,
+	p2ptypes.GoodbyeCodeClientShutdown:        1 * time.Hour,
+	p2ptypes.GoodbyeCodeTooManyPeers:          5 * time.Minute,
+	p2ptypes.GoodbyeCodeGenericError:          2 * time.Minute,
 }
 
 // goodbyeRPCHandler reads the incoming goodbye rpc message from the peer.
@@ -44,18 +38,19 @@ func (s *Service) goodbyeRPCHandler(_ context.Context, msg interface{}, stream l
 		return err
 	}
 	s.rateLimiter.add(stream, 1)
+
 	peerID := stream.Conn().RemotePeer().String()
 	if len(peerID) > 16 {
 		peerID = peerID[:16] + "..."
 	}
 	log.Debug("Peer disconnecting", "peer", peerID, "reason", goodbyeMessage(*m))
 	s.cfg.p2p.Peers().SetNextValidTime(stream.Conn().RemotePeer(), goodByeBackoff(*m))
-	// closes all streams with the peer
+
 	return s.cfg.p2p.Disconnect(stream.Conn().RemotePeer())
 }
 
-// disconnectBadPeer checks whether peer is considered bad by some scorer, and tries to disconnect
-// the peer, if that is the case. Additionally, disconnection reason is obtained from scorer.
+// disconnectBadPeer checks whether a peer is considered bad by any scorer,
+// and disconnects the peer with an appropriate goodbye code if so.
 func (s *Service) disconnectBadPeer(ctx context.Context, id peer.ID) {
 	if !s.cfg.p2p.Peers().IsBad(id) {
 		return
@@ -70,8 +65,7 @@ func (s *Service) disconnectBadPeer(ctx context.Context, id peer.ID) {
 	}
 }
 
-// A custom goodbye method that is used by our connection handler, in the
-// event we receive bad peers.
+// sendGoodbye sends a generic goodbye to the peer and disconnects.
 func (s *Service) sendGoodbye(ctx context.Context, id peer.ID) error {
 	return s.sendGoodByeAndDisconnect(ctx, p2ptypes.GoodbyeCodeGenericError, id)
 }
@@ -80,8 +74,8 @@ func (s *Service) sendGoodByeAndDisconnect(ctx context.Context, code p2ptypes.RP
 	lock := utils.NewMultilock(id.String())
 	lock.Lock()
 	defer lock.Unlock()
-	// In the event we are already disconnected, exit early from the
-	// goodbye method to prevent redundant streams from being created.
+
+	// If already disconnected, exit early to prevent redundant streams.
 	if s.cfg.p2p.Host().Network().Connectedness(id) == network.NotConnected {
 		return nil
 	}
@@ -107,34 +101,25 @@ func (s *Service) sendGoodByeMessage(ctx context.Context, code p2ptypes.RPCGoodb
 
 	log.Debug("Sending Goodbye message to peer", "Reason", goodbyeMessage(code), "peer", stream.Conn().RemotePeer())
 
-	// Wait up to the response timeout for the peer to receive the goodbye
-	// and close the stream (or disconnect). We usually don't bother waiting
-	// around for an EOF, but we're going to close this connection
-	// immediately after we say goodbye.
-	//
-	// NOTE: we don't actually check the response as there's nothing we can
-	// do if something fails. We just need to wait for it.
+	// Wait for the peer to receive the goodbye and close the stream.
+	// We don't check the response -- we just need to wait before disconnecting.
 	SetStreamReadDeadline(stream, respTimeout)
-	_, _err := stream.Read([]byte{0})
-	_ = _err
+	_, _ = stream.Read([]byte{0})
 
 	return nil
 }
 
 func goodbyeMessage(num p2ptypes.RPCGoodbyeCode) string {
-	reason, ok := p2ptypes.GoodbyeCodeMessages[num]
-	if ok {
+	if reason, ok := p2ptypes.GoodbyeCodeMessages[num]; ok {
 		return reason
 	}
 	return fmt.Sprintf("unknown goodbye value of %d received", num)
 }
 
-// determines which backoff time to use depending on the
-// goodbye code provided.
+// goodByeBackoff determines the backoff duration based on the goodbye code.
 func goodByeBackoff(num p2ptypes.RPCGoodbyeCode) time.Time {
-	duration, ok := backOffTime[num]
-	if !ok {
-		return time.Time{}
+	if duration, ok := backOffTime[num]; ok {
+		return time.Now().Add(duration)
 	}
-	return time.Now().Add(duration)
+	return time.Time{}
 }

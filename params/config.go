@@ -21,15 +21,17 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/n42blockchain/N42/common/paths"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/params/networkname"
-	"golang.org/x/crypto/sha3"
 	"math/big"
 	"path"
 	"sort"
 	"strconv"
+
+	"golang.org/x/crypto/sha3"
+
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/paths"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/params/networkname"
 )
 
 //go:embed chainspecs
@@ -59,7 +61,7 @@ const (
 	ParliaConsensus ConsensusType = "parlia"
 	BorConsensus    ConsensusType = "bor"
 	AposConsensu    ConsensusType = "apos"
-	Faker           ConsensusType = "faker" // faker consensus
+	Faker           ConsensusType = "faker"
 )
 
 // Genesis hashes to enforce below configs on.
@@ -142,21 +144,10 @@ type ChainConfig struct {
 	OsakaTime        *big.Int `json:"osakaTime,omitempty"`   // Osaka switch time (nil = no fork)
 	FusakaTime       *big.Int `json:"fusakaTime,omitempty"`  // Fusaka switch time (nil = no fork) - Native AA
 
-	// Parlia fork blocks
-	//RamanujanBlock  *big.Int    `json:"ramanujanBlock,omitempty" toml:",omitempty"`  // ramanujanBlock switch block (nil = no fork, 0 = already activated)
-	//NielsBlock      *big.Int    `json:"nielsBlock,omitempty" toml:",omitempty"`      // nielsBlock switch block (nil = no fork, 0 = already activated)
-	//MirrorSyncBlock *big.Int    `json:"mirrorSyncBlock,omitempty" toml:",omitempty"` // mirrorSyncBlock switch block (nil = no fork, 0 = already activated)
-	//BrunoBlock      *big.Int    `json:"brunoBlock,omitempty" toml:",omitempty"`      // brunoBlock switch block (nil = no fork, 0 = already activated)
-	//EulerBlock      *big.Int    `json:"eulerBlock,omitempty" toml:",omitempty"`      // eulerBlock switch block (nil = no fork, 0 = already activated)
-	//GibbsBlock      *big.Int    `json:"gibbsBlock,omitempty" toml:",omitempty"`      // gibbsBlock switch block (nil = no fork, 0 = already activated)
 	NanoBlock    *big.Int `json:"nanoBlock,omitempty" toml:",omitempty"`    // nanoBlock switch block (nil = no fork, 0 = already activated)
 	MoranBlock   *big.Int `json:"moranBlock,omitempty" toml:",omitempty"`   // moranBlock switch block (nil = no fork, 0 = already activated)
 	BeijingBlock *big.Int `json:"beijingBlock,omitempty" toml:",omitempty"` // beijingBlock switch block (nil = no fork, 0 = already activated)
-	//Apos         *AposConfig `json:"apos,omitempty"`
 
-	// Gnosis Chain fork blocks
-	//PosdaoBlock *big.Int `json:"posdaoBlock,omitempty"`
-	//
 	Eip1559FeeCollector           *types.Address `json:"eip1559FeeCollector,omitempty"`           // (Optional) Address where burnt EIP-1559 fees go to
 	Eip1559FeeCollectorTransition *big.Int       `json:"eip1559FeeCollectorTransition,omitempty"` // (Optional) Block from which burnt EIP-1559 fees go to the Eip1559FeeCollector
 
@@ -197,7 +188,7 @@ type APosConfig struct {
 
 	DepositContract     string `json:"depositContract"`     // Deposit contract
 	DepositNFTContract  string `json:"depositNFTContract"`  // Deposit NFT contract
-	DepositFUJIContract string `json:"depositFUJIContract"` // Deposit NFT contract
+	DepositFUJIContract string `json:"depositFUJIContract"` // Deposit FUJI contract
 }
 
 // String implements the stringer interface, returning the consensus engine details.
@@ -235,15 +226,6 @@ type ParliaConfig struct {
 func (b *ParliaConfig) String() string {
 	return "parlia"
 }
-
-//type AposConfig struct {
-//	DepositContract string `json:"depositContract"` // Deposit contract
-//	Period          uint64 `json:"period"`          // Number of seconds between blocks to enforce
-//	Epoch           uint64 `json:"epoch"`           // Epoch length to reset votes and checkpoint
-//
-//	RewardEpoch uint64 `json:"rewardEpoch"`
-//	RewardLimit uint64 `json:"rewardLimit"`
-//}
 
 // BorConfig is the consensus engine configs for Matic bor based sealing.
 type BorConfig struct {
@@ -340,11 +322,11 @@ func NewSnapshotConfig(checkpointInterval uint64, inmemorySnapshots int, inmemor
 	}
 
 	return &ConsensusSnapshotConfig{
-		checkpointInterval,
-		inmemorySnapshots,
-		inmemorySignatures,
-		path.Join(dbPath, cliquePath),
-		inmemory,
+		CheckpointInterval: checkpointInterval,
+		InmemorySnapshots:  inmemorySnapshots,
+		InmemorySignatures: inmemorySignatures,
+		DBPath:             path.Join(dbPath, cliquePath),
+		InMemory:           inmemory,
 	}
 }
 
@@ -352,7 +334,6 @@ func NewSnapshotConfig(checkpointInterval uint64, inmemorySnapshots int, inmemor
 var NetworkNames = map[string]string{
 	"100100100": "testnet",
 	"94":        "mainnet",
-	//"131":       "testnet",
 }
 
 // Description returns a human-readable description of ChainConfig.
@@ -413,19 +394,10 @@ func (c *ChainConfig) IsMoran(num uint64) bool {
 	return isForked(c.MoranBlock, num)
 }
 
-//	func (c *ChainConfig) IsOnMoran(num *big.Int) bool {
-//		return configNumEqual(c.MoranBlock, num)
-//	}
-//
-// IsNano returns whether num is either equal to the euler fork block or greater.
+// IsNano returns whether num is either equal to the Nano fork block or greater.
 func (c *ChainConfig) IsNano(num uint64) bool {
 	return isForked(c.NanoBlock, num)
 }
-
-//
-//func (c *ChainConfig) IsOnNano(num *big.Int) bool {
-//	return configNumEqual(c.NanoBlock, num)
-//}
 
 // IsMuirGlacier returns whether num is either equal to the Muir Glacier (EIP-2384) fork block or greater.
 func (c *ChainConfig) IsMuirGlacier(num uint64) bool {
@@ -496,7 +468,7 @@ func (c *ChainConfig) IsFusaka(time uint64) bool {
 	return isForked(c.FusakaTime, time)
 }
 
-// IsBeijing returns whether num is either equal to the IsBeijing fork block or greater.
+// IsBeijing returns whether num is either equal to the Beijing fork block or greater.
 func (c *ChainConfig) IsBeijing(num uint64) bool {
 	return isForked(c.BeijingBlock, num)
 }
@@ -504,19 +476,6 @@ func (c *ChainConfig) IsBeijing(num uint64) bool {
 func (c *ChainConfig) IsEip1559FeeCollector(num uint64) bool {
 	return c.Eip1559FeeCollector != nil && isForked(c.Eip1559FeeCollectorTransition, num)
 }
-
-//func (c *ChainConfig) IsMoran(num uint64) bool {
-//	return isForked(c.MoranBlock, num)
-//}
-//
-//func (c *ChainConfig) IsOnMoran(num *big.Int) bool {
-//	return numEqual(c.MoranBlock, num)
-//}
-//
-//// IsNano returns whether num is either equal to the euler fork block or greater.
-//func (c *ChainConfig) IsNano(num uint64) bool {
-//	return isForked(c.NanoBlock, num)
-//}
 
 // CheckCompatible checks whether scheduled fork transitions have been imported
 // with a mismatching chain configuration.
@@ -558,8 +517,6 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "petersburgBlock", block: c.PetersburgBlock},
 		{name: "istanbulBlock", block: c.IstanbulBlock},
 		{name: "muirGlacierBlock", block: c.MuirGlacierBlock, optional: true},
-		//{name: "eulerBlock", block: c.EulerBlock, optional: true},
-		//{name: "gibbsBlock", block: c.GibbsBlock, optional: true},
 		{name: "berlinBlock", block: c.BerlinBlock},
 		{name: "londonBlock", block: c.LondonBlock},
 		{name: "arrowGlacierBlock", block: c.ArrowGlacierBlock, optional: true},
@@ -661,32 +618,6 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head uint64) *ConfigC
 	if isForkIncompatible(c.FusakaTime, newcfg.FusakaTime, head) {
 		return newCompatError("Fusaka fork time", c.FusakaTime, newcfg.FusakaTime)
 	}
-
-	// Parlia forks
-	//if isForkIncompatible(c.RamanujanBlock, newcfg.RamanujanBlock, head) {
-	//	return newCompatError("Ramanujan fork block", c.RamanujanBlock, newcfg.RamanujanBlock)
-	//}
-	//if isForkIncompatible(c.NielsBlock, newcfg.NielsBlock, head) {
-	//	return newCompatError("Niels fork block", c.NielsBlock, newcfg.NielsBlock)
-	//}
-	//if isForkIncompatible(c.MirrorSyncBlock, newcfg.MirrorSyncBlock, head) {
-	//	return newCompatError("MirrorSync fork block", c.MirrorSyncBlock, newcfg.MirrorSyncBlock)
-	//}
-	//if isForkIncompatible(c.BrunoBlock, newcfg.BrunoBlock, head) {
-	//	return newCompatError("Bruno fork block", c.BrunoBlock, newcfg.BrunoBlock)
-	//}
-	//if isForkIncompatible(c.EulerBlock, newcfg.EulerBlock, head) {
-	//	return newCompatError("Euler fork block", c.EulerBlock, newcfg.EulerBlock)
-	//}
-	//if isForkIncompatible(c.GibbsBlock, newcfg.GibbsBlock, head) {
-	//	return newCompatError("Gibbs fork block", c.GibbsBlock, newcfg.GibbsBlock)
-	//}
-	//if isForkIncompatible(c.NanoBlock, newcfg.NanoBlock, head) {
-	//	return newCompatError("Nano fork block", c.NanoBlock, newcfg.NanoBlock)
-	//}
-	//if isForkIncompatible(c.MoranBlock, newcfg.MoranBlock, head) {
-	//	return newCompatError("moran fork block", c.MoranBlock, newcfg.MoranBlock)
-	//}
 	return nil
 }
 
@@ -709,7 +640,7 @@ func configNumEqual(x, y *big.Int) bool {
 		return y == nil
 	}
 	if y == nil {
-		return x == nil
+		return false
 	}
 	return x.Cmp(y) == 0
 }

@@ -258,7 +258,6 @@ func (d *Domain) openFiles() (err error) {
 					}
 					return false
 				}
-				//totalKeys += item.bindex.KeyCount()
 			}
 		}
 		return true
@@ -317,7 +316,6 @@ func (d *Domain) Close() {
 }
 
 func (dt *DomainRoTx) get(key []byte, fromTxNum uint64, roTx kv.Tx) ([]byte, bool, error) {
-	//var invertedStep [8]byte
 	dt.d.stats.TotalQueries.Add(1)
 
 	invertedStep := dt.numBuf
@@ -335,7 +333,6 @@ func (dt *DomainRoTx) get(key []byte, fromTxNum uint64, roTx kv.Tx) ([]byte, boo
 		dt.d.stats.HistoryQueries.Add(1)
 		return dt.readFromFiles(key, fromTxNum)
 	}
-	//keySuffix := make([]byte, len(key)+8)
 	copy(dt.keyBuf[:], key)
 	copy(dt.keyBuf[len(key):], foundInvStep)
 	v, err := roTx.GetOne(dt.d.valsTable, dt.keyBuf[:len(key)+8])
@@ -346,7 +343,6 @@ func (dt *DomainRoTx) get(key []byte, fromTxNum uint64, roTx kv.Tx) ([]byte, boo
 }
 
 func (dt *DomainRoTx) Get(key1, key2 []byte, roTx kv.Tx) ([]byte, error) {
-	//key := make([]byte, len(key1)+len(key2))
 	copy(dt.keyBuf[:], key1)
 	copy(dt.keyBuf[len(key1):], key2)
 	// keys larger than 52 bytes will panic
@@ -357,10 +353,7 @@ func (dt *DomainRoTx) Get(key1, key2 []byte, roTx kv.Tx) ([]byte, error) {
 func (d *Domain) update(key, _ []byte) error {
 	var invertedStep [8]byte
 	binary.BigEndian.PutUint64(invertedStep[:], ^(d.txNum / d.aggregationStep))
-	if err := d.tx.Put(d.keysTable, key, invertedStep[:]); err != nil {
-		return err
-	}
-	return nil
+	return d.tx.Put(d.keysTable, key, invertedStep[:])
 }
 
 func (d *Domain) Put(key1, key2, val []byte) error {
@@ -385,10 +378,7 @@ func (d *Domain) Put(key1, key2, val []byte) error {
 	keySuffix := make([]byte, len(key)+8)
 	copy(keySuffix, key)
 	binary.BigEndian.PutUint64(keySuffix[len(key):], invertedStep)
-	if err = d.tx.Put(d.valsTable, keySuffix, val); err != nil {
-		return err
-	}
-	return nil
+	return d.tx.Put(d.valsTable, keySuffix, val)
 }
 
 func (d *Domain) Delete(key1, key2 []byte) error {
@@ -413,10 +403,7 @@ func (d *Domain) Delete(key1, key2 []byte) error {
 	keySuffix := make([]byte, len(key)+8)
 	copy(keySuffix, key)
 	binary.BigEndian.PutUint64(keySuffix[len(key):], invertedStep)
-	if err = d.tx.Delete(d.valsTable, keySuffix); err != nil {
-		return err
-	}
-	return nil
+	return d.tx.Delete(d.valsTable, keySuffix)
 }
 
 type CursorType uint8
@@ -616,15 +603,7 @@ func (d *Domain) collate(ctx context.Context, step, txFrom, txTo uint64, roTx kv
 		valuesCount uint
 	)
 
-	//TODO: use prorgesSet
-	//totalKeys, err := keysCursor.Count()
-	//if err != nil {
-	//	return Collation{}, fmt.Errorf("failed to obtain keys count for domain %q", d.filenameBase)
-	//}
 	for k, _, err = keysCursor.First(); err == nil && k != nil; k, _, err = keysCursor.NextNoDup() {
-		if err != nil {
-			return Collation{}, err
-		}
 		pos++
 		select {
 		case <-ctx.Done():
@@ -991,14 +970,12 @@ func (d *Domain) prune(ctx context.Context, step uint64, txFrom, txTo, limit uin
 			}
 		}
 		pos.Add(1)
-		//_prog = 100 * (float64(pos) / float64(totalKeys))
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-logEvery.C:
 			d.logger.Info("[snapshots] prune domain", "name", d.filenameBase, "step", step)
-			//"steps", fmt.Sprintf("%.2f-%.2f", float64(txFrom)/float64(d.aggregationStep), float64(txTo)/float64(d.aggregationStep)))
 		default:
 		}
 	}
@@ -1098,7 +1075,6 @@ func (dt *DomainRoTx) readFromFiles(filekey []byte, fromTxNum uint64) ([]byte, b
 		}
 		cur, err := reader.Seek(filekey)
 		if err != nil {
-			//return nil, false, nil //TODO: uncomment me
 			return nil, false, err
 		}
 		if cur == nil {

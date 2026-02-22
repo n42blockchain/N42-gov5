@@ -32,13 +32,11 @@ import (
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
 
-	"github.com/n42blockchain/N42/lib/rlp"
-
 	libcommon "github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/hexutil"
 	"github.com/n42blockchain/N42/lib/common/math"
-
 	"github.com/n42blockchain/N42/lib/crypto/cryptopool"
+	"github.com/n42blockchain/N42/lib/rlp"
 )
 
 // SignatureLength indicates the byte length required to carry a signature with recovery id.
@@ -147,8 +145,9 @@ func ToECDSAUnsafe(d []byte) *ecdsa.PrivateKey {
 func toECDSA(d []byte, strict bool) (*ecdsa.PrivateKey, error) {
 	priv := new(ecdsa.PrivateKey)
 	priv.PublicKey.Curve = S256()
-	if strict && 8*len(d) != priv.Params().BitSize {
-		return nil, fmt.Errorf("invalid length, need %d bits", priv.Params().BitSize)
+	bitSize := priv.Params().BitSize
+	if strict && 8*len(d) != bitSize {
+		return nil, fmt.Errorf("invalid length, need %d bits", bitSize)
 	}
 	priv.D = new(big.Int).SetBytes(d)
 
@@ -223,9 +222,12 @@ func MarshalPubkey(pubkey *ecdsa.PublicKey) []byte {
 // HexToECDSA parses a secp256k1 private key.
 func HexToECDSA(hexkey string) (*ecdsa.PrivateKey, error) {
 	b, err := hex.DecodeString(hexkey)
-	var byteErr hex.InvalidByteError
-	if errors.As(err, &byteErr) {
-		return nil, fmt.Errorf("invalid hex character %q in private key", byte(byteErr))
+	if err != nil {
+		var byteErr hex.InvalidByteError
+		if errors.As(err, &byteErr) {
+			return nil, fmt.Errorf("invalid hex character %q in private key", byte(byteErr))
+		}
+		return nil, err
 	}
 	return ToECDSA(b)
 }
@@ -243,7 +245,8 @@ func LoadECDSA(file string) (*ecdsa.PrivateKey, error) {
 	n, err := readASCII(buf, r)
 	if err != nil {
 		return nil, err
-	} else if n != len(buf) {
+	}
+	if n != len(buf) {
 		return nil, fmt.Errorf("key file too short, want 64 hex characters")
 	}
 	if err := checkKeyFileEnd(r); err != nil {
@@ -297,7 +300,7 @@ func GenerateKey() (*ecdsa.PrivateKey, error) {
 	return ecdsa.GenerateKey(S256(), rand.Reader)
 }
 
-// DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
+// PubkeyToAddress derives the Ethereum address from a secp256k1 public key.
 func PubkeyToAddress(p ecdsa.PublicKey) libcommon.Address {
 	pubBytes := MarshalPubkey(&p)
 	return libcommon.BytesToAddress(Keccak256(pubBytes)[12:])
@@ -309,7 +312,8 @@ func zeroBytes(bytes []byte) {
 	}
 }
 
-// See Appendix F "Signing Transactions" of the Yellow Paper
+// TransactionSignatureIsValid checks whether a transaction signature is valid.
+// See Appendix F "Signing Transactions" of the Yellow Paper.
 func TransactionSignatureIsValid(v byte, r, s *uint256.Int, allowPreEip2s bool) bool {
 	if r.IsZero() || s.IsZero() {
 		return false

@@ -198,10 +198,6 @@ func ParseEOF(code []byte) (*EOFContainer, error) {
 
 	// Parse sections
 	for pos < len(code) {
-		if pos >= len(code) {
-			return nil, ErrEOFMissingTerminator
-		}
-
 		sectionKind := code[pos]
 		pos++
 
@@ -387,7 +383,7 @@ func validateCodeSection(code []byte, typeInfo EOFTypeSection, container *EOFCon
 		}
 
 		// Get instruction size
-		size := eofOpcodeSize(op, code[pos:])
+		size := GetOpcodeSize(op, code[pos:])
 		if pos+size > len(code) {
 			return ErrEOFTruncatedInstruction
 		}
@@ -462,11 +458,6 @@ func isValidEOFOpcode(op OpCode) bool {
 	return true
 }
 
-// eofOpcodeSize returns the total size of an instruction including operands.
-// This function uses a lookup table (opcode_sizes.go) for improved performance.
-func eofOpcodeSize(op OpCode, code []byte) int {
-	return GetOpcodeSize(op, code)
-}
 
 // =============================================================================
 // EOF Code Section Accessors

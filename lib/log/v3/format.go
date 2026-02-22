@@ -18,7 +18,7 @@ const (
 	termMsgJust    = 40
 )
 
-// Format  is the interface implemented by StreamHandler formatters.
+// Format is the interface implemented by StreamHandler formatters.
 type Format interface {
 	Format(r *Record) []byte
 }
@@ -45,19 +45,31 @@ func (f formatFunc) Format(r *Record) []byte {
 //
 //	[May 16 20:58:45] [DBUG] remove route ns=haproxy addr=127.0.0.1:50002
 func TerminalFormat() Format {
+	return terminalFormat(true)
+}
+
+// TerminalFormatNoColor formats log records like TerminalFormat but without
+// ANSI color codes. Suitable for non-terminal outputs like log files.
+func TerminalFormatNoColor() Format {
+	return terminalFormat(false)
+}
+
+func terminalFormat(useColor bool) Format {
 	return FormatFunc(func(r *Record) []byte {
-		var color = 0
-		switch r.Lvl {
-		case LvlCrit:
-			color = 35
-		case LvlError:
-			color = 31
-		case LvlWarn:
-			color = 33
-		case LvlInfo:
-			color = 32
-		case LvlDebug:
-			color = 36
+		var color int
+		if useColor {
+			switch r.Lvl {
+			case LvlCrit:
+				color = 35
+			case LvlError:
+				color = 31
+			case LvlWarn:
+				color = 33
+			case LvlInfo:
+				color = 32
+			case LvlDebug:
+				color = 36
+			}
 		}
 
 		b := &bytes.Buffer{}
@@ -68,30 +80,11 @@ func TerminalFormat() Format {
 			fmt.Fprintf(b, "[%s] [%s] %s ", lvl, r.Time.Format(termTimeFormat), r.Msg)
 		}
 
-		// try to justify the log output for short messages
 		if len(r.Ctx) > 0 && len(r.Msg) < termMsgJust {
 			b.Write(bytes.Repeat([]byte{' '}, termMsgJust-len(r.Msg)))
 		}
 
-		// print the keys logfmt style
 		logfmt(b, r.Ctx, color)
-		return b.Bytes()
-	})
-}
-
-func TerminalFormatNoColor() Format {
-	return FormatFunc(func(r *Record) []byte {
-		b := &bytes.Buffer{}
-		lvl := strings.ToUpper(r.Lvl.String())
-		fmt.Fprintf(b, "[%s] [%s] %s ", lvl, r.Time.Format(termTimeFormat), r.Msg)
-
-		// try to justify the log output for short messages
-		if len(r.Ctx) > 0 && len(r.Msg) < termMsgJust {
-			b.Write(bytes.Repeat([]byte{' '}, termMsgJust-len(r.Msg)))
-		}
-
-		// print the keys logfmt style
-		logfmt(b, r.Ctx, 0)
 		return b.Bytes()
 	})
 }
@@ -121,7 +114,6 @@ func logfmt(buf *bytes.Buffer, ctx []interface{}, color int) {
 			k, v = errorKey, formatLogfmtValue(k)
 		}
 
-		// XXX: we should probably check that all of your key bytes aren't invalid
 		if color > 0 {
 			fmt.Fprintf(buf, "\x1b[%dm%s\x1b[0m=%s", color, k, v)
 		} else {
@@ -214,7 +206,7 @@ func formatJSONValue(value interface{}) interface{} {
 	switch value.(type) {
 	case int, int8, int16, int32, int64, float32, float64, uint, uint8, uint16, uint32, uint64, string:
 		return value
-	case map[string]interface{}, []interface{}, interface{}:
+	case map[string]interface{}, []interface{}:
 		return value
 	default:
 		return fmt.Sprintf("%+v", value)
@@ -265,7 +257,7 @@ func escapeString(s string) string {
 			needsEscape = true
 		}
 	}
-	if needsEscape == false && needsQuotes == false {
+	if !needsEscape && !needsQuotes {
 		return s
 	}
 	e := stringBufPool.Get().(*bytes.Buffer)

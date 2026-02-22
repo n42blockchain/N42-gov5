@@ -103,14 +103,11 @@ func checkBlock(getHashF func(n uint64) types.Hash, blk *block.Block, ibs *state
 	gp := new(common2.GasPool)
 	gp.AddGas(blk.GasLimit())
 	cfg := vm.Config{}
-	//cfg := vm.Config{Debug: true, Tracer: logger.NewMarkdownLogger(nil, os.Stdout)}
-
 	engine := apos.NewFaker()
 	for i, tx := range blk.Transactions() {
 		ibs.Prepare(tx.Hash(), blk.Hash(), i)
 		_, _, err := internal.ApplyTransaction(chainConfig, getHashF, engine, &coinbase, gp, ibs, noop, header, tx, usedGas, cfg)
 		if err != nil {
-
 			return types.Hash{}, err
 		}
 	}

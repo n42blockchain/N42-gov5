@@ -8,96 +8,78 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// Compile-time check that gossipTracer implements pubsub.RawTracer.
 var _ = pubsub.RawTracer(gossipTracer{})
 
-// This tracer is used to implement metrics collection for messages received
-// and broadcasted through gossipsub.
+// gossipTracer implements pubsub.RawTracer to collect Prometheus metrics
+// for messages received and broadcasted through GossipSub.
 type gossipTracer struct {
 	host host.Host
 }
 
-// AddPeer .
-func (g gossipTracer) AddPeer(p peer.ID, proto protocol.ID) {
-	// no-op
-}
+func (g gossipTracer) AddPeer(_ peer.ID, _ protocol.ID) {}
+func (g gossipTracer) RemovePeer(_ peer.ID)              {}
 
-// RemovePeer .
-func (g gossipTracer) RemovePeer(p peer.ID) {
-	// no-op
-}
-
-// Join .
 func (g gossipTracer) Join(topic string) {
 	pubsubTopicsActive.WithLabelValues(topic).Set(1)
 }
 
-// Leave .
 func (g gossipTracer) Leave(topic string) {
 	pubsubTopicsActive.WithLabelValues(topic).Set(0)
 }
 
-// Graft .
-func (g gossipTracer) Graft(p peer.ID, topic string) {
+func (g gossipTracer) Graft(_ peer.ID, topic string) {
 	pubsubTopicsGraft.WithLabelValues(topic).Inc()
 }
 
-// Prune .
-func (g gossipTracer) Prune(p peer.ID, topic string) {
+func (g gossipTracer) Prune(_ peer.ID, topic string) {
 	pubsubTopicsPrune.WithLabelValues(topic).Inc()
 }
 
-// ValidateMessage .
 func (g gossipTracer) ValidateMessage(msg *pubsub.Message) {
 	pubsubMessageValidate.WithLabelValues(*msg.Topic).Inc()
 }
 
-// DeliverMessage .
 func (g gossipTracer) DeliverMessage(msg *pubsub.Message) {
 	pubsubMessageDeliver.WithLabelValues(*msg.Topic).Inc()
 }
 
-// RejectMessage .
-func (g gossipTracer) RejectMessage(msg *pubsub.Message, reason string) {
+func (g gossipTracer) RejectMessage(msg *pubsub.Message, _ string) {
 	pubsubMessageReject.WithLabelValues(*msg.Topic).Inc()
 }
 
-// DuplicateMessage .
 func (g gossipTracer) DuplicateMessage(msg *pubsub.Message) {
 	pubsubMessageDuplicate.WithLabelValues(*msg.Topic).Inc()
 }
 
-// UndeliverableMessage .
 func (g gossipTracer) UndeliverableMessage(msg *pubsub.Message) {
 	pubsubMessageUndeliverable.WithLabelValues(*msg.Topic).Inc()
 }
 
-// ThrottlePeer .
 func (g gossipTracer) ThrottlePeer(p peer.ID) {
 	agent := agentFromPid(p, g.host.Peerstore())
 	pubsubPeerThrottle.WithLabelValues(agent).Inc()
 }
 
-// RecvRPC .
 func (g gossipTracer) RecvRPC(rpc *pubsub.RPC) {
-	setMetricFromRPC(pubsubRPCSubRecv, pubsubRPCRecv, rpc)
+	recordRPCMetrics(pubsubRPCSubRecv, pubsubRPCRecv, rpc)
 }
 
-// SendRPC .
-func (g gossipTracer) SendRPC(rpc *pubsub.RPC, p peer.ID) {
-	setMetricFromRPC(pubsubRPCSubSent, pubsubRPCSent, rpc)
+func (g gossipTracer) SendRPC(rpc *pubsub.RPC, _ peer.ID) {
+	recordRPCMetrics(pubsubRPCSubSent, pubsubRPCSent, rpc)
 }
 
-// DropRPC .
-func (g gossipTracer) DropRPC(rpc *pubsub.RPC, p peer.ID) {
-	setMetricFromRPC(pubsubRPCSubDrop, pubsubRPCDrop, rpc)
+func (g gossipTracer) DropRPC(rpc *pubsub.RPC, _ peer.ID) {
+	recordRPCMetrics(pubsubRPCSubDrop, pubsubRPCDrop, rpc)
 }
 
-func setMetricFromRPC(ctr prometheus.Counter, gauge *prometheus.CounterVec, rpc *pubsub.RPC) {
-	ctr.Add(float64(len(rpc.Subscriptions)))
+// recordRPCMetrics records subscription and control message metrics from an RPC.
+func recordRPCMetrics(subCounter prometheus.Counter, controlGauge *prometheus.CounterVec, rpc *pubsub.RPC) {
+	subCounter.Add(float64(len(rpc.Subscriptions)))
 	if rpc.Control != nil {
-		gauge.WithLabelValues("graft").Add(float64(len(rpc.Control.Graft)))
-		gauge.WithLabelValues("prune").Add(float64(len(rpc.Control.Prune)))
-		gauge.WithLabelValues("ihave").Add(float64(len(rpc.Control.Ihave)))
-		gauge.WithLabelValues("iwant").Add(float64(len(rpc.Control.Iwant)))
+		controlGauge.WithLabelValues("graft").Add(float64(len(rpc.Control.Graft)))
+		controlGauge.WithLabelValues("prune").Add(float64(len(rpc.Control.Prune)))
+		controlGauge.WithLabelValues("ihave").Add(float64(len(rpc.Control.Ihave)))
+		controlGauge.WithLabelValues("iwant").Add(float64(len(rpc.Control.Iwant)))
 	}
 }

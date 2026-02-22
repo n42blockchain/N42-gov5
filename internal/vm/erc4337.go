@@ -173,12 +173,12 @@ type AccountValidationResult struct {
 	Authorizer  types.Address // 0 for valid, 1 for invalid, or aggregator address
 }
 
-// SIG_VALIDATION constants
+// Signature validation result constants
 const (
-	// SIG_VALIDATION_SUCCEEDED means the signature is valid
-	SIG_VALIDATION_SUCCEEDED = 0
-	// SIG_VALIDATION_FAILED means the signature is invalid
-	SIG_VALIDATION_FAILED = 1
+	// SigValidationSucceeded means the signature is valid
+	SigValidationSucceeded = 0
+	// SigValidationFailed means the signature is invalid
+	SigValidationFailed = 1
 )
 
 // PackValidationData packs validation data into a single uint256
@@ -277,47 +277,27 @@ var (
 // Gas Calculation Helpers
 // =============================================================================
 
+// calldataGasForBytes calculates the gas cost for data bytes
+// (4 gas per zero byte, 16 gas per non-zero byte)
+func calldataGasForBytes(data []byte) uint64 {
+	var gas uint64
+	for _, b := range data {
+		if b == 0 {
+			gas += 4
+		} else {
+			gas += 16
+		}
+	}
+	return gas
+}
+
 // CalcPreVerificationGas calculates the pre-verification gas for a UserOperation
 func CalcPreVerificationGas(op *UserOperation, baseFee *uint256.Int) uint64 {
-	// Base cost
 	gas := uint64(PreVerificationGas)
-
-	// Add gas for calldata
-	for _, b := range op.CallData {
-		if b == 0 {
-			gas += 4 // Zero byte
-		} else {
-			gas += 16 // Non-zero byte
-		}
-	}
-
-	// Add gas for initCode if present
-	for _, b := range op.InitCode {
-		if b == 0 {
-			gas += 4
-		} else {
-			gas += 16
-		}
-	}
-
-	// Add gas for paymasterAndData if present
-	for _, b := range op.PaymasterAndData {
-		if b == 0 {
-			gas += 4
-		} else {
-			gas += 16
-		}
-	}
-
-	// Add gas for signature
-	for _, b := range op.Signature {
-		if b == 0 {
-			gas += 4
-		} else {
-			gas += 16
-		}
-	}
-
+	gas += calldataGasForBytes(op.CallData)
+	gas += calldataGasForBytes(op.InitCode)
+	gas += calldataGasForBytes(op.PaymasterAndData)
+	gas += calldataGasForBytes(op.Signature)
 	return gas
 }
 

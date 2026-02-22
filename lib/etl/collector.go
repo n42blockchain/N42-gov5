@@ -27,11 +27,11 @@ import (
 	"time"
 
 	"github.com/c2h5oh/datasize"
-	"github.com/n42blockchain/N42/lib/log/v3"
 
 	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/dir"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
 type LoadNextFunc func(originalK, k, v []byte) error
@@ -314,6 +314,8 @@ func mergeSortFiles(logPrefix string, providers []dataProvider, loadFunc simpleL
 	}
 
 	var prevK, prevV []byte
+	// needsAccumulation is true for buffer types that combine values across duplicate keys
+	needsAccumulation := args.BufferType == SortableAppendBuffer || args.BufferType == SortableMergeBuffer
 
 	// Main loading loop
 	for h.Len() > 0 {
@@ -324,44 +326,33 @@ func mergeSortFiles(logPrefix string, providers []dataProvider, loadFunc simpleL
 		element := heapPop(h)
 		provider := providers[element.TimeIdx]
 
-		// SortableOldestAppearedBuffer must guarantee that only 1 oldest value of key will appear
-		// but because size of buffer is limited - each flushed file does guarantee "oldest appeared"
-		// property, but files may overlap. files are sorted, just skip repeated keys here
-		if args.BufferType == SortableOldestAppearedBuffer {
+		switch {
+		case args.BufferType == SortableOldestAppearedBuffer:
+			// Only keep the oldest (first) value for each key; skip duplicates
 			if !bytes.Equal(prevK, element.Key) {
 				if err = loadFunc(element.Key, element.Value); err != nil {
 					return err
 				}
-				// Need to copy k because the underlying space will be re-used for the next key
 				prevK = common.Copy(element.Key)
 			}
-		} else if args.BufferType == SortableAppendBuffer {
+
+		case needsAccumulation:
+			// Accumulate values for the same key, flush on key change
 			if !bytes.Equal(prevK, element.Key) {
 				if prevK != nil {
 					if err = loadFunc(prevK, prevV); err != nil {
 						return err
 					}
 				}
-				// Need to copy k because the underlying space will be re-used for the next key
 				prevK = common.Copy(element.Key)
 				prevV = common.Copy(element.Value)
+			} else if args.BufferType == SortableMergeBuffer {
+				prevV = buf.(*oldestMergedEntrySortableBuffer).merge(prevV, element.Value)
 			} else {
 				prevV = append(prevV, element.Value...)
 			}
-		} else if args.BufferType == SortableMergeBuffer {
-			if !bytes.Equal(prevK, element.Key) {
-				if prevK != nil {
-					if err = loadFunc(prevK, prevV); err != nil {
-						return err
-					}
-				}
-				// Need to copy k because the underlying space will be re-used for the next key
-				prevK = common.Copy(element.Key)
-				prevV = common.Copy(element.Value)
-			} else {
-				prevV = buf.(*oldestMergedEntrySortableBuffer).merge(prevV, element.Value)
-			}
-		} else {
+
+		default:
 			if err = loadFunc(element.Key, element.Value); err != nil {
 				return err
 			}
@@ -374,11 +365,10 @@ func mergeSortFiles(logPrefix string, providers []dataProvider, loadFunc simpleL
 		}
 	}
 
-	if args.BufferType == SortableAppendBuffer {
-		if prevK != nil {
-			if err = loadFunc(prevK, prevV); err != nil {
-				return err
-			}
+	// Flush the last accumulated key-value pair
+	if needsAccumulation && prevK != nil {
+		if err = loadFunc(prevK, prevV); err != nil {
+			return err
 		}
 	}
 
@@ -386,15 +376,12 @@ func mergeSortFiles(logPrefix string, providers []dataProvider, loadFunc simpleL
 }
 
 func makeCurrentKeyStr(k []byte) string {
-	var currentKeyStr string
 	if k == nil {
-		currentKeyStr = "final"
-	} else if len(k) < 4 {
-		currentKeyStr = hex.EncodeToString(k)
-	} else if k[0] == 0 && k[1] == 0 && k[2] == 0 && k[3] == 0 && len(k) >= 8 { // if key has leading zeroes, show a bit more info
-		currentKeyStr = hex.EncodeToString(k)
-	} else {
-		currentKeyStr = hex.EncodeToString(k[:4])
+		return "final"
 	}
-	return currentKeyStr
+	// Show the full key when it's short or has leading zeroes (for readability)
+	if len(k) < 4 || (len(k) >= 8 && k[0] == 0 && k[1] == 0 && k[2] == 0 && k[3] == 0) {
+		return hex.EncodeToString(k)
+	}
+	return hex.EncodeToString(k[:4])
 }

@@ -24,7 +24,6 @@ import (
 
 	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/hexutil"
-
 	"github.com/n42blockchain/N42/lib/common/math"
 )
 

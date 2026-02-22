@@ -50,18 +50,10 @@ func (mode SyncMode) String() string {
 }
 
 func (mode SyncMode) MarshalText() ([]byte, error) {
-	switch mode {
-	case FullSync:
-		return []byte("full"), nil
-	case SnapSync:
-		return []byte("snap"), nil
-	case LightSync:
-		return []byte("light"), nil
-	case HeaderSync:
-		return []byte("header"), nil
-	default:
+	if !mode.IsValid() {
 		return nil, fmt.Errorf("unknown sync mode %d", mode)
 	}
+	return []byte(mode.String()), nil
 }
 
 func (mode *SyncMode) UnmarshalText(text []byte) error {

@@ -5,21 +5,22 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/erigontech/mdbx-go/mdbx"
-	"github.com/n42blockchain/N42/utils"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/c2h5oh/datasize"
+	"github.com/erigontech/mdbx-go/mdbx"
+	"golang.org/x/exp/maps"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
+
 	"github.com/n42blockchain/N42/lib/common/dbg"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbx2 "github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/log/v3"
-	"golang.org/x/exp/maps"
-	"golang.org/x/sync/errgroup"
-	"golang.org/x/sync/semaphore"
+	"github.com/n42blockchain/N42/utils"
 )
 
 func OpenPair(from, to string, label kv.Label, targetPageSize datasize.ByteSize) (kv.RoDB, kv.RwDB) {
@@ -82,7 +83,7 @@ func Kv2kv(ctx context.Context, src kv.RoDB, dst kv.RwDB, tables []string, readA
 
 func backupTable(ctx context.Context, src kv.RoDB, srcTx kv.Tx, dst kv.RwDB, table string, readAheadThreads int, logEvery *time.Ticker) error {
 	var total uint64
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 	defer wg.Wait()
 	warmupCtx, warmupCancel := context.WithCancel(ctx)
 	defer warmupCancel()
@@ -139,25 +140,13 @@ func backupTable(ctx context.Context, src kv.RoDB, srcTx kv.Tx, dst kv.RwDB, tab
 		default:
 		}
 	}
-	// migrate bucket sequences to native mdbx implementation
-	//currentID, err := srcTx.Sequence(name, 0)
-	//if err != nil {
-	//	return err
-	//}
-	//_, err = dstTx.Sequence(name, currentID)
-	//if err != nil {
-	//	return err
-	//}
-	if err2 := dstTx.Commit(); err2 != nil {
-		return err2
-	}
-	return nil
+	return dstTx.Commit()
 }
 
 const ReadAheadThreads = 128
 
 func WarmupTable(ctx context.Context, db kv.RoDB, bucket string, lvl log.Lvl, readAheadThreads int) {
-	var ThreadsLimit = readAheadThreads
+	threadsLimit := readAheadThreads
 	var total uint64
 	db.View(ctx, func(tx kv.Tx) error {
 		c, _ := tx.Cursor(bucket)
@@ -173,11 +162,9 @@ func WarmupTable(ctx context.Context, db kv.RoDB, bucket string, lvl log.Lvl, re
 	defer logEvery.Stop()
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(ThreadsLimit)
+	g.SetLimit(threadsLimit)
 	for i := 0; i < 256; i++ {
 		for j := 0; j < 256; j++ {
-			i := i
-			j := j
 			g.Go(func() error {
 				return db.View(ctx, func(tx kv.Tx) error {
 					it, err := tx.Prefix(bucket, []byte{byte(i), byte(j)})
@@ -204,7 +191,6 @@ func WarmupTable(ctx context.Context, db kv.RoDB, bucket string, lvl log.Lvl, re
 		}
 	}
 	for i := 0; i < 1_000; i++ {
-		i := i
 		g.Go(func() error {
 			return db.View(ctx, func(tx kv.Tx) error {
 				seek := make([]byte, 8)
@@ -254,7 +240,7 @@ func ClearTable(ctx context.Context, db kv.RoDB, tx kv.RwTx, table string) error
 }
 
 func warmup(ctx context.Context, db kv.RoDB, bucket string) func() {
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

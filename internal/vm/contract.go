@@ -29,13 +29,13 @@ type ContractRef interface {
 // AccountRef implements ContractRef.
 //
 // Account references are used during EVM initialisation and
-// it's primary use is to fetch addresses. Removing this object
+// its primary use is to fetch addresses. Removing this object
 // proves difficult because of the cached jump destinations which
 // are fetched from the parent contract (i.e. the caller), which
 // is a ContractRef.
 type AccountRef types.Address
 
-// Address casts AccountRef to a Address
+// Address casts AccountRef to an Address
 func (ar AccountRef) Address() types.Address { return (types.Address)(ar) }
 
 // Contract represents an ethereum contract in the state database. It contains
@@ -75,19 +75,16 @@ func NewContract(caller ContractRef, object ContractRef, value *uint256.Int, gas
 		c.jumpdests = make(map[types.Hash][]uint64)
 	}
 
-	// Gas should be a pointer so it can safely be reduced through the run
-	// This pointer will be off the state transition
 	c.Gas = gas
-	// ensures a value is set
 	c.value = value
-
 	c.skipAnalysis = skipAnalysis
 
 	return c
 }
 
-// First result tells us if the destination is valid
-// Second result tells us if the code bitmap was used
+// validJumpdest checks whether dest is a valid JUMPDEST position.
+// Returns (valid, usedBitmap) where usedBitmap indicates whether
+// code bitmap analysis was performed.
 func (c *Contract) validJumpdest(dest *uint256.Int) (bool, bool) {
 	udest, overflow := dest.Uint64WithOverflow()
 	// PC cannot go beyond len(code) and certainly can't be bigger than 64bits.
@@ -188,7 +185,7 @@ func (c *Contract) Address() types.Address {
 	return c.self.Address()
 }
 
-// Value returns the contract's value (sent to it from it's caller)
+// Value returns the contract's value (sent to it from its caller)
 func (c *Contract) Value() *uint256.Int {
 	return c.value
 }

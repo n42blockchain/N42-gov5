@@ -474,35 +474,6 @@ func TestFromProtoMessageTypeError(t *testing.T) {
 }
 
 // =============================================================================
-// bytesToUint64 Tests
-// =============================================================================
-
-func TestBytesToUint64(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    []byte
-		expected uint64
-	}{
-		{"empty", []byte{}, 0},
-		{"single_byte", []byte{0x42}, 0x42},
-		{"two_bytes", []byte{0x01, 0x02}, 0x0102},
-		{"eight_bytes", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}, 0x0102030405060708},
-		{"more_than_eight", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09}, 0x0102030405060708},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := bytesToUint64(tt.input)
-			if result != tt.expected {
-				t.Errorf("bytesToUint64(%v) = %d, want %d", tt.input, result, tt.expected)
-			}
-		})
-	}
-
-	t.Logf("✓ bytesToUint64 works correctly")
-}
-
-// =============================================================================
 // Constants Tests
 // =============================================================================
 

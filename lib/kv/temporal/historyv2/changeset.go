@@ -115,28 +115,15 @@ func (s *ChangeSet) Equals(s2 *ChangeSet) bool {
 func FromDBFormat(dbKey, dbValue []byte) (uint64, []byte, []byte, error) {
 	if len(dbKey) == 8 {
 		return DecodeAccounts(dbKey, dbValue)
-	} else {
-		return DecodeStorage(dbKey, dbValue)
 	}
+	return DecodeStorage(dbKey, dbValue)
 }
 
-func AvailableFrom(tx kv.Tx) (uint64, error) {
-	c, err := tx.Cursor(kv.AccountChangeSet)
-	if err != nil {
-		return math2.MaxUint64, err
-	}
-	defer c.Close()
-	k, _, err := c.First()
-	if err != nil {
-		return math2.MaxUint64, err
-	}
-	if len(k) == 0 {
-		return math2.MaxUint64, nil
-	}
-	return binary.BigEndian.Uint64(k), nil
-}
-func AvailableStorageFrom(tx kv.Tx) (uint64, error) {
-	c, err := tx.Cursor(kv.StorageChangeSet)
+func AvailableFrom(tx kv.Tx) (uint64, error)        { return availableFrom(tx, kv.AccountChangeSet) }
+func AvailableStorageFrom(tx kv.Tx) (uint64, error) { return availableFrom(tx, kv.StorageChangeSet) }
+
+func availableFrom(tx kv.Tx, bucket string) (uint64, error) {
+	c, err := tx.Cursor(bucket)
 	if err != nil {
 		return math2.MaxUint64, err
 	}
@@ -176,38 +163,26 @@ func ForPrefix(db kv.Tx, bucket string, startkey []byte, walker func(blockN uint
 
 func Truncate(tx kv.RwTx, from uint64) error {
 	keyStart := hexutility.EncodeTs(from)
-
-	{
-		c, err := tx.RwCursorDupSort(kv.AccountChangeSet)
-		if err != nil {
+	for _, bucket := range []string{kv.AccountChangeSet, kv.StorageChangeSet} {
+		if err := truncateBucket(tx, bucket, keyStart); err != nil {
 			return err
-		}
-		defer c.Close()
-		for k, _, err := c.Seek(keyStart); k != nil; k, _, err = c.NextNoDup() {
-			if err != nil {
-				return err
-			}
-			if err = tx.Delete(kv.AccountChangeSet, k); err != nil {
-				return err
-			}
-			if err != nil {
-				return err
-			}
 		}
 	}
-	{
-		c, err := tx.RwCursorDupSort(kv.StorageChangeSet)
+	return nil
+}
+
+func truncateBucket(tx kv.RwTx, bucket string, keyStart []byte) error {
+	c, err := tx.RwCursorDupSort(bucket)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	for k, _, err := c.Seek(keyStart); k != nil; k, _, err = c.NextNoDup() {
 		if err != nil {
 			return err
 		}
-		defer c.Close()
-		for k, _, err := c.Seek(keyStart); k != nil; k, _, err = c.NextNoDup() {
-			if err != nil {
-				return err
-			}
-			if err = tx.Delete(kv.StorageChangeSet, k); err != nil {
-				return err
-			}
+		if err = tx.Delete(bucket, k); err != nil {
+			return err
 		}
 	}
 	return nil

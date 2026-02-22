@@ -75,19 +75,17 @@ func (h *Speculative) Log(r *log.Record) error {
 
 // Flush logs all records on the handler.
 func (h *Speculative) Flush() {
-	recs := make([]*log.Record, 0)
-	func() {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if h.full {
-			recs = append(recs, h.recs[h.idx:]...)
-		}
-		recs = append(recs, h.recs[:h.idx]...)
+	h.mu.Lock()
+	var recs []*log.Record
+	if h.full {
+		recs = append(recs, h.recs[h.idx:]...)
+	}
+	recs = append(recs, h.recs[:h.idx]...)
 
-		// reset state
-		h.full = false
-		h.idx = 0
-	}()
+	// reset state
+	h.full = false
+	h.idx = 0
+	h.mu.Unlock()
 
 	// don't hold the lock while we flush to the wrapped handler
 	for _, r := range recs {

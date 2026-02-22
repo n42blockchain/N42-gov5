@@ -1,25 +1,24 @@
 package p2p
 
 import (
-	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
-	astLog "github.com/n42blockchain/N42/log"
 	"strconv"
 	"strings"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
+
+	astLog "github.com/n42blockchain/N42/log"
 )
 
 var log = astLog.New("prefix", "p2p")
 
 func logIPAddr(id peer.ID, addrs ...ma.Multiaddr) {
-	var correctAddr ma.Multiaddr
 	for _, addr := range addrs {
-		if strings.Contains(addr.String(), "/ip4/") || strings.Contains(addr.String(), "/ip6/") {
-			correctAddr = addr
-			break
+		addrStr := addr.String()
+		if strings.Contains(addrStr, "/ip4/") || strings.Contains(addrStr, "/ip6/") {
+			log.Info("P2P server started", "addr", addrStr, "peer_id", id.String()[:16]+"...")
+			return
 		}
-	}
-	if correctAddr != nil {
-		log.Info("P2P server started", "addr", correctAddr.String(), "peer_id", id.String()[:16]+"...")
 	}
 }
 

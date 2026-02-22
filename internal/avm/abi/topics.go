@@ -20,11 +20,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/types"
 	"math/big"
 	"reflect"
 
 	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // MakeTopics converts a filter query argument list into a filter topic set.
@@ -65,7 +65,7 @@ func MakeTopics(query ...[]interface{}) ([][]types.Hash, error) {
 				blob := new(big.Int).SetUint64(uint64(rule)).Bytes()
 				copy(topic[types.HashLength-len(blob):], blob)
 			case uint64:
-				blob := new(big.Int).SetUint64(rule).Bytes()
+				blob := new(big.Int).SetUint64(uint64(rule)).Bytes()
 				copy(topic[types.HashLength-len(blob):], blob)
 			case string:
 				hash := crypto.Keccak256Hash([]byte(rule))

@@ -21,13 +21,15 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
-	"github.com/n42blockchain/N42/common/types"
-	"golang.org/x/crypto/sha3"
 	"os"
 	"strings"
+
+	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"golang.org/x/crypto/sha3"
+
+	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 func Hash256toS(data []byte) string {
@@ -96,21 +98,11 @@ func StringToPublic(s string) (crypto.PubKey, error) {
 
 func Exists(path string) bool {
 	_, err := os.Stat(path)
-	if err != nil {
-		if os.IsExist(err) {
-			return true
-		}
-		return false
-	}
-
-	return true
+	return err == nil || !os.IsNotExist(err)
 }
-func MkdirAll(path string, perm os.FileMode) error {
-	if err := os.MkdirAll(path, perm); err != nil {
-		return err
-	}
 
-	return nil
+func MkdirAll(path string, perm os.FileMode) error {
+	return os.MkdirAll(path, perm)
 }
 
 func HexPrefix(a, b []byte) ([]byte, int) {

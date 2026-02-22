@@ -23,8 +23,6 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 )
 
-// DESCRIBED: For info on database buckets see docs/programmers_guide/db_walkthrough.MD
-
 // ErrKeyNotFound is returned when key isn't found in the database.
 var ErrKeyNotFound = errors.New("db: key not found")
 

@@ -18,12 +18,13 @@ package discover
 
 import (
 	"crypto/ecdsa"
+	"net"
+
 	"github.com/n42blockchain/N42/common/mclock"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/internal/p2p/netutil"
 	"github.com/n42blockchain/N42/log"
-	"net"
 )
 
 // UDPConn is a network connection on which discovery can operate.
@@ -79,11 +80,4 @@ func ListenUDP(c UDPConn, ln *enode.LocalNode, cfg Config) (*UDPv4, error) {
 type ReadPacket struct {
 	Data []byte
 	Addr *net.UDPAddr
-}
-
-func min(x, y int) int {
-	if x > y {
-		return y
-	}
-	return x
 }

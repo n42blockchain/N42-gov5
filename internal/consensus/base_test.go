@@ -169,7 +169,7 @@ func TestBasePoAConcurrency(t *testing.T) {
 	}
 
 	wg.Wait()
-	t.Log("✓ BasePoA concurrent operations work correctly")
+	// If we reach here without a data race, concurrent operations are safe.
 }
 
 func TestBasePoAWithLock(t *testing.T) {
@@ -224,8 +224,7 @@ func TestVerifyHeadersAsync(t *testing.T) {
 		})
 
 		close(abort)
-		// Give goroutine time to exit
-		t.Log("✓ VerifyHeadersAsync aborts correctly")
+		// Goroutine should exit cleanly after abort.
 	})
 }
 

@@ -19,9 +19,10 @@ package enr
 import (
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/common/rlp"
 	"io"
 	"net"
+
+	"github.com/n42blockchain/N42/common/rlp"
 )
 
 // Entry is implemented by known node record entry types.

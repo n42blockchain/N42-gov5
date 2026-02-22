@@ -50,7 +50,7 @@ func TestPQPrecompileAddresses(t *testing.T) {
 
 func TestFalconVerifyGas(t *testing.T) {
 	c := &falconVerify{}
-	input := make([]byte, FalconPublicKeySize+FalconMessageSize+FalconMaxSignatureSize)
+	input := make([]byte, FalconPublicKeySize+PQMessageSize+FalconMaxSignatureSize)
 
 	gas := c.RequiredGas(input)
 	if gas != FalconVerifyGas {
@@ -416,7 +416,7 @@ func TestDilithium3VerifyWrongKey(t *testing.T) {
 func TestSQIsignVerifyReturnsNotImplemented(t *testing.T) {
 	c := &sqisignVerify{}
 	// Even with valid-length input, SQIsign should return errPQNotImplemented
-	input := make([]byte, SQIsignPublicKeySize+FalconMessageSize+SQIsignSignatureSize)
+	input := make([]byte, SQIsignPublicKeySize+PQMessageSize+SQIsignSignatureSize)
 	output, err := c.Run(input)
 	if err != errPQNotImplemented {
 		t.Errorf("Expected errPQNotImplemented, got %v", err)
@@ -428,7 +428,7 @@ func TestSQIsignVerifyReturnsNotImplemented(t *testing.T) {
 
 func TestDilithium2VerifyGas(t *testing.T) {
 	c := &dilithium2Verify{}
-	input := make([]byte, Dilithium2PublicKeySize+FalconMessageSize+Dilithium2SignatureSize)
+	input := make([]byte, Dilithium2PublicKeySize+PQMessageSize+Dilithium2SignatureSize)
 
 	gas := c.RequiredGas(input)
 	if gas != Dilithium2VerifyGas {
@@ -438,7 +438,7 @@ func TestDilithium2VerifyGas(t *testing.T) {
 
 func TestDilithium3VerifyGas(t *testing.T) {
 	c := &dilithium3Verify{}
-	input := make([]byte, Dilithium3PublicKeySize+FalconMessageSize+Dilithium3SignatureSize)
+	input := make([]byte, Dilithium3PublicKeySize+PQMessageSize+Dilithium3SignatureSize)
 
 	gas := c.RequiredGas(input)
 	if gas != Dilithium3VerifyGas {
@@ -448,7 +448,7 @@ func TestDilithium3VerifyGas(t *testing.T) {
 
 func TestSQIsignVerifyGas(t *testing.T) {
 	c := &sqisignVerify{}
-	input := make([]byte, SQIsignPublicKeySize+FalconMessageSize+SQIsignSignatureSize)
+	input := make([]byte, SQIsignPublicKeySize+PQMessageSize+SQIsignSignatureSize)
 
 	gas := c.RequiredGas(input)
 	if gas != SQIsignVerifyGas {

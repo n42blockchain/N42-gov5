@@ -82,11 +82,10 @@ func NewHandler(chain BlockChainReader, networkID uint64, earliestBlock uint64, 
 func (h *Handler) MakeStatusPacket() *StatusPacket {
 	currentBlock := h.chain.CurrentBlock()
 	if currentBlock == nil {
-		log.Warn("Unable to create status packet: no current block")
+		log.Warn("unable to create status packet: no current block")
 		return nil
 	}
 
-	// Update local range
 	latestBlock := currentBlock.Number64().Uint64()
 	h.peerTracker.UpdateLocalRange(h.earliestBlock, latestBlock, currentBlock.Hash())
 
@@ -117,32 +116,22 @@ func (h *Handler) MakeBlockRangeUpdatePacket() *BlockRangeUpdatePacket {
 
 // HandleStatusMessage processes an incoming Status message from a peer.
 func (h *Handler) HandleStatusMessage(peerID peer.ID, status *StatusPacket) error {
-	// Safety check: ensure status is not nil
 	if status == nil {
 		return ErrInvalidStatus
 	}
-
-	// Validate protocol version
 	if !IsProtocolVersionSupported(uint(status.ProtocolVersion)) {
 		return fmt.Errorf("unsupported protocol version: %d", status.ProtocolVersion)
 	}
-
-	// Validate network ID
 	if status.NetworkID != h.networkID {
 		return fmt.Errorf("network ID mismatch: got %d, want %d", status.NetworkID, h.networkID)
 	}
-
-	// Validate genesis hash
 	if status.Genesis != h.genesisHash {
 		return fmt.Errorf("genesis hash mismatch: got %s, want %s", status.Genesis.Hex(), h.genesisHash.Hex())
 	}
-
-	// Validate block range
 	if err := status.ValidateBlockRange(); err != nil {
 		return fmt.Errorf("invalid block range: %w", err)
 	}
 
-	// Update peer's block range
 	h.peerTracker.UpdatePeerRange(
 		peerID,
 		status.EarliestBlock,
@@ -150,30 +139,25 @@ func (h *Handler) HandleStatusMessage(peerID peer.ID, status *StatusPacket) erro
 		status.LatestBlockHash,
 	)
 
-	log.Debug("Received status from peer",
+	log.Debug("received status from peer",
 		"peer", peerID.String()[:8],
 		"protocol", status.ProtocolVersion,
 		"network", status.NetworkID,
 		"earliest", status.EarliestBlock,
 		"latest", status.LatestBlock,
 	)
-
 	return nil
 }
 
 // HandleBlockRangeUpdate processes an incoming BlockRangeUpdate message.
 func (h *Handler) HandleBlockRangeUpdate(peerID peer.ID, update *BlockRangeUpdatePacket) error {
-	// Safety check: ensure update is not nil
 	if update == nil {
 		return ErrInvalidBlockRangeUpdate
 	}
-
-	// Validate block range
 	if err := update.ValidateBlockRange(); err != nil {
 		return fmt.Errorf("invalid block range update: %w", err)
 	}
 
-	// Update peer's block range
 	h.peerTracker.UpdatePeerRange(
 		peerID,
 		update.EarliestBlock,
@@ -181,91 +165,73 @@ func (h *Handler) HandleBlockRangeUpdate(peerID peer.ID, update *BlockRangeUpdat
 		update.LatestBlockHash,
 	)
 
-	log.Debug("Received block range update from peer",
+	log.Debug("received block range update",
 		"peer", peerID.String()[:8],
 		"earliest", update.EarliestBlock,
 		"latest", update.LatestBlock,
 	)
-
 	return nil
 }
 
 // OnNewBlock is called when a new block is imported.
-// It checks if a BlockRangeUpdate should be sent to peers.
-func (h *Handler) OnNewBlock(block *block.Block) {
-	blockNumber := block.Number64().Uint64()
-
-	// Check if we should send an update
+// It broadcasts a BlockRangeUpdate to peers if needed per the EIP-7642 epoch rules.
+func (h *Handler) OnNewBlock(blk *block.Block) {
+	blockNumber := blk.Number64().Uint64()
 	if !h.peerTracker.ShouldSendUpdate(blockNumber) {
 		return
 	}
 
-	// Create and broadcast BlockRangeUpdate
 	update := h.MakeBlockRangeUpdatePacket()
 	if update == nil {
 		return
 	}
-
-	// Mark that we're sending an update
 	h.peerTracker.MarkUpdateSent(blockNumber)
 
-	// Broadcast to all connected peers
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := h.peerSender.BroadcastBlockRangeUpdate(ctx, update); err != nil {
-		log.Debug("Failed to broadcast block range update", "err", err)
+		log.Debug("failed to broadcast block range update", "err", err)
 	} else {
-		log.Debug("Sent block range update", "latest", blockNumber)
+		log.Debug("sent block range update", "latest", blockNumber)
 	}
 }
 
 // OnPeerDisconnect is called when a peer disconnects.
 func (h *Handler) OnPeerDisconnect(peerID peer.ID) {
 	h.peerTracker.RemovePeer(peerID)
-	log.Debug("Removed peer range info", "peer", peerID.String()[:8])
+	log.Debug("removed peer range info", "peer", peerID.String()[:8])
 }
 
-// GetPeerRange returns the block range information for a peer.
 func (h *Handler) GetPeerRange(peerID peer.ID) (*PeerBlockRange, bool) {
 	return h.peerTracker.GetPeerRange(peerID)
 }
 
-// GetPeersWithBlock returns peers that have a specific block.
 func (h *Handler) GetPeersWithBlock(blockNumber uint64) []peer.ID {
 	return h.peerTracker.GetPeersWithBlock(blockNumber)
 }
 
-// GetPeersWithBlockRange returns peers that have a block range.
 func (h *Handler) GetPeersWithBlockRange(start, end uint64) []peer.ID {
 	return h.peerTracker.GetPeersWithBlockRange(start, end)
 }
 
-// GetLocalRange returns the local node's block range.
 func (h *Handler) GetLocalRange() *PeerBlockRange {
 	return h.peerTracker.GetLocalRange()
 }
 
-// GetAllPeerRanges returns all peer ranges (for debugging).
 func (h *Handler) GetAllPeerRanges() map[peer.ID]*PeerBlockRange {
 	return h.peerTracker.GetAllPeerRanges()
 }
 
 // makeForkID creates an EIP-2124 fork identifier.
-// For now, returns an empty byte slice as N42 may have its own fork mechanism.
-// This should be implemented based on the network's fork schedule.
+// TODO: Implement based on the network's fork schedule.
 func (h *Handler) makeForkID() []byte {
-	// TODO: Implement EIP-2124 fork ID generation based on chain config
-	// For now, return empty to maintain compatibility
 	return []byte{}
 }
 
-// SetEarliestBlock updates the earliest available block.
-// This should be called when blocks are pruned.
+// SetEarliestBlock updates the earliest available block (e.g., after pruning).
 func (h *Handler) SetEarliestBlock(earliest uint64) {
 	h.earliestBlock = earliest
-
-	// Update local range
 	if current := h.chain.CurrentBlock(); current != nil {
 		h.peerTracker.UpdateLocalRange(earliest, current.Number64().Uint64(), current.Hash())
 	}

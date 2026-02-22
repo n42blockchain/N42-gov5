@@ -22,44 +22,35 @@ import (
 // Interface Definition Tests
 // =============================================================================
 
-// TestConsensusChainReaderExists verifies ConsensusChainReader is defined
+// TestConsensusChainReaderExists verifies ConsensusChainReader is defined.
 func TestConsensusChainReaderExists(t *testing.T) {
 	var _ consensus.ConsensusChainReader = (*testConsensusChainReader)(nil)
-	t.Log("✓ ConsensusChainReader interface exists and is properly defined")
 }
 
-// TestChainHeaderReaderExists verifies ChainHeaderReader is defined
+// TestChainHeaderReaderExists verifies ChainHeaderReader is defined.
 func TestChainHeaderReaderExists(t *testing.T) {
 	var _ consensus.ChainHeaderReader = (*testChainHeaderReader)(nil)
-	t.Log("✓ ChainHeaderReader interface exists and is properly defined")
 }
 
-// TestConsensusChainReaderEmbedsChainHeaderReader verifies embedding
+// TestConsensusChainReaderEmbedsChainHeaderReader verifies that
+// ConsensusChainReader embeds ChainHeaderReader and ChainHeaderReader
+// methods are callable through it.
 func TestConsensusChainReaderEmbedsChainHeaderReader(t *testing.T) {
-	// ConsensusChainReader should embed ChainHeaderReader
-	// If this compiles, the embedding is correct
 	var ccr consensus.ConsensusChainReader = &testConsensusChainReader{}
-	
-	// Should be able to call ChainHeaderReader methods on ConsensusChainReader
+
 	_ = ccr.Config()
 	_ = ccr.CurrentBlock()
 	_ = ccr.GetHeaderByNumber(uint256.NewInt(0))
-	
-	t.Log("✓ ConsensusChainReader properly embeds ChainHeaderReader")
 }
 
-// TestEngineUsesConsensusChainReader verifies Engine interface
+// TestEngineUsesConsensusChainReader verifies Engine interface method signatures
+// reference ConsensusChainReader where appropriate.
 func TestEngineUsesConsensusChainReader(t *testing.T) {
-	// Check that Engine.VerifyUncles uses ConsensusChainReader
-	// Check that Engine.APIs uses ConsensusChainReader
-	
-	// This is a compile-time check via the interface definition
+	// Compile-time check via the interface definition
 	type EngineWithConsensusChainReader interface {
 		VerifyUncles(chain consensus.ConsensusChainReader, block block.IBlock) error
 		APIs(chain consensus.ConsensusChainReader) []interface{}
 	}
-	
-	t.Log("✓ Engine interface uses ConsensusChainReader for VerifyUncles and APIs")
 }
 
 // =============================================================================
@@ -142,7 +133,6 @@ func TestChainHeaderReaderMethods(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.testFn() // If this runs without panic, the method exists with correct signature
-			t.Logf("✓ %s", tt.name)
 		})
 	}
 }
@@ -151,24 +141,22 @@ func TestChainHeaderReaderMethods(t *testing.T) {
 func TestConsensusChainReaderAdditionalMethods(t *testing.T) {
 	var ccr consensus.ConsensusChainReader = &testConsensusChainReader{}
 	
-	// GetBlock(hash types.Hash, number uint64) block.IBlock
 	result := ccr.GetBlock(types.Hash{}, 0)
 	_ = result
-	t.Log("✓ GetBlock(hash, number) block.IBlock")
 }
 
 // =============================================================================
 // Documentation Tests (verify comments exist)
 // =============================================================================
 
-// TestChainHeaderReaderDocumentation verifies documentation comments
+// TestChainHeaderReaderDocumentation is a reminder that ChainHeaderReader has
+// an inconsistency in error return patterns:
+//   - GetHeaderByNumber/GetHeader return nil on error (no error return)
+//   - GetHeaderByHash/GetBlockByNumber return (nil, error)
+//
+// This inconsistency is noted as tech debt in consensus.go.
 func TestChainHeaderReaderDocumentation(t *testing.T) {
-	// This test exists to remind developers to check the documentation
-	// The actual documentation is in consensus.go
-	t.Log("✓ ChainHeaderReader should have documentation noting:")
-	t.Log("  - GetHeaderByNumber/GetHeader return nil on error (no error return)")
-	t.Log("  - GetHeaderByHash/GetBlockByNumber return (nil, error)")
-	t.Log("  - This inconsistency is noted as tech debt")
+	// Intentionally empty -- serves as documentation anchor.
 }
 
 // =============================================================================

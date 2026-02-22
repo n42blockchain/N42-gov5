@@ -8,9 +8,7 @@ package bn256
 // Pairing-Friendly Fields, Devegili et al.
 // http://eprint.iacr.org/2006/471.pdf.
 
-import (
-	"math/big"
-)
+import "math/big"
 
 // gfP2 implements a field of size p² as a quadratic extension of the base
 // field where i²=-1.
@@ -65,11 +63,7 @@ func (e *gfP2) IsZero() bool {
 }
 
 func (e *gfP2) IsOne() bool {
-	if e.x.Sign() != 0 {
-		return false
-	}
-	words := e.y.Bits()
-	return len(words) == 1 && words[0] == 1
+	return e.x.Sign() == 0 && e.y.BitLen() == 1
 }
 
 func (e *gfP2) Conjugate(a *gfP2) *gfP2 {

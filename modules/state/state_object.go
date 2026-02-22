@@ -19,43 +19,44 @@ package state
 import (
 	"bytes"
 	"fmt"
-	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/rlp"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
 	"io"
 	"math/big"
 
 	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/utils"
 )
 
-// var emptyCodeHash = crypto.Keccak256(nil)
-var emptyCodeHash = utils.Keccak256(nil)
-var emptyCodeHashH = types.BytesToHash(emptyCodeHash)
+var (
+	emptyCodeHash  = utils.Keccak256(nil)
+	emptyCodeHashH = types.BytesToHash(emptyCodeHash)
+)
 
 type Code []byte
 
 func (c Code) String() string {
-	return string(c) //strings.Join(Disassemble(c), " ")
+	return string(c)
 }
 
 type Storage map[types.Hash]uint256.Int
 
-func (s Storage) String() (str string) {
+func (s Storage) String() string {
+	var str string
 	for key, value := range s {
 		str += fmt.Sprintf("%X : %X\n", key, value)
 	}
-
-	return
+	return str
 }
 
 func (s Storage) Copy() Storage {
-	cpy := make(Storage)
+	cpy := make(Storage, len(s))
 	for key, value := range s {
 		cpy[key] = value
 	}
-
 	return cpy
 }
 
@@ -71,8 +72,7 @@ type stateObject struct {
 	db       *IntraBlockState
 
 	// Write caches.
-	//trie Trie // storage trie, which becomes non-nil on first access
-	code Code // contract bytecode, which gets set when code is loaded
+	code Code // contract bytecode, set when code is loaded
 
 	originStorage Storage // Storage cache of original entries to dedup rewrites
 	// blockOriginStorage keeps the values of storage items at the beginning of the block
@@ -98,7 +98,7 @@ func (so *stateObject) empty() bool {
 
 // newObject creates a state object.
 func newObject(db *IntraBlockState, address types.Address, data, original *account.StateAccount) *stateObject {
-	var so = stateObject{
+	so := stateObject{
 		db:                 db,
 		address:            address,
 		originStorage:      make(Storage),
@@ -113,11 +113,8 @@ func newObject(db *IntraBlockState, address types.Address, data, original *accou
 	if so.data.CodeHash == (types.Hash{}) {
 		so.data.CodeHash = emptyCodeHashH
 	}
-	if so.data.Root == (types.Hash{}) {
-		// Empty root is left as zero hash, storage trie is initialized lazily
-	}
+	// Empty Root is left as zero hash; storage trie is initialized lazily.
 	so.original.Copy(original)
-
 	return &so
 }
 
@@ -172,12 +169,9 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 		return
 	}
 	// If we have the original value cached, return that
-	{
-		value, cached := so.originStorage[*key]
-		if cached {
-			*out = value
-			return
-		}
+	if value, cached := so.originStorage[*key]; cached {
+		*out = value
+		return
 	}
 	if so.created {
 		out.Clear()
@@ -197,10 +191,6 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 		} else {
 			out.Clear()
 		}
-		//enc1, err1 := so.db.stateReader.ReadAccountStorage(so.address, so.data.GetIncarnation(), key)
-		//if !bytes.Equal(enc1, enc) {
-		//	fmt.Println(err1)
-		//}
 		so.originStorage[*key] = *out
 		so.blockOriginStorage[*key] = *out
 		return
@@ -276,7 +266,6 @@ func (so *stateObject) setState(key *types.Hash, value uint256.Int) {
 // updateTrie writes cached storage modifications into the object's storage trie.
 func (so *stateObject) updateTrie(stateWriter StateWriter) error {
 	for key, value := range so.dirtyStorage {
-		value := value
 		original := so.blockOriginStorage[key]
 		so.originStorage[key] = value
 		if err := stateWriter.WriteAccountStorage(so.address, so.data.GetIncarnation(), &key, &original, &value); err != nil {
@@ -285,6 +274,7 @@ func (so *stateObject) updateTrie(stateWriter StateWriter) error {
 	}
 	return nil
 }
+
 func (so *stateObject) printTrie() {
 	for key, value := range so.dirtyStorage {
 		log.Trace("WriteAccountStorage", "address", so.address, "key", key, "value", value.Hex())
@@ -294,16 +284,14 @@ func (so *stateObject) printTrie() {
 // AddBalance adds amount to so's balance.
 // It is used to add funds to the destination account of a transfer.
 func (so *stateObject) AddBalance(amount *uint256.Int) {
-	// EIP161: We must check emptiness for the objects such that the account
+	// EIP-161: We must check emptiness for the objects such that the account
 	// clearing (0,0,0 objects) can take effect.
 	if amount.IsZero() {
 		if so.empty() {
 			so.touch()
 		}
-
 		return
 	}
-
 	so.SetBalance(new(uint256.Int).Add(so.Balance(), amount))
 }
 
@@ -329,18 +317,14 @@ func (so *stateObject) setBalance(amount *uint256.Int) {
 	so.data.Initialised = true
 }
 
-// Return the gas back to the origin. Used by the Virtual machine or Closures
-func (so *stateObject) ReturnGas(gas *big.Int) {}
+// ReturnGas is a no-op retained for interface compatibility.
+func (so *stateObject) ReturnGas(_ *big.Int) {}
 
 func (so *stateObject) setIncarnation(incarnation uint16) {
 	so.data.SetIncarnation(incarnation)
 }
 
-//
-// Attribute accessors
-//
-
-// Returns the address of the contract/account
+// Address returns the address of the contract/account.
 func (so *stateObject) Address() types.Address {
 	return so.address
 }
@@ -401,10 +385,7 @@ func (so *stateObject) Nonce() uint64 {
 	return so.data.Nonce
 }
 
-// Never called, but must be present to allow stateObject to be used
-// as a vm.Account interface that also satisfies the vm.ContractRef
-// interface. Interfaces are awesome.
+// Value returns zero. This method exists to satisfy the vm.ContractRef interface.
 func (so *stateObject) Value() *big.Int {
-	// Return zero value instead of panic to prevent DoS
 	return big.NewInt(0)
 }

@@ -2,11 +2,12 @@ package scorers
 
 import (
 	"context"
-	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	"math"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
 
 var _ Scorer = (*Service)(nil)
@@ -111,14 +112,13 @@ func (s *Service) Score(pid peer.ID) float64 {
 
 // ScoreNoLock is a lock-free version of Score.
 func (s *Service) ScoreNoLock(pid peer.ID) float64 {
-	score := float64(0)
 	if _, ok := s.store.PeerData(pid); !ok {
 		return 0
 	}
-	score += s.scorers.badResponsesScorer.score(pid) * s.scorerWeight(s.scorers.badResponsesScorer)
-	score += s.scorers.blockProviderScorer.score(pid) * s.scorerWeight(s.scorers.blockProviderScorer)
-	score += s.scorers.peerStatusScorer.score(pid) * s.scorerWeight(s.scorers.peerStatusScorer)
-	score += s.scorers.gossipScorer.score(pid) * s.scorerWeight(s.scorers.gossipScorer)
+	score := s.scorers.badResponsesScorer.score(pid)*s.scorerWeight(s.scorers.badResponsesScorer) +
+		s.scorers.blockProviderScorer.score(pid)*s.scorerWeight(s.scorers.blockProviderScorer) +
+		s.scorers.peerStatusScorer.score(pid)*s.scorerWeight(s.scorers.peerStatusScorer) +
+		s.scorers.gossipScorer.score(pid)*s.scorerWeight(s.scorers.gossipScorer)
 	return math.Round(score*ScoreRoundingFactor) / ScoreRoundingFactor
 }
 
@@ -131,16 +131,9 @@ func (s *Service) IsBadPeer(pid peer.ID) bool {
 
 // IsBadPeerNoLock is a lock-free version of IsBadPeer.
 func (s *Service) IsBadPeerNoLock(pid peer.ID) bool {
-	if s.scorers.badResponsesScorer.isBadPeer(pid) {
-		return true
-	}
-	if s.scorers.peerStatusScorer.isBadPeer(pid) {
-		return true
-	}
-	if s.scorers.gossipScorer.isBadPeer(pid) {
-		return true
-	}
-	return false
+	return s.scorers.badResponsesScorer.isBadPeer(pid) ||
+		s.scorers.peerStatusScorer.isBadPeer(pid) ||
+		s.scorers.gossipScorer.isBadPeer(pid)
 }
 
 // BadPeers returns the peers that are considered bad by any of registered scorers.
@@ -180,16 +173,8 @@ func (s *Service) loop(ctx context.Context) {
 	for {
 		select {
 		case <-decayBadResponsesStats.C:
-			// Exit early if context is canceled.
-			if ctx.Err() != nil {
-				return
-			}
 			s.scorers.badResponsesScorer.Decay()
 		case <-decayBlockProviderStats.C:
-			// Exit early if context is canceled.
-			if ctx.Err() != nil {
-				return
-			}
 			s.scorers.blockProviderScorer.Decay()
 		case <-ctx.Done():
 			return

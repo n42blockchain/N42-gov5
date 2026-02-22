@@ -25,22 +25,23 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
-// =============================================================================
-// RPC Method Metrics
-// =============================================================================
+// MethodStat holds statistics for a single RPC method.
+type MethodStat struct {
+	Method string
+	Calls  uint64
+	Errors uint64
+}
 
-// RPCMetrics collects metrics for RPC method calls.
-// This enables monitoring of RPC method latency and success rates.
+// RPCMetrics collects metrics for RPC method calls, including
+// per-method call counts, error counts, and latency percentiles.
 type RPCMetrics struct {
 	mu sync.RWMutex
 
-	// Method-level metrics
 	methodCalls   map[string]uint64
 	methodErrors  map[string]uint64
 	methodLatency map[string][]time.Duration
 	lastCallTime  map[string]time.Time
 
-	// Global counters
 	totalCalls  uint64
 	totalErrors uint64
 	startTime   time.Time
@@ -57,6 +58,8 @@ func NewRPCMetrics() *RPCMetrics {
 	}
 }
 
+const maxLatencySamples = 1000
+
 // RecordMethod records a method call with its latency and success status.
 func (m *RPCMetrics) RecordMethod(method string, latency time.Duration, success bool) {
 	m.mu.Lock()
@@ -71,16 +74,14 @@ func (m *RPCMetrics) RecordMethod(method string, latency time.Duration, success 
 		m.totalErrors++
 	}
 
-	// Keep last 1000 latencies per method for percentile calculation
 	if m.methodLatency[method] == nil {
-		m.methodLatency[method] = make([]time.Duration, 0, 1000)
+		m.methodLatency[method] = make([]time.Duration, 0, maxLatencySamples)
 	}
-	if len(m.methodLatency[method]) >= 1000 {
+	if len(m.methodLatency[method]) >= maxLatencySamples {
 		m.methodLatency[method] = m.methodLatency[method][1:]
 	}
 	m.methodLatency[method] = append(m.methodLatency[method], latency)
 
-	// Log slow methods
 	if latency > 100*time.Millisecond {
 		log.Debug("Slow RPC method",
 			"method", method,
@@ -90,6 +91,33 @@ func (m *RPCMetrics) RecordMethod(method string, latency time.Duration, success 
 	}
 }
 
+// sortedLatencies returns a sorted copy of the latency samples for the given method.
+// Caller must hold at least a read lock on m.mu.
+func (m *RPCMetrics) sortedLatencies(method string) []time.Duration {
+	latencies := m.methodLatency[method]
+	if len(latencies) == 0 {
+		return nil
+	}
+	sorted := make([]time.Duration, len(latencies))
+	copy(sorted, latencies)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return sorted
+}
+
+// percentiles returns p50 and p95 from a pre-sorted slice of durations.
+func percentiles(sorted []time.Duration) (p50, p95 time.Duration) {
+	if len(sorted) == 0 {
+		return 0, 0
+	}
+	p50 = sorted[len(sorted)/2]
+	p95Index := len(sorted) * 95 / 100
+	if p95Index >= len(sorted) {
+		p95Index = len(sorted) - 1
+	}
+	p95 = sorted[p95Index]
+	return p50, p95
+}
+
 // MethodStats returns statistics for a specific method.
 func (m *RPCMetrics) MethodStats(method string) (calls uint64, errors uint64, p50, p95 time.Duration) {
 	m.mu.RLock()
@@ -97,25 +125,7 @@ func (m *RPCMetrics) MethodStats(method string) (calls uint64, errors uint64, p5
 
 	calls = m.methodCalls[method]
 	errors = m.methodErrors[method]
-
-	latencies := m.methodLatency[method]
-	if len(latencies) == 0 {
-		return
-	}
-
-	// Sort latencies for percentile calculation
-	sorted := make([]time.Duration, len(latencies))
-	copy(sorted, latencies)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-
-	p50Index := len(sorted) / 2
-	p95Index := len(sorted) * 95 / 100
-	if p95Index >= len(sorted) {
-		p95Index = len(sorted) - 1
-	}
-
-	p50 = sorted[p50Index]
-	p95 = sorted[p95Index]
+	p50, p95 = percentiles(m.sortedLatencies(method))
 	return
 }
 
@@ -130,7 +140,12 @@ func (m *RPCMetrics) GlobalStats() (totalCalls, totalErrors uint64, uptime time.
 func (m *RPCMetrics) TopMethods(n int) []MethodStat {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.topMethodsLocked(n)
+}
 
+// topMethodsLocked returns the top N most called methods.
+// Caller must hold at least a read lock on m.mu.
+func (m *RPCMetrics) topMethodsLocked(n int) []MethodStat {
 	stats := make([]MethodStat, 0, len(m.methodCalls))
 	for method, calls := range m.methodCalls {
 		stats = append(stats, MethodStat{
@@ -139,7 +154,6 @@ func (m *RPCMetrics) TopMethods(n int) []MethodStat {
 			Errors: m.methodErrors[method],
 		})
 	}
-
 	sort.Slice(stats, func(i, j int) bool { return stats[i].Calls > stats[j].Calls })
 
 	if n > len(stats) {
@@ -153,50 +167,27 @@ func (m *RPCMetrics) LogStats() {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	totalCalls, totalErrors, uptime := m.totalCalls, m.totalErrors, time.Since(m.startTime)
-
+	uptime := time.Since(m.startTime)
 	errorRate := float64(0)
-	if totalCalls > 0 {
-		errorRate = float64(totalErrors) / float64(totalCalls) * 100
+	if m.totalCalls > 0 {
+		errorRate = float64(m.totalErrors) / float64(m.totalCalls) * 100
 	}
 
 	log.Info("RPC metrics summary",
-		"total_calls", totalCalls,
-		"total_errors", totalErrors,
+		"total_calls", m.totalCalls,
+		"total_errors", m.totalErrors,
 		"error_rate", fmt.Sprintf("%.2f%%", errorRate),
 		"uptime", uptime,
 	)
 
-	// Log top 5 methods
-	for i, stat := range m.TopMethods(5) {
-		calls, errors, p50, p95 := stat.Calls, stat.Errors, time.Duration(0), time.Duration(0)
-		latencies := m.methodLatency[stat.Method]
-		if len(latencies) > 0 {
-			sorted := make([]time.Duration, len(latencies))
-			copy(sorted, latencies)
-			sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-			p50 = sorted[len(sorted)/2]
-			p95Index := len(sorted) * 95 / 100
-			if p95Index >= len(sorted) {
-				p95Index = len(sorted) - 1
-			}
-			p95 = sorted[p95Index]
-		}
-
+	for i, stat := range m.topMethodsLocked(5) {
+		p50, p95 := percentiles(m.sortedLatencies(stat.Method))
 		log.Info(fmt.Sprintf("RPC method #%d", i+1),
 			"method", stat.Method,
-			"calls", calls,
-			"errors", errors,
+			"calls", stat.Calls,
+			"errors", stat.Errors,
 			"p50", p50,
 			"p95", p95,
 		)
 	}
 }
-
-// MethodStat holds statistics for a single method.
-type MethodStat struct {
-	Method string
-	Calls  uint64
-	Errors uint64
-}
-

@@ -26,17 +26,14 @@ import (
 
 func TestEngineInterfaceExists(t *testing.T) {
 	var _ consensus.Engine = (*testEngine)(nil)
-	t.Log("✓ Engine interface exists and is properly defined")
 }
 
 func TestEngineReaderInterfaceExists(t *testing.T) {
 	var _ consensus.EngineReader = (*testEngine)(nil)
-	t.Log("✓ EngineReader interface exists and is properly defined")
 }
 
 func TestCoreEngineInterfaceExists(t *testing.T) {
 	var _ consensus.CoreEngine = (*consensus.EngineAdapter)(nil)
-	t.Log("✓ CoreEngine interface exists and is properly defined")
 }
 
 // =============================================================================
@@ -45,7 +42,6 @@ func TestCoreEngineInterfaceExists(t *testing.T) {
 
 func TestInstrumentedEngineImplementsEngine(t *testing.T) {
 	var _ consensus.Engine = (*consensus.InstrumentedEngine)(nil)
-	t.Log("✓ InstrumentedEngine implements Engine interface")
 }
 
 func TestInstrumentedEngineDisabled(t *testing.T) {
@@ -58,7 +54,6 @@ func TestInstrumentedEngineDisabled(t *testing.T) {
 		t.Errorf("Expected 0 verify header count when disabled, got %d", stats.VerifyHeaderCount)
 	}
 
-	t.Log("✓ InstrumentedEngine disabled mode works correctly")
 }
 
 func TestInstrumentedEngineStatsReset(t *testing.T) {
@@ -83,7 +78,6 @@ func TestInstrumentedEngineStatsReset(t *testing.T) {
 		t.Error("Stats should be zero after reset")
 	}
 
-	t.Log("✓ InstrumentedEngine ResetStats works correctly")
 }
 
 func TestInstrumentedEngineVerifyHeader(t *testing.T) {
@@ -106,7 +100,6 @@ func TestInstrumentedEngineVerifyHeader(t *testing.T) {
 		t.Error("Expected non-zero verify header time")
 	}
 
-	t.Log("✓ InstrumentedEngine VerifyHeader tracks metrics correctly")
 }
 
 func TestInstrumentedEnginePrepare(t *testing.T) {
@@ -126,7 +119,6 @@ func TestInstrumentedEnginePrepare(t *testing.T) {
 		t.Errorf("Expected 1 prepare count, got %d", stats.PrepareCount)
 	}
 
-	t.Log("✓ InstrumentedEngine Prepare tracks metrics correctly")
 }
 
 func TestInstrumentedEngineFinalize(t *testing.T) {
@@ -146,7 +138,6 @@ func TestInstrumentedEngineFinalize(t *testing.T) {
 		t.Errorf("Expected 1 finalize count, got %d", stats.FinalizeCount)
 	}
 
-	t.Log("✓ InstrumentedEngine Finalize tracks metrics correctly")
 }
 
 func TestInstrumentedEngineSeal(t *testing.T) {
@@ -167,7 +158,6 @@ func TestInstrumentedEngineSeal(t *testing.T) {
 		t.Errorf("Expected 1 seal count, got %d", stats.SealCount)
 	}
 
-	t.Log("✓ InstrumentedEngine Seal tracks metrics correctly")
 }
 
 func TestInstrumentedEngineAuthor(t *testing.T) {
@@ -186,7 +176,6 @@ func TestInstrumentedEngineAuthor(t *testing.T) {
 		t.Errorf("Expected 1 author count, got %d", stats.AuthorCount)
 	}
 
-	t.Log("✓ InstrumentedEngine Author tracks metrics correctly")
 }
 
 func TestInstrumentedEngineInner(t *testing.T) {
@@ -197,7 +186,6 @@ func TestInstrumentedEngineInner(t *testing.T) {
 		t.Error("Inner() should return the wrapped engine")
 	}
 
-	t.Log("✓ InstrumentedEngine Inner() returns wrapped engine")
 }
 
 // =============================================================================
@@ -215,7 +203,6 @@ func TestEngineStatsTotalVerifyTime(t *testing.T) {
 		t.Errorf("Expected %v, got %v", expected, stats.TotalVerifyTime())
 	}
 
-	t.Log("✓ EngineStats.TotalVerifyTime calculates correctly")
 }
 
 func TestEngineStatsTotalProductionTime(t *testing.T) {
@@ -230,7 +217,6 @@ func TestEngineStatsTotalProductionTime(t *testing.T) {
 		t.Errorf("Expected %v, got %v", expected, stats.TotalProductionTime())
 	}
 
-	t.Log("✓ EngineStats.TotalProductionTime calculates correctly")
 }
 
 // =============================================================================
@@ -242,7 +228,6 @@ func TestEngineAdapterImplementsCoreEngine(t *testing.T) {
 	adapter := consensus.NewEngineAdapter(inner)
 
 	var _ consensus.CoreEngine = adapter
-	t.Log("✓ EngineAdapter implements CoreEngine")
 }
 
 func TestEngineAdapterVerifyHeader(t *testing.T) {
@@ -257,7 +242,6 @@ func TestEngineAdapterVerifyHeader(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	t.Log("✓ EngineAdapter.VerifyHeader works correctly")
 }
 
 func TestEngineAdapterInner(t *testing.T) {
@@ -268,7 +252,6 @@ func TestEngineAdapterInner(t *testing.T) {
 		t.Error("Inner() should return the wrapped engine")
 	}
 
-	t.Log("✓ EngineAdapter.Inner() returns wrapped engine")
 }
 
 // =============================================================================

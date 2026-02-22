@@ -21,22 +21,18 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/n42blockchain/N42/modules"
 	"sort"
 
 	libcommon "github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/etl"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules"
 )
 
-const (
-	DefaultIncarnation = uint64(1)
-)
+const DefaultIncarnation = uint64(1)
 
-var (
-	ErrNotFound = errors.New("not found")
-)
+var ErrNotFound = errors.New("not found")
 
 func NewStorageChangeSet() *ChangeSet {
 	return &ChangeSet{
@@ -47,13 +43,13 @@ func NewStorageChangeSet() *ChangeSet {
 
 func EncodeStorage(blockN uint64, s *ChangeSet, f func(k, v []byte) error) error {
 	sort.Sort(s)
-	keyPart := length.Addr + modules.Incarnation
+	addrIncLen := length.Addr + modules.Incarnation
 	for _, cs := range s.Changes {
-		newK := make([]byte, length.BlockNum+keyPart)
+		newK := make([]byte, length.BlockNum+addrIncLen)
 		binary.BigEndian.PutUint64(newK, blockN)
-		copy(newK[8:], cs.Key[:keyPart])
+		copy(newK[length.BlockNum:], cs.Key[:addrIncLen])
 		newV := make([]byte, 0, length.Hash+len(cs.Value))
-		newV = append(append(newV, cs.Key[keyPart:]...), cs.Value...)
+		newV = append(append(newV, cs.Key[addrIncLen:]...), cs.Value...)
 		if err := f(newK, newV); err != nil {
 			return err
 		}
@@ -79,10 +75,13 @@ func DecodeStorage(dbKey, dbValue []byte) (uint64, []byte, []byte, error) {
 }
 
 func FindStorage(c kv.CursorDupSort, blockNumber uint64, k []byte) ([]byte, error) {
-	addWithInc, loc := k[:length.Addr+modules.Incarnation], k[length.Addr+modules.Incarnation:]
-	seek := make([]byte, length.BlockNum+length.Addr+modules.Incarnation)
+	addrIncLen := length.Addr + modules.Incarnation
+	addrWithInc, loc := k[:addrIncLen], k[addrIncLen:]
+
+	seek := make([]byte, length.BlockNum+addrIncLen)
 	binary.BigEndian.PutUint64(seek, blockNumber)
-	copy(seek[8:], addWithInc)
+	copy(seek[length.BlockNum:], addrWithInc)
+
 	v, err := c.SeekBothRange(seek, loc)
 	if err != nil {
 		return nil, err
@@ -93,38 +92,22 @@ func FindStorage(c kv.CursorDupSort, blockNumber uint64, k []byte) ([]byte, erro
 	return v[length.Hash:], nil
 }
 
-// RewindDataPlain generates rewind data for all plain buckets between the timestamp
-// timestapSrc is the current timestamp, and timestamp Dst is where we rewind
+// RewindData collects changeset entries for rewinding state from timestampSrc back to timestampDst.
+// It gathers entries in the half-open range (timestampDst, timestampSrc].
 func RewindData(db kv.Tx, timestampSrc, timestampDst uint64, changes *etl.Collector, quit <-chan struct{}) error {
-	if err := walkAndCollect(
-		changes.Collect,
-		db, modules.AccountChangeSet,
-		timestampDst+1, timestampSrc,
-		quit,
-	); err != nil {
+	from := timestampDst + 1
+	to := timestampSrc + 1
+	if err := walkAndCollect(changes.Collect, db, modules.AccountChangeSet, from, to, quit); err != nil {
 		return err
 	}
-
-	if err := walkAndCollect(
-		changes.Collect,
-		db, modules.StorageChangeSet,
-		timestampDst+1, timestampSrc,
-		quit,
-	); err != nil {
-		return err
-	}
-
-	return nil
+	return walkAndCollect(changes.Collect, db, modules.StorageChangeSet, from, to, quit)
 }
 
-func walkAndCollect(collectorFunc func([]byte, []byte) error, db kv.Tx, bucket string, timestampDst, timestampSrc uint64, quit <-chan struct{}) error {
-	return ForRange(db, bucket, timestampDst, timestampSrc+1, func(bl uint64, k, v []byte) error {
+func walkAndCollect(collect func([]byte, []byte) error, db kv.Tx, bucket string, from, to uint64, quit <-chan struct{}) error {
+	return ForRange(db, bucket, from, to, func(_ uint64, k, v []byte) error {
 		if err := libcommon.Stopped(quit); err != nil {
 			return err
 		}
-		if innerErr := collectorFunc(libcommon.Copy(k), libcommon.Copy(v)); innerErr != nil {
-			return innerErr
-		}
-		return nil
+		return collect(libcommon.Copy(k), libcommon.Copy(v))
 	})
 }

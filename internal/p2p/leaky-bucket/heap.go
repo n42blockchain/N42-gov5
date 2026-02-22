@@ -2,16 +2,18 @@ package leakybucket
 
 import "fmt"
 
-// Based on the example implementation of priority queue found in the
-// container/heap package docs: https://golang.org/pkg/container/heap/
+// priorityQueue is a min-heap of LeakyBucket pointers, ordered by their
+// drain time (p field). Based on the container/heap package example:
+// https://golang.org/pkg/container/heap/
 type priorityQueue []*LeakyBucket
 
 func (pq priorityQueue) Len() int {
 	return len(pq)
 }
 
-func (pq priorityQueue) Peak() *LeakyBucket {
-	if len(pq) <= 0 {
+// Peek returns the bucket that will drain soonest, or nil if the queue is empty.
+func (pq priorityQueue) Peek() *LeakyBucket {
+	if len(pq) == 0 {
 		return nil
 	}
 	return pq[0]
@@ -27,21 +29,21 @@ func (pq priorityQueue) Swap(i, j int) {
 	pq[j].index = j
 }
 
-func (pq *priorityQueue) Push(x interface{}) {
-	n := len(*pq)
+func (pq *priorityQueue) Push(x any) {
 	b, ok := x.(*LeakyBucket)
 	if !ok {
-		panic(fmt.Sprintf("%T", x))
+		panic(fmt.Sprintf("priorityQueue.Push: expected *LeakyBucket, got %T", x))
 	}
-	b.index = n
+	b.index = len(*pq)
 	*pq = append(*pq, b)
 }
 
-func (pq *priorityQueue) Pop() interface{} {
+func (pq *priorityQueue) Pop() any {
 	old := *pq
 	n := len(old)
 	b := old[n-1]
-	b.index = -1 // for safety
-	*pq = old[0 : n-1]
+	old[n-1] = nil // avoid memory leak
+	b.index = -1   // mark as removed
+	*pq = old[:n-1]
 	return b
 }

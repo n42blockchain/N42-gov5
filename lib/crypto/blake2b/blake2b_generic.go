@@ -4,9 +4,7 @@
 
 package blake2b
 
-import (
-	"math/bits"
-)
+import "math/bits"
 
 // the precomputed values for BLAKE2b
 // there are 10 16-byte arrays - one for each round

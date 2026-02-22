@@ -18,6 +18,7 @@ package eth69
 
 import (
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/utils"
 )
@@ -83,45 +84,3 @@ func ValidateStatusCompatibility(pbStatus *sync_pb.Status) error {
 	return nil
 }
 
-// Example integration with sync service:
-//
-// import "github.com/n42blockchain/N42/internal/network/eth69"
-//
-// // In sync service initialization:
-// eth69Handler := eth69.NewHandler(
-//     service.chain,
-//     service.networkID,
-//     0,  // earliestBlock (0 for archive node)
-//     service,  // implements PeerSender
-// )
-//
-// // Store handler in service
-// service.eth69Handler = eth69Handler
-//
-// // In status message handler:
-// func (s *Service) handleStatus(ctx context.Context, msg *sync_pb.Status, peerID peer.ID) error {
-//     // Validate and convert
-//     status := eth69.ConvertStatusFromProtobuf(msg)
-//     if err := s.eth69Handler.HandleStatusMessage(peerID, status); err != nil {
-//         return err
-//     }
-//
-//     // Continue with existing logic...
-//     return nil
-// }
-//
-// // In block import handler:
-// func (s *Service) onBlockImported(block *types.Block) {
-//     // Notify eth/69 handler
-//     s.eth69Handler.OnNewBlock(block)
-//
-//     // Continue with existing logic...
-// }
-//
-// // In peer disconnect handler:
-// func (s *Service) onPeerDisconnect(peerID peer.ID) {
-//     // Cleanup eth/69 state
-//     s.eth69Handler.OnPeerDisconnect(peerID)
-//
-//     // Continue with existing logic...
-// }

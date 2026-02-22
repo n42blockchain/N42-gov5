@@ -2,8 +2,9 @@ package prometheus
 
 import (
 	"fmt"
-	"github.com/n42blockchain/N42/log"
 	"net/http"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 var EnabledExpensive = false
@@ -11,22 +12,21 @@ var EnabledExpensive = false
 // Setup starts a dedicated metrics server at the given address.
 // This function enables metrics reporting separate from pprof.
 func Setup(address string, log log.Logger) *http.ServeMux {
-	prometheusMux := http.NewServeMux()
+	mux := http.NewServeMux()
+	mux.Handle("/debug/metrics/prometheus", Handler(DefaultRegistry))
 
-	prometheusMux.Handle("/debug/metrics/prometheus", Handler(DefaultRegistry))
-
-	promServer := &http.Server{
+	server := &http.Server{
 		Addr:    address,
-		Handler: prometheusMux,
+		Handler: mux,
 	}
 
 	go func() {
-		if err := promServer.ListenAndServe(); err != nil {
+		if err := server.ListenAndServe(); err != nil {
 			log.Error("Failure in running Prometheus server", "err", err)
 		}
 	}()
 
 	log.Info("Enabling metrics export to prometheus", "path", fmt.Sprintf("http://%s/debug/metrics/prometheus", address))
 
-	return prometheusMux
+	return mux
 }

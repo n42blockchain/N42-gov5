@@ -28,14 +28,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// fetchHeaders
+// fetchHeaders downloads block headers in batches from available peers.
 func (d *Downloader) fetchHeaders(from uint256.Int, latest uint256.Int) error {
-
-	// 1. create task
 	begin := new(uint256.Int).AddUint64(&from, 1)
 	difference := new(uint256.Int).Sub(&latest, begin)
 	tasks := new(uint256.Int).Add(new(uint256.Int).Div(difference, uint256.NewInt(maxHeaderFetch)), uint256.NewInt(1))
-	//
 	log.Infof("Starting header downloads from: %v latest: %v difference: %v task: %v", begin.Uint64(), latest.Uint64(), difference.Uint64(), tasks.Uint64())
 	defer log.Infof("Header download Finished")
 
@@ -45,8 +42,7 @@ func (d *Downloader) fetchHeaders(from uint256.Int, latest uint256.Int) error {
 		d.headerTasks = append(d.headerTasks, Task{
 			taskID:     taskID,
 			IndexBegin: *begin,
-			//IndexEnd:   *types.Int256Min(uint256.NewInt(0).Sub(uint256.NewInt(0).Add(&from, uint256.NewInt(maxHeaderFetch)), uint256.NewInt(1)), &latest),
-			IsSync: false,
+			IsSync:     false,
 		})
 		begin = begin.Add(begin, uint256.NewInt(maxHeaderFetch))
 	}
@@ -66,29 +62,25 @@ func (d *Downloader) fetchHeaders(from uint256.Int, latest uint256.Int) error {
 		d.headerTaskLock.Lock()
 		if len(d.headerTasks) > 0 {
 			for _, p := range peerSet {
-				randIndex := 0
-				randTask := d.headerTasks[randIndex]
+				task := d.headerTasks[0]
 
-				//
 				var fetchCount uint64
-				// Security: check for underflow before subtraction
 				latestVal := latest.Uint64()
-				beginVal := randTask.IndexBegin.Uint64()
+				beginVal := task.IndexBegin.Uint64()
 				if latestVal >= beginVal && latestVal-beginVal >= maxHeaderFetch-1 {
 					fetchCount = maxHeaderFetch
 				} else if latestVal >= beginVal {
 					fetchCount = latestVal - beginVal + 1
 				} else {
-					// Edge case: latest < begin, skip this task
 					continue
 				}
 
 				msg := &sync_proto.SyncTask{
-					Id:       randTask.taskID,
+					Id:       task.taskID,
 					SyncType: sync_proto.SyncType_HeaderReq,
 					Payload: &sync_proto.SyncTask_SyncHeaderRequest{
 						SyncHeaderRequest: &sync_proto.SyncHeaderRequest{
-							Number: utils.ConvertUint256IntToH256(&randTask.IndexBegin),
+							Number: utils.ConvertUint256IntToH256(&task.IndexBegin),
 							Amount: utils.ConvertUint256IntToH256(uint256.NewInt(fetchCount)),
 						},
 					},
@@ -98,17 +90,15 @@ func (d *Downloader) fetchHeaders(from uint256.Int, latest uint256.Int) error {
 					log.Errorf("failed to marshal header request for peer %v: %v", p.ID(), err)
 					continue
 				}
-				err = p.WriteMsg(message.MsgDownloader, payload)
-
-				if err == nil {
-					randTask.TimeBegin = time.Now()
-					d.headerTasks = append(d.headerTasks[:randIndex], d.headerTasks[randIndex+1:]...)
-					d.headerProcessingTasks[randTask.taskID] = randTask
-					if len(d.headerTasks) == 0 {
-						break
-					}
-				} else {
+				if err = p.WriteMsg(message.MsgDownloader, payload); err != nil {
 					log.Errorf("send sync request message to peer %v err is %v", p.ID(), err)
+					continue
+				}
+				task.TimeBegin = time.Now()
+				d.headerTasks = d.headerTasks[1:]
+				d.headerProcessingTasks[task.taskID] = task
+				if len(d.headerTasks) == 0 {
+					break
 				}
 			}
 		}
@@ -137,9 +127,8 @@ func (d *Downloader) fetchHeaders(from uint256.Int, latest uint256.Int) error {
 	return nil
 }
 
-// fetchHeaders
+// fetchBodies downloads block bodies in batches from available peers.
 func (d *Downloader) fetchBodies(latest uint256.Int) error {
-
 	defer log.Info("Bodies download Finished")
 
 	tick := time.NewTicker(syncPeerIntervalRequest)
@@ -163,16 +152,13 @@ func (d *Downloader) fetchBodies(latest uint256.Int) error {
 		d.bodyTaskPoolLock.Lock()
 		if len(d.bodyTaskPool) > 0 {
 			for _, p := range peerSet {
-				// first task
-				randIndex := 0
-				randTask := d.bodyTaskPool[randIndex]
-
+				task := d.bodyTaskPool[0]
 				msg := &sync_proto.SyncTask{
-					Id:       randTask.taskID,
+					Id:       task.taskID,
 					SyncType: sync_proto.SyncType_BodyReq,
 					Payload: &sync_proto.SyncTask_SyncBlockRequest{
 						SyncBlockRequest: &sync_proto.SyncBlockRequest{
-							Number: utils.Uint256sToH256(randTask.number),
+							Number: utils.Uint256sToH256(task.number),
 						},
 					},
 				}
@@ -181,18 +167,15 @@ func (d *Downloader) fetchBodies(latest uint256.Int) error {
 					log.Errorf("failed to marshal body request for peer %v: %v", p.ID(), err)
 					continue
 				}
-				err = p.WriteMsg(message.MsgDownloader, payload)
-				if err == nil {
-					d.bodyTaskPool = append(d.bodyTaskPool[:randIndex], d.bodyTaskPool[randIndex+1:]...)
-					d.bodyProcessingTasks[randTask.taskID] = randTask
-					// finish
-					if len(d.bodyTaskPool) == 0 {
-						break
-					}
-				} else {
+				if err = p.WriteMsg(message.MsgDownloader, payload); err != nil {
 					log.Errorf("send sync request message to peer %v err is %v", p.ID(), err)
+					continue
 				}
-
+				d.bodyTaskPool = d.bodyTaskPool[1:]
+				d.bodyProcessingTasks[task.taskID] = task
+				if len(d.bodyTaskPool) == 0 {
+					break
+				}
 			}
 		}
 		d.bodyTaskPoolLock.Unlock()

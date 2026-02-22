@@ -55,7 +55,6 @@ func TestErrInvalidOpCodeError(t *testing.T) {
 }
 
 func TestErrorConstants(t *testing.T) {
-	// Test that error constants are properly defined
 	errors := []error{
 		ErrInvalidSubroutineEntry,
 		ErrOutOfGas,
@@ -77,10 +76,10 @@ func TestErrorConstants(t *testing.T) {
 
 	for _, err := range errors {
 		if err == nil {
-			t.Error("Error constant should not be nil")
+			t.Error("error constant should not be nil")
 		}
 		if err.Error() == "" {
-			t.Errorf("Error message should not be empty: %v", err)
+			t.Errorf("error message should not be empty: %v", err)
 		}
 	}
 }

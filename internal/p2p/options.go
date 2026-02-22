@@ -3,17 +3,18 @@ package p2p
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"github.com/libp2p/go-libp2p"
-	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
-	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/utils"
 	"net"
 
+	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/pkg/errors"
+
+	"github.com/n42blockchain/N42/params"
+	"github.com/n42blockchain/N42/utils"
 )
 
 // MultiAddressBuilder takes in an ip address string and port to produce a go multiaddr format.
@@ -37,7 +38,7 @@ func (s *Service) buildOptions(ip net.IP, priKey *ecdsa.PrivateKey) []libp2p.Opt
 	}
 	if cfg.LocalIP != "" {
 		if net.ParseIP(cfg.LocalIP) == nil {
-			log.Crit(fmt.Sprintf("Invalid local ip provided: %s", cfg.LocalIP))
+			log.Crit("Invalid local ip provided", "ip", cfg.LocalIP)
 		}
 		listen, err = MultiAddressBuilder(cfg.LocalIP, uint(cfg.TCPPort))
 		if err != nil {
@@ -62,9 +63,9 @@ func (s *Service) buildOptions(ip net.IP, priKey *ecdsa.PrivateKey) []libp2p.Opt
 		libp2p.Transport(tcp.NewTCPTransport),
 		libp2p.Transport(libp2pquic.NewTransport),
 		libp2p.DefaultMuxers,
+		libp2p.Security(noise.ID, noise.New),
+		libp2p.Ping(false),
 	}
-
-	options = append(options, libp2p.Security(noise.ID, noise.New))
 
 	if cfg.EnableUPnP {
 		options = append(options, libp2p.NATPortMap()) // Allow to use UPnP
@@ -97,8 +98,6 @@ func (s *Service) buildOptions(ip net.IP, priKey *ecdsa.PrivateKey) []libp2p.Opt
 			return addrs
 		}))
 	}
-	// Disable Ping Service.
-	options = append(options, libp2p.Ping(false))
 	return options
 }
 

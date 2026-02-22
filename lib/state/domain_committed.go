@@ -55,16 +55,14 @@ func (m CommitmentMode) String() string {
 }
 
 func ParseCommitmentMode(s string) CommitmentMode {
-	var mode CommitmentMode
 	switch s {
 	case "off":
-		mode = CommitmentModeDisabled
+		return CommitmentModeDisabled
 	case "update":
-		mode = CommitmentModeUpdate
+		return CommitmentModeUpdate
 	default:
-		mode = CommitmentModeDirect
+		return CommitmentModeDirect
 	}
-	return mode
 }
 
 type ValueMerger func(prev, current []byte) (merged []byte, err error)
@@ -313,20 +311,18 @@ type commitmentState struct {
 }
 
 func (cs *commitmentState) Decode(buf []byte) error {
-	if len(buf) < 10 {
-		return fmt.Errorf("ivalid commitment state buffer size")
+	if len(buf) < 18 {
+		return fmt.Errorf("invalid commitment state buffer size: %d < 18", len(buf))
 	}
-	pos := 0
-	cs.txNum = binary.BigEndian.Uint64(buf[pos : pos+8])
-	pos += 8
-	cs.blockNum = binary.BigEndian.Uint64(buf[pos : pos+8])
-	pos += 8
-	cs.trieState = make([]byte, binary.BigEndian.Uint16(buf[pos:pos+2]))
-	pos += 2
-	if len(cs.trieState) == 0 && len(buf) == 10 {
+	cs.txNum = binary.BigEndian.Uint64(buf[0:8])
+	cs.blockNum = binary.BigEndian.Uint64(buf[8:16])
+	trieStateLen := binary.BigEndian.Uint16(buf[16:18])
+	if trieStateLen == 0 {
+		cs.trieState = nil
 		return nil
 	}
-	copy(cs.trieState, buf[pos:pos+len(cs.trieState)])
+	cs.trieState = make([]byte, trieStateLen)
+	copy(cs.trieState, buf[18:18+trieStateLen])
 	return nil
 }
 

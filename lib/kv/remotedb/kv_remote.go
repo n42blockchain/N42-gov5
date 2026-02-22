@@ -349,13 +349,8 @@ func (tx *tx) Has(bucket string, k []byte) (bool, error) {
 	return bytes.Equal(k, kk), nil
 }
 
-func (c *remoteCursor) SeekExact(k []byte) (key, val []byte, err error) {
-	return c.seekExact(k)
-}
-
-func (c *remoteCursor) Prev() ([]byte, []byte, error) {
-	return c.prev()
-}
+func (c *remoteCursor) SeekExact(k []byte) ([]byte, []byte, error) { return c.seekExact(k) }
+func (c *remoteCursor) Prev() ([]byte, []byte, error)              { return c.prev() }
 
 func (tx *tx) Cursor(bucket string) (kv.Cursor, error) {
 	b := tx.db.buckets[bucket]
@@ -376,11 +371,6 @@ func (tx *tx) ListBuckets() ([]string, error) {
 	return nil, fmt.Errorf("function ListBuckets is not implemented for remoteTx")
 }
 
-// func (c *remoteCursor) Put(k []byte, v []byte) error            { panic("not supported") }
-// func (c *remoteCursor) PutNoOverwrite(k []byte, v []byte) error { panic("not supported") }
-// func (c *remoteCursor) Append(k []byte, v []byte) error         { panic("not supported") }
-// func (c *remoteCursor) Delete(k []byte) error                   { panic("not supported") }
-// func (c *remoteCursor) DeleteCurrent() error                    { panic("not supported") }
 func (c *remoteCursor) Count() (uint64, error) {
 	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_COUNT}); err != nil {
 		return 0, err
@@ -393,8 +383,14 @@ func (c *remoteCursor) Count() (uint64, error) {
 
 }
 
-func (c *remoteCursor) first() ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_FIRST}); err != nil {
+// op sends a cursor operation and returns the key-value pair from the response.
+func (c *remoteCursor) op(op remote.Op) ([]byte, []byte, error) {
+	return c.opWithKey(op, nil, nil)
+}
+
+// opWithKey sends a cursor operation with optional key/value and returns the response pair.
+func (c *remoteCursor) opWithKey(op remote.Op, k, v []byte) ([]byte, []byte, error) {
+	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: op, K: k, V: v}); err != nil {
 		return []byte{}, nil, err
 	}
 	pair, err := c.stream.Recv()
@@ -404,169 +400,42 @@ func (c *remoteCursor) first() ([]byte, []byte, error) {
 	return pair.K, pair.V, nil
 }
 
-func (c *remoteCursor) next() ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_NEXT}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
-}
-func (c *remoteCursor) nextDup() ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_NEXT_DUP}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
-}
-func (c *remoteCursor) nextNoDup() ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_NEXT_NO_DUP}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
-}
-func (c *remoteCursor) prev() ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_PREV}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
-}
-func (c *remoteCursor) prevDup() ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_PREV_DUP}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
-}
-func (c *remoteCursor) prevNoDup() ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_PREV_NO_DUP}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
-}
-func (c *remoteCursor) last() ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_LAST}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
-}
-func (c *remoteCursor) setRange(k []byte) ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_SEEK, K: k}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
-}
-func (c *remoteCursor) seekExact(k []byte) ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_SEEK_EXACT, K: k}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
-}
-func (c *remoteCursor) getBothRange(k, v []byte) ([]byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_SEEK_BOTH, K: k, V: v}); err != nil {
-		return nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return nil, err
-	}
-	return pair.V, nil
-}
+func (c *remoteCursor) first() ([]byte, []byte, error)         { return c.op(remote.Op_FIRST) }
+func (c *remoteCursor) next() ([]byte, []byte, error)          { return c.op(remote.Op_NEXT) }
+func (c *remoteCursor) nextDup() ([]byte, []byte, error)       { return c.op(remote.Op_NEXT_DUP) }
+func (c *remoteCursor) nextNoDup() ([]byte, []byte, error)     { return c.op(remote.Op_NEXT_NO_DUP) }
+func (c *remoteCursor) prev() ([]byte, []byte, error)          { return c.op(remote.Op_PREV) }
+func (c *remoteCursor) prevDup() ([]byte, []byte, error)       { return c.op(remote.Op_PREV_DUP) }
+func (c *remoteCursor) prevNoDup() ([]byte, []byte, error)     { return c.op(remote.Op_PREV_NO_DUP) }
+func (c *remoteCursor) last() ([]byte, []byte, error)          { return c.op(remote.Op_LAST) }
+func (c *remoteCursor) getCurrent() ([]byte, []byte, error)    { return c.op(remote.Op_CURRENT) }
+func (c *remoteCursor) setRange(k []byte) ([]byte, []byte, error)  { return c.opWithKey(remote.Op_SEEK, k, nil) }
+func (c *remoteCursor) seekExact(k []byte) ([]byte, []byte, error) { return c.opWithKey(remote.Op_SEEK_EXACT, k, nil) }
+
 func (c *remoteCursor) seekBothExact(k, v []byte) ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_SEEK_BOTH_EXACT, K: k, V: v}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
+	return c.opWithKey(remote.Op_SEEK_BOTH_EXACT, k, v)
 }
+
+func (c *remoteCursor) getBothRange(k, v []byte) ([]byte, error) {
+	_, val, err := c.opWithKey(remote.Op_SEEK_BOTH, k, v)
+	return val, err
+}
+
 func (c *remoteCursor) firstDup() ([]byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_FIRST_DUP}); err != nil {
-		return nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return nil, err
-	}
-	return pair.V, nil
+	_, v, err := c.op(remote.Op_FIRST_DUP)
+	return v, err
 }
+
 func (c *remoteCursor) lastDup() ([]byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_LAST_DUP}); err != nil {
-		return nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return nil, err
-	}
-	return pair.V, nil
-}
-func (c *remoteCursor) getCurrent() ([]byte, []byte, error) {
-	if err := c.stream.Send(&remote.Cursor{Cursor: c.id, Op: remote.Op_CURRENT}); err != nil {
-		return []byte{}, nil, err
-	}
-	pair, err := c.stream.Recv()
-	if err != nil {
-		return []byte{}, nil, err
-	}
-	return pair.K, pair.V, nil
+	_, v, err := c.op(remote.Op_LAST_DUP)
+	return v, err
 }
 
-func (c *remoteCursor) Current() ([]byte, []byte, error) {
-	return c.getCurrent()
-}
-
-// Seek - doesn't start streaming (because much of code does only several .Seek calls without reading sequence of data)
-// .Next() - does request streaming (if configured by user)
-func (c *remoteCursor) Seek(seek []byte) ([]byte, []byte, error) {
-	return c.setRange(seek)
-}
-
-func (c *remoteCursor) First() ([]byte, []byte, error) {
-	return c.first()
-}
-
-// Next - returns next data element from server, request streaming (if configured by user)
-func (c *remoteCursor) Next() ([]byte, []byte, error) {
-	return c.next()
-}
-
-func (c *remoteCursor) Last() ([]byte, []byte, error) {
-	return c.last()
-}
+func (c *remoteCursor) Current() ([]byte, []byte, error) { return c.getCurrent() }
+func (c *remoteCursor) Seek(seek []byte) ([]byte, []byte, error) { return c.setRange(seek) }
+func (c *remoteCursor) First() ([]byte, []byte, error)           { return c.first() }
+func (c *remoteCursor) Next() ([]byte, []byte, error)            { return c.next() }
+func (c *remoteCursor) Last() ([]byte, []byte, error)            { return c.last() }
 
 func (tx *tx) closeGrpcStream() {
 	if tx.stream == nil {

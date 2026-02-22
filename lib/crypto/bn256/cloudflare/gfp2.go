@@ -28,25 +28,23 @@ func (e *gfP2) Set(a *gfP2) *gfP2 {
 }
 
 func (e *gfP2) SetZero() *gfP2 {
-	e.x = gfP{0}
-	e.y = gfP{0}
+	e.x = gfP{}
+	e.y = gfP{}
 	return e
 }
 
 func (e *gfP2) SetOne() *gfP2 {
-	e.x = gfP{0}
+	e.x = gfP{}
 	e.y = *newGFp(1)
 	return e
 }
 
 func (e *gfP2) IsZero() bool {
-	zero := gfP{0}
-	return e.x == zero && e.y == zero
+	return e.x == (gfP{}) && e.y == (gfP{})
 }
 
 func (e *gfP2) IsOne() bool {
-	zero, one := gfP{0}, *newGFp(1)
-	return e.x == zero && e.y == one
+	return e.x == (gfP{}) && e.y == *newGFp(1)
 }
 
 func (e *gfP2) Conjugate(a *gfP2) *gfP2 {

@@ -17,8 +17,6 @@
 package vm
 
 import (
-	"math"
-
 	"github.com/holiman/uint256"
 )
 
@@ -49,13 +47,10 @@ func safeAdd(a, b uint64) (uint64, bool) {
 	return c, c < a
 }
 
-// toWordSize converts a size in bytes to the number of 32-byte words,
-// rounding up.
+// toWordSize is a package-internal alias for ToWordSize.
+// It converts a size in bytes to the number of 32-byte words, rounding up.
 func toWordSize(size uint64) uint64 {
-	if size > math.MaxUint64-31 {
-		return math.MaxUint64/32 + 1
-	}
-	return (size + 31) / 32
+	return ToWordSize(size)
 }
 
 // callGas returns the actual gas cost of the call.
