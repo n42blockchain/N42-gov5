@@ -2072,9 +2072,21 @@ func (s *cursorDup2iter) init(table string, tx kv.Tx) (*cursorDup2iter, error) {
 		s.nextV, err = s.c.SeekBothRange(s.key, s.fromPrefix)
 		return s, err
 	} else {
-		// seek exactly to given key or previous one
-		_, s.nextV, err = s.c.SeekBothExact(s.key, s.fromPrefix)
-		if s.nextV == nil { // no such key
+		// Seek to the first dup value >= fromPrefix, then step back if needed.
+		// SeekBothExact + PrevDup would leave the cursor in invalid dup state on
+		// a miss; SeekBothRange always returns a valid cursor position on success.
+		s.nextV, err = s.c.SeekBothRange(s.key, s.fromPrefix)
+		if err != nil {
+			return s, err
+		}
+		if s.nextV == nil {
+			// No dup value >= fromPrefix; restore cursor and use the last dup.
+			if _, _, err = s.c.SeekExact(s.key); err != nil {
+				return s, err
+			}
+			s.nextV, err = s.c.LastDup()
+		} else if !bytes.Equal(s.nextV, s.fromPrefix) {
+			// Found a dup value > fromPrefix; step back to the largest value < fromPrefix.
 			_, s.nextV, err = s.c.PrevDup()
 		}
 		return s, err
