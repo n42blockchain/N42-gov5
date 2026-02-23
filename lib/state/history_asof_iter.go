@@ -1,0 +1,266 @@
+/*
+   Copyright 2022 Erigon contributors
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+
+package state
+
+import (
+	"bytes"
+	"container/heap"
+	"encoding/binary"
+	"fmt"
+
+	"github.com/n42blockchain/N42/lib/common"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
+)
+
+// StateAsOfIterF - returns state range at given time in history
+type StateAsOfIterF struct {
+	hc    *HistoryRoTx
+	limit int
+
+	from, to []byte
+	nextVal  []byte
+	nextKey  []byte
+
+	h            ReconHeap
+	startTxNum   uint64
+	startTxKey   [8]byte
+	txnKey       [8]byte
+	compressVals bool
+
+	k, v, kBackup, vBackup []byte
+}
+
+func (hi *StateAsOfIterF) Close() {
+}
+
+func (hi *StateAsOfIterF) advanceInFiles() error {
+	for hi.h.Len() > 0 {
+		top := heap.Pop(&hi.h).(*ReconItem)
+		key := top.key
+		var idxVal []byte
+		if hi.compressVals {
+			idxVal, _ = top.g.Next(nil)
+		} else {
+			idxVal, _ = top.g.NextUncompressed()
+		}
+		if top.g.HasNext() {
+			if hi.compressVals {
+				top.key, _ = top.g.Next(nil)
+			} else {
+				top.key, _ = top.g.NextUncompressed()
+			}
+			if hi.to == nil || bytes.Compare(top.key, hi.to) < 0 {
+				heap.Push(&hi.h, top)
+			}
+		}
+
+		if hi.from != nil && bytes.Compare(key, hi.from) < 0 { //TODO: replace by Seek()
+			continue
+		}
+
+		if bytes.Equal(key, hi.nextKey) {
+			continue
+		}
+		ef, _ := eliasfano32.ReadEliasFano(idxVal)
+		n, ok := ef.Search(hi.startTxNum)
+		if !ok {
+			continue
+		}
+
+		hi.nextKey = key
+		binary.BigEndian.PutUint64(hi.txnKey[:], n)
+		historyItem, ok := hi.hc.getFile(top.startTxNum, top.endTxNum)
+		if !ok {
+			return fmt.Errorf("no %s file found for [%x]", hi.hc.h.filenameBase, hi.nextKey)
+		}
+		reader := hi.hc.statelessIdxReader(historyItem.i)
+		offset, ok := reader.Lookup2(hi.txnKey[:], hi.nextKey)
+		if !ok {
+			continue
+		}
+		g := hi.hc.statelessGetter(historyItem.i)
+		g.Reset(offset)
+		if hi.compressVals {
+			hi.nextVal, _ = g.Next(nil)
+		} else {
+			hi.nextVal, _ = g.NextUncompressed()
+		}
+		return nil
+	}
+	hi.nextKey = nil
+	return nil
+}
+
+func (hi *StateAsOfIterF) HasNext() bool {
+	return hi.limit != 0 && hi.nextKey != nil
+}
+
+func (hi *StateAsOfIterF) Next() ([]byte, []byte, error) {
+	hi.limit--
+	hi.k, hi.v = append(hi.k[:0], hi.nextKey...), append(hi.v[:0], hi.nextVal...)
+
+	// Satisfy iter.Dual Invariant 2
+	hi.k, hi.kBackup, hi.v, hi.vBackup = hi.kBackup, hi.k, hi.vBackup, hi.v
+	if err := hi.advanceInFiles(); err != nil {
+		return nil, nil, err
+	}
+	return hi.kBackup, hi.vBackup, nil
+}
+
+// StateAsOfIterDB - returns state range at given time in history
+type StateAsOfIterDB struct {
+	largeValues bool
+	roTx        kv.Tx
+	valsC       kv.Cursor
+	valsCDup    kv.CursorDupSort
+	valsTable   string
+
+	from, to []byte
+	limit    int
+
+	nextKey, nextVal []byte
+
+	startTxNum uint64
+	startTxKey [8]byte
+
+	k, v, kBackup, vBackup []byte
+	err                    error
+}
+
+func (hi *StateAsOfIterDB) Close() {
+	if hi.valsC != nil {
+		hi.valsC.Close()
+	}
+}
+
+func (hi *StateAsOfIterDB) advance() (err error) {
+	// not large:
+	//   keys: txNum -> key1+key2
+	//   vals: key1+key2 -> txNum + value (DupSort)
+	// large:
+	//   keys: txNum -> key1+key2
+	//   vals: key1+key2+txNum -> value (not DupSort)
+	if hi.largeValues {
+		return hi.advanceLargeVals()
+	}
+	return hi.advanceSmallVals()
+}
+
+func (hi *StateAsOfIterDB) advanceLargeVals() error {
+	var seek []byte
+	var err error
+	if hi.valsC == nil {
+		if hi.valsC, err = hi.roTx.Cursor(hi.valsTable); err != nil {
+			return err
+		}
+		firstKey, _, err := hi.valsC.Seek(hi.from)
+		if err != nil {
+			return err
+		}
+		if firstKey == nil {
+			hi.nextKey = nil
+			return nil
+		}
+		seek = append(common.Copy(firstKey[:len(firstKey)-8]), hi.startTxKey[:]...)
+	} else {
+		next, ok := kv.NextSubtree(hi.nextKey)
+		if !ok {
+			hi.nextKey = nil
+			return nil
+		}
+
+		seek = append(next, hi.startTxKey[:]...)
+	}
+	for k, v, err := hi.valsC.Seek(seek); k != nil; k, v, err = hi.valsC.Seek(seek) {
+		if err != nil {
+			return err
+		}
+		if hi.to != nil && bytes.Compare(k[:len(k)-8], hi.to) >= 0 {
+			break
+		}
+		if !bytes.Equal(seek[:len(k)-8], k[:len(k)-8]) {
+			copy(seek[:len(k)-8], k[:len(k)-8])
+			continue
+		}
+		hi.nextKey = k[:len(k)-8]
+		hi.nextVal = v
+		return nil
+	}
+	hi.nextKey = nil
+	return nil
+}
+
+func (hi *StateAsOfIterDB) advanceSmallVals() error {
+	var seek []byte
+	var err error
+	if hi.valsCDup == nil {
+		if hi.valsCDup, err = hi.roTx.CursorDupSort(hi.valsTable); err != nil {
+			return err
+		}
+		seek = hi.from
+	} else {
+		next, ok := kv.NextSubtree(hi.nextKey)
+		if !ok {
+			hi.nextKey = nil
+			return nil
+		}
+		seek = next
+	}
+	for k, _, err := hi.valsCDup.Seek(seek); k != nil; k, _, err = hi.valsCDup.NextNoDup() {
+		if err != nil {
+			return err
+		}
+		if hi.to != nil && bytes.Compare(k, hi.to) >= 0 {
+			break
+		}
+		v, err := hi.valsCDup.SeekBothRange(k, hi.startTxKey[:])
+		if err != nil {
+			return err
+		}
+		if v == nil {
+			continue
+		}
+		hi.nextKey = k
+		hi.nextVal = v[8:]
+		return nil
+	}
+	hi.nextKey = nil
+	return nil
+}
+
+func (hi *StateAsOfIterDB) HasNext() bool {
+	if hi.err != nil {
+		return true
+	}
+	return hi.limit != 0 && hi.nextKey != nil
+}
+
+func (hi *StateAsOfIterDB) Next() ([]byte, []byte, error) {
+	if hi.err != nil {
+		return nil, nil, hi.err
+	}
+	hi.limit--
+	hi.k, hi.v = hi.nextKey, hi.nextVal
+
+	// Satisfy iter.Dual Invariant 2
+	hi.k, hi.kBackup, hi.v, hi.vBackup = hi.kBackup, hi.k, hi.vBackup, hi.v
+	if err := hi.advance(); err != nil {
+		return nil, nil, err
+	}
+	return hi.kBackup, hi.vBackup, nil
+}
