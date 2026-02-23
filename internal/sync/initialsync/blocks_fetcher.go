@@ -15,7 +15,7 @@ import (
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/crypto/rand"
 	"github.com/n42blockchain/N42/internal/p2p"
-	leakybucket "github.com/n42blockchain/N42/internal/p2p/leaky-bucket"
+	"github.com/n42blockchain/N42/internal/p2p/leakybucket"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	"github.com/n42blockchain/N42/utils"
 )

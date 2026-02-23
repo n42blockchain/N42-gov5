@@ -12,7 +12,7 @@ import (
 
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	types "github.com/n42blockchain/N42/common/block"
-	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
+	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
 )

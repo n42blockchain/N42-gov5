@@ -12,7 +12,7 @@ import (
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	ssztype "github.com/n42blockchain/N42/common/types/ssz"
 	"github.com/n42blockchain/N42/internal/p2p"
-	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
+	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 )
 
 // pingHandler reads the incoming ping rpc message from the peer.

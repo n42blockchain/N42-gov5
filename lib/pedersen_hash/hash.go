@@ -1,7 +1,7 @@
 //go:build linux
 // +build linux
 
-package hash
+package pedersen_hash
 
 /*
 #cgo CXXFLAGS: -std=c++17

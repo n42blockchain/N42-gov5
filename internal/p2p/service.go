@@ -28,7 +28,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
-	leakybucket "github.com/n42blockchain/N42/internal/p2p/leaky-bucket"
+	"github.com/n42blockchain/N42/internal/p2p/leakybucket"
 	"github.com/n42blockchain/N42/internal/p2p/peers"
 	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
 	astLog "github.com/n42blockchain/N42/log"
