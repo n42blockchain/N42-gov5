@@ -31,7 +31,7 @@ import (
 	"github.com/n42blockchain/N42/lib/common/fixedgas"
 	"github.com/n42blockchain/N42/lib/common/hexutility"
 	"github.com/n42blockchain/N42/lib/rlp"
-	rlp2 "github.com/n42blockchain/N42/lib/rlp2"
+	"github.com/n42blockchain/N42/lib/rlp2"
 )
 
 func TestParseTransactionRLP(t *testing.T) {

@@ -14,7 +14,7 @@
    limitations under the License.
 */
 
-package rlp
+package rlp2
 
 import (
 	"errors"

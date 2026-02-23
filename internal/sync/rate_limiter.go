@@ -9,8 +9,8 @@ import (
 	"github.com/trailofbits/go-mutexasserts"
 
 	"github.com/n42blockchain/N42/internal/p2p"
-	leakybucket "github.com/n42blockchain/N42/internal/p2p/leaky-bucket"
-	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
+	"github.com/n42blockchain/N42/internal/p2p/leakybucket"
+	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/log"
 )
 

@@ -12,7 +12,7 @@ import (
 	types "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
-	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
+	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
 )

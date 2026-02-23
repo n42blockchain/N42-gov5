@@ -1,4 +1,4 @@
-package rlp
+package rlp2
 
 import (
 	"errors"

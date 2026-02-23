@@ -10,7 +10,7 @@ import (
 
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
-	p2ptypes "github.com/n42blockchain/N42/internal/p2p/types"
+	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/utils"
 )
 
