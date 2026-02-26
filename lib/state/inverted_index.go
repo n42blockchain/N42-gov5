@@ -951,6 +951,7 @@ type InvertedIterator1 struct {
 	startTxKey     [8]byte
 	hasNextInDb    bool
 	hasNextInFiles bool
+	err            error
 }
 
 func (it *InvertedIterator1) Close() {
@@ -987,21 +988,23 @@ func (it *InvertedIterator1) advanceInDb() {
 	var err error
 	if it.cursor == nil {
 		if it.cursor, err = it.roTx.CursorDupSort(it.indexTable); err != nil {
-			// TODO pass error properly around
-			panic(err)
+			it.err = err
+			return
 		}
 		if k, _, err = it.cursor.First(); err != nil {
-			// TODO pass error properly around
-			panic(err)
+			it.err = err
+			return
 		}
 	} else {
 		if k, _, err = it.cursor.NextNoDup(); err != nil {
-			panic(err)
+			it.err = err
+			return
 		}
 	}
 	for k != nil {
 		if v, err = it.cursor.SeekBothRange(k, it.startTxKey[:]); err != nil {
-			panic(err)
+			it.err = err
+			return
 		}
 		if v != nil {
 			txNum := binary.BigEndian.Uint64(v)
@@ -1014,10 +1017,12 @@ func (it *InvertedIterator1) advanceInDb() {
 		// dup-cursor in an indeterminate state. Re-seek to restore a valid cursor
 		// position before calling NextNoDup.
 		if k, _, err = it.cursor.Seek(k); err != nil {
-			panic(err)
+			it.err = err
+			return
 		}
 		if k, _, err = it.cursor.NextNoDup(); err != nil {
-			panic(err)
+			it.err = err
+			return
 		}
 	}
 	it.cursor.Close()
@@ -1053,7 +1058,13 @@ func (it *InvertedIterator1) advance() {
 }
 
 func (it *InvertedIterator1) HasNext() bool {
-	return it.hasNextInFiles || it.hasNextInDb || it.nextKey != nil
+	return it.err == nil && (it.hasNextInFiles || it.hasNextInDb || it.nextKey != nil)
+}
+
+// Err returns any error encountered during iteration.
+// Callers should check Err after HasNext returns false.
+func (it *InvertedIterator1) Err() error {
+	return it.err
 }
 
 func (it *InvertedIterator1) Next(keyBuf []byte) []byte {

@@ -806,13 +806,14 @@ func (a *Aggregator) LogStats(tx kv.Tx, tx2block func(endTxNumMinimax uint64) ui
 
 	c, err := tx.CursorDupSort(a.accounts.InvertedIndex.indexTable)
 	if err != nil {
-		// TODO pass error properly around
-		panic(err)
+		log.Warn("[snapshots] LogStats: failed to open cursor", "err", err)
+		return
 	}
+	defer c.Close()
 	_, v, err := c.First()
 	if err != nil {
-		// TODO pass error properly around
-		panic(err)
+		log.Warn("[snapshots] LogStats: failed to read first entry", "err", err)
+		return
 	}
 	var firstHistoryIndexBlockInDB uint64
 	if len(v) != 0 {

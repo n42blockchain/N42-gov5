@@ -187,16 +187,20 @@ func (f *Filter) unindexedLogs(ctx context.Context, end uint64) ([]*block.Log, e
 }
 
 // blockLogs returns the logs matching the filter criteria within a single block.
+// It uses the header's on-chain Bloom filter to skip blocks that cannot
+// contain matching logs.  If the header cannot be cast to *block.Header the
+// bloom check is skipped and checkMatches is called unconditionally.
 func (f *Filter) blockLogs(ctx context.Context, header block.IHeader) (logs []*block.Log, err error) {
-	// TODO: use header.Bloom when available
-	bloom, _ := types.NewBloom(100)
-	if bloomFilter(bloom, f.addresses, f.topics) {
-		found, err := f.checkMatches(ctx, header)
-		if err != nil {
-			return logs, err
+	if h, ok := header.(*block.Header); ok {
+		if !bloomFilter(h.Bloom, f.addresses, f.topics) {
+			return logs, nil
 		}
-		logs = append(logs, found...)
 	}
+	found, err := f.checkMatches(ctx, header)
+	if err != nil {
+		return logs, err
+	}
+	logs = append(logs, found...)
 	return logs, nil
 }
 
@@ -283,11 +287,14 @@ Logs:
 	return ret
 }
 
-func bloomFilter(bloom *types.Bloom, addresses []types.Address, topics [][]types.Hash) bool {
+// bloomFilter reports whether the 2048-bit Ethereum Bloom filter could contain
+// any log matching the given address and topic filter criteria.
+// An empty filter set (no addresses, no topics) always returns true.
+func bloomFilter(bloom block.Bloom, addresses []types.Address, topics [][]types.Hash) bool {
 	if len(addresses) > 0 {
 		var included bool
 		for _, addr := range addresses {
-			if bloom.Contain(addr.Bytes()) {
+			if bloom.Test(addr.Bytes()) {
 				included = true
 				break
 			}
@@ -300,7 +307,7 @@ func bloomFilter(bloom *types.Bloom, addresses []types.Address, topics [][]types
 	for _, sub := range topics {
 		included := len(sub) == 0 // empty rule set == wildcard
 		for _, topic := range sub {
-			if bloom.Contain(topic.Bytes()) {
+			if bloom.Test(topic.Bytes()) {
 				included = true
 				break
 			}
