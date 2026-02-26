@@ -260,6 +260,24 @@ func newFileFormatter(jsonFormat bool) logrus.Formatter {
 	}
 }
 
+// SetLevel dynamically sets the global log verbosity.
+// level maps our Lvl constants: 0=Crit 1=Fatal 2=Error 3=Warn 4=Info 5=Debug 6=Trace.
+func SetLevel(level int) {
+	if level < int(LvlCrit) {
+		level = int(LvlCrit)
+	}
+	if level > int(LvlTrace) {
+		level = int(LvlTrace)
+	}
+	// logrus and our Lvl share the same numeric mapping (0=Panic/Crit .. 6=Trace).
+	terminal.SetLevel(logrus.Level(level))
+}
+
+// GetLevel returns the current log verbosity level.
+func GetLevel() int {
+	return int(terminal.GetLevel())
+}
+
 // Close 关闭日志系统，停止后台任务
 func Close() {
 	if logManager != nil {

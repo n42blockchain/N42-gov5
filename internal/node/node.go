@@ -34,6 +34,8 @@ import (
 	"github.com/c2h5oh/datasize"
 	"github.com/gofrs/flock"
 	"github.com/holiman/uint256"
+	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 	pkgerrors "github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
@@ -363,6 +365,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))
+	node.api.SetP2P(&p2pAdminAdapter{svc: p2p})
+	node.api.SetMiner(&minerAdminAdapter{m: miner})
 	success = true
 	return &node, nil
 }
@@ -953,4 +957,100 @@ func (n *Node) Engine() consensus.Engine {
 
 func (n *Node) ChainDb() kv.RwDB {
 	return n.db
+}
+
+// =============================================================================
+// API backend adapters
+// =============================================================================
+
+// p2pAdminAdapter bridges p2p.P2P to the api.P2PAdmin interface so that
+// admin_* RPC methods can return real peer data without the api package
+// importing the p2p package directly.
+type p2pAdminAdapter struct {
+	svc p2p.P2P
+}
+
+func (a *p2pAdminAdapter) PeerInfos() []*api.PeerInfo {
+	status := a.svc.Peers()
+	connected := status.Connected()
+	result := make([]*api.PeerInfo, 0, len(connected))
+	for _, pid := range connected {
+		info := &api.PeerInfo{
+			ID:   pid.String(),
+			Name: "N42",
+			Caps: []string{"eth/69"},
+		}
+		if addr, err := status.Address(pid); err == nil {
+			info.Network.RemoteAddress = addr.String()
+		}
+		result = append(result, info)
+	}
+	return result
+}
+
+func (a *p2pAdminAdapter) SelfNodeID() string {
+	return a.svc.PeerID().String()
+}
+
+func (a *p2pAdminAdapter) SelfENR() string {
+	record := a.svc.ENR()
+	if record == nil {
+		return ""
+	}
+	s, err := p2p.SerializeENR(record)
+	if err != nil {
+		return ""
+	}
+	return s
+}
+
+func (a *p2pAdminAdapter) SelfListenAddrs() []string {
+	h := a.svc.Host()
+	if h == nil {
+		return nil
+	}
+	addrs := h.Addrs()
+	result := make([]string, len(addrs))
+	for i, ma := range addrs {
+		result[i] = ma.String()
+	}
+	return result
+}
+
+func (a *p2pAdminAdapter) AddPeer(addr string) error {
+	ma, err := multiaddr.NewMultiaddr(addr)
+	if err != nil {
+		return fmt.Errorf("admin_addPeer: invalid multiaddr %q: %w", addr, err)
+	}
+	info, err := libp2ppeer.AddrInfoFromP2pAddr(ma)
+	if err != nil {
+		return fmt.Errorf("admin_addPeer: cannot derive peer info from %q: %w", addr, err)
+	}
+	// Service.Connect wraps host.Connect with the service context.
+	type connector interface{ Connect(libp2ppeer.AddrInfo) error }
+	if c, ok := a.svc.(connector); ok {
+		return c.Connect(*info)
+	}
+	return a.svc.Host().Connect(context.Background(), *info)
+}
+
+func (a *p2pAdminAdapter) RemovePeer(peerID string) error {
+	pid, err := libp2ppeer.Decode(peerID)
+	if err != nil {
+		return fmt.Errorf("admin_removePeer: invalid peer ID %q: %w", peerID, err)
+	}
+	return a.svc.Disconnect(pid)
+}
+
+// minerAdminAdapter bridges *miner.Miner to api.MinerAdmin.
+type minerAdminAdapter struct {
+	m *miner.Miner
+}
+
+func (a *minerAdminAdapter) Mining() bool {
+	return a.m.Mining()
+}
+
+func (a *minerAdminAdapter) SetCoinbase(addr types.Address) {
+	a.m.SetCoinbase(addr)
 }
