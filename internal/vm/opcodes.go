@@ -104,6 +104,7 @@ const (
 	BASEFEE     OpCode = 0x48
 	BLOBHASH    OpCode = 0x49 // EIP-4844: Blob hash opcode
 	BLOBBASEFEE OpCode = 0x4a // EIP-7516: Blob base fee opcode
+	SLOTNUM     OpCode = 0x4b // EIP-7843: Beacon chain slot number
 )
 
 // 0x50 range - 'storage' and execution.
@@ -283,6 +284,7 @@ var opCodeToString = map[OpCode]string{
 	BASEFEE:     "BASEFEE",
 	BLOBHASH:    "BLOBHASH",
 	BLOBBASEFEE: "BLOBBASEFEE",
+	SLOTNUM:     "SLOTNUM",
 
 	// 0x50 range - 'storage' and execution.
 	POP: "POP",
