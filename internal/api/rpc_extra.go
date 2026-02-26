@@ -84,12 +84,14 @@ func (admin *AdminAPI) NodeInfo() *NodeInfo {
 		Protocols:  map[string]string{"eth": "eth/69"},
 	}
 
-	if p := admin.api.p2p; p != nil {
-		info.ID = p.SelfNodeID()
-		info.ENR = p.SelfENR()
-		addrs := p.SelfListenAddrs()
-		if len(addrs) > 0 {
-			info.ListenAddr = addrs[0]
+	if admin.api != nil {
+		if p := admin.api.p2p; p != nil {
+			info.ID = p.SelfNodeID()
+			info.ENR = p.SelfENR()
+			addrs := p.SelfListenAddrs()
+			if len(addrs) > 0 {
+				info.ListenAddr = addrs[0]
+			}
 		}
 	}
 	return info
@@ -109,8 +111,10 @@ type PeerInfo struct {
 
 // Peers returns information about connected peers.
 func (admin *AdminAPI) Peers() []*PeerInfo {
-	if p := admin.api.p2p; p != nil {
-		return p.PeerInfos()
+	if admin.api != nil {
+		if p := admin.api.p2p; p != nil {
+			return p.PeerInfos()
+		}
 	}
 	return []*PeerInfo{}
 }
@@ -125,22 +129,26 @@ func (admin *AdminAPI) Datadir() string {
 // N42 uses libp2p; url must be a multiaddr string such as
 // /ip4/1.2.3.4/tcp/61016/p2p/12D3KooW...
 func (admin *AdminAPI) AddPeer(url string) (bool, error) {
-	if p := admin.api.p2p; p != nil {
-		if err := p.AddPeer(url); err != nil {
-			return false, err
+	if admin.api != nil {
+		if p := admin.api.p2p; p != nil {
+			if err := p.AddPeer(url); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
-		return true, nil
 	}
 	return false, nil
 }
 
 // RemovePeer disconnects from a remote node identified by its peer ID string.
 func (admin *AdminAPI) RemovePeer(peerID string) (bool, error) {
-	if p := admin.api.p2p; p != nil {
-		if err := p.RemovePeer(peerID); err != nil {
-			return false, err
+	if admin.api != nil {
+		if p := admin.api.p2p; p != nil {
+			if err := p.RemovePeer(peerID); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
-		return true, nil
 	}
 	return false, nil
 }
@@ -254,17 +262,21 @@ func (miner *MinerAPI) Stop() {}
 
 // Mining returns whether the node is currently producing blocks.
 func (miner *MinerAPI) Mining() bool {
-	if m := miner.api.miner; m != nil {
-		return m.Mining()
+	if miner.api != nil {
+		if m := miner.api.miner; m != nil {
+			return m.Mining()
+		}
 	}
 	return false
 }
 
 // SetEtherbase sets the etherbase (coinbase/reward) address for block production.
 func (miner *MinerAPI) SetEtherbase(etherbase types.Address) bool {
-	if m := miner.api.miner; m != nil {
-		m.SetCoinbase(etherbase)
-		return true
+	if miner.api != nil {
+		if m := miner.api.miner; m != nil {
+			m.SetCoinbase(etherbase)
+			return true
+		}
 	}
 	return false
 }
