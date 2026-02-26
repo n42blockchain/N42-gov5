@@ -58,6 +58,31 @@ const (
 	maxCallDataSize = 128 * 1024
 )
 
+// P2PAdmin is the minimal interface for P2P peer management exposed via admin_* RPC methods.
+// Implementations must be safe for concurrent use.
+type P2PAdmin interface {
+	// PeerInfos returns a snapshot of currently connected peer information.
+	PeerInfos() []*PeerInfo
+	// SelfNodeID returns the local node's libp2p peer ID string.
+	SelfNodeID() string
+	// SelfENR returns the local node's serialised ENR string (empty if unavailable).
+	SelfENR() string
+	// SelfListenAddrs returns the multiaddrs the node is listening on.
+	SelfListenAddrs() []string
+	// AddPeer connects to the peer at the given multiaddr string.
+	AddPeer(addr string) error
+	// RemovePeer disconnects from the peer with the given peer ID string.
+	RemovePeer(peerID string) error
+}
+
+// MinerAdmin is the minimal interface for miner control exposed via miner_* RPC methods.
+type MinerAdmin interface {
+	// Mining reports whether the node is currently producing blocks.
+	Mining() bool
+	// SetCoinbase sets the coinbase (reward) address for block production.
+	SetCoinbase(addr types.Address)
+}
+
 // API provides an Ethereum-compatible JSON-RPC API to access blockchain data.
 type API struct {
 	db      kv.RwDB
@@ -68,7 +93,9 @@ type API struct {
 	accountManager *accounts.Manager
 	chainConfig    *params.ChainConfig
 
-	gpo *Oracle
+	gpo   *Oracle
+	p2p   P2PAdmin  // optional; nil until SetP2P is called
+	miner MinerAdmin // optional; nil until SetMiner is called
 }
 
 // NewAPI creates a new protocol API.
@@ -85,6 +112,16 @@ func NewAPI(bc common.IBlockChain, db kv.RwDB, engine consensus.Engine, txspool 
 
 func (api *API) SetGpo(gpo *Oracle) {
 	api.gpo = gpo
+}
+
+// SetP2P wires a P2P backend into the API so that admin_* methods can return real peer data.
+func (api *API) SetP2P(p P2PAdmin) {
+	api.p2p = p
+}
+
+// SetMiner wires a miner backend into the API so that miner_* methods reflect actual state.
+func (api *API) SetMiner(m MinerAdmin) {
+	api.miner = m
 }
 
 func (api *API) Apis() []jsonrpc.API {

@@ -223,10 +223,20 @@ func (h *Handler) GetAllPeerRanges() map[peer.ID]*PeerBlockRange {
 	return h.peerTracker.GetAllPeerRanges()
 }
 
-// makeForkID creates an EIP-2124 fork identifier.
-// TODO: Implement based on the network's fork schedule.
+// makeForkID returns a 4-byte fork identifier for the eth/69 StatusPacket.
+//
+// N42 derives the fork ID from the genesis hash using the same approach as
+// utils.CreateForkDigest: the first 4 bytes of the genesis hash serve as the
+// network-specific fork fingerprint.  Peers that share the same genesis hash
+// will therefore always agree on the fork ID, while peers on a different chain
+// (different genesis) will detect the mismatch during the handshake.
 func (h *Handler) makeForkID() []byte {
-	return []byte{}
+	if h.genesisHash == (types.Hash{}) {
+		return []byte{}
+	}
+	id := make([]byte, 4)
+	copy(id, h.genesisHash[:4])
+	return id
 }
 
 // SetEarliestBlock updates the earliest available block (e.g., after pruning).

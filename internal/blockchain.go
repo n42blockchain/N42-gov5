@@ -201,9 +201,10 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 
 // Config, CurrentBlock, Blocks - see blockchain_reader.go
 
+// InsertHeader inserts a batch of block headers into the canonical chain.
+// Header-only insertion (light client mode) is not yet implemented.
 func (bc *BlockChain) InsertHeader(headers []block.IHeader) (int, error) {
-	// TODO: Implement header-only insertion for light client support
-	return 0, errors.New("InsertHeader not implemented")
+	return 0, errors.New("InsertHeader not implemented: light client mode is not yet supported")
 }
 
 // GenesisBlock - see blockchain_reader.go
@@ -1069,9 +1070,7 @@ func (bc *BlockChain) SetHead(head uint64) error {
 // AddFutureBlock checks if the block is within the max allowed window to get
 // accepted for future processing, and returns an error if the block is too far
 // ahead and was not added.
-//
-// TODO after the transition, the future block shouldn't be kept. Because
-// it's not checked in the Geth side anymore.
+// PoS blocks (difficulty == 0) are never queued as future blocks.
 func (bc *BlockChain) AddFutureBlock(blk block.IBlock) error {
 	max := uint64(time.Now().Unix() + maxTimeFutureBlocks)
 	if blk.Time() > max {

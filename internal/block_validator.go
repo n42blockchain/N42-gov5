@@ -145,7 +145,6 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 	}
 	// Validate the state root against the received state root and throw
 	// an error if they don't match.
-	// TODO 替换 emptyroot
 	if root := statedb.IntermediateRoot(); header.StateRoot() != root {
 		return fmt.Errorf("invalid merkle root (remote: %x local: %x)", header.Root, root)
 	}

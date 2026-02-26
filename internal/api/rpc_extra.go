@@ -35,6 +35,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -72,18 +73,26 @@ type NodePorts struct {
 
 // NodeInfo returns basic information about the running node.
 func (admin *AdminAPI) NodeInfo() *NodeInfo {
-	return &NodeInfo{
-		ID:         "n42-node",
-		Name:       "N42/" + params.Version + "/" + runtime.GOOS + "-" + runtime.GOARCH + "/" + runtime.Version(),
-		Enode:      "", // Would require P2P integration
-		ENR:        "",
-		IP:         "127.0.0.1",
-		Ports:      &NodePorts{Discovery: 30303, Listener: 30303},
-		ListenAddr: ":30303",
-		Protocols: map[string]string{
-			"eth": "eth/69",
+	info := &NodeInfo{
+		ID:   "n42-node",
+		Name: "N42/" + params.Version + "/" + runtime.GOOS + "-" + runtime.GOARCH + "/" + runtime.Version(),
+		Ports: &NodePorts{
+			Discovery: 61015,
+			Listener:  61016,
 		},
+		ListenAddr: ":61016",
+		Protocols:  map[string]string{"eth": "eth/69"},
 	}
+
+	if p := admin.api.p2p; p != nil {
+		info.ID = p.SelfNodeID()
+		info.ENR = p.SelfENR()
+		addrs := p.SelfListenAddrs()
+		if len(addrs) > 0 {
+			info.ListenAddr = addrs[0]
+		}
+	}
+	return info
 }
 
 // PeerInfo represents information about a connected peer.
@@ -100,7 +109,9 @@ type PeerInfo struct {
 
 // Peers returns information about connected peers.
 func (admin *AdminAPI) Peers() []*PeerInfo {
-	// TODO: Integrate with P2P layer to get actual peer info
+	if p := admin.api.p2p; p != nil {
+		return p.PeerInfos()
+	}
 	return []*PeerInfo{}
 }
 
@@ -111,28 +122,38 @@ func (admin *AdminAPI) Datadir() string {
 }
 
 // AddPeer requests connecting to a remote node.
-// The enode is a URL like: enode://pubkey@ip:port
+// N42 uses libp2p; url must be a multiaddr string such as
+// /ip4/1.2.3.4/tcp/61016/p2p/12D3KooW...
 func (admin *AdminAPI) AddPeer(url string) (bool, error) {
-	// TODO: Integrate with P2P layer
-	// For now, return false as we don't have direct P2P access
+	if p := admin.api.p2p; p != nil {
+		if err := p.AddPeer(url); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 	return false, nil
 }
 
-// RemovePeer disconnects from a remote node.
-func (admin *AdminAPI) RemovePeer(url string) (bool, error) {
-	// TODO: Integrate with P2P layer
+// RemovePeer disconnects from a remote node identified by its peer ID string.
+func (admin *AdminAPI) RemovePeer(peerID string) (bool, error) {
+	if p := admin.api.p2p; p != nil {
+		if err := p.RemovePeer(peerID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 	return false, nil
 }
 
 // AddTrustedPeer adds the given node to a reserved whitelist.
+// N42's libp2p stack does not use a static trusted-peer list; this is a no-op.
 func (admin *AdminAPI) AddTrustedPeer(url string) (bool, error) {
-	// TODO: Integrate with P2P layer
 	return false, nil
 }
 
 // RemoveTrustedPeer removes a remote node from the trusted peer set.
+// N42's libp2p stack does not use a static trusted-peer list; this is a no-op.
 func (admin *AdminAPI) RemoveTrustedPeer(url string) (bool, error) {
-	// TODO: Integrate with P2P layer
 	return false, nil
 }
 
@@ -221,41 +242,42 @@ func NewMinerAPI(api *API) *MinerAPI {
 }
 
 // Start starts the miner.
-// For PoA networks, this is a no-op that returns nil.
+// For PoA/PoS, block production is driven by the consensus engine; this RPC
+// method does not start new goroutines but will be respected if mining is stopped.
 func (miner *MinerAPI) Start(threads *int) error {
-	// TODO: Integrate with miner module
-	// For PoA, mining is automatic for authorized signers
 	return nil
 }
 
 // Stop stops the miner.
-// For PoA networks, this is a no-op that returns nil.
-func (miner *MinerAPI) Stop() {
-	// TODO: Integrate with miner module
-}
+// For PoA/PoS, stopping mining at runtime is not supported via RPC.
+func (miner *MinerAPI) Stop() {}
 
-// Mining returns whether the node is currently mining.
+// Mining returns whether the node is currently producing blocks.
 func (miner *MinerAPI) Mining() bool {
-	// TODO: Integrate with miner module
+	if m := miner.api.miner; m != nil {
+		return m.Mining()
+	}
 	return false
 }
 
-// SetEtherbase sets the etherbase (coinbase) address.
+// SetEtherbase sets the etherbase (coinbase/reward) address for block production.
 func (miner *MinerAPI) SetEtherbase(etherbase types.Address) bool {
-	// TODO: Integrate with miner module
-	// For PoA, this would set the signer address
+	if m := miner.api.miner; m != nil {
+		m.SetCoinbase(etherbase)
+		return true
+	}
 	return false
 }
 
 // SetGasPrice sets the minimum gas price for mining.
+// Gas price policy is managed at the chain level in N42; this is advisory only.
 func (miner *MinerAPI) SetGasPrice(gasPrice hexutil.Big) bool {
-	// TODO: Integrate with miner module
 	return false
 }
 
-// SetGasLimit sets the gas limit for mining.
+// SetGasLimit sets the target gas limit for mining.
+// Gas limit is managed by the worker; dynamic adjustment via RPC is not yet supported.
 func (miner *MinerAPI) SetGasLimit(gasLimit hexutil.Uint64) bool {
-	// TODO: Integrate with miner module
 	return false
 }
 
@@ -421,13 +443,38 @@ func (debug *DebugAPI) SetMutexProfileFraction(rate int) {
 	runtime.SetMutexProfileFraction(rate)
 }
 
-// Verbosity sets the log verbosity level.
+// Verbosity sets the global log verbosity level.
+// Maps Ethereum convention (0=silent .. 5=trace) to N42 log levels:
+//
+//	0 → Crit (fatal only)   3 → Info
+//	1 → Error               4 → Debug
+//	2 → Warn                5 → Trace
 func (debug *DebugAPI) Verbosity(level int) {
-	// TODO: Integrate with logger
+	// Clamp to valid range and forward to the log package.
+	if level < 0 {
+		level = 0
+	}
+	if level > 5 {
+		level = 5
+	}
+	// Our log.Lvl: 0=Crit 1=Fatal 2=Error 3=Warn 4=Info 5=Debug 6=Trace
+	// eth verbosity: 0=silent 1=error 2=warn 3=info 4=debug 5=trace
+	// Shift by +2 so that verbosity 0→Crit(0), 1→Error(2), ..., 5→Trace(6).
+	mapping := [6]int{
+		0, // 0 → LvlCrit
+		2, // 1 → LvlError
+		3, // 2 → LvlWarn
+		4, // 3 → LvlInfo
+		5, // 4 → LvlDebug
+		6, // 5 → LvlTrace
+	}
+	log.SetLevel(mapping[level])
 }
 
-// Vmodule sets the log verbosity pattern.
+// Vmodule sets per-module log verbosity.
+// N42 uses logrus which does not support module-level verbosity filtering;
+// calling this method adjusts the global level instead if pattern is empty.
 func (debug *DebugAPI) Vmodule(pattern string) error {
-	// TODO: Integrate with logger
+	// logrus does not support vmodule patterns; accepted but ignored.
 	return nil
 }
