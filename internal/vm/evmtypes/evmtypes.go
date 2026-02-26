@@ -34,6 +34,9 @@ type BlockContext struct {
 	// EIP-4844: Blob gas fields (Cancun)
 	BlobBaseFee   *uint256.Int // Provides information for BLOBBASEFEE
 	ExcessBlobGas uint64       // Excess blob gas for EIP-4844
+
+	// EIP-7843: Beacon slot number (Amsterdam/Fusaka)
+	Slot uint64 // Provides information for SLOTNUM; set to consensus layer slot number
 }
 
 // TxContext provides the EVM with information about a transaction.

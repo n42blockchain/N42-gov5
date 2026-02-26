@@ -399,12 +399,13 @@ func enable7951(jt *JumpTable) {
 }
 
 // newFusakaInstructionSet returns the Fusaka instruction set
-// Fusaka = Osaka + Fusaka EIPs
+// Fusaka = Osaka + Fusaka EIPs + Amsterdam EIPs
 func newFusakaInstructionSet() JumpTable {
 	instructionSet := newOsakaInstructionSet()
 	enable7907(&instructionSet) // EIP-7907: Code size limit increase
 	enable7951(&instructionSet) // EIP-7951: P-256 precompile
 	enable7939(&instructionSet) // EIP-7939: CLZ instruction
+	enable7843(&instructionSet) // EIP-7843: SLOTNUM opcode
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }
@@ -417,6 +418,7 @@ func init() {
 	// Register Fusaka EIPs
 	activators[7907] = enable7907
 	activators[7951] = enable7951
+	// Note: EIP-7843 (enable7843) is registered in eips_amsterdam.go
 }
 
 // GetFusakaInstructionSet returns the Fusaka instruction set
