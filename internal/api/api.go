@@ -73,6 +73,9 @@ type P2PAdmin interface {
 	AddPeer(addr string) error
 	// RemovePeer disconnects from the peer with the given peer ID string.
 	RemovePeer(peerID string) error
+	// HighestPeerBlock returns the highest block number reported by any connected peer.
+	// Returns 0 when no peers are connected or no chain state is available.
+	HighestPeerBlock() uint64
 }
 
 // MinerAdmin is the minimal interface for miner control exposed via miner_* RPC methods.

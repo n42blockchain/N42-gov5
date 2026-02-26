@@ -68,9 +68,12 @@ func (s *BlockChainAPI) Syncing() (interface{}, error) {
 	}
 	currentHeight := currentBlock.Number64().Uint64()
 
-	// TODO: obtain highest block from P2P layer for accurate sync status.
-	// Currently simplified: if the node has block data, it reports as synced.
 	highestBlock := currentHeight
+	if s.api.p2p != nil {
+		if h := s.api.p2p.HighestPeerBlock(); h > highestBlock {
+			highestBlock = h
+		}
+	}
 
 	if currentHeight >= highestBlock {
 		return false, nil
@@ -93,8 +96,10 @@ func (s *BlockChainAPI) Coinbase() (types.Address, error) {
 }
 
 // Mining returns whether this node is currently mining.
-// TODO: integrate with miner module for actual status.
 func (s *BlockChainAPI) Mining() bool {
+	if s.api.miner != nil {
+		return s.api.miner.Mining()
+	}
 	return false
 }
 

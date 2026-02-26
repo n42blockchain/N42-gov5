@@ -395,41 +395,41 @@ func (es *EventSystem) lightFilterNewHead(newHeader block.IHeader, callBack func
 
 // filter logs of a single header in light client mode
 func (es *EventSystem) lightFilterLogs(header block.IHeader, addresses []types.Address, topics [][]types.Hash, remove bool) []*block.Log {
-	// TODO: use header.Bloom when available
-	bloom, _ := types.NewBloom(100)
-	if bloomFilter(bloom, addresses, topics) {
-		logsList, err := es.api.BlockChain().GetLogs(header.Hash())
+	if h, ok := header.(*block.Header); ok {
+		if !bloomFilter(h.Bloom, addresses, topics) {
+			return nil
+		}
+	}
+	logsList, err := es.api.BlockChain().GetLogs(header.Hash())
+	if err != nil {
+		return nil
+	}
+	var unfiltered []*block.Log
+	for _, logs := range logsList {
+		for _, log := range logs {
+			logcopy := *log
+			logcopy.Removed = remove
+			unfiltered = append(unfiltered, &logcopy)
+		}
+	}
+	logs := filterLogs(unfiltered, nil, nil, addresses, topics)
+	if len(logs) > 0 && logs[0].TxHash == (types.Hash{}) {
+		// We have matching but non-derived logs
+		receipts, err := es.api.BlockChain().GetReceipts(header.Hash())
 		if err != nil {
 			return nil
 		}
-		var unfiltered []*block.Log
-		for _, logs := range logsList {
-			for _, log := range logs {
+		unfiltered = unfiltered[:0]
+		for _, receipt := range receipts {
+			for _, log := range receipt.Logs {
 				logcopy := *log
 				logcopy.Removed = remove
 				unfiltered = append(unfiltered, &logcopy)
 			}
 		}
-		logs := filterLogs(unfiltered, nil, nil, addresses, topics)
-		if len(logs) > 0 && logs[0].TxHash == (types.Hash{}) {
-			// We have matching but non-derived logs
-			receipts, err := es.api.BlockChain().GetReceipts(header.Hash())
-			if err != nil {
-				return nil
-			}
-			unfiltered = unfiltered[:0]
-			for _, receipt := range receipts {
-				for _, log := range receipt.Logs {
-					logcopy := *log
-					logcopy.Removed = remove
-					unfiltered = append(unfiltered, &logcopy)
-				}
-			}
-			logs = filterLogs(unfiltered, nil, nil, addresses, topics)
-		}
-		return logs
+		logs = filterLogs(unfiltered, nil, nil, addresses, topics)
 	}
-	return nil
+	return logs
 }
 
 // eventLoop (un)installs filters and processes mux events.

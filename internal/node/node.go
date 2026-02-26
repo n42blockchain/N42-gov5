@@ -1042,6 +1042,10 @@ func (a *p2pAdminAdapter) RemovePeer(peerID string) error {
 	return a.svc.Disconnect(pid)
 }
 
+func (a *p2pAdminAdapter) HighestPeerBlock() uint64 {
+	return a.svc.Peers().HighestBlockNumber().Uint64()
+}
+
 // minerAdminAdapter bridges *miner.Miner to api.MinerAdmin.
 type minerAdminAdapter struct {
 	m *miner.Miner
