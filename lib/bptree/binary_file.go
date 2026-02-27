@@ -26,10 +26,10 @@ import (
 	"strconv"
 )
 
-// Size in bytes of data blocks read/written from/to the file system.
+// BLOCKSIZE is the size in bytes of data blocks read/written from/to the file system.
 const BLOCKSIZE int64 = 4096
 
-// BinaryFile type represents an open binary file.
+// BinaryFile represents an open binary file.
 type BinaryFile struct {
 	file      *os.File
 	path      string
@@ -38,7 +38,7 @@ type BinaryFile struct {
 	opened    bool
 }
 
-// RandomBinaryReader reads data chuncks randomly from a binary file.
+// RandomBinaryReader reads data chunks randomly from a binary file.
 type RandomBinaryReader struct {
 	sourceFile *BinaryFile
 	chunckSize int
@@ -62,14 +62,13 @@ func (r RandomBinaryReader) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-func (r RandomBinaryReader) readAtRandomOffset(b []byte) (n int, err error) {
+func (r RandomBinaryReader) readAtRandomOffset(b []byte) (int, error) {
 	randomValue, err := rand.Int(rand.Reader, big.NewInt(r.sourceFile.size-int64(len(b))))
 	if err != nil {
 		return 0, fmt.Errorf("cannot generate random offset: %w", err)
 	}
 	randomOffset := randomValue.Int64()
-	_, err = r.sourceFile.file.Seek(randomOffset, io.SeekStart)
-	if err != nil {
+	if _, err = r.sourceFile.file.Seek(randomOffset, io.SeekStart); err != nil {
 		return 0, fmt.Errorf("cannot seek to offset %d: %w", randomOffset, err)
 	}
 	bytesRead, err := r.sourceFile.file.Read(b)
@@ -124,8 +123,7 @@ func OpenBinaryFile(path string) *BinaryFile {
 	ensure(err == nil, fmt.Sprintf("OpenBinaryFile: cannot stat file %s error %s\n", path, err))
 	ensure(info.Size() >= 0, fmt.Sprintf("OpenBinaryFile: negative size %d file %s\n", info.Size(), path))
 
-	binaryFile := &BinaryFile{path: path, blockSize: BLOCKSIZE, size: info.Size(), file: file, opened: true}
-	return binaryFile
+	return &BinaryFile{path: path, blockSize: BLOCKSIZE, size: info.Size(), file: file, opened: true}
 }
 
 func (f *BinaryFile) rewind() {
@@ -134,13 +132,8 @@ func (f *BinaryFile) rewind() {
 	ensure(offset == 0, fmt.Sprintf("rewind: unexpected offset after seeking: %d\n", offset))
 }
 
-func (f *BinaryFile) Name() string {
-	return f.path
-}
-
-func (f *BinaryFile) Size() int64 {
-	return f.size
-}
+func (f *BinaryFile) Name() string      { return f.path }
+func (f *BinaryFile) Size() int64        { return f.size }
 
 func (f *BinaryFile) NewReader() *bufio.Reader {
 	ensure(f.opened, fmt.Sprintf("NewReader: file %s is not opened\n", f.path))

@@ -20,16 +20,7 @@ import (
 	"fmt"
 )
 
-type Stats struct {
-	ExposedCount  uint
-	RehashedCount uint
-	CreatedCount  uint
-	UpdatedCount  uint
-	DeletedCount  uint
-	OpeningHashes uint
-	ClosingHashes uint
-}
-
+// Tree23 represents a 2-3 tree with bulk upsert and delete operations.
 type Tree23 struct {
 	root *Node23
 }
@@ -65,7 +56,6 @@ func (t *Tree23) IsValid() (bool, error) {
 	if t.root == nil {
 		return true, nil
 	}
-	// Last leaf must have sentinel next key
 	if lastLeaf := t.root.lastLeaf(); lastLeaf.keyCount() > 0 && lastLeaf.nextKey() != nil {
 		return false, fmt.Errorf("no sentinel next key in last leaf %d", &lastLeaf)
 	}
@@ -73,18 +63,15 @@ func (t *Tree23) IsValid() (bool, error) {
 }
 
 func (t *Tree23) Graph(filename string, debug bool) {
-	graph := NewGraph(t.root)
-	graph.saveDot(filename, debug)
+	NewGraph(t.root).saveDot(filename, debug)
 }
 
 func (t *Tree23) GraphAndPicture(filename string) error {
-	graph := NewGraph(t.root)
-	return graph.saveDotAndPicture(filename, false)
+	return NewGraph(t.root).saveDotAndPicture(filename, false)
 }
 
 func (t *Tree23) GraphAndPictureDebug(filename string) error {
-	graph := NewGraph(t.root)
-	return graph.saveDotAndPicture(filename, true)
+	return NewGraph(t.root).saveDotAndPicture(filename, true)
 }
 
 func (t *Tree23) Height() int {
@@ -116,8 +103,7 @@ func (t *Tree23) WalkKeysPostOrder() []Felt {
 		}
 		return nil
 	})
-	keys := deref(keyPointers)
-	return keys
+	return deref(keyPointers)
 }
 
 func (t *Tree23) Upsert(kvItems KeyValues) *Tree23 {
@@ -132,7 +118,7 @@ func (t *Tree23) UpsertWithStats(kvItems KeyValues, stats *Stats) *Tree23 {
 	} else {
 		t.root = promote(promoted, intermediateKeys, stats)
 	}
-	stats.RehashedCount, stats.ClosingHashes = t.countUpsertRehashedNodes()
+	stats.RehashedCount, stats.ClosingHashes = t.countRehashedNodes(func(n *Node23) bool { return n.exposed })
 	return t
 }
 
@@ -143,24 +129,13 @@ func (t *Tree23) Delete(keyToDelete []Felt) *Tree23 {
 func (t *Tree23) DeleteWithStats(keysToDelete []Felt, stats *Stats) *Tree23 {
 	newRoot, nextKey, intermediateKeys := del(t.root, keysToDelete, stats)
 	t.root, _ = demote(newRoot, nextKey, intermediateKeys, stats)
-	stats.RehashedCount, stats.ClosingHashes = t.countDeleteRehashedNodes()
+	stats.RehashedCount, stats.ClosingHashes = t.countRehashedNodes(func(n *Node23) bool { return n.updated })
 	return t
 }
 
-func (t *Tree23) countUpsertRehashedNodes() (rehashedCount uint, closingHashes uint) {
+func (t *Tree23) countRehashedNodes(predicate func(*Node23) bool) (rehashedCount uint, closingHashes uint) {
 	t.WalkPostOrder(func(n *Node23) interface{} {
-		if n.exposed {
-			rehashedCount++
-			closingHashes += n.howManyHashes()
-		}
-		return nil
-	})
-	return rehashedCount, closingHashes
-}
-
-func (t *Tree23) countDeleteRehashedNodes() (rehashedCount uint, closingHashes uint) {
-	t.WalkPostOrder(func(n *Node23) interface{} {
-		if n.updated {
+		if predicate(n) {
 			rehashedCount++
 			closingHashes += n.howManyHashes()
 		}
