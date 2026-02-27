@@ -37,7 +37,7 @@ var (
 const (
 	VersionMajor       = 5   // Major version - annual release
 	VersionMinor       = 4   // Minor version - feature release
-	VersionBuild       = 658 // Build number - auto-incremented
+	VersionBuild       = 659 // Build number - auto-incremented
 	VersionModifier    = ""  // Modifier component (alpha, beta, stable)
 	VersionKeyCreated  = "n42VersionCreated"
 	VersionKeyFinished = "n42VersionFinished"
@@ -52,10 +52,6 @@ func withModifier(vsn string) string {
 
 func isStable() bool {
 	return VersionModifier == "stable"
-}
-
-func isRelease() bool {
-	return isStable() || VersionModifier == "alpha" || VersionModifier == "beta"
 }
 
 // Version holds the textual version string.
