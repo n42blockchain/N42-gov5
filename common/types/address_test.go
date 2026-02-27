@@ -49,34 +49,6 @@ func TestFromECDSAPub(t *testing.T) {
 	t.Log(addr.String())
 }
 
-// func TestAddress_DecodeString(t *testing.T) {
-// 	_, pub, err := crypto.GenerateEd25519Key(rand.Reader)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-
-// 	addr := PublicToAddress(pub)
-// 	t.Log(addr.String())
-// 	t.Log(addr.Bytes())
-
-// 	h := addr.HexBytes()
-// 	var c Address
-// 	if c.DecodeHexBytes(h) {
-// 		t.Log(h)
-// 		t.Logf("c: %s", c.String())
-// 	}
-
-// 	var a, b Address
-// 	if a.DecodeString(addr.String()) {
-// 		t.Logf("a: %s", a.String())
-// 	}
-// 	if b.DecodeBytes(addr.Bytes()) {
-// 		t.Logf("b: %s", b.String())
-// 	}
-
-// 	t.Log("done!")
-// }
-
 func TestPrivateToAddress(t *testing.T) {
 	priv, pub, err := crypto.GenerateEd25519Key(rand.Reader)
 	if err != nil {
@@ -155,19 +127,6 @@ func TestSign(t *testing.T) {
 		t.Log("verify success")
 	}
 }
-
-// func TestAddressToInt(t *testing.T) {
-// 	priv, _, err := crypto.GenerateECDSAKeyPair(rand.Reader)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-
-// 	sp, err := utils.PrivateToString(priv)
-
-// 	addr := PrivateToAddress(priv)
-// 	t.Logf("address: %s", addr)
-// 	t.Logf("private: %s", sp)
-// }
 
 func TestAddressMarshal(t *testing.T) {
 	aa := make(map[Address]*uint256.Int)

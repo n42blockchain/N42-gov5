@@ -61,7 +61,6 @@ func (h *Signature) Unmarshal(data []byte) error {
 	return h.SetBytes(data)
 }
 
-// Hash supports the %v, %s, %q, %x, %X and %d format verbs.
 func (h Signature) Format(s fmt.State, c rune) {
 	hexb := make([]byte, 2+len(h)*2)
 	copy(hexb, "0x")
@@ -90,17 +89,14 @@ func (h Signature) Format(s fmt.State, c rune) {
 	}
 }
 
-// UnmarshalText parses a hash in hex syntax.
 func (h *Signature) UnmarshalText(input []byte) error {
 	return hexutil.UnmarshalFixedText("Signature", input, h[:])
 }
 
-// UnmarshalJSON parses a hash in hex syntax.
 func (h *Signature) UnmarshalJSON(input []byte) error {
 	return hexutil.UnmarshalFixedJSON(signatureT, input, h[:])
 }
 
-// MarshalText returns the hex representation of h.
 func (h Signature) MarshalText() ([]byte, error) {
 	return hexutil.Bytes(h[:]).MarshalText()
 }
@@ -112,15 +108,12 @@ func (h PublicKey) String() string {
 	return h.Hex()
 }
 
-func (h PublicKey) Bytes() []byte {
-	return h[:]
-}
+func (h PublicKey) Bytes() []byte { return h[:] }
 
 func (h *PublicKey) SetBytes(b []byte) error {
 	if len(b) != PublicKeyLength {
 		return fmt.Errorf("invalid bytes len %d", len(b))
 	}
-
 	copy(h[:], b[:PublicKeyLength])
 	return nil
 }
@@ -137,23 +130,18 @@ func (h *PublicKey) Unmarshal(data []byte) error {
 	return h.SetBytes(data)
 }
 
-// MarshalText returns the hex representation of a.
 func (a PublicKey) MarshalText() ([]byte, error) {
 	return hexutil.Bytes(a[:]).MarshalText()
 }
 
-// UnmarshalText parses a hash in hex syntax.
 func (a *PublicKey) UnmarshalText(input []byte) error {
 	return hexutil.UnmarshalFixedText("PublicKey", input, a[:])
 }
 
-// UnmarshalJSON parses a hash in hex syntax.
 func (a *PublicKey) UnmarshalJSON(input []byte) error {
 	return hexutil.UnmarshalFixedJSON(publicKeyT, input, a[:])
 }
 
-// Format implements fmt.Formatter.
-// supports the %v, %s, %q, %x, %X and %d format verbs.
 func (h PublicKey) Format(s fmt.State, c rune) {
 	hexb := make([]byte, 2+len(h)*2)
 	copy(hexb, "0x")

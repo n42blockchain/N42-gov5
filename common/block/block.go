@@ -97,7 +97,6 @@ func (b *Block) Transactions() []*transaction.Transaction {
 	if b.body != nil {
 		return b.body.Transactions()
 	}
-
 	return nil
 }
 
@@ -121,13 +120,6 @@ func (b *Block) Unmarshal(data []byte) error {
 	return b.FromProtoMessage(&pBlock)
 }
 
-// NewBlock creates a new block. The input data is copied,
-// changes to header and to the field values will not affect the
-// block.
-//
-// The values of TxHash, UncleHash, ReceiptHash and Bloom in header
-// are ignored and set to values derived from the given txs, uncles
-// and receipts.
 func NewBlock(h IHeader, txs []*transaction.Transaction) IBlock {
 	return &Block{
 		header:    CopyHeader(h.(*Header)),

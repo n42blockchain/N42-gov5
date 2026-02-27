@@ -21,8 +21,6 @@ import (
 	"encoding/hex"
 )
 
-// FromHex returns the bytes represented by the hexadecimal string s.
-// s may be prefixed with "0x".
 func FromHex1(s string) []byte {
 	if has0xPrefix(s) {
 		s = s[2:]
@@ -33,12 +31,10 @@ func FromHex1(s string) []byte {
 	return Hex2Bytes(s)
 }
 
-// has0xPrefix validates str begins with '0x' or '0X'.
 func has0xPrefix(str string) bool {
 	return len(str) >= 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')
 }
 
-// Hex2Bytes returns the bytes represented by the hexadecimal string str.
 func Hex2Bytes(str string) []byte {
 	h, _ := hex.DecodeString(str)
 	return h
@@ -46,56 +42,44 @@ func Hex2Bytes(str string) []byte {
 
 func KeyCmp(key1, key2 []byte) (int, bool) {
 	switch {
-	//both keys are empty
 	case len(key1) == 0 && len(key2) == 0:
 		return 0, true
-	//	key1 is empty
-	case len(key1) == 0 && len(key2) != 0:
+	case len(key1) == 0:
 		return 1, false
-	//	key2 is empty
-	case len(key1) != 0 && len(key2) == 0:
+	case len(key2) == 0:
 		return -1, false
 	default:
 		return bytes.Compare(key1, key2), false
 	}
 }
 
-// CopyBytes returns an exact copy of the provided bytes.
-func CopyBytes(b []byte) (copiedBytes []byte) {
+func CopyBytes(b []byte) []byte {
 	if b == nil {
 		return nil
 	}
-	copiedBytes = make([]byte, len(b))
-	copy(copiedBytes, b)
-
-	return
+	cpy := make([]byte, len(b))
+	copy(cpy, b)
+	return cpy
 }
 
-// RightPadBytes zero-pads slice to the right up to length l.
 func RightPadBytes(slice []byte, l int) []byte {
 	if l <= len(slice) {
 		return slice
 	}
-
 	padded := make([]byte, l)
 	copy(padded, slice)
-
 	return padded
 }
 
-// LeftPadBytes zero-pads slice to the left up to length l.
 func LeftPadBytes(slice []byte, l int) []byte {
 	if l <= len(slice) {
 		return slice
 	}
-
 	padded := make([]byte, l)
 	copy(padded[l-len(slice):], slice)
-
 	return padded
 }
 
-// TrimLeftZeroes returns a subslice of s without leading zeroes
 func TrimLeftZeroes(s []byte) []byte {
 	idx := 0
 	for ; idx < len(s); idx++ {
@@ -106,7 +90,6 @@ func TrimLeftZeroes(s []byte) []byte {
 	return s[idx:]
 }
 
-// TrimRightZeroes returns a subslice of s without trailing zeroes
 func TrimRightZeroes(s []byte) []byte {
 	idx := len(s)
 	for ; idx > 0; idx-- {

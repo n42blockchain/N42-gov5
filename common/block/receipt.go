@@ -30,10 +30,7 @@ import (
 )
 
 const (
-	// ReceiptStatusFailed is the status code of a transaction if execution failed.
-	ReceiptStatusFailed = uint64(0)
-
-	// ReceiptStatusSuccessful is the status code of a transaction if execution succeeded.
+	ReceiptStatusFailed     = uint64(0)
 	ReceiptStatusSuccessful = uint64(1)
 )
 
@@ -52,10 +49,8 @@ func (rs *Receipts) Unmarshal(data []byte) error {
 	return rs.FromProtoMessage(pb)
 }
 
-// Len returns the number of receipts in this list.
 func (rs Receipts) Len() int { return len(rs) }
 
-// EncodeIndex encodes the i'th receipt to w.
 func (rs Receipts) EncodeIndex(i int, w *bytes.Buffer) {
 	r := rs[i]
 
@@ -92,7 +87,6 @@ func (rs *Receipts) ToProtoMessage() proto.Message {
 }
 
 type Receipt struct {
-	// Consensus fields: These fields are defined by the Yellow Paper
 	Type              uint8  `json:"type,omitempty"`
 	PostState         []byte `json:"root"`
 	Status            uint64 `json:"status"`
@@ -100,14 +94,10 @@ type Receipt struct {
 	Bloom             Bloom  `json:"logsBloom"         gencodec:"required"`
 	Logs              []*Log `json:"logs"              gencodec:"required"`
 
-	// Implementation fields: These fields are added by geth when processing a transaction.
-	// They are stored in the chain database.
 	TxHash          types.Hash    `json:"transactionHash" gencodec:"required"`
 	ContractAddress types.Address `json:"contractAddress"`
 	GasUsed         uint64        `json:"gasUsed" gencodec:"required"`
 
-	// Inclusion information: These fields provide information about the inclusion of the
-	// transaction corresponding to this receipt.
 	BlockHash        types.Hash   `json:"blockHash,omitempty"`
 	BlockNumber      *uint256.Int `json:"blockNumber,omitempty"`
 	TransactionIndex uint         `json:"transactionIndex"`
@@ -177,7 +167,6 @@ func (r *Receipt) fromProtoMessage(message proto.Message) error {
 	return nil
 }
 
-// storedReceipt is the consensus encoding of a receipt.
 type storedReceipt struct {
 	PostStateOrStatus uint64
 	CumulativeGasUsed uint64
