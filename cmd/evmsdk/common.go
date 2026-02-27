@@ -18,34 +18,16 @@ package evmsdk
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"path"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/go-kit/kit/transport/http/jsonrpc"
-	"github.com/gorilla/websocket"
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/crypto/bls"
-	"github.com/n42blockchain/N42/common/crypto/ecies"
-	"github.com/n42blockchain/N42/common/hexutil"
-	commTyp "github.com/n42blockchain/N42/common/types"
+
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules/state"
-	"golang.org/x/crypto/sha3"
 )
 
 const (
@@ -62,6 +44,8 @@ var isDebug = true
 
 var EE *EvmEngine = &EvmEngine{}
 
+// Emit is the main entry point for the mobile SDK. It dispatches JSON requests
+// to the appropriate engine methods and returns JSON responses.
 func Emit(jsonText string) string {
 	defer func() {
 		if err := recover(); err != nil {
@@ -71,6 +55,7 @@ func Emit(jsonText string) string {
 			}
 		}
 	}()
+
 	er := new(EmitResponse)
 	eq := new(EmitRequest)
 	if err := json.Unmarshal([]byte(jsonText), eq); err != nil {
@@ -127,8 +112,7 @@ func Emit(jsonText string) string {
 		}
 		er.Data = data
 	case "state":
-		data := EE.State()
-		er.Data = data
+		er.Data = EE.State()
 	case "decrypt":
 		data, err := EE.Decrypt(eq)
 		if err != nil {
@@ -164,7 +148,7 @@ func (e *EvmEngine) initLogger(lvl string) {
 }
 
 func ensureLogFileExisted() {
-	logFilePath := path.Join(EE.AppBasePath, LogFile)
+	logFilePath := filepath.Join(EE.AppBasePath, LogFile)
 	f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		fmt.Printf("create log file error,err=%+v\n", err)
@@ -192,6 +176,8 @@ func simpleLogf(txt string, params ...interface{}) {
 	}
 }
 
+// --- Types ---
+
 type Setting struct {
 	Height      int
 	AppBasePath string
@@ -204,6 +190,7 @@ type EmitRequest struct {
 	Typ string      `json:"type"`
 	Val interface{} `json:"val"`
 }
+
 type EmitResponse struct {
 	Code    int         `json:"code"`
 	Message string      `json:"message"`
@@ -230,19 +217,12 @@ type AccountReward struct {
 	Number  *uint256.Int
 	Value   *uint256.Int
 }
+
 type AccountRewards []*AccountReward
 
-func (r AccountRewards) Len() int {
-	return len(r)
-}
-
-func (r AccountRewards) Less(i, j int) bool {
-	return strings.Compare(r[i].Account, r[j].Account) > 0
-}
-
-func (r AccountRewards) Swap(i, j int) {
-	r[i], r[j] = r[j], r[i]
-}
+func (r AccountRewards) Len() int           { return len(r) }
+func (r AccountRewards) Less(i, j int) bool { return strings.Compare(r[i].Account, r[j].Account) > 0 }
+func (r AccountRewards) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
 
 type InnerError struct {
 	Code int
@@ -251,13 +231,7 @@ type InnerError struct {
 
 func (i InnerError) Error() string { return fmt.Sprintf("code:%+v,msg:%+v", i.Code, i.Msg) }
 
-type AggSign struct {
-	Number    uint64            `json:"number"`
-	StateRoot commTyp.Hash      `json:"stateRoot"`
-	Sign      commTyp.Signature `json:"sign"`
-	PublicKey commTyp.PublicKey `json:"publicKey"`
-	Address   commTyp.Address   `json:"address"`
-}
+// --- Engine lifecycle ---
 
 func (e *EvmEngine) Start() error {
 	e.mu.Lock()
@@ -295,53 +269,44 @@ func (e *EvmEngine) State() string {
 	return "stopped"
 }
 
-/*
-	{
-		"type":"setting",
-		"val":{
-			"app_base_path":"/sd/0/evm/",
-			"account":"abcdef1234"
-		}
-	}
-*/
 func (e *EvmEngine) Setting(req *EmitRequest) error {
 	m, ok := req.Val.(map[string]interface{})
 	if !ok {
 		return fmt.Errorf("type assert error,any==>smap")
 	}
 
-	appBasePath, ok := m["app_base_path"]
-	if ok {
-		if appBasePathStr, ok := appBasePath.(string); ok {
-			e.mu.Lock()
-			e.AppBasePath = appBasePathStr
-			e.mu.Unlock()
-		}
+	e.mu.Lock()
+	if str, ok := getStringField(m, "app_base_path"); ok {
+		e.AppBasePath = str
 	}
-	if privKeyIfce, ok := m["priv_key"]; ok {
-		if privKey, ok := privKeyIfce.(string); ok {
-			e.PrivKey = privKey
-		}
-	}
-	if serverUriIfce, ok := m["server_uri"]; ok {
-		if serverUri, ok := serverUriIfce.(string); ok {
-			e.ServerUri = serverUri
-		}
-	}
-	if accIfce, ok := m["account"]; ok {
-		if account, ok := accIfce.(string); ok {
-			e.Account = account
-		}
-	}
+	e.mu.Unlock()
 
-	if logLvlIfce, ok := m["log_level"]; ok {
-		if loglvlStr, ok := logLvlIfce.(string); ok {
-			e.initLogger(loglvlStr)
-		}
+	if str, ok := getStringField(m, "priv_key"); ok {
+		e.PrivKey = str
+	}
+	if str, ok := getStringField(m, "server_uri"); ok {
+		e.ServerUri = str
+	}
+	if str, ok := getStringField(m, "account"); ok {
+		e.Account = str
+	}
+	if str, ok := getStringField(m, "log_level"); ok {
+		e.initLogger(str)
 	}
 
 	return nil
 }
+
+// getStringField extracts a string value from a map[string]interface{}.
+func getStringField(m map[string]interface{}, key string) (string, bool) {
+	v, ok := m[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
 func (e *EvmEngine) List() (interface{}, error) {
 	type l struct {
 		A string `json:"a"`
@@ -350,516 +315,41 @@ func (e *EvmEngine) List() (interface{}, error) {
 	}
 
 	ll := []*l{
-		{
-			A: "a",
-			B: true,
-			C: 123,
-		}, {
-			A: "aa",
-			B: false,
-			C: 456,
-		},
+		{A: "a", B: true, C: 123},
+		{A: "aa", B: false, C: 456},
 	}
 	return ll, nil
 }
-func (e *EvmEngine) SaveFile() error {
-	return nil
-}
-func (e *EvmEngine) ReloadFile() error {
-	return nil
-}
+
+func (e *EvmEngine) SaveFile() error   { return nil }
+func (e *EvmEngine) ReloadFile() error { return nil }
+
 func (e *EvmEngine) BlsSign(req interface{}) (interface{}, error) {
-	var privKey, msg string
 	blsSignMap, ok := req.(map[string]interface{})
 	if !ok {
-		return nil, errors.New("empty input value")
+		return nil, fmt.Errorf("empty input value")
 	}
-	if privKeyIfce, ok := blsSignMap["priv_key"]; ok {
-		if privKey, ok = privKeyIfce.(string); !ok {
-			return nil, errors.New("priv_key type : array byte")
-		}
-	} else {
-		privKey = e.PrivKey
+
+	privKey := e.PrivKey
+	if str, ok := getStringField(blsSignMap, "priv_key"); ok {
+		privKey = str
 	}
-	if msgIfce, ok := blsSignMap["msg"]; ok {
-		if msg, ok = msgIfce.(string); !ok {
-			return nil, errors.New("msg type : array byte")
-		}
-	}
+
+	msg, _ := getStringField(blsSignMap, "msg")
+
 	return BlsSign(privKey, msg)
 }
+
 func (e *EvmEngine) BlsPublicKey(req interface{}) (interface{}, error) {
-	var privKey string
 	blsPublicKeyMap, ok := req.(map[string]interface{})
 	if !ok {
-		return nil, errors.New("empty input value")
+		return nil, fmt.Errorf("empty input value")
 	}
-	if privKeyIfce, ok := blsPublicKeyMap["priv_key"]; ok {
-		if privKey, ok = privKeyIfce.(string); !ok {
-			return nil, errors.New("priv_key type: array byte")
-		}
-	} else {
-		privKey = e.PrivKey
+
+	privKey := e.PrivKey
+	if str, ok := getStringField(blsPublicKeyMap, "priv_key"); ok {
+		privKey = str
 	}
+
 	return BlsPublicKey(privKey)
-}
-
-func (e *EvmEngine) verificationTaskBg() error {
-	simpleLog("gen pubk")
-	pubk, err := BlsPublicKey(e.PrivKey)
-	if err != nil {
-		simpleLog("generate public key error,", err)
-		return err
-	}
-	simpleLog("init websocket")
-	wssvr, err := NewWebSocketService(e.ServerUri, e.Account)
-	if err != nil {
-		return err
-	}
-	simpleLog("init websocket chats")
-	ochan, ichan, err := wssvr.Chans(pubk.(string))
-	if err != nil {
-		return err
-	}
-	go func() {
-		defer func() {
-			if err := recover(); err != nil {
-				buf := make([]byte, 4096)
-				runtime.Stack(buf, true)
-				simpleLog("verification task down", "err", err)
-				simpleLog(string(buf))
-			}
-			e.mu.Lock()
-			e.EngineState = EngineStateStopped
-			e.mu.Unlock()
-		}()
-
-		for {
-			select {
-			case <-e.ctx.Done():
-				simpleLog("task has been cancelled")
-				return
-			case msg, ok := <-ochan:
-				if !ok {
-					simpleLog("task closed")
-					return
-				}
-				entire, err := e.unwrapJSONRPC(msg)
-				if err != nil {
-					simpleLog("unwrap jsonrpc message error,err=", err)
-					continue
-				}
-				resp, err := e.vertify(entire)
-				if err != nil {
-					simpleLog("ee verification failed", err)
-					continue
-				}
-				ichan <- resp
-			}
-		}
-	}()
-	return nil
-}
-
-func (e *EvmEngine) Decrypt(req *EmitRequest) (interface{}, error) {
-
-	var (
-		params              map[string]interface{}
-		privateKeyInterface interface{}
-		privateKeyString    string
-		privateKey          *ecdsa.PrivateKey
-		messageInterface    interface{}
-		message             string
-		messageBytes        []byte
-		ok                  bool
-		err                 error
-	)
-
-	if params, ok = req.Val.(map[string]interface{}); !ok {
-		return nil, fmt.Errorf("empty input value")
-	}
-
-	if privateKeyInterface, ok = params["priv_key"]; !ok {
-		return nil, fmt.Errorf("privateKey is empty")
-	}
-
-	if privateKeyString, ok = privateKeyInterface.(string); !ok {
-		return nil, fmt.Errorf("privateKey type is not string")
-	}
-
-	if privateKey, err = crypto.HexToECDSA(privateKeyString); err != nil {
-		return nil, fmt.Errorf("cannot decode private key")
-	}
-
-	if messageInterface, ok = params["msg"]; !ok {
-		return nil, fmt.Errorf("msg is empty")
-	}
-	if message, ok = messageInterface.(string); !ok {
-		return nil, fmt.Errorf("msg type is not string")
-	}
-	if messageBytes, err = hex.DecodeString(message); err != nil {
-		return nil, fmt.Errorf("msg cannot decode to bytes")
-	}
-
-	priKey := ecies.ImportECDSA(privateKey)
-
-	ms, err := priKey.Decrypt(messageBytes, nil, nil)
-	return hex.EncodeToString(ms), err
-}
-
-func (e *EvmEngine) Encrypt(req *EmitRequest) (interface{}, error) {
-
-	var (
-		params             map[string]interface{}
-		publicKeyInterface interface{}
-		publicKeyString    string
-		publicKeyBytes     []byte
-		publicKey          *ecdsa.PublicKey
-		messageInterface   interface{}
-		message            string
-		messageBytes       []byte
-		ok                 bool
-		err                error
-	)
-
-	if params, ok = req.Val.(map[string]interface{}); !ok {
-		return nil, fmt.Errorf("empty input value")
-	}
-
-	if publicKeyInterface, ok = params["public_key"]; !ok {
-		return nil, fmt.Errorf("public_key is empty")
-	}
-
-	if publicKeyString, ok = publicKeyInterface.(string); !ok {
-		return nil, fmt.Errorf("public_key type is not string")
-	}
-
-	if publicKeyBytes, err = hex.DecodeString(publicKeyString); err != nil {
-		return nil, fmt.Errorf("public_key cannot decode to bytes")
-	}
-
-	if publicKey, err = crypto.DecompressPubkey(publicKeyBytes); err != nil {
-		return nil, fmt.Errorf("cannot decode public key")
-	}
-
-	if messageInterface, ok = params["msg"]; !ok {
-		return nil, fmt.Errorf("msg is empty")
-	}
-	if message, ok = messageInterface.(string); !ok {
-		return nil, fmt.Errorf("msg type is not string")
-	}
-
-	if messageBytes, err = hex.DecodeString(message); err != nil {
-		return nil, fmt.Errorf("msg cannot decode to bytes")
-	}
-
-	pubKey := ecies.ImportECDSAPublic(publicKey)
-	ct, err := ecies.Encrypt(rand.Reader, pubKey, messageBytes, nil, nil)
-
-	return hex.EncodeToString(ct), err
-}
-
-func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
-	var bean state.EntireCode
-	if err := json.Unmarshal(in, &bean); err != nil {
-		simpleLog("unmarshal vertify input error,err=", err)
-		return nil, err
-	}
-
-	if bean.Entire.Header == nil {
-		return nil, errors.New("nil pointer found")
-	}
-
-	simpleLog("start verify ", "blockNr", bean.Entire.Header.Number.Uint64())
-	// before state verify
-	var hash commTyp.Hash
-	hasher := sha3.NewLegacyKeccak256()
-	state.EncodeBeforeState(hasher, bean.Entire.Snap.Items, bean.Codes)
-	hasher.(crypto.KeccakState).Read(hash[:])
-	if bean.Entire.Header.MixDigest != hash {
-		simpleLog("misMatch state hash", "want", bean.Entire.Header.MixDigest, "get", hash, "block", bean.Entire.Header.Number.Uint64())
-		return nil, errors.New("state verify failed")
-	}
-
-	entirecode := state.EntireCode(bean)
-	stateRoot, err := verify(e.ctx, &entirecode)
-	if err != nil {
-		simpleLog("verify failed", "err", err)
-		return nil, err
-	}
-
-	res := AggSign{}
-	copy(res.StateRoot[:], stateRoot[:])
-	if pubkIfce, err := BlsPublicKey(e.PrivKey); err == nil {
-		if pubkStr, ok := pubkIfce.(string); ok {
-			pubkBytes, err := hex.DecodeString(pubkStr)
-			if err == nil {
-				copy(res.PublicKey[:], pubkBytes)
-			}
-		}
-	}
-
-	simpleLog("calculated stateRoot:", "stateRoot", hexutil.Encode(res.StateRoot[:]))
-
-	res.Number = bean.Entire.Header.Number.Uint64()
-	sk, err := decodeSecretKey(e.PrivKey)
-	if err != nil {
-		return nil, err
-	}
-
-	copy(res.Sign[:], sk.Sign(res.StateRoot[:]).Marshal())
-
-	simpleLog("sign stateRoot:", "Sign", hexutil.Encode(res.Sign[:]))
-
-	res.Address = commTyp.HexToAddress(e.Account)
-
-	resBytes, err := json.Marshal(res)
-	if err != nil {
-		return nil, err
-	}
-
-	return resBytes, nil
-}
-
-func (e *EvmEngine) unwrapJSONRPC(in []byte) ([]byte, error) {
-	req := new(jsonrpc.Request)
-	if err := json.Unmarshal(in, req); err != nil {
-		return nil, err
-	}
-	if len(req.Params) == 0 {
-		return []byte{}, errors.New("empty request params")
-	}
-
-	type innerProtocol struct {
-		Subscription string          `json:"subscription"`
-		Result       json.RawMessage `json:"result"`
-	}
-
-	innerReq := new(innerProtocol)
-	if err := json.Unmarshal(req.Params, innerReq); err != nil {
-		return nil, err
-	}
-
-	return innerReq.Result, nil
-}
-
-func Test() string {
-	var sw strings.Builder
-
-	sw.WriteString("version:" + VERSION + "\r\n")
-
-	engJsonBytes, err := json.Marshal(EE)
-	if err == nil {
-		sw.WriteString(string(engJsonBytes) + "\r\n")
-	}
-
-	sw.WriteString("gettime:" + strconv.Itoa(int(GetTime())) + "\r\n")
-
-	sw.WriteString("getapppath:" + GetAppPath() + "\r\n")
-
-	sw.WriteString("getjson:" + GetJson() + "\r\n")
-
-	sw.WriteString("readfile_before:" + ReadTouchedFile() + "\r\n")
-	sw.WriteString("touchfile:" + TouchFile() + "\r\n")
-	sw.WriteString("readfile_after:" + ReadTouchedFile() + "\r\n")
-
-	ns := GetNetInfos()
-	sw.WriteString("getnetinfos:resplen:" + strconv.Itoa(len(ns)) + "\r\n")
-
-	sw.WriteString("backgroundthread:" + BackgroundLoop() + "\r\n")
-
-	sw.WriteString("bls tests " + BlsTest() + "\r\n")
-
-	//block here
-	sw.WriteString("wsocket:" + GetWebSocketConnect() + "\r\n")
-
-	return sw.String()
-}
-
-func GetTime() int64 {
-	return time.Now().Unix()
-}
-
-func GetAppPath() string {
-	path, err := os.Getwd()
-	if err != nil {
-		return err.Error()
-	}
-
-	return fmt.Sprintf("exec path:%+v;;setting_path:%+v", path, EE.AppBasePath)
-}
-
-func GetJson() string {
-	return `{
-		"a":"b",
-		"c":"d"
-	}`
-}
-
-func TouchFile() string {
-	path := path.Join(EE.AppBasePath, "evm_touched_file.txt")
-	file, err := os.Create(path)
-	if err != nil {
-		return err.Error()
-	}
-	defer file.Close()
-	t := time.Now().Unix()
-	n, err := file.WriteString(strconv.Itoa(int(t)) + "|NAME=wux PWD=$WORK/src GOOS=android GOARCH=386 CC=$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android21-clang CXX=$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android21-clang++ CGO_ENABLED=1 GOPATH=$WORK:$GOPATH go mod tidy")
-	if err != nil {
-		return err.Error()
-	}
-	if n == 0 {
-		return "n==0"
-	}
-	return file.Name()
-}
-
-func ReadTouchedFile() string {
-	path := path.Join(EE.AppBasePath, "evm_touched_file.txt")
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Sprintln("open touched file error,err=", err.Error())
-	}
-	defer file.Close()
-	allBytes, err := io.ReadAll(file)
-	if err != nil {
-		return fmt.Sprintln("read touched file error,err=", err.Error())
-	}
-	return string(allBytes)
-}
-
-func GetNetInfos() string {
-	resp, err := http.DefaultClient.Get("https://www.baidu.com")
-	if err != nil {
-		return err.Error()
-	}
-	defer resp.Body.Close()
-	htmlBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err.Error()
-	}
-	return string(htmlBytes)
-}
-
-func RunLoop() string {
-	for {
-		<-time.After(2 * time.Second)
-		fmt.Println("1")
-	}
-}
-
-var backgroundLoopState = ""
-
-func BackgroundLoop() string {
-	if len(backgroundLoopState) != 0 {
-		fmt.Println("BackgroundLoop running already")
-		return "BackgroundLoop running"
-	}
-	backgroundLoopState = "123"
-	go func() {
-		for {
-			<-time.After(2 * time.Second)
-			fmt.Println("alive")
-		}
-	}()
-	return "OK"
-}
-
-func GetWebSocketConnect() string {
-	var sw strings.Builder
-	wsServerURL := os.Getenv("WS_SERVER_URL")
-	if wsServerURL == "" {
-		wsServerURL = "ws://54.175.247.94:20013" // default for backward compatibility
-	}
-	conn, connResp, err := websocket.DefaultDialer.Dial(wsServerURL, nil)
-	if err != nil {
-		return fmt.Sprintf("dial error,err=%+v \r\n", err)
-	}
-	defer conn.Close()
-	connRespBytes, err := io.ReadAll(connResp.Body)
-	if err != nil {
-		return fmt.Sprintf("connresp return error,err=%+v", err)
-	}
-	sw.WriteString(string(connRespBytes))
-	err = conn.WriteMessage(websocket.TextMessage, []byte(`{
-        "jsonrpc":"2.0",
-        "method":"eth_subscribe",
-        "params":["newHeads"],
-        "id":1
-}`))
-	if err != nil {
-		return fmt.Sprintf("connresp write message error,err=%+v", err)
-	}
-
-	_, msg, err := conn.ReadMessage()
-	fmt.Println(string(msg))
-	if err != nil {
-		sw.WriteString("read message error,err=" + err.Error())
-	}
-	sw.WriteString("received message:" + string(msg))
-
-	go func() {
-		wsServerURLSecondary := os.Getenv("WS_SERVER_URL_SECONDARY")
-		if wsServerURLSecondary == "" {
-			wsServerURLSecondary = "ws://174.129.114.74:8546" // default for backward compatibility
-		}
-		innerConn, _, err := websocket.DefaultDialer.Dial(wsServerURLSecondary, nil)
-		if err != nil {
-			fmt.Printf("bg dial error,err=%+v \r\n", err)
-			return
-		}
-		defer innerConn.Close()
-		err = innerConn.WriteMessage(websocket.TextMessage, []byte(`{
-			"jsonrpc":"2.0",
-			"method":"eth_subscribe",
-			"params":["newHeads"],
-			"id":1
-	}`))
-		if err != nil {
-			fmt.Printf("bg writemsg error,err=%+v \r\n", err)
-			return
-		}
-		for {
-			fmt.Println("bg readmsg:waitting")
-			_, msg, err := innerConn.ReadMessage()
-			if err != nil {
-				fmt.Println("bg readmsg error,err=" + err.Error())
-				return
-			}
-			fmt.Println("bg readed msg:" + string(msg))
-		}
-	}()
-
-	return sw.String()
-}
-
-func BlsTest() string {
-	var sw strings.Builder
-
-	blsTests := []func() error{
-		bls.TestSignVerify2,
-		bls.TestAggregateVerify2,
-		bls.TestAggregateVerify_CompressedSignatures2,
-		bls.TestFastAggregateVerify2,
-		bls.TestVerifyCompressed2,
-		bls.TestMultipleSignatureVerification2,
-		bls.TestFastAggregateVerify_ReturnsFalseOnEmptyPubKeyList2,
-		bls.TestEth2FastAggregateVerify2,
-		bls.TestEth2FastAggregateVerify_ReturnsFalseOnEmptyPubKeyList2,
-		bls.TestEth2FastAggregateVerify_ReturnsTrueOnG2PointAtInfinity2,
-		bls.TestSignatureFromBytes2,
-		bls.TestMultipleSignatureFromBytes2,
-		bls.TestCopy2,
-		bls.TestSecretKeyFromBytes2,
-	}
-	for _, testFn := range blsTests {
-		if err := testFn(); err != nil {
-			sw.WriteString(err.Error() + "\r\n")
-		}
-	}
-
-	sw.WriteString("bls test done.")
-	sw.WriteString("==============")
-
-	return sw.String()
 }

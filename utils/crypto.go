@@ -21,18 +21,15 @@ func ConvertFromInterfacePrivKey(privkey crypto.PrivKey) (*ecdsa.PrivateKey, err
 		return nil, err
 	}
 	privKey := new(ecdsa.PrivateKey)
-	k := new(big.Int).SetBytes(rawKey)
-	privKey.D = k
-	privKey.Curve = n42_crypto.S256() // Temporary hack, so libp2p Secp256k1 is recognized as geth Secp256k1 in disc v5.1.
-	privKey.X, privKey.Y = n42_crypto.S256().ScalarBaseMult(rawKey)
+	privKey.D = new(big.Int).SetBytes(rawKey)
+	privKey.Curve = n42_crypto.S256()
+	privKey.X, privKey.Y = privKey.Curve.ScalarBaseMult(rawKey)
 	return privKey, nil
 }
 
 func ConvertToInterfacePrivkey(privkey *ecdsa.PrivateKey) (crypto.PrivKey, error) {
 	privBytes := privkey.D.Bytes()
-	// In the event the number of bytes outputted by the big-int are less than 32,
-	// we append bytes to the start of the sequence for the missing most significant
-	// bytes.
+	// Left-pad to 32 bytes when big.Int encodes fewer bytes.
 	if len(privBytes) < 32 {
 		privBytes = append(make([]byte, 32-len(privBytes)), privBytes...)
 	}
@@ -48,7 +45,6 @@ func ConvertToInterfacePubkey(pubkey *ecdsa.PublicKey) (crypto.PubKey, error) {
 		return nil, errors.Errorf("Y value overflows")
 	}
 	newKey := crypto.PubKey((*crypto.Secp256k1PublicKey)(btcec.NewPublicKey(xVal, yVal)))
-	// Zero out temporary values.
 	xVal.Zero()
 	yVal.Zero()
 	return newKey, nil

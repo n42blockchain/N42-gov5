@@ -111,15 +111,14 @@ func getChan(key string) chan byte {
 
 // unique returns a new slice containing only the unique elements from arr.
 func unique(arr []string) []string {
-	if arr == nil || len(arr) <= 1 {
+	if len(arr) <= 1 {
 		return arr
 	}
-
-	found := map[string]bool{}
+	seen := make(map[string]struct{}, len(arr))
 	result := make([]string, 0, len(arr))
 	for _, v := range arr {
-		if !found[v] {
-			found[v] = true
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
 			result = append(result, v)
 		}
 	}

@@ -21,9 +21,7 @@ import (
 	"path/filepath"
 )
 
-const (
-	datadirDefaultKeyStore = "keystore" // Path within the datadir to the keystore
-)
+const datadirDefaultKeyStore = "keystore"
 
 type NodeConfig struct {
 	NodePrivate string `json:"private" yaml:"private"`
@@ -31,18 +29,12 @@ type NodeConfig struct {
 	HTTPHost    string `json:"http_host" yaml:"http_host" `
 	HTTPPort    string `json:"http_port" yaml:"http_port"`
 	HTTPApi     string `json:"http_api" yaml:"http_api"`
-	// HTTPCors is the Cross-Origin Resource Sharing header to send to requesting
-	// clients. Please be aware that CORS is a browser enforced security, it's fully
-	// useless for custom HTTP clients.
 	HTTPCors string `json:"http_cors" yaml:"http_cors"`
 
 	WS     bool   `json:"ws" yaml:"ws" `
 	WSHost string `json:"ws_host" yaml:"ws_host" `
 	WSPort string `json:"ws_port" yaml:"ws_port"`
 	WSApi  string `json:"ws_api" yaml:"ws_api"`
-	// WSOrigins is the list of domain to accept websocket requests from. Please be
-	// aware that the server can only act upon the HTTP request the client sends and
-	// cannot verify the validity of the request header.
 	WSOrigins        string `json:"ws_origins,omitempty" yaml:"ws_origins,omitempty"`
 	IPCPath          string `json:"ipc_path" yaml:"ipc_path"`
 	DataDir          string `json:"data_dir" yaml:"data_dir"`
@@ -50,40 +42,21 @@ type NodeConfig struct {
 	Chain            string `json:"chain" yaml:"chain"`
 	Miner            bool   `json:"miner" yaml:"miner"`
 
-	AuthRPC bool `json:"auth_rpc" yaml:"auth_rpc"`
-	// AuthAddr is the listening address on which authenticated APIs are provided.
-	AuthAddr string `json:"auth_addr" yaml:"auth_addr"`
-
-	// AuthPort is the port number on which authenticated APIs are provided.
-	AuthPort int `json:"auth_port" yaml:"auth_port"`
-
-	// AuthVirtualHosts is the list of virtual hostnames which are allowed on incoming requests
-	// for the authenticated api. This is by default {'localhost'}.
+	AuthRPC          bool     `json:"auth_rpc" yaml:"auth_rpc"`
+	AuthAddr         string   `json:"auth_addr" yaml:"auth_addr"`
+	AuthPort         int      `json:"auth_port" yaml:"auth_port"`
 	AuthVirtualHosts []string `json:"auth_virtual_hosts" yaml:"auth_virtual_hosts"`
+	JWTSecret        string   `json:"jwt_secret" yaml:"jwt_secret"`
 
-	// JWTSecret is the path to the hex-encoded jwt secret.
-	JWTSecret string `json:"jwt_secret" yaml:"jwt_secret"`
-
-	// KeyStoreDir is the file system folder that contains private keys. The directory can
-	// be specified as a relative path, in which case it is resolved relative to the
-	// current directory.
-	//
-	// If KeyStoreDir is empty, the default location is the "keystore" subdirectory of
-	// DataDir. If DataDir is unspecified and KeyStoreDir is empty, an ephemeral directory
-	// is created by New and destroyed when the node is stopped.
+	// KeyStoreDir is the folder that contains private keys.
+	// If empty, defaults to DataDir/keystore; if DataDir is also empty,
+	// an ephemeral directory is created and destroyed when the node stops.
 	KeyStoreDir string `json:"key_store_dir" yaml:"key_store_dir"`
 
-	// ExternalSigner specifies an external URI for a clef-type signer
-	ExternalSigner string `json:"external_signer" yaml:"external_signer"`
-
-	// UseLightweightKDF lowers the memory and CPU requirements of the key store
-	// scrypt KDF at the expense of security.
-	UseLightweightKDF bool `json:"use_lightweight_kdf" yaml:"use_lightweight_kdf"`
-
-	// InsecureUnlockAllowed allows user to unlock accounts in unsafe http environment.
-	InsecureUnlockAllowed bool `json:"insecure_unlock_allowed" yaml:"insecure_unlock_allowed"`
-
-	PasswordFile string `json:"password_file" yaml:"password_file"`
+	ExternalSigner        string `json:"external_signer" yaml:"external_signer"`
+	UseLightweightKDF     bool   `json:"use_lightweight_kdf" yaml:"use_lightweight_kdf"`
+	InsecureUnlockAllowed bool   `json:"insecure_unlock_allowed" yaml:"insecure_unlock_allowed"`
+	PasswordFile          string `json:"password_file" yaml:"password_file"`
 }
 
 // KeyDirConfig determines the settings for the key directory.
@@ -102,25 +75,21 @@ func (c *NodeConfig) KeyDirConfig() (string, error) {
 
 // getKeyStoreDir retrieves the key directory and will create
 // an ephemeral one if necessary.
-func getKeyStoreDir(conf *NodeConfig) (string, bool, error) {
-	keydir, err := conf.KeyDirConfig()
+func getKeyStoreDir(conf *NodeConfig) (keydir string, isEphemeral bool, err error) {
+	keydir, err = conf.KeyDirConfig()
 	if err != nil {
 		return "", false, err
 	}
-	isEphemeral := false
 	if keydir == "" {
-		// There is no datadir.
 		keydir, err = os.MkdirTemp("", "N42-keystore")
+		if err != nil {
+			return "", false, err
+		}
 		isEphemeral = true
 	}
-
-	if err != nil {
+	if err = os.MkdirAll(keydir, 0700); err != nil {
 		return "", false, err
 	}
-	if err := os.MkdirAll(keydir, 0700); err != nil {
-		return "", false, err
-	}
-
 	return keydir, isEphemeral, nil
 }
 

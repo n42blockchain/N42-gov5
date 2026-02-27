@@ -5,10 +5,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
-// CreateForkDigest creates a fork digest from a genesis time and genesis
-// validators root, utilizing the current slot to determine
-// the active fork version in the node.
 func CreateForkDigest(currentBlockNr *uint256.Int, genesisValidatorsRoot types.Hash) ([4]byte, error) {
-	//todo currentBlockNr
+	// TODO: incorporate currentBlockNr into the fork digest.
 	return ToBytes4(genesisValidatorsRoot[:]), nil
 }

@@ -98,7 +98,7 @@ func StringToPublic(s string) (crypto.PubKey, error) {
 
 func Exists(path string) bool {
 	_, err := os.Stat(path)
-	return err == nil || !os.IsNotExist(err)
+	return !os.IsNotExist(err)
 }
 
 func MkdirAll(path string, perm os.FileMode) error {
@@ -130,12 +130,10 @@ type AppInfo interface {
 	Endpoint() []string
 }
 
-// NewContext returns a new Context that carries value.
 func NewContext(ctx context.Context, s AppInfo) context.Context {
 	return context.WithValue(ctx, appKey{}, s)
 }
 
-// FromContext returns the Transport value stored in ctx, if any.
 func FromContext(ctx context.Context) (s AppInfo, ok bool) {
 	s, ok = ctx.Value(appKey{}).(AppInfo)
 	return
@@ -183,11 +181,9 @@ func Copy(b []byte) []byte {
 	return c
 }
 
-// SplitAndTrim splits input separated by a comma
-// and trims excessive white space from the substrings.
+// SplitAndTrim splits input by comma and trims whitespace from each element.
 func SplitAndTrim(input string) (ret []string) {
-	l := strings.Split(input, ",")
-	for _, r := range l {
+	for _, r := range strings.Split(input, ",") {
 		if r = strings.TrimSpace(r); r != "" {
 			ret = append(ret, r)
 		}
@@ -196,7 +192,6 @@ func SplitAndTrim(input string) (ret []string) {
 }
 
 func ConvertH256ToUint256Int(h256 *types_pb.H256) *uint256.Int {
-	// Note: uint256.Int is an array of 4 uint64 in little-endian order, i.e. most significant word is [3]
 	var i uint256.Int
 	i[3] = h256.Hi.Hi
 	i[2] = h256.Hi.Lo
@@ -206,7 +201,6 @@ func ConvertH256ToUint256Int(h256 *types_pb.H256) *uint256.Int {
 }
 
 func ConvertUint256IntToH256(i *uint256.Int) *types_pb.H256 {
-	// Note: uint256.Int is an array of 4 uint64 in little-endian order, i.e. most significant word is [3]
 	return &types_pb.H256{
 		Lo: &types_pb.H128{Lo: i[0], Hi: i[1]},
 		Hi: &types_pb.H128{Lo: i[2], Hi: i[3]},
@@ -215,7 +209,7 @@ func ConvertUint256IntToH256(i *uint256.Int) *types_pb.H256 {
 
 func ConvertH256ToHash(h256 *types_pb.H256) [32]byte {
 	var hash [32]byte
-	if nil == h256 {
+	if h256 == nil {
 		return hash
 	}
 	binary.BigEndian.PutUint64(hash[0:], h256.Hi.Hi)
@@ -282,8 +276,8 @@ func ConvertH160toAddress(h160 *types_pb.H160) [20]byte {
 }
 
 func ConvertH160ToPAddress(h160 *types_pb.H160) *types.Address {
-	p := new(types.Address)
 	addr := ConvertH160toAddress(h160)
+	p := new(types.Address)
 	p.SetBytes(addr[:])
 	return p
 }
@@ -318,9 +312,9 @@ func ConvertH512ToBytes(h512 *types_pb.H512) []byte {
 
 func ConvertBytesToH512(b []byte) *types_pb.H512 {
 	if len(b) < 64 {
-		var b1 [64]byte
-		copy(b1[:], b)
-		b = b1[:]
+		padded := make([]byte, 64)
+		copy(padded, b)
+		b = padded
 	}
 	return &types_pb.H512{
 		Lo: &types_pb.H256{
@@ -373,6 +367,7 @@ func H384sToPubs(ps []*types_pb.H384) []types.PublicKey {
 	}
 	return b
 }
+
 func ConvertH768ToSignature(h768 *types_pb.H768) [96]byte {
 	var b [96]byte
 	binary.BigEndian.PutUint64(b[0:], h768.Hi.Hi.Hi.Hi)

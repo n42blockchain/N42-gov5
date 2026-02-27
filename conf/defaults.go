@@ -21,24 +21,16 @@ import (
 	"time"
 )
 
-// Default configuration values
 const (
-	// Network defaults
-	DefaultHTTPPort     = "8545"
-	DefaultWSPort       = "8546"
-	DefaultAuthRPCPort  = 8551
-	DefaultP2PPort      = 61016
+	DefaultHTTPPort    = "8545"
+	DefaultWSPort      = "8546"
+	DefaultAuthRPCPort = 8551
+	DefaultP2PPort     = 61016
 
-	// Database defaults
-	DefaultDBCacheSize = 512 // MB
+	DefaultDBCacheSize = 512        // MB
+	DefaultGasPrice    = 1000000000 // 1 Gwei
+	DefaultSyncMode    = "full"
 
-	// Mining defaults
-	DefaultGasPrice = 1000000000 // 1 Gwei
-
-	// Sync defaults
-	DefaultSyncMode = "full"
-
-	// Cache defaults
 	DefaultBlockCacheLimit    = 512
 	DefaultReceiptsCacheLimit = 256
 	DefaultHeaderCacheLimit   = 1024
@@ -46,7 +38,6 @@ const (
 	DefaultNumberCacheLimit   = 2048
 )
 
-// Configuration validation errors
 var (
 	ErrMissingChainConfig   = errors.New("chain configuration is required")
 	ErrInvalidDataDir       = errors.New("data directory is required for non-ephemeral nodes")
@@ -59,9 +50,7 @@ var (
 )
 
 // ApplyDefaults fills in missing configuration values with sensible defaults.
-// This should be called after loading configuration but before using it.
 func ApplyDefaults(cfg *Config) {
-	// Node defaults
 	if cfg.NodeCfg.HTTPPort == "" {
 		cfg.NodeCfg.HTTPPort = DefaultHTTPPort
 	}
@@ -72,7 +61,6 @@ func ApplyDefaults(cfg *Config) {
 		cfg.NodeCfg.AuthPort = DefaultAuthRPCPort
 	}
 
-	// P2P defaults
 	if cfg.P2PCfg != nil {
 		if cfg.P2PCfg.TCPPort == 0 {
 			cfg.P2PCfg.TCPPort = DefaultP2PPort
@@ -82,7 +70,6 @@ func ApplyDefaults(cfg *Config) {
 		}
 	}
 
-	// GPO defaults
 	if cfg.GPO.Blocks == 0 {
 		cfg.GPO.Blocks = 20
 	}
@@ -90,7 +77,6 @@ func ApplyDefaults(cfg *Config) {
 		cfg.GPO.Percentile = 60
 	}
 
-	// Dev config defaults
 	if cfg.DevCfg.TxGenEnabled {
 		if cfg.DevCfg.TxGenInterval == 0 {
 			cfg.DevCfg.TxGenInterval = time.Second
@@ -105,18 +91,11 @@ func ApplyDefaults(cfg *Config) {
 }
 
 // Validate checks the configuration for errors.
-// It should be called after ApplyDefaults.
 func Validate(cfg *Config) error {
-	// Chain config is required for non-development setups
 	if cfg.ChainCfg == nil && cfg.NodeCfg.Chain != "private" {
 		return ErrMissingChainConfig
 	}
 
-	// Data directory is required for persistent nodes
-	// (ephemeral nodes use empty data dir)
-	// This is validated elsewhere, so we don't enforce it here
-
-	// Mining configuration
 	if cfg.NodeCfg.Miner {
 		if cfg.Miner.Etherbase == "" {
 			return ErrInvalidEtherbase
@@ -126,7 +105,6 @@ func Validate(cfg *Config) error {
 		}
 	}
 
-	// TxGen configuration
 	if cfg.DevCfg.TxGenEnabled {
 		if cfg.DevCfg.TxGenInterval <= 0 {
 			return ErrInvalidTxGenInterval
@@ -136,8 +114,7 @@ func Validate(cfg *Config) error {
 	return nil
 }
 
-// ValidateAndApplyDefaults is a convenience function that applies defaults
-// and then validates the configuration.
+// ValidateAndApplyDefaults applies defaults and then validates the configuration.
 func ValidateAndApplyDefaults(cfg *Config) error {
 	ApplyDefaults(cfg)
 	return Validate(cfg)
