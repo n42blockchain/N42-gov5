@@ -128,26 +128,22 @@ func New(dirs datadir.Dirs, version string, verbosity lg.Level, downloadRate, up
 
 	if len(staticPeers) > 0 {
 		torrentConfig.NoDHT = false
-		//defaultNodes := torrentConfig.DhtStartingNodes
 		torrentConfig.DhtStartingNodes = func(network string) dht.StartingNodesGetter {
 			return func() ([]dht.Addr, error) {
 				addrs, err := dht.GlobalBootstrapAddrs(network)
 				if err != nil {
 					return nil, err
 				}
-
 				for _, seed := range staticPeers {
-					if network == "udp" {
-						var addr *net.UDPAddr
+					switch network {
+					case "udp":
 						addr, err := net.ResolveUDPAddr(network, seed+":80")
 						if err != nil {
 							log.Warn("[downloader] Cannot UDP resolve address", "network", network, "addr", seed)
 							continue
 						}
 						addrs = append(addrs, dht.NewAddr(addr))
-					}
-					if network == "tcp" {
-						var addr *net.TCPAddr
+					case "tcp":
 						addr, err := net.ResolveTCPAddr(network, seed+":80")
 						if err != nil {
 							log.Warn("[downloader] Cannot TCP resolve address", "network", network, "addr", seed)
@@ -159,7 +155,6 @@ func New(dirs datadir.Dirs, version string, verbosity lg.Level, downloadRate, up
 				return addrs, nil
 			}
 		}
-		//staticPeers
 	}
 
 	webseedUrlsOrFiles := webseeds

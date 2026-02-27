@@ -47,12 +47,10 @@ func (d *Downloader) getWebDownloadInfo(t *torrent.Torrent) (webDownloadInfo, []
 	d.lock.RLock()
 	info, ok := d.webDownloadInfo[t.Name()]
 	d.lock.RUnlock()
-
 	if ok {
 		return info, nil, nil
 	}
 
-	// todo this function does not exit on first matched webseed hash, could make unexpected results
 	infos, seedHashMismatches, err := d.webseeds.getWebDownloadInfo(d.ctx, t)
 	if err != nil || len(infos) == 0 {
 		return webDownloadInfo{}, seedHashMismatches, fmt.Errorf("can't find download info: %w", err)
@@ -62,61 +60,45 @@ func (d *Downloader) getWebDownloadInfo(t *torrent.Torrent) (webDownloadInfo, []
 
 func getWebpeerTorrentInfo(ctx context.Context, downloadUrl *url.URL) (*metainfo.MetaInfo, error) {
 	torrentRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadUrl.String()+".torrent", nil)
-
 	if err != nil {
 		return nil, err
 	}
 
 	torrentResponse, err := http.DefaultClient.Do(torrentRequest)
-
 	if err != nil {
 		return nil, err
 	}
-
 	defer torrentResponse.Body.Close()
 
 	if torrentResponse.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("can't get webpeer torrent unexpected http response: %s", torrentResponse.Status)
 	}
-
 	return metainfo.Load(torrentResponse.Body)
 }
 
+// matchesPeerHash checks if a peer URL serves a torrent with the expected info hash.
+func matchesPeerHash(ctx context.Context, peerUrl *url.URL, t *torrent.Torrent) bool {
+	downloadUrl := peerUrl.JoinPath(t.Name())
+	peerInfo, err := getWebpeerTorrentInfo(ctx, downloadUrl)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(peerInfo.HashInfoBytes().Bytes(), t.InfoHash().Bytes())
+}
+
 func selectDownloadPeer(ctx context.Context, peerUrls []*url.URL, t *torrent.Torrent) (string, error) {
-	switch len(peerUrls) {
-	case 0:
+	if len(peerUrls) == 0 {
 		return "", fmt.Errorf("no download peers")
-
-	case 1:
-		downloadUrl := peerUrls[0].JoinPath(t.Name())
-		peerInfo, err := getWebpeerTorrentInfo(ctx, downloadUrl)
-
-		if err == nil && bytes.Equal(peerInfo.HashInfoBytes().Bytes(), t.InfoHash().Bytes()) {
-			return peerUrls[0].String(), nil
-		}
-
-	default:
-		peerIndex := rand.Intn(len(peerUrls))
-		peerUrl := peerUrls[peerIndex]
-		downloadUrl := peerUrl.JoinPath(t.Name())
-		peerInfo, err := getWebpeerTorrentInfo(ctx, downloadUrl)
-
-		if err == nil && bytes.Equal(peerInfo.HashInfoBytes().Bytes(), t.InfoHash().Bytes()) {
-			return peerUrl.String(), nil
-		}
-
-		for i := range peerUrls {
-			if i == peerIndex {
-				continue
-			}
-			peerInfo, err := getWebpeerTorrentInfo(ctx, downloadUrl)
-
-			if err == nil && bytes.Equal(peerInfo.HashInfoBytes().Bytes(), t.InfoHash().Bytes()) {
-				return peerUrl.String(), nil
-			}
-		}
 	}
 
+	// Try a random peer first for load distribution
+	startIdx := rand.Intn(len(peerUrls))
+	for i := 0; i < len(peerUrls); i++ {
+		idx := (startIdx + i) % len(peerUrls)
+		if matchesPeerHash(ctx, peerUrls[idx], t) {
+			return peerUrls[idx].String(), nil
+		}
+	}
 	return "", fmt.Errorf("can't find download peer")
 }
 
@@ -126,23 +108,17 @@ func (d *Downloader) webDownload(peerUrls []*url.URL, t *torrent.Torrent, i *web
 	}
 
 	peerUrl, err := selectDownloadPeer(d.ctx, peerUrls, t)
-
 	if err != nil {
 		return nil, err
 	}
-
 	peerUrl = strings.TrimSuffix(peerUrl, "/")
 
 	session, ok := d.webDownloadSessions[peerUrl]
-
 	if !ok {
-		var err error
 		session, err = d.webDownloadClient.NewSession(d.ctx, d.SnapDir(), peerUrl, cloudflareHeaders)
-
 		if err != nil {
 			return nil, err
 		}
-
 		d.webDownloadSessions[peerUrl] = session
 	}
 
@@ -151,7 +127,6 @@ func (d *Downloader) webDownload(peerUrls []*url.URL, t *torrent.Torrent, i *web
 	infoHash := t.InfoHash()
 
 	var length int64
-
 	if i != nil {
 		length = i.length
 	} else {
@@ -160,16 +135,13 @@ func (d *Downloader) webDownload(peerUrls []*url.URL, t *torrent.Torrent, i *web
 
 	magnet := mi.Magnet(&infoHash, &metainfo.Info{Name: name})
 	spec, err := torrent.TorrentSpecFromMagnetUri(magnet.String())
-
 	if err != nil {
 		return session, fmt.Errorf("can't get torrent spec for %s from info: %w", t.Info().Name, err)
 	}
-
 	spec.ChunkSize = downloadercfg.DefaultNetworkChunkSize
 	spec.DisallowDataDownload = true
 
 	info, _, ok := snaptype.ParseFileName(d.SnapDir(), name)
-
 	if !ok {
 		return nil, fmt.Errorf("can't parse filename: %s", name)
 	}
@@ -180,7 +152,6 @@ func (d *Downloader) webDownload(peerUrls []*url.URL, t *torrent.Torrent, i *web
 	d.lock.Unlock()
 
 	d.wg.Add(1)
-
 	if err := sem.Acquire(d.ctx, 1); err != nil {
 		d.logger.Warn("Failed to acquire download semaphore", "err", err)
 		return nil, err
@@ -198,62 +169,47 @@ func (d *Downloader) webDownload(peerUrls []*url.URL, t *torrent.Torrent, i *web
 
 		if d.downloadLimit != nil {
 			limit := float64(*d.downloadLimit) / float64(d.cfg.DownloadSlots)
-
-			func() {
-				d.lock.Lock()
-				defer d.lock.Unlock()
-
-				torrentLimit := d.cfg.ClientConfig.DownloadRateLimiter.Limit()
-				rcloneLimit := d.webDownloadClient.GetBwLimit()
-
-				d.cfg.ClientConfig.DownloadRateLimiter.SetLimit(torrentLimit - rate.Limit(limit))
-				d.webDownloadClient.SetBwLimit(d.ctx, rcloneLimit+rate.Limit(limit))
-			}()
-
-			defer func() {
-				d.lock.Lock()
-				defer d.lock.Unlock()
-
-				torrentLimit := d.cfg.ClientConfig.DownloadRateLimiter.Limit()
-				rcloneLimit := d.webDownloadClient.GetBwLimit()
-
-				d.cfg.ClientConfig.DownloadRateLimiter.SetLimit(torrentLimit + rate.Limit(limit))
-				d.webDownloadClient.SetBwLimit(d.ctx, rcloneLimit-rate.Limit(limit))
-			}()
+			d.adjustBwLimits(limit)
+			defer d.adjustBwLimits(-limit)
 		}
 
-		err := session.Download(d.ctx, name)
-
-		if err != nil {
-			d.logger.Error("Web download failed", "file", name, "err", err)
+		dlErr := session.Download(d.ctx, name)
+		if dlErr != nil {
+			d.logger.Error("Web download failed", "file", name, "err", dlErr)
 		}
 
-		localHash, err := fileHashBytes(d.ctx, info, &d.stats, d.lock)
+		localHash, hashErr := fileHashBytes(d.ctx, info, &d.stats, d.lock)
+		if hashErr != nil {
+			d.logger.Error("Web download failed", "file", name, "url", peerUrl, "err", hashErr)
+			statusChan <- downloadStatus{name: name, length: length, infoHash: infoHash, spec: spec, err: hashErr}
+			return
+		}
 
-		if err == nil {
-			if !bytes.Equal(infoHash.Bytes(), localHash) {
-				err = fmt.Errorf("hash mismatch: expected: 0x%x, got: 0x%x", infoHash.Bytes(), localHash)
-
-				d.logger.Error("Web download failed", "file", name, "url", peerUrl, "err", err)
-
-				if ferr := os.Remove(info.Path); ferr != nil {
-					d.logger.Warn("Couldn't remove invalid file", "file", name, "path", info.Path, "err", ferr)
-				}
+		if !bytes.Equal(infoHash.Bytes(), localHash) {
+			mismatchErr := fmt.Errorf("hash mismatch: expected: 0x%x, got: 0x%x", infoHash.Bytes(), localHash)
+			d.logger.Error("Web download failed", "file", name, "url", peerUrl, "err", mismatchErr)
+			if ferr := os.Remove(info.Path); ferr != nil {
+				d.logger.Warn("Couldn't remove invalid file", "file", name, "path", info.Path, "err", ferr)
 			}
-		} else {
-			d.logger.Error("Web download failed", "file", name, "url", peerUrl, "err", err)
+			statusChan <- downloadStatus{name: name, length: length, infoHash: infoHash, spec: spec, err: mismatchErr}
+			return
 		}
 
-		statusChan <- downloadStatus{
-			name:     name,
-			length:   length,
-			infoHash: infoHash,
-			spec:     spec,
-			err:      err,
-		}
+		statusChan <- downloadStatus{name: name, length: length, infoHash: infoHash, spec: spec}
 	}()
 
 	return session, nil
+}
+
+// adjustBwLimits shifts bandwidth between the torrent client and the rclone web download client.
+func (d *Downloader) adjustBwLimits(delta float64) {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	torrentLimit := d.cfg.ClientConfig.DownloadRateLimiter.Limit()
+	rcloneLimit := d.webDownloadClient.GetBwLimit()
+	d.cfg.ClientConfig.DownloadRateLimiter.SetLimit(torrentLimit - rate.Limit(delta))
+	d.webDownloadClient.SetBwLimit(d.ctx, rcloneLimit+rate.Limit(delta))
 }
 
 func webPeerUrl(peer *torrent.Peer) (*url.URL, error) {
