@@ -21,6 +21,8 @@ import (
 	"sort"
 )
 
+// --- Upsert operations ---
+
 func upsert(n *Node23, kvItems KeyValues, stats *Stats) (nodes []*Node23, newFirstKey *Felt, intermediateKeys []*Felt) {
 	ensure(sort.IsSorted(kvItems), "kvItems are not sorted by key")
 
@@ -32,9 +34,8 @@ func upsert(n *Node23, kvItems KeyValues, stats *Stats) (nodes []*Node23, newFir
 	}
 	if n.isLeaf {
 		return upsertLeaf(n, kvItems, stats)
-	} else {
-		return upsertInternal(n, kvItems, stats)
 	}
+	return upsertInternal(n, kvItems, stats)
 }
 
 func upsertLeaf(n *Node23, kvItems KeyValues, stats *Stats) (nodes []*Node23, newFirstKey *Felt, intermediateKeys []*Felt) {
@@ -47,39 +48,33 @@ func upsertLeaf(n *Node23, kvItems KeyValues, stats *Stats) (nodes []*Node23, ne
 		return []*Node23{n}, nil, intermediateKeys
 	}
 
-	if !n.exposed {
-		n.exposed = true
-		stats.ExposedCount++
-		stats.OpeningHashes += n.howManyHashes()
-	}
+	exposeNode(n, stats)
 
 	currentFirstKey := n.firstKey()
 	addOrReplaceLeaf(n, kvItems, stats)
 	if n.firstKey() != currentFirstKey {
 		newFirstKey = n.firstKey()
-	} else {
-		newFirstKey = nil
 	}
 
-	if n.keyCount() > 3 {
-		for n.keyCount() > 3 {
-			newLeaf := makeLeafNode(n.keys[:3], n.values[:3], stats)
-			intermediateKeys = append(intermediateKeys, n.keys[2])
-			nodes = append(nodes, newLeaf)
-			n.keys, n.values = n.keys[2:], n.values[2:]
-		}
-		newLeaf := makeLeafNode(n.keys, n.values, stats)
-		if n.nextKey() != nil {
-			intermediateKeys = append(intermediateKeys, n.nextKey())
-		}
-		nodes = append(nodes, newLeaf)
-		return nodes, newFirstKey, intermediateKeys
-	} else {
+	if n.keyCount() <= 3 {
 		if n.nextKey() != nil {
 			intermediateKeys = append(intermediateKeys, n.nextKey())
 		}
 		return []*Node23{n}, newFirstKey, intermediateKeys
 	}
+
+	for n.keyCount() > 3 {
+		newLeaf := makeLeafNode(n.keys[:3], n.values[:3], stats)
+		intermediateKeys = append(intermediateKeys, n.keys[2])
+		nodes = append(nodes, newLeaf)
+		n.keys, n.values = n.keys[2:], n.values[2:]
+	}
+	newLeaf := makeLeafNode(n.keys, n.values, stats)
+	if n.nextKey() != nil {
+		intermediateKeys = append(intermediateKeys, n.nextKey())
+	}
+	nodes = append(nodes, newLeaf)
+	return nodes, newFirstKey, intermediateKeys
 }
 
 func upsertInternal(n *Node23, kvItems KeyValues, stats *Stats) (nodes []*Node23, newFirstKey *Felt, intermediateKeys []*Felt) {
@@ -92,11 +87,7 @@ func upsertInternal(n *Node23, kvItems KeyValues, stats *Stats) (nodes []*Node23
 		return []*Node23{n}, nil, intermediateKeys
 	}
 
-	if !n.exposed {
-		n.exposed = true
-		stats.ExposedCount++
-		stats.OpeningHashes += n.howManyHashes()
-	}
+	exposeNode(n, stats)
 
 	itemSubsets := splitItems(n, kvItems)
 
@@ -109,63 +100,15 @@ func upsertInternal(n *Node23, kvItems KeyValues, stats *Stats) (nodes []*Node23
 		newKeys = append(childIntermediateKeys, newKeys...)
 		if childNewFirstKey != nil {
 			if i > 0 {
-				// Handle newFirstKey here
-				previousChild := n.children[i-1]
-				if previousChild.isLeaf {
-					ensure(len(previousChild.keys) > 0, "upsertInternal: previousChild has no keys")
-					if previousChild.nextKey() != childNewFirstKey {
-						previousChild.setNextKey(childNewFirstKey, stats)
-					}
-				} else {
-					ensure(len(previousChild.children) > 0, "upsertInternal: previousChild has no children")
-					lastLeaf := previousChild.lastLeaf()
-					if lastLeaf.nextKey() != childNewFirstKey {
-						lastLeaf.setNextKey(childNewFirstKey, stats)
-					}
-				}
-				// TODO(canepat): previousChild/previousLastLeaf changed instead of making new node
+				propagateFirstKeyToPrevious(n.children[i-1], childNewFirstKey, stats)
 			} else {
-				// Propagate newFirstKey up
 				newFirstKey = childNewFirstKey
 			}
 		}
 	}
 
 	n.children = newChildren
-	if n.childrenCount() > 3 {
-		ensure(len(newKeys) >= n.childrenCount()-1 || n.childrenCount()%2 == 0 && n.childrenCount()%len(newKeys) == 0, "upsertInternal: inconsistent #children vs #newKeys")
-		var hasIntermediateKeys bool
-		if len(newKeys) == n.childrenCount()-1 || len(newKeys) == n.childrenCount() {
-			/* Groups are: 2,2...2 or 3 */
-			hasIntermediateKeys = true
-		} else {
-			/* Groups are: 2,2...2 */
-			hasIntermediateKeys = false
-		}
-		for n.childrenCount() > 3 {
-			nodes = append(nodes, makeInternalNode(n.children[:2], newKeys[:1], stats))
-			n.children = n.children[2:]
-			if hasIntermediateKeys {
-				intermediateKeys = append(intermediateKeys, newKeys[1])
-				newKeys = newKeys[2:]
-			} else {
-				newKeys = newKeys[1:]
-			}
-		}
-		ensure(n.childrenCount() > 0 && len(newKeys) > 0, "upsertInternal: inconsistent #children vs #newKeys")
-		if n.childrenCount() == 2 {
-			ensure(len(newKeys) > 0, "upsertInternal: inconsistent #newKeys")
-			nodes = append(nodes, makeInternalNode(n.children, newKeys[:1], stats))
-			intermediateKeys = append(intermediateKeys, newKeys[1:]...)
-		} else if n.childrenCount() == 3 {
-			ensure(len(newKeys) > 1, "upsertInternal: inconsistent #newKeys")
-			nodes = append(nodes, makeInternalNode(n.children, newKeys[:2], stats))
-			intermediateKeys = append(intermediateKeys, newKeys[2:]...)
-		} else {
-			ensure(false, fmt.Sprintf("upsertInternal: inconsistent #children=%d #newKeys=%d\n", n.childrenCount(), len(newKeys)))
-		}
-		return nodes, newFirstKey, intermediateKeys
-	} else { // n.childrenCount() is 2 or 3
+	if n.childrenCount() <= 3 {
 		ensure(len(newKeys) > 0, "upsertInternal: newKeys count is zero")
 		if len(newKeys) == len(n.children) {
 			n.keys = newKeys[:len(newKeys)-1]
@@ -178,20 +121,50 @@ func upsertInternal(n *Node23, kvItems KeyValues, stats *Stats) (nodes []*Node23
 		stats.UpdatedCount++
 		return []*Node23{n}, newFirstKey, intermediateKeys
 	}
+
+	ensure(len(newKeys) >= n.childrenCount()-1 || n.childrenCount()%2 == 0 && n.childrenCount()%len(newKeys) == 0,
+		"upsertInternal: inconsistent #children vs #newKeys")
+
+	hasIntermediateKeys := len(newKeys) == n.childrenCount()-1 || len(newKeys) == n.childrenCount()
+
+	for n.childrenCount() > 3 {
+		nodes = append(nodes, makeInternalNode(n.children[:2], newKeys[:1], stats))
+		n.children = n.children[2:]
+		if hasIntermediateKeys {
+			intermediateKeys = append(intermediateKeys, newKeys[1])
+			newKeys = newKeys[2:]
+		} else {
+			newKeys = newKeys[1:]
+		}
+	}
+
+	ensure(n.childrenCount() > 0 && len(newKeys) > 0, "upsertInternal: inconsistent #children vs #newKeys")
+	switch n.childrenCount() {
+	case 2:
+		ensure(len(newKeys) > 0, "upsertInternal: inconsistent #newKeys")
+		nodes = append(nodes, makeInternalNode(n.children, newKeys[:1], stats))
+		intermediateKeys = append(intermediateKeys, newKeys[1:]...)
+	case 3:
+		ensure(len(newKeys) > 1, "upsertInternal: inconsistent #newKeys")
+		nodes = append(nodes, makeInternalNode(n.children, newKeys[:2], stats))
+		intermediateKeys = append(intermediateKeys, newKeys[2:]...)
+	default:
+		ensure(false, fmt.Sprintf("upsertInternal: inconsistent #children=%d #newKeys=%d\n", n.childrenCount(), len(newKeys)))
+	}
+	return nodes, newFirstKey, intermediateKeys
 }
+
+// --- Leaf add/replace ---
 
 func addOrReplaceLeaf(n *Node23, kvItems KeyValues, stats *Stats) {
 	ensure(n.isLeaf, "addOrReplaceLeaf: node is not leaf")
 	ensure(len(n.keys) > 0 && len(n.values) > 0, "addOrReplaceLeaf: node keys/values are empty")
 	ensure(len(kvItems.keys) > 0 && len(kvItems.keys) == len(kvItems.values), "addOrReplaceLeaf: invalid kvItems")
 
-	// Temporarily remove next key/value
 	nextKey, nextValue := n.nextKey(), n.nextValue()
-
 	n.keys = n.keys[:len(n.keys)-1]
 	n.values = n.values[:len(n.values)-1]
 
-	// kvItems are ordered by key: search there using n.keys that here are 1 or 2 by design (0 just for empty tree)
 	switch n.keyCount() {
 	case 0:
 		n.keys = append(n.keys, kvItems.keys...)
@@ -204,7 +177,6 @@ func addOrReplaceLeaf(n *Node23, kvItems KeyValues, stats *Stats) {
 		ensure(false, fmt.Sprintf("addOrReplaceLeaf: invalid key count %d", n.keyCount()))
 	}
 
-	// Restore next key/value
 	n.keys = append(n.keys, nextKey)
 	n.values = append(n.values, nextValue)
 }
@@ -215,26 +187,25 @@ func addOrReplaceLeaf1(n *Node23, kvItems KeyValues, stats *Stats) {
 
 	key0, value0 := n.keys[0], n.values[0]
 	index0 := sort.Search(kvItems.Len(), func(i int) bool { return *kvItems.keys[i] >= *key0 })
-	if index0 < kvItems.Len() {
-		// Insert keys/values concatenating new ones around key0
-		n.keys = append(make([]*Felt, 0), kvItems.keys[:index0]...)
-		n.values = append(make([]*Felt, 0), kvItems.values[:index0]...)
-		n.keys = append(n.keys, key0)
-		n.values = append(n.values, value0)
-		if *kvItems.keys[index0] == *key0 {
-			// Incoming key matches an existing key: update
-			n.keys = append(n.keys, kvItems.keys[index0+1:]...)
-			n.values = append(n.values, kvItems.values[index0+1:]...)
-			n.updated = true
-			stats.UpdatedCount++
-		} else {
-			n.keys = append(n.keys, kvItems.keys[index0:]...)
-			n.values = append(n.values, kvItems.values[index0:]...)
-		}
-	} else {
-		// key0 greater than any input key
+
+	if index0 >= kvItems.Len() {
 		n.keys = append(kvItems.keys, key0)
 		n.values = append(kvItems.values, value0)
+		return
+	}
+
+	n.keys = append(make([]*Felt, 0), kvItems.keys[:index0]...)
+	n.values = append(make([]*Felt, 0), kvItems.values[:index0]...)
+	n.keys = append(n.keys, key0)
+	n.values = append(n.values, value0)
+	if *kvItems.keys[index0] == *key0 {
+		n.keys = append(n.keys, kvItems.keys[index0+1:]...)
+		n.values = append(n.values, kvItems.values[index0+1:]...)
+		n.updated = true
+		stats.UpdatedCount++
+	} else {
+		n.keys = append(n.keys, kvItems.keys[index0:]...)
+		n.values = append(n.values, kvItems.values[index0:]...)
 	}
 }
 
@@ -246,61 +217,59 @@ func addOrReplaceLeaf2(n *Node23, kvItems KeyValues, stats *Stats) {
 	index0 := sort.Search(kvItems.Len(), func(i int) bool { return *kvItems.keys[i] >= *key0 })
 	index1 := sort.Search(kvItems.Len(), func(i int) bool { return *kvItems.keys[i] >= *key1 })
 	ensure(index1 >= index0, "addOrReplaceLeaf2: keys not ordered")
-	if index0 < kvItems.Len() {
-		if index1 < kvItems.Len() {
-			// Insert keys/values concatenating new ones around key0 and key1
-			n.keys = append(make([]*Felt, 0), kvItems.keys[:index0]...)
-			n.values = append(make([]*Felt, 0), kvItems.values[:index0]...)
-			n.keys = append(n.keys, key0)
-			n.values = append(n.values, value0)
-			if *kvItems.keys[index0] == *key0 {
-				// Incoming key matches an existing key: update
-				n.keys = append(n.keys, kvItems.keys[index0+1:index1]...)
-				n.values = append(n.values, kvItems.values[index0+1:index1]...)
-				n.updated = true
-				stats.UpdatedCount++
-			} else {
-				n.keys = append(n.keys, kvItems.keys[index0:index1]...)
-				n.values = append(n.values, kvItems.values[index0:index1]...)
-			}
-			n.keys = append(n.keys, key1)
-			n.values = append(n.values, value1)
-			if *kvItems.keys[index1] == *key1 {
-				// Incoming key matches an existing key: update
-				n.keys = append(n.keys, kvItems.keys[index1+1:]...)
-				n.values = append(n.values, kvItems.values[index1+1:]...)
-				if !n.updated {
-					n.updated = true
-					stats.UpdatedCount++
-				}
-			} else {
-				n.keys = append(n.keys, kvItems.keys[index1:]...)
-				n.values = append(n.values, kvItems.values[index1:]...)
-			}
-		} else {
-			// Insert keys/values concatenating new ones around key0, then add key1
-			n.keys = append(make([]*Felt, 0), kvItems.keys[:index0]...)
-			n.values = append(make([]*Felt, 0), kvItems.values[:index0]...)
-			n.keys = append(n.keys, key0)
-			n.values = append(n.values, value0)
-			if *kvItems.keys[index0] == *key0 {
-				// Incoming key matches an existing key: update
-				n.keys = append(n.keys, kvItems.keys[index0+1:]...)
-				n.values = append(n.values, kvItems.values[index0+1:]...)
-				n.updated = true
-				stats.UpdatedCount++
-			} else {
-				n.keys = append(n.keys, kvItems.keys[index0:]...)
-				n.values = append(n.values, kvItems.values[index0:]...)
-			}
-			n.keys = append(n.keys, key1)
-			n.values = append(n.values, value1)
-		}
-	} else {
+
+	if index0 >= kvItems.Len() {
 		ensure(index1 == index0, "addOrReplaceLeaf2: keys not ordered")
-		// Both key0 and key1 greater than any input key
 		n.keys = append(kvItems.keys, key0, key1)
 		n.values = append(kvItems.values, value0, value1)
+		return
+	}
+
+	// Insert keys/values concatenating new ones around key0
+	n.keys = append(make([]*Felt, 0), kvItems.keys[:index0]...)
+	n.values = append(make([]*Felt, 0), kvItems.values[:index0]...)
+	n.keys = append(n.keys, key0)
+	n.values = append(n.values, value0)
+
+	if *kvItems.keys[index0] == *key0 {
+		n.updated = true
+		stats.UpdatedCount++
+		if index1 < kvItems.Len() {
+			n.keys = append(n.keys, kvItems.keys[index0+1:index1]...)
+			n.values = append(n.values, kvItems.values[index0+1:index1]...)
+		} else {
+			n.keys = append(n.keys, kvItems.keys[index0+1:]...)
+			n.values = append(n.values, kvItems.values[index0+1:]...)
+			n.keys = append(n.keys, key1)
+			n.values = append(n.values, value1)
+			return
+		}
+	} else {
+		if index1 < kvItems.Len() {
+			n.keys = append(n.keys, kvItems.keys[index0:index1]...)
+			n.values = append(n.values, kvItems.values[index0:index1]...)
+		} else {
+			n.keys = append(n.keys, kvItems.keys[index0:]...)
+			n.values = append(n.values, kvItems.values[index0:]...)
+			n.keys = append(n.keys, key1)
+			n.values = append(n.values, value1)
+			return
+		}
+	}
+
+	// Insert key1
+	n.keys = append(n.keys, key1)
+	n.values = append(n.values, value1)
+	if *kvItems.keys[index1] == *key1 {
+		n.keys = append(n.keys, kvItems.keys[index1+1:]...)
+		n.values = append(n.values, kvItems.values[index1+1:]...)
+		if !n.updated {
+			n.updated = true
+			stats.UpdatedCount++
+		}
+	} else {
+		n.keys = append(n.keys, kvItems.keys[index1:]...)
+		n.values = append(n.values, kvItems.values[index1:]...)
 	}
 }
 
@@ -321,6 +290,8 @@ func splitItems(n *Node23, kvItems KeyValues) []KeyValues {
 	return itemSubsets
 }
 
+// --- Delete operations ---
+
 func del(n *Node23, keysToDelete []Felt, stats *Stats) (deleted *Node23, nextKey *Felt, intermediateKeys []*Felt) {
 	ensure(sort.IsSorted(Keys(keysToDelete)), "keysToDelete are not sorted")
 
@@ -329,9 +300,8 @@ func del(n *Node23, keysToDelete []Felt, stats *Stats) (deleted *Node23, nextKey
 	}
 	if n.isLeaf {
 		return deleteLeaf(n, keysToDelete, stats)
-	} else {
-		return deleteInternal(n, keysToDelete, stats)
 	}
+	return deleteInternal(n, keysToDelete, stats)
 }
 
 func deleteLeaf(n *Node23, keysToDelete []Felt, stats *Stats) (deleted *Node23, nextKey *Felt, intermediateKeys []*Felt) {
@@ -344,26 +314,22 @@ func deleteLeaf(n *Node23, keysToDelete []Felt, stats *Stats) (deleted *Node23, 
 		return n, nil, intermediateKeys
 	}
 
-	if !n.exposed {
-		n.exposed = true
-		stats.ExposedCount++
-		stats.OpeningHashes += n.howManyHashes()
-	}
+	exposeNode(n, stats)
 
 	currentFirstKey := n.firstKey()
 	deleteLeafKeys(n, keysToDelete, stats)
+
 	if n.keyCount() == 1 {
 		return nil, n.nextKey(), intermediateKeys
-	} else {
-		if n.nextKey() != nil {
-			intermediateKeys = append(intermediateKeys, n.nextKey())
-		}
-		if n.firstKey() != currentFirstKey {
-			return n, n.firstKey(), intermediateKeys
-		} else {
-			return n, nil, intermediateKeys
-		}
 	}
+
+	if n.nextKey() != nil {
+		intermediateKeys = append(intermediateKeys, n.nextKey())
+	}
+	if n.firstKey() != currentFirstKey {
+		return n, n.firstKey(), intermediateKeys
+	}
+	return n, nil, intermediateKeys
 }
 
 func deleteLeafKeys(n *Node23, keysToDelete []Felt, stats *Stats) (deleted KeyValues) {
@@ -378,30 +344,29 @@ func deleteLeafKeys(n *Node23, keysToDelete []Felt, stats *Stats) (deleted KeyVa
 			stats.DeletedCount++
 		}
 	case 3:
-		if Keys(keysToDelete).Contains(*n.keys[0]) {
-			if Keys(keysToDelete).Contains(*n.keys[1]) {
-				deleted.keys = n.keys[:2]
-				deleted.values = n.values[:2]
-				n.keys = n.keys[2:]
-				n.values = n.values[2:]
-				stats.DeletedCount++
-			} else {
-				deleted.keys = n.keys[:1]
-				deleted.values = n.values[:1]
-				n.keys = n.keys[1:]
-				n.values = n.values[1:]
-				n.updated = true
-				stats.UpdatedCount++
-			}
-		} else {
-			if Keys(keysToDelete).Contains(*n.keys[1]) {
-				deleted.keys = n.keys[1:2]
-				deleted.values = n.values[1:2]
-				n.keys = append(n.keys[:1], n.keys[2])
-				n.values = append(n.values[:1], n.values[2])
-				n.updated = true
-				stats.UpdatedCount++
-			}
+		key0Match := Keys(keysToDelete).Contains(*n.keys[0])
+		key1Match := Keys(keysToDelete).Contains(*n.keys[1])
+		switch {
+		case key0Match && key1Match:
+			deleted.keys = n.keys[:2]
+			deleted.values = n.values[:2]
+			n.keys = n.keys[2:]
+			n.values = n.values[2:]
+			stats.DeletedCount++
+		case key0Match:
+			deleted.keys = n.keys[:1]
+			deleted.values = n.values[:1]
+			n.keys = n.keys[1:]
+			n.values = n.values[1:]
+			n.updated = true
+			stats.UpdatedCount++
+		case key1Match:
+			deleted.keys = n.keys[1:2]
+			deleted.values = n.values[1:2]
+			n.keys = append(n.keys[:1], n.keys[2])
+			n.values = append(n.values[:1], n.values[2])
+			n.updated = true
+			stats.UpdatedCount++
 		}
 	default:
 		ensure(false, fmt.Sprintf("unexpected number of keys in %s", n))
@@ -419,11 +384,7 @@ func deleteInternal(n *Node23, keysToDelete []Felt, stats *Stats) (deleted *Node
 		return n, nil, intermediateKeys
 	}
 
-	if !n.exposed {
-		n.exposed = true
-		stats.ExposedCount++
-		stats.OpeningHashes += n.howManyHashes()
-	}
+	exposeNode(n, stats)
 
 	keySubsets := splitKeys(n, keysToDelete)
 
@@ -436,21 +397,10 @@ func deleteInternal(n *Node23, keysToDelete []Felt, stats *Stats) (deleted *Node
 			previousChild := n.children[previousIndex]
 			for previousChild.isEmpty() && previousIndex-1 >= 0 {
 				previousChild = n.children[previousIndex-1]
-				previousIndex = previousIndex - 1
+				previousIndex--
 			}
 			if child == nil || childNextKey != nil {
-				if previousChild.isLeaf {
-					ensure(len(previousChild.keys) > 0, "delete: previousChild has no keys")
-					if previousChild.nextKey() != childNextKey {
-						previousChild.setNextKey(childNextKey, stats)
-					}
-				} else {
-					ensure(len(previousChild.children) > 0, "delete: previousChild has no children")
-					lastLeaf := previousChild.lastLeaf()
-					if lastLeaf.nextKey() != childNextKey {
-						lastLeaf.setNextKey(childNextKey, stats)
-					}
-				}
+				propagateNextKeyToPrevious(previousChild, childNextKey, stats)
 			}
 			if !previousChild.isEmpty() && child != nil && child.childrenCount() == 1 {
 				child.keys = child.keys[:0]
@@ -462,7 +412,7 @@ func deleteInternal(n *Node23, keysToDelete []Felt, stats *Stats) (deleted *Node
 			nextChild := n.children[nextIndex]
 			for nextChild.isEmpty() && nextIndex+1 < n.childrenCount() {
 				nextChild = n.children[nextIndex+1]
-				nextIndex = nextIndex + 1
+				nextIndex++
 			}
 			if !nextChild.isEmpty() && child != nil && child.childrenCount() == 1 {
 				child.keys = child.keys[:0]
@@ -474,6 +424,7 @@ func deleteInternal(n *Node23, keysToDelete []Felt, stats *Stats) (deleted *Node
 			}
 		}
 	}
+
 	switch len(n.children) {
 	case 2:
 		nextKey, intermediateKeys = update2Node(n, newKeys, nextKey, intermediateKeys, stats)
@@ -493,10 +444,11 @@ func deleteInternal(n *Node23, keysToDelete []Felt, stats *Stats) (deleted *Node
 
 	if n.keyCount() == 0 {
 		return nil, nextKey, intermediateKeys
-	} else {
-		return n, nextKey, intermediateKeys
 	}
+	return n, nextKey, intermediateKeys
 }
+
+// --- Merge operations ---
 
 func mergeLeft2Right(left, right *Node23, stats *Stats) (newLeft, newRight *Node23) {
 	ensure(!left.isLeaf, "mergeLeft2Right: left is leaf")
@@ -504,46 +456,23 @@ func mergeLeft2Right(left, right *Node23, stats *Stats) (newLeft, newRight *Node
 
 	if left.firstChild().childrenCount() == 1 {
 		newLeftFirstChild, newRightFirstChild := mergeLeft2Right(left.firstChild(), right.firstChild(), stats)
-		left = makeInternalNode(
-			[]*Node23{newLeftFirstChild},
-			left.keys,
-			stats,
-		)
-		right = makeInternalNode(
-			append([]*Node23{newRightFirstChild}, right.children[1:]...),
-			right.keys,
-			stats,
-		)
+		left = makeInternalNode([]*Node23{newLeftFirstChild}, left.keys, stats)
+		right = makeInternalNode(append([]*Node23{newRightFirstChild}, right.children[1:]...), right.keys, stats)
 	}
 
 	if right.childrenCount() >= 3 {
 		return mergeRight2Left(left, right, stats)
 	}
 	if left.firstChild().isEmpty() {
-		newRight = right
-		newLeft = makeInternalNode([]*Node23{}, []*Felt{}, stats)
-		return newLeft, newRight
+		return makeInternalNode([]*Node23{}, []*Felt{}, stats), right
 	}
 	if right.childrenCount() == 1 {
 		if right.firstChild().isEmpty() {
-			newLeft = left
-			newRight = makeInternalNode([]*Node23{}, []*Felt{}, stats)
-		} else {
-			newRight = makeInternalNode(
-				append([]*Node23{left.firstChild()}, right.children...),
-				[]*Felt{left.lastLeaf().nextKey()},
-				stats,
-			)
-			if left.keyCount() > 1 {
-				newLeft = makeInternalNode(left.children[1:], left.keys[1:], stats)
-			} else {
-				newLeft = makeInternalNode(left.children[1:], left.keys, stats)
-			}
+			return left, makeInternalNode([]*Node23{}, []*Felt{}, stats)
 		}
-	} else {
 		newRight = makeInternalNode(
 			append([]*Node23{left.firstChild()}, right.children...),
-			append([]*Felt{left.lastLeaf().nextKey()}, right.keys...),
+			[]*Felt{left.lastLeaf().nextKey()},
 			stats,
 		)
 		if left.keyCount() > 1 {
@@ -551,6 +480,18 @@ func mergeLeft2Right(left, right *Node23, stats *Stats) (newLeft, newRight *Node
 		} else {
 			newLeft = makeInternalNode(left.children[1:], left.keys, stats)
 		}
+		return newLeft, newRight
+	}
+
+	newRight = makeInternalNode(
+		append([]*Node23{left.firstChild()}, right.children...),
+		append([]*Felt{left.lastLeaf().nextKey()}, right.keys...),
+		stats,
+	)
+	if left.keyCount() > 1 {
+		newLeft = makeInternalNode(left.children[1:], left.keys[1:], stats)
+	} else {
+		newLeft = makeInternalNode(left.children[1:], left.keys, stats)
 	}
 	return newLeft, newRight
 }
@@ -561,57 +502,44 @@ func mergeRight2Left(left, right *Node23, stats *Stats) (newLeft, newRight *Node
 
 	if right.firstChild().childrenCount() == 1 {
 		newLeftLastChild, newRightFirstChild := mergeRight2Left(left.lastChild(), right.firstChild(), stats)
-		left = makeInternalNode(
-			append(left.children[:len(left.children)-1], newLeftLastChild),
-			left.keys,
+		left = makeInternalNode(append(left.children[:len(left.children)-1], newLeftLastChild), left.keys, stats)
+		right = makeInternalNode([]*Node23{newRightFirstChild}, right.keys, stats)
+	}
+
+	if left.childrenCount() >= 3 {
+		return mergeLeft2Right(left, right, stats)
+	}
+
+	if right.firstChild().isEmpty() {
+		return left, makeInternalNode([]*Node23{}, []*Felt{}, stats)
+	}
+
+	if left.childrenCount() == 1 && left.firstChild().isEmpty() {
+		return makeInternalNode([]*Node23{}, []*Felt{}, stats), right
+	}
+
+	if left.childrenCount() == 1 {
+		newLeft = makeInternalNode(
+			append(left.children, right.firstChild()),
+			[]*Felt{right.firstLeaf().firstKey()},
 			stats,
 		)
-		right = makeInternalNode(
-			[]*Node23{newRightFirstChild},
-			right.keys,
+	} else {
+		newLeft = makeInternalNode(
+			append(left.children, right.firstChild()),
+			append(left.keys, right.firstLeaf().firstKey()),
 			stats,
 		)
 	}
-
-	if left.childrenCount() < 3 {
-		if !right.firstChild().isEmpty() {
-			if left.childrenCount() == 1 {
-				if left.firstChild().isEmpty() {
-					newLeft = makeInternalNode([]*Node23{}, []*Felt{}, stats)
-					newRight = right
-				} else {
-					newLeft = makeInternalNode(
-						append(left.children, right.firstChild()),
-						[]*Felt{right.firstLeaf().firstKey()},
-						stats,
-					)
-					if right.keyCount() > 1 {
-						newRight = makeInternalNode(right.children[1:], right.keys[1:], stats)
-					} else {
-						newRight = makeInternalNode(right.children[1:], right.keys, stats)
-					}
-				}
-			} else {
-				newLeft = makeInternalNode(
-					append(left.children, right.firstChild()),
-					append(left.keys, right.firstLeaf().firstKey()),
-					stats,
-				)
-				if right.keyCount() > 1 {
-					newRight = makeInternalNode(right.children[1:], right.keys[1:], stats)
-				} else {
-					newRight = makeInternalNode(right.children[1:], right.keys, stats)
-				}
-			}
-		} else {
-			newLeft = left
-			newRight = makeInternalNode([]*Node23{}, []*Felt{}, stats)
-		}
+	if right.keyCount() > 1 {
+		newRight = makeInternalNode(right.children[1:], right.keys[1:], stats)
 	} else {
-		newLeft, newRight = mergeLeft2Right(left, right, stats)
+		newRight = makeInternalNode(right.children[1:], right.keys, stats)
 	}
 	return newLeft, newRight
 }
+
+// --- Key splitting ---
 
 func splitKeys(n *Node23, keysToDelete []Felt) [][]Felt {
 	ensure(!n.isLeaf, "splitKeys: node is not internal")
@@ -630,12 +558,13 @@ func splitKeys(n *Node23, keysToDelete []Felt) [][]Felt {
 	return keySubsets
 }
 
+// --- Node update helpers ---
+
 func update2Node(n *Node23, newKeys []*Felt, nextKey *Felt, intermediateKeys []*Felt, stats *Stats) (*Felt, []*Felt) {
 	ensure(len(n.children) == 2, "update2Node: wrong number of children")
 
 	switch len(newKeys) {
 	case 0:
-		break
 	case 1:
 		n.keys = newKeys
 	case 2:
@@ -644,40 +573,32 @@ func update2Node(n *Node23, newKeys []*Felt, nextKey *Felt, intermediateKeys []*
 	default:
 		ensure(false, fmt.Sprintf("update2Node: wrong number of newKeys=%d", len(newKeys)))
 	}
+
 	nodeA, nodeC := n.children[0], n.children[1]
 	if nodeA.isEmpty() {
 		if nodeC.isEmpty() {
-			/* A is empty, a_next is the "next key"; C is empty, c_next is the "next key" */
 			n.children = n.children[:0]
 			n.keys = n.keys[:0]
 			if nodeC.isLeaf {
 				return nodeC.nextKey(), intermediateKeys
 			}
 			return nextKey, intermediateKeys
-		} else {
-			/* A is empty, a_next is the "next key"; C is not empty */
-			n.children = n.children[1:]
-			/// n.keys = []*Felt{nodeC.lastLeaf().nextKey()}
-			if nodeA.isLeaf {
-				return nodeA.nextKey(), intermediateKeys
-			}
-			return nextKey, intermediateKeys
 		}
-	} else {
-		if nodeC.isEmpty() {
-			/* A is not empty; C is empty, c_next is the "next key" */
-			n.children = n.children[:1]
-			/// n.keys = []*Felt{nodeA.lastLeaf().nextKey()}
-			if nodeC.isLeaf {
-				nodeA.setNextKey(nodeC.nextKey(), stats)
-			}
-			return nextKey, intermediateKeys
-		} else {
-			/* A is not empty; C is not empty */
-			n.keys = []*Felt{nodeA.lastLeaf().nextKey()}
-			return nextKey, intermediateKeys
+		n.children = n.children[1:]
+		if nodeA.isLeaf {
+			return nodeA.nextKey(), intermediateKeys
 		}
+		return nextKey, intermediateKeys
 	}
+	if nodeC.isEmpty() {
+		n.children = n.children[:1]
+		if nodeC.isLeaf {
+			nodeA.setNextKey(nodeC.nextKey(), stats)
+		}
+		return nextKey, intermediateKeys
+	}
+	n.keys = []*Felt{nodeA.lastLeaf().nextKey()}
+	return nextKey, intermediateKeys
 }
 
 func update3Node(n *Node23, newKeys []*Felt, nextKey *Felt, intermediateKeys []*Felt, stats *Stats) (*Felt, []*Felt) {
@@ -685,10 +606,7 @@ func update3Node(n *Node23, newKeys []*Felt, nextKey *Felt, intermediateKeys []*
 
 	switch len(newKeys) {
 	case 0:
-		break
-	case 1:
-		n.keys = newKeys
-	case 2:
+	case 1, 2:
 		n.keys = newKeys
 	case 3:
 		n.keys = newKeys[:2]
@@ -696,100 +614,91 @@ func update3Node(n *Node23, newKeys []*Felt, nextKey *Felt, intermediateKeys []*
 	default:
 		ensure(false, fmt.Sprintf("update3Node: wrong number of newKeys=%d", len(newKeys)))
 	}
+
 	nodeA, nodeB, nodeC := n.children[0], n.children[1], n.children[2]
-	if nodeA.isEmpty() {
-		if nodeB.isEmpty() {
-			if nodeC.isEmpty() {
-				/* A is empty, a_next is the "next key"; B is empty, b_next is the "next key"; C is empty, c_next is the "next key" */
+	aEmpty, bEmpty, cEmpty := nodeA.isEmpty(), nodeB.isEmpty(), nodeC.isEmpty()
+
+	if aEmpty {
+		if bEmpty {
+			if cEmpty {
 				n.children = n.children[:0]
 				n.keys = n.keys[:0]
 				if nodeA.isLeaf {
 					return nodeC.nextKey(), intermediateKeys
 				}
 				return nextKey, intermediateKeys
-			} else {
-				/* A is empty, a_next is the "next key"; B is empty, b_next is the "next key"; C is not empty */
-				n.children = n.children[2:]
-				/// n.keys = []*Felt{nodeC.lastLeaf().nextKey()}
-				if nodeA.isLeaf {
-					return nodeB.nextKey(), intermediateKeys
-				}
-				return nextKey, intermediateKeys
 			}
-		} else {
-			if nodeC.isEmpty() {
-				/* A is empty, a_next is the "next key"; B is not empty; C is empty, c_next is the "next key" */
-				n.children = n.children[1:2]
-				/// n.keys = []*Felt{nodeB.lastLeaf().nextKey()}
-				if nodeA.isLeaf {
-					nodeB.setNextKey(nodeC.nextKey(), stats)
-					return nodeA.nextKey(), intermediateKeys
-				}
-				return nextKey, intermediateKeys
-			} else {
-				/* A is empty, a_next is the "next key"; B is not empty; C is not empty */
-				n.children = n.children[1:]
-				if nodeA.isLeaf {
-					n.keys = []*Felt{nodeB.nextKey()}
-					return nodeA.nextKey(), intermediateKeys
-				}
-				n.keys = []*Felt{nodeB.lastLeaf().nextKey()}
-				return nextKey, intermediateKeys
+			n.children = n.children[2:]
+			if nodeA.isLeaf {
+				return nodeB.nextKey(), intermediateKeys
 			}
+			return nextKey, intermediateKeys
 		}
-	} else {
-		if nodeB.isEmpty() {
-			if nodeC.isEmpty() {
-				/* A is not empty; B is empty, b_next is the "next key"; C is empty, c_next is the "next key" */
-				n.children = n.children[:1]
-				if nodeA.isLeaf {
-					nodeA.setNextKey(nodeC.nextKey(), stats)
-				}
-				/// n.keys = []*Felt{nodeA.lastLeaf().nextKey()}
-				return nextKey, intermediateKeys
-			} else {
-				/* A is not empty; B is empty, b_next is the "next key"; C is not empty */
-				n.children = append(n.children[:1], n.children[2])
-				if nodeA.isLeaf {
-					n.keys = []*Felt{nodeB.nextKey()}
-					nodeA.setNextKey(nodeB.nextKey(), stats)
-				} else {
-					n.keys = []*Felt{nodeA.lastLeaf().nextKey()}
-				}
-				return nextKey, intermediateKeys
+		if cEmpty {
+			n.children = n.children[1:2]
+			if nodeA.isLeaf {
+				nodeB.setNextKey(nodeC.nextKey(), stats)
+				return nodeA.nextKey(), intermediateKeys
 			}
-		} else {
-			if nodeC.isEmpty() {
-				/* A is not empty; B is not empty; C is empty, c_next is the "next key" */
-				n.children = n.children[:2]
-				if nodeA.isLeaf {
-					n.keys = []*Felt{nodeA.nextKey()}
-					nodeB.setNextKey(nodeC.nextKey(), stats)
-				} else {
-					n.keys = []*Felt{nodeA.lastLeaf().nextKey()}
-				}
-				return nextKey, intermediateKeys
-			} else {
-				/* A is not empty; B is not empty; C is not empty */
-				///n.keys = []*Felt{nodeA.lastLeaf().nextKey(), nodeB.lastLeaf().nextKey()}
-				return nextKey, intermediateKeys
-			}
+			return nextKey, intermediateKeys
 		}
+		n.children = n.children[1:]
+		if nodeA.isLeaf {
+			n.keys = []*Felt{nodeB.nextKey()}
+			return nodeA.nextKey(), intermediateKeys
+		}
+		n.keys = []*Felt{nodeB.lastLeaf().nextKey()}
+		return nextKey, intermediateKeys
 	}
+
+	if bEmpty {
+		if cEmpty {
+			n.children = n.children[:1]
+			if nodeA.isLeaf {
+				nodeA.setNextKey(nodeC.nextKey(), stats)
+			}
+			return nextKey, intermediateKeys
+		}
+		n.children = append(n.children[:1], n.children[2])
+		if nodeA.isLeaf {
+			n.keys = []*Felt{nodeB.nextKey()}
+			nodeA.setNextKey(nodeB.nextKey(), stats)
+		} else {
+			n.keys = []*Felt{nodeA.lastLeaf().nextKey()}
+		}
+		return nextKey, intermediateKeys
+	}
+
+	if cEmpty {
+		n.children = n.children[:2]
+		if nodeA.isLeaf {
+			n.keys = []*Felt{nodeA.nextKey()}
+			nodeB.setNextKey(nodeC.nextKey(), stats)
+		} else {
+			n.keys = []*Felt{nodeA.lastLeaf().nextKey()}
+		}
+		return nextKey, intermediateKeys
+	}
+
+	return nextKey, intermediateKeys
 }
+
+// --- Demote ---
 
 func demote(node *Node23, nextKey *Felt, intermediateKeys []*Felt, stats *Stats) (*Node23, *Felt) {
 	if node == nil {
 		return nil, nextKey
-	} else if len(node.children) == 0 {
+	}
+
+	switch len(node.children) {
+	case 0:
 		if len(node.keys) == 0 {
 			return nil, nextKey
-		} else {
-			return node, nextKey
 		}
-	} else if len(node.children) == 1 {
+		return node, nextKey
+	case 1:
 		return demote(node.children[0], nextKey, intermediateKeys, stats)
-	} else if len(node.children) == 2 {
+	case 2:
 		firstChild, secondChild := node.children[0], node.children[1]
 		if firstChild.keyCount() == 0 && secondChild.keyCount() == 0 {
 			return nil, nextKey
@@ -800,13 +709,52 @@ func demote(node *Node23, nextKey *Felt, intermediateKeys []*Felt, stats *Stats)
 		if firstChild.keyCount() > 0 && secondChild.keyCount() == 0 {
 			return firstChild, nextKey
 		}
-		if firstChild.keyCount() == 2 && secondChild.keyCount() == 2 {
-			if firstChild.isLeaf {
-				keys := []*Felt{firstChild.firstKey(), secondChild.firstKey(), secondChild.nextKey()}
-				values := []*Felt{firstChild.firstValue(), secondChild.firstValue(), secondChild.nextValue()}
-				return makeLeafNode(keys, values, stats), nextKey
-			}
+		if firstChild.keyCount() == 2 && secondChild.keyCount() == 2 && firstChild.isLeaf {
+			keys := []*Felt{firstChild.firstKey(), secondChild.firstKey(), secondChild.nextKey()}
+			values := []*Felt{firstChild.firstValue(), secondChild.firstValue(), secondChild.nextValue()}
+			return makeLeafNode(keys, values, stats), nextKey
 		}
 	}
 	return node, nextKey
+}
+
+// --- Shared helpers ---
+
+func exposeNode(n *Node23, stats *Stats) {
+	if !n.exposed {
+		n.exposed = true
+		stats.ExposedCount++
+		stats.OpeningHashes += n.howManyHashes()
+	}
+}
+
+func propagateFirstKeyToPrevious(previousChild *Node23, newFirstKey *Felt, stats *Stats) {
+	if previousChild.isLeaf {
+		ensure(len(previousChild.keys) > 0, "upsertInternal: previousChild has no keys")
+		if previousChild.nextKey() != newFirstKey {
+			previousChild.setNextKey(newFirstKey, stats)
+		}
+	} else {
+		ensure(len(previousChild.children) > 0, "upsertInternal: previousChild has no children")
+		lastLeaf := previousChild.lastLeaf()
+		if lastLeaf.nextKey() != newFirstKey {
+			lastLeaf.setNextKey(newFirstKey, stats)
+		}
+	}
+	// TODO(canepat): previousChild/previousLastLeaf changed instead of making new node
+}
+
+func propagateNextKeyToPrevious(previousChild *Node23, childNextKey *Felt, stats *Stats) {
+	if previousChild.isLeaf {
+		ensure(len(previousChild.keys) > 0, "delete: previousChild has no keys")
+		if previousChild.nextKey() != childNextKey {
+			previousChild.setNextKey(childNextKey, stats)
+		}
+	} else {
+		ensure(len(previousChild.children) > 0, "delete: previousChild has no children")
+		lastLeaf := previousChild.lastLeaf()
+		if lastLeaf.nextKey() != childNextKey {
+			lastLeaf.setNextKey(childNextKey, stats)
+		}
+	}
 }

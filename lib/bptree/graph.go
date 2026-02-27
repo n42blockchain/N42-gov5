@@ -24,6 +24,15 @@ import (
 	"strconv"
 )
 
+var palette = []string{"#FDF3D0", "#DCE8FA", "#D9E7D6", "#F1CFCD", "#F5F5F5", "#E1D5E7", "#FFE6CC", "white"}
+
+const (
+	colorUnexposed = 0
+	colorExposed   = 1
+	colorUpdated   = 2
+)
+
+// Node23Graph generates Graphviz DOT representations of a 2-3 tree.
 type Node23Graph struct {
 	node *Node23
 }
@@ -33,11 +42,6 @@ func NewGraph(node *Node23) *Node23Graph {
 }
 
 func (g *Node23Graph) saveDot(filename string, debug bool) {
-	palette := []string{"#FDF3D0", "#DCE8FA", "#D9E7D6", "#F1CFCD", "#F5F5F5", "#E1D5E7", "#FFE6CC", "white"}
-	const unexposedIndex = 0
-	const exposedIndex = 1
-	const updatedIndex = 2
-
 	f, err := os.OpenFile(filename+".dot", os.O_RDWR|os.O_CREATE, 0755)
 	if err != nil {
 		log.Fatal(err)
@@ -47,103 +51,28 @@ func (g *Node23Graph) saveDot(filename string, debug bool) {
 			log.Fatal(err)
 		}
 	}()
+
 	if g.node == nil {
-		if _, err := f.WriteString("strict digraph {\nnode [shape=record];}\n"); err != nil {
-			log.Fatal(err)
-		}
+		writeOrDie(f, "strict digraph {\nnode [shape=record];}\n")
 		return
 	}
-	if _, err := f.WriteString("strict digraph {\nnode [shape=record];\n"); err != nil {
-		log.Fatal(err)
-	}
+
+	writeOrDie(f, "strict digraph {\nnode [shape=record];\n")
+
 	for _, n := range g.node.walkNodesPostOrder() {
-		left, down, right := "", "", ""
-		switch n.childrenCount() {
-		case 1:
-			left = "<L>L"
-		case 2:
-			left = "<L>L"
-			right = "<R>R"
-		case 3:
-			left = "<L>L"
-			down = "<D>D"
-			right = "<R>R"
-		}
-		var nodeID string
-		if n.isLeaf {
-			var next string
-			if n.keyCount() > 0 {
-				if n.nextKey() == nil {
-					next = "nil"
-				} else {
-					next = strconv.FormatUint(uint64(*n.nextKey()), 10)
-				}
-				if debug {
-					nodeID = fmt.Sprintf("k=%v %s-%v", deref(n.keys[:len(n.keys)-1]), next, n.keys)
-				} else {
-					nodeID = fmt.Sprintf("k=%v %s", deref(n.keys[:len(n.keys)-1]), next)
-				}
-			} else {
-				nodeID = "k=[]"
-			}
-		} else {
-			if debug {
-				nodeID = fmt.Sprintf("k=%v-%v", deref(n.keys), n.keys)
-			} else {
-				nodeID = fmt.Sprintf("k=%v", deref(n.keys))
-			}
-		}
-		var color string
-		if n.exposed {
-			if n.updated {
-				color = palette[updatedIndex]
-			} else {
-				color = palette[exposedIndex]
-			}
-		} else {
-			ensure(!n.updated, fmt.Sprintf("saveDot: node %v is not exposed but updated", n))
-			color = palette[unexposedIndex]
-		}
-		s := fmt.Sprintf("%d [label=\"%s|{<C>%s|%s}|%s\" style=filled fillcolor=\"%s\"];\n", n.rawPointer(), left, nodeID, down, right, color)
-		if _, err := f.WriteString(s); err != nil {
-			log.Fatal(err)
-		}
+		left, down, right := nodeSlotLabels(n)
+		nodeID := nodeLabel(n, debug)
+		color := nodeColor(n)
+		s := fmt.Sprintf("%d [label=\"%s|{<C>%s|%s}|%s\" style=filled fillcolor=\"%s\"];\n",
+			n.rawPointer(), left, nodeID, down, right, color)
+		writeOrDie(f, s)
 	}
+
 	for _, n := range g.node.walkNodesPostOrder() {
-		var treeLeft, treeDown, treeRight *Node23
-		switch n.childrenCount() {
-		case 1:
-			treeLeft = n.children[0]
-		case 2:
-			treeLeft = n.children[0]
-			treeRight = n.children[1]
-		case 3:
-			treeLeft = n.children[0]
-			treeDown = n.children[1]
-			treeRight = n.children[2]
-		}
-		if treeLeft != nil {
-			//if _, err := f.WriteString(fmt.Sprintln(n.rawPointer(), ":L -> ", treeLeft.rawPointer(), ":C;")); err != nil {
-			if _, err := f.WriteString(fmt.Sprintf("%d:L -> %d:C;\n", n.rawPointer(), treeLeft.rawPointer())); err != nil {
-				log.Fatal(err)
-			}
-		}
-		if treeDown != nil {
-			//if _, err := f.WriteString(fmt.Sprintln(n.rawPointer(), ":D -> ", treeDown.rawPointer(), ":C;")); err != nil {
-			if _, err := f.WriteString(fmt.Sprintf("%d:D -> %d:C;\n", n.rawPointer(), treeDown.rawPointer())); err != nil {
-				log.Fatal(err)
-			}
-		}
-		if treeRight != nil {
-			//if _, err := f.WriteString(fmt.Sprintln(n.rawPointer(), ":R -> ", treeRight.rawPointer(), ":C;")); err != nil {
-			if _, err := f.WriteString(fmt.Sprintf("%d:R -> %d:C;\n", n.rawPointer(), treeRight.rawPointer())); err != nil {
-				log.Fatal(err)
-			}
-		}
+		writeEdges(f, n)
 	}
-	if _, err := f.WriteString("}\n"); err != nil {
-		log.Fatal(err)
-	}
+
+	writeOrDie(f, "}\n")
 }
 
 func (g *Node23Graph) saveDotAndPicture(filename string, debug bool) error {
@@ -153,6 +82,7 @@ func (g *Node23Graph) saveDotAndPicture(filename string, debug bool) error {
 	_ = os.Remove(filepath + ".dot")
 	_ = os.Remove(filepath + ".png")
 	g.saveDot(filepath, debug)
+
 	dotExecutable, _ := exec.LookPath("dot")
 	cmdDot := &exec.Cmd{
 		Path:   dotExecutable,
@@ -160,8 +90,81 @@ func (g *Node23Graph) saveDotAndPicture(filename string, debug bool) error {
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 	}
-	if err := cmdDot.Run(); err != nil {
-		return err
+	return cmdDot.Run()
+}
+
+func nodeSlotLabels(n *Node23) (left, down, right string) {
+	switch n.childrenCount() {
+	case 1:
+		left = "<L>L"
+	case 2:
+		left = "<L>L"
+		right = "<R>R"
+	case 3:
+		left = "<L>L"
+		down = "<D>D"
+		right = "<R>R"
 	}
-	return nil
+	return left, down, right
+}
+
+func nodeLabel(n *Node23, debug bool) string {
+	if n.isLeaf {
+		if n.keyCount() == 0 {
+			return "k=[]"
+		}
+		var next string
+		if n.nextKey() == nil {
+			next = "nil"
+		} else {
+			next = strconv.FormatUint(uint64(*n.nextKey()), 10)
+		}
+		if debug {
+			return fmt.Sprintf("k=%v %s-%v", deref(n.keys[:len(n.keys)-1]), next, n.keys)
+		}
+		return fmt.Sprintf("k=%v %s", deref(n.keys[:len(n.keys)-1]), next)
+	}
+	if debug {
+		return fmt.Sprintf("k=%v-%v", deref(n.keys), n.keys)
+	}
+	return fmt.Sprintf("k=%v", deref(n.keys))
+}
+
+func nodeColor(n *Node23) string {
+	if n.exposed {
+		if n.updated {
+			return palette[colorUpdated]
+		}
+		return palette[colorExposed]
+	}
+	ensure(!n.updated, fmt.Sprintf("saveDot: node %v is not exposed but updated", n))
+	return palette[colorUnexposed]
+}
+
+func writeEdges(f *os.File, n *Node23) {
+	var children [3]*Node23
+	switch n.childrenCount() {
+	case 1:
+		children[0] = n.children[0]
+	case 2:
+		children[0] = n.children[0]
+		children[2] = n.children[1]
+	case 3:
+		children[0] = n.children[0]
+		children[1] = n.children[1]
+		children[2] = n.children[2]
+	}
+
+	labels := [3]string{"L", "D", "R"}
+	for i, child := range children {
+		if child != nil {
+			writeOrDie(f, fmt.Sprintf("%d:%s -> %d:C;\n", n.rawPointer(), labels[i], child.rawPointer()))
+		}
+	}
+}
+
+func writeOrDie(f *os.File, s string) {
+	if _, err := f.WriteString(s); err != nil {
+		log.Fatal(err)
+	}
 }

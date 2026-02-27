@@ -24,11 +24,13 @@ import (
 	"sort"
 )
 
+// KeyFactory creates sorted, unique key collections from binary readers.
 type KeyFactory interface {
 	NewUniqueKeyValues(reader *bufio.Reader) KeyValues
 	NewUniqueKeys(reader *bufio.Reader) Keys
 }
 
+// KeyBinaryFactory reads binary-encoded keys of a fixed size.
 type KeyBinaryFactory struct {
 	keySize int
 }
@@ -60,15 +62,13 @@ func (factory *KeyBinaryFactory) readUniqueKeyValues(reader *bufio.Reader) KeyVa
 			break
 		}
 		keyBytesCount := factory.keySize * (bytesRead / factory.keySize)
-		duplicatedKeys := 0
 		for i := 0; i < keyBytesCount; i += factory.keySize {
 			key := factory.readKey(buffer, i)
-			if _, duplicated := keyRegistry[key]; duplicated {
-				duplicatedKeys++
+			if keyRegistry[key] {
 				continue
 			}
 			keyRegistry[key] = true
-			value := key // Shortcut: value equal to key
+			value := key
 			kvPairs.keys = append(kvPairs.keys, &key)
 			kvPairs.values = append(kvPairs.values, &value)
 		}
@@ -86,11 +86,9 @@ func (factory *KeyBinaryFactory) readUniqueKeys(reader *bufio.Reader) Keys {
 			break
 		}
 		keyBytesCount := factory.keySize * (bytesRead / factory.keySize)
-		duplicatedKeys := 0
 		for i := 0; i < keyBytesCount; i += factory.keySize {
 			key := factory.readKey(buffer, i)
-			if _, duplicated := keyRegistry[key]; duplicated {
-				duplicatedKeys++
+			if keyRegistry[key] {
 				continue
 			}
 			keyRegistry[key] = true
