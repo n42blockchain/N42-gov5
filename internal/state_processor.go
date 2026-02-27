@@ -18,8 +18,7 @@ package internal
 
 import (
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/crypto"
@@ -29,19 +28,19 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/ethdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
+
+	"github.com/holiman/uint256"
 )
 
-// StateProcessor is a basic Processor, which takes care of transitioning
-// state from one point to another.
-//
-// StateProcessor implements Processor.
+// StateProcessor implements Processor and handles state transitions.
 type StateProcessor struct {
-	config *params.ChainConfig // Chain configuration options
-	bc     *BlockChain         // Canonical block chain
-	engine consensus.Engine    // Consensus engine used for block rewards
+	config *params.ChainConfig
+	bc     *BlockChain
+	engine consensus.Engine
 }
 
 // NewStateProcessor initialises a new StateProcessor.
@@ -54,12 +53,8 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 }
 
 // Process processes the state changes according to the Ethereum rules by running
-// the transaction messages using the statedb and applying any rewards to both
-// the processor (coinbase) and any included uncles.
-//
-// Process returns the receipts and logs accumulated during the process and
-// returns the amount of gas that was used in the process. If any of the
-// transactions failed to execute due to insufficient gas it will return an error.
+// the transaction messages and applying rewards. Returns receipts, unpaid rewards,
+// logs, and total gas used.
 func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (block.Receipts, map[types.Address]*uint256.Int, []*block.Log, uint64, error) {
 	concreteHeader, ok := b.Header().(*block.Header)
 	if !ok {
@@ -76,16 +71,14 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		receipts    block.Receipts
 	)
 
-	chainReader := p.bc
+	chainConfig := p.config
 	cfg := vm2.Config{}
 
-	chainConfig := p.config
 	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(b.Number64().ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibs)
 	}
 	noop := state.NewNoopWriter()
 
-	//posa, isPoSA := p.engine.(*apoa.Apoa)
 	for i, tx := range b.Transactions() {
 		ibs.Prepare(tx.Hash(), b.Hash(), i)
 		receipt, _, err := ApplyTransaction(chainConfig, blockHashFunc, p.engine, nil, gp, ibs, noop, concreteHeader, tx, usedGas, cfg)
@@ -110,76 +103,51 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	if !cfg.ReadOnly {
 		txs := b.Transactions()
 		var err error
-		_, nopay, err = p.engine.Finalize(chainReader, concreteHeader, ibs, txs, nil)
+		_, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
 		if err != nil {
 			return nil, nil, nil, 0, err
 		}
 	}
-	allLogs := ibs.Logs()
 
-	//if err := ibs.CommitBlock(chainConfig.Rules(header.Number64().Uint64()), stateWriter); err != nil {
-	//	return nil, nil, 0, fmt.Errorf("committing block %d failed: %w", header.Number64().Uint64(), err)
-	//}
-	//
-	//if err := stateWriter.WriteChangeSets(); err != nil {
-	//	return nil, nil, 0, fmt.Errorf("writing changesets for block %d failed: %w", header.Number64().Uint64(), err)
-	//}
-	//if err := rw.Commit(); nil != err {
-	//	return nil, nil, 0, err
-	//}
+	// Suppress unused variable warnings
+	_ = rejectedTxs
+	_ = includedTxs
 
-	return receipts, nopay, allLogs, *usedGas, nil
+	return receipts, nopay, ibs.Logs(), *usedGas, nil
 }
 
-// applyTransaction attempts to apply a transaction to the given state database
-// and uses the input parameters for its environment. It returns the receipt
-// for the transaction, gas used and an error if the transaction failed,
-// indicating the block was invalid.
+// applyTransaction applies a single transaction and returns its receipt.
 func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *common.GasPool, ibs *state.IntraBlockState, stateWriter state.StateWriter, header *block.Header, tx *transaction.Transaction, usedGas *uint64, evm vm2.VMInterface, cfg vm2.Config) (*block.Receipt, []byte, error) {
 	rules := evm.ChainRules()
-	//msg, err := tx.AsMessage(*transaction.MakeSigner(config, header.Number.Uint64()))
-	//if err != nil {
-	//	return nil, nil, err
-	//}
 
 	msg, err := tx.AsMessage(transaction.MakeSigner(config, header.Number.ToBig()), header.BaseFee)
 	if err != nil {
 		return nil, nil, err
 	}
-
 	msg.SetCheckNonce(!cfg.StatelessExec)
 
 	if msg.FeeCap().IsZero() && engine != nil {
-		//syscall := func(contract types.Address, data []byte) ([]byte, error) {
-		//	return SysCallContract(contract, data, *config, ibs, header, engine)
-		//}
 		msg.SetIsFree(false)
 	}
 
 	txContext := NewEVMTxContext(msg)
 	if cfg.TraceJumpDest {
-		h := tx.Hash()
-		txContext.TxHash = h
+		txContext.TxHash = tx.Hash()
 	}
 
-	// Update the evm with the new transaction context.
 	evm.Reset(txContext, ibs)
 
-	result, err := ApplyMessage(evm, msg, gp, true /* refunds */, false /* gasBailout */)
+	result, err := ApplyMessage(evm, msg, gp, true, false)
 	if err != nil {
 		return nil, nil, err
 	}
-	// Update the state with pending changes
 	if err = ibs.FinalizeTx(rules, stateWriter); err != nil {
 		return nil, nil, err
 	}
 	*usedGas += result.UsedGas
 
-	// Set the receipt logs and create the bloom filter.
-	// based on the eip phase, we're passing whether the root touch-delete accounts.
 	var receipt *block.Receipt
 	if !cfg.NoReceipts {
-		// by the tx.
 		receipt = &block.Receipt{Type: tx.Type(), CumulativeGasUsed: *usedGas}
 		if result.Failed() {
 			receipt.Status = block.ReceiptStatusFailed
@@ -189,11 +157,9 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 
 		receipt.TxHash = tx.Hash()
 		receipt.GasUsed = result.UsedGas
-		// if the transaction created a contract, store the creation address in the receipt.
 		if msg.To() == nil {
 			receipt.ContractAddress = crypto.CreateAddress(evm.TxContext().Origin, tx.Nonce())
 		}
-		// Set the receipt logs and create a bloom for filtering
 		receipt.Logs = ibs.GetLogs(tx.Hash())
 		receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
 		receipt.BlockNumber = header.Number
@@ -203,43 +169,19 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 	return receipt, result.ReturnData, err
 }
 
-// ApplyTransaction attempts to apply a transaction to the given state database
-// and uses the input parameters for its environment. It returns the receipt
-// for the transaction, gas used and an error if the transaction failed,
-// indicating the block was invalid.
+// ApplyTransaction creates the EVM environment and applies a transaction.
 func ApplyTransaction(config *params.ChainConfig, blockHashFunc func(n uint64) types.Hash, engine consensus.Engine, author *types.Address, gp *common.GasPool, ibs *state.IntraBlockState, stateWriter state.StateWriter, header *block.Header, tx *transaction.Transaction, usedGas *uint64, cfg vm2.Config) (*block.Receipt, []byte, error) {
-	// Create a new context to be used in the EVM environment
-
-	// Add addresses to access list if applicable
-	// about the transaction and calling mechanisms.
-	//cfg.SkipAnalysis = SkipAnalysis(config, header.Number.Uint64())
-
-	var vmenv vm2.VMInterface
-
-	//if tx.IsStarkNet() {
-	//	vmenv = &vm.CVMAdapter{Cvm: NewCVM(ibs)}
-	//} else {
 	blockContext := NewEVMBlockContext(header, blockHashFunc, engine, author)
-	vmenv = vm2.NewEVM(blockContext, evmtypes.TxContext{}, ibs, config, cfg)
-	//}
+	vmenv := vm2.NewEVM(blockContext, evmtypes.TxContext{}, ibs, config, cfg)
 
 	return applyTransaction(config, engine, gp, ibs, stateWriter, header, tx, usedGas, vmenv, cfg)
 }
 
-func NewStateReaderWriter(
-	batch ethdb.Database,
-	tx kv.RwTx,
-	blockNumber uint64,
-	writeChangeSets bool,
-	// accumulator *shards.Accumulator,
-	// initialCycle bool,
-	// stateStream bool,
-) (state.StateReader, state.WriterWithChangeSets, error) {
+// NewStateReaderWriter creates a new state reader and writer pair.
+func NewStateReaderWriter(batch ethdb.Database, tx kv.RwTx, blockNumber uint64, writeChangeSets bool) (state.StateReader, state.WriterWithChangeSets, error) {
+	stateReader := state.NewPlainStateReader(tx)
 
-	var stateReader state.StateReader
 	var stateWriter state.WriterWithChangeSets
-
-	stateReader = state.NewPlainStateReader(tx)
 	if writeChangeSets {
 		stateWriter = state.NewPlainStateWriter(batch, tx, blockNumber)
 	} else {

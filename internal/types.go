@@ -18,30 +18,11 @@ package internal
 
 import (
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
 )
-
-// Validator is an interface which defines the standard for block validation. It
-// is only responsible for validating block contents, as the header validation is
-// done by the specific consensus engines.
-//type Validator interface {
-//	// ValidateBody validates the given block's content.
-//	ValidateBody(block *block.Block) error
-//
-//	// ValidateState validates the given statedb and optionally the receipts and
-//	// gas used.
-//	ValidateState(block *block.Block, state *state.StateDB, receipts block.Receipts, usedGas uint64) error
-//}
-//
-//// Prefetcher is an interface for pre-caching transaction signatures and state.
-//type Prefetcher interface {
-//	// Prefetch processes the state changes according to the Ethereum rules by running
-//	// the transaction messages using the statedb, but any changes are discarded. The
-//	// only goal is to pre-cache transaction signatures and state trie nodes.
-//	Prefetch(block *block.Block, statedb *state.StateDB, cfg vm.Config, interrupt *uint32)
-//}
 
 // Processor is an interface for processing blocks using a given initial state.
 type Processor interface {
