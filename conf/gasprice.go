@@ -37,7 +37,6 @@ type GpoConfig struct {
 	IgnorePrice      *big.Int `json:"ignorePrice,omitempty" yaml:"ignorePrice,omitempty"`
 }
 
-// FullNodeGPO contains default gasprice oracle settings for full node.
 var FullNodeGPO = GpoConfig{
 	Blocks:           20,
 	Percentile:       60,
@@ -47,7 +46,6 @@ var FullNodeGPO = GpoConfig{
 	IgnorePrice:      DefaultIgnorePrice,
 }
 
-// LightClientGPO contains default gasprice oracle settings for light client.
 var LightClientGPO = GpoConfig{
 	Blocks:           2,
 	Percentile:       60,

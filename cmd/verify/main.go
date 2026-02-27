@@ -36,7 +36,6 @@ import (
 	"github.com/n42blockchain/N42/modules/state"
 )
 
-// Environment variable names for configuration
 const (
 	EnvPrivateKey   = "N42_VERIFY_PRIVATE_KEY"
 	EnvWebSocketURL = "N42_VERIFY_WS_URL"
@@ -67,7 +66,6 @@ func RootContext() (context.Context, context.CancelFunc) {
 }
 
 func main() {
-	// SECURITY: Read private key from environment variable instead of hardcoding
 	privateKeyHex := os.Getenv(EnvPrivateKey)
 	if privateKeyHex == "" {
 		log.Error("Private key not set. Please set environment variable: " + EnvPrivateKey)
@@ -104,7 +102,6 @@ func main() {
 	ctx, cancel := RootContext()
 	defer cancel()
 
-	// Get WebSocket URL from environment or use default
 	wsURL := os.Getenv(EnvWebSocketURL)
 	if wsURL == "" {
 		wsURL = DefaultWSURL

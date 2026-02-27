@@ -53,11 +53,8 @@ func ipAddrs() ([]net.IP, error) {
 	}
 	var ipAddrs []net.IP
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 {
-			continue // interface down
-		}
-		if iface.Flags&net.FlagLoopback != 0 {
-			continue // loopback interface
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
 		}
 		addrs, err := iface.Addrs()
 		if err != nil {

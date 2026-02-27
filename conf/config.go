@@ -35,11 +35,9 @@ type Config struct {
 	AccountCfg  AccountConfig       `json:"account" yaml:"account"`
 	MetricsCfg  MetricsConfig       `json:"metrics" yaml:"metrics"`
 	P2PCfg      *P2PConfig          `json:"p2p" yaml:"p2p"`
-	// Gas Price Oracle options
-	GPO   GpoConfig   `json:"gpo" yaml:"gpo"`
-	Miner MinerConfig `json:"miner" yaml:"miner"`
-	// Development configuration
-	DevCfg DevConfig `json:"dev" yaml:"dev"`
+	GPO    GpoConfig   `json:"gpo" yaml:"gpo"`
+	Miner  MinerConfig `json:"miner" yaml:"miner"`
+	DevCfg DevConfig   `json:"dev" yaml:"dev"`
 }
 
 func SaveConfigToFile(file string, config Config) error {

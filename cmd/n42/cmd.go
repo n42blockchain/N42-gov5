@@ -71,7 +71,6 @@ var nodeFlg = []cli.Flag{
 }
 
 var rpcFlags = []cli.Flag{
-	// IPC 配置
 	&cli.StringFlag{
 		Name:        "ipcpath",
 		Usage:       "IPC socket 文件名",
@@ -79,8 +78,6 @@ var rpcFlags = []cli.Flag{
 		Value:       DefaultConfig.NodeCfg.IPCPath,
 		Destination: &DefaultConfig.NodeCfg.IPCPath,
 	},
-
-	// HTTP RPC 配置
 	&cli.BoolFlag{
 		Name:        "http",
 		Usage:       "启用 HTTP JSON-RPC 服务",
@@ -116,8 +113,6 @@ var rpcFlags = []cli.Flag{
 		Value:       "",
 		Destination: &DefaultConfig.NodeCfg.HTTPCors,
 	},
-
-	// WebSocket RPC 配置
 	&cli.BoolFlag{
 		Name:        "ws",
 		Usage:       "启用 WebSocket JSON-RPC 服务",
@@ -291,26 +286,21 @@ var loggerFlag = []cli.Flag{
 	},
 }
 var (
-	// P2PNoDiscovery specifies whether we are running a local network and have no need for connecting
-	// to the bootstrap nodes in the cloud
 	P2PNoDiscovery = &cli.BoolFlag{
 		Name:        "p2p.no-discovery",
 		Usage:       "Enable only local network p2p and do not connect to cloud bootstrap nodes.",
 		Destination: &DefaultConfig.P2PCfg.NoDiscovery,
 	}
-	// P2PStaticPeers specifies a set of peers to connect to explicitly.
 	P2PStaticPeers = &cli.StringSliceFlag{
 		Name:        "p2p.peer",
 		Usage:       "Connect with this peer. This flag may be used multiple times.",
 		Destination: p2pStaticPeers,
 	}
-	// P2PBootstrapNode tells the beacon node which bootstrap node to connect to
 	P2PBootstrapNode = &cli.StringSliceFlag{
 		Name:        "p2p.bootstrap-node",
 		Usage:       "The address of bootstrap node. Beacon node will connect for peer discovery via DHT.  Multiple nodes can be passed by using the flag multiple times but not comma-separated. You can also pass YAML files containing multiple nodes.",
 		Destination: p2pBootstrapNode,
 	}
-	// P2PRelayNode tells the beacon node which relay node to connect to.
 	P2PRelayNode = &cli.StringFlag{
 		Name: "p2p.relay-node",
 		Usage: "The address of relay node. The beacon node will connect to the " +
@@ -318,42 +308,36 @@ var (
 		Value:       "",
 		Destination: &DefaultConfig.P2PCfg.RelayNodeAddr,
 	}
-	// P2PUDPPort defines the port to be used by discv5.
 	P2PUDPPort = &cli.IntFlag{
 		Name:        "p2p.udp-port",
 		Usage:       "The port used by discv5.",
 		Value:       61015,
 		Destination: &DefaultConfig.P2PCfg.UDPPort,
 	}
-	// P2PTCPPort defines the port to be used by libp2p.
 	P2PTCPPort = &cli.IntFlag{
 		Name:        "p2p.tcp-port",
 		Usage:       "The port used by libp2p.",
 		Value:       61016,
 		Destination: &DefaultConfig.P2PCfg.TCPPort,
 	}
-	// P2PIP defines the local IP to be used by libp2p.
 	P2PIP = &cli.StringFlag{
 		Name:        "p2p.local-ip",
 		Usage:       "The local ip address to listen for incoming data.",
 		Value:       "",
 		Destination: &DefaultConfig.P2PCfg.LocalIP,
 	}
-	// P2PHost defines the host IP to be used by libp2p.
 	P2PHost = &cli.StringFlag{
 		Name:        "p2p.host-ip",
 		Usage:       "The IP address advertised by libp2p. This may be used to advertise an external IP.",
 		Value:       "",
 		Destination: &DefaultConfig.P2PCfg.HostAddress,
 	}
-	// P2PHostDNS defines the host DNS to be used by libp2p.
 	P2PHostDNS = &cli.StringFlag{
 		Name:        "p2p.host-dns",
 		Usage:       "The DNS address advertised by libp2p. This may be used to advertise an external DNS.",
 		Value:       "",
 		Destination: &DefaultConfig.P2PCfg.HostDNS,
 	}
-	// P2PPrivKey defines a flag to specify the location of the private key file for libp2p.
 	P2PPrivKey = &cli.StringFlag{
 		Name:        "p2p.priv-key",
 		Usage:       "The file containing the private key to use in communications with other peers.",
@@ -366,21 +350,18 @@ var (
 		Value:       true,
 		Destination: &DefaultConfig.P2PCfg.StaticPeerID,
 	}
-	// P2PMetadata defines a flag to specify the location of the peer metadata file.
 	P2PMetadata = &cli.StringFlag{
 		Name:        "p2p.metadata",
 		Usage:       "The file containing the metadata to communicate with other peers.",
 		Value:       "",
 		Destination: &DefaultConfig.P2PCfg.MetaDataDir,
 	}
-	// P2PMaxPeers defines a flag to specify the max number of peers in libp2p.
 	P2PMaxPeers = &cli.IntFlag{
 		Name:        "p2p.max-peers",
 		Usage:       "The max number of p2p peers to maintain.",
 		Value:       5,
 		Destination: &DefaultConfig.P2PCfg.MaxPeers,
 	}
-	// P2PAllowList defines a CIDR subnet to exclusively allow connections.
 	P2PAllowList = &cli.StringFlag{
 		Name: "p2p.allowlist",
 		Usage: "The CIDR subnet for allowing only certain peer connections. " +
@@ -389,7 +370,6 @@ var (
 			"default is to accept all connections.",
 		Destination: &DefaultConfig.P2PCfg.AllowListCIDR,
 	}
-	// P2PDenyList defines a list of CIDR subnets to disallow connections from them.
 	P2PDenyList = &cli.StringSliceFlag{
 		Name: "p2p.denylist",
 		Usage: "The CIDR subnets for denying certainty peer connections. " +
@@ -398,31 +378,24 @@ var (
 			"default is to accept all connections.",
 		Destination: p2pDenyList,
 	}
-
-	// P2PMinSyncPeers specifies the required number of successful peer handshakes in order
-	// to start syncing with external peers.
 	P2PMinSyncPeers = &cli.IntFlag{
 		Name:        "p2p.min-sync-peers",
 		Usage:       "The required number of valid peers to connect with before syncing.",
 		Value:       1,
 		Destination: &DefaultConfig.P2PCfg.MinSyncPeers,
 	}
-
-	// P2PBlockBatchLimit specifies the requested block batch size.
 	P2PBlockBatchLimit = &cli.IntFlag{
 		Name:        "p2p.limit.block-batch",
 		Usage:       "The amount of blocks the local peer is bounded to request and respond to in a batch.",
 		Value:       64,
 		Destination: &DefaultConfig.P2PCfg.P2PLimit.BlockBatchLimit,
 	}
-	// P2PBlockBatchLimitBurstFactor specifies the factor by which block batch size may increase.
 	P2PBlockBatchLimitBurstFactor = &cli.IntFlag{
 		Name:        "p2p.limit.block-burst-factor",
 		Usage:       "The factor by which block batch limit may increase on burst.",
 		Value:       2,
 		Destination: &DefaultConfig.P2PCfg.P2PLimit.BlockBatchLimitBurstFactor,
 	}
-	// P2PBlockBatchLimiterPeriod Period to calculate expected limit for a single peer.
 	P2PBlockBatchLimiterPeriod = &cli.IntFlag{
 		Name:        "p2p.limit.block-limiter-period",
 		Usage:       "Period to calculate expected limit for a single peer.",
@@ -502,7 +475,6 @@ var (
 )
 
 var (
-	// 账户设置
 	UnlockedAccountFlag = &cli.StringFlag{
 		Name:     "unlock",
 		Aliases:  []string{"account.unlock"},
@@ -539,8 +511,6 @@ var (
 		Value:       false,
 		Destination: &DefaultConfig.NodeCfg.InsecureUnlockAllowed,
 	}
-
-	// 指标收集设置
 	MetricsEnabledFlag = &cli.BoolFlag{
 		Name:        "metrics",
 		Usage:       "启用指标收集 (Prometheus 格式)",
@@ -614,8 +584,6 @@ var (
 		P2PBlockBatchLimitBurstFactor,
 		P2PBlockBatchLimiterPeriod,
 	}
-
-	// Development flags
 	devFlags = []cli.Flag{
 		DevTxGenFlag,
 		DevTxGenMaxFlag,
@@ -623,7 +591,6 @@ var (
 )
 
 var (
-	// DevTxGenFlag enables automatic transaction generation for testing.
 	DevTxGenFlag = &cli.BoolFlag{
 		Name:        "dev.txgen",
 		Usage:       "启用自动交易生成器 (开发测试用)",
@@ -631,8 +598,6 @@ var (
 		Value:       false,
 		Destination: &DefaultConfig.DevCfg.TxGenEnabled,
 	}
-
-	// DevTxGenMaxFlag sets the maximum transactions per block.
 	DevTxGenMaxFlag = &cli.IntFlag{
 		Name:        "dev.txgen.max",
 		Usage:       "每个块的最大交易数 (0-31)",

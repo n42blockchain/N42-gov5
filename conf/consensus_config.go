@@ -23,8 +23,8 @@ type ConsensusConfig struct {
 	Etherbase  string      `json:"etherbase" yaml:"etherbase"`
 	Period     uint64      `json:"period" yaml:"period"`
 	APoa       *APoaConfig `json:"apoa" yaml:"poa"`
-	GasFloor   uint64      `json:"gasFloor" yaml:"gasFloor"` // Target gas floor for mined blocks.
-	GasCeil    uint64      `json:"gasCeil" yaml:"gasCeil"`   // Target gas ceiling for mined blocks.
+	GasFloor   uint64      `json:"gasFloor" yaml:"gasFloor"`
+	GasCeil    uint64      `json:"gasCeil" yaml:"gasCeil"`
 	APos       *APosConfig `json:"apos" yaml:"pos"`
 }
 

@@ -33,11 +33,9 @@ import (
 // MakeAddress converts an account specified directly as a hex encoded string or
 // a key index in the key store to an internal account representation.
 func MakeAddress(ks *keystore.KeyStore, account string) (accounts.Account, error) {
-	// If the specified account is a valid address, return it
 	if avmutil.IsHexAddress(account) {
 		return accounts.Account{Address: types.Address(avmutil.HexToAddress(account))}, nil
 	}
-	// Otherwise try to interpret the account as a keystore index
 	index, err := strconv.Atoi(account)
 	if err != nil || index < 0 {
 		return accounts.Account{}, fmt.Errorf("invalid account address or index %q", account)
