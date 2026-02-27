@@ -17,14 +17,11 @@
 package types
 
 import (
-	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"math/bits"
-	"sort"
 
 	gokzg4844 "github.com/crate-crypto/go-kzg-4844"
 	"github.com/erigontech/secp256k1"
@@ -33,23 +30,10 @@ import (
 
 	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/fixedgas"
-	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/common/u256"
 	"github.com/n42blockchain/N42/lib/crypto"
-	"github.com/n42blockchain/N42/lib/gointerfaces/types"
 	"github.com/n42blockchain/N42/lib/rlp"
 )
-
-type TxParseConfig struct {
-	ChainID uint256.Int
-}
-
-type Signature struct {
-	ChainID uint256.Int
-	V       uint256.Int
-	R       uint256.Int
-	S       uint256.Int
-}
 
 // TxParseContext is object that is required to parse transactions and turn transaction payload into TxSlot objects
 // usage of TxContext helps avoid extra memory allocations
@@ -76,82 +60,17 @@ func NewTxParseContext(chainID uint256.Int) *TxParseContext {
 		Keccak1:    sha3.NewLegacyKeccak256(),
 		Keccak2:    sha3.NewLegacyKeccak256(),
 	}
-
-	// behave as of London enabled
 	ctx.cfg.ChainID.Set(&chainID)
 	return ctx
 }
 
-// TxSlot contains information extracted from an Ethereum transaction, which is enough to manage it inside the transaction.
-// Also, it contains some auxillary information, like ephemeral fields, and indices within priority queues
-type TxSlot struct {
-	Rlp            []byte      // Is set to nil after flushing to db, frees memory, later we look for it in the db, if needed
-	Value          uint256.Int // Value transferred by the transaction
-	Tip            uint256.Int // Maximum tip that transaction is giving to miner/block proposer
-	FeeCap         uint256.Int // Maximum fee that transaction burns and gives to the miner/block proposer
-	SenderID       uint64      // SenderID - require external mapping to it's address
-	Nonce          uint64      // Nonce of the transaction
-	DataLen        int         // Length of transaction's data (for calculation of intrinsic gas)
-	DataNonZeroLen int
-	AlAddrCount    int      // Number of addresses in the access list
-	AlStorCount    int      // Number of storage keys in the access list
-	Gas            uint64   // Gas limit of the transaction
-	IDHash         [32]byte // Transaction hash for the purposes of using it as a transaction Id
-	Traced         bool     // Whether transaction needs to be traced throughout transaction pool code and generate debug printing
-	Creation       bool     // Set to true if "To" field of the transaction is not set
-	Type           byte     // Transaction type
-	Size           uint32   // Size of the payload (without the RLP string envelope for typed transactions)
-
-	// EIP-4844: Shard Blob Transactions
-	BlobFeeCap  uint256.Int // max_fee_per_blob_gas
-	BlobHashes  []common.Hash
-	Blobs       [][]byte
-	Commitments []gokzg4844.KZGCommitment
-	Proofs      []gokzg4844.KZGProof
-
-	// EIP-7702: set code tx
-	Authorizations []Signature
-	AuthRaw        [][]byte // rlp encoded chainID+address+nonce, used to recover authorization address in txpool
-}
-
-const (
-	LegacyTxType     byte = 0
-	AccessListTxType byte = 1 // EIP-2930
-	DynamicFeeTxType byte = 2 // EIP-1559
-	BlobTxType       byte = 3 // EIP-4844
-	SetCodeTxType    byte = 4 // EIP-7702
-)
-
-var ErrParseTxn = fmt.Errorf("%w transaction", rlp.ErrParse)
-
-var ErrRejected = errors.New("rejected")
-var ErrAlreadyKnown = errors.New("already known")
-var ErrRlpTooBig = errors.New("txn rlp too big")
-
-// Set the RLP validate function
 func (ctx *TxParseContext) ValidateRLP(f func(txnRlp []byte) error) { ctx.validateRlp = f }
+func (ctx *TxParseContext) WithSender(v bool)                       { ctx.withSender = v }
+func (ctx *TxParseContext) WithAllowPreEip2s(v bool)                { ctx.allowPreEip2s = v }
 
-// Set the with sender flag
-func (ctx *TxParseContext) WithSender(v bool) { ctx.withSender = v }
-
-// Set the AllowPreEIP2s flag
-func (ctx *TxParseContext) WithAllowPreEip2s(v bool) { ctx.allowPreEip2s = v }
-
-// Set ChainID-Required flag in the Parse context and return it
 func (ctx *TxParseContext) ChainIDRequired() *TxParseContext {
 	ctx.chainIDRequired = true
 	return ctx
-}
-
-func PeekTransactionType(serialized []byte) (byte, error) {
-	dataPos, _, legacy, err := rlp.Prefix(serialized, 0)
-	if err != nil {
-		return LegacyTxType, fmt.Errorf("%w: size Prefix: %s", ErrParseTxn, err) //nolint
-	}
-	if legacy {
-		return LegacyTxType, nil
-	}
-	return serialized[dataPos], nil
 }
 
 // ParseTransaction extracts all the information from the transactions's payload (RLP) necessary to build TxSlot.
@@ -172,7 +91,6 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 	if err != nil {
 		return 0, fmt.Errorf("%w: size Prefix: %s", ErrParseTxn, err) //nolint
 	}
-	// This handles the transactions coming from other Erigon peers of older versions, which add 0x80 (empty) transactions into packets
 	if dataLen == 0 {
 		return 0, fmt.Errorf("%w: transaction must be either 1 list or 1 string", ErrParseTxn)
 	}
@@ -186,7 +104,6 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 
 	var wrapperDataPos, wrapperDataLen int
 
-	// If it is non-legacy transaction, the transaction type follows, and then the list
 	if !legacy {
 		slot.Type = payload[p]
 		if slot.Type > SetCodeTxType {
@@ -200,8 +117,6 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 		if err != nil {
 			return 0, fmt.Errorf("%w: envelope Prefix: %s", ErrParseTxn, err) //nolint
 		}
-		// For legacy transaction, the entire payload in expected to be in "rlp" field
-		// whereas for non-legacy, only the content of the envelope (start with position p)
 		slot.Rlp = payload[p-1 : dataPos+dataLen]
 
 		if slot.Type == BlobTxType && wrappedWithBlobs {
@@ -227,65 +142,10 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 		if p != dataPos+dataLen {
 			return 0, fmt.Errorf("%w: unexpected leftover after blob tx body", ErrParseTxn)
 		}
-
-		dataPos, dataLen, err = rlp.ParseList(payload, p)
+		p, err = ctx.parseBlobWrapper(payload, p, slot)
 		if err != nil {
-			return 0, fmt.Errorf("%w: blobs len: %s", ErrParseTxn, err) //nolint
+			return 0, err
 		}
-		blobPos := dataPos
-		for blobPos < dataPos+dataLen {
-			blobPos, err = rlp.StringOfLen(payload, blobPos, fixedgas.BlobSize)
-			if err != nil {
-				return 0, fmt.Errorf("%w: blob: %s", ErrParseTxn, err) //nolint
-			}
-			slot.Blobs = append(slot.Blobs, payload[blobPos:blobPos+fixedgas.BlobSize])
-			blobPos += fixedgas.BlobSize
-		}
-		if blobPos != dataPos+dataLen {
-			return 0, fmt.Errorf("%w: extraneous space in blobs", ErrParseTxn)
-		}
-		p = blobPos
-
-		dataPos, dataLen, err = rlp.ParseList(payload, p)
-		if err != nil {
-			return 0, fmt.Errorf("%w: commitments len: %s", ErrParseTxn, err) //nolint
-		}
-		commitmentPos := dataPos
-		for commitmentPos < dataPos+dataLen {
-			commitmentPos, err = rlp.StringOfLen(payload, commitmentPos, 48)
-			if err != nil {
-				return 0, fmt.Errorf("%w: commitment: %s", ErrParseTxn, err) //nolint
-			}
-			var commitment gokzg4844.KZGCommitment
-			copy(commitment[:], payload[commitmentPos:commitmentPos+48])
-			slot.Commitments = append(slot.Commitments, commitment)
-			commitmentPos += 48
-		}
-		if commitmentPos != dataPos+dataLen {
-			return 0, fmt.Errorf("%w: extraneous space in commitments", ErrParseTxn)
-		}
-		p = commitmentPos
-
-		dataPos, dataLen, err = rlp.ParseList(payload, p)
-		if err != nil {
-			return 0, fmt.Errorf("%w: proofs len: %s", ErrParseTxn, err) //nolint
-		}
-		proofPos := dataPos
-		for proofPos < dataPos+dataLen {
-			proofPos, err = rlp.StringOfLen(payload, proofPos, 48)
-			if err != nil {
-				return 0, fmt.Errorf("%w: proof: %s", ErrParseTxn, err) //nolint
-			}
-			var proof gokzg4844.KZGProof
-			copy(proof[:], payload[proofPos:proofPos+48])
-			slot.Proofs = append(slot.Proofs, proof)
-			proofPos += 48
-		}
-		if proofPos != dataPos+dataLen {
-			return 0, fmt.Errorf("%w: extraneous space in proofs", ErrParseTxn)
-		}
-		p = proofPos
-
 		if p != wrapperDataPos+wrapperDataLen {
 			return 0, fmt.Errorf("%w: extraneous elements in blobs wrapper", ErrParseTxn)
 		}
@@ -294,6 +154,74 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 	slot.Size = uint32(len(slot.Rlp))
 
 	return p, err
+}
+
+// parseBlobWrapper parses the blobs, commitments, and proofs from a wrapped blob transaction.
+func (ctx *TxParseContext) parseBlobWrapper(payload []byte, pos int, slot *TxSlot) (p int, err error) {
+	p = pos
+
+	// Parse blobs
+	dataPos, dataLen, err := rlp.ParseList(payload, p)
+	if err != nil {
+		return 0, fmt.Errorf("%w: blobs len: %s", ErrParseTxn, err) //nolint
+	}
+	blobPos := dataPos
+	for blobPos < dataPos+dataLen {
+		blobPos, err = rlp.StringOfLen(payload, blobPos, fixedgas.BlobSize)
+		if err != nil {
+			return 0, fmt.Errorf("%w: blob: %s", ErrParseTxn, err) //nolint
+		}
+		slot.Blobs = append(slot.Blobs, payload[blobPos:blobPos+fixedgas.BlobSize])
+		blobPos += fixedgas.BlobSize
+	}
+	if blobPos != dataPos+dataLen {
+		return 0, fmt.Errorf("%w: extraneous space in blobs", ErrParseTxn)
+	}
+	p = blobPos
+
+	// Parse commitments
+	dataPos, dataLen, err = rlp.ParseList(payload, p)
+	if err != nil {
+		return 0, fmt.Errorf("%w: commitments len: %s", ErrParseTxn, err) //nolint
+	}
+	commitmentPos := dataPos
+	for commitmentPos < dataPos+dataLen {
+		commitmentPos, err = rlp.StringOfLen(payload, commitmentPos, 48)
+		if err != nil {
+			return 0, fmt.Errorf("%w: commitment: %s", ErrParseTxn, err) //nolint
+		}
+		var commitment gokzg4844.KZGCommitment
+		copy(commitment[:], payload[commitmentPos:commitmentPos+48])
+		slot.Commitments = append(slot.Commitments, commitment)
+		commitmentPos += 48
+	}
+	if commitmentPos != dataPos+dataLen {
+		return 0, fmt.Errorf("%w: extraneous space in commitments", ErrParseTxn)
+	}
+	p = commitmentPos
+
+	// Parse proofs
+	dataPos, dataLen, err = rlp.ParseList(payload, p)
+	if err != nil {
+		return 0, fmt.Errorf("%w: proofs len: %s", ErrParseTxn, err) //nolint
+	}
+	proofPos := dataPos
+	for proofPos < dataPos+dataLen {
+		proofPos, err = rlp.StringOfLen(payload, proofPos, 48)
+		if err != nil {
+			return 0, fmt.Errorf("%w: proof: %s", ErrParseTxn, err) //nolint
+		}
+		var proof gokzg4844.KZGProof
+		copy(proof[:], payload[proofPos:proofPos+48])
+		slot.Proofs = append(slot.Proofs, proof)
+		proofPos += 48
+	}
+	if proofPos != dataPos+dataLen {
+		return 0, fmt.Errorf("%w: extraneous space in proofs", ErrParseTxn)
+	}
+	p = proofPos
+
+	return p, nil
 }
 
 func parseSignature(payload []byte, pos int, legacy bool, cfgChainId *uint256.Int, sig *Signature) (p int, yParity byte, err error) {
@@ -306,7 +234,6 @@ func parseSignature(payload []byte, pos int, legacy bool, cfgChainId *uint256.In
 	}
 	if legacy {
 		preEip155 := sig.V.Eq(u256.N27) || sig.V.Eq(u256.N28)
-		// Compute chainId from V
 		if preEip155 {
 			yParity = byte(sig.V.Uint64() - 27)
 			sig.ChainID.Set(cfgChainId)
@@ -335,7 +262,7 @@ func parseSignature(payload []byte, pos int, legacy bool, cfgChainId *uint256.In
 	if err != nil {
 		return 0, 0, fmt.Errorf("r: %w", err)
 	}
-	// New follows S of the signature
+	// Next follows S of the signature
 	p, err = rlp.U256(payload, p, &sig.S)
 	if err != nil {
 		return 0, 0, fmt.Errorf("s: %w", err)
@@ -363,7 +290,6 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 		if err != nil {
 			return 0, fmt.Errorf("%w: envelope Prefix: %s", ErrParseTxn, err) //nolint
 		}
-		// Hash the content of envelope, not the full payload
 		if _, err = ctx.Keccak1.Write(payload[p : dataPos+dataLen]); err != nil {
 			return 0, fmt.Errorf("%w: computing IdHash (hashing the envelope): %s", ErrParseTxn, err) //nolint
 		}
@@ -383,7 +309,7 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 		if err != nil {
 			return 0, fmt.Errorf("%w: chainId len: %s", ErrParseTxn, err) //nolint
 		}
-		if ctx.ChainID.IsZero() { // zero indicates that the chain ID was not specified in the tx.
+		if ctx.ChainID.IsZero() {
 			if ctx.chainIDRequired {
 				return 0, fmt.Errorf("%w: chainID is required", ErrParseTxn)
 			}
@@ -393,7 +319,7 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 			return 0, fmt.Errorf("%w: %s, %d (expected %d)", ErrParseTxn, "invalid chainID", ctx.ChainID.Uint64(), ctx.cfg.ChainID.Uint64())
 		}
 	}
-	// Next follows the nonce, which we need to parse
+	// Next follows the nonce
 	p, slot.Nonce, err = rlp.U64(payload, p)
 	if err != nil {
 		return 0, fmt.Errorf("%w: nonce: %s", ErrParseTxn, err) //nolint
@@ -403,8 +329,7 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 	if err != nil {
 		return 0, fmt.Errorf("%w: tip: %s", ErrParseTxn, err) //nolint
 	}
-	// Next follows feeCap, but only for dynamic fee transactions, for legacy transaction, it is
-	// equal to tip
+	// Next follows feeCap, but only for dynamic fee transactions
 	if slot.Type < DynamicFeeTxType {
 		slot.FeeCap = slot.Tip
 	} else {
@@ -427,7 +352,6 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 		return 0, fmt.Errorf("%w: unexpected length of to field: %d", ErrParseTxn, dataLen)
 	}
 
-	// Only note if To field is empty or not
 	slot.Creation = dataLen == 0
 	p = dataPos + dataLen
 	// Next follows value
@@ -452,100 +376,18 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 
 	p = dataPos + dataLen
 
-	// Next follows access list for non-legacy transactions, we are only interesting in number of addresses and storage keys
+	// Next follows access list for non-legacy transactions
 	if !legacy {
-		dataPos, dataLen, err = rlp.ParseList(payload, p)
+		p, err = ctx.parseAccessList(payload, p, slot)
 		if err != nil {
-			return 0, fmt.Errorf("%w: access list len: %s", ErrParseTxn, err) //nolint
+			return 0, err
 		}
-		tuplePos := dataPos
-		for tuplePos < dataPos+dataLen {
-			var tupleLen int
-			tuplePos, tupleLen, err = rlp.ParseList(payload, tuplePos)
-			if err != nil {
-				return 0, fmt.Errorf("%w: tuple len: %s", ErrParseTxn, err) //nolint
-			}
-			var addrPos int
-			addrPos, err = rlp.StringOfLen(payload, tuplePos, 20)
-			if err != nil {
-				return 0, fmt.Errorf("%w: tuple addr len: %s", ErrParseTxn, err) //nolint
-			}
-			slot.AlAddrCount++
-			var storagePos, storageLen int
-			storagePos, storageLen, err = rlp.ParseList(payload, addrPos+20)
-			if err != nil {
-				return 0, fmt.Errorf("%w: storage key list len: %s", ErrParseTxn, err) //nolint
-			}
-			sKeyPos := storagePos
-			for sKeyPos < storagePos+storageLen {
-				sKeyPos, err = rlp.StringOfLen(payload, sKeyPos, 32)
-				if err != nil {
-					return 0, fmt.Errorf("%w: tuple storage key len: %s", ErrParseTxn, err) //nolint
-				}
-				slot.AlStorCount++
-				sKeyPos += 32
-			}
-			if sKeyPos != storagePos+storageLen {
-				return 0, fmt.Errorf("%w: unexpected storage key items", ErrParseTxn)
-			}
-			tuplePos += tupleLen
-			if tuplePos != sKeyPos {
-				return 0, fmt.Errorf("%w: extraneous space in the tuple after storage key list", ErrParseTxn)
-			}
-		}
-		if tuplePos != dataPos+dataLen {
-			return 0, fmt.Errorf("%w: extraneous space in the access list after all tuples", ErrParseTxn)
-		}
-		p = dataPos + dataLen
 	}
 	if slot.Type == SetCodeTxType {
-		dataPos, dataLen, err = rlp.ParseList(payload, p)
+		p, err = ctx.parseAuthorizations(payload, p, slot)
 		if err != nil {
-			return 0, fmt.Errorf("%w: authorizations len: %s", ErrParseTxn, err) //nolint
+			return 0, err
 		}
-		authPos := dataPos
-		for authPos < dataPos+dataLen {
-			var authLen int
-			authPos, authLen, err = rlp.ParseList(payload, authPos)
-			if err != nil {
-				return 0, fmt.Errorf("%w: authorization: %s", ErrParseTxn, err) //nolint
-			}
-			var sig Signature
-			p2 := authPos
-			rawStart := p2
-			p2, err = rlp.U256(payload, p2, &sig.ChainID)
-			if err != nil {
-				return 0, fmt.Errorf("%w: authorization chainId: %s", ErrParseTxn, err) //nolint
-			}
-			if !sig.ChainID.IsUint64() {
-				// https://github.com/ethereum/EIPs/pull/8929
-				return 0, fmt.Errorf("%w: authorization chainId is too big: %s", ErrParseTxn, &sig.ChainID)
-			}
-			p2, err = rlp.StringOfLen(payload, p2, 20) // address
-			if err != nil {
-				return 0, fmt.Errorf("%w: authorization address: %s", ErrParseTxn, err) //nolint
-			}
-			p2 += 20
-			p2, _, err = rlp.U64(payload, p2) // nonce
-			if err != nil {
-				return 0, fmt.Errorf("%w: authorization nonce: %s", ErrParseTxn, err) //nolint
-			}
-			rawEnd := p2
-			p2, _, err = parseSignature(payload, p2, false /* legacy */, nil /* cfgChainId */, &sig)
-			if err != nil {
-				return 0, fmt.Errorf("%w: authorization signature: %s", ErrParseTxn, err) //nolint
-			}
-			slot.Authorizations = append(slot.Authorizations, sig)
-			slot.AuthRaw = append(slot.AuthRaw, common.CopyBytes(payload[rawStart:rawEnd]))
-			authPos += authLen
-			if authPos != p2 {
-				return 0, fmt.Errorf("%w: authorization: unexpected list items", ErrParseTxn)
-			}
-		}
-		if authPos != dataPos+dataLen {
-			return 0, fmt.Errorf("%w: extraneous space in the authorizations", ErrParseTxn)
-		}
-		p = dataPos + dataLen
 	}
 	if slot.Type == BlobTxType {
 		p, err = rlp.U256(payload, p, &slot.BlobFeeCap)
@@ -588,11 +430,11 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 			if chainIDBits <= 7 {
 				chainIDLen = 1
 			} else {
-				chainIDLen = common.BitLenToByteLen(chainIDBits) // It is always < 56 bytes
-				sigHashLen++                                     // For chainId len Prefix
+				chainIDLen = common.BitLenToByteLen(chainIDBits)
+				sigHashLen++
 			}
-			sigHashLen += uint(chainIDLen) // For chainId
-			sigHashLen += 2                // For two extra zeros
+			sigHashLen += uint(chainIDLen)
+			sigHashLen += 2 // For two extra zeros
 		}
 	} else {
 		if ctx.Signature.V.GtUint64(1) {
@@ -606,7 +448,6 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 			return 0, fmt.Errorf("%w: computing IdHash: %s", ErrParseTxn, err) //nolint
 		}
 	}
-	//ctx.keccak1.Sum(slot.IdHash[:0])
 	_, _ = ctx.Keccak1.(io.Reader).Read(slot.IDHash[:32])
 	if validateHash != nil {
 		if err := validateHash(slot.IDHash[:32]); err != nil {
@@ -623,51 +464,12 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 	}
 
 	// Computing sigHash (hash used to recover sender from the signature)
-	// Write len Prefix to the Sighash
-	if sigHashLen < 56 {
-		ctx.buf[0] = byte(sigHashLen) + 192
-		if _, err := ctx.Keccak2.Write(ctx.buf[:1]); err != nil {
-			return 0, fmt.Errorf("%w: computing signHash (hashing len Prefix): %s", ErrParseTxn, err) //nolint
-		}
-	} else {
-		beLen := common.BitLenToByteLen(bits.Len(sigHashLen))
-		binary.BigEndian.PutUint64(ctx.buf[1:], uint64(sigHashLen))
-		ctx.buf[8-beLen] = byte(beLen) + 247
-		if _, err := ctx.Keccak2.Write(ctx.buf[8-beLen : 9]); err != nil {
-			return 0, fmt.Errorf("%w: computing signHash (hashing len Prefix): %s", ErrParseTxn, err) //nolint
-		}
+	if err = ctx.computeAndWriteSigHash(payload, sigHashPos, sigHashEnd, sigHashLen, chainIDBits, chainIDLen, legacy); err != nil {
+		return 0, err
 	}
-	if _, err = ctx.Keccak2.Write(payload[sigHashPos:sigHashEnd]); err != nil {
-		return 0, fmt.Errorf("%w: computing signHash: %s", ErrParseTxn, err) //nolint
-	}
-	if legacy {
-		if chainIDLen > 0 {
-			if chainIDBits <= 7 {
-				ctx.buf[0] = byte(ctx.ChainID.Uint64())
-				if _, err := ctx.Keccak2.Write(ctx.buf[:1]); err != nil {
-					return 0, fmt.Errorf("%w: computing signHash (hashing legacy chainId): %s", ErrParseTxn, err) //nolint
-				}
-			} else {
-				binary.BigEndian.PutUint64(ctx.buf[1:9], ctx.ChainID[3])
-				binary.BigEndian.PutUint64(ctx.buf[9:17], ctx.ChainID[2])
-				binary.BigEndian.PutUint64(ctx.buf[17:25], ctx.ChainID[1])
-				binary.BigEndian.PutUint64(ctx.buf[25:33], ctx.ChainID[0])
-				ctx.buf[32-chainIDLen] = 128 + byte(chainIDLen)
-				if _, err = ctx.Keccak2.Write(ctx.buf[32-chainIDLen : 33]); err != nil {
-					return 0, fmt.Errorf("%w: computing signHash (hashing legacy chainId): %s", ErrParseTxn, err) //nolint
-				}
-			}
-			// Encode two zeros
-			ctx.buf[0] = 128
-			ctx.buf[1] = 128
-			if _, err := ctx.Keccak2.Write(ctx.buf[:2]); err != nil {
-				return 0, fmt.Errorf("%w: computing signHash (hashing zeros after legacy chainId): %s", ErrParseTxn, err) //nolint
-			}
-		}
-	}
+
 	// Squeeze Sighash
 	_, _ = ctx.Keccak2.(io.Reader).Read(ctx.Sighash[:32])
-	//ctx.keccak2.Sum(ctx.Sighash[:0])
 	binary.BigEndian.PutUint64(ctx.Sig[0:8], ctx.R[3])
 	binary.BigEndian.PutUint64(ctx.Sig[8:16], ctx.R[2])
 	binary.BigEndian.PutUint64(ctx.Sig[16:24], ctx.R[1])
@@ -681,415 +483,158 @@ func (ctx *TxParseContext) parseTransactionBody(payload []byte, pos, p0 int, slo
 	if _, err = secp256k1.RecoverPubkeyWithContext(secp256k1.DefaultContext, ctx.Sighash[:], ctx.Sig[:], ctx.buf[:0]); err != nil {
 		return 0, fmt.Errorf("%w: recovering sender from signature: %s", ErrParseTxn, err) //nolint
 	}
-	//apply keccak to the public key
+	// apply keccak to the public key
 	ctx.Keccak2.Reset()
 	if _, err = ctx.Keccak2.Write(ctx.buf[1:65]); err != nil {
 		return 0, fmt.Errorf("%w: computing sender from public key: %s", ErrParseTxn, err) //nolint
 	}
 	// squeeze the hash of the public key
-	//ctx.keccak2.Sum(ctx.buf[:0])
 	_, _ = ctx.Keccak2.(io.Reader).Read(ctx.buf[:32])
-	//take last 20 bytes as address
+	// take last 20 bytes as address
 	copy(sender, ctx.buf[12:32])
 
 	return p, nil
 }
 
-type PeerID *types.H512
-
-type Hashes []byte // flatten list of 32-byte hashes
-
-func (h Hashes) At(i int) []byte { return h[i*length.Hash : (i+1)*length.Hash] }
-func (h Hashes) Len() int        { return len(h) / length.Hash }
-func (h Hashes) Less(i, j int) bool {
-	return bytes.Compare(h[i*length.Hash:(i+1)*length.Hash], h[j*length.Hash:(j+1)*length.Hash]) < 0
-}
-func (h Hashes) Swap(i, j int) {
-	ii := i * length.Hash
-	jj := j * length.Hash
-	for k := 0; k < length.Hash; k++ {
-		h[ii], h[jj] = h[jj], h[ii]
-		ii++
-		jj++
-	}
-}
-
-// DedupCopy sorts hashes, and creates deduplicated copy
-func (h Hashes) DedupCopy() Hashes {
-	if len(h) == 0 {
-		return h
-	}
-	sort.Sort(h)
-	unique := 1
-	for i := length.Hash; i < len(h); i += length.Hash {
-		if !bytes.Equal(h[i:i+length.Hash], h[i-length.Hash:i]) {
-			unique++
+// computeAndWriteSigHash writes the RLP list prefix and signing data to ctx.Keccak2.
+func (ctx *TxParseContext) computeAndWriteSigHash(payload []byte, sigHashPos, sigHashEnd int, sigHashLen uint, chainIDBits, chainIDLen int, legacy bool) error {
+	// Write len Prefix to the Sighash
+	if sigHashLen < 56 {
+		ctx.buf[0] = byte(sigHashLen) + 192
+		if _, err := ctx.Keccak2.Write(ctx.buf[:1]); err != nil {
+			return fmt.Errorf("%w: computing signHash (hashing len Prefix): %s", ErrParseTxn, err) //nolint
+		}
+	} else {
+		beLen := common.BitLenToByteLen(bits.Len(sigHashLen))
+		binary.BigEndian.PutUint64(ctx.buf[1:], uint64(sigHashLen))
+		ctx.buf[8-beLen] = byte(beLen) + 247
+		if _, err := ctx.Keccak2.Write(ctx.buf[8-beLen : 9]); err != nil {
+			return fmt.Errorf("%w: computing signHash (hashing len Prefix): %s", ErrParseTxn, err) //nolint
 		}
 	}
-	c := make(Hashes, unique*length.Hash)
-	copy(c[:], h[0:length.Hash])
-	dest := length.Hash
-	for i := dest; i < len(h); i += length.Hash {
-		if !bytes.Equal(h[i:i+length.Hash], h[i-length.Hash:i]) {
-			copy(c[dest:dest+length.Hash], h[i:i+length.Hash])
-			dest += length.Hash
+	if _, err := ctx.Keccak2.Write(payload[sigHashPos:sigHashEnd]); err != nil {
+		return fmt.Errorf("%w: computing signHash: %s", ErrParseTxn, err) //nolint
+	}
+	if legacy && chainIDLen > 0 {
+		if chainIDBits <= 7 {
+			ctx.buf[0] = byte(ctx.ChainID.Uint64())
+			if _, err := ctx.Keccak2.Write(ctx.buf[:1]); err != nil {
+				return fmt.Errorf("%w: computing signHash (hashing legacy chainId): %s", ErrParseTxn, err) //nolint
+			}
+		} else {
+			binary.BigEndian.PutUint64(ctx.buf[1:9], ctx.ChainID[3])
+			binary.BigEndian.PutUint64(ctx.buf[9:17], ctx.ChainID[2])
+			binary.BigEndian.PutUint64(ctx.buf[17:25], ctx.ChainID[1])
+			binary.BigEndian.PutUint64(ctx.buf[25:33], ctx.ChainID[0])
+			ctx.buf[32-chainIDLen] = 128 + byte(chainIDLen)
+			if _, err := ctx.Keccak2.Write(ctx.buf[32-chainIDLen : 33]); err != nil {
+				return fmt.Errorf("%w: computing signHash (hashing legacy chainId): %s", ErrParseTxn, err) //nolint
+			}
 		}
-	}
-	return c
-}
-
-type Announcements struct {
-	ts     []byte
-	sizes  []uint32
-	hashes []byte
-}
-
-func (a *Announcements) Append(t byte, size uint32, hash []byte) {
-	a.ts = append(a.ts, t)
-	a.sizes = append(a.sizes, size)
-	a.hashes = append(a.hashes, hash...)
-}
-
-func (a *Announcements) AppendOther(other Announcements) {
-	a.ts = append(a.ts, other.ts...)
-	a.sizes = append(a.sizes, other.sizes...)
-	a.hashes = append(a.hashes, other.hashes...)
-}
-
-func (a *Announcements) Reset() {
-	a.ts = a.ts[:0]
-	a.sizes = a.sizes[:0]
-	a.hashes = a.hashes[:0]
-}
-
-func (a Announcements) At(i int) (byte, uint32, []byte) {
-	return a.ts[i], a.sizes[i], a.hashes[i*length.Hash : (i+1)*length.Hash]
-}
-func (a Announcements) Len() int { return len(a.ts) }
-func (a Announcements) Less(i, j int) bool {
-	return bytes.Compare(a.hashes[i*length.Hash:(i+1)*length.Hash], a.hashes[j*length.Hash:(j+1)*length.Hash]) < 0
-}
-func (a Announcements) Swap(i, j int) {
-	a.ts[i], a.ts[j] = a.ts[j], a.ts[i]
-	a.sizes[i], a.sizes[j] = a.sizes[j], a.sizes[i]
-	ii := i * length.Hash
-	jj := j * length.Hash
-	for k := 0; k < length.Hash; k++ {
-		a.hashes[ii], a.hashes[jj] = a.hashes[jj], a.hashes[ii]
-		ii++
-		jj++
-	}
-}
-
-// DedupCopy sorts hashes, and creates deduplicated copy
-func (a Announcements) DedupCopy() Announcements {
-	if len(a.ts) == 0 {
-		return a
-	}
-	sort.Sort(a)
-	unique := 1
-	for i := length.Hash; i < len(a.hashes); i += length.Hash {
-		if !bytes.Equal(a.hashes[i:i+length.Hash], a.hashes[i-length.Hash:i]) {
-			unique++
+		// Encode two zeros
+		ctx.buf[0] = 128
+		ctx.buf[1] = 128
+		if _, err := ctx.Keccak2.Write(ctx.buf[:2]); err != nil {
+			return fmt.Errorf("%w: computing signHash (hashing zeros after legacy chainId): %s", ErrParseTxn, err) //nolint
 		}
-	}
-	c := Announcements{
-		ts:     make([]byte, unique),
-		sizes:  make([]uint32, unique),
-		hashes: make([]byte, unique*length.Hash),
-	}
-	copy(c.hashes, a.hashes[0:length.Hash])
-	c.ts[0] = a.ts[0]
-	c.sizes[0] = a.sizes[0]
-	dest := length.Hash
-	j := 1
-	origin := length.Hash
-	for i := 1; i < len(a.ts); i++ {
-		if !bytes.Equal(a.hashes[origin:origin+length.Hash], a.hashes[origin-length.Hash:origin]) {
-			copy(c.hashes[dest:dest+length.Hash], a.hashes[origin:origin+length.Hash])
-			c.ts[j] = a.ts[i]
-			c.sizes[j] = a.sizes[i]
-			dest += length.Hash
-			j++
-		}
-		origin += length.Hash
-	}
-	return c
-}
-
-func (a Announcements) DedupHashes() Hashes {
-	if len(a.ts) == 0 {
-		return Hashes{}
-	}
-	sort.Sort(a)
-	unique := 1
-	for i := length.Hash; i < len(a.hashes); i += length.Hash {
-		if !bytes.Equal(a.hashes[i:i+length.Hash], a.hashes[i-length.Hash:i]) {
-			unique++
-		}
-	}
-	c := make(Hashes, unique*length.Hash)
-	copy(c[:], a.hashes[0:length.Hash])
-	dest := length.Hash
-	j := 1
-	origin := length.Hash
-	for i := 1; i < len(a.ts); i++ {
-		if !bytes.Equal(a.hashes[origin:origin+length.Hash], a.hashes[origin-length.Hash:origin]) {
-			copy(c[dest:dest+length.Hash], a.hashes[origin:origin+length.Hash])
-			dest += length.Hash
-			j++
-		}
-		origin += length.Hash
-	}
-	return c
-}
-
-func (a Announcements) Hashes() Hashes {
-	return Hashes(a.hashes)
-}
-
-func (a Announcements) Copy() Announcements {
-	if len(a.ts) == 0 {
-		return a
-	}
-	c := Announcements{
-		ts:     common.Copy(a.ts),
-		sizes:  make([]uint32, len(a.sizes)),
-		hashes: common.Copy(a.hashes),
-	}
-	copy(c.sizes, a.sizes)
-	return c
-}
-
-type Addresses []byte // flatten list of 20-byte addresses
-
-// AddressAt returns an address at the given index in the flattened list.
-// Use this method if you want to reduce memory allocations
-func (h Addresses) AddressAt(i int) common.Address {
-	return *(*[20]byte)(h[i*length.Addr : (i+1)*length.Addr])
-}
-
-func (h Addresses) At(i int) []byte { return h[i*length.Addr : (i+1)*length.Addr] }
-func (h Addresses) Len() int        { return len(h) / length.Addr }
-
-type TxSlots struct {
-	Txs     []*TxSlot
-	Senders Addresses
-	IsLocal []bool
-}
-
-func (s *TxSlots) Valid() error {
-	if len(s.Txs) != len(s.IsLocal) {
-		return fmt.Errorf("TxSlots: expect equal len of isLocal=%d and txs=%d", len(s.IsLocal), len(s.Txs))
-	}
-	if len(s.Txs) != s.Senders.Len() {
-		return fmt.Errorf("TxSlots: expect equal len of senders=%d and txs=%d", s.Senders.Len(), len(s.Txs))
 	}
 	return nil
 }
 
-var zeroAddr = make([]byte, 20)
-
-// Resize internal arrays to len=targetSize, shrinks if need. It rely on `append` algorithm to realloc
-func (s *TxSlots) Resize(targetSize uint) {
-	for uint(len(s.Txs)) < targetSize {
-		s.Txs = append(s.Txs, nil)
-	}
-	for uint(s.Senders.Len()) < targetSize {
-		s.Senders = append(s.Senders, addressesGrowth...)
-	}
-	for uint(len(s.IsLocal)) < targetSize {
-		s.IsLocal = append(s.IsLocal, false)
-	}
-	//todo: set nil to overflow txs
-	oldLen := uint(len(s.Txs))
-	s.Txs = s.Txs[:targetSize]
-	for i := oldLen; i < targetSize; i++ {
-		s.Txs[i] = nil
-	}
-	s.Senders = s.Senders[:length.Addr*targetSize]
-	for i := oldLen; i < targetSize; i++ {
-		copy(s.Senders.At(int(i)), zeroAddr)
-	}
-	s.IsLocal = s.IsLocal[:targetSize]
-	for i := oldLen; i < targetSize; i++ {
-		s.IsLocal[i] = false
-	}
-}
-func (s *TxSlots) Append(slot *TxSlot, sender []byte, isLocal bool) {
-	n := len(s.Txs)
-	s.Resize(uint(len(s.Txs) + 1))
-	s.Txs[n] = slot
-	s.IsLocal[n] = isLocal
-	copy(s.Senders.At(n), sender)
-}
-
-type TxsRlp struct {
-	Txs     [][]byte
-	Senders Addresses
-	IsLocal []bool
-}
-
-// Resize internal arrays to len=targetSize, shrinks if need. It rely on `append` algorithm to realloc
-func (s *TxsRlp) Resize(targetSize uint) {
-	for uint(len(s.Txs)) < targetSize {
-		s.Txs = append(s.Txs, nil)
-	}
-	for uint(s.Senders.Len()) < targetSize {
-		s.Senders = append(s.Senders, addressesGrowth...)
-	}
-	for uint(len(s.IsLocal)) < targetSize {
-		s.IsLocal = append(s.IsLocal, false)
-	}
-	//todo: set nil to overflow txs
-	s.Txs = s.Txs[:targetSize]
-	s.Senders = s.Senders[:length.Addr*targetSize]
-	s.IsLocal = s.IsLocal[:targetSize]
-}
-
-var addressesGrowth = make([]byte, length.Addr)
-
-func EncodeSenderLengthForStorage(nonce uint64, balance uint256.Int) uint {
-	var structLength uint = 1 // 1 byte for fieldset
-	if !balance.IsZero() {
-		structLength += uint(balance.ByteLen()) + 1
-	}
-	if nonce > 0 {
-		structLength += uint(common.BitLenToByteLen(bits.Len64(nonce))) + 1
-	}
-	return structLength
-}
-
-// Encode the details of txn sender into the given "buffer" byte-slice that should be big enough
-func EncodeSender(nonce uint64, balance uint256.Int, buffer []byte) {
-	var fieldSet = 0 // start with first bit set to 0
-	var pos = 1
-	if nonce > 0 {
-		fieldSet = 1
-		nonceBytes := common.BitLenToByteLen(bits.Len64(nonce))
-		buffer[pos] = byte(nonceBytes)
-		var nonce = nonce
-		for i := nonceBytes; i > 0; i-- {
-			buffer[pos+i] = byte(nonce)
-			nonce >>= 8
-		}
-		pos += nonceBytes + 1
-	}
-
-	// Encoding balance
-	if !balance.IsZero() {
-		fieldSet |= 2
-		balanceBytes := balance.ByteLen()
-		buffer[pos] = byte(balanceBytes)
-		pos++
-		balance.WriteToSlice(buffer[pos : pos+balanceBytes])
-		pos += balanceBytes //nolint
-	}
-
-	buffer[0] = byte(fieldSet)
-}
-
-// Decode the sender's balance and nonce from encoded byte-slice
-func DecodeSender(enc []byte) (nonce uint64, balance uint256.Int, err error) {
-	if len(enc) == 0 {
-		return
-	}
-
-	var fieldSet = enc[0]
-	var pos = 1
-
-	if fieldSet&1 > 0 {
-		decodeLength := int(enc[pos])
-
-		if len(enc) < pos+decodeLength+1 {
-			return nonce, balance, fmt.Errorf(
-				"malformed CBOR for Account.Nonce: %s, Length %d",
-				enc[pos+1:], decodeLength)
-		}
-
-		nonce = bytesToUint64(enc[pos+1 : pos+decodeLength+1])
-		pos += decodeLength + 1
-	}
-
-	if fieldSet&2 > 0 {
-		decodeLength := int(enc[pos])
-
-		if len(enc) < pos+decodeLength+1 {
-			return nonce, balance, fmt.Errorf(
-				"malformed CBOR for Account.Nonce: %s, Length %d",
-				enc[pos+1:], decodeLength)
-		}
-
-		(&balance).SetBytes(enc[pos+1 : pos+decodeLength+1])
-	}
-	return
-}
-
-func bytesToUint64(buf []byte) (x uint64) {
-	for i, b := range buf {
-		x = x<<8 + uint64(b)
-		if i == 7 {
-			return
-		}
-	}
-	return
-}
-
-// nolint
-func (tx *TxSlot) PrintDebug(prefix string) {
-	fmt.Printf("%s: senderID=%d,nonce=%d,tip=%d,v=%d\n", prefix, tx.SenderID, tx.Nonce, tx.Tip, tx.Value.Uint64())
-	//fmt.Printf("%s: senderID=%d,nonce=%d,tip=%d,hash=%x\n", prefix, tx.senderID, tx.nonce, tx.tip, tx.IdHash)
-}
-
-// AccessList is an EIP-2930 access list.
-type AccessList []AccessTuple
-
-// AccessTuple is the element type of an access list.
-type AccessTuple struct {
-	Address     common.Address `json:"address"`
-	StorageKeys []common.Hash  `json:"storageKeys"`
-}
-
-// StorageKeys returns the total number of storage keys in the access list.
-func (al AccessList) StorageKeys() int {
-	sum := 0
-	for _, tuple := range al {
-		sum += len(tuple.StorageKeys)
-	}
-	return sum
-}
-
-func (al AccessList) HasAddr(addr common.Address) bool {
-	for _, tuple := range al {
-		if tuple.Address == addr {
-			return true
-		}
-	}
-	return false
-}
-
-// Removes everything but the payload body from blob tx and prepends 0x3 at the beginning - no copy
-// Doesn't change non-blob tx
-func UnwrapTxPlayloadRlp(blobTxRlp []byte) ([]byte, error) {
-	if blobTxRlp[0] != BlobTxType {
-		return blobTxRlp, nil
-	}
-	dataposPrev, _, isList, err := rlp.Prefix(blobTxRlp[1:], 0)
-	if err != nil || dataposPrev < 1 {
-		return nil, err
-	}
-	if !isList { // This is clearly not wrapped tx then
-		return blobTxRlp, nil
-	}
-
-	blobTxRlp = blobTxRlp[1:]
-	// Get to the wrapper list
-	datapos, datalen, err := rlp.ParseList(blobTxRlp, dataposPrev)
+// parseAccessList parses the EIP-2930 access list from the transaction payload.
+func (ctx *TxParseContext) parseAccessList(payload []byte, pos int, slot *TxSlot) (p int, err error) {
+	dataPos, dataLen, err := rlp.ParseList(payload, pos)
 	if err != nil {
-		return nil, err
+		return 0, fmt.Errorf("%w: access list len: %s", ErrParseTxn, err) //nolint
 	}
-	blobTxRlp = blobTxRlp[dataposPrev-1 : datapos+datalen] // Seek left an extra-bit
-	blobTxRlp[0] = 0x3
-	// Include the prefix part of the rlp
-	return blobTxRlp, nil
+	tuplePos := dataPos
+	for tuplePos < dataPos+dataLen {
+		var tupleLen int
+		tuplePos, tupleLen, err = rlp.ParseList(payload, tuplePos)
+		if err != nil {
+			return 0, fmt.Errorf("%w: tuple len: %s", ErrParseTxn, err) //nolint
+		}
+		var addrPos int
+		addrPos, err = rlp.StringOfLen(payload, tuplePos, 20)
+		if err != nil {
+			return 0, fmt.Errorf("%w: tuple addr len: %s", ErrParseTxn, err) //nolint
+		}
+		slot.AlAddrCount++
+		var storagePos, storageLen int
+		storagePos, storageLen, err = rlp.ParseList(payload, addrPos+20)
+		if err != nil {
+			return 0, fmt.Errorf("%w: storage key list len: %s", ErrParseTxn, err) //nolint
+		}
+		sKeyPos := storagePos
+		for sKeyPos < storagePos+storageLen {
+			sKeyPos, err = rlp.StringOfLen(payload, sKeyPos, 32)
+			if err != nil {
+				return 0, fmt.Errorf("%w: tuple storage key len: %s", ErrParseTxn, err) //nolint
+			}
+			slot.AlStorCount++
+			sKeyPos += 32
+		}
+		if sKeyPos != storagePos+storageLen {
+			return 0, fmt.Errorf("%w: unexpected storage key items", ErrParseTxn)
+		}
+		tuplePos += tupleLen
+		if tuplePos != sKeyPos {
+			return 0, fmt.Errorf("%w: extraneous space in the tuple after storage key list", ErrParseTxn)
+		}
+	}
+	if tuplePos != dataPos+dataLen {
+		return 0, fmt.Errorf("%w: extraneous space in the access list after all tuples", ErrParseTxn)
+	}
+	return dataPos + dataLen, nil
+}
+
+// parseAuthorizations parses the EIP-7702 authorization list from the transaction payload.
+func (ctx *TxParseContext) parseAuthorizations(payload []byte, pos int, slot *TxSlot) (p int, err error) {
+	dataPos, dataLen, err := rlp.ParseList(payload, pos)
+	if err != nil {
+		return 0, fmt.Errorf("%w: authorizations len: %s", ErrParseTxn, err) //nolint
+	}
+	authPos := dataPos
+	for authPos < dataPos+dataLen {
+		var authLen int
+		authPos, authLen, err = rlp.ParseList(payload, authPos)
+		if err != nil {
+			return 0, fmt.Errorf("%w: authorization: %s", ErrParseTxn, err) //nolint
+		}
+		var sig Signature
+		p2 := authPos
+		rawStart := p2
+		p2, err = rlp.U256(payload, p2, &sig.ChainID)
+		if err != nil {
+			return 0, fmt.Errorf("%w: authorization chainId: %s", ErrParseTxn, err) //nolint
+		}
+		if !sig.ChainID.IsUint64() {
+			// https://github.com/ethereum/EIPs/pull/8929
+			return 0, fmt.Errorf("%w: authorization chainId is too big: %s", ErrParseTxn, &sig.ChainID)
+		}
+		p2, err = rlp.StringOfLen(payload, p2, 20) // address
+		if err != nil {
+			return 0, fmt.Errorf("%w: authorization address: %s", ErrParseTxn, err) //nolint
+		}
+		p2 += 20
+		p2, _, err = rlp.U64(payload, p2) // nonce
+		if err != nil {
+			return 0, fmt.Errorf("%w: authorization nonce: %s", ErrParseTxn, err) //nolint
+		}
+		rawEnd := p2
+		p2, _, err = parseSignature(payload, p2, false /* legacy */, nil /* cfgChainId */, &sig)
+		if err != nil {
+			return 0, fmt.Errorf("%w: authorization signature: %s", ErrParseTxn, err) //nolint
+		}
+		slot.Authorizations = append(slot.Authorizations, sig)
+		slot.AuthRaw = append(slot.AuthRaw, common.CopyBytes(payload[rawStart:rawEnd]))
+		authPos += authLen
+		if authPos != p2 {
+			return 0, fmt.Errorf("%w: authorization: unexpected list items", ErrParseTxn)
+		}
+	}
+	if authPos != dataPos+dataLen {
+		return 0, fmt.Errorf("%w: extraneous space in the authorizations", ErrParseTxn)
+	}
+	return dataPos + dataLen, nil
 }
