@@ -39,15 +39,15 @@ func LoadJSON(file string, val interface{}) error {
 }
 
 // findLine returns the line number for the given offset into data.
-func findLine(data []byte, offset int64) (line int) {
-	line = 1
+func findLine(data []byte, offset int64) int {
+	line := 1
 	for i, r := range string(data) {
 		if int64(i) >= offset {
-			return
+			return line
 		}
 		if r == '\n' {
 			line++
 		}
 	}
-	return
+	return line
 }

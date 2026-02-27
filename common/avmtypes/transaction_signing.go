@@ -20,11 +20,13 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/params"
 	"math/big"
+
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/params"
 )
 
 var (
@@ -53,8 +55,6 @@ func MakeSigner(config *params.ChainConfig, blockNumber *big.Int) Signer {
 		signer = NewLondonSigner(config.ChainID)
 	case config.IsBerlin(blockNumber.Uint64()):
 		signer = NewEIP2930Signer(config.ChainID)
-	//case config.IsEIP155(blockNumber):
-	//	signer = NewEIP155Signer(config.ChainID)
 	case config.IsHomestead(blockNumber.Uint64()):
 		signer = HomesteadSigner{}
 	default:
@@ -78,9 +78,6 @@ func LatestSigner(config *params.ChainConfig) Signer {
 		if config.BerlinBlock != nil {
 			return NewEIP2930Signer(config.ChainID)
 		}
-		//if config.EIP155Block != nil {
-		//	return NewEIP155Signer(config.ChainID)
-		//}
 	}
 	return HomesteadSigner{}
 }
@@ -494,11 +491,7 @@ func (fs FrontierSigner) SignatureValues(tx *Transaction, sig []byte) (r, s, v *
 	if tx.Type() != LegacyTxType {
 		return nil, nil, nil, ErrTxTypeNotSupported
 	}
-	r, s, v, err = decodeSignature(sig)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return r, s, v, nil
+	return decodeSignature(sig)
 }
 
 // Hash returns the hash to be signed by the sender.

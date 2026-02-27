@@ -44,12 +44,11 @@ func GetOrCreateCounter(s string, isGauge ...bool) Counter {
 	if UsePrometheusClient {
 		counter := defaultSet.GetOrCreateGauge(s)
 		return intCounter{counter}
-	} else {
-		counter := vm.GetOrCreateCounter(s, isGauge...)
-		DefaultRegistry.Register(s, counter)
-		vm.GetDefaultSet().UnregisterMetric(s)
-		return counter
 	}
+	counter := vm.GetOrCreateCounter(s, isGauge...)
+	DefaultRegistry.Register(s, counter)
+	vm.GetDefaultSet().UnregisterMetric(s)
+	return counter
 }
 
 func GetOrCreateGaugeFunc(s string, f func() float64) prometheus.GaugeFunc {
@@ -66,14 +65,13 @@ func (sm summary) UpdateDuration(startTime time.Time) {
 
 func GetOrCreateSummary(s string) Summary {
 	if UsePrometheusClient {
-		s := defaultSet.GetOrCreateSummary(s)
-		return summary{s}
-	} else {
-		summary := vm.GetOrCreateSummary(s)
-		DefaultRegistry.Register(s, summary)
-		vm.GetDefaultSet().UnregisterMetric(s)
-		return summary
+		sm := defaultSet.GetOrCreateSummary(s)
+		return summary{sm}
 	}
+	sm := vm.GetOrCreateSummary(s)
+	DefaultRegistry.Register(s, sm)
+	vm.GetDefaultSet().UnregisterMetric(s)
+	return sm
 }
 
 func GetOrCreateHistogram(s string) prometheus.Histogram {
