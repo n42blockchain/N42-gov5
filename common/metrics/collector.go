@@ -14,7 +14,6 @@ var (
 	typeCounterTpl                   = "\n# TYPE %s counter\n"
 	typeSummaryTpl                   = "\n# TYPE %s summary\n"
 	keyValueTpl                      = "%s %v\n"
-	keyCounterTpl                    = "%s %v\n"
 	keyQuantileTagValueTpl           = "%s {quantile=\"%s\"} %v\n"
 	keyQuantileTagValueWithLabelsTpl = "%s,quantile=\"%s\"} %v\n"
 )
@@ -49,7 +48,7 @@ func (c *collector) writeTimer(name string, m *metrics.Summary, withType bool) {
 	pv := m.GetQuantiles()
 	ps := m.GetQuantileValues()
 
-	var sum float64 = 0
+	var sum float64
 	if withType {
 		c.buff.WriteString(fmt.Sprintf(typeSummaryTpl, stripLabels(name)))
 	}
@@ -97,7 +96,7 @@ func splitLabels(name string) (string, string) {
 func (c *collector) writeSummaryCounter(name string, value interface{}) {
 	name, labels := splitLabels(name)
 	name = name + "_count"
-	c.buff.WriteString(fmt.Sprintf(keyCounterTpl, name+labels, value))
+	c.buff.WriteString(fmt.Sprintf(keyValueTpl, name+labels, value))
 }
 
 func (c *collector) writeSummaryPercentile(name, p string, value interface{}) {
@@ -113,11 +112,11 @@ func (c *collector) writeSummaryPercentile(name, p string, value interface{}) {
 func (c *collector) writeSummarySum(name string, value string) {
 	name, labels := splitLabels(name)
 	name = name + "_sum"
-	c.buff.WriteString(fmt.Sprintf(keyCounterTpl, name+labels, value))
+	c.buff.WriteString(fmt.Sprintf(keyValueTpl, name+labels, value))
 }
 
 func (c *collector) writeSummaryTime(name string, value string) {
 	name, labels := splitLabels(name)
 	name = name + "_time"
-	c.buff.WriteString(fmt.Sprintf(keyCounterTpl, name+labels, value))
+	c.buff.WriteString(fmt.Sprintf(keyValueTpl, name+labels, value))
 }

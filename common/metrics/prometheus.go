@@ -19,17 +19,18 @@ package prometheus
 
 import (
 	"fmt"
+	"net/http"
+	"sort"
+
 	metrics2 "github.com/VictoriaMetrics/metrics"
-	"github.com/n42blockchain/N42/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
 
-	"net/http"
-	"sort"
+	"github.com/n42blockchain/N42/log"
 )
 
 // Handler returns an HTTP handler which dump metrics in Prometheus format.
-// Output format can be cheched here: https://o11y.tools/metricslint/
+// Output format can be checked here: https://o11y.tools/metricslint/
 func Handler(reg Registry) http.Handler {
 	prometheus.DefaultRegisterer.MustRegister(defaultSet)
 
@@ -55,7 +56,7 @@ func Handler(reg Registry) http.Handler {
 			enc.Encode(m)
 		}
 
-		// Aggregate all the metris into a Prometheus collector
+		// Aggregate all the metrics into a Prometheus collector
 		c := newCollector()
 		c.buff.WriteRune('\n')
 

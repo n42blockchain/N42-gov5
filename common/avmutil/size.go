@@ -24,33 +24,44 @@ import (
 // formatting.
 type StorageSize float64
 
+const (
+	_TiB = 1 << 40
+	_GiB = 1 << 30
+	_MiB = 1 << 20
+	_KiB = 1 << 10
+)
+
 // String implements the stringer interface.
 func (s StorageSize) String() string {
-	if s > 1099511627776 {
-		return fmt.Sprintf("%.2f TiB", s/1099511627776)
-	} else if s > 1073741824 {
-		return fmt.Sprintf("%.2f GiB", s/1073741824)
-	} else if s > 1048576 {
-		return fmt.Sprintf("%.2f MiB", s/1048576)
-	} else if s > 1024 {
-		return fmt.Sprintf("%.2f KiB", s/1024)
-	} else {
-		return fmt.Sprintf("%.2f B", s)
+	if s > _TiB {
+		return fmt.Sprintf("%.2f TiB", s/_TiB)
 	}
+	if s > _GiB {
+		return fmt.Sprintf("%.2f GiB", s/_GiB)
+	}
+	if s > _MiB {
+		return fmt.Sprintf("%.2f MiB", s/_MiB)
+	}
+	if s > _KiB {
+		return fmt.Sprintf("%.2f KiB", s/_KiB)
+	}
+	return fmt.Sprintf("%.2f B", s)
 }
 
 // TerminalString implements log.TerminalStringer, formatting a string for console
 // output during logging.
 func (s StorageSize) TerminalString() string {
-	if s > 1099511627776 {
-		return fmt.Sprintf("%.2fTiB", s/1099511627776)
-	} else if s > 1073741824 {
-		return fmt.Sprintf("%.2fGiB", s/1073741824)
-	} else if s > 1048576 {
-		return fmt.Sprintf("%.2fMiB", s/1048576)
-	} else if s > 1024 {
-		return fmt.Sprintf("%.2fKiB", s/1024)
-	} else {
-		return fmt.Sprintf("%.2fB", s)
+	if s > _TiB {
+		return fmt.Sprintf("%.2fTiB", s/_TiB)
 	}
+	if s > _GiB {
+		return fmt.Sprintf("%.2fGiB", s/_GiB)
+	}
+	if s > _MiB {
+		return fmt.Sprintf("%.2fMiB", s/_MiB)
+	}
+	if s > _KiB {
+		return fmt.Sprintf("%.2fKiB", s/_KiB)
+	}
+	return fmt.Sprintf("%.2fB", s)
 }

@@ -1,22 +1,23 @@
 package avmtypes
 
 import (
-	"bytes"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/transaction"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/common/rlp"
-	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/params"
-	"golang.org/x/crypto/sha3"
 	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/holiman/uint256"
+	"golang.org/x/crypto/sha3"
+
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/params"
 )
 
 // hasherPool holds LegacyKeccak256 hashers for rlpHash.
@@ -35,8 +36,7 @@ func ToastAddress(addr *avmutil.Address) *types.Address {
 	if addr == nil {
 		return nil
 	}
-	nullAddress := avmutil.Address{}
-	if bytes.Equal(addr[:], nullAddress[:]) {
+	if *addr == (avmutil.Address{}) {
 		return &types.Address{0}
 	}
 	var a types.Address
@@ -325,7 +325,6 @@ func (tx *Transaction) setDecoded(inner TxData, size int) {
 }
 
 func (tx *Transaction) ToastTransaction(chainConfig *params.ChainConfig, blockNumber *big.Int) (*transaction.Transaction, error) {
-
 	var inner transaction.TxData
 	gasPrice, overflow := uint256.FromBig(tx.GasPrice())
 	if overflow {
@@ -408,7 +407,6 @@ func (tx *Transaction) ToastTransaction(chainConfig *params.ChainConfig, blockNu
 }
 
 func (tx *Transaction) FromastTransaction(astTx *transaction.Transaction) {
-
 	var inner TxData
 
 	gasPrice := astTx.GasPrice().ToBig()

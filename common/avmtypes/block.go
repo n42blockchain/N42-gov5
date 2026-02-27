@@ -4,11 +4,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
 	"math/big"
 	"reflect"
+
+	"github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // var EmptyUncleHash = rlpHash([]*Header(nil))
@@ -76,18 +77,17 @@ var headerSize = avmutil.StorageSize(reflect.TypeOf(Header{}).Size())
 // Size returns the approximate memory used by all internal contents. It is used
 // to approximate and limit the memory consumption of various caches.
 func (h *Header) Size() avmutil.StorageSize {
-	var baseFeeBits int
+	var bigIntBits int
 	if h.BaseFee != nil {
-		baseFeeBits = h.BaseFee.BitLen()
+		bigIntBits += h.BaseFee.BitLen()
 	}
-	var difficultyBits, numberBits int
 	if h.Difficulty != nil {
-		difficultyBits = h.Difficulty.BitLen()
+		bigIntBits += h.Difficulty.BitLen()
 	}
 	if h.Number != nil {
-		numberBits = h.Number.BitLen()
+		bigIntBits += h.Number.BitLen()
 	}
-	return headerSize + avmutil.StorageSize(len(h.Extra)+(difficultyBits+numberBits+baseFeeBits)/8)
+	return headerSize + avmutil.StorageSize(len(h.Extra)+bigIntBits/8)
 }
 
 // MarshalJSON marshals as JSON.

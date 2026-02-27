@@ -6,7 +6,8 @@ import (
 	"sync"
 
 	metrics2 "github.com/VictoriaMetrics/metrics"
-	"github.com/n42blockchain/N42/lib/log/v3"
+
+	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
 // DuplicateMetric is the error returned by Registry.Register when a metric

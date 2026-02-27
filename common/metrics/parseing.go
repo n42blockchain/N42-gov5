@@ -30,11 +30,9 @@ func parseMetric(s string) (string, prometheus.Labels, error) {
 	}
 
 	tags, err := parseTags(s[:len(s)-1])
-
 	if err != nil {
 		return "", nil, err
 	}
-
 	return ident, tags, nil
 }
 
