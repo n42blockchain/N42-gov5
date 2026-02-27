@@ -194,6 +194,7 @@ func (d *DiagnosticClient) getCurrentSyncIdxs() CurrentSyncStagesIdxs {
 			for subIdx, subStage := range stage.SubStages {
 				if subStage.State == Running {
 					currentIdxs.SubStage = subIdx
+					break
 				}
 			}
 			break

@@ -52,12 +52,11 @@ var cancelled = func() context.Context {
 }()
 
 func (t diagType) Context() context.Context {
-	providerMutex.Lock()
-	defer providerMutex.Unlock()
+	providerMutex.RLock()
+	defer providerMutex.RUnlock()
 	if reg := providers[t]; reg != nil {
 		return reg.context
 	}
-
 	return cancelled
 }
 
@@ -93,8 +92,10 @@ type registry struct {
 	providers []Provider
 }
 
-var providers = map[Type]*registry{}
-var providerMutex sync.RWMutex
+var (
+	providers     = map[Type]*registry{}
+	providerMutex sync.RWMutex
+)
 
 func StartProviders(ctx context.Context, infoType Type, logger log.Logger) {
 	providerMutex.Lock()

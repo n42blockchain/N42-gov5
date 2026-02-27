@@ -32,12 +32,13 @@ var cloudflareHeaders = http.Header{
 }
 
 func (d *DiagnosticClient) setupSpeedtestDiagnostics(rootCtx context.Context) {
+	if !d.speedTest {
+		return
+	}
 	go func() {
-		if d.speedTest {
-			d.networkSpeedMutex.Lock()
-			defer d.networkSpeedMutex.Unlock()
-			d.networkSpeed = d.runSpeedTest(rootCtx)
-		}
+		d.networkSpeedMutex.Lock()
+		defer d.networkSpeedMutex.Unlock()
+		d.networkSpeed = d.runSpeedTest(rootCtx)
 	}()
 }
 
@@ -75,6 +76,6 @@ func (d *DiagnosticClient) NetworkSpeedJson(w io.Writer) {
 	d.networkSpeedMutex.Lock()
 	defer d.networkSpeedMutex.Unlock()
 	if err := json.NewEncoder(w).Encode(d.networkSpeed); err != nil {
-		log.Debug("[diagnostics] ResourcesUsageJson", "err", err)
+		log.Debug("[diagnostics] NetworkSpeedJson", "err", err)
 	}
 }

@@ -81,7 +81,6 @@ func (p *PeerStats) UpdatePeer(peerID string, peerInfo PeerStatisticMsgUpdate, p
 
 func (p *PeerStats) updatePeer(peerID string, peerInfo PeerStatisticMsgUpdate, prevValue any) {
 	pv := peerStatisticsFromMsgUpdate(peerInfo, prevValue)
-
 	p.peersInfo.Store(peerID, pv)
 	p.lastUpdateMap[peerID] = time.Now()
 }
