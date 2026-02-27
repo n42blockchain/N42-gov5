@@ -40,22 +40,16 @@ const (
 	BloomSendMaxTransactions = 100
 )
 
-var (
-	ErrBadPeer = errors.New("bad peer error")
-)
+var ErrBadPeer = errors.New("bad peer error")
 
-// txsRequest
 type txsRequest struct {
-	hashes hashes       //
-	bloom  *types.Bloom //
-	peer   peer.ID      //
+	hashes hashes
+	bloom  *types.Bloom
+	peer   peer.ID
 }
 
 type hashes []types.Hash
 
-// pop removes and returns the last element from the slice.
-// IMPORTANT: Must use pointer receiver to modify the original slice.
-// Security: Added bounds check to prevent panic on empty slice.
 func (h *hashes) pop() types.Hash {
 	if len(*h) == 0 {
 		return types.Hash{}
@@ -66,36 +60,39 @@ func (h *hashes) pop() types.Hash {
 	return x
 }
 
+// TxsFetcher handles transaction synchronization with peers via bloom filters.
 type TxsFetcher struct {
-	quit chan struct{}
+	quit     chan struct{}
+	finished bool
 
-	finished  bool
 	peers     common.PeerMap
 	p2pServer common.INetwork
 
-	peerRequests map[peer.ID]*txsRequest // other peer requests
-
-	bloom *types.Bloom
+	peerRequests map[peer.ID]*txsRequest
+	bloom        *types.Bloom
 
 	getTx      func(hash types.Hash) *transaction.Transaction
 	addTxs     func([]*transaction.Transaction) []error
 	pendingTxs func(enforceTips bool) map[types.Address][]*transaction.Transaction
 
-	// fetchTxs
-	//fetchTxs func(string, []types.Hash)
-	// ch
 	peerJoinCh chan *common.PeerJoinEvent
 	peerDropCh chan *common.PeerDropEvent
-	//
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-func NewTxsFetcher(ctx context.Context, getTx func(hash types.Hash) *transaction.Transaction, addTxs func([]*transaction.Transaction) []error, pendingTxs func(enforceTips bool) map[types.Address][]*transaction.Transaction, p2pServer common.INetwork, peers common.PeerMap, bloom *types.Bloom) *TxsFetcher {
-
+func NewTxsFetcher(
+	ctx context.Context,
+	getTx func(hash types.Hash) *transaction.Transaction,
+	addTxs func([]*transaction.Transaction) []error,
+	pendingTxs func(enforceTips bool) map[types.Address][]*transaction.Transaction,
+	p2pServer common.INetwork,
+	peers common.PeerMap,
+	bloom *types.Bloom,
+) *TxsFetcher {
 	c, cancel := context.WithCancel(ctx)
-	f := &TxsFetcher{
+	return &TxsFetcher{
 		quit:         make(chan struct{}),
 		peers:        peers,
 		peerRequests: make(map[peer.ID]*txsRequest),
@@ -107,24 +104,17 @@ func NewTxsFetcher(ctx context.Context, getTx func(hash types.Hash) *transaction
 		peerJoinCh:   make(chan *common.PeerJoinEvent, 10),
 		peerDropCh:   make(chan *common.PeerDropEvent, 10),
 		finished:     false,
-
-		ctx:    c,
-		cancel: cancel,
+		ctx:          c,
+		cancel:       cancel,
 	}
-
-	return f
 }
 
-// Start starts the fetcher goroutines for transaction broadcasting.
-// R3/R4 fix: Track goroutines properly for cleanup.
 func (f *TxsFetcher) Start() error {
 	go f.sendBloomTransactionLoop()
 	go f.bloomBroadcastLoop()
 	return nil
 }
 
-// Stop gracefully stops all fetcher goroutines and releases resources.
-// R3/R4 fix: Implement proper shutdown mechanism.
 func (f *TxsFetcher) Stop() {
 	if f.cancel != nil {
 		f.cancel()
@@ -133,47 +123,44 @@ func (f *TxsFetcher) Stop() {
 }
 
 // sendBloomTransactionLoop periodically sends pending transactions to peers.
-// R3/R4 fix: Use proper loop with ticker cleanup on context cancellation.
 func (f *TxsFetcher) sendBloomTransactionLoop() {
 	tick := time.NewTicker(BloomSendTransactionTime)
-	defer tick.Stop() // R3 fix: Ensure ticker is stopped to prevent resource leak
+	defer tick.Stop()
 
 	for {
 		select {
 		case <-tick.C:
 			for ID, req := range f.peerRequests {
-				if p, ok := f.peers[ID]; ok {
-					var txs []*types_pb.Transaction
-
-					// Safely pop hashes, checking for empty slice
-					for i := 0; i < BloomSendMaxTransactions && len(req.hashes) > 0; i++ {
-						hash := req.hashes.pop()
-						tx := f.getTx(hash)
-						if tx != nil {
-							txs = append(txs, tx.ToProtoMessage().(*types_pb.Transaction))
-						}
-					}
-					if len(txs) == 0 {
-						continue
-					}
-					msg := &sync_proto.SyncTask{
-						Id:       misc.SecureUint64(),
-						Ok:       true,
-						SyncType: sync_proto.SyncType_TransactionRes,
-						Payload: &sync_proto.SyncTask_SyncTransactionResponse{
-							SyncTransactionResponse: &sync_proto.SyncTransactionResponse{
-								Transactions: txs,
-							},
-						},
-					}
-					// Fix: Check and handle proto.Marshal error
-					data, err := proto.Marshal(msg)
-					if err != nil {
-						log.Warn("Failed to marshal transaction response", "peer", ID, "err", err)
-						continue
-					}
-					p.WriteMsg(message.MsgTransaction, data)
+				p, ok := f.peers[ID]
+				if !ok {
+					continue
 				}
+				var txs []*types_pb.Transaction
+				for i := 0; i < BloomSendMaxTransactions && len(req.hashes) > 0; i++ {
+					hash := req.hashes.pop()
+					if tx := f.getTx(hash); tx != nil {
+						txs = append(txs, tx.ToProtoMessage().(*types_pb.Transaction))
+					}
+				}
+				if len(txs) == 0 {
+					continue
+				}
+				msg := &sync_proto.SyncTask{
+					Id:       misc.SecureUint64(),
+					Ok:       true,
+					SyncType: sync_proto.SyncType_TransactionRes,
+					Payload: &sync_proto.SyncTask_SyncTransactionResponse{
+						SyncTransactionResponse: &sync_proto.SyncTransactionResponse{
+							Transactions: txs,
+						},
+					},
+				}
+				data, err := proto.Marshal(msg)
+				if err != nil {
+					log.Warn("Failed to marshal transaction response", "peer", ID, "err", err)
+					continue
+				}
+				p.WriteMsg(message.MsgTransaction, data)
 			}
 		case <-f.ctx.Done():
 			return
@@ -182,13 +169,12 @@ func (f *TxsFetcher) sendBloomTransactionLoop() {
 }
 
 // bloomBroadcastLoop periodically broadcasts bloom filter to request missing transactions.
-// R3/R4 fix: Use proper loop with ticker cleanup on context cancellation.
 func (f *TxsFetcher) bloomBroadcastLoop() {
 	if f.bloom == nil {
 		return
 	}
 	tick := time.NewTicker(BloomFetcherMaxTime)
-	defer tick.Stop() // R3 fix: Ensure ticker is stopped to prevent resource leak
+	defer tick.Stop()
 
 	bloom, err := f.bloom.Marshal()
 	if err != nil {
@@ -206,7 +192,6 @@ func (f *TxsFetcher) bloomBroadcastLoop() {
 			},
 		},
 	}
-	// Fix: Check and handle proto.Marshal error
 	request, err := proto.Marshal(msg)
 	if err != nil {
 		log.Warn("Failed to marshal transaction request", "err", err)
@@ -220,7 +205,6 @@ func (f *TxsFetcher) bloomBroadcastLoop() {
 				p.WriteMsg(message.MsgTransaction, request)
 			}
 		case <-tick.C:
-			// Periodic bloom broadcast to all connected peers
 			for _, p := range f.peers {
 				p.WriteMsg(message.MsgTransaction, request)
 			}
@@ -232,8 +216,7 @@ func (f *TxsFetcher) bloomBroadcastLoop() {
 
 // ConnHandler handles peer messages for transaction synchronization.
 func (f *TxsFetcher) ConnHandler(data []byte, ID peer.ID) error {
-	_, ok := f.peers[ID]
-	if !ok {
+	if _, ok := f.peers[ID]; !ok {
 		return ErrBadPeer
 	}
 
@@ -243,18 +226,14 @@ func (f *TxsFetcher) ConnHandler(data []byte, ID peer.ID) error {
 		return err
 	}
 
-	//taskID := syncTask.Id
 	log.Debugf("receive synctask msg from :%v, task type: %v, ok:%v", ID, syncTask.SyncType, syncTask.Ok)
 
 	switch syncTask.SyncType {
-
 	case sync_proto.SyncType_TransactionReq:
 		request := syncTask.Payload.(*sync_proto.SyncTask_SyncTransactionRequest).SyncTransactionRequest
-		if _, ok := f.peerRequests[ID]; ok == false {
-
+		if _, ok := f.peerRequests[ID]; !ok {
 			bloom := new(types.Bloom)
-			err := bloom.UnMarshalBloom(request.Bloom)
-			if err == nil {
+			if err := bloom.UnMarshalBloom(request.Bloom); err == nil {
 				var txs []*transaction.Transaction
 				var hashes []types.Hash
 				pending := f.pendingTxs(false)
