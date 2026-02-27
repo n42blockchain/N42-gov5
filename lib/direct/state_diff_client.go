@@ -31,8 +31,7 @@ type StateDiffClient interface {
 
 var _ StateDiffClient = (*StateDiffClientDirect)(nil) // compile-time interface check
 
-// SentryClientDirect implements SentryClient interface by connecting the instance of the client directly with the corresponding
-// instance of SentryServer
+// StateDiffClientDirect implements StateDiffClient by connecting directly to a KVServer.
 type StateDiffClientDirect struct {
 	server remote.KVServer
 }
@@ -77,7 +76,7 @@ func (c *StateDiffStreamC) Recv() (*remote.StateChangeBatch, error) {
 }
 func (c *StateDiffStreamC) Context() context.Context { return c.ctx }
 
-// StateDiffStreamS implements proto_sentry.Sentry_ReceiveMessagesServer
+// StateDiffStreamS implements remote.KV_StateChangesServer.
 type StateDiffStreamS struct {
 	ch  chan *stateDiffReply
 	ctx context.Context

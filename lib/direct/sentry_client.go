@@ -19,11 +19,9 @@ package direct
 import (
 	"context"
 	"fmt"
-	"io"
 	"sync"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/n42blockchain/N42/lib/gointerfaces/sentry"
@@ -123,6 +121,13 @@ type SentryClient interface {
 	MarkDisconnected()
 }
 
+var _ SentryClient = (*SentryClientRemote)(nil)
+var _ SentryClient = (*SentryClientDirect)(nil)
+
+// SentryClientRemote wraps a gRPC SentryClient with protocol negotiation and readiness tracking.
+// App code must use this class to avoid concurrency issues -- it accepts protocol
+// (which is received async by SetStatus) in constructor, meaning the app can't use
+// a client whose protocol is unknown yet.
 type SentryClientRemote struct {
 	sentry.SentryClient
 	sync.RWMutex
@@ -130,12 +135,6 @@ type SentryClientRemote struct {
 	ready    bool
 }
 
-var _ SentryClient = (*SentryClientRemote)(nil) // compile-time interface check
-var _ SentryClient = (*SentryClientDirect)(nil) // compile-time interface check
-
-// NewSentryClientRemote - app code must use this class
-// to avoid concurrency - it accepts protocol (which received async by SetStatus) in constructor,
-// means app can't use client which protocol unknown yet
 func NewSentryClientRemote(client sentry.SentryClient) *SentryClientRemote {
 	return &SentryClientRemote{SentryClient: client}
 }
@@ -182,6 +181,7 @@ func (c *SentryClientRemote) HandShake(ctx context.Context, in *emptypb.Empty, o
 	c.ready = true
 	return reply, nil
 }
+
 func (c *SentryClientRemote) SetStatus(ctx context.Context, in *sentry.StatusData, opts ...grpc.CallOption) (*sentry.SetStatusReply, error) {
 	return c.SentryClient.SetStatus(ctx, in, opts...)
 }
@@ -195,14 +195,8 @@ func (c *SentryClientRemote) PeerCount(ctx context.Context, in *sentry.PeerCount
 	return c.SentryClient.PeerCount(ctx, in)
 }
 
-// Contains implementations of SentryServer, SentryClient, ControlClient, and ControlServer, that may be linked to each other
-// SentryClient is linked directly to the SentryServer, for example, so any function call on the instance of the SentryClient
-// cause invocations directly on the corresponding instance of the SentryServer. However, the link between SentryClient and
-// SentryServer is established outside of the constructor. This means that the reference from the SentyClient to the corresponding
-// SentryServer can be injected at any point in time.
-
-// SentryClientDirect implements SentryClient interface by connecting the instance of the client directly with the corresponding
-// instance of SentryServer
+// SentryClientDirect implements SentryClient interface by connecting the instance of the client
+// directly with the corresponding instance of SentryServer.
 type SentryClientDirect struct {
 	server   sentry.SentryServer
 	protocol uint
@@ -260,8 +254,6 @@ func (c *SentryClientDirect) PeerById(ctx context.Context, in *sentry.PeerByIdRe
 	return c.server.PeerById(ctx, in)
 }
 
-// -- start Messages
-
 func (c *SentryClientDirect) Messages(ctx context.Context, in *sentry.MessagesRequest, opts ...grpc.CallOption) (sentry.Sentry_MessagesClient, error) {
 	in.Ids = filterIds(in.Ids, c.Protocol())
 	ch := make(chan *inboundMessageReply, 16384)
@@ -272,61 +264,6 @@ func (c *SentryClientDirect) Messages(ctx context.Context, in *sentry.MessagesRe
 	}()
 	return &SentryMessagesStreamC{ch: ch, ctx: ctx}, nil
 }
-
-type inboundMessageReply struct {
-	r   *sentry.InboundMessage
-	err error
-}
-
-// SentryMessagesStreamS implements proto_sentry.Sentry_ReceiveMessagesServer
-type SentryMessagesStreamS struct {
-	ch  chan *inboundMessageReply
-	ctx context.Context
-	grpc.ServerStream
-}
-
-func (s *SentryMessagesStreamS) Send(m *sentry.InboundMessage) error {
-	s.ch <- &inboundMessageReply{r: m}
-	return nil
-}
-
-func (s *SentryMessagesStreamS) Context() context.Context { return s.ctx }
-
-func (s *SentryMessagesStreamS) Err(err error) {
-	if err == nil {
-		return
-	}
-	s.ch <- &inboundMessageReply{err: err}
-}
-
-type SentryMessagesStreamC struct {
-	ch  chan *inboundMessageReply
-	ctx context.Context
-	grpc.ClientStream
-}
-
-func (c *SentryMessagesStreamC) Recv() (*sentry.InboundMessage, error) {
-	m, ok := <-c.ch
-	if !ok || m == nil {
-		return nil, io.EOF
-	}
-	return m.r, m.err
-}
-
-func (c *SentryMessagesStreamC) Context() context.Context { return c.ctx }
-
-func (c *SentryMessagesStreamC) RecvMsg(anyMessage interface{}) error {
-	m, err := c.Recv()
-	if err != nil {
-		return err
-	}
-	outMessage := anyMessage.(*sentry.InboundMessage)
-	proto.Merge(outMessage, m)
-	return nil
-}
-
-// -- end Messages
-// -- start Peers
 
 func (c *SentryClientDirect) PeerEvents(ctx context.Context, in *sentry.PeerEventsRequest, opts ...grpc.CallOption) (sentry.Sentry_PeerEventsClient, error) {
 	ch := make(chan *peersReply, 16384)
@@ -341,60 +278,6 @@ func (c *SentryClientDirect) PeerEvents(ctx context.Context, in *sentry.PeerEven
 func (c *SentryClientDirect) AddPeer(ctx context.Context, in *sentry.AddPeerRequest, opts ...grpc.CallOption) (*sentry.AddPeerReply, error) {
 	return c.server.AddPeer(ctx, in)
 }
-
-type peersReply struct {
-	r   *sentry.PeerEvent
-	err error
-}
-
-// SentryPeersStreamS - implements proto_sentry.Sentry_ReceivePeersServer
-type SentryPeersStreamS struct {
-	ch  chan *peersReply
-	ctx context.Context
-	grpc.ServerStream
-}
-
-func (s *SentryPeersStreamS) Send(m *sentry.PeerEvent) error {
-	s.ch <- &peersReply{r: m}
-	return nil
-}
-
-func (s *SentryPeersStreamS) Context() context.Context { return s.ctx }
-
-func (s *SentryPeersStreamS) Err(err error) {
-	if err == nil {
-		return
-	}
-	s.ch <- &peersReply{err: err}
-}
-
-type SentryPeersStreamC struct {
-	ch  chan *peersReply
-	ctx context.Context
-	grpc.ClientStream
-}
-
-func (c *SentryPeersStreamC) Recv() (*sentry.PeerEvent, error) {
-	m, ok := <-c.ch
-	if !ok || m == nil {
-		return nil, io.EOF
-	}
-	return m.r, m.err
-}
-
-func (c *SentryPeersStreamC) Context() context.Context { return c.ctx }
-
-func (c *SentryPeersStreamC) RecvMsg(anyMessage interface{}) error {
-	m, err := c.Recv()
-	if err != nil {
-		return err
-	}
-	outMessage := anyMessage.(*sentry.PeerEvent)
-	proto.Merge(outMessage, m)
-	return nil
-}
-
-// -- end Peers
 
 func (c *SentryClientDirect) NodeInfo(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*types.NodeInfoReply, error) {
 	return c.server.NodeInfo(ctx, in)
