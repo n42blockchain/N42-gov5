@@ -312,29 +312,6 @@ func (dt *DomainRoTx) staticFilesInRange(r DomainRanges) (valuesFiles, indexFile
 func (d *Domain) staticFilesInRange(r DomainRanges, dc *DomainRoTx) (valuesFiles, indexFiles, historyFiles []*filesItem, startJ int) {
 	panic("deprecated: use DomainRoTx.staticFilesInRange")
 }
-func (iit *InvertedIndexRoTx) staticFilesInRange(startTxNum, endTxNum uint64) ([]*filesItem, int) {
-	files := make([]*filesItem, 0, len(iit.files))
-	var startJ int
-
-	for _, item := range iit.files {
-		if item.startTxNum < startTxNum {
-			startJ++
-			continue
-		}
-		if item.endTxNum > endTxNum {
-			break
-		}
-		files = append(files, item.src)
-	}
-	for _, f := range files {
-		if f == nil {
-			panic("must not happen")
-		}
-	}
-
-	return files, startJ
-}
-
 // nolint
 func (ii *InvertedIndex) staticFilesInRange(startTxNum, endTxNum uint64, ic *InvertedIndexRoTx) ([]*filesItem, int) {
 	panic("deprecated: use InvertedIndexRoTx.staticFilesInRange")
@@ -1086,18 +1063,6 @@ func (ht *HistoryRoTx) frozenTo() uint64 {
 	}
 	return 0
 }
-func (iit *InvertedIndexRoTx) frozenTo() uint64 {
-	if len(iit.files) == 0 {
-		return 0
-	}
-	for i := len(iit.files) - 1; i >= 0; i-- {
-		if iit.files[i].src.frozen {
-			return iit.files[i].endTxNum
-		}
-	}
-	return 0
-}
-
 func (d *Domain) cleanAfterFreeze(frozenTo uint64) { //nolint
 	if frozenTo == 0 {
 		return
