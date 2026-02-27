@@ -27,8 +27,7 @@ import (
 )
 
 func RecoverSignerFromRLP(rlp []byte, yParity uint8, r uint256.Int, s uint256.Int) (*common.Address, error) {
-	// from authorizations.go
-	hashData := []byte{byte(0x05)}
+	hashData := []byte{0x05}
 	hashData = append(hashData, rlp...)
 	hash := crypto.Keccak256Hash(hashData)
 

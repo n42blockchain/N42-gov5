@@ -29,18 +29,11 @@ import (
 )
 
 // txMaxBroadcastSize is the max size of a transaction that will be broadcasted.
-// All transactions with a higher size will be announced and need to be fetched
-// by the peer.
+// Larger transactions are announced instead and need to be fetched by the peer.
 const txMaxBroadcastSize = 4 * 1024
 
-// MainLoop - does:
-// send pending byHash to p2p:
-//   - new byHash
-//   - all pooled byHash to recently connected peers
-//   - all local pooled byHash to random peers periodically
-//
-// promote/demote transactions
-// reorgs
+// MainLoop runs the txpool event loop: propagates txs to peers, processes remote txs,
+// commits to DB, and handles reorgs.
 func MainLoop(ctx context.Context, db kv.RwDB, p *TxPool, newTxs chan types.Announcements, send *Send, newSlotsStreams *NewSlotsStreams, notifyMiningAboutNewSlots func()) {
 	syncToNewPeersEvery := time.NewTicker(p.cfg.SyncToNewPeersEvery)
 	defer syncToNewPeersEvery.Stop()

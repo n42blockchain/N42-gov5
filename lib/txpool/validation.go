@@ -202,23 +202,14 @@ func requiredBalance(txn *types.TxSlot) *uint256.Int {
 }
 
 func isTimeBasedForkActivated(isPostFlag *atomic.Bool, forkTime *uint64) bool {
-	// once this flag has been set for the first time we no longer need to check the timestamp
-	set := isPostFlag.Load()
-	if set {
+	if isPostFlag.Load() {
 		return true
 	}
-	if forkTime == nil { // the fork is not enabled
+	if forkTime == nil {
 		return false
 	}
-
-	// a zero here means the fork is always active
-	if *forkTime == 0 {
-		isPostFlag.Swap(true)
-		return true
-	}
-
-	now := time.Now().Unix()
-	activated := uint64(now) >= *forkTime
+	// A zero fork time means the fork is always active
+	activated := *forkTime == 0 || uint64(time.Now().Unix()) >= *forkTime
 	if activated {
 		isPostFlag.Swap(true)
 	}
@@ -252,13 +243,11 @@ func (p *TxPool) isAgra() bool {
 	}
 	defer tx.Rollback()
 
-	head_block, err := chain.CurrentBlockNumber(tx)
-	if head_block == nil || err != nil {
+	headBlock, err := chain.CurrentBlockNumber(tx)
+	if headBlock == nil || err != nil {
 		return false
 	}
-	// A new block is built on top of the head block, so when the head is agraBlock-1,
-	// the new block should use the Agra rules.
-	activated := (*head_block + 1) >= agraBlock
+	activated := (*headBlock + 1) >= agraBlock
 	if activated {
 		p.isPostAgra.Swap(true)
 	}
@@ -281,23 +270,11 @@ func (p *TxPool) GetMaxBlobsPerBlock() uint64 {
 	return p.blobSchedule.MaxBlobsPerBlock(p.isPrague(), p.isOsaka())
 }
 
-// Check that the serialized txn should not exceed a certain max size
 func (p *TxPool) ValidateSerializedTxn(serializedTxn []byte) error {
 	const (
-		// txSlotSize is used to calculate how many data slots a single transaction
-		// takes up based on its size. The slots are used as DoS protection, ensuring
-		// that validating a new transaction remains a constant operation (in reality
-		// O(maxslots), where max slots are 4 currently).
-		txSlotSize = 32 * 1024
-
-		// txMaxSize is the maximum size a single transaction can have. This field has
-		// non-trivial consequences: larger transactions are significantly harder and
-		// more expensive to propagate; larger transactions also take more resources
-		// to validate whether they fit into the pool or not.
-		txMaxSize = 4 * txSlotSize // 128KB
-
-		// Should be enough for a transaction with 6 blobs
-		blobTxMaxSize = 800_000
+		txSlotSize    = 32 * 1024
+		txMaxSize     = 4 * txSlotSize // 128KB
+		blobTxMaxSize = 800_000        // enough for 6 blobs
 	)
 	txType, err := types.PeekTransactionType(serializedTxn)
 	if err != nil {
@@ -350,7 +327,7 @@ func (p *TxPool) validateTxs(txs *types.TxSlots, stateCache kvcache.CacheView) (
 	return reasons, goodTxs, nil
 }
 
-// punishSpammer by drop half of it's transactions with high nonce
+// punishSpammer drops half of the spammer's transactions (those with highest nonces).
 func (p *TxPool) punishSpammer(spammer uint64) {
 	count := p.all.count(spammer) / 2
 	if count > 0 {

@@ -35,7 +35,6 @@ import (
 )
 
 func (p *TxPool) addLocked(mt *metaTx, announcements *types.Announcements) txpoolcfg.DiscardReason {
-	// Insert to pending pool, if pool doesn't have txn with same Nonce and bigger Tip
 	found := p.all.get(mt.Tx.SenderID, mt.Tx.Nonce)
 	if found != nil {
 		if found.Tx.Type == types.BlobTxType && mt.Tx.Type != types.BlobTxType {
@@ -43,7 +42,7 @@ func (p *TxPool) addLocked(mt *metaTx, announcements *types.Announcements) txpoo
 		}
 		priceBump := p.cfg.PriceBump
 
-		//Blob txn threshold checks for replace txn
+		// Blob txn threshold checks for replace
 		if mt.Tx.Type == types.BlobTxType {
 			priceBump = p.cfg.BlobPriceBump
 			blobFeeThreshold, overflow := (&uint256.Int{}).MulDivOverflow(
@@ -59,7 +58,7 @@ func (p *TxPool) addLocked(mt *metaTx, announcements *types.Announcements) txpoo
 			}
 		}
 
-		//Regular txn threshold checks
+		// Regular txn threshold checks
 		tipThreshold := uint256.NewInt(0)
 		tipThreshold = tipThreshold.Mul(&found.Tx.Tip, uint256.NewInt(100+priceBump))
 		tipThreshold.Div(tipThreshold, u256.N100)
@@ -136,17 +135,15 @@ func (p *TxPool) addLocked(mt *metaTx, announcements *types.Announcements) txpoo
 	// All transactions are first added to the queued pool and then immediately promoted from there if required
 	p.queued.Add(mt, "addLocked", p.logger)
 	if mt.Tx.Type == types.BlobTxType {
-		t := p.totalBlobsInPool.Load()
-		p.totalBlobsInPool.Store(t + (uint64(len(mt.Tx.BlobHashes))))
+		p.totalBlobsInPool.Store(p.totalBlobsInPool.Load() + uint64(len(mt.Tx.BlobHashes)))
 	}
 
-	// Remove from mined cache as we are now "resurrecting" it to a sub-pool
 	p.deleteMinedBlobTxn(hashStr)
 	return txpoolcfg.NotSet
 }
 
-// dropping transaction from all sub-structures and from db
-// Important: don't call it while iterating by all
+// discardLocked drops a transaction from all sub-structures and marks it for DB deletion.
+// Important: don't call it while iterating by all.
 func (p *TxPool) discardLocked(mt *metaTx, reason txpoolcfg.DiscardReason) {
 	hashStr := string(mt.Tx.IDHash[:])
 	delete(p.byHash, hashStr)
@@ -154,8 +151,7 @@ func (p *TxPool) discardLocked(mt *metaTx, reason txpoolcfg.DiscardReason) {
 	p.all.delete(mt, reason, p.logger)
 	p.discardReasonsLRU.Add(hashStr, reason)
 	if mt.Tx.Type == types.BlobTxType {
-		t := p.totalBlobsInPool.Load()
-		p.totalBlobsInPool.Store(t - uint64(len(mt.Tx.BlobHashes)))
+		p.totalBlobsInPool.Store(p.totalBlobsInPool.Load() - uint64(len(mt.Tx.BlobHashes)))
 	}
 	if mt.Tx.Type == types.SetCodeTxType {
 		numAuths := len(mt.Tx.AuthRaw)
@@ -181,15 +177,6 @@ func (p *TxPool) addTxs(blockNum uint64, cacheView kvcache.CacheView, senders *s
 		}
 	}
 
-	// This can be thought of a reverse operation from the one described before.
-	// When a block that was deemed "the best" of its height, is no longer deemed "the best", the
-	// transactions contained in it, are now viable for inclusion in other blocks, and therefore should
-	// be returned into the transaction pool.
-	// An interesting note here is that if the block contained any transactions local to the node,
-	// by being first removed from the pool (from the "local" part of it), and then re-injected,
-	// they effective lose their priority over the "remote" transactions. In order to prevent that,
-	// somehow the fact that certain transactions were local, needs to be remembered for some
-	// time (up to some "immutability threshold").
 	sendersWithChangedState := map[uint64]struct{}{}
 	discardReasons := make([]txpoolcfg.DiscardReason, len(newTxs.Txs))
 	announcements := types.Announcements{}
@@ -207,7 +194,7 @@ func (p *TxPool) addTxs(blockNum uint64, cacheView kvcache.CacheView, senders *s
 			discardReasons[i] = reason
 			continue
 		}
-		discardReasons[i] = txpoolcfg.NotSet // unnecessary
+		discardReasons[i] = txpoolcfg.NotSet
 		if txn.Traced {
 			logger.Info(fmt.Sprintf("TX TRACING: schedule sendersWithChangedState idHash=%x senderId=%d", txn.IDHash, mt.Tx.SenderID))
 		}
@@ -228,7 +215,8 @@ func (p *TxPool) addTxs(blockNum uint64, cacheView kvcache.CacheView, senders *s
 	return announcements, discardReasons, nil
 }
 
-// TODO: Looks like a copy of the above
+// addTxsOnNewBlock re-injects unwound transactions and collects senders whose state changed.
+// Unlike addTxs, it also processes state change diffs and does not call promote (caller does that).
 func (p *TxPool) addTxsOnNewBlock(blockNum uint64, cacheView kvcache.CacheView, stateChanges *remote.StateChangeBatch,
 	senders *sendersBatch, newTxs types.TxSlots, pendingBaseFee uint64, blockGasLimit uint64, logger log.Logger) (types.Announcements, error) {
 	if assert.Enable {
@@ -238,15 +226,7 @@ func (p *TxPool) addTxsOnNewBlock(blockNum uint64, cacheView kvcache.CacheView, 
 			}
 		}
 	}
-	// This can be thought of a reverse operation from the one described before.
-	// When a block that was deemed "the best" of its height, is no longer deemed "the best", the
-	// transactions contained in it, are now viable for inclusion in other blocks, and therefore should
-	// be returned into the transaction pool.
-	// An interesting note here is that if the block contained any transactions local to the node,
-	// by being first removed from the pool (from the "local" part of it), and then re-injected,
-	// they effective lose their priority over the "remote" transactions. In order to prevent that,
-	// somehow the fact that certain transactions were local, needs to be remembered for some
-	// time (up to some "immutability threshold").
+
 	sendersWithChangedState := map[uint64]struct{}{}
 	announcements := types.Announcements{}
 	for i, txn := range newTxs.Txs {
@@ -341,20 +321,13 @@ func (p *TxPool) promote(pendingBaseFee uint64, pendingBlobFee uint64, announcem
 		}
 	}
 
-	// Discard worst transactions from the queued sub pool if they do not qualify
-	// <FUNCTIONALITY REMOVED>
-
-	// Discard worst transactions from pending pool until it is within capacity limit
+	// Enforce capacity limits on all sub-pools
 	for p.pending.Len() > p.pending.limit {
 		p.discardLocked(p.pending.PopWorst(), txpoolcfg.PendingPoolOverflow)
 	}
-
-	// Discard worst transactions from pending sub pool until it is within capacity limits
 	for p.baseFee.Len() > p.baseFee.limit {
 		p.discardLocked(p.baseFee.PopWorst(), txpoolcfg.BaseFeePoolOverflow)
 	}
-
-	// Discard worst transactions from the queued sub pool until it is within its capacity limits
 	for p.queued.Len() > p.queued.limit {
 		p.discardLocked(p.queued.PopWorst(), txpoolcfg.QueuedPoolOverflow)
 	}
@@ -413,26 +386,19 @@ func (p *TxPool) onSenderStateChange(senderID uint64, senderNonce uint64, sender
 
 		needBalance := requiredBalance(mt.Tx)
 
-		// 2. Absence of nonce gaps. Set to 1 for transactions whose nonce is N, state nonce for
-		// the sender is M, and there are transactions for all nonces between M and N from the same
-		// sender. Set to 0 is the transaction's nonce is divided from the state nonce by one or more nonce gaps.
+		// Absence of nonce gaps
 		mt.subPool &^= NoNonceGaps
 		if noGapsNonce == mt.Tx.Nonce {
 			mt.subPool |= NoNonceGaps
 			noGapsNonce++
 		}
 
-		// 3. Sufficient balance for gas. Set to 1 if the balance of sender's account in the
-		// state is B, nonce of the sender in the state is M, nonce of the transaction is N, and the
-		// sum of feeCap x gasLimit + transferred_value of all transactions from this sender with
-		// nonces N+1 ... M is no more than B. Set to 0 otherwise. In other words, this bit is
-		// set if there is currently a guarantee that the transaction and all its required prior
-		// transactions will be able to pay for gas.
+		// Sufficient balance for gas
 		mt.subPool &^= EnoughBalance
 		mt.cumulativeBalanceDistance = math.MaxUint64
 		if mt.Tx.Nonce >= senderNonce {
-			cumulativeRequiredBalance = cumulativeRequiredBalance.Add(cumulativeRequiredBalance, needBalance) // already deleted all transactions with nonce <= sender.nonce
-			if senderBalance.Gt(cumulativeRequiredBalance) || senderBalance.Eq(cumulativeRequiredBalance) {
+			cumulativeRequiredBalance = cumulativeRequiredBalance.Add(cumulativeRequiredBalance, needBalance)
+			if senderBalance.Cmp(cumulativeRequiredBalance) >= 0 {
 				mt.subPool |= EnoughBalance
 			} else {
 				if cumulativeRequiredBalance.IsUint64() && senderBalance.IsUint64() {
@@ -469,13 +435,7 @@ func (p *TxPool) onSenderStateChange(senderID uint64, senderNonce uint64, sender
 	logger.Trace("[txpool] onSenderStateChange", "sender", senderID, "count", p.all.count(senderID), "pending", p.pending.Len(), "baseFee", p.baseFee.Len(), "queued", p.queued.Len())
 }
 
-// removeMined - apply new highest block (or batch of blocks)
-//
-// 1. New best block arrives, which potentially changes the balance and the nonce of some senders.
-// We use senderIds data structure to find relevant senderId values, and then use senders data structure to
-// modify state_balance and state_nonce, potentially remove some elements (if transaction with some nonce is
-// included into a block), and finally, walk over the transaction records and update SubPool fields depending on
-// the actual presence of nonce gaps and what the balance is.
+// removeMined removes transactions that have been included in mined blocks.
 func (p *TxPool) removeMined(byNonce *BySenderAndNonce, minedTxs []*types.TxSlot) error {
 	noncesToRemove := map[uint64]uint64{}
 	for _, txn := range minedTxs {
@@ -507,7 +467,6 @@ func (p *TxPool) removeMined(byNonce *BySenderAndNonce, minedTxs []*types.TxSlot
 			}
 
 			toDel = append(toDel, mt)
-			// del from sub-pool
 			switch mt.currentSubPool {
 			case PendingSubPool:
 				pendingRemoved++

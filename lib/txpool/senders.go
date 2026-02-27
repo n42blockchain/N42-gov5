@@ -29,7 +29,6 @@ import (
 	"github.com/n42blockchain/N42/lib/types"
 )
 
-// sender - immutable structure which stores only nonce and balance of account
 type sender struct {
 	balance uint256.Int
 	nonce   uint64
@@ -48,9 +47,7 @@ func SortByNonceLess(a, b *metaTx) bool {
 	return a.Tx.Nonce < b.Tx.Nonce
 }
 
-// sendersBatch stores in-memory senders-related objects - which are different from DB (updated/dirty)
-// flushing to db periodically. it doesn't play as read-cache (because db is small and memory-mapped - doesn't need cache)
-// non thread-safe
+// sendersBatch stores in-memory senders-related objects. Not thread-safe.
 type sendersBatch struct {
 	senderIDs     map[common.Address]uint64
 	senderID2Addr map[uint64]common.Address

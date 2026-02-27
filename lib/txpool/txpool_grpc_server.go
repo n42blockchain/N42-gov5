@@ -46,7 +46,6 @@ import (
 	"github.com/n42blockchain/N42/lib/types"
 )
 
-// TxPoolAPIVersion
 var TxPoolAPIVersion = &types2.VersionReply{Major: 1, Minor: 0, Patch: 0}
 
 type txPool interface {
@@ -296,7 +295,6 @@ func (s *GrpcServer) Status(_ context.Context, _ *txpool_proto.StatusRequest) (*
 	}, nil
 }
 
-// returns nonce for address
 func (s *GrpcServer) Nonce(ctx context.Context, in *txpool_proto.NonceRequest) (*txpool_proto.NonceReply, error) {
 	addr := gointerfaces.ConvertH160toAddress(in.Address)
 	nonce, inPool := s.txPool.NonceFromAddress(addr)
@@ -306,7 +304,6 @@ func (s *GrpcServer) Nonce(ctx context.Context, in *txpool_proto.NonceRequest) (
 	}, nil
 }
 
-// NewSlotsStreams - it's safe to use this class as non-pointer
 type NewSlotsStreams struct {
 	chans map[uint]txpool_proto.Txpool_OnAddServer
 	mu    sync.Mutex
@@ -365,10 +362,8 @@ func StartGrpc(txPoolServer txpool_proto.TxpoolServer, miningServer txpool_proto
 	unaryInterceptors = append(unaryInterceptors, grpc_recovery.UnaryServerInterceptor())
 
 	opts := []grpc.ServerOption{
-		grpc.ReadBufferSize(0),  // reduce buffers to save mem
-		grpc.WriteBufferSize(0), // reduce buffers to save mem
-		// Don't drop the connection, settings accordign to this comment on GitHub
-		// https://github.com/grpc/grpc-go/issues/3171#issuecomment-552796779
+		grpc.ReadBufferSize(0),
+		grpc.WriteBufferSize(0),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             10 * time.Second,
 			PermitWithoutStream: true,

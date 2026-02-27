@@ -27,13 +27,8 @@ import (
 	"github.com/n42blockchain/N42/lib/types"
 )
 
-// BySenderAndNonce - designed to perform most expensive operation in TxPool:
-// "recalculate all ephemeral fields of all transactions" by algo
-//   - for all senders - iterate over all transactions in nonce growing order
-//
-// Performances decisions:
-//   - All senders stored inside 1 large BTree - because iterate over 1 BTree is faster than over map[senderId]BTree
-//   - sortByNonce used as non-pointer wrapper - because iterate over BTree of pointers is 2x slower
+// BySenderAndNonce stores all transactions in a single BTree sorted by (senderID, nonce).
+// A single BTree is faster than map[senderId]BTree for iteration.
 type BySenderAndNonce struct {
 	tree              *btree.BTreeG[*metaTx]
 	search            *metaTx
