@@ -86,12 +86,12 @@ func OffsetSSZ(x uint32) []byte {
 	return b
 }
 
-// EncodeOffset marshals a little endian uint32 to buf
+// EncodeOffset marshals a little endian uint32 to buf.
 func EncodeOffset(buf []byte, offset uint32) {
 	binary.LittleEndian.PutUint32(buf, offset)
 }
 
-// ReadOffset unmarshals a little endian uint32 to dst
+// DecodeOffset unmarshals a little endian uint32.
 func DecodeOffset(x []byte) uint32 {
 	return binary.LittleEndian.Uint32(x)
 }
@@ -100,7 +100,7 @@ func UnmarshalUint64SSZ(x []byte) uint64 {
 	return binary.LittleEndian.Uint64(x)
 }
 
-// Uint64SSZDecode is an alias for UnmarshalUint64SSZ for CL compatibility
+// Uint64SSZDecode is an alias for UnmarshalUint64SSZ.
 func Uint64SSZDecode(x []byte) uint64 {
 	return UnmarshalUint64SSZ(x)
 }
@@ -148,7 +148,6 @@ func DecodeStaticList[T Unmarshaler](bytes []byte, start, end, bytesPerElement u
 	}
 	buf := bytes[start:end]
 	elementsNum := uint64(len(buf)) / uint64(bytesPerElement)
-	// Check for errors
 	if uint32(len(buf))%bytesPerElement != 0 {
 		return nil, ErrBufferNotRounded
 	}
@@ -172,7 +171,6 @@ func DecodeHashList(bytes []byte, start, end, max uint32) ([]common.Hash, error)
 	}
 	buf := bytes[start:end]
 	elementsNum := uint32(len(buf)) / length.Hash
-	// Check for errors
 	if uint32(len(buf))%length.Hash != 0 {
 		return nil, ErrBufferNotRounded
 	}
@@ -192,7 +190,6 @@ func DecodeNumbersList(bytes []byte, start, end uint32, max uint64) ([]uint64, e
 	}
 	buf := bytes[start:end]
 	elementsNum := uint64(len(buf)) / length.BlockNum
-	// Check for errors
 	if uint64(len(buf))%length.BlockNum != 0 {
 		return nil, ErrBufferNotRounded
 	}
@@ -230,11 +227,10 @@ func DecodeString(bytes []byte, start, end, max uint64) ([]byte, error) {
 
 func EncodeDynamicList[T Marshaler](buf []byte, objs []T) (dst []byte, err error) {
 	dst = buf
-	// Attestation
 	subOffset := len(objs) * 4
-	for _, attestation := range objs {
+	for _, obj := range objs {
 		dst = append(dst, OffsetSSZ(uint32(subOffset))...)
-		subOffset += attestation.EncodingSizeSSZ()
+		subOffset += obj.EncodingSizeSSZ()
 	}
 	for _, obj := range objs {
 		dst, err = obj.EncodeSSZ(dst)
