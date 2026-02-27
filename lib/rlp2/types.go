@@ -8,11 +8,12 @@ import (
 
 func Bytes(dst *[]byte, src []byte) error {
 	if len(*dst) < len(src) {
-		(*dst) = make([]byte, len(src))
+		*dst = make([]byte, len(src))
 	}
 	copy(*dst, src)
 	return nil
 }
+
 func BytesExact(dst *[]byte, src []byte) error {
 	if len(*dst) != len(src) {
 		return fmt.Errorf("%w: BytesExact no match", ErrDecode)
@@ -37,20 +38,17 @@ func Uint64(dst *uint64, src []byte) error {
 	for _, b := range src {
 		r = (r << 8) | uint64(b)
 	}
-	(*dst) = r
+	*dst = r
 	return nil
 }
 
 func IsEmpty(dst *bool, src []byte) error {
-	if len(src) == 0 {
-		(*dst) = true
-	} else {
-		(*dst) = false
-	}
+	*dst = len(src) == 0
 	return nil
 }
+
 func BlobLength(dst *int, src []byte) error {
-	(*dst) = len(src)
+	*dst = len(src)
 	return nil
 }
 

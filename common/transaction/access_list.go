@@ -93,7 +93,6 @@ func (tx *AccessListTx) copy() TxData {
 	return cpy
 }
 
-// accessors for innerTx.
 func (tx *AccessListTx) txType() byte            { return AccessListTxType }
 func (tx *AccessListTx) chainID() *uint256.Int   { return tx.ChainID }
 func (tx *AccessListTx) accessList() AccessList      { return tx.AccessList }

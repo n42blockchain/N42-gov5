@@ -206,6 +206,7 @@ type HeaderCanonicalMarkerUpdate struct {
 	AncestorHeight uint64 `json:"ancestorHeight"`
 	AncestorHash   string `json:"ancestorHash"`
 }
+
 type HeadersProcessedUpdate struct {
 	Highest   uint64  `json:"highest"`
 	Age       int     `json:"age"`
@@ -220,6 +221,7 @@ type Headers struct {
 	CanonicalMarker   HeaderCanonicalMarkerUpdate `json:"canonicalMarker"`
 	Processed         HeadersProcessedUpdate      `json:"processed"`
 }
+
 type BodiesInfo struct {
 	BlockDownload BodiesDownloadBlockUpdate `json:"blockDownload"`
 	BlockWrite    BodiesWriteBlockUpdate    `json:"blockWrite"`

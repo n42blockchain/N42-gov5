@@ -30,14 +30,13 @@ func (h *HistTimer) Tag(pairs ...string) *HistTimer {
 		pairs = append(pairs, "UNEQUAL_KEY_VALUE_TAGS")
 	}
 
-	var toJoin []string
-	for i := 0; i < len(pairs); i = i + 2 {
-		toJoin = append(toJoin, fmt.Sprintf(`%s="%s"`, pairs[i], pairs[i+1]))
-	}
-
 	tags := ""
-	if len(toJoin) > 0 {
-		tags = "{" + strings.Join(toJoin, ",") + "}"
+	if len(pairs) > 0 {
+		parts := make([]string, 0, len(pairs)/2)
+		for i := 0; i < len(pairs); i += 2 {
+			parts = append(parts, fmt.Sprintf(`%s="%s"`, pairs[i], pairs[i+1]))
+		}
+		tags = "{" + strings.Join(parts, ",") + "}"
 	}
 
 	return &HistTimer{

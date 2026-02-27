@@ -29,10 +29,6 @@ import (
 // BlobTxType is the transaction type for EIP-4844 blob transactions
 const BlobTxType = 0x03
 
-// =============================================================================
-// Blob Constants (EIP-4844)
-// =============================================================================
-
 const (
 	// BlobTxBlobGasPerBlob is the gas consumed per blob
 	BlobTxBlobGasPerBlob = 1 << 17 // 131072
@@ -62,11 +58,7 @@ const (
 	VersionedHashVersionKZG = 0x01
 )
 
-// =============================================================================
-// BlobTx Structure
-// =============================================================================
-
-// BlobTx represents an EIP-4844 blob transaction
+// BlobTx represents an EIP-4844 blob transaction.
 type BlobTx struct {
 	ChainID    *uint256.Int   // Chain ID
 	Nonce      uint64         // Sender nonce
@@ -106,10 +98,6 @@ type Commitment [48]byte
 
 // Proof represents a KZG proof (48 bytes)
 type Proof [48]byte
-
-// =============================================================================
-// BlobTx TxData Interface Implementation
-// =============================================================================
 
 func (tx *BlobTx) txType() byte { return BlobTxType }
 
@@ -212,45 +200,31 @@ func (tx *BlobTx) setSignatureValues(chainID, v, r, s *uint256.Int) {
 	tx.S = s
 }
 
-// =============================================================================
-// BlobTx Specific Methods
-// =============================================================================
-
-// GetBlobFeeCap returns the blob fee cap
 func (tx *BlobTx) GetBlobFeeCap() *uint256.Int {
 	return tx.BlobFeeCap
 }
 
-// GetBlobHashes returns the versioned blob hashes
 func (tx *BlobTx) GetBlobHashes() []types.Hash {
 	return tx.BlobHashes
 }
 
-// BlobGas returns the blob gas used by this transaction
 func (tx *BlobTx) BlobGas() uint64 {
 	return uint64(len(tx.BlobHashes)) * BlobTxBlobGasPerBlob
 }
 
-// GetSidecar returns the blob sidecar
 func (tx *BlobTx) GetSidecar() *BlobTxSidecar {
 	return tx.Sidecar
 }
 
-// SetSidecar sets the blob sidecar
 func (tx *BlobTx) SetSidecar(sidecar *BlobTxSidecar) {
 	tx.Sidecar = sidecar
 }
 
-// HasSidecar returns true if the transaction has a sidecar
 func (tx *BlobTx) HasSidecar() bool {
 	return tx.Sidecar != nil && len(tx.Sidecar.Blobs) > 0
 }
 
-// =============================================================================
-// BlobTxSidecar Methods
-// =============================================================================
-
-// Copy creates a deep copy of the sidecar
+// Copy creates a deep copy of the sidecar.
 func (s *BlobTxSidecar) Copy() *BlobTxSidecar {
 	if s == nil {
 		return nil
@@ -269,7 +243,6 @@ func (s *BlobTxSidecar) Copy() *BlobTxSidecar {
 	return cpy
 }
 
-// BlobCount returns the number of blobs in the sidecar
 func (s *BlobTxSidecar) BlobCount() int {
 	if s == nil {
 		return 0
@@ -277,16 +250,11 @@ func (s *BlobTxSidecar) BlobCount() int {
 	return len(s.Blobs)
 }
 
-// BlobGas returns the total blob gas for the sidecar
 func (s *BlobTxSidecar) BlobGas() uint64 {
 	return uint64(s.BlobCount()) * BlobTxBlobGasPerBlob
 }
 
-// =============================================================================
-// Versioned Hash Utilities
-// =============================================================================
-
-// KZGToVersionedHash converts a KZG commitment to a versioned hash
+// KZGToVersionedHash converts a KZG commitment to a versioned hash.
 func KZGToVersionedHash(commitment Commitment) types.Hash {
 	h := types.Hash{}
 	h[0] = VersionedHashVersionKZG
@@ -301,11 +269,7 @@ func IsValidVersionedHash(h types.Hash) bool {
 	return h[0] == VersionedHashVersionKZG
 }
 
-// =============================================================================
-// Blob Gas Price Calculation
-// =============================================================================
-
-// CalcBlobFee calculates the blob fee for a given excess blob gas
+// CalcBlobFee calculates the blob fee for a given excess blob gas.
 func CalcBlobFee(excessBlobGas uint64) *uint256.Int {
 	return fakeExponential(
 		uint256.NewInt(BlobTxMinBlobGasprice),
@@ -355,10 +319,6 @@ func fakeExponential(factor, numerator, denominator *uint256.Int) *uint256.Int {
 
 	return output.Div(output, denominator)
 }
-
-// =============================================================================
-// Errors
-// =============================================================================
 
 var (
 	// ErrBlobGasLimitExceeded is returned when blob gas exceeds the limit

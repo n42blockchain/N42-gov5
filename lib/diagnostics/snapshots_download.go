@@ -48,10 +48,6 @@ func (d *DiagnosticClient) runSnapshotListener(rootCtx context.Context) {
 func (d *DiagnosticClient) SetSnapshotDownloadInfo(info SnapshotDownloadStatistics) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.setSnapshotDownloadInfo(info)
-}
-
-func (d *DiagnosticClient) setSnapshotDownloadInfo(info SnapshotDownloadStatistics) {
 	// Preserve the existing SegmentsDownloading map; update all other fields.
 	info.SegmentsDownloading = d.syncStats.SnapshotDownload.SegmentsDownloading
 	d.syncStats.SnapshotDownload = info
@@ -85,13 +81,9 @@ func (d *DiagnosticClient) setDownloadSegments(info SegmentDownloadStatistics) {
 		d.syncStats.SnapshotDownload.SegmentsDownloading = map[string]SegmentDownloadStatistics{}
 	}
 
-	val := d.syncStats.SnapshotDownload.SegmentsDownloading[info.Name]
-	val.Name = info.Name
-	val.TotalBytes = info.TotalBytes
-	val.DownloadedBytes = info.DownloadedBytes
-	val.Webseeds = info.Webseeds
-	val.Peers = info.Peers
-	d.syncStats.SnapshotDownload.SegmentsDownloading[info.Name] = val
+	existing := d.syncStats.SnapshotDownload.SegmentsDownloading[info.Name]
+	info.DownloadedStats = existing.DownloadedStats
+	d.syncStats.SnapshotDownload.SegmentsDownloading[info.Name] = info
 }
 
 func (d *DiagnosticClient) runSnapshotFilesListListener(rootCtx context.Context) {
@@ -118,10 +110,6 @@ func (d *DiagnosticClient) runSnapshotFilesListListener(rootCtx context.Context)
 func (d *DiagnosticClient) SetSnapshotFilesList(info SnapshoFilesList) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.setSnapshotFilesList(info)
-}
-
-func (d *DiagnosticClient) setSnapshotFilesList(info SnapshoFilesList) {
 	d.snapshotFileList = info
 }
 
@@ -145,10 +133,7 @@ func (d *DiagnosticClient) runFileDownloadedListener(rootCtx context.Context) {
 func (d *DiagnosticClient) UpdateFileDownloadedStatistics(downloadedInfo *FileDownloadedStatisticsUpdate, downloadingInfo *SegmentDownloadStatistics) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.updateFileDownloadedStatistics(downloadedInfo, downloadingInfo)
-}
 
-func (d *DiagnosticClient) updateFileDownloadedStatistics(downloadedInfo *FileDownloadedStatisticsUpdate, downloadingInfo *SegmentDownloadStatistics) {
 	if d.syncStats.SnapshotDownload.SegmentsDownloading == nil {
 		d.syncStats.SnapshotDownload.SegmentsDownloading = map[string]SegmentDownloadStatistics{}
 	}
@@ -175,9 +160,8 @@ func (d *DiagnosticClient) UpdateSnapshotStageStats(stats SyncStageStats, subSta
 func (d *DiagnosticClient) updateSnapshotStageStats(stats SyncStageStats, subStageInfo string) {
 	idxs := d.getCurrentSyncIdxs()
 	if idxs.Stage == -1 || idxs.SubStage == -1 {
-		log.Debug("[Diagnostics] Can't find running stage or substage while updating Snapshots stage stats.", "stages:", d.syncStages, "stats:", stats, "subStageInfo:", subStageInfo)
+		log.Debug("[Diagnostics] Can't find running stage or substage", "subStageInfo", subStageInfo)
 		return
 	}
-
 	d.syncStages[idxs.Stage].SubStages[idxs.SubStage].Stats = stats
 }

@@ -99,7 +99,6 @@ func (tx *LegacyTx) copy() TxData {
 	return cpy
 }
 
-// accessors for innerTx.
 func (tx *LegacyTx) txType() byte { return LegacyTxType }
 func (tx *LegacyTx) chainID() *uint256.Int {
 	return DeriveChainId(tx.V)

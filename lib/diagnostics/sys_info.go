@@ -24,7 +24,6 @@ import (
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/mem"
 
-	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/diskutils"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/log/v3"
@@ -70,12 +69,8 @@ func (d *DiagnosticClient) HardwareInfoJson(w io.Writer) {
 	}
 }
 
-func findNodeDisk(dirPath string) string {
-	return diskutils.MountPointForDirPath(dirPath)
-}
-
 func GetSysInfo(dirPath string) HardwareInfo {
-	nodeDisk := findNodeDisk(dirPath)
+	nodeDisk := diskutils.MountPointForDirPath(dirPath)
 
 	ramInfo := GetRAMInfo()
 	diskInfo := GetDiskInfo(nodeDisk)
@@ -150,30 +145,15 @@ func GetCPUInfo() []CPUInfo {
 }
 
 func ReadRAMInfoFromTx(tx kv.Tx) ([]byte, error) {
-	bytes, err := ReadDataFromTable(tx, kv.DiagSystemInfo, SystemRamInfoKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return common.CopyBytes(bytes), nil
+	return readAndCopyFromTable(tx, kv.DiagSystemInfo, SystemRamInfoKey)
 }
 
 func ReadCPUInfoFromTx(tx kv.Tx) ([]byte, error) {
-	bytes, err := ReadDataFromTable(tx, kv.DiagSystemInfo, SystemCpuInfoKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return common.CopyBytes(bytes), nil
+	return readAndCopyFromTable(tx, kv.DiagSystemInfo, SystemCpuInfoKey)
 }
 
 func ReadDiskInfoFromTx(tx kv.Tx) ([]byte, error) {
-	bytes, err := ReadDataFromTable(tx, kv.DiagSystemInfo, SystemDiskInfoKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return common.CopyBytes(bytes), nil
+	return readAndCopyFromTable(tx, kv.DiagSystemInfo, SystemDiskInfoKey)
 }
 
 func RAMInfoUpdater(info RAMInfo) func(tx kv.RwTx) error {

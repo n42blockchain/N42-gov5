@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -49,19 +48,7 @@ func NewSet() *Set {
 }
 
 func (s *Set) Describe(ch chan<- *prometheus.Desc) {
-	lessFunc := func(i, j int) bool {
-		return s.a[i].name < s.a[j].name
-	}
-	s.mu.Lock()
-	if !sort.SliceIsSorted(s.a, lessFunc) {
-		sort.Slice(s.a, lessFunc)
-	}
-	if !sort.SliceIsSorted(s.av, lessFunc) {
-		sort.Slice(s.av, lessFunc)
-	}
-	sa := append([]*namedMetric(nil), s.a...)
-	sav := append([]*namedMetricVec(nil), s.av...)
-	s.mu.Unlock()
+	sa, sav := s.sortedSnapshot()
 	for _, nm := range sa {
 		ch <- nm.metric.Desc()
 	}
@@ -71,6 +58,17 @@ func (s *Set) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (s *Set) Collect(ch chan<- prometheus.Metric) {
+	sa, sav := s.sortedSnapshot()
+	for _, nm := range sa {
+		ch <- nm.metric
+	}
+	for _, nmv := range sav {
+		nmv.metric.Collect(ch)
+	}
+}
+
+// sortedSnapshot returns sorted copies of the metric and metric-vec slices.
+func (s *Set) sortedSnapshot() ([]*namedMetric, []*namedMetricVec) {
 	lessFunc := func(i, j int) bool {
 		return s.a[i].name < s.a[j].name
 	}
@@ -84,12 +82,7 @@ func (s *Set) Collect(ch chan<- prometheus.Metric) {
 	sa := append([]*namedMetric(nil), s.a...)
 	sav := append([]*namedMetricVec(nil), s.av...)
 	s.mu.Unlock()
-	for _, nm := range sa {
-		ch <- nm.metric
-	}
-	for _, nmv := range sav {
-		nmv.metric.Collect(ch)
-	}
+	return sa, sav
 }
 
 // NewHistogram creates and returns new histogram in s with the given name.
@@ -139,35 +132,16 @@ func newHistogram(name string, help ...string) (prometheus.Histogram, error) {
 //
 // Performance tip: prefer NewHistogram instead of GetOrCreateHistogram.
 func (s *Set) GetOrCreateHistogram(name string, help ...string) (prometheus.Histogram, error) {
-	s.mu.Lock()
-	nm := s.m[name]
-	s.mu.Unlock()
-	if nm == nil {
-		metric, err := newHistogram(name, help...)
-		if err != nil {
-			return nil, fmt.Errorf("invalid metric name %q: %w", name, err)
-		}
-
-		nmNew := &namedMetric{
-			name:   name,
-			metric: metric,
-		}
-
-		s.mu.Lock()
-		nm = s.m[name]
-		if nm == nil {
-			nm = nmNew
-			s.m[name] = nm
-			s.a = append(s.a, nm)
-		}
-		s.mu.Unlock()
+	nm, err := s.getOrCreateMetric(name, func() (prometheus.Metric, error) {
+		return newHistogram(name, help...)
+	})
+	if err != nil {
+		return nil, err
 	}
-
 	h, ok := nm.metric.(prometheus.Histogram)
 	if !ok {
 		return nil, fmt.Errorf("metric %q isn't a Histogram. It is %T", name, nm.metric)
 	}
-
 	return h, nil
 }
 
@@ -218,35 +192,16 @@ func newCounter(name string, help ...string) (prometheus.Counter, error) {
 //
 // Performance tip: prefer NewCounter instead of GetOrCreateCounter.
 func (s *Set) GetOrCreateCounter(name string, help ...string) (prometheus.Counter, error) {
-	s.mu.Lock()
-	nm := s.m[name]
-	s.mu.Unlock()
-	if nm == nil {
-		// Slow path - create and register missing counter.
-		metric, err := newCounter(name, help...)
-		if err != nil {
-			return nil, fmt.Errorf("invalid metric name %q: %w", name, err)
-		}
-
-		nmNew := &namedMetric{
-			name:   name,
-			metric: metric,
-		}
-		s.mu.Lock()
-		nm = s.m[name]
-		if nm == nil {
-			nm = nmNew
-			s.m[name] = nm
-			s.a = append(s.a, nm)
-		}
-		s.mu.Unlock()
+	nm, err := s.getOrCreateMetric(name, func() (prometheus.Metric, error) {
+		return newCounter(name, help...)
+	})
+	if err != nil {
+		return nil, err
 	}
-
 	c, ok := nm.metric.(prometheus.Counter)
 	if !ok {
 		return nil, fmt.Errorf("metric %q isn't a Counter. It is %T", name, nm.metric)
 	}
-
 	return c, nil
 }
 
@@ -299,35 +254,16 @@ func newGauge(name string, help ...string) (prometheus.Gauge, error) {
 //
 // Performance tip: prefer NewGauge instead of GetOrCreateGauge.
 func (s *Set) GetOrCreateGauge(name string, help ...string) (prometheus.Gauge, error) {
-	s.mu.Lock()
-	nm := s.m[name]
-	s.mu.Unlock()
-	if nm == nil {
-		// Slow path - create and register missing gauge.
-		metric, err := newGauge(name, help...)
-		if err != nil {
-			return nil, fmt.Errorf("invalid metric name %q: %w", name, err)
-		}
-
-		nmNew := &namedMetric{
-			name:   name,
-			metric: metric,
-		}
-		s.mu.Lock()
-		nm = s.m[name]
-		if nm == nil {
-			nm = nmNew
-			s.m[name] = nm
-			s.a = append(s.a, nm)
-		}
-		s.mu.Unlock()
+	nm, err := s.getOrCreateMetric(name, func() (prometheus.Metric, error) {
+		return newGauge(name, help...)
+	})
+	if err != nil {
+		return nil, err
 	}
-
 	g, ok := nm.metric.(prometheus.Gauge)
 	if !ok {
 		return nil, fmt.Errorf("metric %q isn't a Gauge. It is %T", name, nm.metric)
 	}
-
 	return g, nil
 }
 
@@ -373,34 +309,23 @@ func (s *Set) GetOrCreateGaugeVec(name string, labels []string, help ...string) 
 	if nm.metric == nil {
 		return nil, fmt.Errorf("metric %q is nil", name)
 	}
-
-	metricType := reflect.TypeOf(nm.metric)
-	if metricType != reflect.TypeOf(&prometheus.GaugeVec{}) {
-		return nil, fmt.Errorf("metric %q isn't a GaugeVec. It is %s", name, metricType)
-	}
-
 	return nm.metric, nil
 }
 
-// newGaugeVec creates a new Prometheus GaugeVec.
 func newGaugeVec(name string, labels []string, help ...string) (*prometheus.GaugeVec, error) {
 	name, constLabels, err := parseMetric(name)
 	if err != nil {
 		return nil, err
 	}
-
 	helpStr := "gauge metric"
 	if len(help) > 0 {
 		helpStr = strings.Join(help, ", ")
 	}
-
-	gv := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	return prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name:        name,
 		Help:        helpStr,
 		ConstLabels: constLabels,
-	}, labels)
-
-	return gv, nil
+	}, labels), nil
 }
 
 const defaultSummaryWindow = 5 * time.Minute
@@ -489,36 +414,43 @@ func (s *Set) NewSummaryExt(name string, window time.Duration, quantiles map[flo
 //
 // Performance tip: prefer NewSummaryExt instead of GetOrCreateSummaryExt.
 func (s *Set) GetOrCreateSummaryExt(name string, window time.Duration, quantiles map[float64]float64, help ...string) (prometheus.Summary, error) {
-	s.mu.Lock()
-	nm := s.m[name]
-	s.mu.Unlock()
-	if nm == nil {
-		// Slow path - create and register missing summary.
-		metric, err := newSummary(name, window, quantiles, help...)
-		if err != nil {
-			return nil, fmt.Errorf("invalid metric name %q: %w", name, err)
-		}
-
-		nmNew := &namedMetric{
-			name:   name,
-			metric: metric,
-		}
-		s.mu.Lock()
-		nm = s.m[name]
-		if nm == nil {
-			nm = nmNew
-			s.m[name] = nm
-			s.a = append(s.a, nm)
-		}
-		s.mu.Unlock()
+	nm, err := s.getOrCreateMetric(name, func() (prometheus.Metric, error) {
+		return newSummary(name, window, quantiles, help...)
+	})
+	if err != nil {
+		return nil, err
 	}
-
 	sm, ok := nm.metric.(prometheus.Summary)
 	if !ok {
 		return nil, fmt.Errorf("metric %q isn't a Summary. It is %T", name, nm.metric)
 	}
-
 	return sm, nil
+}
+
+// getOrCreateMetric implements double-check locking for all GetOrCreate* methods.
+func (s *Set) getOrCreateMetric(name string, create func() (prometheus.Metric, error)) (*namedMetric, error) {
+	s.mu.Lock()
+	nm := s.m[name]
+	s.mu.Unlock()
+	if nm != nil {
+		return nm, nil
+	}
+
+	metric, err := create()
+	if err != nil {
+		return nil, fmt.Errorf("invalid metric name %q: %w", name, err)
+	}
+
+	nmNew := &namedMetric{name: name, metric: metric}
+	s.mu.Lock()
+	nm = s.m[name]
+	if nm == nil {
+		nm = nmNew
+		s.m[name] = nm
+		s.a = append(s.a, nm)
+	}
+	s.mu.Unlock()
+	return nm, nil
 }
 
 func (s *Set) registerMetric(name string, m prometheus.Metric) {
@@ -543,21 +475,14 @@ func (s *Set) registerMetricVec(name string, mv *prometheus.GaugeVec, isAux bool
 }
 
 // mustRegisterLocked registers given metric with the given name.
-//
 // Panics if the given name was already registered before.
 func (s *Set) mustRegisterLocked(name string, m prometheus.Metric) {
-	_, ok := s.m[name]
-	if !ok {
-		nm := &namedMetric{
-			name:   name,
-			metric: m,
-		}
-		s.m[name] = nm
-		s.a = append(s.a, nm)
-	}
-	if ok {
+	if _, exists := s.m[name]; exists {
 		panic(fmt.Errorf("metric %q is already registered", name))
 	}
+	nm := &namedMetric{name: name, metric: m}
+	s.m[name] = nm
+	s.a = append(s.a, nm)
 }
 
 // UnregisterMetric removes metric with the given name from s.
@@ -576,23 +501,14 @@ func (s *Set) UnregisterMetric(name string) bool {
 }
 
 func (s *Set) unregisterMetricLocked(nm *namedMetric) bool {
-	name := nm.name
-	delete(s.m, name)
-
-	deleteFromList := func(metricName string) {
-		for i, nm := range s.a {
-			if nm.name == metricName {
-				s.a = append(s.a[:i], s.a[i+1:]...)
-				return
-			}
+	delete(s.m, nm.name)
+	for i, m := range s.a {
+		if m.name == nm.name {
+			s.a = append(s.a[:i], s.a[i+1:]...)
+			return true
 		}
-		panic(fmt.Errorf("cannot find metric %q in the list of registered metrics", name))
 	}
-
-	// remove metric from s.a
-	deleteFromList(name)
-
-	return true
+	panic(fmt.Errorf("cannot find metric %q in the list of registered metrics", nm.name))
 }
 
 // UnregisterAllMetrics de-registers all metrics registered in s.

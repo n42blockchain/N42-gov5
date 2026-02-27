@@ -52,8 +52,6 @@ func cgroupsMemoryLimit() (uint64, error) {
 		return cgroupsV2MemoryLimit()
 	case cgroups.Legacy:
 		return cgroupsV1MemoryLimit()
-	case cgroups.Unavailable:
-		fallthrough
 	default:
 		return 0, errors.New("cgroups not supported in this environment")
 	}
@@ -85,13 +83,14 @@ func cgroupsV1MemoryLimit() (uint64, error) {
 		return 0, fmt.Errorf("failed to load cgroup1 for process: %w", err)
 	}
 
-	if stat, err := cgroup.Stat(); err != nil {
+	stat, err := cgroup.Stat()
+	if err != nil {
 		return 0, fmt.Errorf("failed to load memory cgroup1 stats: %w", err)
-	} else if stat.Memory == nil || stat.Memory.Usage == nil {
-		return 0, fmt.Errorf("cgroup1 memory stats are nil; aborting")
-	} else {
-		return stat.Memory.Usage.Limit, nil
 	}
+	if stat.Memory == nil || stat.Memory.Usage == nil {
+		return 0, fmt.Errorf("cgroup1 memory stats are nil; aborting")
+	}
+	return stat.Memory.Usage.Limit, nil
 }
 
 func cgroupsV2MemoryLimit() (uint64, error) {
@@ -108,11 +107,12 @@ func cgroupsV2MemoryLimit() (uint64, error) {
 		return 0, fmt.Errorf("failed to load cgroup2 for process: %w", err)
 	}
 
-	if stat, err := cgroup.Stat(); err != nil {
+	stat, err := cgroup.Stat()
+	if err != nil {
 		return 0, fmt.Errorf("failed to load cgroup2 memory stats: %w", err)
-	} else if stat.Memory == nil {
-		return 0, fmt.Errorf("cgroup2 memory stats are nil; aborting")
-	} else {
-		return stat.Memory.UsageLimit, nil
 	}
+	if stat.Memory == nil {
+		return 0, fmt.Errorf("cgroup2 memory stats are nil; aborting")
+	}
+	return stat.Memory.UsageLimit, nil
 }

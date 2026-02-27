@@ -22,12 +22,21 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
 func ReadDataFromTable(tx kv.Tx, table string, key []byte) ([]byte, error) {
 	return tx.GetOne(table, key)
+}
+
+func readAndCopyFromTable(tx kv.Tx, table string, key []byte) ([]byte, error) {
+	data, err := ReadDataFromTable(tx, table, key)
+	if err != nil {
+		return nil, err
+	}
+	return common.CopyBytes(data), nil
 }
 
 func PutDataToTable(table string, key []byte, info any) func(tx kv.RwTx) error {

@@ -56,10 +56,6 @@ func (b *BlockEexcStatsData) Data() BlockExecutionStatistics {
 	return b.data
 }
 
-func (d *DiagnosticClient) setupBlockExecutionDiagnostics(rootCtx context.Context) {
-	d.runBlockExecutionListener(rootCtx)
-}
-
 func (d *DiagnosticClient) runBlockExecutionListener(rootCtx context.Context) {
 	go func() {
 		ctx, ch, closeChannel := Context[BlockExecutionStatistics](rootCtx, 1)

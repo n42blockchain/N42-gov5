@@ -237,12 +237,7 @@ func (s PostQuantumSigner) Hash(tx *Transaction) (types.Hash, error) {
 	return pqTx.SigningHash(), nil
 }
 
-// =============================================================================
-// Post-Quantum Transaction Signing Helpers
-// =============================================================================
-
-// SignPQTransaction signs a post-quantum transaction with the given private key
-// This is a high-level helper function that handles the complete signing process
+// SignPQTransaction signs a post-quantum transaction with the given private key.
 func SignPQTransaction(tx *PostQuantumTx, privateKey interface{}) error {
 	signingHash := tx.SigningHash()
 
@@ -290,10 +285,6 @@ func SignNewPQTx(sk *falcon.PrivateKey, txdata *PostQuantumTx) (*Transaction, er
 	return NewTx(txdata), nil
 }
 
-// =============================================================================
-// Public Key Registry Interface
-// =============================================================================
-
 // PQPublicKeyRegistry is an interface for looking up post-quantum public keys
 // by their hash. This is used when transactions use hash references instead
 // of full public keys.
@@ -340,13 +331,7 @@ func ResolvePQPublicKey(tx *PostQuantumTx, registry PQPublicKeyRegistry) ([]byte
 	return pubKey, nil
 }
 
-// =============================================================================
-// Signer Factory with PQ Support
-// =============================================================================
-
-// MakeSignerWithPQ returns a Signer based on chain config and block number,
-// with support for post-quantum transactions.
-// If usePQ is true and the block is after the PQ fork height, returns a PQ signer.
+// MakeSignerWithPQ returns a PQ-capable Signer if usePQ is true, otherwise a London signer.
 func MakeSignerWithPQ(chainId *big.Int, usePQ bool) Signer {
 	if usePQ {
 		return NewPostQuantumSigner(chainId)

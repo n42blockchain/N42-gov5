@@ -48,10 +48,7 @@ func (d *DiagnosticClient) runSegmentIndexingListener(rootCtx context.Context) {
 func (d *DiagnosticClient) AddOrUpdateSegmentIndexingState(upd SnapshotIndexingStatistics) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.addOrUpdateSegmentIndexingState(upd)
-}
 
-func (d *DiagnosticClient) addOrUpdateSegmentIndexingState(upd SnapshotIndexingStatistics) {
 	if d.syncStats.SnapshotIndexing.Segments == nil {
 		d.syncStats.SnapshotIndexing.Segments = []SnapshotSegmentIndexingStatistics{}
 	}
@@ -61,9 +58,7 @@ func (d *DiagnosticClient) addOrUpdateSegmentIndexingState(upd SnapshotIndexingS
 		found := false
 		for j := range existing {
 			if existing[j].SegmentName == updSeg.SegmentName {
-				existing[j].Percent = updSeg.Percent
-				existing[j].Alloc = updSeg.Alloc
-				existing[j].Sys = updSeg.Sys
+				existing[j] = updSeg
 				found = true
 				break
 			}
@@ -84,10 +79,6 @@ func (d *DiagnosticClient) UpdateIndexingStatus() (indexingFinished bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	return d.updateIndexingStatus()
-}
-
-func (d *DiagnosticClient) updateIndexingStatus() (indexingFinished bool) {
 	totalProgressPercent := 0
 	for _, seg := range d.syncStats.SnapshotIndexing.Segments {
 		totalProgressPercent += seg.Percent

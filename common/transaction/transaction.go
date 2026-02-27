@@ -19,15 +19,15 @@ package transaction
 import (
 	"bytes"
 	"fmt"
-	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/utils"
-	"google.golang.org/protobuf/proto"
 	"math/big"
 	"sync/atomic"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/utils"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -40,17 +40,17 @@ const (
 	LegacyTxType = iota
 	AccessListTxType
 	DynamicFeeTxType
-	_              // Reserved for SetCodeTxType (EIP-7702) = 0x04
-	_              // PostQuantumTxType is defined in pq_transaction.go = 0x05
+	_ // Reserved for SetCodeTxType (EIP-7702) = 0x04
+	_ // PostQuantumTxType is defined in pq_transaction.go = 0x05
 )
 
 type TxData interface {
-	txType() byte // returns the type ID
-	copy() TxData // creates a deep copy and initializes all fields
+	txType() byte
+	copy() TxData
 
 	chainID() *uint256.Int
 	accessList() AccessList
-	authList() AuthorizationList // EIP-7702: Authorization list
+	authList() AuthorizationList
 	data() []byte
 	gas() uint64
 	gasPrice() *uint256.Int
@@ -65,27 +65,22 @@ type TxData interface {
 
 	rawSignatureValues() (v, r, s *uint256.Int)
 	setSignatureValues(chainID, v, r, s *uint256.Int)
-
 }
 
 // Transactions implements DerivableList for transactions.
 type Transactions []*Transaction
 
-// Len returns the length of s.
 func (s Transactions) Len() int { return len(s) }
 
-// EncodeIndex encodes the i'th transaction to w. Note that this does not check for errors
-// because we assume that *Transaction will only ever contain valid txs that were either
-// constructed by decoding or via public API in this package.
+// EncodeIndex encodes the i'th transaction to w.
 func (s Transactions) EncodeIndex(i int, w *bytes.Buffer) {
-	tx := s[i]
-	proto, _ := tx.Marshal()
-	w.Write(proto)
+	b, _ := s[i].Marshal()
+	w.Write(b)
 }
 
 type Transaction struct {
-	inner TxData    // Consensus contents of a transaction
-	time  time.Time // Time first seen locally (spam avoidance)
+	inner TxData
+	time  time.Time
 
 	// caches
 	hash atomic.Value
@@ -93,139 +88,110 @@ type Transaction struct {
 	from atomic.Value
 }
 
-// NewTx creates a new transaction.
 func NewTx(inner TxData) *Transaction {
 	tx := new(Transaction)
 	tx.setDecoded(inner.copy(), 0)
 	return tx
 }
 
-func txDataFromProtoMessage(message proto.Message) (TxData, error) {
-	var (
-		pbTx  *types_pb.Transaction
-		ok    bool
-		inner TxData
-	)
+// convertProtoToAddress converts an H160 proto field to *types.Address,
+// returning nil if the result is the zero address.
+func convertProtoToAddress(h160 *types_pb.H160) *types.Address {
+	if h160 == nil {
+		return nil
+	}
+	addr := utils.ConvertH160ToPAddress(h160)
+	if *addr == (types.Address{}) {
+		return nil
+	}
+	return addr
+}
 
-	if pbTx, ok = message.(*types_pb.Transaction); !ok {
+// convertProtoVRS extracts optional V, R, S signature values from proto.
+func convertProtoVRS(pbTx *types_pb.Transaction) (v, r, s *uint256.Int) {
+	if pbTx.V != nil {
+		v = utils.ConvertH256ToUint256Int(pbTx.V)
+	}
+	if pbTx.R != nil {
+		r = utils.ConvertH256ToUint256Int(pbTx.R)
+	}
+	if pbTx.S != nil {
+		s = utils.ConvertH256ToUint256Int(pbTx.S)
+	}
+	return v, r, s
+}
+
+func txDataFromProtoMessage(message proto.Message) (TxData, error) {
+	pbTx, ok := message.(*types_pb.Transaction)
+	if !ok {
 		return nil, fmt.Errorf("invalid proto message type for transaction")
 	}
 
+	v, r, s := convertProtoVRS(pbTx)
+	var inner TxData
+
 	switch pbTx.Type {
 	case LegacyTxType:
-		var itx LegacyTx
-		if pbTx.To != nil {
-			itx.To = utils.ConvertH160ToPAddress(pbTx.To)
-			if *itx.To == (types.Address{}) {
-				itx.To = nil
-			}
-		}
-		itx.From = utils.ConvertH160ToPAddress(pbTx.From)
-		itx.Sign = pbTx.Sign
-		itx.Nonce = pbTx.Nonce
-		itx.Gas = pbTx.Gas
-		itx.GasPrice = utils.ConvertH256ToUint256Int(pbTx.GasPrice)
-		itx.Value = utils.ConvertH256ToUint256Int(pbTx.Value)
-		if pbTx.V != nil {
-			itx.V = utils.ConvertH256ToUint256Int(pbTx.V)
-		}
-		if pbTx.R != nil {
-			itx.R = utils.ConvertH256ToUint256Int(pbTx.R)
-		}
-		if pbTx.S != nil {
-			itx.S = utils.ConvertH256ToUint256Int(pbTx.S)
-		}
-		itx.Data = pbTx.Data
-		inner = &itx
-	case AccessListTxType:
-		var altt AccessListTx
-		altt.ChainID = uint256.NewInt(pbTx.ChainID)
-		altt.Nonce = pbTx.Nonce
-		altt.Gas = pbTx.Gas
-		altt.GasPrice = utils.ConvertH256ToUint256Int(pbTx.GasPrice)
-		altt.Value = utils.ConvertH256ToUint256Int(pbTx.Value)
-		if pbTx.V != nil {
-			altt.V = utils.ConvertH256ToUint256Int(pbTx.V)
-		}
-		if pbTx.R != nil {
-			altt.R = utils.ConvertH256ToUint256Int(pbTx.R)
-		}
-		if pbTx.S != nil {
-			altt.S = utils.ConvertH256ToUint256Int(pbTx.S)
-		}
-		altt.Data = pbTx.Data
-		if pbTx.To != nil {
-			altt.To = utils.ConvertH160ToPAddress(pbTx.To)
-			if *altt.To == (types.Address{}) {
-				altt.To = nil
-			}
-		}
-		altt.From = utils.ConvertH160ToPAddress(pbTx.From)
-		altt.Sign = pbTx.Sign
-		inner = &altt
-	case DynamicFeeTxType:
-		var dftt DynamicFeeTx
-		dftt.ChainID = uint256.NewInt(pbTx.ChainID)
-		dftt.Nonce = pbTx.Nonce
-		dftt.Gas = pbTx.Gas
-		dftt.GasFeeCap = utils.ConvertH256ToUint256Int(pbTx.FeePerGas)
-		dftt.GasTipCap = utils.ConvertH256ToUint256Int(pbTx.PriorityFeePerGas)
-		dftt.Value = utils.ConvertH256ToUint256Int(pbTx.Value)
-		if pbTx.V != nil {
-			dftt.V = utils.ConvertH256ToUint256Int(pbTx.V)
-		}
-		if pbTx.R != nil {
-			dftt.R = utils.ConvertH256ToUint256Int(pbTx.R)
-		}
-		if pbTx.S != nil {
-			dftt.S = utils.ConvertH256ToUint256Int(pbTx.S)
-		}
-		dftt.Data = pbTx.Data
-		if pbTx.To != nil {
-			dftt.To = utils.ConvertH160ToPAddress(pbTx.To)
-			if *dftt.To == (types.Address{}) {
-				dftt.To = nil
-			}
+		inner = &LegacyTx{
+			Nonce:    pbTx.Nonce,
+			Gas:      pbTx.Gas,
+			GasPrice: utils.ConvertH256ToUint256Int(pbTx.GasPrice),
+			Value:    utils.ConvertH256ToUint256Int(pbTx.Value),
+			Data:     pbTx.Data,
+			To:       convertProtoToAddress(pbTx.To),
+			From:     utils.ConvertH160ToPAddress(pbTx.From),
+			Sign:     pbTx.Sign,
+			V:        v, R: r, S: s,
 		}
 
-		dftt.From = utils.ConvertH160ToPAddress(pbTx.From)
-		dftt.Sign = pbTx.Sign
-		inner = &dftt
+	case AccessListTxType:
+		inner = &AccessListTx{
+			ChainID:  uint256.NewInt(pbTx.ChainID),
+			Nonce:    pbTx.Nonce,
+			Gas:      pbTx.Gas,
+			GasPrice: utils.ConvertH256ToUint256Int(pbTx.GasPrice),
+			Value:    utils.ConvertH256ToUint256Int(pbTx.Value),
+			Data:     pbTx.Data,
+			To:       convertProtoToAddress(pbTx.To),
+			From:     utils.ConvertH160ToPAddress(pbTx.From),
+			Sign:     pbTx.Sign,
+			V:        v, R: r, S: s,
+		}
+
+	case DynamicFeeTxType:
+		inner = &DynamicFeeTx{
+			ChainID:   uint256.NewInt(pbTx.ChainID),
+			Nonce:     pbTx.Nonce,
+			Gas:       pbTx.Gas,
+			GasFeeCap: utils.ConvertH256ToUint256Int(pbTx.FeePerGas),
+			GasTipCap: utils.ConvertH256ToUint256Int(pbTx.PriorityFeePerGas),
+			Value:     utils.ConvertH256ToUint256Int(pbTx.Value),
+			Data:      pbTx.Data,
+			To:        convertProtoToAddress(pbTx.To),
+			From:      utils.ConvertH160ToPAddress(pbTx.From),
+			Sign:      pbTx.Sign,
+			V:         v, R: r, S: s,
+		}
+
 	case PostQuantumTxType:
-		var pqtt PostQuantumTx
-		pqtt.ChainID = uint256.NewInt(pbTx.ChainID)
-		pqtt.Nonce = pbTx.Nonce
-		pqtt.Gas = pbTx.Gas
-		pqtt.GasFeeCap = utils.ConvertH256ToUint256Int(pbTx.FeePerGas)
-		pqtt.GasTipCap = utils.ConvertH256ToUint256Int(pbTx.PriorityFeePerGas)
-		pqtt.Value = utils.ConvertH256ToUint256Int(pbTx.Value)
-		if pbTx.V != nil {
-			pqtt.V = utils.ConvertH256ToUint256Int(pbTx.V)
+		inner = &PostQuantumTx{
+			ChainID:     uint256.NewInt(pbTx.ChainID),
+			Nonce:       pbTx.Nonce,
+			Gas:         pbTx.Gas,
+			GasFeeCap:   utils.ConvertH256ToUint256Int(pbTx.FeePerGas),
+			GasTipCap:   utils.ConvertH256ToUint256Int(pbTx.PriorityFeePerGas),
+			Value:       utils.ConvertH256ToUint256Int(pbTx.Value),
+			Data:        pbTx.Data,
+			To:          convertProtoToAddress(pbTx.To),
+			SigAlgo:     uint8(pbTx.PqSigAlgo),
+			PubKeyMode:  uint8(pbTx.PqPubKeyMode),
+			PubKeyData:  pbTx.PqPubKeyData,
+			PQSignature: pbTx.PqSignature,
+			V:           v, R: r, S: s,
 		}
-		if pbTx.R != nil {
-			pqtt.R = utils.ConvertH256ToUint256Int(pbTx.R)
-		}
-		if pbTx.S != nil {
-			pqtt.S = utils.ConvertH256ToUint256Int(pbTx.S)
-		}
-		pqtt.Data = pbTx.Data
-		if pbTx.To != nil {
-			pqtt.To = utils.ConvertH160ToPAddress(pbTx.To)
-			if *pqtt.To == (types.Address{}) {
-				pqtt.To = nil
-			}
-		}
-		// Post-quantum specific fields
-		pqtt.SigAlgo = uint8(pbTx.PqSigAlgo)
-		pqtt.PubKeyMode = uint8(pbTx.PqPubKeyMode)
-		pqtt.PubKeyData = pbTx.PqPubKeyData
-		pqtt.PQSignature = pbTx.PqSignature
-		inner = &pqtt
 	}
 
-	// Note: Hash verification is disabled for P2P compatibility.
-	// Different node versions may compute hashes differently.
-	// The hash from proto is trusted as it comes from the network.
+	// Hash verification is disabled for P2P compatibility.
 	_ = utils.ConvertH256ToHash(pbTx.Hash)
 	_ = inner.hash()
 
@@ -241,12 +207,20 @@ func FromProtoMessage(message proto.Message) (*Transaction, error) {
 }
 
 // toProtoFields populates a types_pb.Transaction with all fields except Hash.
-// This is the shared logic used by both ToProtoMessage and Marshal.
 func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 	var pbTx types_pb.Transaction
 	pbTx.Type = uint64(tx.inner.txType())
 
 	switch t := tx.inner.(type) {
+	case *LegacyTx:
+		pbTx.Nonce = tx.Nonce()
+		pbTx.Gas = tx.Gas()
+		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
+		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.Data = tx.Data()
+		pbTx.From = utils.ConvertAddressToH160(*tx.From())
+		pbTx.Sign = t.Sign
+
 	case *AccessListTx:
 		pbTx.ChainID = t.ChainID.Uint64()
 		pbTx.Nonce = tx.Nonce()
@@ -256,14 +230,7 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 		pbTx.Data = tx.Data()
 		pbTx.From = utils.ConvertAddressToH160(*tx.From())
 		pbTx.Sign = t.Sign
-	case *LegacyTx:
-		pbTx.Nonce = tx.Nonce()
-		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
-		pbTx.Data = tx.Data()
-		pbTx.From = utils.ConvertAddressToH160(*tx.From())
-		pbTx.Sign = t.Sign
+
 	case *DynamicFeeTx:
 		pbTx.ChainID = t.ChainID.Uint64()
 		pbTx.Nonce = tx.Nonce()
@@ -275,6 +242,7 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 		pbTx.Sign = t.Sign
 		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
 		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+
 	case *PostQuantumTx:
 		pbTx.ChainID = t.ChainID.Uint64()
 		pbTx.Nonce = tx.Nonce()
@@ -289,6 +257,7 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 		pbTx.PqPubKeyData = t.PubKeyData
 		pbTx.PqSignature = t.PQSignature
 	}
+
 	if tx.To() != nil {
 		pbTx.To = utils.ConvertAddressToH160(*tx.To())
 	}
@@ -322,8 +291,7 @@ func (tx *Transaction) RawSignatureValues() (v, r, s *uint256.Int) {
 	return tx.inner.rawSignatureValues()
 }
 
-// WithSignatureValues sets the signature values on the transaction.
-// It uses the transaction's existing chainID if available.
+// WithSignatureValues sets the signature values using the transaction's existing chainID.
 func (tx *Transaction) WithSignatureValues(v, r, s *uint256.Int) (*Transaction, error) {
 	tx.inner.setSignatureValues(tx.inner.chainID(), v, r, s)
 	return tx, nil
@@ -339,7 +307,6 @@ func (tx *Transaction) MarshalTo(data []byte) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
-
 	copy(data, b)
 	return len(b), nil
 }
@@ -349,68 +316,29 @@ func (tx *Transaction) Unmarshal(data []byte) error {
 	if err := proto.Unmarshal(data, &pbTx); err != nil {
 		return err
 	}
-
 	inner, err := txDataFromProtoMessage(&pbTx)
 	if err != nil {
 		return err
 	}
-
 	tx.setDecoded(inner, 0)
 	return nil
 }
 
-func (tx *Transaction) Type() uint8 {
-	return tx.inner.txType()
-}
+func (tx *Transaction) Type() uint8         { return tx.inner.txType() }
+func (tx *Transaction) ChainId() *uint256.Int { return tx.inner.chainID() }
+func (tx *Transaction) Data() []byte        { return tx.inner.data() }
+func (tx *Transaction) Gas() uint64         { return tx.inner.gas() }
+func (tx *Transaction) GasPrice() *uint256.Int { return tx.inner.gasPrice() }
+func (tx *Transaction) GasTipCap() *uint256.Int { return tx.inner.gasTipCap() }
+func (tx *Transaction) GasFeeCap() *uint256.Int { return tx.inner.gasFeeCap() }
+func (tx *Transaction) Value() *uint256.Int { return tx.inner.value() }
+func (tx *Transaction) Nonce() uint64       { return tx.inner.nonce() }
+func (tx *Transaction) To() *types.Address  { return copyAddressPtr(tx.inner.to()) }
+func (tx *Transaction) From() *types.Address { return tx.inner.from() }
+func (tx *Transaction) Sign() []byte        { return tx.inner.sign() }
 
-func (tx *Transaction) ChainId() *uint256.Int {
-	return tx.inner.chainID()
-}
-
-func (tx *Transaction) Data() []byte {
-	return tx.inner.data()
-}
-
-func (tx *Transaction) AccessList() AccessList {
-	return tx.inner.accessList()
-}
-
-// AuthList returns the authorization list for EIP-7702 SetCode transactions
-func (tx *Transaction) AuthList() AuthorizationList {
-	return tx.inner.authList()
-}
-
-func (tx *Transaction) Gas() uint64 {
-	return tx.inner.gas()
-}
-
-func (tx *Transaction) GasPrice() *uint256.Int {
-	return tx.inner.gasPrice()
-}
-
-func (tx *Transaction) GasTipCap() *uint256.Int {
-	return tx.inner.gasTipCap()
-}
-
-func (tx *Transaction) GasFeeCap() *uint256.Int {
-	return tx.inner.gasFeeCap()
-}
-
-func (tx *Transaction) Value() *uint256.Int {
-	return tx.inner.value()
-}
-
-func (tx *Transaction) Nonce() uint64 {
-	return tx.inner.nonce()
-}
-
-func (tx *Transaction) To() *types.Address {
-	return copyAddressPtr(tx.inner.to())
-}
-
-func (tx *Transaction) From() *types.Address {
-	return tx.inner.from()
-}
+func (tx *Transaction) AccessList() AccessList       { return tx.inner.accessList() }
+func (tx *Transaction) AuthList() AuthorizationList  { return tx.inner.authList() }
 
 func (tx *Transaction) SetFrom(addr types.Address) {
 	switch t := tx.inner.(type) {
@@ -421,7 +349,7 @@ func (tx *Transaction) SetFrom(addr types.Address) {
 	case *DynamicFeeTx:
 		t.From = &addr
 	case *PostQuantumTx:
-		// PostQuantumTx doesn't have a From field - address is derived from PQ public key
+		// PostQuantumTx address is derived from PQ public key
 	}
 }
 
@@ -438,29 +366,21 @@ func (tx *Transaction) SetNonce(nonce uint64) {
 	}
 }
 
-func (tx *Transaction) Sign() []byte {
-	return tx.inner.sign()
-}
-
 func (tx *Transaction) Cost() *uint256.Int {
-	price := tx.inner.gasPrice()
-	gas := uint256.NewInt(tx.inner.gas())
-	total := new(uint256.Int).Mul(price, gas)
-	total = total.Add(total, tx.Value())
-	return total
+	total := new(uint256.Int).Mul(tx.inner.gasPrice(), uint256.NewInt(tx.inner.gas()))
+	return total.Add(total, tx.Value())
 }
 
 func (tx *Transaction) Hash() types.Hash {
-	if hash := tx.hash.Load(); hash != nil {
-		return hash.(types.Hash)
+	if h := tx.hash.Load(); h != nil {
+		return h.(types.Hash)
 	}
 	h := tx.inner.hash()
 	tx.hash.Store(h)
 	return h
 }
 
-// BlobHashes returns the blob hashes for EIP-4844 blob transactions
-// Returns nil for non-blob transactions
+// BlobHashes returns the blob hashes for EIP-4844 blob transactions.
 func (tx *Transaction) BlobHashes() []types.Hash {
 	if blobTx, ok := tx.inner.(*BlobTx); ok {
 		return blobTx.BlobHashes
@@ -468,8 +388,7 @@ func (tx *Transaction) BlobHashes() []types.Hash {
 	return nil
 }
 
-// BlobFeeCap returns the blob fee cap for EIP-4844 blob transactions
-// Returns nil for non-blob transactions
+// BlobFeeCap returns the blob fee cap for EIP-4844 blob transactions.
 func (tx *Transaction) BlobFeeCap() *uint256.Int {
 	if blobTx, ok := tx.inner.(*BlobTx); ok {
 		return blobTx.BlobFeeCap
@@ -477,8 +396,7 @@ func (tx *Transaction) BlobFeeCap() *uint256.Int {
 	return nil
 }
 
-// BlobGas returns the blob gas used by this transaction
-// Returns 0 for non-blob transactions
+// BlobGas returns the blob gas used by this transaction.
 func (tx *Transaction) BlobGas() uint64 {
 	if blobTx, ok := tx.inner.(*BlobTx); ok {
 		return blobTx.BlobGas()
@@ -486,52 +404,24 @@ func (tx *Transaction) BlobGas() uint64 {
 	return 0
 }
 
-// GasFeeCapCmp compares the fee cap of two transactions.
 func (tx *Transaction) GasFeeCapCmp(other *Transaction) int {
 	return tx.inner.gasFeeCap().Cmp(other.inner.gasFeeCap())
 }
 
-// EffectiveGasTipIntCmp compares the effective gasTipCap of a transaction to the given gasTipCap.
-func (tx *Transaction) EffectiveGasTipIntCmp(other *uint256.Int, baseFee *uint256.Int) int {
-	if baseFee == nil {
-		return tx.GasTipCapIntCmp(other)
-	}
-	return tx.EffectiveGasTipValue(baseFee).Cmp(other)
-}
-
-// GasTipCapCmp compares the gasTipCap of two transactions.
 func (tx *Transaction) GasTipCapCmp(other *Transaction) int {
 	return tx.inner.gasTipCap().Cmp(other.inner.gasTipCap())
 }
 
-// GasFeeCapIntCmp compares the fee cap of the transaction against the given fee cap.
 func (tx *Transaction) GasFeeCapIntCmp(other *uint256.Int) int {
 	return tx.inner.gasFeeCap().Cmp(other)
 }
 
-// GasTipCapIntCmp compares the gasTipCap of the transaction against the given gasTipCap.
 func (tx *Transaction) GasTipCapIntCmp(other *uint256.Int) int {
 	return tx.inner.gasTipCap().Cmp(other)
 }
 
-// EffectiveGasTipValue is identical to EffectiveGasTip, but does not return an
-// error in case the effective gasTipCap is negative
-func (tx *Transaction) EffectiveGasTipValue(baseFee *uint256.Int) *uint256.Int {
-	effectiveTip, _ := tx.EffectiveGasTip(baseFee)
-	return effectiveTip
-}
-
-// EffectiveGasTipCmp compares the effective gasTipCap of two transactions assuming the given base fee.
-func (tx *Transaction) EffectiveGasTipCmp(other *Transaction, baseFee *uint256.Int) int {
-	if baseFee == nil {
-		return tx.GasTipCapCmp(other)
-	}
-	return tx.EffectiveGasTipValue(baseFee).Cmp(other.EffectiveGasTipValue(baseFee))
-}
-
 // EffectiveGasTip returns the effective miner gasTipCap for the given base fee.
-// Note: if the effective gasTipCap is negative, this method returns both error
-// the actual negative value, _and_ ErrGasFeeCapTooLow
+// Returns both the value and ErrGasFeeCapTooLow if the fee cap is below base fee.
 func (tx *Transaction) EffectiveGasTip(baseFee *uint256.Int) (*uint256.Int, error) {
 	if baseFee == nil {
 		return tx.GasTipCap(), nil
@@ -542,6 +432,25 @@ func (tx *Transaction) EffectiveGasTip(baseFee *uint256.Int) (*uint256.Int, erro
 		err = ErrGasFeeCapTooLow
 	}
 	return uint256Min(tx.GasTipCap(), new(uint256.Int).Sub(gasFeeCap, baseFee)), err
+}
+
+func (tx *Transaction) EffectiveGasTipValue(baseFee *uint256.Int) *uint256.Int {
+	effectiveTip, _ := tx.EffectiveGasTip(baseFee)
+	return effectiveTip
+}
+
+func (tx *Transaction) EffectiveGasTipCmp(other *Transaction, baseFee *uint256.Int) int {
+	if baseFee == nil {
+		return tx.GasTipCapCmp(other)
+	}
+	return tx.EffectiveGasTipValue(baseFee).Cmp(other.EffectiveGasTipValue(baseFee))
+}
+
+func (tx *Transaction) EffectiveGasTipIntCmp(other *uint256.Int, baseFee *uint256.Int) int {
+	if baseFee == nil {
+		return tx.GasTipCapIntCmp(other)
+	}
+	return tx.EffectiveGasTipValue(baseFee).Cmp(other)
 }
 
 func uint256Min(x, y *uint256.Int) *uint256.Int {
@@ -556,31 +465,28 @@ func isProtectedV(V *big.Int) bool {
 		v := V.Uint64()
 		return v != 27 && v != 28 && v != 1 && v != 0
 	}
-	// anything not 27 or 28 is considered protected
 	return true
 }
 
-// Protected says whether the transaction is replay-protected.
+// Protected reports whether the transaction is replay-protected.
 func (tx *Transaction) Protected() bool {
 	switch inner := tx.inner.(type) {
 	case *LegacyTx:
 		return inner.V.ToBig() != nil && isProtectedV(inner.V.ToBig())
-	case *PostQuantumTx:
-		// Post-quantum transactions are always protected via ChainID
-		return true
 	default:
 		return true
 	}
 }
 
 // WithSignature returns a new transaction with the given signature.
-// This signature needs to be in the [R || S || V] format where V is 0 or 1.
+// The signature must be in [R || S || V] format where V is 0 or 1.
 func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, error) {
 	r, s, v, err := signer.SignatureValues(tx, sig)
 	if err != nil {
 		return nil, err
 	}
 	cpy := tx.inner.copy()
+
 	var chainID *uint256.Int
 	if signer.ChainID() != nil {
 		chainID, _ = uint256.FromBig(signer.ChainID())
@@ -599,137 +505,4 @@ func copyAddressPtr(a *types.Address) *types.Address {
 	}
 	cpy := *a
 	return &cpy
-}
-
-// Message is a fully derived transaction and implements core.Message
-type Message struct {
-	to         *types.Address
-	from       types.Address
-	nonce      uint64
-	amount     uint256.Int
-	gasLimit   uint64
-	gasPrice   uint256.Int
-	feeCap     uint256.Int
-	tip        uint256.Int
-	data       []byte
-	accessList AccessList
-	authList   AuthorizationList // EIP-7702: Authorization list for SetCode transactions
-	checkNonce bool
-	isFree     bool
-}
-
-func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uint256.Int, gasLimit uint64, gasPrice *uint256.Int, feeCap, tip *uint256.Int, data []byte, accessList AccessList, checkNonce bool, isFree bool) Message {
-	m := Message{
-		from:       from,
-		to:         to,
-		nonce:      nonce,
-		amount:     *amount,
-		gasLimit:   gasLimit,
-		data:       data,
-		accessList: accessList,
-		checkNonce: checkNonce,
-		isFree:     isFree,
-	}
-	if gasPrice != nil {
-		m.gasPrice.Set(gasPrice)
-	}
-	if tip != nil {
-		m.tip.Set(tip)
-	}
-	if feeCap != nil {
-		m.feeCap.Set(feeCap)
-	}
-	return m
-}
-
-// AsMessage returns the transaction as a core.Message.
-func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error) {
-	msg := Message{
-		nonce:      tx.Nonce(),
-		gasLimit:   tx.Gas(),
-		gasPrice:   *new(uint256.Int).Set(tx.GasPrice()),
-		feeCap:     *new(uint256.Int).Set(tx.GasFeeCap()),
-		tip:        *new(uint256.Int).Set(tx.GasTipCap()),
-		to:         tx.To(),
-		amount:     *tx.Value(),
-		data:       tx.Data(),
-		accessList: tx.AccessList(),
-		authList:   tx.AuthList(),
-		checkNonce: false,
-	}
-
-	// If baseFee provided, set gasPrice to effectiveGasPrice.
-	if baseFee != nil {
-		msg.gasPrice.Add(&msg.tip, baseFee)
-		if msg.gasPrice.Gt(&msg.feeCap) {
-			msg.gasPrice = msg.feeCap
-		}
-	}
-	msg.from = *tx.From()
-
-	return msg, nil
-}
-func (m Message) From() types.Address         { return m.from }
-func (m Message) To() *types.Address          { return m.to }
-func (m Message) GasPrice() *uint256.Int      { return &m.gasPrice }
-func (m Message) FeeCap() *uint256.Int        { return &m.feeCap }
-func (m Message) Tip() *uint256.Int           { return &m.tip }
-func (m Message) Value() *uint256.Int         { return &m.amount }
-func (m Message) Gas() uint64                 { return m.gasLimit }
-func (m Message) Nonce() uint64               { return m.nonce }
-func (m Message) Data() []byte                { return m.data }
-func (m Message) AccessList() AccessList      { return m.accessList }
-func (m Message) AuthList() AuthorizationList { return m.authList } // EIP-7702
-func (m Message) CheckNonce() bool            { return m.checkNonce }
-func (m *Message) SetCheckNonce(checkNonce bool) {
-	m.checkNonce = checkNonce
-}
-func (m Message) IsFree() bool { return m.isFree }
-func (m *Message) SetIsFree(isFree bool) {
-	m.isFree = isFree
-}
-
-// =============================================================================
-// Post-Quantum Transaction Helper Methods
-// =============================================================================
-
-// IsPostQuantum returns true if the transaction is a post-quantum transaction
-func (tx *Transaction) IsPostQuantum() bool {
-	return tx.Type() == PostQuantumTxType
-}
-
-// GetPostQuantumTx returns the inner PostQuantumTx if this is a PQ transaction
-// Returns nil if this is not a PQ transaction
-func (tx *Transaction) GetPostQuantumTx() *PostQuantumTx {
-	if pqTx, ok := tx.inner.(*PostQuantumTx); ok {
-		return pqTx
-	}
-	return nil
-}
-
-// PQSigAlgo returns the post-quantum signature algorithm
-// Returns 0 for non-PQ transactions
-func (tx *Transaction) PQSigAlgo() uint8 {
-	if pqTx := tx.GetPostQuantumTx(); pqTx != nil {
-		return pqTx.SigAlgo
-	}
-	return 0
-}
-
-// PQSignature returns the post-quantum signature
-// Returns nil for non-PQ transactions
-func (tx *Transaction) PQSignature() []byte {
-	if pqTx := tx.GetPostQuantumTx(); pqTx != nil {
-		return pqTx.PQSignature
-	}
-	return nil
-}
-
-// PQPubKeyData returns the post-quantum public key data
-// Returns nil for non-PQ transactions
-func (tx *Transaction) PQPubKeyData() []byte {
-	if pqTx := tx.GetPostQuantumTx(); pqTx != nil {
-		return pqTx.PubKeyData
-	}
-	return nil
 }

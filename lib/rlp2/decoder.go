@@ -52,6 +52,7 @@ func (d *Decoder) Rebase() {
 	d.buf.u = d.Bytes()
 	d.buf.off = 0
 }
+
 func (d *Decoder) Fork() *Decoder {
 	return &Decoder{
 		buf: newBuf(d.buf.u, d.buf.off),
@@ -118,7 +119,6 @@ func (d *Decoder) RawElem() ([]byte, Token, error) {
 		return nil, token, fmt.Errorf("%w: unknown token", ErrDecode)
 	}
 	stop := w.Offset()
-	//log.Printf("%x %s\n", buf, token)
 	if err != nil {
 		return nil, token, err
 	}
@@ -167,7 +167,6 @@ func (d *Decoder) Elem() ([]byte, Token, error) {
 	default:
 		return nil, token, fmt.Errorf("%w: unknown token", ErrDecode)
 	}
-	//log.Printf("%x %s\n", buf, token)
 	if err != nil {
 		return nil, token, fmt.Errorf("read data: %w", err)
 	}
