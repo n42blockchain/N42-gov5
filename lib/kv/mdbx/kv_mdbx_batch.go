@@ -93,9 +93,8 @@ retry:
 	}
 }
 
-// trySolo is a special sentinel error value used for signaling that a
-// transaction function should be re-run. It should never be seen by
-// callers.
+// trySolo is a sentinel error signaling that a transaction function
+// should be re-run solo outside the batch.
 var trySolo = errors.New("batch function returned an error and should be re-run solo")
 
 type panicked struct {

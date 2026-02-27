@@ -27,6 +27,21 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/order"
 )
 
+// validateRangeOrder checks that fromPrefix and toPrefix are in the correct order for the given direction.
+func validateRangeOrder(fromPrefix, toPrefix []byte, asc bool) error {
+	if fromPrefix == nil || toPrefix == nil {
+		return nil
+	}
+	cmp := bytes.Compare(fromPrefix, toPrefix)
+	if asc && cmp >= 0 {
+		return fmt.Errorf("tx.Dual: %x must be lexicographicaly before %x", fromPrefix, toPrefix)
+	}
+	if !asc && cmp <= 0 {
+		return fmt.Errorf("tx.Dual: %x must be lexicographicaly before %x", toPrefix, fromPrefix)
+	}
+	return nil
+}
+
 type cursor2iter struct {
 	c  kv.Cursor
 	id int
@@ -38,21 +53,25 @@ type cursor2iter struct {
 	ctx                                context.Context
 }
 
-func (tx *MdbxTx) rangeOrderLimit(table string, fromPrefix, toPrefix []byte, orderAscend order.By, limit int) (*cursor2iter, error) {
-	s := &cursor2iter{ctx: tx.ctx, tx: tx, fromPrefix: fromPrefix, toPrefix: toPrefix, orderAscend: orderAscend, limit: int64(limit), id: tx.streamID}
+// registerStream assigns a stream ID and registers the closer for auto-cleanup.
+func (tx *MdbxTx) registerStream(s kv.Closer) int {
+	id := tx.streamID
 	tx.streamID++
 	if tx.streams == nil {
 		tx.streams = map[int]kv.Closer{}
 	}
-	tx.streams[s.id] = s
+	tx.streams[id] = s
+	return id
+}
+
+func (tx *MdbxTx) rangeOrderLimit(table string, fromPrefix, toPrefix []byte, orderAscend order.By, limit int) (*cursor2iter, error) {
+	s := &cursor2iter{ctx: tx.ctx, tx: tx, fromPrefix: fromPrefix, toPrefix: toPrefix, orderAscend: orderAscend, limit: int64(limit)}
+	s.id = tx.registerStream(s)
 	return s.init(table, tx)
 }
 func (s *cursor2iter) init(table string, tx kv.Tx) (*cursor2iter, error) {
-	if s.orderAscend && s.fromPrefix != nil && s.toPrefix != nil && bytes.Compare(s.fromPrefix, s.toPrefix) >= 0 {
-		return s, fmt.Errorf("tx.Dual: %x must be lexicographicaly before %x", s.fromPrefix, s.toPrefix)
-	}
-	if !s.orderAscend && s.fromPrefix != nil && s.toPrefix != nil && bytes.Compare(s.fromPrefix, s.toPrefix) <= 0 {
-		return s, fmt.Errorf("tx.Dual: %x must be lexicographicaly before %x", s.toPrefix, s.fromPrefix)
+	if err := validateRangeOrder(s.fromPrefix, s.toPrefix, bool(s.orderAscend)); err != nil {
+		return s, err
 	}
 	c, err := tx.Cursor(table)
 	if err != nil {
@@ -150,11 +169,8 @@ type cursorDup2iter struct {
 }
 
 func (s *cursorDup2iter) init(table string, tx kv.Tx) (*cursorDup2iter, error) {
-	if s.orderAscend && s.fromPrefix != nil && s.toPrefix != nil && bytes.Compare(s.fromPrefix, s.toPrefix) >= 0 {
-		return s, fmt.Errorf("tx.Dual: %x must be lexicographicaly before %x", s.fromPrefix, s.toPrefix)
-	}
-	if !s.orderAscend && s.fromPrefix != nil && s.toPrefix != nil && bytes.Compare(s.fromPrefix, s.toPrefix) <= 0 {
-		return s, fmt.Errorf("tx.Dual: %x must be lexicographicaly before %x", s.toPrefix, s.fromPrefix)
+	if err := validateRangeOrder(s.fromPrefix, s.toPrefix, s.orderAscend); err != nil {
+		return s, err
 	}
 	c, err := tx.CursorDupSort(table)
 	if err != nil {
@@ -329,12 +345,8 @@ func (tx *MdbxTx) RangeDescend(table string, fromPrefix, toPrefix []byte, limit 
 }
 
 func (tx *MdbxTx) RangeDupSort(table string, key []byte, fromPrefix, toPrefix []byte, asc order.By, limit int) (iter.KV, error) {
-	s := &cursorDup2iter{ctx: tx.ctx, tx: tx, key: key, fromPrefix: fromPrefix, toPrefix: toPrefix, orderAscend: bool(asc), limit: int64(limit), id: tx.streamID}
-	tx.streamID++
-	if tx.streams == nil {
-		tx.streams = map[int]kv.Closer{}
-	}
-	tx.streams[s.id] = s
+	s := &cursorDup2iter{ctx: tx.ctx, tx: tx, key: key, fromPrefix: fromPrefix, toPrefix: toPrefix, orderAscend: bool(asc), limit: int64(limit)}
+	s.id = tx.registerStream(s)
 	return s.init(table, tx)
 }
 

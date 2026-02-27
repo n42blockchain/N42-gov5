@@ -70,6 +70,19 @@ func (c *MdbxCursor) lastDup() ([]byte, error) {
 	return v, err
 }
 
+// restoreDupSortKey reassembles the full key from a DupSort-shortened key
+// by moving the key suffix from the beginning of the value back into the key.
+func (c *MdbxCursor) restoreDupSortKey(k, v []byte) ([]byte, []byte) {
+	b := c.bucketCfg
+	if !b.AutoDupSortKeysConversion || len(k) != b.DupToLen {
+		return k, v
+	}
+	keyPart := b.DupFromLen - b.DupToLen
+	k = append(k, v[:keyPart]...)
+	v = v[keyPart:]
+	return k, v
+}
+
 func (c *MdbxCursor) Count() (uint64, error) {
 	st, err := c.tx.tx.StatDBI(c.dbi)
 	if err != nil {
@@ -88,17 +101,10 @@ func (c *MdbxCursor) Last() ([]byte, []byte, error) {
 		if mdbx.IsNotFound(err) {
 			return nil, nil, nil
 		}
-		err = fmt.Errorf("failed MdbxKV cursor.Last(): %w, bucket: %s", err, c.bucketName)
-		return []byte{}, nil, err
+		return []byte{}, nil, fmt.Errorf("failed MdbxKV cursor.Last(): %w, bucket: %s", err, c.bucketName)
 	}
 
-	b := c.bucketCfg
-	if b.AutoDupSortKeysConversion && len(k) == b.DupToLen {
-		keyPart := b.DupFromLen - b.DupToLen
-		k = append(k, v[:keyPart]...)
-		v = v[keyPart:]
-	}
-
+	k, v = c.restoreDupSortKey(k, v)
 	return k, v, nil
 }
 
@@ -125,7 +131,8 @@ func (c *MdbxCursor) Seek(seek []byte) (k, v []byte, err error) {
 
 func (c *MdbxCursor) seekDupSort(seek []byte) (k, v []byte, err error) {
 	b := c.bucketCfg
-	from, to := b.DupFromLen, b.DupToLen
+	to := b.DupToLen
+
 	if len(seek) == 0 {
 		k, v, err = c.first()
 		if err != nil {
@@ -134,13 +141,7 @@ func (c *MdbxCursor) seekDupSort(seek []byte) (k, v []byte, err error) {
 			}
 			return []byte{}, nil, err
 		}
-
-		if len(k) == to {
-			k2 := make([]byte, 0, len(k)+from-to)
-			k2 = append(append(k2, k...), v[:from-to]...)
-			v = v[from-to:]
-			k = k2
-		}
+		k, v = c.restoreDupSortKey(k, v)
 		return k, v, nil
 	}
 
@@ -155,7 +156,6 @@ func (c *MdbxCursor) seekDupSort(seek []byte) (k, v []byte, err error) {
 		if mdbx.IsNotFound(err) {
 			return nil, nil, nil
 		}
-
 		return []byte{}, nil, err
 	}
 
@@ -173,13 +173,8 @@ func (c *MdbxCursor) seekDupSort(seek []byte) (k, v []byte, err error) {
 			return []byte{}, nil, err
 		}
 	}
-	if len(k) == to {
-		k2 := make([]byte, 0, len(k)+from-to)
-		k2 = append(append(k2, k...), v[:from-to]...)
-		v = v[from-to:]
-		k = k2
-	}
 
+	k, v = c.restoreDupSortKey(k, v)
 	return k, v, nil
 }
 
@@ -193,15 +188,10 @@ func (c *MdbxCursor) Next() (k, v []byte, err error) {
 	}
 
 	b := c.bucketCfg
-	if b.AutoDupSortKeysConversion && len(k) == b.DupToLen {
-		keyPart := b.DupFromLen - b.DupToLen
-		if len(v) == 0 {
-			return nil, nil, fmt.Errorf("key with empty value: k=%x, len(k)=%d, v=%x", k, len(k), v)
-		}
-		k = append(k, v[:keyPart]...)
-		v = v[keyPart:]
+	if b.AutoDupSortKeysConversion && len(k) == b.DupToLen && len(v) == 0 {
+		return nil, nil, fmt.Errorf("key with empty value: k=%x, len(k)=%d, v=%x", k, len(k), v)
 	}
-
+	k, v = c.restoreDupSortKey(k, v)
 	return k, v, nil
 }
 
@@ -214,17 +204,11 @@ func (c *MdbxCursor) Prev() (k, v []byte, err error) {
 		return []byte{}, nil, fmt.Errorf("failed MdbxKV cursor.Prev(): %w", err)
 	}
 
-	b := c.bucketCfg
-	if b.AutoDupSortKeysConversion && len(k) == b.DupToLen {
-		keyPart := b.DupFromLen - b.DupToLen
-		k = append(k, v[:keyPart]...)
-		v = v[keyPart:]
-	}
-
+	k, v = c.restoreDupSortKey(k, v)
 	return k, v, nil
 }
 
-// Current - return key/data at current cursor position
+// Current returns the key/data at the current cursor position.
 func (c *MdbxCursor) Current() ([]byte, []byte, error) {
 	k, v, err := c.getCurrent()
 	if err != nil {
@@ -234,13 +218,7 @@ func (c *MdbxCursor) Current() ([]byte, []byte, error) {
 		return []byte{}, nil, err
 	}
 
-	b := c.bucketCfg
-	if b.AutoDupSortKeysConversion && len(k) == b.DupToLen {
-		keyPart := b.DupFromLen - b.DupToLen
-		k = append(k, v[:keyPart]...)
-		v = v[keyPart:]
-	}
-
+	k, v = c.restoreDupSortKey(k, v)
 	return k, v, nil
 }
 
@@ -320,7 +298,7 @@ func (c *MdbxCursor) Put(key []byte, value []byte) error {
 		err = c.put(key, value)
 	}
 	if err != nil {
-		return fmt.Errorf("label: %s, table: %s, err: %w", c.tx.db.opts.label, c.bucketName, err)
+		return fmt.Errorf("label: %s, table: %s, %w", c.tx.db.opts.label, c.bucketName, err)
 	}
 	return nil
 }

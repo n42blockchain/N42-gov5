@@ -46,29 +46,25 @@ func (tx *MdbxTx) CreateBucket(name string) error {
 		return nil
 	}
 
-	// if bucket doesn't exists - create it
-
-	var flags = tx.db.buckets[name].Flags
+	// Bucket does not exist -- create it.
+	flags := tx.db.buckets[name].Flags
 	var nativeFlags uint
-	if !(tx.db.ReadOnly() || tx.db.Accede()) {
+	if !tx.db.ReadOnly() && !tx.db.Accede() {
 		nativeFlags |= mdbx.Create
 	}
-
 	if flags&kv.DupSort != 0 {
 		nativeFlags |= mdbx.DupSort
 		flags ^= kv.DupSort
 	}
 	if flags != 0 {
-		return fmt.Errorf("some not supported flag provided for bucket")
+		return fmt.Errorf("unsupported flags provided for bucket %s", name)
 	}
 
 	dbi, err = tx.tx.OpenDBI(name, nativeFlags, nil, nil)
-
 	if err != nil {
 		return fmt.Errorf("create table: %s, %w", name, err)
 	}
 	cnfCopy.DBI = kv.DBI(dbi)
-
 	tx.db.buckets[name] = cnfCopy
 	return nil
 }
@@ -129,13 +125,16 @@ func (tx *MdbxTx) BucketSize(name string) (uint64, error) {
 }
 
 func (tx *MdbxTx) BucketStat(name string) (*mdbx.Stat, error) {
-	if name == "freelist" || name == "gc" || name == "free_list" {
-		return tx.tx.StatDBI(mdbx.DBI(0))
+	var dbi mdbx.DBI
+	switch name {
+	case "freelist", "gc", "free_list":
+		dbi = 0
+	case "root":
+		dbi = 1
+	default:
+		dbi = mdbx.DBI(tx.db.buckets[name].DBI)
 	}
-	if name == "root" {
-		return tx.tx.StatDBI(mdbx.DBI(1))
-	}
-	st, err := tx.tx.StatDBI(mdbx.DBI(tx.db.buckets[name].DBI))
+	st, err := tx.tx.StatDBI(dbi)
 	if err != nil {
 		return nil, fmt.Errorf("bucket: %s, %w", name, err)
 	}

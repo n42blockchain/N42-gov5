@@ -143,7 +143,7 @@ func (opts MdbxOpts) InMem(tmpDir string) MdbxOpts {
 }
 
 func (opts MdbxOpts) Exclusive() MdbxOpts {
-	opts.flags = opts.flags | mdbx.Exclusive
+	opts.flags |= mdbx.Exclusive
 	return opts
 }
 
@@ -153,12 +153,14 @@ func (opts MdbxOpts) Flags(f func(uint) uint) MdbxOpts {
 }
 
 func (opts MdbxOpts) HasFlag(flag uint) bool { return opts.flags&flag != 0 }
+
 func (opts MdbxOpts) Readonly() MdbxOpts {
-	opts.flags = opts.flags | mdbx.Readonly
+	opts.flags |= mdbx.Readonly
 	return opts
 }
+
 func (opts MdbxOpts) Accede() MdbxOpts {
-	opts.flags = opts.flags | mdbx.Accede
+	opts.flags |= mdbx.Accede
 	return opts
 }
 
@@ -219,37 +221,75 @@ func PathDbMap() map[string]kv.RoDB {
 
 var ErrDBDoesNotExists = fmt.Errorf("can't create database - because opening in `Accede` mode. probably another (main) process can create it")
 
-func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
+// applyDebugOverrides applies environment-based debug overrides to the options.
+func (opts MdbxOpts) applyDebugOverrides() MdbxOpts {
 	if dbg.WriteMap() {
-		opts = opts.WriteMap() //nolint
+		opts = opts.WriteMap()
 	}
 	if dbg.DirtySpace() > 0 {
-		opts = opts.DirtySpace(dbg.DirtySpace()) //nolint
+		opts = opts.DirtySpace(dbg.DirtySpace())
 	}
 	if dbg.NoSync() {
-		opts = opts.Flags(func(u uint) uint { return u | mdbx.SafeNoSync }) //nolint
+		opts.flags |= mdbx.SafeNoSync
 	}
 	if dbg.MergeTr() > 0 {
-		opts = opts.WriteMergeThreshold(uint64(dbg.MergeTr() * 8192)) //nolint
+		opts = opts.WriteMergeThreshold(uint64(dbg.MergeTr() * 8192))
 	}
 	if dbg.MdbxReadAhead() {
-		opts = opts.Flags(func(u uint) uint { return u &^ mdbx.NoReadahead }) //nolint
+		opts.flags &^= mdbx.NoReadahead
 	}
-	if opts.HasFlag(mdbx.Accede) || opts.HasFlag(mdbx.Readonly) {
-		for retry := 0; ; retry++ {
-			exists := dir.FileExist(filepath.Join(opts.path, "mdbx.dat"))
-			if exists {
-				break
-			}
-			if retry >= 5 {
-				return nil, fmt.Errorf("%w, label: %s, path: %s", ErrDBDoesNotExists, opts.label.String(), opts.path)
-			}
-			select {
-			case <-time.After(500 * time.Millisecond):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+	return opts
+}
+
+// waitForDBFile waits for the database file to appear when opening in Accede or Readonly mode.
+func (opts MdbxOpts) waitForDBFile(ctx context.Context) error {
+	if !opts.HasFlag(mdbx.Accede) && !opts.HasFlag(mdbx.Readonly) {
+		return nil
+	}
+	for retry := 0; ; retry++ {
+		if dir.FileExist(filepath.Join(opts.path, "mdbx.dat")) {
+			return nil
 		}
+		if retry >= 5 {
+			return fmt.Errorf("%w, label: %s, path: %s", ErrDBDoesNotExists, opts.label.String(), opts.path)
+		}
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// computeDirtySpace returns the dirty space limit based on configuration and system memory.
+func (opts MdbxOpts) computeDirtySpace() uint64 {
+	if opts.dirtySpace > 0 {
+		return opts.dirtySpace
+	}
+
+	const (
+		dirtySpaceMaxChainDB = uint64(1 * datasize.GB)
+		dirtySpaceMaxDefault = uint64(128 * datasize.MB)
+	)
+
+	dirtySpace := mmap.TotalMemory() / 42
+	var maxDirtySpace uint64
+	if opts.label == kv.ChainDB {
+		maxDirtySpace = dirtySpaceMaxChainDB
+	} else {
+		maxDirtySpace = dirtySpaceMaxDefault
+	}
+	if dirtySpace > maxDirtySpace {
+		dirtySpace = maxDirtySpace
+	}
+	return dirtySpace
+}
+
+func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
+	opts = opts.applyDebugOverrides()
+
+	if err := opts.waitForDBFile(ctx); err != nil {
+		return nil, err
 	}
 
 	env, err := mdbx.NewEnv(mdbx.Label(opts.label.String()))
@@ -298,30 +338,13 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 			}
 		}
 
-		// before env.Open() we don't know real pageSize. but will be implemented soon: https://gitflic.ru/project/erthink/libmdbx/issue/15
-		// but we want call all `SetOption` before env.Open(), because:
-		//   - after they will require rwtx-lock, which is not acceptable in ACCEDEE mode.
+		// Must call SetOption before env.Open() because after that they require rwtx-lock.
 		pageSize := opts.pageSize
 		if pageSize == 0 {
 			pageSize = kv.DefaultPageSize()
 		}
 
-		var dirtySpace uint64
-		if opts.dirtySpace > 0 {
-			dirtySpace = opts.dirtySpace
-		} else {
-			dirtySpace = mmap.TotalMemory() / 42 // it's default of mdbx, but our package also supports cgroups and GOMEMLIMIT
-			// clamp to max size
-			const dirtySpaceMaxChainDB = uint64(1 * datasize.GB)
-			const dirtySpaceMaxDefault = uint64(128 * datasize.MB)
-
-			if opts.label == kv.ChainDB && dirtySpace > dirtySpaceMaxChainDB {
-				dirtySpace = dirtySpaceMaxChainDB
-			} else if opts.label != kv.ChainDB && dirtySpace > dirtySpaceMaxDefault {
-				dirtySpace = dirtySpaceMaxDefault
-			}
-		}
-		//can't use real pagesize here - it will be known only after env.Open()
+		dirtySpace := opts.computeDirtySpace()
 		if err = env.SetOption(mdbx.OptTxnDpLimit, dirtySpace/pageSize); err != nil {
 			return nil, err
 		}
@@ -398,29 +421,7 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 		return nil, err
 	}
 
-	// Configure buckets and open deprecated buckets
-	if err := env.View(func(tx *mdbx.Txn) error {
-		for _, name := range buckets {
-			// Open deprecated buckets if they exist, don't create
-			if !db.buckets[name].IsDeprecated {
-				continue
-			}
-			cnfCopy := db.buckets[name]
-			dbi, createErr := tx.OpenDBI(name, mdbx.DBAccede, nil, nil)
-			if createErr != nil {
-				if mdbx.IsNotFound(createErr) {
-					cnfCopy.DBI = NonExistingDBI
-					db.buckets[name] = cnfCopy
-					continue // if deprecated bucket couldn't be open - then it's deleted and it's fine
-				} else {
-					return fmt.Errorf("bucket: %s, %w", name, createErr)
-				}
-			}
-			cnfCopy.DBI = kv.DBI(dbi)
-			db.buckets[name] = cnfCopy
-		}
-		return nil
-	}); err != nil {
+	if err := db.openDeprecatedBuckets(buckets); err != nil {
 		return nil, err
 	}
 
