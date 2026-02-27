@@ -19,11 +19,6 @@ type forkData struct {
 	blocks []*types_pb.Block
 }
 
-// nonSkippedSlotAfter checks slots after the given one in an attempt to find a non-empty future slot.
-// For efficiency only one random slot is checked per epoch, so returned slot might not be the first
-// non-skipped slot. This shouldn't be a problem, as in case of adversary peer, we might get incorrect
-// data anyway, so code that relies on this function must be robust enough to re-request, if no progress
-// is possible with a returned value.
 // nonSkippedSlotAfter is not implemented - returns nil.
 func (f *blocksFetcher) nonSkippedSlotAfter(ctx context.Context, blockNr *uint256.Int) (*uint256.Int, error) {
 	ctx, span := trace.StartSpan(ctx, "initialsync.nonSkippedSlotAfter")
@@ -31,9 +26,7 @@ func (f *blocksFetcher) nonSkippedSlotAfter(ctx context.Context, blockNr *uint25
 	return nil, nil
 }
 
-// findFork queries all peers that have higher head slot, in an attempt to find
-// ones that feature blocks from alternative branches. Once found, peer is further queried
-// to find common ancestor slot. On success, all obtained blocks and peer is returned.
+// findFork is not yet implemented - returns errNoPeersWithAltBlocks.
 func (f *blocksFetcher) findFork(ctx context.Context, blockNr *uint256.Int) (*forkData, error) {
 	ctx, span := trace.StartSpan(ctx, "initialsync.findFork")
 	defer span.End()
@@ -41,14 +34,12 @@ func (f *blocksFetcher) findFork(ctx context.Context, blockNr *uint256.Int) (*fo
 	return nil, errNoPeersWithAltBlocks
 }
 
-// findForkWithPeer loads some blocks from a peer in an attempt to find alternative blocks.
-// Not yet implemented -- returns error unconditionally.
+// findForkWithPeer is not yet implemented -- returns error unconditionally.
 func (f *blocksFetcher) findForkWithPeer(ctx context.Context, pid peer.ID, blockNr *uint256.Int) (*forkData, error) {
 	return nil, errors.New("no alternative blocks exist within scanned range")
 }
 
-// findAncestor tries to figure out common ancestor slot that connects a given root to known block.
-// Not yet implemented -- returns error unconditionally.
+// findAncestor is not yet implemented -- returns error unconditionally.
 func (f *blocksFetcher) findAncestor(ctx context.Context, pid peer.ID, b *types_pb.Block) (*forkData, error) {
 	return nil, errors.New("no common ancestor found")
 }

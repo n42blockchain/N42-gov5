@@ -45,7 +45,6 @@ var (
 	errNoPeersWithAltBlocks  = errors.New("no peers with alternative blocks found")
 )
 
-// Error log throttling to prevent log spam
 var (
 	lastBlockRangeErrLog     time.Time
 	blockRangeErrCount       int
@@ -106,7 +105,6 @@ type fetchRequestResponse struct {
 
 // newBlocksFetcher creates ready to use fetcher.
 func newBlocksFetcher(ctx context.Context, cfg *blocksFetcherConfig) *blocksFetcher {
-	// Initialize block limits with safe defaults (matching U13 fix in rate_limiter.go).
 	var allowedBlocksPerSecond float64 = 64
 	var allowedBlocksBurst int64 = 320
 	var blockLimiterPeriod = 10 * time.Second
@@ -117,8 +115,7 @@ func newBlocksFetcher(ctx context.Context, cfg *blocksFetcherConfig) *blocksFetc
 		blockLimiterPeriod = time.Duration(p2pCfg.P2PLimit.BlockBatchLimiterPeriod) * time.Second
 	}
 
-	// Allow fetcher to go almost to the full burst capacity (less a single batch).
-	rateLimiter := leakybucket.NewCollector(allowedBlocksPerSecond, allowedBlocksBurst, blockLimiterPeriod, false /* deleteEmptyBuckets */)
+	rateLimiter := leakybucket.NewCollector(allowedBlocksPerSecond, allowedBlocksBurst, blockLimiterPeriod, false)
 
 	capacityWeight := cfg.peerFilterCapacityWeight
 	if capacityWeight >= 1 {
@@ -175,14 +172,12 @@ func (f *blocksFetcher) requestResponses() <-chan *fetchRequestResponse {
 func (f *blocksFetcher) loop() {
 	defer close(f.quit)
 
-	// Wait for all loop's goroutines to finish, and safely release resources.
 	wg := &sync.WaitGroup{}
 	defer func() {
 		wg.Wait()
 		close(f.fetchResponses)
 	}()
 
-	// Periodically remove stale peer locks.
 	go func() {
 		ticker := time.NewTicker(peerLocksPollingInterval)
 		defer ticker.Stop()
@@ -196,9 +191,7 @@ func (f *blocksFetcher) loop() {
 		}
 	}()
 
-	// Main loop.
 	for {
-		// Make sure there are available peers before processing requests.
 		if _, err := f.waitForMinimumPeers(f.ctx); err != nil {
 			log.Error("cannot wait peers", "err", err)
 		}
@@ -299,8 +292,6 @@ func logBlockRangeError(err error) {
 
 	blockRangeErrCount++
 	now := time.Now()
-	
-	// Log immediately for first error, then throttle to every 10 seconds
 	if lastBlockRangeErrLog.IsZero() || now.Sub(lastBlockRangeErrLog) >= blockRangeErrLogInterval {
 		if blockRangeErrCount > 1 {
 			log.Warn("Block range request errors", "err", err, "count", blockRangeErrCount, "interval", blockRangeErrLogInterval)
@@ -341,7 +332,6 @@ func (f *blocksFetcher) requestBlocks(ctx context.Context, req *sync_pb.BodiesBy
 
 // waitForBandwidth blocks up until peer's bandwidth is restored.
 func (f *blocksFetcher) waitForBandwidth(pid peer.ID, count uint64) error {
-
 	rem := f.rateLimiter.Remaining(pid.String())
 	if uint64(rem) >= count {
 		// Exit early if we have sufficient capacity
@@ -356,23 +346,15 @@ func (f *blocksFetcher) waitForBandwidth(pid peer.ID, count uint64) error {
 	case <-f.ctx.Done():
 		return errFetcherCtxIsDone
 	case <-timer.C:
-		// Peer has gathered enough capacity to be polled again.
 	}
 	return nil
 }
 
-// Determine how long it will take for us to have the required number of blocks allowed by our rate limiter.
-// We do this by calculating the duration till the rate limiter can request these blocks without exceeding
-// the provided bandwidth limits per peer.
+// timeToWait calculates how long until the rate limiter has enough capacity for the wanted blocks.
 func timeToWait(wanted, rem, capacity int64, timeTillEmpty time.Duration) time.Duration {
-	// Defensive check if we have more than enough blocks
-	// to request from the peer.
 	if rem >= wanted {
 		return 0
 	}
-	// Handle edge case where capacity is equal to the remaining amount
-	// of blocks. This also handles the impossible case in where remaining blocks
-	// exceed the limiter's capacity.
 	if capacity <= rem {
 		return 0
 	}

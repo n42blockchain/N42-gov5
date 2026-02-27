@@ -128,7 +128,6 @@ func (smm *stateMachineManager) findStateMachine(startSlot *uint256.Int) (*state
 }
 
 // highestStartSlot returns the start slot for the latest known state machine.
-// Returns nil on error to force callers to check the error properly.
 func (smm *stateMachineManager) highestStartSlot() (*uint256.Int, error) {
 	if len(smm.keys) == 0 {
 		return nil, errors.New("no state machine exist")

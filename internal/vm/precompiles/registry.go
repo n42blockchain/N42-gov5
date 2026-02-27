@@ -242,12 +242,7 @@ type RegistryStats struct {
 	CallTimeNs   uint64
 }
 
-// =============================================================================
-// Legacy Compatibility
-// =============================================================================
-
 // FromLegacyMap creates a Registry from a legacy precompile map.
-// This provides backward compatibility during migration.
 func FromLegacyMap(contracts map[types.Address]PrecompiledContract, rules *params.Rules) *Registry {
 	r := &Registry{
 		contracts: make(map[types.Address]PrecompiledContract, len(contracts)),
@@ -266,10 +261,6 @@ func FromLegacyMap(contracts map[types.Address]PrecompiledContract, rules *param
 	return r
 }
 
-// =============================================================================
-// Errors
-// =============================================================================
-
 // ErrOutOfGas is returned when gas is insufficient for precompile execution.
 var ErrOutOfGas = &outOfGasError{}
 
@@ -277,10 +268,4 @@ type outOfGasError struct{}
 
 func (e *outOfGasError) Error() string { return "out of gas" }
 
-// =============================================================================
-// Interface compliance
-// =============================================================================
-
-// Compile-time check: Registry must implement vm.PrecompileRegistry interface.
-// This ensures type safety when using Registry with EVM.
 var _ vm.PrecompileRegistry = (*Registry)(nil)
