@@ -22,7 +22,6 @@ import (
 	"math/big"
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-stack/stack"
@@ -38,212 +37,9 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/kvcache"
 	"github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/n42blockchain/N42/lib/metrics"
 	"github.com/n42blockchain/N42/lib/txpool/txpoolcfg"
 	"github.com/n42blockchain/N42/lib/types"
 )
-
-const DefaultBlockGasLimit = uint64(30000000)
-
-var (
-	processBatchTxsTimer    = metrics.NewSummary(`pool_process_remote_txs`)
-	addRemoteTxsTimer       = metrics.NewSummary(`pool_add_remote_txs`)
-	newBlockTimer           = metrics.NewSummary(`pool_new_block`)
-	writeToDBTimer          = metrics.NewSummary(`pool_write_to_db`)
-	propagateToNewPeerTimer = metrics.NewSummary(`pool_propagate_to_new_peer`)
-	propagateNewTxsTimer    = metrics.NewSummary(`pool_propagate_new_txs`)
-	writeToDBBytesCounter   = metrics.GetOrCreateGauge(`pool_write_to_db_bytes`)
-	pendingSubCounter       = metrics.GetOrCreateGauge(`txpool_pending`)
-	queuedSubCounter        = metrics.GetOrCreateGauge(`txpool_queued`)
-	basefeeSubCounter       = metrics.GetOrCreateGauge(`txpool_basefee`)
-)
-
-var TraceAll = false
-
-// Pool is interface for the transaction pool
-// This interface exists for the convenience of testing, and not yet because
-// there are multiple implementations
-//
-//go:generate mockgen -typed=true -destination=./pool_mock.go -package=txpool . Pool
-type Pool interface {
-	ValidateSerializedTxn(serializedTxn []byte) error
-
-	// Handle 3 main events - new remote txs from p2p, new local txs from RPC, new blocks from execution layer
-	AddRemoteTxs(ctx context.Context, newTxs types.TxSlots)
-	AddLocalTxs(ctx context.Context, newTxs types.TxSlots, tx kv.Tx) ([]txpoolcfg.DiscardReason, error)
-	OnNewBlock(ctx context.Context, stateChanges *remote.StateChangeBatch, unwindTxs, unwindBlobTxs, minedTxs types.TxSlots, tx kv.Tx) error
-	// IdHashKnown check whether transaction with given Id hash is known to the pool
-	IdHashKnown(tx kv.Tx, hash []byte) (bool, error)
-	FilterKnownIdHashes(tx kv.Tx, hashes types.Hashes) (unknownHashes types.Hashes, err error)
-	Started() bool
-	GetRlp(tx kv.Tx, hash []byte) ([]byte, error)
-
-	AddNewGoodPeer(peerID types.PeerID)
-}
-
-var _ Pool = (*TxPool)(nil) // compile-time interface check
-
-// SubPoolMarker is an ordered bitset of five bits that's used to sort transactions into sub-pools. Bits meaning:
-// 1. Absence of nonce gaps. Set to 1 for transactions whose nonce is N, state nonce for the sender is M, and there are transactions for all nonces between M and N from the same sender. Set to 0 is the transaction's nonce is divided from the state nonce by one or more nonce gaps.
-// 2. Sufficient balance for gas. Set to 1 if the balance of sender's account in the state is B, nonce of the sender in the state is M, nonce of the transaction is N, and the sum of feeCap x gasLimit + transferred_value of all transactions from this sender with nonces N+1 ... M is no more than B. Set to 0 otherwise. In other words, this bit is set if there is currently a guarantee that the transaction and all its required prior transactions will be able to pay for gas.
-// 3. Not too much gas: Set to 1 if the transaction doesn't use too much gas
-// 4. Dynamic fee requirement. Set to 1 if feeCap of the transaction is no less than baseFee of the currently pending block. Set to 0 otherwise.
-// 5. Local transaction. Set to 1 if transaction is local.
-type SubPoolMarker uint8
-
-const (
-	NoNonceGaps       = 0b010000
-	EnoughBalance     = 0b001000
-	NotTooMuchGas     = 0b000100
-	EnoughFeeCapBlock = 0b000010
-	IsLocal           = 0b000001
-
-	BaseFeePoolBits = NoNonceGaps + EnoughBalance + NotTooMuchGas
-)
-
-// metaTx holds transaction and some metadata
-type metaTx struct {
-	Tx                        *types.TxSlot
-	minFeeCap                 uint256.Int
-	nonceDistance             uint64 // how far their nonces are from the state's nonce for the sender
-	cumulativeBalanceDistance uint64 // how far their cumulativeRequiredBalance are from the state's balance for the sender
-	minTip                    uint64
-	bestIndex                 int
-	worstIndex                int
-	timestamp                 uint64 // when it was added to pool
-	subPool                   SubPoolMarker
-	currentSubPool            SubPoolType
-	minedBlockNum             uint64
-}
-
-func newMetaTx(slot *types.TxSlot, isLocal bool, timestamp uint64) *metaTx {
-	mt := &metaTx{Tx: slot, worstIndex: -1, bestIndex: -1, timestamp: timestamp}
-	if isLocal {
-		mt.subPool = IsLocal
-	}
-	return mt
-}
-
-type SubPoolType uint8
-
-const PendingSubPool SubPoolType = 1
-const BaseFeeSubPool SubPoolType = 2
-const QueuedSubPool SubPoolType = 3
-
-func (sp SubPoolType) String() string {
-	switch sp {
-	case PendingSubPool:
-		return "Pending"
-	case BaseFeeSubPool:
-		return "BaseFee"
-	case QueuedSubPool:
-		return "Queued"
-	}
-	return fmt.Sprintf("Unknown:%d", sp)
-}
-
-// TxPool - holds all pool-related data structures and lock-based tiny methods
-// most of logic implemented by pure tests-friendly functions
-//
-// txpool doesn't start any goroutines - "leave concurrency to user" design
-// txpool has no DB-TX fields - "leave db transactions management to user" design
-// txpool has _chainDB field - but it must maximize local state cache hit-rate - and perform minimum _chainDB transactions
-//
-// It preserve TxSlot objects immutable
-type TxPool struct {
-	_chainDB               kv.RoDB // remote db - use it wisely
-	_stateCache            kvcache.Cache
-	lock                   *sync.Mutex
-	recentlyConnectedPeers *recentlyConnectedPeers // all txs will be propagated to this peers eventually, and clear list
-	senders                *sendersBatch
-	// batch processing of remote transactions
-	// handling is fast enough without batching, but batching allows:
-	//   - fewer _chainDB transactions
-	//   - batch notifications about new txs (reduced P2P spam to other nodes about txs propagation)
-	//   - and as a result reducing lock contention
-	unprocessedRemoteTxs    *types.TxSlots
-	unprocessedRemoteByHash map[string]int                                  // to reject duplicates
-	byHash                  map[string]*metaTx                              // tx_hash => tx : only those records not committed to db yet
-	discardReasonsLRU       *simplelru.LRU[string, txpoolcfg.DiscardReason] // tx_hash => discard_reason : non-persisted
-	pending                 *PendingPool
-	baseFee                 *SubPool
-	queued                  *SubPool
-	minedBlobTxsByBlock     map[uint64][]*metaTx             // (blockNum => slice): cache of recently mined blobs
-	minedBlobTxsByHash      map[string]*metaTx               // (hash => mt): map of recently mined blobs
-	isLocalLRU              *simplelru.LRU[string, struct{}] // tx_hash => is_local : to restore isLocal flag of unwinded transactions
-	newPendingTxs           chan types.Announcements         // notifications about new txs in Pending sub-pool
-	all                     *BySenderAndNonce                // senderID => (sorted map of tx nonce => *metaTx)
-	deletedTxs              []*metaTx                        // list of discarded txs since last db commit
-	promoted                types.Announcements
-	cfg                     txpoolcfg.Config
-	chainID                 uint256.Int
-	lastSeenBlock           atomic.Uint64
-	lastSeenCond            *sync.Cond
-	lastFinalizedBlock      atomic.Uint64
-	started                 atomic.Bool
-	pendingBaseFee          atomic.Uint64
-	pendingBlobFee          atomic.Uint64 // For gas accounting for blobs, which has its own dimension
-	blockGasLimit           atomic.Uint64
-	totalBlobsInPool        atomic.Uint64
-	shanghaiTime            *uint64
-	isPostShanghai          atomic.Bool
-	agraBlock               *uint64
-	isPostAgra              atomic.Bool
-	cancunTime              *uint64
-	isPostCancun            atomic.Bool
-	pragueTime              *uint64
-	isPostPrague            atomic.Bool
-	osakaTime               *uint64
-	isPostOsaka             atomic.Bool
-	blobSchedule            *chain.BlobSchedule
-	feeCalculator           FeeCalculator
-	logger                  log.Logger
-	auths                   map[common.Address]*metaTx // All accounts with a pooled authorization
-}
-
-type FeeCalculator interface {
-	CurrentFees(chainConfig *chain.Config, db kv.Getter) (baseFee uint64, blobFee uint64, minBlobGasPrice, blockGasLimit uint64, err error)
-}
-
-func bigIntToUint64Ptr(v *big.Int, name string) (*uint64, error) {
-	if v == nil {
-		return nil, nil
-	}
-	if !v.IsUint64() {
-		return nil, fmt.Errorf("%s overflow", name)
-	}
-	u := v.Uint64()
-	return &u, nil
-}
-
-// recentlyConnectedPeers does buffer IDs of recently connected good peers
-// then sync of pooled Transaction can happen to all of then at once
-// DoS protection and performance saving
-// it doesn't track if peer disconnected, it's fine
-type recentlyConnectedPeers struct {
-	peers []types.PeerID
-	lock  sync.Mutex
-}
-
-func (l *recentlyConnectedPeers) AddPeer(p types.PeerID) {
-	l.lock.Lock()
-	defer l.lock.Unlock()
-	l.peers = append(l.peers, p)
-}
-
-func (l *recentlyConnectedPeers) GetAndClean() []types.PeerID {
-	l.lock.Lock()
-	defer l.lock.Unlock()
-	peers := l.peers
-	l.peers = nil
-	return peers
-}
-
-var PoolChainConfigKey = []byte("chain_config")
-var PoolLastSeenBlockKey = []byte("last_seen_block")
-var PoolPendingBaseFeeKey = []byte("pending_base_fee")
-var PoolPendingBlobFeeKey = []byte("pending_blob_fee")
-var PoolStateVersion = []byte("state_version")
 
 func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, cache kvcache.Cache,
 	chainID uint256.Int, shanghaiTime, agraBlock, cancunTime, pragueTime, osakaTime *big.Int, blobSchedule *chain.BlobSchedule,
@@ -325,25 +121,20 @@ func (p *TxPool) Start(ctx context.Context, db kv.RwDB) error {
 	if p.started.Load() {
 		return nil
 	}
-
 	return db.View(ctx, func(tx kv.Tx) error {
 		coreDb, _ := p.coreDBWithCache()
 		coreTx, err := coreDb.BeginRo(ctx)
-
 		if err != nil {
 			return err
 		}
-
 		defer coreTx.Rollback()
 
 		if err := p.fromDB(ctx, tx, coreTx); err != nil {
 			return fmt.Errorf("loading pool from DB: %w", err)
 		}
-
 		if p.started.CompareAndSwap(false, true) {
 			p.logger.Info("[txpool] Started")
 		}
-
 		return nil
 	})
 }
@@ -353,11 +144,9 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 	coreDB, cache := p.coreDBWithCache()
 	cache.OnNewBlock(stateChanges)
 	coreTx, err := coreDB.BeginRo(ctx)
-
 	if err != nil {
 		return err
 	}
-
 	defer coreTx.Rollback()
 
 	block := stateChanges.ChangeBatch[len(stateChanges.ChangeBatch)-1].BlockHeight
@@ -373,7 +162,6 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 	}
 
 	cacheView, err := cache.View(ctx, coreTx)
-
 	if err != nil {
 		return err
 	}
@@ -384,7 +172,6 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 			p.lastSeenBlock.Store(block)
 			p.lastSeenCond.Broadcast()
 		}
-
 		p.lock.Unlock()
 	}()
 
@@ -395,7 +182,6 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 	}
 
 	pendingBaseFee, baseFeeChanged := p.setBaseFee(baseFee)
-	// Update pendingBase for all pool queues and slices
 	if baseFeeChanged {
 		p.pending.best.pendingBaseFee = pendingBaseFee
 		p.pending.worst.pendingBaseFee = pendingBaseFee
@@ -456,7 +242,6 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 	}
 
 	_, unwindTxs, err = p.validateTxs(&unwindTxs, cacheView)
-
 	if err != nil {
 		return err
 	}
@@ -482,27 +267,23 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 		return err
 	}
 
-	// remove auths from pool map
+	// Remove auths from pool map for mined SetCode transactions
 	for _, mt := range minedTxs.Txs {
 		if mt.Type == types.SetCodeTxType {
-			numAuths := len(mt.AuthRaw)
-			for i := range numAuths {
+			for i := range len(mt.AuthRaw) {
 				signature := mt.Authorizations[i]
 				signer, err := RecoverSignerFromRLP(mt.AuthRaw[i], uint8(signature.V.Uint64()), signature.R, signature.S)
 				if err != nil {
 					continue
 				}
-
 				delete(p.auths, *signer)
 			}
 		}
 	}
 
 	var announcements types.Announcements
-
-	announcements, err = p.addTxsOnNewBlock(block, cacheView, stateChanges, p.senders, unwindTxs, /* newTxs */
+	announcements, err = p.addTxsOnNewBlock(block, cacheView, stateChanges, p.senders, unwindTxs,
 		pendingBaseFee, stateChanges.BlockGasLimit, p.logger)
-
 	if err != nil {
 		return err
 	}
@@ -552,15 +333,15 @@ func (p *TxPool) AddLocalTxs(ctx context.Context, newTransactions types.TxSlots,
 
 	announcements, addReasons, err := p.addTxs(p.lastSeenBlock.Load(), cacheView, p.senders, newTxs,
 		p.pendingBaseFee.Load(), p.pendingBlobFee.Load(), p.blockGasLimit.Load(), true, p.logger)
-	if err == nil {
-		for i, reason := range addReasons {
-			if reason != txpoolcfg.NotSet {
-				reasons[i] = reason
-			}
-		}
-	} else {
+	if err != nil {
 		return nil, err
 	}
+	for i, reason := range addReasons {
+		if reason != txpoolcfg.NotSet {
+			reasons[i] = reason
+		}
+	}
+
 	p.promoted.Reset()
 	p.promoted.AppendOther(announcements)
 
@@ -582,6 +363,7 @@ func (p *TxPool) AddLocalTxs(ctx context.Context, newTransactions types.TxSlots,
 	}
 	return reasons, nil
 }
+
 func (p *TxPool) coreDBWithCache() (kv.RoDB, kvcache.Cache) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
@@ -599,11 +381,11 @@ func (p *TxPool) NonceFromAddress(addr [20]byte) (nonce uint64, inPool bool) {
 }
 
 func (p *TxPool) IsLocal(idHash []byte) bool {
-	hashS := string(idHash)
 	p.lock.Lock()
 	defer p.lock.Unlock()
-	return p.isLocalLRU.Contains(hashS)
+	return p.isLocalLRU.Contains(string(idHash))
 }
+
 func (p *TxPool) AddNewGoodPeer(peerID types.PeerID) { p.recentlyConnectedPeers.AddPeer(peerID) }
 func (p *TxPool) Started() bool                      { return p.started.Load() }
 

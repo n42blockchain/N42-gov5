@@ -36,7 +36,7 @@ import (
 func (p *TxPool) flushNoFsync(ctx context.Context, db kv.RwDB) (written uint64, err error) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
-	//it's important that write db tx is done inside lock, to make last writes visible for all read operations
+	// Write db tx is done inside lock, to make last writes visible for all read operations
 	if err := db.UpdateNosync(ctx, func(tx kv.RwTx) error {
 		err = p.flushLocked(tx)
 		if err != nil {
@@ -55,14 +55,12 @@ func (p *TxPool) flushNoFsync(ctx context.Context, db kv.RwDB) (written uint64, 
 
 func (p *TxPool) flush(ctx context.Context, db kv.RwDB) (written uint64, err error) {
 	defer writeToDBTimer.ObserveDuration(time.Now())
-	// 1. get global lock on txpool and flush it to db, without fsync (to release lock asap)
-	// 2. then fsync db without txpool lock
 	written, err = p.flushNoFsync(ctx, db)
 	if err != nil {
 		return 0, err
 	}
 
-	// fsync. increase state version - just to make RwTx non-empty (mdbx skips empty RwTx)
+	// fsync: increment state version to make RwTx non-empty (mdbx skips empty RwTx)
 	if err := db.Update(ctx, func(tx kv.RwTx) error {
 		v, err := tx.GetOne(kv.PoolInfo, PoolStateVersion)
 		if err != nil {
@@ -94,7 +92,6 @@ func (p *TxPool) flushLocked(tx kv.RwTx) (err error) {
 				delete(p.senders.senderIDs, addr)
 			}
 		}
-		//fmt.Printf("del:%d,%d,%d\n", mt.Tx.senderID, mt.Tx.nonce, mt.Tx.tip)
 		has, err := tx.Has(kv.PoolTransaction, idHash)
 		if err != nil {
 			return err
@@ -159,9 +156,7 @@ func (p *TxPool) flushLocked(tx kv.RwTx) (err error) {
 		return err
 	}
 
-	// clean - in-memory data structure as later as possible - because if during this Tx will happen error,
-	// DB will stay consistent but some in-memory structures may be already cleaned, and retry will not work
-	// failed write transaction must not create side-effects
+	// Clean in-memory structures last: a failed write tx must not create side-effects
 	p.deletedTxs = p.deletedTxs[:0]
 	return nil
 }
@@ -176,20 +171,11 @@ func (p *TxPool) fromDB(ctx context.Context, tx kv.Tx, coreTx kv.Tx) error {
 		p.lastSeenBlock.Store(lastSeenBlock)
 	}
 
-	// this is necessary as otherwise best - which waits for sync events
-	// may wait for ever if blocks have been process before the txpool
-	// starts with an empty db
 	lastSeenProgress, err := getExecutionProgress(coreTx)
-
 	if err != nil {
 		return err
 	}
-
 	if p.lastSeenBlock.Load() < lastSeenProgress {
-		// TODO we need to process the blocks since the
-		// last seen to make sure that the tx pool is in
-		// sync with the processed blocks
-
 		p.lastSeenBlock.Store(lastSeenProgress)
 	}
 

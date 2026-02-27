@@ -34,8 +34,7 @@ type SentryClient interface {
 	Protocol() uint
 }
 
-// Send - does send concrete P2P messages to Sentry. Same as Fetch but for outbound traffic
-// does not initiate any messages by self
+// Send handles outbound P2P transaction messages to Sentry.
 type Send struct {
 	ctx           context.Context
 	pool          Pool

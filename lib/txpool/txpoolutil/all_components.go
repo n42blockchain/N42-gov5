@@ -121,7 +121,6 @@ func AllComponents(ctx context.Context, cfg txpoolcfg.Config, cache kvcache.Cach
 	}
 
 	txPoolDB, err := opts.Open(ctx)
-
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}

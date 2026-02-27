@@ -21,22 +21,19 @@ import (
 	"github.com/n42blockchain/N42/lib/types"
 )
 
-// Cache recently mined blobs in anticipation of reorg, delete finalized ones
+// processMinedFinalizedBlobs caches recently mined blobs and removes finalized ones.
 func (p *TxPool) processMinedFinalizedBlobs(coreTx kv.Tx, minedTxs []*types.TxSlot, finalizedBlock uint64) error {
 	p.lastFinalizedBlock.Store(finalizedBlock)
-	// Remove blobs in the finalized block and older, loop through all entries
+	// Remove blobs at or before the finalized block
 	for l := len(p.minedBlobTxsByBlock); l > 0 && finalizedBlock > 0; l-- {
-		// delete individual hashes
 		for _, mt := range p.minedBlobTxsByBlock[finalizedBlock] {
 			delete(p.minedBlobTxsByHash, string(mt.Tx.IDHash[:]))
 		}
-		// delete the map entry for this block num
 		delete(p.minedBlobTxsByBlock, finalizedBlock)
-		// move on to older blocks, if present
 		finalizedBlock--
 	}
 
-	// Add mined blobs
+	// Cache newly mined blobs
 	minedBlock := p.lastSeenBlock.Load()
 	p.minedBlobTxsByBlock[minedBlock] = make([]*metaTx, 0)
 	for _, txn := range minedTxs {
@@ -50,7 +47,6 @@ func (p *TxPool) processMinedFinalizedBlobs(coreTx kv.Tx, minedTxs []*types.TxSl
 	return nil
 }
 
-// Delete individual hash entries from minedBlobTxs cache
 func (p *TxPool) deleteMinedBlobTxn(hash string) {
 	mt, exists := p.minedBlobTxsByHash[hash]
 	if !exists {

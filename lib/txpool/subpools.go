@@ -26,12 +26,7 @@ import (
 	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
-// Returns true if the txn "mt" is better than the parameter txn "than"
-// it first compares the subpool markers of the two meta txns, then,
-// (since they have the same subpool marker, and thus same pool)
-// depending on the pool - pending (P), basefee (B), queued (Q) -
-// it compares the effective tip (for P), nonceDistance (for both P,Q)
-// minFeeCap (for B), and cumulative balance distance (for P, Q)
+// better returns true if mt should be ranked higher than "than" in the sub-pool ordering.
 func (mt *metaTx) better(than *metaTx, pendingBaseFee uint256.Int) bool {
 	subPool := mt.subPool
 	thanSubPool := than.subPool
@@ -129,9 +124,7 @@ func (mt *metaTx) worse(than *metaTx, pendingBaseFee uint256.Int) bool {
 	return mt.timestamp > than.timestamp
 }
 
-// PendingPool - is different from other pools - it's best is Slice instead of Heap
-// It's more expensive to maintain "slice sort" invariant, but it allow do cheap copy of
-// pending.best slice for mining (because we consider txs and metaTx are immutable)
+// PendingPool uses a sorted slice (not heap) for best, enabling cheap copies for mining.
 type PendingPool struct {
 	best  *bestSlice
 	worst *WorstQueue
