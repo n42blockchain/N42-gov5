@@ -31,9 +31,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 )
 
-const (
-	HashLength = 32
-)
+const HashLength = 32
 
 var (
 	hashT    = reflect.TypeOf(Hash{})
@@ -42,32 +40,22 @@ var (
 
 type Hash [HashLength]byte
 
-// Bytes gets the byte representation of the underlying hash.
-func (h Hash) Bytes() []byte { return h[:] }
+func (h Hash) Bytes() []byte  { return h[:] }
+func (h Hash) Big() *big.Int  { return new(big.Int).SetBytes(h[:]) }
+func (h Hash) Hex() string    { return hexutil.Encode(h[:]) }
 
-// Big converts a hash to a big integer.
-func (h Hash) Big() *big.Int { return new(big.Int).SetBytes(h[:]) }
-
-// Hex converts a hash to a hex string.
-func (h Hash) Hex() string { return hexutil.Encode(h[:]) }
-
-// TerminalString implements log.TerminalStringer, formatting a string for console
-// output during logging.
 func (h Hash) TerminalString() string {
 	return fmt.Sprintf("%x…%x", h[:3], h[29:])
 }
 
-// UnmarshalText parses a hash in hex syntax.
 func (h *Hash) UnmarshalText(input []byte) error {
 	return hexutil.UnmarshalFixedText("Hash", input, h[:])
 }
 
-// MarshalText returns the hex representation of h.
 func (h Hash) MarshalText() ([]byte, error) {
 	return hexutil.Bytes(h[:]).MarshalText()
 }
 
-// SetBytes sets the hash to the value of b.
 func (h *Hash) SetBytes(b []byte) error {
 	if len(b) != HashLength {
 		return fmt.Errorf("invalid bytes len %d", len(b))
@@ -77,7 +65,6 @@ func (h *Hash) SetBytes(b []byte) error {
 	return nil
 }
 
-// Generate implements testing/quick.Generator.
 func (h Hash) Generate(rand *rand.Rand, size int) reflect.Value {
 	m := rand.Intn(len(h))
 	for i := len(h) - 1; i > m; i-- {
@@ -86,7 +73,6 @@ func (h Hash) Generate(rand *rand.Rand, size int) reflect.Value {
 	return reflect.ValueOf(h)
 }
 
-// Scan implements Scanner for database/sql.
 func (h *Hash) Scan(src interface{}) error {
 	srcB, ok := src.([]byte)
 	if !ok {
@@ -99,7 +85,6 @@ func (h *Hash) Scan(src interface{}) error {
 	return nil
 }
 
-// Value implements valuer for database/sql.
 func (h Hash) Value() (driver.Value, error) {
 	return h[:], nil
 }
@@ -167,8 +152,6 @@ func (h *Hash) Size() int {
 	return HashLength
 }
 
-// Format implements fmt.Formatter.
-// Hash supports the %v, %s, %v, %x, %X and %d format verbs.
 func (h Hash) Format(s fmt.State, c rune) {
 	hexb := make([]byte, 2+len(h)*2)
 	copy(hexb, "0x")
@@ -197,7 +180,6 @@ func (h Hash) Format(s fmt.State, c rune) {
 	}
 }
 
-// UnmarshalJSON parses a hash in hex syntax.
 func (h *Hash) UnmarshalJSON(input []byte) error {
 	return hexutil.UnmarshalFixedJSON(hashT, input, h[:])
 }
@@ -206,27 +188,20 @@ func (h Hash) Equal(other Hash) bool {
 	return bytes.Equal(h[:], other[:])
 }
 
-// HashDifference returns a new set which is the difference between a and b.
 func HashDifference(a, b []Hash) []Hash {
-	keep := make([]Hash, 0, len(a))
-
-	remove := make(map[Hash]struct{})
+	remove := make(map[Hash]struct{}, len(b))
 	for _, hash := range b {
 		remove[hash] = struct{}{}
 	}
-
+	keep := make([]Hash, 0, len(a))
 	for _, hash := range a {
 		if _, ok := remove[hash]; !ok {
 			keep = append(keep, hash)
 		}
 	}
-
 	return keep
 }
 
-// keccakState wraps sha3.state. In addition to the usual hash methods, it also supports
-// Read to get a variable amount of data from the hash state. Read is faster than Sum
-// because it doesn't copy the internal state, but also modifies the internal state.
 type keccakState interface {
 	hash.Hash
 	Read([]byte) (int, error)
@@ -274,24 +249,14 @@ func HashData(data []byte) (Hash, error) {
 	return buf, nil
 }
 
-// Bytes2Hex returns the hexadecimal encoding of d.
 func Bytes2Hex(d []byte) string {
 	return hex.EncodeToString(d)
 }
 
-// HexToHash sets byte representation of s to hash.
-// If b is larger than len(h), b will be cropped from the left.
 func HexToHash(s string) Hash { return BytesToHash(FromHex2Bytes(s)) }
 
-// FromHex2Bytes returns the bytes represented by the hexadecimal string s.
-// s may be prefixed with "0x".
-// This is functionally identical to FromHex1 in bytes.go but retained
-// for backward compatibility with existing callers.
-func FromHex2Bytes(s string) []byte {
-	return FromHex1(s)
-}
+func FromHex2Bytes(s string) []byte { return FromHex1(s) }
 
-// Hashes is a slice of common.Hash, implementing sort.Interface
 type Hashes []Hash
 
 func (hashes Hashes) Len() int {

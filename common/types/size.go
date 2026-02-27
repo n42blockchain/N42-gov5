@@ -16,45 +16,45 @@
 
 package types
 
-import (
-	"fmt"
+import "fmt"
+
+const (
+	kiB StorageSize = 1024
+	miB             = 1024 * kiB
+	giB             = 1024 * miB
+	tiB             = 1024 * giB
 )
 
-// StorageSize is a wrapper around a float value that supports user friendly
-// formatting.
 type StorageSize float64
 
-// String implements the stringer interface.
 func (s StorageSize) String() string {
-	if s > 1099511627776 {
-		return fmt.Sprintf("%.2f TiB", s/1099511627776)
+	if s > tiB {
+		return fmt.Sprintf("%.2f TiB", s/tiB)
 	}
-	if s > 1073741824 {
-		return fmt.Sprintf("%.2f GiB", s/1073741824)
+	if s > giB {
+		return fmt.Sprintf("%.2f GiB", s/giB)
 	}
-	if s > 1048576 {
-		return fmt.Sprintf("%.2f MiB", s/1048576)
+	if s > miB {
+		return fmt.Sprintf("%.2f MiB", s/miB)
 	}
-	if s > 1024 {
-		return fmt.Sprintf("%.2f KiB", s/1024)
+	if s > kiB {
+		return fmt.Sprintf("%.2f KiB", s/kiB)
 	}
 	return fmt.Sprintf("%.2f B", s)
 }
 
-// TerminalString implements log.TerminalStringer, formatting a string for console
-// output during logging.
 func (s StorageSize) TerminalString() string {
-	if s > 1099511627776 {
-		return fmt.Sprintf("%.2fTiB", s/1099511627776)
+	if s > tiB {
+		return fmt.Sprintf("%.2fTiB", s/tiB)
 	}
-	if s > 1073741824 {
-		return fmt.Sprintf("%.2fGiB", s/1073741824)
+	if s > giB {
+		return fmt.Sprintf("%.2fGiB", s/giB)
 	}
-	if s > 1048576 {
-		return fmt.Sprintf("%.2fMiB", s/1048576)
+	if s > miB {
+		return fmt.Sprintf("%.2fMiB", s/miB)
 	}
-	if s > 1024 {
-		return fmt.Sprintf("%.2fKiB", s/1024)
+	if s > kiB {
+		return fmt.Sprintf("%.2fKiB", s/kiB)
 	}
 	return fmt.Sprintf("%.2fB", s)
 }

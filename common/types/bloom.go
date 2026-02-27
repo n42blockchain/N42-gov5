@@ -22,7 +22,6 @@ import (
 	bloomfilter "github.com/holiman/bloomfilter/v2"
 )
 
-// Collide rate
 const probCollide = 0.0000001
 
 type hasher []byte
@@ -34,7 +33,6 @@ func (f hasher) BlockSize() int                    { panic("not implemented") }
 func (f hasher) Size() int { return 8 }
 func (f hasher) Sum64() uint64 {
 	if len(f) < 8 {
-		// Pad with zeros if the hasher is too short
 		padded := make([]byte, 8)
 		copy(padded[8-len(f):], f)
 		return binary.BigEndian.Uint64(padded)
@@ -66,15 +64,12 @@ func (b *Bloom) Add(key []byte) error {
 		return fmt.Errorf("bloom filter is not initialized")
 	}
 	if len(key) != HashLength {
-		return fmt.Errorf("key length is not 32 ")
+		return fmt.Errorf("key length is not %d", HashLength)
 	}
 	b.bloom.Add(hasher(key))
 	return nil
 }
 
-// Contain
-// - true maybe in the set
-// - false must not in the set
 func (b *Bloom) Contain(key []byte) bool {
 	if b.bloom == nil {
 		return false
