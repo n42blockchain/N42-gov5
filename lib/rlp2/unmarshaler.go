@@ -31,66 +31,54 @@ func reflectAny(w *buf, v reflect.Value, rv reflect.Value) error {
 	if um, ok := rv.Interface().(Unmarshaler); ok {
 		return um.UnmarshalRLP(w.Bytes())
 	}
-	// figure out what we are reading
 	prefix, err := w.ReadByte()
 	if err != nil {
 		return err
 	}
 	token := identifyToken(prefix)
-	// switch
+
 	switch token {
 	case TokenDecimal:
-		// in this case, the value is just the byte itself
 		switch v.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			v.SetInt(int64(prefix))
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 			v.SetUint(uint64(prefix))
 		case reflect.Invalid:
-			// do nothing
+			// skip
 		default:
 			return fmt.Errorf("%w: decimal must be unmarshal into integer type", ErrDecode)
 		}
-	case TokenShortBlob:
-		sz := int(token.Diff(prefix))
-		str, err := nextFull(w, sz)
+	case TokenShortBlob, TokenLongBlob:
+		data, err := readPayload(w, token, prefix)
 		if err != nil {
 			return err
 		}
-		return putBlob(str, v, rv)
-	case TokenLongBlob:
-		lenSz := int(token.Diff(prefix))
-		sz, err := nextBeInt(w, lenSz)
+		return putBlob(data, v, rv)
+	case TokenShortList, TokenLongList:
+		data, err := readPayload(w, token, prefix)
 		if err != nil {
 			return err
 		}
-		str, err := nextFull(w, sz)
-		if err != nil {
-			return err
-		}
-		return putBlob(str, v, rv)
-	case TokenShortList:
-		sz := int(token.Diff(prefix))
-		buf, err := nextFull(w, sz)
-		if err != nil {
-			return err
-		}
-		return reflectList(newBuf(buf, 0), v, rv)
-	case TokenLongList:
-		lenSz := int(token.Diff(prefix))
-		sz, err := nextBeInt(w, lenSz)
-		if err != nil {
-			return err
-		}
-		buf, err := nextFull(w, sz)
-		if err != nil {
-			return err
-		}
-		return reflectList(newBuf(buf, 0), v, rv)
+		return reflectList(newBuf(data, 0), v, rv)
 	case TokenUnknown:
 		return fmt.Errorf("%w: unknown token", ErrDecode)
 	}
 	return nil
+}
+
+// readPayload reads the payload bytes for short or long blob/list tokens.
+func readPayload(w *buf, token Token, prefix byte) ([]byte, error) {
+	switch token {
+	case TokenShortBlob, TokenShortList:
+		return nextFull(w, int(token.Diff(prefix)))
+	default:
+		sz, err := nextBeInt(w, int(token.Diff(prefix)))
+		if err != nil {
+			return nil, err
+		}
+		return nextFull(w, sz)
+	}
 }
 
 func putBlob(w []byte, v reflect.Value, rv reflect.Value) error {

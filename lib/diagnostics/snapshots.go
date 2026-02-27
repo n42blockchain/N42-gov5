@@ -23,7 +23,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/log/v3"
 )
@@ -73,18 +72,14 @@ func (d *DiagnosticClient) SetFillDBInfo(info SnapshotFillDBStage) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	d.setFillDBInfo(info)
-}
-
-func (d *DiagnosticClient) setFillDBInfo(info SnapshotFillDBStage) {
 	if d.syncStats.SnapshotFillDB.Stages == nil {
 		d.syncStats.SnapshotFillDB.Stages = []SnapshotFillDBStage{info}
-	} else {
-		for idx, stg := range d.syncStats.SnapshotFillDB.Stages {
-			if stg.StageName == info.StageName {
-				d.syncStats.SnapshotFillDB.Stages[idx] = info
-				break
-			}
+		return
+	}
+	for idx, stg := range d.syncStats.SnapshotFillDB.Stages {
+		if stg.StageName == info.StageName {
+			d.syncStats.SnapshotFillDB.Stages[idx] = info
+			return
 		}
 	}
 }
@@ -92,10 +87,7 @@ func (d *DiagnosticClient) setFillDBInfo(info SnapshotFillDBStage) {
 func (d *DiagnosticClient) SaveSnapshotStageStatsToDB() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.saveSnapshotStageStatsToDB()
-}
 
-func (d *DiagnosticClient) saveSnapshotStageStatsToDB() {
 	err := d.db.Update(d.ctx, func(tx kv.RwTx) error {
 		if err := SnapshotFillDBUpdater(d.syncStats.SnapshotFillDB)(tx); err != nil {
 			return err
@@ -138,30 +130,15 @@ func (d *DiagnosticClient) SnapshotFilesListJson(w io.Writer) {
 }
 
 func SnapshotDownloadInfoFromTx(tx kv.Tx) ([]byte, error) {
-	bytes, err := ReadDataFromTable(tx, kv.DiagSyncStages, SnapshotDownloadStatisticsKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return common.CopyBytes(bytes), nil
+	return readAndCopyFromTable(tx, kv.DiagSyncStages, SnapshotDownloadStatisticsKey)
 }
 
 func SnapshotIndexingInfoFromTx(tx kv.Tx) ([]byte, error) {
-	bytes, err := ReadDataFromTable(tx, kv.DiagSyncStages, SnapshotIndexingStatisticsKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return common.CopyBytes(bytes), nil
+	return readAndCopyFromTable(tx, kv.DiagSyncStages, SnapshotIndexingStatisticsKey)
 }
 
 func SnapshotFillDBInfoFromTx(tx kv.Tx) ([]byte, error) {
-	bytes, err := ReadDataFromTable(tx, kv.DiagSyncStages, SnapshotFillDBStatisticsKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return common.CopyBytes(bytes), nil
+	return readAndCopyFromTable(tx, kv.DiagSyncStages, SnapshotFillDBStatisticsKey)
 }
 
 func SnapshotDownloadUpdater(info SnapshotDownloadStatistics) func(tx kv.RwTx) error {

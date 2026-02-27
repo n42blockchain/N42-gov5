@@ -1,11 +1,8 @@
 package metrics
 
-import (
-	"time"
-)
+import "time"
 
 type DurationObserver interface {
-	// ObserveDuration observes duration since start time
 	ObserveDuration(start time.Time)
 }
 

@@ -24,10 +24,6 @@ import (
 	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func (d *DiagnosticClient) setupResourcesUsageDiagnostics(rootCtx context.Context) {
-	d.runMemoryStatsListener(rootCtx)
-}
-
 func (d *DiagnosticClient) ResourcesUsageJson(w io.Writer) {
 	d.resourcesUsageMutex.Lock()
 	defer d.resourcesUsageMutex.Unlock()

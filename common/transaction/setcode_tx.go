@@ -140,7 +140,6 @@ func (al AuthorizationList) Copy() AuthorizationList {
 	return cpy
 }
 
-// copyAccessList creates a deep copy of AccessList
 func copyAccessList(al AccessList) AccessList {
 	if al == nil {
 		return nil

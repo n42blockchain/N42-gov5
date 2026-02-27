@@ -45,20 +45,18 @@ type sigCache struct {
 
 // MakeSigner returns a Signer based on the given chain config and block number.
 func MakeSigner(config *params.ChainConfig, blockNumber *big.Int) Signer {
-	var signer Signer
 	switch {
 	case config.IsLondon(blockNumber.Uint64()):
-		signer = NewLondonSigner(config.ChainID)
+		return NewLondonSigner(config.ChainID)
 	case config.IsBerlin(blockNumber.Uint64()):
-		signer = NewEIP2930Signer(config.ChainID)
+		return NewEIP2930Signer(config.ChainID)
 	case config.IsEip1559FeeCollector(blockNumber.Uint64()):
-		signer = NewEIP155Signer(config.ChainID)
+		return NewEIP155Signer(config.ChainID)
 	case config.IsHomestead(blockNumber.Uint64()):
-		signer = HomesteadSigner{}
+		return HomesteadSigner{}
 	default:
-		signer = FrontierSigner{}
+		return FrontierSigner{}
 	}
-	return signer
 }
 
 // LatestSignerForChainID returns the 'most permissive' Signer available. Specifically,
@@ -470,11 +468,7 @@ func (fs FrontierSigner) SignatureValues(tx *Transaction, sig []byte) (r, s, v *
 	if tx.Type() != LegacyTxType {
 		return nil, nil, nil, ErrTxTypeNotSupported
 	}
-	r, s, v, err = decodeSignature(sig)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return r, s, v, nil
+	return decodeSignature(sig)
 }
 
 // Hash returns the hash to be signed by the sender.

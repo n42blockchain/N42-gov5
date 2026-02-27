@@ -22,7 +22,6 @@ import (
 	"github.com/holiman/uint256"
 )
 
-// TxDataPool provides pooled LegacyTx objects to reduce allocations.
 var TxDataPool = &sync.Pool{
 	New: func() interface{} {
 		return &LegacyTx{
@@ -32,12 +31,10 @@ var TxDataPool = &sync.Pool{
 	},
 }
 
-// GetPooledLegacyTx gets a LegacyTx from the pool.
 func GetPooledLegacyTx() *LegacyTx {
 	return TxDataPool.Get().(*LegacyTx)
 }
 
-// PutPooledLegacyTx returns a LegacyTx to the pool after clearing it.
 func PutPooledLegacyTx(tx *LegacyTx) {
 	if tx == nil {
 		return
@@ -55,7 +52,6 @@ func PutPooledLegacyTx(tx *LegacyTx) {
 	TxDataPool.Put(tx)
 }
 
-// DynamicFeeTxPool provides pooled DynamicFeeTx objects.
 var DynamicFeeTxPool = &sync.Pool{
 	New: func() interface{} {
 		return &DynamicFeeTx{
@@ -66,12 +62,10 @@ var DynamicFeeTxPool = &sync.Pool{
 	},
 }
 
-// GetPooledDynamicFeeTx gets a DynamicFeeTx from the pool.
 func GetPooledDynamicFeeTx() *DynamicFeeTx {
 	return DynamicFeeTxPool.Get().(*DynamicFeeTx)
 }
 
-// PutPooledDynamicFeeTx returns a DynamicFeeTx to the pool after clearing it.
 func PutPooledDynamicFeeTx(tx *DynamicFeeTx) {
 	if tx == nil {
 		return
@@ -91,19 +85,16 @@ func PutPooledDynamicFeeTx(tx *DynamicFeeTx) {
 	DynamicFeeTxPool.Put(tx)
 }
 
-// Uint256Pool for transaction-related uint256 operations.
 var Uint256Pool = &sync.Pool{
 	New: func() interface{} {
 		return new(uint256.Int)
 	},
 }
 
-// GetUint256 gets a uint256.Int from the pool.
 func GetUint256() *uint256.Int {
 	return Uint256Pool.Get().(*uint256.Int)
 }
 
-// PutUint256 returns a uint256.Int to the pool.
 func PutUint256(v *uint256.Int) {
 	if v != nil {
 		v.Clear()
@@ -111,7 +102,6 @@ func PutUint256(v *uint256.Int) {
 	}
 }
 
-// ByteBufferPool for temporary byte buffers in serialization.
 var ByteBufferPool = &sync.Pool{
 	New: func() interface{} {
 		b := make([]byte, 0, 256)
@@ -119,12 +109,10 @@ var ByteBufferPool = &sync.Pool{
 	},
 }
 
-// GetByteBuffer gets a byte buffer from the pool.
 func GetByteBuffer() *[]byte {
 	return ByteBufferPool.Get().(*[]byte)
 }
 
-// PutByteBuffer returns a byte buffer to the pool.
 func PutByteBuffer(b *[]byte) {
 	if b != nil {
 		*b = (*b)[:0]

@@ -72,11 +72,7 @@ const (
 	PQPublicKeyHashSize = 32
 )
 
-// =============================================================================
-// PostQuantumTx Structure
-// =============================================================================
-
-// PostQuantumTx represents a post-quantum secure transaction
+// PostQuantumTx represents a post-quantum secure transaction.
 type PostQuantumTx struct {
 	ChainID   *uint256.Int   // Chain ID
 	Nonce     uint64         // Sender nonce
@@ -101,10 +97,6 @@ type PostQuantumTx struct {
 	R *uint256.Int
 	S *uint256.Int
 }
-
-// =============================================================================
-// PostQuantumTx TxData Interface Implementation
-// =============================================================================
 
 func (tx *PostQuantumTx) txType() byte { return PostQuantumTxType }
 
@@ -211,11 +203,7 @@ func (tx *PostQuantumTx) setSignatureValues(chainID, v, r, s *uint256.Int) {
 	tx.S = s
 }
 
-// =============================================================================
-// PostQuantumTx Specific Methods
-// =============================================================================
-
-// SigningHash returns the hash to be signed (without signature)
+// SigningHash returns the hash to be signed (without signature).
 func (tx *PostQuantumTx) SigningHash() types.Hash {
 	return hash.PrefixedRlpHash(PostQuantumTxType, []interface{}{
 		tx.ChainID,
@@ -343,10 +331,6 @@ func (tx *PostQuantumTx) EstimatedSize() int {
 	return baseSize
 }
 
-// =============================================================================
-// Errors
-// =============================================================================
-
 var (
 	// ErrInvalidPQAlgorithm is returned when the signature algorithm is unknown
 	ErrInvalidPQAlgorithm = errors.New("pq: invalid signature algorithm")
@@ -367,11 +351,43 @@ var (
 	ErrPQPubKeyMismatch = errors.New("pq: public key hash mismatch")
 )
 
-// =============================================================================
-// NewPostQuantumTx creates a new post-quantum transaction
-// =============================================================================
+// IsPostQuantum returns true if the transaction is a post-quantum transaction.
+func (tx *Transaction) IsPostQuantum() bool {
+	return tx.Type() == PostQuantumTxType
+}
 
-// NewPostQuantumTx creates a new PostQuantumTx with the specified parameters
+// GetPostQuantumTx returns the inner PostQuantumTx if this is a PQ transaction.
+func (tx *Transaction) GetPostQuantumTx() *PostQuantumTx {
+	if pqTx, ok := tx.inner.(*PostQuantumTx); ok {
+		return pqTx
+	}
+	return nil
+}
+
+// PQSigAlgo returns the post-quantum signature algorithm (0 for non-PQ transactions).
+func (tx *Transaction) PQSigAlgo() uint8 {
+	if pqTx := tx.GetPostQuantumTx(); pqTx != nil {
+		return pqTx.SigAlgo
+	}
+	return 0
+}
+
+// PQSignature returns the post-quantum signature (nil for non-PQ transactions).
+func (tx *Transaction) PQSignature() []byte {
+	if pqTx := tx.GetPostQuantumTx(); pqTx != nil {
+		return pqTx.PQSignature
+	}
+	return nil
+}
+
+// PQPubKeyData returns the post-quantum public key data (nil for non-PQ transactions).
+func (tx *Transaction) PQPubKeyData() []byte {
+	if pqTx := tx.GetPostQuantumTx(); pqTx != nil {
+		return pqTx.PubKeyData
+	}
+	return nil
+}
+
 func NewPostQuantumTx(
 	chainID *uint256.Int,
 	nonce uint64,

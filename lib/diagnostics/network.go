@@ -53,7 +53,7 @@ func (p *PeerStats) addOrUpdatePeer(peerID string, peerInfo PeerStatisticMsgUpda
 		p.updatePeer(peerID, peerInfo, value)
 	} else {
 		p.addPeer(peerID, peerInfo)
-		if p.getPeersCount() > p.limit {
+		if p.recordsCount > p.limit {
 			p.removePeersWhichExceedLimit(p.limit)
 		}
 	}
@@ -119,10 +119,6 @@ func peerStatisticsFromMsgUpdate(msg PeerStatisticMsgUpdate, prevValue any) Peer
 func (p *PeerStats) GetPeersCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.getPeersCount()
-}
-
-func (p *PeerStats) getPeersCount() int {
 	return p.recordsCount
 }
 
@@ -197,7 +193,7 @@ func (p *PeerStats) GetOldestUpdatedPeersWithSize(size int) []PeerUpdTime {
 }
 
 func (p *PeerStats) getOldestUpdatedPeersWithSize(size int) []PeerUpdTime {
-	timeArray := make([]PeerUpdTime, 0, p.getPeersCount())
+	timeArray := make([]PeerUpdTime, 0, p.recordsCount)
 	for k, v := range p.lastUpdateMap {
 		timeArray = append(timeArray, PeerUpdTime{k, v})
 	}
@@ -219,17 +215,13 @@ func (p *PeerStats) RemovePeersWhichExceedLimit(limit int) {
 }
 
 func (p *PeerStats) removePeersWhichExceedLimit(limit int) {
-	peersToRemove := p.getPeersCount() - limit
+	peersToRemove := p.recordsCount - limit
 	if peersToRemove > 0 {
 		peers := p.getOldestUpdatedPeersWithSize(peersToRemove)
 		for _, peer := range peers {
 			p.removePeer(peer.PeerID)
 		}
 	}
-}
-
-func (d *DiagnosticClient) setupNetworkDiagnostics(rootCtx context.Context) {
-	d.runCollectPeersStatistics(rootCtx)
 }
 
 func (d *DiagnosticClient) runCollectPeersStatistics(rootCtx context.Context) {

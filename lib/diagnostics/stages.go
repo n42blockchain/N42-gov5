@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/log/v3"
 )
@@ -255,14 +254,10 @@ func (d *DiagnosticClient) SetCurrentSyncStage(css CurrentSyncStage) error {
 	return nil
 }
 
-func (d *DiagnosticClient) setStagesState(stadeIdx int, state StageState) {
-	d.syncStages[stadeIdx].State = state
-	d.setSubStagesState(stadeIdx, state)
-}
-
-func (d *DiagnosticClient) setSubStagesState(stadeIdx int, state StageState) {
-	for subIdx := range d.syncStages[stadeIdx].SubStages {
-		d.syncStages[stadeIdx].SubStages[subIdx].State = state
+func (d *DiagnosticClient) setStagesState(stageIdx int, state StageState) {
+	d.syncStages[stageIdx].State = state
+	for subIdx := range d.syncStages[stageIdx].SubStages {
+		d.syncStages[stageIdx].SubStages[subIdx].State = state
 	}
 }
 
@@ -293,31 +288,20 @@ func (d *DiagnosticClient) SetCurrentSyncSubStage(css CurrentSyncSubStage) {
 
 // Deprecated - used only in tests. Non-thread-safe.
 func (d *DiagnosticClient) GetStageState(stageId string) (StageState, error) {
-	return d.getStageState(stageId)
-}
-
-func (d *DiagnosticClient) getStageState(stageId string) (StageState, error) {
 	for _, stage := range d.syncStages {
 		if stage.ID == stageId {
 			return stage.State, nil
 		}
 	}
-
 	stagesIdsList := make([]string, 0, len(d.syncStages))
 	for _, stage := range d.syncStages {
 		stagesIdsList = append(stagesIdsList, stage.ID)
 	}
-
 	return 0, fmt.Errorf("stage %s not found in stages list %s", stageId, stagesIdsList)
 }
 
 func SyncStagesFromTX(tx kv.Tx) ([]byte, error) {
-	bytes, err := ReadDataFromTable(tx, kv.DiagSyncStages, StagesListKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return common.CopyBytes(bytes), nil
+	return readAndCopyFromTable(tx, kv.DiagSyncStages, StagesListKey)
 }
 
 func StagesListUpdater(info []SyncStage) func(tx kv.RwTx) error {
@@ -333,6 +317,6 @@ func (d *DiagnosticClient) SyncStagesJson(w io.Writer) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if err := json.NewEncoder(w).Encode(d.syncStages); err != nil {
-		log.Debug("[diagnostics] HardwareInfoJson", "err", err)
+		log.Debug("[diagnostics] SyncStagesJson", "err", err)
 	}
 }

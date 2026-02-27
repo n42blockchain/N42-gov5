@@ -36,10 +36,6 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
-// =============================================================================
-// Public Key Mode Constants
-// =============================================================================
-
 const (
 	// PubKeyModeFull indicates the transaction contains a full public key
 	// Used for first-time transactions or when registry is unavailable
@@ -49,10 +45,6 @@ const (
 	// References the public key stored in the on-chain registry
 	PubKeyModeHash uint8 = 1
 )
-
-// =============================================================================
-// Transaction Size Estimation
-// =============================================================================
 
 // TxSizeInfo contains size information for a PQ transaction
 type TxSizeInfo struct {
@@ -140,10 +132,6 @@ func GetExpectedSignatureSize(algo uint8) int {
 	}
 }
 
-// =============================================================================
-// Optimized Transaction Builder
-// =============================================================================
-
 // OptimizedPQTxBuilder helps create optimized PQ transactions
 type OptimizedPQTxBuilder struct {
 	registry   PQPublicKeyRegistry
@@ -221,10 +209,6 @@ func (b *OptimizedPQTxBuilder) BuildTransaction(
 	return tx
 }
 
-// =============================================================================
-// Transaction Validation with Registry
-// =============================================================================
-
 // ValidatePQTxWithRegistry validates a PQ transaction using the registry for key lookup
 func ValidatePQTxWithRegistry(tx *PostQuantumTx, registry PQPublicKeyRegistry) ([]byte, error) {
 	// If full public key is provided, validate size and return it
@@ -259,11 +243,6 @@ func ValidatePQTxWithRegistry(tx *PostQuantumTx, registry PQPublicKeyRegistry) (
 	return pubKey, nil
 }
 
-// =============================================================================
-// Size Comparison Utilities
-// =============================================================================
-
-// CompareTxSizes compares first-time vs subsequent transaction sizes
 type TxSizeComparison struct {
 	Algorithm       string
 	FirstTxSize     int
@@ -302,10 +281,6 @@ func GetAllSizeComparisons() []TxSizeComparison {
 	return comparisons
 }
 
-// =============================================================================
-// Public Key Registration Helper
-// =============================================================================
-
 // RegisterKeyData contains data needed for key registration
 type RegisterKeyData struct {
 	PublicKey []byte
@@ -326,10 +301,6 @@ func PrepareKeyRegistration(pubKey []byte, algo uint8) (*RegisterKeyData, error)
 		KeyHash:   hash.Hash(pubKey),
 	}, nil
 }
-
-// =============================================================================
-// Batch Transaction Optimization
-// =============================================================================
 
 // BatchTxOptimizer optimizes a batch of transactions for the same sender
 type BatchTxOptimizer struct {

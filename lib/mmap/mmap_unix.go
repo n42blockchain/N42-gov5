@@ -30,83 +30,46 @@ import (
 
 const MaxMapSize = 0xFFFFFFFFFFFF
 
-// mmap memory maps a DB's data file.
+// MmapRw memory maps a file with read-write permissions.
 func MmapRw(f *os.File, size int) ([]byte, *[MaxMapSize]byte, error) {
-	// Map the data file to memory.
-	mmapHandle1, err := unix.Mmap(int(f.Fd()), 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Advise the kernel that the mmap is accessed randomly.
-	err = unix.Madvise(mmapHandle1, syscall.MADV_RANDOM)
-	if err != nil && !errors.Is(err, syscall.ENOSYS) {
-		// Ignore not implemented error in kernel because it still works.
-		return nil, nil, fmt.Errorf("madvise: %w", err)
-	}
-	mmapHandle2 := (*[MaxMapSize]byte)(unsafe.Pointer(&mmapHandle1[0]))
-	return mmapHandle1, mmapHandle2, nil
+	return mmapWithProt(f, size, syscall.PROT_READ|syscall.PROT_WRITE)
 }
+
+// Mmap memory maps a file with read-only permissions.
 func Mmap(f *os.File, size int) ([]byte, *[MaxMapSize]byte, error) {
-	// Map the data file to memory.
-	mmapHandle1, err := unix.Mmap(int(f.Fd()), 0, size, syscall.PROT_READ, syscall.MAP_SHARED)
+	return mmapWithProt(f, size, syscall.PROT_READ)
+}
+
+func mmapWithProt(f *os.File, size int, prot int) ([]byte, *[MaxMapSize]byte, error) {
+	mmapHandle1, err := unix.Mmap(int(f.Fd()), 0, size, prot, syscall.MAP_SHARED)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// Advise the kernel that the mmap is accessed randomly.
-	err = unix.Madvise(mmapHandle1, syscall.MADV_RANDOM)
-	if err != nil && !errors.Is(err, syscall.ENOSYS) {
-		// Ignore not implemented error in kernel because it still works.
-		return nil, nil, fmt.Errorf("madvise: %w", err)
+	if err := madvise(mmapHandle1, syscall.MADV_RANDOM); err != nil {
+		return nil, nil, err
 	}
 	mmapHandle2 := (*[MaxMapSize]byte)(unsafe.Pointer(&mmapHandle1[0]))
 	return mmapHandle1, mmapHandle2, nil
 }
 
-func MadviseSequential(mmapHandle1 []byte) error {
-	err := unix.Madvise(mmapHandle1, syscall.MADV_SEQUENTIAL)
+func MadviseSequential(mmapHandle1 []byte) error { return madvise(mmapHandle1, syscall.MADV_SEQUENTIAL) }
+func MadviseNormal(mmapHandle1 []byte) error     { return madvise(mmapHandle1, syscall.MADV_NORMAL) }
+func MadviseWillNeed(mmapHandle1 []byte) error   { return madvise(mmapHandle1, syscall.MADV_WILLNEED) }
+func MadviseRandom(mmapHandle1 []byte) error     { return madvise(mmapHandle1, syscall.MADV_RANDOM) }
+
+// madvise calls unix.Madvise and ignores ENOSYS (not implemented).
+func madvise(b []byte, advice int) error {
+	err := unix.Madvise(b, advice)
 	if err != nil && !errors.Is(err, syscall.ENOSYS) {
-		// Ignore not implemented error in kernel because it still works.
 		return fmt.Errorf("madvise: %w", err)
 	}
 	return nil
 }
 
-func MadviseNormal(mmapHandle1 []byte) error {
-	err := unix.Madvise(mmapHandle1, syscall.MADV_NORMAL)
-	if err != nil && !errors.Is(err, syscall.ENOSYS) {
-		// Ignore not implemented error in kernel because it still works.
-		return fmt.Errorf("madvise: %w", err)
-	}
-	return nil
-}
-
-func MadviseWillNeed(mmapHandle1 []byte) error {
-	err := unix.Madvise(mmapHandle1, syscall.MADV_WILLNEED)
-	if err != nil && !errors.Is(err, syscall.ENOSYS) {
-		// Ignore not implemented error in kernel because it still works.
-		return fmt.Errorf("madvise: %w", err)
-	}
-	return nil
-}
-
-func MadviseRandom(mmapHandle1 []byte) error {
-	err := unix.Madvise(mmapHandle1, syscall.MADV_RANDOM)
-	if err != nil && !errors.Is(err, syscall.ENOSYS) {
-		// Ignore not implemented error in kernel because it still works.
-		return fmt.Errorf("madvise: %w", err)
-	}
-	return nil
-}
-
-// munmap unmaps a DB's data file from memory.
+// Munmap unmaps a previously mapped region.
 func Munmap(mmapHandle1 []byte, _ *[MaxMapSize]byte) error {
-	// Ignore the unmap if we have no mapped data.
 	if mmapHandle1 == nil {
 		return nil
 	}
-	// Unmap using the original byte slice.
-	err := unix.Munmap(mmapHandle1)
-	return err
+	return unix.Munmap(mmapHandle1)
 }

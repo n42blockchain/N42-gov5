@@ -20,7 +20,6 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/avmutil"
 )
 
 type DynamicFeeTx struct {
@@ -44,7 +43,7 @@ func (tx *DynamicFeeTx) copy() TxData {
 		Nonce: tx.Nonce,
 		To:    copyAddressPtr(tx.To),
 		From:  copyAddressPtr(tx.From),
-		Data:  avmutil.CopyBytes(tx.Data),
+		Data:  types.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
 		// These are copied below.
 		AccessList: make(AccessList, len(tx.AccessList)),
@@ -85,7 +84,6 @@ func (tx *DynamicFeeTx) copy() TxData {
 	return cpy
 }
 
-// accessors for innerTx.
 func (tx *DynamicFeeTx) txType() byte            { return DynamicFeeTxType }
 func (tx *DynamicFeeTx) chainID() *uint256.Int   { return tx.ChainID }
 func (tx *DynamicFeeTx) accessList() AccessList      { return tx.AccessList }

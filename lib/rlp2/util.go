@@ -54,16 +54,15 @@ func identifyToken(b byte) Token {
 	switch {
 	case b <= 127:
 		return TokenDecimal
-	case b >= 128 && b <= 183:
+	case b <= 183:
 		return TokenShortBlob
-	case b >= 184 && b <= 191:
+	case b <= 191:
 		return TokenLongBlob
-	case b >= 192 && b <= 247:
+	case b <= 247:
 		return TokenShortList
-	case b >= 248 && b <= 255:
+	default:
 		return TokenLongList
 	}
-	return TokenUnknown
 }
 
 // BeInt parses Big Endian representation of an integer from given payload at given position
