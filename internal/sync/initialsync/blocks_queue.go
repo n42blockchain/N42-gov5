@@ -98,7 +98,6 @@ func newBlocksQueue(ctx context.Context, cfg *blocksQueueConfig) *blocksQueue {
 	}
 	highestExpectedBlockNr := cfg.highestExpectedBlockNr
 
-	// Override fetcher's sync mode.
 	blocksFetcher.mode = cfg.mode
 
 	queue := &blocksQueue{
@@ -112,7 +111,6 @@ func newBlocksQueue(ctx context.Context, cfg *blocksQueueConfig) *blocksQueue {
 		quit:                   make(chan struct{}),
 	}
 
-	// Configure state machines.
 	queue.smm = newStateMachineManager()
 	queue.smm.addEventHandler(eventTick, stateNew, queue.onScheduleEvent(ctx))
 	queue.smm.addEventHandler(eventDataReceived, stateScheduled, queue.onDataReceivedEvent(ctx))
@@ -158,7 +156,6 @@ func (q *blocksQueue) loop() {
 		log.Debug("Can not start blocks provider", "err", err)
 	}
 
-	// Define initial state machines starting from the block after current head.
 	startBlockNr := new(uint256.Int).AddUint64(q.chain.CurrentBlock().Number64(), 1)
 	blocksPerRequest := q.blocksFetcher.blocksPerPeriod
 	for i := startBlockNr.Clone(); i.Cmp(new(uint256.Int).AddUint64(startBlockNr, blocksPerRequest*lookaheadSteps)) == -1; i = i.AddUint64(i, blocksPerRequest) {
@@ -231,7 +228,6 @@ func (q *blocksQueue) loop() {
 				q.cancel()
 				return
 			}
-			// Update state of an epoch for which data is received.
 			if fsm, ok := q.smm.findStateMachine(response.start); ok {
 				if err := fsm.trigger(eventDataReceived, response); err != nil {
 					log.Debug("Can not process event",
@@ -257,9 +253,7 @@ func (q *blocksQueue) waitHighestExpectedBlockNr() bool {
 	if q.ctx.Err() != nil {
 		return false
 	}
-	// Check highest expected blockNr when we approach chain's head slot.
 	if q.chain.CurrentBlock().Number64().Cmp(q.highestExpectedBlockNr) >= 0 {
-		// By the time initial sync is complete, highest slot may increase, re-check.
 		targetBlockNr := q.blocksFetcher.bestFinalizedBlockNr()
 		if q.highestExpectedBlockNr.Cmp(targetBlockNr) == -1 {
 			q.highestExpectedBlockNr = targetBlockNr
@@ -308,14 +302,12 @@ func (q *blocksQueue) onDataReceivedEvent(ctx context.Context) eventHandlerFn {
 		if response.err != nil {
 			switch response.err {
 			case errBlockNrIsTooHigh:
-				// Current window is already too big, re-request previous epochs.
 				for _, fsm := range q.smm.machines {
 					if fsm.start.Cmp(response.start) == -1 && fsm.state == stateSkipped {
 						fsm.setState(stateNew)
 					}
 				}
 			case n42sync.ErrInvalidFetchedData:
-				// Peer returned invalid data, penalize.
 				q.blocksFetcher.p2p.Peers().Scorers().BadResponsesScorer().Increment(m.pid)
 				log.Debug("Peer is penalized for invalid blocks", "pid", response.pid)
 			}
@@ -354,15 +346,11 @@ func (q *blocksQueue) onReadyToSendEvent(ctx context.Context) eventHandlerFn {
 			return stateSent, nil
 		}
 
-		// Make sure that we send epochs in a correct order.
-		// If machine is the first (has lowest start block), send.
 		if m.isFirst() {
 			return send()
 		}
 
-		// Make sure that previous epoch is already processed.
 		for _, fsm := range q.smm.machines {
-			// Review only previous slots.
 			if fsm.start.Cmp(m.start) == -1 {
 				switch fsm.state {
 				case stateNew, stateScheduled, stateDataParsed:
@@ -386,27 +374,21 @@ func (q *blocksQueue) onProcessSkippedEvent(ctx context.Context) eventHandlerFn 
 			return m.state, errInvalidInitialState
 		}
 
-		// Only the highest epoch with skipped state can trigger extension.
 		if !m.isLast() {
-			// When a state machine stays in skipped state for too long - reset it.
 			if time.Since(m.updated) > skippedMachineTimeout {
 				return stateNew, nil
 			}
 			return m.state, nil
 		}
 
-		// Make sure that all machines are in skipped state i.e. manager cannot progress without reset or
-		// moving the last machine's start block forward (in an attempt to find next non-skipped block).
 		if !q.smm.allMachinesInState(stateSkipped) {
 			return m.state, nil
 		}
 
-		// Check if we have enough peers to progress, or sync needs to halt (due to no peers available).
 		if q.blocksFetcher.bestFinalizedBlockNr().Cmp(q.chain.CurrentBlock().Number64()) >= 0 {
 			return stateSkipped, errNoRequiredPeers
 		}
 
-		// All machines are skipped, FSMs need reset.
 		startBlockNr := new(uint256.Int).AddUint64(q.chain.CurrentBlock().Number64(), 1)
 
 		return stateSkipped, q.resetFromBlockNr(ctx, startBlockNr)
@@ -424,7 +406,6 @@ func (q *blocksQueue) onCheckStaleEvent(ctx context.Context) eventHandlerFn {
 			return m.state, errInvalidInitialState
 		}
 
-		// Break out immediately if bucket is not stale.
 		if time.Since(m.updated) < staleEpochTimeout {
 			return m.state, nil
 		}

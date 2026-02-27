@@ -28,12 +28,9 @@ var (
 	ingressPubsubTrafficMeter = metrics.GetOrRegisterMeter("p2p/pubsub/ingress", nil)
 )
 
-type rawTracer struct {
-}
+type rawTracer struct{}
 
-func newRawTracer() *rawTracer {
-	return &rawTracer{}
-}
+func newRawTracer() *rawTracer { return &rawTracer{} }
 
 func (m rawTracer) AddPeer(p peer.ID, proto protocol.ID)             {}
 func (m rawTracer) RemovePeer(p peer.ID)                             {}

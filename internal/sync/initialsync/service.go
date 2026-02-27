@@ -53,8 +53,6 @@ func NewService(ctx context.Context, cfg *Config) *Service {
 		counter: ratecounter.NewRateCounter(counterSeconds * time.Second),
 		done:    make(chan struct{}),
 	}
-	// Mark as syncing immediately to prevent block topic subscriber
-	// from processing blocks before initial sync completes
 	s.syncing.Store(true)
 
 	return s
@@ -72,7 +70,6 @@ func (s *Service) Start() {
 
 	log.Info("Starting chain synchronization...")
 
-	// Loop until fully caught up to handle case where chain advances during sync
 	for {
 		highestExpectedBlockNr := s.waitForMinimumPeers()
 		if err := s.roundRobinSync(highestExpectedBlockNr); err != nil {
@@ -82,12 +79,8 @@ func (s *Service) Start() {
 			log.Crit("Sync failed", "err", err)
 		}
 
-		// Check if we're still behind after sync completed
 		currentBlock := s.cfg.Chain.CurrentBlock().Number64()
 		newHighest, peers := s.cfg.P2P.Peers().BestPeers(1, currentBlock)
-
-		// If no peers or caught up (within 5 blocks), we're done
-		// Future blocks + gossip will handle small gaps
 		if len(peers) == 0 || newHighest.Cmp(currentBlock) <= 0 ||
 			newHighest.Uint64() <= currentBlock.Uint64()+5 {
 			break
@@ -156,7 +149,6 @@ func (s *Service) Resync() error {
 	if s.ctx.Err() != nil {
 		return s.ctx.Err()
 	}
-	// Set it to false since we are syncing again.
 	s.markSyncing()
 	event.GlobalEvent.Send(common.DownloaderStartEvent{})
 	defer func() {
@@ -183,7 +175,6 @@ func (s *Service) Resync() error {
 func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 	required := s.cfg.P2P.GetConfig().MinSyncPeers
 
-	// Check if we should skip waiting for peers
 	if s.shouldSkipPeerWait() {
 		log.Info("Skipping peer discovery (genesis/standalone mode)")
 		return s.cfg.Chain.CurrentBlock().Number64()
@@ -210,15 +201,13 @@ func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 				"timeout", fmt.Sprintf("%ds", remaining*5))
 		}
 
-		// After max wait, check if we should proceed anyway
 		if waitCount >= maxWaitCount {
 			if s.cfg.Chain.CurrentBlock().Number64().IsZero() {
 				log.Warn("Peer discovery timeout, starting as genesis node")
 				return s.cfg.Chain.CurrentBlock().Number64()
 			}
-			// For non-genesis nodes, continue waiting but log warning
 			log.Warn("Extended peer wait, node may be isolated from network")
-			waitCount = 0 // Reset counter to continue waiting
+			waitCount = 0
 		}
 
 		select {
@@ -230,28 +219,17 @@ func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 	return
 }
 
-// shouldSkipPeerWait returns true if the node should skip waiting for peers.
-// This is the case when:
-// 1. MinSyncPeers is 0 (standalone/dev mode)
-// 2. No bootstrap nodes are configured AND we're at genesis block (first node in network)
+// shouldSkipPeerWait returns true if the node should skip waiting for peers:
+// MinSyncPeers==0 (standalone/dev), or genesis block with no bootstrap nodes.
 func (s *Service) shouldSkipPeerWait() bool {
 	cfg := s.cfg.P2P.GetConfig()
-	
-	// If MinSyncPeers is 0, always skip (dev/standalone mode)
 	if cfg.MinSyncPeers == 0 {
 		return true
 	}
-	
-	// Check if we're at genesis block (block 0)
-	isGenesis := s.cfg.Chain.CurrentBlock().Number64().IsZero()
-	if !isGenesis {
+	if !s.cfg.Chain.CurrentBlock().Number64().IsZero() {
 		return false
 	}
-	
-	// Check if no bootstrap nodes are configured
-	noBootstrapNodes := len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0
-	
-	return noBootstrapNodes
+	return len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0
 }
 
 // markSyncing marks node as currently syncing.

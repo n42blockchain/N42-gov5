@@ -39,25 +39,20 @@ func (f *blocksFetcher) removeStalePeerLocks(age time.Duration) {
 }
 
 // selectFailOverPeer randomly selects fail over peer from the list of available peers.
-// Fix: Use iterative approach instead of recursion to prevent stack overflow.
 func (f *blocksFetcher) selectFailOverPeer(excludedPID peer.ID, peers []peer.ID) (peer.ID, error) {
 	if len(peers) == 0 {
 		return "", errNoPeersAvailable
 	}
 
-	// Filter out the excluded peer first
 	availablePeers := make([]peer.ID, 0, len(peers))
 	for _, p := range peers {
 		if p != excludedPID {
 			availablePeers = append(availablePeers, p)
 		}
 	}
-
 	if len(availablePeers) == 0 {
 		return "", errNoPeersAvailable
 	}
-
-	// Select random peer from available peers
 	ind := f.rand.Int() % len(availablePeers)
 	return availablePeers[ind], nil
 }
@@ -71,7 +66,6 @@ func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, err
 	cfg := f.p2p.GetConfig()
 	required := cfg.MinSyncPeers
 
-	// Check if we should skip waiting for peers
 	if f.shouldSkipPeerWait() {
 		log.Info("Skipping peer wait in blocksFetcher (genesis node or standalone mode)")
 		return nil, nil
@@ -95,7 +89,6 @@ func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, err
 			"required", required,
 			"waitCount", waitCount)
 
-		// After max wait, check if we should proceed anyway
 		if waitCount >= maxWaitCount {
 			if f.chain.CurrentBlock().Number64().IsZero() {
 				log.Warn("Timeout waiting for peers on genesis block (blocksFetcher), proceeding")
@@ -117,22 +110,13 @@ func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, err
 // shouldSkipPeerWait returns true if the fetcher should skip waiting for peers.
 func (f *blocksFetcher) shouldSkipPeerWait() bool {
 	cfg := f.p2p.GetConfig()
-
-	// If MinSyncPeers is 0, always skip (dev/standalone mode)
 	if cfg.MinSyncPeers == 0 {
 		return true
 	}
-
-	// Check if we're at genesis block (block 0)
-	isGenesis := f.chain.CurrentBlock().Number64().IsZero()
-	if !isGenesis {
+	if !f.chain.CurrentBlock().Number64().IsZero() {
 		return false
 	}
-
-	// Check if no bootstrap nodes are configured
-	noBootstrapNodes := len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0
-
-	return noBootstrapNodes
+	return len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0
 }
 
 // filterPeers returns transformed list of peers, weight sorted by scores and capacity remaining.
@@ -167,28 +151,16 @@ func (f *blocksFetcher) filterPeers(ctx context.Context, peers []peer.ID, peersP
 }
 
 // trimPeers limits peer list, returning only specified percentage of peers.
-// Takes system constraints into account (min/max peers to sync).
 func trimPeers(peers []peer.ID, peersPercentage float64, minSyncPeers int) []peer.ID {
 	if len(peers) == 0 {
 		return peers
 	}
-
-	required := minSyncPeers
-	// Weak/slow peers will be pushed down the list and trimmed since only percentage of peers is selected.
 	limit := math.Round(float64(len(peers)) * peersPercentage)
-	// Limit cannot be less that minimum peers required by sync mechanism.
-	limit = math.Max(limit, float64(required))
-	// Limit cannot be higher than number of peers available (safe-guard).
+	limit = math.Max(limit, float64(minSyncPeers))
 	limit = math.Min(limit, float64(len(peers)))
 
-	// Defensive bounds check against float64 edge cases (NaN, overflow).
 	limitInt := int(math.Floor(limit))
-	if limitInt < 0 {
-		limitInt = 0
-	}
-	if limitInt > len(peers) {
-		limitInt = len(peers)
-	}
-
+	limitInt = max(limitInt, 0)
+	limitInt = min(limitInt, len(peers))
 	return peers[:limitInt]
 }

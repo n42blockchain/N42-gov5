@@ -20,16 +20,7 @@ import (
 	"github.com/n42blockchain/N42/internal/vm"
 )
 
-// =============================================================================
-// Precompile Factory Functions
-//
-// These functions create precompiled contract instances.
-// They wrap the existing implementations in internal/vm/contracts.go
-// to avoid code duplication during the migration period.
-// =============================================================================
-
 // NewEcrecover creates an ecrecover precompile (address 0x01).
-// Recovers the address associated with the public key from elliptic curve signature.
 func NewEcrecover() PrecompiledContract {
 	return vm.GetEcrecover()
 }
@@ -45,55 +36,39 @@ func NewRipemd160() PrecompiledContract {
 }
 
 // NewDataCopy creates a data copy precompile (address 0x04).
-// Simply copies input data to output (identity function).
 func NewDataCopy() PrecompiledContract {
 	return vm.GetDataCopy()
 }
 
 // NewBigModExp creates a big integer modular exponentiation precompile (address 0x05).
-// Parameters:
-//   - eip2565: enables EIP-2565 gas repricing (Berlin+)
-//   - eip7823: enables EIP-7823 input size limits (max 1024 bytes, Fusaka+)
-//   - eip7883: enables EIP-7883 gas cost increase (3x multiplier, min 500, Fusaka+)
 func NewBigModExp(eip2565, eip7823, eip7883 bool) PrecompiledContract {
 	return vm.GetBigModExp(eip2565, eip7823, eip7883)
 }
 
 // NewBn256Add creates a BN256 curve point addition precompile (address 0x06).
-// istanbul uses Istanbul gas costs (reduced from Byzantium).
 func NewBn256Add(istanbul bool) PrecompiledContract {
 	return vm.GetBn256Add(istanbul)
 }
 
 // NewBn256ScalarMul creates a BN256 scalar multiplication precompile (address 0x07).
-// istanbul uses Istanbul gas costs.
 func NewBn256ScalarMul(istanbul bool) PrecompiledContract {
 	return vm.GetBn256ScalarMul(istanbul)
 }
 
 // NewBn256Pairing creates a BN256 pairing check precompile (address 0x08).
-// istanbul uses Istanbul gas costs.
 func NewBn256Pairing(istanbul bool) PrecompiledContract {
 	return vm.GetBn256Pairing(istanbul)
 }
 
 // NewBlake2F creates a BLAKE2b F compression function precompile (address 0x09).
-// Added in Istanbul (EIP-152).
 func NewBlake2F() PrecompiledContract {
 	return vm.GetBlake2F()
 }
 
 // NewPointEvaluation creates a point evaluation precompile (address 0x0a).
-// Added in Cancun (EIP-4844).
 func NewPointEvaluation() PrecompiledContract {
 	return vm.GetPointEvaluationPrecompile()
 }
-
-// =============================================================================
-// BLS12-381 Precompiles (EIP-2537 Pectra)
-// https://eips.ethereum.org/EIPS/eip-2537
-// Addresses: 0x0b - 0x13
-// =============================================================================
 
 // NewBls12381G1Add creates a BLS12-381 G1 addition precompile (address 0x0b).
 func NewBls12381G1Add() PrecompiledContract {
@@ -140,12 +115,7 @@ func NewBls12381MapG2() PrecompiledContract {
 	return vm.GetBls12381MapG2()
 }
 
-// =============================================================================
-// secp256r1 (P-256) Precompiles (EIP-7212/EIP-7951)
-// =============================================================================
-
 // NewP256Verify creates a P-256 ECDSA signature verification precompile (address 0x100).
-// This verifies signatures on the secp256r1 (P-256/prime256v1) curve.
 func NewP256Verify() PrecompiledContract {
 	return vm.GetP256Verify()
 }

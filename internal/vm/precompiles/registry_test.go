@@ -13,18 +13,10 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-// =============================================================================
-// Interface Compliance Tests
-// =============================================================================
-
 func TestRegistryImplementsPrecompileRegistry(t *testing.T) {
 	var _ vm.PrecompileRegistry = (*Registry)(nil)
 	t.Log("✓ Registry implements vm.PrecompileRegistry")
 }
-
-// =============================================================================
-// Registry Creation Tests
-// =============================================================================
 
 func TestNewRegistryHomestead(t *testing.T) {
 	rules := &params.Rules{
@@ -108,10 +100,6 @@ func TestNewRegistryBerlin(t *testing.T) {
 	t.Log("✓ Berlin registry has correct precompiles")
 }
 
-// =============================================================================
-// Lookup Tests
-// =============================================================================
-
 func TestRegistryLookup(t *testing.T) {
 	rules := &params.Rules{IsByzantium: true, IsIstanbul: true}
 	registry := NewRegistry(rules)
@@ -139,10 +127,6 @@ func TestRegistryLookup(t *testing.T) {
 	t.Log("✓ Registry.Lookup works correctly")
 }
 
-// =============================================================================
-// ActivePrecompiles Tests
-// =============================================================================
-
 func TestActivePrecompiles(t *testing.T) {
 	rules := &params.Rules{IsByzantium: true, IsIstanbul: true}
 	registry := NewRegistry(rules)
@@ -161,10 +145,6 @@ func TestActivePrecompiles(t *testing.T) {
 
 	t.Log("✓ ActivePrecompiles returns valid addresses")
 }
-
-// =============================================================================
-// Run Tests
-// =============================================================================
 
 func TestRegistryRun(t *testing.T) {
 	rules := &params.Rules{IsByzantium: true, IsIstanbul: true}
@@ -219,10 +199,6 @@ func TestRegistryRunNonExistent(t *testing.T) {
 	t.Log("✓ Registry.Run handles non-existent precompile correctly")
 }
 
-// =============================================================================
-// Instrumentation Tests
-// =============================================================================
-
 func TestRegistryWithMetrics(t *testing.T) {
 	rules := &params.Rules{IsByzantium: true, IsIstanbul: true}
 	registry := NewRegistry(rules, WithMetrics(true))
@@ -244,10 +220,6 @@ func TestRegistryWithMetrics(t *testing.T) {
 	t.Log("✓ Registry metrics work correctly")
 }
 
-// =============================================================================
-// Legacy Compatibility Tests
-// =============================================================================
-
 func TestFromLegacyMap(t *testing.T) {
 	// Simulate a legacy map
 	legacyMap := map[types.Address]PrecompiledContract{
@@ -266,10 +238,6 @@ func TestFromLegacyMap(t *testing.T) {
 
 	t.Log("✓ FromLegacyMap creates correct registry")
 }
-
-// =============================================================================
-// Precompile Execution Tests
-// =============================================================================
 
 func TestEcrecoverPrecompile(t *testing.T) {
 	ecrecover := NewEcrecover()

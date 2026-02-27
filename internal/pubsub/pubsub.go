@@ -112,10 +112,7 @@ func (m *n42PubSub) JoinTopic(topic string) (*pubsub.Topic, error) {
 }
 
 func (m *n42PubSub) isRunning() bool {
-	if atomic.LoadInt32(&m.running) <= 0 {
-		return false
-	}
-	return true
+	return atomic.LoadInt32(&m.running) > 0
 }
 
 func (m *n42PubSub) Publish(topic string, msg proto.Message) error {

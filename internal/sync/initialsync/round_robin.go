@@ -34,14 +34,12 @@ func (s *Service) roundRobinSync(highestExpectedBlockNr *uint256.Int) error {
 
 	s.counter = ratecounter.NewRateCounter(counterSeconds * time.Second)
 	s.highestExpectedBlockNr = highestExpectedBlockNr.Clone()
-	// Step 1 - Sync to end of finalized BlockNr.
 	return s.syncToFinalizedBlockNr(ctx, highestExpectedBlockNr)
 }
 
 // syncToFinalizedBlockNr sync from head to best known finalized epoch.
 func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlockNr *uint256.Int) error {
 	if s.cfg.Chain.CurrentBlock().Number64().Cmp(highestExpectedBlockNr) >= 0 {
-		// No need to sync, already synced to the finalized slot.
 		log.Debug("Already synced to finalized block number")
 		return nil
 	}
@@ -83,7 +81,6 @@ func (s *Service) processFetchedData(ctx context.Context, startBlockNr *uint256.
 		return
 	}
 
-	// Use Batch Block Verify to process and verify batches directly.
 	if _, err := s.processBatchedBlocks(ctx, data.blocks, s.cfg.Chain.InsertChain); err != nil {
 		if ctx.Err() != nil {
 			return // suppress errors during shutdown
@@ -114,7 +111,6 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 		return 0, nil
 	}
 
-	// Safety check: block 0 (genesis) has no parent to check
 	firstBlock := blocks[0]
 	blockNum := firstBlock.Number64().Uint64()
 	if blockNum > 0 && !s.cfg.Chain.HasBlock(firstBlock.ParentHash(), blockNum-1) {
@@ -179,7 +175,6 @@ func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 	lastBlock := blks[len(blks)-1]
 	currentBlockNum := utils.ConvertH256ToUint256Int(lastBlock.Header.Number).Uint64()
 
-	// Initialize sync tracking on first call
 	if s.syncStartTime.IsZero() {
 		s.syncStartTime = time.Now()
 		s.syncStartBlock = currentBlockNum
@@ -187,7 +182,6 @@ func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 		s.lastLogBlock = currentBlockNum
 	}
 
-	// Throttle logging: every 5 seconds or every 10000 blocks
 	now := time.Now()
 	blocksSinceLog := currentBlockNum - s.lastLogBlock
 	timeSinceLog := now.Sub(s.lastLogTime)
@@ -196,7 +190,6 @@ func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 		return
 	}
 
-	// Update last log markers
 	s.lastLogTime = now
 	s.lastLogBlock = currentBlockNum
 
@@ -208,7 +201,6 @@ func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
 	targetNum := s.highestExpectedBlockNr.Uint64()
 	remaining := targetNum - currentBlockNum
 
-	// Calculate ETA
 	eta := "calculating..."
 	if rate > 0 && remaining > 0 {
 		etaSecs := float64(remaining) / rate
