@@ -65,9 +65,8 @@ type mdbxPieceCompletion struct {
 
 var _ storage.PieceCompletion = (*mdbxPieceCompletion)(nil)
 
-func NewMdbxPieceCompletion(db kv.RwDB) (ret storage.PieceCompletion, err error) {
-	ret = &mdbxPieceCompletion{db: db}
-	return
+func NewMdbxPieceCompletion(db kv.RwDB) (storage.PieceCompletion, error) {
+	return &mdbxPieceCompletion{db: db}, nil
 }
 
 func (m mdbxPieceCompletion) Get(pk metainfo.PieceKey) (cn storage.Completion, err error) {
@@ -129,9 +128,8 @@ type mdbxPieceCompletionBatch struct {
 
 var _ storage.PieceCompletion = (*mdbxPieceCompletionBatch)(nil)
 
-func NewMdbxPieceCompletionBatch(db kv.RwDB) (ret storage.PieceCompletion, err error) {
-	ret = &mdbxPieceCompletionBatch{db: db.(*mdbx.MdbxKV)}
-	return
+func NewMdbxPieceCompletionBatch(db kv.RwDB) (storage.PieceCompletion, error) {
+	return &mdbxPieceCompletionBatch{db: db.(*mdbx.MdbxKV)}, nil
 }
 
 func (m *mdbxPieceCompletionBatch) Get(pk metainfo.PieceKey) (cn storage.Completion, err error) {

@@ -24,25 +24,20 @@ func openClient(ctx context.Context, dbDir, snapDir string, cfg *torrent.ClientC
 		GrowthStep(16 * datasize.MB).
 		MapSize(16 * datasize.GB).
 		PageSize(uint64(4 * datasize.KB)).
-		//WriteMap().
-		//LifoReclaim().
 		RoTxsLimiter(semaphore.NewWeighted(9_000)).
 		Path(dbDir).
 		Open(ctx)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("torrentcfg.openClient: %w", err)
 	}
-	//c, err = NewMdbxPieceCompletion(db)
+
 	c, err = NewMdbxPieceCompletionBatch(db)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("torrentcfg.NewMdbxPieceCompletion: %w", err)
 	}
 
-	// Use file-based storage instead of MMAP to avoid data loss on shutdown
-	// MMAP can lose data if msync is not called before close
-	// File-based storage is safer as it syncs data to disk on each write
-	// See also: https://github.com/erigontech/erigon/pull/10074
-	//m = storage.NewMMapWithCompletion(snapDir, c)
+	// Use file-based storage instead of MMAP to avoid data loss on shutdown.
+	// File-based storage is safer as it syncs data to disk on each write.
 	m = storage.NewFileOpts(storage.NewFileClientOpts{
 		ClientBaseDir:   snapDir,
 		PieceCompletion: c,
@@ -57,9 +52,7 @@ func openClient(ctx context.Context, dbDir, snapDir string, cfg *torrent.ClientC
 		return nil, nil, nil, nil, fmt.Errorf("torrent.NewClient: %w", err)
 	}
 
-	go func() {
-		dnsResolver.Run(ctx)
-	}()
+	go dnsResolver.Run(ctx)
 
 	return db, c, m, torrentClient, nil
 }

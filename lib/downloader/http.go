@@ -58,80 +58,65 @@ type requestHandler struct {
 
 func (r *requestHandler) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	defer func() {
-		if r := recover(); r != nil {
+		if rec := recover(); rec != nil {
 			if resp != nil && resp.Body != nil {
 				resp.Body.Close()
 				resp.Body = nil
 			}
-
-			err = fmt.Errorf("http client panic: %s", r)
+			err = fmt.Errorf("http client panic: %s", rec)
 		}
 	}()
 
 	insertCloudflareHeaders(req)
-
 	resp, err = r.Transport.RoundTrip(req)
 
-	attempts := 1
-	retry := true
+	const (
+		minDelay    = 500 * time.Millisecond
+		maxDelay    = 5 * time.Second
+		maxAttempts = 10
+	)
 
-	const minDelay = 500 * time.Millisecond
-	const maxDelay = 5 * time.Second
-	const maxAttempts = 10
-
-	for err == nil && retry {
+	for attempts := 1; err == nil; {
 		r.downloader.stats.WebseedTripCount.Add(1)
 
 		switch resp.StatusCode {
 		case http.StatusOK:
-			if len(req.Header.Get("Range")) > 0 {
-				// the torrent lib is expecting http.StatusPartialContent so it will discard this
-				// if this count is higher than 0, its likely there is a server side config issue
-				// as it implies that the server is not handling range requests correctly and is just
-				// returning the whole file - which the torrent lib can't handle
-				//
-				// TODO: We could count the bytes - probably need to take this from the req though
-				// as its not clear the amount of the content which will be read.  This needs
-				// further investigation - if required.
+			// Server returned 200 for a range request -- it's ignoring the Range header.
+			// The torrent lib expects 206 and will discard this response.
+			if req.Header.Get("Range") != "" {
 				r.downloader.stats.WebseedDiscardCount.Add(1)
 			}
-
 			r.downloader.stats.WebseedBytesDownload.Add(resp.ContentLength)
-			retry = false
+			return resp, nil
 
-		// the first two statuses here have been observed from cloudflare
-		// during testing.  The remainder are generally understood to be
-		// retriable http responses, calcBackoff will use the Retry-After
-		// header if its availible
 		case http.StatusInternalServerError, http.StatusBadGateway,
 			http.StatusRequestTimeout, http.StatusTooEarly,
 			http.StatusTooManyRequests, http.StatusServiceUnavailable,
 			http.StatusGatewayTimeout:
 
 			r.downloader.stats.WebseedServerFails.Add(1)
-
 			if resp.Body != nil {
 				resp.Body.Close()
 				resp.Body = nil
 			}
 
 			attempts++
-			delayTimer := time.NewTimer(calcBackoff(minDelay, maxDelay, attempts, resp))
+			if attempts > maxAttempts {
+				return resp, err
+			}
 
+			delayTimer := time.NewTimer(calcBackoff(minDelay, maxDelay, attempts, resp))
 			select {
 			case <-delayTimer.C:
-				// Note this assumes the req.Body is nil
 				resp, err = r.Transport.RoundTrip(req)
 				r.downloader.stats.WebseedTripCount.Add(1)
-
 			case <-req.Context().Done():
-				err = req.Context().Err()
+				return resp, req.Context().Err()
 			}
-			retry = attempts < maxAttempts
 
 		default:
 			r.downloader.stats.WebseedBytesDownload.Add(resp.ContentLength)
-			retry = false
+			return resp, nil
 		}
 	}
 

@@ -51,88 +51,67 @@ func Int2LogLevel(level int) (lvl lg.Level, dbg bool, err error) {
 
 type noopHandler struct{}
 
-func (b noopHandler) Handle(r lg.Record) {
-}
+func (b noopHandler) Handle(r lg.Record) {}
 
 type adapterHandler struct{}
 
-func (b adapterHandler) Handle(r lg.Record) {
-	lvl := r.Level
+// skipPatterns lists substrings that cause a log record to be demoted to Trace level.
+var skipPatterns = map[lg.Level][]string{
+	lg.Debug: {
+		"completion change", "hashed piece", "set torrent=",
+		"all initial dials failed", "local and remote peer ids are the same",
+		"connection at", "don't want conns right now", "is mutually complete",
+		"sending PEX message", "received pex message",
+		"announce to", "announcing to",
+		"EOF", "closed", "connection reset by peer",
+		"use of closed network connection", "broken pipe",
+		"inited with remoteAddr",
+	},
+	lg.Info: {"EOF"},
+	lg.Warning: {
+		"EOF", "requested chunk too long", "banned ip",
+		"banning webseed", "TrackerClient closed",
+		"being sole dirtier of piece", "webrtc conn for unloaded torrent",
+		"could not find offer for id", "received invalid reject",
+		"reservation cancelled",
+	},
+	lg.Error: {"EOF", "short write", "disabling data download"},
+	lg.Critical: {"EOF", "torrent closed", "don't want conns"},
+}
 
-	switch lvl {
-	case lg.Debug:
-		str := r.String()
-		skip := strings.Contains(str, "completion change") || strings.Contains(str, "hashed piece") ||
-			strings.Contains(str, "set torrent=") ||
-			strings.Contains(str, "all initial dials failed") ||
-			strings.Contains(str, "local and remote peer ids are the same") ||
-			strings.Contains(str, "connection at") || strings.Contains(str, "don't want conns right now") ||
-			strings.Contains(str, "is mutually complete") ||
-			strings.Contains(str, "sending PEX message") || strings.Contains(str, "received pex message") ||
-			strings.Contains(str, "announce to") || strings.Contains(str, "announcing to") ||
-			strings.Contains(str, "EOF") || strings.Contains(str, "closed") || strings.Contains(str, "connection reset by peer") || strings.Contains(str, "use of closed network connection") || strings.Contains(str, "broken pipe") ||
-			strings.Contains(str, "inited with remoteAddr")
-		if skip {
-			log.Trace(str, "lvl", lvl.LogString())
-			break
+func shouldSkip(str string, lvl lg.Level) bool {
+	patterns, ok := skipPatterns[lvl]
+	if !ok {
+		// Unknown levels: skip EOF and webseed errors
+		return strings.Contains(str, "EOF") ||
+			strings.Contains(str, "unhandled response status") ||
+			strings.Contains(str, "error doing webseed request")
+	}
+	for _, p := range patterns {
+		if strings.Contains(str, p) {
+			return true
 		}
+	}
+	return false
+}
+
+func (b adapterHandler) Handle(r lg.Record) {
+	str := r.String()
+	if shouldSkip(str, r.Level) {
+		log.Trace(str, "lvl", r.Level.LogString())
+		return
+	}
+
+	switch r.Level {
+	case lg.Debug:
 		log.Debug(str)
 	case lg.Info:
-		str := r.String()
-		skip := strings.Contains(str, "EOF")
-		//strings.Contains(str, "banning ip <nil>") ||
-		//strings.Contains(str, "spurious timer") { // suppress useless errors
-		if skip {
-			log.Trace(str, "lvl", lvl.LogString())
-			break
-		}
 		log.Info(str)
 	case lg.Warning:
-		str := r.String()
-		skip := strings.Contains(str, "EOF") ||
-			strings.Contains(str, "requested chunk too long") ||
-			strings.Contains(str, "banned ip") ||
-			strings.Contains(str, "banning webseed") ||
-			strings.Contains(str, "TrackerClient closed") ||
-			strings.Contains(str, "being sole dirtier of piece") ||
-			strings.Contains(str, "webrtc conn for unloaded torrent") ||
-			strings.Contains(str, "could not find offer for id") ||
-			strings.Contains(str, "received invalid reject") ||
-			strings.Contains(str, "reservation cancelled")
-
-		if skip {
-			log.Trace(str)
-			break
-		}
 		log.Warn(str)
-	case lg.Error:
-		str := r.String()
-		skip := strings.Contains(str, "EOF") ||
-			strings.Contains(str, "short write") ||
-			strings.Contains(str, "disabling data download")
-		if skip {
-			log.Trace(str, "lvl", lvl.LogString())
-			break
-		}
-		log.Error(str)
-	case lg.Critical:
-		str := r.String()
-		skip := strings.Contains(str, "EOF") ||
-			strings.Contains(str, "torrent closed") ||
-			strings.Contains(str, "don't want conns")
-		if skip {
-			log.Trace(str, "lvl", lvl.LogString())
-			break
-		}
+	case lg.Error, lg.Critical:
 		log.Error(str)
 	default:
-		str := r.String()
-		skip := strings.Contains(str, "EOF") || strings.Contains(str, "unhandled response status") ||
-			strings.Contains(str, "error doing webseed request")
-		if skip {
-			log.Trace(str, "lvl", lvl.LogString())
-			break
-		}
-		log.Info("[downloader] "+r.String(), "torrent_log_type", "unknown", "or", lvl.LogString())
+		log.Info("[downloader] "+str, "torrent_log_type", "unknown", "or", r.Level.LogString())
 	}
 }
