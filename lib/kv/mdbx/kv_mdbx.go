@@ -127,6 +127,30 @@ func (db *MdbxKV) openDBIs(buckets []string) error {
 	})
 }
 
+// openDeprecatedBuckets opens deprecated buckets if they exist (without creating them).
+func (db *MdbxKV) openDeprecatedBuckets(buckets []string) error {
+	return db.env.View(func(tx *mdbx.Txn) error {
+		for _, name := range buckets {
+			if !db.buckets[name].IsDeprecated {
+				continue
+			}
+			cnfCopy := db.buckets[name]
+			dbi, err := tx.OpenDBI(name, mdbx.DBAccede, nil, nil)
+			if err != nil {
+				if mdbx.IsNotFound(err) {
+					cnfCopy.DBI = NonExistingDBI
+					db.buckets[name] = cnfCopy
+					continue
+				}
+				return fmt.Errorf("bucket: %s, %w", name, err)
+			}
+			cnfCopy.DBI = kv.DBI(dbi)
+			db.buckets[name] = cnfCopy
+		}
+		return nil
+	})
+}
+
 func (db *MdbxKV) trackTxBegin() bool {
 	db.txsCountMutex.Lock()
 	defer db.txsCountMutex.Unlock()
@@ -166,22 +190,12 @@ func (db *MdbxKV) waitTxsAllDoneOnClose() {
 	}
 }
 
-// Close closes db
+// Close closes db.
 // All transactions must be closed before closing the database.
 func (db *MdbxKV) Close() {
-	// Flush any pending batch before closing to avoid data loss
-	// This must be done BEFORE setting closed=true, otherwise batch.run()
-	// will fail because trackTxBegin() checks the closed flag
-	db.batchMu.Lock()
-	if db.batch != nil {
-		// Trigger the batch to flush pending writes
-		b := db.batch
-		db.batch = nil
-		db.batchMu.Unlock()
-		b.trigger()
-	} else {
-		db.batchMu.Unlock()
-	}
+	// Flush any pending batch before setting closed=true,
+	// otherwise batch.run() will fail because trackTxBegin() checks the closed flag.
+	db.flushPendingBatch()
 
 	if ok := db.closed.CompareAndSwap(false, true); !ok {
 		return
@@ -200,20 +214,27 @@ func (db *MdbxKV) Close() {
 	removeFromPathDbMap(db.path)
 }
 
+func (db *MdbxKV) flushPendingBatch() {
+	db.batchMu.Lock()
+	b := db.batch
+	db.batch = nil
+	db.batchMu.Unlock()
+	if b != nil {
+		b.trigger()
+	}
+}
+
 func (db *MdbxKV) BeginRo(ctx context.Context) (txn kv.Tx, err error) {
-	// don't try to acquire if the context is already done
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
-		// otherwise carry on
 	}
 
 	if !db.trackTxBegin() {
 		return nil, fmt.Errorf("db closed")
 	}
 
-	// will return nil err if context is cancelled (may appear to acquire the semaphore)
 	if semErr := db.roTxsLimiter.Acquire(ctx, 1); semErr != nil {
 		db.trackTxEnd()
 		return nil, fmt.Errorf("mdbx.MdbxKV.BeginRo: roTxsLimiter error %w", semErr)
@@ -221,8 +242,6 @@ func (db *MdbxKV) BeginRo(ctx context.Context) (txn kv.Tx, err error) {
 
 	defer func() {
 		if txn == nil {
-			// on error, or if there is whatever reason that we don't return a tx,
-			// we need to free up the limiter slot, otherwise it could lead to deadlocks
 			db.roTxsLimiter.Release(1)
 			db.trackTxEnd()
 		}

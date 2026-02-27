@@ -26,20 +26,24 @@ import (
 func (tx *MdbxTx) IsRo() bool     { return tx.readOnly }
 func (tx *MdbxTx) ViewID() uint64 { return tx.tx.ID() }
 
+// cleanup releases all resources held by the transaction.
+// It must be called exactly once when a transaction ends (commit or rollback).
+func (tx *MdbxTx) cleanup() {
+	tx.tx = nil
+	tx.db.trackTxEnd()
+	if tx.readOnly {
+		tx.db.roTxsLimiter.Release(1)
+	} else {
+		runtime.UnlockOSThread()
+	}
+	tx.db.leakDetector.Del(tx.id)
+}
+
 func (tx *MdbxTx) Commit() error {
 	if tx.tx == nil {
 		return nil
 	}
-	defer func() {
-		tx.tx = nil
-		tx.db.trackTxEnd()
-		if tx.readOnly {
-			tx.db.roTxsLimiter.Release(1)
-		} else {
-			runtime.UnlockOSThread()
-		}
-		tx.db.leakDetector.Del(tx.id)
-	}()
+	defer tx.cleanup()
 	tx.closeCursors()
 	tx.CollectMetrics()
 
@@ -63,16 +67,7 @@ func (tx *MdbxTx) Rollback() {
 	if tx.tx == nil {
 		return
 	}
-	defer func() {
-		tx.tx = nil
-		tx.db.trackTxEnd()
-		if tx.readOnly {
-			tx.db.roTxsLimiter.Release(1)
-		} else {
-			runtime.UnlockOSThread()
-		}
-		tx.db.leakDetector.Del(tx.id)
-	}()
+	defer tx.cleanup()
 	tx.closeCursors()
 	tx.tx.Abort()
 }
