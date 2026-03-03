@@ -322,6 +322,9 @@ func (w *worker) resultLoop() error {
 				log.Error("Failed writing block to chain", "err", err)
 				continue
 			}
+			w.mu.Lock()
+			delete(w.pendingTasks, sealhash)
+			w.mu.Unlock()
 			blockSignGauge.Set(uint64(len(blk.Body().Verifier())))
 
 			if len(logs) > 0 {
@@ -522,7 +525,7 @@ func (w *worker) workLoop(recommit time.Duration) error {
 		w.mu.Lock()
 		for h, t := range w.pendingTasks {
 			threshold := uint256.NewInt(0).Add(t.block.Number64(), uint256.NewInt(staleThreshold))
-			if number.Cmp(threshold) <= 0 {
+			if number.Cmp(threshold) >= 0 {
 				delete(w.pendingTasks, h)
 			}
 		}
@@ -548,7 +551,9 @@ func (w *worker) workLoop(recommit time.Duration) error {
 			return err
 
 		case <-timer.C:
-			// Periodic resubmit cycle for pulling in higher priced transactions.
+			if w.isRunning() {
+				commit(true, commitInterruptResubmit)
+			}
 
 		case adjust := <-w.resubmitAdjustCh:
 			before := recommit

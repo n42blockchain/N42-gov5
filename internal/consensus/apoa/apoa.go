@@ -670,13 +670,23 @@ func (c *Apoa) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 	// Wait until sealing is terminated or delay timeout.
 	log.Debug("Waiting for slot to sign and propagate", "delay", avmutil.PrettyDuration(delay))
 	go func() {
-	reTimer:
+		// Wait for the computed delay (includes time-to-header + wiggle for out-of-turn)
 		select {
 		case <-stop:
 			return
 		case <-time.After(delay):
-			if header.Time > uint64(time.Now().Unix()) {
-				goto reTimer
+		}
+
+		// Safety: if header.Time hasn't arrived yet (e.g., clock skew), wait for it
+		for {
+			remaining := time.Until(time.Unix(int64(header.Time), 0))
+			if remaining <= 0 {
+				break
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(remaining):
 			}
 		}
 
