@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -195,26 +196,40 @@ func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.C
 		recommit = minPeriodInterval
 	}
 
+	// recoverWrap converts panics in errgroup goroutines to errors,
+	// preventing a single goroutine panic from killing the entire process.
+	recoverWrap := func(name string, fn func() error) func() error {
+		return func() (err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Errorf("panic in miner %s: %v\nstack: %s", name, r, debug.Stack())
+					err = fmt.Errorf("panic in %s: %v", name, r)
+				}
+			}()
+			return fn()
+		}
+	}
+
 	// machine verify
-	group.Go(func() error {
+	group.Go(recoverWrap("MachineVerify", func() error {
 		return api.MachineVerify(ctx)
-	})
+	}))
 
-	group.Go(func() error {
+	group.Go(recoverWrap("workLoop", func() error {
 		return worker.workLoop(recommit)
-	})
+	}))
 
-	group.Go(func() error {
+	group.Go(recoverWrap("runLoop", func() error {
 		return worker.runLoop()
-	})
+	}))
 
-	group.Go(func() error {
+	group.Go(recoverWrap("taskLoop", func() error {
 		return worker.taskLoop()
-	})
+	}))
 
-	group.Go(func() error {
+	group.Go(recoverWrap("resultLoop", func() error {
 		return worker.resultLoop()
-	})
+	}))
 
 	if init {
 		worker.startCh <- struct{}{}
@@ -498,7 +513,7 @@ func (w *worker) workLoop(recommit time.Duration) error {
 		timestamp   int64      // timestamp for each round of sealing.
 	)
 
-	newBlockCh := make(chan common.ChainHighestBlock)
+	newBlockCh := make(chan common.ChainHighestBlock, 10)
 	defer close(newBlockCh)
 
 	newBlockSub, _ := event.GlobalEvent.Subscribe(newBlockCh)

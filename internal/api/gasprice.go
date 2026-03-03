@@ -98,7 +98,7 @@ func NewOracle(backend common.IBlockChain, miner common.IMiner, chainConfig *par
 
 	cache, _ := lru.New(2048)
 
-	highestBlockCh := make(chan common.ChainHighestBlock)
+	highestBlockCh := make(chan common.ChainHighestBlock, 10)
 	highestSub, err := event.GlobalEvent.Subscribe(highestBlockCh)
 	if err != nil {
 		log.Warn("failed to subscribe to ChainHighestBlock events for gas price cache invalidation", "err", err)

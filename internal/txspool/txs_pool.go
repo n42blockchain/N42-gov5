@@ -719,7 +719,14 @@ func (pool *TxsPool) scheduleLoop() {
 
 	for {
 		if curDone == nil && launchNextRun {
-			go pool.runReorg(nextDone, reset, dirtyAccounts, queuedEvents)
+				go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Errorf("panic in txpool runReorg: %v", r)
+					}
+				}()
+				pool.runReorg(nextDone, reset, dirtyAccounts, queuedEvents)
+			}()
 
 			curDone, nextDone = nextDone, make(chan struct{})
 			launchNextRun = false

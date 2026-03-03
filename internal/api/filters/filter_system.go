@@ -99,11 +99,11 @@ func NewEventSystem(api Api) *EventSystem {
 		lightMode:     false,
 		install:       make(chan *subscription),
 		uninstall:     make(chan *subscription),
-		txsCh:         make(chan common.NewTxsEvent),
-		logsCh:        make(chan common.NewLogsEvent),
-		rmLogsCh:      make(chan common.RemovedLogsEvent),
-		pendingLogsCh: make(chan common.NewPendingLogsEvent),
-		chainCh:       make(chan common.ChainHighestBlock),
+		txsCh:         make(chan common.NewTxsEvent, txChanSize),
+		logsCh:        make(chan common.NewLogsEvent, logsChanSize),
+		rmLogsCh:      make(chan common.RemovedLogsEvent, rmLogsChanSize),
+		pendingLogsCh: make(chan common.NewPendingLogsEvent, logsChanSize),
+		chainCh:       make(chan common.ChainHighestBlock, chainEvChanSize),
 	}
 
 	// Subscribe events
@@ -298,7 +298,11 @@ func (es *EventSystem) handleLogs(filters filterIndex, ev common.NewLogsEvent) {
 	for _, f := range filters[LogsSubscription] {
 		matchedLogs := filterLogs(ev.Logs, f.logsCrit.FromBlock, f.logsCrit.ToBlock, f.logsCrit.Addresses, f.logsCrit.Topics)
 		if len(matchedLogs) > 0 {
-			f.logs <- matchedLogs
+			select {
+			case f.logs <- matchedLogs:
+			default:
+				log.Warn("Dropping log subscription event, subscriber too slow", "id", f.id)
+			}
 		}
 	}
 }
@@ -310,7 +314,11 @@ func (es *EventSystem) handlePendingLogs(filters filterIndex, ev common.NewPendi
 	for _, f := range filters[PendingLogsSubscription] {
 		matchedLogs := filterLogs(ev.Logs, nil, f.logsCrit.ToBlock, f.logsCrit.Addresses, f.logsCrit.Topics)
 		if len(matchedLogs) > 0 {
-			f.logs <- matchedLogs
+			select {
+			case f.logs <- matchedLogs:
+			default:
+				log.Warn("Dropping pending log subscription event, subscriber too slow", "id", f.id)
+			}
 		}
 	}
 }
@@ -319,7 +327,11 @@ func (es *EventSystem) handleRemovedLogs(filters filterIndex, ev common.RemovedL
 	for _, f := range filters[LogsSubscription] {
 		matchedLogs := filterLogs(ev.Logs, f.logsCrit.FromBlock, f.logsCrit.ToBlock, f.logsCrit.Addresses, f.logsCrit.Topics)
 		if len(matchedLogs) > 0 {
-			f.logs <- matchedLogs
+			select {
+			case f.logs <- matchedLogs:
+			default:
+				log.Warn("Dropping removed log subscription event, subscriber too slow", "id", f.id)
+			}
 		}
 	}
 }
@@ -331,19 +343,31 @@ func (es *EventSystem) handleTxsEvent(filters filterIndex, ev common.NewTxsEvent
 		hashes = append(hashes, hash)
 	}
 	for _, f := range filters[PendingTransactionsSubscription] {
-		f.hashes <- hashes
+		select {
+		case f.hashes <- hashes:
+		default:
+			log.Warn("Dropping tx subscription event, subscriber too slow", "id", f.id)
+		}
 	}
 }
 
 func (es *EventSystem) handleChainEvent(filters filterIndex, ev common.ChainHighestBlock) {
 	for _, f := range filters[BlocksSubscription] {
-		f.headers <- ev.Block.Header()
+		select {
+		case f.headers <- ev.Block.Header():
+		default:
+			log.Warn("Dropping chain subscription event, subscriber too slow", "id", f.id)
+		}
 	}
 	if es.lightMode && len(filters[LogsSubscription]) > 0 {
 		es.lightFilterNewHead(ev.Block.Header(), func(header block.IHeader, remove bool) {
 			for _, f := range filters[LogsSubscription] {
 				if matchedLogs := es.lightFilterLogs(header, f.logsCrit.Addresses, f.logsCrit.Topics, remove); len(matchedLogs) > 0 {
-					f.logs <- matchedLogs
+					select {
+					case f.logs <- matchedLogs:
+					default:
+						log.Warn("Dropping light filter log event, subscriber too slow", "id", f.id)
+					}
 				}
 			}
 		})

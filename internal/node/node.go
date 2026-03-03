@@ -649,6 +649,7 @@ func (n *Node) startRPC() error {
 
 func (n *Node) stopRPC() {
 	n.http.stop()
+	n.httpAuth.stop()
 	n.ws.stop()
 	n.ipc.stop()
 	n.stopInProc()

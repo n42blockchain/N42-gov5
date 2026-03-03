@@ -768,6 +768,12 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 	// Wait until sealing is terminated or delay timeout.
 	log.Debug("Waiting for slot to sign and propagate", "delay", avmutil.PrettyDuration(delay))
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("panic in apos Seal goroutine: %v", r)
+			}
+		}()
+
 		select {
 		case <-stop:
 			return

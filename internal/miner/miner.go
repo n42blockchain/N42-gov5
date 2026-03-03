@@ -84,8 +84,8 @@ func (m *Miner) runLoop() error {
 		}
 	}()
 
-	downloaderFinishCh := make(chan common.DownloaderFinishEvent)
-	downloaderStartCh := make(chan common.DownloaderStartEvent)
+	downloaderFinishCh := make(chan common.DownloaderFinishEvent, 10)
+	downloaderStartCh := make(chan common.DownloaderStartEvent, 10)
 	finishSub, _ := event.GlobalEvent.Subscribe(downloaderFinishCh)
 	startSub, _ := event.GlobalEvent.Subscribe(downloaderStartCh)
 	defer finishSub.Unsubscribe()
