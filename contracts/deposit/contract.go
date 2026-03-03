@@ -160,8 +160,8 @@ func NewDeposit(ctx context.Context, bc common.IBlockChain, db kv.RwDB, depositC
 		cancel:           cancel,
 		blockChain:       bc,
 		db:               db,
-		logsCh:           make(chan common.NewLogsEvent),
-		rmLogsCh:         make(chan common.RemovedLogsEvent),
+		logsCh:           make(chan common.NewLogsEvent, 10),
+		rmLogsCh:         make(chan common.RemovedLogsEvent, 10),
 		depositContracts: depositContracts,
 	}
 

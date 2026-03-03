@@ -136,15 +136,14 @@ LOOP:
 }
 
 func MachineVerify(ctx context.Context) error {
-	entire := make(chan common.MinedEntireEvent)
+	entire := make(chan common.MinedEntireEvent, 10)
 	blocksSub, err := event.GlobalEvent.Subscribe(entire)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to MinedEntireEvent: %w", err)
 	}
 	defer blocksSub.Unsubscribe()
 
-	errs := make(chan error)
-	defer close(errs)
+	errs := make(chan error, 1)
 
 	for {
 		select {
@@ -158,15 +157,27 @@ func MachineVerify(ctx context.Context) error {
 			log.Tracef("machine verify accept entire, number: %d", entireCode.Entire.Header.Number.Uint64())
 			for k, s := range validVerifiers {
 				go func(seckey string, address string, ec state.EntireCode) {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Errorf("panic in MachineVerify goroutine: %v", r)
+						}
+					}()
+
 					// recover private key
 					sByte, err := hex.DecodeString(seckey)
 					if err != nil {
-						errs <- err
+						select {
+						case errs <- err:
+						default:
+						}
 						return
 					}
 					var addr types.Address
 					if !addr.DecodeString(address) {
-						errs <- errors.New("invalid address")
+						select {
+						case errs <- errors.New("invalid address"):
+						default:
+						}
 						return
 					}
 
@@ -188,7 +199,10 @@ func MachineVerify(ctx context.Context) error {
 					copy(bs[:], sByte)
 					pri, err := bls.SecretKeyFromRandom32Byte(bs)
 					if err != nil {
-						errs <- err
+						select {
+						case errs <- err:
+						default:
+						}
 						return
 					}
 
