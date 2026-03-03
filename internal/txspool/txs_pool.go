@@ -775,17 +775,32 @@ func (pool *TxsPool) blockChangeLoop() {
 	defer pool.wg.Done()
 
 	highestBlockCh := make(chan common.ChainHighestBlock)
-	defer close(highestBlockCh)
 	highestSub, _ := event.GlobalEvent.Subscribe(highestBlockCh)
-	defer highestSub.Unsubscribe()
 
 	oldBlock := pool.bc.CurrentBlock()
 
 	for {
 		select {
-		case <-highestSub.Err():
-			return
+		case err := <-highestSub.Err():
+			// Check if we are shutting down
+			select {
+			case <-pool.ctx.Done():
+				highestSub.Unsubscribe()
+				return
+			default:
+			}
+			log.Error("txpool block subscription error, resubscribing", "err", err)
+			highestSub.Unsubscribe()
+			// Backoff before resubscribing to avoid tight loop
+			select {
+			case <-time.After(time.Second):
+			case <-pool.ctx.Done():
+				return
+			}
+			highestBlockCh = make(chan common.ChainHighestBlock)
+			highestSub, _ = event.GlobalEvent.Subscribe(highestBlockCh)
 		case <-pool.ctx.Done():
+			highestSub.Unsubscribe()
 			return
 		case highestBlock, ok := <-highestBlockCh:
 			if ok && highestBlock.Inserted {

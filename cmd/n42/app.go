@@ -190,6 +190,16 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 		log.Critf("Error starting protocol stack: %v", err)
 	}
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("panic in signal handler goroutine: %v", r)
+				func() {
+					defer func() { recover() }()
+					stack.Close()
+				}()
+			}
+		}()
+
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigc)
@@ -211,8 +221,13 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 			done := make(chan struct{})
 
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Errorf("panic during shutdown: %v", r)
+					}
+					close(done)
+				}()
 				stack.Close()
-				close(done)
 			}()
 
 			// Wait for shutdown with timeout, allow force quit

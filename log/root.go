@@ -43,6 +43,9 @@ var (
 
 	// logManager 管理日志清理
 	logManager *LogManager
+
+	// logWriter holds the lumberjack writer reference for flushing on close
+	logWriter *lumberjack.Logger
 )
 
 type Lvl int
@@ -225,6 +228,9 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 		LocalTime:  config.LocalTime,
 	}
 
+	// Save lumberjack reference for flushing on close
+	logWriter = lj
+
 	// 根据是否同时输出到控制台选择格式化器和输出目标
 	if config.Console {
 		prettyFormatter := NewPrettyFormatter()
@@ -278,10 +284,13 @@ func GetLevel() int {
 	return int(terminal.GetLevel())
 }
 
-// Close 关闭日志系统，停止后台任务
+// Close 关闭日志系统，停止后台任务并刷新缓冲
 func Close() {
 	if logManager != nil {
 		logManager.Stop()
+	}
+	if logWriter != nil {
+		logWriter.Close()
 	}
 }
 
@@ -368,12 +377,18 @@ func Errorf(msg string, ctx ...interface{}) {
 // Crit is a convenient alias for Root().Crit
 func Crit(msg string, ctx ...interface{}) {
 	root.write(msg, LvlCrit, ctx, skipLevel)
+	if logWriter != nil {
+		logWriter.Close()
+	}
 	os.Exit(1)
 }
 
 // Critf is a convenient alias for Root().Crit
 func Critf(msg string, ctx ...interface{}) {
 	root.write(fmt.Sprintf(msg, ctx...), LvlCrit, []interface{}{}, skipLevel)
+	if logWriter != nil {
+		logWriter.Close()
+	}
 	os.Exit(1)
 }
 

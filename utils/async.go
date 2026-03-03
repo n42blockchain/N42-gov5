@@ -30,7 +30,16 @@ func RunEveryWithWG(ctx context.Context, period time.Duration, f func(), wg *syn
 			select {
 			case <-ticker.C:
 				log.Trace("running", "function", funcName)
-				f()
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							buf := make([]byte, 4096)
+							n := runtime.Stack(buf, false)
+							log.Error("panic in periodic function, recovered", "function", funcName, "panic", r, "stack", string(buf[:n]))
+						}
+					}()
+					f()
+				}()
 			case <-ctx.Done():
 				log.Debug("context is closed, exiting", "function", funcName)
 				ticker.Stop()

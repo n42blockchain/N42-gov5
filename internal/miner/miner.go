@@ -18,6 +18,7 @@ package miner
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -142,6 +143,9 @@ func (m *Miner) runLoop() error {
 func (miner *Miner) Close() {
 	miner.cancel()
 	miner.worker.close()
+	if err := miner.group.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		log.Error("miner errgroup returned error", "err", err)
+	}
 }
 
 func (m *Miner) Mining() bool {
