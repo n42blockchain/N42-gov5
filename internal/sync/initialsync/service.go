@@ -70,13 +70,33 @@ func (s *Service) Start() {
 
 	log.Info("Starting chain synchronization...")
 
+	const maxSyncRetries = 10
+	syncRetries := 0
 	for {
 		highestExpectedBlockNr := s.waitForMinimumPeers()
 		if err := s.roundRobinSync(highestExpectedBlockNr); err != nil {
 			if errors.Is(s.ctx.Err(), context.Canceled) {
 				return
 			}
-			log.Crit("Sync failed", "err", err)
+			syncRetries++
+			if syncRetries > maxSyncRetries {
+				log.Error("Sync failed repeatedly, pausing before next attempt", "err", err, "retries", syncRetries)
+			} else {
+				log.Warn("Sync failed, will retry", "err", err, "attempt", syncRetries)
+			}
+			// Exponential backoff: 2s, 4s, 8s, ... capped at 60s
+			backoff := time.Duration(1<<min(syncRetries, 6)) * time.Second
+			if backoff > 60*time.Second {
+				backoff = 60 * time.Second
+			}
+			select {
+			case <-time.After(backoff):
+				continue
+			case <-s.ctx.Done():
+				return
+			}
+		} else {
+			syncRetries = 0
 		}
 
 		currentBlock := s.cfg.Chain.CurrentBlock().Number64()

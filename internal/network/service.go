@@ -19,10 +19,8 @@ package network
 import (
 	"context"
 	"crypto/rand"
-	"os"
-	"os/signal"
+	"runtime/debug"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
@@ -178,7 +176,14 @@ func (s *Service) Start() error {
 	hash, blockNr, _ := s.peerInfo()
 	log.Info("local peer", "PeerId", s.host.ID(), "PeerAddress", s.host.Addrs(), "BlockNr", blockNr.Uint64(), "genesisHash", hash)
 
-	go s.nodeManager(s.addCh)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in nodeManager", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+		s.nodeManager(s.addCh)
+	}()
 
 	return nil
 }
@@ -191,7 +196,6 @@ func (s *Service) PeerCount() int {
 func (s *Service) nodeManager(peerCh chan peer.AddrInfo) {
 	stateTimer := time.NewTicker(60 * time.Second)
 	defer stateTimer.Stop()
-	defer close(peerCh)
 
 	for {
 		select {
@@ -284,14 +288,8 @@ func (s *Service) connectBootstraps(bootstraps []peer.AddrInfo) {
 }
 
 func (s *Service) Wait() {
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT)
-
-	select {
-	case <-stop:
-		s.host.Close()
-		os.Exit(0)
-	}
+	<-s.ctx.Done()
+	s.host.Close()
 }
 
 func (s *Service) state() {
@@ -376,15 +374,12 @@ func (s *Service) handleStream(stream network.Stream) {
 }
 
 func (s *Service) HandlePeerFound(p peer.AddrInfo) {
-	select {
-	case <-s.ctx.Done():
+	if p.ID == s.host.ID() {
 		return
-	default:
-		if p.ID == s.host.ID() {
-			log.Warnf("is self peer remote=%s == self=%s", p.ID.ShortString(), s.host.ID().ShortString())
-			return
-		}
-		s.addCh <- p
+	}
+	select {
+	case s.addCh <- p:
+	case <-s.ctx.Done():
 	}
 }
 

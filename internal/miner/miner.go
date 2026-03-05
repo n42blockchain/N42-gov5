@@ -54,7 +54,7 @@ func NewMiner(ctx context.Context, cfg *conf.Config, bc common.IBlockChain, engi
 	miner := &Miner{
 		engine:  engine,
 		txsPool: txsPool,
-		startCh: make(chan types.Address),
+		startCh: make(chan types.Address, 1),
 		stopCh:  make(chan struct{}),
 		group:   group,
 		ctx:     cancelCtx,
@@ -73,7 +73,11 @@ func (m *Miner) Start() {
 	m.group.Go(func() error {
 		return m.runLoop()
 	})
-	m.startCh <- cb
+	select {
+	case m.startCh <- cb:
+	case <-m.ctx.Done():
+		log.Warn("miner context cancelled before start completed")
+	}
 }
 
 func (m *Miner) runLoop() error {

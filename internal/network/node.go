@@ -23,7 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -93,7 +95,7 @@ type Node struct {
 	msgCallback map[message.MessageType]common.ConnHandler
 	msgLock     sync.RWMutex
 
-	isOK bool
+	isOK atomic.Bool
 }
 
 func NewNode(ctx context.Context, h host.Host, s *Service, peer libpeer.AddrInfo, callback map[message.MessageType]common.ConnHandler, opts ...NodeOption) (*Node, error) {
@@ -140,10 +142,41 @@ func NewNode(ctx context.Context, h host.Host, s *Service, peer libpeer.AddrInfo
 }
 
 func (n *Node) Start() {
-	n.isOK = true
+	n.isOK.Store(true)
 	for _, s := range n.streams {
-		go n.readData(s)
-		go n.writeData(s)
+		peerID := s.Conn().RemotePeer() // cache before goroutine to avoid access in corrupted state
+		go func(stream network.Stream, pid libpeer.ID) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic in readData goroutine", "peer", pid, "panic", r, "stack", string(debug.Stack()))
+					n.cleanupOnError(stream)
+				}
+			}()
+			n.readData(stream)
+		}(s, peerID)
+		go func(stream network.Stream, pid libpeer.ID) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic in writeData goroutine", "peer", pid, "panic", r, "stack", string(debug.Stack()))
+					n.cleanupOnError(stream)
+				}
+			}()
+			n.writeData(stream)
+		}(s, peerID)
+	}
+}
+
+// cleanupOnError handles cleanup when a goroutine panics.
+// Uses CompareAndSwap to ensure cleanup runs exactly once even if called concurrently.
+func (n *Node) cleanupOnError(stream network.Stream) {
+	if n.isOK.CompareAndSwap(true, false) {
+		n.cancel()
+		select {
+		case n.service.removeCh <- stream.Conn().RemotePeer():
+		default:
+			log.Warn("removeCh full, peer removal may be delayed", "peer", stream.Conn().RemotePeer())
+		}
+		stream.Close()
 	}
 }
 
@@ -262,11 +295,14 @@ func (n *Node) SetHandler(msgType message.MessageType, handler common.ConnHandle
 func (n *Node) readData(stream network.Stream) error {
 	defer func() {
 		log.Debug("readData loop exiting", "PeerID", stream.Conn().RemotePeer().String())
-		if n.isOK {
-			n.isOK = false
-			stream.Close()
+		if n.isOK.CompareAndSwap(true, false) {
 			n.cancel()
-			n.service.removeCh <- stream.Conn().RemotePeer()
+			select {
+			case n.service.removeCh <- stream.Conn().RemotePeer():
+			default:
+				log.Warn("removeCh full during readData cleanup", "peer", stream.Conn().RemotePeer())
+			}
+			stream.Close()
 		}
 	}()
 
@@ -361,13 +397,15 @@ func (n *Node) makeMsg(payload []byte) (proto.Message, error) {
 
 func (n *Node) writeData(stream network.Stream) error {
 	defer func() {
-		if n.isOK {
-			n.isOK = false
+		if n.isOK.CompareAndSwap(true, false) {
 			n.cancel()
-			n.service.removeCh <- stream.Conn().RemotePeer()
+			select {
+			case n.service.removeCh <- stream.Conn().RemotePeer():
+			default:
+				log.Warn("removeCh full during writeData cleanup", "peer", stream.Conn().RemotePeer())
+			}
 			stream.Close()
 		}
-		close(n.msgCh)
 	}()
 
 	ticker := time.NewTicker(pingPongTimeout)
@@ -462,7 +500,7 @@ func (n *Node) writeMsg(stream network.Stream, msg message.IMessage) error {
 const writeTimeout = 5 * time.Second
 
 func (n *Node) Write(msg message.IMessage) error {
-	if !n.isOK {
+	if !n.isOK.Load() {
 		return errors.New("node already closed")
 	}
 
@@ -485,10 +523,7 @@ func (n *Node) WriteMsg(messageType message.MessageType, payload []byte) error {
 }
 
 func (n *Node) Close() error {
-	n.Lock()
-	defer n.Unlock()
-	if n.isOK {
-		n.isOK = false
+	if n.isOK.CompareAndSwap(true, false) {
 		n.cancel()
 	}
 	return nil

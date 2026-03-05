@@ -16,7 +16,10 @@
 
 package network
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	errBadMsgType        = errors.New("p2p: message type is invalid")
@@ -47,5 +50,10 @@ func recoverError(existingErr error, recovered any) error {
 	if pErr, ok := recovered.(panicErr); ok {
 		return pErr.err
 	}
-	panic(recovered)
+	// Convert unexpected panics to errors instead of re-panicking,
+	// which would crash the process without any log output.
+	if err, ok := recovered.(error); ok {
+		return fmt.Errorf("unexpected panic in network layer: %w", err)
+	}
+	return fmt.Errorf("unexpected panic in network layer: %v", recovered)
 }

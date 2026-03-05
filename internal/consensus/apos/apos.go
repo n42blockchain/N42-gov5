@@ -383,11 +383,15 @@ func (c *APos) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 // snapshot retrieves the authorization snapshot at a given point in time.
 func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash types.Hash, parents []block.IHeader) (*Snapshot, error) {
 	// Search for a snapshot in memory or on disk for checkpoints
+	const maxSnapshotDepth = 256 * 1024 // prevent unbounded iteration on corrupt chain data
 	var (
 		headers []block.IHeader
 		snap    *Snapshot
 	)
 	for snap == nil {
+		if len(headers) > maxSnapshotDepth {
+			return nil, fmt.Errorf("snapshot not found within %d blocks", maxSnapshotDepth)
+		}
 		// If an in-memory snapshot was found, use that
 		if s, ok := c.recents.Get(hash); ok {
 			snap = s.(*Snapshot)

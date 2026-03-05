@@ -19,6 +19,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	kademliaDHT "github.com/libp2p/go-libp2p-kad-dht"
@@ -70,7 +71,14 @@ func (k *KadDHT) Start() error {
 	}
 
 	k.routingDiscovery.Advertise(k.ctx, DiscoverProtocol)
-	go k.loopDiscoverRemote()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in loopDiscoverRemote", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+		k.loopDiscoverRemote()
+	}()
 	return nil
 }
 
