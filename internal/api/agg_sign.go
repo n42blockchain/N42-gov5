@@ -213,7 +213,11 @@ func MachineVerify(ctx context.Context) error {
 					copy(tmp.Sign[:], sign.Marshal())
 					copy(tmp.PublicKey[:], pri.PublicKey().Marshal())
 					tmp.Address = addr
-					sigChannel <- tmp
+					select {
+					case sigChannel <- tmp:
+					case <-ctx.Done():
+						log.Debug("MachineVerify: context cancelled, dropping sign", "number", tmp.Number)
+					}
 				}(s, k, entireCode)
 			}
 		case <-ctx.Done():
