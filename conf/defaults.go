@@ -77,6 +77,20 @@ func ApplyDefaults(cfg *Config) {
 		cfg.GPO.Percentile = 60
 	}
 
+	// Pruning defaults
+	if cfg.PruneCfg.Mode == "" {
+		cfg.PruneCfg.Mode = PruneModeArchive
+	}
+	if cfg.PruneCfg.BlockRetention == 0 {
+		cfg.PruneCfg.BlockRetention = DefaultBlockRetention
+	}
+	if cfg.PruneCfg.PruneInterval == 0 {
+		cfg.PruneCfg.PruneInterval = DefaultPruneInterval
+	}
+	if cfg.PruneCfg.PruneBatchLimit == 0 {
+		cfg.PruneCfg.PruneBatchLimit = DefaultPruneBatchLimit
+	}
+
 	if cfg.DevCfg.TxGenEnabled {
 		if cfg.DevCfg.TxGenInterval == 0 {
 			cfg.DevCfg.TxGenInterval = time.Second

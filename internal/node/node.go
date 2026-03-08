@@ -115,6 +115,8 @@ type Node struct {
 	httpAuth      *httpServer
 	wsAuth        *httpServer
 	inprocHandler *jsonrpc.Server
+	rateLimiter   *jsonrpc.RateLimiter
+	pruner        *Pruner
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -453,6 +455,13 @@ func (n *Node) Start() error {
 
 	go n.is.Start()
 
+	// Start pruner if enabled
+	if n.config.PruneCfg.IsEnabled() {
+		hp := &nodeHealthProvider{node: n}
+		n.pruner = NewPruner(n.db, n.config.PruneCfg, hp)
+		n.pruner.Start()
+	}
+
 	// Start transaction generator if enabled
 	if n.config.DevCfg.TxGenEnabled {
 		n.startTxGenerator()
@@ -580,12 +589,33 @@ func (n *Node) startRPC() error {
 		return err
 	}
 
+	// Create rate limiter if configured
+	var rl *jsonrpc.RateLimiter
+	if n.config.NodeCfg.HTTPRateLimit > 0 {
+		burst := n.config.NodeCfg.HTTPRateLimitBurst
+		if burst <= 0 {
+			burst = n.config.NodeCfg.HTTPRateLimit * 2
+		}
+		cfg := jsonrpc.DefaultRateLimitConfig()
+		cfg.RequestsPerSecond = n.config.NodeCfg.HTTPRateLimit
+		cfg.BurstSize = burst
+		rl = jsonrpc.NewRateLimiter(cfg)
+		n.rateLimiter = rl
+		log.Info("RPC rate limiting enabled", "rps", n.config.NodeCfg.HTTPRateLimit, "burst", burst)
+	}
+
+	// Set health provider on all HTTP servers
+	hp := &nodeHealthProvider{node: n}
+	n.http.healthProvider = hp
+	n.httpAuth.healthProvider = hp
+
 	if n.config.NodeCfg.HTTP {
 		config := httpConfig{
 			CorsAllowedOrigins: utils.SplitAndTrim(n.config.NodeCfg.HTTPCors),
 			Vhosts:             []string{"*"},
 			Modules:            utils.SplitAndTrim(n.config.NodeCfg.HTTPApi),
 			prefix:             "",
+			rateLimiter:        rl,
 		}
 		port, _ := strconv.Atoi(n.config.NodeCfg.HTTPPort)
 		if err := n.http.setListenAddr(n.config.NodeCfg.HTTPHost, port); err != nil {
@@ -653,6 +683,9 @@ func (n *Node) stopRPC() {
 	n.ws.stop()
 	n.ipc.stop()
 	n.stopInProc()
+	if n.rateLimiter != nil {
+		n.rateLimiter.Stop()
+	}
 }
 
 // InstanceDir retrieves the instance directory used by the protocol stack.
@@ -701,33 +734,40 @@ func (n *Node) stopServices() []error {
 	services := []namedCloser{
 		// 1. RPC services (depends on everything, stop first)
 		{"RPC services", func() error { n.stopRPC(); return nil }},
-		// 2. Transaction generator
+		// 2. Pruner
+		{"Pruner", func() error {
+			if n.pruner != nil {
+				n.pruner.Stop()
+			}
+			return nil
+		}},
+		// 3. Transaction generator
 		{"Transaction generator", func() error {
 			if n.txGenerator != nil {
 				n.txGenerator.Stop()
 			}
 			return nil
 		}},
-		// 3. Miner
+		// 4. Miner
 		{"Miner", func() error { n.miner.Close(); return nil }},
-		// 4. Initial sync (depends on P2P + blockchain, must stop before blockchain closes)
+		// 5. Initial sync (depends on P2P + blockchain, must stop before blockchain closes)
 		{"Initial sync", func() error { return n.is.Stop() }},
-		// 5. Sync service (depends on P2P + blockchain, must stop before blockchain closes)
+		// 6. Sync service (depends on P2P + blockchain, must stop before blockchain closes)
 		{"Sync service", func() error { return n.sync.Stop() }},
-		// 6. Transaction pool
+		// 7. Transaction pool
 		{"Transaction pool", func() error { return n.txspool.Stop() }},
-		// 7. Deposit contract
+		// 8. Deposit contract
 		{"Deposit contract", func() error {
 			if n.depositContract != nil {
 				return n.depositContract.Stop()
 			}
 			return nil
 		}},
-		// 8. Consensus engine
+		// 9. Consensus engine
 		{"Consensus engine", func() error { return n.engine.Close() }},
-		// 9. Blockchain (flush and close DB, after all consumers stopped)
+		// 10. Blockchain (flush and close DB, after all consumers stopped)
 		{"Blockchain", func() error { return n.blockChain.Close() }},
-		// 10. P2P networking (transport layer, last to go)
+		// 11. P2P networking (transport layer, last to go)
 		{"P2P network", func() error { return n.p2p.Stop() }},
 	}
 
@@ -1058,4 +1098,45 @@ func (a *minerAdminAdapter) Mining() bool {
 
 func (a *minerAdminAdapter) SetCoinbase(addr types.Address) {
 	a.m.SetCoinbase(addr)
+}
+
+// nodeHealthProvider implements HealthProvider for the Node.
+type nodeHealthProvider struct {
+	node *Node
+}
+
+func (h *nodeHealthProvider) CurrentBlock() uint64 {
+	if h.node.blockChain == nil {
+		return 0
+	}
+	b := h.node.blockChain.CurrentBlock()
+	if b == nil {
+		return 0
+	}
+	return b.Number64().Uint64()
+}
+
+func (h *nodeHealthProvider) HighestBlock() uint64 {
+	if h.node.p2p == nil {
+		return h.CurrentBlock()
+	}
+	highest := h.node.p2p.Peers().HighestBlockNumber().Uint64()
+	if current := h.CurrentBlock(); current > highest {
+		return current
+	}
+	return highest
+}
+
+func (h *nodeHealthProvider) IsSyncing() bool {
+	if h.node.is == nil {
+		return false
+	}
+	return h.node.is.Syncing()
+}
+
+func (h *nodeHealthProvider) PeerCount() int {
+	if h.node.p2p == nil {
+		return 0
+	}
+	return len(h.node.p2p.Peers().Connected())
 }
