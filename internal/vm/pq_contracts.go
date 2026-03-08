@@ -89,6 +89,12 @@ var (
 	errPQNotImplemented = errors.New("pq: algorithm not yet implemented")
 )
 
+// Compile-time assertions: ensure local size constants match the Dilithium library.
+var _ [mode2.PublicKeySize]byte = [Dilithium2PublicKeySize]byte{}
+var _ [mode2.SignatureSize]byte = [Dilithium2SignatureSize]byte{}
+var _ [mode3.PublicKeySize]byte = [Dilithium3PublicKeySize]byte{}
+var _ [mode3.SignatureSize]byte = [Dilithium3SignatureSize]byte{}
+
 // PrecompiledContractsPQ contains the post-quantum precompiled contracts
 var PrecompiledContractsPQ = map[types.Address]PrecompiledContract{
 	PQFalconVerifyAddr:     &falconVerify{},
