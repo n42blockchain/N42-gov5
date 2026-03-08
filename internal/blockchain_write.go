@@ -185,8 +185,12 @@ func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
 			return err
 		}
 	}
-	bc.currentBlock.Store(blk.(*block.Block))
+	b := blk.(*block.Block)
+	bc.currentBlock.Store(b)
 	headBlockGauge.Set(blk.Number64().Uint64())
+	headGasUsedGauge.Set(b.GasUsed())
+	headGasLimitGauge.Set(b.GasLimit())
+	headTransactionsGauge.Set(uint64(len(b.Transactions())))
 	return nil
 }
 
