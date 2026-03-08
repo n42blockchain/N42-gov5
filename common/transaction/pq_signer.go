@@ -26,10 +26,18 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode2"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode3"
 	"github.com/n42blockchain/N42/common/crypto/falcon"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 )
+
+// Compile-time assertions: ensure transaction size constants match the Dilithium library.
+var _ [mode2.PublicKeySize]byte = [Dilithium2PublicKeySize]byte{}
+var _ [mode2.SignatureSize]byte = [Dilithium2SignatureSize]byte{}
+var _ [mode3.PublicKeySize]byte = [Dilithium3PublicKeySize]byte{}
+var _ [mode3.SignatureSize]byte = [Dilithium3SignatureSize]byte{}
 
 var (
 	// ErrUnsupportedPQAlgorithm is returned when the PQ algorithm is not supported
@@ -182,9 +190,20 @@ func (s PostQuantumSigner) verifyDilithium2Signature(pubKey, msg, sig []byte) ([
 		return nil, ErrPQInvalidPubKeySize
 	}
 
-	// Use the existing Dilithium implementation if available
-	// TODO: Integrate with existing Dilithium code or implement verification
-	return nil, errors.New("pq: Dilithium2 verification not yet implemented")
+	if len(sig) != Dilithium2SignatureSize {
+		return nil, ErrPQSignatureVerificationFailed
+	}
+
+	var pkBuf [mode2.PublicKeySize]byte
+	copy(pkBuf[:], pubKey)
+	var pk mode2.PublicKey
+	pk.Unpack(&pkBuf)
+
+	if !mode2.Verify(&pk, msg, sig) {
+		return nil, ErrPQSignatureVerificationFailed
+	}
+
+	return pubKey, nil
 }
 
 // verifyDilithium3Signature verifies a Dilithium3 signature
@@ -193,8 +212,20 @@ func (s PostQuantumSigner) verifyDilithium3Signature(pubKey, msg, sig []byte) ([
 		return nil, ErrPQInvalidPubKeySize
 	}
 
-	// TODO: Integrate with existing Dilithium code or implement verification
-	return nil, errors.New("pq: Dilithium3 verification not yet implemented")
+	if len(sig) != Dilithium3SignatureSize {
+		return nil, ErrPQSignatureVerificationFailed
+	}
+
+	var pkBuf [mode3.PublicKeySize]byte
+	copy(pkBuf[:], pubKey)
+	var pk mode3.PublicKey
+	pk.Unpack(&pkBuf)
+
+	if !mode3.Verify(&pk, msg, sig) {
+		return nil, ErrPQSignatureVerificationFailed
+	}
+
+	return pubKey, nil
 }
 
 // derivePQAddress derives an Ethereum-style address from a PQ public key
@@ -238,50 +269,94 @@ func (s PostQuantumSigner) Hash(tx *Transaction) (types.Hash, error) {
 }
 
 // SignPQTransaction signs a post-quantum transaction with the given private key.
+// Public key must be set before computing SigningHash() since PubKeyData is
+// included in the hash. Each branch sets the public key first if needed.
 func SignPQTransaction(tx *PostQuantumTx, privateKey interface{}) error {
-	signingHash := tx.SigningHash()
-
 	switch tx.SigAlgo {
 	case PQAlgoFalcon512:
 		sk, ok := privateKey.(*falcon.PrivateKey)
 		if !ok {
 			return errors.New("pq: invalid private key type for Falcon-512")
 		}
-		sig, err := falcon.Sign(sk, signingHash[:])
-		if err != nil {
-			return err
-		}
-		tx.SetPQSignature(sig)
 
-		// Set public key if not already set
 		if len(tx.PubKeyData) == 0 {
 			pk := sk.Public().(*falcon.PublicKey)
 			tx.SetPubKey(pk.Bytes(), false)
 		}
+
+		h := tx.SigningHash()
+		sig, err := falcon.Sign(sk, h[:])
+		if err != nil {
+			return err
+		}
+		tx.SetPQSignature(sig)
 		return nil
 
 	case PQAlgoSQIsign:
 		return errors.New("pq: SQIsign signing not yet implemented")
 
-	case PQAlgoDilithium2, PQAlgoDilithium3:
-		return errors.New("pq: Dilithium signing not yet implemented")
+	case PQAlgoDilithium2:
+		sk2, ok := privateKey.(*mode2.PrivateKey)
+		if !ok {
+			return errors.New("pq: invalid private key type for Dilithium2")
+		}
+
+		// Set public key before computing signing hash, since PubKeyData
+		// is included in SigningHash().
+		if len(tx.PubKeyData) == 0 {
+			pk := sk2.Public().(*mode2.PublicKey)
+			tx.SetPubKey(pk.Bytes(), false)
+		}
+
+		h := tx.SigningHash()
+		sig := make([]byte, mode2.SignatureSize)
+		mode2.SignTo(sk2, h[:], sig)
+		tx.SetPQSignature(sig)
+		return nil
+
+	case PQAlgoDilithium3:
+		sk3, ok := privateKey.(*mode3.PrivateKey)
+		if !ok {
+			return errors.New("pq: invalid private key type for Dilithium3")
+		}
+
+		if len(tx.PubKeyData) == 0 {
+			pk := sk3.Public().(*mode3.PublicKey)
+			tx.SetPubKey(pk.Bytes(), false)
+		}
+
+		h := tx.SigningHash()
+		sig := make([]byte, mode3.SignatureSize)
+		mode3.SignTo(sk3, h[:], sig)
+		tx.SetPQSignature(sig)
+		return nil
 
 	default:
 		return ErrUnsupportedPQAlgorithm
 	}
 }
 
-// SignNewPQTx creates and signs a new post-quantum transaction
+// SignNewPQTx creates and signs a new Falcon-512 post-quantum transaction.
 func SignNewPQTx(sk *falcon.PrivateKey, txdata *PostQuantumTx) (*Transaction, error) {
-	// Set the public key
-	pk := sk.Public().(*falcon.PublicKey)
-	txdata.SetPubKey(pk.Bytes(), false)
-
-	// Sign the transaction
 	if err := SignPQTransaction(txdata, sk); err != nil {
 		return nil, err
 	}
+	return NewTx(txdata), nil
+}
 
+// SignNewDilithium2Tx creates and signs a new Dilithium2 post-quantum transaction.
+func SignNewDilithium2Tx(sk *mode2.PrivateKey, txdata *PostQuantumTx) (*Transaction, error) {
+	if err := SignPQTransaction(txdata, sk); err != nil {
+		return nil, err
+	}
+	return NewTx(txdata), nil
+}
+
+// SignNewDilithium3Tx creates and signs a new Dilithium3 post-quantum transaction.
+func SignNewDilithium3Tx(sk *mode3.PrivateKey, txdata *PostQuantumTx) (*Transaction, error) {
+	if err := SignPQTransaction(txdata, sk); err != nil {
+		return nil, err
+	}
 	return NewTx(txdata), nil
 }
 

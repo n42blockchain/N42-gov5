@@ -33,6 +33,8 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode2"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode3"
 	"github.com/n42blockchain/N42/common/crypto/falcon"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -399,6 +401,220 @@ func (a *registryAdapter) HasPublicKey(keyHash types.Hash) bool {
 }
 
 // =============================================================================
+// Integration Test: Dilithium2 Full Transaction Flow
+// =============================================================================
+
+func TestDilithium2TransactionFullFlow(t *testing.T) {
+	pk, sk, err := mode2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Dilithium2 key pair: %v", err)
+	}
+
+	chainID := uint256.NewInt(1)
+	to := types.HexToAddress("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb4")
+	txdata := transaction.NewPostQuantumTx(
+		chainID, 0, &to,
+		uint256.NewInt(1000000000000000),
+		21000,
+		uint256.NewInt(1000000000),
+		uint256.NewInt(100000000000),
+		nil, nil,
+		transaction.PQAlgoDilithium2,
+	)
+
+	signedTx, err := transaction.SignNewDilithium2Tx(sk, txdata)
+	if err != nil {
+		t.Fatalf("Failed to sign Dilithium2 transaction: %v", err)
+	}
+
+	// Recover sender via signer
+	signer := transaction.NewPostQuantumSigner(chainID.ToBig())
+	sender, err := signer.Sender(signedTx)
+	if err != nil {
+		t.Fatalf("Sender recovery failed: %v", err)
+	}
+
+	expectedAddr := types.BytesToAddress(crypto.Keccak256(pk.Bytes())[12:])
+	if sender != expectedAddr {
+		t.Errorf("Sender = %s, want %s", sender.Hex(), expectedAddr.Hex())
+	}
+
+	t.Logf("Dilithium2 transaction flow completed successfully")
+	t.Logf("  Public key size: %d bytes", mode2.PublicKeySize)
+	t.Logf("  Signature size: %d bytes", mode2.SignatureSize)
+	t.Logf("  Sender address: %s", sender.Hex())
+}
+
+// =============================================================================
+// Integration Test: Dilithium3 Full Transaction Flow
+// =============================================================================
+
+func TestDilithium3TransactionFullFlow(t *testing.T) {
+	pk, sk, err := mode3.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Dilithium3 key pair: %v", err)
+	}
+
+	chainID := uint256.NewInt(1)
+	to := types.HexToAddress("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb4")
+	txdata := transaction.NewPostQuantumTx(
+		chainID, 0, &to,
+		uint256.NewInt(1000000000000000),
+		21000,
+		uint256.NewInt(1000000000),
+		uint256.NewInt(100000000000),
+		nil, nil,
+		transaction.PQAlgoDilithium3,
+	)
+
+	signedTx, err := transaction.SignNewDilithium3Tx(sk, txdata)
+	if err != nil {
+		t.Fatalf("Failed to sign Dilithium3 transaction: %v", err)
+	}
+
+	signer := transaction.NewPostQuantumSigner(chainID.ToBig())
+	sender, err := signer.Sender(signedTx)
+	if err != nil {
+		t.Fatalf("Sender recovery failed: %v", err)
+	}
+
+	expectedAddr := types.BytesToAddress(crypto.Keccak256(pk.Bytes())[12:])
+	if sender != expectedAddr {
+		t.Errorf("Sender = %s, want %s", sender.Hex(), expectedAddr.Hex())
+	}
+
+	t.Logf("Dilithium3 transaction flow completed successfully")
+	t.Logf("  Public key size: %d bytes", mode3.PublicKeySize)
+	t.Logf("  Signature size: %d bytes", mode3.SignatureSize)
+	t.Logf("  Sender address: %s", sender.Hex())
+}
+
+// =============================================================================
+// Integration Test: Dilithium Key Registry
+// =============================================================================
+
+func TestDilithiumKeyRegistry(t *testing.T) {
+	registry := pqregistry.NewRegistry()
+	owner := types.HexToAddress("0xabcdef0123456789abcdef0123456789abcdef01")
+
+	// Register Dilithium2 key
+	pk2, _, err := mode2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Dilithium2 key: %v", err)
+	}
+	keyHash2, err := registry.RegisterKey(pk2.Bytes(), pqregistry.AlgoDilithium2, owner)
+	if err != nil {
+		t.Fatalf("Failed to register Dilithium2 key: %v", err)
+	}
+
+	// Verify retrieval
+	retrieved, err := registry.GetPublicKey(keyHash2)
+	if err != nil {
+		t.Fatalf("Failed to retrieve Dilithium2 key: %v", err)
+	}
+	if !bytes.Equal(retrieved, pk2.Bytes()) {
+		t.Fatal("Retrieved Dilithium2 key doesn't match original")
+	}
+
+	// Check algorithm
+	algo, err := registry.GetAlgorithm(keyHash2)
+	if err != nil {
+		t.Fatalf("Failed to get algorithm: %v", err)
+	}
+	if algo != pqregistry.AlgoDilithium2 {
+		t.Errorf("Algorithm = %d, want %d", algo, pqregistry.AlgoDilithium2)
+	}
+
+	t.Logf("Dilithium2 key registered: %s", keyHash2.Hex())
+
+	// Register Dilithium3 key for different owner
+	owner3 := types.HexToAddress("0x1111111111111111111111111111111111111111")
+	pk3, _, err := mode3.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Dilithium3 key: %v", err)
+	}
+	keyHash3, err := registry.RegisterKey(pk3.Bytes(), pqregistry.AlgoDilithium3, owner3)
+	if err != nil {
+		t.Fatalf("Failed to register Dilithium3 key: %v", err)
+	}
+
+	algo3, _ := registry.GetAlgorithm(keyHash3)
+	if algo3 != pqregistry.AlgoDilithium3 {
+		t.Errorf("Algorithm = %d, want %d", algo3, pqregistry.AlgoDilithium3)
+	}
+
+	t.Logf("Dilithium3 key registered: %s", keyHash3.Hex())
+}
+
+// =============================================================================
+// Integration Test: Cross-Algorithm Comparison (Falcon vs Dilithium)
+// =============================================================================
+
+func TestCrossAlgorithmSigningComparison(t *testing.T) {
+	chainID := uint256.NewInt(1)
+	to := types.HexToAddress("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb4")
+	signer := transaction.NewPostQuantumSigner(chainID.ToBig())
+
+	// Falcon-512
+	_, fsk, _ := falcon.GenerateKey(rand.Reader)
+	ftx := transaction.NewPostQuantumTx(
+		chainID, 0, &to, uint256.NewInt(0), 21000,
+		uint256.NewInt(1e9), uint256.NewInt(100e9),
+		[]byte("cross-algo test"), nil, transaction.PQAlgoFalcon512,
+	)
+	fSigned, err := transaction.SignNewPQTx(fsk, ftx)
+	if err != nil {
+		t.Fatalf("Falcon signing failed: %v", err)
+	}
+	fSender, err := signer.Sender(fSigned)
+	if err != nil {
+		t.Fatalf("Falcon sender recovery failed: %v", err)
+	}
+
+	// Dilithium2
+	_, d2sk, _ := mode2.GenerateKey(rand.Reader)
+	d2tx := transaction.NewPostQuantumTx(
+		chainID, 0, &to, uint256.NewInt(0), 21000,
+		uint256.NewInt(1e9), uint256.NewInt(100e9),
+		[]byte("cross-algo test"), nil, transaction.PQAlgoDilithium2,
+	)
+	d2Signed, err := transaction.SignNewDilithium2Tx(d2sk, d2tx)
+	if err != nil {
+		t.Fatalf("Dilithium2 signing failed: %v", err)
+	}
+	d2Sender, err := signer.Sender(d2Signed)
+	if err != nil {
+		t.Fatalf("Dilithium2 sender recovery failed: %v", err)
+	}
+
+	// Dilithium3
+	_, d3sk, _ := mode3.GenerateKey(rand.Reader)
+	d3tx := transaction.NewPostQuantumTx(
+		chainID, 0, &to, uint256.NewInt(0), 21000,
+		uint256.NewInt(1e9), uint256.NewInt(100e9),
+		[]byte("cross-algo test"), nil, transaction.PQAlgoDilithium3,
+	)
+	d3Signed, err := transaction.SignNewDilithium3Tx(d3sk, d3tx)
+	if err != nil {
+		t.Fatalf("Dilithium3 signing failed: %v", err)
+	}
+	d3Sender, err := signer.Sender(d3Signed)
+	if err != nil {
+		t.Fatalf("Dilithium3 sender recovery failed: %v", err)
+	}
+
+	// All senders should be different (different keys)
+	if fSender == d2Sender || fSender == d3Sender || d2Sender == d3Sender {
+		t.Error("Different keys should produce different sender addresses")
+	}
+
+	t.Logf("Cross-algorithm comparison:")
+	t.Logf("  Falcon-512:  sender=%s", fSender.Hex())
+	t.Logf("  Dilithium2:  sender=%s", d2Sender.Hex())
+	t.Logf("  Dilithium3:  sender=%s", d3Sender.Hex())
+}
+
+// =============================================================================
 // Benchmarks
 // =============================================================================
 
@@ -452,6 +668,64 @@ func BenchmarkPQTransactionVerification(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = falcon.Verify(pk, sigHash[:], sig)
+	}
+}
+
+func BenchmarkDilithium2TransactionSigning(b *testing.B) {
+	_, sk, _ := mode2.GenerateKey(rand.Reader)
+	chainID := uint256.NewInt(1)
+	to := types.HexToAddress("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb4")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		txdata := transaction.NewPostQuantumTx(
+			chainID, uint64(i), &to, uint256.NewInt(0), 21000,
+			uint256.NewInt(1000000000), uint256.NewInt(100000000000),
+			nil, nil, transaction.PQAlgoDilithium2,
+		)
+		_ = transaction.SignPQTransaction(txdata, sk)
+	}
+}
+
+func BenchmarkDilithium3TransactionSigning(b *testing.B) {
+	_, sk, _ := mode3.GenerateKey(rand.Reader)
+	chainID := uint256.NewInt(1)
+	to := types.HexToAddress("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb4")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		txdata := transaction.NewPostQuantumTx(
+			chainID, uint64(i), &to, uint256.NewInt(0), 21000,
+			uint256.NewInt(1000000000), uint256.NewInt(100000000000),
+			nil, nil, transaction.PQAlgoDilithium3,
+		)
+		_ = transaction.SignPQTransaction(txdata, sk)
+	}
+}
+
+func BenchmarkDilithium2Verification(b *testing.B) {
+	pk, sk, _ := mode2.GenerateKey(rand.Reader)
+	msg := make([]byte, 32)
+	rand.Read(msg)
+	sig := make([]byte, mode2.SignatureSize)
+	mode2.SignTo(sk, msg, sig)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		mode2.Verify(pk, msg, sig)
+	}
+}
+
+func BenchmarkDilithium3Verification(b *testing.B) {
+	pk, sk, _ := mode3.GenerateKey(rand.Reader)
+	msg := make([]byte, 32)
+	rand.Read(msg)
+	sig := make([]byte, mode3.SignatureSize)
+	mode3.SignTo(sk, msg, sig)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		mode3.Verify(pk, msg, sig)
 	}
 }
 

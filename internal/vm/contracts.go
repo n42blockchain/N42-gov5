@@ -190,10 +190,13 @@ var PrecompiledContractsPrague = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{0x11}): &bls12381Pairing{},
 	types.BytesToAddress([]byte{0x12}): &bls12381MapG1{},
 	types.BytesToAddress([]byte{0x13}): &bls12381MapG2{},
+	types.BytesToAddress([]byte{0x14}): &falconVerify{},     // PQ: Falcon-512 signature verification
+	types.BytesToAddress([]byte{0x15}): &dilithium2Verify{}, // PQ: Dilithium2 signature verification
+	types.BytesToAddress([]byte{0x16}): &dilithium3Verify{}, // PQ: Dilithium3 signature verification
 }
 
 // PrecompiledContractsPectra contains the default set of pre-compiled Ethereum
-// contracts used in the Pectra release. Same as Prague (BLS12-381 included).
+// contracts used in the Pectra release. Same as Prague (BLS12-381 + PQ included).
 // Pectra = Prague + Electra consensus changes
 var PrecompiledContractsPectra = PrecompiledContractsPrague
 
@@ -225,6 +228,9 @@ var PrecompiledContractsFusaka = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{0x12}): &bls12381MapG1{},
 	types.BytesToAddress([]byte{0x13}): &bls12381MapG2{},
 	types.HexToAddress("0x0000000000000000000000000000000000000100"): &p256Verify{}, // EIP-7951: P-256 precompile
+	types.BytesToAddress([]byte{0x14}): &falconVerify{},     // PQ: Falcon-512 signature verification
+	types.BytesToAddress([]byte{0x15}): &dilithium2Verify{}, // PQ: Dilithium2 signature verification
+	types.BytesToAddress([]byte{0x16}): &dilithium3Verify{}, // PQ: Dilithium3 signature verification
 }
 
 var (

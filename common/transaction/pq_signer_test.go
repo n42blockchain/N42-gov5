@@ -22,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode2"
+	"github.com/n42blockchain/N42/common/crypto/dilithium/mode3"
 	"github.com/n42blockchain/N42/common/crypto/falcon"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -416,6 +418,280 @@ func TestResolvePQPublicKeyFullKeyMode(t *testing.T) {
 
 	if string(resolved) != string(pqTx.PubKeyData) {
 		t.Error("ResolvePQPublicKey should return the full public key directly")
+	}
+}
+
+func TestSignAndVerifyDilithium2(t *testing.T) {
+	chainId := big.NewInt(1)
+	signer := NewPostQuantumSigner(chainId)
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	pk, sk, err := mode2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Dilithium2 key: %v", err)
+	}
+
+	pqTx := NewPostQuantumTx(
+		uint256.NewInt(1),
+		42,
+		&to,
+		uint256.NewInt(1000000000000000000),
+		21000,
+		uint256.NewInt(1000000000),
+		uint256.NewInt(2000000000),
+		[]byte("dilithium2 test"),
+		nil,
+		PQAlgoDilithium2,
+	)
+
+	err = SignPQTransaction(pqTx, sk)
+	if err != nil {
+		t.Fatalf("SignPQTransaction(Dilithium2) failed: %v", err)
+	}
+
+	if len(pqTx.PQSignature) != mode2.SignatureSize {
+		t.Errorf("Signature size = %d, want %d", len(pqTx.PQSignature), mode2.SignatureSize)
+	}
+
+	if len(pqTx.PubKeyData) != mode2.PublicKeySize {
+		t.Errorf("PubKey size = %d, want %d", len(pqTx.PubKeyData), mode2.PublicKeySize)
+	}
+
+	signedTx := NewTx(pqTx)
+	sender, err := signer.Sender(signedTx)
+	if err != nil {
+		t.Fatalf("Sender(Dilithium2) failed: %v", err)
+	}
+
+	expectedAddr := computePQAddress(pk.Bytes())
+	if sender != expectedAddr {
+		t.Errorf("Sender() = %v, want %v", sender, expectedAddr)
+	}
+}
+
+func TestSignAndVerifyDilithium3(t *testing.T) {
+	chainId := big.NewInt(1)
+	signer := NewPostQuantumSigner(chainId)
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	pk, sk, err := mode3.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Dilithium3 key: %v", err)
+	}
+
+	pqTx := NewPostQuantumTx(
+		uint256.NewInt(1),
+		42,
+		&to,
+		uint256.NewInt(1000000000000000000),
+		21000,
+		uint256.NewInt(1000000000),
+		uint256.NewInt(2000000000),
+		[]byte("dilithium3 test"),
+		nil,
+		PQAlgoDilithium3,
+	)
+
+	err = SignPQTransaction(pqTx, sk)
+	if err != nil {
+		t.Fatalf("SignPQTransaction(Dilithium3) failed: %v", err)
+	}
+
+	if len(pqTx.PQSignature) != mode3.SignatureSize {
+		t.Errorf("Signature size = %d, want %d", len(pqTx.PQSignature), mode3.SignatureSize)
+	}
+
+	if len(pqTx.PubKeyData) != mode3.PublicKeySize {
+		t.Errorf("PubKey size = %d, want %d", len(pqTx.PubKeyData), mode3.PublicKeySize)
+	}
+
+	signedTx := NewTx(pqTx)
+	sender, err := signer.Sender(signedTx)
+	if err != nil {
+		t.Fatalf("Sender(Dilithium3) failed: %v", err)
+	}
+
+	expectedAddr := computePQAddress(pk.Bytes())
+	if sender != expectedAddr {
+		t.Errorf("Sender() = %v, want %v", sender, expectedAddr)
+	}
+}
+
+func TestDilithium2InvalidSignature(t *testing.T) {
+	chainId := big.NewInt(1)
+	signer := NewPostQuantumSigner(chainId)
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	pk, _, err := mode2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Dilithium2 key: %v", err)
+	}
+
+	pqTx := &PostQuantumTx{
+		ChainID:     uint256.NewInt(1),
+		Nonce:       42,
+		GasTipCap:   uint256.NewInt(1000000000),
+		GasFeeCap:   uint256.NewInt(2000000000),
+		Gas:         21000,
+		To:          &to,
+		Value:       uint256.NewInt(0),
+		SigAlgo:     PQAlgoDilithium2,
+		PubKeyMode:  0,
+		PubKeyData:  pk.Bytes(),
+		PQSignature: make([]byte, mode2.SignatureSize), // zero-filled invalid sig
+		V:           uint256.NewInt(0),
+		R:           uint256.NewInt(0),
+		S:           uint256.NewInt(0),
+	}
+
+	tx := NewTx(pqTx)
+	_, err = signer.Sender(tx)
+	if err != ErrPQSignatureVerificationFailed {
+		t.Errorf("Expected ErrPQSignatureVerificationFailed, got %v", err)
+	}
+}
+
+func TestDilithium3InvalidSignature(t *testing.T) {
+	chainId := big.NewInt(1)
+	signer := NewPostQuantumSigner(chainId)
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	pk, _, err := mode3.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Dilithium3 key: %v", err)
+	}
+
+	pqTx := &PostQuantumTx{
+		ChainID:     uint256.NewInt(1),
+		Nonce:       42,
+		GasTipCap:   uint256.NewInt(1000000000),
+		GasFeeCap:   uint256.NewInt(2000000000),
+		Gas:         21000,
+		To:          &to,
+		Value:       uint256.NewInt(0),
+		SigAlgo:     PQAlgoDilithium3,
+		PubKeyMode:  0,
+		PubKeyData:  pk.Bytes(),
+		PQSignature: make([]byte, mode3.SignatureSize),
+		V:           uint256.NewInt(0),
+		R:           uint256.NewInt(0),
+		S:           uint256.NewInt(0),
+	}
+
+	tx := NewTx(pqTx)
+	_, err = signer.Sender(tx)
+	if err != ErrPQSignatureVerificationFailed {
+		t.Errorf("Expected ErrPQSignatureVerificationFailed, got %v", err)
+	}
+}
+
+func TestDilithiumWrongPubKeySize(t *testing.T) {
+	chainId := big.NewInt(1)
+	signer := NewPostQuantumSigner(chainId)
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	pqTx := &PostQuantumTx{
+		ChainID:     uint256.NewInt(1),
+		Nonce:       42,
+		GasTipCap:   uint256.NewInt(1000000000),
+		GasFeeCap:   uint256.NewInt(2000000000),
+		Gas:         21000,
+		To:          &to,
+		Value:       uint256.NewInt(0),
+		SigAlgo:     PQAlgoDilithium2,
+		PubKeyMode:  0,
+		PubKeyData:  []byte("wrong size key"),
+		PQSignature: make([]byte, mode2.SignatureSize),
+		V:           uint256.NewInt(0),
+		R:           uint256.NewInt(0),
+		S:           uint256.NewInt(0),
+	}
+
+	tx := NewTx(pqTx)
+	_, err := signer.Sender(tx)
+	if err != ErrPQInvalidPubKeySize {
+		t.Errorf("Expected ErrPQInvalidPubKeySize, got %v", err)
+	}
+}
+
+func TestDilithiumWrongSignatureSize(t *testing.T) {
+	chainId := big.NewInt(1)
+	signer := NewPostQuantumSigner(chainId)
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	pk, _, err := mode2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Dilithium2 key: %v", err)
+	}
+
+	pqTx := &PostQuantumTx{
+		ChainID:     uint256.NewInt(1),
+		Nonce:       42,
+		GasTipCap:   uint256.NewInt(1000000000),
+		GasFeeCap:   uint256.NewInt(2000000000),
+		Gas:         21000,
+		To:          &to,
+		Value:       uint256.NewInt(0),
+		SigAlgo:     PQAlgoDilithium2,
+		PubKeyMode:  0,
+		PubKeyData:  pk.Bytes(),
+		PQSignature: []byte("too short"),
+		V:           uint256.NewInt(0),
+		R:           uint256.NewInt(0),
+		S:           uint256.NewInt(0),
+	}
+
+	tx := NewTx(pqTx)
+	_, err = signer.Sender(tx)
+	if err != ErrPQSignatureVerificationFailed {
+		t.Errorf("Expected ErrPQSignatureVerificationFailed, got %v", err)
+	}
+}
+
+func TestSignDilithiumInvalidKeyType(t *testing.T) {
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	pqTx := NewPostQuantumTx(
+		uint256.NewInt(1), 42, &to, uint256.NewInt(0), 21000,
+		uint256.NewInt(1000000000), uint256.NewInt(2000000000),
+		nil, nil, PQAlgoDilithium2,
+	)
+
+	// Wrong key type: pass a Falcon key for a Dilithium2 transaction
+	_, sk, _ := falcon.GenerateKey(rand.Reader)
+	err := SignPQTransaction(pqTx, sk)
+	if err == nil {
+		t.Error("SignPQTransaction should fail with wrong key type")
+	}
+}
+
+func TestDilithium2CrossKeyVerification(t *testing.T) {
+	chainId := big.NewInt(1)
+	signer := NewPostQuantumSigner(chainId)
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	// Generate two different key pairs
+	_, sk1, _ := mode2.GenerateKey(rand.Reader)
+	pk2, _, _ := mode2.GenerateKey(rand.Reader)
+
+	pqTx := NewPostQuantumTx(
+		uint256.NewInt(1), 42, &to, uint256.NewInt(0), 21000,
+		uint256.NewInt(1000000000), uint256.NewInt(2000000000),
+		nil, nil, PQAlgoDilithium2,
+	)
+
+	// Set pk2 first, then sign with sk1 — signature is over hash(pk2) but
+	// signed by sk1 which doesn't match pk2, so verification must fail.
+	pqTx.SetPubKey(pk2.Bytes(), false)
+	h := pqTx.SigningHash()
+	sig := make([]byte, mode2.SignatureSize)
+	mode2.SignTo(sk1, h[:], sig)
+	pqTx.SetPQSignature(sig)
+
+	tx := NewTx(pqTx)
+	_, err := signer.Sender(tx)
+	if err != ErrPQSignatureVerificationFailed {
+		t.Errorf("Expected ErrPQSignatureVerificationFailed for cross-key, got %v", err)
 	}
 }
 
