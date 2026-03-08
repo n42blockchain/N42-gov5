@@ -25,7 +25,19 @@ import (
 	"errors"
 )
 
-var errShortBuf = errors.New("snap_ssz: buffer too short")
+var (
+	errShortBuf    = errors.New("snap_ssz: buffer too short")
+	errOverflow    = errors.New("snap_ssz: length overflow")
+	errTooMany     = errors.New("snap_ssz: array count exceeds limit")
+)
+
+// maxArrayCount is the maximum number of entries allowed in a deserialized
+// array to prevent OOM from malicious messages.
+const maxArrayCount = 16384
+
+// maxBytesLen is the maximum length of a single bytes field to prevent
+// unbounded memory allocation on deserialization.
+const maxBytesLen = 2 * 1024 * 1024 // 2 MB
 
 // --- binary encoding helpers ---
 
@@ -67,14 +79,18 @@ func readBytes(buf []byte, offset int) ([]byte, int, error) {
 	if offset+4 > len(buf) {
 		return nil, offset, errShortBuf
 	}
-	n := int(binary.LittleEndian.Uint32(buf[offset : offset+4]))
+	n := binary.LittleEndian.Uint32(buf[offset : offset+4])
 	offset += 4
-	if offset+n > len(buf) {
+	if n > maxBytesLen {
+		return nil, offset, errOverflow
+	}
+	end := offset + int(n)
+	if end > len(buf) || end < offset { // overflow check
 		return nil, offset, errShortBuf
 	}
 	data := make([]byte, n)
-	copy(data, buf[offset:offset+n])
-	return data, offset + n, nil
+	copy(data, buf[offset:end])
+	return data, end, nil
 }
 
 func readUint32(buf []byte, offset int) (uint32, int, error) {
@@ -194,6 +210,9 @@ func (m *AccountRangeResponse) UnmarshalSSZ(buf []byte) error {
 	var count uint32
 	if count, off, err = readUint32(buf, off); err != nil {
 		return err
+	}
+	if count > maxArrayCount {
+		return errTooMany
 	}
 	m.Accounts = make([]*AccountEntry, count)
 	for i := uint32(0); i < count; i++ {
@@ -331,6 +350,9 @@ func (m *StorageRangeResponse) UnmarshalSSZ(buf []byte) error {
 	if count, off, err = readUint32(buf, off); err != nil {
 		return err
 	}
+	if count > maxArrayCount {
+		return errTooMany
+	}
 	m.Slots = make([]*StorageEntry, count)
 	for i := uint32(0); i < count; i++ {
 		var entryBytes []byte
@@ -384,6 +406,9 @@ func (m *GetCodeRequest) UnmarshalSSZ(buf []byte) error {
 	var count uint32
 	if count, off, err = readUint32(buf, off); err != nil {
 		return err
+	}
+	if count > maxArrayCount {
+		return errTooMany
 	}
 	m.Hashes = make([][]byte, count)
 	for i := uint32(0); i < count; i++ {
@@ -462,6 +487,9 @@ func (m *CodeResponse) UnmarshalSSZ(buf []byte) error {
 	var count uint32
 	if count, off, err = readUint32(buf, off); err != nil {
 		return err
+	}
+	if count > maxArrayCount {
+		return errTooMany
 	}
 	m.Codes = make([]*CodeEntry, count)
 	for i := uint32(0); i < count; i++ {

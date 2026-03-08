@@ -19,6 +19,7 @@ package snapsync
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,9 +53,10 @@ type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	synced  atomic.Bool
-	syncing atomic.Bool
-	done    chan struct{}
+	synced   atomic.Bool
+	syncing  atomic.Bool
+	started  sync.Once
+	done     chan struct{}
 }
 
 // NewService creates a new snap sync service.
@@ -70,9 +72,15 @@ func NewService(ctx context.Context, cfg *Config) *Service {
 }
 
 // Start runs the snap sync process. Blocks until completion or cancellation.
+// Safe to call multiple times; only the first call executes.
 func (s *Service) Start() {
-	defer close(s.done)
+	s.started.Do(func() {
+		defer close(s.done)
+		s.run()
+	})
+}
 
+func (s *Service) run() {
 	if !s.cfg.SnapSync.Enable {
 		log.Info("Snap sync is disabled, skipping")
 		s.synced.Store(true)
@@ -106,7 +114,7 @@ func (s *Service) Start() {
 
 	log.Info("Starting snap sync...")
 
-	// Step 1: Wait for peers.
+	// Step 1: Wait for peers and select pivot.
 	pivotBlock, stateRoot, err := s.selectPivot()
 	if err != nil {
 		log.Error("Snap sync failed to select pivot", "err", err)
@@ -119,7 +127,7 @@ func (s *Service) Start() {
 	)
 
 	// Step 2: Save pivot and run download manager.
-	if err := s.db().Update(s.ctx, func(tx kv.RwTx) error {
+	if err := s.cfg.DB.Update(s.ctx, func(tx kv.RwTx) error {
 		return SavePivotBlock(tx, pivotBlock)
 	}); err != nil {
 		log.Error("Failed to save pivot block", "err", err)
@@ -188,11 +196,6 @@ func (s *Service) Resync() error {
 	return nil
 }
 
-// db returns the database reference.
-func (s *Service) db() kv.RwDB {
-	return s.cfg.DB
-}
-
 // selectPivot waits for peers and selects a pivot block.
 // The pivot block is chosen as (highest_peer_block - PivotDistance) to ensure
 // enough peers have the state at that point.
@@ -222,7 +225,11 @@ func (s *Service) selectPivot() (uint64, []byte, error) {
 		}
 	}
 
-	pivotBlock := highestBlock.Uint64() - s.cfg.SnapSync.PivotDistance
+	highest := highestBlock.Uint64()
+	if highest <= s.cfg.SnapSync.PivotDistance {
+		return 0, nil, fmt.Errorf("network head %d too low for pivot distance %d", highest, s.cfg.SnapSync.PivotDistance)
+	}
+	pivotBlock := highest - s.cfg.SnapSync.PivotDistance
 
 	// For N42's incremental state root, we pass a nil state root.
 	// State verification relies on block replay, not state root comparison.
