@@ -57,11 +57,14 @@ var (
 // =============================================================================
 
 var (
-	headBlockGauge       = prometheus.GetOrCreateCounter("chain_head_block", true)
-	blockInsertTimer     = prometheus.GetOrCreateHistogram("chain_inserts")
-	blockValidationTimer = prometheus.GetOrCreateHistogram("chain_validation")
-	blockExecutionTimer  = prometheus.GetOrCreateHistogram("chain_execution")
-	blockWriteTimer      = prometheus.GetOrCreateHistogram("chain_write")
+	headBlockGauge        = prometheus.GetOrCreateCounter("chain_head_block", true)
+	headGasUsedGauge      = prometheus.GetOrCreateCounter("chain_head_gas_used", true)
+	headGasLimitGauge     = prometheus.GetOrCreateCounter("chain_head_gas_limit", true)
+	headTransactionsGauge = prometheus.GetOrCreateCounter("chain_head_transactions", true)
+	blockInsertTimer      = prometheus.GetOrCreateHistogram("chain_inserts")
+	blockValidationTimer  = prometheus.GetOrCreateHistogram("chain_validation")
+	blockExecutionTimer   = prometheus.GetOrCreateHistogram("chain_execution")
+	blockWriteTimer       = prometheus.GetOrCreateHistogram("chain_write")
 
 	blockCacheHits    = prometheus.GetOrCreateCounter("cache_block_hits", true)
 	blockCacheMisses  = prometheus.GetOrCreateCounter("cache_block_misses", true)

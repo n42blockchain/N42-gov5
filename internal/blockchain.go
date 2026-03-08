@@ -98,6 +98,9 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 
 	bc.currentBlock.Store(current)
 	headBlockGauge.Set(current.Number64().Uint64())
+	headGasUsedGauge.Set(current.GasUsed())
+	headGasLimitGauge.Set(current.GasLimit())
+	headTransactionsGauge.Set(uint64(len(current.Transactions())))
 	bc.forker = NewForkChoice(bc, nil)
 	bc.process = NewStateProcessor(config, bc, engine)
 	bc.validator = NewBlockValidator(config, bc, engine)

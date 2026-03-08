@@ -48,7 +48,12 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-var blockSignGauge = prometheus.GetOrCreateCounter("block_sign_counter", true)
+var (
+	blockSignGauge      = prometheus.GetOrCreateCounter("block_sign_counter", true)
+	blocksMinedCounter  = prometheus.GetOrCreateCounter("miner_blocks_mined_total", true)
+	miningErrorsCounter = prometheus.GetOrCreateCounter("miner_errors_total", true)
+	blockMiningTimer    = prometheus.GetOrCreateSummary("miner_block_mining_seconds")
+)
 
 type task struct {
 	receipts  []*block.Receipt
@@ -335,11 +340,14 @@ func (w *worker) resultLoop() error {
 			err := w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
 			if err != nil {
 				log.Error("Failed writing block to chain", "err", err)
+				miningErrorsCounter.Inc()
 				continue
 			}
 			w.mu.Lock()
 			delete(w.pendingTasks, sealhash)
 			w.mu.Unlock()
+			blocksMinedCounter.Inc()
+			blockMiningTimer.UpdateDuration(task.createdAt)
 			blockSignGauge.Set(uint64(len(blk.Body().Verifier())))
 
 			if len(logs) > 0 {
