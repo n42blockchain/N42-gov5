@@ -87,9 +87,10 @@ func TestSnapSyncIntegration(t *testing.T) {
 
 	// Step 3: Create manager with target DB (no real P2P needed).
 	mgr := &Manager{
-		cfg:   &conf.SnapSyncConfig{MaxBytesPerReq: maxReqBytes},
-		db:    targetDB,
-		dbSem: semaphore.NewWeighted(maxConcurrentDBWrites),
+		cfg:    &conf.SnapSyncConfig{MaxBytesPerReq: maxReqBytes},
+		db:     targetDB,
+		dbSem:  semaphore.NewWeighted(maxConcurrentDBWrites),
+		scorer: newPeerScorer(),
 	}
 	mgr.initFresh()
 

@@ -147,9 +147,15 @@ func TestParseAccountForTasks(t *testing.T) {
 	emptyCodeHash := crypto.Keccak256Hash(nil)
 
 	// Empty/nil data.
-	inc, code := parseAccountForTasks(nil)
-	if inc != 0 || code != nil {
-		t.Errorf("nil: inc=%d, code=%v", inc, code)
+	valid, inc, code := parseAccountForTasks(nil)
+	if !valid || inc != 0 || code != nil {
+		t.Errorf("nil: valid=%v inc=%d code=%v", valid, inc, code)
+	}
+
+	// Invalid protobuf data.
+	valid, inc, code = parseAccountForTasks([]byte{0xFF, 0xFF, 0xFF})
+	if valid {
+		t.Errorf("invalid: expected valid=false, got true")
 	}
 
 	// EOA: nonce=5, balance=1000, no code, no incarnation.
@@ -163,9 +169,9 @@ func TestParseAccountForTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inc, code = parseAccountForTasks(eoaData)
-	if inc != 0 || code != nil {
-		t.Errorf("eoa: inc=%d, code=%v", inc, code)
+	valid, inc, code = parseAccountForTasks(eoaData)
+	if !valid || inc != 0 || code != nil {
+		t.Errorf("eoa: valid=%v inc=%d code=%v", valid, inc, code)
 	}
 
 	// Contract: incarnation=1, non-empty codeHash.
@@ -181,9 +187,9 @@ func TestParseAccountForTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inc, code = parseAccountForTasks(contractData)
-	if inc != 1 {
-		t.Errorf("contract: expected inc=1, got %d", inc)
+	valid, inc, code = parseAccountForTasks(contractData)
+	if !valid || inc != 1 {
+		t.Errorf("contract: valid=%v expected inc=1, got %d", valid, inc)
 	}
 	if code == nil || !bytes.Equal(code, contractCodeHash[:]) {
 		t.Errorf("contract: expected codeHash=%x, got %x", contractCodeHash[:], code)
@@ -199,9 +205,9 @@ func TestParseAccountForTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inc, code = parseAccountForTasks(destroyedData)
-	if inc != 3 {
-		t.Errorf("destroyed: expected inc=3, got %d", inc)
+	valid, inc, code = parseAccountForTasks(destroyedData)
+	if !valid || inc != 3 {
+		t.Errorf("destroyed: valid=%v expected inc=3, got %d", valid, inc)
 	}
 	if code != nil {
 		t.Errorf("destroyed: expected nil codeHash, got %x", code)

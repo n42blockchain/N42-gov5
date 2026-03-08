@@ -27,6 +27,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 
+	stderrors "errors"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p"
@@ -117,6 +119,10 @@ func (s *Service) run() {
 	// Step 1: Wait for peers and select pivot.
 	pivotBlock, stateRoot, err := s.selectPivot()
 	if err != nil {
+		if stderrors.Is(err, ErrSnapSyncNotNeeded) {
+			log.Info("Snap sync not needed, falling back to regular sync", "reason", err)
+			return
+		}
 		log.Error("Snap sync failed to select pivot", "err", err)
 		return
 	}
@@ -196,6 +202,10 @@ func (s *Service) Resync() error {
 	return nil
 }
 
+// ErrSnapSyncNotNeeded is returned when the network head is below the
+// SyncThreshold, meaning regular block-by-block sync is more efficient.
+var ErrSnapSyncNotNeeded = stderrors.New("snap sync not needed")
+
 // selectPivot waits for peers and selects a pivot block.
 // The pivot block is chosen as (highest_peer_block - PivotDistance) to ensure
 // enough peers have the state at that point.
@@ -226,6 +236,14 @@ func (s *Service) selectPivot() (uint64, []byte, error) {
 	}
 
 	highest := highestBlock.Uint64()
+
+	// If the network is not far enough ahead, regular sync is more efficient.
+	threshold := s.cfg.SnapSync.SyncThreshold
+	if threshold > 0 && highest < threshold {
+		return 0, nil, fmt.Errorf("%w: network head %d below threshold %d",
+			ErrSnapSyncNotNeeded, highest, threshold)
+	}
+
 	if highest <= s.cfg.SnapSync.PivotDistance {
 		return 0, nil, fmt.Errorf("network head %d too low for pivot distance %d", highest, s.cfg.SnapSync.PivotDistance)
 	}

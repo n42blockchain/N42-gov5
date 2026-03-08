@@ -72,6 +72,7 @@ type Manager struct {
 	mu     sync.Mutex
 	wg     sync.WaitGroup         // tracks all task goroutines
 	dbSem  *semaphore.Weighted    // limits concurrent DB writes
+	scorer *peerScorer            // peer performance tracker
 }
 
 // NewManager creates a new snap sync download manager.
@@ -83,6 +84,7 @@ func NewManager(cfg *conf.SnapSyncConfig, p2pProvider p2p.P2P, db kv.RwDB, pivot
 		pivotBlock: pivotBlock,
 		stateRoot:  stateRoot,
 		dbSem:      semaphore.NewWeighted(maxConcurrentDBWrites),
+		scorer:     newPeerScorer(),
 	}
 }
 
@@ -308,7 +310,7 @@ func (m *Manager) pickTask() *RangeTask {
 	return nil
 }
 
-// pickPeer returns a connected peer that supports snap sync.
+// pickPeer returns the best-scoring connected peer for the next task.
 func (m *Manager) pickPeer() peer.ID {
 	peers := m.p2p.Peers()
 	if peers == nil {
@@ -318,9 +320,7 @@ func (m *Manager) pickPeer() peer.ID {
 	if len(connected) == 0 {
 		return ""
 	}
-	// Simple round-robin: pick first available peer.
-	// TODO: add scoring/load balancing
-	return connected[0]
+	return m.scorer.bestPeer(connected)
 }
 
 // processTimeouts checks for timed-out tasks and resets them.
@@ -359,6 +359,7 @@ func (m *Manager) executeTask(ctx context.Context, task *RangeTask) {
 // failTask marks a task as failed by incrementing retries and resetting assignment.
 func (m *Manager) failTask(task *RangeTask) {
 	snapTaskErrors.Inc()
+	m.scorer.recordFailure(task.Assigned)
 	m.mu.Lock()
 	task.Retries++
 	task.Reset()
@@ -367,6 +368,8 @@ func (m *Manager) failTask(task *RangeTask) {
 
 // executeAccountTask fetches and processes an account range.
 func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
+	start := time.Now()
+
 	req := &sync_pb.GetAccountRangeRequest{
 		Root:     m.stateRoot,
 		Start:    task.StartKey,
@@ -381,6 +384,8 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 		return
 	}
 
+	latency := time.Since(start)
+
 	// Validate response size.
 	if len(resp.Accounts) > maxResponseEntries {
 		log.Warn("Peer returned too many account entries", "peer", task.Assigned, "count", len(resp.Accounts))
@@ -392,6 +397,7 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 	var newStorageTasks []*RangeTask
 	var newCodeHashes [][]byte
 	var lastAddress []byte
+	var skipped int
 
 	// Acquire DB write semaphore.
 	if err := m.dbSem.Acquire(ctx, 1); err != nil {
@@ -402,13 +408,30 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 
 	if err := m.db.Update(ctx, func(tx kv.RwTx) error {
 		for _, entry := range resp.Accounts {
+			// Validate address length.
+			if len(entry.Address) != 20 {
+				log.Warn("Skipping account with invalid address length",
+					"peer", task.Assigned, "len", len(entry.Address))
+				snapInvalidAccounts.Inc()
+				skipped++
+				continue
+			}
+
+			// Validate and parse account data.
+			valid, incarnation, codeHash := parseAccountForTasks(entry.Account)
+			if !valid {
+				log.Warn("Skipping account with invalid protobuf data",
+					"peer", task.Assigned, "addr", entry.Address)
+				snapInvalidAccounts.Inc()
+				skipped++
+				continue
+			}
+
 			if err := tx.Put(modules.Account, entry.Address, entry.Account); err != nil {
 				return err
 			}
 			lastAddress = entry.Address
 
-			// Check if account has storage or code that needs fetching.
-			incarnation, codeHash := parseAccountForTasks(entry.Account)
 			if incarnation > 0 {
 				newStorageTasks = append(newStorageTasks, &RangeTask{
 					Kind:    TaskStorage,
@@ -431,13 +454,15 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 		return
 	}
 
+	m.scorer.recordSuccess(task.Assigned, latency)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// Update progress after successful write.
-	count := uint64(len(resp.Accounts))
-	m.accountsDone += count
-	snapAccountsDownloaded.Add(int(count))
+	written := uint64(len(resp.Accounts) - skipped)
+	m.accountsDone += written
+	snapAccountsDownloaded.Add(int(written))
 	var batchBytes uint64
 	for _, entry := range resp.Accounts {
 		batchBytes += uint64(len(entry.Address) + len(entry.Account))
@@ -468,6 +493,7 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 
 	log.Debug("Account range processed",
 		"received", len(resp.Accounts),
+		"skipped", skipped,
 		"completed", resp.Completed,
 		"totalAccounts", m.accountsDone,
 		"pendingStorage", len(m.storageTasks),
@@ -477,6 +503,8 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 
 // executeStorageTask fetches and processes a storage range.
 func (m *Manager) executeStorageTask(ctx context.Context, task *RangeTask) {
+	start := time.Now()
+
 	req := &sync_pb.GetStorageRangeRequest{
 		Root:     m.stateRoot,
 		Account:  task.Account,
@@ -517,6 +545,8 @@ func (m *Manager) executeStorageTask(ctx context.Context, task *RangeTask) {
 		return
 	}
 
+	m.scorer.recordSuccess(task.Assigned, time.Since(start))
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -544,6 +574,8 @@ func (m *Manager) executeStorageTask(ctx context.Context, task *RangeTask) {
 
 // executeCodeTask fetches and processes contract bytecodes.
 func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
+	start := time.Now()
+
 	req := &sync_pb.GetCodeRequest{
 		Hashes: task.CodeHashes,
 	}
@@ -559,6 +591,18 @@ func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
 		log.Warn("Peer returned too many code entries", "peer", task.Assigned, "count", len(resp.Codes))
 		m.failTask(task)
 		return
+	}
+
+	// Track which code hashes were received for completeness verification.
+	received := make(map[string]struct{}, len(resp.Codes))
+	for _, entry := range resp.Codes {
+		received[string(entry.Hash)] = struct{}{}
+	}
+	var missingHashes [][]byte
+	for _, hash := range task.CodeHashes {
+		if _, ok := received[string(hash)]; !ok {
+			missingHashes = append(missingHashes, hash)
+		}
 	}
 
 	if err := m.dbSem.Acquire(ctx, 1); err != nil {
@@ -580,6 +624,8 @@ func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
 		return
 	}
 
+	m.scorer.recordSuccess(task.Assigned, time.Since(start))
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -594,6 +640,26 @@ func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
 	snapBytesReceived.Add(int(cBytes))
 
 	m.removeTask(&m.codeTasks, task)
+
+	// If some requested codes were not found, create a retry task with a different peer.
+	if len(missingHashes) > 0 {
+		snapCodesMissing.Add(len(missingHashes))
+		log.Warn("Some contract codes not found on peer",
+			"peer", task.Assigned,
+			"missing", len(missingHashes),
+			"received", len(resp.Codes),
+		)
+		if task.Retries < maxTaskRetries-1 {
+			m.codeTasks = append(m.codeTasks, &RangeTask{
+				Kind:       TaskCode,
+				CodeHashes: missingHashes,
+				Retries:    task.Retries + 1,
+			})
+		} else {
+			log.Error("Gave up on missing contract codes after max retries",
+				"missing", len(missingHashes))
+		}
+	}
 }
 
 // removeTask removes a task from the given task list. Caller must hold m.mu.
@@ -606,29 +672,31 @@ func (m *Manager) removeTask(list *[]*RangeTask, task *RangeTask) {
 	}
 }
 
-// parseAccountForTasks extracts incarnation and codeHash from protobuf-encoded
-// account data. Returns incarnation > 0 if the account has storage, and
-// codeHash (as raw bytes) if it is non-empty.
+// parseAccountForTasks validates and extracts incarnation and codeHash from
+// protobuf-encoded account data.
+//
+// Returns valid=false if the data cannot be decoded as a protobuf StateAccount.
+// Returns incarnation > 0 if the account has storage, and codeHash (as raw bytes)
+// if it is non-empty.
 //
 // Account data in the Account table is protobuf-encoded via
 // StateAccount.ToProtoMessage() → proto.Marshal().
-func parseAccountForTasks(encoded []byte) (uint16, []byte) {
+func parseAccountForTasks(encoded []byte) (valid bool, incarnation uint16, codeHash []byte) {
 	if len(encoded) == 0 {
-		return 0, nil
+		return true, 0, nil
 	}
 
 	var acc account.StateAccount
 	if err := acc.Unmarshal(encoded); err != nil {
-		return 0, nil
+		return false, 0, nil
 	}
 
-	var codeHash []byte
 	if !acc.IsEmptyCodeHash() {
 		codeHash = make([]byte, 32)
 		copy(codeHash, acc.CodeHash[:])
 	}
 
-	return acc.Incarnation, codeHash
+	return true, acc.Incarnation, codeHash
 }
 
 // sendGetAccountRange wraps the sync package's SendGetAccountRange.
