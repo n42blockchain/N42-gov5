@@ -112,6 +112,11 @@ const (
 
 	Stake = "Stake" // stakes   ast_stake -> bytes
 
+	// SnapSyncProgress stores snap sync download progress for crash recovery.
+	// key: "pivot" -> pivot block number + hash
+	// key: "account_cursor" -> last downloaded account address
+	// key: "state" -> "running" | "completed"
+	SnapSyncProgress = "SnapSyncProgress"
 )
 
 const (
@@ -158,6 +163,7 @@ var n42Tables = []string{
 	Deposit,
 	BlockVerify,
 	BlockRewards,
+	SnapSyncProgress,
 }
 
 var N42TableCfg = kv.TableCfg{
