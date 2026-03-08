@@ -91,6 +91,23 @@ func ApplyDefaults(cfg *Config) {
 		cfg.PruneCfg.PruneBatchLimit = DefaultPruneBatchLimit
 	}
 
+	// Snap sync defaults
+	if cfg.SnapSyncCfg.PivotDistance == 0 {
+		cfg.SnapSyncCfg.PivotDistance = DefaultSnapPivotDistance
+	}
+	if cfg.SnapSyncCfg.MaxConcurrency == 0 {
+		cfg.SnapSyncCfg.MaxConcurrency = DefaultSnapMaxConcurrency
+	}
+	if cfg.SnapSyncCfg.MaxBytesPerReq == 0 {
+		cfg.SnapSyncCfg.MaxBytesPerReq = DefaultSnapMaxBytesPerReq
+	}
+	if cfg.SnapSyncCfg.MinSnapPeers == 0 {
+		cfg.SnapSyncCfg.MinSnapPeers = DefaultSnapMinPeers
+	}
+	if cfg.SnapSyncCfg.SyncThreshold == 0 {
+		cfg.SnapSyncCfg.SyncThreshold = DefaultSnapSyncThreshold
+	}
+
 	if cfg.DevCfg.TxGenEnabled {
 		if cfg.DevCfg.TxGenInterval == 0 {
 			cfg.DevCfg.TxGenInterval = time.Second

@@ -38,7 +38,8 @@ type Config struct {
 	GPO      GpoConfig   `json:"gpo" yaml:"gpo"`
 	Miner    MinerConfig `json:"miner" yaml:"miner"`
 	DevCfg   DevConfig   `json:"dev" yaml:"dev"`
-	PruneCfg PruneConfig `json:"prune" yaml:"prune"`
+	PruneCfg    PruneConfig    `json:"prune" yaml:"prune"`
+	SnapSyncCfg SnapSyncConfig `json:"snap_sync" yaml:"snap_sync"`
 }
 
 func SaveConfigToFile(file string, config Config) error {
