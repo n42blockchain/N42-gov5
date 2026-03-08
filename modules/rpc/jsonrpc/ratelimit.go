@@ -65,6 +65,16 @@ func NewRateLimiter(config *RateLimitConfig) *RateLimiter {
 	if config == nil {
 		config = DefaultRateLimitConfig()
 	}
+	// Fill in defaults for zero-valued fields
+	if config.CleanupInterval <= 0 {
+		config.CleanupInterval = time.Minute
+	}
+	if config.EntryTTL <= 0 {
+		config.EntryTTL = 5 * time.Minute
+	}
+	if config.BurstSize <= 0 {
+		config.BurstSize = config.RequestsPerSecond * 2
+	}
 	rl := &RateLimiter{
 		config:  config,
 		entries: make(map[string]*rateLimitEntry),

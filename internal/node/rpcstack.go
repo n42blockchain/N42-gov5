@@ -43,6 +43,7 @@ type httpConfig struct {
 	Vhosts             []string
 	prefix             string
 	jwtSecret          []byte // optional JWT secret
+	rateLimiter        *jsonrpc.RateLimiter // optional rate limiter
 }
 
 // wsConfig is the JSON-RPC/Websocket configuration
@@ -75,7 +76,8 @@ type httpServer struct {
 	host     string
 	port     int
 
-	handlerNames map[string]string
+	handlerNames   map[string]string
+	healthProvider HealthProvider // optional health check data source
 }
 
 func newHTTPServer() *httpServer {
@@ -304,9 +306,12 @@ func (h *httpServer) enableRPC(apis []jsonrpc.API, config httpConfig) error {
 	}
 	h.httpConfig = config
 	h.httpHandler.Store(&rpcHandler{
-		Handler: NewHTTPHandlerStack(srv, config.CorsAllowedOrigins, config.Vhosts, config.jwtSecret),
+		Handler: NewHTTPHandlerStack(srv, config.CorsAllowedOrigins, config.Vhosts, config.jwtSecret, config.rateLimiter),
 		server:  srv,
 	})
+	// Register /health endpoint
+	h.mux.Handle("/health", newHealthHandler(h.healthProvider))
+	h.handlerNames["/health"] = "health check"
 	return nil
 }
 
@@ -328,12 +333,16 @@ func (h *httpServer) wsAllowed() bool {
 	return h.wsHandler.Load().(*rpcHandler) != nil
 }
 
-func NewHTTPHandlerStack(srv http.Handler, cors []string, vhosts []string, jwtSecret []byte) http.Handler {
+func NewHTTPHandlerStack(srv http.Handler, cors []string, vhosts []string, jwtSecret []byte, rl *jsonrpc.RateLimiter) http.Handler {
 	// Wrap the CORS-handler within a host-handler
 	handler := newCorsHandler(srv, cors)
 	handler = newVHostHandler(vhosts, handler)
 	if len(jwtSecret) != 0 {
 		handler = newJWTHandler(jwtSecret, handler)
+	}
+	// Apply rate limiting before gzip (reject early to save resources)
+	if rl != nil {
+		handler = jsonrpc.RateLimitMiddleware(rl, handler)
 	}
 	return newGzipHandler(handler)
 }

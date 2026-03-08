@@ -53,6 +53,10 @@ type NodeConfig struct {
 	// an ephemeral directory is created and destroyed when the node stops.
 	KeyStoreDir string `json:"key_store_dir" yaml:"key_store_dir"`
 
+	// Rate limiting configuration
+	HTTPRateLimit      int `json:"http_rate_limit" yaml:"http_rate_limit"`           // Max requests per second per IP (0 = disabled)
+	HTTPRateLimitBurst int `json:"http_rate_limit_burst" yaml:"http_rate_limit_burst"` // Max burst size for rate limiting
+
 	ExternalSigner        string `json:"external_signer" yaml:"external_signer"`
 	UseLightweightKDF     bool   `json:"use_lightweight_kdf" yaml:"use_lightweight_kdf"`
 	InsecureUnlockAllowed bool   `json:"insecure_unlock_allowed" yaml:"insecure_unlock_allowed"`
