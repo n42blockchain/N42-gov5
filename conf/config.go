@@ -35,9 +35,10 @@ type Config struct {
 	AccountCfg  AccountConfig       `json:"account" yaml:"account"`
 	MetricsCfg  MetricsConfig       `json:"metrics" yaml:"metrics"`
 	P2PCfg      *P2PConfig          `json:"p2p" yaml:"p2p"`
-	GPO    GpoConfig   `json:"gpo" yaml:"gpo"`
-	Miner  MinerConfig `json:"miner" yaml:"miner"`
-	DevCfg DevConfig   `json:"dev" yaml:"dev"`
+	GPO      GpoConfig   `json:"gpo" yaml:"gpo"`
+	Miner    MinerConfig `json:"miner" yaml:"miner"`
+	DevCfg   DevConfig   `json:"dev" yaml:"dev"`
+	PruneCfg PruneConfig `json:"prune" yaml:"prune"`
 }
 
 func SaveConfigToFile(file string, config Config) error {
