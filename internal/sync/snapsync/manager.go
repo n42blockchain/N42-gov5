@@ -17,9 +17,7 @@
 package snapsync
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"sync"
 	"time"
 
@@ -27,6 +25,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -607,61 +606,29 @@ func (m *Manager) removeTask(list *[]*RangeTask, task *RangeTask) {
 	}
 }
 
-// parseAccountForTasks extracts incarnation and codeHash from encoded account data.
-// Returns incarnation > 0 if the account has storage, and codeHash if non-empty.
+// parseAccountForTasks extracts incarnation and codeHash from protobuf-encoded
+// account data. Returns incarnation > 0 if the account has storage, and
+// codeHash (as raw bytes) if it is non-empty.
 //
-// Account encoding in N42 (Erigon-style):
-//
-//	fieldset(1) + [nonce(8)] + [balance(1 len + N bytes)] + [incarnation(2)] + [codeHash(32)]
+// Account data in the Account table is protobuf-encoded via
+// StateAccount.ToProtoMessage() → proto.Marshal().
 func parseAccountForTasks(encoded []byte) (uint16, []byte) {
-	if len(encoded) < 3 {
+	if len(encoded) == 0 {
 		return 0, nil
 	}
 
-	fieldSet := encoded[0]
-	offset := 1
+	var acc account.StateAccount
+	if err := acc.Unmarshal(encoded); err != nil {
+		return 0, nil
+	}
 
-	// Bit 0: nonce present (8 bytes).
-	if fieldSet&1 != 0 {
-		offset += 8
-		if offset > len(encoded) {
-			return 0, nil
-		}
-	}
-	// Bit 1: balance present (1 byte length prefix + N bytes value).
-	if fieldSet&2 != 0 {
-		if offset >= len(encoded) {
-			return 0, nil
-		}
-		balLen := int(encoded[offset])
-		offset += 1 + balLen
-		if offset > len(encoded) {
-			return 0, nil
-		}
-	}
-	// Bit 2: incarnation present (2 bytes big-endian).
-	var incarnation uint16
-	if fieldSet&4 != 0 {
-		if offset+2 > len(encoded) {
-			return 0, nil
-		}
-		incarnation = binary.BigEndian.Uint16(encoded[offset : offset+2])
-		offset += 2
-	}
-	// Bit 3: code hash present (32 bytes).
 	var codeHash []byte
-	if fieldSet&8 != 0 {
-		if offset+32 > len(encoded) {
-			return incarnation, nil
-		}
+	if !acc.IsEmptyCodeHash() {
 		codeHash = make([]byte, 32)
-		copy(codeHash, encoded[offset:offset+32])
-		if bytes.Equal(codeHash, emptyCodeHash) {
-			codeHash = nil
-		}
+		copy(codeHash, acc.CodeHash[:])
 	}
 
-	return incarnation, codeHash
+	return acc.Incarnation, codeHash
 }
 
 // sendGetAccountRange wraps the sync package's SendGetAccountRange.

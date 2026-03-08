@@ -5,6 +5,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
@@ -139,16 +144,66 @@ func TestClearProgress(t *testing.T) {
 }
 
 func TestParseAccountForTasks(t *testing.T) {
-	// Empty account.
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+
+	// Empty/nil data.
 	inc, code := parseAccountForTasks(nil)
 	if inc != 0 || code != nil {
-		t.Errorf("empty: inc=%d, code=%v", inc, code)
+		t.Errorf("nil: inc=%d, code=%v", inc, code)
 	}
 
-	// Account with only nonce (fieldset=0x01, 8 bytes nonce).
-	data := []byte{0x01, 0, 0, 0, 0, 0, 0, 0, 1}
-	inc, code = parseAccountForTasks(data)
+	// EOA: nonce=5, balance=1000, no code, no incarnation.
+	eoa := account.StateAccount{
+		Initialised: true,
+		Nonce:       5,
+		Balance:     *uint256.NewInt(1000),
+		CodeHash:    emptyCodeHash,
+	}
+	eoaData, err := eoa.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inc, code = parseAccountForTasks(eoaData)
 	if inc != 0 || code != nil {
-		t.Errorf("nonce-only: inc=%d, code=%v", inc, code)
+		t.Errorf("eoa: inc=%d, code=%v", inc, code)
+	}
+
+	// Contract: incarnation=1, non-empty codeHash.
+	contractCodeHash := types.BytesHash(crypto.Keccak256([]byte("contract code")))
+	contract := account.StateAccount{
+		Initialised: true,
+		Nonce:       1,
+		Balance:     *uint256.NewInt(0),
+		CodeHash:    contractCodeHash,
+		Incarnation: 1,
+	}
+	contractData, err := contract.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inc, code = parseAccountForTasks(contractData)
+	if inc != 1 {
+		t.Errorf("contract: expected inc=1, got %d", inc)
+	}
+	if code == nil || !bytes.Equal(code, contractCodeHash[:]) {
+		t.Errorf("contract: expected codeHash=%x, got %x", contractCodeHash[:], code)
+	}
+
+	// Contract with incarnation but empty codeHash (destroyed and recreated).
+	destroyedContract := account.StateAccount{
+		Initialised: true,
+		Incarnation: 3,
+		CodeHash:    emptyCodeHash,
+	}
+	destroyedData, err := destroyedContract.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inc, code = parseAccountForTasks(destroyedData)
+	if inc != 3 {
+		t.Errorf("destroyed: expected inc=3, got %d", inc)
+	}
+	if code != nil {
+		t.Errorf("destroyed: expected nil codeHash, got %x", code)
 	}
 }
