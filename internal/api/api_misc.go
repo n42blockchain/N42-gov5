@@ -176,7 +176,7 @@ type Web3API struct {
 }
 
 func (s *Web3API) ClientVersion() string {
-	return "testName"
+	return "N42/" + params.VersionWithMeta
 }
 
 func (s *Web3API) Sha3(input hexutil.Bytes) hexutil.Bytes {
@@ -219,6 +219,9 @@ func (s *NetAPI) Listening() bool {
 
 // PeerCount returns the number of connected peers.
 func (s *NetAPI) PeerCount() hexutil.Uint {
+	if s.api.p2p != nil {
+		return hexutil.Uint(len(s.api.p2p.PeerInfos()))
+	}
 	return 0
 }
 
