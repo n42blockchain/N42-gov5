@@ -121,12 +121,24 @@ func (m *Manager) Run(ctx context.Context) error {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
+	progressTicker := time.NewTicker(30 * time.Second)
+	defer progressTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
 			m.processTimeouts()
+		case <-progressTicker.C:
+			p := m.GetProgress()
+			log.Info("Snap sync progress",
+				"accounts", p.AccountsDone,
+				"storage", p.StoragesDone,
+				"codes", p.CodesDone,
+				"bytes", p.BytesReceived,
+				"pendingTasks", p.PendingTasks,
+			)
 		default:
 		}
 
@@ -292,6 +304,7 @@ func (m *Manager) processTimeouts() {
 			log.Debug("Account task timed out, resetting", "peer", task.Assigned)
 			task.Retries++
 			task.Reset()
+			snapTaskTimeouts.Inc()
 		}
 	}
 	for _, task := range m.storageTasks {
@@ -299,6 +312,7 @@ func (m *Manager) processTimeouts() {
 			log.Debug("Storage task timed out, resetting", "peer", task.Assigned)
 			task.Retries++
 			task.Reset()
+			snapTaskTimeouts.Inc()
 		}
 	}
 	for _, task := range m.codeTasks {
@@ -306,6 +320,7 @@ func (m *Manager) processTimeouts() {
 			log.Debug("Code task timed out, resetting", "peer", task.Assigned)
 			task.Retries++
 			task.Reset()
+			snapTaskTimeouts.Inc()
 		}
 	}
 }
@@ -334,6 +349,7 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 	resp, err := sendGetAccountRange(ctx, m.p2p, task.Assigned, req)
 	if err != nil {
 		log.Debug("Account range request failed", "peer", task.Assigned, "err", err)
+		snapTaskErrors.Inc()
 		m.mu.Lock()
 		task.Retries++
 		task.Reset()
@@ -373,6 +389,7 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 		return nil
 	}); err != nil {
 		log.Error("Failed to write account data", "err", err)
+		snapTaskErrors.Inc()
 		m.mu.Lock()
 		task.Retries++
 		task.Reset()
@@ -384,10 +401,15 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 	defer m.mu.Unlock()
 
 	// Update progress.
-	m.accountsDone += uint64(len(resp.Accounts))
+	count := uint64(len(resp.Accounts))
+	m.accountsDone += count
+	snapAccountsDownloaded.Add(int(count))
+	var batchBytes uint64
 	for _, entry := range resp.Accounts {
-		m.bytesReceived += uint64(len(entry.Address) + len(entry.Account))
+		batchBytes += uint64(len(entry.Address) + len(entry.Account))
 	}
+	m.bytesReceived += batchBytes
+	snapBytesReceived.Add(int(batchBytes))
 
 	// Remove completed task.
 	m.removeAccountTask(task)
@@ -432,6 +454,7 @@ func (m *Manager) executeStorageTask(ctx context.Context, task *RangeTask) {
 	resp, err := sendGetStorageRange(ctx, m.p2p, task.Assigned, req)
 	if err != nil {
 		log.Debug("Storage range request failed", "peer", task.Assigned, "err", err)
+		snapTaskErrors.Inc()
 		m.mu.Lock()
 		task.Retries++
 		task.Reset()
@@ -448,6 +471,7 @@ func (m *Manager) executeStorageTask(ctx context.Context, task *RangeTask) {
 		return nil
 	}); err != nil {
 		log.Error("Failed to write storage data", "err", err)
+		snapTaskErrors.Inc()
 		m.mu.Lock()
 		task.Retries++
 		task.Reset()
@@ -458,10 +482,15 @@ func (m *Manager) executeStorageTask(ctx context.Context, task *RangeTask) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.storagesDone += uint64(len(resp.Slots))
+	scount := uint64(len(resp.Slots))
+	m.storagesDone += scount
+	snapStorageDownloaded.Add(int(scount))
+	var sBytes uint64
 	for _, entry := range resp.Slots {
-		m.bytesReceived += uint64(len(entry.Key) + len(entry.Value))
+		sBytes += uint64(len(entry.Key) + len(entry.Value))
 	}
+	m.bytesReceived += sBytes
+	snapBytesReceived.Add(int(sBytes))
 
 	m.removeStorageTask(task)
 
@@ -484,6 +513,7 @@ func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
 	resp, err := sendGetCode(ctx, m.p2p, task.Assigned, req)
 	if err != nil {
 		log.Debug("Code request failed", "peer", task.Assigned, "err", err)
+		snapTaskErrors.Inc()
 		m.mu.Lock()
 		task.Retries++
 		task.Reset()
@@ -500,6 +530,7 @@ func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
 		return nil
 	}); err != nil {
 		log.Error("Failed to write code data", "err", err)
+		snapTaskErrors.Inc()
 		m.mu.Lock()
 		task.Retries++
 		task.Reset()
@@ -510,10 +541,15 @@ func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.codesDone += uint64(len(resp.Codes))
+	ccount := uint64(len(resp.Codes))
+	m.codesDone += ccount
+	snapCodesDownloaded.Add(int(ccount))
+	var cBytes uint64
 	for _, entry := range resp.Codes {
-		m.bytesReceived += uint64(len(entry.Code))
+		cBytes += uint64(len(entry.Code))
 	}
+	m.bytesReceived += cBytes
+	snapBytesReceived.Add(int(cBytes))
 
 	m.removeCodeTask(task)
 }
