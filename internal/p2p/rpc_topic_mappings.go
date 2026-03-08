@@ -22,6 +22,11 @@ const (
 	PingMessageName           = "/ping"
 	BodiesByRangeMessageName  = "/bodies_by_range"
 	HeadersByRangeMessageName = "/headers_by_range"
+
+	// Snap sync protocol message names.
+	GetAccountRangeMessageName = "/get_account_range"
+	GetStorageRangeMessageName = "/get_storage_range"
+	GetCodeMessageName         = "/get_code"
 )
 
 // V1 RPC topic constants.
@@ -31,6 +36,11 @@ const (
 	RPCPingTopicV1        = protocolPrefix + PingMessageName + SchemaVersionV1
 	RPCBodiesDataTopicV1  = protocolPrefix + BodiesByRangeMessageName + SchemaVersionV1
 	RPCHeadersDataTopicV1 = protocolPrefix + HeadersByRangeMessageName + SchemaVersionV1
+
+	// Snap sync protocol topics.
+	RPCGetAccountRangeTopicV1 = protocolPrefix + GetAccountRangeMessageName + SchemaVersionV1
+	RPCGetStorageRangeTopicV1 = protocolPrefix + GetStorageRangeMessageName + SchemaVersionV1
+	RPCGetCodeTopicV1         = protocolPrefix + GetCodeMessageName + SchemaVersionV1
 )
 
 // RPCTopicMappings maps each RPC topic to its expected request message type.
@@ -39,6 +49,11 @@ var RPCTopicMappings = map[string]interface{}{
 	RPCBodiesDataTopicV1: new(sync_pb.BodiesByRangeRequest),
 	RPCPingTopicV1:       new(ssztype.SSZUint64),
 	RPCGoodByeTopicV1:    new(ssztype.SSZUint64),
+
+	// Snap sync protocol mappings.
+	RPCGetAccountRangeTopicV1: new(sync_pb.GetAccountRangeRequest),
+	RPCGetStorageRangeTopicV1: new(sync_pb.GetStorageRangeRequest),
+	RPCGetCodeTopicV1:         new(sync_pb.GetCodeRequest),
 }
 
 // Lookup tables for topic deconstruction.
@@ -47,11 +62,14 @@ var (
 		protocolPrefix: true,
 	}
 	messageMapping = map[string]bool{
-		StatusMessageName:         true,
-		GoodbyeMessageName:        true,
-		PingMessageName:           true,
-		BodiesByRangeMessageName:  true,
-		HeadersByRangeMessageName: true,
+		StatusMessageName:          true,
+		GoodbyeMessageName:         true,
+		PingMessageName:            true,
+		BodiesByRangeMessageName:   true,
+		HeadersByRangeMessageName:  true,
+		GetAccountRangeMessageName: true,
+		GetStorageRangeMessageName: true,
+		GetCodeMessageName:         true,
 	}
 	versionMapping = map[string]bool{
 		SchemaVersionV1: true,
