@@ -88,8 +88,8 @@ func LoadState(tx kv.Tx) (string, error) {
 }
 
 // ClearProgress removes all snap sync progress data.
-func ClearProgress(db kv.RwDB) error {
-	return db.Update(context.Background(), func(tx kv.RwTx) error {
+func ClearProgress(ctx context.Context, db kv.RwDB) error {
+	return db.Update(ctx, func(tx kv.RwTx) error {
 		for _, key := range [][]byte{keyPivotBlock, keyAccountCursor, keyState} {
 			if err := tx.Delete(modules.SnapSyncProgress, key); err != nil {
 				return err

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/conf"
@@ -32,6 +33,22 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 )
+
+// maxConcurrentDBWrites limits concurrent database transactions to avoid
+// resource exhaustion on the MDBX backend.
+const maxConcurrentDBWrites = 8
+
+// maxResponseEntries is the maximum number of entries accepted in a single
+// response from a peer. This prevents OOM from malicious responses.
+const maxResponseEntries = 8192
+
+// emptyCodeHash is keccak256("").
+var emptyCodeHash = []byte{
+	0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c,
+	0x92, 0x7e, 0x7d, 0xb2, 0xdc, 0xc7, 0x03, 0xc0,
+	0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b,
+	0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70,
+}
 
 // Manager orchestrates snap sync state downloads from multiple peers.
 type Manager struct {
@@ -42,33 +59,31 @@ type Manager struct {
 	pivotBlock uint64
 	stateRoot  []byte // 32 bytes
 
-	// Task queues (protected by mu)
+	// Task queues (protected by mu).
 	accountTasks []*RangeTask
 	storageTasks []*RangeTask
 	codeTasks    []*RangeTask
 
-	// Progress counters
+	// Progress counters (protected by mu).
 	accountsDone  uint64
 	storagesDone  uint64
 	codesDone     uint64
 	bytesReceived uint64
 
 	mu     sync.Mutex
-	ctx    context.Context
-	cancel context.CancelFunc
+	wg     sync.WaitGroup         // tracks all task goroutines
+	dbSem  *semaphore.Weighted    // limits concurrent DB writes
 }
 
 // NewManager creates a new snap sync download manager.
 func NewManager(cfg *conf.SnapSyncConfig, p2pProvider p2p.P2P, db kv.RwDB, pivotBlock uint64, stateRoot []byte) *Manager {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		cfg:        cfg,
 		p2p:        p2pProvider,
 		db:         db,
 		pivotBlock: pivotBlock,
 		stateRoot:  stateRoot,
-		ctx:        ctx,
-		cancel:     cancel,
+		dbSem:      semaphore.NewWeighted(maxConcurrentDBWrites),
 	}
 }
 
@@ -95,11 +110,11 @@ func (m *Manager) GetProgress() Progress {
 }
 
 // Run starts the download process and blocks until completion or error.
+// The provided context controls cancellation; Run waits for all in-flight
+// task goroutines before returning.
 func (m *Manager) Run(ctx context.Context) error {
-	m.ctx = ctx
-
 	// Try to resume from previous progress.
-	if err := m.resume(); err != nil {
+	if err := m.resume(ctx); err != nil {
 		log.Warn("Failed to resume snap sync progress, starting fresh", "err", err)
 		m.initFresh()
 	}
@@ -127,6 +142,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			m.wg.Wait()
 			return ctx.Err()
 		case <-ticker.C:
 			m.processTimeouts()
@@ -142,12 +158,21 @@ func (m *Manager) Run(ctx context.Context) error {
 		default:
 		}
 
-		// Check if all tasks are complete.
+		// Check if all tasks are complete and no goroutines are in-flight.
 		m.mu.Lock()
 		allDone := len(m.accountTasks) == 0 && len(m.storageTasks) == 0 && len(m.codeTasks) == 0
 		m.mu.Unlock()
 		if allDone {
-			break
+			// Wait for all in-flight goroutines to finish before declaring done.
+			m.wg.Wait()
+			// Re-check after goroutines finish (they may have added new tasks).
+			m.mu.Lock()
+			allDone = len(m.accountTasks) == 0 && len(m.storageTasks) == 0 && len(m.codeTasks) == 0
+			m.mu.Unlock()
+			if allDone {
+				break
+			}
+			continue
 		}
 
 		// Pick and execute the next unassigned task.
@@ -168,8 +193,12 @@ func (m *Manager) Run(ctx context.Context) error {
 		task.Assigned = pid
 		task.AssignedAt = time.Now()
 
-		// Execute task in a goroutine.
-		go m.executeTask(ctx, task)
+		// Execute task in a tracked goroutine.
+		m.wg.Add(1)
+		go func(t *RangeTask) {
+			defer m.wg.Done()
+			m.executeTask(ctx, t)
+		}(task)
 	}
 
 	// Mark as completed.
@@ -189,9 +218,10 @@ func (m *Manager) Run(ctx context.Context) error {
 	return nil
 }
 
-// Stop cancels the download manager.
+// Stop cancels the download manager and waits for in-flight goroutines.
 func (m *Manager) Stop() {
-	m.cancel()
+	// Caller should cancel the context passed to Run().
+	m.wg.Wait()
 }
 
 // initFresh initializes the task list for a fresh download.
@@ -210,10 +240,10 @@ func (m *Manager) initFresh() {
 }
 
 // resume tries to restore progress from the database.
-func (m *Manager) resume() error {
+func (m *Manager) resume(ctx context.Context) error {
 	var cursor []byte
 	var state string
-	if err := m.db.View(m.ctx, func(tx kv.Tx) error {
+	if err := m.db.View(ctx, func(tx kv.Tx) error {
 		var err error
 		state, err = LoadState(tx)
 		if err != nil {
@@ -299,30 +329,20 @@ func (m *Manager) processTimeouts() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, task := range m.accountTasks {
-		if task.IsTimedOut() {
-			log.Debug("Account task timed out, resetting", "peer", task.Assigned)
-			task.Retries++
-			task.Reset()
-			snapTaskTimeouts.Inc()
+	resetTimedOut := func(tasks []*RangeTask, kind string) {
+		for _, task := range tasks {
+			if task.IsTimedOut() {
+				log.Debug("Task timed out, resetting", "kind", kind, "peer", task.Assigned)
+				task.Retries++
+				task.Reset()
+				snapTaskTimeouts.Inc()
+			}
 		}
 	}
-	for _, task := range m.storageTasks {
-		if task.IsTimedOut() {
-			log.Debug("Storage task timed out, resetting", "peer", task.Assigned)
-			task.Retries++
-			task.Reset()
-			snapTaskTimeouts.Inc()
-		}
-	}
-	for _, task := range m.codeTasks {
-		if task.IsTimedOut() {
-			log.Debug("Code task timed out, resetting", "peer", task.Assigned)
-			task.Retries++
-			task.Reset()
-			snapTaskTimeouts.Inc()
-		}
-	}
+
+	resetTimedOut(m.accountTasks, "account")
+	resetTimedOut(m.storageTasks, "storage")
+	resetTimedOut(m.codeTasks, "code")
 }
 
 // executeTask runs a single download task.
@@ -337,6 +357,15 @@ func (m *Manager) executeTask(ctx context.Context, task *RangeTask) {
 	}
 }
 
+// failTask marks a task as failed by incrementing retries and resetting assignment.
+func (m *Manager) failTask(task *RangeTask) {
+	snapTaskErrors.Inc()
+	m.mu.Lock()
+	task.Retries++
+	task.Reset()
+	m.mu.Unlock()
+}
+
 // executeAccountTask fetches and processes an account range.
 func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 	req := &sync_pb.GetAccountRangeRequest{
@@ -349,11 +378,14 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 	resp, err := sendGetAccountRange(ctx, m.p2p, task.Assigned, req)
 	if err != nil {
 		log.Debug("Account range request failed", "peer", task.Assigned, "err", err)
-		snapTaskErrors.Inc()
-		m.mu.Lock()
-		task.Retries++
-		task.Reset()
-		m.mu.Unlock()
+		m.failTask(task)
+		return
+	}
+
+	// Validate response size.
+	if len(resp.Accounts) > maxResponseEntries {
+		log.Warn("Peer returned too many account entries", "peer", task.Assigned, "count", len(resp.Accounts))
+		m.failTask(task)
 		return
 	}
 
@@ -361,6 +393,13 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 	var newStorageTasks []*RangeTask
 	var newCodeHashes [][]byte
 	var lastAddress []byte
+
+	// Acquire DB write semaphore.
+	if err := m.dbSem.Acquire(ctx, 1); err != nil {
+		m.failTask(task)
+		return
+	}
+	defer m.dbSem.Release(1)
 
 	if err := m.db.Update(ctx, func(tx kv.RwTx) error {
 		for _, entry := range resp.Accounts {
@@ -389,18 +428,14 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 		return nil
 	}); err != nil {
 		log.Error("Failed to write account data", "err", err)
-		snapTaskErrors.Inc()
-		m.mu.Lock()
-		task.Retries++
-		task.Reset()
-		m.mu.Unlock()
+		m.failTask(task)
 		return
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Update progress.
+	// Update progress after successful write.
 	count := uint64(len(resp.Accounts))
 	m.accountsDone += count
 	snapAccountsDownloaded.Add(int(count))
@@ -412,7 +447,7 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 	snapBytesReceived.Add(int(batchBytes))
 
 	// Remove completed task.
-	m.removeAccountTask(task)
+	m.removeTask(&m.accountTasks, task)
 
 	// If not completed, add continuation task.
 	if !resp.Completed && len(resp.NextStart) > 0 {
@@ -454,13 +489,21 @@ func (m *Manager) executeStorageTask(ctx context.Context, task *RangeTask) {
 	resp, err := sendGetStorageRange(ctx, m.p2p, task.Assigned, req)
 	if err != nil {
 		log.Debug("Storage range request failed", "peer", task.Assigned, "err", err)
-		snapTaskErrors.Inc()
-		m.mu.Lock()
-		task.Retries++
-		task.Reset()
-		m.mu.Unlock()
+		m.failTask(task)
 		return
 	}
+
+	if len(resp.Slots) > maxResponseEntries {
+		log.Warn("Peer returned too many storage entries", "peer", task.Assigned, "count", len(resp.Slots))
+		m.failTask(task)
+		return
+	}
+
+	if err := m.dbSem.Acquire(ctx, 1); err != nil {
+		m.failTask(task)
+		return
+	}
+	defer m.dbSem.Release(1)
 
 	if err := m.db.Update(ctx, func(tx kv.RwTx) error {
 		for _, entry := range resp.Slots {
@@ -471,11 +514,7 @@ func (m *Manager) executeStorageTask(ctx context.Context, task *RangeTask) {
 		return nil
 	}); err != nil {
 		log.Error("Failed to write storage data", "err", err)
-		snapTaskErrors.Inc()
-		m.mu.Lock()
-		task.Retries++
-		task.Reset()
-		m.mu.Unlock()
+		m.failTask(task)
 		return
 	}
 
@@ -492,7 +531,7 @@ func (m *Manager) executeStorageTask(ctx context.Context, task *RangeTask) {
 	m.bytesReceived += sBytes
 	snapBytesReceived.Add(int(sBytes))
 
-	m.removeStorageTask(task)
+	m.removeTask(&m.storageTasks, task)
 
 	if !resp.Completed && len(resp.NextStart) > 0 {
 		m.storageTasks = append(m.storageTasks, &RangeTask{
@@ -513,13 +552,21 @@ func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
 	resp, err := sendGetCode(ctx, m.p2p, task.Assigned, req)
 	if err != nil {
 		log.Debug("Code request failed", "peer", task.Assigned, "err", err)
-		snapTaskErrors.Inc()
-		m.mu.Lock()
-		task.Retries++
-		task.Reset()
-		m.mu.Unlock()
+		m.failTask(task)
 		return
 	}
+
+	if len(resp.Codes) > maxResponseEntries {
+		log.Warn("Peer returned too many code entries", "peer", task.Assigned, "count", len(resp.Codes))
+		m.failTask(task)
+		return
+	}
+
+	if err := m.dbSem.Acquire(ctx, 1); err != nil {
+		m.failTask(task)
+		return
+	}
+	defer m.dbSem.Release(1)
 
 	if err := m.db.Update(ctx, func(tx kv.RwTx) error {
 		for _, entry := range resp.Codes {
@@ -530,11 +577,7 @@ func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
 		return nil
 	}); err != nil {
 		log.Error("Failed to write code data", "err", err)
-		snapTaskErrors.Inc()
-		m.mu.Lock()
-		task.Retries++
-		task.Reset()
-		m.mu.Unlock()
+		m.failTask(task)
 		return
 	}
 
@@ -551,34 +594,14 @@ func (m *Manager) executeCodeTask(ctx context.Context, task *RangeTask) {
 	m.bytesReceived += cBytes
 	snapBytesReceived.Add(int(cBytes))
 
-	m.removeCodeTask(task)
+	m.removeTask(&m.codeTasks, task)
 }
 
-// removeAccountTask removes a task from the account task list.
-func (m *Manager) removeAccountTask(task *RangeTask) {
-	for i, t := range m.accountTasks {
+// removeTask removes a task from the given task list. Caller must hold m.mu.
+func (m *Manager) removeTask(list *[]*RangeTask, task *RangeTask) {
+	for i, t := range *list {
 		if t == task {
-			m.accountTasks = append(m.accountTasks[:i], m.accountTasks[i+1:]...)
-			return
-		}
-	}
-}
-
-// removeStorageTask removes a task from the storage task list.
-func (m *Manager) removeStorageTask(task *RangeTask) {
-	for i, t := range m.storageTasks {
-		if t == task {
-			m.storageTasks = append(m.storageTasks[:i], m.storageTasks[i+1:]...)
-			return
-		}
-	}
-}
-
-// removeCodeTask removes a task from the code task list.
-func (m *Manager) removeCodeTask(task *RangeTask) {
-	for i, t := range m.codeTasks {
-		if t == task {
-			m.codeTasks = append(m.codeTasks[:i], m.codeTasks[i+1:]...)
+			*list = append((*list)[:i], (*list)[i+1:]...)
 			return
 		}
 	}
@@ -586,21 +609,11 @@ func (m *Manager) removeCodeTask(task *RangeTask) {
 
 // parseAccountForTasks extracts incarnation and codeHash from encoded account data.
 // Returns incarnation > 0 if the account has storage, and codeHash if non-empty.
+//
+// Account encoding in N42 (Erigon-style):
+//
+//	fieldset(1) + [nonce(8)] + [balance(1 len + N bytes)] + [incarnation(2)] + [codeHash(32)]
 func parseAccountForTasks(encoded []byte) (uint16, []byte) {
-	if len(encoded) == 0 {
-		return 0, nil
-	}
-
-	// Account encoding in N42 (Erigon-style):
-	// The encoded format uses a field-set byte followed by fields.
-	// We need to extract incarnation and code hash.
-	// Simplified parsing: look for incarnation (2 bytes) and code hash (32 bytes).
-	//
-	// The actual format from state/plain_state_writer.go:
-	//   fieldset(1) + [nonce(8)] + [balance(up to 32)] + [incarnation(2)] + [codeHash(32)]
-	//
-	// For now, we check if the account has enough bytes to contain incarnation/code.
-
 	if len(encoded) < 3 {
 		return 0, nil
 	}
@@ -608,19 +621,25 @@ func parseAccountForTasks(encoded []byte) (uint16, []byte) {
 	fieldSet := encoded[0]
 	offset := 1
 
-	// Bit 0: nonce present
+	// Bit 0: nonce present (8 bytes).
 	if fieldSet&1 != 0 {
 		offset += 8
+		if offset > len(encoded) {
+			return 0, nil
+		}
 	}
-	// Bit 1: balance present
+	// Bit 1: balance present (1 byte length prefix + N bytes value).
 	if fieldSet&2 != 0 {
 		if offset >= len(encoded) {
 			return 0, nil
 		}
 		balLen := int(encoded[offset])
 		offset += 1 + balLen
+		if offset > len(encoded) {
+			return 0, nil
+		}
 	}
-	// Bit 2: incarnation present
+	// Bit 2: incarnation present (2 bytes big-endian).
 	var incarnation uint16
 	if fieldSet&4 != 0 {
 		if offset+2 > len(encoded) {
@@ -629,7 +648,7 @@ func parseAccountForTasks(encoded []byte) (uint16, []byte) {
 		incarnation = binary.BigEndian.Uint16(encoded[offset : offset+2])
 		offset += 2
 	}
-	// Bit 3: code hash present
+	// Bit 3: code hash present (32 bytes).
 	var codeHash []byte
 	if fieldSet&8 != 0 {
 		if offset+32 > len(encoded) {
@@ -637,8 +656,6 @@ func parseAccountForTasks(encoded []byte) (uint16, []byte) {
 		}
 		codeHash = make([]byte, 32)
 		copy(codeHash, encoded[offset:offset+32])
-		// Check if it's the empty code hash (keccak256(""))
-		emptyCodeHash := []byte{0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2, 0xdc, 0xc7, 0x03, 0xc0, 0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b, 0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70}
 		if bytes.Equal(codeHash, emptyCodeHash) {
 			codeHash = nil
 		}
@@ -661,7 +678,7 @@ var sendGetAccountRange = func(ctx context.Context, p2pProvider p2p.SenderEncode
 	}
 	defer func() { _ = stream.Close() }()
 
-	code, errMsg, err := readSnapStatusCode(stream, p2pProvider)
+	code, errMsg, err := readSnapStatusCode(stream)
 	if err != nil {
 		return nil, err
 	}
@@ -688,7 +705,7 @@ var sendGetStorageRange = func(ctx context.Context, p2pProvider p2p.SenderEncode
 	}
 	defer func() { _ = stream.Close() }()
 
-	code, errMsg, err := readSnapStatusCode(stream, p2pProvider)
+	code, errMsg, err := readSnapStatusCode(stream)
 	if err != nil {
 		return nil, err
 	}
@@ -715,7 +732,7 @@ var sendGetCode = func(ctx context.Context, p2pProvider p2p.SenderEncoder, pid p
 	}
 	defer func() { _ = stream.Close() }()
 
-	code, errMsg, err := readSnapStatusCode(stream, p2pProvider)
+	code, errMsg, err := readSnapStatusCode(stream)
 	if err != nil {
 		return nil, err
 	}
@@ -731,9 +748,9 @@ var sendGetCode = func(ctx context.Context, p2pProvider p2p.SenderEncoder, pid p
 }
 
 // readSnapStatusCode reads the 1-byte status code from a snap sync response stream.
-func readSnapStatusCode(stream interface{ Read([]byte) (int, error) }, p2pProvider p2p.EncodingProvider) (byte, string, error) {
+func readSnapStatusCode(stream interface{ Read([]byte) (int, error) }) (byte, string, error) {
 	b := make([]byte, 1)
-	if _, err := stream.(interface{ Read([]byte) (int, error) }).Read(b); err != nil {
+	if _, err := stream.Read(b); err != nil {
 		return 0, "", err
 	}
 	if b[0] == 0 {

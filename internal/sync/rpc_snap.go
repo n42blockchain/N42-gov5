@@ -60,6 +60,20 @@ func (s *Service) accountRangeRPCHandler(ctx context.Context, msg interface{}, s
 		return errors.New("message is not type *sync_pb.GetAccountRangeRequest")
 	}
 
+	// Validate key lengths when provided.
+	if len(req.Start) > 0 && len(req.Start) != 20 {
+		s.writeErrorResponseToStream(responseCodeInvalidRequest, "start key must be 20 bytes", stream)
+		return p2ptypes.ErrInvalidRequest
+	}
+	if len(req.End) > 0 && len(req.End) != 20 {
+		s.writeErrorResponseToStream(responseCodeInvalidRequest, "end key must be 20 bytes", stream)
+		return p2ptypes.ErrInvalidRequest
+	}
+	if len(req.Start) > 0 && len(req.End) > 0 && bytes.Compare(req.Start, req.End) >= 0 {
+		s.writeErrorResponseToStream(responseCodeInvalidRequest, "start must be less than end", stream)
+		return p2ptypes.ErrInvalidRequest
+	}
+
 	maxBytes := req.MaxBytes
 	if maxBytes == 0 || maxBytes > maxSnapResponseBytes {
 		maxBytes = maxSnapResponseBytes
@@ -148,8 +162,8 @@ func (s *Service) storageRangeRPCHandler(ctx context.Context, msg interface{}, s
 		return errors.New("message is not type *sync_pb.GetStorageRangeRequest")
 	}
 
-	if len(req.Account) == 0 {
-		s.writeErrorResponseToStream(responseCodeInvalidRequest, "account address required", stream)
+	if len(req.Account) != 20 {
+		s.writeErrorResponseToStream(responseCodeInvalidRequest, "account address must be 20 bytes", stream)
 		return p2ptypes.ErrInvalidRequest
 	}
 
@@ -253,6 +267,12 @@ func (s *Service) codeRPCHandler(ctx context.Context, msg interface{}, stream li
 	if len(req.Hashes) > maxSnapCodeHashes {
 		s.writeErrorResponseToStream(responseCodeInvalidRequest, "too many code hashes", stream)
 		return p2ptypes.ErrInvalidRequest
+	}
+	for _, hash := range req.Hashes {
+		if len(hash) != 32 {
+			s.writeErrorResponseToStream(responseCodeInvalidRequest, "code hash must be 32 bytes", stream)
+			return p2ptypes.ErrInvalidRequest
+		}
 	}
 
 	resp := &sync_pb.CodeResponse{}

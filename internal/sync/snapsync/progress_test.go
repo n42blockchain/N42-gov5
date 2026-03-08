@@ -103,7 +103,7 @@ func TestClearProgress(t *testing.T) {
 	}
 
 	// Clear all progress.
-	if err := ClearProgress(db); err != nil {
+	if err := ClearProgress(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 

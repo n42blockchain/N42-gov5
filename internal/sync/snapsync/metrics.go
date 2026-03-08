@@ -27,5 +27,4 @@ var (
 	snapBytesReceived      = prometheus.GetOrCreateCounter("snap_sync_bytes_received", true)
 	snapTaskErrors         = prometheus.GetOrCreateCounter("snap_sync_task_errors_total", true)
 	snapTaskTimeouts       = prometheus.GetOrCreateCounter("snap_sync_task_timeouts_total", true)
-	snapActiveTasks        = prometheus.GetOrCreateCounter("snap_sync_active_tasks", true)
 )
