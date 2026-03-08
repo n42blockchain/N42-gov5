@@ -63,6 +63,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
+	"github.com/n42blockchain/N42/internal/sync/snapsync"
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txspool"
@@ -104,6 +105,7 @@ type Node struct {
 	p2p             p2p.P2P
 	sync            *n42sync.Service
 	is              *initialsync.Service
+	snapSync        *snapsync.Service
 	accman          *accounts.Manager
 
 	api     *api.API
@@ -267,6 +269,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		P2P:   p2p,
 	})
 
+	snapSyncSvc := snapsync.NewService(ctx, &snapsync.Config{
+		P2P:      p2p,
+		Chain:    bc,
+		DB:       chainKv,
+		SnapSync: &cfg.SnapSyncCfg,
+	})
+
 	syncServer, err := n42sync.NewService(
 		ctx,
 		n42sync.WithP2P(p2p),
@@ -313,9 +322,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		keyDir:     keyDir,
 		keyDirTemp: isEphem,
 
-		p2p:  p2p,
-		sync: syncServer,
-		is:   is,
+		p2p:      p2p,
+		sync:     syncServer,
+		is:       is,
+		snapSync: snapSyncSvc,
 	}
 
 	if err = setAccountManagerBackends(&node, &cfg.NodeCfg); err != nil {
@@ -453,7 +463,12 @@ func (n *Node) Start() error {
 		n.depositContract.Start()
 	}
 
-	go n.is.Start()
+	// Start snap sync first (if enabled). It blocks until completion or skip,
+	// then initial sync picks up from the pivot block.
+	go func() {
+		n.snapSync.Start()
+		n.is.Start()
+	}()
 
 	// Start pruner if enabled
 	if n.config.PruneCfg.IsEnabled() {
@@ -750,7 +765,8 @@ func (n *Node) stopServices() []error {
 		}},
 		// 4. Miner
 		{"Miner", func() error { n.miner.Close(); return nil }},
-		// 5. Initial sync (depends on P2P + blockchain, must stop before blockchain closes)
+		// 5. Snap sync + Initial sync (depends on P2P + blockchain, must stop before blockchain closes)
+		{"Snap sync", func() error { return n.snapSync.Stop() }},
 		{"Initial sync", func() error { return n.is.Stop() }},
 		// 6. Sync service (depends on P2P + blockchain, must stop before blockchain closes)
 		{"Sync service", func() error { return n.sync.Stop() }},
