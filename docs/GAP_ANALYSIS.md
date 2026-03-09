@@ -48,7 +48,7 @@
 
 **Path-Based Storage (PBSS)**：geth v1.13+ 和 reth 均采用路径索引替代哈希索引存储状态节点，实现在线裁剪（不再需要离线 prune）。N42 使用 MDBX 的 key=address 方案本质上类似 flat state，但缺乏等价的在线 trie 裁剪机制。
 
-**Verkle Tree**：以太坊 Fusaka (2025.12) 硬分叉已包含 Verkle Tree，Glamsterdam (2026 H1) 将进一步完善。Verkle tree 将 proof 大小从 ~4KB 降至 ~150B，是实现无状态客户端的关键。N42 使用增量 Keccak 方案，无法生成标准以太坊兼容的 Verkle proof。
+**Verkle Tree**：以太坊 Fusaka (2025.12.3 主网激活) 硬分叉已部分引入 Verkle Tree，geth v1.16.7 支持。Verkle tree 将 proof 大小从 ~4KB 降至 ~150B，是实现无状态客户端的关键。Glamsterdam (2026 H1) 将完善 Verkle 迁移。N42 使用增量 Keccak 方案，无法生成标准以太坊兼容的 Verkle proof。
 
 **Snapshot Layer**：geth 的 snapshot 层提供 O(1) 状态读取（非遍历 trie），reth 的 flat state 设计从一开始就内建此能力。N42 的 `internal/snapshot/manager.go` 仅提供逻辑快照点（用于裁剪恢复），不是性能加速层。
 
@@ -116,11 +116,11 @@
 
 ### 3.3 关键差距
 
-**Transaction DAG 分析**：Grevm 2.1 的核心创新 — 在执行前通过静态分析（access list hints）构建交易依赖 DAG，实现近乎最优的并行调度。Sei v2 也有类似的依赖分析。N42 的 Block-STM 采用纯乐观方式（execute→validate→retry），在高冲突场景下效率低于 DAG 方案。
+**Transaction DAG 分析**：Grevm 2.1 的核心创新 — 在执行前通过模拟执行结果（hints）构建交易依赖 DAG，使用 Lock-Free DAG（2.1 新增，调度开销降低 60%）和 Task Groups（强依赖交易归组同线程顺序执行）。性能数据：Uniswap 场景 11.25 gigagas/s，30% hot-ratio 混合场景 2.96 gigagas/s（5.5x 提升），不可并行化场景比 Block-STM 减少 **95% CPU 使用**。N42 的 Block-STM 采用纯乐观方式（execute→validate→retry），在高冲突场景下效率显著低于 DAG 方案。
 
-**Async I/O (MonadDB)**：Monad 的核心差异化特性 — 将状态读取从同步 I/O 改为异步 I/O，允许 EVM 在等待磁盘读取时切换执行其他交易。这本质上是将 I/O 等待时间隐藏在计算中，实现真正的流水线执行。
+**Async I/O (MonadDB)**：Monad（2025.11 主网上线）的核心差异化特性 — MonadDB 使用 Linux `io_uring` 内核技术，执行线程发起 I/O 请求不阻塞，可直接在块设备（block device）上运行绕过文件系统。多 VM 实例 + 异步 I/O 允许一个交易等待磁盘加载时继续处理其他交易，实现真正的流水线执行。
 
-**JIT/AOT EVM 编译**：reth 团队的 `revmc` 项目探索将 EVM 字节码编译为本机机器码。虽仍处实验阶段，但热合约（如 DEX router）可获得 10-100x 加速。
+**JIT/AOT EVM 编译**：reth 的 `revmc` 将 EVM 字节码编译为本机机器码，JIT 模式计算密集场景最高 6.9x 提升（Fibonacci 19x），AOT 模式预编译热门合约（USDC、WETH）消除预热延迟。LLVM 后端自动向量化（SIMD），目标集成后整体 ~2x EVM 执行提升。
 
 **PeerDAS (Data Availability Sampling)**：Fusaka 硬分叉引入的核心特性，允许验证节点通过采样而非下载完整 blob 数据来验证数据可用性。对 L2 Rollup 生态至关重要。
 
@@ -157,18 +157,18 @@
 | **共识引擎** | PoS (Beacon) | PoS (Beacon) | Tendermint/CometBFT | MonadBFT | AptosBFT (Jolteon) | APoA/APoS |
 | **Engine API v1-v4** | ✅ 完整 | ✅ 完整 | N/A | N/A | N/A | ⚠️ v4 存在 |
 | **Proposer-Builder Separation** | ✅ MEV-Boost | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Slot-based 出块** | ✅ 12s | ✅ 12s | ✅ ~400ms | ✅ 1s | ✅ ~160ms | ✅ 8s (period) |
-| **Finality 速度** | ~15min (2 epoch) | ~15min | ~400ms | ~1s | ~160ms | 取决于 epoch |
+| **Slot-based 出块** | ✅ 12s | ✅ 12s | ✅ ~400ms (Giga: sub-400ms) | ✅ 400ms | ✅ ~160ms (Raptr) | ✅ 8s (period) |
+| **Finality 速度** | ~15min (2 epoch) | ~15min | ~400ms 即时 | ~800ms | <800ms (Raptr) | 取决于 epoch |
 | **Deferred Execution** | ❌ | ❌ | ❌ | ✅ 核心特性 | ✅ | ❌ |
-| **流水线共识** | ❌ | ❌ | ✅ Twin-Turbo | ✅ 完整流水线 | ✅ | ❌ |
+| **流水线共识** | ❌ | ❌ | ✅ Twin-Turbo → Autobahn (Giga) | ✅ 完整流水线 | ✅ Raptr (Prefix Consensus) | ❌ |
 | **PQ-STARK 验证** | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ 独有 |
 | **Withdrawal 处理** | ✅ | ✅ | N/A | N/A | N/A | ❌ deposit 合约 |
 
 ### 关键差距
 
-**Deferred Execution（延迟执行）**：Monad 和 Aptos 的核心创新 — 将区块执行与共识解耦。共识先对区块排序达成一致，执行在后台异步进行。这允许共识和执行完全流水线化，大幅提高吞吐量。
+**Deferred Execution（延迟执行）**：Monad 和 Aptos 的核心创新 — 将区块执行与共识解耦。共识先对交易排序达成一致（区块 = 交易排序服务），执行在后台异步进行，执行可利用完整区块时间平滑突发负载。Sei Giga（2026 年上线）也采用此模式，共识仅排序不包含状态变更结果。
 
-**流水线共识（Pipelining）**：Monad 实现了共识 → 执行 → I/O 的完整流水线重叠。当区块 N 正在执行时，区块 N+1 的共识已经在进行，区块 N-1 的 I/O 正在写入磁盘。Sei 的 Twin-Turbo 也有类似的优化思路。
+**流水线共识（Pipelining）**：Monad 实现了共识 → 执行 → I/O 的完整流水线重叠（Block N 共识 | Block N-1 执行 | Block N-2 提交），Aptos Raptr（2025.6 Baby Raptr 主网上线）使用 Prefix Consensus 将网络跳数从 6 减至 4，延迟降低 20%（100-150ms），目标 250k TPS。Sei Giga 引入 **Autobahn 共识 + 多提议者（Multi-Proposer）** 模型，多个验证者并行出块消除单提议者瓶颈。
 
 **N42 优势**：PQ-STARK 后量子签名验证是 N42 的独有特性，以太坊 2026 路线图才将量子抗性列为核心优先事项。
 
@@ -313,9 +313,11 @@
 
 ### 关键差距
 
-**ExEx (Execution Extensions)**：reth 的核心创新之一 — 允许开发者编写插件来监听链上事件（区块提交、reorg、EVM trace）。geth PR#30611 (by karalabe) 正在实现相同功能。ExEx 使得构建索引器、分析工具、跨链桥等不再需要修改节点源码。
+**ExEx (Execution Extensions)**：reth 的核心创新之一 — 后执行钩子（post-execution hooks），支持实时构建 rollup、indexer、MEV bot 等，代码量减少 10x+。特性包括：异步 future 支持、reorg 感知流、替代 VM 集成。geth PR#30611 (by karalabe) 正在移植此概念（因 Go 无动态加载，需编译进二进制）。
 
-**SDK/库化使用**：reth 设计之初就考虑了作为 Rust 库使用（`reth` crate），允许构建自定义节点。N42 的模块化程度有限，`internal/` 包不可外部导入。
+**OP Stack 生态转向**：**Optimism 将于 2026 年 5 月 31 日停止支持 op-geth**，全面转向 op-reth。新功能（如 Karst 硬分叉）仅在 op-reth 开发。Superchain（34 条 OP Chain）正在迁移到 Reth 架构。这标志着 Rust 实现在 L2 生态中的主导地位。
+
+**SDK/库化使用**：reth 设计之初就考虑了作为 Rust 库使用 — 每个组件都是独立 crate，开发者可单独引入 P2P 网络栈、直接操作数据库、拆解节点为所需组件。N42 的模块化程度有限，`internal/` 包不可外部导入。
 
 ---
 
@@ -325,19 +327,21 @@
 
 | 升级 | 时间 | 关键 EIP | N42 状态 |
 |------|------|----------|----------|
-| **Pectra** | 2025.3 | 7702(AA), 2537(BLS), 6110(deposits), 7251(consolidation) | ✅ 大部分已实现 |
-| **Fusaka** | 2025.12 | PeerDAS, Verkle Tree, 7825(gas limit) | ❌ 缺失 PeerDAS/Verkle |
-| **Glamsterdam** | 2026 H1 | EOF 完整版, 更快出块(6s), MEV 改革 | ✅ EOF 已提前实现 |
-| **Hegotá** | 2026 H2 | State expiry, PQ 密码学 | ✅ PQ 已有，State expiry ❌ |
+| **Pectra** | 2025.5.7 | 7702(AA), 2537(BLS), 6110(deposits), 7623(calldata cost) | ✅ 大部分已实现 |
+| **Fusaka** | 2025.12.3 | PeerDAS(7594), Verkle Tree, 7825(tx gas limit 16.78M), Gas↑150M | ❌ 缺失 PeerDAS/Verkle |
+| BPO1/BPO2 | 2025.12.9 / 2026.1.7 | Blob 参数调整（target 3→6, max 6→9） | ❌ |
+| **Glamsterdam** | 2026 H1 | EOF(7692) 完整版, 更快出块(6s), MEV 改革 | ✅ EOF 已提前实现 |
+| **Hegotá** | 2026 H2 | State expiry, PQ 密码学, 进一步扩容 | ✅ PQ 已有，State expiry ❌ |
 
 ### 13.2 高性能链趋势
 
-| 趋势 | Monad | Sei v3 | Aptos | Grevm 2.1 | **N42** |
-|------|-------|--------|-------|-----------|---------|
-| **10,000+ TPS** | ✅ 目标 | ✅ 目标 | ✅ 已达 | N/A (库) | ❌ 未测 |
-| **亚秒级 Finality** | ✅ ~1s | ✅ ~400ms | ✅ ~160ms | N/A | ❌ 8s period |
-| **异步执行** | ✅ | ❌ | ✅ | ❌ | ❌ |
-| **自定义数据库** | ✅ MonadDB | ✅ SeiDB | ✅ AptosDB | ❌ | ❌ MDBX |
+| 趋势 | Monad | Sei v3/Giga | Aptos | Grevm 2.1 | **N42** |
+|------|-------|-------------|-------|-----------|---------|
+| **TPS 目标** | 10,000 | 200,000 (Giga 5 gigagas/s) | 250,000 (Raptr) | 100,000+ (目标) | ❌ 未测 |
+| **亚秒级 Finality** | ✅ ~800ms | ✅ ~400ms 即时 | ✅ <800ms (Raptr) | N/A | ❌ 8s period |
+| **延迟/异步执行** | ✅ 核心 | ✅ Giga 采用 | ✅ | ❌ | ❌ |
+| **自定义数据库** | ✅ MonadDB (io_uring) | ✅ SeiDB (SS+SC) | ✅ AptosDB (JMT) | ❌ | ❌ MDBX |
+| **多提议者** | ❌ | ✅ Giga Autobahn | ❌ | N/A | ❌ |
 | **Move VM** | ❌ | ❌ | ✅ | ❌ | ❌ |
 
 ---
@@ -458,45 +462,57 @@
 
 ### Geth (go-ethereum) v1.16+
 - **语言**：Go
-- **数据库**：LevelDB/Pebble + Freezer
-- **状态**：MPT → PBSS (v1.13+) → Verkle (Fusaka)
-- **同步**：Snap Sync 默认，Full/Light 可选
-- **亮点**：最成熟的以太坊客户端，v1.16 支持 Fusaka (Verkle + PeerDAS)
+- **数据库**：Pebble（v1.14+ 默认，取代 LevelDB）+ Freezer 冷存储
+- **状态**：MPT → PBSS (v1.13+ 自动在线裁剪) → Verkle (Fusaka 部分引入)
+- **同步**：Snap Sync 默认（动态快照 7min 遍历所有账户），LES 已废弃
+- **P2P**：DevP2P, eth/68 + eth/69 (history expiry), snap protocol
+- **亮点**：最成熟的以太坊客户端，v1.16.7 Fusaka 主网（Verkle + PeerDAS + Gas↑150M），ExEx PR 进行中，Live Tracing，GraphQL API
+- **路线图**：Glamsterdam (2026H1, EOF), Hegotá (2026H2), 每年两次硬分叉新节奏
 
 ### Reth v1.11+
 - **语言**：Rust
-- **数据库**：MDBX + Static Files
-- **状态**：Flat State + Sparse Trie 缓存
-- **同步**：Staged Sync (12 阶段)
-- **亮点**：ExEx 框架、模块化设计、1G gas/s 吞吐、作为库使用
+- **数据库**：MDBX + Static Files（v1.11 新增 2 表，+30GB 改善 reorg 性能）
+- **状态**：Flat State + Sparse Trie 缓存（跨 payload 复用，state root 延迟↓25%）
+- **同步**：Staged Sync（Headers→Bodies→Execution→Hashing→Merkle→History→Pruning）
+- **性能**：1G gas/s 吞吐，newPayload 均值 32.4ms，revmc JIT 热合约 6.9x 加速
+- **亮点**：ExEx 成熟框架、模块化库设计（每个 crate 独立）、Grevm/PEVM 兼容、**Optimism 官方选择**（2026.5 停止 op-geth）
+- **生态**：Gravity Reth (ERC20 ~41k TPS), PEVM (RISE Chain), BSC Reth
 
-### Sei v2/v3
+### Sei v2/v3/Giga
 - **语言**：Go (Cosmos SDK)
-- **数据库**：SeiDB (SS + SC 分离)
-- **状态**：IAVL Tree → SeiDB
-- **共识**：Twin-Turbo CometBFT
-- **亮点**：EVM + CosmWasm 双合约引擎、IBC 跨链、~400ms finality
+- **数据库**：SeiDB — State Store (Log-structured KV) + State Commitment (mmap IAVL, ~100ns 访问)
+- **状态**：IAVL Tree → SeiDB SS+SC 分离，WAL + 周期性快照，崩溃快速恢复
+- **共识**：Twin-Turbo CometBFT → **Autobahn (Giga)** 多提议者模型
+- **并行**：乐观并行化 — worker goroutine + CacheMultiStore + 冲突检测/串行重执行
+- **性能**：v2: 100 megagas/s，**Giga (2026): 5 gigagas/s, 200k+ TPS, 50x 吞吐提升**
+- **亮点**：EVM + CosmWasm 双引擎、IBC 跨链、即时 Finality、Giga 延迟执行 + 多提议者
 
-### Monad
+### Monad (2025.11 主网上线)
 - **语言**：C++ / Rust
-- **数据库**：MonadDB (custom)
-- **状态**：自研 Patricia Trie + async I/O
-- **共识**：MonadBFT (HotStuff 变体)
-- **亮点**：完整流水线架构、延迟执行、io_uring、目标 10,000 TPS
+- **数据库**：MonadDB — 持久化 Patricia Trie + `io_uring` + 块设备直连（绕过文件系统）
+- **状态**：多版本状态数据，内联压缩，单写者 + 多读者
+- **共识**：MonadBFT (HotStuff 变体), 400ms 区块, ~800ms finality
+- **并行**：乐观并行 + 多 VM 实例 + 延迟执行 + 完整流水线（共识|执行|I/O 三阶段重叠）
+- **性能**：10,000 TPS，字节码级 100% EVM 兼容
+- **亮点**：完整流水线架构、异步 I/O（io_uring）、延迟执行解耦共识与执行、MONAD_NINE 升级 (2026 初)
 
 ### Grevm 2.1 (Gravity/Galxe)
-- **语言**：Rust
-- **类型**：EVM 执行库（非完整节点）
-- **核心**：Hint-based DAG 并行调度
-- **亮点**：通过预分析 access list 构建 TX 依赖图，近乎最优并行度
+- **语言**：Rust (基于 revm)
+- **类型**：EVM 执行库（非完整节点），可嵌入 reth 等节点
+- **核心三模块**：Dependency Manager (DAG) + Execution Scheduler + Parallel State Storage
+- **2.1 新增**：Lock-Free DAG（调度开销↓60%）、Task Groups（强依赖交易归组）、Parallel State Store（异步打包重叠 30-60ms）
+- **性能**：Uniswap 11.25 gigagas/s，30% hot-ratio 2.96 gigagas/s (5.5x↑)，高冲突 95% less CPU vs Block-STM
+- **部署**：Gravity 主网 2026 中目标 100k+ TPS，Gravity Reth (reth fork) 集成
 
 ### Aptos
 - **语言**：Rust
-- **数据库**：AptosDB (RocksDB)
-- **状态**：Jellyfish Merkle Tree
-- **共识**：AptosBFT (Jolteon, HotStuff 变体)
-- **VM**：Move VM (非 EVM)
-- **亮点**：Block-STM 原创者、~160ms finality、线性类型安全
+- **数据库**：AptosDB (RocksDB) + Jellyfish Merkle Tree (稀疏 Merkle 变体，利于分片)
+- **共识演进**：AptosBFT → Jolteon (Quorum Store) → **Raptr** (Prefix Consensus, 网络跳数 6→4)
+- **VM**：Move VM — 线性类型系统，资源导向（资产不可复制/丢失），字节码验证器
+- **并行**：Block-STM 原创（低冲突 32 线程 16x 加速，高冲突 8x），Block-STM V2 开发中
+- **Gas 模型**：三维分离 — Execution Gas + I/O Gas (浮动) + Storage Gas (固定 APT 绝对值)
+- **性能**：Baby Raptr (2025.6 主网) 延迟↓20%，**Raptr 目标 250k TPS, <800ms 延迟**
+- **亮点**：Block-STM 原创者、Aave 首个非 EVM 部署 (2025.8)、Velociraptr 规划中
 
 ---
 
