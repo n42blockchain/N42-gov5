@@ -33,6 +33,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -127,6 +128,9 @@ type BlockChain struct {
 	process         Processor
 	parallelEVM     bool
 	prefetchEnabled bool
+
+	freezer       *freezer.Freezer
+	ancientReader *freezer.AncientReader
 
 	wg sync.WaitGroup
 

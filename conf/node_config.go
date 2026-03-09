@@ -66,6 +66,14 @@ type NodeConfig struct {
 	// Pre-loads sender, recipient, and access list state into cache.
 	Prefetch bool `json:"prefetch" yaml:"prefetch"`
 
+	// AncientDB enables the freezer/ancient DB for moving old block data
+	// to append-only flat files, reducing hot MDBX database size.
+	AncientDB bool `json:"ancient_db" yaml:"ancient_db"`
+
+	// AncientFreezeThreshold is the number of blocks behind chain head
+	// before blocks are eligible for freezing. Default: 90000.
+	AncientFreezeThreshold uint64 `json:"ancient_freeze_threshold,omitempty" yaml:"ancient_freeze_threshold,omitempty"`
+
 	ExternalSigner        string `json:"external_signer" yaml:"external_signer"`
 	UseLightweightKDF     bool   `json:"use_lightweight_kdf" yaml:"use_lightweight_kdf"`
 	InsecureUnlockAllowed bool   `json:"insecure_unlock_allowed" yaml:"insecure_unlock_allowed"`
