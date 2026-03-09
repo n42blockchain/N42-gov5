@@ -28,6 +28,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
+	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
@@ -191,10 +192,12 @@ func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
 	}
 	b := blk.(*block.Block)
 	bc.currentBlock.Store(b)
-	headBlockGauge.Set(blk.Number64().Uint64())
+	blockNum := blk.Number64().Uint64()
+	headBlockGauge.Set(blockNum)
 	headGasUsedGauge.Set(b.GasUsed())
 	headGasLimitGauge.Set(b.GasLimit())
 	headTransactionsGauge.Set(uint64(len(b.Transactions())))
+	nodeMetrics.SyncCurrentBlock.Set(blockNum)
 	return nil
 }
 

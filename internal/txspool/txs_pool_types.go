@@ -65,6 +65,12 @@ var (
 	pendingGauge = prometheus.GetOrCreateCounter("txpool_pending", true)
 	queuedGauge  = prometheus.GetOrCreateCounter("txpool_queued", true)
 	localGauge   = prometheus.GetOrCreateCounter("txpool_local", true)
+
+	txpoolAddedTotal    = prometheus.GetOrCreateCounter("txpool_added_total")
+	txpoolDroppedTotal  = prometheus.GetOrCreateCounter("txpool_dropped_total")
+	txpoolRejectedTotal = prometheus.GetOrCreateCounter("txpool_rejected_total")
+	txpoolUnderpricedTotal = prometheus.GetOrCreateCounter("txpool_underpriced_total")
+	txpoolOverflowTotal = prometheus.GetOrCreateCounter("txpool_overflow_total")
 )
 
 type txspoolResetRequest struct {

@@ -274,6 +274,15 @@ func (pool *TxsPool) addTxsLocked(txs []*transaction.Transaction, local bool) ([
 		errs[i] = err
 		if err == nil && !replaced {
 			dirty.addTx(tx)
+			txpoolAddedTotal.Inc()
+		} else if err != nil {
+			txpoolRejectedTotal.Inc()
+			switch {
+			case errors.Is(err, ErrUnderpriced) || errors.Is(err, ErrReplaceUnderpriced):
+				txpoolUnderpricedTotal.Inc()
+			case errors.Is(err, ErrTxPoolOverflow):
+				txpoolOverflowTotal.Inc()
+			}
 		}
 	}
 	return errs, dirty
@@ -365,6 +374,7 @@ func (pool *TxsPool) removeTx(hash types.Hash, outofbound bool) {
 	if tx == nil {
 		return
 	}
+	txpoolDroppedTotal.Inc()
 	from := tx.From()
 	if from == nil {
 		return
