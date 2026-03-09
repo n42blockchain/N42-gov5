@@ -27,6 +27,12 @@ const (
 	GetAccountRangeMessageName = "/get_account_range"
 	GetStorageRangeMessageName = "/get_storage_range"
 	GetCodeMessageName         = "/get_code"
+
+	// Snapshot protocol message names.
+	GetSnapshotInfoMessageName         = "/get_snapshot_info"
+	GetSnapshotAccountRangeMessageName = "/get_snapshot_account_range"
+	GetSnapshotStorageRangeMessageName = "/get_snapshot_storage_range"
+	GetChangeSetRangeMessageName       = "/get_changeset_range"
 )
 
 // V1 RPC topic constants.
@@ -41,6 +47,12 @@ const (
 	RPCGetAccountRangeTopicV1 = protocolPrefix + GetAccountRangeMessageName + SchemaVersionV1
 	RPCGetStorageRangeTopicV1 = protocolPrefix + GetStorageRangeMessageName + SchemaVersionV1
 	RPCGetCodeTopicV1         = protocolPrefix + GetCodeMessageName + SchemaVersionV1
+
+	// Snapshot protocol topics.
+	RPCGetSnapshotInfoTopicV1         = protocolPrefix + GetSnapshotInfoMessageName + SchemaVersionV1
+	RPCGetSnapshotAccountRangeTopicV1 = protocolPrefix + GetSnapshotAccountRangeMessageName + SchemaVersionV1
+	RPCGetSnapshotStorageRangeTopicV1 = protocolPrefix + GetSnapshotStorageRangeMessageName + SchemaVersionV1
+	RPCGetChangeSetRangeTopicV1       = protocolPrefix + GetChangeSetRangeMessageName + SchemaVersionV1
 )
 
 // RPCTopicMappings maps each RPC topic to its expected request message type.
@@ -54,6 +66,12 @@ var RPCTopicMappings = map[string]interface{}{
 	RPCGetAccountRangeTopicV1: new(sync_pb.GetAccountRangeRequest),
 	RPCGetStorageRangeTopicV1: new(sync_pb.GetStorageRangeRequest),
 	RPCGetCodeTopicV1:         new(sync_pb.GetCodeRequest),
+
+	// Snapshot protocol mappings.
+	RPCGetSnapshotInfoTopicV1:         new(sync_pb.GetSnapshotInfoRequest),
+	RPCGetSnapshotAccountRangeTopicV1: new(sync_pb.GetSnapshotAccountRangeRequest),
+	RPCGetSnapshotStorageRangeTopicV1: new(sync_pb.GetSnapshotStorageRangeRequest),
+	RPCGetChangeSetRangeTopicV1:       new(sync_pb.GetChangeSetRangeRequest),
 }
 
 // Lookup tables for topic deconstruction.
@@ -70,6 +88,11 @@ var (
 		GetAccountRangeMessageName: true,
 		GetStorageRangeMessageName: true,
 		GetCodeMessageName:         true,
+
+		GetSnapshotInfoMessageName:         true,
+		GetSnapshotAccountRangeMessageName: true,
+		GetSnapshotStorageRangeMessageName: true,
+		GetChangeSetRangeMessageName:       true,
 	}
 	versionMapping = map[string]bool{
 		SchemaVersionV1: true,

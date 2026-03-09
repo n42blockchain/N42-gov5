@@ -77,3 +77,81 @@ type CodeEntry struct {
 type CodeResponse struct {
 	Codes []*CodeEntry `ssz-max:"256"`
 }
+
+// --- Snapshot protocol messages ---
+
+// GetSnapshotInfoRequest asks a peer for its available snapshot heights.
+type GetSnapshotInfoRequest struct{}
+
+// SnapshotInfoEntry describes one available snapshot on a peer.
+type SnapshotInfoEntry struct {
+	BlockNumber  uint64
+	AccountCount uint64
+	StorageCount uint64
+	CodeCount    uint64
+}
+
+// SnapshotInfoResponse lists the snapshots a peer can serve.
+type SnapshotInfoResponse struct {
+	Snapshots []*SnapshotInfoEntry `ssz-max:"16"`
+}
+
+// GetSnapshotAccountRangeRequest requests account state at a snapshot height.
+// Unlike GetAccountRangeRequest, this uses WalkAsOf to reconstruct state at
+// the exact snapshot height rather than reading the current PlainState.
+type GetSnapshotAccountRangeRequest struct {
+	SnapshotBlock uint64 //              snapshot height
+	Start         []byte `ssz-max:"20"` // inclusive start address
+	End           []byte `ssz-max:"20"` // exclusive end address
+	MaxBytes      uint64 //              soft response size limit
+}
+
+// GetSnapshotStorageRangeRequest requests storage at a snapshot height.
+type GetSnapshotStorageRangeRequest struct {
+	SnapshotBlock uint64 //              snapshot height
+	Account       []byte `ssz-max:"20"` // account address
+	Incarnation   uint16 //              account incarnation
+	Start         []byte `ssz-max:"32"` // start storage key
+	End           []byte `ssz-max:"32"` // end storage key
+	MaxBytes      uint64
+}
+
+// GetChangeSetRangeRequest requests account changesets in a block range.
+// Used for incremental sync: peer has state at FromBlock and needs to
+// advance to ToBlock by applying changesets.
+type GetChangeSetRangeRequest struct {
+	FromBlock uint64 // inclusive start block
+	ToBlock   uint64 // exclusive end block
+	MaxBytes  uint64
+}
+
+// CompressedBatchResponse is a generic response that carries bulk key-value
+// data compressed with zstd. The payload is produced by snapshot.EncodeBatch
+// and can be decoded by snapshot.DecodeBatch. Using a single compressed blob
+// instead of per-entry SSZ encoding provides 2-4x bandwidth reduction for
+// account and storage data.
+//
+// Wire format:
+//   [4 bytes] EntryCount   — number of entries (for quick pre-allocation)
+//   [1 byte]  Completed    — 1 if range is exhausted
+//   [N bytes] NextStart    — pagination cursor (length-prefixed)
+//   [M bytes] Data         — zstd-compressed batch (length-prefixed)
+type CompressedBatchResponse struct {
+	EntryCount uint32
+	Completed  bool
+	NextStart  []byte `ssz-max:"54"` // pagination cursor, max = storage key length
+	Data       []byte               // zstd-compressed batch (EncodeBatch output)
+}
+
+// ChangeSetEntry is a single account change in a block.
+type ChangeSetEntry struct {
+	BlockNumber uint64
+	Address     []byte `ssz-max:"20"`   // account address
+	Data        []byte `ssz-max:"1024"` // old account value
+}
+
+// ChangeSetRangeResponse returns a batch of changesets.
+type ChangeSetRangeResponse struct {
+	Entries   []*ChangeSetEntry `ssz-max:"8192"`
+	Completed bool              //                 true if range exhausted
+}

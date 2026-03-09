@@ -33,6 +33,12 @@ func (s *Service) registerRPCHandlers() {
 	s.registerRPC(p2p.RPCGetAccountRangeTopicV1, s.accountRangeRPCHandler)
 	s.registerRPC(p2p.RPCGetStorageRangeTopicV1, s.storageRangeRPCHandler)
 	s.registerRPC(p2p.RPCGetCodeTopicV1, s.codeRPCHandler)
+
+	// Snapshot protocol handlers.
+	s.registerRPC(p2p.RPCGetSnapshotInfoTopicV1, s.snapshotInfoRPCHandler)
+	s.registerRPC(p2p.RPCGetSnapshotAccountRangeTopicV1, s.snapshotAccountRangeRPCHandler)
+	s.registerRPC(p2p.RPCGetSnapshotStorageRangeTopicV1, s.snapshotStorageRangeRPCHandler)
+	s.registerRPC(p2p.RPCGetChangeSetRangeTopicV1, s.changeSetRangeRPCHandler)
 }
 
 // unregisterHandlers removes all registered RPC stream handlers.
@@ -46,6 +52,10 @@ func (s *Service) unregisterHandlers() {
 		p2p.RPCGetAccountRangeTopicV1,
 		p2p.RPCGetStorageRangeTopicV1,
 		p2p.RPCGetCodeTopicV1,
+		p2p.RPCGetSnapshotInfoTopicV1,
+		p2p.RPCGetSnapshotAccountRangeTopicV1,
+		p2p.RPCGetSnapshotStorageRangeTopicV1,
+		p2p.RPCGetChangeSetRangeTopicV1,
 	}
 	for _, t := range topics {
 		s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(t + suffix))

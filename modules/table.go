@@ -117,6 +117,13 @@ const (
 	// key: "account_cursor" -> last downloaded account address
 	// key: "state" -> "running" | "completed"
 	SnapSyncProgress = "SnapSyncProgress"
+
+	// SnapshotIndex stores metadata for periodic state snapshots.
+	// key: block_number (8 bytes big-endian)
+	// value: JSON-encoded SnapshotMeta (creation time, counts, etc.)
+	// The pruner uses the oldest retained snapshot height as the lower
+	// bound for changeset retention.
+	SnapshotIndex = "SnapshotIndex"
 )
 
 const (
@@ -164,6 +171,7 @@ var n42Tables = []string{
 	BlockVerify,
 	BlockRewards,
 	SnapSyncProgress,
+	SnapshotIndex,
 }
 
 var N42TableCfg = kv.TableCfg{
