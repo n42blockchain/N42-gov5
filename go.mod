@@ -76,6 +76,7 @@ require (
 	github.com/erigontech/secp256k1 v1.2.0
 	github.com/erigontech/speedtest v0.0.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
+	github.com/klauspost/compress v1.18.4
 	github.com/mattn/go-colorable v0.1.14
 	github.com/mattn/go-isatty v0.0.20
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
@@ -85,6 +86,9 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.1
 	github.com/spaolacci/murmur3 v1.1.0
 	github.com/tidwall/btree v1.8.1
+	go.opentelemetry.io/otel v1.40.0
+	go.opentelemetry.io/otel/sdk v1.39.0
+	go.opentelemetry.io/otel/trace v1.40.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/time v0.14.0
 	google.golang.org/grpc v1.79.1
@@ -154,7 +158,6 @@ require (
 	github.com/ipld/go-ipld-prime v0.21.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/koron/go-ssdp v0.1.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -238,9 +241,7 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.40.0 // indirect
 	go.opentelemetry.io/otel/metric v1.40.0 // indirect
-	go.opentelemetry.io/otel/trace v1.40.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/fx v1.24.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

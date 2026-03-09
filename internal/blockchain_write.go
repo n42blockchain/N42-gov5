@@ -28,7 +28,9 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/exex"
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
+	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
@@ -79,7 +81,25 @@ func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Re
 
 // writeBlockWithState persists block, receipts, state, and reward data, then
 // decides whether a reorg is needed. Returns the resulting WriteStatus.
-func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) (WriteStatus, error) {
+func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) (status WriteStatus, retErr error) {
+	// OpenTelemetry: trace block write operations.
+	bcTracer := tracing.Tracer("blockchain")
+	_, span := tracing.StartSpan(bc.ctx, bcTracer, "blockchain.writeBlockWithState")
+	span.SetAttributes(
+		tracing.Int64Attr("block.number", int64(blk.Number64().Uint64())),
+		tracing.StringAttr("block.hash", blk.Hash().String()),
+		tracing.Int64Attr("block.tx_count", int64(len(blk.Body().Transactions()))),
+		tracing.Int64Attr("block.receipt_count", int64(len(receipts))),
+	)
+	defer func() {
+		if retErr != nil {
+			tracing.SetSpanError(span, retErr)
+		} else {
+			tracing.SetSpanOK(span)
+		}
+		span.End()
+	}()
+
 	var externTd *uint256.Int
 
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
@@ -100,6 +120,10 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		if len(receipts) > 0 {
 			if err := rawdb.AppendReceipts(tx, blk.Number64().Uint64(), receipts); err != nil {
 				log.Errorf("rawdb.AppendReceipts failed err= %v", err)
+				return err
+			}
+			if err := rawdb.WriteLogIndex(tx, blk.Number64().Uint64(), receipts); err != nil {
+				log.Errorf("rawdb.WriteLogIndex failed err= %v", err)
 				return err
 			}
 		}
@@ -140,7 +164,6 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		return NonStatTy, err
 	}
 
-	var status WriteStatus
 	if reorg {
 		if blk.ParentHash() != bc.CurrentBlock().Hash() {
 			if err := bc.reorg(nil, bc.CurrentBlock(), blk); err != nil {
@@ -156,6 +179,17 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		if err := bc.writeHeadBlock(nil, blk); err != nil {
 			log.Errorf("failed to save latest blocks, err: %v", err)
 			return NonStatTy, err
+		}
+
+		// Notify ExEx extensions about the committed block.
+		if bc.exexManager != nil {
+			bc.exexManager.Notify(&exex.ExExNotification{
+				Type:     exex.NotificationCommit,
+				Block:    blk,
+				Receipts: receipts,
+				Hash:     blk.Hash(),
+				Number:   blk.Number64().Uint64(),
+			})
 		}
 	}
 

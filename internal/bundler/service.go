@@ -86,6 +86,11 @@ func (s *BundlerService) Start(ctx context.Context) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in bundler loop, recovered", "panic", r)
+			}
+		}()
 		s.bundleLoop(ctx)
 	}()
 	log.Info("Bundler service started",

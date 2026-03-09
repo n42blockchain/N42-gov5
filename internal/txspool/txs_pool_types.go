@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -91,6 +92,13 @@ type TxsPoolConfig struct {
 	GlobalQueue  uint64
 
 	Lifetime time.Duration
+
+	// DynamicSizing enables memory-aware pool capacity adjustment.
+	// When enabled, the pool periodically checks heap usage and scales
+	// GlobalSlots between MinGlobalSlots and GlobalSlots.
+	DynamicSizing   bool   `json:"dynamic_sizing" yaml:"dynamic_sizing"`
+	MinGlobalSlots  uint64 `json:"min_global_slots" yaml:"min_global_slots"`
+	MemoryLimitMB   uint64 `json:"memory_limit_mb" yaml:"memory_limit_mb"`
 }
 
 // DefaultTxPoolConfig contains the default configuration for the transaction pool.
@@ -104,6 +112,10 @@ var DefaultTxPoolConfig = TxsPoolConfig{
 	GlobalQueue:  1024,
 
 	Lifetime: 3 * time.Hour,
+
+	DynamicSizing:  false,
+	MinGlobalSlots: 1024,
+	MemoryLimitMB:  4096, // 4GB default memory limit
 }
 
 // TxsPool contains all currently known transactions.
@@ -148,6 +160,10 @@ type TxsPool struct {
 	isRun uint32
 
 	deposit *deposit.Deposit
+
+	// Dynamic sizing: effective slots may be lower than config.GlobalSlots
+	// when memory pressure is detected.
+	effectiveGlobalSlots atomic.Uint64
 }
 
 // addressByHeartbeat is an account address tagged with its last activity timestamp.

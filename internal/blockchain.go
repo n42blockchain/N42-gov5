@@ -39,6 +39,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
@@ -127,14 +128,30 @@ func (bc *BlockChain) SetPrefetch(enabled bool) {
 }
 
 // SetFreezer attaches the ancient data freezer to the blockchain.
-func (bc *BlockChain) SetFreezer(f *freezer.Freezer) {
+// It accepts any implementation of freezer.FreezerAPI. If the concrete type
+// is *freezer.Freezer, an AncientReader is also created for high-level access.
+func (bc *BlockChain) SetFreezer(f freezer.FreezerAPI) {
 	bc.freezer = f
-	bc.ancientReader = freezer.NewAncientReader(f)
+	if concrete, ok := f.(*freezer.Freezer); ok {
+		bc.ancientReader = freezer.NewAncientReader(concrete)
+	}
 	log.Info("Ancient data freezer attached", "frozen", f.Frozen())
 }
 
+// SetExExManager attaches an Execution Extensions manager to the blockchain.
+// The manager will receive notifications after each block commit or revert.
+func (bc *BlockChain) SetExExManager(m *exex.Manager) {
+	bc.exexManager = m
+	log.Info("ExEx manager attached to blockchain")
+}
+
+// ExExManager returns the attached ExEx manager, or nil if not configured.
+func (bc *BlockChain) ExExManager() *exex.Manager {
+	return bc.exexManager
+}
+
 // Freezer returns the attached freezer, or nil if not configured.
-func (bc *BlockChain) Freezer() *freezer.Freezer {
+func (bc *BlockChain) Freezer() freezer.FreezerAPI {
 	return bc.freezer
 }
 

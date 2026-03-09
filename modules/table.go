@@ -89,7 +89,7 @@ const (
 	Log      = "TransactionLog" // block_num_u64 + txId -> logs of transaction
 
 	// Stores bitmap indices - in which block numbers saw logs of given 'address' or 'topic'
-	// [addr or topic] + [2 bytes inverted shard number] -> bitmap(blockN)
+	// [addr or topic] + [4 bytes shard number] -> bitmap(blockN)
 	// indices are sharded - because some bitmaps are >1Mb and when new incoming blocks process it
 	//	 updates ~300 of bitmaps - by append small amount new values. It cause much big writes (MDBX does copy-on-write).
 	//
@@ -118,12 +118,22 @@ const (
 	// key: "state" -> "running" | "completed"
 	SnapSyncProgress = "SnapSyncProgress"
 
+	// BlobSidecars stores blob sidecars for EIP-4844 blob transactions.
+	// key: block_num(8) + block_hash(32) = 40 bytes
+	// value: protobuf-encoded list of BlobSidecar
+	BlobSidecars = "BlobSidecars"
+
 	// SnapshotIndex stores metadata for periodic state snapshots.
 	// key: block_number (8 bytes big-endian)
 	// value: JSON-encoded SnapshotMeta (creation time, counts, etc.)
 	// The pruner uses the oldest retained snapshot height as the lower
 	// bound for changeset retention.
 	SnapshotIndex = "SnapshotIndex"
+
+	// DataColumns stores PeerDAS (EIP-7594) data columns.
+	// key: block_hash(32) + col_index(8) = 40 bytes
+	// value: encoded DataColumn (block number, KZG proof, column data)
+	DataColumns = "DataColumns"
 )
 
 const (
@@ -162,6 +172,9 @@ var n42Tables = []string{
 	Receipts,
 	Log,
 
+	LogTopicIndex,
+	LogAddressIndex,
+
 	SignersDB,
 	PoaSnapshot,
 	Sequence,
@@ -172,6 +185,8 @@ var n42Tables = []string{
 	BlockRewards,
 	SnapSyncProgress,
 	SnapshotIndex,
+	BlobSidecars,
+	DataColumns,
 }
 
 var N42TableCfg = kv.TableCfg{

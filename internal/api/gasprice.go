@@ -108,6 +108,11 @@ func NewOracle(backend common.IBlockChain, miner common.IMiner, chainConfig *par
 	// Note: The goroutine will exit when the subscription is closed
 	if highestSub != nil {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic in gas price block monitor, recovered", "panic", r)
+				}
+			}()
 			defer close(highestBlockCh)
 			var lastHead types.Hash
 			for {

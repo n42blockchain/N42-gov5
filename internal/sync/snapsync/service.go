@@ -206,9 +206,24 @@ func (s *Service) Resync() error {
 var ErrSnapSyncNotNeeded = stderrors.New("snap sync not needed")
 
 // selectPivot waits for peers and selects a pivot block.
-// The pivot block is chosen as (highest_peer_block - PivotDistance) to ensure
-// enough peers have the state at that point.
+// If a checkpoint has already set a pivot (via checkpoint sync), that value
+// is used directly. Otherwise the pivot is chosen as
+// (highest_peer_block - PivotDistance) to ensure enough peers have the state.
 func (s *Service) selectPivot() (uint64, []byte, error) {
+	// Check if checkpoint sync has already set a pivot block.
+	var checkpointPivot uint64
+	if err := s.cfg.DB.View(s.ctx, func(tx kv.Tx) error {
+		var err error
+		checkpointPivot, err = LoadPivotBlock(tx)
+		return err
+	}); err != nil {
+		log.Warn("Failed to check for checkpoint pivot", "err", err)
+	}
+	if checkpointPivot > 0 {
+		log.Info("Using checkpoint pivot block for snap sync", "pivotBlock", checkpointPivot)
+		return checkpointPivot, nil, nil
+	}
+
 	required := s.cfg.SnapSync.MinSnapPeers
 	if required <= 0 {
 		required = 3

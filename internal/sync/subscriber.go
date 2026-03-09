@@ -53,6 +53,12 @@ func (s *Service) registerSubscribers(digest [4]byte) {
 		s.blockSubscriber,
 		digest,
 	)
+	s.subscribe(
+		p2p.BlobSidecarTopicFormat,
+		s.noopValidator,
+		s.blobSidecarSubscriber,
+		digest,
+	)
 	//todo txs?
 	//s.subscribe(
 	//	p2p.TransactionTopicFormat,
@@ -167,7 +173,14 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 		}
 	}
 
-	go messageLoop()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in messageLoop, recovered", "topic", topic, "panic", r)
+			}
+		}()
+		messageLoop()
+	}()
 	// Shorten topic for cleaner logging
 	shortTopic := topic
 	if len(topic) > 50 {

@@ -3,14 +3,25 @@ package filters
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"time"
 
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
+
+// deferRecover is a deferred panic handler for filter subscription goroutines.
+func deferRecover(label string) {
+	if r := recover(); r != nil {
+		buf := make([]byte, 4096)
+		n := runtime.Stack(buf, false)
+		log.Error("panic in filter goroutine, recovered", "label", label, "panic", r, "stack", string(buf[:n]))
+	}
+}
 
 // filter is a helper struct that holds metadata information over the filter type
 // and associated subscription in the event system.
@@ -92,6 +103,7 @@ func (filterApi *FilterAPI) NewPendingTransactionFilter() jsonrpc.ID {
 	filterApi.filtersMu.Unlock()
 
 	go func() {
+		defer deferRecover("NewPendingTransactionFilter")
 		for {
 			select {
 			case ph := <-pendingTxs:
@@ -126,6 +138,7 @@ func (filterApi *FilterAPI) NewPendingTransactions(ctx context.Context) (*jsonrp
 	}
 
 	go func() {
+		defer deferRecover("NewPendingTransactions")
 		txHashes := make(chan []types.Hash, 128)
 		pendingTxSub := filterApi.events.SubscribePendingTxs(txHashes)
 
@@ -163,6 +176,7 @@ func (filterApi *FilterAPI) NewBlockFilter() jsonrpc.ID {
 	filterApi.filtersMu.Unlock()
 
 	go func() {
+		defer deferRecover("NewBlockFilter")
 		for {
 			select {
 			case h := <-headers:
@@ -196,6 +210,7 @@ func (filterApi *FilterAPI) NewHeads(ctx context.Context) (*jsonrpc.Subscription
 	}
 
 	go func() {
+		defer deferRecover("NewHeads")
 		headers := make(chan block.IHeader)
 		headersSub := filterApi.events.SubscribeNewHeads(headers)
 		for {
@@ -234,6 +249,7 @@ func (filterApi *FilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*jso
 	}
 
 	go func() {
+		defer deferRecover("Logs")
 		for {
 			select {
 			case logs := <-matchedLogs:
@@ -277,6 +293,7 @@ func (filterApi *FilterAPI) NewFilter(crit FilterCriteria) (jsonrpc.ID, error) {
 	filterApi.filtersMu.Unlock()
 
 	go func() {
+		defer deferRecover("NewFilter")
 		for {
 			select {
 			case l := <-logs:

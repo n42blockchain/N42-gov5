@@ -19,12 +19,14 @@ package jsonrpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -236,6 +238,19 @@ func (h *handler) handleCallMsg(cp *callProc, msg *jsonrpcMessage) *jsonrpcMessa
 	start := time.Now()
 	switch {
 	case msg.isCall():
+		// OpenTelemetry: trace each RPC method call.
+		rpcTracer := tracing.Tracer("rpc")
+		spanCtx, span := tracing.StartSpan(cp.ctx, rpcTracer, "rpc."+msg.Method)
+		span.SetAttributes(
+			tracing.StringAttr("rpc.method", msg.Method),
+			tracing.StringAttr("rpc.request_id", string(msg.ID)),
+		)
+		cp.ctx = spanCtx
+		defer func() {
+			span.SetAttributes(tracing.Int64Attr("rpc.duration_ms", time.Since(start).Milliseconds()))
+			span.End()
+		}()
+
 		h.log.Trace("begin "+msg.Method, "p", string(msg.Params))
 		resp := h.handleCall(cp, msg)
 		logFields := []interface{}{
@@ -250,8 +265,10 @@ func (h *handler) handleCallMsg(cp *callProc, msg *jsonrpcMessage) *jsonrpcMessa
 				logFields = append(logFields, "errdata", resp.Error.Data)
 			}
 			h.log.Warn("Served "+msg.Method, logFields...)
+			tracing.SetSpanError(span, fmt.Errorf("%s", resp.Error.Message))
 		} else {
 			h.log.Trace("Served "+msg.Method, logFields...)
+			tracing.SetSpanOK(span)
 		}
 		return resp
 	case msg.hasValidID():

@@ -13,6 +13,7 @@ import (
 	"go.opencensus.io/trace"
 
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/log"
 )
@@ -28,6 +29,10 @@ func (s *Service) registerRPCHandlers() {
 	s.registerRPC(p2p.RPCGoodByeTopicV1, s.goodbyeRPCHandler)
 	s.registerRPC(p2p.RPCPingTopicV1, s.pingHandler)
 	s.registerRPC(p2p.RPCBodiesDataTopicV1, s.bodiesByRangeRPCHandler)
+
+	// Blob sidecar protocol handlers.
+	s.registerRPC(p2p.RPCBlobSidecarsByRangeTopicV1, s.blobSidecarsByRangeRPCHandler)
+	s.registerRPC(p2p.RPCBlobSidecarsByRootTopicV1, s.blobSidecarsByRootRPCHandler)
 
 	// Snap sync protocol handlers.
 	s.registerRPC(p2p.RPCGetAccountRangeTopicV1, s.accountRangeRPCHandler)
@@ -46,6 +51,8 @@ func (s *Service) unregisterHandlers() {
 	suffix := s.cfg.p2p.Encoding().ProtocolSuffix()
 	topics := []string{
 		p2p.RPCBodiesDataTopicV1,
+		p2p.RPCBlobSidecarsByRangeTopicV1,
+		p2p.RPCBlobSidecarsByRootTopicV1,
 		p2p.RPCStatusTopicV1,
 		p2p.RPCGoodByeTopicV1,
 		p2p.RPCPingTopicV1,
@@ -90,6 +97,15 @@ func (s *Service) registerRPC(baseTopic string, handle rpcHandler) {
 			trace.StringAttribute("topic", topic),
 			trace.StringAttribute("peer", stream.Conn().RemotePeer().String()),
 		)
+
+		// OpenTelemetry: trace P2P RPC message handling.
+		p2pTracer := tracing.Tracer("p2p")
+		ctx, otelSpan := tracing.StartSpan(ctx, p2pTracer, "p2p.rpc."+baseTopic)
+		otelSpan.SetAttributes(
+			tracing.StringAttr("p2p.topic", topic),
+			tracing.StringAttr("p2p.peer", stream.Conn().RemotePeer().String()),
+		)
+		defer otelSpan.End()
 
 		// Check that the peer is not banned before processing.
 		if s.cfg.p2p.Peers().IsBad(stream.Conn().RemotePeer()) {
