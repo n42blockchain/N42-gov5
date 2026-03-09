@@ -593,10 +593,15 @@ func (c *APos) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	if parent == nil {
 		return errors.New("unknown ancestor")
 	}
-	rawHeader.Time = parent.(*block.Header).Time + c.config.Period
+	parentHeader := parent.(*block.Header)
+	rawHeader.Time = parentHeader.Time + c.config.Period
 	if rawHeader.Time < uint64(time.Now().Unix())+mergeSignMinTime {
 		rawHeader.Time = uint64(time.Now().Unix()) + mergeSignMinTime
 	}
+
+	// EIP-4844: Set excess blob gas from parent.
+	rawHeader.ExcessBlobGas = transaction.CalcExcessBlobGas(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed)
+
 	return nil
 }
 
@@ -652,6 +657,10 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	rawHeader.Root = state.IntermediateRoot()
 	// Store the state root before finalization for verification purposes
 	rawHeader.MixDigest = state.BeforeStateRoot()
+
+	// EIP-4844: Calculate blob gas used from included transactions.
+	rawHeader.BlobGasUsed = misc.CalcBlobGasUsed(txs)
+
 	return rewards, unpayMap, nil
 }
 

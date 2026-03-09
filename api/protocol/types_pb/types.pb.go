@@ -552,8 +552,10 @@ type Header struct {
 	// 65+32 byte (clique)
 	Extra     []byte `protobuf:"bytes,13,opt,name=Extra,proto3" json:"Extra,omitempty" ssz-max:"117"`
 	Signature *H768  `protobuf:"bytes,14,opt,name=Signature,proto3" json:"Signature,omitempty"`
-	Bloom     *H2048 `protobuf:"bytes,15,opt,name=Bloom,proto3" json:"Bloom,omitempty"`
-	MixDigest *H256  `protobuf:"bytes,16,opt,name=MixDigest,proto3" json:"MixDigest,omitempty"`
+	Bloom         *H2048 `protobuf:"bytes,15,opt,name=Bloom,proto3" json:"Bloom,omitempty"`
+	MixDigest     *H256  `protobuf:"bytes,16,opt,name=MixDigest,proto3" json:"MixDigest,omitempty"`
+	BlobGasUsed   uint64 `protobuf:"varint,17,opt,name=BlobGasUsed,proto3" json:"BlobGasUsed,omitempty"`
+	ExcessBlobGas uint64 `protobuf:"varint,18,opt,name=ExcessBlobGas,proto3" json:"ExcessBlobGas,omitempty"`
 }
 
 func (x *Header) Reset() {
@@ -698,6 +700,20 @@ func (x *Header) GetMixDigest() *H256 {
 		return x.MixDigest
 	}
 	return nil
+}
+
+func (x *Header) GetBlobGasUsed() uint64 {
+	if x != nil {
+		return x.BlobGasUsed
+	}
+	return 0
+}
+
+func (x *Header) GetExcessBlobGas() uint64 {
+	if x != nil {
+		return x.ExcessBlobGas
+	}
+	return 0
 }
 
 type Verifier struct {

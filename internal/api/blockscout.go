@@ -301,7 +301,8 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 		if tx.Type() == transaction.BlobTxType {
 			blobGasUsed := hexutil.Uint64(tx.BlobGas())
 			br.BlobGasUsed = &blobGasUsed
-			br.BlobGasPrice = (*hexutil.Big)(big.NewInt(1)) // minimum blob gas price
+			blobFee := transaction.CalcBlobFee(blk.Header().(*block.Header).ExcessBlobGas)
+			br.BlobGasPrice = (*hexutil.Big)(blobFee.ToBig())
 		}
 
 		result[i] = br
@@ -492,15 +493,14 @@ func (s *BlockChainAPI) BatchGetCode(ctx context.Context, addresses []types.Addr
 }
 
 // BlobBaseFee returns the current blob base fee in wei (EIP-4844).
-// N42 does not currently have ExcessBlobGas in headers, so this returns
-// the minimum blob base fee (1 wei) for API compatibility.
 func (s *BlockChainAPI) BlobBaseFee(ctx context.Context) (*hexutil.Big, error) {
 	currentBlock := s.api.BlockChain().CurrentBlock()
 	if currentBlock == nil {
 		return nil, errors.New("no current block")
 	}
-
-	return (*hexutil.Big)(big.NewInt(1)), nil
+	header := currentBlock.Header().(*block.Header)
+	blobFee := transaction.CalcBlobFee(header.ExcessBlobGas)
+	return (*hexutil.Big)(blobFee.ToBig()), nil
 }
 
 // SimulateV1BlockOverride contains block-level overrides for simulation.
