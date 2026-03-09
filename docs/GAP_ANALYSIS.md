@@ -110,7 +110,7 @@
 | **EIP-7516 (BLOBBASEFEE)** | ✅ | ✅ | ❌ | ✅ | ✅ | Blob 基础费 |
 | **EIP-3855 (PUSH0)** | ✅ | ✅ | ✅ | ✅ | ✅ | 零值推入 |
 | **EIP-7702 (Pectra AA)** | ✅ | ✅ | ❌ | 🔧 | ✅ | 委托账户代码 |
-| **EIP-2537 (BLS12-381)** | ✅ | ✅ | ❌ | 🔧 | ❌ 仅地址常量 | BLS 预编译 |
+| **EIP-2537 (BLS12-381)** | ✅ | ✅ | ❌ | 🔧 | ✅ 9 预编译完整 | BLS 预编译 |
 | **EOF (EVM Object Format)** | 🔧 Glamsterdam | 🔧 | ❌ | ❌ | ✅ | N42 已提前实现 |
 | **EIP-7212 (P-256)** | ✅ Pectra | ✅ | ❌ | 🔧 | ✅ | secp256r1 验证 |
 | **ERC-4337 (AA)** | 部分 | 部分 | ❌ | ❌ | ⚠️ 仅 helpers | 账户抽象 |
@@ -331,7 +331,7 @@
 
 | 升级 | 时间 | 关键 EIP | N42 状态 |
 |------|------|----------|----------|
-| **Pectra** | 2025.5.7 | 7702(AA), 2537(BLS), 6110(deposits), 7623(calldata cost) | ⚠️ 7702✅ 2537❌stub 6110⚠️解析 |
+| **Pectra** | 2025.5.7 | 7702(AA), 2537(BLS), 6110(deposits), 7623(calldata cost) | ⚠️ 7702✅ 2537✅ 6110⚠️解析 |
 | **Fusaka** | 2025.12.3 | PeerDAS(7594), Verkle Tree, 7825(tx gas limit 16.78M), Gas↑150M | ❌ 缺失 PeerDAS/Verkle |
 | BPO1/BPO2 | 2025.12.9 / 2026.1.7 | Blob 参数调整（target 3→6, max 6→9） | ❌ |
 | **Glamsterdam** | 2026 H1 | EOF(7692) 完整版, 更快出块(6s), MEV 改革 | ✅ EOF 已提前实现 |
@@ -394,7 +394,7 @@
 |------|------|------|------|-----|-------|-------|---------|
 | 状态管理 | 15% | 95 | 98 | 80 | 90 | 85 | 60 |
 | 同步机制 | 10% | 90 | 95 | 75 | 70 | 80 | 65 |
-| 执行层/EVM | 20% | 85 | 88 | 90 | 95 | 90* | 68 |
+| 执行层/EVM | 20% | 85 | 88 | 90 | 95 | 90* | 75 |
 | P2P 网络 | 10% | 95 | 90 | 80 | 80 | 75 | 70 |
 | 共识 | 10% | 90 | 90 | 85 | 95 | 90 | 75 |
 | RPC API | 10% | 95 | 95 | 60 | 70 | 60 | 80 |
@@ -403,7 +403,7 @@
 | 安全性 | 5% | 90 | 95 | 85 | 80 | 90 | 75 |
 | 可观测性 | 5% | 90 | 95 | 85 | 60 | 85 | 40 |
 | 扩展性 | 5% | 80 | 95 | 85 | 40 | 70 | 30 |
-| **加权总分** | 100% | **91** | **93** | **80** | **81** | **81** | **66** |
+| **加权总分** | 100% | **91** | **93** | **80** | **81** | **81** | **67** |
 
 > *Aptos 使用 Move VM，非直接可比
 
@@ -456,7 +456,7 @@
 | **PQ-STARK 后量子签名** | 已集成到 APoS 共识 | 以太坊 2026 才开始研究 |
 | **Block-STM 并行 EVM** | Wave executor 524行+23测试，无基准测试 | geth 无，reth 仅 prewarming |
 | **EOF 提前实现** | EIP-3540/3670/4200/4750/5450 完整 | geth/reth 计划 Glamsterdam |
-| **Pectra EIP 部分支持** | 7702✅完整, 7212✅P-256, 2537❌stub, 6110⚠️解析, 7251⚠️常量 | geth/reth 完整实现 |
+| **Pectra EIP 大部分支持** | 7702✅, 7212✅P-256, 2537✅9预编译, 6110⚠️解析, 7251⚠️常量 | geth/reth 完整实现 |
 | **LayeredDB 分层存储** | State DB + History DB 分离 | 类似 reth 架构理念 |
 | **MDBX 高性能存储** | memory-mapped B+tree | 与 reth 相同选择 |
 
@@ -557,7 +557,7 @@
 | **TX Pool Journal** | `internal/txspool/journal.go` | ~200 | - | ✅ 生产可用 | flushToDB/loadFromDB，集成到 Start/Stop |
 | **EOF (EVM Object Format)** | `internal/vm/eof.go` | 509 | 有 | ✅ 完整实现 | EIP-3540/3670/4200/4750/5450 |
 | **EIP-7702 (Delegation)** | `internal/vm/eips_pectra.go` | ~200 | - | ✅ 完整实现 | 委托账户代码设置 |
-| **EIP-2537 (BLS)** | `internal/vm/eips_pectra.go` | ~50 | 0 | ❌ **Stub** | **仅预编译地址常量，零加密逻辑，调用会静默失败** |
+| **EIP-2537 (BLS)** | `internal/vm/contracts.go:854-1360` + `common/crypto/bls12381/` | ~500+800 | - | ✅ 完整实现 | 9 预编译(G1Add/Mul/MSM,G2同,Pairing,MapG1/G2)，含 x86 汇编优化 |
 | **EIP-6110 (Deposits)** | `internal/vm/eips_pectra.go` | ~80 | - | ⚠️ 解析器 | 仅日志解析，无完整 deposit 处理流程 |
 | **EIP-7251 (MaxEB)** | `internal/vm/eips_pectra.go` | ~30 | 0 | ⚠️ 常量 | 仅常量定义 |
 | **ERC-4337 (AA)** | `internal/vm/erc4337.go` | 362 | 0 | ⚠️ Helpers | UserOperation 结构 + gas helpers，**无 EntryPoint、无 bundler、无签名验证** |
@@ -571,8 +571,7 @@
 
 ### C.2 关键风险点
 
-1. **EIP-2537 BLS 预编译为空壳**：`eips_pectra.go` 中仅注册了 9 个 BLS 预编译地址（0x0b~0x13），但实现函数体为空或返回零值。如果有合约调用这些地址，**不会报错但返回错误结果**。这是一个静默失败（silent failure）风险。
-2. **Block-STM 缺乏性能验证**：23 个单元测试验证了正确性，但没有任何基准测试（benchmark）量化并行加速比。也没有使用真实 EVM 交易的集成测试。无法确认在 N42 的实际工作负载下是否有显著收益。
+1. **Block-STM 缺乏性能验证**：23 个单元测试验证了正确性，但没有任何基准测试（benchmark）量化并行加速比。也没有使用真实 EVM 交易的集成测试。无法确认在 N42 的实际工作负载下是否有显著收益。
 3. **Chain Metrics 死代码**：`DBReadBytes`/`DBWriteBytes`/`FreezerBlocks` 等 8 个 Prometheus 指标从未被递增（`Inc()`/`Add()` 未在任何执行路径调用），会在 Grafana 中永远显示为 0，误导运维人员。
 4. **ERC-4337 误标为已支持**：仅有 `UserOperation` 结构定义和 gas 计算 helpers，缺少 EntryPoint 合约交互、bundler 逻辑、签名聚合等核心功能。不能声称支持 ERC-4337。
 
@@ -580,7 +579,7 @@
 
 | 维度 | N42 实际水平 | geth/reth 水平 | 差距评估 |
 |------|-------------|---------------|----------|
-| EVM 兼容性 | Cancun ✅, 部分 Pectra (7702/P-256/EOF) | Cancun+Pectra 完整 | 中等差距（BLS/deposits 缺失） |
+| EVM 兼容性 | Cancun ✅, 大部分 Pectra (7702/BLS/P-256/EOF) | Cancun+Pectra 完整 | 小幅差距（deposits/MaxEB 部分） |
 | 并行执行 | Block-STM 算法完整，无性能数据 | geth 无并行，reth prewarming | 潜在优势但未验证 |
 | 可观测性 | 11 系统指标 + 1 链指标 | 200-300+ 全面指标 | **重大差距** |
 | 测试覆盖 | snap sync 51 测试，parallel 23 测试 | 数千测试 + fuzzing | 重大差距 |
