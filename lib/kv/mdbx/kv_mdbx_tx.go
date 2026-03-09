@@ -49,6 +49,10 @@ func (tx *MdbxTx) GetOne(bucket string, k []byte) ([]byte, error) {
 		return nil, err
 	}
 	_, v, err := c.SeekExact(k)
+	if err == nil {
+		tx.readCount.Add(1)
+		tx.readBytes.Add(uint64(len(v)))
+	}
 	return v, err
 }
 
@@ -69,7 +73,12 @@ func (tx *MdbxTx) Put(table string, k, v []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.Put(k, v)
+	if err := c.Put(k, v); err != nil {
+		return err
+	}
+	tx.writeCount.Add(1)
+	tx.writeBytes.Add(uint64(len(k) + len(v)))
+	return nil
 }
 
 func (tx *MdbxTx) Delete(table string, k []byte) error {
@@ -77,7 +86,11 @@ func (tx *MdbxTx) Delete(table string, k []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.Delete(k)
+	if err := c.Delete(k); err != nil {
+		return err
+	}
+	tx.writeCount.Add(1)
+	return nil
 }
 
 func (tx *MdbxTx) Append(bucket string, k, v []byte) error {
@@ -85,14 +98,24 @@ func (tx *MdbxTx) Append(bucket string, k, v []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.Append(k, v)
+	if err := c.Append(k, v); err != nil {
+		return err
+	}
+	tx.writeCount.Add(1)
+	tx.writeBytes.Add(uint64(len(k) + len(v)))
+	return nil
 }
 func (tx *MdbxTx) AppendDup(bucket string, k, v []byte) error {
 	c, err := tx.statelessCursor(bucket)
 	if err != nil {
 		return err
 	}
-	return c.(*MdbxDupSortCursor).AppendDup(k, v)
+	if err := c.(*MdbxDupSortCursor).AppendDup(k, v); err != nil {
+		return err
+	}
+	tx.writeCount.Add(1)
+	tx.writeBytes.Add(uint64(len(k) + len(v)))
+	return nil
 }
 
 func (tx *MdbxTx) IncrementSequence(bucket string, amount uint64) (uint64, error) {
@@ -229,4 +252,14 @@ func (tx *MdbxTx) CollectMetrics() {
 	kv.GcLeafMetric.SetUint64(gc.LeafPages)
 	kv.GcOverflowMetric.SetUint64(gc.OverflowPages)
 	kv.GcPagesMetric.SetUint64((gc.LeafPages + gc.OverflowPages) * tx.db.opts.pageSize / 8)
+
+	// Flush per-transaction I/O counters to global metrics.
+	if rc := tx.readCount.Load(); rc > 0 {
+		kv.DbReadCount.Add(float64(rc))
+		kv.DbReadBytes.Add(float64(tx.readBytes.Load()))
+	}
+	if wc := tx.writeCount.Load(); wc > 0 {
+		kv.DbWriteCount.Add(float64(wc))
+		kv.DbWriteBytes.Add(float64(tx.writeBytes.Load()))
+	}
 }

@@ -25,6 +25,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common"
+	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"
 )
@@ -374,6 +375,14 @@ func (sm *SyncStateMachine) evaluate() {
 	currentState := sm.State()
 	currentBlock := sm.blockchain.CurrentBlock().Number64()
 	highestBlock, peers := sm.p2p.Peers().BestPeers(sm.config.MinSyncPeers, currentBlock)
+
+	// Update sync metrics.
+	nodeMetrics.SyncHighestBlock.Set(highestBlock.Uint64())
+	if highestBlock.Uint64() > currentBlock.Uint64() {
+		nodeMetrics.SyncIsSyncing.Set(1)
+	} else {
+		nodeMetrics.SyncIsSyncing.Set(0)
+	}
 
 	// Not enough peers
 	if len(peers) < sm.config.MinSyncPeers {
