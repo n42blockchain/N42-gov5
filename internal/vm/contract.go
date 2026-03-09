@@ -191,11 +191,18 @@ func (c *Contract) Value() *uint256.Int {
 }
 
 // SetCallCode sets the code of the contract and address of the backing data
-// object
+// object. For EOF containers, it parses the EOF structure.
 func (c *Contract) SetCallCode(addr *types.Address, hash types.Hash, code []byte) {
 	c.Code = code
 	c.CodeHash = hash
 	c.CodeAddr = addr
+
+	// Parse EOF container if code starts with EOF magic
+	if IsEOF(code) {
+		if container, err := ParseEOF(code); err == nil {
+			c.EOFContainer = container
+		}
+	}
 }
 
 // SetCodeOptionalHash can be used to provide code, but it's optional to provide hash.
@@ -204,4 +211,11 @@ func (c *Contract) SetCodeOptionalHash(addr *types.Address, codeAndHash *codeAnd
 	c.Code = codeAndHash.code
 	c.CodeHash = codeAndHash.hash
 	c.CodeAddr = addr
+
+	// Parse EOF container if code starts with EOF magic
+	if IsEOF(codeAndHash.code) {
+		if container, err := ParseEOF(codeAndHash.code); err == nil {
+			c.EOFContainer = container
+		}
+	}
 }

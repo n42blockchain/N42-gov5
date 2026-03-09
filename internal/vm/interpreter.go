@@ -211,6 +211,20 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			Stack:    locStack,
 			Contract: contract,
 		}
+	)
+
+	// EOF: Initialize return stack and set code to section 0 for EOF contracts
+	if contract.EOFContainer != nil {
+		callContext.ReturnStack = stack.NewReturnStack()
+		defer stack.ReturnRStack(callContext.ReturnStack)
+		// Set code to the first code section
+		if section := contract.EOFContainer.GetCodeSection(0); section != nil {
+			contract.Code = section
+			contract.CodeSection = 0
+		}
+	}
+
+	var (
 		// For optimisation reason we're using uint64 as the program counter.
 		// It's theoretically possible to go above 2^64. The YP defines the PC
 		// to be uint256. Practically much less so feasible.
