@@ -16,6 +16,8 @@
 
 package conf
 
+import "fmt"
+
 const (
 	DefaultSnapPivotDistance   = 64
 	DefaultSnapMaxConcurrency = 16
@@ -37,4 +39,40 @@ type SnapSyncConfig struct {
 // IsEnabled returns true if snap sync is explicitly enabled.
 func (c *SnapSyncConfig) IsEnabled() bool {
 	return c.Enable
+}
+
+// Validate checks that configuration values are within acceptable ranges
+// and applies defaults where needed. Returns an error for invalid values.
+func (c *SnapSyncConfig) Validate() error {
+	if !c.Enable {
+		return nil
+	}
+	if c.PivotDistance == 0 {
+		c.PivotDistance = DefaultSnapPivotDistance
+	}
+	if c.PivotDistance > 256 {
+		return fmt.Errorf("snap sync: PivotDistance %d exceeds max 256", c.PivotDistance)
+	}
+	if c.MaxConcurrency == 0 {
+		c.MaxConcurrency = DefaultSnapMaxConcurrency
+	}
+	if c.MaxConcurrency > 64 {
+		return fmt.Errorf("snap sync: MaxConcurrency %d exceeds max 64", c.MaxConcurrency)
+	}
+	if c.MaxBytesPerReq == 0 {
+		c.MaxBytesPerReq = DefaultSnapMaxBytesPerReq
+	}
+	if c.MaxBytesPerReq < 64*1024 {
+		return fmt.Errorf("snap sync: MaxBytesPerReq %d below minimum 64KB", c.MaxBytesPerReq)
+	}
+	if c.MaxBytesPerReq > 8*1024*1024 {
+		return fmt.Errorf("snap sync: MaxBytesPerReq %d exceeds max 8MB", c.MaxBytesPerReq)
+	}
+	if c.MinSnapPeers == 0 {
+		c.MinSnapPeers = DefaultSnapMinPeers
+	}
+	if c.MinSnapPeers > 32 {
+		return fmt.Errorf("snap sync: MinSnapPeers %d exceeds max 32", c.MinSnapPeers)
+	}
+	return nil
 }
