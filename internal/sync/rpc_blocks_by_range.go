@@ -39,6 +39,19 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 		return err
 	}
 
+	// Check if requested range is within available history (EIP-4444).
+	if s.cfg.earliestBlock != nil {
+		earliest := s.cfg.earliestBlock()
+		if earliest > 0 {
+			startBlock := utils.ConvertH256ToUint256Int(m.StartBlockNumber).Uint64()
+			if startBlock < earliest {
+				reason := fmt.Sprintf("requested block %d is before earliest available block %d", startBlock, earliest)
+				s.writeErrorResponseToStream(responseCodeInvalidRequest, reason, stream)
+				return p2ptypes.ErrInvalidRequest
+			}
+		}
+	}
+
 	// Only process range requests with a step of 1.
 	if m.Step > 1 {
 		m.Step = 1

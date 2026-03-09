@@ -50,9 +50,10 @@ type validationFn func(ctx context.Context) (pubsub.ValidationResult, error)
 
 // config holds dependencies for the sync service.
 type config struct {
-	p2p         p2p.P2P
-	chain       common.IBlockChain
-	initialSync Checker
+	p2p            p2p.P2P
+	chain          common.IBlockChain
+	initialSync    Checker
+	earliestBlock  func() uint64 // returns earliest available block, 0 = all available
 }
 
 // Service is responsible for handling all runtime p2p related operations as the
@@ -168,6 +169,13 @@ func (s *Service) initCaches() {
 	if err != nil {
 		panic(fmt.Sprintf("failed to create seen block cache: %v", err))
 	}
+}
+
+// SetEarliestBlock sets the function that returns the earliest available block
+// number. P2P range requests for blocks before this number are rejected.
+// This must be called before Start.
+func (s *Service) SetEarliestBlock(fn func() uint64) {
+	s.cfg.earliestBlock = fn
 }
 
 // Checker defines an interface for verifying whether a node is currently

@@ -83,6 +83,7 @@ import (
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	statesnapshot "github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/utils"
@@ -127,8 +128,9 @@ type Node struct {
 	wsAuth        *httpServer
 	inprocHandler *jsonrpc.Server
 	rateLimiter   *jsonrpc.RateLimiter
-	pruner        *Pruner
-	snapshotMgr   *snapshot.Manager
+	pruner          *Pruner
+	historyExpirer  *HistoryExpirer
+	snapshotMgr     *snapshot.Manager
 
 	exexManager *exex.Manager // Execution Extensions manager
 
@@ -294,6 +296,18 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	exexMgr.Register(&extensions.LogExtension{})
 	if realBC, ok := bc.(*internal.BlockChain); ok {
 		realBC.SetExExManager(exexMgr)
+	}
+
+	// Initialize snapshot acceleration tree if configured.
+	if cfg.SnapshotAccelCfg.Enable {
+		if realBC, ok := bc.(*internal.BlockChain); ok {
+			cache := layered.ExtractCache(chainKv)
+			if cache != nil {
+				cur := realBC.CurrentBlock()
+				tree := statesnapshot.NewTree(cache, cur.Number64().Uint64(), cur.Hash(), cfg.SnapshotAccelCfg.MaxDiffLayers)
+				realBC.SetSnapshotTree(tree)
+			}
+		}
 	}
 
 	if cfg.ChainCfg.Apos != nil {
@@ -566,6 +580,18 @@ func (n *Node) Start() error {
 		n.is.Start()
 	})
 
+	// Start snapshot acceleration cache warmer if enabled.
+	if n.config.SnapshotAccelCfg.Enable && n.config.SnapshotAccelCfg.WarmupOnStart {
+		if cache := layered.ExtractCache(n.db); cache != nil {
+			warmer := statesnapshot.NewWarmer(n.db, cache, n.config.SnapshotAccelCfg.WarmupAccounts)
+			utils.SafeGo("snapshot-accel/warmup", func() {
+				if err := warmer.Warm(n.ctx); err != nil {
+					log.Warn("Snapshot acceleration warmup failed", "err", err)
+				}
+			})
+		}
+	}
+
 	// Start snapshot manager if enabled
 	if n.config.SnapshotCfg.Enable {
 		bp := &nodeBlockProvider{node: n}
@@ -582,6 +608,16 @@ func (n *Node) Start() error {
 		}
 		n.pruner = NewPruner(n.db, n.config.PruneCfg, hp, snap)
 		n.pruner.Start()
+	}
+
+	// Start history expirer if enabled (EIP-4444 style)
+	if n.config.HistoryExpiryCfg.IsEnabled() {
+		hp := &nodeHealthProvider{node: n}
+		n.historyExpirer = NewHistoryExpirer(n.db, n.config.HistoryExpiryCfg, hp)
+		n.historyExpirer.Start()
+		// Wire earliest-block gate into the sync service so that P2P range
+		// requests for expired blocks are rejected.
+		n.sync.SetEarliestBlock(n.historyExpirer.EarliestBlock)
 	}
 
 	// Start transaction generator if enabled
@@ -870,7 +906,14 @@ func (n *Node) stopServices() []error {
 			}
 			return nil
 		}},
-		// 3. Transaction generator
+		// 3b. History expirer
+		{"History expirer", func() error {
+			if n.historyExpirer != nil {
+				n.historyExpirer.Stop()
+			}
+			return nil
+		}},
+		// 3c. Transaction generator
 		{"Transaction generator", func() error {
 			if n.txGenerator != nil {
 				n.txGenerator.Stop()

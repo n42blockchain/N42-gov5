@@ -39,10 +39,10 @@
 | **Path-Based Storage (PBSS)** | ✅ v1.13+ 默认 | ✅ flat state | ✅ E3 扁平KV核心 | ❌ | ❌ | N/A | N/A | ❌ |
 | **Verkle Tree** | 🔧 Fusaka 已含 | 🔧 跟进中 | ❌ 未明确 | ❌ | ❌ | N/A | ❌ | ❌ 战略废弃 |
 | **State Pruning** | ✅ PBSS 在线裁剪 | ✅ 多模式 | ✅ archive/full/minimal | ✅ SeiDB | ✅ | N/A | ✅ | ✅ `pruner.go` |
-| **Snapshot / Flat State** | ✅ 完整快照层 | ✅ flat state 核心设计 | ✅ 不可变segment文件 | ✅ SeiDB SS | ✅ MonadDB | N/A | ✅ | ⚠️ 逻辑快照(1,340行) |
+| **Snapshot / Flat State** | ✅ 完整快照层 | ✅ flat state 核心设计 | ✅ 不可变segment文件 | ✅ SeiDB SS | ✅ MonadDB | N/A | ✅ | ✅ DiffLayer树+ShardedCache |
 | **Ancient/Freezer DB** | ✅ 5 表冷存储 | ✅ static files | ✅ segment+OtterSync | ❌ | ❌ | N/A | ✅ | ✅ P1-8 |
 | **State Expiry** | 🔧 2026 路线图 | 🔧 跟进中 | 🔧 EIP-4444 minimal模式 | ❌ | ❌ | N/A | ❌ | ❌ |
-| **History Expiry** | ✅ eth/69 支持 | ✅ | ✅ v3.1+ EIP-4444 phase1 | ❌ | ❌ | N/A | ❌ | ❌ |
+| **History Expiry** | ✅ eth/69 支持 | ✅ | ✅ v3.1+ EIP-4444 phase1 | ❌ | ❌ | N/A | ❌ | ✅ EIP-4444 |
 | **DB Inspection 工具** | ✅ | ✅ | ✅ diagnostics模块 | ❌ | ❌ | N/A | ✅ | ✅ P3-3 |
 | **Sparse Trie (内存缓存)** | ❌ | ✅ v1.2+ 核心优化 | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | **Per-TX 历史粒度** | ❌ per-block | ❌ per-block | ✅ E3 核心创新 | ❌ | ❌ | N/A | ❌ | ❌ |
@@ -414,8 +414,8 @@
 
 | 维度 | 权重 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |------|------|------|------|------------|-----|-------|-------|---------|
-| 状态管理 | 15% | 95 | 98 | 97 | 80 | 90 | 85 | 60 |
-| 同步机制 | 10% | 90 | 95 | 98 | 75 | 70 | 80 | 72 |
+| 状态管理 | 15% | 95 | 98 | 97 | 80 | 90 | 85 | 68 |
+| 同步机制 | 10% | 90 | 95 | 98 | 75 | 70 | 80 | 75 |
 | 执行层/EVM | 20% | 85 | 88 | 85 | 90 | 95 | 90* | 85 |
 | P2P 网络 | 10% | 95 | 90 | 92 | 80 | 80 | 75 | 82 |
 | 共识 | 10% | 90 | 90 | 93 | 85 | 95 | 90 | 75 |
@@ -425,7 +425,7 @@
 | 安全性 | 5% | 90 | 95 | 85 | 85 | 80 | 90 | 85 |
 | 可观测性 | 5% | 90 | 95 | 85 | 85 | 60 | 85 | 75 |
 | 扩展性 | 5% | 80 | 95 | 88 | 85 | 40 | 70 | 68 |
-| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **84** |
+| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **85** |
 
 > *Aptos 使用 Move VM，非直接可比
 
@@ -435,7 +435,7 @@
 
 | # | 缺失功能 | 影响 | 参考实现 | 预估工作量 |
 |---|----------|------|----------|-----------|
-| 1 | **Snapshot 加速层** | 状态读取性能差 10-50x | geth snapshot, reth flat state | 2-3 周 |
+| 1 | ~~**Snapshot 加速层**~~ | ✅ 已完成 — DiffLayer 树 + DiskLayer + SnapshotStateReader + 启动缓存预热 + DiffCollector + 指标, 18 测试 | - | - |
 | 2 | ~~**Bloom Bits 索引**~~ | ✅ 已完成 — LogTopicIndex/LogAddressIndex roaring bitmap + indexedLogs 集成, 3 测试 | - | - |
 | 3 | ~~**Panic Recovery 全覆盖**~~ | ✅ 已完成 — SafeGo 工具 + 8 处关键 goroutine 修复 | - | - |
 | 4 | ~~**Fuzzing 测试基础设施**~~ | ✅ 已完成 — 29 fuzz 函数(RLP/ABI/SSZ/EVM Precompile), 4 文件 | - | - |
@@ -466,7 +466,7 @@
 | # | 缺失功能 | 影响 | 参考实现 | 预估工作量 |
 |---|----------|------|----------|-----------|
 | 16 | **State Expiry** | 状态膨胀长期无解 | 以太坊 Hegotá | 研究阶段 |
-| 17 | **History Expiry (eth/69)** | 无法裁剪历史数据 | geth v1.16 | 2 周 |
+| 17 | ~~**History Expiry (eth/69)**~~ | ✅ 已完成 — HistoryExpirer 后台引擎 + P2P 门控 + DB accessors + 配置, 8 测试 | - | - |
 | 18 | **Async I/O (io_uring)** | I/O 密集场景性能受限 | Monad | 4-6 周 |
 | 19 | **JIT/AOT EVM** | 热合约执行慢 | reth revmc | 研究阶段 |
 | 20 | **Portal Network** | 无轻客户端去中心化支持 | geth portal | 研究阶段 |
@@ -604,6 +604,8 @@
 | **DB CLI 工具** | `cmd/n42/dbcmd.go` | 289 | - | ✅ 完整 | stats/list/get/inspect 四命令 |
 | **Chain Import/Export** | `cmd/n42/chaincmd.go` | 252 | - | ✅ 完整 | protobuf 格式，批量导入 |
 | **State Export** | `cmd/n42/statecmd.go` | 203 | - | ✅ 完整 | JSON 流式输出，含 storage/code 选项 |
+| **Snapshot 加速层** | `modules/state/snapshot/` | ~960 | 18 | ✅ 生产可用 | DiffLayer 树+DiskLayer+SnapshotStateReader+DiffCollector+Warmer+指标 |
+| **History Expiry** | `internal/node/history_expiry.go` + `modules/rawdb/accessors_history.go` | ~360 | 8 | ✅ 生产可用 | EIP-4444 风格过期+P2P 门控+批量限制+持久化 EarliestBlock |
 
 ### C.2 关键风险点
 
@@ -626,7 +628,7 @@
 | EVM 兼容性 | Cancun ✅, 大部分 Pectra (7702/BLS/P-256/EOF) | Cancun+Pectra 完整 | Cancun+Pectra+Fusaka | 小幅差距（deposits/MaxEB 部分） |
 | 并行执行 | Block-STM 实测 3.9x 加速(M1 Max) | geth 无并行，reth prewarming | 实验性并行 | N42 领先(数据验证), 高冲突场景需 DAG 优化 |
 | 同步机制 | Snap Sync 完整 | 成熟 | Staged Sync+OtterSync 最快 | 中等差距（无 Staged Sync） |
-| 状态存储 | MDBX flat + LayeredDB(关闭) | PBSS/flat state 成熟 | E3 三层+segment(archive 1.6TB) | **重大差距**（磁盘占用/历史查询） |
+| 状态存储 | MDBX flat + LayeredDB + Snapshot DiffLayer 树 + History Expiry | PBSS/flat state 成熟 | E3 三层+segment(archive 1.6TB) | 中等差距（有加速层和过期，无 per-TX 粒度） |
 | 可观测性 | 30+ 指标 + 3 Grafana 面板 | 200-300+ 全面指标 | Prometheus+Grafana+diagnostics | 中等差距 |
 | 测试覆盖 | snap sync 51, parallel 30, fuzz 29, checkpoint 8 | 数千测试 + fuzzing | hive+执行规范测试 | 中等差距(fuzz已有) |
 | 模块化部署 | 单体二进制 | 单体(geth)/crate(reth) | RPC/TxPool/Sentry/CL 独立进程 | **重大差距** |

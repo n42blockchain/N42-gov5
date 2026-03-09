@@ -47,7 +47,7 @@ func TestPruner_MaybePrune_SkipsWhenNotEnoughHistory(t *testing.T) {
 	}
 	hp := &staticBlockProvider{block: 50} // less than retention
 
-	pruner := NewPruner(db, config, hp)
+	pruner := NewPruner(db, config, hp, nil)
 	pruner.maybePrune()
 
 	// Should not have pruned (currentBlock < retention)
@@ -66,7 +66,7 @@ func TestPruner_MaybePrune_SkipsWhenIntervalNotReached(t *testing.T) {
 	}
 	hp := &staticBlockProvider{block: 200}
 
-	pruner := NewPruner(db, config, hp)
+	pruner := NewPruner(db, config, hp, nil)
 	pruner.lastPrunedBlock = 195 // only 5 blocks since last prune
 
 	pruner.maybePrune()
@@ -102,7 +102,7 @@ func TestPruner_PruneChangeSets(t *testing.T) {
 	}
 	hp := &staticBlockProvider{block: 200}
 
-	pruner := NewPruner(db, config, hp)
+	pruner := NewPruner(db, config, hp, nil)
 	pruner.maybePrune()
 
 	if pruner.lastPrunedBlock != 200 {
@@ -175,7 +175,7 @@ func TestPruner_PruneReceipts(t *testing.T) {
 	}
 	hp := &staticBlockProvider{block: 100}
 
-	pruner := NewPruner(db, config, hp)
+	pruner := NewPruner(db, config, hp, nil)
 	pruner.maybePrune()
 
 	// pruneTo = 100 - 20 = 80, so blocks 1-79 pruned, 80-100 remain
@@ -228,7 +228,7 @@ func TestPruner_NoReceiptPruneByDefault(t *testing.T) {
 	}
 	hp := &staticBlockProvider{block: 50}
 
-	pruner := NewPruner(db, config, hp)
+	pruner := NewPruner(db, config, hp, nil)
 	pruner.maybePrune()
 
 	// Receipts should all remain
@@ -266,7 +266,7 @@ func TestPruner_MaybePrune_SkipsAfterReorg(t *testing.T) {
 	// Simulate reorg: current block went backward
 	hp := &staticBlockProvider{block: 150}
 
-	pruner := NewPruner(db, config, hp)
+	pruner := NewPruner(db, config, hp, nil)
 	pruner.lastPrunedBlock = 200 // was higher before reorg
 
 	pruner.maybePrune()
@@ -287,7 +287,7 @@ func TestPruner_StartStop(t *testing.T) {
 	}
 	hp := &staticBlockProvider{block: 0}
 
-	pruner := NewPruner(db, config, hp)
+	pruner := NewPruner(db, config, hp, nil)
 	pruner.Start()
 	pruner.Stop() // should not hang
 }
