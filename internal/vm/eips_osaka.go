@@ -312,8 +312,19 @@ func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 		length     = scope.Stack.Pop()
 	)
 
+	if length.IsZero() {
+		return nil, nil
+	}
+
+	len64 := length.Uint64()
+
 	container := scope.Contract.EOFContainer
-	if container == nil || length.IsZero() {
+	if container == nil {
+		// No data section: write zeros
+		padded := make([]byte, len64)
+		if err := scope.Memory.Set(memOffset.Uint64(), len64, padded); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 
@@ -323,14 +334,16 @@ func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 		dataOff64 = uint64(len(data))
 	}
 
-	len64 := length.Uint64()
 	end := dataOff64 + len64
 	if end > uint64(len(data)) {
 		end = uint64(len(data))
 	}
 
-	// Copy data to memory
-	if err := scope.Memory.Set(memOffset.Uint64(), len64, data[dataOff64:end]); err != nil {
+	// Zero-pad if data source is shorter than requested length
+	padded := make([]byte, len64)
+	copy(padded, data[dataOff64:end])
+
+	if err := scope.Memory.Set(memOffset.Uint64(), len64, padded); err != nil {
 		return nil, err
 	}
 	return nil, nil
@@ -412,6 +425,11 @@ func opEXCHANGE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 // opEOFCREATE implements EOFCREATE (0xEC) - create contract from EOF container
 // Stack: [value, salt, dataOffset, dataSize] => [address]
 func opEOFCREATE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	// Reject in static context
+	if interpreter.readOnly {
+		return nil, ErrWriteProtection
+	}
+
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+1 >= uint64(len(code)) {
@@ -457,18 +475,25 @@ func opEOFCREATE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 		initCode = fullCode
 	}
 
-	// Use gas for contract creation
+	// EIP-150: reserve 1/64 of gas, deduct from contract
 	gas := scope.Contract.Gas
-	gas = gas - gas/64 // EIP-150: reserve 1/64 of gas
+	gas -= gas / 64
+	scope.Contract.UseGas(gas)
 
 	// Call Create2 with salt for deterministic address
-	ret, addr, returnGas, err := interpreter.evm.Create2(scope.Contract, initCode, gas, &value, &salt)
-	scope.Contract.Gas += returnGas
+	res, addr, returnGas, suberr := interpreter.evm.Create2(scope.Contract, initCode, gas, &value, &salt)
 
-	if err != nil || len(ret) == 0 {
+	if suberr != nil {
 		scope.Stack.Push(new(uint256.Int))
 	} else {
 		scope.Stack.Push(new(uint256.Int).SetBytes(addr.Bytes()))
+	}
+	scope.Contract.Gas += returnGas
+
+	if suberr == ErrExecutionReverted {
+		interpreter.returnData = res
+	} else {
+		interpreter.returnData = nil
 	}
 
 	*pc++ // Skip immediate
@@ -507,7 +532,7 @@ func opRETURNCONTRACT(pc *uint64, interpreter *EVMInterpreter, scope *ScopeConte
 		auxData = scope.Memory.GetCopy(int64(off64), int64(size64))
 	}
 
-	// Build final deploy code with auxiliary data appended
+	// Build final deploy code (copy to avoid mutating container data)
 	if len(auxData) > 0 {
 		result := make([]byte, len(deployCode)+len(auxData))
 		copy(result, deployCode)
@@ -515,7 +540,9 @@ func opRETURNCONTRACT(pc *uint64, interpreter *EVMInterpreter, scope *ScopeConte
 		return result, errStopToken
 	}
 
-	return deployCode, errStopToken
+	result := make([]byte, len(deployCode))
+	copy(result, deployCode)
+	return result, errStopToken
 }
 
 // opRETURNDATALOAD implements RETURNDATALOAD (0xF7) - load 32 bytes from return data
@@ -525,8 +552,7 @@ func opRETURNDATALOAD(pc *uint64, interpreter *EVMInterpreter, scope *ScopeConte
 
 	returnData := interpreter.returnData
 	if !offset.IsUint64() || off64+32 > uint64(len(returnData)) {
-		offset.Clear()
-		return nil, nil
+		return nil, ErrReturnDataOutOfBounds
 	}
 
 	offset.SetBytes32(returnData[off64 : off64+32])
