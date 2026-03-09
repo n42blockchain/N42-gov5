@@ -470,8 +470,8 @@ type AccessTuple struct {
 }
 
 // CreateAccessList creates an EIP-2930 type AccessList for the given transaction.
-// Note: This is a simplified implementation that returns an empty access list.
-// Full implementation requires compatible AccessListTracer interface.
+// It iteratively executes the transaction with an AccessListTracer, collecting
+// touched addresses and storage slots until the access list stabilizes.
 func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionArgs, blockNrOrHash *jsonrpc.BlockNumberOrHash) (*AccessListResult, error) {
 	// Set default block
 	bNrOrHash := jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.PendingBlockNumber)
@@ -502,17 +502,6 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 		return nil, errors.New("invalid header type")
 	}
 
-	// Get state
-	var ibs *state.IntraBlockState
-	err = s.api.Database().View(ctx, func(t kv.Tx) error {
-		stateReader := state.NewPlainState(t, header.Number64().Uint64())
-		ibs = state.New(stateReader)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	// Create message
 	if err := args.setDefaults(ctx, s.api); err != nil {
 		return nil, err
@@ -522,26 +511,101 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 		return nil, err
 	}
 
-	// Set up EVM without tracer for gas estimation
-	vmConfig := vm.Config{NoBaseFee: true}
-	txContext := internal.NewEVMTxContext(msg)
-	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), s.api.engine, nil)
-	evm := vm.NewEVM(blockContext, txContext, ibs, s.api.GetChainConfig(), vmConfig)
-
-	// Execute to get gas used
-	gp := new(common.GasPool).AddGas(header.GasLimit)
-	result, err := internal.ApplyMessage(evm, msg, gp, true, false)
-	if err != nil {
-		return &AccessListResult{Error: err.Error()}, nil
+	// Determine sender and destination for exclusion
+	from := msg.From()
+	to := types.Address{}
+	if msg.To() != nil {
+		to = *msg.To()
 	}
 
-	// Return empty access list with gas used
-	// TODO: Implement full access list generation when AccessListTracer is compatible
-	emptyList := make(AccessList, 0)
-	return &AccessListResult{
-		Accesslist: &emptyList,
-		GasUsed:    hexutil.Uint64(result.UsedGas),
-	}, nil
+	// Get active precompiles for exclusion
+	chainConfig := s.api.GetChainConfig()
+	rules := chainConfig.Rules(header.Number64().Uint64())
+	precompiles := vm.ActivePrecompiles(rules)
+
+	// Start with the provided access list (if any)
+	prevAccessList := msg.AccessList()
+
+	// Iteratively run the transaction with tracer, collecting access list
+	// until it stabilizes (max 10 iterations to prevent infinite loops)
+	var (
+		gasUsed    uint64
+		execErr    string
+		resultList transaction.AccessList
+	)
+
+	for i := 0; i < 10; i++ {
+		// Get fresh state for each iteration
+		var ibs *state.IntraBlockState
+		err = s.api.Database().View(ctx, func(t kv.Tx) error {
+			stateReader := state.NewPlainState(t, header.Number64().Uint64())
+			ibs = state.New(stateReader)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// Create tracer with current access list
+		tracer := logger.NewAccessListTracer(prevAccessList, from, to, precompiles)
+
+		// Set up EVM with tracer
+		vmConfig := vm.Config{
+			Debug:     true,
+			Tracer:    tracer,
+			NoBaseFee: true,
+		}
+		txContext := internal.NewEVMTxContext(msg)
+		blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), s.api.engine, nil)
+		evm := vm.NewEVM(blockContext, txContext, ibs, chainConfig, vmConfig)
+
+		// Execute transaction
+		gp := new(common.GasPool).AddGas(header.GasLimit)
+		result, execError := internal.ApplyMessage(evm, msg, gp, true, false)
+		if execError != nil {
+			return &AccessListResult{Error: execError.Error()}, nil
+		}
+
+		gasUsed = result.UsedGas
+		if result.Err != nil {
+			execErr = result.Err.Error()
+		} else {
+			execErr = ""
+		}
+
+		// Get the access list collected by the tracer
+		newAccessList := tracer.AccessList()
+
+		// Check if access list has stabilized
+		newTracer := logger.NewAccessListTracer(newAccessList, from, to, precompiles)
+		prevTracer := logger.NewAccessListTracer(prevAccessList, from, to, precompiles)
+		if prevTracer.Equal(newTracer) {
+			resultList = newAccessList
+			break
+		}
+
+		// Use new access list for next iteration
+		prevAccessList = newAccessList
+		resultList = newAccessList
+	}
+
+	// Convert to API result type
+	apiList := make(AccessList, len(resultList))
+	for i, tuple := range resultList {
+		apiList[i] = AccessTuple{
+			Address:     tuple.Address,
+			StorageKeys: tuple.StorageKeys,
+		}
+	}
+
+	result := &AccessListResult{
+		Accesslist: &apiList,
+		GasUsed:    hexutil.Uint64(gasUsed),
+	}
+	if execErr != "" {
+		result.Error = execErr
+	}
+	return result, nil
 }
 
 // =============================================================================
