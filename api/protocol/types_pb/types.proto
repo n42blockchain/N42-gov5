@@ -86,6 +86,9 @@ message Header {
   H768 Signature = 14;
   H2048 Bloom = 15;
   H256 MixDigest = 16;
+  // EIP-4844 blob gas fields (Cancun fork)
+  uint64 BlobGasUsed = 17;
+  uint64 ExcessBlobGas = 18;
 }
 
 message Verifier {

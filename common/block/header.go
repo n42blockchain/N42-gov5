@@ -69,6 +69,10 @@ type Header struct {
 
 	BaseFee *uint256.Int `json:"baseFeePerGas" rlp:"optional"`
 
+	// EIP-4844 blob gas fields (Cancun fork)
+	BlobGasUsed   uint64 `json:"blobGasUsed,omitempty"`
+	ExcessBlobGas uint64 `json:"excessBlobGas,omitempty"`
+
 	hash atomic.Value
 
 	Signature types.Signature `json:"signature"`
@@ -111,22 +115,24 @@ func (h Header) Hash() types.Hash {
 
 func (h *Header) ToProtoMessage() proto.Message {
 	return &types_pb.Header{
-		ParentHash:  utils.ConvertHashToH256(h.ParentHash),
-		Coinbase:    utils.ConvertAddressToH160(h.Coinbase),
-		Root:        utils.ConvertHashToH256(h.Root),
-		TxHash:      utils.ConvertHashToH256(h.TxHash),
-		ReceiptHash: utils.ConvertHashToH256(h.ReceiptHash),
-		Difficulty:  utils.ConvertUint256IntToH256(h.Difficulty),
-		Number:      utils.ConvertUint256IntToH256(h.Number),
-		GasLimit:    h.GasLimit,
-		GasUsed:     h.GasUsed,
-		Time:        h.Time,
-		Nonce:       h.Nonce.Uint64(),
-		BaseFee:     utils.ConvertUint256IntToH256(h.BaseFee),
-		Extra:       h.Extra,
-		Signature:   utils.ConvertSignatureToH768(h.Signature),
-		Bloom:       utils.ConvertBytesToH2048(h.Bloom.Bytes()),
-		MixDigest:   utils.ConvertHashToH256(h.MixDigest),
+		ParentHash:    utils.ConvertHashToH256(h.ParentHash),
+		Coinbase:      utils.ConvertAddressToH160(h.Coinbase),
+		Root:          utils.ConvertHashToH256(h.Root),
+		TxHash:        utils.ConvertHashToH256(h.TxHash),
+		ReceiptHash:   utils.ConvertHashToH256(h.ReceiptHash),
+		Difficulty:    utils.ConvertUint256IntToH256(h.Difficulty),
+		Number:        utils.ConvertUint256IntToH256(h.Number),
+		GasLimit:      h.GasLimit,
+		GasUsed:       h.GasUsed,
+		Time:          h.Time,
+		Nonce:         h.Nonce.Uint64(),
+		BaseFee:       utils.ConvertUint256IntToH256(h.BaseFee),
+		Extra:         h.Extra,
+		Signature:     utils.ConvertSignatureToH768(h.Signature),
+		Bloom:         utils.ConvertBytesToH2048(h.Bloom.Bytes()),
+		MixDigest:     utils.ConvertHashToH256(h.MixDigest),
+		BlobGasUsed:   h.BlobGasUsed,
+		ExcessBlobGas: h.ExcessBlobGas,
 	}
 }
 
@@ -152,6 +158,8 @@ func (h *Header) FromProtoMessage(message proto.Message) error {
 	h.Signature = utils.ConvertH768ToSignature(pbHeader.Signature)
 	h.Bloom = utils.ConvertH2048ToBloom(pbHeader.Bloom)
 	h.MixDigest = utils.ConvertH256ToHash(pbHeader.MixDigest)
+	h.BlobGasUsed = pbHeader.BlobGasUsed
+	h.ExcessBlobGas = pbHeader.ExcessBlobGas
 	return nil
 }
 
