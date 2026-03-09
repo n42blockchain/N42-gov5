@@ -1,8 +1,9 @@
 # N42 全局功能缺失深度对比分析
 
 > 对比对象：go-ethereum (geth) v1.16+、reth v1.11+、Sei v2/v3、Monad、Grevm 2.1、Aptos
-> 分析日期：2026-03-09
+> 分析日期：2026-03-09（修订：基于源码审计校正 N42 标注）
 > 范围：以太坊及高性能公链客户端全局功能模块
+> 方法：N42 数据基于源码审计（行数/测试覆盖/集成状态），竞品数据标注来源（官方文档/白皮书/宣称）
 
 ---
 
@@ -24,6 +25,7 @@
 - [十四、性能工程](#十四性能工程)
 - [十五、跨链与互操作性](#十五跨链与互操作性)
 - [十六、综合评分与优先级建议](#十六综合评分与优先级建议)
+- [附录 C：N42 源码审计摘要](#附录-cn42-源码审计摘要)
 
 ---
 
@@ -37,7 +39,7 @@
 | **Path-Based Storage (PBSS)** | ✅ v1.13+ 默认 | ✅ flat state | ❌ | ❌ | N/A | N/A | ❌ |
 | **Verkle Tree** | 🔧 Fusaka 已含 | 🔧 跟进中 | ❌ | ❌ | N/A | ❌ | ❌ |
 | **State Pruning** | ✅ PBSS 在线裁剪 | ✅ 多模式 | ✅ SeiDB | ✅ | N/A | ✅ | ✅ `pruner.go` |
-| **Snapshot / Flat State** | ✅ 完整快照层 | ✅ flat state 核心设计 | ✅ SeiDB SS | ✅ MonadDB | N/A | ✅ | ⚠️ 逻辑快照 |
+| **Snapshot / Flat State** | ✅ 完整快照层 | ✅ flat state 核心设计 | ✅ SeiDB SS | ✅ MonadDB | N/A | ✅ | ⚠️ 逻辑快照(1,340行) |
 | **Ancient/Freezer DB** | ✅ 5 表冷存储 | ✅ static files | ❌ | ❌ | N/A | ✅ | ✅ P1-8 |
 | **State Expiry** | 🔧 2026 路线图 | 🔧 跟进中 | ❌ | ❌ | N/A | ❌ | ❌ |
 | **History Expiry** | ✅ eth/69 支持 | ✅ | ❌ | ❌ | N/A | ❌ | ❌ |
@@ -50,7 +52,7 @@
 
 **Verkle Tree**：以太坊 Fusaka (2025.12.3 主网激活) 硬分叉已部分引入 Verkle Tree，geth v1.16.7 支持。Verkle tree 将 proof 大小从 ~4KB 降至 ~150B，是实现无状态客户端的关键。Glamsterdam (2026 H1) 将完善 Verkle 迁移。N42 使用增量 Keccak 方案，无法生成标准以太坊兼容的 Verkle proof。
 
-**Snapshot Layer**：geth 的 snapshot 层提供 O(1) 状态读取（非遍历 trie），reth 的 flat state 设计从一开始就内建此能力。N42 的 `internal/snapshot/manager.go` 仅提供逻辑快照点（用于裁剪恢复），不是性能加速层。
+**Snapshot Layer**：geth 的 snapshot 层提供 O(1) 状态读取（非遍历 trie），reth 的 flat state 设计从一开始就内建此能力。N42 的 `internal/snapshot/` (manager.go 252行 + compress.go 195行 + types.go 等，共约 1,340 行代码，4 个测试) 实现了生产级逻辑快照（快照创建/恢复/清理/压缩），但其定位是裁剪恢复点 + P2P 传输压缩，不等同于 geth 的性能加速层。N42 的 MDBX key=address 本身提供了接近 flat state 的读取性能。
 
 **Sparse Trie**：reth v1.11 的核心优化，将 state root 计算延迟降低 25-27%，吞吐量提升 33%（700M→1G gas/s）。通过跨 payload 复用内存中的 trie 节点，避免每次重建。
 
@@ -108,10 +110,10 @@
 | **EIP-7516 (BLOBBASEFEE)** | ✅ | ✅ | ❌ | ✅ | ✅ | Blob 基础费 |
 | **EIP-3855 (PUSH0)** | ✅ | ✅ | ✅ | ✅ | ✅ | 零值推入 |
 | **EIP-7702 (Pectra AA)** | ✅ | ✅ | ❌ | 🔧 | ✅ | 委托账户代码 |
-| **EIP-2537 (BLS12-381)** | ✅ | ✅ | ❌ | 🔧 | ✅ | BLS 预编译 |
+| **EIP-2537 (BLS12-381)** | ✅ | ✅ | ❌ | 🔧 | ❌ 仅地址常量 | BLS 预编译 |
 | **EOF (EVM Object Format)** | 🔧 Glamsterdam | 🔧 | ❌ | ❌ | ✅ | N42 已提前实现 |
 | **EIP-7212 (P-256)** | ✅ Pectra | ✅ | ❌ | 🔧 | ✅ | secp256r1 验证 |
-| **ERC-4337 (AA)** | 部分 | 部分 | ❌ | ❌ | ✅ pre-Pectra | 账户抽象 |
+| **ERC-4337 (AA)** | 部分 | 部分 | ❌ | ❌ | ⚠️ 仅 helpers | 账户抽象 |
 | **PeerDAS** | ✅ Fusaka | ✅ | ❌ | ❌ | ❌ | 数据可用性采样 |
 
 ### 3.3 关键差距
@@ -283,7 +285,7 @@
 
 | 功能 | geth | reth | Sei | Monad | Aptos | **N42** |
 |------|------|------|-----|-------|-------|---------|
-| **Prometheus Metrics** | ✅ 200+ | ✅ 300+ | ✅ | ✅ | ✅ | ✅ P1-10 |
+| **Prometheus Metrics** | ✅ 200+ | ✅ 300+ | ✅ | ✅ | ✅ | ⚠️ 20指标(9项死代码) |
 | **OpenTelemetry** | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | **Grafana Dashboard** | ✅ 官方模板 | ✅ 官方模板 | ✅ | ❌ | ✅ | ❌ |
 | **结构化事件日志** | ✅ | ✅ | ✅ | ✅ | ✅ | 部分 |
@@ -294,6 +296,8 @@
 ### 关键差距
 
 **Grafana Dashboard 模板**：geth 和 reth 都提供开箱即用的 Grafana 面板配置。N42 有 Prometheus 指标但缺乏预配置面板，运维人员需要自行搭建。
+
+**N42 Metrics 审计备注**：`system_metrics.go` 有 11 个 Go runtime 指标（goroutines/内存/GC 等）实际在收集；`chain_metrics.go` 定义了 9 个链指标（SyncCurrentBlock/DBReadBytes/FreezerBlocks 等），但仅 `SyncCurrentBlock` 被实际调用，其余 8 项为死代码，未在任何执行路径中递增。总共约 20 个指标，远低于 geth(200+) 和 reth(300+)。
 
 **OpenTelemetry**：分布式追踪标准，reth、Sei、Aptos 均已集成。对于多节点部署的问题诊断至关重要。
 
@@ -327,7 +331,7 @@
 
 | 升级 | 时间 | 关键 EIP | N42 状态 |
 |------|------|----------|----------|
-| **Pectra** | 2025.5.7 | 7702(AA), 2537(BLS), 6110(deposits), 7623(calldata cost) | ✅ 大部分已实现 |
+| **Pectra** | 2025.5.7 | 7702(AA), 2537(BLS), 6110(deposits), 7623(calldata cost) | ⚠️ 7702✅ 2537❌stub 6110⚠️解析 |
 | **Fusaka** | 2025.12.3 | PeerDAS(7594), Verkle Tree, 7825(tx gas limit 16.78M), Gas↑150M | ❌ 缺失 PeerDAS/Verkle |
 | BPO1/BPO2 | 2025.12.9 / 2026.1.7 | Blob 参数调整（target 3→6, max 6→9） | ❌ |
 | **Glamsterdam** | 2026 H1 | EOF(7692) 完整版, 更快出块(6s), MEV 改革 | ✅ EOF 已提前实现 |
@@ -337,7 +341,7 @@
 
 | 趋势 | Monad | Sei v3/Giga | Aptos | Grevm 2.1 | **N42** |
 |------|-------|-------------|-------|-----------|---------|
-| **TPS 目标** | 10,000 | 200,000 (Giga 5 gigagas/s) | 250,000 (Raptr) | 100,000+ (目标) | ❌ 未测 |
+| **TPS 目标** | 10,000 (宣称) | 200,000 (Giga宣称) | 250,000 (Raptr宣称) | 100,000+ (宣称) | ❌ 未测 |
 | **亚秒级 Finality** | ✅ ~800ms | ✅ ~400ms 即时 | ✅ <800ms (Raptr) | N/A | ❌ 8s period |
 | **延迟/异步执行** | ✅ 核心 | ✅ Giga 采用 | ✅ | ❌ | ❌ |
 | **自定义数据库** | ✅ MonadDB (io_uring) | ✅ SeiDB (SS+SC) | ✅ AptosDB (JMT) | ❌ | ❌ MDBX |
@@ -390,16 +394,16 @@
 |------|------|------|------|-----|-------|-------|---------|
 | 状态管理 | 15% | 95 | 98 | 80 | 90 | 85 | 60 |
 | 同步机制 | 10% | 90 | 95 | 75 | 70 | 80 | 65 |
-| 执行层/EVM | 20% | 85 | 88 | 90 | 95 | 90* | 80 |
+| 执行层/EVM | 20% | 85 | 88 | 90 | 95 | 90* | 68 |
 | P2P 网络 | 10% | 95 | 90 | 80 | 80 | 75 | 70 |
 | 共识 | 10% | 90 | 90 | 85 | 95 | 90 | 75 |
 | RPC API | 10% | 95 | 95 | 60 | 70 | 60 | 80 |
 | 交易池 | 5% | 90 | 90 | 85 | 85 | 70 | 85 |
 | 工具链 | 5% | 95 | 70 | 50 | 30 | 60 | 75 |
-| 安全性 | 5% | 90 | 95 | 85 | 80 | 90 | 80 |
-| 可观测性 | 5% | 90 | 95 | 85 | 60 | 85 | 55 |
+| 安全性 | 5% | 90 | 95 | 85 | 80 | 90 | 75 |
+| 可观测性 | 5% | 90 | 95 | 85 | 60 | 85 | 40 |
 | 扩展性 | 5% | 80 | 95 | 85 | 40 | 70 | 30 |
-| **加权总分** | 100% | **91** | **93** | **80** | **81** | **81** | **71** |
+| **加权总分** | 100% | **91** | **93** | **80** | **81** | **81** | **66** |
 
 > *Aptos 使用 Move VM，非直接可比
 
@@ -450,9 +454,9 @@
 | 优势 | 说明 | 竞争对手状态 |
 |------|------|-------------|
 | **PQ-STARK 后量子签名** | 已集成到 APoS 共识 | 以太坊 2026 才开始研究 |
-| **Block-STM 并行 EVM** | Wave executor 完整实现 | geth 无，reth 仅 prewarming |
+| **Block-STM 并行 EVM** | Wave executor 524行+23测试，无基准测试 | geth 无，reth 仅 prewarming |
 | **EOF 提前实现** | EIP-3540/3670/4200/4750/5450 完整 | geth/reth 计划 Glamsterdam |
-| **Pectra EIP 完整支持** | 7702/2537/6110/7069/7742 | 与 geth/reth 同步 |
+| **Pectra EIP 部分支持** | 7702✅完整, 7212✅P-256, 2537❌stub, 6110⚠️解析, 7251⚠️常量 | geth/reth 完整实现 |
 | **LayeredDB 分层存储** | State DB + History DB 分离 | 类似 reth 架构理念 |
 | **MDBX 高性能存储** | memory-mapped B+tree | 与 reth 相同选择 |
 
@@ -532,3 +536,52 @@
 - `docs/POST_QUANTUM_UPGRADE_PLAN.md` — PQ 密码学升级路线
 - `docs/ETH_EL_TEST_PLAN.md` — 以太坊执行层测试计划
 - `docs/SECURITY_AUDIT_REPORT.md` — 安全审计报告
+
+---
+
+## 附录 C：N42 源码审计摘要
+
+> 审计日期：2026-03-09，方法：逐文件阅读源码，统计代码行数、测试数量、集成状态
+
+### C.1 功能实现状态（按源码验证）
+
+| 功能模块 | 核心文件 | 代码行数 | 测试数 | 实际状态 | 备注 |
+|----------|----------|----------|--------|----------|------|
+| **State Pruning** | `internal/node/pruner.go` | 235 | 7 | ✅ 生产可用 | 真实数据删除，快照感知边界 |
+| **Logical Snapshots** | `internal/snapshot/manager.go` + `compress.go` | ~450 | 4 | ✅ 生产可用 | 非 geth 式性能加速层，用于裁剪恢复点 |
+| **Snap Sync** | `internal/sync/snapsync/` | ~4,274 | 51 | ✅ 生产可用 | 完整实现：service+manager+tasks+verify+progress+metrics |
+| **Block-STM** | `internal/parallel/` | ~524 | 23 | ⚠️ 算法完整 | Wave executor+MVS 完整，但 **无基准测试、无真实 EVM 集成测试** |
+| **State Prefetch** | `internal/prefetcher.go` | ~150 | - | ✅ 集成 | ShardedCache 预加载 sender/recipient/access-list |
+| **Ancient/Freezer** | `modules/rawdb/freezer/` | ~800 | - | ✅ 默认关闭 | 5 表冷存储，`ancient_db: true` 启用 |
+| **LayeredDB** | `lib/kv/layered/` | ~1,200 | - | ✅ 默认关闭 | ShardedCache + LayeredDB 分层 |
+| **TX Pool Journal** | `internal/txspool/journal.go` | ~200 | - | ✅ 生产可用 | flushToDB/loadFromDB，集成到 Start/Stop |
+| **EOF (EVM Object Format)** | `internal/vm/eof.go` | 509 | 有 | ✅ 完整实现 | EIP-3540/3670/4200/4750/5450 |
+| **EIP-7702 (Delegation)** | `internal/vm/eips_pectra.go` | ~200 | - | ✅ 完整实现 | 委托账户代码设置 |
+| **EIP-2537 (BLS)** | `internal/vm/eips_pectra.go` | ~50 | 0 | ❌ **Stub** | **仅预编译地址常量，零加密逻辑，调用会静默失败** |
+| **EIP-6110 (Deposits)** | `internal/vm/eips_pectra.go` | ~80 | - | ⚠️ 解析器 | 仅日志解析，无完整 deposit 处理流程 |
+| **EIP-7251 (MaxEB)** | `internal/vm/eips_pectra.go` | ~30 | 0 | ⚠️ 常量 | 仅常量定义 |
+| **ERC-4337 (AA)** | `internal/vm/erc4337.go` | 362 | 0 | ⚠️ Helpers | UserOperation 结构 + gas helpers，**无 EntryPoint、无 bundler、无签名验证** |
+| **P-256 Verify** | `internal/vm/contracts_p256.go` | 276 | - | ✅ 完整实现 | secp256r1 verify + recover |
+| **Cancun EIPs** | `internal/vm/eips_cancun.go` | 251 | - | ✅ 完整实现 | TLOAD/TSTORE/MCOPY/BLOBHASH/BLOBBASEFEE |
+| **System Metrics** | `internal/metrics/system_metrics.go` | ~150 | - | ✅ 实际收集 | 11 指标：goroutines/内存/GC/CPU |
+| **Chain Metrics** | `internal/metrics/chain_metrics.go` | ~100 | 0 | ❌ 死代码 | 9 指标定义但 **仅 SyncCurrentBlock 被调用**，其余 8 项未接入 |
+| **DB CLI 工具** | `cmd/n42/dbcmd.go` | 289 | - | ✅ 完整 | stats/list/get/inspect 四命令 |
+| **Chain Import/Export** | `cmd/n42/chaincmd.go` | 252 | - | ✅ 完整 | protobuf 格式，批量导入 |
+| **State Export** | `cmd/n42/statecmd.go` | 203 | - | ✅ 完整 | JSON 流式输出，含 storage/code 选项 |
+
+### C.2 关键风险点
+
+1. **EIP-2537 BLS 预编译为空壳**：`eips_pectra.go` 中仅注册了 9 个 BLS 预编译地址（0x0b~0x13），但实现函数体为空或返回零值。如果有合约调用这些地址，**不会报错但返回错误结果**。这是一个静默失败（silent failure）风险。
+2. **Block-STM 缺乏性能验证**：23 个单元测试验证了正确性，但没有任何基准测试（benchmark）量化并行加速比。也没有使用真实 EVM 交易的集成测试。无法确认在 N42 的实际工作负载下是否有显著收益。
+3. **Chain Metrics 死代码**：`DBReadBytes`/`DBWriteBytes`/`FreezerBlocks` 等 8 个 Prometheus 指标从未被递增（`Inc()`/`Add()` 未在任何执行路径调用），会在 Grafana 中永远显示为 0，误导运维人员。
+4. **ERC-4337 误标为已支持**：仅有 `UserOperation` 结构定义和 gas 计算 helpers，缺少 EntryPoint 合约交互、bundler 逻辑、签名聚合等核心功能。不能声称支持 ERC-4337。
+
+### C.3 与竞品的诚实差距
+
+| 维度 | N42 实际水平 | geth/reth 水平 | 差距评估 |
+|------|-------------|---------------|----------|
+| EVM 兼容性 | Cancun ✅, 部分 Pectra (7702/P-256/EOF) | Cancun+Pectra 完整 | 中等差距（BLS/deposits 缺失） |
+| 并行执行 | Block-STM 算法完整，无性能数据 | geth 无并行，reth prewarming | 潜在优势但未验证 |
+| 可观测性 | 11 系统指标 + 1 链指标 | 200-300+ 全面指标 | **重大差距** |
+| 测试覆盖 | snap sync 51 测试，parallel 23 测试 | 数千测试 + fuzzing | 重大差距 |
+| 状态存储 | MDBX flat + LayeredDB(关闭) | PBSS/flat state 成熟 | 中等差距 |
