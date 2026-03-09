@@ -9,8 +9,11 @@ const (
 	GossipExitMessage        = "voluntary_exit"
 	GossipTransactionMessage = "transaction"
 
+	GossipBlobSidecarMessage = "blob_sidecar"
+
 	// Topic format strings combining the protocol prefix with message type.
-	BlockTopicFormat       = GossipProtocolAndDigest + GossipBlockMessage
-	ExitBlockTopicFormat   = GossipProtocolAndDigest + GossipExitMessage
-	TransactionTopicFormat = GossipProtocolAndDigest + GossipTransactionMessage
+	BlockTopicFormat          = GossipProtocolAndDigest + GossipBlockMessage
+	ExitBlockTopicFormat      = GossipProtocolAndDigest + GossipExitMessage
+	TransactionTopicFormat    = GossipProtocolAndDigest + GossipTransactionMessage
+	BlobSidecarTopicFormat    = GossipProtocolAndDigest + GossipBlobSidecarMessage
 )

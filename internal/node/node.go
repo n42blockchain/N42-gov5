@@ -59,13 +59,17 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/debug"
+	"github.com/n42blockchain/N42/internal/exex"
+	"github.com/n42blockchain/N42/internal/exex/extensions"
 	"github.com/n42blockchain/N42/internal/miner"
 	"github.com/n42blockchain/N42/internal/p2p"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
+	"github.com/n42blockchain/N42/internal/sync/checkpoint"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
 	"github.com/n42blockchain/N42/internal/snapshot"
 	"github.com/n42blockchain/N42/internal/sync/snapsync"
 	"github.com/n42blockchain/N42/internal/tracers"
+	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txspool"
 	"github.com/n42blockchain/N42/lib/common/cmp"
@@ -109,6 +113,7 @@ type Node struct {
 	p2p             p2p.P2P
 	sync            *n42sync.Service
 	is              *initialsync.Service
+	checkpointSync  *checkpoint.Service
 	snapSync        *snapsync.Service
 	accman          *accounts.Manager
 
@@ -125,8 +130,12 @@ type Node struct {
 	pruner        *Pruner
 	snapshotMgr   *snapshot.Manager
 
+	exexManager *exex.Manager // Execution Extensions manager
+
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
+
+	tracingShutdown func(context.Context) error // flushes and stops the OTel tracer provider
 
 	// Development tools
 	txGenerator *txgen.Generator // Transaction generator for testing
@@ -280,6 +289,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		}
 	}
 
+	// Create and attach the Execution Extensions (ExEx) manager.
+	exexMgr := exex.NewManager(0)
+	exexMgr.Register(&extensions.LogExtension{})
+	if realBC, ok := bc.(*internal.BlockChain); ok {
+		realBC.SetExExManager(exexMgr)
+	}
+
 	if cfg.ChainCfg.Apos != nil {
 		depositContracts := make(map[types.Address]deposit.DepositContract)
 		entries := []struct {
@@ -321,6 +337,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		SnapSync: &cfg.SnapSyncCfg,
 	})
 
+	checkpointSvc := checkpoint.NewService(&checkpoint.Config{
+		Checkpoint: &cfg.CheckpointCfg,
+		P2P:        p2p,
+		Chain:      bc,
+		DB:         chainKv,
+	})
+
 	syncServer, err := n42sync.NewService(
 		ctx,
 		n42sync.WithP2P(p2p),
@@ -355,6 +378,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		engine:          engine,
 		depositContract: depositContract,
 
+		exexManager:   exexMgr,
 		inprocHandler: jsonrpc.NewServer(),
 		http:          newHTTPServer(),
 		ws:            newHTTPServer(),
@@ -367,10 +391,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		keyDir:     keyDir,
 		keyDirTemp: isEphem,
 
-		p2p:      p2p,
-		sync:     syncServer,
-		is:       is,
-		snapSync: snapSyncSvc,
+		p2p:            p2p,
+		sync:           syncServer,
+		is:             is,
+		checkpointSync: checkpointSvc,
+		snapSync:       snapSyncSvc,
 	}
 
 	if err = setAccountManagerBackends(&node, &cfg.NodeCfg); err != nil {
@@ -420,6 +445,18 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		})
 	}
 
+	// Initialize OpenTelemetry tracing if configured.
+	tracingShutdown, err := tracing.Init(tracing.Config{
+		Enable:     cfg.TracingCfg.Enable,
+		Endpoint:   cfg.TracingCfg.Endpoint,
+		SampleRate: cfg.TracingCfg.SampleRate,
+	})
+	if err != nil {
+		log.Warn("Failed to initialize tracing, continuing without it", "err", err)
+		tracingShutdown = func(context.Context) error { return nil }
+	}
+	node.tracingShutdown = tracingShutdown
+
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))
 	node.api.SetP2P(&p2pAdminAdapter{svc: p2p})
@@ -448,6 +485,11 @@ func (n *Node) Start() error {
 	if err := n.blockChain.Start(); err != nil {
 		log.Errorf("failed setup blockChain service, err: %v", err)
 		return err
+	}
+
+	// Start ExEx manager after blockchain is running.
+	if n.exexManager != nil {
+		n.exexManager.Start(n.ctx)
 	}
 
 	if n.config.NodeCfg.Miner {
@@ -508,12 +550,21 @@ func (n *Node) Start() error {
 		n.depositContract.Start()
 	}
 
-	// Start snap sync first (if enabled). It blocks until completion or skip,
-	// then initial sync picks up from the pivot block.
-	go func() {
+	// Start sync pipeline: checkpoint sync (optional) -> snap sync -> initial sync.
+	// Checkpoint sync validates a trusted block and sets it as the snap sync pivot.
+	// Snap sync downloads state at the pivot. Initial sync replays remaining blocks.
+	utils.SafeGo("node/sync-startup", func() {
+		if n.checkpointSync != nil {
+			pivot, err := n.checkpointSync.Start(n.ctx)
+			if err != nil {
+				log.Error("Checkpoint sync failed", "err", err)
+			} else if pivot > 0 {
+				log.Info("Checkpoint sync completed, snap sync will use checkpoint pivot", "pivot", pivot)
+			}
+		}
 		n.snapSync.Start()
 		n.is.Start()
-	}()
+	})
 
 	// Start snapshot manager if enabled
 	if n.config.SnapshotCfg.Enable {
@@ -844,9 +895,23 @@ func (n *Node) stopServices() []error {
 		}},
 		// 9. Consensus engine
 		{"Consensus engine", func() error { return n.engine.Close() }},
-		// 10. Blockchain (flush and close DB, after all consumers stopped)
+		// 10. ExEx manager (stop extensions before blockchain closes)
+		{"ExEx manager", func() error {
+			if n.exexManager != nil {
+				n.exexManager.Stop()
+			}
+			return nil
+		}},
+		// 11. Blockchain (flush and close DB, after all consumers stopped)
 		{"Blockchain", func() error { return n.blockChain.Close() }},
-		// 11. P2P networking (transport layer, last to go)
+		// 11. OpenTelemetry tracing (flush remaining spans before network goes down)
+		{"Tracing", func() error {
+			if n.tracingShutdown != nil {
+				return n.tracingShutdown(context.Background())
+			}
+			return nil
+		}},
+		// 12. P2P networking (transport layer, last to go)
 		{"P2P network", func() error { return n.p2p.Stop() }},
 	}
 

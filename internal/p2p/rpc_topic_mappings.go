@@ -28,6 +28,10 @@ const (
 	GetStorageRangeMessageName = "/get_storage_range"
 	GetCodeMessageName         = "/get_code"
 
+	// Blob sidecar protocol message names.
+	BlobSidecarsByRangeMessageName = "/blob_sidecars_by_range"
+	BlobSidecarsByRootMessageName  = "/blob_sidecars_by_root"
+
 	// Snapshot protocol message names.
 	GetSnapshotInfoMessageName         = "/get_snapshot_info"
 	GetSnapshotAccountRangeMessageName = "/get_snapshot_account_range"
@@ -42,6 +46,10 @@ const (
 	RPCPingTopicV1        = protocolPrefix + PingMessageName + SchemaVersionV1
 	RPCBodiesDataTopicV1  = protocolPrefix + BodiesByRangeMessageName + SchemaVersionV1
 	RPCHeadersDataTopicV1 = protocolPrefix + HeadersByRangeMessageName + SchemaVersionV1
+
+	// Blob sidecar protocol topics.
+	RPCBlobSidecarsByRangeTopicV1 = protocolPrefix + BlobSidecarsByRangeMessageName + SchemaVersionV1
+	RPCBlobSidecarsByRootTopicV1  = protocolPrefix + BlobSidecarsByRootMessageName + SchemaVersionV1
 
 	// Snap sync protocol topics.
 	RPCGetAccountRangeTopicV1 = protocolPrefix + GetAccountRangeMessageName + SchemaVersionV1
@@ -61,6 +69,10 @@ var RPCTopicMappings = map[string]interface{}{
 	RPCBodiesDataTopicV1: new(sync_pb.BodiesByRangeRequest),
 	RPCPingTopicV1:       new(ssztype.SSZUint64),
 	RPCGoodByeTopicV1:    new(ssztype.SSZUint64),
+
+	// Blob sidecar protocol mappings.
+	RPCBlobSidecarsByRangeTopicV1: new(sync_pb.BlobSidecarsByRangeRequest),
+	RPCBlobSidecarsByRootTopicV1:  new(sync_pb.BlobSidecarsByRootRequest),
 
 	// Snap sync protocol mappings.
 	RPCGetAccountRangeTopicV1: new(sync_pb.GetAccountRangeRequest),
@@ -85,6 +97,8 @@ var (
 		PingMessageName:            true,
 		BodiesByRangeMessageName:   true,
 		HeadersByRangeMessageName:  true,
+		BlobSidecarsByRangeMessageName: true,
+		BlobSidecarsByRootMessageName:  true,
 		GetAccountRangeMessageName: true,
 		GetStorageRangeMessageName: true,
 		GetCodeMessageName:         true,

@@ -1,0 +1,301 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Sync Progress",
+      "type": "row"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": {
+        "defaults": { "thresholds": { "steps": [{"color": "green", "value": null}] } }
+      },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 1 },
+      "id": 101,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sync_current_block", "legendFormat": "Current Block" }],
+      "title": "Current Block",
+      "type": "stat"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": {
+        "defaults": { "thresholds": { "steps": [{"color": "green", "value": null}] } }
+      },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 1 },
+      "id": 102,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sync_highest_block", "legendFormat": "Highest Block" }],
+      "title": "Highest Block",
+      "type": "stat"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "text": "Synced" }, "1": { "text": "Syncing" } }, "type": "value" }
+          ],
+          "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}] }
+        }
+      },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 1 },
+      "id": 103,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sync_is_syncing", "legendFormat": "Status" }],
+      "title": "Sync Status",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 200,
+      "title": "Database I/O",
+      "type": "row"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 201,
+      "targets": [
+        { "expr": "rate(db_read_total[5m])", "legendFormat": "Reads/s" },
+        { "expr": "rate(db_write_total[5m])", "legendFormat": "Writes/s" }
+      ],
+      "title": "DB Operations/s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 202,
+      "targets": [
+        { "expr": "rate(db_read_bytes_total[5m])", "legendFormat": "Read Bytes/s" },
+        { "expr": "rate(db_write_bytes_total[5m])", "legendFormat": "Write Bytes/s" }
+      ],
+      "title": "DB Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 14 },
+      "id": 203,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "freezer_frozen_blocks", "legendFormat": "Frozen Blocks" }],
+      "title": "Freezer: Frozen Blocks",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 300,
+      "title": "Transaction Pool (Advanced)",
+      "type": "row"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "id": 301,
+      "targets": [
+        { "expr": "rate(txpool_added_total[5m])", "legendFormat": "Added/s" },
+        { "expr": "rate(txpool_dropped_total[5m])", "legendFormat": "Dropped/s" },
+        { "expr": "rate(txpool_rejected_total[5m])", "legendFormat": "Rejected/s" },
+        { "expr": "rate(txpool_underpriced_total[5m])", "legendFormat": "Underpriced/s" },
+        { "expr": "rate(txpool_overflow_total[5m])", "legendFormat": "Overflow/s" }
+      ],
+      "title": "TxPool Event Rates",
+      "type": "timeseries"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "id": 302,
+      "targets": [
+        { "expr": "txpool_effective_slots", "legendFormat": "Effective Slots" },
+        { "expr": "txpool_memory_used_mb", "legendFormat": "Memory Used (MB)" }
+      ],
+      "title": "Dynamic Pool Sizing",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "id": 400,
+      "title": "Snap Sync",
+      "type": "row"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "id": 401,
+      "targets": [
+        { "expr": "snap_sync_accounts_downloaded", "legendFormat": "Accounts" },
+        { "expr": "snap_sync_storage_downloaded", "legendFormat": "Storage" },
+        { "expr": "snap_sync_codes_downloaded", "legendFormat": "Codes" }
+      ],
+      "title": "Snap Sync: Downloaded Items",
+      "type": "timeseries"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "decbytes" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "id": 402,
+      "targets": [
+        { "expr": "snap_sync_bytes_received", "legendFormat": "Bytes Received" }
+      ],
+      "title": "Snap Sync: Network Bytes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 36 },
+      "id": 403,
+      "targets": [
+        { "expr": "rate(snap_sync_task_errors_total[5m])", "legendFormat": "Errors/s" },
+        { "expr": "rate(snap_sync_task_timeouts_total[5m])", "legendFormat": "Timeouts/s" },
+        { "expr": "rate(snap_sync_codes_missing_total[5m])", "legendFormat": "Missing Codes/s" },
+        { "expr": "rate(snap_sync_invalid_accounts_total[5m])", "legendFormat": "Invalid Accounts/s" }
+      ],
+      "title": "Snap Sync: Error Rates",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+      "id": 500,
+      "title": "ERC-4337 Bundler",
+      "type": "row"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "id": 501,
+      "targets": [
+        { "expr": "rate(bundler_ops_received_total[5m])", "legendFormat": "Received/s" },
+        { "expr": "rate(bundler_ops_validated_total[5m])", "legendFormat": "Validated/s" },
+        { "expr": "rate(bundler_ops_rejected_total[5m])", "legendFormat": "Rejected/s" }
+      ],
+      "title": "Bundler: UserOp Rates",
+      "type": "timeseries"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
+      "id": 502,
+      "targets": [
+        { "expr": "bundler_pool_size", "legendFormat": "Pool Size" },
+        { "expr": "rate(bundler_bundles_sent_total[5m])", "legendFormat": "Bundles Sent/s" },
+        { "expr": "rate(bundler_bundles_failed_total[5m])", "legendFormat": "Bundles Failed/s" }
+      ],
+      "title": "Bundler: Bundle Activity",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
+      "id": 600,
+      "title": "P2P Network",
+      "type": "row"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 50 },
+      "id": 601,
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(block_arrival_latency_milliseconds_bucket[5m]))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(block_arrival_latency_milliseconds_bucket[5m]))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, rate(block_arrival_latency_milliseconds_bucket[5m]))", "legendFormat": "p99" }
+      ],
+      "title": "Block Arrival Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 50 },
+      "id": 602,
+      "targets": [
+        { "expr": "sum(rate(p2p_message_received_total[5m])) by (topic)", "legendFormat": "{{topic}}" }
+      ],
+      "title": "P2P Messages by Topic",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 58 },
+      "id": 700,
+      "title": "Miner",
+      "type": "row"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 59 },
+      "id": 701,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "miner_blocks_mined_total", "legendFormat": "Blocks Mined" }],
+      "title": "Blocks Mined",
+      "type": "stat"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 59 },
+      "id": 702,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "miner_errors_total", "legendFormat": "Errors" }],
+      "title": "Miner Errors",
+      "type": "stat"
+    },
+    {
+      "datasource": null,
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 59 },
+      "id": 703,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "miner_block_mining_seconds{quantile=\"0.99\"}", "legendFormat": "p99" }],
+      "title": "Block Mining Time (p99)",
+      "type": "stat"
+    }
+  ],
+  "schemaVersion": 30,
+  "style": "dark",
+  "tags": ["n42", "advanced"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "N42 Advanced Monitoring",
+  "uid": "n42-advanced",
+  "version": 1
+}

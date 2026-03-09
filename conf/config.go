@@ -39,10 +39,13 @@ type Config struct {
 	Miner    MinerConfig `json:"miner" yaml:"miner"`
 	DevCfg   DevConfig   `json:"dev" yaml:"dev"`
 	PruneCfg     PruneConfig     `json:"prune" yaml:"prune"`
-	SnapSyncCfg  SnapSyncConfig  `json:"snap_sync" yaml:"snap_sync"`
-	SnapshotCfg  SnapshotConfig  `json:"snapshot" yaml:"snapshot"`
-	LayeredDBCfg LayeredDBConfig `json:"layered_db" yaml:"layered_db"`
-	BundlerCfg   BundlerConfig   `json:"bundler" yaml:"bundler"`
+	SnapSyncCfg    SnapSyncConfig   `json:"snap_sync" yaml:"snap_sync"`
+	CheckpointCfg  CheckpointConfig `json:"checkpoint" yaml:"checkpoint"`
+	SnapshotCfg    SnapshotConfig   `json:"snapshot" yaml:"snapshot"`
+	LayeredDBCfg   LayeredDBConfig  `json:"layered_db" yaml:"layered_db"`
+	BundlerCfg     BundlerConfig    `json:"bundler" yaml:"bundler"`
+	TracingCfg     TracingConfig    `json:"tracing" yaml:"tracing"`
+	PeerDASCfg     PeerDASConfig    `json:"peerdas" yaml:"peerdas"`
 }
 
 func SaveConfigToFile(file string, config Config) error {

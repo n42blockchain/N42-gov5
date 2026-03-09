@@ -764,6 +764,11 @@ func (s *BlockChainAPI) MinedBlock(ctx context.Context, address types.Address) (
 		return nil, fmt.Errorf("failed to create subscription: %w", err)
 	}
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in MinedEntire subscription, recovered", "panic", r)
+			}
+		}()
 		entire := make(chan common.MinedEntireEvent, 20)
 		blocksSub, err := event.GlobalEvent.Subscribe(entire)
 		if err != nil {

@@ -19,6 +19,7 @@ package download
 import (
 	"context"
 	"errors"
+	"fmt"
 	"hash"
 	"sync"
 	"sync/atomic"
@@ -235,7 +236,15 @@ func (d *Downloader) spawnSync(fetchers []func() error) error {
 	d.cancelWg.Add(len(fetchers))
 	for _, fn := range fetchers {
 		fn := fn
-		go func() { defer d.cancelWg.Done(); errc <- fn() }()
+		go func() {
+			defer d.cancelWg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					errc <- fmt.Errorf("panic in downloader: %v", r)
+				}
+			}()
+			errc <- fn()
+		}()
 	}
 	var err error
 	for i := 0; i < len(fetchers); i++ {

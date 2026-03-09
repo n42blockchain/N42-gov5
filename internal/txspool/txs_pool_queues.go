@@ -150,7 +150,8 @@ func (pool *TxsPool) truncatePending() {
 	for _, list := range pool.pending {
 		pending += uint64(list.Len())
 	}
-	if pending <= pool.config.GlobalSlots {
+	globalSlots := pool.EffectiveGlobalSlots()
+	if pending <= globalSlots {
 		return
 	}
 
@@ -164,14 +165,14 @@ func (pool *TxsPool) truncatePending() {
 
 	// Gradually drop transactions from offenders
 	offenders := []types.Address{}
-	for pending > pool.config.GlobalSlots && !spammers.Empty() {
+	for pending > globalSlots && !spammers.Empty() {
 		offender, _ := spammers.Pop()
 		offenders = append(offenders, offender.(types.Address))
 
 		if len(offenders) > 1 {
 			threshold := pool.pending[offender.(types.Address)].Len()
 
-			for pending > pool.config.GlobalSlots && pool.pending[offenders[len(offenders)-2]].Len() > threshold {
+			for pending > globalSlots && pool.pending[offenders[len(offenders)-2]].Len() > threshold {
 				for i := 0; i < len(offenders)-1; i++ {
 					list := pool.pending[offenders[i]]
 					caps := list.Cap(list.Len() - 1)
@@ -192,8 +193,8 @@ func (pool *TxsPool) truncatePending() {
 	}
 
 	// If still above threshold, reduce to limit or min allowance
-	if pending > pool.config.GlobalSlots && len(offenders) > 0 {
-		for pending > pool.config.GlobalSlots && uint64(pool.pending[offenders[len(offenders)-1]].Len()) > pool.config.AccountSlots {
+	if pending > globalSlots && len(offenders) > 0 {
+		for pending > globalSlots && uint64(pool.pending[offenders[len(offenders)-1]].Len()) > pool.config.AccountSlots {
 			for _, addr := range offenders {
 				list := pool.pending[addr]
 				caps := list.Cap(list.Len() - 1)

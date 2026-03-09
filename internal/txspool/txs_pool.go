@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/crypto"
@@ -33,6 +34,7 @@ import (
 	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
+	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
@@ -73,11 +75,24 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 		log.Info("Restored persisted transactions", "count", loaded)
 	}
 
+	// Initialize effective slots to configured maximum.
+	pool.effectiveGlobalSlots.Store(pool.config.GlobalSlots)
+
 	pool.wg.Add(1)
 	go pool.scheduleLoop()
 
 	pool.wg.Add(1)
 	go pool.blockChangeLoop()
+
+	// Start dynamic sizing monitor if enabled.
+	if pool.config.DynamicSizing {
+		pool.wg.Add(1)
+		go pool.dynamicSizingLoop()
+		log.Info("TxPool dynamic sizing enabled",
+			"maxSlots", pool.config.GlobalSlots,
+			"minSlots", pool.config.MinGlobalSlots,
+			"memoryLimitMB", pool.config.MemoryLimitMB)
+	}
 
 	return pool, nil
 }
@@ -215,6 +230,14 @@ func (pool *TxsPool) ResetState(blockHash types.Hash) error {
 
 // addTxs attempts to queue a batch of transactions if they are valid.
 func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []error {
+	// OpenTelemetry: trace transaction ingestion.
+	txTracer := tracing.Tracer("txpool")
+	_, span := tracing.StartSpan(pool.ctx, txTracer, "txpool.addTxs")
+	span.SetAttributes(
+		tracing.Int64Attr("txpool.batch_size", int64(len(txs))),
+	)
+	defer span.End()
+
 	var (
 		errs = make([]error, len(txs))
 		news = make([]*transaction.Transaction, 0, len(txs))
@@ -305,17 +328,19 @@ func (pool *TxsPool) add(tx *transaction.Transaction, local bool) (replaced bool
 		return false, err
 	}
 
-	// If the transaction pool is full, discard underpriced transactions
-	if uint64(pool.all.Slots()+numSlots(tx)) > pool.config.GlobalSlots+pool.config.GlobalQueue {
+	// If the transaction pool is full, discard underpriced transactions.
+	// Use effective slots (may be reduced under memory pressure).
+	effectiveSlots := pool.EffectiveGlobalSlots()
+	if uint64(pool.all.Slots()+numSlots(tx)) > effectiveSlots+pool.config.GlobalQueue {
 		if !isLocal && pool.priced.Underpriced(tx) {
 			log.Debug("Discarding underpriced transaction", "hash", hash, "gasTipCap", gasPrice, "gasFeeCap", gasPrice)
 			return false, ErrUnderpriced
 		}
-		if pool.changesSinceReorg > int(pool.config.GlobalSlots/4) {
+		if pool.changesSinceReorg > int(effectiveSlots/4) {
 			return false, ErrTxPoolOverflow
 		}
 
-		drop, success := pool.priced.Discard(pool.all.Slots()-int(pool.config.GlobalSlots+pool.config.GlobalQueue)+numSlots(tx), isLocal)
+		drop, success := pool.priced.Discard(pool.all.Slots()-int(effectiveSlots+pool.config.GlobalQueue)+numSlots(tx), isLocal)
 		if !isLocal && !success {
 			log.Debug("Discarding overflown transaction", "hash", hash)
 			return false, ErrTxPoolOverflow

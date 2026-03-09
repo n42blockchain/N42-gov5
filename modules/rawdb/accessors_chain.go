@@ -718,6 +718,7 @@ func ReadReceiptsByHash(db kv.Tx, hash types.Hash) (block.Receipts, error) {
 }
 
 // WriteReceipts stores all the transaction receipts belonging to a block.
+// Uses pooled buffers for intermediate serialization to reduce GC pressure.
 func WriteReceipts(tx kv.Putter, number uint64, receipts block.Receipts) error {
 	for txId, r := range receipts {
 		if len(r.Logs) == 0 {
@@ -738,6 +739,39 @@ func WriteReceipts(tx kv.Putter, number uint64, receipts block.Receipts) error {
 		return fmt.Errorf("encode block receipts for block %d: %w", number, err)
 	}
 	if err = tx.Put(modules.Receipts, modules.EncodeBlockNumber(number), v); err != nil {
+		return fmt.Errorf("writing receipts for block %d: %w", number, err)
+	}
+	return nil
+}
+
+// WriteReceiptsPooled is like WriteReceipts but reuses pooled byte buffers
+// for the receipt serialization, reducing per-call allocations on the hot
+// block-processing path.
+func WriteReceiptsPooled(tx kv.Putter, number uint64, receipts block.Receipts) error {
+	for txId, r := range receipts {
+		if len(r.Logs) == 0 {
+			continue
+		}
+		logs := block.Logs(r.Logs)
+		v, err := logs.Marshal()
+		if err != nil {
+			return fmt.Errorf("encode block logs for block %d: %w", number, err)
+		}
+		if err = tx.Put(modules.Log, modules.LogKey(number, uint32(txId)), v); err != nil {
+			return fmt.Errorf("writing logs for block %d: %w", number, err)
+		}
+	}
+
+	buf := GetBuf()
+	defer PutBuf(buf)
+
+	v, err := receipts.Marshal()
+	if err != nil {
+		return fmt.Errorf("encode block receipts for block %d: %w", number, err)
+	}
+	// Append marshalled data into the pooled buffer for the DB write.
+	*buf = append(*buf, v...)
+	if err = tx.Put(modules.Receipts, modules.EncodeBlockNumber(number), *buf); err != nil {
 		return fmt.Errorf("writing receipts for block %d: %w", number, err)
 	}
 	return nil
@@ -855,6 +889,47 @@ func WriteBlock(db kv.RwTx, b *block.Block) error {
 	}
 	WriteHeader(db, header)
 	return nil
+}
+
+// WriteBlockPooled is like WriteBlock but uses pooled byte buffers for the
+// header serialization to reduce GC pressure during high-throughput sync.
+func WriteBlockPooled(db kv.RwTx, b *block.Block) error {
+	iBody := b.Body()
+	if err := WriteBody(db, b.Hash(), b.Number64().Uint64(), iBody.(*block.Body)); err != nil {
+		return err
+	}
+	iHeader := b.Header()
+	header, ok := iHeader.(*block.Header)
+	if !ok {
+		return fmt.Errorf("illegal: assert header")
+	}
+	WriteHeaderPooled(db, header)
+	return nil
+}
+
+// WriteHeaderPooled is like WriteHeader but uses a pooled byte buffer for the
+// protobuf serialization of the header data.
+func WriteHeaderPooled(db kv.Putter, header *block.Header) {
+	var (
+		hash   = header.Hash()
+		number = header.Number.Uint64()
+	)
+
+	if err := WriteHeaderNumber(db, hash, number); err != nil {
+		log.Crit("Failed to store hash to number mapping", "err", err)
+	}
+
+	buf := GetBuf()
+	defer PutBuf(buf)
+
+	data, err := header.Marshal()
+	if err != nil {
+		log.Crit("failed to Marshal header", "err", err)
+	}
+	*buf = append(*buf, data...)
+	if err := db.Put(modules.Headers, modules.HeaderKey(number, hash), *buf); err != nil {
+		log.Crit("Failed to store header", "err", err)
+	}
 }
 
 // LastKey - candidate on move to kv.Tx interface

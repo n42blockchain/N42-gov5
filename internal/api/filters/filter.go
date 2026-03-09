@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
@@ -15,6 +16,7 @@ import (
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 
@@ -104,24 +106,20 @@ func (f *Filter) Logs(ctx context.Context) ([]*block.Log, error) {
 	if f.end == jsonrpc.LatestBlockNumber.Int64() || f.end == jsonrpc.PendingBlockNumber.Int64() {
 		end = head
 	}
-	// Gather all indexed logs, and finish with non indexed ones
-	var (
-		logs           []*block.Log
-		err            error
-		size, sections = uint64(4096), uint64(10)
-	)
-	if indexed := sections * size; indexed > uint64(f.begin) {
-		if indexed > end {
-			logs, err = f.indexedLogs(ctx, end)
-		} else {
-			logs, err = f.indexedLogs(ctx, indexed-1)
-		}
+	// Try indexed log lookup first; fall back to unindexed if the index is
+	// not available or an error occurs.
+	logs, indexed, err := f.indexedLogs(ctx, end)
+	if err != nil {
+		return logs, err
+	}
+	if !indexed {
+		// Index unavailable — fall back to full scan.
+		logs, err = f.unindexedLogs(ctx, end)
 		if err != nil {
 			return logs, err
 		}
 	}
-	rest, err := f.unindexedLogs(ctx, end)
-	logs = append(logs, rest...)
+
 	if pending {
 		pendingLogs, err := f.pendingLogs()
 		if err != nil {
@@ -132,39 +130,81 @@ func (f *Filter) Logs(ctx context.Context) ([]*block.Log, error) {
 	return logs, err
 }
 
-// indexedLogs returns the logs matching the filter criteria based on the bloom
-// bits indexed available locally or via the network.
-func (f *Filter) indexedLogs(ctx context.Context, end uint64) ([]*block.Log, error) {
-	matches := make(chan uint64, 64)
+// indexedLogs returns the logs matching the filter criteria using the roaring
+// bitmap indices stored in LogAddressIndex / LogTopicIndex tables. The third
+// return value (indexed) indicates whether the index was actually used. When
+// false the caller should fall back to unindexedLogs.
+func (f *Filter) indexedLogs(ctx context.Context, end uint64) ([]*block.Log, bool, error) {
+	from := uint64(f.begin)
 
-	// TODO: integrate bloombits matcher for indexed log filtering.
-	// Currently this returns immediately since no matches are produced.
+	var candidateBlocks *roaring.Bitmap
+
+	// Open a read-only DB transaction for index lookups.
+	dbTx, err := f.db.BeginRo(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer dbTx.Rollback()
+
+	// Resolve address candidates.
+	if len(f.addresses) > 0 {
+		addrBM, err := rawdb.BlocksForAddresses(dbTx, f.addresses, from, end)
+		if err != nil {
+			// Index not available or table empty — fall back.
+			return nil, false, nil
+		}
+		candidateBlocks = addrBM
+	}
+
+	// Resolve topic candidates and intersect with address candidates.
+	if len(f.topics) > 0 {
+		topicBM, err := rawdb.BlocksForTopics(dbTx, f.topics, from, end)
+		if err != nil {
+			return nil, false, nil
+		}
+		if topicBM != nil {
+			if candidateBlocks == nil {
+				candidateBlocks = topicBM
+			} else {
+				candidateBlocks.And(topicBM)
+			}
+		}
+		// topicBM == nil means all topic positions were wildcards; no filtering needed.
+	}
+
+	// If no filter criteria at all, fall back to unindexed (full scan).
+	if len(f.addresses) == 0 && len(f.topics) == 0 {
+		return nil, false, nil
+	}
+
+	// If candidateBlocks is still nil (all wildcard topics, no addresses), fall back.
+	if candidateBlocks == nil {
+		return nil, false, nil
+	}
 
 	var logs []*block.Log
-
-	for {
+	it := candidateBlocks.Iterator()
+	for it.HasNext() {
 		select {
-		case number, ok := <-matches:
-			if !ok {
-				return logs, nil
-			}
-			f.begin = int64(number) + 1
-
-			// Retrieve the suggested block and pull any truly matching logs
-			header := f.api.BlockChain().GetHeaderByNumber(uint256.NewInt(number))
-			if header == nil {
-				return logs, nil
-			}
-			found, err := f.checkMatches(ctx, header)
-			if err != nil {
-				return logs, err
-			}
-			logs = append(logs, found...)
-
 		case <-ctx.Done():
-			return logs, ctx.Err()
+			return logs, true, ctx.Err()
+		default:
 		}
+
+		number := uint64(it.Next())
+		header := f.api.BlockChain().GetHeaderByNumber(uint256.NewInt(number))
+		if header == nil {
+			continue
+		}
+		found, err := f.checkMatches(ctx, header)
+		if err != nil {
+			return logs, true, err
+		}
+		logs = append(logs, found...)
 	}
+
+	f.begin = int64(end) + 1
+	return logs, true, nil
 }
 
 // unindexedLogs returns the logs matching the filter criteria based on raw block

@@ -31,6 +31,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
@@ -129,8 +130,10 @@ type BlockChain struct {
 	parallelEVM     bool
 	prefetchEnabled bool
 
-	freezer       *freezer.Freezer
+	freezer       freezer.FreezerAPI
 	ancientReader *freezer.AncientReader
+
+	exexManager *exex.Manager
 
 	wg sync.WaitGroup
 

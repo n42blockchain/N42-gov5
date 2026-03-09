@@ -169,6 +169,13 @@ func (e *Executor) executeParallel(txIndices []int) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					buf := make([]byte, 4096)
+					n := runtime.Stack(buf, false)
+					log.Error("panic in parallel executor worker, recovered", "panic", r, "stack", string(buf[:n]))
+				}
+			}()
 			for txIndex := range work {
 				e.executeSingle(txIndex)
 			}

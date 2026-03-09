@@ -60,8 +60,8 @@
 //
 //	Receipts         : block_num(8) -> receipts_proto
 //	Log              : block_num(8) + tx_id(4) -> logs_proto
-//	LogTopicIndex    : topic(32) + shard(2) -> roaring_bitmap
-//	LogAddressIndex  : address(20) + shard(2) -> roaring_bitmap
+//	LogTopicIndex    : topic(32) + shard(4) -> roaring_bitmap (shard = chunk max block number)
+//	LogAddressIndex  : address(20) + shard(4) -> roaring_bitmap (shard = chunk max block number)
 //
 // ## 6. Trace Buckets (modules/rawdb/ access)
 //
@@ -191,8 +191,8 @@ var StateBuckets = []string{
 }
 
 // ChainBuckets lists buckets that should only be accessed by modules/rawdb
-// Note: Some buckets (NonCanonicalTxs, MaxTxNum, LogTopicIndex, LogAddressIndex,
-// CallTraceSet, CallFromIndex, CallToIndex) are documented but not yet in N42TableCfg
+// Note: Some buckets (NonCanonicalTxs, MaxTxNum, CallTraceSet, CallFromIndex,
+// CallToIndex) are documented but not yet in N42TableCfg
 var ChainBuckets = []string{
 	modules.Headers,
 	modules.HeaderNumber,
@@ -206,6 +206,7 @@ var ChainBuckets = []string{
 	modules.Senders,
 	modules.Receipts,
 	modules.Log,
+	modules.BlobSidecars,
 }
 
 // ConsensusBuckets lists buckets that should only be accessed by internal/consensus
