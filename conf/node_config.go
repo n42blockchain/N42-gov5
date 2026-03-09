@@ -57,6 +57,11 @@ type NodeConfig struct {
 	HTTPRateLimit      int `json:"http_rate_limit" yaml:"http_rate_limit"`           // Max requests per second per IP (0 = disabled)
 	HTTPRateLimitBurst int `json:"http_rate_limit_burst" yaml:"http_rate_limit_burst"` // Max burst size for rate limiting
 
+	// ParallelEVM enables Block-STM parallel transaction execution.
+	// When enabled, blocks with >4 transactions are executed in parallel
+	// using optimistic concurrency with automatic conflict detection.
+	ParallelEVM bool `json:"parallel_evm" yaml:"parallel_evm"`
+
 	ExternalSigner        string `json:"external_signer" yaml:"external_signer"`
 	UseLightweightKDF     bool   `json:"use_lightweight_kdf" yaml:"use_lightweight_kdf"`
 	InsecureUnlockAllowed bool   `json:"insecure_unlock_allowed" yaml:"insecure_unlock_allowed"`

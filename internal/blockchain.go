@@ -41,6 +41,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -106,6 +107,14 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	bc.validator = NewBlockValidator(config, bc, engine)
 
 	return bc, nil
+}
+
+// SetParallelEVM enables or disables Block-STM parallel transaction execution.
+func (bc *BlockChain) SetParallelEVM(enabled bool) {
+	bc.parallelEVM = enabled
+	if enabled {
+		log.Info("Block-STM parallel EVM execution enabled")
+	}
 }
 
 // =============================================================================
@@ -482,7 +491,10 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 		}
 		defer tx.Rollback()
 
-		stateReader := state.NewPlainStateReader(tx)
+		var stateReader state.StateReader = state.NewPlainStateReader(tx)
+		if cache := layered.ExtractCache(db); cache != nil {
+			stateReader = state.NewCachedStateReader(stateReader, cache)
+		}
 		ibs := state.New(stateReader)
 		stateWriter := state.NewNoopWriter()
 
@@ -515,7 +527,15 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 
 			pstart := time.Now()
 			var nopay map[types.Address]*uint256.Int
-			receipts, nopay, logs, usedGas, err = bc.process.Process(blk.(*block.Block), ibs, reader, writer, blockHashFunc)
+			if bc.parallelEVM {
+				if sp, ok := bc.process.(*StateProcessor); ok {
+					receipts, nopay, logs, usedGas, err = sp.ProcessParallel(blk.(*block.Block), ibs, reader, writer, blockHashFunc)
+				} else {
+					receipts, nopay, logs, usedGas, err = bc.process.Process(blk.(*block.Block), ibs, reader, writer, blockHashFunc)
+				}
+			} else {
+				receipts, nopay, logs, usedGas, err = bc.process.Process(blk.(*block.Block), ibs, reader, writer, blockHashFunc)
+			}
 			if err != nil {
 				bc.reportBlock(blk, receipts, err)
 				return nil, err
