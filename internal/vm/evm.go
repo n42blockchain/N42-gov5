@@ -16,6 +16,7 @@
 package vm
 
 import (
+	"fmt"
 	"sync/atomic"
 
 	"github.com/holiman/uint256"
@@ -466,8 +467,16 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	}
 
 	// Reject code starting with 0xEF if EIP-3541 is enabled.
-	if err == nil && evm.chainRules.IsLondon && len(ret) >= 1 && ret[0] == 0xEF {
-		err = ErrInvalidCode
+	if err == nil && len(ret) >= 1 && ret[0] == 0xEF {
+		if evm.chainRules.IsOsaka {
+			// Osaka+: Validate EOF container before deployment
+			if validateErr := ValidateEOF(ret); validateErr != nil {
+				err = fmt.Errorf("%w: %v", ErrInvalidCode, validateErr)
+			}
+		} else if evm.chainRules.IsLondon {
+			// Pre-Osaka: reject all 0xEF-prefixed code
+			err = ErrInvalidCode
+		}
 	}
 	// if the contract creation ran successfully and no errors were returned
 	// calculate the gas required to store the code. If the code could not

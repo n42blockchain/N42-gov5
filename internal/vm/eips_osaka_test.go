@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm/stack"
 )
 
@@ -511,6 +512,190 @@ func TestOpRJUMP_OutOfBounds(t *testing.T) {
 	_, err := opRJUMP(&pc, nil, scope)
 	if err != nil {
 		t.Logf("opRJUMP correctly returned error for out-of-bounds: %v", err)
+	}
+}
+
+// CALLF/RETF Code Section Switching Tests
+
+func TestOpCALLF_RETF_CodeSectionSwitch(t *testing.T) {
+	// Create a container with 2 code sections:
+	// Section 0: CALLF 1 (calls section 1)
+	// Section 1: PUSH1 42, RETF (returns to section 0)
+	section0 := []byte{byte(CALLF), 0x00, 0x01} // CALLF section 1
+	section1 := []byte{byte(PUSH1), 0x2A, byte(RETF)} // PUSH1 42, RETF
+
+	container := &EOFContainer{
+		Header: &EOFHeader{
+			Version:   EOFVersion1,
+			CodeSizes: []uint16{uint16(len(section0)), uint16(len(section1))},
+			Types: []EOFTypeSection{
+				{Inputs: 0, Outputs: 0, MaxStackHeight: 1},
+				{Inputs: 0, Outputs: 1, MaxStackHeight: 1},
+			},
+		},
+		Code: [][]byte{section0, section1},
+	}
+
+	scope := &ScopeContext{
+		Stack:       stack.New(),
+		Memory:      NewMemory(),
+		Contract:    &Contract{Code: section0, EOFContainer: container, CodeSection: 0},
+		ReturnStack: stack.NewReturnStack(),
+	}
+
+	// Execute CALLF
+	pc := uint64(0)
+	_, err := opCALLF(&pc, nil, scope)
+	if err != nil {
+		t.Fatalf("CALLF failed: %v", err)
+	}
+
+	// After CALLF, code should be section 1
+	if scope.Contract.CodeSection != 1 {
+		t.Errorf("CodeSection = %d, want 1", scope.Contract.CodeSection)
+	}
+	if len(scope.Contract.Code) != len(section1) {
+		t.Errorf("Code length = %d, want %d", len(scope.Contract.Code), len(section1))
+	}
+
+	// Execute PUSH1 42 (manually advance pc)
+	pc++ // pc was decremented by CALLF, interpreter increments it
+	scope.Stack.Push(uint256.NewInt(0x2A))
+	pc++ // skip push data
+
+	// Execute RETF
+	_, err = opRETF(&pc, nil, scope)
+	if err != nil {
+		t.Fatalf("RETF failed: %v", err)
+	}
+
+	// After RETF, code should be back to section 0
+	if scope.Contract.CodeSection != 0 {
+		t.Errorf("CodeSection = %d, want 0", scope.Contract.CodeSection)
+	}
+	if len(scope.Contract.Code) != len(section0) {
+		t.Errorf("Code length = %d, want %d", len(scope.Contract.Code), len(section0))
+	}
+
+	// Stack should have value 42
+	result := scope.Stack.Pop()
+	if result.Uint64() != 0x2A {
+		t.Errorf("Stack top = %d, want 42", result.Uint64())
+	}
+}
+
+func TestOpJUMPF_CodeSectionSwitch(t *testing.T) {
+	section0 := []byte{byte(JUMPF), 0x00, 0x01}
+	section1 := []byte{byte(STOP)}
+
+	container := &EOFContainer{
+		Header: &EOFHeader{
+			Version:   EOFVersion1,
+			CodeSizes: []uint16{uint16(len(section0)), uint16(len(section1))},
+			Types: []EOFTypeSection{
+				{Inputs: 0, Outputs: NonReturningFunction, MaxStackHeight: 0},
+				{Inputs: 0, Outputs: NonReturningFunction, MaxStackHeight: 0},
+			},
+		},
+		Code: [][]byte{section0, section1},
+	}
+
+	scope := &ScopeContext{
+		Stack:       stack.New(),
+		Memory:      NewMemory(),
+		Contract:    &Contract{Code: section0, EOFContainer: container, CodeSection: 0},
+		ReturnStack: stack.NewReturnStack(),
+	}
+
+	pc := uint64(0)
+	_, err := opJUMPF(&pc, nil, scope)
+	if err != nil {
+		t.Fatalf("JUMPF failed: %v", err)
+	}
+
+	// After JUMPF, code should be section 1, no return stack push
+	if scope.Contract.CodeSection != 1 {
+		t.Errorf("CodeSection = %d, want 1", scope.Contract.CodeSection)
+	}
+	if len(scope.ReturnStack.Data()) != 0 {
+		t.Errorf("ReturnStack should be empty after JUMPF, has %d items", len(scope.ReturnStack.Data()))
+	}
+}
+
+// EOF Container Parsing Tests
+
+func TestParseEOF_ValidContainer(t *testing.T) {
+	// Build a valid EOF container:
+	// EF00 01 (magic + version)
+	// 01 0004 (type section: 4 bytes)
+	// 01 0001 0002 (1 code section of 2 bytes)
+	// 03 0004 (data section: 4 bytes)
+	// 00 (terminator)
+	// 00 00 00 01 (type: 0 inputs, 0 outputs, max_stack 1)
+	// 00 FE (code: STOP, INVALID)
+	// DE AD BE EF (data)
+	raw := []byte{
+		0xEF, 0x00, 0x01,       // magic + version
+		0x01, 0x00, 0x04,       // type section size = 4
+		0x01, 0x00, 0x01,       // 1 code section
+		0x00, 0x02,             // code size = 2
+		0x03, 0x00, 0x04,       // data section size = 4
+		0x00,                   // terminator
+		0x00, 0x00, 0x00, 0x01, // types: 0 in, 0 out, max_stack=1
+		0x00, 0xFE,             // code
+		0xDE, 0xAD, 0xBE, 0xEF, // data
+	}
+
+	container, err := ParseEOF(raw)
+	if err != nil {
+		t.Fatalf("ParseEOF failed: %v", err)
+	}
+
+	if container.NumCodeSections() != 1 {
+		t.Errorf("NumCodeSections = %d, want 1", container.NumCodeSections())
+	}
+	if container.DataSize() != 4 {
+		t.Errorf("DataSize = %d, want 4", container.DataSize())
+	}
+	if container.Header.Types[0].Inputs != 0 {
+		t.Errorf("Type[0].Inputs = %d, want 0", container.Header.Types[0].Inputs)
+	}
+}
+
+func TestContractSetCallCode_EOF(t *testing.T) {
+	// Build a minimal valid EOF container
+	raw := []byte{
+		0xEF, 0x00, 0x01,
+		0x01, 0x00, 0x04,
+		0x01, 0x00, 0x01,
+		0x00, 0x01,
+		0x03, 0x00, 0x00,
+		0x00,
+		0x00, 0x00, 0x00, 0x01,
+		0x00, // STOP
+	}
+
+	c := &Contract{}
+	addr := types.Address{}
+	c.SetCallCode(&addr, types.Hash{}, raw)
+
+	if c.EOFContainer == nil {
+		t.Fatal("EOFContainer should be set for EOF code")
+	}
+	if c.EOFContainer.NumCodeSections() != 1 {
+		t.Errorf("NumCodeSections = %d, want 1", c.EOFContainer.NumCodeSections())
+	}
+}
+
+func TestContractSetCallCode_Legacy(t *testing.T) {
+	legacyCode := []byte{byte(PUSH1), 0x00, byte(STOP)}
+
+	c := &Contract{}
+	addr := types.Address{}
+	c.SetCallCode(&addr, types.Hash{}, legacyCode)
+
+	if c.EOFContainer != nil {
+		t.Error("EOFContainer should be nil for legacy code")
 	}
 }
 

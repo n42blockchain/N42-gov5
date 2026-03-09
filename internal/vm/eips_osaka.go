@@ -156,19 +156,26 @@ func opCALLF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 		return nil, ErrEOFInvalidCallF
 	}
 
-	// Push return address to return stack
-	returnAddr := uint32(*pc + 3)
-	scope.ReturnStack.Push(returnAddr)
-
 	// Get target code section
 	container := scope.Contract.EOFContainer
 	if container == nil || int(funcIdx) >= container.NumCodeSections() {
 		return nil, ErrEOFInvalidCallF
 	}
 
-	// Update scope to new code section
+	// Encode return info: pack current section index and return PC
+	// Format: upper 16 bits = section index, lower 16 bits = PC offset
+	returnPC := *pc + 3
+	returnInfo := uint32(scope.Contract.CodeSection)<<16 | uint32(returnPC&0xFFFF)
+	scope.ReturnStack.Push(returnInfo)
+
+	// Switch to target code section
+	targetCode := container.GetCodeSection(int(funcIdx))
+	if targetCode == nil {
+		return nil, ErrEOFInvalidCallF
+	}
+	scope.Contract.Code = targetCode
 	scope.Contract.CodeSection = int(funcIdx)
-	*pc = 0 // Start at beginning of new section
+	*pc = 0
 	*pc-- // Will be incremented by interpreter loop
 
 	return nil, nil
@@ -181,13 +188,26 @@ func opRETF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 		return nil, ErrEOFInvalidRetF
 	}
 
-	// Pop return address from return stack
-	returnAddr := scope.ReturnStack.Pop()
+	// Pop return info from return stack
+	returnInfo := scope.ReturnStack.Pop()
 
-	// Restore to previous code section
-	// The return address encodes both section and position
-	scope.Contract.CodeSection = 0 // Main section
-	*pc = uint64(returnAddr) - 1   // Will be incremented
+	// Decode: upper 16 bits = section index, lower 16 bits = PC offset
+	sectionIdx := int(returnInfo >> 16)
+	returnPC := uint64(returnInfo & 0xFFFF)
+
+	// Restore code section
+	container := scope.Contract.EOFContainer
+	if container == nil || sectionIdx >= container.NumCodeSections() {
+		return nil, ErrEOFInvalidRetF
+	}
+
+	targetCode := container.GetCodeSection(sectionIdx)
+	if targetCode == nil {
+		return nil, ErrEOFInvalidRetF
+	}
+	scope.Contract.Code = targetCode
+	scope.Contract.CodeSection = sectionIdx
+	*pc = returnPC - 1 // Will be incremented by interpreter loop
 
 	return nil, nil
 }
@@ -207,10 +227,15 @@ func opJUMPF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 		return nil, ErrEOFInvalidCallF
 	}
 
-	// Jump to new code section without pushing return address
+	// Switch to target code section without pushing return address (tail call)
+	targetCode := container.GetCodeSection(int(funcIdx))
+	if targetCode == nil {
+		return nil, ErrEOFInvalidCallF
+	}
+	scope.Contract.Code = targetCode
 	scope.Contract.CodeSection = int(funcIdx)
 	*pc = 0
-	*pc--
+	*pc-- // Will be incremented by interpreter loop
 
 	return nil, nil
 }
@@ -385,34 +410,112 @@ func opEXCHANGE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 }
 
 // opEOFCREATE implements EOFCREATE (0xEC) - create contract from EOF container
+// Stack: [value, salt, dataOffset, dataSize] => [address]
 func opEOFCREATE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	// This is a simplified implementation
-	// Full implementation requires contract creation logic
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+1 >= uint64(len(code)) {
 		return nil, ErrEOFTruncatedInstruction
 	}
-	_ = code[*pc+1] // Container index
+	containerIdx := int(code[*pc+1])
 
-	// Push failure (0) for now - full implementation needed
-	scope.Stack.Push(new(uint256.Int))
+	var (
+		value      = scope.Stack.Pop()
+		salt       = scope.Stack.Pop()
+		dataOffset = scope.Stack.Pop()
+		dataSize   = scope.Stack.Pop()
+	)
+
+	container := scope.Contract.EOFContainer
+	if container == nil || containerIdx >= container.NumContainers() {
+		scope.Stack.Push(new(uint256.Int))
+		*pc++
+		return nil, nil
+	}
+
+	// Get sub-container bytecode (the initcode)
+	initCode := container.GetContainer(containerIdx)
+	if initCode == nil {
+		scope.Stack.Push(new(uint256.Int))
+		*pc++
+		return nil, nil
+	}
+
+	// Read auxiliary data from memory
+	off64 := dataOffset.Uint64()
+	size64 := dataSize.Uint64()
+	var auxData []byte
+	if size64 > 0 {
+		auxData = scope.Memory.GetCopy(int64(off64), int64(size64))
+	}
+
+	// Append auxiliary data to initcode
+	if len(auxData) > 0 {
+		fullCode := make([]byte, len(initCode)+len(auxData))
+		copy(fullCode, initCode)
+		copy(fullCode[len(initCode):], auxData)
+		initCode = fullCode
+	}
+
+	// Use gas for contract creation
+	gas := scope.Contract.Gas
+	gas = gas - gas/64 // EIP-150: reserve 1/64 of gas
+
+	// Call Create2 with salt for deterministic address
+	ret, addr, returnGas, err := interpreter.evm.Create2(scope.Contract, initCode, gas, &value, &salt)
+	scope.Contract.Gas += returnGas
+
+	if err != nil || len(ret) == 0 {
+		scope.Stack.Push(new(uint256.Int))
+	} else {
+		scope.Stack.Push(new(uint256.Int).SetBytes(addr.Bytes()))
+	}
 
 	*pc++ // Skip immediate
 	return nil, nil
 }
 
 // opRETURNCONTRACT implements RETURNCONTRACT (0xEE) - return new contract from initcode
+// Stack: [auxDataOffset, auxDataSize] => []
 func opRETURNCONTRACT(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+1 >= uint64(len(code)) {
 		return nil, ErrEOFTruncatedInstruction
 	}
-	_ = code[*pc+1] // Container index
+	containerIdx := int(code[*pc+1])
 
-	// Implementation requires integration with contract creation
-	return nil, ErrExecutionReverted
+	auxDataOffset := scope.Stack.Pop()
+	auxDataSize := scope.Stack.Pop()
+
+	container := scope.Contract.EOFContainer
+	if container == nil || containerIdx >= container.NumContainers() {
+		return nil, ErrEOFInvalidContainer
+	}
+
+	// Get the deploy container
+	deployCode := container.GetContainer(containerIdx)
+	if deployCode == nil {
+		return nil, ErrEOFInvalidContainer
+	}
+
+	// Read auxiliary data from memory
+	off64 := auxDataOffset.Uint64()
+	size64 := auxDataSize.Uint64()
+	var auxData []byte
+	if size64 > 0 {
+		auxData = scope.Memory.GetCopy(int64(off64), int64(size64))
+	}
+
+	// Build final deploy code with auxiliary data appended
+	if len(auxData) > 0 {
+		result := make([]byte, len(deployCode)+len(auxData))
+		copy(result, deployCode)
+		copy(result[len(deployCode):], auxData)
+		return result, errStopToken
+	}
+
+	return deployCode, errStopToken
 }
 
 // opRETURNDATALOAD implements RETURNDATALOAD (0xF7) - load 32 bytes from return data
@@ -548,11 +651,19 @@ func enableEOF(jt *JumpTable) {
 	disableLegacyOpcodes(jt)
 }
 
-// disableLegacyOpcodes disables opcodes that are not allowed in EOF
+// disableLegacyOpcodes disables opcodes that are not valid in EOF mode.
+// Note: We don't nil them in the shared jump table because it's used for
+// both legacy and EOF code. Instead, the EOF validator (ValidateEOF) rejects
+// code containing these opcodes at deploy time.
+// This function is intentionally a no-op to avoid breaking legacy execution
+// while still documenting which opcodes are forbidden in EOF.
 func disableLegacyOpcodes(jt *JumpTable) {
-	// These opcodes are replaced or removed in EOF
-	// We don't actually nil them out, but mark them for legacy only
-	// The EOF validator will reject code containing these
+	// EOF-forbidden opcodes (validated at deploy time by isValidEOFOpcode):
+	// - JUMP, JUMPI, PC, JUMPDEST: replaced by RJUMP/RJUMPI/RJUMPV
+	// - CODESIZE, CODECOPY, EXTCODESIZE, EXTCODECOPY, EXTCODEHASH: no code introspection
+	// - CALLCODE, SELFDESTRUCT: deprecated
+	// - CREATE, CREATE2: replaced by EOFCREATE
+	// - GAS: removed in EOF
 }
 
 // gasDataCopy calculates dynamic gas for DATACOPY
