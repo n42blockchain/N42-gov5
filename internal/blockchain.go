@@ -117,6 +117,14 @@ func (bc *BlockChain) SetParallelEVM(enabled bool) {
 	}
 }
 
+// SetPrefetch enables or disables state prefetching before block execution.
+func (bc *BlockChain) SetPrefetch(enabled bool) {
+	bc.prefetchEnabled = enabled
+	if enabled {
+		log.Info("State prefetching enabled")
+	}
+}
+
 // =============================================================================
 // Lifecycle
 // =============================================================================
@@ -524,6 +532,13 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 				return rawdb.ReadHeader(tx, hash, number)
 			}
 			blockHashFunc := GetHashFn(blk.Header().(*block.Header), getHeader)
+
+			// Start state prefetching in background if cache is available.
+			if bc.prefetchEnabled {
+				prefetcher := NewStatePrefetcher(bc.chainConfig)
+				prefetcher.Prefetch(blk.(*block.Block), reader)
+				defer prefetcher.Close()
+			}
 
 			pstart := time.Now()
 			var nopay map[types.Address]*uint256.Int
