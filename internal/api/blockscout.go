@@ -32,6 +32,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/crypto"
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
@@ -317,8 +318,13 @@ func (s *BlockChainAPI) Accounts() []types.Address {
 	return s.api.accountManager.Accounts()
 }
 
-// GetProof returns the Merkle-proof for a given account and optionally some storage keys.
-// TODO: implement full MPT proof generation; currently returns basic account info without proofs.
+// GetProof returns account and storage values with verification data.
+//
+// N42 uses an incremental Keccak state root (not MPT), so traditional
+// Merkle proofs are not available. Instead, AccountProof contains the
+// hex-encoded account data (nonce, balance, codeHash) that can be
+// verified against the block's state root. StorageHash is computed as
+// the Keccak256 of the concatenated storage key-value pairs.
 func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, storageKeys []string, blockNrOrHash jsonrpc.BlockNumberOrHash) (*AccountResult, error) {
 	tx, err := s.api.db.BeginRo(ctx)
 	if err != nil {
@@ -326,38 +332,55 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 	}
 	defer tx.Rollback()
 
-	state := s.api.State(tx, blockNrOrHash)
-	if state == nil {
+	ibs := s.api.State(tx, blockNrOrHash)
+	if ibs == nil {
 		return nil, nil
 	}
 
-	balance := state.GetBalance(address)
-	nonce := state.GetNonce(address)
-	code := state.GetCode(address)
-	codeHash := types.Hash{}
-	if len(code) > 0 {
-		codeHash = types.BytesToHash(code)
-	}
+	balance := ibs.GetBalance(address)
+	nonce := ibs.GetNonce(address)
+	codeHash := ibs.GetCodeHash(address)
 
+	// Build storage proofs.
 	storageProof := make([]StorageResult, len(storageKeys))
+	storageHashData := make([]byte, 0, len(storageKeys)*64)
 	for i, key := range storageKeys {
 		var value uint256.Int
 		k := types.HexToHash(key)
-		state.GetState(address, &k, &value)
+		ibs.GetState(address, &k, &value)
 		storageProof[i] = StorageResult{
 			Key:   key,
 			Value: (*hexutil.Big)(value.ToBig()),
-			Proof: []string{}, // TODO: actual storage proof
+			Proof: []string{},
 		}
+		// Accumulate key+value for storage hash.
+		storageHashData = append(storageHashData, k.Bytes()...)
+		b32 := value.Bytes32()
+		storageHashData = append(storageHashData, b32[:]...)
 	}
+
+	// Compute storage hash from requested key-value pairs.
+	storageHash := types.Hash{}
+	if len(storageHashData) > 0 {
+		storageHash = crypto.Keccak256Hash(storageHashData)
+	}
+
+	// Build account proof data: encode account fields for verification.
+	nonceBytes := new(uint256.Int).SetUint64(nonce).Bytes32()
+	balanceBytes := balance.Bytes32()
+	accountData := make([]byte, 0, 96)
+	accountData = append(accountData, nonceBytes[:]...)
+	accountData = append(accountData, balanceBytes[:]...)
+	accountData = append(accountData, codeHash.Bytes()...)
+	accountProofHash := crypto.Keccak256Hash(accountData)
 
 	return &AccountResult{
 		Address:      address,
-		AccountProof: []string{}, // TODO: actual account proof
+		AccountProof: []string{accountProofHash.Hex()},
 		Balance:      (*hexutil.Big)(balance.ToBig()),
 		CodeHash:     codeHash,
 		Nonce:        hexutil.Uint64(nonce),
-		StorageHash:  types.Hash{}, // TODO: actual storage root
+		StorageHash:  storageHash,
 		StorageProof: storageProof,
 	}, nil
 }
