@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -149,26 +150,16 @@ func exportState(ctx *cli.Context) error {
 				// Storage key: address(20) + incarnation(2) + storageKey(32)
 				prefix := make([]byte, 22)
 				copy(prefix, k)
-				// incarnation = 1 (most common)
-				prefix[20] = 0
-				prefix[21] = 1
+				// Use actual incarnation from account
+				prefix[20] = byte(acc.Incarnation >> 8)
+				prefix[21] = byte(acc.Incarnation)
 
 				for sk, sv, err := storageCursor.Seek(prefix); sk != nil; sk, sv, err = storageCursor.Next() {
 					if err != nil {
 						break
 					}
 					// Check prefix match (address + incarnation)
-					if len(sk) < 22 {
-						break
-					}
-					match := true
-					for i := 0; i < 22; i++ {
-						if sk[i] != prefix[i] {
-							match = false
-							break
-						}
-					}
-					if !match {
+					if !bytes.HasPrefix(sk, prefix) {
 						break
 					}
 					storageKey := sk[22:]
