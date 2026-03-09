@@ -27,7 +27,6 @@ import (
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules"
 )
 
 var dbCommand = &cli.Command{
@@ -140,9 +139,6 @@ func dbStats(ctx *cli.Context) error {
 
 // dbList lists all table names.
 func dbList(ctx *cli.Context) error {
-	modules.N42Init()
-	kv.ChaindataTablesCfg = modules.N42TableCfg
-
 	stack, err := node.NewNode(ctx, &DefaultConfig)
 	if err != nil {
 		return err

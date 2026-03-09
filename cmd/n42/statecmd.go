@@ -66,12 +66,6 @@ type DumpAccount struct {
 	Storage map[string]string `json:"storage,omitempty"`
 }
 
-// StateDump represents the complete state dump.
-type StateDump struct {
-	Block    uint64         `json:"block"`
-	Accounts []*DumpAccount `json:"accounts"`
-}
-
 func exportState(ctx *cli.Context) error {
 	if ctx.NArg() < 1 {
 		return fmt.Errorf("usage: n42 export state <filename> [--include-storage] [--include-code]")
@@ -113,9 +107,17 @@ func exportState(ctx *cli.Context) error {
 	}
 	defer cursor.Close()
 
-	dump := &StateDump{
-		Block:    blockNum,
-		Accounts: make([]*DumpAccount, 0, 1024),
+	// Stream JSON output to avoid OOM on large state
+	f, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("cannot create file: %w", err)
+	}
+	defer f.Close()
+
+	encoder := json.NewEncoder(f)
+	// Write opening structure
+	if _, err := f.WriteString(fmt.Sprintf("{\"block\":%d,\"accounts\":[\n", blockNum)); err != nil {
+		return fmt.Errorf("write error: %w", err)
 	}
 
 	count := uint64(0)
@@ -169,7 +171,15 @@ func exportState(ctx *cli.Context) error {
 			}
 		}
 
-		dump.Accounts = append(dump.Accounts, da)
+		// Stream each account as JSON line
+		if count > 0 {
+			if _, err := f.WriteString(",\n"); err != nil {
+				return fmt.Errorf("write error: %w", err)
+			}
+		}
+		if err := encoder.Encode(da); err != nil {
+			return fmt.Errorf("JSON encode error at account %x: %w", k, err)
+		}
 		count++
 
 		if count%100000 == 0 {
@@ -178,17 +188,9 @@ func exportState(ctx *cli.Context) error {
 		}
 	}
 
-	// Write JSON output
-	f, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("cannot create file: %w", err)
-	}
-	defer f.Close()
-
-	encoder := json.NewEncoder(f)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(dump); err != nil {
-		return fmt.Errorf("JSON encode error: %w", err)
+	// Close JSON structure
+	if _, err := f.WriteString("]}\n"); err != nil {
+		return fmt.Errorf("write error: %w", err)
 	}
 
 	log.Info("State export complete",
