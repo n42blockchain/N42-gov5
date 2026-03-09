@@ -77,6 +77,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/utils"
@@ -238,13 +239,43 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, fmt.Errorf("failed to create blockchain: %w", err)
 	}
 
-	// Enable parallel EVM execution and state prefetching if configured.
+	// Enable parallel EVM execution, state prefetching, and ancient DB if configured.
 	if realBC, ok := bc.(*internal.BlockChain); ok {
 		if cfg.NodeCfg.ParallelEVM {
 			realBC.SetParallelEVM(true)
 		}
 		if cfg.NodeCfg.Prefetch {
 			realBC.SetPrefetch(true)
+		}
+		if cfg.NodeCfg.AncientDB {
+			ancientPath := filepath.Join(cfg.NodeCfg.DataDir, "ancient")
+			threshold := cfg.NodeCfg.AncientFreezeThreshold
+			f, err := freezer.New(ancientPath, threshold)
+			if err != nil {
+				log.Warn("Failed to open ancient DB, continuing without freezer", "err", err)
+			} else {
+				realBC.SetFreezer(f)
+				// Start background freeze goroutine.
+				f.StartFreeze(ctx, func() uint64 {
+					cur := realBC.CurrentBlock()
+					if cur == nil {
+						return 0
+					}
+					return cur.Number64().Uint64()
+				}, func(start, count uint64) (*freezer.FreezeData, error) {
+					var data *freezer.FreezeData
+					err := chainKv.View(ctx, func(tx kv.Tx) error {
+						var e error
+						data, e = rawdb.CollectFreezeData(tx, start, count)
+						return e
+					})
+					return data, err
+				}, func(start, count uint64) error {
+					return chainKv.Update(ctx, func(tx kv.RwTx) error {
+						return rawdb.CleanupFrozenData(tx, start, count)
+					})
+				})
+			}
 		}
 	}
 

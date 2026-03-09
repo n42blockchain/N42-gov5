@@ -45,6 +45,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
@@ -125,6 +126,23 @@ func (bc *BlockChain) SetPrefetch(enabled bool) {
 	}
 }
 
+// SetFreezer attaches the ancient data freezer to the blockchain.
+func (bc *BlockChain) SetFreezer(f *freezer.Freezer) {
+	bc.freezer = f
+	bc.ancientReader = freezer.NewAncientReader(f)
+	log.Info("Ancient data freezer attached", "frozen", f.Frozen())
+}
+
+// Freezer returns the attached freezer, or nil if not configured.
+func (bc *BlockChain) Freezer() *freezer.Freezer {
+	return bc.freezer
+}
+
+// AncientReader returns the ancient reader, or nil if no freezer is attached.
+func (bc *BlockChain) AncientReader() *freezer.AncientReader {
+	return bc.ancientReader
+}
+
 // =============================================================================
 // Lifecycle
 // =============================================================================
@@ -140,6 +158,11 @@ func (bc *BlockChain) Start() error {
 func (bc *BlockChain) Close() error {
 	bc.cancel()
 	bc.wg.Wait()
+	if bc.freezer != nil {
+		if err := bc.freezer.Close(); err != nil {
+			log.Warn("Failed to close freezer", "err", err)
+		}
+	}
 	return nil
 }
 
