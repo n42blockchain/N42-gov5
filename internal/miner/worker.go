@@ -39,6 +39,7 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/miner/builder"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/log"
@@ -173,6 +174,8 @@ type worker struct {
 
 	newTaskHook func(*task)
 
+	bundlePool *builder.BundlePool // MEV bundle pool
+
 	snapshotMu       sync.RWMutex
 	snapshotBlock    block.IBlock
 	snapshotReceipts block.Receipts
@@ -196,6 +199,7 @@ func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.C
 		pendingTasks:     make(map[types.Hash]*task),
 		minerConf:        minerConf,
 		resubmitAdjustCh: make(chan *intervalAdjust, resubmitAdjustChanSize),
+		bundlePool:       builder.NewBundlePool(),
 	}
 	recommit := worker.minerConf.Recommit
 	if recommit < minPeriodInterval {
@@ -598,11 +602,6 @@ func (w *worker) workLoop(recommit time.Duration) error {
 
 func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header) error {
 	env.txs = []*transaction.Transaction{}
-	txs, err := w.txsPool.GetTransaction()
-	if err != nil {
-		log.Warn("get transaction error", "err", err)
-		return err
-	}
 
 	header := env.header
 	noop := state.NewNoopWriter()
@@ -627,8 +626,54 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		return nil
 	}
 
-	log.Tracef("fillTransactions txs len:%d", len(txs))
-	for _, tx := range txs {
+	blockNumber := header.Number.Uint64()
+
+	// Phase 1: Execute MEV bundles at block top (highest-paying first).
+	if w.bundlePool != nil {
+		bundles := w.bundlePool.GetBundles(blockNumber, header.Time)
+		for _, bundle := range bundles {
+			if env.gasPool.Gas() < params.TxGas {
+				break
+			}
+			// Try to commit entire bundle atomically.
+			snap := ibs.Snapshot()
+			gasSnap := env.gasPool.Gas()
+			startTxCount := len(env.txs)
+			startReceiptCount := len(env.receipts)
+			bundleOk := true
+
+			for _, tx := range bundle.Txs {
+				err := commitTx(tx)
+				if err != nil {
+					if bundle.IsRevertAllowed(tx.Hash()) {
+						continue // Allowed to fail
+					}
+					bundleOk = false
+					break
+				}
+				env.tcount++
+			}
+
+			if !bundleOk {
+				// Revert entire bundle.
+				ibs.RevertToSnapshot(snap)
+				env.gasPool = new(common.GasPool).AddGas(gasSnap)
+				env.txs = env.txs[:startTxCount]
+				env.receipts = env.receipts[:startReceiptCount]
+			}
+		}
+	}
+
+	// Phase 2: Fill remaining space with regular transactions sorted by effective tip.
+	pending := w.txsPool.Pending(false)
+	if len(pending) == 0 {
+		return nil
+	}
+
+	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
+	log.Tracef("fillTransactions pending accounts:%d", len(pending))
+
+	for {
 		if interrupt != nil {
 			if signal := interrupt.Load(); signal != commitInterruptNone {
 				return signalToErr(signal)
@@ -639,17 +684,31 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			break
 		}
 
+		tx := txSet.Peek()
+		if tx == nil {
+			break
+		}
+
 		err := commitTx(tx)
 		switch {
 		case err == nil:
 			env.tcount++
-		case errors.Is(err, internal.ErrGasLimitReached),
-			errors.Is(err, internal.ErrNonceTooHigh),
-			errors.Is(err, internal.ErrNonceTooLow):
-			continue
+			txSet.Shift() // Move to next tx from same account
+		case errors.Is(err, internal.ErrGasLimitReached):
+			txSet.Pop() // Skip this account entirely
+		case errors.Is(err, internal.ErrNonceTooHigh):
+			txSet.Pop() // Nonce gap, skip account
+		case errors.Is(err, internal.ErrNonceTooLow):
+			txSet.Shift() // Try next nonce from same account
 		default:
 			log.Error("miningCommitTx failed", "error", err)
+			txSet.Shift()
 		}
+	}
+
+	// Prune old bundles.
+	if w.bundlePool != nil {
+		w.bundlePool.PruneBundles(blockNumber)
 	}
 
 	return nil

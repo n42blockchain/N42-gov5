@@ -27,6 +27,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/miner/builder"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"golang.org/x/sync/errgroup"
@@ -165,4 +166,9 @@ func (m *Miner) SetCoinbase(addr types.Address) {
 
 func (m *Miner) PendingBlockAndReceipts() (block.IBlock, block.Receipts) {
 	return m.worker.pendingBlockAndReceipts()
+}
+
+// BundlePool returns the MEV bundle pool for submitting transaction bundles.
+func (m *Miner) BundlePool() *builder.BundlePool {
+	return m.worker.bundlePool
 }
