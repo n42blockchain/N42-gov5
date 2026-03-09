@@ -76,6 +76,7 @@ import (
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
+	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -957,6 +958,10 @@ func (n *Node) SetupMetrics(config conf.MetricsConfig) {
 	if !config.Enable {
 		return
 	}
+
+	// Register Go runtime and system-level metrics.
+	nodeMetrics.RegisterSystemMetrics()
+
 	if config.HTTP != "" {
 		address := net.JoinHostPort(config.HTTP, strconv.Itoa(config.Port))
 		log.Info("Enabling stand-alone metrics HTTP endpoint", "address", address)
