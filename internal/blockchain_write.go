@@ -29,6 +29,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -105,7 +106,10 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			return err
 		}
 
-		stateWriter := state.NewPlainStateWriter(tx, tx, blk.Number64().Uint64())
+		var stateWriter state.WriterWithChangeSets = state.NewPlainStateWriter(tx, tx, blk.Number64().Uint64())
+		if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
+			stateWriter = state.NewCachedStateWriter(stateWriter, cache)
+		}
 		if err := ibs.CommitBlock(bc.chainConfig.Rules(blk.Number64().Uint64()), stateWriter); err != nil {
 			return err
 		}

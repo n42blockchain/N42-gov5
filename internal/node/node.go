@@ -70,6 +70,7 @@ import (
 	"github.com/n42blockchain/N42/internal/txspool"
 	"github.com/n42blockchain/N42/lib/common/cmp"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
@@ -235,6 +236,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	bc, err := internal.NewBlockChain(ctx, genesisBlock, engine, chainKv, p2p, cfg.ChainCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create blockchain: %w", err)
+	}
+
+	// Enable parallel EVM execution if configured.
+	if cfg.NodeCfg.ParallelEVM {
+		if realBC, ok := bc.(*internal.BlockChain); ok {
+			realBC.SetParallelEVM(true)
+		}
 	}
 
 	if cfg.ChainCfg.Apos != nil {
@@ -956,13 +964,18 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		logger = log2.New()
 	}
 
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+
+	// If layered DB is enabled, split into state + history databases.
+	if cfg.LayeredDBCfg.Enable {
+		return openLayeredDatabase(ctx, cfg, logger, name)
+	}
+
 	dbPath := filepath.Join(cfg.NodeCfg.DataDir, name)
 	log.Info("Opening database", "name", name, "path", dbPath)
 
 	roTxsLimiter := semaphore.NewWeighted(int64(cmp.Max(32, runtime.GOMAXPROCS(-1)*8)))
-
-	modules.N42Init()
-	kv.ChaindataTablesCfg = modules.N42TableCfg
 
 	chainKv, err := mdbx.NewMDBX(logger).
 		WriteMergeThreshold(4 * 8192).
@@ -980,6 +993,67 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		return nil, err
 	}
 	return chainKv, nil
+}
+
+// openLayeredDatabase creates a LayeredDB with separate state and history
+// MDBX instances. The state DB is smaller and faster (holds only current
+// state), while the history DB handles append-heavy changeset/index data.
+func openLayeredDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, name string) (kv.RwDB, error) {
+	if err := cfg.LayeredDBCfg.Validate(); err != nil {
+		return nil, fmt.Errorf("layered DB config: %w", err)
+	}
+
+	stateDBPath := cfg.LayeredDBCfg.StateDBPath
+	if stateDBPath == "" {
+		stateDBPath = filepath.Join(cfg.NodeCfg.DataDir, name+"-state")
+	}
+	historyDBPath := cfg.LayeredDBCfg.HistoryDBPath
+	if historyDBPath == "" {
+		historyDBPath = filepath.Join(cfg.NodeCfg.DataDir, name+"-history")
+	}
+
+	log.Info("Opening layered database",
+		"stateDB", stateDBPath,
+		"historyDB", historyDBPath,
+		"cacheShards", cfg.LayeredDBCfg.CacheShards,
+		"cacheCapacity", cfg.LayeredDBCfg.CacheCapacity,
+	)
+
+	roTxsLimiter := semaphore.NewWeighted(int64(cmp.Max(32, runtime.GOMAXPROCS(-1)*8)))
+
+	// State DB: smaller MapSize, optimized for random read/write.
+	stateKv, err := mdbx.NewMDBX(logger).
+		WriteMergeThreshold(4 * 8192).
+		Path(stateDBPath).Label(kv.ChainDB).
+		DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter).
+		MapSize(2 * datasize.TB).
+		Open(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open state DB: %w", err)
+	}
+
+	// History DB: larger MapSize, optimized for sequential append.
+	historyKv, err := mdbx.NewMDBX(logger).
+		WriteMergeThreshold(4 * 8192).
+		Path(historyDBPath).Label(kv.ChainDB).
+		DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter).
+		MapSize(8 * datasize.TB).
+		Open(ctx)
+	if err != nil {
+		stateKv.Close()
+		return nil, fmt.Errorf("open history DB: %w", err)
+	}
+
+	db := layered.NewLayeredDB(stateKv, historyKv, &cfg.LayeredDBCfg)
+
+	if err = db.Update(ctx, func(tx kv.RwTx) error {
+		return params.SetN42Version(tx, params.VersionKeyCreated)
+	}); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return db, nil
 }
 
 func WriteGenesisBlock(db kv.RwTx, genesis *conf.Genesis) (*block.Block, error) {

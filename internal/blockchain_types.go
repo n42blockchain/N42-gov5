@@ -124,7 +124,8 @@ type BlockChain struct {
 
 	errorCh chan error
 
-	process Processor
+	process     Processor
+	parallelEVM bool
 
 	wg sync.WaitGroup
 
