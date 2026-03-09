@@ -201,6 +201,76 @@ func (debug *DebugAPI) GetAccount(ctx context.Context, address types.Address) {
 
 }
 
+// DbGet reads a raw value from the database.
+func (debug *DebugAPI) DbGet(ctx context.Context, table string, key hexutil.Bytes) (hexutil.Bytes, error) {
+	if debug.api == nil || debug.api.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	roTX, err := debug.api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer roTX.Rollback()
+
+	val, err := roTX.GetOne(table, key)
+	if err != nil {
+		return nil, err
+	}
+	if val == nil {
+		return nil, fmt.Errorf("key not found")
+	}
+	return hexutil.Bytes(val), nil
+}
+
+// TableInfo represents information about a database table.
+type TableInfo struct {
+	Name  string `json:"name"`
+	Count uint64 `json:"count"`
+	Size  uint64 `json:"size"`
+}
+
+// DbStats returns statistics for all database tables.
+func (debug *DebugAPI) DbStats(ctx context.Context) ([]TableInfo, error) {
+	if debug.api == nil || debug.api.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	roTX, err := debug.api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer roTX.Rollback()
+
+	migrator, ok := roTX.(kv.BucketMigrator)
+	if !ok {
+		return nil, fmt.Errorf("database does not support listing tables")
+	}
+	buckets, err := migrator.ListBuckets()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tables: %w", err)
+	}
+
+	result := make([]TableInfo, 0, len(buckets))
+	for _, bucket := range buckets {
+		size, _ := roTX.BucketSize(bucket)
+		cursor, err := roTX.Cursor(bucket)
+		if err != nil {
+			continue
+		}
+		count, _ := cursor.Count()
+		cursor.Close()
+		if count > 0 {
+			result = append(result, TableInfo{
+				Name:  bucket,
+				Count: count,
+				Size:  size,
+			})
+		}
+	}
+	return result, nil
+}
+
 // NetAPI offers network related RPC methods
 type NetAPI struct {
 	api            *API
