@@ -62,6 +62,10 @@ type NodeConfig struct {
 	// using optimistic concurrency with automatic conflict detection.
 	ParallelEVM bool `json:"parallel_evm" yaml:"parallel_evm"`
 
+	// Prefetch enables state prefetching before block execution.
+	// Pre-loads sender, recipient, and access list state into cache.
+	Prefetch bool `json:"prefetch" yaml:"prefetch"`
+
 	ExternalSigner        string `json:"external_signer" yaml:"external_signer"`
 	UseLightweightKDF     bool   `json:"use_lightweight_kdf" yaml:"use_lightweight_kdf"`
 	InsecureUnlockAllowed bool   `json:"insecure_unlock_allowed" yaml:"insecure_unlock_allowed"`

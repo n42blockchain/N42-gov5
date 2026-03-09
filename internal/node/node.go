@@ -238,10 +238,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, fmt.Errorf("failed to create blockchain: %w", err)
 	}
 
-	// Enable parallel EVM execution if configured.
-	if cfg.NodeCfg.ParallelEVM {
-		if realBC, ok := bc.(*internal.BlockChain); ok {
+	// Enable parallel EVM execution and state prefetching if configured.
+	if realBC, ok := bc.(*internal.BlockChain); ok {
+		if cfg.NodeCfg.ParallelEVM {
 			realBC.SetParallelEVM(true)
+		}
+		if cfg.NodeCfg.Prefetch {
+			realBC.SetPrefetch(true)
 		}
 	}
 
