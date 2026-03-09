@@ -69,6 +69,10 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 	pool.priced = newTxPricedList(pool.all)
 	pool.reset(nil, bc.CurrentBlock())
 
+	if loaded := pool.loadFromDB(); loaded > 0 {
+		log.Info("Restored persisted transactions", "count", loaded)
+	}
+
 	pool.wg.Add(1)
 	go pool.scheduleLoop()
 
@@ -79,7 +83,11 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 }
 
 // Stop terminates the transaction pool.
+// Persists local and pending transactions to DB before shutdown.
 func (pool *TxsPool) Stop() error {
+	if err := pool.flushToDB(); err != nil {
+		log.Warn("Failed to persist transaction pool", "err", err)
+	}
 	pool.cancel()
 	pool.wg.Wait()
 	log.Info("Transaction pool stopped")
