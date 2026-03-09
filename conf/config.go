@@ -42,6 +42,7 @@ type Config struct {
 	SnapSyncCfg  SnapSyncConfig  `json:"snap_sync" yaml:"snap_sync"`
 	SnapshotCfg  SnapshotConfig  `json:"snapshot" yaml:"snapshot"`
 	LayeredDBCfg LayeredDBConfig `json:"layered_db" yaml:"layered_db"`
+	BundlerCfg   BundlerConfig   `json:"bundler" yaml:"bundler"`
 }
 
 func SaveConfigToFile(file string, config Config) error {

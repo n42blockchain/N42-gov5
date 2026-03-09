@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/internal/api/filters"
+	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/utils"
 )
@@ -61,6 +62,9 @@ type Router struct {
 	enablePersonal bool
 	enableMiner    bool
 	enableRPC      bool
+
+	// ERC-4337 bundler
+	bundlerService *bundler.BundlerService
 }
 
 // RouterConfig holds configuration for the API router.
@@ -217,7 +221,21 @@ func (r *Router) APIs() []jsonrpc.API {
 		})
 	}
 
+	// ERC-4337 bundler namespace
+	if r.bundlerService != nil {
+		apis = append(apis, jsonrpc.API{
+			Namespace: "eth",
+			Service:   NewBundlerAPI(r.bundlerService),
+		})
+	}
+
 	return apis
+}
+
+// SetBundlerService sets the ERC-4337 bundler service for the router.
+// Must be called before APIs() to register the bundler endpoints.
+func (r *Router) SetBundlerService(svc *bundler.BundlerService) {
+	r.bundlerService = svc
 }
 
 // Metrics returns the RPC metrics collector.
