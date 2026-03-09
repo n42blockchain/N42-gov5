@@ -113,7 +113,7 @@
 | **EIP-2537 (BLS12-381)** | ✅ | ✅ | ❌ | 🔧 | ✅ 9 预编译完整 | BLS 预编译 |
 | **EOF (EVM Object Format)** | 🔧 Glamsterdam | 🔧 | ❌ | ❌ | ✅ | N42 已提前实现 |
 | **EIP-7212 (P-256)** | ✅ Pectra | ✅ | ❌ | 🔧 | ✅ | secp256r1 验证 |
-| **ERC-4337 (AA)** | 部分 | 部分 | ❌ | ❌ | ⚠️ 仅 helpers | 账户抽象 |
+| **ERC-4337 (AA)** | 部分 | 部分 | ❌ | ❌ | ✅ bundler+mempool | 账户抽象 |
 | **PeerDAS** | ✅ Fusaka | ✅ | ❌ | ❌ | ❌ | 数据可用性采样 |
 
 ### 3.3 关键差距
@@ -285,7 +285,7 @@
 
 | 功能 | geth | reth | Sei | Monad | Aptos | **N42** |
 |------|------|------|-----|-------|-------|---------|
-| **Prometheus Metrics** | ✅ 200+ | ✅ 300+ | ✅ | ✅ | ✅ | ⚠️ 20指标(9项死代码) |
+| **Prometheus Metrics** | ✅ 200+ | ✅ 300+ | ✅ | ✅ | ✅ | ✅ ~30指标(已全部接入) |
 | **OpenTelemetry** | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | **Grafana Dashboard** | ✅ 官方模板 | ✅ 官方模板 | ✅ | ❌ | ✅ | ❌ |
 | **结构化事件日志** | ✅ | ✅ | ✅ | ✅ | ✅ | 部分 |
@@ -394,16 +394,16 @@
 |------|------|------|------|-----|-------|-------|---------|
 | 状态管理 | 15% | 95 | 98 | 80 | 90 | 85 | 60 |
 | 同步机制 | 10% | 90 | 95 | 75 | 70 | 80 | 65 |
-| 执行层/EVM | 20% | 85 | 88 | 90 | 95 | 90* | 75 |
+| 执行层/EVM | 20% | 85 | 88 | 90 | 95 | 90* | 78 |
 | P2P 网络 | 10% | 95 | 90 | 80 | 80 | 75 | 70 |
 | 共识 | 10% | 90 | 90 | 85 | 95 | 90 | 75 |
 | RPC API | 10% | 95 | 95 | 60 | 70 | 60 | 80 |
 | 交易池 | 5% | 90 | 90 | 85 | 85 | 70 | 85 |
 | 工具链 | 5% | 95 | 70 | 50 | 30 | 60 | 75 |
 | 安全性 | 5% | 90 | 95 | 85 | 80 | 90 | 75 |
-| 可观测性 | 5% | 90 | 95 | 85 | 60 | 85 | 40 |
+| 可观测性 | 5% | 90 | 95 | 85 | 60 | 85 | 55 |
 | 扩展性 | 5% | 80 | 95 | 85 | 40 | 70 | 30 |
-| **加权总分** | 100% | **91** | **93** | **80** | **81** | **81** | **67** |
+| **加权总分** | 100% | **91** | **93** | **80** | **81** | **81** | **69** |
 
 > *Aptos 使用 Move VM，非直接可比
 
@@ -560,11 +560,11 @@
 | **EIP-2537 (BLS)** | `internal/vm/contracts.go:854-1360` + `common/crypto/bls12381/` | ~500+800 | - | ✅ 完整实现 | 9 预编译(G1Add/Mul/MSM,G2同,Pairing,MapG1/G2)，含 x86 汇编优化 |
 | **EIP-6110 (Deposits)** | `internal/vm/eips_pectra.go` | ~80 | - | ⚠️ 解析器 | 仅日志解析，无完整 deposit 处理流程 |
 | **EIP-7251 (MaxEB)** | `internal/vm/eips_pectra.go` | ~30 | 0 | ⚠️ 常量 | 仅常量定义 |
-| **ERC-4337 (AA)** | `internal/vm/erc4337.go` | 362 | 0 | ⚠️ Helpers | UserOperation 结构 + gas helpers，**无 EntryPoint、无 bundler、无签名验证** |
+| **ERC-4337 (AA)** | `internal/vm/erc4337.go` + `internal/bundler/` | 362+1120 | 22+18 | ✅ Bundler 实现 | UserOp mempool + validator + bundle builder + RPC 端点 |
 | **P-256 Verify** | `internal/vm/contracts_p256.go` | 276 | - | ✅ 完整实现 | secp256r1 verify + recover |
 | **Cancun EIPs** | `internal/vm/eips_cancun.go` | 251 | - | ✅ 完整实现 | TLOAD/TSTORE/MCOPY/BLOBHASH/BLOBBASEFEE |
 | **System Metrics** | `internal/metrics/system_metrics.go` | ~150 | - | ✅ 实际收集 | 11 指标：goroutines/内存/GC/CPU |
-| **Chain Metrics** | `internal/metrics/chain_metrics.go` | ~100 | 0 | ❌ 死代码 | 9 指标定义但 **仅 SyncCurrentBlock 被调用**，其余 8 项未接入 |
+| **Chain Metrics** | `internal/metrics/chain_metrics.go` + `lib/kv/` + `freezer/` | ~100 | - | ✅ 已全部接入 | DB 读写/Freezer/Sync 指标已接入执行路径 |
 | **DB CLI 工具** | `cmd/n42/dbcmd.go` | 289 | - | ✅ 完整 | stats/list/get/inspect 四命令 |
 | **Chain Import/Export** | `cmd/n42/chaincmd.go` | 252 | - | ✅ 完整 | protobuf 格式，批量导入 |
 | **State Export** | `cmd/n42/statecmd.go` | 203 | - | ✅ 完整 | JSON 流式输出，含 storage/code 选项 |
@@ -572,8 +572,8 @@
 ### C.2 关键风险点
 
 1. **Block-STM 缺乏性能验证**：23 个单元测试验证了正确性，但没有任何基准测试（benchmark）量化并行加速比。也没有使用真实 EVM 交易的集成测试。无法确认在 N42 的实际工作负载下是否有显著收益。
-3. **Chain Metrics 死代码**：`DBReadBytes`/`DBWriteBytes`/`FreezerBlocks` 等 8 个 Prometheus 指标从未被递增（`Inc()`/`Add()` 未在任何执行路径调用），会在 Grafana 中永远显示为 0，误导运维人员。
-4. **ERC-4337 误标为已支持**：仅有 `UserOperation` 结构定义和 gas 计算 helpers，缺少 EntryPoint 合约交互、bundler 逻辑、签名聚合等核心功能。不能声称支持 ERC-4337。
+3. ~~Chain Metrics 死代码~~：**已修复** — DB 读写/Freezer/Sync 指标已接入执行路径。
+4. ~~ERC-4337 误标为已支持~~：**已修复** — 实现了 bundler service、UserOp mempool、validator、bundle builder 和 4 个 RPC 端点。
 
 ### C.3 与竞品的诚实差距
 
