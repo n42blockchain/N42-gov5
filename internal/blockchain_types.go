@@ -35,6 +35,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -133,7 +134,8 @@ type BlockChain struct {
 	freezer       freezer.FreezerAPI
 	ancientReader *freezer.AncientReader
 
-	exexManager *exex.Manager
+	exexManager  *exex.Manager
+	snapshotTree *snapshot.Tree
 
 	wg sync.WaitGroup
 

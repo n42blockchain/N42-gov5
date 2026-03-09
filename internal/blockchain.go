@@ -48,6 +48,7 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -148,6 +149,18 @@ func (bc *BlockChain) SetExExManager(m *exex.Manager) {
 // ExExManager returns the attached ExEx manager, or nil if not configured.
 func (bc *BlockChain) ExExManager() *exex.Manager {
 	return bc.exexManager
+}
+
+// SetSnapshotTree attaches a snapshot acceleration tree to the blockchain.
+// The tree caches recent block state diffs for fast reads without DB access.
+func (bc *BlockChain) SetSnapshotTree(tree *snapshot.Tree) {
+	bc.snapshotTree = tree
+	log.Info("Snapshot acceleration tree attached")
+}
+
+// SnapshotTree returns the attached snapshot tree, or nil if not configured.
+func (bc *BlockChain) SnapshotTree() *snapshot.Tree {
+	return bc.snapshotTree
 }
 
 // Freezer returns the attached freezer, or nil if not configured.

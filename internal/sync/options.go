@@ -27,3 +27,12 @@ func WithInitialSync(initialSync Checker) Option {
 		return nil
 	}
 }
+
+// WithEarliestBlock sets a function that returns the earliest available block
+// number. P2P range requests for blocks before this number are rejected.
+func WithEarliestBlock(fn func() uint64) Option {
+	return func(s *Service) error {
+		s.cfg.earliestBlock = fn
+		return nil
+	}
+}

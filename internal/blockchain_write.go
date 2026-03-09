@@ -36,6 +36,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
+	statesnapshot "github.com/n42blockchain/N42/modules/state/snapshot"
 )
 
 // WriteBlockWithoutState persists a block without writing its state.
@@ -135,6 +136,14 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
 			stateWriter = state.NewCachedStateWriter(stateWriter, cache)
 		}
+
+		// Wrap with DiffCollector to capture state diffs for snapshot acceleration.
+		var diffCollector *statesnapshot.DiffCollector
+		if bc.snapshotTree != nil {
+			diffCollector = statesnapshot.NewDiffCollector(stateWriter)
+			stateWriter = diffCollector
+		}
+
 		if err := ibs.CommitBlock(bc.chainConfig.Rules(blk.Number64().Uint64()), stateWriter); err != nil {
 			return err
 		}
@@ -143,6 +152,21 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		}
 		if err := stateWriter.WriteHistory(); err != nil {
 			return fmt.Errorf("writing history for block %d failed: %w", blk.Number64().Uint64(), err)
+		}
+
+		// Update snapshot tree with collected diffs.
+		if diffCollector != nil && bc.snapshotTree != nil {
+			if err := bc.snapshotTree.Update(
+				blk.Number64().Uint64(),
+				blk.Hash(),
+				blk.ParentHash(),
+				diffCollector.Accounts(),
+				diffCollector.AccountDeletions(),
+				diffCollector.Storage(),
+			); err != nil {
+				// Non-fatal: snapshot acceleration is best-effort.
+				log.Warn("Failed to update snapshot tree", "block", blk.Number64().Uint64(), "err", err)
+			}
 		}
 
 		if nopay != nil {
