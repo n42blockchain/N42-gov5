@@ -116,6 +116,17 @@ func (s *Service) run() {
 
 	log.Info("Starting snap sync...")
 
+	startTime := time.Now()
+
+	// Try snapshot-based sync first: discover a snapshot from peers,
+	// download state at that height, then the caller replays remaining blocks.
+	if s.trySnapshotSync() {
+		return
+	}
+
+	// Fallback to original pivot-based snap sync.
+	log.Info("Snapshot sync unavailable, falling back to pivot-based snap sync")
+
 	// Step 1: Wait for peers and select pivot.
 	pivotBlock, stateRoot, err := s.selectPivot()
 	if err != nil {
@@ -141,31 +152,13 @@ func (s *Service) run() {
 	}
 
 	mgr := NewManager(s.cfg.SnapSync, s.cfg.P2P, s.cfg.DB, pivotBlock, stateRoot)
-	startTime := time.Now()
 
 	if err := mgr.Run(s.ctx); err != nil {
 		log.Error("Snap sync download failed", "err", err)
 		return
 	}
 
-	// Step 3: Verify downloaded state.
-	stats, err := VerifyDownloadedState(s.ctx, s.cfg.DB)
-	if err != nil {
-		log.Error("Snap sync state verification failed", "err", err)
-		return
-	}
-
-	if err := VerifyAccountIntegrity(s.ctx, s.cfg.DB, 1000); err != nil {
-		log.Error("Snap sync account integrity check failed", "err", err)
-		return
-	}
-
-	log.Info("Snap sync completed successfully",
-		"duration", time.Since(startTime),
-		"accounts", stats.AccountCount,
-		"storageSlots", stats.StorageCount,
-		"codes", stats.CodeCount,
-	)
+	s.verifyAndLog(startTime)
 }
 
 // Stop cancels the snap sync service.
@@ -252,6 +245,69 @@ func (s *Service) selectPivot() (uint64, []byte, error) {
 	// For N42's incremental state root, we pass a nil state root.
 	// State verification relies on block replay, not state root comparison.
 	return pivotBlock, nil, nil
+}
+
+// trySnapshotSync attempts snapshot-based sync. Returns true if successful.
+func (s *Service) trySnapshotSync() bool {
+	sm := NewSnapshotManager(s.cfg.SnapSync, s.cfg.P2P, s.cfg.DB)
+
+	// Wait up to 30 seconds for enough peers with snapshots.
+	var snapshotBlock uint64
+	deadline := time.After(30 * time.Second)
+	minPeers := s.cfg.SnapSync.MinSnapPeers
+	if minPeers <= 0 {
+		minPeers = 2
+	}
+
+	for {
+		var err error
+		snapshotBlock, err = sm.DiscoverSnapshot(s.ctx, minPeers)
+		if err == nil && snapshotBlock > 0 {
+			break
+		}
+
+		select {
+		case <-time.After(5 * time.Second):
+			log.Debug("Waiting for snapshot peers...", "err", err)
+		case <-deadline:
+			log.Info("No snapshots discovered from peers, using fallback sync")
+			return false
+		case <-s.ctx.Done():
+			return false
+		}
+	}
+
+	log.Info("Starting snapshot-based sync", "snapshotBlock", snapshotBlock)
+	startTime := time.Now()
+
+	if err := sm.Run(s.ctx, snapshotBlock); err != nil {
+		log.Error("Snapshot sync download failed", "err", err)
+		return false
+	}
+
+	s.verifyAndLog(startTime)
+	return true
+}
+
+// verifyAndLog runs post-download verification and logs completion.
+func (s *Service) verifyAndLog(startTime time.Time) {
+	stats, err := VerifyDownloadedState(s.ctx, s.cfg.DB)
+	if err != nil {
+		log.Error("Snap sync state verification failed", "err", err)
+		return
+	}
+
+	if err := VerifyAccountIntegrity(s.ctx, s.cfg.DB, 1000); err != nil {
+		log.Error("Snap sync account integrity check failed", "err", err)
+		return
+	}
+
+	log.Info("Snap sync completed successfully",
+		"duration", time.Since(startTime),
+		"accounts", stats.AccountCount,
+		"storageSlots", stats.StorageCount,
+		"codes", stats.CodeCount,
+	)
 }
 
 // checkPreviousCompletion checks if a previous snap sync run already completed.

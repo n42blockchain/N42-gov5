@@ -28,11 +28,18 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
+// SnapshotBoundary provides the oldest retained snapshot block number so
+// that the pruner does not delete changesets still needed for snapshot reads.
+type SnapshotBoundary interface {
+	OldestRetainedBlock() uint64
+}
+
 // Pruner runs background pruning of historical blockchain data.
 type Pruner struct {
 	db     kv.RwDB
 	config conf.PruneConfig
 	hp     HealthProvider // used to get current block number
+	snap   SnapshotBoundary
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -41,12 +48,14 @@ type Pruner struct {
 }
 
 // NewPruner creates a new Pruner. Does not start pruning until Start is called.
-func NewPruner(db kv.RwDB, config conf.PruneConfig, hp HealthProvider) *Pruner {
+// snap may be nil if snapshot system is disabled.
+func NewPruner(db kv.RwDB, config conf.PruneConfig, hp HealthProvider, snap SnapshotBoundary) *Pruner {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Pruner{
 		db:     db,
 		config: config,
 		hp:     hp,
+		snap:   snap,
 		ctx:    ctx,
 		cancel: cancel,
 		done:   make(chan struct{}),
@@ -114,6 +123,15 @@ func (p *Pruner) maybePrune() {
 		return // not enough history yet
 	}
 	pruneTo := currentBlock - p.config.BlockRetention
+
+	// Respect snapshot boundary: never prune changesets that are needed to
+	// reconstruct state at the oldest retained snapshot height.
+	if p.snap != nil {
+		oldest := p.snap.OldestRetainedBlock()
+		if oldest > 0 && pruneTo > oldest {
+			pruneTo = oldest
+		}
+	}
 
 	if err := p.prune(pruneTo); err != nil {
 		log.Error("Pruning failed", "pruneTo", pruneTo, "err", err)

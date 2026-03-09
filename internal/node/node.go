@@ -63,6 +63,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
+	"github.com/n42blockchain/N42/internal/snapshot"
 	"github.com/n42blockchain/N42/internal/sync/snapsync"
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/txgen"
@@ -119,6 +120,7 @@ type Node struct {
 	inprocHandler *jsonrpc.Server
 	rateLimiter   *jsonrpc.RateLimiter
 	pruner        *Pruner
+	snapshotMgr   *snapshot.Manager
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -470,10 +472,21 @@ func (n *Node) Start() error {
 		n.is.Start()
 	}()
 
+	// Start snapshot manager if enabled
+	if n.config.SnapshotCfg.Enable {
+		bp := &nodeBlockProvider{node: n}
+		n.snapshotMgr = snapshot.NewManager(n.config.SnapshotCfg, n.db, bp)
+		n.snapshotMgr.Start()
+	}
+
 	// Start pruner if enabled
 	if n.config.PruneCfg.IsEnabled() {
 		hp := &nodeHealthProvider{node: n}
-		n.pruner = NewPruner(n.db, n.config.PruneCfg, hp)
+		var snap SnapshotBoundary
+		if n.snapshotMgr != nil {
+			snap = n.snapshotMgr
+		}
+		n.pruner = NewPruner(n.db, n.config.PruneCfg, hp, snap)
 		n.pruner.Start()
 	}
 
@@ -749,7 +762,14 @@ func (n *Node) stopServices() []error {
 	services := []namedCloser{
 		// 1. RPC services (depends on everything, stop first)
 		{"RPC services", func() error { n.stopRPC(); return nil }},
-		// 2. Pruner
+		// 2. Snapshot manager
+		{"Snapshot manager", func() error {
+			if n.snapshotMgr != nil {
+				n.snapshotMgr.Stop()
+			}
+			return nil
+		}},
+		// 3. Pruner
 		{"Pruner", func() error {
 			if n.pruner != nil {
 				n.pruner.Stop()
@@ -1155,4 +1175,20 @@ func (h *nodeHealthProvider) PeerCount() int {
 		return 0
 	}
 	return len(h.node.p2p.Peers().Connected())
+}
+
+// nodeBlockProvider implements snapshot.BlockProvider for the Node.
+type nodeBlockProvider struct {
+	node *Node
+}
+
+func (b *nodeBlockProvider) CurrentBlock() uint64 {
+	if b.node.blockChain == nil {
+		return 0
+	}
+	blk := b.node.blockChain.CurrentBlock()
+	if blk == nil {
+		return 0
+	}
+	return blk.Number64().Uint64()
 }
