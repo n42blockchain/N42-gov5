@@ -118,3 +118,70 @@ func TestPeerScorer_RecordFailureIgnoresEmptyPeer(t *testing.T) {
 		t.Errorf("expected no entries after empty peer failure, got %d", count)
 	}
 }
+
+func TestPeerScorer_BanAfterInvalidResponses(t *testing.T) {
+	ps := newPeerScorer()
+	pid := peer.ID("malicious")
+
+	// Below threshold — not banned.
+	for i := 0; i < banThreshold-1; i++ {
+		ps.recordInvalid(pid)
+	}
+	if ps.isBanned(pid) {
+		t.Fatal("peer should not be banned before threshold")
+	}
+
+	// Reach threshold — banned.
+	ps.recordInvalid(pid)
+	if !ps.isBanned(pid) {
+		t.Fatal("peer should be banned after reaching threshold")
+	}
+}
+
+func TestPeerScorer_BannedPeerExcludedFromBestPeer(t *testing.T) {
+	ps := newPeerScorer()
+	good := peer.ID("good")
+	bad := peer.ID("bad")
+
+	// Give good peer a good score.
+	for i := 0; i < 10; i++ {
+		ps.recordSuccess(good, 50*time.Millisecond)
+	}
+
+	// Ban bad peer.
+	for i := 0; i < banThreshold; i++ {
+		ps.recordInvalid(bad)
+	}
+
+	// Bad peer should never be selected.
+	for i := 0; i < 50; i++ {
+		selected := ps.bestPeer([]peer.ID{good, bad})
+		if selected == bad {
+			t.Fatal("banned peer should not be selected")
+		}
+	}
+}
+
+func TestPeerScorer_AllPeersBannedReturnsEmpty(t *testing.T) {
+	ps := newPeerScorer()
+	pid := peer.ID("only-peer")
+
+	for i := 0; i < banThreshold; i++ {
+		ps.recordInvalid(pid)
+	}
+
+	if got := ps.bestPeer([]peer.ID{pid}); got != "" {
+		t.Errorf("expected empty when all peers banned, got %q", got)
+	}
+}
+
+func TestPeerScorer_RecordInvalidIgnoresEmptyPeer(t *testing.T) {
+	ps := newPeerScorer()
+	ps.recordInvalid("") // should not panic
+	ps.mu.Lock()
+	count := len(ps.peers)
+	ps.mu.Unlock()
+	if count != 0 {
+		t.Errorf("expected no entries after empty peer invalid, got %d", count)
+	}
+}

@@ -362,6 +362,14 @@ func (sm *SnapshotManager) executeSnapshotAccountTask(ctx context.Context, task 
 		return
 	}
 
+	// Validate batch integrity.
+	if err := validateAccountBatch(resp, entries, task.StartKey, task.EndKey); err != nil {
+		log.Warn("Invalid account batch from peer", "peer", task.Assigned, "err", err)
+		sm.scorer.recordInvalid(task.Assigned)
+		sm.failTask(task)
+		return
+	}
+
 	latency := time.Since(start)
 
 	// Write to DB.
@@ -489,6 +497,14 @@ func (sm *SnapshotManager) executeSnapshotStorageTask(ctx context.Context, task 
 		return
 	}
 
+	// Validate storage batch integrity.
+	if err := validateStorageBatch(resp, entries, task.StartKey, task.EndKey); err != nil {
+		log.Warn("Invalid storage batch from peer", "peer", task.Assigned, "err", err)
+		sm.scorer.recordInvalid(task.Assigned)
+		sm.failTask(task)
+		return
+	}
+
 	if err := sm.dbSem.Acquire(ctx, 1); err != nil {
 		sm.failTask(task)
 		return
@@ -541,6 +557,14 @@ func (sm *SnapshotManager) executeCodeTaskFromPeer(ctx context.Context, task *Ra
 	resp, err := sendGetCode(ctx, sm.p2p, task.Assigned, req)
 	if err != nil {
 		log.Debug("Code request failed", "peer", task.Assigned, "err", err)
+		sm.failTask(task)
+		return
+	}
+
+	// Validate code response.
+	if err := validateCodeResponse(resp, task.CodeHashes); err != nil {
+		log.Warn("Invalid code response from peer", "peer", task.Assigned, "err", err)
+		sm.scorer.recordInvalid(task.Assigned)
 		sm.failTask(task)
 		return
 	}

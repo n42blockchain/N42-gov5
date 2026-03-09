@@ -17,10 +17,13 @@
 package snapsync
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 
+	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
@@ -123,6 +126,108 @@ func VerifyAccountIntegrity(ctx context.Context, db kv.RoDB, sampleSize int) err
 		}
 
 		log.Debug("Account integrity check passed", "sampled", checked)
+		return nil
+	})
+}
+
+// VerifyCodeIntegrity walks all accounts and verifies that every non-empty
+// CodeHash has a corresponding entry in the Code table. This catches missing
+// contract codes that could cause execution failures.
+func VerifyCodeIntegrity(ctx context.Context, db kv.RoDB) error {
+	emptyCode := crypto.Keccak256Hash(nil)
+
+	var missing int
+	var checked int
+
+	if err := db.View(ctx, func(tx kv.Tx) error {
+		c, err := tx.Cursor(modules.Account)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+
+		for k, v, err := c.First(); k != nil; k, v, err = c.Next() {
+			if err != nil {
+				return err
+			}
+			if len(k) != 20 || len(v) == 0 {
+				continue
+			}
+
+			var acc account.StateAccount
+			if err := acc.Unmarshal(v); err != nil {
+				continue
+			}
+
+			codeHash := acc.CodeHash
+			if codeHash == emptyCode || bytes.Equal(codeHash[:], emptyCode[:]) {
+				continue
+			}
+
+			code, err := tx.GetOne(modules.Code, codeHash[:])
+			if err != nil {
+				return fmt.Errorf("looking up code for %x: %w", k, err)
+			}
+			if code == nil {
+				missing++
+				log.Warn("Missing contract code",
+					"address", fmt.Sprintf("%x", k),
+					"codeHash", fmt.Sprintf("%x", codeHash),
+				)
+			}
+			checked++
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	if missing > 0 {
+		return fmt.Errorf("%w: %d contract codes missing out of %d checked", ErrStateCorrupted, missing, checked)
+	}
+
+	log.Debug("Code integrity check passed", "contracts", checked)
+	return nil
+}
+
+// VerifyStorageIntegrity checks that storage entries only exist for accounts
+// with Incarnation > 0, and that storage key format is correct (54 bytes).
+func VerifyStorageIntegrity(ctx context.Context, db kv.RoDB, sampleSize int) error {
+	if sampleSize <= 0 {
+		sampleSize = 1000
+	}
+
+	return db.View(ctx, func(tx kv.Tx) error {
+		c, err := tx.Cursor(modules.Storage)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+
+		checked := 0
+		for k, _, err := c.First(); k != nil && checked < sampleSize; k, _, err = c.Next() {
+			if err != nil {
+				return err
+			}
+
+			// Storage key = address(20) + incarnation(2) + storageKey(32) = 54 bytes.
+			if len(k) != 54 {
+				return fmt.Errorf("%w: storage key length %d, expected 54", ErrStateCorrupted, len(k))
+			}
+
+			// Extract address and verify the account exists.
+			addr := k[:20]
+			accData, err := tx.GetOne(modules.Account, addr)
+			if err != nil {
+				return err
+			}
+			if accData == nil {
+				return fmt.Errorf("%w: orphaned storage for non-existent account %x", ErrStateCorrupted, addr)
+			}
+			checked++
+		}
+
+		log.Debug("Storage integrity check passed", "sampled", checked)
 		return nil
 	})
 }

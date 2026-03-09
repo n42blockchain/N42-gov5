@@ -32,16 +32,26 @@ const explorationRate = 5 // 1 in 5 = 20%
 // score is significantly reduced to allow other peers to be tried first.
 const failurePenaltyWindow = 10 * time.Second
 
+// banThreshold is the number of invalid responses that triggers a peer ban.
+// Invalid responses indicate data corruption or malicious behavior.
+const banThreshold = 3
+
+// banDuration is how long a banned peer remains excluded.
+const banDuration = 5 * time.Minute
+
 // peerStats tracks per-peer download performance.
 type peerStats struct {
 	successes    int
 	failures     int
+	invalids     int // count of invalid/malicious responses
 	totalLatency time.Duration
 	lastFailure  time.Time
+	bannedUntil  time.Time
 }
 
 // peerScorer selects the best peer for each download task based on
-// observed success rates and response latencies.
+// observed success rates and response latencies. Peers that send
+// invalid data are temporarily banned.
 type peerScorer struct {
 	mu    sync.Mutex
 	peers map[peer.ID]*peerStats
@@ -74,8 +84,36 @@ func (ps *peerScorer) recordFailure(pid peer.ID) {
 	s.lastFailure = time.Now()
 }
 
+// recordInvalid records an invalid/malicious response from the given peer.
+// After banThreshold invalid responses, the peer is banned for banDuration.
+func (ps *peerScorer) recordInvalid(pid peer.ID) {
+	if pid == "" {
+		return
+	}
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	s := ps.getOrCreate(pid)
+	s.invalids++
+	s.failures++
+	s.lastFailure = time.Now()
+	if s.invalids >= banThreshold {
+		s.bannedUntil = time.Now().Add(banDuration)
+	}
+}
+
+// isBanned returns true if the peer is currently banned.
+func (ps *peerScorer) isBanned(pid peer.ID) bool {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	s, ok := ps.peers[pid]
+	if !ok {
+		return false
+	}
+	return !s.bannedUntil.IsZero() && time.Now().Before(s.bannedUntil)
+}
+
 // bestPeer returns the highest-scoring connected peer, with occasional random
-// exploration to avoid starvation.
+// exploration to avoid starvation. Banned peers are excluded.
 func (ps *peerScorer) bestPeer(candidates []peer.ID) peer.ID {
 	if len(candidates) == 0 {
 		return ""
@@ -83,14 +121,27 @@ func (ps *peerScorer) bestPeer(candidates []peer.ID) peer.ID {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	// Explore: pick a random peer to give every peer a chance.
-	if len(candidates) > 1 && rand.Intn(explorationRate) == 0 {
-		return candidates[rand.Intn(len(candidates))]
+	// Filter out banned peers.
+	now := time.Now()
+	var eligible []peer.ID
+	for _, pid := range candidates {
+		s, ok := ps.peers[pid]
+		if !ok || s.bannedUntil.IsZero() || now.After(s.bannedUntil) {
+			eligible = append(eligible, pid)
+		}
+	}
+	if len(eligible) == 0 {
+		return ""
 	}
 
-	best := candidates[0]
+	// Explore: pick a random peer to give every peer a chance.
+	if len(eligible) > 1 && rand.Intn(explorationRate) == 0 {
+		return eligible[rand.Intn(len(eligible))]
+	}
+
+	best := eligible[0]
 	bestScore := ps.scoreLocked(best)
-	for _, pid := range candidates[1:] {
+	for _, pid := range eligible[1:] {
 		s := ps.scoreLocked(pid)
 		if s > bestScore {
 			best = pid
@@ -129,6 +180,12 @@ func (ps *peerScorer) scoreLocked(pid peer.ID) float64 {
 	if !s.lastFailure.IsZero() && time.Since(s.lastFailure) < failurePenaltyWindow {
 		score *= 0.1
 	}
+
+	// Extra penalty for invalid responses.
+	if s.invalids > 0 {
+		score *= 0.5
+	}
+
 	return score
 }
 

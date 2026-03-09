@@ -16,6 +16,8 @@
 
 package conf
 
+import "fmt"
+
 const (
 	DefaultSnapshotInterval     = uint64(10000) // create snapshot every N blocks
 	DefaultSnapshotMaxRetained  = 3             // keep at most N snapshots
@@ -31,4 +33,28 @@ type SnapshotConfig struct {
 	Interval      uint64 `json:"interval" yaml:"interval"`             // blocks between snapshots
 	MaxRetained   int    `json:"max_retained" yaml:"max_retained"`     // max snapshots to keep
 	SafetyMargin  uint64 `json:"safety_margin" yaml:"safety_margin"`   // HEAD - margin = snapshot height
+}
+
+// Validate checks that configuration values are within acceptable ranges
+// and applies defaults where needed.
+func (c *SnapshotConfig) Validate() error {
+	if !c.Enable {
+		return nil
+	}
+	if c.Interval == 0 {
+		c.Interval = DefaultSnapshotInterval
+	}
+	if c.Interval < 100 {
+		return fmt.Errorf("snapshot: Interval %d below minimum 100", c.Interval)
+	}
+	if c.MaxRetained == 0 {
+		c.MaxRetained = DefaultSnapshotMaxRetained
+	}
+	if c.MaxRetained < 1 || c.MaxRetained > 100 {
+		return fmt.Errorf("snapshot: MaxRetained %d outside range [1, 100]", c.MaxRetained)
+	}
+	if c.SafetyMargin == 0 {
+		c.SafetyMargin = DefaultSnapshotSafetyMargin
+	}
+	return nil
 }

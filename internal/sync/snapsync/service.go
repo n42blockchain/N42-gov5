@@ -89,6 +89,12 @@ func (s *Service) run() {
 		return
 	}
 
+	if err := s.cfg.SnapSync.Validate(); err != nil {
+		log.Error("Invalid snap sync configuration", "err", err)
+		s.synced.Store(true)
+		return
+	}
+
 	// Check if we actually need snap sync (only for empty/near-genesis nodes).
 	currentBlock := s.cfg.Chain.CurrentBlock().Number64().Uint64()
 	if currentBlock > 0 {
@@ -299,6 +305,16 @@ func (s *Service) verifyAndLog(startTime time.Time) {
 
 	if err := VerifyAccountIntegrity(s.ctx, s.cfg.DB, 1000); err != nil {
 		log.Error("Snap sync account integrity check failed", "err", err)
+		return
+	}
+
+	if err := VerifyCodeIntegrity(s.ctx, s.cfg.DB); err != nil {
+		log.Error("Snap sync code integrity check failed", "err", err)
+		return
+	}
+
+	if err := VerifyStorageIntegrity(s.ctx, s.cfg.DB, 1000); err != nil {
+		log.Error("Snap sync storage integrity check failed", "err", err)
 		return
 	}
 
