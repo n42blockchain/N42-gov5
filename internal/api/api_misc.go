@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"runtime"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -269,6 +270,66 @@ func (debug *DebugAPI) DbStats(ctx context.Context) ([]TableInfo, error) {
 		}
 	}
 	return result, nil
+}
+
+// NodeStatus represents a comprehensive snapshot of node state.
+type NodeStatus struct {
+	Version      string `json:"version"`
+	Network      string `json:"network"`
+	CurrentBlock uint64 `json:"currentBlock"`
+	HighestBlock uint64 `json:"highestBlock"`
+	Syncing      bool   `json:"syncing"`
+	PeerCount    int    `json:"peerCount"`
+	GasPrice     string `json:"gasPrice"`
+	ChainID      string `json:"chainId"`
+	NumGoroutine int    `json:"numGoroutine"`
+	MemAllocMB   uint64 `json:"memAllocMB"`
+}
+
+// NodeStatus returns a comprehensive snapshot of the node state.
+func (debug *DebugAPI) NodeStatus(ctx context.Context) (*NodeStatus, error) {
+	status := &NodeStatus{
+		Version:      params.Version,
+		NumGoroutine: runtime.NumGoroutine(),
+	}
+
+	// Memory stats
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	status.MemAllocMB = m.Alloc / 1024 / 1024
+
+	if debug.api != nil {
+		// Chain info
+		if bc := debug.api.BlockChain(); bc != nil {
+			if current := bc.CurrentBlock(); current != nil {
+				status.CurrentBlock = current.Number64().Uint64()
+			}
+		}
+
+		// Chain config
+		if cc := debug.api.GetChainConfig(); cc != nil {
+			status.ChainID = cc.ChainID.String()
+			status.Network = cc.ChainName
+		}
+
+		// Peer info
+		if p := debug.api.p2p; p != nil {
+			status.PeerCount = len(p.PeerInfos())
+			status.HighestBlock = p.HighestPeerBlock()
+		}
+
+		// Sync status
+		status.Syncing = status.HighestBlock > 0 && status.CurrentBlock < status.HighestBlock
+
+		// Gas price
+		if debug.api.gpo != nil {
+			if tip, err := debug.api.gpo.SuggestTipCap(ctx, debug.api.GetChainConfig()); err == nil {
+				status.GasPrice = tip.String()
+			}
+		}
+	}
+
+	return status, nil
 }
 
 // NetAPI offers network related RPC methods
