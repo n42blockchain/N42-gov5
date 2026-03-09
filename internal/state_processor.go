@@ -29,6 +29,7 @@ import (
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/modules/ethdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -178,8 +179,10 @@ func ApplyTransaction(config *params.ChainConfig, blockHashFunc func(n uint64) t
 }
 
 // NewStateReaderWriter creates a new state reader and writer pair.
-func NewStateReaderWriter(batch ethdb.Database, tx kv.RwTx, blockNumber uint64, writeChangeSets bool) (state.StateReader, state.WriterWithChangeSets, error) {
-	stateReader := state.NewPlainStateReader(tx)
+// If cache is non-nil, the reader and writer are wrapped with cache-aware
+// decorators to accelerate hot-path reads across blocks.
+func NewStateReaderWriter(batch ethdb.Database, tx kv.RwTx, blockNumber uint64, writeChangeSets bool, cache *layered.ShardedCache) (state.StateReader, state.WriterWithChangeSets, error) {
+	var stateReader state.StateReader = state.NewPlainStateReader(tx)
 
 	var stateWriter state.WriterWithChangeSets
 	if writeChangeSets {
@@ -187,5 +190,12 @@ func NewStateReaderWriter(batch ethdb.Database, tx kv.RwTx, blockNumber uint64, 
 	} else {
 		stateWriter = state.NewPlainStateWriterNoHistory(batch)
 	}
+
+	// Wrap with cache if available (LayeredDB mode).
+	if cache != nil {
+		stateReader = state.NewCachedStateReader(stateReader, cache)
+		stateWriter = state.NewCachedStateWriter(stateWriter, cache)
+	}
+
 	return stateReader, stateWriter, nil
 }

@@ -41,6 +41,7 @@ type Config struct {
 	PruneCfg     PruneConfig     `json:"prune" yaml:"prune"`
 	SnapSyncCfg  SnapSyncConfig  `json:"snap_sync" yaml:"snap_sync"`
 	SnapshotCfg  SnapshotConfig  `json:"snapshot" yaml:"snapshot"`
+	LayeredDBCfg LayeredDBConfig `json:"layered_db" yaml:"layered_db"`
 }
 
 func SaveConfigToFile(file string, config Config) error {
