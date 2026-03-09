@@ -1,0 +1,143 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+//
+// The N42 library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The N42 library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+
+package state
+
+import (
+	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv/layered"
+	"github.com/n42blockchain/N42/modules"
+	"google.golang.org/protobuf/proto"
+)
+
+// CachedStateReader wraps a StateReader with a cross-block ShardedCache.
+// It accelerates repeated reads of the same account/storage/code data
+// across multiple blocks, complementing IntraBlockState's per-block cache.
+//
+// Cache keys are table+dbKey (same as LayeredDB), so the cache is shared
+// with the DB layer for maximum hit rate.
+type CachedStateReader struct {
+	inner StateReader
+	cache *layered.ShardedCache
+}
+
+// NewCachedStateReader creates a CachedStateReader that wraps inner with cache.
+// If cache is nil, it behaves identically to inner (no overhead).
+func NewCachedStateReader(inner StateReader, cache *layered.ShardedCache) *CachedStateReader {
+	return &CachedStateReader{inner: inner, cache: cache}
+}
+
+func (r *CachedStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
+	key := address.Bytes()
+
+	// Check cache.
+	if r.cache != nil {
+		if enc, ok := r.cache.Get(modules.Account, key); ok {
+			if len(enc) == 0 {
+				return nil, nil
+			}
+			var a account.StateAccount
+			if err := a.DecodeForStorage(enc); err != nil {
+				// Cache entry corrupted — fall through to DB.
+				r.cache.Delete(modules.Account, key)
+			} else {
+				return &a, nil
+			}
+		}
+	}
+
+	// Cache miss — read from underlying reader.
+	a, err := r.inner.ReadAccountData(address)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate cache. Store the raw proto-encoded bytes for fast retrieval.
+	if r.cache != nil {
+		if a == nil {
+			r.cache.Put(modules.Account, key, nil) // negative cache
+		} else {
+			pb := a.ToProtoMessage()
+			if enc, err := proto.Marshal(pb); err == nil {
+				r.cache.Put(modules.Account, key, enc)
+			}
+		}
+	}
+
+	return a, nil
+}
+
+func (r *CachedStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+
+	if r.cache != nil {
+		if v, ok := r.cache.Get(modules.Storage, compositeKey); ok {
+			if len(v) == 0 {
+				return nil, nil
+			}
+			return v, nil
+		}
+	}
+
+	enc, err := r.inner.ReadAccountStorage(address, incarnation, key)
+	if err != nil {
+		return nil, err
+	}
+
+	if r.cache != nil {
+		r.cache.Put(modules.Storage, compositeKey, enc)
+	}
+
+	return enc, nil
+}
+
+func (r *CachedStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+	cacheKey := codeHash[:]
+
+	if r.cache != nil {
+		if v, ok := r.cache.Get(modules.Code, cacheKey); ok {
+			if len(v) == 0 {
+				return nil, nil
+			}
+			return v, nil
+		}
+	}
+
+	code, err := r.inner.ReadAccountCode(address, incarnation, codeHash)
+	if err != nil {
+		return nil, err
+	}
+
+	if r.cache != nil {
+		r.cache.Put(modules.Code, cacheKey, code)
+	}
+
+	return code, nil
+}
+
+func (r *CachedStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(address, incarnation, codeHash)
+	return len(code), err
+}
+
+func (r *CachedStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
+	// Incarnation lookups are rare — delegate directly without caching.
+	return r.inner.ReadAccountIncarnation(address)
+}
+
+// Compile-time check.
+var _ StateReader = (*CachedStateReader)(nil)

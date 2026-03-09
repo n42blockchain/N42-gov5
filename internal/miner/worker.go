@@ -42,6 +42,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/lib/kv/layered"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -451,7 +452,10 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	}
 	defer tx.Rollback()
 
-	stateReader := state.NewPlainStateReader(tx)
+	var stateReader state.StateReader = state.NewPlainStateReader(tx)
+	if cache := layered.ExtractCache(w.chain.DB()); cache != nil {
+		stateReader = state.NewCachedStateReader(stateReader, cache)
+	}
 	stateWriter := state.NewNoopWriter()
 	ibs := state.New(stateReader)
 	ibs.BeginWriteSnapshot()
