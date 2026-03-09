@@ -86,6 +86,12 @@ type MdbxTx struct {
 
 	streams  map[int]kv.Closer
 	streamID int
+
+	// Per-transaction I/O counters for metrics.
+	readCount  atomic.Uint64
+	writeCount atomic.Uint64
+	readBytes  atomic.Uint64
+	writeBytes atomic.Uint64
 }
 
 func (db *MdbxKV) Path() string     { return db.opts.path }

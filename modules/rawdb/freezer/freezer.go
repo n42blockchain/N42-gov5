@@ -27,8 +27,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/log"
 )
+
+var freezerFrozenBlocks = prometheus.GetOrCreateCounter("freezer_frozen_blocks", true)
 
 const (
 	// Default number of blocks behind chain head to start freezing.
@@ -203,6 +206,7 @@ func (f *Freezer) Freeze(start uint64, data *FreezeData) error {
 
 	f.frozen.Add(count)
 	f.saveFrozenCount(f.frozen.Load())
+	freezerFrozenBlocks.Set(f.frozen.Load())
 
 	return nil
 }

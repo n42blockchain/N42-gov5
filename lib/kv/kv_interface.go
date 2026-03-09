@@ -87,6 +87,11 @@ var (
 	GcOverflowMetric = metrics.GetOrCreateGauge(`db_gc_overflow`) //nolint
 	GcPagesMetric    = metrics.GetOrCreateGauge(`db_gc_pages`)    //nolint
 
+	// DB read/write counters — incremented per transaction in CollectMetrics().
+	DbReadCount  = metrics.GetOrCreateGauge(`db_read_total`)       //nolint
+	DbWriteCount = metrics.GetOrCreateGauge(`db_write_total`)      //nolint
+	DbReadBytes  = metrics.GetOrCreateGauge(`db_read_bytes_total`) //nolint
+	DbWriteBytes = metrics.GetOrCreateGauge(`db_write_bytes_total`)//nolint
 )
 
 type DBVerbosityLvl int8

@@ -27,15 +27,6 @@ var (
 	SyncIsSyncing    = prometheus.GetOrCreateCounter("sync_is_syncing", true)
 )
 
-// Database metrics.
-var (
-	DBReadCount  = prometheus.GetOrCreateCounter("db_read_total")
-	DBWriteCount = prometheus.GetOrCreateCounter("db_write_total")
-	DBReadBytes  = prometheus.GetOrCreateCounter("db_read_bytes_total")
-	DBWriteBytes = prometheus.GetOrCreateCounter("db_write_bytes_total")
-)
-
-// Freezer metrics.
-var (
-	FreezerFrozenBlocks = prometheus.GetOrCreateCounter("freezer_frozen_blocks", true)
-)
+// NOTE: DB read/write metrics are defined in lib/kv/kv_interface.go (DbReadCount etc.)
+// and updated in lib/kv/mdbx/kv_mdbx_tx.go CollectMetrics().
+// Freezer metrics are defined in modules/rawdb/freezer/freezer.go.
