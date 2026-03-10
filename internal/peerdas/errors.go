@@ -36,4 +36,10 @@ var (
 
 	// ErrServiceAlreadyRunning is returned on duplicate Start calls.
 	ErrServiceAlreadyRunning = errors.New("peerdas: service already running")
+
+	// ErrInvalidKZGProofLength is returned when a KZG proof is not exactly 48 bytes.
+	ErrInvalidKZGProofLength = errors.New("peerdas: KZG proof must be exactly 48 bytes")
+
+	// ErrEmptyColumnData is returned when a DataColumn has no data entries.
+	ErrEmptyColumnData = errors.New("peerdas: column data is empty")
 )

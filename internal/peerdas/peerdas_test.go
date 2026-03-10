@@ -384,12 +384,12 @@ func TestDataColumn_Validate(t *testing.T) {
 		},
 		{
 			name:    "index out of range",
-			col:     &DataColumn{Index: NumberOfColumns, BlockHash: randomHash(), KZGProof: []byte{1}},
+			col:     &DataColumn{Index: NumberOfColumns, BlockHash: randomHash(), KZGProof: randomBytes(KZGProofLength), Data: [][]byte{{1}}},
 			wantErr: ErrColumnIndexOutOfRange,
 		},
 		{
 			name:    "empty block hash",
-			col:     &DataColumn{Index: 0, KZGProof: []byte{1}},
+			col:     &DataColumn{Index: 0, KZGProof: randomBytes(KZGProofLength), Data: [][]byte{{1}}},
 			wantErr: ErrEmptyBlockHash,
 		},
 		{
@@ -398,8 +398,18 @@ func TestDataColumn_Validate(t *testing.T) {
 			wantErr: ErrEmptyKZGProof,
 		},
 		{
+			name:    "invalid proof length",
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), KZGProof: []byte{1, 2, 3}},
+			wantErr: ErrInvalidKZGProofLength,
+		},
+		{
+			name:    "empty column data",
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), KZGProof: randomBytes(KZGProofLength)},
+			wantErr: ErrEmptyColumnData,
+		},
+		{
 			name:    "valid",
-			col:     &DataColumn{Index: 0, BlockHash: randomHash(), KZGProof: []byte{1}},
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), KZGProof: randomBytes(KZGProofLength), Data: [][]byte{{1, 2, 3}}},
 			wantErr: nil,
 		},
 	}
@@ -471,5 +481,220 @@ func TestService_StartStop(t *testing.T) {
 	// Stop again should be no-op.
 	if err := svc.Stop(); err != nil {
 		t.Fatalf("Stop again: %v", err)
+	}
+}
+
+// --- mockBlockProvider for testing ---
+
+type mockBlockProvider struct {
+	hash   types.Hash
+	number uint64
+}
+
+func (m *mockBlockProvider) CurrentBlock() (types.Hash, uint64) {
+	return m.hash, m.number
+}
+
+func TestService_StartStopWithSampling(t *testing.T) {
+	db := newTestDB(t)
+	cfg := Config{
+		Enable:          true,
+		CustodyCount:    CustodyRequirement,
+		SamplingEnabled: true,
+		SampleCount:     SamplesPerSlot,
+	}
+	svc := NewService(cfg, randomBytes(32), db)
+	svc.SetBlockProvider(&mockBlockProvider{hash: randomHash(), number: 100})
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start with sampling: %v", err)
+	}
+
+	// Service should be running with sampling loop active.
+	if err := svc.Stop(); err != nil {
+		t.Fatalf("Stop with sampling: %v", err)
+	}
+}
+
+// --- KZG proof length validation in VerifyAvailability ---
+
+func TestVerifyAvailability_InvalidKZGProofLength(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	blockHash := randomHash()
+	nodeID := randomBytes(32)
+
+	cfg := Config{
+		Enable:          true,
+		CustodyCount:    CustodyRequirement,
+		SamplingEnabled: true,
+		SampleCount:     SamplesPerSlot,
+	}
+	svc := NewService(cfg, nodeID, db)
+
+	// Store columns with wrong KZG proof length (not 48 bytes).
+	sampleCols := SampleColumns(blockHash, cfg.SampleCount)
+	for _, colIdx := range sampleCols {
+		col := &DataColumn{
+			Index:       colIdx,
+			BlockHash:   blockHash,
+			BlockNumber: 42,
+			Data:        [][]byte{{0x01, 0x02}},
+			KZGProof:    randomBytes(32), // wrong length: 32 instead of 48
+		}
+		if err := db.Update(ctx, func(tx kv.RwTx) error {
+			return StoreColumn(tx, col)
+		}); err != nil {
+			t.Fatalf("store column %d: %v", colIdx, err)
+		}
+	}
+
+	available, err := svc.VerifyAvailability(ctx, blockHash, 42)
+	if err != nil {
+		t.Fatalf("VerifyAvailability: %v", err)
+	}
+	if available {
+		t.Error("expected availability=false when KZG proofs have wrong length")
+	}
+}
+
+func TestVerifyAvailability_EmptyColumnData(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	blockHash := randomHash()
+	nodeID := randomBytes(32)
+
+	cfg := Config{
+		Enable:          true,
+		CustodyCount:    CustodyRequirement,
+		SamplingEnabled: true,
+		SampleCount:     SamplesPerSlot,
+	}
+	svc := NewService(cfg, nodeID, db)
+
+	// Store columns with correct KZG proof but empty data.
+	sampleCols := SampleColumns(blockHash, cfg.SampleCount)
+	for _, colIdx := range sampleCols {
+		col := &DataColumn{
+			Index:       colIdx,
+			BlockHash:   blockHash,
+			BlockNumber: 42,
+			Data:        [][]byte{}, // empty data
+			KZGProof:    randomBytes(KZGProofLength),
+		}
+		if err := db.Update(ctx, func(tx kv.RwTx) error {
+			return StoreColumn(tx, col)
+		}); err != nil {
+			t.Fatalf("store column %d: %v", colIdx, err)
+		}
+	}
+
+	available, err := svc.VerifyAvailability(ctx, blockHash, 42)
+	if err != nil {
+		t.Fatalf("VerifyAvailability: %v", err)
+	}
+	if available {
+		t.Error("expected availability=false when column data is empty")
+	}
+}
+
+// --- Sampling round test ---
+
+func TestService_RunSamplingRound(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	blockHash := randomHash()
+	nodeID := randomBytes(32)
+
+	cfg := Config{
+		Enable:          true,
+		CustodyCount:    CustodyRequirement,
+		SamplingEnabled: true,
+		SampleCount:     SamplesPerSlot,
+	}
+	svc := NewService(cfg, nodeID, db)
+	svc.SetBlockProvider(&mockBlockProvider{hash: blockHash, number: 100})
+
+	// Store all sampled columns with valid data.
+	sampleCols := SampleColumns(blockHash, cfg.SampleCount)
+	for _, colIdx := range sampleCols {
+		col := makeTestColumn(blockHash, colIdx)
+		if err := db.Update(ctx, func(tx kv.RwTx) error {
+			return StoreColumn(tx, col)
+		}); err != nil {
+			t.Fatalf("store column %d: %v", colIdx, err)
+		}
+	}
+
+	// Run a sampling round — should pass without error.
+	svc.runSamplingRound(ctx)
+
+	// Verify lastSampledBlock was updated.
+	if svc.lastSampledBlock != 100 {
+		t.Errorf("lastSampledBlock: got %d, want 100", svc.lastSampledBlock)
+	}
+
+	// Running again for the same block should be a no-op (skip).
+	svc.runSamplingRound(ctx)
+}
+
+// --- KZGProofLength constant test ---
+
+func TestKZGProofLength(t *testing.T) {
+	if KZGProofLength != 48 {
+		t.Fatalf("KZGProofLength should be 48, got %d", KZGProofLength)
+	}
+}
+
+// --- StoreDataColumn with enhanced validation ---
+
+func TestStoreDataColumn_InvalidProofLength(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nodeID := randomBytes(32)
+
+	cfg := Config{
+		Enable:       true,
+		CustodyCount: CustodyRequirement,
+	}
+	svc := NewService(cfg, nodeID, db)
+
+	col := &DataColumn{
+		Index:       0,
+		BlockHash:   randomHash(),
+		BlockNumber: 1,
+		Data:        [][]byte{{0x01}},
+		KZGProof:    randomBytes(32), // wrong length
+	}
+
+	err := svc.StoreDataColumn(ctx, col)
+	if err != ErrInvalidKZGProofLength {
+		t.Fatalf("expected ErrInvalidKZGProofLength, got %v", err)
+	}
+}
+
+func TestStoreDataColumn_EmptyData(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nodeID := randomBytes(32)
+
+	cfg := Config{
+		Enable:       true,
+		CustodyCount: CustodyRequirement,
+	}
+	svc := NewService(cfg, nodeID, db)
+
+	col := &DataColumn{
+		Index:       0,
+		BlockHash:   randomHash(),
+		BlockNumber: 1,
+		Data:        nil, // empty data
+		KZGProof:    randomBytes(KZGProofLength),
+	}
+
+	err := svc.StoreDataColumn(ctx, col)
+	if err != ErrEmptyColumnData {
+		t.Fatalf("expected ErrEmptyColumnData, got %v", err)
 	}
 }

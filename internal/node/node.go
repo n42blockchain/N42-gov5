@@ -69,6 +69,7 @@ import (
 	"github.com/n42blockchain/N42/internal/exex/extensions"
 	"github.com/n42blockchain/N42/internal/miner"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/peerdas"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	"github.com/n42blockchain/N42/internal/sync/checkpoint"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
@@ -141,6 +142,7 @@ type Node struct {
 	exexManager     *exex.Manager         // Execution Extensions manager
 	hotstuffService *hotstuff.Service     // HotStuff BFT consensus service (nil if not using HotStuff)
 	bundlerService  *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
+	peerdasService  *peerdas.Service      // PeerDAS (EIP-7594) data availability service (nil if disabled)
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -530,6 +532,20 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		node.bundlerService = bundler.NewBundlerService(bundlerCfg, chainID)
 	}
 
+	// Create PeerDAS service if enabled.
+	if cfg.PeerDASCfg.IsEnabled() {
+		peerID := node.p2p.PeerID()
+		nodeIDBytes := []byte(peerID)
+		peerdasCfg := peerdas.Config{
+			Enable:          true,
+			CustodyCount:    cfg.PeerDASCfg.CustodyCount,
+			SamplingEnabled: cfg.PeerDASCfg.SamplingEnabled,
+			SampleCount:     cfg.PeerDASCfg.SampleCount,
+		}
+		node.peerdasService = peerdas.NewService(peerdasCfg, nodeIDBytes, node.db)
+		node.peerdasService.SetBlockProvider(&peerdasBlockProvider{node: &node})
+	}
+
 	success = true
 	chainKv = nil // prevent deferred cleanup from closing the DB now owned by node
 	return &node, nil
@@ -660,6 +676,14 @@ func (n *Node) Start() error {
 		n.bundlerService.Start(n.ctx)
 	}
 
+	// Register snapshot range-read API when snapshots are enabled.
+	if n.config.SnapshotCfg.Enable {
+		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
+			Namespace: "debug",
+			Service:   api.NewSnapshotAPI(n.db),
+		})
+	}
+
 	if err := n.startRPC(); err != nil {
 		log.Error("failed start jsonrpc service", zap.Error(err))
 		return err
@@ -733,6 +757,13 @@ func (n *Node) Start() error {
 		// Wire earliest-block gate into the sync service so that P2P range
 		// requests for expired blocks are rejected.
 		n.sync.SetEarliestBlock(n.historyExpirer.EarliestBlock)
+	}
+
+	// Start PeerDAS service if enabled
+	if n.peerdasService != nil {
+		if err := n.peerdasService.Start(n.ctx); err != nil {
+			log.Warn("PeerDAS service failed to start", "err", err)
+		}
 	}
 
 	// Start transaction generator if enabled
@@ -1045,6 +1076,13 @@ func (n *Node) stopServices() []error {
 		{"Bundler service", func() error {
 			if n.bundlerService != nil {
 				n.bundlerService.Stop()
+			}
+			return nil
+		}},
+		// 3e. PeerDAS service
+		{"PeerDAS service", func() error {
+			if n.peerdasService != nil {
+				return n.peerdasService.Stop()
 			}
 			return nil
 		}},
@@ -1549,6 +1587,22 @@ func (b *nodeBlockProvider) CurrentBlock() uint64 {
 		return 0
 	}
 	return blk.Number64().Uint64()
+}
+
+// peerdasBlockProvider implements peerdas.BlockProvider using the node's blockchain.
+type peerdasBlockProvider struct {
+	node *Node
+}
+
+func (p *peerdasBlockProvider) CurrentBlock() (types.Hash, uint64) {
+	if p.node.blockChain == nil {
+		return types.Hash{}, 0
+	}
+	blk := p.node.blockChain.CurrentBlock()
+	if blk == nil {
+		return types.Hash{}, 0
+	}
+	return blk.Hash(), blk.Number64().Uint64()
 }
 
 // devnetGenesisBlock creates a minimal genesis for --dev / private chain mode.

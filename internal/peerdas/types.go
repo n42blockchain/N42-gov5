@@ -27,6 +27,12 @@ const (
 
 	// SamplesPerSlot is the default number of columns sampled for an availability check.
 	SamplesPerSlot = 8
+
+	// KZGProofLength is the expected length of a BLS12-381 G1 point used as a KZG proof.
+	KZGProofLength = 48
+
+	// SamplingInterval is the default interval between sampling rounds.
+	SamplingInterval = 12 // seconds (one slot)
 )
 
 // DataColumn represents a single column of blob data for a given block.
@@ -63,6 +69,12 @@ func (dc *DataColumn) Validate() error {
 	}
 	if len(dc.KZGProof) == 0 {
 		return ErrEmptyKZGProof
+	}
+	if len(dc.KZGProof) != KZGProofLength {
+		return ErrInvalidKZGProofLength
+	}
+	if len(dc.Data) == 0 {
+		return ErrEmptyColumnData
 	}
 	return nil
 }
