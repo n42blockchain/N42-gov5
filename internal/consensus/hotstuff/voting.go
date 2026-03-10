@@ -173,9 +173,10 @@ func (e *ConsensusEngine) tryFormCommitQC() error {
 		return err
 	}
 
+	commitVoteCount := e.commitCollector.VoteCount()
 	now := time.Now()
 	e.viewTiming.CommitQCFormed = &now
-	e.viewTiming.CommitVoteCount = uint32(e.commitCollector.VoteCount())
+	e.viewTiming.CommitVoteCount = uint32(commitVoteCount)
 
 	log.Info("block committed!", "view", view, "blockHash", blockHash)
 
