@@ -36,9 +36,9 @@ func newRateLimiter(p2pProvider p2p.P2P) *limiter {
 
 	// Block rate limits with defaults for nil P2PLimit.
 	var (
-		allowedBlocksPerSecond float64 = 64
-		allowedBlocksBurst     int64   = 320
-		blockLimiterPeriod             = 10 * time.Second
+		allowedBlocksPerSecond float64 = 500
+		allowedBlocksBurst     int64   = 1000
+		blockLimiterPeriod             = 1 * time.Second
 	)
 
 	if cfg := p2pProvider.GetConfig(); cfg != nil && cfg.P2PLimit != nil {

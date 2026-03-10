@@ -141,6 +141,8 @@ func (d *Downloader) processChain() error {
 		case <-d.ctx.Done():
 			return ErrCanceled
 		case <-tick.C:
+			// Collect blocks under lock, then release before InsertChain
+			// so fetchBodies/processBodies can continue downloading in parallel.
 			d.bodyTaskPoolLock.Lock()
 			wantBlockNumber := new(uint256.Int).AddUint64(d.bc.CurrentBlock().Number64(), 1)
 			log.Tracef("want block %d have blocks count is %d", wantBlockNumber.Uint64(), len(d.bodyResultStore))
@@ -158,9 +160,9 @@ func (d *Downloader) processChain() error {
 				}
 				wantBlockNumber.AddUint64(wantBlockNumber, 1)
 			}
+			d.bodyTaskPoolLock.Unlock()
 
 			if len(blocks) == 0 {
-				d.bodyTaskPoolLock.Unlock()
 				continue
 			}
 
@@ -172,10 +174,8 @@ func (d *Downloader) processChain() error {
 
 			if _, err := d.bc.InsertChain(blocks); err != nil {
 				log.Errorf("downloader failed to insert new block in blockchain, err:%v", err)
-				d.bodyTaskPoolLock.Unlock()
 				return err
 			}
-			d.bodyTaskPoolLock.Unlock()
 		}
 	}
 	return nil

@@ -105,9 +105,9 @@ type fetchRequestResponse struct {
 
 // newBlocksFetcher creates ready to use fetcher.
 func newBlocksFetcher(ctx context.Context, cfg *blocksFetcherConfig) *blocksFetcher {
-	var allowedBlocksPerSecond float64 = 64
-	var allowedBlocksBurst int64 = 320
-	var blockLimiterPeriod = 10 * time.Second
+	var allowedBlocksPerSecond float64 = 500
+	var allowedBlocksBurst int64 = 1000
+	var blockLimiterPeriod = 1 * time.Second
 
 	if p2pCfg := cfg.p2p.GetConfig(); p2pCfg != nil && p2pCfg.P2PLimit != nil {
 		allowedBlocksPerSecond = float64(p2pCfg.P2PLimit.BlockBatchLimit)
