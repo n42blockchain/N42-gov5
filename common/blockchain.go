@@ -80,6 +80,11 @@ type IBlockChain interface {
 	DB() kv.RwDB
 	Quit() <-chan struct{}
 
+	// EarliestBlock returns the earliest block number that still has full
+	// data available after history expiry (EIP-4444). Returns 0 if no
+	// history has been expired (i.e. all blocks are available).
+	EarliestBlock() uint64
+
 	Close() error
 
 	// WriteBlockWithState writes a block with its state to the database.
