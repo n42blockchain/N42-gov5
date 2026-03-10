@@ -55,7 +55,12 @@ func VerifyEIP4844Header(parent, header *block.Header) error {
 func CalcBlobGasUsed(txs []*transaction.Transaction) uint64 {
 	var blobGasUsed uint64
 	for _, tx := range txs {
-		blobGasUsed += tx.BlobGas()
+		gas := tx.BlobGas()
+		if blobGasUsed+gas < blobGasUsed {
+			// Overflow protection: cap at max uint64.
+			return ^uint64(0)
+		}
+		blobGasUsed += gas
 	}
 	return blobGasUsed
 }

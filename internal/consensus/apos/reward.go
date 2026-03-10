@@ -195,7 +195,12 @@ func (r *Reward) buildRewards(tx kv.RwTx, number *uint256.Int, setRewards bool) 
 			return nil, errors.New("buildreward block type assert error")
 		}
 
-		verifiers := block.Body().Verifier()
+		body := block.Body()
+		if body == nil {
+			currentNr.SubUint64(currentNr, 1)
+			continue
+		}
+		verifiers := body.Verifier()
 		for _, verifier := range verifiers {
 			depositInfo, ok := depositeMap[verifier.Address]
 			if !ok {

@@ -264,7 +264,11 @@ func (s *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, 
 	if int(index) >= len(txs) {
 		return nil
 	}
-	headerBaseFee := blk.Header().BaseFee64()
+	hdr := blk.Header()
+	if hdr == nil {
+		return nil
+	}
+	headerBaseFee := hdr.BaseFee64()
 	if headerBaseFee == nil {
 		headerBaseFee = new(uint256.Int)
 	}

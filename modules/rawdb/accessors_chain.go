@@ -211,6 +211,8 @@ func deleteHeader(db kv.Deleter, hash types.Hash, number uint64) {
 }
 
 // ReadBodyRAW retrieves the block body (transactions and uncles) in encoding.
+// Returns nil only when the body does not exist; panics on encoding errors
+// to prevent silent data corruption (e.g. during freezer operations).
 func ReadBodyRAW(db kv.Tx, hash types.Hash, number uint64) []byte {
 	body := ReadCanonicalBodyWithTransactions(db, hash, number)
 	if body == nil {
@@ -220,7 +222,7 @@ func ReadBodyRAW(db kv.Tx, hash types.Hash, number uint64) []byte {
 
 	bodyRaw, err := proto.Marshal(pbBody)
 	if err != nil {
-		log.Error("ReadBodyRAW failed", "err", err)
+		log.Crit("ReadBodyRAW: failed to marshal block body", "number", number, "hash", hash, "err", err)
 	}
 	return bodyRaw
 }
@@ -228,7 +230,7 @@ func ReadBodyRAW(db kv.Tx, hash types.Hash, number uint64) []byte {
 func ReadStorageBodyRAW(db kv.Getter, hash types.Hash, number uint64) []byte {
 	bodyRaw, err := db.GetOne(modules.BlockBody, modules.BlockBodyKey(number, hash))
 	if err != nil {
-		log.Error("ReadBodyRAW failed", "err", err)
+		log.Error("ReadStorageBodyRAW failed", "number", number, "hash", hash, "err", err)
 	}
 	return bodyRaw
 }

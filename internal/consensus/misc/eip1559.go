@@ -64,6 +64,11 @@ func CalcBaseFee(config *params.ChainConfig, parent *block.Header) *big.Int {
 		return new(big.Int).SetUint64(params.InitialBaseFee)
 	}
 
+	// Guard against nil parent BaseFee (should not happen for London+ blocks).
+	if parent.BaseFee == nil {
+		return new(big.Int).SetUint64(params.InitialBaseFee)
+	}
+
 	var (
 		parentGasTarget          = parent.GasLimit / params.ElasticityMultiplier
 		parentGasTargetBig       = new(big.Int).SetUint64(parentGasTarget)

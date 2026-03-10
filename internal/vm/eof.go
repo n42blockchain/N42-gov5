@@ -432,6 +432,10 @@ func validateCodeSection(code []byte, typeInfo EOFTypeSection, container *EOFCon
 			if int(offset)+32 > int(container.Header.DataSize) {
 				return ErrEOFInvalidDataOffset
 			}
+			// Also validate against actual data length (data may be truncated).
+			if int(offset)+32 > len(container.Data) {
+				return ErrEOFInvalidDataOffset
+			}
 		}
 
 		pos += size

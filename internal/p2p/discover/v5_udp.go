@@ -544,7 +544,8 @@ func (t *UDPv5) dispatch() {
 		case c := <-t.callDoneCh:
 			active := t.activeCallByNode[c.id]
 			if active != c {
-				panic("BUG: callDone for inactive call")
+				t.log.Warn("callDone for inactive call, ignoring", "id", c.id)
+				continue
 			}
 			c.timeout.Stop()
 			delete(t.activeCallByAuth, c.nonce)
@@ -563,12 +564,18 @@ func (t *UDPv5) dispatch() {
 			close(t.readNextCh)
 			for id, queue := range t.callQueue {
 				for _, c := range queue {
-					c.err <- errClosed
+					select {
+					case c.err <- errClosed:
+					default:
+					}
 				}
 				delete(t.callQueue, id)
 			}
 			for id, c := range t.activeCallByNode {
-				c.err <- errClosed
+				select {
+				case c.err <- errClosed:
+				default:
+				}
 				delete(t.activeCallByNode, id)
 				delete(t.activeCallByAuth, c.nonce)
 			}

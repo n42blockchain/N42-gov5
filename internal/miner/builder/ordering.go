@@ -105,13 +105,28 @@ type txWithPrice struct {
 }
 
 func (t *txWithPrice) computeEffectiveTip() {
+	tipCapU := t.tx.GasTipCap()
+	feeCapU := t.tx.GasFeeCap()
 	if t.baseFee == nil || t.baseFee.IsZero() {
-		t.effectiveTip = t.tx.GasTipCap().ToBig()
+		if tipCapU != nil {
+			t.effectiveTip = tipCapU.ToBig()
+		} else {
+			t.effectiveTip = t.tx.GasPrice().ToBig()
+		}
 		return
 	}
 	// effectiveTip = min(gasTipCap, gasFeeCap - baseFee)
-	feeCap := t.tx.GasFeeCap().ToBig()
-	tipCap := t.tx.GasTipCap().ToBig()
+	var feeCap, tipCap *big.Int
+	if feeCapU != nil {
+		feeCap = feeCapU.ToBig()
+	} else {
+		feeCap = t.tx.GasPrice().ToBig()
+	}
+	if tipCapU != nil {
+		tipCap = tipCapU.ToBig()
+	} else {
+		tipCap = t.tx.GasPrice().ToBig()
+	}
 	diff := new(big.Int).Sub(feeCap, t.baseFee.ToBig())
 	if diff.Cmp(tipCap) < 0 {
 		t.effectiveTip = diff
