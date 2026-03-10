@@ -1,0 +1,125 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+
+package hotstuff
+
+// RoundState tracks the state of the current consensus round (view).
+//
+// Each view progresses through phases:
+//
+//	WaitingForProposal → Voting → PreCommit → Committed
+//
+// A timeout at any point transitions to TimedOut, triggering view change.
+type RoundState struct {
+	currentView         ViewNumber
+	phase               Phase
+	lockedQC            QuorumCertificate // highest QC (safety lock)
+	lastCommittedQC     QuorumCertificate // most recently committed
+	consecutiveTimeouts uint32
+}
+
+// NewRoundState creates a new round state starting at view 1.
+func NewRoundState() *RoundState {
+	genesis := GenesisQC()
+	return &RoundState{
+		currentView:     1,
+		phase:           PhaseWaitingForProposal,
+		lockedQC:        genesis,
+		lastCommittedQC: genesis,
+	}
+}
+
+// FromSnapshot restores state from a persisted snapshot (crash recovery).
+func RoundStateFromSnapshot(view ViewNumber, lockedQC, lastCommittedQC QuorumCertificate, consecutiveTimeouts uint32) *RoundState {
+	return &RoundState{
+		currentView:         view,
+		phase:               PhaseWaitingForProposal,
+		lockedQC:            lockedQC,
+		lastCommittedQC:     lastCommittedQC,
+		consecutiveTimeouts: consecutiveTimeouts,
+	}
+}
+
+// CurrentView returns the current view number.
+func (rs *RoundState) CurrentView() ViewNumber {
+	return rs.currentView
+}
+
+// Phase returns the current phase.
+func (rs *RoundState) Phase() Phase {
+	return rs.phase
+}
+
+// LockedQC returns the safety lock QC.
+func (rs *RoundState) LockedQC() *QuorumCertificate {
+	return &rs.lockedQC
+}
+
+// LastCommittedQC returns the last committed QC.
+func (rs *RoundState) LastCommittedQC() *QuorumCertificate {
+	return &rs.lastCommittedQC
+}
+
+// ConsecutiveTimeouts returns the timeout counter.
+func (rs *RoundState) ConsecutiveTimeouts() uint32 {
+	return rs.consecutiveTimeouts
+}
+
+// EnterVoting transitions to the Voting phase.
+func (rs *RoundState) EnterVoting() {
+	rs.phase = PhaseVoting
+}
+
+// EnterPreCommit transitions to the PreCommit phase.
+func (rs *RoundState) EnterPreCommit() {
+	rs.phase = PhasePreCommit
+}
+
+// Commit marks the current view as committed and updates QC state.
+func (rs *RoundState) Commit(commitQC QuorumCertificate) {
+	rs.phase = PhaseCommitted
+	if commitQC.View > rs.lockedQC.View {
+		rs.lockedQC = commitQC.Clone()
+	}
+	if commitQC.View >= rs.lastCommittedQC.View {
+		rs.lastCommittedQC = commitQC.Clone()
+	}
+	rs.consecutiveTimeouts = 0
+}
+
+// AdvanceView advances to a new view, resetting the phase.
+// Enforces monotonicity: the view can only move forward.
+func (rs *RoundState) AdvanceView(newView ViewNumber) {
+	if newView <= rs.currentView {
+		return
+	}
+	rs.currentView = newView
+	rs.phase = PhaseWaitingForProposal
+}
+
+// Timeout transitions to timed-out phase and increments the backoff counter.
+func (rs *RoundState) Timeout() {
+	rs.phase = PhaseTimedOut
+	rs.consecutiveTimeouts++
+	if rs.consecutiveTimeouts == 0 { // overflow protection
+		rs.consecutiveTimeouts--
+	}
+}
+
+// ResetConsecutiveTimeouts resets the timeout counter.
+func (rs *RoundState) ResetConsecutiveTimeouts() {
+	rs.consecutiveTimeouts = 0
+}
+
+// UpdateLockedQC updates the locked QC if the given QC has a higher view.
+func (rs *RoundState) UpdateLockedQC(qc *QuorumCertificate) {
+	if qc.View > rs.lockedQC.View {
+		rs.lockedQC = qc.Clone()
+	}
+}
+
+// IsSafeToVote implements the HotStuff-2 safety rule: a proposal is safe to vote on
+// if its justify_qc extends the locked QC (justify_qc.view >= locked_qc.view).
+func (rs *RoundState) IsSafeToVote(justifyQC *QuorumCertificate) bool {
+	return justifyQC.View >= rs.lockedQC.View
+}
