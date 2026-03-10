@@ -193,9 +193,12 @@ func (m *MVS) ApplyAll(numTxs int, fn func(LocationKey, []byte) error) error {
 			return e.versions[i].txIndex >= numTxs
 		})
 		if idx > 0 {
-			v := e.versions[idx-1]
+			// Copy value while holding the lock to avoid data race.
+			src := e.versions[idx-1].value
+			val := make([]byte, len(src))
+			copy(val, src)
 			e.mu.RUnlock()
-			if err := fn(key, v.value); err != nil {
+			if err := fn(key, val); err != nil {
 				return err
 			}
 		} else {

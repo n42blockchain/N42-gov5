@@ -301,7 +301,10 @@ func (s *TransactionAPI) SendTransaction(ctx context.Context, args TransactionAr
 	if err := args.setDefaults(ctx, s.api); err != nil {
 		return avmcommon.Hash{}, err
 	}
-	tx := args.toTransaction()
+	tx, err := args.toTransaction()
+	if err != nil {
+		return avmcommon.Hash{}, err
+	}
 
 	signed, err := wallet.SignTx(account, tx, s.api.GetChainConfig().ChainID)
 	if err != nil {

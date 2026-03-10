@@ -19,6 +19,7 @@ package apos
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 
@@ -207,7 +208,10 @@ func (s *Snapshot) apply(headers []block.IHeader) (*Snapshot, error) {
 		logged = time.Now()
 	)
 	for i, iHeader := range headers {
-		header := iHeader.(*block.Header)
+		header, ok := iHeader.(*block.Header)
+		if !ok || header == nil {
+			return nil, fmt.Errorf("invalid header type at index %d", i)
+		}
 		// Remove any votes on checkpoint blocks
 		number := header.Number.Uint64()
 		if number%s.config.Epoch == 0 {

@@ -238,7 +238,7 @@ func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (t
 }
 
 // toTransaction assemble Transaction
-func (args *TransactionArgs) toTransaction() *transaction.Transaction {
+func (args *TransactionArgs) toTransaction() (*transaction.Transaction, error) {
 	var data transaction.TxData
 	switch {
 	case args.MaxFeePerGas != nil:
@@ -253,22 +253,22 @@ func (args *TransactionArgs) toTransaction() *transaction.Transaction {
 			Data:       args.data(),
 			AccessList: al,
 		}
-		var is bool
-		dy.GasFeeCap, is = uint256.FromBig((*big.Int)(args.MaxFeePerGas))
-		if is {
-			log.Error("GasFeeCap to uint256 failed")
+		var overflow bool
+		dy.GasFeeCap, overflow = uint256.FromBig((*big.Int)(args.MaxFeePerGas))
+		if overflow {
+			return nil, errors.New("maxFeePerGas overflows uint256")
 		}
-		dy.ChainID, is = uint256.FromBig((*big.Int)(args.ChainID))
-		if is {
-			log.Error("ChainID to uint256 failed")
+		dy.ChainID, overflow = uint256.FromBig((*big.Int)(args.ChainID))
+		if overflow {
+			return nil, errors.New("chainID overflows uint256")
 		}
-		dy.GasTipCap, is = uint256.FromBig((*big.Int)(args.MaxPriorityFeePerGas))
-		if is {
-			log.Error("GasTipCap to uint256 failed")
+		dy.GasTipCap, overflow = uint256.FromBig((*big.Int)(args.MaxPriorityFeePerGas))
+		if overflow {
+			return nil, errors.New("maxPriorityFeePerGas overflows uint256")
 		}
-		dy.Value, is = uint256.FromBig((*big.Int)(args.Value))
-		if is {
-			log.Error("Value to uint256 failed")
+		dy.Value, overflow = uint256.FromBig((*big.Int)(args.Value))
+		if overflow {
+			return nil, errors.New("value overflows uint256")
 		}
 		data = dy
 	case args.AccessList != nil:
@@ -279,18 +279,18 @@ func (args *TransactionArgs) toTransaction() *transaction.Transaction {
 			Data:  args.data(),
 		}
 		alt.AccessList = avmtypes.ToastAccessList(*args.AccessList)
-		var is bool
-		alt.GasPrice, is = uint256.FromBig((*big.Int)(args.GasPrice))
-		if is {
-			log.Error("GasPrice to uint256 failed")
+		var overflow bool
+		alt.GasPrice, overflow = uint256.FromBig((*big.Int)(args.GasPrice))
+		if overflow {
+			return nil, errors.New("gasPrice overflows uint256")
 		}
-		alt.ChainID, is = uint256.FromBig((*big.Int)(args.ChainID))
-		if is {
-			log.Error("ChainID to uint256 failed")
+		alt.ChainID, overflow = uint256.FromBig((*big.Int)(args.ChainID))
+		if overflow {
+			return nil, errors.New("chainID overflows uint256")
 		}
-		alt.Value, is = uint256.FromBig((*big.Int)(args.Value))
-		if is {
-			log.Error("Value to uint256 failed")
+		alt.Value, overflow = uint256.FromBig((*big.Int)(args.Value))
+		if overflow {
+			return nil, errors.New("value overflows uint256")
 		}
 		data = alt
 	default:
@@ -300,18 +300,18 @@ func (args *TransactionArgs) toTransaction() *transaction.Transaction {
 			Gas:   uint64(*args.Gas),
 			Data:  args.data(),
 		}
-		var is bool
-		lt.GasPrice, is = uint256.FromBig((*big.Int)(args.GasPrice))
-		if is {
-			log.Error("GasPrice to uint256 failed")
+		var overflow bool
+		lt.GasPrice, overflow = uint256.FromBig((*big.Int)(args.GasPrice))
+		if overflow {
+			return nil, errors.New("gasPrice overflows uint256")
 		}
-		lt.Value, is = uint256.FromBig((*big.Int)(args.Value))
-		if is {
-			log.Error("Value to uint256 failed")
+		lt.Value, overflow = uint256.FromBig((*big.Int)(args.Value))
+		if overflow {
+			return nil, errors.New("value overflows uint256")
 		}
 		data = lt
 	}
-	return transaction.NewTx(data)
+	return transaction.NewTx(data), nil
 }
 
 // newRPCPendingTransaction returns a pending transaction that will serialize to the RPC representation.
