@@ -219,6 +219,15 @@ func (e *ConsensusEngine) Pacemaker() *Pacemaker {
 	return e.pacemaker
 }
 
+// RestoreState restores persisted consensus state for crash recovery.
+// Must only be called before the engine starts processing events.
+func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC QuorumCertificate, consecutiveTimeouts uint32) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
+	e.pacemaker.ResetForView(view, consecutiveTimeouts)
+}
+
 func (e *ConsensusEngine) ValidatorCount() uint32 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -443,62 +452,123 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg) error {
 }
 
 func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg) error {
+	if msg.Payload == nil {
+		return ErrInvalidMessage
+	}
 	switch msg.Type {
 	case MsgProposal:
-		return e.processProposal(msg.Payload.(*Proposal))
+		p, ok := msg.Payload.(*Proposal)
+		if !ok || p == nil {
+			return ErrInvalidMessage
+		}
+		return e.processProposal(p)
 	case MsgVote:
-		return e.processVote(msg.Payload.(*Vote))
+		v, ok := msg.Payload.(*Vote)
+		if !ok || v == nil {
+			return ErrInvalidMessage
+		}
+		return e.processVote(v)
 	case MsgCommitVote:
-		return e.processCommitVote(msg.Payload.(*CommitVote))
+		cv, ok := msg.Payload.(*CommitVote)
+		if !ok || cv == nil {
+			return ErrInvalidMessage
+		}
+		return e.processCommitVote(cv)
 	case MsgPrepareQC:
-		return e.processPrepareQC(msg.Payload.(*PrepareQCMsg))
+		pqc, ok := msg.Payload.(*PrepareQCMsg)
+		if !ok || pqc == nil {
+			return ErrInvalidMessage
+		}
+		return e.processPrepareQC(pqc)
 	case MsgTimeout:
-		return e.processTimeout(msg.Payload.(*TimeoutMessage))
+		tm, ok := msg.Payload.(*TimeoutMessage)
+		if !ok || tm == nil {
+			return ErrInvalidMessage
+		}
+		return e.processTimeout(tm)
 	case MsgNewView:
-		return e.processNewView(msg.Payload.(*NewViewMsg))
+		nv, ok := msg.Payload.(*NewViewMsg)
+		if !ok || nv == nil {
+			return ErrInvalidMessage
+		}
+		return e.processNewView(nv)
 	case MsgDecide:
-		return e.processDecide(msg.Payload.(*Decide))
+		d, ok := msg.Payload.(*Decide)
+		if !ok || d == nil {
+			return ErrInvalidMessage
+		}
+		return e.processDecide(d)
 	}
-	return nil
+	return ErrInvalidMessage
 }
 
 func messageView(msg ConsensusMsg) ViewNumber {
+	if msg.Payload == nil {
+		return 0
+	}
 	switch msg.Type {
 	case MsgProposal:
-		return msg.Payload.(*Proposal).View
+		if p, ok := msg.Payload.(*Proposal); ok && p != nil {
+			return p.View
+		}
 	case MsgVote:
-		return msg.Payload.(*Vote).View
+		if v, ok := msg.Payload.(*Vote); ok && v != nil {
+			return v.View
+		}
 	case MsgCommitVote:
-		return msg.Payload.(*CommitVote).View
+		if cv, ok := msg.Payload.(*CommitVote); ok && cv != nil {
+			return cv.View
+		}
 	case MsgPrepareQC:
-		return msg.Payload.(*PrepareQCMsg).View
+		if pqc, ok := msg.Payload.(*PrepareQCMsg); ok && pqc != nil {
+			return pqc.View
+		}
 	case MsgTimeout:
-		return msg.Payload.(*TimeoutMessage).View
+		if tm, ok := msg.Payload.(*TimeoutMessage); ok && tm != nil {
+			return tm.View
+		}
 	case MsgNewView:
-		return msg.Payload.(*NewViewMsg).View
+		if nv, ok := msg.Payload.(*NewViewMsg); ok && nv != nil {
+			return nv.View
+		}
 	case MsgDecide:
-		return msg.Payload.(*Decide).View
+		if d, ok := msg.Payload.(*Decide); ok && d != nil {
+			return d.View
+		}
 	}
 	return 0
 }
 
 func extractQCFromMessage(msg *ConsensusMsg) *QuorumCertificate {
+	if msg == nil || msg.Payload == nil {
+		return nil
+	}
 	switch msg.Type {
 	case MsgProposal:
-		qc := msg.Payload.(*Proposal).JustifyQC
-		return &qc
+		if p, ok := msg.Payload.(*Proposal); ok && p != nil {
+			qc := p.JustifyQC
+			return &qc
+		}
 	case MsgTimeout:
-		qc := msg.Payload.(*TimeoutMessage).HighQC
-		return &qc
+		if tm, ok := msg.Payload.(*TimeoutMessage); ok && tm != nil {
+			qc := tm.HighQC
+			return &qc
+		}
 	case MsgDecide:
-		qc := msg.Payload.(*Decide).CommitQC
-		return &qc
+		if d, ok := msg.Payload.(*Decide); ok && d != nil {
+			qc := d.CommitQC
+			return &qc
+		}
 	case MsgPrepareQC:
-		qc := msg.Payload.(*PrepareQCMsg).QC
-		return &qc
+		if pqc, ok := msg.Payload.(*PrepareQCMsg); ok && pqc != nil {
+			qc := pqc.QC
+			return &qc
+		}
 	case MsgNewView:
-		qc := msg.Payload.(*NewViewMsg).TimeoutCert.HighQC
-		return &qc
+		if nv, ok := msg.Payload.(*NewViewMsg); ok && nv != nil {
+			qc := nv.TimeoutCert.HighQC
+			return &qc
+		}
 	}
 	return nil
 }

@@ -272,8 +272,8 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 
 	// Encode view number in extra-data.
 	var view ViewNumber
-	if h.engine != nil {
-		view = h.engine.CurrentView()
+	if ce := h.Engine(); ce != nil {
+		view = ce.CurrentView()
 	}
 
 	extra := make([]byte, extraMinLen)
@@ -335,6 +335,7 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 
 	h.lock.RLock()
 	sk := h.secretKey
+	ce := h.engine
 	h.lock.RUnlock()
 
 	if sk == nil {
@@ -348,9 +349,23 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 	// Append signature to extra data.
 	header.Extra = append(header.Extra, sig.Marshal()...)
 
+	sealed := b.WithSeal(header)
+
+	// Feed the block hash into the consensus engine so the leader can
+	// broadcast a Proposal to start the HotStuff voting round.
+	if ce != nil {
+		blockHash := sealed.Hash()
+		if err := ce.ProcessEvent(ConsensusEvent{
+			Type: EventBlockReady,
+			Hash: blockHash,
+		}); err != nil {
+			log.Debug("hotstuff: seal block event ignored", "err", err)
+		}
+	}
+
 	go func() {
 		select {
-		case results <- b.WithSeal(header):
+		case results <- sealed:
 		case <-stop:
 		}
 	}()
@@ -418,40 +433,40 @@ type API struct {
 
 // GetCurrentView returns the current consensus view number.
 func (api *API) GetCurrentView() ViewNumber {
-	if api.hotstuff.engine != nil {
-		return api.hotstuff.engine.CurrentView()
+	if ce := api.hotstuff.Engine(); ce != nil {
+		return ce.CurrentView()
 	}
 	return 0
 }
 
 // GetCurrentPhase returns the current consensus phase.
 func (api *API) GetCurrentPhase() string {
-	if api.hotstuff.engine != nil {
-		return api.hotstuff.engine.CurrentPhase().String()
+	if ce := api.hotstuff.Engine(); ce != nil {
+		return ce.CurrentPhase().String()
 	}
 	return "uninitialized"
 }
 
 // GetValidatorCount returns the number of validators.
 func (api *API) GetValidatorCount() uint32 {
-	if api.hotstuff.engine != nil {
-		return api.hotstuff.engine.ValidatorCount()
+	if ce := api.hotstuff.Engine(); ce != nil {
+		return ce.ValidatorCount()
 	}
 	return 0
 }
 
 // GetConsecutiveTimeouts returns the current consecutive timeout count.
 func (api *API) GetConsecutiveTimeouts() uint32 {
-	if api.hotstuff.engine != nil {
-		return api.hotstuff.engine.ConsecutiveTimeouts()
+	if ce := api.hotstuff.Engine(); ce != nil {
+		return ce.ConsecutiveTimeouts()
 	}
 	return 0
 }
 
 // IsCurrentLeader returns whether this node is the current view leader.
 func (api *API) IsCurrentLeader() bool {
-	if api.hotstuff.engine != nil {
-		return api.hotstuff.engine.IsCurrentLeader()
+	if ce := api.hotstuff.Engine(); ce != nil {
+		return ce.IsCurrentLeader()
 	}
 	return false
 }

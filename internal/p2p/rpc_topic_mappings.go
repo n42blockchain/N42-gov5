@@ -37,6 +37,9 @@ const (
 	GetSnapshotAccountRangeMessageName = "/get_snapshot_account_range"
 	GetSnapshotStorageRangeMessageName = "/get_snapshot_storage_range"
 	GetChangeSetRangeMessageName       = "/get_changeset_range"
+
+	// HotStuff consensus direct messaging.
+	HotStuffDirectMessageName = "/hotstuff_direct"
 )
 
 // V1 RPC topic constants.
@@ -61,6 +64,9 @@ const (
 	RPCGetSnapshotAccountRangeTopicV1 = protocolPrefix + GetSnapshotAccountRangeMessageName + SchemaVersionV1
 	RPCGetSnapshotStorageRangeTopicV1 = protocolPrefix + GetSnapshotStorageRangeMessageName + SchemaVersionV1
 	RPCGetChangeSetRangeTopicV1       = protocolPrefix + GetChangeSetRangeMessageName + SchemaVersionV1
+
+	// HotStuff direct message topic.
+	RPCHotStuffDirectTopicV1 = protocolPrefix + HotStuffDirectMessageName + SchemaVersionV1
 )
 
 // RPCTopicMappings maps each RPC topic to its expected request message type.
@@ -84,6 +90,9 @@ var RPCTopicMappings = map[string]interface{}{
 	RPCGetSnapshotAccountRangeTopicV1: new(sync_pb.GetSnapshotAccountRangeRequest),
 	RPCGetSnapshotStorageRangeTopicV1: new(sync_pb.GetSnapshotStorageRangeRequest),
 	RPCGetChangeSetRangeTopicV1:       new(sync_pb.GetChangeSetRangeRequest),
+
+	// HotStuff direct message mapping.
+	RPCHotStuffDirectTopicV1: new(sync_pb.HotStuffConsensusMsg),
 }
 
 // Lookup tables for topic deconstruction.
@@ -107,6 +116,7 @@ var (
 		GetSnapshotAccountRangeMessageName: true,
 		GetSnapshotStorageRangeMessageName: true,
 		GetChangeSetRangeMessageName:       true,
+		HotStuffDirectMessageName:          true,
 	}
 	versionMapping = map[string]bool{
 		SchemaVersionV1: true,
