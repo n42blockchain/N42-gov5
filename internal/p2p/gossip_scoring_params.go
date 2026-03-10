@@ -57,6 +57,8 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 		return blockTopicParams(), nil
 	case strings.Contains(topic, GossipExitMessage):
 		return voluntaryExitTopicParams(), nil
+	case strings.Contains(topic, GossipBlobSidecarMessage):
+		return blockTopicParams(), nil
 	default:
 		return nil, errors.Errorf("unrecognized topic for parameter registration: %s", topic)
 	}
