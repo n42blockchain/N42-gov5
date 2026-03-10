@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common"
@@ -166,6 +167,21 @@ func (m *Miner) SetCoinbase(addr types.Address) {
 
 func (m *Miner) PendingBlockAndReceipts() (block.IBlock, block.Receipts) {
 	return m.worker.pendingBlockAndReceipts()
+}
+
+// TriggerBlockProduction triggers an immediate block production attempt.
+// Used by BFT consensus (e.g., HotStuff) to start block building when the
+// node becomes the leader for a new view.
+func (m *Miner) TriggerBlockProduction() {
+	if !m.worker.isRunning() {
+		return
+	}
+	interrupt := new(atomic.Int32)
+	select {
+	case m.worker.newWorkCh <- &newWorkReq{interrupt: interrupt, noempty: true, timestamp: time.Now().Unix()}:
+	default:
+		// Channel full — a block build is already in progress.
+	}
 }
 
 // BundlePool returns the MEV bundle pool for submitting transaction bundles.

@@ -59,6 +59,8 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 		return voluntaryExitTopicParams(), nil
 	case strings.Contains(topic, GossipBlobSidecarMessage):
 		return blockTopicParams(), nil
+	case strings.Contains(topic, GossipHotStuffConsensusMessage):
+		return hotstuffConsensusTopicParams(), nil
 	default:
 		return nil, errors.Errorf("unrecognized topic for parameter registration: %s", topic)
 	}
@@ -107,6 +109,34 @@ func voluntaryExitTopicParams() *pubsub.TopicScoreParams {
 		FirstMessageDeliveriesCap:      5,
 		InvalidMessageDeliveriesWeight: -2000,
 		InvalidMessageDeliveriesDecay:  scoreDecay(invalidDecayPeriod),
+	}
+}
+
+// hotstuffConsensusTopicParams returns scoring parameters for the HotStuff consensus gossip topic.
+// Consensus messages are critical — use high weight similar to blocks.
+func hotstuffConsensusTopicParams() *pubsub.TopicScoreParams {
+	const decayEpoch = time.Duration(5)
+	blockDur := oneBlockDuration()
+	mesh := inMeshCap()
+
+	return &pubsub.TopicScoreParams{
+		TopicWeight:                     beaconBlockWeight,
+		TimeInMeshWeight:                maxInMeshScore / mesh,
+		TimeInMeshQuantum:               blockDur,
+		TimeInMeshCap:                   mesh,
+		FirstMessageDeliveriesWeight:    1,
+		FirstMessageDeliveriesDecay:     scoreDecay(twentyBlocks),
+		FirstMessageDeliveriesCap:       46, // Higher cap: multiple messages per view
+		MeshMessageDeliveriesWeight:     0,
+		MeshMessageDeliveriesDecay:      scoreDecay(decayEpoch * blockDur),
+		MeshMessageDeliveriesCap:        float64(decayEpoch),
+		MeshMessageDeliveriesThreshold:  float64(decayEpoch) / 10,
+		MeshMessageDeliveriesWindow:     2 * time.Second,
+		MeshMessageDeliveriesActivation: 4 * blockDur,
+		MeshFailurePenaltyWeight:        0,
+		MeshFailurePenaltyDecay:         scoreDecay(decayEpoch * blockDur),
+		InvalidMessageDeliveriesWeight:  -140.4475,
+		InvalidMessageDeliveriesDecay:   scoreDecay(invalidDecayPeriod),
 	}
 }
 

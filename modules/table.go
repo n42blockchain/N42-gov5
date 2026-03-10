@@ -134,6 +134,11 @@ const (
 	// key: block_hash(32) + col_index(8) = 40 bytes
 	// value: encoded DataColumn (block number, KZG proof, column data)
 	DataColumns = "DataColumns"
+
+	// HotStuffState stores HotStuff-2 BFT consensus state for crash recovery.
+	// key: "state" (fixed)
+	// value: view(8) + consecutiveTimeouts(4) + lockedQC(var) + lastCommittedQC(var)
+	HotStuffState = "HotStuffState"
 )
 
 const (
@@ -187,6 +192,7 @@ var n42Tables = []string{
 	SnapshotIndex,
 	BlobSidecars,
 	DataColumns,
+	HotStuffState,
 }
 
 var N42TableCfg = kv.TableCfg{

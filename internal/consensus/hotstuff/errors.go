@@ -12,6 +12,7 @@ import (
 // Consensus error types for the HotStuff-2 protocol.
 var (
 	ErrOutputChannelClosed = fmt.Errorf("consensus output channel full or closed")
+	ErrInvalidMessage      = fmt.Errorf("invalid or corrupted consensus message")
 	ErrEpochScheduleEmpty  = fmt.Errorf("epoch schedule must not be empty")
 )
 

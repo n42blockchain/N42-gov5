@@ -61,6 +61,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
@@ -135,7 +136,8 @@ type Node struct {
 	historyExpirer  *HistoryExpirer
 	snapshotMgr     *snapshot.Manager
 
-	exexManager *exex.Manager // Execution Extensions manager
+	exexManager     *exex.Manager         // Execution Extensions manager
+	hotstuffService *hotstuff.Service     // HotStuff BFT consensus service (nil if not using HotStuff)
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -271,6 +273,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		engine = apoa.New(cfg.ChainCfg.Clique, chainKv)
 	case params.AposConsensu:
 		engine = apos.New(cfg.ChainCfg.Apos, chainKv, cfg.ChainCfg)
+	case params.HotStuffConsensus:
+		engine = hotstuff.New(cfg.ChainCfg.HotStuff, cfg.ChainCfg)
 	case params.Faker:
 		engine = apos.NewFaker()
 	default:
@@ -579,6 +583,14 @@ func (n *Node) Start() error {
 				return fmt.Errorf("signer missing: %v", findErr)
 			}
 			pos.Authorize(eb, wallet.SignData)
+		} else if hs, ok := n.engine.(*hotstuff.HotStuff); ok {
+			// HotStuff uses BLS keys — load from keystore directory.
+			blsKey, blsErr := hotstuff.LoadBLSKeyFromDir(n.keyDir, eb)
+			if blsErr != nil {
+				log.Error("HotStuff BLS key unavailable", "err", blsErr)
+				return fmt.Errorf("hotstuff BLS key missing for %s: %v", eb, blsErr)
+			}
+			hs.Authorize(eb, blsKey)
 		}
 
 		n.miner.SetCoinbase(eb)
@@ -587,6 +599,18 @@ func (n *Node) Start() error {
 
 	if pos, ok := n.engine.(*apos.APos); ok {
 		pos.SetBlockChain(n.blockChain)
+	}
+
+	// Start HotStuff consensus service if applicable.
+	if hs, ok := n.engine.(*hotstuff.HotStuff); ok {
+		gossipTopic := p2p.HotStuffConsensusTopicFormat
+		rpcTopic := p2p.RPCHotStuffDirectTopicV1
+		svc := hotstuff.NewService(hs, n.p2p, n.db, gossipTopic, rpcTopic)
+		svc.SetBlockProducer(n.miner)
+		if err := svc.Start(); err != nil {
+			log.Warn("HotStuff service start deferred (engine not initialized)", "err", err)
+		}
+		n.hotstuffService = svc
 	}
 
 	log.PrintStartupProgress(2, 6, "JSON-RPC services")
@@ -990,6 +1014,13 @@ func (n *Node) stopServices() []error {
 		{"Deposit contract", func() error {
 			if n.depositContract != nil {
 				return n.depositContract.Stop()
+			}
+			return nil
+		}},
+		// 8b. HotStuff consensus service
+		{"HotStuff service", func() error {
+			if n.hotstuffService != nil {
+				n.hotstuffService.Stop()
 			}
 			return nil
 		}},

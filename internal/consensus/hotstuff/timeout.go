@@ -213,7 +213,7 @@ func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeou
 func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 	view := e.roundState.CurrentView()
 
-	if nv.View <= view {
+	if nv.View == 0 || nv.View <= view {
 		return nil
 	}
 
