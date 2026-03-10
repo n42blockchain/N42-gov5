@@ -762,7 +762,14 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 		}
 
 		header.Signature = aggSign
-		body := b.Body().(*block.Body)
+		rawBody := b.Body()
+		if rawBody == nil {
+			return errors.New("block body is nil during seal")
+		}
+		body, ok := rawBody.(*block.Body)
+		if !ok {
+			return errors.New("unexpected block body type")
+		}
 		body.Verifiers = verifiers
 		delay = time.Unix(int64(header.Time), 0).Sub(time.Now())
 	}

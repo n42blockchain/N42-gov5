@@ -307,6 +307,7 @@ func (s *TransactionAPI) SendTransaction(ctx context.Context, args TransactionAr
 	if err != nil {
 		return avmcommon.Hash{}, err
 	}
+	signed.SetFrom(args.from())
 	return SubmitTransaction(ctx, s.api, signed)
 }
 

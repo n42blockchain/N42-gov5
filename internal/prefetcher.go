@@ -74,6 +74,12 @@ func (p *StatePrefetcher) Prefetch(blk *block.Block, stateReader state.StateRead
 		return
 	}
 
+	// Cancel any previous prefetch to avoid goroutine leak.
+	if p.cancel != nil {
+		p.cancel()
+		p.wg.Wait()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 

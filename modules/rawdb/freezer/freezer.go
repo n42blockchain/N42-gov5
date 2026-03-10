@@ -335,5 +335,7 @@ func (f *Freezer) loadFrozenCount() uint64 {
 func (f *Freezer) saveFrozenCount(count uint64) {
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], count)
-	_ = os.WriteFile(filepath.Join(f.path, ancientMetaFile), buf[:], 0644)
+	if err := os.WriteFile(filepath.Join(f.path, ancientMetaFile), buf[:], 0644); err != nil {
+		log.Error("Freezer: failed to save frozen count", "count", count, "err", err)
+	}
 }

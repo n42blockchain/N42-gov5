@@ -541,12 +541,21 @@ func (pool *TxsPool) validateSender(tx *transaction.Transaction) bool {
 		return false
 	}
 
-	vByte := byte(v.Uint64())
-	if vByte >= 27 {
-		vByte -= 27
+	// Derive recovery ID from V. For EIP-155 protected transactions,
+	// V = chainId*2 + 35 + parity, so we need to extract parity (0 or 1).
+	vVal := v.Uint64()
+	var vByte byte
+	if vVal >= 35 {
+		// EIP-155: parity = (V - 35) % 2
+		vByte = byte((vVal - 35) % 2)
+	} else if vVal >= 27 {
+		// Unprotected: V is 27 or 28
+		vByte = byte(vVal - 27)
+	} else {
+		vByte = byte(vVal)
 	}
 	if !crypto.ValidateSignatureValues(vByte, r, s, true) {
-		log.Debug("Transaction signature values are invalid")
+		log.Debug("Transaction signature values are invalid", "v", vVal, "vByte", vByte)
 		return false
 	}
 
@@ -762,13 +771,20 @@ func (pool *TxsPool) scheduleLoop() {
 
 	for {
 		if curDone == nil && launchNextRun {
-				go func() {
+			// Capture variables before clearing them, to avoid race with the goroutine.
+			rReset := reset
+			rDirty := dirtyAccounts
+			rEvents := queuedEvents
+			rDone := nextDone
+
+			go func() {
 				defer func() {
 					if r := recover(); r != nil {
 						log.Errorf("panic in txpool runReorg: %v", r)
+						close(rDone)
 					}
 				}()
-				pool.runReorg(nextDone, reset, dirtyAccounts, queuedEvents)
+				pool.runReorg(rDone, rReset, rDirty, rEvents)
 			}()
 
 			curDone, nextDone = nextDone, make(chan struct{})

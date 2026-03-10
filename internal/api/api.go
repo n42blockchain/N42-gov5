@@ -427,7 +427,9 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 	var err error
 	if blockNr, ok := blockNrOrHash.Number(); ok {
 		if blockNr < jsonrpc.EarliestBlockNumber {
-			header = api.BlockChain().CurrentBlock().Header()
+			if cb := api.BlockChain().CurrentBlock(); cb != nil {
+				header = cb.Header()
+			}
 		} else {
 			header = api.BlockChain().GetHeaderByNumber(uint256.NewInt(uint64(blockNr.Int64())))
 		}
