@@ -356,7 +356,11 @@ func (s *TxsPoolAPI) ContentFrom(ctx context.Context, addr types.Address) map[st
 	content["queued"] = make(map[string]*RPCTransaction)
 
 	pending, queue := s.api.TxsPool().Content()
-	curHeader := s.api.BlockChain().CurrentBlock().Header()
+	curBlock := s.api.BlockChain().CurrentBlock()
+	if curBlock == nil {
+		return content
+	}
+	curHeader := curBlock.Header()
 
 	// Filter pending transactions
 	if txs, ok := pending[addr]; ok {

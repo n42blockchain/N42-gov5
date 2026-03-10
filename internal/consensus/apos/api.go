@@ -195,8 +195,11 @@ func (api *API) Status() (*status, error) {
 	}
 	for n := start; n < end; n++ {
 		h := api.chain.GetHeaderByNumber(uint256.NewInt(n))
-		block := api.chain.GetBlock(h.Hash(), n)
 		if h == nil {
+			return nil, fmt.Errorf("missing block %d", n)
+		}
+		block := api.chain.GetBlock(h.Hash(), n)
+		if block == nil {
 			return nil, fmt.Errorf("missing block %d", n)
 		}
 		if block.Difficulty().Cmp(diffInTurn) == 0 {
@@ -313,7 +316,11 @@ func (api *API) GetBlockRewards(blockNr jsonrpc.BlockNumberOrHash) (resp []*bloc
 			err = errors.New("cannot find block body")
 			return err
 		}
-		resp = blk.Body().Reward()
+		body := blk.Body()
+		if body == nil {
+			return nil
+		}
+		resp = body.Reward()
 		return nil
 	})
 	return resp, err
@@ -357,22 +364,28 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	}
 
 	currentBlock := api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+	if currentBlock == nil {
+		return nil, errUnknownBlock
+	}
 	minedBlocks := make([]MinedBlock, 0, wantCount)
 	var searchCount int
 	var findCount uint64
 
 	for {
 		blockNum := currentHeader.Number64().Uint64()
-		for _, verify := range currentBlock.Body().Verifier() {
-			if addr == verify.Address {
-				minedBlocks = append(minedBlocks, MinedBlock{
-					BlockNumber: currentBlock.Number64(),
-					Timestamp:   currentBlock.Time(),
-					Reward:      depositInfo.RewardPerBlock,
-				})
-				findCount++
-				if findCount >= wantCount {
-					goto Finish
+		body := currentBlock.Body()
+		if body != nil {
+			for _, verify := range body.Verifier() {
+				if addr == verify.Address {
+					minedBlocks = append(minedBlocks, MinedBlock{
+						BlockNumber: currentBlock.Number64(),
+						Timestamp:   currentBlock.Time(),
+						Reward:      depositInfo.RewardPerBlock,
+					})
+					findCount++
+					if findCount >= wantCount {
+						goto Finish
+					}
 				}
 			}
 		}
@@ -389,6 +402,9 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 			break
 		}
 		currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+		if currentBlock == nil {
+			break
+		}
 	}
 
 Finish:
@@ -421,20 +437,26 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	}
 
 	currentBlock := api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+	if currentBlock == nil {
+		return nil, errUnknownBlock
+	}
 	minedBlocks := make([]MinedBlock, 0, wantCount)
 	var searchCount int
 	var findCount uint64
 
 	for {
 		blockNum := currentHeader.Number64().Uint64()
-		for _, verify := range currentBlock.Body().Verifier() {
-			if addr == verify.Address {
-				minedBlocks = append(minedBlocks, MinedBlock{
-					BlockNumber: currentBlock.Number64(),
-					Timestamp:   currentBlock.Time(),
-					Reward:      depositInfo.RewardPerBlock,
-				})
-				findCount++
+		body := currentBlock.Body()
+		if body != nil {
+			for _, verify := range body.Verifier() {
+				if addr == verify.Address {
+					minedBlocks = append(minedBlocks, MinedBlock{
+						BlockNumber: currentBlock.Number64(),
+						Timestamp:   currentBlock.Time(),
+						Reward:      depositInfo.RewardPerBlock,
+					})
+					findCount++
+				}
 			}
 		}
 		if findCount >= wantCount {
@@ -456,6 +478,9 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 			break
 		}
 		currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+		if currentBlock == nil {
+			break
+		}
 	}
 
 	return &VerifiedBlockResponse{

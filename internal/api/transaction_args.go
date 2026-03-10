@@ -473,9 +473,16 @@ func (args *TransactionArgs) setFeeDefaults(ctx context.Context, b *API) error {
 	}
 	// Now attempt to fill in default value depending on whether London is active or not.
 	head := b.BlockChain().CurrentBlock()
+	if head == nil {
+		return errors.New("current block is nil")
+	}
 	if b.chainConfig.IsLondon(head.Number64().Uint64()) {
 		// London is active, set maxPriorityFeePerGas and maxFeePerGas.
-		if err := args.setLondonFeeDefaults(ctx, head.Header().(*block.Header), b); err != nil {
+		headHeader, ok := head.Header().(*block.Header)
+		if !ok || headHeader == nil {
+			return errors.New("invalid current block header type")
+		}
+		if err := args.setLondonFeeDefaults(ctx, headHeader, b); err != nil {
 			return err
 		}
 	} else {

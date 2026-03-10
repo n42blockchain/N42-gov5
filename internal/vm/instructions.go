@@ -889,7 +889,11 @@ func opRevert(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 }
 
 func opUndefined(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	return nil, &ErrInvalidOpCode{opcode: OpCode(scope.Contract.Code[*pc])}
+	var op OpCode
+	if *pc < uint64(len(scope.Contract.Code)) {
+		op = OpCode(scope.Contract.Code[*pc])
+	}
+	return nil, &ErrInvalidOpCode{opcode: op}
 }
 
 func opStop(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {

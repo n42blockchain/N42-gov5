@@ -2,6 +2,7 @@ package apos
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/holiman/uint256"
@@ -38,8 +39,15 @@ func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHead
 		if err != nil {
 			return nil, nil, err
 		}
+		if block == nil {
+			return nil, nil, fmt.Errorf("block %d not found", currentNr.Uint64())
+		}
+		body := block.Body()
+		if body == nil {
+			return nil, nil, fmt.Errorf("block %d body is nil", currentNr.Uint64())
+		}
 
-		verifiers := block.Body().Verifier()
+		verifiers := body.Verifier()
 		for _, verifier := range verifiers {
 			_, ok := depositeMap[verifier.Address]
 			if !ok {

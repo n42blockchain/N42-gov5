@@ -301,7 +301,11 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 		if tx.Type() == transaction.BlobTxType {
 			blobGasUsed := hexutil.Uint64(tx.BlobGas())
 			br.BlobGasUsed = &blobGasUsed
-			blobFee := transaction.CalcBlobFee(blk.Header().(*block.Header).ExcessBlobGas)
+			var excessBlobGas uint64
+			if bh, ok := blk.Header().(*block.Header); ok && bh != nil {
+				excessBlobGas = bh.ExcessBlobGas
+			}
+			blobFee := transaction.CalcBlobFee(excessBlobGas)
 			br.BlobGasPrice = (*hexutil.Big)(blobFee.ToBig())
 		}
 
