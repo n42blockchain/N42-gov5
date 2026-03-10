@@ -49,17 +49,28 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
+// TxSubmitter abstracts transaction submission to the txpool.
+type TxSubmitter interface {
+	SubmitBundleTx(entryPoint types.Address, calldata []byte, gasLimit uint64) error
+}
+
 // BundlerService is the main ERC-4337 bundler service.
 type BundlerService struct {
-	config    *Config
-	pool      *UserOpPool
-	validator *Validator
-	builder   *BundleBuilder
-	chainID   uint64
+	config      *Config
+	pool        *UserOpPool
+	validator   *Validator
+	builder     *BundleBuilder
+	chainID     uint64
+	txSubmitter TxSubmitter
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+}
+
+// SetTxSubmitter sets the transaction submitter for bundle submission.
+func (s *BundlerService) SetTxSubmitter(ts TxSubmitter) {
+	s.txSubmitter = ts
 }
 
 // NewBundlerService creates a new bundler service.
@@ -230,10 +241,18 @@ func (s *BundlerService) tryCreateBundle() error {
 
 	gasEstimate := s.builder.EstimateGas(ops)
 
-	log.Info("Bundle created",
-		"ops", len(ops),
-		"calldata", len(calldata),
-		"gasEstimate", gasEstimate.Uint64())
+	gasLimit := gasEstimate.Uint64()
+
+	// Submit bundle transaction to the txpool.
+	if s.txSubmitter != nil {
+		entryPoint := s.config.EntryPoints[0]
+		if err := s.txSubmitter.SubmitBundleTx(entryPoint, calldata, gasLimit); err != nil {
+			return err
+		}
+	} else {
+		log.Warn("Bundle created but no tx submitter configured — dropping",
+			"ops", len(ops), "calldata", len(calldata), "gasEstimate", gasLimit)
+	}
 
 	// Remove bundled operations from pool.
 	for _, op := range ops {

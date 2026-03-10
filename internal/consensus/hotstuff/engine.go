@@ -316,6 +316,13 @@ func (e *ConsensusEngine) validatorSet() *ValidatorSet {
 	return e.epochManager.CurrentValidatorSet()
 }
 
+// CurrentValidatorSet returns the active validator set (thread-safe).
+func (e *ConsensusEngine) CurrentValidatorSet() *ValidatorSet {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.validatorSet()
+}
+
 func (e *ConsensusEngine) emit(output EngineOutput) error {
 	select {
 	case e.outputCh <- output:
