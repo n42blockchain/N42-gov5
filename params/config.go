@@ -64,8 +64,9 @@ const (
 	CliqueConsensus ConsensusType = "clique"
 	ParliaConsensus ConsensusType = "parlia"
 	BorConsensus    ConsensusType = "bor"
-	AposConsensu    ConsensusType = "apos"
-	Faker           ConsensusType = "faker"
+	AposConsensu       ConsensusType = "apos"
+	HotStuffConsensus  ConsensusType = "hotstuff"
+	Faker              ConsensusType = "faker"
 )
 
 // ---------------------------------------------------------------------------
@@ -172,7 +173,8 @@ type ChainConfig struct {
 	Aura   *AuRaConfig   `json:"aura,omitempty"`
 	Parlia *ParliaConfig `json:"parlia,omitempty" toml:",omitempty"`
 	Bor    *BorConfig    `json:"bor,omitempty"`
-	Apos   *APosConfig   `json:"apos,omitempty"`
+	Apos     *APosConfig     `json:"apos,omitempty"`
+	HotStuff *HotStuffConfig `json:"hotstuff,omitempty"`
 }
 
 // String implements the fmt.Stringer interface.
@@ -296,6 +298,19 @@ type BorConfig struct {
 }
 
 func (b *BorConfig) String() string { return "bor" }
+
+// HotStuffConfig is the consensus engine config for HotStuff-2 BFT consensus.
+type HotStuffConfig struct {
+	Period      uint64 `json:"period"`      // Block period in seconds (default 3)
+	BaseTimeout uint64 `json:"baseTimeout"` // Base timeout in milliseconds (default 60000)
+	MaxTimeout  uint64 `json:"maxTimeout"`  // Max timeout in milliseconds (default 120000)
+	EpochLength uint64 `json:"epochLength"` // Epoch length in blocks for validator set rotation
+}
+
+func (c *HotStuffConfig) String() string {
+	return fmt.Sprintf("{Period: %v, BaseTimeout: %v, MaxTimeout: %v, EpochLength: %v}",
+		c.Period, c.BaseTimeout, c.MaxTimeout, c.EpochLength)
+}
 
 func (c *BorConfig) CalculateBackupMultiplier(number uint64) uint64 {
 	return c.calculateBorConfigHelper(c.BackupMultiplier, number)
