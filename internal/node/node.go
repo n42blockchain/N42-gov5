@@ -516,11 +516,15 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	// Create ERC-4337 bundler service if enabled.
 	if cfg.BundlerCfg.Enabled {
+		bundleInterval := time.Duration(cfg.BundlerCfg.BundleIntervalSec) * time.Second
+		if bundleInterval <= 0 {
+			bundleInterval = 12 * time.Second // default
+		}
 		bundlerCfg := &bundler.Config{
 			Enabled:        true,
 			MaxPoolSize:    cfg.BundlerCfg.MaxPoolSize,
 			MaxBundleSize:  cfg.BundlerCfg.MaxBundleSize,
-			BundleInterval: time.Duration(cfg.BundlerCfg.BundleIntervalSec) * time.Second,
+			BundleInterval: bundleInterval,
 		}
 		chainID := cfg.ChainCfg.ChainID.Uint64()
 		node.bundlerService = bundler.NewBundlerService(bundlerCfg, chainID)
@@ -623,13 +627,13 @@ func (n *Node) Start() error {
 	}
 
 	// Start HotStuff consensus service if applicable.
-	if hs, ok := n.engine.(*hotstuff.HotStuff); ok {
+	if hs, ok := n.engine.(*hotstuff.HotStuff); ok && hs.Engine() != nil {
 		gossipTopic := p2p.HotStuffConsensusTopicFormat
 		rpcTopic := p2p.RPCHotStuffDirectTopicV1
 		svc := hotstuff.NewService(hs, n.p2p, n.db, gossipTopic, rpcTopic)
 		svc.SetBlockProducer(n.miner)
 		if err := svc.Start(); err != nil {
-			log.Warn("HotStuff service start deferred (engine not initialized)", "err", err)
+			log.Warn("HotStuff service failed to start", "err", err)
 		}
 		n.hotstuffService = svc
 	}

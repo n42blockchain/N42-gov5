@@ -152,15 +152,23 @@ func (h *HotStuff) InitEngineFromConfig() error {
 
 	validators := make([]ValidatorInfo, 0, len(cfg.Validators))
 	for i, vc := range cfg.Validators {
-		addr := types.HexToAddress(vc.Address)
+		// Validate address format: must be 42-char 0x-prefixed hex.
+		addrStr := strings.TrimSpace(vc.Address)
+		if len(addrStr) != 42 || !strings.HasPrefix(addrStr, "0x") {
+			return fmt.Errorf("hotstuff: validator %d has malformed address: %q", i, vc.Address)
+		}
+		addr := types.HexToAddress(addrStr)
 		if addr == (types.Address{}) {
-			return fmt.Errorf("hotstuff: validator %d has invalid address: %s", i, vc.Address)
+			return fmt.Errorf("hotstuff: validator %d has zero address", i)
 		}
 
 		blsHex := strings.TrimPrefix(vc.BLSKey, "0x")
 		pubKeyBytes, err := hex.DecodeString(blsHex)
 		if err != nil {
 			return fmt.Errorf("hotstuff: validator %d has invalid BLS key hex: %w", i, err)
+		}
+		if len(pubKeyBytes) != 48 {
+			return fmt.Errorf("hotstuff: validator %d BLS key wrong length: got %d, want 48", i, len(pubKeyBytes))
 		}
 		pubKey, err := bls.PublicKeyFromBytes(pubKeyBytes)
 		if err != nil {
@@ -174,6 +182,9 @@ func (h *HotStuff) InitEngineFromConfig() error {
 	}
 
 	n := uint32(len(validators))
+	if n < 4 {
+		log.Warn("hotstuff: fewer than 4 validators — BFT safety guarantees are weakened", "count", n)
+	}
 	faultTolerance := (n - 1) / 3
 
 	return h.InitEngine(validators, faultTolerance)
@@ -267,6 +278,12 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 		qc, err := decodeQC(qcData)
 		if err != nil {
 			return fmt.Errorf("invalid QC in extra-data: %w", err)
+		}
+
+		// Cross-check QC view against header view.
+		headerView := binary.LittleEndian.Uint64(header.Extra[extraMagicLen : extraMagicLen+extraViewLen])
+		if qc.View != headerView {
+			return fmt.Errorf("QC view %d does not match header view %d", qc.View, headerView)
 		}
 
 		// If the consensus engine is initialized, verify QC signatures
