@@ -40,6 +40,11 @@ type SnapshotAccelConfig struct {
 
 	// WarmupAccounts is the maximum number of accounts to load during warmup.
 	WarmupAccounts int `json:"warmup_accounts" yaml:"warmup_accounts"`
+
+	// Persist enables flat snapshot persistence to MDBX tables.
+	// When enabled, flattened diff layers are written to SnapshotAccount/SnapshotStorage
+	// tables, and a diff layer journal is saved on shutdown for crash recovery.
+	Persist bool `json:"snapshot_persist" yaml:"snapshot_persist"`
 }
 
 // Validate checks configuration values and applies defaults.

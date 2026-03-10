@@ -345,6 +345,37 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			if cache != nil {
 				cur := realBC.CurrentBlock()
 				tree := statesnapshot.NewTree(cache, cur.Number64().Uint64(), cur.Hash(), cfg.SnapshotAccelCfg.MaxDiffLayers)
+
+				// Enable persistence if configured.
+				if cfg.SnapshotAccelCfg.Persist {
+					tree.SetDB(chainKv)
+
+					// Check if flat snapshot generation is complete.
+					if tx, err := chainKv.BeginRo(ctx); err == nil {
+						complete, _ := rawdb.IsSnapshotGenComplete(tx)
+						tx.Rollback()
+						if complete {
+							tree.SetGenReady(true)
+							log.Info("Snapshot flat tables ready for reads")
+						} else {
+							// Start background generation.
+							gen := statesnapshot.NewGenerator(chainKv, cur.Hash(), cur.Number64().Uint64())
+							go func() {
+								gen.Run(ctx)
+								tree.SetGenReady(true)
+							}()
+						}
+					}
+
+					// Load journal for crash recovery.
+					if tx, err := chainKv.BeginRo(ctx); err == nil {
+						if err := statesnapshot.LoadJournal(tx, tree); err != nil {
+							log.Warn("Failed to load snapshot journal", "err", err)
+						}
+						tx.Rollback()
+					}
+				}
+
 				realBC.SetSnapshotTree(tree)
 			}
 		}
@@ -1115,6 +1146,17 @@ func (n *Node) stopServices() []error {
 		{"ExEx manager", func() error {
 			if n.exexManager != nil {
 				n.exexManager.Stop()
+			}
+			return nil
+		}},
+		// 10b. Snapshot journal (persist diff layers before blockchain closes)
+		{"Snapshot journal", func() error {
+			if realBC, ok := n.blockChain.(*internal.BlockChain); ok {
+				if tree := realBC.SnapshotTree(); tree != nil {
+					if err := tree.SaveJournal(); err != nil {
+						log.Warn("Failed to save snapshot journal", "err", err)
+					}
+				}
 			}
 			return nil
 		}},
