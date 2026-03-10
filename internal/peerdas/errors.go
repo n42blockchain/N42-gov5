@@ -16,7 +16,10 @@
 
 package peerdas
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrNilColumn is returned when a nil DataColumn is encountered.
@@ -40,6 +43,35 @@ var (
 	// ErrInvalidKZGProofLength is returned when a KZG proof is not exactly 48 bytes.
 	ErrInvalidKZGProofLength = errors.New("peerdas: KZG proof must be exactly 48 bytes")
 
-	// ErrEmptyColumnData is returned when a DataColumn has no data entries.
+	// ErrEmptyColumnData is returned when a DataColumn has no cell entries.
 	ErrEmptyColumnData = errors.New("peerdas: column data is empty")
+
+	// ErrProofCountMismatch is returned when KZGProofs count != Cells count.
+	ErrProofCountMismatch = errors.New("peerdas: KZG proof count does not match cell count")
+
+	// ErrCommitmentCountMismatch is returned when Commitments count != Cells count.
+	ErrCommitmentCountMismatch = errors.New("peerdas: commitment count does not match cell count")
+
+	// ErrInvalidCommitmentLength is returned when a commitment is not exactly 48 bytes.
+	ErrInvalidCommitmentLength = errors.New("peerdas: commitment must be exactly 48 bytes")
+
+	// ErrKZGVerificationFailed is returned when KZG cell proof verification fails.
+	ErrKZGVerificationFailed = errors.New("peerdas: KZG cell proof verification failed")
+
+	// ErrKZGContextNotReady is returned when the PeerDAS KZG context is not initialized.
+	ErrKZGContextNotReady = errors.New("peerdas: KZG context not initialized")
+
+	// ErrNoBlobsProvided is returned when no blobs are provided for column production.
+	ErrNoBlobsProvided = errors.New("peerdas: no blobs provided")
 )
+
+// InvalidCellSizeError provides detailed information about a cell with wrong size.
+type InvalidCellSizeError struct {
+	Index int
+	Got   int
+	Want  int
+}
+
+func (e *InvalidCellSizeError) Error() string {
+	return fmt.Sprintf("peerdas: cell %d has size %d, want %d", e.Index, e.Got, e.Want)
+}

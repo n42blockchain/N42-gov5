@@ -31,22 +31,36 @@ const (
 	// KZGProofLength is the expected length of a BLS12-381 G1 point used as a KZG proof.
 	KZGProofLength = 48
 
+	// KZGCommitmentLength is the expected length of a KZG commitment.
+	KZGCommitmentLength = 48
+
+	// BytesPerCell is the size of a single cell (64 field elements * 32 bytes).
+	BytesPerCell = 2048
+
 	// SamplingInterval is the default interval between sampling rounds.
 	SamplingInterval = 12 // seconds (one slot)
 )
 
 // DataColumn represents a single column of blob data for a given block.
-// Each column contains one field element per blob present in the block,
-// along with the corresponding KZG proof for that column.
+// In EIP-7594, each column index corresponds to one cell per blob in the block.
+// For a block with N blobs, the column stores N cells, N KZG proofs, and N commitments.
 type DataColumn struct {
 	Index       uint64     // column index in [0, NumberOfColumns)
 	BlockHash   types.Hash // block this column belongs to
 	BlockNumber uint64
-	// Data holds the column payload. Each inner slice corresponds to a
-	// blob in the block (one field-element slice per blob).
-	Data [][]byte
-	// KZGProof is the aggregated KZG proof for this column.
-	KZGProof []byte
+
+	// Cells holds the cell data for this column index, one per blob in the block.
+	// Each entry is BytesPerCell (2048) bytes.
+	Cells [][]byte
+
+	// KZGProofs holds one KZG proof per blob for this column index.
+	// Each entry is KZGProofLength (48) bytes.
+	KZGProofs [][]byte
+
+	// Commitments holds the KZG commitment for each blob.
+	// Each entry is KZGCommitmentLength (48) bytes.
+	// Required for KZG cell proof verification.
+	Commitments [][]byte
 }
 
 // DataColumnIdentifier uniquely identifies a data column by block root
@@ -56,7 +70,7 @@ type DataColumnIdentifier struct {
 	Index     uint64
 }
 
-// Validate performs basic structural validation on a DataColumn.
+// Validate performs structural validation on a DataColumn.
 func (dc *DataColumn) Validate() error {
 	if dc == nil {
 		return ErrNilColumn
@@ -67,14 +81,36 @@ func (dc *DataColumn) Validate() error {
 	if dc.BlockHash == (types.Hash{}) {
 		return ErrEmptyBlockHash
 	}
-	if len(dc.KZGProof) == 0 {
-		return ErrEmptyKZGProof
-	}
-	if len(dc.KZGProof) != KZGProofLength {
-		return ErrInvalidKZGProofLength
-	}
-	if len(dc.Data) == 0 {
+	if len(dc.Cells) == 0 {
 		return ErrEmptyColumnData
 	}
+
+	// Validate cell sizes.
+	for i, cell := range dc.Cells {
+		if len(cell) != BytesPerCell {
+			return &InvalidCellSizeError{Index: i, Got: len(cell), Want: BytesPerCell}
+		}
+	}
+
+	// Validate KZG proofs count and sizes.
+	if len(dc.KZGProofs) != len(dc.Cells) {
+		return ErrProofCountMismatch
+	}
+	for _, proof := range dc.KZGProofs {
+		if len(proof) != KZGProofLength {
+			return ErrInvalidKZGProofLength
+		}
+	}
+
+	// Validate commitments count and sizes.
+	if len(dc.Commitments) != len(dc.Cells) {
+		return ErrCommitmentCountMismatch
+	}
+	for _, comm := range dc.Commitments {
+		if len(comm) != KZGCommitmentLength {
+			return ErrInvalidCommitmentLength
+		}
+	}
+
 	return nil
 }

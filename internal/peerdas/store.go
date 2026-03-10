@@ -35,13 +35,19 @@ func columnKey(blockHash types.Hash, colIdx uint64) []byte {
 }
 
 // encodeColumn serializes a DataColumn to bytes.
-// Format: blockNumber(8) + kzgProofLen(4) + kzgProof + dataCount(4) + for each data: len(4) + bytes.
+// Format v2:
+//
+//	blockNumber(8) +
+//	blobCount(4) +
+//	for each blob:
+//	  commitment(KZGCommitmentLength) +
+//	  proof(KZGProofLength) +
+//	  cell(BytesPerCell)
 func encodeColumn(col *DataColumn) ([]byte, error) {
-	// Calculate total size.
-	size := 8 + 4 + len(col.KZGProof) + 4
-	for _, d := range col.Data {
-		size += 4 + len(d)
-	}
+	blobCount := len(col.Cells)
+	// Fixed-size per blob: commitment(48) + proof(48) + cell(2048) = 2144
+	perBlob := KZGCommitmentLength + KZGProofLength + BytesPerCell
+	size := 8 + 4 + blobCount*perBlob
 
 	buf := make([]byte, 0, size)
 
@@ -50,20 +56,16 @@ func encodeColumn(col *DataColumn) ([]byte, error) {
 	binary.BigEndian.PutUint64(numBuf[:], col.BlockNumber)
 	buf = append(buf, numBuf[:]...)
 
-	// KZG proof length + data.
-	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(col.KZGProof)))
-	buf = append(buf, lenBuf[:]...)
-	buf = append(buf, col.KZGProof...)
+	// Blob count (4 bytes).
+	var countBuf [4]byte
+	binary.BigEndian.PutUint32(countBuf[:], uint32(blobCount))
+	buf = append(buf, countBuf[:]...)
 
-	// Data slices count.
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(col.Data)))
-	buf = append(buf, lenBuf[:]...)
-
-	for _, d := range col.Data {
-		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(d)))
-		buf = append(buf, lenBuf[:]...)
-		buf = append(buf, d...)
+	// Per-blob data: commitment + proof + cell.
+	for i := 0; i < blobCount; i++ {
+		buf = append(buf, col.Commitments[i]...)
+		buf = append(buf, col.KZGProofs[i]...)
+		buf = append(buf, col.Cells[i]...)
 	}
 
 	return buf, nil
@@ -71,7 +73,7 @@ func encodeColumn(col *DataColumn) ([]byte, error) {
 
 // decodeColumn deserializes a DataColumn from bytes.
 func decodeColumn(blockHash types.Hash, colIdx uint64, raw []byte) (*DataColumn, error) {
-	if len(raw) < 12 { // 8 (blockNum) + 4 (proofLen) minimum
+	if len(raw) < 12 { // 8 (blockNum) + 4 (blobCount) minimum
 		return nil, fmt.Errorf("peerdas: column data too short: %d bytes", len(raw))
 	}
 
@@ -80,47 +82,48 @@ func decodeColumn(blockHash types.Hash, colIdx uint64, raw []byte) (*DataColumn,
 	blockNum := binary.BigEndian.Uint64(raw[offset:])
 	offset += 8
 
-	proofLen := int(binary.BigEndian.Uint32(raw[offset:]))
-	offset += 4
-	if offset+proofLen > len(raw) {
-		return nil, fmt.Errorf("peerdas: proof length %d exceeds data", proofLen)
-	}
-	proof := make([]byte, proofLen)
-	copy(proof, raw[offset:offset+proofLen])
-	offset += proofLen
-
-	if offset+4 > len(raw) {
-		return nil, fmt.Errorf("peerdas: missing data count at offset %d", offset)
-	}
-	dataCount := int(binary.BigEndian.Uint32(raw[offset:]))
+	blobCount := int(binary.BigEndian.Uint32(raw[offset:]))
 	offset += 4
 
-	if dataCount > 1024 { // reasonable upper bound
-		return nil, fmt.Errorf("peerdas: data count %d exceeds limit", dataCount)
+	if blobCount > 1024 { // reasonable upper bound
+		return nil, fmt.Errorf("peerdas: blob count %d exceeds limit", blobCount)
 	}
 
-	data := make([][]byte, dataCount)
-	for i := 0; i < dataCount; i++ {
-		if offset+4 > len(raw) {
-			return nil, fmt.Errorf("peerdas: truncated data entry %d", i)
-		}
-		dLen := int(binary.BigEndian.Uint32(raw[offset:]))
-		offset += 4
-		if offset+dLen > len(raw) {
-			return nil, fmt.Errorf("peerdas: data entry %d length %d exceeds remaining", i, dLen)
-		}
-		entry := make([]byte, dLen)
-		copy(entry, raw[offset:offset+dLen])
-		offset += dLen
-		data[i] = entry
+	perBlob := KZGCommitmentLength + KZGProofLength + BytesPerCell
+	expectedRemaining := blobCount * perBlob
+	if offset+expectedRemaining > len(raw) {
+		return nil, fmt.Errorf("peerdas: data truncated: need %d bytes, have %d", offset+expectedRemaining, len(raw))
+	}
+
+	commitments := make([][]byte, blobCount)
+	proofs := make([][]byte, blobCount)
+	cells := make([][]byte, blobCount)
+
+	for i := 0; i < blobCount; i++ {
+		commitment := make([]byte, KZGCommitmentLength)
+		copy(commitment, raw[offset:offset+KZGCommitmentLength])
+		offset += KZGCommitmentLength
+
+		proof := make([]byte, KZGProofLength)
+		copy(proof, raw[offset:offset+KZGProofLength])
+		offset += KZGProofLength
+
+		cell := make([]byte, BytesPerCell)
+		copy(cell, raw[offset:offset+BytesPerCell])
+		offset += BytesPerCell
+
+		commitments[i] = commitment
+		proofs[i] = proof
+		cells[i] = cell
 	}
 
 	return &DataColumn{
 		Index:       colIdx,
 		BlockHash:   blockHash,
 		BlockNumber: blockNum,
-		Data:        data,
-		KZGProof:    proof,
+		Cells:       cells,
+		KZGProofs:   proofs,
+		Commitments: commitments,
 	}, nil
 }
 

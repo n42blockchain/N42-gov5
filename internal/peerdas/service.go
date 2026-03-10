@@ -29,9 +29,13 @@ import (
 // Config holds PeerDAS configuration. Disabled by default.
 type Config struct {
 	Enable          bool   `json:"peerdas" yaml:"peerdas"`
-	CustodyCount    uint64 `json:"custody_count" yaml:"custody_count"`     // columns to custody; default: CustodyRequirement
-	SamplingEnabled bool   `json:"das_sampling" yaml:"das_sampling"`       // whether to perform DAS on new blocks
+	CustodyCount    uint64 `json:"custody_count" yaml:"custody_count"`       // columns to custody; default: CustodyRequirement
+	SamplingEnabled bool   `json:"das_sampling" yaml:"das_sampling"`         // whether to perform DAS on new blocks
 	SampleCount     int    `json:"das_sample_count" yaml:"das_sample_count"` // columns per sample; default: SamplesPerSlot
+
+	// SkipKZGVerification disables cryptographic KZG verification when storing
+	// or verifying data columns. Only use for testing/development.
+	SkipKZGVerification bool `json:"skip_kzg_verification" yaml:"skip_kzg_verification"`
 }
 
 // DefaultConfig returns a Config with sensible defaults (disabled).
@@ -73,6 +77,7 @@ type Service struct {
 	db          kv.RwDB
 	custodyCols []uint64 // sorted column indices this node custodies
 	nodeID      []byte
+	verifier    *Verifier // nil if KZG verification is disabled or init fails
 
 	blockProvider    BlockProvider
 	lastSampledBlock uint64 // block number of the last completed sampling round
@@ -93,12 +98,25 @@ func NewService(cfg Config, nodeID []byte, db kv.RwDB) *Service {
 		cols = CustodyColumns(nodeID, cfg.CustodyCount)
 	}
 
-	return &Service{
+	s := &Service{
 		cfg:         cfg,
 		db:          db,
 		nodeID:      nodeID,
 		custodyCols: cols,
 	}
+
+	// Initialize KZG verifier if enabled and verification is not skipped.
+	if cfg.Enable && !cfg.SkipKZGVerification {
+		v, err := NewVerifier()
+		if err != nil {
+			log.Warn("PeerDAS KZG verifier init failed, falling back to structural checks",
+				"err", err)
+		} else {
+			s.verifier = v
+		}
+	}
+
+	return s
 }
 
 // SetBlockProvider sets the block provider used by the sampling loop.
@@ -129,6 +147,7 @@ func (s *Service) Start(ctx context.Context) error {
 	log.Info("PeerDAS service started",
 		"custody_columns", len(s.custodyCols),
 		"sampling_enabled", s.cfg.SamplingEnabled,
+		"kzg_verification", s.verifier != nil,
 	)
 
 	if s.cfg.SamplingEnabled && s.blockProvider != nil {
@@ -246,16 +265,9 @@ func (s *Service) CustodyColumnIndices() []uint64 {
 }
 
 // VerifyAvailability samples columns for the given block and checks that
-// all sampled columns are available in local storage. Returns true if all
-// sampled columns are present and pass format checks, false otherwise.
-//
-// Format checks performed on each column:
-//   - Column must exist in local storage
-//   - KZG proof must be exactly 48 bytes (BLS12-381 G1 compressed point)
-//   - Column data must be non-empty
-//   - Column index must be < NumberOfColumns (128)
-//
-// Full cryptographic KZG verification is not yet implemented.
+// all sampled columns are available in local storage. When a KZG verifier
+// is configured, it additionally performs cryptographic proof verification.
+// Returns true if all sampled columns are present and valid.
 func (s *Service) VerifyAvailability(ctx context.Context, blockHash types.Hash, blockNum uint64) (bool, error) {
 	if !s.cfg.Enable {
 		return false, ErrServiceNotEnabled
@@ -280,16 +292,23 @@ func (s *Service) VerifyAvailability(ctx context.Context, blockHash types.Hash, 
 				return nil
 			}
 
-			// Validate KZG proof is exactly 48 bytes (compressed BLS12-381 G1 point).
-			if len(col.KZGProof) != KZGProofLength {
+			// Structural validation.
+			if err := VerifyDataColumnLight(col); err != nil {
 				available = false
 				return nil
 			}
 
-			// Validate column data is non-empty.
-			if len(col.Data) == 0 {
-				available = false
-				return nil
+			// Cryptographic KZG verification when verifier is available.
+			if s.verifier != nil {
+				if err := s.verifier.VerifyDataColumn(col); err != nil {
+					log.Warn("PeerDAS KZG verification failed",
+						"block", blockNum,
+						"column", colIdx,
+						"err", err,
+					)
+					available = false
+					return nil
+				}
 			}
 		}
 		available = true
@@ -302,8 +321,8 @@ func (s *Service) VerifyAvailability(ctx context.Context, blockHash types.Hash, 
 	return available, nil
 }
 
-// StoreDataColumn validates and persists a data column. Only columns that
-// this node custodies (or all columns if custody is not relevant) are stored.
+// StoreDataColumn validates and persists a data column. When a KZG verifier
+// is configured, the column's KZG proofs are verified before storage.
 func (s *Service) StoreDataColumn(ctx context.Context, col *DataColumn) error {
 	if !s.cfg.Enable {
 		return ErrServiceNotEnabled
@@ -311,6 +330,13 @@ func (s *Service) StoreDataColumn(ctx context.Context, col *DataColumn) error {
 
 	if err := col.Validate(); err != nil {
 		return err
+	}
+
+	// Cryptographic verification before storing.
+	if s.verifier != nil {
+		if err := s.verifier.VerifyDataColumn(col); err != nil {
+			return err
+		}
 	}
 
 	return s.db.Update(ctx, func(tx kv.RwTx) error {
