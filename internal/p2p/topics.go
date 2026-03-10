@@ -9,7 +9,8 @@ const (
 	GossipExitMessage        = "voluntary_exit"
 	GossipTransactionMessage = "transaction"
 
-	GossipBlobSidecarMessage    = "blob_sidecar"
+	GossipBlobSidecarMessage       = "blob_sidecar"
+	GossipDataColumnMessage        = "data_column_sidecar"
 	GossipHotStuffConsensusMessage = "hotstuff_consensus"
 
 	// Topic format strings combining the protocol prefix with message type.
@@ -17,5 +18,6 @@ const (
 	ExitBlockTopicFormat          = GossipProtocolAndDigest + GossipExitMessage
 	TransactionTopicFormat        = GossipProtocolAndDigest + GossipTransactionMessage
 	BlobSidecarTopicFormat        = GossipProtocolAndDigest + GossipBlobSidecarMessage
+	DataColumnTopicFormat         = GossipProtocolAndDigest + GossipDataColumnMessage
 	HotStuffConsensusTopicFormat  = GossipProtocolAndDigest + GossipHotStuffConsensusMessage
 )

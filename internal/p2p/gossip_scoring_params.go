@@ -59,6 +59,8 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 		return voluntaryExitTopicParams(), nil
 	case strings.Contains(topic, GossipBlobSidecarMessage):
 		return blockTopicParams(), nil
+	case strings.Contains(topic, GossipDataColumnMessage):
+		return blockTopicParams(), nil
 	case strings.Contains(topic, GossipHotStuffConsensusMessage):
 		return hotstuffConsensusTopicParams(), nil
 	default:
