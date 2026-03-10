@@ -387,7 +387,7 @@ var (
 	P2PBlockBatchLimit = &cli.IntFlag{
 		Name:        "p2p.limit.block-batch",
 		Usage:       "The amount of blocks the local peer is bounded to request and respond to in a batch.",
-		Value:       64,
+		Value:       500,
 		Destination: &DefaultConfig.P2PCfg.P2PLimit.BlockBatchLimit,
 	}
 	P2PBlockBatchLimitBurstFactor = &cli.IntFlag{
@@ -399,7 +399,7 @@ var (
 	P2PBlockBatchLimiterPeriod = &cli.IntFlag{
 		Name:        "p2p.limit.block-limiter-period",
 		Usage:       "Period to calculate expected limit for a single peer.",
-		Value:       5,
+		Value:       1,
 		Destination: &DefaultConfig.P2PCfg.P2PLimit.BlockBatchLimiterPeriod,
 	}
 )
