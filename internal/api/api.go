@@ -440,6 +440,9 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 	if err != nil {
 		return nil, err
 	}
+	if header == nil {
+		return nil, errors.New("block not found")
+	}
 	tx, err := api.db.BeginRo(ctx)
 	if err != nil {
 		return nil, err

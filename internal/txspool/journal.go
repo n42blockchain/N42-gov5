@@ -59,9 +59,25 @@ func (pool *TxsPool) flushToDB() error {
 			txs[tx.Hash()] = tx
 		}
 	}
+
+	// Pre-marshal all transactions while still holding the read lock to avoid
+	// any race on the Transaction objects.
+	type txEntry struct {
+		hash types.Hash
+		data []byte
+	}
+	entries := make([]txEntry, 0, len(txs))
+	for hash, tx := range txs {
+		data, err := tx.Marshal()
+		if err != nil {
+			log.Warn("Failed to marshal tx for persistence", "hash", hash, "err", err)
+			continue
+		}
+		entries = append(entries, txEntry{hash: hash, data: data})
+	}
 	pool.mu.RUnlock()
 
-	if len(txs) == 0 {
+	if len(entries) == 0 {
 		return nil
 	}
 
@@ -71,19 +87,12 @@ func (pool *TxsPool) flushToDB() error {
 			return err
 		}
 
-		count := 0
-		for hash, tx := range txs {
-			data, err := tx.Marshal()
-			if err != nil {
-				log.Warn("Failed to marshal tx for persistence", "hash", hash, "err", err)
-				continue
-			}
-			if err := dbTx.Put(kv.PoolTransaction, hash.Bytes(), data); err != nil {
+		for _, e := range entries {
+			if err := dbTx.Put(kv.PoolTransaction, e.hash.Bytes(), e.data); err != nil {
 				return err
 			}
-			count++
 		}
-		log.Info("Transaction pool persisted", "txs", count)
+		log.Info("Transaction pool persisted", "txs", len(entries))
 		return nil
 	})
 

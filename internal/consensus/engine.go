@@ -259,7 +259,10 @@ func (e *InstrumentedEngine) VerifyHeaders(chain ChainHeaderReader, headers []bl
 	start := time.Now()
 	quit, results := e.inner.VerifyHeaders(chain, headers, seals)
 
-	// Wrap results channel to capture timing
+	// Wrap results channel to capture timing.
+	// Note: quit is send-only (chan<- struct{}) so we cannot receive from it.
+	// The goroutine terminates when the inner results channel is closed,
+	// which happens when quit is signalled or all headers are verified.
 	wrappedResults := make(chan error, len(headers))
 	go func() {
 		defer close(wrappedResults)

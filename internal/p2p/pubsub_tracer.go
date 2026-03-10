@@ -37,22 +37,37 @@ func (g gossipTracer) Prune(_ peer.ID, topic string) {
 }
 
 func (g gossipTracer) ValidateMessage(msg *pubsub.Message) {
+	if msg == nil || msg.Topic == nil {
+		return
+	}
 	pubsubMessageValidate.WithLabelValues(*msg.Topic).Inc()
 }
 
 func (g gossipTracer) DeliverMessage(msg *pubsub.Message) {
+	if msg == nil || msg.Topic == nil {
+		return
+	}
 	pubsubMessageDeliver.WithLabelValues(*msg.Topic).Inc()
 }
 
 func (g gossipTracer) RejectMessage(msg *pubsub.Message, _ string) {
+	if msg == nil || msg.Topic == nil {
+		return
+	}
 	pubsubMessageReject.WithLabelValues(*msg.Topic).Inc()
 }
 
 func (g gossipTracer) DuplicateMessage(msg *pubsub.Message) {
+	if msg == nil || msg.Topic == nil {
+		return
+	}
 	pubsubMessageDuplicate.WithLabelValues(*msg.Topic).Inc()
 }
 
 func (g gossipTracer) UndeliverableMessage(msg *pubsub.Message) {
+	if msg == nil || msg.Topic == nil {
+		return
+	}
 	pubsubMessageUndeliverable.WithLabelValues(*msg.Topic).Inc()
 }
 

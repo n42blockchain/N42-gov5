@@ -28,6 +28,10 @@ type Api interface {
 	GetEvm(ctx context.Context, msg internal.Message, ibs evmtypes.IntraBlockState, header block.IHeader, vmConfig *vm2.Config) (*vm2.EVM, func() error, error)
 }
 
+// maxLogResults is the maximum number of log results returned by a filter query
+// to prevent memory exhaustion from unbounded responses.
+const maxLogResults = 10000
+
 // Filter can be used to retrieve and filter logs.
 type Filter struct {
 	api Api
@@ -205,6 +209,10 @@ func (f *Filter) indexedLogs(ctx context.Context, end uint64) ([]*block.Log, boo
 			return logs, true, err
 		}
 		logs = append(logs, found...)
+		if len(logs) >= maxLogResults {
+			logs = logs[:maxLogResults]
+			return logs, true, nil
+		}
 	}
 
 	f.begin = int64(end) + 1
@@ -226,6 +234,10 @@ func (f *Filter) unindexedLogs(ctx context.Context, end uint64) ([]*block.Log, e
 			return logs, err
 		}
 		logs = append(logs, found...)
+		if len(logs) >= maxLogResults {
+			logs = logs[:maxLogResults]
+			return logs, nil
+		}
 	}
 	return logs, nil
 }

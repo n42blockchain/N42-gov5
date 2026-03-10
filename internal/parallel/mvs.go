@@ -209,11 +209,17 @@ func (m *MVS) ApplyAll(numTxs int, fn func(LocationKey, []byte) error) error {
 }
 
 // DeleteAll removes all writes by txIndex across all locations.
+// We collect entries under RLock first, then release it before locking
+// individual entries to prevent deadlock with getOrCreateEntry's Lock.
 func (m *MVS) DeleteAll(txIndex int) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
+	snapshot := make([]*mvEntry, 0, len(m.entries))
 	for _, e := range m.entries {
+		snapshot = append(snapshot, e)
+	}
+	m.mu.RUnlock()
+
+	for _, e := range snapshot {
 		e.mu.Lock()
 		idx := sort.Search(len(e.versions), func(i int) bool {
 			return e.versions[i].txIndex >= txIndex

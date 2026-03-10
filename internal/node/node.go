@@ -155,9 +155,20 @@ const (
 func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	ctx, cancel := context.WithCancel(cliCtx.Context)
 	success := false
+
+	// Track resources that need cleanup on failure.
+	var chainKv kv.RwDB
+	var dirLockNode Node // tracks dirLock for cleanup
+
 	defer func() {
 		if !success {
 			cancel()
+			if dirLockNode.dirLock != nil {
+				dirLockNode.dirLock.Unlock()
+			}
+			if chainKv != nil {
+				chainKv.Close()
+			}
 		}
 	}()
 
@@ -169,7 +180,6 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		genesisHash     types.Hash
 		genesisConfig   *conf.Genesis
 		chainConfig     *params.ChainConfig
-		chainKv         kv.RwDB
 		err             error
 	)
 
@@ -247,6 +257,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if err := node.openDataDir(cfg); err != nil {
 		return nil, err
 	}
+	dirLockNode.dirLock = node.dirLock // track for cleanup on error
 
 	cfg.ChainCfg = chainConfig
 
@@ -496,6 +507,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	node.api.SetP2P(&p2pAdminAdapter{svc: p2p})
 	node.api.SetMiner(&minerAdminAdapter{m: miner})
 	success = true
+	chainKv = nil // prevent deferred cleanup from closing the DB now owned by node
 	return &node, nil
 }
 
@@ -1020,7 +1032,9 @@ func (n *Node) doClose(errs []error) error {
 	// synchronize with OpenDatabase*.
 	n.lock.Lock()
 	n.state = closedState
-	n.db.Close()
+	if n.db != nil {
+		n.db.Close()
+	}
 	n.lock.Unlock()
 
 	if err := n.accman.Close(); err != nil {
