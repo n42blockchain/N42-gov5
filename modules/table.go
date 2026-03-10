@@ -139,6 +139,27 @@ const (
 	// key: "state" (fixed)
 	// value: view(8) + consecutiveTimeouts(4) + lockedQC(var) + lastCommittedQC(var)
 	HotStuffState = "HotStuffState"
+
+	// SnapshotAccount stores the flat snapshot of account state.
+	// key: address (20 bytes)
+	// value: protobuf-encoded StateAccount (same format as Account table)
+	SnapshotAccount = "SnapshotAccount"
+
+	// SnapshotStorage stores the flat snapshot of contract storage.
+	// key: address(20) + incarnation(2) + storageKey(32) = 54 bytes
+	// value: storage value (DupSort, same format as Storage table)
+	SnapshotStorage = "SnapshotStorage"
+
+	// SnapshotMeta stores snapshot disk layer metadata for crash recovery.
+	// key: "disk_root" -> root_hash(32) + block_num(8) = 40 bytes
+	// key: "gen_marker" -> address(20) — generation cursor
+	// key: "gen_complete" -> 0x01 — flag indicating generation is done
+	SnapshotMeta = "SnapshotMeta"
+
+	// SnapshotJournal stores serialized diff layers for crash recovery.
+	// key: block_num (8 bytes big-endian)
+	// value: serialized diff layer (accounts, deletions, storage)
+	SnapshotJournal = "SnapshotJournal"
 )
 
 const (
@@ -193,12 +214,22 @@ var n42Tables = []string{
 	BlobSidecars,
 	DataColumns,
 	HotStuffState,
+	SnapshotAccount,
+	SnapshotStorage,
+	SnapshotMeta,
+	SnapshotJournal,
 }
 
 var N42TableCfg = kv.TableCfg{
 	AccountChangeSet: {Flags: kv.DupSort},
 	StorageChangeSet: {Flags: kv.DupSort},
 	Storage: {
+		Flags:                     kv.DupSort,
+		AutoDupSortKeysConversion: true,
+		DupFromLen:                54,
+		DupToLen:                  34,
+	},
+	SnapshotStorage: {
 		Flags:                     kv.DupSort,
 		AutoDupSortKeysConversion: true,
 		DupFromLen:                54,
