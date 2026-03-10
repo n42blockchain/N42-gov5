@@ -130,6 +130,12 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 		return nil
 	}
 
+	// Validate voter index is within the known validator set.
+	vs := e.validatorSet()
+	if _, err := vs.GetPublicKey(cv.Voter); err != nil {
+		return err
+	}
+
 	if e.commitCollector == nil {
 		return nil
 	}
@@ -137,8 +143,8 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 		return nil
 	}
 
-	// Verify BLS signature.
-	pk, err := e.validatorSet().GetPublicKey(cv.Voter)
+	// Verify BLS signature (validator bounds already checked above).
+	pk, err := vs.GetPublicKey(cv.Voter)
 	if err != nil {
 		return err
 	}

@@ -6,6 +6,7 @@ package snapshot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -164,12 +165,15 @@ func (t *Tree) flattenOldest() {
 	newDisk.SetDB(t.db)
 	newDisk.SetGenReady(t.diskLayer.GenReady())
 
-	// Re-parent children.
+	// Re-parent children — must hold each DiffLayer's lock to avoid
+	// races with concurrent Account()/Storage() reads on dl.parent.
 	for _, layer := range t.layers {
 		if dl, ok := layer.(*DiffLayer); ok {
+			dl.lock.Lock()
 			if dl.parent == oldest {
 				dl.parent = newDisk
 			}
+			dl.lock.Unlock()
 		}
 	}
 
@@ -244,8 +248,7 @@ func (t *Tree) persistDiffToDisk(dl *DiffLayer) {
 			pb := acc.ToProtoMessage()
 			enc, err := proto.Marshal(pb)
 			if err != nil {
-				log.Warn("Snapshot: marshal account for persist failed", "addr", addr.Hex(), "err", err)
-				continue
+				return fmt.Errorf("snapshot: marshal account %s: %w", addr.Hex(), err)
 			}
 			if err := rawdb.WriteSnapshotAccount(tx, addr, enc); err != nil {
 				return err

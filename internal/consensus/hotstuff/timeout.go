@@ -165,11 +165,12 @@ func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeou
 	log.Info("advancing to higher timeout view for synchronization",
 		"currentView", currentView, "timeoutView", timeout.View, "sender", timeout.Sender)
 
+	// Mark timeout BEFORE advancing so that advanceToView replays buffered
+	// messages with the correct phase (PhaseTimedOut) and backoff level.
+	e.roundState.Timeout()
 	if err := e.advanceToView(timeout.View); err != nil {
 		return err
 	}
-	e.roundState.Timeout()
-	e.pacemaker.ResetForView(timeout.View, e.roundState.ConsecutiveTimeouts())
 
 	// Create timeout collector if needed.
 	nValidators := e.validatorSet().Len()

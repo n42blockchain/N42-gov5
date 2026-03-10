@@ -108,11 +108,12 @@ func (dl *DiffLayer) Account(addr types.Address) (*account.StateAccount, bool) {
 		dl.lock.RUnlock()
 		return acc, true
 	}
+	parent := dl.parent
 	dl.lock.RUnlock()
 
 	// Not in this layer — ask parent.
-	if dl.parent != nil {
-		return dl.parent.Account(addr)
+	if parent != nil {
+		return parent.Account(addr)
 	}
 	return nil, false
 }
@@ -137,10 +138,11 @@ func (dl *DiffLayer) Storage(addr types.Address, key types.Hash) ([]byte, bool) 
 			return val, true
 		}
 	}
+	parent := dl.parent
 	dl.lock.RUnlock()
 
-	if dl.parent != nil {
-		return dl.parent.Storage(addr, key)
+	if parent != nil {
+		return parent.Storage(addr, key)
 	}
 	return nil, false
 }
