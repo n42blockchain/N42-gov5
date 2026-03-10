@@ -161,11 +161,21 @@ func (g *Generator) Run(ctx context.Context) {
 				nextMarker := make([]byte, len(lastKey))
 				copy(nextMarker, lastKey)
 				// Increment for next seek.
+				overflow := true
 				for i := len(nextMarker) - 1; i >= 0; i-- {
 					nextMarker[i]++
 					if nextMarker[i] != 0 {
+						overflow = false
 						break
 					}
+				}
+				if overflow {
+					// All bytes were 0xFF — end of keyspace reached.
+					batchDone = true
+					if err := rawdb.WriteSnapshotDiskRoot(tx, g.diskRoot, g.diskBlock); err != nil {
+						return err
+					}
+					return rawdb.SetSnapshotGenComplete(tx)
 				}
 				if err := rawdb.WriteSnapshotGenMarker(tx, nextMarker); err != nil {
 					return err

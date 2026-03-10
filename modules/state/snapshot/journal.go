@@ -6,6 +6,7 @@ package snapshot
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -342,17 +343,21 @@ func LoadJournal(tx kv.Tx, tree *Tree) error {
 		return nil
 	}
 
-	// Wire parent pointers. Each layer's parent is found by looking up its
-	// root in the tree (which initially has only the disk layer).
+	// Sort by block number to ensure parent-first ordering.
+	sort.Slice(deserialized, func(i, j int) bool {
+		return deserialized[i].block < deserialized[j].block
+	})
+
+	// Wire parent pointers. Each layer's parent is found by matching block number.
 	tree.lock.Lock()
 	defer tree.lock.Unlock()
 
 	for _, dl := range deserialized {
 		// Find parent — could be disk layer or a previously inserted diff.
-		// We try the disk layer root first, then scan existing layers.
+		// Match by block number (parent should be block-1).
 		var parent Layer
 		for _, layer := range tree.layers {
-			if layer.BlockNumber() == dl.block-1 || layer.Root() == dl.parent.Root() {
+			if layer.BlockNumber() == dl.block-1 {
 				parent = layer
 				break
 			}

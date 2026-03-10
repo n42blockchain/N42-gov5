@@ -12,6 +12,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"google.golang.org/protobuf/proto"
@@ -197,9 +198,13 @@ func (t *Tree) mergeDiffIntoCache(dl *DiffLayer) {
 	}
 
 	for addr, acc := range dl.accounts {
+		if acc == nil {
+			continue
+		}
 		pb := acc.ToProtoMessage()
 		enc, err := proto.Marshal(pb)
 		if err != nil {
+			log.Warn("Snapshot: marshal account for cache failed", "addr", addr.Hex(), "err", err)
 			continue
 		}
 		cache.Put(modules.Account, addr.Bytes(), enc)
@@ -239,6 +244,7 @@ func (t *Tree) persistDiffToDisk(dl *DiffLayer) {
 			pb := acc.ToProtoMessage()
 			enc, err := proto.Marshal(pb)
 			if err != nil {
+				log.Warn("Snapshot: marshal account for persist failed", "addr", addr.Hex(), "err", err)
 				continue
 			}
 			if err := rawdb.WriteSnapshotAccount(tx, addr, enc); err != nil {
@@ -267,6 +273,7 @@ func (t *Tree) persistDiffToDisk(dl *DiffLayer) {
 	})
 
 	if err != nil {
+		log.Error("Snapshot: persist diff to disk failed", "block", dl.block, "root", dl.root.Hex(), "err", err)
 		snapshotPersistErrors.Inc()
 	} else {
 		snapshotPersistFlushCount.Inc()
@@ -278,8 +285,7 @@ func (t *Tree) Discard(root types.Hash) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	layer, ok := t.layers[root]
-	if !ok {
+	if _, ok := t.layers[root]; !ok {
 		return
 	}
 
@@ -294,8 +300,6 @@ func (t *Tree) Discard(root types.Hash) {
 			delete(t.layers, r)
 		}
 	}
-	_ = layer
-
 	diffCount, diffMem := t.sizeLocked()
 	snapshotDiffLayers.Set(uint64(diffCount))
 	snapshotDiffMemory.Set(diffMem)
