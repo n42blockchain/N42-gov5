@@ -45,6 +45,10 @@ func columnKey(blockHash types.Hash, colIdx uint64) []byte {
 //	  cell(BytesPerCell)
 func encodeColumn(col *DataColumn) ([]byte, error) {
 	blobCount := len(col.Cells)
+	if blobCount != len(col.Commitments) || blobCount != len(col.KZGProofs) {
+		return nil, fmt.Errorf("peerdas: slice length mismatch: cells=%d commitments=%d proofs=%d",
+			blobCount, len(col.Commitments), len(col.KZGProofs))
+	}
 	// Fixed-size per blob: commitment(48) + proof(48) + cell(2048) = 2144
 	perBlob := KZGCommitmentLength + KZGProofLength + BytesPerCell
 	size := 8 + 4 + blobCount*perBlob

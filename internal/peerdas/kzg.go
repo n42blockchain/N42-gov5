@@ -52,6 +52,12 @@ func (v *Verifier) VerifyDataColumn(col *DataColumn) error {
 	if blobCount == 0 {
 		return ErrEmptyColumnData
 	}
+	if len(col.KZGProofs) != blobCount {
+		return ErrProofCountMismatch
+	}
+	if len(col.Commitments) != blobCount {
+		return ErrCommitmentCountMismatch
+	}
 
 	// Build parallel arrays for batch verification.
 	commitments := make([]transaction.Commitment, blobCount)
