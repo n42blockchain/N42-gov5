@@ -201,6 +201,11 @@ func (pool *TxsPool) Stats() (int, int, int, int) {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
 
+	return pool.statsLocked()
+}
+
+// statsLocked returns stats. Caller must hold at least pool.mu.RLock().
+func (pool *TxsPool) statsLocked() (int, int, int, int) {
 	pendingTxs := 0
 	pendingAddresses := len(pool.pending)
 	for _, list := range pool.pending {
@@ -219,7 +224,7 @@ func (pool *TxsPool) StatsPrint() {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
 
-	pendingAddresses, pendingTxs, queuedAddresses, queuedTxs := pool.Stats()
+	pendingAddresses, pendingTxs, queuedAddresses, queuedTxs := pool.statsLocked()
 	log.Debugf("txs pool: pendingAddresses count: %d pendingTxs count: %d", pendingAddresses, pendingTxs)
 	log.Debugf("txs pool: queuedAddresses count: %d queuedTxs count: %d", queuedAddresses, queuedTxs)
 }

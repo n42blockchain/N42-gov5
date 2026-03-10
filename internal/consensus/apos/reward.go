@@ -116,12 +116,23 @@ func (r *Reward) GetRewards(addr types.Address, from *uint256.Int, to *uint256.I
 		if err != nil {
 			return nil, err
 		}
+		if blk == nil {
+			continue
+		}
+		body := blk.Body()
+		if body == nil {
+			continue
+		}
 
-		for _, reward := range blk.Body().Reward() {
+		for _, reward := range body.Reward() {
 			if reward.Address == addr {
+				var ts uint64
+				if h, ok := blk.Header().(*block.Header); ok && h != nil {
+					ts = h.Time
+				}
 				resp.Data = append(resp.Data, &RewardResponseValue{
 					Value:       *reward.Amount,
-					Timestamp:   hexutil.Uint64(blk.Header().(*block.Header).Time),
+					Timestamp:   hexutil.Uint64(ts),
 					BlockNumber: blockNr.String(),
 				})
 				resp.Total = resp.Total.Add(resp.Total, reward.Amount)

@@ -91,7 +91,11 @@ func (f *Filter) Logs(ctx context.Context) ([]*block.Log, error) {
 		return f.pendingLogs()
 	}
 	// Figure out the limits of the filter range
-	header := f.api.BlockChain().CurrentBlock().Header()
+	curBlock := f.api.BlockChain().CurrentBlock()
+	if curBlock == nil {
+		return nil, nil
+	}
+	header := curBlock.Header()
 	if header == nil {
 		return nil, nil
 	}

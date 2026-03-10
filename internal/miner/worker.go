@@ -737,13 +737,19 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 	if currentHeader == nil {
 		return nil, errors.New("current block header is nil")
 	}
-	parent := currentHeader.(*block.Header)
+	parent, ok := currentHeader.(*block.Header)
+	if !ok || parent == nil {
+		return nil, errors.New("invalid current block header type")
+	}
 	if param.parentHash != (types.Hash{}) {
 		b, _ := w.chain.GetBlockByHash(param.parentHash)
 		if b == nil {
 			return nil, errors.New("missing parent")
 		}
-		parent = b.Header().(*block.Header)
+		parent, ok = b.Header().(*block.Header)
+		if !ok || parent == nil {
+			return nil, errors.New("invalid parent header type")
+		}
 	}
 
 	if parent.Time >= param.timestamp {
