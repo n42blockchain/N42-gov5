@@ -362,7 +362,17 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 							gen := statesnapshot.NewGenerator(chainKv, cur.Hash(), cur.Number64().Uint64())
 							go func() {
 								gen.Run(ctx)
-								tree.SetGenReady(true)
+								// Only mark ready if generation actually completed
+								// (not cancelled or failed mid-way).
+								if ctx.Err() == nil {
+									if rtx, err := chainKv.BeginRo(context.Background()); err == nil {
+										complete, _ := rawdb.IsSnapshotGenComplete(rtx)
+										rtx.Rollback()
+										if complete {
+											tree.SetGenReady(true)
+										}
+									}
+								}
 							}()
 						}
 					}

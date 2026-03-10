@@ -19,6 +19,7 @@ package peerdas
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -80,7 +81,7 @@ type Service struct {
 	verifier    *Verifier // nil if KZG verification is disabled or init fails
 
 	blockProvider    BlockProvider
-	lastSampledBlock uint64 // block number of the last completed sampling round
+	lastSampledBlock atomic.Uint64 // block number of the last completed sampling round
 
 	mu      sync.Mutex
 	running bool
@@ -122,6 +123,8 @@ func NewService(cfg Config, nodeID []byte, db kv.RwDB) *Service {
 // SetBlockProvider sets the block provider used by the sampling loop.
 // Must be called before Start.
 func (s *Service) SetBlockProvider(bp BlockProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.blockProvider = bp
 }
 
@@ -185,13 +188,19 @@ func (s *Service) samplingLoop(ctx context.Context) {
 // runSamplingRound performs a single sampling check on the current head block.
 // Skips if the block has already been sampled.
 func (s *Service) runSamplingRound(ctx context.Context) {
-	blockHash, blockNum := s.blockProvider.CurrentBlock()
+	s.mu.Lock()
+	bp := s.blockProvider
+	s.mu.Unlock()
+	if bp == nil {
+		return
+	}
+	blockHash, blockNum := bp.CurrentBlock()
 	if blockHash == (types.Hash{}) || blockNum == 0 {
 		return
 	}
 
 	// Skip blocks we have already sampled.
-	if blockNum <= s.lastSampledBlock {
+	if blockNum <= s.lastSampledBlock.Load() {
 		return
 	}
 
@@ -205,7 +214,7 @@ func (s *Service) runSamplingRound(ctx context.Context) {
 		return
 	}
 
-	s.lastSampledBlock = blockNum
+	s.lastSampledBlock.Store(blockNum)
 
 	if available {
 		log.Debug("PeerDAS sampling passed",

@@ -25,7 +25,7 @@ type Pacemaker struct {
 
 	// Adaptive timeout: ring buffer of recent commit latencies.
 	recentLatencies []time.Duration
-	latencyCursor   int
+	latencyCursor   uint64
 }
 
 const (
@@ -59,12 +59,13 @@ func (p *Pacemaker) ObserveCommitLatency(latency time.Duration) {
 }
 
 // effectiveBaseTimeout returns the adaptive base timeout considering observed latencies.
+// Caller must hold at least p.mu.RLock.
 func (p *Pacemaker) effectiveBaseTimeout() time.Duration {
 	if len(p.recentLatencies) < 5 {
 		return p.baseTimeout
 	}
 
-	// Compute p95 of recent latencies.
+	// Compute p95 of recent latencies. Copy the slice to avoid sorting the original.
 	sorted := make([]int64, len(p.recentLatencies))
 	for i, d := range p.recentLatencies {
 		sorted[i] = d.Milliseconds()
