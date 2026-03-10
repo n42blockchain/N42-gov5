@@ -351,6 +351,10 @@ func (t *FreezerTable) TruncateHead(from uint64) error {
 	if _, err := t.indexFile.Seek(0, io.SeekEnd); err != nil {
 		return err
 	}
+	// Sync to ensure truncation is persisted.
+	if err := t.indexFile.Sync(); err != nil {
+		return fmt.Errorf("freezer: sync after truncate: %w", err)
+	}
 
 	t.items.Store(from)
 

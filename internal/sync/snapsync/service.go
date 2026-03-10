@@ -238,7 +238,7 @@ func (s *Service) selectPivot() (uint64, []byte, error) {
 		currentBlock := s.cfg.Chain.CurrentBlock().Number64()
 		highestBlock, peers = s.cfg.P2P.Peers().BestPeers(required, currentBlock)
 
-		if len(peers) >= required && highestBlock.Uint64() > s.cfg.SnapSync.PivotDistance {
+		if len(peers) >= required && highestBlock != nil && highestBlock.Uint64() > s.cfg.SnapSync.PivotDistance {
 			break
 		}
 

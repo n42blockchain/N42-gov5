@@ -131,7 +131,11 @@ func (s *TransactionAPI) SignTransaction(ctx context.Context, args TransactionAr
 	}
 
 	// Get the current header for RPC transaction formatting
-	header := s.api.BlockChain().CurrentBlock().Header()
+	currentBlock := s.api.BlockChain().CurrentBlock()
+	if currentBlock == nil {
+		return nil, errors.New("no current block available")
+	}
+	header := currentBlock.Header()
 
 	return &SignedTransactionResult{
 		Raw: raw,
@@ -265,7 +269,11 @@ func (s *TransactionAPI) PendingTransactions() ([]*RPCTransaction, error) {
 	}
 
 	var transactions []*RPCTransaction
-	curHeader := s.api.BlockChain().CurrentBlock().Header()
+	currentBlock := s.api.BlockChain().CurrentBlock()
+	if currentBlock == nil {
+		return nil, nil
+	}
+	curHeader := currentBlock.Header()
 
 	for account, txs := range pending {
 		// Only include transactions from managed accounts

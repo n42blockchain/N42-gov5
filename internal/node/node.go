@@ -19,9 +19,11 @@ package node
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"math/big"
 	"net"
 	"os"
 	"path"
@@ -45,6 +47,7 @@ import (
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/types"
@@ -200,13 +203,30 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	if genesisHash == (types.Hash{}) {
-		genesisHash = *params.GenesisHashByChainName(cfg.NodeCfg.Chain)
-		genesisConfig = internal.GenesisByChainName(cfg.NodeCfg.Chain)
-		chainConfig = params.ChainConfigByChainName(cfg.NodeCfg.Chain)
+		if cfg.NodeCfg.Chain == "private" {
+			// Private/dev chain: use a built-in devnet genesis so that
+			// --dev works out of the box without a separate config file.
+			genesisConfig = devnetGenesisBlock(cfg)
+			chainConfig = genesisConfig.Config
+		} else {
+			hashPtr := params.GenesisHashByChainName(cfg.NodeCfg.Chain)
+			if hashPtr == nil {
+				return nil, fmt.Errorf("unknown chain: %s", cfg.NodeCfg.Chain)
+			}
+			genesisHash = *hashPtr
+			genesisConfig = internal.GenesisByChainName(cfg.NodeCfg.Chain)
+			chainConfig = params.ChainConfigByChainName(cfg.NodeCfg.Chain)
+		}
 		if err := chainKv.Update(ctx, func(tx kv.RwTx) error {
 			var writeErr error
 			genesisBlock, writeErr = WriteGenesisBlock(tx, genesisConfig)
-			return writeErr
+			if writeErr != nil {
+				return writeErr
+			}
+			if cfg.NodeCfg.Chain == "private" {
+				genesisHash = genesisBlock.Hash()
+			}
+			return nil
 		}); err != nil {
 			return nil, err
 		}
@@ -511,6 +531,25 @@ func (n *Node) Start() error {
 		if err != nil {
 			log.Error("Cannot start mining without etherbase", "err", err)
 			return fmt.Errorf("etherbase missing: %v", err)
+		}
+
+		// In dev mode, auto-unlock the etherbase account for signing.
+		if n.config.NodeCfg.Chain == "private" {
+			password := ""
+			if n.config.NodeCfg.PasswordFile != "" {
+				if data, readErr := os.ReadFile(n.config.NodeCfg.PasswordFile); readErr == nil {
+					password = strings.TrimSpace(string(data))
+				}
+			}
+			for _, backend := range n.accman.Backends(keystore.KeyStoreType) {
+				if ks, ok := backend.(*keystore.KeyStore); ok {
+					if unlockErr := ks.Unlock(accounts.Account{Address: eb}, password); unlockErr != nil {
+						log.Warn("Failed to auto-unlock etherbase in dev mode", "err", unlockErr)
+					} else {
+						log.Info("Auto-unlocked etherbase for dev mode", "address", eb)
+					}
+				}
+			}
 		}
 
 		// Authorize the consensus engine with the miner's signing function.
@@ -887,6 +926,12 @@ type namedCloser struct {
 // It is the inverse of Start. Services are stopped in dependency order:
 // consumers first, then infrastructure layers (blockchain, P2P) last.
 func (n *Node) stopServices() []error {
+	// Cancel the node context first so all background goroutines receive
+	// the shutdown signal before we begin stopping services sequentially.
+	if n.cancel != nil {
+		n.cancel()
+	}
+
 	var errs []error
 
 	services := []namedCloser{
@@ -1412,4 +1457,71 @@ func (b *nodeBlockProvider) CurrentBlock() uint64 {
 		return 0
 	}
 	return blk.Number64().Uint64()
+}
+
+// devnetGenesisBlock creates a minimal genesis for --dev / private chain mode.
+// It uses Clique (APoa) consensus with a 4-second block period and pre-funds
+// the configured etherbase (if any) so the node can immediately start mining.
+func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
+	period := uint64(4)
+	if cfg.ChainCfg != nil && cfg.ChainCfg.Clique != nil && cfg.ChainCfg.Clique.Period > 0 {
+		period = cfg.ChainCfg.Clique.Period
+	}
+
+	zero := big.NewInt(0)
+	chainConfig := &params.ChainConfig{
+		ChainID:               big.NewInt(94),
+		HomesteadBlock:        zero,
+		TangerineWhistleBlock: zero,
+		SpuriousDragonBlock:   zero,
+		ByzantiumBlock:        zero,
+		ConstantinopleBlock:   zero,
+		PetersburgBlock:       zero,
+		IstanbulBlock:         zero,
+		MuirGlacierBlock:      zero,
+		BerlinBlock:           zero,
+		LondonBlock:           zero,
+		ArrowGlacierBlock:     zero,
+		Consensus:             params.CliqueConsensus,
+		Clique: &params.CliqueConfig{
+			Period: period,
+			Epoch:  30000,
+		},
+	}
+
+	alloc := make(conf.GenesisAlloc)
+
+	// Pre-fund etherbase with a large balance.
+	if cfg.Miner.Etherbase != "" {
+		addr := types.HexToAddress(cfg.Miner.Etherbase)
+		alloc[addr] = conf.GenesisAccount{
+			Balance: "1000000000000000000000000000", // 10^27 wei
+		}
+	}
+
+	// Pre-fund deterministic stress-test accounts so cmd/stresstest works out of the box.
+	// Accounts are generated as: sha256("n42-stress-test-key-{i}") → ECDSA key → address.
+	for i := 0; i < 50; i++ {
+		seed := fmt.Sprintf("n42-stress-test-key-%d", i)
+		h := sha256.Sum256([]byte(seed))
+		key, err := crypto.ToECDSA(h[:])
+		if err != nil {
+			continue
+		}
+		addr := crypto.PubkeyToAddress(key.PublicKey)
+		alloc[types.Address(addr)] = conf.GenesisAccount{
+			Balance: "1000000000000000000000", // 1000 ETH each
+		}
+	}
+
+	miners := []string{}
+	if cfg.Miner.Etherbase != "" {
+		miners = append(miners, cfg.Miner.Etherbase)
+	}
+
+	return &conf.Genesis{
+		Config: chainConfig,
+		Alloc:  alloc,
+		Miners: miners,
+	}
 }

@@ -565,7 +565,7 @@ func (c *Apoa) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	rawHeader.MixDigest = types.Hash{}
 
 	// Ensure the timestamp has the correct delay
-	parent := chain.GetHeader(rawHeader.ParentHash, rawHeader.Number.Sub(rawHeader.Number, uint256.NewInt(1)))
+	parent := chain.GetHeader(rawHeader.ParentHash, new(uint256.Int).Sub(rawHeader.Number, uint256.NewInt(1)))
 	if parent == nil {
 		return errors.New("unknown ancestor")
 	}

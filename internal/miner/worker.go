@@ -353,7 +353,14 @@ func (w *worker) resultLoop() error {
 			w.mu.Unlock()
 			blocksMinedCounter.Inc()
 			blockMiningTimer.UpdateDuration(task.createdAt)
-			blockSignGauge.Set(uint64(len(blk.Body().Verifier())))
+
+			body := blk.Body()
+			var verifierCount, rewardCount int
+			if body != nil {
+				verifierCount = len(body.Verifier())
+				rewardCount = len(body.Reward())
+			}
+			blockSignGauge.Set(uint64(verifierCount))
 
 			if len(logs) > 0 {
 				event.GlobalEvent.Send(common.NewLogsEvent{Logs: logs})
@@ -366,8 +373,8 @@ func (w *worker) resultLoop() error {
 				"used gas", blk.GasUsed(),
 				"diff", blk.Difficulty().Uint64(),
 				"headerTime", time.Unix(int64(blk.Time()), 0).Format(time.RFC3339),
-				"verifierCount", len(blk.Body().Verifier()),
-				"rewardCount", len(blk.Body().Reward()),
+				"verifierCount", verifierCount,
+				"rewardCount", rewardCount,
 				"elapsed", common.PrettyDuration(time.Since(task.createdAt)),
 				"txs", len(blk.Transactions()))
 
@@ -375,7 +382,9 @@ func (w *worker) resultLoop() error {
 				log.Error("Failed Broadcast block to p2p network", "err", err)
 				continue
 			}
-			event.GlobalEvent.Send(common.ChainHighestBlock{Block: *blk.(*block.Block), Inserted: true})
+			if concrete, ok := blk.(*block.Block); ok {
+				event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concrete, Inserted: true})
+			}
 		}
 	}
 }
@@ -830,6 +839,11 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 
 	w.updateSnapshot(envCopy, rewards)
 
+	commitRewardCount := 0
+	if b := iblock.Body(); b != nil {
+		commitRewardCount = len(b.Reward())
+	}
+
 	select {
 	case w.taskCh <- &task{receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay}:
 		log.Debug("Commit new sealing work",
@@ -839,7 +853,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 			"gas", iblock.GasUsed(),
 			"elapsed", common.PrettyDuration(time.Since(start)),
 			"headerTime", time.Unix(int64(iblock.Time()), 0).Format(time.RFC3339),
-			"rewardCount", len(iblock.Body().Reward()),
+			"rewardCount", commitRewardCount,
 		)
 	case <-w.ctx.Done():
 		return w.ctx.Err()

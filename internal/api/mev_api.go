@@ -19,7 +19,9 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/miner/builder"
@@ -75,7 +77,7 @@ func (api *MevAPI) SendBundle(ctx context.Context, args SendBundleArgs) (*SendBu
 	for i, raw := range args.Txs {
 		var tx transaction.Transaction
 		if err := tx.Unmarshal(raw); err != nil {
-			return nil, errors.New("failed to decode transaction " + string(rune('0'+i)))
+			return nil, fmt.Errorf("failed to decode transaction %d: %w", i, err)
 		}
 		txs = append(txs, &tx)
 	}
@@ -92,15 +94,12 @@ func (api *MevAPI) SendBundle(ctx context.Context, args SendBundleArgs) (*SendBu
 		return nil, err
 	}
 
-	// Compute bundle hash as Keccak256 of all tx hashes.
+	// Compute bundle hash as Keccak256 of concatenated tx hashes.
 	var hashData []byte
 	for _, tx := range txs {
 		hashData = append(hashData, tx.Hash().Bytes()...)
 	}
-	bundleHash := types.BytesToHash(hashData)
-	if len(hashData) > 32 {
-		bundleHash = types.BytesToHash(hashData[:32])
-	}
+	bundleHash := types.BytesToHash(crypto.Keccak256(hashData))
 
 	return &SendBundleResult{BundleHash: bundleHash}, nil
 }

@@ -165,7 +165,10 @@ func opCALLF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 	// Encode return info: pack current section index and return PC
 	// Format: upper 16 bits = section index, lower 16 bits = PC offset
 	returnPC := *pc + 3
-	returnInfo := uint32(scope.Contract.CodeSection)<<16 | uint32(returnPC&0xFFFF)
+	if returnPC > 0xFFFF || scope.Contract.CodeSection > 0xFFFF {
+		return nil, ErrEOFInvalidCallF
+	}
+	returnInfo := uint32(scope.Contract.CodeSection)<<16 | uint32(returnPC)
 	scope.ReturnStack.Push(returnInfo)
 
 	// Switch to target code section

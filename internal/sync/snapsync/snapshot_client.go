@@ -100,8 +100,11 @@ func (sm *SnapshotManager) DiscoverSnapshot(ctx context.Context, minPeers int) (
 	}
 	results := make(chan peerResult, len(connected))
 
+	var wg sync.WaitGroup
 	for _, pid := range connected {
+		wg.Add(1)
 		go func(pid peer.ID) {
+			defer wg.Done()
 			info, err := sendGetSnapshotInfo(ctx, sm.p2p, pid)
 			if err != nil {
 				log.Debug("Failed to get snapshot info from peer", "peer", pid, "err", err)
@@ -116,16 +119,17 @@ func (sm *SnapshotManager) DiscoverSnapshot(ctx context.Context, minPeers int) (
 		}(pid)
 	}
 
+	// Close results channel after all goroutines complete to prevent goroutine leaks.
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
 	// Collect results.
 	heightVotes := make(map[uint64]int)
-	for i := 0; i < len(connected); i++ {
-		select {
-		case r := <-results:
-			for _, h := range r.heights {
-				heightVotes[h]++
-			}
-		case <-ctx.Done():
-			return 0, ctx.Err()
+	for r := range results {
+		for _, h := range r.heights {
+			heightVotes[h]++
 		}
 	}
 
