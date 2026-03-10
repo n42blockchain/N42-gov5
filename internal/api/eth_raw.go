@@ -116,7 +116,10 @@ func (s *TransactionAPI) SignTransaction(ctx context.Context, args TransactionAr
 	}
 
 	// Create the transaction
-	tx := args.toTransaction()
+	tx, err := args.toTransaction()
+	if err != nil {
+		return nil, err
+	}
 
 	// Sign the transaction
 	signed, err := wallet.SignTx(account, tx, s.api.GetChainConfig().ChainID)

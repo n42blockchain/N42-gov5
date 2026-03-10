@@ -498,7 +498,10 @@ func (s *BlockChainAPI) BlobBaseFee(ctx context.Context) (*hexutil.Big, error) {
 	if currentBlock == nil {
 		return nil, errors.New("no current block")
 	}
-	header := currentBlock.Header().(*block.Header)
+	header, ok := currentBlock.Header().(*block.Header)
+	if !ok || header == nil {
+		return (*hexutil.Big)(new(big.Int)), nil
+	}
 	blobFee := transaction.CalcBlobFee(header.ExcessBlobGas)
 	return (*hexutil.Big)(blobFee.ToBig()), nil
 }

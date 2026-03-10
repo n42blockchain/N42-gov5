@@ -3,6 +3,7 @@ package filters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"time"
@@ -329,6 +330,11 @@ func (filterApi *FilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([
 		end := jsonrpc.LatestBlockNumber.Int64()
 		if crit.ToBlock != nil {
 			end = crit.ToBlock.Int64()
+		}
+		// Limit the block range to prevent DoS.
+		const maxBlockRange = 10000
+		if end >= begin && end-begin > maxBlockRange {
+			return nil, fmt.Errorf("query returned more than %d results, limit block range", maxBlockRange)
 		}
 		// Construct the range filter
 		filter = NewRangeFilter(filterApi.api, begin, end, crit.Addresses, crit.Topics)

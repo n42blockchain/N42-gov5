@@ -198,6 +198,9 @@ func (pool *TxsPool) Nonce(addr types.Address) uint64 {
 
 // Stats returns counts of pending/queued addresses and transactions.
 func (pool *TxsPool) Stats() (int, int, int, int) {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
 	pendingTxs := 0
 	pendingAddresses := len(pool.pending)
 	for _, list := range pool.pending {

@@ -336,11 +336,11 @@ func (c *APos) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 	} else {
 		parent = chain.GetHeader(header.ParentHash, uint256.NewInt(number-1))
 	}
-	if parent == nil || parent.(*block.Header) == nil || parent.Number64().Uint64() != number-1 || parent.Hash() != header.ParentHash {
+	rawParent, ok := parent.(*block.Header)
+	if parent == nil || !ok || rawParent == nil || parent.Number64().Uint64() != number-1 || parent.Hash() != header.ParentHash {
 		return errUnknownBlock
 	}
 	// Verify timestamp is valid (parent time + period <= header time)
-	rawParent := parent.(*block.Header)
 	if rawParent.Time+c.config.Period > header.Time {
 		return errInvalidTimestamp
 	}

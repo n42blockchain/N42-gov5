@@ -55,33 +55,39 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, inclTx bool, 
 		fields["transactions"] = transactions
 
 		// verifiers
-		verifiers := make([]interface{}, len(block.Body().Verifier()))
-		for i, verifier := range block.Body().Verifier() {
-			verifiers[i] = verifier
+		body := block.Body()
+		var verifiers []interface{}
+		if body != nil {
+			verifiers = make([]interface{}, len(body.Verifier()))
+			for i, verifier := range body.Verifier() {
+				verifiers[i] = verifier
+			}
 		}
 		fields["verifier"] = verifiers
 
-		// reward todo
+		// reward
 		type RPCReward struct {
 			Address types.Address
 			Amount  *uint256.Int
 		}
-		rewards := make([]*RPCReward, len(block.Body().Reward()))
-		for i, reward := range block.Body().Reward() {
-			rewards[i] = &RPCReward{
-				reward.Address,
-				reward.Amount,
+		var rewards []*RPCReward
+		if body != nil {
+			rewards = make([]*RPCReward, len(body.Reward()))
+			for i, reward := range body.Reward() {
+				rewards[i] = &RPCReward{
+					reward.Address,
+					reward.Amount,
+				}
 			}
 		}
 		fields["rewards"] = rewards
-
-		td := chain.GetTd(block.Hash(), block.Number64())
-		if td == nil {
-			td = new(uint256.Int)
-		}
-		fields["totalDifficulty"] = (*hexutil.Big)(td.ToBig())
-
 	}
+
+	td := chain.GetTd(block.Hash(), block.Number64())
+	if td == nil {
+		td = new(uint256.Int)
+	}
+	fields["totalDifficulty"] = (*hexutil.Big)(td.ToBig())
 	// POA
 	uncleHashes := make([]types.Hash, 0)
 	fields["uncles"] = uncleHashes
@@ -111,7 +117,10 @@ func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64) *RPCTransacti
 
 // RPCMarshalHeader converts the given header to the RPC output .
 func RPCMarshalHeader(head block.IHeader) map[string]interface{} {
-	header := head.(*block.Header)
+	header, ok := head.(*block.Header)
+	if !ok || header == nil {
+		return nil
+	}
 	ethHeader := avmtypes.FromN42Header(head)
 
 	result := map[string]interface{}{

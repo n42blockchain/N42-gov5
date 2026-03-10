@@ -132,7 +132,7 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 	}
 
 	txs := bf.block.Transactions()
-	sorter := make(sortGasAndReward, len(txs))
+	sorter := make(sortGasAndReward, 0, len(txs))
 	for i, tx := range txs {
 		// Bounds check: ensure receipts index is valid
 		if i >= len(bf.receipts) {
@@ -142,7 +142,7 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 		if err != nil {
 			continue
 		}
-		sorter[i] = txGasAndReward{gasUsed: bf.receipts[i].GasUsed, reward: reward.ToBig()}
+		sorter = append(sorter, txGasAndReward{gasUsed: bf.receipts[i].GasUsed, reward: reward.ToBig()})
 	}
 	sort.Stable(sorter)
 
