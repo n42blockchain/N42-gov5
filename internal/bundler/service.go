@@ -70,6 +70,8 @@ type BundlerService struct {
 
 // SetTxSubmitter sets the transaction submitter for bundle submission.
 func (s *BundlerService) SetTxSubmitter(ts TxSubmitter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.txSubmitter = ts
 }
 
@@ -181,6 +183,9 @@ func (s *BundlerService) SupportedEntryPoints() []types.Address {
 
 // EstimateUserOperationGas estimates gas values for a UserOperation.
 func (s *BundlerService) EstimateUserOperationGas(op *vm.UserOperation) (*GasEstimate, error) {
+	if len(s.config.EntryPoints) == 0 {
+		return nil, errors.New("no entry points configured")
+	}
 	if err := s.validator.ValidateStatic(op, s.config.EntryPoints[0]); err != nil {
 		return nil, err
 	}
@@ -250,11 +255,13 @@ func (s *BundlerService) tryCreateBundle() error {
 			return err
 		}
 	} else {
-		log.Warn("Bundle created but no tx submitter configured — dropping",
+		// No submitter configured — keep ops in pool for later retry.
+		log.Warn("Bundle created but no tx submitter configured — retaining ops",
 			"ops", len(ops), "calldata", len(calldata), "gasEstimate", gasLimit)
+		return nil
 	}
 
-	// Remove bundled operations from pool.
+	// Remove successfully submitted operations from pool.
 	for _, op := range ops {
 		hash := UserOpHash(op, s.config.EntryPoints[0], s.chainID)
 		s.pool.Remove(hash)
