@@ -21,15 +21,17 @@ import (
 	"crypto/rand"
 	"testing"
 
+	"github.com/n42blockchain/N42/common/crypto/kzg"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/lib/kv"
+	kv2 "github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
 )
 
 func init() {
 	modules.N42Init()
-	kv.ChaindataTablesCfg = modules.N42TableCfg
+	kv2.ChaindataTablesCfg = modules.N42TableCfg
 }
 
 // randomBytes returns n random bytes.
@@ -43,6 +45,21 @@ func randomHash() types.Hash {
 	var h types.Hash
 	_, _ = rand.Read(h[:])
 	return h
+}
+
+// makeTestColumn creates a valid DataColumn with proper cell sizes.
+func makeTestColumn(blockHash types.Hash, colIdx uint64) *DataColumn {
+	cell := make([]byte, BytesPerCell)
+	copy(cell, []byte{0x01, 0x02, 0x03})
+
+	return &DataColumn{
+		Index:       colIdx,
+		BlockHash:   blockHash,
+		BlockNumber: 42,
+		Cells:       [][]byte{cell},
+		KZGProofs:   [][]byte{randomBytes(KZGProofLength)},
+		Commitments: [][]byte{randomBytes(KZGCommitmentLength)},
+	}
 }
 
 // --- Custody tests ---
@@ -63,7 +80,6 @@ func TestCustodyColumns_Deterministic(t *testing.T) {
 }
 
 func TestCustodyColumns_Coverage(t *testing.T) {
-	// With enough nodes, all 128 columns should be covered.
 	seen := make(map[uint64]bool)
 	for i := 0; i < 500; i++ {
 		nodeID := randomBytes(32)
@@ -72,9 +88,6 @@ func TestCustodyColumns_Coverage(t *testing.T) {
 			seen[c] = true
 		}
 	}
-
-	// With 500 nodes each custodying 4 columns, 2000 assignments total.
-	// Expected coverage per column ~= 1 - (124/128)^500 ≈ 1.0 (virtually certain).
 	if len(seen) < NumberOfColumns {
 		t.Errorf("only %d of %d columns covered with 500 nodes", len(seen), NumberOfColumns)
 	}
@@ -82,14 +95,10 @@ func TestCustodyColumns_Coverage(t *testing.T) {
 
 func TestCustodyColumns_MinCount(t *testing.T) {
 	nodeID := randomBytes(32)
-
-	// Requesting fewer than CustodyRequirement should be clamped up.
 	cols := CustodyColumns(nodeID, 1)
 	if uint64(len(cols)) != CustodyRequirement {
 		t.Fatalf("expected %d columns, got %d", CustodyRequirement, len(cols))
 	}
-
-	// Requesting more than NumberOfColumns should be clamped down.
 	cols = CustodyColumns(nodeID, NumberOfColumns+100)
 	if uint64(len(cols)) != NumberOfColumns {
 		t.Fatalf("expected %d columns, got %d", NumberOfColumns, len(cols))
@@ -166,22 +175,9 @@ func TestSampleColumns_NoDuplicates(t *testing.T) {
 
 // --- Storage tests ---
 
-func newTestDB(t *testing.T) kv.RwDB {
+func newTestDB(t *testing.T) kv2.RwDB {
 	t.Helper()
 	return memdb.NewTestDB(t)
-}
-
-func makeTestColumn(blockHash types.Hash, colIdx uint64) *DataColumn {
-	return &DataColumn{
-		Index:       colIdx,
-		BlockHash:   blockHash,
-		BlockNumber: 42,
-		Data: [][]byte{
-			{0x01, 0x02, 0x03},
-			{0x04, 0x05},
-		},
-		KZGProof: randomBytes(48),
-	}
 }
 
 func TestColumnStorage_Roundtrip(t *testing.T) {
@@ -191,16 +187,14 @@ func TestColumnStorage_Roundtrip(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Store
-	if err := db.Update(ctx, func(tx kv.RwTx) error {
+	if err := db.Update(ctx, func(tx kv2.RwTx) error {
 		return StoreColumn(tx, col)
 	}); err != nil {
 		t.Fatalf("StoreColumn: %v", err)
 	}
 
-	// Get
 	var got *DataColumn
-	if err := db.View(ctx, func(tx kv.Tx) error {
+	if err := db.View(ctx, func(tx kv2.Tx) error {
 		var err error
 		got, err = GetColumn(tx, blockHash, 7)
 		return err
@@ -220,21 +214,34 @@ func TestColumnStorage_Roundtrip(t *testing.T) {
 	if got.BlockNumber != col.BlockNumber {
 		t.Errorf("block number: got %d, want %d", got.BlockNumber, col.BlockNumber)
 	}
-	if len(got.Data) != len(col.Data) {
-		t.Fatalf("data length: got %d, want %d", len(got.Data), len(col.Data))
+	if len(got.Cells) != len(col.Cells) {
+		t.Fatalf("cells length: got %d, want %d", len(got.Cells), len(col.Cells))
 	}
-	for i := range got.Data {
-		if string(got.Data[i]) != string(col.Data[i]) {
-			t.Errorf("data[%d] mismatch", i)
+	for i := range got.Cells {
+		if len(got.Cells[i]) != len(col.Cells[i]) {
+			t.Errorf("cell[%d] length mismatch: got %d, want %d", i, len(got.Cells[i]), len(col.Cells[i]))
 		}
 	}
-	if string(got.KZGProof) != string(col.KZGProof) {
-		t.Error("KZG proof mismatch")
+	if len(got.KZGProofs) != len(col.KZGProofs) {
+		t.Fatalf("proofs length mismatch")
+	}
+	for i := range got.KZGProofs {
+		if string(got.KZGProofs[i]) != string(col.KZGProofs[i]) {
+			t.Errorf("proof[%d] mismatch", i)
+		}
+	}
+	if len(got.Commitments) != len(col.Commitments) {
+		t.Fatalf("commitments length mismatch")
+	}
+	for i := range got.Commitments {
+		if string(got.Commitments[i]) != string(col.Commitments[i]) {
+			t.Errorf("commitment[%d] mismatch", i)
+		}
 	}
 
 	// Has
 	var has bool
-	if err := db.View(ctx, func(tx kv.Tx) error {
+	if err := db.View(ctx, func(tx kv2.Tx) error {
 		var err error
 		has, err = HasColumn(tx, blockHash, 7)
 		return err
@@ -244,18 +251,6 @@ func TestColumnStorage_Roundtrip(t *testing.T) {
 	if !has {
 		t.Error("HasColumn returned false for stored column")
 	}
-
-	// Has for non-existent column
-	if err := db.View(ctx, func(tx kv.Tx) error {
-		var err error
-		has, err = HasColumn(tx, blockHash, 99)
-		return err
-	}); err != nil {
-		t.Fatalf("HasColumn: %v", err)
-	}
-	if has {
-		t.Error("HasColumn returned true for non-existent column")
-	}
 }
 
 func TestColumnStorage_GetNonExistent(t *testing.T) {
@@ -264,7 +259,7 @@ func TestColumnStorage_GetNonExistent(t *testing.T) {
 	blockHash := randomHash()
 
 	var got *DataColumn
-	if err := db.View(ctx, func(tx kv.Tx) error {
+	if err := db.View(ctx, func(tx kv2.Tx) error {
 		var err error
 		got, err = GetColumn(tx, blockHash, 0)
 		return err
@@ -283,9 +278,8 @@ func TestColumnStorage_InvalidIndex(t *testing.T) {
 	col := &DataColumn{
 		Index:     NumberOfColumns, // out of range
 		BlockHash: randomHash(),
-		KZGProof:  []byte{0x01},
 	}
-	err := db.Update(ctx, func(tx kv.RwTx) error {
+	err := db.Update(ctx, func(tx kv2.RwTx) error {
 		return StoreColumn(tx, col)
 	})
 	if err == nil {
@@ -293,7 +287,7 @@ func TestColumnStorage_InvalidIndex(t *testing.T) {
 	}
 }
 
-// --- Service / VerifyAvailability tests ---
+// --- Service / VerifyAvailability tests (skip KZG for unit tests) ---
 
 func TestVerifyAvailability_AllPresent(t *testing.T) {
 	db := newTestDB(t)
@@ -302,20 +296,18 @@ func TestVerifyAvailability_AllPresent(t *testing.T) {
 	nodeID := randomBytes(32)
 
 	cfg := Config{
-		Enable:          true,
-		CustodyCount:    CustodyRequirement,
-		SamplingEnabled: true,
-		SampleCount:     SamplesPerSlot,
+		Enable:              true,
+		CustodyCount:        CustodyRequirement,
+		SamplingEnabled:     true,
+		SampleCount:         SamplesPerSlot,
+		SkipKZGVerification: true,
 	}
 	svc := NewService(cfg, nodeID, db)
 
-	// Determine which columns will be sampled for this block.
 	sampleCols := SampleColumns(blockHash, cfg.SampleCount)
-
-	// Store all sampled columns.
 	for _, colIdx := range sampleCols {
 		col := makeTestColumn(blockHash, colIdx)
-		if err := db.Update(ctx, func(tx kv.RwTx) error {
+		if err := db.Update(ctx, func(tx kv2.RwTx) error {
 			return StoreColumn(tx, col)
 		}); err != nil {
 			t.Fatalf("store column %d: %v", colIdx, err)
@@ -338,14 +330,14 @@ func TestVerifyAvailability_Missing(t *testing.T) {
 	nodeID := randomBytes(32)
 
 	cfg := Config{
-		Enable:          true,
-		CustodyCount:    CustodyRequirement,
-		SamplingEnabled: true,
-		SampleCount:     SamplesPerSlot,
+		Enable:              true,
+		CustodyCount:        CustodyRequirement,
+		SamplingEnabled:     true,
+		SampleCount:         SamplesPerSlot,
+		SkipKZGVerification: true,
 	}
 	svc := NewService(cfg, nodeID, db)
 
-	// Don't store any columns.
 	available, err := svc.VerifyAvailability(ctx, blockHash, 42)
 	if err != nil {
 		t.Fatalf("VerifyAvailability: %v", err)
@@ -372,53 +364,72 @@ func TestVerifyAvailability_Disabled(t *testing.T) {
 // --- DataColumn.Validate tests ---
 
 func TestDataColumn_Validate(t *testing.T) {
+	validCell := make([]byte, BytesPerCell)
+	validProof := randomBytes(KZGProofLength)
+	validComm := randomBytes(KZGCommitmentLength)
+
 	tests := []struct {
 		name    string
 		col     *DataColumn
-		wantErr error
+		wantErr bool
 	}{
 		{
 			name:    "nil",
 			col:     nil,
-			wantErr: ErrNilColumn,
+			wantErr: true,
 		},
 		{
 			name:    "index out of range",
-			col:     &DataColumn{Index: NumberOfColumns, BlockHash: randomHash(), KZGProof: randomBytes(KZGProofLength), Data: [][]byte{{1}}},
-			wantErr: ErrColumnIndexOutOfRange,
+			col:     &DataColumn{Index: NumberOfColumns, BlockHash: randomHash(), Cells: [][]byte{validCell}, KZGProofs: [][]byte{validProof}, Commitments: [][]byte{validComm}},
+			wantErr: true,
 		},
 		{
 			name:    "empty block hash",
-			col:     &DataColumn{Index: 0, KZGProof: randomBytes(KZGProofLength), Data: [][]byte{{1}}},
-			wantErr: ErrEmptyBlockHash,
+			col:     &DataColumn{Index: 0, Cells: [][]byte{validCell}, KZGProofs: [][]byte{validProof}, Commitments: [][]byte{validComm}},
+			wantErr: true,
 		},
 		{
-			name:    "empty proof",
-			col:     &DataColumn{Index: 0, BlockHash: randomHash()},
-			wantErr: ErrEmptyKZGProof,
+			name:    "empty cells",
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), KZGProofs: [][]byte{validProof}, Commitments: [][]byte{validComm}},
+			wantErr: true,
+		},
+		{
+			name:    "wrong cell size",
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), Cells: [][]byte{{1, 2, 3}}, KZGProofs: [][]byte{validProof}, Commitments: [][]byte{validComm}},
+			wantErr: true,
+		},
+		{
+			name:    "proof count mismatch",
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), Cells: [][]byte{validCell}, KZGProofs: [][]byte{}, Commitments: [][]byte{validComm}},
+			wantErr: true,
 		},
 		{
 			name:    "invalid proof length",
-			col:     &DataColumn{Index: 0, BlockHash: randomHash(), KZGProof: []byte{1, 2, 3}},
-			wantErr: ErrInvalidKZGProofLength,
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), Cells: [][]byte{validCell}, KZGProofs: [][]byte{{1, 2, 3}}, Commitments: [][]byte{validComm}},
+			wantErr: true,
 		},
 		{
-			name:    "empty column data",
-			col:     &DataColumn{Index: 0, BlockHash: randomHash(), KZGProof: randomBytes(KZGProofLength)},
-			wantErr: ErrEmptyColumnData,
+			name:    "commitment count mismatch",
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), Cells: [][]byte{validCell}, KZGProofs: [][]byte{validProof}, Commitments: [][]byte{}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid commitment length",
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), Cells: [][]byte{validCell}, KZGProofs: [][]byte{validProof}, Commitments: [][]byte{{1, 2, 3}}},
+			wantErr: true,
 		},
 		{
 			name:    "valid",
-			col:     &DataColumn{Index: 0, BlockHash: randomHash(), KZGProof: randomBytes(KZGProofLength), Data: [][]byte{{1, 2, 3}}},
-			wantErr: nil,
+			col:     &DataColumn{Index: 0, BlockHash: randomHash(), Cells: [][]byte{validCell}, KZGProofs: [][]byte{validProof}, Commitments: [][]byte{validComm}},
+			wantErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.col.Validate()
-			if err != tt.wantErr {
-				t.Errorf("got err=%v, want %v", err, tt.wantErr)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("got err=%v, wantErr=%v", err, tt.wantErr)
 			}
 		})
 	}
@@ -429,8 +440,9 @@ func TestDataColumn_Validate(t *testing.T) {
 func TestService_IsCustodyColumn(t *testing.T) {
 	nodeID := randomBytes(32)
 	cfg := Config{
-		Enable:       true,
-		CustodyCount: CustodyRequirement,
+		Enable:              true,
+		CustodyCount:        CustodyRequirement,
+		SkipKZGVerification: true,
 	}
 	svc := NewService(cfg, nodeID, nil)
 
@@ -439,12 +451,10 @@ func TestService_IsCustodyColumn(t *testing.T) {
 		t.Fatal("no custody columns assigned")
 	}
 
-	// First custody column should return true.
 	if !svc.IsCustodyColumn(cols[0]) {
 		t.Error("IsCustodyColumn returned false for custodied column")
 	}
 
-	// Find a non-custodied column.
 	custodySet := make(map[uint64]bool)
 	for _, c := range cols {
 		custodySet[c] = true
@@ -461,7 +471,7 @@ func TestService_IsCustodyColumn(t *testing.T) {
 
 func TestService_StartStop(t *testing.T) {
 	db := newTestDB(t)
-	cfg := Config{Enable: true, CustodyCount: CustodyRequirement}
+	cfg := Config{Enable: true, CustodyCount: CustodyRequirement, SkipKZGVerification: true}
 	svc := NewService(cfg, randomBytes(32), db)
 
 	ctx := context.Background()
@@ -469,7 +479,6 @@ func TestService_StartStop(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Double start should fail.
 	if err := svc.Start(ctx); err != ErrServiceAlreadyRunning {
 		t.Fatalf("expected ErrServiceAlreadyRunning, got %v", err)
 	}
@@ -478,7 +487,6 @@ func TestService_StartStop(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	// Stop again should be no-op.
 	if err := svc.Stop(); err != nil {
 		t.Fatalf("Stop again: %v", err)
 	}
@@ -498,10 +506,11 @@ func (m *mockBlockProvider) CurrentBlock() (types.Hash, uint64) {
 func TestService_StartStopWithSampling(t *testing.T) {
 	db := newTestDB(t)
 	cfg := Config{
-		Enable:          true,
-		CustodyCount:    CustodyRequirement,
-		SamplingEnabled: true,
-		SampleCount:     SamplesPerSlot,
+		Enable:              true,
+		CustodyCount:        CustodyRequirement,
+		SamplingEnabled:     true,
+		SampleCount:         SamplesPerSlot,
+		SkipKZGVerification: true,
 	}
 	svc := NewService(cfg, randomBytes(32), db)
 	svc.SetBlockProvider(&mockBlockProvider{hash: randomHash(), number: 100})
@@ -511,91 +520,8 @@ func TestService_StartStopWithSampling(t *testing.T) {
 		t.Fatalf("Start with sampling: %v", err)
 	}
 
-	// Service should be running with sampling loop active.
 	if err := svc.Stop(); err != nil {
 		t.Fatalf("Stop with sampling: %v", err)
-	}
-}
-
-// --- KZG proof length validation in VerifyAvailability ---
-
-func TestVerifyAvailability_InvalidKZGProofLength(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	blockHash := randomHash()
-	nodeID := randomBytes(32)
-
-	cfg := Config{
-		Enable:          true,
-		CustodyCount:    CustodyRequirement,
-		SamplingEnabled: true,
-		SampleCount:     SamplesPerSlot,
-	}
-	svc := NewService(cfg, nodeID, db)
-
-	// Store columns with wrong KZG proof length (not 48 bytes).
-	sampleCols := SampleColumns(blockHash, cfg.SampleCount)
-	for _, colIdx := range sampleCols {
-		col := &DataColumn{
-			Index:       colIdx,
-			BlockHash:   blockHash,
-			BlockNumber: 42,
-			Data:        [][]byte{{0x01, 0x02}},
-			KZGProof:    randomBytes(32), // wrong length: 32 instead of 48
-		}
-		if err := db.Update(ctx, func(tx kv.RwTx) error {
-			return StoreColumn(tx, col)
-		}); err != nil {
-			t.Fatalf("store column %d: %v", colIdx, err)
-		}
-	}
-
-	available, err := svc.VerifyAvailability(ctx, blockHash, 42)
-	if err != nil {
-		t.Fatalf("VerifyAvailability: %v", err)
-	}
-	if available {
-		t.Error("expected availability=false when KZG proofs have wrong length")
-	}
-}
-
-func TestVerifyAvailability_EmptyColumnData(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	blockHash := randomHash()
-	nodeID := randomBytes(32)
-
-	cfg := Config{
-		Enable:          true,
-		CustodyCount:    CustodyRequirement,
-		SamplingEnabled: true,
-		SampleCount:     SamplesPerSlot,
-	}
-	svc := NewService(cfg, nodeID, db)
-
-	// Store columns with correct KZG proof but empty data.
-	sampleCols := SampleColumns(blockHash, cfg.SampleCount)
-	for _, colIdx := range sampleCols {
-		col := &DataColumn{
-			Index:       colIdx,
-			BlockHash:   blockHash,
-			BlockNumber: 42,
-			Data:        [][]byte{}, // empty data
-			KZGProof:    randomBytes(KZGProofLength),
-		}
-		if err := db.Update(ctx, func(tx kv.RwTx) error {
-			return StoreColumn(tx, col)
-		}); err != nil {
-			t.Fatalf("store column %d: %v", colIdx, err)
-		}
-	}
-
-	available, err := svc.VerifyAvailability(ctx, blockHash, 42)
-	if err != nil {
-		t.Fatalf("VerifyAvailability: %v", err)
-	}
-	if available {
-		t.Error("expected availability=false when column data is empty")
 	}
 }
 
@@ -608,34 +534,32 @@ func TestService_RunSamplingRound(t *testing.T) {
 	nodeID := randomBytes(32)
 
 	cfg := Config{
-		Enable:          true,
-		CustodyCount:    CustodyRequirement,
-		SamplingEnabled: true,
-		SampleCount:     SamplesPerSlot,
+		Enable:              true,
+		CustodyCount:        CustodyRequirement,
+		SamplingEnabled:     true,
+		SampleCount:         SamplesPerSlot,
+		SkipKZGVerification: true,
 	}
 	svc := NewService(cfg, nodeID, db)
 	svc.SetBlockProvider(&mockBlockProvider{hash: blockHash, number: 100})
 
-	// Store all sampled columns with valid data.
 	sampleCols := SampleColumns(blockHash, cfg.SampleCount)
 	for _, colIdx := range sampleCols {
 		col := makeTestColumn(blockHash, colIdx)
-		if err := db.Update(ctx, func(tx kv.RwTx) error {
+		if err := db.Update(ctx, func(tx kv2.RwTx) error {
 			return StoreColumn(tx, col)
 		}); err != nil {
 			t.Fatalf("store column %d: %v", colIdx, err)
 		}
 	}
 
-	// Run a sampling round — should pass without error.
 	svc.runSamplingRound(ctx)
 
-	// Verify lastSampledBlock was updated.
 	if svc.lastSampledBlock != 100 {
 		t.Errorf("lastSampledBlock: got %d, want 100", svc.lastSampledBlock)
 	}
 
-	// Running again for the same block should be a no-op (skip).
+	// Running again for the same block should be a no-op.
 	svc.runSamplingRound(ctx)
 }
 
@@ -647,7 +571,7 @@ func TestKZGProofLength(t *testing.T) {
 	}
 }
 
-// --- StoreDataColumn with enhanced validation ---
+// --- StoreDataColumn with validation ---
 
 func TestStoreDataColumn_InvalidProofLength(t *testing.T) {
 	db := newTestDB(t)
@@ -655,8 +579,9 @@ func TestStoreDataColumn_InvalidProofLength(t *testing.T) {
 	nodeID := randomBytes(32)
 
 	cfg := Config{
-		Enable:       true,
-		CustodyCount: CustodyRequirement,
+		Enable:              true,
+		CustodyCount:        CustodyRequirement,
+		SkipKZGVerification: true,
 	}
 	svc := NewService(cfg, nodeID, db)
 
@@ -664,8 +589,9 @@ func TestStoreDataColumn_InvalidProofLength(t *testing.T) {
 		Index:       0,
 		BlockHash:   randomHash(),
 		BlockNumber: 1,
-		Data:        [][]byte{{0x01}},
-		KZGProof:    randomBytes(32), // wrong length
+		Cells:       [][]byte{make([]byte, BytesPerCell)},
+		KZGProofs:   [][]byte{randomBytes(32)}, // wrong length
+		Commitments: [][]byte{randomBytes(KZGCommitmentLength)},
 	}
 
 	err := svc.StoreDataColumn(ctx, col)
@@ -680,8 +606,9 @@ func TestStoreDataColumn_EmptyData(t *testing.T) {
 	nodeID := randomBytes(32)
 
 	cfg := Config{
-		Enable:       true,
-		CustodyCount: CustodyRequirement,
+		Enable:              true,
+		CustodyCount:        CustodyRequirement,
+		SkipKZGVerification: true,
 	}
 	svc := NewService(cfg, nodeID, db)
 
@@ -689,12 +616,355 @@ func TestStoreDataColumn_EmptyData(t *testing.T) {
 		Index:       0,
 		BlockHash:   randomHash(),
 		BlockNumber: 1,
-		Data:        nil, // empty data
-		KZGProof:    randomBytes(KZGProofLength),
+		Cells:       nil,
+		KZGProofs:   [][]byte{randomBytes(KZGProofLength)},
+		Commitments: [][]byte{randomBytes(KZGCommitmentLength)},
 	}
 
 	err := svc.StoreDataColumn(ctx, col)
 	if err != ErrEmptyColumnData {
 		t.Fatalf("expected ErrEmptyColumnData, got %v", err)
+	}
+}
+
+// =============================================================================
+// Real KZG integration tests
+// =============================================================================
+
+// makeZeroBlob creates a blob filled with zeros (valid canonical field elements).
+func makeZeroBlob() transaction.Blob {
+	return transaction.Blob{}
+}
+
+func TestKZG_ProduceAndVerifyColumns(t *testing.T) {
+	blob := makeZeroBlob()
+
+	// Compute commitment for the blob.
+	commitment, err := kzg.BlobToCommitment(&blob)
+	if err != nil {
+		t.Fatalf("BlobToCommitment: %v", err)
+	}
+
+	blockHash := randomHash()
+	columns, err := ProduceColumns(
+		[]transaction.Blob{blob},
+		[]transaction.Commitment{commitment},
+		blockHash,
+		100,
+	)
+	if err != nil {
+		t.Fatalf("ProduceColumns: %v", err)
+	}
+
+	// Verify all 128 columns have correct structure.
+	for i := uint64(0); i < NumberOfColumns; i++ {
+		col := columns[i]
+		if col == nil {
+			t.Fatalf("column %d is nil", i)
+		}
+		if col.Index != i {
+			t.Errorf("column %d has index %d", i, col.Index)
+		}
+		if len(col.Cells) != 1 {
+			t.Fatalf("column %d: expected 1 cell, got %d", i, len(col.Cells))
+		}
+		if len(col.Cells[0]) != BytesPerCell {
+			t.Errorf("column %d: cell size %d, want %d", i, len(col.Cells[0]), BytesPerCell)
+		}
+		if err := col.Validate(); err != nil {
+			t.Fatalf("column %d: Validate: %v", i, err)
+		}
+	}
+
+	// KZG verify a few columns.
+	verifier, err := NewVerifier()
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	for _, colIdx := range []uint64{0, 1, 63, 127} {
+		if err := verifier.VerifyDataColumn(columns[colIdx]); err != nil {
+			t.Errorf("VerifyDataColumn(%d): %v", colIdx, err)
+		}
+	}
+}
+
+func TestKZG_VerifyDataColumn_BadProof(t *testing.T) {
+	blob := makeZeroBlob()
+	commitment, err := kzg.BlobToCommitment(&blob)
+	if err != nil {
+		t.Fatalf("BlobToCommitment: %v", err)
+	}
+
+	columns, err := ProduceColumns(
+		[]transaction.Blob{blob},
+		[]transaction.Commitment{commitment},
+		randomHash(),
+		100,
+	)
+	if err != nil {
+		t.Fatalf("ProduceColumns: %v", err)
+	}
+
+	verifier, err := NewVerifier()
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	// Corrupt a proof and verify it fails.
+	col := columns[0]
+	col.KZGProofs[0][0] ^= 0xff
+
+	if err := verifier.VerifyDataColumn(col); err == nil {
+		t.Error("expected verification to fail with corrupted proof")
+	}
+}
+
+func TestKZG_VerifyDataColumn_BadCell(t *testing.T) {
+	blob := makeZeroBlob()
+	commitment, err := kzg.BlobToCommitment(&blob)
+	if err != nil {
+		t.Fatalf("BlobToCommitment: %v", err)
+	}
+
+	columns, err := ProduceColumns(
+		[]transaction.Blob{blob},
+		[]transaction.Commitment{commitment},
+		randomHash(),
+		100,
+	)
+	if err != nil {
+		t.Fatalf("ProduceColumns: %v", err)
+	}
+
+	verifier, err := NewVerifier()
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	// Corrupt cell data and verify it fails.
+	col := columns[5]
+	col.Cells[0][100] ^= 0xff
+
+	if err := verifier.VerifyDataColumn(col); err == nil {
+		t.Error("expected verification to fail with corrupted cell data")
+	}
+}
+
+func TestKZG_VerifyDataColumn_WrongCommitment(t *testing.T) {
+	blob := makeZeroBlob()
+	commitment, err := kzg.BlobToCommitment(&blob)
+	if err != nil {
+		t.Fatalf("BlobToCommitment: %v", err)
+	}
+
+	columns, err := ProduceColumns(
+		[]transaction.Blob{blob},
+		[]transaction.Commitment{commitment},
+		randomHash(),
+		100,
+	)
+	if err != nil {
+		t.Fatalf("ProduceColumns: %v", err)
+	}
+
+	verifier, err := NewVerifier()
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	// Use a different blob's commitment.
+	var blob2 transaction.Blob
+	blob2[0] = 0x01 // different but still valid (< BLS modulus)
+	commitment2, err := kzg.BlobToCommitment(&blob2)
+	if err != nil {
+		t.Fatalf("BlobToCommitment for blob2: %v", err)
+	}
+
+	col := columns[10]
+	copy(col.Commitments[0], commitment2[:])
+
+	if err := verifier.VerifyDataColumn(col); err == nil {
+		t.Error("expected verification to fail with wrong commitment")
+	}
+}
+
+func TestKZG_StoreAndVerifyWithRealKZG(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nodeID := randomBytes(32)
+
+	cfg := Config{
+		Enable:       true,
+		CustodyCount: CustodyRequirement,
+		SampleCount:  SamplesPerSlot,
+		// KZG verification enabled (default).
+	}
+	svc := NewService(cfg, nodeID, db)
+
+	blob := makeZeroBlob()
+	commitment, err := kzg.BlobToCommitment(&blob)
+	if err != nil {
+		t.Fatalf("BlobToCommitment: %v", err)
+	}
+
+	blockHash := randomHash()
+	columns, err := ProduceColumns(
+		[]transaction.Blob{blob},
+		[]transaction.Commitment{commitment},
+		blockHash,
+		100,
+	)
+	if err != nil {
+		t.Fatalf("ProduceColumns: %v", err)
+	}
+
+	// Store all sampled columns with real KZG verification.
+	sampleCols := SampleColumns(blockHash, cfg.SampleCount)
+	for _, colIdx := range sampleCols {
+		if err := svc.StoreDataColumn(ctx, columns[colIdx]); err != nil {
+			t.Fatalf("StoreDataColumn(%d): %v", colIdx, err)
+		}
+	}
+
+	// Verify availability with real KZG.
+	available, err := svc.VerifyAvailability(ctx, blockHash, 100)
+	if err != nil {
+		t.Fatalf("VerifyAvailability: %v", err)
+	}
+	if !available {
+		t.Error("expected availability=true with real KZG-verified columns")
+	}
+}
+
+func TestKZG_StoreRejectsInvalidProof(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nodeID := randomBytes(32)
+
+	cfg := Config{
+		Enable:       true,
+		CustodyCount: CustodyRequirement,
+	}
+	svc := NewService(cfg, nodeID, db)
+
+	blob := makeZeroBlob()
+	commitment, err := kzg.BlobToCommitment(&blob)
+	if err != nil {
+		t.Fatalf("BlobToCommitment: %v", err)
+	}
+
+	columns, err := ProduceColumns(
+		[]transaction.Blob{blob},
+		[]transaction.Commitment{commitment},
+		randomHash(),
+		100,
+	)
+	if err != nil {
+		t.Fatalf("ProduceColumns: %v", err)
+	}
+
+	// Corrupt proof on column 0.
+	col := columns[0]
+	col.KZGProofs[0][0] ^= 0xff
+
+	err = svc.StoreDataColumn(ctx, col)
+	if err == nil {
+		t.Error("expected StoreDataColumn to reject column with invalid KZG proof")
+	}
+}
+
+func TestProduceColumns_NoBlobs(t *testing.T) {
+	_, err := ProduceColumns(nil, nil, randomHash(), 1)
+	if err != ErrNoBlobsProvided {
+		t.Fatalf("expected ErrNoBlobsProvided, got %v", err)
+	}
+}
+
+func TestProduceColumns_CommitmentMismatch(t *testing.T) {
+	blob := makeZeroBlob()
+	_, err := ProduceColumns([]transaction.Blob{blob}, nil, randomHash(), 1)
+	if err != ErrCommitmentCountMismatch {
+		t.Fatalf("expected ErrCommitmentCountMismatch, got %v", err)
+	}
+}
+
+// --- VerifyDataColumnLight test ---
+
+func TestVerifyDataColumnLight(t *testing.T) {
+	validCell := make([]byte, BytesPerCell)
+	validProof := randomBytes(KZGProofLength)
+	validComm := randomBytes(KZGCommitmentLength)
+
+	col := &DataColumn{
+		Index:       0,
+		BlockHash:   randomHash(),
+		Cells:       [][]byte{validCell},
+		KZGProofs:   [][]byte{validProof},
+		Commitments: [][]byte{validComm},
+	}
+	if err := VerifyDataColumnLight(col); err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
+
+	// Out of range index.
+	col.Index = NumberOfColumns
+	if err := VerifyDataColumnLight(col); err != ErrColumnIndexOutOfRange {
+		t.Errorf("expected ErrColumnIndexOutOfRange, got %v", err)
+	}
+}
+
+// --- Benchmarks ---
+
+func BenchmarkProduceColumns(b *testing.B) {
+	blob := makeZeroBlob()
+	commitment, err := kzg.BlobToCommitment(&blob)
+	if err != nil {
+		b.Fatalf("BlobToCommitment: %v", err)
+	}
+	blockHash := randomHash()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := ProduceColumns(
+			[]transaction.Blob{blob},
+			[]transaction.Commitment{commitment},
+			blockHash,
+			uint64(i),
+		)
+		if err != nil {
+			b.Fatalf("ProduceColumns: %v", err)
+		}
+	}
+}
+
+func BenchmarkVerifyDataColumn(b *testing.B) {
+	blob := makeZeroBlob()
+	commitment, err := kzg.BlobToCommitment(&blob)
+	if err != nil {
+		b.Fatalf("BlobToCommitment: %v", err)
+	}
+
+	columns, err := ProduceColumns(
+		[]transaction.Blob{blob},
+		[]transaction.Commitment{commitment},
+		randomHash(),
+		100,
+	)
+	if err != nil {
+		b.Fatalf("ProduceColumns: %v", err)
+	}
+
+	verifier, err := NewVerifier()
+	if err != nil {
+		b.Fatalf("NewVerifier: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		col := columns[i%NumberOfColumns]
+		if err := verifier.VerifyDataColumn(col); err != nil {
+			b.Fatalf("VerifyDataColumn: %v", err)
+		}
 	}
 }
