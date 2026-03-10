@@ -375,6 +375,12 @@ func (c *APos) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 		// Verify the header's EIP-1559 attributes.
 		return err
 	}
+	// Verify EIP-4844 blob gas fields if Beijing fork is active.
+	if chain.Config().IsBeijing(number) {
+		if err := misc.VerifyEIP4844Header(rawParent, header); err != nil {
+			return err
+		}
+	}
 	// Retrieve the snapshot needed to verify this header and cache it
 	snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
 	if err != nil {

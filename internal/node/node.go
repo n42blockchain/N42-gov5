@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/gofrs/flock"
@@ -58,6 +59,7 @@ import (
 	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/nft"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
+	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
@@ -138,6 +140,7 @@ type Node struct {
 
 	exexManager     *exex.Manager         // Execution Extensions manager
 	hotstuffService *hotstuff.Service     // HotStuff BFT consensus service (nil if not using HotStuff)
+	bundlerService  *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -510,6 +513,19 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))
 	node.api.SetP2P(&p2pAdminAdapter{svc: p2p})
 	node.api.SetMiner(&minerAdminAdapter{m: miner})
+
+	// Create ERC-4337 bundler service if enabled.
+	if cfg.BundlerCfg.Enabled {
+		bundlerCfg := &bundler.Config{
+			Enabled:        true,
+			MaxPoolSize:    cfg.BundlerCfg.MaxPoolSize,
+			MaxBundleSize:  cfg.BundlerCfg.MaxBundleSize,
+			BundleInterval: time.Duration(cfg.BundlerCfg.BundleIntervalSec) * time.Second,
+		}
+		chainID := cfg.ChainCfg.ChainID.Uint64()
+		node.bundlerService = bundler.NewBundlerService(bundlerCfg, chainID)
+	}
+
 	success = true
 	chainKv = nil // prevent deferred cleanup from closing the DB now owned by node
 	return &node, nil
@@ -591,6 +607,11 @@ func (n *Node) Start() error {
 				return fmt.Errorf("hotstuff BLS key missing for %s: %v", eb, blsErr)
 			}
 			hs.Authorize(eb, blsKey)
+
+			// Initialize the consensus engine with the genesis validator set.
+			if err := hs.InitEngineFromConfig(); err != nil {
+				return fmt.Errorf("hotstuff engine init failed: %w", err)
+			}
 		}
 
 		n.miner.SetCoinbase(eb)
@@ -619,6 +640,21 @@ func (n *Node) Start() error {
 	n.rpcAPIs = append(n.rpcAPIs, n.api.Apis()...)
 	n.rpcAPIs = append(n.rpcAPIs, tracers.APIs(n.api)...)
 	n.rpcAPIs = append(n.rpcAPIs, debug.APIs()...)
+
+	// Register MEV bundle submission API.
+	n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
+		Namespace: "eth",
+		Service:   api.NewMevAPI(n.miner),
+	})
+
+	// Register bundler RPC and start service.
+	if n.bundlerService != nil {
+		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
+			Namespace: "eth",
+			Service:   api.NewBundlerAPI(n.bundlerService),
+		})
+		n.bundlerService.Start(n.ctx)
+	}
 
 	if err := n.startRPC(); err != nil {
 		log.Error("failed start jsonrpc service", zap.Error(err))
@@ -998,6 +1034,13 @@ func (n *Node) stopServices() []error {
 		{"Transaction generator", func() error {
 			if n.txGenerator != nil {
 				n.txGenerator.Stop()
+			}
+			return nil
+		}},
+		// 3d. Bundler service
+		{"Bundler service", func() error {
+			if n.bundlerService != nil {
+				n.bundlerService.Stop()
 			}
 			return nil
 		}},

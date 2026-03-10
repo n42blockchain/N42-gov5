@@ -14,15 +14,18 @@ package hotstuff
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/crypto/bls/common"
+	"github.com/n42blockchain/N42/common/crypto/bls"
+	blscommon "github.com/n42blockchain/N42/common/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -55,7 +58,7 @@ type HotStuff struct {
 	cancel context.CancelFunc
 
 	// BLS key management
-	secretKey common.SecretKey
+	secretKey blscommon.SecretKey
 	signer    types.Address
 	lock      sync.RWMutex
 
@@ -98,7 +101,7 @@ func New(config *params.HotStuffConfig, chainConfig *params.ChainConfig) *HotStu
 }
 
 // Authorize injects a BLS private key and the corresponding address into the engine.
-func (h *HotStuff) Authorize(signer types.Address, secretKey common.SecretKey) {
+func (h *HotStuff) Authorize(signer types.Address, secretKey blscommon.SecretKey) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 	h.signer = signer
@@ -136,6 +139,44 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 		"validators", vs.Len(), "quorum", vs.QuorumSize())
 
 	return nil
+}
+
+// InitEngineFromConfig parses the genesis validator set from chain config and
+// initializes the consensus engine. This is the production entry point called
+// from node.go after Authorize.
+func (h *HotStuff) InitEngineFromConfig() error {
+	cfg := h.config
+	if cfg == nil || len(cfg.Validators) == 0 {
+		return fmt.Errorf("hotstuff: no validators configured in chain config")
+	}
+
+	validators := make([]ValidatorInfo, 0, len(cfg.Validators))
+	for i, vc := range cfg.Validators {
+		addr := types.HexToAddress(vc.Address)
+		if addr == (types.Address{}) {
+			return fmt.Errorf("hotstuff: validator %d has invalid address: %s", i, vc.Address)
+		}
+
+		blsHex := strings.TrimPrefix(vc.BLSKey, "0x")
+		pubKeyBytes, err := hex.DecodeString(blsHex)
+		if err != nil {
+			return fmt.Errorf("hotstuff: validator %d has invalid BLS key hex: %w", i, err)
+		}
+		pubKey, err := bls.PublicKeyFromBytes(pubKeyBytes)
+		if err != nil {
+			return fmt.Errorf("hotstuff: validator %d has invalid BLS public key: %w", i, err)
+		}
+
+		validators = append(validators, ValidatorInfo{
+			Address:   addr,
+			PublicKey: pubKey,
+		})
+	}
+
+	n := uint32(len(validators))
+	faultTolerance := (n - 1) / 3
+
+	return h.InitEngine(validators, faultTolerance)
 }
 
 // Engine returns the inner consensus state machine (may be nil if not initialized).
@@ -218,6 +259,26 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 
 	if header.Time <= parentHeader.Time {
 		return errors.New("timestamp must be after parent")
+	}
+
+	// Verify embedded QC if extra-data contains one.
+	if len(header.Extra) > extraMinLen {
+		qcData := header.Extra[extraMinLen:]
+		qc, err := decodeQC(qcData)
+		if err != nil {
+			return fmt.Errorf("invalid QC in extra-data: %w", err)
+		}
+
+		// If the consensus engine is initialized, verify QC signatures
+		// against the active validator set.
+		if ce := h.Engine(); ce != nil {
+			vs := ce.CurrentValidatorSet()
+			if vs != nil && !vs.IsEmpty() {
+				if err := VerifyQC(qc, vs); err != nil {
+					return fmt.Errorf("QC verification failed: %w", err)
+				}
+			}
+		}
 	}
 
 	return nil

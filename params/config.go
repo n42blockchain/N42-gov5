@@ -299,17 +299,26 @@ type BorConfig struct {
 
 func (b *BorConfig) String() string { return "bor" }
 
+// HotStuffValidatorConfig defines a genesis validator for HotStuff consensus.
+type HotStuffValidatorConfig struct {
+	Address string `json:"address"` // Hex-encoded Ethereum address
+	BLSKey  string `json:"blsKey"`  // Hex-encoded BLS12-381 public key (48 bytes)
+}
+
 // HotStuffConfig is the consensus engine config for HotStuff-2 BFT consensus.
 type HotStuffConfig struct {
 	Period      uint64 `json:"period"`      // Block period in seconds (default 3)
 	BaseTimeout uint64 `json:"baseTimeout"` // Base timeout in milliseconds (default 60000)
 	MaxTimeout  uint64 `json:"maxTimeout"`  // Max timeout in milliseconds (default 120000)
 	EpochLength uint64 `json:"epochLength"` // Epoch length in blocks for validator set rotation
+
+	// Validators is the genesis validator set for HotStuff consensus.
+	Validators []HotStuffValidatorConfig `json:"validators,omitempty"`
 }
 
 func (c *HotStuffConfig) String() string {
-	return fmt.Sprintf("{Period: %v, BaseTimeout: %v, MaxTimeout: %v, EpochLength: %v}",
-		c.Period, c.BaseTimeout, c.MaxTimeout, c.EpochLength)
+	return fmt.Sprintf("{Period: %v, BaseTimeout: %v, MaxTimeout: %v, EpochLength: %v, Validators: %d}",
+		c.Period, c.BaseTimeout, c.MaxTimeout, c.EpochLength, len(c.Validators))
 }
 
 func (c *BorConfig) CalculateBackupMultiplier(number uint64) uint64 {
