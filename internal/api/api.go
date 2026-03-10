@@ -248,6 +248,13 @@ func (s *BlockChainAPI) BlockNumber() hexutil.Uint64 {
 	return hexutil.Uint64(num.Uint64())
 }
 
+// EarliestBlock returns the earliest block number that still has full data
+// available. After EIP-4444 style history expiry, older blocks are pruned
+// and this value advances. Returns 0x0 when all history is available.
+func (s *BlockChainAPI) EarliestBlock() hexutil.Uint64 {
+	return hexutil.Uint64(s.api.BlockChain().EarliestBlock())
+}
+
 // GetCode returns the code stored at the given address in the state for the given block.
 func (s *BlockChainAPI) GetCode(ctx context.Context, address avmcommon.Address, blockNrOrHash jsonrpc.BlockNumberOrHash) (hexutil.Bytes, error) {
 	tx, err := s.api.db.BeginRo(ctx)

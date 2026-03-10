@@ -404,3 +404,21 @@ func (bc *BlockChain) Quit() <-chan struct{} {
 	return bc.ctx.Done()
 }
 
+// EarliestBlock returns the earliest block number that still has full data
+// available after history expiry (EIP-4444). Returns 0 if no history has
+// been expired (i.e. all blocks are available).
+func (bc *BlockChain) EarliestBlock() uint64 {
+	var earliest uint64
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		val, err := rawdb.ReadEarliestBlock(tx)
+		if err != nil {
+			return err
+		}
+		earliest = val
+		return nil
+	}); err != nil {
+		log.Warn("EarliestBlock: failed to read from DB", "err", err)
+	}
+	return earliest
+}
+

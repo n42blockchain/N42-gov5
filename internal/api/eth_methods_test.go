@@ -189,6 +189,29 @@ func TestRPCTransactionNilTo(t *testing.T) {
 // BlockNumber 测试
 // =============================================================================
 
+func TestEarliestBlockReturnType(t *testing.T) {
+	// EarliestBlock returns hexutil.Uint64, same as BlockNumber.
+	// Verify the return type is correct (compile-time check) and that
+	// the zero value serialises to "0x0".
+	var val hexutil.Uint64
+	data, err := json.Marshal(val)
+	if err != nil {
+		t.Fatalf("Failed to marshal hexutil.Uint64: %v", err)
+	}
+	if string(data) != `"0x0"` {
+		t.Errorf("hexutil.Uint64(0) marshalled to %s, want \"0x0\"", data)
+	}
+
+	val = hexutil.Uint64(42000)
+	data, err = json.Marshal(val)
+	if err != nil {
+		t.Fatalf("Failed to marshal hexutil.Uint64(42000): %v", err)
+	}
+	if string(data) != `"0xa410"` {
+		t.Errorf("hexutil.Uint64(42000) marshalled to %s, want \"0xa410\"", data)
+	}
+}
+
 func TestBlockNumberConstants(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -371,3 +371,4 @@ func BenchmarkEncodeForDerive(b *testing.B) {
 		encodeForDerive(list, 0, buf)
 	}
 }
+
