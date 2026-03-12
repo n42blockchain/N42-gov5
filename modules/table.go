@@ -160,6 +160,16 @@ const (
 	// key: block_num (8 bytes big-endian)
 	// value: serialized diff layer (accounts, deletions, storage)
 	SnapshotJournal = "SnapshotJournal"
+
+	// JMTNode stores Jellyfish Merkle Tree nodes, content-addressed by Blake3 hash.
+	// key: blake3_hash (32 bytes)
+	// value: serialized JMT node (internal/leaf/extension)
+	JMTNode = "JMTNode"
+
+	// JMTRoot stores the latest JMT root hash for crash recovery.
+	// key: "root" (fixed)
+	// value: blake3_hash (32 bytes)
+	JMTRoot = "JMTRoot"
 )
 
 const (
@@ -218,6 +228,8 @@ var n42Tables = []string{
 	SnapshotStorage,
 	SnapshotMeta,
 	SnapshotJournal,
+	JMTNode,
+	JMTRoot,
 }
 
 var N42TableCfg = kv.TableCfg{

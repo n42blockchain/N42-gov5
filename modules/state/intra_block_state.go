@@ -105,6 +105,10 @@ type IntraBlockState struct {
 
 	// EIP-1153: Transient storage
 	transientStorage transientStorage
+
+	// rootComputer is an optional pluggable state root implementation.
+	// When nil, the default incremental Keccak hash is used.
+	rootComputer RootComputer
 }
 
 // New creates a new IntraBlockState with the given state reader.
@@ -120,6 +124,12 @@ func New(stateReader StateReader) *IntraBlockState {
 		balanceInc:        map[types.Address]*BalanceIncrease{},
 		transientStorage:  newTransientStorage(),
 	}
+}
+
+// SetRootComputer sets a custom state root implementation (e.g., JMT).
+// When set, IntermediateRoot() delegates to this instead of the default Keccak hash.
+func (sdb *IntraBlockState) SetRootComputer(rc RootComputer) {
+	sdb.rootComputer = rc
 }
 
 func (sdb *IntraBlockState) BeginWriteSnapshot() {
@@ -1000,9 +1010,48 @@ func (s *IntraBlockState) GenerateRootHash() types.Hash {
 	return root
 }
 
-// IntermediateRoot returns the current root hash by delegating to GenerateRootHash.
+// IntermediateRoot returns the current root hash.
+// If a RootComputer is set (e.g., JMT), it delegates to that;
+// otherwise falls back to the legacy incremental Keccak hash.
 func (s *IntraBlockState) IntermediateRoot() types.Hash {
+	if s.rootComputer != nil {
+		return s.computeRootViaComputer()
+	}
 	return s.GenerateRootHash()
+}
+
+// computeRootViaComputer collects dirty accounts/storage and delegates
+// to the pluggable RootComputer.
+func (s *IntraBlockState) computeRootViaComputer() types.Hash {
+	accounts := make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty))
+	storage := make(map[types.Address]map[types.Hash]*uint256.Int)
+
+	for addr := range s.stateObjectsDirty {
+		obj := s.getStateObject(addr)
+		if obj == nil || obj.deleted {
+			accounts[addr] = nil // mark as deleted
+			continue
+		}
+		acct := new(account.StateAccount)
+		acct.Copy(&obj.data)
+		accounts[addr] = acct
+
+		// Collect dirty storage for this account.
+		if len(obj.dirtyStorage) > 0 {
+			slots := make(map[types.Hash]*uint256.Int, len(obj.dirtyStorage))
+			for k, v := range obj.dirtyStorage {
+				val := new(uint256.Int).Set(&v)
+				slots[k] = val
+			}
+			storage[addr] = slots
+		}
+	}
+
+	root, err := s.rootComputer.ComputeRoot(accounts, storage)
+	if err != nil {
+		panic("JMT root computation failed: " + err.Error())
+	}
+	return root
 }
 
 func (sdb *IntraBlockState) HasSelfdestructed(addr types.Address) bool {

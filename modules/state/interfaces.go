@@ -112,6 +112,16 @@ type StateReaderWriter interface {
 	StateWriter
 }
 
+// RootComputer computes the state root hash for a set of dirty accounts
+// and storage slots. The default implementation uses incremental Keccak;
+// when JMT is enabled, a JMT-based implementation replaces it.
+type RootComputer interface {
+	// ComputeRoot computes the state root from dirty accounts and storage.
+	// accounts maps address → current account state (nil means deleted).
+	// storage maps address → (slot → value) for dirty storage slots.
+	ComputeRoot(accounts map[types.Address]*account.StateAccount, storage map[types.Address]map[types.Hash]*uint256.Int) (types.Hash, error)
+}
+
 // Compile-time interface implementation checks
 var (
 	_ StateReader          = (*PlainStateReader)(nil)
