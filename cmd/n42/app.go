@@ -56,6 +56,10 @@ func appRun(ctx *cli.Context) error {
 		DefaultConfig.P2PCfg.DataDir = DefaultConfig.NodeCfg.DataDir
 	}
 
+	if err := conf.ValidateAndApplyDefaults(&DefaultConfig); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	log.Init(DefaultConfig.NodeCfg, DefaultConfig.LoggerCfg)
 
 	if DefaultConfig.PprofCfg.Pprof {
