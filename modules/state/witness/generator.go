@@ -32,12 +32,12 @@ type Generator struct {
 }
 
 // NewGenerator creates a witness Generator backed by the given JMTCommitment.
-// Returns an error if c is nil.
-func NewGenerator(c *commitment.JMTCommitment) *Generator {
+// Returns nil and an error if c is nil.
+func NewGenerator(c *commitment.JMTCommitment) (*Generator, error) {
 	if c == nil {
-		panic("witness: NewGenerator called with nil JMTCommitment")
+		return nil, errors.New("witness: NewGenerator called with nil JMTCommitment")
 	}
-	return &Generator{commitment: c}
+	return &Generator{commitment: c}, nil
 }
 
 // Generate builds a BlockWitness containing Merkle proofs for every state key

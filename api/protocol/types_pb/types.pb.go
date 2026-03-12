@@ -834,6 +834,7 @@ type Body struct {
 	Txs       []*Transaction `protobuf:"bytes,1,rep,name=txs,proto3" json:"txs,omitempty" ssz-max:"104857600"`
 	Verifiers []*Verifier    `protobuf:"bytes,2,rep,name=verifiers,proto3" json:"verifiers,omitempty" ssz-max:"104857600"`
 	Rewards   []*Reward      `protobuf:"bytes,3,rep,name=rewards,proto3" json:"rewards,omitempty" ssz-max:"104857600"`
+	ZkProof   []byte         `protobuf:"bytes,4,opt,name=zk_proof,json=zkProof,proto3" json:"zk_proof,omitempty" ssz-max:"1048576"`
 }
 
 func (x *Body) Reset() {
@@ -885,6 +886,13 @@ func (x *Body) GetVerifiers() []*Verifier {
 func (x *Body) GetRewards() []*Reward {
 	if x != nil {
 		return x.Rewards
+	}
+	return nil
+}
+
+func (x *Body) GetZkProof() []byte {
+	if x != nil {
+		return x.ZkProof
 	}
 	return nil
 }

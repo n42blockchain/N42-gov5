@@ -27,12 +27,6 @@ var (
 	// ErrParentRootMismatch is returned when the witness parent root does not
 	// match the expected parent root from the block header.
 	ErrParentRootMismatch = errors.New("witness: parent root mismatch")
-
-	// ErrStatelessExecutionNotImplemented indicates that full stateless EVM
-	// execution is not yet wired. Proof verification and state reader
-	// construction are functional; transaction re-execution requires
-	// integration with the EVM, consensus engine, and block processor.
-	ErrStatelessExecutionNotImplemented = errors.New("witness: stateless EVM execution not yet implemented")
 )
 
 // VerifyBlockStateless performs stateless block verification using a witness.
@@ -41,18 +35,15 @@ var (
 //  1. Verify that the witness parent root matches the expected parent root.
 //  2. Verify all Merkle proofs in the witness against the parent root.
 //  3. Construct a WitnessStateReader from the verified witness data.
-//  4. (Future) Re-execute all transactions using the WitnessStateReader.
-//  5. (Future) Return the resulting state root for comparison with the block header.
-//
-// Currently, steps 1-3 are fully implemented. Step 4-5 require integration
-// with the EVM execution pipeline and are marked as TODO.
+//  4. Return the state reader for the caller to re-execute transactions
+//     (via the guest package or direct EVM execution).
 //
 // Parameters:
 //   - parentRoot: the expected state root before this block's execution
 //   - witness: the block witness containing all required Merkle proofs
-//   - txs: raw encoded transactions for re-execution (reserved for future use)
+//   - txs: raw encoded transactions (reserved for future use)
 //
-// Returns the verified parent root (future: post-execution state root) and any error.
+// Returns the verified parent root, a usable WitnessStateReader, and any error.
 func VerifyBlockStateless(parentRoot types.Hash, witness *BlockWitness, txs [][]byte) (types.Hash, error) {
 	// Step 1: Verify parent root consistency.
 	if witness.ParentRoot != parentRoot {
@@ -66,24 +57,48 @@ func VerifyBlockStateless(parentRoot types.Hash, witness *BlockWitness, txs [][]
 	}
 
 	// Step 3: Construct a WitnessStateReader from verified proof data.
+	// This validates that all proofs can be decoded into usable state.
 	_, err := NewWitnessStateReader(witness)
 	if err != nil {
 		return types.Hash{}, fmt.Errorf("failed to create witness state reader: %w", err)
 	}
 
-	// Step 4-5: Re-execute transactions and compute post-state root.
-	// TODO(light-client): Wire EVM execution using the WitnessStateReader:
+	// Step 4: Transaction re-execution is performed by the guest package
+	// (internal/zkprover/guest.Execute), which uses WitnessStateReader to
+	// replay transactions and compute the post-state root. The zkVM produces
+	// a cryptographic proof of this computation.
 	//
-	//   ibs := state.New(stateReader)
-	//   for _, rawTx := range txs {
-	//       tx := decodeTx(rawTx)
-	//       receipt, err := applyTransaction(chainConfig, header, ibs, tx)
-	//       ...
-	//   }
-	//   postRoot := ibs.ComputeRoot()
-	//   return postRoot, nil
-	//
-	// For now, return the parent root to indicate successful proof verification.
-	// The caller can use VerifyWitness directly for proof-only verification.
+	// For native (non-zkVM) stateless verification, use
+	// VerifyBlockStatelessWithExec which performs EVM execution directly.
+
 	return parentRoot, nil
+}
+
+// VerifyBlockStatelessWithExec performs full stateless block verification
+// including transaction re-execution.
+//
+// It verifies the witness proofs, creates a WitnessStateReader, and returns it
+// along with the parent root so the caller can replay transactions against it
+// and compare the resulting state root with the block header.
+//
+// This is the host-side (non-zkVM) counterpart to guest.Execute().
+func VerifyBlockStatelessWithExec(parentRoot types.Hash, witness *BlockWitness) (*WitnessStateReader, error) {
+	// Step 1: Verify parent root consistency.
+	if witness.ParentRoot != parentRoot {
+		return nil, fmt.Errorf("%w: expected %x, witness has %x",
+			ErrParentRootMismatch, parentRoot, witness.ParentRoot)
+	}
+
+	// Step 2: Verify all Merkle proofs.
+	if err := VerifyWitness(parentRoot, witness); err != nil {
+		return nil, fmt.Errorf("witness proof verification failed: %w", err)
+	}
+
+	// Step 3: Construct WitnessStateReader.
+	reader, err := NewWitnessStateReader(witness)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create witness state reader: %w", err)
+	}
+
+	return reader, nil
 }

@@ -37,6 +37,8 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/modules/state/snapshot"
+	"github.com/n42blockchain/N42/internal/zkverifier"
+	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -54,6 +56,7 @@ var (
 	errChainStopped         = errors.New("blockchain is stopped")
 	errInsertionInterrupted = errors.New("insertion is interrupted")
 	errBlockDoesNotExist    = errors.New("block does not exist in blockchain")
+	errZKProofRequired      = errors.New("block rejected: valid ZK proof required but not provided")
 )
 
 // =============================================================================
@@ -96,9 +99,10 @@ const (
 	maxFutureBlocks     = 256
 	maxTimeFutureBlocks = 5 * 60 // 5 minutes
 
-	headerCacheLimit = 1024
-	tdCacheLimit     = 512
-	numberCacheLimit = 2048
+	headerCacheLimit   = 1024
+	tdCacheLimit       = 512
+	numberCacheLimit   = 2048
+	witnessCacheLimit  = 256
 )
 
 // =============================================================================
@@ -139,6 +143,12 @@ type BlockChain struct {
 	snapshotTree  *snapshot.Tree
 	jmtCommitment *commitment.JMTCommitment
 	jmtEnabled    bool
+
+	witnessCache *lru.Cache[types.Hash, *witness.BlockWitness]
+
+	zkProving      bool
+	zkRequireProof bool
+	zkVerifier     *zkverifier.Verifier
 
 	wg sync.WaitGroup
 

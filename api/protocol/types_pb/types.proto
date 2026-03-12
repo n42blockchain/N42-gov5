@@ -105,6 +105,7 @@ message Body {
   repeated Transaction txs = 1 [(ext.ssz_max) = "104857600"];
   repeated Verifier verifiers = 2 [(ext.ssz_max) = "104857600"];
   repeated Reward rewards = 3 [(ext.ssz_max) = "104857600"];
+  bytes zk_proof = 4 [(ext.ssz_max) = "1048576"];  // Optional ZK proof (≤1MB)
 }
 
 message Transaction {
