@@ -89,7 +89,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 		insertLock:    make(chan struct{}, 1),
 		peers:         make(map[peer.ID]bool),
 		chBlocks:      make(chan block.IBlock, 100),
-		errorCh:       make(chan error),
+		errorCh:       make(chan error, 1),
 		p2p:           p2p,
 		latestBlockCh: make(chan block.IBlock, 50),
 		engine:        engine,

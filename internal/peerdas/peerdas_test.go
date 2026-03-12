@@ -555,8 +555,8 @@ func TestService_RunSamplingRound(t *testing.T) {
 
 	svc.runSamplingRound(ctx)
 
-	if svc.lastSampledBlock != 100 {
-		t.Errorf("lastSampledBlock: got %d, want 100", svc.lastSampledBlock)
+	if svc.lastSampledBlock.Load() != 100 {
+		t.Errorf("lastSampledBlock: got %d, want 100", svc.lastSampledBlock.Load())
 	}
 
 	// Running again for the same block should be a no-op.

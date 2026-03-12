@@ -108,7 +108,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		ptd, err := rawdb.ReadTd(tx, blk.ParentHash(), uint256.NewInt(0).Sub(blk.Number64(), uint256.NewInt(1)).Uint64())
 		if err != nil {
-			log.Errorf("ReadTd failed err: %v", err)
+			return fmt.Errorf("reading parent td for block %d: %w", blk.Number64().Uint64(), err)
 		}
 		if ptd == nil {
 			return consensus.ErrUnknownAncestor
@@ -187,7 +187,9 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 
 		if nopay != nil {
 			for addr, v := range nopay {
-				rawdb.PutAccountReward(tx, addr, v)
+				if err := rawdb.PutAccountReward(tx, addr, v); err != nil {
+					return fmt.Errorf("writing account reward for %s: %w", addr, err)
+				}
 			}
 		}
 		return nil
