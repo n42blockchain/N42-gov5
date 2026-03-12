@@ -19,6 +19,8 @@ package conf
 import (
 	"errors"
 	"time"
+
+	"github.com/n42blockchain/N42/params"
 )
 
 const (
@@ -106,6 +108,11 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.SnapSyncCfg.SyncThreshold == 0 {
 		cfg.SnapSyncCfg.SyncThreshold = DefaultSnapSyncThreshold
+	}
+
+	// Pre-load chain config from embedded chain specs if not already set.
+	if cfg.ChainCfg == nil && cfg.NodeCfg.Chain != "" && cfg.NodeCfg.Chain != "private" {
+		cfg.ChainCfg = params.ChainConfigByChainName(cfg.NodeCfg.Chain)
 	}
 
 	if cfg.DevCfg.TxGenEnabled {
