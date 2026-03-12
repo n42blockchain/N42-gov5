@@ -45,6 +45,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/n42blockchain/N42/accounts"
+	"github.com/n42blockchain/N42/accounts/external"
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -59,6 +60,7 @@ import (
 	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/nft"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
+	"github.com/n42blockchain/N42/internal/api/graphql"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
@@ -67,6 +69,7 @@ import (
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
+	"github.com/n42blockchain/N42/internal/mcp"
 	"github.com/n42blockchain/N42/internal/miner"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/peerdas"
@@ -146,6 +149,7 @@ type Node struct {
 	hotstuffService *hotstuff.Service     // HotStuff BFT consensus service (nil if not using HotStuff)
 	bundlerService  *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
 	peerdasService  *peerdas.Service      // PeerDAS (EIP-7594) data availability service (nil if disabled)
+	mcpServer       *mcp.Server           // MCP (Model Context Protocol) server for AI agents (nil if disabled)
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -753,6 +757,12 @@ func (n *Node) Start() error {
 		})
 	}
 
+	// Register witness API for stateless block verification.
+	n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
+		Namespace: "eth",
+		Service:   api.NewWitnessAPI(n.api),
+	})
+
 	if err := n.startRPC(); err != nil {
 		log.Error("failed start jsonrpc service", zap.Error(err))
 		return err
@@ -833,6 +843,18 @@ func (n *Node) Start() error {
 		if err := n.peerdasService.Start(n.ctx); err != nil {
 			log.Warn("PeerDAS service failed to start", "err", err)
 		}
+	}
+
+	// MCP Server
+	if n.config.MCPCfg.Enabled {
+		mcpBackend := &mcpNodeBackend{node: n}
+		n.mcpServer = mcp.NewServer(mcpBackend, n.config.MCPCfg.AllowedTools)
+		addr := fmt.Sprintf(":%d", n.config.MCPCfg.Port)
+		go func() {
+			if err := n.mcpServer.Start(addr); err != nil {
+				log.Error("MCP server failed to start", "err", err)
+			}
+		}()
 	}
 
 	// Start transaction generator if enabled
@@ -1000,6 +1022,14 @@ func (n *Node) startRPC() error {
 		if err := n.http.start(); err != nil {
 			return err
 		}
+
+		// GraphQL API
+		if n.config.NodeCfg.GraphQL.Enabled {
+			gqlHandler := graphql.New(n.api)
+			endpoint := n.config.NodeCfg.GraphQL.EffectiveEndpoint()
+			n.http.mux.Handle(endpoint, gqlHandler)
+			log.Info("GraphQL endpoint enabled", "endpoint", endpoint)
+		}
 	}
 
 	// Configure WebSocket.
@@ -1155,6 +1185,13 @@ func (n *Node) stopServices() []error {
 			}
 			return nil
 		}},
+		// 3f. MCP server
+		{"MCP server", func() error {
+			if n.mcpServer != nil {
+				return n.mcpServer.Stop()
+			}
+			return nil
+		}},
 		// 4. Miner
 		{"Miner", func() error { n.miner.Close(); return nil }},
 		// 5. Snap sync + Initial sync (depends on P2P + blockchain, must stop before blockchain closes)
@@ -1303,11 +1340,18 @@ func setAccountManagerBackends(stack *Node, conf *conf.NodeConfig) error {
 		scryptP = keystore.LightScryptP
 	}
 
-	// For now, we're using EITHER external signer OR local signers.
-	// If/when we implement some form of lockfile for USB and keystore wallets,
-	// we can have both, but it's very confusing for the user to see the same
-	// accounts in both externally and locally, plus very racey.
-	am.AddBackend(keystore.NewKeyStore(keydir, scryptN, scryptP))
+	// Use EITHER external signer OR local signers to avoid duplicate accounts
+	// and race conditions between the two backends.
+	if conf.ExternalSigner != "" {
+		log.Info("Using external signer", "endpoint", conf.ExternalSigner)
+		extBackend, err := external.NewExternalBackend(conf.ExternalSigner)
+		if err != nil {
+			return fmt.Errorf("external signer at %s: %w", conf.ExternalSigner, err)
+		}
+		am.AddBackend(extBackend)
+	} else {
+		am.AddBackend(keystore.NewKeyStore(keydir, scryptN, scryptP))
+	}
 
 	return nil
 }
@@ -1683,6 +1727,32 @@ func (p *peerdasBlockProvider) CurrentBlock() (types.Hash, uint64) {
 		return types.Hash{}, 0
 	}
 	return blk.Hash(), blk.Number64().Uint64()
+}
+
+// mcpNodeBackend implements mcp.Backend using the node's services.
+type mcpNodeBackend struct {
+	node *Node
+}
+
+func (b *mcpNodeBackend) BlockChain() common.IBlockChain { return b.node.blockChain }
+func (b *mcpNodeBackend) Database() kv.RwDB              { return b.node.db }
+func (b *mcpNodeBackend) TxPool() common.ITxsPool        { return b.node.txspool }
+func (b *mcpNodeBackend) PeerCount() int {
+	if b.node.p2p != nil {
+		return len(b.node.p2p.Peers().Connected())
+	}
+	return 0
+}
+func (b *mcpNodeBackend) SyncProgress() *mcp.SyncStatus {
+	var current uint64
+	if b.node.blockChain != nil && b.node.blockChain.CurrentBlock() != nil {
+		current = b.node.blockChain.CurrentBlock().Number64().Uint64()
+	}
+	return &mcp.SyncStatus{
+		CurrentBlock: current,
+		HighestBlock: current,
+		Syncing:      false,
+	}
 }
 
 // devnetGenesisBlock creates a minimal genesis for --dev / private chain mode.

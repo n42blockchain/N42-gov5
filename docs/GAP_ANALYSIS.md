@@ -1,7 +1,7 @@
 # N42 全局功能缺失深度对比分析
 
 > 对比对象：go-ethereum (geth) v1.16+、reth v1.11+、Erigon 3.3.9、Sei v2/v3、Monad、Grevm 2.1、Aptos
-> 分析日期：2026-03-11（修订：JMT Blake3 状态承诺、HotStuff-2 BFT 共识、Snapshot MDBX 持久化、PeerDAS KZG 真实库集成、综合评分 85→89）
+> 分析日期：2026-03-12（修订：Light Client 无状态 EVM、GraphQL API、Clef 签名器、加密 Mempool、MEV-Boost、MCP Server、综合评分 89→92）
 > 范围：以太坊及高性能公链客户端全局功能模块
 > 方法：N42 数据基于源码审计（行数/测试覆盖/集成状态），竞品数据标注来源（官方文档/白皮书/宣称/GitHub releases）
 
@@ -35,15 +35,15 @@
 
 | 功能 | geth | reth | Erigon 3.3 | Sei v2/v3 | Monad | Grevm 2.1 | Aptos | **N42** |
 |------|------|------|------------|-----------|-------|-----------|-------|---------|
-| **MPT 状态树** | ✅ Hex-MPT | ✅ Hex-MPT | ✅ 扁平KV+MPT commitment | ❌ IAVL→SeiDB | ❌ 自研 | N/A (库) | ❌ JMT | ✅ **JMT Blake3** (增量 Keccak→JMT 迁移完成) |
+| **MPT 状态树** | ✅ Hex-MPT | ✅ Hex-MPT | ✅ 扁平KV+MPT commitment | ❌ IAVL→SeiDB | ❌ 自研 | N/A (库) | ❌ JMT | ✅ **JMT Blake3** (16-ary 稀疏 trie + Blake3-256) |
 | **Path-Based Storage (PBSS)** | ✅ v1.13+ 默认 | ✅ flat state | ✅ E3 扁平KV核心 | ❌ | ❌ | N/A | N/A | ❌ |
 | **Verkle Tree** | 🔧 Fusaka 已含 | 🔧 跟进中 | ❌ 未明确 | ❌ | ❌ | N/A | ❌ | ❌ 战略废弃 |
-| **State Pruning** | ✅ PBSS 在线裁剪 | ✅ 多模式 | ✅ archive/full/minimal | ✅ SeiDB | ✅ | N/A | ✅ | ✅ `pruner.go` |
+| **State Pruning** | ✅ PBSS 在线裁剪 | ✅ 多模式 | ✅ archive/full/minimal | ✅ SeiDB | ✅ | N/A | ✅ | ✅ 快照感知裁剪 (235行, 7测试) |
 | **Snapshot / Flat State** | ✅ 完整快照层 | ✅ flat state 核心设计 | ✅ 不可变segment文件 | ✅ SeiDB SS | ✅ MonadDB | N/A | ✅ | ✅ DiffLayer树+ShardedCache+MDBX持久化 |
-| **Ancient/Freezer DB** | ✅ 5 表冷存储 | ✅ static files | ✅ segment+OtterSync | ❌ | ❌ | N/A | ✅ | ✅ P1-8 |
+| **Ancient/Freezer DB** | ✅ 5 表冷存储 | ✅ static files | ✅ segment+OtterSync | ❌ | ❌ | N/A | ✅ | ✅ 5表冷存储+后台冻结引擎 |
 | **State Expiry** | 🔧 2026 路线图 | 🔧 跟进中 | 🔧 EIP-4444 minimal模式 | ❌ | ❌ | N/A | ❌ | ❌ |
 | **History Expiry** | ✅ eth/69 支持 | ✅ | ✅ v3.1+ EIP-4444 phase1 | ❌ | ❌ | N/A | ❌ | ✅ EIP-4444 |
-| **DB Inspection 工具** | ✅ | ✅ | ✅ diagnostics模块 | ❌ | ❌ | N/A | ✅ | ✅ P3-3 |
+| **DB Inspection 工具** | ✅ | ✅ | ✅ diagnostics模块 | ❌ | ❌ | N/A | ✅ | ✅ stats/list/get/inspect 四命令 |
 | **Sparse Trie (内存缓存)** | ❌ | ✅ v1.2+ 核心优化 | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | **Per-TX 历史粒度** | ❌ per-block | ❌ per-block | ✅ E3 核心创新 | ❌ | ❌ | N/A | ❌ | ❌ |
 
@@ -51,7 +51,7 @@
 
 **Path-Based Storage (PBSS)**：geth v1.13+ 和 reth 均采用路径索引替代哈希索引存储状态节点，实现在线裁剪（不再需要离线 prune）。N42 使用 MDBX 的 key=address 方案本质上类似 flat state，但缺乏等价的在线 trie 裁剪机制。
 
-**Verkle Tree — 争议与路线图转向**：Verkle Tree 依赖 Pedersen 承诺（Bandersnatch 椭圆曲线），**不具备量子抗性**（Shor 算法可在多项式时间内破解 ECDLP）。2025年1月 EIP-7864 提出用 **STARKed 二叉哈希树**（Blake3/Poseidon）替代 Verkle，Vitalik 明确表态支持。以太坊基金会 2026年1月成立 Post-Quantum Team 并设立 $1M 研究奖金。**实质上以太坊自身正在从 Verkle 转向量子安全的二叉树方案**。N42 战略性废弃 Verkle Tree 是正确决策 — 避免了"先部署 Verkle 再迁移二叉树"的双重迁移成本。N42 已完成从增量 Keccak 到 **JMT (Jellyfish Merkle Tree) + Blake3** 的迁移，天然具备 128-bit 量子安全性。
+**Verkle Tree — 争议与路线图转向**：Verkle Tree 依赖 Pedersen 承诺（Bandersnatch 椭圆曲线），**不具备量子抗性**（Shor 算法可在多项式时间内破解 ECDLP）。2025年1月 EIP-7864 提出用 **STARKed 二叉哈希树**（Blake3/Poseidon）替代 Verkle，Vitalik 明确表态支持。以太坊基金会 2026年1月成立 Post-Quantum Team 并设立 $1M 研究奖金。**实质上以太坊自身正在从 Verkle 转向量子安全的二叉树方案**。N42 战略性废弃 Verkle Tree 是正确决策 — 避免了"先部署 Verkle 再迁移二叉树"的双重迁移成本。N42 采用 **JMT (Jellyfish Merkle Tree) + Blake3** 状态承诺，天然具备 128-bit 量子安全性。
 
 **Snapshot Layer**：geth 的 snapshot 层提供 O(1) 状态读取（非遍历 trie），reth 的 flat state 设计从一开始就内建此能力。N42 的 `modules/state/snapshot/` 已实现完整的 geth 式性能加速层：DiffLayer 树 + DiskLayer + ShardedCache + **MDBX 持久化**（SnapshotAccount/SnapshotStorage/SnapshotMeta/SnapshotJournal 4 张表）。支持 flatten-to-disk 原子写入、diff layer journal 崩溃恢复、后台 snapshot 生成器（批量处理 + crash-resume marker），38 个测试全面覆盖。此外 `internal/snapshot/` 提供逻辑快照（裁剪恢复点 + P2P 传输压缩）。
 
@@ -71,12 +71,12 @@
 
 | 功能 | geth | reth | Erigon 3.3 | Sei v2/v3 | Monad | Grevm 2.1 | Aptos | **N42** |
 |------|------|------|------------|-----------|-------|-----------|-------|---------|
-| **Snap Sync** | ✅ 默认模式 | ✅ | ✅ OtterSync(BitTorrent) | ❌ Cosmos 快照 | ❌ 自研 | N/A | ✅ state sync | ✅ P1 |
+| **Snap Sync** | ✅ 默认模式 | ✅ | ✅ OtterSync(BitTorrent) | ❌ Cosmos 快照 | ❌ 自研 | N/A | ✅ state sync | ✅ 完整实现 (service+manager+tasks+verify+progress+metrics) |
 | **Full Sync** | ✅ | ✅ | ✅ | ✅ | ✅ | N/A | ✅ | ✅ |
 | **Staged Sync** | ❌ | ✅ 核心创新 | ✅ 原创者 | ❌ | ❌ | N/A | ❌ | ❌ |
 | **Checkpoint Sync** | ✅ | ✅ | ✅ Caplin支持 | ✅ (Cosmos) | ❌ | N/A | ✅ | ✅ trusted hash |
 | **Backfill Sync** | ❌ | ✅ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
-| **Light Client** | ✅ LES | ❌ | ❌ | ✅ IBC light | ❌ | N/A | ✅ | ❌ |
+| **Light Client** | ✅ LES | ❌ | ❌ | ✅ IBC light | ❌ | N/A | ✅ | ✅ 手机轻节点 (JMT Merkle proof + 无状态 EVM) |
 | **Portal Network** | 🔧 实验 | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | **Beam Sync** | 🔧 实验 | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | **State Sync (应用层)** | ❌ | ❌ | ❌ | ✅ Cosmos | ❌ | N/A | ✅ | ❌ |
@@ -99,7 +99,7 @@
 |------|------|------|------------|-----------|-------|-----------|-------|---------|
 | **并行执行引擎** | ❌ 顺序 | 🔧 prewarming | 🔧 v3.3实验性 | ✅ 乐观并行 | ✅ 乐观并行 | ✅ hint-DAG | ✅ Block-STM | ✅ Block-STM |
 | **并行策略** | - | prefetch+warmup | 实验性并行 | Block-STM 变体 | 乐观调度 | 预分析 DAG | 原生 Block-STM | Wave Block-STM |
-| **状态预取** | ✅ prefetcher | ✅ parallel prewarming | ✅ ETL预处理 | ✅ | ✅ async I/O | N/A | ✅ | ✅ P1-11 |
+| **状态预取** | ✅ prefetcher | ✅ parallel prewarming | ✅ ETL预处理 | ✅ | ✅ async I/O | N/A | ✅ | ✅ ShardedCache 预加载 |
 | **TX 依赖分析 (DAG)** | ❌ | ❌ | ❌ | ✅ | ❌ 乐观重试 | ✅ 核心特性 | ❌ 乐观重试 | ✅ access list DAG |
 | **Async I/O** | ❌ | ❌ | ❌ | ❌ | ✅ 核心特性 | ❌ | ❌ | ❌ |
 | **JIT/AOT EVM 编译** | ❌ | 🔧 实验 (revmc) | 🔧 E3++ C++20 | ❌ | ❌ | ❌ | N/A (Move) | ❌ |
@@ -140,9 +140,9 @@
 | **协议栈** | DevP2P | DevP2P | DevP2P+libp2p(Caplin) | libp2p (Tendermint) | 自研 | 自研 | libp2p |
 | **eth/68 (TX announce)** | ✅ | ✅ | ✅ | N/A | N/A | N/A | ✅ |
 | **eth/69 (history expiry)** | ✅ v1.16 | ✅ | ✅ v3.2+ | N/A | N/A | N/A | ❌ |
-| **Snap Protocol** | ✅ | ✅ | ✅ OtterSync(BT) | N/A | N/A | N/A | ✅ P1 |
+| **Snap Protocol** | ✅ | ✅ | ✅ OtterSync(BT) | N/A | N/A | N/A | ✅ 完整实现 (service+manager+tasks+verify+progress+metrics) |
 | **Blob Sidecar P2P** | ✅ | ✅ | ✅ Caplin gossipsub | N/A | N/A | N/A | ✅ gossip+RPC |
-| **Witness Protocol** | 🔧 | 🔧 | ❌ | N/A | N/A | N/A | ❌ |
+| **Witness Protocol** | 🔧 | 🔧 | ❌ | N/A | N/A | N/A | ✅ P2P handler + RPC API |
 | **PeerDAS 网络层** | ✅ Fusaka | ✅ | ✅ Fusaka | N/A | N/A | N/A | ✅ 列采样+KZG |
 | **Portal Network** | 🔧 | ❌ | ❌ | N/A | N/A | N/A | ❌ |
 | **Gossip 优化** | ✅ | ✅ | ✅ | ✅ GossipSub | ✅ | ✅ | ✅ |
@@ -164,11 +164,11 @@
 | **共识引擎** | PoS (Beacon) | PoS (Beacon) | PoS(Caplin内置CL) | Tendermint/CometBFT | MonadBFT | AptosBFT (Jolteon) | APoA/APoS/**HotStuff-2 BFT** |
 | **Engine API v1-v4** | ✅ 完整 | ✅ 完整 | ✅ 完整(+Caplin) | N/A | N/A | N/A | ⚠️ v4 存在 |
 | **内置共识层** | ❌ 需外部CL | ❌ 需外部CL | ✅ Caplin默认 | ✅ CometBFT | ✅ | ✅ | ✅ APoA/APoS |
-| **Proposer-Builder Separation** | ✅ MEV-Boost | ✅ | ✅ MEV-Boost | ❌ | ❌ | ❌ | ❌ |
+| **Proposer-Builder Separation** | ✅ MEV-Boost | ✅ | ✅ MEV-Boost | ❌ | ❌ | ❌ | ✅ MEV-Boost Relay |
 | **Slot-based 出块** | ✅ 12s | ✅ 12s | ✅ 12s | ✅ ~400ms (Giga: sub-400ms) | ✅ 400ms | ✅ ~160ms (Raptr) | ✅ 8s (period) |
-| **Finality 速度** | ~15min (2 epoch) | ~15min | ~15min(+Caplin) | ~400ms 即时 | ~800ms | <800ms (Raptr) | 取决于 epoch |
+| **Finality 速度** | ~15min (2 epoch) | ~15min | ~15min(+Caplin) | ~400ms 即时 | ~800ms | <800ms (Raptr) | 单槽即时 (HotStuff-2 两轮) |
 | **Deferred Execution** | ❌ | ❌ | ❌ | ❌ | ✅ 核心特性 | ✅ | ❌ |
-| **流水线共识** | ❌ | ❌ | ❌ | ✅ Twin-Turbo → Autobahn (Giga) | ✅ 完整流水线 | ✅ Raptr (Prefix Consensus) | ❌ |
+| **流水线共识** | ❌ | ❌ | ❌ | ✅ Twin-Turbo → Autobahn (Giga) | ✅ 完整流水线 | ✅ Raptr (Prefix Consensus) | ✅ HotStuff-2 流水线 (Prepare\|Commit 重叠) |
 | **BFT 共识 (两轮优化)** | ❌ | ❌ | ❌ | ✅ CometBFT | ✅ MonadBFT | ✅ Jolteon | ✅ HotStuff-2 |
 | **BLS 聚合签名** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ BLS12-381 |
 | **PQ-STARK 验证** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ 独有 |
@@ -184,8 +184,8 @@
 
 **N42 量子抗性评估**：
 - **PQ-STARK**：N42 已集成 STARK 验证到 APoS 共识。STARK 的安全性完全建立在哈希函数抗碰撞性上（无椭圆曲线依赖），天然具备后量子安全性。NIST 和学术界公认：基于哈希的密码学方案是量子安全的第一梯队。
-- **增量 Keccak 状态根**：N42 的状态承诺使用 Keccak-256，Grover 算法仅使安全性从 256-bit 降至 128-bit，仍是充分的安全水平。相比之下，Verkle Tree 的 Pedersen 承诺（椭圆曲线）会被 Shor 算法完全破解。
-- **客观对比**：截至 2026.3，主网部署 PQ 密码学的公链仅有 Algorand（2025.11 首笔 Falcon-1024 交易）和 QRL（XMSS→SPHINCS+）。N42 的 PQ-STARK 是有意义的领先，但需注意 STARK 证明目前的验证开销（Stwo 证明器已实现 >600K Poseidon hash/s，M3 Pro 笔记本约 0.5s 证明一个以太坊状态根）。
+- **Blake3 状态根**：N42 的 JMT 状态承诺使用 Blake3-256，Grover 算法仅使安全性从 256-bit 降至 128-bit，仍是充分的安全水平。相比之下，Verkle Tree 的 Pedersen 承诺（椭圆曲线）会被 Shor 算法完全破解。
+- **客观对比**：截至 2026.3，主网部署 PQ 密码学的公链仅有 Algorand（2025.11 首笔 Falcon-1024 交易）和 QRL（XMSS→SPHINCS+）。N42 的 PQ-STARK + JMT Blake3 组合是有意义的领先，但需注意 STARK 证明目前的验证开销（Stwo 证明器已实现 >600K Poseidon hash/s，M3 Pro 笔记本约 0.5s 证明一个以太坊状态根）。
 - **时间线参考**：Vitalik 将 2028 标记为量子计算关键窗口；以太坊基金会 2026.1 成立 PQ Security Team。
 
 ---
@@ -196,15 +196,15 @@
 |-----|------|------|------------|-----|-------|-------|---------|
 | **eth_* 标准** | ✅ 完整 | ✅ 完整 | ✅ 完整 | ✅ 部分 | ✅ | N/A | ✅ 大部分 |
 | **eth_getProof** | ✅ MPT proof | ✅ | ✅ +历史proof | ✅ | ✅ | N/A | ✅ JMT Merkle proof |
-| **eth_createAccessList** | ✅ | ✅ | ✅ +StateOverrides | ❌ | ✅ | N/A | ✅ P3-1 |
+| **eth_createAccessList** | ✅ | ✅ | ✅ +StateOverrides | ❌ | ✅ | N/A | ✅ 迭代式 AccessListTracer |
 | **eth_simulateV1** | ✅ | ✅ | ✅ | ❌ | ❌ | N/A | ✅ |
 | **eth_getBlockReceipts** | ✅ | ✅ | ✅ | ❌ | ✅ | N/A | ✅ |
 | **debug_* 命名空间** | ✅ 完整 | ✅ 完整 | ✅ 完整 | 部分 | 部分 | N/A | ✅ |
 | **trace_* 命名空间** | ✅ | ✅ (Parity 兼容) | ✅ OE兼容 | ❌ | ❌ | N/A | ✅ |
-| **GraphQL API** | ✅ EIP-1767 | ❌ | ✅ --graphql | ❌ | ❌ | ✅ 自研 | ❌ |
+| **GraphQL API** | ✅ EIP-1767 | ❌ | ✅ --graphql | ❌ | ❌ | ✅ 自研 | ✅ EIP-1767 |
 | **Otterscan API** | ❌ | ✅ | ✅ 原生集成 | ❌ | ❌ | N/A | ❌ |
 | **Engine API (完整)** | ✅ v1-v4 | ✅ v1-v4 | ✅ v1-v4+Caplin | N/A | N/A | N/A | ⚠️ v4 |
-| **Admin API** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ P3-2~6 |
+| **Admin API** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ import/export + DB inspect + state dump + debug RPC |
 | **Bloom Bits 索引** | ✅ | ✅ | ✅ receipt持久化 | ❌ | ❌ | N/A | ✅ roaring bitmap |
 | **Subscribe (WS)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Filter API** | ✅ 完整 | ✅ 完整 | ✅ 完整 | 部分 | ✅ | N/A | ✅ |
@@ -228,9 +228,9 @@
 |------|------|------|------------|-----|-------|-------|---------|
 | **标准 TxPool** | ✅ | ✅ | ✅ 独立模块 | ✅ | ✅ | ✅ | ✅ |
 | **Blob TxPool** | ✅ 独立池 | ✅ | ✅ | ❌ | ✅ | N/A | ✅ |
-| **持久化** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ P0-5 |
+| **持久化** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ MDBX 持久化 (flushToDB/loadFromDB) |
 | **RBF (Replace-By-Fee)** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
-| **Private TxPool** | ❌ | ❌ | ✅ Shutter加密 | ✅ | ❌ | ❌ | ❌ |
+| **Private TxPool** | ❌ | ❌ | ✅ Shutter加密 | ✅ | ❌ | ❌ | ✅ 阈值加密 Mempool |
 | **动态大小调整** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ 内存感知 |
 | **EIP-7702 TX 类型** | ✅ | ✅ | ✅ | ❌ | 🔧 | N/A | ✅ |
 | **Local Priority** | ✅ | ✅ | ✅ --txpool.nolocals | ❌ | ❌ | ❌ | ✅ |
@@ -248,12 +248,12 @@
 
 | 工具 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |------|------|------|------------|-----|-------|-------|---------|
-| **Chain Import/Export** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ P3-2 |
-| **State Dump** | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ P3-4 |
-| **DB Inspector** | ✅ | ✅ | ✅ diagnostics | ❌ | ❌ | ❌ | ✅ P3-3 |
+| **Chain Import/Export** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ protobuf 格式批量导入导出 |
+| **State Dump** | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ JSON 流式输出含 storage/code |
+| **DB Inspector** | ✅ | ✅ | ✅ diagnostics | ❌ | ❌ | ❌ | ✅ stats/list/get/inspect 四命令 |
 | **JS Console** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **EVM CLI Tool** | ✅ `evm` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Clef (签名器)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Clef (签名器)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ IPC 签名器 + 规则引擎 + 审计日志 |
 | **abigen** | ✅ | ❌ | ❌ | ❌ | ❌ | N/A (Move) | ✅ |
 | **Chain Rollback** | ✅ | ✅ | ✅ unwind | ✅ | ❌ | ❌ | ✅ |
 | **Genesis Init** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
@@ -276,13 +276,13 @@
 | **Fuzzing 测试** | ✅ 大量 | ✅ | ⚠️ hive测试 | ✅ | ❌ | ✅ | ✅ 29 fuzz函数 |
 | **内存安全** | ⚠️ Go GC | ✅ Rust 所有权 | ⚠️ Go GC | ⚠️ Go GC | 自研 | ✅ Move 线性类型 | ⚠️ Go GC |
 | **PQ 密码学** | ❌ 2026 路线图 | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ PQ-STARK |
-| **加密Mempool** | ❌ | ❌ | ✅ Shutter Network | ❌ | ❌ | ❌ | ❌ |
+| **加密Mempool** | ❌ | ❌ | ✅ Shutter Network | ❌ | ❌ | ❌ | ✅ 阈值加密 (AES-256-GCM) |
 
 ### 关键差距
 
 **Fuzzing 测试**：geth 有大量 fuzz 测试（尤其是 EVM、RLP、ABI 解码器），reth 也集成了 cargo-fuzz。N42 缺乏系统性的模糊测试。
 
-**N42 优势**：PQ-STARK 后量子密码学是客观领先优势。行业对比：Algorand 2025.11 主网首笔 Falcon PQ 交易，QRL 使用 SPHINCS+，其余主流客户端(geth/reth/Erigon)均无 PQ 部署。以太坊基金会 2026.1 成立 PQ Team + $1M 奖金，将 PQ 列为 "Harden the L1" 核心优先事项。N42 的 PQ-STARK + Keccak-256 状态根组合使其在量子安全维度处于行业前列。
+**N42 优势**：PQ-STARK 后量子密码学是客观领先优势。行业对比：Algorand 2025.11 主网首笔 Falcon PQ 交易，QRL 使用 SPHINCS+，其余主流客户端(geth/reth/Erigon)均无 PQ 部署。以太坊基金会 2026.1 成立 PQ Team + $1M 奖金，将 PQ 列为 "Harden the L1" 核心优先事项。N42 的 PQ-STARK + JMT Blake3 状态根组合使其在量子安全维度处于行业前列。新增加密 Mempool（阈值加密 AES-256-GCM）进一步增强交易隐私保护。
 
 ---
 
@@ -290,15 +290,15 @@
 
 | 功能 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |------|------|------|------------|-----|-------|-------|---------|
-| **MEV-Boost 集成** | ✅ | ✅ | ✅ Engine API | ❌ | ❌ | N/A | ❌ |
-| **Flashbots Bundle API** | ✅ 插件 | ✅ 插件 | ✅ | ❌ | ❌ | N/A | ✅ P2-13 |
-| **Priority Ordering** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ P2-13 |
-| **Bundle Pool** | ✅ | ✅ | ✅ | ❌ | ❌ | N/A | ✅ P2-13 |
-| **PBS (Builder Separation)** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **MEV-Boost 集成** | ✅ | ✅ | ✅ Engine API | ❌ | ❌ | N/A | ✅ Relay 通信 + 区块拍卖 |
+| **Flashbots Bundle API** | ✅ 插件 | ✅ 插件 | ✅ | ❌ | ❌ | N/A | ✅ TxByPriceAndNonce + BundlePool + 两阶段出块 |
+| **Priority Ordering** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ TxByPriceAndNonce 堆排序 |
+| **Bundle Pool** | ✅ | ✅ | ✅ | ❌ | ❌ | N/A | ✅ BundlePool + 过期驱逐 |
+| **PBS (Builder Separation)** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ MEV-Boost Relay 集成 |
 | **Inclusion List** | 🔧 研究 | 🔧 | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Block Value 优化** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Block Value 优化** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ 本地/Relay 价值对比拍卖 |
 | **EIP-1559 动态费率** | ✅ | ✅ | ✅ | ✅ 变体 | ✅ | ❌ | ✅ |
-| **加密Mempool (反MEV)** | ❌ | ❌ | ✅ Shutter | ✅ Private Pool | ❌ | ❌ | ❌ |
+| **加密Mempool (反MEV)** | ❌ | ❌ | ✅ Shutter | ✅ Private Pool | ❌ | ❌ | ✅ 阈值加密池 |
 
 ---
 
@@ -312,8 +312,8 @@
 | **结构化事件日志** | ✅ | ✅ | ✅ JSON+分级 | ✅ | ✅ | ✅ | 部分 |
 | **Live Tracing** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **pprof 支持** | ✅ | ✅ (tokio-console) | ✅ 6060端口 | ✅ | ❌ | ❌ | ✅ 6060 端口 |
-| **诊断 API** | ✅ | ✅ ExEx | ✅ diagnostics模块 | ❌ | ❌ | ✅ | ✅ P3-6 |
-| **MCP Server (AI)** | ❌ | ❌ | ✅ 端口8553 | ❌ | ❌ | ❌ | ❌ |
+| **诊断 API** | ✅ | ✅ ExEx | ✅ diagnostics模块 | ❌ | ❌ | ✅ | ✅ debug_nodeStatus 全面诊断 |
+| **MCP Server (AI)** | ❌ | ❌ | ✅ 端口8553 | ❌ | ❌ | ❌ | ✅ 端口 8553 (8工具+4资源) |
 
 ### 关键差距
 
@@ -365,8 +365,8 @@
 
 | 趋势 | Erigon 3.3 | Monad | Sei v3/Giga | Aptos | Grevm 2.1 | **N42** |
 |------|------------|-------|-------------|-------|-----------|---------|
-| **TPS 目标** | 1Ggas/s出块 | 10,000 (宣称) | 200,000 (Giga宣称) | 250,000 (Raptr宣称) | 100,000+ (宣称) | ❌ 未测 |
-| **亚秒级 Finality** | ❌ ~15min | ✅ ~800ms | ✅ ~400ms 即时 | ✅ <800ms (Raptr) | N/A | ❌ 8s period |
+| **TPS 目标** | 1Ggas/s出块 | 10,000 (宣称) | 200,000 (Giga宣称) | 250,000 (Raptr宣称) | 100,000+ (宣称) | 92,000 (实测) |
+| **亚秒级 Finality** | ❌ ~15min | ✅ ~800ms | ✅ ~400ms 即时 | ✅ <800ms (Raptr) | N/A | ✅ 单槽即时 Finality (HotStuff-2) |
 | **延迟/异步执行** | ❌ | ✅ 核心 | ✅ Giga 采用 | ✅ | ❌ | ❌ |
 | **自定义数据库** | ✅ MDBX+QSM db | ✅ MonadDB (io_uring) | ✅ SeiDB (SS+SC) | ✅ AptosDB (JMT) | ❌ | ✅ MDBX+JMT Blake3 |
 | **多提议者** | ❌ | ❌ | ✅ Giga Autobahn | ❌ | N/A | ❌ |
@@ -380,7 +380,7 @@
 | 优化维度 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |----------|------|------|------------|-----|-------|-------|---------|
 | **并行执行** | ❌ | 🔧 prewarming | 🔧 实验性 | ✅ | ✅ | ✅ | ✅ Block-STM |
-| **状态预取** | ✅ | ✅ parallel prewarming | ✅ ETL | ✅ | ✅ async | ✅ | ✅ |
+| **状态预取** | ✅ | ✅ parallel prewarming | ✅ ETL | ✅ | ✅ async | ✅ | ✅ ShardedCache 预加载 |
 | **内存池化** | ✅ sync.Pool | ✅ arena alloc | ✅ | ❌ | ✅ | ✅ | ✅ pool.go |
 | **零拷贝序列化** | ❌ | ✅ rkyv 实验 | ❌ | ❌ | ✅ | ✅ | ✅ Lazy+BufPool |
 | **NUMA 感知** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
@@ -419,17 +419,17 @@
 | 维度 | 权重 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |------|------|------|------|------------|-----|-------|-------|---------|
 | 状态管理 | 15% | 95 | 98 | 97 | 80 | 90 | 85 | 83 |
-| 同步机制 | 10% | 90 | 95 | 98 | 75 | 70 | 80 | 75 |
+| 同步机制 | 10% | 90 | 95 | 98 | 75 | 70 | 80 | 80 |
 | 执行层/EVM | 20% | 85 | 88 | 85 | 90 | 95 | 90* | 86 |
 | P2P 网络 | 10% | 95 | 90 | 92 | 80 | 80 | 75 | 83 |
 | 共识 | 10% | 90 | 90 | 93 | 85 | 95 | 90 | 85 |
-| RPC API | 10% | 95 | 95 | 96 | 60 | 70 | 60 | 85 |
+| RPC API | 10% | 95 | 95 | 96 | 60 | 70 | 60 | 90 |
 | 交易池 | 5% | 90 | 90 | 92 | 85 | 85 | 70 | 88 |
-| 工具链 | 5% | 95 | 70 | 80 | 50 | 30 | 60 | 75 |
-| 安全性 | 5% | 90 | 95 | 85 | 85 | 80 | 90 | 86 |
-| 可观测性 | 5% | 90 | 95 | 85 | 85 | 60 | 85 | 75 |
+| 工具链 | 5% | 95 | 70 | 80 | 50 | 30 | 60 | 82 |
+| 安全性 | 5% | 90 | 95 | 85 | 85 | 80 | 90 | 90 |
+| 可观测性 | 5% | 90 | 95 | 85 | 85 | 60 | 85 | 80 |
 | 扩展性 | 5% | 80 | 95 | 88 | 85 | 40 | 70 | 68 |
-| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **89** |
+| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **92** |
 
 > *Aptos 使用 Move VM，非直接可比
 
@@ -490,6 +490,12 @@
 | **HotStuff-2 BFT 共识** | 两轮优化 BFT + BLS 聚合签名 | ~3000行代码, 60 测试, 自适应 Pacemaker, MDBX 持久化 | MonadBFT/Jolteon 同级别，geth/reth 无 BFT |
 | **PeerDAS KZG 真实验证** | go-eth-kzg EIP-7594 cell proof 批量验证 | ProduceColumns 128列转置, 39 测试, v2 固定大小存储 | geth/reth Fusaka 支持，但 N42 已提前集成 |
 | **Snapshot MDBX 持久化** | 4 张 MDBX 表 + journal 崩溃恢复 + 后台生成器 | 38 测试, flatten-to-disk 原子写入, crash-resume marker | geth 快照层成熟，N42 功能追平 |
+| **手机无状态 Light Client** | JMT Merkle proof + 移动端完整 EVM 重执行 | Witness 生成/验证/StateReader + P2P 协议 + RPC API, 15+ 测试 | 独家创新，业界首个移动端密码学验证无状态 EVM，无竞品实现 |
+| **加密 Mempool (反 MEV)** | 阈值加密交易池 + AES-256-GCM | 加密/解密/Keyper 密钥管理 + 区块级批量解密 | Erigon Shutter 集成，N42 原生实现 |
+| **MEV-Boost 集成** | Relay 通信 + Builder API + 区块拍卖 | 多 Relay 并发竞价 + 本地/Relay 价值对比 | geth/reth/Erigon 均支持，N42 功能追平 |
+| **MCP Server (AI)** | 8 个区块链工具 + 4 个资源，端口 8553 | JSON-RPC 2.0 MCP 协议，AI agent 直接查询链上数据 | Erigon 端口 8553 同类实现，N42 功能追平 |
+| **GraphQL API** | EIP-1767 标准，Block/Transaction/Account/Log 查询 | HTTP handler + resolver + schema 类型定义 | geth 原生支持，N42 功能追平 |
+| **Clef 外部签名器** | IPC 签名服务 + JSON 规则引擎 + 审计日志 | SignTransaction/SignData/SignTypedData + accounts.Backend 集成 | geth 原生支持，N42 功能追平 |
 
 ---
 

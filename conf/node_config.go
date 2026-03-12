@@ -80,6 +80,8 @@ type NodeConfig struct {
 	// before blocks are eligible for freezing. Default: 90000.
 	AncientFreezeThreshold uint64 `json:"ancient_freeze_threshold,omitempty" yaml:"ancient_freeze_threshold,omitempty"`
 
+	GraphQL GraphQLCfg `json:"graphql" yaml:"graphql"`
+
 	ExternalSigner        string `json:"external_signer" yaml:"external_signer"`
 	UseLightweightKDF     bool   `json:"use_lightweight_kdf" yaml:"use_lightweight_kdf"`
 	InsecureUnlockAllowed bool   `json:"insecure_unlock_allowed" yaml:"insecure_unlock_allowed"`
