@@ -1356,6 +1356,9 @@ func (b *Body) MarshalSSZ() ([]byte, error) {
 }
 
 // MarshalSSZTo ssz marshals the Body object to a target array
+// Note: ZkProof is intentionally excluded from SSZ encoding to maintain
+// backward compatibility with existing P2P peers. ZkProof is carried
+// only via protobuf (storage/DB layer).
 func (b *Body) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 	dst = buf
 	offset := int(12)
@@ -1419,6 +1422,7 @@ func (b *Body) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 }
 
 // UnmarshalSSZ ssz unmarshals the Body object
+// Note: ZkProof is excluded from SSZ — carried only via protobuf.
 func (b *Body) UnmarshalSSZ(buf []byte) error {
 	var err error
 	size := uint64(len(buf))

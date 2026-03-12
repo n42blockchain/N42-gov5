@@ -39,6 +39,9 @@ func (s *Service) registerRPCHandlers() {
 	s.registerRPC(p2p.RPCGetStorageRangeTopicV1, s.storageRangeRPCHandler)
 	s.registerRPC(p2p.RPCGetCodeTopicV1, s.codeRPCHandler)
 
+	// Witness protocol handler.
+	s.registerRPC(p2p.RPCGetBlockWitnessTopicV1, s.witnessRPCHandler)
+
 	// Snapshot protocol handlers.
 	s.registerRPC(p2p.RPCGetSnapshotInfoTopicV1, s.snapshotInfoRPCHandler)
 	s.registerRPC(p2p.RPCGetSnapshotAccountRangeTopicV1, s.snapshotAccountRangeRPCHandler)
@@ -59,6 +62,7 @@ func (s *Service) unregisterHandlers() {
 		p2p.RPCGetAccountRangeTopicV1,
 		p2p.RPCGetStorageRangeTopicV1,
 		p2p.RPCGetCodeTopicV1,
+		p2p.RPCGetBlockWitnessTopicV1,
 		p2p.RPCGetSnapshotInfoTopicV1,
 		p2p.RPCGetSnapshotAccountRangeTopicV1,
 		p2p.RPCGetSnapshotStorageRangeTopicV1,
