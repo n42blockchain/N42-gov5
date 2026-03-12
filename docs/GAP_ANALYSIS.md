@@ -1,7 +1,7 @@
 # N42 全局功能缺失深度对比分析
 
 > 对比对象：go-ethereum (geth) v1.16+、reth v1.11+、Erigon 3.3.9、Sei v2/v3、Monad、Grevm 2.1、Aptos
-> 分析日期：2026-03-10（修订：HotStuff-2 BFT 共识、Snapshot MDBX 持久化、PeerDAS KZG 真实库集成、综合评分 85→88）
+> 分析日期：2026-03-11（修订：JMT Blake3 状态承诺、HotStuff-2 BFT 共识、Snapshot MDBX 持久化、PeerDAS KZG 真实库集成、综合评分 85→89）
 > 范围：以太坊及高性能公链客户端全局功能模块
 > 方法：N42 数据基于源码审计（行数/测试覆盖/集成状态），竞品数据标注来源（官方文档/白皮书/宣称/GitHub releases）
 
@@ -35,7 +35,7 @@
 
 | 功能 | geth | reth | Erigon 3.3 | Sei v2/v3 | Monad | Grevm 2.1 | Aptos | **N42** |
 |------|------|------|------------|-----------|-------|-----------|-------|---------|
-| **MPT 状态树** | ✅ Hex-MPT | ✅ Hex-MPT | ✅ 扁平KV+MPT commitment | ❌ IAVL→SeiDB | ❌ 自研 | N/A (库) | ❌ JMT | ❌ 增量 Keccak |
+| **MPT 状态树** | ✅ Hex-MPT | ✅ Hex-MPT | ✅ 扁平KV+MPT commitment | ❌ IAVL→SeiDB | ❌ 自研 | N/A (库) | ❌ JMT | ✅ **JMT Blake3** (增量 Keccak→JMT 迁移完成) |
 | **Path-Based Storage (PBSS)** | ✅ v1.13+ 默认 | ✅ flat state | ✅ E3 扁平KV核心 | ❌ | ❌ | N/A | N/A | ❌ |
 | **Verkle Tree** | 🔧 Fusaka 已含 | 🔧 跟进中 | ❌ 未明确 | ❌ | ❌ | N/A | ❌ | ❌ 战略废弃 |
 | **State Pruning** | ✅ PBSS 在线裁剪 | ✅ 多模式 | ✅ archive/full/minimal | ✅ SeiDB | ✅ | N/A | ✅ | ✅ `pruner.go` |
@@ -51,7 +51,7 @@
 
 **Path-Based Storage (PBSS)**：geth v1.13+ 和 reth 均采用路径索引替代哈希索引存储状态节点，实现在线裁剪（不再需要离线 prune）。N42 使用 MDBX 的 key=address 方案本质上类似 flat state，但缺乏等价的在线 trie 裁剪机制。
 
-**Verkle Tree — 争议与路线图转向**：Verkle Tree 依赖 Pedersen 承诺（Bandersnatch 椭圆曲线），**不具备量子抗性**（Shor 算法可在多项式时间内破解 ECDLP）。2025年1月 EIP-7864 提出用 **STARKed 二叉哈希树**（Blake3/Poseidon）替代 Verkle，Vitalik 明确表态支持。以太坊基金会 2026年1月成立 Post-Quantum Team 并设立 $1M 研究奖金。**实质上以太坊自身正在从 Verkle 转向量子安全的二叉树方案**。N42 战略性废弃 Verkle Tree 是正确决策 — 避免了"先部署 Verkle 再迁移二叉树"的双重迁移成本。N42 的增量 Keccak 方案基于哈希函数，天然具备 128-bit 量子安全性（Grover 算法仅将 256-bit 哈希安全性减半）。
+**Verkle Tree — 争议与路线图转向**：Verkle Tree 依赖 Pedersen 承诺（Bandersnatch 椭圆曲线），**不具备量子抗性**（Shor 算法可在多项式时间内破解 ECDLP）。2025年1月 EIP-7864 提出用 **STARKed 二叉哈希树**（Blake3/Poseidon）替代 Verkle，Vitalik 明确表态支持。以太坊基金会 2026年1月成立 Post-Quantum Team 并设立 $1M 研究奖金。**实质上以太坊自身正在从 Verkle 转向量子安全的二叉树方案**。N42 战略性废弃 Verkle Tree 是正确决策 — 避免了"先部署 Verkle 再迁移二叉树"的双重迁移成本。N42 已完成从增量 Keccak 到 **JMT (Jellyfish Merkle Tree) + Blake3** 的迁移，天然具备 128-bit 量子安全性。
 
 **Snapshot Layer**：geth 的 snapshot 层提供 O(1) 状态读取（非遍历 trie），reth 的 flat state 设计从一开始就内建此能力。N42 的 `modules/state/snapshot/` 已实现完整的 geth 式性能加速层：DiffLayer 树 + DiskLayer + ShardedCache + **MDBX 持久化**（SnapshotAccount/SnapshotStorage/SnapshotMeta/SnapshotJournal 4 张表）。支持 flatten-to-disk 原子写入、diff layer journal 崩溃恢复、后台 snapshot 生成器（批量处理 + crash-resume marker），38 个测试全面覆盖。此外 `internal/snapshot/` 提供逻辑快照（裁剪恢复点 + P2P 传输压缩）。
 
@@ -63,7 +63,7 @@
 
 - MDBX 作为底层 KV 存储具有优秀的读写性能（memory-mapped B+tree）
 - `lib/kv/layered/` LayeredDB 分层存储（State DB + History DB）是合理的架构选择
-- 增量 Keccak 方案比 MPT 简单得多，适合非以太坊兼容场景
+- **JMT (Jellyfish Merkle Tree) Blake3 状态承诺**：16-ary 稀疏 trie + Extension 路径压缩 + Blake3-256 内容寻址节点。与 Aptos 的 JMT 同源设计。支持 Merkle inclusion/exclusion proof（eth_getProof），BatchUpdate 1000 key ~3.5ms。双写架构：flat Account/Storage 表保持 O(1) 读性能，JMT 并行更新提供可验证状态根。含离线迁移工具（`n42 migrate-jmt`），分批事务 + cursor checkpoint 断点恢复。33 个测试 + 基准测试全面覆盖。Blake3 天然具备 128-bit 量子安全性（Grover 降半），优于 Verkle 的 Pedersen（Shor 完全破解）
 
 ---
 
@@ -195,7 +195,7 @@
 | API | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |-----|------|------|------------|-----|-------|-------|---------|
 | **eth_* 标准** | ✅ 完整 | ✅ 完整 | ✅ 完整 | ✅ 部分 | ✅ | N/A | ✅ 大部分 |
-| **eth_getProof** | ✅ MPT proof | ✅ | ✅ +历史proof | ✅ | ✅ | N/A | ✅ 增量 Keccak |
+| **eth_getProof** | ✅ MPT proof | ✅ | ✅ +历史proof | ✅ | ✅ | N/A | ✅ JMT Merkle proof |
 | **eth_createAccessList** | ✅ | ✅ | ✅ +StateOverrides | ❌ | ✅ | N/A | ✅ P3-1 |
 | **eth_simulateV1** | ✅ | ✅ | ✅ | ❌ | ❌ | N/A | ✅ |
 | **eth_getBlockReceipts** | ✅ | ✅ | ✅ | ❌ | ✅ | N/A | ✅ |
@@ -368,7 +368,7 @@
 | **TPS 目标** | 1Ggas/s出块 | 10,000 (宣称) | 200,000 (Giga宣称) | 250,000 (Raptr宣称) | 100,000+ (宣称) | ❌ 未测 |
 | **亚秒级 Finality** | ❌ ~15min | ✅ ~800ms | ✅ ~400ms 即时 | ✅ <800ms (Raptr) | N/A | ❌ 8s period |
 | **延迟/异步执行** | ❌ | ✅ 核心 | ✅ Giga 采用 | ✅ | ❌ | ❌ |
-| **自定义数据库** | ✅ MDBX+QSM db | ✅ MonadDB (io_uring) | ✅ SeiDB (SS+SC) | ✅ AptosDB (JMT) | ❌ | ❌ MDBX |
+| **自定义数据库** | ✅ MDBX+QSM db | ✅ MonadDB (io_uring) | ✅ SeiDB (SS+SC) | ✅ AptosDB (JMT) | ❌ | ✅ MDBX+JMT Blake3 |
 | **多提议者** | ❌ | ❌ | ✅ Giga Autobahn | ❌ | N/A | ❌ |
 | **Move VM** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | **C++执行模块** | 🔧 E3++ | ❌ C++/Rust | ❌ | ❌ | ❌ | ❌ |
@@ -418,7 +418,7 @@
 
 | 维度 | 权重 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |------|------|------|------|------------|-----|-------|-------|---------|
-| 状态管理 | 15% | 95 | 98 | 97 | 80 | 90 | 85 | 75 |
+| 状态管理 | 15% | 95 | 98 | 97 | 80 | 90 | 85 | 83 |
 | 同步机制 | 10% | 90 | 95 | 98 | 75 | 70 | 80 | 75 |
 | 执行层/EVM | 20% | 85 | 88 | 85 | 90 | 95 | 90* | 86 |
 | P2P 网络 | 10% | 95 | 90 | 92 | 80 | 80 | 75 | 83 |
@@ -429,7 +429,7 @@
 | 安全性 | 5% | 90 | 95 | 85 | 85 | 80 | 90 | 86 |
 | 可观测性 | 5% | 90 | 95 | 85 | 85 | 60 | 85 | 75 |
 | 扩展性 | 5% | 80 | 95 | 88 | 85 | 40 | 70 | 68 |
-| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **88** |
+| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **89** |
 
 > *Aptos 使用 Move VM，非直接可比
 
@@ -480,7 +480,8 @@
 | 优势 | 说明 | 数据支撑 | 竞争对手状态 |
 |------|------|----------|-------------|
 | **PQ-STARK 后量子验证** | 已集成到 APoS 共识层 | STARK 仅依赖哈希函数抗碰撞性，128-bit 量子安全；无椭圆曲线依赖 | 以太坊 2026.1 成立 PQ Team + $1M 奖金，Algorand 2025.11 首个主网 PQ 交易(Falcon)，其余客户端均无 |
-| **增量 Keccak 天然量子安全** | 状态承诺基于 Keccak-256 哈希 | Grover 算法仅使安全性减半(256→128bit)，远优于 Verkle 的 Pedersen(Shor 完全破解) | 以太坊正从 Verkle(Pedersen) 转向 Blake3/Poseidon 二叉树(EIP-7864) |
+| **JMT Blake3 状态承诺** | 16-ary 稀疏 trie + Extension 路径压缩 + Blake3 内容寻址 | ~2,500 行代码(lib/jmt/+commitment/), 33 测试, BatchUpdate 1000key ~3.5ms, Merkle proof 支持, 离线迁移工具 | Aptos 使用同源 JMT 设计; geth/reth 使用 Hex-MPT; 以太坊正转向 Blake3/Poseidon 二叉树(EIP-7864) |
+| **Blake3 量子安全状态根** | JMT 状态承诺基于 Blake3-256 哈希 | Grover 算法仅使安全性减半(256→128bit)，远优于 Verkle 的 Pedersen(Shor 完全破解) | 以太坊正从 Verkle(Pedersen) 转向 Blake3/Poseidon 二叉树(EIP-7864) |
 | **Block-STM 并行 EVM** | Wave executor 524行+23测试+7基准测试套件 | M1 Max 实测：独立TX 3.9x加速, 100TX 1.4ms; 热点场景量化了 DAG 优化空间 | geth 无并行, reth 仅 prewarming, Erigon 实验性 |
 | **EOF 提前实现** | EIP-3540/3670/4200/4750/5450 完整 | 509行代码，含验证器+容器格式+跳转表 | geth/reth 计划 Glamsterdam (2026 H1) |
 | **Pectra EIP 大部分支持** | 7702✅, 7212✅P-256, 2537✅9预编译, 6110⚠️解析, 7251⚠️常量 | BLS 预编译含 x86 汇编优化(800行) | geth/reth 完整实现 |
@@ -590,6 +591,7 @@
 
 | 功能模块 | 核心文件 | 代码行数 | 测试数 | 实际状态 | 备注 |
 |----------|----------|----------|--------|----------|------|
+| **JMT Blake3 状态承诺** | `lib/jmt/` + `lib/jmt/store/` + `modules/state/commitment/` | ~2,500 | 33 | ✅ 生产可用 | 16-ary JMT + Blake3 内容寻址 + Merkle proof + LazyDBStore(MDBX 按需读取) + 离线迁移工具(分批事务+断点恢复) + BatchUpdate 1000key ~3.5ms |
 | **State Pruning** | `internal/node/pruner.go` | 235 | 7 | ✅ 生产可用 | 真实数据删除，快照感知边界 |
 | **Logical Snapshots** | `internal/snapshot/manager.go` + `compress.go` | ~450 | 4 | ✅ 生产可用 | 非 geth 式性能加速层，用于裁剪恢复点 |
 | **Snap Sync** | `internal/sync/snapsync/` | ~4,274 | 51 | ✅ 生产可用 | 完整实现：service+manager+tasks+verify+progress+metrics |
@@ -646,7 +648,7 @@
 | EVM 兼容性 | Cancun ✅, 大部分 Pectra (7702/BLS/P-256/EOF) | Cancun+Pectra 完整 | Cancun+Pectra+Fusaka | 小幅差距（deposits/MaxEB 部分） |
 | 并行执行 | Block-STM 实测 3.9x 加速(M1 Max) | geth 无并行，reth prewarming | 实验性并行 | N42 领先(数据验证), 高冲突场景需 DAG 优化 |
 | 同步机制 | Snap Sync 完整 | 成熟 | Staged Sync+OtterSync 最快 | 中等差距（无 Staged Sync） |
-| 状态存储 | MDBX flat + LayeredDB + Snapshot DiffLayer 树 + MDBX 持久化(4表) + journal 崩溃恢复 + History Expiry | PBSS/flat state 成熟 | E3 三层+segment(archive 1.6TB) | 差距缩小（有加速层、持久化和过期，无 per-TX 粒度） |
+| 状态存储 | MDBX flat + **JMT Blake3 状态承诺** + LayeredDB + Snapshot DiffLayer 树 + MDBX 持久化(4表) + journal 崩溃恢复 + History Expiry | PBSS/flat state 成熟 | E3 三层+segment(archive 1.6TB) | 差距缩小（有 JMT 承诺层、加速层、持久化和过期，无 per-TX 粒度） |
 | 可观测性 | 30+ 指标 + 3 Grafana 面板 | 200-300+ 全面指标 | Prometheus+Grafana+diagnostics | 中等差距 |
 | 测试覆盖 | snap sync 51, parallel 30, fuzz 29, checkpoint 8, snapshot 38, hotstuff 60, peerdas 39 | 数千测试 + fuzzing | hive+执行规范测试 | 差距缩小(255+测试) |
 | 模块化部署 | 单体二进制 | 单体(geth)/crate(reth) | RPC/TxPool/Sentry/CL 独立进程 | **重大差距** |

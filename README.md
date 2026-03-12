@@ -1,6 +1,6 @@
 # N42 Blockchain
 
-[![Go](https://img.shields.io/badge/go-1.19%2B-blue.svg)](https://golang.org)
+[![Go](https://img.shields.io/badge/go-1.25%2B-blue.svg)](https://golang.org)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/n42blockchain/n42/ci.yml?branch=main)](https://github.com/n42blockchain/n42/actions)
 [![GitHub License](https://img.shields.io/github/license/n42blockchain/n42)](https://github.com/n42blockchain/n42/blob/main/LICENSE)
 [![GitHub Issues](https://img.shields.io/github/issues/n42blockchain/n42)](https://github.com/n42blockchain/n42/issues)
@@ -16,12 +16,48 @@ Featuring a modular, sharded architecture, N42 delivers high transaction through
 
 **Disclaimer:** This software is currently a tech preview. We will do our best to keep it stable and avoid breaking changes, but we make no guarantees.
 
+## Key Features
+
+- **High-Performance EVM**: Block-STM parallel transaction execution with multi-version state
+- **Jellyfish Merkle Tree (JMT)**: Blake3-hashed state commitment with Merkle proofs, replacing legacy incremental Keccak
+- **Pluggable Consensus**: Authority PoA (`apoa`) and Authority PoS (`apos`) engines
+- **MDBX Storage**: Memory-mapped B+ tree database with layered caching
+- **Snap Sync**: Fast state synchronization with parallel downloading and verification
+- **Ancient/Freezer DB**: Automatic archival of historical data beyond a configurable threshold
+- **Blob Transactions (EIP-4844)**: Native support for blob-carrying transactions
+- **EOF (EVM Object Format)**: Full EVM Object Format support including EOFCREATE and sub-containers
+- **MEV Infrastructure**: Bundle pool and priority-based transaction ordering for block builders
+- **State Prefetching**: Predictive state loading for sender/recipient/access-list entries
+- **ExEx Extensions**: Execution Extension framework for pluggable post-block processing
+- **Flat Snapshot Acceleration**: In-memory snapshot tree with diff layers for fast state reads
+- **Comprehensive RPC**: Full Ethereum JSON-RPC including `eth_getProof`, `eth_createAccessList`, `debug_*` endpoints
+
+## Architecture
+
+```
+cmd/n42/          Main entry point and CLI commands
+internal/         Core blockchain logic
+  consensus/      Pluggable consensus engines (apoa/, apos/)
+  miner/          Block production with MEV bundle support
+  txspool/        Transaction pool with persistence
+  vm/             EVM execution engine with EOF support
+  avm/            N42 AVM (alternative VM)
+  sync/           Chain synchronization (snap sync, initial sync)
+  api/            JSON-RPC backend implementation
+modules/          Data layer
+  state/          State management with JMT commitment
+  rawdb/          Raw database operations (MDBX + freezer)
+lib/              Shared libraries
+  jmt/            Jellyfish Merkle Tree implementation
+  kv/             Key-value store interfaces (mdbx/, memdb/)
+```
+
 ## System Requirements
 
 - **Storage**: ≥ 200 GB (SSD or NVMe recommended; HDD not recommended)
 - **Memory**: ≥ 16 GB RAM
 - **CPU**: 64-bit architecture
-- **Go Version**: [≥ 1.19](https://golang.org/doc/install)
+- **Go Version**: [≥ 1.25](https://golang.org/doc/install)
 
 ## Building from Source
 
@@ -74,6 +110,11 @@ N42 includes one main executable located in the `cmd` directory:
 | Command | Description |
 |---------|-------------|
 | **`n42`** | Main CLI client, provides JSON RPC endpoints over HTTP transports. Use `n42 --help` for options. |
+| **`n42 migrate-jmt`** | Offline migration tool to build JMT state commitment from existing database. |
+| **`n42 import`** | Import blocks from a file. |
+| **`n42 export`** | Export blocks to a file. |
+| **`n42 db`** | Database inspection and maintenance commands. |
+| **`n42 state-dump`** | Dump account state to JSON. |
 
 ## Network Ports
 
@@ -86,6 +127,31 @@ N42 includes one main executable located in the `cmd` directory:
 | 20014 | TCP      | Secure JSON RPC (JWT Auth)   | Authenticated       |
 | 4000  | TCP      | Blockchain Explorer          | Public              |
 | 6060  | TCP      | Metrics & Profiling (pprof)  | Private             |
+
+## Configuration
+
+Key configuration options in `NodeConfig`:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `jmt_commitment` | `bool` | Enable JMT state commitment (requires `migrate-jmt` first) |
+| `parallel_evm` | `bool` | Enable Block-STM parallel EVM execution |
+| `prefetch` | `bool` | Enable state prefetching for transaction processing |
+| `ancient_db` | `bool` | Enable ancient/freezer database for historical data |
+| `ancient_freeze_threshold` | `uint64` | Block threshold for freezing data to ancient DB |
+
+## Development
+
+```sh
+make build          # Compile all packages
+make test           # Run all tests
+make test-short     # Fast tests with -short flag
+make lint           # Run golangci-lint
+make check          # fmt + vet + lint
+make race-core      # Race detection on core packages
+make ci-full        # Full CI pipeline
+make bench-smoke    # Quick benchmarks on core packages
+```
 
 ## License
 
