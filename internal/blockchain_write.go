@@ -146,18 +146,26 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			stateWriter = diffCollector
 		}
 
-		if err := ibs.CommitBlock(bc.chainConfig.Rules(blk.Number64().Uint64()), stateWriter); err != nil {
-			return err
-		}
-		if err := stateWriter.WriteChangeSets(); err != nil {
-			return fmt.Errorf("writing changesets for block %d failed: %w", blk.Number64().Uint64(), err)
-		}
-		if err := stateWriter.WriteHistory(); err != nil {
-			return fmt.Errorf("writing history for block %d failed: %w", blk.Number64().Uint64(), err)
+		// ibs may be nil when the block was accepted via ZK proof fast path
+		// (EVM re-execution skipped). In that case, skip state commit since
+		// the proven state root is trusted.
+		if ibs != nil {
+			if err := ibs.CommitBlock(bc.chainConfig.Rules(blk.Number64().Uint64()), stateWriter); err != nil {
+				return err
+			}
+			if err := stateWriter.WriteChangeSets(); err != nil {
+				return fmt.Errorf("writing changesets for block %d failed: %w", blk.Number64().Uint64(), err)
+			}
+			if err := stateWriter.WriteHistory(); err != nil {
+				return fmt.Errorf("writing history for block %d failed: %w", blk.Number64().Uint64(), err)
+			}
 		}
 
 		// Flush JMT dirty nodes into the current MDBX transaction and persist root.
-		if bc.jmtEnabled && bc.jmtCommitment != nil {
+		// Skip when ibs is nil (ZK fast path): no EVM was executed, so no JMT
+		// updates occurred. Writing the JMT root here would incorrectly persist
+		// the parent's root as the current block's root.
+		if ibs != nil && bc.jmtEnabled && bc.jmtCommitment != nil {
 			mdbxNodeStore := jmtstore.NewMDBXStore(tx, jmtstore.JMTNodeTable)
 			if err := bc.jmtCommitment.Tree().FlushTo(mdbxNodeStore); err != nil {
 				return fmt.Errorf("flushing JMT nodes for block %d failed: %w", blk.Number64().Uint64(), err)

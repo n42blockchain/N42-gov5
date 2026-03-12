@@ -52,6 +52,7 @@ type Config struct {
 	GraphQL          GraphQLCfg          `json:"graphql" yaml:"graphql"`
 	MEVBoost         MEVBoostCfg         `json:"mev_boost" yaml:"mev_boost"`
 	EncryptedPool    EncryptedPoolCfg    `json:"encrypted_pool" yaml:"encrypted_pool"`
+	ZKProverCfg      ZKProverCfg         `json:"zkprover" yaml:"zkprover"`
 }
 
 func SaveConfigToFile(file string, config Config) error {

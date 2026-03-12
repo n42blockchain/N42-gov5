@@ -20,13 +20,12 @@ import (
 	"context"
 	"fmt"
 
+	internalPkg "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state/witness"
 )
 
 // WitnessAPI provides an API to retrieve block witnesses for stateless verification.
-// Block witnesses contain the minimal set of Merkle proofs needed to verify
-// a block's state transitions without access to the full state database.
 type WitnessAPI struct {
 	api *API
 }
@@ -37,19 +36,7 @@ func NewWitnessAPI(api *API) *WitnessAPI {
 }
 
 // GetBlockWitness returns the block witness for stateless verification.
-// The witness contains all JMT Merkle proofs needed to verify the state
-// transition of the given block without full state.
-//
-// Prerequisites:
-//   - JMT commitment must be enabled on the node.
-//   - The block must have been locally produced or the witness must have
-//     been cached during block import.
-//
-// This endpoint is intended for light clients that need to verify block
-// execution without downloading the entire state trie.
 func (s *WitnessAPI) GetBlockWitness(ctx context.Context, blockNrOrHash jsonrpc.BlockNumberOrHash) (*witness.BlockWitness, error) {
-	// Resolve the block number or hash to validate the request refers
-	// to a known block.
 	blk, err := BlockByNumberOrHash(ctx, blockNrOrHash, s.api)
 	if err != nil {
 		return nil, fmt.Errorf("block not found: %w", err)
@@ -58,24 +45,21 @@ func (s *WitnessAPI) GetBlockWitness(ctx context.Context, blockNrOrHash jsonrpc.
 		return nil, fmt.Errorf("block not found")
 	}
 
-	// Block witness generation requires the JMT commitment layer to be
-	// active. Without it, there are no Merkle proofs to serve.
-	//
-	// In production, witnesses are generated during block production by
-	// the miner using a TracingReader to record all state accesses, then
-	// cached for serving via this RPC endpoint. The witness cache would
-	// be keyed by block hash and pruned after a configurable retention
-	// period.
-	//
-	// TODO(light-client): Wire witness cache from miner/block processor.
-	// The flow would be:
-	//   1. Miner wraps state reader in witness.TracingReader
-	//   2. After block execution, Generator.Generate() produces BlockWitness
-	//   3. BlockWitness is stored in an LRU cache keyed by block hash
-	//   4. This RPC endpoint retrieves from that cache
+	bc, ok := s.api.bc.(*internalPkg.BlockChain)
+	if !ok {
+		return nil, fmt.Errorf("witness not supported: blockchain type assertion failed")
+	}
 
-	return nil, fmt.Errorf("block witness not available for block %d: JMT commitment must be enabled and block must be locally produced",
-		blk.Number64().Uint64())
+	if !bc.IsJMTEnabled() {
+		return nil, fmt.Errorf("block witness not available: JMT commitment must be enabled")
+	}
+
+	w, found := bc.GetWitness(blk.Hash())
+	if !found {
+		return nil, fmt.Errorf("block witness not available for block %d (only recent blocks have cached witnesses; the witness may have been evicted from the LRU cache)", blk.Number64().Uint64())
+	}
+
+	return w, nil
 }
 
 // APIs returns the RPC API descriptors for the witness namespace.

@@ -82,6 +82,8 @@ import (
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txspool"
+	"github.com/n42blockchain/N42/internal/zkprover"
+	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/common/cmp"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
@@ -150,6 +152,9 @@ type Node struct {
 	bundlerService  *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
 	peerdasService  *peerdas.Service      // PeerDAS (EIP-7594) data availability service (nil if disabled)
 	mcpServer       *mcp.Server           // MCP (Model Context Protocol) server for AI agents (nil if disabled)
+
+	zkProverService  *zkprover.Service     // ZK prover gRPC client (nil if disabled)
+	zkVerifier       *zkverifier.Verifier  // ZK proof verifier (nil if disabled)
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -370,6 +375,25 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		}
 	}
 
+	// Initialize ZK proving if configured.
+	var zkProverSvc *zkprover.Service
+	var zkVerify *zkverifier.Verifier
+	if cfg.NodeCfg.ZKProving || cfg.ZKProverCfg.Enabled {
+		if realBC, ok := bc.(*internal.BlockChain); ok {
+			realBC.SetZKProving(true, cfg.ZKProverCfg.RequireProof)
+		}
+		zkVerify = zkverifier.NewVerifier()
+		if cfg.ZKProverCfg.Enabled && !cfg.ZKProverCfg.VerifyOnly {
+			var err error
+			zkProverSvc, err = zkprover.NewService(&cfg.ZKProverCfg)
+			if err != nil {
+				log.Warn("Failed to create ZK prover service", "err", err)
+			} else {
+				log.Info("ZK prover service configured", "addr", cfg.ZKProverCfg.ProverAddr)
+			}
+		}
+	}
+
 	// Initialize snapshot acceleration tree if configured.
 	if cfg.SnapshotAccelCfg.Enable {
 		if realBC, ok := bc.(*internal.BlockChain); ok {
@@ -483,6 +507,12 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	miner := miner.NewMiner(ctx, cfg, bc, engine, pool, nil)
 
+	// Wire ZK prover service to the miner so it can submit proof requests
+	// after producing blocks.
+	if zkProverSvc != nil {
+		miner.SetZKProverService(zkProverSvc)
+	}
+
 	keyDir, isEphem, err := getKeyStoreDir(&cfg.NodeCfg)
 	if err != nil {
 		return nil, err
@@ -505,8 +535,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		engine:          engine,
 		depositContract: depositContract,
 
-		exexManager:   exexMgr,
-		inprocHandler: jsonrpc.NewServer(),
+		exexManager:     exexMgr,
+		zkProverService: zkProverSvc,
+		zkVerifier:      zkVerify,
+		inprocHandler:   jsonrpc.NewServer(),
 		http:          newHTTPServer(),
 		ws:            newHTTPServer(),
 		wsAuth:        newHTTPServer(),
@@ -763,6 +795,9 @@ func (n *Node) Start() error {
 		Service:   api.NewWitnessAPI(n.api),
 	})
 
+	// Register ZK proof query and verification API.
+	n.rpcAPIs = append(n.rpcAPIs, api.NewZKProofAPI(n.api).APIs()...)
+
 	if err := n.startRPC(); err != nil {
 		log.Error("failed start jsonrpc service", zap.Error(err))
 		return err
@@ -855,6 +890,11 @@ func (n *Node) Start() error {
 				log.Error("MCP server failed to start", "err", err)
 			}
 		}()
+	}
+
+	// Start ZK prover service if configured.
+	if n.zkProverService != nil {
+		n.zkProverService.Start()
 	}
 
 	// Start transaction generator if enabled
@@ -1189,6 +1229,12 @@ func (n *Node) stopServices() []error {
 		{"MCP server", func() error {
 			if n.mcpServer != nil {
 				return n.mcpServer.Stop()
+			}
+			return nil
+		}},
+		{"ZK prover", func() error {
+			if n.zkProverService != nil {
+				n.zkProverService.Stop()
 			}
 			return nil
 		}},

@@ -38,6 +38,7 @@ type IBody interface {
 	Verifier() []*Verify
 	Reward() []*Reward
 	Transactions() []*transaction.Transaction
+	ZKProof() []byte
 	ToProtoMessage() proto.Message
 	FromProtoMessage(message proto.Message) error
 }

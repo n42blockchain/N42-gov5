@@ -184,6 +184,14 @@ func (m *Miner) TriggerBlockProduction() {
 	}
 }
 
+// SetZKProverService sets the ZK prover service on the miner's worker.
+// Must be called before Start() for the miner to submit proof requests.
+func (m *Miner) SetZKProverService(svc interface {
+	SubmitBlock(blockHash types.Hash, blockNum uint64, guestInput []byte) error
+}) {
+	m.worker.zkProverService = svc
+}
+
 // BundlePool returns the MEV bundle pool for submitting transaction bundles.
 func (m *Miner) BundlePool() *builder.BundlePool {
 	return m.worker.bundlePool

@@ -75,6 +75,13 @@ n42: deps version-bump
 	$(GOBUILD) -o $(BUILD_PATH)$(APP_NAME)  ${APP_PATH}
 	@echo "Compile done!"
 
+zkguest:
+	@echo "Building RISC-V64 zkVM guest program..."
+	CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build \
+		-tags nosqlite,noboltdb,zkguest \
+		-ldflags "-s -w" -o build/bin/zkguest ./cmd/zkguest
+	@echo "zkguest build done!"
+
 clef:
 	$(GOBUILD) -o $(BUILD_PATH)clef ./cmd/clef
 	@echo "Done building clef."

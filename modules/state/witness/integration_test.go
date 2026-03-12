@@ -150,7 +150,10 @@ func TestIntegration_WitnessGenerateVerifyRead(t *testing.T) {
 
 	// --- Step 3: Generate witness ---
 
-	gen := NewGenerator(jmtCommit)
+	gen, err := NewGenerator(jmtCommit)
+	if err != nil {
+		t.Fatalf("NewGenerator failed: %v", err)
+	}
 	w, err := gen.Generate(parentRoot, tracer, nil /* no codes */)
 	if err != nil {
 		t.Fatalf("witness generation failed: %v", err)
@@ -370,4 +373,29 @@ func (r *jmtStateReader) ReadAccountCodeSize(address types.Address, incarnation 
 
 func (r *jmtStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
 	return 0, nil
+}
+
+// TestNewGenerator_NilCommitment verifies NewGenerator returns error for nil JMTCommitment.
+func TestNewGenerator_NilCommitment(t *testing.T) {
+	gen, err := NewGenerator(nil)
+	if err == nil {
+		t.Fatal("expected error for nil JMTCommitment")
+	}
+	if gen != nil {
+		t.Fatal("expected nil generator on error")
+	}
+}
+
+// TestNewGenerator_ValidCommitment verifies NewGenerator succeeds with valid JMTCommitment.
+func TestNewGenerator_ValidCommitment(t *testing.T) {
+	store := jmt.NewMemStore()
+	tree := jmt.New(store)
+	jmtCommit := commitment.NewJMTCommitment(tree)
+	gen, err := NewGenerator(jmtCommit)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gen == nil {
+		t.Fatal("expected non-nil generator")
+	}
 }

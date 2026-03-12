@@ -48,8 +48,11 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/internal/zkprover"
+	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/modules/state/snapshot"
+	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -78,6 +81,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	tdCache, _ := lru.New[types.Hash, *uint256.Int](tdCacheLimit)
 	numberCache, _ := lru.New[types.Hash, uint64](numberCacheLimit)
 	headerCache, _ := lru.New[types.Hash, *block.Header](headerCacheLimit)
+	witnessCache, _ := lru.New[types.Hash, *witness.BlockWitness](witnessCacheLimit)
 
 	bc := &BlockChain{
 		chainConfig:   config,
@@ -99,6 +103,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 		receiptCache:  receiptsCache,
 		numberCache:   numberCache,
 		headerCache:   headerCache,
+		witnessCache:  witnessCache,
 	}
 
 	bc.currentBlock.Store(current)
@@ -179,6 +184,42 @@ func (bc *BlockChain) JMTCommitment() *commitment.JMTCommitment {
 // IsJMTEnabled returns true if JMT state commitment is active.
 func (bc *BlockChain) IsJMTEnabled() bool {
 	return bc.jmtEnabled
+}
+
+// StoreWitness caches a block witness keyed by block hash.
+func (bc *BlockChain) StoreWitness(hash types.Hash, w *witness.BlockWitness) {
+	if w != nil {
+		bc.witnessCache.Add(hash, w)
+	}
+}
+
+// GetWitness retrieves a cached block witness by block hash.
+func (bc *BlockChain) GetWitness(hash types.Hash) (*witness.BlockWitness, bool) {
+	return bc.witnessCache.Get(hash)
+}
+
+// SetZKProving enables or disables ZK proving mode.
+// When requireProof is true, blocks without valid ZK proofs are rejected.
+// Note: requireProof implies zkProving — if requireProof is true, zkProving is
+// forced to true regardless of the enabled parameter.
+func (bc *BlockChain) SetZKProving(enabled bool, requireProof ...bool) {
+	bc.zkProving = enabled
+	if len(requireProof) > 0 {
+		bc.zkRequireProof = requireProof[0]
+	}
+	// requireProof implies zkProving — we need the verifier to validate proofs.
+	if bc.zkRequireProof {
+		bc.zkProving = true
+	}
+	if bc.zkProving {
+		bc.zkVerifier = zkverifier.NewVerifier()
+		log.Info("ZK proving mode enabled", "requireProof", bc.zkRequireProof)
+	}
+}
+
+// IsZKProvingEnabled returns true if ZK proving is active.
+func (bc *BlockChain) IsZKProvingEnabled() bool {
+	return bc.zkProving
 }
 
 // Freezer returns the attached freezer, or nil if not configured.
@@ -593,6 +634,38 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 		log.Tracef("Current block: number=%v, hash=%v, difficult=%v | Insert block block: number=%v, hash=%v, difficult= %v",
 			bc.CurrentBlock().Number64(), bc.CurrentBlock().Hash(), bc.CurrentBlock().Difficulty(), blk.Number64(), blk.Hash(), blk.Difficulty())
 
+		// ZK fast path: if the block has a valid ZK proof and ZK verification
+		// is enabled, skip EVM re-execution and trust the proven state root.
+		hasZKProof := bc.zkProving && blk.Body() != nil && len(blk.Body().ZKProof()) > 0
+		if hasZKProof {
+			if bc.tryZKFastPath(blk) {
+				start := time.Now()
+				wstart := time.Now()
+				status, werr := bc.writeBlockWithState(blk, nil, nil, nil)
+				if werr != nil {
+					return it.index, werr
+				}
+				blockWriteTimer.Observe(float64(time.Since(wstart)))
+				blockInsertTimer.Observe(float64(time.Since(start)))
+				stats.processed++
+				if status == CanonStatTy {
+					lastCanon = blk
+				}
+				log.Info("Block accepted via ZK proof (EVM skipped)", "number", blk.Number64(), "hash", blk.Hash())
+				continue
+			}
+			// Proof exists but verification failed.
+			if bc.zkRequireProof {
+				log.Warn("Block rejected: ZK proof verification failed", "number", blk.Number64(), "hash", blk.Hash())
+				return it.index, errZKProofRequired
+			}
+			// Not required — fall through to EVM execution.
+		} else if bc.zkRequireProof {
+			// No proof present but required.
+			log.Warn("Block rejected: ZK proof required but not provided", "number", blk.Number64(), "hash", blk.Hash())
+			return it.index, errZKProofRequired
+		}
+
 		start := time.Now()
 		var receipts block.Receipts
 		var logs []*block.Log
@@ -984,6 +1057,31 @@ Hash: %#x
 Error: %v
 ##############################
 `, blk.Number64().String(), blk.Hash(), receiptString, err))
+}
+
+// tryZKFastPath attempts to verify the block's ZK proof. Returns true if
+// the proof is valid and EVM re-execution can be skipped.
+func (bc *BlockChain) tryZKFastPath(blk block.IBlock) bool {
+	body := blk.Body()
+	if body == nil || len(body.ZKProof()) == 0 {
+		return false
+	}
+
+	proof, err := zkprover.DecodeProof(body.ZKProof())
+	if err != nil {
+		log.Debug("Failed to decode ZK proof, falling back to EVM", "block", blk.Number64(), "err", err)
+		return false
+	}
+
+	if bc.zkVerifier == nil {
+		return false
+	}
+	if err := bc.zkVerifier.Verify(proof, blk.StateRoot(), blk.GasUsed()); err != nil {
+		log.Warn("ZK proof verification failed, falling back to EVM", "block", blk.Number64(), "err", err)
+		return false
+	}
+
+	return true
 }
 
 func (bc *BlockChain) syncChain(remoteBlock uint64, peerID peer.ID) {

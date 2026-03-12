@@ -31,6 +31,9 @@ type Body struct {
 	Txs       []*transaction.Transaction
 	Verifiers []*Verify
 	Rewards   []*Reward
+	// ZkProof holds the optional ZK proof for bypass verification.
+	// Field is named ZkProof (not ZKProof) to avoid conflict with the ZKProof() getter method.
+	ZkProof []byte
 }
 
 func (b *Body) ToProtoMessage() proto.Message {
@@ -53,6 +56,7 @@ func (b *Body) ToProtoMessage() proto.Message {
 		Txs:       pbTxs,
 		Verifiers: pbVerifiers,
 		Rewards:   pbRewards,
+		ZkProof:   b.ZkProof,
 	}
 }
 
@@ -84,6 +88,11 @@ func (b *Body) FromProtoMessage(message proto.Message) error {
 	}
 	b.Rewards = rewards
 
+	if len(pBody.ZkProof) > 0 {
+		b.ZkProof = make([]byte, len(pBody.ZkProof))
+		copy(b.ZkProof, pBody.ZkProof)
+	}
+
 	return nil
 }
 
@@ -96,6 +105,10 @@ func (b *Body) Verifier() []*Verify {
 
 func (b *Body) Reward() []*Reward {
 	return b.Rewards
+}
+
+func (b *Body) ZKProof() []byte {
+	return b.ZkProof
 }
 
 func (b *Body) reward() []*types_pb.H256 {

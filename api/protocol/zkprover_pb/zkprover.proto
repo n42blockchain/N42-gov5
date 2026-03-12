@@ -1,0 +1,61 @@
+syntax = "proto3";
+package zkprover_pb;
+
+option go_package = "github.com/n42blockchain/N42/api/protocol/zkprover_pb";
+
+// ZKProver is the gRPC service for submitting proof requests to an
+// external ZISK prover cluster and retrieving completed proofs.
+service ZKProver {
+    // SubmitProveRequest submits a new block for ZK proof generation.
+    rpc SubmitProveRequest(ProveRequest) returns (ProveResponse);
+
+    // GetProofStatus checks the status of a pending proof generation job.
+    rpc GetProofStatus(ProofStatusRequest) returns (ProofStatusResponse);
+
+    // GetProof retrieves a completed proof.
+    rpc GetProof(GetProofRequest) returns (GetProofResponse);
+}
+
+message ProveRequest {
+    bytes block_hash = 1;      // 32-byte block hash
+    uint64 block_number = 2;
+    bytes guest_input = 3;     // Serialized GuestInput
+    string proof_type = 4;     // "stark" or "snark"
+    bytes guest_elf = 5;       // RISC-V64 ELF binary (optional, if not pre-loaded)
+}
+
+message ProveResponse {
+    string job_id = 1;
+    bool accepted = 2;
+    string error = 3;
+}
+
+message ProofStatusRequest {
+    string job_id = 1;
+}
+
+enum ProofStatus {
+    PENDING = 0;
+    PROVING = 1;
+    COMPLETED = 2;
+    FAILED = 3;
+}
+
+message ProofStatusResponse {
+    string job_id = 1;
+    ProofStatus status = 2;
+    string error = 3;
+}
+
+message GetProofRequest {
+    string job_id = 1;
+}
+
+message GetProofResponse {
+    string job_id = 1;
+    bytes proof_data = 2;       // Serialized proof
+    bytes public_inputs = 3;    // Public inputs for verification
+    string proof_type = 4;      // "stark" or "snark"
+    bool found = 5;
+    string error = 6;
+}

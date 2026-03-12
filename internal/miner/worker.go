@@ -39,14 +39,16 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
-	"github.com/n42blockchain/N42/internal/miner/builder"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
+	"github.com/n42blockchain/N42/internal/miner/builder"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/internal/zkprover"
+	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -174,7 +176,10 @@ type worker struct {
 
 	newTaskHook func(*task)
 
-	bundlePool *builder.BundlePool // MEV bundle pool
+	bundlePool      *builder.BundlePool   // MEV bundle pool
+	zkProverService interface {            // ZK prover service (nil if disabled)
+		SubmitBlock(blockHash types.Hash, blockNum uint64, guestInput []byte) error
+	}
 
 	snapshotMu       sync.RWMutex
 	snapshotBlock    block.IBlock
@@ -469,6 +474,15 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	if cache := layered.ExtractCache(w.chain.DB()); cache != nil {
 		stateReader = state.NewCachedStateReader(stateReader, cache)
 	}
+
+	// Wrap state reader with TracingReader when JMT is enabled to record
+	// all state accesses for witness generation.
+	var tracingReader *witness.TracingReader
+	if bc, ok := w.chain.(*internal.BlockChain); ok && bc.IsJMTEnabled() {
+		tracingReader = witness.NewTracingReader(stateReader)
+		stateReader = tracingReader
+	}
+
 	stateWriter := state.NewNoopWriter()
 	ibs := state.New(stateReader)
 	ibs.BeginWriteSnapshot()
@@ -499,7 +513,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		}
 	}
 
-	if err = w.commit(current, stateWriter, ibs, start, headers); err != nil {
+	if err = w.commit(current, stateWriter, ibs, start, headers, tracingReader); err != nil {
 		log.Errorf("w.commit failed, error %v\n", err)
 		return err
 	}
@@ -799,7 +813,7 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 	return env
 }
 
-func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs *state.IntraBlockState, start time.Time, needHeaders []*block.Header) error {
+func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs *state.IntraBlockState, start time.Time, needHeaders []*block.Header, tracingReader *witness.TracingReader) error {
 	if !w.isRunning() {
 		return nil
 	}
@@ -808,6 +822,43 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, envCopy.header, ibs, envCopy.txs, nil, envCopy.receipts)
 	if err != nil {
 		return err
+	}
+
+	// Generate witness after FinalizeAndAssemble when JMT + TracingReader are active.
+	if tracingReader != nil {
+		if bc, ok := w.chain.(*internal.BlockChain); ok && bc.JMTCommitment() != nil {
+			gen, gerr := witness.NewGenerator(bc.JMTCommitment())
+			if gerr != nil {
+				log.Warn("Failed to create witness generator", "err", gerr)
+			}
+			var bw *witness.BlockWitness
+			var werr error
+			if gen != nil {
+				parentRoot := bc.CurrentBlock().StateRoot()
+				bw, werr = gen.Generate(parentRoot, tracingReader, ibs.CodeHashes())
+			}
+			if werr != nil {
+				log.Warn("Failed to generate block witness", "err", werr)
+			} else {
+				bc.StoreWitness(iblock.Hash(), bw)
+				log.Debug("Block witness generated", "block", iblock.Number64().Uint64(), "accounts", len(bw.AccountProofs), "storage", len(bw.StorageProofs))
+
+				// Async submit to ZK prover if configured.
+				if w.zkProverService != nil {
+					parentHdr := bc.CurrentBlock().Header()
+					go func(blkHash types.Hash, blkNum uint64, bwCopy *witness.BlockWitness, ph block.IHeader) {
+						guestInput, err := zkprover.BuildGuestInput(w.chainConfig, iblock, ph, bwCopy)
+						if err != nil {
+							log.Warn("Failed to build guest input for ZK prover", "err", err)
+							return
+						}
+						if err := w.zkProverService.SubmitBlock(blkHash, blkNum, guestInput); err != nil {
+							log.Warn("Failed to submit block to ZK prover", "err", err)
+						}
+					}(iblock.Hash(), iblock.Number64().Uint64(), bw, parentHdr)
+				}
+			}
+		}
 	}
 
 	if w.chainConfig.IsBeijing(envCopy.header.Number.Uint64()) {

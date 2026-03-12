@@ -80,6 +80,9 @@ type NodeConfig struct {
 	// before blocks are eligible for freezing. Default: 90000.
 	AncientFreezeThreshold uint64 `json:"ancient_freeze_threshold,omitempty" yaml:"ancient_freeze_threshold,omitempty"`
 
+	// ZKProving enables ZK proof generation and/or verification.
+	ZKProving bool `json:"zk_proving" yaml:"zk_proving"`
+
 	GraphQL GraphQLCfg `json:"graphql" yaml:"graphql"`
 
 	ExternalSigner        string `json:"external_signer" yaml:"external_signer"`
