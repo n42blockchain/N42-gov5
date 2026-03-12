@@ -31,6 +31,8 @@ import (
 	"github.com/n42blockchain/N42/internal/exex"
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/tracing"
+	"github.com/n42blockchain/N42/lib/jmt"
+	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
@@ -152,6 +154,20 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		}
 		if err := stateWriter.WriteHistory(); err != nil {
 			return fmt.Errorf("writing history for block %d failed: %w", blk.Number64().Uint64(), err)
+		}
+
+		// Flush JMT dirty nodes into the current MDBX transaction and persist root.
+		if bc.jmtEnabled && bc.jmtCommitment != nil {
+			mdbxNodeStore := jmtstore.NewMDBXStore(tx, jmtstore.JMTNodeTable)
+			if err := bc.jmtCommitment.Tree().FlushTo(mdbxNodeStore); err != nil {
+				return fmt.Errorf("flushing JMT nodes for block %d failed: %w", blk.Number64().Uint64(), err)
+			}
+			rootTypesHash := bc.jmtCommitment.Root()
+			var jmtRoot jmt.Hash
+			copy(jmtRoot[:], rootTypesHash[:])
+			if err := jmtstore.WriteJMTRoot(tx, jmtRoot); err != nil {
+				return fmt.Errorf("writing JMT root for block %d failed: %w", blk.Number64().Uint64(), err)
+			}
 		}
 
 		// Update snapshot tree with collected diffs.

@@ -66,6 +66,12 @@ type NodeConfig struct {
 	// Pre-loads sender, recipient, and access list state into cache.
 	Prefetch bool `json:"prefetch" yaml:"prefetch"`
 
+	// JMTCommitment enables the Jellyfish Merkle Tree state commitment.
+	// When enabled, Header.Root is computed from a Blake3-based JMT
+	// instead of the legacy incremental Keccak hash.
+	// Requires offline migration for existing databases (cmd/n42 migrate-jmt).
+	JMTCommitment bool `json:"jmt_commitment" yaml:"jmt_commitment"`
+
 	// AncientDB enables the freezer/ancient DB for moving old block data
 	// to append-only flat files, reducing hot MDBX database size.
 	AncientDB bool `json:"ancient_db" yaml:"ancient_db"`

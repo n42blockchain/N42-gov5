@@ -86,10 +86,13 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/lib/jmt"
+	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/modules"
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	statesnapshot "github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
@@ -336,6 +339,31 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	exexMgr.Register(&extensions.LogExtension{})
 	if realBC, ok := bc.(*internal.BlockChain); ok {
 		realBC.SetExExManager(exexMgr)
+	}
+
+	// Initialize JMT state commitment if configured.
+	if cfg.NodeCfg.JMTCommitment {
+		if realBC, ok := bc.(*internal.BlockChain); ok {
+			// Read the last persisted JMT root from DB.
+			var jmtRoot jmt.Hash
+			if rtx, err := chainKv.BeginRo(ctx); err == nil {
+				jmtRoot, _ = jmtstore.ReadJMTRoot(rtx)
+				rtx.Rollback()
+			}
+			// Use LazyDBStore so the tree can read previously persisted nodes
+			// from MDBX on demand. Writes are buffered in tree.dirty and flushed
+			// to MDBX via FlushTo(MDBXStore) inside writeBlockWithState.
+			lazyStore := jmtstore.NewLazyDBStore(ctx, chainKv, modules.JMTNode)
+			var tree *jmt.Tree
+			if jmtRoot == jmt.EmptyHash {
+				tree = jmt.New(lazyStore)
+			} else {
+				tree = jmt.NewFromRoot(lazyStore, jmtRoot)
+			}
+			jmtCommit := commitment.NewJMTCommitment(tree)
+			realBC.SetJMTCommitment(jmtCommit)
+			log.Info("JMT state commitment initialized", "root", fmt.Sprintf("%x", jmtRoot[:8]))
+		}
 	}
 
 	// Initialize snapshot acceleration tree if configured.

@@ -70,6 +70,7 @@ require (
 	github.com/anacrolix/log v0.17.0
 	github.com/anacrolix/torrent v1.61.0
 	github.com/containerd/cgroups/v3 v3.1.3
+	github.com/crate-crypto/go-eth-kzg v1.4.0
 	github.com/edsrzf/mmap-go v1.2.0
 	github.com/erigontech/erigon-snapshot v1.3.0
 	github.com/erigontech/interfaces v0.0.0-20260222191547-4d76ef8b1901
@@ -93,6 +94,7 @@ require (
 	golang.org/x/time v0.14.0
 	google.golang.org/grpc v1.79.1
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.6.1
+	lukechampine.com/blake3 v1.4.1
 )
 
 require (
@@ -123,7 +125,6 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
-	github.com/crate-crypto/go-eth-kzg v1.4.0 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
@@ -258,7 +259,6 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	lukechampine.com/blake3 v1.4.1 // indirect
 	modernc.org/libc v1.67.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

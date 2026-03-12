@@ -48,6 +48,7 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/params"
 )
@@ -161,6 +162,23 @@ func (bc *BlockChain) SetSnapshotTree(tree *snapshot.Tree) {
 // SnapshotTree returns the attached snapshot tree, or nil if not configured.
 func (bc *BlockChain) SnapshotTree() *snapshot.Tree {
 	return bc.snapshotTree
+}
+
+// SetJMTCommitment enables the Jellyfish Merkle Tree state commitment.
+func (bc *BlockChain) SetJMTCommitment(c *commitment.JMTCommitment) {
+	bc.jmtCommitment = c
+	bc.jmtEnabled = true
+	log.Info("JMT state commitment enabled (Blake3)")
+}
+
+// JMTCommitment returns the JMT commitment layer, or nil if not enabled.
+func (bc *BlockChain) JMTCommitment() *commitment.JMTCommitment {
+	return bc.jmtCommitment
+}
+
+// IsJMTEnabled returns true if JMT state commitment is active.
+func (bc *BlockChain) IsJMTEnabled() bool {
+	return bc.jmtEnabled
 }
 
 // Freezer returns the attached freezer, or nil if not configured.
