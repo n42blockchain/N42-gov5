@@ -75,6 +75,10 @@ n42: deps version-bump
 	$(GOBUILD) -o $(BUILD_PATH)$(APP_NAME)  ${APP_PATH}
 	@echo "Compile done!"
 
+clef:
+	$(GOBUILD) -o $(BUILD_PATH)clef ./cmd/clef
+	@echo "Done building clef."
+
 images:
 	@echo "docker images build ..."
 	DOCKER_BUILDKIT=1 docker build -t n42/n42:local .
@@ -146,7 +150,7 @@ open-output:
 
 #== mobiles end
 
-.PHONY: build test test-short race-core fmt vet lint bench-smoke ci
+.PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef
 .PHONY: race bench cover check install tidy help test-cover test-verbose
 .PHONY: version version-bump version-minor version-major
 

@@ -92,6 +92,18 @@ func (t *Tree) buildProof(nodeHash Hash, path NibblePath, depth int, proof *Proo
 	}
 }
 
+// ExtractProofNodes returns all intermediate nodes from the proof path
+// as (hash -> encoded_node) pairs. These can be used to seed a partial
+// JMT tree for post-state root computation in stateless execution.
+func ExtractProofNodes(proof *Proof, h Hasher) map[Hash][]byte {
+	nodes := make(map[Hash][]byte, len(proof.Path))
+	for _, entry := range proof.Path {
+		nodeHash := h.Hash(entry.NodeData)
+		nodes[nodeHash] = entry.NodeData
+	}
+	return nodes
+}
+
 // VerifyProof verifies a Merkle proof against a known root hash.
 // Returns the value if the proof is a valid inclusion proof, or nil + nil
 // if it is a valid exclusion proof. Returns an error if the proof is invalid.

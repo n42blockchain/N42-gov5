@@ -40,6 +40,9 @@ const (
 
 	// HotStuff consensus direct messaging.
 	HotStuffDirectMessageName = "/hotstuff_direct"
+
+	// Witness protocol message name.
+	GetBlockWitnessMessageName = "/get_block_witness"
 )
 
 // V1 RPC topic constants.
@@ -67,6 +70,9 @@ const (
 
 	// HotStuff direct message topic.
 	RPCHotStuffDirectTopicV1 = protocolPrefix + HotStuffDirectMessageName + SchemaVersionV1
+
+	// Witness protocol topic.
+	RPCGetBlockWitnessTopicV1 = protocolPrefix + GetBlockWitnessMessageName + SchemaVersionV1
 )
 
 // RPCTopicMappings maps each RPC topic to its expected request message type.
@@ -93,6 +99,9 @@ var RPCTopicMappings = map[string]interface{}{
 
 	// HotStuff direct message mapping.
 	RPCHotStuffDirectTopicV1: new(sync_pb.HotStuffConsensusMsg),
+
+	// Witness protocol mapping.
+	RPCGetBlockWitnessTopicV1: new(sync_pb.GetBlockWitnessRequest),
 }
 
 // Lookup tables for topic deconstruction.
@@ -117,6 +126,7 @@ var (
 		GetSnapshotStorageRangeMessageName: true,
 		GetChangeSetRangeMessageName:       true,
 		HotStuffDirectMessageName:          true,
+		GetBlockWitnessMessageName:         true,
 	}
 	versionMapping = map[string]bool{
 		SchemaVersionV1: true,

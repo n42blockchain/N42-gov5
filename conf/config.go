@@ -48,6 +48,10 @@ type Config struct {
 	TracingCfg     TracingConfig    `json:"tracing" yaml:"tracing"`
 	PeerDASCfg       PeerDASConfig       `json:"peerdas" yaml:"peerdas"`
 	SnapshotAccelCfg SnapshotAccelConfig `json:"snapshot_accel" yaml:"snapshot_accel"`
+	MCPCfg           MCPCfg              `json:"mcp" yaml:"mcp"`
+	GraphQL          GraphQLCfg          `json:"graphql" yaml:"graphql"`
+	MEVBoost         MEVBoostCfg         `json:"mev_boost" yaml:"mev_boost"`
+	EncryptedPool    EncryptedPoolCfg    `json:"encrypted_pool" yaml:"encrypted_pool"`
 }
 
 func SaveConfigToFile(file string, config Config) error {
