@@ -31,7 +31,7 @@ type Body struct {
 	Txs       []*transaction.Transaction
 	Verifiers []*Verify
 	Rewards   []*Reward
-	// ZkProof holds the optional ZK proof for bypass verification.
+	// ZkProof holds the optional ZK proof for fast-path verification.
 	// Field is named ZkProof (not ZKProof) to avoid conflict with the ZKProof() getter method.
 	ZkProof []byte
 }

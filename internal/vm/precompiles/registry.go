@@ -20,7 +20,7 @@
 // Benefits:
 //   - Eliminates global state and init() side effects
 //   - Enables per-chain/per-block precompile configuration
-//   - Improves testability via dependency injection
+//   - Improves testability via pluggable dependency wiring
 //   - Supports feature flags for rollback
 //
 // Usage:

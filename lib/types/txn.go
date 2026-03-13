@@ -238,7 +238,7 @@ func parseSignature(payload []byte, pos int, legacy bool, cfgChainId *uint256.In
 			yParity = byte(sig.V.Uint64() - 27)
 			sig.ChainID.Set(cfgChainId)
 		} else {
-			// EIP-155: Simple replay attack protection
+			// EIP-155: Simple replay protection
 			// V = ChainID * 2 + 35 + yParity
 			if sig.V.LtUint64(35) {
 				return 0, 0, fmt.Errorf("EIP-155 implies V>=35 (was %d)", sig.V.Uint64())

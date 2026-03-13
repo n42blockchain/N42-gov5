@@ -19,11 +19,9 @@ package node
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"math/big"
 	"net"
 	"os"
 	"path"
@@ -37,8 +35,6 @@ import (
 	"github.com/c2h5oh/datasize"
 	"github.com/gofrs/flock"
 	"github.com/holiman/uint256"
-	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
-	"github.com/multiformats/go-multiaddr"
 	pkgerrors "github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
@@ -49,7 +45,6 @@ import (
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/types"
@@ -70,13 +65,14 @@ import (
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
 	"github.com/n42blockchain/N42/internal/mcp"
+	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/miner"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/peerdas"
+	"github.com/n42blockchain/N42/internal/snapshot"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	"github.com/n42blockchain/N42/internal/sync/checkpoint"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
-	"github.com/n42blockchain/N42/internal/snapshot"
 	"github.com/n42blockchain/N42/internal/sync/snapsync"
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/tracing"
@@ -85,21 +81,20 @@ import (
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/common/cmp"
+	"github.com/n42blockchain/N42/lib/jmt"
+	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/lib/jmt"
-	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/modules"
-	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	statesnapshot "github.com/n42blockchain/N42/modules/state/snapshot"
-	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/utils"
 )
@@ -136,25 +131,25 @@ type Node struct {
 	api     *api.API
 	rpcAPIs []jsonrpc.API
 
-	http          *httpServer
-	ipc           *ipcServer
-	ws            *httpServer
-	httpAuth      *httpServer
-	wsAuth        *httpServer
-	inprocHandler *jsonrpc.Server
-	rateLimiter   *jsonrpc.RateLimiter
-	pruner          *Pruner
-	historyExpirer  *HistoryExpirer
-	snapshotMgr     *snapshot.Manager
+	http           *httpServer
+	ipc            *ipcServer
+	ws             *httpServer
+	httpAuth       *httpServer
+	wsAuth         *httpServer
+	inprocHandler  *jsonrpc.Server
+	rateLimiter    *jsonrpc.RateLimiter
+	pruner         *Pruner
+	historyExpirer *HistoryExpirer
+	snapshotMgr    *snapshot.Manager
 
-	exexManager     *exex.Manager         // Execution Extensions manager
-	hotstuffService *hotstuff.Service     // HotStuff BFT consensus service (nil if not using HotStuff)
+	exexManager     *exex.Manager           // Execution Extensions manager
+	hotstuffService *hotstuff.Service       // HotStuff BFT consensus service (nil if not using HotStuff)
 	bundlerService  *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
-	peerdasService  *peerdas.Service      // PeerDAS (EIP-7594) data availability service (nil if disabled)
-	mcpServer       *mcp.Server           // MCP (Model Context Protocol) server for AI agents (nil if disabled)
+	peerdasService  *peerdas.Service        // PeerDAS (EIP-7594) data availability service (nil if disabled)
+	mcpServer       *mcp.Server             // MCP (Model Context Protocol) server for AI agents (nil if disabled)
 
-	zkProverService  *zkprover.Service     // ZK prover gRPC client (nil if disabled)
-	zkVerifier       *zkverifier.Verifier  // ZK proof verifier (nil if disabled)
+	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
+	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -383,6 +378,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			realBC.SetZKProving(true, cfg.ZKProverCfg.RequireProof)
 		}
 		zkVerify = zkverifier.NewVerifier()
+		if cfg.ZKProverCfg.RequireProof && !zkVerify.CryptographicReady() {
+			return nil, fmt.Errorf("zkprover: require_proof cannot be enabled before cryptographic verification is ready")
+		}
 		if cfg.ZKProverCfg.Enabled && !cfg.ZKProverCfg.VerifyOnly {
 			var err error
 			zkProverSvc, err = zkprover.NewService(&cfg.ZKProverCfg)
@@ -539,12 +537,12 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		zkProverService: zkProverSvc,
 		zkVerifier:      zkVerify,
 		inprocHandler:   jsonrpc.NewServer(),
-		http:          newHTTPServer(),
-		ws:            newHTTPServer(),
-		wsAuth:        newHTTPServer(),
-		httpAuth:      newHTTPServer(),
-		ipc:           newIPCServer(&cfg.NodeCfg),
-		etherbase:     types.HexToAddress(cfg.Miner.Etherbase),
+		http:            newHTTPServer(),
+		ws:              newHTTPServer(),
+		wsAuth:          newHTTPServer(),
+		httpAuth:        newHTTPServer(),
+		ipc:             newIPCServer(&cfg.NodeCfg),
+		etherbase:       types.HexToAddress(cfg.Miner.Etherbase),
 
 		accman:     accman,
 		keyDir:     keyDir,
@@ -1600,270 +1598,4 @@ func (n *Node) Engine() consensus.Engine {
 
 func (n *Node) ChainDb() kv.RwDB {
 	return n.db
-}
-
-// =============================================================================
-// API backend adapters
-// =============================================================================
-
-// p2pAdminAdapter bridges p2p.P2P to the api.P2PAdmin interface so that
-// admin_* RPC methods can return real peer data without the api package
-// importing the p2p package directly.
-type p2pAdminAdapter struct {
-	svc p2p.P2P
-}
-
-func (a *p2pAdminAdapter) PeerInfos() []*api.PeerInfo {
-	status := a.svc.Peers()
-	connected := status.Connected()
-	result := make([]*api.PeerInfo, 0, len(connected))
-	for _, pid := range connected {
-		info := &api.PeerInfo{
-			ID:   pid.String(),
-			Name: "N42",
-			Caps: []string{"eth/69"},
-		}
-		if addr, err := status.Address(pid); err == nil {
-			info.Network.RemoteAddress = addr.String()
-		}
-		result = append(result, info)
-	}
-	return result
-}
-
-func (a *p2pAdminAdapter) SelfNodeID() string {
-	return a.svc.PeerID().String()
-}
-
-func (a *p2pAdminAdapter) SelfENR() string {
-	record := a.svc.ENR()
-	if record == nil {
-		return ""
-	}
-	s, err := p2p.SerializeENR(record)
-	if err != nil {
-		return ""
-	}
-	return s
-}
-
-func (a *p2pAdminAdapter) SelfListenAddrs() []string {
-	h := a.svc.Host()
-	if h == nil {
-		return nil
-	}
-	addrs := h.Addrs()
-	result := make([]string, len(addrs))
-	for i, ma := range addrs {
-		result[i] = ma.String()
-	}
-	return result
-}
-
-func (a *p2pAdminAdapter) AddPeer(addr string) error {
-	ma, err := multiaddr.NewMultiaddr(addr)
-	if err != nil {
-		return fmt.Errorf("admin_addPeer: invalid multiaddr %q: %w", addr, err)
-	}
-	info, err := libp2ppeer.AddrInfoFromP2pAddr(ma)
-	if err != nil {
-		return fmt.Errorf("admin_addPeer: cannot derive peer info from %q: %w", addr, err)
-	}
-	// Service.Connect wraps host.Connect with the service context.
-	type connector interface{ Connect(libp2ppeer.AddrInfo) error }
-	if c, ok := a.svc.(connector); ok {
-		return c.Connect(*info)
-	}
-	return a.svc.Host().Connect(context.Background(), *info)
-}
-
-func (a *p2pAdminAdapter) RemovePeer(peerID string) error {
-	pid, err := libp2ppeer.Decode(peerID)
-	if err != nil {
-		return fmt.Errorf("admin_removePeer: invalid peer ID %q: %w", peerID, err)
-	}
-	return a.svc.Disconnect(pid)
-}
-
-func (a *p2pAdminAdapter) HighestPeerBlock() uint64 {
-	return a.svc.Peers().HighestBlockNumber().Uint64()
-}
-
-// minerAdminAdapter bridges *miner.Miner to api.MinerAdmin.
-type minerAdminAdapter struct {
-	m *miner.Miner
-}
-
-func (a *minerAdminAdapter) Mining() bool {
-	return a.m.Mining()
-}
-
-func (a *minerAdminAdapter) SetCoinbase(addr types.Address) {
-	a.m.SetCoinbase(addr)
-}
-
-// nodeHealthProvider implements HealthProvider for the Node.
-type nodeHealthProvider struct {
-	node *Node
-}
-
-func (h *nodeHealthProvider) CurrentBlock() uint64 {
-	if h.node.blockChain == nil {
-		return 0
-	}
-	b := h.node.blockChain.CurrentBlock()
-	if b == nil {
-		return 0
-	}
-	return b.Number64().Uint64()
-}
-
-func (h *nodeHealthProvider) HighestBlock() uint64 {
-	if h.node.p2p == nil {
-		return h.CurrentBlock()
-	}
-	highest := h.node.p2p.Peers().HighestBlockNumber().Uint64()
-	if current := h.CurrentBlock(); current > highest {
-		return current
-	}
-	return highest
-}
-
-func (h *nodeHealthProvider) IsSyncing() bool {
-	if h.node.is == nil {
-		return false
-	}
-	return h.node.is.Syncing()
-}
-
-func (h *nodeHealthProvider) PeerCount() int {
-	if h.node.p2p == nil {
-		return 0
-	}
-	return len(h.node.p2p.Peers().Connected())
-}
-
-// nodeBlockProvider implements snapshot.BlockProvider for the Node.
-type nodeBlockProvider struct {
-	node *Node
-}
-
-func (b *nodeBlockProvider) CurrentBlock() uint64 {
-	if b.node.blockChain == nil {
-		return 0
-	}
-	blk := b.node.blockChain.CurrentBlock()
-	if blk == nil {
-		return 0
-	}
-	return blk.Number64().Uint64()
-}
-
-// peerdasBlockProvider implements peerdas.BlockProvider using the node's blockchain.
-type peerdasBlockProvider struct {
-	node *Node
-}
-
-func (p *peerdasBlockProvider) CurrentBlock() (types.Hash, uint64) {
-	if p.node.blockChain == nil {
-		return types.Hash{}, 0
-	}
-	blk := p.node.blockChain.CurrentBlock()
-	if blk == nil {
-		return types.Hash{}, 0
-	}
-	return blk.Hash(), blk.Number64().Uint64()
-}
-
-// mcpNodeBackend implements mcp.Backend using the node's services.
-type mcpNodeBackend struct {
-	node *Node
-}
-
-func (b *mcpNodeBackend) BlockChain() common.IBlockChain { return b.node.blockChain }
-func (b *mcpNodeBackend) Database() kv.RwDB              { return b.node.db }
-func (b *mcpNodeBackend) TxPool() common.ITxsPool        { return b.node.txspool }
-func (b *mcpNodeBackend) PeerCount() int {
-	if b.node.p2p != nil {
-		return len(b.node.p2p.Peers().Connected())
-	}
-	return 0
-}
-func (b *mcpNodeBackend) SyncProgress() *mcp.SyncStatus {
-	var current uint64
-	if b.node.blockChain != nil && b.node.blockChain.CurrentBlock() != nil {
-		current = b.node.blockChain.CurrentBlock().Number64().Uint64()
-	}
-	return &mcp.SyncStatus{
-		CurrentBlock: current,
-		HighestBlock: current,
-		Syncing:      false,
-	}
-}
-
-// devnetGenesisBlock creates a minimal genesis for --dev / private chain mode.
-// It uses Clique (APoa) consensus with a 4-second block period and pre-funds
-// the configured etherbase (if any) so the node can immediately start mining.
-func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
-	period := uint64(4)
-	if cfg.ChainCfg != nil && cfg.ChainCfg.Clique != nil && cfg.ChainCfg.Clique.Period > 0 {
-		period = cfg.ChainCfg.Clique.Period
-	}
-
-	zero := big.NewInt(0)
-	chainConfig := &params.ChainConfig{
-		ChainID:               big.NewInt(94),
-		HomesteadBlock:        zero,
-		TangerineWhistleBlock: zero,
-		SpuriousDragonBlock:   zero,
-		ByzantiumBlock:        zero,
-		ConstantinopleBlock:   zero,
-		PetersburgBlock:       zero,
-		IstanbulBlock:         zero,
-		MuirGlacierBlock:      zero,
-		BerlinBlock:           zero,
-		LondonBlock:           zero,
-		ArrowGlacierBlock:     zero,
-		Consensus:             params.CliqueConsensus,
-		Clique: &params.CliqueConfig{
-			Period: period,
-			Epoch:  30000,
-		},
-	}
-
-	alloc := make(conf.GenesisAlloc)
-
-	// Pre-fund etherbase with a large balance.
-	if cfg.Miner.Etherbase != "" {
-		addr := types.HexToAddress(cfg.Miner.Etherbase)
-		alloc[addr] = conf.GenesisAccount{
-			Balance: "1000000000000000000000000000", // 10^27 wei
-		}
-	}
-
-	// Pre-fund deterministic stress-test accounts so cmd/stresstest works out of the box.
-	// Accounts are generated as: sha256("n42-stress-test-key-{i}") → ECDSA key → address.
-	for i := 0; i < 50; i++ {
-		seed := fmt.Sprintf("n42-stress-test-key-%d", i)
-		h := sha256.Sum256([]byte(seed))
-		key, err := crypto.ToECDSA(h[:])
-		if err != nil {
-			continue
-		}
-		addr := crypto.PubkeyToAddress(key.PublicKey)
-		alloc[types.Address(addr)] = conf.GenesisAccount{
-			Balance: "1000000000000000000000", // 1000 ETH each
-		}
-	}
-
-	miners := []string{}
-	if cfg.Miner.Etherbase != "" {
-		miners = append(miners, cfg.Miner.Etherbase)
-	}
-
-	return &conf.Genesis{
-		Config: chainConfig,
-		Alloc:  alloc,
-		Miners: miners,
-	}
 }

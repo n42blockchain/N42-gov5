@@ -923,7 +923,6 @@ func (sdb *IntraBlockState) PrepareAccessList(sender types.Address, dst *types.A
 	sdb.AddAddressToAccessList(sender)
 	if dst != nil {
 		sdb.AddAddressToAccessList(*dst)
-		// If it's a create-tx, the destination will be added inside evm.create
 	}
 	for _, addr := range precompiles {
 		sdb.AddAddressToAccessList(addr)
@@ -936,21 +935,17 @@ func (sdb *IntraBlockState) PrepareAccessList(sender types.Address, dst *types.A
 	}
 }
 
-// AddAddressToAccessList adds the given address to the access list
+// AddAddressToAccessList adds the given address to the access list.
 func (sdb *IntraBlockState) AddAddressToAccessList(addr types.Address) {
 	if sdb.accessList.AddAddress(addr) {
 		sdb.journal.append(accessListAddAccountChange{&addr})
 	}
 }
 
-// AddSlotToAccessList adds the given (address, slot)-tuple to the access list
+// AddSlotToAccessList adds the given (address, slot)-tuple to the access list.
 func (sdb *IntraBlockState) AddSlotToAccessList(addr types.Address, slot types.Hash) {
 	addrMod, slotMod := sdb.accessList.AddSlot(addr, slot)
 	if addrMod {
-		// In practice, this should not happen, since there is no way to enter the
-		// scope of 'address' without having the 'address' become already added
-		// to the access list (via call-variant, create, etc).
-		// Better safe than sorry, though
 		sdb.journal.append(accessListAddAccountChange{&addr})
 	}
 	if slotMod {
@@ -978,8 +973,8 @@ func (s *IntraBlockState) GenerateRootHash() types.Hash {
 	}
 
 	sortedAddrs := make(types.Addresses, 0, len(s.stateObjectsDirty))
-	for a := range s.stateObjectsDirty {
-		sortedAddrs = append(sortedAddrs, a)
+	for addr := range s.stateObjectsDirty {
+		sortedAddrs = append(sortedAddrs, addr)
 	}
 	sort.Sort(sortedAddrs)
 
@@ -1029,22 +1024,21 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	for addr := range s.stateObjectsDirty {
 		obj := s.getStateObject(addr)
 		if obj == nil || obj.deleted {
-			accounts[addr] = nil // mark as deleted
+			accounts[addr] = nil
 			continue
 		}
 		acct := new(account.StateAccount)
 		acct.Copy(&obj.data)
 		accounts[addr] = acct
 
-		// Collect dirty storage for this account.
-		if len(obj.dirtyStorage) > 0 {
-			slots := make(map[types.Hash]*uint256.Int, len(obj.dirtyStorage))
-			for k, v := range obj.dirtyStorage {
-				val := new(uint256.Int).Set(&v)
-				slots[k] = val
-			}
-			storage[addr] = slots
+		if len(obj.dirtyStorage) == 0 {
+			continue
 		}
+		slots := make(map[types.Hash]*uint256.Int, len(obj.dirtyStorage))
+		for key, value := range obj.dirtyStorage {
+			slots[key] = new(uint256.Int).Set(&value)
+		}
+		storage[addr] = slots
 	}
 
 	root, err := s.rootComputer.ComputeRoot(accounts, storage)
@@ -1056,13 +1050,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 
 func (sdb *IntraBlockState) HasSelfdestructed(addr types.Address) bool {
 	stateObject := sdb.getStateObject(addr)
-	if stateObject == nil {
-		return false
-	}
-	if stateObject.deleted {
-		return false
-	}
-	if stateObject.created {
+	if stateObject == nil || stateObject.deleted || stateObject.created {
 		return false
 	}
 	return stateObject.selfdestructed
@@ -1086,7 +1074,6 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 	stateObject.markSelfdestructed()
 	stateObject.created = false
 	stateObject.data.Balance.Clear()
-
 	return true
 }
 
@@ -1103,7 +1090,6 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 	}
 
 	if stateObject.created {
-		// Account was created in this transaction - full selfdestruct
 		sdb.journal.append(selfdestructChange{
 			account:     &addr,
 			prev:        stateObject.selfdestructed,
@@ -1112,43 +1098,32 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 		stateObject.markSelfdestructed()
 		stateObject.created = false
 		stateObject.data.Balance.Clear()
-	} else {
-		// EIP-6780: Account was NOT created in this transaction.
-		// Only transfer the balance - account keeps code, storage, nonce.
-		// The caller (opSelfdestruct) already did AddBalance(beneficiary, originalBalance).
-		// Now we need to do the SubBalance part.
-		//
-		// If beneficiary == addr (self-destruct to self):
-		//   - opSelfdestruct read balance X, then AddBalance(self, X) making balance = 2X
-		//   - We need to SubBalance X to restore to original X (current / 2)
-		// If beneficiary != addr:
-		//   - AddBalance added X to beneficiary
-		//   - We need to clear our balance (SubBalance all = SetBalance 0)
-		if addr == beneficiary {
-			// Self-destruct to self: undo the AddBalance by subtracting half the current balance
-			// Current balance = 2X (original was X, then X was added)
-			// We want final balance = X, so subtract X = current / 2
-			currentBalance := stateObject.Balance()
-			if !currentBalance.IsZero() {
-				halfBalance := new(uint256.Int).Div(currentBalance, uint256.NewInt(2))
-				sdb.journal.append(balanceChange{
-					account: &addr,
-					prev:    *currentBalance,
-				})
-				stateObject.data.Balance.Sub(currentBalance, halfBalance)
-			}
-		} else {
-			// Different beneficiary: clear caller's balance (they got it via AddBalance)
-			prevBalance := *stateObject.Balance()
-			if !prevBalance.IsZero() {
-				sdb.journal.append(balanceChange{
-					account: &addr,
-					prev:    prevBalance,
-				})
-				stateObject.data.Balance.Clear()
-			}
-		}
+		return
 	}
+
+	if addr == beneficiary {
+		currentBalance := stateObject.Balance()
+		if currentBalance.IsZero() {
+			return
+		}
+		halfBalance := new(uint256.Int).Div(currentBalance, uint256.NewInt(2))
+		sdb.journal.append(balanceChange{
+			account: &addr,
+			prev:    *currentBalance,
+		})
+		stateObject.data.Balance.Sub(currentBalance, halfBalance)
+		return
+	}
+
+	prevBalance := *stateObject.Balance()
+	if prevBalance.IsZero() {
+		return
+	}
+	sdb.journal.append(balanceChange{
+		account: &addr,
+		prev:    prevBalance,
+	})
+	stateObject.data.Balance.Clear()
 }
 
 // WasCreatedInCurrentTx returns whether the account was created in the current transaction.
@@ -1161,19 +1136,21 @@ func (sdb *IntraBlockState) WasCreatedInCurrentTx(addr types.Address) bool {
 }
 
 // BeforeStateRoot computes a hash of the used state. Must be called after all transactions execute.
-func (sdb *IntraBlockState) BeforeStateRoot() (hash types.Hash) {
+func (sdb *IntraBlockState) BeforeStateRoot() (hashValue types.Hash) {
 	if sdb.snap == nil {
 		return types.Hash{}
 	}
 	sort.Sort(sdb.snap.Items)
-	ch := sdb.CodeHashes()
-	hs := make(HashCodes, 0, len(ch))
-	for k, v := range ch {
-		hs = append(hs, &HashCode{Hash: k, Code: v})
+
+	codeHashes := sdb.CodeHashes()
+	hashCodes := make(HashCodes, 0, len(codeHashes))
+	for codeHash, code := range codeHashes {
+		hashCodes = append(hashCodes, &HashCode{Hash: codeHash, Code: code})
 	}
-	sort.Sort(hs)
+	sort.Sort(hashCodes)
+
 	hasher := sha3.NewLegacyKeccak256()
-	EncodeBeforeState(hasher, sdb.snap.Items, hs)
-	hasher.(crypto.KeccakState).Read(hash[:])
-	return
+	EncodeBeforeState(hasher, sdb.snap.Items, hashCodes)
+	hasher.(crypto.KeccakState).Read(hashValue[:])
+	return hashValue
 }

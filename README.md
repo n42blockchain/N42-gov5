@@ -1,6 +1,6 @@
 # N42 Blockchain
 
-[![Go](https://img.shields.io/badge/go-1.25%2B-blue.svg)](https://golang.org)
+[![Go](https://img.shields.io/badge/go-1.21%2B-blue.svg)](https://golang.org)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/n42blockchain/n42/ci.yml?branch=main)](https://github.com/n42blockchain/n42/actions)
 [![GitHub License](https://img.shields.io/github/license/n42blockchain/n42)](https://github.com/n42blockchain/n42/blob/main/LICENSE)
 [![GitHub Issues](https://img.shields.io/github/issues/n42blockchain/n42)](https://github.com/n42blockchain/n42/issues)
@@ -12,52 +12,84 @@
 
 N42 establishes a secure, efficient, and globally connected digital ecosystem, giving developers unparalleled freedom and seamless interoperability for building applications. As a high-performance public blockchain, N42 is built using Go, leveraging its superior concurrency, scalability, and deployment simplicity to deliver a resilient and highly efficient infrastructure.
 
-Featuring a modular, sharded architecture, N42 delivers high transaction throughput and advanced data processing—key elements for building globally connected digital infrastructure. Its permissionless framework enables effortless integration and efficient data exchange across a wide range of applications, paving the way for the next generation of decentralized internet services.
+Featuring a modular, sharded architecture, N42 delivers high transaction throughput and advanced data processing — key elements for building globally connected digital infrastructure. Its permissionless framework enables effortless integration and efficient data exchange across a wide range of applications, paving the way for the next generation of decentralized internet services.
 
 **Disclaimer:** This software is currently a tech preview. We will do our best to keep it stable and avoid breaking changes, but we make no guarantees.
 
 ## Key Features
 
+### Zero-Knowledge Proof System
+
+- **ZISK zkVM Fast-Path Proving**: Block producers generate ZK proofs after execution; validators verify proofs in milliseconds without re-executing the EVM, drastically reducing hardware requirements
+- **RISC-V64 Guest Program**: Standalone EVM execution binary (`cmd/zkguest`) compiled to RISC-V64 for zkVM proving, with pure Go EVM core (no CGO)
+- **gRPC Prover Integration**: External ZISK prover cluster connection via gRPC, with configurable concurrency, timeouts, and proof types (STARK/SNARK)
+- **Soft Verification Mode**: Blocks with proofs are verified via ZK; blocks without proofs fall back to normal EVM execution (configurable to enforce proofs)
+- **Block Witness Infrastructure**: TracingReader-based witness capture during block production, binary encoding, LRU caching, and P2P witness request protocol
+
+### Consensus & Execution
+
 - **High-Performance EVM**: Block-STM parallel transaction execution with multi-version state
-- **Jellyfish Merkle Tree (JMT)**: Blake3-hashed state commitment with Merkle proofs, replacing legacy incremental Keccak
 - **Pluggable Consensus**: Authority PoA (`apoa`) and Authority PoS (`apos`) engines
-- **MDBX Storage**: Memory-mapped B+ tree database with layered caching
-- **Snap Sync**: Fast state synchronization with parallel downloading and verification
-- **Ancient/Freezer DB**: Automatic archival of historical data beyond a configurable threshold
+- **EOF (EVM Object Format)**: Full support including EOFCREATE, RETURNCONTRACT, and sub-containers
 - **Blob Transactions (EIP-4844)**: Native support for blob-carrying transactions
-- **EOF (EVM Object Format)**: Full EVM Object Format support including EOFCREATE and sub-containers
 - **MEV Infrastructure**: Bundle pool and priority-based transaction ordering for block builders
 - **State Prefetching**: Predictive state loading for sender/recipient/access-list entries
-- **ExEx Extensions**: Execution Extension framework for pluggable post-block processing
+
+### State & Storage
+
+- **Jellyfish Merkle Tree (JMT)**: Blake3-hashed state commitment with Merkle proofs, replacing legacy incremental Keccak
+- **MDBX Storage**: Memory-mapped B+ tree database with layered caching
+- **Ancient/Freezer DB**: Automatic archival of historical data beyond a configurable threshold
 - **Flat Snapshot Acceleration**: In-memory snapshot tree with diff layers for fast state reads
-- **Comprehensive RPC**: Full Ethereum JSON-RPC including `eth_getProof`, `eth_createAccessList`, `debug_*` endpoints
+
+### Networking & Sync
+
+- **Snap Sync**: Fast state synchronization with parallel downloading and verification
+- **P2P Networking**: libp2p-based with Kademlia DHT, peer scoring, and rate limiting
+- **ExEx Extensions**: Execution Extension framework for pluggable post-block processing
+
+### API & Tooling
+
+- **Comprehensive JSON-RPC**: Full Ethereum JSON-RPC including `eth_getProof`, `eth_createAccessList`, `debug_*`, and ZK proof endpoints (`zk_getBlockZKProof`, `zk_verifyBlockZKProof`, `zk_getProofStatus`)
+- **Witness RPC**: `eth_getBlockWitness` for retrieving block execution witnesses
+- **MCP Server**: Model Context Protocol server for AI-assisted blockchain interaction
+- **Chain Import/Export**: Length-prefixed protobuf format for offline block data transfer
+- **Database Inspector**: CLI tools for database stats, key inspection, and state dumps
 
 ## Architecture
 
 ```
-cmd/n42/          Main entry point and CLI commands
-internal/         Core blockchain logic
-  consensus/      Pluggable consensus engines (apoa/, apos/)
-  miner/          Block production with MEV bundle support
-  txspool/        Transaction pool with persistence
-  vm/             EVM execution engine with EOF support
-  avm/            N42 AVM (alternative VM)
-  sync/           Chain synchronization (snap sync, initial sync)
-  api/            JSON-RPC backend implementation
-modules/          Data layer
-  state/          State management with JMT commitment
-  rawdb/          Raw database operations (MDBX + freezer)
-lib/              Shared libraries
-  jmt/            Jellyfish Merkle Tree implementation
-  kv/             Key-value store interfaces (mdbx/, memdb/)
+cmd/
+  n42/              Main entry point and CLI commands
+  zkguest/          RISC-V64 ZK guest program (standalone EVM for zkVM)
+internal/
+  consensus/        Pluggable consensus engines (apoa/, apos/)
+  miner/            Block production with MEV bundle support and witness capture
+  txspool/          Transaction pool with persistence
+  vm/               EVM execution engine with EOF support
+  avm/              N42 AVM (alternative VM)
+  sync/             Chain synchronization (snap sync, initial sync, witness P2P)
+  api/              JSON-RPC backend (eth, debug, zk, witness endpoints)
+  zkprover/         ZK prover service (gRPC client, input builder, guest program)
+  zkverifier/       ZK proof verifier (STARK/SNARK verification)
+  mcp/              Model Context Protocol server
+modules/
+  state/            State management with JMT commitment and witness generation
+  rawdb/            Raw database operations (MDBX + freezer)
+lib/
+  jmt/              Jellyfish Merkle Tree implementation (Blake3, 16-ary)
+  kv/               Key-value store interfaces (mdbx/, memdb/)
+conf/               Node configuration (P2P, RPC, consensus, ZK prover settings)
 ```
 
 ## System Requirements
 
-- **Storage**: ≥ 200 GB (SSD or NVMe recommended; HDD not recommended)
-- **Memory**: ≥ 16 GB RAM
+- **Storage**: >= 200 GB (SSD or NVMe recommended; HDD not recommended)
+- **Memory**: >= 16 GB RAM
 - **CPU**: 64-bit architecture
-- **Go Version**: [≥ 1.25](https://golang.org/doc/install)
+- **Go Version**: [>= 1.21](https://golang.org/doc/install)
+
+Current build/test environment: `go1.26.1`
 
 ## Building from Source
 
@@ -75,6 +107,13 @@ git clone https://github.com/n42blockchain/n42.git
 cd n42
 make n42
 ./build/bin/n42
+```
+
+Build the ZK guest program (requires no CGO):
+
+```sh
+make zkguest
+# Output: build/bin/zkguest (linux/riscv64 ELF binary)
 ```
 
 ### Windows
@@ -105,7 +144,7 @@ make stop   # docker-compose stop
 
 ## Executables
 
-N42 includes one main executable located in the `cmd` directory:
+N42 includes the following executables:
 
 | Command | Description |
 |---------|-------------|
@@ -115,6 +154,7 @@ N42 includes one main executable located in the `cmd` directory:
 | **`n42 export`** | Export blocks to a file. |
 | **`n42 db`** | Database inspection and maintenance commands. |
 | **`n42 state-dump`** | Dump account state to JSON. |
+| **`zkguest`** | Standalone RISC-V64 EVM binary for ZK proof generation inside zkVM. |
 
 ## Network Ports
 
@@ -140,6 +180,17 @@ Key configuration options in `NodeConfig`:
 | `ancient_db` | `bool` | Enable ancient/freezer database for historical data |
 | `ancient_freeze_threshold` | `uint64` | Block threshold for freezing data to ancient DB |
 
+ZK Prover configuration (`ZKProverCfg`):
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `enabled` | `bool` | Enable ZK proof generation |
+| `prover_addr` | `string` | gRPC address of external ZISK prover cluster |
+| `prover_timeout` | `int` | Proof generation timeout in seconds (default: 600) |
+| `proof_type` | `string` | Proof type: `"stark"` or `"snark"` |
+| `max_concurrent` | `int` | Maximum concurrent proof generation jobs |
+| `guest_binary` | `string` | Path to RISC-V64 ELF guest binary |
+
 ## Development
 
 ```sh
@@ -156,4 +207,3 @@ make bench-smoke    # Quick benchmarks on core packages
 ## License
 
 N42 is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.en.html).
-

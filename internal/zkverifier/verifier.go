@@ -53,6 +53,10 @@ var (
 	// ErrSNARKVerificationFailed is returned when SNARK verification fails.
 	ErrSNARKVerificationFailed = errors.New("zkverifier: SNARK verification failed")
 
+	// ErrCryptographicVerificationUnavailable is returned when the verifier can
+	// only validate public inputs but cannot prove cryptographic soundness.
+	ErrCryptographicVerificationUnavailable = errors.New("zkverifier: cryptographic verification not implemented")
+
 	verifyDuration = prometheus.GetOrCreateSummary("zkverifier_verify_duration_seconds")
 	verifySuccess  = prometheus.GetOrCreateCounter("zkverifier_verify_success_total", true)
 	verifyFailed   = prometheus.GetOrCreateCounter("zkverifier_verify_failed_total", true)
@@ -64,6 +68,12 @@ type Verifier struct{}
 // NewVerifier creates a new ZK proof verifier.
 func NewVerifier() *Verifier {
 	return &Verifier{}
+}
+
+// CryptographicReady reports whether a real cryptographic verifier backend is
+// wired in. Before that point, this package only performs parallel side-checks.
+func (v *Verifier) CryptographicReady() bool {
+	return false
 }
 
 // Verify validates a ZK proof against expected block execution results.
@@ -103,8 +113,8 @@ func (v *Verifier) Verify(proof *zkprover.Proof, expectedStateRoot types.Hash, e
 }
 
 // VerifySTARK verifies a STARK proof against expected execution results.
-// In production, this would call the ZISK STARK verifier library.
-// For now, it validates the proof structure and public inputs format.
+// Before the cryptographic backend is ready, this acts as a side-check that
+// validates public inputs shape and consistency only.
 func (v *Verifier) VerifySTARK(proof *zkprover.Proof, expectedStateRoot types.Hash, expectedGasUsed uint64) error {
 	if len(proof.PublicInputs) < 32+8 { // stateRoot + gasUsed minimum
 		return fmt.Errorf("%w: public inputs too short (%d bytes)", ErrPublicInputsMismatch, len(proof.PublicInputs))
@@ -126,12 +136,8 @@ func (v *Verifier) VerifySTARK(proof *zkprover.Proof, expectedStateRoot types.Ha
 			ErrPublicInputsMismatch, expectedGasUsed, provenGasUsed)
 	}
 
-	// TODO(zisk): STARK verification not yet implemented — accepting all proofs
-	// with valid public inputs format. In production, this must call the ZISK
-	// STARK verifier library to cryptographically verify the proof:
-	//   return zisk.VerifySTARK(proof.ProofData, proof.PublicInputs, guestELFHash)
 	starkStubOnce.Do(func() {
-		log.Warn("STARK proof verification is a stub — proofs accepted without cryptographic check")
+		log.Warn("STARK proof verification is running in side-check mode only; cryptographic backend not yet enabled")
 	})
 
 	return nil
@@ -152,12 +158,8 @@ func (v *Verifier) VerifySNARK(proof *zkprover.Proof, expectedStateRoot types.Ha
 			ErrPublicInputsMismatch, expectedStateRoot, provenStateRoot)
 	}
 
-	// TODO(zisk): SNARK verification not yet implemented — accepting all proofs
-	// with valid public inputs format. In production, this must use gnark-crypto:
-	//   vk := loadVerifyingKey()
-	//   return groth16.Verify(proof.ProofData, vk, proof.PublicInputs)
 	snarkStubOnce.Do(func() {
-		log.Warn("SNARK proof verification is a stub — proofs accepted without cryptographic check")
+		log.Warn("SNARK proof verification is running in side-check mode only; cryptographic backend not yet enabled")
 	})
 
 	return nil

@@ -1,0 +1,94 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+//
+// The N42 library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The N42 library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+
+package rawdb
+
+import (
+	"fmt"
+
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules"
+)
+
+func ReadCurrentBlockNumber(db kv.Getter) *uint64 {
+	headHash := ReadHeadHeaderHash(db)
+	return ReadHeaderNumber(db, headHash)
+}
+
+func ReadCurrentHeader(db kv.Getter) *block.Header {
+	headHash := ReadHeadHeaderHash(db)
+	headNumber := ReadHeaderNumber(db, headHash)
+	if headNumber == nil {
+		return nil
+	}
+	return ReadHeader(db, headHash, *headNumber)
+}
+
+func ReadCurrentBlock(db kv.Tx) *block.Block {
+	headHash := ReadHeadBlockHash(db)
+	headNumber := ReadHeaderNumber(db, headHash)
+	if headNumber == nil {
+		return nil
+	}
+	return ReadBlock(db, headHash, *headNumber)
+}
+
+// ReadHeadHeaderHash retrieves the hash of the current canonical head header.
+func ReadHeadHeaderHash(db kv.Getter) types.Hash {
+	return readHeadHash(db, modules.HeadHeaderKey)
+}
+
+// ReadHeadBlockHash retrieves the hash of the current canonical head block.
+func ReadHeadBlockHash(db kv.Getter) types.Hash {
+	return readHeadHash(db, modules.HeadBlockKey)
+}
+
+func readHeadHash(db kv.Getter, table string) types.Hash {
+	data, err := db.GetOne(table, []byte(table))
+	if err != nil {
+		log.Error("read head hash failed", "table", table, "err", err)
+	}
+	if len(data) == 0 {
+		return types.Hash{}
+	}
+	return types.BytesToHash(data)
+}
+
+// WriteHeadBlockHash stores the head block's hash.
+func WriteHeadBlockHash(db kv.Putter, hash types.Hash) {
+	if err := db.Put(modules.HeadBlockKey, []byte(modules.HeadBlockKey), hash.Bytes()); err != nil {
+		log.Crit("Failed to store last block's hash", "err", err)
+	}
+}
+
+// WriteHeadHeaderHash stores the hash of the current canonical head header.
+func WriteHeadHeaderHash(db kv.Putter, hash types.Hash) error {
+	if err := db.Put(modules.HeadHeaderKey, []byte(modules.HeadHeaderKey), hash.Bytes()); err != nil {
+		return fmt.Errorf("failed to store last header's hash: %w", err)
+	}
+	return nil
+}
+
+func GetPoaSnapshot(db kv.Getter, hash types.Hash) ([]byte, error) {
+	return db.GetOne(modules.PoaSnapshot, hash.Bytes())
+}
+
+func StorePoaSnapshot(db kv.Putter, hash types.Hash, data []byte) error {
+	return db.Put(modules.PoaSnapshot, hash.Bytes(), data)
+}

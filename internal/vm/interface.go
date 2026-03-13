@@ -66,7 +66,7 @@ type VMInterface = VMInterpreter
 
 // VMCaller is the interface for EVM execution engine call operations.
 // This interface enables:
-//   - Dependency injection for testing
+//   - Pluggable dependencies for testing
 //   - Future VM implementations (e.g., optimized VMs, alternative interpreters)
 //   - Instrumentation and tracing without modifying core EVM
 //

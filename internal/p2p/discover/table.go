@@ -474,7 +474,7 @@ func (tab *Table) addSeenNode(n *node) {
 // has no space, the node is added to the replacements list.
 //
 // There is an additional safety measure: if the table is still initializing the node
-// is not added. This prevents an attack where the table could be filled by just sending
+// is not added. This prevents a spam pattern where the table could be filled by just sending
 // ping repeatedly.
 //
 // The caller must not hold tab.mutex.

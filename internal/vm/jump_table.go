@@ -1205,7 +1205,6 @@ func newFrontierInstructionSet() JumpTable {
 		},
 	}
 
-	// Fill all unassigned slots with opUndefined.
 	for i, entry := range tbl {
 		if entry == nil {
 			tbl[i] = &operation{execute: opUndefined}

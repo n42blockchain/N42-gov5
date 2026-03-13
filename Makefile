@@ -56,8 +56,13 @@ BUILD_MOBILE_PATH = ./build/mobile/
 
 ## go-version:                        print and verify go version
 go-version:
-	@if [ $(shell go version | cut -c 16-17) -lt 18 ]; then \
-		echo "minimum required Golang version is 1.18"; \
+	@ver=$$(go env GOVERSION | sed -E 's/^go([0-9]+\.[0-9]+(\.[0-9]+)?).*$$/\1/'); \
+	major=$${ver%%.*}; \
+	rest=$${ver#*.}; \
+	minor=$${rest%%.*}; \
+	if [ -z "$$ver" ] || [ "$$major" -lt 1 ] || \
+	   { [ "$$major" -eq 1 ] && [ "$$minor" -lt 21 ]; }; then \
+		echo "minimum required Golang version is 1.21"; \
 		exit 1 ;\
 	fi
 gen:
@@ -120,7 +125,7 @@ devtools:
 
 
 PACKAGE_NAME          := github.com/n42blockchain/N42
-GOLANG_CROSS_VERSION  ?= v1.20.7
+GOLANG_CROSS_VERSION  ?= v1.26.1
 
 .PHONY: release-docker
 release-docker:
