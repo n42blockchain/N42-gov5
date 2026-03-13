@@ -33,7 +33,7 @@ import (
 var emptyCodeHash = crypto.Keccak256Hash(nil)
 
 // PrecompileRegistry is the interface for precompile lookup.
-// Used for dependency injection to avoid global state.
+// Used for dependency wiring to avoid global state.
 //
 // Implementations:
 //   - precompiles.Registry (recommended): Full implementation with metrics
@@ -141,7 +141,7 @@ type EVM struct {
 	// applied in opCall*.
 	callGasTemp uint64
 
-	// precompileRegistry provides precompile lookup (optional, for dependency injection).
+	// precompileRegistry provides precompile lookup (optional, for dependency wiring).
 	// If nil, falls back to legacy global maps.
 	precompileRegistry PrecompileRegistry
 }
@@ -153,7 +153,7 @@ func NewEVM(blockCtx evmtypes.BlockContext, txCtx evmtypes.TxContext, state evmt
 	return NewEVMWithPrecompiles(blockCtx, txCtx, state, chainConfig, vmConfig, nil)
 }
 
-// NewEVMWithPrecompiles returns a new EVM with an injected precompile registry.
+// NewEVMWithPrecompiles returns a new EVM with a supplied precompile registry.
 // If registry is nil, falls back to legacy global maps.
 // This is the recommended constructor for new code.
 func NewEVMWithPrecompiles(blockCtx evmtypes.BlockContext, txCtx evmtypes.TxContext, state evmtypes.IntraBlockState, chainConfig *params.ChainConfig, vmConfig Config, registry PrecompileRegistry) *EVM {

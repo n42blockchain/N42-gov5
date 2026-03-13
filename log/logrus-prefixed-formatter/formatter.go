@@ -71,7 +71,7 @@ type compiledColorScheme struct {
 }
 
 type TextFormatter struct {
-	// Set to true to bypass checking for a TTY before outputting colors.
+	// Set to true to skip checking for a TTY before outputting colors.
 	ForceColors bool
 
 	// Whether the logger's out is to a terminal.

@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	// Following vars are injected through the build flags (see Makefile)
+	// Following vars are set through build flags (see Makefile)
 	GitCommit string
 	GitBranch string
 	GitTag    string
@@ -37,7 +37,7 @@ var (
 const (
 	VersionMajor       = 5   // Major version - annual release
 	VersionMinor       = 5   // Minor version - feature release
-	VersionBuild       = 756 // Build number - auto-incremented
+	VersionBuild       = 757 // Build number - auto-incremented
 	VersionModifier    = ""  // Modifier component (alpha, beta, stable)
 	VersionKeyCreated  = "n42VersionCreated"
 	VersionKeyFinished = "n42VersionFinished"

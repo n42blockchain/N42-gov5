@@ -65,7 +65,7 @@ func main() {
 
 ### Fields
 
-* `ForceColors bool` — set to true to bypass checking for a TTY before outputting colors.
+* `ForceColors bool` — set to true to skip checking for a TTY before outputting colors.
 * `DisableColors bool` — force disabling colors. For a TTY colors are enabled by default.
 * `DisableUppercase bool` — set to true to turn off the conversion of the log level names to uppercase.
 * `ForceFormatting bool` — force formatted layout, even for non-TTY output.

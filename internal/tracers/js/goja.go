@@ -478,7 +478,7 @@ func (t *jsTracer) setBuiltinFunctions() {
 // setTypeConverters sets up utilities for converting Go types into those
 // suitable for JS consumption.
 func (t *jsTracer) setTypeConverters() error {
-	// Inject bigint logic.
+	// Add bigint bridge logic.
 	// TODO: To be replaced after goja adds support for native JS bigint.
 	toBigCode, err := t.vm.RunProgram(bigIntProgram)
 	if err != nil {

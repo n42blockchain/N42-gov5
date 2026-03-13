@@ -77,7 +77,7 @@ func (d *WebSeeds) ByFileName(name string) (metainfo.UrlList, bool) {
 }
 
 var (
-	ErrInvalidEtag = fmt.Errorf("invalid etag")
+	ErrInvalidEtag  = fmt.Errorf("invalid etag")
 	ErrEtagNotFound = fmt.Errorf("not found")
 )
 
@@ -304,7 +304,7 @@ func (d *WebSeeds) callTorrentHttpProvider(ctx context.Context, u *url.URL, file
 	defer resp.Body.Close()
 
 	if resp.ContentLength == 0 || resp.ContentLength > int64(128*datasize.MB) {
-		return nil, fmt.Errorf(".torrent downloading size attack prevention: resp.ContentLength=%d, url=%s", resp.ContentLength, u.EscapedPath())
+		return nil, fmt.Errorf(".torrent download size guard: resp.ContentLength=%d, url=%s", resp.ContentLength, u.EscapedPath())
 	}
 
 	res, err := io.ReadAll(resp.Body)

@@ -99,6 +99,9 @@ func (s *ZKProofAPI) VerifyBlockZKProof(ctx context.Context, blockNrOrHash jsonr
 	if err != nil {
 		return false, fmt.Errorf("failed to decode proof: %w", err)
 	}
+	if !s.verifier.CryptographicReady() {
+		return false, zkverifier.ErrCryptographicVerificationUnavailable
+	}
 
 	if err := s.verifier.Verify(proof, blk.StateRoot(), blk.GasUsed()); err != nil {
 		return false, err

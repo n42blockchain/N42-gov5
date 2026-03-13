@@ -37,7 +37,7 @@ package rawdb
 // These interfaces allow:
 //   - Clear separation of concerns
 //   - Easy mocking for tests
-//   - Dependency injection
+//   - Pluggable dependency wiring
 //   - Future alternative implementations
 
 import (
@@ -218,4 +218,3 @@ type Database interface {
 	DatabaseReader
 	DatabaseWriter
 }
-

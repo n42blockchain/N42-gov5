@@ -152,7 +152,7 @@
 			if (call.gas !== undefined) {
 				call.gas = '0x' + bigInt(call.gas).toString(16);
 			}
-			// Inject the call into the previous one
+			// Attach the call to the previous one
 			var left = this.callstack.length;
 			if (this.callstack[left-1].calls === undefined) {
 				this.callstack[left-1].calls = [];

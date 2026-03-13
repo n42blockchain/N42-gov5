@@ -41,6 +41,8 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/zkprover"
+	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
@@ -48,8 +50,6 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
-	"github.com/n42blockchain/N42/internal/zkprover"
-	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/modules/state/witness"
@@ -792,8 +792,8 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 				continue
 			}
 			if canonical != nil && canonical.StateRoot() == blk.StateRoot() {
-				log.Warn("Sidechain ghost-state attack detected", "number", blk.Number64(), "sideroot", blk.StateRoot(), "canonroot", canonical.StateRoot())
-				return it.index, errors.New("sidechain ghost-state attack")
+				log.Warn("Sidechain ghost-state mismatch detected", "number", blk.Number64(), "sideroot", blk.StateRoot(), "canonroot", canonical.StateRoot())
+				return it.index, errors.New("sidechain ghost-state mismatch")
 			}
 		}
 		if externTd.Cmp(uint256.NewInt(0)) == 0 {
@@ -811,7 +811,7 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 			if err := bc.writeBlockWithTd(blk, externTd.Clone()); err != nil {
 				return it.index, err
 			}
-			log.Debug("Injected sidechain block", "number", blk.Number64(), "hash", blk.Hash(),
+			log.Debug("Stored sidechain block", "number", blk.Number64(), "hash", blk.Hash(),
 				"diff", blk.Difficulty(), "elapsed", time.Since(start).Seconds(),
 				"txs", len(blk.Transactions()), "gas", blk.GasUsed(), "root", blk.StateRoot())
 		} else {
@@ -1074,6 +1074,10 @@ func (bc *BlockChain) tryZKFastPath(blk block.IBlock) bool {
 	}
 
 	if bc.zkVerifier == nil {
+		return false
+	}
+	if !bc.zkVerifier.CryptographicReady() {
+		log.Debug("ZK verifier is in side-check mode; skipping ZK fast path", "block", blk.Number64())
 		return false
 	}
 	if err := bc.zkVerifier.Verify(proof, blk.StateRoot(), blk.GasUsed()); err != nil {

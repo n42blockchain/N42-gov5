@@ -15,7 +15,7 @@
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
 // Package core provides core abstractions and utilities for the N42 blockchain.
-// This includes the service container for lifecycle management and dependency injection.
+// This includes the service container for lifecycle management and dependency wiring.
 package core
 
 import (

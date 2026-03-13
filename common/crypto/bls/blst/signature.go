@@ -100,7 +100,7 @@ func (s *Signature) Verify(pubKey common.PublicKey, msg []byte) bool {
 }
 
 // AggregateVerify verifies each public key against its respective message. This is vulnerable to
-// rogue public-key attack. Each user must provide a proof-of-knowledge of the public key.
+// rogue public-key misuse. Each user must provide a proof-of-knowledge of the public key.
 //
 // Note: The msgs must be distinct. For maximum performance, this method does not ensure distinct
 // messages.
