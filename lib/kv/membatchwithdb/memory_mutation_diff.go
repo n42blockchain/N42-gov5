@@ -10,6 +10,7 @@ type entry struct {
 type MemoryDiff struct {
 	diff              map[table][]entry // god.
 	deletedEntries    map[string][]string
+	deletedDups       map[string][]entry
 	clearedTableNames []string
 }
 
@@ -29,6 +30,18 @@ func (m *MemoryDiff) Flush(tx kv.RwTx) error {
 	for bucket, keys := range m.deletedEntries {
 		for _, key := range keys {
 			if err := tx.Delete(bucket, []byte(key)); err != nil {
+				return err
+			}
+		}
+	}
+	for bucket, entries := range m.deletedDups {
+		cursor, err := tx.RwCursorDupSort(bucket)
+		if err != nil {
+			return err
+		}
+		defer cursor.Close()
+		for _, entry := range entries {
+			if err := cursor.DeleteExact(entry.k, entry.v); err != nil {
 				return err
 			}
 		}

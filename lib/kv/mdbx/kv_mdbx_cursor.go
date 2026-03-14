@@ -284,7 +284,7 @@ func (c *MdbxCursor) deleteDupSort(key []byte) error {
 
 func (c *MdbxCursor) PutNoOverwrite(key []byte, value []byte) error {
 	if c.bucketCfg.AutoDupSortKeysConversion {
-		panic("not implemented")
+		return fmt.Errorf("PutNoOverwrite does not support AutoDupSortKeysConversion")
 	}
 
 	return c.putNoOverwrite(key, value)

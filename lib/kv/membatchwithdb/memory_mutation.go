@@ -112,7 +112,7 @@ func (m *MemoryMutation) isDupDeleted(table string, key []byte, val []byte) bool
 }
 
 func (m *MemoryMutation) DBSize() (uint64, error) {
-	panic("not implemented")
+	return m.memTx.DBSize()
 }
 
 func initSequences(db kv.Tx, memTx kv.RwTx) error {
@@ -188,7 +188,13 @@ func (m *MemoryMutation) GetOne(table string, key []byte) ([]byte, error) {
 }
 
 func (m *MemoryMutation) Last(table string) ([]byte, []byte, error) {
-	panic("not implemented. (MemoryMutation.Last)")
+	c, err := m.Cursor(table)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer c.Close()
+
+	return c.Last()
 }
 
 // Has return whether a key is present in a certain table.
@@ -258,19 +264,27 @@ func (m *MemoryMutation) Prefix(table string, prefix []byte) (iter.KV, error) {
 	return m.Stream(table, prefix, nextPrefix)
 }
 func (m *MemoryMutation) Stream(table string, fromPrefix, toPrefix []byte) (iter.KV, error) {
-	panic("please implement me")
+	return m.Range(table, fromPrefix, toPrefix)
 }
 func (m *MemoryMutation) StreamAscend(table string, fromPrefix, toPrefix []byte, limit int) (iter.KV, error) {
-	panic("please implement me")
+	return m.RangeAscend(table, fromPrefix, toPrefix, limit)
 }
 func (m *MemoryMutation) StreamDescend(table string, fromPrefix, toPrefix []byte, limit int) (iter.KV, error) {
-	panic("please implement me")
+	return m.RangeDescend(table, fromPrefix, toPrefix, limit)
 }
 func (m *MemoryMutation) Range(table string, fromPrefix, toPrefix []byte) (iter.KV, error) {
-	panic("please implement me")
+	return m.RangeAscend(table, fromPrefix, toPrefix, -1)
 }
 func (m *MemoryMutation) RangeAscend(table string, fromPrefix, toPrefix []byte, limit int) (iter.KV, error) {
-	panic("please implement me")
+	s := &rangeIter{orderAscend: true, limit: int64(limit)}
+	var err error
+	if s.iterDb, err = m.db.RangeAscend(table, fromPrefix, toPrefix, limit); err != nil {
+		return s, err
+	}
+	if s.iterMem, err = m.memTx.RangeAscend(table, fromPrefix, toPrefix, limit); err != nil {
+		return s, err
+	}
+	return s.init()
 }
 func (m *MemoryMutation) RangeDescend(table string, fromPrefix, toPrefix []byte, limit int) (iter.KV, error) {
 	s := &rangeIter{orderAscend: false, limit: int64(limit)}
@@ -475,15 +489,15 @@ func (m *MemoryMutation) BucketSize(bucket string) (uint64, error) {
 }
 
 func (m *MemoryMutation) DropBucket(bucket string) error {
-	panic("Not implemented")
+	return fmt.Errorf("drop bucket is not supported for pending mutations")
 }
 
 func (m *MemoryMutation) ExistsBucket(bucket string) (bool, error) {
-	panic("Not implemented")
+	return m.memTx.ExistsBucket(bucket)
 }
 
 func (m *MemoryMutation) ListBuckets() ([]string, error) {
-	panic("Not implemented")
+	return m.memTx.ListBuckets()
 }
 
 func (m *MemoryMutation) ClearBucket(bucket string) error {
@@ -515,6 +529,20 @@ func (m *MemoryMutation) Flush(tx kv.RwTx) error {
 		for key := range keys {
 			if err := tx.Delete(bucket, []byte(key)); err != nil {
 				return err
+			}
+		}
+	}
+	for bucket, keys := range m.deletedDups {
+		cursor, err := tx.RwCursorDupSort(bucket)
+		if err != nil {
+			return err
+		}
+		defer cursor.Close()
+		for key, vals := range keys {
+			for val := range vals {
+				if err := cursor.DeleteExact([]byte(key), []byte(val)); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -572,6 +600,7 @@ func (m *MemoryMutation) Diff() (*MemoryDiff, error) {
 	memDiff := &MemoryDiff{
 		diff:           make(map[table][]entry),
 		deletedEntries: make(map[string][]string),
+		deletedDups:    make(map[string][]entry),
 	}
 	// Obtain buckets touched.
 	buckets, err := m.memTx.ListBuckets()
@@ -586,6 +615,16 @@ func (m *MemoryMutation) Diff() (*MemoryDiff, error) {
 	for bucket, keys := range m.deletedEntries {
 		for key := range keys {
 			memDiff.deletedEntries[bucket] = append(memDiff.deletedEntries[bucket], key)
+		}
+	}
+	for bucket, keys := range m.deletedDups {
+		for key, vals := range keys {
+			for val := range vals {
+				memDiff.deletedDups[bucket] = append(memDiff.deletedDups[bucket], entry{
+					k: common.Copy([]byte(key)),
+					v: common.Copy([]byte(val)),
+				})
+			}
 		}
 	}
 	// Iterate over each bucket and apply changes accordingly.
@@ -692,9 +731,9 @@ func (m *MemoryMutation) Cursor(bucket string) (kv.Cursor, error) {
 }
 
 func (m *MemoryMutation) ViewID() uint64 {
-	panic("ViewID Not implemented")
+	return m.memTx.ViewID()
 }
 
 func (m *MemoryMutation) CHandle() unsafe.Pointer {
-	panic("CHandle not implemented")
+	return m.memTx.CHandle()
 }

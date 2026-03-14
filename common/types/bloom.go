@@ -24,20 +24,40 @@ import (
 
 const probCollide = 0.0000001
 
-type hasher []byte
+type hasher struct {
+	data []byte
+}
 
-func (f hasher) Write(p []byte) (n int, err error) { panic("not implemented") }
-func (f hasher) Sum(b []byte) []byte               { panic("not implemented") }
-func (f hasher) Reset()                            { panic("not implemented") }
-func (f hasher) BlockSize() int                    { panic("not implemented") }
-func (f hasher) Size() int { return 8 }
-func (f hasher) Sum64() uint64 {
-	if len(f) < 8 {
-		padded := make([]byte, 8)
-		copy(padded[8-len(f):], f)
-		return binary.BigEndian.Uint64(padded)
+func newHasher(data []byte) *hasher {
+	h := &hasher{}
+	_, _ = h.Write(data)
+	return h
+}
+
+func (h *hasher) Write(p []byte) (n int, err error) {
+	h.data = append(h.data[:0], p...)
+	return len(p), nil
+}
+
+func (h *hasher) Sum(b []byte) []byte {
+	var sum [8]byte
+	binary.BigEndian.PutUint64(sum[:], h.Sum64())
+	return append(b, sum[:]...)
+}
+
+func (h *hasher) Reset() {
+	h.data = h.data[:0]
+}
+
+func (h *hasher) BlockSize() int { return HashLength }
+func (h *hasher) Size() int      { return 8 }
+func (h *hasher) Sum64() uint64 {
+	if len(h.data) < 8 {
+		var padded [8]byte
+		copy(padded[8-len(h.data):], h.data)
+		return binary.BigEndian.Uint64(padded[:])
 	}
-	return binary.BigEndian.Uint64(f)
+	return binary.BigEndian.Uint64(h.data)
 }
 
 type Bloom struct {
@@ -66,7 +86,7 @@ func (b *Bloom) Add(key []byte) error {
 	if len(key) != HashLength {
 		return fmt.Errorf("key length is not %d", HashLength)
 	}
-	b.bloom.Add(hasher(key))
+	b.bloom.Add(newHasher(key))
 	return nil
 }
 
@@ -74,7 +94,7 @@ func (b *Bloom) Contain(key []byte) bool {
 	if b.bloom == nil {
 		return false
 	}
-	return b.bloom.Contains(hasher(key))
+	return b.bloom.Contains(newHasher(key))
 }
 
 func (b *Bloom) Marshal() ([]byte, error) {

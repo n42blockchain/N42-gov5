@@ -193,6 +193,9 @@ func SplitAndTrim(input string) (ret []string) {
 
 func ConvertH256ToUint256Int(h256 *types_pb.H256) *uint256.Int {
 	var i uint256.Int
+	if h256 == nil {
+		return &i
+	}
 	i[3] = h256.Hi.Hi
 	i[2] = h256.Hi.Lo
 	i[1] = h256.Lo.Hi

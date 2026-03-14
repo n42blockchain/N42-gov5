@@ -15,6 +15,7 @@ package membatchwithdb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/n42blockchain/N42/lib/common"
@@ -50,6 +51,13 @@ type memoryMutationCursor struct {
 	pureDupSort     bool
 }
 
+var (
+	errPutNoDupDataUnsupported            = errors.New("PutNoDupData is not supported for pending mutations")
+	errDeleteCurrentDuplicatesUnsupported = errors.New("DeleteCurrentDuplicates is not supported for AutoDupSortKeysConversion tables")
+	errReverseIterationUnsupported        = errors.New("reverse iteration is not supported for pending mutations")
+	errDupCountUnsupported                = errors.New("duplicate counting helpers are not supported for pending mutations")
+)
+
 func (m *memoryMutationCursor) isTableCleared() bool {
 	return m.mutation.isTableCleared(m.table)
 }
@@ -57,9 +65,11 @@ func (m *memoryMutationCursor) isTableCleared() bool {
 func (m *memoryMutationCursor) isEntryDeleted(key []byte, value []byte, t NextType) bool {
 	if t == Normal {
 		return m.mutation.isEntryDeleted(m.table, key)
-	} else {
-		return m.mutation.isEntryDeleted(m.table, m.convertAutoDupsort(key, value))
 	}
+	if m.pureDupSort {
+		return m.mutation.isDupDeleted(m.table, key, value)
+	}
+	return m.mutation.isEntryDeleted(m.table, m.convertAutoDupsort(key, value))
 }
 
 // First move cursor to first position and return key and value accordingly.
@@ -291,6 +301,23 @@ func (m *memoryMutationCursor) SeekExact(seek []byte) ([]byte, []byte, error) {
 		return memKey, memValue, err
 	}
 
+	if m.pureDupSort {
+		dbKey, dbValue, err := m.cursor.SeekExact(seek)
+		if err != nil {
+			return nil, nil, err
+		}
+		if dbKey != nil && m.isEntryDeleted(dbKey, dbValue, Dup) {
+			dbKey, dbValue, err = m.getNextOnDb(Dup)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !bytes.Equal(dbKey, seek) {
+				dbKey, dbValue = nil, nil
+			}
+		}
+		return m.resolveCursorPriority(memKey, memValue, dbKey, dbValue, Dup)
+	}
+
 	if memKey != nil {
 		m.currentMemEntry.key = memKey
 		m.currentMemEntry.value = memValue
@@ -330,7 +357,7 @@ func (m *memoryMutationCursor) AppendDup(k []byte, v []byte) error {
 }
 
 func (m *memoryMutationCursor) PutNoDupData(key, value []byte) error {
-	panic("Not implemented")
+	return errPutNoDupDataUnsupported
 }
 
 func (m *memoryMutationCursor) Delete(k []byte) error {
@@ -341,19 +368,29 @@ func (m *memoryMutationCursor) DeleteCurrent() error {
 	if !m.pureDupSort {
 		return m.mutation.Delete(m.table, m.currentPair.key)
 	}
+	if err := m.memCursor.DeleteExact(m.currentPair.key, m.currentPair.value); err != nil {
+		return err
+	}
 	m.mutation.deleteDup(m.table, m.currentPair.key, m.currentPair.value)
 	return nil
 }
 
-func (m *memoryMutationCursor) DeleteExact(_, _ []byte) error {
-	panic("DeleteExact Not implemented")
+func (m *memoryMutationCursor) DeleteExact(k, v []byte) error {
+	if m.pureDupSort {
+		if err := m.memCursor.DeleteExact(common.Copy(k), common.Copy(v)); err != nil {
+			return err
+		}
+		m.mutation.deleteDup(m.table, common.Copy(k), common.Copy(v))
+		return nil
+	}
+	return m.mutation.Delete(m.table, m.convertAutoDupsort(k, v))
 }
 
 func (m *memoryMutationCursor) DeleteCurrentDuplicates() error {
 	config, ok := kv.ChaindataTablesCfg[m.table]
 	autoKeyConversion := ok && config.AutoDupSortKeysConversion
 	if autoKeyConversion {
-		panic("DeleteCurrentDuplicates Not implemented for AutoDupSortKeysConversion tables")
+		return errDeleteCurrentDuplicatesUnsupported
 	}
 
 	k, _, err := m.Current()
@@ -452,13 +489,13 @@ func (m *memoryMutationCursor) Last() ([]byte, []byte, error) {
 }
 
 func (m *memoryMutationCursor) Prev() ([]byte, []byte, error) {
-	panic("Prev is not implemented!")
+	return nil, nil, errReverseIterationUnsupported
 }
 func (m *memoryMutationCursor) PrevDup() ([]byte, []byte, error) {
-	panic("Prev is not implemented!")
+	return nil, nil, errReverseIterationUnsupported
 }
 func (m *memoryMutationCursor) PrevNoDup() ([]byte, []byte, error) {
-	panic("Prev is not implemented!")
+	return nil, nil, errReverseIterationUnsupported
 }
 
 func (m *memoryMutationCursor) Close() {
@@ -471,11 +508,24 @@ func (m *memoryMutationCursor) Close() {
 }
 
 func (m *memoryMutationCursor) Count() (uint64, error) {
-	panic("Not implemented")
+	cursor, err := m.mutation.makeCursor(m.table)
+	if err != nil {
+		return 0, err
+	}
+	defer cursor.Close()
+
+	var count uint64
+	for k, _, err := cursor.First(); k != nil; k, _, err = cursor.Next() {
+		if err != nil {
+			return 0, err
+		}
+		count++
+	}
+	return count, nil
 }
 
 func (m *memoryMutationCursor) FirstDup() ([]byte, error) {
-	panic("Not implemented")
+	return nil, errDupCountUnsupported
 }
 
 func (m *memoryMutationCursor) NextNoDup() ([]byte, []byte, error) {
@@ -500,11 +550,11 @@ func (m *memoryMutationCursor) NextNoDup() ([]byte, []byte, error) {
 }
 
 func (m *memoryMutationCursor) LastDup() ([]byte, error) {
-	panic("Not implemented")
+	return nil, errDupCountUnsupported
 }
 
 func (m *memoryMutationCursor) CountDuplicates() (uint64, error) {
-	panic("Not implemented")
+	return 0, errDupCountUnsupported
 }
 
 func (m *memoryMutationCursor) SeekBothExact(key, value []byte) ([]byte, []byte, error) {

@@ -131,6 +131,10 @@ message Transaction {
   uint32 pqPubKeyMode = 18;   // 0=Full public key, 1=Public key hash reference
   bytes pqPubKeyData = 19 [(ext.ssz_max) = "2048"];  // Full public key or 32-byte hash
   bytes pqSignature = 20 [(ext.ssz_max) = "4096"];   // Post-quantum signature
+
+  // EIP-4844 blob transaction fields (Type 0x03)
+  H256 blobFeeCap = 21;
+  repeated H256 blobHashes = 22;
 }
 
 message Receipts {
@@ -167,4 +171,3 @@ message Log {
 message Logs {
   repeated Log logs = 1;
 }
-

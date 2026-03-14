@@ -85,5 +85,5 @@ func (t *TemporaryMdbx) Close() {
 }
 
 func (t *TemporaryMdbx) CHandle() unsafe.Pointer {
-	panic("CHandle not implemented")
+	return t.db.CHandle()
 }

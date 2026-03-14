@@ -128,6 +128,13 @@ func (e *EngineAPIv4) NewPayloadV4(
 	parentBeaconBlockRoot *types.Hash,
 	executionRequests []hexutil.Bytes,
 ) (*NewPayloadResponseV3, error) {
+	if payload == nil {
+		return invalidPayloadResponse("missing execution payload"), nil
+	}
+	if parentBeaconBlockRoot == nil {
+		return invalidPayloadResponse("missing parent beacon block root"), nil
+	}
+
 	// Validate blob gas and versioned hashes for Pectra (EIP-7691)
 	if resp := validateBlobGasAndHashes(
 		payload.BlobGasUsed,
@@ -138,6 +145,9 @@ func (e *EngineAPIv4) NewPayloadV4(
 		vm.PectraBlobGasPerBlob,
 	); resp != nil {
 		return resp, nil
+	}
+	if err := ValidateBlobTransactions(payload.Transactions, expectedBlobVersionedHashes); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
 	}
 
 	// Validate execution requests (EIP-7685)
@@ -168,6 +178,10 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	state *ForkchoiceStateV1,
 	attrs *PayloadAttributesV4,
 ) (*ForkchoiceUpdatedResponseV3, error) {
+	if state == nil {
+		return invalidForkchoiceResponse("missing forkchoice state"), nil
+	}
+
 	// Validate attributes if present
 	if attrs != nil {
 		// Parent beacon block root is required for Pectra
