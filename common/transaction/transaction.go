@@ -121,6 +121,13 @@ func convertProtoVRS(pbTx *types_pb.Transaction) (v, r, s *uint256.Int) {
 	return v, r, s
 }
 
+func convertUint256IntToH256IfSet(i *uint256.Int) *types_pb.H256 {
+	if i == nil {
+		return nil
+	}
+	return utils.ConvertUint256IntToH256(i)
+}
+
 func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 	pbTx, ok := message.(*types_pb.Transaction)
 	if !ok {
@@ -139,7 +146,7 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 			Value:    utils.ConvertH256ToUint256Int(pbTx.Value),
 			Data:     pbTx.Data,
 			To:       convertProtoToAddress(pbTx.To),
-			From:     utils.ConvertH160ToPAddress(pbTx.From),
+			From:     convertProtoToAddress(pbTx.From),
 			Sign:     pbTx.Sign,
 			V:        v, R: r, S: s,
 		}
@@ -153,7 +160,7 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 			Value:    utils.ConvertH256ToUint256Int(pbTx.Value),
 			Data:     pbTx.Data,
 			To:       convertProtoToAddress(pbTx.To),
-			From:     utils.ConvertH160ToPAddress(pbTx.From),
+			From:     convertProtoToAddress(pbTx.From),
 			Sign:     pbTx.Sign,
 			V:        v, R: r, S: s,
 		}
@@ -168,9 +175,28 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 			Value:     utils.ConvertH256ToUint256Int(pbTx.Value),
 			Data:      pbTx.Data,
 			To:        convertProtoToAddress(pbTx.To),
-			From:      utils.ConvertH160ToPAddress(pbTx.From),
+			From:      convertProtoToAddress(pbTx.From),
 			Sign:      pbTx.Sign,
 			V:         v, R: r, S: s,
+		}
+
+	case BlobTxType:
+		var to types.Address
+		if addr := convertProtoToAddress(pbTx.To); addr != nil {
+			to = *addr
+		}
+		inner = &BlobTx{
+			ChainID:    uint256.NewInt(pbTx.ChainID),
+			Nonce:      pbTx.Nonce,
+			Gas:        pbTx.Gas,
+			GasFeeCap:  utils.ConvertH256ToUint256Int(pbTx.FeePerGas),
+			GasTipCap:  utils.ConvertH256ToUint256Int(pbTx.PriorityFeePerGas),
+			Value:      utils.ConvertH256ToUint256Int(pbTx.Value),
+			Data:       pbTx.Data,
+			To:         to,
+			BlobFeeCap: utils.ConvertH256ToUint256Int(pbTx.BlobFeeCap),
+			BlobHashes: utils.H256sToHashes(pbTx.BlobHashes),
+			V:          v, R: r, S: s,
 		}
 
 	case PostQuantumTxType:
@@ -189,6 +215,9 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 			PQSignature: pbTx.PqSignature,
 			V:           v, R: r, S: s,
 		}
+
+	default:
+		return nil, fmt.Errorf("unsupported transaction type: %d", pbTx.Type)
 	}
 
 	// Hash verification is disabled for P2P compatibility.
@@ -215,47 +244,73 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 	case *LegacyTx:
 		pbTx.Nonce = tx.Nonce()
 		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.GasPrice = convertUint256IntToH256IfSet(tx.GasPrice())
+		pbTx.Value = convertUint256IntToH256IfSet(tx.Value())
 		pbTx.Data = tx.Data()
-		pbTx.From = utils.ConvertAddressToH160(*tx.From())
+		if from := tx.From(); from != nil {
+			pbTx.From = utils.ConvertAddressToH160(*from)
+		}
 		pbTx.Sign = t.Sign
 
 	case *AccessListTx:
-		pbTx.ChainID = t.ChainID.Uint64()
+		if t.ChainID != nil {
+			pbTx.ChainID = t.ChainID.Uint64()
+		}
 		pbTx.Nonce = tx.Nonce()
 		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.GasPrice = convertUint256IntToH256IfSet(tx.GasPrice())
+		pbTx.Value = convertUint256IntToH256IfSet(tx.Value())
 		pbTx.Data = tx.Data()
-		pbTx.From = utils.ConvertAddressToH160(*tx.From())
+		if from := tx.From(); from != nil {
+			pbTx.From = utils.ConvertAddressToH160(*from)
+		}
 		pbTx.Sign = t.Sign
 
 	case *DynamicFeeTx:
-		pbTx.ChainID = t.ChainID.Uint64()
+		if t.ChainID != nil {
+			pbTx.ChainID = t.ChainID.Uint64()
+		}
 		pbTx.Nonce = tx.Nonce()
 		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.GasPrice = convertUint256IntToH256IfSet(tx.GasPrice())
+		pbTx.Value = convertUint256IntToH256IfSet(tx.Value())
 		pbTx.Data = tx.Data()
-		pbTx.From = utils.ConvertAddressToH160(*tx.From())
+		if from := tx.From(); from != nil {
+			pbTx.From = utils.ConvertAddressToH160(*from)
+		}
 		pbTx.Sign = t.Sign
-		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
-		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+		pbTx.FeePerGas = convertUint256IntToH256IfSet(t.GasFeeCap)
+		pbTx.PriorityFeePerGas = convertUint256IntToH256IfSet(t.GasTipCap)
 
 	case *PostQuantumTx:
-		pbTx.ChainID = t.ChainID.Uint64()
+		if t.ChainID != nil {
+			pbTx.ChainID = t.ChainID.Uint64()
+		}
 		pbTx.Nonce = tx.Nonce()
 		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.GasPrice = convertUint256IntToH256IfSet(tx.GasPrice())
+		pbTx.Value = convertUint256IntToH256IfSet(tx.Value())
 		pbTx.Data = tx.Data()
-		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
-		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+		pbTx.FeePerGas = convertUint256IntToH256IfSet(t.GasFeeCap)
+		pbTx.PriorityFeePerGas = convertUint256IntToH256IfSet(t.GasTipCap)
 		pbTx.PqSigAlgo = uint32(t.SigAlgo)
 		pbTx.PqPubKeyMode = uint32(t.PubKeyMode)
 		pbTx.PqPubKeyData = t.PubKeyData
 		pbTx.PqSignature = t.PQSignature
+
+	case *BlobTx:
+		if t.ChainID != nil {
+			pbTx.ChainID = t.ChainID.Uint64()
+		}
+		pbTx.Nonce = tx.Nonce()
+		pbTx.Gas = tx.Gas()
+		pbTx.GasPrice = convertUint256IntToH256IfSet(tx.GasPrice())
+		pbTx.Value = convertUint256IntToH256IfSet(tx.Value())
+		pbTx.Data = tx.Data()
+		pbTx.FeePerGas = convertUint256IntToH256IfSet(t.GasFeeCap)
+		pbTx.PriorityFeePerGas = convertUint256IntToH256IfSet(t.GasTipCap)
+		pbTx.BlobFeeCap = convertUint256IntToH256IfSet(t.BlobFeeCap)
+		pbTx.BlobHashes = utils.ConvertHashesToH256(t.BlobHashes)
 	}
 
 	if tx.To() != nil {
@@ -264,13 +319,13 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 
 	v, r, s := tx.RawSignatureValues()
 	if v != nil {
-		pbTx.V = utils.ConvertUint256IntToH256(v)
+		pbTx.V = convertUint256IntToH256IfSet(v)
 	}
 	if r != nil {
-		pbTx.R = utils.ConvertUint256IntToH256(r)
+		pbTx.R = convertUint256IntToH256IfSet(r)
 	}
 	if s != nil {
-		pbTx.S = utils.ConvertUint256IntToH256(s)
+		pbTx.S = convertUint256IntToH256IfSet(s)
 	}
 
 	return &pbTx
@@ -324,21 +379,21 @@ func (tx *Transaction) Unmarshal(data []byte) error {
 	return nil
 }
 
-func (tx *Transaction) Type() uint8         { return tx.inner.txType() }
-func (tx *Transaction) ChainId() *uint256.Int { return tx.inner.chainID() }
-func (tx *Transaction) Data() []byte        { return tx.inner.data() }
-func (tx *Transaction) Gas() uint64         { return tx.inner.gas() }
-func (tx *Transaction) GasPrice() *uint256.Int { return tx.inner.gasPrice() }
+func (tx *Transaction) Type() uint8             { return tx.inner.txType() }
+func (tx *Transaction) ChainId() *uint256.Int   { return tx.inner.chainID() }
+func (tx *Transaction) Data() []byte            { return tx.inner.data() }
+func (tx *Transaction) Gas() uint64             { return tx.inner.gas() }
+func (tx *Transaction) GasPrice() *uint256.Int  { return tx.inner.gasPrice() }
 func (tx *Transaction) GasTipCap() *uint256.Int { return tx.inner.gasTipCap() }
 func (tx *Transaction) GasFeeCap() *uint256.Int { return tx.inner.gasFeeCap() }
-func (tx *Transaction) Value() *uint256.Int { return tx.inner.value() }
-func (tx *Transaction) Nonce() uint64       { return tx.inner.nonce() }
-func (tx *Transaction) To() *types.Address  { return copyAddressPtr(tx.inner.to()) }
-func (tx *Transaction) From() *types.Address { return tx.inner.from() }
-func (tx *Transaction) Sign() []byte        { return tx.inner.sign() }
+func (tx *Transaction) Value() *uint256.Int     { return tx.inner.value() }
+func (tx *Transaction) Nonce() uint64           { return tx.inner.nonce() }
+func (tx *Transaction) To() *types.Address      { return copyAddressPtr(tx.inner.to()) }
+func (tx *Transaction) From() *types.Address    { return tx.inner.from() }
+func (tx *Transaction) Sign() []byte            { return tx.inner.sign() }
 
-func (tx *Transaction) AccessList() AccessList       { return tx.inner.accessList() }
-func (tx *Transaction) AuthList() AuthorizationList  { return tx.inner.authList() }
+func (tx *Transaction) AccessList() AccessList      { return tx.inner.accessList() }
+func (tx *Transaction) AuthList() AuthorizationList { return tx.inner.authList() }
 
 func (tx *Transaction) SetFrom(addr types.Address) {
 	switch t := tx.inner.(type) {

@@ -260,7 +260,7 @@ func (ht *HistoryRoTx) WalkAsOf(startTxNum uint64, from, to []byte, roTx kv.Tx, 
 	}
 	binary.BigEndian.PutUint64(hi.startTxKey[:], startTxNum)
 	if err := hi.advanceInFiles(); err != nil {
-		panic(err)
+		return &errKVIter{err: err}
 	}
 
 	dbit := &StateAsOfIterDB{
@@ -273,14 +273,28 @@ func (ht *HistoryRoTx) WalkAsOf(startTxNum uint64, from, to []byte, roTx kv.Tx, 
 	}
 	binary.BigEndian.PutUint64(dbit.startTxKey[:], startTxNum)
 	if err := dbit.advance(); err != nil {
-		panic(err)
+		return &errKVIter{err: err}
 	}
 	return iter.UnionKV(hi, dbit, limit)
 }
 
+type errKVIter struct {
+	err error
+}
+
+func (it *errKVIter) HasNext() bool {
+	return it.err != nil
+}
+
+func (it *errKVIter) Next() ([]byte, []byte, error) {
+	err := it.err
+	it.err = nil
+	return nil, nil, err
+}
+
 func (ht *HistoryRoTx) iterateChangedFrozen(fromTxNum, toTxNum int, asc order.By, limit int) (iter.KV, error) {
 	if !asc {
-		panic("not supported yet")
+		return nil, fmt.Errorf("history iteration in descending order is not supported")
 	}
 	if len(ht.iit.files) == 0 {
 		return iter.EmptyKV, nil
@@ -322,7 +336,7 @@ func (ht *HistoryRoTx) iterateChangedFrozen(fromTxNum, toTxNum int, asc order.By
 
 func (ht *HistoryRoTx) iterateChangedRecent(fromTxNum, toTxNum int, asc order.By, limit int, roTx kv.Tx) (iter.KV, error) {
 	if asc == order.Desc {
-		panic("not supported yet")
+		return nil, fmt.Errorf("history iteration in descending order is not supported")
 	}
 	rangeIsInFiles := toTxNum >= 0 && len(ht.iit.files) > 0 && ht.iit.files[len(ht.iit.files)-1].endTxNum >= uint64(toTxNum)
 	if rangeIsInFiles {
@@ -346,7 +360,7 @@ func (ht *HistoryRoTx) iterateChangedRecent(fromTxNum, toTxNum int, asc order.By
 
 func (ht *HistoryRoTx) HistoryRange(fromTxNum, toTxNum int, asc order.By, limit int, roTx kv.Tx) (iter.KV, error) {
 	if asc == order.Desc {
-		panic("not supported yet")
+		return nil, fmt.Errorf("history iteration in descending order is not supported")
 	}
 	itOnFiles, err := ht.iterateChangedFrozen(fromTxNum, toTxNum, asc, limit)
 	if err != nil {
@@ -387,7 +401,7 @@ func (ht *HistoryRoTx) idxRangeRecent(key []byte, startTxNum, endTxNum int, asc 
 				return binary.BigEndian.Uint64(k[len(k)-8:]), nil
 			})
 		} else {
-			panic("implement me")
+			return nil, fmt.Errorf("index range in descending order is not supported for large values")
 		}
 	} else {
 		if asc {
@@ -408,7 +422,7 @@ func (ht *HistoryRoTx) idxRangeRecent(key []byte, startTxNum, endTxNum int, asc 
 				return binary.BigEndian.Uint64(v), nil
 			})
 		} else {
-			panic("implement me")
+			return nil, fmt.Errorf("index range in descending order is not supported")
 		}
 	}
 

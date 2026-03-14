@@ -24,7 +24,7 @@ type DB struct {
 
 func New(db kv.RwDB, agg *state.Aggregator) (*DB, error) {
 	if !kvcfg.HistoryV3.FromDB(db) {
-		panic("not supported")
+		return nil, fmt.Errorf("temporal database requires history.v3 support")
 	}
 	return &DB{RwDB: db, agg: agg}, nil
 }
@@ -144,7 +144,7 @@ func (tx *Tx) Commit() error {
 
 func (tx *Tx) DomainRange(name kv.Domain, fromKey, toKey []byte, asOfTs uint64, asc order.By, limit int) (it iter.KV, err error) {
 	if asc == order.Desc {
-		panic("not supported yet")
+		return nil, fmt.Errorf("domain range descending order is not supported")
 	}
 	switch name {
 	case kv.AccountsDomain:
@@ -165,11 +165,11 @@ func (tx *Tx) DomainRange(name kv.Domain, fromKey, toKey []byte, asOfTs uint64, 
 		})
 		it = iter.UnionKV(histStateIt2, latestStateIt2, limit)
 	case kv.StorageDomain:
-		// not yet implemented
+		return nil, fmt.Errorf("domain range for %s is not implemented", name)
 	case kv.CodeDomain:
-		panic("not implemented yet")
+		return nil, fmt.Errorf("domain range for %s is not implemented", name)
 	default:
-		panic(fmt.Sprintf("unexpected: %s", name))
+		return nil, fmt.Errorf("unexpected domain name: %s", name)
 	}
 
 	if closer, ok := it.(kv.Closer); ok {
@@ -180,7 +180,7 @@ func (tx *Tx) DomainRange(name kv.Domain, fromKey, toKey []byte, asOfTs uint64, 
 }
 func (tx *Tx) DomainGet(name kv.Domain, key, key2 []byte) (v []byte, ok bool, err error) {
 	if config3.EnableHistoryV4InTest {
-		panic("implement me")
+		return nil, false, fmt.Errorf("DomainGet is unavailable when history v4 test mode is enabled")
 	}
 	switch name {
 	case kv.AccountsDomain:
@@ -193,14 +193,14 @@ func (tx *Tx) DomainGet(name kv.Domain, key, key2 []byte) (v []byte, ok bool, er
 		v, err = tx.GetOne(kv.Code, key2)
 		return v, v != nil, err
 	default:
-		panic(fmt.Sprintf("unexpected: %s", name))
+		return nil, false, fmt.Errorf("unexpected domain name: %s", name)
 	}
 }
 func (tx *Tx) DomainGetAsOf(_ kv.Domain, _, _ []byte, _ uint64) (v []byte, ok bool, err error) {
 	if config3.EnableHistoryV4InTest {
-		panic("implement me")
+		return nil, false, fmt.Errorf("DomainGetAsOf is unavailable when history v4 test mode is enabled")
 	}
-	panic("not implemented yet")
+	return nil, false, fmt.Errorf("DomainGetAsOf is not implemented")
 }
 
 func (tx *Tx) HistoryGet(name kv.History, key []byte, ts uint64) (v []byte, ok bool, err error) {
@@ -219,7 +219,7 @@ func (tx *Tx) HistoryGet(name kv.History, key []byte, ts uint64) (v []byte, ok b
 	case kv.CodeHistory:
 		return tx.aggCtx.ReadAccountCodeNoStateWithRecent(key, ts, tx.MdbxTx)
 	default:
-		panic(fmt.Sprintf("unexpected: %s", name))
+		return nil, false, fmt.Errorf("unexpected history name: %s", name)
 	}
 }
 
@@ -236,10 +236,10 @@ func (tx *Tx) IndexRange(name kv.InvertedIdx, k []byte, fromTs, toTs int, asc or
 
 func (tx *Tx) HistoryRange(name kv.History, fromTs, toTs int, asc order.By, limit int) (it iter.KV, err error) {
 	if asc == order.Desc {
-		panic("not implemented yet")
+		return nil, fmt.Errorf("history range descending order is not supported")
 	}
 	if limit >= 0 {
-		panic("not implemented yet")
+		return nil, fmt.Errorf("history range with explicit limit is not implemented")
 	}
 	switch name {
 	case kv.AccountsHistory:

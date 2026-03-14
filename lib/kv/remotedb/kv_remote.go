@@ -127,7 +127,17 @@ func NewRemote(v gointerfaces.Version, logger log.Logger, remoteKV remote.KVClie
 	return remoteOpts{bucketsCfg: kv.ChaindataTablesCfg, version: v, log: logger, remoteKV: remoteKV}
 }
 
-func (db *DB) PageSize() uint64       { panic("not implemented") }
+var (
+	errRemoteDBReadOnly              = fmt.Errorf("remote db is read-only")
+	errRemoteDBSequenceUnsupported   = fmt.Errorf("remote db provider doesn't support sequence operations")
+	errRemoteDBSizeUnsupported       = fmt.Errorf("remote db provider doesn't support DBSize")
+	errRemoteBucketSizeUnsupported   = fmt.Errorf("remote db provider doesn't support BucketSize")
+	errRemoteRangeDupSortUnsupported = fmt.Errorf("remote db provider doesn't support RangeDupSort")
+	errRemoteDupSortWriteUnsupported = fmt.Errorf("remote db provider doesn't support dupsort write operations")
+	errRemoteDupSortCountUnsupported = fmt.Errorf("remote db provider doesn't support dupsort duplicate counts")
+)
+
+func (db *DB) PageSize() uint64       { return kv.DefaultPageSize() }
 func (db *DB) ReadOnly() bool         { return true }
 func (db *DB) AllTables() kv.TableCfg { return db.buckets }
 
@@ -150,7 +160,7 @@ func (db *DB) EnsureVersionCompatibility() bool {
 func (db *DB) Close() {}
 
 func (db *DB) CHandle() unsafe.Pointer {
-	panic("CHandle not implemented")
+	return nil
 }
 
 func (db *DB) BeginRo(ctx context.Context) (txn kv.Tx, err error) {
@@ -231,16 +241,16 @@ func (db *DB) UpdateNosync(ctx context.Context, f func(tx kv.RwTx) error) (err e
 func (tx *tx) ViewID() uint64  { return tx.viewID }
 func (tx *tx) CollectMetrics() {}
 func (tx *tx) IncrementSequence(bucket string, amount uint64) (uint64, error) {
-	panic("not implemented yet")
+	return 0, errRemoteDBSequenceUnsupported
 }
 func (tx *tx) ReadSequence(bucket string) (uint64, error) {
-	panic("not implemented yet")
+	return 0, errRemoteDBSequenceUnsupported
 }
-func (tx *tx) Append(bucket string, k, v []byte) error    { panic("no write methods") }
-func (tx *tx) AppendDup(bucket string, k, v []byte) error { panic("no write methods") }
+func (tx *tx) Append(bucket string, k, v []byte) error    { return errRemoteDBReadOnly }
+func (tx *tx) AppendDup(bucket string, k, v []byte) error { return errRemoteDBReadOnly }
 
 func (tx *tx) Commit() error {
-	panic("remote db is read-only")
+	return errRemoteDBReadOnly
 }
 
 func (tx *tx) Rollback() {
@@ -251,7 +261,7 @@ func (tx *tx) Rollback() {
 		c.Close()
 	}
 }
-func (tx *tx) DBSize() (uint64, error) { panic("not implemented") }
+func (tx *tx) DBSize() (uint64, error) { return 0, errRemoteDBSizeUnsupported }
 
 func (tx *tx) statelessCursor(bucket string) (kv.Cursor, error) {
 	if tx.statelessCursors == nil {
@@ -269,7 +279,7 @@ func (tx *tx) statelessCursor(bucket string) (kv.Cursor, error) {
 	return c, nil
 }
 
-func (tx *tx) BucketSize(name string) (uint64, error) { panic("not implemented") }
+func (tx *tx) BucketSize(name string) (uint64, error) { return 0, errRemoteBucketSizeUnsupported }
 
 func (tx *tx) ForEach(bucket string, fromPrefix []byte, walker func(k, v []byte) error) error {
 	it, err := tx.Range(bucket, fromPrefix, nil)
@@ -400,17 +410,21 @@ func (c *remoteCursor) opWithKey(op remote.Op, k, v []byte) ([]byte, []byte, err
 	return pair.K, pair.V, nil
 }
 
-func (c *remoteCursor) first() ([]byte, []byte, error)         { return c.op(remote.Op_FIRST) }
-func (c *remoteCursor) next() ([]byte, []byte, error)          { return c.op(remote.Op_NEXT) }
-func (c *remoteCursor) nextDup() ([]byte, []byte, error)       { return c.op(remote.Op_NEXT_DUP) }
-func (c *remoteCursor) nextNoDup() ([]byte, []byte, error)     { return c.op(remote.Op_NEXT_NO_DUP) }
-func (c *remoteCursor) prev() ([]byte, []byte, error)          { return c.op(remote.Op_PREV) }
-func (c *remoteCursor) prevDup() ([]byte, []byte, error)       { return c.op(remote.Op_PREV_DUP) }
-func (c *remoteCursor) prevNoDup() ([]byte, []byte, error)     { return c.op(remote.Op_PREV_NO_DUP) }
-func (c *remoteCursor) last() ([]byte, []byte, error)          { return c.op(remote.Op_LAST) }
-func (c *remoteCursor) getCurrent() ([]byte, []byte, error)    { return c.op(remote.Op_CURRENT) }
-func (c *remoteCursor) setRange(k []byte) ([]byte, []byte, error)  { return c.opWithKey(remote.Op_SEEK, k, nil) }
-func (c *remoteCursor) seekExact(k []byte) ([]byte, []byte, error) { return c.opWithKey(remote.Op_SEEK_EXACT, k, nil) }
+func (c *remoteCursor) first() ([]byte, []byte, error)      { return c.op(remote.Op_FIRST) }
+func (c *remoteCursor) next() ([]byte, []byte, error)       { return c.op(remote.Op_NEXT) }
+func (c *remoteCursor) nextDup() ([]byte, []byte, error)    { return c.op(remote.Op_NEXT_DUP) }
+func (c *remoteCursor) nextNoDup() ([]byte, []byte, error)  { return c.op(remote.Op_NEXT_NO_DUP) }
+func (c *remoteCursor) prev() ([]byte, []byte, error)       { return c.op(remote.Op_PREV) }
+func (c *remoteCursor) prevDup() ([]byte, []byte, error)    { return c.op(remote.Op_PREV_DUP) }
+func (c *remoteCursor) prevNoDup() ([]byte, []byte, error)  { return c.op(remote.Op_PREV_NO_DUP) }
+func (c *remoteCursor) last() ([]byte, []byte, error)       { return c.op(remote.Op_LAST) }
+func (c *remoteCursor) getCurrent() ([]byte, []byte, error) { return c.op(remote.Op_CURRENT) }
+func (c *remoteCursor) setRange(k []byte) ([]byte, []byte, error) {
+	return c.opWithKey(remote.Op_SEEK, k, nil)
+}
+func (c *remoteCursor) seekExact(k []byte) ([]byte, []byte, error) {
+	return c.opWithKey(remote.Op_SEEK_EXACT, k, nil)
+}
 
 func (c *remoteCursor) seekBothExact(k, v []byte) ([]byte, []byte, error) {
 	return c.opWithKey(remote.Op_SEEK_BOTH_EXACT, k, v)
@@ -431,7 +445,7 @@ func (c *remoteCursor) lastDup() ([]byte, error) {
 	return v, err
 }
 
-func (c *remoteCursor) Current() ([]byte, []byte, error) { return c.getCurrent() }
+func (c *remoteCursor) Current() ([]byte, []byte, error)         { return c.getCurrent() }
 func (c *remoteCursor) Seek(seek []byte) ([]byte, []byte, error) { return c.setRange(seek) }
 func (c *remoteCursor) First() ([]byte, []byte, error)           { return c.first() }
 func (c *remoteCursor) Next() ([]byte, []byte, error)            { return c.next() }
@@ -504,11 +518,21 @@ func (c *remoteCursorDupSort) SeekBothRange(k, v []byte) ([]byte, error) {
 	return c.getBothRange(k, v)
 }
 
-func (c *remoteCursorDupSort) DeleteExact(k1, k2 []byte) error    { panic("not supported") }
-func (c *remoteCursorDupSort) AppendDup(k []byte, v []byte) error { panic("not supported") }
-func (c *remoteCursorDupSort) PutNoDupData(k, v []byte) error     { panic("not supported") }
-func (c *remoteCursorDupSort) DeleteCurrentDuplicates() error     { panic("not supported") }
-func (c *remoteCursorDupSort) CountDuplicates() (uint64, error)   { panic("not supported") }
+func (c *remoteCursorDupSort) DeleteExact(k1, k2 []byte) error {
+	return errRemoteDupSortWriteUnsupported
+}
+func (c *remoteCursorDupSort) AppendDup(k []byte, v []byte) error {
+	return errRemoteDupSortWriteUnsupported
+}
+func (c *remoteCursorDupSort) PutNoDupData(k, v []byte) error {
+	return errRemoteDupSortWriteUnsupported
+}
+func (c *remoteCursorDupSort) DeleteCurrentDuplicates() error {
+	return errRemoteDupSortWriteUnsupported
+}
+func (c *remoteCursorDupSort) CountDuplicates() (uint64, error) {
+	return 0, errRemoteDupSortCountUnsupported
+}
 
 func (c *remoteCursorDupSort) FirstDup() ([]byte, error)          { return c.firstDup() }
 func (c *remoteCursorDupSort) NextDup() ([]byte, []byte, error)   { return c.nextDup() }
@@ -599,9 +623,9 @@ func (tx *tx) RangeDescend(table string, fromPrefix, toPrefix []byte, limit int)
 	return tx.rangeOrderLimit(table, fromPrefix, toPrefix, order.Desc, limit)
 }
 func (tx *tx) RangeDupSort(table string, key []byte, fromPrefix, toPrefix []byte, asc order.By, limit int) (iter.KV, error) {
-	panic("not implemented yet")
+	return nil, errRemoteRangeDupSortUnsupported
 }
 
 func (tx *tx) CHandle() unsafe.Pointer {
-	panic("CHandle not implemented")
+	return nil
 }

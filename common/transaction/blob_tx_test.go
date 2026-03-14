@@ -85,9 +85,9 @@ func TestBlobTxCopy(t *testing.T) {
 
 func TestBlobTxBlobGas(t *testing.T) {
 	tests := []struct {
-		name       string
-		blobCount  int
-		expectGas  uint64
+		name      string
+		blobCount int
+		expectGas uint64
 	}{
 		{"no blobs", 0, 0},
 		{"one blob", 1, BlobTxBlobGasPerBlob},
@@ -104,6 +104,50 @@ func TestBlobTxBlobGas(t *testing.T) {
 				t.Errorf("BlobGas() = %d, want %d", got, tt.expectGas)
 			}
 		})
+	}
+}
+
+func TestBlobTxProtoRoundTrip(t *testing.T) {
+	original := NewTx(&BlobTx{
+		ChainID:    uint256.NewInt(1),
+		Nonce:      7,
+		GasTipCap:  uint256.NewInt(3),
+		GasFeeCap:  uint256.NewInt(9),
+		Gas:        25000,
+		To:         types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Value:      uint256.NewInt(11),
+		Data:       []byte{0xaa, 0xbb},
+		BlobFeeCap: uint256.NewInt(5),
+		BlobHashes: []types.Hash{
+			types.HexToHash("0x0100000000000000000000000000000000000000000000000000000000000001"),
+			types.HexToHash("0x0100000000000000000000000000000000000000000000000000000000000002"),
+		},
+		V: uint256.NewInt(1),
+		R: uint256.NewInt(2),
+		S: uint256.NewInt(3),
+	})
+
+	data, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+
+	var decoded Transaction
+	if err := decoded.Unmarshal(data); err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+
+	if decoded.Type() != BlobTxType {
+		t.Fatalf("Type() = %d, want %d", decoded.Type(), BlobTxType)
+	}
+	if decoded.BlobFeeCap().Cmp(uint256.NewInt(5)) != 0 {
+		t.Fatalf("BlobFeeCap() = %s, want 5", decoded.BlobFeeCap())
+	}
+	if len(decoded.BlobHashes()) != 2 {
+		t.Fatalf("BlobHashes() len = %d, want 2", len(decoded.BlobHashes()))
+	}
+	if decoded.BlobHashes()[0] != original.BlobHashes()[0] || decoded.BlobHashes()[1] != original.BlobHashes()[1] {
+		t.Fatalf("BlobHashes() = %v, want %v", decoded.BlobHashes(), original.BlobHashes())
 	}
 }
 
@@ -143,9 +187,9 @@ func TestCalcBlobFee(t *testing.T) {
 		excessBlobGas uint64
 		expectMin     uint64
 	}{
-		{"zero excess", 0, 1},                                  // Minimum is 1 wei
-		{"small excess", 100000, 1},                           // Still minimum
-		{"target excess", BlobTxTargetBlobGasPerBlock, 1},     // At target
+		{"zero excess", 0, 1},                             // Minimum is 1 wei
+		{"small excess", 100000, 1},                       // Still minimum
+		{"target excess", BlobTxTargetBlobGasPerBlock, 1}, // At target
 	}
 
 	for _, tt := range tests {
@@ -160,10 +204,10 @@ func TestCalcBlobFee(t *testing.T) {
 
 func TestCalcExcessBlobGas(t *testing.T) {
 	tests := []struct {
-		name             string
-		parentExcess     uint64
+		name              string
+		parentExcess      uint64
 		parentBlobGasUsed uint64
-		expectExcess     uint64
+		expectExcess      uint64
 	}{
 		{"zero excess zero used", 0, 0, 0},
 		{"zero excess below target", 0, BlobTxTargetBlobGasPerBlock - 1, 0},
@@ -286,12 +330,12 @@ func TestBlobTxSidecarBlobCount(t *testing.T) {
 					Blobs: make([]Blob, tt.blobs),
 				}
 			}
-			
+
 			var got int
 			if sidecar != nil {
 				got = sidecar.BlobCount()
 			}
-			
+
 			if got != tt.expected {
 				t.Errorf("BlobCount() = %d, want %d", got, tt.expected)
 			}
@@ -354,7 +398,7 @@ func BenchmarkKZGToVersionedHash(b *testing.B) {
 	for i := range commitment {
 		commitment[i] = byte(i)
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		KZGToVersionedHash(commitment)
@@ -396,4 +440,3 @@ func BenchmarkBlobTxSidecarCopy(b *testing.B) {
 		sidecar.Copy()
 	}
 }
-

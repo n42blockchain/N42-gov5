@@ -45,7 +45,7 @@ func (x *BlobSidecar) Reset() {
 	*x = BlobSidecar{}
 	// Reuse H128's message type info (index 0) for proto reflection.
 	// This is safe because we only use SSZ encoding on the wire.
-	mi := &file_types_proto_msgTypes[0]
+	mi := &file_types_pb_types_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -54,7 +54,7 @@ func (x *BlobSidecar) String() string { return "BlobSidecar" }
 func (x *BlobSidecar) ProtoMessage()  {}
 
 func (x *BlobSidecar) ProtoReflect() protoreflect.Message {
-	mi := &file_types_proto_msgTypes[0]
+	mi := &file_types_pb_types_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {

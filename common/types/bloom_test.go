@@ -16,7 +16,12 @@
 
 package types
 
-import "testing"
+import (
+	"hash"
+	"testing"
+)
+
+var _ hash.Hash64 = newHasher(nil)
 
 func TestBloom_Contain(t *testing.T) {
 	bloom, _ := NewBloom(10)
@@ -38,4 +43,28 @@ func TestBloom_Contain(t *testing.T) {
 	b, _ := bloom.Marshal()
 	t.Logf("bloom Marshal: %+v", b)
 
+}
+
+func TestHasherMethods(t *testing.T) {
+	h := newHasher([]byte{0x01, 0x02})
+	if got := h.Sum64(); got != 0x0102 {
+		t.Fatalf("Sum64() = %d, want %d", got, 0x0102)
+	}
+
+	sum := h.Sum(nil)
+	if len(sum) != 8 {
+		t.Fatalf("Sum() len = %d, want 8", len(sum))
+	}
+
+	h.Reset()
+	if got := h.Sum64(); got != 0 {
+		t.Fatalf("Sum64() after Reset = %d, want 0", got)
+	}
+
+	if _, err := h.Write([]byte{1, 2, 3, 4, 5, 6, 7, 8}); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if got := h.Sum64(); got != 0x0102030405060708 {
+		t.Fatalf("Sum64() = %x, want %x", got, uint64(0x0102030405060708))
+	}
 }

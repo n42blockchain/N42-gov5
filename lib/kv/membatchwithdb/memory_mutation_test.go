@@ -154,6 +154,46 @@ func TestFlush(t *testing.T) {
 	require.Equal(t, value, []byte("value5"))
 }
 
+func TestMemoryMutationHelperMethods(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+
+	initializeDbNonDupSort(rwTx)
+	batch := NewMemoryBatch(rwTx, "", log.Root())
+	require.NoError(t, batch.Put(kv.HashedAccounts, []byte("BAAA"), []byte("value4")))
+
+	size, err := batch.DBSize()
+	require.NoError(t, err)
+	require.NotZero(t, size)
+
+	exists, err := batch.ExistsBucket(kv.HashedAccounts)
+	require.NoError(t, err)
+	require.True(t, exists)
+
+	buckets, err := batch.ListBuckets()
+	require.NoError(t, err)
+	require.Contains(t, buckets, kv.HashedAccounts)
+
+	key, value, err := batch.Last(kv.HashedAccounts)
+	require.NoError(t, err)
+	require.Equal(t, []byte("CCAA"), key)
+	require.Equal(t, []byte("value3"), value)
+
+	it, err := batch.Range(kv.HashedAccounts, []byte("AAAA"), []byte("DZZZ"))
+	require.NoError(t, err)
+
+	var got []string
+	for it.HasNext() {
+		k, _, err := it.Next()
+		require.NoError(t, err)
+		got = append(got, string(k))
+	}
+	require.Equal(t, []string{"AAAA", "BAAA", "CAAA", "CBAA", "CCAA"}, got)
+
+	require.Equal(t, rwTx.ViewID(), batch.ViewID())
+	_ = batch.CHandle()
+	require.Error(t, batch.DropBucket(kv.HashedAccounts))
+}
+
 func TestForEach(t *testing.T) {
 	_, rwTx := memdb.NewTestTx(t)
 
@@ -483,6 +523,65 @@ func TestDeleteCurrentDuplicates(t *testing.T) {
 	require.Equal(t, []string{"value1.1", "value1.3"}, values)
 }
 
+func TestDeleteCurrentPureDupsortRemovesVisibleEntry(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+
+	initializeDbDupSort(rwTx)
+
+	batch := NewMemoryBatch(rwTx, "", log.Root())
+	defer batch.Close()
+
+	cursor, err := batch.RwCursorDupSort(kv.AccountChangeSet)
+	require.NoError(t, err)
+
+	require.NoError(t, cursor.Put([]byte("key1"), []byte("value1.2")))
+
+	k, v, err := cursor.SeekBothExact([]byte("key1"), []byte("value1.2"))
+	require.NoError(t, err)
+	require.Equal(t, []byte("key1"), k)
+	require.Equal(t, []byte("value1.2"), v)
+	require.NoError(t, cursor.DeleteCurrent())
+
+	var got []string
+	for k, v, err = cursor.First(); k != nil; k, v, err = cursor.Next() {
+		require.NoError(t, err)
+		got = append(got, string(k)+":"+string(v))
+	}
+	require.Equal(t, []string{
+		"key1:value1.1",
+		"key1:value1.3",
+		"key3:value3.1",
+		"key3:value3.3",
+	}, got)
+}
+
+func TestDeleteExactPureDupsortPersistsOnFlush(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+
+	initializeDbDupSort(rwTx)
+
+	batch := NewMemoryBatch(rwTx, "", log.Root())
+	defer batch.Close()
+
+	cursor, err := batch.RwCursorDupSort(kv.AccountChangeSet)
+	require.NoError(t, err)
+
+	require.NoError(t, cursor.DeleteExact([]byte("key1"), []byte("value1.1")))
+	require.NoError(t, batch.Flush(rwTx))
+
+	var got []string
+	err = rwTx.ForEach(kv.AccountChangeSet, nil, func(k, v []byte) error {
+		got = append(got, string(k)+":"+string(v))
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"key1:value1.3",
+		"key3:value3.1",
+		"key3:value3.3",
+	}, got)
+}
+
 func TestSeekBothRange(t *testing.T) {
 	_, rwTx := memdb.NewTestTx(t)
 
@@ -665,4 +764,36 @@ func TestAutoConversionSeekBothRange(t *testing.T) {
 	v, err = c.SeekBothRange([]byte("X..........................."), []byte("_______________________________Y"))
 	require.NoError(t, err)
 	assert.Nil(t, v)
+}
+
+func TestMemoryMutationCursorUnsupportedPathsReturnErrors(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+
+	initializeDbDupSort(rwTx)
+	initializeDbAutoConversion(rwTx)
+
+	batch := NewMemoryBatch(rwTx, "", log.Root())
+	defer batch.Close()
+
+	dupCursor, err := batch.RwCursorDupSort(kv.AccountChangeSet)
+	require.NoError(t, err)
+
+	count, err := dupCursor.Count()
+	require.NoError(t, err)
+	require.EqualValues(t, 4, count)
+
+	_, _, err = dupCursor.Prev()
+	require.ErrorIs(t, err, errReverseIterationUnsupported)
+
+	_, err = dupCursor.FirstDup()
+	require.ErrorIs(t, err, errDupCountUnsupported)
+
+	err = dupCursor.PutNoDupData([]byte("key4"), []byte("value4.1"))
+	require.ErrorIs(t, err, errPutNoDupDataUnsupported)
+
+	autoCursor, err := batch.RwCursorDupSort(kv.PlainState)
+	require.NoError(t, err)
+
+	err = autoCursor.DeleteCurrentDuplicates()
+	require.ErrorIs(t, err, errDeleteCurrentDuplicatesUnsupported)
 }

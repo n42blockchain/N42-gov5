@@ -180,6 +180,14 @@ func TestRange(t *testing.T) {
 	})
 }
 
+func TestTemporaryMdbxCHandle(t *testing.T) {
+	db, err := NewTemporaryMdbx(context.Background(), t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(db.Close)
+
+	require.NotNil(t, db.CHandle())
+}
+
 func TestRangeDupSort(t *testing.T) {
 	t.Run("Asc", func(t *testing.T) {
 		_, tx, _ := BaseCase(t)

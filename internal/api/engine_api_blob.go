@@ -166,6 +166,13 @@ func NewEngineAPIBlob(api *BlockChainAPI) *EngineAPIBlob {
 // NewPayloadV3 processes a new execution payload with blob support
 // engine_newPayloadV3
 func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayloadV3, expectedBlobVersionedHashes []types.Hash, parentBeaconBlockRoot *types.Hash) (*NewPayloadResponseV3, error) {
+	if payload == nil {
+		return invalidPayloadResponse("missing execution payload"), nil
+	}
+	if parentBeaconBlockRoot == nil {
+		return invalidPayloadResponse("missing parent beacon block root"), nil
+	}
+
 	// Validate blob gas and versioned hashes for Cancun
 	if resp := validateBlobGasAndHashes(
 		payload.BlobGasUsed,
@@ -176,6 +183,9 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 		transaction.BlobTxBlobGasPerBlob,
 	); resp != nil {
 		return resp, nil
+	}
+	if err := ValidateBlobTransactions(payload.Transactions, expectedBlobVersionedHashes); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
 	}
 
 	// TODO: Implement actual payload processing
@@ -209,6 +219,10 @@ func (e *EngineAPIBlob) GetPayloadV3(ctx context.Context, payloadID PayloadID) (
 // ForkchoiceUpdatedV3 updates the fork choice with blob support
 // engine_forkchoiceUpdatedV3
 func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *ForkchoiceStateV1, attrs *PayloadAttributesV3) (*ForkchoiceUpdatedResponseV3, error) {
+	if state == nil {
+		return invalidForkchoiceResponse("missing forkchoice state"), nil
+	}
+
 	// Validate attributes if present
 	if attrs != nil {
 		// Parent beacon block root is required for Cancun
@@ -341,10 +355,13 @@ func ValidateBlobTransactions(txs []hexutil.Bytes, expectedHashes []types.Hash) 
 			continue
 		}
 
-		// Check if this is a blob transaction (type 0x03)
-		if txBytes[0] == transaction.BlobTxType {
-			// TODO: Decode transaction and extract blob hashes
-			// For now, skip validation
+		var tx transaction.Transaction
+		if err := tx.Unmarshal(txBytes); err != nil {
+			return err
+		}
+
+		if tx.Type() == transaction.BlobTxType {
+			actualHashes = append(actualHashes, tx.BlobHashes()...)
 		}
 	}
 
