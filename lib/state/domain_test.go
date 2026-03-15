@@ -87,6 +87,20 @@ func TestDomain_OpenFolder(t *testing.T) {
 	d.Close()
 }
 
+func TestDomainLastStepInDBRejectsMalformedKey(t *testing.T) {
+	logger := log.New()
+	_, db, d := testDbAndDomain(t, logger)
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	require.NoError(t, tx.Put(d.valsTable, []byte("short"), []byte("value")))
+
+	require.NotPanics(t, func() {
+		require.Zero(t, d.LastStepInDB(tx))
+	})
+}
+
 // btree index should work correctly if K < m
 func TestCollationBuild(t *testing.T) {
 	logger := log.New()

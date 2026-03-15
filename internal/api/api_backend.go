@@ -61,6 +61,14 @@ func (b *API) CurrentBlock() *block.Header {
 	return header
 }
 
+func (b *API) canonicalHashForNumber(number *uint256.Int) (types.Hash, error) {
+	chain, ok := b.bc.(*internal.BlockChain)
+	if !ok {
+		return types.Hash{}, errors.New("canonical hash check unavailable for this blockchain implementation")
+	}
+	return chain.GetCanonicalHash(number), nil
+}
+
 // HeaderByNumber returns the block header for the given block number.
 // Returns the latest header when rpc.LatestBlockNumber is specified.
 func (b *API) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*block.Header, error) {
@@ -93,8 +101,14 @@ func (b *API) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockN
 		if header == nil {
 			return nil, errors.New("header for hash not found")
 		}
-		if blockNrOrHash.RequireCanonical && b.bc.(*internal.BlockChain).GetCanonicalHash(header.Number64()) != hash {
-			return nil, errors.New("hash is not currently canonical")
+		if blockNrOrHash.RequireCanonical {
+			canonicalHash, err := b.canonicalHashForNumber(header.Number64())
+			if err != nil {
+				return nil, err
+			}
+			if canonicalHash != hash {
+				return nil, errors.New("hash is not currently canonical")
+			}
 		}
 		h, ok := header.(*block.Header)
 		if !ok {
@@ -174,8 +188,14 @@ func (b *API) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNu
 		if header == nil {
 			return nil, errors.New("header for hash not found")
 		}
-		if blockNrOrHash.RequireCanonical && b.bc.(*internal.BlockChain).GetCanonicalHash(header.Number64()) != hash {
-			return nil, errors.New("hash is not currently canonical")
+		if blockNrOrHash.RequireCanonical {
+			canonicalHash, err := b.canonicalHashForNumber(header.Number64())
+			if err != nil {
+				return nil, err
+			}
+			if canonicalHash != hash {
+				return nil, errors.New("hash is not currently canonical")
+			}
 		}
 		iBlock := b.bc.GetBlock(hash, header.Number64().Uint64())
 		if iBlock == nil {
@@ -287,7 +307,7 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *block.B
 		return nil, evmtypes.BlockContext{}, statedb, nil
 	}
 
-	signer := transaction.MakeSigner(eth.BlockChain().Config(), blk.Number64().ToBig())
+	signer := transaction.MakeSigner(eth.BlockChain().Config(), uint256ToBigOrZero(blk.Number64()))
 	getHeader := func(hash types.Hash, number uint64) *block.Header {
 		return rawdb.ReadHeader(dbTx, hash, number)
 	}

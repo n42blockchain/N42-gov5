@@ -97,7 +97,7 @@ type API struct {
 	chainConfig    *params.ChainConfig
 
 	gpo   *Oracle
-	p2p   P2PAdmin  // optional; nil until SetP2P is called
+	p2p   P2PAdmin   // optional; nil until SetP2P is called
 	miner MinerAdmin // optional; nil until SetMiner is called
 }
 
@@ -166,6 +166,9 @@ func (n *API) Engine() consensus.Engine       { return n.engine }
 func (n *API) BlockChain() common.IBlockChain { return n.bc }
 func (n *API) GetEvm(ctx context.Context, msg internal.Message, ibs evmtypes.IntraBlockState, header block.IHeader, vmConfig *vm2.Config) (*vm2.EVM, func() error, error) {
 	vmError := func() error { return nil }
+	if vmConfig == nil {
+		vmConfig = &vm2.Config{}
+	}
 
 	concreteHeader, ok := header.(*block.Header)
 	if !ok {
@@ -331,9 +334,9 @@ type StorageResult struct {
 // if stateDiff is set, all diff will be applied first and then execute the call
 // message.
 type OverrideAccount struct {
-	Nonce      *hexutil.Uint64                      `json:"nonce"`
-	Code       *hexutil.Bytes                       `json:"code"`
-	Balance    **hexutil.Big                        `json:"balance"`
+	Nonce      *hexutil.Uint64                    `json:"nonce"`
+	Code       *hexutil.Bytes                     `json:"code"`
+	Balance    **hexutil.Big                      `json:"balance"`
 	StatsPrint *map[avmcommon.Hash]avmcommon.Hash `json:"state"`
 	StateDiff  *map[avmcommon.Hash]avmcommon.Hash `json:"stateDiff"`
 }
@@ -480,7 +483,7 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 	defer cancel()
 
 	// Get a new instance of the EVM.
-	msg, err := args.ToMessage(globalGasCap, header.BaseFee64().ToBig())
+	msg, err := args.ToMessage(globalGasCap, headerBaseFeeBig(header))
 	if err != nil {
 		return nil, err
 	}

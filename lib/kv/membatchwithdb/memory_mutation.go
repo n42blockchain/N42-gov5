@@ -55,7 +55,9 @@ func NewMemoryBatch(tx kv.Tx, tmpDir string, logger log.Logger) *MemoryMutation 
 		panic(err)
 	}
 	if err := initSequences(tx, memTx); err != nil {
-		return nil
+		memTx.Rollback()
+		tmpDB.Close()
+		panic(fmt.Errorf("initialize sequence bucket: %w", err))
 	}
 
 	return &MemoryMutation{
@@ -116,10 +118,14 @@ func (m *MemoryMutation) DBSize() (uint64, error) {
 }
 
 func initSequences(db kv.Tx, memTx kv.RwTx) error {
+	if db == nil {
+		return nil
+	}
 	cursor, err := db.Cursor(kv.Sequence)
 	if err != nil {
 		return err
 	}
+	defer cursor.Close()
 	for k, v, err := cursor.First(); k != nil; k, v, err = cursor.Next() {
 		if err != nil {
 			return err

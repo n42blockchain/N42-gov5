@@ -34,6 +34,7 @@ import (
 
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
 )
@@ -203,6 +204,100 @@ func TestInvIndexAfterPrune(t *testing.T) {
 		require.NoError(t, err)
 		require.Nil(t, k, table)
 	}
+}
+
+func TestRecentInvertedIdxIterCursorErrorIsReturned(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	roTx := memdb.BeginRo(t, db)
+
+	it := &RecentInvertedIdxIter{
+		key:         []byte("missing"),
+		startTxNum:  0,
+		endTxNum:    -1,
+		limit:       1,
+		orderAscend: true,
+		roTx:        roTx,
+		indexTable:  "missing_table",
+		hasNext:     true,
+	}
+
+	require.NotPanics(t, func() {
+		it.advanceInDB()
+	})
+	require.True(t, it.HasNext())
+
+	_, err := it.Next()
+	require.Error(t, err)
+}
+
+func TestFrozenInvertedIdxIterReturnsStoredError(t *testing.T) {
+	wantErr := fmt.Errorf("boom")
+	it := &FrozenInvertedIdxIter{
+		err:     wantErr,
+		hasNext: true,
+	}
+
+	require.True(t, it.HasNext())
+	_, err := it.Next()
+	require.ErrorIs(t, err, wantErr)
+}
+
+func TestRecentInvertedIdxIterRejectsShortTxNumValue(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+	require.NoError(t, rwTx.Put(kv.AccountChangeSet, []byte("key"), []byte{0x01}))
+
+	it := &RecentInvertedIdxIter{
+		key:         []byte("key"),
+		startTxNum:  0,
+		endTxNum:    -1,
+		limit:       1,
+		orderAscend: true,
+		roTx:        rwTx,
+		indexTable:  kv.AccountChangeSet,
+		hasNext:     true,
+	}
+
+	require.NotPanics(t, func() {
+		it.advanceInDB()
+	})
+	require.True(t, it.HasNext())
+
+	_, err := it.Next()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "txnum prefix")
+}
+
+func TestInvertedIndexRecentRangeRejectsShortTxNumValue(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+	require.NoError(t, rwTx.Put(kv.AccountChangeSet, []byte("key"), []byte{0x01}))
+
+	iit := &InvertedIndexRoTx{
+		ii: &InvertedIndex{indexTable: kv.AccountChangeSet},
+	}
+	it, err := iit.recentIterateRange([]byte("key"), 0, -1, order.Asc, 1, rwTx)
+	require.NoError(t, err)
+	if closer, ok := it.(iter.Closer); ok {
+		defer closer.Close()
+	}
+
+	require.True(t, it.HasNext())
+	_, err = it.Next()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "txnum prefix")
+}
+
+func TestInvIndexCollateRejectsShortTxKey(t *testing.T) {
+	logger := log.New()
+	_, db, ii := testDbAndInvertedIndex(t, 16, logger)
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	require.NoError(t, tx.Put(ii.indexKeysTable, []byte("short"), []byte("key")))
+
+	_, err = ii.collate(context.Background(), 0, 16, tx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "8-byte txnum")
 }
 
 func filledInvIndex(tb testing.TB, logger log.Logger) (string, kv.RwDB, *InvertedIndex, uint64) {

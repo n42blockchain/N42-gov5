@@ -131,7 +131,7 @@ func (r *Resolver) Logs(ctx context.Context, filter LogFilter) ([]*Log, error) {
 	if currentBlock == nil {
 		return nil, errors.New("chain not available")
 	}
-	currentNum := currentBlock.Number64().Uint64()
+	currentNum := uint256ToUint64OrZero(currentBlock.Number64())
 
 	var from, to uint64
 	if filter.FromBlock != nil {
@@ -244,7 +244,7 @@ func (r *Resolver) marshalBlock(iblock blockpkg.IBlock) (*Block, error) {
 	parentHash := iblock.ParentHash()
 
 	gqlBlock := &Block{
-		Number:           hexutil.Uint64(iblock.Number64().Uint64()),
+		Number:           hexutil.Uint64(uint256ToUint64OrZero(iblock.Number64())),
 		Hash:             iblock.Hash(),
 		Parent:           &parentHash,
 		Timestamp:        hexutil.Uint64(iblock.Time()),
@@ -279,7 +279,7 @@ func (r *Resolver) marshalBlock(iblock blockpkg.IBlock) (*Block, error) {
 	txs := iblock.Transactions()
 	gqlTxs := make([]*Transaction, len(txs))
 	blockHash := iblock.Hash()
-	blockNum := iblock.Number64().Uint64()
+	blockNum := uint256ToUint64OrZero(iblock.Number64())
 	for i, tx := range txs {
 		gqlTxs[i] = marshalTransaction(tx, blockHash, blockNum, uint64(i))
 	}

@@ -7,12 +7,12 @@ import (
 	"math/big"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/accounts"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
-	avmcommon "github.com/n42blockchain/N42/common/avmutil"
-	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -68,7 +68,7 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	if header == nil {
 		return avmcommon.Hash{}, errors.New("no header available")
 	}
-	metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), header.Number64().ToBig())
+	metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()))
 	if err != nil {
 		return avmcommon.Hash{}, err
 	}
@@ -107,7 +107,7 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 			hs[i] = avmcommon.Hash{}
 			return hs, err
 		}
-		metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), header.Number64().ToBig())
+		metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()))
 		if err != nil {
 			hs[i] = avmcommon.Hash{}
 			return hs, err
@@ -272,7 +272,7 @@ func (s *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, 
 	if headerBaseFee == nil {
 		headerBaseFee = new(uint256.Int)
 	}
-	return newRPCTransaction(txs[index], avmtypes.ToastHash(blockHash), blk.Number64().Uint64(), uint64(index), headerBaseFee.ToBig())
+	return newRPCTransaction(txs[index], avmtypes.ToastHash(blockHash), uint256ToUint64OrZero(blk.Number64()), uint64(index), headerBaseFee.ToBig())
 }
 
 // SubmitTransaction submits a transaction to the transaction pool.
@@ -341,4 +341,3 @@ func toHexSlice(b [][]byte) []string {
 	}
 	return r
 }
-

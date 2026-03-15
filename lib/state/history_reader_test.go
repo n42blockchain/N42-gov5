@@ -5,6 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/lib/kv/order"
 )
 
@@ -49,4 +53,58 @@ func TestErrKVIterEmitsErrorOnce(t *testing.T) {
 	if it.HasNext() {
 		t.Fatal("HasNext() after Next = true, want false")
 	}
+}
+
+func TestGetNoStateFromDBRejectsShortValue(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+	require.NoError(t, rwTx.Put(kv.AccountChangeSet, []byte("key"), []byte{0x01}))
+
+	ht := &HistoryRoTx{h: &History{historyValsTable: kv.AccountChangeSet}}
+	_, _, err := ht.getNoStateFromDB([]byte("key"), 0, rwTx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "txnum prefix")
+}
+
+func TestGetNoStateFromDBRejectsShortCompositeKey(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+	require.NoError(t, rwTx.Put(kv.PlainState, []byte("short"), []byte("value")))
+
+	ht := &HistoryRoTx{h: &History{historyValsTable: kv.PlainState, largeValues: true}}
+	_, _, err := ht.getNoStateFromDB([]byte("sho"), 0, rwTx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "txnum suffix")
+}
+
+func TestIdxRangeRecentRejectsShortValue(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+	require.NoError(t, rwTx.Put(kv.AccountChangeSet, []byte("key"), []byte{0x01}))
+
+	ht := &HistoryRoTx{h: &History{historyValsTable: kv.AccountChangeSet}}
+	it, err := ht.idxRangeRecent([]byte("key"), 0, -1, order.Asc, 1, rwTx)
+	require.NoError(t, err)
+	if closer, ok := it.(interface{ Close() }); ok {
+		defer closer.Close()
+	}
+
+	require.True(t, it.HasNext())
+	_, err = it.Next()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "txnum prefix")
+}
+
+func TestIdxRangeRecentRejectsShortCompositeKey(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+	require.NoError(t, rwTx.Put(kv.PlainState, []byte("short"), []byte("value")))
+
+	ht := &HistoryRoTx{h: &History{historyValsTable: kv.PlainState, largeValues: true}}
+	it, err := ht.idxRangeRecent([]byte("sho"), 0, -1, order.Asc, 1, rwTx)
+	require.NoError(t, err)
+	if closer, ok := it.(interface{ Close() }); ok {
+		defer closer.Close()
+	}
+
+	require.True(t, it.HasNext())
+	_, err = it.Next()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "txnum suffix")
 }

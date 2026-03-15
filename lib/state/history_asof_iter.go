@@ -43,6 +43,7 @@ type StateAsOfIterF struct {
 	compressVals bool
 
 	k, v, kBackup, vBackup []byte
+	err                    error
 }
 
 func (hi *StateAsOfIterF) Close() {
@@ -107,17 +108,23 @@ func (hi *StateAsOfIterF) advanceInFiles() error {
 }
 
 func (hi *StateAsOfIterF) HasNext() bool {
+	if hi.err != nil {
+		return true
+	}
 	return hi.limit != 0 && hi.nextKey != nil
 }
 
 func (hi *StateAsOfIterF) Next() ([]byte, []byte, error) {
+	if hi.err != nil {
+		return nil, nil, hi.err
+	}
 	hi.limit--
 	hi.k, hi.v = append(hi.k[:0], hi.nextKey...), append(hi.v[:0], hi.nextVal...)
 
 	// Satisfy iter.Dual Invariant 2
 	hi.k, hi.kBackup, hi.v, hi.vBackup = hi.kBackup, hi.k, hi.vBackup, hi.v
 	if err := hi.advanceInFiles(); err != nil {
-		return nil, nil, err
+		hi.err = err
 	}
 	return hi.kBackup, hi.vBackup, nil
 }
@@ -176,7 +183,11 @@ func (hi *StateAsOfIterDB) advanceLargeVals() error {
 			hi.nextKey = nil
 			return nil
 		}
-		seek = append(common.Copy(firstKey[:len(firstKey)-8]), hi.startTxKey[:]...)
+		firstKeyPrefix, err := trimTxNumSuffix("StateAsOfIterDB.advanceLargeVals", firstKey)
+		if err != nil {
+			return err
+		}
+		seek = append(common.Copy(firstKeyPrefix), hi.startTxKey[:]...)
 	} else {
 		next, ok := kv.NextSubtree(hi.nextKey)
 		if !ok {
@@ -190,14 +201,22 @@ func (hi *StateAsOfIterDB) advanceLargeVals() error {
 		if err != nil {
 			return err
 		}
-		if hi.to != nil && bytes.Compare(k[:len(k)-8], hi.to) >= 0 {
+		keyPrefix, err := trimTxNumSuffix("StateAsOfIterDB.advanceLargeVals", k)
+		if err != nil {
+			return err
+		}
+		if hi.to != nil && bytes.Compare(keyPrefix, hi.to) >= 0 {
 			break
 		}
-		if !bytes.Equal(seek[:len(k)-8], k[:len(k)-8]) {
-			copy(seek[:len(k)-8], k[:len(k)-8])
+		seekPrefix, err := trimTxNumSuffix("StateAsOfIterDB.advanceLargeVals", seek)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(seekPrefix, keyPrefix) {
+			seek = append(common.Copy(keyPrefix), hi.startTxKey[:]...)
 			continue
 		}
-		hi.nextKey = k[:len(k)-8]
+		hi.nextKey = keyPrefix
 		hi.nextVal = v
 		return nil
 	}
@@ -233,7 +252,16 @@ func (hi *StateAsOfIterDB) advanceSmallVals() error {
 			return err
 		}
 		if v == nil {
+			// SeekBothRange with no matching value leaves the DupSort cursor's
+			// inner dup-cursor in an indeterminate state. Re-seek to the current
+			// key before continuing with NextNoDup.
+			if k, _, err = hi.valsCDup.Seek(k); err != nil {
+				return err
+			}
 			continue
+		}
+		if len(v) < 8 {
+			return fmt.Errorf("StateAsOfIterDB.advanceSmallVals: expected txnum prefix with at least 8 bytes, got %d", len(v))
 		}
 		hi.nextKey = k
 		hi.nextVal = v[8:]
@@ -260,7 +288,7 @@ func (hi *StateAsOfIterDB) Next() ([]byte, []byte, error) {
 	// Satisfy iter.Dual Invariant 2
 	hi.k, hi.kBackup, hi.v, hi.vBackup = hi.kBackup, hi.k, hi.vBackup, hi.v
 	if err := hi.advance(); err != nil {
-		return nil, nil, err
+		hi.err = err
 	}
 	return hi.kBackup, hi.vBackup, nil
 }

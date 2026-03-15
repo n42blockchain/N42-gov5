@@ -180,7 +180,7 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 
 	// Replay transactions up to the target
 	txs := blk.Transactions()
-	signer := transaction.MakeSigner(debug.api.GetChainConfig(), header.Number64().ToBig())
+	signer := transaction.MakeSigner(debug.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()))
 
 	for i := 0; i < txIndex; i++ {
 		msg, err := txs[i].AsMessage(signer, header.BaseFee64())
@@ -409,7 +409,7 @@ func (debug *DebugAPI) TraceCall(ctx context.Context, args TransactionArgs, bloc
 	}
 
 	// Create the message
-	msg, err := args.ToMessage(debug.api.RPCGasCap(), header.BaseFee64().ToBig())
+	msg, err := args.ToMessage(debug.api.RPCGasCap(), headerBaseFeeBig(header))
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +506,7 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 	if err := args.setDefaults(ctx, s.api); err != nil {
 		return nil, err
 	}
-	msg, err := args.ToMessage(s.api.RPCGasCap(), header.BaseFee64().ToBig())
+	msg, err := args.ToMessage(s.api.RPCGasCap(), headerBaseFeeBig(header))
 	if err != nil {
 		return nil, err
 	}

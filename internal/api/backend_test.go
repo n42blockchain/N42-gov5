@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -19,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/kv"
 	rpc "github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -69,10 +70,10 @@ func TestConfigBackendInterface(t *testing.T) {
 func TestHelperInterfaces(t *testing.T) {
 	var _ BlockReader = (*API)(nil)
 	t.Log("✓ BlockReader interface properly defined")
-	
+
 	var _ HeaderReader = (*API)(nil)
 	t.Log("✓ HeaderReader interface properly defined")
-	
+
 	var _ StateReader = (*API)(nil)
 	t.Log("✓ StateReader interface properly defined")
 }
@@ -84,11 +85,70 @@ func TestHelperInterfaces(t *testing.T) {
 // mockBackend implements Backend for testing purposes
 type mockBackend struct{}
 
+type canonicalCheckChainStub struct {
+	header *block.Header
+	blk    *block.Block
+}
+
+func (m *canonicalCheckChainStub) Config() *params.ChainConfig { return nil }
+func (m *canonicalCheckChainStub) CurrentBlock() block.IBlock  { return m.blk }
+func (m *canonicalCheckChainStub) GetHeader(hash types.Hash, number *uint256.Int) block.IHeader {
+	return m.header
+}
+func (m *canonicalCheckChainStub) GetHeaderByNumber(number *uint256.Int) block.IHeader {
+	return m.header
+}
+func (m *canonicalCheckChainStub) GetHeaderByHash(hash types.Hash) (block.IHeader, error) {
+	return m.header, nil
+}
+func (m *canonicalCheckChainStub) GetTd(types.Hash, *uint256.Int) *uint256.Int { return nil }
+func (m *canonicalCheckChainStub) GetBlockByNumber(number *uint256.Int) (block.IBlock, error) {
+	return m.blk, nil
+}
+func (m *canonicalCheckChainStub) GetDepositInfo(types.Address) (*uint256.Int, *uint256.Int) {
+	return nil, nil
+}
+func (m *canonicalCheckChainStub) GetAccountRewardUnpaid(types.Address) (*uint256.Int, error) {
+	return nil, nil
+}
+func (m *canonicalCheckChainStub) InsertHeader(headers []block.IHeader) (int, error) { return 0, nil }
+func (m *canonicalCheckChainStub) GetBlockByHash(h types.Hash) (block.IBlock, error) {
+	return m.blk, nil
+}
+func (m *canonicalCheckChainStub) Blocks() []block.IBlock                          { return nil }
+func (m *canonicalCheckChainStub) Start() error                                    { return nil }
+func (m *canonicalCheckChainStub) GenesisBlock() block.IBlock                      { return nil }
+func (m *canonicalCheckChainStub) NewBlockHandler(payload []byte, p peer.ID) error { return nil }
+func (m *canonicalCheckChainStub) InsertChain(blocks []block.IBlock) (int, error)  { return 0, nil }
+func (m *canonicalCheckChainStub) InsertBlock(blocks []block.IBlock, isSync bool) (int, error) {
+	return 0, nil
+}
+func (m *canonicalCheckChainStub) SetEngine(engine interface{}) {}
+func (m *canonicalCheckChainStub) GetBlocksFromHash(hash types.Hash, n int) []block.IBlock {
+	return nil
+}
+func (m *canonicalCheckChainStub) SealedBlock(block.IBlock) error                       { return nil }
+func (m *canonicalCheckChainStub) Engine() interface{}                                  { return nil }
+func (m *canonicalCheckChainStub) GetReceipts(types.Hash) (block.Receipts, error)       { return nil, nil }
+func (m *canonicalCheckChainStub) GetLogs(types.Hash) ([][]*block.Log, error)           { return nil, nil }
+func (m *canonicalCheckChainStub) SetHead(head uint64) error                            { return nil }
+func (m *canonicalCheckChainStub) AddFutureBlock(block.IBlock) error                    { return nil }
+func (m *canonicalCheckChainStub) GetBlock(hash types.Hash, number uint64) block.IBlock { return m.blk }
+func (m *canonicalCheckChainStub) StateAt(tx kv.Tx, blockNr uint64) interface{}         { return nil }
+func (m *canonicalCheckChainStub) HasBlock(hash types.Hash, number uint64) bool         { return m.blk != nil }
+func (m *canonicalCheckChainStub) DB() kv.RwDB                                          { return nil }
+func (m *canonicalCheckChainStub) Quit() <-chan struct{}                                { return nil }
+func (m *canonicalCheckChainStub) EarliestBlock() uint64                                { return 0 }
+func (m *canonicalCheckChainStub) Close() error                                         { return nil }
+func (m *canonicalCheckChainStub) WriteBlockWithState(block.IBlock, []*block.Receipt, interface{}, map[types.Address]*uint256.Int) error {
+	return nil
+}
+
 // BlockchainBackend methods
-func (m *mockBackend) BlockChain() common.IBlockChain                              { return nil }
-func (m *mockBackend) Engine() consensus.Engine                                    { return nil }
-func (m *mockBackend) Database() kv.RwDB                                           { return nil }
-func (m *mockBackend) CurrentHeader() *block.Header                                { return nil }
+func (m *mockBackend) BlockChain() common.IBlockChain { return nil }
+func (m *mockBackend) Engine() consensus.Engine       { return nil }
+func (m *mockBackend) Database() kv.RwDB              { return nil }
+func (m *mockBackend) CurrentHeader() *block.Header   { return nil }
 func (m *mockBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*block.Header, error) {
 	return nil, nil
 }
@@ -144,14 +204,14 @@ func TestMockBackendImplementsInterface(t *testing.T) {
 // TestBackendComposition verifies Backend composes sub-interfaces
 func TestBackendComposition(t *testing.T) {
 	var backend Backend = &mockBackend{}
-	
+
 	// Verify we can use backend as each sub-interface
 	var _ BlockchainBackend = backend
 	var _ StateBackend = backend
 	var _ TxPoolBackend = backend
 	var _ AccountBackend = backend
 	var _ ConfigBackend = backend
-	
+
 	t.Log("✓ Backend properly composes all sub-interfaces")
 }
 
@@ -159,21 +219,21 @@ func TestBackendComposition(t *testing.T) {
 func TestInterfaceGranularity(t *testing.T) {
 	// Components can depend on minimal interfaces
 	var backend Backend = &mockBackend{}
-	
+
 	// A component that only needs block reading
 	useBlockReader := func(br BlockReader) {
 		_ = br.CurrentBlock()
 	}
 	useBlockReader(backend)
 	t.Log("✓ BlockReader can be used independently")
-	
+
 	// A component that only needs header reading
 	useHeaderReader := func(hr HeaderReader) {
 		_ = hr.CurrentHeader()
 	}
 	useHeaderReader(backend)
 	t.Log("✓ HeaderReader can be used independently")
-	
+
 	// A component that only needs state reading
 	useStateReader := func(sr StateReader) {
 		_, _ = sr.StateAtBlock(context.Background(), nil, nil)
@@ -182,3 +242,25 @@ func TestInterfaceGranularity(t *testing.T) {
 	t.Log("✓ StateReader can be used independently")
 }
 
+func TestHeaderByNumberOrHashRequireCanonicalWithNonInternalChain(t *testing.T) {
+	header := &block.Header{Number: uint256.NewInt(1), Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(0)}
+	api := &API{bc: &canonicalCheckChainStub{header: header}}
+
+	args := rpc.BlockNumberOrHashWithHash(header.Hash(), true)
+	_, err := api.HeaderByNumberOrHash(context.Background(), args)
+	if err == nil || err.Error() != "canonical hash check unavailable for this blockchain implementation" {
+		t.Fatalf("HeaderByNumberOrHash() error = %v", err)
+	}
+}
+
+func TestBlockByNumberOrHashRequireCanonicalWithNonInternalChain(t *testing.T) {
+	header := &block.Header{Number: uint256.NewInt(1), Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(0)}
+	blk := block.NewBlock(header, nil).(*block.Block)
+	api := &API{bc: &canonicalCheckChainStub{header: header, blk: blk}}
+
+	args := rpc.BlockNumberOrHashWithHash(header.Hash(), true)
+	_, err := api.BlockByNumberOrHash(context.Background(), args)
+	if err == nil || err.Error() != "canonical hash check unavailable for this blockchain implementation" {
+		t.Fatalf("BlockByNumberOrHash() error = %v", err)
+	}
+}

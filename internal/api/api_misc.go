@@ -2,18 +2,19 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"runtime"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/turbo/rpchelper"
@@ -69,6 +70,9 @@ type feeHistoryResult struct {
 
 // FeeHistory returns the fee market history.
 func (s *n42API) FeeHistory(ctx context.Context, blockCount jsonrpc.DecimalOrHex, lastBlock jsonrpc.BlockNumber, rewardPercentiles []float64) (*feeHistoryResult, error) {
+	if s == nil || s.api == nil || s.api.gpo == nil {
+		return nil, errors.New("gas price oracle is unavailable")
+	}
 	var (
 		resolvedLastBlock *uint256.Int
 		err               error
@@ -302,7 +306,7 @@ func (debug *DebugAPI) NodeStatus(ctx context.Context) (*NodeStatus, error) {
 		// Chain info
 		if bc := debug.api.BlockChain(); bc != nil {
 			if current := bc.CurrentBlock(); current != nil {
-				status.CurrentBlock = current.Number64().Uint64()
+				status.CurrentBlock = uint256ToUint64OrZero(current.Number64())
 			}
 		}
 

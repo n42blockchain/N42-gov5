@@ -38,3 +38,25 @@ func TestMapmutation_Flush_Close(t *testing.T) {
 	batch.Close()
 	batch.Close()
 }
+
+func TestMapmutationReturnsErrorsWithoutAttachedDB(t *testing.T) {
+	batch := NewHashBatch(nil, nil, os.TempDir(), log.New())
+
+	_, _, err := batch.Last(kv.ChaindataTables[0])
+	require.ErrorIs(t, err, errMapmutationDBUnavailable)
+
+	err = batch.ForEach(kv.ChaindataTables[0], nil, func(k, v []byte) error { return nil })
+	require.ErrorIs(t, err, errMapmutationDBUnavailable)
+
+	err = batch.ForPrefix(kv.ChaindataTables[0], nil, func(k, v []byte) error { return nil })
+	require.ErrorIs(t, err, errMapmutationDBUnavailable)
+
+	err = batch.ForAmount(kv.ChaindataTables[0], nil, 1, func(k, v []byte) error { return nil })
+	require.ErrorIs(t, err, errMapmutationDBUnavailable)
+
+	err = batch.Commit()
+	require.ErrorIs(t, err, errMapmutationCommitUnsupported)
+
+	batch.Rollback()
+	batch.Rollback()
+}

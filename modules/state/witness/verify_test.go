@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/jmt"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
 
@@ -588,6 +589,85 @@ func TestNewTracingReader_NilPanic(t *testing.T) {
 		}
 	}()
 	NewTracingReader(nil)
+}
+
+func TestNewWitnessStateReaderNilWitness(t *testing.T) {
+	if _, err := NewWitnessStateReader(nil); err == nil {
+		t.Fatal("expected error for nil witness")
+	}
+}
+
+func TestWitnessStateReaderReturnsCopies(t *testing.T) {
+	addr := types.HexToAddress("0x1234567890abcdef1234567890abcdef12345678")
+	slot := types.HexToHash("0x01")
+	codeHash := types.HexToHash("0x02")
+
+	acct := makeTestAccount(7, 77)
+	acct.CodeHash = codeHash
+
+	w := &BlockWitness{
+		AccountProofs: []KeyProof{
+			{
+				OriginalKey: addr[:],
+				Value:       commitment.EncodeAccountValue(acct),
+			},
+		},
+		StorageProofs: []KeyProof{
+			{
+				OriginalKey: append(append([]byte{}, addr[:]...), slot[:]...),
+				Value:       []byte("value"),
+			},
+		},
+		Codes: []*state.HashCode{
+			{Hash: codeHash, Code: []byte("code")},
+		},
+	}
+
+	reader, err := NewWitnessStateReader(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readAcct, err := reader.ReadAccountData(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readAcct.Nonce = 99
+	readAcct.Balance.SetUint64(999)
+
+	readAcctAgain, err := reader.ReadAccountData(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readAcctAgain.Nonce != 7 || readAcctAgain.Balance.Uint64() != 77 {
+		t.Fatal("ReadAccountData should return a copy")
+	}
+
+	readStorage, err := reader.ReadAccountStorage(addr, 1, &slot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readStorage[0] = 'X'
+	readStorageAgain, err := reader.ReadAccountStorage(addr, 1, &slot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(readStorageAgain) != "value" {
+		t.Fatal("ReadAccountStorage should return a copy")
+	}
+
+	readCode, err := reader.ReadAccountCode(addr, 1, codeHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readCode[0] = 'X'
+	readCodeAgain, err := reader.ReadAccountCode(addr, 1, codeHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(readCodeAgain) != "code" {
+		t.Fatal("ReadAccountCode should return a copy")
+	}
 }
 
 // mockStateReader is a no-op state reader for testing TracingReader.

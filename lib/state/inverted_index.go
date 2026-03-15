@@ -508,7 +508,10 @@ func (ii *InvertedIndex) collate(ctx context.Context, txFrom, txTo uint64, roTx 
 	binary.BigEndian.PutUint64(txKey[:], txFrom)
 	var k, v []byte
 	for k, v, err = keysCursor.Seek(txKey[:]); err == nil && k != nil; k, v, err = keysCursor.Next() {
-		txNum := binary.BigEndian.Uint64(k)
+		txNum, err := decodeTxNumExact("InvertedIndex.collate index key", k)
+		if err != nil {
+			return nil, err
+		}
 		if txNum >= txTo {
 			break
 		}
@@ -650,7 +653,10 @@ func (ii *InvertedIndex) warmup(ctx context.Context, txFrom, limit uint64, tx kv
 	if k == nil {
 		return nil
 	}
-	txFrom = binary.BigEndian.Uint64(k)
+	txFrom, err = decodeTxNumExact("InvertedIndex.warmup index key", k)
+	if err != nil {
+		return err
+	}
 	txTo := txFrom + ii.aggregationStep
 	if limit != math.MaxUint64 && limit != 0 {
 		txTo = txFrom + limit
@@ -659,7 +665,10 @@ func (ii *InvertedIndex) warmup(ctx context.Context, txFrom, limit uint64, tx kv
 		if err != nil {
 			return fmt.Errorf("iterate over %s keys: %w", ii.filenameBase, err)
 		}
-		txNum := binary.BigEndian.Uint64(k)
+		txNum, err := decodeTxNumExact("InvertedIndex.warmup index key", k)
+		if err != nil {
+			return err
+		}
 		if txNum >= txTo {
 			break
 		}
@@ -690,7 +699,10 @@ func (ii *InvertedIndex) prune(ctx context.Context, txFrom, txTo, limit uint64, 
 	if k == nil {
 		return nil
 	}
-	txFrom = binary.BigEndian.Uint64(k)
+	txFrom, err = decodeTxNumExact("InvertedIndex.prune index key", k)
+	if err != nil {
+		return err
+	}
 	if limit != math.MaxUint64 && limit != 0 {
 		txTo = cmp.Min(txTo, txFrom+limit)
 	}
@@ -718,7 +730,10 @@ func (ii *InvertedIndex) prune(ctx context.Context, txFrom, txTo, limit uint64, 
 		if err != nil {
 			return err
 		}
-		txNum := binary.BigEndian.Uint64(k)
+		txNum, err := decodeTxNumExact("InvertedIndex.prune index key", k)
+		if err != nil {
+			return err
+		}
 		if txNum >= txTo {
 			break
 		}
@@ -750,7 +765,10 @@ func (ii *InvertedIndex) prune(ctx context.Context, txFrom, txTo, limit uint64, 
 			if err != nil {
 				return err
 			}
-			txNum := binary.BigEndian.Uint64(v)
+			txNum, err := decodeTxNumExact("InvertedIndex.prune value", v)
+			if err != nil {
+				return err
+			}
 			if txNum >= txTo {
 				break
 			}

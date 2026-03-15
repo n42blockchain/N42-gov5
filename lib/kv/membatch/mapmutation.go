@@ -14,6 +14,11 @@ import (
 	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
+var (
+	errMapmutationCommitUnsupported = errors.New("pending mutations are not database transactions; use Flush")
+	errMapmutationDBUnavailable     = errors.New("pending mutations require an attached database transaction")
+)
+
 type Mapmutation struct {
 	puts   map[string]map[string][]byte // table -> key -> value ie. blocks -> hash -> blockBod
 	db     kv.Tx
@@ -120,6 +125,9 @@ func (m *Mapmutation) GetOne(table string, key []byte) ([]byte, error) {
 }
 
 func (m *Mapmutation) Last(table string) ([]byte, []byte, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, nil, err
+	}
 	c, err := m.db.Cursor(table)
 	if err != nil {
 		return nil, nil, err
@@ -176,17 +184,23 @@ func (m *Mapmutation) BatchSize() int {
 }
 
 func (m *Mapmutation) ForEach(bucket string, fromPrefix []byte, walker func(k, v []byte) error) error {
-	m.panicOnEmptyDB()
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
 	return m.db.ForEach(bucket, fromPrefix, walker)
 }
 
 func (m *Mapmutation) ForPrefix(bucket string, prefix []byte, walker func(k, v []byte) error) error {
-	m.panicOnEmptyDB()
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
 	return m.db.ForPrefix(bucket, prefix, walker)
 }
 
 func (m *Mapmutation) ForAmount(bucket string, prefix []byte, amount uint32, walker func(k, v []byte) error) error {
-	m.panicOnEmptyDB()
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
 	return m.db.ForAmount(bucket, prefix, amount, walker)
 }
 
@@ -256,11 +270,12 @@ func (m *Mapmutation) Close() {
 	m.clean()
 	m.clean = nil
 }
-func (m *Mapmutation) Commit() error { panic("not db txn, use .Flush method") }
-func (m *Mapmutation) Rollback()     { panic("not db txn, use .Close method") }
+func (m *Mapmutation) Commit() error { return errMapmutationCommitUnsupported }
+func (m *Mapmutation) Rollback()     { m.Close() }
 
-func (m *Mapmutation) panicOnEmptyDB() {
+func (m *Mapmutation) ensureDB() error {
 	if m.db == nil {
-		panic("Not implemented")
+		return errMapmutationDBUnavailable
 	}
+	return nil
 }

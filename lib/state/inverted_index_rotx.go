@@ -150,7 +150,7 @@ func (iit *InvertedIndexRoTx) recentIterateRange(key []byte, startTxNum, endTxNu
 		return nil, err
 	}
 	return iter.TransformKV2U64(it, func(_, v []byte) (uint64, error) {
-		return binary.BigEndian.Uint64(v), nil
+		return decodeTxNumPrefix("InvertedIndexRoTx.recentIterateRange", v)
 	}), nil
 }
 
@@ -314,7 +314,12 @@ func (it *FrozenInvertedIdxIter) HasNext() bool {
 	return it.hasNext
 }
 
-func (it *FrozenInvertedIdxIter) Next() (uint64, error) { return it.next(), nil }
+func (it *FrozenInvertedIdxIter) Next() (uint64, error) {
+	if it.err != nil {
+		return 0, it.err
+	}
+	return it.next(), nil
+}
 
 func (it *FrozenInvertedIdxIter) next() uint64 {
 	it.limit--
@@ -415,17 +420,23 @@ func (it *RecentInvertedIdxIter) Close() {
 	bitmapdb.ReturnToPool64(it.bm)
 }
 
+func (it *RecentInvertedIdxIter) fail(err error) {
+	it.err = err
+	it.hasNext = false
+}
+
 func (it *RecentInvertedIdxIter) advanceInDB() {
 	var v []byte
 	var err error
 	if it.cursor == nil {
 		if it.cursor, err = it.roTx.CursorDupSort(it.indexTable); err != nil {
-			// TODO pass error properly around
-			panic(err)
+			it.fail(err)
+			return
 		}
 		var k []byte
 		if k, _, err = it.cursor.SeekExact(it.key); err != nil {
-			panic(err)
+			it.fail(err)
+			return
 		}
 		if k == nil {
 			it.hasNext = false
@@ -438,13 +449,15 @@ func (it *RecentInvertedIdxIter) advanceInDB() {
 			binary.BigEndian.PutUint64(keyBytes[:], uint64(it.startTxNum))
 		}
 		if v, err = it.cursor.SeekBothRange(it.key, keyBytes[:]); err != nil {
-			panic(err)
+			it.fail(err)
+			return
 		}
 		if v == nil {
 			if !it.orderAscend {
-				_, v, _ = it.cursor.PrevDup()
+				_, v, err = it.cursor.PrevDup()
 				if err != nil {
-					panic(err)
+					it.fail(err)
+					return
 				}
 			}
 			if v == nil {
@@ -456,13 +469,14 @@ func (it *RecentInvertedIdxIter) advanceInDB() {
 		if it.orderAscend {
 			_, v, err = it.cursor.NextDup()
 			if err != nil {
-				// TODO pass error properly around
-				panic(err)
+				it.fail(err)
+				return
 			}
 		} else {
 			_, v, err = it.cursor.PrevDup()
 			if err != nil {
-				panic(err)
+				it.fail(err)
+				return
 			}
 		}
 	}
@@ -472,10 +486,14 @@ func (it *RecentInvertedIdxIter) advanceInDB() {
 	if it.orderAscend {
 		for ; v != nil; _, v, err = it.cursor.NextDup() {
 			if err != nil {
-				// TODO pass error properly around
-				panic(err)
+				it.fail(err)
+				return
 			}
-			n := binary.BigEndian.Uint64(v)
+			n, err := decodeTxNumPrefix("RecentInvertedIdxIter.advanceInDB", v)
+			if err != nil {
+				it.fail(err)
+				return
+			}
 			if it.endTxNum >= 0 && int(n) >= it.endTxNum {
 				it.hasNext = false
 				return
@@ -489,10 +507,14 @@ func (it *RecentInvertedIdxIter) advanceInDB() {
 	} else {
 		for ; v != nil; _, v, err = it.cursor.PrevDup() {
 			if err != nil {
-				// TODO pass error properly around
-				panic(err)
+				it.fail(err)
+				return
 			}
-			n := binary.BigEndian.Uint64(v)
+			n, err := decodeTxNumPrefix("RecentInvertedIdxIter.advanceInDB", v)
+			if err != nil {
+				it.fail(err)
+				return
+			}
 			if int(n) <= it.endTxNum {
 				it.hasNext = false
 				return
@@ -605,7 +627,11 @@ func (it *InvertedIterator1) advanceInDb() {
 			return
 		}
 		if v != nil {
-			txNum := binary.BigEndian.Uint64(v)
+			txNum, err := decodeTxNumPrefix("InvertedIterator1.advanceInDb", v)
+			if err != nil {
+				it.err = err
+				return
+			}
 			if txNum < it.endTxNum {
 				it.nextDbKey = append(it.nextDbKey[:0], k...)
 				return

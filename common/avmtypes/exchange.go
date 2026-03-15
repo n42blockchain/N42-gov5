@@ -482,8 +482,8 @@ func FromN42Header(iHeader block.IHeader) *Header {
 		Root:        FromastHash(header.Root),
 		TxHash:      FromastHash(header.TxHash),
 		ReceiptHash: FromastHash(header.ReceiptHash),
-		Difficulty:  header.Difficulty.ToBig(),
-		Number:      header.Number.ToBig(),
+		Difficulty:  uint256ToBigOrZero(header.Difficulty),
+		Number:      uint256ToBigOrZero(header.Number),
 		GasLimit:    header.GasLimit,
 		GasUsed:     header.GasUsed,
 		Time:        header.Time,
@@ -493,6 +493,13 @@ func FromN42Header(iHeader block.IHeader) *Header {
 		BaseFee:     baseFee,
 		Bloom:       *bloom,
 	}
+}
+
+func uint256ToBigOrZero(v *uint256.Int) *big.Int {
+	if v == nil {
+		return new(big.Int)
+	}
+	return v.ToBig()
 }
 
 func rlpHash(x interface{}) (h avmutil.Hash) {

@@ -60,7 +60,7 @@ func (s *ZKProofAPI) GetBlockZKProof(ctx context.Context, blockNrOrHash jsonrpc.
 	}
 
 	result := &ZKProofResult{
-		BlockNumber: blk.Number64().Uint64(),
+		BlockNumber: uint256ToUint64OrZero(blk.Number64()),
 		Available:   false,
 	}
 
@@ -92,7 +92,7 @@ func (s *ZKProofAPI) VerifyBlockZKProof(ctx context.Context, blockNrOrHash jsonr
 
 	body := blk.Body()
 	if body == nil || len(body.ZKProof()) == 0 {
-		return false, fmt.Errorf("no ZK proof available for block %d", blk.Number64().Uint64())
+		return false, fmt.Errorf("no ZK proof available for block %d", uint256ToUint64OrZero(blk.Number64()))
 	}
 
 	proof, err := zkprover.DecodeProof(body.ZKProof())

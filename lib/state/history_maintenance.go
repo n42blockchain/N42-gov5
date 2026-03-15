@@ -136,7 +136,7 @@ func (h *History) prune(ctx context.Context, txFrom, txTo, limit uint64, _ *time
 			if err != nil {
 				return err
 			}
-			if binary.BigEndian.Uint64(vv) != txNum {
+			if len(vv) < 8 || binary.BigEndian.Uint64(vv) != txNum {
 				continue
 			}
 			if err = valsCDup.DeleteCurrent(); err != nil {

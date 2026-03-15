@@ -107,11 +107,20 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 	bf.results.nextBaseFee = new(big.Int)
 
 	if oracle.chainConfig.IsLondon(bf.blockNumber + 1) {
-		bf.results.nextBaseFee = misc.CalcBaseFee(oracle.chainConfig, bf.header.(*block.Header))
+		concreteHeader, ok := bf.header.(*block.Header)
+		if !ok {
+			bf.err = errors.New("unexpected header type in processBlock")
+			return
+		}
+		bf.results.nextBaseFee = misc.CalcBaseFee(oracle.chainConfig, concreteHeader)
 	} else {
 		bf.results.nextBaseFee = new(big.Int)
 	}
 
+	if bf.block == nil {
+		bf.err = errors.New("block is nil in processBlock")
+		return
+	}
 	bf.results.gasUsedRatio = float64(bf.block.GasUsed()) / float64(bf.block.GasLimit())
 	if len(percentiles) == 0 {
 		// rewards were not requested, return null
@@ -184,8 +193,12 @@ func (oracle *Oracle) resolveBlockRange(ctx context.Context, reqEnd jsonrpc.Bloc
 	if headBlock == nil {
 		return nil, nil, 0, 0, errors.New("current block header not available")
 	}
+	headNumber := headBlock.Number64()
+	if headNumber == nil {
+		return nil, nil, 0, 0, errors.New("current block number not available")
+	}
 
-	head := jsonrpc.BlockNumber(headBlock.Number64().Uint64())
+	head := jsonrpc.BlockNumber(headNumber.Uint64())
 
 	// Fail if request block is beyond the chain's current head.
 	if head < reqEnd {
@@ -218,7 +231,11 @@ func (oracle *Oracle) resolveBlockRange(ctx context.Context, reqEnd jsonrpc.Bloc
 			return nil, nil, 0, 0, err
 		}
 		// Absolute number resolved.
-		reqEnd = jsonrpc.BlockNumber(resolved.Number64().Uint64())
+		resolvedNumber := resolved.Number64()
+		if resolvedNumber == nil {
+			return nil, nil, 0, 0, errors.New("resolved block number not available")
+		}
+		reqEnd = jsonrpc.BlockNumber(resolvedNumber.Uint64())
 	}
 
 	// If there are no blocks to return, short circuit.
@@ -285,6 +302,14 @@ func (oracle *Oracle) FeeHistory(ctx context.Context, blocks int, unresolvedLast
 	for i, p := range rewardPercentiles {
 		binary.LittleEndian.PutUint64(percentileKey[i*8:(i+1)*8], math.Float64bits(p))
 	}
+	var (
+		pendingBlockNumber uint64
+		hasPendingNumber   bool
+	)
+	if pendingBlock != nil && pendingBlock.Number64() != nil {
+		pendingBlockNumber = pendingBlock.Number64().Uint64()
+		hasPendingNumber = true
+	}
 	for i := 0; i < maxBlockFetchers && i < blocks; i++ {
 		go func() {
 			for {
@@ -295,7 +320,7 @@ func (oracle *Oracle) FeeHistory(ctx context.Context, blocks int, unresolvedLast
 				}
 
 				fees := &blockFees{blockNumber: blockNumber}
-				if pendingBlock != nil && blockNumber >= pendingBlock.Number64().Uint64() {
+				if pendingBlock != nil && hasPendingNumber && blockNumber >= pendingBlockNumber {
 					fees.block, fees.receipts = pendingBlock, pendingReceipts
 					fees.header = fees.block.Header()
 					oracle.processBlock(fees, rewardPercentiles)

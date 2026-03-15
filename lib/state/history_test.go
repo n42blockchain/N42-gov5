@@ -249,6 +249,58 @@ func TestHistoryAfterPrune(t *testing.T) {
 	})
 }
 
+func TestHistoryCollateRejectsShortTxKey(t *testing.T) {
+	logger := log.New()
+	_, db, h := testDbAndHistory(t, false, logger)
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	require.NoError(t, tx.Put(h.indexKeysTable, []byte("short"), []byte("key")))
+
+	_, err = h.collate(0, 0, 16, tx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "8-byte txnum")
+}
+
+func TestHistoryCollateRejectsShortValue(t *testing.T) {
+	logger := log.New()
+	_, db, h := testDbAndHistory(t, false, logger)
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	var txKey [8]byte
+	binary.BigEndian.PutUint64(txKey[:], 1)
+	require.NoError(t, tx.Put(h.indexKeysTable, txKey[:], []byte("key")))
+	require.NoError(t, tx.Put(h.historyValsTable, []byte("key"), []byte{0x01}))
+
+	_, err = h.collate(0, 0, 16, tx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "txnum prefix")
+}
+
+func TestHistoryPruneMissingHistoryValueDoesNotPanic(t *testing.T) {
+	logger := log.New()
+	ctx := context.Background()
+	_, db, h := testDbAndHistory(t, false, logger)
+
+	tx, err := db.BeginRw(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	h.SetTx(tx)
+
+	var txKey [8]byte
+	binary.BigEndian.PutUint64(txKey[:], 2)
+	require.NoError(t, tx.Put(h.indexKeysTable, txKey[:], []byte("key1")))
+
+	require.NotPanics(t, func() {
+		err = h.prune(ctx, 0, 16, 1, nil)
+	})
+	require.NoError(t, err)
+}
+
 func filledHistory(tb testing.TB, largeValues bool, logger log.Logger) (string, kv.RwDB, *History, uint64) {
 	tb.Helper()
 	path, db, h := testDbAndHistory(tb, largeValues, logger)

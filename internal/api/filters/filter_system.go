@@ -386,7 +386,12 @@ func (es *EventSystem) lightFilterNewHead(newHeader block.IHeader, callBack func
 	for oldh.Hash() != newh.Hash() {
 		if oldh.Number64().Uint64() >= newh.Number64().Uint64() {
 			oldHeaders = append(oldHeaders, oldh)
-			pHash := oldh.(*block.Header).ParentHash
+			oldHeader, ok := oldh.(*block.Header)
+			if !ok || oldHeader == nil {
+				log.Warn("lightFilterNewHead: unexpected old header type")
+				return
+			}
+			pHash := oldHeader.ParentHash
 			es.api.Database().View(context.Background(), func(tx kv.Tx) error {
 				var err error
 				oldh, err = rawdb.ReadHeaderByHash(tx, pHash)
@@ -395,7 +400,12 @@ func (es *EventSystem) lightFilterNewHead(newHeader block.IHeader, callBack func
 		}
 		if oldh.Number64().Uint64() < newh.Number64().Uint64() {
 			newHeaders = append(newHeaders, newh)
-			pHash := newh.(*block.Header).ParentHash
+			newConcreteHeader, ok := newh.(*block.Header)
+			if !ok || newConcreteHeader == nil {
+				log.Warn("lightFilterNewHead: unexpected new header type")
+				return
+			}
+			pHash := newConcreteHeader.ParentHash
 			es.api.Database().View(context.Background(), func(tx kv.Tx) error {
 				newh, _ = rawdb.ReadHeaderByHash(tx, pHash)
 				if newh == nil {

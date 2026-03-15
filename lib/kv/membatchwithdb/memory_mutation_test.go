@@ -194,6 +194,16 @@ func TestMemoryMutationHelperMethods(t *testing.T) {
 	require.Error(t, batch.DropBucket(kv.HashedAccounts))
 }
 
+func TestNewMemoryBatchWithoutBaseTx(t *testing.T) {
+	batch := NewMemoryBatch(nil, t.TempDir(), log.Root())
+	require.NotNil(t, batch)
+	defer batch.Close()
+
+	seq, err := batch.ReadSequence("bucket")
+	require.NoError(t, err)
+	require.Zero(t, seq)
+}
+
 func TestForEach(t *testing.T) {
 	_, rwTx := memdb.NewTestTx(t)
 
