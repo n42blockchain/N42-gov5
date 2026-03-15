@@ -56,7 +56,7 @@ func (s *WitnessAPI) GetBlockWitness(ctx context.Context, blockNrOrHash jsonrpc.
 
 	w, found := bc.GetWitness(blk.Hash())
 	if !found {
-		return nil, fmt.Errorf("block witness not available for block %d (only recent blocks have cached witnesses; the witness may have been evicted from the LRU cache)", blk.Number64().Uint64())
+		return nil, fmt.Errorf("block witness not available for block %d (only recent blocks have cached witnesses; the witness may have been evicted from the LRU cache)", uint256ToUint64OrZero(blk.Number64()))
 	}
 
 	return w, nil

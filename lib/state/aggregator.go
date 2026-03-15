@@ -18,7 +18,6 @@ package state
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	math2 "math"
@@ -713,8 +712,16 @@ func (a *Aggregator) CanPruneFrom(tx kv.Tx) uint64 {
 	fst, _ := kv.FirstKey(tx, kv.TblTracesToKeys)
 	fst2, _ := kv.FirstKey(tx, kv.TblStorageHistoryKeys)
 	if len(fst) > 0 && len(fst2) > 0 {
-		fstInDb := binary.BigEndian.Uint64(fst)
-		fstInDb2 := binary.BigEndian.Uint64(fst2)
+		fstInDb, err := decodeTxNumExact("Aggregator.CanPruneFrom traces key", fst)
+		if err != nil {
+			log.Warn("[snapshots] CanPruneFrom: malformed first traces key", "err", err)
+			return math2.MaxUint64
+		}
+		fstInDb2, err := decodeTxNumExact("Aggregator.CanPruneFrom storage history key", fst2)
+		if err != nil {
+			log.Warn("[snapshots] CanPruneFrom: malformed first storage history key", "err", err)
+			return math2.MaxUint64
+		}
 		return cmp.Min(fstInDb, fstInDb2)
 	}
 	return math2.MaxUint64
@@ -800,7 +807,12 @@ func (a *Aggregator) LogStats(tx kv.Tx, tx2block func(endTxNumMinimax uint64) ui
 	}
 	var firstHistoryIndexBlockInDB uint64
 	if len(v) != 0 {
-		firstHistoryIndexBlockInDB = tx2block(binary.BigEndian.Uint64(v))
+		firstTxNum, err := decodeTxNumExact("Aggregator.LogStats first history index", v)
+		if err != nil {
+			log.Warn("[snapshots] LogStats: malformed first history index entry", "err", err)
+		} else {
+			firstHistoryIndexBlockInDB = tx2block(firstTxNum)
+		}
 	}
 
 	var m runtime.MemStats
@@ -1085,7 +1097,7 @@ func (a *Aggregator) PutIdx(idx kv.InvertedIdx, key []byte) error {
 	case kv.LogTopicIndex:
 		return a.logTopics.Add(key)
 	default:
-		panic(idx)
+		return fmt.Errorf("unsupported inverted index: %s", idx)
 	}
 }
 
@@ -1157,7 +1169,12 @@ func lastIdInDB(db kv.RoDB, table string) (lstInDb uint64) {
 	if err := db.View(context.Background(), func(tx kv.Tx) error {
 		lst, _ := kv.LastKey(tx, table)
 		if len(lst) > 0 {
-			lstInDb = binary.BigEndian.Uint64(lst)
+			txNum, err := decodeTxNumExact("Aggregator.lastIdInDB", lst)
+			if err != nil {
+				log.Warn("[snapshots] lastIdInDB: malformed last key", "table", table, "err", err)
+				return nil
+			}
+			lstInDb = txNum
 		}
 		return nil
 	}); err != nil {

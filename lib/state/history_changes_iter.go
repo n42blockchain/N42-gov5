@@ -124,7 +124,7 @@ func (hi *HistoryChangesIterFiles) Next() ([]byte, []byte, error) {
 	// Satisfy iter.Dual Invariant 2
 	hi.k, hi.kBackup, hi.v, hi.vBackup = hi.kBackup, hi.k, hi.vBackup, hi.v
 	if err := hi.advance(); err != nil {
-		return nil, nil, err
+		hi.err = err
 	}
 	return hi.kBackup, hi.vBackup, nil
 }
@@ -180,7 +180,11 @@ func (hi *HistoryChangesIterDB) advanceLargeVals() error {
 			hi.nextKey = nil
 			return nil
 		}
-		seek = append(common.Copy(firstKey[:len(firstKey)-8]), hi.startTxKey[:]...)
+		firstKeyPrefix, err := trimTxNumSuffix("HistoryChangesIterDB.advanceLargeVals", firstKey)
+		if err != nil {
+			return err
+		}
+		seek = append(common.Copy(firstKeyPrefix), hi.startTxKey[:]...)
 	} else {
 		next, ok := kv.NextSubtree(hi.nextKey)
 		if !ok {
@@ -194,8 +198,12 @@ func (hi *HistoryChangesIterDB) advanceLargeVals() error {
 		if err != nil {
 			return err
 		}
-		if hi.endTxNum >= 0 && int(binary.BigEndian.Uint64(k[len(k)-8:])) >= hi.endTxNum {
-			next, ok := kv.NextSubtree(k[:len(k)-8])
+		keyPrefix, txNum, err := splitTxNumSuffix("HistoryChangesIterDB.advanceLargeVals", k)
+		if err != nil {
+			return err
+		}
+		if hi.endTxNum >= 0 && int(txNum) >= hi.endTxNum {
+			next, ok := kv.NextSubtree(keyPrefix)
 			if !ok {
 				hi.nextKey = nil
 				return nil
@@ -203,11 +211,15 @@ func (hi *HistoryChangesIterDB) advanceLargeVals() error {
 			seek = append(next, hi.startTxKey[:]...)
 			continue
 		}
-		if !bytes.Equal(seek[:len(k)-8], k[:len(k)-8]) {
-			copy(seek[:len(k)-8], k[:len(k)-8])
+		seekPrefix, err := trimTxNumSuffix("HistoryChangesIterDB.advanceLargeVals", seek)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(seekPrefix, keyPrefix) {
+			seek = append(common.Copy(keyPrefix), hi.startTxKey[:]...)
 			continue
 		}
-		hi.nextKey = k[:len(k)-8]
+		hi.nextKey = keyPrefix
 		hi.nextVal = v
 		return nil
 	}
@@ -248,6 +260,9 @@ func (hi *HistoryChangesIterDB) advanceSmallVals() (err error) {
 			}
 			continue
 		}
+		if len(v) < 8 {
+			return fmt.Errorf("HistoryChangesIterDB.advanceSmallVals: expected txnum prefix with at least 8 bytes, got %d", len(v))
+		}
 		foundTxNumVal := v[:8]
 		if hi.endTxNum >= 0 && int(binary.BigEndian.Uint64(foundTxNumVal)) >= hi.endTxNum {
 			k, _, err = hi.valsCDup.NextNoDup()
@@ -284,7 +299,7 @@ func (hi *HistoryChangesIterDB) Next() ([]byte, []byte, error) {
 	hi.limit--
 	hi.k, hi.v = hi.nextKey, hi.nextVal
 	if err := hi.advance(); err != nil {
-		return nil, nil, err
+		hi.err = err
 	}
 	return hi.k, hi.v, nil
 }

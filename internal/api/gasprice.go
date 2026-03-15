@@ -159,12 +159,15 @@ func (oracle *Oracle) SuggestTipCap(ctx context.Context, chainConfig *params.Cha
 		return new(big.Int).Set(oracle.lastPrice), nil
 	}
 	head := currentBlock.Header()
-	var headHash types.Hash
 	if head == nil {
-		headHash = types.Hash{}
-	} else {
-		headHash = types.Hash(head.Hash())
+		return new(big.Int).Set(oracle.lastPrice), nil
 	}
+	headNumber := head.Number64()
+	if headNumber == nil {
+		return new(big.Int).Set(oracle.lastPrice), nil
+	}
+	var headHash types.Hash
+	headHash = types.Hash(head.Hash())
 
 	// If the latest gasprice is still available, return it.
 	oracle.cacheLock.RLock()
@@ -185,7 +188,7 @@ func (oracle *Oracle) SuggestTipCap(ctx context.Context, chainConfig *params.Cha
 	}
 	var (
 		sent, exp int
-		number    = head.Number64().Uint64()
+		number    = headNumber.Uint64()
 		result    = make(chan blockResult, oracle.checkBlocks)
 		quit      = make(chan struct{})
 		results   []*big.Int

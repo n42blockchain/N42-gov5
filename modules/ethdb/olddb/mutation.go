@@ -208,17 +208,23 @@ func (m *mutation) BatchSize() int {
 }
 
 func (m *mutation) ForEach(bucket string, fromPrefix []byte, walker func(k, v []byte) error) error {
-	m.panicOnEmptyDB()
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
 	return m.db.ForEach(bucket, fromPrefix, walker)
 }
 
 func (m *mutation) ForPrefix(bucket string, prefix []byte, walker func(k, v []byte) error) error {
-	m.panicOnEmptyDB()
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
 	return m.db.ForPrefix(bucket, prefix, walker)
 }
 
 func (m *mutation) ForAmount(bucket string, prefix []byte, amount uint32, walker func(k, v []byte) error) error {
-	m.panicOnEmptyDB()
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
 	return m.db.ForAmount(bucket, prefix, amount, walker)
 }
 
@@ -326,13 +332,14 @@ func (m *mutation) Close() {
 }
 
 func (m *mutation) Begin(ctx context.Context, flags ethdb.TxFlags) (ethdb.DbWithPendingMutations, error) {
-	panic("mutation can't start transaction, because doesn't own it")
+	return nil, errMutationBeginUnsupported
 }
 
-func (m *mutation) panicOnEmptyDB() {
+func (m *mutation) ensureDB() error {
 	if m.db == nil {
-		panic("Not implemented")
+		return errMutationDBUnavailable
 	}
+	return nil
 }
 
 func (m *mutation) SetRwKV(kv kv.RwDB) {

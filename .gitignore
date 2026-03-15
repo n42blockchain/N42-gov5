@@ -41,6 +41,8 @@ genesis*.json
 # Compiled binary
 n42
 cmd/n42/n42
+clef
+verify
 
 # MDBX database files (runtime data)
 *.dat
@@ -60,6 +62,10 @@ LOCK
 network-keys
 network-seq
 jwtsecret
+
+# Local assistant/editor state
+.claude/
+.codex-cache/
 
 # Keystore (optional - uncomment if you want to exclude)
 # devtest/keystore/

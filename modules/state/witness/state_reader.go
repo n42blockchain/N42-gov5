@@ -17,6 +17,7 @@
 package witness
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -43,6 +44,9 @@ var _ state.StateReader = (*WitnessStateReader)(nil)
 // accounts, addr||slot for storage) so that the reader can index by the
 // original EVM-visible keys.
 func NewWitnessStateReader(w *BlockWitness) (*WitnessStateReader, error) {
+	if w == nil {
+		return nil, errors.New("witness: nil block witness")
+	}
 	r := &WitnessStateReader{
 		accounts: make(map[types.Address]*account.StateAccount, len(w.AccountProofs)),
 		storage:  make(map[types.Address]map[types.Hash][]byte),
@@ -123,7 +127,10 @@ func (r *WitnessStateReader) ReadAccountData(address types.Address) (*account.St
 	if !ok {
 		return nil, nil
 	}
-	return acct, nil
+	if acct == nil {
+		return nil, nil
+	}
+	return acct.SelfCopy(), nil
 }
 
 // ReadAccountStorage returns the value of a storage slot from the witness.
@@ -140,7 +147,12 @@ func (r *WitnessStateReader) ReadAccountStorage(address types.Address, incarnati
 	if !ok {
 		return nil, nil
 	}
-	return val, nil
+	if val == nil {
+		return nil, nil
+	}
+	out := make([]byte, len(val))
+	copy(out, val)
+	return out, nil
 }
 
 // ReadAccountCode returns the contract code from the witness.
@@ -153,7 +165,9 @@ func (r *WitnessStateReader) ReadAccountCode(address types.Address, incarnation 
 	if !ok {
 		return nil, nil
 	}
-	return code, nil
+	out := make([]byte, len(code))
+	copy(out, code)
+	return out, nil
 }
 
 // ReadAccountCodeSize returns the size of the contract code from the witness.

@@ -213,7 +213,14 @@ func (ht *HistoryRoTx) getNoStateFromDB(key []byte, txNum uint64, tx kv.Tx) ([]b
 		if err != nil {
 			return nil, false, err
 		}
-		if kAndTxNum == nil || !bytes.Equal(kAndTxNum[:len(kAndTxNum)-8], key) {
+		if kAndTxNum == nil {
+			return nil, false, nil
+		}
+		keyPrefix, err := trimTxNumSuffix("HistoryRoTx.getNoStateFromDB", kAndTxNum)
+		if err != nil {
+			return nil, false, err
+		}
+		if !bytes.Equal(keyPrefix, key) {
 			return nil, false, nil
 		}
 		// val == []byte{} means key was created in this txNum and doesn't exist before.
@@ -233,6 +240,9 @@ func (ht *HistoryRoTx) getNoStateFromDB(key []byte, txNum uint64, tx kv.Tx) ([]b
 	}
 	if val == nil {
 		return nil, false, nil
+	}
+	if len(val) < 8 {
+		return nil, false, fmt.Errorf("HistoryRoTx.getNoStateFromDB: expected txnum prefix with at least 8 bytes, got %d", len(val))
 	}
 	// `val == []byte{}` means key was created in this txNum and doesn't exist before.
 	return val[8:], true, nil
@@ -398,7 +408,11 @@ func (ht *HistoryRoTx) idxRangeRecent(key []byte, startTxNum, endTxNum int, asc 
 				return nil, err
 			}
 			dbIt = iter.TransformKV2U64(it, func(k, _ []byte) (uint64, error) {
-				return binary.BigEndian.Uint64(k[len(k)-8:]), nil
+				_, txNum, err := splitTxNumSuffix("HistoryRoTx.idxRangeRecent", k)
+				if err != nil {
+					return 0, err
+				}
+				return txNum, nil
 			})
 		} else {
 			return nil, fmt.Errorf("index range in descending order is not supported for large values")
@@ -419,7 +433,7 @@ func (ht *HistoryRoTx) idxRangeRecent(key []byte, startTxNum, endTxNum int, asc 
 				return nil, err
 			}
 			dbIt = iter.TransformKV2U64(it, func(_, v []byte) (uint64, error) {
-				return binary.BigEndian.Uint64(v), nil
+				return decodeTxNumPrefix("HistoryRoTx.idxRangeRecent", v)
 			})
 		} else {
 			return nil, fmt.Errorf("index range in descending order is not supported")

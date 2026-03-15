@@ -17,7 +17,13 @@
 package sync
 
 import (
+	"errors"
 	"testing"
+
+	lru "github.com/hashicorp/golang-lru/v2"
+
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 func TestResponseCodes(t *testing.T) {
@@ -53,5 +59,26 @@ func TestResponseCodeUniqueness(t *testing.T) {
 func TestIsValidStreamErrorNil(t *testing.T) {
 	if isValidStreamError(nil) {
 		t.Error("isValidStreamError(nil) should return false")
+	}
+}
+
+func TestInitCachesReturnsErrorInsteadOfPanicking(t *testing.T) {
+	origBadFactory := newBadBlockCache
+	origSeenFactory := newSeenBlockCache
+	t.Cleanup(func() {
+		newBadBlockCache = origBadFactory
+		newSeenBlockCache = origSeenFactory
+	})
+
+	wantErr := errors.New("boom")
+	newBadBlockCache = func() (*lru.Cache[types.Hash, bool], error) { return nil, wantErr }
+	newSeenBlockCache = func() (*lru.Cache[types.Hash, *block.Block], error) {
+		t.Fatal("newSeenBlockCache should not be called after bad cache failure")
+		return nil, nil
+	}
+
+	svc := &Service{}
+	if err := svc.initCaches(); !errors.Is(err, wantErr) {
+		t.Fatalf("initCaches() error = %v, want %v", err, wantErr)
 	}
 }

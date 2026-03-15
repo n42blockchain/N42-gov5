@@ -191,17 +191,23 @@ func (m *mapmutation) BatchSize() int {
 }
 
 func (m *mapmutation) ForEach(bucket string, fromPrefix []byte, walker func(k, v []byte) error) error {
-	m.panicOnEmptyDB()
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
 	return m.db.ForEach(bucket, fromPrefix, walker)
 }
 
 func (m *mapmutation) ForPrefix(bucket string, prefix []byte, walker func(k, v []byte) error) error {
-	m.panicOnEmptyDB()
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
 	return m.db.ForPrefix(bucket, prefix, walker)
 }
 
 func (m *mapmutation) ForAmount(bucket string, prefix []byte, amount uint32, walker func(k, v []byte) error) error {
-	m.panicOnEmptyDB()
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
 	return m.db.ForAmount(bucket, prefix, amount, walker)
 }
 
@@ -269,13 +275,14 @@ func (m *mapmutation) Close() {
 }
 
 func (m *mapmutation) Begin(ctx context.Context, flags ethdb.TxFlags) (ethdb.DbWithPendingMutations, error) {
-	panic("mutation can't start transaction, because doesn't own it")
+	return nil, errMutationBeginUnsupported
 }
 
-func (m *mapmutation) panicOnEmptyDB() {
+func (m *mapmutation) ensureDB() error {
 	if m.db == nil {
-		panic("Not implemented")
+		return errMutationDBUnavailable
 	}
+	return nil
 }
 
 func (m *mapmutation) SetRwKV(kv kv.RwDB) {

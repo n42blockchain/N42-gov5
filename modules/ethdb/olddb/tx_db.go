@@ -31,13 +31,13 @@ func WrapIntoTxDB(tx kv.RwTx) *TxDb {
 }
 
 func (m *TxDb) Close() {
-	panic("don't call me")
+	m.Rollback()
 }
 
 func (m *TxDb) Begin(ctx context.Context, flags ethdb.TxFlags) (ethdb.DbWithPendingMutations, error) {
 	batch := m
 	if m.tx != nil {
-		panic("nested transactions not supported")
+		return nil, errNestedTransactionsUnsupported
 	}
 
 	if err := batch.begin(ctx, flags); err != nil {
@@ -104,7 +104,14 @@ func (m *TxDb) Delete(table string, k []byte) error {
 }
 
 func (m *TxDb) begin(ctx context.Context, flags ethdb.TxFlags) error {
-	db := m.db.(ethdb.HasRwKV).RwKV()
+	hasRwKV, ok := m.db.(ethdb.HasRwKV)
+	if !ok {
+		return errMutationDBUnavailable
+	}
+	db := hasRwKV.RwKV()
+	if db == nil {
+		return errMutationDBUnavailable
+	}
 
 	var (
 		tx  kv.Tx

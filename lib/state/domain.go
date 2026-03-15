@@ -92,7 +92,12 @@ func NewDomain(dir, tmpdir string, aggregationStep uint64,
 func (d *Domain) LastStepInDB(tx kv.Tx) (lstInDb uint64) {
 	lst, _ := kv.FirstKey(tx, d.valsTable)
 	if len(lst) > 0 {
-		lstInDb = ^binary.BigEndian.Uint64(lst[len(lst)-8:])
+		_, txNum, err := splitTxNumSuffix("Domain.LastStepInDB", lst)
+		if err != nil {
+			d.logger.Warn("[snapshots] LastStepInDB: malformed first key", "name", d.filenameBase, "err", err)
+			return 0
+		}
+		lstInDb = ^txNum
 	}
 	return lstInDb
 }
@@ -473,7 +478,11 @@ func (d *Domain) collate(ctx context.Context, step, txFrom, txTo uint64, roTx kv
 		if v, err = keysCursor.LastDup(); err != nil {
 			return Collation{}, fmt.Errorf("find last %s key for aggregation step k=[%x]: %w", d.filenameBase, k, err)
 		}
-		s := ^binary.BigEndian.Uint64(v)
+		txNum, err := decodeTxNumExact("Domain.collate key suffix", v)
+		if err != nil {
+			return Collation{}, err
+		}
+		s := ^txNum
 		if s == step {
 			keySuffix := make([]byte, len(k)+8)
 			copy(keySuffix, k)
@@ -891,18 +900,28 @@ func (d *Domain) warmup(ctx context.Context, txFrom, limit uint64, tx kv.Tx) err
 	if k == nil {
 		return nil
 	}
-	txFrom = binary.BigEndian.Uint64(k)
+	txFrom, err = decodeTxNumExact("Domain.warmup history key", k)
+	if err != nil {
+		return err
+	}
 	txTo := txFrom + d.aggregationStep
 	if limit != math.MaxUint64 && limit != 0 {
 		txTo = txFrom + limit
 	}
 	for ; err == nil && k != nil; k, v, err = domainKeysCursor.Next() {
-		txNum := binary.BigEndian.Uint64(k)
+		txNum, err := decodeTxNumExact("Domain.warmup history key", k)
+		if err != nil {
+			return err
+		}
 		if txNum >= txTo {
 			break
 		}
+		keyPrefix, _, err := splitTxNumSuffix("Domain.warmup key suffix", v)
+		if err != nil {
+			return err
+		}
 		_, _, _ = valsC.Seek(v[len(v)-8:])
-		_, _ = idxC.SeekBothRange(v[:len(v)-8], k)
+		_, _ = idxC.SeekBothRange(keyPrefix, k)
 
 		select {
 		case <-ctx.Done():

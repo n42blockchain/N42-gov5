@@ -282,7 +282,10 @@ func (h *History) collate(step, txFrom, txTo uint64, roTx kv.Tx) (HistoryCollati
 	binary.BigEndian.PutUint64(txKey[:], txFrom)
 	var k, v []byte
 	for k, v, err = keysCursor.Seek(txKey[:]); err == nil && k != nil; k, v, err = keysCursor.Next() {
-		txNum := binary.BigEndian.Uint64(k)
+		txNum, err := decodeTxNumExact("History.collate index key", k)
+		if err != nil {
+			return HistoryCollation{}, err
+		}
 		if txNum >= txTo {
 			break
 		}
@@ -345,10 +348,16 @@ func (h *History) collate(step, txFrom, txTo uint64, roTx kv.Tx) (HistoryCollati
 				if err != nil {
 					return HistoryCollation{}, err
 				}
-				if val != nil && binary.BigEndian.Uint64(val) == txNum {
-					val = val[8:]
-				} else {
-					val = nil
+				if val != nil {
+					foundTxNum, err := decodeTxNumPrefix("History.collate value", val)
+					if err != nil {
+						return HistoryCollation{}, err
+					}
+					if foundTxNum == txNum {
+						val = val[8:]
+					} else {
+						val = nil
+					}
 				}
 				if err = historyComp.AddUncompressedWord(val); err != nil {
 					return HistoryCollation{}, fmt.Errorf("add %s history val [%x]=>[%x]: %w", h.filenameBase, k, val, err)

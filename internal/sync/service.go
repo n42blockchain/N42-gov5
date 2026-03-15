@@ -43,6 +43,13 @@ const (
 var (
 	errWrongMessage = errors.New("wrong pubsub message")
 	errNilMessage   = errors.New("nil pubsub message")
+
+	newBadBlockCache = func() (*lru.Cache[types.Hash, bool], error) {
+		return lru.New[types.Hash, bool](badBlockSize)
+	}
+	newSeenBlockCache = func() (*lru.Cache[types.Hash, *block.Block], error) {
+		return lru.New[types.Hash, *block.Block](seenBlockSize)
+	}
 )
 
 // validationFn is a functional type for p2p validation options.
@@ -50,10 +57,10 @@ type validationFn func(ctx context.Context) (pubsub.ValidationResult, error)
 
 // config holds dependencies for the sync service.
 type config struct {
-	p2p            p2p.P2P
-	chain          common.IBlockChain
-	initialSync    Checker
-	earliestBlock  func() uint64 // returns earliest available block, 0 = all available
+	p2p           p2p.P2P
+	chain         common.IBlockChain
+	initialSync   Checker
+	earliestBlock func() uint64 // returns earliest available block, 0 = all available
 }
 
 // Service is responsible for handling all runtime p2p related operations as the
@@ -93,7 +100,10 @@ func NewService(ctx context.Context, opts ...Option) (*Service, error) {
 
 	r.subHandler = newSubTopicHandler()
 	r.rateLimiter = newRateLimiter(r.cfg.p2p)
-	r.initCaches()
+	if err := r.initCaches(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to initialize sync caches: %w", err)
+	}
 
 	r.registerRPCHandlers()
 
@@ -158,17 +168,18 @@ func (s *Service) Status() error {
 }
 
 // initCaches initializes LRU caches used to deduplicate incoming blocks
-// and track bad blocks to prevent DoS.
-func (s *Service) initCaches() {
+// and track bad blocks to prevent spam amplification.
+func (s *Service) initCaches() error {
 	var err error
-	s.badBlockCache, err = lru.New[types.Hash, bool](badBlockSize)
+	s.badBlockCache, err = newBadBlockCache()
 	if err != nil {
-		panic(fmt.Sprintf("failed to create bad block cache: %v", err))
+		return fmt.Errorf("create bad block cache: %w", err)
 	}
-	s.seenBlockCache, err = lru.New[types.Hash, *block.Block](seenBlockSize)
+	s.seenBlockCache, err = newSeenBlockCache()
 	if err != nil {
-		panic(fmt.Sprintf("failed to create seen block cache: %v", err))
+		return fmt.Errorf("create seen block cache: %w", err)
 	}
+	return nil
 }
 
 // SetEarliestBlock sets the function that returns the earliest available block

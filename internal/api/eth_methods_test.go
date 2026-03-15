@@ -17,15 +17,18 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"math/big"
 	"testing"
 
 	"github.com/holiman/uint256"
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/params"
 )
 
 // =============================================================================
@@ -102,6 +105,42 @@ func TestTransactionArgsData(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSetLondonFeeDefaultsRejectsNilBaseFee(t *testing.T) {
+	args := TransactionArgs{
+		MaxPriorityFeePerGas: (*hexutil.Big)(big.NewInt(1)),
+	}
+
+	err := args.setLondonFeeDefaults(context.Background(), &block.Header{}, &API{})
+	if err == nil || err.Error() != "current block base fee is nil" {
+		t.Fatalf("setLondonFeeDefaults() error = %v", err)
+	}
+}
+
+func TestSetLondonFeeDefaultsRejectsMissingOracle(t *testing.T) {
+	args := TransactionArgs{}
+	head := &block.Header{
+		BaseFee: uint256.NewInt(1),
+	}
+
+	err := args.setLondonFeeDefaults(context.Background(), head, &API{})
+	if err == nil || err.Error() != "gas price oracle is unavailable" {
+		t.Fatalf("setLondonFeeDefaults() error = %v", err)
+	}
+}
+
+func TestSetFeeDefaultsRejectsNilCurrentBlockNumber(t *testing.T) {
+	args := TransactionArgs{}
+	api := &API{
+		bc:          &gasPriceChainStub{current: &gasPriceBlockStub{header: &block.Header{}}},
+		chainConfig: &params.ChainConfig{LondonBlock: big.NewInt(0)},
+	}
+
+	err := args.setFeeDefaults(context.Background(), api)
+	if err == nil || err.Error() != "current block number is nil" {
+		t.Fatalf("setFeeDefaults() error = %v", err)
 	}
 }
 

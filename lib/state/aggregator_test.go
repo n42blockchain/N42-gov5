@@ -8,12 +8,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/n42blockchain/N42/lib/common"
 	"github.com/n42blockchain/N42/lib/common/background"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/seg"
 )
@@ -62,7 +64,6 @@ func Test_BtreeIndex_Seek(t *testing.T) {
 		require.NoErrorf(t, err, "i=%d", i)
 		require.EqualValues(t, keys[i], cur.key)
 		require.NotEmptyf(t, cur.Value(), "i=%d", i)
-		// require.EqualValues(t, uint64(i), cur.Value())
 	}
 	for i := 1; i < len(keys); i++ {
 		alt := common.Copy(keys[i])
@@ -190,4 +191,16 @@ func Test_InitBtreeIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, bt.KeyCount(), keyCount)
 	bt.Close()
+}
+
+func TestAggregatorPutIdxRejectsUnsupportedIndex(t *testing.T) {
+	var agg Aggregator
+
+	err := agg.PutIdx(kv.InvertedIdx("unsupported"), []byte("k"))
+	if err == nil {
+		t.Fatal("PutIdx() error = nil, want unsupported index error")
+	}
+	if !strings.Contains(err.Error(), "unsupported inverted index") {
+		t.Fatalf("PutIdx() error = %v", err)
+	}
 }

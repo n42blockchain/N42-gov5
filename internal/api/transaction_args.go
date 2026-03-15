@@ -40,58 +40,58 @@ import (
 type TransactionArgs struct {
 	From                 *avmcommon.Address `json:"from"`
 	To                   *avmcommon.Address `json:"to"`
-	Gas                  *hexutil.Uint64     `json:"gas"`
-	GasPrice             *hexutil.Big        `json:"gasPrice"`
-	MaxFeePerGas         *hexutil.Big        `json:"maxFeePerGas"`
-	MaxPriorityFeePerGas *hexutil.Big        `json:"maxPriorityFeePerGas"`
-	Value                *hexutil.Big        `json:"value"`
-	Nonce                *hexutil.Uint64     `json:"nonce"`
+	Gas                  *hexutil.Uint64    `json:"gas"`
+	GasPrice             *hexutil.Big       `json:"gasPrice"`
+	MaxFeePerGas         *hexutil.Big       `json:"maxFeePerGas"`
+	MaxPriorityFeePerGas *hexutil.Big       `json:"maxPriorityFeePerGas"`
+	Value                *hexutil.Big       `json:"value"`
+	Nonce                *hexutil.Uint64    `json:"nonce"`
 
 	Data  *hexutil.Bytes `json:"data"`
 	Input *hexutil.Bytes `json:"input"`
 
 	// Introduced by AccessListTxType transaction.
 	AccessList *avmtypes.AccessList `json:"accessList,omitempty"`
-	ChainID    *hexutil.Big          `json:"chainId,omitempty"`
+	ChainID    *hexutil.Big         `json:"chainId,omitempty"`
 }
 
 // RPCAuthorization represents an EIP-7702 authorization for RPC serialization
 type RPCAuthorization struct {
-	ChainID hexutil.Uint64   `json:"chainId"`
+	ChainID hexutil.Uint64    `json:"chainId"`
 	Address avmcommon.Address `json:"address"`
-	Nonce   hexutil.Uint64   `json:"nonce"`
-	V       *hexutil.Big     `json:"v"`
-	R       *hexutil.Big     `json:"r"`
-	S       *hexutil.Big     `json:"s"`
-	YParity *hexutil.Uint64  `json:"yParity,omitempty"`
+	Nonce   hexutil.Uint64    `json:"nonce"`
+	V       *hexutil.Big      `json:"v"`
+	R       *hexutil.Big      `json:"r"`
+	S       *hexutil.Big      `json:"s"`
+	YParity *hexutil.Uint64   `json:"yParity,omitempty"`
 }
 
 // RPCTransaction represents a transaction that will serialize to the RPC representation of a transaction
 type RPCTransaction struct {
 	BlockHash        *avmcommon.Hash      `json:"blockHash"`
-	BlockNumber      *hexutil.Big          `json:"blockNumber"`
+	BlockNumber      *hexutil.Big         `json:"blockNumber"`
 	From             avmcommon.Address    `json:"from"`
-	Gas              hexutil.Uint64        `json:"gas"`
-	GasPrice         *hexutil.Big          `json:"gasPrice"`
-	GasFeeCap        *hexutil.Big          `json:"maxFeePerGas,omitempty"`
-	GasTipCap        *hexutil.Big          `json:"maxPriorityFeePerGas,omitempty"`
+	Gas              hexutil.Uint64       `json:"gas"`
+	GasPrice         *hexutil.Big         `json:"gasPrice"`
+	GasFeeCap        *hexutil.Big         `json:"maxFeePerGas,omitempty"`
+	GasTipCap        *hexutil.Big         `json:"maxPriorityFeePerGas,omitempty"`
 	Hash             avmcommon.Hash       `json:"hash"`
-	Input            hexutil.Bytes         `json:"input"`
-	Nonce            hexutil.Uint64        `json:"nonce"`
+	Input            hexutil.Bytes        `json:"input"`
+	Nonce            hexutil.Uint64       `json:"nonce"`
 	To               *avmcommon.Address   `json:"to"`
-	TransactionIndex *hexutil.Uint64       `json:"transactionIndex"`
-	Value            *hexutil.Big          `json:"value"`
-	Type             hexutil.Uint64        `json:"type"`
+	TransactionIndex *hexutil.Uint64      `json:"transactionIndex"`
+	Value            *hexutil.Big         `json:"value"`
+	Type             hexutil.Uint64       `json:"type"`
 	Accesses         *avmtypes.AccessList `json:"accessList,omitempty"`
-	ChainID          *hexutil.Big          `json:"chainId,omitempty"`
-	V                *hexutil.Big          `json:"v"`
-	R                *hexutil.Big          `json:"r"`
-	S                *hexutil.Big          `json:"s"`
+	ChainID          *hexutil.Big         `json:"chainId,omitempty"`
+	V                *hexutil.Big         `json:"v"`
+	R                *hexutil.Big         `json:"r"`
+	S                *hexutil.Big         `json:"s"`
 	// EIP-4844 Blob transaction fields
-	MaxFeePerBlobGas    *hexutil.Big       `json:"maxFeePerBlobGas,omitempty"`
-	BlobVersionedHashes []avmcommon.Hash   `json:"blobVersionedHashes,omitempty"`
+	MaxFeePerBlobGas    *hexutil.Big     `json:"maxFeePerBlobGas,omitempty"`
+	BlobVersionedHashes []avmcommon.Hash `json:"blobVersionedHashes,omitempty"`
 	// EIP-7702 SetCode authorization list
-	AuthorizationList   []RPCAuthorization `json:"authorizationList,omitempty"`
+	AuthorizationList []RPCAuthorization `json:"authorizationList,omitempty"`
 	// YParity for EIP-2718+ typed transactions
 	YParity *hexutil.Uint64 `json:"yParity,omitempty"`
 }
@@ -476,7 +476,11 @@ func (args *TransactionArgs) setFeeDefaults(ctx context.Context, b *API) error {
 	if head == nil {
 		return errors.New("current block is nil")
 	}
-	if b.chainConfig.IsLondon(head.Number64().Uint64()) {
+	headNumber := head.Number64()
+	if headNumber == nil {
+		return errors.New("current block number is nil")
+	}
+	if b.chainConfig.IsLondon(headNumber.Uint64()) {
 		// London is active, set maxPriorityFeePerGas and maxFeePerGas.
 		headHeader, ok := head.Header().(*block.Header)
 		if !ok || headHeader == nil {
@@ -490,6 +494,9 @@ func (args *TransactionArgs) setFeeDefaults(ctx context.Context, b *API) error {
 			return errors.New("maxFeePerGas and maxPriorityFeePerGas are not valid before London is active")
 		}
 		// London not active, set gas price.
+		if b == nil || b.gpo == nil {
+			return errors.New("gas price oracle is unavailable")
+		}
 		price, err := b.gpo.SuggestTipCap(ctx, b.chainConfig)
 		if err != nil {
 			return err
@@ -501,8 +508,14 @@ func (args *TransactionArgs) setFeeDefaults(ctx context.Context, b *API) error {
 
 // setLondonFeeDefaults fills in reasonable default fee values for unspecified fields.
 func (args *TransactionArgs) setLondonFeeDefaults(ctx context.Context, head *block.Header, b *API) error {
+	if head == nil {
+		return errors.New("current block header is nil")
+	}
 	// Set maxPriorityFeePerGas if it is missing.
 	if args.MaxPriorityFeePerGas == nil {
+		if b == nil || b.gpo == nil {
+			return errors.New("gas price oracle is unavailable")
+		}
 		tip, err := b.gpo.SuggestTipCap(ctx, b.chainConfig)
 		if err != nil {
 			return err
@@ -511,6 +524,9 @@ func (args *TransactionArgs) setLondonFeeDefaults(ctx context.Context, head *blo
 	}
 	// Set maxFeePerGas if it is missing.
 	if args.MaxFeePerGas == nil {
+		if head.BaseFee == nil {
+			return errors.New("current block base fee is nil")
+		}
 		// Set the max fee to be 2 times larger than the previous block's base fee.
 		// The additional slack allows the tx to not become invalidated if the base
 		// fee is rising.

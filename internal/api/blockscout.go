@@ -32,10 +32,10 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/common/crypto"
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -67,7 +67,7 @@ func (s *BlockChainAPI) Syncing() (interface{}, error) {
 	if currentBlock == nil {
 		return false, nil
 	}
-	currentHeight := currentBlock.Number64().Uint64()
+	currentHeight := uint256ToUint64OrZero(currentBlock.Number64())
 
 	highestBlock := currentHeight
 	if s.api.p2p != nil {
@@ -192,7 +192,7 @@ func (s *TransactionAPI) GetTransactionByBlockNumberAndIndex(ctx context.Context
 	return newRPCTransaction(
 		txs[index],
 		blk.Hash(),
-		blk.Number64().Uint64(),
+		uint256ToUint64OrZero(blk.Number64()),
 		uint64(index),
 		headerBaseFee.ToBig(),
 	)
@@ -249,7 +249,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 
 	header := blk.Header()
 	blockHash := blk.Hash()
-	blockNumber := blk.Number64().Uint64()
+	blockNumber := uint256ToUint64OrZero(blk.Number64())
 	headerBaseFee := header.BaseFee64()
 	if headerBaseFee == nil {
 		headerBaseFee = new(uint256.Int)
@@ -610,7 +610,7 @@ func (s *BlockChainAPI) SimulateV1(ctx context.Context, blocks []SimulateV1Block
 // simulateBlock simulates a single block with calls
 func (s *BlockChainAPI) simulateBlock(ctx context.Context, simBlock SimulateV1BlockStateCalls, baseHeader *block.Header, blockOffset uint64) (*SimulateV1BlockResult, error) {
 	// Set up block parameters
-	blockNumber := baseHeader.Number64().Uint64() + blockOffset + 1
+	blockNumber := uint256ToUint64OrZero(baseHeader.Number64()) + blockOffset + 1
 	blockTime := baseHeader.Time + (blockOffset+1)*12 // Assume 12s block time
 	gasLimit := baseHeader.GasLimit
 	feeRecipient := baseHeader.Coinbase
@@ -654,7 +654,7 @@ func (s *BlockChainAPI) simulateBlock(ctx context.Context, simBlock SimulateV1Bl
 	// Get state
 	var ibs *state.IntraBlockState
 	err := s.api.Database().View(ctx, func(t kv.Tx) error {
-		stateReader := state.NewPlainState(t, baseHeader.Number64().Uint64())
+		stateReader := state.NewPlainState(t, uint256ToUint64OrZero(baseHeader.Number64()))
 		ibs = state.New(stateReader)
 		return nil
 	})
@@ -707,7 +707,7 @@ func (s *BlockChainAPI) simulateCall(ctx context.Context, args TransactionArgs, 
 	}
 
 	// Create message
-	msg, err := args.ToMessage(s.api.RPCGasCap(), header.BaseFee.ToBig())
+	msg, err := args.ToMessage(s.api.RPCGasCap(), headerBaseFeeBig(header))
 	if err != nil {
 		return SimulateV1CallResult{
 			Status: hexutil.Uint64(0),

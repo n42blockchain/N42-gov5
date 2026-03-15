@@ -112,7 +112,7 @@ func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64) *RPCTransacti
 	if index >= uint64(len(txs)) {
 		return nil
 	}
-	return newRPCTransaction(txs[index], b.Hash(), b.Number64().Uint64(), index, big.NewInt(baseFee))
+	return newRPCTransaction(txs[index], b.Hash(), uint256ToUint64OrZero(b.Number64()), index, big.NewInt(baseFee))
 }
 
 // RPCMarshalHeader converts the given header to the RPC output .
@@ -124,14 +124,14 @@ func RPCMarshalHeader(head block.IHeader) map[string]interface{} {
 	ethHeader := avmtypes.FromN42Header(head)
 
 	result := map[string]interface{}{
-		"number":           (*hexutil.Big)(head.Number64().ToBig()),
+		"number":           (*hexutil.Big)(uint256ToBigOrZero(head.Number64())),
 		"hash":             avmtypes.FromastHash(header.Hash()),
 		"parentHash":       avmtypes.FromastHash(header.ParentHash),
 		"nonce":            header.Nonce,
 		"mixHash":          avmtypes.FromastHash(header.MixDigest),
 		"sha3Uncles":       avmtypes.FromastHash(hash.EmptyUncleHash),
 		"miner":            avmtypes.FromastAddress(&header.Coinbase),
-		"difficulty":       (*hexutil.Big)(header.Difficulty.ToBig()),
+		"difficulty":       (*hexutil.Big)(uint256ToBigOrZero(header.Difficulty)),
 		"extraData":        hexutil.Bytes(header.Extra),
 		"size":             hexutil.Uint64(ethHeader.Size()),
 		"gasLimit":         hexutil.Uint64(header.GasLimit),
