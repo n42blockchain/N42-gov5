@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/lib/kv"
 )
 
 func TestOpenDB_InMemory(t *testing.T) {
@@ -111,4 +114,87 @@ func TestDB_ExpirerStopsOnClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("quit channel not closed after Close()")
 	}
+}
+
+func TestDBNodeSkipsCorruptRecord(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(context.Background(), "", tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	var id ID
+	id[0] = 0x42
+	if err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
+		return tx.Put(kv.NodeRecords, nodeKey(id), []byte{0xff, 0x00, 0x01})
+	}); err != nil {
+		t.Fatalf("failed to write corrupt node record: %v", err)
+	}
+
+	if got := db.Node(id); got != nil {
+		t.Fatalf("Node returned %v, want nil for corrupt record", got)
+	}
+}
+
+func TestDBQuerySeedsSkipsIncompleteNode(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(context.Background(), "", tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+	incomplete := NewV4(&key.PublicKey, nil, 0, 0)
+	for i := range incomplete.id {
+		incomplete.id[i] = 0xff
+	}
+	if err := db.UpdateNode(incomplete); err != nil {
+		t.Fatalf("UpdateNode failed: %v", err)
+	}
+
+	seeds := db.QuerySeeds(1, time.Hour)
+	if len(seeds) != 0 {
+		t.Fatalf("QuerySeeds returned %d nodes, want 0", len(seeds))
+	}
+}
+
+func TestDBQuerySeedsSkipsMalformedRecordKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(context.Background(), "", tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
+		return tx.Put(kv.NodeRecords, []byte("n:broken"), []byte{0x01})
+	}); err != nil {
+		t.Fatalf("failed to write malformed node key: %v", err)
+	}
+
+	if seeds := db.QuerySeeds(1, time.Hour); len(seeds) != 0 {
+		t.Fatalf("QuerySeeds returned %d nodes, want 0", len(seeds))
+	}
+}
+
+func TestDBExpireNodesSkipsMalformedMetadataKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(context.Background(), "", tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.kv.Update(context.Background(), func(tx kv.RwTx) error {
+		return tx.Put(kv.Inodes, []byte("n:broken"), []byte{0x01})
+	}); err != nil {
+		t.Fatalf("failed to write malformed inode key: %v", err)
+	}
+
+	db.expireNodes()
 }

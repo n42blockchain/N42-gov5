@@ -14,8 +14,8 @@ import (
 
 	"github.com/n42blockchain/N42/api/protocol/sync_pb"
 	"github.com/n42blockchain/N42/internal/p2p"
-	"github.com/n42blockchain/N42/internal/p2p/peers"
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
+	"github.com/n42blockchain/N42/internal/p2p/peers"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
 )
@@ -77,10 +77,11 @@ func (s *Service) resyncIfBehind() {
 	s.wg.Add(1)
 	utils.RunEveryWithWG(s.ctx, resyncInterval, func() {
 		if s.cfg.initialSync != nil && !s.cfg.initialSync.Syncing() {
-			highestBlockNr, _ := s.cfg.p2p.Peers().BestPeers(s.cfg.p2p.GetConfig().MinSyncPeers*2, s.cfg.chain.CurrentBlock().Number64())
-			if highestBlockNr.Cmp(new(uint256.Int).AddUint64(s.cfg.chain.CurrentBlock().Number64(), 5)) >= 0 {
+			currentHeight := currentBlockNumber(s.cfg.chain)
+			highestBlockNr, _ := s.cfg.p2p.Peers().BestPeers(s.cfg.p2p.GetConfig().MinSyncPeers*2, currentHeight)
+			if highestBlockNr.Cmp(new(uint256.Int).AddUint64(currentHeight, 5)) >= 0 {
 				log.Info("Fallen behind peers; reverting to initial sync to catch up",
-					"currentBlockNr", s.cfg.chain.CurrentBlock().Number64(),
+					"currentBlockNr", currentHeight,
 					"peersBlockNr", highestBlockNr,
 				)
 				numberOfTimesResyncedCounter.Inc()
@@ -99,7 +100,7 @@ func (s *Service) sendRPCStatusRequest(ctx context.Context, id peer.ID) error {
 
 	resp := &sync_pb.Status{
 		GenesisHash:   utils.ConvertHashToH256(s.cfg.chain.GenesisBlock().Hash()),
-		CurrentHeight: utils.ConvertUint256IntToH256(s.cfg.chain.CurrentBlock().Number64()),
+		CurrentHeight: utils.ConvertUint256IntToH256(currentBlockNumber(s.cfg.chain)),
 	}
 	topic, err := p2p.TopicFromMessage(p2p.StatusMessageName)
 	if err != nil {
@@ -136,7 +137,7 @@ func (s *Service) sendRPCStatusRequest(ctx context.Context, id peer.ID) error {
 }
 
 func (s *Service) reValidatePeer(ctx context.Context, id peer.ID) error {
-	s.cfg.p2p.Peers().Scorers().PeerStatusScorer().SetCurrentHeight(s.cfg.chain.CurrentBlock().Number64())
+	s.cfg.p2p.Peers().Scorers().PeerStatusScorer().SetCurrentHeight(currentBlockNumber(s.cfg.chain))
 	if err := s.sendRPCStatusRequest(ctx, id); err != nil {
 		return err
 	}
@@ -212,7 +213,7 @@ func (s *Service) statusRPCHandler(ctx context.Context, msg interface{}, stream 
 func (s *Service) respondWithStatus(_ context.Context, stream network.Stream) error {
 	resp := &sync_pb.Status{
 		GenesisHash:   utils.ConvertHashToH256(s.cfg.chain.GenesisBlock().Hash()),
-		CurrentHeight: utils.ConvertUint256IntToH256(s.cfg.chain.CurrentBlock().Number64()),
+		CurrentHeight: utils.ConvertUint256IntToH256(currentBlockNumber(s.cfg.chain)),
 	}
 	if _, err := stream.Write([]byte{responseCodeSuccess}); err != nil {
 		log.Debug("Could not write to stream", "err", err)

@@ -54,6 +54,11 @@ func NewBlockValidator(config *params.ChainConfig, blockchain *BlockChain, engin
 // header's transaction and uncle roots. The headers are assumed to be already
 // validated at this point.
 func (v *BlockValidator) ValidateBody(b block.IBlock) error {
+	blockNumber, err := requireBlockNumber(b, "block number unavailable")
+	if err != nil {
+		return err
+	}
+
 	// Check Signature valid
 	vfs := b.Body().Verifier()
 	addrs := make([]types.Address, len(vfs))
@@ -67,7 +72,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 		ss[i] = blsP
 	}
 
-	if v.config.IsBeijing(b.Number64().Uint64()) {
+	if v.config.IsBeijing(blockNumber.Uint64()) {
 		header, ok := b.Header().(*block.Header)
 		if !ok {
 			return fmt.Errorf("ValidateBody: invalid header type assertion for block %v", b.Number64())
@@ -77,7 +82,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 			return err
 		}
 		if !sig.FastAggregateVerify(ss, header.Root) {
-			log.Warn("aggregate signature verification failed", "blockNr", b.Number64().Uint64(), "Signature", hexutil.Encode(header.Signature[:]), "Root", hexutil.Encode(header.Root[:]))
+			log.Warn("aggregate signature verification failed", "blockNr", blockNumber.Uint64(), "Signature", hexutil.Encode(header.Signature[:]), "Root", hexutil.Encode(header.Root[:]))
 			for i, addr := range addrs {
 				log.Warn("", "address", addr.String(), "publicKey", hexutil.Encode(ss[i].Marshal()))
 			}
@@ -86,7 +91,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 	}
 
 	// Check whether the block's known, and if not, that it's linkable
-	if v.bc.HasBlockAndState(b.Hash(), b.Number64().Uint64()) {
+	if v.bc.HasBlockAndState(b.Hash(), blockNumber.Uint64()) {
 		return ErrKnownBlock
 	}
 
@@ -94,7 +99,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", hash, b.TxHash())
 	}
 
-	blockNum := b.Number64().Uint64()
+	blockNum := blockNumber.Uint64()
 	if blockNum == 0 {
 		return nil
 	}

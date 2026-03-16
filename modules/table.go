@@ -161,6 +161,11 @@ const (
 	// value: serialized diff layer (accounts, deletions, storage)
 	SnapshotJournal = "SnapshotJournal"
 
+	// TxPoolJournal stores internal/txspool crash recovery data.
+	// key: transaction hash (32 bytes)
+	// value: protobuf-encoded transaction
+	TxPoolJournal = "TxPoolJournal"
+
 	// JMTNode stores Jellyfish Merkle Tree nodes, content-addressed by Blake3 hash.
 	// key: blake3_hash (32 bytes)
 	// value: serialized JMT node (internal/leaf/extension)
@@ -228,6 +233,7 @@ var n42Tables = []string{
 	SnapshotStorage,
 	SnapshotMeta,
 	SnapshotJournal,
+	TxPoolJournal,
 	JMTNode,
 	JMTRoot,
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/common/types"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -104,5 +105,54 @@ func TestUnmarshalHandlesMissingNumericFieldsAsZero(t *testing.T) {
 	}
 	if tx.Value().Cmp(uint256.NewInt(0)) != 0 {
 		t.Fatalf("Value() = %s, want 0", tx.Value())
+	}
+}
+
+func TestTransactionProtoRoundTripPreservesZeroAddress(t *testing.T) {
+	zero := types.Address{}
+	original := NewTx(&LegacyTx{
+		Nonce: 1,
+		Gas:   21000,
+		To:    &zero,
+		From:  &zero,
+	})
+
+	data, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+
+	var decoded Transaction
+	if err := decoded.Unmarshal(data); err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+
+	if decoded.To() == nil || *decoded.To() != zero {
+		t.Fatalf("To() = %v, want zero address", decoded.To())
+	}
+	if decoded.From() == nil || *decoded.From() != zero {
+		t.Fatalf("From() = %v, want zero address", decoded.From())
+	}
+}
+
+func TestTransactionProtoRoundTripPreservesContractCreation(t *testing.T) {
+	original := NewTx(&LegacyTx{
+		Nonce: 1,
+		Gas:   21000,
+		To:    nil,
+	})
+
+	data, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+
+	var decoded Transaction
+	if err := decoded.Unmarshal(data); err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+
+	if decoded.To() != nil {
+		t.Fatalf("To() = %v, want nil for contract creation", decoded.To())
 	}
 }

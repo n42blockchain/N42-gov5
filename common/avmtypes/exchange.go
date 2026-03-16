@@ -458,12 +458,12 @@ func (tx *Transaction) FromastTransaction(astTx *transaction.Transaction) {
 }
 
 func FromN42Header(iHeader block.IHeader) *Header {
-	if iHeader == nil {
-		return nil
-	}
 	header, ok := iHeader.(*block.Header)
-	if !ok {
-		return nil
+	if !ok || header == nil {
+		return &Header{
+			Difficulty: new(big.Int),
+			Number:     new(big.Int),
+		}
 	}
 	//author, _ := engine.Author(iHeader)
 

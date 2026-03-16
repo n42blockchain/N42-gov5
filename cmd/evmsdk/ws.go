@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"io"
 	"runtime"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
@@ -29,6 +30,8 @@ type WebSocketService struct {
 	acc       string
 	readConn  *websocket.Conn
 	writeConn *websocket.Conn
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func NewWebSocketService(addr, acc string) (*WebSocketService, error) {
@@ -70,7 +73,28 @@ func NewWebSocketService(addr, acc string) (*WebSocketService, error) {
 		readConn:  readConn,
 		writeConn: writeConn,
 		acc:       acc,
+		done:      make(chan struct{}),
 	}, nil
+}
+
+func (ws *WebSocketService) Close() error {
+	var closeErr error
+
+	ws.closeOnce.Do(func() {
+		close(ws.done)
+		if ws.readConn != nil {
+			if err := ws.readConn.Close(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
+		if ws.writeConn != nil {
+			if err := ws.writeConn.Close(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
+	})
+
+	return closeErr
 }
 
 func (ws *WebSocketService) Chans(pubk string) (<-chan []byte, chan<- []byte, error) {
@@ -136,7 +160,10 @@ func (ws *WebSocketService) Chans(pubk string) (<-chan []byte, chan<- []byte, er
 				return
 			}
 			if msgType == websocket.TextMessage {
-				chO <- b
+				if !ws.forwardReadMessage(chO, b) {
+					close(chO)
+					return
+				}
 			}
 			simpleLog("received msg:", string(b))
 		}
@@ -151,7 +178,7 @@ func (ws *WebSocketService) Chans(pubk string) (<-chan []byte, chan<- []byte, er
 			}
 			EE.Stop()
 		}()
-		for msg := range chI {
+		ws.forwardWrites(chI, func(wrappedRequest []byte) error {
 			/*
 				{
 					"jsonrpc":"2.0",
@@ -165,19 +192,42 @@ func (ws *WebSocketService) Chans(pubk string) (<-chan []byte, chan<- []byte, er
 					"id":1
 				}
 			*/
+			return ws.writeConn.WriteMessage(websocket.TextMessage, wrappedRequest)
+		})
+	}()
+	return chO, chI, nil
+}
+
+func (ws *WebSocketService) forwardWrites(in <-chan []byte, send func([]byte) error) {
+	for {
+		select {
+		case <-ws.done:
+			return
+		case msg, ok := <-in:
+			if !ok {
+				return
+			}
 			wrappedRequest, err := ws.wrapJSONRPCRequest(msg)
 			if err != nil {
 				simpleLog("wrapJSONRPCRequest error,err=", err)
 				continue
 			}
-			if err := ws.writeConn.WriteMessage(websocket.TextMessage, wrappedRequest); err != nil {
+			if err := send(wrappedRequest); err != nil {
 				simpleLog("ws producer stopped")
 				return
 			}
 			simpleLog("submit Sign to chain")
 		}
-	}()
-	return chO, chI, nil
+	}
+}
+
+func (ws *WebSocketService) forwardReadMessage(out chan<- []byte, msg []byte) bool {
+	select {
+	case out <- msg:
+		return true
+	case <-ws.done:
+		return false
+	}
 }
 
 type JSONRPCRequest struct {
@@ -185,7 +235,7 @@ type JSONRPCRequest struct {
 	Method  string                 `json:"method"`
 	ID      int                    `json:"id"`
 	Params  []json.RawMessage      `json:"params"`
-	Error   map[string]interface{} `json:"error"`
+	Error   map[string]interface{} `json:"error,omitempty"`
 }
 
 func (ws *WebSocketService) wrapJSONRPCRequest(in []byte) ([]byte, error) {

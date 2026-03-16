@@ -242,14 +242,27 @@ func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool, error) {
 		return msgs, false, nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.Token() // skip '['
+	if _, err := dec.Token(); err != nil {
+		return nil, true, err
+	}
 	var msgs []*jsonrpcMessage
 	for dec.More() {
 		if len(msgs) >= maxBatchSize {
 			return nil, true, fmt.Errorf("batch request too large, max %d", maxBatchSize)
 		}
 		msgs = append(msgs, new(jsonrpcMessage))
-		dec.Decode(&msgs[len(msgs)-1])
+		if err := dec.Decode(&msgs[len(msgs)-1]); err != nil {
+			return nil, true, err
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, true, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		if err == nil {
+			return nil, true, fmt.Errorf("unexpected trailing data after batch")
+		}
+		return nil, true, err
 	}
 	return msgs, true, nil
 }

@@ -131,7 +131,7 @@ func (m *TxDb) begin(ctx context.Context, flags ethdb.TxFlags) error {
 }
 
 func (m *TxDb) RwKV() kv.RwDB {
-	panic("not allowed to get KV interface because you will loose transaction, please use .Tx() method")
+	return nil
 }
 
 // Last can only be called from the transaction thread

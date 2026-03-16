@@ -3,6 +3,7 @@ package witness
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -244,6 +245,22 @@ func TestBinaryEncoding_DecodeTooShort(t *testing.T) {
 	}
 }
 
+func TestBinaryEncoding_EncodeNilWitness(t *testing.T) {
+	_, err := EncodeBinaryWitness(nil)
+	if !errors.Is(err, errBinaryWitnessNil) {
+		t.Fatalf("EncodeBinaryWitness(nil) error = %v", err)
+	}
+}
+
+func TestBinaryEncoding_EncodeNilCodeEntry(t *testing.T) {
+	_, err := EncodeBinaryWitness(&BlockWitness{
+		Codes: []*state.HashCode{nil},
+	})
+	if !errors.Is(err, errBinaryWitnessNilCode) {
+		t.Fatalf("EncodeBinaryWitness(nil code) error = %v", err)
+	}
+}
+
 // TestBinaryEncoding_DecodeTooLarge verifies max size enforcement.
 func TestBinaryEncoding_DecodeTooLarge(t *testing.T) {
 	data := make([]byte, MaxWitnessSize+1)
@@ -402,12 +419,32 @@ func TestBinaryEncoding_ReadBytesMaxWitnessSize(t *testing.T) {
 // without allocating unbounded memory.
 func TestBinaryEncoding_LargeNumProofs(t *testing.T) {
 	// Set numAccountProofs to a huge number, but data is too short.
-	buf := make([]byte, 32+4+4+4) // parentRoot + 3 counts
+	buf := make([]byte, 32+4+4+4)                      // parentRoot + 3 counts
 	binary.LittleEndian.PutUint32(buf[32:36], 1000000) // 1M proofs
 
 	_, err := DecodeBinaryWitness(buf)
 	if err == nil {
 		t.Fatal("expected error for data too short for claimed proof count")
+	}
+}
+
+func TestBinaryEncoding_LargeNumStorageProofs(t *testing.T) {
+	buf := make([]byte, 32+4+4+4) // parentRoot + 3 counts
+	binary.LittleEndian.PutUint32(buf[36:40], 1000000)
+
+	_, err := DecodeBinaryWitness(buf)
+	if err == nil {
+		t.Fatal("expected error for data too short for claimed storage proof count")
+	}
+}
+
+func TestBinaryEncoding_LargeNumCodes(t *testing.T) {
+	buf := make([]byte, 32+4+4+4) // parentRoot + 3 counts
+	binary.LittleEndian.PutUint32(buf[40:44], 1000000)
+
+	_, err := DecodeBinaryWitness(buf)
+	if err == nil {
+		t.Fatal("expected error for data too short for claimed code count")
 	}
 }
 

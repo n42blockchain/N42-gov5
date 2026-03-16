@@ -178,9 +178,13 @@ func parallelApplyTx(
 	evm vm2.VMInterface,
 	cfg vm2.Config,
 ) (*block.Receipt, uint64, []*block.Log, error) {
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, 0, nil, err
+	}
 	rules := evm.ChainRules()
 
-	msg, err := tx.AsMessage(transaction.MakeSigner(config, header.Number.ToBig()), header.BaseFee)
+	msg, err := tx.AsMessage(transaction.MakeSigner(config, headerNumber.ToBig()), header.BaseFee)
 	if err != nil {
 		return nil, 0, nil, err
 	}

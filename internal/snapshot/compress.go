@@ -71,8 +71,11 @@ func getEncoder() *zstd.Encoder {
 			zstd.WithEncoderLevel(zstd.EncoderLevel(zstdLevel)),
 			zstd.WithEncoderConcurrency(1),
 		)
-		if err != nil {
-			panic("snapshot: failed to create zstd encoder: " + err.Error())
+		if err != nil || sharedEnc == nil {
+			if err != nil {
+				panic("snapshot: failed to create zstd encoder: " + err.Error())
+			}
+			panic("snapshot: failed to create zstd encoder: nil encoder")
 		}
 	})
 	return sharedEnc
@@ -85,8 +88,11 @@ func getDecoder() *zstd.Decoder {
 			zstd.WithDecoderMaxMemory(maxDecompressedSize),
 			zstd.WithDecoderConcurrency(1),
 		)
-		if err != nil {
-			panic("snapshot: failed to create zstd decoder: " + err.Error())
+		if err != nil || sharedDec == nil {
+			if err != nil {
+				panic("snapshot: failed to create zstd decoder: " + err.Error())
+			}
+			panic("snapshot: failed to create zstd decoder: nil decoder")
 		}
 	})
 	return sharedDec

@@ -22,11 +22,11 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -111,7 +111,11 @@ func (f *Faker) Seal(chain consensus.ChainHeaderReader, blk block.IBlock, result
 	f.sealMu.Lock()
 	defer f.sealMu.Unlock()
 
-	blockNum := blk.Number64().Uint64()
+	blockNumber, err := requireBlockNumber(blk, "block number unavailable")
+	if err != nil {
+		return err
+	}
+	blockNum := blockNumber.Uint64()
 
 	// Skip if we've already sealed this block number (prevent duplicate blocks)
 	if blockNum <= f.lastSealedNum && f.lastSealedNum > 0 {
@@ -145,7 +149,11 @@ func (f *Faker) SealHash(header block.IHeader) types.Hash {
 func (f *Faker) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent block.IHeader) *uint256.Int {
 	// Return difficulty = parent.Number + 2 to ensure TD always increases
 	// This guarantees ReorgNeeded returns true for new blocks
-	return uint256.NewInt(0).Add(parent.Number64(), uint256.NewInt(2))
+	parentNumber, err := requireHeaderNumber(parent, "parent header number unavailable")
+	if err != nil {
+		return uint256.NewInt(0)
+	}
+	return uint256.NewInt(0).Add(parentNumber, uint256.NewInt(2))
 }
 
 func (f *Faker) Type() params.ConsensusType {

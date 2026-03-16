@@ -31,11 +31,11 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/n42blockchain/N42/params/networkname"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
+	"github.com/n42blockchain/N42/params/networkname"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -82,8 +82,12 @@ func (g *GenesisBlock) Write(tx kv.RwTx) (*block.Block, *state.IntraBlockState, 
 	if err2 != nil {
 		return block, statedb, err2
 	}
+	blockNumber, err := requireBlockNumber(block, "genesis block number unavailable")
+	if err != nil {
+		return nil, nil, err
+	}
 
-	if err := rawdb.WriteTd(tx, block.Hash(), block.Number64().Uint64(), uint256.NewInt(0)); err != nil {
+	if err := rawdb.WriteTd(tx, block.Hash(), blockNumber.Uint64(), uint256.NewInt(0)); err != nil {
 		return nil, nil, err
 	}
 	if err := rawdb.WriteBlock(tx, block); err != nil {
@@ -92,11 +96,11 @@ func (g *GenesisBlock) Write(tx kv.RwTx) (*block.Block, *state.IntraBlockState, 
 	//if err := rawdb.TxNums.WriteForGenesis(tx, 1); err != nil {
 	//	return nil, nil, err
 	//}
-	if err := rawdb.WriteReceipts(tx, block.Number64().Uint64(), nil); err != nil {
+	if err := rawdb.WriteReceipts(tx, blockNumber.Uint64(), nil); err != nil {
 		return nil, nil, err
 	}
 
-	if err := rawdb.WriteCanonicalHash(tx, block.Hash(), block.Number64().Uint64()); err != nil {
+	if err := rawdb.WriteCanonicalHash(tx, block.Hash(), blockNumber.Uint64()); err != nil {
 		return nil, nil, err
 	}
 
@@ -140,10 +144,10 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 				return
 			}
 			balance, overflow := uint256.FromBig(b)
-		if overflow {
-			errCh <- fmt.Errorf("balance overflow for address %s", address.Hex())
-			return
-		}
+			if overflow {
+				errCh <- fmt.Errorf("balance overflow for address %s", address.Hex())
+				return
+			}
 			statedb.AddBalance(address, balance)
 			statedb.SetCode(address, account.Code)
 			statedb.SetNonce(address, account.Nonce)
@@ -249,7 +253,11 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 			}
 		}
 	}
-	if block.Number64().Uint64() != 0 {
+	blockNumber, err := requireBlockNumber(block, "genesis block number unavailable")
+	if err != nil {
+		return nil, statedb, err
+	}
+	if blockNumber.Uint64() != 0 {
 		return nil, statedb, errors.New("can't commit genesis block with number > 0")
 	}
 

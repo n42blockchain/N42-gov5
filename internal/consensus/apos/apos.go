@@ -274,10 +274,14 @@ func (c *APos) verifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHe
 	if !ok {
 		return errors.New("invalid header type: expected *block.Header")
 	}
-	if header.Number.IsZero() {
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	if headerNumber.IsZero() {
 		return errUnknownBlock
 	}
-	number := header.Number.Uint64()
+	number := headerNumber.Uint64()
 
 	// Don't waste time checking blocks from the future
 	if header.Time > uint64(time.Now().Unix()) {
@@ -334,7 +338,11 @@ func (c *APos) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 		return errors.New("invalid header type: expected *block.Header")
 	}
 	// The genesis block is the always valid dead-end
-	number := header.Number.Uint64()
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	number := headerNumber.Uint64()
 	if number == 0 {
 		return nil
 	}
@@ -345,8 +353,12 @@ func (c *APos) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 	} else {
 		parent = chain.GetHeader(header.ParentHash, uint256.NewInt(number-1))
 	}
+	if parent == nil {
+		return errUnknownBlock
+	}
+	parentNumber, err := requireHeaderNumber(parent, "parent header number unavailable")
 	rawParent, ok := parent.(*block.Header)
-	if parent == nil || !ok || rawParent == nil || parent.Number64().Uint64() != number-1 || parent.Hash() != header.ParentHash {
+	if err != nil || !ok || rawParent == nil || parentNumber.Uint64() != number-1 || parent.Hash() != header.ParentHash {
 		return errUnknownBlock
 	}
 	// Verify timestamp is valid (parent time + period <= header time)
@@ -357,7 +369,7 @@ func (c *APos) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 	if header.GasUsed > header.GasLimit {
 		return fmt.Errorf("invalid gasUsed: have %d, gasLimit %d", header.GasUsed, header.GasLimit)
 	}
-	if !chain.Config().IsLondon(header.Number.Uint64()) {
+	if !chain.Config().IsLondon(number) {
 		// Verify BaseFee not present before EIP-1559 fork.
 		if header.BaseFee != nil {
 			return fmt.Errorf("invalid baseFee before fork: have %d, want <nil>", header.BaseFee)
@@ -442,9 +454,9 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 			checkpoint := chain.GetHeaderByNumber(uint256.NewInt(number))
 			if checkpoint != nil {
 				rawCheckpoint, ok := checkpoint.(*block.Header)
-			if !ok {
-				return nil, errors.New("invalid checkpoint header type: expected *block.Header")
-			}
+				if !ok {
+					return nil, errors.New("invalid checkpoint header type: expected *block.Header")
+				}
 				hash := checkpoint.Hash()
 
 				// Security: validate extra data length before calculating signers count
@@ -471,7 +483,8 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 		if len(parents) > 0 {
 			// If we have explicit parents, pick from there (enforced)
 			header = parents[len(parents)-1]
-			if header.Hash() != hash || header.Number64().Uint64() != number {
+			headerNumber, err := requireHeaderNumber(header, "parent header number unavailable")
+			if err != nil || header.Hash() != hash || headerNumber.Uint64() != number {
 				return nil, errUnknownBlock
 			}
 			parents = parents[:len(parents)-1]
@@ -528,7 +541,11 @@ func (c *APos) verifySeal(snap *Snapshot, h block.IHeader, parents []block.IHead
 	if !ok {
 		return errors.New("invalid header type: expected *block.Header")
 	}
-	number := header.Number.Uint64()
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	number := headerNumber.Uint64()
 	if number == 0 {
 		return errUnknownBlock
 	}
@@ -551,7 +568,7 @@ func (c *APos) verifySeal(snap *Snapshot, h block.IHeader, parents []block.IHead
 	}
 	// Ensure that the difficulty corresponds to the turn-ness of the signer
 	if !c.fakeDiff {
-		inturn := snap.inturn(header.Number.Uint64(), signer)
+		inturn := snap.inturn(number, signer)
 		if inturn && header.Difficulty.Cmp(diffInTurn) != 0 {
 			return errWrongDifficulty
 		}
@@ -573,7 +590,11 @@ func (c *APos) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	rawHeader.Coinbase = types.Address{}
 	rawHeader.Nonce = block.BlockNonce{}
 
-	number := rawHeader.Number.Uint64()
+	headerNumber, err := requireHeaderNumber(rawHeader, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	number := headerNumber.Uint64()
 	// Assemble the voting snapshot to check which votes make sense
 	snap, err := c.snapshot(chain, number-1, rawHeader.ParentHash, nil)
 	if err != nil {
@@ -623,7 +644,7 @@ func (c *APos) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	rawHeader.MixDigest = types.Hash{}
 
 	// Ensure the timestamp has the correct delay
-	parent := chain.GetHeader(rawHeader.ParentHash, uint256.NewInt(0).Sub(rawHeader.Number, uint256.NewInt(1)))
+	parent := chain.GetHeader(rawHeader.ParentHash, uint256.NewInt(0).Sub(headerNumber, uint256.NewInt(1)))
 	if parent == nil {
 		return errors.New("unknown ancestor")
 	}
@@ -650,13 +671,17 @@ func (c *APos) Rewards(tx kv.RwTx, header block.IHeader, state *state.IntraBlock
 	if overflow {
 		return nil, errors.New("BeijingBlock overflows uint256")
 	}
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
 	// Security: ensure number >= beijing before subtraction to prevent underflow
-	if header.Number64().Cmp(beijing) >= 0 && new(uint256.Int).Mod(new(uint256.Int).Sub(header.Number64(), beijing), uint256.NewInt(c.config.RewardEpoch)).
+	if headerNumber.Cmp(beijing) >= 0 && new(uint256.Int).Mod(new(uint256.Int).Sub(headerNumber, beijing), uint256.NewInt(c.config.RewardEpoch)).
 		Cmp(uint256.NewInt(0)) == 0 {
-		log.Info("begin setreward", "headnumber", header.Number64().ToBig().String())
+		log.Info("begin setreward", "headnumber", headerNumber.ToBig().String())
 
 		rewardService := newReward(c.chainConfig)
-		accRewards, err := rewardService.SetRewards(tx, header.Number64(), setRewards)
+		accRewards, err := rewardService.SetRewards(tx, headerNumber, setRewards)
 		if err != nil {
 			log.Error("setreward error", "err", err)
 			return nil, err
@@ -696,7 +721,11 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	}
 	rawHeader.Root = state.IntermediateRoot()
 	// Store the state root before finalization for verification purposes
-	rawHeader.MixDigest = state.BeforeStateRoot()
+	beforeStateRoot, err := state.BeforeStateRoot()
+	if err != nil {
+		return nil, nil, err
+	}
+	rawHeader.MixDigest = beforeStateRoot
 
 	// EIP-4844: Calculate blob gas used from included transactions.
 	rawHeader.BlobGasUsed = misc.CalcBlobGasUsed(txs)
@@ -736,7 +765,11 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 	}
 
 	// Sealing the genesis block is not supported
-	number := header.Number.Uint64()
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	number := headerNumber.Uint64()
 	if number == 0 {
 		return errUnknownBlock
 	}
@@ -775,11 +808,11 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 		wiggle := time.Duration(len(snap.Signers)/2+1) * wiggleTime
 		delay += time.Duration(misc.SecureInt63n(int64(wiggle)))
 
-		log.Infof("wiggle %s , time %s, number %d", avmutil.PrettyDuration(wiggle), avmutil.PrettyDuration(delay), header.Number.Uint64())
+		log.Infof("wiggle %s , time %s, number %d", avmutil.PrettyDuration(wiggle), avmutil.PrettyDuration(delay), number)
 		log.Trace("Out-of-turn signing requested", "wiggle", avmutil.PrettyDuration(wiggle))
 	}
 
-	if c.chainConfig.IsBeijing(header.Number.Uint64()) {
+	if c.chainConfig.IsBeijing(number) {
 		ctx, cancel := context.WithTimeout(c.ctx, delay)
 		defer cancel()
 		member := c.CountDepositor()
@@ -858,7 +891,11 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 // * DIFF_NOTURN(2) if BLOCK_NUMBER % SIGNER_COUNT != SIGNER_INDEX
 // * DIFF_INTURN(1) if BLOCK_NUMBER % SIGNER_COUNT == SIGNER_INDEX
 func (c *APos) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent block.IHeader) *uint256.Int {
-	snap, err := c.snapshot(chain, parent.Number64().Uint64(), parent.Hash(), nil)
+	parentNumber, err := requireHeaderNumber(parent, "parent header number unavailable")
+	if err != nil {
+		return uint256.NewInt(0)
+	}
+	snap, err := c.snapshot(chain, parentNumber.Uint64(), parent.Hash(), nil)
 	if err != nil {
 		return uint256.NewInt(0)
 	}

@@ -34,6 +34,8 @@ var (
 	ErrClientQuit                = errors.New("client is closed")
 	ErrNoResult                  = errors.New("no result in JSON-RPC response")
 	ErrSubscriptionQueueOverflow = errors.New("subscription queue overflow")
+	ErrInvalidSubscribeChannel   = errors.New("subscribe requires a writable channel")
+	ErrNilSubscribeChannel       = errors.New("subscribe channel must not be nil")
 	errClientReconnected         = errors.New("client reconnected")
 	errDead                      = errors.New("connection lost")
 )
@@ -428,11 +430,11 @@ func (c *Client) read(codec ServerCodec) {
 func (c *Client) Subscribe(ctx context.Context, namespace string, channel interface{}, args ...interface{}) (*ClientSubscription, error) {
 	// Check type of channel first.
 	chanVal := reflect.ValueOf(channel)
-	if chanVal.Kind() != reflect.Chan || chanVal.Type().ChanDir()&reflect.SendDir == 0 {
-		panic(fmt.Sprintf("channel argument of Subscribe has type %T, need writable channel", channel))
+	if !chanVal.IsValid() || chanVal.Kind() != reflect.Chan || chanVal.Type().ChanDir()&reflect.SendDir == 0 {
+		return nil, fmt.Errorf("%w: got %T", ErrInvalidSubscribeChannel, channel)
 	}
 	if chanVal.IsNil() {
-		panic("channel given to Subscribe must not be nil")
+		return nil, ErrNilSubscribeChannel
 	}
 	if c.isHTTP {
 		return nil, ErrNotificationsUnsupported

@@ -20,8 +20,8 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/runtime/protoimpl"
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 // BlobSidecar is a gossip-compatible representation of a blob sidecar.

@@ -110,11 +110,7 @@ func (h *HeadersByRangeRequest) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	// Field (2) 'Step'
 	hh.PutUint64(h.Step)
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -165,11 +161,7 @@ func (p *Ping) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	// Field (0) 'SeqNumber'
 	hh.PutUint64(p.SeqNumber)
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -297,11 +289,7 @@ func (s *Status) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -429,11 +417,7 @@ func (f *ForkData) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -540,10 +524,6 @@ func (b *BodiesByRangeRequest) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	// Field (2) 'Step'
 	hh.PutUint64(b.Step)
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }

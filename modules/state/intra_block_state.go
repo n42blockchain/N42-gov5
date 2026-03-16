@@ -1136,9 +1136,9 @@ func (sdb *IntraBlockState) WasCreatedInCurrentTx(addr types.Address) bool {
 }
 
 // BeforeStateRoot computes a hash of the used state. Must be called after all transactions execute.
-func (sdb *IntraBlockState) BeforeStateRoot() (hashValue types.Hash) {
+func (sdb *IntraBlockState) BeforeStateRoot() (hashValue types.Hash, err error) {
 	if sdb.snap == nil {
-		return types.Hash{}
+		return types.Hash{}, nil
 	}
 	sort.Sort(sdb.snap.Items)
 
@@ -1150,7 +1150,9 @@ func (sdb *IntraBlockState) BeforeStateRoot() (hashValue types.Hash) {
 	sort.Sort(hashCodes)
 
 	hasher := sha3.NewLegacyKeccak256()
-	EncodeBeforeState(hasher, sdb.snap.Items, hashCodes)
+	if err := EncodeBeforeState(hasher, sdb.snap.Items, hashCodes); err != nil {
+		return types.Hash{}, err
+	}
 	hasher.(crypto.KeccakState).Read(hashValue[:])
-	return hashValue
+	return hashValue, nil
 }

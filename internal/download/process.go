@@ -23,7 +23,6 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
 )
 
 func (d *Downloader) processHeaders() error {
@@ -61,7 +60,12 @@ func (d *Downloader) processHeaders() error {
 			delete(d.headerProcessingTasks, task.taskID)
 			log.Tracef("received headers from remote peers, the header count is %v", len(task.headers))
 			for _, header := range task.headers {
-				headerNum := *utils.ConvertH256ToUint256Int(header.Number)
+				headerNumber, err := requireProtoHeaderNumber(header, "header number unavailable")
+				if err != nil {
+					d.headerTaskLock.Unlock()
+					return err
+				}
+				headerNum := *headerNumber
 				headerNumberPool = append(headerNumberPool, headerNum)
 				if len(headerNumberPool) >= maxBodiesFetch {
 					number := make([]uint256.Int, len(headerNumberPool))
@@ -111,7 +115,12 @@ func (d *Downloader) processBodies() error {
 			delete(d.bodyProcessingTasks, response.taskID)
 			log.Debugf("received block from remote peers, the block count is %v", len(response.bodies))
 			for _, body := range response.bodies {
-				d.bodyResultStore[*utils.ConvertH256ToUint256Int(body.Header.Number)] = body
+				blockNumber, err := requireProtoBlockNumber(body, "block number unavailable")
+				if err != nil {
+					d.bodyTaskPoolLock.Unlock()
+					return err
+				}
+				d.bodyResultStore[*blockNumber] = body
 			}
 			d.bodyTaskPoolLock.Unlock()
 		case <-tick.C:
@@ -144,7 +153,12 @@ func (d *Downloader) processChain() error {
 			// Collect blocks under lock, then release before InsertChain
 			// so fetchBodies/processBodies can continue downloading in parallel.
 			d.bodyTaskPoolLock.Lock()
-			wantBlockNumber := new(uint256.Int).AddUint64(d.bc.CurrentBlock().Number64(), 1)
+			currentNumber, err := requireCurrentBlockNumber(d.bc, "current block number unavailable")
+			if err != nil {
+				d.bodyTaskPoolLock.Unlock()
+				return err
+			}
+			wantBlockNumber := new(uint256.Int).AddUint64(currentNumber, 1)
 			log.Tracef("want block %d have blocks count is %d", wantBlockNumber.Uint64(), len(d.bodyResultStore))
 
 			var blocks []block.IBlock
@@ -166,10 +180,17 @@ func (d *Downloader) processChain() error {
 				continue
 			}
 
-			first, last := blocks[0].Header(), blocks[len(blocks)-1].Header()
+			firstNumber, err := requireBlockNumber(blocks[0], "first block number unavailable")
+			if err != nil {
+				return err
+			}
+			lastNumber, err := requireBlockNumber(blocks[len(blocks)-1], "last block number unavailable")
+			if err != nil {
+				return err
+			}
 			log.Info("Inserting downloaded chain", "items", len(blocks),
-				"firstnum", first.Number64().Uint64(), "firsthash", first.Hash(),
-				"lastnum", last.Number64().Uint64(), "lasthash", last.Hash(),
+				"firstnum", firstNumber.Uint64(), "firsthash", blocks[0].Hash(),
+				"lastnum", lastNumber.Uint64(), "lasthash", blocks[len(blocks)-1].Hash(),
 			)
 
 			if _, err := d.bc.InsertChain(blocks); err != nil {

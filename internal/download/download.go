@@ -39,19 +39,21 @@ import (
 )
 
 var (
-	ErrBusy          = errors.New("busy")
-	ErrCanceled      = errors.New("syncing canceled (requested)")
-	ErrSyncBlock     = errors.New("err sync block")
-	ErrTimeout       = errors.New("timeout")
-	ErrBadPeer       = errors.New("bad peer error")
-	ErrNoPeers       = errors.New("no peers to download")
-	ErrInvalidPubSub = errors.New("PubSub is nil")
+	ErrBusy                   = errors.New("busy")
+	ErrCanceled               = errors.New("syncing canceled (requested)")
+	ErrSyncBlock              = errors.New("err sync block")
+	ErrTimeout                = errors.New("timeout")
+	ErrBadPeer                = errors.New("bad peer error")
+	ErrNoPeers                = errors.New("no peers to download")
+	ErrInvalidNetwork         = errors.New("network is nil")
+	ErrInvalidPubSub          = errors.New("PubSub is nil")
+	ErrInvalidSyncTaskPayload = errors.New("invalid sync task payload")
 )
 
 const (
-	maxHeaderFetch          = 192            // Maximum number of headers per request
-	maxBodiesFetch          = 128            // Maximum number of bodies per request
-	maxResultsProcess       = 2048           // Maximum number of results to import at once
+	maxHeaderFetch          = 192  // Maximum number of headers per request
+	maxBodiesFetch          = 128  // Maximum number of bodies per request
+	maxResultsProcess       = 2048 // Maximum number of results to import at once
 	syncPeerCount           = 6
 	syncTimeTick            = 10 * time.Second
 	syncTimeOutPerRequest   = 1 * time.Minute
@@ -96,7 +98,7 @@ type Downloader struct {
 	highestNumber uint256.Int
 	highestMu     sync.RWMutex
 
-	ctx context.Context
+	ctx        context.Context
 	cancel     context.CancelFunc
 	cancelLock sync.RWMutex
 	cancelWg   sync.WaitGroup
@@ -124,9 +126,9 @@ type Downloader struct {
 func NewDownloader(ctx context.Context, bc common.IBlockChain, network common.INetwork, pubsub common.IPubSub, peers common.PeerMap) common.IDownloader {
 	c, cancel := context.WithCancel(ctx)
 
-	highestNumber := bc.CurrentBlock().Number64().Clone()
+	highestNumber := cloneCurrentBlockNumberOrZero(bc)
 	for _, peer := range peers {
-		if highestNumber.Uint64() < peer.CurrentHeight.Uint64() {
+		if peer.CurrentHeight != nil && highestNumber.Uint64() < peer.CurrentHeight.Uint64() {
 			highestNumber = peer.CurrentHeight.Clone()
 		}
 	}
@@ -173,7 +175,7 @@ func (d *Downloader) waitAvailablePeer() {
 		case <-d.ctx.Done():
 			return
 		case <-timer.C:
-			peers := d.peersInfo.findPeers(new(uint256.Int).AddUint64(d.bc.CurrentBlock().Number64(), 1), 10)
+			peers := d.peersInfo.findPeers(uint256.NewInt(currentBlockNumberOrZero(d.bc)+1), 10)
 			if len(peers) > 0 {
 				return
 			}
@@ -185,6 +187,10 @@ func (d *Downloader) waitAvailablePeer() {
 
 // Start starts the Downloader service.
 func (d *Downloader) Start() error {
+	if d.network == nil {
+		return ErrInvalidNetwork
+	}
+
 	go d.pubSubLoop()
 
 	// If this is a bootstrap node, signal completion immediately
@@ -273,7 +279,11 @@ func (d *Downloader) IsDownloading() bool {
 }
 
 func (d *Downloader) findAncestor() (uint256.Int, error) {
-	return *d.bc.CurrentBlock().Number64(), nil
+	number, err := requireCurrentBlockNumber(d.bc, "current block number unavailable")
+	if err != nil {
+		return uint256.Int{}, err
+	}
+	return *number.Clone(), nil
 }
 
 func (d *Downloader) findHead() (uint256.Int, error) {
@@ -303,16 +313,24 @@ func (d *Downloader) pubSubLoop() {
 			log.Debugf("receive a err from highestSub %v", err)
 			return
 		case highestBlock, ok := <-highestBlockCh:
+			if !ok {
+				continue
+			}
+			blockNumber, err := requireBlockNumber(&highestBlock.Block, "highest block number unavailable")
+			if err != nil {
+				log.Warn("ignoring highest block event", "err", err)
+				continue
+			}
 			d.highestMu.RLock()
 			curHighest := d.highestNumber.Uint64()
 			d.highestMu.RUnlock()
-			if ok && highestBlock.Block.Number64().Uint64() > curHighest {
-				log.Debugf("receive a new highestBlock block number: %d", highestBlock.Block.Number64().Uint64())
+			if blockNumber.Uint64() > curHighest {
+				log.Debugf("receive a new highestBlock block number: %d", blockNumber.Uint64())
 				d.highestMu.Lock()
-				d.highestNumber = *highestBlock.Block.Number64()
+				d.highestNumber = *blockNumber.Clone()
 				d.highestMu.Unlock()
 				if highestBlock.Inserted {
-					d.peersInfo.peerInfoBroadcast(highestBlock.Block.Number64())
+					d.peersInfo.peerInfoBroadcast(blockNumber)
 				}
 			}
 		}
@@ -345,10 +363,16 @@ func (d *Downloader) synchronise() {
 			d.highestMu.RLock()
 			highest := d.highestNumber.Clone()
 			d.highestMu.RUnlock()
-			difference := new(uint256.Int).Sub(highest, d.bc.CurrentBlock().Number64())
-			log.Tracef("highest: %d, current: %d", highest.Uint64(), d.bc.CurrentBlock().Number64().Uint64())
+			currentNumber, err := requireCurrentBlockNumber(d.bc, "current block number unavailable")
+			if err != nil {
+				log.Warn("downloader skipped sync check", "err", err)
+				tick.Reset(syncTimeTick)
+				continue
+			}
+			difference := new(uint256.Int).Sub(highest, currentNumber)
+			log.Tracef("highest: %d, current: %d", highest.Uint64(), currentNumber.Uint64())
 			if difference.Uint64() > 1 {
-				log.Infof("start downloader Compare Loop remote highestNumber: %d, current number: %d, difference: %d", highest.Uint64(), d.bc.CurrentBlock().Number64().Uint64(), difference.Uint64())
+				log.Infof("start downloader Compare Loop remote highestNumber: %d, current number: %d, difference: %d", highest.Uint64(), currentNumber.Uint64(), difference.Uint64())
 				if err := d.doSync(d.getMode()); err != nil {
 					log.Errorf("failed to running downloader, err:%v", err)
 				}
@@ -377,32 +401,60 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 	switch syncTask.SyncType {
 
 	case sync_proto.SyncType_HeaderRes:
-		headersResponse := syncTask.Payload.(*sync_proto.SyncTask_SyncHeaderResponse).SyncHeaderResponse
+		headersResponse := syncTask.GetSyncHeaderResponse()
+		if headersResponse == nil {
+			return fmt.Errorf("%w: %s", ErrInvalidSyncTaskPayload, syncTask.SyncType.String())
+		}
 		// Security: bounds check before accessing slice elements
 		if len(headersResponse.Headers) > 0 {
-			params = append(params, "headerCount", len(headersResponse.Headers), "headerNumberFrom", utils.ConvertH256ToUint256Int(headersResponse.Headers[0].Number).Uint64(), "headerNumberTo", utils.ConvertH256ToUint256Int(headersResponse.Headers[len(headersResponse.Headers)-1].Number).Uint64())
+			firstNumber, err := requireProtoHeaderNumber(headersResponse.Headers[0], "header number unavailable")
+			if err != nil {
+				return err
+			}
+			lastNumber, err := requireProtoHeaderNumber(headersResponse.Headers[len(headersResponse.Headers)-1], "header number unavailable")
+			if err != nil {
+				return err
+			}
+			params = append(params, "headerCount", len(headersResponse.Headers), "headerNumberFrom", firstNumber.Uint64(), "headerNumberTo", lastNumber.Uint64())
 		} else {
 			params = append(params, "headerCount", 0)
 		}
 		d.headerProcCh <- &headerResponse{taskID: taskID, ok: syncTask.Ok, headers: headersResponse.Headers}
 
 	case sync_proto.SyncType_HeaderReq:
-		headerRequest := syncTask.Payload.(*sync_proto.SyncTask_SyncHeaderRequest).SyncHeaderRequest
+		headerRequest := syncTask.GetSyncHeaderRequest()
+		if headerRequest == nil {
+			return fmt.Errorf("%w: %s", ErrInvalidSyncTaskPayload, syncTask.SyncType.String())
+		}
 		params = append(params, "Amount", utils.ConvertH256ToUint256Int(headerRequest.Amount).Uint64(), "headerNumberFrom", utils.ConvertH256ToUint256Int(headerRequest.Number).Uint64())
 		go d.responseHeaders(taskID, p, headerRequest)
 
 	case sync_proto.SyncType_BodyRes:
-		bodiesResponse := syncTask.Payload.(*sync_proto.SyncTask_SyncBlockResponse).SyncBlockResponse
+		bodiesResponse := syncTask.GetSyncBlockResponse()
+		if bodiesResponse == nil {
+			return fmt.Errorf("%w: %s", ErrInvalidSyncTaskPayload, syncTask.SyncType.String())
+		}
 		// Security: bounds check before accessing slice elements
 		if len(bodiesResponse.Blocks) > 0 {
-			params = append(params, "blocksCount", len(bodiesResponse.Blocks), "bodyNumberFrom", utils.ConvertH256ToUint256Int(bodiesResponse.Blocks[0].Header.Number).Uint64(), "bodyNumberTo", utils.ConvertH256ToUint256Int(bodiesResponse.Blocks[len(bodiesResponse.Blocks)-1].Header.Number).Uint64())
+			firstNumber, err := requireProtoBlockNumber(bodiesResponse.Blocks[0], "block number unavailable")
+			if err != nil {
+				return err
+			}
+			lastNumber, err := requireProtoBlockNumber(bodiesResponse.Blocks[len(bodiesResponse.Blocks)-1], "block number unavailable")
+			if err != nil {
+				return err
+			}
+			params = append(params, "blocksCount", len(bodiesResponse.Blocks), "bodyNumberFrom", firstNumber.Uint64(), "bodyNumberTo", lastNumber.Uint64())
 		} else {
 			params = append(params, "blocksCount", 0)
 		}
 		d.blockProcCh <- &bodyResponse{taskID: taskID, ok: syncTask.Ok, bodies: bodiesResponse.Blocks}
 
 	case sync_proto.SyncType_BodyReq:
-		blockRequest := syncTask.Payload.(*sync_proto.SyncTask_SyncBlockRequest).SyncBlockRequest
+		blockRequest := syncTask.GetSyncBlockRequest()
+		if blockRequest == nil {
+			return fmt.Errorf("%w: %s", ErrInvalidSyncTaskPayload, syncTask.SyncType.String())
+		}
 		// Security: bounds check before accessing slice elements
 		if len(blockRequest.Number) > 0 {
 			params = append(params, "bodyNumberFrom", utils.ConvertH256ToUint256Int(blockRequest.Number[0]).Uint64(), "bodyNumberTo", utils.ConvertH256ToUint256Int(blockRequest.Number[len(blockRequest.Number)-1]).Uint64())
@@ -412,7 +464,10 @@ func (d *Downloader) ConnHandler(data []byte, ID peer.ID) error {
 		go d.responseBlocks(taskID, p, blockRequest)
 
 	case sync_proto.SyncType_PeerInfoBroadcast:
-		peerInfoBroadcast := syncTask.Payload.(*sync_proto.SyncTask_SyncPeerInfoBroadcast).SyncPeerInfoBroadcast
+		peerInfoBroadcast := syncTask.GetSyncPeerInfoBroadcast()
+		if peerInfoBroadcast == nil {
+			return fmt.Errorf("%w: %s", ErrInvalidSyncTaskPayload, syncTask.SyncType.String())
+		}
 		currentNumber := utils.ConvertH256ToUint256Int(peerInfoBroadcast.Number)
 		currentDifficulty := utils.ConvertH256ToUint256Int(peerInfoBroadcast.Difficulty)
 		params = append(params, "Number", currentNumber, "Difficulty", currentDifficulty)

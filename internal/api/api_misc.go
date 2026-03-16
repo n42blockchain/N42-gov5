@@ -42,8 +42,8 @@ func (s *n42API) GasPrice(ctx context.Context) (*hexutil.Big, error) {
 	}
 	currentBlock := s.api.BlockChain().CurrentBlock()
 	if currentBlock != nil {
-		if head := currentBlock.Header(); head != nil && head.BaseFee64() != nil && !head.BaseFee64().IsZero() {
-			tipcap.Add(tipcap, head.BaseFee64().ToBig())
+		if baseFee := headerBaseFeeBig(currentBlock.Header()); baseFee != nil && baseFee.Sign() > 0 {
+			tipcap.Add(tipcap, baseFee)
 		}
 	}
 	return (*hexutil.Big)(tipcap), nil

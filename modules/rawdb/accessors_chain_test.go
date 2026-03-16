@@ -20,9 +20,38 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"google.golang.org/protobuf/proto"
 )
+
+type rawdbBlockStub struct {
+	number *uint256.Int
+}
+
+func (b *rawdbBlockStub) Header() block.IHeader                           { return b }
+func (b *rawdbBlockStub) Body() block.IBody                               { return nil }
+func (b *rawdbBlockStub) Transaction(types.Hash) *transaction.Transaction { return nil }
+func (b *rawdbBlockStub) Transactions() []*transaction.Transaction        { return nil }
+func (b *rawdbBlockStub) Number64() *uint256.Int                          { return b.number }
+func (b *rawdbBlockStub) BaseFee64() *uint256.Int                         { return uint256.NewInt(0) }
+func (b *rawdbBlockStub) Difficulty() *uint256.Int                        { return uint256.NewInt(1) }
+func (b *rawdbBlockStub) Time() uint64                                    { return 0 }
+func (b *rawdbBlockStub) GasLimit() uint64                                { return 0 }
+func (b *rawdbBlockStub) GasUsed() uint64                                 { return 0 }
+func (b *rawdbBlockStub) Nonce() uint64                                   { return 0 }
+func (b *rawdbBlockStub) Coinbase() types.Address                         { return types.Address{} }
+func (b *rawdbBlockStub) ParentHash() types.Hash                          { return types.Hash{} }
+func (b *rawdbBlockStub) TxHash() types.Hash                              { return types.Hash{} }
+func (b *rawdbBlockStub) Hash() types.Hash                                { return types.Hash{} }
+func (b *rawdbBlockStub) ToProtoMessage() proto.Message                   { return nil }
+func (b *rawdbBlockStub) FromProtoMessage(proto.Message) error            { return nil }
+func (b *rawdbBlockStub) Marshal() ([]byte, error)                        { return nil, nil }
+func (b *rawdbBlockStub) Unmarshal([]byte) error                          { return nil }
+func (b *rawdbBlockStub) StateRoot() types.Hash                           { return types.Hash{} }
+func (b *rawdbBlockStub) WithSeal(block.IHeader) *block.Block             { return nil }
 
 func TestTdStorage(t *testing.T) {
 	_, tx := memdb.NewTestTx(t)
@@ -85,5 +114,19 @@ func TestTdStorage(t *testing.T) {
 	}
 	if entry.Cmp(zeroTd) != 0 {
 		t.Fatalf("TD at block 100 mismatch: have %v, want %v", entry, zeroTd)
+	}
+}
+
+func TestRequireBlockNumberRejectsNilNumber(t *testing.T) {
+	_, err := requireBlockNumber(&rawdbBlockStub{}, "block number unavailable")
+	if err == nil || err.Error() != "block number unavailable" {
+		t.Fatalf("requireBlockNumber() error = %v", err)
+	}
+}
+
+func TestRequireHeaderNumberRejectsNilNumber(t *testing.T) {
+	_, err := requireHeaderNumber(&block.Header{}, "header number unavailable")
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("requireHeaderNumber() error = %v", err)
 	}
 }

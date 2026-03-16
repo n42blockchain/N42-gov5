@@ -17,13 +17,13 @@
 package internal
 
 import (
-	"fmt"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/params"
+	"math/big"
 )
 
 // NewEVMBlockContext creates a new context for use in the EVM.
@@ -37,14 +37,15 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 	}
 	var baseFee uint256.Int
 	if header.BaseFee != nil {
-		overflow := baseFee.SetFromBig(header.BaseFee.ToBig())
-		if overflow {
-			panic(fmt.Errorf("header.BaseFee higher than 2^256-1"))
-		}
+		baseFee.SetFromBig(header.BaseFee.ToBig())
+	}
+	difficulty := new(big.Int)
+	if header.Difficulty != nil {
+		difficulty = header.Difficulty.ToBig()
 	}
 
 	var prevRandDao *types.Hash
-	if header.Difficulty.Cmp(uint256.NewInt(0)) == 0 {
+	if header.Difficulty != nil && header.Difficulty.Cmp(uint256.NewInt(0)) == 0 {
 		// EIP-4399. We use SerenityDifficulty (i.e. 0) as a telltale of Proof-of-Stake blocks.
 		prevRandDao = &header.MixDigest
 	}
@@ -55,15 +56,19 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 	} else {
 		transferFunc = Transfer
 	}
+	headerNumber := uint64(0)
+	if number, err := requireHeaderNumber(header, "header number unavailable"); err == nil {
+		headerNumber = number.Uint64()
+	}
 
 	return evmtypes.BlockContext{
 		CanTransfer: CanTransfer,
 		Transfer:    transferFunc,
 		GetHash:     blockHashFunc,
 		Coinbase:    beneficiary,
-		BlockNumber: header.Number.Uint64(),
+		BlockNumber: headerNumber,
 		Time:        header.Time,
-		Difficulty:  header.Difficulty.ToBig(),
+		Difficulty:  difficulty,
 		BaseFee:     &baseFee,
 		GasLimit:    header.GasLimit,
 		PrevRanDao:  prevRandDao,
@@ -85,14 +90,15 @@ func GetHashFn(ref *block.Header, getHeader func(hash types.Hash, number uint64)
 	var cache []types.Hash
 
 	return func(n uint64) types.Hash {
-		if n >= ref.Number.Uint64() {
+		refNumber, err := requireHeaderNumber(ref, "")
+		if err != nil || n >= refNumber.Uint64() {
 			return types.Hash{}
 		}
 		// If there's no hash cache yet, make one
 		if len(cache) == 0 {
 			cache = append(cache, ref.ParentHash)
 		}
-		if idx := ref.Number.Uint64() - n - 1; idx < uint64(len(cache)) {
+		if idx := refNumber.Uint64() - n - 1; idx < uint64(len(cache)) {
 			return cache[idx]
 		}
 		if getHeader == nil {
@@ -100,16 +106,20 @@ func GetHashFn(ref *block.Header, getHeader func(hash types.Hash, number uint64)
 		}
 		// No luck in the cache, but we can start iterating from the last element we already know
 		lastKnownHash := cache[len(cache)-1]
-		lastKnownNumber := ref.Number.Uint64() - uint64(len(cache))
+		lastKnownNumber := refNumber.Uint64() - uint64(len(cache))
 
 		for {
 			header := getHeader(lastKnownHash, lastKnownNumber)
 			if header == nil {
 				break
 			}
+			headerNumber, err := requireHeaderNumber(header, "")
+			if err != nil || headerNumber.Uint64() == 0 {
+				break
+			}
 			cache = append(cache, header.ParentHash)
 			lastKnownHash = header.ParentHash
-			lastKnownNumber = header.Number.Uint64() - 1
+			lastKnownNumber = headerNumber.Uint64() - 1
 			if n == lastKnownNumber {
 				return lastKnownHash
 			}

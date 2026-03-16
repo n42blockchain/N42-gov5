@@ -62,17 +62,31 @@ import (
 
 func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consensus.Engine, db kv.RwDB, p2p p2p.P2P, config *params.ChainConfig) (common.IBlockChain, error) {
 	c, cancel := context.WithCancel(ctx)
+	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if _, err := requireBlockNumber(concreteGenesis, "genesis block number unavailable"); err != nil {
+		cancel()
+		return nil, err
+	}
 	var current *block.Block
 
 	if err := db.View(c, func(tx kv.Tx) error {
 		current = rawdb.ReadCurrentBlock(tx)
 		if current == nil {
-			current = genesisBlock.(*block.Block)
+			current = concreteGenesis
 		}
 		return nil
 	}); err != nil {
 		log.Warnf("failed to read current block from database, using genesis: %v", err)
-		current = genesisBlock.(*block.Block)
+		current = concreteGenesis
+	}
+	currentNumber, err := requireBlockNumber(current, "current block number unavailable")
+	if err != nil {
+		cancel()
+		return nil, err
 	}
 
 	blockCache, _ := lru.New[types.Hash, *block.Block](blockCacheLimit)
@@ -107,7 +121,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	}
 
 	bc.currentBlock.Store(current)
-	headBlockGauge.Set(current.Number64().Uint64())
+	headBlockGauge.Set(currentNumber.Uint64())
 	headGasUsedGauge.Set(current.GasUsed())
 	headGasLimitGauge.Set(current.GasLimit())
 	headTransactionsGauge.Set(uint64(len(current.Transactions())))
@@ -308,9 +322,20 @@ func (bc *BlockChain) processFutureBlocks() {
 		return
 	}
 
+	currentNumber, err := requireBlockNumber(bc.CurrentBlock(), "current block number unavailable")
+	if err != nil {
+		log.Warn("Skipping future block processing", "err", err)
+		return
+	}
+
 	blocks := make([]block.IBlock, 0, bc.futureBlocks.Len())
 	for _, key := range bc.futureBlocks.Keys() {
 		if value, ok := bc.futureBlocks.Get(key); ok {
+			if _, err := requireBlockNumber(value, "future block number unavailable"); err != nil {
+				log.Warn("Dropping future block with unavailable number", "hash", key, "err", err)
+				bc.futureBlocks.Remove(key)
+				continue
+			}
 			blocks = append(blocks, value)
 		}
 	}
@@ -318,7 +343,15 @@ func (bc *BlockChain) processFutureBlocks() {
 		return blocks[i].Number64().Cmp(blocks[j].Number64()) < 0
 	})
 
-	if len(blocks) == 0 || blocks[0].Number64().Uint64() > bc.CurrentBlock().Number64().Uint64()+1 {
+	if len(blocks) == 0 {
+		return
+	}
+	firstNumber, err := requireBlockNumber(blocks[0], "future block number unavailable")
+	if err != nil {
+		log.Warn("Skipping future block processing", "err", err)
+		return
+	}
+	if firstNumber.Uint64() > currentNumber.Uint64()+1 {
 		return
 	}
 
@@ -329,7 +362,12 @@ func (bc *BlockChain) processFutureBlocks() {
 			bc.futureBlocks.Remove(k)
 		}
 		if n > 0 {
-			log.Infof("insert %d future block success, for %d to %d", n, blocks[0].Number64().Uint64(), blocks[n-1].Number64().Uint64())
+			lastNumber, numberErr := requireBlockNumber(blocks[n-1], "future block number unavailable")
+			if numberErr != nil {
+				log.Infof("insert %d future block success", n)
+			} else {
+				log.Infof("insert %d future block success, for %d to %d", n, firstNumber.Uint64(), lastNumber.Uint64())
+			}
 		}
 	}
 }
@@ -369,8 +407,17 @@ func (bc *BlockChain) runNewBlockMessage() {
 
 // persistBlock writes a block to the database and updates head hash.
 func (bc *BlockChain) persistBlock(db kv.RwDB, blk block.IBlock, source string) {
+	concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
+	if err != nil {
+		log.Errorf("failed to write block from %s: %v", source, err)
+		return
+	}
+	if _, err := requireBlockNumber(concreteBlock, "block number unavailable"); err != nil {
+		log.Errorf("failed to write block from %s: %v", source, err)
+		return
+	}
 	if err := db.Update(bc.ctx, func(tx kv.RwTx) error {
-		if err := rawdb.WriteBlock(tx, blk.(*block.Block)); err != nil {
+		if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
 			return err
 		}
 		rawdb.WriteHeadBlockHash(tx, blk.Hash())
@@ -492,8 +539,16 @@ func (bc *BlockChain) AddFutureBlock(blk block.IBlock) error {
 	if blk.Difficulty().Uint64() == 0 {
 		return nil
 	}
-	log.Info("add future block", "hash", blk.Hash(), "number", blk.Number64().Uint64(), "stateRoot", blk.StateRoot(), "txs", len(blk.Body().Transactions()))
-	bc.futureBlocks.Add(blk.Hash(), blk.(*block.Block))
+	concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
+	if err != nil {
+		return err
+	}
+	blockNumber, err := requireBlockNumber(concreteBlock, "block number unavailable")
+	if err != nil {
+		return err
+	}
+	log.Info("add future block", "hash", blk.Hash(), "number", blockNumber.Uint64(), "stateRoot", blk.StateRoot(), "txs", len(blk.Body().Transactions()))
+	bc.futureBlocks.Add(blk.Hash(), concreteBlock)
 	return nil
 }
 
@@ -552,16 +607,25 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 	// Skip already-known blocks
 	if bc.skipBlock(err) {
 		var (
-			reorg   bool
-			current = bc.CurrentBlock()
+			reorg         bool
+			current       = bc.CurrentBlock()
+			currentNumber *uint256.Int
 		)
+		currentNumber, err = requireBlockNumber(current, "current block number unavailable")
+		if err != nil {
+			return it.index, err
+		}
 		for blk != nil && bc.skipBlock(err) {
 			reorg, err = bc.forker.ReorgNeeded(current.Header(), blk.Header())
 			if err != nil {
 				return it.index, err
 			}
 			if reorg {
-				if blk.Number64().Uint64() > current.Number64().Uint64() || bc.GetCanonicalHash(blk.Number64()) != blk.Hash() {
+				blockNumber, numberErr := requireBlockNumber(blk, "block number unavailable")
+				if numberErr != nil {
+					return it.index, numberErr
+				}
+				if blockNumber.Uint64() > currentNumber.Uint64() || bc.GetCanonicalHash(blockNumber) != blk.Hash() {
 					break
 				}
 			}
@@ -670,17 +734,29 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 		var receipts block.Receipts
 		var logs []*block.Log
 		var usedGas uint64
+		concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
+		if err != nil {
+			return it.index, err
+		}
+		concreteHeader, err := requireConcreteHeader(concreteBlock.Header(), "unexpected block header type")
+		if err != nil {
+			return it.index, err
+		}
+		blockNumber, err := requireBlockNumber(blk, "block number unavailable")
+		if err != nil {
+			return it.index, err
+		}
 
-		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blk.Number64().Uint64(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
+		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blockNumber.Uint64(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return rawdb.ReadHeader(tx, hash, number)
 			}
-			blockHashFunc := GetHashFn(blk.Header().(*block.Header), getHeader)
+			blockHashFunc := GetHashFn(concreteHeader, getHeader)
 
 			// Start state prefetching in background if cache is available.
 			if bc.prefetchEnabled {
 				prefetcher := NewStatePrefetcher(bc.chainConfig)
-				prefetcher.Prefetch(blk.(*block.Block), reader)
+				prefetcher.Prefetch(concreteBlock, reader)
 				defer prefetcher.Close()
 			}
 
@@ -688,12 +764,12 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			var nopay map[types.Address]*uint256.Int
 			if bc.parallelEVM {
 				if sp, ok := bc.process.(*StateProcessor); ok {
-					receipts, nopay, logs, usedGas, err = sp.ProcessParallel(blk.(*block.Block), ibs, reader, writer, blockHashFunc)
+					receipts, nopay, logs, usedGas, err = sp.ProcessParallel(concreteBlock, ibs, reader, writer, blockHashFunc)
 				} else {
-					receipts, nopay, logs, usedGas, err = bc.process.Process(blk.(*block.Block), ibs, reader, writer, blockHashFunc)
+					receipts, nopay, logs, usedGas, err = bc.process.Process(concreteBlock, ibs, reader, writer, blockHashFunc)
 				}
 			} else {
-				receipts, nopay, logs, usedGas, err = bc.process.Process(blk.(*block.Block), ibs, reader, writer, blockHashFunc)
+				receipts, nopay, logs, usedGas, err = bc.process.Process(concreteBlock, ibs, reader, writer, blockHashFunc)
 			}
 			if err != nil {
 				bc.reportBlock(blk, receipts, err)
@@ -770,20 +846,29 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 
 func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int, error) {
 	var (
-		externTd  uint256.Int
-		lastBlock = blk
-		current   = bc.CurrentBlock()
+		externTd      uint256.Int
+		lastBlock     = blk
+		current       = bc.CurrentBlock()
+		currentNumber *uint256.Int
 	)
 	err := ErrPrunedAncestor
+	currentNumber, err = requireBlockNumber(current, "current block number unavailable")
+	if err != nil {
+		return 0, err
+	}
 
 	for ; blk != nil && errors.Is(err, ErrPrunedAncestor); blk, err = it.next() {
-		if number := blk.Number64(); current.Number64().Cmp(number) >= 0 {
-			canonical, err := bc.GetBlockByNumber(number)
+		blockNumber, numberErr := requireBlockNumber(blk, "block number unavailable")
+		if numberErr != nil {
+			return it.index, numberErr
+		}
+		if currentNumber.Cmp(blockNumber) >= 0 {
+			canonical, err := bc.GetBlockByNumber(blockNumber)
 			if err != nil {
 				return 0, err
 			}
 			if canonical != nil && canonical.Hash() == blk.Hash() {
-				pt := bc.GetTd(blk.Hash(), blk.Number64())
+				pt := bc.GetTd(blk.Hash(), blockNumber)
 				if pt == nil {
 					log.Warn("Missing td for canonical block, skipping sidechain processing", "hash", blk.Hash(), "number", blk.Number64())
 					return 0, nil
@@ -797,7 +882,10 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 			}
 		}
 		if externTd.Cmp(uint256.NewInt(0)) == 0 {
-			parentTd := bc.GetTd(blk.ParentHash(), uint256.NewInt(0).Sub(blk.Number64(), uint256.NewInt(1)))
+			if blockNumber.IsZero() {
+				return it.index, errors.New("sidechain block has no parent")
+			}
+			parentTd := bc.GetTd(blk.ParentHash(), uint256.NewInt(0).Sub(blockNumber, uint256.NewInt(1)))
 			if parentTd == nil {
 				log.Warn("Missing td for parent block, skipping sidechain processing", "parentHash", blk.ParentHash(), "number", blk.Number64())
 				return 0, nil
@@ -806,7 +894,7 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 		}
 		externTd = *externTd.Add(&externTd, blk.Difficulty())
 
-		if !bc.HasBlock(blk.Hash(), blk.Number64().Uint64()) {
+		if !bc.HasBlock(blk.Hash(), blockNumber.Uint64()) {
 			start := time.Now()
 			if err := bc.writeBlockWithTd(blk, externTd.Clone()); err != nil {
 				return it.index, err
@@ -825,7 +913,7 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 		return it.index, err
 	}
 	if !reorg {
-		localTd := bc.GetTd(current.Hash(), current.Number64())
+		localTd := bc.GetTd(current.Hash(), currentNumber)
 		log.Info("Sidechain written to disk", "start", it.first().Number64(), "end", it.previous().Number64(), "sidetd", externTd, "localtd", localTd)
 		return it.index, err
 	}
@@ -835,10 +923,25 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 		numbers []uint64
 	)
 	parent := it.previous()
-	for parent != nil && !bc.HasState(parent.StateRoot()) {
+	for parent != nil {
+		parentHeader, err := requireConcreteHeader(parent, "unexpected parent header type")
+		if err != nil {
+			return it.index, err
+		}
+		parentNumber, err := requireHeaderNumber(parent, "parent header number unavailable")
+		if err != nil {
+			return it.index, err
+		}
+		if bc.HasState(parent.StateRoot()) {
+			break
+		}
 		hashes = append(hashes, parent.Hash())
-		numbers = append(numbers, parent.Number64().Uint64())
-		parent = bc.GetHeader(parent.(*block.Header).ParentHash, uint256.NewInt(0).Sub(parent.Number64(), uint256.NewInt(1)))
+		numbers = append(numbers, parentNumber.Uint64())
+		if parentNumber.IsZero() {
+			parent = nil
+			break
+		}
+		parent = bc.GetHeader(parentHeader.ParentHash, uint256.NewInt(0).Sub(parentNumber, uint256.NewInt(1)))
 	}
 	if parent == nil {
 		return it.index, errors.New("missing parent")
@@ -878,13 +981,20 @@ func (bc *BlockChain) recoverAncestors(blk block.IBlock) (types.Hash, error) {
 		numbers []uint256.Int
 		parent  = blk
 	)
-	for parent != nil && !bc.HasState(parent.Hash()) {
-		hashes = append(hashes, parent.Hash())
-		numbers = append(numbers, *parent.Number64())
-		if parent.Number64().IsZero() {
+	for parent != nil {
+		parentNumber, err := requireBlockNumber(parent, "ancestor block number unavailable")
+		if err != nil {
+			return types.Hash{}, err
+		}
+		if bc.HasState(parent.Hash()) {
 			break
 		}
-		parent = bc.GetBlock(parent.ParentHash(), parent.Number64().Uint64()-1)
+		hashes = append(hashes, parent.Hash())
+		numbers = append(numbers, *parentNumber)
+		if parentNumber.IsZero() {
+			break
+		}
+		parent = bc.GetBlock(parent.ParentHash(), parentNumber.Uint64()-1)
 	}
 	if parent == nil {
 		return types.Hash{}, errors.New("missing parent")
@@ -924,22 +1034,51 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 		audit.EndReorg(auditEvent, commonBlock, oldChain, newChain, len(deletedTxs), len(addedTxs), nil)
 	}()
 
+	if oldBlock == nil {
+		return errors.New("invalid old chain")
+	}
+	if newBlock == nil {
+		return errors.New("invalid new chain")
+	}
+	oldNumber, err := requireBlockNumber(oldBlock, "old block number unavailable")
+	if err != nil {
+		return err
+	}
+	newNumber, err := requireBlockNumber(newBlock, "new block number unavailable")
+	if err != nil {
+		return err
+	}
+
 	// Reduce the longer chain to match the shorter one
-	if oldBlock.Number64().Uint64() > newBlock.Number64().Uint64() {
-		for ; oldBlock != nil && oldBlock.Number64().Uint64() != newBlock.Number64().Uint64(); oldBlock = bc.GetBlock(oldBlock.ParentHash(), oldBlock.Number64().Uint64()-1) {
+	if oldNumber.Uint64() > newNumber.Uint64() {
+		for oldBlock != nil && oldNumber.Uint64() != newNumber.Uint64() {
 			oldChain = append(oldChain, oldBlock)
 			for _, tx := range oldBlock.Transactions() {
 				deletedTxs = append(deletedTxs, tx.Hash())
 			}
-			if oldBlock.Number64().IsZero() {
+			if oldNumber.IsZero() {
 				break
+			}
+			oldBlock = bc.GetBlock(oldBlock.ParentHash(), oldNumber.Uint64()-1)
+			if oldBlock != nil {
+				oldNumber, err = requireBlockNumber(oldBlock, "old block number unavailable")
+				if err != nil {
+					return err
+				}
 			}
 		}
 	} else {
-		for ; newBlock != nil && newBlock.Number64() != oldBlock.Number64(); newBlock = bc.GetBlock(newBlock.ParentHash(), newBlock.Number64().Uint64()-1) {
+		for newBlock != nil && newNumber.Uint64() != oldNumber.Uint64() {
 			newChain = append(newChain, newBlock)
-			if newBlock.Number64().IsZero() {
+			if newNumber.IsZero() {
 				break
+			}
+			newBlock = bc.GetBlock(newBlock.ParentHash(), newNumber.Uint64()-1)
+			if newBlock != nil {
+				newNumber, err = requireBlockNumber(newBlock, "new block number unavailable")
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -951,7 +1090,6 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 	}
 
 	var useExternalTx bool
-	var err error
 	if tx == nil {
 		tx, err = bc.ChainDB.BeginRw(bc.ctx)
 		if err != nil {
@@ -974,14 +1112,22 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 		}
 		newChain = append(newChain, newBlock)
 
-		if oldBlock.Number64().IsZero() || newBlock.Number64().IsZero() {
+		oldNumber, err = requireBlockNumber(oldBlock, "old block number unavailable")
+		if err != nil {
+			return err
+		}
+		newNumber, err = requireBlockNumber(newBlock, "new block number unavailable")
+		if err != nil {
+			return err
+		}
+		if oldNumber.IsZero() || newNumber.IsZero() {
 			return errors.New("reached genesis without finding common ancestor")
 		}
-		oldBlock = rawdb.ReadBlock(tx, oldBlock.ParentHash(), oldBlock.Number64().Uint64()-1)
+		oldBlock = rawdb.ReadBlock(tx, oldBlock.ParentHash(), oldNumber.Uint64()-1)
 		if oldBlock == nil {
 			return errors.New("invalid old chain")
 		}
-		newBlock = rawdb.ReadBlock(tx, newBlock.ParentHash(), newBlock.Number64().Uint64()-1)
+		newBlock = rawdb.ReadBlock(tx, newBlock.ParentHash(), newNumber.Uint64()-1)
 		if newBlock == nil {
 			return errors.New("invalid new chain")
 		}
@@ -1005,8 +1151,12 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 
 	// Insert new chain blocks (except head) in proper order
 	for i := len(newChain) - 1; i >= 1; i-- {
+		blockNumber, numberErr := requireBlockNumber(newChain[i], "new chain block number unavailable")
+		if numberErr != nil {
+			return numberErr
+		}
 		if err := bc.writeHeadBlock(tx, newChain[i]); err != nil {
-			return fmt.Errorf("failed to write head block during reorg at %d: %w", newChain[i].Number64().Uint64(), err)
+			return fmt.Errorf("failed to write head block during reorg at %d: %w", blockNumber.Uint64(), err)
 		}
 		for _, t := range newChain[i].Transactions() {
 			addedTxs = append(addedTxs, t.Hash())
@@ -1019,9 +1169,17 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 	}
 
 	// Delete stale canonical hash markers
-	number := commonBlock.Number64().Uint64()
+	commonNumber, err := requireBlockNumber(commonBlock, "common block number unavailable")
+	if err != nil {
+		return err
+	}
+	number := commonNumber.Uint64()
 	if len(newChain) > 1 {
-		number = newChain[1].Number64().Uint64()
+		newChainNumber, numberErr := requireBlockNumber(newChain[1], "new chain block number unavailable")
+		if numberErr != nil {
+			return numberErr
+		}
+		number = newChainNumber.Uint64()
 	}
 	for i := number + 1; ; i++ {
 		hash, _ := rawdb.ReadCanonicalHash(tx, i)

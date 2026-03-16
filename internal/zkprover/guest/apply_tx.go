@@ -55,6 +55,7 @@ func ApplyTx(fork ForkConfig, chainID uint64, header *block.Header, ibs *state.I
 	if header.Number == nil {
 		return nil, fmt.Errorf("block header number is nil")
 	}
+	blockNumber := header.Number.Uint64()
 
 	ibs.Prepare(tx.Hash(), types.Hash{}, txIndex)
 
@@ -76,6 +77,10 @@ func ApplyTx(fork ForkConfig, chainID uint64, header *block.Header, ibs *state.I
 	if header.BaseFee != nil {
 		baseFee.SetFromBig(header.BaseFee.ToBig())
 	}
+	difficulty := new(big.Int)
+	if header.Difficulty != nil {
+		difficulty = header.Difficulty.ToBig()
+	}
 
 	if getHash == nil {
 		getHash = func(n uint64) types.Hash { return types.Hash{} }
@@ -86,9 +91,9 @@ func ApplyTx(fork ForkConfig, chainID uint64, header *block.Header, ibs *state.I
 		Transfer:    transfer,
 		GetHash:     getHash,
 		Coinbase:    header.Coinbase,
-		BlockNumber: header.Number.Uint64(),
+		BlockNumber: blockNumber,
 		Time:        header.Time,
-		Difficulty:  header.Difficulty.ToBig(),
+		Difficulty:  difficulty,
 		BaseFee:     &baseFee,
 		GasLimit:    header.GasLimit,
 	}

@@ -107,15 +107,19 @@ var (
 	errTooShort            = errors.New("packet too short")
 	errInvalidHeader       = errors.New("invalid packet header")
 	errInvalidFlag         = errors.New("invalid flag value in header")
+	errInvalidHeaderFlag   = errors.New("invalid packet header flag")
 	errMinVersion          = errors.New("version of packet header below minimum")
 	errMsgTooShort         = errors.New("message/handshake packet below minimum size")
 	errAuthSize            = errors.New("declared auth size is beyond packet length")
+	errAuthSizeOverflow    = errors.New("packet auth size overflows uint16")
 	errUnexpectedHandshake = errors.New("unexpected auth response, not in handshake")
 	errInvalidAuthKey      = errors.New("invalid ephemeral pubkey")
 	errNoRecord            = errors.New("expected ENR in handshake but none sent")
 	errInvalidNonceSig     = errors.New("invalid ID nonce signature")
 	errMessageTooShort     = errors.New("message contains no data")
 	errMessageDecrypt      = errors.New("cannot decrypt message")
+	errMissingNode         = errors.New("missing node in whoareyou packet")
+	errMissingChallenge    = errors.New("missing challenge node")
 )
 
 // Public errors.
@@ -253,7 +257,7 @@ func (c *Codec) writeHeaders(head *Header) {
 }
 
 // makeHeader creates a packet header.
-func (c *Codec) makeHeader(toID enode.ID, flag byte, authsizeExtra int) Header {
+func (c *Codec) makeHeader(toID enode.ID, flag byte, authsizeExtra int) (Header, error) {
 	var authsize int
 	switch flag {
 	case flagMessage:
@@ -263,11 +267,11 @@ func (c *Codec) makeHeader(toID enode.ID, flag byte, authsizeExtra int) Header {
 	case flagHandshake:
 		authsize = sizeofHandshakeAuthData
 	default:
-		panic(fmt.Errorf("BUG: invalid packet header flag %x", flag))
+		return Header{}, fmt.Errorf("%w: %x", errInvalidHeaderFlag, flag)
 	}
 	authsize += authsizeExtra
 	if authsize > int(^uint16(0)) {
-		panic(fmt.Errorf("BUG: auth size %d overflows uint16", authsize))
+		return Header{}, fmt.Errorf("%w: %d", errAuthSizeOverflow, authsize)
 	}
 	return Header{
 		StaticHeader: StaticHeader{
@@ -276,12 +280,15 @@ func (c *Codec) makeHeader(toID enode.ID, flag byte, authsizeExtra int) Header {
 			Flag:       flag,
 			AuthSize:   uint16(authsize),
 		},
-	}
+	}, nil
 }
 
 // encodeRandom encodes a packet with random content.
 func (c *Codec) encodeRandom(toID enode.ID) (Header, []byte, error) {
-	head := c.makeHeader(toID, flagMessage, 0)
+	head, err := c.makeHeader(toID, flagMessage, 0)
+	if err != nil {
+		return Header{}, nil, err
+	}
 
 	// Encode auth data.
 	auth := messageAuthData{SrcID: c.localnode.ID()}
@@ -302,11 +309,14 @@ func (c *Codec) encodeRandom(toID enode.ID) (Header, []byte, error) {
 func (c *Codec) encodeWhoareyou(toID enode.ID, packet *Whoareyou) (Header, error) {
 	// Sanity check node field to catch misbehaving callers.
 	if packet.RecordSeq > 0 && packet.Node == nil {
-		panic("BUG: missing node in whoareyou with non-zero seq")
+		return Header{}, errMissingNode
 	}
 
 	// Create header.
-	head := c.makeHeader(toID, flagWhoareyou, 0)
+	head, err := c.makeHeader(toID, flagWhoareyou, 0)
+	if err != nil {
+		return Header{}, err
+	}
 	head.Nonce = packet.Nonce
 
 	// Encode auth data.
@@ -324,7 +334,7 @@ func (c *Codec) encodeWhoareyou(toID enode.ID, packet *Whoareyou) (Header, error
 func (c *Codec) encodeHandshakeHeader(toID enode.ID, addr string, challenge *Whoareyou) (Header, *session, error) {
 	// Ensure calling code sets challenge.node.
 	if challenge.Node == nil {
-		panic("BUG: missing challenge.Node in encode")
+		return Header{}, nil, errMissingChallenge
 	}
 
 	// Generate new secrets.
@@ -345,8 +355,12 @@ func (c *Codec) encodeHandshakeHeader(toID enode.ID, addr string, challenge *Who
 	// Encode the auth header.
 	var (
 		authsizeExtra = len(auth.pubkey) + len(auth.signature) + len(auth.record)
-		head          = c.makeHeader(toID, flagHandshake, authsizeExtra)
+		head          Header
 	)
+	head, err = c.makeHeader(toID, flagHandshake, authsizeExtra)
+	if err != nil {
+		return Header{}, nil, err
+	}
 	c.headbuf.Reset()
 	binary.Write(&c.headbuf, binary.BigEndian, &auth.h)
 	c.headbuf.Write(auth.signature)
@@ -401,7 +415,10 @@ func (c *Codec) makeHandshakeAuth(toID enode.ID, addr string, challenge *Whoarey
 
 // encodeMessageHeader encodes an encrypted message packet.
 func (c *Codec) encodeMessageHeader(toID enode.ID, s *session) (Header, error) {
-	head := c.makeHeader(toID, flagMessage, 0)
+	head, err := c.makeHeader(toID, flagMessage, 0)
+	if err != nil {
+		return Header{}, err
+	}
 
 	nonce, err := c.sc.nextNonce(s)
 	if err != nil {
@@ -656,10 +673,8 @@ func (h *StaticHeader) checkValid(packetLen int, protocolID [6]byte) error {
 
 // mask returns a cipher for 'masking' / 'unmasking' packet headers.
 func (h *Header) mask(destID enode.ID) cipher.Stream {
-	block, err := aes.NewCipher(destID[:16])
-	if err != nil {
-		panic("can't create cipher")
-	}
+	// destID is a fixed-size value, so destID[:16] always yields a valid AES-128 key.
+	block, _ := aes.NewCipher(destID[:16])
 	return cipher.NewCTR(block, h.IV[:])
 }
 

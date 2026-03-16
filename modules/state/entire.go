@@ -60,21 +60,24 @@ type Entire struct {
 }
 
 func (e Entire) Clone() Entire {
-	copyHeader := *e.Header
-	c := Entire{
-		Header: &copyHeader,
+	c := Entire{}
+	if e.Header != nil {
+		copyHeader := *e.Header
+		c.Header = &copyHeader
 	}
 	c.Uncles = e.Uncles
 	c.Transactions = e.Transactions
 	c.Proof = e.Proof
 	c.Senders = e.Senders
-	c.Snap = &Snapshot{
-		Items:     e.Snap.Items,
-		OutHash:   e.Snap.OutHash,
-		accounts:  e.Snap.accounts,
-		storage:   e.Snap.storage,
-		written:   e.Snap.written,
-		getOneFun: e.Snap.getOneFun,
+	if e.Snap != nil {
+		c.Snap = &Snapshot{
+			Items:     e.Snap.Items,
+			OutHash:   e.Snap.OutHash,
+			accounts:  e.Snap.accounts,
+			storage:   e.Snap.storage,
+			written:   e.Snap.written,
+			getOneFun: e.Snap.getOneFun,
+		}
 	}
 	return c
 }
@@ -211,7 +214,7 @@ func (s *Snapshot) AddStorage(address types.Address, key *types.Hash, incarnatio
 	s.storage[*(*string)(unsafe.Pointer(&compositeKey))] = len(s.storage)
 }
 
-func EncodeBeforeState(w io.Writer, list Items, codeHash HashCodes) {
+func EncodeBeforeState(w io.Writer, list Items, codeHash HashCodes) error {
 	enc := make([]interface{}, 0, len(list)*2+len(codeHash)*2)
 	for _, i := range list {
 		enc = append(enc, i.Key, i.Value)
@@ -220,7 +223,5 @@ func EncodeBeforeState(w io.Writer, list Items, codeHash HashCodes) {
 	for _, h := range codeHash {
 		enc = append(enc, h.Hash, h.Code)
 	}
-	if err := rlp.Encode(w, enc); err != nil {
-		panic("before state encode failed:" + err.Error())
-	}
+	return rlp.Encode(w, enc)
 }

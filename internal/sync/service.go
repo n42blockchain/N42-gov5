@@ -161,7 +161,11 @@ func (s *Service) Stop() error {
 // Status of the currently running regular sync service.
 func (s *Service) Status() error {
 	// If our HighestBlockNumber lower than our peers are reporting then we might be out of sync.
-	if s.cfg.chain.CurrentBlock().Number64().Uint64()+1 < s.cfg.p2p.Peers().HighestBlockNumber().Uint64() {
+	currentBlock, err := requireCurrentBlockNumber(s.cfg.chain, "current block number unavailable")
+	if err != nil {
+		return err
+	}
+	if currentBlock.Uint64()+1 < s.cfg.p2p.Peers().HighestBlockNumber().Uint64() {
 		return errors.New("out of sync")
 	}
 	return nil

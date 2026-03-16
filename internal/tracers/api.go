@@ -201,10 +201,14 @@ func (api *API) TraceBlock(ctx context.Context, blob hexutil.Bytes, config *Trac
 // executes all the transactions contained within. The return value will be one item
 // per transaction, dependent on the requested tracer.
 func (api *API) traceBlock(ctx context.Context, block *types.Block, config *TraceConfig) ([]*txTraceResult, error) {
-	if block.Number64().Uint64() == 0 {
+	blockNumber, err := requireBlockNumber(block, "block number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	if blockNumber.Uint64() == 0 {
 		return nil, errors.New("genesis is not traceable")
 	}
-	parent, err := api.blockByNumberAndHash(ctx, rpc.BlockNumber(block.Number64().Uint64()-1), block.ParentHash())
+	parent, err := api.blockByNumberAndHash(ctx, rpc.BlockNumber(blockNumber.Uint64()-1), block.ParentHash())
 	if err != nil {
 		return nil, err
 	}
@@ -219,10 +223,11 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 		return nil, err
 	}
 	var (
-		txs      = block.Transactions()
+		txs       = block.Transactions()
 		blockHash = block.Hash()
-		blockCtx  = core.NewEVMBlockContext(block.Header().(*types.Header), core.GetHashFn(block.Header().(*types.Header), api.chainContext(ctx).GetHeader), api.chainContext(ctx).Engine(), nil)
-		signer    = transaction.MakeSigner(api.backend.ChainConfig(), block.Number64().ToBig())
+		header    = block.Header().(*types.Header)
+		blockCtx  = core.NewEVMBlockContext(header, core.GetHashFn(header, api.chainContext(ctx).GetHeader), api.chainContext(ctx).Engine(), nil)
+		signer    = transaction.MakeSigner(api.backend.ChainConfig(), blockNumber.ToBig())
 		results   = make([]*txTraceResult, len(txs))
 	)
 	for i, tx := range txs {
@@ -230,7 +235,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 		msg, _ := tx.AsMessage(signer, block.BaseFee64())
 		txctx := &Context{
 			BlockHash:   blockHash,
-			BlockNumber: block.Number64().ToBig(),
+			BlockNumber: blockNumber.ToBig(),
 			TxIndex:     i,
 			TxHash:      tx.Hash(),
 		}
@@ -239,7 +244,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 			return nil, err
 		}
 		results[i] = &txTraceResult{Result: res}
-		statedb.FinalizeTx(api.backend.ChainConfig().Rules(block.Number64().Uint64()), state.NewNoopWriter())
+		statedb.FinalizeTx(api.backend.ChainConfig().Rules(blockNumber.Uint64()), state.NewNoopWriter())
 	}
 	return results, nil
 }
@@ -278,9 +283,13 @@ func (api *API) TraceTransaction(ctx context.Context, hash common.Hash, config *
 	if err != nil {
 		return nil, err
 	}
+	resolvedBlockNumber, err := requireBlockNumber(block, "block number unavailable")
+	if err != nil {
+		return nil, err
+	}
 	txctx := &Context{
 		BlockHash:   blockHash,
-		BlockNumber: block.Number64().ToBig(),
+		BlockNumber: resolvedBlockNumber.ToBig(),
 		TxIndex:     int(index),
 		TxHash:      hash,
 	}
@@ -331,7 +340,7 @@ func (api *API) TraceCall(ctx context.Context, args api.TransactionArgs, blockNr
 		}
 		config.BlockOverrides.Apply(&vmctx)
 	}
-	msg, err := args.ToMessage(api.backend.RPCGasCap(), block.BaseFee64().ToBig())
+	msg, err := args.ToMessage(api.backend.RPCGasCap(), blockBaseFeeBig(block))
 	if err != nil {
 		return nil, err
 	}
@@ -352,8 +361,8 @@ func (api *API) traceTx(ctx context.Context, message *transaction.Message, txctx
 	}
 	var (
 		err       error
-		timeout   = defaultTraceTimeout
-		txContext = core.NewEVMTxContext(message)
+		timeout          = defaultTraceTimeout
+		txContext        = core.NewEVMTxContext(message)
 		tracer    Tracer = logger.NewStructLogger(config.Config)
 	)
 	if config.Tracer != nil {
@@ -393,4 +402,3 @@ func APIs(backend Backend) []rpc.API {
 		},
 	}
 }
-

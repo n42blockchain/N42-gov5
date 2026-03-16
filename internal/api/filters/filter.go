@@ -103,8 +103,11 @@ func (f *Filter) Logs(ctx context.Context) ([]*block.Log, error) {
 	if header == nil {
 		return nil, nil
 	}
+	head, err := requireHeaderNumber(header, "current block number unavailable")
+	if err != nil {
+		return nil, err
+	}
 	var (
-		head    = header.Number64().Uint64()
 		end     = uint64(f.end)
 		pending = f.end == jsonrpc.PendingBlockNumber.Int64()
 	)

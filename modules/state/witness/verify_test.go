@@ -17,6 +17,7 @@
 package witness
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -581,14 +582,15 @@ func TestVerifyBlockStateless_RootMismatch(t *testing.T) {
 	}
 }
 
-// TestNewTracingReader_NilPanic tests that NewTracingReader panics with nil.
-func TestNewTracingReader_NilPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for nil StateReader")
-		}
-	}()
-	NewTracingReader(nil)
+func TestNewTracingReader_NilReaderReturnsErrors(t *testing.T) {
+	tracer := NewTracingReader(nil)
+	if tracer == nil {
+		t.Fatal("expected non-nil TracingReader")
+	}
+
+	if _, err := tracer.ReadAccountData(types.Address{}); !errors.Is(err, errNilStateReader) {
+		t.Fatalf("ReadAccountData() error = %v, want %v", err, errNilStateReader)
+	}
 }
 
 func TestNewWitnessStateReaderNilWitness(t *testing.T) {

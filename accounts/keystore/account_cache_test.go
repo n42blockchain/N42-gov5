@@ -18,7 +18,6 @@ package keystore
 
 import (
 	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -50,6 +49,48 @@ var (
 	}
 )
 
+func waitForCacheCondition(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", desc)
+}
+
+func waitForWatcherRunning(t *testing.T, ks *KeyStore) {
+	t.Helper()
+
+	if !ks.cache.watcher.enabled() {
+		return
+	}
+	waitForCacheCondition(t, 2*time.Second, "filesystem watcher to start", func() bool {
+		ks.cache.mu.Lock()
+		defer ks.cache.mu.Unlock()
+		return ks.cache.watcher.running
+	})
+}
+
+func waitForWatcherAttempt(t *testing.T, ks *KeyStore) {
+	t.Helper()
+
+	if !ks.cache.watcher.enabled() {
+		return
+	}
+	waitForCacheCondition(t, 2*time.Second, "filesystem watcher attempt", func() bool {
+		return ks.cache.watcherStarted()
+	})
+}
+
+func testMissingKeyStoreDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "keystore")
+}
+
 func TestWatchNewFile(t *testing.T) {
 	t.Parallel()
 
@@ -57,7 +98,7 @@ func TestWatchNewFile(t *testing.T) {
 
 	// Ensure the watcher is started before adding any files.
 	ks.Accounts()
-	time.Sleep(1000 * time.Millisecond)
+	waitForWatcherRunning(t, ks)
 
 	// Move in the files.
 	wantAccounts := make([]accounts.Account, len(cachetestAccounts))
@@ -93,19 +134,19 @@ func TestWatchNoDir(t *testing.T) {
 	t.Parallel()
 
 	// Create ks but not the directory that it watches.
-	rand.Seed(time.Now().UnixNano())
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("eth-keystore-watchnodir-test-%d-%d", os.Getpid(), rand.Int()))
+	dir := testMissingKeyStoreDir(t)
 	ks := NewKeyStore(dir, LightScryptN, LightScryptP)
 
 	list := ks.Accounts()
 	if len(list) > 0 {
 		t.Error("initial account list not empty:", list)
 	}
-	time.Sleep(100 * time.Millisecond)
+	waitForWatcherAttempt(t, ks)
 
 	// Create the directory and copy a key file into it.
-	os.MkdirAll(dir, 0700)
-	defer os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	file := filepath.Join(dir, "aaa")
 	if err := cp.CopyFile(file, cachetestAccounts[0].URL.Path); err != nil {
 		t.Fatal(err)
@@ -319,19 +360,19 @@ func TestUpdatedKeyfileContents(t *testing.T) {
 	t.Parallel()
 
 	// Create a temporary keystore to test with
-	rand.Seed(time.Now().UnixNano())
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("eth-keystore-updatedkeyfilecontents-test-%d-%d", os.Getpid(), rand.Int()))
+	dir := testMissingKeyStoreDir(t)
 	ks := NewKeyStore(dir, LightScryptN, LightScryptP)
 
 	list := ks.Accounts()
 	if len(list) > 0 {
 		t.Error("initial account list not empty:", list)
 	}
-	time.Sleep(100 * time.Millisecond)
+	waitForWatcherAttempt(t, ks)
 
 	// Create the directory and copy a key file into it.
-	os.MkdirAll(dir, 0700)
-	defer os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	file := filepath.Join(dir, "aaa")
 
 	// Place one of our testfiles in there
@@ -347,9 +388,6 @@ func TestUpdatedKeyfileContents(t *testing.T) {
 		return
 	}
 
-	// needed so that modTime of `file` is different to its current value after forceCopyFile
-	time.Sleep(1000 * time.Millisecond)
-
 	// Now replace file contents
 	if err := forceCopyFile(file, cachetestAccounts[1].URL.Path); err != nil {
 		t.Fatal(err)
@@ -362,9 +400,6 @@ func TestUpdatedKeyfileContents(t *testing.T) {
 		t.Error(err)
 		return
 	}
-
-	// needed so that modTime of `file` is different to its current value after forceCopyFile
-	time.Sleep(1000 * time.Millisecond)
 
 	// Now replace file contents again
 	if err := forceCopyFile(file, cachetestAccounts[2].URL.Path); err != nil {
@@ -379,11 +414,8 @@ func TestUpdatedKeyfileContents(t *testing.T) {
 		return
 	}
 
-	// needed so that modTime of `file` is different to its current value after os.WriteFile
-	time.Sleep(1000 * time.Millisecond)
-
 	// Now replace file contents with crap
-	if err := os.WriteFile(file, []byte("foo"), 0600); err != nil {
+	if err := writeFileWithFutureModTime(file, []byte("foo"), 0600); err != nil {
 		t.Fatal(err)
 		return
 	}
@@ -400,5 +432,16 @@ func forceCopyFile(dst, src string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	return writeFileWithFutureModTime(dst, data, 0644)
+}
+
+func writeFileWithFutureModTime(path string, data []byte, perm os.FileMode) error {
+	nextModTime := time.Now().Add(time.Second)
+	if info, err := os.Stat(path); err == nil {
+		nextModTime = info.ModTime().Add(time.Second)
+	}
+	if err := os.WriteFile(path, data, perm); err != nil {
+		return err
+	}
+	return os.Chtimes(path, nextModTime, nextModTime)
 }

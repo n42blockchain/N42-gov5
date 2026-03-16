@@ -46,6 +46,10 @@ var (
 	// to contain a 65 byte secp256k1 signature.
 	ErrMissingSignature = errors.New("extra-data 65 byte signature suffix missing")
 
+	// ErrInvalidHeaderType is returned when a consensus helper requires the
+	// concrete N42 block header implementation but receives a different type.
+	ErrInvalidHeaderType = errors.New("invalid header type")
+
 	// ErrExtraSigners is returned if non-checkpoint block contain signer data in
 	// their extra-data fields.
 	ErrExtraSigners = errors.New("non-checkpoint block contains extra signer list")
@@ -98,4 +102,3 @@ var (
 	// ErrUnknownAncestor is returned when the parent block is not found.
 	ErrUnknownAncestor = errors.New("unknown ancestor")
 )
-

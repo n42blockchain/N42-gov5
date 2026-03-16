@@ -152,6 +152,10 @@ func (ln *LocalNode) Set(e enr.Entry) {
 }
 
 func (ln *LocalNode) set(e enr.Entry) {
+	if err := validateLocalNodeEntry(e); err != nil {
+		log.Warn("Ignoring invalid local ENR entry", "key", localNodeEntryKey(e), "err", err)
+		return
+	}
 	val, exists := ln.entries[e.ENRKey()]
 	if !exists || !reflect.DeepEqual(val, e) {
 		ln.entries[e.ENRKey()] = e
@@ -295,6 +299,31 @@ func (ln *LocalNode) invalidate() {
 	ln.cur.Store((*Node)(nil))
 }
 
+func validateLocalNodeEntry(e enr.Entry) (err error) {
+	if e == nil {
+		return fmt.Errorf("entry is nil")
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if recErr, ok := recovered.(error); ok {
+				err = recErr
+				return
+			}
+			err = fmt.Errorf("%v", recovered)
+		}
+	}()
+	var r enr.Record
+	r.Set(e)
+	return nil
+}
+
+func localNodeEntryKey(e enr.Entry) string {
+	if e == nil {
+		return "<nil>"
+	}
+	return e.ENRKey()
+}
+
 func (ln *LocalNode) sign() {
 	if n := ln.cur.Load().(*Node); n != nil {
 		return // no changes
@@ -325,4 +354,3 @@ func (ln *LocalNode) bumpSeq() {
 	ln.seq++
 	ln.db.storeLocalSeq(ln.id, ln.seq)
 }
-

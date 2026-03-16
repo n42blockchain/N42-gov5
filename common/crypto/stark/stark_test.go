@@ -19,6 +19,7 @@ package stark
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -204,6 +205,44 @@ func TestVerifierWrongMessage(t *testing.T) {
 	err := verifier.VerifyWithMessage(proof, []byte("wrong message"), inputs)
 	if err != ErrVerificationFailed {
 		t.Errorf("Expected ErrVerificationFailed, got %v", err)
+	}
+}
+
+func TestVerifierRejectsZeroSignerProof(t *testing.T) {
+	verifier := NewVerifier()
+	proof := &AggregatedProof{
+		Version:         ProofVersion,
+		SignerCount:     0,
+		AggregateHash:   computeAggregateHash(types.Hash{}, types.Hash{}, types.Hash{}, types.Hash{}),
+		RandomChallenge: types.Hash{},
+	}
+
+	if err := verifier.Verify(proof, nil); err != ErrInvalidProof {
+		t.Fatalf("Verify() error = %v, want %v", err, ErrInvalidProof)
+	}
+	if err := verifier.VerifyWithMessage(proof, []byte("msg"), nil); err != ErrInvalidProof {
+		t.Fatalf("VerifyWithMessage() error = %v, want %v", err, ErrInvalidProof)
+	}
+}
+
+func TestParseProofRejectsInvalidSignerCount(t *testing.T) {
+	prover := NewProver(DefaultProverConfig())
+	proof, err := prover.AggregateSignatures([]byte("test"), generateTestInputs(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	encoded := proof.Bytes()
+
+	binary.BigEndian.PutUint32(encoded[1:5], 0)
+	if _, err := ParseProof(encoded); err != ErrInvalidProof {
+		t.Fatalf("ParseProof(zero signer count) error = %v, want %v", err, ErrInvalidProof)
+	}
+
+	encoded = proof.Bytes()
+	binary.BigEndian.PutUint32(encoded[1:5], MaxSignatures+1)
+	if _, err := ParseProof(encoded); err != ErrInvalidProof {
+		t.Fatalf("ParseProof(too many signers) error = %v, want %v", err, ErrInvalidProof)
 	}
 }
 

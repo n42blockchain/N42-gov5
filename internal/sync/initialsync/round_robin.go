@@ -39,7 +39,11 @@ func (s *Service) roundRobinSync(highestExpectedBlockNr *uint256.Int) error {
 
 // syncToFinalizedBlockNr sync from head to best known finalized epoch.
 func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlockNr *uint256.Int) error {
-	if s.cfg.Chain.CurrentBlock().Number64().Cmp(highestExpectedBlockNr) >= 0 {
+	currentBlock, err := requireCurrentBlockNumber(s.cfg.Chain, "current block number unavailable")
+	if err != nil {
+		return err
+	}
+	if currentBlock.Cmp(highestExpectedBlockNr) >= 0 {
 		log.Debug("Already synced to finalized block number")
 		return nil
 	}
@@ -57,7 +61,12 @@ func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlo
 		if ctx.Err() != nil {
 			continue // drain channel but skip processing
 		}
-		s.processFetchedData(ctx, s.cfg.Chain.CurrentBlock().Number64(), data)
+		currentBlock, err := requireCurrentBlockNumber(s.cfg.Chain, "current block number unavailable")
+		if err != nil {
+			log.Warn("Skipping fetched data with unavailable current block number", "err", err)
+			continue
+		}
+		s.processFetchedData(ctx, currentBlock, data)
 	}
 
 	if ctx.Err() != nil {
@@ -65,7 +74,7 @@ func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlo
 		return ctx.Err()
 	}
 
-	log.Info("Synced to finalized block number - now syncing blocks up to current head", "syncedBlockNr", s.cfg.Chain.CurrentBlock().Number64().Uint64(), "highestExpectedBlockNr", highestExpectedBlockNr.Uint64())
+	log.Info("Synced to finalized block number - now syncing blocks up to current head", "syncedBlockNr", currentBlockNumberOrZero(s.cfg.Chain), "highestExpectedBlockNr", highestExpectedBlockNr.Uint64())
 	if err := queue.stop(); err != nil {
 		log.Debug("Error stopping queue", "err", err)
 	}
@@ -112,7 +121,11 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 	}
 
 	firstBlock := blocks[0]
-	blockNum := firstBlock.Number64().Uint64()
+	blockNumber, err := requireBlockNumber(firstBlock, "block number unavailable")
+	if err != nil {
+		return 0, err
+	}
+	blockNum := blockNumber.Uint64()
 	if blockNum > 0 && !s.cfg.Chain.HasBlock(firstBlock.ParentHash(), blockNum-1) {
 		return 0, fmt.Errorf("%w: %s (in processBatchedBlocks, Number=%d)", errParentDoesNotExist, firstBlock.ParentHash(), blockNum)
 	}
@@ -131,10 +144,21 @@ func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Blo
 // returning the remaining unprocessed blocks. Returns nil if all blocks
 // have already been processed.
 func (s *Service) skipProcessedBlocks(ctx context.Context, blocks []block.IBlock) ([]block.IBlock, error) {
-	headNum := s.cfg.Chain.CurrentBlock().Number64().Uint64()
+	headNumber, err := requireCurrentBlockNumber(s.cfg.Chain, "current block number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	headNum := headNumber.Uint64()
 
 	skip := 0
-	for skip < len(blocks) && headNum >= blocks[skip].Number64().Uint64() {
+	for skip < len(blocks) {
+		blockNumber, err := requireBlockNumber(blocks[skip], "block number unavailable")
+		if err != nil {
+			return nil, err
+		}
+		if headNum < blockNumber.Uint64() {
+			break
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -145,9 +169,13 @@ func (s *Service) skipProcessedBlocks(ctx context.Context, blocks []block.IBlock
 		return blocks, nil
 	}
 	if skip == len(blocks) {
+		lastBlockNumber, err := requireBlockNumber(blocks[len(blocks)-1], "block number unavailable")
+		if err != nil {
+			return nil, err
+		}
 		log.Debug("All blocks in batch already processed, skipping",
 			"currentBlock", headNum,
-			"batchBlock", blocks[len(blocks)-1].Number64().Uint64())
+			"batchBlock", lastBlockNumber.Uint64())
 		return nil, nil
 	}
 	return blocks[skip:], nil
@@ -158,7 +186,11 @@ func (s *Service) updatePeerScorerStats(pid peer.ID, startBlockNr *uint256.Int) 
 	if pid == "" {
 		return
 	}
-	headNum := s.cfg.Chain.CurrentBlock().Number64().Uint64()
+	headNumber, err := requireCurrentBlockNumber(s.cfg.Chain, "current block number unavailable")
+	if err != nil {
+		return
+	}
+	headNum := headNumber.Uint64()
 	startNum := startBlockNr.Uint64()
 	if startNum >= headNum {
 		return

@@ -133,6 +133,9 @@ func parseComplete(rawurl string) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(ips) == 0 {
+			return nil, errors.New("no IP addresses found for host")
+		}
 		ip = ips[0]
 	}
 	// Ensure the IP is 4 bytes long for IPv4 addresses.

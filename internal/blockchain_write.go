@@ -20,6 +20,7 @@ package internal
 // Read-only methods are in blockchain_reader.go.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -46,8 +47,15 @@ func (bc *BlockChain) WriteBlockWithoutState(blk block.IBlock) error {
 	if bc.insertStopped() {
 		return errInsertionInterrupted
 	}
+	concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
+	if err != nil {
+		return err
+	}
+	if _, err := requireBlockNumber(concreteBlock, "block number unavailable"); err != nil {
+		return err
+	}
 	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-		return rawdb.WriteBlock(tx, blk.(*block.Block))
+		return rawdb.WriteBlock(tx, concreteBlock)
 	})
 }
 
@@ -57,11 +65,19 @@ func (bc *BlockChain) writeBlockWithTd(blk block.IBlock, td *uint256.Int) error 
 	if bc.insertStopped() {
 		return errInsertionInterrupted
 	}
+	concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
+	if err != nil {
+		return err
+	}
+	blockNumber, err := requireBlockNumber(concreteBlock, "block number unavailable")
+	if err != nil {
+		return err
+	}
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-		if err := rawdb.WriteBlock(tx, blk.(*block.Block)); err != nil {
+		if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
 			return err
 		}
-		return rawdb.WriteTd(tx, blk.Hash(), blk.Number64().Uint64(), td)
+		return rawdb.WriteTd(tx, blk.Hash(), blockNumber.Uint64(), td)
 	}); err != nil {
 		return err
 	}
@@ -85,11 +101,19 @@ func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Re
 // writeBlockWithState persists block, receipts, state, and reward data, then
 // decides whether a reorg is needed. Returns the resulting WriteStatus.
 func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) (status WriteStatus, retErr error) {
+	concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
+	if err != nil {
+		return NonStatTy, err
+	}
+	blockNumber, err := requireBlockNumber(concreteBlock, "block number unavailable")
+	if err != nil {
+		return NonStatTy, err
+	}
 	// OpenTelemetry: trace block write operations.
 	bcTracer := tracing.Tracer("blockchain")
 	_, span := tracing.StartSpan(bc.ctx, bcTracer, "blockchain.writeBlockWithState")
 	span.SetAttributes(
-		tracing.Int64Attr("block.number", int64(blk.Number64().Uint64())),
+		tracing.Int64Attr("block.number", int64(blockNumber.Uint64())),
 		tracing.StringAttr("block.hash", blk.Hash().String()),
 		tracing.Int64Attr("block.tx_count", int64(len(blk.Body().Transactions()))),
 		tracing.Int64Attr("block.receipt_count", int64(len(receipts))),
@@ -106,35 +130,35 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 	var externTd *uint256.Int
 
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-		ptd, err := rawdb.ReadTd(tx, blk.ParentHash(), uint256.NewInt(0).Sub(blk.Number64(), uint256.NewInt(1)).Uint64())
+		ptd, err := rawdb.ReadTd(tx, blk.ParentHash(), uint256.NewInt(0).Sub(blockNumber, uint256.NewInt(1)).Uint64())
 		if err != nil {
-			return fmt.Errorf("reading parent td for block %d: %w", blk.Number64().Uint64(), err)
+			return fmt.Errorf("reading parent td for block %d: %w", blockNumber.Uint64(), err)
 		}
 		if ptd == nil {
 			return consensus.ErrUnknownAncestor
 		}
 
 		externTd = uint256.NewInt(0).Add(ptd, blk.Difficulty())
-		if err := rawdb.WriteTd(tx, blk.Hash(), blk.Number64().Uint64(), externTd); err != nil {
+		if err := rawdb.WriteTd(tx, blk.Hash(), blockNumber.Uint64(), externTd); err != nil {
 			return err
 		}
-		log.Trace("writeTd:", "number", blk.Number64().Uint64(), "hash", blk.Hash(), "td", externTd.Uint64())
+		log.Trace("writeTd:", "number", blockNumber.Uint64(), "hash", blk.Hash(), "td", externTd.Uint64())
 
 		if len(receipts) > 0 {
-			if err := rawdb.AppendReceipts(tx, blk.Number64().Uint64(), receipts); err != nil {
+			if err := rawdb.AppendReceipts(tx, blockNumber.Uint64(), receipts); err != nil {
 				log.Errorf("rawdb.AppendReceipts failed err= %v", err)
 				return err
 			}
-			if err := rawdb.WriteLogIndex(tx, blk.Number64().Uint64(), receipts); err != nil {
+			if err := rawdb.WriteLogIndex(tx, blockNumber.Uint64(), receipts); err != nil {
 				log.Errorf("rawdb.WriteLogIndex failed err= %v", err)
 				return err
 			}
 		}
-		if err := rawdb.WriteBlock(tx, blk.(*block.Block)); err != nil {
+		if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
 			return err
 		}
 
-		var stateWriter state.WriterWithChangeSets = state.NewPlainStateWriter(tx, tx, blk.Number64().Uint64())
+		var stateWriter state.WriterWithChangeSets = state.NewPlainStateWriter(tx, tx, blockNumber.Uint64())
 		if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
 			stateWriter = state.NewCachedStateWriter(stateWriter, cache)
 		}
@@ -150,14 +174,14 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		// (EVM re-execution skipped). In that case, skip state commit since
 		// the proven state root is trusted.
 		if ibs != nil {
-			if err := ibs.CommitBlock(bc.chainConfig.Rules(blk.Number64().Uint64()), stateWriter); err != nil {
+			if err := ibs.CommitBlock(bc.chainConfig.Rules(blockNumber.Uint64()), stateWriter); err != nil {
 				return err
 			}
 			if err := stateWriter.WriteChangeSets(); err != nil {
-				return fmt.Errorf("writing changesets for block %d failed: %w", blk.Number64().Uint64(), err)
+				return fmt.Errorf("writing changesets for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 			if err := stateWriter.WriteHistory(); err != nil {
-				return fmt.Errorf("writing history for block %d failed: %w", blk.Number64().Uint64(), err)
+				return fmt.Errorf("writing history for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 		}
 
@@ -168,20 +192,20 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		if ibs != nil && bc.jmtEnabled && bc.jmtCommitment != nil {
 			mdbxNodeStore := jmtstore.NewMDBXStore(tx, jmtstore.JMTNodeTable)
 			if err := bc.jmtCommitment.Tree().FlushTo(mdbxNodeStore); err != nil {
-				return fmt.Errorf("flushing JMT nodes for block %d failed: %w", blk.Number64().Uint64(), err)
+				return fmt.Errorf("flushing JMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 			rootTypesHash := bc.jmtCommitment.Root()
 			var jmtRoot jmt.Hash
 			copy(jmtRoot[:], rootTypesHash[:])
 			if err := jmtstore.WriteJMTRoot(tx, jmtRoot); err != nil {
-				return fmt.Errorf("writing JMT root for block %d failed: %w", blk.Number64().Uint64(), err)
+				return fmt.Errorf("writing JMT root for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 		}
 
 		// Update snapshot tree with collected diffs.
 		if diffCollector != nil && bc.snapshotTree != nil {
 			if err := bc.snapshotTree.Update(
-				blk.Number64().Uint64(),
+				blockNumber.Uint64(),
 				blk.Hash(),
 				blk.ParentHash(),
 				diffCollector.Accounts(),
@@ -189,7 +213,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				diffCollector.Storage(),
 			); err != nil {
 				// Non-fatal: snapshot acceleration is best-effort.
-				log.Warn("Failed to update snapshot tree", "block", blk.Number64().Uint64(), "err", err)
+				log.Warn("Failed to update snapshot tree", "block", blockNumber.Uint64(), "err", err)
 			}
 		}
 
@@ -238,7 +262,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				Block:    blk,
 				Receipts: receipts,
 				Hash:     blk.Hash(),
-				Number:   blk.Number64().Uint64(),
+				Number:   blockNumber.Uint64(),
 			})
 		}
 	}
@@ -249,12 +273,29 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 	return status, nil
 }
 
+func (bc *BlockChain) headWriteContext() context.Context {
+	if bc.ctx == nil || bc.ctx.Err() != nil {
+		// The main block/state write may have already committed when node shutdown
+		// cancels bc.ctx. Allow the short head/canonical finalization tx to finish.
+		return context.Background()
+	}
+	return bc.ctx
+}
+
 // writeHeadBlock updates the canonical head block and its associated indexes.
 func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
+	concreteBlock, castErr := requireConcreteBlock(blk, "unexpected block type")
+	if castErr != nil {
+		return castErr
+	}
+	blockNumber, numberErr := requireBlockNumber(concreteBlock, "block number unavailable")
+	if numberErr != nil {
+		return numberErr
+	}
 	var err error
 	var notExternalTx bool
 	if tx == nil {
-		tx, err = bc.ChainDB.BeginRw(bc.ctx)
+		tx, err = bc.ChainDB.BeginRw(bc.headWriteContext())
 		if err != nil {
 			return err
 		}
@@ -263,9 +304,9 @@ func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
 	}
 
 	rawdb.WriteHeadBlockHash(tx, blk.Hash())
-	rawdb.WriteTxLookupEntries(tx, blk.(*block.Block))
+	rawdb.WriteTxLookupEntries(tx, concreteBlock)
 
-	if err = rawdb.WriteCanonicalHash(tx, blk.Hash(), blk.Number64().Uint64()); err != nil {
+	if err = rawdb.WriteCanonicalHash(tx, blk.Hash(), blockNumber.Uint64()); err != nil {
 		return err
 	}
 
@@ -274,14 +315,12 @@ func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
 			return err
 		}
 	}
-	b := blk.(*block.Block)
-	bc.currentBlock.Store(b)
-	blockNum := blk.Number64().Uint64()
-	headBlockGauge.Set(blockNum)
-	headGasUsedGauge.Set(b.GasUsed())
-	headGasLimitGauge.Set(b.GasLimit())
-	headTransactionsGauge.Set(uint64(len(b.Transactions())))
-	nodeMetrics.SyncCurrentBlock.Set(blockNum)
+	bc.currentBlock.Store(concreteBlock)
+	headBlockGauge.Set(blockNumber.Uint64())
+	headGasUsedGauge.Set(concreteBlock.GasUsed())
+	headGasLimitGauge.Set(concreteBlock.GasLimit())
+	headTransactionsGauge.Set(uint64(len(concreteBlock.Transactions())))
+	nodeMetrics.SyncCurrentBlock.Set(blockNumber.Uint64())
 	return nil
 }
 

@@ -196,7 +196,7 @@ func TestIsCheckpoint(t *testing.T) {
 	v := NewHeaderValidator(1000)
 
 	tests := []struct {
-		number     uint64
+		number       uint64
 		isCheckpoint bool
 	}{
 		{0, true},
@@ -213,6 +213,24 @@ func TestIsCheckpoint(t *testing.T) {
 				t.Errorf("IsCheckpoint(%d) = %v, want %v", tt.number, got, tt.isCheckpoint)
 			}
 		})
+	}
+}
+
+func TestValidateBasicFieldsRejectsMissingHeaderNumber(t *testing.T) {
+	v := NewHeaderValidator(1000)
+
+	err := v.ValidateBasicFields(&block.Header{})
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("ValidateBasicFields() error = %v, want header number unavailable", err)
+	}
+}
+
+func TestValidateCheckpointSignersRejectsMissingHeaderNumber(t *testing.T) {
+	v := NewHeaderValidator(1000)
+
+	err := v.ValidateCheckpointSigners(&block.Header{}, nil)
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("ValidateCheckpointSigners() error = %v, want header number unavailable", err)
 	}
 }
 
@@ -402,4 +420,3 @@ func TestGoldenSampleDifficulty(t *testing.T) {
 		}
 	}
 }
-

@@ -97,7 +97,10 @@ func EncodeSigHeader(w io.Writer, iHeader block.IHeader) error {
 // Ecrecover extracts the Ethereum account address from a signed header.
 // The result is cached in sigcache for performance.
 func Ecrecover(iHeader block.IHeader, sigcache *lru.ARCCache) (types.Address, error) {
-	header := iHeader.(*block.Header)
+	header, ok := iHeader.(*block.Header)
+	if !ok || header == nil {
+		return types.Address{}, ErrInvalidHeaderType
+	}
 	// If the signature's already cached, return that
 	hash := header.Hash()
 	if address, known := sigcache.Get(hash); known {
@@ -136,4 +139,3 @@ func NewSnapshotCache() *lru.ARCCache {
 	cache, _ := lru.NewARC(InmemorySnapshots)
 	return cache
 }
-

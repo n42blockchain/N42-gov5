@@ -95,8 +95,12 @@ func MultipleSignaturesFromBytes(multiSigs [][]byte) ([]common.Signature, error)
 // In the Ethereum proof of stake specification:
 // def Verify(PK: BLSPubkey, message: Bytes, signature: BLSSignature) -> bool
 func (s *Signature) Verify(pubKey common.PublicKey, msg []byte) bool {
+	pk, ok := unwrapPublicKey(pubKey)
+	if !ok {
+		return false
+	}
 	// Signature and PKs are assumed to have been validated upon decompression!
-	return s.s.Verify(false, pubKey.(*PublicKey).p, false, msg, dst)
+	return s.s.Verify(false, pk.p, false, msg, dst)
 }
 
 // AggregateVerify verifies each public key against its respective message. This is vulnerable to
@@ -128,8 +132,12 @@ func (s *Signature) AggregateVerify(pubKeys []common.PublicKey, msgs [][32]byte)
 	msgSlices := make([][]byte, len(msgs))
 	rawKeys := make([]*blstPublicKey, len(msgs))
 	for i := 0; i < size; i++ {
+		pk, ok := unwrapPublicKey(pubKeys[i])
+		if !ok {
+			return false
+		}
 		msgSlices[i] = msgs[i][:]
-		rawKeys[i] = pubKeys[i].(*PublicKey).p
+		rawKeys[i] = pk.p
 	}
 	// Signature and PKs are assumed to have been validated upon decompression!
 	return s.s.AggregateVerify(false, rawKeys, false, msgSlices, dst)
@@ -152,7 +160,11 @@ func (s *Signature) FastAggregateVerify(pubKeys []common.PublicKey, msg [32]byte
 	}
 	rawKeys := make([]*blstPublicKey, len(pubKeys))
 	for i := 0; i < len(pubKeys); i++ {
-		rawKeys[i] = pubKeys[i].(*PublicKey).p
+		pk, ok := unwrapPublicKey(pubKeys[i])
+		if !ok {
+			return false
+		}
+		rawKeys[i] = pk.p
 	}
 	return s.s.FastAggregateVerify(true, rawKeys, msg[:], dst)
 }
@@ -210,18 +222,27 @@ func VerifyMultipleSignatures(sigs [][]byte, msgs [][32]byte, pubKeys []common.P
 	if len(sigs) == 0 || len(pubKeys) == 0 {
 		return false, nil
 	}
-	rawSigs := new(blstSignature).BatchUncompress(sigs)
-
 	length := len(sigs)
 	if length != len(pubKeys) || length != len(msgs) {
 		return false, pkgerrors.Errorf("provided signatures, pubkeys and messages have differing lengths. S: %d, P: %d,M %d",
 			length, len(pubKeys), len(msgs))
 	}
+	rawSigs := new(blstSignature).BatchUncompress(sigs)
+	if len(rawSigs) == 0 {
+		return false, pkgerrors.New("could not unmarshal bytes into signature")
+	}
+	if len(rawSigs) != length {
+		return false, pkgerrors.Errorf("wanted %d decompressed signatures but got %d", length, len(rawSigs))
+	}
 	mulP1Aff := make([]*blstPublicKey, length)
 	rawMsgs := make([]blst.Message, length)
 
 	for i := 0; i < length; i++ {
-		mulP1Aff[i] = pubKeys[i].(*PublicKey).p
+		pk, ok := unwrapPublicKey(pubKeys[i])
+		if !ok {
+			return false, errUninitializedPublicKey
+		}
+		mulP1Aff[i] = pk.p
 		rawMsgs[i] = msgs[i][:]
 	}
 	// Secure source of RNG

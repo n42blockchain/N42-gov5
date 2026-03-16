@@ -33,6 +33,10 @@ func BuildGuestInput(
 	parentHeader block.IHeader,
 	bw *witness.BlockWitness,
 ) ([]byte, error) {
+	blockNumber, err := requireBlockNumber(blk, "block number unavailable")
+	if err != nil {
+		return nil, err
+	}
 	headerProto := blk.Header().ToProtoMessage()
 	headerBytes, err := proto.Marshal(headerProto)
 	if err != nil {
@@ -55,16 +59,21 @@ func BuildGuestInput(
 		}
 	}
 
+	chainID, err := guestChainID(chainConfig)
+	if err != nil {
+		return nil, err
+	}
+
 	witnessBytes, err := witness.EncodeBinaryWitness(bw)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode witness: %w", err)
 	}
 
-	blockNum := blk.Number64().Uint64()
+	blockNum := blockNumber.Uint64()
 	blockTime := blk.Time()
 
 	input := &GuestInput{
-		ChainID:      chainConfig.ChainID.Uint64(),
+		ChainID:      chainID,
 		BlockHeader:  headerBytes,
 		ParentHeader: parentBytes,
 		Transactions: txBytes,
@@ -96,4 +105,11 @@ func BuildGuestInput(
 	}
 
 	return EncodeGuestInput(input)
+}
+
+func guestChainID(chainConfig *params.ChainConfig) (uint64, error) {
+	if chainConfig == nil || chainConfig.ChainID == nil {
+		return 0, fmt.Errorf("chain ID unavailable")
+	}
+	return chainConfig.ChainID.Uint64(), nil
 }

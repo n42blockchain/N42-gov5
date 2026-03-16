@@ -65,7 +65,11 @@ func ReadReceipts(db kv.Tx, block *block.Block, senders []types.Address) block.R
 	if block == nil {
 		return nil
 	}
-	receipts := ReadRawReceipts(db, block.Number64().Uint64())
+	blockNumber, err := requireBlockNumber(block, "")
+	if err != nil {
+		return nil
+	}
+	receipts := ReadRawReceipts(db, blockNumber.Uint64())
 	if receipts == nil {
 		return nil
 	}

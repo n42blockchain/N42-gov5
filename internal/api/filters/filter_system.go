@@ -384,7 +384,17 @@ func (es *EventSystem) lightFilterNewHead(newHeader block.IHeader, callBack func
 	// find common ancestor, create list of rolled back and new block hashes
 	var oldHeaders, newHeaders []block.IHeader
 	for oldh.Hash() != newh.Hash() {
-		if oldh.Number64().Uint64() >= newh.Number64().Uint64() {
+		oldNumber, err := requireHeaderNumber(oldh, "old header number unavailable")
+		if err != nil {
+			log.Warn("lightFilterNewHead: invalid old header", "err", err)
+			return
+		}
+		newNumber, err := requireHeaderNumber(newh, "new header number unavailable")
+		if err != nil {
+			log.Warn("lightFilterNewHead: invalid new header", "err", err)
+			return
+		}
+		if oldNumber >= newNumber {
 			oldHeaders = append(oldHeaders, oldh)
 			oldHeader, ok := oldh.(*block.Header)
 			if !ok || oldHeader == nil {
@@ -398,7 +408,17 @@ func (es *EventSystem) lightFilterNewHead(newHeader block.IHeader, callBack func
 				return err
 			})
 		}
-		if oldh.Number64().Uint64() < newh.Number64().Uint64() {
+		oldNumber, err = requireHeaderNumber(oldh, "old header number unavailable")
+		if err != nil {
+			log.Warn("lightFilterNewHead: invalid old header", "err", err)
+			return
+		}
+		newNumber, err = requireHeaderNumber(newh, "new header number unavailable")
+		if err != nil {
+			log.Warn("lightFilterNewHead: invalid new header", "err", err)
+			return
+		}
+		if oldNumber < newNumber {
 			newHeaders = append(newHeaders, newh)
 			newConcreteHeader, ok := newh.(*block.Header)
 			if !ok || newConcreteHeader == nil {

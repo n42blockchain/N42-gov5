@@ -41,14 +41,14 @@ test_rpc() {
     
     if echo "$RESPONSE" | grep -q '"result"'; then
         echo "✓ PASS"
-        ((PASS_COUNT++))
+        PASS_COUNT=$((PASS_COUNT + 1))
     elif echo "$RESPONSE" | grep -q '"error"'; then
         ERROR_MSG=$(echo "$RESPONSE" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
         echo "✗ FAIL: $ERROR_MSG"
-        ((FAIL_COUNT++))
+        FAIL_COUNT=$((FAIL_COUNT + 1))
     else
         echo "? UNKNOWN"
-        ((FAIL_COUNT++))
+        FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 }
 
@@ -134,4 +134,3 @@ if [ $FAIL_COUNT -gt 0 ]; then
 else
     exit 0
 fi
-

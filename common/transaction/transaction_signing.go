@@ -45,14 +45,21 @@ type sigCache struct {
 
 // MakeSigner returns a Signer based on the given chain config and block number.
 func MakeSigner(config *params.ChainConfig, blockNumber *big.Int) Signer {
+	if config == nil {
+		return FrontierSigner{}
+	}
+	blockNum := uint64(0)
+	if blockNumber != nil {
+		blockNum = blockNumber.Uint64()
+	}
 	switch {
-	case config.IsLondon(blockNumber.Uint64()):
+	case config.IsLondon(blockNum):
 		return NewLondonSigner(config.ChainID)
-	case config.IsBerlin(blockNumber.Uint64()):
+	case config.IsBerlin(blockNum):
 		return NewEIP2930Signer(config.ChainID)
-	case config.IsEip1559FeeCollector(blockNumber.Uint64()):
+	case config.IsEip1559FeeCollector(blockNum):
 		return NewEIP155Signer(config.ChainID)
-	case config.IsHomestead(blockNumber.Uint64()):
+	case config.IsHomestead(blockNum):
 		return HomesteadSigner{}
 	default:
 		return FrontierSigner{}

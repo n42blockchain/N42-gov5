@@ -110,15 +110,15 @@ func (s *SignatureInput) PublicKeyHash() types.Hash {
 
 // AggregatedProof represents a STARK-style aggregated proof of multiple signatures
 type AggregatedProof struct {
-	Version         uint8         // Proof format version
-	SignerCount     uint32        // Number of signers
-	Message         types.Hash    // Message that was signed
-	PublicKeyRoot   types.Hash    // Merkle root of public keys
-	SignatureRoot   types.Hash    // Merkle root of signatures
-	AggregateHash   types.Hash    // Combined hash for verification
-	SignerBitmap    []byte        // Bitmap of participating signers (optional)
-	MerkleProofs    [][]byte      // Merkle proofs for verification (optional)
-	RandomChallenge types.Hash    // Random challenge for binding
+	Version         uint8      // Proof format version
+	SignerCount     uint32     // Number of signers
+	Message         types.Hash // Message that was signed
+	PublicKeyRoot   types.Hash // Merkle root of public keys
+	SignatureRoot   types.Hash // Merkle root of signatures
+	AggregateHash   types.Hash // Combined hash for verification
+	SignerBitmap    []byte     // Bitmap of participating signers (optional)
+	MerkleProofs    [][]byte   // Merkle proofs for verification (optional)
+	RandomChallenge types.Hash // Random challenge for binding
 }
 
 // Bytes serializes the proof to bytes
@@ -173,6 +173,9 @@ func ParseProof(data []byte) (*AggregatedProof, error) {
 
 	// Signer count
 	if err := binary.Read(buf, binary.BigEndian, &p.SignerCount); err != nil {
+		return nil, err
+	}
+	if err := validateSignerCount(p.SignerCount); err != nil {
 		return nil, err
 	}
 
@@ -349,6 +352,9 @@ func (v *Verifier) Verify(proof *AggregatedProof, pubKeyCommitments []types.Hash
 	if proof == nil {
 		return ErrInvalidProof
 	}
+	if err := validateSignerCount(proof.SignerCount); err != nil {
+		return err
+	}
 	if proof.Version != ProofVersion {
 		return ErrInvalidProofVersion
 	}
@@ -380,6 +386,9 @@ func (v *Verifier) Verify(proof *AggregatedProof, pubKeyCommitments []types.Hash
 func (v *Verifier) VerifyWithMessage(proof *AggregatedProof, message []byte, inputs []SignatureInput) error {
 	if proof == nil {
 		return ErrInvalidProof
+	}
+	if err := validateSignerCount(proof.SignerCount); err != nil {
+		return err
 	}
 	if len(message) == 0 {
 		return ErrEmptyMessage
@@ -510,6 +519,13 @@ func createSignerBitmap(count int) []byte {
 		bitmap[i/8] |= 1 << (i % 8)
 	}
 	return bitmap
+}
+
+func validateSignerCount(count uint32) error {
+	if count < MinSignatures || count > MaxSignatures {
+		return ErrInvalidProof
+	}
+	return nil
 }
 
 // =============================================================================

@@ -94,16 +94,12 @@ func NewTx(inner TxData) *Transaction {
 	return tx
 }
 
-// convertProtoToAddress converts an H160 proto field to *types.Address,
-// returning nil if the result is the zero address.
+// convertProtoToAddress converts an optional H160 proto field to *types.Address.
 func convertProtoToAddress(h160 *types_pb.H160) *types.Address {
 	if h160 == nil {
 		return nil
 	}
 	addr := utils.ConvertH160ToPAddress(h160)
-	if *addr == (types.Address{}) {
-		return nil
-	}
 	return addr
 }
 

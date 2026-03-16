@@ -55,3 +55,10 @@ func TestBTreeMutationReturnsErrorsWithoutAttachedDB(t *testing.T) {
 	_, err = batch.Begin(context.Background(), ethdb.RW)
 	require.ErrorIs(t, err, errMutationBeginUnsupported)
 }
+
+func TestTxDbRwKVReturnsNil(t *testing.T) {
+	_, rwTx := memdb.NewTestTx(t)
+
+	txDB := WrapIntoTxDB(rwTx)
+	require.Nil(t, txDB.RwKV())
+}

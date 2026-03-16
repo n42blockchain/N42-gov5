@@ -71,7 +71,7 @@ func (s *Server) resourceLatestBlock(_ context.Context) (interface{}, error) {
 	}
 
 	return map[string]interface{}{
-		"number":    current.Number64().Uint64(),
+		"number":    blockNumberOrZero(current),
 		"hash":      current.Hash().Hex(),
 		"timestamp": current.Time(),
 		"gas_used":  current.GasUsed(),
@@ -95,8 +95,8 @@ func (s *Server) resourceSyncStatus(_ context.Context) (interface{}, error) {
 		}
 		return map[string]interface{}{
 			"syncing":       false,
-			"current_block": current.Number64().Uint64(),
-			"highest_block": current.Number64().Uint64(),
+			"current_block": blockNumberOrZero(current),
+			"highest_block": blockNumberOrZero(current),
 		}, nil
 	}
 

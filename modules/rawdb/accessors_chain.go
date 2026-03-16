@@ -180,12 +180,16 @@ func ReadHeadersByNumber(db kv.Tx, number uint64) ([]*block.Header, error) {
 // WriteHeader stores a block header into the database and also stores the hash-
 // to-number mapping.
 func WriteHeader(db kv.Putter, header *block.Header) {
+	number, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		log.Crit("Failed to store header", "err", err)
+	}
 	var (
-		hash   = header.Hash()
-		number = header.Number.Uint64()
+		hash      = header.Hash()
+		numberU64 = number.Uint64()
 	)
 
-	if err := WriteHeaderNumber(db, hash, number); err != nil {
+	if err := WriteHeaderNumber(db, hash, numberU64); err != nil {
 		log.Crit("Failed to store hash to number mapping", "err", err)
 	}
 
@@ -194,7 +198,7 @@ func WriteHeader(db kv.Putter, header *block.Header) {
 	if err != nil {
 		log.Crit("failed to Marshal header", "err", err)
 	}
-	if err := db.Put(modules.Headers, modules.HeaderKey(number, hash), data); err != nil {
+	if err := db.Put(modules.Headers, modules.HeaderKey(numberU64, hash), data); err != nil {
 		log.Crit("Failed to store header", "err", err)
 	}
 }

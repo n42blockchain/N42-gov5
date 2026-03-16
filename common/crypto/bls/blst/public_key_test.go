@@ -10,7 +10,10 @@ package blst
 import (
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/n42blockchain/N42/common/crypto/bls/common"
 )
 
 // TestPublicKeyUnmarshalJSON tests the fixed UnmarshalJSON method
@@ -18,10 +21,10 @@ func TestPublicKeyUnmarshalJSON(t *testing.T) {
 	// Generate a valid BLS public key for testing
 	// Using a known valid public key bytes (48 bytes)
 	validPubKeyHex := "0x" + "b5bfd7dd8cdeb128843bc287230af38926187075cbfbefa81009a2ce615ac53d2914e5e9e206e3d5ab1c00a645cb6e230"
-	
+
 	// Test valid JSON input
 	jsonInput := `"` + validPubKeyHex + `"`
-	
+
 	var pk PublicKey
 	err := json.Unmarshal([]byte(jsonInput), &pk)
 	if err != nil {
@@ -30,7 +33,7 @@ func TestPublicKeyUnmarshalJSON(t *testing.T) {
 		t.Logf("UnmarshalJSON returned error (expected for invalid key): %v", err)
 	} else {
 		t.Log("✓ UnmarshalJSON succeeded with valid input")
-		
+
 		// Verify the key can be marshaled back
 		marshaled, err := pk.MarshalText()
 		if err != nil {
@@ -45,7 +48,7 @@ func TestPublicKeyUnmarshalJSON(t *testing.T) {
 func TestPublicKeyUnmarshalText(t *testing.T) {
 	// Generate a valid BLS public key for testing
 	validPubKeyHex := "0x" + "b5bfd7dd8cdeb128843bc287230af38926187075cbfbefa81009a2ce615ac53d2914e5e9e206e3d5ab1c00a645cb6e230"
-	
+
 	var pk PublicKey
 	err := pk.UnmarshalText([]byte(validPubKeyHex))
 	if err != nil {
@@ -61,7 +64,7 @@ func TestPublicKeyUnmarshalText(t *testing.T) {
 func TestPublicKeyUnmarshalInvalidLength(t *testing.T) {
 	// Test with wrong length (not 48 bytes)
 	shortHex := "0x1234567890abcdef"
-	
+
 	var pk PublicKey
 	err := pk.UnmarshalText([]byte(shortHex))
 	if err != nil {
@@ -86,28 +89,28 @@ func TestPublicKeyUnmarshalEmpty(t *testing.T) {
 func TestPublicKeyMarshalRoundTrip(t *testing.T) {
 	// Create a valid key from bytes
 	pubKeyBytes, _ := hex.DecodeString("b5bfd7dd8cdeb128843bc287230af38926187075cbfbefa81009a2ce615ac53d2914e5e9e206e3d5ab1c00a645cb6e23")
-	
+
 	if len(pubKeyBytes) != BLSPubkeyLength {
 		t.Skipf("Test key has wrong length: %d (expected %d)", len(pubKeyBytes), BLSPubkeyLength)
 	}
-	
+
 	pk, err := PublicKeyFromBytes(pubKeyBytes)
 	if err != nil {
 		t.Skipf("Cannot create key from test bytes: %v", err)
 	}
-	
+
 	// Marshal
 	marshaled := pk.Marshal()
 	if len(marshaled) != BLSPubkeyLength {
 		t.Errorf("Marshal returned wrong length: %d", len(marshaled))
 	}
-	
+
 	// Unmarshal
 	pk2, err := PublicKeyFromBytes(marshaled)
 	if err != nil {
 		t.Errorf("Cannot unmarshal marshaled key: %v", err)
 	}
-	
+
 	// Compare
 	if !pk.Equals(pk2) {
 		t.Error("Round-trip failed: keys are not equal")
@@ -122,13 +125,13 @@ func TestPublicKeyMarshalRoundTrip(t *testing.T) {
 func TestBufferAllocationFix(t *testing.T) {
 	// This test verifies that UnmarshalText properly allocates a buffer
 	// The bug was: b := make([]byte, 0) which would fail to unmarshal
-	
+
 	// A valid 48-byte hex string (padded with zeros for testing)
 	testHex := "0x" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-	
+
 	var pk PublicKey
 	err := pk.UnmarshalText([]byte(testHex))
-	
+
 	// We expect an error because this is not a valid BLS key,
 	// but the error should NOT be about buffer size
 	if err != nil {
@@ -145,3 +148,78 @@ func TestBufferAllocationFix(t *testing.T) {
 	}
 }
 
+func TestPublicKeyMarshalTextZeroValue(t *testing.T) {
+	var pk PublicKey
+
+	if got := pk.Marshal(); got != nil {
+		t.Fatalf("Marshal() = %x, want nil", got)
+	}
+
+	_, err := pk.MarshalText()
+	if err == nil {
+		t.Fatal("MarshalText() expected error for zero-value key")
+	}
+	if !strings.Contains(err.Error(), "uninitialized public key") {
+		t.Fatalf("MarshalText() error = %v", err)
+	}
+}
+
+func TestPublicKeyJSONMarshalZeroValue(t *testing.T) {
+	var pk PublicKey
+
+	data, err := json.Marshal(&pk)
+	if err == nil {
+		t.Fatalf("json.Marshal() expected error for zero-value key, got %s", data)
+	}
+	if !strings.Contains(err.Error(), "uninitialized public key") {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+}
+
+func TestPublicKeyCopyZeroValue(t *testing.T) {
+	var pk PublicKey
+
+	copied := pk.Copy()
+	if copied == nil {
+		t.Fatal("Copy() returned nil")
+	}
+	if got := copied.Marshal(); got != nil {
+		t.Fatalf("Copy().Marshal() = %x, want nil", got)
+	}
+}
+
+func TestPublicKeyIsInfiniteZeroValue(t *testing.T) {
+	var pk PublicKey
+	if pk.IsInfinite() {
+		t.Fatal("IsInfinite() = true, want false for zero-value key")
+	}
+}
+
+func TestPublicKeyEqualsZeroValue(t *testing.T) {
+	var pk PublicKey
+	if pk.Equals(&PublicKey{}) {
+		t.Fatal("Equals() = true, want false for zero-value key")
+	}
+	if pk.Equals((common.PublicKey)(nil)) {
+		t.Fatal("Equals(nil) = true, want false")
+	}
+}
+
+func TestPublicKeyAggregateZeroValue(t *testing.T) {
+	var pk PublicKey
+	if got := pk.Aggregate(&PublicKey{}); got != nil {
+		t.Fatalf("Aggregate() = %#v, want nil", got)
+	}
+}
+
+func TestAggregateMultiplePubkeysRejectsUninitializedKey(t *testing.T) {
+	priv, err := RandKey()
+	if err != nil {
+		t.Fatalf("RandKey() error = %v", err)
+	}
+
+	var zero PublicKey
+	if got := AggregateMultiplePubkeys([]common.PublicKey{priv.PublicKey(), &zero}); got != nil {
+		t.Fatalf("AggregateMultiplePubkeys() = %#v, want nil", got)
+	}
+}

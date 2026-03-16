@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"sync"
 
 	metrics2 "github.com/VictoriaMetrics/metrics"
 	"github.com/prometheus/client_golang/prometheus"
@@ -29,10 +30,14 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
+var registerDefaultSetOnce sync.Once
+
 // Handler returns an HTTP handler that dumps metrics in Prometheus format.
 // Output format can be checked here: https://o11y.tools/metricslint/
 func Handler(reg Registry) http.Handler {
-	prometheus.DefaultRegisterer.MustRegister(defaultSet)
+	registerDefaultSetOnce.Do(func() {
+		prometheus.DefaultRegisterer.MustRegister(defaultSet)
+	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Gather and pre-sort the metrics to avoid random listings

@@ -2,6 +2,8 @@ package bls
 
 import "github.com/pkg/errors"
 
+var errInvalidPublicKeyInBatch = errors.New("invalid public key in signature batch")
+
 // SignatureBatch refers to the defined set of
 // signatures and its respective public keys and
 // messages required to verify it.
@@ -45,6 +47,9 @@ func (s *SignatureBatch) Copy() *SignatureBatch {
 		signatures[i] = sig
 	}
 	for i := range s.PublicKeys {
+		if s.PublicKeys[i] == nil {
+			continue
+		}
 		pubkeys[i] = s.PublicKeys[i].Copy()
 	}
 	for i := range s.Messages {
@@ -70,7 +75,9 @@ func (s *SignatureBatch) RemoveDuplicates() (int, *SignatureBatch, error) {
 	duplicateSet := make(map[int]bool)
 	for i := 0; i < len(s.Signatures); i++ {
 		if sigIdx, ok := sigMap[string(s.Signatures[i])]; ok {
-			if s.PublicKeys[sigIdx].Equals(s.PublicKeys[i]) &&
+			if s.PublicKeys[sigIdx] != nil &&
+				s.PublicKeys[i] != nil &&
+				s.PublicKeys[sigIdx].Equals(s.PublicKeys[i]) &&
 				s.Messages[sigIdx] == s.Messages[i] {
 				duplicateSet[i] = true
 				continue
@@ -132,6 +139,9 @@ func (s *SignatureBatch) AggregateBatch() (*SignatureBatch, error) {
 	for rt, b := range msgMap {
 		if len(b.PublicKeys) > 1 {
 			aggPub := AggregateMultiplePubkeys(b.PublicKeys)
+			if aggPub == nil {
+				return nil, errInvalidPublicKeyInBatch
+			}
 			aggSig, err := AggregateCompressedSignatures(b.Signatures)
 			if err != nil {
 				return nil, err

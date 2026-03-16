@@ -78,7 +78,8 @@ func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, err
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		_, peers := f.p2p.Peers().BestPeers(cfg.MinSyncPeers, f.chain.CurrentBlock().Number64())
+		currentHeight := currentBlockNumber(f.chain)
+		_, peers := f.p2p.Peers().BestPeers(cfg.MinSyncPeers, currentHeight)
 		if len(peers) >= required {
 			return peers, nil
 		}
@@ -90,7 +91,7 @@ func (f *blocksFetcher) waitForMinimumPeers(ctx context.Context) ([]peer.ID, err
 			"waitCount", waitCount)
 
 		if waitCount >= maxWaitCount {
-			if f.chain.CurrentBlock().Number64().IsZero() {
+			if currentHeight.IsZero() {
 				log.Warn("Timeout waiting for peers on genesis block (blocksFetcher), proceeding")
 				return nil, nil
 			}
@@ -113,7 +114,7 @@ func (f *blocksFetcher) shouldSkipPeerWait() bool {
 	if cfg.MinSyncPeers == 0 {
 		return true
 	}
-	if !f.chain.CurrentBlock().Number64().IsZero() {
+	if !currentBlockNumber(f.chain).IsZero() {
 		return false
 	}
 	return len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0

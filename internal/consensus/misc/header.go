@@ -18,6 +18,7 @@ package misc
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"time"
 
@@ -39,10 +40,23 @@ func NewHeaderValidator(epoch uint64) *HeaderValidator {
 	return &HeaderValidator{epoch: epoch}
 }
 
+func requireHeaderNumber(header *block.Header, msg string) (uint64, error) {
+	if header == nil {
+		return 0, errors.New("header is nil")
+	}
+	if header.Number == nil {
+		return 0, errors.New(msg)
+	}
+	return header.Number.Uint64(), nil
+}
+
 // ValidateBasicFields performs basic validation on a header that doesn't require
 // access to parent headers or snapshots.
 func (v *HeaderValidator) ValidateBasicFields(header *block.Header) error {
-	number := header.Number.Uint64()
+	number, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
 
 	// Genesis block validation is not supported
 	if header.Number.IsZero() {
@@ -127,7 +141,10 @@ func (v *HeaderValidator) ValidateMixDigest(header *block.Header) error {
 
 // ValidateCheckpointSigners verifies that a checkpoint block contains the correct signer list.
 func (v *HeaderValidator) ValidateCheckpointSigners(header *block.Header, expectedSigners []types.Address) error {
-	number := header.Number.Uint64()
+	number, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
 	if number%v.epoch != 0 {
 		return nil // Not a checkpoint block
 	}
@@ -191,4 +208,3 @@ func PrepareExtraData(extra []byte, signers []types.Address, isCheckpoint bool) 
 	extra = append(extra, make([]byte, ExtraSeal)...)
 	return extra
 }
-

@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"errors"
+	"math/big"
 	"strings"
 
 	"github.com/n42blockchain/N42/common/ens"
@@ -58,9 +59,10 @@ func (e *ENSAPI) ResolveName(ctx context.Context, name string) (types.Address, e
 	// Calculate the namehash
 	node := ens.Namehash(name)
 
-	// Get chain ID for registry address
-	chainID := e.api.ChainId().ToInt().Uint64()
-	registryAddr := ens.GetRegistryAddress(chainID)
+	registryAddr, err := e.registryAddress()
+	if err != nil {
+		return types.Address{}, err
+	}
 
 	// Call registry.resolver(node) to get resolver address
 	resolverAddr, err := e.getResolver(ctx, registryAddr, node)
@@ -81,9 +83,10 @@ func (e *ENSAPI) ResolveAddress(ctx context.Context, addr types.Address) (string
 	// Calculate reverse node
 	reverseNode := ens.ReverseNode(addr)
 
-	// Get chain ID for registry address
-	chainID := e.api.ChainId().ToInt().Uint64()
-	registryAddr := ens.GetRegistryAddress(chainID)
+	registryAddr, err := e.registryAddress()
+	if err != nil {
+		return "", err
+	}
 
 	// Get resolver for reverse node
 	resolverAddr, err := e.getResolver(ctx, registryAddr, reverseNode)
@@ -107,8 +110,10 @@ func (e *ENSAPI) GetContentHash(ctx context.Context, name string) (hexutil.Bytes
 	}
 
 	node := ens.Namehash(name)
-	chainID := e.api.ChainId().ToInt().Uint64()
-	registryAddr := ens.GetRegistryAddress(chainID)
+	registryAddr, err := e.registryAddress()
+	if err != nil {
+		return nil, err
+	}
 
 	resolverAddr, err := e.getResolver(ctx, registryAddr, node)
 	if err != nil {
@@ -130,8 +135,10 @@ func (e *ENSAPI) GetTextRecord(ctx context.Context, name string, key string) (st
 	}
 
 	node := ens.Namehash(name)
-	chainID := e.api.ChainId().ToInt().Uint64()
-	registryAddr := ens.GetRegistryAddress(chainID)
+	registryAddr, err := e.registryAddress()
+	if err != nil {
+		return "", err
+	}
 
 	resolverAddr, err := e.getResolver(ctx, registryAddr, node)
 	if err != nil {
@@ -153,8 +160,10 @@ func (e *ENSAPI) GetOwner(ctx context.Context, name string) (types.Address, erro
 	}
 
 	node := ens.Namehash(name)
-	chainID := e.api.ChainId().ToInt().Uint64()
-	registryAddr := ens.GetRegistryAddress(chainID)
+	registryAddr, err := e.registryAddress()
+	if err != nil {
+		return types.Address{}, err
+	}
 
 	return e.getOwner(ctx, registryAddr, node)
 }
@@ -167,8 +176,10 @@ func (e *ENSAPI) GetResolver(ctx context.Context, name string) (types.Address, e
 	}
 
 	node := ens.Namehash(name)
-	chainID := e.api.ChainId().ToInt().Uint64()
-	registryAddr := ens.GetRegistryAddress(chainID)
+	registryAddr, err := e.registryAddress()
+	if err != nil {
+		return types.Address{}, err
+	}
 
 	return e.getResolver(ctx, registryAddr, node)
 }
@@ -189,6 +200,17 @@ func (e *ENSAPI) IsValidName(ctx context.Context, name string) (bool, error) {
 // =============================================================================
 // Internal Helper Methods
 // =============================================================================
+
+func (e *ENSAPI) registryAddress() (types.Address, error) {
+	if e == nil || e.api == nil {
+		return types.Address{}, errors.New("chain ID unavailable")
+	}
+	chainID := e.api.ChainId()
+	if chainID == nil {
+		return types.Address{}, errors.New("chain ID unavailable")
+	}
+	return ens.GetRegistryAddress(chainID.ToInt().Uint64()), nil
+}
 
 // getResolver calls registry.resolver(node)
 func (e *ENSAPI) getResolver(ctx context.Context, registryAddr types.Address, node types.Hash) (types.Address, error) {
@@ -320,22 +342,14 @@ func (e *ENSAPI) ethCall(ctx context.Context, to types.Address, data []byte) ([]
 
 // decodeABIString decodes an ABI-encoded string
 func decodeABIString(data []byte) (string, error) {
-	if len(data) < 64 {
+	decoded, err := decodeABIDynamicValue(data)
+	if err != nil {
+		return "", err
+	}
+	if len(decoded) == 0 {
 		return "", nil
 	}
-
-	// Get offset (first 32 bytes)
-	// Get length (next 32 bytes after offset)
-	length := int(data[63])
-	if length == 0 {
-		return "", nil
-	}
-
-	if len(data) < 64+length {
-		return "", ens.ErrResolutionFailed
-	}
-
-	return strings.TrimRight(string(data[64:64+length]), "\x00"), nil
+	return strings.TrimRight(string(decoded), "\x00"), nil
 }
 
 // decodeABIBytes decodes an ABI-encoded bytes
@@ -344,17 +358,42 @@ func decodeABIBytes(data []byte) ([]byte, error) {
 		return nil, nil
 	}
 
-	// Get length
-	length := int(data[63])
-	if length == 0 {
+	decoded, err := decodeABIDynamicValue(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(decoded) == 0 {
 		return nil, nil
 	}
 
-	if len(data) < 64+length {
+	result := make([]byte, len(decoded))
+	copy(result, decoded)
+	return result, nil
+}
+
+func decodeABIDynamicValue(data []byte) ([]byte, error) {
+	if len(data) < 64 {
+		return nil, nil
+	}
+
+	dataLen := uint64(len(data))
+	offset := new(big.Int).SetBytes(data[:32])
+	if !offset.IsUint64() {
+		return nil, ens.ErrResolutionFailed
+	}
+	start := offset.Uint64()
+	if start > dataLen || start+32 > dataLen {
 		return nil, ens.ErrResolutionFailed
 	}
 
-	result := make([]byte, length)
-	copy(result, data[64:64+length])
-	return result, nil
+	length := new(big.Int).SetBytes(data[start : start+32])
+	if !length.IsUint64() {
+		return nil, ens.ErrResolutionFailed
+	}
+	size := length.Uint64()
+	if start+32+size > dataLen {
+		return nil, ens.ErrResolutionFailed
+	}
+
+	return data[start+32 : start+32+size], nil
 }

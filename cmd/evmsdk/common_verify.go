@@ -17,6 +17,7 @@
 package evmsdk
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -35,7 +36,7 @@ type AggSign struct {
 	Number    uint64            `json:"number"`
 	StateRoot commTyp.Hash      `json:"stateRoot"`
 	Sign      commTyp.Signature `json:"sign"`
-	PublicKey commTyp.PublicKey  `json:"publicKey"`
+	PublicKey commTyp.PublicKey `json:"publicKey"`
 	Address   commTyp.Address   `json:"address"`
 }
 
@@ -54,10 +55,14 @@ func (e *EvmEngine) verificationTaskBg() error {
 	simpleLog("init websocket chats")
 	ochan, ichan, err := wssvr.Chans(pubk.(string))
 	if err != nil {
+		_ = wssvr.Close()
 		return err
 	}
 	go func() {
 		defer func() {
+			if err := wssvr.Close(); err != nil {
+				simpleLog("close websocket service error", "err", err)
+			}
 			if err := recover(); err != nil {
 				buf := make([]byte, 4096)
 				runtime.Stack(buf, true)
@@ -89,11 +94,23 @@ func (e *EvmEngine) verificationTaskBg() error {
 					simpleLog("ee verification failed", err)
 					continue
 				}
-				ichan <- resp
+				if !sendVerificationResult(e.ctx, ichan, resp) {
+					simpleLog("verification response dropped because task is stopping")
+					return
+				}
 			}
 		}
 	}()
 	return nil
+}
+
+func sendVerificationResult(ctx context.Context, out chan<- []byte, resp []byte) bool {
+	select {
+	case out <- resp:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
@@ -106,15 +123,24 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 	if bean.Entire.Header == nil {
 		return nil, errors.New("nil pointer found")
 	}
+	if bean.Entire.Header.Number == nil {
+		return nil, errors.New("block number unavailable")
+	}
+	if bean.Entire.Snap == nil {
+		return nil, errors.New("snapshot unavailable")
+	}
 
-	simpleLog("start verify ", "blockNr", bean.Entire.Header.Number.Uint64())
+	blockNumber := bean.Entire.Header.Number.Uint64()
+	simpleLog("start verify ", "blockNr", blockNumber)
 
 	var hash commTyp.Hash
 	hasher := sha3.NewLegacyKeccak256()
-	state.EncodeBeforeState(hasher, bean.Entire.Snap.Items, bean.Codes)
+	if err := state.EncodeBeforeState(hasher, bean.Entire.Snap.Items, bean.Codes); err != nil {
+		return nil, err
+	}
 	hasher.(crypto.KeccakState).Read(hash[:])
 	if bean.Entire.Header.MixDigest != hash {
-		simpleLog("misMatch state hash", "want", bean.Entire.Header.MixDigest, "get", hash, "block", bean.Entire.Header.Number.Uint64())
+		simpleLog("misMatch state hash", "want", bean.Entire.Header.MixDigest, "get", hash, "block", blockNumber)
 		return nil, errors.New("state verify failed")
 	}
 
@@ -138,7 +164,7 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 
 	simpleLog("calculated stateRoot:", "stateRoot", hexutil.Encode(res.StateRoot[:]))
 
-	res.Number = bean.Entire.Header.Number.Uint64()
+	res.Number = blockNumber
 	sk, err := decodeSecretKey(e.PrivKey)
 	if err != nil {
 		return nil, err

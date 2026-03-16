@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
@@ -146,8 +147,7 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 		for {
 			msg, err := sub.Next(s.ctx)
 			if err != nil {
-				// This should only happen when the context is cancelled or subscription is cancelled.
-				if err != pubsub.ErrSubscriptionCancelled { // Only log a warning on unexpected errors.
+				if shouldLogSubscriptionError(s.ctx, err) {
 					log.Warn("Subscription next failed", "err", err)
 				}
 				// Cancel subscription in the event of an error, as we are
@@ -173,7 +173,9 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 		}
 	}
 
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("panic in messageLoop, recovered", "topic", topic, "panic", r)
@@ -188,6 +190,16 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 	}
 	log.Info("Subscribed to gossip topic", "topic", shortTopic)
 	return sub
+}
+
+func shouldLogSubscriptionError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, pubsub.ErrSubscriptionCancelled) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	return ctx == nil || ctx.Err() == nil
 }
 
 // Wrap the pubsub validator with a metric monitoring function. This function increments the
@@ -298,7 +310,7 @@ func (*Service) addDigestAndIndexToTopic(topic string, digest [4]byte, idx uint6
 
 func (s *Service) currentForkDigest() ([4]byte, error) {
 	genRoot := s.cfg.chain.GenesisBlock().Header().Hash()
-	return utils.CreateForkDigest(s.cfg.chain.CurrentBlock().Number64(), genRoot)
+	return utils.CreateForkDigest(currentBlockNumber(s.cfg.chain), genRoot)
 }
 
 // isDigestValid checks if the provided digest matches the expected digest

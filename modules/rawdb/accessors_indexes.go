@@ -52,8 +52,14 @@ func ReadTxLookupEntry(db kv.Getter, txnHash types.Hash) (*uint64, error) {
 // WriteTxLookupEntries stores a positional metadata for every transaction from
 // a block, enabling hash based transaction and receipt lookups.
 func WriteTxLookupEntries(db kv.Putter, block *block.Block) {
+	blockNumber, err := requireBlockNumber(block, "block number unavailable")
+	if err != nil {
+		log.Error("Skipping transaction lookup entries", "err", err)
+		return
+	}
+
+	data := blockNumber.Bytes()
 	for _, tx := range block.Transactions() {
-		data := block.Number64().Bytes()
 		h := tx.Hash()
 		if err := db.Put(modules.TxLookup, h.Bytes(), data); err != nil {
 			log.Crit("Failed to store transaction lookup entry", "err", err)

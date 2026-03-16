@@ -320,7 +320,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 					if cur == nil {
 						return 0
 					}
-					return cur.Number64().Uint64()
+					return blockNumberOrZero(cur)
 				}, func(start, count uint64) (*freezer.FreezeData, error) {
 					var data *freezer.FreezeData
 					err := chainKv.View(ctx, func(tx kv.Tx) error {
@@ -398,7 +398,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			cache := layered.ExtractCache(chainKv)
 			if cache != nil {
 				cur := realBC.CurrentBlock()
-				tree := statesnapshot.NewTree(cache, cur.Number64().Uint64(), cur.Hash(), cfg.SnapshotAccelCfg.MaxDiffLayers)
+				if cur == nil {
+					return nil, fmt.Errorf("snapshot acceleration requires current block")
+				}
+				curBlockNumber := blockNumberOrZero(cur)
+				tree := statesnapshot.NewTree(cache, curBlockNumber, cur.Hash(), cfg.SnapshotAccelCfg.MaxDiffLayers)
 
 				// Enable persistence if configured.
 				if cfg.SnapshotAccelCfg.Persist {
@@ -413,7 +417,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 							log.Info("Snapshot flat tables ready for reads")
 						} else {
 							// Start background generation.
-							gen := statesnapshot.NewGenerator(chainKv, cur.Hash(), cur.Number64().Uint64())
+							gen := statesnapshot.NewGenerator(chainKv, cur.Hash(), curBlockNumber)
 							go func() {
 								gen.Run(ctx)
 								// Only mark ready if generation actually completed
@@ -582,12 +586,16 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	// Print the pretty banner with system info
+	currentBlockNumber := uint64(0)
+	if currentBlock := bc.CurrentBlock(); currentBlock != nil {
+		currentBlockNumber = blockNumberOrZero(currentBlock)
+	}
 	log.PrintBanner(
 		params.VersionWithMeta,
 		fmt.Sprintf("%s (ID: %s)", chainName, cfg.ChainCfg.ChainID.String()),
 		consensusName,
 		actualGenesisHash.String(),
-		bc.CurrentBlock().Number64().Uint64(),
+		currentBlockNumber,
 		fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
 		runtime.Version(),
 		runtime.NumCPU(),
@@ -631,7 +639,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			MaxBundleSize:  cfg.BundlerCfg.MaxBundleSize,
 			BundleInterval: bundleInterval,
 		}
-		chainID := cfg.ChainCfg.ChainID.Uint64()
+		chainID, err := bundlerChainID(cfg.ChainCfg)
+		if err != nil {
+			return nil, err
+		}
 		node.bundlerService = bundler.NewBundlerService(bundlerCfg, chainID)
 	}
 
@@ -652,6 +663,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	success = true
 	chainKv = nil // prevent deferred cleanup from closing the DB now owned by node
 	return &node, nil
+}
+
+func bundlerChainID(chainCfg *params.ChainConfig) (uint64, error) {
+	if chainCfg == nil || chainCfg.ChainID == nil {
+		return 0, errors.New("bundler requires chain ID")
+	}
+	return chainCfg.ChainID.Uint64(), nil
 }
 
 func (n *Node) Start() error {

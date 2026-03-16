@@ -87,6 +87,10 @@ func IsDeposit(db kv.RwDB, addr types.Address) (bool, error) {
 }
 
 func SignMerge(ctx context.Context, header *block.Header, depositNum uint64) (types.Signature, []*block.Verify, error) {
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return types.Signature{}, nil, err
+	}
 	aggrSigns := make([]bls.Signature, 0)
 	verifiers := make([]*block.Verify, 0)
 	uniq := make(map[types.Address]struct{})
@@ -96,8 +100,8 @@ LOOP:
 		select {
 		case s := <-sigChannel:
 			log.Tracef("accept sign, %+v", s)
-			if s.Number != header.Number.Uint64() {
-				log.Tracef("discard sign: need block number %d, get %d", header.Number.Uint64(), s.Number)
+			if s.Number != headerNumber.Uint64() {
+				log.Tracef("discard sign: need block number %d, get %d", headerNumber.Uint64(), s.Number)
 				continue
 			}
 
@@ -154,7 +158,12 @@ func MachineVerify(ctx context.Context) error {
 				log.Warn("MinedEntireEvent.Entire is not state.EntireCode")
 				continue
 			}
-			log.Tracef("machine verify accept entire, number: %d", entireCode.Entire.Header.Number.Uint64())
+			headerNumber, err := requireHeaderNumber(entireCode.Entire.Header, "header number unavailable")
+			if err != nil {
+				log.Warn("MachineVerify skipped entire without block number", "err", err)
+				continue
+			}
+			log.Tracef("machine verify accept entire, number: %d", headerNumber.Uint64())
 			for k, s := range validVerifiers {
 				go func(seckey string, address string, ec state.EntireCode) {
 					defer func() {
@@ -184,13 +193,24 @@ func MachineVerify(ctx context.Context) error {
 					// before state verify
 					var hash types.Hash
 					hasher := sha3.NewLegacyKeccak256()
-					state.EncodeBeforeState(hasher, ec.Entire.Snap.Items, ec.Codes)
+					if err = state.EncodeBeforeState(hasher, ec.Entire.Snap.Items, ec.Codes); err != nil {
+						select {
+						case errs <- err:
+						default:
+						}
+						return
+					}
 					_, err = hasher.(crypto.KeccakState).Read(hash[:])
 					if err != nil {
 						return
 					}
+					eventHeaderNumber, err := requireHeaderNumber(ec.Entire.Header, "header number unavailable")
+					if err != nil {
+						log.Warn("MachineVerify skipped sign without block number", "err", err)
+						return
+					}
 					if ec.Entire.Header.MixDigest != hash {
-						log.Warn("misMatch before state hash", "want:", ec.Entire.Header.MixDigest, "get:", hash, ec.Entire.Header.Number.Uint64())
+						log.Warn("misMatch before state hash", "want:", ec.Entire.Header.MixDigest, "get:", hash, eventHeaderNumber.Uint64())
 						return
 					}
 
@@ -208,7 +228,7 @@ func MachineVerify(ctx context.Context) error {
 
 					// Signature
 					sign := pri.Sign(ec.Entire.Header.Root[:])
-					tmp := AggSign{Number: ec.Entire.Header.Number.Uint64()}
+					tmp := AggSign{Number: eventHeaderNumber.Uint64()}
 					copy(tmp.StateRoot[:], ec.Entire.Header.Root[:])
 					copy(tmp.Sign[:], sign.Marshal())
 					copy(tmp.PublicKey[:], pri.PublicKey().Marshal())

@@ -128,7 +128,11 @@ func (s *Service) updateMetrics() {
 		return
 	}
 	currentBlock := s.cfg.chain.CurrentBlock()
-	if currentBlock == nil || currentBlock.Header() == nil || currentBlock.Header().Number64().IsZero() {
+	if currentBlock == nil {
+		return
+	}
+	header := currentBlock.Header()
+	if header == nil || headerNumberOrZero(header) == 0 {
 		return
 	}
 

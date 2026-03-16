@@ -73,6 +73,9 @@ func (p *StatePrefetcher) Prefetch(blk *block.Block, stateReader state.StateRead
 	if !ok {
 		return
 	}
+	if _, err := requireHeaderNumber(header, "header number unavailable"); err != nil {
+		return
+	}
 
 	// Cancel any previous prefetch to avoid goroutine leak.
 	if p.cancel != nil {
@@ -204,4 +207,3 @@ func (p *StatePrefetcher) Close() {
 		)
 	}
 }
-

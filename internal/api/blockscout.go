@@ -632,7 +632,11 @@ func (s *BlockChainAPI) simulateBlock(ctx context.Context, simBlock SimulateV1Bl
 			feeRecipient = *simBlock.BlockOverrides.FeeRecipient
 		}
 		if simBlock.BlockOverrides.BaseFeePerGas != nil {
-			baseFee = uint256.MustFromBig(simBlock.BlockOverrides.BaseFeePerGas.ToInt())
+			convertedBaseFee, err := uint256FromBig(simBlock.BlockOverrides.BaseFeePerGas.ToInt())
+			if err != nil {
+				return nil, fmt.Errorf("invalid baseFeePerGas: %w", err)
+			}
+			baseFee = convertedBaseFee
 		}
 		if simBlock.BlockOverrides.PrevRandao != nil {
 			prevRandao = *simBlock.BlockOverrides.PrevRandao
@@ -687,7 +691,7 @@ func (s *BlockChainAPI) simulateBlock(ctx context.Context, simBlock SimulateV1Bl
 		GasLimit:      hexutil.Uint64(gasLimit),
 		GasUsed:       hexutil.Uint64(totalGasUsed),
 		FeeRecipient:  feeRecipient,
-		BaseFeePerGas: (*hexutil.Big)(baseFee.ToBig()),
+		BaseFeePerGas: (*hexutil.Big)(uint256ToBigOrZero(baseFee)),
 		PrevRandao:    prevRandao,
 		Calls:         callResults,
 	}, nil

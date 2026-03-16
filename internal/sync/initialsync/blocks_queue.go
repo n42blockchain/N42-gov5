@@ -156,7 +156,7 @@ func (q *blocksQueue) loop() {
 		log.Debug("Can not start blocks provider", "err", err)
 	}
 
-	startBlockNr := new(uint256.Int).AddUint64(q.chain.CurrentBlock().Number64(), 1)
+	startBlockNr := new(uint256.Int).AddUint64(currentBlockNumber(q.chain), 1)
 	blocksPerRequest := q.blocksFetcher.blocksPerPeriod
 	for i := startBlockNr.Clone(); i.Cmp(new(uint256.Int).AddUint64(startBlockNr, blocksPerRequest*lookaheadSteps)) == -1; i = i.AddUint64(i, blocksPerRequest) {
 		q.smm.addStateMachine(i)
@@ -171,7 +171,7 @@ func (q *blocksQueue) loop() {
 
 		log.Trace("tick",
 			"highestExpectedBlockNr", q.highestExpectedBlockNr,
-			"ourBlockNr", q.chain.CurrentBlock().Number64(),
+			"ourBlockNr", currentBlockNumber(q.chain),
 			"state", q.smm.String(),
 		)
 
@@ -208,7 +208,7 @@ func (q *blocksQueue) loop() {
 					}
 				}
 				// Do garbage collection, and advance sliding window forward.
-				if q.chain.CurrentBlock().Number64().Cmp(new(uint256.Int).AddUint64(fsm.start, blocksPerRequest-1)) >= 0 {
+				if currentBlockNumber(q.chain).Cmp(new(uint256.Int).AddUint64(fsm.start, blocksPerRequest-1)) >= 0 {
 					highestStartSlot, err := q.smm.highestStartSlot()
 					if err != nil {
 						log.Debug("Cannot obtain highest epoch state number", "err", err)
@@ -253,7 +253,7 @@ func (q *blocksQueue) waitHighestExpectedBlockNr() bool {
 	if q.ctx.Err() != nil {
 		return false
 	}
-	if q.chain.CurrentBlock().Number64().Cmp(q.highestExpectedBlockNr) >= 0 {
+	if currentBlockNumber(q.chain).Cmp(q.highestExpectedBlockNr) >= 0 {
 		targetBlockNr := q.blocksFetcher.bestFinalizedBlockNr()
 		if q.highestExpectedBlockNr.Cmp(targetBlockNr) == -1 {
 			q.highestExpectedBlockNr = targetBlockNr
@@ -385,11 +385,11 @@ func (q *blocksQueue) onProcessSkippedEvent(ctx context.Context) eventHandlerFn 
 			return m.state, nil
 		}
 
-		if q.blocksFetcher.bestFinalizedBlockNr().Cmp(q.chain.CurrentBlock().Number64()) >= 0 {
+		if q.blocksFetcher.bestFinalizedBlockNr().Cmp(currentBlockNumber(q.chain)) >= 0 {
 			return stateSkipped, errNoRequiredPeers
 		}
 
-		startBlockNr := new(uint256.Int).AddUint64(q.chain.CurrentBlock().Number64(), 1)
+		startBlockNr := new(uint256.Int).AddUint64(currentBlockNumber(q.chain), 1)
 
 		return stateSkipped, q.resetFromBlockNr(ctx, startBlockNr)
 	}

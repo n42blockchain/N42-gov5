@@ -17,9 +17,12 @@
 package miner
 
 import (
+	"reflect"
 	"testing"
 	"time"
+	"unsafe"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/params"
 )
@@ -224,6 +227,18 @@ func BenchmarkCalcGasLimitEqual(b *testing.B) {
 	}
 }
 
+func TestFillTransactionsRejectsMissingHeaderNumber(t *testing.T) {
+	w := &worker{}
+	env := &environment{
+		header: &block.Header{},
+	}
+
+	err := w.fillTransactions(nil, env, nil, nil)
+	if err == nil || err.Error() != "mining header number unavailable" {
+		t.Fatalf("fillTransactions() error = %v", err)
+	}
+}
+
 func BenchmarkCalcGasLimitIteration(b *testing.B) {
 	parent := uint64(10000000)
 	desired := uint64(20000000)
@@ -262,6 +277,38 @@ func TestSignalToErr(t *testing.T) {
 	}
 
 	t.Logf("signalToErr handles known signals correctly")
+}
+
+func TestRequireBlockNumberRejectsNilNumber(t *testing.T) {
+	blk := testMinerBlock(nil)
+
+	_, err := requireBlockNumber(blk, "block number unavailable")
+	if err == nil || err.Error() != "block number unavailable" {
+		t.Fatalf("requireBlockNumber() error = %v", err)
+	}
+}
+
+func TestRequireHeaderNumberRejectsNilNumber(t *testing.T) {
+	_, err := requireHeaderNumber(&block.Header{}, "header number unavailable")
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("requireHeaderNumber() error = %v", err)
+	}
+}
+
+func testMinerBlock(number *uint256.Int) *block.Block {
+	blk := &block.Block{}
+	setMinerBlockField(blk, "header", &block.Header{
+		Number:     number,
+		Difficulty: uint256.NewInt(1),
+		BaseFee:    uint256.NewInt(0),
+	})
+	setMinerBlockField(blk, "body", &block.Body{})
+	return blk
+}
+
+func setMinerBlockField(target interface{}, name string, value interface{}) {
+	field := reflect.ValueOf(target).Elem().FieldByName(name)
+	reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Set(reflect.ValueOf(value))
 }
 
 func TestSignalToErrUnknown(t *testing.T) {
