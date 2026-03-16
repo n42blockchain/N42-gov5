@@ -17,12 +17,16 @@
 package deposit
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/crypto/bls"
 	"github.com/n42blockchain/N42/common/hexutil"
+	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -57,4 +61,42 @@ func TestUint256(t *testing.T) {
 	n100Hex, _ := hexutil.Decode("0x56BC75E2D63100000") // 100 N
 	n100Uint256 := new(uint256.Int).Mul(uint256.NewInt(params.N), uint256.NewInt(100))
 	t.Logf("100 N uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(n100Uint256.Bytes()), hexutil.Encode(n100Hex))
+}
+
+func TestNewDeposit_GlobalEventClosed(t *testing.T) {
+	event.GlobalEvent = event.Event{}
+	t.Cleanup(func() {
+		event.GlobalEvent = event.Event{}
+	})
+
+	newLogsCh := make(chan common.NewLogsEvent, 1)
+	removedLogsCh := make(chan common.RemovedLogsEvent, 1)
+	if _, err := event.GlobalEvent.Subscribe(newLogsCh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := event.GlobalEvent.Subscribe(removedLogsCh); err != nil {
+		t.Fatal(err)
+	}
+	event.GlobalEvent.Close()
+
+	d := NewDeposit(context.Background(), nil, nil, nil)
+	if d.logsSub != nil || d.rmLogsSub != nil {
+		t.Fatal("expected closed event scopes to disable deposit subscriptions")
+	}
+
+	d.Start()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := d.Stop(); err != nil {
+			t.Errorf("Stop() error = %v", err)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop() blocked with disabled subscriptions")
+	}
 }

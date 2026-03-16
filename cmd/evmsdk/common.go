@@ -236,14 +236,19 @@ func (i InnerError) Error() string { return fmt.Sprintf("code:%+v,msg:%+v", i.Co
 func (e *EvmEngine) Start() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.ctx, e.cancelFunc = context.WithCancel(context.Background())
 	if e.EngineState == EngineStateRunning {
 		return fmt.Errorf("evme is running")
 	}
+	e.ctx, e.cancelFunc = context.WithCancel(context.Background())
 	e.EngineState = EngineStateRunning
 
 	if err := e.verificationTaskBg(); err != nil {
 		e.EngineState = EngineStateStopped
+		if e.cancelFunc != nil {
+			e.cancelFunc()
+		}
+		e.ctx = nil
+		e.cancelFunc = nil
 		simpleLogf("launch verification task failed,err=%+v", err.Error())
 		return err
 	}

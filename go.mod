@@ -1,19 +1,19 @@
 module github.com/n42blockchain/N42
 
-go 1.25.0
+go 1.25.7
 
 require (
 	github.com/RoaringBitmap/roaring v1.9.4
-	github.com/VictoriaMetrics/metrics v1.41.2
+	github.com/VictoriaMetrics/metrics v1.42.0
 	github.com/btcsuite/btcd/btcec/v2 v2.3.6
 	github.com/c2h5oh/datasize v0.0.0-20231215233829-aa82cc1e6500
 	github.com/cespare/cp v1.1.1
-	github.com/consensys/gnark-crypto v0.19.2
+	github.com/consensys/gnark-crypto v0.20.0
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
-	github.com/davecgh/go-spew v1.1.1
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/deckarep/golang-set v1.8.0
 	github.com/deckarep/golang-set/v2 v2.8.0
-	github.com/dop251/goja v0.0.0-20260226184354-913bd86fb70c
+	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/erigontech/mdbx-go v0.40.0
 	github.com/fjl/gencodec v0.1.1
 	github.com/fsnotify/fsnotify v1.9.0
@@ -25,7 +25,7 @@ require (
 	github.com/google/btree v1.1.3
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/hashicorp/go-bexpr v0.1.15
+	github.com/hashicorp/go-bexpr v0.1.16
 	github.com/hashicorp/golang-lru v1.0.2
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/holiman/bloomfilter/v2 v2.0.3
@@ -44,7 +44,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.67.5
-	github.com/prysmaticlabs/fastssz v0.0.0-20221107182844-78142813af44
+	github.com/prysmaticlabs/fastssz v0.0.0-20260313210737-46c2c806e3e1
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9
 	github.com/rs/cors v1.11.1
 	github.com/sirupsen/logrus v1.9.4
@@ -54,10 +54,10 @@ require (
 	github.com/urfave/cli/v2 v2.27.7
 	go.opencensus.io v0.24.0
 	go.uber.org/zap v1.27.1
-	golang.org/x/crypto v0.48.0
-	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa
-	golang.org/x/sync v0.19.0
-	golang.org/x/sys v0.41.0
+	golang.org/x/crypto v0.49.0
+	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90
+	golang.org/x/sync v0.20.0
+	golang.org/x/sys v0.42.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce
@@ -70,10 +70,10 @@ require (
 	github.com/anacrolix/log v0.17.0
 	github.com/anacrolix/torrent v1.61.0
 	github.com/containerd/cgroups/v3 v3.1.3
-	github.com/crate-crypto/go-eth-kzg v1.4.0
+	github.com/crate-crypto/go-eth-kzg v1.5.0
 	github.com/edsrzf/mmap-go v1.2.0
 	github.com/erigontech/erigon-snapshot v1.3.0
-	github.com/erigontech/interfaces v0.0.0-20260222191547-4d76ef8b1901
+	github.com/erigontech/interfaces v0.0.0-20260309190044-b1ca32817912
 	github.com/erigontech/secp256k1 v1.2.0
 	github.com/erigontech/speedtest v0.0.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
@@ -84,15 +84,15 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/rs/dnscache v0.0.0-20230804202142-fc85eb664529
-	github.com/shirou/gopsutil/v4 v4.26.1
+	github.com/shirou/gopsutil/v4 v4.26.2
 	github.com/spaolacci/murmur3 v1.1.0
 	github.com/tidwall/btree v1.8.1
-	go.opentelemetry.io/otel v1.40.0
-	go.opentelemetry.io/otel/sdk v1.39.0
-	go.opentelemetry.io/otel/trace v1.40.0
+	go.opentelemetry.io/otel v1.42.0
+	go.opentelemetry.io/otel/sdk v1.42.0
+	go.opentelemetry.io/otel/trace v1.42.0
 	go.uber.org/mock v0.6.0
-	golang.org/x/time v0.14.0
-	google.golang.org/grpc v1.79.1
+	golang.org/x/time v0.15.0
+	google.golang.org/grpc v1.79.2
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.6.1
 	lukechampine.com/blake3 v1.4.1
 )
@@ -120,8 +120,8 @@ require (
 	github.com/bradfitz/iter v0.0.0-20191230175014-e8f45d346db8 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cilium/ebpf v0.20.0 // indirect
-	github.com/clipperhouse/uax29/v2 v2.6.0 // indirect
+	github.com/cilium/ebpf v0.21.0 // indirect
+	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
@@ -131,7 +131,7 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/ebitengine/purego v0.9.1 // indirect
+	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/felixge/fgprof v0.9.5 // indirect
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
@@ -149,15 +149,15 @@ require (
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
-	github.com/google/pprof v0.0.0-20260202012954-cb029daf43ef // indirect
+	github.com/google/pprof v0.0.0-20260302011040-a15ffb7f9dcc // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/ianlancetaylor/cgosymbolizer v0.0.0-20251106193036-e159b5929349 // indirect
-	github.com/ipfs/boxo v0.36.0 // indirect
+	github.com/ipfs/boxo v0.37.0 // indirect
 	github.com/ipfs/go-cid v0.6.0 // indirect
 	github.com/ipfs/go-datastore v0.9.1 // indirect
 	github.com/ipfs/go-log/v2 v2.9.1 // indirect
-	github.com/ipld/go-ipld-prime v0.21.0 // indirect
+	github.com/ipld/go-ipld-prime v0.22.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
@@ -176,7 +176,7 @@ require (
 	github.com/libp2p/go-yamux/v5 v5.1.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260216142805-b3301c5f2a88 // indirect
 	github.com/marten-seemann/tcp v0.0.0-20210406111302-dfbc87cc63fd // indirect
-	github.com/mattn/go-runewidth v0.0.20 // indirect
+	github.com/mattn/go-runewidth v0.0.21 // indirect
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
@@ -210,7 +210,7 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.16 // indirect
 	github.com/pion/rtp v1.10.1 // indirect
-	github.com/pion/sctp v1.9.2 // indirect
+	github.com/pion/sctp v1.9.3 // indirect
 	github.com/pion/sdp/v3 v3.0.18 // indirect
 	github.com/pion/srtp/v2 v2.0.20 // indirect
 	github.com/pion/srtp/v3 v3.0.10 // indirect
@@ -222,10 +222,10 @@ require (
 	github.com/pion/turn/v4 v4.1.4 // indirect
 	github.com/pion/webrtc/v3 v3.3.6 // indirect
 	github.com/pion/webrtc/v4 v4.2.9 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/polydawn/refmt v0.89.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/polydawn/refmt v0.89.1-0.20231129105047-37766d95467a // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/prometheus/procfs v0.19.2 // indirect
+	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/prysmaticlabs/gohashtree v0.0.5-beta // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
@@ -243,26 +243,26 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel/metric v1.40.0 // indirect
+	go.opentelemetry.io/otel/metric v1.42.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/fx v1.24.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.yaml.in/yaml/v2 v2.4.3 // indirect
+	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/mod v0.33.0 // indirect
-	golang.org/x/net v0.50.0 // indirect
-	golang.org/x/telemetry v0.0.0-20260213145524-e0ab670178e1 // indirect
-	golang.org/x/term v0.40.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
-	golang.org/x/tools v0.42.0 // indirect
+	golang.org/x/mod v0.34.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260312161427-1546bf4b83fe // indirect
+	golang.org/x/term v0.41.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/tools v0.43.0 // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260311181403-84a4fc48630c // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	modernc.org/libc v1.67.7 // indirect
+	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.45.0 // indirect
+	modernc.org/sqlite v1.46.1 // indirect
 	zombiezen.com/go/sqlite v1.4.2 // indirect
 )
 

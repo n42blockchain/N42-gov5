@@ -83,9 +83,11 @@ type Service struct {
 	jobs       map[string]*jobInfo // jobID → info
 	mu         sync.RWMutex
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	lifecycleMu sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	running     bool
+	wg          sync.WaitGroup
 
 	// client is the external prover communication interface.
 	// Set via SetProverClient before Start() for production use.
@@ -120,9 +122,19 @@ func (s *Service) SetProverClient(client ProverClient) {
 
 // Start begins the background job poller.
 func (s *Service) Start() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	if s.running {
+		return
+	}
 	if s.client == nil {
 		s.client = &NoopProverClient{}
 	}
+	if s.ctx == nil || s.ctx.Err() != nil {
+		s.ctx, s.cancel = context.WithCancel(context.Background())
+	}
+	s.running = true
 	s.wg.Add(1)
 	go s.pollJobs()
 	log.Info("ZK prover service started", "addr", s.cfg.ProverAddr, "proofType", s.cfg.ProofType)
@@ -130,7 +142,16 @@ func (s *Service) Start() {
 
 // Stop shuts down the prover service and releases resources.
 func (s *Service) Stop() {
-	s.cancel()
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	if !s.running {
+		return
+	}
+	s.running = false
+	if s.cancel != nil {
+		s.cancel()
+	}
 	s.wg.Wait()
 	if s.client != nil {
 		if err := s.client.Close(); err != nil {

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/hexutil"
 
 	common2 "github.com/n42blockchain/N42/common"
@@ -73,17 +74,21 @@ func verify(ctx context.Context, msg *state.EntireCode) (types.Hash, error) {
 	}
 
 	blk := block.NewBlockFromStorage(msg.Entire.Header.Hash(), msg.Entire.Header, body)
+	blockNumber, err := requireBlockNumber(blk.Number64())
+	if err != nil {
+		return types.Hash{}, err
+	}
 	batch := olddb.NewHashBatch(nil, ctx.Done(), "")
 	defer batch.Rollback()
 	old := make(map[string][]byte, len(msg.Entire.Snap.Items))
 	for _, v := range msg.Entire.Snap.Items {
 		old[string(v.Key)] = v.Value
 	}
-	stateReader := olddb.NewStateReader(old, nil, batch, blk.Number64().Uint64())
+	stateReader := olddb.NewStateReader(old, nil, batch, blockNumber)
 	stateReader.SetReadCodeF(readCodeF)
 	ibs := state.New(stateReader)
 	ibs.SetSnapshot(msg.Entire.Snap)
-	ibs.SetHeight(blk.Number64().Uint64())
+	ibs.SetHeight(blockNumber)
 	ibs.SetGetOneFun(batch.GetOne)
 
 	root, err := checkBlock2(getNumberHash, blk, ibs, msg.CoinBase, msg.Rewards)
@@ -95,8 +100,12 @@ func verify(ctx context.Context, msg *state.EntireCode) (types.Hash, error) {
 
 func checkBlock2(getHashF func(n uint64) types.Hash, blk *block.Block, ibs *state.IntraBlockState, coinbase types.Address, rewards []*block.Reward) (types.Hash, error) {
 	header := blk.Header().(*block.Header)
+	blockNumber, err := requireBlockNumber(blk.Number64())
+	if err != nil {
+		return types.Hash{}, err
+	}
 	chainConfig := params.MainnetChainConfig
-	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(blk.Number64().ToBig()) == 0 {
+	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(new(uint256.Int).SetUint64(blockNumber).ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibs)
 	}
 	noop := state.NewNoopWriter()
@@ -138,4 +147,11 @@ func checkBlock2(getHashF func(n uint64) types.Hash, blk *block.Block, ibs *stat
 	}
 
 	return ibs.IntermediateRoot(), nil
+}
+
+func requireBlockNumber(v *uint256.Int) (uint64, error) {
+	if v == nil {
+		return 0, fmt.Errorf("block number unavailable")
+	}
+	return v.Uint64(), nil
 }

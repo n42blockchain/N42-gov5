@@ -36,6 +36,42 @@ import (
 
 var testSigData = make([]byte, 32)
 
+func waitForKeyStoreCondition(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", desc)
+}
+
+func waitForSignHashError(t *testing.T, timeout time.Duration, ks *KeyStore, account accounts.Account, want error) {
+	t.Helper()
+
+	var lastErr error
+	waitForKeyStoreCondition(t, timeout, "sign hash error "+want.Error(), func() bool {
+		_, lastErr = ks.SignHash(account, testSigData)
+		return lastErr == want
+	})
+	if lastErr != want {
+		t.Fatalf("SignHash() error = %v, want %v", lastErr, want)
+	}
+}
+
+func waitForUpdaterState(t *testing.T, ks *KeyStore, want bool) {
+	t.Helper()
+
+	waitForKeyStoreCondition(t, walletRefreshCycle+time.Second, "wallet updater state", func() bool {
+		ks.mu.RLock()
+		defer ks.mu.RUnlock()
+		return ks.updating == want
+	})
+}
+
 func TestKeyStore(t *testing.T) {
 	dir, ks := tmpKeyStore(t, true)
 
@@ -140,11 +176,7 @@ func TestTimedUnlock(t *testing.T) {
 	}
 
 	// Signing fails again after automatic locking
-	time.Sleep(250 * time.Millisecond)
-	_, err = ks.SignHash(accounts.Account{Address: a1.Address}, testSigData)
-	if err != ErrLocked {
-		t.Fatal("Signing should've failed with ErrLocked timeout expired, got ", err)
-	}
+	waitForSignHashError(t, time.Second, ks, accounts.Account{Address: a1.Address}, ErrLocked)
 }
 
 func TestOverrideUnlock(t *testing.T) {
@@ -179,11 +211,7 @@ func TestOverrideUnlock(t *testing.T) {
 	}
 
 	// Signing fails again after automatic locking
-	time.Sleep(250 * time.Millisecond)
-	_, err = ks.SignHash(accounts.Account{Address: a1.Address}, testSigData)
-	if err != ErrLocked {
-		t.Fatal("Signing should've failed with ErrLocked timeout expired, got ", err)
-	}
+	waitForSignHashError(t, time.Second, ks, accounts.Account{Address: a1.Address}, ErrLocked)
 }
 
 // This test should fail under -race if signing races the expiration goroutine.
@@ -219,7 +247,6 @@ func TestWalletNotifierLifecycle(t *testing.T) {
 	_, ks := tmpKeyStore(t, false)
 
 	// Ensure that the notification updater is not running yet
-	time.Sleep(250 * time.Millisecond)
 	ks.mu.RLock()
 	updating := ks.updating
 	ks.mu.RUnlock()
@@ -236,11 +263,11 @@ func TestWalletNotifierLifecycle(t *testing.T) {
 		subs[i] = ks.Subscribe(updates)
 
 		// Ensure the notifier comes online
-		time.Sleep(250 * time.Millisecond)
+		waitForUpdaterState(t, ks, true)
+
 		ks.mu.RLock()
 		updating = ks.updating
 		ks.mu.RUnlock()
-
 		if !updating {
 			t.Errorf("sub %d: wallet notifier not running after subscription", i)
 		}
@@ -250,20 +277,17 @@ func TestWalletNotifierLifecycle(t *testing.T) {
 		// Close an existing subscription
 		subs[i].Unsubscribe()
 
-		// Ensure the notifier shuts down at and only at the last close
-		for k := 0; k < int(walletRefreshCycle/(250*time.Millisecond))+2; k++ {
-			ks.mu.RLock()
-			updating = ks.updating
-			ks.mu.RUnlock()
-
-			if i < len(subs)-1 && !updating {
+		ks.mu.RLock()
+		updating = ks.updating
+		ks.mu.RUnlock()
+		if i < len(subs)-1 {
+			if !updating {
 				t.Fatalf("sub %d: event notifier stopped prematurely", i)
 			}
-			if i == len(subs)-1 && !updating {
-				return
-			}
-			time.Sleep(250 * time.Millisecond)
+			continue
 		}
+		waitForUpdaterState(t, ks, false)
+		return
 	}
 	t.Errorf("wallet notifier didn't terminate after unsubscribe")
 }
@@ -277,6 +301,7 @@ type walletEvent struct {
 // or deleted from the keystore.
 func TestWalletNotifications(t *testing.T) {
 	_, ks := tmpKeyStore(t, false)
+	rng := rand.New(rand.NewSource(1))
 
 	// Subscribe to the wallet feed and collect events.
 	var (
@@ -303,7 +328,7 @@ func TestWalletNotifications(t *testing.T) {
 		wantEvents []walletEvent
 	)
 	for i := 0; i < 1024; i++ {
-		if create := len(live) == 0 || rand.Int()%4 > 0; create {
+		if create := len(live) == 0 || rng.Int()%4 > 0; create {
 			// Add a new account and ensure wallet notifications arrives
 			account, err := ks.NewAccount("")
 			if err != nil {

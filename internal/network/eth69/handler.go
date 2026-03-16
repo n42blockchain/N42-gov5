@@ -85,8 +85,13 @@ func (h *Handler) MakeStatusPacket() *StatusPacket {
 		log.Warn("unable to create status packet: no current block")
 		return nil
 	}
+	latestNumber, err := requireBlockNumber(currentBlock, "current block number unavailable")
+	if err != nil {
+		log.Warn("unable to create status packet", "err", err)
+		return nil
+	}
 
-	latestBlock := currentBlock.Number64().Uint64()
+	latestBlock := latestNumber.Uint64()
 	h.peerTracker.UpdateLocalRange(h.earliestBlock, latestBlock, currentBlock.Hash())
 
 	return &StatusPacket{
@@ -106,10 +111,15 @@ func (h *Handler) MakeBlockRangeUpdatePacket() *BlockRangeUpdatePacket {
 	if currentBlock == nil {
 		return nil
 	}
+	latestNumber, err := requireBlockNumber(currentBlock, "current block number unavailable")
+	if err != nil {
+		log.Warn("unable to create block range update packet", "err", err)
+		return nil
+	}
 
 	return &BlockRangeUpdatePacket{
 		EarliestBlock:   h.earliestBlock,
-		LatestBlock:     currentBlock.Number64().Uint64(),
+		LatestBlock:     latestNumber.Uint64(),
 		LatestBlockHash: currentBlock.Hash(),
 	}
 }
@@ -176,8 +186,12 @@ func (h *Handler) HandleBlockRangeUpdate(peerID peer.ID, update *BlockRangeUpdat
 // OnNewBlock is called when a new block is imported.
 // It broadcasts a BlockRangeUpdate to peers if needed per the EIP-7642 epoch rules.
 func (h *Handler) OnNewBlock(blk *block.Block) {
-	blockNumber := blk.Number64().Uint64()
-	if !h.peerTracker.ShouldSendUpdate(blockNumber) {
+	blockNumber, err := requireBlockNumber(blk, "block number unavailable")
+	if err != nil {
+		log.Warn("skipping block range update", "err", err)
+		return
+	}
+	if !h.peerTracker.ShouldSendUpdate(blockNumber.Uint64()) {
 		return
 	}
 
@@ -185,7 +199,7 @@ func (h *Handler) OnNewBlock(blk *block.Block) {
 	if update == nil {
 		return
 	}
-	h.peerTracker.MarkUpdateSent(blockNumber)
+	h.peerTracker.MarkUpdateSent(blockNumber.Uint64())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -193,7 +207,7 @@ func (h *Handler) OnNewBlock(blk *block.Block) {
 	if err := h.peerSender.BroadcastBlockRangeUpdate(ctx, update); err != nil {
 		log.Debug("failed to broadcast block range update", "err", err)
 	} else {
-		log.Debug("sent block range update", "latest", blockNumber)
+		log.Debug("sent block range update", "latest", blockNumber.Uint64())
 	}
 }
 
@@ -243,6 +257,11 @@ func (h *Handler) makeForkID() []byte {
 func (h *Handler) SetEarliestBlock(earliest uint64) {
 	h.earliestBlock = earliest
 	if current := h.chain.CurrentBlock(); current != nil {
-		h.peerTracker.UpdateLocalRange(earliest, current.Number64().Uint64(), current.Hash())
+		currentNumber, err := requireBlockNumber(current, "current block number unavailable")
+		if err != nil {
+			log.Warn("unable to update local block range", "err", err)
+			return
+		}
+		h.peerTracker.UpdateLocalRange(earliest, currentNumber.Uint64(), current.Hash())
 	}
 }

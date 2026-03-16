@@ -18,6 +18,7 @@ package v2
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -119,7 +120,7 @@ func ResubscribeErr(backoffMax time.Duration, fn ResubscribeErrFunc) Subscriptio
 		waitTime:   backoffMax / 10,
 		backoffMax: backoffMax,
 		fn:         fn,
-		err:        make(chan error),
+		err:        make(chan error, 1),
 		unsub:      make(chan struct{}),
 	}
 	go s.loop()
@@ -130,6 +131,8 @@ func ResubscribeErr(backoffMax time.Duration, fn ResubscribeErrFunc) Subscriptio
 // For every call but the first, the second argument to this function is
 // the error that occurred with the previous subscription.
 type ResubscribeErrFunc func(context.Context, error) (Subscription, error)
+
+var errNilResubscribeSubscription = errors.New("event: ResubscribeFunc returned nil subscription and no error")
 
 type resubscribeSub struct {
 	fn                   ResubscribeErrFunc
@@ -143,7 +146,7 @@ type resubscribeSub struct {
 
 func (s *resubscribeSub) Unsubscribe() {
 	s.unsubOnce.Do(func() {
-		s.unsub <- struct{}{}
+		close(s.unsub)
 		<-s.err
 	})
 }
@@ -156,7 +159,11 @@ func (s *resubscribeSub) loop() {
 	defer close(s.err)
 	var done bool
 	for !done {
-		sub := s.subscribe()
+		sub, err := s.subscribe()
+		if err != nil {
+			s.err <- err
+			return
+		}
 		if sub == nil {
 			break
 		}
@@ -165,7 +172,7 @@ func (s *resubscribeSub) loop() {
 	}
 }
 
-func (s *resubscribeSub) subscribe() Subscription {
+func (s *resubscribeSub) subscribe() (Subscription, error) {
 	subscribed := make(chan error)
 	var sub Subscription
 	for {
@@ -181,18 +188,18 @@ func (s *resubscribeSub) subscribe() Subscription {
 			cancel()
 			if err == nil {
 				if sub == nil {
-					panic("event: ResubscribeFunc returned nil subscription and no error")
+					return nil, errNilResubscribeSubscription
 				}
-				return sub
+				return sub, nil
 			}
 			// Subscribing failed, wait before launching the next try.
 			if s.backoffWait() {
-				return nil // unsubscribed during wait
+				return nil, nil // unsubscribed during wait
 			}
 		case <-s.unsub:
 			cancel()
 			<-subscribed // avoid leaking the s.fn goroutine.
-			return nil
+			return nil, nil
 		}
 	}
 }

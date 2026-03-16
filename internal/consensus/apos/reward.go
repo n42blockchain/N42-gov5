@@ -18,6 +18,7 @@ package apos
 
 import (
 	"errors"
+	"math/big"
 	"sort"
 	"strings"
 
@@ -84,16 +85,25 @@ func (r AccountRewards) Swap(i, j int) {
 }
 
 func newReward(chainConfig *params.ChainConfig) *Reward {
-	rewardLimitBig, overflow := uint256.FromBig(chainConfig.Apos.RewardLimit)
-	if overflow {
-		log.Error("RewardLimit overflows uint256, using max value")
-		rewardLimitBig = uint256.MustFromBig(chainConfig.Apos.RewardLimit)
-	}
+	rewardLimitBig := rewardLimitOrMax(chainConfig.Apos.RewardLimit)
 	return &Reward{
 		chainConfig: chainConfig,
 		rewardLimit: rewardLimitBig,
 		rewardEpoch: uint256.NewInt(chainConfig.Apos.RewardEpoch),
 	}
+}
+
+func rewardLimitOrMax(limit *big.Int) *uint256.Int {
+	rewardLimitBig, overflow := uint256.FromBig(limit)
+	if limit == nil {
+		log.Error("RewardLimit is missing, using max value")
+		return new(uint256.Int).SetAllOne()
+	}
+	if overflow {
+		log.Error("RewardLimit overflows uint256, using max value")
+		return new(uint256.Int).SetAllOne()
+	}
+	return rewardLimitBig
 }
 
 func (r *Reward) GetRewards(addr types.Address, from *uint256.Int, to *uint256.Int, getBlockByNumber func(*uint256.Int) (block.IBlock, error)) (*RewardResponse, error) {
@@ -190,7 +200,7 @@ func (r *Reward) buildRewards(tx kv.RwTx, number *uint256.Int, setRewards bool) 
 			return nil, errors.New("buildreward header type assert error")
 		}
 
-		block := rawdb.ReadBlock(tx, header.Hash(), header.Number.Uint64())
+		block := rawdb.ReadBlock(tx, header.Hash(), currentNr.Uint64())
 		if block == nil {
 			return nil, errors.New("buildreward block type assert error")
 		}

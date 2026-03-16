@@ -77,13 +77,14 @@ func Init(cfg Config) (shutdown func(context.Context) error, err error) {
 		cfg.SampleRate = DefaultConfig.SampleRate
 	}
 
-	// Build resource describing this service.
+	// sdkresource.Default() already carries the SDK's schema URL. Keep the
+	// service-identifying attributes schemaless so OTel SDK upgrades do not
+	// break resource merging on semconv version drift.
 	res, err := sdkresource.Merge(
 		sdkresource.Default(),
-		sdkresource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName("n42-node"),
-			semconv.ServiceVersion("1.0.0"),
+		sdkresource.NewSchemaless(
+			semconv.ServiceNameKey.String("n42-node"),
+			semconv.ServiceVersionKey.String("1.0.0"),
 		),
 	)
 	if err != nil {

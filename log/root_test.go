@@ -10,7 +10,28 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/conf"
+	"github.com/sirupsen/logrus"
 )
+
+func resetLoggerGlobals(t *testing.T) {
+	t.Helper()
+
+	oldTerminal := terminal
+	oldLogManager := logManager
+	oldLogWriter := logWriter
+
+	Close()
+	terminal = logrus.New()
+	logManager = nil
+	logWriter = nil
+
+	t.Cleanup(func() {
+		Close()
+		terminal = oldTerminal
+		logManager = oldLogManager
+		logWriter = oldLogWriter
+	})
+}
 
 // TestLogLevels 测试日志级别
 func TestLogLevels(t *testing.T) {
@@ -62,12 +83,13 @@ func TestNewLogger(t *testing.T) {
 
 // TestLogManagerCreation 测试日志管理器创建
 func TestLogManagerCreation(t *testing.T) {
-	manager := NewLogManager("/tmp/test_logs", 100)
+	logDir := filepath.Join(t.TempDir(), "logs")
+	manager := NewLogManager(logDir, 100)
 	if manager == nil {
 		t.Fatal("LogManager should not be nil")
 	}
-	if manager.logDir != "/tmp/test_logs" {
-		t.Errorf("Expected logDir /tmp/test_logs, got %s", manager.logDir)
+	if manager.logDir != logDir {
+		t.Errorf("Expected logDir %s, got %s", logDir, manager.logDir)
 	}
 	if manager.totalSizeCap != 100*1024*1024 {
 		t.Errorf("Expected totalSizeCap %d, got %d", 100*1024*1024, manager.totalSizeCap)
@@ -77,40 +99,52 @@ func TestLogManagerCreation(t *testing.T) {
 
 // TestLogManagerStartStop 测试日志管理器启动停止
 func TestLogManagerStartStop(t *testing.T) {
-	manager := NewLogManager("/tmp/test_logs", 100)
+	manager := NewLogManager(filepath.Join(t.TempDir(), "logs"), 100)
 	manager.Start()
-	time.Sleep(100 * time.Millisecond)
+	if manager.cancel == nil {
+		t.Fatal("Start() did not install a cancel function")
+	}
 	manager.Stop()
 	t.Log("✓ LogManager start/stop works correctly")
 }
 
 // TestLogManagerNoSizeCap 测试无大小限制的日志管理器
 func TestLogManagerNoSizeCap(t *testing.T) {
-	manager := NewLogManager("/tmp/test_logs", 0)
+	manager := NewLogManager(filepath.Join(t.TempDir(), "logs"), 0)
 	manager.Start() // 应该不启动任何后台任务
+	if manager.cancel != nil {
+		t.Fatal("Start() should not create a cleanup loop when size cap is disabled")
+	}
 	manager.Stop()
 	t.Log("✓ LogManager with no size cap works correctly")
 }
 
 // TestInitConsoleOnly 测试仅控制台输出
 func TestInitConsoleOnly(t *testing.T) {
+	resetLoggerGlobals(t)
+
 	nodeConfig := conf.NodeConfig{
 		DataDir: t.TempDir(),
 	}
 	loggerConfig := conf.LoggerConfig{
-		LogFile:  "", // 空表示只输出到控制台
-		Level:    "info",
-		MaxSize:  100,
-		Console:  true,
+		LogFile: "", // 空表示只输出到控制台
+		Level:   "info",
+		MaxSize: 100,
+		Console: true,
 	}
 
 	Init(nodeConfig, loggerConfig)
 	Info("Test console output")
+	if logWriter != nil {
+		t.Fatal("console-only init should not create a file writer")
+	}
 	t.Log("✓ Console-only logging works")
 }
 
 // TestInitWithFile 测试文件输出
 func TestInitWithFile(t *testing.T) {
+	resetLoggerGlobals(t)
+
 	tmpDir := t.TempDir()
 	nodeConfig := conf.NodeConfig{
 		DataDir: tmpDir,
@@ -137,11 +171,19 @@ func TestInitWithFile(t *testing.T) {
 	}
 
 	Close()
+	logPath := filepath.Join(logDir, "test.log")
+	if info, err := os.Stat(logPath); err != nil {
+		t.Fatalf("Log file was not created: %v", err)
+	} else if info.Size() == 0 {
+		t.Fatal("Log file should not be empty")
+	}
 	t.Log("✓ File logging works")
 }
 
 // TestLogOutput 测试各级别日志输出
 func TestLogOutput(t *testing.T) {
+	resetLoggerGlobals(t)
+
 	tmpDir := t.TempDir()
 	nodeConfig := conf.NodeConfig{
 		DataDir: tmpDir,
@@ -174,6 +216,14 @@ func TestLogOutput(t *testing.T) {
 	Info("with context", "key1", "value1", "key2", 123)
 
 	Close()
+	logPath := filepath.Join(tmpDir, "log", "test.log")
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", logPath, err)
+	}
+	if len(content) == 0 {
+		t.Fatal("expected log output file to contain data")
+	}
 	t.Log("✓ All log levels output correctly")
 }
 
@@ -229,6 +279,46 @@ func TestNormalizeOddLength(t *testing.T) {
 	t.Log("✓ normalize handles odd length correctly")
 }
 
+func TestLogManagerCleanupRemovesOldestFiles(t *testing.T) {
+	resetLoggerGlobals(t)
+
+	logDir := t.TempDir()
+	manager := NewLogManager(logDir, 1)
+	manager.totalSizeCap = 8
+
+	oldest := filepath.Join(logDir, "oldest.log")
+	middle := filepath.Join(logDir, "middle.log")
+	newest := filepath.Join(logDir, "newest.log.gz")
+
+	writeLogFixture := func(path string, size int, modTime time.Time) {
+		t.Helper()
+		data := make([]byte, size)
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", path, err)
+		}
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatalf("Chtimes(%s) error = %v", path, err)
+		}
+	}
+
+	baseTime := time.Now().Add(-time.Hour)
+	writeLogFixture(oldest, 4, baseTime)
+	writeLogFixture(middle, 3, baseTime.Add(time.Minute))
+	writeLogFixture(newest, 2, baseTime.Add(2*time.Minute))
+
+	manager.cleanup()
+
+	if _, err := os.Stat(oldest); !os.IsNotExist(err) {
+		t.Fatalf("expected oldest log file to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(middle); err != nil {
+		t.Fatalf("expected middle log file to remain: %v", err)
+	}
+	if _, err := os.Stat(newest); err != nil {
+		t.Fatalf("expected newest log file to remain: %v", err)
+	}
+}
+
 // BenchmarkLogInfo 基准测试 Info 日志
 func BenchmarkLogInfo(b *testing.B) {
 	tmpDir := b.TempDir()
@@ -250,4 +340,3 @@ func BenchmarkLogInfo(b *testing.B) {
 		Info("benchmark message", "iteration", i)
 	}
 }
-

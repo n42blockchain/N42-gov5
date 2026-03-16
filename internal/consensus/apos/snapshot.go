@@ -198,7 +198,15 @@ func (s *Snapshot) apply(headers []block.IHeader) (*Snapshot, error) {
 		if !ok1 || !ok0 {
 			return nil, fmt.Errorf("invalid header type at index %d", i)
 		}
-		if h1.Number.Uint64() != h0.Number.Uint64()+1 {
+		h1Number, err := requireHeaderNumber(h1, "header number unavailable")
+		if err != nil {
+			return nil, err
+		}
+		h0Number, err := requireHeaderNumber(h0, "header number unavailable")
+		if err != nil {
+			return nil, err
+		}
+		if h1Number.Uint64() != h0Number.Uint64()+1 {
 			return nil, errInvalidVotingChain
 		}
 	}
@@ -206,7 +214,11 @@ func (s *Snapshot) apply(headers []block.IHeader) (*Snapshot, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid header type at index 0")
 	}
-	if first.Number.Uint64() != s.Number+1 {
+	firstNumber, err := requireHeaderNumber(first, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	if firstNumber.Uint64() != s.Number+1 {
 		return nil, errInvalidVotingChain
 	}
 	// Iterate through the headers and create a new snapshot
@@ -222,7 +234,11 @@ func (s *Snapshot) apply(headers []block.IHeader) (*Snapshot, error) {
 			return nil, fmt.Errorf("invalid header type at index %d", i)
 		}
 		// Remove any votes on checkpoint blocks
-		number := header.Number.Uint64()
+		headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+		if err != nil {
+			return nil, err
+		}
+		number := headerNumber.Uint64()
 		if number%s.config.Epoch == 0 {
 			snap.Votes = nil
 			snap.Tally = make(map[types.Address]Tally)

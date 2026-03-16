@@ -314,6 +314,87 @@ func TestChainContextInterface(t *testing.T) {
 	t.Logf("✓ ChainContext interface is correctly defined")
 }
 
+func TestNewEVMBlockContextMissingHeaderNumber(t *testing.T) {
+	author := types.Address{0x42}
+	header := &block.Header{
+		Difficulty: uint256.NewInt(1),
+	}
+
+	ctx := NewEVMBlockContext(header, nil, nil, &author)
+
+	if ctx.BlockNumber != 0 {
+		t.Fatalf("BlockNumber = %d, want 0", ctx.BlockNumber)
+	}
+	if ctx.Coinbase != author {
+		t.Fatalf("Coinbase = %v, want %v", ctx.Coinbase, author)
+	}
+}
+
+func TestNewEVMBlockContextMissingDifficulty(t *testing.T) {
+	author := types.Address{0x42}
+	ctx := NewEVMBlockContext(&block.Header{}, nil, nil, &author)
+
+	if ctx.Difficulty == nil {
+		t.Fatal("Difficulty should be initialized")
+	}
+	if ctx.Difficulty.Sign() != 0 {
+		t.Fatalf("Difficulty = %v, want 0", ctx.Difficulty)
+	}
+	if ctx.PrevRanDao != nil {
+		t.Fatalf("PrevRanDao = %v, want nil", ctx.PrevRanDao)
+	}
+}
+
+func TestNewEVMBlockContextPreservesBaseFee(t *testing.T) {
+	author := types.Address{0x42}
+	baseFee := new(uint256.Int).SetAllOne()
+	ctx := NewEVMBlockContext(&block.Header{BaseFee: baseFee}, nil, nil, &author)
+
+	if ctx.BaseFee == nil {
+		t.Fatal("BaseFee should be initialized")
+	}
+	if ctx.BaseFee.Cmp(baseFee) != 0 {
+		t.Fatalf("BaseFee = %v, want %v", ctx.BaseFee, baseFee)
+	}
+	if ctx.BaseFee == baseFee {
+		t.Fatal("BaseFee should be copied into context storage")
+	}
+}
+
+func TestGetHashFnRejectsMissingRefHeaderNumber(t *testing.T) {
+	called := false
+	getHash := GetHashFn(&block.Header{}, func(hash types.Hash, number uint64) *block.Header {
+		called = true
+		return nil
+	})
+
+	if got := getHash(0); got != (types.Hash{}) {
+		t.Fatalf("GetHashFn returned %v, want zero hash", got)
+	}
+	if called {
+		t.Fatal("GetHashFn called header lookup for malformed reference header")
+	}
+}
+
+func TestGetHashFnStopsOnAncestorWithoutNumber(t *testing.T) {
+	ref := &block.Header{
+		Number:     uint256.NewInt(3),
+		ParentHash: types.HexToHash("0x01"),
+	}
+	lookups := 0
+	getHash := GetHashFn(ref, func(hash types.Hash, number uint64) *block.Header {
+		lookups++
+		return &block.Header{ParentHash: types.HexToHash("0x02")}
+	})
+
+	if got := getHash(1); got != (types.Hash{}) {
+		t.Fatalf("GetHashFn returned %v, want zero hash", got)
+	}
+	if lookups != 1 {
+		t.Fatalf("GetHashFn lookups = %d, want 1", lookups)
+	}
+}
+
 // =============================================================================
 // Benchmark Tests
 // =============================================================================

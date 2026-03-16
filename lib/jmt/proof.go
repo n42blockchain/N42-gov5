@@ -154,25 +154,72 @@ func VerifyProof(root Hash, proof *Proof, h Hasher) ([]byte, error) {
 		return nil, ErrInvalidProof
 	}
 
-	// Check the terminal entry.
-	lastEntry := proof.Path[len(proof.Path)-1]
-	lastNode, err := DecodeNode(lastEntry.NodeData)
-	if err != nil {
-		return nil, ErrInvalidProof
-	}
+	keyPath := NewNibblePath(proof.Key)
+	depth := 0
 
-	switch lastNode.Type {
-	case NodeTypeLeaf:
-		if lastNode.Leaf.KeyHash == proof.Key {
-			return lastNode.Leaf.Value, nil // inclusion
+	for i, entry := range proof.Path {
+		node, err := DecodeNode(entry.NodeData)
+		if err != nil {
+			return nil, ErrInvalidProof
 		}
-		return nil, nil // exclusion: different key at leaf
-	case NodeTypeInternal:
-		// Exclusion: path ended at an internal node with empty child slot.
-		return nil, nil
-	case NodeTypeExtension:
-		// Exclusion: path diverged within extension.
-		return nil, nil
+
+		isLast := i == len(proof.Path)-1
+		switch node.Type {
+		case NodeTypeInternal:
+			if depth >= keyPath.Len() {
+				return nil, ErrInvalidProof
+			}
+
+			expectedNibble := keyPath.At(depth)
+			if entry.Nibble != int8(expectedNibble) {
+				return nil, ErrInvalidProof
+			}
+
+			child := node.Internal.Children[expectedNibble]
+			if !child.Valid {
+				if !isLast {
+					return nil, ErrInvalidProof
+				}
+				return nil, nil
+			}
+			if isLast {
+				return nil, ErrInvalidProof
+			}
+			depth++
+
+		case NodeTypeExtension:
+			ext := node.Extension
+			extLen := ext.Path.Len()
+			match := true
+			for j := 0; j < extLen; j++ {
+				if depth+j >= keyPath.Len() || keyPath.At(depth+j) != ext.Path.At(j) {
+					match = false
+					break
+				}
+			}
+			if !match {
+				if !isLast {
+					return nil, ErrInvalidProof
+				}
+				return nil, nil
+			}
+			if isLast {
+				return nil, ErrInvalidProof
+			}
+			depth += extLen
+
+		case NodeTypeLeaf:
+			if !isLast {
+				return nil, ErrInvalidProof
+			}
+			if node.Leaf.KeyHash == proof.Key {
+				return node.Leaf.Value, nil
+			}
+			return nil, nil
+
+		default:
+			return nil, ErrInvalidProof
+		}
 	}
 
 	return nil, ErrInvalidProof

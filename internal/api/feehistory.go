@@ -306,9 +306,12 @@ func (oracle *Oracle) FeeHistory(ctx context.Context, blocks int, unresolvedLast
 		pendingBlockNumber uint64
 		hasPendingNumber   bool
 	)
-	if pendingBlock != nil && pendingBlock.Number64() != nil {
-		pendingBlockNumber = pendingBlock.Number64().Uint64()
-		hasPendingNumber = true
+	if pendingBlock != nil {
+		number, numberErr := requireUint256(pendingBlock.Number64(), "pending block number unavailable")
+		if numberErr == nil {
+			pendingBlockNumber = number.Uint64()
+			hasPendingNumber = true
+		}
 	}
 	for i := 0; i < maxBlockFetchers && i < blocks; i++ {
 		go func() {

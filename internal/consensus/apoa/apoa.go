@@ -256,10 +256,14 @@ func (c *Apoa) verifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHe
 	if !ok {
 		return errors.New("invalid header type: expected *block.Header")
 	}
-	if header.Number.IsZero() {
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	if headerNumber.IsZero() {
 		return errUnknownBlock
 	}
-	number := header.Number.Uint64()
+	number := headerNumber.Uint64()
 
 	// Don't waste time checking blocks from the future
 	if header.Time > uint64(time.Now().Unix()) {
@@ -320,7 +324,11 @@ func (c *Apoa) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 		return errors.New("invalid header type: expected *block.Header")
 	}
 	// The genesis block is the always valid dead-end
-	number := header.Number.Uint64()
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	number := headerNumber.Uint64()
 	if number == 0 {
 		return nil
 	}
@@ -331,7 +339,11 @@ func (c *Apoa) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 	} else {
 		parent = chain.GetHeader(header.ParentHash, uint256.NewInt(number-1))
 	}
-	if parent == nil || parent.Number64().Uint64() != number-1 || parent.Hash() != header.ParentHash {
+	if parent == nil {
+		return errUnknownBlock
+	}
+	parentNumber, err := requireHeaderNumber(parent, "parent header number unavailable")
+	if err != nil || parentNumber.Uint64() != number-1 || parent.Hash() != header.ParentHash {
 		return errUnknownBlock
 	}
 	// Verify timestamp is valid (parent time + period <= header time)
@@ -435,7 +447,8 @@ func (c *Apoa) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 		if len(parents) > 0 {
 			// If we have explicit parents, pick from there (enforced)
 			header = parents[len(parents)-1]
-			if header.Hash() != hash || header.Number64().Uint64() != number {
+			headerNumber, err := requireHeaderNumber(header, "parent header number unavailable")
+			if err != nil || header.Hash() != hash || headerNumber.Uint64() != number {
 				return nil, errUnknownBlock
 			}
 			parents = parents[:len(parents)-1]
@@ -490,7 +503,11 @@ func (c *Apoa) verifySeal(snap *Snapshot, h block.IHeader, parents []block.IHead
 	if !ok {
 		return errors.New("invalid header type: expected *block.Header")
 	}
-	number := header.Number.Uint64()
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	number := headerNumber.Uint64()
 	if number == 0 {
 		return errUnknownBlock
 	}
@@ -512,7 +529,7 @@ func (c *Apoa) verifySeal(snap *Snapshot, h block.IHeader, parents []block.IHead
 	}
 	// Ensure that the difficulty corresponds to the turn-ness of the signer
 	if !c.fakeDiff {
-		inturn := snap.inturn(header.Number.Uint64(), signer)
+		inturn := snap.inturn(number, signer)
 		if inturn && header.Difficulty.Cmp(diffInTurn) != 0 {
 			return errWrongDifficulty
 		}
@@ -534,7 +551,11 @@ func (c *Apoa) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	rawHeader.Coinbase = types.Address{}
 	rawHeader.Nonce = block.BlockNonce{}
 
-	number := rawHeader.Number.Uint64()
+	headerNumber, err := requireHeaderNumber(rawHeader, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	number := headerNumber.Uint64()
 	// Assemble the voting snapshot to check which votes make sense
 	snap, err := c.snapshot(chain, number-1, rawHeader.ParentHash, nil)
 	if err != nil {
@@ -584,7 +605,7 @@ func (c *Apoa) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	rawHeader.MixDigest = types.Hash{}
 
 	// Ensure the timestamp has the correct delay
-	parent := chain.GetHeader(rawHeader.ParentHash, new(uint256.Int).Sub(rawHeader.Number, uint256.NewInt(1)))
+	parent := chain.GetHeader(rawHeader.ParentHash, new(uint256.Int).Sub(headerNumber, uint256.NewInt(1)))
 	if parent == nil {
 		return errors.New("unknown ancestor")
 	}
@@ -643,7 +664,11 @@ func (c *Apoa) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 	}
 
 	// Sealing the genesis block is not supported
-	number := header.Number.Uint64()
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	number := headerNumber.Uint64()
 	if number == 0 {
 		return errUnknownBlock
 	}
@@ -682,7 +707,7 @@ func (c *Apoa) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 		wiggle := time.Duration(len(snap.Signers)/2+1) * wiggleTime
 		delay += time.Duration(misc.SecureInt63n(int64(wiggle)))
 
-		log.Infof("wiggle %s , time %s, number %d", avmutil.PrettyDuration(wiggle), avmutil.PrettyDuration(delay), header.Number.Uint64())
+		log.Infof("wiggle %s , time %s, number %d", avmutil.PrettyDuration(wiggle), avmutil.PrettyDuration(delay), number)
 		log.Debug("Out-of-turn signing requested", "wiggle", avmutil.PrettyDuration(wiggle))
 	}
 	// Sign all the things!
@@ -740,7 +765,11 @@ func (c *Apoa) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 // * DIFF_NOTURN(2) if BLOCK_NUMBER % SIGNER_COUNT != SIGNER_INDEX
 // * DIFF_INTURN(1) if BLOCK_NUMBER % SIGNER_COUNT == SIGNER_INDEX
 func (c *Apoa) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent block.IHeader) *uint256.Int {
-	snap, err := c.snapshot(chain, parent.Number64().Uint64(), parent.Hash(), nil)
+	parentNumber, err := requireHeaderNumber(parent, "parent header number unavailable")
+	if err != nil {
+		return uint256.NewInt(0)
+	}
+	snap, err := c.snapshot(chain, parentNumber.Uint64(), parent.Hash(), nil)
 	if err != nil {
 		return uint256.NewInt(0)
 	}

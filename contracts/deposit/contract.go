@@ -165,16 +165,30 @@ func NewDeposit(ctx context.Context, bc common.IBlockChain, db kv.RwDB, depositC
 		depositContracts: depositContracts,
 	}
 
-	d.logsSub, _ = event.GlobalEvent.Subscribe(d.logsCh)
-	d.rmLogsSub, _ = event.GlobalEvent.Subscribe(d.rmLogsCh)
+	var logsErr error
+	d.logsSub, logsErr = event.GlobalEvent.Subscribe(d.logsCh)
+	var removedLogsErr error
+	d.rmLogsSub, removedLogsErr = event.GlobalEvent.Subscribe(d.rmLogsCh)
 
 	if d.logsSub == nil || d.rmLogsSub == nil {
-		log.Error("Subscribe for event system failed")
+		if d.logsSub != nil {
+			d.logsSub.Unsubscribe()
+			d.logsSub = nil
+		}
+		if d.rmLogsSub != nil {
+			d.rmLogsSub.Unsubscribe()
+			d.rmLogsSub = nil
+		}
+		log.Error("Subscribe for event system failed", "logsErr", logsErr, "removedLogsErr", removedLogsErr)
 	}
 	return d
 }
 
 func (d *Deposit) Start() {
+	if d.logsSub == nil || d.rmLogsSub == nil {
+		log.Warn("Deposit event listener not started because event subscriptions are unavailable")
+		return
+	}
 	d.wg.Add(1)
 	go d.eventLoop()
 }

@@ -17,6 +17,7 @@
 package witness
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -39,12 +40,37 @@ type TracingReader struct {
 // Compile-time interface check.
 var _ state.StateReader = (*TracingReader)(nil)
 
+var errNilStateReader = errors.New("witness: nil StateReader")
+
+type errorStateReader struct {
+	err error
+}
+
+func (r errorStateReader) ReadAccountData(types.Address) (*account.StateAccount, error) {
+	return nil, r.err
+}
+
+func (r errorStateReader) ReadAccountStorage(types.Address, uint16, *types.Hash) ([]byte, error) {
+	return nil, r.err
+}
+
+func (r errorStateReader) ReadAccountCode(types.Address, uint16, types.Hash) ([]byte, error) {
+	return nil, r.err
+}
+
+func (r errorStateReader) ReadAccountCodeSize(types.Address, uint16, types.Hash) (int, error) {
+	return 0, r.err
+}
+
+func (r errorStateReader) ReadAccountIncarnation(types.Address) (uint16, error) {
+	return 0, r.err
+}
+
 // NewTracingReader creates a TracingReader that delegates to inner and
 // records all state keys accessed through the StateReader interface.
-// Panics if inner is nil.
 func NewTracingReader(inner state.StateReader) *TracingReader {
 	if inner == nil {
-		panic("witness: NewTracingReader called with nil StateReader")
+		inner = errorStateReader{err: errNilStateReader}
 	}
 	return &TracingReader{
 		inner:    inner,

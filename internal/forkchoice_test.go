@@ -194,3 +194,29 @@ func BenchmarkUint256Clone(b *testing.B) {
 		value.Clone()
 	}
 }
+
+func TestReorgNeededRejectsNilCurrentHeaderNumber(t *testing.T) {
+	chain := newMockChainReader()
+	fc := NewForkChoice(chain, nil)
+
+	reorg, err := fc.ReorgNeeded(&block.Header{}, &block.Header{Number: uint256.NewInt(1)})
+	if err == nil || err.Error() != "current header number unavailable" {
+		t.Fatalf("ReorgNeeded() error = %v", err)
+	}
+	if reorg {
+		t.Fatal("ReorgNeeded() reorg = true, want false")
+	}
+}
+
+func TestReorgNeededRejectsNilNewHeaderNumber(t *testing.T) {
+	chain := newMockChainReader()
+	fc := NewForkChoice(chain, nil)
+
+	reorg, err := fc.ReorgNeeded(&block.Header{Number: uint256.NewInt(1)}, &block.Header{})
+	if err == nil || err.Error() != "new header number unavailable" {
+		t.Fatalf("ReorgNeeded() error = %v", err)
+	}
+	if reorg {
+		t.Fatal("ReorgNeeded() reorg = true, want false")
+	}
+}

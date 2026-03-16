@@ -37,6 +37,8 @@ const (
 
 var acceptedContentTypes = []string{contentType, "application/json-rpc", "application/jsonrequest"}
 
+var errHTTPWriteUnsupported = errors.New("writeJSON is not supported on http connections")
+
 type httpConn struct {
 	client    *http.Client
 	url       string
@@ -47,7 +49,7 @@ type httpConn struct {
 }
 
 func (hc *httpConn) writeJSON(context.Context, interface{}) error {
-	panic("writeJSON called on httpConn")
+	return errHTTPWriteUnsupported
 }
 
 func (hc *httpConn) remoteAddr() string {

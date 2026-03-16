@@ -228,5 +228,5 @@ var ApplicationBuckets = []string{
 	modules.Deposit,
 	modules.BlockVerify,
 	modules.BlockRewards,
+	modules.TxPoolJournal,
 }
-

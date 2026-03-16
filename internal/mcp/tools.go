@@ -185,19 +185,19 @@ type searchTransactionsParams struct {
 // --- Tool result types ---
 
 type blockResult struct {
-	Number       uint64            `json:"number"`
-	Hash         string            `json:"hash"`
-	ParentHash   string            `json:"parent_hash"`
-	StateRoot    string            `json:"state_root"`
-	TxHash       string            `json:"tx_hash"`
-	Coinbase     string            `json:"coinbase"`
-	GasLimit     uint64            `json:"gas_limit"`
-	GasUsed      uint64            `json:"gas_used"`
-	Timestamp    uint64            `json:"timestamp"`
-	Difficulty   string            `json:"difficulty"`
-	BaseFee      string            `json:"base_fee,omitempty"`
-	TxCount      int               `json:"tx_count"`
-	Transactions interface{}       `json:"transactions,omitempty"`
+	Number       uint64      `json:"number"`
+	Hash         string      `json:"hash"`
+	ParentHash   string      `json:"parent_hash"`
+	StateRoot    string      `json:"state_root"`
+	TxHash       string      `json:"tx_hash"`
+	Coinbase     string      `json:"coinbase"`
+	GasLimit     uint64      `json:"gas_limit"`
+	GasUsed      uint64      `json:"gas_used"`
+	Timestamp    uint64      `json:"timestamp"`
+	Difficulty   string      `json:"difficulty"`
+	BaseFee      string      `json:"base_fee,omitempty"`
+	TxCount      int         `json:"tx_count"`
+	Transactions interface{} `json:"transactions,omitempty"`
 }
 
 type txSummary struct {
@@ -301,7 +301,7 @@ func (s *Server) toolGetTransaction(ctx context.Context, params json.RawMessage)
 	}
 
 	// Scan the last 128 blocks to limit DoS exposure.
-	head := current.Number64().Uint64()
+	head := blockNumberOrZero(current)
 	const scanDepth = 128
 	start := uint64(0)
 	if head > scanDepth {
@@ -310,7 +310,7 @@ func (s *Server) toolGetTransaction(ctx context.Context, params json.RawMessage)
 
 	log.Warn("MCP getTransaction: scanning blocks for tx (consider using tx index)", "hash", p.Hash, "depth", scanDepth)
 
-	for i := head; i > start; i-- {
+	for i := head; ; i-- {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -325,6 +325,9 @@ func (s *Server) toolGetTransaction(ctx context.Context, params json.RawMessage)
 			if tx.Hash() == txHash {
 				return marshalTx(tx, i), nil
 			}
+		}
+		if i == start || i == 0 {
+			break
 		}
 	}
 
@@ -347,7 +350,7 @@ func (s *Server) toolGetBalance(ctx context.Context, params json.RawMessage) (in
 	if current == nil {
 		return nil, fmt.Errorf("no current block available")
 	}
-	blockNr := current.Number64().Uint64()
+	blockNr := blockNumberOrZero(current)
 	if p.Block != nil {
 		blockNr = *p.Block
 	}
@@ -399,7 +402,7 @@ func (s *Server) toolGetLogs(ctx context.Context, params json.RawMessage) (inter
 		return nil, fmt.Errorf("no current block")
 	}
 
-	head := current.Number64().Uint64()
+	head := blockNumberOrZero(current)
 	from := head
 	to := head
 	if p.FromBlock != nil {
@@ -492,7 +495,7 @@ func (s *Server) toolGetCode(ctx context.Context, params json.RawMessage) (inter
 	if current == nil {
 		return nil, fmt.Errorf("no current block available")
 	}
-	blockNr := current.Number64().Uint64()
+	blockNr := blockNumberOrZero(current)
 	if p.Block != nil {
 		blockNr = *p.Block
 	}
@@ -548,7 +551,7 @@ func (s *Server) toolGetStorageAt(ctx context.Context, params json.RawMessage) (
 	if current == nil {
 		return nil, fmt.Errorf("no current block available")
 	}
-	blockNr := current.Number64().Uint64()
+	blockNr := blockNumberOrZero(current)
 	if p.Block != nil {
 		blockNr = *p.Block
 	}
@@ -599,7 +602,7 @@ func (s *Server) toolChainInfo(_ context.Context, _ json.RawMessage) (interface{
 	}
 
 	if current != nil {
-		result["latest_block"] = current.Number64().Uint64()
+		result["latest_block"] = blockNumberOrZero(current)
 		result["latest_hash"] = current.Hash().Hex()
 		result["latest_timestamp"] = current.Time()
 	}
@@ -628,7 +631,7 @@ func (s *Server) toolSearchTransactions(ctx context.Context, params json.RawMess
 		return nil, fmt.Errorf("no current block")
 	}
 
-	head := current.Number64().Uint64()
+	head := blockNumberOrZero(current)
 	from := head
 	to := head
 
@@ -734,7 +737,7 @@ func (s *Server) toolSearchTransactions(ctx context.Context, params json.RawMess
 // marshalBlock converts a block to a JSON-friendly result.
 func marshalBlock(blk block.IBlock, full bool) *blockResult {
 	result := &blockResult{
-		Number:     blk.Number64().Uint64(),
+		Number:     blockNumberOrZero(blk),
 		Hash:       blk.Hash().Hex(),
 		ParentHash: blk.ParentHash().Hex(),
 		StateRoot:  blk.StateRoot().Hex(),

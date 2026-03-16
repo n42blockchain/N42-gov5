@@ -18,7 +18,6 @@ package block
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math/big"
 
 	"github.com/n42blockchain/N42/common/crypto"
@@ -45,8 +44,8 @@ func BytesToBloom(b []byte) Bloom {
 }
 
 func (b *Bloom) SetBytes(d []byte) {
-	if len(b) < len(d) {
-		panic(fmt.Sprintf("bloom bytes too big %d %d", len(b), len(d)))
+	if len(d) > BloomByteLength {
+		d = d[len(d)-BloomByteLength:]
 	}
 	copy(b[BloomByteLength-len(d):], d)
 }

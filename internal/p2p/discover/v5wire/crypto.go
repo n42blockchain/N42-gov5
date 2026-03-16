@@ -43,11 +43,14 @@ type Nonce [gcmNonceSize]byte
 
 // EncodePubkey encodes a public key.
 func EncodePubkey(key *ecdsa.PublicKey) []byte {
+	if key == nil || key.Curve == nil {
+		return nil
+	}
 	switch key.Curve {
 	case crypto.S256():
 		return crypto.CompressPubkey(key)
 	default:
-		panic("unsupported curve " + key.Curve.Params().Name + " in EncodePubkey")
+		return nil
 	}
 }
 
@@ -153,11 +156,11 @@ func ecdh(privkey *ecdsa.PrivateKey, pubkey *ecdsa.PublicKey) []byte {
 func encryptGCM(dest, key, nonce, plaintext, authData []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		panic(fmt.Errorf("can't create block cipher: %v", err))
+		return nil, fmt.Errorf("can't create block cipher: %v", err)
 	}
 	aesgcm, err := cipher.NewGCMWithNonceSize(block, gcmNonceSize)
 	if err != nil {
-		panic(fmt.Errorf("can't create GCM: %v", err))
+		return nil, fmt.Errorf("can't create GCM: %v", err)
 	}
 	return aesgcm.Seal(dest, nonce, plaintext, authData), nil
 }

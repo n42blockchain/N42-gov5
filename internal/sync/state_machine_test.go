@@ -87,7 +87,9 @@ func TestSyncMetricsStateDuration(t *testing.T) {
 	m := NewSyncMetrics()
 
 	m.EnterState(SyncStateInitialSync)
-	time.Sleep(10 * time.Millisecond)
+	m.mu.Lock()
+	m.stateEnterTime[SyncStateInitialSync] = time.Now().Add(-10 * time.Millisecond)
+	m.mu.Unlock()
 	m.ExitState(SyncStateInitialSync)
 
 	duration := m.StateDuration(SyncStateInitialSync)
@@ -402,4 +404,3 @@ func TestSyncStateMachineImplementsChecker(t *testing.T) {
 
 	t.Log("✓ SyncStateMachine implements Checker interface")
 }
-

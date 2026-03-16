@@ -50,9 +50,48 @@ func TestService_StartStop(t *testing.T) {
 	}
 
 	svc.Start()
-	// Give the poller goroutine time to spin up.
-	time.Sleep(10 * time.Millisecond)
+	if !svc.running {
+		t.Fatal("Start() did not mark service as running")
+	}
+	if svc.ctx == nil || svc.ctx.Err() != nil {
+		t.Fatal("Start() did not install a live context")
+	}
 	svc.Stop()
+	if svc.running {
+		t.Fatal("Stop() did not mark service as stopped")
+	}
+	if svc.ctx == nil || svc.ctx.Err() == nil {
+		t.Fatal("Stop() did not cancel service context")
+	}
+}
+
+func TestService_RestartRecreatesContext(t *testing.T) {
+	svc, err := NewService(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var submitCtxErr error
+	client := &testProverClient{
+		submitWithContextFn: func(ctx context.Context, blockHash types.Hash, blockNum uint64) (string, error) {
+			submitCtxErr = ctx.Err()
+			return "remote-job-restart", submitCtxErr
+		},
+	}
+	svc.SetProverClient(client)
+
+	svc.Start()
+	svc.Stop()
+	svc.Start()
+	defer svc.Stop()
+
+	hash := types.HexToHash("0x1010101010101010101010101010101010101010101010101010101010101010")
+	if err := svc.SubmitBlock(hash, 101, []byte("guest-input")); err != nil {
+		t.Fatal(err)
+	}
+	if submitCtxErr != nil {
+		t.Fatalf("expected restarted service to use a live context, got %v", submitCtxErr)
+	}
 }
 
 // TestService_SubmitBlock verifies basic job submission.
@@ -590,11 +629,15 @@ func TestService_CheckJobs_WithClient(t *testing.T) {
 
 // testProverClient is a test implementation of ProverClient.
 type testProverClient struct {
-	submitFn func(blockHash types.Hash, blockNum uint64) (string, error)
-	statusFn func(jobID string) (*Proof, error)
+	submitFn            func(blockHash types.Hash, blockNum uint64) (string, error)
+	submitWithContextFn func(ctx context.Context, blockHash types.Hash, blockNum uint64) (string, error)
+	statusFn            func(jobID string) (*Proof, error)
 }
 
-func (c *testProverClient) Submit(_ context.Context, blockHash types.Hash, blockNum uint64, _ []byte) (string, error) {
+func (c *testProverClient) Submit(ctx context.Context, blockHash types.Hash, blockNum uint64, _ []byte) (string, error) {
+	if c.submitWithContextFn != nil {
+		return c.submitWithContextFn(ctx, blockHash, blockNum)
+	}
 	if c.submitFn != nil {
 		return c.submitFn(blockHash, blockNum)
 	}

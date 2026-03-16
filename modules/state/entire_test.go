@@ -18,6 +18,7 @@ package state
 
 import (
 	"bytes"
+	"errors"
 	"sort"
 	"testing"
 
@@ -25,6 +26,12 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 )
+
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
+}
 
 // =============================================================================
 // HashCodes Tests
@@ -97,6 +104,13 @@ func TestHashCodesSort(t *testing.T) {
 	}
 
 	t.Logf("✓ HashCodes sorting works correctly")
+}
+
+func TestEncodeBeforeStateReturnsWriterError(t *testing.T) {
+	err := EncodeBeforeState(errWriter{}, Items{{Key: []byte{0x01}, Value: []byte{0x02}}}, nil)
+	if err == nil {
+		t.Fatal("expected writer error")
+	}
 }
 
 // =============================================================================
@@ -322,6 +336,30 @@ func TestEntireClone(t *testing.T) {
 	}
 
 	t.Logf("✓ Entire.Clone works correctly")
+}
+
+func TestEntireCloneHandlesNilHeaderAndSnapshot(t *testing.T) {
+	original := Entire{
+		Proof:   types.HexToHash("0x01"),
+		Senders: []types.Address{{0x01}},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Clone() panicked: %v", r)
+		}
+	}()
+
+	cloned := original.Clone()
+	if cloned.Header != nil {
+		t.Fatal("expected nil Header")
+	}
+	if cloned.Snap != nil {
+		t.Fatal("expected nil Snap")
+	}
+	if cloned.Proof != original.Proof {
+		t.Fatal("expected Proof to be copied")
+	}
 }
 
 // =============================================================================

@@ -165,13 +165,16 @@ func nodeKey(id ID) []byte {
 }
 
 // splitNodeKey returns the node ID of a key created by nodeKey.
-func splitNodeKey(key []byte) (id ID, rest []byte) {
+func splitNodeKey(key []byte) (id ID, rest []byte, ok bool) {
 	if !bytes.HasPrefix(key, []byte(dbNodePrefix)) {
-		return ID{}, nil
+		return ID{}, nil, false
 	}
 	item := key[len(dbNodePrefix):]
+	if len(item) < len(id)+1 || item[len(id)] != ':' {
+		return ID{}, nil, false
+	}
 	copy(id[:], item[:len(id)])
-	return id, item[len(id)+1:]
+	return id, item[len(id)+1:], true
 }
 
 // nodeItemKey returns the database key for a node metadata field.
@@ -184,11 +187,17 @@ func nodeItemKey(id ID, ip net.IP, field string) []byte {
 }
 
 // splitNodeItemKey returns the components of a key created by nodeItemKey.
-func splitNodeItemKey(key []byte) (id ID, ip net.IP, field string) {
-	id, key = splitNodeKey(key)
+func splitNodeItemKey(key []byte) (id ID, ip net.IP, field string, ok bool) {
+	id, key, ok = splitNodeKey(key)
+	if !ok {
+		return ID{}, nil, "", false
+	}
 	// Skip discover root.
 	if string(key) == dbDiscoverRoot {
-		return id, nil, ""
+		return id, nil, "", true
+	}
+	if !bytes.HasPrefix(key, []byte(dbDiscoverRoot+":")) || len(key) < len(dbDiscoverRoot)+1+16+1 {
+		return ID{}, nil, "", false
 	}
 	key = key[len(dbDiscoverRoot)+1:]
 	// Split out the IP.
@@ -199,7 +208,7 @@ func splitNodeItemKey(key []byte) (id ID, ip net.IP, field string) {
 	key = key[16+1:]
 	// Field is the remainder of key.
 	field = string(key)
-	return id, ip, field
+	return id, ip, field, true
 }
 
 func v5Key(id ID, ip net.IP, field string) []byte {
@@ -305,13 +314,14 @@ func (db *DB) Node(id ID) *Node {
 	if blob == nil {
 		return nil
 	}
-	return mustDecodeNode(id[:], blob)
+	return decodeNode(id[:], blob)
 }
 
-func mustDecodeNode(id, data []byte) *Node {
+func decodeNode(id, data []byte) *Node {
 	node := new(Node)
 	if err := rlp.DecodeBytes(data, &node.r); err != nil {
-		panic(fmt.Errorf("p2p/enode: can't decode node %x in DB: %w", id, err))
+		log.Warn("p2p/enode: skipping invalid node record", "id", fmt.Sprintf("%x", id), "err", err)
+		return nil
 	}
 	// Restore node id cache.
 	copy(node.id[:], id)
@@ -432,7 +442,10 @@ func (db *DB) expireNodes() {
 			if err != nil {
 				return err
 			}
-			id, ip, field := splitNodeItemKey(k)
+			id, ip, field, ok := splitNodeItemKey(k)
+			if !ok {
+				continue
+			}
 			if field == dbNodePong {
 				time, _ := binary.Varint(v)
 				if time > youngestPong {
@@ -595,17 +608,21 @@ func (db *DB) QuerySeeds(n int, maxAge time.Duration) []*Node {
 				if err != nil {
 					return err
 				}
-				id, rest := splitNodeKey(k)
-				if string(rest) == dbDiscoverRoot {
-					n = mustDecodeNode(id[:], v)
+				id, rest, ok := splitNodeKey(k)
+				if ok && string(rest) == dbDiscoverRoot {
+					n = decodeNode(id[:], v)
 				}
 			}
 			if n == nil {
 				id[0] = 0
 				continue // iterator exhausted
 			}
+			ip := n.IP()
+			if ip == nil {
+				continue
+			}
 			db.ensureExpirer()
-			pongKey := nodeItemKey(n.ID(), n.IP(), dbNodePong)
+			pongKey := nodeItemKey(n.ID(), ip, dbNodePong)
 			var lastPongReceived int64
 			blob, errGet := tx.GetOne(kv.Inodes, pongKey)
 			if errGet != nil {

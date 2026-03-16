@@ -57,6 +57,10 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 // the transaction messages and applying rewards. Returns receipts, unpaid rewards,
 // logs, and total gas used.
 func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (block.Receipts, map[types.Address]*uint256.Int, []*block.Log, uint64, error) {
+	blockNumber, err := requireBlockNumber(b, "block number unavailable")
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
 	concreteHeader, ok := b.Header().(*block.Header)
 	if !ok {
 		return nil, nil, nil, 0, fmt.Errorf("Process: invalid header type assertion for block %v", b.Number64())
@@ -75,7 +79,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	chainConfig := p.config
 	cfg := vm2.Config{}
 
-	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(b.Number64().ToBig()) == 0 {
+	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(blockNumber.ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibs)
 	}
 	noop := state.NewNoopWriter()
@@ -119,9 +123,13 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 
 // applyTransaction applies a single transaction and returns its receipt.
 func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *common.GasPool, ibs *state.IntraBlockState, stateWriter state.StateWriter, header *block.Header, tx *transaction.Transaction, usedGas *uint64, evm vm2.VMInterface, cfg vm2.Config) (*block.Receipt, []byte, error) {
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, nil, err
+	}
 	rules := evm.ChainRules()
 
-	msg, err := tx.AsMessage(transaction.MakeSigner(config, header.Number.ToBig()), header.BaseFee)
+	msg, err := tx.AsMessage(transaction.MakeSigner(config, headerNumber.ToBig()), header.BaseFee)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -625,62 +625,86 @@ func (pool *TxsPool) queueTxEvent(tx *transaction.Transaction) {
 func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 	var reinject []*transaction.Transaction
 
-	if oldBlock != nil && oldBlock.Header().Hash().String() != newBlock.ParentHash().String() {
-		oldNum := oldBlock.Number64()
-		newNum := newBlock.Number64()
+	if newBlock == nil {
+		newBlock = currentBlock(pool.bc)
+	}
+	if newBlock == nil {
+		log.Warn("Skipping txpool reset with unavailable current block")
+		return
+	}
 
-		if depth := uint64(math.Abs(float64(oldNum.Uint64()) - float64(newNum.Uint64()))); depth > 64 {
-			log.Debug("Skipping deep transaction reorg", "depth", depth)
-		} else {
-			var discarded, included []*transaction.Transaction
-			rem := oldBlock
-			add := newBlock
-
-			if rem == nil {
-				if newNum.Cmp(oldNum) >= 0 {
-					log.Warn("Transaction pool reset with missing oldhead",
-						"old", oldBlock.Header().Hash(), "oldnum", oldNum, "new", newBlock.Hash(), "newnum", newNum)
-					return
-				}
-				log.Debug("Skipping transaction reset caused by setHead",
-					"old", oldBlock.Header().Hash(), "oldnum", oldNum, "new", newBlock.Hash(), "newnum", newNum)
+	if oldBlock != nil {
+		oldHeader := oldBlock.Header()
+		if oldHeader == nil {
+			log.Warn("Skipping transaction reset with missing old header", "new", newBlock.Hash())
+		} else if oldHeader.Hash().String() != newBlock.ParentHash().String() {
+			oldNum, oldNumErr := requireBlockNumber(oldBlock, "old block number unavailable")
+			newNum, newNumErr := requireBlockNumber(newBlock, "new block number unavailable")
+			if oldNumErr != nil || newNumErr != nil {
+				log.Warn("Skipping transaction reset with unavailable head number", "oldErr", oldNumErr, "newErr", newNumErr)
+			} else if depth := uint64(math.Abs(float64(oldNum.Uint64()) - float64(newNum.Uint64()))); depth > 64 {
+				log.Debug("Skipping deep transaction reorg", "depth", depth)
 			} else {
-				for rem.Number64().Cmp(add.Number64()) == 1 {
+				var discarded, included []*transaction.Transaction
+				rem := oldBlock
+				add := newBlock
+				reorgComplete := true
+
+				for reorgComplete {
+					remNum, remErr := requireBlockNumber(rem, "old chain block number unavailable")
+					addNum, addErr := requireBlockNumber(add, "new chain block number unavailable")
+					if remErr != nil || addErr != nil {
+						log.Warn("Skipping transaction reset with unavailable reorg block number", "oldErr", remErr, "newErr", addErr)
+						reorgComplete = false
+						break
+					}
+					if remNum.Cmp(addNum) != 1 {
+						break
+					}
 					discarded = append(discarded, rem.Body().Transactions()...)
 					if rem, _ = pool.bc.GetBlockByHash(rem.ParentHash()); rem == nil {
-						log.Error("Unrooted old chain seen by tx pool", "block", oldBlock.Number64(), "hash", oldBlock.Hash())
+						log.Error("Unrooted old chain seen by tx pool", "block", oldNum, "hash", oldBlock.Hash())
 						return
 					}
 				}
-				for add.Number64().Cmp(rem.Number64()) == 1 {
+				for reorgComplete {
+					remNum, remErr := requireBlockNumber(rem, "old chain block number unavailable")
+					addNum, addErr := requireBlockNumber(add, "new chain block number unavailable")
+					if remErr != nil || addErr != nil {
+						log.Warn("Skipping transaction reset with unavailable reorg block number", "oldErr", remErr, "newErr", addErr)
+						reorgComplete = false
+						break
+					}
+					if addNum.Cmp(remNum) != 1 {
+						break
+					}
 					included = append(included, add.Body().Transactions()...)
 					if add, _ = pool.bc.GetBlockByHash(add.ParentHash()); add == nil {
-						log.Error("Unrooted new chain seen by tx pool", "block", newBlock.Number64(), "hash", newBlock.Hash())
+						log.Error("Unrooted new chain seen by tx pool", "block", newNum, "hash", newBlock.Hash())
 						return
 					}
 				}
-				for rem.Hash() != add.Hash() {
-					discarded = append(discarded, rem.Body().Transactions()...)
-					if rem, _ = pool.bc.GetBlockByHash(rem.ParentHash()); rem == nil {
-						log.Error("Unrooted old chain seen by tx pool", "block", oldBlock.Number64(), "hash", oldBlock.Header().Hash())
-						return
+				if reorgComplete {
+					for rem.Hash() != add.Hash() {
+						discarded = append(discarded, rem.Body().Transactions()...)
+						if rem, _ = pool.bc.GetBlockByHash(rem.ParentHash()); rem == nil {
+							log.Error("Unrooted old chain seen by tx pool", "block", oldNum, "hash", oldBlock.Header().Hash())
+							return
+						}
+						included = append(included, add.Body().Transactions()...)
+						if add, _ = pool.bc.GetBlockByHash(add.ParentHash()); add == nil {
+							log.Error("Unrooted new chain seen by tx pool", "block", newNum, "hash", newBlock.Hash())
+							return
+						}
 					}
-					included = append(included, add.Body().Transactions()...)
-					if add, _ = pool.bc.GetBlockByHash(add.ParentHash()); add == nil {
-						log.Error("Unrooted new chain seen by tx pool", "block", newBlock.Number64(), "hash", newBlock.Hash())
-						return
-					}
+					log.Debugf("start to reset txs pool4 discarded %d , included %d, old number :%d ,new number:%d",
+						len(discarded), len(included), oldNum.Uint64(), newNum.Uint64())
+					reinject = pool.txDifference(discarded, included)
 				}
-				log.Debugf("start to reset txs pool4 discarded %d , included %d, old number :%d ,new number:%d",
-					len(discarded), len(included), oldNum.Uint64(), newNum.Uint64())
-				reinject = pool.txDifference(discarded, included)
 			}
 		}
 	}
 
-	if newBlock == nil {
-		newBlock = pool.bc.CurrentBlock()
-	}
 	pool.currentMaxGas = newBlock.GasLimit()
 
 	if len(reinject) > 0 {
@@ -689,7 +713,10 @@ func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 	pool.addTxsLocked(reinject, false)
 
 	// Update all fork indicators by next pending block number.
-	next := new(big.Int).Add(newBlock.Number64().ToBig(), big.NewInt(1))
+	next := big.NewInt(1)
+	if blockNumber := newBlock.Number64(); blockNumber != nil {
+		next = new(big.Int).Add(blockNumber.ToBig(), big.NewInt(1))
+	}
 	pool.istanbul = pool.chainconfig.IsIstanbul(next.Uint64())
 	pool.eip2718 = pool.chainconfig.IsBerlin(next.Uint64())
 	pool.eip1559 = pool.chainconfig.IsLondon(next.Uint64())
@@ -726,9 +753,13 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	if reset != nil {
 		pool.demoteUnexecutables()
 
-		if reset.newBlock != nil && pool.chainconfig.IsLondon(reset.newBlock.Number64().Uint64()+1) {
-			pendingBaseFee, _ := uint256.FromBig(misc.CalcBaseFee(pool.chainconfig, reset.newBlock.Header().(*block.Header)))
-			pool.priced.SetBaseFee(pendingBaseFee)
+		if reset.newBlock != nil {
+			if blockNumber := reset.newBlock.Number64(); blockNumber != nil && pool.chainconfig.IsLondon(blockNumber.Uint64()+1) {
+				if header, ok := reset.newBlock.Header().(*block.Header); ok && header != nil {
+					pendingBaseFee, _ := uint256.FromBig(misc.CalcBaseFee(pool.chainconfig, header))
+					pool.priced.SetBaseFee(pendingBaseFee)
+				}
+			}
 		}
 		nonces := make(map[types.Address]uint64, len(pool.pending))
 		for addr, list := range pool.pending {

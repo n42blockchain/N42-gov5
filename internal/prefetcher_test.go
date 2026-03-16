@@ -196,6 +196,25 @@ func TestPrefetcher_EmptyBlock(t *testing.T) {
 	}
 }
 
+func TestPrefetcher_SkipsMalformedHeader(t *testing.T) {
+	pf := NewStatePrefetcher(testChainConfig())
+
+	blk := makePrefetchBlock(&block.Header{Difficulty: uint256.NewInt(1)}, []*transaction.Transaction{
+		transaction.NewTransaction(0, types.Address{0x01}, nil, nil, 21000, nil, nil),
+	})
+	reader := newMockStateReader()
+
+	pf.Prefetch(blk, reader)
+	pf.Close()
+
+	if reader.readAccountCalls.Load() != 0 {
+		t.Fatalf("expected 0 account reads for malformed header, got %d", reader.readAccountCalls.Load())
+	}
+	if reader.readCodeCalls.Load() != 0 {
+		t.Fatalf("expected 0 code reads for malformed header, got %d", reader.readCodeCalls.Load())
+	}
+}
+
 func TestPrefetcher_PrefetchesSenderAndRecipient(t *testing.T) {
 	config := testChainConfig()
 	signer := transaction.MakeSigner(config, uint256.NewInt(0).ToBig())

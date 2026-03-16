@@ -43,7 +43,11 @@ type API struct {
 // block header when number is nil or LatestBlockNumber.
 func (api *API) resolveHeader(number *jsonrpc.BlockNumber) block.IHeader {
 	if number == nil || *number == jsonrpc.LatestBlockNumber {
-		return api.chain.CurrentBlock().Header()
+		current := api.chain.CurrentBlock()
+		if current == nil {
+			return nil
+		}
+		return current.Header()
 	}
 	return api.chain.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
 }
@@ -69,7 +73,11 @@ func (api *API) GetSnapshot(number *jsonrpc.BlockNumber) (*Snapshot, error) {
 	if header == nil {
 		return nil, errUnknownBlock
 	}
-	return api.apoa.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	return api.apoa.snapshot(api.chain, headerNumber.Uint64(), header.Hash(), nil)
 }
 
 // GetSnapshotAtHash retrieves the state snapshot at a given block.
@@ -78,7 +86,11 @@ func (api *API) GetSnapshotAtHash(hash types.Hash) (*Snapshot, error) {
 	if header == nil {
 		return nil, errUnknownBlock
 	}
-	return api.apoa.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	return api.apoa.snapshot(api.chain, headerNumber.Uint64(), header.Hash(), nil)
 }
 
 // GetSigners retrieves the list of authorized signers at the specified block.
@@ -87,7 +99,11 @@ func (api *API) GetSigners(number *jsonrpc.BlockNumber) ([]avmutil.Address, erro
 	if header == nil {
 		return nil, errUnknownBlock
 	}
-	return api.snapshotSigners(header.Number64().Uint64(), header.Hash())
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	return api.snapshotSigners(headerNumber.Uint64(), header.Hash())
 }
 
 // GetSignersAtHash retrieves the list of authorized signers at the specified block.
@@ -96,7 +112,11 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]avmutil.Address, error) {
 	if header == nil {
 		return nil, errUnknownBlock
 	}
-	return api.snapshotSigners(header.Number64().Uint64(), header.Hash())
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	return api.snapshotSigners(headerNumber.Uint64(), header.Hash())
 }
 
 // Proposals returns the current proposals the node tries to uphold and vote on.
@@ -142,17 +162,25 @@ type status struct {
 func (api *API) Status() (*status, error) {
 	var (
 		numBlocks = uint64(64)
-		header    = api.chain.CurrentBlock().Header()
+		current   = api.chain.CurrentBlock()
 		diff      = uint64(0)
 		optimals  = 0
 	)
-	snap, err := api.apoa.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
+	if current == nil {
+		return nil, errUnknownBlock
+	}
+	header := current.Header()
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	snap, err := api.apoa.snapshot(api.chain, headerNumber.Uint64(), header.Hash(), nil)
 	if err != nil {
 		return nil, err
 	}
 	var (
 		signers = snap.signers()
-		end     = header.Number64().Uint64()
+		end     = headerNumber.Uint64()
 		start   = end - numBlocks
 	)
 	if numBlocks > end {

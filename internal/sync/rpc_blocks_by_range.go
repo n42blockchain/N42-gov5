@@ -180,7 +180,7 @@ func (s *Service) validateRangeRequest(r *sync_pb.BodiesByRangeRequest) error {
 
 	// Add a buffer for possible large range requests from nodes syncing close to the head.
 	buffer := rangeLimit * 2
-	highestExpectedBlockNumber := new(uint256.Int).AddUint64(s.cfg.chain.CurrentBlock().Number64(), uint64(buffer))
+	highestExpectedBlockNumber := new(uint256.Int).AddUint64(currentBlockNumber(s.cfg.chain), uint64(buffer))
 
 	if count == 0 || count > maxRequestBlocks {
 		return p2ptypes.ErrInvalidRequest

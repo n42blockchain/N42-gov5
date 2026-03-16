@@ -17,12 +17,44 @@
 package apos
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
+	"google.golang.org/protobuf/proto"
 )
+
+type nilNumberBlockStub struct {
+	header *block.Header
+}
+
+func (b nilNumberBlockStub) Number64() *uint256.Int                          { return nil }
+func (b nilNumberBlockStub) BaseFee64() *uint256.Int                         { return nil }
+func (b nilNumberBlockStub) Hash() types.Hash                                { return b.header.Hash() }
+func (b nilNumberBlockStub) ToProtoMessage() proto.Message                   { return nil }
+func (b nilNumberBlockStub) FromProtoMessage(proto.Message) error            { return nil }
+func (b nilNumberBlockStub) Marshal() ([]byte, error)                        { return nil, nil }
+func (b nilNumberBlockStub) Unmarshal([]byte) error                          { return nil }
+func (b nilNumberBlockStub) StateRoot() types.Hash                           { return types.Hash{} }
+func (b nilNumberBlockStub) Header() block.IHeader                           { return b.header }
+func (b nilNumberBlockStub) Body() block.IBody                               { return nil }
+func (b nilNumberBlockStub) Transaction(types.Hash) *transaction.Transaction { return nil }
+func (b nilNumberBlockStub) Transactions() []*transaction.Transaction        { return nil }
+func (b nilNumberBlockStub) Difficulty() *uint256.Int                        { return nil }
+func (b nilNumberBlockStub) Time() uint64                                    { return 0 }
+func (b nilNumberBlockStub) GasLimit() uint64                                { return 0 }
+func (b nilNumberBlockStub) GasUsed() uint64                                 { return 0 }
+func (b nilNumberBlockStub) Nonce() uint64                                   { return 0 }
+func (b nilNumberBlockStub) Coinbase() types.Address                         { return types.Address{} }
+func (b nilNumberBlockStub) ParentHash() types.Hash                          { return types.Hash{} }
+func (b nilNumberBlockStub) TxHash() types.Hash                              { return types.Hash{} }
+func (b nilNumberBlockStub) WithSeal(block.IHeader) *block.Block             { return nil }
 
 // =============================================================================
 // Vote Tests
@@ -247,5 +279,73 @@ func BenchmarkSnapshotSignerLookup(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = snap.Signers[target]
+	}
+}
+
+func TestVerifyCascadingFieldsRejectsParentWithoutNumber(t *testing.T) {
+	engine := &APos{config: &params.APosConfig{Epoch: epochLength, Period: 1}}
+	header := &block.Header{Number: uint256.NewInt(1)}
+
+	err := engine.verifyCascadingFields(nil, header, []block.IHeader{&block.Header{}})
+	if err != errUnknownBlock {
+		t.Fatalf("verifyCascadingFields() error = %v", err)
+	}
+}
+
+func TestPrepareRejectsMissingHeaderNumber(t *testing.T) {
+	engine := &APos{config: &params.APosConfig{Epoch: epochLength, Period: 1}}
+
+	err := engine.Prepare(nil, &block.Header{})
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+}
+
+func TestRewardsRejectsMissingHeaderNumber(t *testing.T) {
+	engine := &APos{
+		config:      &params.APosConfig{RewardEpoch: 1},
+		chainConfig: &params.ChainConfig{BeijingBlock: big.NewInt(0)},
+	}
+
+	_, err := engine.Rewards(nil, &block.Header{}, (*state.IntraBlockState)(nil), false)
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("Rewards() error = %v", err)
+	}
+}
+
+func TestSnapshotApplyRejectsMissingHeaderNumber(t *testing.T) {
+	snap := &Snapshot{Number: 1}
+
+	_, err := snap.apply([]block.IHeader{&block.Header{}})
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("apply() error = %v, want header number unavailable", err)
+	}
+}
+
+func TestSealRejectsMissingHeaderNumber(t *testing.T) {
+	engine := &APos{config: &params.APosConfig{Epoch: epochLength, Period: 1}}
+	blk := nilNumberBlockStub{header: &block.Header{}}
+
+	err := engine.Seal(nil, blk, make(chan block.IBlock, 1), make(chan struct{}))
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("Seal() error = %v", err)
+	}
+}
+
+func TestCalcDifficultyRejectsParentWithoutNumber(t *testing.T) {
+	engine := &APos{}
+
+	if got := engine.CalcDifficulty(nil, 0, &block.Header{}); got.Sign() != 0 {
+		t.Fatalf("CalcDifficulty() = %v, want 0", got)
+	}
+}
+
+func TestFakerSealRejectsMissingBlockNumber(t *testing.T) {
+	faker := NewFaker()
+	blk := nilNumberBlockStub{header: &block.Header{}}
+
+	err := faker.Seal(nil, blk, make(chan block.IBlock, 1), make(chan struct{}))
+	if err == nil || err.Error() != "block number unavailable" {
+		t.Fatalf("Seal() error = %v", err)
 	}
 }

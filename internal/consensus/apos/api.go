@@ -69,7 +69,11 @@ func (api *API) GetSnapshot(number *jsonrpc.BlockNumber) (*Snapshot, error) {
 	if header == nil {
 		return nil, errUnknownBlock
 	}
-	return api.apos.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	return api.apos.snapshot(api.chain, headerNumber.Uint64(), header.Hash(), nil)
 }
 
 // GetSnapshotAtHash retrieves the state snapshot at a given block.
@@ -78,7 +82,11 @@ func (api *API) GetSnapshotAtHash(hash types.Hash) (*Snapshot, error) {
 	if header == nil {
 		return nil, errUnknownBlock
 	}
-	return api.apos.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	return api.apos.snapshot(api.chain, headerNumber.Uint64(), header.Hash(), nil)
 }
 
 // GetSigners retrieves the list of authorized signers at the specified block.
@@ -102,14 +110,22 @@ func (api *API) GetSignersAtHash(hash types.Hash) ([]avmutil.Address, error) {
 // resolveHeader returns the header for the given block number, defaulting to the current block.
 func (api *API) resolveHeader(number *jsonrpc.BlockNumber) block.IHeader {
 	if number == nil || *number == jsonrpc.LatestBlockNumber {
-		return api.chain.CurrentBlock().Header()
+		current := api.chain.CurrentBlock()
+		if current == nil {
+			return nil
+		}
+		return current.Header()
 	}
 	return api.chain.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
 }
 
 // snapshotSigners retrieves the snapshot at the given header and returns the signer list.
 func (api *API) snapshotSigners(header block.IHeader) ([]avmutil.Address, error) {
-	snap, err := api.apos.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	snap, err := api.apos.snapshot(api.chain, headerNumber.Uint64(), header.Hash(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -164,17 +180,25 @@ type status struct {
 func (api *API) Status() (*status, error) {
 	var (
 		numBlocks = uint64(64)
-		header    = api.chain.CurrentBlock().Header()
+		current   = api.chain.CurrentBlock()
 		diff      = uint64(0)
 		optimals  = 0
 	)
-	snap, err := api.apos.snapshot(api.chain, header.Number64().Uint64(), header.Hash(), nil)
+	if current == nil {
+		return nil, errUnknownBlock
+	}
+	header := current.Header()
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	snap, err := api.apos.snapshot(api.chain, headerNumber.Uint64(), header.Hash(), nil)
 	if err != nil {
 		return nil, err
 	}
 	var (
 		signers = snap.signers()
-		end     = header.Number64().Uint64()
+		end     = headerNumber.Uint64()
 		start   = end - numBlocks
 	)
 	if numBlocks > end {
@@ -252,7 +276,10 @@ func (api *API) GetSigner(rlpOrBlockNr *blockNumberOrHashOrRLP) (types.Address, 
 		blockNrOrHash := rlpOrBlockNr.BlockNumberOrHash
 		var header block.IHeader
 		if blockNrOrHash == nil {
-			header = api.chain.CurrentBlock().Header()
+			current := api.chain.CurrentBlock()
+			if current != nil {
+				header = current.Header()
+			}
 		} else if hash, ok := blockNrOrHash.Hash(); ok {
 			header, _ = api.chain.GetHeaderByHash(hash)
 		} else if number, ok := blockNrOrHash.Number(); ok {
@@ -331,7 +358,11 @@ func (api *API) getHeader(from jsonrpc.BlockNumberOrHash) block.IHeader {
 	if blockNr, ok := from.Number(); ok {
 		switch {
 		case blockNr == jsonrpc.LatestBlockNumber || blockNr == jsonrpc.PendingBlockNumber:
-			return api.chain.CurrentBlock().Header()
+			current := api.chain.CurrentBlock()
+			if current == nil {
+				return nil
+			}
+			return current.Header()
 		case blockNr < jsonrpc.EarliestBlockNumber:
 			return api.chain.GetHeaderByNumber(uint256.NewInt(0))
 		default:
@@ -342,7 +373,11 @@ func (api *API) getHeader(from jsonrpc.BlockNumberOrHash) block.IHeader {
 		header, _ := api.chain.GetHeaderByHash(hash)
 		return header
 	}
-	return api.chain.CurrentBlock().Header()
+	current := api.chain.CurrentBlock()
+	if current == nil {
+		return nil
+	}
+	return current.Header()
 }
 
 // GetMinedBlock retrieves blocks mined by the given address, searching backward from the specified block.
@@ -362,8 +397,12 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	if currentHeader == nil {
 		return nil, errUnknownBlock
 	}
+	currentHeaderNumber, err := requireHeaderNumber(currentHeader, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
 
-	currentBlock := api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+	currentBlock := api.chain.GetBlock(currentHeader.Hash(), currentHeaderNumber.Uint64())
 	if currentBlock == nil {
 		return nil, errUnknownBlock
 	}
@@ -372,7 +411,7 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	var findCount uint64
 
 	for {
-		blockNum := currentHeader.Number64().Uint64()
+		blockNum := currentHeaderNumber.Uint64()
 		body := currentBlock.Body()
 		if body != nil {
 			for _, verify := range body.Verifier() {
@@ -401,7 +440,11 @@ func (api *API) GetMinedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		if currentHeader == nil {
 			break
 		}
-		currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+		currentHeaderNumber, err = requireHeaderNumber(currentHeader, "header number unavailable")
+		if err != nil {
+			return nil, err
+		}
+		currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeaderNumber.Uint64())
 		if currentBlock == nil {
 			break
 		}
@@ -435,8 +478,12 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	if currentHeader == nil {
 		return nil, errUnknownBlock
 	}
+	currentHeaderNumber, err := requireHeaderNumber(currentHeader, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
 
-	currentBlock := api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+	currentBlock := api.chain.GetBlock(currentHeader.Hash(), currentHeaderNumber.Uint64())
 	if currentBlock == nil {
 		return nil, errUnknownBlock
 	}
@@ -445,7 +492,7 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 	var findCount uint64
 
 	for {
-		blockNum := currentHeader.Number64().Uint64()
+		blockNum := currentHeaderNumber.Uint64()
 		body := currentBlock.Body()
 		if body != nil {
 			for _, verify := range body.Verifier() {
@@ -462,7 +509,11 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		if findCount >= wantCount {
 			break
 		}
-		if uint64(*to) == currentBlock.Number64().Uint64() {
+		currentBlockNumber, err := requireHeaderNumber(currentBlock, "block number unavailable")
+		if err != nil {
+			return nil, err
+		}
+		if uint64(*to) == currentBlockNumber.Uint64() {
 			break
 		}
 		searchCount++
@@ -477,7 +528,11 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 		if currentHeader == nil {
 			break
 		}
-		currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeader.Number64().Uint64())
+		currentHeaderNumber, err = requireHeaderNumber(currentHeader, "header number unavailable")
+		if err != nil {
+			return nil, err
+		}
+		currentBlock = api.chain.GetBlock(currentHeader.Hash(), currentHeaderNumber.Uint64())
 		if currentBlock == nil {
 			break
 		}

@@ -17,12 +17,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/tracers/logger"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/params"
 )
 
 // =============================================================================
@@ -273,6 +277,58 @@ func TestStructLogResJSON(t *testing.T) {
 	}
 
 	t.Logf("✓ StructLogRes JSON serialization works correctly")
+}
+
+func TestTraceTxRejectsNilBlockNumber(t *testing.T) {
+	debug := &DebugAPI{api: &API{}}
+	blk := &gasPriceBlockStub{}
+
+	_, err := debug.traceTx(context.Background(), nil, blk, 0, nil)
+	if err == nil || err.Error() != "block number unavailable" {
+		t.Fatalf("traceTx() error = %v", err)
+	}
+}
+
+func TestTraceCallRejectsNilHeaderNumber(t *testing.T) {
+	blk := &gasPriceBlockStub{header: &block.Header{}}
+	api := &API{
+		bc:          &canonicalCheckChainStub{blk: blk},
+		chainConfig: &params.ChainConfig{},
+	}
+	debug := &DebugAPI{api: api}
+
+	_, err := debug.TraceCall(context.Background(), TransactionArgs{}, jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.LatestBlockNumber), nil)
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("TraceCall() error = %v", err)
+	}
+}
+
+func TestCreateAccessListRejectsNilHeaderNumber(t *testing.T) {
+	blk := &gasPriceBlockStub{header: &block.Header{}}
+	api := &API{
+		bc:          &canonicalCheckChainStub{blk: blk},
+		chainConfig: &params.ChainConfig{},
+	}
+	chainAPI := &BlockChainAPI{api: api}
+
+	_, err := chainAPI.CreateAccessList(context.Background(), TransactionArgs{}, nil)
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("CreateAccessList() error = %v", err)
+	}
+}
+
+func TestStorageRangeAtRejectsNilBlockNumber(t *testing.T) {
+	blk := &gasPriceBlockStub{}
+	debug := &DebugAPI{
+		api: &API{
+			bc: &canonicalCheckChainStub{blk: blk},
+		},
+	}
+
+	_, err := debug.StorageRangeAt(context.Background(), float64(1), 0, types.Address{}, types.Hash{}, 1)
+	if err == nil || err.Error() != "block number unavailable" {
+		t.Fatalf("StorageRangeAt() error = %v", err)
+	}
 }
 
 // =============================================================================

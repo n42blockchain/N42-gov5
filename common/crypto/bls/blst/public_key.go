@@ -13,6 +13,7 @@ import (
 
 var maxKeys = 1000000
 var pubkeyCache *lru.Cache
+var errUninitializedPublicKey = errors.New("uninitialized public key")
 
 func init() {
 	var err error
@@ -31,6 +32,14 @@ const (
 // PublicKey used in the BLS signature scheme.
 type PublicKey struct {
 	p *blstPublicKey
+}
+
+func unwrapPublicKey(pubKey common.PublicKey) (*PublicKey, bool) {
+	pk, ok := pubKey.(*PublicKey)
+	if !ok || pk == nil || pk.p == nil {
+		return nil, false
+	}
+	return pk, true
 }
 
 // PublicKeyFromBytes creates a BLS public key from a  BigEndian byte slice.
@@ -82,17 +91,26 @@ func AggregatePublicKeys(pubs [][]byte) (common.PublicKey, error) {
 
 // Marshal a public key into a LittleEndian byte slice.
 func (p *PublicKey) Marshal() []byte {
+	if p == nil || p.p == nil {
+		return nil
+	}
 	return p.p.Compress()
 }
 
 // Copy the public key to a new pointer reference.
 func (p *PublicKey) Copy() common.PublicKey {
+	if p == nil || p.p == nil {
+		return &PublicKey{}
+	}
 	np := *p.p
 	return &PublicKey{p: &np}
 }
 
 // IsInfinite checks if the public key is infinite.
 func (p *PublicKey) IsInfinite() bool {
+	if p == nil || p.p == nil {
+		return false
+	}
 	zeroKey := new(blstPublicKey)
 	return p.p.Equals(zeroKey)
 }
@@ -100,16 +118,30 @@ func (p *PublicKey) IsInfinite() bool {
 // Equals checks if the provided public key is equal to
 // the current one.
 func (p *PublicKey) Equals(p2 common.PublicKey) bool {
-	return p.p.Equals(p2.(*PublicKey).p)
+	if p == nil || p.p == nil {
+		return false
+	}
+	pk2, ok := unwrapPublicKey(p2)
+	if !ok {
+		return false
+	}
+	return p.p.Equals(pk2.p)
 }
 
 // Aggregate two public keys.
 func (p *PublicKey) Aggregate(p2 common.PublicKey) common.PublicKey {
+	if p == nil || p.p == nil {
+		return nil
+	}
+	pk2, ok := unwrapPublicKey(p2)
+	if !ok {
+		return nil
+	}
 
 	agg := new(blstAggregatePublicKey)
 	// No group check here since it is checked at decompression time
 	agg.Add(p.p, false)
-	agg.Add(p2.(*PublicKey).p, false)
+	agg.Add(pk2.p, false)
 	p.p = agg.ToAffine()
 
 	return p
@@ -144,7 +176,11 @@ func (p *PublicKey) UnmarshalText(input []byte) error {
 }
 
 func (p *PublicKey) MarshalText() ([]byte, error) {
-	return hexutil.Bytes(p.Marshal()).MarshalText()
+	marshaled := p.Marshal()
+	if marshaled == nil {
+		return nil, errUninitializedPublicKey
+	}
+	return hexutil.Bytes(marshaled).MarshalText()
 }
 
 // AggregateMultiplePubkeys aggregates the provided decompressed keys into a single key.
@@ -155,7 +191,11 @@ func AggregateMultiplePubkeys(pubkeys []common.PublicKey) common.PublicKey {
 	}
 	mulP1 := make([]*blstPublicKey, 0, len(pubkeys))
 	for _, pubkey := range pubkeys {
-		mulP1 = append(mulP1, pubkey.(*PublicKey).p)
+		pk, ok := unwrapPublicKey(pubkey)
+		if !ok {
+			return nil
+		}
+		mulP1 = append(mulP1, pk.p)
 	}
 	agg := new(blstAggregatePublicKey)
 	// No group check needed here since it is done in PublicKeyFromBytes

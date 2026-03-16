@@ -48,10 +48,20 @@ import (
 var (
 	errBinaryWitnessShort    = errors.New("witness: binary data too short")
 	errBinaryWitnessTooLarge = errors.New("witness: binary data exceeds maximum size")
+	errBinaryWitnessNil      = errors.New("witness: block witness is nil")
+	errBinaryWitnessNilCode  = errors.New("witness: block witness contains nil code entry")
+)
+
+const (
+	minBinaryProofSize = 32 + 4 + 4 + 32 + 4 + 4
+	minBinaryCodeSize  = types.HashLength + 4
 )
 
 // EncodeBinaryWitness serializes a BlockWitness into a compact binary format.
 func EncodeBinaryWitness(w *BlockWitness) ([]byte, error) {
+	if w == nil {
+		return nil, errBinaryWitnessNil
+	}
 	// Estimate initial capacity.
 	size := 32 + 4 + 4 + 4 // parentRoot + 3 counts
 	for i := range w.AccountProofs {
@@ -61,6 +71,9 @@ func EncodeBinaryWitness(w *BlockWitness) ([]byte, error) {
 		size += estimateKeyProofSize(&w.StorageProofs[i])
 	}
 	for _, hc := range w.Codes {
+		if hc == nil {
+			return nil, errBinaryWitnessNilCode
+		}
 		size += 32 + 4 + len(hc.Code)
 	}
 
@@ -84,6 +97,9 @@ func EncodeBinaryWitness(w *BlockWitness) ([]byte, error) {
 	// Codes
 	buf = appendU32(buf, uint32(len(w.Codes)))
 	for _, hc := range w.Codes {
+		if hc == nil {
+			return nil, errBinaryWitnessNilCode
+		}
 		buf = append(buf, hc.Hash[:]...)
 		buf = appendBytes(buf, hc.Code)
 	}
@@ -115,6 +131,9 @@ func DecodeBinaryWitness(data []byte) (*BlockWitness, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureEntryCountWithinBounds(int(numAcct), len(data)-r.pos, minBinaryProofSize, "account proofs"); err != nil {
+		return nil, err
+	}
 	w.AccountProofs = make([]KeyProof, numAcct)
 	for i := uint32(0); i < numAcct; i++ {
 		w.AccountProofs[i], err = readKeyProof(r)
@@ -128,6 +147,9 @@ func DecodeBinaryWitness(data []byte) (*BlockWitness, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureEntryCountWithinBounds(int(numStor), len(data)-r.pos, minBinaryProofSize, "storage proofs"); err != nil {
+		return nil, err
+	}
 	w.StorageProofs = make([]KeyProof, numStor)
 	for i := uint32(0); i < numStor; i++ {
 		w.StorageProofs[i], err = readKeyProof(r)
@@ -139,6 +161,9 @@ func DecodeBinaryWitness(data []byte) (*BlockWitness, error) {
 	// Codes
 	numCodes, err := r.readU32()
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureEntryCountWithinBounds(int(numCodes), len(data)-r.pos, minBinaryCodeSize, "codes"); err != nil {
 		return nil, err
 	}
 	w.Codes = make([]*state.HashCode, numCodes)
@@ -217,6 +242,25 @@ func estimateKeyProofSize(kp *KeyProof) int {
 		s += 4 + len(e.NodeData) + 1
 	}
 	return s
+}
+
+func ensureEntryCountWithinBounds(count, remainingBytes, minEntrySize int, label string) error {
+	if count < 0 {
+		return fmt.Errorf("witness: negative %s count", label)
+	}
+	if count == 0 {
+		return nil
+	}
+	if minEntrySize <= 0 {
+		return fmt.Errorf("witness: invalid minimum size for %s", label)
+	}
+	if remainingBytes < 0 {
+		return errBinaryWitnessShort
+	}
+	if count > remainingBytes/minEntrySize {
+		return fmt.Errorf("witness: %s count %d exceeds remaining data", label, count)
+	}
+	return nil
 }
 
 // reader is a simple byte reader with position tracking.

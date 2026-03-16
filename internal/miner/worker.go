@@ -42,12 +42,12 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/miner/builder"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
-	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/lib/kv/layered"
+	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
-	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 )
@@ -176,8 +176,8 @@ type worker struct {
 
 	newTaskHook func(*task)
 
-	bundlePool      *builder.BundlePool   // MEV bundle pool
-	zkProverService interface {            // ZK prover service (nil if disabled)
+	bundlePool      *builder.BundlePool // MEV bundle pool
+	zkProverService interface {         // ZK prover service (nil if disabled)
 		SubmitBlock(blockHash types.Hash, blockNum uint64, guestInput []byte) error
 	}
 
@@ -307,9 +307,14 @@ func (w *worker) resultLoop() error {
 			if blk == nil {
 				continue
 			}
+			blockNumber, err := requireBlockNumber(blk, "block number unavailable")
+			if err != nil {
+				log.Error("Ignoring sealed block", "err", err, "hash", blk.Hash())
+				continue
+			}
 
 			// Short circuit when receiving duplicate result caused by resubmitting.
-			if w.chain.HasBlock(blk.Hash(), blk.Number64().Uint64()) {
+			if w.chain.HasBlock(blk.Hash(), blockNumber.Uint64()) {
 				continue
 			}
 
@@ -321,7 +326,7 @@ func (w *worker) resultLoop() error {
 			task, exist := w.pendingTasks[sealhash]
 			w.mu.RUnlock()
 			if !exist {
-				log.Error("Block found but no relative pending task", "number", blk.Number64().Uint64(), "sealhash", sealhash, "hash", hash)
+				log.Error("Block found but no relative pending task", "number", blockNumber.Uint64(), "sealhash", sealhash, "hash", hash)
 				continue
 			}
 
@@ -347,7 +352,7 @@ func (w *worker) resultLoop() error {
 				logs = append(logs, receipt.Logs...)
 			}
 
-			err := w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
+			err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
 			if err != nil {
 				log.Error("Failed writing block to chain", "err", err)
 				miningErrorsCounter.Inc()
@@ -374,7 +379,7 @@ func (w *worker) resultLoop() error {
 			log.Info("🔨 Successfully sealed new block",
 				"sealhash", sealhash,
 				"hash", hash,
-				"number", blk.Number64().Uint64(),
+				"number", blockNumber.Uint64(),
 				"used gas", blk.GasUsed(),
 				"diff", blk.Difficulty().Uint64(),
 				"headerTime", time.Unix(int64(blk.Time()), 0).Format(time.RFC3339),
@@ -649,7 +654,11 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		return nil
 	}
 
-	blockNumber := header.Number.Uint64()
+	headerNumber, err := requireHeaderNumber(header, "mining header number unavailable")
+	if err != nil {
+		return err
+	}
+	blockNumber := headerNumber.Uint64()
 
 	// Phase 1: Execute MEV bundles at block top (highest-paying first).
 	if w.bundlePool != nil {
@@ -770,10 +779,15 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		timestamp = parent.Time + 1
 	}
 
+	parentNumber, err := requireHeaderNumber(parent, "parent block number unavailable")
+	if err != nil {
+		return nil, err
+	}
+
 	header := &block.Header{
 		ParentHash: parent.Hash(),
 		Coinbase:   param.coinbase,
-		Number:     uint256.NewInt(0).Add(parent.Number64(), uint256.NewInt(1)),
+		Number:     uint256.NewInt(0).Add(parentNumber, uint256.NewInt(1)),
 		GasLimit:   CalcGasLimit(parent.GasLimit, w.minerConf.GasCeil),
 		Time:       uint64(timestamp),
 		Difficulty: uint256.NewInt(0),
@@ -781,9 +795,13 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 	}
 
 	// Set baseFee and GasLimit if we are on an EIP-1559 chain
-	if w.chainConfig.IsLondon(header.Number.Uint64()) {
+	headerNumber, err := requireHeaderNumber(header, "mining header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	if w.chainConfig.IsLondon(headerNumber.Uint64()) {
 		header.BaseFee, _ = uint256.FromBig(misc.CalcBaseFee(w.chainConfig, parent))
-		if !w.chainConfig.IsLondon(parent.Number64().Uint64()) {
+		if !w.chainConfig.IsLondon(parentNumber.Uint64()) {
 			parentGasLimit := parent.GasLimit * params.ElasticityMultiplier
 			header.GasLimit = CalcGasLimit(parentGasLimit, w.minerConf.GasCeil)
 		}
@@ -806,7 +824,7 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 	}
 
 	for _, ancestor := range w.chain.GetBlocksFromHash(parent.ParentHash, 3) {
-		env.family.Add(ancestor.(*block.Block).Hash())
+		env.family.Add(ancestor.Hash())
 		env.ancestors.Add(ancestor.Hash())
 	}
 
@@ -841,27 +859,36 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 				log.Warn("Failed to generate block witness", "err", werr)
 			} else {
 				bc.StoreWitness(iblock.Hash(), bw)
-				log.Debug("Block witness generated", "block", iblock.Number64().Uint64(), "accounts", len(bw.AccountProofs), "storage", len(bw.StorageProofs))
+				iblockNumber, numberErr := requireBlockNumber(iblock, "finalized block number unavailable")
+				if numberErr != nil {
+					log.Warn("Block witness generated without block number", "err", numberErr)
+				} else {
+					log.Debug("Block witness generated", "block", iblockNumber.Uint64(), "accounts", len(bw.AccountProofs), "storage", len(bw.StorageProofs))
 
-				// Async submit to ZK prover if configured.
-				if w.zkProverService != nil {
-					parentHdr := bc.CurrentBlock().Header()
-					go func(blkHash types.Hash, blkNum uint64, bwCopy *witness.BlockWitness, ph block.IHeader) {
-						guestInput, err := zkprover.BuildGuestInput(w.chainConfig, iblock, ph, bwCopy)
-						if err != nil {
-							log.Warn("Failed to build guest input for ZK prover", "err", err)
-							return
-						}
-						if err := w.zkProverService.SubmitBlock(blkHash, blkNum, guestInput); err != nil {
-							log.Warn("Failed to submit block to ZK prover", "err", err)
-						}
-					}(iblock.Hash(), iblock.Number64().Uint64(), bw, parentHdr)
+					// Async submit to ZK prover if configured.
+					if w.zkProverService != nil {
+						parentHdr := bc.CurrentBlock().Header()
+						go func(blkHash types.Hash, blkNum uint64, bwCopy *witness.BlockWitness, ph block.IHeader) {
+							guestInput, err := zkprover.BuildGuestInput(w.chainConfig, iblock, ph, bwCopy)
+							if err != nil {
+								log.Warn("Failed to build guest input for ZK prover", "err", err)
+								return
+							}
+							if err := w.zkProverService.SubmitBlock(blkHash, blkNum, guestInput); err != nil {
+								log.Warn("Failed to submit block to ZK prover", "err", err)
+							}
+						}(iblock.Hash(), iblockNumber.Uint64(), bw, parentHdr)
+					}
 				}
 			}
 		}
 	}
 
-	if w.chainConfig.IsBeijing(envCopy.header.Number.Uint64()) {
+	envHeaderNumber, err := requireHeaderNumber(envCopy.header, "mining header number unavailable")
+	if err != nil {
+		return err
+	}
+	if w.chainConfig.IsBeijing(envHeaderNumber.Uint64()) {
 		txs := make([][]byte, len(envCopy.txs))
 		for i, tx := range envCopy.txs {
 			txs[i], err = tx.Marshal()
@@ -869,9 +896,13 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 				return fmt.Errorf("failed to marshal transaction %d: %w", i, err)
 			}
 		}
+		concreteHeader, ok := iblock.Header().(*block.Header)
+		if !ok || concreteHeader == nil {
+			return errors.New("invalid finalized block header type")
+		}
 
 		entire := state.Entire{
-			Header:       iblock.Header().(*block.Header),
+			Header:       concreteHeader,
 			Transactions: txs,
 			Snap:         ibs.Snap(),
 			Proof:        types.Hash{},
@@ -903,8 +934,12 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 
 	select {
 	case w.taskCh <- &task{receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay}:
+		blockNumber := uint64(0)
+		if number := iblock.Number64(); number != nil {
+			blockNumber = number.Uint64()
+		}
 		log.Debug("Commit new sealing work",
-			"number", iblock.Header().Number64().Uint64(),
+			"number", blockNumber,
 			"sealhash", w.engine.SealHash(iblock.Header()),
 			"txs", envCopy.tcount,
 			"gas", iblock.GasUsed(),

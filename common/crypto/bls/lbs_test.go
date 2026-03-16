@@ -110,6 +110,104 @@ func TestMultipleSignatureVerification(t *testing.T) {
 	assert.Equal(t, true, verify, "Signature did not verify")
 }
 
+func TestVerifyMultipleSignaturesRejectsMalformedSignature(t *testing.T) {
+	priv, err := RandKey()
+	require.NoError(t, err)
+
+	msg := [32]byte{'h', 'e', 'l', 'l', 'o'}
+	badSig := make([]byte, blst.BLSSignatureLength)
+
+	verify, err := VerifyMultipleSignatures([][]byte{badSig}, [][32]byte{msg}, []common.PublicKey{priv.PublicKey()})
+	assert.ErrorContains(t, err, "could not unmarshal bytes into signature")
+	assert.False(t, verify)
+}
+
+func TestSignatureVerifyReturnsFalseOnUninitializedPublicKey(t *testing.T) {
+	priv, err := RandKey()
+	require.NoError(t, err)
+
+	msg := []byte("hello")
+	sig := priv.Sign(msg)
+
+	var zeroPub blst.PublicKey
+	assert.False(t, sig.Verify(&zeroPub, msg))
+}
+
+func TestFastAggregateVerifyReturnsFalseOnUninitializedPublicKey(t *testing.T) {
+	priv, err := RandKey()
+	require.NoError(t, err)
+
+	msg := [32]byte{'h', 'e', 'l', 'l', 'o'}
+	sig := priv.Sign(msg[:])
+
+	var zeroPub blst.PublicKey
+	assert.False(t, sig.FastAggregateVerify([]common.PublicKey{&zeroPub}, msg))
+}
+
+func TestVerifyMultipleSignaturesRejectsUninitializedPublicKey(t *testing.T) {
+	priv, err := RandKey()
+	require.NoError(t, err)
+
+	msg := [32]byte{'h', 'e', 'l', 'l', 'o'}
+	sig := priv.Sign(msg[:]).Marshal()
+
+	var zeroPub blst.PublicKey
+	verify, err := VerifyMultipleSignatures([][]byte{sig}, [][32]byte{msg}, []common.PublicKey{&zeroPub})
+	assert.ErrorContains(t, err, "uninitialized public key")
+	assert.False(t, verify)
+}
+
+func TestSignatureBatchCopyHandlesNilPublicKey(t *testing.T) {
+	msg := [32]byte{'h', 'e', 'l', 'l', 'o'}
+	batch := &SignatureBatch{
+		Signatures: [][]byte{{0x01}},
+		PublicKeys: []PublicKey{nil},
+		Messages:   [][32]byte{msg},
+	}
+
+	copied := batch.Copy()
+	require.Len(t, copied.PublicKeys, 1)
+	assert.Nil(t, copied.PublicKeys[0])
+}
+
+func TestSignatureBatchRemoveDuplicatesHandlesNilPublicKey(t *testing.T) {
+	msg := [32]byte{'h', 'e', 'l', 'l', 'o'}
+	batch := &SignatureBatch{
+		Signatures: [][]byte{{0x01}, {0x01}},
+		PublicKeys: []PublicKey{nil, nil},
+		Messages:   [][32]byte{msg, msg},
+	}
+
+	duplicates, out, err := batch.RemoveDuplicates()
+	require.NoError(t, err)
+	assert.Equal(t, 0, duplicates)
+	require.Len(t, out.PublicKeys, 2)
+}
+
+func TestSignatureBatchAggregateBatchRejectsInvalidPublicKey(t *testing.T) {
+	msg := [32]byte{'h', 'e', 'l', 'l', 'o'}
+
+	priv1, err := RandKey()
+	require.NoError(t, err)
+	priv2, err := RandKey()
+	require.NoError(t, err)
+
+	batch := &SignatureBatch{
+		Signatures: [][]byte{
+			priv1.Sign(msg[:]).Marshal(),
+			priv2.Sign(msg[:]).Marshal(),
+		},
+		PublicKeys: []PublicKey{
+			priv1.PublicKey(),
+			nil,
+		},
+		Messages: [][32]byte{msg, msg},
+	}
+
+	_, err = batch.AggregateBatch()
+	assert.ErrorContains(t, err, "invalid public key in signature batch")
+}
+
 func TestFastAggregateVerify_ReturnsFalseOnEmptyPubKeyList(t *testing.T) {
 	var pubkeys []common.PublicKey
 	msg := [32]byte{'h', 'e', 'l', 'l', 'o'}

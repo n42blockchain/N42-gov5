@@ -62,11 +62,7 @@ func (h *H128) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	// Field (1) 'Lo'
 	hh.PutUint64(h.Lo)
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -138,11 +134,7 @@ func (h *H160) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	// Field (1) 'Lo'
 	hh.PutUint32(h.Lo)
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -226,11 +218,7 @@ func (h *H256) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -314,11 +302,7 @@ func (h *H384) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -402,11 +386,7 @@ func (h *H768) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -490,11 +470,7 @@ func (h *H512) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -578,11 +554,7 @@ func (h *H1024) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -666,11 +638,7 @@ func (h *H2048) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -798,11 +766,7 @@ func (b *Block) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -1144,11 +1108,7 @@ func (h *Header) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 			return
 		}
 		hh.PutBytes(h.Extra)
-		if ssz.EnableVectorizedHTR {
-			hh.MerkleizeWithMixinVectorizedHTR(elemIndx, byteLen, (117+31)/32)
-		} else {
-			hh.MerkleizeWithMixin(elemIndx, byteLen, (117+31)/32)
-		}
+		hh.MerkleizeWithMixin(elemIndx, byteLen, (117+31)/32)
 	}
 
 	// Field (13) 'Signature'
@@ -1166,11 +1126,7 @@ func (h *Header) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -1254,11 +1210,7 @@ func (v *Verifier) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -1342,11 +1294,7 @@ func (r *Reward) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -1553,11 +1501,7 @@ func (b *Body) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 				return
 			}
 		}
-		if ssz.EnableVectorizedHTR {
-			hh.MerkleizeWithMixinVectorizedHTR(subIndx, num, 104857600)
-		} else {
-			hh.MerkleizeWithMixin(subIndx, num, 104857600)
-		}
+		hh.MerkleizeWithMixin(subIndx, num, 104857600)
 	}
 
 	// Field (1) 'Verifiers'
@@ -1573,11 +1517,7 @@ func (b *Body) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 				return
 			}
 		}
-		if ssz.EnableVectorizedHTR {
-			hh.MerkleizeWithMixinVectorizedHTR(subIndx, num, 104857600)
-		} else {
-			hh.MerkleizeWithMixin(subIndx, num, 104857600)
-		}
+		hh.MerkleizeWithMixin(subIndx, num, 104857600)
 	}
 
 	// Field (2) 'Rewards'
@@ -1593,18 +1533,10 @@ func (b *Body) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 				return
 			}
 		}
-		if ssz.EnableVectorizedHTR {
-			hh.MerkleizeWithMixinVectorizedHTR(subIndx, num, 104857600)
-		} else {
-			hh.MerkleizeWithMixin(subIndx, num, 104857600)
-		}
+		hh.MerkleizeWithMixin(subIndx, num, 104857600)
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }
 
@@ -1938,11 +1870,7 @@ func (t *Transaction) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 			return
 		}
 		hh.PutBytes(t.Data)
-		if ssz.EnableVectorizedHTR {
-			hh.MerkleizeWithMixinVectorizedHTR(elemIndx, byteLen, (104857600+31)/32)
-		} else {
-			hh.MerkleizeWithMixin(elemIndx, byteLen, (104857600+31)/32)
-		}
+		hh.MerkleizeWithMixin(elemIndx, byteLen, (104857600+31)/32)
 	}
 
 	// Field (8) 'Sign'
@@ -1954,11 +1882,7 @@ func (t *Transaction) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 			return
 		}
 		hh.PutBytes(t.Sign)
-		if ssz.EnableVectorizedHTR {
-			hh.MerkleizeWithMixinVectorizedHTR(elemIndx, byteLen, (104857600+31)/32)
-		} else {
-			hh.MerkleizeWithMixin(elemIndx, byteLen, (104857600+31)/32)
-		}
+		hh.MerkleizeWithMixin(elemIndx, byteLen, (104857600+31)/32)
 	}
 
 	// Field (9) 'To'
@@ -1994,10 +1918,6 @@ func (t *Transaction) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 		return
 	}
 
-	if ssz.EnableVectorizedHTR {
-		hh.MerkleizeVectorizedHTR(indx)
-	} else {
-		hh.Merkleize(indx)
-	}
+	hh.Merkleize(indx)
 	return
 }

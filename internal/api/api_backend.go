@@ -140,7 +140,11 @@ func (b *API) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*block
 		if header == nil {
 			return nil, errors.New("current block not available")
 		}
-		iBlock := b.bc.GetBlock(header.Hash(), header.Number64().Uint64())
+		headerNumber, err := requireUint256(header.Number64(), "current block number unavailable")
+		if err != nil {
+			return nil, err
+		}
+		iBlock := b.bc.GetBlock(header.Hash(), headerNumber.Uint64())
 		if iBlock == nil {
 			return nil, errors.New("current block body not found")
 		}
@@ -188,8 +192,12 @@ func (b *API) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNu
 		if header == nil {
 			return nil, errors.New("header for hash not found")
 		}
+		headerNumber, err := requireUint256(header.Number64(), "header number unavailable")
+		if err != nil {
+			return nil, err
+		}
 		if blockNrOrHash.RequireCanonical {
-			canonicalHash, err := b.canonicalHashForNumber(header.Number64())
+			canonicalHash, err := b.canonicalHashForNumber(headerNumber)
 			if err != nil {
 				return nil, err
 			}
@@ -197,7 +205,7 @@ func (b *API) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNu
 				return nil, errors.New("hash is not currently canonical")
 			}
 		}
-		iBlock := b.bc.GetBlock(hash, header.Number64().Uint64())
+		iBlock := b.bc.GetBlock(hash, headerNumber.Uint64())
 		if iBlock == nil {
 			return nil, errors.New("header found, but block body is missing")
 		}
@@ -286,11 +294,18 @@ func (b *API) CurrentHeader() *block.Header {
 // within a block. It replays all prior transactions to reconstruct the state at
 // the specified transaction index.
 func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *block.Block, txIndex int) (*transaction.Message, evmtypes.BlockContext, *state.IntraBlockState, error) {
-	if blk.Number64().Uint64() == 0 {
+	if blk == nil {
+		return nil, evmtypes.BlockContext{}, nil, errors.New("block is nil")
+	}
+	blockNumber, err := requireUint256(blk.Number64(), "block number unavailable")
+	if err != nil {
+		return nil, evmtypes.BlockContext{}, nil, err
+	}
+	if blockNumber.Uint64() == 0 {
 		return nil, evmtypes.BlockContext{}, nil, errors.New("no transaction in genesis")
 	}
 
-	iParent := eth.BlockChain().GetBlock(blk.ParentHash(), blk.Number64().Uint64()-1)
+	iParent := eth.BlockChain().GetBlock(blk.ParentHash(), blockNumber.Uint64()-1)
 	if iParent == nil {
 		return nil, evmtypes.BlockContext{}, nil, fmt.Errorf("parent %#x not found", blk.ParentHash())
 	}
@@ -339,7 +354,11 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *block.B
 		if _, err := internal.ApplyMessage(vmenv, msg, new(gaspool.GasPool).AddGas(tx.Gas()), true /* refunds */, false /* gasBailout */); err != nil {
 			return nil, evmtypes.BlockContext{}, nil, fmt.Errorf("transaction %x failed: %w", tx.Hash(), err)
 		}
-		_ = statedb.FinalizeTx(rules, statedb.GetStateReader().(*state.PlainState))
+		stateReader, err := requirePlainStateReader(statedb, "unexpected state reader type")
+		if err != nil {
+			return nil, evmtypes.BlockContext{}, nil, err
+		}
+		_ = statedb.FinalizeTx(rules, stateReader)
 
 		if idx+1 == len(blk.Transactions()) {
 			return nil, blockContext, statedb, nil
@@ -350,11 +369,18 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *block.B
 
 // StateAtBlock retrieves the state database associated with a certain block.
 func (eth *API) StateAtBlock(ctx context.Context, tx kv.Tx, blk *block.Block) (*state.IntraBlockState, error) {
-	origin := blk.Number64().Uint64()
+	if blk == nil {
+		return nil, errors.New("block is nil")
+	}
+	blockNumber, err := requireUint256(blk.Number64(), "block number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	origin := blockNumber.Uint64()
 	stateIface := eth.BlockChain().StateAt(tx, origin)
-	statedb, ok := stateIface.(*state.IntraBlockState)
-	if !ok || statedb == nil {
-		return nil, errors.New("failed to retrieve state for block")
+	statedb, err := requireIntraBlockState(stateIface, "failed to retrieve state for block")
+	if err != nil {
+		return nil, err
 	}
 	return statedb, nil
 }

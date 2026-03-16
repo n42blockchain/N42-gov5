@@ -142,7 +142,7 @@ func (h *nodeHealthProvider) CurrentBlock() uint64 {
 	if b == nil {
 		return 0
 	}
-	return b.Number64().Uint64()
+	return blockNumberOrZero(b)
 }
 
 func (h *nodeHealthProvider) HighestBlock() uint64 {
@@ -183,7 +183,7 @@ func (b *nodeBlockProvider) CurrentBlock() uint64 {
 	if blk == nil {
 		return 0
 	}
-	return blk.Number64().Uint64()
+	return blockNumberOrZero(blk)
 }
 
 // peerdasBlockProvider implements peerdas.BlockProvider using the node's blockchain.
@@ -199,7 +199,7 @@ func (p *peerdasBlockProvider) CurrentBlock() (types.Hash, uint64) {
 	if blk == nil {
 		return types.Hash{}, 0
 	}
-	return blk.Hash(), blk.Number64().Uint64()
+	return blk.Hash(), blockNumberOrZero(blk)
 }
 
 // mcpNodeBackend implements mcp.Backend using the node's services.
@@ -220,7 +220,7 @@ func (b *mcpNodeBackend) PeerCount() int {
 func (b *mcpNodeBackend) SyncProgress() *mcp.SyncStatus {
 	var current uint64
 	if b.node.blockChain != nil && b.node.blockChain.CurrentBlock() != nil {
-		current = b.node.blockChain.CurrentBlock().Number64().Uint64()
+		current = blockNumberOrZero(b.node.blockChain.CurrentBlock())
 	}
 	return &mcp.SyncStatus{
 		CurrentBlock: current,

@@ -144,7 +144,7 @@ func (api *API) Apis() []jsonrpc.API {
 			Service:   &Web3API{api},
 		}, {
 			Namespace: "net",
-			Service:   NewNetAPI(api, api.GetChainConfig().ChainID.Uint64()),
+			Service:   NewNetAPI(api, chainIDUint64(api.GetChainConfig())),
 		},
 		{
 			Namespace: "debug",
@@ -158,6 +158,13 @@ func (api *API) Apis() []jsonrpc.API {
 			Service:   filters.NewFilterAPI(api, 5*time.Minute),
 		},
 	}
+}
+
+func chainIDUint64(cfg *params.ChainConfig) uint64 {
+	if cfg == nil || cfg.ChainID == nil {
+		return 0
+	}
+	return cfg.ChainID.Uint64()
 }
 
 func (n *API) TxsPool() common.ITxsPool       { return n.txspool }
@@ -216,7 +223,14 @@ func NewBlockChainAPI(api *API) *BlockChainAPI {
 
 // ChainId returns the chain ID used for signing replay-protected transactions.
 func (api *BlockChainAPI) ChainId() *hexutil.Big {
-	return (*hexutil.Big)(api.api.GetChainConfig().ChainID)
+	if api == nil || api.api == nil {
+		return nil
+	}
+	cfg := api.api.GetChainConfig()
+	if cfg == nil || cfg.ChainID == nil {
+		return nil
+	}
+	return (*hexutil.Big)(cfg.ChainID)
 }
 
 // GetBalance returns the amount of wei for the given address at the given block.
@@ -398,12 +412,18 @@ type BlockOverrides struct {
 }
 
 // Apply overrides the given header fields into the given block context.
-func (diff *BlockOverrides) Apply(blockCtx *evmtypes.BlockContext) {
+func (diff *BlockOverrides) Apply(blockCtx *evmtypes.BlockContext) error {
 	if diff == nil {
-		return
+		return nil
 	}
 	if diff.Number != nil {
-		blockCtx.BlockNumber = diff.Number.ToInt().Uint64()
+		number, err := uint256FromBig(diff.Number.ToInt())
+		if err != nil {
+			return fmt.Errorf("invalid block override number: %w", err)
+		}
+		if number != nil {
+			blockCtx.BlockNumber = number.Uint64()
+		}
 	}
 	if diff.Difficulty != nil {
 		blockCtx.Difficulty = diff.Difficulty.ToInt()
@@ -421,8 +441,13 @@ func (diff *BlockOverrides) Apply(blockCtx *evmtypes.BlockContext) {
 		blockCtx.PrevRanDao = diff.Random
 	}
 	if diff.BaseFee != nil {
-		blockCtx.BaseFee, _ = uint256.FromBig(diff.BaseFee.ToInt())
+		baseFee, err := uint256FromBig(diff.BaseFee.ToInt())
+		if err != nil {
+			return fmt.Errorf("invalid block override base fee: %w", err)
+		}
+		blockCtx.BaseFee = baseFee
 	}
+	return nil
 }
 
 func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash jsonrpc.BlockNumberOrHash, overrides *StateOverride, timeout time.Duration, globalGasCap uint64) (*internal.ExecutionResult, error) {

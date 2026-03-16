@@ -314,14 +314,10 @@ func (sm *SyncStateMachine) transitionTo(newState SyncState) {
 	sm.metrics.EnterState(newState)
 
 	// Log transition (handle nil blockchain for testing)
-	var currentBlock uint64
-	if sm.blockchain != nil {
-		currentBlock = sm.blockchain.CurrentBlock().Number64().Uint64()
-	}
 	log.Info("Sync state transition",
 		"from", oldState.String(),
 		"to", newState.String(),
-		"current_block", currentBlock,
+		"current_block", currentBlockNumberOrZero(sm.blockchain),
 	)
 
 	sm.mu.RLock()
@@ -373,7 +369,11 @@ func (sm *SyncStateMachine) run() {
 // evaluate checks the current state and transitions if needed.
 func (sm *SyncStateMachine) evaluate() {
 	currentState := sm.State()
-	currentBlock := sm.blockchain.CurrentBlock().Number64()
+	currentBlock, err := requireCurrentBlockNumber(sm.blockchain, "current block number unavailable")
+	if err != nil {
+		log.Warn("Sync state evaluation skipped", "err", err)
+		return
+	}
 	highestBlock, peers := sm.p2p.Peers().BestPeers(sm.config.MinSyncPeers, currentBlock)
 
 	// Update sync metrics.
@@ -496,15 +496,16 @@ func (sm *SyncStateMachine) performSync(
 	}
 
 	startTime := time.Now()
-	var startBlock uint64
-	if sm.blockchain != nil {
-		startBlock = sm.blockchain.CurrentBlock().Number64().Uint64()
+	startBlock := currentBlockNumberOrZero(sm.blockchain)
+	targetBlockNumber := uint64(0)
+	if targetBlock != nil {
+		targetBlockNumber = targetBlock.Uint64()
 	}
 
 	log.Info("Starting sync",
 		"type", label,
 		"current_block", startBlock,
-		"target_block", targetBlock.Uint64(),
+		"target_block", targetBlockNumber,
 	)
 
 	if err := handler(sm.ctx, targetBlock); err != nil {
@@ -516,10 +517,7 @@ func (sm *SyncStateMachine) performSync(
 		return
 	}
 
-	var endBlock uint64
-	if sm.blockchain != nil {
-		endBlock = sm.blockchain.CurrentBlock().Number64().Uint64()
-	}
+	endBlock := currentBlockNumberOrZero(sm.blockchain)
 	blocksProcessed := endBlock - startBlock
 	sm.metrics.RecordBlocksProcessed(blocksProcessed)
 

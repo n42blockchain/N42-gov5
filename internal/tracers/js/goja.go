@@ -42,11 +42,13 @@ var assetTracers = make(map[string]string)
 
 // init retrieves the JavaScript transaction tracers included in go-ethereum.
 func init() {
-	var err error
-	assetTracers, err = jsassets.Load()
+	// Keep JS eval available even if embedded built-in tracers fail to load.
+	tracers.DefaultDirectory.RegisterJSEval(newJsTracer)
+	loaded, err := jsassets.Load()
 	if err != nil {
-		panic(err)
+		return
 	}
+	assetTracers = loaded
 	for name, code := range assetTracers {
 		code := code // capture loop variable for closure
 		ctor := func(ctx *tracers.Context, cfg json.RawMessage) (tracers.Tracer, error) {
@@ -54,7 +56,6 @@ func init() {
 		}
 		tracers.DefaultDirectory.Register(name, ctor, true)
 	}
-	tracers.DefaultDirectory.RegisterJSEval(newJsTracer)
 }
 
 // bigIntProgram is compiled once and the exported function mostly invoked to convert

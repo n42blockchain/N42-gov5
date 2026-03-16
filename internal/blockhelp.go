@@ -61,7 +61,11 @@ type EphemeralExecResult struct {
 
 // SysCallContract executes a system call to a contract using the system address as sender.
 func SysCallContract(contract types.Address, data []byte, chainConfig params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) (result []byte, err error) {
-	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(header.Number64().ToBig()) == 0 {
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(headerNumber.ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibs)
 	}
 
@@ -109,6 +113,10 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 func FinalizeBlockExecution(engine consensus.Engine, header *block.Header,
 	txs transaction.Transactions, stateWriter state.WriterWithChangeSets, cc *params.ChainConfig, ibs *state.IntraBlockState,
 	receipts block.Receipts, headerReader consensus.ChainHeaderReader, isMining bool) (newBlock block.IBlock, newTxs transaction.Transactions, newReceipt block.Receipts, err error) {
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, nil, nil, err
+	}
 
 	if isMining {
 		newBlock, _, _, err = engine.FinalizeAndAssemble(headerReader, header, ibs, txs, nil, receipts)
@@ -119,14 +127,14 @@ func FinalizeBlockExecution(engine consensus.Engine, header *block.Header,
 		return nil, nil, nil, err
 	}
 
-	if err := ibs.CommitBlock(cc.Rules(header.Number.Uint64()), stateWriter); err != nil {
-		return nil, nil, nil, fmt.Errorf("committing block %d failed: %w", header.Number.Uint64(), err)
+	if err := ibs.CommitBlock(cc.Rules(headerNumber.Uint64()), stateWriter); err != nil {
+		return nil, nil, nil, fmt.Errorf("committing block %d failed: %w", headerNumber.Uint64(), err)
 	}
 	if err := stateWriter.WriteChangeSets(); err != nil {
-		return nil, nil, nil, fmt.Errorf("writing changesets for block %d failed: %w", header.Number.Uint64(), err)
+		return nil, nil, nil, fmt.Errorf("writing changesets for block %d failed: %w", headerNumber.Uint64(), err)
 	}
 	if err := stateWriter.WriteHistory(); err != nil {
-		return nil, nil, nil, fmt.Errorf("writing history for block %d failed: %w", header.Number.Uint64(), err)
+		return nil, nil, nil, fmt.Errorf("writing history for block %d failed: %w", headerNumber.Uint64(), err)
 	}
 
 	return newBlock, newTxs, newReceipt, nil

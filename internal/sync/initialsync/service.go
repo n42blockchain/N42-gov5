@@ -36,10 +36,10 @@ type Service struct {
 	highestExpectedBlockNr *uint256.Int
 	done                   chan struct{} // closed when Start() returns
 	// Log throttling
-	lastLogTime            time.Time
-	lastLogBlock           uint64
-	syncStartTime          time.Time
-	syncStartBlock         uint64
+	lastLogTime    time.Time
+	lastLogBlock   uint64
+	syncStartTime  time.Time
+	syncStartBlock uint64
 }
 
 // NewService configures the initial sync service responsible for bringing the node up to the
@@ -99,7 +99,11 @@ func (s *Service) Start() {
 			syncRetries = 0
 		}
 
-		currentBlock := s.cfg.Chain.CurrentBlock().Number64()
+		currentBlock, err := requireCurrentBlockNumber(s.cfg.Chain, "current block number unavailable")
+		if err != nil {
+			log.Warn("Stopping sync loop due to unavailable current block number", "err", err)
+			break
+		}
 		newHighest, peers := s.cfg.P2P.Peers().BestPeers(1, currentBlock)
 		if len(peers) == 0 || newHighest.Cmp(currentBlock) <= 0 ||
 			newHighest.Uint64() <= currentBlock.Uint64()+5 {
@@ -111,7 +115,7 @@ func (s *Service) Start() {
 			"peersBlock", newHighest.Uint64())
 	}
 
-	log.Info("Chain sync completed", "block", s.cfg.Chain.CurrentBlock().Number64().Uint64())
+	log.Info("Chain sync completed", "block", currentBlockNumberOrZero(s.cfg.Chain))
 }
 
 // Stop initial sync.
@@ -149,7 +153,7 @@ func (s *Service) isNearingSynced() bool {
 	if s.highestExpectedBlockNr == nil || s.highestExpectedBlockNr.IsZero() {
 		return false
 	}
-	currentBlock := s.cfg.Chain.CurrentBlock().Number64().Uint64()
+	currentBlock := currentBlockNumberOrZero(s.cfg.Chain)
 	targetBlock := s.highestExpectedBlockNr.Uint64()
 	if currentBlock >= targetBlock {
 		return true
@@ -176,14 +180,14 @@ func (s *Service) Resync() error {
 		event.GlobalEvent.Send(common.DownloaderFinishEvent{})
 	}()
 
-	beforeBlockNr := s.cfg.Chain.CurrentBlock().Number64()
+	beforeBlockNr := currentBlockNumber(s.cfg.Chain)
 	highestExpectedBlockNr := s.waitForMinimumPeers()
 	if err := s.roundRobinSync(highestExpectedBlockNr); err != nil {
-		log.Error("Resync fail", "err", err, "highestExpectedBlockNr", highestExpectedBlockNr, "currentNr", s.cfg.Chain.CurrentBlock().Number64(), "beforeResyncBlockNr", beforeBlockNr)
+		log.Error("Resync fail", "err", err, "highestExpectedBlockNr", highestExpectedBlockNr, "currentNr", currentBlockNumber(s.cfg.Chain), "beforeResyncBlockNr", beforeBlockNr)
 		return err
 	}
 
-	log.Info("Resync attempt complete", "highestExpectedBlockNr", highestExpectedBlockNr, "currentNr", s.cfg.Chain.CurrentBlock().Number64(), "beforeResyncBlockNr", beforeBlockNr)
+	log.Info("Resync attempt complete", "highestExpectedBlockNr", highestExpectedBlockNr, "currentNr", currentBlockNumber(s.cfg.Chain), "beforeResyncBlockNr", beforeBlockNr)
 	return nil
 }
 
@@ -197,7 +201,7 @@ func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 
 	if s.shouldSkipPeerWait() {
 		log.Info("Skipping peer discovery (genesis/standalone mode)")
-		return s.cfg.Chain.CurrentBlock().Number64()
+		return currentBlockNumber(s.cfg.Chain)
 	}
 
 	var peers []peer.ID
@@ -205,7 +209,7 @@ func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 	maxWaitCount := 60 // Maximum ~5 minutes wait (60 * 5 seconds)
 
 	for {
-		highestExpectedBlockNr, peers = s.cfg.P2P.Peers().BestPeers(s.cfg.P2P.GetConfig().MinSyncPeers, s.cfg.Chain.CurrentBlock().Number64())
+		highestExpectedBlockNr, peers = s.cfg.P2P.Peers().BestPeers(s.cfg.P2P.GetConfig().MinSyncPeers, currentBlockNumber(s.cfg.Chain))
 		if len(peers) >= required {
 			log.Info("Found suitable peers for sync", "peers", len(peers), "required", required)
 			break
@@ -222,9 +226,9 @@ func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 		}
 
 		if waitCount >= maxWaitCount {
-			if s.cfg.Chain.CurrentBlock().Number64().IsZero() {
+			if currentBlockNumber(s.cfg.Chain).IsZero() {
 				log.Warn("Peer discovery timeout, starting as genesis node")
-				return s.cfg.Chain.CurrentBlock().Number64()
+				return currentBlockNumber(s.cfg.Chain)
 			}
 			log.Warn("Extended peer wait, node may be isolated from network")
 			waitCount = 0
@@ -233,7 +237,7 @@ func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 		select {
 		case <-time.After(handshakePollingInterval):
 		case <-s.ctx.Done():
-			return s.cfg.Chain.CurrentBlock().Number64()
+			return currentBlockNumber(s.cfg.Chain)
 		}
 	}
 	return
@@ -246,7 +250,7 @@ func (s *Service) shouldSkipPeerWait() bool {
 	if cfg.MinSyncPeers == 0 {
 		return true
 	}
-	if !s.cfg.Chain.CurrentBlock().Number64().IsZero() {
+	if !currentBlockNumber(s.cfg.Chain).IsZero() {
 		return false
 	}
 	return len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0

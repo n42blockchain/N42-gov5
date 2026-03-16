@@ -40,9 +40,9 @@ import (
 // [4..11]  = view number (8 bytes LE)
 // [12..end] = encoded QC (variable length)
 const (
-	extraMagicLen   = 4
-	extraViewLen    = 8
-	extraMinLen     = extraMagicLen + extraViewLen
+	extraMagicLen      = 4
+	extraViewLen       = 8
+	extraMinLen        = extraMagicLen + extraViewLen
 	inmemorySignatures = 4096
 	inmemorySnapshots  = 128
 )
@@ -76,11 +76,9 @@ type HotStuff struct {
 // New creates a new HotStuff consensus engine.
 func New(config *params.HotStuffConfig, chainConfig *params.ChainConfig) *HotStuff {
 	ctx, cancel := context.WithCancel(context.Background())
-	signatures, err := lru.NewARC(inmemorySignatures)
-	if err != nil {
-		// This should never happen with a positive capacity constant.
-		panic(fmt.Sprintf("hotstuff: failed to create LRU cache: %v", err))
-	}
+	// NewARC only fails for invalid capacities. This adapter uses a fixed
+	// positive constant, so there is no meaningful runtime recovery path here.
+	signatures, _ := lru.NewARC(inmemorySignatures)
 
 	conf := config
 	if conf == nil {

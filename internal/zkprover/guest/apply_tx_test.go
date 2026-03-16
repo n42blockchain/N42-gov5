@@ -6,6 +6,7 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/params"
@@ -211,6 +212,13 @@ func TestTransfer(t *testing.T) {
 	}
 	if ibs.GetBalance(types.Address{0x02}).Uint64() != 800 {
 		t.Fatalf("recipient balance: got %d, want 800", ibs.GetBalance(types.Address{0x02}).Uint64())
+	}
+}
+
+func TestApplyTxRejectsMissingHeaderNumber(t *testing.T) {
+	_, err := ApplyTx(ForkConfig{}, 1, &block.Header{}, nil, nil, 0, nil, nil, 0)
+	if err == nil || err.Error() != "block header number is nil" {
+		t.Fatalf("ApplyTx() error = %v, want block header number is nil", err)
 	}
 }
 

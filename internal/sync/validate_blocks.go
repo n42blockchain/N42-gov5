@@ -64,8 +64,12 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 	if _, ok = iBody.(*block.Body); !ok {
 		return pubsub.ValidationReject, errors.New("msg.body is not block.Body")
 	}
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return pubsub.ValidationReject, err
+	}
 
-	if s.cfg.chain.HasBlock(header.Root, header.Number.Uint64()) {
+	if s.cfg.chain.HasBlock(header.Root, headerNumber.Uint64()) {
 		return pubsub.ValidationIgnore, nil
 	}
 
@@ -84,7 +88,7 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 
 	// Handle block when the parent is unknown.
 	// Safety check: ensure block number is > 0 before subtracting to prevent underflow.
-	if header.Number.Uint64() > 0 && !s.cfg.chain.HasBlock(header.ParentHash, header.Number.Uint64()-1) {
+	if headerNumber.Uint64() > 0 && !s.cfg.chain.HasBlock(header.ParentHash, headerNumber.Uint64()-1) {
 		// TODO: implement orphan block handling
 	}
 

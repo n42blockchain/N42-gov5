@@ -36,9 +36,19 @@ var (
 // - gas limit check
 // - basefee check
 func VerifyEip1559Header(config *params.ChainConfig, parent, header *block.Header) error {
+	if parent == nil {
+		return errors.New("parent header is nil")
+	}
+	parentNumber, err := requireHeaderNumber(parent, "parent header number unavailable")
+	if err != nil {
+		return err
+	}
+	if header == nil {
+		return errors.New("header is nil")
+	}
 	// Verify that the gas limit remains within allowed bounds
 	parentGasLimit := parent.GasLimit
-	if !config.IsLondon(parent.Number.Uint64()) {
+	if !config.IsLondon(parentNumber) {
 		parentGasLimit = parent.GasLimit * params.ElasticityMultiplier
 	}
 	if err := VerifyGaslimit(parentGasLimit, header.GasLimit); err != nil {
@@ -59,8 +69,15 @@ func VerifyEip1559Header(config *params.ChainConfig, parent, header *block.Heade
 
 // CalcBaseFee calculates the basefee of the header.
 func CalcBaseFee(config *params.ChainConfig, parent *block.Header) *big.Int {
+	if parent == nil {
+		return new(big.Int).SetUint64(params.InitialBaseFee)
+	}
+	parentNumber, err := requireHeaderNumber(parent, "")
+	if err != nil {
+		return new(big.Int).SetUint64(params.InitialBaseFee)
+	}
 	// If the current block is the first EIP-1559 block, return the InitialBaseFee.
-	if !config.IsLondon(parent.Number.Uint64()) {
+	if !config.IsLondon(parentNumber) {
 		return new(big.Int).SetUint64(params.InitialBaseFee)
 	}
 

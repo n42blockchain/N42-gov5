@@ -473,6 +473,15 @@ func FromN42Header(iHeader block.IHeader) *Header {
 	bloom := new(Bloom)
 	bloom.SetBytes(header.Bloom.Bytes())
 
+	difficulty := new(big.Int)
+	if header.Difficulty != nil {
+		difficulty = header.Difficulty.ToBig()
+	}
+	number := new(big.Int)
+	if header.Number != nil {
+		number = header.Number.ToBig()
+	}
+
 	return &Header{
 		ParentHash:  FromastHash(header.ParentHash),
 		UncleHash:   FromastHash(EmptyUncleHash),
@@ -480,8 +489,8 @@ func FromN42Header(iHeader block.IHeader) *Header {
 		Root:        FromastHash(header.Root),
 		TxHash:      FromastHash(header.TxHash),
 		ReceiptHash: FromastHash(header.ReceiptHash),
-		Difficulty:  header.Difficulty.ToBig(),
-		Number:      header.Number.ToBig(),
+		Difficulty:  difficulty,
+		Number:      number,
 		GasLimit:    header.GasLimit,
 		GasUsed:     header.GasUsed,
 		Time:        header.Time,

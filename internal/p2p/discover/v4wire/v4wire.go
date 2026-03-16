@@ -255,6 +255,9 @@ func recoverNodeKey(hash, sig []byte) (key Pubkey, err error) {
 // EncodePubkey encodes a secp256k1 public key.
 func EncodePubkey(key *ecdsa.PublicKey) Pubkey {
 	var e Pubkey
+	if key == nil {
+		return e
+	}
 	math.ReadBits(key.X, e[:len(e)/2])
 	math.ReadBits(key.Y, e[len(e)/2:])
 	return e

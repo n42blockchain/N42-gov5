@@ -24,28 +24,55 @@ import (
 	"time"
 )
 
+func waitGroupOrTimeout(t *testing.T, wg *sync.WaitGroup, timeout time.Duration, desc string) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for %s", desc)
+	}
+}
+
 func TestSafeGo_NoPanic(t *testing.T) {
-	var done atomic.Bool
+	done := make(chan struct{})
 	SafeGo("test-no-panic", func() {
-		done.Store(true)
+		close(done)
 	})
-	time.Sleep(50 * time.Millisecond)
-	if !done.Load() {
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
 		t.Fatal("goroutine did not run")
 	}
 }
 
 func TestSafeGo_PanicRecovery(t *testing.T) {
 	var after atomic.Bool
-	// Panic should NOT propagate to the test.
+	done := make(chan struct{})
+
 	SafeGo("test-panic", func() {
-		defer func() { after.Store(true) }()
+		defer func() {
+			after.Store(true)
+			close(done)
+		}()
 		panic("test panic")
 	})
-	time.Sleep(50 * time.Millisecond)
-	// The defer in f runs before our recover, so after should still be false
-	// because the panic unwinds f's defers, then our recover catches it.
-	// Actually: defer in f runs, THEN our recover catches. So after = true.
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("panicing goroutine did not finish")
+	}
+	if !after.Load() {
+		t.Fatal("deferred cleanup did not run before panic recovery")
+	}
 }
 
 func TestSafeGoWithWG_NoPanic(t *testing.T) {
@@ -55,7 +82,7 @@ func TestSafeGoWithWG_NoPanic(t *testing.T) {
 	SafeGoWithWG("test-wg", &wg, func() {
 		done.Store(true)
 	})
-	wg.Wait()
+	waitGroupOrTimeout(t, &wg, time.Second, "SafeGoWithWG without panic")
 	if !done.Load() {
 		t.Fatal("goroutine did not run")
 	}
@@ -67,8 +94,8 @@ func TestSafeGoWithWG_PanicRecovery(t *testing.T) {
 	SafeGoWithWG("test-wg-panic", &wg, func() {
 		panic("test wg panic")
 	})
-	// WaitGroup should still be decremented even after panic.
-	wg.Wait()
+
+	waitGroupOrTimeout(t, &wg, time.Second, "SafeGoWithWG panic recovery")
 }
 
 func TestSafeGoErr_NoPanic(t *testing.T) {
@@ -107,13 +134,16 @@ func TestSafeGoErr_PanicBecomesError(t *testing.T) {
 
 func TestSafeGo_MultipleConcurrent(t *testing.T) {
 	var count atomic.Int32
+	var wg sync.WaitGroup
 	const n = 100
+	wg.Add(n)
 	for i := 0; i < n; i++ {
 		SafeGo("concurrent", func() {
+			defer wg.Done()
 			count.Add(1)
 		})
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitGroupOrTimeout(t, &wg, 2*time.Second, "all concurrent SafeGo calls")
 	if count.Load() != n {
 		t.Fatalf("expected %d, got %d", n, count.Load())
 	}

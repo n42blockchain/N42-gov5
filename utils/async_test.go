@@ -2,64 +2,65 @@ package utils
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
+func waitForCounterAtLeast(t *testing.T, counter *int32, want int32, timeout time.Duration) int32 {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		got := atomic.LoadInt32(counter)
+		if got >= want {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return atomic.LoadInt32(counter)
+}
+
 func TestRunEvery(t *testing.T) {
 	var counter int32
+	var wg sync.WaitGroup
 
 	ctx, cancel := context.WithCancel(context.Background())
+	wg.Add(1)
 
-	// Run a function every 10ms
-	RunEvery(ctx, 10*time.Millisecond, func() {
+	RunEveryWithWG(ctx, 10*time.Millisecond, func() {
 		atomic.AddInt32(&counter, 1)
-	})
+	}, &wg)
 
-	// Wait for a few iterations
-	time.Sleep(55 * time.Millisecond)
-
-	// Cancel the context
-	cancel()
-
-	// Wait for goroutine to stop
-	time.Sleep(20 * time.Millisecond)
-
-	// Check that the function was called multiple times
-	count := atomic.LoadInt32(&counter)
+	count := waitForCounterAtLeast(t, &counter, 3, time.Second)
 	if count < 3 {
 		t.Errorf("RunEvery() called function %d times, expected at least 3", count)
 	}
 
-	// Store current count
-	finalCount := count
+	cancel()
+	waitGroupOrTimeout(t, &wg, time.Second, "RunEvery goroutine shutdown")
 
-	// Wait a bit more and verify it stopped
-	time.Sleep(30 * time.Millisecond)
-	newCount := atomic.LoadInt32(&counter)
-
-	if newCount != finalCount {
-		t.Errorf("RunEvery() continued after context cancelled: %d vs %d", finalCount, newCount)
+	if finalCount := atomic.LoadInt32(&counter); finalCount < count {
+		t.Errorf("RunEvery() counter regressed after shutdown: %d -> %d", count, finalCount)
 	}
 }
 
 func TestRunEveryImmediateCancel(t *testing.T) {
 	var counter int32
+	var wg sync.WaitGroup
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
+	cancel()
+	wg.Add(1)
 
-	RunEvery(ctx, 10*time.Millisecond, func() {
+	RunEveryWithWG(ctx, 10*time.Millisecond, func() {
 		atomic.AddInt32(&counter, 1)
-	})
+	}, &wg)
 
-	// Wait a bit
-	time.Sleep(50 * time.Millisecond)
+	waitGroupOrTimeout(t, &wg, time.Second, "RunEvery immediate-cancel exit")
 
-	// Function should not have been called (or maybe once due to timing)
-	count := atomic.LoadInt32(&counter)
-	if count > 1 {
+	if count := atomic.LoadInt32(&counter); count != 0 {
 		t.Errorf("RunEvery() called function %d times after immediate cancel", count)
 	}
 }

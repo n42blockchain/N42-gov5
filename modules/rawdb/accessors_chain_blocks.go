@@ -68,7 +68,11 @@ func ReadBlockWithSenders(db kv.Getter, hash types.Hash, number uint64) (*block.
 
 // WriteBlock serializes a block into the database, header and body separately.
 func WriteBlock(db kv.RwTx, b *block.Block) error {
-	if err := WriteBody(db, b.Hash(), b.Number64().Uint64(), b.Body().(*block.Body)); err != nil {
+	blockNumber, err := requireBlockNumber(b, "block number unavailable")
+	if err != nil {
+		return err
+	}
+	if err := WriteBody(db, b.Hash(), blockNumber.Uint64(), b.Body().(*block.Body)); err != nil {
 		return err
 	}
 	header, ok := b.Header().(*block.Header)
@@ -82,7 +86,11 @@ func WriteBlock(db kv.RwTx, b *block.Block) error {
 // WriteBlockPooled is like WriteBlock but uses pooled byte buffers for the
 // header serialization to reduce GC pressure during high-throughput sync.
 func WriteBlockPooled(db kv.RwTx, b *block.Block) error {
-	if err := WriteBody(db, b.Hash(), b.Number64().Uint64(), b.Body().(*block.Body)); err != nil {
+	blockNumber, err := requireBlockNumber(b, "block number unavailable")
+	if err != nil {
+		return err
+	}
+	if err := WriteBody(db, b.Hash(), blockNumber.Uint64(), b.Body().(*block.Body)); err != nil {
 		return err
 	}
 	header, ok := b.Header().(*block.Header)
@@ -96,12 +104,16 @@ func WriteBlockPooled(db kv.RwTx, b *block.Block) error {
 // WriteHeaderPooled is like WriteHeader but uses a pooled byte buffer for the
 // protobuf serialization of the header data.
 func WriteHeaderPooled(db kv.Putter, header *block.Header) {
+	number, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		log.Crit("Failed to store header", "err", err)
+	}
 	var (
-		hash   = header.Hash()
-		number = header.Number.Uint64()
+		hash      = header.Hash()
+		numberU64 = number.Uint64()
 	)
 
-	if err := WriteHeaderNumber(db, hash, number); err != nil {
+	if err := WriteHeaderNumber(db, hash, numberU64); err != nil {
 		log.Crit("Failed to store hash to number mapping", "err", err)
 	}
 
@@ -113,7 +125,7 @@ func WriteHeaderPooled(db kv.Putter, header *block.Header) {
 		log.Crit("failed to Marshal header", "err", err)
 	}
 	*buf = append(*buf, data...)
-	if err := db.Put(modules.Headers, modules.HeaderKey(number, hash), *buf); err != nil {
+	if err := db.Put(modules.Headers, modules.HeaderKey(numberU64, hash), *buf); err != nil {
 		log.Crit("Failed to store header", "err", err)
 	}
 }

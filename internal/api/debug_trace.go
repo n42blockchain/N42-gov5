@@ -105,9 +105,10 @@ func (debug *DebugAPI) TraceTransaction(ctx context.Context, hash types.Hash, co
 		tx        *transaction.Transaction
 		blockHash types.Hash
 		index     uint64
+		err       error
 	)
 
-	err := debug.api.Database().View(ctx, func(t kv.Tx) error {
+	err = debug.api.Database().View(ctx, func(t kv.Tx) error {
 		var err error
 		tx, blockHash, _, index, err = rawdb.ReadTransactionByHash(t, hash)
 		return err
@@ -135,6 +136,7 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 	var (
 		tracer  vm.EVMLogger
 		timeout = 5 * time.Second
+		err     error
 	)
 
 	// Parse timeout from config
@@ -158,9 +160,13 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 	}
 
 	// Get state at the beginning of the block
+	blockNumber, err := requireUint256(blk.Number64(), "block number unavailable")
+	if err != nil {
+		return nil, err
+	}
 	var ibs *state.IntraBlockState
-	err := debug.api.Database().View(ctx, func(t kv.Tx) error {
-		blockNum := blk.Number64().Uint64()
+	err = debug.api.Database().View(ctx, func(t kv.Tx) error {
+		blockNum := blockNumber.Uint64()
 		if blockNum > 0 {
 			blockNum--
 		}
@@ -177,10 +183,14 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 	if !ok {
 		return nil, errors.New("invalid header type")
 	}
+	headerNumber, err := requireUint256(header.Number64(), "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
 
 	// Replay transactions up to the target
 	txs := blk.Transactions()
-	signer := transaction.MakeSigner(debug.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()))
+	signer := transaction.MakeSigner(debug.api.GetChainConfig(), headerNumber.ToBig())
 
 	for i := 0; i < txIndex; i++ {
 		msg, err := txs[i].AsMessage(signer, header.BaseFee64())
@@ -196,7 +206,7 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 		if _, err := internal.ApplyMessage(evm, msg, gp, true, false); err != nil {
 			return nil, err
 		}
-		ibs.FinalizeTx(debug.api.GetChainConfig().Rules(header.Number64().Uint64()), state.NewNoopWriter())
+		ibs.FinalizeTx(debug.api.GetChainConfig().Rules(headerNumber.Uint64()), state.NewNoopWriter())
 	}
 
 	// Execute the target transaction with tracing
@@ -368,6 +378,10 @@ func (debug *DebugAPI) TraceCall(ctx context.Context, args TransactionArgs, bloc
 	if !ok {
 		return nil, errors.New("invalid header type")
 	}
+	headerNumber, err := requireUint256(header.Number64(), "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
 
 	// Set up the tracer
 	var tracer vm.EVMLogger
@@ -393,7 +407,7 @@ func (debug *DebugAPI) TraceCall(ctx context.Context, args TransactionArgs, bloc
 	// Get state
 	var ibs *state.IntraBlockState
 	err = debug.api.Database().View(ctx, func(t kv.Tx) error {
-		stateReader := state.NewPlainState(t, header.Number64().Uint64())
+		stateReader := state.NewPlainState(t, headerNumber.Uint64())
 		ibs = state.New(stateReader)
 		return nil
 	})
@@ -421,7 +435,9 @@ func (debug *DebugAPI) TraceCall(ctx context.Context, args TransactionArgs, bloc
 
 	// Apply block overrides
 	if config != nil && config.BlockOverrides != nil {
-		config.BlockOverrides.Apply(&blockContext)
+		if err := config.BlockOverrides.Apply(&blockContext); err != nil {
+			return nil, err
+		}
 	}
 
 	evm := vm.NewEVM(blockContext, txContext, ibs, debug.api.GetChainConfig(), vmConfig)
@@ -501,6 +517,10 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 	if !ok {
 		return nil, errors.New("invalid header type")
 	}
+	headerNumber, err := requireUint256(header.Number64(), "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
 
 	// Create message
 	if err := args.setDefaults(ctx, s.api); err != nil {
@@ -520,7 +540,7 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 
 	// Get active precompiles for exclusion
 	chainConfig := s.api.GetChainConfig()
-	rules := chainConfig.Rules(header.Number64().Uint64())
+	rules := chainConfig.Rules(headerNumber.Uint64())
 	precompiles := vm.ActivePrecompiles(rules)
 
 	// Start with the provided access list (if any)
@@ -538,7 +558,7 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 		// Get fresh state for each iteration
 		var ibs *state.IntraBlockState
 		err = s.api.Database().View(ctx, func(t kv.Tx) error {
-			stateReader := state.NewPlainState(t, header.Number64().Uint64())
+			stateReader := state.NewPlainState(t, headerNumber.Uint64())
 			ibs = state.New(stateReader)
 			return nil
 		})
@@ -718,13 +738,21 @@ func (debug *DebugAPI) StorageRangeAt(ctx context.Context, blockHashOrNumber int
 	if err != nil || blk == nil {
 		return nil, errors.New("block not found")
 	}
+	blockNumber, err := requireUint256(blk.Number64(), "block number unavailable")
+	if err != nil {
+		return nil, err
+	}
 
 	// Get state at the block
 	var stateDB *state.IntraBlockState
 	if err := debug.api.Database().View(ctx, func(tx kv.Tx) error {
-		ibs := debug.api.State(tx, jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.BlockNumber(blk.Number64().Uint64())))
+		ibs := debug.api.State(tx, jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.BlockNumber(blockNumber.Uint64())))
 		if ibs != nil {
-			stateDB = ibs.(*state.IntraBlockState)
+			var err error
+			stateDB, err = requireIntraBlockState(ibs, "unexpected state type")
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {

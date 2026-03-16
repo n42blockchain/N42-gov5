@@ -46,14 +46,16 @@ import (
 const SizeLimit = 300 // maximum encoded size of a node record in bytes
 
 var (
-	ErrInvalidSig     = errors.New("invalid signature on node record")
-	errNotSorted      = errors.New("record key/value pairs are not sorted by key")
-	errDuplicateKey   = errors.New("record contains duplicate key")
-	errIncompletePair = errors.New("record contains incomplete k/v pair")
-	errIncompleteList = errors.New("record contains less than two list elements")
-	errTooBig         = fmt.Errorf("record bigger than %d bytes", SizeLimit)
-	errEncodeUnsigned = errors.New("can't encode unsigned record")
-	errNotFound       = errors.New("no such key in record")
+	ErrInvalidSig       = errors.New("invalid signature on node record")
+	errNotSorted        = errors.New("record key/value pairs are not sorted by key")
+	errDuplicateKey     = errors.New("record contains duplicate key")
+	errIncompletePair   = errors.New("record contains incomplete k/v pair")
+	errIncompleteList   = errors.New("record contains less than two list elements")
+	errTooBig           = fmt.Errorf("record bigger than %d bytes", SizeLimit)
+	errEncodeUnsigned   = errors.New("can't encode unsigned record")
+	errNotFound         = errors.New("no such key in record")
+	errNilSchemeWithSig = errors.New("invalid call to SetSig with non-nil signature but nil scheme")
+	errNilSigWithScheme = errors.New("invalid call to SetSig with nil signature but non-nil scheme")
 )
 
 // An IdentityScheme is capable of verifying record signatures and
@@ -287,14 +289,14 @@ func (r *Record) VerifySignature(s IdentityScheme) error {
 // You can also use SetSig to remove the signature explicitly by passing a nil scheme
 // and signature.
 //
-// SetSig panics when either the scheme or the signature (but not both) are nil.
+// SetSig returns an error when either the scheme or the signature (but not both) are nil.
 func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 	switch {
 	// Prevent storing invalid data.
 	case s == nil && sig != nil:
-		panic("enr: invalid call to SetSig with non-nil signature but nil scheme")
+		return errNilSchemeWithSig
 	case s != nil && sig == nil:
-		panic("enr: invalid call to SetSig with nil signature but non-nil scheme")
+		return errNilSigWithScheme
 	// Verify if we have a scheme.
 	case s != nil:
 		if err := s.Verify(r, sig); err != nil {

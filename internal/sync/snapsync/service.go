@@ -55,10 +55,10 @@ type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	synced   atomic.Bool
-	syncing  atomic.Bool
-	started  sync.Once
-	done     chan struct{}
+	synced  atomic.Bool
+	syncing atomic.Bool
+	started sync.Once
+	done    chan struct{}
 }
 
 // NewService creates a new snap sync service.
@@ -96,7 +96,7 @@ func (s *Service) run() {
 	}
 
 	// Check if we actually need snap sync (only for empty/near-genesis nodes).
-	currentBlock := s.cfg.Chain.CurrentBlock().Number64().Uint64()
+	currentBlock := currentBlockNumberOrZero(s.cfg.Chain)
 	if currentBlock > 0 {
 		log.Info("Node already has state, skipping snap sync", "block", currentBlock)
 		s.synced.Store(true)
@@ -235,7 +235,7 @@ func (s *Service) selectPivot() (uint64, []byte, error) {
 	var peers []peer.ID
 
 	for {
-		currentBlock := s.cfg.Chain.CurrentBlock().Number64()
+		currentBlock := currentBlockNumber(s.cfg.Chain)
 		highestBlock, peers = s.cfg.P2P.Peers().BestPeers(required, currentBlock)
 
 		if len(peers) >= required && highestBlock != nil && highestBlock.Uint64() > s.cfg.SnapSync.PivotDistance {

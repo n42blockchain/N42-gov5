@@ -304,7 +304,7 @@ func (f *BasicFetcher) FetchBlocks(ctx context.Context, start *uint256.Int, coun
 
 	startTime := time.Now()
 
-	_, peers := f.p2p.Peers().BestPeers(f.config.MinPeers, f.blockchain.CurrentBlock().Number64())
+	_, peers := f.p2p.Peers().BestPeers(f.config.MinPeers, currentBlockNumber(f.blockchain))
 	if len(peers) == 0 {
 		f.metrics.RecordFetch(peer.ID("unknown"), count, 0, time.Since(startTime), false)
 		return nil, errors.New("no peers available")

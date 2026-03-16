@@ -66,13 +66,21 @@ func NewForkChoice(chainReader ChainReader, preserve func(header block.IHeader) 
 // total difficulty is higher. In the extern mode, the trusted
 // header is always selected as the head.
 func (f *ForkChoice) ReorgNeeded(current block.IHeader, header block.IHeader) (bool, error) {
+	currentNumber, err := requireHeaderNumber(current, "current header number unavailable")
+	if err != nil {
+		return false, err
+	}
+	headerNumber, err := requireHeaderNumber(header, "new header number unavailable")
+	if err != nil {
+		return false, err
+	}
 	var (
-		localTD  = f.chain.GetTd(current.Hash(), current.Number64())
-		externTd = f.chain.GetTd(header.Hash(), header.Number64())
+		localTD  = f.chain.GetTd(current.Hash(), currentNumber)
+		externTd = f.chain.GetTd(header.Hash(), headerNumber)
 	)
 	if localTD == nil || externTd == nil {
 		log.Warnf("ForkChoice.ReorgNeeded: missing td, localTD=%v, externTd=%v, currentHash=%s, currentNum=%d, headerHash=%s, headerNum=%d",
-			localTD, externTd, current.Hash().String(), current.Number64().Uint64(), header.Hash().String(), header.Number64().Uint64())
+			localTD, externTd, current.Hash().String(), currentNumber.Uint64(), header.Hash().String(), headerNumber.Uint64())
 		return false, errors.New("missing td")
 	}
 	log.Tracef("ForkChoice.ReorgNeeded: localTD = %d, externTd = %d", localTD.Uint64(), externTd.Uint64())
@@ -87,7 +95,7 @@ func (f *ForkChoice) ReorgNeeded(current block.IHeader, header block.IHeader) (b
 	// Please refer to http://www.cs.cornell.edu/~ie53/publications/btcProcFC.pdf
 	reorg := externTd.Cmp(localTD) > 0
 	if !reorg && externTd.Cmp(localTD) == 0 {
-		number, headNumber := header.Number64().Uint64(), current.Number64().Uint64()
+		number, headNumber := headerNumber.Uint64(), currentNumber.Uint64()
 		if number < headNumber {
 			reorg = true
 		} else if number == headNumber {

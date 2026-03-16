@@ -24,6 +24,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/params"
 )
 
 func TestDecodeSignatureValidLength(t *testing.T) {
@@ -82,6 +83,20 @@ func TestDecodeSignatureInvalidLength(t *testing.T) {
 				t.Error("decodeSignature should return nil values on error")
 			}
 		})
+	}
+}
+
+func TestMakeSignerAllowsNilInputs(t *testing.T) {
+	if !MakeSigner(nil, nil).Equal(FrontierSigner{}) {
+		t.Fatal("MakeSigner(nil, nil) did not return FrontierSigner")
+	}
+
+	config := &params.ChainConfig{
+		ChainID:     big.NewInt(1),
+		LondonBlock: big.NewInt(0),
+	}
+	if !MakeSigner(config, nil).Equal(NewLondonSigner(config.ChainID)) {
+		t.Fatal("MakeSigner(config, nil) did not return London signer")
 	}
 }
 

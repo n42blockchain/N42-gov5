@@ -17,17 +17,24 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 	if err := blk.FromProtoMessage(msg); err != nil {
 		return err
 	}
+	blockNumber, err := requireBlockNumber(blk, "block number unavailable")
+	if err != nil {
+		return err
+	}
 
 	header := blk.Header()
 	log.Info("Subscriber received new block",
-		"number", header.Number64().Uint64(),
+		"number", blockNumber.Uint64(),
 		"hash", header.Hash(),
 		"stateRoot", header.StateRoot(),
 		"txs", len(blk.Transactions()),
 	)
 
-	currentHeight := s.cfg.chain.CurrentBlock().Number64().Uint64()
-	if blk.Number64().Uint64() > currentHeight+1 {
+	currentHeight, err := requireCurrentBlockNumber(s.cfg.chain, "current block number unavailable")
+	if err != nil {
+		return err
+	}
+	if blockNumber.Uint64() > currentHeight.Uint64()+1 {
 		return s.cfg.chain.AddFutureBlock(blk)
 	}
 

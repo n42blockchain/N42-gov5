@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
-
 )
 
 // --- helpers ---
@@ -403,6 +402,50 @@ func TestProofInvalidRoot(t *testing.T) {
 	}
 	fakeRoot := HashKey([]byte("fake"))
 	_, err = VerifyProof(fakeRoot, proof, DefaultHasher())
+	if err != ErrInvalidProof {
+		t.Fatalf("expected ErrInvalidProof, got %v", err)
+	}
+}
+
+func TestProofRejectsTruncatedPath(t *testing.T) {
+	tree, _ := newTestTree()
+	for i := uint64(0); i < 20; i++ {
+		tree.Put(makeKey(i), makeValue(i))
+	}
+
+	proof, err := tree.GetProof(makeKey(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proof.Path) < 2 {
+		t.Fatal("expected multi-step proof")
+	}
+
+	tampered := *proof
+	tampered.Path = append([]ProofEntry(nil), proof.Path[:len(proof.Path)-1]...)
+
+	_, err = VerifyProof(tree.Root(), &tampered, DefaultHasher())
+	if err != ErrInvalidProof {
+		t.Fatalf("expected ErrInvalidProof, got %v", err)
+	}
+}
+
+func TestProofRejectsPathForDifferentKey(t *testing.T) {
+	tree, _ := newTestTree()
+	for i := uint64(0); i < 20; i++ {
+		tree.Put(makeKey(i), makeValue(i))
+	}
+
+	proof, err := tree.GetProof(makeKey(999))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tampered := *proof
+	tampered.Key = makeKey(7)
+	tampered.Path = append([]ProofEntry(nil), proof.Path...)
+
+	_, err = VerifyProof(tree.Root(), &tampered, DefaultHasher())
 	if err != ErrInvalidProof {
 		t.Fatalf("expected ErrInvalidProof, got %v", err)
 	}

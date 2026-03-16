@@ -87,7 +87,7 @@ type mockBackend struct{}
 
 type canonicalCheckChainStub struct {
 	header *block.Header
-	blk    *block.Block
+	blk    block.IBlock
 }
 
 func (m *canonicalCheckChainStub) Config() *params.ChainConfig { return nil }
@@ -262,5 +262,45 @@ func TestBlockByNumberOrHashRequireCanonicalWithNonInternalChain(t *testing.T) {
 	_, err := api.BlockByNumberOrHash(context.Background(), args)
 	if err == nil || err.Error() != "canonical hash check unavailable for this blockchain implementation" {
 		t.Fatalf("BlockByNumberOrHash() error = %v", err)
+	}
+}
+
+func TestBlockByNumberLatestRejectsNilCurrentBlockNumber(t *testing.T) {
+	blk := &gasPriceBlockStub{}
+	api := &API{bc: &canonicalCheckChainStub{blk: blk}}
+
+	_, err := api.BlockByNumber(context.Background(), rpc.LatestBlockNumber)
+	if err == nil || err.Error() != "current block number unavailable" {
+		t.Fatalf("BlockByNumber() error = %v", err)
+	}
+}
+
+func TestBlockByNumberOrHashRejectsNilHeaderNumber(t *testing.T) {
+	header := &block.Header{}
+	blk := block.NewBlock(header, nil).(*block.Block)
+	api := &API{bc: &canonicalCheckChainStub{header: header, blk: blk}}
+
+	args := rpc.BlockNumberOrHashWithHash(header.Hash(), false)
+	_, err := api.BlockByNumberOrHash(context.Background(), args)
+	if err == nil || err.Error() != "header number unavailable" {
+		t.Fatalf("BlockByNumberOrHash() error = %v", err)
+	}
+}
+
+func TestStateAtTransactionRejectsNilBlock(t *testing.T) {
+	api := &API{}
+
+	_, _, _, err := api.StateAtTransaction(context.Background(), nil, nil, 0)
+	if err == nil || err.Error() != "block is nil" {
+		t.Fatalf("StateAtTransaction() error = %v", err)
+	}
+}
+
+func TestStateAtBlockRejectsNilBlock(t *testing.T) {
+	api := &API{}
+
+	_, err := api.StateAtBlock(context.Background(), nil, nil)
+	if err == nil || err.Error() != "block is nil" {
+		t.Fatalf("StateAtBlock() error = %v", err)
 	}
 }

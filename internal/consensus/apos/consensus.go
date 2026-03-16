@@ -108,7 +108,10 @@ func doReward(chainConf *params.ChainConfig, state *state.IntraBlockState, heade
 	if overflow {
 		return nil, nil, errors.New("BeijingBlock overflows uint256")
 	}
-	number := header.Number64()
+	number, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, nil, err
+	}
 	var rewards block.Rewards
 	var upayMap map[types.Address]*uint256.Int
 
@@ -130,7 +133,7 @@ func doReward(chainConf *params.ChainConfig, state *state.IntraBlockState, heade
 					state.CreateAccount(addr, false)
 				}
 
-				log.Info("🔨 set account reward", "addr", addr, "amount", value.Uint64(), "blockNr", header.Number.Uint64())
+				log.Info("🔨 set account reward", "addr", addr, "amount", value.Uint64(), "blockNr", number.Uint64())
 				state.AddBalance(addr, value)
 				rewards = append(rewards, &block.Reward{
 					Address: addr,
@@ -138,7 +141,7 @@ func doReward(chainConf *params.ChainConfig, state *state.IntraBlockState, heade
 				})
 			}
 		}
-		if !isWrongStateRootBlockNumber(header.Number64()) {
+		if !isWrongStateRootBlockNumber(number) {
 			state.SoftFinalise()
 		}
 		sort.Sort(rewards)
