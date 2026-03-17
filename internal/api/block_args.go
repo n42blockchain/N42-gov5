@@ -31,8 +31,11 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.ChainConfig, inclTx bool, fullTx bool) (map[string]interface{}, error) {
+func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.ChainConfig, inclTx bool, fullTx bool, blockHashOverride *types.Hash) (map[string]interface{}, error) {
 	fields := RPCMarshalHeader(block.Header(), cfg)
+	if blockHashOverride != nil {
+		fields["hash"] = avmtypes.FromastHash(*blockHashOverride)
+	}
 
 	if inclTx {
 		formatTx := func(tx *transaction.Transaction) (interface{}, error) {
@@ -42,7 +45,7 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.C
 		if fullTx {
 			formatTx = func(tx *transaction.Transaction) (interface{}, error) {
 				hash := tx.Hash()
-				return newRPCTransactionFromBlockHash(block, hash, cfg), nil
+				return newRPCTransactionFromBlockHash(block, hash, cfg, blockHashOverride), nil
 			}
 		}
 		txs := block.Transactions()
@@ -97,23 +100,27 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.C
 }
 
 // newRPCTransactionFromBlockHash returns a transaction that will serialize to the RPC representation.
-func newRPCTransactionFromBlockHash(b block.IBlock, findHash types.Hash, cfg *params.ChainConfig) *RPCTransaction {
+func newRPCTransactionFromBlockHash(b block.IBlock, findHash types.Hash, cfg *params.ChainConfig, blockHashOverride *types.Hash) *RPCTransaction {
 	for idx, tx := range b.Transactions() {
 		hash := tx.Hash()
 		if hash == findHash {
-			return newRPCTransactionFromBlockIndex(b, uint64(idx), cfg)
+			return newRPCTransactionFromBlockIndex(b, uint64(idx), cfg, blockHashOverride)
 		}
 	}
 	return nil
 }
 
 // newRPCTransactionFromBlockIndex returns a transaction that will serialize to the RPC representation.
-func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64, cfg *params.ChainConfig) *RPCTransaction {
+func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64, cfg *params.ChainConfig, blockHashOverride *types.Hash) *RPCTransaction {
 	txs := b.Transactions()
 	if index >= uint64(len(txs)) {
 		return nil
 	}
-	return newRPCTransaction(txs[index], ethCompatibleBlockHash(b, cfg), uint256ToUint64OrZero(b.Number64()), index, big.NewInt(baseFee))
+	blockHash := ethCompatibleBlockHash(b, cfg)
+	if blockHashOverride != nil {
+		blockHash = *blockHashOverride
+	}
+	return newRPCTransaction(txs[index], blockHash, uint256ToUint64OrZero(b.Number64()), index, big.NewInt(baseFee))
 }
 
 // RPCMarshalHeader converts the given header to the RPC output .
@@ -150,11 +157,9 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 	}
 
 	// Post-Merge/Cancun compatibility fields (Blockscout v9.3.3)
-	// N42 is a POA/POS chain without beacon chain withdrawals or block-level blob gas,
-	// but Blockscout expects these fields to be present for proper parsing.
 	result["withdrawalsRoot"] = avmtypes.FromastHash(types.Hash{})
-	result["blobGasUsed"] = hexutil.Uint64(0)
-	result["excessBlobGas"] = hexutil.Uint64(0)
+	result["blobGasUsed"] = hexutil.Uint64(header.BlobGasUsed)
+	result["excessBlobGas"] = hexutil.Uint64(header.ExcessBlobGas)
 	result["withdrawals"] = []interface{}{}
 
 	return result

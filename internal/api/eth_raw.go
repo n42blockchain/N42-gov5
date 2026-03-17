@@ -208,7 +208,7 @@ func (s *TransactionAPI) GetRawTransactionByHash(ctx context.Context, hash avmco
 // Returns:
 //   - The RLP-encoded transaction bytes
 func (s *TransactionAPI) GetRawTransactionByBlockHashAndIndex(ctx context.Context, blockHash avmcommon.Hash, index hexutil.Uint) (hexutil.Bytes, error) {
-	block, err := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(blockHash))
+	block, err := s.getBlockByHash(avmtypes.ToastHash(blockHash))
 	if err != nil || block == nil {
 		return nil, err
 	}

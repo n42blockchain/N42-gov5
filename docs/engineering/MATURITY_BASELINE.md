@@ -1,0 +1,71 @@
+# N42 成熟度基线与 Smoke Gate
+
+这份文档把 [`PRODUCTION_MATURITY_PLAN.md`](./PRODUCTION_MATURITY_PLAN.md) 里 Phase 0 的“固定命令清单”和“专项 smoke”落成可执行 gate。
+
+## 1. 固定命令清单
+
+核心基线：
+
+1. `go build ./...`
+2. `go vet ./...`
+3. `go test -count=1 ./...`
+4. `make lint`
+5. `make race-core`
+
+专项 smoke：
+
+1. `make maturity-smoke`
+2. `make maturity-baseline`
+
+其中：
+
+1. `make maturity-smoke` 只跑聚焦的外部 surface / 恢复性 smoke。
+2. `make maturity-baseline` 跑同一套 smoke，并额外执行核心基线命令，结果写入 `build/maturity-baseline/<timestamp>/summary.md`。
+
+## 2. Smoke 覆盖面
+
+| 类别 | 包 / 入口 | 目标 |
+|---|---|---|
+| Engine API | `./internal/api` | 校验 `NewPayload*` / `ForkchoiceUpdated*` / `GetPayload*` 的最小真实闭环 |
+| GraphQL | `./internal/api/graphql` | 保证查询路由、参数校验和错误路径仍可用 |
+| Clef | `./cmd/clef` | 保证 signer/rule engine 的成功与失败路径 |
+| External signer | `./accounts/external` | 保证外部签名账户发现、签名、拒绝路径 |
+| Node auth / genesis | `./internal/node` | 保证 auth namespace 过滤和 Hive genesis 启动前置条件 |
+| Keystore recovery | `./accounts/keystore` | 保证 watcher 漏事件时缓存仍会补扫刷新 |
+| Genesis config | `./conf` | 保证 Hive / engine genesis 解析和 consensus 推断 |
+| Snapshot recovery | `./modules/state/snapshot` | 保证 journal 落盘/重载、损坏输入和取消路径 |
+| TxPool journal | `./internal/txspool` | 保证 graceful shutdown 后的 journal 落盘、重载、去重和旧格式迁移 |
+
+## 3. 输出位置
+
+脚本路径：
+
+1. [scripts/run_maturity_baseline.sh](/Users/jieliu/Documents/n42/N42-gov5/scripts/run_maturity_baseline.sh)
+
+结果目录：
+
+1. `build/maturity-baseline/<timestamp>/summary.md`
+2. 同目录下保存每一步的独立 `*.log`
+
+## 4. 红线
+
+以下任一项失败，都不能把当前状态称为“生产候选”：
+
+1. `make maturity-smoke` 失败
+2. `go build ./...` 失败
+3. `go vet ./...` 失败
+4. `go test -count=1 ./...` 失败
+5. `make lint` 失败
+6. `make race-core` 失败
+
+## 5. 运行建议
+
+日常收口：
+
+1. 先跑 `make maturity-smoke`
+2. 需要形成可追溯记录时跑 `make maturity-baseline`
+
+版本发布前：
+
+1. 跑 `make maturity-baseline`
+2. 再补 Hive / interop / soak 的外部环境验证

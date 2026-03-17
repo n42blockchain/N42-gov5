@@ -208,7 +208,7 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 
 // GetBlockTransactionCountByHash returns the number of transactions in the block with the given hash.
 func (s *TransactionAPI) GetBlockTransactionCountByHash(ctx context.Context, blockHash avmcommon.Hash) *hexutil.Uint {
-	if block, _ := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(blockHash)); block != nil {
+	if block, _ := s.getBlockByHash(avmtypes.ToastHash(blockHash)); block != nil {
 		n := hexutil.Uint(len(block.Transactions()))
 		return &n
 	}
@@ -256,7 +256,7 @@ func (s *TransactionAPI) GetTransactionByHash(ctx context.Context, hash avmcommo
 
 // GetTransactionByBlockHashAndIndex returns the transaction for the given block hash and index.
 func (s *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, blockHash avmcommon.Hash, index hexutil.Uint) *RPCTransaction {
-	blk, _ := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(blockHash))
+	blk, _ := s.getBlockByHash(avmtypes.ToastHash(blockHash))
 	if blk == nil {
 		return nil
 	}

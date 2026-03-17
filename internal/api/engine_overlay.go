@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"math/big"
+	"sort"
 	"sync"
 
 	"github.com/holiman/uint256"
@@ -11,26 +13,35 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 )
 
 type engineBuiltPayload struct {
-	v1 *ExecutionPayloadV1
-	v2 *ExecutionPayloadV2
+	v1                *ExecutionPayloadV1
+	v2                *ExecutionPayloadV2
+	v3                *ExecutionPayloadV3
+	v4                *ExecutionPayloadV4
+	blobsBundle       *BlobsBundleV1
+	executionRequests []hexutil.Bytes
 }
 
 type engineOverlay struct {
 	mu            sync.RWMutex
 	head          block.IBlock
 	blocksByNum   map[uint64]block.IBlock
+	blocksByHash  map[types.Hash]block.IBlock
+	hashesByNum   map[uint64]types.Hash
 	builtPayloads map[PayloadID]*engineBuiltPayload
 }
 
 func newEngineOverlay() *engineOverlay {
 	return &engineOverlay{
 		blocksByNum:   make(map[uint64]block.IBlock),
+		blocksByHash:  make(map[types.Hash]block.IBlock),
+		hashesByNum:   make(map[uint64]types.Hash),
 		builtPayloads: make(map[PayloadID]*engineBuiltPayload),
 	}
 }
@@ -116,12 +127,89 @@ func ethCompatibleBlockHash(blk block.IBlock, cfg *params.ChainConfig) types.Has
 	return ethCompatibleHeaderHash(blk.Header(), cfg)
 }
 
+type enginePayloadHashOptions struct {
+	includeWithdrawals bool
+	withdrawals        []*Withdrawal
+	includeBlobFields  bool
+	parentBeaconRoot   *types.Hash
+	requestsHash       *types.Hash
+}
+
+func ethCompatibleEngineBlockHash(blk block.IBlock, cfg *params.ChainConfig, opts enginePayloadHashOptions) types.Hash {
+	if blk == nil {
+		return types.Hash{}
+	}
+	header, ok := blk.Header().(*block.Header)
+	if !ok || header == nil {
+		return types.Hash{}
+	}
+	var (
+		baseFee         *big.Int
+		withdrawalsHash *types.Hash
+		blobGasUsed     *uint64
+		excessBlobGas   *uint64
+	)
+	number := uint64FromUint256OrZero(header.Number)
+	if header.BaseFee != nil {
+		baseFee = header.BaseFee.ToBig()
+	}
+	if opts.includeWithdrawals || (cfg != nil && cfg.IsShanghai(number)) {
+		root := withdrawalsRoot(opts.withdrawals)
+		withdrawalsHash = &root
+	}
+	if opts.includeBlobFields || (cfg != nil && (cfg.IsCancun(number) || cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time))) {
+		blobGasUsed = new(uint64)
+		excessBlobGas = new(uint64)
+		*blobGasUsed = header.BlobGasUsed
+		*excessBlobGas = header.ExcessBlobGas
+	}
+	return hash.RlpHash(&ethRPCHeader{
+		ParentHash:       header.ParentHash,
+		UncleHash:        hash.EmptyUncleHash,
+		Coinbase:         header.Coinbase,
+		Root:             header.Root,
+		TxHash:           header.TxHash,
+		ReceiptHash:      header.ReceiptHash,
+		Bloom:            block.BytesToBloom(header.Bloom.Bytes()),
+		Difficulty:       uint256ToBigOrZero(header.Difficulty),
+		Number:           uint256ToBigOrZero(header.Number),
+		GasLimit:         header.GasLimit,
+		GasUsed:          header.GasUsed,
+		Time:             header.Time,
+		Extra:            header.Extra,
+		MixDigest:        header.MixDigest,
+		Nonce:            block.EncodeNonce(header.Nonce.Uint64()),
+		BaseFee:          baseFee,
+		WithdrawalsHash:  withdrawalsHash,
+		BlobGasUsed:      blobGasUsed,
+		ExcessBlobGas:    excessBlobGas,
+		ParentBeaconRoot: opts.parentBeaconRoot,
+		RequestsHash:     opts.requestsHash,
+	})
+}
+
 func makePayloadID(parentHash types.Hash, timestamp uint64, feeRecipient types.Address) PayloadID {
-	var input [8 + len(parentHash) + len(feeRecipient)]byte
-	copy(input[:], parentHash[:])
-	binary.BigEndian.PutUint64(input[len(parentHash):len(parentHash)+8], timestamp)
-	copy(input[len(parentHash)+8:], feeRecipient[:])
-	sum := sha256.Sum256(input[:])
+	return makePayloadIDWithExtras(parentHash, timestamp, feeRecipient)
+}
+
+func makePayloadIDWithExtras(parentHash types.Hash, timestamp uint64, feeRecipient types.Address, extras ...[]byte) PayloadID {
+	size := len(parentHash) + 8 + len(feeRecipient)
+	for _, extra := range extras {
+		size += len(extra)
+	}
+	input := make([]byte, size)
+	offset := 0
+	copy(input[offset:], parentHash[:])
+	offset += len(parentHash)
+	binary.BigEndian.PutUint64(input[offset:offset+8], timestamp)
+	offset += 8
+	copy(input[offset:], feeRecipient[:])
+	offset += len(feeRecipient)
+	for _, extra := range extras {
+		copy(input[offset:], extra)
+		offset += len(extra)
+	}
+	sum := sha256.Sum256(input)
 	var id PayloadID
 	copy(id[:], sum[:len(id)])
 	return id
@@ -176,6 +264,74 @@ func executionPayloadV1ToBlock(payload *ExecutionPayloadV1) (block.IBlock, error
 		BaseFee:     uint256FromHexUint64(payload.BaseFeePerGas),
 	}
 	return block.NewBlock(header, txs), nil
+}
+
+func executionPayloadV2ToBlock(payload *ExecutionPayloadV2) (block.IBlock, error) {
+	if payload == nil {
+		return nil, nil
+	}
+	return executionPayloadV1ToBlock(&payload.ExecutionPayloadV1)
+}
+
+func executionPayloadV3ToBlock(payload *ExecutionPayloadV3) (block.IBlock, error) {
+	if payload == nil {
+		return nil, nil
+	}
+	blk, err := executionPayloadV1ToBlock(&ExecutionPayloadV1{
+		ParentHash:    payload.ParentHash,
+		FeeRecipient:  payload.FeeRecipient,
+		StateRoot:     payload.StateRoot,
+		ReceiptsRoot:  payload.ReceiptsRoot,
+		LogsBloom:     payload.LogsBloom,
+		PrevRandao:    payload.PrevRandao,
+		BlockNumber:   payload.BlockNumber,
+		GasLimit:      payload.GasLimit,
+		GasUsed:       payload.GasUsed,
+		Timestamp:     payload.Timestamp,
+		ExtraData:     payload.ExtraData,
+		BaseFeePerGas: payload.BaseFeePerGas,
+		BlockHash:     payload.BlockHash,
+		Transactions:  payload.Transactions,
+	})
+	if err != nil || blk == nil {
+		return blk, err
+	}
+	header, ok := blk.Header().(*block.Header)
+	if !ok || header == nil {
+		return blk, nil
+	}
+	if payload.BlobGasUsed != nil {
+		header.BlobGasUsed = uint64(*payload.BlobGasUsed)
+	}
+	if payload.ExcessBlobGas != nil {
+		header.ExcessBlobGas = uint64(*payload.ExcessBlobGas)
+	}
+	return blk.WithSeal(header), nil
+}
+
+func executionPayloadV4ToBlock(payload *ExecutionPayloadV4) (block.IBlock, error) {
+	if payload == nil {
+		return nil, nil
+	}
+	return executionPayloadV3ToBlock(&ExecutionPayloadV3{
+		ParentHash:    payload.ParentHash,
+		FeeRecipient:  payload.FeeRecipient,
+		StateRoot:     payload.StateRoot,
+		ReceiptsRoot:  payload.ReceiptsRoot,
+		LogsBloom:     payload.LogsBloom,
+		PrevRandao:    payload.PrevRandao,
+		BlockNumber:   payload.BlockNumber,
+		GasLimit:      payload.GasLimit,
+		GasUsed:       payload.GasUsed,
+		Timestamp:     payload.Timestamp,
+		ExtraData:     payload.ExtraData,
+		BaseFeePerGas: payload.BaseFeePerGas,
+		BlockHash:     payload.BlockHash,
+		Transactions:  payload.Transactions,
+		Withdrawals:   cloneWithdrawals(payload.Withdrawals),
+		BlobGasUsed:   payload.BlobGasUsed,
+		ExcessBlobGas: payload.ExcessBlobGas,
+	})
 }
 
 func blockToExecutionPayloadV1(blk block.IBlock, cfg *params.ChainConfig) *ExecutionPayloadV1 {
@@ -249,6 +405,200 @@ func buildExecutionPayloadV1(parent block.IBlock, parentHash types.Hash, attrs *
 	return blockToExecutionPayloadV1(blk, cfg)
 }
 
+func buildExecutionPayloadV2(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV2, cfg *params.ChainConfig) *ExecutionPayloadV2 {
+	if attrs == nil {
+		return nil
+	}
+	v1 := buildExecutionPayloadV1(parent, parentHash, &attrs.PayloadAttributesV1, cfg)
+	if v1 == nil {
+		return nil
+	}
+	payload := &ExecutionPayloadV2{
+		ExecutionPayloadV1: *v1,
+		Withdrawals:        cloneWithdrawals(attrs.Withdrawals),
+	}
+	payload.BlockHash = ethCompatibleEngineBlockHash(blockFromExecutionPayloadV1(v1), cfg, enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+	})
+	return payload
+}
+
+func buildExecutionPayloadV3(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV3, cfg *params.ChainConfig) *ExecutionPayloadV3 {
+	if attrs == nil {
+		return nil
+	}
+	v2 := buildExecutionPayloadV2(parent, parentHash, &PayloadAttributesV2{
+		PayloadAttributesV1: PayloadAttributesV1{
+			Timestamp:             attrs.Timestamp,
+			PrevRandao:            attrs.PrevRandao,
+			SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
+		},
+		Withdrawals: cloneWithdrawals(attrs.Withdrawals),
+	}, cfg)
+	if v2 == nil {
+		return nil
+	}
+	excessBlobGas := uint64(0)
+	if parent != nil {
+		if parentHeader, ok := parent.Header().(*block.Header); ok && parentHeader != nil {
+			excessBlobGas = CalcExcessBlobGas(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed)
+		}
+	}
+	payload := &ExecutionPayloadV3{
+		ParentHash:    v2.ParentHash,
+		FeeRecipient:  v2.FeeRecipient,
+		StateRoot:     v2.StateRoot,
+		ReceiptsRoot:  v2.ReceiptsRoot,
+		LogsBloom:     v2.LogsBloom,
+		PrevRandao:    v2.PrevRandao,
+		BlockNumber:   v2.BlockNumber,
+		GasLimit:      v2.GasLimit,
+		GasUsed:       v2.GasUsed,
+		Timestamp:     v2.Timestamp,
+		ExtraData:     v2.ExtraData,
+		BaseFeePerGas: v2.BaseFeePerGas,
+		BlockHash:     v2.BlockHash,
+		Transactions:  cloneHexutilBytesList(v2.Transactions),
+		Withdrawals:   cloneWithdrawals(v2.Withdrawals),
+		BlobGasUsed:   hexutilUint64Ptr(0),
+		ExcessBlobGas: hexutilUint64Ptr(excessBlobGas),
+	}
+	payload.BlockHash = ethCompatibleEngineBlockHash(blockFromExecutionPayloadV3(payload), cfg, enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   attrs.ParentBeaconBlockRoot,
+	})
+	return payload
+}
+
+func buildExecutionPayloadV4(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV4, cfg *params.ChainConfig) *ExecutionPayloadV4 {
+	if attrs == nil {
+		return nil
+	}
+	v3 := buildExecutionPayloadV3(parent, parentHash, &PayloadAttributesV3{
+		Timestamp:             attrs.Timestamp,
+		PrevRandao:            attrs.PrevRandao,
+		SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
+		Withdrawals:           cloneWithdrawals(attrs.Withdrawals),
+		ParentBeaconBlockRoot: attrs.ParentBeaconBlockRoot,
+	}, cfg)
+	if v3 == nil {
+		return nil
+	}
+	requestsHash := executionRequestsHash(nil)
+	payload := &ExecutionPayloadV4{
+		ParentHash:            v3.ParentHash,
+		FeeRecipient:          v3.FeeRecipient,
+		StateRoot:             v3.StateRoot,
+		ReceiptsRoot:          v3.ReceiptsRoot,
+		LogsBloom:             v3.LogsBloom,
+		PrevRandao:            v3.PrevRandao,
+		BlockNumber:           v3.BlockNumber,
+		GasLimit:              v3.GasLimit,
+		GasUsed:               v3.GasUsed,
+		Timestamp:             v3.Timestamp,
+		ExtraData:             v3.ExtraData,
+		BaseFeePerGas:         v3.BaseFeePerGas,
+		BlockHash:             v3.BlockHash,
+		Transactions:          cloneHexutilBytesList(v3.Transactions),
+		Withdrawals:           cloneWithdrawals(v3.Withdrawals),
+		BlobGasUsed:           v3.BlobGasUsed,
+		ExcessBlobGas:         v3.ExcessBlobGas,
+		DepositRequests:       []DepositRequest{},
+		WithdrawalRequests:    []WithdrawalRequest{},
+		ConsolidationRequests: []ConsolidationRequest{},
+	}
+	payload.BlockHash = ethCompatibleEngineBlockHash(blockFromExecutionPayloadV4(payload), cfg, enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   attrs.ParentBeaconBlockRoot,
+		requestsHash:       &requestsHash,
+	})
+	return payload
+}
+
+func blockFromExecutionPayloadV1(payload *ExecutionPayloadV1) block.IBlock {
+	blk, _ := executionPayloadV1ToBlock(payload)
+	return blk
+}
+
+func blockFromExecutionPayloadV3(payload *ExecutionPayloadV3) block.IBlock {
+	blk, _ := executionPayloadV3ToBlock(payload)
+	return blk
+}
+
+func blockFromExecutionPayloadV4(payload *ExecutionPayloadV4) block.IBlock {
+	blk, _ := executionPayloadV4ToBlock(payload)
+	return blk
+}
+
+type withdrawalList []*Withdrawal
+
+func (w withdrawalList) Len() int {
+	return len(w)
+}
+
+func (w withdrawalList) EncodeIndex(i int, buf *bytes.Buffer) {
+	if i < 0 || i >= len(w) || w[i] == nil {
+		buf.Reset()
+		return
+	}
+	buf.Reset()
+	_ = rlp.Encode(buf, w[i])
+}
+
+func withdrawalsRoot(withdrawals []*Withdrawal) types.Hash {
+	return hash.DeriveSha(withdrawalList(withdrawals))
+}
+
+func executionRequestsHash(requests []hexutil.Bytes) types.Hash {
+	sorted := cloneHexutilBytesList(requests)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if len(sorted[i]) == 0 {
+			return false
+		}
+		if len(sorted[j]) == 0 {
+			return true
+		}
+		return sorted[i][0] < sorted[j][0]
+	})
+	aggregate := sha256.New()
+	for _, request := range sorted {
+		if len(request) <= 1 {
+			continue
+		}
+		sum := sha256.Sum256(request)
+		_, _ = aggregate.Write(sum[:])
+	}
+	var out types.Hash
+	_ = out.SetBytes(aggregate.Sum(nil))
+	return out
+}
+
+func cloneHexutilBytesList(values []hexutil.Bytes) []hexutil.Bytes {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]hexutil.Bytes, 0, len(values))
+	for _, value := range values {
+		if value == nil {
+			cloned = append(cloned, nil)
+			continue
+		}
+		copyValue := append(hexutil.Bytes(nil), value...)
+		cloned = append(cloned, copyValue)
+	}
+	return cloned
+}
+
+func hexutilUint64Ptr(v uint64) *hexutil.Uint64 {
+	n := hexutil.Uint64(v)
+	return &n
+}
+
 func (o *engineOverlay) builtPayload(id PayloadID) *engineBuiltPayload {
 	if o == nil {
 		return nil
@@ -267,14 +617,20 @@ func (o *engineOverlay) storeBuiltPayload(id PayloadID, payload *engineBuiltPayl
 	o.builtPayloads[id] = payload
 }
 
-func (o *engineOverlay) importBlock(blk block.IBlock) {
+func (o *engineOverlay) importBlock(blk block.IBlock, blockHash types.Hash) {
 	if o == nil || blk == nil || blk.Number64() == nil {
 		return
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	number := blk.Number64().Uint64()
 	o.head = blk
-	o.blocksByNum[blk.Number64().Uint64()] = blk
+	o.blocksByNum[number] = blk
+	if blockHash == (types.Hash{}) {
+		blockHash = ethCompatibleBlockHash(blk, nil)
+	}
+	o.hashesByNum[number] = blockHash
+	o.blocksByHash[blockHash] = blk
 }
 
 func (o *engineOverlay) headBlock(fallback block.IBlock) block.IBlock {
@@ -296,4 +652,28 @@ func (o *engineOverlay) blockByNumber(number uint64) block.IBlock {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.blocksByNum[number]
+}
+
+func (o *engineOverlay) blockByHash(hash types.Hash) block.IBlock {
+	if o == nil {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.blocksByHash[hash]
+}
+
+func (o *engineOverlay) hashForBlock(blk block.IBlock, cfg *params.ChainConfig) types.Hash {
+	if blk == nil {
+		return types.Hash{}
+	}
+	if o != nil && blk.Number64() != nil {
+		o.mu.RLock()
+		hashOverride, ok := o.hashesByNum[blk.Number64().Uint64()]
+		o.mu.RUnlock()
+		if ok {
+			return hashOverride
+		}
+	}
+	return ethCompatibleBlockHash(blk, cfg)
 }

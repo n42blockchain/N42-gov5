@@ -6,6 +6,7 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -30,6 +31,13 @@ func newJournalTestDB(tb testing.TB) kv.RwDB {
 	return db
 }
 
+type journalChainStub struct {
+	common.IBlockChain
+	db kv.RwDB
+}
+
+func (c *journalChainStub) DB() kv.RwDB { return c.db }
+
 func newPersistedTestTx(nonce uint64) *transaction.Transaction {
 	to := types.Address{0x01}
 	return transaction.NewTx(&transaction.LegacyTx{
@@ -40,6 +48,28 @@ func newPersistedTestTx(nonce uint64) *transaction.Transaction {
 		GasPrice: uint256.NewInt(1),
 		Data:     []byte{0x01, 0x02, 0x03},
 	})
+}
+
+func newJournalTestPool(ctx context.Context, db kv.RwDB) *TxsPool {
+	return &TxsPool{
+		ctx:     ctx,
+		bc:      &journalChainStub{db: db},
+		locals:  newAccountSet(),
+		pending: make(map[types.Address]*txsList),
+		queue:   make(map[types.Address]*txsList),
+	}
+}
+
+func journalTestList(tb testing.TB, strict bool, txs ...*transaction.Transaction) *txsList {
+	tb.Helper()
+	list := newTxsList(strict)
+	for _, tx := range txs {
+		ok, _ := list.Add(tx, 0)
+		if !ok {
+			tb.Fatalf("failed to add tx %s to journal test list", tx.Hash())
+		}
+	}
+	return list
 }
 
 func TestLoadPersistedTransactionsClearsUnreadableJournalEntries(t *testing.T) {
@@ -126,5 +156,131 @@ func TestLoadPersistedTransactionsMigratesLegacyEntriesWithoutClearingForeignDat
 		return nil
 	}); err != nil {
 		t.Fatalf("verify legacy migration: %v", err)
+	}
+}
+
+func TestFlushToDBPersistsLocalAndPendingTransactions(t *testing.T) {
+	db := newJournalTestDB(t)
+	ctx := context.Background()
+	pool := newJournalTestPool(ctx, db)
+
+	localAddr := types.Address{0x11}
+	remoteAddr := types.Address{0x22}
+	localPending := newPersistedTestTx(1)
+	localQueued := newPersistedTestTx(2)
+	remotePending := newPersistedTestTx(3)
+	remoteQueued := newPersistedTestTx(4)
+	staleTx := newPersistedTestTx(99)
+
+	staleEncoded, err := staleTx.Marshal()
+	if err != nil {
+		t.Fatalf("marshal stale tx: %v", err)
+	}
+	if err := db.Update(ctx, func(tx kv.RwTx) error {
+		return tx.Put(modules.TxPoolJournal, staleTx.Hash().Bytes(), staleEncoded)
+	}); err != nil {
+		t.Fatalf("seed stale journal entry: %v", err)
+	}
+
+	pool.locals.add(localAddr)
+	pool.pending[localAddr] = journalTestList(t, true, localPending)
+	pool.queue[localAddr] = journalTestList(t, false, localQueued)
+	pool.pending[remoteAddr] = journalTestList(t, true, remotePending)
+	pool.queue[remoteAddr] = journalTestList(t, false, remoteQueued)
+
+	if err := pool.flushToDB(); err != nil {
+		t.Fatalf("flushToDB() error = %v", err)
+	}
+
+	txs, err := loadPersistedTransactions(ctx, db)
+	if err != nil {
+		t.Fatalf("loadPersistedTransactions() error = %v", err)
+	}
+	if len(txs) != 3 {
+		t.Fatalf("loadPersistedTransactions() returned %d txs, want 3", len(txs))
+	}
+
+	want := map[types.Hash]struct{}{
+		localPending.Hash():  {},
+		localQueued.Hash():   {},
+		remotePending.Hash(): {},
+	}
+	for _, tx := range txs {
+		if _, ok := want[tx.Hash()]; !ok {
+			t.Fatalf("unexpected tx restored from journal: %s", tx.Hash())
+		}
+		delete(want, tx.Hash())
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing journal txs after reload: %v", want)
+	}
+
+	if err := db.View(ctx, func(tx kv.Tx) error {
+		cursor, err := tx.Cursor(modules.TxPoolJournal)
+		if err != nil {
+			return err
+		}
+		defer cursor.Close()
+		k, _, err := cursor.First()
+		if err != nil {
+			return err
+		}
+		if k != nil {
+			t.Fatalf("expected TxPoolJournal to be cleared after reload, found key %x", k)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify journal cleared after reload: %v", err)
+	}
+}
+
+func TestLoadPersistedTransactionsDeduplicatesCurrentAndLegacyEntries(t *testing.T) {
+	db := newJournalTestDB(t)
+	ctx := context.Background()
+
+	tx := newPersistedTestTx(7)
+	encoded, err := tx.Marshal()
+	if err != nil {
+		t.Fatalf("marshal tx: %v", err)
+	}
+
+	if err := db.Update(ctx, func(dbTx kv.RwTx) error {
+		if err := dbTx.Put(modules.TxPoolJournal, tx.Hash().Bytes(), encoded); err != nil {
+			return err
+		}
+		return dbTx.Put(kv.PoolTransaction, tx.Hash().Bytes(), encoded)
+	}); err != nil {
+		t.Fatalf("seed duplicate journal entries: %v", err)
+	}
+
+	txs, err := loadPersistedTransactions(ctx, db)
+	if err != nil {
+		t.Fatalf("loadPersistedTransactions() error = %v", err)
+	}
+	if len(txs) != 1 {
+		t.Fatalf("loadPersistedTransactions() returned %d txs, want 1", len(txs))
+	}
+	if txs[0].Hash() != tx.Hash() {
+		t.Fatalf("loaded tx hash = %s, want %s", txs[0].Hash(), tx.Hash())
+	}
+
+	if err := db.View(ctx, func(dbTx kv.Tx) error {
+		current, err := dbTx.GetOne(modules.TxPoolJournal, tx.Hash().Bytes())
+		if err != nil {
+			return err
+		}
+		if current != nil {
+			t.Fatalf("expected current journal entry to be cleared, got %x", current)
+		}
+		legacy, err := dbTx.GetOne(kv.PoolTransaction, tx.Hash().Bytes())
+		if err != nil {
+			return err
+		}
+		if legacy != nil {
+			t.Fatalf("expected legacy journal entry to be cleared, got %x", legacy)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify duplicate journal entries cleared: %v", err)
 	}
 }
