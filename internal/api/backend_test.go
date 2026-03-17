@@ -86,8 +86,10 @@ func TestHelperInterfaces(t *testing.T) {
 type mockBackend struct{}
 
 type canonicalCheckChainStub struct {
-	header *block.Header
-	blk    block.IBlock
+	header              *block.Header
+	blk                 block.IBlock
+	earliest            uint64
+	lastRequestedNumber uint64
 }
 
 func (m *canonicalCheckChainStub) Config() *params.ChainConfig { return nil }
@@ -103,6 +105,9 @@ func (m *canonicalCheckChainStub) GetHeaderByHash(hash types.Hash) (block.IHeade
 }
 func (m *canonicalCheckChainStub) GetTd(types.Hash, *uint256.Int) *uint256.Int { return nil }
 func (m *canonicalCheckChainStub) GetBlockByNumber(number *uint256.Int) (block.IBlock, error) {
+	if number != nil {
+		m.lastRequestedNumber = number.Uint64()
+	}
 	return m.blk, nil
 }
 func (m *canonicalCheckChainStub) GetDepositInfo(types.Address) (*uint256.Int, *uint256.Int) {
@@ -138,7 +143,7 @@ func (m *canonicalCheckChainStub) StateAt(tx kv.Tx, blockNr uint64) interface{} 
 func (m *canonicalCheckChainStub) HasBlock(hash types.Hash, number uint64) bool         { return m.blk != nil }
 func (m *canonicalCheckChainStub) DB() kv.RwDB                                          { return nil }
 func (m *canonicalCheckChainStub) Quit() <-chan struct{}                                { return nil }
-func (m *canonicalCheckChainStub) EarliestBlock() uint64                                { return 0 }
+func (m *canonicalCheckChainStub) EarliestBlock() uint64                                { return m.earliest }
 func (m *canonicalCheckChainStub) Close() error                                         { return nil }
 func (m *canonicalCheckChainStub) WriteBlockWithState(block.IBlock, []*block.Receipt, interface{}, map[types.Address]*uint256.Int) error {
 	return nil
@@ -272,6 +277,25 @@ func TestBlockByNumberLatestRejectsNilCurrentBlockNumber(t *testing.T) {
 	_, err := api.BlockByNumber(context.Background(), rpc.LatestBlockNumber)
 	if err == nil || err.Error() != "current block number unavailable" {
 		t.Fatalf("BlockByNumber() error = %v", err)
+	}
+}
+
+func TestBlockByNumberUsesEarliestAvailableAfterHistoryExpiry(t *testing.T) {
+	stub := &canonicalCheckChainStub{
+		blk:      &gasPriceBlockStub{header: &block.Header{Number: uint256.NewInt(42)}},
+		earliest: 42,
+	}
+	api := &API{bc: stub}
+
+	blk, err := BlockByNumber(context.Background(), rpc.EarliestBlockNumber, api)
+	if err != nil {
+		t.Fatalf("BlockByNumber() error = %v", err)
+	}
+	if blk == nil {
+		t.Fatal("expected block, got nil")
+	}
+	if stub.lastRequestedNumber != 42 {
+		t.Fatalf("requested block number = %d, want 42", stub.lastRequestedNumber)
 	}
 }
 

@@ -113,24 +113,25 @@ func (s *BlockChainAPI) Hashrate() hexutil.Uint64 {
 // PendingBlockNumber and LatestBlockNumber both return the current head block.
 // Negative numbers (other than the two special values above) are rejected.
 func (s *BlockChainAPI) getBlockByNumber(number jsonrpc.BlockNumber) (block.IBlock, error) {
+	resolvedNumber, err := normalizeBlockNumberForHistory(number, s.api.BlockChain())
+	if err != nil {
+		return nil, err
+	}
 	if s.api != nil && s.api.engineOverlay != nil {
-		if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+		if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
 			if blk := s.api.engineOverlay.headBlock(s.api.BlockChain().CurrentBlock()); blk != nil {
 				return blk, nil
 			}
-		} else if number >= 0 {
-			if blk := s.api.engineOverlay.blockByNumber(uint64(number.Int64())); blk != nil {
+		} else if resolvedNumber >= 0 {
+			if blk := s.api.engineOverlay.blockByNumber(uint64(resolvedNumber.Int64())); blk != nil {
 				return blk, nil
 			}
 		}
 	}
-	if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+	if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
 		return s.api.BlockChain().CurrentBlock(), nil
 	}
-	if number < 0 {
-		return nil, fmt.Errorf("invalid block number: %d", number)
-	}
-	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number.Int64())))
+	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(resolvedNumber.Int64())))
 }
 
 func (s *BlockChainAPI) getBlockByHash(hash types.Hash) (block.IBlock, error) {
@@ -191,24 +192,25 @@ func (s *BlockChainAPI) GetUncleByBlockNumberAndIndex(ctx context.Context, block
 
 // getBlockByNumber resolves a block by its jsonrpc.BlockNumber for TransactionAPI.
 func (s *TransactionAPI) getBlockByNumber(number jsonrpc.BlockNumber) (block.IBlock, error) {
+	resolvedNumber, err := normalizeBlockNumberForHistory(number, s.api.BlockChain())
+	if err != nil {
+		return nil, err
+	}
 	if s.api != nil && s.api.engineOverlay != nil {
-		if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+		if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
 			if blk := s.api.engineOverlay.headBlock(s.api.BlockChain().CurrentBlock()); blk != nil {
 				return blk, nil
 			}
-		} else if number >= 0 {
-			if blk := s.api.engineOverlay.blockByNumber(uint64(number.Int64())); blk != nil {
+		} else if resolvedNumber >= 0 {
+			if blk := s.api.engineOverlay.blockByNumber(uint64(resolvedNumber.Int64())); blk != nil {
 				return blk, nil
 			}
 		}
 	}
-	if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+	if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
 		return s.api.BlockChain().CurrentBlock(), nil
 	}
-	if number < 0 {
-		return nil, fmt.Errorf("invalid block number: %d", number)
-	}
-	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number.Int64())))
+	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(resolvedNumber.Int64())))
 }
 
 func (s *TransactionAPI) getBlockByHash(hash types.Hash) (block.IBlock, error) {

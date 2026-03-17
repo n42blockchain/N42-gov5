@@ -278,6 +278,21 @@ func (s *BlockChainAPI) EarliestBlock() hexutil.Uint64 {
 	return hexutil.Uint64(s.api.BlockChain().EarliestBlock())
 }
 
+func normalizeBlockNumberForHistory(number jsonrpc.BlockNumber, bc common.IBlockChain) (jsonrpc.BlockNumber, error) {
+	if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+		return number, nil
+	}
+	if number < 0 {
+		return 0, fmt.Errorf("invalid block number: %d", number)
+	}
+	if number == jsonrpc.EarliestBlockNumber && bc != nil {
+		if earliest := bc.EarliestBlock(); earliest > 0 {
+			return jsonrpc.BlockNumber(earliest), nil
+		}
+	}
+	return number, nil
+}
+
 // GetCode returns the code stored at the given address in the state for the given block.
 func (s *BlockChainAPI) GetCode(ctx context.Context, address avmcommon.Address, blockNrOrHash jsonrpc.BlockNumberOrHash) (hexutil.Bytes, error) {
 	tx, err := s.api.db.BeginRo(ctx)
@@ -467,12 +482,16 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 	var header block.IHeader
 	var err error
 	if blockNr, ok := blockNrOrHash.Number(); ok {
-		if blockNr < jsonrpc.EarliestBlockNumber {
+		resolvedBlockNr, resolveErr := normalizeBlockNumberForHistory(blockNr, api.BlockChain())
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		if resolvedBlockNr < jsonrpc.EarliestBlockNumber {
 			if cb := api.BlockChain().CurrentBlock(); cb != nil {
 				header = cb.Header()
 			}
 		} else {
-			header = api.BlockChain().GetHeaderByNumber(uint256.NewInt(uint64(blockNr.Int64())))
+			header = api.BlockChain().GetHeaderByNumber(uint256.NewInt(uint64(resolvedBlockNr.Int64())))
 		}
 	}
 	if hash, ok := blockNrOrHash.Hash(); ok {
@@ -600,10 +619,14 @@ func (s *BlockChainAPI) Call(ctx context.Context, args TransactionArgs, blockNrO
 
 func BlockByNumber(ctx context.Context, number jsonrpc.BlockNumber, n *API) (block.IBlock, error) {
 	// Pending and latest both resolve to the current block
-	if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+	resolvedNumber, err := normalizeBlockNumberForHistory(number, n.BlockChain())
+	if err != nil {
+		return nil, err
+	}
+	if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
 		return n.BlockChain().CurrentBlock(), nil
 	}
-	return n.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number)))
+	return n.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(resolvedNumber)))
 }
 
 func BlockByNumberOrHash(ctx context.Context, blockNrOrHash jsonrpc.BlockNumberOrHash, api *API) (block.IBlock, error) {

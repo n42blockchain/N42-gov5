@@ -1,7 +1,7 @@
 # N42 生产成熟度提升计划
 
 > 计划日期：2026-03-17
-> 输入基线：[`docs/GAP_ANALYSIS.md`](../GAP_ANALYSIS.md)、[`TEST_REVIEW_FINDINGS.md`](./TEST_REVIEW_FINDINGS.md)
+> 输入基线：[`docs/GAP.md`](../GAP.md)、[`docs/GAP_ANALYSIS.md`](../GAP_ANALYSIS.md)、[`TEST_REVIEW_FINDINGS.md`](./TEST_REVIEW_FINDINGS.md)
 > 目标：优先把已有能力做成熟、可恢复、可运维、可互操作；暂不以补齐新功能项为第一优先级
 
 ---
@@ -32,7 +32,7 @@
 
 ## 二、为什么先做成熟度而不是补功能
 
-按当前 [`docs/GAP_ANALYSIS.md`](../GAP_ANALYSIS.md) 的结论，N42 的问题已经不是“没有功能”：
+按当前 [`docs/GAP.md`](../GAP.md) 的结论，N42 的问题已经不是“没有功能”：
 
 - 状态承诺、快照、Witness、GraphQL、Clef、HotStuff、Bundler、MEV、Encrypted TxPool 都已存在。
 - 真正拖住生产判断的是：`Engine API` 语义、恢复性、运维拓扑、长期稳定性和跨客户端互操作。
@@ -62,13 +62,13 @@
 
 已落地：
 
-1. `Phase 0` 的最小 gate 已固定为 `make maturity-smoke` 和 `make maturity-baseline`，基线覆盖 `Engine API`、GraphQL、Clef、external signer、node auth/genesis、keystore、genesis config、checkpoint、snapshot、freezer、txpool journal。
+1. `Phase 0` 的最小 gate 已固定为 `make maturity-smoke` 和 `make maturity-baseline`，基线覆盖 `Engine API`、GraphQL、Clef、external signer、node auth/genesis、keystore、genesis config、checkpoint、snapshot、freezer、history expiry recovery、txpool journal。
 2. `Phase 1` 已把 `Engine API` 推进到最小真实闭环，且 GraphQL / Clef / external signer / node auth+genesis 已进入固定 smoke。
 3. `Phase 2` 已把 keystore watcher 漏事件补扫、snapshot journal、txpool journal、checkpoint 半写入恢复、freezer 元数据滞后恢复纳入自动化回归。
 
 仍未完成：
 
-1. `history expiry` 的重启一致性和边界 RPC 仍未进入固定 gate。
+1. archive / historical proof 的查询与恢复路径仍未进入固定 gate。
 2. 长时间运行下的 goroutine / heap / queue 资源边界仍未建立可回归红线。
 3. Hive / EEST / RPC compatibility 的真实互操作矩阵、24h soak 和重启循环测试仍未落地。
 4. dashboard、告警、runbook 和 release checklist 仍未形成发布门禁。
@@ -186,7 +186,7 @@
 
 1. keystore watcher 漏事件补扫、genesis config fail-fast、snapshot journal、txpool journal 已有恢复 smoke。
 2. checkpoint 现在会拒绝把“只有 canonical hash 的半写入块”误判成已恢复；freezer 现在会按最小真实表项数恢复，而不是盲信滞后的元数据。
-3. `history expiry` 的重启一致性和边界查询回归仍未补齐，是当前恢复性里最明显的剩余缺口。
+3. `history expiry` 的 `earliest` / `feeHistory` / canonical lookup 边界查询和重启续跑已进入固定 gate；当前恢复性里更明显的剩余缺口转为 archive / historical proof 查询与深历史恢复路径。
 
 ### Phase 3：运行时稳态与资源边界
 

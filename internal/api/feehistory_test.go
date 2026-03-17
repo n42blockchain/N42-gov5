@@ -74,3 +74,48 @@ func TestResolveBlockRangeRejectsNilHeadNumber(t *testing.T) {
 		t.Fatalf("resolveBlockRange() error = %v", err)
 	}
 }
+
+func TestResolveBlockRangeUsesEarliestAvailableBlock(t *testing.T) {
+	earliestHeader := &block.Header{Number: uint256.NewInt(50), Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(1)}
+	headHeader := &block.Header{Number: uint256.NewInt(100), Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(1)}
+	oracle := &Oracle{
+		backend: &gasPriceChainStub{
+			current:  &gasPriceBlockStub{header: headHeader},
+			headers:  map[uint64]block.IHeader{50: earliestHeader, 100: headHeader},
+			earliest: 50,
+		},
+	}
+
+	_, _, end, blocks, err := oracle.resolveBlockRange(context.Background(), jsonrpc.EarliestBlockNumber, 5)
+	if err != nil {
+		t.Fatalf("resolveBlockRange() error = %v", err)
+	}
+	if end != 50 {
+		t.Fatalf("resolved end block = %d, want 50", end)
+	}
+	if blocks != 1 {
+		t.Fatalf("resolved block count = %d, want 1", blocks)
+	}
+}
+
+func TestResolveBlockRangeClampsToEarliestAvailableHistory(t *testing.T) {
+	headHeader := &block.Header{Number: uint256.NewInt(100), Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(1)}
+	oracle := &Oracle{
+		backend: &gasPriceChainStub{
+			current:  &gasPriceBlockStub{header: headHeader},
+			headers:  map[uint64]block.IHeader{100: headHeader},
+			earliest: 50,
+		},
+	}
+
+	_, _, end, blocks, err := oracle.resolveBlockRange(context.Background(), jsonrpc.BlockNumber(100), 60)
+	if err != nil {
+		t.Fatalf("resolveBlockRange() error = %v", err)
+	}
+	if end != 100 {
+		t.Fatalf("resolved end block = %d, want 100", end)
+	}
+	if blocks != 51 {
+		t.Fatalf("resolved block count = %d, want 51", blocks)
+	}
+}

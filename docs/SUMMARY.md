@@ -47,7 +47,8 @@
 
 ## Engineering
 
-1. [Gap Analysis (Repo-Verified Baseline)](./GAP_ANALYSIS.md)
+1. [Gap (Repo-Verified Baseline)](./GAP.md)
+1. [Gap Analysis (Cross-Client Comparison)](./GAP_ANALYSIS.md)
 1. [Gap Remediation Plan](./engineering/GAP_REMEDIATION_PLAN.md)
 1. [Performance Optimization Plan](./engineering/PERFORMANCE_OPTIMIZATION_PLAN.md)
 1. [Performance Optimization Report](./engineering/PERFORMANCE_OPTIMIZATION_REPORT.md)
