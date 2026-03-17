@@ -161,7 +161,7 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 		return syncingPayloadResponse(), nil
 	}
 	if overlay := e.overlay(); overlay != nil {
-		overlay.importBlock(blk)
+		overlay.importBlock(blk, blockHash)
 	}
 	return validPayloadResponse(blockHash), nil
 }
@@ -174,7 +174,25 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if payload.Withdrawals == nil {
 		return invalidPayloadResponse("missing withdrawals"), nil
 	}
-	return e.NewPayloadV1(ctx, &payload.ExecutionPayloadV1)
+	blk, err := executionPayloadV2ToBlock(payload)
+	if err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	blockHash := ethCompatibleEngineBlockHash(blk, e.chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+	})
+	if payload.BlockHash != blockHash {
+		return invalidPayloadResponse("block hash mismatch"), nil
+	}
+	headHash := e.currentHeadHash()
+	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
+		return syncingPayloadResponse(), nil
+	}
+	if overlay := e.overlay(); overlay != nil {
+		overlay.importBlock(blk, blockHash)
+	}
+	return validPayloadResponse(blockHash), nil
 }
 
 // GetPayloadV1 retrieves a Paris payload.
@@ -234,22 +252,30 @@ func (e *EngineAPIV1) ForkchoiceUpdatedV2(ctx context.Context, state *Forkchoice
 	if attrs == nil {
 		return e.ForkchoiceUpdatedV1(ctx, state, nil)
 	}
-	resp, err := e.ForkchoiceUpdatedV1(ctx, state, &attrs.PayloadAttributesV1)
-	if err != nil || resp == nil || resp.PayloadID == nil {
-		return resp, err
+	head := e.currentHead()
+	if head == nil {
+		return syncingForkchoiceResponse(), nil
 	}
-	built := e.builtPayload(*resp.PayloadID)
-	if built == nil || built.v1 == nil {
-		return resp, err
+	headHash := e.currentHeadHash()
+	if state.HeadBlockHash != headHash {
+		return syncingForkchoiceResponse(), nil
 	}
-	payloadV2 := &ExecutionPayloadV2{
-		ExecutionPayloadV1: *built.v1,
-		Withdrawals:        cloneWithdrawals(attrs.Withdrawals),
+	if uint64(attrs.Timestamp) <= head.Time() {
+		return invalidForkchoiceResponse("payload timestamp must be greater than parent"), nil
 	}
+	payloadV2 := buildExecutionPayloadV2(head, headHash, attrs, e.chainConfig())
+	if payloadV2 == nil {
+		return invalidForkchoiceResponse("failed to build payload"), nil
+	}
+	withdrawalsRoot := withdrawalsRoot(attrs.Withdrawals)
+	payloadID := makePayloadIDWithExtras(headHash, uint64(attrs.Timestamp), attrs.SuggestedFeeRecipient, withdrawalsRoot[:])
 	if overlay := e.overlay(); overlay != nil {
-		overlay.storeBuiltPayload(*resp.PayloadID, &engineBuiltPayload{v1: built.v1, v2: payloadV2})
+		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
+			v1: &payloadV2.ExecutionPayloadV1,
+			v2: payloadV2,
+		})
 	}
-	return resp, nil
+	return validForkchoiceResponse(headHash, &payloadID), nil
 }
 
 // ExchangeCapabilities returns the Engine API methods supported by this node.
@@ -302,7 +328,11 @@ func (e *EngineAPIV1) currentHead() block.IBlock {
 }
 
 func (e *EngineAPIV1) currentHeadHash() types.Hash {
-	return ethCompatibleBlockHash(e.currentHead(), e.chainConfig())
+	head := e.currentHead()
+	if overlay := e.overlay(); overlay != nil {
+		return overlay.hashForBlock(head, e.chainConfig())
+	}
+	return ethCompatibleBlockHash(head, e.chainConfig())
 }
 
 func (e *EngineAPIV1) builtPayload(payloadID PayloadID) *engineBuiltPayload {

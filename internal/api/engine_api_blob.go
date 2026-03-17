@@ -156,6 +156,10 @@ func NewEngineAPIBlob(api *BlockChainAPI) *EngineAPIBlob {
 	return &EngineAPIBlob{api: api}
 }
 
+func (e *EngineAPIBlob) v1() *EngineAPIV1 {
+	return &EngineAPIV1{api: e.api}
+}
+
 // NewPayloadV3 processes a new execution payload with blob support
 // engine_newPayloadV3
 func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayloadV3, expectedBlobVersionedHashes []types.Hash, parentBeaconBlockRoot *types.Hash) (*PayloadStatusV1, error) {
@@ -180,28 +184,40 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if err := ValidateBlobTransactions(payload.Transactions, expectedBlobVersionedHashes); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-
-	// TODO: Implement actual payload processing
-	// This would:
-	// 1. Decode and validate transactions
-	// 2. Verify state root
-	// 3. Execute transactions
-	// 4. Validate receipts root
-
-	// Return SYNCING until payload processing is fully implemented.
-	// Returning VALID for an unverified payload would mislead the consensus layer.
-	return &PayloadStatusV1{Status: PayloadStatusSyncing}, nil
+	blk, err := executionPayloadV3ToBlock(payload)
+	if err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	blockHash := ethCompatibleEngineBlockHash(blk, e.v1().chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   parentBeaconBlockRoot,
+	})
+	if payload.BlockHash != blockHash {
+		return invalidPayloadResponse("block hash mismatch"), nil
+	}
+	headHash := e.v1().currentHeadHash()
+	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
+		return syncingPayloadResponse(), nil
+	}
+	if overlay := e.v1().overlay(); overlay != nil {
+		overlay.importBlock(blk, blockHash)
+	}
+	return validPayloadResponse(blockHash), nil
 }
 
 // GetPayloadV3 retrieves a payload with blob bundle
 // engine_getPayloadV3
 func (e *EngineAPIBlob) GetPayloadV3(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV3, error) {
-	// TODO: Implement payload retrieval
-	// This would:
-	// 1. Look up payload by ID
-	// 2. Retrieve blob sidecar
-	// 3. Build response with execution payload and blobs bundle
-
+	if built := e.v1().builtPayload(payloadID); built != nil && built.v3 != nil {
+		return &GetPayloadResponseV3{
+			ExecutionPayload:      built.v3,
+			BlockValue:            hexutil.Uint64(0),
+			BlobsBundle:           built.blobsBundle,
+			ShouldOverrideBuilder: false,
+		}, nil
+	}
 	return nil, errPayloadNotFound
 }
 
@@ -211,33 +227,88 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	if state == nil {
 		return invalidForkchoiceResponse("missing forkchoice state"), nil
 	}
-
-	// Validate attributes if present
-	if attrs != nil {
-		// Parent beacon block root is required for Cancun
-		if attrs.ParentBeaconBlockRoot == nil {
-			return invalidForkchoiceResponse("missing parent beacon block root"), nil
-		}
+	head := e.v1().currentHead()
+	if head == nil {
+		return syncingForkchoiceResponse(), nil
 	}
-
-	// TODO: Implement fork choice update
-	// This would:
-	// 1. Update fork choice
-	// 2. Start payload building if attributes present
-
-	// Return SYNCING until fork choice update is fully implemented.
-	// Returning VALID for an unprocessed fork choice would mislead the consensus layer.
-	return &ForkchoiceUpdatedResponseV3{
-		PayloadStatus: PayloadStatusV1{
-			Status: PayloadStatusSyncing,
-		},
-	}, nil
+	headHash := e.v1().currentHeadHash()
+	if state.HeadBlockHash != headHash {
+		return syncingForkchoiceResponse(), nil
+	}
+	if attrs == nil {
+		return validForkchoiceResponse(headHash, nil), nil
+	}
+	if attrs.Withdrawals == nil {
+		return invalidForkchoiceResponse("missing withdrawals"), nil
+	}
+	if attrs.ParentBeaconBlockRoot == nil {
+		return invalidForkchoiceResponse("missing parent beacon block root"), nil
+	}
+	if uint64(attrs.Timestamp) <= head.Time() {
+		return invalidForkchoiceResponse("payload timestamp must be greater than parent"), nil
+	}
+	payload := buildExecutionPayloadV3(head, headHash, attrs, e.v1().chainConfig())
+	if payload == nil {
+		return invalidForkchoiceResponse("failed to build payload"), nil
+	}
+	withdrawalsRoot := withdrawalsRoot(attrs.Withdrawals)
+	payloadID := makePayloadIDWithExtras(
+		headHash,
+		uint64(attrs.Timestamp),
+		attrs.SuggestedFeeRecipient,
+		withdrawalsRoot[:],
+		attrs.ParentBeaconBlockRoot[:],
+	)
+	if overlay := e.v1().overlay(); overlay != nil {
+		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
+			v1: &ExecutionPayloadV1{
+				ParentHash:    payload.ParentHash,
+				FeeRecipient:  payload.FeeRecipient,
+				StateRoot:     payload.StateRoot,
+				ReceiptsRoot:  payload.ReceiptsRoot,
+				LogsBloom:     cloneHexutilBytesList([]hexutil.Bytes{payload.LogsBloom})[0],
+				PrevRandao:    payload.PrevRandao,
+				BlockNumber:   payload.BlockNumber,
+				GasLimit:      payload.GasLimit,
+				GasUsed:       payload.GasUsed,
+				Timestamp:     payload.Timestamp,
+				ExtraData:     append(hexutil.Bytes(nil), payload.ExtraData...),
+				BaseFeePerGas: payload.BaseFeePerGas,
+				BlockHash:     payload.BlockHash,
+				Transactions:  cloneHexutilBytesList(payload.Transactions),
+			},
+			v2: &ExecutionPayloadV2{
+				ExecutionPayloadV1: ExecutionPayloadV1{
+					ParentHash:    payload.ParentHash,
+					FeeRecipient:  payload.FeeRecipient,
+					StateRoot:     payload.StateRoot,
+					ReceiptsRoot:  payload.ReceiptsRoot,
+					LogsBloom:     cloneHexutilBytesList([]hexutil.Bytes{payload.LogsBloom})[0],
+					PrevRandao:    payload.PrevRandao,
+					BlockNumber:   payload.BlockNumber,
+					GasLimit:      payload.GasLimit,
+					GasUsed:       payload.GasUsed,
+					Timestamp:     payload.Timestamp,
+					ExtraData:     append(hexutil.Bytes(nil), payload.ExtraData...),
+					BaseFeePerGas: payload.BaseFeePerGas,
+					BlockHash:     payload.BlockHash,
+					Transactions:  cloneHexutilBytesList(payload.Transactions),
+				},
+				Withdrawals: cloneWithdrawals(payload.Withdrawals),
+			},
+			v3:          payload,
+			blobsBundle: &BlobsBundleV1{Commitments: []hexutil.Bytes{}, Proofs: []hexutil.Bytes{}, Blobs: []hexutil.Bytes{}},
+		})
+	}
+	return validForkchoiceResponse(headHash, &payloadID), nil
 }
 
 // GetBlobsBundleV1 retrieves the blobs bundle for a payload
 // engine_getBlobsBundleV1
 func (e *EngineAPIBlob) GetBlobsBundleV1(ctx context.Context, payloadID PayloadID) (*BlobsBundleV1, error) {
-	// TODO: Implement blobs bundle retrieval
+	if built := e.v1().builtPayload(payloadID); built != nil && built.blobsBundle != nil {
+		return built.blobsBundle, nil
+	}
 	return nil, errPayloadNotFound
 }
 

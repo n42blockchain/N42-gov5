@@ -133,6 +133,26 @@ func (s *BlockChainAPI) getBlockByNumber(number jsonrpc.BlockNumber) (block.IBlo
 	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number.Int64())))
 }
 
+func (s *BlockChainAPI) getBlockByHash(hash types.Hash) (block.IBlock, error) {
+	if s.api != nil && s.api.engineOverlay != nil {
+		if blk := s.api.engineOverlay.blockByHash(hash); blk != nil {
+			return blk, nil
+		}
+	}
+	return s.api.BlockChain().GetBlockByHash(hash)
+}
+
+func (s *BlockChainAPI) overlayBlockHash(blk block.IBlock) *types.Hash {
+	if s == nil || s.api == nil || s.api.engineOverlay == nil || blk == nil {
+		return nil
+	}
+	hash := s.api.engineOverlay.hashForBlock(blk, s.api.GetChainConfig())
+	if hash == (types.Hash{}) {
+		return nil
+	}
+	return &hash
+}
+
 // GetBlockTransactionCountByNumber returns the number of transactions in a block
 // matching the given block number.
 func (s *BlockChainAPI) GetBlockTransactionCountByNumber(ctx context.Context, blockNr jsonrpc.BlockNumber) (*hexutil.Uint, error) {
@@ -191,6 +211,22 @@ func (s *TransactionAPI) getBlockByNumber(number jsonrpc.BlockNumber) (block.IBl
 	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(number.Int64())))
 }
 
+func (s *TransactionAPI) getBlockByHash(hash types.Hash) (block.IBlock, error) {
+	if s.api != nil && s.api.engineOverlay != nil {
+		if blk := s.api.engineOverlay.blockByHash(hash); blk != nil {
+			return blk, nil
+		}
+	}
+	return s.api.BlockChain().GetBlockByHash(hash)
+}
+
+func (s *TransactionAPI) overlayBlockHash(blk block.IBlock) types.Hash {
+	if s == nil || s.api == nil || s.api.engineOverlay == nil || blk == nil {
+		return ethCompatibleBlockHash(blk, nil)
+	}
+	return s.api.engineOverlay.hashForBlock(blk, s.api.GetChainConfig())
+}
+
 // GetTransactionByBlockNumberAndIndex returns the transaction for the given block number and index.
 func (s *TransactionAPI) GetTransactionByBlockNumberAndIndex(ctx context.Context, blockNr jsonrpc.BlockNumber, index hexutil.Uint) *RPCTransaction {
 	blk, err := s.getBlockByNumber(blockNr)
@@ -213,7 +249,7 @@ func (s *TransactionAPI) GetTransactionByBlockNumberAndIndex(ctx context.Context
 	}
 	return newRPCTransaction(
 		txs[index],
-		blk.Hash(),
+		s.overlayBlockHash(blk),
 		uint256ToUint64OrZero(blk.Number64()),
 		uint64(index),
 		headerBaseFee.ToBig(),
@@ -249,7 +285,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 	if blockNr, ok := blockNrOrHash.Number(); ok {
 		blk, err = s.getBlockByNumber(blockNr)
 	} else if hash, ok := blockNrOrHash.Hash(); ok {
-		blk, err = s.api.BlockChain().GetBlockByHash(types.Hash(hash))
+		blk, err = s.getBlockByHash(hash)
 	}
 
 	if err != nil {

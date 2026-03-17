@@ -316,7 +316,7 @@ func (s *BlockChainAPI) GetStorageAt(ctx context.Context, address types.Address,
 
 // GetUncleCountByBlockHash returns number of uncles in the block for the given block hash
 func (s *BlockChainAPI) GetUncleCountByBlockHash(ctx context.Context, blockHash avmcommon.Hash) *hexutil.Uint {
-	if block, _ := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(blockHash)); block != nil {
+	if block, _ := s.getBlockByHash(avmtypes.ToastHash(blockHash)); block != nil {
 		// POA/POS consensus does not have uncles
 		n := hexutil.Uint(0)
 		return &n
@@ -769,7 +769,7 @@ func (s *BlockChainAPI) EstimateGas(ctx context.Context, args TransactionArgs, b
 func (s *BlockChainAPI) GetBlockByNumber(ctx context.Context, number jsonrpc.BlockNumber, fullTx bool) (map[string]interface{}, error) {
 	block, err := s.getBlockByNumber(number)
 	if block != nil && err == nil {
-		response, err := RPCMarshalBlock(block, s.api.BlockChain(), s.api.GetChainConfig(), true, fullTx)
+		response, err := RPCMarshalBlock(block, s.api.BlockChain(), s.api.GetChainConfig(), true, fullTx, s.overlayBlockHash(block))
 		if err == nil && number == jsonrpc.PendingBlockNumber {
 			// Pending blocks need to nil out a few fields
 			for _, field := range []string{"hash", "nonce", "miner"} {
@@ -784,10 +784,10 @@ func (s *BlockChainAPI) GetBlockByNumber(ctx context.Context, number jsonrpc.Blo
 
 // GetBlockByHash returns the requested block by hash, with full or hash-only transactions.
 func (s *BlockChainAPI) GetBlockByHash(ctx context.Context, hash avmcommon.Hash, fullTx bool) (map[string]interface{}, error) {
-	block, err := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(hash))
+	block, err := s.getBlockByHash(avmtypes.ToastHash(hash))
 
 	if block != nil {
-		return RPCMarshalBlock(block, s.api.BlockChain(), s.api.GetChainConfig(), true, fullTx)
+		return RPCMarshalBlock(block, s.api.BlockChain(), s.api.GetChainConfig(), true, fullTx, s.overlayBlockHash(block))
 	}
 	return nil, err
 }

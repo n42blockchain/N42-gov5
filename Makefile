@@ -168,7 +168,7 @@ open-output:
 
 .PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef
 .PHONY: race bench cover check install tidy help test-cover test-verbose perf-baseline
-.PHONY: version version-bump version-minor version-major
+.PHONY: version version-bump version-minor version-major maturity-smoke maturity-baseline
 
 # =============================================================================
 # 核心目标 (Core Targets)
@@ -233,6 +233,16 @@ lint:
 # 组合检查：fmt + vet + lint
 check: fmt vet lint
 	@echo "==> All checks passed!"
+
+# 成熟度 smoke：聚焦外部 surface 和恢复性
+maturity-smoke: go-version
+	@echo "==> bash scripts/run_maturity_baseline.sh"
+	bash scripts/run_maturity_baseline.sh
+
+# 成熟度基线：smoke + 核心 gate，结果写入 build/maturity-baseline/
+maturity-baseline: go-version
+	@echo "==> bash scripts/run_maturity_baseline.sh --full"
+	bash scripts/run_maturity_baseline.sh --full
 
 # =============================================================================
 # 基准测试 (Benchmarks)
@@ -327,6 +337,8 @@ help:
 	@echo "    vet           - 静态分析 (go vet)"
 	@echo "    lint          - Lint 检查 (golangci-lint)"
 	@echo "    check         - 组合检查 (fmt + vet + lint)"
+	@echo "    maturity-smoke    - 外部 surface / 恢复性 smoke gate"
+	@echo "    maturity-baseline - smoke + build/vet/test/lint/race-core 基线记录"
 	@echo ""
 	@echo "  基准测试:"
 	@echo "    bench         - 完整基准测试"

@@ -21,6 +21,7 @@ package api
 
 import (
 	"context"
+	"encoding/binary"
 	"math/big"
 
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -119,6 +120,10 @@ func NewEngineAPIv4(api *BlockChainAPI) *EngineAPIv4 {
 	return &EngineAPIv4{api: api}
 }
 
+func (e *EngineAPIv4) blobAPI() *EngineAPIBlob {
+	return &EngineAPIBlob{api: e.api}
+}
+
 // NewPayloadV4 processes a new execution payload with Pectra support
 // engine_newPayloadV4
 func (e *EngineAPIv4) NewPayloadV4(
@@ -154,16 +159,43 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if err := validateExecutionRequests(executionRequests, payload); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-
-	// Return SYNCING until payload processing is fully implemented.
-	// Returning VALID for an unverified payload would mislead the consensus layer.
-	return &PayloadStatusV1{Status: PayloadStatusSyncing}, nil
+	blk, err := executionPayloadV4ToBlock(payload)
+	if err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	requestsHash := executionRequestsHash(executionRequests)
+	blockHash := ethCompatibleEngineBlockHash(blk, e.blobAPI().v1().chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   parentBeaconBlockRoot,
+		requestsHash:       &requestsHash,
+	})
+	if payload.BlockHash != blockHash {
+		return invalidPayloadResponse("block hash mismatch"), nil
+	}
+	headHash := e.blobAPI().v1().currentHeadHash()
+	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
+		return syncingPayloadResponse(), nil
+	}
+	if overlay := e.blobAPI().v1().overlay(); overlay != nil {
+		overlay.importBlock(blk, blockHash)
+	}
+	return validPayloadResponse(blockHash), nil
 }
 
 // GetPayloadV4 retrieves a payload with Pectra fields
 // engine_getPayloadV4
 func (e *EngineAPIv4) GetPayloadV4(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV4, error) {
-	// TODO: Implement payload retrieval with Pectra fields
+	if built := e.blobAPI().v1().builtPayload(payloadID); built != nil && built.v4 != nil {
+		return &GetPayloadResponseV4{
+			ExecutionPayload:      built.v4,
+			BlockValue:            hexutil.Uint64(0),
+			BlobsBundle:           built.blobsBundle,
+			ShouldOverrideBuilder: false,
+			ExecutionRequests:     cloneHexutilBytesList(built.executionRequests),
+		}, nil
+	}
 	return nil, errPayloadNotFound
 }
 
@@ -177,30 +209,60 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if state == nil {
 		return invalidForkchoiceResponse("missing forkchoice state"), nil
 	}
-
-	// Validate attributes if present
-	if attrs != nil {
-		// Parent beacon block root is required for Pectra
-		if attrs.ParentBeaconBlockRoot == nil {
-			return invalidForkchoiceResponse("missing parent beacon block root"), nil
-		}
-
-		// Validate target blobs if specified (EIP-7840)
-		if attrs.TargetBlobsPerBlock != nil {
-			target := uint64(*attrs.TargetBlobsPerBlock)
-			if target > vm.PectraMaxBlobsPerBlock {
-				return invalidForkchoiceResponse("target blobs exceeds maximum"), nil
-			}
+	head := e.blobAPI().v1().currentHead()
+	if head == nil {
+		return syncingForkchoiceResponse(), nil
+	}
+	headHash := e.blobAPI().v1().currentHeadHash()
+	if state.HeadBlockHash != headHash {
+		return syncingForkchoiceResponse(), nil
+	}
+	if attrs == nil {
+		return validForkchoiceResponse(headHash, nil), nil
+	}
+	if attrs.Withdrawals == nil {
+		return invalidForkchoiceResponse("missing withdrawals"), nil
+	}
+	if attrs.ParentBeaconBlockRoot == nil {
+		return invalidForkchoiceResponse("missing parent beacon block root"), nil
+	}
+	if attrs.TargetBlobsPerBlock != nil {
+		target := uint64(*attrs.TargetBlobsPerBlock)
+		if target > vm.PectraMaxBlobsPerBlock {
+			return invalidForkchoiceResponse("target blobs exceeds maximum"), nil
 		}
 	}
-
-	// Return SYNCING until fork choice update is fully implemented.
-	// Returning VALID for an unprocessed fork choice would mislead the consensus layer.
-	return &ForkchoiceUpdatedResponseV3{
-		PayloadStatus: PayloadStatusV1{
-			Status: PayloadStatusSyncing,
-		},
-	}, nil
+	if uint64(attrs.Timestamp) <= head.Time() {
+		return invalidForkchoiceResponse("payload timestamp must be greater than parent"), nil
+	}
+	payload := buildExecutionPayloadV4(head, headHash, attrs, e.blobAPI().v1().chainConfig())
+	if payload == nil {
+		return invalidForkchoiceResponse("failed to build payload"), nil
+	}
+	withdrawalsRoot := withdrawalsRoot(attrs.Withdrawals)
+	var targetBlobBytes [8]byte
+	if attrs.TargetBlobsPerBlock != nil {
+		binary.BigEndian.PutUint64(targetBlobBytes[:], uint64(*attrs.TargetBlobsPerBlock))
+	}
+	payloadID := makePayloadIDWithExtras(
+		headHash,
+		uint64(attrs.Timestamp),
+		attrs.SuggestedFeeRecipient,
+		withdrawalsRoot[:],
+		attrs.ParentBeaconBlockRoot[:],
+		targetBlobBytes[:],
+	)
+	if overlay := e.blobAPI().v1().overlay(); overlay != nil {
+		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
+			v4:                payload,
+			v3:                &ExecutionPayloadV3{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions), Withdrawals: cloneWithdrawals(payload.Withdrawals), BlobGasUsed: payload.BlobGasUsed, ExcessBlobGas: payload.ExcessBlobGas},
+			v2:                &ExecutionPayloadV2{ExecutionPayloadV1: ExecutionPayloadV1{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions)}, Withdrawals: cloneWithdrawals(payload.Withdrawals)},
+			v1:                &ExecutionPayloadV1{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions)},
+			blobsBundle:       &BlobsBundleV1{Commitments: []hexutil.Bytes{}, Proofs: []hexutil.Bytes{}, Blobs: []hexutil.Bytes{}},
+			executionRequests: []hexutil.Bytes{},
+		})
+	}
+	return validForkchoiceResponse(headHash, &payloadID), nil
 }
 
 // GetBlobsV1 retrieves blob sidecars by versioned hashes
