@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/utils"
@@ -197,6 +198,17 @@ func (abi *ABI) MethodById(sigdata []byte) (*Method, error) {
 	return nil, fmt.Errorf("no method with id: %#x", sigdata[:4])
 }
 
+// ErrorByID looks up an error by the 4-byte id,
+// returns nil if none found.
+func (abi *ABI) ErrorByID(sigdata [4]byte) (*Error, error) {
+	for _, errABI := range abi.Errors {
+		if bytes.Equal(errABI.ID[:4], sigdata[:]) {
+			return &errABI, nil
+		}
+	}
+	return nil, fmt.Errorf("no error with id: %#x", sigdata)
+}
+
 // EventByID looks an event up by its topic hash in the
 // ABI and returns nil if none found.
 func (abi *ABI) EventByID(topic types.Hash) (*Event, error) {
@@ -221,23 +233,55 @@ func (abi *ABI) HasReceive() bool {
 // revertSelector is a special function selector for revert reason unpacking.
 var revertSelector = utils.Keccak256([]byte("Error(string)"))[:4]
 
+// panicSelector is a special function selector for panic reason unpacking.
+var panicSelector = utils.Keccak256([]byte("Panic(uint256)"))[:4]
+
+// panicReasons is copied from ethers.js for human-readable panic codes.
+var panicReasons = map[uint64]string{
+	0x00: "generic panic",
+	0x01: "assert(false)",
+	0x11: "arithmetic underflow or overflow",
+	0x12: "division or modulo by zero",
+	0x21: "enum overflow",
+	0x22: "invalid encoded storage byte array accessed",
+	0x31: "out-of-bounds array access; popping on an empty array",
+	0x32: "out-of-bounds access of an array or bytesN",
+	0x41: "out of memory",
+	0x51: "uninitialized function",
+}
+
 // UnpackRevert resolves the abi-encoded revert reason. According to the solidity
 // spec https://solidity.readthedocs.io/en/latest/control-structures.html#revert,
 // the provided revert reason is abi-encoded as if it were a call to a function
-// `Error(string)`. So it's a special tool for it.
+// `Error(string)` or `Panic(uint256)`. So it's a special tool for it.
 func UnpackRevert(data []byte) (string, error) {
 	if len(data) < 4 {
 		return "", errors.New("invalid data for unpacking")
 	}
-	if !bytes.Equal(data[:4], revertSelector) {
+	switch {
+	case bytes.Equal(data[:4], revertSelector):
+		typ, _ := NewType("string", "", nil)
+		unpacked, err := (Arguments{{Type: typ}}).Unpack(data[4:])
+		if err != nil {
+			return "", err
+		}
+		return unpacked[0].(string), nil
+	case bytes.Equal(data[:4], panicSelector):
+		typ, _ := NewType("uint256", "", nil)
+		unpacked, err := (Arguments{{Type: typ}}).Unpack(data[4:])
+		if err != nil {
+			return "", err
+		}
+		panicCode := unpacked[0].(*big.Int)
+		if panicCode.IsUint64() {
+			if reason, ok := panicReasons[panicCode.Uint64()]; ok {
+				return reason, nil
+			}
+		}
+		return fmt.Sprintf("unknown panic code: %#x", panicCode), nil
+	default:
 		return "", errors.New("invalid data for unpacking")
 	}
-	typ, _ := NewType("string", "", nil)
-	unpacked, err := (Arguments{{Type: typ}}).Unpack(data[4:])
-	if err != nil {
-		return "", err
-	}
-	return unpacked[0].(string), nil
 }
 
 // overloadedName returns the next available name for a given thing.

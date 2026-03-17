@@ -156,11 +156,21 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 		result["baseFeePerGas"] = (*hexutil.Big)(header.BaseFee.ToBig())
 	}
 
-	// Post-Merge/Cancun compatibility fields (Blockscout v9.3.3)
-	result["withdrawalsRoot"] = avmtypes.FromastHash(types.Hash{})
-	result["blobGasUsed"] = hexutil.Uint64(header.BlobGasUsed)
-	result["excessBlobGas"] = hexutil.Uint64(header.ExcessBlobGas)
-	result["withdrawals"] = []interface{}{}
+	number := uint64FromUint256OrZero(header.Number)
+	if cfg != nil && cfg.IsShanghai(number) {
+		result["withdrawalsRoot"] = avmtypes.FromastHash(types.Hash{})
+		result["withdrawals"] = []interface{}{}
+	}
+	if cfg != nil && (cfg.IsCancun(number) || cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
+		if _, ok := result["withdrawalsRoot"]; !ok {
+			result["withdrawalsRoot"] = avmtypes.FromastHash(types.Hash{})
+		}
+		if _, ok := result["withdrawals"]; !ok {
+			result["withdrawals"] = []interface{}{}
+		}
+		result["blobGasUsed"] = hexutil.Uint64(header.BlobGasUsed)
+		result["excessBlobGas"] = hexutil.Uint64(header.ExcessBlobGas)
+	}
 
 	return result
 }

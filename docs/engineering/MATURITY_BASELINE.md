@@ -16,11 +16,19 @@
 
 1. `make maturity-smoke`
 2. `make maturity-baseline`
+3. `make ops-smoke`
+4. `make interop-smoke`
+5. `make soak-smoke`
+6. `make release-check`
 
 其中：
 
 1. `make maturity-smoke` 只跑聚焦的外部 surface / 恢复性 smoke。
 2. `make maturity-baseline` 跑同一套 smoke，并额外执行核心基线命令，结果写入 `build/maturity-baseline/<timestamp>/summary.md`。
+3. `make ops-smoke` 固定验证 RPC、metrics、pprof 和短压测。
+4. `make interop-smoke` 固定验证 RPC / Blockscout / Hive `engine-auth` / EEST collect-only。
+5. `make soak-smoke` 固定验证重启循环和短时负载。
+6. `make release-check` 串行执行 `maturity-baseline + ops-smoke + interop-smoke + soak-smoke`。
 
 ## 2. Smoke 覆盖面
 
@@ -49,6 +57,10 @@
 
 1. `build/maturity-baseline/<timestamp>/summary.md`
 2. 同目录下保存每一步的独立 `*.log`
+3. `build/ops-smoke/<timestamp>/summary.md`
+4. `build/interop-smoke/<timestamp>/summary.md`
+5. `build/soak-smoke/<timestamp>/summary.md`
+6. `build/release-check/<timestamp>/summary.md`
 
 ## 4. 红线
 
@@ -67,11 +79,13 @@
 
 1. 先跑 `make maturity-smoke`
 2. 需要形成可追溯记录时跑 `make maturity-baseline`
+3. 对运行时或互操作面有改动时，再跑 `make ops-smoke`、`make interop-smoke`
 
 版本发布前：
 
-1. 跑 `make maturity-baseline`
-2. 再补 Hive / interop / soak 的外部环境验证
+1. 跑 `make release-check`
+2. 记录 `maturity-baseline`、`ops-smoke`、`interop-smoke`、`soak-smoke` 和 `release-check` 的 summary 路径
+3. 对照 [`OPERATIONS_RUNBOOK.md`](./OPERATIONS_RUNBOOK.md) 和 [`PUBLISH_CHECKLIST.md`](./PUBLISH_CHECKLIST.md)
 
 ## 6. 当前仍未覆盖的成熟度项
 
@@ -80,7 +94,6 @@
 当前仍未纳入固定 gate 的关键项：
 
 1. archive / historical proof 的查询与恢复路径
-2. 长时间运行下的 goroutine、heap、队列和连接数资源边界
-3. Hive / EEST / RPC compatibility 的真实互操作矩阵
-4. 24h soak、并发 RPC+txpool 压测、重启/恢复循环测试
-5. dashboard、告警、runbook 和 release checklist
+2. 24h / nightly 级长时间资源边界和更重的并发压测
+3. 更完整的 archive-depth / deep-history / broad RPC compatibility 互操作矩阵
+4. 更细的 dashboard 阈值回标和线上告警调优

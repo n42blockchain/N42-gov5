@@ -20,7 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+
 	"github.com/holiman/uint256"
+
 	N42 "github.com/n42blockchain/N42"
 	"github.com/n42blockchain/N42/accounts/abi"
 	"github.com/n42blockchain/N42/common/block"
@@ -28,8 +33,6 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	event "github.com/n42blockchain/N42/modules/event/v2"
-	"strings"
-	"sync"
 )
 
 const basefeeWiggleMultiplier = 2
@@ -40,10 +43,13 @@ type SignerFn func(types.Address, *transaction.Transaction) (*transaction.Transa
 
 // CallOpts is the collection of options to fine tune a contract call request.
 type CallOpts struct {
-	Pending     bool            // Whether to operate on the pending state or the last known one
-	From        types.Address   // Optional the sender address, otherwise the first account is used
-	BlockNumber *uint256.Int    // Optional the block number on which the call should be performed
-	Context     context.Context // Network context to support cancellation and timeouts (nil = no timeout)
+	Pending              bool            // Whether to operate on the pending state or the last known one
+	From                 types.Address   // Optional the sender address, otherwise the first account is used
+	BlockNumber          *uint256.Int    // Optional the block number on which the call should be performed
+	Context              context.Context // Network context to support cancellation and timeouts (nil = no timeout)
+	EnableCCIPRead       bool            // Whether to follow EIP-3668 OffchainLookup redirects
+	CCIPReadMaxRedirects int             // Maximum number of OffchainLookup follow-up calls (default: 4)
+	CCIPReadClient       *http.Client    // Optional HTTP client for CCIP-Read gateway requests
 }
 
 // TransactOpts is the collection of authorization data required to create a
@@ -162,35 +168,26 @@ func (c *BoundContract) Call(opts *CallOpts, results *[]interface{}, method stri
 		return err
 	}
 	var (
-		msg    = N42.CallMsg{From: opts.From, To: &c.address, Data: input}
-		ctx    = ensureContext(opts.Context)
 		code   []byte
 		output []byte
 	)
-	if opts.Pending {
-		pb, ok := c.caller.(PendingContractCaller)
-		if !ok {
-			return ErrNoPendingState
-		}
-		output, err = pb.PendingCallContract(ctx, msg)
-		if err != nil {
-			return err
-		}
-		if len(output) == 0 {
-			// Make sure we have a contract to operate on, and bail out otherwise.
+	output, err = c.call(opts, input)
+	if err != nil {
+		return err
+	}
+	if len(output) == 0 {
+		ctx := ensureContext(opts.Context)
+		if opts.Pending {
+			pb, ok := c.caller.(PendingContractCaller)
+			if !ok {
+				return ErrNoPendingState
+			}
 			if code, err = pb.PendingCodeAt(ctx, c.address); err != nil {
 				return err
 			} else if len(code) == 0 {
 				return ErrNoCode
 			}
-		}
-	} else {
-		output, err = c.caller.CallContract(ctx, msg, opts.BlockNumber)
-		if err != nil {
-			return err
-		}
-		if len(output) == 0 {
-			// Make sure we have a contract to operate on, and bail out otherwise.
+		} else {
 			if code, err = c.caller.CodeAt(ctx, c.address, opts.BlockNumber); err != nil {
 				return err
 			} else if len(code) == 0 {

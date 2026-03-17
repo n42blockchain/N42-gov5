@@ -51,27 +51,33 @@
 
 | 门槛 | 要求 | 当前状态 |
 |---|---|---|
-| 外部语义正确 | `Engine API`、核心 RPC、签名器接口在真实对接环境下行为正确 | 部分具备 |
-| 恢复性 | 重启、崩溃恢复、历史过期、快照恢复、genesis/bootstrap 路径可重复验证 | 部分具备 |
+| 外部语义正确 | `Engine API`、核心 RPC、签名器接口在真实对接环境下行为正确 | 已具备最小闭环 |
+| 恢复性 | 重启、崩溃恢复、历史过期、快照恢复、genesis/bootstrap 路径可重复验证 | 已具备最小闭环 |
 | 资源边界 | 长时间运行下 goroutine、内存、磁盘、队列、连接数有边界且可观测 | 未完成 |
-| 互操作 | Hive / execution-spec / 核心 RPC 兼容矩阵稳定 | 未完成 |
-| 发布门禁 | 有固定回归套件和 nightly soak，而不是只靠一次性本地绿测 | 部分具备 |
-| 运维交付 | 指标、告警、runbook、备份恢复步骤和故障演练闭环 | 未完成 |
+| 互操作 | Hive / execution-spec / 核心 RPC 兼容矩阵稳定 | 已具备最小闭环 |
+| 发布门禁 | 有固定回归套件和 nightly soak，而不是只靠一次性本地绿测 | 已具备最小闭环 |
+| 运维交付 | 指标、告警、runbook、备份恢复步骤和故障演练闭环 | 已具备最小闭环 |
 
 ### 当前进展快照（截至 2026-03-17）
 
 已落地：
 
 1. `Phase 0` 的最小 gate 已固定为 `make maturity-smoke` 和 `make maturity-baseline`，基线覆盖 `Engine API`、GraphQL、Clef、external signer、node auth/genesis、keystore、genesis config、checkpoint、snapshot、freezer、history expiry recovery、txpool journal。
-2. `Phase 1` 已把 `Engine API` 推进到最小真实闭环，且 GraphQL / Clef / external signer / node auth+genesis 已进入固定 smoke。
-3. `Phase 2` 已把 keystore watcher 漏事件补扫、snapshot journal、txpool journal、checkpoint 半写入恢复、freezer 元数据滞后恢复纳入自动化回归。
+2. `Phase 1` 已把 `Engine API` 推进到真实 Hive `engine-auth` 绿测，GraphQL / Clef / external signer / node auth+genesis 已进入固定 smoke，并补上了 `EIP-3668 (CCIP-Read)` 支持。
+3. `Phase 2` 已把 keystore watcher 漏事件补扫、snapshot journal、txpool journal、checkpoint 半写入恢复、freezer 元数据滞后恢复和 `history expiry` 重启续跑纳入自动化回归。
+4. `Phase 4` 已固定 `make interop-smoke`、`make soak-smoke` 和 `make release-check`，覆盖 RPC / Blockscout / Hive `engine-auth` / EEST collect-only / 重启循环 / 短压测。
+5. `Phase 5` 已把最小 runbook、发布 checklist 和 metrics 基线文档落到仓库。
 
 仍未完成：
 
 1. archive / historical proof 的查询与恢复路径仍未进入固定 gate。
-2. 长时间运行下的 goroutine / heap / queue 资源边界仍未建立可回归红线。
-3. Hive / EEST / RPC compatibility 的真实互操作矩阵、24h soak 和重启循环测试仍未落地。
-4. dashboard、告警、runbook 和 release checklist 仍未形成发布门禁。
+2. 24h / nightly 级 goroutine / heap / queue 资源边界仍未形成连续回归红线。
+3. 更重的深历史 / archive-depth / broad RPC compatibility 互操作矩阵仍属于下一波工作。
+
+结论：
+
+1. 这份计划里“仓库内可执行、可回归、可追溯”的交付项已经落地完成。
+2. 当前状态可称为“受控发布候选基线已具备”，但还不应把它扩写成“无条件生产就绪”。
 
 ---
 
@@ -151,7 +157,8 @@
 
 1. `Engine API` 已具备 `forkchoiceUpdated -> getPayload -> newPayload -> RPC block lookup` 的最小 round-trip 回归。
 2. GraphQL、Clef、external signer、node auth/genesis 已纳入固定 smoke。
-3. 真实 Hive `engine-auth` 和更广的 RPC compatibility 仍未进入常态 gate。
+3. `EIP-3668 (CCIP-Read)` 已补进 ABI / bind 调用层。
+4. 真实 Hive `engine-auth`、Blockscout RPC smoke 和 EEST collect-only 已进入固定 interop gate。
 
 ### Phase 2：把恢复性做成一等公民
 
@@ -248,6 +255,13 @@
 1. N42 至少具备固定的、可重复的 interop 和 soak 跑法。
 2. 失败结果可以稳定归因，不再混在 collect-only / stub / smoke / real-exec 口径里。
 
+当前进展：
+
+1. `make interop-smoke` 已固定执行 RPC / Blockscout / Hive `engine-auth` / EEST collect-only。
+2. `make soak-smoke` 已固定执行 3 轮重启 + 短压测循环。
+3. `scripts/run_interop_smoke.sh` 已把 Hive 基础设施 flake 与语义失败分开，通过 cleanup + retry 把 `API 500` 归类为环境抖动而不是实现回归。
+4. `make release-check` 已把 `maturity-baseline + ops-smoke + interop-smoke + soak-smoke` 收成单一发布 gate。
+
 ### Phase 5：运维交付与发布门禁
 
 目标：把“代码层成熟度”转换成“发布层成熟度”。
@@ -274,6 +288,13 @@
 
 1. 发布决策可追溯。
 2. 线上问题有最小操作手册，不再靠开发者记忆兜底。
+
+当前进展：
+
+1. 最小 dashboard / 告警阈值继续使用 [`METRICS_BASELINE.md`](./METRICS_BASELINE.md)。
+2. 运维手册已落在 [`OPERATIONS_RUNBOOK.md`](./OPERATIONS_RUNBOOK.md)。
+3. 发布 checklist 已落在 [`PUBLISH_CHECKLIST.md`](./PUBLISH_CHECKLIST.md)。
+4. `make release-check` 现在就是发布前的强约束 gate。
 
 ---
 

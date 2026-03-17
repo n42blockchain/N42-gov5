@@ -74,6 +74,90 @@ func TestRPCMarshalHeaderUsesEthereumCompatibleHash(t *testing.T) {
 	}
 }
 
+func TestRPCMarshalHeaderOmitsPostForkFieldsBeforeShanghai(t *testing.T) {
+	t.Parallel()
+
+	header := &block.Header{
+		Number:        uint256.NewInt(0),
+		Time:          9,
+		BaseFee:       uint256.NewInt(1),
+		BlobGasUsed:   11,
+		ExcessBlobGas: 22,
+	}
+	cfg := &params.ChainConfig{
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(10),
+		CancunBlock:   big.NewInt(20),
+	}
+
+	fields := RPCMarshalHeader(header, cfg)
+	for _, key := range []string{"withdrawalsRoot", "withdrawals", "blobGasUsed", "excessBlobGas"} {
+		if _, ok := fields[key]; ok {
+			t.Fatalf("RPCMarshalHeader() unexpectedly included %q before Shanghai/Cancun", key)
+		}
+	}
+}
+
+func TestRPCMarshalHeaderIncludesWithdrawalsAtShanghai(t *testing.T) {
+	t.Parallel()
+
+	header := &block.Header{
+		Number:  uint256.NewInt(10),
+		Time:    9,
+		BaseFee: uint256.NewInt(1),
+	}
+	cfg := &params.ChainConfig{
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(10),
+		CancunBlock:   big.NewInt(20),
+	}
+
+	fields := RPCMarshalHeader(header, cfg)
+	if _, ok := fields["withdrawalsRoot"]; !ok {
+		t.Fatal("RPCMarshalHeader() missing withdrawalsRoot at Shanghai")
+	}
+	if _, ok := fields["withdrawals"]; !ok {
+		t.Fatal("RPCMarshalHeader() missing withdrawals at Shanghai")
+	}
+	if _, ok := fields["blobGasUsed"]; ok {
+		t.Fatal("RPCMarshalHeader() unexpectedly included blobGasUsed before Cancun")
+	}
+	if _, ok := fields["excessBlobGas"]; ok {
+		t.Fatal("RPCMarshalHeader() unexpectedly included excessBlobGas before Cancun")
+	}
+}
+
+func TestRPCMarshalHeaderIncludesBlobFieldsAtCancun(t *testing.T) {
+	t.Parallel()
+
+	header := &block.Header{
+		Number:        uint256.NewInt(20),
+		Time:          9,
+		BaseFee:       uint256.NewInt(1),
+		BlobGasUsed:   11,
+		ExcessBlobGas: 22,
+	}
+	cfg := &params.ChainConfig{
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(10),
+		CancunBlock:   big.NewInt(20),
+	}
+
+	fields := RPCMarshalHeader(header, cfg)
+	if got, ok := fields["blobGasUsed"].(hexutil.Uint64); !ok || uint64(got) != 11 {
+		t.Fatalf("RPCMarshalHeader() blobGasUsed = %#v, want 11", fields["blobGasUsed"])
+	}
+	if got, ok := fields["excessBlobGas"].(hexutil.Uint64); !ok || uint64(got) != 22 {
+		t.Fatalf("RPCMarshalHeader() excessBlobGas = %#v, want 22", fields["excessBlobGas"])
+	}
+	if _, ok := fields["withdrawalsRoot"]; !ok {
+		t.Fatal("RPCMarshalHeader() missing withdrawalsRoot at Cancun")
+	}
+	if _, ok := fields["withdrawals"]; !ok {
+		t.Fatal("RPCMarshalHeader() missing withdrawals at Cancun")
+	}
+}
+
 func TestEthCompatibleHeaderHashMatchesHiveGenesisSample(t *testing.T) {
 	t.Parallel()
 
