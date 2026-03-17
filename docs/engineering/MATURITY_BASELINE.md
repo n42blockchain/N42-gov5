@@ -71,3 +71,15 @@
 
 1. 跑 `make maturity-baseline`
 2. 再补 Hive / interop / soak 的外部环境验证
+
+## 6. 当前仍未覆盖的成熟度项
+
+`make maturity-baseline` 通过只说明最小 surface 和恢复 smoke 当前是绿的，不代表已经进入“生产候选”。
+
+当前仍未纳入固定 gate 的关键项：
+
+1. `history expiry` 的重启一致性和边界 RPC 行为
+2. 长时间运行下的 goroutine、heap、队列和连接数资源边界
+3. Hive / EEST / RPC compatibility 的真实互操作矩阵
+4. 24h soak、并发 RPC+txpool 压测、重启/恢复循环测试
+5. dashboard、告警、runbook 和 release checklist

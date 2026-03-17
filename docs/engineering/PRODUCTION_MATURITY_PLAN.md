@@ -51,12 +51,27 @@
 
 | 门槛 | 要求 | 当前状态 |
 |---|---|---|
-| 外部语义正确 | `Engine API`、核心 RPC、签名器接口在真实对接环境下行为正确 | 未完成 |
+| 外部语义正确 | `Engine API`、核心 RPC、签名器接口在真实对接环境下行为正确 | 部分具备 |
 | 恢复性 | 重启、崩溃恢复、历史过期、快照恢复、genesis/bootstrap 路径可重复验证 | 部分具备 |
 | 资源边界 | 长时间运行下 goroutine、内存、磁盘、队列、连接数有边界且可观测 | 未完成 |
 | 互操作 | Hive / execution-spec / 核心 RPC 兼容矩阵稳定 | 未完成 |
-| 发布门禁 | 有固定回归套件和 nightly soak，而不是只靠一次性本地绿测 | 未完成 |
+| 发布门禁 | 有固定回归套件和 nightly soak，而不是只靠一次性本地绿测 | 部分具备 |
 | 运维交付 | 指标、告警、runbook、备份恢复步骤和故障演练闭环 | 未完成 |
+
+### 当前进展快照（截至 2026-03-17）
+
+已落地：
+
+1. `Phase 0` 的最小 gate 已固定为 `make maturity-smoke` 和 `make maturity-baseline`，基线覆盖 `Engine API`、GraphQL、Clef、external signer、node auth/genesis、keystore、genesis config、checkpoint、snapshot、freezer、txpool journal。
+2. `Phase 1` 已把 `Engine API` 推进到最小真实闭环，且 GraphQL / Clef / external signer / node auth+genesis 已进入固定 smoke。
+3. `Phase 2` 已把 keystore watcher 漏事件补扫、snapshot journal、txpool journal、checkpoint 半写入恢复、freezer 元数据滞后恢复纳入自动化回归。
+
+仍未完成：
+
+1. `history expiry` 的重启一致性和边界 RPC 仍未进入固定 gate。
+2. 长时间运行下的 goroutine / heap / queue 资源边界仍未建立可回归红线。
+3. Hive / EEST / RPC compatibility 的真实互操作矩阵、24h soak 和重启循环测试仍未落地。
+4. dashboard、告警、runbook 和 release checklist 仍未形成发布门禁。
 
 ---
 
@@ -98,6 +113,12 @@
 1. 任何后续提交都能对照这份基线判断“是在变稳还是在漂移”
 2. 生产判断不再依赖口头结论
 
+当前进展：
+
+1. `make maturity-smoke` / `make maturity-baseline` 已落地，具体覆盖项见 [`MATURITY_BASELINE.md`](./MATURITY_BASELINE.md)。
+2. 当前 full baseline 固定执行的是 `go build ./...`、`go vet ./...`、`go test -count=1 ./...`、`make lint`、`make race-core`。
+3. `make test` 仍可作为人工复核入口补跑，但由于和 `go test ./...` 覆盖高度重叠，当前没有单独列成 baseline 行。
+
 ### Phase 1：收口现有外部 surface 的真实语义
 
 目标：优先把已经对外暴露的接口做成“真实可对接”，尤其是 `Engine API`。
@@ -125,6 +146,12 @@
 1. `engine-auth` 相关 Hive 套件从“启动成功但语义失败”推进到“核心路径绿”。
 2. `Engine API` 不再以 `namespace 存在` 充当完成标准。
 3. GraphQL / Clef / external signer 在成功和失败路径上都有稳定回归。
+
+当前进展：
+
+1. `Engine API` 已具备 `forkchoiceUpdated -> getPayload -> newPayload -> RPC block lookup` 的最小 round-trip 回归。
+2. GraphQL、Clef、external signer、node auth/genesis 已纳入固定 smoke。
+3. 真实 Hive `engine-auth` 和更广的 RPC compatibility 仍未进入常态 gate。
 
 ### Phase 2：把恢复性做成一等公民
 
@@ -154,6 +181,12 @@
 
 1. 出现异常重启时，节点不会留下“看起来起来了，但内部状态漂移”的隐患。
 2. 恢复路径有自动化覆盖，不再依赖人工重放。
+
+当前进展：
+
+1. keystore watcher 漏事件补扫、genesis config fail-fast、snapshot journal、txpool journal 已有恢复 smoke。
+2. checkpoint 现在会拒绝把“只有 canonical hash 的半写入块”误判成已恢复；freezer 现在会按最小真实表项数恢复，而不是盲信滞后的元数据。
+3. `history expiry` 的重启一致性和边界查询回归仍未补齐，是当前恢复性里最明显的剩余缺口。
 
 ### Phase 3：运行时稳态与资源边界
 
