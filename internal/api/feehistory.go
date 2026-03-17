@@ -199,6 +199,7 @@ func (oracle *Oracle) resolveBlockRange(ctx context.Context, reqEnd jsonrpc.Bloc
 	}
 
 	head := jsonrpc.BlockNumber(headNumber.Uint64())
+	earliest := jsonrpc.BlockNumber(oracle.backend.EarliestBlock())
 
 	// Fail if request block is beyond the chain's current head.
 	if head < reqEnd {
@@ -206,7 +207,7 @@ func (oracle *Oracle) resolveBlockRange(ctx context.Context, reqEnd jsonrpc.Bloc
 	}
 
 	// Resolve block tag.
-	if reqEnd < 0 {
+	if reqEnd < 0 || reqEnd == jsonrpc.EarliestBlockNumber {
 		var (
 			resolved block.IHeader
 			err      error
@@ -225,7 +226,7 @@ func (oracle *Oracle) resolveBlockRange(ctx context.Context, reqEnd jsonrpc.Bloc
 		case jsonrpc.LatestBlockNumber:
 			resolved = headBlock
 		case jsonrpc.EarliestBlockNumber:
-			resolved = oracle.backend.GetHeaderByNumber(uint256.NewInt(0))
+			resolved = oracle.backend.GetHeaderByNumber(uint256.NewInt(uint64(earliest)))
 		}
 		if resolved == nil || err != nil {
 			return nil, nil, 0, 0, err
@@ -242,9 +243,14 @@ func (oracle *Oracle) resolveBlockRange(ctx context.Context, reqEnd jsonrpc.Bloc
 	if blocks == 0 {
 		return nil, nil, 0, 0, nil
 	}
-	// Ensure not trying to retrieve before genesis.
-	if int(reqEnd+1) < blocks {
-		blocks = int(reqEnd + 1)
+	if reqEnd < earliest {
+		reqEnd = earliest
+		blocks = 1
+	}
+	// Ensure not trying to retrieve before the earliest available block.
+	available := int(reqEnd-earliest) + 1
+	if available < blocks {
+		blocks = available
 	}
 	return pendingBlock, pendingReceipts, uint64(reqEnd), blocks, nil
 }

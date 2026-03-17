@@ -59,7 +59,9 @@ func (b *gasPriceBlockStub) TxHash() types.Hash                              { r
 func (b *gasPriceBlockStub) WithSeal(block.IHeader) *block.Block             { return nil }
 
 type gasPriceChainStub struct {
-	current block.IBlock
+	current  block.IBlock
+	headers  map[uint64]block.IHeader
+	earliest uint64
 }
 
 func (m *gasPriceChainStub) Config() *params.ChainConfig { return nil }
@@ -67,7 +69,15 @@ func (m *gasPriceChainStub) CurrentBlock() block.IBlock  { return m.current }
 func (m *gasPriceChainStub) GetHeader(hash types.Hash, number *uint256.Int) block.IHeader {
 	return nil
 }
-func (m *gasPriceChainStub) GetHeaderByNumber(number *uint256.Int) block.IHeader { return nil }
+func (m *gasPriceChainStub) GetHeaderByNumber(number *uint256.Int) block.IHeader {
+	if number == nil {
+		return nil
+	}
+	if m.headers == nil {
+		return nil
+	}
+	return m.headers[number.Uint64()]
+}
 func (m *gasPriceChainStub) GetHeaderByHash(hash types.Hash) (block.IHeader, error) {
 	return nil, nil
 }
@@ -102,7 +112,7 @@ func (m *gasPriceChainStub) StateAt(kv.Tx, uint64) interface{}                 {
 func (m *gasPriceChainStub) HasBlock(types.Hash, uint64) bool                  { return false }
 func (m *gasPriceChainStub) DB() kv.RwDB                                       { return nil }
 func (m *gasPriceChainStub) Quit() <-chan struct{}                             { return nil }
-func (m *gasPriceChainStub) EarliestBlock() uint64                             { return 0 }
+func (m *gasPriceChainStub) EarliestBlock() uint64                             { return m.earliest }
 func (m *gasPriceChainStub) Close() error                                      { return nil }
 func (m *gasPriceChainStub) WriteBlockWithState(block.IBlock, []*block.Receipt, interface{}, map[types.Address]*uint256.Int) error {
 	return nil

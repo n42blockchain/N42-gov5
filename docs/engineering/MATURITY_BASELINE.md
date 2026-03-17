@@ -36,6 +36,7 @@
 | Checkpoint recovery | `./internal/sync/checkpoint` | 保证重启时不会把只有 canonical hash 的半写入 checkpoint 误判成已完整恢复 |
 | Snapshot recovery | `./modules/state/snapshot` | 保证 journal 落盘/重载、损坏输入和取消路径 |
 | Freezer recovery | `./modules/rawdb/freezer` | 保证 ancient 元数据滞后或表项数不一致时，重启按最小真实表项恢复而不是截断有效冷数据 |
+| History expiry recovery | `./internal/api`、`./internal/node`、`./turbo/rpchelper` | 保证 `earliest` / `feeHistory` / canonical lookup 对齐最早可用历史，并验证重启后会从持久化 earliest 继续推进 |
 | TxPool journal | `./internal/txspool` | 保证 graceful shutdown 后的 journal 落盘、重载、去重和旧格式迁移 |
 
 ## 3. 输出位置
@@ -78,7 +79,7 @@
 
 当前仍未纳入固定 gate 的关键项：
 
-1. `history expiry` 的重启一致性和边界 RPC 行为
+1. archive / historical proof 的查询与恢复路径
 2. 长时间运行下的 goroutine、heap、队列和连接数资源边界
 3. Hive / EEST / RPC compatibility 的真实互操作矩阵
 4. 24h soak、并发 RPC+txpool 压测、重启/恢复循环测试

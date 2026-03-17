@@ -127,6 +127,9 @@ run_step recovery "snapshot-journal" "$run_dir/snapshot-journal.log" \
 run_step recovery "freezer-recovery" "$run_dir/freezer-recovery.log" \
   go test -count=1 ./modules/rawdb/freezer -run \
   'TestFreezerReopenPrefersTableCountWhenMetadataStale|TestFreezerReopenTruncatesToShortestTable'
+run_step recovery "history-expiry-recovery" "$run_dir/history-expiry-recovery.log" \
+  go test -count=1 ./internal/api ./internal/node ./turbo/rpchelper -run \
+  'TestBlockByNumberUsesEarliestAvailableAfterHistoryExpiry|TestResolveBlockRangeUsesEarliestAvailableBlock|TestResolveBlockRangeClampsToEarliestAvailableHistory|TestHistoryExpiry_RestartResumesFromPersistedEarliestBlock|TestGetCanonicalBlockNumberUsesEarliestAvailableHistory'
 run_step recovery "txpool-journal" "$run_dir/txpool-journal.log" \
   go test -count=1 ./internal/txspool -run \
   'TestFlushToDBPersistsLocalAndPendingTransactions|TestLoadPersistedTransactionsDeduplicatesCurrentAndLegacyEntries|TestLoadPersistedTransactionsClearsUnreadableJournalEntries|TestLoadPersistedTransactionsMigratesLegacyEntriesWithoutClearingForeignData'

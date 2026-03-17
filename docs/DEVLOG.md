@@ -266,7 +266,7 @@
 
 ## 2026-03-09 — GAP_ANALYSIS 客观性修正 + Verkle Tree 战略废弃分析
 
-基于 Verkle Tree 争议研究和用户反馈，对 `docs/GAP_ANALYSIS.md` 进行数据驱动的客观修正：
+基于 Verkle Tree 争议研究和用户反馈，对当时的 gap 基线文档进行数据驱动的客观修正（后续已拆分为 `docs/GAP.md` 仓库核对版和 `docs/GAP_ANALYSIS.md` 横向对比版）：
 
 **Verkle Tree 分析：**
 - 以太坊自身正从 Verkle 转向 STARKed 二叉树 — EIP-7864 (2025.1), Vitalik 明确支持
@@ -324,7 +324,23 @@
 - 混入了仓库外版本摘要、路线图和宣传口径
 - 评分模型不是源码事实
 
-当前有效口径以 [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md) 为准；对仓库外项目统一视为“未按同标准复核”，不再下领先、落后或具体分数结论。
+当前仓库核对口径以 [`docs/GAP.md`](docs/GAP.md) 为准，详细横向对比见 [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md)；对仓库外项目统一视为“未按同标准复核”，不再下领先、落后或具体分数结论。
+
+---
+
+## 2026-03-17 — History Expiry 边界语义收口
+
+- `internal/api/api.go` 新增 `normalizeBlockNumberForHistory`，`BlockByNumber` / `DoCall` 不再把 `earliest` 静默解到 `0`，而是对齐链上 `EarliestBlock()`
+- `internal/api/blockscout.go` 的区块查询路径同步对齐最早可用历史
+- `internal/api/feehistory.go` 现在会把 `earliest` 和请求窗口 clamp 到最早可用历史，不再越过已过期边界
+- `turbo/rpchelper/helper.go` 的 canonical lookup 在 `earliest` 标签下改为读取 `rawdb.ReadEarliestBlock`
+- 新增回归：`TestBlockByNumberUsesEarliestAvailableAfterHistoryExpiry`、`TestResolveBlockRangeUsesEarliestAvailableBlock`、`TestResolveBlockRangeClampsToEarliestAvailableHistory`、`TestGetCanonicalBlockNumberUsesEarliestAvailableHistory`
+- 基线脚本新增 `history-expiry-recovery` recovery smoke，固定覆盖 `earliest` / `feeHistory` / canonical lookup 的边界语义，以及重启后从持久化 earliest 继续推进的恢复路径
+
+当前结论：
+
+- `history expiry` 的边界 RPC 语义和重启续跑已进入固定 gate
+- `archive / historical proof` 查询与深历史恢复仍是恢复性里的剩余缺口
 
 ---
 
@@ -364,7 +380,7 @@ RPC 端点（注册在 `eth` 命名空间）：
 
 ## 2026-03-09 — GAP_ANALYSIS 文档口径修订说明
 
-`docs/GAP_ANALYSIS.md` 已从“外部竞品深度对比文档”收口为“仓库核对版实装基线”。
+当时的 `docs/GAP_ANALYSIS.md` 曾从“外部竞品深度对比文档”收口为“仓库核对版实装基线”；当前结构已进一步拆分为 `docs/GAP.md` 负责仓库核对基线，`docs/GAP_ANALYSIS.md` 负责横向对比。
 
 当前保留的只有两类信息：
 
@@ -757,7 +773,7 @@ RPC 端点（注册在 `eth` 命名空间）：
 - 多处结论与后续代码演进已不一致
 - 表格混合了源码事实、主观判断和外部行业认知
 
-因此这里不再保留旧表正文。当前有效基线以 [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md) 为准；如果未来需要恢复跨仓库对比，必须逐个仓库单独审计并附复现命令。
+因此这里不再保留旧表正文。当前仓库核对基线以 [`docs/GAP.md`](docs/GAP.md) 为准，详细横向对比见 [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md)；如果未来需要恢复跨仓库对比，必须逐个仓库单独审计并附复现命令。
 
 ---
 

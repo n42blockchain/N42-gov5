@@ -1,9 +1,9 @@
 # N42 评价提升修复计划（仓库核对版）
 
 > 计划日期：2026-03-16
-> 输入基线：[`docs/GAP_ANALYSIS.md`](../GAP_ANALYSIS.md)
+> 输入基线：[`docs/GAP.md`](../GAP.md)
 > 目标：通过代码与测试补强，把“代码存在”模块提升为“已验证”，而不是通过修改文案提升结论
-> 当前状态：Phase 1-6 已完成，结果已回写到 [`docs/GAP_ANALYSIS.md`](../GAP_ANALYSIS.md)
+> 当前状态：Phase 1-6 已完成，结果已回写到 [`docs/GAP.md`](../GAP.md)
 
 ---
 
@@ -44,7 +44,7 @@
 2. `go test -count=1 ./internal/tracers/... ./internal/api/filters ./contracts/pqregistry ./internal/metrics/prometheus ./internal/network/...`
 3. `go test -count=1 ./internal/miner/builder`
 
-本轮顺带补列进 `docs/GAP_ANALYSIS.md` 的现有已验证模块：
+本轮顺带补列进 `docs/GAP.md` 的现有已验证模块：
 
 | 模块 | 现有证据 | 验收命令 |
 |---|---|---|
@@ -224,7 +224,7 @@ go test -count=1 ./internal/txspool/...
 执行项：
 
 1. 逐项复核哪几个模块可以从“代码存在”改写成“已验证”。
-2. 更新 `docs/GAP_ANALYSIS.md` 中对应行，不提前升格。
+2. 更新 `docs/GAP.md` 中对应行，不提前升格。
 3. 在 `docs/DEVLOG.md` 记录新增测试和真实修复点，不写主观评分。
 4. 统一跑总回归，确保评价提升不是靠局部绿测换来的。
 
@@ -238,14 +238,14 @@ make build
 
 ### Phase 6：现有测试模块扩展核对
 
-目标：把原表里遗漏、但仓库内已经具备同目录测试的模块补列进 `docs/GAP_ANALYSIS.md`。
+目标：把原表里遗漏、但仓库内已经具备同目录测试的模块补列进 `docs/GAP.md`。
 
 执行项：
 
 1. 盘点同目录已带测试的功能模块，只选有明确功能边界的包，不把纯内部工具碎片硬拆成能力项。
 2. 统计每个模块的 Go 文件数、代码行数、`Test`/`Benchmark` 数。
 3. 真实跑包级 `go test -count=1`，只把通过的模块升格进“已核实能力”表。
-4. 回写 `docs/GAP_ANALYSIS.md` 和本计划，不提前宣称未跑过的模块。
+4. 回写 `docs/GAP.md` 和本计划，不提前宣称未跑过的模块。
 
 本轮已完成的补列对象：
 
@@ -285,5 +285,5 @@ make build
 本计划完成时，至少应满足：
 
 1. 上述 5 个“代码存在”模块中，多数已具备同目录自动化测试。
-2. `docs/GAP_ANALYSIS.md` 中“代码存在”条目数量明显下降，且每次升格都有对应命令和测试文件。
+2. `docs/GAP.md` 中“代码存在”条目数量明显下降，且每次升格都有对应命令和测试文件。
 3. 整体结论仍然只基于仓库源码、测试和命令结果，不引入外部宣传口径。

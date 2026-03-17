@@ -58,7 +58,12 @@ func getBlockNumber(requireCanonical bool, blockNrOrHash jsonrpc.BlockNumberOrHa
 				return nil, types.Hash{}, err
 			}
 		case jsonrpc.EarliestBlockNumber:
-			blockNumber = uint256.NewInt(0)
+			var earliest uint64
+			earliest, err = rawdb.ReadEarliestBlock(tx)
+			if err != nil {
+				return nil, types.Hash{}, err
+			}
+			blockNumber = uint256.NewInt(earliest)
 		case jsonrpc.FinalizedBlockNumber:
 			blockNumber, err = GetFinalizedBlockNumber(tx)
 			if err != nil {

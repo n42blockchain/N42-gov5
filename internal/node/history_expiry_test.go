@@ -184,6 +184,54 @@ func TestHistoryExpiry_EarliestBlock_Persistence(t *testing.T) {
 	}
 }
 
+func TestHistoryExpiry_RestartResumesFromPersistedEarliestBlock(t *testing.T) {
+	db := memdb.NewTestDB(t)
+
+	hashes := make(map[uint64]types.Hash)
+	if err := db.Update(testCtx(), func(tx kv.RwTx) error {
+		for i := uint64(1); i <= 200; i++ {
+			hashes[i] = writeTestBlock(t, tx, i)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	config := conf.HistoryExpiryConfig{
+		Enable:     true,
+		Retention:  50,
+		Interval:   10,
+		BatchLimit: 30,
+	}
+	hp := &staticBlockProvider{block: 200}
+
+	expirer1 := NewHistoryExpirer(db, config, hp)
+	expirer1.maybeExpire()
+	if expirer1.EarliestBlock() != 31 {
+		t.Fatalf("first run: expected earliestBlock=31, got %d", expirer1.EarliestBlock())
+	}
+
+	expirer2 := NewHistoryExpirer(db, config, hp)
+	expirer2.maybeExpire()
+	if expirer2.EarliestBlock() != 61 {
+		t.Fatalf("restart run: expected earliestBlock=61, got %d", expirer2.EarliestBlock())
+	}
+
+	if err := db.View(testCtx(), func(tx kv.Tx) error {
+		for i := uint64(1); i <= 60; i++ {
+			if blockDataExists(t, tx, i, hashes[i]) {
+				t.Errorf("block %d should be deleted after restart resume", i)
+			}
+		}
+		if !blockDataExists(t, tx, 61, hashes[61]) {
+			t.Error("block 61 should still exist after restart resume")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHistoryExpiry_BatchLimit(t *testing.T) {
 	db := memdb.NewTestDB(t)
 
