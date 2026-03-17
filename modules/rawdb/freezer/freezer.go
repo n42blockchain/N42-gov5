@@ -49,10 +49,10 @@ const (
 
 // Table names for frozen block data.
 const (
-	TableHeaders   = "headers"
-	TableBodies    = "bodies"
-	TableReceipts  = "receipts"
-	TableHashes    = "hashes"
+	TableHeaders    = "headers"
+	TableBodies     = "bodies"
+	TableReceipts   = "receipts"
+	TableHashes     = "hashes"
 	TableDifficulty = "difficulty"
 )
 
@@ -110,30 +110,53 @@ func New(path string, threshold uint64) (*Freezer, error) {
 		f.tables[name] = t
 	}
 
-	// Load frozen block count from metadata file.
-	f.frozen.Store(f.loadFrozenCount())
-
-	// Verify table consistency — all tables should have same item count.
-	items := f.frozen.Load()
-	for name, t := range f.tables {
-		if t.Items() != items {
-			log.Warn("Freezer table item count mismatch, truncating to minimum",
-				"table", name, "items", t.Items(), "frozen", items)
-			if t.Items() > items {
-				if err := t.TruncateHead(items); err != nil {
-					f.Close()
-					return nil, err
-				}
-			} else {
-				// Table has fewer items, adjust frozen count down.
-				items = t.Items()
-			}
+	// Recover the frozen count from the tables themselves. The metadata file is
+	// only advisory: a crash between syncing the tables and updating the
+	// metadata should not cause valid ancient data to be truncated on restart.
+	persisted := f.loadFrozenCount()
+	var (
+		items       uint64
+		maxItems    uint64
+		initialized bool
+	)
+	for _, t := range f.tables {
+		count := t.Items()
+		if !initialized {
+			items = count
+			maxItems = count
+			initialized = true
+			continue
+		}
+		if count < items {
+			items = count
+		}
+		if count > maxItems {
+			maxItems = count
 		}
 	}
-	if items != f.frozen.Load() {
-		f.frozen.Store(items)
+	if !initialized {
+		items = 0
+	}
+	if persisted != items || maxItems != items {
+		log.Warn("Freezer count mismatch detected, recovering from table minimum",
+			"persisted", persisted, "table_min", items, "table_max", maxItems)
+	}
+	for name, t := range f.tables {
+		if t.Items() <= items {
+			continue
+		}
+		log.Warn("Freezer table item count mismatch, truncating to recovered count",
+			"table", name, "items", t.Items(), "target", items)
+		if err := t.TruncateHead(items); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+	f.frozen.Store(items)
+	if persisted != items {
 		f.saveFrozenCount(items)
 	}
+	freezerFrozenBlocks.Set(items)
 
 	log.Info("Freezer opened", "path", path, "frozen", items)
 	return f, nil

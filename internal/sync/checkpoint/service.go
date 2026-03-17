@@ -149,7 +149,15 @@ func (s *Service) checkExistingBlock(ctx context.Context, blockNum uint64, expec
 			return fmt.Errorf("existing block %d has hash %s, expected checkpoint hash %s",
 				blockNum, hash.String(), expectedHash.String())
 		}
-		// Block exists and hash matches.
+
+		headerNumber := rawdb.ReadHeaderNumber(tx, hash)
+		if headerNumber == nil || *headerNumber != blockNum || rawdb.ReadBlock(tx, hash, blockNum) == nil {
+			log.Warn("Checkpoint block mapping exists without complete block data, redownloading",
+				"block", blockNum, "hash", hash.String())
+			return nil
+		}
+
+		// Block exists and is complete.
 		found = true
 		return nil
 	})

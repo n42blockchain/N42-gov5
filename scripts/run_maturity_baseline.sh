@@ -118,9 +118,15 @@ run_step recovery "keystore-reload" "$run_dir/keystore-reload.log" \
 run_step recovery "genesis-config" "$run_dir/genesis-config.log" \
   go test -count=1 ./conf -run \
   'TestGenesisUnmarshalHiveEngineFixture|TestGenesisUnmarshalPreservesExplicitHeaderFields|TestGenesisUnmarshalInfersConsensusFromExplicitEngine|TestApplyHiveGenesisEnvCreatesFakerConfig|TestApplyHiveGenesisEnvSupportsClique'
+run_step recovery "checkpoint-recovery" "$run_dir/checkpoint-recovery.log" \
+  go test -count=1 ./internal/sync/checkpoint -run \
+  'TestCheckpointService_AlreadyHaveBlock|TestCheckpointService_CheckExistingBlockRejectsIncompleteBlock|TestCheckpointService_HashMismatch'
 run_step recovery "snapshot-journal" "$run_dir/snapshot-journal.log" \
   go test -count=1 ./modules/state/snapshot -run \
   'TestJournalSaveAndLoad|TestJournalSaveAndLoad_MultipleBlocks|TestJournalDeserialize_TruncatedData|TestJournalDeserialize_CorruptAccountCount|TestGenerator_ContextCancelled'
+run_step recovery "freezer-recovery" "$run_dir/freezer-recovery.log" \
+  go test -count=1 ./modules/rawdb/freezer -run \
+  'TestFreezerReopenPrefersTableCountWhenMetadataStale|TestFreezerReopenTruncatesToShortestTable'
 run_step recovery "txpool-journal" "$run_dir/txpool-journal.log" \
   go test -count=1 ./internal/txspool -run \
   'TestFlushToDBPersistsLocalAndPendingTransactions|TestLoadPersistedTransactionsDeduplicatesCurrentAndLegacyEntries|TestLoadPersistedTransactionsClearsUnreadableJournalEntries|TestLoadPersistedTransactionsMigratesLegacyEntriesWithoutClearingForeignData'

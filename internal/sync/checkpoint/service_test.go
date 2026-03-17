@@ -20,6 +20,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/sync/snapsync"
@@ -141,13 +144,27 @@ func TestCheckpointService_NilConfig(t *testing.T) {
 	}
 }
 
+func testCheckpointBlock(number uint64) *block.Block {
+	return block.NewBlock(&block.Header{
+		Number:     uint256.NewInt(number),
+		Time:       number,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(1),
+		Difficulty: uint256.NewInt(1),
+	}, nil).(*block.Block)
+}
+
 func TestCheckpointService_AlreadyHaveBlock(t *testing.T) {
 	db := memdb.NewTestDB(t)
 	ctx := context.Background()
 
-	// Pre-populate DB with a canonical hash at block 1000.
-	expectedHash := types.HexToHash("0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+	// Pre-populate DB with a complete canonical block at block 1000.
+	blk := testCheckpointBlock(1000)
+	expectedHash := blk.Hash()
 	err := db.Update(ctx, func(tx kv.RwTx) error {
+		if err := rawdb.WriteBlock(tx, blk); err != nil {
+			return err
+		}
 		return rawdb.WriteCanonicalHash(tx, expectedHash, 1000)
 	})
 	if err != nil {
@@ -158,7 +175,7 @@ func TestCheckpointService_AlreadyHaveBlock(t *testing.T) {
 		Checkpoint: &conf.CheckpointConfig{
 			Enable:      true,
 			BlockNumber: 1000,
-			BlockHash:   "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+			BlockHash:   "0x" + expectedHash.String(),
 		},
 		DB: db,
 	})
@@ -182,6 +199,29 @@ func TestCheckpointService_AlreadyHaveBlock(t *testing.T) {
 	}
 	if savedPivot != 1000 {
 		t.Errorf("expected saved pivot 1000, got: %d", savedPivot)
+	}
+}
+
+func TestCheckpointService_CheckExistingBlockRejectsIncompleteBlock(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	ctx := context.Background()
+	blk := testCheckpointBlock(1000)
+	expectedHash := blk.Hash()
+
+	err := db.Update(ctx, func(tx kv.RwTx) error {
+		return rawdb.WriteCanonicalHash(tx, expectedHash, 1000)
+	})
+	if err != nil {
+		t.Fatalf("failed to pre-populate DB: %v", err)
+	}
+
+	svc := NewService(&Config{DB: db})
+	found, err := svc.checkExistingBlock(ctx, 1000, expectedHash)
+	if err != nil {
+		t.Fatalf("checkExistingBlock returned error: %v", err)
+	}
+	if found {
+		t.Fatal("expected incomplete block data to trigger redownload")
 	}
 }
 
