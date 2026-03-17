@@ -18,9 +18,30 @@ package freezer
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+func makeFreezeData(count int) *FreezeData {
+	data := &FreezeData{
+		Headers:    make([][]byte, count),
+		Bodies:     make([][]byte, count),
+		Receipts:   make([][]byte, count),
+		Hashes:     make([][]byte, count),
+		Difficulty: make([][]byte, count),
+	}
+	for i := 0; i < count; i++ {
+		data.Headers[i] = []byte(fmt.Sprintf("header-%d", i))
+		data.Bodies[i] = []byte(fmt.Sprintf("body-%d", i))
+		data.Receipts[i] = []byte(fmt.Sprintf("receipt-%d", i))
+		data.Hashes[i] = []byte(fmt.Sprintf("hash-%032d", i))
+		data.Difficulty[i] = []byte(fmt.Sprintf("td-%d", i))
+	}
+	return data
+}
 
 func TestFreezerTableBasic(t *testing.T) {
 	dir := t.TempDir()
@@ -185,20 +206,7 @@ func TestFreezerFull(t *testing.T) {
 	}
 
 	// Freeze a batch of blocks.
-	data := &FreezeData{
-		Headers:    make([][]byte, 5),
-		Bodies:     make([][]byte, 5),
-		Receipts:   make([][]byte, 5),
-		Hashes:     make([][]byte, 5),
-		Difficulty: make([][]byte, 5),
-	}
-	for i := 0; i < 5; i++ {
-		data.Headers[i] = []byte(fmt.Sprintf("header-%d", i))
-		data.Bodies[i] = []byte(fmt.Sprintf("body-%d", i))
-		data.Receipts[i] = []byte(fmt.Sprintf("receipt-%d", i))
-		data.Hashes[i] = []byte(fmt.Sprintf("hash-%032d", i))
-		data.Difficulty[i] = []byte(fmt.Sprintf("td-%d", i))
-	}
+	data := makeFreezeData(5)
 
 	if err := f.Freeze(0, data); err != nil {
 		t.Fatal(err)
@@ -249,5 +257,89 @@ func TestFreezerFull(t *testing.T) {
 	}
 	if !bytes.Equal(body, []byte("body-1")) {
 		t.Fatalf("got %q, want %q", body, "body-1")
+	}
+}
+
+func TestFreezerReopenPrefersTableCountWhenMetadataStale(t *testing.T) {
+	dir := t.TempDir()
+	f, err := New(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Freeze(0, makeFreezeData(5)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stale [8]byte
+	binary.BigEndian.PutUint64(stale[:], 4)
+	if err := os.WriteFile(filepath.Join(dir, ancientMetaFile), stale[:], 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f2, err := New(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f2.Close()
+
+	if got := f2.Frozen(); got != 5 {
+		t.Fatalf("after reopen: frozen=%d, want 5", got)
+	}
+	if got := f2.loadFrozenCount(); got != 5 {
+		t.Fatalf("metadata not repaired: got %d, want 5", got)
+	}
+	hdr, err := f2.Ancient(TableHeaders, 4)
+	if err != nil {
+		t.Fatalf("retrieve preserved block 4: %v", err)
+	}
+	if !bytes.Equal(hdr, []byte("header-4")) {
+		t.Fatalf("got %q, want %q", hdr, "header-4")
+	}
+}
+
+func TestFreezerReopenTruncatesToShortestTable(t *testing.T) {
+	dir := t.TempDir()
+	f, err := New(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Freeze(0, makeFreezeData(5)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	bodyTable, err := NewFreezerTable(dir, TableBodies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bodyTable.TruncateHead(4); err != nil {
+		t.Fatal(err)
+	}
+	if err := bodyTable.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f2, err := New(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f2.Close()
+
+	if got := f2.Frozen(); got != 4 {
+		t.Fatalf("after reopen: frozen=%d, want 4", got)
+	}
+	if got := f2.loadFrozenCount(); got != 4 {
+		t.Fatalf("metadata not repaired: got %d, want 4", got)
+	}
+	if _, err := f2.Ancient(TableBodies, 4); err != ErrOutOfBounds {
+		t.Fatalf("expected ErrOutOfBounds for truncated body table, got %v", err)
+	}
+	if _, err := f2.Ancient(TableHeaders, 4); err != ErrOutOfBounds {
+		t.Fatalf("expected header table to be truncated to 4 items, got %v", err)
 	}
 }

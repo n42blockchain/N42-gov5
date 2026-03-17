@@ -33,7 +33,9 @@
 | Node auth / genesis | `./internal/node` | 保证 auth namespace 过滤和 Hive genesis 启动前置条件 |
 | Keystore recovery | `./accounts/keystore` | 保证 watcher 漏事件时缓存仍会补扫刷新 |
 | Genesis config | `./conf` | 保证 Hive / engine genesis 解析和 consensus 推断 |
+| Checkpoint recovery | `./internal/sync/checkpoint` | 保证重启时不会把只有 canonical hash 的半写入 checkpoint 误判成已完整恢复 |
 | Snapshot recovery | `./modules/state/snapshot` | 保证 journal 落盘/重载、损坏输入和取消路径 |
+| Freezer recovery | `./modules/rawdb/freezer` | 保证 ancient 元数据滞后或表项数不一致时，重启按最小真实表项恢复而不是截断有效冷数据 |
 | TxPool journal | `./internal/txspool` | 保证 graceful shutdown 后的 journal 落盘、重载、去重和旧格式迁移 |
 
 ## 3. 输出位置
