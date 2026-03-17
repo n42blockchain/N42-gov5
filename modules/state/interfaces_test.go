@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -32,23 +33,23 @@ func TestStateWriterInterface(t *testing.T) {
 // TestWriterWithChangeSetsInterface verifies WriterWithChangeSets extends StateWriter
 func TestWriterWithChangeSetsInterface(t *testing.T) {
 	var _ WriterWithChangeSets = (*mockWriterWithChangeSets)(nil)
-	
+
 	// Verify it also satisfies StateWriter
 	var wcw WriterWithChangeSets = &mockWriterWithChangeSets{}
 	var _ StateWriter = wcw
-	
+
 	t.Log("✓ WriterWithChangeSets properly extends StateWriter")
 }
 
 // TestStateReaderWriterInterface verifies the combined interface
 func TestStateReaderWriterInterface(t *testing.T) {
 	var _ StateReaderWriter = (*mockStateReaderWriter)(nil)
-	
+
 	// Verify it satisfies both interfaces
 	var srw StateReaderWriter = &mockStateReaderWriter{}
 	var _ StateReader = srw
 	var _ StateWriter = srw
-	
+
 	t.Log("✓ StateReaderWriter combines StateReader and StateWriter")
 }
 
@@ -88,27 +89,27 @@ func TestNoopWriterImplementsInterface(t *testing.T) {
 // TestStateReaderMethods verifies all StateReader methods have correct signatures
 func TestStateReaderMethods(t *testing.T) {
 	var reader StateReader = &mockStateReader{}
-	
+
 	// ReadAccountData
 	_, err := reader.ReadAccountData(types.Address{})
 	_ = err
 	t.Log("✓ ReadAccountData(address) (*account.StateAccount, error)")
-	
+
 	// ReadAccountStorage
 	_, err = reader.ReadAccountStorage(types.Address{}, 0, &types.Hash{})
 	_ = err
 	t.Log("✓ ReadAccountStorage(address, incarnation, key) ([]byte, error)")
-	
+
 	// ReadAccountCode
 	_, err = reader.ReadAccountCode(types.Address{}, 0, types.Hash{})
 	_ = err
 	t.Log("✓ ReadAccountCode(address, incarnation, codeHash) ([]byte, error)")
-	
+
 	// ReadAccountCodeSize
 	_, err = reader.ReadAccountCodeSize(types.Address{}, 0, types.Hash{})
 	_ = err
 	t.Log("✓ ReadAccountCodeSize(address, incarnation, codeHash) (int, error)")
-	
+
 	// ReadAccountIncarnation
 	_, err = reader.ReadAccountIncarnation(types.Address{})
 	_ = err
@@ -118,27 +119,27 @@ func TestStateReaderMethods(t *testing.T) {
 // TestStateWriterMethods verifies all StateWriter methods have correct signatures
 func TestStateWriterMethods(t *testing.T) {
 	var writer StateWriter = &mockStateWriter{}
-	
+
 	// UpdateAccountData
 	err := writer.UpdateAccountData(types.Address{}, nil, nil)
 	_ = err
 	t.Log("✓ UpdateAccountData(address, original, account) error")
-	
+
 	// UpdateAccountCode
 	err = writer.UpdateAccountCode(types.Address{}, 0, types.Hash{}, nil)
 	_ = err
 	t.Log("✓ UpdateAccountCode(address, incarnation, codeHash, code) error")
-	
+
 	// DeleteAccount
 	err = writer.DeleteAccount(types.Address{}, nil)
 	_ = err
 	t.Log("✓ DeleteAccount(address, original) error")
-	
+
 	// WriteAccountStorage
 	err = writer.WriteAccountStorage(types.Address{}, 0, &types.Hash{}, nil, nil)
 	_ = err
 	t.Log("✓ WriteAccountStorage(address, incarnation, key, original, value) error")
-	
+
 	// CreateContract
 	err = writer.CreateContract(types.Address{})
 	_ = err
@@ -209,4 +210,3 @@ type mockStateReaderWriter struct {
 	mockStateReader
 	mockStateWriter
 }
-

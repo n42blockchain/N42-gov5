@@ -7,13 +7,14 @@ import (
 	"context"
 	"sync/atomic"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
-	"google.golang.org/protobuf/proto"
 
 	state_proto "github.com/n42blockchain/N42/api/protocol/state"
 )
@@ -29,12 +30,12 @@ import (
 // When db is nil or generation is incomplete, Account/Storage return (nil, false)
 // as before, causing the SnapshotStateReader to use the inner reader.
 type DiskLayer struct {
-	cache     *layered.ShardedCache
-	db        kv.RwDB // nil if persistence is not enabled
-	block     uint64
-	root      types.Hash
-	stale     atomic.Bool
-	genReady  atomic.Bool // true when flat snapshot is fully generated
+	cache    *layered.ShardedCache
+	db       kv.RwDB // nil if persistence is not enabled
+	block    uint64
+	root     types.Hash
+	stale    atomic.Bool
+	genReady atomic.Bool // true when flat snapshot is fully generated
 }
 
 // NewDiskLayer creates a new disk layer backed by the given cache.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -319,4 +320,3 @@ func (m *mockStateReaderWithData) ReadAccountCodeSize(address types.Address, inc
 func (m *mockStateReaderWithData) ReadAccountIncarnation(address types.Address) (uint16, error) {
 	return 0, nil
 }
-

@@ -28,6 +28,8 @@ import (
 // TestConsensusChainReaderInterface verifies that ConsensusChainReader interface
 // is properly defined and can be used
 func TestConsensusChainReaderInterface(t *testing.T) {
+	t.Parallel()
+
 	// Verify ConsensusChainReader embeds ChainHeaderReader
 	var _ consensus.ConsensusChainReader = (*mockConsensusChainReader)(nil)
 	t.Log("✓ ConsensusChainReader interface properly defined")
@@ -35,26 +37,32 @@ func TestConsensusChainReaderInterface(t *testing.T) {
 
 // TestChainHeaderReaderInterface verifies ChainHeaderReader methods
 func TestChainHeaderReaderInterface(t *testing.T) {
+	t.Parallel()
+
 	var _ consensus.ChainHeaderReader = (*mockChainHeaderReader)(nil)
 	t.Log("✓ ChainHeaderReader interface properly defined")
 }
 
 // TestIBlockChainEmbedsChainHeaderReader verifies IBlockChain embeds ChainHeaderReader
 func TestIBlockChainEmbedsChainHeaderReader(t *testing.T) {
+	t.Parallel()
+
 	// Test that IBlockChain interface includes ChainHeaderReader methods
 	// by checking that a ChainHeaderReader can be assigned from IBlockChain type assertion
-	
+
 	// This is a compile-time verification - the types must be compatible
 	type BlockChainWithChainHeaderReader interface {
 		common.IBlockChain
 		consensus.ChainHeaderReader
 	}
-	
+
 	t.Log("✓ IBlockChain properly embeds consensus.ChainHeaderReader")
 }
 
 // TestAccountStateReaderRename verifies the renamed interface
 func TestAccountStateReaderRename(t *testing.T) {
+	t.Parallel()
+
 	var _ common.AccountStateReader = (*mockAccountStateReader)(nil)
 	t.Log("✓ AccountStateReader interface properly renamed from ChainStateReader")
 }
@@ -65,9 +73,11 @@ func TestAccountStateReaderRename(t *testing.T) {
 
 // TestGetHeaderByNumberSignature tests that GetHeaderByNumber returns IHeader
 func TestGetHeaderByNumberSignature(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockChainHeaderReader{}
 	number := uint256.NewInt(100)
-	
+
 	header := mock.GetHeaderByNumber(number)
 	if header != nil {
 		t.Log("✓ GetHeaderByNumber returns block.IHeader (may be nil)")
@@ -78,9 +88,11 @@ func TestGetHeaderByNumberSignature(t *testing.T) {
 
 // TestGetHeaderByHashSignature tests that GetHeaderByHash returns (IHeader, error)
 func TestGetHeaderByHashSignature(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockChainHeaderReader{}
 	hash := types.Hash{}
-	
+
 	header, err := mock.GetHeaderByHash(hash)
 	if err != nil {
 		t.Logf("✓ GetHeaderByHash returns error for invalid hash: %v", err)
@@ -91,16 +103,18 @@ func TestGetHeaderByHashSignature(t *testing.T) {
 
 // TestIHeaderChainSimplified verifies IHeaderChain only contains non-duplicated methods
 func TestIHeaderChainSimplified(t *testing.T) {
+	t.Parallel()
+
 	// IHeaderChain should only have:
 	// - InsertHeader
 	// - GetBlockByHash
 	// (GetHeaderByNumber, GetHeaderByHash, GetBlockByNumber are now in ChainHeaderReader)
-	
+
 	type SimpleIHeaderChain interface {
 		InsertHeader(headers []block.IHeader) (int, error)
 		GetBlockByHash(h types.Hash) (block.IBlock, error)
 	}
-	
+
 	// Verify IHeaderChain matches our expected simplified interface
 	var _ common.IHeaderChain = (*mockIHeaderChain)(nil)
 	t.Log("✓ IHeaderChain properly simplified (removed duplicate methods)")
@@ -112,40 +126,42 @@ func TestIHeaderChainSimplified(t *testing.T) {
 
 // TestConsensusChainReaderMethodSignatures verifies all method signatures
 func TestConsensusChainReaderMethodSignatures(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockChainHeaderReader{}
-	
+
 	// Config() *params.ChainConfig
 	_ = mock.Config()
 	t.Log("✓ Config() returns *params.ChainConfig")
-	
+
 	// CurrentBlock() block.IBlock
 	_ = mock.CurrentBlock()
 	t.Log("✓ CurrentBlock() returns block.IBlock")
-	
+
 	// GetHeader(hash types.Hash, number *uint256.Int) block.IHeader
 	_ = mock.GetHeader(types.Hash{}, uint256.NewInt(0))
 	t.Log("✓ GetHeader() returns block.IHeader")
-	
+
 	// GetHeaderByNumber(number *uint256.Int) block.IHeader
 	_ = mock.GetHeaderByNumber(uint256.NewInt(0))
 	t.Log("✓ GetHeaderByNumber() returns block.IHeader")
-	
+
 	// GetHeaderByHash(hash types.Hash) (block.IHeader, error)
 	_, _ = mock.GetHeaderByHash(types.Hash{})
 	t.Log("✓ GetHeaderByHash() returns (block.IHeader, error)")
-	
+
 	// GetTd(types.Hash, *uint256.Int) *uint256.Int
 	_ = mock.GetTd(types.Hash{}, uint256.NewInt(0))
 	t.Log("✓ GetTd() returns *uint256.Int")
-	
+
 	// GetBlockByNumber(number *uint256.Int) (block.IBlock, error)
 	_, _ = mock.GetBlockByNumber(uint256.NewInt(0))
 	t.Log("✓ GetBlockByNumber() returns (block.IBlock, error)")
-	
+
 	// GetDepositInfo(address types.Address) (*uint256.Int, *uint256.Int)
 	_, _ = mock.GetDepositInfo(types.Address{})
 	t.Log("✓ GetDepositInfo() returns (*uint256.Int, *uint256.Int)")
-	
+
 	// GetAccountRewardUnpaid(account types.Address) (*uint256.Int, error)
 	_, _ = mock.GetAccountRewardUnpaid(types.Address{})
 	t.Log("✓ GetAccountRewardUnpaid() returns (*uint256.Int, error)")

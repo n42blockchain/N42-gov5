@@ -157,7 +157,7 @@ func TestVerifyWitness_MultipleAccounts(t *testing.T) {
 
 	root := jmtCommit.Root()
 
-	var proofs []KeyProof
+	proofs := make([]KeyProof, 0, len(addrs))
 	for _, addr := range addrs {
 		proof, err := jmtCommit.GetAccountProof(addr)
 		if err != nil {

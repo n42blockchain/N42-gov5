@@ -43,6 +43,7 @@ import (
 
 // TestERC1155InterfaceID verifies ERC-1155 interface ID calculation
 func TestERC1155InterfaceID(t *testing.T) {
+	t.Parallel()
 	// ERC-1155 interface ID: 0xd9b67a26
 	// Calculated from: safeTransferFrom(address,address,uint256,uint256,bytes) ^
 	//                  safeBatchTransferFrom(address,address,uint256[],uint256[],bytes) ^
@@ -62,6 +63,7 @@ func TestERC1155InterfaceID(t *testing.T) {
 
 // TestERC1155EventSignatures verifies ERC-1155 event signatures
 func TestERC1155EventSignatures(t *testing.T) {
+	t.Parallel()
 	// TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)
 	// Keccak256 hash: 0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62
 	transferSingleSig := types.HexToHash("0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62")
@@ -94,13 +96,14 @@ func TestERC1155EventSignatures(t *testing.T) {
 
 // TestERC20InterfaceID verifies ERC-20 function selectors
 func TestERC20InterfaceID(t *testing.T) {
+	t.Parallel()
 	// Common ERC-20 function selectors
 	selectors := map[string][4]byte{
-		"totalSupply()":                       {0x18, 0x16, 0x0d, 0xdd},
-		"balanceOf(address)":                  {0x70, 0xa0, 0x82, 0x31},
-		"transfer(address,uint256)":           {0xa9, 0x05, 0x9c, 0xbb},
-		"allowance(address,address)":          {0xdd, 0x62, 0xed, 0x3e},
-		"approve(address,uint256)":            {0x09, 0x5e, 0xa7, 0xb3},
+		"totalSupply()":                         {0x18, 0x16, 0x0d, 0xdd},
+		"balanceOf(address)":                    {0x70, 0xa0, 0x82, 0x31},
+		"transfer(address,uint256)":             {0xa9, 0x05, 0x9c, 0xbb},
+		"allowance(address,address)":            {0xdd, 0x62, 0xed, 0x3e},
+		"approve(address,uint256)":              {0x09, 0x5e, 0xa7, 0xb3},
 		"transferFrom(address,address,uint256)": {0x23, 0xb8, 0x72, 0xdd},
 	}
 
@@ -116,6 +119,7 @@ func TestERC20InterfaceID(t *testing.T) {
 
 // TestERC20EventSignaturesPM verifies ERC-20 event signatures for prediction markets
 func TestERC20EventSignaturesPM(t *testing.T) {
+	t.Parallel()
 	// Transfer(address indexed from, address indexed to, uint256 value)
 	transferSig := types.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
 
@@ -138,6 +142,7 @@ func TestERC20EventSignaturesPM(t *testing.T) {
 
 // TestCREATE2OpcodeExists verifies CREATE2 opcode is available
 func TestCREATE2OpcodeExists(t *testing.T) {
+	t.Parallel()
 	// CREATE2 opcode: 0xf5
 	create2Op := vm.CREATE2
 
@@ -155,6 +160,7 @@ func TestCREATE2OpcodeExists(t *testing.T) {
 
 // TestCREATE2AddressCalculation verifies CREATE2 address calculation
 func TestCREATE2AddressCalculation(t *testing.T) {
+	t.Parallel()
 	// CREATE2 address = keccak256(0xff ++ sender ++ salt ++ keccak256(initCode))[12:]
 	sender := types.HexToAddress("0x0000000000000000000000000000000000000001")
 	salt := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000001")
@@ -180,6 +186,7 @@ func TestCREATE2AddressCalculation(t *testing.T) {
 
 // TestDELEGATECALLOpcodeExists verifies DELEGATECALL opcode is available
 func TestDELEGATECALLOpcodeExists(t *testing.T) {
+	t.Parallel()
 	// DELEGATECALL opcode: 0xf4
 	delegateOp := vm.DELEGATECALL
 
@@ -200,6 +207,7 @@ func TestDELEGATECALLOpcodeExists(t *testing.T) {
 
 // TestLOGOpcodesExist verifies LOG0-LOG4 opcodes are available
 func TestLOGOpcodesExist(t *testing.T) {
+	t.Parallel()
 	logOps := []struct {
 		op       vm.OpCode
 		expected byte
@@ -230,6 +238,7 @@ func TestLOGOpcodesExist(t *testing.T) {
 
 // TestERC165SupportsInterface verifies supportsInterface selector
 func TestERC165SupportsInterface(t *testing.T) {
+	t.Parallel()
 	// supportsInterface(bytes4) selector: 0x01ffc9a7
 	supportsInterfaceSelector := [4]byte{0x01, 0xff, 0xc9, 0xa7}
 
@@ -250,17 +259,18 @@ func TestERC165SupportsInterface(t *testing.T) {
 
 // TestPrecompiledContractsAvailable verifies required precompiled contracts
 func TestPrecompiledContractsAvailable(t *testing.T) {
+	t.Parallel()
 	// Precompiled contracts required for prediction markets
 	precompiles := map[string]types.Address{
-		"ecRecover":     types.HexToAddress("0x0000000000000000000000000000000000000001"),
-		"SHA256":        types.HexToAddress("0x0000000000000000000000000000000000000002"),
-		"RIPEMD160":     types.HexToAddress("0x0000000000000000000000000000000000000003"),
-		"identity":      types.HexToAddress("0x0000000000000000000000000000000000000004"),
-		"modexp":        types.HexToAddress("0x0000000000000000000000000000000000000005"),
-		"bn256Add":      types.HexToAddress("0x0000000000000000000000000000000000000006"),
+		"ecRecover":      types.HexToAddress("0x0000000000000000000000000000000000000001"),
+		"SHA256":         types.HexToAddress("0x0000000000000000000000000000000000000002"),
+		"RIPEMD160":      types.HexToAddress("0x0000000000000000000000000000000000000003"),
+		"identity":       types.HexToAddress("0x0000000000000000000000000000000000000004"),
+		"modexp":         types.HexToAddress("0x0000000000000000000000000000000000000005"),
+		"bn256Add":       types.HexToAddress("0x0000000000000000000000000000000000000006"),
 		"bn256ScalarMul": types.HexToAddress("0x0000000000000000000000000000000000000007"),
-		"bn256Pairing":  types.HexToAddress("0x0000000000000000000000000000000000000008"),
-		"blake2F":       types.HexToAddress("0x0000000000000000000000000000000000000009"),
+		"bn256Pairing":   types.HexToAddress("0x0000000000000000000000000000000000000008"),
+		"blake2F":        types.HexToAddress("0x0000000000000000000000000000000000000009"),
 	}
 
 	for name, addr := range precompiles {
@@ -278,6 +288,7 @@ func TestPrecompiledContractsAvailable(t *testing.T) {
 
 // TestGasLimitSufficient verifies gas limits are sufficient for complex operations
 func TestGasLimitSufficient(t *testing.T) {
+	t.Parallel()
 	// Minimum gas for various operations
 	operations := map[string]uint64{
 		"TxGas":                 params.TxGas,                 // 21000
@@ -304,6 +315,7 @@ func TestGasLimitSufficient(t *testing.T) {
 
 // TestConditionIDCalculation verifies condition ID calculation pattern
 func TestConditionIDCalculation(t *testing.T) {
+	t.Parallel()
 	// In Gnosis CTF, conditionId = keccak256(oracle, questionId, outcomeSlotCount)
 	oracle := types.HexToAddress("0x0000000000000000000000000000000000000001")
 	questionId := types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
@@ -325,6 +337,7 @@ func TestConditionIDCalculation(t *testing.T) {
 
 // TestPositionIDCalculation verifies position ID calculation pattern
 func TestPositionIDCalculation(t *testing.T) {
+	t.Parallel()
 	// In Gnosis CTF, positionId = keccak256(collateralToken, collectionId)
 	collateralToken := types.HexToAddress("0x0000000000000000000000000000000000000001")
 	collectionId := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
@@ -345,6 +358,7 @@ func TestPositionIDCalculation(t *testing.T) {
 
 // TestOracleTimestampAccess verifies block timestamp is accessible
 func TestOracleTimestampAccess(t *testing.T) {
+	t.Parallel()
 	// TIMESTAMP opcode: 0x42
 	timestampOp := vm.TIMESTAMP
 
@@ -357,6 +371,7 @@ func TestOracleTimestampAccess(t *testing.T) {
 
 // TestOracleBlockNumberAccess verifies block number is accessible
 func TestOracleBlockNumberAccess(t *testing.T) {
+	t.Parallel()
 	// NUMBER opcode: 0x43
 	numberOp := vm.NUMBER
 
@@ -373,6 +388,7 @@ func TestOracleBlockNumberAccess(t *testing.T) {
 
 // TestAMMMathOperations verifies math operations for AMM
 func TestAMMMathOperations(t *testing.T) {
+	t.Parallel()
 	// Test uint256 operations needed for AMM
 	x := uint256.NewInt(1000000)
 	y := uint256.NewInt(2000000)
@@ -401,18 +417,19 @@ func TestAMMMathOperations(t *testing.T) {
 
 // TestSqrtCalculation verifies square root can be calculated (for AMM)
 func TestSqrtCalculation(t *testing.T) {
+	t.Parallel()
 	// Babylonian method for sqrt with improved precision
 	x := uint256.NewInt(1000000)
 
 	// Initial guess - start closer to the expected result
 	guess := new(uint256.Int).Set(x)
-	
+
 	// Babylonian iteration: guess = (guess + x/guess) / 2
 	for i := 0; i < 20; i++ {
 		quotient := new(uint256.Int).Div(x, guess)
 		sum := new(uint256.Int).Add(guess, quotient)
 		newGuess := new(uint256.Int).Div(sum, uint256.NewInt(2))
-		
+
 		// Check for convergence
 		if newGuess.Cmp(guess) == 0 {
 			break
@@ -425,7 +442,7 @@ func TestSqrtCalculation(t *testing.T) {
 	expected := uint64(1000)
 	result := guess.Uint64()
 	tolerance := expected / 100 // 1%
-	
+
 	if result < expected-tolerance || result > expected+tolerance {
 		t.Errorf("Sqrt calculation: expected ~%d, got %d", expected, result)
 	}
@@ -439,6 +456,7 @@ func TestSqrtCalculation(t *testing.T) {
 
 // TestChainConfigForPredictionMarkets verifies chain config supports required features
 func TestChainConfigForPredictionMarkets(t *testing.T) {
+	t.Parallel()
 	// Create a test config
 	config := &params.ChainConfig{
 		ChainID:               big.NewInt(1),
@@ -477,32 +495,8 @@ func TestChainConfigForPredictionMarkets(t *testing.T) {
 
 // TestPredictionMarketCompatibilitySummary provides a summary of all tests
 func TestPredictionMarketCompatibilitySummary(t *testing.T) {
-	t.Log("=== Prediction Market Compatibility Summary ===")
-	t.Log("")
-	t.Log("ERC Standards:")
-	t.Log("  ✓ ERC-1155 (Conditional Tokens)")
-	t.Log("  ✓ ERC-20 (Collateral Tokens)")
-	t.Log("  ✓ ERC-165 (Interface Detection)")
-	t.Log("")
-	t.Log("Core EVM Features:")
-	t.Log("  ✓ CREATE2 (Deterministic Deployment)")
-	t.Log("  ✓ DELEGATECALL (Proxy Patterns)")
-	t.Log("  ✓ LOG0-LOG4 (Events)")
-	t.Log("")
-	t.Log("Precompiled Contracts:")
-	t.Log("  ✓ ecRecover, SHA256, RIPEMD160")
-	t.Log("  ✓ identity, modexp")
-	t.Log("  ✓ bn256Add, bn256ScalarMul, bn256Pairing")
-	t.Log("  ✓ blake2F")
-	t.Log("")
-	t.Log("Oracle Support:")
-	t.Log("  ✓ TIMESTAMP, NUMBER opcodes")
-	t.Log("")
-	t.Log("AMM Support:")
-	t.Log("  ✓ uint256 math operations")
-	t.Log("  ✓ Sqrt calculation capability")
-	t.Log("")
-	t.Log("=== All compatibility checks passed ===")
+	t.Parallel()
+	t.Skip(compatibilitySummaryManualSkip)
 }
 
 // =============================================================================
@@ -541,4 +535,3 @@ func BenchmarkUint256Div(b *testing.B) {
 		result.Div(x, y)
 	}
 }
-

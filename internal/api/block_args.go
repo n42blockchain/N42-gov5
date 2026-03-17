@@ -28,10 +28,11 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/params"
 )
 
-func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, inclTx bool, fullTx bool) (map[string]interface{}, error) {
-	fields := RPCMarshalHeader(block.Header())
+func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.ChainConfig, inclTx bool, fullTx bool) (map[string]interface{}, error) {
+	fields := RPCMarshalHeader(block.Header(), cfg)
 
 	if inclTx {
 		formatTx := func(tx *transaction.Transaction) (interface{}, error) {
@@ -41,7 +42,7 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, inclTx bool, 
 		if fullTx {
 			formatTx = func(tx *transaction.Transaction) (interface{}, error) {
 				hash := tx.Hash()
-				return newRPCTransactionFromBlockHash(block, hash), nil
+				return newRPCTransactionFromBlockHash(block, hash, cfg), nil
 			}
 		}
 		txs := block.Transactions()
@@ -96,27 +97,27 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, inclTx bool, 
 }
 
 // newRPCTransactionFromBlockHash returns a transaction that will serialize to the RPC representation.
-func newRPCTransactionFromBlockHash(b block.IBlock, findHash types.Hash) *RPCTransaction {
+func newRPCTransactionFromBlockHash(b block.IBlock, findHash types.Hash, cfg *params.ChainConfig) *RPCTransaction {
 	for idx, tx := range b.Transactions() {
 		hash := tx.Hash()
 		if hash == findHash {
-			return newRPCTransactionFromBlockIndex(b, uint64(idx))
+			return newRPCTransactionFromBlockIndex(b, uint64(idx), cfg)
 		}
 	}
 	return nil
 }
 
 // newRPCTransactionFromBlockIndex returns a transaction that will serialize to the RPC representation.
-func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64) *RPCTransaction {
+func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64, cfg *params.ChainConfig) *RPCTransaction {
 	txs := b.Transactions()
 	if index >= uint64(len(txs)) {
 		return nil
 	}
-	return newRPCTransaction(txs[index], b.Hash(), uint256ToUint64OrZero(b.Number64()), index, big.NewInt(baseFee))
+	return newRPCTransaction(txs[index], ethCompatibleBlockHash(b, cfg), uint256ToUint64OrZero(b.Number64()), index, big.NewInt(baseFee))
 }
 
 // RPCMarshalHeader converts the given header to the RPC output .
-func RPCMarshalHeader(head block.IHeader) map[string]interface{} {
+func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]interface{} {
 	header, ok := head.(*block.Header)
 	if !ok || header == nil {
 		return nil
@@ -125,7 +126,7 @@ func RPCMarshalHeader(head block.IHeader) map[string]interface{} {
 
 	result := map[string]interface{}{
 		"number":           (*hexutil.Big)(uint256ToBigOrZero(head.Number64())),
-		"hash":             avmtypes.FromastHash(header.Hash()),
+		"hash":             avmtypes.FromastHash(ethCompatibleHeaderHash(head, cfg)),
 		"parentHash":       avmtypes.FromastHash(header.ParentHash),
 		"nonce":            header.Nonce,
 		"mixHash":          avmtypes.FromastHash(header.MixDigest),

@@ -62,6 +62,11 @@ message H2048 {
   H1024 lo = 2;
 }
 
+message AccessTuple {
+  H160 address = 1;
+  repeated H256 storageKeys = 2 [(ext.ssz_max) = "65536"];
+}
+
 
 message Block{
   Header Header = 1;
@@ -135,6 +140,9 @@ message Transaction {
   // EIP-4844 blob transaction fields (Type 0x03)
   H256 blobFeeCap = 21;
   repeated H256 blobHashes = 22;
+
+  // Access list carrying transaction types (EIP-2930/EIP-1559/EIP-4844/PQ)
+  repeated AccessTuple accessList = 23 [(ext.ssz_max) = "4096"];
 }
 
 message Receipts {

@@ -86,6 +86,15 @@ func waitForWatcherAttempt(t *testing.T, ks *KeyStore) {
 	})
 }
 
+func cachedAccounts(ac *accountCache) []accounts.Account {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+
+	cpy := make([]accounts.Account, len(ac.all))
+	copy(cpy, ac.all)
+	return cpy
+}
+
 func testMissingKeyStoreDir(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "keystore")
@@ -423,6 +432,47 @@ func TestUpdatedKeyfileContents(t *testing.T) {
 		t.Errorf("Emptying account file failed")
 		t.Error(err)
 		return
+	}
+}
+
+func TestAccountsReloadWhenWatcherMissesEvent(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "aaa")
+
+	ac, _ := newAccountCache(dir)
+	t.Cleanup(ac.close)
+
+	if err := cp.CopyFile(file, cachetestAccounts[0].URL.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := ac.scanAccounts(); err != nil {
+		t.Fatal(err)
+	}
+
+	wantAccounts := []accounts.Account{{
+		Address: cachetestAccounts[0].Address,
+		URL:     accounts.URL{Scheme: KeyStoreScheme, Path: file},
+	}}
+	if got := cachedAccounts(ac); !reflect.DeepEqual(got, wantAccounts) {
+		t.Fatalf("initial cache mismatch\n got %s\nwant %s", spew.Sdump(got), spew.Sdump(wantAccounts))
+	}
+
+	if err := forceCopyFile(file, cachetestAccounts[1].URL.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	ac.mu.Lock()
+	ac.watcher.running = true
+	ac.mu.Unlock()
+
+	wantAccounts = []accounts.Account{{
+		Address: cachetestAccounts[1].Address,
+		URL:     accounts.URL{Scheme: KeyStoreScheme, Path: file},
+	}}
+	if got := ac.accounts(); !reflect.DeepEqual(got, wantAccounts) {
+		t.Fatalf("missed-event reload mismatch\n got %s\nwant %s", spew.Sdump(got), spew.Sdump(wantAccounts))
 	}
 }
 

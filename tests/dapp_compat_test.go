@@ -30,8 +30,8 @@ var (
 	ERC165InterfaceID = [4]byte{0x01, 0xff, 0xc9, 0xa7} // supportsInterface(bytes4)
 
 	// Token Standards
-	ERC20InterfaceID  = [4]byte{0x36, 0x37, 0x2b, 0x07} // Not formally defined, but common
-	ERC721InterfaceID = [4]byte{0x80, 0xac, 0x58, 0xcd} // ERC-721
+	ERC20InterfaceID   = [4]byte{0x36, 0x37, 0x2b, 0x07} // Not formally defined, but common
+	ERC721InterfaceID  = [4]byte{0x80, 0xac, 0x58, 0xcd} // ERC-721
 	ERC1155InterfaceID = [4]byte{0xd9, 0xb6, 0x7a, 0x26} // ERC-1155
 
 	// Extensions
@@ -47,15 +47,16 @@ var (
 
 // TestERC20FunctionSelectors verifies ERC-20 function selectors
 func TestERC20FunctionSelectors(t *testing.T) {
+	t.Parallel()
 	selectors := map[string][4]byte{
-		"name()":                            {0x06, 0xfd, 0xde, 0x03},
-		"symbol()":                          {0x95, 0xd8, 0x9b, 0x41},
-		"decimals()":                        {0x31, 0x3c, 0xe5, 0x67},
-		"totalSupply()":                     {0x18, 0x16, 0x0d, 0xdd},
-		"balanceOf(address)":                {0x70, 0xa0, 0x82, 0x31},
-		"transfer(address,uint256)":         {0xa9, 0x05, 0x9c, 0xbb},
-		"allowance(address,address)":        {0xdd, 0x62, 0xed, 0x3e},
-		"approve(address,uint256)":          {0x09, 0x5e, 0xa7, 0xb3},
+		"name()":                                {0x06, 0xfd, 0xde, 0x03},
+		"symbol()":                              {0x95, 0xd8, 0x9b, 0x41},
+		"decimals()":                            {0x31, 0x3c, 0xe5, 0x67},
+		"totalSupply()":                         {0x18, 0x16, 0x0d, 0xdd},
+		"balanceOf(address)":                    {0x70, 0xa0, 0x82, 0x31},
+		"transfer(address,uint256)":             {0xa9, 0x05, 0x9c, 0xbb},
+		"allowance(address,address)":            {0xdd, 0x62, 0xed, 0x3e},
+		"approve(address,uint256)":              {0x09, 0x5e, 0xa7, 0xb3},
 		"transferFrom(address,address,uint256)": {0x23, 0xb8, 0x72, 0xdd},
 	}
 
@@ -72,6 +73,7 @@ func TestERC20FunctionSelectors(t *testing.T) {
 
 // TestERC20EventSignatures verifies ERC-20 event signatures
 func TestERC20EventSignatures(t *testing.T) {
+	t.Parallel()
 	// Transfer(address indexed from, address indexed to, uint256 value)
 	transferSig := crypto.Keccak256([]byte("Transfer(address,address,uint256)"))
 	expectedTransfer := "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -91,6 +93,7 @@ func TestERC20EventSignatures(t *testing.T) {
 
 // TestBatchTransferPattern tests multicall/batch transfer support
 func TestBatchTransferPattern(t *testing.T) {
+	t.Parallel()
 	// Verify CREATE2 for deterministic deployment (used by Gnosis Safe)
 	create2Op := vm.CREATE2
 	if create2Op != 0xf5 {
@@ -114,6 +117,7 @@ func TestBatchTransferPattern(t *testing.T) {
 
 // TestHTLCSupport tests Hash Time Lock Contract requirements
 func TestHTLCSupport(t *testing.T) {
+	t.Parallel()
 	// HTLC requires:
 	// 1. Keccak256 hashing (KECCAK256 opcode)
 	// 2. Block timestamp (TIMESTAMP opcode)
@@ -147,13 +151,14 @@ func TestHTLCSupport(t *testing.T) {
 
 // TestMultiSigSupport tests multi-signature wallet support
 func TestMultiSigSupport(t *testing.T) {
+	t.Parallel()
 	// Multi-sig requires:
 	// 1. ecrecover for signature verification
 	// 2. Deterministic addresses (CREATE2)
 	// 3. Proxy pattern (DELEGATECALL)
 
 	ecrecover := vm.GetEcrecover()
-	
+
 	// Test with zero input (should return nil, not error)
 	input := make([]byte, 128)
 	result, err := ecrecover.Run(input)
@@ -172,15 +177,16 @@ func TestMultiSigSupport(t *testing.T) {
 
 // TestERC721FunctionSelectors verifies ERC-721 function selectors
 func TestERC721FunctionSelectors(t *testing.T) {
+	t.Parallel()
 	selectors := map[string][4]byte{
-		"balanceOf(address)":                          {0x70, 0xa0, 0x82, 0x31},
-		"ownerOf(uint256)":                            {0x63, 0x52, 0x21, 0x1e},
-		"safeTransferFrom(address,address,uint256)":   {0x42, 0x84, 0x2e, 0x0e},
-		"transferFrom(address,address,uint256)":       {0x23, 0xb8, 0x72, 0xdd},
-		"approve(address,uint256)":                    {0x09, 0x5e, 0xa7, 0xb3},
-		"setApprovalForAll(address,bool)":             {0xa2, 0x2c, 0xb4, 0x65},
-		"getApproved(uint256)":                        {0x08, 0x18, 0x12, 0xfc},
-		"isApprovedForAll(address,address)":           {0xe9, 0x85, 0xe9, 0xc5},
+		"balanceOf(address)":                        {0x70, 0xa0, 0x82, 0x31},
+		"ownerOf(uint256)":                          {0x63, 0x52, 0x21, 0x1e},
+		"safeTransferFrom(address,address,uint256)": {0x42, 0x84, 0x2e, 0x0e},
+		"transferFrom(address,address,uint256)":     {0x23, 0xb8, 0x72, 0xdd},
+		"approve(address,uint256)":                  {0x09, 0x5e, 0xa7, 0xb3},
+		"setApprovalForAll(address,bool)":           {0xa2, 0x2c, 0xb4, 0x65},
+		"getApproved(uint256)":                      {0x08, 0x18, 0x12, 0xfc},
+		"isApprovedForAll(address,address)":         {0xe9, 0x85, 0xe9, 0xc5},
 	}
 
 	for name, expected := range selectors {
@@ -195,10 +201,11 @@ func TestERC721FunctionSelectors(t *testing.T) {
 
 // TestERC721EventSignatures verifies ERC-721 event signatures
 func TestERC721EventSignatures(t *testing.T) {
+	t.Parallel()
 	events := map[string]string{
-		"Transfer(address,address,uint256)":      "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-		"Approval(address,address,uint256)":      "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
-		"ApprovalForAll(address,address,bool)":   "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31",
+		"Transfer(address,address,uint256)":    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+		"Approval(address,address,uint256)":    "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
+		"ApprovalForAll(address,address,bool)": "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31",
 	}
 
 	for sig, expected := range events {
@@ -213,11 +220,12 @@ func TestERC721EventSignatures(t *testing.T) {
 
 // TestERC1155Support verifies ERC-1155 multi-token support
 func TestERC1155Support(t *testing.T) {
+	t.Parallel()
 	// ERC-1155 specific selectors
 	selectors := map[string][4]byte{
-		"balanceOf(address,uint256)":                                   {0x00, 0xfd, 0xd5, 0x8e},
-		"balanceOfBatch(address[],uint256[])":                          {0x4e, 0x12, 0x73, 0xf4},
-		"safeTransferFrom(address,address,uint256,uint256,bytes)":      {0xf2, 0x42, 0x43, 0x2a},
+		"balanceOf(address,uint256)":                                       {0x00, 0xfd, 0xd5, 0x8e},
+		"balanceOfBatch(address[],uint256[])":                              {0x4e, 0x12, 0x73, 0xf4},
+		"safeTransferFrom(address,address,uint256,uint256,bytes)":          {0xf2, 0x42, 0x43, 0x2a},
 		"safeBatchTransferFrom(address,address,uint256[],uint256[],bytes)": {0x2e, 0xb2, 0xc2, 0xd6},
 	}
 
@@ -233,6 +241,7 @@ func TestERC1155Support(t *testing.T) {
 
 // TestERC2981Royalty tests royalty standard support
 func TestERC2981Royalty(t *testing.T) {
+	t.Parallel()
 	// ERC-2981 royaltyInfo(uint256,uint256) returns (address,uint256)
 	selector := crypto.Keccak256([]byte("royaltyInfo(uint256,uint256)"))[:4]
 	expected := [4]byte{0x2a, 0x55, 0x20, 0x5a}
@@ -246,6 +255,7 @@ func TestERC2981Royalty(t *testing.T) {
 
 // TestERC5192Soulbound tests soulbound token support
 func TestERC5192Soulbound(t *testing.T) {
+	t.Parallel()
 	// ERC-5192 locked(uint256) returns (bool)
 	selector := crypto.Keccak256([]byte("locked(uint256)"))[:4]
 	expected := [4]byte{0xb4, 0x5a, 0x3c, 0x0e}
@@ -263,6 +273,7 @@ func TestERC5192Soulbound(t *testing.T) {
 
 // TestAMMSupport tests Automated Market Maker requirements
 func TestAMMSupport(t *testing.T) {
+	t.Parallel()
 	// AMM requires:
 	// 1. uint256 math operations
 	// 2. Square root calculation capability
@@ -276,7 +287,7 @@ func TestAMMSupport(t *testing.T) {
 	// k should be 1e36
 	expected := new(uint256.Int)
 	expected.SetFromBig(new(big.Int).Exp(big.NewInt(10), big.NewInt(36), nil))
-	
+
 	if k.Cmp(expected) != 0 {
 		t.Errorf("uint256 multiplication error")
 	}
@@ -286,6 +297,7 @@ func TestAMMSupport(t *testing.T) {
 
 // TestFlashLoanSupport tests flash loan capability
 func TestFlashLoanSupport(t *testing.T) {
+	t.Parallel()
 	// Flash loans require:
 	// 1. Re-entrancy capability (CALL within CALL)
 	// 2. Balance checks
@@ -311,6 +323,7 @@ func TestFlashLoanSupport(t *testing.T) {
 
 // TestOracleIntegration tests oracle pattern support
 func TestOracleIntegration(t *testing.T) {
+	t.Parallel()
 	// Oracles require:
 	// 1. External call capability (CALL/STATICCALL)
 	// 2. Timestamp access
@@ -320,7 +333,7 @@ func TestOracleIntegration(t *testing.T) {
 	// Chainlink latestRoundData selector
 	selector := crypto.Keccak256([]byte("latestRoundData()"))[:4]
 	expected := [4]byte{0xfe, 0xaf, 0x96, 0x8c}
-	
+
 	if string(selector) != string(expected[:]) {
 		t.Errorf("Chainlink latestRoundData selector mismatch")
 	}
@@ -341,6 +354,7 @@ func TestOracleIntegration(t *testing.T) {
 
 // TestYieldFarmingSupport tests yield farming/staking support
 func TestYieldFarmingSupport(t *testing.T) {
+	t.Parallel()
 	// Yield farming requires:
 	// 1. ERC-20 support
 	// 2. Reward calculation (math)
@@ -353,9 +367,9 @@ func TestYieldFarmingSupport(t *testing.T) {
 
 	// Common staking selectors
 	selectors := map[string][4]byte{
-		"stake(uint256)":    {},
-		"unstake(uint256)":  {},
-		"claimRewards()":    {},
+		"stake(uint256)":         {},
+		"unstake(uint256)":       {},
+		"claimRewards()":         {},
 		"pendingReward(address)": {},
 	}
 
@@ -375,6 +389,7 @@ func TestYieldFarmingSupport(t *testing.T) {
 
 // TestDAppGasCosts verifies reasonable gas costs for common operations
 func TestDAppGasCosts(t *testing.T) {
+	t.Parallel()
 	gasCosts := map[string]uint64{
 		"TxGas":                 params.TxGas,                 // 21000
 		"TxGasContractCreation": params.TxGasContractCreation, // 53000
@@ -404,35 +419,8 @@ func TestDAppGasCosts(t *testing.T) {
 
 // TestPhase1CompatibilitySummary provides a summary of Phase 1 capabilities
 func TestPhase1CompatibilitySummary(t *testing.T) {
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("           PHASE 1 DAPP COMPATIBILITY SUMMARY")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("")
-	t.Log("Payment Systems:")
-	t.Log("  ✓ ERC-20 token standard")
-	t.Log("  ✓ Batch transfers (multicall)")
-	t.Log("  ✓ Multi-signature wallets (Gnosis Safe)")
-	t.Log("  ✓ Hash Time Lock Contracts (HTLC)")
-	t.Log("  ✓ Streaming payments (Sablier-style)")
-	t.Log("")
-	t.Log("NFT Standards:")
-	t.Log("  ✓ ERC-721 (Standard NFT)")
-	t.Log("  ✓ ERC-1155 (Multi-token)")
-	t.Log("  ✓ ERC-2981 (Royalties)")
-	t.Log("  ✓ ERC-5192 (Soulbound tokens)")
-	t.Log("  ✓ ERC-721 Metadata & Enumerable")
-	t.Log("")
-	t.Log("DeFi Protocols:")
-	t.Log("  ✓ AMM (Uniswap-style)")
-	t.Log("  ✓ Flash Loans (Aave-style)")
-	t.Log("  ✓ Oracle Integration (Chainlink)")
-	t.Log("  ✓ Yield Farming/Staking")
-	t.Log("  ✓ Lending/Borrowing")
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("    N42 FULLY SUPPORTS PHASE 1 DAPP REQUIREMENTS")
-	t.Log("═══════════════════════════════════════════════════════════════")
+	t.Parallel()
+	t.Skip(compatibilitySummaryManualSkip)
 }
 
 // =============================================================================
@@ -458,4 +446,3 @@ func BenchmarkUint256Math(b *testing.B) {
 		result.Div(result, x)
 	}
 }
-

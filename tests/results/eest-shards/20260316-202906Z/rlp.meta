@@ -1,0 +1,9 @@
+shard=rlp
+selector=.*eip2930_access_list.*
+target=unchanged
+mode=consume-engine
+python=3.13
+pytest_workers=auto
+command=uv run --python 3.13 consume engine --input stable@latest --sim.limit .\*eip2930_access_list.\* -n auto 
+rc=0
+duration_seconds=0

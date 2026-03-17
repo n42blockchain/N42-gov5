@@ -127,7 +127,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 	expectedBlobVersionedHashes []types.Hash,
 	parentBeaconBlockRoot *types.Hash,
 	executionRequests []hexutil.Bytes,
-) (*NewPayloadResponseV3, error) {
+) (*PayloadStatusV1, error) {
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
@@ -157,11 +157,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 
 	// Return SYNCING until payload processing is fully implemented.
 	// Returning VALID for an unverified payload would mislead the consensus layer.
-	return &NewPayloadResponseV3{
-		Status: PayloadStatusV1{
-			Status: PayloadStatusSyncing,
-		},
-	}, nil
+	return &PayloadStatusV1{Status: PayloadStatusSyncing}, nil
 }
 
 // GetPayloadV4 retrieves a payload with Pectra fields
@@ -309,30 +305,10 @@ type ClientCapabilities struct {
 // engine_getClientCapabilitiesV1
 func (e *EngineAPIv4) GetClientCapabilitiesV1(ctx context.Context) (*ClientCapabilities, error) {
 	return &ClientCapabilities{
-		SupportedForks: []string{
-			"cancun",
-			"prague",
-			"pectra",
-		},
-		SupportedMethods: []string{
-			"engine_newPayloadV1",
-			"engine_newPayloadV2",
-			"engine_newPayloadV3",
-			"engine_newPayloadV4",
-			"engine_getPayloadV1",
-			"engine_getPayloadV2",
-			"engine_getPayloadV3",
-			"engine_getPayloadV4",
-			"engine_forkchoiceUpdatedV1",
-			"engine_forkchoiceUpdatedV2",
-			"engine_forkchoiceUpdatedV3",
-			"engine_forkchoiceUpdatedV4",
-			"engine_getBlobsV1",
-			"engine_getBlobScheduleV1",
-			"engine_getClientCapabilitiesV1",
-		},
-		ProtocolVersion: "4.0.0",
-		CanCancelFork:   true,
+		SupportedForks:   supportedEngineForks(),
+		SupportedMethods: supportedEngineMethods(),
+		ProtocolVersion:  "4.0.0",
+		CanCancelFork:    true,
 	}, nil
 }
 

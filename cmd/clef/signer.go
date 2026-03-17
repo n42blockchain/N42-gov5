@@ -17,20 +17,21 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"math/big"
 	"sort"
 	"sync"
 
+	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -39,20 +40,23 @@ const clefVersion = "1.0.0"
 // TransactionArgs represents the arguments for signing a transaction.
 // Field types follow the Ethereum JSON-RPC convention (hex-encoded).
 type TransactionArgs struct {
-	From     types.Address  `json:"from"`
-	To       *types.Address `json:"to"`
-	Gas      hexutil.Uint64 `json:"gas"`
-	GasPrice *hexutil.Big   `json:"gasPrice"`
-	Value    *hexutil.Big   `json:"value"`
-	Nonce    hexutil.Uint64 `json:"nonce"`
-	Data     hexutil.Bytes  `json:"data"`
-	ChainID  *hexutil.Big   `json:"chainId"`
+	From                 types.Address          `json:"from"`
+	To                   *types.Address         `json:"to"`
+	Gas                  hexutil.Uint64         `json:"gas"`
+	GasPrice             *hexutil.Big           `json:"gasPrice"`
+	MaxFeePerGas         *hexutil.Big           `json:"maxFeePerGas"`
+	MaxPriorityFeePerGas *hexutil.Big           `json:"maxPriorityFeePerGas"`
+	Value                *hexutil.Big           `json:"value"`
+	Nonce                hexutil.Uint64         `json:"nonce"`
+	Data                 hexutil.Bytes          `json:"data"`
+	ChainID              *hexutil.Big           `json:"chainId"`
+	AccessList           transaction.AccessList `json:"accessList,omitempty"`
 }
 
 // SignedTx is the result of a successful transaction signing.
 type SignedTx struct {
-	Raw hexutil.Bytes    `json:"raw"`
-	Tx  *TransactionArgs `json:"tx"`
+	Raw hexutil.Bytes            `json:"raw"`
+	Tx  *transaction.Transaction `json:"tx"`
 }
 
 // TypedData represents EIP-712 typed structured data.
@@ -118,63 +122,103 @@ func (s *SignerService) SignTransaction(ctx context.Context, args TransactionArg
 		return nil, fmt.Errorf("unknown account %s", args.From.Hex())
 	}
 
-	// Build a hash of the transaction fields for signing.
-	// We construct a canonical representation and sign its Keccak-256 hash.
-	txHash := s.hashTransactionArgs(&args, chainID)
+	tx, signer, err := buildTransactionForSigning(args, chainID)
+	if err != nil {
+		return nil, err
+	}
+	txHash, err := signer.Hash(tx)
+	if err != nil {
+		return nil, fmt.Errorf("hash transaction: %w", err)
+	}
 
-	sig, err := s.keystore.SignHash(acct, txHash)
+	sig, err := s.keystore.SignHash(acct, txHash[:])
 	if err != nil {
 		return nil, fmt.Errorf("sign transaction: %w", err)
 	}
 
+	signedTx, err := tx.WithSignature(signer, sig)
+	if err != nil {
+		return nil, fmt.Errorf("apply transaction signature: %w", err)
+	}
+	rawTx, err := signedTx.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("marshal signed transaction: %w", err)
+	}
+
 	return &SignedTx{
-		Raw: hexutil.Bytes(sig),
-		Tx:  &args,
+		Raw: hexutil.Bytes(rawTx),
+		Tx:  signedTx,
 	}, nil
 }
 
-// hashTransactionArgs produces a Keccak-256 digest of the canonical
-// transaction fields for signature purposes. Each field is length-prefixed
-// (4-byte big-endian length) to prevent ambiguous concatenation.
-func (s *SignerService) hashTransactionArgs(args *TransactionArgs, chainID *big.Int) []byte {
-	var buf bytes.Buffer
+func buildTransactionForSigning(args TransactionArgs, chainID *big.Int) (*transaction.Transaction, transaction.Signer, error) {
+	switch {
+	case args.MaxFeePerGas != nil || args.MaxPriorityFeePerGas != nil:
+		if args.MaxFeePerGas == nil || args.MaxPriorityFeePerGas == nil {
+			return nil, nil, fmt.Errorf("dynamic fee transaction requires both maxFeePerGas and maxPriorityFeePerGas")
+		}
+		if chainID == nil || chainID.Sign() == 0 {
+			return nil, nil, fmt.Errorf("dynamic fee transaction requires a non-zero chain ID")
+		}
+		tx := transaction.NewTx(&transaction.DynamicFeeTx{
+			ChainID:    mustUint256(chainID),
+			Nonce:      uint64(args.Nonce),
+			GasTipCap:  mustUint256(args.MaxPriorityFeePerGas.ToInt()),
+			GasFeeCap:  mustUint256(args.MaxFeePerGas.ToInt()),
+			Gas:        uint64(args.Gas),
+			To:         args.To,
+			Value:      mustUint256(bigFromHexutil(args.Value)),
+			Data:       args.Data,
+			From:       &args.From,
+			AccessList: args.AccessList,
+		})
+		return tx, transaction.NewLondonSigner(chainID), nil
+	case len(args.AccessList) > 0:
+		if chainID == nil || chainID.Sign() == 0 {
+			return nil, nil, fmt.Errorf("access list transaction requires a non-zero chain ID")
+		}
+		tx := transaction.NewTx(&transaction.AccessListTx{
+			ChainID:    mustUint256(chainID),
+			Nonce:      uint64(args.Nonce),
+			GasPrice:   mustUint256(bigFromHexutil(args.GasPrice)),
+			Gas:        uint64(args.Gas),
+			To:         args.To,
+			Value:      mustUint256(bigFromHexutil(args.Value)),
+			Data:       args.Data,
+			From:       &args.From,
+			AccessList: args.AccessList,
+		})
+		return tx, transaction.NewEIP2930Signer(chainID), nil
+	default:
+		tx := transaction.NewTx(&transaction.LegacyTx{
+			Nonce:    uint64(args.Nonce),
+			GasPrice: mustUint256(bigFromHexutil(args.GasPrice)),
+			Gas:      uint64(args.Gas),
+			To:       args.To,
+			Value:    mustUint256(bigFromHexutil(args.Value)),
+			Data:     args.Data,
+			From:     &args.From,
+		})
+		return tx, transaction.LatestSignerForChainID(chainID), nil
+	}
+}
 
-	// writeField writes a 4-byte big-endian length prefix followed by data.
-	writeField := func(data []byte) {
-		var lb [4]byte
-		binary.BigEndian.PutUint32(lb[:], uint32(len(data)))
-		buf.Write(lb[:])
-		buf.Write(data)
+func bigFromHexutil(v *hexutil.Big) *big.Int {
+	if v == nil {
+		return new(big.Int)
 	}
+	return v.ToInt()
+}
 
-	writeField(args.From[:])
-	if args.To != nil {
-		writeField(args.To[:])
-	} else {
-		writeField(nil)
+func mustUint256(v *big.Int) *uint256.Int {
+	if v == nil {
+		return new(uint256.Int)
 	}
-	writeField(new(big.Int).SetUint64(uint64(args.Gas)).Bytes())
-	if args.GasPrice != nil {
-		writeField(args.GasPrice.ToInt().Bytes())
-	} else {
-		writeField(nil)
+	out, overflow := uint256.FromBig(v)
+	if overflow {
+		return new(uint256.Int)
 	}
-	if args.Value != nil {
-		writeField(args.Value.ToInt().Bytes())
-	} else {
-		writeField(nil)
-	}
-	writeField(new(big.Int).SetUint64(uint64(args.Nonce)).Bytes())
-	writeField(args.Data)
-	if args.ChainID != nil {
-		writeField(args.ChainID.ToInt().Bytes())
-	} else if chainID != nil {
-		writeField(chainID.Bytes())
-	} else {
-		writeField(nil)
-	}
-
-	return crypto.Keccak256(buf.Bytes())
+	return out
 }
 
 // SignData signs arbitrary data after applying rule-based approval.

@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/params"
 )
 
 // EIP-7702 Delegation Tests
@@ -221,6 +222,79 @@ func TestBLSPrecompileAddresses(t *testing.T) {
 		if tc.addr != expected {
 			t.Errorf("%s = %v, want %v", tc.name, tc.addr, expected)
 		}
+	}
+}
+
+func TestBLS12381MultiExpGasMatchesSpec(t *testing.T) {
+	testCases := []struct {
+		name       string
+		precompile PrecompiledContract
+		pairSize   int
+		gasByK     map[int]uint64
+	}{
+		{
+			name:       "G1MSM",
+			precompile: GetBls12381G1MultiExp(),
+			pairSize:   160,
+			gasByK: map[int]uint64{
+				1:   12000,
+				2:   22776,
+				3:   30528,
+				8:   69888,
+				64:  442368,
+				128: 797184,
+				149: 927972,
+			},
+		},
+		{
+			name:       "G2MSM",
+			precompile: GetBls12381G2MultiExp(),
+			pairSize:   288,
+			gasByK: map[int]uint64{
+				1:   22500,
+				2:   45000,
+				3:   62302,
+				8:   143280,
+				64:  838080,
+				128: 1509120,
+				149: 1756710,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			for k, want := range tc.gasByK {
+				input := make([]byte, k*tc.pairSize)
+				if got := tc.precompile.RequiredGas(input); got != want {
+					t.Fatalf("RequiredGas(%d pairs)=%d, want %d", k, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestBLS12381PairingGasMatchesSpec(t *testing.T) {
+	p := GetBls12381Pairing()
+	testCases := map[int]uint64{
+		1: 70300,
+		2: 102900,
+		3: 135500,
+	}
+
+	for pairs, want := range testCases {
+		input := make([]byte, pairs*384)
+		if got := p.RequiredGas(input); got != want {
+			t.Fatalf("RequiredGas(%d pairs)=%d, want %d", pairs, got, want)
+		}
+	}
+
+	if params.Bls12381PairingBaseGas != 37700 {
+		t.Fatalf("Bls12381PairingBaseGas=%d, want 37700", params.Bls12381PairingBaseGas)
+	}
+	if params.Bls12381PairingPerPairGas != 32600 {
+		t.Fatalf("Bls12381PairingPerPairGas=%d, want 32600", params.Bls12381PairingPerPairGas)
 	}
 }
 

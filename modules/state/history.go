@@ -106,7 +106,7 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 				return nil, err
 			}
 			if len(codeHash) > 0 {
-				acc.CodeHash.SetBytes(codeHash)
+				acc.CodeHash = types.BytesToHash(codeHash)
 			}
 			data = make([]byte, acc.EncodingLengthForStorage())
 			acc.EncodeForStorage(data)

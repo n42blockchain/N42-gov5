@@ -570,9 +570,17 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	// Print beautiful startup banner
 	actualGenesisHash := genesisBlock.Hash()
-	expectedGenesisHash := params.MainnetGenesisHash
-	if cfg.NodeCfg.Chain == "testnet" {
+	var (
+		expectedGenesisHash types.Hash
+		hasExpectedGenesis  bool
+	)
+	switch cfg.NodeCfg.Chain {
+	case "", "mainnet":
+		expectedGenesisHash = params.MainnetGenesisHash
+		hasExpectedGenesis = true
+	case "testnet":
 		expectedGenesisHash = params.TestnetGenesisHash
+		hasExpectedGenesis = true
 	}
 
 	// Get chain info from description
@@ -603,7 +611,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	)
 
 	// Check genesis hash mismatch
-	if actualGenesisHash != expectedGenesisHash {
+	if hasExpectedGenesis && actualGenesisHash != expectedGenesisHash {
 		log.PrintErrorBox("Genesis Hash Mismatch", []string{
 			fmt.Sprintf("Expected: %s", expectedGenesisHash.String()[:20]+"..."),
 			fmt.Sprintf("Actual:   %s", actualGenesisHash.String()[:20]+"..."),
@@ -779,6 +787,11 @@ func (n *Node) Start() error {
 
 	n.rpcAPIs = append(n.rpcAPIs, n.engine.APIs(n.blockChain)...)
 	n.rpcAPIs = append(n.rpcAPIs, n.api.Apis()...)
+	n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
+		Namespace: "admin",
+		Service:   api.NewAdminAPI(n.api),
+	})
+	n.rpcAPIs = append(n.rpcAPIs, api.EngineAPIs(n.api)...)
 	n.rpcAPIs = append(n.rpcAPIs, tracers.APIs(n.api)...)
 	n.rpcAPIs = append(n.rpcAPIs, debug.APIs()...)
 
@@ -1117,7 +1130,7 @@ func (n *Node) startRPC() error {
 		config := httpConfig{
 			CorsAllowedOrigins: utils.SplitAndTrim(n.config.NodeCfg.HTTPCors),
 			Vhosts:             []string{"*"},
-			Modules:            []string{"apos"},
+			Modules:            authenticatedModules(allAPIs),
 			prefix:             "",
 			jwtSecret:          jwtSecret,
 		}

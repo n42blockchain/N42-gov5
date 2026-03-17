@@ -1,0 +1,9 @@
+shard=paris+shanghai
+selector=.*/.*fork_(Paris\|Shanghai)
+target=~2,600
+mode=fill
+python=3.13
+pytest_workers=auto
+command=uv run --python 3.13 fill tests -k fork_Paris\ or\ fork_Shanghai -n auto 
+rc=0
+duration_seconds=0

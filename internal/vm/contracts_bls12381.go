@@ -34,18 +34,17 @@ var (
 	errBLS12381G2PointSubgroup             = errors.New("g2 point is not on correct subgroup")
 )
 
-func bls12381MultiExpGas(inputLen, pairSize int, mulGas uint64) uint64 {
+func bls12381MultiExpGas(inputLen, pairSize int, mulGas uint64, discounts []uint64) uint64 {
 	k := inputLen / pairSize
 	if k == 0 {
 		return 0
 	}
 
-	discounts := params.Bls12381MultiExpDiscountTable
-	discount := discounts[len(discounts)-1]
-	if k < len(discounts) {
-		discount = discounts[k-1]
+	discountIndex := k
+	if discountIndex >= len(discounts) {
+		discountIndex = len(discounts) - 1
 	}
-	return (uint64(k) * mulGas * discount) / 1000
+	return (uint64(k) * mulGas * discounts[discountIndex]) / 1000
 }
 
 // bls12381G1Add implements EIP-2537 G1Add precompile.
@@ -101,7 +100,7 @@ func (c *bls12381G1Mul) Run(input []byte) ([]byte, error) {
 type bls12381G1MultiExp struct{}
 
 func (c *bls12381G1MultiExp) RequiredGas(input []byte) uint64 {
-	return bls12381MultiExpGas(len(input), 160, params.Bls12381G1MulGas)
+	return bls12381MultiExpGas(len(input), 160, params.Bls12381G1MulGas, params.Bls12381G1MultiExpDiscountTable[:])
 }
 
 func (c *bls12381G1MultiExp) Run(input []byte) ([]byte, error) {
@@ -184,7 +183,7 @@ func (c *bls12381G2Mul) Run(input []byte) ([]byte, error) {
 type bls12381G2MultiExp struct{}
 
 func (c *bls12381G2MultiExp) RequiredGas(input []byte) uint64 {
-	return bls12381MultiExpGas(len(input), 288, params.Bls12381G2MulGas)
+	return bls12381MultiExpGas(len(input), 288, params.Bls12381G2MulGas, params.Bls12381G2MultiExpDiscountTable[:])
 }
 
 func (c *bls12381G2MultiExp) Run(input []byte) ([]byte, error) {

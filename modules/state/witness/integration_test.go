@@ -215,7 +215,7 @@ func TestIntegration_WitnessGenerateVerifyRead(t *testing.T) {
 			t.Fatalf("expected non-nil account for addr %s", addr.Hex())
 		}
 		if !readAcct.Initialised {
-			t.Fatal("expected account to be initialised")
+			t.Fatal("expected account to be initialized")
 		}
 		if readAcct.Balance.IsZero() {
 			t.Fatal("expected non-zero balance")
@@ -274,7 +274,7 @@ func TestIntegration_WitnessEncodeDecodeRoundTrip(t *testing.T) {
 	root := jmtCommit.Root()
 
 	// Generate proofs for all 3.
-	var proofs []KeyProof
+	proofs := make([]KeyProof, 0, len(addrs))
 	for _, addr := range addrs {
 		proof, err := jmtCommit.GetAccountProof(addr)
 		if err != nil {

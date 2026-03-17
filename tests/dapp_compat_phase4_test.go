@@ -26,6 +26,7 @@ import (
 
 // TestCarbonCreditToken tests carbon credit tokenization
 func TestCarbonCreditToken(t *testing.T) {
+	t.Parallel()
 	// Carbon credits can be:
 	// 1. ERC-20 for fungible credits
 	// 2. ERC-721 for unique project credits
@@ -49,17 +50,18 @@ func TestCarbonCreditToken(t *testing.T) {
 
 // TestCarbonRegistry tests carbon registry support
 func TestCarbonRegistry(t *testing.T) {
+	t.Parallel()
 	// Carbon registry requires:
 	// 1. Project registration
 	// 2. Verification status tracking
 	// 3. Credit issuance authorization
 
 	selectors := map[string][4]byte{
-		"registerProject(bytes32,string)":       {},
-		"verifyProject(bytes32)":                {},
-		"setVerifier(bytes32,address)":          {},
-		"getProjectStatus(bytes32)":             {},
-		"issueCredits(bytes32,uint256)":         {},
+		"registerProject(bytes32,string)": {},
+		"verifyProject(bytes32)":          {},
+		"setVerifier(bytes32,address)":    {},
+		"getProjectStatus(bytes32)":       {},
+		"issueCredits(bytes32,uint256)":   {},
 	}
 
 	for name := range selectors {
@@ -74,16 +76,17 @@ func TestCarbonRegistry(t *testing.T) {
 
 // TestCarbonRetirement tests carbon credit retirement (burning)
 func TestCarbonRetirement(t *testing.T) {
+	t.Parallel()
 	// Retirement requires:
 	// 1. Burn mechanism
 	// 2. Retirement certificate generation
 	// 3. Beneficiary tracking
 
 	selectors := map[string][4]byte{
-		"retire(uint256,string)":                {},
+		"retire(uint256,string)":                 {},
 		"retireOnBehalf(uint256,address,string)": {},
-		"getRetirementCertificate(uint256)":     {},
-		"getTotalRetired(address)":              {},
+		"getRetirementCertificate(uint256)":      {},
+		"getTotalRetired(address)":               {},
 	}
 
 	for name := range selectors {
@@ -102,6 +105,7 @@ func TestCarbonRetirement(t *testing.T) {
 
 // TestDeviceRegistration tests DePIN device registration
 func TestDeviceRegistration(t *testing.T) {
+	t.Parallel()
 	// Device registration requires:
 	// 1. Unique device IDs
 	// 2. Owner association
@@ -127,6 +131,7 @@ func TestDeviceRegistration(t *testing.T) {
 
 // TestDePINRewards tests DePIN reward distribution
 func TestDePINRewards(t *testing.T) {
+	t.Parallel()
 	// Reward distribution requires:
 	// 1. ERC-20 token for rewards
 	// 2. Contribution tracking
@@ -151,6 +156,7 @@ func TestDePINRewards(t *testing.T) {
 
 // TestDePINMetering tests usage metering for DePIN
 func TestDePINMetering(t *testing.T) {
+	t.Parallel()
 	// Metering requires:
 	// 1. Oracle integration for off-chain data
 	// 2. Aggregated reporting
@@ -184,6 +190,7 @@ func TestDePINMetering(t *testing.T) {
 
 // TestIoTDeviceIdentity tests IoT device identity
 func TestIoTDeviceIdentity(t *testing.T) {
+	t.Parallel()
 	// IoT identity requires:
 	// 1. Lightweight signature verification
 	// 2. Device certificate storage
@@ -197,9 +204,9 @@ func TestIoTDeviceIdentity(t *testing.T) {
 	}
 
 	selectors := map[string][4]byte{
-		"registerIoTDevice(bytes32,bytes)":  {},
-		"rotateDeviceKey(bytes32,bytes)":    {},
-		"revokeDevice(bytes32)":             {},
+		"registerIoTDevice(bytes32,bytes)":           {},
+		"rotateDeviceKey(bytes32,bytes)":             {},
+		"revokeDevice(bytes32)":                      {},
 		"verifyDeviceSignature(bytes32,bytes,bytes)": {},
 	}
 
@@ -215,6 +222,7 @@ func TestIoTDeviceIdentity(t *testing.T) {
 
 // TestIoTDataSubmission tests IoT data submission patterns
 func TestIoTDataSubmission(t *testing.T) {
+	t.Parallel()
 	// Data submission requires:
 	// 1. Batch data submission
 	// 2. Data hash verification
@@ -247,15 +255,16 @@ func TestIoTDataSubmission(t *testing.T) {
 
 // TestIoTAutomation tests IoT automation/trigger patterns
 func TestIoTAutomation(t *testing.T) {
+	t.Parallel()
 	// Automation requires:
 	// 1. Conditional execution
 	// 2. Keeper/Gelato-style triggers
 	// 3. State machine patterns
 
 	selectors := map[string][4]byte{
-		"registerTrigger(bytes32,bytes)":  {},
-		"checkTrigger(bytes32)":           {},
-		"executeTrigger(bytes32)":         {},
+		"registerTrigger(bytes32,bytes)":     {},
+		"checkTrigger(bytes32)":              {},
+		"executeTrigger(bytes32)":            {},
 		"setAutomationParams(bytes32,bytes)": {},
 	}
 
@@ -275,6 +284,7 @@ func TestIoTAutomation(t *testing.T) {
 
 // TestResearchDataNFT tests research data NFT
 func TestResearchDataNFT(t *testing.T) {
+	t.Parallel()
 	// Research data NFT requires:
 	// 1. ERC-721 for data ownership
 	// 2. License terms storage
@@ -299,6 +309,7 @@ func TestResearchDataNFT(t *testing.T) {
 
 // TestPeerReviewDAO tests decentralized peer review
 func TestPeerReviewDAO(t *testing.T) {
+	t.Parallel()
 	// Peer review requires:
 	// 1. Reviewer registration
 	// 2. Review submission
@@ -324,6 +335,7 @@ func TestPeerReviewDAO(t *testing.T) {
 
 // TestIPRegistration tests intellectual property registration
 func TestIPRegistration(t *testing.T) {
+	t.Parallel()
 	// IP registration requires:
 	// 1. Timestamp proof
 	// 2. Hash commitment
@@ -335,9 +347,9 @@ func TestIPRegistration(t *testing.T) {
 	}
 
 	selectors := map[string][4]byte{
-		"registerIP(bytes32,string)":        {},
-		"proveOwnership(bytes32,bytes)":     {},
-		"transferIP(bytes32,address)":       {},
+		"registerIP(bytes32,string)":         {},
+		"proveOwnership(bytes32,bytes)":      {},
+		"transferIP(bytes32,address)":        {},
 		"licenseIP(bytes32,address,uint256)": {},
 	}
 
@@ -353,16 +365,17 @@ func TestIPRegistration(t *testing.T) {
 
 // TestResearchFunding tests decentralized research funding
 func TestResearchFunding(t *testing.T) {
+	t.Parallel()
 	// Research funding requires:
 	// 1. Proposal submission
 	// 2. Funding pools
 	// 3. Milestone tracking
 
 	selectors := map[string][4]byte{
-		"submitProposal(bytes32,uint256)":    {},
-		"fundProposal(bytes32)":              {},
-		"releaseMilestone(bytes32,uint256)":  {},
-		"refundContributors(bytes32)":        {},
+		"submitProposal(bytes32,uint256)":   {},
+		"fundProposal(bytes32)":             {},
+		"releaseMilestone(bytes32,uint256)": {},
+		"refundContributors(bytes32)":       {},
 	}
 
 	for name := range selectors {
@@ -381,6 +394,7 @@ func TestResearchFunding(t *testing.T) {
 
 // TestPhysicalAssetTracking tests physical asset tracking
 func TestPhysicalAssetTracking(t *testing.T) {
+	t.Parallel()
 	// Physical asset tracking requires:
 	// 1. NFC/RFID tag linking
 	// 2. Location updates
@@ -405,6 +419,7 @@ func TestPhysicalAssetTracking(t *testing.T) {
 
 // TestAuthenticityVerification tests authenticity verification
 func TestAuthenticityVerification(t *testing.T) {
+	t.Parallel()
 	// Authenticity requires:
 	// 1. Issuer signature
 	// 2. Verification status
@@ -433,44 +448,8 @@ func TestAuthenticityVerification(t *testing.T) {
 
 // TestPhase4CompatibilitySummary provides a summary of Phase 4 capabilities
 func TestPhase4CompatibilitySummary(t *testing.T) {
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("           PHASE 4 DAPP COMPATIBILITY SUMMARY")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("")
-	t.Log("Carbon Trading:")
-	t.Log("  ✓ Carbon Credit Tokens (ERC-20/721)")
-	t.Log("  ✓ Carbon Registry Management")
-	t.Log("  ✓ Credit Retirement (Burning)")
-	t.Log("  ✓ Offset Certificate Generation")
-	t.Log("")
-	t.Log("DePIN (Decentralized Physical Infrastructure):")
-	t.Log("  ✓ Device Registration")
-	t.Log("  ✓ Reward Distribution")
-	t.Log("  ✓ Usage Metering")
-	t.Log("  ✓ Stake/Slash Mechanisms")
-	t.Log("")
-	t.Log("IoT (Internet of Things):")
-	t.Log("  ✓ Device Identity Management")
-	t.Log("  ✓ Data Submission (Single/Batch)")
-	t.Log("  ✓ Automation Triggers")
-	t.Log("  ✓ Lightweight Verification")
-	t.Log("")
-	t.Log("DeSci (Decentralized Science):")
-	t.Log("  ✓ Research Data NFTs")
-	t.Log("  ✓ Peer Review DAO")
-	t.Log("  ✓ IP Registration & Licensing")
-	t.Log("  ✓ Research Funding")
-	t.Log("")
-	t.Log("Provenance & Ownership:")
-	t.Log("  ✓ Physical Asset Tracking")
-	t.Log("  ✓ Authenticity Verification")
-	t.Log("  ✓ Custody Chain Management")
-	t.Log("  ✓ Tamper Detection")
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("    N42 FULLY SUPPORTS PHASE 4 DAPP REQUIREMENTS")
-	t.Log("═══════════════════════════════════════════════════════════════")
+	t.Parallel()
+	t.Skip(compatibilitySummaryManualSkip)
 }
 
 // =============================================================================
@@ -479,47 +458,8 @@ func TestPhase4CompatibilitySummary(t *testing.T) {
 
 // TestAllDAppCompatibilitySummary provides final comprehensive summary
 func TestAllDAppCompatibilitySummary(t *testing.T) {
-	t.Log("")
-	t.Log("╔═══════════════════════════════════════════════════════════════╗")
-	t.Log("║         N42 COMPLETE DAPP COMPATIBILITY REPORT                ║")
-	t.Log("╠═══════════════════════════════════════════════════════════════╣")
-	t.Log("║                                                               ║")
-	t.Log("║  ZK-EVM:                                                      ║")
-	t.Log("║    ✓ Groth16 (BN254) ................ Fully Supported         ║")
-	t.Log("║    ✓ PLONK/KZG (BLS12-381) .......... Fully Supported         ║")
-	t.Log("║    ✓ Off-chain Compute/On-chain Verify ... Ready              ║")
-	t.Log("║                                                               ║")
-	t.Log("║  Phase 1 - Core Finance:                                      ║")
-	t.Log("║    ✓ Payment (ERC-20, HTLC, MultiSig) ... Fully Supported     ║")
-	t.Log("║    ✓ NFT (ERC-721/1155/2981/5192) ...... Fully Supported      ║")
-	t.Log("║    ✓ DeFi (AMM, Flash Loans, Oracles) .. Fully Supported      ║")
-	t.Log("║                                                               ║")
-	t.Log("║  Phase 2 - Governance & Identity:                             ║")
-	t.Log("║    ✓ DAO (Governor, Timelock) .......... Fully Supported      ║")
-	t.Log("║    ✓ DID (ERC-725/735) ................. Fully Supported      ║")
-	t.Log("║    ✓ Gaming (VRF, State Channels) ...... Fully Supported      ║")
-	t.Log("║                                                               ║")
-	t.Log("║  Phase 3 - Emerging Applications:                             ║")
-	t.Log("║    ✓ AI/AI Agent ...................... Fully Supported       ║")
-	t.Log("║    ✓ Social Platforms ................. Fully Supported       ║")
-	t.Log("║    ✓ Metaverse ........................ Fully Supported       ║")
-	t.Log("║    ✓ RWA (Real World Assets) .......... Fully Supported       ║")
-	t.Log("║    ✓ Supply Chain ..................... Fully Supported       ║")
-	t.Log("║                                                               ║")
-	t.Log("║  Phase 4 - Vertical Domains:                                  ║")
-	t.Log("║    ✓ Carbon Trading ................... Fully Supported       ║")
-	t.Log("║    ✓ DePIN ............................ Fully Supported       ║")
-	t.Log("║    ✓ IoT .............................. Fully Supported       ║")
-	t.Log("║    ✓ DeSci ............................ Fully Supported       ║")
-	t.Log("║    ✓ Provenance ....................... Fully Supported       ║")
-	t.Log("║                                                               ║")
-	t.Log("║  Previously Verified:                                         ║")
-	t.Log("║    ✓ Prediction Market ................ Fully Supported       ║")
-	t.Log("║    ✓ ENS .............................. Fully Supported       ║")
-	t.Log("║                                                               ║")
-	t.Log("╠═══════════════════════════════════════════════════════════════╣")
-	t.Log("║         ALL 19 DAPP CATEGORIES: FULLY SUPPORTED               ║")
-	t.Log("╚═══════════════════════════════════════════════════════════════╝")
+	t.Parallel()
+	t.Skip(compatibilitySummaryManualSkip)
 }
 
 // =============================================================================
@@ -544,4 +484,3 @@ func BenchmarkKeccak256Provenance(b *testing.B) {
 		crypto.Keccak256(data)
 	}
 }
-

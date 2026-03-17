@@ -2,6 +2,12 @@
 
 > 生成日期：2025-12-15  
 > 版本：v1.0.0
+>
+> 2026-03-16 仓库复核：
+> 1. 这是一份历史重构记录，不能直接视为当前目录结构蓝图。
+> 2. 已直接复核文件存在并通过包级命令：`go test -count=1 ./modules/state ./internal/vm ./internal/consensus/... ./internal/sync ./internal/p2p ./internal/api`。
+> 3. PR 2.1 的实际落地路径是 `common/rlp`，不是 `common/encoding/`。
+> 4. PR 6.1 当前仓库的实际落地是 router/backend 抽象；`internal/api/eth/`、`internal/api/n42/` 目录并未出现在当前仓库。
 
 ---
 
@@ -35,7 +41,7 @@
 | 阶段 | PR | 状态 | 说明 |
 |------|-----|------|------|
 | 1.1-1.5 | 代码清理 + 命名 + 别名 + 错误处理 | ✅ 完成 | 基础代码质量 |
-| 2.1 | RLP 编码抽象 | ✅ 完成 | `common/encoding/` |
+| 2.1 | RLP 编码抽象 | ✅ 完成 | `common/rlp` |
 | 2.2 | StateDB 接口抽象 | ✅ 完成 | `modules/state/interfaces.go` |
 | 3.1 | 预编译合约注册表 | ✅ 完成 | `internal/vm/precompiles/` |
 | 3.2 | EVM 接口化 | ✅ 完成 | `internal/vm/interface.go` |
@@ -43,7 +49,7 @@
 | 4.2 | 共识公共逻辑提取 | ✅ 完成 | `internal/consensus/misc/` |
 | 5.1 | 同步状态机 | ✅ 完成 | `internal/sync/state_machine.go` |
 | 5.2 | P2P 与同步解耦 | ✅ 完成 | `internal/p2p/sync_interface.go` |
-| 6.1 | RPC 层职责分离 | ✅ 完成 | `internal/api/router.go` |
+| 6.1 | RPC 层职责分离 | ✅ 完成 | `internal/api/router.go` + backend/interface 抽象 |
 | 7.1 | Hardening 收口 | ✅ 完成 | init 清理 + reorg 审计 |
 
 ---
@@ -291,6 +297,8 @@ type BlockFetcher interface {
 
 **目标**：API 网关化，职责分离
 
+> 2026-03-16 复核：当前仓库职责分离的主要落地点是 `internal/api/router.go`、`internal/api/backend.go`、`internal/api/interface.go`。如果未来继续按 namespace 拆分，可以再引入 `internal/api/eth/`、`internal/api/n42/` 目录；当前仓库尚未采用该目录方案。
+
 **新增文件**：
 - `internal/api/interface.go` - RPCMetrics
 - `internal/api/router.go` - API Router
@@ -521,7 +529,7 @@ var _ StateReader = (*API)(nil)
 
 ### 高优先级
 
-1. **RPC 方法实现**：`internal/api/eth/` 和 `internal/api/n42/` 需要填充实际方法实现
+1. **RPC 方法实现**：如未来继续按 namespace 细分，可再引入 `internal/api/eth/`、`internal/api/n42/` 等目录；当前仓库尚未采用该目录方案
 2. **同步模块集成**：`SyncStateMachine` 和 `BlockFetcher` 需要集成到 `internal/sync/service.go`
 3. **P2P 层适配**：实现 `SyncP2P` 接口的具体适配器
 
@@ -595,4 +603,3 @@ cd tools/bench && go run ./cmd/metrics -rpc http://localhost:8545
 ---
 
 *文档生成完成*
-

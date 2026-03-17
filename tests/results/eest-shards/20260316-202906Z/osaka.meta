@@ -1,0 +1,9 @@
+shard=osaka
+selector=.*/.*fork_Osaka
+target=~21,000
+mode=consume-engine
+python=3.13
+pytest_workers=auto
+command=uv run --python 3.13 consume engine --input stable@latest --sim.limit .\*fork_Osaka.\* -n auto 
+rc=0
+duration_seconds=0

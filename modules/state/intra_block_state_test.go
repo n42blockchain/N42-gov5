@@ -32,8 +32,10 @@ import (
 	"testing/quick"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv/memdb"
+
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
 )
 
 func TestSnapshotRandom(t *testing.T) {
@@ -55,7 +57,7 @@ func TestSnapshotRandom(t *testing.T) {
 //
 // A new state is created and all actions are applied to it. Several snapshots are taken
 // in between actions. The test then reverts each snapshot. For each snapshot the actions
-// leading up to it are replayed on a fresh, empty state. The behaviour of all public
+// leading up to it are replayed on a fresh, empty state. The behavior of all public
 // accessor methods on the reverted state must match the return value of the equivalent
 // methods on the replayed state.
 type snapshotTest struct {
@@ -141,7 +143,7 @@ func newTestAction(addr types.Address, r *rand.Rand) testAction {
 			fn: func(a testAction, s *IntraBlockState) {
 				data := make([]byte, 2)
 				binary.BigEndian.PutUint16(data, uint16(a.args[0]))
-				s.AddLog(&types.Log{Address: addr, Data: data})
+				s.AddLog(&block.Log{Address: addr, Data: data})
 			},
 			args: make([]int64, 1),
 		},
@@ -161,7 +163,7 @@ func newTestAction(addr types.Address, r *rand.Rand) testAction {
 		},
 	}
 	action := actions[r.Intn(len(actions))]
-	var nameargs []string
+	nameargs := make([]string, 0, len(action.args)+1)
 	if !action.noAddr {
 		nameargs = append(nameargs, addr.Hex())
 	}
@@ -215,7 +217,7 @@ func (test *snapshotTest) String() string {
 
 func (test *snapshotTest) run() bool {
 	// Run all actions and create snapshots.
-	db := memdb.New()
+	db := memdb.New("")
 	defer db.Close()
 	tx, err := db.BeginRw(context.Background())
 	if err != nil {

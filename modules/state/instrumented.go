@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
@@ -43,11 +44,11 @@ type InstrumentedReader struct {
 	enabled bool
 
 	// Counters
-	readAccountCount   uint64
-	readStorageCount   uint64
-	readCodeCount      uint64
-	readCodeSizeCount  uint64
-	readIncarnCount    uint64
+	readAccountCount  uint64
+	readStorageCount  uint64
+	readCodeCount     uint64
+	readCodeSizeCount uint64
+	readIncarnCount   uint64
 
 	// Timing (nanoseconds)
 	readAccountTime  uint64
@@ -218,17 +219,17 @@ type InstrumentedWriter struct {
 	enabled bool
 
 	// Counters
-	updateAccountCount uint64
-	updateCodeCount    uint64
-	deleteAccountCount uint64
-	writeStorageCount  uint64
+	updateAccountCount  uint64
+	updateCodeCount     uint64
+	deleteAccountCount  uint64
+	writeStorageCount   uint64
 	createContractCount uint64
 
 	// Timing (nanoseconds)
-	updateAccountTime uint64
-	updateCodeTime    uint64
-	deleteAccountTime uint64
-	writeStorageTime  uint64
+	updateAccountTime  uint64
+	updateCodeTime     uint64
+	deleteAccountTime  uint64
+	writeStorageTime   uint64
 	createContractTime uint64
 }
 
@@ -390,4 +391,3 @@ var (
 	_ StateReader = (*InstrumentedReader)(nil)
 	_ StateWriter = (*InstrumentedWriter)(nil)
 )
-

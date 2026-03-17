@@ -85,13 +85,6 @@ type ForkchoiceUpdatedResponseV3 struct {
 	PayloadID     *PayloadID      `json:"payloadId"`
 }
 
-// NewPayloadResponseV3 includes validation status
-type NewPayloadResponseV3 struct {
-	Status          PayloadStatusV1 `json:"status"`
-	LatestValidHash *types.Hash     `json:"latestValidHash"`
-	ValidationError *string         `json:"validationError"`
-}
-
 // PayloadStatusV1 represents the status of payload validation
 type PayloadStatusV1 struct {
 	Status          string      `json:"status"`
@@ -165,7 +158,7 @@ func NewEngineAPIBlob(api *BlockChainAPI) *EngineAPIBlob {
 
 // NewPayloadV3 processes a new execution payload with blob support
 // engine_newPayloadV3
-func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayloadV3, expectedBlobVersionedHashes []types.Hash, parentBeaconBlockRoot *types.Hash) (*NewPayloadResponseV3, error) {
+func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayloadV3, expectedBlobVersionedHashes []types.Hash, parentBeaconBlockRoot *types.Hash) (*PayloadStatusV1, error) {
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
@@ -197,11 +190,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 
 	// Return SYNCING until payload processing is fully implemented.
 	// Returning VALID for an unverified payload would mislead the consensus layer.
-	return &NewPayloadResponseV3{
-		Status: PayloadStatusV1{
-			Status: PayloadStatusSyncing,
-		},
-	}, nil
+	return &PayloadStatusV1{Status: PayloadStatusSyncing}, nil
 }
 
 // GetPayloadV3 retrieves a payload with blob bundle
@@ -267,12 +256,10 @@ type ForkchoiceStateV1 struct {
 // Helper Functions
 // =============================================================================
 
-func invalidPayloadResponse(reason string) *NewPayloadResponseV3 {
-	return &NewPayloadResponseV3{
-		Status: PayloadStatusV1{
-			Status:          PayloadStatusInvalid,
-			ValidationError: &reason,
-		},
+func invalidPayloadResponse(reason string) *PayloadStatusV1 {
+	return &PayloadStatusV1{
+		Status:          PayloadStatusInvalid,
+		ValidationError: &reason,
 	}
 }
 
@@ -309,7 +296,7 @@ func validateBlobGasAndHashes(
 	maxBlobGas uint64,
 	maxBlobs uint64,
 	gasPerBlob uint64,
-) *NewPayloadResponseV3 {
+) *PayloadStatusV1 {
 	// 1. Validate blob gas fields are present
 	if blobGasUsed == nil || excessBlobGas == nil {
 		return invalidPayloadResponse("missing blob gas fields")

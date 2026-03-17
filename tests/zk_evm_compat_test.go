@@ -60,6 +60,7 @@ var (
 
 // TestBN256AddPrecompile tests the BN256 addition precompile
 func TestBN256AddPrecompile(t *testing.T) {
+	t.Parallel()
 	// Test vector: P1 + P2 where P1 and P2 are valid G1 points
 	// P1 = (1, 2) - generator point
 	// P2 = (1, 2) - same point
@@ -70,8 +71,8 @@ func TestBN256AddPrecompile(t *testing.T) {
 	// Generator point G1 = (1, 2)
 	input := make([]byte, 128)
 	// First point (1, 2)
-	input[31] = 1  // x = 1
-	input[63] = 2  // y = 2
+	input[31] = 1 // x = 1
+	input[63] = 2 // y = 2
 	// Second point (1, 2)
 	input[95] = 1  // x = 1
 	input[127] = 2 // y = 2
@@ -90,13 +91,14 @@ func TestBN256AddPrecompile(t *testing.T) {
 
 // TestBN256ScalarMulPrecompile tests the BN256 scalar multiplication precompile
 func TestBN256ScalarMulPrecompile(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBn256ScalarMul(true) // Istanbul version
 
 	// Generator point G1 = (1, 2), scalar = 2
 	input := make([]byte, 96)
-	input[31] = 1  // x = 1
-	input[63] = 2  // y = 2
-	input[95] = 2  // scalar = 2
+	input[31] = 1 // x = 1
+	input[63] = 2 // y = 2
+	input[95] = 2 // scalar = 2
 
 	output, err := p.Run(input)
 	if err != nil {
@@ -112,6 +114,7 @@ func TestBN256ScalarMulPrecompile(t *testing.T) {
 
 // TestBN256PairingPrecompile tests the BN256 pairing precompile
 func TestBN256PairingPrecompile(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBn256Pairing(true) // Istanbul version
 
 	// Empty input should return true (identity pairing)
@@ -132,6 +135,7 @@ func TestBN256PairingPrecompile(t *testing.T) {
 
 // TestBN256PairingGasCalculation tests gas calculation for pairing
 func TestBN256PairingGasCalculation(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBn256Pairing(true)
 
 	// Test gas for different pair counts
@@ -161,6 +165,7 @@ func TestBN256PairingGasCalculation(t *testing.T) {
 
 // TestBLS12381G1AddPrecompile tests BLS12-381 G1 addition
 func TestBLS12381G1AddPrecompile(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBls12381G1Add()
 
 	// Test with zero points (identity element)
@@ -181,6 +186,7 @@ func TestBLS12381G1AddPrecompile(t *testing.T) {
 
 // TestBLS12381G1MulPrecompile tests BLS12-381 G1 scalar multiplication
 func TestBLS12381G1MulPrecompile(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBls12381G1Mul()
 
 	// Test with zero point and scalar
@@ -200,6 +206,7 @@ func TestBLS12381G1MulPrecompile(t *testing.T) {
 
 // TestBLS12381G2AddPrecompile tests BLS12-381 G2 addition
 func TestBLS12381G2AddPrecompile(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBls12381G2Add()
 
 	// Test with zero points
@@ -219,6 +226,7 @@ func TestBLS12381G2AddPrecompile(t *testing.T) {
 
 // TestBLS12381PairingPrecompile tests BLS12-381 pairing
 func TestBLS12381PairingPrecompile(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBls12381Pairing()
 
 	// Empty pairing should succeed and return true
@@ -237,21 +245,22 @@ func TestBLS12381PairingPrecompile(t *testing.T) {
 
 // TestModExpPrecompile tests modular exponentiation
 func TestModExpPrecompile(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBigModExp(true, false, false) // EIP-2565 version
 
 	// Test: 2^3 mod 5 = 3
 	// Input format: base_len || exp_len || mod_len || base || exp || mod
 	input := make([]byte, 96+1+1+1) // 96 header + 1 base + 1 exp + 1 mod
-	
+
 	// Lengths (32 bytes each)
-	input[31] = 1   // base length = 1
-	input[63] = 1   // exp length = 1
-	input[95] = 1   // mod length = 1
-	
+	input[31] = 1 // base length = 1
+	input[63] = 1 // exp length = 1
+	input[95] = 1 // mod length = 1
+
 	// Values
-	input[96] = 2   // base = 2
-	input[97] = 3   // exp = 3
-	input[98] = 5   // mod = 5
+	input[96] = 2 // base = 2
+	input[97] = 3 // exp = 3
+	input[98] = 5 // mod = 5
 
 	output, err := p.Run(input)
 	if err != nil {
@@ -268,6 +277,7 @@ func TestModExpPrecompile(t *testing.T) {
 
 // TestModExpLargeNumbers tests modexp with larger numbers
 func TestModExpLargeNumbers(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBigModExp(true, false, false)
 
 	// Test: 3^5 mod 13 = 243 mod 13 = 9
@@ -297,14 +307,15 @@ func TestModExpLargeNumbers(t *testing.T) {
 
 // TestBlake2FPrecompile tests the BLAKE2b F compression function
 func TestBlake2FPrecompile(t *testing.T) {
+	t.Parallel()
 	p := vm.GetBlake2F()
 
 	// Test vector from EIP-152
 	// This is a known test vector
 	inputHex := "0000000048c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b61626300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000001"
-	
+
 	input, _ := hex.DecodeString(inputHex)
-	
+
 	output, err := p.Run(input)
 	if err != nil {
 		t.Fatalf("Blake2F failed: %v", err)
@@ -323,6 +334,7 @@ func TestBlake2FPrecompile(t *testing.T) {
 
 // TestGroth16VerificationComponents tests all components needed for Groth16
 func TestGroth16VerificationComponents(t *testing.T) {
+	t.Parallel()
 	// Groth16 verification requires:
 	// 1. BN256 scalar multiplication (for public input commitment)
 	// 2. BN256 addition (for accumulating G1 points)
@@ -364,6 +376,7 @@ func TestGroth16VerificationComponents(t *testing.T) {
 
 // TestPLONKVerificationComponents tests components needed for PLONK
 func TestPLONKVerificationComponents(t *testing.T) {
+	t.Parallel()
 	// PLONK verification typically uses BLS12-381 for:
 	// 1. G1 multi-scalar multiplication
 	// 2. Pairing checks
@@ -398,41 +411,36 @@ func TestPLONKVerificationComponents(t *testing.T) {
 
 // TestZKRollupVerificationGas estimates gas for typical ZK rollup verification
 func TestZKRollupVerificationGas(t *testing.T) {
+	t.Parallel()
 	// Estimate gas for a typical ZK rollup batch verification
-	
+
 	// Groth16 verification (typical)
 	groth16Gas := uint64(0)
-	
+
 	// 1. Public input processing (scalar muls and adds)
 	numPublicInputs := 10
 	groth16Gas += uint64(numPublicInputs) * params.Bn256ScalarMulGasIstanbul
 	groth16Gas += uint64(numPublicInputs) * params.Bn256AddGasIstanbul
-	
+
 	// 2. Pairing check (4 pairs for Groth16)
 	groth16Gas += params.Bn256PairingBaseGasIstanbul + 4*params.Bn256PairingPerPointGasIstanbul
 
 	// PLONK verification (typical)
 	plonkGas := uint64(0)
-	
+
 	// 1. G1 multi-exp (8 points typical)
 	// Using discount table approximation
 	plonkGas += 8 * params.Bls12381G1MulGas * 849 / 1000 // 8 point discount
-	
+
 	// 2. Pairing (2 pairs typical)
 	plonkGas += params.Bls12381PairingBaseGas + 2*params.Bls12381PairingPerPairGas
 
-	t.Logf("Groth16 verification estimated gas: %d", groth16Gas)
-	t.Logf("PLONK verification estimated gas: %d", plonkGas)
-
-	// Both should be reasonable (< 1M gas typically)
 	if groth16Gas > 500000 {
-		t.Logf("Warning: Groth16 gas is high: %d", groth16Gas)
+		t.Fatalf("Groth16 gas too high: %d", groth16Gas)
 	}
 	if plonkGas > 1000000 {
-		t.Logf("Warning: PLONK gas is high: %d", plonkGas)
+		t.Fatalf("PLONK gas too high: %d", plonkGas)
 	}
-
-	t.Log("✓ ZK rollup verification gas estimation complete")
 }
 
 // =============================================================================
@@ -441,16 +449,17 @@ func TestZKRollupVerificationGas(t *testing.T) {
 
 // TestAllZKPrecompilesAvailable verifies all ZK precompiles exist
 func TestAllZKPrecompilesAvailable(t *testing.T) {
+	t.Parallel()
 	precompiles := map[string]types.Address{
 		// BN254 (Groth16)
 		"bn256Add":       bn256AddAddr,
 		"bn256ScalarMul": bn256ScalarMulAddr,
 		"bn256Pairing":   bn256PairingAddr,
-		
+
 		// Utility
 		"modExp":  modExpAddr,
 		"blake2F": blake2FAddr,
-		
+
 		// BLS12-381 (PLONK/KZG)
 		"bls12381G1Add":      bls12381G1AddAddr,
 		"bls12381G1Mul":      bls12381G1MulAddr,
@@ -474,12 +483,13 @@ func TestAllZKPrecompilesAvailable(t *testing.T) {
 
 // TestPrecompilesInBerlin verifies precompiles are active in Berlin
 func TestPrecompilesInBerlin(t *testing.T) {
+	t.Parallel()
 	rules := &params.Rules{
 		IsBerlin: true,
 	}
 
 	addresses := vm.ActivePrecompiles(rules)
-	
+
 	requiredCount := 9 // ecrecover through blake2f
 	if len(addresses) < requiredCount {
 		t.Errorf("Expected at least %d precompiles in Berlin, got %d", requiredCount, len(addresses))
@@ -494,40 +504,8 @@ func TestPrecompilesInBerlin(t *testing.T) {
 
 // TestZKEVMCompatibilitySummary provides a summary of ZK capabilities
 func TestZKEVMCompatibilitySummary(t *testing.T) {
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("            ZK-EVM COMPATIBILITY SUMMARY")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("")
-	t.Log("Groth16 Verification (BN254/alt_bn128):")
-	t.Log("  ✓ ecAdd (0x06)        - Elliptic curve addition")
-	t.Log("  ✓ ecMul (0x07)        - Scalar multiplication")
-	t.Log("  ✓ ecPairing (0x08)    - Pairing check")
-	t.Log("")
-	t.Log("PLONK/KZG Verification (BLS12-381 EIP-2537):")
-	t.Log("  ✓ G1Add (0x0b)        - G1 point addition")
-	t.Log("  ✓ G1Mul (0x0c)        - G1 scalar multiplication")
-	t.Log("  ✓ G1MultiExp (0x0d)   - G1 multi-exponentiation (MSM)")
-	t.Log("  ✓ G2Add (0x0e)        - G2 point addition")
-	t.Log("  ✓ G2Mul (0x0f)        - G2 scalar multiplication")
-	t.Log("  ✓ G2MultiExp (0x10)   - G2 multi-exponentiation (MSM)")
-	t.Log("  ✓ Pairing (0x11)      - Pairing check")
-	t.Log("  ✓ MapG1 (0x12)        - Map FP to G1")
-	t.Log("  ✓ MapG2 (0x13)        - Map FP2 to G2")
-	t.Log("")
-	t.Log("Supporting Operations:")
-	t.Log("  ✓ modExp (0x05)       - Modular exponentiation")
-	t.Log("  ✓ blake2F (0x09)      - BLAKE2b compression")
-	t.Log("  ✓ KZG Point Eval      - EIP-4844 blob verification")
-	t.Log("")
-	t.Log("Supported ZK Proof Systems:")
-	t.Log("  ✓ Groth16             - snarkjs, circom compatible")
-	t.Log("  ✓ PLONK               - halo2, noir compatible")
-	t.Log("  ✓ KZG                 - blob proofs, verkle tries")
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("    N42 FULLY SUPPORTS ZK-EVM OFF-CHAIN COMPUTE ON-CHAIN VERIFY")
-	t.Log("═══════════════════════════════════════════════════════════════")
+	t.Parallel()
+	t.Skip(compatibilitySummaryManualSkip)
 }
 
 // =============================================================================
@@ -580,7 +558,7 @@ func BenchmarkModExp(b *testing.B) {
 func BenchmarkBlake2F(b *testing.B) {
 	p := vm.GetBlake2F()
 	input := make([]byte, 213)
-	input[3] = 12 // 12 rounds
+	input[3] = 12  // 12 rounds
 	input[212] = 1 // final block
 
 	b.ResetTimer()
@@ -588,4 +566,3 @@ func BenchmarkBlake2F(b *testing.B) {
 		p.Run(input)
 	}
 }
-

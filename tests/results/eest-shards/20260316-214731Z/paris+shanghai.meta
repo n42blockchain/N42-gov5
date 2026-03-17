@@ -1,0 +1,9 @@
+shard=paris+shanghai
+selector=.*/.*fork_(Paris\|Shanghai)
+target=~2,600
+mode=consume-engine
+python=3.13
+pytest_workers=1
+command=uv run --python 3.13 consume engine --input stable@latest --sim.limit .\*fork_\(Paris\|Shanghai\).\* -n 1 -q -x 
+rc=2
+duration_seconds=10

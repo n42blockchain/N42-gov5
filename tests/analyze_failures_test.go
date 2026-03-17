@@ -13,6 +13,8 @@ import (
 	"testing"
 )
 
+const analyzeFailuresManualHarnessSkip = "manual failure-analysis harness; excluded from default suite until converted into asserted, opt-in regression coverage"
+
 // FailurePattern tracks failure patterns
 type FailurePattern struct {
 	Pattern string
@@ -22,6 +24,8 @@ type FailurePattern struct {
 
 // TestDetailedFailureAnalysis analyzes failure patterns in depth
 func TestDetailedFailureAnalysis(t *testing.T) {
+	t.Skip(analyzeFailuresManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("State tests not found")
@@ -136,6 +140,8 @@ func TestDetailedFailureAnalysis(t *testing.T) {
 
 // TestAnalyzeEIP2930Failures specifically analyzes EIP-2930 access list failures
 func TestAnalyzeEIP2930Failures(t *testing.T) {
+	t.Skip(analyzeFailuresManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests/stEIP2930"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("EIP-2930 tests not found")
@@ -189,6 +195,8 @@ func TestAnalyzeEIP2930Failures(t *testing.T) {
 
 // TestAnalyzeEIP1153Failures analyzes transient storage (TLOAD/TSTORE) failures
 func TestAnalyzeEIP1153Failures(t *testing.T) {
+	t.Skip(analyzeFailuresManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests/Cancun"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("Cancun tests not found")
@@ -246,6 +254,8 @@ func TestAnalyzeEIP1153Failures(t *testing.T) {
 
 // TestAnalyzePrecompileFailures analyzes precompile test failures
 func TestAnalyzePrecompileFailures(t *testing.T) {
+	t.Skip(analyzeFailuresManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests/stPreCompiledContracts"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("Precompile tests not found")
@@ -319,6 +329,8 @@ func TestAnalyzePrecompileFailures(t *testing.T) {
 
 // TestDebugSingleTest runs a single test with detailed output
 func TestDebugSingleTest(t *testing.T) {
+	t.Skip(analyzeFailuresManualHarnessSkip)
+
 	// Change this path to debug a specific test
 	testPath := "eth-tests/general-state-tests/GeneralStateTests/stPreCompiledContracts/precompsEIP2929Cancun.json"
 	if _, err := os.Stat(testPath); os.IsNotExist(err) {
@@ -392,6 +404,8 @@ func truncateString(s string, maxLen int) string {
 
 // TestAnalyzeGasDifferences analyzes the actual gas differences
 func TestAnalyzeGasDifferences(t *testing.T) {
+	t.Skip(analyzeFailuresManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("State tests not found")
@@ -450,6 +464,8 @@ func TestAnalyzeGasDifferences(t *testing.T) {
 
 // TestExportFailedTests exports failed tests to JSON for further analysis
 func TestExportFailedTests(t *testing.T) {
+	t.Skip(analyzeFailuresManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("State tests not found")

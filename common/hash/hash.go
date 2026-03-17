@@ -19,8 +19,8 @@ package hash
 import (
 	"bytes"
 	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/types"
 	"sync"
 
 	"golang.org/x/crypto/sha3"
@@ -55,6 +55,9 @@ func encodeForDerive(list DerivableList, i int, buf *bytes.Buffer) []byte {
 
 // DeriveSha creates the tree hashes of transactions and receipts in a block header.
 func DeriveSha(list DerivableList) (h types.Hash) {
+	if list == nil || list.Len() == 0 {
+		return EmptyRootHash
+	}
 
 	sha := HasherPool.Get().(crypto.KeccakState)
 	defer HasherPool.Put(sha)
@@ -74,6 +77,8 @@ func DeriveSha(list DerivableList) (h types.Hash) {
 var (
 	// NilHash sum(nil)
 	NilHash = types.HexToHash("0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
+	// EmptyRootHash is the Ethereum empty trie root used for empty tx/receipt tries.
+	EmptyRootHash = types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
 	// EmptyUncleHash rlpHash([]*Header(nil))
 	EmptyUncleHash = types.HexToHash("0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347")
 )

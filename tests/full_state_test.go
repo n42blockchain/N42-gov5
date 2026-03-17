@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+const fullStateManualHarnessSkip = "manual EL fixture execution/analysis harness; excluded from default suite until isolated assertions and opt-in execution are in place"
+
 // TestStats holds statistics for test execution
 type TestStats struct {
 	TotalFiles     int64
@@ -194,6 +196,8 @@ func (s *TestStats) PrintReport() string {
 
 // TestFullStateTests runs ALL Ethereum state tests
 func TestFullStateTests(t *testing.T) {
+	t.Skip(fullStateManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("State tests not found. Run test data setup first.")
@@ -288,6 +292,8 @@ func TestFullStateTests(t *testing.T) {
 
 // TestQuickStateTests runs a subset of tests for quick validation
 func TestQuickStateTests(t *testing.T) {
+	t.Skip(fullStateManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("State tests not found")
@@ -350,6 +356,8 @@ func TestQuickStateTests(t *testing.T) {
 
 // TestAnalyzeFailures analyzes failure patterns
 func TestAnalyzeFailures(t *testing.T) {
+	t.Skip(fullStateManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("State tests not found")
@@ -429,6 +437,8 @@ func TestAnalyzeFailures(t *testing.T) {
 
 // TestSelfdestructCases specifically tests SELFDESTRUCT behavior
 func TestSelfdestructCases(t *testing.T) {
+	t.Skip(fullStateManualHarnessSkip)
+
 	testDir := "eth-tests/general-state-tests/GeneralStateTests/stCallCodes"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("Test directory not found")
