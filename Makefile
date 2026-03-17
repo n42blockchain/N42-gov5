@@ -169,6 +169,7 @@ open-output:
 .PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef
 .PHONY: race bench cover check install tidy help test-cover test-verbose perf-baseline
 .PHONY: version version-bump version-minor version-major maturity-smoke maturity-baseline
+.PHONY: ops-smoke interop-smoke soak-smoke release-check
 
 # =============================================================================
 # 核心目标 (Core Targets)
@@ -243,6 +244,22 @@ maturity-smoke: go-version
 maturity-baseline: go-version
 	@echo "==> bash scripts/run_maturity_baseline.sh --full"
 	bash scripts/run_maturity_baseline.sh --full
+
+ops-smoke: go-version
+	@echo "==> bash scripts/run_ops_smoke.sh"
+	bash scripts/run_ops_smoke.sh
+
+interop-smoke: go-version
+	@echo "==> bash scripts/run_interop_smoke.sh"
+	bash scripts/run_interop_smoke.sh
+
+soak-smoke: go-version
+	@echo "==> bash scripts/run_soak_smoke.sh"
+	bash scripts/run_soak_smoke.sh
+
+release-check: go-version
+	@echo "==> bash scripts/run_release_gate.sh"
+	bash scripts/run_release_gate.sh
 
 # =============================================================================
 # 基准测试 (Benchmarks)
@@ -339,6 +356,10 @@ help:
 	@echo "    check         - 组合检查 (fmt + vet + lint)"
 	@echo "    maturity-smoke    - 外部 surface / 恢复性 smoke gate"
 	@echo "    maturity-baseline - smoke + build/vet/test/lint/race-core 基线记录"
+	@echo "    ops-smoke         - 节点 metrics/pprof/RPC/短压测运行时 gate"
+	@echo "    interop-smoke     - RPC/Blockscout/Hive/EEST collect interop gate"
+	@echo "    soak-smoke        - 重启循环 + 短压测 soak gate"
+	@echo "    release-check     - maturity-baseline + ops/interop/soak 发布 gate"
 	@echo ""
 	@echo "  基准测试:"
 	@echo "    bench         - 完整基准测试"

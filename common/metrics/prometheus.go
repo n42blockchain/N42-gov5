@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"sync"
 
 	metrics2 "github.com/VictoriaMetrics/metrics"
 	"github.com/prometheus/client_golang/prometheus"
@@ -29,10 +30,20 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
+var registerDefaultSetOnce sync.Once
+var defaultSetGatherer prometheus.Gatherer
+var defaultSetRegisterErr error
+
 // Handler returns an HTTP handler which dump metrics in Prometheus format.
 // Output format can be checked here: https://o11y.tools/metricslint/
 func Handler(reg Registry) http.Handler {
-	prometheus.DefaultRegisterer.MustRegister(defaultSet)
+	registerDefaultSetOnce.Do(func() {
+		registry := prometheus.NewRegistry()
+		defaultSetRegisterErr = registry.Register(defaultSet)
+		if defaultSetRegisterErr == nil {
+			defaultSetGatherer = registry
+		}
+	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Gather and pre-sort the metrics to avoid random listings
@@ -44,16 +55,20 @@ func Handler(reg Registry) http.Handler {
 
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		metrics2.WritePrometheus(w, true)
+		metrics2.WritePrometheus(w, false)
 
-		contentType := expfmt.Negotiate(r.Header)
-		enc := expfmt.NewEncoder(w, contentType)
-		mf, err := prometheus.DefaultGatherer.Gather()
-		if err != nil {
-			return
-		}
-		for _, m := range mf {
-			enc.Encode(m)
+		if defaultSetRegisterErr == nil && defaultSetGatherer != nil {
+			contentType := expfmt.Negotiate(r.Header)
+			enc := expfmt.NewEncoder(w, contentType)
+			mf, err := defaultSetGatherer.Gather()
+			if err == nil {
+				for _, m := range mf {
+					if err := enc.Encode(m); err != nil {
+						log.Warn("Failed to encode Prometheus default metric", "err", err)
+						break
+					}
+				}
+			}
 		}
 
 		// Aggregate all the metrics into a Prometheus collector

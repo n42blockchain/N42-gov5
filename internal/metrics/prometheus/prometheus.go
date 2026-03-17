@@ -49,7 +49,7 @@ func Handler(reg Registry) http.Handler {
 
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		metrics2.WritePrometheus(w, true)
+		metrics2.WritePrometheus(w, false)
 
 		contentType := expfmt.Negotiate(r.Header)
 		enc := expfmt.NewEncoder(w, contentType)

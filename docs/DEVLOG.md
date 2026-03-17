@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-03-17 — 生产成熟度 gate 收口 + CCIP-Read
+
+这轮把之前分散的成熟化工作真正收成了固定 gate，同时把 `EIP-3668 (CCIP-Read)` 补到了 ABI / bind 调用层。
+
+### 本轮实现
+
+- `accounts/abi/ccip.go`、`accounts/abi/bind/ccip.go`、`internal/avm/abi/ccip.go`：新增 `OffchainLookup` / `CCIP-Read` 支持，包含 revert 识别、gateway GET/POST 跟随和 callback 重新打包。
+- `accounts/abi/abi.go`、`internal/avm/abi/abi.go`：补 `ErrorByID`、`Panic(uint256)` revert 识别和 `OffchainLookup` 解析辅助。
+- `accounts/abi/bind/base.go`：`CallOpts` 增加 `EnableCCIPRead`、`CCIPReadMaxRedirects`、`CCIPReadClient`，`BoundContract.Call` 可自动跟随 `EIP-3668`。
+- `common/metrics/prometheus.go`、`internal/metrics/prometheus/prometheus.go`：修正 Prometheus 默认 collector 重复注册和双重输出问题，避免 metrics/pprof gate 因重复样本或注册 panic 漂移。
+- `internal/api/block_args.go`、`internal/api/engine_overlay.go`：把 `RPCMarshalHeader` 的 `withdrawals/blob gas` 字段改成按 Shanghai / Cancun 系列分叉条件输出，修正 Hive `engine-auth` 的头哈希/链头兼容问题。
+- `scripts/run_ops_smoke.sh`、`scripts/run_interop_smoke.sh`、`scripts/run_soak_smoke.sh`、`scripts/run_release_gate.sh`：形成固定的 ops / interop / soak / release gate；其中 `interop` 现在会把 Hive 基础设施 `API 500` flake 与实现语义失败分开，通过 cleanup + retry 降噪。
+
+### 新增文档
+
+- `docs/engineering/OPERATIONS_RUNBOOK.md`
+- `docs/engineering/PUBLISH_CHECKLIST.md`
+- 同步刷新 `GAP.md`、`GAP_ANALYSIS.md`、`PRODUCTION_MATURITY_PLAN.md`、`MATURITY_BASELINE.md`
+
+### 本轮验证
+
+- `go test -count=1 ./accounts/abi ./accounts/abi/bind ./internal/avm/abi ./common/metrics ./internal/metrics/prometheus ./internal/api`
+- `make lint`
+- [`../build/maturity-baseline/20260317-074829Z/summary.md`](../build/maturity-baseline/20260317-074829Z/summary.md)
+- [`../build/ops-smoke/20260317-075716Z/summary.md`](../build/ops-smoke/20260317-075716Z/summary.md)
+- [`../build/interop-smoke/20260317-075747Z/summary.md`](../build/interop-smoke/20260317-075747Z/summary.md)
+- [`../build/soak-smoke/20260317-075856Z/summary.md`](../build/soak-smoke/20260317-075856Z/summary.md)
+- [`../build/release-check/20260317-075540Z/summary.md`](../build/release-check/20260317-075540Z/summary.md)
+
 ## 2026-03-16 — Transaction Proto / SSZ Schema 修复
 
 这轮补的是一个真实协议缺口：`common/transaction` 的 protobuf 编解码之前不会保留 `AccessList`，而 `api/protocol/types_pb.Transaction` 的 SSZ 实现也没有完整反映后续加入的 `accessList`、blob 和 post-quantum 字段。结果是，signed tx raw 的回解和 P2P SSZ round-trip 都会丢字段。
