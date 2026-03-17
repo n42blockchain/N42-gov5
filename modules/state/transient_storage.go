@@ -18,6 +18,7 @@ package state
 
 import (
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -58,4 +59,3 @@ func (t transientStorage) Copy() transientStorage {
 	}
 	return cp
 }
-

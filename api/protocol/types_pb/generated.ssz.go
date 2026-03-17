@@ -127,6 +127,9 @@ func (h *H160) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	indx := hh.Index()
 
 	// Field (0) 'Hi'
+	if h.Hi == nil {
+		h.Hi = new(H128)
+	}
 	if err = h.Hi.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -209,11 +212,17 @@ func (h *H256) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	indx := hh.Index()
 
 	// Field (0) 'Hi'
+	if h.Hi == nil {
+		h.Hi = new(H128)
+	}
 	if err = h.Hi.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (1) 'Lo'
+	if h.Lo == nil {
+		h.Lo = new(H128)
+	}
 	if err = h.Lo.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -293,11 +302,17 @@ func (h *H384) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	indx := hh.Index()
 
 	// Field (0) 'Hi'
+	if h.Hi == nil {
+		h.Hi = new(H256)
+	}
 	if err = h.Hi.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (1) 'Lo'
+	if h.Lo == nil {
+		h.Lo = new(H128)
+	}
 	if err = h.Lo.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -377,11 +392,17 @@ func (h *H768) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	indx := hh.Index()
 
 	// Field (0) 'Hi'
+	if h.Hi == nil {
+		h.Hi = new(H384)
+	}
 	if err = h.Hi.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (1) 'Lo'
+	if h.Lo == nil {
+		h.Lo = new(H384)
+	}
 	if err = h.Lo.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -461,11 +482,17 @@ func (h *H512) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	indx := hh.Index()
 
 	// Field (0) 'Hi'
+	if h.Hi == nil {
+		h.Hi = new(H256)
+	}
 	if err = h.Hi.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (1) 'Lo'
+	if h.Lo == nil {
+		h.Lo = new(H256)
+	}
 	if err = h.Lo.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -545,11 +572,17 @@ func (h *H1024) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	indx := hh.Index()
 
 	// Field (0) 'Hi'
+	if h.Hi == nil {
+		h.Hi = new(H512)
+	}
 	if err = h.Hi.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (1) 'Lo'
+	if h.Lo == nil {
+		h.Lo = new(H512)
+	}
 	if err = h.Lo.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -629,11 +662,17 @@ func (h *H2048) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	indx := hh.Index()
 
 	// Field (0) 'Hi'
+	if h.Hi == nil {
+		h.Hi = new(H1024)
+	}
 	if err = h.Hi.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (1) 'Lo'
+	if h.Lo == nil {
+		h.Lo = new(H1024)
+	}
 	if err = h.Lo.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -1548,7 +1587,7 @@ func (t *Transaction) MarshalSSZ() ([]byte, error) {
 // MarshalSSZTo ssz marshals the Transaction object to a target array
 func (t *Transaction) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 	dst = buf
-	offset := int(336)
+	offset := int(392)
 
 	// Field (0) 'Type'
 	dst = ssz.MarshalUint64(dst, t.Type)
@@ -1650,6 +1689,36 @@ func (t *Transaction) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 		return
 	}
 
+	// Field (16) 'PqSigAlgo'
+	dst = ssz.MarshalUint32(dst, t.PqSigAlgo)
+
+	// Field (17) 'PqPubKeyMode'
+	dst = ssz.MarshalUint32(dst, t.PqPubKeyMode)
+
+	// Offset (18) 'PqPubKeyData'
+	dst = ssz.WriteOffset(dst, offset)
+	offset += len(t.PqPubKeyData)
+
+	// Offset (19) 'PqSignature'
+	dst = ssz.WriteOffset(dst, offset)
+	offset += len(t.PqSignature)
+
+	// Field (20) 'BlobFeeCap'
+	if t.BlobFeeCap == nil {
+		t.BlobFeeCap = new(H256)
+	}
+	if dst, err = t.BlobFeeCap.MarshalSSZTo(dst); err != nil {
+		return
+	}
+
+	// Offset (21) 'BlobHashes'
+	dst = ssz.WriteOffset(dst, offset)
+	offset += len(t.BlobHashes) * 32
+
+	// Offset (22) 'AccessList'
+	dst = ssz.WriteOffset(dst, offset)
+	offset += sszSizeAccessTupleList(t.AccessList)
+
 	// Field (7) 'Data'
 	if size := len(t.Data); size > 104857600 {
 		err = ssz.ErrBytesLengthFn("--.Data", size, 104857600)
@@ -1664,6 +1733,30 @@ func (t *Transaction) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 	}
 	dst = append(dst, t.Sign...)
 
+	// Field (18) 'PqPubKeyData'
+	if size := len(t.PqPubKeyData); size > 2048 {
+		err = ssz.ErrBytesLengthFn("--.PqPubKeyData", size, 2048)
+		return
+	}
+	dst = append(dst, t.PqPubKeyData...)
+
+	// Field (19) 'PqSignature'
+	if size := len(t.PqSignature); size > 4096 {
+		err = ssz.ErrBytesLengthFn("--.PqSignature", size, 4096)
+		return
+	}
+	dst = append(dst, t.PqSignature...)
+
+	// Field (21) 'BlobHashes'
+	if dst, err = sszMarshalH256List(dst, t.BlobHashes, "--.BlobHashes", transactionSSZMaxBlobHashes); err != nil {
+		return
+	}
+
+	// Field (22) 'AccessList'
+	if dst, err = sszMarshalAccessTupleList(dst, t.AccessList, "--.AccessList", 4096); err != nil {
+		return
+	}
+
 	return
 }
 
@@ -1671,12 +1764,12 @@ func (t *Transaction) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 func (t *Transaction) UnmarshalSSZ(buf []byte) error {
 	var err error
 	size := uint64(len(buf))
-	if size < 336 {
+	if size < 392 {
 		return ssz.ErrSize
 	}
 
 	tail := buf
-	var o7, o8 uint64
+	var o7, o8, o18, o19, o21, o22 uint64
 
 	// Field (0) 'Type'
 	t.Type = ssz.UnmarshallUint64(buf[0:8])
@@ -1724,7 +1817,7 @@ func (t *Transaction) UnmarshalSSZ(buf []byte) error {
 		return ssz.ErrOffset
 	}
 
-	if o7 < 336 {
+	if o7 < 392 {
 		return ssz.ErrInvalidVariableOffset
 	}
 
@@ -1784,6 +1877,40 @@ func (t *Transaction) UnmarshalSSZ(buf []byte) error {
 		return err
 	}
 
+	// Field (16) 'PqSigAlgo'
+	t.PqSigAlgo = ssz.UnmarshallUint32(buf[336:340])
+
+	// Field (17) 'PqPubKeyMode'
+	t.PqPubKeyMode = ssz.UnmarshallUint32(buf[340:344])
+
+	// Offset (18) 'PqPubKeyData'
+	if o18 = ssz.ReadOffset(buf[344:348]); o18 > size || o8 > o18 {
+		return ssz.ErrOffset
+	}
+
+	// Offset (19) 'PqSignature'
+	if o19 = ssz.ReadOffset(buf[348:352]); o19 > size || o18 > o19 {
+		return ssz.ErrOffset
+	}
+
+	// Field (20) 'BlobFeeCap'
+	if t.BlobFeeCap == nil {
+		t.BlobFeeCap = new(H256)
+	}
+	if err = t.BlobFeeCap.UnmarshalSSZ(buf[352:384]); err != nil {
+		return err
+	}
+
+	// Offset (21) 'BlobHashes'
+	if o21 = ssz.ReadOffset(buf[384:388]); o21 > size || o19 > o21 {
+		return ssz.ErrOffset
+	}
+
+	// Offset (22) 'AccessList'
+	if o22 = ssz.ReadOffset(buf[388:392]); o22 > size || o21 > o22 {
+		return ssz.ErrOffset
+	}
+
 	// Field (7) 'Data'
 	{
 		buf = tail[o7:o8]
@@ -1807,18 +1934,66 @@ func (t *Transaction) UnmarshalSSZ(buf []byte) error {
 		}
 		t.Sign = append(t.Sign, buf...)
 	}
+
+	// Field (18) 'PqPubKeyData'
+	{
+		buf = tail[o18:o19]
+		if len(buf) > 2048 {
+			return ssz.ErrBytesLength
+		}
+		t.PqPubKeyData = append(t.PqPubKeyData[:0], buf...)
+	}
+
+	// Field (19) 'PqSignature'
+	{
+		buf = tail[o19:o21]
+		if len(buf) > 4096 {
+			return ssz.ErrBytesLength
+		}
+		t.PqSignature = append(t.PqSignature[:0], buf...)
+	}
+
+	// Field (21) 'BlobHashes'
+	{
+		buf = tail[o21:o22]
+		t.BlobHashes, err = sszUnmarshalH256List(buf, transactionSSZMaxBlobHashes)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Field (22) 'AccessList'
+	{
+		buf = tail[o22:]
+		t.AccessList, err = sszUnmarshalAccessTupleList(buf, 4096)
+		if err != nil {
+			return err
+		}
+	}
 	return err
 }
 
 // SizeSSZ returns the ssz encoded size in bytes for the Transaction object
 func (t *Transaction) SizeSSZ() (size int) {
-	size = 336
+	size = 392
 
 	// Field (7) 'Data'
 	size += len(t.Data)
 
 	// Field (8) 'Sign'
 	size += len(t.Sign)
+
+	// Field (18) 'PqPubKeyData'
+	size += len(t.PqPubKeyData)
+
+	// Field (19) 'PqSignature'
+	size += len(t.PqSignature)
+
+	// Field (21) 'BlobHashes'
+	size += len(t.BlobHashes) * 32
+
+	// Field (22) 'AccessList'
+	size += sszSizeAccessTupleList(t.AccessList)
 
 	return
 }
@@ -1839,6 +2014,9 @@ func (t *Transaction) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	hh.PutUint64(t.Nonce)
 
 	// Field (2) 'GasPrice'
+	if t.GasPrice == nil {
+		t.GasPrice = new(H256)
+	}
 	if err = t.GasPrice.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -1847,16 +2025,25 @@ func (t *Transaction) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	hh.PutUint64(t.Gas)
 
 	// Field (4) 'FeePerGas'
+	if t.FeePerGas == nil {
+		t.FeePerGas = new(H256)
+	}
 	if err = t.FeePerGas.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (5) 'PriorityFeePerGas'
+	if t.PriorityFeePerGas == nil {
+		t.PriorityFeePerGas = new(H256)
+	}
 	if err = t.PriorityFeePerGas.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (6) 'Value'
+	if t.Value == nil {
+		t.Value = new(H256)
+	}
 	if err = t.Value.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -1886,11 +2073,17 @@ func (t *Transaction) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	}
 
 	// Field (9) 'To'
+	if t.To == nil {
+		t.To = new(H160)
+	}
 	if err = t.To.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (10) 'From'
+	if t.From == nil {
+		t.From = new(H160)
+	}
 	if err = t.From.HashTreeRootWith(hh); err != nil {
 		return
 	}
@@ -1899,22 +2092,82 @@ func (t *Transaction) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	hh.PutUint64(t.ChainID)
 
 	// Field (12) 'Hash'
+	if t.Hash == nil {
+		t.Hash = new(H256)
+	}
 	if err = t.Hash.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (13) 'R'
+	if t.R == nil {
+		t.R = new(H256)
+	}
 	if err = t.R.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (14) 'S'
+	if t.S == nil {
+		t.S = new(H256)
+	}
 	if err = t.S.HashTreeRootWith(hh); err != nil {
 		return
 	}
 
 	// Field (15) 'V'
+	if t.V == nil {
+		t.V = new(H256)
+	}
 	if err = t.V.HashTreeRootWith(hh); err != nil {
+		return
+	}
+
+	// Field (16) 'PqSigAlgo'
+	hh.PutUint32(t.PqSigAlgo)
+
+	// Field (17) 'PqPubKeyMode'
+	hh.PutUint32(t.PqPubKeyMode)
+
+	// Field (18) 'PqPubKeyData'
+	{
+		elemIndx := hh.Index()
+		byteLen := uint64(len(t.PqPubKeyData))
+		if byteLen > 2048 {
+			err = ssz.ErrIncorrectListSize
+			return
+		}
+		hh.PutBytes(t.PqPubKeyData)
+		hh.MerkleizeWithMixin(elemIndx, byteLen, (2048+31)/32)
+	}
+
+	// Field (19) 'PqSignature'
+	{
+		elemIndx := hh.Index()
+		byteLen := uint64(len(t.PqSignature))
+		if byteLen > 4096 {
+			err = ssz.ErrIncorrectListSize
+			return
+		}
+		hh.PutBytes(t.PqSignature)
+		hh.MerkleizeWithMixin(elemIndx, byteLen, (4096+31)/32)
+	}
+
+	// Field (20) 'BlobFeeCap'
+	if t.BlobFeeCap == nil {
+		t.BlobFeeCap = new(H256)
+	}
+	if err = t.BlobFeeCap.HashTreeRootWith(hh); err != nil {
+		return
+	}
+
+	// Field (21) 'BlobHashes'
+	if err = sszHashH256List(hh, t.BlobHashes, transactionSSZMaxBlobHashes); err != nil {
+		return
+	}
+
+	// Field (22) 'AccessList'
+	if err = sszHashAccessTupleList(hh, t.AccessList, 4096); err != nil {
 		return
 	}
 

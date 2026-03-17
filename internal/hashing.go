@@ -55,6 +55,9 @@ func encodeForDerive(list DerivableList, i int, buf *bytes.Buffer) []byte {
 
 // DeriveSha creates the tree hashes of transactions and receipts in a block header.
 func DeriveSha(list DerivableList) (h types.Hash) {
+	if list == nil || list.Len() == 0 {
+		return EmptyRootHash
+	}
 
 	sha := hasherPool.Get().(crypto.KeccakState)
 	defer hasherPool.Put(sha)
@@ -70,3 +73,8 @@ func DeriveSha(list DerivableList) (h types.Hash) {
 	sha.Read(h[:])
 	return h
 }
+
+var (
+	// EmptyRootHash is the Ethereum empty trie root used for empty tx/receipt tries.
+	EmptyRootHash = types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+)

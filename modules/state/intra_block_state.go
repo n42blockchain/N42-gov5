@@ -145,8 +145,7 @@ func (sdb *IntraBlockState) CodeHashes() map[types.Hash][]byte {
 	for addr, stateObject := range sdb.stateObjects {
 		_, isDirty := sdb.stateObjectsDirty[addr]
 		if isDirty && (stateObject.created || !stateObject.selfdestructed) && stateObject.code != nil && stateObject.dirtyCode {
-			h := types.Hash{}
-			h.SetBytes(stateObject.CodeHash())
+			h := types.BytesToHash(stateObject.CodeHash())
 			sdb.codeMap[h] = stateObject.code
 		}
 	}
@@ -1001,7 +1000,9 @@ func (s *IntraBlockState) GenerateRootHash() types.Hash {
 	}
 
 	var root types.Hash
-	sha.Read(root[:])
+	if _, err := sha.Read(root[:]); err != nil {
+		panic("can't read root hash: " + err.Error())
+	}
 	return root
 }
 
@@ -1153,6 +1154,12 @@ func (sdb *IntraBlockState) BeforeStateRoot() (hashValue types.Hash, err error) 
 	if err := EncodeBeforeState(hasher, sdb.snap.Items, hashCodes); err != nil {
 		return types.Hash{}, err
 	}
-	hasher.(crypto.KeccakState).Read(hashValue[:])
+	keccakHasher, ok := hasher.(crypto.KeccakState)
+	if !ok {
+		return types.Hash{}, fmt.Errorf("unexpected hasher type %T", hasher)
+	}
+	if _, err := keccakHasher.Read(hashValue[:]); err != nil {
+		return types.Hash{}, err
+	}
 	return hashValue, nil
 }

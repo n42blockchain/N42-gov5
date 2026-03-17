@@ -17,11 +17,12 @@
 package state
 
 import (
+	"google.golang.org/protobuf/proto"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/modules"
-	"google.golang.org/protobuf/proto"
 )
 
 // CachedStateReader wraps a StateReader with a cross-block ShardedCache.

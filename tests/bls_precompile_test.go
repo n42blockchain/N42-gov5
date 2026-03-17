@@ -8,7 +8,6 @@ package tests
 import (
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,10 +30,12 @@ type BLSTestCase struct {
 var blsPrecompileAddresses = map[string]types.Address{
 	"add_G1":        types.BytesToAddress([]byte{0x0b}), // BLS12_G1ADD
 	"mul_G1":        types.BytesToAddress([]byte{0x0c}), // BLS12_G1MUL
-	"multiexp_G1":   types.BytesToAddress([]byte{0x0d}), // BLS12_G1MSM
+	"msm_G1":        types.BytesToAddress([]byte{0x0d}), // BLS12_G1MSM
+	"multiexp_G1":   types.BytesToAddress([]byte{0x0d}), // Legacy alias
 	"add_G2":        types.BytesToAddress([]byte{0x0e}), // BLS12_G2ADD
 	"mul_G2":        types.BytesToAddress([]byte{0x0f}), // BLS12_G2MUL
-	"multiexp_G2":   types.BytesToAddress([]byte{0x10}), // BLS12_G2MSM
+	"msm_G2":        types.BytesToAddress([]byte{0x10}), // BLS12_G2MSM
+	"multiexp_G2":   types.BytesToAddress([]byte{0x10}), // Legacy alias
 	"pairing":       types.BytesToAddress([]byte{0x11}), // BLS12_PAIRING
 	"map_fp_to_G1":  types.BytesToAddress([]byte{0x12}), // BLS12_MAP_FP_TO_G1
 	"map_fp2_to_G2": types.BytesToAddress([]byte{0x13}), // BLS12_MAP_FP2_TO_G2
@@ -51,9 +52,34 @@ func getPrecompileFromFilename(filename string) (types.Address, bool) {
 	return types.Address{}, false
 }
 
+func TestGetPrecompileFromFilenameRecognizesMSMVectors(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]types.Address{
+		"msm_G1_bls.json": types.BytesToAddress([]byte{0x0d}),
+		"msm_G2_bls.json": types.BytesToAddress([]byte{0x10}),
+	}
+
+	for filename, want := range testCases {
+		filename := filename
+		want := want
+		t.Run(filename, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := getPrecompileFromFilename(filename)
+			if !ok {
+				t.Fatalf("expected filename %q to resolve", filename)
+			}
+			if got != want {
+				t.Fatalf("getPrecompileFromFilename(%q)=%s, want %s", filename, got.Hex(), want.Hex())
+			}
+		})
+	}
+}
+
 func TestBLSPrecompiles(t *testing.T) {
 	blsTestDir := filepath.Join("eth-tests", "execution-spec-tests", "tests", "prague", "eip2537_bls_12_381_precompiles", "vectors")
-	
+
 	// Check if directory exists
 	if _, err := os.Stat(blsTestDir); os.IsNotExist(err) {
 		t.Skipf("BLS test directory not found: %s", blsTestDir)
@@ -71,16 +97,12 @@ func TestBLSPrecompiles(t *testing.T) {
 		return
 	}
 
-	passed := 0
-	failed := 0
-	skipped := 0
-
 	for _, file := range files {
+		file := file
 		filename := filepath.Base(file)
-		
+
 		// Skip fail- prefixed tests for now (these test error conditions)
 		if strings.HasPrefix(filename, "fail-") {
-			skipped++
 			continue
 		}
 
@@ -120,7 +142,7 @@ func TestBLSPrecompiles(t *testing.T) {
 					// Check gas
 					requiredGas := precompile.RequiredGas(input)
 					if requiredGas != tc.Gas {
-						t.Logf("Gas mismatch: got %d, want %d", requiredGas, tc.Gas)
+						t.Fatalf("RequiredGas() mismatch: got %d, want %d", requiredGas, tc.Gas)
 					}
 
 					// Run precompile
@@ -143,14 +165,12 @@ func TestBLSPrecompiles(t *testing.T) {
 			}
 		})
 	}
-
-	fmt.Printf("\nBLS Precompile Test Results: %d passed, %d failed, %d skipped\n", passed, failed, skipped)
 }
 
 // TestBLSG1Add specifically tests BLS G1 ADD precompile
 func TestBLSG1Add(t *testing.T) {
 	testFile := filepath.Join("eth-tests", "execution-spec-tests", "tests", "prague", "eip2537_bls_12_381_precompiles", "vectors", "add_G1_bls.json")
-	
+
 	if _, err := os.Stat(testFile); os.IsNotExist(err) {
 		t.Skipf("Test file not found: %s", testFile)
 		return
@@ -177,6 +197,9 @@ func TestBLSG1Add(t *testing.T) {
 	for _, tc := range testCases {
 		input, _ := hex.DecodeString(tc.Input)
 		expected, _ := hex.DecodeString(tc.Expected)
+		if gas := precompile.RequiredGas(input); gas != tc.Gas {
+			t.Fatalf("FAIL %s: gas mismatch: got %d, want %d", tc.Name, gas, tc.Gas)
+		}
 
 		result, err := precompile.Run(input)
 		if err != nil {
@@ -198,4 +221,3 @@ func TestBLSG1Add(t *testing.T) {
 		t.Errorf("Some BLS G1 ADD tests failed")
 	}
 }
-

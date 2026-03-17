@@ -17,9 +17,12 @@
 package graphql
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -46,12 +49,19 @@ const maxRequestBodySize = 1 << 20
 // requests with a JSON body conforming to the standard GraphQL over HTTP
 // specification and delegates query resolution to the embedded Resolver.
 type Handler struct {
-	backend *Resolver
+	backend queryBackend
+}
+
+type queryBackend interface {
+	Block(context.Context, BlockArgs) (*Block, error)
+	Transaction(context.Context, types.Hash) (*Transaction, error)
+	Account(context.Context, types.Address, *uint64) (*Account, error)
+	Logs(context.Context, LogFilter) ([]*Log, error)
 }
 
 // NewHandler creates a new GraphQL HTTP handler.
-func NewHandler(resolver *Resolver) *Handler {
-	return &Handler{backend: resolver}
+func NewHandler(backend queryBackend) *Handler {
+	return &Handler{backend: backend}
 }
 
 // ServeHTTP implements the http.Handler interface.
@@ -64,8 +74,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer r.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodySize))
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds 1048576 bytes")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
@@ -120,23 +135,30 @@ func (h *Handler) resolveBlock(r *http.Request, req GraphQLRequest) (interface{}
 	args := BlockArgs{}
 
 	if req.Variables != nil {
-		if num, ok := extractUint64Variable(req.Variables, "number"); ok {
+		if num, ok, err := extractUint64Variable(req.Variables, "number"); err != nil {
+			return nil, fmt.Errorf("invalid block number argument: %w", err)
+		} else if ok {
 			n := hexutil.Uint64(num)
 			args.Number = &n
 		}
-		if hashStr, ok := req.Variables["hash"].(string); ok {
-			hash := types.HexToHash(hashStr)
+		if hash, ok, err := extractHashVariable(req.Variables, "hash"); err != nil {
+			return nil, fmt.Errorf("invalid block hash argument: %w", err)
+		} else if ok {
 			args.Hash = &hash
 		}
 	}
 
 	// Also try to parse inline arguments from the query string.
 	if args.Number == nil && args.Hash == nil {
-		if num, ok := extractInlineNumber(req.Query); ok {
+		if num, ok, err := extractInlineNumber(req.Query); err != nil {
+			return nil, fmt.Errorf("invalid block number argument: %w", err)
+		} else if ok {
 			n := hexutil.Uint64(num)
 			args.Number = &n
 		}
-		if hash, ok := extractInlineHash(req.Query); ok {
+		if hash, ok, err := extractInlineHash(req.Query); err != nil {
+			return nil, fmt.Errorf("invalid block hash argument: %w", err)
+		} else if ok {
 			args.Hash = &hash
 		}
 	}
@@ -155,15 +177,19 @@ func (h *Handler) resolveTransaction(r *http.Request, req GraphQLRequest) (inter
 	found := false
 
 	if req.Variables != nil {
-		if hashStr, ok := req.Variables["hash"].(string); ok {
-			hash = types.HexToHash(hashStr)
+		if parsedHash, ok, err := extractHashVariable(req.Variables, "hash"); err != nil {
+			return nil, fmt.Errorf("invalid transaction hash argument: %w", err)
+		} else if ok {
+			hash = parsedHash
 			found = true
 		}
 	}
 
 	if !found {
-		if h, ok := extractInlineHash(req.Query); ok {
-			hash = h
+		if parsedHash, ok, err := extractInlineHash(req.Query); err != nil {
+			return nil, fmt.Errorf("invalid transaction hash argument: %w", err)
+		} else if ok {
+			hash = parsedHash
 			found = true
 		}
 	}
@@ -188,18 +214,24 @@ func (h *Handler) resolveAccount(r *http.Request, req GraphQLRequest) (interface
 	var blockNr *uint64
 
 	if req.Variables != nil {
-		if addrStr, ok := req.Variables["address"].(string); ok {
-			addr = types.HexToAddress(addrStr)
+		if parsedAddr, ok, err := extractAddressVariable(req.Variables, "address"); err != nil {
+			return nil, fmt.Errorf("invalid account address argument: %w", err)
+		} else if ok {
+			addr = parsedAddr
 			addrFound = true
 		}
-		if num, ok := extractUint64Variable(req.Variables, "blockNumber"); ok {
+		if num, ok, err := extractUint64Variable(req.Variables, "blockNumber"); err != nil {
+			return nil, fmt.Errorf("invalid account blockNumber argument: %w", err)
+		} else if ok {
 			blockNr = &num
 		}
 	}
 
 	if !addrFound {
-		if a, ok := extractInlineAddress(req.Query); ok {
-			addr = a
+		if parsedAddr, ok, err := extractInlineAddress(req.Query); err != nil {
+			return nil, fmt.Errorf("invalid account address argument: %w", err)
+		} else if ok {
+			addr = parsedAddr
 			addrFound = true
 		}
 	}
@@ -221,36 +253,27 @@ func (h *Handler) resolveLogs(r *http.Request, req GraphQLRequest) (interface{},
 	filter := LogFilter{}
 
 	if req.Variables != nil {
-		if fb, ok := extractUint64Variable(req.Variables, "fromBlock"); ok {
+		if fb, ok, err := extractUint64Variable(req.Variables, "fromBlock"); err != nil {
+			return nil, fmt.Errorf("invalid logs fromBlock argument: %w", err)
+		} else if ok {
 			n := hexutil.Uint64(fb)
 			filter.FromBlock = &n
 		}
-		if tb, ok := extractUint64Variable(req.Variables, "toBlock"); ok {
+		if tb, ok, err := extractUint64Variable(req.Variables, "toBlock"); err != nil {
+			return nil, fmt.Errorf("invalid logs toBlock argument: %w", err)
+		} else if ok {
 			n := hexutil.Uint64(tb)
 			filter.ToBlock = &n
 		}
-		if addrs, ok := req.Variables["addresses"].([]interface{}); ok {
-			for _, a := range addrs {
-				if s, ok := a.(string); ok {
-					filter.Addresses = append(filter.Addresses, types.HexToAddress(s))
-				}
-			}
+		if addresses, ok, err := extractAddressSliceVariable(req.Variables, "addresses"); err != nil {
+			return nil, fmt.Errorf("invalid logs addresses argument: %w", err)
+		} else if ok {
+			filter.Addresses = addresses
 		}
-		if topics, ok := req.Variables["topics"].([]interface{}); ok {
-			for _, topicGroup := range topics {
-				var group []types.Hash
-				switch tg := topicGroup.(type) {
-				case []interface{}:
-					for _, t := range tg {
-						if s, ok := t.(string); ok {
-							group = append(group, types.HexToHash(s))
-						}
-					}
-				case string:
-					group = append(group, types.HexToHash(tg))
-				}
-				filter.Topics = append(filter.Topics, group)
-			}
+		if topics, ok, err := extractTopicGroupsVariable(req.Variables, "topics"); err != nil {
+			return nil, fmt.Errorf("invalid logs topics argument: %w", err)
+		} else if ok {
+			filter.Topics = topics
 		}
 	}
 
@@ -270,107 +293,213 @@ func normalizeQuery(q string) string {
 
 // extractUint64Variable extracts a uint64 value from a variables map,
 // supporting both JSON number and hex-string representations.
-func extractUint64Variable(vars map[string]interface{}, key string) (uint64, bool) {
+func extractUint64Variable(vars map[string]interface{}, key string) (uint64, bool, error) {
 	v, ok := vars[key]
 	if !ok {
-		return 0, false
+		return 0, false, nil
 	}
 	switch val := v.(type) {
 	case float64:
-		return uint64(val), true
+		if math.IsNaN(val) || math.IsInf(val, 0) || val < 0 || val != math.Trunc(val) || val > math.MaxUint64 {
+			return 0, true, fmt.Errorf("must be a non-negative integer")
+		}
+		return uint64(val), true, nil
 	case string:
 		// Support hex (0x...) and decimal strings.
 		val = strings.TrimSpace(val)
 		if strings.HasPrefix(val, "0x") || strings.HasPrefix(val, "0X") {
 			n, err := strconv.ParseUint(val[2:], 16, 64)
 			if err != nil {
-				return 0, false
+				return 0, true, err
 			}
-			return n, true
+			return n, true, nil
 		}
 		n, err := strconv.ParseUint(val, 10, 64)
 		if err != nil {
-			return 0, false
+			return 0, true, err
 		}
-		return n, true
+		return n, true, nil
 	default:
-		return 0, false
+		return 0, true, fmt.Errorf("must be a JSON number or string")
 	}
 }
 
 // extractInlineNumber attempts to find a number argument inside a GraphQL
 // query string, e.g. block(number: 123) or block(number: "0x7b").
-func extractInlineNumber(query string) (uint64, bool) {
-	idx := strings.Index(strings.ToLower(query), "number:")
-	if idx < 0 {
-		return 0, false
+func extractInlineNumber(query string) (uint64, bool, error) {
+	token, ok := extractInlineToken(query, "number")
+	if !ok {
+		return 0, false, nil
 	}
-	rest := strings.TrimSpace(query[idx+len("number:"):])
-	// Remove leading quote if present.
-	rest = strings.TrimLeft(rest, " \"")
-	// Extract the value token.
-	end := strings.IndexAny(rest, " ,)\"\n\t}")
-	if end < 0 {
-		end = len(rest)
-	}
-	token := strings.TrimSpace(rest[:end])
 	if strings.HasPrefix(token, "0x") || strings.HasPrefix(token, "0X") {
 		n, err := strconv.ParseUint(token[2:], 16, 64)
 		if err != nil {
-			return 0, false
+			return 0, true, err
 		}
-		return n, true
+		return n, true, nil
 	}
 	n, err := strconv.ParseUint(token, 10, 64)
 	if err != nil {
-		return 0, false
+		return 0, true, err
 	}
-	return n, true
+	return n, true, nil
 }
 
 // extractInlineHash attempts to find a hash argument inside a GraphQL query
 // string, e.g. block(hash: "0xabc...").
-func extractInlineHash(query string) (types.Hash, bool) {
-	idx := strings.Index(strings.ToLower(query), "hash:")
-	if idx < 0 {
-		return types.Hash{}, false
+func extractInlineHash(query string) (types.Hash, bool, error) {
+	token, ok := extractInlineToken(query, "hash")
+	if !ok {
+		return types.Hash{}, false, nil
 	}
-	rest := strings.TrimSpace(query[idx+len("hash:"):])
-	rest = strings.TrimLeft(rest, " \"")
-	end := strings.IndexAny(rest, " ,)\"\n\t}")
-	if end < 0 {
-		end = len(rest)
+	hash, err := parseHash(token)
+	if err != nil {
+		return types.Hash{}, true, err
 	}
-	token := strings.TrimSpace(rest[:end])
-	if !strings.HasPrefix(token, "0x") && !strings.HasPrefix(token, "0X") {
-		return types.Hash{}, false
-	}
-	if len(token) < 10 { // minimum reasonable hash length
-		return types.Hash{}, false
-	}
-	hash := types.HexToHash(token)
-	return hash, true
+	return hash, true, nil
 }
 
 // extractInlineAddress attempts to find an address argument inside a GraphQL
 // query string, e.g. account(address: "0xabc...").
-func extractInlineAddress(query string) (types.Address, bool) {
-	idx := strings.Index(strings.ToLower(query), "address:")
-	if idx < 0 {
-		return types.Address{}, false
+func extractInlineAddress(query string) (types.Address, bool, error) {
+	token, ok := extractInlineToken(query, "address")
+	if !ok {
+		return types.Address{}, false, nil
 	}
-	rest := strings.TrimSpace(query[idx+len("address:"):])
+	addr, err := parseAddress(token)
+	if err != nil {
+		return types.Address{}, true, err
+	}
+	return addr, true, nil
+}
+
+func extractHashVariable(vars map[string]interface{}, key string) (types.Hash, bool, error) {
+	raw, ok := vars[key]
+	if !ok {
+		return types.Hash{}, false, nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return types.Hash{}, true, fmt.Errorf("must be a hex string")
+	}
+	hash, err := parseHash(value)
+	if err != nil {
+		return types.Hash{}, true, err
+	}
+	return hash, true, nil
+}
+
+func extractAddressVariable(vars map[string]interface{}, key string) (types.Address, bool, error) {
+	raw, ok := vars[key]
+	if !ok {
+		return types.Address{}, false, nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return types.Address{}, true, fmt.Errorf("must be a hex string")
+	}
+	addr, err := parseAddress(value)
+	if err != nil {
+		return types.Address{}, true, err
+	}
+	return addr, true, nil
+}
+
+func extractAddressSliceVariable(vars map[string]interface{}, key string) ([]types.Address, bool, error) {
+	raw, ok := vars[key]
+	if !ok {
+		return nil, false, nil
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, true, fmt.Errorf("must be an array of addresses")
+	}
+	addresses := make([]types.Address, 0, len(items))
+	for _, item := range items {
+		value, ok := item.(string)
+		if !ok {
+			return nil, true, fmt.Errorf("must contain only address strings")
+		}
+		addr, err := parseAddress(value)
+		if err != nil {
+			return nil, true, err
+		}
+		addresses = append(addresses, addr)
+	}
+	return addresses, true, nil
+}
+
+func extractTopicGroupsVariable(vars map[string]interface{}, key string) ([][]types.Hash, bool, error) {
+	raw, ok := vars[key]
+	if !ok {
+		return nil, false, nil
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, true, fmt.Errorf("must be an array")
+	}
+
+	groups := make([][]types.Hash, 0, len(items))
+	for _, item := range items {
+		switch value := item.(type) {
+		case []interface{}:
+			group := make([]types.Hash, 0, len(value))
+			for _, nested := range value {
+				hashValue, ok := nested.(string)
+				if !ok {
+					return nil, true, fmt.Errorf("must contain only hash strings")
+				}
+				hash, err := parseHash(hashValue)
+				if err != nil {
+					return nil, true, err
+				}
+				group = append(group, hash)
+			}
+			groups = append(groups, group)
+		case string:
+			hash, err := parseHash(value)
+			if err != nil {
+				return nil, true, err
+			}
+			groups = append(groups, []types.Hash{hash})
+		default:
+			return nil, true, fmt.Errorf("must contain only hash strings or arrays of hash strings")
+		}
+	}
+	return groups, true, nil
+}
+
+func extractInlineToken(query, key string) (string, bool) {
+	idx := strings.Index(strings.ToLower(query), key+":")
+	if idx < 0 {
+		return "", false
+	}
+	rest := strings.TrimSpace(query[idx+len(key)+1:])
 	rest = strings.TrimLeft(rest, " \"")
 	end := strings.IndexAny(rest, " ,)\"\n\t}")
 	if end < 0 {
 		end = len(rest)
 	}
-	token := strings.TrimSpace(rest[:end])
-	if !strings.HasPrefix(token, "0x") && !strings.HasPrefix(token, "0X") {
-		return types.Address{}, false
+	return strings.TrimSpace(rest[:end]), true
+}
+
+func parseHash(input string) (types.Hash, error) {
+	decoded, err := hexutil.Decode(strings.TrimSpace(input))
+	if err != nil {
+		return types.Hash{}, err
 	}
-	addr := types.HexToAddress(token)
-	return addr, true
+	if len(decoded) != types.HashLength {
+		return types.Hash{}, fmt.Errorf("must be %d bytes", types.HashLength)
+	}
+	return types.BytesToHash(decoded), nil
+}
+
+func parseAddress(input string) (types.Address, error) {
+	value := strings.TrimSpace(input)
+	if !types.IsHexAddress(value) {
+		return types.Address{}, fmt.Errorf("must be a 20-byte hex address")
+	}
+	return types.HexToAddress(value), nil
 }
 
 // writeError writes a JSON error response.

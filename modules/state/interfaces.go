@@ -29,13 +29,15 @@
 //   - IntraBlockState: Full state management during block execution
 //
 // Usage:
-//   The internal/vm package should use StateReader/StateWriter interfaces
-//   (via evmtypes.IntraBlockState) rather than concrete implementations,
-//   enabling testability and flexibility.
+//
+//	The internal/vm package should use StateReader/StateWriter interfaces
+//	(via evmtypes.IntraBlockState) rather than concrete implementations,
+//	enabling testability and flexibility.
 package state
 
 import (
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -129,4 +131,3 @@ var (
 	_ WriterWithChangeSets = (*PlainStateWriter)(nil)
 	_ StateWriter          = (*NoopWriter)(nil)
 )
-

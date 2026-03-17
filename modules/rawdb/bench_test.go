@@ -17,6 +17,7 @@
 package rawdb
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -25,6 +26,13 @@ import (
 // benchHash is a shared hash used across all benchmarks.
 var benchHash = types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 
+// benchBytesSink keeps benchmark results alive to avoid compiler elimination.
+var benchBytesSink atomic.Value
+
+func init() {
+	benchBytesSink.Store([]byte(nil))
+}
+
 // =============================================================================
 // Key Generation Benchmarks
 // =============================================================================
@@ -32,50 +40,66 @@ var benchHash = types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567
 func BenchmarkHeaderKeyGen(b *testing.B) {
 	b.ReportAllocs()
 	number := uint64(12345)
+	hash := benchHash
+	var key []byte
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		HeaderKey(number, benchHash)
+		hash[0] = byte(i)
+		key = HeaderKey(number+uint64(i&1), hash)
 	}
+	benchBytesSink.Store(key)
 }
 
 func BenchmarkBlockBodyKeyGen(b *testing.B) {
 	b.ReportAllocs()
 	number := uint64(12345)
+	hash := benchHash
+	var key []byte
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		BlockBodyKey(number, benchHash)
+		hash[0] = byte(i)
+		key = BlockBodyKey(number+uint64(i&1), hash)
 	}
+	benchBytesSink.Store(key)
 }
 
 func BenchmarkTxLookupKeyGen(b *testing.B) {
 	b.ReportAllocs()
+	hash := benchHash
+	var key []byte
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		TxLookupKey(benchHash)
+		hash[0] = byte(i)
+		key = TxLookupKey(hash)
 	}
+	benchBytesSink.Store(key)
 }
 
 func BenchmarkReceiptKeyGen(b *testing.B) {
 	b.ReportAllocs()
 	number := uint64(12345)
+	var key []byte
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ReceiptKey(number)
+		key = ReceiptKey(number + uint64(i&1))
 	}
+	benchBytesSink.Store(key)
 }
 
 func BenchmarkEncodeBlockNumber(b *testing.B) {
 	b.ReportAllocs()
 	number := uint64(12345)
+	var key []byte
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		EncodeBlockNumber(number)
+		key = EncodeBlockNumber(number + uint64(i&1))
 	}
+	benchBytesSink.Store(key)
 }
 
 // =============================================================================
@@ -86,17 +110,29 @@ func BenchmarkHeaderKeyParallel(b *testing.B) {
 	number := uint64(12345)
 
 	b.RunParallel(func(pb *testing.PB) {
+		hash := benchHash
+		var key []byte
+		var i uint64
 		for pb.Next() {
-			HeaderKey(number, benchHash)
+			hash[0] = byte(i)
+			key = HeaderKey(number+(i&1), hash)
+			i++
 		}
+		benchBytesSink.Store(key)
 	})
 }
 
 func BenchmarkTxLookupKeyParallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
+		hash := benchHash
+		var key []byte
+		var i uint64
 		for pb.Next() {
-			TxLookupKey(benchHash)
+			hash[0] = byte(i)
+			key = TxLookupKey(hash)
+			i++
 		}
+		benchBytesSink.Store(key)
 	})
 }
 
@@ -104,8 +140,12 @@ func BenchmarkEncodeBlockNumberParallel(b *testing.B) {
 	number := uint64(12345)
 
 	b.RunParallel(func(pb *testing.PB) {
+		var key []byte
+		var i uint64
 		for pb.Next() {
-			EncodeBlockNumber(number)
+			key = EncodeBlockNumber(number + (i & 1))
+			i++
 		}
+		benchBytesSink.Store(key)
 	})
 }

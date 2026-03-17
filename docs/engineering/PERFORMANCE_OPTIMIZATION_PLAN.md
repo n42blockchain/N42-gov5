@@ -4,6 +4,12 @@
 **目标**: 全面分析和优化代码库性能  
 **原则**: 先测量，后优化；数据驱动决策
 
+> 2026-03-16 仓库复核说明：
+> 1. 本轮已补最小 runner 和结果目录：`scripts/run_perf_baseline.sh`、`benchmarks/README.md`、`benchmarks/results/`。但原计划里的按领域拆分目录骨架仍未完整落地。
+> 2. 当前可复现的性能证据主要来自包内 benchmark，如 `tools/tpsbench`、`modules/rawdb`、`internal/vm`。
+> 3. `modules/rawdb/bench_test.go` 已在本轮修复返回值未消费导致的 benchmark 失真；旧文档里的 `0.32 ns/op` 一类数字不应再直接引用。
+> 4. 因此本计划仍应视为“待复核的执行计划”，不是已经被完整验收的事实报告。
+
 ---
 
 ## 优化计划概览
@@ -546,7 +552,6 @@ go-torch -b cpu.prof
 
 ---
 
-**计划状态**: 待确认  
+**计划状态**: 仓库复核后仍待确认
 **创建日期**: 2024-12-16  
 **预计完成**: 4周
-

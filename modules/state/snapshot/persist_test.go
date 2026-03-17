@@ -580,9 +580,9 @@ func TestJournalSerialize_EmptyDiffLayer(t *testing.T) {
 func TestJournalSerialize_NilAccountValue(t *testing.T) {
 	addr := types.HexToAddress("0x1111111111111111111111111111111111111111")
 	dl := &DiffLayer{
-		root:     types.HexToHash("0xaaaa"),
-		block:    10,
-		accounts: map[types.Address]*account.StateAccount{addr: nil},
+		root:        types.HexToHash("0xaaaa"),
+		block:       10,
+		accounts:    map[types.Address]*account.StateAccount{addr: nil},
 		accountDels: map[types.Address]struct{}{},
 		storage:     map[types.Address]map[types.Hash][]byte{},
 	}

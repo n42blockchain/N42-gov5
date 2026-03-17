@@ -110,6 +110,10 @@ tests/*.log
 PUSH_*.md
 RELEASE_*.md
 
+# Local benchmark captures
+benchmarks/results/*
+!benchmarks/results/.gitkeep
+
 # EIP compliance temporary docs
 EIP_COMPLIANCE_*.md
 SPECIFICATION_*.md

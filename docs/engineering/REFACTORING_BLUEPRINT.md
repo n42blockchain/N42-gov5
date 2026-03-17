@@ -1,6 +1,13 @@
 # N42-go 重构蓝图
 
 > 版本: v1.0 | 日期: 2025-12-15 | 作者: 架构重构工作组
+>
+> 2026-03-16 仓库复核：
+> 1. 这是一份历史蓝图，不等于当前仓库目录结构的逐项实况。
+> 2. 已直接复核并确认存在的落地点包括：`modules/state/interfaces.go`、`internal/vm/precompiles/registry.go`、`internal/vm/interface.go`、`internal/consensus/engine.go`、`internal/consensus/base.go`、`internal/p2p/sync_interface.go`、`internal/api/router.go`。
+> 3. `modules/state` 已不再依赖 `internal/avm/rlp`，当前实际落地是依赖 `common/rlp`，不是本蓝图里写的 `common/encoding/rlp.go`。
+> 4. `internal/api/eth`、`internal/api/n42` 等 namespace 目录当前仓库中不存在，RPC 层职责分离的实际落地以 `internal/api/router.go`、`internal/api/backend.go`、`internal/api/interface.go` 为主。
+> 5. 本次实际跑过：`go test -count=1 ./modules/state ./internal/vm ./internal/consensus/... ./internal/sync ./internal/p2p ./internal/api`。
 
 ---
 
@@ -176,6 +183,8 @@ modules/state → modules/ethdb (底层存储)
 ### Phase 2: State DB 边界重构 (P0)
 
 #### PR 2.1: 消除 modules/state 对 internal/avm/rlp 的依赖
+> 2026-03-16 复核：这一项的目标在当前仓库已基本达成，但实际路径是 `common/rlp`，不是下方计划中的 `common/encoding/rlp.go`。
+
 ```
 改动范围:
 ├── modules/state/entire.go          (移除 rlp 依赖)
@@ -414,6 +423,8 @@ type SyncStateMachine struct {
 ### Phase 6: RPC 层重构 (P4)
 
 #### PR 6.1: API 层职责分离
+> 2026-03-16 复核：当前仓库实际落地为 `internal/api/router.go`、`internal/api/backend.go`、`internal/api/interface.go` 的路由/后端抽象；下方按 namespace 拆目录的方案尚未落地为当前目录结构。
+
 ```
 改动范围:
 ├── internal/api/eth/                 (新建: eth namespace)
@@ -592,4 +603,3 @@ grep -rn "func init()" --include="*.go" .
 ---
 
 *文档维护: 每个 PR 合并后更新对应章节状态*
-

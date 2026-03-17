@@ -9,14 +9,14 @@ import (
 
 // Prometheus metrics for the snapshot acceleration layer.
 var (
-	snapshotDiffLayers         = prometheus.GetOrCreateCounter("snapshot_accel_diff_layers", true)
-	snapshotDiffMemory         = prometheus.GetOrCreateCounter("snapshot_accel_diff_memory_bytes", true)
-	snapshotFlattenCount       = prometheus.GetOrCreateCounter("snapshot_accel_flatten_total")
+	snapshotDiffLayers          = prometheus.GetOrCreateCounter("snapshot_accel_diff_layers", true)
+	snapshotDiffMemory          = prometheus.GetOrCreateCounter("snapshot_accel_diff_memory_bytes", true)
+	snapshotFlattenCount        = prometheus.GetOrCreateCounter("snapshot_accel_flatten_total")
 	snapshotCacheWarmedAccounts = prometheus.GetOrCreateCounter("snapshot_accel_warmed_accounts", true)
-	snapshotLayerHits          = prometheus.GetOrCreateCounter("snapshot_accel_layer_hits")
-	snapshotLayerMisses        = prometheus.GetOrCreateCounter("snapshot_accel_layer_misses")
-	snapshotDiskHits           = prometheus.GetOrCreateCounter("snapshot_accel_disk_hits")
-	snapshotPersistFlushCount  = prometheus.GetOrCreateCounter("snapshot_accel_persist_flush_total")
-	snapshotPersistErrors      = prometheus.GetOrCreateCounter("snapshot_accel_persist_errors_total")
-	snapshotGenDuration        = prometheus.GetOrCreateCounter("snapshot_accel_gen_duration_ms", true)
+	snapshotLayerHits           = prometheus.GetOrCreateCounter("snapshot_accel_layer_hits")
+	snapshotLayerMisses         = prometheus.GetOrCreateCounter("snapshot_accel_layer_misses")
+	snapshotDiskHits            = prometheus.GetOrCreateCounter("snapshot_accel_disk_hits")
+	snapshotPersistFlushCount   = prometheus.GetOrCreateCounter("snapshot_accel_persist_flush_total")
+	snapshotPersistErrors       = prometheus.GetOrCreateCounter("snapshot_accel_persist_errors_total")
+	snapshotGenDuration         = prometheus.GetOrCreateCounter("snapshot_accel_gen_duration_ms", true)
 )

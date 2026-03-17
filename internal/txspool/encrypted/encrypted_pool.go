@@ -63,6 +63,9 @@ var (
 	// ErrDecryptionFailed is returned when transaction decryption fails.
 	ErrDecryptionFailed = errors.New("encrypted pool: decryption failed")
 
+	// ErrNilDecryptor is returned when block decryption is attempted without a decryptor.
+	ErrNilDecryptor = errors.New("encrypted pool: decryptor not configured")
+
 	// pruneWindow defines the number of blocks after blockTarget before
 	// an encrypted transaction is considered expired and eligible for pruning.
 	pruneWindow uint64 = 256
@@ -84,7 +87,7 @@ type EncryptedTx struct {
 	GasPrice      *uint256.Int  `json:"gas_price"`      // gas price (plaintext for ordering)
 	SubmittedAt   time.Time     `json:"submitted_at"`   // submission timestamp
 	BlockTarget   uint64        `json:"block_target"`   // target block number
-	Nonce         uint64        `json:"nonce"`           // sender nonce
+	Nonce         uint64        `json:"nonce"`          // sender nonce
 }
 
 // Decryptor is the interface for threshold decryption of encrypted transactions.
@@ -191,16 +194,7 @@ func (p *EncryptedPool) GetPending(blockNumber uint64) []*EncryptedTx {
 	var result []*EncryptedTx
 	for _, tx := range p.pending {
 		if tx.BlockTarget == blockNumber {
-			// Return a defensive copy to avoid callers mutating pool internals.
-			cp := *tx
-			if tx.GasPrice != nil {
-				cp.GasPrice = new(uint256.Int).Set(tx.GasPrice)
-			}
-			cp.EncryptedData = make([]byte, len(tx.EncryptedData))
-			copy(cp.EncryptedData, tx.EncryptedData)
-			cp.EncryptionKey = make([]byte, len(tx.EncryptionKey))
-			copy(cp.EncryptionKey, tx.EncryptionKey)
-			result = append(result, &cp)
+			result = append(result, cloneEncryptedTx(tx))
 		}
 	}
 
@@ -218,6 +212,10 @@ func (p *EncryptedPool) GetPending(blockNumber uint64) []*EncryptedTx {
 // rather than aborting the entire batch, because a single malformed ciphertext
 // must not block production.
 func (p *EncryptedPool) DecryptForBlock(blockNumber uint64) ([]*transaction.Transaction, error) {
+	if p.decryptor == nil {
+		return nil, ErrNilDecryptor
+	}
+
 	candidates := p.GetPending(blockNumber)
 	if len(candidates) == 0 {
 		return nil, nil
@@ -229,8 +227,8 @@ func (p *EncryptedPool) DecryptForBlock(blockNumber uint64) ([]*transaction.Tran
 	)
 
 	var (
-		result  []*transaction.Transaction
-		failed  int
+		result []*transaction.Transaction
+		failed int
 	)
 
 	var decryptedIDs []types.Hash
@@ -322,7 +320,9 @@ func (p *EncryptedPool) GetBySender(sender types.Address) []*EncryptedTx {
 
 	// Return a copy sorted by nonce.
 	out := make([]*EncryptedTx, len(txs))
-	copy(out, txs)
+	for i, tx := range txs {
+		out[i] = cloneEncryptedTx(tx)
+	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].Nonce < out[j].Nonce
 	})
@@ -371,4 +371,17 @@ func validateEncryptedTx(tx *EncryptedTx) error {
 		return ErrInvalidTx
 	}
 	return nil
+}
+
+func cloneEncryptedTx(tx *EncryptedTx) *EncryptedTx {
+	if tx == nil {
+		return nil
+	}
+	cp := *tx
+	if tx.GasPrice != nil {
+		cp.GasPrice = new(uint256.Int).Set(tx.GasPrice)
+	}
+	cp.EncryptedData = append([]byte(nil), tx.EncryptedData...)
+	cp.EncryptionKey = append([]byte(nil), tx.EncryptionKey...)
+	return &cp
 }

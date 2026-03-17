@@ -59,14 +59,14 @@ func readChainSpec(filename string) *ChainConfig {
 type ConsensusType string
 
 const (
-	AuRaConsensus   ConsensusType = "aura"
-	EtHashConsensus ConsensusType = "ethash"
-	CliqueConsensus ConsensusType = "clique"
-	ParliaConsensus ConsensusType = "parlia"
-	BorConsensus    ConsensusType = "bor"
-	AposConsensu       ConsensusType = "apos"
-	HotStuffConsensus  ConsensusType = "hotstuff"
-	Faker              ConsensusType = "faker"
+	AuRaConsensus     ConsensusType = "aura"
+	EtHashConsensus   ConsensusType = "ethash"
+	CliqueConsensus   ConsensusType = "clique"
+	ParliaConsensus   ConsensusType = "parlia"
+	BorConsensus      ConsensusType = "bor"
+	AposConsensu      ConsensusType = "apos"
+	HotStuffConsensus ConsensusType = "hotstuff"
+	Faker             ConsensusType = "faker"
 )
 
 // ---------------------------------------------------------------------------
@@ -168,13 +168,42 @@ type ChainConfig struct {
 	Eip1559FeeCollectorTransition *big.Int       `json:"eip1559FeeCollectorTransition,omitempty"`
 
 	// Consensus engine configs
-	Ethash *EthashConfig `json:"ethash,omitempty"`
-	Clique *CliqueConfig `json:"clique,omitempty"`
-	Aura   *AuRaConfig   `json:"aura,omitempty"`
-	Parlia *ParliaConfig `json:"parlia,omitempty" toml:",omitempty"`
-	Bor    *BorConfig    `json:"bor,omitempty"`
+	Ethash   *EthashConfig   `json:"ethash,omitempty"`
+	Clique   *CliqueConfig   `json:"clique,omitempty"`
+	Aura     *AuRaConfig     `json:"aura,omitempty"`
+	Parlia   *ParliaConfig   `json:"parlia,omitempty" toml:",omitempty"`
+	Bor      *BorConfig      `json:"bor,omitempty"`
 	Apos     *APosConfig     `json:"apos,omitempty"`
 	HotStuff *HotStuffConfig `json:"hotstuff,omitempty"`
+}
+
+// NormalizeConsensus infers a missing consensus value from explicit engine
+// sub-configs. When a custom/private genesis omits engine settings entirely,
+// default to Faker so the execution layer remains bootable for external-driver
+// scenarios such as Hive Engine API tests.
+func NormalizeConsensus(cfg *ChainConfig) *ChainConfig {
+	if cfg == nil || cfg.Consensus != "" {
+		return cfg
+	}
+	switch {
+	case cfg.Clique != nil:
+		cfg.Consensus = CliqueConsensus
+	case cfg.Apos != nil:
+		cfg.Consensus = AposConsensu
+	case cfg.HotStuff != nil:
+		cfg.Consensus = HotStuffConsensus
+	case cfg.Aura != nil:
+		cfg.Consensus = AuRaConsensus
+	case cfg.Parlia != nil:
+		cfg.Consensus = ParliaConsensus
+	case cfg.Bor != nil:
+		cfg.Consensus = BorConsensus
+	case cfg.Ethash != nil:
+		cfg.Consensus = EtHashConsensus
+	default:
+		cfg.Consensus = Faker
+	}
+	return cfg
 }
 
 // String implements the fmt.Stringer interface.

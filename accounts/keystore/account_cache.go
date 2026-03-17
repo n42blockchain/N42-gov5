@@ -198,24 +198,27 @@ func (ac *accountCache) find(a accounts.Account) (accounts.Account, error) {
 
 func (ac *accountCache) maybeReload() {
 	ac.mu.Lock()
-
-	if ac.watcher.running {
-		ac.mu.Unlock()
-		return // A watcher is running and will keep the cache up-to-date.
-	}
+	shouldReload := false
 	if ac.throttle == nil {
-		ac.throttle = time.NewTimer(0)
+		ac.throttle = time.NewTimer(minReloadInterval)
+		shouldReload = true
 	} else {
 		select {
 		case <-ac.throttle.C:
+			shouldReload = true
+			ac.throttle.Reset(minReloadInterval)
 		default:
-			ac.mu.Unlock()
-			return // The cache was reloaded recently.
 		}
 	}
-	// No watcher running, start it.
-	ac.watcher.start()
-	ac.throttle.Reset(minReloadInterval)
+	if !shouldReload {
+		ac.mu.Unlock()
+		return // The cache was reloaded recently.
+	}
+	// Even with an active watcher, perform a throttled rescan to recover from
+	// missed filesystem events and keep the cache self-healing.
+	if !ac.watcher.running {
+		ac.watcher.start()
+	}
 	ac.mu.Unlock()
 	ac.scanAccounts()
 }

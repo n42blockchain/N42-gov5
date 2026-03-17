@@ -99,6 +99,8 @@ type API struct {
 	gpo   *Oracle
 	p2p   P2PAdmin   // optional; nil until SetP2P is called
 	miner MinerAdmin // optional; nil until SetMiner is called
+
+	engineOverlay *engineOverlay
 }
 
 // NewAPI creates a new protocol API.
@@ -110,6 +112,7 @@ func NewAPI(bc common.IBlockChain, db kv.RwDB, engine consensus.Engine, txspool 
 		txspool:        txspool,
 		accountManager: accountManager,
 		chainConfig:    config,
+		engineOverlay:  newEngineOverlay(),
 	}
 }
 
@@ -251,6 +254,9 @@ func (s *BlockChainAPI) GetBalance(ctx context.Context, address avmcommon.Addres
 
 func (s *BlockChainAPI) BlockNumber() hexutil.Uint64 {
 	currentBlock := s.api.BlockChain().CurrentBlock()
+	if s.api != nil && s.api.engineOverlay != nil {
+		currentBlock = s.api.engineOverlay.headBlock(currentBlock)
+	}
 	if currentBlock == nil {
 		return hexutil.Uint64(0)
 	}
@@ -763,7 +769,7 @@ func (s *BlockChainAPI) EstimateGas(ctx context.Context, args TransactionArgs, b
 func (s *BlockChainAPI) GetBlockByNumber(ctx context.Context, number jsonrpc.BlockNumber, fullTx bool) (map[string]interface{}, error) {
 	block, err := s.getBlockByNumber(number)
 	if block != nil && err == nil {
-		response, err := RPCMarshalBlock(block, s.api.BlockChain(), true, fullTx)
+		response, err := RPCMarshalBlock(block, s.api.BlockChain(), s.api.GetChainConfig(), true, fullTx)
 		if err == nil && number == jsonrpc.PendingBlockNumber {
 			// Pending blocks need to nil out a few fields
 			for _, field := range []string{"hash", "nonce", "miner"} {
@@ -781,7 +787,7 @@ func (s *BlockChainAPI) GetBlockByHash(ctx context.Context, hash avmcommon.Hash,
 	block, err := s.api.BlockChain().GetBlockByHash(avmtypes.ToastHash(hash))
 
 	if block != nil {
-		return RPCMarshalBlock(block, s.api.BlockChain(), true, fullTx)
+		return RPCMarshalBlock(block, s.api.BlockChain(), s.api.GetChainConfig(), true, fullTx)
 	}
 	return nil, err
 }

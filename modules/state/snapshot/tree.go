@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"sync"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -16,7 +18,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
-	"google.golang.org/protobuf/proto"
 )
 
 // DefaultMaxDiffLayers is the default cap on stacked diff layers before

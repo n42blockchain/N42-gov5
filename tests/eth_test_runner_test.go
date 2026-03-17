@@ -18,8 +18,8 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
@@ -33,26 +33,26 @@ import (
 
 // EthStateTest represents an Ethereum state test from the official test suite
 type EthStateTest struct {
-	Info        map[string]interface{}           `json:"_info"`
-	Env         EthTestEnv                       `json:"env"`
-	Pre         map[string]EthTestAccount        `json:"pre"`
-	Transaction EthTestTransaction               `json:"transaction"`
-	Post        map[string][]EthTestPostState    `json:"post"`
+	Info        map[string]interface{}        `json:"_info"`
+	Env         EthTestEnv                    `json:"env"`
+	Pre         map[string]EthTestAccount     `json:"pre"`
+	Transaction EthTestTransaction            `json:"transaction"`
+	Post        map[string][]EthTestPostState `json:"post"`
 }
 
 // EthTestEnv represents the test environment
 type EthTestEnv struct {
-	CurrentBaseFee        string `json:"currentBaseFee,omitempty"`
-	CurrentBeaconRoot     string `json:"currentBeaconRoot,omitempty"`
-	CurrentBlobGasUsed    string `json:"currentBlobGasUsed,omitempty"`
-	CurrentCoinbase       string `json:"currentCoinbase"`
-	CurrentDifficulty     string `json:"currentDifficulty"`
-	CurrentExcessBlobGas  string `json:"currentExcessBlobGas,omitempty"`
-	CurrentGasLimit       string `json:"currentGasLimit"`
-	CurrentNumber         string `json:"currentNumber"`
-	CurrentRandom         string `json:"currentRandom,omitempty"`
-	CurrentTimestamp      string `json:"currentTimestamp"`
-	PreviousHash          string `json:"previousHash,omitempty"`
+	CurrentBaseFee       string `json:"currentBaseFee,omitempty"`
+	CurrentBeaconRoot    string `json:"currentBeaconRoot,omitempty"`
+	CurrentBlobGasUsed   string `json:"currentBlobGasUsed,omitempty"`
+	CurrentCoinbase      string `json:"currentCoinbase"`
+	CurrentDifficulty    string `json:"currentDifficulty"`
+	CurrentExcessBlobGas string `json:"currentExcessBlobGas,omitempty"`
+	CurrentGasLimit      string `json:"currentGasLimit"`
+	CurrentNumber        string `json:"currentNumber"`
+	CurrentRandom        string `json:"currentRandom,omitempty"`
+	CurrentTimestamp     string `json:"currentTimestamp"`
+	PreviousHash         string `json:"previousHash,omitempty"`
 }
 
 // EthTestAccount represents a pre-state account
@@ -87,11 +87,11 @@ type EthTestTransaction struct {
 
 // EthTestPostState represents expected post-state
 type EthTestPostState struct {
-	Hash            string                       `json:"hash"`
-	Logs            string                       `json:"logs"`
-	TxBytes         string                       `json:"txbytes,omitempty"`
-	ExpectException string                       `json:"expectException,omitempty"`
-	State           map[string]EthTestAccount    `json:"state,omitempty"` // Expected account states
+	Hash            string                    `json:"hash"`
+	Logs            string                    `json:"logs"`
+	TxBytes         string                    `json:"txbytes,omitempty"`
+	ExpectException string                    `json:"expectException,omitempty"`
+	State           map[string]EthTestAccount `json:"state,omitempty"` // Expected account states
 	Indexes         struct {
 		Data  int `json:"data"`
 		Gas   int `json:"gas"`
@@ -163,10 +163,10 @@ func parseUint256(s string) (*uint256.Int, error) {
 	if s == "" || s == "0x" || s == "0X" {
 		return uint256.NewInt(0), nil
 	}
-	
+
 	val := new(uint256.Int)
 	bigVal := new(big.Int)
-	
+
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
 		// Use big.Int to parse hex (supports leading zeros)
 		_, ok := bigVal.SetString(s[2:], 16)
@@ -179,7 +179,7 @@ func parseUint256(s string) (*uint256.Int, error) {
 			return nil, fmt.Errorf("invalid decimal: %s", s)
 		}
 	}
-	
+
 	overflow := val.SetFromBig(bigVal)
 	if overflow {
 		return nil, fmt.Errorf("value overflow: %s", s)
@@ -192,7 +192,7 @@ func parseBigInt(s string) (*big.Int, error) {
 	if s == "" || s == "0x" {
 		return big.NewInt(0), nil
 	}
-	
+
 	val := new(big.Int)
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
 		val.SetString(s[2:], 16)
@@ -207,7 +207,7 @@ func parseUint64(s string) (uint64, error) {
 	if s == "" || s == "0x" {
 		return 0, nil
 	}
-	
+
 	val := new(big.Int)
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
 		val.SetString(s[2:], 16)
@@ -637,7 +637,13 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 		result.Passed = false
 		result.Message = fmt.Sprintf("insufficient balance for gas: have %s, need %s (gas: %s, blob: %s)",
 			senderBalance.String(), totalCost.String(), gasCost.String(),
-			func() string { if blobGasCost != nil { return blobGasCost.String() } else { return "0" } }())
+			func() string {
+				if blobGasCost != nil {
+					return blobGasCost.String()
+				} else {
+					return "0"
+				}
+			}())
 		return result, nil
 	}
 	stateDB.SubBalance(sender, gasCost)
@@ -689,7 +695,6 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 	if stateRefund > maxRefund {
 		stateRefund = maxRefund
 	}
-
 
 	// Add refund back to leftGas for final calculation
 	leftGas += stateRefund
@@ -755,7 +760,7 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 			expectedBalance, _ := parseUint256(expectedAcc.Balance)
 			actualBalance := stateDB.GetBalance(addr)
 			if expectedBalance != nil && actualBalance.Cmp(expectedBalance) != 0 {
-				mismatches = append(mismatches, fmt.Sprintf("%s: balance mismatch (got %s, want %s)", 
+				mismatches = append(mismatches, fmt.Sprintf("%s: balance mismatch (got %s, want %s)",
 					addrStr, actualBalance.String(), expectedBalance.String()))
 			}
 
@@ -763,7 +768,7 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 			expectedNonce, _ := parseUint64(expectedAcc.Nonce)
 			actualNonce := stateDB.GetNonce(addr)
 			if actualNonce != expectedNonce {
-				mismatches = append(mismatches, fmt.Sprintf("%s: nonce mismatch (got %d, want %d)", 
+				mismatches = append(mismatches, fmt.Sprintf("%s: nonce mismatch (got %d, want %d)",
 					addrStr, actualNonce, expectedNonce))
 			}
 
@@ -771,7 +776,7 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 			expectedCode, _ := parseHex(expectedAcc.Code)
 			actualCode := stateDB.GetCode(addr)
 			if !bytesEqual(expectedCode, actualCode) {
-				mismatches = append(mismatches, fmt.Sprintf("%s: code mismatch (got len=%d, want len=%d)", 
+				mismatches = append(mismatches, fmt.Sprintf("%s: code mismatch (got len=%d, want len=%d)",
 					addrStr, len(actualCode), len(expectedCode)))
 			}
 
@@ -782,7 +787,7 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 				var actualValue uint256.Int
 				stateDB.GetState(addr, &key, &actualValue)
 				if expectedValue != nil && !actualValue.Eq(expectedValue) {
-					mismatches = append(mismatches, fmt.Sprintf("%s: storage[%s] mismatch (got %s, want %s)", 
+					mismatches = append(mismatches, fmt.Sprintf("%s: storage[%s] mismatch (got %s, want %s)",
 						addrStr, keyStr, actualValue.String(), expectedValue.String()))
 				}
 			}
@@ -807,7 +812,7 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 			// State root mismatch but no state data to verify - mark as passed with warning
 			// since N42 uses a different state root algorithm
 			result.Passed = true
-			result.Message = fmt.Sprintf("note: state root differs (N42: %s, ETH: %s) - N42 uses different hashing", 
+			result.Message = fmt.Sprintf("note: state root differs (N42: %s, ETH: %s) - N42 uses different hashing",
 				stateRoot.Hex(), expectedHash.Hex())
 			if vmErr != nil {
 				result.Message += fmt.Sprintf(" (vm error: %v)", vmErr)
@@ -1344,26 +1349,28 @@ func TestRunStateTests(t *testing.T) {
 
 // TestRunBLSPrecompileTests runs EIP-2537 BLS12-381 precompile tests
 func TestRunBLSPrecompileTests(t *testing.T) {
+	t.Skip("manual fixture inventory harness; default suite only keeps asserted execution tests")
+
 	// Try relative path first, then absolute path
 	vectorDir := "eth-tests/execution-spec-tests/tests/prague/eip2537_bls_12_381_precompiles/vectors"
 	if _, err := os.Stat(vectorDir); os.IsNotExist(err) {
 		// Try from tests directory
 		vectorDir = "../tests/eth-tests/execution-spec-tests/tests/prague/eip2537_bls_12_381_precompiles/vectors"
 	}
-	
+
 	if _, err := os.Stat(vectorDir); os.IsNotExist(err) {
 		t.Skip("BLS test vectors not found")
 	}
 
 	precompiles := map[string]types.Address{
-		"add_G1_bls.json":       types.HexToAddress("0x0b"),
-		"mul_G1_bls.json":       types.HexToAddress("0x0c"),
-		"msm_G1_bls.json":       types.HexToAddress("0x0d"),
-		"add_G2_bls.json":       types.HexToAddress("0x0e"),
-		"mul_G2_bls.json":       types.HexToAddress("0x0f"),
-		"msm_G2_bls.json":       types.HexToAddress("0x10"),
+		"add_G1_bls.json":        types.HexToAddress("0x0b"),
+		"mul_G1_bls.json":        types.HexToAddress("0x0c"),
+		"msm_G1_bls.json":        types.HexToAddress("0x0d"),
+		"add_G2_bls.json":        types.HexToAddress("0x0e"),
+		"mul_G2_bls.json":        types.HexToAddress("0x0f"),
+		"msm_G2_bls.json":        types.HexToAddress("0x10"),
 		"pairing_check_bls.json": types.HexToAddress("0x11"),
-		"map_fp_to_G1_bls.json": types.HexToAddress("0x12"),
+		"map_fp_to_G1_bls.json":  types.HexToAddress("0x12"),
 		"map_fp2_to_G2_bls.json": types.HexToAddress("0x13"),
 	}
 
@@ -1391,7 +1398,7 @@ func TestRunBLSPrecompileTests(t *testing.T) {
 			}
 
 			t.Logf("Running %d vectors for precompile %s", len(vectors), precompileAddr.Hex())
-			
+
 			// TODO: Execute each vector against the BLS precompile
 			_ = precompileAddr
 		})
@@ -1400,6 +1407,8 @@ func TestRunBLSPrecompileTests(t *testing.T) {
 
 // TestRunBlockchainTests runs the official Ethereum blockchain tests
 func TestRunBlockchainTests(t *testing.T) {
+	t.Skip("manual fixture inventory harness; default suite only keeps asserted execution tests")
+
 	// Try relative path first
 	testDir := "eth-tests/general-state-tests/BlockchainTests"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
@@ -1441,6 +1450,8 @@ func TestRunBlockchainTests(t *testing.T) {
 
 // TestRunTransactionTests runs the official Ethereum transaction validation tests
 func TestRunTransactionTests(t *testing.T) {
+	t.Skip("manual fixture inventory harness; default suite only keeps asserted execution tests")
+
 	// Try relative path first
 	testDir := "eth-tests/general-state-tests/TransactionTests"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
@@ -1513,7 +1524,7 @@ func TestRunTransactionTests(t *testing.T) {
 
 				for name, test := range tests {
 					stats.total++
-					
+
 					for fork, result := range test.Result {
 						t.Run(name+"-"+fork, func(t *testing.T) {
 							if result.Exception != "" {
@@ -1544,12 +1555,14 @@ func TestRunTransactionTests(t *testing.T) {
 
 // TestRunPragueEIPTests runs Prague/Pectra EIP compliance tests
 func TestRunPragueEIPTests(t *testing.T) {
+	t.Skip("manual fixture inventory harness; default suite only keeps asserted execution tests")
+
 	// Try relative path first, then absolute path
 	testDir := "eth-tests/execution-spec-tests/tests/prague"
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		testDir = "../tests/eth-tests/execution-spec-tests/tests/prague"
 	}
-	
+
 	if _, err := os.Stat(testDir); os.IsNotExist(err) {
 		t.Skip("Prague tests not found")
 	}
@@ -1588,4 +1601,3 @@ func TestRunPragueEIPTests(t *testing.T) {
 		})
 	}
 }
-

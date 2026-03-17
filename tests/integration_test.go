@@ -23,6 +23,8 @@ import (
 
 // TestCommonInternalIntegration verifies common and internal packages work together
 func TestCommonInternalIntegration(t *testing.T) {
+	t.Parallel()
+
 	// Test GasPool from common is compatible with internal error handling
 	gp := common.GasPool(1000)
 	err := gp.SubGas(500)
@@ -41,6 +43,8 @@ func TestCommonInternalIntegration(t *testing.T) {
 
 // TestTypesHashConsistency verifies hash types are consistent across modules
 func TestTypesHashConsistency(t *testing.T) {
+	t.Parallel()
+
 	// Create hash in common/types
 	hash1 := types.Hash{0x01, 0x02, 0x03}
 
@@ -61,6 +65,8 @@ func TestTypesHashConsistency(t *testing.T) {
 
 // TestAddressTypeConsistency verifies address types work across modules
 func TestAddressTypeConsistency(t *testing.T) {
+	t.Parallel()
+
 	// Create address
 	addr := types.Address{0x01, 0x02, 0x03}
 
@@ -80,6 +86,8 @@ func TestAddressTypeConsistency(t *testing.T) {
 
 // TestUint256Integration verifies uint256 types work correctly
 func TestUint256Integration(t *testing.T) {
+	t.Parallel()
+
 	// Create uint256 values
 	val1 := uint256.NewInt(1000)
 	val2 := uint256.NewInt(500)
@@ -101,6 +109,8 @@ func TestUint256Integration(t *testing.T) {
 
 // TestKeccak256HashIntegration verifies Keccak256 produces consistent results
 func TestKeccak256HashIntegration(t *testing.T) {
+	t.Parallel()
+
 	data := []byte("hello world")
 
 	// Hash using utils
@@ -126,6 +136,8 @@ func TestKeccak256HashIntegration(t *testing.T) {
 
 // TestInternalErrorsExist verifies all internal errors are properly defined
 func TestInternalErrorsExist(t *testing.T) {
+	t.Parallel()
+
 	errors := []error{
 		internal.ErrInvalidBlock,
 		internal.ErrInvalidPubSub,
@@ -159,6 +171,8 @@ func TestInternalErrorsExist(t *testing.T) {
 
 // TestCommonErrorsExist verifies common errors are defined
 func TestCommonErrorsExist(t *testing.T) {
+	t.Parallel()
+
 	if common.ErrGasLimitReached == nil {
 		t.Error("common.ErrGasLimitReached should not be nil")
 	}
@@ -177,6 +191,8 @@ func TestCommonErrorsExist(t *testing.T) {
 
 // TestEVMTypesStateDBAlias verifies evmtypes.IntraBlockState is common.StateDB alias
 func TestEVMTypesStateDBAlias(t *testing.T) {
+	t.Parallel()
+
 	// evmtypes.IntraBlockState should be an alias for common.StateDB
 	// This is a compile-time check
 	var _ evmtypes.IntraBlockState = (common.StateDB)(nil)
@@ -187,6 +203,8 @@ func TestEVMTypesStateDBAlias(t *testing.T) {
 
 // TestBigConstantsAvailable verifies common big constants are available
 func TestBigConstantsAvailable(t *testing.T) {
+	t.Parallel()
+
 	constants := []struct {
 		name  string
 		value int64
@@ -219,6 +237,8 @@ func TestBigConstantsAvailable(t *testing.T) {
 
 // TestToBytesConsistency verifies ToBytes functions work correctly
 func TestToBytesConsistency(t *testing.T) {
+	t.Parallel()
+
 	// Test various ToBytes functions
 	input := make([]byte, 100)
 	for i := range input {
@@ -252,6 +272,8 @@ func TestToBytesConsistency(t *testing.T) {
 
 // TestHexPrefixIntegration verifies HexPrefix utility
 func TestHexPrefixIntegration(t *testing.T) {
+	t.Parallel()
+
 	a := []byte{1, 2, 3, 4, 5}
 	b := []byte{1, 2, 3, 9, 9}
 
@@ -273,6 +295,8 @@ func TestHexPrefixIntegration(t *testing.T) {
 
 // TestGasPoolOperations verifies GasPool operations are thread-safe conceptually
 func TestGasPoolOperations(t *testing.T) {
+	t.Parallel()
+
 	gp := common.GasPool(10000)
 
 	// Chain of operations
@@ -304,6 +328,8 @@ func TestGasPoolOperations(t *testing.T) {
 
 // TestHashZeroValue verifies zero hash behavior
 func TestHashZeroValue(t *testing.T) {
+	t.Parallel()
+
 	var zeroHash types.Hash
 
 	// All bytes should be zero
@@ -318,6 +344,8 @@ func TestHashZeroValue(t *testing.T) {
 
 // TestAddressZeroValue verifies zero address behavior
 func TestAddressZeroValue(t *testing.T) {
+	t.Parallel()
+
 	var zeroAddr types.Address
 
 	// All bytes should be zero

@@ -18,6 +18,7 @@ package external
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
@@ -69,7 +70,7 @@ func (eb *ExternalBackend) Subscribe(sink chan<- accounts.WalletEvent) event.Sub
 // signTransactionResult is the JSON structure returned by the
 // account_signTransaction RPC method on the Clef signer.
 type signTransactionResult struct {
-	Raw hexutil.Bytes          `json:"raw"`
+	Raw hexutil.Bytes            `json:"raw"`
 	Tx  *transaction.Transaction `json:"tx"`
 }
 
@@ -251,6 +252,7 @@ func (s *ExternalSigner) SignTx(account accounts.Account, tx *transaction.Transa
 		if tx.GasPrice() != nil {
 			args["gasPrice"] = (*hexutil.Big)(tx.GasPrice().ToBig())
 		}
+		args["accessList"] = tx.AccessList()
 	case transaction.DynamicFeeTxType:
 		if tx.GasFeeCap() != nil {
 			args["maxFeePerGas"] = (*hexutil.Big)(tx.GasFeeCap().ToBig())
@@ -277,6 +279,16 @@ func (s *ExternalSigner) SignTx(account accounts.Account, tx *transaction.Transa
 	var res signTransactionResult
 	if err := s.client.Call(&res, "account_signTransaction", args); err != nil {
 		return nil, err
+	}
+	if len(res.Raw) > 0 {
+		var signedTx transaction.Transaction
+		if err := signedTx.Unmarshal(res.Raw); err != nil {
+			return nil, fmt.Errorf("decode signed transaction: %w", err)
+		}
+		return &signedTx, nil
+	}
+	if res.Tx == nil {
+		return nil, errors.New("external signer returned empty transaction result")
 	}
 	return res.Tx, nil
 }

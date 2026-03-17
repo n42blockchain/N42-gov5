@@ -124,6 +124,41 @@ func convertUint256IntToH256IfSet(i *uint256.Int) *types_pb.H256 {
 	return utils.ConvertUint256IntToH256(i)
 }
 
+func convertProtoAccessList(pbAccessList []*types_pb.AccessTuple) AccessList {
+	if len(pbAccessList) == 0 {
+		return nil
+	}
+	accessList := make(AccessList, len(pbAccessList))
+	for i, tuple := range pbAccessList {
+		if tuple == nil {
+			continue
+		}
+		var addr types.Address
+		if converted := utils.ConvertH160ToPAddress(tuple.Address); converted != nil {
+			addr = *converted
+		}
+		accessList[i] = AccessTuple{
+			Address:     addr,
+			StorageKeys: utils.H256sToHashes(tuple.StorageKeys),
+		}
+	}
+	return accessList
+}
+
+func convertAccessListToProto(accessList AccessList) []*types_pb.AccessTuple {
+	if len(accessList) == 0 {
+		return nil
+	}
+	pbAccessList := make([]*types_pb.AccessTuple, 0, len(accessList))
+	for _, tuple := range accessList {
+		pbAccessList = append(pbAccessList, &types_pb.AccessTuple{
+			Address:     utils.ConvertAddressToH160(tuple.Address),
+			StorageKeys: utils.ConvertHashesToH256(tuple.StorageKeys),
+		})
+	}
+	return pbAccessList
+}
+
 func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 	pbTx, ok := message.(*types_pb.Transaction)
 	if !ok {
@@ -149,31 +184,33 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 
 	case AccessListTxType:
 		inner = &AccessListTx{
-			ChainID:  uint256.NewInt(pbTx.ChainID),
-			Nonce:    pbTx.Nonce,
-			Gas:      pbTx.Gas,
-			GasPrice: utils.ConvertH256ToUint256Int(pbTx.GasPrice),
-			Value:    utils.ConvertH256ToUint256Int(pbTx.Value),
-			Data:     pbTx.Data,
-			To:       convertProtoToAddress(pbTx.To),
-			From:     convertProtoToAddress(pbTx.From),
-			Sign:     pbTx.Sign,
-			V:        v, R: r, S: s,
+			ChainID:    uint256.NewInt(pbTx.ChainID),
+			Nonce:      pbTx.Nonce,
+			Gas:        pbTx.Gas,
+			GasPrice:   utils.ConvertH256ToUint256Int(pbTx.GasPrice),
+			Value:      utils.ConvertH256ToUint256Int(pbTx.Value),
+			Data:       pbTx.Data,
+			To:         convertProtoToAddress(pbTx.To),
+			From:       convertProtoToAddress(pbTx.From),
+			AccessList: convertProtoAccessList(pbTx.AccessList),
+			Sign:       pbTx.Sign,
+			V:          v, R: r, S: s,
 		}
 
 	case DynamicFeeTxType:
 		inner = &DynamicFeeTx{
-			ChainID:   uint256.NewInt(pbTx.ChainID),
-			Nonce:     pbTx.Nonce,
-			Gas:       pbTx.Gas,
-			GasFeeCap: utils.ConvertH256ToUint256Int(pbTx.FeePerGas),
-			GasTipCap: utils.ConvertH256ToUint256Int(pbTx.PriorityFeePerGas),
-			Value:     utils.ConvertH256ToUint256Int(pbTx.Value),
-			Data:      pbTx.Data,
-			To:        convertProtoToAddress(pbTx.To),
-			From:      convertProtoToAddress(pbTx.From),
-			Sign:      pbTx.Sign,
-			V:         v, R: r, S: s,
+			ChainID:    uint256.NewInt(pbTx.ChainID),
+			Nonce:      pbTx.Nonce,
+			Gas:        pbTx.Gas,
+			GasFeeCap:  utils.ConvertH256ToUint256Int(pbTx.FeePerGas),
+			GasTipCap:  utils.ConvertH256ToUint256Int(pbTx.PriorityFeePerGas),
+			Value:      utils.ConvertH256ToUint256Int(pbTx.Value),
+			Data:       pbTx.Data,
+			To:         convertProtoToAddress(pbTx.To),
+			From:       convertProtoToAddress(pbTx.From),
+			AccessList: convertProtoAccessList(pbTx.AccessList),
+			Sign:       pbTx.Sign,
+			V:          v, R: r, S: s,
 		}
 
 	case BlobTxType:
@@ -190,6 +227,7 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 			Value:      utils.ConvertH256ToUint256Int(pbTx.Value),
 			Data:       pbTx.Data,
 			To:         to,
+			AccessList: convertProtoAccessList(pbTx.AccessList),
 			BlobFeeCap: utils.ConvertH256ToUint256Int(pbTx.BlobFeeCap),
 			BlobHashes: utils.H256sToHashes(pbTx.BlobHashes),
 			V:          v, R: r, S: s,
@@ -205,6 +243,7 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 			Value:       utils.ConvertH256ToUint256Int(pbTx.Value),
 			Data:        pbTx.Data,
 			To:          convertProtoToAddress(pbTx.To),
+			AccessList:  convertProtoAccessList(pbTx.AccessList),
 			SigAlgo:     uint8(pbTx.PqSigAlgo),
 			PubKeyMode:  uint8(pbTx.PqPubKeyMode),
 			PubKeyData:  pbTx.PqPubKeyData,
@@ -311,6 +350,9 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 
 	if tx.To() != nil {
 		pbTx.To = utils.ConvertAddressToH160(*tx.To())
+	}
+	if accessList := tx.AccessList(); len(accessList) > 0 {
+		pbTx.AccessList = convertAccessListToProto(accessList)
 	}
 
 	v, r, s := tx.RawSignatureValues()

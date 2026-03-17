@@ -39,7 +39,7 @@ func ReadChainConfig(db kv.Getter, hash types.Hash) (*params.ChainConfig, error)
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("invalid chain config JSON: %w", err)
 	}
-	return &config, nil
+	return params.NormalizeConsensus(&config), nil
 }
 
 // WriteChainConfig writes the chain config settings to the database.

@@ -2,6 +2,63 @@
 
 ---
 
+## 2026-03-16 — Transaction Proto / SSZ Schema 修复
+
+这轮补的是一个真实协议缺口：`common/transaction` 的 protobuf 编解码之前不会保留 `AccessList`，而 `api/protocol/types_pb.Transaction` 的 SSZ 实现也没有完整反映后续加入的 `accessList`、blob 和 post-quantum 字段。结果是，signed tx raw 的回解和 P2P SSZ round-trip 都会丢字段。
+
+### 本轮修复
+
+- `api/protocol/types_pb/types.proto` 和 `api/protocol/types_pb/types.pb.go`：给 `Transaction` 增加 `accessList` schema，并新增 `AccessTuple`。
+- `common/transaction/transaction.go`：补上 access list 的 proto <-> 交易对象转换，覆盖 `AccessListTx`、`DynamicFeeTx`、`BlobTx`、`PostQuantumTx`。
+- `common/transaction/transaction_proto_test.go`：新增 protobuf round-trip 回归，验证上述 4 类交易都能保住 access list。
+- `accounts/external/backend_test.go`：把 external signer 回归补强为“出站 payload 带 `accessList`，回解后的 signed tx 也保住 `AccessList()`”。
+- `api/protocol/types_pb/generated.ssz.go`：在保留原有生成文件骨架的前提下，补齐 `Transaction` 的 `accessList`、`blobFeeCap`、`blobHashes`、`pqSigAlgo`、`pqPubKeyMode`、`pqPubKeyData`、`pqSignature` 的 SSZ 编解码和哈希树路径。
+- `api/protocol/types_pb/transaction_ssz_helpers.go`：新增 `H256` 列表和 `AccessTuple` 列表的 SSZ helper。
+- `api/protocol/types_pb/transaction_ssz_test.go`：新增 5 个 SSZ 回归，覆盖 `AccessTuple` round-trip、交易 `accessList`、blob 字段、post-quantum 字段以及 nil optional 的 `HashTreeRoot()`。
+- `api/protocol/types_pb/generated.ssz.go`：顺带把 `H160/H256/H384/H512/H768/H1024/H2048` 的零值 `HashTreeRootWith()` 改成 nil-safe，避免协议包装零值直接 panic。
+
+### 本轮验证
+
+- `go test -count=1 ./common/transaction ./accounts/external ./cmd/clef`
+- `go test -count=1 ./api/protocol/types_pb ./common/block ./internal/txspool/... ./internal/p2p/...`
+- `go test -count=1 ./api/protocol/types_pb ./internal/p2p/...`
+- `go vet ./...`
+- `go test ./...`，其中 `./tests` 包耗时 `188.613s`
+- `go build ./...`
+
+## 2026-03-16 — GAP_REMEDIATION 第一轮执行
+
+按 [`docs/engineering/GAP_REMEDIATION_PLAN.md`](engineering/GAP_REMEDIATION_PLAN.md) 的仓库核对口径，先把 5 个“代码存在但证据不足”的模块补到“同目录测试 + 包级命令可复现”。
+
+### 新增测试
+
+- `internal/api/graphql/handler_test.go`：16 个测试，覆盖 HTTP 方法、非法 JSON、超大 body、路由分发和坏 hash/address/number 输入。
+- `accounts/external/backend_test.go`：6 个测试，覆盖 in-proc JSON-RPC 的 `listAccounts`、`SignData`、`SignText`、`SignTx` 和 unsupported passphrase API。
+- `cmd/clef/signer_test.go`：11 个测试，覆盖 rules、audit、版本/账户枚举、legacy/dynamic fee 交易签名和规则拒签路径。
+- `internal/mev/boost_test.go`：6 个测试，覆盖 relay header 获取、竞价决策、builder API 和本地 block value。
+- `internal/txspool/encrypted/encrypted_pool_test.go`：8 个测试，覆盖 AES-GCM、keyper 生命周期、decryptor 参数校验、`nil decryptor`、排序和 defensive copy。
+
+### 同步修复
+
+- `internal/api/graphql/handler.go`：拒绝超大请求体，并把畸形 hash/address/number 参数从“静默降级”改成显式错误。
+- `cmd/clef/signer.go`：`account_signTransaction` 现在返回真正的 signed tx raw，并支持 legacy/access-list/dynamic-fee 交易重建。
+- `accounts/external/backend.go`：`SignTx` 优先按 `Raw` 回解交易；同时补发 `accessList`。
+- `internal/txspool/encrypted/encrypted_pool.go`：`DecryptForBlock` 在 `decryptor == nil` 时返回明确错误；`GetBySender` 改成 defensive copy。
+
+### 本轮验证
+
+- `go test -count=1 ./internal/api/graphql`
+- `go test -count=1 ./accounts/external`
+- `go test -count=1 ./cmd/clef`
+- `go test -count=1 ./internal/mev`
+- `go test -count=1 ./internal/txspool/encrypted`
+- `go test -count=1 ./internal/api/graphql ./accounts/external ./cmd/clef ./internal/mev ./internal/txspool/encrypted ./internal/txspool/...`
+- `go vet ./...`
+- `go test ./...`，其中 `./tests` 包耗时 `188.497s`
+- `make build`
+
+---
+
 ## 2026-03-11 — JMT (Jellyfish Merkle Tree) + Blake3 状态承诺
 
 ### 20. JMT 核心树实现 (lib/jmt/)
@@ -257,19 +314,17 @@
 
 ---
 
-## 2026-03-09 — GAP_ANALYSIS 新增 Erigon 3.3.9 全维度对比
+## 2026-03-09 — GAP_ANALYSIS 旧版外部对比归档
 
-在 `docs/GAP_ANALYSIS.md` 中全面加入 Erigon 3.3.9 作为第七个对比对象（此前：geth/reth/Sei/Monad/Grevm/Aptos）。
+本节原先记录过一版面向 Erigon/geth/reth/Sei/Monad/Aptos 的外部对比摘要、性能数据和综合评分。
 
-**Erigon 3.3.9 关键特性摘要：**
-- **E3 三层状态架构**：domain/history/idx，per-TX 历史粒度，archive 仅 1.6TB（geth 的 1/12）
-- **Staged Sync + OtterSync**：分阶段同步原创者，BitTorrent 分发 archive 同步 2-3h
-- **Caplin 内置共识层**：证明成功率 99.7%，无需外部 CL 客户端
-- **模块化进程**：RPC/TxPool/Sentry/CL 可独立部署，RPCDaemon 支持集群扩展
-- **Historical Proofs**：v3.3 核心创新，索引化历史 MPT proof，p50 延迟 0.003s
-- **Shutter 加密 mempool**、Otterscan 集成、Fusaka 支持
+按 2026-03-16 的仓库核对标准，这些内容不再作为当前有效结论保留，原因是：
 
-**综合评分**：Erigon 92 分（geth 91, reth 93），在同步机制和状态管理维度领先。
+- 未在同一轮审计中按同方法读取对方源码并运行验证
+- 混入了仓库外版本摘要、路线图和宣传口径
+- 评分模型不是源码事实
+
+当前有效口径以 [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md) 为准；对仓库外项目统一视为“未按同标准复核”，不再下领先、落后或具体分数结论。
 
 ---
 
@@ -307,47 +362,22 @@ RPC 端点（注册在 `eth` 命名空间）：
 
 ---
 
-## 2026-03-09 — 全局功能深度对比分析文档
+## 2026-03-09 — GAP_ANALYSIS 文档口径修订说明
 
-### 对比文档
+`docs/GAP_ANALYSIS.md` 已从“外部竞品深度对比文档”收口为“仓库核对版实装基线”。
 
-创建 `docs/GAP_ANALYSIS.md`，深度对比 N42 与 geth v1.16+、reth v1.11+、**Erigon 3.3.9**、Sei v2/v3、Monad、Grevm 2.1、Aptos 七大客户端。
+当前保留的只有两类信息：
 
-**文档结构（16 个维度）：**
-1. 状态管理与存储（PBSS/Verkle/Sparse Trie/Snapshot Layer）
-2. 同步机制（Staged Sync/Checkpoint Sync/Backfill）
-3. 执行层与 EVM（并行执行/DAG/Async I/O/JIT）
-4. P2P 网络层（eth/69/Blob Sidecar/PeerDAS）
-5. 共识层与区块构建（Deferred Execution/流水线共识）
-6. RPC API 完整性（GraphQL/Otterscan/Bloom Bits）
-7. 交易池（动态大小/Private TxPool）
-8. 开发者工具与 CLI
-9. 安全与稳定性（Fuzzing/PQ 密码学）
-10. MEV 与经济模型（PBS/Inclusion List）
-11. 可观测性与运维（OpenTelemetry/Grafana Dashboard）
-12. L2/Rollup 与扩展框架（ExEx/SDK 化）
-13. 以太坊路线图对齐（Fusaka/Glamsterdam/Hegotá）
-14. 性能工程（零拷贝/io_uring/NUMA）
-15. 跨链与互操作性
-16. 综合评分与优先级建议（加权评分 + 20 项分层缺失清单）
+- 本仓库内看得到的实现、测试、`go test` 结果和 `rg/wc` 统计
+- 本仓库内明确搜不到实现的缺口
 
-**关键发现（源码审计校正后）：**
-- N42 综合评分 **67/100**（geth 91, reth 93, Sei/Monad/Aptos 约 80）
-- P0 缺失：Snapshot 加速层、Bloom Bits 索引、Panic Recovery 全覆盖、Fuzzing
-- N42 独有优势：PQ-STARK（领先以太坊路线图 1 年）、EOF 提前实现、Block-STM 并行 EVM
+当前不再保留的包括：
 
-**源码审计校正（重大修正）：**
-- EIP-2537 BLS：经二次审计确认为 ✅ 完整实现（contracts.go 9个预编译 + crypto/bls12381 密码学库）
-- ERC-4337 AA：✅→⚠️ helpers（仅 UserOperation 结构 + gas 计算，无 EntryPoint/bundler）
-- Chain Metrics：✅→❌ 死代码（9 项中 8 项从未被调用）
-- Pectra EIPs：从"大部分已实现"校正为分项标注（7702✅ 2537❌ 6110⚠️）
-- Block-STM：补充"无基准测试、无真实 EVM 集成测试"警告
-- 竞品 TPS 数据：标注为"宣称"（Monad 10k/Sei 200k/Aptos 250k 均未独立验证）
-- 新增附录 C：完整源码审计摘要（21 项功能模块，含代码行数/测试数/实际状态）
+- 外部项目综合评分、排位和主观优先级模型
+- 未经同轮源码复核的外部能力判断
+- 媒体、路线图、基金会或主网宣传数据
 
-**文档规范化：**
-- 新文档放入 `docs/` 目录
-- 开发日志中旧版对比章节保留并添加指向新文档的引用
+后续如果要恢复外部对比，必须单独建“外部来源证据表”，不能与源码审计混写。
 
 ---
 
@@ -717,181 +747,17 @@ RPC 端点（注册在 `eth` 命名空间）：
 
 ---
 
-## 2026-03-08 — 功能缺失分析：对比 geth / reth / sei 等主流客户端
+## 2026-03-08 — 旧版功能对比表归档
 
-> **注意**：本节已整合升级为完整深度对比文档，详见 [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md)
-> 新文档扩展对比范围至 geth/reth/Sei/Monad/Grevm 2.1/Aptos 六大客户端，包含 16 个维度、综合评分体系和分层优先级建议。
-> 以下为原始简要版本，保留供参考。
+本节曾保留一版 `geth / reth / sei` 对照表，用来罗列 N42 的功能缺口。
 
-### 背景
+按当前仓库核对标准，这张表已经失效，原因是：
 
-对 N42 项目与 go-ethereum (geth)、reth、sei 等主流以太坊/公链客户端进行全局功能对比，识别缺失的功能模块。
+- 其中对外部项目的 `✅/❌/实验中` 标记未在本轮按同方法复核
+- 多处结论与后续代码演进已不一致
+- 表格混合了源码事实、主观判断和外部行业认知
 
-### 一、状态管理与存储
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **State Pruning（状态裁剪）** | ✅ | ✅ | ✅ | ✅ 已有 | `internal/node/pruner.go` — PruneConfig(BlockRetention/PruneInterval/PruneBatchLimit) |
-| **Snapshot（快照系统）** | ✅ | ✅ | ✅ | ❌ | geth 有完整的 snapshot 层加速状态读取，N42 缺失 |
-| **Flat State Storage** | ✅ | ✅ | - | ❌ | reth 核心设计之一，极大加速状态读取 |
-| **State Expiry / Verkle Tree** | 实验中 | 实验中 | - | ❌ | 以太坊路线图中的未来状态管理方案 |
-| **Ancient/Freezer DB（冷数据归档）** | ✅ | ✅ | - | ✅ P1-8 | `modules/rawdb/freezer/` — 5 个表，后台冻结 goroutine |
-| **Path-based Storage Scheme** | ✅ | ✅ | - | ❌ | geth 1.14+ 的新存储方案，提升性能 |
-| **Database Compaction/Inspection 工具** | ✅ | ✅ | - | ✅ P3-3 | `n42 db stats/list/get/inspect` + `debug_dbGet/dbStats` RPC |
-
-### 二、同步机制
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **Snap Sync（快照同步）** | ✅ | ✅ | - | ✅ P1 | `internal/sync/snapsync/` — 完整 5 阶段实现 + 集成测试 |
-| **Light Sync（轻节点同步）** | ✅ | - | - | ❌ | LES 协议支持轻客户端 |
-| **Checkpoint Sync** | ✅ | ✅ | ✅ | ❌ | 从可信检查点开始同步，大幅缩短同步时间 |
-| **Backfill Sync** | - | ✅ | - | ❌ | 后台回填历史数据 |
-| **Staged Sync（分阶段同步）** | - | ✅ | - | ❌ | reth/Erigon 的核心创新，将同步分为多个独立阶段 |
-| **Beam Sync** | 实验中 | - | - | ❌ | 按需获取状态的同步模式 |
-
-### 三、EVM 与执行层
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **Parallel EVM（并行执行）** | - | 实验中 | ✅ | ✅ P0-1 | Block-STM 乐观并行 + wave executor |
-| **EVM JIT/AOT 编译** | - | 实验中 | - | ❌ | 将 EVM 字节码编译为机器码，提升执行速度 |
-| **State Prefetching（状态预取）** | ✅ | ✅ | ✅ | ✅ P1-11 | `internal/prefetcher.go` — sender/recipient/access-list 预取 |
-| **Transaction DAG 分析** | - | - | ✅ | ❌ | sei 分析交易依赖关系以实现最大并行度 |
-| **Execution Witness（执行见证）** | 实验中 | 实验中 | - | ❌ | Verkle tree 相关，无状态客户端所需 |
-| **EOF (EVM Object Format)** | 开发中 | 开发中 | - | ✅ P2-15 | 完整 EIP-3540/3670/4200/4750/5450，含审计修复 |
-
-### 四、P2P 网络层
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **DevP2P 协议完整实现** | ✅ | ✅ | - | ❌ | N42 用 libp2p，非 DevP2P |
-| **Snap Protocol** | ✅ | ✅ | - | ✅ P1 | `api/protocol/sync_pb/snap_messages*.go` — SSZ 编解码 |
-| **Witness Protocol** | 实验中 | - | - | ❌ | 无状态客户端的见证数据传播 |
-| **Transaction Announcement (eth/68)** | ✅ | ✅ | - | ✅ 已有 | `lib/txpool/announcements.go` — hash-based 公告 |
-| **Blob Sidecar 传播** | ✅ | ✅ | - | ❌ | EIP-4844 blob 数据的 P2P 传播协议 |
-| **Portal Network** | 实验中 | - | - | ❌ | 去中心化轻客户端网络 |
-
-### 五、共识层集成
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **完整 Engine API (v1-v4)** | ✅ | ✅ | - | ⚠️ 部分 | v4 存在但 v1-v3 为 stub，N42 使用自有共识 |
-| **Beacon Chain 集成** | ✅ | ✅ | - | ❌ | N42 使用 APoA/APoS 自有共识 |
-| **Withdrawal（提款处理）** | ✅ | ✅ | - | ❌ | N42 使用 deposit 合约机制 |
-| **Blob Transaction 完整支持** | ✅ | ✅ | - | ✅ P2-14 | Header 字段 + 共识验证 + API 集成 |
-| **Proposer-Builder Separation** | 部分 | ✅ | - | ❌ | MEV-boost 集成 |
-
-### 六、RPC API 完整性
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **eth_getProof** | ✅ | ✅ | ✅ | ✅ P1-9 | 增量 Keccak 证明（非 MPT） |
-| **eth_getLogs 高级过滤** | ✅ | ✅ | - | ⚠️ 部分 | header bloom 过滤已有，缺 bloom bits 索引 |
-| **eth_createAccessList** | ✅ | ✅ | - | ✅ P3-1 | 迭代 AccessListTracer 算法 |
-| **eth_getBlockReceipts** | ✅ | ✅ | - | ✅ 已有 | `GetBlockReceipts` 已实现 |
-| **eth_simulateV1** | 开发中 | 开发中 | - | ✅ 已有 | `SimulateV1` 多块模拟 |
-| **debug 完整命名空间** | ✅ | ✅ | - | ✅ P3-5/6 | setHead + dbGet/dbStats + nodeStatus + tracing |
-| **Otterscan API** | - | ✅ | - | ❌ | 高性能区块浏览器 API |
-| **GraphQL API** | ✅ | - | - | ❌ | EIP-1767 标准 GraphQL 接口 |
-| **Batch Request 优化** | ✅ | ✅ | - | ✅ 已有 | maxBatchSize=1000 限制 + 并行执行 |
-
-### 七、交易池
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **Blob Transaction Pool** | ✅ | ✅ | - | ✅ 已有 | blob 交易池已实现 |
-| **交易池持久化** | ✅ | ✅ | - | ✅ P0-5 | `internal/txspool/journal.go` — flushToDB/loadFromDB |
-| **交易替换策略 (RBF)** | ✅ | ✅ | - | ✅ 已有 | priceBump 替换策略 |
-| **Private Transaction Pool** | - | - | ✅ | ❌ | 防 MEV/抢跑的私有交易池 |
-| **交易池大小动态调整** | ✅ | ✅ | - | ❌ | 根据内存压力动态调整池大小 |
-| **Local Account Journal** | ✅ | - | - | ✅ P0-5 | 同交易池持久化 |
-
-### 八、开发者工具与 CLI
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **JavaScript Console** | ✅ | - | - | ❌ | 交互式 JS 控制台 |
-| **Chain Import/Export** | ✅ | ✅ | - | ✅ P3-2 | `n42 export chain` / `n42 import` |
-| **Account Import/Export** | ✅ | - | - | ✅ 已有 | `n42 account import` (keystore) |
-| **DB Inspector** | ✅ | ✅ | - | ✅ P3-3 | `n42 db stats/list/get/inspect` |
-| **Chain Rollback** | ✅ | ✅ | - | ✅ 已有 | `debug_setHead` |
-| **Init from Genesis** | ✅ | ✅ | ✅ | ✅ 已有 | `n42 init` 命令 |
-| **Dump State** | ✅ | - | - | ✅ P3-4 | `n42 export state` (流式 JSON) |
-| **EVM 命令行工具 (evm)** | ✅ | - | - | ❌ | 独立的 EVM 执行/反汇编工具 |
-| **abigen (ABI 代码生成)** | ✅ | - | - | ✅ 已有 | `accounts/abi/` 包 |
-| **clef (签名器)** | ✅ | - | - | ❌ | 独立签名服务 |
-
-### 九、安全与稳定性
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **DoS 防护层** | ✅ | ✅ | ✅ | ✅ 已有 | maxCallDataSize(128KB) + maxBatchSize(1000) + 速率限制 |
-| **RPC 速率限制** | ✅ | ✅ | ✅ | ✅ 已有 | `modules/rpc/jsonrpc/ratelimit.go` — token bucket per IP |
-| **交易 Gas 上限保护** | ✅ | ✅ | - | ✅ 已有 | rpcGasCap=50000000 |
-| **Panic Recovery 全面性** | ✅ | ✅ | ✅ | ⚠️ 部分 | 关键路径有 recover，非全覆盖 |
-| **Graceful Shutdown** | ✅ | ✅ | ✅ | ✅ 已有 | SIGINT/SIGTERM + 磁盘空间监控 |
-| **Health Check Endpoint** | ✅ | ✅ | ✅ | ✅ 已有 | `internal/node/health.go` — /health (200/503) |
-
-### 十、MEV 与经济模型
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **MEV-Boost 集成** | ✅ | ✅ | - | ❌ | 外部区块构建器集成 |
-| **Flashbots Bundle API** | 插件 | 插件 | - | ✅ P2-13 | `eth_sendBundle` + BundlePool |
-| **Priority Ordering** | ✅ | ✅ | ✅ | ✅ P2-13 | `TxByPriceAndNonce` 堆排序 |
-| **EIP-4337 Account Abstraction** | 部分 | 部分 | - | ❌ | 账户抽象支持 |
-
-### 十一、可观测性与运维
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **OpenTelemetry/Jaeger 追踪** | - | ✅ | ✅ | ❌ | 分布式追踪支持 |
-| **Grafana Dashboard 模板** | ✅ | ✅ | ✅ | ❌ | 预配置的监控面板 |
-| **详细 Metrics 体系** | ✅ | ✅ | ✅ | ✅ P1-10 | Go runtime + txpool + sync + freezer 指标 |
-| **结构化事件日志** | ✅ | ✅ | ✅ | 部分 | `log.Info/Warn/Error` 结构化字段，但无专用事件系统 |
-| **Admin API 完整性** | ✅ | ✅ | - | ✅ P3-2~6 | export/import chain, DB inspector, debug_nodeStatus |
-
-### 十二、L2/Rollup 支持
-
-| 缺失功能 | geth | reth | sei | N42 | 说明 |
-|----------|------|------|-----|-----|------|
-| **Op-geth / Op-reth 模式** | ✅ | ✅ | - | ❌ | 作为 L2 执行层客户端运行 |
-| **Sequencer 模式** | - | - | ✅ | ❌ | 充当 L2 排序器 |
-| **Batch Submission** | - | - | ✅ | ❌ | 向 L1 提交批次数据 |
-| **Fraud/Validity Proof 支持** | 部分 | 部分 | ✅ | ❌ | 生成和验证证明 |
-
-### 十三、Cosmos/IBC 生态（sei 特有）
-
-| 缺失功能 | sei | 说明 |
-|----------|-----|------|
-| **IBC 跨链通信** | ✅ | 跨链资产和消息传递 |
-| **CosmWasm 智能合约** | ✅ | 除 EVM 外的另一种合约引擎 |
-| **原生代币 Denom** | ✅ | 链原生资产管理 |
-| **链上治理** | ✅ | 提案投票机制 |
-
-### 优先级建议
-
-#### P0 — 生产环境必须
-1. **State Pruning** — 没有裁剪，节点数据将无限增长
-2. **Snapshot 系统** — 缺失则状态读取性能低下
-3. **完整 Graceful Shutdown** — 防止数据库损坏
-4. **RPC 速率限制** — 防止节点被 DoS
-5. **交易池持久化** — 重启不丢失 pending 交易
-6. **Health Check 端点** — 生产部署必需
-
-#### P1 — 竞争力关键
-7. **Snap Sync 完善** — 新节点同步时间从天级缩短到小时级
-8. **Ancient/Freezer DB** — 降低热数据库压力
-9. **eth_getProof** — DeFi 和跨链桥生态必需
-10. **详细 Metrics 体系** — 运维监控必备
-11. **State Prefetching** — 显著提升执行性能
-
-#### P2 — 差异化竞争
-12. **Parallel EVM** — 性能差异化的核心特性
-13. **MEV 基础设施** — 吸引验证者和搜索者
-14. **Blob 完整支持** — L2 生态集成
-15. **EOF 支持** — 跟进以太坊路线图
+因此这里不再保留旧表正文。当前有效基线以 [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md) 为准；如果未来需要恢复跨仓库对比，必须逐个仓库单独审计并附复现命令。
 
 ---
 
@@ -1037,9 +903,11 @@ AggregatedProof:
 | | | Dilithium | ⏳ 30% | ❌ 骨架 |
 | **合约层** | 公钥注册表 | 通用 | ✅ 100% | ⏳ 可选 |
 
-### 四、与主流项目对比
+### 四、与主流项目的历史对照（未按同标准复核）
 
-| 能力 | N42 | Ethereum (geth/reth) | 其他公链 |
+> 注意：下表中的外部项目信息不是 2026-03-16 这轮源码核对结果，只保留为当时的背景判断，不应用于当前客观评分或对外结论。
+
+| 能力 | N42 | Ethereum（未复核） | 其他公链（未复核） |
 |------|-----|---------------------|---------|
 | PQ 签名算法库 | ✅ Falcon + Dilithium + 4种 | ❌ 无 | 极少数有研究 |
 | PQ 交易类型 | ✅ Type 0x05 | ❌ 无 (仅 EIP 讨论) | ❌ 无 |
@@ -1196,7 +1064,7 @@ Falcon 在速度和大小上均优于 Dilithium，但 Dilithium 是 NIST 正式�
 
 ### 背景
 
-对比 geth/reth/sei 后识别的 P0 缺失功能。项目已有 `RateLimiter` 实现（token bucket per-IP）但未集成到中间件链。
+本条的原始背景来自早期对外对照整理；按当前仓库核对标准，它只保留为当时的补齐动因，不作为对 geth/reth/sei 的当前客观结论。项目已有 `RateLimiter` 实现（token bucket per-IP）但未集成到中间件链。
 
 ### RPC 限流
 

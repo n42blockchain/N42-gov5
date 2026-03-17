@@ -24,13 +24,14 @@ import (
 
 // TestERC20VotesSupport tests governance token capabilities
 func TestERC20VotesSupport(t *testing.T) {
+	t.Parallel()
 	// ERC20Votes selectors (OpenZeppelin Governor)
 	selectors := map[string][4]byte{
-		"getVotes(address)":                        {},
-		"getPastVotes(address,uint256)":            {},
-		"getPastTotalSupply(uint256)":              {},
-		"delegates(address)":                       {},
-		"delegate(address)":                        {},
+		"getVotes(address)":             {},
+		"getPastVotes(address,uint256)": {},
+		"getPastTotalSupply(uint256)":   {},
+		"delegates(address)":            {},
+		"delegate(address)":             {},
 		"delegateBySig(address,uint256,uint256,uint8,bytes32,bytes32)": {},
 	}
 
@@ -46,15 +47,16 @@ func TestERC20VotesSupport(t *testing.T) {
 
 // TestGovernorSupport tests OpenZeppelin Governor pattern
 func TestGovernorSupport(t *testing.T) {
+	t.Parallel()
 	// Governor function selectors
 	selectors := map[string][4]byte{
-		"propose(address[],uint256[],bytes[],string)": {},
-		"castVote(uint256,uint8)":                     {},
-		"castVoteWithReason(uint256,uint8,string)":    {},
+		"propose(address[],uint256[],bytes[],string)":  {},
+		"castVote(uint256,uint8)":                      {},
+		"castVoteWithReason(uint256,uint8,string)":     {},
 		"execute(address[],uint256[],bytes[],bytes32)": {},
-		"state(uint256)":                              {},
-		"proposalThreshold()":                         {},
-		"quorum(uint256)":                             {},
+		"state(uint256)":                               {},
+		"proposalThreshold()":                          {},
+		"quorum(uint256)":                              {},
 	}
 
 	for name := range selectors {
@@ -69,6 +71,7 @@ func TestGovernorSupport(t *testing.T) {
 
 // TestTimelockSupport tests Timelock Controller
 func TestTimelockSupport(t *testing.T) {
+	t.Parallel()
 	// Verify TIMESTAMP opcode for time-based delays
 	if vm.TIMESTAMP != 0x42 {
 		t.Errorf("TIMESTAMP opcode incorrect")
@@ -83,9 +86,9 @@ func TestTimelockSupport(t *testing.T) {
 	selectors := map[string][4]byte{
 		"schedule(address,uint256,bytes,bytes32,bytes32,uint256)": {},
 		"execute(address,uint256,bytes,bytes32,bytes32)":          {},
-		"cancel(bytes32)":                                          {},
-		"getMinDelay()":                                            {},
-		"isOperation(bytes32)":                                     {},
+		"cancel(bytes32)":      {},
+		"getMinDelay()":        {},
+		"isOperation(bytes32)": {},
 	}
 
 	for name := range selectors {
@@ -100,6 +103,7 @@ func TestTimelockSupport(t *testing.T) {
 
 // TestSnapshotSupport tests historical balance queries
 func TestSnapshotSupport(t *testing.T) {
+	t.Parallel()
 	// Snapshot requires:
 	// 1. BLOCKHASH opcode for historical block access
 	// 2. Storage operations for balance history
@@ -127,6 +131,7 @@ func TestSnapshotSupport(t *testing.T) {
 
 // TestERC725Support tests identity proxy contract support
 func TestERC725Support(t *testing.T) {
+	t.Parallel()
 	// ERC-725 (Identity Proxy)
 	// Interface ID: 0x44c028fe
 	selectors := map[string][4]byte{
@@ -148,12 +153,13 @@ func TestERC725Support(t *testing.T) {
 
 // TestERC735Support tests claim holder support
 func TestERC735Support(t *testing.T) {
+	t.Parallel()
 	// ERC-735 (Claim Holder)
 	selectors := map[string][4]byte{
-		"getClaim(bytes32)":           {},
-		"getClaimIdsByTopic(uint256)": {},
+		"getClaim(bytes32)":                                    {},
+		"getClaimIdsByTopic(uint256)":                          {},
 		"addClaim(uint256,uint256,address,bytes,bytes,string)": {},
-		"removeClaim(bytes32)":        {},
+		"removeClaim(bytes32)":                                 {},
 	}
 
 	for name := range selectors {
@@ -168,6 +174,7 @@ func TestERC735Support(t *testing.T) {
 
 // TestSignatureVerification tests signature verification for DIDs
 func TestSignatureVerification(t *testing.T) {
+	t.Parallel()
 	// ecrecover for signature verification
 	ecrecover := vm.GetEcrecover()
 	gas := ecrecover.RequiredGas(make([]byte, 128))
@@ -180,6 +187,7 @@ func TestSignatureVerification(t *testing.T) {
 
 // TestDIDDocumentStorage tests on-chain DID document storage
 func TestDIDDocumentStorage(t *testing.T) {
+	t.Parallel()
 	// DID documents require:
 	// 1. Event logging for DID registry changes
 	// 2. Storage for DID controller/authentication
@@ -194,10 +202,10 @@ func TestDIDDocumentStorage(t *testing.T) {
 
 	// EtherDID Registry selectors
 	selectors := map[string][4]byte{
-		"setAttribute(address,bytes32,bytes,uint256)":   {},
-		"revokeAttribute(address,bytes32,bytes)":        {},
-		"changeOwner(address,address)":                  {},
-		"identityOwner(address)":                        {},
+		"setAttribute(address,bytes32,bytes,uint256)": {},
+		"revokeAttribute(address,bytes32,bytes)":      {},
+		"changeOwner(address,address)":                {},
+		"identityOwner(address)":                      {},
 	}
 
 	for name := range selectors {
@@ -212,6 +220,7 @@ func TestDIDDocumentStorage(t *testing.T) {
 
 // TestRevocationRegistry tests credential revocation support
 func TestRevocationRegistry(t *testing.T) {
+	t.Parallel()
 	// Revocation registry requires:
 	// 1. Bitmap storage for efficient revocation status
 	// 2. Timestamp for revocation date
@@ -239,6 +248,7 @@ func TestRevocationRegistry(t *testing.T) {
 
 // TestVRFSupport tests Verifiable Random Function support
 func TestVRFSupport(t *testing.T) {
+	t.Parallel()
 	// VRF requires BN256 curve operations
 	// Chainlink VRF uses: ecAdd, ecMul, ecPairing
 
@@ -255,9 +265,9 @@ func TestVRFSupport(t *testing.T) {
 
 	// Chainlink VRF selectors
 	selectors := map[string][4]byte{
-		"requestRandomness(bytes32,uint256)":           {},
-		"fulfillRandomness(bytes32,uint256)":           {},
-		"rawFulfillRandomness(bytes32,uint256)":        {},
+		"requestRandomness(bytes32,uint256)":    {},
+		"fulfillRandomness(bytes32,uint256)":    {},
+		"rawFulfillRandomness(bytes32,uint256)": {},
 	}
 
 	for name := range selectors {
@@ -272,6 +282,7 @@ func TestVRFSupport(t *testing.T) {
 
 // TestCommitRevealRandomness tests commit-reveal randomness pattern
 func TestCommitRevealRandomness(t *testing.T) {
+	t.Parallel()
 	// Commit-Reveal requires:
 	// 1. KECCAK256 for hash commitments
 	// 2. BLOCKHASH for block-based entropy
@@ -296,14 +307,15 @@ func TestCommitRevealRandomness(t *testing.T) {
 
 // TestGameAssetNFT tests game asset NFT support
 func TestGameAssetNFT(t *testing.T) {
+	t.Parallel()
 	// Game assets typically use ERC-721 or ERC-1155
 	// Already verified in Phase 1, but check gaming-specific patterns
 
 	// ERC-998 Composable NFT (for game inventory)
 	selectors := map[string][4]byte{
-		"getChild(address,uint256,address,uint256)":    {},
-		"ownerOfChild(address,uint256)":                {},
-		"rootOwnerOf(uint256)":                         {},
+		"getChild(address,uint256,address,uint256)":      {},
+		"ownerOfChild(address,uint256)":                  {},
+		"rootOwnerOf(uint256)":                           {},
 		"transferChild(uint256,address,address,uint256)": {},
 	}
 
@@ -319,6 +331,7 @@ func TestGameAssetNFT(t *testing.T) {
 
 // TestStateChannelSupport tests state channel requirements
 func TestStateChannelSupport(t *testing.T) {
+	t.Parallel()
 	// State channels require:
 	// 1. Signature verification (ecrecover)
 	// 2. Deterministic addresses (CREATE2)
@@ -336,10 +349,10 @@ func TestStateChannelSupport(t *testing.T) {
 
 	// State channel selectors
 	selectors := map[string][4]byte{
-		"deposit()":                    {},
-		"withdraw(uint256)":            {},
-		"challenge(bytes,bytes)":       {},
-		"finalize()":                   {},
+		"deposit()":              {},
+		"withdraw(uint256)":      {},
+		"challenge(bytes,bytes)": {},
+		"finalize()":             {},
 	}
 
 	for name := range selectors {
@@ -354,16 +367,17 @@ func TestStateChannelSupport(t *testing.T) {
 
 // TestTournamentContract tests tournament/escrow patterns
 func TestTournamentContract(t *testing.T) {
+	t.Parallel()
 	// Tournament contracts require:
 	// 1. Escrow functionality
 	// 2. Multi-party payouts
 	// 3. Time-based state transitions
 
 	selectors := map[string][4]byte{
-		"joinTournament(uint256)":       {},
-		"submitScore(uint256,uint256)":  {},
-		"distributePrizes(uint256)":     {},
-		"refund(uint256)":               {},
+		"joinTournament(uint256)":      {},
+		"submitScore(uint256,uint256)": {},
+		"distributePrizes(uint256)":    {},
+		"refund(uint256)":              {},
 	}
 
 	for name := range selectors {
@@ -382,21 +396,8 @@ func TestTournamentContract(t *testing.T) {
 
 // TestDIDImplementationGaps identifies what needs to be added for full DID support
 func TestDIDImplementationGaps(t *testing.T) {
-	t.Log("")
-	t.Log("DID Implementation Analysis:")
-	t.Log("")
-	t.Log("✓ Available Now:")
-	t.Log("  - ERC-725/735 contract deployment")
-	t.Log("  - Signature verification (ecrecover)")
-	t.Log("  - Event logging for DID changes")
-	t.Log("  - Storage for claims/attributes")
-	t.Log("")
-	t.Log("✓ Recommended Additions (Smart Contract Level):")
-	t.Log("  - EtherDID Registry deployment guide")
-	t.Log("  - Verifiable Credential schema templates")
-	t.Log("  - W3C DID method specification for N42")
-	t.Log("")
-	t.Log("EVM Layer: FULLY SUPPORTED")
+	t.Parallel()
+	t.Skip(compatibilityGapAnalysisSkip)
 }
 
 // =============================================================================
@@ -405,36 +406,8 @@ func TestDIDImplementationGaps(t *testing.T) {
 
 // TestPhase2CompatibilitySummary provides a summary of Phase 2 capabilities
 func TestPhase2CompatibilitySummary(t *testing.T) {
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("           PHASE 2 DAPP COMPATIBILITY SUMMARY")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("")
-	t.Log("DAO (Decentralized Autonomous Organization):")
-	t.Log("  ✓ ERC-20 Votes (Governance Tokens)")
-	t.Log("  ✓ OpenZeppelin Governor Pattern")
-	t.Log("  ✓ Timelock Controller")
-	t.Log("  ✓ Snapshot (Historical Balances)")
-	t.Log("  ✓ Multi-signature Execution")
-	t.Log("")
-	t.Log("DID (Decentralized Identity):")
-	t.Log("  ✓ ERC-725 (Identity Proxy)")
-	t.Log("  ✓ ERC-735 (Claim Holder)")
-	t.Log("  ✓ Signature Verification")
-	t.Log("  ✓ DID Document Storage")
-	t.Log("  ✓ Revocation Registry")
-	t.Log("")
-	t.Log("Gaming:")
-	t.Log("  ✓ VRF (Verifiable Random Function)")
-	t.Log("  ✓ Commit-Reveal Randomness")
-	t.Log("  ✓ Game Asset NFTs (ERC-721/1155)")
-	t.Log("  ✓ Composable NFTs (ERC-998)")
-	t.Log("  ✓ State Channels")
-	t.Log("  ✓ Tournament/Escrow Contracts")
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("    N42 FULLY SUPPORTS PHASE 2 DAPP REQUIREMENTS")
-	t.Log("═══════════════════════════════════════════════════════════════")
+	t.Parallel()
+	t.Skip(compatibilitySummaryManualSkip)
 }
 
 // =============================================================================
@@ -457,4 +430,3 @@ func BenchmarkEcrecoverGas(b *testing.B) {
 		ecrecover.RequiredGas(input)
 	}
 }
-

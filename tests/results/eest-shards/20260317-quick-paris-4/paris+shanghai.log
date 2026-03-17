@@ -1,0 +1,62 @@
+
+================================================================================
+⚠️  IMPORTANT: Repository Migration in Progress - 'The Weld' ⚠️
+================================================================================
+
+This repository is being merged into ethereum/execution-specs (EELS) during the
+week of October 20-24, 2025.
+
+📅 Timeline:
+  • Week of Oct 13-17: Closing PRs, porting issues to EELS
+  • Week of Oct 20-24: Migration week - fixing CI and fixture building
+  • Oct 24 (ETA): Weld finalized - all development moves to EELS
+
+👉 What This Means:
+  • Test Contributors: After Oct 24, reopen draft PRs in EELS
+  • All future test development happens in EELS after completion
+  • Fixture releases continue as usual during transition
+
+For details: https://steel.ethereum.foundation/blog/2025-09-11_weld-announcement/
+================================================================================
+
+bringing up nodes...
+bringing up nodes...
+
+E
+==================================== ERRORS ====================================
+_ ERROR at setup of tests/osaka/eip7883_modexp_gas_increase/test_modexp_thresholds.py::test_modexp_used_in_transaction_entry_points[fork_Paris-blockchain_test_engine_from_state_test-exact_gas]-n42_local _
+[gw0] darwin -- Python 3.13.0 /Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/bin/python
+src/pytest_plugins/consume/simulators/engine/conftest.py:47: in engine_rpc
+    return EngineRPC(client.engine_url)
+                     ^^^^^^^^^^^^^^^^^
+E   AttributeError: 'Client' object has no attribute 'engine_url'
+---------------------------- Captured stdout setup -----------------------------
+2026-03-17 01:05:18.767+00:00 [[36mINFO[0m] pytest_plugins.consume.simulators.test_case_description: Hive info: ['./build/bin/hive', '--dev', '--dev.addr', '127.0.0.1:3001', '--client-file', '/Users/jieliu/Documents/n42/N42-gov5/tests/eth-hive/n42-clients.yaml', '--client', 'n42_local', '--docker.output', '--docker.nocache', 'n42_local']
+2026-03-17 01:05:18.769+00:00 [[36mINFO[0m] pytest_plugins.consume.simulators.single_test_client: Starting client (n42_local)...
+2026-03-17 01:05:19.003+00:00 [[36mINFO[0m] pytest_plugins.consume.simulators.single_test_client: Client (n42_local) ready!
+- Log file: /Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/logs/consume-engine-20260317-010514-main.log -
+- Generated html report: file:///Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.meta/report_consume.html -
+
+================================================================================
+⚠️  IMPORTANT: Repository Migration in Progress - 'The Weld' ⚠️
+================================================================================
+
+This repository is being merged into ethereum/execution-specs (EELS) during the
+week of October 20-24, 2025.
+
+📅 Timeline:
+  • Week of Oct 13-17: Closing PRs, porting issues to EELS
+  • Week of Oct 20-24: Migration week - fixing CI and fixture building
+  • Oct 24 (ETA): Weld finalized - all development moves to EELS
+
+👉 What This Means:
+  • Test Contributors: After Oct 24, reopen draft PRs in EELS
+  • All future test development happens in EELS after completion
+  • Fixture releases continue as usual during transition
+
+For details: https://steel.ethereum.foundation/blog/2025-09-11_weld-announcement/
+================================================================================
+
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!! xdist.dsession.Interrupted: stopping after 1 failures !!!!!!!!!!!!!
+1 error in 6.51s

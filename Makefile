@@ -6,6 +6,10 @@ APP_NAME := n42
 APP_PATH := ./cmd/n42
 SHELL := /bin/bash
 GO = go
+GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null)
+ifeq ($(strip $(GOLANGCI_LINT)),)
+GOLANGCI_LINT := $(shell $(GO) env GOPATH 2>/dev/null)/bin/golangci-lint
+endif
 #LDFLAGS := -ldflags "-w -s -X github.com/n42blockchain/N42/version.BuildNumber=${GIT_COMMIT} -X 'github.com/n42blockchain/N42/version.BuildTime=${BUILD_TIME}' -X 'github.com/n42blockchain/N42/version.GoVersion=${GO_VERSION}'"
 
 
@@ -163,7 +167,7 @@ open-output:
 #== mobiles end
 
 .PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef
-.PHONY: race bench cover check install tidy help test-cover test-verbose
+.PHONY: race bench cover check install tidy help test-cover test-verbose perf-baseline
 .PHONY: version version-bump version-minor version-major
 
 # =============================================================================
@@ -220,11 +224,11 @@ vet:
 
 # lint：如果没装 golangci-lint，就给出提示并退出 2（避免"假通过"）
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 || { \
+	@test -x "$(GOLANGCI_LINT)" || { \
 		echo "golangci-lint not found. Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
 		exit 2; \
 	}
-	golangci-lint run ./...
+	"$(GOLANGCI_LINT)" run ./...
 
 # 组合检查：fmt + vet + lint
 check: fmt vet lint
@@ -244,6 +248,11 @@ bench-smoke: go-version
 bench: go-version
 	@echo "==> go test -bench ./..."
 	$(GO) test -run ^$$ -bench . -benchmem ./...
+
+# 固定子集的可重复性能基线
+perf-baseline: go-version
+	@echo "==> bash scripts/run_perf_baseline.sh"
+	bash scripts/run_perf_baseline.sh
 
 # =============================================================================
 # 覆盖率 (Coverage)
@@ -322,6 +331,7 @@ help:
 	@echo "  基准测试:"
 	@echo "    bench         - 完整基准测试"
 	@echo "    bench-smoke   - 快速基准测试 (核心包)"
+	@echo "    perf-baseline - 运行固定子集并写入 benchmarks/results/"
 	@echo ""
 	@echo "  CI:"
 	@echo "    ci            - 标准 CI (build + test + vet)"

@@ -24,7 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
+	"strings"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/holiman/uint256"
@@ -38,6 +38,8 @@ import (
 	"github.com/n42blockchain/N42/params/networkname"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hash"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 )
@@ -78,6 +80,9 @@ type GenesisBlock struct {
 }
 
 func (g *GenesisBlock) Write(tx kv.RwTx) (*block.Block, *state.IntraBlockState, error) {
+	if g == nil || g.GenesisConfig == nil || g.GenesisConfig.Config == nil {
+		return nil, nil, ErrGenesisNoConfig
+	}
 	block, statedb, err2 := g.WriteGenesisState(tx)
 	if err2 != nil {
 		return block, statedb, err2
@@ -118,6 +123,9 @@ func (g *GenesisBlock) Write(tx kv.RwTx) (*block.Block, *state.IntraBlockState, 
 }
 
 func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
+	if g == nil || g.GenesisConfig == nil || g.GenesisConfig.Config == nil {
+		return nil, nil, ErrGenesisNoConfig
+	}
 	_ = g.GenesisConfig.Alloc //nil-check
 
 	var root types.Hash
@@ -138,14 +146,9 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		statedb = state.New(r)
 
 		for address, account := range g.GenesisConfig.Alloc {
-			b, ok := new(big.Int).SetString(account.Balance, 10)
-			if !ok {
-				errCh <- fmt.Errorf("invalid balance for address %s: overflow", address.Hex())
-				return
-			}
-			balance, overflow := uint256.FromBig(b)
-			if overflow {
-				errCh <- fmt.Errorf("balance overflow for address %s", address.Hex())
+			balance, err := decodeGenesisBalance(account.Balance)
+			if err != nil {
+				errCh <- fmt.Errorf("invalid balance for address %s: %w", address.Hex(), err)
 				return
 			}
 			statedb.AddBalance(address, balance)
@@ -201,12 +204,25 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		}
 	}
 
+	stateRoot := root
+	if g.GenesisConfig.StateRoot != (types.Hash{}) {
+		stateRoot = g.GenesisConfig.StateRoot
+	}
+	txHash := hash.DeriveSha(transaction.Transactions(nil))
+	if g.GenesisConfig.TxHash != (types.Hash{}) {
+		txHash = g.GenesisConfig.TxHash
+	}
+	receiptHash := hash.DeriveSha(block.Receipts(nil))
+	if g.GenesisConfig.ReceiptHash != (types.Hash{}) {
+		receiptHash = g.GenesisConfig.ReceiptHash
+	}
+
 	head := &block.Header{
 		ParentHash:  g.GenesisConfig.ParentHash,
 		Coinbase:    g.GenesisConfig.Coinbase,
-		Root:        root,
-		TxHash:      types.Hash{0},
-		ReceiptHash: types.Hash{0},
+		Root:        stateRoot,
+		TxHash:      txHash,
+		ReceiptHash: receiptHash,
 		Difficulty:  g.GenesisConfig.Difficulty,
 		Number:      uint256.NewInt(g.GenesisConfig.Number),
 		GasLimit:    g.GenesisConfig.GasLimit,
@@ -236,6 +252,24 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	}
 
 	return block.NewBlock(head, nil).(*block.Block), statedb, nil
+}
+
+func decodeGenesisBalance(input string) (*uint256.Int, error) {
+	if input == "" {
+		return uint256.NewInt(0), nil
+	}
+	if strings.HasPrefix(input, "0x") || strings.HasPrefix(input, "0X") {
+		return uint256.FromHex(normalizeGenesisHexQuantity(input))
+	}
+	return uint256.FromDecimal(input)
+}
+
+func normalizeGenesisHexQuantity(input string) string {
+	raw := strings.TrimLeft(input[2:], "0")
+	if raw == "" {
+		raw = "0"
+	}
+	return input[:2] + raw
 }
 
 func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.IntraBlockState, error) {

@@ -29,6 +29,7 @@ package tests
 import (
 	"bytes"
 	"crypto/rand"
+	"strings"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -234,15 +235,15 @@ func TestPQAlgorithmSizeComparison(t *testing.T) {
 	comparisons := transaction.GetAllSizeComparisons()
 
 	t.Log("Post-Quantum Algorithm Size Comparison:")
-	t.Log("=" + string(make([]byte, 70)))
+	t.Log(strings.Repeat("=", 70))
 	t.Log("| Algorithm    | First Tx  | Subsequent | Savings  | Savings % |")
-	t.Log("|-" + string(make([]byte, 68)) + "|")
+	t.Log("|" + strings.Repeat("-", 68) + "|")
 
 	for _, c := range comparisons {
 		t.Logf("| %-12s | %8d B | %8d B | %7d B | %8.1f%% |",
 			c.Algorithm, c.FirstTxSize, c.SubsequentSize, c.Savings, c.SavingsPercent)
 	}
-	t.Log("=" + string(make([]byte, 70)))
+	t.Log(strings.Repeat("=", 70))
 
 	// Verify all algorithms have positive savings
 	for _, c := range comparisons {

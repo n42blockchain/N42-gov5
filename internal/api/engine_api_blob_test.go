@@ -62,8 +62,8 @@ func TestEngineAPIBlobInputValidation(t *testing.T) {
 
 	resp, err := engine.NewPayloadV3(context.Background(), nil, nil, &root)
 	require.NoError(t, err)
-	require.Equal(t, PayloadStatusInvalid, resp.Status.Status)
-	require.Equal(t, "missing execution payload", *resp.Status.ValidationError)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.Equal(t, "missing execution payload", *resp.ValidationError)
 
 	emptyPayload := &ExecutionPayloadV3{
 		BlobGasUsed:   hexUint64Ptr(0),
@@ -71,8 +71,8 @@ func TestEngineAPIBlobInputValidation(t *testing.T) {
 	}
 	resp, err = engine.NewPayloadV3(context.Background(), emptyPayload, nil, nil)
 	require.NoError(t, err)
-	require.Equal(t, PayloadStatusInvalid, resp.Status.Status)
-	require.Equal(t, "missing parent beacon block root", *resp.Status.ValidationError)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.Equal(t, "missing parent beacon block root", *resp.ValidationError)
 
 	expected := testVersionedHash(1)
 	mismatch := testVersionedHash(2)
@@ -83,8 +83,8 @@ func TestEngineAPIBlobInputValidation(t *testing.T) {
 	}
 	resp, err = engine.NewPayloadV3(context.Background(), payload, []types.Hash{mismatch}, &root)
 	require.NoError(t, err)
-	require.Equal(t, PayloadStatusInvalid, resp.Status.Status)
-	require.Equal(t, errBlobHashMismatch.Error(), *resp.Status.ValidationError)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.Equal(t, errBlobHashMismatch.Error(), *resp.ValidationError)
 }
 
 func TestEngineAPIBlobForkchoiceRequiresState(t *testing.T) {
@@ -102,8 +102,8 @@ func TestEngineAPIv4InputValidation(t *testing.T) {
 
 	resp, err := engine.NewPayloadV4(context.Background(), nil, nil, &root, nil)
 	require.NoError(t, err)
-	require.Equal(t, PayloadStatusInvalid, resp.Status.Status)
-	require.Equal(t, "missing execution payload", *resp.Status.ValidationError)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.Equal(t, "missing execution payload", *resp.ValidationError)
 
 	expected := testVersionedHash(1)
 	mismatch := testVersionedHash(2)
@@ -114,8 +114,8 @@ func TestEngineAPIv4InputValidation(t *testing.T) {
 	}
 	resp, err = engine.NewPayloadV4(context.Background(), payload, []types.Hash{mismatch}, &root, nil)
 	require.NoError(t, err)
-	require.Equal(t, PayloadStatusInvalid, resp.Status.Status)
-	require.Equal(t, errBlobHashMismatch.Error(), *resp.Status.ValidationError)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.Equal(t, errBlobHashMismatch.Error(), *resp.ValidationError)
 
 	forkchoiceResp, err := engine.ForkchoiceUpdatedV4(context.Background(), nil, nil)
 	require.NoError(t, err)

@@ -1,7 +1,64 @@
 # N42 性能优化报告
 
 **报告日期**: 2024-12-16  
-**状态**: 进行中
+**状态**: 历史报告，已于 2026-03-16 做仓库复核
+
+---
+
+## 2026-03-16 仓库复核
+
+本节只保留本次在当前仓库中重新跑出的结果，不沿用旧报告里未复核的 profile 和 benchmark 表。
+
+### 已复核事实
+
+| 项目 | 证据 | 结论 |
+|------|------|------|
+| `benchmarks/` 基线入口 | `benchmarks/README.md`、`benchmarks/results/`、`scripts/run_perf_baseline.sh` 已存在 | Phase 0 已补最小可重复入口，但原计划中的分领域目录骨架仍未完整落地 |
+| 优化实现文件 | `internal/vm/pool.go`、`common/transaction/pool.go`、`modules/state/pool.go`、`internal/sync/sharded_map.go`、`internal/sync/atomic_counter.go`、`modules/rawdb/batch.go`、`internal/vm/jump_table_cache.go`、`internal/p2p/message_pool.go`、`internal/cache/lru.go`、`common/encoding/pool.go` 均存在 | Phase 2-8 所列代码实现存在 |
+| `tools/tpsbench` 子集基线 | `go test -run '^$' -bench 'Benchmark(AccountGeneration|TransactionCreation|StateGetBalance|SimpleTransfer|EVMTransfer|FullPipeline|BatchProcessing_1K)$' -benchmem ./tools/tpsbench` 通过 | 旧表中的 TPS benchmark 数字不是当前基线，应以下面的复核值为准 |
+| `modules/rawdb` 子集基线 | `go test -run '^$' -bench 'Benchmark(HeaderKeyGen|BlockBodyKeyGen|TxLookupKeyGen|ReceiptKeyGen|HeaderKeyParallel)$' -benchmem ./modules/rawdb` 通过 | 原 benchmark 曾被返回值未消费污染，已在 `modules/rawdb/bench_test.go` 修复 |
+| `internal/vm` 子集基线 | `go test -run '^$' -bench 'Benchmark(OpAdd|OpMul|OpDiv|OpExp|MemoryPoolGetPut)$' -benchmem ./internal/vm` 通过 | VM 段落可保留为“当前局部基线”，但不是全量性能结论 |
+
+### 2026-03-16 实测基线
+
+`tools/tpsbench` 子集：
+
+| 测试项 | 纳秒/操作 | 内存分配 | 分配次数 |
+|------|----------:|----------:|----------:|
+| `BenchmarkAccountGeneration` | `32112 ns/op` | `1312 B/op` | `21 allocs/op` |
+| `BenchmarkTransactionCreation` | `22380 ns/op` | `1994 B/op` | `44 allocs/op` |
+| `BenchmarkStateGetBalance` | `30.07 ns/op` | `32 B/op` | `1 allocs/op` |
+| `BenchmarkSimpleTransfer` | `73.07 ns/op` | `0 B/op` | `0 allocs/op` |
+| `BenchmarkEVMTransfer` | `107.8 ns/op` | `24 B/op` | `1 allocs/op` |
+| `BenchmarkFullPipeline` | `87105 ns/op` | `4380 B/op` | `92 allocs/op` |
+| `BenchmarkBatchProcessing_1K` | `308222 ns/op` | `187122 B/op` | `4392 allocs/op` |
+
+`modules/rawdb` 子集：
+
+| 测试项 | 纳秒/操作 | 内存分配 | 分配次数 |
+|------|----------:|----------:|----------:|
+| `BenchmarkHeaderKeyGen` | `17.87 ns/op` | `48 B/op` | `1 allocs/op` |
+| `BenchmarkBlockBodyKeyGen` | `17.90 ns/op` | `48 B/op` | `1 allocs/op` |
+| `BenchmarkTxLookupKeyGen` | `14.31 ns/op` | `32 B/op` | `1 allocs/op` |
+| `BenchmarkReceiptKeyGen` | `9.549 ns/op` | `8 B/op` | `1 allocs/op` |
+| `BenchmarkHeaderKeyParallel` | `13.76 ns/op` | `48 B/op` | `1 allocs/op` |
+
+`internal/vm` 子集：
+
+| 测试项 | 纳秒/操作 | 内存分配 | 分配次数 |
+|------|----------:|----------:|----------:|
+| `BenchmarkOpAdd` | `17.39 ns/op` | `8 B/op` | `1 allocs/op` |
+| `BenchmarkOpMul` | `18.48 ns/op` | `8 B/op` | `1 allocs/op` |
+| `BenchmarkOpDiv` | `16.68 ns/op` | `8 B/op` | `1 allocs/op` |
+| `BenchmarkOpExp` | `28.49 ns/op` | `8 B/op` | `1 allocs/op` |
+| `BenchmarkMemoryPoolGetPut` | `8.315 ns/op` | `0 B/op` | `0 allocs/op` |
+
+### 当前结论
+
+1. Phase 2-8 声称的多数优化文件在仓库中确实存在。
+2. 旧报告里的部分 benchmark 数字已经过时，不能直接当作当前基线。
+3. `modules/rawdb` 的旧 key-generation benchmark 因返回值未消费而失真，这次已在测试代码中修复。
+4. Phase 0“完整基准基础设施”仍不能按原文算完成，因为规划中的 `benchmarks/` 目录结构和基线产物没有落盘。
 
 ---
 
@@ -324,6 +381,5 @@
 ---
 
 **报告生成**: 2024-12-16  
-**最后更新**: 2024-12-16  
-**状态**: ✅ 全部阶段完成
-
+**最后更新**: 2026-03-16
+**状态**: 历史报告，已补充当前仓库复核结果

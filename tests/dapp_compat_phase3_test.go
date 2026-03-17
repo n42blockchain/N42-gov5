@@ -25,6 +25,7 @@ import (
 
 // TestAIDataHashingSupport tests support for AI training data hashing
 func TestAIDataHashingSupport(t *testing.T) {
+	t.Parallel()
 	// AI data verification requires:
 	// 1. KECCAK256 for data hashing
 	// 2. IPFS CID storage
@@ -52,16 +53,17 @@ func TestAIDataHashingSupport(t *testing.T) {
 
 // TestAIModelVerification tests support for model hash verification
 func TestAIModelVerification(t *testing.T) {
+	t.Parallel()
 	// Model verification requires:
 	// 1. Hash storage for model weights
 	// 2. Version control via events
 	// 3. Access control for updates
 
 	selectors := map[string][4]byte{
-		"registerModel(bytes32,string)":      {},
-		"updateModel(bytes32,bytes32)":       {},
-		"verifyModel(bytes32)":               {},
-		"getModelHash(bytes32)":              {},
+		"registerModel(bytes32,string)": {},
+		"updateModel(bytes32,bytes32)":  {},
+		"verifyModel(bytes32)":          {},
+		"getModelHash(bytes32)":         {},
 	}
 
 	for name := range selectors {
@@ -76,6 +78,7 @@ func TestAIModelVerification(t *testing.T) {
 
 // TestAIAgentSupport tests AI Agent wallet capabilities
 func TestAIAgentSupport(t *testing.T) {
+	t.Parallel()
 	// AI Agent requires:
 	// 1. Account Abstraction (EIP-7702)
 	// 2. Programmable wallets
@@ -93,10 +96,10 @@ func TestAIAgentSupport(t *testing.T) {
 
 	// AI Agent interface selectors
 	selectors := map[string][4]byte{
-		"execute(address,uint256,bytes)":     {},
-		"setAuthorization(address,bool)":     {},
-		"getAuthorizedActions(address)":      {},
-		"validateAction(bytes)":              {},
+		"execute(address,uint256,bytes)": {},
+		"setAuthorization(address,bool)": {},
+		"getAuthorizedActions(address)":  {},
+		"validateAction(bytes)":          {},
 	}
 
 	for name := range selectors {
@@ -111,6 +114,7 @@ func TestAIAgentSupport(t *testing.T) {
 
 // TestAIInferenceVerification tests support for inference verification
 func TestAIInferenceVerification(t *testing.T) {
+	t.Parallel()
 	// ZK-based inference verification requires:
 	// 1. BN256 pairing for Groth16 proofs
 	// 2. BLS12-381 for PLONK proofs
@@ -136,15 +140,16 @@ func TestAIInferenceVerification(t *testing.T) {
 
 // TestSocialProfileStorage tests on-chain profile storage
 func TestSocialProfileStorage(t *testing.T) {
+	t.Parallel()
 	// Social profiles require:
 	// 1. Storage for profile data hashes
 	// 2. Events for updates
 
 	selectors := map[string][4]byte{
-		"setProfile(bytes32,string)":   {},
-		"getProfile(address)":          {},
-		"setAvatar(address,string)":    {},
-		"setBio(address,string)":       {},
+		"setProfile(bytes32,string)": {},
+		"getProfile(address)":        {},
+		"setAvatar(address,string)":  {},
+		"setBio(address,string)":     {},
 	}
 
 	for name := range selectors {
@@ -159,6 +164,7 @@ func TestSocialProfileStorage(t *testing.T) {
 
 // TestFollowGraphSupport tests on-chain follow graph
 func TestFollowGraphSupport(t *testing.T) {
+	t.Parallel()
 	// Follow graph requires:
 	// 1. Efficient storage for relationships
 	// 2. Events for follow/unfollow
@@ -188,6 +194,7 @@ func TestFollowGraphSupport(t *testing.T) {
 
 // TestContentHashStorage tests content hash storage
 func TestContentHashStorage(t *testing.T) {
+	t.Parallel()
 	// Content storage requires:
 	// 1. IPFS/Arweave hash storage
 	// 2. Content moderation hooks
@@ -198,10 +205,10 @@ func TestContentHashStorage(t *testing.T) {
 	}
 
 	selectors := map[string][4]byte{
-		"post(bytes32)":                {},
-		"comment(bytes32,bytes32)":     {},
-		"like(bytes32)":                {},
-		"report(bytes32)":              {},
+		"post(bytes32)":            {},
+		"comment(bytes32,bytes32)": {},
+		"like(bytes32)":            {},
+		"report(bytes32)":          {},
 	}
 
 	for name := range selectors {
@@ -216,13 +223,14 @@ func TestContentHashStorage(t *testing.T) {
 
 // TestTokenGatedAccess tests token-gated content access
 func TestTokenGatedAccess(t *testing.T) {
+	t.Parallel()
 	// Token gating requires:
 	// 1. NFT balance checks
 	// 2. ERC-20 balance checks
 
 	selectors := map[string][4]byte{
-		"checkAccess(address,uint256)": {},
-		"setAccessNFT(address)":        {},
+		"checkAccess(address,uint256)":    {},
+		"setAccessNFT(address)":           {},
 		"setAccessToken(address,uint256)": {},
 	}
 
@@ -242,16 +250,17 @@ func TestTokenGatedAccess(t *testing.T) {
 
 // TestVirtualLandNFT tests virtual land NFT support
 func TestVirtualLandNFT(t *testing.T) {
+	t.Parallel()
 	// Virtual land requires:
 	// 1. ERC-721 for land parcels
 	// 2. Coordinate storage
 	// 3. Adjacent parcel queries
 
 	selectors := map[string][4]byte{
-		"mintLand(int256,int256)":          {},
-		"getLandAt(int256,int256)":         {},
-		"getAdjacentParcels(uint256)":      {},
-		"setLandContent(uint256,bytes32)":  {},
+		"mintLand(int256,int256)":         {},
+		"getLandAt(int256,int256)":        {},
+		"getAdjacentParcels(uint256)":     {},
+		"setLandContent(uint256,bytes32)": {},
 	}
 
 	for name := range selectors {
@@ -266,16 +275,17 @@ func TestVirtualLandNFT(t *testing.T) {
 
 // TestWearablesNFT tests wearable NFT support
 func TestWearablesNFT(t *testing.T) {
+	t.Parallel()
 	// Wearables require:
 	// 1. ERC-1155 for multiple items
 	// 2. Equipment slots system
 	// 3. Rarity attributes
 
 	selectors := map[string][4]byte{
-		"equip(uint256,uint256)":    {},
-		"unequip(uint256)":          {},
-		"getEquipped(address)":      {},
-		"getRarity(uint256)":        {},
+		"equip(uint256,uint256)": {},
+		"unequip(uint256)":       {},
+		"getEquipped(address)":   {},
+		"getRarity(uint256)":     {},
 	}
 
 	for name := range selectors {
@@ -290,16 +300,17 @@ func TestWearablesNFT(t *testing.T) {
 
 // TestAvatarNFT tests avatar NFT support
 func TestAvatarNFT(t *testing.T) {
+	t.Parallel()
 	// Avatar NFT requires:
 	// 1. ERC-721 base
 	// 2. Customization storage
 	// 3. Cross-platform identity
 
 	selectors := map[string][4]byte{
-		"createAvatar(bytes)":       {},
+		"createAvatar(bytes)":            {},
 		"customizeAvatar(uint256,bytes)": {},
-		"getAvatarData(uint256)":    {},
-		"linkPlatform(uint256,bytes32)": {},
+		"getAvatarData(uint256)":         {},
+		"linkPlatform(uint256,bytes32)":  {},
 	}
 
 	for name := range selectors {
@@ -318,6 +329,7 @@ func TestAvatarNFT(t *testing.T) {
 
 // TestAssetTokenization tests real-world asset tokenization
 func TestAssetTokenization(t *testing.T) {
+	t.Parallel()
 	// RWA tokenization requires:
 	// 1. ERC-20 or ERC-3643 for security tokens
 	// 2. Compliance checks
@@ -343,15 +355,16 @@ func TestAssetTokenization(t *testing.T) {
 
 // TestComplianceModule tests compliance/KYC support
 func TestComplianceModule(t *testing.T) {
+	t.Parallel()
 	// Compliance requires:
 	// 1. Whitelist/blacklist storage
 	// 2. Transfer restrictions
 	// 3. Regulatory hooks
 
 	selectors := map[string][4]byte{
-		"addToWhitelist(address)":       {},
-		"removeFromWhitelist(address)":  {},
-		"isWhitelisted(address)":        {},
+		"addToWhitelist(address)":              {},
+		"removeFromWhitelist(address)":         {},
+		"isWhitelisted(address)":               {},
 		"canTransfer(address,address,uint256)": {},
 	}
 
@@ -367,16 +380,17 @@ func TestComplianceModule(t *testing.T) {
 
 // TestDividendDistribution tests dividend/yield distribution
 func TestDividendDistribution(t *testing.T) {
+	t.Parallel()
 	// Dividend distribution requires:
 	// 1. Snapshot for balance at dividend date
 	// 2. Claim mechanism
 	// 3. Distribution calculation
 
 	selectors := map[string][4]byte{
-		"distributeDividend(uint256)":  {},
-		"claimDividend(uint256)":       {},
-		"getPendingDividend(address)":  {},
-		"getDividendHistory(address)":  {},
+		"distributeDividend(uint256)": {},
+		"claimDividend(uint256)":      {},
+		"getPendingDividend(address)": {},
+		"getDividendHistory(address)": {},
 	}
 
 	for name := range selectors {
@@ -395,6 +409,7 @@ func TestDividendDistribution(t *testing.T) {
 
 // TestProvenanceTracking tests supply chain provenance
 func TestProvenanceTracking(t *testing.T) {
+	t.Parallel()
 	// Provenance tracking requires:
 	// 1. Event logging for each step
 	// 2. Timestamp verification
@@ -411,10 +426,10 @@ func TestProvenanceTracking(t *testing.T) {
 	}
 
 	selectors := map[string][4]byte{
-		"registerProduct(bytes32)":           {},
-		"addEvent(bytes32,bytes32,string)":   {},
-		"getHistory(bytes32)":                {},
-		"verifyChain(bytes32)":               {},
+		"registerProduct(bytes32)":         {},
+		"addEvent(bytes32,bytes32,string)": {},
+		"getHistory(bytes32)":              {},
+		"verifyChain(bytes32)":             {},
 	}
 
 	for name := range selectors {
@@ -429,6 +444,7 @@ func TestProvenanceTracking(t *testing.T) {
 
 // TestBatchManagement tests batch/lot tracking
 func TestBatchManagement(t *testing.T) {
+	t.Parallel()
 	// Batch management requires:
 	// 1. Batch ID generation
 	// 2. Quantity tracking
@@ -453,6 +469,7 @@ func TestBatchManagement(t *testing.T) {
 
 // TestCertificateVerification tests supply chain certificates
 func TestCertificateVerification(t *testing.T) {
+	t.Parallel()
 	// Certificate verification requires:
 	// 1. Signature verification (ecrecover)
 	// 2. Certificate storage
@@ -486,46 +503,8 @@ func TestCertificateVerification(t *testing.T) {
 
 // TestPhase3CompatibilitySummary provides a summary of Phase 3 capabilities
 func TestPhase3CompatibilitySummary(t *testing.T) {
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("           PHASE 3 DAPP COMPATIBILITY SUMMARY")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("")
-	t.Log("AI & AI Agent:")
-	t.Log("  ✓ Training Data Hashing (SHA256/KECCAK256)")
-	t.Log("  ✓ Model Hash Verification")
-	t.Log("  ✓ ZK-based Inference Verification")
-	t.Log("  ✓ AI Agent Wallets (Account Abstraction)")
-	t.Log("  ✓ Autonomous Execution")
-	t.Log("")
-	t.Log("Social Platforms:")
-	t.Log("  ✓ On-chain Profile Storage")
-	t.Log("  ✓ Follow Graph Management")
-	t.Log("  ✓ Content Hash Storage (IPFS/Arweave)")
-	t.Log("  ✓ Token-Gated Access")
-	t.Log("  ✓ Social Tokens/Tips")
-	t.Log("")
-	t.Log("Metaverse:")
-	t.Log("  ✓ Virtual Land NFTs")
-	t.Log("  ✓ Wearables (ERC-1155)")
-	t.Log("  ✓ Avatar NFTs")
-	t.Log("  ✓ Virtual Economy")
-	t.Log("")
-	t.Log("RWA (Real World Assets):")
-	t.Log("  ✓ Asset Tokenization (ERC-3643)")
-	t.Log("  ✓ Compliance/KYC Modules")
-	t.Log("  ✓ Dividend Distribution")
-	t.Log("  ✓ Transfer Restrictions")
-	t.Log("")
-	t.Log("Supply Chain:")
-	t.Log("  ✓ Provenance Tracking")
-	t.Log("  ✓ Batch/Lot Management")
-	t.Log("  ✓ Certificate Verification")
-	t.Log("  ✓ Timestamp Validation")
-	t.Log("")
-	t.Log("═══════════════════════════════════════════════════════════════")
-	t.Log("    N42 FULLY SUPPORTS PHASE 3 DAPP REQUIREMENTS")
-	t.Log("═══════════════════════════════════════════════════════════════")
+	t.Parallel()
+	t.Skip(compatibilitySummaryManualSkip)
 }
 
 // =============================================================================
@@ -550,4 +529,3 @@ func BenchmarkKeccak256ContentHash(b *testing.B) {
 		crypto.Keccak256(data)
 	}
 }
-

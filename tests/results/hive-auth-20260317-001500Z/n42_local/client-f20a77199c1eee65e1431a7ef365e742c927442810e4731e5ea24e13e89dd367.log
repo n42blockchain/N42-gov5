@@ -1,0 +1,96 @@
+Supplied genesis state (trimmed, use --sim.loglevel 4 or 5 for full output):
+{
+  "config": {
+    "chainId": 7,
+    "homesteadBlock": 0,
+    "eip150Block": 0,
+    "eip155Block": 0,
+    "eip158Block": 0,
+    "byzantiumBlock": 0,
+    "constantinopleBlock": 0,
+    "petersburgBlock": 0,
+    "istanbulBlock": 0,
+    "muirGlacierBlock": 0,
+    "berlinBlock": 0,
+    "londonBlock": 0,
+    "mergeNetsplitBlock": 0,
+    "terminalTotalDifficulty": 196608,
+    "depositContractAddress": "0x0000000000000000000000000000000000000000"
+  },
+  "nonce": "0x0",
+  "timestamp": "0x1234",
+  "extraData": "0x0000000000000000000000000000000000000000000000000000000000000000658bdf435d810c91414ec09147daa6db624063790000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "gasLimit": "0x2fefd8",
+  "difficulty": "0x30000",
+  "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "coinbase": "0x0000000000000000000000000000000000000000",
+  "alloc": {
+    "0000000000000000000000000000000000000314": {
+      "code": "0x60606040526000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff168063a223e05d1461006a578063abd1a0cf1461008d578063abfced1d146100d4578063e05c914a14610110578063e6768b451461014c575b610000565b346100005761007761019d565b6040518082815260200191505060405180910390f35b34610000576100be600480803573ffffffffffffffffffffffffffffffffffffffff169060200190919050506101a3565b6040518082815260200191505060405180910390f35b346100005761010e600480803573ffffffffffffffffffffffffffffffffffffffff169060200190919080359060200190919050506101ed565b005b346100005761014a600480803590602001909190803573ffffffffffffffffffffffffffffffffffffffff16906020019091905050610236565b005b346100005761017960048080359060200190919080359060200190919080359060200190919050506103c4565b60405180848152602001838152602001828152602001935050505060405180910390f35b60005481565b6000600160008373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020016000205490505b919050565b80600160008473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff168152602001908152602001600020819055505b5050565b7f6031a8d62d7c95988fa262657cd92107d90ed96e08d8f867d32f26edfe85502260405180905060405180910390a17f47e2689743f14e97f7dcfa5eec10ba1dff02f83b3d1d4b9c07b206cbbda66450826040518082815260200191505060405180910390a1817fa48a6b249a5084126c3da369fbc9b16827ead8cb5cdc094b717d3f1dcd995e2960405180905060405180910390a27f7890603b316f3509577afd111710f9ebeefa15e12f72347d9dffd0d65ae3bade81604051808273ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16815260200191505060405180910390a18073ffffffffffffffffffffffffffffffffffffffff167f7efef9ea3f60ddc038e50cccec621f86a0195894dc0520482abf8b5c6b659e4160405180905060405180910390a28181604051808381526020018273ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019250505060405180910390a05b5050565b6000600060008585859250925092505b935093509390505600a165627a7a72305820aaf842d0d0c35c45622c5263cbb54813d2974d3999c8c38551d7c613ea2bc1170029",
+      "storage": {
+        "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000001234",
+        "0x6661e9d6d8b923d5bbaab1b96e1dd51ff6ea2a93520fdc9eb75d059238b8c5e9": "0x0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "balance": "0x0"
+    },
+    "0000000000000000000000000000000000000315": {
+      "code": "0x60606040526000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff168063ef2769ca1461003e575b610000565b3461000057610078600480803573ffffffffffffffffffffffffffffffffffffffff1690602001909190803590602001909190505061007a565b005b8173ffffffffffffffffffffffffffffffffffffffff166108fc829081150290604051809050600060405180830381858888f1935050505015610106578173ffffffffffffffffffffffffffffffffffffffff167f30a3c50752f2552dcc2b93f5b96866280816a986c0c0408cb6778b9fa198288f826040518082815260200191505060405180910390a25b5b50505600a165627a7a72305820637991fabcc8abad4294bf2bb615db78fbec4edff1635a2647d3894e2daf6a610029",
+      "balance": "0x9999999999999999999999999999999"
+    },
+    "0000000000000000000000000000000000000316": {
+      "code": "0x444355",
+      "balance": "0x0"
+    },
+    "0000000000000000000000000000000000000317": {
+      "code": "0x600160003555",
+      "balance": "0x0"
+    }
+  },
+  "number": "0x0",
+  "gasUsed": "0x0",
+  "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "baseFeePerGas": null,
+  "excessBlobGas": null,
+  "blobGasUsed": null
+}
+Initializing N42 database from /genesis.json
+time="2026-03-16T23:55:46Z" level=info msg="Opening database" name=chaindata path=/n42data/chaindata prefix=main
+time="2026-03-16T23:55:46Z" level=info msg="Initializing genesis block..." prefix=main
+time="2026-03-16T23:55:46Z" level=info msg="Successfully wrote genesis state" hash="99396d…23d12b" prefix=v2
+Running n42 with flags: --data.dir /n42data --chain private --http --http.addr 0.0.0.0 --http.port 8545 --http.api admin,debug,eth,net,txpool,web3,rpc --ws --ws.addr 0.0.0.0 --ws.port 8546 --ws.api admin,debug,eth,net,txpool,web3,rpc --authrpc --authrpc.addr 0.0.0.0 --authrpc.port 8551 --authrpc.jwtsecret /jwtsecret --p2p.no-discovery --p2p.tcp-port 30303 --p2p.udp-port 30303 --log.level info
+[96m●[0m [2mnode[0m Opening database [2mname[0m=chaindata [2mpath[0m=/n42data/chaindata  [38;5;60m2026-03-16 23:55:46 0s[0m
+[93m![0m [2mp2p[0m [93mNo bootstrap addresses supplied[0m
+[95m●[0m [2mp2p[0m Generated new network key
+[95m●[0m [2mp2p[0m P2P node [92minitialized[0m [95mpeer_id[0m=[35m16Uiu2HAkxyKubDg...[0m
+[96m●[0m [2mnode[0m ExEx extension registered [2mname[0m=log
+[96m●[0m [2mnode[0m ExEx manager attached to blockchain
+[92m●[0m [2msync[0m Subscribed to gossip topic [2mtopic[0m=/n42/99396d2a/block/ssz_snappy
+[92m●[0m [2msync[0m Subscribed to gossip topic [2mtopic[0m=/n42/99396d2a/blob_sidecar/ssz_snappy
+
+  [38;5;173m███╗   ██╗██╗  ██╗██████╗ [0m  [97mv5.5.760[0m [90m·[0m [90mprivate (ID: 7)[0m
+  [38;5;173m████╗  ██║██║  ██║╚════██╗[0m  [90mfaker[0m
+  [38;5;173m██╔██╗ ██║███████║ █████╔╝[0m  [90mGenesis 99396d2a11...ce23d12b[0m
+  [38;5;173m██║╚██╗██║╚════██║██╔═══╝ [0m  [90mBlock   #[97m0[0m
+  [38;5;173m██║ ╚████║     ██║███████╗[0m  [90mlinux/arm64 [90m·[0m[90m go1.25.8 [90m·[0m[90m 10 cores
+  [38;5;173m╚═╝  ╚═══╝     ╚═╝╚══════╝[0m  [90m/n42data[0m
+
+  [96m-[0m [2m[1/6][0m Starting [97mBlockchain[0m...
+[96m●[0m [2mexex[0m ExEx log extension [92mstarted[0m
+[96m●[0m [2mnode[0m ExEx manager [92mstarted[0m [2mextensions[0m=1
+  [96m-[0m [2m[2/6][0m Starting [97mJSON-RPC services[0m...
+[96m●[0m HTTP server [92mstarted[0m [2mcors[0m= [2mendpoint[0m=[::]:8545 [2mvhosts[0m=*
+[96m●[0m [2mnode[0m health check enabled [2murl[0m=http://[::]:8545/health
+[96m●[0m [2mnode[0m WebSocket enabled [2murl[0m=ws://[::]:8546
+[96m●[0m [2mnode[0m Loaded JWT secret file [2mcrc32[0m=0xb0a0f6e6 [2mpath[0m=/jwtsecret
+[96m●[0m HTTP server [92mstarted[0m [2mcors[0m= [2mendpoint[0m=[::]:8551 [2mvhosts[0m=*
+[96m●[0m [2mnode[0m health check enabled [2murl[0m=http://[::]:8551/health
+  [96m-[0m [2m[3/6][0m Starting [97mP2P networking[0m...
+[95m●[0m [2mp2p[0m P2P server [92mstarted[0m [2maddr[0m=/ip4/172.17.0.4/tcp/30303 [95mpeer_id[0m=[35m16Uiu2HAkxyKubDg...[0m
+  [96m-[0m [2m[4/6][0m Starting [97mSync service[0m...
+  [96m-[0m [2m[5/6][0m Starting [97mMetrics[0m...
+  [96m-[0m [2m[6/6][0m Starting [97mDeposit contract[0m...
+  [92m✓[0m [92mAll services started[0m
+[96m●[0m [2msnapsync[0m Snap sync is disabled, skipping
+[92m●[0m [2minitial-sync[0m Starting chain synchronization...
+[92m●[0m [2minitial-sync[0m Skipping peer discovery (genesis/standalone mode)
+[92m●[0m [2minitial-sync[0m Chain sync [92mcompleted[0m [96mblock[0m=[36m0[0m

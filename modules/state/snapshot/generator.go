@@ -96,7 +96,7 @@ func (g *Generator) Run(ctx context.Context) {
 
 	for {
 		if ctx.Err() != nil {
-			log.Info("Snapshot generation: context cancelled")
+			log.Info("Snapshot generation: context canceled")
 			return
 		}
 

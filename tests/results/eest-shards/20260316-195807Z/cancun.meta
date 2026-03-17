@@ -1,0 +1,9 @@
+shard=cancun
+selector=.*/.*fork_Cancun
+target=~17,250
+mode=consume-engine
+python=3.13
+pytest_workers=auto
+command=uv run --python 3.13 consume engine --input stable@latest -k fork_Cancun -n auto 
+rc=0
+duration_seconds=0

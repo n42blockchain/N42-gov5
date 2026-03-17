@@ -60,6 +60,10 @@ func initGenesis(cliCtx *cli.Context) error {
 	if err := json.NewDecoder(file).Decode(genesis); err != nil {
 		utils.Fatalf("invalid genesis file: %v", err)
 	}
+	conf.ApplyHiveGenesisEnv(genesis, os.LookupEnv)
+	if genesis.Config == nil {
+		utils.Fatalf("invalid genesis file: missing chain config")
+	}
 
 	chaindb, err := node.OpenDatabase(cliCtx.Context, &DefaultConfig, nil, kv.ChainDB.String())
 	if err != nil {

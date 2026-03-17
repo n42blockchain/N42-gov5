@@ -470,6 +470,9 @@ func TestChainConfigStorage(t *testing.T) {
 	if config.ChainID.Cmp(testConfig.ChainID) != 0 {
 		t.Fatalf("ChainID mismatch: have %v, want %v", config.ChainID, testConfig.ChainID)
 	}
+	if config.Consensus != params.Faker {
+		t.Fatalf("Consensus mismatch: have %v, want %v", config.Consensus, params.Faker)
+	}
 
 	if err := WriteChainConfig(tx, genesisHash, nil); err == nil {
 		t.Fatal("WriteChainConfig should fail for nil config")

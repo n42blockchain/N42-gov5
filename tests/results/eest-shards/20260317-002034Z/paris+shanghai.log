@@ -1,0 +1,94 @@
+
+================================================================================
+⚠️  IMPORTANT: Repository Migration in Progress - 'The Weld' ⚠️
+================================================================================
+
+This repository is being merged into ethereum/execution-specs (EELS) during the
+week of October 20-24, 2025.
+
+📅 Timeline:
+  • Week of Oct 13-17: Closing PRs, porting issues to EELS
+  • Week of Oct 20-24: Migration week - fixing CI and fixture building
+  • Oct 24 (ETA): Weld finalized - all development moves to EELS
+
+👉 What This Means:
+  • Test Contributors: After Oct 24, reopen draft PRs in EELS
+  • All future test development happens in EELS after completion
+  • Fixture releases continue as usual during transition
+
+For details: https://steel.ethereum.foundation/blog/2025-09-11_weld-announcement/
+================================================================================
+
+bringing up nodes...
+bringing up nodes...
+
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [  67/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 134/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 201/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 268/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 335/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 402/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 469/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 536/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 603/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 670/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 737/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 804/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 871/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 938/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [1005/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [1072/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [1139/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [1206/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [1273/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [1340/3573]
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4445222768, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
+/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4511020912, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
+/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4508874608, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
+/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4515051376, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
+/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4514232176, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
+/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4509857648, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
+/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4509087600, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
+/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4447713136, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
+/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4449859440, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
+/Users/jieliu/Documents/n42/N42-gov5/tests/eth-tests/execution-spec-tests/.venv/lib/python3.13/site-packages/_pytest/main.py:324: PluggyTeardownRaisedWarning: A plugin raised an exception during an old-style hookwrapper teardown.
+Plugin: 4522063728, Hook: pytest_sessionfinish
+OSError: cannot send (already closed?)
+For more information see https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning
+  config.hook.pytest_sessionfinish(
