@@ -140,18 +140,33 @@ func (e *EngineAPIv4) NewPayloadV4(
 		return invalidPayloadResponse("missing parent beacon block root"), nil
 	}
 
-	// Validate blob gas and versioned hashes for Pectra (EIP-7691)
+	maxBlobGas := uint64(vm.PectraMaxBlobGasPerBlock)
+	maxBlobs := uint64(vm.PectraMaxBlobsPerBlock)
+	gasPerBlob := uint64(vm.PectraBlobGasPerBlob)
+	if cfg := e.blobAPI().v1().chainConfig(); cfg != nil {
+		maxBlobGas = cfg.BlobMaxGasPerBlock(uint64(payload.Timestamp))
+		maxBlobs = cfg.BlobMaxBlobsPerBlock(uint64(payload.Timestamp))
+		gasPerBlob = cfg.BlobGasPerBlob(uint64(payload.Timestamp))
+	}
+	// Validate blob gas and versioned hashes for the active blob schedule.
 	if resp := validateBlobGasAndHashes(
 		payload.BlobGasUsed,
 		payload.ExcessBlobGas,
 		expectedBlobVersionedHashes,
-		vm.PectraMaxBlobGasPerBlock,
-		vm.PectraMaxBlobsPerBlock,
-		vm.PectraBlobGasPerBlob,
+		maxBlobGas,
+		maxBlobs,
+		gasPerBlob,
 	); resp != nil {
 		return resp, nil
 	}
 	if err := ValidateBlobTransactions(payload.Transactions, expectedBlobVersionedHashes); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	blk, err := executionPayloadV4ToBlock(payload)
+	if err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.blobAPI().v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 
@@ -159,11 +174,16 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if err := validateExecutionRequests(executionRequests, payload); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	blk, err := executionPayloadV4ToBlock(payload)
-	if err != nil {
+	requestsHash := executionRequestsHash(executionRequests)
+	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.blobAPI().v1().chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   parentBeaconBlockRoot,
+		requestsHash:       &requestsHash,
+	}); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	requestsHash := executionRequestsHash(executionRequests)
 	blockHash := ethCompatibleEngineBlockHash(blk, e.blobAPI().v1().chainConfig(), enginePayloadHashOptions{
 		includeWithdrawals: true,
 		withdrawals:        payload.Withdrawals,
@@ -173,6 +193,12 @@ func (e *EngineAPIv4) NewPayloadV4(
 	})
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
+	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), e.blobAPI().v1().parentHeader(payload.ParentHash), e.blobAPI().v1().chainConfig()); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	if err := e.blobAPI().v1().validatePayloadExecution(blk, payload.ParentHash); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
 	}
 	headHash := e.blobAPI().v1().currentHeadHash()
 	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
@@ -228,7 +254,11 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	}
 	if attrs.TargetBlobsPerBlock != nil {
 		target := uint64(*attrs.TargetBlobsPerBlock)
-		if target > vm.PectraMaxBlobsPerBlock {
+		maxTarget := uint64(vm.PectraMaxBlobsPerBlock)
+		if cfg := e.blobAPI().v1().chainConfig(); cfg != nil {
+			maxTarget = cfg.BlobMaxBlobsPerBlock(uint64(attrs.Timestamp))
+		}
+		if target > maxTarget {
 			return invalidForkchoiceResponse("target blobs exceeds maximum"), nil
 		}
 	}
@@ -337,9 +367,20 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 // GetBlobScheduleV1 retrieves the current blob schedule
 // engine_getBlobScheduleV1 (new in Pectra)
 func (e *EngineAPIv4) GetBlobScheduleV1(ctx context.Context) (*BlobScheduleResponse, error) {
+	target := uint64(vm.PectraTargetBlobsPerBlock)
+	max := uint64(vm.PectraMaxBlobsPerBlock)
+	if cfg := e.blobAPI().v1().chainConfig(); cfg != nil {
+		head := blockHeader(e.blobAPI().v1().currentHead())
+		timestamp := uint64(0)
+		if head != nil {
+			timestamp = head.Time
+		}
+		target = cfg.BlobTargetBlobsPerBlock(timestamp)
+		max = cfg.BlobMaxBlobsPerBlock(timestamp)
+	}
 	return &BlobScheduleResponse{
-		TargetBlobsPerBlock: vm.PectraTargetBlobsPerBlock,
-		MaxBlobsPerBlock:    vm.PectraMaxBlobsPerBlock,
+		TargetBlobsPerBlock: target,
+		MaxBlobsPerBlock:    max,
 		BlobGasPerBlob:      vm.PectraBlobGasPerBlob,
 	}, nil
 }

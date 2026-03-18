@@ -8,6 +8,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/params"
@@ -90,11 +91,13 @@ func TestGenesisBlockToBlockUsesExplicitHeaderFields(t *testing.T) {
 
 	genesis := &GenesisBlock{
 		GenesisConfig: &conf.Genesis{
-			Config:      &params.ChainConfig{},
-			Alloc:       conf.GenesisAlloc{},
-			StateRoot:   types.HexToHash("0x95a6b74fbcb35dd5bd4dc03e03236164da625fc661cadfe58674b7cd27e664e1"),
-			TxHash:      hash.EmptyRootHash,
-			ReceiptHash: hash.EmptyRootHash,
+			Config:        &params.ChainConfig{},
+			Alloc:         conf.GenesisAlloc{},
+			StateRoot:     types.HexToHash("0x95a6b74fbcb35dd5bd4dc03e03236164da625fc661cadfe58674b7cd27e664e1"),
+			TxHash:        hash.EmptyRootHash,
+			ReceiptHash:   hash.EmptyRootHash,
+			BlobGasUsed:   0,
+			ExcessBlobGas: transaction.BlobTxTargetBlobGasPerBlock,
 		},
 	}
 
@@ -112,5 +115,11 @@ func TestGenesisBlockToBlockUsesExplicitHeaderFields(t *testing.T) {
 	}
 	if header.ReceiptHash != genesis.GenesisConfig.ReceiptHash {
 		t.Fatalf("ReceiptHash = %s, want %s", header.ReceiptHash, genesis.GenesisConfig.ReceiptHash)
+	}
+	if header.BlobGasUsed != genesis.GenesisConfig.BlobGasUsed {
+		t.Fatalf("BlobGasUsed = %d, want %d", header.BlobGasUsed, genesis.GenesisConfig.BlobGasUsed)
+	}
+	if header.ExcessBlobGas != genesis.GenesisConfig.ExcessBlobGas {
+		t.Fatalf("ExcessBlobGas = %d, want %d", header.ExcessBlobGas, genesis.GenesisConfig.ExcessBlobGas)
 	}
 }

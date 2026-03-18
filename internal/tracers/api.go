@@ -227,7 +227,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 		blockHash = block.Hash()
 		header    = block.Header().(*types.Header)
 		blockCtx  = core.NewEVMBlockContext(header, core.GetHashFn(header, api.chainContext(ctx).GetHeader), api.chainContext(ctx).Engine(), nil)
-		signer    = transaction.MakeSigner(api.backend.ChainConfig(), blockNumber.ToBig())
+		signer    = transaction.MakeSignerWithTimestamp(api.backend.ChainConfig(), blockNumber.ToBig(), block.Time())
 		results   = make([]*txTraceResult, len(txs))
 	)
 	for i, tx := range txs {
@@ -244,7 +244,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 			return nil, err
 		}
 		results[i] = &txTraceResult{Result: res}
-		statedb.FinalizeTx(api.backend.ChainConfig().Rules(blockNumber.Uint64()), state.NewNoopWriter())
+		statedb.FinalizeTx(api.backend.ChainConfig().RulesWithTimestamp(blockNumber.Uint64(), block.Time()), state.NewNoopWriter())
 	}
 	return results, nil
 }

@@ -220,6 +220,64 @@ func TestRulesWithTimestamp(t *testing.T) {
 	}
 }
 
+func TestRulesWithTimestampForkInheritance(t *testing.T) {
+	cfg := &ChainConfig{
+		ChainID:   big.NewInt(1),
+		OsakaTime: big.NewInt(0),
+	}
+
+	rules := cfg.RulesWithTimestamp(0, 0)
+
+	if !rules.IsOsaka {
+		t.Fatal("IsOsaka should be true at Osaka activation")
+	}
+	for name, enabled := range map[string]bool{
+		"IsPectra":           rules.IsPectra,
+		"IsPrague":           rules.IsPrague,
+		"IsCancun":           rules.IsCancun,
+		"IsShanghai":         rules.IsShanghai,
+		"IsLondon":           rules.IsLondon,
+		"IsBerlin":           rules.IsBerlin,
+		"IsIstanbul":         rules.IsIstanbul,
+		"IsPetersburg":       rules.IsPetersburg,
+		"IsConstantinople":   rules.IsConstantinople,
+		"IsByzantium":        rules.IsByzantium,
+		"IsSpuriousDragon":   rules.IsSpuriousDragon,
+		"IsTangerineWhistle": rules.IsTangerineWhistle,
+		"IsHomestead":        rules.IsHomestead,
+	} {
+		if !enabled {
+			t.Fatalf("%s should inherit as active at Osaka", name)
+		}
+	}
+}
+
+func TestRulesWithTimestampDoesNotInferBlockForksFromLaterBlockForks(t *testing.T) {
+	cfg := &ChainConfig{
+		ChainID:               big.NewInt(1),
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(100),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(200),
+		BerlinBlock:           big.NewInt(300),
+		LondonBlock:           big.NewInt(0),
+	}
+
+	rules := cfg.RulesWithTimestamp(150, 150)
+	if !rules.IsLondon {
+		t.Fatal("IsLondon should follow explicit block activation")
+	}
+	if rules.IsIstanbul {
+		t.Fatal("IsIstanbul should not be inferred from London for block-based schedules")
+	}
+	if rules.IsBerlin {
+		t.Fatal("IsBerlin should not be inferred from London for block-based schedules")
+	}
+}
+
 func TestChainConfigByChainName(t *testing.T) {
 	mainnet := ChainConfigByChainName(networkname.MainnetChainName)
 	if mainnet == nil {

@@ -721,6 +721,7 @@ func memoryDataCopy(stack *stack.Stack) (uint64, bool) {
 // Osaka = Pectra + EOF
 func newOsakaInstructionSet() JumpTable {
 	instructionSet := newPectraInstructionSet()
+	enable7939(&instructionSet) // EIP-7939: CLZ instruction
 	enableEOF(&instructionSet)
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
@@ -734,4 +735,3 @@ func init() {
 	// Register EOF enabler
 	activators[3540] = enableEOF // EIP-3540: EOF
 }
-

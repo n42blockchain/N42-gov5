@@ -100,6 +100,40 @@ func TestNewRegistryBerlin(t *testing.T) {
 	t.Log("✓ Berlin registry has correct precompiles")
 }
 
+func TestNewRegistryOsakaAddsP256(t *testing.T) {
+	rules := &params.Rules{
+		IsByzantium: true,
+		IsIstanbul:  true,
+		IsBerlin:    true,
+		IsCancun:    true,
+		IsPrague:    true,
+		IsPectra:    true,
+		IsOsaka:     true,
+	}
+	registry := NewRegistry(rules)
+
+	p256Addr := types.HexToAddress("0x0000000000000000000000000000000000000100")
+	if !registry.Has(p256Addr) {
+		t.Fatal("Expected Osaka registry to expose P-256 precompile at 0x100")
+	}
+
+	modexpAddr := types.BytesToAddress([]byte{5})
+	p, ok := registry.Lookup(modexpAddr)
+	if !ok || p == nil {
+		t.Fatal("Expected Osaka registry to expose MODEXP precompile at 0x05")
+	}
+	input := make([]byte, 96+32+32+32)
+	input[31] = 32
+	input[63] = 32
+	input[95] = 32
+	input[96+31] = 2
+	input[96+32+31] = 10
+	input[96+32+32+31] = 13
+	if gas := p.RequiredGas(input); gas < 500 {
+		t.Fatalf("Osaka MODEXP gas = %d, want >= 500 with EIP-7883 active", gas)
+	}
+}
+
 func TestRegistryLookup(t *testing.T) {
 	rules := &params.Rules{IsByzantium: true, IsIstanbul: true}
 	registry := NewRegistry(rules)
@@ -241,7 +275,7 @@ func TestFromLegacyMap(t *testing.T) {
 
 func TestEcrecoverPrecompile(t *testing.T) {
 	ecrecover := NewEcrecover()
-	
+
 	// Test gas calculation
 	gas := ecrecover.RequiredGas(make([]byte, 128))
 	if gas != 3000 { // EcrecoverGas
@@ -253,7 +287,7 @@ func TestEcrecoverPrecompile(t *testing.T) {
 
 func TestSha256Precompile(t *testing.T) {
 	sha := NewSha256()
-	
+
 	// Test with known input
 	input := []byte("hello")
 	output, err := sha.Run(input)
@@ -269,7 +303,7 @@ func TestSha256Precompile(t *testing.T) {
 
 func TestDataCopyPrecompile(t *testing.T) {
 	dataCopy := NewDataCopy()
-	
+
 	// Test data copy
 	input := []byte{1, 2, 3, 4, 5}
 	output, err := dataCopy.Run(input)
@@ -282,4 +316,3 @@ func TestDataCopyPrecompile(t *testing.T) {
 
 	t.Log("✓ DataCopy precompile works correctly")
 }
-

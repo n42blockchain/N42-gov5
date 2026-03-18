@@ -1,0 +1,316 @@
+package api
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"math/big"
+
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hash"
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/rlp"
+	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
+	internalcore "github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
+	vmcore "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/lib/common/fixedgas"
+	"github.com/n42blockchain/N42/lib/txpool/txpoolcfg"
+	"github.com/n42blockchain/N42/params"
+)
+
+var (
+	errBlobTxMissingHashes       = errors.New("blob transaction missing blob hashes")
+	errBlobTxTooManyBlobs        = errors.New("blob transaction has too many blobs")
+	errSetCodeTxEmptyAuthList    = errors.New("EIP-7702 transaction with empty auth list")
+	errBlobTxContractCreation    = errors.New("input string too short for common.Address, decoding into (types.BlobTx).To")
+	errSetCodeTxContractCreation = errors.New("input string too short for common.Address, decoding into (types.SetCodeTx).To")
+	errTxGasLimitTooHigh         = errors.New("transaction gas limit too high")
+	errFloorDataGasTooLow        = errors.New("insufficient gas for floor data gas cost")
+	errInitCodeSizeExceeded      = errors.New("max initcode size exceeded")
+)
+
+func validateExecutionPayloadTransactions(txs []hexutil.Bytes, cfg *params.ChainConfig, blockNumber, timestamp, baseFee, blockGasLimit uint64) error {
+	rules := &params.Rules{ChainID: new(big.Int)}
+	if cfg != nil {
+		rules = cfg.RulesWithTimestamp(blockNumber, timestamp)
+	}
+	baseFeeValue := uint256.NewInt(baseFee)
+
+	for _, txBytes := range txs {
+		if len(txBytes) == 0 {
+			continue
+		}
+		tx, err := transaction.DecodeEthereumTransaction(txBytes)
+		if err != nil {
+			return err
+		}
+		if err := validateExecutionPayloadTransaction(tx, rules, baseFeeValue, blockGasLimit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateExecutionPayloadHeader(header, parent *block.Header, cfg *params.ChainConfig) error {
+	if header == nil {
+		return errors.New("missing execution payload header")
+	}
+	if header.GasLimit > params.MaxGasLimit {
+		return fmt.Errorf("invalid gasLimit: have %v, max %v", header.GasLimit, params.MaxGasLimit)
+	}
+	if header.GasUsed > header.GasLimit {
+		return fmt.Errorf("invalid gasUsed: have %d, gasLimit %d", header.GasUsed, header.GasLimit)
+	}
+	if parent == nil {
+		return nil
+	}
+	blockNumber := uint64FromUint256OrZero(header.Number)
+	if cfg != nil && cfg.IsLondon(blockNumber) {
+		return misc.VerifyEip1559Header(cfg, parent, header)
+	}
+	return misc.VerifyGaslimit(parent.GasLimit, header.GasLimit)
+}
+
+func validateExecutionPayloadBlockRLPSize(blk block.IBlock, rawTxs []hexutil.Bytes, cfg *params.ChainConfig, opts enginePayloadHashOptions) error {
+	if blk == nil || cfg == nil {
+		return nil
+	}
+	header, ok := blk.Header().(*block.Header)
+	if !ok || header == nil {
+		return nil
+	}
+	rules := cfg.RulesWithTimestamp(uint64FromUint256OrZero(header.Number), header.Time)
+	if rules == nil || (!rules.IsOsaka && !rules.IsFusaka) {
+		return nil
+	}
+	size, err := executionPayloadBlockRLPSize(blk, rawTxs, cfg, opts)
+	if err != nil {
+		return err
+	}
+	return vmcore.ValidateRLPBlockSize(size, true)
+}
+
+func executionPayloadBlockRLPSize(blk block.IBlock, rawTxs []hexutil.Bytes, cfg *params.ChainConfig, opts enginePayloadHashOptions) (uint64, error) {
+	header, ok := blk.Header().(*block.Header)
+	if !ok || header == nil {
+		return 0, fmt.Errorf("unexpected execution payload header type %T", blk.Header())
+	}
+	encodedTxs := make([]interface{}, 0, len(rawTxs))
+	for _, tx := range rawTxs {
+		encodedTxs = append(encodedTxs, blockRLPTransaction(tx))
+	}
+	blockRLP := []interface{}{
+		enginePayloadRLPHeader(header, cfg, opts),
+		encodedTxs,
+		[]interface{}{},
+	}
+	if includeWithdrawalsInPayloadBlockBody(header, cfg, opts) {
+		if opts.withdrawals != nil {
+			blockRLP = append(blockRLP, opts.withdrawals)
+		} else {
+			blockRLP = append(blockRLP, []*Withdrawal{})
+		}
+	}
+	var buf bytes.Buffer
+	if err := rlp.Encode(&buf, blockRLP); err != nil {
+		return 0, err
+	}
+	return uint64(buf.Len()), nil
+}
+
+func blockRLPTransaction(tx hexutil.Bytes) interface{} {
+	// Legacy transactions are already raw RLP lists inside the payload.
+	// Typed transactions (EIP-2718 and descendants) are opaque byte strings in
+	// the block body and must be RLP-wrapped by the outer block encoder.
+	if len(tx) > 0 && tx[0] >= 0xc0 {
+		return rawRLP(tx)
+	}
+	return []byte(tx)
+}
+
+func includeWithdrawalsInPayloadBlockBody(header *block.Header, cfg *params.ChainConfig, opts enginePayloadHashOptions) bool {
+	if opts.includeWithdrawals {
+		return true
+	}
+	if cfg == nil {
+		return false
+	}
+	return cfg.IsShanghai(uint64FromUint256OrZero(header.Number))
+}
+
+func enginePayloadRLPHeader(header *block.Header, cfg *params.ChainConfig, opts enginePayloadHashOptions) *ethRPCHeader {
+	var (
+		baseFee         *big.Int
+		withdrawalsHash *types.Hash
+		blobGasUsed     *uint64
+		excessBlobGas   *uint64
+		requestsHash    *types.Hash
+	)
+	number := uint64FromUint256OrZero(header.Number)
+	if header.BaseFee != nil {
+		baseFee = header.BaseFee.ToBig()
+	}
+	if includeWithdrawalsInPayloadBlockBody(header, cfg, opts) {
+		root := withdrawalsRoot(opts.withdrawals)
+		withdrawalsHash = &root
+	}
+	if opts.includeBlobFields || (cfg != nil && (cfg.IsCancun(number) || cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time))) {
+		blobGasUsed = new(uint64)
+		excessBlobGas = new(uint64)
+		*blobGasUsed = header.BlobGasUsed
+		*excessBlobGas = header.ExcessBlobGas
+	}
+	if opts.requestsHash != nil {
+		requestsHash = opts.requestsHash
+	} else if cfg != nil && (cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
+		root := executionRequestsHash(nil)
+		requestsHash = &root
+	}
+	return &ethRPCHeader{
+		ParentHash:       header.ParentHash,
+		UncleHash:        hash.EmptyUncleHash,
+		Coinbase:         header.Coinbase,
+		Root:             header.Root,
+		TxHash:           header.TxHash,
+		ReceiptHash:      header.ReceiptHash,
+		Bloom:            block.BytesToBloom(header.Bloom.Bytes()),
+		Difficulty:       uint256ToBigOrZero(header.Difficulty),
+		Number:           uint256ToBigOrZero(header.Number),
+		GasLimit:         header.GasLimit,
+		GasUsed:          header.GasUsed,
+		Time:             header.Time,
+		Extra:            header.Extra,
+		MixDigest:        header.MixDigest,
+		Nonce:            block.EncodeNonce(header.Nonce.Uint64()),
+		BaseFee:          baseFee,
+		WithdrawalsHash:  withdrawalsHash,
+		BlobGasUsed:      blobGasUsed,
+		ExcessBlobGas:    excessBlobGas,
+		ParentBeaconRoot: opts.parentBeaconRoot,
+		RequestsHash:     requestsHash,
+	}
+}
+
+func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *params.Rules, baseFee *uint256.Int, blockGasLimit uint64) error {
+	if tx == nil {
+		return nil
+	}
+	isContractCreation := tx.To() == nil
+	if rules.IsShanghai && isContractCreation && len(tx.Data()) > fixedgas.MaxInitCodeSize {
+		return errInitCodeSizeExceeded
+	}
+	if rules.IsOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
+		return errTxGasLimitTooHigh
+	}
+
+	switch tx.Type() {
+	case transaction.LegacyTxType:
+	case transaction.AccessListTxType:
+		if !rules.IsBerlin {
+			return internalcore.ErrTxTypeNotSupported
+		}
+	case transaction.DynamicFeeTxType:
+		if !rules.IsLondon {
+			return internalcore.ErrTxTypeNotSupported
+		}
+	case transaction.BlobTxType:
+		if !rules.IsCancun {
+			return internalcore.ErrTxTypeNotSupported
+		}
+		if isContractCreation {
+			return errBlobTxContractCreation
+		}
+		if len(tx.BlobHashes()) == 0 {
+			return errBlobTxMissingHashes
+		}
+		if uint64(len(tx.BlobHashes())) > maxBlobsPerTx(rules) {
+			return errBlobTxTooManyBlobs
+		}
+	case transaction.SetCodeTxType:
+		if !rules.IsPrague {
+			return internalcore.ErrTxTypeNotSupported
+		}
+		if isContractCreation {
+			return errSetCodeTxContractCreation
+		}
+		if len(tx.AuthList()) == 0 {
+			return errSetCodeTxEmptyAuthList
+		}
+	default:
+		return internalcore.ErrTxTypeNotSupported
+	}
+
+	if tx.Gas() > blockGasLimit {
+		return internalcore.ErrGasLimitReached
+	}
+	if tx.GasFeeCapIntCmp(tx.GasTipCap()) < 0 {
+		return internalcore.ErrTipAboveFeeCap
+	}
+	if rules.IsLondon {
+		if _, err := tx.EffectiveGasTip(baseFee); err != nil {
+			return err
+		}
+	}
+
+	accessListLen, storageKeysLen := accessListStats(tx.AccessList())
+	intrinsicGas, floorGas, reason := txpoolcfg.CalcIntrinsicGas(
+		uint64(len(tx.Data())),
+		countNonZeroBytes(tx.Data()),
+		uint64(len(tx.AuthList())),
+		accessListLen,
+		storageKeysLen,
+		isContractCreation,
+		rules.IsHomestead,
+		rules.IsIstanbul,
+		rules.IsShanghai,
+		rules.IsPrague,
+	)
+	if reason != txpoolcfg.Success {
+		return fmt.Errorf("intrinsic gas calculation failed: %s", reason)
+	}
+	if rules.IsPrague && floorGas > intrinsicGas {
+		intrinsicGas = floorGas
+		if tx.Gas() < floorGas {
+			return errFloorDataGasTooLow
+		}
+	}
+	if tx.Gas() < intrinsicGas {
+		return internalcore.ErrIntrinsicGas
+	}
+	return nil
+}
+
+func countNonZeroBytes(data []byte) uint64 {
+	var count uint64
+	for _, b := range data {
+		if b != 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func accessListStats(accessList transaction.AccessList) (uint64, uint64) {
+	var addresses uint64
+	var storageKeys uint64
+	for _, tuple := range accessList {
+		addresses++
+		storageKeys += uint64(len(tuple.StorageKeys))
+	}
+	return addresses, storageKeys
+}
+
+func maxBlobsPerTx(rules *params.Rules) uint64 {
+	switch {
+	case rules.IsOsaka:
+		return transaction.MaxBlobsPerBlock
+	case rules.IsPectra || rules.IsPrague:
+		return 9
+	default:
+		return transaction.MaxBlobsPerBlock
+	}
+}

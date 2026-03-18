@@ -218,20 +218,22 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	}
 
 	head := &block.Header{
-		ParentHash:  g.GenesisConfig.ParentHash,
-		Coinbase:    g.GenesisConfig.Coinbase,
-		Root:        stateRoot,
-		TxHash:      txHash,
-		ReceiptHash: receiptHash,
-		Difficulty:  g.GenesisConfig.Difficulty,
-		Number:      uint256.NewInt(g.GenesisConfig.Number),
-		GasLimit:    g.GenesisConfig.GasLimit,
-		GasUsed:     g.GenesisConfig.GasUsed,
-		Time:        uint64(g.GenesisConfig.Timestamp),
-		Extra:       g.GenesisConfig.ExtraData,
-		MixDigest:   g.GenesisConfig.Mixhash,
-		Nonce:       block.EncodeNonce(g.GenesisConfig.Nonce),
-		BaseFee:     g.GenesisConfig.BaseFee,
+		ParentHash:    g.GenesisConfig.ParentHash,
+		Coinbase:      g.GenesisConfig.Coinbase,
+		Root:          stateRoot,
+		TxHash:        txHash,
+		ReceiptHash:   receiptHash,
+		Difficulty:    g.GenesisConfig.Difficulty,
+		Number:        uint256.NewInt(g.GenesisConfig.Number),
+		GasLimit:      g.GenesisConfig.GasLimit,
+		GasUsed:       g.GenesisConfig.GasUsed,
+		Time:          uint64(g.GenesisConfig.Timestamp),
+		Extra:         g.GenesisConfig.ExtraData,
+		MixDigest:     g.GenesisConfig.Mixhash,
+		Nonce:         block.EncodeNonce(g.GenesisConfig.Nonce),
+		BaseFee:       g.GenesisConfig.BaseFee,
+		BlobGasUsed:   g.GenesisConfig.BlobGasUsed,
+		ExcessBlobGas: g.GenesisConfig.ExcessBlobGas,
 	}
 	if len(ExtraData) > 0 {
 		head.Extra = ExtraData

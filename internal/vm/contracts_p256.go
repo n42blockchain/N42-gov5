@@ -41,8 +41,9 @@ import (
 // =============================================================================
 
 const (
-	// P256VerifyGas is the gas cost for P256VERIFY precompile
-	P256VerifyGas = 3450
+	// P256VerifyGas is the gas cost for P256VERIFY precompile.
+	// EEST Osaka fixtures expect 6900 gas per EIP-7951.
+	P256VerifyGas = 6900
 
 	// P256VerifyInputLength is the expected input length
 	P256VerifyInputLength = 160
@@ -273,4 +274,3 @@ func calculateP256Y(x *big.Int, params *elliptic.CurveParams) *big.Int {
 func GetP256Ecrecover() PrecompiledContract {
 	return &p256Ecrecover{}
 }
-

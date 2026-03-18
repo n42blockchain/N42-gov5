@@ -47,7 +47,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 	if chainID == nil {
 		chainID = new(big.Int)
 	}
-	return &Rules{
+	rules := &Rules{
 		ChainID:               new(big.Int).Set(chainID),
 		IsHomestead:           c.IsHomestead(num),
 		IsTangerineWhistle:    c.IsTangerineWhistle(num),
@@ -70,6 +70,36 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsParlia:              c.Parlia != nil,
 		IsAura:                c.Aura != nil,
 		IsBeijing:             c.IsBeijing(num),
+	}
+	rules.applyForkInheritance()
+	return rules
+}
+
+func (r *Rules) applyForkInheritance() {
+	if r == nil {
+		return
+	}
+	if r.IsFusaka {
+		r.IsOsaka = true
+	}
+	if r.IsOsaka {
+		r.IsPectra = true
+	}
+	if r.IsPectra {
+		r.IsPrague = true
+	}
+	if r.IsPrague {
+		r.IsCancun = true
+		r.IsShanghai = true
+		r.IsLondon = true
+		r.IsBerlin = true
+		r.IsIstanbul = true
+		r.IsPetersburg = true
+		r.IsConstantinople = true
+		r.IsByzantium = true
+		r.IsSpuriousDragon = true
+		r.IsTangerineWhistle = true
+		r.IsHomestead = true
 	}
 }
 

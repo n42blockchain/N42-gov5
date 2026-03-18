@@ -194,17 +194,13 @@ var PrecompiledContractsPrague = map[types.Address]PrecompiledContract{
 
 // PrecompiledContractsPectra contains the default set of pre-compiled Ethereum
 // contracts used in the Pectra release. Same as Prague (BLS12-381 + PQ included).
-// Pectra = Prague + Electra consensus changes
+// Pectra = Prague + Electra consensus changes.
 var PrecompiledContractsPectra = PrecompiledContractsPrague
 
 // PrecompiledContractsOsaka contains the default set of pre-compiled Ethereum
-// contracts used in the Osaka release. Same as Pectra (EOF support, no new precompiles).
-var PrecompiledContractsOsaka = PrecompiledContractsPectra
-
-// PrecompiledContractsFusaka contains the default set of pre-compiled Ethereum
-// contracts used in the Fusaka release. Includes Osaka precompiles + EIP-7823/7883 MODEXP
-// updates + P-256 precompile (EIP-7951).
-var PrecompiledContractsFusaka = map[types.Address]PrecompiledContract{
+// contracts used in the Osaka release. Osaka keeps Prague/Pectra precompiles
+// and updates MODEXP for EIP-7823/EIP-7883, while adding the P-256 precompile.
+var PrecompiledContractsOsaka = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{1}):                                  &ecrecover{},
 	types.BytesToAddress([]byte{2}):                                  &sha256hash{},
 	types.BytesToAddress([]byte{3}):                                  &ripemd160hash{},
@@ -224,11 +220,15 @@ var PrecompiledContractsFusaka = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{0x11}):                               &bls12381Pairing{},
 	types.BytesToAddress([]byte{0x12}):                               &bls12381MapG1{},
 	types.BytesToAddress([]byte{0x13}):                               &bls12381MapG2{},
-	types.HexToAddress("0x0000000000000000000000000000000000000100"): &p256Verify{},       // EIP-7951: P-256 precompile
+	types.HexToAddress("0x0000000000000000000000000000000000000100"): &p256Verify{},       // EIP-7951
 	types.BytesToAddress([]byte{0x14}):                               &falconVerify{},     // PQ: Falcon-512 signature verification
 	types.BytesToAddress([]byte{0x15}):                               &dilithium2Verify{}, // PQ: Dilithium2 signature verification
 	types.BytesToAddress([]byte{0x16}):                               &dilithium3Verify{}, // PQ: Dilithium3 signature verification
 }
+
+// PrecompiledContractsFusaka contains the default set of pre-compiled Ethereum
+// contracts used in the Fusaka release. Today it inherits Osaka's precompile set.
+var PrecompiledContractsFusaka = PrecompiledContractsOsaka
 
 var (
 	PrecompiledAddressesMoran          []types.Address
@@ -514,6 +514,9 @@ func (c *bigModExp) RequiredGas(input []byte) uint64 {
 	// Calculate the gas cost of the operation
 	gas := new(big.Int).Set(math.BigMax(modLen, baseLen))
 	if c.eip2565 {
+		if c.eip7883 {
+			return CalcModExpGas7883(baseLen, expLen, modLen, expHead)
+		}
 		// EIP-2565 has three changes
 		// 1. Different multComplexity (inlined here)
 		// in EIP-2565 (https://eips.ethereum.org/EIPS/eip-2565):
@@ -534,20 +537,6 @@ func (c *bigModExp) RequiredGas(input []byte) uint64 {
 		}
 
 		gasVal := gas.Uint64()
-
-		// EIP-7883: Apply 3x multiplier for gas cost
-		if c.eip7883 {
-			// Check for overflow before multiplying
-			if gasVal > math.MaxUint64/modexpGasMultiplierEIP7883 {
-				return math.MaxUint64
-			}
-			gasVal *= modexpGasMultiplierEIP7883
-			// Apply minimum gas of 500
-			if gasVal < modexpMinGasEIP7883 {
-				return modexpMinGasEIP7883
-			}
-			return gasVal
-		}
 
 		// 3. Minimum price of 200 gas (EIP-2565)
 		if gasVal < 200 {
@@ -858,8 +847,8 @@ func GetDataCopy() PrecompiledContract { return &dataCopy{} }
 // GetBigModExp returns a big modular exponentiation precompile instance.
 // Parameters:
 //   - eip2565: enables EIP-2565 gas repricing (Berlin+)
-//   - eip7823: enables EIP-7823 input size limits (max 1024 bytes, Fusaka+)
-//   - eip7883: enables EIP-7883 gas cost increase (3x multiplier, min 500, Fusaka+)
+//   - eip7823: enables EIP-7823 input size limits (max 1024 bytes, Osaka+)
+//   - eip7883: enables EIP-7883 gas cost increase (3x multiplier, min 500, Osaka+)
 func GetBigModExp(eip2565, eip7823, eip7883 bool) PrecompiledContract {
 	return &bigModExp{eip2565: eip2565, eip7823: eip7823, eip7883: eip7883}
 }

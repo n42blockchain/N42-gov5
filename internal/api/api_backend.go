@@ -322,7 +322,7 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *block.B
 		return nil, evmtypes.BlockContext{}, statedb, nil
 	}
 
-	signer := transaction.MakeSigner(eth.BlockChain().Config(), uint256ToBigOrZero(blk.Number64()))
+	signer := transaction.MakeSignerWithTimestamp(eth.BlockChain().Config(), uint256ToBigOrZero(blk.Number64()), blk.Time())
 	getHeader := func(hash types.Hash, number uint64) *block.Header {
 		return rawdb.ReadHeader(dbTx, hash, number)
 	}

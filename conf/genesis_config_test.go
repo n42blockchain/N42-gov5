@@ -142,6 +142,8 @@ func TestGenesisUnmarshalPreservesExplicitHeaderFields(t *testing.T) {
 		"stateRoot": "0x95a6b74fbcb35dd5bd4dc03e03236164da625fc661cadfe58674b7cd27e664e1",
 		"transactionsTrie": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
 		"receiptTrie": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+		"blobGasUsed": "0x0",
+		"excessBlobGas": "0x60000",
 		"hash": "0xcb4c993e716e052eac1d566becae628b24d0f490c4efaff9f4153b8cf092a5f0",
 		"alloc": {}
 	}`
@@ -162,6 +164,12 @@ func TestGenesisUnmarshalPreservesExplicitHeaderFields(t *testing.T) {
 	}
 	if genesis.Hash != types.HexToHash("0xcb4c993e716e052eac1d566becae628b24d0f490c4efaff9f4153b8cf092a5f0") {
 		t.Fatalf("unexpected hash: %s", genesis.Hash)
+	}
+	if genesis.BlobGasUsed != 0 {
+		t.Fatalf("unexpected blobGasUsed: got %d want 0", genesis.BlobGasUsed)
+	}
+	if genesis.ExcessBlobGas != 0x60000 {
+		t.Fatalf("unexpected excessBlobGas: got %d want %d", genesis.ExcessBlobGas, 0x60000)
 	}
 }
 

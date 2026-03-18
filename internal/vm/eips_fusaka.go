@@ -121,8 +121,8 @@ const (
 	// Set to 8192 bits (1024 bytes) to prevent DoS attacks
 	ModExpMaxInputLen = 1024
 
-	// ModExpMaxGas is the maximum gas that can be charged for MODEXP
-	// This caps the worst-case gas consumption
+	// ModExpMaxGas is retained as a Fusaka configuration hint for operators.
+	// MODEXP gas accounting does not clamp to this value.
 	ModExpMaxGas = 10_000_000
 )
 
@@ -155,51 +155,47 @@ var (
 // =============================================================================
 
 const (
-	// ModExpGasMultiplier7883 is the multiplier for MODEXP gas calculation
-	// Increased to 1.5x (represented as 3/2) in Fusaka
-	ModExpGasMultiplier7883Num = 3
-	ModExpGasMultiplier7883Den = 2
+	// ModExpLargeBaseModulusMultiplier7883 doubles the large-input multiplication
+	// complexity versus EIP-2565.
+	ModExpLargeBaseModulusMultiplier7883 = 2
+
+	// ModExpExponentByteMultiplier7883 doubles the per-byte weight of exponent
+	// bytes above the first 32.
+	ModExpExponentByteMultiplier7883 = 16
 
 	// ModExpMinGas7883 is the minimum gas for MODEXP operations
-	ModExpMinGas7883 = 200
+	ModExpMinGas7883 = 500
 )
 
 // CalcModExpGas7883 calculates MODEXP gas with EIP-7883 adjustments
 func CalcModExpGas7883(baseLen, expLen, modLen *big.Int, expHead *big.Int) uint64 {
-	// Use existing complexity calculation
 	multiComplexity := modexpMultComplexityFusaka(modLen, baseLen)
-
-	// Calculate adjusted exponent length
 	adjExpLen := adjustedExpLength(expLen, expHead)
 
-	// Gas = multiComplexity * max(adjExpLen, 1) / 3 * (3/2)
 	gas := new(big.Int).Set(multiComplexity)
 	gas.Mul(gas, bigMax(adjExpLen, big1))
-	gas.Div(gas, big20)
 
-	// Apply EIP-7883 multiplier (3/2)
-	gas.Mul(gas, big.NewInt(ModExpGasMultiplier7883Num))
-	gas.Div(gas, big.NewInt(ModExpGasMultiplier7883Den))
-
-	// Enforce minimum gas
+	if !gas.IsUint64() {
+		return ^uint64(0)
+	}
 	if gas.Uint64() < ModExpMinGas7883 {
 		return ModExpMinGas7883
-	}
-
-	// Enforce maximum gas (EIP-7823)
-	if !gas.IsUint64() || gas.Uint64() > ModExpMaxGas {
-		return ModExpMaxGas
 	}
 
 	return gas.Uint64()
 }
 
-// modexpMultComplexityFusaka calculates complexity for Fusaka (same as Berlin)
+// modexpMultComplexityFusaka calculates the MODEXP multiplication complexity
+// for EIP-7883.
 func modexpMultComplexityFusaka(modLen, baseLen *big.Int) *big.Int {
 	x := bigMax(modLen, baseLen)
+	if x.Cmp(big32) <= 0 {
+		return big.NewInt(16)
+	}
 	words := new(big.Int).Add(x, big.NewInt(7))
 	words.Div(words, big.NewInt(8))
-	return new(big.Int).Mul(words, words)
+	wordsSquared := new(big.Int).Mul(words, words)
+	return wordsSquared.Mul(wordsSquared, big.NewInt(ModExpLargeBaseModulusMultiplier7883))
 }
 
 // adjustedExpLength calculates adjusted exponent length for gas
@@ -210,9 +206,9 @@ func adjustedExpLength(expLen, expHead *big.Int) *big.Int {
 		}
 		return big.NewInt(0)
 	}
-	// For expLen > 32: 8 * (expLen - 32) + bitLen(expHead) - 1
+	// For expLen > 32: 16 * (expLen - 32) + bitLen(expHead) - 1
 	result := new(big.Int).Sub(expLen, big.NewInt(32))
-	result.Mul(result, big.NewInt(8))
+	result.Mul(result, big.NewInt(ModExpExponentByteMultiplier7883))
 	if expHead.BitLen() > 0 {
 		result.Add(result, big.NewInt(int64(expHead.BitLen()-1)))
 	}
@@ -269,8 +265,8 @@ type FusakaBlobParams struct {
 // DefaultFusakaBlobParams returns default Fusaka blob parameters
 func DefaultFusakaBlobParams() FusakaBlobParams {
 	return FusakaBlobParams{
-		MaxBlobsPerBlock:    12,                    // Increased from 9 (Pectra)
-		TargetBlobsPerBlock: 8,                     // Increased from 6 (Pectra)
+		MaxBlobsPerBlock:    12,                          // Increased from 9 (Pectra)
+		TargetBlobsPerBlock: 8,                           // Increased from 6 (Pectra)
 		BlobGasPerBlob:      params.BlobTxBlobGasPerBlob, // 131072
 		MaxBlobGasPerBlock:  12 * params.BlobTxBlobGasPerBlob,
 	}
@@ -352,13 +348,15 @@ func GetDefaultBlockGasLimit(isFusaka bool) uint64 {
 // to prevent DoS attacks through oversized blocks.
 // =============================================================================
 
-// MaxRLPBlockSizeFusaka is the maximum RLP-encoded block size (10MB)
-const MaxRLPBlockSizeFusaka = 10 * 1024 * 1024
+// MaxRLPBlockSizeFusaka is the maximum RLP-encoded block size enforced by
+// EIP-7934 from Osaka onward: 10 MiB block size minus the 2 MiB safety margin.
+const MaxRLPBlockSizeFusaka = 8 * 1024 * 1024
 
-// ValidateRLPBlockSize validates RLP block size (EIP-7934)
-func ValidateRLPBlockSize(size uint64, isFusaka bool) error {
-	if !isFusaka {
-		return nil // No limit before Fusaka
+// ValidateRLPBlockSize validates the EIP-7934 RLP block size limit once the
+// fork is active.
+func ValidateRLPBlockSize(size uint64, eip7934Active bool) error {
+	if !eip7934Active {
+		return nil
 	}
 	if size > MaxRLPBlockSizeFusaka {
 		return ErrRLPBlockSizeTooLarge
@@ -380,7 +378,7 @@ var ErrRLPBlockSizeTooLarge = errors.New("RLP block size exceeds maximum")
 var P256VerifyAddress = types.HexToAddress("0x0000000000000000000000000000000000000100")
 
 // P256VERIFY precompile gas cost
-const P256VerifyGasFusaka = 3450
+const P256VerifyGasFusaka = 6900
 
 // =============================================================================
 // Fusaka JumpTable Modifications
@@ -470,5 +468,3 @@ func DefaultFusakaConfig() FusakaConfig {
 		BlobParams:           DefaultFusakaBlobParams(),
 	}
 }
-
-

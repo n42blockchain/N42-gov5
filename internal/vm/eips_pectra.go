@@ -40,7 +40,7 @@ var DelegationPrefix = []byte{0xef, 0x01, 0x00}
 // Gas costs for EIP-7702
 const (
 	// PerAuthBaseCost is the base gas cost per authorization tuple
-	PerAuthBaseCost = 2500
+	PerAuthBaseCost = 12500
 
 	// PerEmptyAccountCost is the gas cost for each newly created account
 	PerEmptyAccountCost = 25000
@@ -582,4 +582,3 @@ func DecodeExecutionRequest(data []byte) (byte, []byte, error) {
 }
 
 var errEmptyRequest = errors.New("empty execution request")
-

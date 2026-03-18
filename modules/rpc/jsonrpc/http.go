@@ -31,7 +31,10 @@ import (
 )
 
 const (
-	maxRequestContentLength = 1024 * 1024 * 5
+	// Engine API payloads can exceed 16 MiB once an 8 MiB RLP block is
+	// represented as hex-encoded JSON transactions, so keep enough headroom
+	// for Osaka/EIP-7934 while still bounding request size.
+	maxRequestContentLength = 32 * 1024 * 1024
 	contentType             = "application/json"
 )
 

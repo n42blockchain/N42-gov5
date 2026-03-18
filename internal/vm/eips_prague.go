@@ -21,7 +21,7 @@ import (
 )
 
 // =============================================================================
-// EIP-7939: CLZ - Count Leading Zeros (Prague/Fusaka)
+// EIP-7939: CLZ - Count Leading Zeros (Osaka/Fusaka)
 // https://eips.ethereum.org/EIPS/eip-7939
 // =============================================================================
 

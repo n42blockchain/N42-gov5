@@ -507,7 +507,9 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 		return ErrInsufficientFunds
 	}
 
-	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.To() == nil, true, pool.istanbul, pool.shanghai)
+	current := pool.bc.CurrentBlock()
+	isPrague := pool.chainconfig != nil && current != nil && pool.chainconfig.IsPrague(current.Time())
+	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, pool.shanghai, isPrague)
 	if err != nil {
 		return err
 	}

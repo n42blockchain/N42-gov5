@@ -45,7 +45,7 @@ func testBlobTxBytes(t *testing.T, hashes []types.Hash) hexutil.Bytes {
 		S:          uint256.NewInt(1),
 	})
 
-	data, err := tx.Marshal()
+	data, err := transaction.EncodeEthereumTransaction(tx)
 	require.NoError(t, err)
 	return hexutil.Bytes(data)
 }
@@ -89,6 +89,185 @@ func TestEngineAPIBlobInputValidation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, resp.Status)
 	require.Equal(t, errBlobHashMismatch.Error(), *resp.ValidationError)
+}
+
+func TestEngineAPIBlobRejectsIntrinsicGasTooLowTransaction(t *testing.T) {
+	t.Parallel()
+
+	api, headHash := newEnginePayloadTestAPI()
+	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
+	beaconRoot := types.Hash{0x99}
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	tx := transaction.NewTx(&transaction.AccessListTx{
+		ChainID:    uint256.NewInt(1),
+		Nonce:      1,
+		GasPrice:   uint256.NewInt(7),
+		Gas:        params.TxGas - 1,
+		To:         &to,
+		Value:      uint256.NewInt(0),
+		AccessList: transaction.AccessList{},
+		V:          uint256.NewInt(0),
+		R:          uint256.NewInt(1),
+		S:          uint256.NewInt(1),
+	})
+	raw, err := transaction.EncodeEthereumTransaction(tx)
+	require.NoError(t, err)
+
+	resp, err := engine.NewPayloadV3(context.Background(), &ExecutionPayloadV3{
+		ParentHash:    headHash,
+		FeeRecipient:  types.Address{0x22},
+		StateRoot:     types.Hash{0x33},
+		ReceiptsRoot:  types.Hash{0x44},
+		LogsBloom:     make([]byte, 256),
+		PrevRandao:    types.Hash{0x55},
+		BlockNumber:   hexutil.Uint64(1),
+		GasLimit:      hexutil.Uint64(30_000_000),
+		GasUsed:       hexutil.Uint64(0),
+		Timestamp:     hexutil.Uint64(2),
+		BaseFeePerGas: hexutil.Uint64(1),
+		BlockHash:     types.Hash{0x66},
+		Transactions:  []hexutil.Bytes{raw},
+		Withdrawals:   []*Withdrawal{},
+		BlobGasUsed:   hexUint64Ptr(0),
+		ExcessBlobGas: hexUint64Ptr(0),
+	}, nil, &beaconRoot)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.NotNil(t, resp.ValidationError)
+	require.Equal(t, "intrinsic gas too low", *resp.ValidationError)
+}
+
+func TestEngineAPIBlobRejectsGasLimitBelowMinimum(t *testing.T) {
+	t.Parallel()
+
+	api, headHash := newEnginePayloadTestAPI()
+	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
+	beaconRoot := types.Hash{0x99}
+
+	payload := &ExecutionPayloadV3{
+		ParentHash:    headHash,
+		FeeRecipient:  types.Address{0x22},
+		StateRoot:     types.Hash{0x33},
+		ReceiptsRoot:  types.Hash{0x44},
+		LogsBloom:     make([]byte, 256),
+		PrevRandao:    types.Hash{0x55},
+		BlockNumber:   hexutil.Uint64(1),
+		GasLimit:      hexutil.Uint64(params.MinGasLimit - 1),
+		GasUsed:       hexutil.Uint64(0),
+		Timestamp:     hexutil.Uint64(2),
+		BaseFeePerGas: hexutil.Uint64(1),
+		Transactions:  nil,
+		Withdrawals:   []*Withdrawal{},
+		BlobGasUsed:   hexUint64Ptr(0),
+		ExcessBlobGas: hexUint64Ptr(0),
+	}
+	blk, err := executionPayloadV3ToBlock(payload)
+	require.NoError(t, err)
+	payload.BlockHash = ethCompatibleEngineBlockHash(blk, api.chainConfig, enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   &beaconRoot,
+	})
+
+	resp, err := engine.NewPayloadV3(context.Background(), payload, nil, &beaconRoot)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.NotNil(t, resp.ValidationError)
+	require.Contains(t, *resp.ValidationError, "invalid gas limit")
+}
+
+func TestEngineAPIBlobRejectsGasLimitBelowMinimumWhenParentResolvedViaCurrentHeadHash(t *testing.T) {
+	t.Parallel()
+
+	genesisHeader := &block.Header{
+		Number:        uint256.NewInt(0),
+		Difficulty:    uint256.NewInt(0),
+		GasLimit:      params.MinGasLimit,
+		GasUsed:       0,
+		Time:          0,
+		BaseFee:       uint256.NewInt(7),
+		BlobGasUsed:   0,
+		ExcessBlobGas: 0,
+	}
+	genesisBlock := block.NewBlock(genesisHeader, nil)
+	chain := &canonicalCheckChainStub{
+		header:              genesisHeader,
+		blk:                 genesisBlock,
+		disableHeaderByHash: true,
+	}
+	cfg := &params.ChainConfig{
+		BerlinBlock:   big.NewInt(0),
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(0),
+		CancunBlock:   big.NewInt(0),
+	}
+	api := &API{
+		bc:            chain,
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+	engineV1 := NewEngineAPIV1(NewBlockChainAPI(api))
+	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
+	headHash := engineV1.currentHeadHash()
+	beaconRoot := types.Hash{}
+
+	payload := &ExecutionPayloadV3{
+		ParentHash:    headHash,
+		FeeRecipient:  types.Address{0x22},
+		StateRoot:     types.Hash{0x33},
+		ReceiptsRoot:  types.Hash{0x44},
+		LogsBloom:     make([]byte, 256),
+		PrevRandao:    types.Hash{0x55},
+		BlockNumber:   hexutil.Uint64(1),
+		GasLimit:      hexutil.Uint64(0),
+		GasUsed:       hexutil.Uint64(0),
+		Timestamp:     hexutil.Uint64(12),
+		BaseFeePerGas: hexutil.Uint64(7),
+		Transactions:  nil,
+		Withdrawals:   []*Withdrawal{},
+		BlobGasUsed:   hexUint64Ptr(0),
+		ExcessBlobGas: hexUint64Ptr(0),
+	}
+	blk, err := executionPayloadV3ToBlock(payload)
+	require.NoError(t, err)
+	payload.BlockHash = ethCompatibleEngineBlockHash(blk, cfg, enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   &beaconRoot,
+	})
+
+	resp, err := engine.NewPayloadV3(context.Background(), payload, nil, &beaconRoot)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.NotNil(t, resp.ValidationError)
+	require.Contains(t, *resp.ValidationError, "invalid gas limit")
+}
+
+func TestEngineAPIBlobRejectsOsakaPayloadAboveBlobGasAllowance(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newEnginePayloadTestAPI()
+	api.chainConfig.OsakaTime = big.NewInt(0)
+	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
+	beaconRoot := types.Hash{0x99}
+	hashes := make([]types.Hash, 10)
+	for i := range hashes {
+		hashes[i] = testVersionedHash(byte(i + 1))
+	}
+
+	resp, err := engine.NewPayloadV3(context.Background(), &ExecutionPayloadV3{
+		Timestamp:     hexutil.Uint64(2),
+		Transactions:  []hexutil.Bytes{testBlobTxBytes(t, hashes)},
+		BlobGasUsed:   hexUint64Ptr(uint64(len(hashes)) * transaction.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: hexUint64Ptr(0),
+	}, hashes, &beaconRoot)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.NotNil(t, resp.ValidationError)
+	require.Equal(t, "blob gas used 1310720 exceeds maximum allowance 1179648", *resp.ValidationError)
 }
 
 func TestEngineAPIBlobForkchoiceRequiresState(t *testing.T) {
@@ -233,11 +412,13 @@ func newEnginePayloadTestAPI() (*API, types.Hash) {
 		blk:    genesisBlock,
 	}
 	cfg := &params.ChainConfig{
+		BerlinBlock:   big.NewInt(0),
 		LondonBlock:   big.NewInt(0),
 		ShanghaiBlock: big.NewInt(0),
 		CancunBlock:   big.NewInt(0),
 		PragueTime:    big.NewInt(0),
 		PectraTime:    big.NewInt(0),
+		OsakaTime:     big.NewInt(0),
 	}
 	api := &API{
 		bc:            chain,

@@ -65,6 +65,9 @@ func (tx *AccessListTx) copy() TxData {
 		Value:      new(uint256.Int),
 		ChainID:    new(uint256.Int),
 		GasPrice:   new(uint256.Int),
+		V:          new(uint256.Int),
+		R:          new(uint256.Int),
+		S:          new(uint256.Int),
 	}
 	copy(cpy.AccessList, tx.AccessList)
 	if tx.Value != nil {

@@ -152,9 +152,21 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(payload.GasLimit)); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.chainConfig(), enginePayloadHashOptions{}); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
 	blockHash := ethCompatibleBlockHash(blk, e.chainConfig())
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
+	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), e.parentHeader(payload.ParentHash), e.chainConfig()); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	if err := e.validatePayloadExecution(blk, payload.ParentHash); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
 	}
 	headHash := e.currentHeadHash()
 	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
@@ -178,12 +190,27 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(payload.GasLimit)); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+	}); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
 	blockHash := ethCompatibleEngineBlockHash(blk, e.chainConfig(), enginePayloadHashOptions{
 		includeWithdrawals: true,
 		withdrawals:        payload.Withdrawals,
 	})
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
+	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), e.parentHeader(payload.ParentHash), e.chainConfig()); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	if err := e.validatePayloadExecution(blk, payload.ParentHash); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
 	}
 	headHash := e.currentHeadHash()
 	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
@@ -223,7 +250,7 @@ func (e *EngineAPIV1) ForkchoiceUpdatedV1(ctx context.Context, state *Forkchoice
 	if head == nil {
 		return syncingForkchoiceResponse(), nil
 	}
-	headHash := ethCompatibleBlockHash(head, e.chainConfig())
+	headHash := e.currentHeadHash()
 	if state.HeadBlockHash != headHash {
 		return syncingForkchoiceResponse(), nil
 	}
@@ -335,6 +362,25 @@ func (e *EngineAPIV1) currentHeadHash() types.Hash {
 	return ethCompatibleBlockHash(head, e.chainConfig())
 }
 
+func (e *EngineAPIV1) parentHeader(hash types.Hash) *block.Header {
+	if head := e.currentHead(); head != nil && e.currentHeadHash() == hash {
+		return blockHeader(head)
+	}
+	if overlay := e.overlay(); overlay != nil {
+		if blk := overlay.blockByHash(hash); blk != nil {
+			return blockHeader(blk)
+		}
+	}
+	if e == nil || e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil {
+		return nil
+	}
+	header, _ := e.api.api.BlockChain().GetHeaderByHash(hash)
+	if concrete, ok := header.(*block.Header); ok {
+		return concrete
+	}
+	return nil
+}
+
 func (e *EngineAPIV1) builtPayload(payloadID PayloadID) *engineBuiltPayload {
 	if overlay := e.overlay(); overlay != nil {
 		return overlay.builtPayload(payloadID)
@@ -347,6 +393,14 @@ func (e *EngineAPIV1) chainConfig() *params.ChainConfig {
 		return nil
 	}
 	return e.api.api.GetChainConfig()
+}
+
+func blockHeader(blk block.IBlock) *block.Header {
+	if blk == nil {
+		return nil
+	}
+	header, _ := blk.Header().(*block.Header)
+	return header
 }
 
 func cloneWithdrawals(withdrawals []*Withdrawal) []*Withdrawal {

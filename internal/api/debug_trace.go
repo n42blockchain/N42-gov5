@@ -190,7 +190,7 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 
 	// Replay transactions up to the target
 	txs := blk.Transactions()
-	signer := transaction.MakeSigner(debug.api.GetChainConfig(), headerNumber.ToBig())
+	signer := transaction.MakeSignerWithTimestamp(debug.api.GetChainConfig(), headerNumber.ToBig(), header.Time)
 
 	for i := 0; i < txIndex; i++ {
 		msg, err := txs[i].AsMessage(signer, header.BaseFee64())
@@ -206,7 +206,7 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 		if _, err := internal.ApplyMessage(evm, msg, gp, true, false); err != nil {
 			return nil, err
 		}
-		ibs.FinalizeTx(debug.api.GetChainConfig().Rules(headerNumber.Uint64()), state.NewNoopWriter())
+		ibs.FinalizeTx(debug.api.GetChainConfig().RulesWithTimestamp(headerNumber.Uint64(), header.Time), state.NewNoopWriter())
 	}
 
 	// Execute the target transaction with tracing

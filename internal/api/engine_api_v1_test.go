@@ -210,6 +210,87 @@ func TestEngineAPIV1BuildsAndImportsMinimalPayload(t *testing.T) {
 	}
 }
 
+func TestForkchoiceUpdatedV2UsesOverlayHeadHashWhenAttrsNil(t *testing.T) {
+	t.Parallel()
+
+	genesisHeader := &block.Header{
+		Number:     uint256.NewInt(0),
+		Difficulty: uint256.NewInt(0),
+		GasLimit:   30_000_000,
+		GasUsed:    0,
+		Time:       14999,
+		BaseFee:    uint256.NewInt(1),
+	}
+	genesisBlock := block.NewBlock(genesisHeader, nil)
+	chain := &canonicalCheckChainStub{
+		header: genesisHeader,
+		blk:    genesisBlock,
+	}
+	cfg := &params.ChainConfig{
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(10),
+	}
+	api := &API{
+		bc:            chain,
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIV1(NewBlockChainAPI(api))
+
+	genesisHash := engine.currentHeadHash()
+	attrs := &PayloadAttributesV2{
+		PayloadAttributesV1: PayloadAttributesV1{
+			Timestamp:             15000,
+			PrevRandao:            typesHashFromHexByte(0x33),
+			SuggestedFeeRecipient: types.Address{0x44},
+		},
+		Withdrawals: []*Withdrawal{{
+			Index:          hexutil.Uint64(1),
+			ValidatorIndex: hexutil.Uint64(2),
+			Address:        types.Address{0x55},
+			Amount:         hexutil.Uint64(3),
+		}},
+	}
+
+	buildResp, err := engine.ForkchoiceUpdatedV2(context.Background(), &ForkchoiceStateV1{
+		HeadBlockHash: genesisHash,
+	}, attrs)
+	if err != nil {
+		t.Fatalf("ForkchoiceUpdatedV2(build) error = %v", err)
+	}
+	if buildResp.PayloadStatus.Status != PayloadStatusValid {
+		t.Fatalf("ForkchoiceUpdatedV2(build).Status = %q, want %q", buildResp.PayloadStatus.Status, PayloadStatusValid)
+	}
+	if buildResp.PayloadID == nil {
+		t.Fatal("ForkchoiceUpdatedV2(build) returned nil payload ID")
+	}
+
+	built, err := engine.GetPayloadV2(context.Background(), *buildResp.PayloadID)
+	if err != nil {
+		t.Fatalf("GetPayloadV2() error = %v", err)
+	}
+	importResp, err := engine.NewPayloadV2(context.Background(), built.ExecutionPayload)
+	if err != nil {
+		t.Fatalf("NewPayloadV2() error = %v", err)
+	}
+	if importResp.Status != PayloadStatusValid {
+		t.Fatalf("NewPayloadV2().Status = %q, want %q", importResp.Status, PayloadStatusValid)
+	}
+
+	finalResp, err := engine.ForkchoiceUpdatedV2(context.Background(), &ForkchoiceStateV1{
+		HeadBlockHash: built.ExecutionPayload.BlockHash,
+	}, nil)
+	if err != nil {
+		t.Fatalf("ForkchoiceUpdatedV2(finalize) error = %v", err)
+	}
+	if finalResp.PayloadStatus.Status != PayloadStatusValid {
+		t.Fatalf("ForkchoiceUpdatedV2(finalize).Status = %q, want %q", finalResp.PayloadStatus.Status, PayloadStatusValid)
+	}
+	if finalResp.PayloadID != nil {
+		t.Fatalf("ForkchoiceUpdatedV2(finalize).PayloadID = %v, want nil", finalResp.PayloadID)
+	}
+}
+
 func typesHashFromHexByte(b byte) types.Hash {
 	var h types.Hash
 	h[31] = b

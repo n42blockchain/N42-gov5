@@ -361,6 +361,26 @@ func TestNewEVMBlockContextPreservesBaseFee(t *testing.T) {
 	}
 }
 
+func TestNewEVMBlockContextPopulatesBlobFeeFields(t *testing.T) {
+	author := types.Address{0x42}
+	header := &block.Header{
+		ExcessBlobGas: transaction.BlobTxTargetBlobGasPerBlock,
+	}
+
+	ctx := NewEVMBlockContext(header, nil, nil, &author)
+
+	if ctx.BlobBaseFee == nil {
+		t.Fatal("BlobBaseFee should be initialized")
+	}
+	want := transaction.CalcBlobFee(header.ExcessBlobGas)
+	if ctx.BlobBaseFee.Cmp(want) != 0 {
+		t.Fatalf("BlobBaseFee = %v, want %v", ctx.BlobBaseFee, want)
+	}
+	if ctx.ExcessBlobGas != header.ExcessBlobGas {
+		t.Fatalf("ExcessBlobGas = %d, want %d", ctx.ExcessBlobGas, header.ExcessBlobGas)
+	}
+}
+
 func TestGetHashFnRejectsMissingRefHeaderNumber(t *testing.T) {
 	called := false
 	getHash := GetHashFn(&block.Header{}, func(hash types.Hash, number uint64) *block.Header {

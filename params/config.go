@@ -157,7 +157,14 @@ type ChainConfig struct {
 	PragueTime *big.Int `json:"pragueTime,omitempty"`
 	PectraTime *big.Int `json:"pectraTime,omitempty"`
 	OsakaTime  *big.Int `json:"osakaTime,omitempty"`
+	BPO1Time   *big.Int `json:"bpo1Time,omitempty"`
+	BPO2Time   *big.Int `json:"bpo2Time,omitempty"`
+	BPO3Time   *big.Int `json:"bpo3Time,omitempty"`
+	BPO4Time   *big.Int `json:"bpo4Time,omitempty"`
+	BPO5Time   *big.Int `json:"bpo5Time,omitempty"`
 	FusakaTime *big.Int `json:"fusakaTime,omitempty"`
+
+	BlobSchedule *BlobSchedule `json:"blobSchedule,omitempty"`
 
 	// BSC / custom fork fields
 	NanoBlock    *big.Int `json:"nanoBlock,omitempty" toml:",omitempty"`
