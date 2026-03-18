@@ -195,6 +195,63 @@ func TestEngineAPIBlobRejectsBlobTxBelowBlockBlobFee(t *testing.T) {
 	require.Equal(t, errBlobTxFeeCapTooLow.Error(), *resp.ValidationError)
 }
 
+func TestEngineAPIBlobRejectsInvalidExcessBlobGasBeforeBlobFeeValidation(t *testing.T) {
+	t.Parallel()
+
+	api, headHash := newEnginePayloadTestAPI()
+	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
+	beaconRoot := types.Hash{0x99}
+
+	tx := transaction.NewTx(&transaction.BlobTx{
+		ChainID:    uint256.NewInt(1),
+		Nonce:      1,
+		GasTipCap:  uint256.NewInt(1),
+		GasFeeCap:  uint256.NewInt(2),
+		Gas:        50_000,
+		To:         types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Value:      uint256.NewInt(0),
+		BlobFeeCap: uint256.NewInt(1),
+		BlobHashes: []types.Hash{testVersionedHash(1)},
+		V:          uint256.NewInt(0),
+		R:          uint256.NewInt(1),
+		S:          uint256.NewInt(1),
+	})
+	raw, err := transaction.EncodeEthereumTransaction(tx)
+	require.NoError(t, err)
+
+	payload := &ExecutionPayloadV3{
+		ParentHash:    headHash,
+		FeeRecipient:  types.Address{0x22},
+		StateRoot:     types.Hash{0x33},
+		ReceiptsRoot:  types.Hash{0x44},
+		LogsBloom:     make([]byte, 256),
+		PrevRandao:    types.Hash{0x55},
+		BlockNumber:   hexutil.Uint64(1),
+		GasLimit:      hexutil.Uint64(30_000_000),
+		GasUsed:       hexutil.Uint64(0),
+		Timestamp:     hexutil.Uint64(2),
+		BaseFeePerGas: hexutil.Uint64(1),
+		Transactions:  []hexutil.Bytes{raw},
+		Withdrawals:   []*Withdrawal{},
+		BlobGasUsed:   hexUint64Ptr(transaction.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: hexUint64Ptr(^uint64(0)),
+	}
+	blk, err := executionPayloadV3ToBlock(payload)
+	require.NoError(t, err)
+	payload.BlockHash = ethCompatibleEngineBlockHash(blk, api.chainConfig, enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   &beaconRoot,
+	})
+
+	resp, err := engine.NewPayloadV3(context.Background(), payload, tx.BlobHashes(), &beaconRoot)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.NotNil(t, resp.ValidationError)
+	require.Contains(t, *resp.ValidationError, "incorrect excess blob gas")
+}
+
 func TestEngineAPIBlobRejectsGasLimitBelowMinimum(t *testing.T) {
 	t.Parallel()
 

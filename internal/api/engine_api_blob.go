@@ -197,6 +197,9 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), e.v1().parentHeader(payload.ParentHash), e.v1().chainConfig()); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
 	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
@@ -216,9 +219,6 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	})
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
-	}
-	if err := validateExecutionPayloadHeader(blockHeader(blk), e.v1().parentHeader(payload.ParentHash), e.v1().chainConfig()); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
 	}
 	if err := e.v1().validatePayloadExecution(blk, payload.ParentHash); err != nil {
 		return invalidPayloadResponse(err.Error()), nil

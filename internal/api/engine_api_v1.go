@@ -152,6 +152,9 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), e.parentHeader(payload.ParentHash), e.chainConfig()); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
 	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), 0, uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
@@ -161,9 +164,6 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 	blockHash := ethCompatibleBlockHash(blk, e.chainConfig())
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
-	}
-	if err := validateExecutionPayloadHeader(blockHeader(blk), e.parentHeader(payload.ParentHash), e.chainConfig()); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
 	}
 	if err := e.validatePayloadExecution(blk, payload.ParentHash); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
@@ -190,6 +190,9 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), e.parentHeader(payload.ParentHash), e.chainConfig()); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
 	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), 0, uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
@@ -205,9 +208,6 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	})
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
-	}
-	if err := validateExecutionPayloadHeader(blockHeader(blk), e.parentHeader(payload.ParentHash), e.chainConfig()); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
 	}
 	if err := e.validatePayloadExecution(blk, payload.ParentHash); err != nil {
 		return invalidPayloadResponse(err.Error()), nil

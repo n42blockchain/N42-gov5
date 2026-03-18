@@ -166,6 +166,9 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), e.blobAPI().v1().parentHeader(payload.ParentHash), e.blobAPI().v1().chainConfig()); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
 	if err := validateExecutionPayloadTransactions(payload.Transactions, e.blobAPI().v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
@@ -193,9 +196,6 @@ func (e *EngineAPIv4) NewPayloadV4(
 	})
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
-	}
-	if err := validateExecutionPayloadHeader(blockHeader(blk), e.blobAPI().v1().parentHeader(payload.ParentHash), e.blobAPI().v1().chainConfig()); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
 	}
 	if err := e.blobAPI().v1().validatePayloadExecution(blk, payload.ParentHash); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
