@@ -33,6 +33,8 @@ type Message struct {
 	gasPrice   uint256.Int
 	feeCap     uint256.Int
 	tip        uint256.Int
+	blobFeeCap *uint256.Int
+	blobHashes []types.Hash
 	data       []byte
 	accessList AccessList
 	authList   AuthorizationList
@@ -40,13 +42,14 @@ type Message struct {
 	isFree     bool
 }
 
-func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uint256.Int, gasLimit uint64, gasPrice *uint256.Int, feeCap, tip *uint256.Int, data []byte, accessList AccessList, checkNonce bool, isFree bool) Message {
+func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uint256.Int, gasLimit uint64, gasPrice *uint256.Int, feeCap, tip, blobFeeCap *uint256.Int, blobHashes []types.Hash, data []byte, accessList AccessList, checkNonce bool, isFree bool) Message {
 	m := Message{
 		from:       from,
 		to:         to,
 		nonce:      nonce,
 		amount:     *amount,
 		gasLimit:   gasLimit,
+		blobHashes: append([]types.Hash(nil), blobHashes...),
 		data:       data,
 		accessList: accessList,
 		checkNonce: checkNonce,
@@ -61,6 +64,9 @@ func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uin
 	if feeCap != nil {
 		m.feeCap.Set(feeCap)
 	}
+	if blobFeeCap != nil {
+		m.blobFeeCap = new(uint256.Int).Set(blobFeeCap)
+	}
 	return m
 }
 
@@ -72,12 +78,16 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 		gasPrice:   copyUint256OrZero(tx.GasPrice()),
 		feeCap:     copyUint256OrZero(tx.GasFeeCap()),
 		tip:        copyUint256OrZero(tx.GasTipCap()),
+		blobHashes: append([]types.Hash(nil), tx.BlobHashes()...),
 		to:         tx.To(),
 		amount:     copyUint256OrZero(tx.Value()),
 		data:       tx.Data(),
 		accessList: tx.AccessList(),
 		authList:   tx.AuthList(),
 		checkNonce: false,
+	}
+	if blobFeeCap := tx.BlobFeeCap(); blobFeeCap != nil {
+		msg.blobFeeCap = new(uint256.Int).Set(blobFeeCap)
 	}
 
 	if baseFee != nil {
@@ -115,6 +125,8 @@ func (m Message) To() *types.Address          { return m.to }
 func (m Message) GasPrice() *uint256.Int      { return &m.gasPrice }
 func (m Message) FeeCap() *uint256.Int        { return &m.feeCap }
 func (m Message) Tip() *uint256.Int           { return &m.tip }
+func (m Message) BlobFeeCap() *uint256.Int    { return m.blobFeeCap }
+func (m Message) BlobHashes() []types.Hash    { return m.blobHashes }
 func (m Message) Value() *uint256.Int         { return &m.amount }
 func (m Message) Gas() uint64                 { return m.gasLimit }
 func (m Message) Nonce() uint64               { return m.nonce }

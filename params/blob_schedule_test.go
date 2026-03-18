@@ -3,6 +3,8 @@ package params
 import (
 	"math/big"
 	"testing"
+
+	"github.com/holiman/uint256"
 )
 
 func TestBlobScheduleDefaultsFollowForks(t *testing.T) {
@@ -81,5 +83,50 @@ func TestCalcExcessBlobGasUsesActiveTarget(t *testing.T) {
 	}
 	if got := cfg.CalcExcessBlobGas(parentExcess, parentBlobGasUsed, 20); got != 3*BlobTxBlobGasPerBlob {
 		t.Fatalf("CalcExcessBlobGas(osaka) = %d, want %d", got, 3*BlobTxBlobGasPerBlob)
+	}
+}
+
+func TestCalcExcessBlobGasWithBaseFeeUsesOsakaReservePriceFormula(t *testing.T) {
+	cfg := &ChainConfig{
+		PragueTime: big.NewInt(0),
+		OsakaTime:  big.NewInt(20),
+	}
+
+	parentExcess := uint64(6 * BlobTxBlobGasPerBlob)
+	parentBlobGasUsed := uint64(0)
+	parentBaseFee := uint256.NewInt(108)
+
+	if got := cfg.CalcExcessBlobGasWithBaseFee(parentExcess, parentBlobGasUsed, parentBaseFee, 20); got != parentExcess {
+		t.Fatalf("CalcExcessBlobGasWithBaseFee(osaka reserve active) = %d, want %d", got, parentExcess)
+	}
+}
+
+func TestCalcExcessBlobGasWithBaseFeeActivatesReserveBeforeRoundedReservePriceIncreases(t *testing.T) {
+	cfg := &ChainConfig{
+		PragueTime: big.NewInt(0),
+		OsakaTime:  big.NewInt(20),
+	}
+
+	parentExcess := uint64(6 * BlobTxBlobGasPerBlob)
+	parentBlobGasUsed := uint64(0)
+	parentBaseFee := uint256.NewInt(18)
+
+	if got := cfg.CalcExcessBlobGasWithBaseFee(parentExcess, parentBlobGasUsed, parentBaseFee, 20); got != parentExcess {
+		t.Fatalf("CalcExcessBlobGasWithBaseFee(osaka reserve threshold) = %d, want %d", got, parentExcess)
+	}
+}
+
+func TestCalcExcessBlobGasWithBaseFeeKeepsBelowTargetAtZero(t *testing.T) {
+	cfg := &ChainConfig{
+		PragueTime: big.NewInt(0),
+		OsakaTime:  big.NewInt(20),
+	}
+
+	parentExcess := uint64(3 * BlobTxBlobGasPerBlob)
+	parentBlobGasUsed := uint64(0)
+	parentBaseFee := uint256.NewInt(108)
+
+	if got := cfg.CalcExcessBlobGasWithBaseFee(parentExcess, parentBlobGasUsed, parentBaseFee, 20); got != 0 {
+		t.Fatalf("CalcExcessBlobGasWithBaseFee(osaka reserve active below target) = %d, want 0", got)
 	}
 }

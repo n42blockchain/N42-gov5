@@ -50,7 +50,7 @@ func TestValidateExecutionPayloadTransactionsRejectsBlobWithoutHashes(t *testing
 		S:          uint256.NewInt(1),
 	})
 
-	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 1, 30_000_000)
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 1, 0, 30_000_000)
 	require.ErrorIs(t, err, errBlobTxMissingHashes)
 }
 
@@ -76,7 +76,7 @@ func TestValidateExecutionPayloadTransactionsRejectsSetCodeEmptyAuthList(t *test
 		S:         uint256.NewInt(1),
 	})
 
-	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 1, 30_000_000)
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 1, 0, 30_000_000)
 	require.ErrorIs(t, err, errSetCodeTxEmptyAuthList)
 }
 
@@ -112,7 +112,7 @@ func TestValidateExecutionPayloadTransactionsAcceptsPragueSetCodeTx(t *testing.T
 		S: uint256.NewInt(1),
 	})
 
-	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 7, 30_000_000)
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 7, 0, 30_000_000)
 	require.NoError(t, err)
 }
 
@@ -138,7 +138,7 @@ func TestValidateExecutionPayloadTransactionsAcceptsOsakaBlobTxViaForkInheritanc
 		S:          uint256.NewInt(1),
 	})
 
-	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 0, 7, 30_000_000)
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 0, 7, 0, 30_000_000)
 	require.NoError(t, err)
 }
 
@@ -169,7 +169,7 @@ func TestValidateExecutionPayloadTransactionsRejectsOsakaBlobTxAbovePerTxLimit(t
 		S:          uint256.NewInt(1),
 	})
 
-	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 0, 7, 30_000_000)
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 0, 7, 0, 30_000_000)
 	require.ErrorIs(t, err, errBlobTxTooManyBlobs)
 }
 
@@ -200,7 +200,7 @@ func TestValidateExecutionPayloadTransactionsRejectsPragueFloorGas(t *testing.T)
 		tx.Data()[i] = 0x01
 	}
 
-	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 0, 30_000_000)
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 0, 0, 30_000_000)
 	require.ErrorIs(t, err, errFloorDataGasTooLow)
 }
 
@@ -223,7 +223,7 @@ func TestValidateExecutionPayloadTransactionsRejectsOsakaGasLimitCap(t *testing.
 		S:        uint256.NewInt(1),
 	})
 
-	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 0, 30_000_000)
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 0, 0, 30_000_000)
 	require.ErrorIs(t, err, errTxGasLimitTooHigh)
 }
 
@@ -246,7 +246,7 @@ func TestValidateExecutionPayloadTransactionsRejectsOversizedInitCode(t *testing
 		S:        uint256.NewInt(1),
 	})
 
-	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 0, 30_000_000)
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 0, 0, 30_000_000)
 	require.ErrorIs(t, err, errInitCodeSizeExceeded)
 }
 
@@ -270,8 +270,36 @@ func TestValidateExecutionPayloadTransactionsRejectsTxGasAboveBlockGasLimit(t *t
 		S:        uint256.NewInt(1),
 	})
 
-	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 7, 21_000)
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 7, 0, 21_000)
 	require.ErrorIs(t, err, internalcore.ErrGasLimitReached)
+}
+
+func TestValidateExecutionPayloadTransactionsRejectsBlobTxBelowBlockBlobFee(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:       big.NewInt(1),
+		LondonBlock:   big.NewInt(0),
+		CancunBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(0),
+	}
+	tx := transaction.NewTx(&transaction.BlobTx{
+		ChainID:    uint256.NewInt(1),
+		Nonce:      1,
+		GasTipCap:  uint256.NewInt(1),
+		GasFeeCap:  uint256.NewInt(2),
+		Gas:        50_000,
+		To:         types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Value:      uint256.NewInt(0),
+		BlobFeeCap: uint256.NewInt(0),
+		BlobHashes: []types.Hash{testVersionedHash(1)},
+		V:          uint256.NewInt(0),
+		R:          uint256.NewInt(1),
+		S:          uint256.NewInt(1),
+	})
+
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 1, 0, 30_000_000)
+	require.ErrorIs(t, err, errBlobTxFeeCapTooLow)
 }
 
 func TestValidateExecutionPayloadHeaderRejectsGasLimitBelowMinimum(t *testing.T) {
@@ -301,6 +329,111 @@ func TestValidateExecutionPayloadHeaderRejectsGasUsedAboveGasLimit(t *testing.T)
 
 	err := validateExecutionPayloadHeader(header, nil, nil)
 	require.EqualError(t, err, "invalid gasUsed: have 11, gasLimit 10")
+}
+
+func TestValidateExecutionPayloadHeaderRejectsIncorrectExcessBlobGasForOsakaSchedule(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:       big.NewInt(1),
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(0),
+		CancunBlock:   big.NewInt(0),
+		PragueTime:    big.NewInt(0),
+		PectraTime:    big.NewInt(0),
+		OsakaTime:     big.NewInt(0),
+	}
+	parent := &block.Header{
+		Number:        uint256.NewInt(0),
+		GasLimit:      30_000_000,
+		GasUsed:       0,
+		Time:          1,
+		BaseFee:       uint256.NewInt(1),
+		BlobGasUsed:   7 * params.BlobTxBlobGasPerBlob,
+		ExcessBlobGas: 0,
+	}
+	header := &block.Header{
+		Number:        uint256.NewInt(1),
+		GasLimit:      30_000_000,
+		GasUsed:       0,
+		Time:          2,
+		BaseFee:       uint256.NewInt(1),
+		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
+		ExcessBlobGas: 0,
+	}
+
+	err := validateExecutionPayloadHeader(header, parent, cfg)
+	require.EqualError(t, err, "incorrect excess blob gas: have 0, want 131072")
+}
+
+func TestValidateExecutionPayloadHeaderAcceptsOsakaReservePriceExcessBlobGas(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:       big.NewInt(1),
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(0),
+		CancunBlock:   big.NewInt(0),
+		PragueTime:    big.NewInt(0),
+		PectraTime:    big.NewInt(0),
+		OsakaTime:     big.NewInt(0),
+	}
+	parent := &block.Header{
+		Number:        uint256.NewInt(0),
+		GasLimit:      30_000_000,
+		GasUsed:       0,
+		Time:          1,
+		BaseFee:       uint256.NewInt(108),
+		BlobGasUsed:   0,
+		ExcessBlobGas: 6 * params.BlobTxBlobGasPerBlob,
+	}
+	header := &block.Header{
+		Number:        uint256.NewInt(1),
+		GasLimit:      30_000_000,
+		GasUsed:       0,
+		Time:          2,
+		BaseFee:       uint256.NewInt(95),
+		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
+		ExcessBlobGas: 6 * params.BlobTxBlobGasPerBlob,
+	}
+
+	err := validateExecutionPayloadHeader(header, parent, cfg)
+	require.NoError(t, err)
+}
+
+func TestValidateExecutionPayloadHeaderAcceptsZeroExcessBlobGasBelowTargetEvenWithReservePrice(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:       big.NewInt(1),
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(0),
+		CancunBlock:   big.NewInt(0),
+		PragueTime:    big.NewInt(0),
+		PectraTime:    big.NewInt(0),
+		OsakaTime:     big.NewInt(0),
+	}
+	parent := &block.Header{
+		Number:        uint256.NewInt(0),
+		GasLimit:      30_000_000,
+		GasUsed:       0,
+		Time:          1,
+		BaseFee:       uint256.NewInt(108),
+		BlobGasUsed:   0,
+		ExcessBlobGas: 3 * params.BlobTxBlobGasPerBlob,
+	}
+	header := &block.Header{
+		Number:        uint256.NewInt(1),
+		GasLimit:      30_000_000,
+		GasUsed:       0,
+		Time:          2,
+		BaseFee:       uint256.NewInt(95),
+		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
+		ExcessBlobGas: 0,
+	}
+
+	err := validateExecutionPayloadHeader(header, parent, cfg)
+	require.NoError(t, err)
 }
 
 func TestValidateExecutionPayloadBlockRLPSizeRejectsOsakaOversize(t *testing.T) {

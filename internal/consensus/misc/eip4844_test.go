@@ -4,8 +4,10 @@
 package misc
 
 import (
+	"math/big"
 	"testing"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -26,7 +28,7 @@ func TestVerifyEIP4844Header_Valid(t *testing.T) {
 		ExcessBlobGas: expectedExcess,
 	}
 
-	err := VerifyEIP4844Header(parent, child)
+	err := VerifyEIP4844Header(parent, child, nil)
 	if err != nil {
 		t.Fatalf("valid header should pass verification: %v", err)
 	}
@@ -43,7 +45,7 @@ func TestVerifyEIP4844Header_ZeroBlobs(t *testing.T) {
 		ExcessBlobGas: expectedExcess,
 	}
 
-	err := VerifyEIP4844Header(parent, child)
+	err := VerifyEIP4844Header(parent, child, nil)
 	if err != nil {
 		t.Fatalf("zero-blob header should pass: %v", err)
 	}
@@ -59,7 +61,7 @@ func TestVerifyEIP4844Header_ExcessBlobGasMismatch(t *testing.T) {
 		ExcessBlobGas: 999999, // Wrong value
 	}
 
-	err := VerifyEIP4844Header(parent, child)
+	err := VerifyEIP4844Header(parent, child, nil)
 	if err == nil {
 		t.Fatal("expected error for excess blob gas mismatch")
 	}
@@ -75,7 +77,7 @@ func TestVerifyEIP4844Header_BlobGasExceedsMax(t *testing.T) {
 		ExcessBlobGas: transaction.CalcExcessBlobGas(0, 0),
 	}
 
-	err := VerifyEIP4844Header(parent, child)
+	err := VerifyEIP4844Header(parent, child, nil)
 	if err == nil {
 		t.Fatal("expected error for blob gas exceeding maximum")
 	}
@@ -91,7 +93,7 @@ func TestVerifyEIP4844Header_BlobGasNotMultiple(t *testing.T) {
 		ExcessBlobGas: transaction.CalcExcessBlobGas(0, 0),
 	}
 
-	err := VerifyEIP4844Header(parent, child)
+	err := VerifyEIP4844Header(parent, child, nil)
 	if err == nil {
 		t.Fatal("expected error for blob gas not being a multiple of BlobTxBlobGasPerBlob")
 	}
@@ -108,7 +110,7 @@ func TestVerifyEIP4844Header_MaxBlobs(t *testing.T) {
 		ExcessBlobGas: transaction.CalcExcessBlobGas(0, 0),
 	}
 
-	err := VerifyEIP4844Header(parent, child)
+	err := VerifyEIP4844Header(parent, child, nil)
 	if err != nil {
 		t.Fatalf("max blob gas should be valid: %v", err)
 	}
@@ -130,7 +132,7 @@ func TestVerifyEIP4844Header_ExcessAccumulation(t *testing.T) {
 		ExcessBlobGas: expectedExcess,
 	}
 
-	err := VerifyEIP4844Header(parent, child)
+	err := VerifyEIP4844Header(parent, child, nil)
 	if err != nil {
 		t.Fatalf("accumulated excess should be valid: %v", err)
 	}
@@ -138,6 +140,29 @@ func TestVerifyEIP4844Header_ExcessAccumulation(t *testing.T) {
 	// Verify the excess is actually nonzero in this scenario.
 	if expectedExcess == 0 {
 		t.Fatal("expected nonzero excess for this test case")
+	}
+}
+
+func TestVerifyEIP4844Header_OsakaReservePrice(t *testing.T) {
+	cfg := &params.ChainConfig{
+		PragueTime: big.NewInt(0),
+		OsakaTime:  big.NewInt(0),
+	}
+	parent := &block.Header{
+		Time:          1,
+		BaseFee:       uint256.NewInt(108),
+		BlobGasUsed:   0,
+		ExcessBlobGas: 6 * params.BlobTxBlobGasPerBlob,
+	}
+	child := &block.Header{
+		Time:          2,
+		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
+		ExcessBlobGas: 6 * params.BlobTxBlobGasPerBlob,
+	}
+
+	err := VerifyEIP4844Header(parent, child, cfg)
+	if err != nil {
+		t.Fatalf("osaka reserve-price header should pass: %v", err)
 	}
 }
 

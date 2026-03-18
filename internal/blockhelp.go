@@ -74,7 +74,7 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 		&contract,
 		0, u256.Num0,
 		math.MaxUint64, u256.Num0,
-		nil, nil,
+		nil, nil, nil, nil,
 		data, nil, false,
 		true, // isFree
 	)

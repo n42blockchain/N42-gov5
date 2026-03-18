@@ -486,7 +486,7 @@ func buildExecutionPayloadV3(parent block.IBlock, parentHash types.Hash, attrs *
 	if parent != nil {
 		if parentHeader, ok := parent.Header().(*block.Header); ok && parentHeader != nil {
 			if cfg != nil {
-				excessBlobGas = cfg.CalcExcessBlobGas(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed, uint64(attrs.Timestamp))
+				excessBlobGas = cfg.CalcExcessBlobGasWithBaseFee(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed, parentHeader.BaseFee, uint64(attrs.Timestamp))
 			} else {
 				excessBlobGas = CalcExcessBlobGas(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed)
 			}

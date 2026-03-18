@@ -71,3 +71,41 @@ func TestAsMessageRejectsMissingSignerWhenSenderAbsent(t *testing.T) {
 		t.Fatal("AsMessage() error = nil, want missing signer error")
 	}
 }
+
+func TestAsMessagePreservesBlobFields(t *testing.T) {
+	key, err := crypto.HexToECDSA("4c0883a69102937d6231471b5dbb6204fe5129617082797f9d2f2e8a6f5f7c2f")
+	if err != nil {
+		t.Fatalf("HexToECDSA() error = %v", err)
+	}
+	signer := NewLondonSigner(big.NewInt(1))
+	to := types.HexToAddress("0x2222222222222222222222222222222222222222")
+	blobHash := types.HexToHash("0x010203")
+	signed, err := SignTx(NewTx(&BlobTx{
+		ChainID:    uint256.NewInt(1),
+		Nonce:      1,
+		GasTipCap:  uint256.NewInt(1),
+		GasFeeCap:  uint256.NewInt(2),
+		Gas:        21000,
+		To:         to,
+		Value:      uint256.NewInt(0),
+		BlobFeeCap: uint256.NewInt(3),
+		BlobHashes: []types.Hash{blobHash},
+		V:          uint256.NewInt(0),
+		R:          uint256.NewInt(1),
+		S:          uint256.NewInt(1),
+	}), signer, key)
+	if err != nil {
+		t.Fatalf("SignTx() error = %v", err)
+	}
+
+	msg, err := signed.AsMessage(signer, nil)
+	if err != nil {
+		t.Fatalf("AsMessage() error = %v", err)
+	}
+	if msg.BlobFeeCap() == nil || msg.BlobFeeCap().Cmp(uint256.NewInt(3)) != 0 {
+		t.Fatalf("Message.BlobFeeCap() = %v, want 3", msg.BlobFeeCap())
+	}
+	if len(msg.BlobHashes()) != 1 || msg.BlobHashes()[0] != blobHash {
+		t.Fatalf("Message.BlobHashes() = %v, want [%v]", msg.BlobHashes(), blobHash)
+	}
+}

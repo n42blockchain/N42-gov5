@@ -232,7 +232,7 @@ func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (t
 	if is1 || is2 || is3 || is4 {
 		return transaction.Message{}, errors.New("args.Value higher than 2^256-1")
 	}
-	msg := transaction.NewMessage(addr, avmtypes.ToastAddress(args.To), 0, val, gas, gp, gfc, gtc, data, accessList, false, true)
+	msg := transaction.NewMessage(addr, avmtypes.ToastAddress(args.To), 0, val, gas, gp, gfc, gtc, nil, nil, data, accessList, false, true)
 	return msg, nil
 
 }

@@ -34,6 +34,8 @@ var defaultBlobSchedule = map[string]BlobConfig{
 	"bpo5":   {Target: uint64Ptr(14), Max: uint64Ptr(21), BaseFeeUpdateFraction: uint64Ptr(13739630)},
 }
 
+const blobBaseCost7918 = 1 << 13
+
 func uint64Ptr(v uint64) *uint64 {
 	return &v
 }
@@ -146,12 +148,38 @@ func (c *ChainConfig) BlobMaxGasPerBlock(time uint64) uint64 {
 }
 
 func (c *ChainConfig) CalcExcessBlobGas(parentExcessBlobGas, parentBlobGasUsed, time uint64) uint64 {
+	return c.CalcExcessBlobGasWithBaseFee(parentExcessBlobGas, parentBlobGasUsed, nil, time)
+}
+
+func (c *ChainConfig) CalcExcessBlobGasWithBaseFee(parentExcessBlobGas, parentBlobGasUsed uint64, parentBaseFee *uint256.Int, time uint64) uint64 {
 	excessBlobGas := parentExcessBlobGas + parentBlobGasUsed
 	targetBlobGas := c.BlobTargetGasPerBlock(time)
 	if excessBlobGas < targetBlobGas {
 		return 0
 	}
+
+	if c != nil && c.IsOsaka(time) && c.isBlobReservePriceActive(parentExcessBlobGas, parentBaseFee, time) {
+		maxBlobGas := c.BlobMaxGasPerBlock(time)
+		if maxBlobGas == 0 {
+			return parentExcessBlobGas
+		}
+		blobExcessAdjustment := parentBlobGasUsed * (maxBlobGas - targetBlobGas) / maxBlobGas
+		return parentExcessBlobGas + blobExcessAdjustment
+	}
+
 	return excessBlobGas - targetBlobGas
+}
+
+func (c *ChainConfig) isBlobReservePriceActive(parentExcessBlobGas uint64, parentBaseFee *uint256.Int, time uint64) bool {
+	if c == nil || parentBaseFee == nil || !c.IsOsaka(time) {
+		return false
+	}
+	currentBlobBaseFee := c.CalcBlobFee(parentExcessBlobGas, time)
+	reserveCost := new(uint256.Int).Set(parentBaseFee)
+	reserveCost.Mul(reserveCost, uint256.NewInt(blobBaseCost7918))
+	blobFeeCost := new(uint256.Int).Set(currentBlobBaseFee)
+	blobFeeCost.Mul(blobFeeCost, uint256.NewInt(c.BlobGasPerBlob(time)))
+	return reserveCost.Cmp(blobFeeCost) > 0
 }
 
 func (c *ChainConfig) CalcBlobFee(excessBlobGas, time uint64) *uint256.Int {

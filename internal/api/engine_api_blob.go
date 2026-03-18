@@ -197,7 +197,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.v1().chainConfig(), enginePayloadHashOptions{

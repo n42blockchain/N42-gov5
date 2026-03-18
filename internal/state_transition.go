@@ -83,6 +83,8 @@ type Message interface {
 	GasPrice() *uint256.Int
 	FeeCap() *uint256.Int
 	Tip() *uint256.Int
+	BlobFeeCap() *uint256.Int
+	BlobHashes() []types.Hash
 	Gas() uint64
 	Value() *uint256.Int
 
@@ -238,6 +240,10 @@ func (st *StateTransition) buyGas(gasBailout bool) error {
 			return fmt.Errorf("%w: address %v", ErrInsufficientFunds, st.msg.From().Hex())
 		}
 	}
+	blobBalanceCheck, blobFee := st.blobFeeCost(balanceCheck)
+	if blobBalanceCheck != nil {
+		balanceCheck = blobBalanceCheck
+	}
 
 	var subBalance bool
 	if have, want := st.state.GetBalance(st.msg.From()), balanceCheck; have.Cmp(want) < 0 {
@@ -258,6 +264,9 @@ func (st *StateTransition) buyGas(gasBailout bool) error {
 
 	if subBalance {
 		st.state.SubBalance(st.msg.From(), mgval)
+		if blobFee != nil {
+			st.state.SubBalance(st.msg.From(), blobFee)
+		}
 	}
 	return nil
 }
@@ -302,6 +311,14 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 			if err := CheckEip1559TxGasFeeCap(st.msg.From(), st.gasFeeCap, st.tip, st.evm.Context().BaseFee, st.msg.IsFree()); err != nil {
 				return err
 			}
+		}
+	}
+	if len(st.msg.BlobHashes()) > 0 {
+		blobFeeCap := st.msg.BlobFeeCap()
+		currentBlobFee := st.currentBlobBaseFee()
+		if blobFeeCap == nil || currentBlobFee == nil || blobFeeCap.Lt(currentBlobFee) {
+			return fmt.Errorf("%w: address %v, blobFeeCap: %s blobBaseFee: %s", transaction.ErrBlobFeeCapTooLow,
+				st.msg.From().Hex(), formatUint256(blobFeeCap), formatUint256(currentBlobFee))
 		}
 	}
 	return st.buyGas(gasBailout)
@@ -445,6 +462,45 @@ func (st *StateTransition) refundGas(refundQuotient uint64) {
 
 func (st *StateTransition) gasUsed() uint64 {
 	return st.initialGas - st.gas
+}
+
+func (st *StateTransition) currentBlobBaseFee() *uint256.Int {
+	if len(st.msg.BlobHashes()) == 0 {
+		return nil
+	}
+	if cfg := st.evm.ChainConfig(); cfg != nil {
+		return cfg.CalcBlobFee(st.evm.Context().ExcessBlobGas, st.evm.Context().Time)
+	}
+	if st.evm.Context().BlobBaseFee == nil {
+		return nil
+	}
+	return new(uint256.Int).Set(st.evm.Context().BlobBaseFee)
+}
+
+func (st *StateTransition) blobFeeCost(balanceCheck *uint256.Int) (*uint256.Int, *uint256.Int) {
+	if len(st.msg.BlobHashes()) == 0 {
+		return nil, nil
+	}
+	blobGas := uint64(len(st.msg.BlobHashes())) * params.BlobTxBlobGasPerBlob
+	blobFeeCap := st.msg.BlobFeeCap()
+	currentBlobFee := st.currentBlobBaseFee()
+	if blobFeeCap == nil || currentBlobFee == nil {
+		return nil, nil
+	}
+	maxBlobCost := new(uint256.Int).SetUint64(blobGas)
+	maxBlobCost.Mul(maxBlobCost, blobFeeCap)
+	balanceCheck = new(uint256.Int).Add(balanceCheck, maxBlobCost)
+
+	actualBlobCost := new(uint256.Int).SetUint64(blobGas)
+	actualBlobCost.Mul(actualBlobCost, currentBlobFee)
+	return balanceCheck, actualBlobCost
+}
+
+func formatUint256(v *uint256.Int) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return v.String()
 }
 
 // toWordSize returns the ceiled word size required for init code payment calculation.
