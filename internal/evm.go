@@ -19,6 +19,7 @@ package internal
 import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
@@ -39,6 +40,7 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 	if header.BaseFee != nil {
 		baseFee.SetFromBig(header.BaseFee.ToBig())
 	}
+	blobBaseFee := transaction.CalcBlobFee(header.ExcessBlobGas)
 	difficulty := new(big.Int)
 	if header.Difficulty != nil {
 		difficulty = header.Difficulty.ToBig()
@@ -62,16 +64,18 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 	}
 
 	return evmtypes.BlockContext{
-		CanTransfer: CanTransfer,
-		Transfer:    transferFunc,
-		GetHash:     blockHashFunc,
-		Coinbase:    beneficiary,
-		BlockNumber: headerNumber,
-		Time:        header.Time,
-		Difficulty:  difficulty,
-		BaseFee:     &baseFee,
-		GasLimit:    header.GasLimit,
-		PrevRanDao:  prevRandDao,
+		CanTransfer:   CanTransfer,
+		Transfer:      transferFunc,
+		GetHash:       blockHashFunc,
+		Coinbase:      beneficiary,
+		BlockNumber:   headerNumber,
+		Time:          header.Time,
+		Difficulty:    difficulty,
+		BaseFee:       &baseFee,
+		BlobBaseFee:   blobBaseFee,
+		ExcessBlobGas: header.ExcessBlobGas,
+		GasLimit:      header.GasLimit,
+		PrevRanDao:    prevRandDao,
 	}
 }
 

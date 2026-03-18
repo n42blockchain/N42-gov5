@@ -37,6 +37,8 @@ type engineOverlay struct {
 	builtPayloads map[PayloadID]*engineBuiltPayload
 }
 
+type ethereumRawTransactions [][]byte
+
 func newEngineOverlay() *engineOverlay {
 	return &engineOverlay{
 		blocksByNum:   make(map[uint64]block.IBlock),
@@ -80,43 +82,54 @@ func ethCompatibleHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.
 		withdrawals   *types.Hash
 		blobGasUsed   *uint64
 		excessBlobGas *uint64
+		beaconRoot    *types.Hash
+		requestsHash  *types.Hash
 	)
 	number := uint64FromUint256OrZero(header.Number)
 	if header.BaseFee != nil {
 		baseFee = header.BaseFee.ToBig()
 	}
 	if cfg != nil && cfg.IsShanghai(number) {
-		withdrawals = new(types.Hash)
+		root := withdrawalsRoot(nil)
+		withdrawals = &root
 	}
 	if cfg != nil && (cfg.IsCancun(number) || cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
 		if withdrawals == nil {
-			withdrawals = new(types.Hash)
+			root := withdrawalsRoot(nil)
+			withdrawals = &root
 		}
+		beaconRoot = new(types.Hash)
 		blobGasUsed = new(uint64)
 		excessBlobGas = new(uint64)
 		*blobGasUsed = header.BlobGasUsed
 		*excessBlobGas = header.ExcessBlobGas
 	}
+	if cfg != nil && (cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
+		root := executionRequestsHash(nil)
+		requestsHash = &root
+	}
 	return hash.RlpHash(&ethRPCHeader{
-		ParentHash:      header.ParentHash,
-		UncleHash:       hash.EmptyUncleHash,
-		Coinbase:        header.Coinbase,
-		Root:            header.Root,
-		TxHash:          header.TxHash,
-		ReceiptHash:     header.ReceiptHash,
-		Bloom:           block.BytesToBloom(header.Bloom.Bytes()),
-		Difficulty:      uint256ToBigOrZero(header.Difficulty),
-		Number:          uint256ToBigOrZero(header.Number),
-		GasLimit:        header.GasLimit,
-		GasUsed:         header.GasUsed,
-		Time:            header.Time,
-		Extra:           header.Extra,
-		MixDigest:       header.MixDigest,
-		Nonce:           block.EncodeNonce(header.Nonce.Uint64()),
-		BaseFee:         baseFee,
-		WithdrawalsHash: withdrawals,
-		BlobGasUsed:     blobGasUsed,
-		ExcessBlobGas:   excessBlobGas,
+		ParentHash:       header.ParentHash,
+		UncleHash:        hash.EmptyUncleHash,
+		Coinbase:         header.Coinbase,
+		Root:             header.Root,
+		TxHash:           header.TxHash,
+		ReceiptHash:      header.ReceiptHash,
+		Bloom:            block.BytesToBloom(header.Bloom.Bytes()),
+		Difficulty:       uint256ToBigOrZero(header.Difficulty),
+		Number:           uint256ToBigOrZero(header.Number),
+		GasLimit:         header.GasLimit,
+		GasUsed:          header.GasUsed,
+		Time:             header.Time,
+		Extra:            header.Extra,
+		MixDigest:        header.MixDigest,
+		Nonce:            block.EncodeNonce(header.Nonce.Uint64()),
+		BaseFee:          baseFee,
+		WithdrawalsHash:  withdrawals,
+		BlobGasUsed:      blobGasUsed,
+		ExcessBlobGas:    excessBlobGas,
+		ParentBeaconRoot: beaconRoot,
+		RequestsHash:     requestsHash,
 	})
 }
 
@@ -148,6 +161,7 @@ func ethCompatibleEngineBlockHash(blk block.IBlock, cfg *params.ChainConfig, opt
 		withdrawalsHash *types.Hash
 		blobGasUsed     *uint64
 		excessBlobGas   *uint64
+		requestsHash    *types.Hash
 	)
 	number := uint64FromUint256OrZero(header.Number)
 	if header.BaseFee != nil {
@@ -162,6 +176,12 @@ func ethCompatibleEngineBlockHash(blk block.IBlock, cfg *params.ChainConfig, opt
 		excessBlobGas = new(uint64)
 		*blobGasUsed = header.BlobGasUsed
 		*excessBlobGas = header.ExcessBlobGas
+	}
+	if opts.requestsHash != nil {
+		requestsHash = opts.requestsHash
+	} else if cfg != nil && (cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
+		root := executionRequestsHash(nil)
+		requestsHash = &root
 	}
 	return hash.RlpHash(&ethRPCHeader{
 		ParentHash:       header.ParentHash,
@@ -184,7 +204,7 @@ func ethCompatibleEngineBlockHash(blk block.IBlock, cfg *params.ChainConfig, opt
 		BlobGasUsed:      blobGasUsed,
 		ExcessBlobGas:    excessBlobGas,
 		ParentBeaconRoot: opts.parentBeaconRoot,
-		RequestsHash:     opts.requestsHash,
+		RequestsHash:     requestsHash,
 	})
 }
 
@@ -226,14 +246,40 @@ func uint64FromUint256OrZero(v *uint256.Int) uint64 {
 	return v.Uint64()
 }
 
+func (txs ethereumRawTransactions) Len() int { return len(txs) }
+
+func (txs ethereumRawTransactions) EncodeIndex(i int, w *bytes.Buffer) {
+	w.Write(txs[i])
+}
+
+func encodeEthereumTransactions(txs []*transaction.Transaction) ([]hexutil.Bytes, types.Hash, error) {
+	if len(txs) == 0 {
+		return nil, deriveEthereumListHash(ethereumRawTransactions(nil)), nil
+	}
+	rawTxs := make(ethereumRawTransactions, 0, len(txs))
+	encodedTxs := make([]hexutil.Bytes, 0, len(txs))
+	for _, tx := range txs {
+		if tx == nil {
+			continue
+		}
+		raw, err := transaction.EncodeEthereumTransaction(tx)
+		if err != nil {
+			return nil, types.Hash{}, err
+		}
+		rawTxs = append(rawTxs, raw)
+		encodedTxs = append(encodedTxs, hexutil.Bytes(raw))
+	}
+	return encodedTxs, deriveEthereumListHash(rawTxs), nil
+}
+
 func decodeTransactions(encoded []hexutil.Bytes) ([]*transaction.Transaction, error) {
 	txs := make([]*transaction.Transaction, 0, len(encoded))
 	for _, raw := range encoded {
 		if len(raw) == 0 {
 			continue
 		}
-		tx := new(transaction.Transaction)
-		if err := tx.Unmarshal(raw); err != nil {
+		tx, err := transaction.DecodeEthereumTransaction(raw)
+		if err != nil {
 			return nil, err
 		}
 		txs = append(txs, tx)
@@ -246,11 +292,15 @@ func executionPayloadV1ToBlock(payload *ExecutionPayloadV1) (block.IBlock, error
 	if err != nil {
 		return nil, err
 	}
+	_, txRoot, err := encodeEthereumTransactions(txs)
+	if err != nil {
+		return nil, err
+	}
 	header := &block.Header{
 		ParentHash:  payload.ParentHash,
 		Coinbase:    payload.FeeRecipient,
 		Root:        payload.StateRoot,
-		TxHash:      hash.DeriveSha(transaction.Transactions(txs)),
+		TxHash:      txRoot,
 		ReceiptHash: payload.ReceiptsRoot,
 		Bloom:       block.BytesToBloom(payload.LogsBloom),
 		Difficulty:  uint256.NewInt(0),
@@ -343,16 +393,9 @@ func blockToExecutionPayloadV1(blk block.IBlock, cfg *params.ChainConfig) *Execu
 		return nil
 	}
 	txs := blk.Transactions()
-	encodedTxs := make([]hexutil.Bytes, 0, len(txs))
-	for _, tx := range txs {
-		if tx == nil {
-			continue
-		}
-		raw, err := tx.Marshal()
-		if err != nil {
-			continue
-		}
-		encodedTxs = append(encodedTxs, raw)
+	encodedTxs, _, err := encodeEthereumTransactions(txs)
+	if err != nil {
+		encodedTxs = nil
 	}
 	return &ExecutionPayloadV1{
 		ParentHash:    header.ParentHash,
@@ -442,7 +485,11 @@ func buildExecutionPayloadV3(parent block.IBlock, parentHash types.Hash, attrs *
 	excessBlobGas := uint64(0)
 	if parent != nil {
 		if parentHeader, ok := parent.Header().(*block.Header); ok && parentHeader != nil {
-			excessBlobGas = CalcExcessBlobGas(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed)
+			if cfg != nil {
+				excessBlobGas = cfg.CalcExcessBlobGas(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed, uint64(attrs.Timestamp))
+			} else {
+				excessBlobGas = CalcExcessBlobGas(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed)
+			}
 		}
 	}
 	payload := &ExecutionPayloadV3{
@@ -551,7 +598,7 @@ func (w withdrawalList) EncodeIndex(i int, buf *bytes.Buffer) {
 }
 
 func withdrawalsRoot(withdrawals []*Withdrawal) types.Hash {
-	return hash.DeriveSha(withdrawalList(withdrawals))
+	return deriveEthereumListHash(withdrawalList(withdrawals))
 }
 
 func executionRequestsHash(requests []hexutil.Bytes) types.Hash {

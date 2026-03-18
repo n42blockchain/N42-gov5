@@ -100,6 +100,16 @@ func TestMakeSignerAllowsNilInputs(t *testing.T) {
 	}
 }
 
+func TestMakeSignerWithTimestampHonorsTimeForks(t *testing.T) {
+	config := &params.ChainConfig{
+		ChainID:   big.NewInt(1),
+		OsakaTime: big.NewInt(0),
+	}
+	if !MakeSignerWithTimestamp(config, big.NewInt(1), 0).Equal(NewLondonSigner(config.ChainID)) {
+		t.Fatal("MakeSignerWithTimestamp() did not return London signer for Osaka rules")
+	}
+}
+
 func TestDecodeSignatureNoPanic(t *testing.T) {
 	// This test ensures that invalid signatures no longer cause panics
 	defer func() {
@@ -289,6 +299,77 @@ func TestHashSucceedsForSupportedTxTypes(t *testing.T) {
 			}
 			if h == (types.Hash{}) {
 				t.Error("Hash() returned empty hash")
+			}
+		})
+	}
+}
+
+func TestLondonSignerRecoversTypedTransactionSenders(t *testing.T) {
+	t.Parallel()
+
+	key, err := crypto.HexToECDSA("4c0883a69102937d6231471b5dbb6204fe512961708279c7b07b8d2f2b1dd1c7")
+	if err != nil {
+		t.Fatalf("HexToECDSA() error = %v", err)
+	}
+	expected := crypto.PubkeyToAddress(key.PublicKey)
+	chainID := big.NewInt(1)
+	signer := NewLondonSigner(chainID)
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	tests := []struct {
+		name string
+		tx   *Transaction
+	}{
+		{
+			name: "blob",
+			tx: NewTx(&BlobTx{
+				ChainID:    uint256.NewInt(1),
+				Nonce:      1,
+				GasTipCap:  uint256.NewInt(2),
+				GasFeeCap:  uint256.NewInt(9),
+				Gas:        50_000,
+				To:         to,
+				Value:      uint256.NewInt(1),
+				BlobFeeCap: uint256.NewInt(3),
+				BlobHashes: []types.Hash{types.HexToHash("0x01")},
+			}),
+		},
+		{
+			name: "setcode",
+			tx: NewTx(&SetCodeTx{
+				ChainID:   uint256.NewInt(1),
+				Nonce:     2,
+				GasTipCap: uint256.NewInt(2),
+				GasFeeCap: uint256.NewInt(9),
+				Gas:       60_000,
+				To:        &to,
+				Value:     uint256.NewInt(1),
+				AuthList: AuthorizationList{
+					{
+						ChainID: 1,
+						Address: types.HexToAddress("0x0000000000000000000000000000000000000001"),
+						Nonce:   0,
+						V:       uint256.NewInt(0),
+						R:       uint256.NewInt(1),
+						S:       uint256.NewInt(2),
+					},
+				},
+			}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signed, err := SignTx(tt.tx, signer, key)
+			if err != nil {
+				t.Fatalf("SignTx() error = %v", err)
+			}
+			from, err := Sender(signer, signed)
+			if err != nil {
+				t.Fatalf("Sender() error = %v", err)
+			}
+			if from != expected {
+				t.Fatalf("Sender() = %v, want %v", from, expected)
 			}
 		})
 	}

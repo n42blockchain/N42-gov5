@@ -208,8 +208,8 @@ func TestGetP256Ecrecover(t *testing.T) {
 }
 
 func TestP256Constants(t *testing.T) {
-	if P256VerifyGas != 3450 {
-		t.Errorf("P256VerifyGas = %d, want 3450", P256VerifyGas)
+	if P256VerifyGas != 6900 {
+		t.Errorf("P256VerifyGas = %d, want 6900", P256VerifyGas)
 	}
 	if P256VerifyInputLength != 160 {
 		t.Errorf("P256VerifyInputLength = %d, want 160", P256VerifyInputLength)

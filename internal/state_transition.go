@@ -128,7 +128,7 @@ func (result *ExecutionResult) Revert() []byte {
 }
 
 // IntrinsicGas computes the 'intrinsic gas' for a message with the given data.
-func IntrinsicGas(data []byte, accessList transaction.AccessList, isContractCreation bool, isHomestead, isEIP2028 bool, isEIP3860 bool) (uint64, error) {
+func IntrinsicGas(data []byte, accessList transaction.AccessList, authList transaction.AuthorizationList, isContractCreation bool, isHomestead, isEIP2028 bool, isEIP3860 bool, isPrague bool) (uint64, error) {
 	var gas uint64
 	if isContractCreation && isHomestead {
 		gas = params.TxGasContractCreation
@@ -172,6 +172,12 @@ func IntrinsicGas(data []byte, accessList transaction.AccessList, isContractCrea
 	if accessList != nil {
 		gas += uint64(len(accessList)) * params.TxAccessListAddressGas
 		gas += uint64(accessList.StorageKeys()) * params.TxAccessListStorageKeyGas
+	}
+	if isPrague && len(authList) > 0 {
+		if (math.MaxUint64-gas)/params.PerEmptyAccountCost < uint64(len(authList)) {
+			return 0, ErrGasUintOverflow
+		}
+		gas += uint64(len(authList)) * params.PerEmptyAccountCost
 	}
 	return gas, nil
 }
@@ -326,7 +332,7 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	rules := st.evm.ChainRules()
 
 	// Check intrinsic gas
-	gas, err := IntrinsicGas(st.data, st.msg.AccessList(), contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
+	gas, err := IntrinsicGas(st.data, st.msg.AccessList(), st.msg.AuthList(), contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +358,7 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	}
 
 	// EIP-7702: Process authorization list before execution
-	if rules.IsPectra && msg.AuthList() != nil {
+	if rules.IsPrague && msg.AuthList() != nil {
 		if err := st.applyAuthorizations(msg.AuthList()); err != nil {
 			return nil, err
 		}
@@ -475,12 +481,17 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 			continue
 		}
 
+		wasEmpty := st.state.Empty(signer)
+
 		// Account must not have non-delegation code
 		existingCode := st.state.GetCode(signer)
 		if len(existingCode) > 0 && !vm2.HasDelegation(existingCode) {
 			continue
 		}
 
+		if !wasEmpty && params.PerEmptyAccountCost > params.PerAuthBaseCost {
+			st.state.AddRefund(params.PerEmptyAccountCost - params.PerAuthBaseCost)
+		}
 		st.state.SetNonce(signer, signerNonce+1)
 		st.state.SetCode(signer, vm2.AddressToDelegation(auth.Address))
 		st.state.AddAddressToAccessList(signer)

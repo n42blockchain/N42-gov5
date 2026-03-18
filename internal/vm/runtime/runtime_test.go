@@ -17,6 +17,7 @@
 package runtime
 
 import (
+	"encoding/binary"
 	"math/big"
 	"testing"
 	"time"
@@ -24,6 +25,9 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -313,5 +317,135 @@ func TestChainConfigAllForksEnabled(t *testing.T) {
 		if check.block == nil || check.block.Cmp(zeroBlock) != 0 {
 			t.Errorf("%s should be at block 0, got %v", check.name, check.block)
 		}
+	}
+}
+
+func buildRuntimeModExpInput(baseLen, expLen, modLen uint64, base, exponent, modulus []byte) []byte {
+	input := make([]byte, 96+baseLen+expLen+modLen)
+	binary.BigEndian.PutUint64(input[24:32], baseLen)
+	binary.BigEndian.PutUint64(input[56:64], expLen)
+	binary.BigEndian.PutUint64(input[88:96], modLen)
+
+	offset := 96
+	copy(input[offset:offset+int(baseLen)], base)
+	offset += int(baseLen)
+	copy(input[offset:offset+int(expLen)], exponent)
+	offset += int(expLen)
+	copy(input[offset:offset+int(modLen)], modulus)
+	return input
+}
+
+func testRuntimeChainConfig() *params.ChainConfig {
+	return &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		HomesteadBlock:        new(big.Int),
+		TangerineWhistleBlock: new(big.Int),
+		SpuriousDragonBlock:   new(big.Int),
+		ByzantiumBlock:        new(big.Int),
+		ConstantinopleBlock:   new(big.Int),
+		PetersburgBlock:       new(big.Int),
+		IstanbulBlock:         new(big.Int),
+		MuirGlacierBlock:      new(big.Int),
+		BerlinBlock:           new(big.Int),
+		LondonBlock:           new(big.Int),
+		ArrowGlacierBlock:     new(big.Int),
+		GrayGlacierBlock:      new(big.Int),
+		ShanghaiBlock:         new(big.Int),
+		CancunBlock:           new(big.Int),
+		PragueTime:            new(big.Int),
+		OsakaTime:             big.NewInt(1),
+	}
+}
+
+func TestCallUsesOsakaModExpGasByTimestamp(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(tx, 1))
+
+	base := make([]byte, 1024)
+	for i := range base {
+		base[i] = 0x01
+	}
+	input := buildRuntimeModExpInput(1024, 1, 1, base, []byte{0x00}, []byte{0x02})
+	modexpAddr := types.BytesToAddress([]byte{5})
+
+	suppliedGas := uint64(500000)
+	osakaCfg := &Config{
+		ChainConfig: testRuntimeChainConfig(),
+		Origin:      types.HexToAddress("0x1000000000000000000000000000000000000001"),
+		BlockNumber: big.NewInt(1),
+		Time:        big.NewInt(1),
+		GasLimit:    suppliedGas,
+		GasPrice:    uint256.NewInt(0),
+		Value:       uint256.NewInt(0),
+		State:       ibs,
+	}
+
+	_, remainingGas, err := Call(modexpAddr, input, osakaCfg)
+	if err != nil {
+		t.Fatalf("Osaka runtime.Call failed: %v", err)
+	}
+	osakaGasUsed := suppliedGas - remainingGas
+	if osakaGasUsed != 32768 {
+		t.Fatalf("Osaka runtime.Call gas used = %d, want 32768", osakaGasUsed)
+	}
+
+	pragueCfg := &Config{
+		ChainConfig: testRuntimeChainConfig(),
+		Origin:      types.HexToAddress("0x1000000000000000000000000000000000000002"),
+		BlockNumber: big.NewInt(1),
+		Time:        big.NewInt(0),
+		GasLimit:    suppliedGas,
+		GasPrice:    uint256.NewInt(0),
+		Value:       uint256.NewInt(0),
+		State:       state.New(state.NewPlainState(tx, 1)),
+	}
+
+	_, remainingGas, err = Call(modexpAddr, input, pragueCfg)
+	if err != nil {
+		t.Fatalf("Pre-Osaka runtime.Call failed: %v", err)
+	}
+	pragueGasUsed := suppliedGas - remainingGas
+	if pragueGasUsed != 5461 {
+		t.Fatalf("Pre-Osaka runtime.Call gas used = %d, want 5461", pragueGasUsed)
+	}
+}
+
+func TestCallResolvesDelegationCodeInPectra(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(tx, 1))
+
+	delegatedAddr := types.HexToAddress("0x10000000000000000000000000000000000000aa")
+	targetAddr := types.HexToAddress("0x20000000000000000000000000000000000000bb")
+
+	// ADDRESS; PUSH1 0x00; MSTORE; PUSH1 0x20; PUSH1 0x00; RETURN
+	targetCode := []byte{byte(vm.ADDRESS), byte(vm.PUSH1), 0x00, byte(vm.MSTORE), byte(vm.PUSH1), 0x20, byte(vm.PUSH1), 0x00, byte(vm.RETURN)}
+
+	ibs.CreateAccount(targetAddr, true)
+	ibs.SetCode(targetAddr, targetCode)
+	ibs.CreateAccount(delegatedAddr, true)
+	ibs.SetCode(delegatedAddr, vm.AddressToDelegation(targetAddr))
+
+	cfg := &Config{
+		ChainConfig: testRuntimeChainConfig(),
+		Origin:      types.HexToAddress("0x30000000000000000000000000000000000000cc"),
+		BlockNumber: big.NewInt(1),
+		Time:        big.NewInt(1),
+		GasLimit:    100000,
+		GasPrice:    uint256.NewInt(0),
+		Value:       uint256.NewInt(0),
+		State:       ibs,
+	}
+
+	ret, _, err := Call(delegatedAddr, nil, cfg)
+	if err != nil {
+		t.Fatalf("runtime.Call via delegated account failed: %v", err)
+	}
+	if len(ret) != 32 {
+		t.Fatalf("delegated call return length = %d, want 32", len(ret))
+	}
+	if got := types.BytesToAddress(ret[12:32]); got != delegatedAddr {
+		t.Fatalf("delegated call ADDRESS = %s, want %s", got, delegatedAddr)
 	}
 }

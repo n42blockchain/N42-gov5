@@ -433,6 +433,9 @@ func TestOsakaInstructionSet(t *testing.T) {
 			t.Errorf("Opcode %s should be enabled in Osaka", op.String())
 		}
 	}
+	if !isCLZEnabled(&jt) {
+		t.Fatal("CLZ should be enabled in Osaka instruction set")
+	}
 }
 
 func TestOsakaGasConstants(t *testing.T) {

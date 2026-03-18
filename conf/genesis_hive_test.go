@@ -1,6 +1,7 @@
 package conf
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/n42blockchain/N42/params"
@@ -53,6 +54,38 @@ func TestApplyHiveGenesisEnvCreatesFakerConfig(t *testing.T) {
 	}
 	if genesis.Config.PragueTime == nil || genesis.Config.PragueTime.Uint64() != 15000 {
 		t.Fatalf("unexpected prague time: %v", genesis.Config.PragueTime)
+	}
+}
+
+func TestApplyHiveGenesisEnvSupportsBPOForkTimestamps(t *testing.T) {
+	t.Parallel()
+
+	genesis := &Genesis{
+		Config: &params.ChainConfig{
+			OsakaTime: big.NewInt(0),
+		},
+	}
+	env := map[string]string{
+		"HIVE_OSAKA_TIMESTAMP": "0",
+		"HIVE_BPO1_TIMESTAMP":  "15000",
+	}
+
+	ApplyHiveGenesisEnv(genesis, func(key string) (string, bool) {
+		value, ok := env[key]
+		return value, ok
+	})
+
+	if genesis.Config == nil {
+		t.Fatal("genesis.Config should not be nil")
+	}
+	if genesis.Config.BPO1Time == nil || genesis.Config.BPO1Time.Uint64() != 15000 {
+		t.Fatalf("unexpected BPO1 time: %v", genesis.Config.BPO1Time)
+	}
+	if got := genesis.Config.BlobMaxBlobsPerBlock(0); got != 9 {
+		t.Fatalf("BlobMaxBlobsPerBlock(0) = %d, want 9", got)
+	}
+	if got := genesis.Config.BlobMaxBlobsPerBlock(15000); got != 15 {
+		t.Fatalf("BlobMaxBlobsPerBlock(15000) = %d, want 15", got)
 	}
 }
 

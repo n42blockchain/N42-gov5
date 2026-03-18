@@ -135,8 +135,9 @@ func (r *Registry) registerForRules(rules *params.Rules) {
 		r.register(0x13, NewBls12381MapG2())      // BLS12_MAP_FP2_TO_G2
 	}
 
-	// Fusaka additions (EIP-7823/7883: MODEXP updates + EIP-7951: P-256 precompile)
-	if rules.IsFusaka {
+	// Osaka additions (EIP-7823/7883: MODEXP updates + EIP-7951: P-256 precompile)
+	// Fusaka inherits the same precompile behavior today.
+	if rules.IsOsaka || rules.IsFusaka {
 		// Update MODEXP with EIP-7823 (input size limits) and EIP-7883 (gas cost increase)
 		r.register(5, NewBigModExp(true, true, true))
 

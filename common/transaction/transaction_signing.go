@@ -20,13 +20,14 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"math/big"
+
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/u256"
 	"github.com/n42blockchain/N42/params"
-	"math/big"
 )
 
 var (
@@ -45,6 +46,16 @@ type sigCache struct {
 
 // MakeSigner returns a Signer based on the given chain config and block number.
 func MakeSigner(config *params.ChainConfig, blockNumber *big.Int) Signer {
+	blockNum := uint64(0)
+	if blockNumber != nil {
+		blockNum = blockNumber.Uint64()
+	}
+	return MakeSignerWithTimestamp(config, blockNumber, blockNum)
+}
+
+// MakeSignerWithTimestamp returns a Signer based on the given chain config, block
+// number, and block timestamp. This is required for Prague+ time-based forks.
+func MakeSignerWithTimestamp(config *params.ChainConfig, blockNumber *big.Int, timestamp uint64) Signer {
 	if config == nil {
 		return FrontierSigner{}
 	}
@@ -52,14 +63,15 @@ func MakeSigner(config *params.ChainConfig, blockNumber *big.Int) Signer {
 	if blockNumber != nil {
 		blockNum = blockNumber.Uint64()
 	}
+	rules := config.RulesWithTimestamp(blockNum, timestamp)
 	switch {
-	case config.IsLondon(blockNum):
+	case rules.IsLondon:
 		return NewLondonSigner(config.ChainID)
-	case config.IsBerlin(blockNum):
+	case rules.IsBerlin:
 		return NewEIP2930Signer(config.ChainID)
-	case config.IsEip1559FeeCollector(blockNum):
+	case rules.IsEip1559FeeCollector:
 		return NewEIP155Signer(config.ChainID)
-	case config.IsHomestead(blockNum):
+	case rules.IsHomestead:
 		return HomesteadSigner{}
 	default:
 		return FrontierSigner{}
@@ -169,23 +181,14 @@ func NewLondonSigner(chainId *big.Int) Signer {
 }
 
 func (s londonSigner) Sender(tx *Transaction) (types.Address, error) {
-	if tx.Type() != DynamicFeeTxType {
+	switch tx.Type() {
+	case DynamicFeeTxType, BlobTxType, SetCodeTxType:
+		return recoverTypedSender(tx, s.chainId, func() (types.Hash, error) {
+			return s.Hash(tx)
+		})
+	default:
 		return s.eip2930Signer.Sender(tx)
 	}
-	V, R, S := tx.RawSignatureValues()
-	// DynamicFee txs are defined to use 0 and 1 as their recovery
-	// id, add 27 to become equivalent to unprotected Homestead signatures.
-	V1 := new(big.Int).Add(V.ToBig(), big.NewInt(27))
-	chainId, _ := uint256.FromBig(s.chainId)
-	id := tx.ChainId()
-	if id.Cmp(chainId) != 0 {
-		return types.Address{}, ErrInvalidChainId
-	}
-	h, err := s.Hash(tx)
-	if err != nil {
-		return types.Address{}, err
-	}
-	return recoverPlain(h, R.ToBig(), S.ToBig(), V1, true)
 }
 
 func (s londonSigner) Equal(s2 Signer) bool {
@@ -194,14 +197,90 @@ func (s londonSigner) Equal(s2 Signer) bool {
 }
 
 func (s londonSigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big.Int, err error) {
-	txdata, ok := tx.inner.(*DynamicFeeTx)
-	if !ok {
+	switch txdata := tx.inner.(type) {
+	case *DynamicFeeTx:
+		return signatureValuesForTypedTx(txdata.ChainID, s.chainId, sig)
+	case *BlobTx:
+		return signatureValuesForTypedTx(txdata.ChainID, s.chainId, sig)
+	case *SetCodeTx:
+		return signatureValuesForTypedTx(txdata.ChainID, s.chainId, sig)
+	default:
 		return s.eip2930Signer.SignatureValues(tx, sig)
 	}
-	// Check that chain ID of tx matches the signer. We also accept ID zero here,
-	// because it indicates that the chain ID was not specified in the tx.
-	chainId, _ := uint256.FromBig(s.chainId)
-	if txdata.ChainID.Sign() != 0 && txdata.ChainID.Cmp(chainId) != 0 {
+}
+
+// Hash returns the hash to be signed by the sender.
+// It does not uniquely identify the transaction.
+func (s londonSigner) Hash(tx *Transaction) (types.Hash, error) {
+	switch tx.Type() {
+	case DynamicFeeTxType:
+		return hash.PrefixedRlpHash(
+			tx.Type(),
+			[]interface{}{
+				s.chainId,
+				tx.Nonce(),
+				tx.GasTipCap(),
+				tx.GasFeeCap(),
+				tx.Gas(),
+				tx.To(),
+				tx.Value(),
+				tx.Data(),
+				tx.AccessList(),
+			}), nil
+	case BlobTxType:
+		return hash.PrefixedRlpHash(
+			tx.Type(),
+			[]interface{}{
+				s.chainId,
+				tx.Nonce(),
+				tx.GasTipCap(),
+				tx.GasFeeCap(),
+				tx.Gas(),
+				tx.To(),
+				tx.Value(),
+				tx.Data(),
+				tx.AccessList(),
+				tx.BlobFeeCap(),
+				tx.BlobHashes(),
+			}), nil
+	case SetCodeTxType:
+		return hash.PrefixedRlpHash(
+			tx.Type(),
+			[]interface{}{
+				s.chainId,
+				tx.Nonce(),
+				tx.GasTipCap(),
+				tx.GasFeeCap(),
+				tx.Gas(),
+				tx.To(),
+				tx.Value(),
+				tx.Data(),
+				tx.AccessList(),
+				tx.AuthList(),
+			}), nil
+	default:
+		return s.eip2930Signer.Hash(tx)
+	}
+}
+
+func recoverTypedSender(tx *Transaction, expectedChainID *big.Int, hashFn func() (types.Hash, error)) (types.Address, error) {
+	V, R, S := tx.RawSignatureValues()
+	V1 := new(big.Int).Add(V.ToBig(), big.NewInt(27))
+	chainId, _ := uint256.FromBig(expectedChainID)
+	id := tx.ChainId()
+	if id.Cmp(chainId) != 0 {
+		return types.Address{}, ErrInvalidChainId
+	}
+	h, err := hashFn()
+	if err != nil {
+		return types.Address{}, err
+	}
+	return recoverPlain(h, R.ToBig(), S.ToBig(), V1, true)
+}
+
+func signatureValuesForTypedTx(txChainID *uint256.Int, signerChainID *big.Int, sig []byte) (R, S, V *big.Int, err error) {
+	chainId, _ := uint256.FromBig(signerChainID)
+	if txChainID != nil && txChainID.Sign() != 0 && txChainID.Cmp(chainId) != 0 {
 		return nil, nil, nil, ErrInvalidChainId
 	}
 	R, S, _, err = decodeSignature(sig)
@@ -210,27 +289,6 @@ func (s londonSigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 	}
 	V = big.NewInt(int64(sig[64]))
 	return R, S, V, nil
-}
-
-// Hash returns the hash to be signed by the sender.
-// It does not uniquely identify the transaction.
-func (s londonSigner) Hash(tx *Transaction) (types.Hash, error) {
-	if tx.Type() != DynamicFeeTxType {
-		return s.eip2930Signer.Hash(tx)
-	}
-	return hash.PrefixedRlpHash(
-		tx.Type(),
-		[]interface{}{
-			s.chainId,
-			tx.Nonce(),
-			tx.GasTipCap(),
-			tx.GasFeeCap(),
-			tx.Gas(),
-			tx.To(),
-			tx.Value(),
-			tx.Data(),
-			tx.AccessList(),
-		}), nil
 }
 
 type eip2930Signer struct{ EIP155Signer }

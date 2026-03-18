@@ -26,6 +26,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 )
 
 // =============================================================================
@@ -171,13 +172,21 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	}
 
 	// Validate blob gas and versioned hashes for Cancun
+	maxBlobGas := uint64(transaction.MaxBlobGasPerBlock)
+	maxBlobs := uint64(transaction.MaxBlobsPerBlock)
+	gasPerBlob := uint64(transaction.BlobTxBlobGasPerBlob)
+	if cfg := e.v1().chainConfig(); cfg != nil {
+		maxBlobGas = cfg.BlobMaxGasPerBlock(uint64(payload.Timestamp))
+		maxBlobs = cfg.BlobMaxBlobsPerBlock(uint64(payload.Timestamp))
+		gasPerBlob = cfg.BlobGasPerBlob(uint64(payload.Timestamp))
+	}
 	if resp := validateBlobGasAndHashes(
 		payload.BlobGasUsed,
 		payload.ExcessBlobGas,
 		expectedBlobVersionedHashes,
-		transaction.MaxBlobGasPerBlock,
-		transaction.MaxBlobsPerBlock,
-		transaction.BlobTxBlobGasPerBlob,
+		maxBlobGas,
+		maxBlobs,
+		gasPerBlob,
 	); resp != nil {
 		return resp, nil
 	}
@@ -188,6 +197,17 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(payload.GasLimit)); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.v1().chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   parentBeaconBlockRoot,
+	}); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
 	blockHash := ethCompatibleEngineBlockHash(blk, e.v1().chainConfig(), enginePayloadHashOptions{
 		includeWithdrawals: true,
 		withdrawals:        payload.Withdrawals,
@@ -196,6 +216,12 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	})
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
+	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), e.v1().parentHeader(payload.ParentHash), e.v1().chainConfig()); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	if err := e.v1().validatePayloadExecution(blk, payload.ParentHash); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
 	}
 	headHash := e.v1().currentHeadHash()
 	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
@@ -328,6 +354,7 @@ type ForkchoiceStateV1 struct {
 // =============================================================================
 
 func invalidPayloadResponse(reason string) *PayloadStatusV1 {
+	log.Info("Engine payload invalid", "reason", reason)
 	return &PayloadStatusV1{
 		Status:          PayloadStatusInvalid,
 		ValidationError: &reason,
@@ -335,6 +362,7 @@ func invalidPayloadResponse(reason string) *PayloadStatusV1 {
 }
 
 func invalidForkchoiceResponse(reason string) *ForkchoiceUpdatedResponseV3 {
+	log.Info("Engine forkchoice invalid", "reason", reason)
 	return &ForkchoiceUpdatedResponseV3{
 		PayloadStatus: PayloadStatusV1{
 			Status:          PayloadStatusInvalid,
@@ -375,7 +403,7 @@ func validateBlobGasAndHashes(
 
 	// 2. Validate blob gas used is within limits
 	if uint64(*blobGasUsed) > maxBlobGas {
-		return invalidPayloadResponse("blob gas exceeds maximum")
+		return invalidPayloadResponse("blob gas used " + strconv.FormatUint(uint64(*blobGasUsed), 10) + " exceeds maximum allowance " + strconv.FormatUint(maxBlobGas, 10))
 	}
 
 	// 3. Validate blob count
@@ -413,8 +441,8 @@ func ValidateBlobTransactions(txs []hexutil.Bytes, expectedHashes []types.Hash) 
 			continue
 		}
 
-		var tx transaction.Transaction
-		if err := tx.Unmarshal(txBytes); err != nil {
+		tx, err := transaction.DecodeEthereumTransaction(txBytes)
+		if err != nil {
 			return err
 		}
 

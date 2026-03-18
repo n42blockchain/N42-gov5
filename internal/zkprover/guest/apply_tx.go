@@ -66,7 +66,7 @@ func ApplyTx(fork ForkConfig, chainID uint64, header *block.Header, ibs *state.I
 	// selects the correct signer type (London/EIP2930/EIP155/Homestead).
 	chainCfg := forkToChainConfig(fork, chainID, blockNum, header.Time)
 
-	signer := transaction.MakeSigner(chainCfg, blockNum)
+	signer := transaction.MakeSignerWithTimestamp(chainCfg, blockNum, header.Time)
 	msg, err := tx.AsMessage(signer, header.BaseFee)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create message: %w", err)

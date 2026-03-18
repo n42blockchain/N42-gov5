@@ -129,7 +129,7 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 	}
 	rules := evm.ChainRules()
 
-	msg, err := tx.AsMessage(transaction.MakeSigner(config, headerNumber.ToBig()), header.BaseFee)
+	msg, err := tx.AsMessage(transaction.MakeSignerWithTimestamp(config, headerNumber.ToBig(), header.Time), header.BaseFee)
 	if err != nil {
 		return nil, nil, err
 	}

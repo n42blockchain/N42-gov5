@@ -176,8 +176,8 @@ const (
 	// https://eips.ethereum.org/EIPS/eip-7702
 	TxAuthTupleGas uint64 = 12500 // Per auth tuple in authorization list
 
-	// P256 verify precompile (EIP-7212)
-	P256VerifyGas uint64 = 3450 // Gas cost for P256 signature verification
+	// P256 verify precompile (EIP-7951)
+	P256VerifyGas uint64 = 6900 // Gas cost for P256 signature verification
 
 	// EIP-4844: Shard Blob Transactions (Cancun)
 	// https://eips.ethereum.org/EIPS/eip-4844
@@ -193,7 +193,7 @@ const (
 // Pectra gas costs - mutable for testing
 var (
 	// PerAuthBaseCost is the base gas cost per authorization tuple in EIP-7702
-	PerAuthBaseCost uint64 = 2500
+	PerAuthBaseCost uint64 = 12500
 
 	// PerEmptyAccountCost is the gas cost for each newly created account in EIP-7702
 	PerEmptyAccountCost uint64 = 25000

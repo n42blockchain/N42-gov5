@@ -90,9 +90,12 @@ type canonicalCheckChainStub struct {
 	blk                 block.IBlock
 	earliest            uint64
 	lastRequestedNumber uint64
+	disableHeaderByHash bool
+	config              *params.ChainConfig
+	db                  kv.RwDB
 }
 
-func (m *canonicalCheckChainStub) Config() *params.ChainConfig { return nil }
+func (m *canonicalCheckChainStub) Config() *params.ChainConfig { return m.config }
 func (m *canonicalCheckChainStub) CurrentBlock() block.IBlock  { return m.blk }
 func (m *canonicalCheckChainStub) GetHeader(hash types.Hash, number *uint256.Int) block.IHeader {
 	return m.header
@@ -101,6 +104,9 @@ func (m *canonicalCheckChainStub) GetHeaderByNumber(number *uint256.Int) block.I
 	return m.header
 }
 func (m *canonicalCheckChainStub) GetHeaderByHash(hash types.Hash) (block.IHeader, error) {
+	if m.disableHeaderByHash {
+		return nil, nil
+	}
 	return m.header, nil
 }
 func (m *canonicalCheckChainStub) GetTd(types.Hash, *uint256.Int) *uint256.Int { return nil }
@@ -141,7 +147,7 @@ func (m *canonicalCheckChainStub) AddFutureBlock(block.IBlock) error            
 func (m *canonicalCheckChainStub) GetBlock(hash types.Hash, number uint64) block.IBlock { return m.blk }
 func (m *canonicalCheckChainStub) StateAt(tx kv.Tx, blockNr uint64) interface{}         { return nil }
 func (m *canonicalCheckChainStub) HasBlock(hash types.Hash, number uint64) bool         { return m.blk != nil }
-func (m *canonicalCheckChainStub) DB() kv.RwDB                                          { return nil }
+func (m *canonicalCheckChainStub) DB() kv.RwDB                                          { return m.db }
 func (m *canonicalCheckChainStub) Quit() <-chan struct{}                                { return nil }
 func (m *canonicalCheckChainStub) EarliestBlock() uint64                                { return m.earliest }
 func (m *canonicalCheckChainStub) Close() error                                         { return nil }

@@ -54,20 +54,20 @@ func TestModExpEIP7823InputLimits(t *testing.T) {
 			eip7823: true,
 		},
 		{
-			name:       "exceeds limit - base 1025",
-			baseLen:    1025, expLen: 32, modLen: 32,
+			name:    "exceeds limit - base 1025",
+			baseLen: 1025, expLen: 32, modLen: 32,
 			eip7823:    true,
 			wantMaxGas: true, wantErr: true,
 		},
 		{
-			name:       "exceeds limit - exp 1025",
-			baseLen:    32, expLen: 1025, modLen: 32,
+			name:    "exceeds limit - exp 1025",
+			baseLen: 32, expLen: 1025, modLen: 32,
 			eip7823:    true,
 			wantMaxGas: true, wantErr: true,
 		},
 		{
-			name:       "exceeds limit - mod 1025",
-			baseLen:    32, expLen: 32, modLen: 1025,
+			name:    "exceeds limit - mod 1025",
+			baseLen: 32, expLen: 32, modLen: 1025,
 			eip7823:    true,
 			wantMaxGas: true, wantErr: true,
 		},
@@ -112,32 +112,56 @@ func TestModExpEIP7883GasCalculation(t *testing.T) {
 		modLen    uint64
 		expValue  byte
 		eip7883   bool
-		wantMin   uint64
-		checkMult bool
+		wantGas   uint64
+		expAtHead bool
 	}{
 		{
 			name:     "minimum gas with eip7883 - small inputs",
-			baseLen:  1, expLen: 1, modLen: 1,
-			expValue: 1, eip7883: true,
-			wantMin: 500,
+			baseLen:  1,
+			expLen:   1,
+			modLen:   1,
+			expValue: 1,
+			eip7883:  true,
+			wantGas:  500,
 		},
 		{
 			name:     "minimum gas without eip7883 - small inputs",
-			baseLen:  1, expLen: 1, modLen: 1,
-			expValue: 1, eip7883: false,
-			wantMin: 200,
+			baseLen:  1,
+			expLen:   1,
+			modLen:   1,
+			expValue: 1,
+			eip7883:  false,
+			wantGas:  200,
 		},
 		{
-			name:      "3x multiplier with larger inputs",
-			baseLen:   64, expLen: 64, modLen: 64,
-			expValue:  0xff, eip7883: true,
-			checkMult: true,
+			name:      "eip7883 exact gas with 64-byte inputs",
+			baseLen:   64,
+			expLen:    64,
+			modLen:    64,
+			expValue:  0xff,
+			eip7883:   true,
+			wantGas:   65536,
+			expAtHead: false,
 		},
 		{
-			name:      "3x multiplier with medium inputs",
-			baseLen:   128, expLen: 128, modLen: 128,
-			expValue:  0xff, eip7883: true,
-			checkMult: true,
+			name:      "eip7883 exact gas with head bits",
+			baseLen:   128,
+			expLen:    128,
+			modLen:    128,
+			expValue:  0xff,
+			eip7883:   true,
+			wantGas:   916992,
+			expAtHead: true,
+		},
+		{
+			name:      "eip7883 does not clamp large zero exponent case",
+			baseLen:   32,
+			expLen:    1024,
+			modLen:    1024,
+			expValue:  0x00,
+			eip7883:   true,
+			wantGas:   520093696,
+			expAtHead: true,
 		},
 	}
 
@@ -145,50 +169,37 @@ func TestModExpEIP7883GasCalculation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			totalLen := 96 + tt.baseLen + tt.expLen + tt.modLen
 			input := make([]byte, totalLen)
-			input[31] = byte(tt.baseLen)
-			input[63] = byte(tt.expLen)
-			input[95] = byte(tt.modLen)
+			binary.BigEndian.PutUint64(input[24:32], tt.baseLen)
+			binary.BigEndian.PutUint64(input[56:64], tt.expLen)
+			binary.BigEndian.PutUint64(input[88:96], tt.modLen)
 
 			if tt.baseLen > 0 {
 				input[96+tt.baseLen-1] = 2
 			}
 			if tt.expLen > 0 {
-				input[96+tt.baseLen+tt.expLen-1] = tt.expValue
+				expOffset := 96 + tt.baseLen + tt.expLen - 1
+				if tt.expAtHead {
+					expOffset = 96 + tt.baseLen
+				}
+				input[expOffset] = tt.expValue
 			}
 			if tt.modLen > 0 {
 				input[96+tt.baseLen+tt.expLen+tt.modLen-1] = 3
 			}
 
-			if tt.checkMult {
-				c7883 := &bigModExp{eip2565: true, eip7823: false, eip7883: true}
-				cBase := &bigModExp{eip2565: true, eip7823: false, eip7883: false}
-
-				gas7883 := c7883.RequiredGas(input)
-				gasBase := cBase.RequiredGas(input)
-
-				expectedGas := gasBase * 3
-				if expectedGas < 500 {
-					expectedGas = 500
-				}
-
-				if gas7883 < expectedGas-1 || gas7883 > expectedGas+1 {
-					t.Errorf("EIP-7883 gas = %d, expected ~%d (3x of %d)", gas7883, expectedGas, gasBase)
-				}
-			} else {
-				c := &bigModExp{eip2565: true, eip7823: false, eip7883: tt.eip7883}
-				gas := c.RequiredGas(input)
-				if gas < tt.wantMin {
-					t.Errorf("RequiredGas() = %d, want >= %d", gas, tt.wantMin)
-				}
+			c := &bigModExp{eip2565: true, eip7823: false, eip7883: tt.eip7883}
+			gas := c.RequiredGas(input)
+			if gas != tt.wantGas {
+				t.Errorf("RequiredGas() = %d, want %d", gas, tt.wantGas)
 			}
 		})
 	}
 }
 
-func TestModExpFusakaPrecompile(t *testing.T) {
-	fusaka := PrecompiledContractsFusaka[types.BytesToAddress([]byte{5})]
-	if fusaka == nil {
-		t.Fatal("Fusaka MODEXP precompile not found at address 0x05")
+func TestModExpOsakaPrecompile(t *testing.T) {
+	osaka := PrecompiledContractsOsaka[types.BytesToAddress([]byte{5})]
+	if osaka == nil {
+		t.Fatal("Osaka MODEXP precompile not found at address 0x05")
 	}
 
 	// Input with baseLen=1025 exceeding EIP-7823 limit
@@ -198,13 +209,13 @@ func TestModExpFusakaPrecompile(t *testing.T) {
 	input[63] = 32
 	input[95] = 32
 
-	gas := fusaka.RequiredGas(input)
+	gas := osaka.RequiredGas(input)
 	if gas != math.MaxUint64 {
-		t.Errorf("Fusaka MODEXP RequiredGas() = %d for oversized input, want math.MaxUint64", gas)
+		t.Errorf("Osaka MODEXP RequiredGas() = %d for oversized input, want math.MaxUint64", gas)
 	}
 
-	if _, err := fusaka.Run(input); err == nil {
-		t.Error("Fusaka MODEXP Run() should return error for oversized input")
+	if _, err := osaka.Run(input); err == nil {
+		t.Error("Osaka MODEXP Run() should return error for oversized input")
 	}
 
 	// Valid input: 2^10 mod 13 = 10
@@ -216,32 +227,41 @@ func TestModExpFusakaPrecompile(t *testing.T) {
 	validInput[96+32+31] = 10
 	validInput[96+32+32+31] = 13
 
-	validGas := fusaka.RequiredGas(validInput)
+	validGas := osaka.RequiredGas(validInput)
 	if validGas < 500 {
-		t.Errorf("Fusaka MODEXP RequiredGas() = %d, want >= 500 (EIP-7883 minimum)", validGas)
+		t.Errorf("Osaka MODEXP RequiredGas() = %d, want >= 500 (EIP-7883 minimum)", validGas)
 	}
 
-	result, err := fusaka.Run(validInput)
+	result, err := osaka.Run(validInput)
 	if err != nil {
-		t.Fatalf("Fusaka MODEXP Run() error = %v", err)
+		t.Fatalf("Osaka MODEXP Run() error = %v", err)
 	}
 	if len(result) != 32 {
-		t.Fatalf("Fusaka MODEXP Run() result length = %d, want 32", len(result))
+		t.Fatalf("Osaka MODEXP Run() result length = %d, want 32", len(result))
 	}
 	if result[31] != 10 {
-		t.Errorf("Fusaka MODEXP Run() result[31] = %d, want 10 (2^10 mod 13)", result[31])
+		t.Errorf("Osaka MODEXP Run() result[31] = %d, want 10 (2^10 mod 13)", result[31])
 	}
 }
 
-func TestPrecompiledContractsPectraOsakaEquivalence(t *testing.T) {
-	if len(PrecompiledContractsPectra) != len(PrecompiledContractsOsaka) {
-		t.Errorf("Pectra has %d precompiles, Osaka has %d, want equal",
-			len(PrecompiledContractsPectra), len(PrecompiledContractsOsaka))
-	}
+func TestPrecompiledContractsOsakaActivatesModExpAndP256(t *testing.T) {
+	modexpAddr := types.BytesToAddress([]byte{5})
+	p256Addr := types.HexToAddress("0x0000000000000000000000000000000000000100")
 
-	for addr := range PrecompiledContractsPectra {
-		if PrecompiledContractsOsaka[addr] == nil {
-			t.Errorf("Osaka missing precompile at address %v", addr)
-		}
+	modexp, ok := PrecompiledContractsOsaka[modexpAddr].(*bigModExp)
+	if !ok {
+		t.Fatalf("Osaka MODEXP precompile has unexpected type %T", PrecompiledContractsOsaka[modexpAddr])
+	}
+	if !modexp.eip2565 || !modexp.eip7823 || !modexp.eip7883 {
+		t.Fatalf("Osaka MODEXP flags = %+v, want EIP-2565/EIP-7823/EIP-7883 enabled", *modexp)
+	}
+	if PrecompiledContractsPectra[p256Addr] != nil {
+		t.Fatal("Pectra should not expose the P-256 precompile at 0x100")
+	}
+	if PrecompiledContractsOsaka[p256Addr] == nil {
+		t.Fatal("Osaka should expose the P-256 precompile at 0x100")
+	}
+	if PrecompiledContractsFusaka[p256Addr] == nil {
+		t.Fatal("Fusaka should inherit Osaka's P-256 precompile at 0x100")
 	}
 }

@@ -47,10 +47,12 @@ type Genesis struct {
 	Miners []string     `json:"miners" yaml:"miners"`
 	Alloc  GenesisAlloc `json:"alloc" yaml:"alloc"  gencodec:"required"`
 
-	Number     uint64       `json:"number"`
-	GasUsed    uint64       `json:"gasUsed"`
-	ParentHash types.Hash   `json:"parentHash"`
-	BaseFee    *uint256.Int `json:"baseFeePerGas"`
+	Number        uint64       `json:"number"`
+	GasUsed       uint64       `json:"gasUsed"`
+	ParentHash    types.Hash   `json:"parentHash"`
+	BaseFee       *uint256.Int `json:"baseFeePerGas"`
+	BlobGasUsed   uint64       `json:"blobGasUsed"`
+	ExcessBlobGas uint64       `json:"excessBlobGas"`
 }
 
 type GenesisAlloc map[types.Address]GenesisAccount
@@ -63,24 +65,26 @@ type GenesisAccount struct {
 }
 
 type genesisJSON struct {
-	Config      *params.ChainConfig `json:"config"`
-	Nonce       json.RawMessage     `json:"nonce"`
-	Timestamp   json.RawMessage     `json:"timestamp"`
-	ExtraData   json.RawMessage     `json:"extraData"`
-	GasLimit    json.RawMessage     `json:"gasLimit"`
-	Difficulty  json.RawMessage     `json:"difficulty"`
-	Mixhash     types.Hash          `json:"mixHash"`
-	Coinbase    types.Address       `json:"coinbase"`
-	StateRoot   types.Hash          `json:"stateRoot"`
-	TxHash      types.Hash          `json:"transactionsTrie"`
-	ReceiptHash types.Hash          `json:"receiptTrie"`
-	Hash        types.Hash          `json:"hash"`
-	Miners      []string            `json:"miners"`
-	Alloc       json.RawMessage     `json:"alloc"`
-	Number      json.RawMessage     `json:"number"`
-	GasUsed     json.RawMessage     `json:"gasUsed"`
-	ParentHash  types.Hash          `json:"parentHash"`
-	BaseFee     json.RawMessage     `json:"baseFeePerGas"`
+	Config        *params.ChainConfig `json:"config"`
+	Nonce         json.RawMessage     `json:"nonce"`
+	Timestamp     json.RawMessage     `json:"timestamp"`
+	ExtraData     json.RawMessage     `json:"extraData"`
+	GasLimit      json.RawMessage     `json:"gasLimit"`
+	Difficulty    json.RawMessage     `json:"difficulty"`
+	Mixhash       types.Hash          `json:"mixHash"`
+	Coinbase      types.Address       `json:"coinbase"`
+	StateRoot     types.Hash          `json:"stateRoot"`
+	TxHash        types.Hash          `json:"transactionsTrie"`
+	ReceiptHash   types.Hash          `json:"receiptTrie"`
+	Hash          types.Hash          `json:"hash"`
+	Miners        []string            `json:"miners"`
+	Alloc         json.RawMessage     `json:"alloc"`
+	Number        json.RawMessage     `json:"number"`
+	GasUsed       json.RawMessage     `json:"gasUsed"`
+	ParentHash    types.Hash          `json:"parentHash"`
+	BaseFee       json.RawMessage     `json:"baseFeePerGas"`
+	BlobGasUsed   json.RawMessage     `json:"blobGasUsed"`
+	ExcessBlobGas json.RawMessage     `json:"excessBlobGas"`
 }
 
 type genesisAccountJSON struct {
@@ -134,26 +138,36 @@ func (g *Genesis) UnmarshalJSON(input []byte) error {
 	if err != nil {
 		return err
 	}
+	blobGasUsed, err := decodeGenesisUint64("blobGasUsed", dec.BlobGasUsed)
+	if err != nil {
+		return err
+	}
+	excessBlobGas, err := decodeGenesisUint64("excessBlobGas", dec.ExcessBlobGas)
+	if err != nil {
+		return err
+	}
 
 	*g = Genesis{
-		Config:      params.NormalizeConsensus(dec.Config),
-		Nonce:       nonce,
-		Timestamp:   timestamp,
-		ExtraData:   extraData,
-		GasLimit:    gasLimit,
-		Difficulty:  difficulty,
-		Mixhash:     dec.Mixhash,
-		Coinbase:    dec.Coinbase,
-		StateRoot:   dec.StateRoot,
-		TxHash:      dec.TxHash,
-		ReceiptHash: dec.ReceiptHash,
-		Hash:        dec.Hash,
-		Miners:      dec.Miners,
-		Alloc:       alloc,
-		Number:      number,
-		GasUsed:     gasUsed,
-		ParentHash:  dec.ParentHash,
-		BaseFee:     baseFee,
+		Config:        params.NormalizeConsensus(dec.Config),
+		Nonce:         nonce,
+		Timestamp:     timestamp,
+		ExtraData:     extraData,
+		GasLimit:      gasLimit,
+		Difficulty:    difficulty,
+		Mixhash:       dec.Mixhash,
+		Coinbase:      dec.Coinbase,
+		StateRoot:     dec.StateRoot,
+		TxHash:        dec.TxHash,
+		ReceiptHash:   dec.ReceiptHash,
+		Hash:          dec.Hash,
+		Miners:        dec.Miners,
+		Alloc:         alloc,
+		Number:        number,
+		GasUsed:       gasUsed,
+		ParentHash:    dec.ParentHash,
+		BaseFee:       baseFee,
+		BlobGasUsed:   blobGasUsed,
+		ExcessBlobGas: excessBlobGas,
 	}
 	return nil
 }

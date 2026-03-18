@@ -17,6 +17,8 @@
 package transaction
 
 import (
+	"fmt"
+
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -67,11 +69,11 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 	msg := Message{
 		nonce:      tx.Nonce(),
 		gasLimit:   tx.Gas(),
-		gasPrice:   *new(uint256.Int).Set(tx.GasPrice()),
-		feeCap:     *new(uint256.Int).Set(tx.GasFeeCap()),
-		tip:        *new(uint256.Int).Set(tx.GasTipCap()),
+		gasPrice:   copyUint256OrZero(tx.GasPrice()),
+		feeCap:     copyUint256OrZero(tx.GasFeeCap()),
+		tip:        copyUint256OrZero(tx.GasTipCap()),
 		to:         tx.To(),
-		amount:     *tx.Value(),
+		amount:     copyUint256OrZero(tx.Value()),
 		data:       tx.Data(),
 		accessList: tx.AccessList(),
 		authList:   tx.AuthList(),
@@ -84,9 +86,28 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 			msg.gasPrice = msg.feeCap
 		}
 	}
-	msg.from = *tx.From()
+	if from := tx.From(); from != nil {
+		msg.from = *from
+		return msg, nil
+	}
+	if s == nil {
+		return Message{}, fmt.Errorf("missing signer for sender derivation")
+	}
+	from, err := Sender(s, tx)
+	if err != nil {
+		return Message{}, err
+	}
+	msg.from = from
 
 	return msg, nil
+}
+
+func copyUint256OrZero(v *uint256.Int) uint256.Int {
+	var out uint256.Int
+	if v != nil {
+		out.Set(v)
+	}
+	return out
 }
 
 func (m Message) From() types.Address         { return m.from }

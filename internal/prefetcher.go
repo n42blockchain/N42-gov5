@@ -86,7 +86,7 @@ func (p *StatePrefetcher) Prefetch(blk *block.Block, stateReader state.StateRead
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 
-	signer := transaction.MakeSigner(p.config, header.Number.ToBig())
+	signer := transaction.MakeSignerWithTimestamp(p.config, header.Number.ToBig(), header.Time)
 	coinbase := header.Coinbase
 
 	// Worker pool: bounded goroutines processing transactions.

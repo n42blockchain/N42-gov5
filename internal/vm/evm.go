@@ -71,10 +71,10 @@ func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool)
 	case evm.chainRules.IsNano:
 		precompiles = PrecompiledContractsNano
 	case evm.chainRules.IsFusaka:
-		// Fusaka includes EIP-7823/7883 MODEXP updates + P-256 precompile (EIP-7951)
+		// Fusaka currently inherits Osaka's precompile set.
 		precompiles = PrecompiledContractsFusaka
 	case evm.chainRules.IsOsaka:
-		// Osaka includes EOF support (no new precompiles)
+		// Osaka enables MODEXP EIP-7823/EIP-7883 and adds the P-256 precompile.
 		precompiles = PrecompiledContractsOsaka
 	case evm.chainRules.IsPectra:
 		// Pectra includes EIP-7702 (Account Abstraction) + all Prague precompiles
@@ -239,10 +239,22 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 			}
 		}
 	}
+	codeAddr := addr
 	p, isPrecompile := evm.precompile(addr)
 	var code []byte
 	if !isPrecompile {
 		code = evm.intraBlockState.GetCode(addr)
+		if evm.chainRules.IsPectra {
+			if delegatedAddr, ok := ParseDelegation(code); ok {
+				codeAddr = delegatedAddr
+				p, isPrecompile = evm.precompile(codeAddr)
+				if !isPrecompile {
+					code = evm.intraBlockState.GetCode(codeAddr)
+				} else {
+					code = nil
+				}
+			}
+		}
 	}
 
 	snapshot := evm.intraBlockState.Snapshot()
@@ -303,9 +315,10 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 		// leak the 'contract' to the outer scope, and make allocation for 'contract'
 		// even if the actual execution ends on RunPrecompiled above.
 		addrCopy := addr
+		codeAddrCopy := codeAddr
 		// Initialise a new contract and set the code that is to be used by the EVM.
 		// The contract is a scoped environment for this execution context only.
-		codeHash := evm.intraBlockState.GetCodeHash(addrCopy)
+		codeHash := evm.intraBlockState.GetCodeHash(codeAddrCopy)
 		var contract *Contract
 		if typ == CALLCODE {
 			contract = NewContract(caller, AccountRef(caller.Address()), value, gas, evm.config.SkipAnalysis)
@@ -314,7 +327,7 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 		} else {
 			contract = NewContract(caller, AccountRef(addrCopy), value, gas, evm.config.SkipAnalysis)
 		}
-		contract.SetCallCode(&addrCopy, codeHash, code)
+		contract.SetCallCode(&codeAddrCopy, codeHash, code)
 		ret, err = run(evm, contract, input, typ == STATICCALL)
 		gas = contract.Gas
 	}

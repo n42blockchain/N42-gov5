@@ -96,6 +96,21 @@ func ApplyHiveGenesisEnv(genesis *Genesis, lookup func(string) (string, bool)) b
 	if value, ok := envBig(get, "HIVE_OSAKA_TIMESTAMP"); ok {
 		cfg.OsakaTime = value
 	}
+	if value, ok := envBig(get, "HIVE_BPO1_TIMESTAMP"); ok {
+		cfg.BPO1Time = value
+	}
+	if value, ok := envBig(get, "HIVE_BPO2_TIMESTAMP"); ok {
+		cfg.BPO2Time = value
+	}
+	if value, ok := envBig(get, "HIVE_BPO3_TIMESTAMP"); ok {
+		cfg.BPO3Time = value
+	}
+	if value, ok := envBig(get, "HIVE_BPO4_TIMESTAMP"); ok {
+		cfg.BPO4Time = value
+	}
+	if value, ok := envBig(get, "HIVE_BPO5_TIMESTAMP"); ok {
+		cfg.BPO5Time = value
+	}
 	if value, ok := envUint64(get, "HIVE_CLIQUE_PERIOD"); ok {
 		cfg.Clique = &params.CliqueConfig{
 			Period: value,
@@ -129,6 +144,11 @@ func hasHiveGenesisEnv(lookup hiveEnvLookup) bool {
 		"HIVE_CANCUN_TIMESTAMP",
 		"HIVE_PRAGUE_TIMESTAMP",
 		"HIVE_OSAKA_TIMESTAMP",
+		"HIVE_BPO1_TIMESTAMP",
+		"HIVE_BPO2_TIMESTAMP",
+		"HIVE_BPO3_TIMESTAMP",
+		"HIVE_BPO4_TIMESTAMP",
+		"HIVE_BPO5_TIMESTAMP",
 		"HIVE_CLIQUE_PERIOD",
 	}
 	for _, key := range keys {
@@ -166,11 +186,17 @@ func cloneChainConfig(src *params.ChainConfig) *params.ChainConfig {
 	dst.PragueTime = cloneBig(src.PragueTime)
 	dst.PectraTime = cloneBig(src.PectraTime)
 	dst.OsakaTime = cloneBig(src.OsakaTime)
+	dst.BPO1Time = cloneBig(src.BPO1Time)
+	dst.BPO2Time = cloneBig(src.BPO2Time)
+	dst.BPO3Time = cloneBig(src.BPO3Time)
+	dst.BPO4Time = cloneBig(src.BPO4Time)
+	dst.BPO5Time = cloneBig(src.BPO5Time)
 	dst.FusakaTime = cloneBig(src.FusakaTime)
 	dst.NanoBlock = cloneBig(src.NanoBlock)
 	dst.MoranBlock = cloneBig(src.MoranBlock)
 	dst.BeijingBlock = cloneBig(src.BeijingBlock)
 	dst.Eip1559FeeCollectorTransition = cloneBig(src.Eip1559FeeCollectorTransition)
+	dst.BlobSchedule = cloneBlobSchedule(src.BlobSchedule)
 	if src.Clique != nil {
 		cliqueCopy := *src.Clique
 		dst.Clique = &cliqueCopy
@@ -207,6 +233,41 @@ func cloneBig(src *big.Int) *big.Int {
 		return nil
 	}
 	return new(big.Int).Set(src)
+}
+
+func cloneBlobConfig(src *params.BlobConfig) *params.BlobConfig {
+	if src == nil {
+		return nil
+	}
+	return &params.BlobConfig{
+		Target:                cloneUint64Ptr(src.Target),
+		Max:                   cloneUint64Ptr(src.Max),
+		BaseFeeUpdateFraction: cloneUint64Ptr(src.BaseFeeUpdateFraction),
+	}
+}
+
+func cloneBlobSchedule(src *params.BlobSchedule) *params.BlobSchedule {
+	if src == nil {
+		return nil
+	}
+	return &params.BlobSchedule{
+		Cancun: cloneBlobConfig(src.Cancun),
+		Prague: cloneBlobConfig(src.Prague),
+		Osaka:  cloneBlobConfig(src.Osaka),
+		BPO1:   cloneBlobConfig(src.BPO1),
+		BPO2:   cloneBlobConfig(src.BPO2),
+		BPO3:   cloneBlobConfig(src.BPO3),
+		BPO4:   cloneBlobConfig(src.BPO4),
+		BPO5:   cloneBlobConfig(src.BPO5),
+	}
+}
+
+func cloneUint64Ptr(src *uint64) *uint64 {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	return &dst
 }
 
 func envBig(lookup hiveEnvLookup, keys ...string) (*big.Int, bool) {

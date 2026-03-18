@@ -122,10 +122,15 @@ func TestValidateModExpInput(t *testing.T) {
 
 // EIP-7883: ModExp Gas Cost
 
-func TestModExpGasMultiplier(t *testing.T) {
-	ratio := float64(ModExpGasMultiplier7883Num) / float64(ModExpGasMultiplier7883Den)
-	if ratio != 1.5 {
-		t.Errorf("ModExp multiplier ratio = %f, want 1.5", ratio)
+func TestModExpGasConstants7883(t *testing.T) {
+	if ModExpLargeBaseModulusMultiplier7883 != 2 {
+		t.Errorf("ModExpLargeBaseModulusMultiplier7883 = %d, want 2", ModExpLargeBaseModulusMultiplier7883)
+	}
+	if ModExpExponentByteMultiplier7883 != 16 {
+		t.Errorf("ModExpExponentByteMultiplier7883 = %d, want 16", ModExpExponentByteMultiplier7883)
+	}
+	if ModExpMinGas7883 != 500 {
+		t.Errorf("ModExpMinGas7883 = %d, want 500", ModExpMinGas7883)
 	}
 }
 
@@ -136,20 +141,18 @@ func TestCalcModExpGas7883(t *testing.T) {
 		expLen  *big.Int
 		modLen  *big.Int
 		expHead *big.Int
+		wantGas uint64
 	}{
-		{"small_inputs", big.NewInt(32), big.NewInt(32), big.NewInt(32), big.NewInt(1)},
-		{"medium_inputs", big.NewInt(128), big.NewInt(128), big.NewInt(128), big.NewInt(255)},
-		{"large_inputs", big.NewInt(512), big.NewInt(512), big.NewInt(512), big.NewInt(0)},
+		{"small_inputs", big.NewInt(32), big.NewInt(32), big.NewInt(32), big.NewInt(1), 500},
+		{"medium_inputs", big.NewInt(128), big.NewInt(128), big.NewInt(128), big.NewInt(255), 790016},
+		{"large_inputs_uncapped", big.NewInt(512), big.NewInt(512), big.NewInt(512), big.NewInt(0), 62914560},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			gas := CalcModExpGas7883(tc.baseLen, tc.expLen, tc.modLen, tc.expHead)
-			if gas < ModExpMinGas7883 {
-				t.Errorf("CalcModExpGas7883() = %d, want >= %d", gas, ModExpMinGas7883)
-			}
-			if gas > ModExpMaxGas {
-				t.Errorf("CalcModExpGas7883() = %d, want <= %d", gas, ModExpMaxGas)
+			if gas != tc.wantGas {
+				t.Errorf("CalcModExpGas7883() = %d, want %d", gas, tc.wantGas)
 			}
 		})
 	}
@@ -252,29 +255,29 @@ func TestGetDefaultBlockGasLimit(t *testing.T) {
 // EIP-7934: RLP Block Size
 
 func TestMaxRLPBlockSizeFusaka(t *testing.T) {
-	if MaxRLPBlockSizeFusaka != 10*1024*1024 {
-		t.Errorf("MaxRLPBlockSizeFusaka = %d, want %d", MaxRLPBlockSizeFusaka, 10*1024*1024)
+	if MaxRLPBlockSizeFusaka != 8*1024*1024 {
+		t.Errorf("MaxRLPBlockSizeFusaka = %d, want %d", MaxRLPBlockSizeFusaka, 8*1024*1024)
 	}
 }
 
 func TestValidateRLPBlockSize(t *testing.T) {
 	tests := []struct {
-		name     string
-		size     uint64
-		isFusaka bool
-		wantErr  bool
+		name    string
+		size    uint64
+		active  bool
+		wantErr bool
 	}{
-		{"pre_fusaka_large", 100 * 1024 * 1024, false, false},
-		{"fusaka_valid", MaxRLPBlockSizeFusaka, true, false},
-		{"fusaka_invalid", MaxRLPBlockSizeFusaka + 1, true, true},
+		{"inactive_large", 100 * 1024 * 1024, false, false},
+		{"at_limit", MaxRLPBlockSizeFusaka, true, false},
+		{"above_limit", MaxRLPBlockSizeFusaka + 1, true, true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateRLPBlockSize(tc.size, tc.isFusaka)
+			err := ValidateRLPBlockSize(tc.size, tc.active)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("ValidateRLPBlockSize(%d, %v) error = %v, wantErr %v",
-					tc.size, tc.isFusaka, err, tc.wantErr)
+					tc.size, tc.active, err, tc.wantErr)
 			}
 		})
 	}
@@ -290,8 +293,8 @@ func TestP256VerifyAddress(t *testing.T) {
 }
 
 func TestP256VerifyGasFusaka(t *testing.T) {
-	if P256VerifyGasFusaka != 3450 {
-		t.Errorf("P256VerifyGasFusaka = %d, want 3450", P256VerifyGasFusaka)
+	if P256VerifyGasFusaka != 6900 {
+		t.Errorf("P256VerifyGasFusaka = %d, want 6900", P256VerifyGasFusaka)
 	}
 }
 
