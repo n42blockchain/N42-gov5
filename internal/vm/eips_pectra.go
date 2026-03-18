@@ -84,17 +84,18 @@ func ResolveDelegation(evm VMInterpreter, addr types.Address) types.Address {
 // https://eips.ethereum.org/EIPS/eip-2537
 // =============================================================================
 
-// BLS precompile addresses (0x0b - 0x12)
+// BLS precompile addresses aligned with the active Prague/Osaka execution-spec-tests
+// layout. Single-scalar and multi-scalar inputs intentionally share the MSM entries.
 var (
 	BLS12G1AddAddr      = types.BytesToAddress([]byte{0x0b})
 	BLS12G1MulAddr      = types.BytesToAddress([]byte{0x0c})
-	BLS12G1MultiExpAddr = types.BytesToAddress([]byte{0x0d})
-	BLS12G2AddAddr      = types.BytesToAddress([]byte{0x0e})
-	BLS12G2MulAddr      = types.BytesToAddress([]byte{0x0f})
-	BLS12G2MultiExpAddr = types.BytesToAddress([]byte{0x10})
-	BLS12PairingAddr    = types.BytesToAddress([]byte{0x11})
-	BLS12MapG1Addr      = types.BytesToAddress([]byte{0x12})
-	BLS12MapG2Addr      = types.BytesToAddress([]byte{0x13})
+	BLS12G1MultiExpAddr = BLS12G1MulAddr
+	BLS12G2AddAddr      = types.BytesToAddress([]byte{0x0d})
+	BLS12G2MulAddr      = types.BytesToAddress([]byte{0x0e})
+	BLS12G2MultiExpAddr = BLS12G2MulAddr
+	BLS12PairingAddr    = types.BytesToAddress([]byte{0x0f})
+	BLS12MapG1Addr      = types.BytesToAddress([]byte{0x10})
+	BLS12MapG2Addr      = types.BytesToAddress([]byte{0x11})
 )
 
 // =============================================================================
@@ -137,8 +138,8 @@ var MaxEffectiveBalanceEIP7251 = new(uint256.Int).Mul(
 
 // Request types for EIP-7685
 const (
-	DepositRequestType    = 0x00
-	WithdrawalRequestType = 0x01
+	DepositRequestType       = 0x00
+	WithdrawalRequestType    = 0x01
 	ConsolidationRequestType = 0x02
 )
 

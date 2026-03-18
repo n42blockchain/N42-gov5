@@ -38,17 +38,16 @@ var (
 	// Blake2F precompile - Used for hashing
 	blake2FAddr = types.BytesToAddress([]byte{9})
 
-	// BLS12-381 precompiles - Used for PLONK/KZG (EIP-2537 Pectra)
-	// Addresses: 0x0b - 0x13 per EIP-2537 specification
+	// BLS12-381 precompiles - Used for PLONK/KZG (active Prague/Osaka layout)
 	bls12381G1AddAddr      = types.BytesToAddress([]byte{0x0b}) // BLS12_G1ADD
-	bls12381G1MulAddr      = types.BytesToAddress([]byte{0x0c}) // BLS12_G1MUL
-	bls12381G1MultiExpAddr = types.BytesToAddress([]byte{0x0d}) // BLS12_G1MSM
-	bls12381G2AddAddr      = types.BytesToAddress([]byte{0x0e}) // BLS12_G2ADD
-	bls12381G2MulAddr      = types.BytesToAddress([]byte{0x0f}) // BLS12_G2MUL
-	bls12381G2MultiExpAddr = types.BytesToAddress([]byte{0x10}) // BLS12_G2MSM
-	bls12381PairingAddr    = types.BytesToAddress([]byte{0x11}) // BLS12_PAIRING
-	bls12381MapG1Addr      = types.BytesToAddress([]byte{0x12}) // BLS12_MAP_FP_TO_G1
-	bls12381MapG2Addr      = types.BytesToAddress([]byte{0x13}) // BLS12_MAP_FP2_TO_G2
+	bls12381G1MulAddr      = types.BytesToAddress([]byte{0x0c}) // Active scalar/MSM entry
+	bls12381G1MultiExpAddr = types.BytesToAddress([]byte{0x0c}) // BLS12_G1MSM
+	bls12381G2AddAddr      = types.BytesToAddress([]byte{0x0d}) // BLS12_G2ADD
+	bls12381G2MulAddr      = types.BytesToAddress([]byte{0x0e}) // Active scalar/MSM entry
+	bls12381G2MultiExpAddr = types.BytesToAddress([]byte{0x0e}) // BLS12_G2MSM
+	bls12381PairingAddr    = types.BytesToAddress([]byte{0x0f}) // BLS12_PAIRING
+	bls12381MapG1Addr      = types.BytesToAddress([]byte{0x10}) // BLS12_MAP_FP_TO_G1
+	bls12381MapG2Addr      = types.BytesToAddress([]byte{0x11}) // BLS12_MAP_FP2_TO_G2
 
 	// KZG Point Evaluation (EIP-4844)
 	kzgPointEvalAddr = types.BytesToAddress([]byte{0x0a})

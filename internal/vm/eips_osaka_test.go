@@ -37,7 +37,7 @@ func createTestScopeWithEOF(code []byte, data []byte, containers [][]byte) *Scop
 	return &ScopeContext{
 		Stack:       stack.New(),
 		Memory:      NewMemory(),
-		Contract:    &Contract{Code: code, EOFContainer: container},
+		Contract:    &Contract{Code: code, EOFContainer: container, CodeSection: 0},
 		ReturnStack: stack.NewReturnStack(),
 	}
 }
@@ -58,7 +58,7 @@ func TestOpDUPN(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scope := createTestScope([]byte{byte(DUPN), tt.n})
+			scope := createTestScopeWithEOF([]byte{byte(DUPN), tt.n}, nil, nil)
 
 			for i := len(tt.stack) - 1; i >= 0; i-- {
 				scope.Stack.Push(uint256.NewInt(tt.stack[i]))
@@ -97,7 +97,7 @@ func TestOpSWAPN(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scope := createTestScope([]byte{byte(SWAPN), tt.n})
+			scope := createTestScopeWithEOF([]byte{byte(SWAPN), tt.n}, nil, nil)
 
 			for i := len(tt.stack) - 1; i >= 0; i-- {
 				scope.Stack.Push(uint256.NewInt(tt.stack[i]))
@@ -133,7 +133,7 @@ func TestOpEXCHANGE(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scope := createTestScope([]byte{byte(EXCHANGE), tt.imm})
+			scope := createTestScopeWithEOF([]byte{byte(EXCHANGE), tt.imm}, nil, nil)
 
 			for i := len(tt.stack) - 1; i >= 0; i-- {
 				scope.Stack.Push(uint256.NewInt(tt.stack[i]))
@@ -305,7 +305,7 @@ func TestOpRJUMP(t *testing.T) {
 			code[1] = byte(tt.offset >> 8)
 			code[2] = byte(tt.offset & 0xff)
 
-			scope := createTestScope(code)
+			scope := createTestScopeWithEOF(code, nil, nil)
 			pc := uint64(0)
 			_, err := opRJUMP(&pc, nil, scope)
 			if err != nil {
@@ -340,7 +340,7 @@ func TestOpRJUMPI(t *testing.T) {
 			code[1] = byte(tt.offset >> 8)
 			code[2] = byte(tt.offset & 0xff)
 
-			scope := createTestScope(code)
+			scope := createTestScopeWithEOF(code, nil, nil)
 			scope.Stack.Push(uint256.NewInt(tt.condition))
 
 			pc := uint64(0)
@@ -382,7 +382,7 @@ func TestOpRJUMPV(t *testing.T) {
 				code[2+i*2+1] = byte(offset & 0xff)
 			}
 
-			scope := createTestScope(code)
+			scope := createTestScopeWithEOF(code, nil, nil)
 			scope.Stack.Push(uint256.NewInt(tt.caseIndex))
 
 			pc := uint64(0)
@@ -469,7 +469,7 @@ func TestOsakaGasConstants(t *testing.T) {
 // Edge Case Tests
 
 func TestOpDUPN_StackUnderflow(t *testing.T) {
-	scope := createTestScope([]byte{byte(DUPN), 0x10})
+	scope := createTestScopeWithEOF([]byte{byte(DUPN), 0x10}, nil, nil)
 	for i := 0; i < 5; i++ {
 		scope.Stack.Push(uint256.NewInt(uint64(i)))
 	}
@@ -482,7 +482,7 @@ func TestOpDUPN_StackUnderflow(t *testing.T) {
 }
 
 func TestOpSWAPN_StackUnderflow(t *testing.T) {
-	scope := createTestScope([]byte{byte(SWAPN), 0x10})
+	scope := createTestScopeWithEOF([]byte{byte(SWAPN), 0x10}, nil, nil)
 	for i := 0; i < 5; i++ {
 		scope.Stack.Push(uint256.NewInt(uint64(i)))
 	}
@@ -495,7 +495,7 @@ func TestOpSWAPN_StackUnderflow(t *testing.T) {
 }
 
 func TestOpEXCHANGE_StackUnderflow(t *testing.T) {
-	scope := createTestScope([]byte{byte(EXCHANGE), 0xFF})
+	scope := createTestScopeWithEOF([]byte{byte(EXCHANGE), 0xFF}, nil, nil)
 	for i := 0; i < 5; i++ {
 		scope.Stack.Push(uint256.NewInt(uint64(i)))
 	}
@@ -509,7 +509,7 @@ func TestOpEXCHANGE_StackUnderflow(t *testing.T) {
 
 func TestOpRJUMP_OutOfBounds(t *testing.T) {
 	code := []byte{byte(RJUMP), 0x7F, 0xFF} // Large positive offset
-	scope := createTestScope(code)
+	scope := createTestScopeWithEOF(code, nil, nil)
 
 	pc := uint64(0)
 	_, err := opRJUMP(&pc, nil, scope)
@@ -524,7 +524,7 @@ func TestOpCALLF_RETF_CodeSectionSwitch(t *testing.T) {
 	// Create a container with 2 code sections:
 	// Section 0: CALLF 1 (calls section 1)
 	// Section 1: PUSH1 42, RETF (returns to section 0)
-	section0 := []byte{byte(CALLF), 0x00, 0x01} // CALLF section 1
+	section0 := []byte{byte(CALLF), 0x00, 0x01}       // CALLF section 1
 	section1 := []byte{byte(PUSH1), 0x2A, byte(RETF)} // PUSH1 42, RETF
 
 	container := &EOFContainer{
@@ -638,14 +638,14 @@ func TestParseEOF_ValidContainer(t *testing.T) {
 	// 00 FE (code: STOP, INVALID)
 	// DE AD BE EF (data)
 	raw := []byte{
-		0xEF, 0x00, 0x01,       // magic + version
-		0x01, 0x00, 0x04,       // type section size = 4
-		0x01, 0x00, 0x01,       // 1 code section
-		0x00, 0x02,             // code size = 2
-		0x03, 0x00, 0x04,       // data section size = 4
+		0xEF, 0x00, 0x01, // magic + version
+		0x01, 0x00, 0x04, // type section size = 4
+		0x01, 0x00, 0x01, // 1 code section
+		0x00, 0x02, // code size = 2
+		0x03, 0x00, 0x04, // data section size = 4
 		0x00,                   // terminator
 		0x00, 0x00, 0x00, 0x01, // types: 0 in, 0 out, max_stack=1
-		0x00, 0xFE,             // code
+		0x00, 0xFE, // code
 		0xDE, 0xAD, 0xBE, 0xEF, // data
 	}
 
@@ -705,7 +705,7 @@ func TestContractSetCallCode_Legacy(t *testing.T) {
 // Benchmarks
 
 func BenchmarkOpDUPN(b *testing.B) {
-	scope := createTestScope([]byte{byte(DUPN), 0x05})
+	scope := createTestScopeWithEOF([]byte{byte(DUPN), 0x05}, nil, nil)
 	for i := 0; i < 10; i++ {
 		scope.Stack.Push(uint256.NewInt(uint64(i)))
 	}
@@ -719,7 +719,7 @@ func BenchmarkOpDUPN(b *testing.B) {
 }
 
 func BenchmarkOpSWAPN(b *testing.B) {
-	scope := createTestScope([]byte{byte(SWAPN), 0x05})
+	scope := createTestScopeWithEOF([]byte{byte(SWAPN), 0x05}, nil, nil)
 	for i := 0; i < 10; i++ {
 		scope.Stack.Push(uint256.NewInt(uint64(i)))
 	}
@@ -759,11 +759,56 @@ func BenchmarkOpRJUMP(b *testing.B) {
 	code[0] = byte(RJUMP)
 	code[1] = 0x00
 	code[2] = 0x00
-	scope := createTestScope(code)
+	scope := createTestScopeWithEOF(code, nil, nil)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		pc := uint64(0)
 		opRJUMP(&pc, nil, scope)
+	}
+}
+
+func TestEOFOpcodesRejectLegacyBytecode(t *testing.T) {
+	tests := []struct {
+		name   string
+		opcode OpCode
+		code   []byte
+		exec   func(*uint64, *EVMInterpreter, *ScopeContext) ([]byte, error)
+	}{
+		{"rjump", RJUMP, []byte{byte(RJUMP), 0x00, 0x00}, opRJUMP},
+		{"rjumpi", RJUMPI, []byte{byte(RJUMPI), 0x00, 0x00}, opRJUMPI},
+		{"rjumpv", RJUMPV, []byte{byte(RJUMPV), 0x01, 0x00, 0x00}, opRJUMPV},
+		{"callf", CALLF, []byte{byte(CALLF), 0x00, 0x00}, opCALLF},
+		{"retf", RETF, []byte{byte(RETF)}, opRETF},
+		{"jumpf", JUMPF, []byte{byte(JUMPF), 0x00, 0x00}, opJUMPF},
+		{"dataload", DATALOAD, []byte{byte(DATALOAD)}, opDATALOAD},
+		{"dataloadn", DATALOADN, []byte{byte(DATALOADN), 0x00, 0x00}, opDATALOADN},
+		{"datasize", DATASIZE, []byte{byte(DATASIZE)}, opDATASIZE},
+		{"datacopy", DATACOPY, []byte{byte(DATACOPY)}, opDATACOPY},
+		{"dupn", DUPN, []byte{byte(DUPN), 0x00}, opDUPN},
+		{"swapn", SWAPN, []byte{byte(SWAPN), 0x00}, opSWAPN},
+		{"exchange", EXCHANGE, []byte{byte(EXCHANGE), 0x00}, opEXCHANGE},
+		{"eofcreate", EOFCREATE, []byte{byte(EOFCREATE), 0x00}, opEOFCREATE},
+		{"returncontract", RETURNCONTRACT, []byte{byte(RETURNCONTRACT), 0x00}, opRETURNCONTRACT},
+		{"returndataload", RETURNDATALOAD, []byte{byte(RETURNDATALOAD)}, opRETURNDATALOAD},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scope := createTestScope(tt.code)
+			pc := uint64(0)
+
+			_, err := tt.exec(&pc, nil, scope)
+			if err == nil {
+				t.Fatalf("expected invalid opcode error for %s", tt.opcode)
+			}
+			invalid, ok := err.(*ErrInvalidOpCode)
+			if !ok {
+				t.Fatalf("expected ErrInvalidOpCode, got %T: %v", err, err)
+			}
+			if invalid.opcode != tt.opcode {
+				t.Fatalf("invalid opcode = %s, want %s", invalid.opcode, tt.opcode)
+			}
+		})
 	}
 }

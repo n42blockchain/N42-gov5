@@ -1365,13 +1365,13 @@ func TestRunBLSPrecompileTests(t *testing.T) {
 	precompiles := map[string]types.Address{
 		"add_G1_bls.json":        types.HexToAddress("0x0b"),
 		"mul_G1_bls.json":        types.HexToAddress("0x0c"),
-		"msm_G1_bls.json":        types.HexToAddress("0x0d"),
-		"add_G2_bls.json":        types.HexToAddress("0x0e"),
-		"mul_G2_bls.json":        types.HexToAddress("0x0f"),
-		"msm_G2_bls.json":        types.HexToAddress("0x10"),
-		"pairing_check_bls.json": types.HexToAddress("0x11"),
-		"map_fp_to_G1_bls.json":  types.HexToAddress("0x12"),
-		"map_fp2_to_G2_bls.json": types.HexToAddress("0x13"),
+		"msm_G1_bls.json":        types.HexToAddress("0x0c"),
+		"add_G2_bls.json":        types.HexToAddress("0x0d"),
+		"mul_G2_bls.json":        types.HexToAddress("0x0e"),
+		"msm_G2_bls.json":        types.HexToAddress("0x0e"),
+		"pairing_check_bls.json": types.HexToAddress("0x0f"),
+		"map_fp_to_G1_bls.json":  types.HexToAddress("0x10"),
+		"map_fp2_to_G2_bls.json": types.HexToAddress("0x11"),
 	}
 
 	for filename, precompileAddr := range precompiles {

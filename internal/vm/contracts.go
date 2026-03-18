@@ -135,19 +135,18 @@ var PrecompiledContractsBerlin = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{9}): &blake2F{},
 }
 
-// PrecompiledContractsBLS contains the set of pre-compiled Ethereum
-// contracts specified in EIP-2537 (Pectra). These are exported for testing purposes.
-// Addresses: 0x0b - 0x13 per EIP-2537 specification
+// PrecompiledContractsBLS contains the active BLS12-381 precompile layout used by
+// Prague/Osaka compatibility tests. Current EEST fixtures route both single-scalar
+// and multi-scalar inputs through the MSM entries, so the active address range is
+// 0x0b - 0x11.
 var PrecompiledContractsBLS = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{0x0b}): &bls12381G1Add{},      // BLS12_G1ADD
-	types.BytesToAddress([]byte{0x0c}): &bls12381G1Mul{},      // BLS12_G1MUL
-	types.BytesToAddress([]byte{0x0d}): &bls12381G1MultiExp{}, // BLS12_G1MSM
-	types.BytesToAddress([]byte{0x0e}): &bls12381G2Add{},      // BLS12_G2ADD
-	types.BytesToAddress([]byte{0x0f}): &bls12381G2Mul{},      // BLS12_G2MUL
-	types.BytesToAddress([]byte{0x10}): &bls12381G2MultiExp{}, // BLS12_G2MSM
-	types.BytesToAddress([]byte{0x11}): &bls12381Pairing{},    // BLS12_PAIRING
-	types.BytesToAddress([]byte{0x12}): &bls12381MapG1{},      // BLS12_MAP_FP_TO_G1
-	types.BytesToAddress([]byte{0x13}): &bls12381MapG2{},      // BLS12_MAP_FP2_TO_G2
+	types.BytesToAddress([]byte{0x0c}): &bls12381G1MultiExp{}, // BLS12_G1 scalar/MSM
+	types.BytesToAddress([]byte{0x0d}): &bls12381G2Add{},      // BLS12_G2ADD
+	types.BytesToAddress([]byte{0x0e}): &bls12381G2MultiExp{}, // BLS12_G2 scalar/MSM
+	types.BytesToAddress([]byte{0x0f}): &bls12381Pairing{},    // BLS12_PAIRING
+	types.BytesToAddress([]byte{0x10}): &bls12381MapG1{},      // BLS12_MAP_FP_TO_G1
+	types.BytesToAddress([]byte{0x11}): &bls12381MapG2{},      // BLS12_MAP_FP2_TO_G2
 }
 
 // PrecompiledContractsCancun contains the default set of pre-compiled Ethereum
@@ -166,7 +165,8 @@ var PrecompiledContractsCancun = map[types.Address]PrecompiledContract{
 }
 
 // PrecompiledContractsPrague contains the default set of pre-compiled Ethereum
-// contracts used in the Prague release. This includes Cancun precompiles + BLS (EIP-2537).
+// contracts used in the Prague release. This includes Cancun precompiles plus
+// the active BLS layout exercised by current execution-spec-tests.
 var PrecompiledContractsPrague = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{1}):    &ecrecover{},
 	types.BytesToAddress([]byte{2}):    &sha256hash{},
@@ -179,27 +179,22 @@ var PrecompiledContractsPrague = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{9}):    &blake2F{},
 	types.BytesToAddress([]byte{0x0a}): &pointEvaluationPrecompile{}, // EIP-4844
 	types.BytesToAddress([]byte{0x0b}): &bls12381G1Add{},             // EIP-2537
-	types.BytesToAddress([]byte{0x0c}): &bls12381G1Mul{},
-	types.BytesToAddress([]byte{0x0d}): &bls12381G1MultiExp{},
-	types.BytesToAddress([]byte{0x0e}): &bls12381G2Add{},
-	types.BytesToAddress([]byte{0x0f}): &bls12381G2Mul{},
-	types.BytesToAddress([]byte{0x10}): &bls12381G2MultiExp{},
-	types.BytesToAddress([]byte{0x11}): &bls12381Pairing{},
-	types.BytesToAddress([]byte{0x12}): &bls12381MapG1{},
-	types.BytesToAddress([]byte{0x13}): &bls12381MapG2{},
-	types.BytesToAddress([]byte{0x14}): &falconVerify{},     // PQ: Falcon-512 signature verification
-	types.BytesToAddress([]byte{0x15}): &dilithium2Verify{}, // PQ: Dilithium2 signature verification
-	types.BytesToAddress([]byte{0x16}): &dilithium3Verify{}, // PQ: Dilithium3 signature verification
+	types.BytesToAddress([]byte{0x0c}): &bls12381G1MultiExp{},
+	types.BytesToAddress([]byte{0x0d}): &bls12381G2Add{},
+	types.BytesToAddress([]byte{0x0e}): &bls12381G2MultiExp{},
+	types.BytesToAddress([]byte{0x0f}): &bls12381Pairing{},
+	types.BytesToAddress([]byte{0x10}): &bls12381MapG1{},
+	types.BytesToAddress([]byte{0x11}): &bls12381MapG2{},
 }
 
 // PrecompiledContractsPectra contains the default set of pre-compiled Ethereum
-// contracts used in the Pectra release. Same as Prague (BLS12-381 + PQ included).
+// contracts used in the Pectra release. Same as Prague's EL surface.
 // Pectra = Prague + Electra consensus changes.
 var PrecompiledContractsPectra = PrecompiledContractsPrague
 
 // PrecompiledContractsOsaka contains the default set of pre-compiled Ethereum
-// contracts used in the Osaka release. Osaka keeps Prague/Pectra precompiles
-// and updates MODEXP for EIP-7823/EIP-7883, while adding the P-256 precompile.
+// contracts used in the Osaka release. Osaka keeps the Prague/Pectra active
+// BLS layout, updates MODEXP for EIP-7823/EIP-7883, and adds the P-256 precompile.
 var PrecompiledContractsOsaka = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{1}):                                  &ecrecover{},
 	types.BytesToAddress([]byte{2}):                                  &sha256hash{},
@@ -212,18 +207,13 @@ var PrecompiledContractsOsaka = map[types.Address]PrecompiledContract{
 	types.BytesToAddress([]byte{9}):                                  &blake2F{},
 	types.BytesToAddress([]byte{0x0a}):                               &pointEvaluationPrecompile{}, // EIP-4844
 	types.BytesToAddress([]byte{0x0b}):                               &bls12381G1Add{},             // EIP-2537
-	types.BytesToAddress([]byte{0x0c}):                               &bls12381G1Mul{},
-	types.BytesToAddress([]byte{0x0d}):                               &bls12381G1MultiExp{},
-	types.BytesToAddress([]byte{0x0e}):                               &bls12381G2Add{},
-	types.BytesToAddress([]byte{0x0f}):                               &bls12381G2Mul{},
-	types.BytesToAddress([]byte{0x10}):                               &bls12381G2MultiExp{},
-	types.BytesToAddress([]byte{0x11}):                               &bls12381Pairing{},
-	types.BytesToAddress([]byte{0x12}):                               &bls12381MapG1{},
-	types.BytesToAddress([]byte{0x13}):                               &bls12381MapG2{},
-	types.HexToAddress("0x0000000000000000000000000000000000000100"): &p256Verify{},       // EIP-7951
-	types.BytesToAddress([]byte{0x14}):                               &falconVerify{},     // PQ: Falcon-512 signature verification
-	types.BytesToAddress([]byte{0x15}):                               &dilithium2Verify{}, // PQ: Dilithium2 signature verification
-	types.BytesToAddress([]byte{0x16}):                               &dilithium3Verify{}, // PQ: Dilithium3 signature verification
+	types.BytesToAddress([]byte{0x0c}):                               &bls12381G1MultiExp{},
+	types.BytesToAddress([]byte{0x0d}):                               &bls12381G2Add{},
+	types.BytesToAddress([]byte{0x0e}):                               &bls12381G2MultiExp{},
+	types.BytesToAddress([]byte{0x0f}):                               &bls12381Pairing{},
+	types.BytesToAddress([]byte{0x10}):                               &bls12381MapG1{},
+	types.BytesToAddress([]byte{0x11}):                               &bls12381MapG2{},
+	types.HexToAddress("0x0000000000000000000000000000000000000100"): &p256Verify{}, // EIP-7951
 }
 
 // PrecompiledContractsFusaka contains the default set of pre-compiled Ethereum

@@ -37,23 +37,23 @@ import (
 
 const (
 	// Gas costs for EOF instructions
-	GasRJUMP  = 2   // RJUMP gas cost
-	GasRJUMPI = 4   // RJUMPI gas cost
-	GasRJUMPV = 4   // RJUMPV base gas cost
-	GasCALLF  = 5   // CALLF gas cost
-	GasRETF   = 3   // RETF gas cost
-	GasJUMPF  = 5   // JUMPF gas cost
+	GasRJUMP  = 2 // RJUMP gas cost
+	GasRJUMPI = 4 // RJUMPI gas cost
+	GasRJUMPV = 4 // RJUMPV base gas cost
+	GasCALLF  = 5 // CALLF gas cost
+	GasRETF   = 3 // RETF gas cost
+	GasJUMPF  = 5 // JUMPF gas cost
 
 	// Data section access
-	GasDataLoad  = 4   // DATALOAD gas cost
-	GasDataLoadN = 3   // DATALOADN gas cost
-	GasDataSize  = 2   // DATASIZE gas cost
-	GasDataCopy  = 3   // DATACOPY base gas cost
+	GasDataLoad  = 4 // DATALOAD gas cost
+	GasDataLoadN = 3 // DATALOADN gas cost
+	GasDataSize  = 2 // DATASIZE gas cost
+	GasDataCopy  = 3 // DATACOPY base gas cost
 
 	// Stack manipulation
-	GasDUPN     = 3   // DUPN gas cost
-	GasSWAPN    = 3   // SWAPN gas cost
-	GasEXCHANGE = 3   // EXCHANGE gas cost
+	GasDUPN     = 3 // DUPN gas cost
+	GasSWAPN    = 3 // SWAPN gas cost
+	GasEXCHANGE = 3 // EXCHANGE gas cost
 
 	// Contract creation
 	GasEOFCREATE      = 32000 // EOFCREATE gas cost (same as CREATE)
@@ -65,8 +65,18 @@ const (
 // EOF Opcode Implementations
 // =============================================================================
 
+func requireEOFExecution(scope *ScopeContext, op OpCode) error {
+	if scope == nil || scope.Contract == nil || scope.Contract.EOFContainer == nil {
+		return &ErrInvalidOpCode{opcode: op}
+	}
+	return nil
+}
+
 // opRJUMP implements RJUMP (0xE0) - unconditional relative jump
 func opRJUMP(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, RJUMP); err != nil {
+		return nil, err
+	}
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+3 > uint64(len(code)) {
@@ -84,6 +94,9 @@ func opRJUMP(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 
 // opRJUMPI implements RJUMPI (0xE1) - conditional relative jump
 func opRJUMPI(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, RJUMPI); err != nil {
+		return nil, err
+	}
 	condition := scope.Stack.Pop()
 	code := scope.Contract.Code
 	// Security: bounds check for code access
@@ -106,6 +119,9 @@ func opRJUMPI(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 
 // opRJUMPV implements RJUMPV (0xE2) - jump table (switch)
 func opRJUMPV(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, RJUMPV); err != nil {
+		return nil, err
+	}
 	code := scope.Contract.Code
 	// Security: bounds check for count byte
 	if *pc+2 > uint64(len(code)) {
@@ -144,6 +160,9 @@ func opRJUMPV(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 
 // opCALLF implements CALLF (0xE3) - call function
 func opCALLF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, CALLF); err != nil {
+		return nil, err
+	}
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+3 > uint64(len(code)) {
@@ -186,6 +205,9 @@ func opCALLF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 
 // opRETF implements RETF (0xE4) - return from function
 func opRETF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, RETF); err != nil {
+		return nil, err
+	}
 	// Check if return stack is empty
 	if scope.ReturnStack == nil || len(scope.ReturnStack.Data()) == 0 {
 		return nil, ErrEOFInvalidRetF
@@ -217,6 +239,9 @@ func opRETF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 
 // opJUMPF implements JUMPF (0xE5) - tail call to function
 func opJUMPF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, JUMPF); err != nil {
+		return nil, err
+	}
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+3 > uint64(len(code)) {
@@ -245,14 +270,12 @@ func opJUMPF(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 
 // opDATALOAD implements DATALOAD (0xD0) - load 32 bytes from data section
 func opDATALOAD(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, DATALOAD); err != nil {
+		return nil, err
+	}
 	offset := scope.Stack.Peek()
 
 	container := scope.Contract.EOFContainer
-	if container == nil {
-		offset.Clear()
-		return nil, nil
-	}
-
 	data := container.GetData()
 	off64 := offset.Uint64()
 
@@ -268,6 +291,9 @@ func opDATALOAD(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 
 // opDATALOADN implements DATALOADN (0xD1) - load 32 bytes with immediate offset
 func opDATALOADN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, DATALOADN); err != nil {
+		return nil, err
+	}
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+3 > uint64(len(code)) {
@@ -276,12 +302,6 @@ func opDATALOADN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 	offset := binary.BigEndian.Uint16(code[*pc+1:])
 
 	container := scope.Contract.EOFContainer
-	if container == nil {
-		scope.Stack.Push(new(uint256.Int))
-		*pc += 2 // Skip immediate even on error path
-		return nil, nil
-	}
-
 	data := container.GetData()
 	if int(offset)+32 > len(data) {
 		scope.Stack.Push(new(uint256.Int))
@@ -298,17 +318,20 @@ func opDATALOADN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 
 // opDATASIZE implements DATASIZE (0xD2) - get data section size
 func opDATASIZE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	container := scope.Contract.EOFContainer
-	size := uint64(0)
-	if container != nil {
-		size = uint64(container.DataSize())
+	if err := requireEOFExecution(scope, DATASIZE); err != nil {
+		return nil, err
 	}
+	container := scope.Contract.EOFContainer
+	size := uint64(container.DataSize())
 	scope.Stack.Push(uint256.NewInt(size))
 	return nil, nil
 }
 
 // opDATACOPY implements DATACOPY (0xD3) - copy from data section to memory
 func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, DATACOPY); err != nil {
+		return nil, err
+	}
 	var (
 		memOffset  = scope.Stack.Pop()
 		dataOffset = scope.Stack.Pop()
@@ -322,15 +345,6 @@ func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	len64 := length.Uint64()
 
 	container := scope.Contract.EOFContainer
-	if container == nil {
-		// No data section: write zeros
-		padded := make([]byte, len64)
-		if err := scope.Memory.Set(memOffset.Uint64(), len64, padded); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}
-
 	data := container.GetData()
 	dataOff64, overflow := dataOffset.Uint64WithOverflow()
 	if overflow || dataOff64 > uint64(len(data)) {
@@ -354,6 +368,9 @@ func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 
 // opDUPN implements DUPN (0xE6) - DUP with immediate operand
 func opDUPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, DUPN); err != nil {
+		return nil, err
+	}
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+1 >= uint64(len(code)) {
@@ -374,6 +391,9 @@ func opDUPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 
 // opSWAPN implements SWAPN (0xE7) - SWAP with immediate operand
 func opSWAPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, SWAPN); err != nil {
+		return nil, err
+	}
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+1 >= uint64(len(code)) {
@@ -393,6 +413,9 @@ func opSWAPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 
 // opEXCHANGE implements EXCHANGE (0xE8) - exchange two stack items
 func opEXCHANGE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, EXCHANGE); err != nil {
+		return nil, err
+	}
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+1 >= uint64(len(code)) {
@@ -428,6 +451,9 @@ func opEXCHANGE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 // opEOFCREATE implements EOFCREATE (0xEC) - create contract from EOF container
 // Stack: [value, salt, dataOffset, dataSize] => [address]
 func opEOFCREATE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, EOFCREATE); err != nil {
+		return nil, err
+	}
 	// Reject in static context
 	if interpreter.readOnly {
 		return nil, ErrWriteProtection
@@ -448,7 +474,7 @@ func opEOFCREATE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 	)
 
 	container := scope.Contract.EOFContainer
-	if container == nil || containerIdx >= container.NumContainers() {
+	if containerIdx >= container.NumContainers() {
 		scope.Stack.Push(new(uint256.Int))
 		*pc++
 		return nil, nil
@@ -506,6 +532,9 @@ func opEOFCREATE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 // opRETURNCONTRACT implements RETURNCONTRACT (0xEE) - return new contract from initcode
 // Stack: [auxDataOffset, auxDataSize] => []
 func opRETURNCONTRACT(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, RETURNCONTRACT); err != nil {
+		return nil, err
+	}
 	code := scope.Contract.Code
 	// Security: bounds check for code access
 	if *pc+1 >= uint64(len(code)) {
@@ -517,7 +546,7 @@ func opRETURNCONTRACT(pc *uint64, interpreter *EVMInterpreter, scope *ScopeConte
 	auxDataSize := scope.Stack.Pop()
 
 	container := scope.Contract.EOFContainer
-	if container == nil || containerIdx >= container.NumContainers() {
+	if containerIdx >= container.NumContainers() {
 		return nil, ErrEOFInvalidContainer
 	}
 
@@ -550,6 +579,9 @@ func opRETURNCONTRACT(pc *uint64, interpreter *EVMInterpreter, scope *ScopeConte
 
 // opRETURNDATALOAD implements RETURNDATALOAD (0xF7) - load 32 bytes from return data
 func opRETURNDATALOAD(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if err := requireEOFExecution(scope, RETURNDATALOAD); err != nil {
+		return nil, err
+	}
 	offset := scope.Stack.Peek()
 	off64 := offset.Uint64()
 
