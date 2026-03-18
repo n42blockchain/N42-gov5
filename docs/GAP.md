@@ -131,7 +131,7 @@ N42 已经不是“功能面窄”的客户端。状态承诺、快照、Witness
 - overlay 现在能把 Engine 导入块暴露给普通 RPC 查询路径。
 - Hive `engine-auth` 现在能稳定通过，且 `RPCMarshalHeader` 已按 Shanghai / Cancun 系列分叉条件输出兼容字段。
 - payload 校验已经补到共享 validation + stateful validation 路径，覆盖 `gasLimit`、`baseFee`、typed tx block RLP size、header/parent hash 兼容和按状态执行的无效块判定。
-- 近期已落地一批真实 EEST blocker 修复，包括 BPO 时间驱动的 blob schedule、authorization list intrinsic gas、Osaka `P256VERIFY` gas、oversized block RLP 和 access-list/intrinsic gas 兼容。
+- 近期已落地一批真实 EEST blocker 修复，包括 BPO 时间驱动的 blob schedule、authorization list intrinsic gas、Osaka `P256VERIFY` gas、oversized block RLP、blob tx 的 blob fee 扣费语义、`BlobHashes -> TxContext` 传播链，以及 access-list/intrinsic gas 兼容。
 - 最新一轮兼容修复已经把标准 Osaka precompile surface 和 N42 的 PQ 扩展面重新分开，避免把 PQ 地址误加入标准 fork 的执行与 warm-access 语义中；这类问题现在被明确归类为“扩展能力放置边界”，而不是“上游 fork 兼容项”。
 
 相关文件：
@@ -143,6 +143,7 @@ N42 已经不是“功能面窄”的客户端。状态承诺、快照、Witness
 - [`../internal/api/engine_payload_stateful.go`](../internal/api/engine_payload_stateful.go)
 - [`../params/blob_schedule.go`](../params/blob_schedule.go)
 - [`../conf/genesis_hive.go`](../conf/genesis_hive.go)
+- [`../internal/evm.go`](../internal/evm.go)
 - [`../internal/state_transition.go`](../internal/state_transition.go)
 - [`../internal/vm/contracts_p256.go`](../internal/vm/contracts_p256.go)
 - [`../internal/api/engine_api_blob_test.go`](../internal/api/engine_api_blob_test.go)
@@ -189,6 +190,19 @@ N42 已经不是“功能面窄”的客户端。状态承诺、快照、Witness
    - 精确 EEST/Hive selector 复测
    - broad rerun 证明断点向后推进
 3. 标准兼容层的退出标准不是“某个 EIP 已有代码”，而是“标准 fork surface 不再混入 N42 自定义扩展，并且 broad matrix 持续向后推进”。
+4. 当前推荐的执行顺序是：
+   - 先把正在推进的 Osaka `blockchain_test_engine` 宽跑继续压到新的首个失败
+   - 再回补 Paris+Shanghai / Cancun / Prague 的 broad shard，避免只在最新 fork 上收口
+   - 最后再跑更宽的跨 fork 汇总矩阵，确认没有因为新 fork 修复把旧 fork 拉回去
+5. 当前这一段最应该优先盯的文件是：
+   - `Engine API` / payload 语义：[`../internal/api/engine_payload_validation.go`](../internal/api/engine_payload_validation.go)、[`../internal/api/engine_payload_stateful.go`](../internal/api/engine_payload_stateful.go)
+   - typed tx / auth list / blob tx 语义：[`../internal/state_transition.go`](../internal/state_transition.go)、[`../common/transaction/`](../common/transaction/)
+   - fork precompile surface 与 VM 语义：[`../internal/vm/contracts.go`](../internal/vm/contracts.go)、[`../internal/vm/eips_osaka.go`](../internal/vm/eips_osaka.go)、[`../internal/vm/eips_pectra.go`](../internal/vm/eips_pectra.go)
+   - EEST 文案兼容层：[`../tests/eth-tests/execution-spec-tests/src/ethereum_clis/clis/geth.py`](../tests/eth-tests/execution-spec-tests/src/ethereum_clis/clis/geth.py)
+6. 这一段的阶段性退出标准应写得更硬一些：
+   - Osaka broad engine path 不再在明显的 mapper / surface drift 上反复停住
+   - Paris+Shanghai / Cancun / Prague 至少各有一轮 broad shard 回归被重新打通
+   - 新增修复不再只靠单点 selector 证明，而是能在后续 broad rerun 中稳定越过旧断点
 
 ### 6.2 PQ 预编译与 N42 扩展层
 
@@ -203,6 +217,15 @@ N42 已经不是“功能面窄”的客户端。状态承诺、快照、Witness
    - PQ 交易与公钥注册表集成测试
    - PQ 共识模式的专用回归
 4. 在 Dilithium / SQIsign 没进入可验证完成态之前，不把它们写成默认生产能力。
+5. 代码层面建议按下面的顺序收：
+   - 先把标准 fork map 和 warm set 里的 PQ 地址彻底清干净
+   - 再引入独立开关，例如 `ChainConfig` 中显式的 PQ 激活字段，而不是借用 Prague / Osaka 的激活路径
+   - 然后把 PQ registry / tx / consensus 的联动测试独立出来，避免和标准 Hive/EEST 共享同一套预期
+   - 最后再决定旧地址别名是否保留以及保留多久
+6. 这一段的退出标准不是“PQ 代码还在仓里”，而是：
+   - 标准 Hive/EEST 对 PQ 地址零感知
+   - N42 自定义链下，PQ 预编译和 PQ 交易有单独可重复 gate
+   - `GAP`、升级路线和实现代码三者口径一致
 
 ### 6.3 历史与恢复能力
 
@@ -212,6 +235,15 @@ N42 已经不是“功能面窄”的客户端。状态承诺、快照、Witness
    - archive 节点的深历史查询能力
    - historical proof / witness 查询能力
 3. 补齐深历史重启恢复矩阵，避免“功能存在但重启后边界漂移”。
+4. 当前建议拆成三个独立子题，避免混写：
+   - archive 数据保留与深历史 RPC 查询
+   - historical proof / witness 查询接口
+   - freezer / checkpoint / history expiry 在深历史模式下的重启恢复
+5. 这一段的最小交付物应该包括：
+   - 一个 archive-depth smoke 或基线脚本
+   - 至少一组深历史重启恢复回归
+   - 文档里明确说明哪些查询在 pruning/history expiry 下不再保证可用
+6. 退出标准应是“边界清晰且可重复验证”，不是“代码里有 archive 相关目录”。
 
 ### 6.4 运行时稳态与持续门禁
 
@@ -221,8 +253,27 @@ N42 已经不是“功能面窄”的客户端。状态承诺、快照、Witness
    - nightly interop
    - 周期性长稳
 3. 把 dashboard 阈值、告警和 runbook 回写到发布 gate，避免“文档写了但 release-check 不拦”。
+4. 建议把这段直接拆成可落地的固定入口：
+   - `make release-check` 保持提交级最小闭环
+   - nightly 跑 broad EEST / interop / archive-depth
+   - 周级或更长周期跑 24h soak、资源边界和回归趋势采样
+5. 要记录的不只是 pass/fail，还应包括：
+   - goroutine / heap / RSS 的峰值区间
+   - txpool / peer / RPC 队列长度
+   - 关键接口延迟和错误率
+6. 退出标准应是“阈值、告警、runbook、gate 四者联动”，而不是“有 Prometheus 指标导出”。
 
-### 6.5 当前推荐执行顺序
+### 6.5 证据与记录纪律
+
+1. `GAP.md` 只记录已经有源码和验证证据支撑的状态，不提前写 broad run 正在进行中的结论。
+2. 每次遇到新的 broad blocker，都应补三样东西：
+   - 失败日志路径
+   - 精确 selector
+   - 对应修复文件和回归文件
+3. 如果一个问题只是 EEST exception mapper 漂移，应在文档里明确记为“兼容层文案差异”，不要误写成执行语义未实现。
+4. 如果一个问题属于标准 fork surface 和 N42 自定义扩展混淆，应优先归到分层/放置问题，而不是继续堆特判。
+
+### 6.6 当前推荐执行顺序
 
 1. 先继续推进 broad Hive/EEST matrix，尤其是当前正在运行的 Osaka engine path。
 2. 再把 PQ 预编译从“仓内实现存在”收口成“扩展层放置和启用边界清晰”。

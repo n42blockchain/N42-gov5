@@ -104,7 +104,7 @@ func TestGetEvmAcceptsNilConfig(t *testing.T) {
 		Difficulty: uint256.NewInt(1),
 		BaseFee:    uint256.NewInt(0),
 	}
-	msg := transaction.NewMessage(types.Address{}, nil, 0, uint256.NewInt(0), 21000, uint256.NewInt(0), nil, nil, nil, nil, false, false)
+	msg := transaction.NewMessage(types.Address{}, nil, 0, uint256.NewInt(0), 21000, uint256.NewInt(0), nil, nil, nil, nil, nil, nil, false, false)
 
 	evm, vmError, err := api.GetEvm(context.Background(), msg, nil, header, nil)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestGetEvmRejectsUnexpectedHeaderType(t *testing.T) {
 		engine:      &apiTestEngine{},
 		chainConfig: &params.ChainConfig{},
 	}
-	msg := transaction.NewMessage(types.Address{}, nil, 0, uint256.NewInt(0), 21000, uint256.NewInt(0), nil, nil, nil, nil, false, false)
+	msg := transaction.NewMessage(types.Address{}, nil, 0, uint256.NewInt(0), 21000, uint256.NewInt(0), nil, nil, nil, nil, nil, nil, false, false)
 
 	_, _, err := api.GetEvm(context.Background(), msg, nil, &apiHeaderStub{}, nil)
 	if err == nil || err.Error() != "GetEvm: invalid header type assertion" {

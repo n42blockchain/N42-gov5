@@ -152,7 +152,7 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), 0, uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.chainConfig(), enginePayloadHashOptions{}); err != nil {
@@ -190,7 +190,7 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), 0, uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.chainConfig(), enginePayloadHashOptions{

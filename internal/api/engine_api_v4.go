@@ -166,7 +166,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.blobAPI().v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.blobAPI().v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 

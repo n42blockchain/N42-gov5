@@ -237,6 +237,74 @@ func TestTransfer_ZeroAmount(t *testing.T) {
 	t.Logf("✓ Transfer handles zero amount correctly")
 }
 
+type mockMessage struct {
+	from       types.Address
+	to         *types.Address
+	gasPrice   *uint256.Int
+	feeCap     *uint256.Int
+	tip        *uint256.Int
+	blobFeeCap *uint256.Int
+	blobHashes []types.Hash
+	gas        uint64
+	value      *uint256.Int
+	nonce      uint64
+	checkNonce bool
+	data       []byte
+	accessList transaction.AccessList
+	authList   transaction.AuthorizationList
+	isFree     bool
+}
+
+func (m mockMessage) From() types.Address                        { return m.from }
+func (m mockMessage) To() *types.Address                         { return m.to }
+func (m mockMessage) GasPrice() *uint256.Int                    { return m.gasPrice }
+func (m mockMessage) FeeCap() *uint256.Int                      { return m.feeCap }
+func (m mockMessage) Tip() *uint256.Int                         { return m.tip }
+func (m mockMessage) BlobFeeCap() *uint256.Int                  { return m.blobFeeCap }
+func (m mockMessage) BlobHashes() []types.Hash                  { return m.blobHashes }
+func (m mockMessage) Gas() uint64                               { return m.gas }
+func (m mockMessage) Value() *uint256.Int                       { return m.value }
+func (m mockMessage) Nonce() uint64                             { return m.nonce }
+func (m mockMessage) CheckNonce() bool                          { return m.checkNonce }
+func (m mockMessage) Data() []byte                              { return m.data }
+func (m mockMessage) AccessList() transaction.AccessList        { return m.accessList }
+func (m mockMessage) AuthList() transaction.AuthorizationList   { return m.authList }
+func (m mockMessage) IsFree() bool                              { return m.isFree }
+
+func TestNewEVMTxContextCarriesBlobHashes(t *testing.T) {
+	hashes := []types.Hash{
+		types.HexToHash("0x01"),
+		types.HexToHash("0x02"),
+	}
+	msg := mockMessage{
+		from:       types.Address{0x01},
+		gasPrice:   uint256.NewInt(7),
+		blobHashes: hashes,
+	}
+
+	txCtx := NewEVMTxContext(msg)
+
+	if txCtx.Origin != msg.from {
+		t.Fatalf("Origin = %x, want %x", txCtx.Origin, msg.from)
+	}
+	if txCtx.GasPrice == nil || txCtx.GasPrice.Cmp(msg.gasPrice) != 0 {
+		t.Fatalf("GasPrice = %v, want %v", txCtx.GasPrice, msg.gasPrice)
+	}
+	if len(txCtx.BlobHashes) != len(hashes) {
+		t.Fatalf("len(BlobHashes) = %d, want %d", len(txCtx.BlobHashes), len(hashes))
+	}
+	for i := range hashes {
+		if txCtx.BlobHashes[i] != hashes[i] {
+			t.Fatalf("BlobHashes[%d] = %s, want %s", i, txCtx.BlobHashes[i], hashes[i])
+		}
+	}
+
+	hashes[0] = types.HexToHash("0xff")
+	if txCtx.BlobHashes[0] != types.HexToHash("0x01") {
+		t.Fatalf("BlobHashes should be copied, got %s", txCtx.BlobHashes[0])
+	}
+}
+
 func TestTransfer_ToNewAddress(t *testing.T) {
 	db := newMockStateDB()
 	sender := types.Address{0x01}

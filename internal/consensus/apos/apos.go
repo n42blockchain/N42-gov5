@@ -389,7 +389,7 @@ func (c *APos) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 	}
 	// Verify EIP-4844 blob gas fields if Beijing fork is active.
 	if chain.Config().IsBeijing(number) {
-		if err := misc.VerifyEIP4844Header(rawParent, header); err != nil {
+		if err := misc.VerifyEIP4844Header(rawParent, header, c.chainConfig); err != nil {
 			return err
 		}
 	}
@@ -658,7 +658,7 @@ func (c *APos) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	}
 
 	// EIP-4844: Set excess blob gas from parent.
-	rawHeader.ExcessBlobGas = transaction.CalcExcessBlobGas(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed)
+	rawHeader.ExcessBlobGas = c.chainConfig.CalcExcessBlobGasWithBaseFee(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed, parentHeader.BaseFee, rawHeader.Time)
 
 	return nil
 }

@@ -27,6 +27,8 @@ type testSetCodeMessage struct {
 	gasPrice   *uint256.Int
 	feeCap     *uint256.Int
 	tip        *uint256.Int
+	blobFeeCap *uint256.Int
+	blobHashes []types.Hash
 	gas        uint64
 	value      *uint256.Int
 	nonce      uint64
@@ -42,6 +44,8 @@ func (m testSetCodeMessage) To() *types.Address                      { return m.
 func (m testSetCodeMessage) GasPrice() *uint256.Int                  { return m.gasPrice }
 func (m testSetCodeMessage) FeeCap() *uint256.Int                    { return m.feeCap }
 func (m testSetCodeMessage) Tip() *uint256.Int                       { return m.tip }
+func (m testSetCodeMessage) BlobFeeCap() *uint256.Int                { return m.blobFeeCap }
+func (m testSetCodeMessage) BlobHashes() []types.Hash                { return m.blobHashes }
 func (m testSetCodeMessage) Gas() uint64                             { return m.gas }
 func (m testSetCodeMessage) Value() *uint256.Int                     { return m.value }
 func (m testSetCodeMessage) Nonce() uint64                           { return m.nonce }
@@ -131,6 +135,17 @@ func buildModExpGasCapWrapper(requestedGas uint64) []byte {
 	return code
 }
 
+func buildBlobFeeSubtractionContractCode() []byte {
+	return []byte{
+		byte(vm2.ORIGIN), byte(vm2.BALANCE), byte(vm2.PUSH0), byte(vm2.SSTORE),
+		byte(vm2.PUSH0), byte(vm2.PUSH0), byte(vm2.PUSH0), byte(vm2.PUSH0),
+		byte(vm2.CALLVALUE), byte(vm2.SELFBALANCE), byte(vm2.SUB),
+		byte(vm2.ORIGIN), byte(vm2.GAS), byte(vm2.CALL),
+		byte(vm2.ORIGIN), byte(vm2.BALANCE), byte(vm2.PUSH1), 0x01, byte(vm2.SSTORE),
+		byte(vm2.STOP),
+	}
+}
+
 func TestApplyMessageExecutesDelegatedCodeForAuthorizedEOA(t *testing.T) {
 	db := memdb.NewTestDB(t)
 	tx := memdb.BeginRw(t, db)
@@ -195,8 +210,8 @@ func TestApplyMessageExecutesDelegatedCodeForAuthorizedEOA(t *testing.T) {
 	if result.Err != nil {
 		t.Fatalf("ApplyMessage execution error: %v (usedGas=%d)", result.Err, result.UsedGas)
 	}
-	if result.UsedGas != 114_544 {
-		t.Fatalf("ApplyMessage usedGas = %d, want 114544", result.UsedGas)
+	if result.UsedGas != 102_044 {
+		t.Fatalf("ApplyMessage usedGas = %d, want 102044", result.UsedGas)
 	}
 
 	want := []uint64{255, 254, 127, 0}
@@ -302,8 +317,8 @@ func TestApplyTransactionExecutesDecodedSetCodeTx(t *testing.T) {
 	if receipt == nil {
 		t.Fatal("ApplyTransaction returned nil receipt")
 	}
-	if receipt.GasUsed != 114_544 {
-		t.Fatalf("receipt.GasUsed = %d, want 114544", receipt.GasUsed)
+	if receipt.GasUsed != 102_044 {
+		t.Fatalf("receipt.GasUsed = %d, want 102044", receipt.GasUsed)
 	}
 
 	want := []uint64{255, 254, 127, 0}
@@ -314,6 +329,70 @@ func TestApplyTransactionExecutesDecodedSetCodeTx(t *testing.T) {
 		if got.Uint64() != expected {
 			t.Fatalf("slot %d = %d, want %d", i, got.Uint64(), expected)
 		}
+	}
+}
+
+func TestApplyMessageSubtractsBlobFeeBeforeExecution(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(tx, 1))
+
+	sender := types.HexToAddress("0x1000000000000000000000000000000000000001")
+	contract := types.HexToAddress("0x2000000000000000000000000000000000000002")
+	coinbase := types.HexToAddress("0x3000000000000000000000000000000000000003")
+
+	ibs.CreateAccount(sender, false)
+	ibs.CreateAccount(contract, true)
+	ibs.SetCode(contract, buildBlobFeeSubtractionContractCode())
+	ibs.AddBalance(contract, uint256.NewInt(100))
+
+	msg := testSetCodeMessage{
+		from:       sender,
+		to:         &contract,
+		gasPrice:   uint256.NewInt(7),
+		feeCap:     uint256.NewInt(7),
+		tip:        uint256.NewInt(0),
+		blobFeeCap: uint256.NewInt(1),
+		blobHashes: []types.Hash{{1}},
+		gas:        500_000,
+		value:      uint256.NewInt(0),
+	}
+
+	gasCost := new(uint256.Int).Mul(uint256.NewInt(msg.gas), msg.gasPrice)
+	blobCost := new(uint256.Int).Mul(uint256.NewInt(params.BlobTxBlobGasPerBlob), uint256.NewInt(1))
+	ibs.AddBalance(sender, new(uint256.Int).Add(gasCost, blobCost))
+
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		GasLimit:   30_000_000,
+		Time:       1,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+	config := testStateTransitionChainConfig()
+	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, &coinbase)
+	txCtx := evmtypes.TxContext{Origin: msg.From(), GasPrice: msg.GasPrice()}
+	evm := vm2.NewEVM(blockCtx, txCtx, ibs, config, vm2.Config{})
+	gp := new(common.GasPool).AddGas(header.GasLimit)
+
+	result, err := ApplyMessage(evm, msg, gp, true, false)
+	if err != nil {
+		t.Fatalf("ApplyMessage error: %v", err)
+	}
+	if result.Err != nil {
+		t.Fatalf("ApplyMessage execution error: %v", result.Err)
+	}
+
+	var slot0, slot1 uint256.Int
+	key0 := storageSlot(0)
+	key1 := storageSlot(1)
+	ibs.GetState(contract, &key0, &slot0)
+	ibs.GetState(contract, &key1, &slot1)
+	if slot0.Uint64() != 0 {
+		t.Fatalf("slot 0 = %d, want 0", slot0.Uint64())
+	}
+	if slot1.Uint64() != 100 {
+		t.Fatalf("slot 1 = %d, want 100", slot1.Uint64())
 	}
 }
 

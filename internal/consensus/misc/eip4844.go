@@ -27,7 +27,7 @@ import (
 // VerifyEIP4844Header verifies the blob gas fields in the block header.
 // It checks that BlobGasUsed is within limits and ExcessBlobGas is correctly
 // derived from the parent header.
-func VerifyEIP4844Header(parent, header *block.Header) error {
+func VerifyEIP4844Header(parent, header *block.Header, cfg *params.ChainConfig) error {
 	// Verify blob gas used does not exceed maximum.
 	if header.BlobGasUsed > params.MaxBlobGasPerBlock {
 		return fmt.Errorf("blob gas used %d exceeds maximum %d",
@@ -42,6 +42,9 @@ func VerifyEIP4844Header(parent, header *block.Header) error {
 
 	// Verify excess blob gas is correctly computed from parent.
 	expectedExcess := transaction.CalcExcessBlobGas(parent.ExcessBlobGas, parent.BlobGasUsed)
+	if cfg != nil {
+		expectedExcess = cfg.CalcExcessBlobGasWithBaseFee(parent.ExcessBlobGas, parent.BlobGasUsed, parent.BaseFee, header.Time)
+	}
 	if header.ExcessBlobGas != expectedExcess {
 		return fmt.Errorf("incorrect excess blob gas: have %d, want %d",
 			header.ExcessBlobGas, expectedExcess)

@@ -82,8 +82,9 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 // NewEVMTxContext creates a new transaction context for a single transaction.
 func NewEVMTxContext(msg Message) evmtypes.TxContext {
 	return evmtypes.TxContext{
-		Origin:   msg.From(),
-		GasPrice: msg.GasPrice(),
+		Origin:     msg.From(),
+		GasPrice:   msg.GasPrice(),
+		BlobHashes: append([]types.Hash(nil), msg.BlobHashes()...),
 	}
 }
 

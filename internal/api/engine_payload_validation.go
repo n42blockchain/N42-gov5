@@ -25,6 +25,7 @@ import (
 var (
 	errBlobTxMissingHashes       = errors.New("blob transaction missing blob hashes")
 	errBlobTxTooManyBlobs        = errors.New("blob transaction has too many blobs")
+	errBlobTxFeeCapTooLow        = errors.New("max fee per blob gas less than block blob gas fee")
 	errSetCodeTxEmptyAuthList    = errors.New("EIP-7702 transaction with empty auth list")
 	errBlobTxContractCreation    = errors.New("input string too short for common.Address, decoding into (types.BlobTx).To")
 	errSetCodeTxContractCreation = errors.New("input string too short for common.Address, decoding into (types.SetCodeTx).To")
@@ -33,10 +34,14 @@ var (
 	errInitCodeSizeExceeded      = errors.New("max initcode size exceeded")
 )
 
-func validateExecutionPayloadTransactions(txs []hexutil.Bytes, cfg *params.ChainConfig, blockNumber, timestamp, baseFee, blockGasLimit uint64) error {
+func validateExecutionPayloadTransactions(txs []hexutil.Bytes, cfg *params.ChainConfig, blockNumber, timestamp, baseFee, excessBlobGas, blockGasLimit uint64) error {
 	rules := &params.Rules{ChainID: new(big.Int)}
+	var blobBaseFee *uint256.Int
 	if cfg != nil {
 		rules = cfg.RulesWithTimestamp(blockNumber, timestamp)
+		if rules.IsCancun {
+			blobBaseFee = cfg.CalcBlobFee(excessBlobGas, timestamp)
+		}
 	}
 	baseFeeValue := uint256.NewInt(baseFee)
 
@@ -48,7 +53,7 @@ func validateExecutionPayloadTransactions(txs []hexutil.Bytes, cfg *params.Chain
 		if err != nil {
 			return err
 		}
-		if err := validateExecutionPayloadTransaction(tx, rules, baseFeeValue, blockGasLimit); err != nil {
+		if err := validateExecutionPayloadTransaction(tx, rules, baseFeeValue, blobBaseFee, blockGasLimit); err != nil {
 			return err
 		}
 	}
@@ -70,9 +75,38 @@ func validateExecutionPayloadHeader(header, parent *block.Header, cfg *params.Ch
 	}
 	blockNumber := uint64FromUint256OrZero(header.Number)
 	if cfg != nil && cfg.IsLondon(blockNumber) {
-		return misc.VerifyEip1559Header(cfg, parent, header)
+		if err := misc.VerifyEip1559Header(cfg, parent, header); err != nil {
+			return err
+		}
+	} else if err := misc.VerifyGaslimit(parent.GasLimit, header.GasLimit); err != nil {
+		return err
 	}
-	return misc.VerifyGaslimit(parent.GasLimit, header.GasLimit)
+	if cfg != nil {
+		rules := cfg.RulesWithTimestamp(blockNumber, header.Time)
+		if rules != nil && rules.IsCancun {
+			return validateExecutionPayloadBlobHeader(header, parent, cfg)
+		}
+	}
+	return nil
+}
+
+func validateExecutionPayloadBlobHeader(header, parent *block.Header, cfg *params.ChainConfig) error {
+	if header == nil || parent == nil || cfg == nil {
+		return nil
+	}
+	gasPerBlob := cfg.BlobGasPerBlob(header.Time)
+	maxBlobGas := cfg.BlobMaxGasPerBlock(header.Time)
+	if header.BlobGasUsed > maxBlobGas {
+		return fmt.Errorf("blob gas used %d exceeds maximum %d", header.BlobGasUsed, maxBlobGas)
+	}
+	if header.BlobGasUsed%gasPerBlob != 0 {
+		return fmt.Errorf("blob gas used %d is not a multiple of %d", header.BlobGasUsed, gasPerBlob)
+	}
+	expectedExcess := cfg.CalcExcessBlobGasWithBaseFee(parent.ExcessBlobGas, parent.BlobGasUsed, parent.BaseFee, header.Time)
+	if header.ExcessBlobGas != expectedExcess {
+		return fmt.Errorf("incorrect excess blob gas: have %d, want %d", header.ExcessBlobGas, expectedExcess)
+	}
+	return nil
 }
 
 func validateExecutionPayloadBlockRLPSize(blk block.IBlock, rawTxs []hexutil.Bytes, cfg *params.ChainConfig, opts enginePayloadHashOptions) error {
@@ -195,7 +229,7 @@ func enginePayloadRLPHeader(header *block.Header, cfg *params.ChainConfig, opts 
 	}
 }
 
-func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *params.Rules, baseFee *uint256.Int, blockGasLimit uint64) error {
+func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *params.Rules, baseFee, blobBaseFee *uint256.Int, blockGasLimit uint64) error {
 	if tx == nil {
 		return nil
 	}
@@ -229,6 +263,9 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 		}
 		if uint64(len(tx.BlobHashes())) > maxBlobsPerTx(rules) {
 			return errBlobTxTooManyBlobs
+		}
+		if blobFeeCap := tx.BlobFeeCap(); blobFeeCap == nil || blobBaseFee == nil || blobFeeCap.Lt(blobBaseFee) {
+			return errBlobTxFeeCapTooLow
 		}
 	case transaction.SetCodeTxType:
 		if !rules.IsPrague {
