@@ -208,13 +208,13 @@ func TestBLSPrecompileAddresses(t *testing.T) {
 	}{
 		{"BLS12G1AddAddr", BLS12G1AddAddr, 0x0b},
 		{"BLS12G1MulAddr", BLS12G1MulAddr, 0x0c},
-		{"BLS12G1MultiExpAddr", BLS12G1MultiExpAddr, 0x0d},
-		{"BLS12G2AddAddr", BLS12G2AddAddr, 0x0e},
-		{"BLS12G2MulAddr", BLS12G2MulAddr, 0x0f},
-		{"BLS12G2MultiExpAddr", BLS12G2MultiExpAddr, 0x10},
-		{"BLS12PairingAddr", BLS12PairingAddr, 0x11},
-		{"BLS12MapG1Addr", BLS12MapG1Addr, 0x12},
-		{"BLS12MapG2Addr", BLS12MapG2Addr, 0x13},
+		{"BLS12G1MultiExpAddr", BLS12G1MultiExpAddr, 0x0c},
+		{"BLS12G2AddAddr", BLS12G2AddAddr, 0x0d},
+		{"BLS12G2MulAddr", BLS12G2MulAddr, 0x0e},
+		{"BLS12G2MultiExpAddr", BLS12G2MultiExpAddr, 0x0e},
+		{"BLS12PairingAddr", BLS12PairingAddr, 0x0f},
+		{"BLS12MapG1Addr", BLS12MapG1Addr, 0x10},
+		{"BLS12MapG2Addr", BLS12MapG2Addr, 0x11},
 	}
 
 	for _, tc := range expectedAddrs {
@@ -222,6 +222,66 @@ func TestBLSPrecompileAddresses(t *testing.T) {
 		if tc.addr != expected {
 			t.Errorf("%s = %v, want %v", tc.name, tc.addr, expected)
 		}
+	}
+}
+
+func TestActiveBLSPrecompileLayoutMatchesCurrentForkRules(t *testing.T) {
+	activeAddrs := []types.Address{
+		types.BytesToAddress([]byte{0x0b}),
+		types.BytesToAddress([]byte{0x0c}),
+		types.BytesToAddress([]byte{0x0d}),
+		types.BytesToAddress([]byte{0x0e}),
+		types.BytesToAddress([]byte{0x0f}),
+		types.BytesToAddress([]byte{0x10}),
+		types.BytesToAddress([]byte{0x11}),
+	}
+	inactiveAddrs := []types.Address{
+		types.BytesToAddress([]byte{0x12}),
+		types.BytesToAddress([]byte{0x13}),
+		types.BytesToAddress([]byte{0x14}),
+		types.BytesToAddress([]byte{0x15}),
+		types.BytesToAddress([]byte{0x16}),
+		types.BytesToAddress([]byte{0x17}),
+	}
+
+	testCases := []struct {
+		name      string
+		contracts map[types.Address]PrecompiledContract
+		rules     *params.Rules
+	}{
+		{"Prague", PrecompiledContractsPrague, &params.Rules{IsPrague: true}},
+		{"Osaka", PrecompiledContractsOsaka, &params.Rules{IsOsaka: true}},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			for _, addr := range activeAddrs {
+				if _, ok := tc.contracts[addr]; !ok {
+					t.Fatalf("expected active BLS precompile at %s", addr.Hex())
+				}
+			}
+			for _, addr := range inactiveAddrs {
+				if _, ok := tc.contracts[addr]; ok {
+					t.Fatalf("unexpected inactive precompile at %s", addr.Hex())
+				}
+			}
+
+			activeSet := make(map[types.Address]struct{})
+			for _, addr := range ActivePrecompiles(tc.rules) {
+				activeSet[addr] = struct{}{}
+			}
+			for _, addr := range activeAddrs {
+				if _, ok := activeSet[addr]; !ok {
+					t.Fatalf("expected warmed precompile at %s", addr.Hex())
+				}
+			}
+			for _, addr := range inactiveAddrs {
+				if _, ok := activeSet[addr]; ok {
+					t.Fatalf("unexpected warmed inactive precompile at %s", addr.Hex())
+				}
+			}
+		})
 	}
 }
 

@@ -141,10 +141,10 @@ func (m *mockVMInterpreter) Context() evmtypes.BlockContext {
 func (m *mockVMInterpreter) TxContext() evmtypes.TxContext {
 	return evmtypes.TxContext{GasPrice: uint256.NewInt(1)}
 }
-func (m *mockVMInterpreter) Config() Config        { return Config{} }
-func (m *mockVMInterpreter) SetCallGasTemp(uint64)  {}
-func (m *mockVMInterpreter) CallGasTemp() uint64    { return 0 }
-func (m *mockVMInterpreter) Cancelled() bool        { return false }
+func (m *mockVMInterpreter) Config() Config                                     { return Config{} }
+func (m *mockVMInterpreter) SetCallGasTemp(uint64)                              {}
+func (m *mockVMInterpreter) CallGasTemp() uint64                                { return 0 }
+func (m *mockVMInterpreter) Cancelled() bool                                    { return false }
 func (m *mockVMInterpreter) Reset(evmtypes.TxContext, evmtypes.IntraBlockState) {}
 
 // ---------------------------------------------------------------------------
@@ -190,11 +190,11 @@ func TestEOF_RJUMP(t *testing.T) {
 		// Expected: jump over the two INVALID bytes to STOP
 		code := []byte{
 			byte(RJUMP), 0x00, 0x02, // RJUMP +2 (skip 2 bytes)
-			byte(INVALID),            // skipped
-			byte(INVALID),            // skipped
-			byte(STOP),               // land here
+			byte(INVALID), // skipped
+			byte(INVALID), // skipped
+			byte(STOP),    // land here
 		}
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		pc := uint64(0)
 		_, err := opRJUMP(&pc, nil, scope)
 		if err != nil {
@@ -234,7 +234,7 @@ func TestEOF_RJUMP(t *testing.T) {
 		code[5] = 0xFD // -3 in two's complement
 		// remaining bytes are NOPs/STOP
 
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		pc := uint64(3)
 		_, err := opRJUMP(&pc, nil, scope)
 		if err != nil {
@@ -254,7 +254,7 @@ func TestEOF_RJUMP(t *testing.T) {
 		code[1] = 0x00
 		code[2] = 0x00
 
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		pc := uint64(0)
 		_, err := opRJUMP(&pc, nil, scope)
 		if err != nil {
@@ -267,7 +267,7 @@ func TestEOF_RJUMP(t *testing.T) {
 
 	t.Run("out_of_bounds_positive", func(t *testing.T) {
 		code := []byte{byte(RJUMP), 0x7F, 0xFF} // offset = +32767
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		pc := uint64(0)
 		_, err := opRJUMP(&pc, nil, scope)
 		if err == nil {
@@ -281,7 +281,7 @@ func TestEOF_RJUMP(t *testing.T) {
 		// Encode int16(-10) as big-endian
 		code[1] = 0xFF
 		code[2] = 0xF6 // -10 in two's complement
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		pc := uint64(0)
 		_, err := opRJUMP(&pc, nil, scope)
 		if err == nil {
@@ -301,7 +301,7 @@ func TestEOF_RJUMPI(t *testing.T) {
 		code[0] = byte(RJUMPI)
 		binary.BigEndian.PutUint16(code[1:], uint16(int16(4)))
 
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(1)) // nonzero → taken
 
 		pc := uint64(0)
@@ -321,7 +321,7 @@ func TestEOF_RJUMPI(t *testing.T) {
 		code[0] = byte(RJUMPI)
 		binary.BigEndian.PutUint16(code[1:], uint16(int16(4)))
 
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(0)) // zero → not taken
 
 		pc := uint64(0)
@@ -341,7 +341,7 @@ func TestEOF_RJUMPI(t *testing.T) {
 		code[0] = byte(RJUMPI)
 		binary.BigEndian.PutUint16(code[1:], uint16(int16(2)))
 
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(0xFFFFFFFF))
 
 		pc := uint64(0)
@@ -363,7 +363,7 @@ func TestEOF_RJUMPI(t *testing.T) {
 		code[6] = 0xFF
 		code[7] = 0xFD
 
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(1))
 
 		pc := uint64(5)
@@ -784,7 +784,7 @@ func TestEOF_DATALOAD(t *testing.T) {
 		}
 	})
 
-	t.Run("no_container_returns_zero", func(t *testing.T) {
+	t.Run("no_container_is_invalid_opcode", func(t *testing.T) {
 		scope := &ScopeContext{
 			Stack:    stack.New(),
 			Memory:   NewMemory(),
@@ -794,13 +794,15 @@ func TestEOF_DATALOAD(t *testing.T) {
 
 		pc := uint64(0)
 		_, err := opDATALOAD(&pc, nil, scope)
-		if err != nil {
-			t.Fatalf("DATALOAD without container failed: %v", err)
+		if err == nil {
+			t.Fatal("DATALOAD without container should return invalid opcode")
 		}
-
-		result := scope.Stack.Peek()
-		if !result.IsZero() {
-			t.Errorf("DATALOAD without container should return 0, got %v", result)
+		invalid, ok := err.(*ErrInvalidOpCode)
+		if !ok {
+			t.Fatalf("expected ErrInvalidOpCode, got %T: %v", err, err)
+		}
+		if invalid.opcode != DATALOAD {
+			t.Fatalf("invalid opcode = %s, want %s", invalid.opcode, DATALOAD)
 		}
 	})
 }
@@ -839,7 +841,7 @@ func TestEOF_DATASIZE(t *testing.T) {
 		})
 	}
 
-	t.Run("no_container", func(t *testing.T) {
+	t.Run("no_container_is_invalid_opcode", func(t *testing.T) {
 		scope := &ScopeContext{
 			Stack:    stack.New(),
 			Memory:   NewMemory(),
@@ -848,13 +850,15 @@ func TestEOF_DATASIZE(t *testing.T) {
 
 		pc := uint64(0)
 		_, err := opDATASIZE(&pc, nil, scope)
-		if err != nil {
-			t.Fatalf("DATASIZE without container failed: %v", err)
+		if err == nil {
+			t.Fatal("DATASIZE without container should return invalid opcode")
 		}
-
-		result := scope.Stack.Pop()
-		if result.Uint64() != 0 {
-			t.Errorf("DATASIZE without container = %d, want 0", result.Uint64())
+		invalid, ok := err.(*ErrInvalidOpCode)
+		if !ok {
+			t.Fatalf("expected ErrInvalidOpCode, got %T: %v", err, err)
+		}
+		if invalid.opcode != DATASIZE {
+			t.Fatalf("invalid opcode = %s, want %s", invalid.opcode, DATASIZE)
 		}
 	})
 }
@@ -867,7 +871,7 @@ func TestEOF_DUPN_SWAPN(t *testing.T) {
 	t.Run("dupn_0_duplicates_top", func(t *testing.T) {
 		// DUPN 0x00 means duplicate stack[0] (top), equivalent to DUP1
 		code := []byte{byte(DUPN), 0x00}
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(42))
 
 		pc := uint64(0)
@@ -889,7 +893,7 @@ func TestEOF_DUPN_SWAPN(t *testing.T) {
 	t.Run("dupn_deep", func(t *testing.T) {
 		// DUPN 0x04 means duplicate stack[4] (5th from top)
 		code := []byte{byte(DUPN), 0x04}
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		// Push 5 values: bottom=100, ..., top=500
 		for i := 1; i <= 5; i++ {
 			scope.Stack.Push(uint256.NewInt(uint64(i * 100)))
@@ -911,7 +915,7 @@ func TestEOF_DUPN_SWAPN(t *testing.T) {
 	t.Run("dupn_underflow", func(t *testing.T) {
 		// DUPN 0x10 = dup 17th element, but only 3 on stack
 		code := []byte{byte(DUPN), 0x10}
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(1))
 		scope.Stack.Push(uint256.NewInt(2))
 		scope.Stack.Push(uint256.NewInt(3))
@@ -927,7 +931,7 @@ func TestEOF_DUPN_SWAPN(t *testing.T) {
 		// SWAPN 0x01 means n=2, swap top with 2nd from top (like SWAP1 in legacy)
 		// Note: SWAPN 0x00 → n=1 → Swap(1) is identity (swaps top with itself)
 		code := []byte{byte(SWAPN), 0x01}
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(10)) // bottom
 		scope.Stack.Push(uint256.NewInt(20)) // top
 
@@ -953,7 +957,7 @@ func TestEOF_DUPN_SWAPN(t *testing.T) {
 		// Swap(4): swap Data[1]=200 with Data[4]=500
 		// Result: [100, 500, 300, 400, 200]
 		code := []byte{byte(SWAPN), 0x03}
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		for i := 1; i <= 5; i++ {
 			scope.Stack.Push(uint256.NewInt(uint64(i * 100)))
 		}
@@ -972,7 +976,7 @@ func TestEOF_DUPN_SWAPN(t *testing.T) {
 
 	t.Run("swapn_underflow", func(t *testing.T) {
 		code := []byte{byte(SWAPN), 0x10} // n=17
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(1))
 		scope.Stack.Push(uint256.NewInt(2))
 
@@ -992,7 +996,7 @@ func TestEOF_EXCHANGE(t *testing.T) {
 	t.Run("exchange_1_1", func(t *testing.T) {
 		// imm = 0x00: n=1, m=1 → exchange stack[0] and stack[1]
 		code := []byte{byte(EXCHANGE), 0x00}
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(10))
 		scope.Stack.Push(uint256.NewInt(20))
 
@@ -1017,7 +1021,7 @@ func TestEOF_EXCHANGE(t *testing.T) {
 		// n = (imm>>4)+1 = 2, m = (imm&0x0f)+1 = 3
 		// a = Back(n-1) = Back(1), b = Back(n+m-1) = Back(4)
 		code := []byte{byte(EXCHANGE), 0x12}
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		// Push [10, 20, 30, 40, 50] (50 on top)
 		for i := 1; i <= 5; i++ {
 			scope.Stack.Push(uint256.NewInt(uint64(i * 10)))
@@ -1052,7 +1056,7 @@ func TestEOF_EXCHANGE(t *testing.T) {
 	t.Run("exchange_underflow", func(t *testing.T) {
 		// imm = 0xFF: n=16, m=16 → needs 32 items
 		code := []byte{byte(EXCHANGE), 0xFF}
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(1))
 		scope.Stack.Push(uint256.NewInt(2))
 
@@ -1106,8 +1110,8 @@ func TestEOF_InterpreterRun_RJUMP_Forward(t *testing.T) {
 	// Should skip the INVALID and execute STOP
 	code := []byte{
 		byte(RJUMP), 0x00, 0x01, // RJUMP +1
-		byte(INVALID),            // skipped
-		byte(STOP),               // executed
+		byte(INVALID), // skipped
+		byte(STOP),    // executed
 	}
 	types_ := []EOFTypeInfo{{Inputs: 0, Outputs: 0, MaxStackHeight: 0}}
 	raw := buildEOFContainer([][]byte{code}, types_, nil)
@@ -1139,10 +1143,10 @@ func TestEOF_InterpreterRun_RJUMPI(t *testing.T) {
 	// PUSH1 0x01, RJUMPI +1, INVALID, STOP
 	// Condition is 1 (nonzero) so RJUMPI should be taken, skipping INVALID.
 	code := []byte{
-		byte(PUSH1), 0x01,        // push 1
+		byte(PUSH1), 0x01, // push 1
 		byte(RJUMPI), 0x00, 0x01, // RJUMPI +1
-		byte(INVALID),             // skipped
-		byte(STOP),                // executed
+		byte(INVALID), // skipped
+		byte(STOP),    // executed
 	}
 	types_ := []EOFTypeInfo{{Inputs: 0, Outputs: 1, MaxStackHeight: 1}}
 	raw := buildEOFContainer([][]byte{code}, types_, nil)
@@ -1173,10 +1177,10 @@ func TestEOF_InterpreterRun_RJUMPI_NotTaken(t *testing.T) {
 	// PUSH1 0x00, RJUMPI +1, STOP, INVALID
 	// Condition is 0 so RJUMPI not taken → falls through to STOP
 	code := []byte{
-		byte(PUSH1), 0x00,        // push 0
+		byte(PUSH1), 0x00, // push 0
 		byte(RJUMPI), 0x00, 0x01, // RJUMPI +1 (not taken)
-		byte(STOP),                // executed
-		byte(INVALID),             // never reached
+		byte(STOP),    // executed
+		byte(INVALID), // never reached
 	}
 	types_ := []EOFTypeInfo{{Inputs: 0, Outputs: 1, MaxStackHeight: 1}}
 	raw := buildEOFContainer([][]byte{code}, types_, nil)
@@ -1212,11 +1216,11 @@ func TestEOF_InterpreterRun_DATALOAD_DATASIZE(t *testing.T) {
 	}
 
 	code := []byte{
-		byte(DATASIZE),           // push data size (64)
-		byte(PUSH1), 0x00,       // push 0 (offset)
-		byte(DATALOAD),           // load 32 bytes from offset 0
-		byte(POP),                // discard DATALOAD result
-		byte(POP),                // discard DATASIZE result
+		byte(DATASIZE),    // push data size (64)
+		byte(PUSH1), 0x00, // push 0 (offset)
+		byte(DATALOAD), // load 32 bytes from offset 0
+		byte(POP),      // discard DATALOAD result
+		byte(POP),      // discard DATASIZE result
 		byte(STOP),
 	}
 	types_ := []EOFTypeInfo{{Inputs: 0, Outputs: 2, MaxStackHeight: 2}}
@@ -1248,13 +1252,13 @@ func TestEOF_InterpreterRun_DUPN_SWAPN(t *testing.T) {
 	// EOF program: PUSH1 10, PUSH1 20, DUPN 1, POP, SWAPN 0, POP, POP, STOP
 	// DUPN 1 duplicates the 2nd item (10), then SWAPN 0 swaps top two.
 	code := []byte{
-		byte(PUSH1), 0x0A,       // push 10
-		byte(PUSH1), 0x14,       // push 20
-		byte(DUPN), 0x01,        // dup 2nd from top (10)
-		byte(POP),                // pop
-		byte(SWAPN), 0x00,       // swap top two
-		byte(POP),                // pop
-		byte(POP),                // pop
+		byte(PUSH1), 0x0A, // push 10
+		byte(PUSH1), 0x14, // push 20
+		byte(DUPN), 0x01, // dup 2nd from top (10)
+		byte(POP),         // pop
+		byte(SWAPN), 0x00, // swap top two
+		byte(POP), // pop
+		byte(POP), // pop
 		byte(STOP),
 	}
 	types_ := []EOFTypeInfo{{Inputs: 0, Outputs: 2, MaxStackHeight: 3}}
@@ -1287,12 +1291,12 @@ func TestEOF_InterpreterRun_CALLF_RETF(t *testing.T) {
 	// Section 1: PUSH1 42, POP, RETF
 	section0 := []byte{
 		byte(CALLF), 0x00, 0x01, // call section 1
-		byte(STOP),               // return after call
+		byte(STOP), // return after call
 	}
 	section1 := []byte{
-		byte(PUSH1), 0x2A,       // push 42
-		byte(POP),                // pop it
-		byte(RETF),               // return
+		byte(PUSH1), 0x2A, // push 42
+		byte(POP),  // pop it
+		byte(RETF), // return
 	}
 
 	types_ := []EOFTypeInfo{
@@ -1502,11 +1506,11 @@ func TestEOF_RJUMPV_Execution(t *testing.T) {
 		// Format: RJUMPV count offset0 offset1
 		code := make([]byte, 20)
 		code[0] = byte(RJUMPV)
-		code[1] = 0x02 // 2 cases
+		code[1] = 0x02                                         // 2 cases
 		binary.BigEndian.PutUint16(code[2:], uint16(int16(2))) // case 0: offset +2
 		binary.BigEndian.PutUint16(code[4:], uint16(int16(4))) // case 1: offset +4
 
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(0)) // select case 0
 
 		pc := uint64(0)
@@ -1524,11 +1528,11 @@ func TestEOF_RJUMPV_Execution(t *testing.T) {
 	t.Run("select_case_1", func(t *testing.T) {
 		code := make([]byte, 20)
 		code[0] = byte(RJUMPV)
-		code[1] = 0x02 // 2 cases
+		code[1] = 0x02                                         // 2 cases
 		binary.BigEndian.PutUint16(code[2:], uint16(int16(2))) // case 0: offset +2
 		binary.BigEndian.PutUint16(code[4:], uint16(int16(4))) // case 1: offset +4
 
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(1)) // select case 1
 
 		pc := uint64(0)
@@ -1551,7 +1555,7 @@ func TestEOF_RJUMPV_Execution(t *testing.T) {
 		binary.BigEndian.PutUint16(code[2:], uint16(int16(2)))
 		binary.BigEndian.PutUint16(code[4:], uint16(int16(4)))
 
-		scope := createTestScope(code)
+		scope := createTestScopeWithEOF(code, nil, nil)
 		scope.Stack.Push(uint256.NewInt(99)) // way out of range
 
 		pc := uint64(0)

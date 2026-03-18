@@ -29,16 +29,16 @@ type BLSTestCase struct {
 // BLS precompile addresses per EIP-2537
 var blsPrecompileAddresses = map[string]types.Address{
 	"add_G1":        types.BytesToAddress([]byte{0x0b}), // BLS12_G1ADD
-	"mul_G1":        types.BytesToAddress([]byte{0x0c}), // BLS12_G1MUL
-	"msm_G1":        types.BytesToAddress([]byte{0x0d}), // BLS12_G1MSM
-	"multiexp_G1":   types.BytesToAddress([]byte{0x0d}), // Legacy alias
-	"add_G2":        types.BytesToAddress([]byte{0x0e}), // BLS12_G2ADD
-	"mul_G2":        types.BytesToAddress([]byte{0x0f}), // BLS12_G2MUL
-	"msm_G2":        types.BytesToAddress([]byte{0x10}), // BLS12_G2MSM
-	"multiexp_G2":   types.BytesToAddress([]byte{0x10}), // Legacy alias
-	"pairing":       types.BytesToAddress([]byte{0x11}), // BLS12_PAIRING
-	"map_fp_to_G1":  types.BytesToAddress([]byte{0x12}), // BLS12_MAP_FP_TO_G1
-	"map_fp2_to_G2": types.BytesToAddress([]byte{0x13}), // BLS12_MAP_FP2_TO_G2
+	"mul_G1":        types.BytesToAddress([]byte{0x0c}), // Active scalar/MSM entry
+	"msm_G1":        types.BytesToAddress([]byte{0x0c}), // BLS12_G1MSM
+	"multiexp_G1":   types.BytesToAddress([]byte{0x0c}), // Legacy alias
+	"add_G2":        types.BytesToAddress([]byte{0x0d}), // BLS12_G2ADD
+	"mul_G2":        types.BytesToAddress([]byte{0x0e}), // Active scalar/MSM entry
+	"msm_G2":        types.BytesToAddress([]byte{0x0e}), // BLS12_G2MSM
+	"multiexp_G2":   types.BytesToAddress([]byte{0x0e}), // Legacy alias
+	"pairing":       types.BytesToAddress([]byte{0x0f}), // BLS12_PAIRING
+	"map_fp_to_G1":  types.BytesToAddress([]byte{0x10}), // BLS12_MAP_FP_TO_G1
+	"map_fp2_to_G2": types.BytesToAddress([]byte{0x11}), // BLS12_MAP_FP2_TO_G2
 }
 
 // getPrecompileFromFilename determines which precompile to use based on filename
@@ -56,8 +56,8 @@ func TestGetPrecompileFromFilenameRecognizesMSMVectors(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]types.Address{
-		"msm_G1_bls.json": types.BytesToAddress([]byte{0x0d}),
-		"msm_G2_bls.json": types.BytesToAddress([]byte{0x10}),
+		"msm_G1_bls.json": types.BytesToAddress([]byte{0x0c}),
+		"msm_G2_bls.json": types.BytesToAddress([]byte{0x0e}),
 	}
 
 	for filename, want := range testCases {
