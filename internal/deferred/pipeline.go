@@ -46,6 +46,9 @@ type Pipeline struct {
 	mu             sync.RWMutex
 	lastCommitted  uint64
 	commitInterval time.Duration
+
+	commitCancel context.CancelFunc
+	commitWg     sync.WaitGroup
 }
 
 // CommitFunc persists an execution result to the database.
@@ -96,12 +99,22 @@ func NewPipeline(config PipelineConfig, executeFn ExecuteFunc, commitFn CommitFu
 // Start launches the pipeline workers.
 func (p *Pipeline) Start(ctx context.Context) {
 	p.executor.Start()
-	go p.commitLoop(ctx)
+	commitCtx, cancel := context.WithCancel(ctx)
+	p.commitCancel = cancel
+	p.commitWg.Add(1)
+	go func() {
+		defer p.commitWg.Done()
+		p.commitLoop(commitCtx)
+	}()
 	log.Info("Deferred execution pipeline started")
 }
 
-// Stop gracefully shuts down the pipeline.
+// Stop gracefully shuts down the pipeline, waiting for all goroutines.
 func (p *Pipeline) Stop() {
+	if p.commitCancel != nil {
+		p.commitCancel()
+	}
+	p.commitWg.Wait()
 	p.executor.Stop()
 	log.Info("Deferred execution pipeline stopped", "lastCommitted", p.lastCommitted)
 }

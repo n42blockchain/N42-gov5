@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/lib/kv"
@@ -30,10 +32,11 @@ import (
 type Pipeline struct {
 	stages  []*Stage
 	db      kv.RwDB
-	running bool
+	running atomic.Bool
 
 	// UnwindTo is set when a stage detects an issue requiring rewind.
 	// The pipeline will unwind all stages to this point before continuing.
+	mu       sync.Mutex
 	unwindTo *uint64
 }
 
@@ -49,11 +52,10 @@ func NewPipeline(db kv.RwDB, stages []*Stage) *Pipeline {
 // It handles forward processing, unwinding on errors, and stage-level
 // progress persistence.
 func (p *Pipeline) Run(ctx context.Context, target uint64) error {
-	if p.running {
+	if !p.running.CompareAndSwap(false, true) {
 		return fmt.Errorf("pipeline already running")
 	}
-	p.running = true
-	defer func() { p.running = false }()
+	defer p.running.Store(false)
 
 	log.Info("Staged sync pipeline starting", "target", target, "stages", len(p.stages))
 
@@ -64,8 +66,15 @@ func (p *Pipeline) Run(ctx context.Context, target uint64) error {
 		}
 
 		// Check for pending unwind
-		if p.unwindTo != nil {
-			return p.runUnwind(ctx, *p.unwindTo)
+		p.mu.Lock()
+		needsUnwind := p.unwindTo != nil
+		var unwindTarget uint64
+		if needsUnwind {
+			unwindTarget = *p.unwindTo
+		}
+		p.mu.Unlock()
+		if needsUnwind {
+			return p.runUnwind(ctx, unwindTarget)
 		}
 
 		if err := p.runStage(ctx, stage, target); err != nil {
@@ -74,8 +83,15 @@ func (p *Pipeline) Run(ctx context.Context, target uint64) error {
 	}
 
 	// Handle unwind if one was requested during forward pass
-	if p.unwindTo != nil {
-		return p.runUnwind(ctx, *p.unwindTo)
+	p.mu.Lock()
+	needsUnwind := p.unwindTo != nil
+	var unwindTarget uint64
+	if needsUnwind {
+		unwindTarget = *p.unwindTo
+	}
+	p.mu.Unlock()
+	if needsUnwind {
+		return p.runUnwind(ctx, unwindTarget)
 	}
 
 	log.Info("Staged sync pipeline completed", "target", target)
@@ -84,6 +100,8 @@ func (p *Pipeline) Run(ctx context.Context, target uint64) error {
 
 // RequestUnwind marks that all stages should be unwound to the given block.
 func (p *Pipeline) RequestUnwind(to uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.unwindTo = &to
 }
 

@@ -288,11 +288,15 @@ func (rm *ReconfigurationManager) ApplyAtEpochBoundary() *ValidatorSet {
 
 // PendingAddCount returns the number of validators pending addition.
 func (rm *ReconfigurationManager) PendingAddCount() int {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
 	return len(rm.pendingAdds)
 }
 
 // PendingRemoveCount returns the number of validators pending removal.
 func (rm *ReconfigurationManager) PendingRemoveCount() int {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
 	return len(rm.pendingRemoves)
 }
 
