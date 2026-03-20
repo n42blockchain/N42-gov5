@@ -22,6 +22,7 @@ import (
 	"math"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -100,6 +101,53 @@ func ReadReceiptsByHash(db kv.Tx, hash types.Hash) (block.Receipts, error) {
 		return nil, nil
 	}
 	return receipts, nil
+}
+
+// ReadReceiptByTxHash retrieves a single receipt by transaction hash using the
+// TxLookup index. This avoids loading the full block for single-receipt queries,
+// providing O(1) receipt access equivalent to Erigon's --persist.receipts.
+func ReadReceiptByTxHash(db kv.Tx, txHash types.Hash) (*block.Receipt, uint64, uint64, error) {
+	// Step 1: TxLookup → blockNumber
+	blockNumPtr, err := ReadTxLookupEntry(db, txHash)
+	if err != nil || blockNumPtr == nil {
+		return nil, 0, 0, err
+	}
+	blockNum := *blockNumPtr
+
+	// Step 2: Read all receipts for that block
+	receipts := ReadRawReceipts(db, blockNum)
+	if receipts == nil {
+		return nil, 0, 0, nil
+	}
+
+	// Step 3: Read block to find tx index by hash
+	hash, err := ReadCanonicalHash(db, blockNum)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	bodyRaw, err := ReadStorageBody(db, hash, blockNum)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	// Scan transactions to find the matching index
+	for i := uint32(0); i < bodyRaw.TxAmount; i++ {
+		txIdKey := make([]byte, 8)
+		binary.BigEndian.PutUint64(txIdKey, bodyRaw.BaseTxId+uint64(i))
+		txnRaw, err := db.GetOne(modules.BlockTx, txIdKey)
+		if err != nil || txnRaw == nil {
+			continue
+		}
+		var txn transaction.Transaction
+		if err := txn.Unmarshal(txnRaw); err != nil {
+			continue
+		}
+		if txn.Hash() == txHash && int(i) < len(receipts) {
+			return receipts[i], blockNum, uint64(i), nil
+		}
+	}
+
+	return nil, 0, 0, nil
 }
 
 // WriteReceipts stores all the transaction receipts belonging to a block.
