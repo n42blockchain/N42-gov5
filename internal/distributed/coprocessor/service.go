@@ -80,29 +80,23 @@ func (s *Service) SubmitTask(programHash types.Hash, input []byte, submitter typ
 }
 
 // SubmitProof validates and records a proof for a task.
+// Uses atomic status check-and-update to prevent TOCTOU races.
 func (s *Service) SubmitProof(taskID types.Hash, proofData, publicOutputs []byte) (bool, error) {
-	task, ok := s.tasks.GetTask(taskID)
-	if !ok {
-		return false, ErrTaskNotFound
-	}
-	if task.Status != TaskPending && task.Status != TaskProving {
-		return false, ErrTaskNotPending
+	if len(proofData) == 0 {
+		return false, ErrInvalidProof
 	}
 
-	// Mark as proving
-	s.tasks.UpdateStatus(taskID, TaskProving, nil, nil, "")
+	// Atomic check-and-transition: Pending/Proving → Proving (under single lock hold)
+	programHash, err := s.tasks.TransitionToProving(taskID)
+	if err != nil {
+		return false, err
+	}
 
 	// Verify the proof
-	program, ok := s.registry.Get(task.ProgramHash)
+	program, ok := s.registry.Get(programHash)
 	if !ok {
 		s.tasks.UpdateStatus(taskID, TaskFailed, nil, nil, "program no longer registered")
 		return false, ErrProgramNotRegistered
-	}
-
-	// Basic proof validation: non-empty data + valid public outputs
-	if len(proofData) == 0 {
-		s.tasks.UpdateStatus(taskID, TaskFailed, nil, nil, "empty proof data")
-		return false, ErrInvalidProof
 	}
 	_ = program // verification key would be used for full Groth16 verification
 
@@ -111,7 +105,7 @@ func (s *Service) SubmitProof(taskID types.Hash, proofData, publicOutputs []byte
 
 	log.Debug("Coprocessor task proof verified",
 		"taskID", taskID.Hex()[:10],
-		"program", task.ProgramHash.Hex()[:10],
+		"program", programHash.Hex()[:10],
 		"proofSize", len(proofData),
 		"outputSize", len(publicOutputs),
 	)

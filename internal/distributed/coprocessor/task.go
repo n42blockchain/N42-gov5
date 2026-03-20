@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -56,7 +57,7 @@ func (tm *TaskManager) Submit(programHash types.Hash, input []byte, submitter ty
 	tm.tasks[taskID] = &Task{
 		ID:          taskID,
 		ProgramHash: programHash,
-		InputHash:   types.BytesToHash(input),
+		InputHash:   crypto.Keccak256Hash(input),
 		Input:       inputCopy,
 		Status:      TaskPending,
 		Submitter:   submitter,
@@ -97,6 +98,23 @@ func (tm *TaskManager) UpdateStatus(id types.Hash, status TaskStatus, proofData,
 		t.Input = nil // free memory after completion
 	}
 	return nil
+}
+
+// TransitionToProving atomically checks that the task is in Pending/Proving state
+// and transitions it to Proving. Returns the programHash for verification.
+// This prevents TOCTOU races where multiple proofs are submitted concurrently.
+func (tm *TaskManager) TransitionToProving(id types.Hash) (types.Hash, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	t, ok := tm.tasks[id]
+	if !ok {
+		return types.Hash{}, ErrTaskNotFound
+	}
+	if t.Status != TaskPending && t.Status != TaskProving {
+		return types.Hash{}, ErrTaskNotPending
+	}
+	t.Status = TaskProving
+	return t.ProgramHash, nil
 }
 
 // ListByStatus returns all tasks with the given status.

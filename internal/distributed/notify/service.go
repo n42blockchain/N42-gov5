@@ -177,8 +177,8 @@ func (s *Service) Unsubscribe(channelID string) {
 
 // Dispatch sends a notification to all matching subscribers and records history.
 func (s *Service) Dispatch(n *Notification) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	for _, ch := range s.channels {
 		if ch.Matches(n) {
@@ -190,10 +190,12 @@ func (s *Service) Dispatch(n *Notification) {
 		}
 	}
 
-	// Record history
+	// Record history (copy to avoid backing array memory leak)
 	hist := s.history[n.Address]
 	if len(hist) >= s.cfg.MaxHistory {
-		hist = hist[1:] // drop oldest
+		newHist := make([]*Notification, len(hist)-1, s.cfg.MaxHistory)
+		copy(newHist, hist[1:])
+		hist = newHist
 	}
 	s.history[n.Address] = append(hist, n)
 }

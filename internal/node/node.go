@@ -996,7 +996,9 @@ func (n *Node) Start() error {
 	// Start distributed infrastructure services.
 	if n.config.CoprocessorCfg.Enabled {
 		svc, err := dcoprocessor.NewService(&n.config.CoprocessorCfg)
-		if err == nil {
+		if err != nil {
+			log.Error("Failed to create coprocessor service", "err", err)
+		} else {
 			n.coprocessorService = svc
 			svc.Start()
 			log.Info("ZK coprocessor service enabled")
