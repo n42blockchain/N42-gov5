@@ -34,6 +34,28 @@ var (
 	errBLS12381G2PointSubgroup             = errors.New("g2 point is not on correct subgroup")
 )
 
+func decodeG1PointInSubgroup(g *bls12381.G1, in []byte) (*bls12381.PointG1, error) {
+	point, err := g.DecodePoint(in)
+	if err != nil {
+		return nil, err
+	}
+	if !g.InCorrectSubgroup(point) {
+		return nil, errBLS12381G1PointSubgroup
+	}
+	return point, nil
+}
+
+func decodeG2PointInSubgroup(g *bls12381.G2, in []byte) (*bls12381.PointG2, error) {
+	point, err := g.DecodePoint(in)
+	if err != nil {
+		return nil, err
+	}
+	if !g.InCorrectSubgroup(point) {
+		return nil, errBLS12381G2PointSubgroup
+	}
+	return point, nil
+}
+
 func bls12381MultiExpGas(inputLen, pairSize int, mulGas uint64, discounts []uint64) uint64 {
 	k := inputLen / pairSize
 	if k == 0 {
@@ -59,11 +81,11 @@ func (c *bls12381G1Add) Run(input []byte) ([]byte, error) {
 		return nil, errBLS12381InvalidInputLength
 	}
 	g := bls12381.NewG1()
-	p0, err := g.DecodePoint(input[:128])
+	p0, err := decodeG1PointInSubgroup(g, input[:128])
 	if err != nil {
 		return nil, err
 	}
-	p1, err := g.DecodePoint(input[128:])
+	p1, err := decodeG1PointInSubgroup(g, input[128:])
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +107,7 @@ func (c *bls12381G1Mul) Run(input []byte) ([]byte, error) {
 		return nil, errBLS12381InvalidInputLength
 	}
 	g := bls12381.NewG1()
-	p0, err := g.DecodePoint(input[:128])
+	p0, err := decodeG1PointInSubgroup(g, input[:128])
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +137,7 @@ func (c *bls12381G1MultiExp) Run(input []byte) ([]byte, error) {
 	for i := 0; i < k; i++ {
 		off := 160 * i
 		t0, t1, t2 := off, off+128, off+160
-		point, err := g.DecodePoint(input[t0:t1])
+		point, err := decodeG1PointInSubgroup(g, input[t0:t1])
 		if err != nil {
 			return nil, err
 		}
@@ -143,11 +165,11 @@ func (c *bls12381G2Add) Run(input []byte) ([]byte, error) {
 	}
 	g := bls12381.NewG2()
 	r := g.New()
-	p0, err := g.DecodePoint(input[:256])
+	p0, err := decodeG2PointInSubgroup(g, input[:256])
 	if err != nil {
 		return nil, err
 	}
-	p1, err := g.DecodePoint(input[256:])
+	p1, err := decodeG2PointInSubgroup(g, input[256:])
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +190,7 @@ func (c *bls12381G2Mul) Run(input []byte) ([]byte, error) {
 		return nil, errBLS12381InvalidInputLength
 	}
 	g := bls12381.NewG2()
-	p0, err := g.DecodePoint(input[:256])
+	p0, err := decodeG2PointInSubgroup(g, input[:256])
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +220,7 @@ func (c *bls12381G2MultiExp) Run(input []byte) ([]byte, error) {
 	for i := 0; i < k; i++ {
 		off := 288 * i
 		t0, t1, t2 := off, off+256, off+288
-		point, err := g.DecodePoint(input[t0:t1])
+		point, err := decodeG2PointInSubgroup(g, input[t0:t1])
 		if err != nil {
 			return nil, err
 		}
