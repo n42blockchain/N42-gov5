@@ -48,7 +48,7 @@ common/             -> Public types (importable)
 params/             -> Chain parameters, genesis configs (embedded JSON)
 conf/               -> Configuration structs
 accounts/           -> Account management (keystore/)
-contracts/          -> Smart contracts (deposit/AMT, deposit/FUJI, deposit/NFT)
+contracts/          -> Smart contracts (deposit contract with tiered staking)
 sdk/                -> Public SDK re-exports for library consumers
 ```
 

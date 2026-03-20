@@ -79,7 +79,7 @@ common/           → Shared types and utilities
 params/           → Chain parameters, genesis configs (mainnet.json/testnet.json embedded via //go:embed)
 conf/             → Node configuration structs (RPC, P2P, consensus settings)
 accounts/         → Account management (keystore/, abi/)
-contracts/        → Smart contracts (deposit/AMT, deposit/FUJI, deposit/NFT)
+contracts/        → Smart contracts (deposit contract with tiered staking)
 turbo/            → Performance optimization layers (rpchelper, etc.)
 ```
 
