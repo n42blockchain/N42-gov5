@@ -295,6 +295,10 @@ func ActivePrecompiles(rules *params.Rules) []types.Address {
 	if rules.IsPQPrecompiles {
 		addrs = append(addrs, collectAddresses(PrecompiledContractsPQ)...)
 	}
+	// N42 extension: append CAS precompile address when enabled
+	if rules.IsContentStore {
+		addrs = append(addrs, collectAddresses(PrecompiledContractsCAS)...)
+	}
 	return addrs
 }
 
