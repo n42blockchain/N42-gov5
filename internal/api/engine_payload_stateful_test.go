@@ -489,6 +489,244 @@ func TestEngineAPIv4AcceptsPragueWithdrawalSystemCallAtGasLimit(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestProcessPragueSystemCallsMatchesModifiedWithdrawalContractFixture(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	cfg := &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		Consensus:             params.Faker,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
+		ShanghaiBlock:         big.NewInt(0),
+		CancunBlock:           big.NewInt(0),
+		PragueTime:            big.NewInt(0),
+		PectraTime:            big.NewInt(0),
+		OsakaTime:             big.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+
+	serializedRequests := make([][]byte, 0, 15)
+	for i := 0; i < 15; i++ {
+		req := &vm2.WithdrawalRequest{
+			Amount: 0,
+		}
+		req.ValidatorPubkey[47] = byte(i + 1)
+		serialized := req.Serialize()
+		serializedRequests = append(serializedRequests, serialized)
+	}
+
+	genesis := &internalcore.GenesisBlock{
+		GenesisConfig: &conf.Genesis{
+			Config: cfg,
+			Alloc: conf.GenesisAlloc{
+				vm2.WithdrawalRequestsAddress: {
+					Balance: "0x0",
+					Nonce:   1,
+					Code:    buildMacroMstoreReturnContract(serializedRequests),
+				},
+			},
+			Number:     0,
+			GasLimit:   30_000_000,
+			Difficulty: uint256.NewInt(0),
+			Timestamp:  1,
+			BaseFee:    uint256.NewInt(7),
+		},
+	}
+
+	var genesisBlock *block.Block
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, _, err := genesis.Write(tx)
+		if err != nil {
+			return err
+		}
+		genesisBlock = blk
+		return nil
+	})
+	require.NoError(t, err)
+
+	header := &block.Header{
+		ParentHash: genesisBlock.Hash(),
+		Number:     uint256.NewInt(1),
+		GasLimit:   30_000_000,
+		GasUsed:    0,
+		Time:       2,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+
+	var (
+		rawRet   []byte
+		requests []hexutil.Bytes
+	)
+	err = withCanonicalParentState(db, 0, func(tx kv.Tx, stateReader state.StateReader, ibs *state.IntraBlockState) error {
+		raw, err := internalcore.SysCallContract(vm2.WithdrawalRequestsAddress, nil, *cfg, ibs, header, &apiTestEngine{})
+		if err != nil {
+			return err
+		}
+		rawRet = raw
+
+		grouped, err := internalcore.ProcessPragueSystemCalls(cfg, ibs, header, &apiTestEngine{})
+		if err != nil {
+			return err
+		}
+		requests = grouped
+		return nil
+	})
+	require.NoError(t, err)
+
+	expectedOpaquePayload := buildModifiedWithdrawalFixtureReturnPayload(serializedRequests)
+	require.Equal(t, expectedOpaquePayload, rawRet)
+	require.Equal(t, []hexutil.Bytes{
+		append([]byte{WithdrawalRequestType}, expectedOpaquePayload...),
+	}, requests)
+}
+
+func TestValidateExecutionRequestsAcceptsOpaqueWithdrawalPayloadWhenLegacyArraysOmitted(t *testing.T) {
+	serializedRequests := make([][]byte, 0, 15)
+	for i := 0; i < 15; i++ {
+		req := &vm2.WithdrawalRequest{}
+		req.ValidatorPubkey[47] = byte(i + 1)
+		serializedRequests = append(serializedRequests, req.Serialize())
+	}
+	requests := []hexutil.Bytes{
+		append([]byte{WithdrawalRequestType}, buildModifiedWithdrawalFixtureReturnPayload(serializedRequests)...),
+	}
+	payload := &ExecutionPayloadV4{}
+	require.NoError(t, validateExecutionRequests(requests, payload))
+}
+
+func TestEngineAPIv4AcceptsPragueOpaqueWithdrawalRequests(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	cfg := &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		Consensus:             params.Faker,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
+		ShanghaiBlock:         big.NewInt(0),
+		CancunBlock:           big.NewInt(0),
+		PragueTime:            big.NewInt(0),
+		PectraTime:            big.NewInt(0),
+		OsakaTime:             big.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+
+	serializedRequests := make([][]byte, 0, 15)
+	for i := 0; i < 15; i++ {
+		req := &vm2.WithdrawalRequest{}
+		req.ValidatorPubkey[47] = byte(i + 1)
+		serializedRequests = append(serializedRequests, req.Serialize())
+	}
+	executionRequests := []hexutil.Bytes{
+		append([]byte{WithdrawalRequestType}, buildModifiedWithdrawalFixtureReturnPayload(serializedRequests)...),
+	}
+
+	genesis := &internalcore.GenesisBlock{
+		GenesisConfig: &conf.Genesis{
+			Config: cfg,
+			Alloc: conf.GenesisAlloc{
+				vm2.WithdrawalRequestsAddress: {
+					Balance: "0x0",
+					Nonce:   1,
+					Code:    buildMacroMstoreReturnContract(serializedRequests),
+				},
+			},
+			Number:     0,
+			GasLimit:   30_000_000,
+			Difficulty: uint256.NewInt(0),
+			Timestamp:  1,
+			BaseFee:    uint256.NewInt(7),
+		},
+	}
+
+	var genesisBlock *block.Block
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, _, err := genesis.Write(tx)
+		if err != nil {
+			return err
+		}
+		genesisBlock = blk
+		return nil
+	})
+	require.NoError(t, err)
+
+	parentHash := ethCompatibleBlockHash(genesisBlock, cfg)
+	chain := &canonicalCheckChainStub{
+		header: genesisBlock.Header().(*block.Header),
+		blk:    genesisBlock,
+		config: cfg,
+		db:     db,
+	}
+	api := &API{
+		bc:            chain,
+		db:            db,
+		engine:        &apiTestEngine{},
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIv4(NewBlockChainAPI(api))
+
+	beaconRoot := types.Hash{0x77}
+	payload := &ExecutionPayloadV4{
+		ParentHash:    parentHash,
+		FeeRecipient:  types.Address{},
+		StateRoot:     types.Hash{0x01},
+		ReceiptsRoot:  types.Hash{0x02},
+		LogsBloom:     make([]byte, 256),
+		PrevRandao:    types.Hash{0x03},
+		BlockNumber:   hexutil.Uint64(1),
+		GasLimit:      hexutil.Uint64(30_000_000),
+		GasUsed:       hexutil.Uint64(0),
+		Timestamp:     hexutil.Uint64(2),
+		BaseFeePerGas: hexutil.Uint64(7),
+		Transactions:  nil,
+		Withdrawals:   []*Withdrawal{},
+		BlobGasUsed:   hexUint64Ptr(0),
+		ExcessBlobGas: hexUint64Ptr(0),
+	}
+
+	blk, err := executionPayloadV4ToBlock(payload)
+	require.NoError(t, err)
+	requestsHash := executionRequestsHash(executionRequests)
+	payload.BlockHash = ethCompatibleEngineBlockHash(blk, cfg, enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   &beaconRoot,
+		requestsHash:       &requestsHash,
+	})
+
+	resp, err := engine.NewPayloadV4(context.Background(), payload, nil, &beaconRoot, executionRequests)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, resp.Status)
+	require.NotNil(t, resp.LatestValidHash)
+	require.Equal(t, payload.BlockHash, *resp.LatestValidHash)
+}
+
 func TestEngineAPIv4AcceptsBeaconRootTimestampPayload(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg
@@ -888,4 +1126,89 @@ func appendPushUint(code []byte, value uint64) []byte {
 	width := len(buf) - first
 	code = append(code, byte(vm2.PUSH1)+byte(width)-1)
 	return append(code, buf[first:]...)
+}
+
+func buildMacroMstoreReturnContract(chunks [][]byte) []byte {
+	code := make([]byte, 0, len(chunks)*96)
+	offset := 0
+	for _, chunk := range chunks {
+		offset += len(chunk)
+		code = appendMacroMstore(code, chunk, offset)
+	}
+	code = append(code, byte(vm2.MSIZE))
+	code = appendPushUint(code, 0)
+	code = append(code, byte(vm2.RETURN))
+	return code
+}
+
+func appendMacroMstore(code []byte, data []byte, offset int) []byte {
+	for i := 0; i < len(data); {
+		end := i + 32
+		if end > len(data) {
+			end = len(data)
+		}
+		chunk := data[i:end]
+		if len(chunk) == 32 {
+			code = appendPushBytesExact(code, chunk)
+			code = appendPushUint(code, uint64(offset))
+			code = append(code, byte(vm2.MSTORE))
+		} else {
+			code = appendPushUint(code, uint64(offset))
+			code = append(code, byte(vm2.MLOAD))
+			code = appendPushBytesExact(code, repeatedByte(0xff, 32-len(chunk)))
+			code = append(code, byte(vm2.AND))
+			padded := make([]byte, 32)
+			copy(padded, chunk)
+			code = appendPushBytesExact(code, padded)
+			code = append(code, byte(vm2.OR))
+			code = appendPushUint(code, uint64(offset))
+			code = append(code, byte(vm2.MSTORE))
+		}
+		offset += len(chunk)
+		i = end
+	}
+	return code
+}
+
+func appendPushBytesExact(code []byte, value []byte) []byte {
+	if len(value) == 0 {
+		return append(code, byte(vm2.PUSH0))
+	}
+	code = append(code, byte(vm2.PUSH1)+byte(len(value))-1)
+	return append(code, value...)
+}
+
+func repeatedByte(b byte, n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+	return out
+}
+
+func buildModifiedWithdrawalFixtureReturnPayload(serializedRequests [][]byte) []byte {
+	maxTouched := 0
+	offset := 0
+	for _, serialized := range serializedRequests {
+		offset += len(serialized)
+		cursor := offset
+		for i := 0; i < len(serialized); {
+			end := i + 32
+			if end > len(serialized) {
+				end = len(serialized)
+			}
+			if touched := cursor + 32; touched > maxTouched {
+				maxTouched = touched
+			}
+			cursor += end - i
+			i = end
+		}
+	}
+	raw := make([]byte, 32*((maxTouched+31)/32))
+	offset = 76
+	for _, serialized := range serializedRequests {
+		copy(raw[offset:], serialized)
+		offset += len(serialized)
+	}
+	return raw
 }

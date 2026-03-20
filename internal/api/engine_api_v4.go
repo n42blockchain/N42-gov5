@@ -367,6 +367,15 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 			return errUnknownRequestType
 		}
 
+		// Current Prague/Osaka fixtures provide the canonical request lists only
+		// via the fourth engine_newPayloadV4 parameter. The payload-local request
+		// arrays are legacy and may be omitted entirely. When those arrays are
+		// absent, the grouped executionRequests parameter is an opaque byte blob
+		// per EIP-7685 and must not be re-parsed into fixed-size records here.
+		if payloadLen == 0 {
+			continue
+		}
+
 		if (len(req)-1)%reqSize != 0 {
 			return errInvalidRequestEncoding
 		}
@@ -379,10 +388,7 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 		case ConsolidationRequestType:
 			consolidationCount += count
 		}
-		// Current Prague/Osaka fixtures provide the canonical request lists only
-		// via the fourth engine_newPayloadV4 parameter. The payload-local request
-		// arrays are legacy and may be omitted entirely.
-		if payloadLen > 0 && payloadLen != count {
+		if payloadLen != count {
 			return errRequestCountMismatch
 		}
 	}
