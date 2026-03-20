@@ -59,6 +59,37 @@ func TestBLS12381G1MultiExpRejectsPointsOutsideSubgroup(t *testing.T) {
 	}
 }
 
+func TestBLS12381G1AddAcceptsPointsOutsideSubgroup(t *testing.T) {
+	t.Parallel()
+
+	input := append(
+		encodeBLSG1Point(big.NewInt(0), big.NewInt(2)),
+		encodeBLSG1Point(big.NewInt(0), big.NewInt(0))...,
+	)
+
+	got, err := (&bls12381G1Add{}).Run(input)
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if want := encodeBLSG1Point(big.NewInt(0), big.NewInt(2)); string(got) != string(want) {
+		t.Fatalf("Run output mismatch:\n got  %x\n want %x", got, want)
+	}
+}
+
+func TestBLS12381G1MulRejectsPointsOutsideSubgroup(t *testing.T) {
+	t.Parallel()
+
+	input := append(
+		encodeBLSG1Point(big.NewInt(0), big.NewInt(2)),
+		encodeBLSScalar(2)...,
+	)
+
+	_, err := (&bls12381G1Mul{}).Run(input)
+	if !errors.Is(err, errBLS12381G1PointSubgroup) {
+		t.Fatalf("Run error = %v, want %v", err, errBLS12381G1PointSubgroup)
+	}
+}
+
 func TestBLS12381G2MultiExpRejectsPointsOutsideSubgroup(t *testing.T) {
 	t.Parallel()
 
@@ -73,6 +104,52 @@ func TestBLS12381G2MultiExpRejectsPointsOutsideSubgroup(t *testing.T) {
 	)
 
 	_, err := (&bls12381G2MultiExp{}).Run(input)
+	if !errors.Is(err, errBLS12381G2PointSubgroup) {
+		t.Fatalf("Run error = %v, want %v", err, errBLS12381G2PointSubgroup)
+	}
+}
+
+func TestBLS12381G2AddAcceptsPointsOutsideSubgroup(t *testing.T) {
+	t.Parallel()
+
+	input := append(
+		encodeBLSG2Point(
+			mustBigFromHex(t, "0x1"),
+			mustBigFromHex(t, "0x1"),
+			mustBigFromHex(t, "0x17faa6201231304f270b858dad9462089f2a5b83388e4b10773abc1eef6d193b9fce4e8ea2d9d28e3c3a315aa7de14ca"),
+			mustBigFromHex(t, "0x0cc12449be6ac4e7f367e7242250427c4fb4c39325d3164ad397c1837a90f0ea1a534757df374dd6569345eb41ed76e"),
+		),
+		encodeBLSG2Point(big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0))...,
+	)
+
+	got, err := (&bls12381G2Add{}).Run(input)
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if want := encodeBLSG2Point(
+		mustBigFromHex(t, "0x1"),
+		mustBigFromHex(t, "0x1"),
+		mustBigFromHex(t, "0x17faa6201231304f270b858dad9462089f2a5b83388e4b10773abc1eef6d193b9fce4e8ea2d9d28e3c3a315aa7de14ca"),
+		mustBigFromHex(t, "0x0cc12449be6ac4e7f367e7242250427c4fb4c39325d3164ad397c1837a90f0ea1a534757df374dd6569345eb41ed76e"),
+	); string(got) != string(want) {
+		t.Fatalf("Run output mismatch:\n got  %x\n want %x", got, want)
+	}
+}
+
+func TestBLS12381G2MulRejectsPointsOutsideSubgroup(t *testing.T) {
+	t.Parallel()
+
+	input := append(
+		encodeBLSG2Point(
+			mustBigFromHex(t, "0x1"),
+			mustBigFromHex(t, "0x1"),
+			mustBigFromHex(t, "0x17faa6201231304f270b858dad9462089f2a5b83388e4b10773abc1eef6d193b9fce4e8ea2d9d28e3c3a315aa7de14ca"),
+			mustBigFromHex(t, "0x0cc12449be6ac4e7f367e7242250427c4fb4c39325d3164ad397c1837a90f0ea1a534757df374dd6569345eb41ed76e"),
+		),
+		encodeBLSScalar(2)...,
+	)
+
+	_, err := (&bls12381G2Mul{}).Run(input)
 	if !errors.Is(err, errBLS12381G2PointSubgroup) {
 		t.Fatalf("Run error = %v, want %v", err, errBLS12381G2PointSubgroup)
 	}

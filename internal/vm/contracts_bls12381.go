@@ -81,11 +81,11 @@ func (c *bls12381G1Add) Run(input []byte) ([]byte, error) {
 		return nil, errBLS12381InvalidInputLength
 	}
 	g := bls12381.NewG1()
-	p0, err := decodeG1PointInSubgroup(g, input[:128])
+	p0, err := g.DecodePoint(input[:128])
 	if err != nil {
 		return nil, err
 	}
-	p1, err := decodeG1PointInSubgroup(g, input[128:])
+	p1, err := g.DecodePoint(input[128:])
 	if err != nil {
 		return nil, err
 	}
@@ -165,11 +165,11 @@ func (c *bls12381G2Add) Run(input []byte) ([]byte, error) {
 	}
 	g := bls12381.NewG2()
 	r := g.New()
-	p0, err := decodeG2PointInSubgroup(g, input[:256])
+	p0, err := g.DecodePoint(input[:256])
 	if err != nil {
 		return nil, err
 	}
-	p1, err := decodeG2PointInSubgroup(g, input[256:])
+	p1, err := g.DecodePoint(input[256:])
 	if err != nil {
 		return nil, err
 	}
