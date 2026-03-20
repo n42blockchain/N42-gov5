@@ -84,9 +84,10 @@ type ConsensusEngine struct {
 	myIndex   ValidatorIndex
 	secretKey common.SecretKey
 
-	epochManager *EpochManager
-	roundState   *RoundState
-	pacemaker    *Pacemaker
+	epochManager  *EpochManager
+	reconfigMgr   *ReconfigurationManager
+	roundState    *RoundState
+	pacemaker     *Pacemaker
 
 	voteCollector    *VoteCollector
 	commitCollector  *VoteCollector
@@ -156,7 +157,7 @@ func NewConsensusEngineWithEpochManager(
 	baseTimeoutMs, maxTimeoutMs uint64,
 	outputCh chan<- EngineOutput,
 ) *ConsensusEngine {
-	return &ConsensusEngine{
+	e := &ConsensusEngine{
 		myIndex:             myIndex,
 		secretKey:           secretKey,
 		epochManager:        epochManager,
@@ -168,6 +169,8 @@ func NewConsensusEngineWithEpochManager(
 		futureMsgBuffer:     make([]futureMsg, 0),
 		viewTiming:          newViewTiming(),
 	}
+	e.reconfigMgr = NewReconfigurationManager(epochManager)
+	return e
 }
 
 // WithRecoveredState creates an engine with recovered state from a persisted snapshot.
@@ -323,6 +326,13 @@ func (e *ConsensusEngine) CurrentValidatorSet() *ValidatorSet {
 	return e.validatorSet()
 }
 
+// ReconfigManager returns the reconfiguration manager for proposing
+// validator set changes. The returned manager is safe for concurrent use
+// only when accessed through the engine's lock (via ProcessEvent).
+func (e *ConsensusEngine) ReconfigManager() *ReconfigurationManager {
+	return e.reconfigMgr
+}
+
 func (e *ConsensusEngine) emit(output EngineOutput) error {
 	select {
 	case e.outputCh <- output:
@@ -353,19 +363,46 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	// Save current PrepareQC for piggybacking.
 	e.previousPrepareQC = e.prepareQC
 
-	// Check epoch boundary.
-	if e.epochManager.EpochsEnabled() &&
-		e.epochManager.IsEpochBoundary(newView) &&
-		e.epochManager.AdvanceEpoch() {
-		newEpoch := e.epochManager.CurrentEpoch()
-		validatorCount := e.validatorSet().Len()
-		log.Info("epoch transition at view boundary", "epoch", newEpoch, "validators", validatorCount, "view", newView)
-		if err := e.emit(EngineOutput{
-			Type:           OutputEpochTransition,
-			NewEpoch:       newEpoch,
-			ValidatorCount: validatorCount,
-		}); err != nil {
-			return err
+	// Check epoch boundary — apply pending reconfigurations if committed.
+	if e.epochManager.EpochsEnabled() && e.epochManager.IsEpochBoundary(newView) {
+		// Apply committed reconfiguration changes before advancing epoch.
+		// Per HotStuff-2 § 5: changes take effect only after the old set commits them.
+		if e.reconfigMgr != nil && e.reconfigMgr.IsCommitted() {
+			if newSet := e.reconfigMgr.ApplyAtEpochBoundary(); newSet != nil {
+				// Validate the transition is safe (sufficient overlap for liveness)
+				if err := ValidateTransition(e.validatorSet(), newSet); err != nil {
+					log.Error("Unsafe validator set transition blocked", "err", err)
+				} else {
+					// Update own index in new set
+					if myAddr, addrErr := e.validatorSet().GetAddress(e.myIndex); addrErr == nil {
+						newIdx := newSet.FindByAddress(myAddr)
+						if newIdx >= 0 {
+							e.myIndex = ValidatorIndex(newIdx)
+						} else {
+							log.Warn("This node removed from validator set at epoch boundary",
+								"address", myAddr.Hex(), "epoch", e.epochManager.CurrentEpoch()+1)
+						}
+					}
+				}
+			}
+		}
+
+		if e.epochManager.AdvanceEpoch() {
+			newEpoch := e.epochManager.CurrentEpoch()
+			validatorCount := e.validatorSet().Len()
+			log.Info("epoch transition at view boundary",
+				"epoch", newEpoch,
+				"validators", validatorCount,
+				"quorum", e.validatorSet().QuorumSize(),
+				"view", newView,
+			)
+			if err := e.emit(EngineOutput{
+				Type:           OutputEpochTransition,
+				NewEpoch:       newEpoch,
+				ValidatorCount: validatorCount,
+			}); err != nil {
+				return err
+			}
 		}
 	}
 
