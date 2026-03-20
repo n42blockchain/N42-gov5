@@ -75,7 +75,7 @@
 | **Full Sync** | ✅ | ✅ | ✅ | ✅ | ✅ | N/A | ✅ | ✅ |
 | **Staged Sync** | ❌ | ✅ 核心创新 | ✅ 原创者 | ❌ | ❌ | N/A | ❌ | ✅ 7 stage 管线 + forward/unwind/prune |
 | **Checkpoint Sync** | ✅ | ✅ | ✅ Caplin支持 | ✅ (Cosmos) | ❌ | N/A | ✅ | ✅ trusted hash |
-| **Backfill Sync** | ❌ | ✅ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
+| **Backfill Sync** | ❌ | ✅ | ❌ | ❌ | ❌ | N/A | ❌ | ✅ 后台历史回填 (checkpoint→genesis, 批量下载+写入) |
 | **Light Client** | ✅ LES | ❌ | ❌ | ✅ IBC light | ❌ | N/A | ✅ | ✅ 手机轻节点 (JMT Merkle proof + 无状态 EVM) |
 | **Portal Network** | 🔧 实验 | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | **Beam Sync** | 🔧 实验 | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
