@@ -325,15 +325,23 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 
 	// It is allowed to call precompiles, even via delegatecall
 	if isPrecompile {
-		// Check for stateful CAS precompile
+		// Check for stateful CAS precompile with post-execution gas accounting
 		if cas, ok := p.(*contentStore); ok && evm.contentStoreDB != nil {
 			gasCost := cas.RequiredGas(input)
 			if gas < gasCost {
 				ret, gas, err = nil, 0, ErrOutOfGas
 			} else {
 				gas -= gasCost
-				readOnly := typ == STATICCALL
+				readOnly := evm.interpreter.(*EVMInterpreter).readOnly || typ == STATICCALL
 				ret, err = cas.RunWithDB(evm.contentStoreDB, input, readOnly)
+				// Refund overcharged gas for casLoad: charge actual data size
+				if err == nil && len(input) > 0 && input[0] == casLoad && ret != nil {
+					actualCost := params.ContentLoadBaseGas + params.ContentLoadPerByteGas*uint64(len(ret))
+					charged := params.ContentLoadBaseGas + params.ContentLoadPerByteGas*uint64(params.ContentStoreMaxSize)
+					if charged > actualCost {
+						gas += charged - actualCost // refund the difference
+					}
+				}
 			}
 		} else {
 			ret, gas, err = RunPrecompiledContract(p, input, gas)
