@@ -288,3 +288,118 @@ func TestReconfigNilPublicKeyRejected(t *testing.T) {
 		t.Fatal("expected error for nil public key")
 	}
 }
+
+func TestReconfigApplyWithoutCommit(t *testing.T) {
+	validators := makeTestValidators(4)
+	vs := NewValidatorSet(validators, 1)
+	em := NewEpochManagerWithLength(vs, 10)
+	rm := NewReconfigurationManager(em)
+
+	sk, _ := blst.RandKey()
+	rm.ProposeAddValidator(types.BytesToAddress([]byte{0x70}), sk.PublicKey())
+	// Do NOT call MarkCommitted
+
+	result := rm.ApplyAtEpochBoundary()
+	if result != nil {
+		t.Fatal("should not apply uncommitted changes")
+	}
+}
+
+func TestReconfigApplyWithoutEpochs(t *testing.T) {
+	validators := makeTestValidators(4)
+	vs := NewValidatorSet(validators, 1)
+	em := NewEpochManager(vs) // epochs disabled (length=0)
+	rm := NewReconfigurationManager(em)
+
+	sk, _ := blst.RandKey()
+	rm.ProposeAddValidator(types.BytesToAddress([]byte{0x71}), sk.PublicKey())
+	rm.MarkCommitted()
+
+	result := rm.ApplyAtEpochBoundary()
+	if result != nil {
+		t.Fatal("should not apply when epochs are disabled")
+	}
+}
+
+func TestReconfigPendingCounts(t *testing.T) {
+	validators := makeTestValidators(7)
+	vs := NewValidatorSet(validators, 2)
+	em := NewEpochManagerWithLength(vs, 10)
+	rm := NewReconfigurationManager(em)
+
+	if rm.PendingAddCount() != 0 || rm.PendingRemoveCount() != 0 {
+		t.Fatal("fresh manager should have zero counts")
+	}
+
+	sk, _ := blst.RandKey()
+	rm.ProposeAddValidator(types.BytesToAddress([]byte{0x72}), sk.PublicKey())
+	if rm.PendingAddCount() != 1 {
+		t.Errorf("PendingAddCount = %d, want 1", rm.PendingAddCount())
+	}
+
+	rm.ProposeRemoveValidator(validators[0].Address)
+	if rm.PendingRemoveCount() != 1 {
+		t.Errorf("PendingRemoveCount = %d, want 1", rm.PendingRemoveCount())
+	}
+}
+
+func TestReconfigDoubleRemoveRejected(t *testing.T) {
+	validators := makeTestValidators(7)
+	vs := NewValidatorSet(validators, 2)
+	em := NewEpochManagerWithLength(vs, 10)
+	rm := NewReconfigurationManager(em)
+
+	err := rm.ProposeRemoveValidator(validators[0].Address)
+	if err != nil {
+		t.Fatalf("first remove should succeed: %v", err)
+	}
+	err = rm.ProposeRemoveValidator(validators[0].Address)
+	if err == nil {
+		t.Fatal("duplicate remove should fail")
+	}
+}
+
+func TestReconfigMarkCommittedIdempotent(t *testing.T) {
+	validators := makeTestValidators(4)
+	vs := NewValidatorSet(validators, 1)
+	em := NewEpochManagerWithLength(vs, 10)
+	rm := NewReconfigurationManager(em)
+
+	sk, _ := blst.RandKey()
+	rm.ProposeAddValidator(types.BytesToAddress([]byte{0x73}), sk.PublicKey())
+	rm.MarkCommitted()
+	rm.MarkCommitted() // idempotent
+	if !rm.IsCommitted() {
+		t.Fatal("should still be committed after double MarkCommitted")
+	}
+}
+
+func TestReconfigRemoveNonexistent(t *testing.T) {
+	validators := makeTestValidators(4)
+	vs := NewValidatorSet(validators, 1)
+	em := NewEpochManagerWithLength(vs, 10)
+	rm := NewReconfigurationManager(em)
+
+	err := rm.ProposeRemoveValidator(types.BytesToAddress([]byte{0xFF}))
+	if err == nil {
+		t.Fatal("removing nonexistent validator should fail")
+	}
+}
+
+func TestReconfigDoubleAddRejected(t *testing.T) {
+	validators := makeTestValidators(4)
+	vs := NewValidatorSet(validators, 1)
+	em := NewEpochManagerWithLength(vs, 10)
+	rm := NewReconfigurationManager(em)
+
+	sk, _ := blst.RandKey()
+	addr := types.BytesToAddress([]byte{0x74})
+	err := rm.ProposeAddValidator(addr, sk.PublicKey())
+	if err != nil {
+		t.Fatalf("first add should succeed: %v", err)
+	}
+	err = rm.ProposeAddValidator(addr, sk.PublicKey())
+	if err == nil {
+		t.Fatal("duplicate add should fail")
+	}
+}
