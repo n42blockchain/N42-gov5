@@ -44,7 +44,7 @@ func isForkedTime(s *big.Int, t uint64) bool {
 	if s == nil {
 		return false
 	}
-	return s.Uint64() <= t
+	return s.Cmp(new(big.Int).SetUint64(t)) <= 0
 }
 
 func (c *ChainConfig) IsBPO1(time uint64) bool {

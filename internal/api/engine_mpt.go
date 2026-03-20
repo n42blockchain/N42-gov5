@@ -89,11 +89,10 @@ func (t *ethereumStackTrie) Update(key, value []byte) error {
 		return fmt.Errorf("non-ascending key order")
 	}
 	t.last = append(t.last[:0], k...)
-	t.insert(t.root, k, value)
-	return nil
+	return t.insert(t.root, k, value)
 }
 
-func (t *ethereumStackTrie) insert(st *ethereumStackTrieNode, key, value []byte) {
+func (t *ethereumStackTrie) insert(st *ethereumStackTrieNode, key, value []byte) error {
 	switch st.typ {
 	case engineTrieBranchNode:
 		idx := int(key[0])
@@ -109,14 +108,13 @@ func (t *ethereumStackTrie) insert(st *ethereumStackTrieNode, key, value []byte)
 				key: append([]byte(nil), key[1:]...),
 				val: value,
 			}
-			return
+			return nil
 		}
-		t.insert(st.children[idx], key[1:], value)
+		return t.insert(st.children[idx], key[1:], value)
 	case engineTrieExtNode:
 		diffidx := diffIndex(st.key, key)
 		if diffidx == len(st.key) {
-			t.insert(st.children[0], key[diffidx:], value)
-			return
+			return t.insert(st.children[0], key[diffidx:], value)
 		}
 		var child *ethereumStackTrieNode
 		if diffidx < len(st.key)-1 {
@@ -150,7 +148,7 @@ func (t *ethereumStackTrie) insert(st *ethereumStackTrieNode, key, value []byte)
 	case engineTrieLeafNode:
 		diffidx := diffIndex(st.key, key)
 		if diffidx >= len(st.key) {
-			panic("trying to insert into existing key")
+			return fmt.Errorf("trying to insert into existing key")
 		}
 
 		var branch *ethereumStackTrieNode
@@ -180,10 +178,11 @@ func (t *ethereumStackTrie) insert(st *ethereumStackTrieNode, key, value []byte)
 		st.key = append(st.key[:0], key...)
 		st.val = value
 	case engineTrieHashedNode:
-		panic("trying to insert into hash")
+		return fmt.Errorf("trying to insert into hash")
 	default:
-		panic("invalid trie node type")
+		return fmt.Errorf("invalid trie node type: %d", st.typ)
 	}
+	return nil
 }
 
 func (t *ethereumStackTrie) Hash() types.Hash {
