@@ -22,8 +22,29 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/vm"
 )
+
+func init() {
+	tracers.DefaultDirectory.Register("liveTracer", newLiveTracerFromContext, false)
+}
+
+// newLiveTracerFromContext creates a LiveTracer from the tracer context.
+// The event channel is internal; callers use GetResult() to retrieve a summary.
+func newLiveTracerFromContext(ctx *tracers.Context, cfg json.RawMessage) (tracers.Tracer, error) {
+	blockNum := uint64(0)
+	if ctx != nil && ctx.BlockNumber != nil {
+		blockNum = ctx.BlockNumber.Uint64()
+	}
+	// Internal event channel for self-contained use; events are counted but not streamed.
+	ch := make(chan LiveTracerEvent, 1024)
+	go func() {
+		for range ch {
+		} // drain
+	}()
+	return NewLiveTracer(blockNum, ch, 10000), nil
+}
 
 // LiveTracerEvent represents a single execution event emitted in real-time.
 type LiveTracerEvent struct {
