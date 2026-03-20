@@ -512,6 +512,13 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 			return errUnknownRequestType
 		}
 
+		// When payload-local request arrays are absent, the executionRequests
+		// parameter is an opaque byte blob per EIP-7685 and must not be
+		// re-parsed into fixed-size records.
+		if payloadLen == 0 {
+			continue
+		}
+
 		if (len(req)-1)%reqSize != 0 {
 			return errInvalidRequestEncoding
 		}
