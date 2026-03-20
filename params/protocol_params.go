@@ -20,11 +20,17 @@ import (
 	"math/big"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // GasLimitBoundDivisor is the bound divisor of the gas limit, used in update calculations.
 // Declared as var because it can be overridden (e.g., by BSC-compatible chains).
-var GasLimitBoundDivisor uint64 = 1024
+var (
+	GasLimitBoundDivisor uint64 = 1024
+
+	// BeaconRootsAddress is the EIP-4788 system contract that stores parent beacon roots.
+	BeaconRootsAddress = types.HexToAddress("0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02")
+)
 
 const (
 	MinGasLimit     uint64 = 5000               // Minimum the gas limit may ever be.

@@ -6,6 +6,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	internalcore "github.com/n42blockchain/N42/internal"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
@@ -13,6 +14,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
 )
 
 func (e *EngineAPIV1) canonicalHead() block.IBlock {
@@ -26,7 +28,7 @@ func (e *EngineAPIV1) canonicalHeadHash() types.Hash {
 	return ethCompatibleBlockHash(e.canonicalHead(), e.chainConfig())
 }
 
-func (e *EngineAPIV1) validatePayloadExecution(blk block.IBlock, parentHash types.Hash) error {
+func (e *EngineAPIV1) validatePayloadExecution(blk block.IBlock, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes) error {
 	if blk == nil || parentHash == (types.Hash{}) {
 		return nil
 	}
@@ -65,15 +67,42 @@ func (e *EngineAPIV1) validatePayloadExecution(blk block.IBlock, parentHash type
 		gasPool.AddGas(concreteBlock.GasLimit())
 		stateWriter := state.NewNoopWriter()
 		usedGas := uint64(0)
+		receipts := make(block.Receipts, 0, len(concreteBlock.Transactions()))
+		cfg := e.chainConfig()
+		if err := internalcore.ProcessBeaconBlockRoot(parentBeaconRoot, cfg, ibs, header, e.api.api.engine); err != nil {
+			return err
+		}
 
 		for i, txn := range concreteBlock.Transactions() {
 			ibs.Prepare(txn.Hash(), concreteBlock.Hash(), i)
-			if _, _, err := internalcore.ApplyTransaction(e.chainConfig(), blockHashFunc, e.api.api.engine, nil, gasPool, ibs, stateWriter, header, txn, &usedGas, vm2.Config{}); err != nil {
+			receipt, _, err := internalcore.ApplyTransaction(cfg, blockHashFunc, e.api.api.engine, nil, gasPool, ibs, stateWriter, header, txn, &usedGas, vm2.Config{})
+			if err != nil {
 				return err
+			}
+			if receipt != nil {
+				receipts = append(receipts, receipt)
 			}
 		}
 		if usedGas != header.GasUsed {
 			return fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, header.GasUsed)
+		}
+		var rules *params.Rules
+		if cfg != nil {
+			rules = cfg.RulesWithTimestamp(uint64FromUint256OrZero(header.Number), header.Time)
+		}
+		if rules != nil && rules.IsPrague {
+			actualRequests, err := internalcore.CollectDepositExecutionRequests(receipts)
+			if err != nil {
+				return err
+			}
+			pragueRequests, err := internalcore.ProcessPragueSystemCalls(cfg, ibs, header, e.api.api.engine)
+			if err != nil {
+				return err
+			}
+			actualRequests = append(actualRequests, pragueRequests...)
+			if executionRequestsHash(actualRequests) != executionRequestsHash(expectedRequests) {
+				return fmt.Errorf("invalid requests hash")
+			}
 		}
 		return nil
 	})

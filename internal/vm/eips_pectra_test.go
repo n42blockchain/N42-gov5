@@ -184,16 +184,20 @@ func TestSystemAddresses(t *testing.T) {
 	addresses := []struct {
 		name string
 		addr types.Address
+		want types.Address
 	}{
-		{"SystemAddress", SystemAddress},
-		{"WithdrawalRequestsAddress", WithdrawalRequestsAddress},
-		{"ConsolidationRequestsAddress", ConsolidationRequestsAddress},
-		{"DepositContractAddress", DepositContractAddress},
+		{"SystemAddress", SystemAddress, types.HexToAddress("0xfffffffffffffffffffffffffffffffffffffffe")},
+		{"WithdrawalRequestsAddress", WithdrawalRequestsAddress, types.HexToAddress("0x00000961EF480EB55E80D19AD83579A64C007002")},
+		{"ConsolidationRequestsAddress", ConsolidationRequestsAddress, types.HexToAddress("0x0000BBDDC7CE488642FB579F8B00F3A590007251")},
+		{"DepositContractAddress", DepositContractAddress, types.HexToAddress("0x00000000219ab540356cBB839Cbe05303d7705Fa")},
 	}
 
 	for _, a := range addresses {
 		if a.addr == (types.Address{}) {
 			t.Errorf("%s should not be zero", a.name)
+		}
+		if a.addr != a.want {
+			t.Errorf("%s = %v, want %v", a.name, a.addr, a.want)
 		}
 	}
 }

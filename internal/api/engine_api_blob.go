@@ -220,7 +220,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
 	}
-	if err := e.v1().validatePayloadExecution(blk, payload.ParentHash); err != nil {
+	if err := e.v1().validatePayloadExecution(blk, payload.ParentHash, parentBeaconBlockRoot, nil); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 	headHash := e.v1().currentHeadHash()

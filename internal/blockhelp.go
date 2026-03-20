@@ -20,7 +20,10 @@ package internal
 import (
 	"fmt"
 
+	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -36,7 +39,9 @@ import (
 type SyncMode string
 
 const (
-	TriesInMemory = 128
+	TriesInMemory               = 128
+	systemCallGas               = 30_000_000
+	beaconRootsHistoryBufferLen = 8191
 )
 
 type RejectedTx struct {
@@ -73,7 +78,7 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 		state.SystemAddress,
 		&contract,
 		0, u256.Num0,
-		math.MaxUint64, u256.Num0,
+		systemCallGas, u256.Num0,
 		nil, nil, nil, nil,
 		data, nil, false,
 		true, // isFree
@@ -93,6 +98,12 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 
 	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), engine, author)
 	evm := vm.NewEVM(blockContext, txContext, ibs, &chainConfig, vmConfig)
+	if rules := evm.ChainRules(); rules.IsBerlin {
+		ibs.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), nil)
+		if rules.IsShanghai {
+			ibs.AddAddressToAccessList(blockContext.Coinbase)
+		}
+	}
 
 	ret, _, err := evm.Call(
 		vm.AccountRef(msg.From()),
@@ -106,6 +117,100 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 		return nil, nil
 	}
 	return ret, err
+}
+
+func appendExecutionRequest(requests []hexutil.Bytes, requestType byte, payload []byte) []hexutil.Bytes {
+	if len(payload) == 0 {
+		return requests
+	}
+	grouped := make([]byte, 1+len(payload))
+	grouped[0] = requestType
+	copy(grouped[1:], payload)
+	return append(requests, hexutil.Bytes(grouped))
+}
+
+// CollectDepositExecutionRequests extracts EIP-6110 deposit requests from block receipts.
+func CollectDepositExecutionRequests(receipts block.Receipts) ([]hexutil.Bytes, error) {
+	var serialized []byte
+	for _, receipt := range receipts {
+		if receipt == nil {
+			continue
+		}
+		for _, lg := range receipt.Logs {
+			if lg == nil || lg.Address != vm.DepositContractAddress {
+				continue
+			}
+			deposit, err := vm.ParseDepositLog(lg.Topics, lg.Data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse deposit logs: %w", err)
+			}
+			serialized = append(serialized, deposit.Serialize()...)
+		}
+	}
+	return appendExecutionRequest(nil, vm.DepositRequestType, serialized), nil
+}
+
+// ProcessBeaconBlockRoot applies the EIP-4788 system call before block transaction execution.
+func ProcessBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) error {
+	if beaconRoot == nil || chainConfig == nil || ibs == nil || header == nil {
+		return nil
+	}
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	rules := chainConfig.RulesWithTimestamp(headerNumber.Uint64(), header.Time)
+	if rules == nil || !rules.IsCancun {
+		return nil
+	}
+
+	timestampSlot := types.Hash{}
+	uint256.NewInt(header.Time % beaconRootsHistoryBufferLen).WriteToSlice(timestampSlot[:])
+
+	rootSlot := types.Hash{}
+	uint256.NewInt((header.Time % beaconRootsHistoryBufferLen) + beaconRootsHistoryBufferLen).WriteToSlice(rootSlot[:])
+
+	timestampValue := uint256.NewInt(header.Time)
+	rootValue := uint256.NewInt(0).SetBytes(beaconRoot[:])
+	ibs.SetState(params.BeaconRootsAddress, &timestampSlot, *timestampValue)
+	ibs.SetState(params.BeaconRootsAddress, &rootSlot, *rootValue)
+	return ibs.FinalizeTx(rules, state.NewNoopWriter())
+}
+
+// ProcessPragueSystemCalls applies Prague/Pectra end-of-block system contract
+// calls that may invalidate the payload if they error.
+func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) ([]hexutil.Bytes, error) {
+	if chainConfig == nil || ibs == nil || header == nil {
+		return nil, nil
+	}
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	rules := chainConfig.RulesWithTimestamp(headerNumber.Uint64(), header.Time)
+	if rules == nil || !rules.IsPrague {
+		return nil, nil
+	}
+
+	noop := state.NewNoopWriter()
+	requests := make([]hexutil.Bytes, 0, 2)
+	for _, systemCall := range []struct {
+		contract    types.Address
+		requestType byte
+	}{
+		{contract: vm.WithdrawalRequestsAddress, requestType: vm.WithdrawalRequestType},
+		{contract: vm.ConsolidationRequestsAddress, requestType: vm.ConsolidationRequestType},
+	} {
+		ret, err := SysCallContract(systemCall.contract, nil, *chainConfig, ibs, header, engine)
+		if err != nil {
+			return nil, fmt.Errorf("system call failed to execute: %w", err)
+		}
+		requests = appendExecutionRequest(requests, systemCall.requestType, ret)
+		if err := ibs.FinalizeTx(rules, noop); err != nil {
+			return nil, err
+		}
+	}
+	return requests, nil
 }
 
 // FinalizeBlockExecution finalizes block execution by running engine finalization
