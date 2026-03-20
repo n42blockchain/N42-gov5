@@ -355,7 +355,7 @@
 
 | 升级 | 时间 | 关键 EIP | N42 状态 |
 |------|------|----------|----------|
-| **Pectra** | 2025.5.7 已上线 | 7702(AA), 2537(BLS), 6110(deposits), 7623(calldata cost) | ✅ 7702✅ 2537✅ 6110⚠️解析 7623✅ |
+| **Pectra** | 2025.5.7 已上线 | 7702(AA), 2537(BLS), 6110(deposits), 7623(calldata cost) | ✅ 完整: 7702✅ 2537✅ 6110✅ 7623✅ 7251✅ 7002✅ 2935✅ 7685✅ |
 | **Fusaka** | 2025.12.3 已上线 | PeerDAS(7594) blob 6→48, Gas↑150M, 7825(tx gas limit) | ✅ PeerDAS✅ BPO✅ 7825✅ |
 | BPO1-5 | 2025.12→2026.1 已上线 | Blob 参数渐进调整（target 10→14→48） | ✅ BlobSchedule 完整支持 |
 | **Glamsterdam** | 2026 H1 计划中 | ePBS(enshrined PBS), EOF(7692), gas 优化, Verkle Tree候选 | ✅ EOF 已提前实现, MEV-Boost✅, ePBS ❌ |
@@ -527,7 +527,7 @@
 | **Blake3 量子安全状态根** | JMT 状态承诺基于 Blake3-256 哈希 | Grover 算法仅使安全性减半(256→128bit)，远优于 Verkle 的 Pedersen(Shor 完全破解) | 以太坊正从 Verkle(Pedersen) 转向 Blake3/Poseidon 二叉树(EIP-7864) |
 | **Block-STM 并行 EVM** | Wave executor 524行+23测试+7基准测试套件 | M1 Max 实测：独立TX 3.9x加速, 100TX 1.4ms; 热点场景量化了 DAG 优化空间 | geth 无并行, reth 仅 prewarming, Erigon 实验性 |
 | **EOF 提前实现** | EIP-3540/3670/4200/4750/5450 完整 | 509行代码，含验证器+容器格式+跳转表 | geth/reth 计划 Glamsterdam (2026 H1) |
-| **Pectra EIP 大部分支持** | 7702✅, 7212✅P-256, 2537✅9预编译, 6110⚠️解析, 7251⚠️常量 | BLS 预编译含 x86 汇编优化(800行) | geth/reth 完整实现 |
+| **Pectra EIP 完整支持** | 7702✅ 7212✅ 2537✅ 6110✅ 7251✅ 7002✅ 7623✅ 2935✅ 7685✅ | 9 项 Pectra EIP 全部实现：delegation + BLS + P-256 + deposits + MaxEB/consolidation + withdrawal requests + floor data gas + historical hashes + execution requests | geth/reth 完整实现，N42 功能追平 |
 | **LayeredDB 分层存储** | State DB + History DB 分离 | ~1,200行代码, ShardedCache 分片缓存 | 类似 reth 架构理念 |
 | **战略性废弃 Verkle** | 避免双重迁移成本(Verkle→二叉树) | 以太坊 EIP-7864(2025.1) 证实方向转变 | geth/reth 投入 Verkle 开发后面临返工风险 |
 | **HotStuff-2 BFT 共识** | 两轮优化 BFT + BLS 聚合签名 | ~3000行代码, 60 测试, 自适应 Pacemaker, MDBX 持久化 | MonadBFT/Jolteon 同级别，geth/reth 无 BFT |
@@ -660,8 +660,8 @@
 | **EOF (EVM Object Format)** | `internal/vm/eof.go` | 509 | 有 | ✅ 完整实现 | EIP-3540/3670/4200/4750/5450 |
 | **EIP-7702 (Delegation)** | `internal/vm/eips_pectra.go` | ~200 | - | ✅ 完整实现 | 委托账户代码设置 |
 | **EIP-2537 (BLS)** | `internal/vm/contracts.go:854-1360` + `common/crypto/bls12381/` | ~500+800 | - | ✅ 完整实现 | 9 预编译(G1Add/Mul/MSM,G2同,Pairing,MapG1/G2)，含 x86 汇编优化 |
-| **EIP-6110 (Deposits)** | `internal/vm/eips_pectra.go` | ~80 | - | ⚠️ 解析器 | 仅日志解析，无完整 deposit 处理流程 |
-| **EIP-7251 (MaxEB)** | `internal/vm/eips_pectra.go` | ~30 | 0 | ⚠️ 常量 | 仅常量定义 |
+| **EIP-6110 (Deposits)** | `internal/vm/eips_pectra.go`, `internal/blockhelp.go` | ~150 | 有 | ✅ 完整 | ParseDepositLog (含 overflow 保护) + receipt log 提取 + Engine API executionRequests 传递 |
+| **EIP-7251 (MaxEB)** | `internal/vm/eips_pectra.go`, `internal/blockhelp.go` | ~80 | - | ✅ 完整 | MaxEffectiveBalance 常量 + ConsolidationRequestsAddress 系统合约 + ProcessPragueSystemCalls request 收集 |
 | **ERC-4337 (AA)** | `internal/vm/erc4337.go` + `internal/bundler/` | 362+1120 | 22+18 | ✅ Bundler 实现 | UserOp mempool + validator + bundle builder + RPC 端点 |
 | **P-256 Verify** | `internal/vm/contracts_p256.go` | 276 | - | ✅ 完整实现 | secp256r1 verify + recover |
 | **Cancun EIPs** | `internal/vm/eips_cancun.go` | 251 | - | ✅ 完整实现 | TLOAD/TSTORE/MCOPY/BLOBHASH/BLOBBASEFEE |
@@ -702,7 +702,7 @@
 
 | 维度 | N42 实际水平 | geth/reth 水平 | Erigon 3.3 水平 | 差距评估 |
 |------|-------------|---------------|----------------|----------|
-| EVM 兼容性 | Cancun ✅, 大部分 Pectra (7702/BLS/P-256/EOF) | Cancun+Pectra 完整 | Cancun+Pectra+Fusaka | 小幅差距（deposits/MaxEB 部分） |
+| EVM 兼容性 | Cancun ✅, Pectra 完整 (9 项 EIP), EOF 提前实现 | Cancun+Pectra 完整 | Cancun+Pectra+Fusaka | 已追平 |
 | 并行执行 | Block-STM 实测 3.9x 加速(M1 Max) | geth 无并行，reth prewarming | 实验性并行 | N42 领先(数据验证), 高冲突场景需 DAG 优化 |
 | 同步机制 | Snap Sync 完整 | 成熟 | Staged Sync+OtterSync 最快 | 中等差距（无 Staged Sync） |
 | 状态存储 | MDBX flat + **JMT Blake3 状态承诺** + LayeredDB + Snapshot DiffLayer 树 + MDBX 持久化(4表) + journal 崩溃恢复 + History Expiry | PBSS/flat state 成熟 | E3 三层+segment(archive 1.6TB) | 差距缩小（有 JMT 承诺层、加速层、持久化和过期，无 per-TX 粒度） |
