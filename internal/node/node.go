@@ -58,6 +58,11 @@ import (
 	"github.com/n42blockchain/N42/internal/api/graphql"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/deferred"
+	"github.com/n42blockchain/N42/lib/gointerfaces/remote"
+	"github.com/n42blockchain/N42/lib/kv/remotedbserver"
+	log3 "github.com/n42blockchain/N42/lib/log/v3"
+	"google.golang.org/grpc"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -146,7 +151,9 @@ type Node struct {
 	hotstuffService *hotstuff.Service       // HotStuff BFT consensus service (nil if not using HotStuff)
 	bundlerService  *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
 	peerdasService  *peerdas.Service        // PeerDAS (EIP-7594) data availability service (nil if disabled)
-	mcpServer       *mcp.Server             // MCP (Model Context Protocol) server for AI agents (nil if disabled)
+	mcpServer        *mcp.Server             // MCP (Model Context Protocol) server for AI agents (nil if disabled)
+	deferredPipeline *deferred.Pipeline      // Deferred execution pipeline (nil if disabled)
+	grpcServer       *grpc.Server            // gRPC KV server for RPCDaemon (nil if disabled)
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
@@ -830,6 +837,15 @@ func (n *Node) Start() error {
 	// Register Otterscan block explorer API (ots_* namespace).
 	n.rpcAPIs = append(n.rpcAPIs, api.OtterscanApis(n.api)...)
 
+	// Register HotStuff validator reconfiguration API if running HotStuff consensus.
+	if hs, ok := n.engine.(*hotstuff.HotStuff); ok {
+		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
+			Namespace:     "admin",
+			Service:       api.NewHotStuffReconfigAPI(func() *hotstuff.HotStuff { return hs }),
+			Authenticated: true,
+		})
+	}
+
 	if err := n.startRPC(); err != nil {
 		log.Error("failed start jsonrpc service", zap.Error(err))
 		return err
@@ -926,6 +942,42 @@ func (n *Node) Start() error {
 				log.Error("MCP server failed to start", "err", err)
 			}
 		}()
+	}
+
+	// Start gRPC KV server for RPCDaemon if configured.
+	if addr := n.config.NodeCfg.PrivateAPIAddr; addr != "" {
+		lis, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("failed to listen on private API addr %s: %w", addr, err)
+		}
+		grpcSrv := grpc.NewServer()
+		kvServer := remotedbserver.NewKvServer(n.ctx, n.db, nil, nil, nil, log3.New())
+		remote.RegisterKVServer(grpcSrv, kvServer)
+		go func() {
+			log.Info("gRPC KV server started for RPCDaemon", "addr", addr)
+			if err := grpcSrv.Serve(lis); err != nil {
+				log.Error("gRPC KV server error", "err", err)
+			}
+		}()
+		n.grpcServer = grpcSrv
+	}
+
+	// Start deferred execution pipeline if configured.
+	if n.config.DeferredExec.Enabled {
+		deferredCfg := deferred.PipelineConfig{
+			Execution: deferred.Config{
+				QueueSize: n.config.DeferredExec.QueueSize,
+				Workers:   n.config.DeferredExec.Workers,
+			},
+		}
+		execFn := deferred.NewEVMExecuteFunc(n.db, n.blockChain)
+		commitFn := deferred.NewCommitFunc()
+		n.deferredPipeline = deferred.NewPipeline(deferredCfg, execFn, commitFn)
+		n.deferredPipeline.Start(n.ctx)
+		log.Info("Deferred execution pipeline enabled",
+			"queueSize", n.config.DeferredExec.QueueSize,
+			"workers", n.config.DeferredExec.Workers,
+		)
 	}
 
 	// Start ZK prover service if configured.
@@ -1219,6 +1271,20 @@ func (n *Node) stopServices() []error {
 	services := []namedCloser{
 		// 1. RPC services (depends on everything, stop first)
 		{"RPC services", func() error { n.stopRPC(); return nil }},
+		// 2a. gRPC KV server
+		{"gRPC KV server", func() error {
+			if n.grpcServer != nil {
+				n.grpcServer.GracefulStop()
+			}
+			return nil
+		}},
+		// 2b. Deferred execution pipeline
+		{"Deferred execution", func() error {
+			if n.deferredPipeline != nil {
+				n.deferredPipeline.Stop()
+			}
+			return nil
+		}},
 		// 2. Snapshot manager
 		{"Snapshot manager", func() error {
 			if n.snapshotMgr != nil {

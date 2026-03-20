@@ -53,6 +53,7 @@ type Config struct {
 	MEVBoost         MEVBoostCfg         `json:"mev_boost" yaml:"mev_boost"`
 	EncryptedPool    EncryptedPoolCfg    `json:"encrypted_pool" yaml:"encrypted_pool"`
 	ZKProverCfg      ZKProverCfg         `json:"zkprover" yaml:"zkprover"`
+	DeferredExec     DeferredExecConfig  `json:"deferred_exec" yaml:"deferred_exec"`
 }
 
 func SaveConfigToFile(file string, config Config) error {
