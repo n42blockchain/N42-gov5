@@ -103,3 +103,92 @@ func TestLiveTracerFaultEvent(t *testing.T) {
 		t.Errorf("fault event: type=%s depth=%d err=%s", evt.Type, evt.Depth, evt.Error)
 	}
 }
+
+func TestLiveTracerEnterExit(t *testing.T) {
+	eventCh := make(chan LiveTracerEvent, 100)
+	tracer := NewLiveTracer(10, eventCh, 0)
+	from := types.HexToAddress("0xaaaa")
+	to := types.HexToAddress("0xbbbb")
+
+	tracer.CaptureEnter(vm.CALL, from, to, nil, 50000, uint256.NewInt(0))
+	tracer.CaptureExit(nil, 21000, nil)
+
+	enter := <-eventCh
+	if enter.Type != "enter" {
+		t.Errorf("expected enter, got %s", enter.Type)
+	}
+	exit := <-eventCh
+	if exit.Type != "exit" || exit.GasUsed != 21000 {
+		t.Errorf("expected exit with 21000 gas, got type=%s gas=%d", exit.Type, exit.GasUsed)
+	}
+}
+
+func TestLiveTracerExitWithError(t *testing.T) {
+	eventCh := make(chan LiveTracerEvent, 100)
+	tracer := NewLiveTracer(10, eventCh, 0)
+
+	tracer.CaptureEnd(nil, 0, vm.ErrOutOfGas)
+	evt := <-eventCh
+	if evt.Error != vm.ErrOutOfGas.Error() {
+		t.Errorf("expected ErrOutOfGas, got %s", evt.Error)
+	}
+}
+
+func TestLiveTracerGetResult(t *testing.T) {
+	eventCh := make(chan LiveTracerEvent, 100)
+	tracer := NewLiveTracer(42, eventCh, 0)
+	tracer.CaptureTxStart(21000)
+	tracer.CaptureTxEnd(0)
+
+	result, err := tracer.GetResult()
+	if err != nil {
+		t.Fatalf("GetResult error: %v", err)
+	}
+	if len(result) == 0 {
+		t.Fatal("expected non-empty result")
+	}
+}
+
+func TestLiveTracerStop(t *testing.T) {
+	eventCh := make(chan LiveTracerEvent, 100)
+	tracer := NewLiveTracer(1, eventCh, 0)
+	tracer.CaptureTxStart(21000)
+	tracer.Stop(nil) // should close
+
+	// After stop, no more events
+	tracer.CaptureTxStart(21000)
+	if tracer.EventCount() != 1 {
+		t.Errorf("expected 1 event (stopped), got %d", tracer.EventCount())
+	}
+}
+
+func TestLiveTracerSetTxIndex(t *testing.T) {
+	eventCh := make(chan LiveTracerEvent, 100)
+	tracer := NewLiveTracer(1, eventCh, 0)
+
+	tracer.SetTxIndex(5)
+	tracer.CaptureTxStart(21000)
+
+	evt := <-eventCh
+	if evt.TxIndex != 5 {
+		t.Errorf("TxIndex = %d, want 5", evt.TxIndex)
+	}
+}
+
+func TestNewLiveTracerFromContext(t *testing.T) {
+	tr, err := newLiveTracerFromContext(nil, nil)
+	if err != nil {
+		t.Fatalf("newLiveTracerFromContext error: %v", err)
+	}
+	if tr == nil {
+		t.Fatal("expected non-nil tracer")
+	}
+	// Verify it implements the Tracer interface
+	result, err := tr.GetResult()
+	if err != nil {
+		t.Fatalf("GetResult error: %v", err)
+	}
+	if len(result) == 0 {
+		t.Fatal("expected non-empty result")
+	}
+}
