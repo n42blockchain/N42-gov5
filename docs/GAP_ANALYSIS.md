@@ -202,7 +202,7 @@
 | **debug_* 命名空间** | ✅ 完整 | ✅ 完整 | ✅ 完整 | 部分 | 部分 | N/A | ✅ |
 | **trace_* 命名空间** | ✅ | ✅ (Parity 兼容) | ✅ OE兼容 | ❌ | ❌ | N/A | ✅ |
 | **GraphQL API** | ✅ EIP-1767 | ❌ | ✅ --graphql | ❌ | ❌ | ✅ 自研 | ✅ EIP-1767 |
-| **Otterscan API** | ❌ | ✅ | ✅ 原生集成 | ❌ | ❌ | N/A | ❌ |
+| **Otterscan API** | ❌ | ✅ | ✅ 原生集成 | ❌ | ❌ | N/A | ✅ 完整 (getApiLevel/hasCode/blockDetails/blockTxs/contractCreator/searchTxs/txError) |
 | **Engine API (完整)** | ✅ v1-v4 | ✅ v1-v4 | ✅ v1-v4+Caplin | N/A | N/A | N/A | ✅ v1-v4 完整 |
 | **Admin API** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ import/export + DB inspect + state dump + debug RPC |
 | **Bloom Bits 索引** | ✅ | ✅ | ✅ receipt持久化 | ❌ | ❌ | N/A | ✅ roaring bitmap |
@@ -234,7 +234,7 @@
 | **动态大小调整** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ 内存感知 |
 | **EIP-7702 TX 类型** | ✅ | ✅ | ✅ | ❌ | 🔧 | N/A | ✅ |
 | **Local Priority** | ✅ | ✅ | ✅ --txpool.nolocals | ❌ | ❌ | ❌ | ✅ |
-| **独立进程部署** | ❌ | ❌ | ✅ 核心特性 | ❌ | ❌ | ❌ | ❌ |
+| **独立进程部署** | ❌ | ❌ | ✅ 核心特性 | ❌ | ❌ | ❌ | N/A (RPCDaemon 已拆分 RPC 层; TxPool 拆分收益边际) |
 
 ### 关键差距
 
@@ -251,14 +251,14 @@
 | **Chain Import/Export** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ protobuf 格式批量导入导出 |
 | **State Dump** | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ JSON 流式输出含 storage/code |
 | **DB Inspector** | ✅ | ✅ | ✅ diagnostics | ❌ | ❌ | ❌ | ✅ stats/list/get/inspect 四命令 |
-| **JS Console** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **EVM CLI Tool** | ✅ `evm` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **JS Console** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | N/A (过时特性; MCP Server + curl + foundry 替代) |
+| **EVM CLI Tool** | ✅ `evm` | ❌ | ❌ | ❌ | ❌ | ❌ | N/A (debug_traceCall RPC 提供在线调试) |
 | **Clef (签名器)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ IPC 签名器 + 规则引擎 + 审计日志 |
 | **abigen** | ✅ | ❌ | ❌ | ❌ | ❌ | N/A (Move) | ✅ |
 | **Chain Rollback** | ✅ | ✅ | ✅ unwind | ✅ | ❌ | ❌ | ✅ |
 | **Genesis Init** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | **Keystore 管理** | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| **devp2p CLI** | ✅ | ❌ | ✅ sentry独立 | ❌ | ❌ | ❌ | ❌ |
+| **devp2p CLI** | ✅ | ❌ | ✅ sentry独立 | ❌ | ❌ | ❌ | N/A (N42 用 libp2p; admin_peers RPC 提供诊断) |
 | **TOML 配置文件** | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ YAML |
 
 ---
@@ -274,7 +274,7 @@
 | **Health Check** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Panic Recovery** | ✅ 全面 | ✅ Rust 安全 | ⚠️ Go GC | ✅ | ✅ | ✅ Move 安全 | ✅ SafeGo+8处 |
 | **Fuzzing 测试** | ✅ 大量 | ✅ | ⚠️ hive测试 | ✅ | ❌ | ✅ | ✅ 29 fuzz函数 |
-| **内存安全** | ⚠️ Go GC | ✅ Rust 所有权 | ⚠️ Go GC | ⚠️ Go GC | 自研 | ✅ Move 线性类型 | ⚠️ Go GC |
+| **内存安全** | ⚠️ Go GC | ✅ Rust 所有权 | ⚠️ Go GC | ⚠️ Go GC | 自研 | ✅ Move 线性类型 | ⚠️ Go GC (SafeGo + 3 轮安全审计 47+ bug 修复加固) |
 | **PQ 密码学** | ❌ 2026 路线图 | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ PQ-STARK |
 | **加密Mempool** | ❌ | ❌ | ✅ Shutter Network | ❌ | ❌ | ❌ | ✅ 阈值加密 (AES-256-GCM) |
 
@@ -295,7 +295,7 @@
 | **Priority Ordering** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ TxByPriceAndNonce 堆排序 |
 | **Bundle Pool** | ✅ | ✅ | ✅ | ❌ | ❌ | N/A | ✅ BundlePool + 过期驱逐 |
 | **PBS (Builder Separation)** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ MEV-Boost Relay 集成 |
-| **Inclusion List** | 🔧 研究 | 🔧 | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Inclusion List** | 🔧 研究 | 🔧 | ❌ | ❌ | ❌ | ❌ | N/A (等 Glamsterdam 确定; HotStuff 共识无 PBS 审查问题) |
 | **Block Value 优化** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ 本地/Relay 价值对比拍卖 |
 | **EIP-1559 动态费率** | ✅ | ✅ | ✅ | ✅ 变体 | ✅ | ❌ | ✅ |
 | **加密Mempool (反MEV)** | ❌ | ❌ | ✅ Shutter | ✅ Private Pool | ❌ | ❌ | ✅ 阈值加密池 |
@@ -310,7 +310,7 @@
 | **OpenTelemetry** | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ OTLP/HTTP |
 | **Grafana Dashboard** | ✅ 官方模板 | ✅ 官方模板 | ✅ | ✅ | ❌ | ✅ | ✅ 3面板 |
 | **结构化事件日志** | ✅ | ✅ | ✅ JSON+分级 | ✅ | ✅ | ✅ | ✅ JSON 默认 (文件输出) |
-| **Live Tracing** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Live Tracing** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ liveTracer (实时 EVM 事件流 + tracer directory 注册) |
 | **pprof 支持** | ✅ | ✅ (tokio-console) | ✅ 6060端口 | ✅ | ❌ | ❌ | ✅ 6060 端口 |
 | **诊断 API** | ✅ | ✅ ExEx | ✅ diagnostics模块 | ❌ | ❌ | ✅ | ✅ debug_nodeStatus 全面诊断 |
 | **MCP Server (AI)** | ❌ | ❌ | ✅ 端口8553 | ❌ | ❌ | ❌ | ✅ 端口 8553 (8工具+4资源) |
@@ -401,7 +401,7 @@
 | **Sparse Trie 缓存** | ❌ | ✅ 核心 | ❌ | ❌ | N/A | ❌ | ✅ JMT 节点 LRU (16384 entries) |
 | **批量 DB 写入** | ✅ | ✅ | ✅ ETL预处理 | ✅ | ✅ | ✅ | ✅ |
 | **ShardedCache** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ LayeredDB |
-| **Receipt持久化** | ✅ | ✅ | ✅ RPC 10x提速 | ❌ | ❌ | ❌ | ❌ |
+| **Receipt持久化** | ✅ | ✅ | ✅ RPC 10x提速 | ❌ | ❌ | ❌ | ✅ per-block Receipts + roaring bitmap 日志索引 + ReadReceiptByTxHash O(1) 查询 |
 
 ### 关键差距
 
