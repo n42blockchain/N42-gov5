@@ -35,7 +35,15 @@ import (
 
 // DelegationPrefix is the prefix bytes for EIP-7702 delegated accounts
 // An account with code starting with this prefix (0xef0100) is considered delegated
-var DelegationPrefix = []byte{0xef, 0x01, 0x00}
+// delegationPrefixArray is the immutable source for the delegation prefix.
+var delegationPrefixArray = [3]byte{0xef, 0x01, 0x00}
+
+// DelegationPrefix returns a copy of the EIP-7702 delegation prefix bytes.
+// Returns a fresh slice each time to prevent callers from mutating the constant.
+func DelegationPrefix() []byte {
+	p := delegationPrefixArray
+	return p[:]
+}
 
 // Gas costs for EIP-7702
 const (
@@ -48,7 +56,7 @@ const (
 
 // HasDelegation checks if the code has the EIP-7702 delegation prefix
 func HasDelegation(code []byte) bool {
-	return len(code) == 23 && bytes.HasPrefix(code, DelegationPrefix)
+	return len(code) == 23 && bytes.HasPrefix(code, DelegationPrefix())
 }
 
 // ParseDelegation parses the delegation address from code
@@ -63,7 +71,7 @@ func ParseDelegation(code []byte) (types.Address, bool) {
 // AddressToDelegation creates delegation code from an address
 func AddressToDelegation(addr types.Address) []byte {
 	code := make([]byte, 23)
-	copy(code, DelegationPrefix)
+	copy(code, DelegationPrefix())
 	copy(code[3:], addr[:])
 	return code
 }
@@ -305,7 +313,10 @@ func ParseDepositLog(topics []types.Hash, data []byte) (*DepositRequest, error) 
 	if offset+32 > len(data) {
 		return nil, errInvalidDepositLog
 	}
-	pubkeyLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	pubkeyLen, overflow := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64WithOverflow()
+	if overflow {
+		return nil, errInvalidDepositLog
+	}
 	offset += 32
 	if pubkeyLen != 48 || offset+48 > len(data) {
 		return nil, errInvalidDepositLog
@@ -319,7 +330,10 @@ func ParseDepositLog(topics []types.Hash, data []byte) (*DepositRequest, error) 
 	if offset+32 > len(data) {
 		return nil, errInvalidDepositLog
 	}
-	credLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	credLen, overflow := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64WithOverflow()
+	if overflow {
+		return nil, errInvalidDepositLog
+	}
 	offset += 32
 	if credLen != 32 || offset+32 > len(data) {
 		return nil, errInvalidDepositLog
@@ -331,7 +345,10 @@ func ParseDepositLog(topics []types.Hash, data []byte) (*DepositRequest, error) 
 	if offset+32 > len(data) {
 		return nil, errInvalidDepositLog
 	}
-	amountLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	amountLen, overflow := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64WithOverflow()
+	if overflow {
+		return nil, errInvalidDepositLog
+	}
 	offset += 32
 	if amountLen != 8 || offset+8 > len(data) {
 		return nil, errInvalidDepositLog
@@ -347,7 +364,10 @@ func ParseDepositLog(topics []types.Hash, data []byte) (*DepositRequest, error) 
 	if offset+32 > len(data) {
 		return nil, errInvalidDepositLog
 	}
-	sigLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	sigLen, overflow := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64WithOverflow()
+	if overflow {
+		return nil, errInvalidDepositLog
+	}
 	offset += 32
 	if sigLen != 96 || offset+96 > len(data) {
 		return nil, errInvalidDepositLog
@@ -360,7 +380,10 @@ func ParseDepositLog(topics []types.Hash, data []byte) (*DepositRequest, error) 
 	if offset+32 > len(data) {
 		return nil, errInvalidDepositLog
 	}
-	indexLen := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64()
+	indexLen, overflow := new(uint256.Int).SetBytes(data[offset : offset+32]).Uint64WithOverflow()
+	if overflow {
+		return nil, errInvalidDepositLog
+	}
 	offset += 32
 	if indexLen != 8 || offset+8 > len(data) {
 		return nil, errInvalidDepositLog
@@ -542,11 +565,22 @@ type StateDB interface {
 // Gas calculation helpers for EIP-7702
 // =============================================================================
 
-// CalcAuthorizationGas calculates the gas cost for authorization list processing
-func CalcAuthorizationGas(authCount int, newAccountCount int) uint64 {
-	gas := uint64(authCount) * PerAuthBaseCost
-	gas += uint64(newAccountCount) * PerEmptyAccountCost
-	return gas
+// CalcAuthorizationGas calculates the gas cost for authorization list processing.
+// Returns the gas cost and whether an overflow occurred (true = overflow).
+func CalcAuthorizationGas(authCount int, newAccountCount int) (uint64, bool) {
+	authGas, ok := SafeMulUint64(uint64(authCount), PerAuthBaseCost)
+	if !ok {
+		return 0, true
+	}
+	accountGas, ok := SafeMulUint64(uint64(newAccountCount), PerEmptyAccountCost)
+	if !ok {
+		return 0, true
+	}
+	total, ok := SafeAddUint64(authGas, accountGas)
+	if !ok {
+		return 0, true
+	}
+	return total, false
 }
 
 // =============================================================================

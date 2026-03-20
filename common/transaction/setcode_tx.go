@@ -305,9 +305,14 @@ func (tx *SetCodeTx) EncodeRLP() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// DelegationPrefix is the prefix used to identify delegated accounts (EIP-7702)
-// An account with code starting with this prefix is considered delegated
-var DelegationPrefix = []byte{0xef, 0x01, 0x00}
+// delegationPrefixArray holds the EIP-7702 delegation prefix as an immutable array.
+var delegationPrefixArray = [3]byte{0xef, 0x01, 0x00}
+
+// DelegationPrefix returns a copy of the EIP-7702 delegation prefix bytes.
+func DelegationPrefix() []byte {
+	p := delegationPrefixArray
+	return p[:]
+}
 
 // ParseDelegation attempts to parse a delegation from account code.
 // Returns the delegated address and true if successful, empty address and false otherwise.
@@ -315,7 +320,7 @@ func ParseDelegation(code []byte) (types.Address, bool) {
 	if len(code) != 23 { // 3 bytes prefix + 20 bytes address
 		return types.Address{}, false
 	}
-	if !bytes.HasPrefix(code, DelegationPrefix) {
+	if !bytes.HasPrefix(code, DelegationPrefix()) {
 		return types.Address{}, false
 	}
 	return types.BytesToAddress(code[3:23]), true
@@ -324,7 +329,7 @@ func ParseDelegation(code []byte) (types.Address, bool) {
 // AddressToDelegation converts an address to delegation code (EIP-7702)
 func AddressToDelegation(addr types.Address) []byte {
 	code := make([]byte, 23)
-	copy(code, DelegationPrefix)
+	copy(code, DelegationPrefix())
 	copy(code[3:], addr[:])
 	return code
 }

@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"math/big"
 	"strings"
@@ -305,21 +306,25 @@ func (e *ENSAPI) getContentHash(ctx context.Context, resolverAddr types.Address,
 // getTextRecord calls resolver.text(node, key)
 func (e *ENSAPI) getTextRecord(ctx context.Context, resolverAddr types.Address, node types.Hash, key string) (string, error) {
 	// Build call data: text(bytes32, string)
-	// This is more complex due to dynamic string encoding
+	// ABI encoding: selector(4) + node(32) + string_offset(32) + string_length(32) + string_data(padded to 32)
 	keyBytes := []byte(key)
-	callData := make([]byte, 4+32+32+32+len(keyBytes))
+	paddedLen := ((len(keyBytes) + 31) / 32) * 32 // pad to 32-byte boundary
+	if paddedLen == 0 {
+		paddedLen = 32
+	}
+	callData := make([]byte, 4+32+32+32+paddedLen)
 
 	copy(callData[:4], ens.TextSelector[:])
 	copy(callData[4:36], node[:])
 
-	// String offset (64 = 0x40)
-	callData[67] = 0x40
+	// String offset as 32-byte big-endian uint256 (offset = 64 = 0x40, points past node + offset word)
+	callData[35+32] = 0x40
 
-	// String length
-	callData[99] = byte(len(keyBytes))
+	// String length as 32-byte big-endian uint256
+	binary.BigEndian.PutUint64(callData[4+32+32+24:4+32+32+32], uint64(len(keyBytes)))
 
-	// String data
-	copy(callData[100:], keyBytes)
+	// String data (zero-padded by make)
+	copy(callData[4+32+32+32:], keyBytes)
 
 	result, err := e.ethCall(ctx, resolverAddr, callData)
 	if err != nil {

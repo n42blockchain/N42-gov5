@@ -65,16 +65,37 @@ func (e Entire) Clone() Entire {
 		copyHeader := *e.Header
 		c.Header = &copyHeader
 	}
-	c.Uncles = e.Uncles
-	c.Transactions = e.Transactions
 	c.Proof = e.Proof
-	c.Senders = e.Senders
+
+	// Deep copy slices to prevent mutations from affecting the original
+	if len(e.Uncles) > 0 {
+		c.Uncles = make([]*types2.Header, len(e.Uncles))
+		copy(c.Uncles, e.Uncles)
+	}
+	if len(e.Transactions) > 0 {
+		c.Transactions = make([][]byte, len(e.Transactions))
+		copy(c.Transactions, e.Transactions)
+	}
+	if len(e.Senders) > 0 {
+		c.Senders = make([]types.Address, len(e.Senders))
+		copy(c.Senders, e.Senders)
+	}
 	if e.Snap != nil {
+		items := make([]*Item, len(e.Snap.Items))
+		copy(items, e.Snap.Items)
+		accounts := make(map[string]int, len(e.Snap.accounts))
+		for k, v := range e.Snap.accounts {
+			accounts[k] = v
+		}
+		storage := make(map[string]int, len(e.Snap.storage))
+		for k, v := range e.Snap.storage {
+			storage[k] = v
+		}
 		c.Snap = &Snapshot{
-			Items:     e.Snap.Items,
+			Items:     items,
 			OutHash:   e.Snap.OutHash,
-			accounts:  e.Snap.accounts,
-			storage:   e.Snap.storage,
+			accounts:  accounts,
+			storage:   storage,
 			written:   e.Snap.written,
 			getOneFun: e.Snap.getOneFun,
 		}
@@ -202,7 +223,7 @@ func (s *Snapshot) AddAccount(address types.Address, account *account.StateAccou
 	account.EncodeForStorage(value)
 	s.Items = append(s.Items, &Item{Key: address[:], Value: value})
 	addrBytes := address[:]
-	s.accounts[*(*string)(unsafe.Pointer(&addrBytes))] = len(s.Items)
+	s.accounts[*(*string)(unsafe.Pointer(&addrBytes))] = len(s.Items) - 1
 }
 
 func (s *Snapshot) AddStorage(address types.Address, key *types.Hash, incarnation uint16, value []byte) {
@@ -211,7 +232,7 @@ func (s *Snapshot) AddStorage(address types.Address, key *types.Hash, incarnatio
 	}
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
 	s.Items = append(s.Items, &Item{Key: compositeKey, Value: value})
-	s.storage[*(*string)(unsafe.Pointer(&compositeKey))] = len(s.storage)
+	s.storage[*(*string)(unsafe.Pointer(&compositeKey))] = len(s.Items) - 1
 }
 
 func EncodeBeforeState(w io.Writer, list Items, codeHash HashCodes) error {

@@ -55,7 +55,12 @@ func (tx *DynamicFeeTx) copy() TxData {
 		R:          new(uint256.Int),
 		S:          new(uint256.Int),
 	}
-	copy(cpy.AccessList, tx.AccessList)
+	for i, tuple := range tx.AccessList {
+		cpy.AccessList[i] = AccessTuple{
+			Address:     tuple.Address,
+			StorageKeys: append([]types.Hash(nil), tuple.StorageKeys...),
+		}
+	}
 	if tx.Value != nil {
 		cpy.Value.Set(tx.Value)
 	}

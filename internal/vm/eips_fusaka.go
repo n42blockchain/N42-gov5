@@ -42,6 +42,8 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 )
@@ -188,7 +190,7 @@ func CalcModExpGas7883(baseLen, expLen, modLen *big.Int, expHead *big.Int) uint6
 // modexpMultComplexityFusaka calculates the MODEXP multiplication complexity
 // for EIP-7883.
 func modexpMultComplexityFusaka(modLen, baseLen *big.Int) *big.Int {
-	x := bigMax(modLen, baseLen)
+	x := new(big.Int).Set(bigMax(modLen, baseLen)) // copy to avoid mutating inputs
 	if x.Cmp(big32) <= 0 {
 		return big.NewInt(16)
 	}
@@ -299,21 +301,30 @@ func CalcBlobBaseFeeFusaka(excessBlobGas uint64) *big.Int {
 	return baseFee
 }
 
-// CalcBlobBaseFee calculates the blob base fee from excess gas (standard)
+// CalcBlobBaseFee calculates the blob base fee from excess gas using the
+// proper fake_exponential algorithm from EIP-4844.
 func CalcBlobBaseFee(excessBlobGas uint64) *big.Int {
-	// fakeBlobBaseFee = MIN_BLOB_GASPRICE * e^(excessBlobGas / BLOB_GASPRICE_UPDATE_FRACTION)
-	// Using integer approximation
-	fee := big.NewInt(int64(params.BlobTxMinBlobGasprice))
-	if excessBlobGas > 0 {
-		// Approximation of exponential
-		exponent := new(big.Int).SetUint64(excessBlobGas)
-		exponent.Div(exponent, big.NewInt(int64(params.BlobTxBlobGaspriceUpdateFraction)))
+	// Use the standard fakeExponential: factor * e^(numerator/denominator)
+	factor := uint256.NewInt(params.BlobTxMinBlobGasprice)
+	numerator := uint256.NewInt(excessBlobGas)
+	denominator := uint256.NewInt(params.BlobTxBlobGaspriceUpdateFraction)
 
-		// e^x ≈ 1 + x + x^2/2 for small x
-		multiplier := new(big.Int).Add(big.NewInt(1), exponent)
-		fee.Mul(fee, multiplier)
+	i := uint256.NewInt(1)
+	output := uint256.NewInt(0)
+	numeratorAccum := new(uint256.Int).Mul(factor, denominator)
+
+	for {
+		output.Add(output, numeratorAccum)
+		numeratorAccum.Mul(numeratorAccum, numerator)
+		numeratorAccum.Div(numeratorAccum, denominator)
+		numeratorAccum.Div(numeratorAccum, i)
+		i.AddUint64(i, 1)
+		if numeratorAccum.IsZero() {
+			break
+		}
 	}
-	return fee
+	output.Div(output, denominator)
+	return output.ToBig()
 }
 
 // =============================================================================

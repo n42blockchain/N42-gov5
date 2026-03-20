@@ -262,6 +262,7 @@ func (sdb *IntraBlockState) GetStateReader() StateReader {
 func (sdb *IntraBlockState) Reset() {
 	sdb.stateObjects = make(map[types.Address]*stateObject)
 	sdb.stateObjectsDirty = make(map[types.Address]struct{})
+	sdb.nilAccounts = make(map[types.Address]struct{})
 	sdb.thash = types.Hash{}
 	sdb.bhash = types.Hash{}
 	sdb.txIndex = 0
@@ -322,11 +323,11 @@ func (sdb *IntraBlockState) AddRefund(gas uint64) {
 // SubRefund removes gas from the refund counter.
 // This method will set an error if the refund counter goes below zero
 func (sdb *IntraBlockState) SubRefund(gas uint64) {
-	sdb.journal.append(refundChange{prev: sdb.refund})
 	if gas > sdb.refund {
 		sdb.setErrorUnsafe(fmt.Errorf("refund counter below zero: gas=%d, refund=%d", gas, sdb.refund))
 		return
 	}
+	sdb.journal.append(refundChange{prev: sdb.refund})
 	sdb.refund -= gas
 }
 
@@ -763,7 +764,7 @@ func updateAccount(EIP161Enabled bool, isAura bool, stateWriter StateWriter, add
 		}
 		stateObject.deleted = true
 	}
-	// A selfdestructed account must never be written back in the same tx finalisation
+	// A selfdestructed account must never be written back in the same tx finalization
 	// pass, even if it was also created in this transaction.
 	if isDirty && !stateObject.selfdestructed && !emptyRemoval {
 		stateObject.deleted = false
@@ -1104,6 +1105,11 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 	}
 
 	if addr == beneficiary {
+		// Self-to-self case: the caller (opSelfdestruct) has already done
+		// AddBalance(beneficiary, originalBalance), doubling the balance to 2*B.
+		// To achieve the correct no-op semantics (balance stays at B), we subtract
+		// half of the current balance, i.e. 2*B - (2*B/2) = B.
+		// This works because 2*B is always even, so integer division is exact.
 		currentBalance := stateObject.Balance()
 		if currentBalance.IsZero() {
 			return

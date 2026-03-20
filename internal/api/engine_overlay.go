@@ -28,6 +28,11 @@ type engineBuiltPayload struct {
 	executionRequests []hexutil.Bytes
 }
 
+const (
+	maxOverlayBlocks   = 1024 // max imported blocks to retain
+	maxOverlayPayloads = 128  // max built payloads to retain
+)
+
 type engineOverlay struct {
 	mu            sync.RWMutex
 	head          block.IBlock
@@ -662,6 +667,20 @@ func (o *engineOverlay) storeBuiltPayload(id PayloadID, payload *engineBuiltPayl
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.builtPayloads[id] = payload
+
+	// Evict oldest payloads if limit exceeded to prevent unbounded memory growth
+	if len(o.builtPayloads) > maxOverlayPayloads {
+		count := 0
+		for pid := range o.builtPayloads {
+			if pid != id {
+				delete(o.builtPayloads, pid)
+				count++
+				if len(o.builtPayloads) <= maxOverlayPayloads/2 {
+					break
+				}
+			}
+		}
+	}
 }
 
 func (o *engineOverlay) importBlock(blk block.IBlock, blockHash types.Hash) {
@@ -678,6 +697,29 @@ func (o *engineOverlay) importBlock(blk block.IBlock, blockHash types.Hash) {
 	}
 	o.hashesByNum[number] = blockHash
 	o.blocksByHash[blockHash] = blk
+
+	// Evict oldest blocks if limit exceeded to prevent unbounded memory growth
+	if len(o.blocksByNum) > maxOverlayBlocks {
+		o.evictOldBlocks(number)
+	}
+}
+
+// evictOldBlocks removes blocks older than the cutoff to bound memory usage.
+// Caller must hold o.mu write lock.
+func (o *engineOverlay) evictOldBlocks(currentNum uint64) {
+	cutoff := uint64(0)
+	if currentNum > maxOverlayBlocks {
+		cutoff = currentNum - maxOverlayBlocks
+	}
+	for num := range o.blocksByNum {
+		if num < cutoff {
+			if h, ok := o.hashesByNum[num]; ok {
+				delete(o.blocksByHash, h)
+				delete(o.hashesByNum, num)
+			}
+			delete(o.blocksByNum, num)
+		}
+	}
 }
 
 func (o *engineOverlay) headBlock(fallback block.IBlock) block.IBlock {
