@@ -147,7 +147,11 @@ func (c *SP1ProverClient) executeLocally(jobID string, blockHash types.Hash, blo
 	// without actually running the guest program (avoiding import cycles).
 	// The simulation proves the integration pipeline works end-to-end.
 	// In production, the SP1 network would run the real guest ELF binary.
-	simStateRoot := sha256.Sum256(append([]byte("sp1-sim-root-"), guestInput...))
+	rootHasher := sha256.New()
+	rootHasher.Write([]byte("sp1-sim-root-"))
+	rootHasher.Write(guestInput)
+	var simStateRoot [32]byte
+	copy(simStateRoot[:], rootHasher.Sum(nil))
 	var simGasUsed uint64 = 21000 // default gas for simulation
 
 	// Build public inputs: [32B postStateRoot][8B gasUsed]
@@ -175,6 +179,7 @@ func (c *SP1ProverClient) executeLocally(jobID string, blockHash types.Hash, blo
 	if job, ok := c.jobs[jobID]; ok {
 		job.proof = proof
 		job.status = "completed"
+		job.guestInput = nil // free memory after proving
 	}
 	c.mu.Unlock()
 
@@ -235,6 +240,21 @@ func (c *SP1ProverClient) modeString() string {
 	return "network"
 }
 
+// PruneCompletedJobs removes completed/failed jobs older than the given duration.
+// Should be called periodically to prevent unbounded memory growth.
+func (c *SP1ProverClient) PruneCompletedJobs(maxAge time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cutoff := time.Now().Add(-maxAge)
+	pruned := 0
+	for id, job := range c.jobs {
+		if (job.status == "completed" || job.status == "failed") && job.submitted.Before(cutoff) {
+			delete(c.jobs, id)
+			pruned++
+		}
+	}
+	return pruned
+}
 
 // Compile-time check that SP1ProverClient implements ProverClient.
 var _ ProverClient = (*SP1ProverClient)(nil)
