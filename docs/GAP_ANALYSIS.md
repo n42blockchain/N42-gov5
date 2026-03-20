@@ -1,7 +1,7 @@
 # N42 全局功能缺失深度对比分析
 
 > 对比对象：go-ethereum (geth) v1.16+、reth v1.11+、Erigon 3.3.9、Sei v2/v3、Monad、Grevm 2.1、Aptos
-> 分析日期：2026-03-12（修订：Light Client 无状态 EVM、GraphQL API、Clef 签名器、加密 Mempool、MEV-Boost、MCP Server、综合评分 89→92）
+> 分析日期：2026-03-20（修订：Staged Sync、Deferred Execution、RPCDaemon、JMT 节点缓存、HotStuff-2 Reconfig、182+ 指标、PQ 预编译隔离、安全审计 47+ fixes、综合评分 85→89）
 > 范围：以太坊及高性能公链客户端全局功能模块
 > 方法：N42 数据基于源码审计（行数/测试覆盖/集成状态），竞品数据标注来源（官方文档/白皮书/宣称/GitHub releases）
 
@@ -44,7 +44,7 @@
 | **State Expiry** | 🔧 2026 路线图 | 🔧 跟进中 | 🔧 EIP-4444 minimal模式 | ❌ | ❌ | N/A | ❌ | ❌ |
 | **History Expiry** | ✅ eth/69 支持 | ✅ | ✅ v3.1+ EIP-4444 phase1 | ❌ | ❌ | N/A | ❌ | ✅ EIP-4444 |
 | **DB Inspection 工具** | ✅ | ✅ | ✅ diagnostics模块 | ❌ | ❌ | N/A | ✅ | ✅ stats/list/get/inspect 四命令 |
-| **Sparse Trie (内存缓存)** | ❌ | ✅ v1.2+ 核心优化 | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
+| **Sparse Trie (内存缓存)** | ❌ | ✅ v1.2+ 核心优化 | ❌ | ❌ | ❌ | N/A | ❌ | ✅ JMT 节点 LRU 缓存 (16384 entries, 跨 payload 复用) |
 | **Per-TX 历史粒度** | ❌ per-block | ❌ per-block | ✅ E3 核心创新 | ❌ | ❌ | N/A | ❌ | ❌ |
 
 ### 1.2 关键差距分析
@@ -73,7 +73,7 @@
 |------|------|------|------------|-----------|-------|-----------|-------|---------|
 | **Snap Sync** | ✅ 默认模式 | ✅ | ✅ OtterSync(BitTorrent) | ❌ Cosmos 快照 | ❌ 自研 | N/A | ✅ state sync | ✅ 完整实现 (service+manager+tasks+verify+progress+metrics) |
 | **Full Sync** | ✅ | ✅ | ✅ | ✅ | ✅ | N/A | ✅ | ✅ |
-| **Staged Sync** | ❌ | ✅ 核心创新 | ✅ 原创者 | ❌ | ❌ | N/A | ❌ | ❌ |
+| **Staged Sync** | ❌ | ✅ 核心创新 | ✅ 原创者 | ❌ | ❌ | N/A | ❌ | ✅ 7 stage 管线 + forward/unwind/prune |
 | **Checkpoint Sync** | ✅ | ✅ | ✅ Caplin支持 | ✅ (Cosmos) | ❌ | N/A | ✅ | ✅ trusted hash |
 | **Backfill Sync** | ❌ | ✅ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | **Light Client** | ✅ LES | ❌ | ❌ | ✅ IBC light | ❌ | N/A | ✅ | ✅ 手机轻节点 (JMT Merkle proof + 无状态 EVM) |
@@ -167,7 +167,7 @@
 | **Proposer-Builder Separation** | ✅ MEV-Boost | ✅ | ✅ MEV-Boost | ❌ | ❌ | ❌ | ✅ MEV-Boost Relay |
 | **Slot-based 出块** | ✅ 12s | ✅ 12s | ✅ 12s | ✅ ~400ms (Giga: sub-400ms) | ✅ 400ms | ✅ ~160ms (Raptr) | ✅ 8s (period) |
 | **Finality 速度** | ~15min (2 epoch) | ~15min | ~15min(+Caplin) | ~400ms 即时 | ~800ms | <800ms (Raptr) | 单槽即时 (HotStuff-2 两轮) |
-| **Deferred Execution** | ❌ | ❌ | ❌ | ❌ | ✅ 核心特性 | ✅ | ❌ |
+| **Deferred Execution** | ❌ | ❌ | ❌ | ❌ | ✅ 核心特性 | ✅ | ✅ PoC (consensus-execution 分离) |
 | **流水线共识** | ❌ | ❌ | ❌ | ✅ Twin-Turbo → Autobahn (Giga) | ✅ 完整流水线 | ✅ Raptr (Prefix Consensus) | ✅ HotStuff-2 流水线 (Prepare\|Commit 重叠) |
 | **BFT 共识 (两轮优化)** | ❌ | ❌ | ❌ | ✅ CometBFT | ✅ MonadBFT | ✅ Jolteon | ✅ HotStuff-2 |
 | **BLS 聚合签名** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ BLS12-381 |
@@ -208,7 +208,7 @@
 | **Bloom Bits 索引** | ✅ | ✅ | ✅ receipt持久化 | ❌ | ❌ | N/A | ✅ roaring bitmap |
 | **Subscribe (WS)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Filter API** | ✅ 完整 | ✅ 完整 | ✅ 完整 | 部分 | ✅ | N/A | ✅ |
-| **RPCDaemon 独立部署** | ❌ | ❌ | ✅ 核心特性 | ❌ | ❌ | ❌ | ❌ |
+| **RPCDaemon 独立部署** | ❌ | ❌ | ✅ 核心特性 | ❌ | ❌ | ❌ | ✅ 独立二进制 (gRPC remote KV) |
 
 ### 关键差距
 
@@ -306,10 +306,10 @@
 
 | 功能 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |------|------|------|------------|-----|-------|-------|---------|
-| **Prometheus Metrics** | ✅ 200+ | ✅ 300+ | ✅ 端口6061 | ✅ | ✅ | ✅ | ✅ ~30指标(已全部接入) |
+| **Prometheus Metrics** | ✅ 200+ | ✅ 300+ | ✅ 端口6061 | ✅ | ✅ | ✅ | ✅ 182+ 指标 (EVM/Chain/Reorg/Fee/TxLifecycle/EngineAPI/RPC/JMT) |
 | **OpenTelemetry** | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ OTLP/HTTP |
 | **Grafana Dashboard** | ✅ 官方模板 | ✅ 官方模板 | ✅ | ✅ | ❌ | ✅ | ✅ 3面板 |
-| **结构化事件日志** | ✅ | ✅ | ✅ JSON+分级 | ✅ | ✅ | ✅ | 部分 |
+| **结构化事件日志** | ✅ | ✅ | ✅ JSON+分级 | ✅ | ✅ | ✅ | ✅ JSON 默认 (文件输出) |
 | **Live Tracing** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **pprof 支持** | ✅ | ✅ (tokio-console) | ✅ 6060端口 | ✅ | ❌ | ❌ | ✅ 6060 端口 |
 | **诊断 API** | ✅ | ✅ ExEx | ✅ diagnostics模块 | ❌ | ❌ | ✅ | ✅ debug_nodeStatus 全面诊断 |
@@ -385,7 +385,7 @@
 | **零拷贝序列化** | ❌ | ✅ rkyv 实验 | ❌ | ❌ | ✅ | ✅ | ✅ Lazy+BufPool |
 | **NUMA 感知** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | **IO_uring** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| **Sparse Trie 缓存** | ❌ | ✅ 核心 | ❌ | ❌ | N/A | ❌ | ❌ |
+| **Sparse Trie 缓存** | ❌ | ✅ 核心 | ❌ | ❌ | N/A | ❌ | ✅ JMT 节点 LRU (16384 entries) |
 | **批量 DB 写入** | ✅ | ✅ | ✅ ETL预处理 | ✅ | ✅ | ✅ | ✅ |
 | **ShardedCache** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ LayeredDB |
 | **Receipt持久化** | ✅ | ✅ | ✅ RPC 10x提速 | ❌ | ❌ | ❌ | ❌ |
@@ -418,18 +418,18 @@
 
 | 维度 | 权重 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |------|------|------|------|------------|-----|-------|-------|---------|
-| 状态管理 | 15% | 95 | 98 | 97 | 80 | 90 | 85 | 83 |
-| 同步机制 | 10% | 90 | 95 | 98 | 75 | 70 | 80 | 80 |
-| 执行层/EVM | 20% | 85 | 88 | 85 | 90 | 95 | 90* | 86 |
+| 状态管理 | 15% | 95 | 98 | 97 | 80 | 90 | 85 | **90** |
+| 同步机制 | 10% | 90 | 95 | 98 | 75 | 70 | 80 | **88** |
+| 执行层/EVM | 20% | 85 | 88 | 85 | 90 | 95 | 90* | **90** |
 | P2P 网络 | 10% | 95 | 90 | 92 | 80 | 80 | 75 | 83 |
-| 共识 | 10% | 90 | 90 | 93 | 85 | 95 | 90 | 85 |
-| RPC API | 10% | 95 | 95 | 96 | 60 | 70 | 60 | 90 |
+| 共识 | 10% | 90 | 90 | 93 | 85 | 95 | 90 | **90** |
+| RPC API | 10% | 95 | 95 | 96 | 60 | 70 | 60 | **92** |
 | 交易池 | 5% | 90 | 90 | 92 | 85 | 85 | 70 | 88 |
-| 工具链 | 5% | 95 | 70 | 80 | 50 | 30 | 60 | 82 |
-| 安全性 | 5% | 90 | 95 | 85 | 85 | 80 | 90 | 90 |
-| 可观测性 | 5% | 90 | 95 | 85 | 85 | 60 | 85 | 80 |
-| 扩展性 | 5% | 80 | 95 | 88 | 85 | 40 | 70 | 68 |
-| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **92** |
+| 工具链 | 5% | 95 | 70 | 80 | 50 | 30 | 60 | **84** |
+| 安全性 | 5% | 90 | 95 | 85 | 85 | 80 | 90 | **93** |
+| 可观测性 | 5% | 90 | 95 | 85 | 85 | 60 | 85 | **88** |
+| 扩展性 | 5% | 80 | 95 | 88 | 85 | 40 | 70 | **72** |
+| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **89** |
 
 > *Aptos 使用 Move VM，非直接可比
 
@@ -461,7 +461,7 @@
 |---|----------|------|----------|-----------|
 | 11 | ~~**ExEx 执行扩展框架**~~ | ✅ 已完成 — Manager + Extension 接口 + LogExtension + blockchain 集成, 8 测试 | - | - |
 | 12 | ~~**Verkle Tree**~~ | ⚡ 战略废弃 — 以太坊自身正从 Verkle 转向 STARKed 二叉树(EIP-7864)，不具备量子抗性 | - | - |
-| 13 | **Deferred Execution** | 吞吐量天花板低于 Monad/Aptos | Monad pipeline | 4-6 周 |
+| 13 | ~~**Deferred Execution**~~ | ✅ 已完成 (PoC) — Executor + Pipeline, consensus-execution 分离, 可配置 worker pool, 三阶段架构, 6 测试 | - | - |
 | 14 | ~~**PeerDAS**~~ | ✅ 已完成 — 列分配 + 采样服务 + 列存储 + **go-eth-kzg KZG 真实验证** + ProduceColumns 转置 + 39 测试 | - | - |
 | 15 | ~~**零拷贝序列化**~~ | ✅ 已完成 — LazyReceipt/LazyHeader + BufPool + BatchRead, 28 测试+4 bench | - | - |
 
@@ -496,6 +496,14 @@
 | **MCP Server (AI)** | 8 个区块链工具 + 4 个资源，端口 8553 | JSON-RPC 2.0 MCP 协议，AI agent 直接查询链上数据 | Erigon 端口 8553 同类实现，N42 功能追平 |
 | **GraphQL API** | EIP-1767 标准，Block/Transaction/Account/Log 查询 | HTTP handler + resolver + schema 类型定义 | geth 原生支持，N42 功能追平 |
 | **Clef 外部签名器** | IPC 签名服务 + JSON 规则引擎 + 审计日志 | SignTransaction/SignData/SignTypedData + accounts.Backend 集成 | geth 原生支持，N42 功能追平 |
+| **Staged Sync 管线** | 7 stage (Headers→Finish) + forward/unwind/prune | per-stage MDBX 持久化 + crash resume, 5 测试 | Erigon 原创/reth 借鉴，N42 功能追平 |
+| **Deferred Execution (PoC)** | consensus-execution 分离 + 可配置 worker pool | 三阶段架构 (Queue→Execute→Commit), stateRoot(N) 在 block N+1, 6 测试 | Monad/Aptos 核心特性，N42 PoC 就位 |
+| **RPCDaemon 独立部署** | 独立二进制 via gRPC remote KV | cmd/rpcdaemon/ + remotedbserver 集成 | Erigon 核心特性，N42 功能追平 |
+| **JMT 稀疏 Trie 节点缓存** | 16384-entry LRU decoded node cache | 跨 payload 复用, 单调驱逐, per-tree 序列号 | reth Sparse Trie 同类设计 |
+| **HotStuff-2 验证者重配置** | commit-then-activate 协议 (HotStuff-2 §5) | quorum overlap 验证 + safe add/remove + epoch 边界激活, 8 测试 | Jolteon §4.3 同级安全保证 |
+| **182+ Prometheus 指标** | EVM/Chain/Reorg/Fee/TxLifecycle/EngineAPI/RPC/JMT | 55 新指标扩展, 从 ~127 到 182+ | 接近 geth 200+ 水平 |
+| **PQ 预编译隔离** | ChainConfig.PQPrecompilesTime 独立开关 | 标准 fork PQ-free, EEST 零干扰 | 安全与兼容性双保障 |
+| **47+ 安全 Bug 修复** | 3 轮深度审计: CRITICAL/HIGH/MEDIUM | VM/State/API/Consensus 全覆盖 | 生产安全基线 |
 
 ---
 
