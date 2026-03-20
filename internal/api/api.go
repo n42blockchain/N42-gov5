@@ -31,6 +31,7 @@ import (
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api/filters"
@@ -208,6 +209,39 @@ func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.
 
 func (n *API) GetChainConfig() *params.ChainConfig {
 	return n.chainConfig
+}
+
+// doWeb3Call executes a read-only EVM call for the web3:// gateway.
+// Returns the raw output bytes from the contract execution.
+func (n *API) doWeb3Call(ctx context.Context, tx kv.Tx, to types.Address, calldata []byte, blockNrOrHash jsonrpc.BlockNumberOrHash) ([]byte, error) {
+	ibs := n.State(tx, blockNrOrHash)
+	if ibs == nil {
+		return nil, fmt.Errorf("state not available")
+	}
+
+	concreteHeader, ok := n.bc.CurrentBlock().Header().(*block.Header)
+	if !ok || concreteHeader == nil {
+		return nil, fmt.Errorf("header not available")
+	}
+
+	msg := transaction.NewMessage(types.Address{}, &to, 0, uint256.NewInt(0), 50000000,
+		uint256.NewInt(0), uint256.NewInt(0), uint256.NewInt(0), nil, nil,
+		calldata, nil, false, true)
+
+	vmCfg := vm2.Config{NoBaseFee: true}
+	blockCtx := internal.NewEVMBlockContext(concreteHeader, internal.GetHashFn(concreteHeader, nil), n.engine, nil)
+	txCtx := internal.NewEVMTxContext(msg)
+	evm := vm2.NewEVM(blockCtx, txCtx, ibs, n.chainConfig, vmCfg)
+
+	gp := new(common.GasPool).AddGas(50000000)
+	result, err := internal.ApplyMessage(evm, msg, gp, true, false)
+	if err != nil {
+		return nil, err
+	}
+	if result.Err != nil {
+		return nil, result.Err
+	}
+	return result.Return(), nil
 }
 
 func (n *API) RPCGasCap() uint64 {

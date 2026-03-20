@@ -31,7 +31,6 @@ package api
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -72,10 +71,11 @@ func (gw *Web3Gateway) Start() error {
 	mux.HandleFunc("/", gw.handleRequest)
 
 	gw.server = &http.Server{
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Handler:        mux,
+		ReadTimeout:    15 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 16, // 64KB max header
 	}
 
 	go func() {
@@ -141,7 +141,8 @@ func (gw *Web3Gateway) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	result, err := gw.executeCall(ctx, contractAddr, calldata)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("contract call failed: %v", err), http.StatusInternalServerError)
+		log.Debug("web3 gateway call failed", "contract", contractAddr.Hex(), "err", err)
+		http.Error(w, "contract call failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -158,7 +159,7 @@ func (gw *Web3Gateway) handleRequest(w http.ResponseWriter, r *http.Request) {
 	w.Write(result)
 }
 
-// executeCall performs an eth_call to the target contract.
+// executeCall performs a real eth_call to the target contract.
 func (gw *Web3Gateway) executeCall(ctx context.Context, to types.Address, calldata []byte) ([]byte, error) {
 	tx, err := gw.api.db.BeginRo(ctx)
 	if err != nil {
@@ -172,25 +173,24 @@ func (gw *Web3Gateway) executeCall(ctx context.Context, to types.Address, callda
 		return nil, fmt.Errorf("state not available")
 	}
 
-	// Read contract code to verify it exists
+	// Verify contract exists
 	code := ibs.GetCode(to)
 	if len(code) == 0 {
 		return nil, fmt.Errorf("no code at address %s", to.Hex())
 	}
 
-	// For simple resource serving, try reading from ContentStore first
-	// if the calldata looks like a content hash (32 bytes)
-	if len(calldata) == 32 {
-		// Try direct ContentStore lookup via the contract
-		return code, nil // return contract bytecode as fallback
-	}
-
-	// Return contract code for root path (common pattern for on-chain frontends)
+	// For root path with no calldata, return contract bytecode directly
+	// (common pattern for on-chain frontends using SSTORE2/bytecode storage)
 	if len(calldata) == 0 {
 		return code, nil
 	}
 
-	return calldata, nil
+	// Execute real EVM call via the API's DoCall infrastructure
+	result, err := gw.api.doWeb3Call(ctx, tx, to, calldata, blockNrOrHash)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // buildCalldata encodes a resource path into EVM calldata.
@@ -243,12 +243,3 @@ func inferContentType(path string) string {
 	}
 }
 
-// resolveHex tries to decode a hex string, returning nil if invalid.
-func resolveHex(s string) []byte {
-	s = strings.TrimPrefix(s, "0x")
-	b, err := hex.DecodeString(s)
-	if err != nil {
-		return nil
-	}
-	return b
-}
