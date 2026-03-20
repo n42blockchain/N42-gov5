@@ -46,13 +46,14 @@ type Tree struct {
 	dirty map[Hash][]byte
 
 	// nodeCache is an LRU cache of decoded *Node objects keyed by content hash.
-	// This avoids re-decoding the same node bytes on repeated lookups across
-	// multiple payloads within the same block, providing sparse trie semantics.
-	// Nodes evicted from dirty are promoted here on Flush so they remain
-	// accessible without going to the store.
 	nodeCache    map[Hash]*nodeCacheEntry
 	nodeCacheCap int
 	nodeCacheSeq uint64 // per-tree sequence counter for LRU eviction
+
+	// gc tracks node reference counts for garbage collection.
+	// When enabled, old nodes replaced during tree mutations are queued
+	// for deletion, preventing unbounded store growth.
+	gc *NodeGC
 }
 
 type nodeCacheEntry struct {
@@ -162,9 +163,13 @@ func (t *Tree) Put(keyHash Hash, value []byte) error {
 		return nil
 	}
 
+	oldRoot := t.root
 	newRoot, err := t.put(t.root, path, 0, leaf)
 	if err != nil {
 		return err
+	}
+	if t.gc != nil && newRoot != oldRoot {
+		t.gc.DecRef(oldRoot)
 	}
 	t.root = newRoot
 	return nil
@@ -246,6 +251,10 @@ func (t *Tree) putInternal(node *Node, path NibblePath, depth int, leaf *Node) (
 	}
 
 	// Build a new internal node with the updated child.
+	// DecRef the old child if it was replaced.
+	if t.gc != nil && child.Valid && child.Hash != childHash {
+		t.gc.DecRef(child.Hash)
+	}
 	newInternal := NewInternalNode()
 	*newInternal.Internal = *node.Internal
 	newInternal.Internal.Children[nibble] = ChildEntry{Hash: childHash, Valid: true}
@@ -331,6 +340,9 @@ func (t *Tree) Delete(keyHash Hash) error {
 	}
 	if !found {
 		return ErrNotFound
+	}
+	if t.gc != nil && newRoot != t.root {
+		t.gc.DecRef(t.root)
 	}
 	t.root = newRoot
 	return nil
@@ -499,11 +511,39 @@ func (t *Tree) Reset() {
 	t.nodeCache = make(map[Hash]*nodeCacheEntry, t.nodeCacheCap)
 }
 
+// EnableGC activates reference-counting garbage collection.
+// When enabled, nodes replaced during Put/Delete are tracked and can be
+// collected via CollectGarbage(). Call after tree construction.
+func (t *Tree) EnableGC() {
+	t.gc = NewNodeGC()
+	// The current root is the initial live reference.
+	if t.root != EmptyHash {
+		t.gc.IncRef(t.root)
+	}
+}
+
+// GC returns the garbage collector, or nil if GC is not enabled.
+func (t *Tree) GC() *NodeGC {
+	return t.gc
+}
+
+// CollectGarbage deletes unreachable nodes from the given store.
+// Returns the number of nodes deleted. No-op if GC is not enabled.
+func (t *Tree) CollectGarbage(store NodeStore) (int, error) {
+	if t.gc == nil {
+		return 0, nil
+	}
+	return t.gc.CollectGarbage(store)
+}
+
 // storeNode serializes a node, computes its hash, and buffers it in dirty.
 func (t *Tree) storeNode(n *Node) Hash {
 	data := EncodeNode(n)
 	h := t.hasher.Hash(data)
 	t.dirty[h] = data
+	if t.gc != nil {
+		t.gc.IncRef(h)
+	}
 	return h
 }
 
