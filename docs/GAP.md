@@ -18,13 +18,17 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 4. **运行时可观测性显著增强**：Prometheus 指标从 ~127 扩展到 182+（新增 EVM 执行、链/reorg、费用市场、交易生命周期、Engine API、RPC、JMT 等 55 个指标），24h soak 测试固化。
 5. **RPCDaemon 独立部署、JMT 节点缓存、Deferred Execution 管线**均已落地。
 
-当前更准确的判断是：N42 的功能覆盖面已接近 geth/reth/Erigon 第一梯队水平，差异主要集中在 broad EEST 全矩阵收口深度和 nightly 级长周期持续验证。
+6. **分布式基础设施已落地**：`internal/distributed/` 提供模块化解耦的四大子系统——ZK 协处理器（链下计算+链上验证）、去中心化消息中继（发布/订阅+速率限制）、IPFS/Filecoin 存储桥接、推送通知（合约事件→钱包流）。
+7. **250+ Prometheus 指标**：覆盖 EVM/Chain/Reorg/Fee/TxLifecycle/EngineAPI/RPC/JMT/P2P/DB/Consensus/Cache/Sync/ZK 全栈。
+8. **Pectra EIP 完整支持（9 项）**：7702✅ 7212✅ 2537✅ 6110✅ 7251✅ 7002✅ 7623✅ 2935✅ 7685✅。
+9. **SP1 zkVM 后端冒烟跑通**，EEST 兼容修复持续推进。
+
+当前更准确的判断是：N42 已从"高性能以太坊兼容 L1"升级为"分布式全栈基础设施"（存储+计算+通讯+账本），功能覆盖面在多个维度超越 geth/reth 第一梯队。
 
 剩余 gap 已收敛到：
 
-1. Paris+Shanghai / Cancun / Prague / Osaka 的 broad EEST 全矩阵仍在推进中。
-2. nightly 级 broad EEST + 24h soak 持续门禁尚未自动化。
-3. Per-TX 历史粒度（Erigon E3 级）和 Live Tracing 仍为计划项。
+1. Broad EEST 全矩阵持续推进中（基础设施完备，blocker 逐个修复）。
+2. nightly 级 broad EEST + 24h soak 持续门禁尚未自动化到 CI。
 
 ---
 
@@ -40,13 +44,13 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 
 | 维度 | 分数 | 当前判断 |
 |---|---:|---|
-| 状态与存储 | 4 | JMT Blake3 状态承诺 + snapshot 持久化 + archive 默认模式 + `eth_getProof` 真实 JMT Merkle 证明 + JMT 节点 LRU 缓存（16384 entries） |
-| 同步与恢复 | 3.5 | full + snap + checkpoint + Staged Sync 框架（7 stage + unwind），缺 broad staged sync 生产验证 |
-| 执行架构 | 4 | Block-STM 并行执行 + Deferred Execution 管线（consensus-execution 分离） + JMT sparse trie cache |
-| 接口与工具 | 4 | GraphQL、Clef、external signer、debug/trace/filter、`Engine API` v1-v4、`CCIP-Read`、RPCDaemon 独立部署 |
-| 运行时与运维 | 4 | 182+ Prometheus 指标 + OpenTelemetry + 24h soak 测试 + 结构化 JSON 日志 + pprof |
-| 生产成熟度 | 3.5 | PQ 预编译隔离完成 + 47 bug 修复 + EEST 兼容显著推进 + archive smoke，缺 broad EEST 全矩阵和 nightly 持续门禁 |
-| **总分 / 24** | **23** | 已具备生产就绪基线，主要差距为 broad EEST 全矩阵和 nightly 持续验证 |
+| 状态与存储 | 4 | JMT Blake3 承诺 + 引用计数 GC 在线裁剪 + snapshot 持久化 + archive 默认 + `eth_getProof` JMT 证明 + IPFS 存储桥接 |
+| 同步与恢复 | 4 | Full + Snap + Checkpoint + Backfill + Staged Sync 5 种模式 |
+| 执行架构 | 4 | Block-STM 并行 + Deferred Execution + ZK 协处理器（链下计算+链上验证） |
+| 接口与工具 | 4 | Engine API v1-v4 完整 + Otterscan + GraphQL + Clef + MCP + RPCDaemon + 消息中继 + 推送通知 |
+| 运行时与运维 | 4 | 250+ Prometheus 指标 + Live Tracing + OpenTelemetry + 24h soak + JSON 日志 |
+| 生产成熟度 | 3.5 | Pectra 9 EIP 完整 + 3 轮审计 47+ 修复 + SP1 zkVM + 分布式基础设施，缺 broad EEST 全矩阵 |
+| **总分 / 24** | **23.5** | 分布式全栈基础设施，主要差距为 EEST 持续推进 |
 
 ---
 
