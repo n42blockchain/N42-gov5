@@ -164,6 +164,12 @@ type ChainConfig struct {
 	BPO5Time   *big.Int `json:"bpo5Time,omitempty"`
 	FusakaTime *big.Int `json:"fusakaTime,omitempty"`
 
+	// N42 extension: post-quantum precompile activation (independent of standard forks).
+	// When set, PQ precompiles (Falcon 0x14, Dilithium2 0x15, Dilithium3 0x16, SQIsign 0x17)
+	// become available at the specified timestamp. These are N42-specific extensions and
+	// are NOT part of any standard Ethereum fork surface.
+	PQPrecompilesTime *big.Int `json:"pqPrecompilesTime,omitempty"`
+
 	BlobSchedule *BlobSchedule `json:"blobSchedule,omitempty"`
 
 	// BSC / custom fork fields

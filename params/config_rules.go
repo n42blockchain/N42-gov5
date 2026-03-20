@@ -32,6 +32,7 @@ type Rules struct {
 	IsNano, IsMoran                                         bool
 	IsEip1559FeeCollector                                   bool
 	IsParlia, IsStarknet, IsAura, IsBeijing                 bool
+	IsPQPrecompiles                                         bool // N42 extension: post-quantum precompiles enabled
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -70,6 +71,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsParlia:              c.Parlia != nil,
 		IsAura:                c.Aura != nil,
 		IsBeijing:             c.IsBeijing(num),
+		IsPQPrecompiles:       c.IsPQPrecompiles(timestamp),
 	}
 	rules.applyForkInheritance()
 	return rules
@@ -223,6 +225,12 @@ func (c *ChainConfig) IsOsaka(time uint64) bool {
 // Fusaka enables native account abstraction with protocol-level transaction validation.
 func (c *ChainConfig) IsFusaka(time uint64) bool {
 	return isForked(c.FusakaTime, time)
+}
+
+// IsPQPrecompiles returns whether time is at or past the PQ precompiles activation timestamp.
+// This is an N42-specific extension independent of standard Ethereum forks.
+func (c *ChainConfig) IsPQPrecompiles(time uint64) bool {
+	return isForked(c.PQPrecompilesTime, time)
 }
 
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.

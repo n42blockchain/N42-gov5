@@ -262,33 +262,40 @@ func init() {
 
 // ActivePrecompiles returns the precompiles enabled with the current configuration.
 func ActivePrecompiles(rules *params.Rules) []types.Address {
+	var addrs []types.Address
 	switch {
 	case rules.IsMoran:
-		return PrecompiledAddressesMoran
+		addrs = PrecompiledAddressesMoran
 	case rules.IsNano:
-		return PrecompiledAddressesNano
+		addrs = PrecompiledAddressesNano
 	case rules.IsFusaka:
-		return PrecompiledAddressesFusaka
+		addrs = PrecompiledAddressesFusaka
 	case rules.IsOsaka:
-		return PrecompiledAddressesOsaka
+		addrs = PrecompiledAddressesOsaka
 	case rules.IsPectra:
-		return PrecompiledAddressesPectra
+		addrs = PrecompiledAddressesPectra
 	case rules.IsPrague:
-		return PrecompiledAddressesPrague
+		addrs = PrecompiledAddressesPrague
 	case rules.IsCancun:
-		return PrecompiledAddressesCancun
+		addrs = PrecompiledAddressesCancun
 	case rules.IsBerlin:
-		return PrecompiledAddressesBerlin
+		addrs = PrecompiledAddressesBerlin
 	case rules.IsIstanbul:
 		if rules.IsParlia {
-			return PrecompiledAddressesIstanbulForBSC
+			addrs = PrecompiledAddressesIstanbulForBSC
+		} else {
+			addrs = PrecompiledAddressesIstanbul
 		}
-		return PrecompiledAddressesIstanbul
 	case rules.IsByzantium:
-		return PrecompiledAddressesByzantium
+		addrs = PrecompiledAddressesByzantium
 	default:
-		return PrecompiledAddressesHomestead
+		addrs = PrecompiledAddressesHomestead
 	}
+	// N42 extension: append PQ precompile addresses when enabled
+	if rules.IsPQPrecompiles {
+		addrs = append(addrs, collectAddresses(PrecompiledContractsPQ)...)
+	}
+	return addrs
 }
 
 // RunPrecompiledContract runs and evaluates the output of a precompiled contract.

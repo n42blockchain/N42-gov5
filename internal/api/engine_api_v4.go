@@ -22,6 +22,7 @@ package api
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math/big"
 
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -138,6 +139,9 @@ func (e *EngineAPIv4) NewPayloadV4(
 	}
 	if parentBeaconBlockRoot == nil {
 		return invalidPayloadResponse("missing parent beacon block root"), nil
+	}
+	if payload.Withdrawals == nil {
+		return invalidPayloadResponse("missing withdrawals in Pectra+ payload"), nil
 	}
 
 	maxBlobGas := uint64(vm.PectraMaxBlobGasPerBlock)
@@ -328,17 +332,28 @@ const (
 func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPayloadV4) error {
 	// Count requests by type
 	var depositCount, withdrawalCount, consolidationCount int
+	// EIP-7685: request types must appear in ascending order
+	lastType := byte(0)
+	firstSeen := true
 
 	for _, req := range requests {
 		if len(req) == 0 {
 			continue
 		}
 
+		// Enforce ascending request type ordering per EIP-7685
+		reqType := req[0]
+		if !firstSeen && reqType <= lastType {
+			return fmt.Errorf("execution requests not in ascending type order: type %d after %d", reqType, lastType)
+		}
+		lastType = reqType
+		firstSeen = false
+
 		var (
 			payloadLen int
 			reqSize    int
 		)
-		switch req[0] {
+		switch reqType {
 		case DepositRequestType:
 			reqSize = vm.DepositRequestSize
 			payloadLen = len(payload.DepositRequests)
@@ -356,7 +371,7 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 			return errInvalidRequestEncoding
 		}
 		count := (len(req) - 1) / reqSize
-		switch req[0] {
+		switch reqType {
 		case DepositRequestType:
 			depositCount += count
 		case WithdrawalRequestType:
