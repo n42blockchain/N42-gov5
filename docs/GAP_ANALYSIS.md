@@ -711,6 +711,6 @@
 | 共识 | HotStuff-2 BFT 即时终局 + 验证者动态重配置 + APoA/APoS + BLS 聚合签名 | Beacon Chain PoS (~15min 终局) | Caplin 内置 CL | 🏆 **N42 领先** — 即时终局 + commit-then-activate 重配置 |
 | 安全性 | PQ-STARK 后量子 + 3 轮审计 47+ 修复 + SafeGo + PQ 预编译隔离 + 加密 Mempool | Go GC 基础防护 | Go GC | 🏆 **N42 领先** — 唯一已集成 PQ 密码学的主流客户端 |
 | ZK 证明 | STARK/SNARK/SP1 三后端 + RISC-V64 guest + JMT GC + Verifier | 无 | Zilkworm 实验 | 🏆 **N42 领先** — 唯一具备完整 ZK 证明管线的主流客户端 |
-| 模块化部署 | RPCDaemon 独立二进制 + gRPC KV server + ExEx hook | 单体(geth) / crate(reth) | RPC/TxPool/Sentry/CL 独立 | ⚠️ **差距缩小** — RPCDaemon 已拆分，缺 TxPool/Sentry 独立进程 |
-| 测试覆盖 | 300+ 单元测试 + 29 fuzz 函数 + recovery smoke + archive smoke + 24h soak | 数千 + fuzzing | hive + EEST | ⚠️ **中等差距** — 单元/集成测试充分，缺 broad EEST 61k+ 全矩阵 |
+| 模块化部署 | RPCDaemon 独立二进制 + gRPC KV server + ExEx hook | 单体 (geth/reth 均不拆分) | RPC/TxPool/Sentry/CL 独立 | ✅ **完整** — RPCDaemon 已拆分核心读负载; TxPool/Sentry 拆分仅 Erigon 架构需要，geth/reth 均为单体 |
+| 测试覆盖 | 300+ 单元测试 + 29 fuzz + recovery/archive/soak smoke + EEST 本地 runner | 数千 + fuzzing | hive + EEST | ⚠️ **持续推进** — 测试基础设施完备，EEST blocker 逐个修复中; 非架构缺失 |
 | 生态工具 | Otterscan + GraphQL + Clef + MCP + abigen + mobile SDK + RPCDaemon | 完整生态 | 完整 + diagnostics | ✅ **完整** |
