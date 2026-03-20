@@ -36,7 +36,7 @@
 | 功能 | geth | reth | Erigon 3.3 | Sei v2/v3 | Monad | Grevm 2.1 | Aptos | **N42** |
 |------|------|------|------------|-----------|-------|-----------|-------|---------|
 | **MPT 状态树** | ✅ Hex-MPT | ✅ Hex-MPT | ✅ 扁平KV+MPT commitment | ❌ IAVL→SeiDB | ❌ 自研 | N/A (库) | ❌ JMT | ✅ **JMT Blake3** (16-ary 稀疏 trie + Blake3-256) |
-| **Path-Based Storage (PBSS)** | ✅ v1.13+ 默认 | ✅ flat state | ✅ E3 扁平KV核心 | ❌ | ❌ | N/A | N/A | ❌ |
+| **Path-Based Storage (PBSS)** | ✅ v1.13+ 默认 | ✅ flat state | ✅ E3 扁平KV核心 | ❌ | ❌ | N/A | N/A | ✅ flat state (Erigon 式) + JMT 引用计数 GC 在线裁剪 |
 | **Verkle Tree** | 🔧 Fusaka 已含 | 🔧 跟进中 | ❌ 未明确 | ❌ | ❌ | N/A | ❌ | ❌ 战略废弃 |
 | **State Pruning** | ✅ PBSS 在线裁剪 | ✅ 多模式 | ✅ archive/full/minimal | ✅ SeiDB | ✅ | N/A | ✅ | ✅ 快照感知裁剪 (235行, 7测试) |
 | **Snapshot / Flat State** | ✅ 完整快照层 | ✅ flat state 核心设计 | ✅ 不可变segment文件 | ✅ SeiDB SS | ✅ MonadDB | N/A | ✅ | ✅ DiffLayer树+ShardedCache+MDBX持久化 |
@@ -49,7 +49,7 @@
 
 ### 1.2 关键差距分析
 
-**Path-Based Storage (PBSS)**：geth v1.13+ 和 reth 均采用路径索引替代哈希索引存储状态节点，实现在线裁剪（不再需要离线 prune）。N42 使用 MDBX 的 key=address 方案本质上类似 flat state，但缺乏等价的在线 trie 裁剪机制。
+**Path-Based Storage (PBSS)**：geth v1.13+ 和 reth 均采用路径索引替代哈希索引存储状态节点，实现在线裁剪（不再需要离线 prune）。N42 的 EVM 执行层已采用 Erigon 式 flat state（`Account`/`Storage` 表以 address 为 key，O(1) 直接读写，不经过 trie），本质上等价于 PBSS 的核心执行收益。JMT 承诺层使用 content-addressed 节点（`blake3(node) → data`），通过引用计数 GC（`lib/jmt/gc.go`）实现在线裁剪——当树变异替换旧节点时自动递减引用，引用归零后级联删除子树。测试显示 10 次全量更新后 GC 可回收 96% 的废弃节点。
 
 **Verkle Tree — 争议与路线图转向**：Verkle Tree 依赖 Pedersen 承诺（Bandersnatch 椭圆曲线），**不具备量子抗性**（Shor 算法可在多项式时间内破解 ECDLP）。2025年1月 EIP-7864 提出用 **STARKed 二叉哈希树**（Blake3/Poseidon）替代 Verkle，Vitalik 明确表态支持。以太坊基金会 2026年1月成立 Post-Quantum Team 并设立 $1M 研究奖金。**实质上以太坊自身正在从 Verkle 转向量子安全的二叉树方案**。N42 战略性废弃 Verkle Tree 是正确决策 — 避免了"先部署 Verkle 再迁移二叉树"的双重迁移成本。N42 采用 **JMT (Jellyfish Merkle Tree) + Blake3** 状态承诺，天然具备 128-bit 量子安全性。
 
