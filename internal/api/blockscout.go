@@ -385,11 +385,19 @@ func (s *BlockChainAPI) Accounts() []types.Address {
 
 // GetProof returns account and storage values with verification data.
 //
-// N42 uses an incremental Keccak state root (not MPT), so traditional
-// Merkle proofs are not available. Instead, AccountProof contains the
-// hex-encoded account data (nonce, balance, codeHash) that can be
-// verified against the block's state root. StorageHash is computed as
-// the Keccak256 of the concatenated storage key-value pairs.
+// GetProof returns account and storage Merkle proofs per EIP-1186.
+//
+// When the JMT (Jellyfish Merkle Tree) state commitment is enabled,
+// AccountProof and StorageProof contain real JMT Merkle proof nodes
+// (hex-encoded serialized trie nodes from root to leaf) that can be
+// cryptographically verified against the block's state root.
+//
+// When JMT is not enabled, a simplified proof is returned containing a
+// hash of the account data for basic integrity checking.
+//
+// Historical block queries are supported via the state history system
+// (changesets + temporal DB), but JMT Merkle proofs are only available
+// for the latest state since the JMT tree reflects the current tip.
 func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, storageKeys []string, blockNrOrHash jsonrpc.BlockNumberOrHash) (*AccountResult, error) {
 	tx, err := s.api.db.BeginRo(ctx)
 	if err != nil {
@@ -406,6 +414,28 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 	nonce := ibs.GetNonce(address)
 	codeHash := ibs.GetCodeHash(address)
 
+	// Try to generate real JMT Merkle proofs if the commitment engine is available.
+	var accountProofStrings []string
+	if bc, ok := s.api.BlockChain().(*internal.BlockChain); ok && bc.JMTCommitment() != nil {
+		jmtCommit := bc.JMTCommitment()
+		if proof, err := jmtCommit.GetAccountProof(address); err == nil && proof != nil {
+			accountProofStrings = make([]string, len(proof.Path))
+			for i, entry := range proof.Path {
+				accountProofStrings[i] = hexutil.Encode(entry.NodeData)
+			}
+		}
+	}
+	// Fallback: hash-based proof when JMT is not available.
+	if len(accountProofStrings) == 0 {
+		nonceBytes := new(uint256.Int).SetUint64(nonce).Bytes32()
+		balanceBytes := balance.Bytes32()
+		accountData := make([]byte, 0, 96)
+		accountData = append(accountData, nonceBytes[:]...)
+		accountData = append(accountData, balanceBytes[:]...)
+		accountData = append(accountData, codeHash.Bytes()...)
+		accountProofStrings = []string{crypto.Keccak256Hash(accountData).Hex()}
+	}
+
 	// Build storage proofs.
 	storageProof := make([]StorageResult, len(storageKeys))
 	storageHashData := make([]byte, 0, len(storageKeys)*64)
@@ -413,35 +443,38 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 		var value uint256.Int
 		k := types.HexToHash(key)
 		ibs.GetState(address, &k, &value)
+
+		var proofStrings []string
+		if bc, ok := s.api.BlockChain().(*internal.BlockChain); ok && bc.JMTCommitment() != nil {
+			if proof, err := bc.JMTCommitment().GetStorageProof(address, k); err == nil && proof != nil {
+				proofStrings = make([]string, len(proof.Path))
+				for j, entry := range proof.Path {
+					proofStrings[j] = hexutil.Encode(entry.NodeData)
+				}
+			}
+		}
+		if proofStrings == nil {
+			proofStrings = []string{}
+		}
+
 		storageProof[i] = StorageResult{
 			Key:   key,
 			Value: (*hexutil.Big)(value.ToBig()),
-			Proof: []string{},
+			Proof: proofStrings,
 		}
-		// Accumulate key+value for storage hash.
 		storageHashData = append(storageHashData, k.Bytes()...)
 		b32 := value.Bytes32()
 		storageHashData = append(storageHashData, b32[:]...)
 	}
 
-	// Compute storage hash from requested key-value pairs.
 	storageHash := types.Hash{}
 	if len(storageHashData) > 0 {
 		storageHash = crypto.Keccak256Hash(storageHashData)
 	}
 
-	// Build account proof data: encode account fields for verification.
-	nonceBytes := new(uint256.Int).SetUint64(nonce).Bytes32()
-	balanceBytes := balance.Bytes32()
-	accountData := make([]byte, 0, 96)
-	accountData = append(accountData, nonceBytes[:]...)
-	accountData = append(accountData, balanceBytes[:]...)
-	accountData = append(accountData, codeHash.Bytes()...)
-	accountProofHash := crypto.Keccak256Hash(accountData)
-
 	return &AccountResult{
 		Address:      address,
-		AccountProof: []string{accountProofHash.Hex()},
+		AccountProof: accountProofStrings,
 		Balance:      (*hexutil.Big)(balance.ToBig()),
 		CodeHash:     codeHash,
 		Nonce:        hexutil.Uint64(nonce),
