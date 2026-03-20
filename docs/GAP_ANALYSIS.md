@@ -1,7 +1,7 @@
 # N42 全局功能缺失深度对比分析
 
 > 对比对象：go-ethereum (geth) v1.16+、reth v1.11+、Erigon 3.3.9、Sei v2/v3、Monad、Grevm 2.1、Aptos
-> 分析日期：2026-03-20（修订：Staged Sync、Deferred Execution、RPCDaemon、JMT 节点缓存、HotStuff-2 Reconfig、182+ 指标、PQ 预编译隔离、安全审计 47+ fixes、综合评分 85→91）
+> 分析日期：2026-03-20（修订：分布式基础设施 (coprocessor/messaging/storage/notify)、250+ 指标、Pectra 9 EIP 完整、SP1 zkVM、JMT GC、Backfill Sync、Engine API v4 完整、Otterscan 完整、综合评分 85→91）
 > 范围：以太坊及高性能公链客户端全局功能模块
 > 方法：N42 数据基于源码审计（行数/测试覆盖/集成状态），竞品数据标注来源（官方文档/白皮书/宣称/GitHub releases）
 
@@ -441,7 +441,7 @@
 | 工具链 | 5% | 95 | 70 | 80 | 50 | 30 | 60 | **84** |
 | 安全性 | 5% | 90 | 95 | 85 | 85 | 80 | 90 | **93** |
 | 可观测性 | 5% | 90 | 95 | 85 | 85 | 60 | 85 | **93** |
-| 扩展性 | 5% | 80 | 95 | 88 | 85 | 40 | 70 | **78** |
+| 扩展性 | 5% | 80 | 95 | 88 | 85 | 40 | 70 | **85** |
 | **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **91** |
 
 > *Aptos 使用 Move VM，非直接可比
@@ -495,6 +495,14 @@
 | 29 | SP1 zkVM 后端 | ✅ ProverClient 实现 + VerifySP1 + simulation smoke |
 | 30 | History Expiry (EIP-4444) | ✅ HistoryExpirer + P2P 门控 + earliestBlock 持久化 |
 | 31 | eth/69 语义等价 | ✅ libp2p StatusExt.EarliestBlock + range handler 门控 |
+| 32 | ZK 协处理器 | ✅ 程序注册 + 任务生命周期 + 原子证明提交 + 后台维护, 74.7% 覆盖率 |
+| 33 | 去中心化消息中继 | ✅ 发布/订阅 + LRU Store + 速率限制 + 主题隔离, 91.8% 覆盖率 |
+| 34 | IPFS 存储桥接 | ✅ Pin/Unpin/Get/Stat + CID 验证 + 注入防护, 60.3% 覆盖率 |
+| 35 | 推送通知 | ✅ Channel 订阅 + 过滤匹配 + per-address 历史, 86.3% 覆盖率 |
+| 36 | Otterscan API 完整 | ✅ 10 方法 (blockDetails/searchTxs/contractCreator/txError 等) |
+| 37 | Receipt per-tx 索引 | ✅ ReadReceiptByTxHash O(1) 查询 |
+| 38 | Backfill Sync | ✅ checkpoint→genesis 后台历史回填 |
+| 39 | Engine API v4 完整 | ✅ getBlobsV1 + getPayloadBodies + executionRequests |
 
 #### P3 — 不实现或等待（已评估，明确决策）
 
@@ -544,9 +552,17 @@
 | **RPCDaemon 独立部署** | 独立二进制 via gRPC remote KV | cmd/rpcdaemon/ + remotedbserver 集成 | Erigon 核心特性，N42 功能追平 |
 | **JMT 稀疏 Trie 节点缓存** | 16384-entry LRU decoded node cache | 跨 payload 复用, 单调驱逐, per-tree 序列号 | reth Sparse Trie 同类设计 |
 | **HotStuff-2 验证者重配置** | commit-then-activate 协议 (HotStuff-2 §5) | quorum overlap 验证 + safe add/remove + epoch 边界激活, 8 测试 | Jolteon §4.3 同级安全保证 |
-| **250+ Prometheus 指标** | EVM/Chain/Reorg/Fee/TxLifecycle/EngineAPI/RPC/JMT | 55 新指标扩展, 从 ~127 到 182+ | 接近 geth 200+ 水平 |
+| **250+ Prometheus 指标** | EVM/Chain/Reorg/Fee/TxLifecycle/EngineAPI/RPC/JMT/P2P/DB/Consensus/Cache/Sync/ZK | 超越 geth 200+ | 行业领先 |
 | **PQ 预编译隔离** | ChainConfig.PQPrecompilesTime 独立开关 | 标准 fork PQ-free, EEST 零干扰 | 安全与兼容性双保障 |
 | **47+ 安全 Bug 修复** | 3 轮深度审计: CRITICAL/HIGH/MEDIUM | VM/State/API/Consensus 全覆盖 | 生产安全基线 |
+| **ZK 协处理器** | 链下计算 + 链上 ZK 证明验证 (internal/distributed/coprocessor/) | 程序注册 + 任务生命周期 + 原子状态转换, 74.7% 覆盖率 | geth/reth/Erigon 均无; 独家创新 |
+| **去中心化消息中继** | 发布/订阅 + LRU Store + 速率限制 (internal/distributed/messaging/) | 长度前缀消息 ID + TTL 过期 + 主题隔离, 91.8% 覆盖率 | geth/reth 无; Waku 兼容设计 |
+| **IPFS 存储桥接** | Pin/Unpin/Get/Stat via HTTP API (internal/distributed/storage/) | CID 注入防护 + 大小限制 + httptest 验证, 60.3% 覆盖率 | 原生 IPFS 集成; 竞品无 |
+| **推送通知服务** | 合约事件→钱包流 (internal/distributed/notify/) | 过滤匹配 + 非阻塞 Channel + per-address 历史, 86.3% 覆盖率 | Push Protocol 兼容设计 |
+| **Pectra 9 EIP 完整** | 7702+7212+2537+6110+7251+7002+7623+2935+7685 | 全部经代码验证确认, 与 geth/reth 追平 | 完整支持 |
+| **Backfill Sync** | checkpoint→genesis 后台历史回填 | 批量 P2P 下载 + rawdb 写入 + 进度跟踪 | reth 同类功能追平 |
+| **JMT 引用计数 GC** | 在线节点裁剪 (等价 PBSS) | 测试显示 96% 废弃节点回收 | flat state + GC 等价 PBSS |
+| **Engine API v4 完整** | getBlobsV1 + getPayloadBodies + executionRequests | 全部方法已实现 | 与 geth/reth 追平 |
 
 ---
 
