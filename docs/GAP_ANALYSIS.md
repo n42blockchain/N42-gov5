@@ -351,27 +351,40 @@
 
 ## 十三、前沿路线图对齐
 
-### 13.1 以太坊 2025-2026 升级路线
+### 13.1 以太坊 2025-2026 升级路线（2026-03 更新）
 
 | 升级 | 时间 | 关键 EIP | N42 状态 |
 |------|------|----------|----------|
-| **Pectra** | 2025.5.7 | 7702(AA), 2537(BLS), 6110(deposits), 7623(calldata cost) | ⚠️ 7702✅ 2537✅ 6110⚠️解析 |
-| **Fusaka** | 2025.12.3 | PeerDAS(7594), Verkle Tree(争议中), 7825(tx gas limit 16.78M), Gas↑150M | ⚠️ Verkle 战略废弃，缺 PeerDAS |
-| BPO1/BPO2 | 2025.12.9 / 2026.1.7 | Blob 参数调整（target 3→6, max 6→9） | ❌ |
-| **Glamsterdam** | 2026 H1 | EOF(7692) 完整版, 更快出块(6s), MEV 改革 | ✅ EOF 已提前实现 |
-| **Hegotá** | 2026 H2 | State expiry, PQ 密码学, 进一步扩容 | ✅ PQ 已有，State expiry ❌ |
+| **Pectra** | 2025.5.7 已上线 | 7702(AA), 2537(BLS), 6110(deposits), 7623(calldata cost) | ✅ 7702✅ 2537✅ 6110⚠️解析 7623✅ |
+| **Fusaka** | 2025.12.3 已上线 | PeerDAS(7594) blob 6→48, Gas↑150M, 7825(tx gas limit) | ✅ PeerDAS✅ BPO✅ 7825✅ |
+| BPO1-5 | 2025.12→2026.1 已上线 | Blob 参数渐进调整（target 10→14→48） | ✅ BlobSchedule 完整支持 |
+| **Glamsterdam** | 2026 H1 计划中 | ePBS(enshrined PBS), EOF(7692), gas 优化, Verkle Tree候选 | ✅ EOF 已提前实现, MEV-Boost✅, ePBS ❌ |
+| **Hegotá** | 2026 H2 命名中 | Verkle Tree(候选), PQ 密码学, State expiry | ✅ PQ 已有(领先), JMT Blake3 对齐 Verkle→二叉树方向, State expiry ❌ |
 
-### 13.2 高性能链趋势
+### 13.2 高性能链趋势（2026-03 更新）
 
-| 趋势 | Erigon 3.3 | Monad | Sei v3/Giga | Aptos | Grevm 2.1 | **N42** |
-|------|------------|-------|-------------|-------|-----------|---------|
-| **TPS 目标** | 1Ggas/s出块 | 10,000 (宣称) | 200,000 (Giga宣称) | 250,000 (Raptr宣称) | 100,000+ (宣称) | 92,000 (实测) |
-| **亚秒级 Finality** | ❌ ~15min | ✅ ~800ms | ✅ ~400ms 即时 | ✅ <800ms (Raptr) | N/A | ✅ 单槽即时 Finality (HotStuff-2) |
-| **延迟/异步执行** | ❌ | ✅ 核心 | ✅ Giga 采用 | ✅ | ❌ | ❌ |
-| **自定义数据库** | ✅ MDBX+QSM db | ✅ MonadDB (io_uring) | ✅ SeiDB (SS+SC) | ✅ AptosDB (JMT) | ❌ | ✅ MDBX+JMT Blake3 |
-| **多提议者** | ❌ | ❌ | ✅ Giga Autobahn | ❌ | N/A | ❌ |
-| **Move VM** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| **C++执行模块** | 🔧 E3++ | ❌ C++/Rust | ❌ | ❌ | ❌ | ❌ |
+| 趋势 | Erigon 3.3 | Monad (主网) | Sei Giga | Aptos Raptr | MegaETH | **N42** |
+|------|------------|-------------|----------|-------------|---------|---------|
+| **TPS 目标** | 1Ggas/s | 10,000 (主网) | 200,000 (宣称) | 250,000 (基准测试) | 100,000 (L2) | 92,000 (实测) |
+| **亚秒级 Finality** | ❌ ~15min | ✅ ~800ms | ✅ ~400ms | ✅ <800ms | ✅ L2 | ✅ HotStuff-2 即时 |
+| **延迟/异步执行** | ❌ | ✅ 核心 | ✅ Giga | ✅ | ❌ | ✅ PoC (可配置启用) |
+| **多提议者** | ❌ | ❌ | ✅ Autobahn | ❌ | ❌ | ❌ |
+| **实时 ZK 证明** | ❌ | ❌ | ❌ | ❌ | ❌ | 🔧 ZK prover 框架 |
+| **PQ 密码学** | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ **领先全行业** |
+| **RPCDaemon 拆分** | ✅ 核心 | ❌ | ❌ | ❌ | ❌ | ✅ gRPC KV |
+| **验证者动态重配置** | ❌ | ❌ | ❌ | ✅ 自动 | ❌ | ✅ commit-then-activate |
+
+### 13.3 2026 行业趋势与 N42 战略方向
+
+| 趋势 | 行业动态 | N42 机遇 | 优先级 |
+|------|----------|----------|--------|
+| **ePBS (enshrined PBS)** | Glamsterdam 核心特性，预计减少 70% MEV 提取 | 升级 MEV-Boost 为 ePBS 原生支持 | P1 |
+| **实时 ZK 证明** | SP1 Hypercube 10.8s 证明以太坊区块；RISC Zero 44s | 集成 SP1/RISC Zero 作为 ZK 后端 | P1 |
+| **Based Rollups** | Taiko 先行，利用 L1 验证者做排序 | N42 作为 Base Layer 支持 Based Sequencing | P2 |
+| **Native AA** | 超越 EIP-7702，协议级账户抽象 | 已有 Bundler + EIP-7702，可扩展到 Native AA | P2 |
+| **Blob 持续扩容** | PeerDAS 已上线，目标 48 blobs/block | PeerDAS 已实现，跟进参数调整 | P3 |
+| **Verkle→二叉哈希树** | 以太坊正从 Verkle 转向 STARKed 二叉树 | JMT Blake3 已天然对齐此方向 | ✅ 已对齐 |
+| **PQ 密码学** | ETH Foundation $2M 研究奖金，2028 量子窗口 | **N42 唯一已集成 PQ 的主流客户端** | ✅ 领先 |
 
 ---
 
