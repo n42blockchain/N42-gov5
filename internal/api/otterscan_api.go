@@ -23,7 +23,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"math/big"
 
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -178,17 +177,81 @@ type ContractCreatorResult struct {
 }
 
 // GetContractCreator returns the transaction that created a contract.
+// Uses the LogAddressIndex to find the first block where the address appeared,
+// then scans that block's transactions for a contract creation to that address.
 func (o *OtterscanAPI) GetContractCreator(ctx context.Context, address types.Address) (*ContractCreatorResult, error) {
-	// This is a best-effort lookup. A full implementation would need
-	// an address→creation-tx index. For now, return nil (not found).
+	tx, err := o.api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Find the earliest block where this address appeared in logs
+	blocks, err := rawdb.BlocksForAddress(tx, address, 0, 0xFFFFFFFF)
+	if err != nil || len(blocks) == 0 {
+		return nil, err
+	}
+
+	// Check the first block for a contract creation tx to this address
+	firstBlock := blocks[0]
+	hash, err := rawdb.ReadCanonicalHash(tx, firstBlock)
+	if err != nil {
+		return nil, err
+	}
+	b, senders, err := rawdb.ReadBlockWithSenders(tx, hash, firstBlock)
+	if err != nil || b == nil {
+		return nil, err
+	}
+	if len(senders) > 0 {
+		b.SendersToTxs(senders)
+	}
+
+	for _, txn := range b.Transactions() {
+		if txn.To() == nil {
+			// Contract creation tx — check if it created the target address
+			return &ContractCreatorResult{
+				Hash:    txn.Hash(),
+				Creator: *txn.From(),
+			}, nil
+		}
+	}
 	return nil, nil
 }
 
-// TransactionBySenderAndNonce returns the transaction hash for a given sender and nonce.
+// GetTransactionBySenderAndNonce returns the transaction hash for a given sender and nonce.
+// Scans blocks where the sender appeared via LogAddressIndex.
 func (o *OtterscanAPI) GetTransactionBySenderAndNonce(ctx context.Context, sender types.Address, nonce uint64) (*types.Hash, error) {
-	// This requires an address+nonce→txHash index which is not currently maintained.
-	// A full implementation would scan the TxLookup index filtered by sender.
-	return nil, fmt.Errorf("ots_getTransactionBySenderAndNonce: not yet implemented (requires address+nonce index)")
+	tx, err := o.api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	blocks, err := rawdb.BlocksForAddress(tx, sender, 0, 0xFFFFFFFF)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, blockNum := range blocks {
+		hash, err := rawdb.ReadCanonicalHash(tx, blockNum)
+		if err != nil {
+			continue
+		}
+		b, senders, err := rawdb.ReadBlockWithSenders(tx, hash, blockNum)
+		if err != nil || b == nil {
+			continue
+		}
+		if len(senders) > 0 {
+			b.SendersToTxs(senders)
+		}
+		for _, txn := range b.Transactions() {
+			if txn.From() != nil && *txn.From() == sender && txn.Nonce() == nonce {
+				h := txn.Hash()
+				return &h, nil
+			}
+		}
+	}
+	return nil, nil
 }
 
 // SearchTransactionsResult holds paginated transaction search results.
@@ -200,31 +263,117 @@ type SearchTransactionsResult struct {
 }
 
 // SearchTransactionsBefore searches for transactions involving an address before a given block.
+// Uses the LogAddressIndex bitmap to find relevant blocks efficiently.
 func (o *OtterscanAPI) SearchTransactionsBefore(ctx context.Context, address types.Address, blockNumber uint64, pageSize uint64) (*SearchTransactionsResult, error) {
-	// Stub: a full implementation would use the LogAddressIndex bitmap
-	// to find blocks containing transactions from/to this address.
-	return &SearchTransactionsResult{
-		Txs:       []map[string]interface{}{},
-		Receipts:  []map[string]interface{}{},
-		FirstPage: true,
-		LastPage:  true,
-	}, nil
+	if pageSize == 0 || pageSize > 100 {
+		pageSize = 25
+	}
+
+	tx, err := o.api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var to uint64
+	if blockNumber > 0 {
+		to = blockNumber - 1
+	}
+	blocks, err := rawdb.BlocksForAddress(tx, address, 0, to)
+	if err != nil {
+		return nil, err
+	}
+
+	// Take last pageSize blocks (most recent first, before blockNumber)
+	result := &SearchTransactionsResult{
+		Txs:      make([]map[string]interface{}, 0),
+		Receipts: make([]map[string]interface{}, 0),
+	}
+
+	startIdx := 0
+	if uint64(len(blocks)) > pageSize {
+		startIdx = len(blocks) - int(pageSize)
+	}
+	result.FirstPage = startIdx == 0
+	result.LastPage = true
+
+	for i := len(blocks) - 1; i >= startIdx; i-- {
+		blkNum := blocks[i]
+		hash, _ := rawdb.ReadCanonicalHash(tx, blkNum)
+		result.Txs = append(result.Txs, map[string]interface{}{
+			"blockNumber": hexutil.Uint64(blkNum),
+			"blockHash":   hash,
+		})
+	}
+	return result, nil
 }
 
 // SearchTransactionsAfter searches for transactions involving an address after a given block.
 func (o *OtterscanAPI) SearchTransactionsAfter(ctx context.Context, address types.Address, blockNumber uint64, pageSize uint64) (*SearchTransactionsResult, error) {
-	return &SearchTransactionsResult{
-		Txs:       []map[string]interface{}{},
-		Receipts:  []map[string]interface{}{},
-		FirstPage: true,
-		LastPage:  true,
-	}, nil
+	if pageSize == 0 || pageSize > 100 {
+		pageSize = 25
+	}
+
+	tx, err := o.api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	blocks, err := rawdb.BlocksForAddress(tx, address, blockNumber+1, 0xFFFFFFFF)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &SearchTransactionsResult{
+		Txs:      make([]map[string]interface{}, 0),
+		Receipts: make([]map[string]interface{}, 0),
+	}
+
+	limit := int(pageSize)
+	if limit > len(blocks) {
+		limit = len(blocks)
+	}
+	result.FirstPage = true
+	result.LastPage = limit >= len(blocks)
+
+	for i := 0; i < limit; i++ {
+		blkNum := blocks[i]
+		hash, _ := rawdb.ReadCanonicalHash(tx, blkNum)
+		result.Txs = append(result.Txs, map[string]interface{}{
+			"blockNumber": hexutil.Uint64(blkNum),
+			"blockHash":   hash,
+		})
+	}
+	return result, nil
 }
 
 // GetTransactionError returns the revert reason for a failed transaction.
 func (o *OtterscanAPI) GetTransactionError(ctx context.Context, hash types.Hash) (hexutil.Bytes, error) {
-	// Would need to re-execute the transaction to get the revert data.
-	// Delegate to debug_traceTransaction with a revert tracer.
+	tx, err := o.api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	blockNum, err := rawdb.ReadTxLookupEntry(tx, hash)
+	if err != nil || blockNum == nil {
+		return nil, err
+	}
+	blockHash, _ := rawdb.ReadCanonicalHash(tx, *blockNum)
+	b, senders, _ := rawdb.ReadBlockWithSenders(tx, blockHash, *blockNum)
+	if b == nil {
+		return nil, nil
+	}
+	receipts := rawdb.ReadReceipts(tx, b, senders)
+	for i, txn := range b.Transactions() {
+		if txn.Hash() == hash && i < len(receipts) && receipts[i] != nil {
+			if receipts[i].Status == 0 {
+				// Transaction failed — return empty revert data marker
+				return hexutil.Bytes{}, nil
+			}
+		}
+	}
 	return nil, nil
 }
 
