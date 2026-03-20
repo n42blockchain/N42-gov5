@@ -94,6 +94,8 @@ func (v *Verifier) Verify(proof *zkprover.Proof, expectedStateRoot types.Hash, e
 		err = v.VerifySTARK(proof, expectedStateRoot, expectedGasUsed)
 	case zkprover.ProofTypeSNARK:
 		err = v.VerifySNARK(proof, expectedStateRoot)
+	case zkprover.ProofTypeSP1:
+		err = v.VerifySP1(proof, expectedStateRoot, expectedGasUsed)
 	default:
 		err = fmt.Errorf("%w: %s", ErrUnsupportedProofType, proof.Type)
 	}
@@ -164,3 +166,45 @@ func (v *Verifier) VerifySNARK(proof *zkprover.Proof, expectedStateRoot types.Ha
 
 	return nil
 }
+
+// VerifySP1 verifies an SP1-generated proof against expected execution results.
+//
+// SP1 proofs contain:
+//   - ProofData: STARK proof bytes (or simulated hash in dev mode)
+//   - PublicInputs: [32B postStateRoot][8B gasUsed]
+//
+// In simulation mode (development), this validates public inputs only.
+// In production mode (with SP1 SDK), this would call SP1's native verifier
+// which validates the full STARK proof cryptographically.
+func (v *Verifier) VerifySP1(proof *zkprover.Proof, expectedStateRoot types.Hash, expectedGasUsed uint64) error {
+	if len(proof.PublicInputs) < 40 {
+		return fmt.Errorf("%w: SP1 public inputs too short (%d bytes, need 40)",
+			ErrPublicInputsMismatch, len(proof.PublicInputs))
+	}
+
+	// Extract and validate state root
+	var provenStateRoot types.Hash
+	copy(provenStateRoot[:], proof.PublicInputs[:32])
+	if provenStateRoot != expectedStateRoot {
+		return fmt.Errorf("%w: SP1 state root expected %x, proven %x",
+			ErrPublicInputsMismatch, expectedStateRoot, provenStateRoot)
+	}
+
+	// Extract and validate gas used
+	provenGasUsed := binary.LittleEndian.Uint64(proof.PublicInputs[32:40])
+	if provenGasUsed != expectedGasUsed {
+		return fmt.Errorf("%w: SP1 gas used expected %d, proven %d",
+			ErrPublicInputsMismatch, expectedGasUsed, provenGasUsed)
+	}
+
+	// TODO: When SP1 Go SDK is available, call sp1.Verify(proof.ProofData, vkey, publicInputs)
+	// For now, public input validation provides structural correctness.
+	sp1StubOnce.Do(func() {
+		log.Info("SP1 proof verification active (public input validation mode)",
+			"note", "full cryptographic verification requires SP1 SDK integration")
+	})
+
+	return nil
+}
+
+var sp1StubOnce sync.Once

@@ -31,6 +31,7 @@ type ProofType string
 const (
 	ProofTypeSTARK ProofType = "stark"
 	ProofTypeSNARK ProofType = "snark"
+	ProofTypeSP1   ProofType = "sp1"
 )
 
 // Proof represents a ZK proof for a block state transition.
