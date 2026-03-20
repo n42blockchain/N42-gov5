@@ -41,7 +41,7 @@
 | **State Pruning** | ✅ PBSS 在线裁剪 | ✅ 多模式 | ✅ archive/full/minimal | ✅ SeiDB | ✅ | N/A | ✅ | ✅ 快照感知裁剪 (235行, 7测试) |
 | **Snapshot / Flat State** | ✅ 完整快照层 | ✅ flat state 核心设计 | ✅ 不可变segment文件 | ✅ SeiDB SS | ✅ MonadDB | N/A | ✅ | ✅ DiffLayer树+ShardedCache+MDBX持久化 |
 | **Ancient/Freezer DB** | ✅ 5 表冷存储 | ✅ static files | ✅ segment+OtterSync | ❌ | ❌ | N/A | ✅ | ✅ 5表冷存储+后台冻结引擎 |
-| **State Expiry** | 🔧 2026 路线图 | 🔧 跟进中 | 🔧 EIP-4444 minimal模式 | ❌ | ❌ | N/A | ❌ | ❌ |
+| **State Expiry** | 🔧 2026 路线图 | 🔧 跟进中 | 🔧 EIP-4444 minimal模式 | ❌ | ❌ | N/A | ❌ | 🔧 基础设施已预备 (JMT GC + Witness + History Expiry) |
 | **History Expiry** | ✅ eth/69 支持 | ✅ | ✅ v3.1+ EIP-4444 phase1 | ❌ | ❌ | N/A | ❌ | ✅ EIP-4444 |
 | **DB Inspection 工具** | ✅ | ✅ | ✅ diagnostics模块 | ❌ | ❌ | N/A | ✅ | ✅ stats/list/get/inspect 四命令 |
 | **Sparse Trie (内存缓存)** | ❌ | ✅ v1.2+ 核心优化 | ❌ | ❌ | ❌ | N/A | ❌ | ✅ JMT 节点 LRU 缓存 (16384 entries, 跨 payload 复用) |
@@ -482,7 +482,7 @@
 
 | # | 缺失功能 | 影响 | 参考实现 | 预估工作量 |
 |---|----------|------|----------|-----------|
-| 16 | **State Expiry** | 状态膨胀长期无解 | 以太坊 Hegotá | 研究阶段 |
+| 16 | **State Expiry** | 全行业零实现（以太坊 2028+ 预估）。N42 基础设施已预备：JMT GC 在线裁剪✅ + Witness 系统✅ + History Expiry✅。等待以太坊确定最终方案后跟进 | 以太坊 Hegotá (TBD) | 12-24 月（全栈变更） |
 | 17 | ~~**History Expiry (eth/69)**~~ | ✅ 已完成 — HistoryExpirer 后台引擎 + P2P 门控 + DB accessors + 配置, 8 测试 | - | - |
 | 18 | **Async I/O (io_uring)** | I/O 密集场景性能受限 | Monad | 4-6 周 |
 | 19 | **JIT/AOT EVM** | 热合约执行慢 | reth revmc | 研究阶段 |
