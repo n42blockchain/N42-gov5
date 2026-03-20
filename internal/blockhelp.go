@@ -140,6 +140,9 @@ func CollectDepositExecutionRequests(receipts block.Receipts) ([]hexutil.Bytes, 
 			if lg == nil || lg.Address != vm.DepositContractAddress {
 				continue
 			}
+			if len(lg.Topics) == 0 || lg.Topics[0] != vm.DepositEventSignature {
+				continue
+			}
 			deposit, err := vm.ParseDepositLog(lg.Topics, lg.Data)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse deposit logs: %w", err)

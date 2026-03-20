@@ -488,8 +488,9 @@ func TestValidateExecutionRequestsAcceptsFlattenedGroupedEncodingWithoutLegacyPa
 func TestValidateExecutionRequestsRejectsTruncatedGroupedEncoding(t *testing.T) {
 	t.Parallel()
 
+	// When payload-local arrays are populated, truncated encoding is rejected.
 	payload := &ExecutionPayloadV4{
-		DepositRequests: make([]DepositRequest, 1),
+		DepositRequests: make([]DepositRequest, 1), // non-empty: triggers size validation
 	}
 	requests := []hexutil.Bytes{
 		append([]byte{DepositRequestType}, make([]byte, vmcore.DepositRequestSize-1)...),
@@ -497,6 +498,20 @@ func TestValidateExecutionRequestsRejectsTruncatedGroupedEncoding(t *testing.T) 
 
 	err := validateExecutionRequests(requests, payload)
 	require.ErrorIs(t, err, errInvalidRequestEncoding)
+}
+
+func TestValidateExecutionRequestsAcceptsOpaqueWhenPayloadArraysAbsent(t *testing.T) {
+	t.Parallel()
+
+	// When payload-local arrays are empty (opaque mode per EIP-7685),
+	// requests are accepted without size validation.
+	payload := &ExecutionPayloadV4{} // empty arrays
+	requests := []hexutil.Bytes{
+		append([]byte{DepositRequestType}, make([]byte, 17)...), // arbitrary size
+	}
+
+	err := validateExecutionRequests(requests, payload)
+	require.NoError(t, err)
 }
 
 func TestExecutionPayloadBlockRLPSizeWrapsTypedTransactions(t *testing.T) {
