@@ -337,9 +337,8 @@ func (e *EngineAPIV1) overlay() *engineOverlay {
 	if e == nil || e.api == nil || e.api.api == nil {
 		return nil
 	}
-	if e.api.api.engineOverlay == nil {
-		e.api.api.engineOverlay = newEngineOverlay()
-	}
+	// engineOverlay is always initialized in NewAPI(); no lazy init needed.
+	// Returning nil is safe — all overlay methods are nil-receiver safe.
 	return e.api.api.engineOverlay
 }
 

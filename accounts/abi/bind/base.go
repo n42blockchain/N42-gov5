@@ -251,7 +251,7 @@ func (c *BoundContract) createDynamicTx(opts *TransactOpts, contract *types.Addr
 	// Estimate FeeCap
 	gasFeeCap := opts.GasFeeCap
 	if gasFeeCap == nil {
-		gasFeeCap = gasTipCap.Add(gasTipCap, head.BaseFee.Mod(head.BaseFee, uint256.NewInt(basefeeWiggleMultiplier)))
+		gasFeeCap = new(uint256.Int).Add(gasTipCap, new(uint256.Int).Mul(head.BaseFee, uint256.NewInt(basefeeWiggleMultiplier)))
 	}
 	if gasFeeCap.Cmp(gasTipCap) < 0 {
 		return nil, fmt.Errorf("maxFeePerGas (%v) < maxPriorityFeePerGas (%v)", gasFeeCap, gasTipCap)

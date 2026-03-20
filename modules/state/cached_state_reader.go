@@ -17,8 +17,6 @@
 package state
 
 import (
-	"google.golang.org/protobuf/proto"
-
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv/layered"
@@ -67,15 +65,14 @@ func (r *CachedStateReader) ReadAccountData(address types.Address) (*account.Sta
 		return nil, err
 	}
 
-	// Populate cache. Store the raw proto-encoded bytes for fast retrieval.
+	// Populate cache. Store the same EncodeForStorage format that the read path expects.
 	if r.cache != nil {
 		if a == nil {
 			r.cache.Put(modules.Account, key, nil) // negative cache
 		} else {
-			pb := a.ToProtoMessage()
-			if enc, err := proto.Marshal(pb); err == nil {
-				r.cache.Put(modules.Account, key, enc)
-			}
+			enc := make([]byte, a.EncodingLengthForStorage())
+			a.EncodeForStorage(enc)
+			r.cache.Put(modules.Account, key, enc)
 		}
 	}
 

@@ -35,8 +35,8 @@ func TestHasDelegation(t *testing.T) {
 		{"empty code", []byte{}, false},
 		{"too short", []byte{0xef, 0x01, 0x00}, false},
 		{"wrong prefix", append([]byte{0xef, 0x02, 0x00}, make([]byte, 20)...), false},
-		{"valid delegation", append(DelegationPrefix, make([]byte, 20)...), true},
-		{"too long", append(DelegationPrefix, make([]byte, 21)...), false},
+		{"valid delegation", append(DelegationPrefix(), make([]byte, 20)...), true},
+		{"too long", append(DelegationPrefix(), make([]byte, 21)...), false},
 	}
 
 	for _, tt := range tests {
@@ -65,7 +65,7 @@ func TestParseDelegation(t *testing.T) {
 		{"wrong prefix byte 0", append([]byte{0xff, 0x01, 0x00}, addr.Bytes()...), types.Address{}, false},
 		{"wrong prefix byte 1", append([]byte{0xef, 0x02, 0x00}, addr.Bytes()...), types.Address{}, false},
 		{"wrong prefix byte 2", append([]byte{0xef, 0x01, 0x01}, addr.Bytes()...), types.Address{}, false},
-		{"too long", append(DelegationPrefix, make([]byte, 21)...), types.Address{}, false},
+		{"too long", append(DelegationPrefix(), make([]byte, 21)...), types.Address{}, false},
 	}
 
 	for _, tt := range tests {
@@ -85,7 +85,7 @@ func TestAddressToDelegation(t *testing.T) {
 	addr := types.HexToAddress("0xabcdef0123456789abcdef0123456789abcdef01")
 	code := AddressToDelegation(addr)
 
-	if !bytes.HasPrefix(code, DelegationPrefix) {
+	if !bytes.HasPrefix(code, DelegationPrefix()) {
 		t.Error("AddressToDelegation() should have delegation prefix")
 	}
 	if len(code) != 23 {
@@ -106,11 +106,12 @@ func TestAddressToDelegation(t *testing.T) {
 }
 
 func TestDelegationPrefixBytes(t *testing.T) {
-	if len(DelegationPrefix) != 3 {
-		t.Errorf("DelegationPrefix length = %d, want 3", len(DelegationPrefix))
+	prefix := DelegationPrefix()
+	if len(prefix) != 3 {
+		t.Errorf("DelegationPrefix length = %d, want 3", len(prefix))
 	}
-	if DelegationPrefix[0] != 0xef || DelegationPrefix[1] != 0x01 || DelegationPrefix[2] != 0x00 {
-		t.Errorf("DelegationPrefix = %x, want ef0100", DelegationPrefix)
+	if prefix[0] != 0xef || prefix[1] != 0x01 || prefix[2] != 0x00 {
+		t.Errorf("DelegationPrefix = %x, want ef0100", prefix)
 	}
 }
 
@@ -378,7 +379,11 @@ func TestCalcAuthorizationGas(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := CalcAuthorizationGas(tt.authCount, tt.newAccountCount)
+		got, overflow := CalcAuthorizationGas(tt.authCount, tt.newAccountCount)
+		if overflow {
+			t.Errorf("CalcAuthorizationGas(%d, %d) overflowed unexpectedly",
+				tt.authCount, tt.newAccountCount)
+		}
 		if got != tt.expectedGas {
 			t.Errorf("CalcAuthorizationGas(%d, %d) = %d, want %d",
 				tt.authCount, tt.newAccountCount, got, tt.expectedGas)

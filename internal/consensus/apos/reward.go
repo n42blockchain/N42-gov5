@@ -94,11 +94,11 @@ func newReward(chainConfig *params.ChainConfig) *Reward {
 }
 
 func rewardLimitOrMax(limit *big.Int) *uint256.Int {
-	rewardLimitBig, overflow := uint256.FromBig(limit)
 	if limit == nil {
 		log.Error("RewardLimit is missing, using max value")
 		return new(uint256.Int).SetAllOne()
 	}
+	rewardLimitBig, overflow := uint256.FromBig(limit)
 	if overflow {
 		log.Error("RewardLimit overflows uint256, using max value")
 		return new(uint256.Int).SetAllOne()

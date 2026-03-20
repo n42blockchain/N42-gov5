@@ -298,10 +298,14 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 				st.msg.From().Hex(), stNonce)
 		}
 
-		// EIP-3607: Reject transactions from senders with deployed code
+		// EIP-3607: Reject transactions from senders with deployed code.
+		// EIP-7702 exception: accounts with delegation code (0xef0100 prefix) are still valid EOA senders.
 		if codeHash := st.state.GetCodeHash(st.msg.From()); codeHash != emptyCodeHash && codeHash != (types.Hash{}) {
-			return fmt.Errorf("%w: address %v, codehash: %s", ErrSenderNoEOA,
-				st.msg.From().Hex(), codeHash)
+			code := st.state.GetCode(st.msg.From())
+			if !vm2.HasDelegation(code) {
+				return fmt.Errorf("%w: address %v, codehash: %s", ErrSenderNoEOA,
+					st.msg.From().Hex(), codeHash)
+			}
 		}
 	}
 

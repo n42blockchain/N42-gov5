@@ -23,6 +23,10 @@ type MCPCfg struct {
 	// Enabled controls whether the MCP server starts with the node.
 	Enabled bool `json:"enabled" yaml:"enabled"`
 
+	// Host is the bind address for the MCP server. Default: "127.0.0.1" (localhost only).
+	// Set to "0.0.0.0" to listen on all interfaces (use with caution).
+	Host string `json:"host" yaml:"host"`
+
 	// Port is the TCP port for the MCP HTTP server. Default: 8553.
 	Port int `json:"port" yaml:"port"`
 
@@ -37,6 +41,7 @@ type MCPCfg struct {
 func DefaultMCPCfg() MCPCfg {
 	return MCPCfg{
 		Enabled: false,
+		Host:    "127.0.0.1",
 		Port:    8553,
 	}
 }

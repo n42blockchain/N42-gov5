@@ -241,7 +241,7 @@ func ReadStorageBodyRAW(db kv.Getter, hash types.Hash, number uint64) []byte {
 func ReadStorageBody(db kv.Getter, hash types.Hash, number uint64) (block.BodyForStorage, error) {
 	bodyRaw, err := db.GetOne(modules.BlockBody, modules.BlockBodyKey(number, hash))
 	if err != nil {
-		log.Error("ReadStorageBody failed", "err", err)
+		return block.BodyForStorage{}, fmt.Errorf("ReadStorageBody: %w", err)
 	}
 	if len(bodyRaw) != 8+4 {
 		return block.BodyForStorage{}, fmt.Errorf("invalid body raw length: expected 12, got %d", len(bodyRaw))

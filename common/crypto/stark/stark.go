@@ -36,6 +36,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
@@ -311,7 +312,9 @@ func (p *Prover) AggregateSignatures(message []byte, inputs []SignatureInput) (*
 
 	// Generate random challenge
 	var challenge types.Hash
-	rand.Read(challenge[:])
+	if _, err := rand.Read(challenge[:]); err != nil {
+		return nil, fmt.Errorf("generate random challenge: %w", err)
+	}
 
 	// Compute aggregate hash
 	aggregateHash := computeAggregateHash(messageHash, pubKeyRoot, sigRoot, challenge)

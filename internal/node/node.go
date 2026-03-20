@@ -913,7 +913,11 @@ func (n *Node) Start() error {
 	if n.config.MCPCfg.Enabled {
 		mcpBackend := &mcpNodeBackend{node: n}
 		n.mcpServer = mcp.NewServer(mcpBackend, n.config.MCPCfg.AllowedTools)
-		addr := fmt.Sprintf(":%d", n.config.MCPCfg.Port)
+		host := n.config.MCPCfg.Host
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		addr := fmt.Sprintf("%s:%d", host, n.config.MCPCfg.Port)
 		go func() {
 			if err := n.mcpServer.Start(addr); err != nil {
 				log.Error("MCP server failed to start", "err", err)

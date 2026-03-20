@@ -33,6 +33,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 )
 
 const clefVersion = "1.0.0"
@@ -210,12 +211,25 @@ func bigFromHexutil(v *hexutil.Big) *big.Int {
 	return v.ToInt()
 }
 
-func mustUint256(v *big.Int) *uint256.Int {
+// toUint256 converts a big.Int to uint256.Int, returning an error on overflow
+// instead of silently returning zero.
+func toUint256(v *big.Int) (*uint256.Int, error) {
 	if v == nil {
-		return new(uint256.Int)
+		return new(uint256.Int), nil
 	}
 	out, overflow := uint256.FromBig(v)
 	if overflow {
+		return nil, fmt.Errorf("value %v overflows uint256", v)
+	}
+	return out, nil
+}
+
+// mustUint256 converts a big.Int to uint256.Int for use in struct literals.
+// Logs an error and returns zero on overflow rather than silently succeeding.
+func mustUint256(v *big.Int) *uint256.Int {
+	out, err := toUint256(v)
+	if err != nil {
+		log.Error("uint256 overflow in transaction field", "value", v, "err", err)
 		return new(uint256.Int)
 	}
 	return out

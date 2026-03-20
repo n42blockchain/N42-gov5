@@ -279,7 +279,7 @@ func opDATALOAD(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	data := container.GetData()
 	off64 := offset.Uint64()
 
-	if !offset.IsUint64() || off64+32 > uint64(len(data)) {
+	if !offset.IsUint64() || off64 > uint64(len(data))-32 || uint64(len(data)) < 32 {
 		// Out of bounds - return zeros
 		offset.Clear()
 		return nil, nil
@@ -352,7 +352,7 @@ func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	}
 
 	end := dataOff64 + len64
-	if end > uint64(len(data)) {
+	if end < dataOff64 || end > uint64(len(data)) { // overflow check: end < dataOff64
 		end = uint64(len(data))
 	}
 
@@ -586,7 +586,7 @@ func opRETURNDATALOAD(pc *uint64, interpreter *EVMInterpreter, scope *ScopeConte
 	off64 := offset.Uint64()
 
 	returnData := interpreter.returnData
-	if !offset.IsUint64() || off64+32 > uint64(len(returnData)) {
+	if !offset.IsUint64() || uint64(len(returnData)) < 32 || off64 > uint64(len(returnData))-32 {
 		return nil, ErrReturnDataOutOfBounds
 	}
 

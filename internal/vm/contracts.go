@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/holiman/uint256"
@@ -546,9 +547,18 @@ func (c *bigModExp) RequiredGas(input []byte) uint64 {
 
 func (c *bigModExp) Run(input []byte) ([]byte, error) {
 	var (
-		baseLen = new(big.Int).SetBytes(getData(input, 0, 32)).Uint64()
-		expLen  = new(big.Int).SetBytes(getData(input, 32, 32)).Uint64()
-		modLen  = new(big.Int).SetBytes(getData(input, 64, 32)).Uint64()
+		baseLenBig = new(big.Int).SetBytes(getData(input, 0, 32))
+		expLenBig  = new(big.Int).SetBytes(getData(input, 32, 32))
+		modLenBig  = new(big.Int).SetBytes(getData(input, 64, 32))
+	)
+	// Guard against silent truncation: if any length exceeds uint64, the input is invalid
+	if baseLenBig.BitLen() > 64 || expLenBig.BitLen() > 64 || modLenBig.BitLen() > 64 {
+		return nil, fmt.Errorf("MODEXP: input length exceeds uint64")
+	}
+	var (
+		baseLen = baseLenBig.Uint64()
+		expLen  = expLenBig.Uint64()
+		modLen  = modLenBig.Uint64()
 	)
 
 	// EIP-7823: Enforce input size limits (max 1024 bytes for each)
