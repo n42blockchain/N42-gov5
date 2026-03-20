@@ -217,6 +217,17 @@ var (
 	DurationLimit          = big.NewInt(13)         // The decision boundary on the blocktime duration used to determine whether difficulty should go up or not.
 )
 
+// Content-Addressed Storage (CAS) precompile gas costs.
+const (
+	ContentStoreBaseGas    uint64 = 20000 // base gas for store operation
+	ContentStorePerByteGas uint64 = 200   // per-byte gas for store
+	ContentLoadBaseGas     uint64 = 5000  // base gas for load operation
+	ContentLoadPerByteGas  uint64 = 50    // per-byte gas for load
+	ContentExistsGas       uint64 = 2600  // gas for exists check (same as ColdSloadCost)
+	ContentSizeGas         uint64 = 2600  // gas for size query
+	ContentStoreMaxSize    int    = 24576 // 24KB max per entry (same as MaxCodeSize)
+)
+
 func ApplyBinanceSmartChainParams() {
 	GasLimitBoundDivisor = 256
 }

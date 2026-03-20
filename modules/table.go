@@ -175,6 +175,11 @@ const (
 	// key: "root" (fixed)
 	// value: blake3_hash (32 bytes)
 	JMTRoot = "JMTRoot"
+
+	// ContentStore stores content-addressed blobs for the CAS precompile.
+	// key: keccak256(data) (32 bytes)
+	// value: raw data (up to 24KB)
+	ContentStore = "ContentStore"
 )
 
 const (
@@ -236,6 +241,7 @@ var n42Tables = []string{
 	TxPoolJournal,
 	JMTNode,
 	JMTRoot,
+	ContentStore,
 }
 
 var N42TableCfg = kv.TableCfg{
