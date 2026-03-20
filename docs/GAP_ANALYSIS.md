@@ -77,9 +77,9 @@
 | **Checkpoint Sync** | ✅ | ✅ | ✅ Caplin支持 | ✅ (Cosmos) | ❌ | N/A | ✅ | ✅ trusted hash |
 | **Backfill Sync** | ❌ | ✅ | ❌ | ❌ | ❌ | N/A | ❌ | ✅ 后台历史回填 (checkpoint→genesis, 批量下载+写入) |
 | **Light Client** | ✅ LES | ❌ | ❌ | ✅ IBC light | ❌ | N/A | ✅ | ✅ 手机轻节点 (JMT Merkle proof + 无状态 EVM) |
-| **Portal Network** | 🔧 实验 | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
-| **Beam Sync** | 🔧 实验 | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
-| **State Sync (应用层)** | ❌ | ❌ | ❌ | ✅ Cosmos | ❌ | N/A | ✅ | ❌ |
+| **Portal Network** | 🔧 实验 | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | N/A (轻客户端 + Witness P2P 已覆盖核心用例) |
+| **Beam Sync** | 🔧 实验(已废弃) | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | N/A (行业已淘汰，Checkpoint+Backfill 替代) |
+| **State Sync (应用层)** | ❌ | ❌ | ❌ | ✅ Cosmos | ❌ | N/A | ✅ | N/A (Snap Sync + Checkpoint 提供等价功能) |
 
 ### 关键差距
 
