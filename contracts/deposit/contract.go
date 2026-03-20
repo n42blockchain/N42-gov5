@@ -37,30 +37,30 @@ import (
 const (
 	DayPerMonth = 30
 
-	// AMT deposit tiers (in N tokens)
+	// Tier-1 deposit amounts (in N tokens)
 	fiftyDeposit       = 50
 	OneHundredDeposit  = 100
 	FiveHundredDeposit = 500
 
-	// FUJI deposit tiers (in N tokens)
+	// Tier-2 deposit amounts (in N tokens)
 	fuji2000Deposit = 2000
 	fuji800Deposit  = 800
 	fuji200Deposit  = 200
 
-	// Maximum tasks per epoch by AMT deposit tier
+	// Maximum tasks per epoch by Tier-1 deposit level
 	fiftyDepositMaxTaskPerEpoch       = 500
 	OneHundredDepositMaxTaskPerEpoch  = 100
 	FiveHundredDepositMaxTaskPerEpoch = 100
 
-	// Maximum tasks per epoch for FUJI deposits
+	// Maximum tasks per epoch for Tier-2 deposits
 	fujiMaxTaskPerEpoch = 50
 
-	// Monthly rewards by AMT deposit tier
+	// Monthly rewards by Tier-1 deposit level
 	fiftyDepositRewardPerMonth       = 0.375 * params.N
 	OneHundredDepositRewardPerMonth  = 1 * params.N
 	FiveHundredDepositRewardPerMonth = 6.25 * params.N // max uint64 = ^uint64(0) ~ 18.44 N, so 6.25 N is safe
 
-	// Rewards for FUJI deposit tiers
+	// Rewards for Tier-2 deposit levels
 	fuji200RewardPerEpoch  = 0.025 * params.N
 	fuji800RewardPerEpoch  = 0.1 * params.N
 	fuji2000RewardPerMonth = 10 * params.N
