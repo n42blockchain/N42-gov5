@@ -51,6 +51,7 @@ type EngineOutput struct {
 	// Epoch transition fields
 	NewEpoch       uint64
 	ValidatorCount uint32
+	Removed        bool // true if this node was removed from the validator set
 }
 
 // EngineOutputType identifies the kind of output action.
@@ -190,7 +191,7 @@ func WithRecoveredState(
 		consecutiveTimeouts = MaxRecoveredConsecutiveTimeouts
 	}
 
-	return &ConsensusEngine{
+	e := &ConsensusEngine{
 		myIndex:             myIndex,
 		secretKey:           secretKey,
 		epochManager:        epochManager,
@@ -202,6 +203,8 @@ func WithRecoveredState(
 		futureMsgBuffer:     make([]futureMsg, 0),
 		viewTiming:          newViewTiming(),
 	}
+	e.reconfigMgr = NewReconfigurationManager(epochManager)
+	return e
 }
 
 // Public accessors
@@ -367,21 +370,26 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	if e.epochManager.EpochsEnabled() && e.epochManager.IsEpochBoundary(newView) {
 		// Apply committed reconfiguration changes before advancing epoch.
 		// Per HotStuff-2 § 5: changes take effect only after the old set commits them.
+		// Note: ApplyAtEpochBoundary() validates internally (ValidateTransition)
+		// and only stages the set if validation passes.
 		if e.reconfigMgr != nil && e.reconfigMgr.IsCommitted() {
+			// Capture own address before the set changes
+			myAddr, _ := e.validatorSet().GetAddress(e.myIndex)
+
 			if newSet := e.reconfigMgr.ApplyAtEpochBoundary(); newSet != nil {
-				// Validate the transition is safe (sufficient overlap for liveness)
-				if err := ValidateTransition(e.validatorSet(), newSet); err != nil {
-					log.Error("Unsafe validator set transition blocked", "err", err)
+				// Update own index in the new set
+				newIdx := newSet.FindByAddress(myAddr)
+				if newIdx >= 0 {
+					e.myIndex = ValidatorIndex(newIdx)
 				} else {
-					// Update own index in new set
-					if myAddr, addrErr := e.validatorSet().GetAddress(e.myIndex); addrErr == nil {
-						newIdx := newSet.FindByAddress(myAddr)
-						if newIdx >= 0 {
-							e.myIndex = ValidatorIndex(newIdx)
-						} else {
-							log.Warn("This node removed from validator set at epoch boundary",
-								"address", myAddr.Hex(), "epoch", e.epochManager.CurrentEpoch()+1)
-						}
+					log.Warn("This node removed from validator set at epoch boundary",
+						"address", myAddr.Hex(), "epoch", e.epochManager.CurrentEpoch()+1)
+					// Emit removal signal so the outer node can transition to observer mode
+					if err := e.emit(EngineOutput{
+						Type:    OutputEpochTransition,
+						Removed: true,
+					}); err != nil {
+						return err
 					}
 				}
 			}

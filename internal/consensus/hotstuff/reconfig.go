@@ -17,8 +17,10 @@
 package hotstuff
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/n42blockchain/N42/common/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/types"
@@ -51,6 +53,7 @@ import (
 //   - QCs from the transition boundary are verified against the epoch-appropriate set
 //   - Historical sets are retained for QC verification across epoch boundaries
 type ReconfigurationManager struct {
+	mu           sync.Mutex
 	epochManager *EpochManager
 
 	// pendingAdds holds validators to add at the next epoch boundary.
@@ -76,6 +79,9 @@ func NewReconfigurationManager(em *EpochManager) *ReconfigurationManager {
 //   - The block must be committed by the current validator set (CommitQC)
 //   - The new validator set is computed deterministically from committed state
 func (rm *ReconfigurationManager) ProposeAddValidator(addr types.Address, pubKey common.PublicKey) error {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
 	if pubKey == nil {
 		return fmt.Errorf("reconfig: BLS public key required for validator %s", addr.Hex())
 	}
@@ -113,6 +119,9 @@ func (rm *ReconfigurationManager) ProposeAddValidator(addr types.Address, pubKey
 //   - Cannot remove if it would break the 3f+1 requirement
 //   - The removal must be committed before taking effect
 func (rm *ReconfigurationManager) ProposeRemoveValidator(addr types.Address) error {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
 	// Check exists in current set
 	if rm.epochManager.CurrentValidatorSet().FindByAddress(addr) < 0 {
 		return fmt.Errorf("reconfig: validator %s not in active set", addr.Hex())
@@ -125,9 +134,10 @@ func (rm *ReconfigurationManager) ProposeRemoveValidator(addr types.Address) err
 		}
 	}
 
-	// Compute resulting set size
+	// Compute resulting set size conservatively: only count current set minus
+	// pending removes. Do NOT count pending adds since they may not materialize.
 	currentN := int(rm.epochManager.CurrentValidatorSet().Len())
-	resultN := currentN + len(rm.pendingAdds) - len(rm.pendingRemoves) - 1
+	resultN := currentN - len(rm.pendingRemoves) - 1
 	if resultN < 4 {
 		return fmt.Errorf("reconfig: cannot remove validator %s, would leave %d validators (minimum 4 for BFT safety)", addr.Hex(), resultN)
 	}
@@ -147,7 +157,10 @@ func (rm *ReconfigurationManager) ProposeRemoveValidator(addr types.Address) err
 // committed block (received CommitQC). This is the safety gate: changes
 // only take effect after commitment by the current validator set.
 func (rm *ReconfigurationManager) MarkCommitted() {
-	if rm.HasPendingChanges() {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	if rm.hasPendingChanges() {
 		rm.committed = true
 		log.Info("Reconfiguration changes committed",
 			"adds", len(rm.pendingAdds),
@@ -159,12 +172,24 @@ func (rm *ReconfigurationManager) MarkCommitted() {
 // HasPendingChanges returns true if there are uncommitted or committed
 // but not yet activated changes.
 func (rm *ReconfigurationManager) HasPendingChanges() bool {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	return rm.hasPendingChanges()
+}
+
+func (rm *ReconfigurationManager) hasPendingChanges() bool {
 	return len(rm.pendingAdds) > 0 || len(rm.pendingRemoves) > 0
 }
 
 // IsCommitted returns true if pending changes have been committed.
 func (rm *ReconfigurationManager) IsCommitted() bool {
-	return rm.committed && rm.HasPendingChanges()
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	return rm.isCommitted()
+}
+
+func (rm *ReconfigurationManager) isCommitted() bool {
+	return rm.committed && rm.hasPendingChanges()
 }
 
 // ApplyAtEpochBoundary computes and stages the new validator set for the
@@ -177,7 +202,14 @@ func (rm *ReconfigurationManager) IsCommitted() bool {
 // regular consensus protocol. Once committed, all honest replicas compute
 // the new configuration deterministically."
 func (rm *ReconfigurationManager) ApplyAtEpochBoundary() *ValidatorSet {
-	if !rm.IsCommitted() {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	if !rm.isCommitted() {
+		return nil
+	}
+	if !rm.epochManager.EpochsEnabled() {
+		log.Warn("Reconfiguration ignored: epochs not enabled")
 		return nil
 	}
 
@@ -206,9 +238,10 @@ func (rm *ReconfigurationManager) ApplyAtEpochBoundary() *ValidatorSet {
 	// Add new validators
 	newValidators = append(newValidators, rm.pendingAdds...)
 
-	// Sort by address for deterministic ordering across all nodes
+	// Sort by raw address bytes for deterministic ordering across all nodes.
+	// Do NOT use Address.Hex() which applies EIP-55 checksumming.
 	sort.Slice(newValidators, func(i, j int) bool {
-		return newValidators[i].Address.Hex() < newValidators[j].Address.Hex()
+		return bytes.Compare(newValidators[i].Address[:], newValidators[j].Address[:]) < 0
 	})
 
 	// Compute fault tolerance: f = (n-1)/3
@@ -221,24 +254,36 @@ func (rm *ReconfigurationManager) ApplyAtEpochBoundary() *ValidatorSet {
 		return nil
 	}
 
-	// Stage the new set
+	newSet := NewValidatorSet(newValidators, f)
+
+	// Validate transition BEFORE staging (HotStuff-2 safety).
+	// If validation fails, do NOT stage the unsafe set.
+	if err := ValidateTransition(currentSet, newSet); err != nil {
+		log.Error("Unsafe validator set transition blocked", "err", err)
+		return nil
+	}
+
+	// Stage the validated set
 	rm.epochManager.StageNextEpoch(newValidators, f)
 
-	log.Info("New validator set staged for next epoch",
-		"epoch", rm.epochManager.CurrentEpoch()+1,
-		"validators", n,
-		"faultTolerance", f,
-		"quorum", 2*f+1,
-		"added", len(rm.pendingAdds),
-		"removed", len(rm.pendingRemoves),
-	)
+	addCount := len(rm.pendingAdds)
+	removeCount := len(rm.pendingRemoves)
 
 	// Clear pending changes
 	rm.pendingAdds = nil
 	rm.pendingRemoves = nil
 	rm.committed = false
 
-	return NewValidatorSet(newValidators, f)
+	log.Info("New validator set staged for next epoch",
+		"epoch", rm.epochManager.CurrentEpoch()+1,
+		"validators", n,
+		"faultTolerance", f,
+		"quorum", 2*f+1,
+		"added", addCount,
+		"removed", removeCount,
+	)
+
+	return newSet
 }
 
 // PendingAddCount returns the number of validators pending addition.
