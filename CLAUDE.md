@@ -60,37 +60,53 @@ internal/         → Core business logic (private packages)
   p2p/            → libp2p-based networking with Kademlia DHT
   sync/           → Chain synchronization (initial-sync, etc.)
   api/            → JSON-RPC API backend implementation
-  tracers/        → Debug/trace (js/ for JS tracers via goja, native/ for Go tracers)
+  tracers/        → Debug/trace (js/, native/liveTracer for real-time EVM events)
+  distributed/    → Distributed infrastructure (modular, decoupled)
+    coprocessor/  → ZK coprocessor (off-chain compute + on-chain verify)
+    messaging/    → Decentralized messaging relay (publish/subscribe + RLN rate limit)
+    storage/      → IPFS/Filecoin storage bridge (pin/get/stat)
+    notify/       → Push notifications (contract events → wallet streams)
+  deferred/       → Deferred execution pipeline (consensus-execution separation)
+  mev/            → MEV-Boost relay integration
+  mcp/            → MCP Server (AI agent data queries)
+  zkprover/       → ZK proving (STARK/SNARK/SP1 three backends)
+  zkverifier/     → ZK proof verification
+  metrics/        → 250+ Prometheus metrics
+  exex/           → Execution Extensions (ExEx) framework
+  bundler/        → ERC-4337 account abstraction bundler
+  peerdas/        → PeerDAS data availability sampling (EIP-7594)
 modules/          → Data layer
-  state/          → State trie management
-  rawdb/          → Raw database operations (MDBX backend)
+  state/          → State management (IntraBlockState, snapshot, witness, JMT commitment)
+  rawdb/          → Raw database operations (MDBX backend, freezer, log index)
   rpc/            → JSON-RPC transport (HTTP, WebSocket, IPC)
   ethdb/          → Database interface abstraction
 lib/              → Shared libraries
-  kv/             → Key-value store interfaces (kv/mdbx/, kv/memdb/)
-  types/          → Core type definitions
-  common/         → Utility packages
+  kv/             → Key-value store (mdbx/, memdb/, remotedb/, remotedbserver/, layered/)
+  jmt/            → Jellyfish Merkle Tree (Blake3, sparse cache, ref-counting GC)
+  state/          → HistoryV3 aggregator (per-block changeset + inverted index)
 common/           → Shared types and utilities
-  types/          → Address, Hash, and core blockchain types
-  block/          → Block interfaces and types
-  transaction/    → Transaction types
-  crypto/         → Cryptographic functions
-  rlp/            → RLP encoding/decoding
-params/           → Chain parameters, genesis configs (mainnet.json/testnet.json embedded via //go:embed)
-conf/             → Node configuration structs (RPC, P2P, consensus settings)
-accounts/         → Account management (keystore/, abi/)
+  types/          → Address, Hash, core blockchain types
+  block/          → Block/Header/Body interfaces
+  transaction/    → Transaction types (Legacy, AccessList, DynamicFee, Blob, SetCode)
+  crypto/         → Cryptographic functions (bls/, stark/, dilithium/, falcon/)
+params/           → Chain parameters (config, blob_schedule, chainspecs/)
+conf/             → Node configuration (all subsystem configs)
+accounts/         → Account management (keystore/, abi/, external/)
 contracts/        → Smart contracts (deposit contract with tiered staking)
-turbo/            → Performance optimization layers (rpchelper, etc.)
+cmd/rpcdaemon/    → Standalone RPC daemon (gRPC remote KV)
+cmd/clef/         → External signer (IPC + rules + audit log)
+cmd/zkguest/      → ZK guest program (RISC-V64 target)
 ```
 
 ### Key Patterns
 
-- **Node** (`internal/node/node.go`) is the central orchestrator — it creates DB, consensus engine, miner, txpool, P2P, and RPC stack, then manages lifecycle (Start/Stop).
-- **Consensus is pluggable**: `apoa` (Authority PoA) and `apos` (Authority PoS) implement the `consensus.Engine` interface.
-- **Database**: MDBX (memory-mapped B+ tree) via `lib/kv/mdbx/`; `lib/kv/memdb/` for testing.
-- **State management**: `modules/state/` handles state trie with changeset tracking in `modules/changeset/`.
-- **P2P**: Built on `go-libp2p` with custom protocols for block/transaction propagation.
-- **Chain specs**: `params/chainspecs/mainnet.json` and `testnet.json` are embedded at compile time.
+- **Node** (`internal/node/node.go`) is the central orchestrator — it creates DB, consensus engine, miner, txpool, P2P, RPC, MCP, ZK prover, deferred executor, gRPC KV server, distributed services, then manages lifecycle (Start/Stop).
+- **Consensus is pluggable**: `apoa` (PoA), `apos` (PoS), and `hotstuff` (HotStuff-2 BFT) implement the `consensus.Engine` interface.
+- **Database**: MDBX (memory-mapped B+ tree) via `lib/kv/mdbx/`; `lib/kv/memdb/` for testing; `lib/kv/remotedb/` for RPCDaemon.
+- **State management**: `modules/state/` handles state trie with changeset tracking; `modules/state/commitment/` provides JMT Blake3 state commitment with ref-counting GC for online pruning.
+- **P2P**: Built on `go-libp2p` with custom protocols for block/transaction/blob/witness propagation.
+- **PQ isolation**: Post-quantum precompiles (0x14-0x17) are NOT in standard fork maps; activated only via `ChainConfig.PQPrecompilesTime`.
+- **Distributed infrastructure**: `internal/distributed/` provides modular coprocessor/messaging/storage/notify services, each independently configurable and lifecycle-managed.
 
 ### Default Ports
 
@@ -102,6 +118,8 @@ turbo/            → Performance optimization layers (rpchelper, etc.)
 | 20013 | JSON-RPC WebSocket         |
 | 20014 | Authenticated RPC (JWT)    |
 | 6060  | pprof metrics              |
+| 8553  | MCP Server (AI agents)     |
+| 9090  | gRPC KV (RPCDaemon)        |
 
 ## Code Style & Linting
 
