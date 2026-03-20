@@ -827,6 +827,9 @@ func (n *Node) Start() error {
 	// Register ZK proof query and verification API.
 	n.rpcAPIs = append(n.rpcAPIs, api.NewZKProofAPI(n.api).APIs()...)
 
+	// Register Otterscan block explorer API (ots_* namespace).
+	n.rpcAPIs = append(n.rpcAPIs, api.OtterscanApis(n.api)...)
+
 	if err := n.startRPC(); err != nil {
 		log.Error("failed start jsonrpc service", zap.Error(err))
 		return err
