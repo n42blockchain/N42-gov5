@@ -23,5 +23,5 @@ package params
 const (
 	Wei  = 1
 	GWei = 1e9
-	N    = 1e18 // Native token denomination (formerly AMT)
+	N    = 1e18 // Native token denomination (1 N = 10^18 wei)
 )
