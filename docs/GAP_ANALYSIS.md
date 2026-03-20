@@ -396,7 +396,7 @@
 | **状态预取** | ✅ | ✅ parallel prewarming | ✅ ETL | ✅ | ✅ async | ✅ | ✅ ShardedCache 预加载 |
 | **内存池化** | ✅ sync.Pool | ✅ arena alloc | ✅ | ❌ | ✅ | ✅ | ✅ pool.go |
 | **零拷贝序列化** | ❌ | ✅ rkyv 实验 | ❌ | ❌ | ✅ | ✅ | ✅ Lazy+BufPool |
-| **NUMA 感知** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| **NUMA 感知** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | N/A (Go runtime 不支持 NUMA 亲和性; 单 socket 部署零收益; 仅 Monad 自研 runtime 实现) |
 | **IO_uring** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | N/A (MDBX mmap 等价读性能; Go 无成熟绑定) |
 | **Sparse Trie 缓存** | ❌ | ✅ 核心 | ❌ | ❌ | N/A | ❌ | ✅ JMT 节点 LRU (16384 entries) |
 | **批量 DB 写入** | ✅ | ✅ | ✅ ETL预处理 | ✅ | ✅ | ✅ | ✅ |
