@@ -18,6 +18,7 @@ package internal
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -26,6 +27,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
+	"github.com/n42blockchain/N42/internal/metrics"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -57,6 +59,11 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 // the transaction messages and applying rewards. Returns receipts, unpaid rewards,
 // logs, and total gas used.
 func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (block.Receipts, map[types.Address]*uint256.Int, []*block.Log, uint64, error) {
+	processStart := time.Now()
+	defer func() {
+		metrics.BlockProcessingSeconds.UpdateDuration(processStart)
+		metrics.BlockTxCount.Add(len(b.Transactions()))
+	}()
 	blockNumber, err := requireBlockNumber(b, "block number unavailable")
 	if err != nil {
 		return nil, nil, nil, 0, err
