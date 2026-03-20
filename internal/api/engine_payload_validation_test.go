@@ -488,7 +488,9 @@ func TestValidateExecutionRequestsAcceptsFlattenedGroupedEncodingWithoutLegacyPa
 func TestValidateExecutionRequestsRejectsTruncatedGroupedEncoding(t *testing.T) {
 	t.Parallel()
 
-	payload := &ExecutionPayloadV4{}
+	payload := &ExecutionPayloadV4{
+		DepositRequests: make([]DepositRequest, 1),
+	}
 	requests := []hexutil.Bytes{
 		append([]byte{DepositRequestType}, make([]byte, vmcore.DepositRequestSize-1)...),
 	}
