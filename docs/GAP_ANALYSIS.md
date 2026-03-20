@@ -698,14 +698,19 @@
 | `internal/peerdas/kzg.go` | `VerifyDataColumn` 缺少 Commitments/KZGProofs 长度验证 | 添加 slice length 匹配检查 |
 | `internal/peerdas/store.go` | `encodeColumn` 缺少 slice 长度一致性检查 | 添加前置验证 |
 
-### C.3 与竞品的诚实差距
+### C.3 与竞品的诚实差距（2026-03-20 更新）
 
 | 维度 | N42 实际水平 | geth/reth 水平 | Erigon 3.3 水平 | 差距评估 |
 |------|-------------|---------------|----------------|----------|
-| EVM 兼容性 | Cancun ✅, Pectra 完整 (9 项 EIP), EOF 提前实现 | Cancun+Pectra 完整 | Cancun+Pectra+Fusaka | 已追平 |
-| 并行执行 | Block-STM 实测 3.9x 加速(M1 Max) | geth 无并行，reth prewarming | 实验性并行 | N42 领先(数据验证), 高冲突场景需 DAG 优化 |
-| 同步机制 | Snap Sync 完整 | 成熟 | Staged Sync+OtterSync 最快 | 中等差距（无 Staged Sync） |
-| 状态存储 | MDBX flat + **JMT Blake3 状态承诺** + LayeredDB + Snapshot DiffLayer 树 + MDBX 持久化(4表) + journal 崩溃恢复 + History Expiry | PBSS/flat state 成熟 | E3 三层+segment(archive 1.6TB) | 差距缩小（有 JMT 承诺层、加速层、持久化和过期，无 per-TX 粒度） |
-| 可观测性 | 30+ 指标 + 3 Grafana 面板 | 200-300+ 全面指标 | Prometheus+Grafana+diagnostics | 中等差距 |
-| 测试覆盖 | snap sync 51, parallel 30, fuzz 29, checkpoint 8, snapshot 38, hotstuff 60, peerdas 39 | 数千测试 + fuzzing | hive+执行规范测试 | 差距缩小(255+测试) |
-| 模块化部署 | 单体二进制 | 单体(geth)/crate(reth) | RPC/TxPool/Sentry/CL 独立进程 | **重大差距** |
+| EVM 兼容性 | Cancun✅ Pectra✅完整(9项EIP) EOF✅提前实现 Fusaka✅(PeerDAS+BPO+7825) | Cancun+Pectra+Fusaka 完整 | 同左 | **已追平** |
+| 并行执行 | Block-STM 3.9x 加速 + Deferred Execution PoC + ShardedCache 预加载 | geth 无并行; reth prewarming | 实验性并行 | **N42 领先** |
+| 同步机制 | Full+Snap+Checkpoint+Backfill+Staged Sync 7-stage 框架 | Snap Sync 成熟 | Staged Sync+OtterSync | **差距缩小** (Staged Sync 框架已有，缺 OtterSync 级分发) |
+| 状态存储 | MDBX flat + JMT Blake3 承诺 + 16384 节点 LRU + 引用计数 GC + DiffLayer 快照 + History Expiry | PBSS flat 成熟 | E3 三层+segment | **已追平** (flat state + JMT GC 等价 PBSS，缺 per-TX 粒度) |
+| 可观测性 | 182+ Prometheus 指标 + Live Tracing + 3 Grafana 面板 + JSON 日志 + 24h soak + OpenTelemetry | 200-300+ 指标 | Prometheus+diagnostics | **小幅差距** (已接近 geth 200+ 水平) |
+| RPC 完整性 | eth_* + debug_* + trace_* + Engine API v1-v4 + Otterscan ots_* + GraphQL + Clef + MCP | 完整 | 完整+Otterscan | **已追平** |
+| 共识 | HotStuff-2 BFT 即时终局 + 验证者动态重配置 + APoA/APoS | Beacon Chain PoS | Caplin 内置 CL | **N42 领先** (即时终局+重配置) |
+| 安全性 | PQ-STARK + 3 轮审计 47+ 修复 + SafeGo + PQ 预编译隔离 | Go GC | Go GC | **N42 领先** (唯一 PQ 集成客户端) |
+| ZK 证明 | STARK/SNARK/SP1 三后端 + RISC-V64 guest + JMT GC | 无 | Zilkworm 实验 | **N42 领先** |
+| 模块化部署 | RPCDaemon 独立 + gRPC KV server + ExEx hook | 单体(geth)/crate(reth) | RPC/TxPool/Sentry/CL 独立 | **差距缩小** (RPCDaemon 已拆分，缺 TxPool/Sentry) |
+| 测试覆盖 | 300+ 测试 (snap 51, parallel 30, fuzz 29, hotstuff 60+, peerdas 39, jmt 33, deferred 14, staged 5, zk 40+) | 数千 + fuzzing | hive+EEST | **中等差距** (单元测试充分，缺 broad EEST 全矩阵) |
+| 生态工具 | Otterscan + GraphQL + Clef + MCP + abigen + mobile SDK | 完整生态 | 完整+diagnostics | **小幅差距** |
