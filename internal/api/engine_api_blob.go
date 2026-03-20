@@ -170,6 +170,9 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if parentBeaconBlockRoot == nil {
 		return invalidPayloadResponse("missing parent beacon block root"), nil
 	}
+	if payload.Withdrawals == nil {
+		return invalidPayloadResponse("missing withdrawals in Cancun+ payload"), nil
+	}
 
 	// Validate blob gas and versioned hashes for Cancun
 	maxBlobGas := uint64(transaction.MaxBlobGasPerBlock)

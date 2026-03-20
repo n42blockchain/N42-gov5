@@ -71,19 +71,14 @@ func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool)
 	case evm.chainRules.IsNano:
 		precompiles = PrecompiledContractsNano
 	case evm.chainRules.IsFusaka:
-		// Fusaka currently inherits Osaka's precompile set.
 		precompiles = PrecompiledContractsFusaka
 	case evm.chainRules.IsOsaka:
-		// Osaka enables MODEXP EIP-7823/EIP-7883 and adds the P-256 precompile.
 		precompiles = PrecompiledContractsOsaka
 	case evm.chainRules.IsPectra:
-		// Pectra includes EIP-7702 (Account Abstraction) + all Prague precompiles
 		precompiles = PrecompiledContractsPectra
 	case evm.chainRules.IsPrague:
-		// Prague includes BLS precompiles (EIP-2537) + all Cancun precompiles
 		precompiles = PrecompiledContractsPrague
 	case evm.chainRules.IsCancun:
-		// Cancun includes point evaluation precompile (EIP-4844) + all Berlin precompiles
 		precompiles = PrecompiledContractsCancun
 	case evm.chainRules.IsBerlin:
 		precompiles = PrecompiledContractsBerlin
@@ -98,8 +93,16 @@ func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool)
 	default:
 		precompiles = PrecompiledContractsHomestead
 	}
-	p, ok := precompiles[addr]
-	return p, ok
+	if p, ok := precompiles[addr]; ok {
+		return p, true
+	}
+	// N42 extension: check PQ precompiles if enabled via independent config switch
+	if evm.chainRules.IsPQPrecompiles {
+		if p, ok := PrecompiledContractsPQ[addr]; ok {
+			return p, true
+		}
+	}
+	return nil, false
 }
 
 // run runs the given contract and takes care of running precompiles with a fallback to the byte code interpreter.

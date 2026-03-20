@@ -84,6 +84,7 @@ func TestEngineAPIBlobInputValidation(t *testing.T) {
 		Transactions:  []hexutil.Bytes{testBlobTxBytes(t, []types.Hash{expected})},
 		BlobGasUsed:   hexUint64Ptr(transaction.BlobTxBlobGasPerBlob),
 		ExcessBlobGas: hexUint64Ptr(0),
+		Withdrawals:   []*Withdrawal{},
 	}
 	resp, err = engine.NewPayloadV3(context.Background(), payload, []types.Hash{mismatch}, &root)
 	require.NoError(t, err)
@@ -377,6 +378,7 @@ func TestEngineAPIBlobRejectsOsakaPayloadAboveBlobGasAllowance(t *testing.T) {
 		Transactions:  []hexutil.Bytes{testBlobTxBytes(t, hashes)},
 		BlobGasUsed:   hexUint64Ptr(uint64(len(hashes)) * transaction.BlobTxBlobGasPerBlob),
 		ExcessBlobGas: hexUint64Ptr(0),
+		Withdrawals:   []*Withdrawal{},
 	}, hashes, &beaconRoot)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, resp.Status)
@@ -565,6 +567,7 @@ func TestEngineAPIv4InputValidation(t *testing.T) {
 		Transactions:  []hexutil.Bytes{testBlobTxBytes(t, []types.Hash{expected})},
 		BlobGasUsed:   hexUint64Ptr(transaction.BlobTxBlobGasPerBlob),
 		ExcessBlobGas: hexUint64Ptr(0),
+		Withdrawals:   []*Withdrawal{},
 	}
 	resp, err = engine.NewPayloadV4(context.Background(), payload, []types.Hash{mismatch}, &root, nil)
 	require.NoError(t, err)
