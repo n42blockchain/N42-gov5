@@ -27,6 +27,12 @@ package jmt
 //   - ExtensionNode: path-compressed chain of single-child internals
 //
 // All nodes are content-addressed: stored and looked up by Blake3(serialized).
+//
+// NOT THREAD SAFE: Tree methods must not be called concurrently.
+// The caller is responsible for external synchronization if the tree
+// is shared across goroutines. This is consistent with IntraBlockState
+// and other per-block data structures in the N42 codebase.
+
 // DefaultNodeCacheSize is the default number of decoded nodes to cache.
 const DefaultNodeCacheSize = 16384
 

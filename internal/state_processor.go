@@ -58,11 +58,14 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 // Process processes the state changes according to the Ethereum rules by running
 // the transaction messages and applying rewards. Returns receipts, unpaid rewards,
 // logs, and total gas used.
-func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (block.Receipts, map[types.Address]*uint256.Int, []*block.Log, uint64, error) {
+func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (_ block.Receipts, _ map[types.Address]*uint256.Int, _ []*block.Log, _ uint64, retErr error) {
 	processStart := time.Now()
 	defer func() {
-		metrics.BlockProcessingSeconds.UpdateDuration(processStart)
-		metrics.BlockTxCount.Add(len(b.Transactions()))
+		// Only record metrics on successful block processing to avoid skewing data.
+		if retErr == nil {
+			metrics.BlockProcessingSeconds.UpdateDuration(processStart)
+			metrics.BlockTxCount.Add(len(b.Transactions()))
+		}
 	}()
 	blockNumber, err := requireBlockNumber(b, "block number unavailable")
 	if err != nil {
