@@ -103,6 +103,12 @@ func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool)
 			return p, true
 		}
 	}
+	// N42 extension: content-addressed storage precompile
+	if evm.chainRules.IsContentStore {
+		if p, ok := PrecompiledContractsCAS[addr]; ok {
+			return p, true
+		}
+	}
 	return nil, false
 }
 
@@ -148,6 +154,15 @@ type EVM struct {
 	// precompileRegistry provides precompile lookup (optional, for dependency wiring).
 	// If nil, falls back to legacy global maps.
 	precompileRegistry PrecompileRegistry
+
+	// contentStoreDB provides access to the content-addressed storage table.
+	// Set at block processing time when the CAS precompile is enabled.
+	contentStoreDB ContentStoreDB
+}
+
+// SetContentStoreDB sets the content-addressed storage database accessor.
+func (evm *EVM) SetContentStoreDB(db ContentStoreDB) {
+	evm.contentStoreDB = db
 }
 
 // NewEVM returns a new EVM. The returned EVM is not thread safe and should
@@ -310,7 +325,19 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 
 	// It is allowed to call precompiles, even via delegatecall
 	if isPrecompile {
-		ret, gas, err = RunPrecompiledContract(p, input, gas)
+		// Check for stateful CAS precompile
+		if cas, ok := p.(*contentStore); ok && evm.contentStoreDB != nil {
+			gasCost := cas.RequiredGas(input)
+			if gas < gasCost {
+				ret, gas, err = nil, 0, ErrOutOfGas
+			} else {
+				gas -= gasCost
+				readOnly := typ == STATICCALL
+				ret, err = cas.RunWithDB(evm.contentStoreDB, input, readOnly)
+			}
+		} else {
+			ret, gas, err = RunPrecompiledContract(p, input, gas)
+		}
 	} else if len(code) == 0 {
 		// If the account has no code, we can abort here
 		// The depth-check is already done, and precompiles handled above
