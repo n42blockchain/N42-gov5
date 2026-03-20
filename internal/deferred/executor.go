@@ -49,6 +49,9 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
+// sentinel for double-close protection
+var closedSentinel = struct{}{}
+
 // ExecutionResult holds the outcome of executing a block's transactions.
 type ExecutionResult struct {
 	// BlockNumber is the block that was executed.
@@ -113,9 +116,10 @@ type Executor struct {
 	// lastQueued tracks the highest block number queued for execution.
 	lastQueued atomic.Uint64
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	stopOnce sync.Once // guards double-close of queue channel
 }
 
 type executionJob struct {
@@ -153,9 +157,10 @@ func (e *Executor) Start() {
 }
 
 // Stop gracefully shuts down the executor, waiting for in-flight work.
+// Safe to call multiple times.
 func (e *Executor) Stop() {
 	e.cancel()
-	close(e.queue)
+	e.stopOnce.Do(func() { close(e.queue) })
 	e.wg.Wait()
 	log.Info("Deferred executor stopped", "lastExecuted", e.lastExecuted.Load())
 }
@@ -164,6 +169,11 @@ func (e *Executor) Stop() {
 // This is called by the consensus layer after agreeing on transaction ordering.
 // It blocks if the queue is full (backpressure from execution to consensus).
 func (e *Executor) Submit(blockNumber uint64, blockHash types.Hash) error {
+	// Check context first to avoid send-on-closed-channel panic
+	// when Stop() has been called concurrently.
+	if e.ctx.Err() != nil {
+		return e.ctx.Err()
+	}
 	select {
 	case e.queue <- executionJob{blockNumber: blockNumber, blockHash: blockHash}:
 		e.lastQueued.Store(blockNumber)
@@ -238,11 +248,15 @@ func (e *Executor) worker(id int) {
 	for job := range e.queue {
 		start := time.Now()
 		result, err := e.executeFn(e.ctx, job.blockNumber, job.blockHash)
-		if err != nil {
+		if err != nil || result == nil {
+			errMsg := err
+			if errMsg == nil {
+				errMsg = fmt.Errorf("executeFn returned nil result")
+			}
 			result = &ExecutionResult{
 				BlockNumber:   job.blockNumber,
 				BlockHash:     job.blockHash,
-				Error:         fmt.Errorf("execution failed: %w", err),
+				Error:         fmt.Errorf("execution failed: %w", errMsg),
 				ExecutionTime: time.Since(start),
 			}
 		} else {
@@ -253,7 +267,16 @@ func (e *Executor) worker(id int) {
 		e.results[job.blockNumber] = result
 		e.mu.Unlock()
 
-		e.lastExecuted.Store(job.blockNumber)
+		// Monotonic update: only advance lastExecuted if this block is higher
+		for {
+			old := e.lastExecuted.Load()
+			if job.blockNumber <= old {
+				break
+			}
+			if e.lastExecuted.CompareAndSwap(old, job.blockNumber) {
+				break
+			}
+		}
 
 		if result.Error != nil {
 			log.Error("Deferred execution failed",

@@ -46,6 +46,7 @@ type Tree struct {
 	// accessible without going to the store.
 	nodeCache    map[Hash]*nodeCacheEntry
 	nodeCacheCap int
+	nodeCacheSeq uint64 // per-tree sequence counter for LRU eviction
 }
 
 type nodeCacheEntry struct {
@@ -501,8 +502,6 @@ func (t *Tree) storeNode(n *Node) Hash {
 }
 
 // loadNode retrieves a node by hash, checking dirty buffer first, then store.
-var nodeCacheSeq uint64
-
 func (t *Tree) loadNode(h Hash) (*Node, error) {
 	// 1. Check dirty buffer (uncommitted writes)
 	if data, ok := t.dirty[h]; ok {
@@ -511,8 +510,8 @@ func (t *Tree) loadNode(h Hash) (*Node, error) {
 	// 2. Check parsed node cache (avoids re-decode + store lookup)
 	if t.nodeCache != nil {
 		if entry, ok := t.nodeCache[h]; ok {
-			nodeCacheSeq++
-			entry.seq = nodeCacheSeq
+			t.nodeCacheSeq++
+			entry.seq = t.nodeCacheSeq
 			return entry.node, nil
 		}
 	}
@@ -536,13 +535,13 @@ func (t *Tree) cacheNode(h Hash, n *Node) {
 	if t.nodeCache == nil || t.nodeCacheCap <= 0 {
 		return
 	}
-	nodeCacheSeq++
-	t.nodeCache[h] = &nodeCacheEntry{node: n, seq: nodeCacheSeq}
+	t.nodeCacheSeq++
+	t.nodeCache[h] = &nodeCacheEntry{node: n, seq: t.nodeCacheSeq}
 
 	// Simple eviction: when over capacity, remove the oldest entry
 	if len(t.nodeCache) > t.nodeCacheCap {
 		var oldestHash Hash
-		oldestSeq := nodeCacheSeq
+		oldestSeq := t.nodeCacheSeq
 		for k, v := range t.nodeCache {
 			if v.seq < oldestSeq {
 				oldestSeq = v.seq

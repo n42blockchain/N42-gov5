@@ -4,6 +4,7 @@
 package hotstuff
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 
@@ -93,7 +94,7 @@ func (vs *ValidatorSet) Addresses() []types.Address {
 		addrs[i] = v.Address
 	}
 	sort.Slice(addrs, func(i, j int) bool {
-		return addrs[i].Hex() < addrs[j].Hex()
+		return bytes.Compare(addrs[i][:], addrs[j][:]) < 0
 	})
 	return addrs
 }
