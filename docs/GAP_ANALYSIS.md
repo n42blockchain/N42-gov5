@@ -139,7 +139,7 @@
 |------|------|------|------------|-----|-------|-------|---------|
 | **协议栈** | DevP2P | DevP2P | DevP2P+libp2p(Caplin) | libp2p (Tendermint) | 自研 | 自研 | libp2p |
 | **eth/68 (TX announce)** | ✅ | ✅ | ✅ | N/A | N/A | N/A | ✅ |
-| **eth/69 (history expiry)** | ✅ v1.16 | ✅ | ✅ v3.2+ | N/A | N/A | N/A | ❌ |
+| **eth/69 (history expiry)** | ✅ v1.16 | ✅ | ✅ v3.2+ | N/A | N/A | N/A | ✅ 语义等价 (libp2p Status.EarliestBlock + range handler 门控) |
 | **Snap Protocol** | ✅ | ✅ | ✅ OtterSync(BT) | N/A | N/A | N/A | ✅ 完整实现 (service+manager+tasks+verify+progress+metrics) |
 | **Blob Sidecar P2P** | ✅ | ✅ | ✅ Caplin gossipsub | N/A | N/A | N/A | ✅ gossip+RPC |
 | **Witness Protocol** | 🔧 | 🔧 | ❌ | N/A | N/A | N/A | ✅ P2P handler + RPC API |
@@ -162,7 +162,7 @@
 | 功能 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |------|------|------|------------|-----|-------|-------|---------|
 | **共识引擎** | PoS (Beacon) | PoS (Beacon) | PoS(Caplin内置CL) | Tendermint/CometBFT | MonadBFT | AptosBFT (Jolteon) | APoA/APoS/**HotStuff-2 BFT** |
-| **Engine API v1-v4** | ✅ 完整 | ✅ 完整 | ✅ 完整(+Caplin) | N/A | N/A | N/A | ⚠️ v4 存在 |
+| **Engine API v1-v4** | ✅ 完整 | ✅ 完整 | ✅ 完整(+Caplin) | N/A | N/A | N/A | ✅ v1-v4 完整 (含 getBlobsV1 + getPayloadBodies) |
 | **内置共识层** | ❌ 需外部CL | ❌ 需外部CL | ✅ Caplin默认 | ✅ CometBFT | ✅ | ✅ | ✅ APoA/APoS |
 | **Proposer-Builder Separation** | ✅ MEV-Boost | ✅ | ✅ MEV-Boost | ❌ | ❌ | ❌ | ✅ MEV-Boost Relay |
 | **Slot-based 出块** | ✅ 12s | ✅ 12s | ✅ 12s | ✅ ~400ms (Giga: sub-400ms) | ✅ 400ms | ✅ ~160ms (Raptr) | ✅ 8s (period) |
@@ -203,7 +203,7 @@
 | **trace_* 命名空间** | ✅ | ✅ (Parity 兼容) | ✅ OE兼容 | ❌ | ❌ | N/A | ✅ |
 | **GraphQL API** | ✅ EIP-1767 | ❌ | ✅ --graphql | ❌ | ❌ | ✅ 自研 | ✅ EIP-1767 |
 | **Otterscan API** | ❌ | ✅ | ✅ 原生集成 | ❌ | ❌ | N/A | ❌ |
-| **Engine API (完整)** | ✅ v1-v4 | ✅ v1-v4 | ✅ v1-v4+Caplin | N/A | N/A | N/A | ⚠️ v4 |
+| **Engine API (完整)** | ✅ v1-v4 | ✅ v1-v4 | ✅ v1-v4+Caplin | N/A | N/A | N/A | ✅ v1-v4 完整 |
 | **Admin API** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ import/export + DB inspect + state dump + debug RPC |
 | **Bloom Bits 索引** | ✅ | ✅ | ✅ receipt持久化 | ❌ | ❌ | N/A | ✅ roaring bitmap |
 | **Subscribe (WS)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |

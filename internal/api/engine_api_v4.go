@@ -21,10 +21,12 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"math/big"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm"
@@ -299,11 +301,154 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	return validForkchoiceResponse(headHash, &payloadID), nil
 }
 
-// GetBlobsV1 retrieves blob sidecars by versioned hashes
+// GetBlobsV1 retrieves blob sidecars by versioned hashes.
 // engine_getBlobsV1 (new in Pectra)
-func (e *EngineAPIv4) GetBlobsV1(ctx context.Context, versionedHashes []types.Hash) (*BlobAndProofV1, error) {
-	// TODO: Implement blob retrieval by hash
-	return nil, errBlobNotFound
+//
+// Per Engine API spec: returns an array of BlobAndProofV1 entries
+// matching the requested versioned hashes. Entries are null if the
+// blob is not available locally.
+func (e *EngineAPIv4) GetBlobsV1(ctx context.Context, versionedHashes []types.Hash) ([]*BlobAndProofV1, error) {
+	if len(versionedHashes) == 0 {
+		return []*BlobAndProofV1{}, nil
+	}
+
+	// Search through built payloads' blob bundles for matching hashes.
+	overlay := e.blobAPI().v1().overlay()
+	results := make([]*BlobAndProofV1, len(versionedHashes))
+
+	if overlay == nil {
+		return results, nil // all null entries
+	}
+
+	// Build an index of versioned hash → (blob, commitment, proof) from all
+	// built payloads. This is a scan over recently built payloads, which is
+	// bounded by maxOverlayPayloads.
+	type blobEntry struct {
+		blob       hexutil.Bytes
+		commitment hexutil.Bytes
+		proof      hexutil.Bytes
+	}
+	blobIndex := make(map[types.Hash]*blobEntry)
+
+	overlay.mu.RLock()
+	for _, built := range overlay.builtPayloads {
+		if built == nil || built.blobsBundle == nil {
+			continue
+		}
+		bundle := built.blobsBundle
+		for i := 0; i < len(bundle.Commitments) && i < len(bundle.Blobs) && i < len(bundle.Proofs); i++ {
+			// Compute versioned hash from commitment: SHA256(commitment)[1:] with version prefix
+			if len(bundle.Commitments[i]) >= 48 {
+				vHash := computeVersionedHash(bundle.Commitments[i])
+				blobIndex[vHash] = &blobEntry{
+					blob:       bundle.Blobs[i],
+					commitment: bundle.Commitments[i],
+					proof:      bundle.Proofs[i],
+				}
+			}
+		}
+	}
+	overlay.mu.RUnlock()
+
+	// Match requested hashes
+	for i, h := range versionedHashes {
+		if entry, ok := blobIndex[h]; ok {
+			results[i] = &BlobAndProofV1{
+				Blob:       entry.blob,
+				Commitment: entry.commitment,
+				Proof:      entry.proof,
+			}
+		}
+		// else: results[i] remains nil (blob not available)
+	}
+
+	return results, nil
+}
+
+// computeVersionedHash computes a versioned hash from a KZG commitment.
+// versionedHash = 0x01 || SHA256(commitment)[1:]
+func computeVersionedHash(commitment []byte) types.Hash {
+	h := sha256.Sum256(commitment)
+	h[0] = 0x01 // KZG version byte
+	return types.Hash(h)
+}
+
+// GetPayloadBodiesByHashV1 returns execution payload bodies for the given block hashes.
+// engine_getPayloadBodiesByHashV1
+func (e *EngineAPIv4) GetPayloadBodiesByHashV1(ctx context.Context, hashes []types.Hash) ([]*ExecutionPayloadBodyV1, error) {
+	results := make([]*ExecutionPayloadBodyV1, len(hashes))
+
+	overlay := e.blobAPI().v1().overlay()
+	if overlay == nil {
+		return results, nil
+	}
+
+	overlay.mu.RLock()
+	defer overlay.mu.RUnlock()
+
+	for i, hash := range hashes {
+		blk, ok := overlay.blocksByHash[hash]
+		if !ok || blk == nil {
+			continue
+		}
+		body := payloadBodyFromBlock(blk)
+		results[i] = body
+	}
+	return results, nil
+}
+
+// GetPayloadBodiesByRangeV1 returns execution payload bodies for a range of blocks.
+// engine_getPayloadBodiesByRangeV1
+func (e *EngineAPIv4) GetPayloadBodiesByRangeV1(ctx context.Context, start hexutil.Uint64, count hexutil.Uint64) ([]*ExecutionPayloadBodyV1, error) {
+	if count == 0 || count > 1024 {
+		if count > 1024 {
+			count = 1024
+		}
+		if count == 0 {
+			return []*ExecutionPayloadBodyV1{}, nil
+		}
+	}
+
+	results := make([]*ExecutionPayloadBodyV1, count)
+
+	overlay := e.blobAPI().v1().overlay()
+	if overlay == nil {
+		return results, nil
+	}
+
+	overlay.mu.RLock()
+	defer overlay.mu.RUnlock()
+
+	for i := uint64(0); i < uint64(count); i++ {
+		num := uint64(start) + i
+		blk, ok := overlay.blocksByNum[num]
+		if !ok || blk == nil {
+			continue
+		}
+		results[i] = payloadBodyFromBlock(blk)
+	}
+	return results, nil
+}
+
+// ExecutionPayloadBodyV1 is the response type for getPayloadBodies methods.
+type ExecutionPayloadBodyV1 struct {
+	Transactions []hexutil.Bytes `json:"transactions"`
+	Withdrawals  []*Withdrawal   `json:"withdrawals"`
+}
+
+// payloadBodyFromBlock extracts the payload body from a block.
+func payloadBodyFromBlock(blk block.IBlock) *ExecutionPayloadBodyV1 {
+	txs := blk.Transactions()
+	encodedTxs := make([]hexutil.Bytes, len(txs))
+	for i, tx := range txs {
+		if data, err := tx.Marshal(); err == nil {
+			encodedTxs[i] = data
+		}
+	}
+	return &ExecutionPayloadBodyV1{
+		Transactions: encodedTxs,
+		Withdrawals:  []*Withdrawal{}, // N42 uses deposit contracts instead of protocol withdrawals
+	}
 }
 
 // =============================================================================
