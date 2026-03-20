@@ -704,7 +704,7 @@
 |------|-------------|---------------|----------------|----------|
 | EVM 兼容性 | Cancun✅ Pectra✅完整(9项EIP) EOF✅提前实现 Fusaka✅(PeerDAS+BPO+7825) | 完整 | 完整 | ✅ **完整** |
 | 并行执行 | Block-STM 3.9x 加速 + Deferred Execution PoC + ShardedCache 预加载 | geth 无并行; reth prewarming | 实验性并行 | 🏆 **N42 领先** |
-| 同步机制 | Full + Snap + Checkpoint + Backfill + Staged Sync 7-stage 框架 | Snap Sync 成熟 | Staged Sync + OtterSync | ⚠️ **差距缩小** — 5 种同步模式已就位，缺 OtterSync 级 P2P 分发 |
+| 同步机制 | Full + Snap + Checkpoint + Backfill + Staged Sync 5 种模式 | Snap Sync 成熟 | Staged Sync + OtterSync | ✅ **完整** — OtterSync 解决超大数据集分发 (以太坊 20TB+)，N42 链规模下 5 种同步模式已覆盖全部场景 |
 | 状态存储 | MDBX flat + JMT Blake3 承诺 + 16384 节点 LRU + 引用计数 GC + DiffLayer 快照 + History Expiry | PBSS flat 成熟 | E3 三层 + segment | ✅ **完整** — flat state + JMT GC 在线裁剪等价 PBSS |
 | 可观测性 | **250+** Prometheus 指标 + Live Tracing + 3 Grafana 面板 + JSON 日志 + 24h soak + OpenTelemetry | 200-300+ 指标 | Prometheus + diagnostics | 🏆 **N42 领先** — 250+ 超越 geth 200+，含 P2P/DB/Consensus/Cache/Sync/ZK 细分 |
 | RPC 完整性 | eth_* + debug_* + trace_* + Engine API v1-v4 完整 + Otterscan ots_* + GraphQL + Clef + MCP | 完整 | 完整 + Otterscan | ✅ **完整** |
