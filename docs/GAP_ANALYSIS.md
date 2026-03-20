@@ -101,8 +101,8 @@
 | **并行策略** | - | prefetch+warmup | 实验性并行 | Block-STM 变体 | 乐观调度 | 预分析 DAG | 原生 Block-STM | Wave Block-STM |
 | **状态预取** | ✅ prefetcher | ✅ parallel prewarming | ✅ ETL预处理 | ✅ | ✅ async I/O | N/A | ✅ | ✅ ShardedCache 预加载 |
 | **TX 依赖分析 (DAG)** | ❌ | ❌ | ❌ | ✅ | ❌ 乐观重试 | ✅ 核心特性 | ❌ 乐观重试 | ✅ access list DAG |
-| **Async I/O** | ❌ | ❌ | ❌ | ❌ | ✅ 核心特性 | ❌ | ❌ | ❌ |
-| **JIT/AOT EVM 编译** | ❌ | 🔧 实验 (revmc) | 🔧 E3++ C++20 | ❌ | ❌ | ❌ | N/A (Move) | ❌ |
+| **Async I/O** | ❌ | ❌ | ❌ | ❌ | ✅ 核心特性 | ❌ | ❌ | N/A (MDBX mmap 读路径已等价；Go 生态无成熟 io_uring 方案；Linux-only) |
+| **JIT/AOT EVM 编译** | ❌ | 🔧 实验 (revmc) | 🔧 E3++ C++20 | ❌ | ❌ | ❌ | N/A (Move) | N/A (Go 无 LLVM 绑定；热合约通过 precompile 替代；RISC-V EVM 用于 ZK 证明) |
 | **SIMD 优化** | ❌ | 🔧 实验 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 ### 3.2 EVM 兼容性与 EIP 支持
@@ -397,7 +397,7 @@
 | **内存池化** | ✅ sync.Pool | ✅ arena alloc | ✅ | ❌ | ✅ | ✅ | ✅ pool.go |
 | **零拷贝序列化** | ❌ | ✅ rkyv 实验 | ❌ | ❌ | ✅ | ✅ | ✅ Lazy+BufPool |
 | **NUMA 感知** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| **IO_uring** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| **IO_uring** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | N/A (MDBX mmap 等价读性能; Go 无成熟绑定) |
 | **Sparse Trie 缓存** | ❌ | ✅ 核心 | ❌ | ❌ | N/A | ❌ | ✅ JMT 节点 LRU (16384 entries) |
 | **批量 DB 写入** | ✅ | ✅ | ✅ ETL预处理 | ✅ | ✅ | ✅ | ✅ |
 | **ShardedCache** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ LayeredDB |
@@ -484,9 +484,9 @@
 |---|----------|------|----------|-----------|
 | 16 | **State Expiry** | 全行业零实现（以太坊 2028+ 预估）。N42 基础设施已预备：JMT GC 在线裁剪✅ + Witness 系统✅ + History Expiry✅。等待以太坊确定最终方案后跟进 | 以太坊 Hegotá (TBD) | 12-24 月（全栈变更） |
 | 17 | ~~**History Expiry (eth/69)**~~ | ✅ 已完成 — HistoryExpirer 后台引擎 + P2P 门控 + DB accessors + 配置, 8 测试 | - | - |
-| 18 | **Async I/O (io_uring)** | I/O 密集场景性能受限 | Monad | 4-6 周 |
-| 19 | **JIT/AOT EVM** | 热合约执行慢 | reth revmc | 研究阶段 |
-| 20 | **Portal Network** | 无轻客户端去中心化支持 | geth portal | 研究阶段 |
+| 18 | **Async I/O (io_uring)** | N/A — MDBX mmap 读路径已等价 async I/O；Go 无成熟 io_uring 绑定；Linux-only 限制跨平台；需自研数据库才有意义 | Monad (自研 MonadDB) | 不实现 |
+| 19 | **JIT/AOT EVM** | N/A — Go 生态无 LLVM 绑定；热合约可通过 precompile 替代；编译器 bug 风险导致共识分裂；每次 EIP 变更需同步更新编译器 | reth revmc (Rust+LLVM) | 不实现，持续监控 |
+| 20 | **Portal Network** | N/A — 轻客户端 + Witness P2P 已覆盖核心用例；geth 自身仅实验阶段；需引入第二套 P2P 网络栈 (3000+ LOC) | geth portal (实验) | 不实现 |
 
 ### 16.3 N42 独有优势（需保持/强化）
 
