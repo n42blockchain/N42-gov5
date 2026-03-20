@@ -54,6 +54,12 @@ type Config struct {
 	EncryptedPool    EncryptedPoolCfg    `json:"encrypted_pool" yaml:"encrypted_pool"`
 	ZKProverCfg      ZKProverCfg         `json:"zkprover" yaml:"zkprover"`
 	DeferredExec     DeferredExecConfig  `json:"deferred_exec" yaml:"deferred_exec"`
+
+	// Distributed infrastructure
+	CoprocessorCfg   CoprocessorCfg   `json:"coprocessor" yaml:"coprocessor"`
+	MessagingCfg     MessagingCfg     `json:"messaging" yaml:"messaging"`
+	StorageCfg       StorageCfg       `json:"storage" yaml:"storage"`
+	NotifyCfg        NotifyCfg        `json:"notify" yaml:"notify"`
 }
 
 func SaveConfigToFile(file string, config Config) error {

@@ -59,6 +59,10 @@ import (
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/deferred"
+	dcoprocessor "github.com/n42blockchain/N42/internal/distributed/coprocessor"
+	dmessaging "github.com/n42blockchain/N42/internal/distributed/messaging"
+	dnotify "github.com/n42blockchain/N42/internal/distributed/notify"
+	dstorage "github.com/n42blockchain/N42/internal/distributed/storage"
 	"github.com/n42blockchain/N42/lib/gointerfaces/remote"
 	"github.com/n42blockchain/N42/lib/kv/remotedbserver"
 	log3 "github.com/n42blockchain/N42/lib/log/v3"
@@ -152,8 +156,12 @@ type Node struct {
 	bundlerService  *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
 	peerdasService  *peerdas.Service        // PeerDAS (EIP-7594) data availability service (nil if disabled)
 	mcpServer        *mcp.Server             // MCP (Model Context Protocol) server for AI agents (nil if disabled)
-	deferredPipeline *deferred.Pipeline      // Deferred execution pipeline (nil if disabled)
-	grpcServer       *grpc.Server            // gRPC KV server for RPCDaemon (nil if disabled)
+	deferredPipeline   *deferred.Pipeline             // Deferred execution pipeline (nil if disabled)
+	grpcServer         *grpc.Server                  // gRPC KV server for RPCDaemon (nil if disabled)
+	coprocessorService *dcoprocessor.Service          // ZK coprocessor (nil if disabled)
+	messagingService   *dmessaging.Service            // Decentralized messaging (nil if disabled)
+	storageBridge      *dstorage.Bridge               // IPFS/Filecoin storage bridge (nil if disabled)
+	notifyService      *dnotify.Service               // Push notifications (nil if disabled)
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
@@ -985,6 +993,31 @@ func (n *Node) Start() error {
 		n.zkProverService.Start()
 	}
 
+	// Start distributed infrastructure services.
+	if n.config.CoprocessorCfg.Enabled {
+		svc, err := dcoprocessor.NewService(&n.config.CoprocessorCfg)
+		if err == nil {
+			n.coprocessorService = svc
+			svc.Start()
+			log.Info("ZK coprocessor service enabled")
+		}
+	}
+	if n.config.MessagingCfg.Enabled {
+		n.messagingService = dmessaging.NewService(&n.config.MessagingCfg)
+		n.messagingService.Start()
+		log.Info("Messaging relay service enabled")
+	}
+	if n.config.StorageCfg.Enabled {
+		n.storageBridge = dstorage.NewBridge(&n.config.StorageCfg)
+		n.storageBridge.Start()
+		log.Info("Storage bridge service enabled")
+	}
+	if n.config.NotifyCfg.Enabled {
+		n.notifyService = dnotify.NewService(&n.config.NotifyCfg)
+		n.notifyService.Start()
+		log.Info("Push notification service enabled")
+	}
+
 	// Start transaction generator if enabled
 	if n.config.DevCfg.TxGenEnabled {
 		n.startTxGenerator()
@@ -1278,7 +1311,23 @@ func (n *Node) stopServices() []error {
 			}
 			return nil
 		}},
-		// 2b. Deferred execution pipeline
+		// 2b. Distributed infrastructure
+		{"Distributed services", func() error {
+			if n.notifyService != nil {
+				n.notifyService.Stop()
+			}
+			if n.messagingService != nil {
+				n.messagingService.Stop()
+			}
+			if n.storageBridge != nil {
+				n.storageBridge.Stop()
+			}
+			if n.coprocessorService != nil {
+				n.coprocessorService.Stop()
+			}
+			return nil
+		}},
+		// 2c. Deferred execution pipeline
 		{"Deferred execution", func() error {
 			if n.deferredPipeline != nil {
 				n.deferredPipeline.Stop()
