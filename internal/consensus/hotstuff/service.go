@@ -139,6 +139,10 @@ func (s *Service) handleOutput(output EngineOutput) {
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
 		updateMetricsBlockCommitted(output.View)
+		// Mark pending reconfigurations as committed now that the block has a CommitQC.
+		if rm := s.engine.Engine().ReconfigManager(); rm != nil && rm.HasPendingChanges() {
+			rm.MarkCommitted()
+		}
 		s.persistState()
 	case OutputViewChanged:
 		log.Debug("hotstuff: view changed", "view", output.View)
