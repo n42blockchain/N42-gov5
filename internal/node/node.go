@@ -162,6 +162,7 @@ type Node struct {
 	messagingService   *dmessaging.Service            // Decentralized messaging (nil if disabled)
 	storageBridge      *dstorage.Bridge               // IPFS/Filecoin storage bridge (nil if disabled)
 	notifyService      *dnotify.Service               // Push notifications (nil if disabled)
+	web3Gateway        *api.Web3Gateway               // web3:// protocol gateway (nil if disabled)
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
@@ -1020,6 +1021,14 @@ func (n *Node) Start() error {
 		log.Info("Push notification service enabled")
 	}
 
+	// Start web3:// protocol gateway if configured.
+	if n.config.Web3GatewayCfg.Enabled {
+		n.web3Gateway = api.NewWeb3Gateway(n.api, &n.config.Web3GatewayCfg)
+		if err := n.web3Gateway.Start(); err != nil {
+			log.Error("web3:// gateway failed to start", "err", err)
+		}
+	}
+
 	// Start transaction generator if enabled
 	if n.config.DevCfg.TxGenEnabled {
 		n.startTxGenerator()
@@ -1313,7 +1322,14 @@ func (n *Node) stopServices() []error {
 			}
 			return nil
 		}},
-		// 2b. Distributed infrastructure
+		// 2b. web3:// gateway
+		{"web3 gateway", func() error {
+			if n.web3Gateway != nil {
+				n.web3Gateway.Stop()
+			}
+			return nil
+		}},
+		// 2c. Distributed infrastructure
 		{"Distributed services", func() error {
 			if n.notifyService != nil {
 				n.notifyService.Stop()

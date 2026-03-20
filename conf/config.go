@@ -55,6 +55,9 @@ type Config struct {
 	ZKProverCfg      ZKProverCfg         `json:"zkprover" yaml:"zkprover"`
 	DeferredExec     DeferredExecConfig  `json:"deferred_exec" yaml:"deferred_exec"`
 
+	// Web3 gateway
+	Web3GatewayCfg   Web3GatewayCfg   `json:"web3_gateway" yaml:"web3_gateway"`
+
 	// Distributed infrastructure
 	CoprocessorCfg   CoprocessorCfg   `json:"coprocessor" yaml:"coprocessor"`
 	MessagingCfg     MessagingCfg     `json:"messaging" yaml:"messaging"`
