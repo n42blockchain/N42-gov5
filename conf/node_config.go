@@ -66,6 +66,12 @@ type NodeConfig struct {
 	// Pre-loads sender, recipient, and access list state into cache.
 	Prefetch bool `json:"prefetch" yaml:"prefetch"`
 
+	// PrivateAPIAddr is the address to expose the gRPC KV service for RPCDaemon.
+	// When set (e.g., "127.0.0.1:9090"), the core node starts a gRPC server
+	// that RPCDaemon instances can connect to for remote database access.
+	// Leave empty to disable (default).
+	PrivateAPIAddr string `json:"private_api_addr" yaml:"private_api_addr"`
+
 	// JMTCommitment enables the Jellyfish Merkle Tree state commitment.
 	// When enabled, Header.Root is computed from a Blake3-based JMT
 	// instead of the legacy incremental Keccak hash.
