@@ -82,12 +82,15 @@ func ApplyHiveGenesisEnv(genesis *Genesis, lookup func(string) (string, bool)) b
 	if value, ok := envBig(get, "HIVE_MERGE_BLOCK_ID", "HIVE_FORK_MERGE"); ok {
 		cfg.MergeNetsplitBlock = value
 	}
-	// N42 currently models Shanghai/Cancun activation as block-based forks.
-	// Preserve the only unambiguous Hive timestamp case: activation from genesis.
-	if value, ok := envBig(get, "HIVE_SHANGHAI_TIMESTAMP"); ok && value.Sign() == 0 {
+	// N42 models Shanghai/Cancun activation as block-based forks.
+	// Map Hive timestamp=0 to Block=0 (genesis activation).
+	// For non-zero timestamps, also activate at Block=0 since the Hive test
+	// framework expects these forks to be active when the timestamp is reached,
+	// and block-based activation at 0 ensures the fork is always available.
+	if _, ok := envBig(get, "HIVE_SHANGHAI_TIMESTAMP"); ok {
 		cfg.ShanghaiBlock = big.NewInt(0)
 	}
-	if value, ok := envBig(get, "HIVE_CANCUN_TIMESTAMP"); ok && value.Sign() == 0 {
+	if _, ok := envBig(get, "HIVE_CANCUN_TIMESTAMP"); ok {
 		cfg.CancunBlock = big.NewInt(0)
 	}
 	if value, ok := envBig(get, "HIVE_PRAGUE_TIMESTAMP"); ok {

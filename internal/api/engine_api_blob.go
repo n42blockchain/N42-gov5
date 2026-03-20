@@ -358,8 +358,12 @@ type ForkchoiceStateV1 struct {
 
 func invalidPayloadResponse(reason string) *PayloadStatusV1 {
 	log.Info("Engine payload invalid", "reason", reason)
+	// Per Engine API spec, INVALID status MUST include latestValidHash.
+	// Use zero hash when the last valid block is unknown.
+	zeroHash := types.Hash{}
 	return &PayloadStatusV1{
 		Status:          PayloadStatusInvalid,
+		LatestValidHash: &zeroHash,
 		ValidationError: &reason,
 	}
 }
