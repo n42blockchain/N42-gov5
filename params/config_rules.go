@@ -33,6 +33,7 @@ type Rules struct {
 	IsEip1559FeeCollector                                   bool
 	IsParlia, IsStarknet, IsAura, IsBeijing                 bool
 	IsPQPrecompiles                                         bool // N42 extension: post-quantum precompiles enabled
+	IsContentStore                                          bool // N42 extension: content-addressed storage precompile
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -72,6 +73,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsAura:                c.Aura != nil,
 		IsBeijing:             c.IsBeijing(num),
 		IsPQPrecompiles:       c.IsPQPrecompiles(timestamp),
+		IsContentStore:        c.IsContentStore(timestamp),
 	}
 	rules.applyForkInheritance()
 	return rules
@@ -231,6 +233,11 @@ func (c *ChainConfig) IsFusaka(time uint64) bool {
 // This is an N42-specific extension independent of standard Ethereum forks.
 func (c *ChainConfig) IsPQPrecompiles(time uint64) bool {
 	return isForked(c.PQPrecompilesTime, time)
+}
+
+// IsContentStore returns whether time is at or past the content-addressed storage precompile activation.
+func (c *ChainConfig) IsContentStore(time uint64) bool {
+	return isForked(c.ContentStoreTime, time)
 }
 
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.

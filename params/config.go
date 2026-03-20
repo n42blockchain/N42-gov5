@@ -170,6 +170,11 @@ type ChainConfig struct {
 	// are NOT part of any standard Ethereum fork surface.
 	PQPrecompilesTime *big.Int `json:"pqPrecompilesTime,omitempty"`
 
+	// N42 extension: content-addressed storage precompile (0x0300).
+	// When set, the CAS precompile becomes available for storing/loading
+	// arbitrary data by content hash at the specified timestamp.
+	ContentStoreTime *big.Int `json:"contentStoreTime,omitempty"`
+
 	BlobSchedule *BlobSchedule `json:"blobSchedule,omitempty"`
 
 	// BSC / custom fork fields
