@@ -446,47 +446,77 @@
 
 > *Aptos 使用 Move VM，非直接可比
 
-### 16.2 按紧迫度分层的缺失功能
+### 16.2 按紧迫度分层的功能状态
 
-#### P0 — 生产环境必须补齐
+> 截至 2026-03-20。已完成项保留记录以体现完整演进轨迹。
 
-| # | 缺失功能 | 影响 | 参考实现 | 预估工作量 |
-|---|----------|------|----------|-----------|
-| 1 | ~~**Snapshot 加速层**~~ | ✅ 已完成 — DiffLayer 树 + DiskLayer + SnapshotStateReader + 启动缓存预热 + DiffCollector + 指标, 18 测试 | - | - |
-| 2 | ~~**Bloom Bits 索引**~~ | ✅ 已完成 — LogTopicIndex/LogAddressIndex roaring bitmap + indexedLogs 集成, 3 测试 | - | - |
-| 3 | ~~**Panic Recovery 全覆盖**~~ | ✅ 已完成 — SafeGo 工具 + 8 处关键 goroutine 修复 | - | - |
-| 4 | ~~**Fuzzing 测试基础设施**~~ | ✅ 已完成 — 29 fuzz 函数(RLP/ABI/SSZ/EVM Precompile), 4 文件 | - | - |
+#### P0 — 生产环境基线（全部已完成 ✅）
 
-#### P1 — 竞争力关键
+| # | 功能 | 状态 |
+|---|------|------|
+| 1 | Snapshot 加速层 | ✅ DiffLayer 树 + DiskLayer + MDBX 持久化, 38 测试 |
+| 2 | Bloom/Log 索引 | ✅ roaring bitmap (LogTopicIndex + LogAddressIndex), eth_getLogs 索引路径 |
+| 3 | Panic Recovery | ✅ SafeGo + 8 处关键 goroutine |
+| 4 | Fuzzing 测试 | ✅ 29 fuzz 函数 |
+| 5 | Engine API v1-v4 | ✅ 完整 (含 getBlobsV1 + getPayloadBodies) |
+| 6 | eth_getProof | ✅ 真实 JMT Merkle 证明 (account + storage) |
+| 7 | PQ 预编译隔离 | ✅ ChainConfig.PQPrecompilesTime 独立开关, 标准 fork 零感知 |
+| 8 | 安全审计 | ✅ 3 轮深度审计, 47+ bug 修复 (CRITICAL/HIGH/MEDIUM) |
 
-| # | 缺失功能 | 影响 | 参考实现 | 预估工作量 |
-|---|----------|------|----------|-----------|
-| 5 | ~~**TX DAG 分析**~~ | ✅ 已完成 — DAG builder + DAGExecutor + Block-STM 验证安全网, 20 测试 + benchmarks | - | - |
-| 6 | ~~**Checkpoint Sync**~~ | ✅ 已完成 — config + service + snap sync 集成, 8 测试 | - | - |
-| 7 | ~~**Grafana Dashboard 模板**~~ | ✅ 已完成 — n42_advanced.json (7 分组, 20+ 面板) | - | - |
-| 8 | ~~**OpenTelemetry 集成**~~ | ✅ 已完成 — OTLP/HTTP exporter + 4 处 span (RPC/Block/TxPool/P2P), 9 测试 | - | - |
-| 9 | ~~**动态 TxPool 大小**~~ | ✅ 已完成 — 内存感知动态调整, 85%/70% 滞环策略 | - | - |
-| 10 | ~~**Blob Sidecar P2P**~~ | ✅ 已完成 — gossip topic + RPC handlers + 存储 + SSZ 编码, 5 测试 | - | - |
+#### P1 — 竞争力关键（全部已完成 ✅）
 
-#### P2 — 差异化竞争
+| # | 功能 | 状态 |
+|---|------|------|
+| 9 | Block-STM 并行 EVM | ✅ Wave executor + DAG + MVS, 23 测试 + benchmarks |
+| 10 | Checkpoint Sync | ✅ trusted hash + service + snap sync 集成 |
+| 11 | Backfill Sync | ✅ 后台历史回填 (checkpoint→genesis, 批量 P2P 下载) |
+| 12 | Staged Sync 框架 | ✅ 7 stage pipeline + forward/unwind/prune + MDBX 持久化 |
+| 13 | Grafana Dashboard | ✅ n42_advanced.json (7 分组, 20+ 面板) |
+| 14 | OpenTelemetry | ✅ OTLP/HTTP + 4 处 span |
+| 15 | 182+ Prometheus 指标 | ✅ EVM/Chain/Reorg/Fee/TxLifecycle/EngineAPI/RPC/JMT |
+| 16 | Live Tracing | ✅ liveTracer (实时 EVM 事件流, tracer directory 注册) |
+| 17 | Otterscan API | ✅ 完整 ots_* 命名空间 (blockDetails/searchTxs/contractCreator/txError) |
+| 18 | Receipt 持久化 | ✅ per-block + roaring bitmap 日志索引 + ReadReceiptByTxHash O(1) |
+| 19 | Blob Sidecar P2P | ✅ gossip + RPC + SSZ 编码 |
+| 20 | 动态 TxPool | ✅ 内存感知, 85%/70% 滞环策略 |
 
-| # | 缺失功能 | 影响 | 参考实现 | 预估工作量 |
-|---|----------|------|----------|-----------|
-| 11 | ~~**ExEx 执行扩展框架**~~ | ✅ 已完成 — Manager + Extension 接口 + LogExtension + blockchain 集成, 8 测试 | - | - |
-| 12 | ~~**Verkle Tree**~~ | ⚡ 战略废弃 — 以太坊自身正从 Verkle 转向 STARKed 二叉树(EIP-7864)，不具备量子抗性 | - | - |
-| 13 | ~~**Deferred Execution**~~ | ✅ 已完成 (PoC) — Executor + Pipeline, consensus-execution 分离, 可配置 worker pool, 三阶段架构, 6 测试 | - | - |
-| 14 | ~~**PeerDAS**~~ | ✅ 已完成 — 列分配 + 采样服务 + 列存储 + **go-eth-kzg KZG 真实验证** + ProduceColumns 转置 + 39 测试 | - | - |
-| 15 | ~~**零拷贝序列化**~~ | ✅ 已完成 — LazyReceipt/LazyHeader + BufPool + BatchRead, 28 测试+4 bench | - | - |
+#### P2 — 差异化竞争（全部已完成 ✅）
 
-#### P3 — 前瞻布局
+| # | 功能 | 状态 |
+|---|------|------|
+| 21 | ExEx 执行扩展 | ✅ Manager + Hook + LogExtension, 8 测试 |
+| 22 | Deferred Execution | ✅ Executor + Pipeline + EVM adapter + config 可启用 |
+| 23 | PeerDAS | ✅ 列采样 + KZG 真实验证 + 39 测试 |
+| 24 | 零拷贝序列化 | ✅ LazyReceipt/LazyHeader + BufPool, 28 测试 |
+| 25 | RPCDaemon 独立部署 | ✅ gRPC KV server + 独立二进制 |
+| 26 | HotStuff-2 验证者重配置 | ✅ commit-then-activate 协议 + RPC + MarkCommitted, 8 测试 |
+| 27 | JMT 稀疏 Trie 缓存 | ✅ 16384-entry LRU + 跨 payload 复用 |
+| 28 | JMT 引用计数 GC | ✅ 在线节点裁剪 (等价 PBSS), 测试显示 96% 废弃节点回收 |
+| 29 | SP1 zkVM 后端 | ✅ ProverClient 实现 + VerifySP1 + simulation smoke |
+| 30 | History Expiry (EIP-4444) | ✅ HistoryExpirer + P2P 门控 + earliestBlock 持久化 |
+| 31 | eth/69 语义等价 | ✅ libp2p StatusExt.EarliestBlock + range handler 门控 |
 
-| # | 缺失功能 | 影响 | 参考实现 | 预估工作量 |
-|---|----------|------|----------|-----------|
-| 16 | **State Expiry** | 全行业零实现（以太坊 2028+ 预估）。N42 基础设施已预备：JMT GC 在线裁剪✅ + Witness 系统✅ + History Expiry✅。等待以太坊确定最终方案后跟进 | 以太坊 Hegotá (TBD) | 12-24 月（全栈变更） |
-| 17 | ~~**History Expiry (eth/69)**~~ | ✅ 已完成 — HistoryExpirer 后台引擎 + P2P 门控 + DB accessors + 配置, 8 测试 | - | - |
-| 18 | **Async I/O (io_uring)** | N/A — MDBX mmap 读路径已等价 async I/O；Go 无成熟 io_uring 绑定；Linux-only 限制跨平台；需自研数据库才有意义 | Monad (自研 MonadDB) | 不实现 |
-| 19 | **JIT/AOT EVM** | N/A — Go 生态无 LLVM 绑定；热合约可通过 precompile 替代；编译器 bug 风险导致共识分裂；每次 EIP 变更需同步更新编译器 | reth revmc (Rust+LLVM) | 不实现，持续监控 |
-| 20 | **Portal Network** | N/A — 轻客户端 + Witness P2P 已覆盖核心用例；geth 自身仅实验阶段；需引入第二套 P2P 网络栈 (3000+ LOC) | geth portal (实验) | 不实现 |
+#### P3 — 不实现或等待（已评估，明确决策）
+
+| # | 功能 | 决策 | 理由 |
+|---|------|------|------|
+| 32 | Verkle Tree | ⚡ **战略废弃** | 以太坊从 Verkle 转向 STARKed 二叉树 (EIP-7864); JMT Blake3 已对齐新方向 |
+| 33 | State Expiry | 🔧 **等待** | 全行业零实现 (2028+); 基础设施已预备 (JMT GC + Witness + History Expiry) |
+| 34 | Async I/O | ❌ **不实现** | MDBX mmap 已等价读性能; Go 无成熟 io_uring; 需自研 DB 才有意义 |
+| 35 | JIT/AOT EVM | ❌ **不实现** | Go 无 LLVM; precompile 替代; 编译器 bug 致共识分裂风险 |
+| 36 | Portal Network | ❌ **不实现** | 轻客户端 + Witness P2P 已覆盖; geth 自身仅实验阶段 |
+| 37 | OP Stack | N/A | N42 是 L1; ExEx 可作为 L2 hook |
+| 38 | Fraud Proof | N/A | ZK proof (有效性证明) 严格强于 fraud proof (欺诈证明) |
+| 39 | JS Console | N/A | 过时; MCP Server + foundry/curl 替代 |
+| 40 | EVM CLI Tool | N/A | debug_traceCall RPC 替代 |
+| 41 | devp2p CLI | N/A | N42 用 libp2p; admin_peers 诊断 |
+| 42 | TxPool 独立进程 | N/A | RPCDaemon 已拆分 RPC 层; 边际收益 |
+| 43 | NUMA 感知 | N/A | Go runtime 不支持; 单 socket 零收益 |
+| 44 | 多提议者 | N/A | HotStuff 流水线已满足; 无生产验证; 研究前沿 |
+| 45 | Inclusion List (FOCIL) | N/A | 等 Glamsterdam; HotStuff 无 PBS 审查问题 |
+| 46 | Cosmos IBC | N/A | 非 Cosmos 链 |
+| 47 | 桥接/跨链消息 | N/A | 合约层实现; EVM 兼容性已支持标准桥接部署 |
+| 48 | Chain Abstraction | ❌ | 全行业零实现; 纯研究阶段 |
 
 ### 16.3 N42 独有优势（需保持/强化）
 
