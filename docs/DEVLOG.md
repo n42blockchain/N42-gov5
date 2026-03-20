@@ -1240,7 +1240,7 @@ prune:
 1. 重命名文件: `gasLimit.go` → `gas_limit.go`, `blake2bAVX2_amd64.go` → `blake2b_avx2_amd64.go`
 2. 修复包名: `astdb` → `amcdb`, `hash` → `pedersen_hash`
 3. `lib/rlp2` 包声明从 `rlp` 改为 `rlp2`（10 个文件），更新 2 个 importer
-4. 合约目录小写化: `contracts/deposit/{AMT,FUJI,NFT}` → `{amt,fuji,nft}`，更新 `node.go` 导入
+4. 合约目录小写化: `contracts/deposit/` 子目录规范化，更新 `node.go` 导入
 5. 目录重命名: `leaky-bucket` → `leakybucket`, `initial-sync` → `initialsync`，更新 4 个 importer
 6. `p2p/types` → `p2p/p2ptypes`，移除 9 个 importer 的冗余别名
 

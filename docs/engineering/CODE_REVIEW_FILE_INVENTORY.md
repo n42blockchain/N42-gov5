@@ -2675,9 +2675,9 @@ Excluded paths: `devtest/`, `mainnet/`, `n42data/`, `build/`, `bin/`, `coverage`
 
 #### `contracts/deposit` (16 files)
 
-- `contracts/deposit/amt/AMT.go`
+- `contracts/deposit/amt/deposit.go`
 - `contracts/deposit/contract.go`
-- `contracts/deposit/fuji/FUJI.go`
+- `contracts/deposit/fuji/deposit.go`
 - `contracts/deposit/nft/NFT.go`
 - `contracts/deposit/contract_test.go`
 - `contracts/deposit/amt/Deposit.sol`
