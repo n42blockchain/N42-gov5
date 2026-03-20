@@ -247,7 +247,8 @@ func isForked(s *big.Int, head uint64) bool {
 	if s == nil {
 		return false
 	}
-	return s.Uint64() <= head
+	// Use Cmp instead of Uint64() to avoid silent truncation for values > 2^64.
+	return s.Cmp(new(big.Int).SetUint64(head)) <= 0
 }
 
 // isForkIncompatible returns true if a fork scheduled at s1 cannot be rescheduled to
