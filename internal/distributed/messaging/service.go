@@ -239,7 +239,15 @@ func (s *Service) Publish(topic string, payload []byte, contentType string, send
 		return types.Hash{}, fmt.Errorf("rate limit exceeded for sender")
 	}
 
-	h := sha256.Sum256(append([]byte(topic), payload...))
+	// Length-prefixed hash to prevent (topic,payload) collision across boundaries
+	idHasher := sha256.New()
+	topicBytes := []byte(topic)
+	idHasher.Write([]byte{byte(len(topicBytes) >> 8), byte(len(topicBytes))})
+	idHasher.Write(topicBytes)
+	idHasher.Write(payload)
+	idHasher.Write([]byte(senderID))
+	var h [32]byte
+	copy(h[:], idHasher.Sum(nil))
 	msg := &Message{
 		ID:          types.Hash(h),
 		Topic:       topic,
@@ -285,10 +293,11 @@ func (s *Service) Stats() map[string]interface{} {
 
 func (s *Service) pruneLoop() {
 	defer s.wg.Done()
-	ticker := time.NewTicker(time.Duration(s.cfg.StoreTTLSec/2) * time.Second)
-	if s.cfg.StoreTTLSec <= 0 {
-		ticker = time.NewTicker(30 * time.Minute)
+	interval := time.Duration(s.cfg.StoreTTLSec/2) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Minute
 	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

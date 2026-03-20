@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,20 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/log"
 )
+
+// cidPattern validates CID format (CIDv0: Qm..., CIDv1: b..., bafy...)
+var cidPattern = regexp.MustCompile(`^(Qm[1-9A-HJ-NP-Za-km-z]{44,}|b[a-z2-7]{58,})$`)
+
+// validateCID checks that a CID string is well-formed and safe.
+func validateCID(cid string) error {
+	if cid == "" {
+		return fmt.Errorf("empty CID")
+	}
+	if !cidPattern.MatchString(cid) {
+		return fmt.Errorf("invalid CID format: %s", cid)
+	}
+	return nil
+}
 
 // ObjectStat holds metadata about a stored object.
 type ObjectStat struct {
@@ -52,7 +68,10 @@ func NewIPFSClient(apiAddr string, pinTimeout, getTimeout time.Duration, maxGetS
 
 // Pin pins a CID on the IPFS node.
 func (c *IPFSClient) Pin(ctx context.Context, cid string) error {
-	url := fmt.Sprintf("%s/api/v0/pin/add?arg=%s", c.apiBase, cid)
+	if err := validateCID(cid); err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/api/v0/pin/add?arg=%s", c.apiBase, url.QueryEscape(cid))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return err
@@ -71,7 +90,10 @@ func (c *IPFSClient) Pin(ctx context.Context, cid string) error {
 
 // Unpin removes a pin from the IPFS node.
 func (c *IPFSClient) Unpin(ctx context.Context, cid string) error {
-	url := fmt.Sprintf("%s/api/v0/pin/rm?arg=%s", c.apiBase, cid)
+	if err := validateCID(cid); err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/api/v0/pin/rm?arg=%s", c.apiBase, url.QueryEscape(cid))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return err
@@ -90,7 +112,10 @@ func (c *IPFSClient) Unpin(ctx context.Context, cid string) error {
 
 // Get retrieves data from IPFS by CID, limited by maxGetSize.
 func (c *IPFSClient) Get(ctx context.Context, cid string) ([]byte, error) {
-	url := fmt.Sprintf("%s/api/v0/cat?arg=%s", c.apiBase, cid)
+	if err := validateCID(cid); err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("%s/api/v0/cat?arg=%s", c.apiBase, url.QueryEscape(cid))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return nil, err
@@ -109,7 +134,10 @@ func (c *IPFSClient) Get(ctx context.Context, cid string) ([]byte, error) {
 
 // Stat returns metadata about an IPFS object.
 func (c *IPFSClient) Stat(ctx context.Context, cid string) (*ObjectStat, error) {
-	url := fmt.Sprintf("%s/api/v0/object/stat?arg=%s", c.apiBase, cid)
+	if err := validateCID(cid); err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("%s/api/v0/object/stat?arg=%s", c.apiBase, url.QueryEscape(cid))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return nil, err
