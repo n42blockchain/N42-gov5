@@ -45,8 +45,7 @@ func (tx *DynamicFeeTx) copy() TxData {
 		From:  copyAddressPtr(tx.From),
 		Data:  types.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
-		// These are copied below.
-		AccessList: make(AccessList, len(tx.AccessList)),
+		AccessList: copyAccessList(tx.AccessList),
 		Value:      new(uint256.Int),
 		ChainID:    new(uint256.Int),
 		GasTipCap:  new(uint256.Int),
@@ -54,12 +53,6 @@ func (tx *DynamicFeeTx) copy() TxData {
 		V:          new(uint256.Int),
 		R:          new(uint256.Int),
 		S:          new(uint256.Int),
-	}
-	for i, tuple := range tx.AccessList {
-		cpy.AccessList[i] = AccessTuple{
-			Address:     tuple.Address,
-			StorageKeys: append([]types.Hash(nil), tuple.StorageKeys...),
-		}
 	}
 	if tx.Value != nil {
 		cpy.Value.Set(tx.Value)
