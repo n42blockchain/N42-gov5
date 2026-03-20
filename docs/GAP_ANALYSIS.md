@@ -172,7 +172,7 @@
 | **BFT 共识 (两轮优化)** | ❌ | ❌ | ❌ | ✅ CometBFT | ✅ MonadBFT | ✅ Jolteon | ✅ HotStuff-2 |
 | **BLS 聚合签名** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ BLS12-381 |
 | **PQ-STARK 验证** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ 独有 |
-| **Withdrawal 处理** | ✅ | ✅ | ✅ | N/A | N/A | N/A | ❌ deposit 合约 |
+| **Withdrawal 处理** | ✅ | ✅ | ✅ | N/A | N/A | N/A | ⚠️ Engine API 传递✅ + Withdrawal 类型✅ + withdrawalsRoot 计算✅; 余额转移使用 deposit 合约 (AMT/FUJI/NFT) 替代以太坊原生 withdrawal 机制 |
 
 ### 关键差距
 
