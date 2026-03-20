@@ -197,7 +197,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
 	}
-	if err := e.blobAPI().v1().validatePayloadExecution(blk, payload.ParentHash); err != nil {
+	if err := e.blobAPI().v1().validatePayloadExecution(blk, payload.ParentHash, parentBeaconBlockRoot, executionRequests); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 	headHash := e.blobAPI().v1().currentHeadHash()
@@ -334,26 +334,54 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 			continue
 		}
 
+		var (
+			payloadLen int
+			reqSize    int
+		)
 		switch req[0] {
 		case DepositRequestType:
-			depositCount++
+			reqSize = vm.DepositRequestSize
+			payloadLen = len(payload.DepositRequests)
 		case WithdrawalRequestType:
-			withdrawalCount++
+			reqSize = vm.WithdrawalRequestSize
+			payloadLen = len(payload.WithdrawalRequests)
 		case ConsolidationRequestType:
-			consolidationCount++
+			reqSize = vm.ConsolidationRequestSize
+			payloadLen = len(payload.ConsolidationRequests)
 		default:
 			return errUnknownRequestType
 		}
+
+		if (len(req)-1)%reqSize != 0 {
+			return errInvalidRequestEncoding
+		}
+		count := (len(req) - 1) / reqSize
+		switch req[0] {
+		case DepositRequestType:
+			depositCount += count
+		case WithdrawalRequestType:
+			withdrawalCount += count
+		case ConsolidationRequestType:
+			consolidationCount += count
+		}
+		// Current Prague/Osaka fixtures provide the canonical request lists only
+		// via the fourth engine_newPayloadV4 parameter. The payload-local request
+		// arrays are legacy and may be omitted entirely.
+		if payloadLen > 0 && payloadLen != count {
+			return errRequestCountMismatch
+		}
 	}
 
-	// Verify counts match payload
-	if depositCount != len(payload.DepositRequests) {
+	// Only enforce count parity when legacy payload-local request arrays are
+	// explicitly populated. Current fixtures omit them and rely solely on the
+	// flattened executionRequests parameter.
+	if len(payload.DepositRequests) > 0 && depositCount != len(payload.DepositRequests) {
 		return errRequestCountMismatch
 	}
-	if withdrawalCount != len(payload.WithdrawalRequests) {
+	if len(payload.WithdrawalRequests) > 0 && withdrawalCount != len(payload.WithdrawalRequests) {
 		return errRequestCountMismatch
 	}
-	if consolidationCount != len(payload.ConsolidationRequests) {
+	if len(payload.ConsolidationRequests) > 0 && consolidationCount != len(payload.ConsolidationRequests) {
 		return errRequestCountMismatch
 	}
 
@@ -456,7 +484,8 @@ func (e *EngineAPIv4) GetForkCandidatesV1(ctx context.Context) (*ForkCandidateSt
 // =============================================================================
 
 var (
-	errBlobNotFound         = &engineError{"blob not found"}
-	errUnknownRequestType   = &engineError{"unknown request type"}
-	errRequestCountMismatch = &engineError{"request count mismatch"}
+	errBlobNotFound           = &engineError{"blob not found"}
+	errUnknownRequestType     = &engineError{"unknown request type"}
+	errInvalidRequestEncoding = &engineError{"invalid request encoding"}
+	errRequestCountMismatch   = &engineError{"request count mismatch"}
 )

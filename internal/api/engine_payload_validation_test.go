@@ -457,6 +457,46 @@ func TestValidateExecutionPayloadBlockRLPSizeRejectsOsakaOversize(t *testing.T) 
 	require.ErrorIs(t, err, vmcore.ErrRLPBlockSizeTooLarge)
 }
 
+func TestValidateExecutionRequestsAcceptsFlattenedGroupedEncoding(t *testing.T) {
+	t.Parallel()
+
+	payload := &ExecutionPayloadV4{
+		DepositRequests:       make([]DepositRequest, 2),
+		WithdrawalRequests:    make([]WithdrawalRequest, 1),
+		ConsolidationRequests: make([]ConsolidationRequest, 1),
+	}
+	requests := []hexutil.Bytes{
+		append([]byte{DepositRequestType}, make([]byte, vmcore.DepositRequestSize*2)...),
+		append([]byte{WithdrawalRequestType}, make([]byte, vmcore.WithdrawalRequestSize)...),
+		append([]byte{ConsolidationRequestType}, make([]byte, vmcore.ConsolidationRequestSize)...),
+	}
+
+	require.NoError(t, validateExecutionRequests(requests, payload))
+}
+
+func TestValidateExecutionRequestsAcceptsFlattenedGroupedEncodingWithoutLegacyPayloadFields(t *testing.T) {
+	t.Parallel()
+
+	payload := &ExecutionPayloadV4{}
+	requests := []hexutil.Bytes{
+		append([]byte{DepositRequestType}, make([]byte, vmcore.DepositRequestSize)...),
+	}
+
+	require.NoError(t, validateExecutionRequests(requests, payload))
+}
+
+func TestValidateExecutionRequestsRejectsTruncatedGroupedEncoding(t *testing.T) {
+	t.Parallel()
+
+	payload := &ExecutionPayloadV4{}
+	requests := []hexutil.Bytes{
+		append([]byte{DepositRequestType}, make([]byte, vmcore.DepositRequestSize-1)...),
+	}
+
+	err := validateExecutionRequests(requests, payload)
+	require.ErrorIs(t, err, errInvalidRequestEncoding)
+}
+
 func TestExecutionPayloadBlockRLPSizeWrapsTypedTransactions(t *testing.T) {
 	t.Parallel()
 

@@ -33,9 +33,13 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/params"
 )
 
 func TestSnapshotRandom(t *testing.T) {
@@ -46,6 +50,94 @@ func TestSnapshotRandom(t *testing.T) {
 		t.Errorf("%v:\n%s", test.err, test)
 	} else if err != nil {
 		t.Error(err)
+	}
+}
+
+func TestFinalizeTxDeletesCreatedSelfdestructedContract(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	addr := types.HexToAddress("0x10000000000000000000000000000000000000aa")
+	beneficiary := types.HexToAddress("0x10000000000000000000000000000000000000bb")
+	sentinel := types.HexToAddress("0x10000000000000000000000000000000000000dd")
+	db := memdb.NewTestDB(t)
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		writer := NewPlainStateWriter(tx, tx, 1)
+		orig := account.NewAccount()
+		sentinelAccount := account.NewAccount()
+		sentinelAccount.Nonce = 1
+		if err := writer.UpdateAccountData(sentinel, &orig, &sentinelAccount); err != nil {
+			return err
+		}
+
+		statedb := New(NewPlainState(tx, 1))
+		statedb.CreateAccount(addr, true)
+		statedb.SetCode(addr, []byte{0x60, 0x00})
+		statedb.SetBalance(addr, uint256.NewInt(3))
+		statedb.AddBalance(beneficiary, uint256.NewInt(3))
+		statedb.Selfdestruct6780(addr, beneficiary)
+
+		if !statedb.HasSelfdestructed(addr) {
+			t.Fatal("expected account to be marked selfdestructed before finalization")
+		}
+
+		if err := statedb.FinalizeTx(&params.Rules{IsSpuriousDragon: true}, writer); err != nil {
+			return err
+		}
+
+		if statedb.Exist(addr) {
+			t.Fatal("expected created+selfdestructed account to be removed after FinalizeTx")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = db.View(context.Background(), func(tx kv.Tx) error {
+		reloaded := New(NewPlainStateReader(tx))
+		if reloaded.Exist(addr) {
+			t.Fatal("expected created+selfdestructed account to stay deleted when reloaded")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCodeHashesSkipsCreatedSelfdestructedContract(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	addr := types.HexToAddress("0x10000000000000000000000000000000000000cc")
+	db := memdb.NewTestDB(t)
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		statedb := New(NewPlainState(tx, 1))
+		statedb.CreateAccount(addr, true)
+		statedb.SetCode(addr, []byte{0x60, 0x00})
+		statedb.SetBalance(addr, uint256.NewInt(1))
+		statedb.Selfdestruct6780(addr, types.Address{})
+		statedb.stateObjectsDirty[addr] = struct{}{}
+		statedb.BeginWriteCodes()
+
+		if got := statedb.CodeHashes(); len(got) != 0 {
+			t.Fatalf("expected no code hashes for created+selfdestructed contract, got %d", len(got))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/params"
 )
 
 // =============================================================================
@@ -347,6 +348,26 @@ func TestTransientStorageCopy(t *testing.T) {
 	}
 
 	t.Logf("✓ TransientStorage Copy works correctly")
+}
+
+func TestFinalizeTxClearsTransientStorage(t *testing.T) {
+	statedb := New(nil)
+	addr := types.HexToAddress("0x1234567890abcdef1234567890abcdef12345678")
+	key := types.HexToHash("0x01")
+	value := *uint256.NewInt(7)
+
+	statedb.SetTransientState(addr, key, value)
+	if got := statedb.GetTransientState(addr, key); got != value {
+		t.Fatalf("transient storage should contain written value before finalization, got %v", got)
+	}
+
+	if err := statedb.FinalizeTx(&params.Rules{}, NewNoopWriter()); err != nil {
+		t.Fatalf("FinalizeTx returned error: %v", err)
+	}
+
+	if got := statedb.GetTransientState(addr, key); got != (uint256.Int{}) {
+		t.Fatalf("transient storage should be cleared after finalization, got %v", got)
+	}
 }
 
 // =============================================================================

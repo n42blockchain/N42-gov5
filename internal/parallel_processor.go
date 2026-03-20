@@ -152,6 +152,9 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	if usedGas != concreteHeader.GasUsed {
 		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
 	}
+	if _, err := ProcessPragueSystemCalls(p.config, ibs, concreteHeader, p.engine); err != nil {
+		return nil, nil, nil, 0, err
+	}
 
 	// Finalize block (rewards, etc.) — operates on ibs which now has all changes.
 	var nopay map[types.Address]*uint256.Int

@@ -165,7 +165,7 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
 	}
-	if err := e.validatePayloadExecution(blk, payload.ParentHash); err != nil {
+	if err := e.validatePayloadExecution(blk, payload.ParentHash, nil, nil); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 	headHash := e.currentHeadHash()
@@ -209,7 +209,7 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
 	}
-	if err := e.validatePayloadExecution(blk, payload.ParentHash); err != nil {
+	if err := e.validatePayloadExecution(blk, payload.ParentHash, nil, nil); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 	headHash := e.currentHeadHash()

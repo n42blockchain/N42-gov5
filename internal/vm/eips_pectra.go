@@ -147,10 +147,12 @@ const (
 var SystemAddress = types.HexToAddress("0xfffffffffffffffffffffffffffffffffffffffe")
 
 // WithdrawalRequestsAddress is the address of the withdrawal requests contract (EIP-7002)
-var WithdrawalRequestsAddress = types.HexToAddress("0x00A3ca265EBcb825B45F985A16CEFB49958cE017")
+// aligned with the active Prague/Osaka execution-spec-tests fixtures.
+var WithdrawalRequestsAddress = types.HexToAddress("0x00000961EF480EB55E80D19AD83579A64C007002")
 
 // ConsolidationRequestsAddress is the address of the consolidation requests contract (EIP-7251)
-var ConsolidationRequestsAddress = types.HexToAddress("0x00b42dbF2194e931E80326D950320f7d9Dbeac02")
+// aligned with the active Prague/Osaka execution-spec-tests fixtures.
+var ConsolidationRequestsAddress = types.HexToAddress("0x0000BBDDC7CE488642FB579F8B00F3A590007251")
 
 // =============================================================================
 // EIP-7002: Execution Layer Triggerable Withdrawals (Pectra)
