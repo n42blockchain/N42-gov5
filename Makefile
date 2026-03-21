@@ -169,7 +169,7 @@ open-output:
 .PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef
 .PHONY: race bench cover check install tidy help test-cover test-verbose perf-baseline
 .PHONY: version version-bump version-minor version-major maturity-smoke maturity-baseline
-.PHONY: ops-smoke interop-smoke soak-smoke release-check
+.PHONY: ops-smoke interop-smoke soak-smoke release-check eest-log eest-watch
 
 # =============================================================================
 # 核心目标 (Core Targets)
@@ -194,6 +194,14 @@ test-short: go-version
 test-verbose: go-version
 	@echo "==> go test -v ./..."
 	$(GO) test -v ./...
+
+eest-log:
+	@if [ -z "$(LOG)" ]; then echo "Usage: make eest-log LOG=/abs/path/to/pytest.log"; exit 1; fi
+	@bash ./scripts/check_eest_log.sh "$(LOG)"
+
+eest-watch:
+	@if [ -z "$(LOG)" ]; then echo "Usage: make eest-watch LOG=/abs/path/to/pytest.log [INTERVAL=300]"; exit 1; fi
+	@bash ./scripts/watch_eest_log.sh "$(LOG)" --interval "$(or $(INTERVAL),300)"
 
 # =============================================================================
 # Race 检测 (Race Detection)

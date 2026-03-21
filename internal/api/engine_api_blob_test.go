@@ -590,8 +590,8 @@ func TestEngineAPIv4RejectsMalformedExecutionRequestsAsInvalidParams(t *testing.
 		Withdrawals:   []*Withdrawal{},
 	}
 	executionRequests := []hexutil.Bytes{
-		{ConsolidationRequestType},
-		{ConsolidationRequestType},
+		{ConsolidationRequestType, 0x01},
+		{ConsolidationRequestType, 0x02},
 	}
 
 	resp, err := engine.NewPayloadV4(context.Background(), payload, nil, &root, executionRequests)
