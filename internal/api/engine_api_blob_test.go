@@ -580,6 +580,29 @@ func TestEngineAPIv4InputValidation(t *testing.T) {
 	require.Equal(t, "missing forkchoice state", *forkchoiceResp.PayloadStatus.ValidationError)
 }
 
+func TestEngineAPIv4RejectsMalformedExecutionRequestsAsInvalidParams(t *testing.T) {
+	engine := NewEngineAPIv4(nil)
+	root := types.Hash{0x01}
+
+	payload := &ExecutionPayloadV4{
+		BlobGasUsed:   hexUint64Ptr(0),
+		ExcessBlobGas: hexUint64Ptr(0),
+		Withdrawals:   []*Withdrawal{},
+	}
+	executionRequests := []hexutil.Bytes{
+		{ConsolidationRequestType},
+		{ConsolidationRequestType},
+	}
+
+	resp, err := engine.NewPayloadV4(context.Background(), payload, nil, &root, executionRequests)
+	require.Nil(t, resp)
+	require.Error(t, err)
+	var codedErr interface{ ErrorCode() int }
+	require.ErrorAs(t, err, &codedErr)
+	require.Equal(t, -32602, codedErr.ErrorCode())
+	require.Contains(t, err.Error(), "execution requests not in ascending type order")
+}
+
 func TestEngineAPIBlobBuildsAndImportsMinimalPayloadV3(t *testing.T) {
 	t.Parallel()
 
