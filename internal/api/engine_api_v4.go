@@ -181,7 +181,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 
 	// Validate execution requests (EIP-7685)
 	if err := validateExecutionRequests(executionRequests, payload); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
+		return nil, &engineInvalidParamsError{msg: err.Error()}
 	}
 	requestsHash := executionRequestsHash(executionRequests)
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.blobAPI().v1().chainConfig(), enginePayloadHashOptions{

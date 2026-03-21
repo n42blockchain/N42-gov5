@@ -501,3 +501,15 @@ type engineError struct {
 func (e *engineError) Error() string {
 	return e.msg
 }
+
+type engineInvalidParamsError struct {
+	msg string
+}
+
+func (e *engineInvalidParamsError) Error() string {
+	return e.msg
+}
+
+func (e *engineInvalidParamsError) ErrorCode() int {
+	return -32602
+}
