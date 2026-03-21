@@ -33,7 +33,7 @@ func detectPublicIP() net.IP {
 		"https://ifconfig.me/ip",
 		"https://icanhazip.com",
 	}
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := &http.Client{Timeout: 2 * time.Second}
 	for _, svc := range services {
 		resp, err := client.Get(svc)
 		if err != nil {
