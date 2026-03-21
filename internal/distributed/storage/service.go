@@ -66,6 +66,28 @@ func NewIPFSClient(apiAddr string, pinTimeout, getTimeout time.Duration, maxGetS
 	}
 }
 
+// retryDo retries an HTTP request up to maxRetries times with exponential backoff.
+func (c *IPFSClient) retryDo(req *http.Request, maxRetries int) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt*attempt) * 100 * time.Millisecond)
+		}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode >= 500 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("IPFS: server error %d", resp.StatusCode)
+			continue
+		}
+		return resp, nil
+	}
+	return nil, fmt.Errorf("IPFS: max retries exceeded: %w", lastErr)
+}
+
 // Pin pins a CID on the IPFS node.
 func (c *IPFSClient) Pin(ctx context.Context, cid string) error {
 	if err := validateCID(cid); err != nil {

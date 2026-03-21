@@ -170,6 +170,17 @@ func (e *Engine) HostFunctions() *HostFunctions {
 	return e.hostFuncs
 }
 
+// Stats returns engine statistics.
+func (e *Engine) Stats() map[string]interface{} {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return map[string]interface{}{
+		"cacheSize":     len(e.cache),
+		"maxMemoryMB":   e.maxMemoryMB,
+		"gasMultiplier": e.gasMultiplier,
+	}
+}
+
 // Close releases all engine resources including cached modules.
 func (e *Engine) Close(ctx context.Context) error {
 	e.mu.Lock()

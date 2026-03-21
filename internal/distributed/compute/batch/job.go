@@ -86,6 +86,7 @@ type Job struct {
 	RetryLimit    int           `json:"retryLimit"`
 	CreatedAt     time.Time     `json:"createdAt"`
 	CompletedAt   time.Time     `json:"completedAt,omitempty"`
+	Deadline      time.Time     `json:"deadline,omitempty"`
 	Error         string        `json:"error,omitempty"`
 }
 
@@ -116,6 +117,23 @@ func NewMapReduceJob(submitter types.Address, mapProgram, reduceProgram types.Ha
 	job := NewJob(submitter, mapProgram, input, splitStrategy, parallelism)
 	job.ReduceHash = reduceProgram
 	return job
+}
+
+// IsExpired returns true if the job has passed its deadline.
+func (j *Job) IsExpired() bool {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if j.Deadline.IsZero() {
+		return false
+	}
+	return time.Now().After(j.Deadline)
+}
+
+// SetDeadline sets a deadline for job completion.
+func (j *Job) SetDeadline(d time.Time) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Deadline = d
 }
 
 // AddMapTask adds a map task to the job.
