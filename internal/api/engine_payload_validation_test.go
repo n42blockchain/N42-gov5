@@ -27,6 +27,12 @@ func mustEncodeEthereumTx(t *testing.T, tx *transaction.Transaction) hexutil.Byt
 	return hexutil.Bytes(data)
 }
 
+func mustDecodeRawEthereumTx(t *testing.T, raw string) hexutil.Bytes {
+	t.Helper()
+
+	return hexutil.MustDecode(raw)
+}
+
 func TestValidateExecutionPayloadTransactionsRejectsBlobWithoutHashes(t *testing.T) {
 	t.Parallel()
 
@@ -80,6 +86,21 @@ func TestValidateExecutionPayloadTransactionsRejectsSetCodeEmptyAuthList(t *test
 	require.ErrorIs(t, err, errSetCodeTxEmptyAuthList)
 }
 
+func TestValidateExecutionPayloadTransactionsAllowsSetCodeInvalidMaxAuthorizationChainID(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:     big.NewInt(1),
+		LondonBlock: big.NewInt(0),
+		PragueTime:  big.NewInt(0),
+		OsakaTime:   big.NewInt(0),
+	}
+	rawTx := mustDecodeRawEthereumTx(t, "0x04f8e101808007830186a0944c87531476694224c79671e2b844c2ab24c886cf8080c0f87cf87aa0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff944c87531476694224c79671e2b844c2ab24c885cf8001a08625888bf53285bd4d5ce133807c1fb66379dc1e90e58abe967536b684ebc423a03d78ea4353faec9eea32c2f96e6949d27371692491ad4a6adee93ded801653f680a01b8de583bb5be1de409ac4be6bb24983171a87aa0e1ce53723bceadf323ae755a00a20f06aacc0082260e195978bda197ab84987184bb11e3e7b86b433f414d253")
+
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{rawTx}, cfg, 1, 1000, 7, 0, 0x55d4a80)
+	require.NoError(t, err)
+}
+
 func TestValidateExecutionPayloadTransactionsAcceptsPragueSetCodeTx(t *testing.T) {
 	t.Parallel()
 
@@ -99,7 +120,7 @@ func TestValidateExecutionPayloadTransactionsAcceptsPragueSetCodeTx(t *testing.T
 		Value:     uint256.NewInt(0),
 		AuthList: transaction.AuthorizationList{
 			{
-				ChainID: 1,
+				ChainID: *uint256.NewInt(1),
 				Address: types.HexToAddress("0x0000000000000000000000000000000000000001"),
 				Nonce:   0,
 				V:       uint256.NewInt(0),
@@ -534,7 +555,7 @@ func TestExecutionPayloadBlockRLPSizeWrapsTypedTransactions(t *testing.T) {
 		Value:     uint256.NewInt(0),
 		AuthList: transaction.AuthorizationList{
 			{
-				ChainID: 1,
+				ChainID: *uint256.NewInt(1),
 				Address: types.HexToAddress("0x0000000000000000000000000000000000000001"),
 				Nonce:   0,
 				V:       uint256.NewInt(0),

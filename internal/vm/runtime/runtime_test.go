@@ -449,3 +449,202 @@ func TestCallResolvesDelegationCodeInPectra(t *testing.T) {
 		t.Fatalf("delegated call ADDRESS = %s, want %s", got, delegatedAddr)
 	}
 }
+
+func appendPush(code []byte, value uint64) []byte {
+	if value == 0 {
+		return append(code, byte(vm.PUSH0))
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], value)
+	i := 0
+	for i < len(buf) && buf[i] == 0 {
+		i++
+	}
+	n := len(buf) - i
+	code = append(code, byte(vm.PUSH1)+byte(n-1))
+	return append(code, buf[i:]...)
+}
+
+func appendPushAddress(code []byte, addr types.Address) []byte {
+	code = append(code, byte(vm.PUSH20))
+	return append(code, addr.Bytes()...)
+}
+
+func appendCall(code []byte, op vm.OpCode, addr types.Address) []byte {
+	code = appendPush(code, 0) // outSize
+	code = appendPush(code, 0) // outOffset
+	code = appendPush(code, 0) // inSize
+	code = appendPush(code, 0) // inOffset
+	if op == vm.CALL || op == vm.CALLCODE {
+		code = appendPush(code, 0) // value
+	}
+	code = appendPushAddress(code, addr)
+	code = append(code, byte(vm.GAS), byte(op))
+	return code
+}
+
+func appendSstore(code []byte, slot uint64) []byte {
+	code = appendPush(code, slot)
+	return append(code, byte(vm.SSTORE))
+}
+
+func TestCallIntoChainDelegatingSetCodeReturnsFailureWithoutInvalidatingOuterCall(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(tx, 1))
+
+	authSigner1 := types.HexToAddress("0x1000000000000000000000000000000000000011")
+	authSigner2 := types.HexToAddress("0x2000000000000000000000000000000000000022")
+	entry := types.HexToAddress("0x3000000000000000000000000000000000000033")
+	origin := types.HexToAddress("0x4000000000000000000000000000000000000044")
+
+	ibs.CreateAccount(authSigner1, true)
+	ibs.CreateAccount(authSigner2, true)
+	ibs.CreateAccount(entry, true)
+	ibs.SetCode(authSigner1, vm.AddressToDelegation(authSigner2))
+	ibs.SetCode(authSigner2, vm.AddressToDelegation(authSigner1))
+	entryCode := appendCall(nil, vm.CALL, authSigner1)
+	entryCode = appendSstore(entryCode, 0)
+	entryCode = append(entryCode, byte(vm.STOP))
+	ibs.SetCode(entry, entryCode)
+
+	cfg := &Config{
+		ChainConfig: testRuntimeChainConfig(),
+		Origin:      origin,
+		BlockNumber: big.NewInt(1),
+		Time:        big.NewInt(1),
+		GasLimit:    10_000_000,
+		GasPrice:    uint256.NewInt(0),
+		Value:       uint256.NewInt(0),
+		State:       ibs,
+	}
+	rules := cfg.ChainConfig.Rules(1)
+	ibs.PrepareAccessList(origin, &entry, vm.ActivePrecompiles(rules), nil)
+	ibs.AddAddressToAccessList(authSigner1)
+	ibs.AddAddressToAccessList(authSigner2)
+
+	if _, _, err := Call(entry, nil, cfg); err != nil {
+		t.Fatalf("runtime.Call failed: %v", err)
+	}
+	var got uint256.Int
+	slot := types.Hash{}
+	ibs.GetState(entry, &slot, &got)
+	if got.Sign() != 0 {
+		t.Fatalf("entry storage[0] = %d, want 0", got.Uint64())
+	}
+}
+
+func TestCallIntoDelegatedAuthorityKeepsTransientStorageScopedToAuthority(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(tx, 1))
+
+	authSigner := types.HexToAddress("0x5000000000000000000000000000000000000055")
+	target := types.HexToAddress("0x6000000000000000000000000000000000000066")
+	entry := types.HexToAddress("0x7000000000000000000000000000000000000077")
+	origin := types.HexToAddress("0x8000000000000000000000000000000000000088")
+
+	ibs.CreateAccount(authSigner, true)
+	ibs.CreateAccount(target, true)
+	ibs.CreateAccount(entry, true)
+	ibs.SetCode(authSigner, vm.AddressToDelegation(target))
+	targetCode := appendPush(nil, 2)
+	targetCode = append(targetCode, byte(vm.TLOAD))
+	targetCode = appendSstore(targetCode, 1)
+	targetCode = appendPush(targetCode, 3)
+	targetCode = appendPush(targetCode, 2)
+	targetCode = append(targetCode, byte(vm.TSTORE), byte(vm.STOP))
+	ibs.SetCode(target, targetCode)
+	entryCode := appendCall(nil, vm.CALL, authSigner)
+	entryCode = append(entryCode, byte(vm.POP))
+	entryCode = appendCall(entryCode, vm.CALL, target)
+	entryCode = append(entryCode, byte(vm.POP), byte(vm.STOP))
+	ibs.SetCode(entry, entryCode)
+
+	cfg := &Config{
+		ChainConfig: testRuntimeChainConfig(),
+		Origin:      origin,
+		BlockNumber: big.NewInt(1),
+		Time:        big.NewInt(1),
+		GasLimit:    100_000,
+		GasPrice:    uint256.NewInt(0),
+		Value:       uint256.NewInt(0),
+		State:       ibs,
+	}
+	rules := cfg.ChainConfig.Rules(1)
+	ibs.PrepareAccessList(origin, &entry, vm.ActivePrecompiles(rules), nil)
+	ibs.AddAddressToAccessList(authSigner)
+	ibs.AddAddressToAccessList(target)
+
+	if _, _, err := Call(entry, nil, cfg); err != nil {
+		t.Fatalf("runtime.Call failed: %v", err)
+	}
+	slot1 := types.Hash{}
+	slot1[31] = 1
+	var authorityStored, targetStored uint256.Int
+	ibs.GetState(authSigner, &slot1, &authorityStored)
+	ibs.GetState(target, &slot1, &targetStored)
+	if authorityStored.Sign() != 0 {
+		t.Fatalf("authority storage[1] = %d, want 0", authorityStored.Uint64())
+	}
+	if targetStored.Sign() != 0 {
+		t.Fatalf("target storage[1] = %d, want 0", targetStored.Uint64())
+	}
+}
+
+func TestCallWarmStateAcrossAuthorityAndDelegationTarget(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(tx, 1))
+
+	authSigner := types.HexToAddress("0x9000000000000000000000000000000000000099")
+	target := types.HexToAddress("0xa0000000000000000000000000000000000000aa")
+	entry := types.HexToAddress("0xb0000000000000000000000000000000000000bb")
+	origin := types.HexToAddress("0xc0000000000000000000000000000000000000cc")
+
+	ibs.CreateAccount(authSigner, true)
+	ibs.CreateAccount(target, true)
+	ibs.CreateAccount(entry, true)
+	ibs.SetCode(authSigner, vm.AddressToDelegation(target))
+	ibs.SetCode(target, []byte{byte(vm.STOP)})
+	entryCode := appendCall(nil, vm.CALL, authSigner)
+	entryCode = appendSstore(entryCode, 1)
+	entryCode = appendCall(entryCode, vm.CALL, target)
+	entryCode = appendSstore(entryCode, 1)
+	entryCode = appendPush(entryCode, 1)
+	entryCode = appendSstore(entryCode, 2)
+	entryCode = append(entryCode, byte(vm.STOP))
+	ibs.SetCode(entry, entryCode)
+
+	cfg := &Config{
+		ChainConfig: testRuntimeChainConfig(),
+		Origin:      origin,
+		BlockNumber: big.NewInt(1),
+		Time:        big.NewInt(1),
+		GasLimit:    1_000_000,
+		GasPrice:    uint256.NewInt(0),
+		Value:       uint256.NewInt(0),
+		State:       ibs,
+	}
+	rules := cfg.ChainConfig.Rules(1)
+	ibs.PrepareAccessList(origin, &entry, vm.ActivePrecompiles(rules), nil)
+	ibs.AddAddressToAccessList(authSigner)
+	ibs.AddAddressToAccessList(target)
+
+	if _, _, err := Call(entry, nil, cfg); err != nil {
+		t.Fatalf("runtime.Call failed: %v", err)
+	}
+	slot1 := types.Hash{}
+	slot1[31] = 1
+	slot2 := types.Hash{}
+	slot2[31] = 2
+	var lastResult, success uint256.Int
+	ibs.GetState(entry, &slot1, &lastResult)
+	ibs.GetState(entry, &slot2, &success)
+	if lastResult.Uint64() != 1 {
+		t.Fatalf("entry storage[1] = %d, want 1", lastResult.Uint64())
+	}
+	if success.Uint64() != 1 {
+		t.Fatalf("entry storage[2] = %d, want 1", success.Uint64())
+	}
+}

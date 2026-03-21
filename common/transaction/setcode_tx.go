@@ -56,12 +56,12 @@ var (
 // Authorization represents an EIP-7702 authorization tuple.
 // It allows an EOA to temporarily delegate its code to a contract address.
 type Authorization struct {
-	ChainID uint64         `json:"chainId"` // Chain ID of the authorization
-	Address types.Address  `json:"address"` // Contract address to delegate to
-	Nonce   uint64         `json:"nonce"`   // Nonce of the authorizing account
-	V       *uint256.Int   `json:"v"`       // Signature V value
-	R       *uint256.Int   `json:"r"`       // Signature R value
-	S       *uint256.Int   `json:"s"`       // Signature S value
+	ChainID uint256.Int   `json:"chainId"` // Chain ID of the authorization
+	Address types.Address `json:"address"` // Contract address to delegate to
+	Nonce   uint64        `json:"nonce"`   // Nonce of the authorizing account
+	V       *uint256.Int  `json:"v"`       // Signature V value
+	R       *uint256.Int  `json:"r"`       // Signature R value
+	S       *uint256.Int  `json:"s"`       // Signature S value
 }
 
 // Copy creates a deep copy of the authorization
@@ -333,4 +333,3 @@ func AddressToDelegation(addr types.Address) []byte {
 	copy(code[3:], addr[:])
 	return code
 }
-
