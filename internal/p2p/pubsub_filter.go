@@ -19,6 +19,11 @@ const pubsubSubscriptionRequestLimit = 200
 
 // CanSubscribe returns true if the topic is of interest and we could subscribe to it.
 func (s *Service) CanSubscribe(topic string) bool {
+	// Allow messaging relay topics: /n42/msg/shard/{N}
+	if strings.HasPrefix(topic, "/n42/msg/") {
+		return true
+	}
+
 	parts := strings.Split(topic, "/")
 	if len(parts) != 5 || parts[0] != "" || parts[1] != "n42" || parts[4] != encoder.ProtocolSuffixSSZSnappy {
 		return false

@@ -30,7 +30,9 @@ const (
 	TaskProving  TaskStatus = 1
 	TaskVerified TaskStatus = 2
 	TaskFailed   TaskStatus = 3
-	TaskExpired  TaskStatus = 4
+	TaskExpired            TaskStatus = 4
+	TaskChallenged         TaskStatus = 5
+	TaskOptimisticVerified TaskStatus = 6
 )
 
 func (s TaskStatus) String() string {
@@ -45,6 +47,58 @@ func (s TaskStatus) String() string {
 		return "failed"
 	case TaskExpired:
 		return "expired"
+	case TaskChallenged:
+		return "challenged"
+	case TaskOptimisticVerified:
+		return "optimistic_verified"
+	default:
+		return "unknown"
+	}
+}
+
+// VerificationTier determines the verification method for a compute task.
+// TierZK is the default (zero value) for backward compatibility.
+type VerificationTier uint8
+
+const (
+	TierZK         VerificationTier = 0 // Full ZK proof verification (default)
+	TierOptimistic VerificationTier = 1 // Optimistic with challenge window
+	TierTEE        VerificationTier = 2 // TEE attestation verification
+)
+
+func (t VerificationTier) String() string {
+	switch t {
+	case TierZK:
+		return "zk"
+	case TierOptimistic:
+		return "optimistic"
+	case TierTEE:
+		return "tee"
+	default:
+		return "unknown"
+	}
+}
+
+// Capability identifies what types of computation a provider supports.
+type Capability uint8
+
+const (
+	CapZK      Capability = 0
+	CapWASM    Capability = 1
+	CapAI      Capability = 2
+	CapGeneral Capability = 3
+)
+
+func (c Capability) String() string {
+	switch c {
+	case CapZK:
+		return "zk"
+	case CapWASM:
+		return "wasm"
+	case CapAI:
+		return "ai"
+	case CapGeneral:
+		return "general"
 	default:
 		return "unknown"
 	}
@@ -62,7 +116,14 @@ type Task struct {
 	PublicOutputs []byte        `json:"publicOutputs,omitempty"`
 	CreatedAt     time.Time     `json:"createdAt"`
 	CompletedAt   time.Time     `json:"completedAt,omitempty"`
-	Error         string        `json:"error,omitempty"`
+	Error             string           `json:"error,omitempty"`
+	VerificationTier  VerificationTier `json:"verificationTier"`
+	Bond              uint64           `json:"bond,omitempty"`
+	ChallengeDeadline time.Time        `json:"challengeDeadline,omitempty"`
+	Challenger        types.Address    `json:"challenger,omitempty"`
+	AssignedProvider  types.Address    `json:"assignedProvider,omitempty"`
+	BidPrice          uint64           `json:"bidPrice,omitempty"`
+	RewardAmount      uint64           `json:"rewardAmount,omitempty"`
 }
 
 // Program represents a registered verifiable program.

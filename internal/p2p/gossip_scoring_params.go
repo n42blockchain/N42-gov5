@@ -63,6 +63,8 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 		return blockTopicParams(), nil
 	case strings.Contains(topic, GossipHotStuffConsensusMessage):
 		return hotstuffConsensusTopicParams(), nil
+	case strings.Contains(topic, GossipMessagePrefix):
+		return messagingTopicParams(), nil
 	default:
 		return nil, errors.Errorf("unrecognized topic for parameter registration: %s", topic)
 	}
@@ -139,6 +141,24 @@ func hotstuffConsensusTopicParams() *pubsub.TopicScoreParams {
 		MeshFailurePenaltyDecay:         scoreDecay(decayEpoch * blockDur),
 		InvalidMessageDeliveriesWeight:  -140.4475,
 		InvalidMessageDeliveriesDecay:   scoreDecay(invalidDecayPeriod),
+	}
+}
+
+// messagingTopicParams returns scoring parameters for messaging relay topics.
+// Messages are non-critical application data, so use lightweight scoring.
+func messagingTopicParams() *pubsub.TopicScoreParams {
+	mesh := inMeshCap()
+
+	return &pubsub.TopicScoreParams{
+		TopicWeight:                    0.1,
+		TimeInMeshWeight:               maxInMeshScore / mesh,
+		TimeInMeshQuantum:              oneBlockDuration(),
+		TimeInMeshCap:                  mesh,
+		FirstMessageDeliveriesWeight:   0.5,
+		FirstMessageDeliveriesDecay:    scoreDecay(oneHundredBlocks),
+		FirstMessageDeliveriesCap:      100,
+		InvalidMessageDeliveriesWeight: -100,
+		InvalidMessageDeliveriesDecay:  scoreDecay(invalidDecayPeriod),
 	}
 }
 

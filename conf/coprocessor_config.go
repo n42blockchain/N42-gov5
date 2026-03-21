@@ -14,15 +14,31 @@ type CoprocessorCfg struct {
 	MaxPendingTasks    int    `json:"max_pending_tasks" yaml:"max_pending_tasks"`
 	ProverEndpoint     string `json:"prover_endpoint" yaml:"prover_endpoint"`
 	PruneIntervalSec   int    `json:"prune_interval" yaml:"prune_interval"`
+
+	// Tiered verification
+	DefaultVerificationTier int    `json:"default_verification_tier" yaml:"default_verification_tier"` // 0=ZK, 1=Optimistic, 2=TEE
+	OptimisticChallengeSec  int    `json:"optimistic_challenge_sec" yaml:"optimistic_challenge_sec"`
+	OptimisticBondWei       uint64 `json:"optimistic_bond_wei" yaml:"optimistic_bond_wei"`
+
+	// Provider marketplace
+	EnableMarketplace bool   `json:"enable_marketplace" yaml:"enable_marketplace"`
+	MinProviderStake  uint64 `json:"min_provider_stake" yaml:"min_provider_stake"`
+	SlashPercentage   int    `json:"slash_percentage" yaml:"slash_percentage"` // 0-100
 }
 
 func DefaultCoprocessorCfg() CoprocessorCfg {
 	return CoprocessorCfg{
-		Enabled:            false,
-		MaxConcurrentTasks: 16,
-		TaskTimeoutSec:     300,
-		MaxPendingTasks:    256,
-		PruneIntervalSec:   60,
+		Enabled:                false,
+		MaxConcurrentTasks:     16,
+		TaskTimeoutSec:         300,
+		MaxPendingTasks:        256,
+		PruneIntervalSec:       60,
+		DefaultVerificationTier: 0, // TierZK
+		OptimisticChallengeSec: 3600,
+		OptimisticBondWei:      1_000_000_000_000_000_000, // 1 ETH
+		EnableMarketplace:      false,
+		MinProviderStake:       10_000_000_000_000_000_000, // 10 ETH
+		SlashPercentage:        10,
 	}
 }
 

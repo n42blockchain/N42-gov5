@@ -182,3 +182,50 @@ State management uses incremental Keccak hashing (not Merkle Patricia Trie). Acc
 | 20013 | JSON-RPC WebSocket         |
 | 20014 | Authenticated RPC (JWT)    |
 | 6060  | pprof metrics              |
+| 8553  | MCP Server (AI agents)     |
+| 8554  | Message Stream (SSE)       |
+| 9090  | gRPC KV (RPCDaemon)        |
+
+## AI-Native Infrastructure
+
+N42 includes a complete AI safety and agent infrastructure at the L1 level:
+
+```
+internal/
+  ai/                    AI infrastructure (modular, decoupled)
+    wallet/              AI agent wallets (session keys, spending policies, paymaster)
+      account.go           Session keys, spending policies
+      service.go           Agent service orchestrator
+    coord/               AI agent coordination
+      registry.go          Capability-based agent discovery
+      negotiation.go       Task delegation protocol
+      reputation.go        Weighted reputation system
+    governance/          Training data governance (ethics committee voting)
+    training/            ZK training verification (model provenance)
+    attestation/         ZK inference attestation (signed results, chain-of-custody)
+  vm/
+    contracts_ai_inference.go  AI inference precompile (0x0301)
+  mev/
+    ai_optimizer.go      AI transaction ordering
+    gas_predictor.go     EWMA gas prediction
+  zkprover/
+    zkml.go              ZKML proof generation
+    zkml_trace.go        Execution trace capture
+  exex/extensions/
+    ai_indexer.go        AI data pipeline (token/event/gas indexing)
+  mcp/
+    data_tools.go        AI data query tools
+    agent_tools.go       Agent discovery tools
+```
+
+### Interface Decoupling
+
+The AI subsystems communicate through interfaces, not concrete types:
+
+- `training.DatasetGovernance` ← implemented by `governance.Committee`
+- `attestation.TrainingVerification` ← implemented by `training.TrainingProver`
+- `attestation.ZKProofProvider` ← wraps `zkprover.ZKMLProver`
+- `miner.AIOptimizer` ← implemented by `mev.AIBlockOptimizer`
+- `vm.InferenceBackend` ← wraps `inference.InferenceService`
+
+Each feature can be enabled/disabled independently via `conf.AICfg`.

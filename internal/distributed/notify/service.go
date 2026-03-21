@@ -225,3 +225,24 @@ func (s *Service) Stats() map[string]interface{} {
 		"dropped":     s.dropped.Load(),
 	}
 }
+
+// ChannelCount returns the number of active subscribers.
+func (s *Service) ChannelCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.channels)
+}
+
+// HistoryCount returns the number of addresses with notification history.
+func (s *Service) HistoryCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.history)
+}
+
+// ClearHistory removes all notification history.
+func (s *Service) ClearHistory() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = make(map[types.Address][]*Notification)
+}
