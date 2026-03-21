@@ -6,6 +6,68 @@
 
 ## [未发布] - 开发中
 
+### 2026-03-21
+
+#### 🤖 AI-Native Infrastructure (Phase 1-6 + AI Safety)
+
+**AI Agent Wallet Protocol** (`internal/ai/wallet/`):
+- Agent accounts with deterministic address derivation (Keccak256)
+- Session keys: time-limited, contract-allowlisted, spend-capped (max 16/account)
+- Spending policies: Rate, Cap, Allowlist, Composite (AND/OR)
+- Gas sponsorship via PaymasterService with deposit pool
+- Bundler integration: agent session key validation in ERC-4337 UserOps
+
+**AI Inference Precompile** (`internal/vm/contracts_ai_inference.go`):
+- Precompiled contract at address `0x0301` with 4 selectors
+- Gas-metered: 10000 base + 100/byte for requests, 2600 for queries
+- Activated via `ChainConfig.AIInferenceTime` (independent of standard forks)
+
+**AI Data Pipeline** (`internal/exex/extensions/ai_indexer.go`):
+- ExEx extension indexing: token transfers, contract events, address profiles, gas metrics
+- 5 MCP tools: queryTokenTransfers, getAddressProfile, analyzeContract, getGasAnalytics, queryEvents
+
+**Agent Discovery** (`internal/ai/coord/registry.go`, `negotiation.go`, `reputation.go`):
+- Capability-based agent registry with stake requirements
+- Task negotiation protocol: request → bid → accept → complete/dispute
+- Weighted reputation: completion 40%, disputes 30%, response time 20%, stake 10%
+
+**ZKML Verification** (`internal/zkprover/zkml.go`):
+- Circuit generation from model structure with layer-level constraints
+- Execution trace capture (per-layer intermediate values)
+- ZK proof generation with 96-byte public inputs (modelHash + inputHash + outputHash)
+
+**AI Block Building** (`internal/mev/ai_optimizer.go`, `gas_predictor.go`):
+- AI-optimized transaction ordering with effective tip × gas efficiency scoring
+- MEV detection: arbitrage and liquidation pattern recognition
+- Fairness guard: sandwich attack detection
+- EWMA gas prediction (alpha=0.3, 32-block window)
+
+**AI Training Data Governance** (`internal/ai/governance/`):
+- On-chain dataset provenance tracking with content hash (CAS)
+- Human ethics committee: quorum/threshold voting with secp256k1 signature verification
+- Categories: Fairness, Privacy, ContentSafety, Transparency
+- Dataset lifecycle: Pending → UnderReview → Approved/Rejected/Revoked
+
+**ZK Training Verification** (`internal/ai/training/`):
+- TrainingProver: governance-gated registration (only approved datasets)
+- 160-byte public inputs: modelHash + initWeights + finalWeights + config + datasetRoot
+- Epoch-level execution trace for ZK witness generation
+- TrainingVerifier: structural validation (SP1/Groth16 integration planned)
+
+**ZK Inference Attestation** (`internal/ai/attestation/`):
+- Signed attestations binding inference results to full provenance chain
+- Multi-hop chain validation: output[i] == input[i+1] (autonomous driving pipelines)
+- Three safety levels: Standard, HighValue, Critical (requires training verification)
+- TTL-based expiry with automatic pruning
+
+**验证状态**:
+- ✅ `go build ./...` 通过
+- ✅ 150 AI 测试全部通过 (race-safe)
+- ✅ 零回归 (messaging 92 tests + bundler/coprocessor/zkprover/zkverifier/mev/exex 全部通过)
+- ✅ 三轮代码审计 + 修复 (15 governance + 7 training + 6 attestation 修复)
+
+---
+
 ### 2024-12-17
 
 #### 📦 依赖库更新与安全审计

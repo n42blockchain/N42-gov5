@@ -228,6 +228,15 @@ const (
 	ContentStoreMaxSize    int    = 24576 // 24KB max per entry (same as MaxCodeSize)
 )
 
+// AI Inference precompile (0x0301) gas costs.
+const (
+	AIInferenceBaseGas       uint64 = 10000 // base gas for inference request
+	AIInferencePerByteGas    uint64 = 100   // per-byte gas for input data
+	AIInferenceGetResultGas  uint64 = 2600  // gas for result query (same as ColdSloadCost)
+	AIInferenceGetModelGas   uint64 = 2600  // gas for model info query
+	AIInferenceListModelsGas uint64 = 5000  // gas for listing models
+)
+
 func ApplyBinanceSmartChainParams() {
 	GasLimitBoundDivisor = 256
 }

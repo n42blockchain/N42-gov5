@@ -66,6 +66,9 @@ type Config struct {
 	NotifyCfg        NotifyCfg        `json:"notify" yaml:"notify"`
 	TorrentDistCfg   TorrentDistCfg   `json:"torrent_dist" yaml:"torrent_dist"`
 	Ed2kCfg          Ed2kCfg          `json:"ed2k" yaml:"ed2k"`
+
+	// AI infrastructure (unified)
+	AICfg            AICfg            `json:"ai" yaml:"ai"`
 }
 
 func SaveConfigToFile(file string, config Config) error {

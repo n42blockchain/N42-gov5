@@ -62,18 +62,20 @@ type InferenceExecutor interface {
 // Uses opML (optimistic machine learning) verification: results are accepted
 // optimistically with an economic bond, subject to fraud proof challenges.
 type InferenceService struct {
-	mu       sync.RWMutex
-	models   *ModelRegistry
-	requests map[types.Hash]*trackedRequest
-	executor InferenceExecutor
-	nonce    uint64
+	mu          sync.RWMutex
+	models      *ModelRegistry
+	requests    map[types.Hash]*trackedRequest
+	executor    InferenceExecutor
+	resultCache *ResultCache
+	nonce       uint64
 }
 
 // NewInferenceService creates an inference service with the given model registry.
 func NewInferenceService(models *ModelRegistry) *InferenceService {
 	return &InferenceService{
-		models:   models,
-		requests: make(map[types.Hash]*trackedRequest),
+		models:      models,
+		requests:    make(map[types.Hash]*trackedRequest),
+		resultCache: NewResultCache(4096, time.Hour),
 	}
 }
 
@@ -168,6 +170,12 @@ func (s *InferenceService) Execute(ctx context.Context, requestID types.Hash) (*
 	}
 	s.mu.Unlock()
 
+	// Write to result cache for precompile access.
+	if s.resultCache != nil && result != nil {
+		outputCAS := crypto.Keccak256Hash(result.Output)
+		s.resultCache.Put(requestID, RequestOptimisticVerified, outputCAS)
+	}
+
 	log.Debug("Inference completed (optimistic)",
 		"requestID", requestID.Hex()[:10],
 		"confidence", result.Confidence,
@@ -187,7 +195,26 @@ func (s *InferenceService) FinalizeRequest(requestID types.Hash) error {
 		return fmt.Errorf("inference: request %s not in optimistic-verified state", requestID.Hex())
 	}
 	tracked.Status = RequestVerified
+
+	// Update cache with verified status.
+	if s.resultCache != nil && tracked.Result != nil {
+		outputCAS := crypto.Keccak256Hash(tracked.Result.Output)
+		s.resultCache.Put(requestID, RequestVerified, outputCAS)
+	}
 	return nil
+}
+
+// GetCachedResult returns a cached inference result for precompile access.
+func (s *InferenceService) GetCachedResult(requestID types.Hash) (*CachedResult, bool) {
+	if s.resultCache == nil {
+		return nil, false
+	}
+	return s.resultCache.Get(requestID)
+}
+
+// ResultCacheRef returns the result cache for external access.
+func (s *InferenceService) ResultCacheRef() *ResultCache {
+	return s.resultCache
 }
 
 // ChallengeRequest marks a request as challenged for fraud proof verification.

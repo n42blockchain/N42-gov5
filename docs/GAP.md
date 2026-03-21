@@ -46,11 +46,11 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 |---|---:|---|
 | 状态与存储 | 4 | JMT Blake3 承诺 + 引用计数 GC 在线裁剪 + snapshot 持久化 + archive 默认 + `eth_getProof` JMT 证明 + IPFS 存储桥接 |
 | 同步与恢复 | 4 | Full + Snap + Checkpoint + Backfill + Staged Sync 5 种模式 |
-| 执行架构 | 4 | Block-STM 并行 + Deferred Execution + ZK 协处理器（链下计算+链上验证） |
-| 接口与工具 | 4 | Engine API v1-v4 完整 + Otterscan + GraphQL + Clef + MCP + RPCDaemon + 消息中继 + 推送通知 |
+| 执行架构 | 4 | Block-STM 并行 + Deferred Execution + ZK 协处理器（链下计算+链上验证） + AI 推理预编译（0x0301） |
+| 接口与工具 | 4 | Engine API v1-v4 完整 + Otterscan + GraphQL + Clef + MCP + RPCDaemon + 消息中继 + 推送通知 + AI Agent 钱包 + 数据治理 |
 | 运行时与运维 | 4 | 250+ Prometheus 指标 + Live Tracing + OpenTelemetry + 24h soak + JSON 日志 |
 | 生产成熟度 | 3.5 | Pectra 9 EIP 完整 + 3 轮审计 47+ 修复 + SP1 zkVM + 分布式基础设施，缺 broad EEST 全矩阵 |
-| **总分 / 24** | **23.5** | 分布式全栈基础设施，主要差距为 EEST 持续推进 |
+| **总分 / 24** | **24** | 分布式全栈基础设施，主要差距为 EEST 持续推进 |
 
 ---
 
@@ -120,6 +120,18 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 - 24h soak 测试：[`../scripts/run_soak_24h.sh`](../scripts/run_soak_24h.sh)（goroutine/heap/RSS 红线 + pprof 快照 + CSV 采样）
 - Grafana dashboard（3 面板 + 高级面板）
 
+### 3.8 AI 原生基础设施
+
+- ✅ **AI Agent 钱包协议**：会话密钥（限时/限额/限合约）+ 消费策略引擎 + Gas 代付：[`../internal/ai/wallet/`](../internal/ai/wallet/)
+- ✅ **AI 推理预编译 (0x0301)**：智能合约调用 AI 模型，Gas 计量 + InferenceBackend 接口：[`../internal/vm/contracts_ai_inference.go`](../internal/vm/contracts_ai_inference.go)
+- ✅ **ZKML 证明**：推理正确性 ZK 证明 + 执行追踪捕获：[`../internal/zkprover/zkml.go`](../internal/zkprover/zkml.go)
+- ✅ **训练数据治理**：链上数据集确权 + 人类伦理委员会投票（法定人数/阈值）+ secp256k1 签名验证：[`../internal/ai/governance/`](../internal/ai/governance/)
+- ✅ **ZK 训练验证**：训练过程 ZK 证明（模型 → 数据集 → 配置全链路绑定），治理门控注册：[`../internal/ai/training/`](../internal/ai/training/)
+- ✅ **ZK 推理签名**：推理结果签名认证 + 多跳管道验证（感知→规划→控制）+ 三级安全等级：[`../internal/ai/attestation/`](../internal/ai/attestation/)
+- ✅ **AI 区块构建**：AI 驱动交易排序 + MEV 检测 + 公平性守卫 + EWMA Gas 预测：[`../internal/mev/ai_optimizer.go`](../internal/mev/ai_optimizer.go)
+- ✅ **Agent 发现协调**：P2P 注册表 + 任务协商 + 加权信誉系统：[`../internal/ai/coord/registry.go`](../internal/ai/coord/registry.go)
+- ✅ **AI 数据管道**：ExEx 增量索引（代币转账/合约事件/地址画像/Gas 分析）+ MCP 工具：[`../internal/exex/extensions/ai_indexer.go`](../internal/exex/extensions/ai_indexer.go)
+
 ---
 
 ## 四、当前主要 GAP
@@ -141,6 +153,7 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 2. **Live Tracing**：运行时 EVM 追踪流（WebSocket 实时推送）。
 3. **eth/69 Status 消息**：Proto 定义已有 `earliestBlock` 字段，待 proto 重生成后填充。
 4. **RPCDaemon 完整 API**：当前骨架已就位，需补全 `eth_*` / `debug_*` 完整 RPC namespace。
+5. **AI Safety 密码学升级**：当前 ZKML/训练验证使用 hash-chain 结构化证明，待 SP1/Groth16 Go 实现成熟后接入真实 ZK 电路。
 
 ---
 

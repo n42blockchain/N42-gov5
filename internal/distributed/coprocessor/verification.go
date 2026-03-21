@@ -110,3 +110,26 @@ func (tv *TieredVerifier) RegisterVerifier(tier VerificationTier, v Verifier) {
 	defer tv.mu.Unlock()
 	tv.verifiers[tier] = v
 }
+
+// ZKMLVerifierFunc is a function type that adapts ZKML proof verification
+// to the coprocessor's Verifier interface. The function receives the raw
+// proof data and should return whether the proof is valid.
+type ZKMLVerifierFunc func(proofData []byte) (bool, error)
+
+// ZKMLVerifierAdapter wraps a ZKMLVerifierFunc as a coprocessor Verifier.
+type ZKMLVerifierAdapter struct {
+	verifyFunc ZKMLVerifierFunc
+}
+
+func (v *ZKMLVerifierAdapter) Verify(task *Task, proofData []byte) (bool, error) {
+	if v.verifyFunc == nil {
+		return false, fmt.Errorf("ZKML verifier not configured")
+	}
+	return v.verifyFunc(proofData)
+}
+
+// SetZKMLVerifier registers a ZKML verification function on the ZK tier.
+// This connects the ZKML prover/verifier with the coprocessor's verification pipeline.
+func (tv *TieredVerifier) SetZKMLVerifier(fn ZKMLVerifierFunc) {
+	tv.RegisterVerifier(TierZK, &ZKMLVerifierAdapter{verifyFunc: fn})
+}

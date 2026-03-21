@@ -194,6 +194,12 @@ type Service struct {
 	once   sync.Once
 }
 
+// Agent discovery and negotiation topic constants.
+const (
+	AgentDiscoveryTopic  = "/n42/agents/discovery"
+	AgentNegotiateTopic  = "/n42/agents/negotiate"
+)
+
 // NewService creates a messaging service.
 func NewService(cfg *conf.MessagingCfg) *Service {
 	ctx, cancel := context.WithCancel(context.Background())

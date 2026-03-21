@@ -175,6 +175,10 @@ type ChainConfig struct {
 	// arbitrary data by content hash at the specified timestamp.
 	ContentStoreTime *big.Int `json:"contentStoreTime,omitempty"`
 
+	// N42 extension: AI inference precompile (0x0301).
+	// When set, smart contracts can submit inference requests and read verified results.
+	AIInferenceTime *big.Int `json:"aiInferenceTime,omitempty"`
+
 	BlobSchedule *BlobSchedule `json:"blobSchedule,omitempty"`
 
 	// BSC / custom fork fields
