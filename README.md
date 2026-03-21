@@ -56,6 +56,18 @@ Featuring a modular, sharded architecture, N42 delivers high transaction through
 - **Chain Import/Export**: Length-prefixed protobuf format for offline block data transfer
 - **Database Inspector**: CLI tools for database stats, key inspection, and state dumps
 
+### AI-Native Infrastructure
+
+- **AI Agent Wallets**: L1-native agent accounts with session keys (time-limited, contract-allowlisted, spend-capped), composable spending policies (rate/cap/allowlist), and gas sponsorship via paymaster
+- **AI Inference Precompile (0x0301)**: Smart contracts call AI models on-chain — submit inference requests, read verified results, query model registry. Gas-metered with tiered verification (ZK/Optimistic/TEE)
+- **ZKML Verification**: Zero-knowledge proofs of ML inference correctness — circuit generation from model structure, execution trace capture, proof generation and verification
+- **AI Data Governance**: On-chain training data provenance with human ethics committee voting (quorum/threshold, secp256k1-signed ballots). Datasets must pass fairness, privacy, content safety, and transparency review before use in training
+- **ZK Training Verification**: Cryptographic proofs binding trained models to approved datasets and training processes. Prevents model forgery and weight tampering. Governance-gated registration
+- **ZK Inference Attestation**: Signed attestations for inference results with chain-of-custody validation. Multi-hop pipeline support (perception→planning→control) for autonomous driving and robotics safety. Three safety tiers: Standard, HighValue, Critical
+- **AI Block Building**: AI-optimized transaction ordering with MEV detection, sandwich attack protection (fairness guard), and EWMA-based gas prediction
+- **Agent Discovery**: P2P agent registry with capability-based discovery, task negotiation protocol, and weighted reputation system
+- **AI Data Pipeline**: ExEx-powered incremental indexer for token transfers, contract events, address profiles, and gas analytics — O(1) structured queries via MCP
+
 ## Architecture
 
 ```
@@ -73,6 +85,7 @@ internal/
   zkprover/         ZK prover service (gRPC client, input builder, guest program)
   zkverifier/       ZK proof verifier (STARK/SNARK verification)
   mcp/              Model Context Protocol server
+  mev/              MEV relay + AI block optimizer
 modules/
   state/            State management with JMT commitment and witness generation
   rawdb/            Raw database operations (MDBX + freezer)
@@ -80,6 +93,11 @@ lib/
   jmt/              Jellyfish Merkle Tree implementation (Blake3, 16-ary)
   kv/               Key-value store interfaces (mdbx/, memdb/)
 conf/               Node configuration (P2P, RPC, consensus, ZK prover settings)
+  ai/wallet/        AI agent wallets (session keys, spending policies, paymaster)
+  ai/coord/         AI agent coordination (discovery, negotiation, reputation)
+  ai/governance/    Training data governance (ethics committee voting)
+  ai/training/      ZK training verification (model provenance)
+  ai/attestation/   ZK inference attestation (signed results, chain-of-custody)
 ```
 
 ## System Requirements
@@ -167,6 +185,8 @@ N42 includes the following executables:
 | 20014 | TCP      | Secure JSON RPC (JWT Auth)   | Authenticated       |
 | 4000  | TCP      | Blockchain Explorer          | Public              |
 | 6060  | TCP      | Metrics & Profiling (pprof)  | Private             |
+| 8553  | TCP      | MCP Server (AI agents)       | Private             |
+| 8554  | TCP      | Message Stream (SSE)         | Private             |
 
 ## Configuration
 
@@ -190,6 +210,17 @@ ZK Prover configuration (`ZKProverCfg`):
 | `proof_type` | `string` | Proof type: `"stark"` or `"snark"` |
 | `max_concurrent` | `int` | Maximum concurrent proof generation jobs |
 | `guest_binary` | `string` | Path to RISC-V64 ELF guest binary |
+
+AI configuration (`AICfg`):
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `governance.enabled` | `bool` | Enable training data governance with ethics committee |
+| `governance.committee_quorum` | `int` | Minimum votes for valid review decision (default: 3) |
+| `governance.committee_threshold` | `float64` | Approval ratio for pass (default: 0.67) |
+| `training.enabled` | `bool` | Enable ZK training process verification |
+| `attestation.enabled` | `bool` | Enable ZK inference attestation with chain-of-custody |
+| `attestation.ttl_sec` | `int` | Attestation expiry in seconds (default: 86400) |
 
 ## Development
 
