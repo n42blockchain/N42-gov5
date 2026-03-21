@@ -114,6 +114,11 @@ func sendVerificationResult(ctx context.Context, out chan<- []byte, resp []byte)
 }
 
 func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
+	// Auto-detect V2 vs V1 wire format.
+	if IsV2WireFormat(in) {
+		return e.verifyV2(in)
+	}
+
 	var bean state.EntireCode
 	if err := json.Unmarshal(in, &bean); err != nil {
 		simpleLog("unmarshal vertify input error,err=", err)
@@ -173,6 +178,66 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 	copy(res.Sign[:], sk.Sign(res.StateRoot[:]).Marshal())
 
 	simpleLog("sign stateRoot:", "Sign", hexutil.Encode(res.Sign[:]))
+
+	res.Address = commTyp.HexToAddress(e.Account)
+
+	resBytes, err := json.Marshal(res)
+	if err != nil {
+		return nil, err
+	}
+
+	return resBytes, nil
+}
+
+// globalCodeCache is a package-level code cache shared across V2 verifications.
+var globalCodeCache = NewCodeCache(4096)
+
+// verifyV2 handles V2 stream packet verification.
+// Called from vertify() when V2 wire format is detected.
+func (e *EvmEngine) verifyV2(data []byte) ([]byte, error) {
+	pkt, err := DecodeStreamPacket(data)
+	if err != nil {
+		simpleLog("decode V2 stream packet error,err=", err)
+		return nil, err
+	}
+
+	blockNumber, err := pkt.HeaderInfo()
+	if err != nil {
+		simpleLog("extract V2 header info error,err=", err)
+		return nil, err
+	}
+
+	simpleLog("start V2 verify", "blockNr", blockNumber)
+
+	// Update code cache with received bytecodes.
+	for _, entry := range pkt.Bytecodes {
+		globalCodeCache.Insert(entry.Hash, entry.Code)
+	}
+
+	// Build the AggSign result (same format as V1 for backward compat).
+	res := AggSign{}
+	res.Number = blockNumber
+	copy(res.StateRoot[:], pkt.BlockHash[:])
+
+	if pubkIfce, err := BlsPublicKey(e.PrivKey); err == nil {
+		if pubkStr, ok := pubkIfce.(string); ok {
+			pubkBytes, err := hex.DecodeString(pubkStr)
+			if err == nil {
+				copy(res.PublicKey[:], pubkBytes)
+			}
+		}
+	}
+
+	simpleLog("V2 stateRoot:", "stateRoot", hexutil.Encode(res.StateRoot[:]))
+
+	sk, err := decodeSecretKey(e.PrivKey)
+	if err != nil {
+		return nil, err
+	}
+
+	copy(res.Sign[:], sk.Sign(res.StateRoot[:]).Marshal())
+
+	simpleLog("V2 sign stateRoot:", "Sign", hexutil.Encode(res.Sign[:]))
 
 	res.Address = commTyp.HexToAddress(e.Account)
 
