@@ -83,8 +83,9 @@ var (
 // ---------------------------------------------------------------------------
 
 var (
-	MainnetChainConfig = readChainSpec("chainspecs/mainnet.json")
-	TestnetChainConfig = readChainSpec("chainspecs/testnet.json")
+	MainnetChainConfig       = readChainSpec("chainspecs/mainnet.json")
+	MainnetCompatChainConfig = readChainSpec("chainspecs/mainnet_compat.json") // backward-compatible (no Shanghai+), matches legacy genesis hash
+	TestnetChainConfig       = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
 		ChainID:               big.NewInt(1),
@@ -445,6 +446,8 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 	switch chain {
 	case networkname.MainnetChainName:
 		return MainnetChainConfig
+	case "mainnet_compat":
+		return MainnetCompatChainConfig
 	case networkname.TestnetChainName:
 		return TestnetChainConfig
 	default:
@@ -454,7 +457,7 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 
 func GenesisHashByChainName(chain string) *types.Hash {
 	switch chain {
-	case networkname.MainnetChainName:
+	case networkname.MainnetChainName, "mainnet_compat":
 		return &MainnetGenesisHash
 	case networkname.TestnetChainName:
 		return &TestnetGenesisHash

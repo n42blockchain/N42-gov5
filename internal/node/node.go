@@ -601,7 +601,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		hasExpectedGenesis  bool
 	)
 	switch cfg.NodeCfg.Chain {
-	case "", "mainnet":
+	case "", "mainnet", "mainnet_compat":
 		expectedGenesisHash = params.MainnetGenesisHash
 		hasExpectedGenesis = true
 	case "testnet":
