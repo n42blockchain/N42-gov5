@@ -182,6 +182,7 @@ type Service struct {
 	store       *Store
 	rateLimiter *RateLimiter
 	handlers    map[string][]MessageHandler
+	relay       *Relay
 
 	mu          sync.RWMutex
 	published   atomic.Uint64
@@ -192,6 +193,12 @@ type Service struct {
 	wg     sync.WaitGroup
 	once   sync.Once
 }
+
+// Agent discovery and negotiation topic constants.
+const (
+	AgentDiscoveryTopic  = "/n42/agents/discovery"
+	AgentNegotiateTopic  = "/n42/agents/negotiate"
+)
 
 // NewService creates a messaging service.
 func NewService(cfg *conf.MessagingCfg) *Service {
@@ -267,6 +274,13 @@ func (s *Service) Publish(topic string, payload []byte, contentType string, send
 		h(msg)
 	}
 
+	// Forward to P2P relay if available
+	if s.relay != nil {
+		if err := s.relay.PublishToNetwork(msg); err != nil {
+			log.Debug("Failed to relay message", "err", err)
+		}
+	}
+
 	return msg.ID, nil
 }
 
@@ -288,6 +302,25 @@ func (s *Service) Stats() map[string]interface{} {
 		"published": s.published.Load(),
 		"received":  s.received.Load(),
 		"storeSize": s.store.Size(),
+	}
+}
+
+// SetRelay attaches a P2P relay to the service for cross-node message propagation.
+func (s *Service) SetRelay(r *Relay) {
+	s.relay = r
+}
+
+// DeliverFromRelay processes a message received from the P2P relay.
+// It stores the message and dispatches to local handlers without re-relaying.
+func (s *Service) DeliverFromRelay(msg *Message) {
+	s.store.Add(msg)
+	s.received.Add(1)
+
+	s.mu.RLock()
+	handlers := s.handlers[msg.Topic]
+	s.mu.RUnlock()
+	for _, h := range handlers {
+		h(msg)
 	}
 }
 

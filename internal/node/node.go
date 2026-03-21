@@ -50,9 +50,9 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/contracts/deposit"
-	n42deposit "github.com/n42blockchain/N42/contracts/deposit/amt"
-	fujideposit "github.com/n42blockchain/N42/contracts/deposit/fuji"
-	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/nft"
+	"github.com/n42blockchain/N42/contracts/deposit/nftstake"
+	"github.com/n42blockchain/N42/contracts/deposit/testnet"
+	"github.com/n42blockchain/N42/contracts/deposit/token"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/api/graphql"
@@ -63,6 +63,10 @@ import (
 	dmessaging "github.com/n42blockchain/N42/internal/distributed/messaging"
 	dnotify "github.com/n42blockchain/N42/internal/distributed/notify"
 	dstorage "github.com/n42blockchain/N42/internal/distributed/storage"
+	"github.com/n42blockchain/N42/internal/ai/attestation"
+	"github.com/n42blockchain/N42/internal/ai/governance"
+	"github.com/n42blockchain/N42/internal/ai/training"
+	"github.com/n42blockchain/N42/internal/ai/wallet"
 	"github.com/n42blockchain/N42/lib/gointerfaces/remote"
 	"github.com/n42blockchain/N42/lib/kv/remotedbserver"
 	log3 "github.com/n42blockchain/N42/lib/log/v3"
@@ -163,6 +167,12 @@ type Node struct {
 	storageBridge      *dstorage.Bridge               // IPFS/Filecoin storage bridge (nil if disabled)
 	notifyService      *dnotify.Service               // Push notifications (nil if disabled)
 	web3Gateway        *api.Web3Gateway               // web3:// protocol gateway (nil if disabled)
+	walletService      *wallet.Service                // AI agent wallet (nil if disabled)
+
+	// AI safety infrastructure
+	dataGovernance     *governance.Committee           // Data governance (nil if disabled)
+	trainingProver     *training.TrainingProver        // ZK training verification (nil if disabled)
+	attestationService *attestation.AttestationService // Inference attestation (nil if disabled)
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
@@ -472,9 +482,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			name     string
 			contract deposit.DepositContract
 		}{
-			{cfg.ChainCfg.Apos.DepositContract, "DepositContract", new(n42deposit.Contract)},
-			{cfg.ChainCfg.Apos.DepositNFTContract, "DepositNFTContract", new(nftdeposit.Contract)},
-			{cfg.ChainCfg.Apos.DepositFUJIContract, "DepositFUJIContract", new(fujideposit.Contract)},
+			{cfg.ChainCfg.Apos.DepositContract, "DepositContract", new(token.Contract)},
+			{cfg.ChainCfg.Apos.DepositNFTContract, "DepositNFTContract", new(nftstake.Contract)},
+			{cfg.ChainCfg.Apos.DepositFUJIContract, "DepositFUJIContract", new(testnet.Contract)},
 		}
 		for _, e := range entries {
 			if e.addr == "" {
@@ -994,6 +1004,45 @@ func (n *Node) Start() error {
 		n.zkProverService.Start()
 	}
 
+	// Start AI wallet service if enabled.
+	if n.config.AICfg.Wallet.Enabled {
+		n.walletService = wallet.NewService(n.config.AICfg.Wallet.MaxSessionKeys, n.config.AICfg.Wallet.PaymasterEnabled)
+		log.Info("AI wallet service enabled",
+			"maxSessionKeys", n.config.AICfg.Wallet.MaxSessionKeys,
+			"paymaster", n.config.AICfg.Wallet.PaymasterEnabled,
+		)
+	}
+
+	// Start AI safety services.
+	if n.config.AICfg.Governance.Enabled {
+		reg := governance.NewDatasetRegistry(n.config.AICfg.Governance.MaxDatasets)
+		n.dataGovernance = governance.NewCommittee(governance.CommitteeConfig{
+			Quorum:    n.config.AICfg.Governance.CommitteeQuorum,
+			Threshold: n.config.AICfg.Governance.CommitteeThreshold,
+		}, reg)
+		log.Info("AI data governance enabled",
+			"quorum", n.config.AICfg.Governance.CommitteeQuorum,
+			"threshold", n.config.AICfg.Governance.CommitteeThreshold,
+		)
+	}
+	if n.config.AICfg.Training.Enabled {
+		var gov training.DatasetGovernance
+		if n.dataGovernance != nil {
+			gov = n.dataGovernance
+		}
+		n.trainingProver = training.NewTrainingProver(gov)
+		log.Info("ZK training verification enabled")
+	}
+	if n.config.AICfg.Attestation.Enabled {
+		ttl := time.Duration(n.config.AICfg.Attestation.TTLSec) * time.Second
+		n.attestationService = attestation.NewAttestationService(
+			nil, nil, ttl, n.config.AICfg.Attestation.MaxItems,
+		)
+		log.Info("ZK inference attestation enabled",
+			"ttl", n.config.AICfg.Attestation.TTLSec,
+		)
+	}
+
 	// Start distributed infrastructure services.
 	if n.config.CoprocessorCfg.Enabled {
 		svc, err := dcoprocessor.NewService(&n.config.CoprocessorCfg)
@@ -1329,7 +1378,18 @@ func (n *Node) stopServices() []error {
 			}
 			return nil
 		}},
-		// 2c. Distributed infrastructure
+		// 2c. AI services
+		{"AI wallet", func() error {
+			n.walletService = nil
+			return nil
+		}},
+		{"AI safety", func() error {
+			n.attestationService = nil
+			n.trainingProver = nil
+			n.dataGovernance = nil
+			return nil
+		}},
+		// 2d. Distributed infrastructure
 		{"Distributed services", func() error {
 			if n.notifyService != nil {
 				n.notifyService.Stop()

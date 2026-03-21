@@ -67,6 +67,9 @@ func (tm *TaskManager) Submit(programHash types.Hash, input []byte, submitter ty
 }
 
 // GetTask returns a task by ID.
+// NOTE: The returned pointer references the live task object. Reading its fields
+// concurrently with service operations is only safe when the service is stopped.
+// Use GetTaskSnapshot for a race-free copy.
 func (tm *TaskManager) GetTask(id types.Hash) (*Task, bool) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -74,7 +77,37 @@ func (tm *TaskManager) GetTask(id types.Hash) (*Task, bool) {
 	return t, ok
 }
 
+// GetTaskSnapshot returns a shallow copy of a task, safe to read without holding locks.
+func (tm *TaskManager) GetTaskSnapshot(id types.Hash) (Task, bool) {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	t, ok := tm.tasks[id]
+	if !ok {
+		return Task{}, false
+	}
+	return *t, true
+}
+
+// validTransition checks if a status transition is allowed by the state machine.
+func validTransition(from, to TaskStatus) bool {
+	switch from {
+	case TaskPending:
+		return to == TaskProving || to == TaskExpired
+	case TaskProving:
+		return to == TaskVerified || to == TaskFailed || to == TaskExpired || to == TaskOptimisticVerified
+	case TaskOptimisticVerified:
+		return to == TaskVerified || to == TaskChallenged
+	case TaskChallenged:
+		return to == TaskVerified || to == TaskFailed
+	case TaskVerified, TaskFailed, TaskExpired:
+		return false // terminal states
+	default:
+		return false
+	}
+}
+
 // UpdateStatus transitions a task to a new status with optional proof data.
+// Returns error if the transition violates the state machine.
 func (tm *TaskManager) UpdateStatus(id types.Hash, status TaskStatus, proofData, publicOutputs []byte, errMsg string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -82,6 +115,9 @@ func (tm *TaskManager) UpdateStatus(id types.Hash, status TaskStatus, proofData,
 	t, ok := tm.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id.Hex())
+	}
+	if !validTransition(t.Status, status) {
+		return fmt.Errorf("invalid transition %s → %s for task %s", t.Status, status, id.Hex()[:10])
 	}
 	t.Status = status
 	if len(proofData) > 0 {
@@ -115,6 +151,59 @@ func (tm *TaskManager) TransitionToProving(id types.Hash) (types.Hash, error) {
 	}
 	t.Status = TaskProving
 	return t.ProgramHash, nil
+}
+
+// SetOptimisticVerified marks a task as optimistic-verified and sets the challenge deadline.
+func (tm *TaskManager) SetOptimisticVerified(id types.Hash, proofData, publicOutputs []byte, deadline time.Time) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	t, ok := tm.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	t.Status = TaskOptimisticVerified
+	if len(proofData) > 0 {
+		t.ProofData = proofData
+	}
+	if len(publicOutputs) > 0 {
+		t.PublicOutputs = publicOutputs
+	}
+	t.ChallengeDeadline = deadline
+	return nil
+}
+
+// TransitionToChallenged atomically checks that the task is in OptimisticVerified
+// state and within the challenge window, then transitions it to Challenged.
+// This prevents TOCTOU races in SubmitChallenge.
+func (tm *TaskManager) TransitionToChallenged(id types.Hash, challenger types.Address) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	t, ok := tm.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	if t.Status != TaskOptimisticVerified {
+		return ErrTaskNotChallengeable
+	}
+	if time.Now().After(t.ChallengeDeadline) {
+		return ErrChallengeWindowExpired
+	}
+	t.Status = TaskChallenged
+	t.Challenger = challenger
+	return nil
+}
+
+// AssignProvider assigns a provider and bid price to a task.
+func (tm *TaskManager) AssignProvider(id types.Hash, provider types.Address, bidPrice uint64) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	t, ok := tm.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	t.AssignedProvider = provider
+	t.BidPrice = bidPrice
+	return nil
 }
 
 // ListByStatus returns all tasks with the given status.

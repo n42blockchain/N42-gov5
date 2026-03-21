@@ -23,8 +23,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -190,6 +192,17 @@ func (m *Miner) SetZKProverService(svc interface {
 	SubmitBlock(blockHash types.Hash, blockNum uint64, guestInput []byte) error
 }) {
 	m.worker.zkProverService = svc
+}
+
+// AIOptimizer is the interface for AI-enhanced transaction ordering.
+type AIOptimizer interface {
+	OptimizeOrdering(txs []*transaction.Transaction, baseFee *uint256.Int) []*transaction.Transaction
+}
+
+// SetAIOptimizer sets the AI block optimizer on the miner's worker.
+// When set, the optimizer is used to reorder transactions for improved block value.
+func (m *Miner) SetAIOptimizer(optimizer AIOptimizer) {
+	m.worker.aiOptimizer = optimizer
 }
 
 // BundlePool returns the MEV bundle pool for submitting transaction bundles.

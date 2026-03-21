@@ -59,10 +59,16 @@ type Config struct {
 	Web3GatewayCfg   Web3GatewayCfg   `json:"web3_gateway" yaml:"web3_gateway"`
 
 	// Distributed infrastructure
+	ComputeCfg       ComputeCfg       `json:"compute" yaml:"compute"`
 	CoprocessorCfg   CoprocessorCfg   `json:"coprocessor" yaml:"coprocessor"`
 	MessagingCfg     MessagingCfg     `json:"messaging" yaml:"messaging"`
 	StorageCfg       StorageCfg       `json:"storage" yaml:"storage"`
 	NotifyCfg        NotifyCfg        `json:"notify" yaml:"notify"`
+	TorrentDistCfg   TorrentDistCfg   `json:"torrent_dist" yaml:"torrent_dist"`
+	Ed2kCfg          Ed2kCfg          `json:"ed2k" yaml:"ed2k"`
+
+	// AI infrastructure (unified)
+	AICfg            AICfg            `json:"ai" yaml:"ai"`
 }
 
 func SaveConfigToFile(file string, config Config) error {

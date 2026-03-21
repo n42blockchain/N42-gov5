@@ -109,6 +109,12 @@ func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool)
 			return p, true
 		}
 	}
+	// N42 extension: AI inference precompile
+	if evm.chainRules.IsAIInference {
+		if p, ok := PrecompiledContractsAIInference[addr]; ok {
+			return p, true
+		}
+	}
 	return nil, false
 }
 

@@ -299,6 +299,10 @@ func ActivePrecompiles(rules *params.Rules) []types.Address {
 	if rules.IsContentStore {
 		addrs = append(addrs, collectAddresses(PrecompiledContractsCAS)...)
 	}
+	// N42 extension: append AI inference precompile address when enabled
+	if rules.IsAIInference {
+		addrs = append(addrs, collectAddresses(PrecompiledContractsAIInference)...)
+	}
 	return addrs
 }
 

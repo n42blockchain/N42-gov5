@@ -180,6 +180,7 @@ type worker struct {
 	zkProverService interface {         // ZK prover service (nil if disabled)
 		SubmitBlock(blockHash types.Hash, blockNum uint64, guestInput []byte) error
 	}
+	aiOptimizer AIOptimizer // AI transaction ordering optimizer (nil if disabled)
 
 	snapshotMu       sync.RWMutex
 	snapshotBlock    block.IBlock

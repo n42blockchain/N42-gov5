@@ -98,6 +98,41 @@ func (v *Validator) ValidateStatic(op *vm.UserOperation, entryPoint types.Addres
 	return nil
 }
 
+// AgentSessionValidator validates agent session keys for UserOperations.
+// If nil, agent session key validation is skipped.
+type AgentSessionValidator interface {
+	ValidateSessionKey(keyID types.Hash, target types.Address, methodSig []byte, value *uint256.Int, gas uint64) error
+}
+
+// ValidateAgentSession validates an agent session key against the UserOperation.
+// The session key ID is extracted from the first 32 bytes of the signature field
+// when the signature is longer than 65 bytes (standard ECDSA length).
+func (v *Validator) ValidateAgentSession(op *vm.UserOperation, validator AgentSessionValidator) error {
+	if validator == nil {
+		return nil
+	}
+	// Agent session keys are identified by signatures longer than standard ECDSA (65 bytes).
+	// Format: [32 bytes keyID][65+ bytes signature]
+	if len(op.Signature) < 97 {
+		return nil // standard signature, skip agent validation
+	}
+
+	var keyID types.Hash
+	copy(keyID[:], op.Signature[:32])
+
+	var target types.Address
+	if len(op.CallData) >= 20 {
+		copy(target[:], op.CallData[:20])
+	}
+
+	var methodSig []byte
+	if len(op.CallData) >= 24 {
+		methodSig = op.CallData[20:24]
+	}
+
+	return validator.ValidateSessionKey(keyID, target, methodSig, nil, op.CallGasLimit.Uint64())
+}
+
 // ValidateStateful performs state-dependent validation checks.
 func (v *Validator) ValidateStateful(op *vm.UserOperation, state StateReader) error {
 	senderExists := state.GetCodeSize(op.Sender) > 0 || state.GetNonce(op.Sender) > 0

@@ -20,4 +20,11 @@ const (
 	BlobSidecarTopicFormat        = GossipProtocolAndDigest + GossipBlobSidecarMessage
 	DataColumnTopicFormat         = GossipProtocolAndDigest + GossipDataColumnMessage
 	HotStuffConsensusTopicFormat  = GossipProtocolAndDigest + GossipHotStuffConsensusMessage
+
+	// Message relay topics (8 shards, Waku-style)
+	GossipMessagePrefix = "message/shard/"
+	GossipMessageFormat = "/n42/msg/shard/%d"
+
+	// Store query protocol
+	StoreQueryProtocol = "/n42/msg/store_query/1.0.0"
 )

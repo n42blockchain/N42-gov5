@@ -153,7 +153,8 @@ func TestTaskPrune(t *testing.T) {
 	tm := NewTaskManager(10, 1*time.Millisecond)
 	ph := types.HexToHash("0xaa")
 	id, _ := tm.Submit(ph, []byte("x"), types.Address{})
-	tm.UpdateStatus(id, TaskVerified, []byte("p"), []byte("o"), "")
+	tm.TransitionToProving(id) // Pending → Proving
+	tm.UpdateStatus(id, TaskVerified, []byte("p"), []byte("o"), "") // Proving → Verified
 
 	time.Sleep(5 * time.Millisecond)
 	pruned := tm.Prune(1 * time.Millisecond)
@@ -162,5 +163,125 @@ func TestTaskPrune(t *testing.T) {
 	}
 	if tm.TotalCount() != 0 {
 		t.Fatal("should have 0 tasks after prune")
+	}
+}
+
+func TestTaskStateTransitionValidation(t *testing.T) {
+	// Test the validTransition function through UpdateStatus
+	tm := NewTaskManager(10, 5*time.Second)
+	ph := types.HexToHash("0xbb")
+
+	// Submit a task (Pending)
+	id, _ := tm.Submit(ph, []byte("input"), types.Address{})
+
+	// Invalid: Pending → Verified (must go through Proving first)
+	err := tm.UpdateStatus(id, TaskVerified, nil, nil, "")
+	if err == nil {
+		t.Fatal("expected error for Pending → Verified transition")
+	}
+
+	// Valid: Pending → Proving
+	_, err = tm.TransitionToProving(id)
+	if err != nil {
+		t.Fatalf("Pending → Proving: %v", err)
+	}
+
+	// Invalid: Proving → Pending (not allowed)
+	err = tm.UpdateStatus(id, TaskPending, nil, nil, "")
+	if err == nil {
+		t.Fatal("expected error for Proving → Pending transition")
+	}
+
+	// Valid: Proving → Verified
+	err = tm.UpdateStatus(id, TaskVerified, []byte("proof"), []byte("output"), "")
+	if err != nil {
+		t.Fatalf("Proving → Verified: %v", err)
+	}
+
+	// Terminal: Verified → anything should fail
+	err = tm.UpdateStatus(id, TaskFailed, nil, nil, "retry")
+	if err == nil {
+		t.Fatal("expected error: Verified is a terminal state")
+	}
+}
+
+func TestServiceClaimTask(t *testing.T) {
+	cfg := testConfig()
+	cfg.MinProviderStake = 1000 // low minimum so tests don't need ETH-scale stake
+	svc, _ := NewService(cfg)
+	svc.Start()
+	defer svc.Stop()
+
+	ph := types.HexToHash("0x1234")
+	svc.Registry().Register(ph, []byte("vk"), "prog")
+
+	providerAddr := types.HexToAddress("0xabcd")
+	if err := svc.RegisterProvider(providerAddr, 5000, []Capability{CapZK}); err != nil {
+		t.Fatalf("RegisterProvider: %v", err)
+	}
+
+	taskID, _ := svc.SubmitTask(ph, []byte("data"), types.Address{})
+
+	// Claim the task
+	if err := svc.ClaimTask(taskID, providerAddr); err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+
+	task, _ := svc.Tasks().GetTask(taskID)
+	if task.AssignedProvider != providerAddr {
+		t.Fatalf("assigned provider = %v, want %v", task.AssignedProvider, providerAddr)
+	}
+
+	// Claiming again should fail: task already assigned
+	providerAddr2 := types.HexToAddress("0xffff")
+	svc.RegisterProvider(providerAddr2, 5000, []Capability{CapZK})
+	err := svc.ClaimTask(taskID, providerAddr2)
+	if err != ErrTaskAlreadyAssigned {
+		t.Fatalf("expected ErrTaskAlreadyAssigned, got %v", err)
+	}
+}
+
+func TestServiceRegisterUnregisterProvider(t *testing.T) {
+	cfg := testConfig()
+	cfg.MinProviderStake = 1000 // low minimum so tests don't need ETH-scale stake
+	svc, _ := NewService(cfg)
+	svc.Start()
+	defer svc.Stop()
+
+	addr := types.HexToAddress("0x9999")
+	caps := []Capability{CapWASM, CapGeneral}
+
+	// Register
+	if err := svc.RegisterProvider(addr, 2000, caps); err != nil {
+		t.Fatalf("RegisterProvider: %v", err)
+	}
+
+	p, ok := svc.Providers().Get(addr)
+	if !ok {
+		t.Fatal("provider not found after registration")
+	}
+	if p.Status != ProviderActive {
+		t.Fatalf("status = %v, want Active", p.Status)
+	}
+
+	// Duplicate registration should fail
+	err := svc.RegisterProvider(addr, 2000, caps)
+	if err != ErrProviderExists {
+		t.Fatalf("expected ErrProviderExists, got %v", err)
+	}
+
+	// Unregister
+	if err := svc.UnregisterProvider(addr); err != nil {
+		t.Fatalf("UnregisterProvider: %v", err)
+	}
+	_, ok = svc.Providers().Get(addr)
+	if ok {
+		t.Fatal("provider should be removed after unregistration")
+	}
+
+	// Unregister again should fail
+	err = svc.UnregisterProvider(addr)
+	if err != ErrProviderNotFound {
+		t.Fatalf("expected ErrProviderNotFound, got %v", err)
 	}
 }

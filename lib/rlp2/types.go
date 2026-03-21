@@ -1,3 +1,6 @@
+// Package rlp2 is a legacy alternative RLP encoder/decoder.
+// Deprecated: Use lib/rlp instead. This package is retained only for
+// backward-compatible test fixtures in lib/types/txn_test.go.
 package rlp2
 
 import (
