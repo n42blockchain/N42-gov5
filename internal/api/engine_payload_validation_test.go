@@ -535,6 +535,30 @@ func TestValidateExecutionRequestsAcceptsOpaqueWhenPayloadArraysAbsent(t *testin
 	require.NoError(t, err)
 }
 
+func TestValidateExecutionRequestsRejectsEmptyEntry(t *testing.T) {
+	t.Parallel()
+
+	payload := &ExecutionPayloadV4{}
+	requests := []hexutil.Bytes{
+		{},
+	}
+
+	err := validateExecutionRequests(requests, payload)
+	require.ErrorIs(t, err, errInvalidRequestEncoding)
+}
+
+func TestValidateExecutionRequestsRejectsTypeOnlyEntryWithoutLegacyPayloadFields(t *testing.T) {
+	t.Parallel()
+
+	payload := &ExecutionPayloadV4{}
+	requests := []hexutil.Bytes{
+		{DepositRequestType},
+	}
+
+	err := validateExecutionRequests(requests, payload)
+	require.ErrorIs(t, err, errInvalidRequestEncoding)
+}
+
 func TestExecutionPayloadBlockRLPSizeWrapsTypedTransactions(t *testing.T) {
 	t.Parallel()
 

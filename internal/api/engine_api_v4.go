@@ -483,7 +483,7 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 
 	for _, req := range requests {
 		if len(req) == 0 {
-			continue
+			return errInvalidRequestEncoding
 		}
 
 		// Enforce ascending request type ordering per EIP-7685
@@ -516,6 +516,9 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 		// parameter is an opaque byte blob per EIP-7685 and must not be
 		// re-parsed into fixed-size records.
 		if payloadLen == 0 {
+			if len(req) == 1 {
+				return errInvalidRequestEncoding
+			}
 			continue
 		}
 
