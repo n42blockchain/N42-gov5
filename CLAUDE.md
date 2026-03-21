@@ -62,9 +62,20 @@ internal/         → Core business logic (private packages)
   api/            → JSON-RPC API backend implementation
   tracers/        → Debug/trace (js/, native/liveTracer for real-time EVM events)
   distributed/    → Distributed infrastructure (modular, decoupled)
-    coprocessor/  → ZK coprocessor (off-chain compute + on-chain verify)
+    coprocessor/  → Distributed compute coprocessor (tiered verification, provider marketplace)
+      verification.go → Tiered verifier: ZK (default), Optimistic (bond+challenge), TEE (attestation)
+      challenge.go    → Challenge manager: fraud proof disputes for optimistic verification
+      provider.go     → Provider registry: stake, capabilities, reputation tracking
+      marketplace.go  → Reverse-auction marketplace: bid, select (price/ETA/reputation)
+      slashing.go     → Verify-or-Slash: economic penalties for misbehavior
+    compute/      → Distributed compute engines
+      wasm/       → WASM execution engine (wazero-compatible, fuel-based gas, host functions)
+      batch/      → MapReduce batch compute (job splitting, scheduling, aggregation)
+      inference/  → AI inference with opML verification (optimistic ML + fraud proofs)
     messaging/    → Decentralized messaging relay (publish/subscribe + RLN rate limit)
-    storage/      → IPFS/Filecoin storage bridge (pin/get/stat)
+    storage/      → Multi-protocol storage (IPFS bridge, CAS↔CID, universal resolver)
+      torrent/    → BitTorrent bridge (anacrolix/torrent, CAS↔infohash, magnet, seeder)
+      ed2k/       → eDonkey2000 (MD4 hash, ed2k link parse/format, hash bridge)
     notify/       → Push notifications (contract events → wallet streams)
   deferred/       → Deferred execution pipeline (consensus-execution separation)
   mev/            → MEV-Boost relay integration
@@ -106,7 +117,13 @@ cmd/zkguest/      → ZK guest program (RISC-V64 target)
 - **State management**: `modules/state/` handles state trie with changeset tracking; `modules/state/commitment/` provides JMT Blake3 state commitment with ref-counting GC for online pruning.
 - **P2P**: Built on `go-libp2p` with custom protocols for block/transaction/blob/witness propagation.
 - **PQ isolation**: Post-quantum precompiles (0x14-0x17) are NOT in standard fork maps; activated only via `ChainConfig.PQPrecompilesTime`.
-- **Distributed infrastructure**: `internal/distributed/` provides modular coprocessor/messaging/storage/notify services, each independently configurable and lifecycle-managed.
+- **Distributed compute platform**: `internal/distributed/` provides a full distributed compute stack:
+  - **Tiered verification** (Brevis coChain pattern): ZK proof (default) → Optimistic with bond+challenge window → TEE attestation. Tasks route through `TieredVerifier` based on `VerificationTier`.
+  - **Provider network** (EigenLayer AVS + Akash model): providers register with stake+capabilities, claim tasks or bid in reverse-auction marketplace, get rewarded/slashed via Verify-or-Slash economic model.
+  - **WASM engine**: sandboxed execution with fuel-based gas metering, host functions (CAS load/store, keccak256, logging), compilation cache. Runtime interface wraps wazero.
+  - **Batch compute**: MapReduce over CAS data — job splits into map tasks, parallel execution, ordered reduce with panic recovery.
+  - **AI inference** (ORA opML): model registry, optimistic ML verification with fraud proof challenges.
+  - **State machine enforcement**: `validTransition()` in task.go enforces legal status transitions; atomic `TransitionToProving`/`TransitionToChallenged` prevent TOCTOU races.
 
 ### Default Ports
 

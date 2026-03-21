@@ -249,6 +249,282 @@ func TestNotifyEndToEnd(t *testing.T) {
 	t.Logf("Notify e2e: %v", stats)
 }
 
+// TestTieredVerificationEndToEnd exercises the optimistic verification flow:
+// register program → submit task → set optimistic tier + bond → submit proof →
+// verify optimistic-verified state → wait for challenge window → verify finalized.
+func TestTieredVerificationEndToEnd(t *testing.T) {
+	cfg := conf.DefaultCoprocessorCfg()
+	cfg.Enabled = true
+	cfg.TaskTimeoutSec = 30
+	cfg.OptimisticChallengeSec = 1
+	cfg.PruneIntervalSec = 1
+
+	svc, err := coprocessor.NewService(&cfg)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	svc.Start()
+
+	// 1. Register a program
+	programHash := types.HexToHash("0xdeadbeef01")
+	vk := []byte("vk-optimistic-test")
+	if err := svc.Registry().Register(programHash, vk, "optimistic-program"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// 2. Submit a task
+	submitter := types.HexToAddress("0xaaaa01")
+	taskID, err := svc.SubmitTask(programHash, []byte("compute-input"), submitter)
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+
+	// 3. Set optimistic tier and bond on the task before proof submission.
+	// GetTask returns a pointer to the live task struct; fields are exported.
+	task, ok := svc.Tasks().GetTask(taskID)
+	if !ok {
+		t.Fatal("task not found after submission")
+	}
+	task.VerificationTier = coprocessor.TierOptimistic
+	task.Bond = 1_000_000_000_000_000_000 // 1 ETH bond
+
+	// 4. Submit proof — should result in TaskOptimisticVerified, not TaskVerified
+	proof := []byte("optimistic-result-data")
+	outputs := []byte(`{"result": "optimistic"}`)
+	verified, err := svc.SubmitProof(taskID, proof, outputs)
+	if err != nil {
+		t.Fatalf("SubmitProof: %v", err)
+	}
+	if !verified {
+		t.Fatal("optimistic proof should be accepted")
+	}
+
+	// 5. Verify task is in optimistic-verified state (not yet finalized)
+	task, _ = svc.Tasks().GetTask(taskID)
+	if task.Status != coprocessor.TaskOptimisticVerified {
+		t.Fatalf("status = %v, want OptimisticVerified", task.Status)
+	}
+	if task.ChallengeDeadline.IsZero() {
+		t.Fatal("challenge deadline should be set")
+	}
+	t.Logf("Task optimistic-verified, deadline: %v", task.ChallengeDeadline)
+
+	// 6. Wait for challenge window (1s) + maintenance tick (1s) + buffer
+	time.Sleep(3 * time.Second)
+
+	// 7. Stop service to prevent concurrent writes before reading task
+	svc.Stop()
+
+	// 8. Verify task is now finalized to Verified
+	task, _ = svc.Tasks().GetTask(taskID)
+	if task.Status != coprocessor.TaskVerified {
+		t.Fatalf("status = %v, want Verified after challenge window expired", task.Status)
+	}
+
+	t.Logf("Tiered verification e2e: task finalized from OptimisticVerified → Verified")
+}
+
+// TestProviderMarketplaceEndToEnd exercises the provider lifecycle:
+// register provider → submit task → provider claims task → submit proof →
+// verify provider was rewarded.
+func TestProviderMarketplaceEndToEnd(t *testing.T) {
+	cfg := conf.DefaultCoprocessorCfg()
+	cfg.Enabled = true
+	cfg.TaskTimeoutSec = 30
+	cfg.MinProviderStake = 100 // low stake for testing
+	cfg.EnableMarketplace = true
+
+	svc, err := coprocessor.NewService(&cfg)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	svc.Start()
+	defer svc.Stop()
+
+	// 1. Register a program
+	programHash := types.HexToHash("0xdeadbeef02")
+	if err := svc.Registry().Register(programHash, []byte("vk-marketplace"), "marketplace-program"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// 2. Register a provider with sufficient stake
+	providerAddr := types.HexToAddress("0xABCDEF1234567890ABcdef1234567890AbCdEf12")
+	capabilities := []coprocessor.Capability{coprocessor.CapZK, coprocessor.CapGeneral}
+	if err := svc.RegisterProvider(providerAddr, 1000, capabilities); err != nil {
+		t.Fatalf("RegisterProvider: %v", err)
+	}
+
+	// 3. Verify provider is active
+	provider, ok := svc.Providers().Get(providerAddr)
+	if !ok {
+		t.Fatal("provider not found after registration")
+	}
+	if provider.Status != coprocessor.ProviderActive {
+		t.Fatalf("provider status = %v, want Active", provider.Status)
+	}
+	if !provider.HasCapability(coprocessor.CapZK) {
+		t.Fatal("provider should have ZK capability")
+	}
+	t.Logf("Provider registered: stake=%d, reputation=%d", provider.Stake, provider.Reputation)
+
+	// 4. Submit a task
+	submitter := types.HexToAddress("0x2222222222222222222222222222222222222222")
+	taskID, err := svc.SubmitTask(programHash, []byte("marketplace-input"), submitter)
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+
+	// 5. Provider claims the task
+	if err := svc.ClaimTask(taskID, providerAddr); err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+
+	// 6. Verify task is assigned to the provider
+	task, ok := svc.Tasks().GetTask(taskID)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if task.AssignedProvider != providerAddr {
+		t.Fatalf("assigned provider = %v, want %v", task.AssignedProvider, providerAddr)
+	}
+
+	// 7. Set a reward amount and submit proof (TierZK by default)
+	task.RewardAmount = 500
+	proof := []byte("zk-proof-for-marketplace-task")
+	outputs := []byte(`{"result": "done"}`)
+	verified, err := svc.SubmitProof(taskID, proof, outputs)
+	if err != nil {
+		t.Fatalf("SubmitProof: %v", err)
+	}
+	if !verified {
+		t.Fatal("proof should be verified")
+	}
+
+	// 8. Verify task completed successfully
+	task, _ = svc.Tasks().GetTask(taskID)
+	if task.Status != coprocessor.TaskVerified {
+		t.Fatalf("status = %v, want Verified", task.Status)
+	}
+
+	// 9. Verify provider was rewarded (reputation increased, task count incremented)
+	provider, _ = svc.Providers().Get(providerAddr)
+	if provider.Reputation <= 5000 {
+		t.Fatalf("provider reputation = %d, expected increase above initial 5000", provider.Reputation)
+	}
+	if provider.TasksTotal == 0 {
+		t.Fatal("provider task count should be > 0 after completing a task")
+	}
+
+	// 10. Unregister provider
+	if err := svc.UnregisterProvider(providerAddr); err != nil {
+		t.Fatalf("UnregisterProvider: %v", err)
+	}
+	if svc.Providers().TotalCount() != 0 {
+		t.Fatal("provider count should be 0 after unregistering")
+	}
+
+	t.Logf("Provider marketplace e2e: provider rewarded, reputation=%d, tasks=%d",
+		provider.Reputation, provider.TasksTotal)
+}
+
+// TestChallengeFlowEndToEnd exercises the challenge lifecycle:
+// register program → submit task (optimistic) → submit proof →
+// verify optimistic-verified → submit challenge → verify challenged status.
+func TestChallengeFlowEndToEnd(t *testing.T) {
+	cfg := conf.DefaultCoprocessorCfg()
+	cfg.Enabled = true
+	cfg.TaskTimeoutSec = 30
+	cfg.OptimisticChallengeSec = 60 // long window so challenge arrives in time
+
+	svc, err := coprocessor.NewService(&cfg)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	svc.Start()
+	defer svc.Stop()
+
+	// 1. Register a program
+	programHash := types.HexToHash("0xdeadbeef03")
+	if err := svc.Registry().Register(programHash, []byte("vk-challenge"), "challenge-program"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// 2. Submit a task
+	submitter := types.HexToAddress("0xsubmitter03")
+	taskID, err := svc.SubmitTask(programHash, []byte("challenge-input"), submitter)
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+
+	// 3. Set optimistic tier + bond before proof submission
+	task, ok := svc.Tasks().GetTask(taskID)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	task.VerificationTier = coprocessor.TierOptimistic
+	task.Bond = 500_000_000_000_000_000 // 0.5 ETH
+
+	// 4. Submit proof → should land in TaskOptimisticVerified
+	verified, err := svc.SubmitProof(taskID, []byte("optimistic-result"), []byte(`{"val":42}`))
+	if err != nil {
+		t.Fatalf("SubmitProof: %v", err)
+	}
+	if !verified {
+		t.Fatal("optimistic proof should be accepted")
+	}
+
+	task, _ = svc.Tasks().GetTask(taskID)
+	if task.Status != coprocessor.TaskOptimisticVerified {
+		t.Fatalf("status = %v, want OptimisticVerified before challenge", task.Status)
+	}
+
+	// 5. Submit a challenge
+	challenger := types.HexToAddress("0xchallenger03")
+	challengeID, err := svc.SubmitChallenge(taskID, challenger, 100_000_000, "incorrect computation")
+	if err != nil {
+		t.Fatalf("SubmitChallenge: %v", err)
+	}
+	if challengeID == (types.Hash{}) {
+		t.Fatal("challenge ID should be non-zero")
+	}
+	t.Logf("Challenge submitted: %s", challengeID.Hex()[:16])
+
+	// 6. Verify task status is now Challenged
+	task, _ = svc.Tasks().GetTask(taskID)
+	if task.Status != coprocessor.TaskChallenged {
+		t.Fatalf("status = %v, want Challenged", task.Status)
+	}
+	if task.Challenger != challenger {
+		t.Fatalf("challenger = %v, want %v", task.Challenger, challenger)
+	}
+
+	// 7. Verify challenge exists in the challenge manager
+	challenge, ok := svc.Challenges().Get(challengeID)
+	if !ok {
+		t.Fatal("challenge not found in manager")
+	}
+	if challenge.TaskID != taskID {
+		t.Fatalf("challenge taskID = %v, want %v", challenge.TaskID, taskID)
+	}
+	if challenge.Status != coprocessor.ChallengePending {
+		t.Fatalf("challenge status = %v, want Pending", challenge.Status)
+	}
+	if svc.Challenges().HasPendingChallenge(taskID) == false {
+		t.Fatal("HasPendingChallenge should return true")
+	}
+
+	// 8. Verify challenge is returned by GetByTask
+	challenges := svc.Challenges().GetByTask(taskID)
+	if len(challenges) != 1 {
+		t.Fatalf("GetByTask returned %d challenges, want 1", len(challenges))
+	}
+	if challenges[0].Challenger != challenger {
+		t.Fatalf("challenge challenger = %v, want %v", challenges[0].Challenger, challenger)
+	}
+
+	t.Logf("Challenge flow e2e: task challenged, challenge count=%d", svc.Challenges().Count())
+}
+
 // TestCrossModuleIntegration verifies that coprocessor task completion
 // can trigger a notification via the notify service.
 func TestCrossModuleIntegration(t *testing.T) {
