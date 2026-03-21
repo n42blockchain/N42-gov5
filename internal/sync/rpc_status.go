@@ -99,7 +99,7 @@ func (s *Service) sendRPCStatusRequest(ctx context.Context, id peer.ID) error {
 	defer cancel()
 
 	resp := &sync_pb.Status{
-		GenesisHash:   utils.ConvertHashToH256(s.cfg.chain.GenesisBlock().Hash()),
+		GenesisHash:   utils.ConvertHashToH256(s.genesisHashForStatus()),
 		CurrentHeight: utils.ConvertUint256IntToH256(currentBlockNumber(s.cfg.chain)),
 	}
 	topic, err := p2p.TopicFromMessage(p2p.StatusMessageName)
@@ -212,7 +212,7 @@ func (s *Service) statusRPCHandler(ctx context.Context, msg interface{}, stream 
 
 func (s *Service) respondWithStatus(_ context.Context, stream network.Stream) error {
 	resp := &sync_pb.Status{
-		GenesisHash:   utils.ConvertHashToH256(s.cfg.chain.GenesisBlock().Hash()),
+		GenesisHash:   utils.ConvertHashToH256(s.genesisHashForStatus()),
 		CurrentHeight: utils.ConvertUint256IntToH256(currentBlockNumber(s.cfg.chain)),
 	}
 	if _, err := stream.Write([]byte{responseCodeSuccess}); err != nil {

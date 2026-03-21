@@ -309,11 +309,17 @@ func (*Service) addDigestAndIndexToTopic(topic string, digest [4]byte, idx uint6
 }
 
 func (s *Service) currentForkDigest() ([4]byte, error) {
-	genRoot := s.cfg.chain.GenesisBlock().Header().Hash()
+	return utils.CreateForkDigest(currentBlockNumber(s.cfg.chain), s.genesisHashForStatus())
+}
+
+// genesisHashForStatus returns the genesis hash to use in status messages
+// and fork digest calculations. Uses the override hash when configured
+// (for backward compatibility with peers running older Header struct versions).
+func (s *Service) genesisHashForStatus() types.Hash {
 	if s.cfg.overrideGenesisHash != nil {
-		genRoot = *s.cfg.overrideGenesisHash
+		return *s.cfg.overrideGenesisHash
 	}
-	return utils.CreateForkDigest(currentBlockNumber(s.cfg.chain), genRoot)
+	return s.cfg.chain.GenesisBlock().Header().Hash()
 }
 
 // isDigestValid checks if the provided digest matches the expected digest
