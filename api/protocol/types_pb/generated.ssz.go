@@ -1764,7 +1764,9 @@ func (t *Transaction) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 func (t *Transaction) UnmarshalSSZ(buf []byte) error {
 	var err error
 	size := uint64(len(buf))
-	if size < 392 {
+	// Accept legacy transaction size (336) for backward compatibility
+	// with peers running older versions without blob transaction fields.
+	if size < 336 {
 		return ssz.ErrSize
 	}
 
