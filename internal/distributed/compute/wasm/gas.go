@@ -3,6 +3,29 @@
 
 package wasm
 
+import "math"
+
+// SafeGasAdd returns a + b, capped at math.MaxUint64 on overflow.
+func SafeGasAdd(a, b uint64) uint64 {
+	sum := a + b
+	if sum < a {
+		return math.MaxUint64
+	}
+	return sum
+}
+
+// SafeGasMul returns a * b, capped at math.MaxUint64 on overflow.
+func SafeGasMul(a, b uint64) uint64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	result := a * b
+	if result/a != b {
+		return math.MaxUint64
+	}
+	return result
+}
+
 // GasTable defines gas costs for WASM operations.
 // Uses the fuel-based metering model (compatible with wazero's fuel system).
 // Each fuel unit maps to a configurable amount of gas via the engine's gasMultiplier.
@@ -55,15 +78,15 @@ func DefaultGasTable() *GasTable {
 
 // Keccak256Cost returns the total gas cost for hashing the given number of bytes.
 func (g *GasTable) Keccak256Cost(dataLen int) uint64 {
-	return g.HostKeccak256 + g.HostKeccak256B*uint64(dataLen)
+	return SafeGasAdd(g.HostKeccak256, SafeGasMul(g.HostKeccak256B, uint64(dataLen)))
 }
 
 // LogMsgCost returns the total gas cost for logging a message of the given length.
 func (g *GasTable) LogMsgCost(msgLen int) uint64 {
-	return g.HostLogMsg + g.HostLogMsgB*uint64(msgLen)
+	return SafeGasAdd(g.HostLogMsg, SafeGasMul(g.HostLogMsgB, uint64(msgLen)))
 }
 
 // MemoryGrowCost returns the gas cost for growing memory by the given number of pages.
 func (g *GasTable) MemoryGrowCost(pages uint32) uint64 {
-	return g.MemoryGrow + g.MemoryPageCost*uint64(pages)
+	return SafeGasAdd(g.MemoryGrow, SafeGasMul(g.MemoryPageCost, uint64(pages)))
 }

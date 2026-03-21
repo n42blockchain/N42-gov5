@@ -75,6 +75,33 @@ func NewUniversalResolver(
 	}
 }
 
+// Stats returns resolver statistics.
+func (ur *UniversalResolver) Stats() map[string]interface{} {
+	stats := map[string]interface{}{
+		"hasIPFS":    ur.ipfsBridge != nil,
+		"hasTorrent": ur.torrentBridge != nil,
+		"hasEd2k":    ur.ed2kBridge != nil,
+		"hasCAS":     ur.casGet != nil,
+	}
+	return stats
+}
+
+// HasProtocol returns whether a specific protocol backend is configured.
+func (ur *UniversalResolver) HasProtocol(p Protocol) bool {
+	switch p {
+	case ProtocolCAS:
+		return ur.casGet != nil
+	case ProtocolIPFS:
+		return ur.ipfsBridge != nil
+	case ProtocolBitTorrent:
+		return ur.torrentBridge != nil
+	case ProtocolEd2k:
+		return ur.ed2kBridge != nil
+	default:
+		return false
+	}
+}
+
 // Resolve attempts to retrieve content by keccak256 hash using all available
 // protocols in order: CAS -> IPFS -> BitTorrent.
 func (ur *UniversalResolver) Resolve(ctx context.Context, contentHash [32]byte) (*ContentResult, error) {

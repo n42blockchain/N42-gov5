@@ -4,6 +4,7 @@
 package wasm
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"sync"
 
@@ -148,6 +149,16 @@ func (hf *HostFunctions) registerDefaults() {
 			hf.logMu.Unlock()
 			cost := hf.gasTable.LogMsgCost(len(args))
 			return nil, cost, nil
+		},
+	}
+
+	// sha256: compute SHA-256 hash
+	hf.funcs["sha256"] = &HostFunc{
+		Name: "sha256",
+		Handler: func(args []byte) ([]byte, uint64, error) {
+			h := sha256.Sum256(args)
+			cost := hf.gasTable.Keccak256Cost(len(args)) // same cost model
+			return h[:], cost, nil
 		},
 	}
 }

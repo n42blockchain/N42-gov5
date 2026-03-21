@@ -67,11 +67,25 @@ func (tm *TaskManager) Submit(programHash types.Hash, input []byte, submitter ty
 }
 
 // GetTask returns a task by ID.
+// NOTE: The returned pointer references the live task object. Reading its fields
+// concurrently with service operations is only safe when the service is stopped.
+// Use GetTaskSnapshot for a race-free copy.
 func (tm *TaskManager) GetTask(id types.Hash) (*Task, bool) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 	t, ok := tm.tasks[id]
 	return t, ok
+}
+
+// GetTaskSnapshot returns a shallow copy of a task, safe to read without holding locks.
+func (tm *TaskManager) GetTaskSnapshot(id types.Hash) (Task, bool) {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	t, ok := tm.tasks[id]
+	if !ok {
+		return Task{}, false
+	}
+	return *t, true
 }
 
 // validTransition checks if a status transition is allowed by the state machine.

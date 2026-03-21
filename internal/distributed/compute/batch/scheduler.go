@@ -108,6 +108,54 @@ func (s *Scheduler) FailMapTask(jobID, taskID types.Hash, errMsg string) error {
 	return fmt.Errorf("batch: task %s not found in job %s", taskID.Hex(), jobID.Hex())
 }
 
+// CancelJob marks a job and all its pending tasks as failed.
+func (s *Scheduler) CancelJob(jobID types.Hash, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return fmt.Errorf("batch: job %s not found", jobID.Hex())
+	}
+
+	job.mu.Lock()
+	defer job.mu.Unlock()
+
+	job.Status = JobFailed
+	job.Error = reason
+	for _, t := range job.MapTasks {
+		if t.Status == JobPending || t.Status == JobMapping {
+			t.Status = JobFailed
+			t.Error = "cancelled: " + reason
+		}
+	}
+	return nil
+}
+
+// ExpireJobs cancels all jobs that have passed their deadline. Returns count of expired jobs.
+func (s *Scheduler) ExpireJobs() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	expired := 0
+	for _, job := range s.jobs {
+		if job.IsExpired() && job.Status != JobCompleted && job.Status != JobFailed {
+			job.mu.Lock()
+			job.Status = JobFailed
+			job.Error = "deadline exceeded"
+			for _, t := range job.MapTasks {
+				if t.Status == JobPending || t.Status == JobMapping {
+					t.Status = JobFailed
+					t.Error = "deadline exceeded"
+				}
+			}
+			job.mu.Unlock()
+			expired++
+		}
+	}
+	return expired
+}
+
 // CheckProgress examines a job and transitions it to the reduce phase if all
 // maps are complete, or marks it as failed if any map failed permanently.
 func (s *Scheduler) CheckProgress(jobID types.Hash) (JobStatus, error) {

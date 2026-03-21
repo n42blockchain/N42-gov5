@@ -235,3 +235,37 @@ func (s *InferenceService) TotalCount() int {
 	defer s.mu.RUnlock()
 	return len(s.requests)
 }
+
+// PurgeCompleted removes all completed/failed/challenged requests. Returns count purged.
+func (s *InferenceService) PurgeCompleted() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	purged := 0
+	for id, r := range s.requests {
+		if r.Status == RequestVerified || r.Status == RequestFailed || r.Status == RequestChallenged {
+			delete(s.requests, id)
+			purged++
+		}
+	}
+	return purged
+}
+
+// ListRequests returns all tracked requests with their statuses.
+func (s *InferenceService) ListRequests() []struct {
+	ID     types.Hash
+	Status RequestStatus
+} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]struct {
+		ID     types.Hash
+		Status RequestStatus
+	}, 0, len(s.requests))
+	for id, r := range s.requests {
+		result = append(result, struct {
+			ID     types.Hash
+			Status RequestStatus
+		}{id, r.Status})
+	}
+	return result
+}

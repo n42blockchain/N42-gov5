@@ -300,14 +300,15 @@ func TestTieredVerificationEndToEnd(t *testing.T) {
 	}
 
 	// 5. Verify task is in optimistic-verified state (not yet finalized)
-	task, _ = svc.Tasks().GetTask(taskID)
-	if task.Status != coprocessor.TaskOptimisticVerified {
-		t.Fatalf("status = %v, want OptimisticVerified", task.Status)
+	// Use GetTaskSnapshot to avoid racing with the maintenance goroutine.
+	snap, _ := svc.Tasks().GetTaskSnapshot(taskID)
+	if snap.Status != coprocessor.TaskOptimisticVerified {
+		t.Fatalf("status = %v, want OptimisticVerified", snap.Status)
 	}
-	if task.ChallengeDeadline.IsZero() {
+	if snap.ChallengeDeadline.IsZero() {
 		t.Fatal("challenge deadline should be set")
 	}
-	t.Logf("Task optimistic-verified, deadline: %v", task.ChallengeDeadline)
+	t.Logf("Task optimistic-verified, deadline: %v", snap.ChallengeDeadline)
 
 	// 6. Wait for challenge window (1s) + maintenance tick (1s) + buffer
 	time.Sleep(3 * time.Second)
