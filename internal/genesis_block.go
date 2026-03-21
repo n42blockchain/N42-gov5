@@ -315,10 +315,26 @@ func GenesisByChainName(chain string) *conf.Genesis {
 	switch chain {
 	case networkname.MainnetChainName:
 		return mainnetGenesisBlock()
+	case "mainnet_compat":
+		return mainnetCompatGenesisBlock()
 	case networkname.TestnetChainName:
 		return testnetGenesisBlock()
 	default:
 		return nil
+	}
+}
+
+// mainnetCompatGenesisBlock returns a backward-compatible mainnet genesis block
+// without Shanghai/Cancun/Pectra forks, matching the original genesis hash
+// (0x138734b7...) for syncing with legacy mainnet peers.
+func mainnetCompatGenesisBlock() *conf.Genesis {
+	return &conf.Genesis{
+		Config:    params.MainnetCompatChainConfig,
+		Nonce:     0,
+		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
+		Timestamp: 1678174066,
+		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
+		Number:    0,
 	}
 }
 
