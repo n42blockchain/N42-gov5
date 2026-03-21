@@ -1,10 +1,12 @@
 package transaction
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -14,6 +16,7 @@ func TestEthereumTransactionRoundTrip(t *testing.T) {
 	delegateTo := types.HexToAddress("0x3333333333333333333333333333333333333333")
 	storageKey := types.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	blobHash := types.HexToHash("0x0100000000000000000000000000000000000000000000000000000000000001")
+	maxAuthChainID := new(uint256.Int).SetBytes(bytes.Repeat([]byte{0xff}, 32))
 
 	tests := []struct {
 		name string
@@ -106,7 +109,7 @@ func TestEthereumTransactionRoundTrip(t *testing.T) {
 					StorageKeys: []types.Hash{storageKey},
 				}},
 				AuthList: AuthorizationList{{
-					ChainID: 1,
+					ChainID: *maxAuthChainID,
 					Address: delegateTo,
 					Nonce:   9,
 					V:       uint256.NewInt(1),
@@ -146,6 +149,22 @@ func TestEncodeEthereumTransactionRejectsUnsupportedType(t *testing.T) {
 	})
 	if _, err := EncodeEthereumTransaction(tx); err == nil {
 		t.Fatal("EncodeEthereumTransaction() error = nil, want unsupported type error")
+	}
+}
+
+func TestDecodeEthereumTransactionPreservesMaxAuthorizationChainID(t *testing.T) {
+	raw := hexutil.MustDecode("0x04f8e101808007830186a0944c87531476694224c79671e2b844c2ab24c886cf8080c0f87cf87aa0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff944c87531476694224c79671e2b844c2ab24c885cf8001a08625888bf53285bd4d5ce133807c1fb66379dc1e90e58abe967536b684ebc423a03d78ea4353faec9eea32c2f96e6949d27371692491ad4a6adee93ded801653f680a01b8de583bb5be1de409ac4be6bb24983171a87aa0e1ce53723bceadf323ae755a00a20f06aacc0082260e195978bda197ab84987184bb11e3e7b86b433f414d253")
+
+	tx, err := DecodeEthereumTransaction(raw)
+	if err != nil {
+		t.Fatalf("DecodeEthereumTransaction() error = %v", err)
+	}
+	if len(tx.AuthList()) != 1 {
+		t.Fatalf("AuthList() len = %d, want 1", len(tx.AuthList()))
+	}
+	want := new(uint256.Int).SetBytes(bytes.Repeat([]byte{0xff}, 32))
+	if tx.AuthList()[0].ChainID.Cmp(want) != 0 {
+		t.Fatalf("AuthList()[0].ChainID = %s, want %s", &tx.AuthList()[0].ChainID, want)
 	}
 }
 
@@ -207,7 +226,7 @@ func assertTransactionEquivalent(t *testing.T, got, want *Transaction) {
 	for i := range got.AuthList() {
 		gotAuth := got.AuthList()[i]
 		wantAuth := want.AuthList()[i]
-		if gotAuth.ChainID != wantAuth.ChainID || gotAuth.Address != wantAuth.Address || gotAuth.Nonce != wantAuth.Nonce {
+		if gotAuth.ChainID.Cmp(&wantAuth.ChainID) != 0 || gotAuth.Address != wantAuth.Address || gotAuth.Nonce != wantAuth.Nonce {
 			t.Fatalf("AuthList()[%d] = %+v, want %+v", i, gotAuth, wantAuth)
 		}
 	}

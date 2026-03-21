@@ -188,6 +188,25 @@ func gasEip2929AccountCheck(evm VMInterpreter, contract *Contract, stack *stack.
 	return 0, nil
 }
 
+func delegationCallAccessCost(evm VMInterpreter, addr types.Address) uint64 {
+	if !evm.ChainRules().IsPrague {
+		return 0
+	}
+
+	code := evm.IntraBlockState().GetCode(addr)
+	delegatedAddr, ok := ParseDelegation(code)
+	if !ok {
+		return 0
+	}
+
+	if evm.IntraBlockState().AddressInAccessList(delegatedAddr) {
+		return params.WarmStorageReadCostEIP2929
+	}
+
+	evm.IntraBlockState().AddAddressToAccessList(delegatedAddr)
+	return params.ColdAccountAccessCostEIP2929
+}
+
 func makeCallVariantGasCallEIP2929(oldCalculator gasFunc) gasFunc {
 	return func(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
 		addr := types.Address(stack.Back(1).Bytes20())
@@ -207,21 +226,35 @@ func makeCallVariantGasCallEIP2929(oldCalculator gasFunc) gasFunc {
 				return 0, ErrOutOfGas
 			}
 		}
+
+		delegationCost := delegationCallAccessCost(evm, addr)
+		if delegationCost > 0 {
+			if !contract.UseGas(delegationCost) {
+				return 0, ErrOutOfGas
+			}
+		}
 		// Now call the old calculator, which takes into account
 		// - create new account
 		// - transfer value
 		// - memory expansion
 		// - 63/64ths rule
 		gas, err := oldCalculator(evm, contract, stack, mem, memorySize)
-		if warmAccess || err != nil {
+		if err != nil {
 			return gas, err
 		}
 		// In case of a cold access, we temporarily add the cold charge back, and also
 		// add it to the returned gas. By adding it to the return, it will be charged
 		// outside of this function, as part of the dynamic gas, and that will make it
 		// also become correctly reported to tracers.
-		contract.Gas += coldCost
-		return gas + coldCost, nil
+		if !warmAccess {
+			contract.Gas += coldCost
+			gas += coldCost
+		}
+		if delegationCost > 0 {
+			contract.Gas += delegationCost
+			gas += delegationCost
+		}
+		return gas, nil
 	}
 }
 

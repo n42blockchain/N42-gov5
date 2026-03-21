@@ -157,12 +157,12 @@ func TestSetCodeTxAccessList(t *testing.T) {
 func TestAuthorizationFields(t *testing.T) {
 	addr := types.HexToAddress("0xabcdef0123456789abcdef0123456789abcdef01")
 	auth := &Authorization{
-		ChainID: 1,
+		ChainID: *uint256.NewInt(1),
 		Address: addr,
 		Nonce:   10,
 	}
 
-	if auth.ChainID != 1 {
+	if auth.ChainID.Cmp(uint256.NewInt(1)) != 0 {
 		t.Errorf("Authorization.ChainID = %v, want 1", auth.ChainID)
 	}
 	if auth.Address != addr {
@@ -175,7 +175,7 @@ func TestAuthorizationFields(t *testing.T) {
 
 func TestAuthListCopy(t *testing.T) {
 	auth1 := &Authorization{
-		ChainID: 1,
+		ChainID: *uint256.NewInt(1),
 		Address: types.HexToAddress("0x1111111111111111111111111111111111111111"),
 		Nonce:   1,
 		V:       uint256.NewInt(27),
@@ -183,7 +183,7 @@ func TestAuthListCopy(t *testing.T) {
 		S:       uint256.NewInt(67890),
 	}
 	auth2 := &Authorization{
-		ChainID: 1,
+		ChainID: *uint256.NewInt(1),
 		Address: types.HexToAddress("0x2222222222222222222222222222222222222222"),
 		Nonce:   2,
 	}
@@ -219,7 +219,7 @@ func TestSetCodeTxCopy(t *testing.T) {
 		Data:      []byte{0x01, 0x02, 0x03},
 		AccessList: AccessList{{Address: addr, StorageKeys: []types.Hash{{}}}},
 		AuthList: AuthorizationList{{
-			ChainID: 1,
+			ChainID: *uint256.NewInt(1),
 			Address: addr,
 			Nonce:   1,
 		}},
@@ -415,9 +415,9 @@ func BenchmarkCopyAccessList(b *testing.B) {
 
 func BenchmarkAuthListCopy(b *testing.B) {
 	authList := AuthorizationList{
-		{ChainID: 1, Address: types.Address{}, Nonce: 1},
-		{ChainID: 1, Address: types.Address{}, Nonce: 2},
-		{ChainID: 1, Address: types.Address{}, Nonce: 3},
+		{ChainID: *uint256.NewInt(1), Address: types.Address{}, Nonce: 1},
+		{ChainID: *uint256.NewInt(1), Address: types.Address{}, Nonce: 2},
+		{ChainID: *uint256.NewInt(1), Address: types.Address{}, Nonce: 3},
 	}
 
 	b.ResetTimer()
@@ -425,4 +425,3 @@ func BenchmarkAuthListCopy(b *testing.B) {
 		authList.Copy()
 	}
 }
-

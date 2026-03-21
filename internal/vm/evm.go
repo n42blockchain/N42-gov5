@@ -240,6 +240,26 @@ func (evm *EVM) Interpreter() Interpreter {
 	return evm.interpreter
 }
 
+func (evm *EVM) resolveCode(addr types.Address) []byte {
+	code := evm.intraBlockState.GetCode(addr)
+	if !evm.chainRules.IsPrague {
+		return code
+	}
+	if delegatedAddr, ok := ParseDelegation(code); ok {
+		return evm.intraBlockState.GetCode(delegatedAddr)
+	}
+	return code
+}
+
+func (evm *EVM) resolveCodeHash(addr types.Address) types.Hash {
+	if evm.chainRules.IsPrague {
+		if delegatedAddr, ok := ParseDelegation(evm.intraBlockState.GetCode(addr)); ok {
+			return evm.intraBlockState.GetCodeHash(delegatedAddr)
+		}
+	}
+	return evm.intraBlockState.GetCodeHash(addr)
+}
+
 func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input []byte, gas uint64, value *uint256.Int, bailout bool) (ret []byte, leftOverGas uint64, err error) {
 	metrics.EVMCallCount.Inc()
 	depth := evm.interpreter.Depth()
@@ -259,23 +279,8 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 			}
 		}
 	}
-	codeAddr := addr
 	p, isPrecompile := evm.precompile(addr)
 	var code []byte
-	if !isPrecompile {
-		code = evm.intraBlockState.GetCode(addr)
-		if evm.chainRules.IsPectra {
-			if delegatedAddr, ok := ParseDelegation(code); ok {
-				codeAddr = delegatedAddr
-				p, isPrecompile = evm.precompile(codeAddr)
-				if !isPrecompile {
-					code = evm.intraBlockState.GetCode(codeAddr)
-				} else {
-					code = nil
-				}
-			}
-		}
-	}
 
 	snapshot := evm.intraBlockState.Snapshot()
 
@@ -347,29 +352,35 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 			ret, gas, err = RunPrecompiledContract(p, input, gas)
 		}
 	} else if len(code) == 0 {
+		code = evm.resolveCode(addr)
+		if len(code) == 0 {
+			// If the account has no code, we can abort here
+			// The depth-check is already done, and precompiles handled above
+			ret, err = nil, nil // gas is unchanged
+		} else {
+			// At this point, we use a copy of address. If we don't, the go compiler will
+			// leak the 'contract' to the outer scope, and make allocation for 'contract'
+			// even if the actual execution ends on RunPrecompiled above.
+			addrCopy := addr
+			// Initialise a new contract and set the code that is to be used by the EVM.
+			// The contract is a scoped environment for this execution context only.
+			codeHash := evm.resolveCodeHash(addrCopy)
+			var contract *Contract
+			if typ == CALLCODE {
+				contract = NewContract(caller, AccountRef(caller.Address()), value, gas, evm.config.SkipAnalysis)
+			} else if typ == DELEGATECALL {
+				contract = NewContract(caller, AccountRef(caller.Address()), value, gas, evm.config.SkipAnalysis).AsDelegate()
+			} else {
+				contract = NewContract(caller, AccountRef(addrCopy), value, gas, evm.config.SkipAnalysis)
+			}
+			contract.SetCallCode(&addrCopy, codeHash, code)
+			ret, err = run(evm, contract, input, typ == STATICCALL)
+			gas = contract.Gas
+		}
+	} else {
 		// If the account has no code, we can abort here
 		// The depth-check is already done, and precompiles handled above
-		ret, err = nil, nil // gas is unchanged
-	} else {
-		// At this point, we use a copy of address. If we don't, the go compiler will
-		// leak the 'contract' to the outer scope, and make allocation for 'contract'
-		// even if the actual execution ends on RunPrecompiled above.
-		addrCopy := addr
-		codeAddrCopy := codeAddr
-		// Initialise a new contract and set the code that is to be used by the EVM.
-		// The contract is a scoped environment for this execution context only.
-		codeHash := evm.intraBlockState.GetCodeHash(codeAddrCopy)
-		var contract *Contract
-		if typ == CALLCODE {
-			contract = NewContract(caller, AccountRef(caller.Address()), value, gas, evm.config.SkipAnalysis)
-		} else if typ == DELEGATECALL {
-			contract = NewContract(caller, AccountRef(caller.Address()), value, gas, evm.config.SkipAnalysis).AsDelegate()
-		} else {
-			contract = NewContract(caller, AccountRef(addrCopy), value, gas, evm.config.SkipAnalysis)
-		}
-		contract.SetCallCode(&codeAddrCopy, codeHash, code)
-		ret, err = run(evm, contract, input, typ == STATICCALL)
-		gas = contract.Gas
+		ret, err = nil, nil
 	}
 	// When an error was returned by the EVM or when setting the creation code
 	// above we revert to the snapshot and consume any gas remaining. Additionally

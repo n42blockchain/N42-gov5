@@ -346,7 +346,7 @@ func TestLondonSignerRecoversTypedTransactionSenders(t *testing.T) {
 				Value:     uint256.NewInt(1),
 				AuthList: AuthorizationList{
 					{
-						ChainID: 1,
+						ChainID: *uint256.NewInt(1),
 						Address: types.HexToAddress("0x0000000000000000000000000000000000000001"),
 						Nonce:   0,
 						V:       uint256.NewInt(0),

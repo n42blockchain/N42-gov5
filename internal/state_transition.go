@@ -378,13 +378,6 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		}
 	}
 
-	// EIP-7702: Process authorization list before execution
-	if rules.IsPrague && msg.AuthList() != nil {
-		if err := st.applyAuthorizations(msg.AuthList()); err != nil {
-			return nil, err
-		}
-	}
-
 	// Set up access list (EIP-2929)
 	if rules.IsBerlin {
 		st.state.PrepareAccessList(msg.From(), msg.To(), vm2.ActivePrecompiles(rules), msg.AccessList())
@@ -402,6 +395,16 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		ret, _, st.gas, vmerr = st.evm.Create(sender, st.data, st.gas, st.value)
 	} else {
 		st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
+		if rules.IsPrague && msg.AuthList() != nil {
+			if err := st.applyAuthorizations(msg.AuthList()); err != nil {
+				return nil, err
+			}
+		}
+		if rules.IsPrague {
+			if delegatedAddr, ok := vm2.ParseDelegation(st.state.GetCode(st.to())); ok {
+				st.state.AddAddressToAccessList(delegatedAddr)
+			}
+		}
 		ret, st.gas, vmerr = st.evm.Call(sender, st.to(), st.data, st.gas, st.value, bailout)
 	}
 
@@ -518,10 +521,17 @@ func toWordSize(size uint64) uint64 {
 // applyAuthorizations processes the EIP-7702 authorization list.
 // For each valid authorization, it sets delegation code on the signer's account.
 func (st *StateTransition) applyAuthorizations(authList transaction.AuthorizationList) error {
-	chainID := st.evm.ChainConfig().ChainID.Uint64()
-
 	for _, auth := range authList {
 		if auth == nil {
+			continue
+		}
+
+		// Chain ID must match or be 0 (wildcard)
+		if !auth.ChainID.IsZero() && auth.ChainID.CmpBig(st.evm.ChainConfig().ChainID) != 0 {
+			continue
+		}
+		// Nonce must remain within EIP-2681 bounds.
+		if auth.Nonce+1 < auth.Nonce {
 			continue
 		}
 
@@ -529,11 +539,7 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 		if err != nil {
 			continue
 		}
-
-		// Chain ID must match or be 0 (wildcard)
-		if auth.ChainID != 0 && auth.ChainID != chainID {
-			continue
-		}
+		st.state.AddAddressToAccessList(signer)
 
 		// Nonce must match
 		signerNonce := st.state.GetNonce(signer)
@@ -553,9 +559,11 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 			st.state.AddRefund(params.PerEmptyAccountCost - params.PerAuthBaseCost)
 		}
 		st.state.SetNonce(signer, signerNonce+1)
-		st.state.SetCode(signer, vm2.AddressToDelegation(auth.Address))
-		st.state.AddAddressToAccessList(signer)
-		st.state.AddAddressToAccessList(auth.Address)
+		if auth.Address == (types.Address{}) {
+			st.state.SetCode(signer, nil)
+		} else {
+			st.state.SetCode(signer, vm2.AddressToDelegation(auth.Address))
+		}
 	}
 
 	return nil

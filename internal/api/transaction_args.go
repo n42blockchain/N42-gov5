@@ -57,7 +57,7 @@ type TransactionArgs struct {
 
 // RPCAuthorization represents an EIP-7702 authorization for RPC serialization
 type RPCAuthorization struct {
-	ChainID hexutil.Uint64    `json:"chainId"`
+	ChainID *hexutil.Big      `json:"chainId"`
 	Address avmcommon.Address `json:"address"`
 	Nonce   hexutil.Uint64    `json:"nonce"`
 	V       *hexutil.Big      `json:"v"`
@@ -430,7 +430,7 @@ func newRPCTransaction(tx *transaction.Transaction, blockHash types.Hash, blockN
 					continue
 				}
 				rpcAuth := RPCAuthorization{
-					ChainID: hexutil.Uint64(auth.ChainID),
+					ChainID: (*hexutil.Big)(auth.ChainID.ToBig()),
 					Address: *avmtypes.FromastAddress(&auth.Address),
 					Nonce:   hexutil.Uint64(auth.Nonce),
 				}
