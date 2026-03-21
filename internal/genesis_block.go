@@ -38,8 +38,6 @@ import (
 	"github.com/n42blockchain/N42/params/networkname"
 
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/hash"
-	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 )
@@ -208,14 +206,11 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	if g.GenesisConfig.StateRoot != (types.Hash{}) {
 		stateRoot = g.GenesisConfig.StateRoot
 	}
-	txHash := hash.DeriveSha(transaction.Transactions(nil))
-	if g.GenesisConfig.TxHash != (types.Hash{}) {
-		txHash = g.GenesisConfig.TxHash
-	}
-	receiptHash := hash.DeriveSha(block.Receipts(nil))
-	if g.GenesisConfig.ReceiptHash != (types.Hash{}) {
-		receiptHash = g.GenesisConfig.ReceiptHash
-	}
+	// Use zero hash for TxHash/ReceiptHash when not explicitly set in genesis
+	// config. This preserves backward compatibility with the original genesis
+	// hash (0x138734b7...) which used zero hashes for empty transactions/receipts.
+	txHash := g.GenesisConfig.TxHash
+	receiptHash := g.GenesisConfig.ReceiptHash
 
 	head := &block.Header{
 		ParentHash:    g.GenesisConfig.ParentHash,
