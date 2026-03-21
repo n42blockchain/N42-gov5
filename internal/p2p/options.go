@@ -32,18 +32,20 @@ func MultiAddressBuilder(ipAddr string, port uint) (ma.Multiaddr, error) {
 // buildOptions for the libp2p host.
 func (s *Service) buildOptions(ip net.IP, priKey *ecdsa.PrivateKey) []libp2p.Option {
 	cfg := s.cfg
-	listen, err := MultiAddressBuilder(ip.String(), uint(cfg.TCPPort))
-	if err != nil {
-		log.Crit("Failed to p2p listen", "err", err)
-	}
+
+	// Determine the listen address: bind to local interface, not the external IP.
+	// The external/public IP is only used for advertising (AddrsFactory below),
+	// not for binding. Behind NAT, binding to a public IP fails with EADDRNOTAVAIL.
+	listenIP := "0.0.0.0"
 	if cfg.LocalIP != "" {
 		if net.ParseIP(cfg.LocalIP) == nil {
 			log.Crit("Invalid local ip provided", "ip", cfg.LocalIP)
 		}
-		listen, err = MultiAddressBuilder(cfg.LocalIP, uint(cfg.TCPPort))
-		if err != nil {
-			log.Crit("Failed to p2p listen", "err", err)
-		}
+		listenIP = cfg.LocalIP
+	}
+	listen, err := MultiAddressBuilder(listenIP, uint(cfg.TCPPort))
+	if err != nil {
+		log.Crit("Failed to p2p listen", "err", err)
 	}
 	ifaceKey, err := utils.ConvertToInterfacePrivkey(priKey)
 	if err != nil {
@@ -76,9 +78,14 @@ func (s *Service) buildOptions(ip net.IP, priKey *ecdsa.PrivateKey) []libp2p.Opt
 		// Disable relay if it has not been set.
 		options = append(options, libp2p.DisableRelay())
 	}
-	if cfg.HostAddress != "" {
+	// Advertise external address: explicit --p2p.host-ip or auto-detected public IP.
+	advertiseIP := cfg.HostAddress
+	if advertiseIP == "" && ip != nil && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsUnspecified() {
+		advertiseIP = ip.String()
+	}
+	if advertiseIP != "" {
 		options = append(options, libp2p.AddrsFactory(func(addrs []ma.Multiaddr) []ma.Multiaddr {
-			external, err := MultiAddressBuilder(cfg.HostAddress, uint(cfg.TCPPort))
+			external, err := MultiAddressBuilder(advertiseIP, uint(cfg.TCPPort))
 			if err != nil {
 				log.Error("Unable to create external multiaddress", "err", err)
 			} else {
