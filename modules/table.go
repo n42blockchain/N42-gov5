@@ -180,6 +180,21 @@ const (
 	// key: keccak256(data) (32 bytes)
 	// value: raw data (up to 24KB)
 	ContentStore = "ContentStore"
+
+	// TorrentHashMap maps keccak256 content hashes to BitTorrent infohashes.
+	// key: keccak256(data) (32 bytes)
+	// value: infohash (20 bytes) + metainfo length (4 bytes) + metainfo
+	TorrentHashMap = "TorrentHashMap"
+
+	// Ed2kHashMap maps keccak256 content hashes to ed2k/eDonkey hashes.
+	// key: keccak256(data) (32 bytes)
+	// value: ed2k hash (16 bytes, MD4)
+	Ed2kHashMap = "Ed2kHashMap"
+
+	// MagnetURIStore stores magnet URIs for content discovery.
+	// key: keccak256(data) (32 bytes)
+	// value: magnet URI string (UTF-8)
+	MagnetURIStore = "MagnetURIStore"
 )
 
 const (
@@ -242,6 +257,9 @@ var n42Tables = []string{
 	JMTNode,
 	JMTRoot,
 	ContentStore,
+	TorrentHashMap,
+	Ed2kHashMap,
+	MagnetURIStore,
 }
 
 var N42TableCfg = kv.TableCfg{
