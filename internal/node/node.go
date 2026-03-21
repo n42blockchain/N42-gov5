@@ -50,9 +50,9 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/contracts/deposit"
-	n42deposit "github.com/n42blockchain/N42/contracts/deposit/amt"
-	fujideposit "github.com/n42blockchain/N42/contracts/deposit/fuji"
-	nftdeposit "github.com/n42blockchain/N42/contracts/deposit/nft"
+	"github.com/n42blockchain/N42/contracts/deposit/nftstake"
+	"github.com/n42blockchain/N42/contracts/deposit/testnet"
+	"github.com/n42blockchain/N42/contracts/deposit/token"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/api/graphql"
@@ -482,9 +482,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			name     string
 			contract deposit.DepositContract
 		}{
-			{cfg.ChainCfg.Apos.DepositContract, "DepositContract", new(n42deposit.Contract)},
-			{cfg.ChainCfg.Apos.DepositNFTContract, "DepositNFTContract", new(nftdeposit.Contract)},
-			{cfg.ChainCfg.Apos.DepositFUJIContract, "DepositFUJIContract", new(fujideposit.Contract)},
+			{cfg.ChainCfg.Apos.DepositContract, "DepositContract", new(token.Contract)},
+			{cfg.ChainCfg.Apos.DepositNFTContract, "DepositNFTContract", new(nftstake.Contract)},
+			{cfg.ChainCfg.Apos.DepositFUJIContract, "DepositFUJIContract", new(testnet.Contract)},
 		}
 		for _, e := range entries {
 			if e.addr == "" {
