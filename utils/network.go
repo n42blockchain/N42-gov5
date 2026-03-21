@@ -1,17 +1,55 @@
 package utils
 
 import (
+	"io"
 	"net"
+	"net/http"
 	"sort"
+	"strings"
+	"time"
 )
 
 // IPAddr gets the external ipv4 address and converts into a libp2p formatted value.
+// It first attempts to detect the public IP via external services (for nodes behind NAT),
+// then falls back to local interface addresses.
 func IPAddr() net.IP {
+	// Try public IP detection first (for NAT traversal)
+	if pubIP := detectPublicIP(); pubIP != nil {
+		return pubIP
+	}
+	// Fallback to local interface IP
 	ip, err := ExternalIP()
 	if err != nil {
 		panic(err)
 	}
 	return net.ParseIP(ip)
+}
+
+// detectPublicIP queries external services to determine the public IP.
+// Returns nil if detection fails (e.g., no internet, all services down).
+func detectPublicIP() net.IP {
+	services := []string{
+		"https://api.ipify.org",
+		"https://ifconfig.me/ip",
+		"https://icanhazip.com",
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	for _, svc := range services {
+		resp, err := client.Get(svc)
+		if err != nil {
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != 200 {
+			continue
+		}
+		ipStr := strings.TrimSpace(string(body))
+		if ip := net.ParseIP(ipStr); ip != nil {
+			return ip
+		}
+	}
+	return nil
 }
 
 // ExternalIPv4 returns the first IPv4 available.
