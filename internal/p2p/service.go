@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,7 +46,7 @@ const (
 	pubsubQueueSize      = 600
 	maxDialTimeout       = 10 * time.Second
 	ttfbTimeout          = 10 * time.Second
-	reconnectBootNode    = 1 * time.Minute
+	reconnectBootNode    = 2 * time.Minute
 	maxConcurrentPeerOps = 16
 )
 
@@ -419,7 +420,18 @@ func (s *Service) connectWithPeer(ctx context.Context, info peer.AddrInfo) error
 
 	log.Debug("start connect", "peer info", info)
 	if err := s.host.Connect(ctx, info); err != nil {
-		s.Peers().Scorers().BadResponsesScorer().Increment(info.ID)
+		// Do not penalize peer for transient dial failures (peer id mismatch
+		// after key rotation, connection refused, timeout). Only increment
+		// bad response score for protocol-level misbehavior, not connectivity
+		// issues. This prevents bootnode from being permanently blacklisted
+		// after a key rotation or temporary unavailability.
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "peer id mismatch") &&
+			!strings.Contains(errMsg, "connection refused") &&
+			!strings.Contains(errMsg, "context deadline exceeded") &&
+			!strings.Contains(errMsg, "i/o timeout") {
+			s.Peers().Scorers().BadResponsesScorer().Increment(info.ID)
+		}
 		return err
 	}
 	return nil

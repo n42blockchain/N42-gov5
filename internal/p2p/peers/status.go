@@ -69,9 +69,9 @@ const (
 	// MinBackOffDuration minimum amount (in milliseconds) to wait before peer is re-dialed.
 	// When node and peer are dialing each other simultaneously connection may fail. In order, to break
 	// of constant dialing, peer is assigned some backoff period, and only dialed again once that backoff is up.
-	MinBackOffDuration = 100
+	MinBackOffDuration = 500
 	// MaxBackOffDuration maximum amount (in milliseconds) to wait before peer is re-dialed.
-	MaxBackOffDuration = 5000
+	MaxBackOffDuration = 30000
 )
 
 // Status is the structure holding the peer status information.

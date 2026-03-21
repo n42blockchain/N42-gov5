@@ -301,7 +301,15 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	cfg.ChainCfg = chainConfig
 
-	p2p, err := p2p.NewService(ctx, genesisBlock.Hash(), cfg.P2PCfg, cfg.NodeCfg)
+	// For compat mode, use the hardcoded legacy genesis hash for P2P fork digest
+	// so we can handshake with peers running the original genesis. The actual
+	// genesis block hash differs due to Header struct changes (added blob fields),
+	// but the chain data is identical.
+	p2pGenesisHash := genesisBlock.Hash()
+	if cfg.NodeCfg.Chain == "mainnet_compat" {
+		p2pGenesisHash = params.MainnetGenesisHash
+	}
+	p2p, err := p2p.NewService(ctx, p2pGenesisHash, cfg.P2PCfg, cfg.NodeCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -523,12 +531,15 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		DB:         chainKv,
 	})
 
-	syncServer, err := n42sync.NewService(
-		ctx,
+	syncOpts := []n42sync.Option{
 		n42sync.WithP2P(p2p),
 		n42sync.WithChainService(bc),
 		n42sync.WithInitialSync(is),
-	)
+	}
+	if cfg.NodeCfg.Chain == "mainnet_compat" {
+		syncOpts = append(syncOpts, n42sync.WithOverrideGenesisHash(params.MainnetGenesisHash))
+	}
+	syncServer, err := n42sync.NewService(ctx, syncOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sync service: %w", err)
 	}

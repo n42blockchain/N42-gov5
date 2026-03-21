@@ -310,6 +310,9 @@ func (*Service) addDigestAndIndexToTopic(topic string, digest [4]byte, idx uint6
 
 func (s *Service) currentForkDigest() ([4]byte, error) {
 	genRoot := s.cfg.chain.GenesisBlock().Header().Hash()
+	if s.cfg.overrideGenesisHash != nil {
+		genRoot = *s.cfg.overrideGenesisHash
+	}
 	return utils.CreateForkDigest(currentBlockNumber(s.cfg.chain), genRoot)
 }
 
