@@ -2,6 +2,7 @@ package sync
 
 import (
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p"
 )
 
@@ -24,6 +25,16 @@ func WithChainService(chain common.IBlockChain) Option {
 func WithInitialSync(initialSync Checker) Option {
 	return func(s *Service) error {
 		s.cfg.initialSync = initialSync
+		return nil
+	}
+}
+
+// WithOverrideGenesisHash overrides the genesis hash used for fork digest
+// calculation. Used in compat mode where the actual genesis hash differs
+// from the legacy value due to Header struct changes.
+func WithOverrideGenesisHash(h types.Hash) Option {
+	return func(s *Service) error {
+		s.cfg.overrideGenesisHash = &h
 		return nil
 	}
 }

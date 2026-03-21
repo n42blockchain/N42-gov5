@@ -57,10 +57,11 @@ type validationFn func(ctx context.Context) (pubsub.ValidationResult, error)
 
 // config holds dependencies for the sync service.
 type config struct {
-	p2p           p2p.P2P
-	chain         common.IBlockChain
-	initialSync   Checker
-	earliestBlock func() uint64 // returns earliest available block, 0 = all available
+	p2p                  p2p.P2P
+	chain                common.IBlockChain
+	initialSync          Checker
+	earliestBlock        func() uint64      // returns earliest available block, 0 = all available
+	overrideGenesisHash  *types.Hash        // if set, use this for fork digest instead of actual genesis hash
 }
 
 // Service is responsible for handling all runtime p2p related operations as the
