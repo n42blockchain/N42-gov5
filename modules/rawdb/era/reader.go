@@ -26,9 +26,10 @@ import (
 
 // Reader reads records from an EraE archive.
 type Reader struct {
-	file   *os.File
-	header Header
-	index  []IndexEntry
+	file     *os.File
+	header   Header
+	index    []IndexEntry
+	fileSize int64
 }
 
 // OpenReader opens an existing EraE archive for reading.
@@ -74,6 +75,14 @@ func OpenReader(path string) (*Reader, error) {
 		return nil, ErrEmptyArchive
 	}
 
+	// Validate that the claimed index fits within the file.
+	// The file must contain at least: Header + index entries + footer.
+	maxPossibleEntries := uint64(fileSize-int64(HeaderSize+FooterSize)) / uint64(IndexEntrySize)
+	if count > maxPossibleEntries {
+		f.Close()
+		return nil, fmt.Errorf("era: corrupt footer: index count %d exceeds file capacity %d", count, maxPossibleEntries)
+	}
+
 	// Read index entries.
 	indexSize := int64(count) * int64(IndexEntrySize)
 	indexOffset := fileSize - int64(FooterSize) - indexSize
@@ -93,9 +102,10 @@ func OpenReader(path string) (*Reader, error) {
 	}
 
 	return &Reader{
-		file:   f,
-		header: *h,
-		index:  index,
+		file:     f,
+		header:   *h,
+		index:    index,
+		fileSize: fileSize,
 	}, nil
 }
 
@@ -130,6 +140,9 @@ func (r *Reader) ReadRecord(blockNumber uint64) (blockData, receiptsData []byte,
 		return nil, nil, fmt.Errorf("era: read block data length: %w", err)
 	}
 	blockLen := binary.BigEndian.Uint64(lenBuf[:])
+	if int64(blockLen) > r.fileSize-offset {
+		return nil, nil, fmt.Errorf("era: block data length %d exceeds remaining file size", blockLen)
+	}
 	offset += 8
 
 	// Read block data.
@@ -144,6 +157,9 @@ func (r *Reader) ReadRecord(blockNumber uint64) (blockData, receiptsData []byte,
 		return nil, nil, fmt.Errorf("era: read receipts data length: %w", err)
 	}
 	receiptsLen := binary.BigEndian.Uint64(lenBuf[:])
+	if int64(receiptsLen) > r.fileSize-offset {
+		return nil, nil, fmt.Errorf("era: receipts data length %d exceeds remaining file size", receiptsLen)
+	}
 	offset += 8
 
 	// Read receipts data.

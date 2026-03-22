@@ -160,11 +160,16 @@ const (
 
 // FloorDataGas calculates the minimum gas required for a transaction based on EIP-7623.
 // This is used to ensure data-heavy transactions pay a minimum amount.
-// Formula: 21000 + tokens * TOTAL_COST_FLOOR_PER_TOKEN
+// Formula: baseTxGas + tokens * TOTAL_COST_FLOOR_PER_TOKEN
 // where tokens = zero_bytes + (nonzero_bytes * 4)
-func FloorDataGas(data []byte) uint64 {
+// and baseTxGas is 4500 after Glamsterdam (EIP-7904), 21000 otherwise.
+func FloorDataGas(data []byte, isGlamsterdam ...bool) uint64 {
+	baseTxGas := uint64(21000)
+	if len(isGlamsterdam) > 0 && isGlamsterdam[0] {
+		baseTxGas = 4500 // params.TxGasGlamsterdam
+	}
 	if len(data) == 0 {
-		return 21000 // TxGas
+		return baseTxGas
 	}
 
 	var zeroBytes, nonZeroBytes uint64
@@ -180,7 +185,7 @@ func FloorDataGas(data []byte) uint64 {
 	tokens := zeroBytes + nonZeroBytes*StandardTokenCost
 
 	// Floor gas = base gas + tokens * floor cost per token
-	return 21000 + tokens*TotalCostFloorPerToken
+	return baseTxGas + tokens*TotalCostFloorPerToken
 }
 
 // CalcCalldataCostEIP7623 calculates the calldata cost with EIP-7623 rules
