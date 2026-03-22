@@ -137,6 +137,15 @@ func (c *LRU[K, V]) Keys() []K {
 	return keys
 }
 
+// oldestKey returns the least-recently-used key and true, or zero and false if empty.
+func (c *LRU[K, V]) oldestKey() (K, bool) {
+	if oldest := c.order.Back(); oldest != nil {
+		return oldest.Value.(*lruEntry[K, V]).key, true
+	}
+	var zero K
+	return zero, false
+}
+
 func (c *LRU[K, V]) evictOldest() {
 	if oldest := c.order.Back(); oldest != nil {
 		c.removeElement(oldest)
@@ -261,16 +270,14 @@ func (c *ARC[K, V]) Set(key K, value V) {
 
 func (c *ARC[K, V]) replace(key K) {
 	if c.t1.Len() > 0 && (c.t1.Len() > c.p || (c.b2.Contains(key) && c.t1.Len() == c.p)) {
-		// Move from T1 to B1
-		if keys := c.t1.Keys(); len(keys) > 0 {
-			oldKey := keys[len(keys)-1]
+		// Move LRU from T1 to B1
+		if oldKey, ok := c.t1.oldestKey(); ok {
 			c.t1.Delete(oldKey)
 			c.b1.Set(oldKey, struct{}{})
 		}
 	} else if c.t2.Len() > 0 {
-		// Move from T2 to B2
-		if keys := c.t2.Keys(); len(keys) > 0 {
-			oldKey := keys[len(keys)-1]
+		// Move LRU from T2 to B2
+		if oldKey, ok := c.t2.oldestKey(); ok {
 			c.t2.Delete(oldKey)
 			c.b2.Set(oldKey, struct{}{})
 		}

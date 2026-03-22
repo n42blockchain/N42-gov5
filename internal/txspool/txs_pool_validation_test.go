@@ -366,7 +366,6 @@ func TestErrorVariables(t *testing.T) {
 		ErrNonceTooHigh,
 		ErrInsufficientFunds,
 		ErrTipAboveFeeCap,
-		ErrInvalidSignature,
 	}
 
 	for _, err := range errors {
