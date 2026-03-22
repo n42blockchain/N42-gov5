@@ -65,6 +65,7 @@ var (
 	pectraInstructionSet           = newPectraInstructionSet()
 	osakaInstructionSet            = newOsakaInstructionSet()
 	fusakaInstructionSet           = newFusakaInstructionSet()
+	glamsterdamInstructionSet      = newGlamsterdamInstructionSet()
 )
 
 // JumpTable contains the EVM opcodes supported at a given fork.
@@ -86,6 +87,18 @@ func validateAndFillMaxStack(jt *JumpTable) {
 		}
 		op.maxStack = maxStack(op.numPop, op.numPush)
 	}
+}
+
+// newGlamsterdamInstructionSet returns the Glamsterdam instruction set.
+// Glamsterdam = Fusaka + EIP-7904 gas repricing (CREATE, CREATE2, SSTORE).
+func newGlamsterdamInstructionSet() JumpTable {
+	instructionSet := newFusakaInstructionSet()
+	// EIP-7904: Glamsterdam gas repricing
+	instructionSet[CREATE].constantGas = params.CreateGasGlamsterdam
+	instructionSet[CREATE2].constantGas = params.Create2GasGlamsterdam
+	instructionSet[SSTORE].dynamicGas = gasSStoreGlamsterdam
+	validateAndFillMaxStack(&instructionSet)
+	return instructionSet
 }
 
 // newPragueInstructionSet returns the frontier, homestead, byzantium,
