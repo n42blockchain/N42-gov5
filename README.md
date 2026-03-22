@@ -45,6 +45,7 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **MDBX Storage**: Memory-mapped B+ tree database with layered caching
 - **Ancient/Freezer DB**: Automatic archival of historical data beyond a configurable threshold
 - **Flat Snapshot Acceleration**: DiffLayer tree with MDBX persistence, journal crash recovery, and background generator
+- **Storage Tiering**: Configurable NVMe/HDD split — hot data (chaindata ~50GB) on NVMe, cold data (history/indices ~800GB) on HDD, reducing hardware costs ~60%
 
 ### Networking & Sync
 
@@ -52,6 +53,7 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **P2P Networking**: libp2p-based with Kademlia DHT, peer scoring, rate limiting, and NAT traversal
 - **ExEx Extensions**: Execution Extension framework for pluggable post-block processing
 - **Decentralized Messaging**: 6-layer P2P messaging platform (relay, E2E encryption, RLN anti-spam, persistent storage, MLS groups, DID identity)
+- **OtterSync (BitTorrent Sync)**: Export/import chain data as EraE segment files via BitTorrent, shifting ~98% of initial sync from CPU to network bandwidth
 
 ### API & Tooling
 
@@ -105,6 +107,7 @@ internal/
   txspool/          Transaction pool with persistence and encryption
   vm/               EVM execution engine with EOF, BLS, P256, CAS, AI precompiles
   sync/             Chain synchronization (full, snap, checkpoint, backfill, staged)
+    torrentsync/    OtterSync BitTorrent chain sync (exporter/importer/manifest)
   api/              JSON-RPC backend (eth, debug, trace, zk, engine, witness, graphql)
   zkprover/         ZK prover service (STARK/SNARK/SP1, ZKML)
   zkverifier/       ZK proof verifier (block proofs, ZKML)
@@ -130,6 +133,7 @@ modules/
   rawdb/era/        EraE history archive format (reader/writer)
 lib/
   jmt/              Jellyfish Merkle Tree implementation (Blake3, 16-ary)
+    archive/        Haystack JMT node compression (seg + RecSplit index)
   kv/               Key-value store interfaces (mdbx/, memdb/, remotedb/, layered/)
 params/             Chain parameters, genesis configs (embedded JSON)
 conf/               Node configuration (unified AICfg, all subsystem configs)

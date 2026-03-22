@@ -249,3 +249,33 @@ N42-specific extensions (independent activation):
 - PQ Precompiles (Falcon, Dilithium, SQIsign)
 - CAS Precompile (0x0300)
 - AI Inference Precompile (0x0301)
+
+## Data Tiering & Sync
+
+### Storage Tiering
+
+Operators can split data across storage tiers via `storage_tier` config:
+
+| Tier | Content | Size | Recommended |
+|------|---------|------|------------|
+| Hot | Chaindata MDBX, tmp | ~50 GB | NVMe |
+| Warm | Domain snapshots, accessors | ~300 GB | NVMe/SSD |
+| Cold | History, indices, freezer, EraE | ~800 GB | HDD |
+
+### OtterSync (BitTorrent Chain Sync)
+
+`internal/sync/torrentsync/` enables initial sync via BitTorrent:
+
+1. Seed node exports frozen blocks → EraE segments (8192 blocks/file)
+2. Manifest lists available segments with SHA256 hashes
+3. New node downloads segments via BitTorrent/HTTP webseed
+4. Importer writes blocks to DB with hash chain verification
+5. Regular P2P sync continues from the import tip
+
+### JMT Archive Compression
+
+`lib/jmt/archive/` compresses historical JMT nodes for long-term storage:
+
+- Nodes stored as hash+data word pairs in `lib/seg/` compressed segments
+- `lib/recsplit/` RecSplit index provides O(1) lookup by node hash
+- Enables `eth_getProof` for historical blocks from compressed archives
