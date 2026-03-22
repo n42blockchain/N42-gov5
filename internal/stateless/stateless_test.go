@@ -76,32 +76,38 @@ func TestCodeCache_Capacity(t *testing.T) {
 		t.Fatalf("Len after fill: got %d, want 3", cc.Len())
 	}
 
-	// Attempt to add a fourth entry -- should be silently dropped.
+	// Add a fourth entry -- should evict the LRU (0x01).
 	h4 := types.Hash{0x04}
 	cc.Put(h4, []byte{0x04})
 	if cc.Len() != 3 {
-		t.Fatalf("Len after overflow: got %d, want 3", cc.Len())
+		t.Fatalf("Len after eviction: got %d, want 3", cc.Len())
 	}
 
-	// Verify the fourth entry was not added.
-	_, ok := cc.Get(h4)
+	// The fourth entry should be present.
+	got4, ok := cc.Get(h4)
+	if !ok || got4[0] != 0x04 {
+		t.Fatal("expected new entry to be present after eviction")
+	}
+
+	// The first entry (LRU) should have been evicted.
+	_, ok = cc.Get(types.Hash{0x01})
 	if ok {
-		t.Fatal("expected overflow entry to be dropped")
+		t.Fatal("expected LRU entry (0x01) to be evicted")
 	}
 
-	// Verify existing entries are still present.
-	for i := 0; i < 3; i++ {
-		h := types.Hash{byte(i + 1)}
+	// Entries 0x02 and 0x03 should still be present.
+	for i := 2; i <= 3; i++ {
+		h := types.Hash{byte(i)}
 		_, ok := cc.Get(h)
 		if !ok {
-			t.Errorf("entry %d missing after overflow attempt", i+1)
+			t.Errorf("entry 0x%02x missing after eviction", i)
 		}
 	}
 
 	// Updating an existing entry should succeed even at capacity.
-	h1 := types.Hash{0x01}
-	cc.Put(h1, []byte{0xFF})
-	got, ok := cc.Get(h1)
+	h2 := types.Hash{0x02}
+	cc.Put(h2, []byte{0xFF})
+	got, ok := cc.Get(h2)
 	if !ok || got[0] != 0xFF {
 		t.Error("update of existing entry failed at capacity")
 	}

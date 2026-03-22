@@ -58,23 +58,18 @@ func NewCachedStore(inner jmt.NodeStore, capacity int) *CachedStore {
 // Get retrieves a serialized node by hash. It checks the cache first,
 // then falls through to the inner store on a miss.
 func (s *CachedStore) Get(hash jmt.Hash) ([]byte, error) {
-	// 1. Check cache under read lock.
-	s.mu.RLock()
+	// 1. Check cache under write lock (promotion requires write access).
+	s.mu.Lock()
 	if elem, ok := s.cache[hash]; ok {
+		s.lru.MoveToFront(elem)
 		entry := elem.Value.(*cacheEntry)
 		cp := make([]byte, len(entry.data))
 		copy(cp, entry.data)
-		s.mu.RUnlock()
-
-		// Promote under write lock.
-		s.mu.Lock()
-		s.lru.MoveToFront(elem)
 		s.mu.Unlock()
-
 		s.hits.Add(1)
 		return cp, nil
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	// 2. Cache miss — read from inner store.
 	data, err := s.inner.Get(hash)
@@ -83,7 +78,8 @@ func (s *CachedStore) Get(hash jmt.Hash) ([]byte, error) {
 		return nil, err
 	}
 
-	// 3. Add to cache under write lock.
+	// 3. Add to cache under write lock. Double-check in case another
+	// goroutine populated the same key while we read from inner.
 	s.mu.Lock()
 	s.addLocked(hash, data)
 	s.mu.Unlock()
@@ -159,13 +155,12 @@ func (s *CachedStore) addLocked(hash jmt.Hash, data []byte) {
 	}
 
 	// Evict LRU entry if at capacity.
-	for s.lru.Len() >= s.capacity {
+	if s.lru.Len() >= s.capacity {
 		tail := s.lru.Back()
-		if tail == nil {
-			break
+		if tail != nil {
+			evicted := s.lru.Remove(tail).(*cacheEntry)
+			delete(s.cache, evicted.hash)
 		}
-		evicted := s.lru.Remove(tail).(*cacheEntry)
-		delete(s.cache, evicted.hash)
 	}
 
 	cp := make([]byte, len(data))
