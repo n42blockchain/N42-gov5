@@ -279,3 +279,24 @@ Operators can split data across storage tiers via `storage_tier` config:
 - Nodes stored as hash+data word pairs in `lib/seg/` compressed segments
 - `lib/recsplit/` RecSplit index provides O(1) lookup by node hash
 - Enables `eth_getProof` for historical blocks from compressed archives
+
+### JMT Performance
+
+The Jellyfish Merkle Tree uses a two-level caching strategy:
+
+1. **Parsed Node Cache** (`tree.go`): 65536-entry LRU of decoded `*Node` objects,
+   persisted across block validations (not reset per payload)
+2. **CachedStore** (`store/cached_store.go`): Read-through LRU byte cache wrapping
+   `LazyDBStore`, eliminating per-Get MDBX transaction overhead
+
+Together these reduce MDBX reads by 50-80% during steady-state operation.
+
+### Stateless Validation
+
+`internal/stateless/` enables block verification without full state:
+
+- `Validator`: verifies blocks using JMT Merkle proof witnesses
+- `CodeCache`: LRU cache for contract bytecodes (~10GB for mainnet)
+- Witness infrastructure: `modules/state/witness/` provides `BlockWitness`,
+  `WitnessStateReader`, proof generation and verification
+- P2P witness protocol: `internal/sync/rpc_witness.go`
