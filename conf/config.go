@@ -67,6 +67,9 @@ type Config struct {
 	TorrentDistCfg   TorrentDistCfg   `json:"torrent_dist" yaml:"torrent_dist"`
 	Ed2kCfg          Ed2kCfg          `json:"ed2k" yaml:"ed2k"`
 
+	// Storage tiering (NVMe/HDD split)
+	StorageTierCfg   StorageTierCfg   `json:"storage_tier" yaml:"storage_tier"`
+
 	// AI infrastructure (unified)
 	AICfg            AICfg            `json:"ai" yaml:"ai"`
 
