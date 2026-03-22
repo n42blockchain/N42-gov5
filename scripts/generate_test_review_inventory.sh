@@ -90,7 +90,7 @@ def section_for(path: str) -> str:
         "internal/parallel/",
         "internal/exex/",
         "internal/core/",
-        "internal/amcdb/",
+        "internal/amcdb/", # REMOVED,
     )):
         return "Phase 3 Consensus / Network / RPC / Node"
     if path.startswith("internal/"):
