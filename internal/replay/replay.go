@@ -141,10 +141,10 @@ func (e *Engine) Stats() *Stats { return e.stats }
 func (e *Engine) Run(ctx context.Context) (*Stats, error) {
 	var err error
 
-	// Open source DB (read-only).
+	// Open source DB (read-only). Do NOT use WithTableCfg — the old database
+	// may lack newer tables (e.g., BlobSidecars). MDBX_RDONLY prevents creation.
 	e.srcDB, err = mdbx.NewMDBX(log2.New()).
 		Path(e.cfg.SourcePath + "/chaindata").
-		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return kv.ChaindataTablesCfg }).
 		MapSize(2 * datasize.TB).
 		Flags(func(flags uint) uint { return flags | 0x20000 }).
 		Open(ctx)
