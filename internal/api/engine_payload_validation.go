@@ -305,6 +305,7 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 		rules.IsIstanbul,
 		rules.IsShanghai,
 		rules.IsPrague,
+		rules.IsGlamsterdam,
 	)
 	if reason != txpoolcfg.Success {
 		return fmt.Errorf("intrinsic gas calculation failed: %s", reason)

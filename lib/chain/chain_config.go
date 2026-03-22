@@ -79,7 +79,8 @@ type Config struct {
 	ShanghaiTime *big.Int `json:"shanghaiTime,omitempty"`
 	CancunTime   *big.Int `json:"cancunTime,omitempty"`
 	PragueTime   *big.Int `json:"pragueTime,omitempty"`
-	OsakaTime    *big.Int `json:"osakaTime,omitempty"`
+	OsakaTime       *big.Int `json:"osakaTime,omitempty"`
+	GlamsterdamTime *big.Int `json:"glamsterdamTime,omitempty"` // EIP-7904 gas repricing
 
 	// Optional EIP-4844 parameters (see also EIP-7691 & EIP-7840)
 	MinBlobGasPrice *uint64       `json:"minBlobGasPrice,omitempty"`

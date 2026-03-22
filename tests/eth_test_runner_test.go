@@ -606,7 +606,7 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 	// Calculate intrinsic gas
 	isContractCreation := to == nil
 	intrinsicGas, err := internal.IntrinsicGas(txData, accessList, nil, isContractCreation,
-		rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague)
+		rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague, rules.IsGlamsterdam)
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate intrinsic gas: %w", err)
 	}

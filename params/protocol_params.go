@@ -101,6 +101,19 @@ const (
 	TxAccessListAddressGas    uint64 = 2400 // Per address specified in EIP 2930 access list
 	TxAccessListStorageKeyGas uint64 = 1900 // Per storage key specified in EIP 2930 access list
 
+	// EIP-7904: Glamsterdam gas repricing constants.
+	// Simple transfers drop from 21000 to 4500 gas.
+	TxGasGlamsterdam                     uint64 = 4500
+	TxGasContractCreationGlamsterdam     uint64 = 12500 // TxGasGlamsterdam + CreateGasGlamsterdam
+	TxDataZeroGasGlamsterdam             uint64 = 1
+	TxDataNonZeroGasGlamsterdam          uint64 = 4
+	TxAccessListAddressGasGlamsterdam    uint64 = 600
+	TxAccessListStorageKeyGasGlamsterdam uint64 = 475
+	CallNewAccountGasGlamsterdam         uint64 = 6250
+	CreateGasGlamsterdam                 uint64 = 8000
+	Create2GasGlamsterdam                uint64 = 8000
+	SstoreClearsScheduleRefundGlamsterdam uint64 = 3375 // SstoreResetGasEIP2200 - ColdSloadCostEIP2929 + TxAccessListStorageKeyGasGlamsterdam
+
 	// These have been changed during the course of the chain
 	CallGasFrontier              uint64 = 40  // Once per CALL operation & message call transaction.
 	CallGasEIP150                uint64 = 700 // Static portion of gas for CALL-derivatives after EIP 150 (Tangerine)

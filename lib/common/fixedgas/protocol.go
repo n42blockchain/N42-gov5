@@ -26,6 +26,14 @@ const (
 	TxAccessListStorageKeyGas uint64 = 1900  // Per storage key specified in EIP 2930 access list
 	TxTotalCostFloorPerToken  uint64 = 10    // Per token of calldata in a transaction, as a minimum the txn must pay (EIP-7623)
 
+	// EIP-7904: Glamsterdam gas repricing constants.
+	TxGasGlamsterdam                     uint64 = 4500
+	TxGasContractCreationGlamsterdam     uint64 = 12500
+	TxDataZeroGasGlamsterdam             uint64 = 1
+	TxDataNonZeroGasGlamsterdam          uint64 = 4
+	TxAccessListAddressGasGlamsterdam    uint64 = 600
+	TxAccessListStorageKeyGasGlamsterdam uint64 = 475
+
 	// EIP-7825: Transaction Gas Limit Cap
 	// Maximum gas limit per transaction = 2^24 = 16,777,216
 	MaxTxnGasLimit uint64 = 16_777_216

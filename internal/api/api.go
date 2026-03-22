@@ -363,6 +363,45 @@ func (s *BlockChainAPI) GetStorageAt(ctx context.Context, address types.Address,
 	return va.Bytes(), nil
 }
 
+// GetStorageValues returns multiple storage values for a contract in a single call.
+// EIP-7834: batch storage value retrieval.
+func (s *BlockChainAPI) GetStorageValues(ctx context.Context, address types.Address, keys []string, blockNrOrHash *uint64) ([]string, error) {
+	const maxKeys = 1024
+	if len(keys) > maxKeys {
+		return nil, fmt.Errorf("too many keys: %d, max %d", len(keys), maxKeys)
+	}
+
+	tx, err := s.api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Convert *uint64 to BlockNumberOrHash; nil means latest.
+	var bnOrHash jsonrpc.BlockNumberOrHash
+	if blockNrOrHash != nil {
+		bn := jsonrpc.BlockNumber(int64(*blockNrOrHash))
+		bnOrHash = jsonrpc.BlockNumberOrHashWithNumber(bn)
+	} else {
+		bnOrHash = jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.LatestBlockNumber)
+	}
+
+	ibs := s.api.State(tx, bnOrHash)
+	if ibs == nil {
+		return nil, fmt.Errorf("state not available")
+	}
+
+	results := make([]string, len(keys))
+	for i, key := range keys {
+		var va uint256.Int
+		k := types.HexToHash(key)
+		ibs.GetState(address, &k, &va)
+		b32 := va.Bytes32()
+		results[i] = hexutil.Encode(b32[:])
+	}
+	return results, nil
+}
+
 // GetUncleCountByBlockHash returns number of uncles in the block for the given block hash
 func (s *BlockChainAPI) GetUncleCountByBlockHash(ctx context.Context, blockHash avmcommon.Hash) *hexutil.Uint {
 	if block, _ := s.getBlockByHash(avmtypes.ToastHash(blockHash)); block != nil {

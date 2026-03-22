@@ -143,8 +143,9 @@ func AllComponents(ctx context.Context, cfg txpoolcfg.Config, cache kvcache.Cach
 		pragueTime = cfg.OverridePragueTime
 	}
 	osakaTime := chainConfig.OsakaTime
+	glamsterdamTime := chainConfig.GlamsterdamTime
 
-	txPool, err := txpool.New(newTxs, chainDB, cfg, cache, *chainID, shanghaiTime, agraBlock, cancunTime, pragueTime, osakaTime,
+	txPool, err := txpool.New(newTxs, chainDB, cfg, cache, *chainID, shanghaiTime, agraBlock, cancunTime, pragueTime, osakaTime, glamsterdamTime,
 		chainConfig.BlobSchedule, feeCalculator, logger)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err

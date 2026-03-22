@@ -377,12 +377,16 @@ func gasCall(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Mem
 		transfersValue = !stack.Back(2).IsZero()
 		address        = types.Address(stack.Back(1).Bytes20())
 	)
+	callNewAccountGas := uint64(params.CallNewAccountGas)
+	if evm.ChainRules().IsGlamsterdam {
+		callNewAccountGas = params.CallNewAccountGasGlamsterdam
+	}
 	if evm.ChainRules().IsSpuriousDragon {
 		if transfersValue && evm.IntraBlockState().Empty(address) {
-			gas += params.CallNewAccountGas
+			gas += callNewAccountGas
 		}
 	} else if !evm.IntraBlockState().Exist(address) {
-		gas += params.CallNewAccountGas
+		gas += callNewAccountGas
 	}
 	if transfersValue {
 		gas += params.CallValueTransferGas

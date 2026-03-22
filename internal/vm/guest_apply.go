@@ -162,9 +162,17 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate bool, rules *params.Rules) uint64 {
 	var gas uint64
 	if isCreate {
-		gas = params.TxGasContractCreation
+		if rules.IsGlamsterdam {
+			gas = params.TxGasContractCreationGlamsterdam
+		} else {
+			gas = params.TxGasContractCreation
+		}
 	} else {
-		gas = params.TxGas
+		if rules.IsGlamsterdam {
+			gas = params.TxGasGlamsterdam
+		} else {
+			gas = params.TxGas
+		}
 	}
 
 	// Data cost.
@@ -176,7 +184,9 @@ func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate 
 			}
 		}
 		nonZeroGas := uint64(params.TxDataNonZeroGasFrontier)
-		if rules.IsIstanbul {
+		if rules.IsGlamsterdam {
+			nonZeroGas = params.TxDataNonZeroGasGlamsterdam
+		} else if rules.IsIstanbul {
 			nonZeroGas = params.TxDataNonZeroGasEIP2028
 		}
 		// Overflow check: nz * nonZeroGas.
@@ -189,11 +199,15 @@ func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate 
 		}
 		gas += nzCost
 
+		zeroGas := uint64(params.TxDataZeroGas)
+		if rules.IsGlamsterdam {
+			zeroGas = params.TxDataZeroGasGlamsterdam
+		}
 		z := uint64(len(data)) - nz
-		if z > 0 && params.TxDataZeroGas > 0 && z > (^uint64(0))/params.TxDataZeroGas {
+		if z > 0 && zeroGas > 0 && z > (^uint64(0))/zeroGas {
 			return ^uint64(0)
 		}
-		zCost := z * params.TxDataZeroGas
+		zCost := z * zeroGas
 		if gas > ^uint64(0)-zCost {
 			return ^uint64(0)
 		}
@@ -202,11 +216,17 @@ func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate 
 
 	// Access list cost.
 	if len(accessList) > 0 {
+		accessListAddressGas := uint64(params.TxAccessListAddressGas)
+		accessListStorageKeyGas := uint64(params.TxAccessListStorageKeyGas)
+		if rules.IsGlamsterdam {
+			accessListAddressGas = params.TxAccessListAddressGasGlamsterdam
+			accessListStorageKeyGas = params.TxAccessListStorageKeyGasGlamsterdam
+		}
 		addrCount := uint64(len(accessList))
-		if addrCount > (^uint64(0))/params.TxAccessListAddressGas {
+		if addrCount > (^uint64(0))/accessListAddressGas {
 			return ^uint64(0)
 		}
-		addrCost := addrCount * params.TxAccessListAddressGas
+		addrCost := addrCount * accessListAddressGas
 		if gas > ^uint64(0)-addrCost {
 			return ^uint64(0)
 		}
@@ -214,10 +234,10 @@ func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate 
 		for _, al := range accessList {
 			keyCount := uint64(len(al.StorageKeys))
 			if keyCount > 0 {
-				if keyCount > (^uint64(0))/params.TxAccessListStorageKeyGas {
+				if keyCount > (^uint64(0))/accessListStorageKeyGas {
 					return ^uint64(0)
 				}
-				keyCost := keyCount * params.TxAccessListStorageKeyGas
+				keyCost := keyCount * accessListStorageKeyGas
 				if gas > ^uint64(0)-keyCost {
 					return ^uint64(0)
 				}

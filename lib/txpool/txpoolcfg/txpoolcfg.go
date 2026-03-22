@@ -191,21 +191,36 @@ func (r DiscardReason) String() string {
 
 // CalcIntrinsicGas computes the 'intrinsic gas' for a message with the given data.
 // TODO: move input data to a struct
-func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen, storageKeysLen uint64, isContractCreation, isHomestead, isEIP2028, isShanghai, isPrague bool) (gas uint64, floorGas7623 uint64, d DiscardReason) {
+func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen, storageKeysLen uint64, isContractCreation, isHomestead, isEIP2028, isShanghai, isPrague bool, isGlamsterdam ...bool) (gas uint64, floorGas7623 uint64, d DiscardReason) {
+	glamsterdam := len(isGlamsterdam) > 0 && isGlamsterdam[0]
 	// Set the starting gas for the raw transaction
 	if isContractCreation && isHomestead {
-		gas = fixedgas.TxGasContractCreation
+		if glamsterdam {
+			gas = fixedgas.TxGasContractCreationGlamsterdam
+		} else {
+			gas = fixedgas.TxGasContractCreation
+		}
 	} else {
-		gas = fixedgas.TxGas
+		if glamsterdam {
+			gas = fixedgas.TxGasGlamsterdam
+		} else {
+			gas = fixedgas.TxGas
+		}
 	}
-	floorGas7623 = fixedgas.TxGas
+	if glamsterdam {
+		floorGas7623 = fixedgas.TxGasGlamsterdam
+	} else {
+		floorGas7623 = fixedgas.TxGas
+	}
 	// Bump the required gas by the amount of transactional data
 	if dataLen > 0 {
 		// Zero and non-zero bytes are priced differently
 		nz := dataNonZeroLen
 		// Make sure we don't exceed uint64 for all data combinations
 		nonZeroGas := fixedgas.TxDataNonZeroGasFrontier
-		if isEIP2028 {
+		if glamsterdam {
+			nonZeroGas = fixedgas.TxDataNonZeroGasGlamsterdam
+		} else if isEIP2028 {
 			nonZeroGas = fixedgas.TxDataNonZeroGasEIP2028
 		}
 
@@ -220,7 +235,11 @@ func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen,
 
 		z := dataLen - nz
 
-		product, overflow = emath.SafeMul(z, fixedgas.TxDataZeroGas)
+		zeroGas := fixedgas.TxDataZeroGas
+		if glamsterdam {
+			zeroGas = fixedgas.TxDataZeroGasGlamsterdam
+		}
+		product, overflow = emath.SafeMul(z, zeroGas)
 		if overflow {
 			return 0, 0, GasUintOverflow
 		}
@@ -255,7 +274,13 @@ func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen,
 		}
 	}
 	if accessListLen > 0 {
-		product, overflow := emath.SafeMul(accessListLen, fixedgas.TxAccessListAddressGas)
+		accessListAddrGas := fixedgas.TxAccessListAddressGas
+		accessListKeyGas := fixedgas.TxAccessListStorageKeyGas
+		if glamsterdam {
+			accessListAddrGas = fixedgas.TxAccessListAddressGasGlamsterdam
+			accessListKeyGas = fixedgas.TxAccessListStorageKeyGasGlamsterdam
+		}
+		product, overflow := emath.SafeMul(accessListLen, accessListAddrGas)
 		if overflow {
 			return 0, 0, GasUintOverflow
 		}
@@ -264,7 +289,7 @@ func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen,
 			return 0, 0, GasUintOverflow
 		}
 
-		product, overflow = emath.SafeMul(storageKeysLen, fixedgas.TxAccessListStorageKeyGas)
+		product, overflow = emath.SafeMul(storageKeysLen, accessListKeyGas)
 		if overflow {
 			return 0, 0, GasUintOverflow
 		}

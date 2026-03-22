@@ -186,6 +186,8 @@ type TxPool struct {
 	isPostPrague            atomic.Bool
 	osakaTime               *uint64
 	isPostOsaka             atomic.Bool
+	glamsterdamTime         *uint64
+	isPostGlamsterdam       atomic.Bool
 	blobSchedule            *chain.BlobSchedule
 	feeCalculator           FeeCalculator
 	logger                  log.Logger
