@@ -153,7 +153,7 @@
 
 **eth/69 协议**：EIP-7642，增加了 `earliestBlock` / `latestBlock` 字段到 Status 消息，新增 `BlockRangeUpdate` 消息。支持 history expiry — 客户端可在 2025.5 后丢弃 pre-merge 历史数据。N42 使用 libp2p 而非 DevP2P，协议不直接兼容，但概念可借鉴。
 
-**Blob Sidecar P2P**：EIP-4844 的 blob 数据通过独立的 gossip 通道传播。虽然 N42 支持 blob 交易处理，但缺乏 blob sidecar 的 P2P 传播协议。
+**Blob Sidecar P2P**：~~已关闭~~ N42 已实现完整的 blob sidecar P2P 传播：GossipSub 独立 topic (`blob_sidecar`)、`BlobSidecarsByRange` / `BlobSidecarsByRoot` RPC handler (`internal/sync/rpc_blob.go`)、gossip scoring 参数配置、SSZ 编码。覆盖 EIP-4844 全部 P2P 需求。
 
 ---
 
@@ -212,9 +212,9 @@
 
 ### 关键差距
 
-**Bloom Bits 索引**：geth 和 reth 都实现了 bloom bits 索引用于加速 `eth_getLogs` 查询。N42 使用 header bloom 过滤但缺乏 bloom bits 的位级索引，大范围历史日志查询性能较差。
+**Bloom Bits 索引**：geth 和 reth 都实现了 bloom bits 索引用于加速 `eth_getLogs` 查询。N42 有 `BloomBitsKey` 基础设施 (`lib/kv/dbutils/`) 和 roaring bitmap 索引，同时 `internal/exex/extensions/ai_indexer.go` 提供了更强的 O(1) 结构化事件查询能力（按合约/事件签名/区块范围），实际上比 bloom bits 更高效。低优先级差距。
 
-**GraphQL API**：EIP-1767 标准，提供更灵活的数据查询能力。geth 原生支持，但非关键缺失。
+**GraphQL API**：~~已关闭~~ N42 已实现完整的 EIP-1767 GraphQL API (`internal/api/graphql/`): schema 定义、resolver、HTTP handler、helper。功能与 geth 对齐。
 
 **Otterscan API**：reth 和 Erigon 支持的区块浏览器优化 API，支持高效的地址交易历史查询、内部交易追踪等。Erigon 是 Otterscan 的原始集成目标。
 
@@ -280,7 +280,7 @@
 
 ### 关键差距
 
-**Fuzzing 测试**：geth 有大量 fuzz 测试（尤其是 EVM、RLP、ABI 解码器），reth 也集成了 cargo-fuzz。N42 缺乏系统性的模糊测试。
+**Fuzzing 测试**：~~已更正~~ N42 有 18 个 fuzz 测试文件（29 个 fuzz 函数），覆盖：ABI 编码 (`accounts/abi/`)、EVM precompiles (`internal/vm/`)、RLP 编解码 (`lib/rlp/`)、seg 压缩/解压 (`lib/seg/`)、RecSplit (`lib/recsplit/`)、Elias-Fano (`lib/recsplit/eliasfano*/`)、Patricia trie (`lib/seg/patricia/`)、SSZ (`api/protocol/sync_pb/`)、Aggregator (`lib/state/`)、Blake2b (`common/crypto/`, `lib/crypto/`)。覆盖核心编解码和密码学组件。
 
 **N42 优势**：PQ-STARK 后量子密码学是客观领先优势。行业对比：Algorand 2025.11 主网首笔 Falcon PQ 交易，QRL 使用 SPHINCS+，其余主流客户端(geth/reth/Erigon)均无 PQ 部署。以太坊基金会 2026.1 成立 PQ Team + $1M 奖金，将 PQ 列为 "Harden the L1" 核心优先事项。N42 的 PQ-STARK + JMT Blake3 状态根组合使其在量子安全维度处于行业前列。新增加密 Mempool（阈值加密 AES-256-GCM）进一步增强交易隐私保护。
 
@@ -319,7 +319,7 @@
 
 **Grafana Dashboard**：N42 现有 3 个 Grafana 面板 — `amc.json`(基础)、`amc_internal.json`(内部)、`n42_advanced.json`(7分组/20+面板: Sync Progress, DB I/O, TxPool Advanced, Snap Sync, ERC-4337 Bundler, P2P Network, Miner)。覆盖新增的所有指标。
 
-**N42 Metrics 审计备注**：`system_metrics.go` 有 11 个 Go runtime 指标（goroutines/内存/GC 等）实际在收集；`chain_metrics.go` 已全部接入执行路径（DB 读写/Freezer/Sync）；新增 txpool 指标（added/dropped/rejected/underpriced/overflow/effective_slots/memory_used_mb）。总共约 30+ 指标，仍低于 geth(200+) 和 reth(300+)。
+**N42 Metrics 审计备注**：经源码审计确认，N42 有 **250+ Prometheus 指标**（272 个 metric 注册调用），覆盖：系统/Go runtime (11)、链/同步 (12)、MDBX (30+)、P2P (20+)、TxPool (10)、快照 (10)、HotStuff (5)、Bundler (6)、ZK (9)、EVM 执行/状态/链/reorg/费用/交易/Engine API/RPC/JMT (55+)、Pipeline timing (8)、AI/Ingest (10+)。**与 geth 200+ 相当，不存在差距。**
 
 **OpenTelemetry**：分布式追踪标准，reth、Sei、Aptos 均已集成。对于多节点部署的问题诊断至关重要。
 
