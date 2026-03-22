@@ -181,7 +181,6 @@ func (api *API) Status() (*status, error) {
 	var (
 		numBlocks = uint64(64)
 		current   = api.chain.CurrentBlock()
-		diff      = uint64(0)
 		optimals  = 0
 	)
 	if current == nil {
@@ -229,7 +228,6 @@ func (api *API) Status() (*status, error) {
 		if block.Difficulty().Cmp(diffInTurn) == 0 {
 			optimals++
 		}
-		diff += block.Difficulty().Uint64()
 		sealer, err := api.apos.Author(h)
 		if err != nil {
 			return nil, err
