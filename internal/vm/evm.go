@@ -505,14 +505,14 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	}
 	// Ensure there's no existing contract already at the designated address
 	// EIP-684: Check nonce and code
-	// EIP-7610: Also check for non-empty storage (Cancun+)
+	// EIP-7610: Also check for non-empty storage (Paris+)
 	contractHash := evm.intraBlockState.GetCodeHash(address)
 	hasCode := contractHash != (types.Hash{}) && contractHash != emptyCodeHash
 	hasNonce := evm.intraBlockState.GetNonce(address) != 0
-	// For Cancun+, also check for non-empty storage (EIP-7610 style behavior)
-	hasStorage := evm.chainRules.IsCancun && evm.intraBlockState.HasNonEmptyStorage(address)
+	hasStorage := evm.chainRules.IsParis && evm.intraBlockState.HasNonEmptyStorage(address)
 	if hasNonce || hasCode || hasStorage {
 		err = ErrContractAddressCollision
+		gasConsumption = gas
 		return nil, types.Address{}, 0, err
 	}
 	// Create a new account on the state
