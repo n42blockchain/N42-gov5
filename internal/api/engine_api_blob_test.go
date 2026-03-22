@@ -92,6 +92,52 @@ func TestEngineAPIBlobInputValidation(t *testing.T) {
 	require.Equal(t, errBlobHashMismatch.Error(), *resp.ValidationError)
 }
 
+func TestEngineAPIBlobRejectsPreCancunBlobFieldsAsInvalidParams(t *testing.T) {
+	t.Parallel()
+
+	genesisHeader := &block.Header{
+		Number:     uint256.NewInt(0),
+		Difficulty: uint256.NewInt(0),
+		GasLimit:   30_000_000,
+		Time:       0,
+		BaseFee:    uint256.NewInt(1),
+	}
+	genesisBlock := block.NewBlock(genesisHeader, nil)
+	chain := &canonicalCheckChainStub{
+		header: genesisHeader,
+		blk:    genesisBlock,
+	}
+	cfg := &params.ChainConfig{
+		BerlinBlock:  big.NewInt(0),
+		LondonBlock:  big.NewInt(0),
+		ShanghaiTime: big.NewInt(0),
+		CancunTime:   big.NewInt(15_000),
+	}
+	api := &API{
+		bc:            chain,
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
+	root := types.Hash{0x01}
+
+	resp, err := engine.NewPayloadV3(context.Background(), &ExecutionPayloadV3{
+		ParentHash:    ethCompatibleBlockHash(genesisBlock, cfg),
+		BlockNumber:   hexutil.Uint64(1),
+		Timestamp:     hexutil.Uint64(14_999),
+		GasLimit:      hexutil.Uint64(30_000_000),
+		BaseFeePerGas: hexutil.Uint64(1),
+		BlobGasUsed:   hexUint64Ptr(0),
+		ExcessBlobGas: hexUint64Ptr(0),
+	}, nil, &root)
+	require.Nil(t, resp)
+	require.Error(t, err)
+	var codedErr interface{ ErrorCode() int }
+	require.ErrorAs(t, err, &codedErr)
+	require.Equal(t, -32602, codedErr.ErrorCode())
+	require.Contains(t, err.Error(), "blob fields not allowed before Cancun")
+}
+
 func TestEngineAPIBlobRejectsIntrinsicGasTooLowTransaction(t *testing.T) {
 	t.Parallel()
 

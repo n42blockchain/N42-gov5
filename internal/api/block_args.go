@@ -157,11 +157,11 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 	}
 
 	number := uint64FromUint256OrZero(header.Number)
-	if cfg != nil && cfg.IsShanghai(number) {
+	if cfg != nil && cfg.IsShanghaiAt(number, header.Time) {
 		result["withdrawalsRoot"] = avmtypes.FromastHash(withdrawalsRoot(nil))
 		result["withdrawals"] = []interface{}{}
 	}
-	if cfg != nil && (cfg.IsCancun(number) || cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
+	if cfg != nil && cfg.IsCancunAt(number, header.Time) {
 		if _, ok := result["withdrawalsRoot"]; !ok {
 			result["withdrawalsRoot"] = avmtypes.FromastHash(withdrawalsRoot(nil))
 		}

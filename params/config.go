@@ -154,15 +154,20 @@ type ChainConfig struct {
 	CancunBlock      *big.Int `json:"cancunBlock,omitempty"`
 	ShardingForkTime *big.Int `json:"shardingForkTime,omitempty"`
 
+	// Optional timestamp-based activation for Shanghai/Cancun.
+	// Hive transition fixtures use timestamp schedules for these forks.
+	ShanghaiTime *big.Int `json:"shanghaiTime,omitempty"`
+	CancunTime   *big.Int `json:"cancunTime,omitempty"`
+
 	// Timestamp-based fork fields
-	PragueTime *big.Int `json:"pragueTime,omitempty"`
-	PectraTime *big.Int `json:"pectraTime,omitempty"`
-	OsakaTime  *big.Int `json:"osakaTime,omitempty"`
-	BPO1Time   *big.Int `json:"bpo1Time,omitempty"`
-	BPO2Time   *big.Int `json:"bpo2Time,omitempty"`
-	BPO3Time   *big.Int `json:"bpo3Time,omitempty"`
-	BPO4Time   *big.Int `json:"bpo4Time,omitempty"`
-	BPO5Time   *big.Int `json:"bpo5Time,omitempty"`
+	PragueTime      *big.Int `json:"pragueTime,omitempty"`
+	PectraTime      *big.Int `json:"pectraTime,omitempty"`
+	OsakaTime       *big.Int `json:"osakaTime,omitempty"`
+	BPO1Time        *big.Int `json:"bpo1Time,omitempty"`
+	BPO2Time        *big.Int `json:"bpo2Time,omitempty"`
+	BPO3Time        *big.Int `json:"bpo3Time,omitempty"`
+	BPO4Time        *big.Int `json:"bpo4Time,omitempty"`
+	BPO5Time        *big.Int `json:"bpo5Time,omitempty"`
 	FusakaTime      *big.Int `json:"fusakaTime,omitempty"`
 	GlamsterdamTime *big.Int `json:"glamsterdamTime,omitempty"` // EIP-7904 gas repricing
 
