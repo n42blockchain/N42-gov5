@@ -26,6 +26,7 @@ internal/           -> Core business logic (private, not importable)
 modules/            -> Data layer (importable by external packages)
   state/            -> State trie management with changeset tracking
   rawdb/            -> Raw database operations (MDBX backend)
+  rawdb/era/        -> EraE standardized history archive (reader/writer/index)
   rawdb/freezer/    -> Ancient/freezer cold storage for old blocks
   rpc/              -> JSON-RPC transport (HTTP, WebSocket, IPC)
   ethdb/            -> Database interface abstraction
@@ -229,3 +230,22 @@ The AI subsystems communicate through interfaces, not concrete types:
 - `vm.InferenceBackend` ← wraps `inference.InferenceService`
 
 Each feature can be enabled/disabled independently via `conf.AICfg`.
+
+## Fork Schedule
+
+N42 supports all Ethereum execution forks through Glamsterdam:
+
+| Fork | Activation | Key Features |
+|------|-----------|-------------|
+| London | Block 0 | EIP-1559 base fee |
+| Shanghai | Block 11907216 | Withdrawals |
+| Cancun | Timestamp | EIP-4844 blobs |
+| Pectra | Timestamp | EIP-7702 SetCode, BLS, 9 EIPs |
+| Osaka | Timestamp | EOF opcodes |
+| Fusaka | Timestamp | PeerDAS, BPO, gas metering |
+| Glamsterdam | Timestamp | EIP-7904 gas repricing (-78.6% transfers) |
+
+N42-specific extensions (independent activation):
+- PQ Precompiles (Falcon, Dilithium, SQIsign)
+- CAS Precompile (0x0300)
+- AI Inference Precompile (0x0301)

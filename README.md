@@ -37,6 +37,7 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **EOF (EVM Object Format)**: Full support including EOFCREATE, RETURNCONTRACT, and sub-containers
 - **Blob Transactions (EIP-4844)**: Native support for blob-carrying transactions with V2 wire format
 - **Pectra EIPs (9 complete)**: EIP-7702, EIP-2537 BLS, EIP-6110, EIP-7251, EIP-7002, EIP-7623, EIP-2935, EIP-7685
+- **Glamsterdam Gas Repricing (EIP-7904)**: Simple transfers drop from 21000 to 4500 gas (-78.6%), data costs reduced 75%, contract creation 75% cheaper. Activated via timestamp fork
 
 ### State & Storage
 
@@ -59,6 +60,8 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **GraphQL API**: Full GraphQL endpoint with schema-driven queries
 - **RPCDaemon**: Standalone RPC server connecting to core node via gRPC for read scaling
 - **Mobile SDK**: iOS/Android SDK via gomobile with V2 wire format, BLS signing, and WebSocket/QUIC verification
+- **`eth_getStorageValues` (EIP-7834)**: Batch storage value retrieval — query up to 1024 storage slots in a single RPC call
+- **EraE History Format**: Standardized binary archive for blocks + receipts with random access via block number index
 
 ### AI-Native Infrastructure
 
@@ -124,6 +127,7 @@ internal/
 modules/
   state/            State management with JMT commitment and witness generation
   rawdb/            Raw database operations (MDBX + freezer)
+  rawdb/era/        EraE history archive format (reader/writer)
 lib/
   jmt/              Jellyfish Merkle Tree implementation (Blake3, 16-ary)
   kv/               Key-value store interfaces (mdbx/, memdb/, remotedb/, layered/)
@@ -242,6 +246,12 @@ AI Infrastructure (`AICfg`):
 | `mev_optimizer.enabled` | `bool` | Enable AI block building |
 | `mev_optimizer.fairness_mode` | `bool` | Enable sandwich detection (default: true) |
 
+Glamsterdam Fork (`GlamsterdamTime`):
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `glamsterdamTime` | `timestamp` | Activation time for EIP-7904 gas repricing |
+
 ## Running a Node
 
 ```sh
@@ -260,6 +270,12 @@ n42 --data.dir ./mainnet --chain mainnet \
 
 # Development mode
 n42 --chain private --p2p.no-discovery --dev.txgen
+
+# Export chain history to EraE archive
+n42 export-era --output history.era --start 0 --end 1000000
+
+# Import from EraE archive
+n42 import-era --input history.era
 ```
 
 ## Development
