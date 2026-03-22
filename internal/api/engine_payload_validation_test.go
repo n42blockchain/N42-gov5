@@ -60,6 +60,29 @@ func TestValidateExecutionPayloadTransactionsRejectsBlobWithoutHashes(t *testing
 	require.ErrorIs(t, err, errBlobTxMissingHashes)
 }
 
+func TestEnginePayloadRLPHeaderRespectsShanghaiCancunTimeTransitions(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:      big.NewInt(1),
+		LondonBlock:  big.NewInt(0),
+		ShanghaiTime: big.NewInt(15_000),
+		CancunTime:   big.NewInt(15_000),
+	}
+
+	preFork := &block.Header{Number: uint256.NewInt(0), Time: 14_999}
+	preForkHeader := enginePayloadRLPHeader(preFork, cfg, enginePayloadHashOptions{})
+	require.Nil(t, preForkHeader.WithdrawalsHash)
+	require.Nil(t, preForkHeader.BlobGasUsed)
+	require.Nil(t, preForkHeader.ExcessBlobGas)
+
+	postFork := &block.Header{Number: uint256.NewInt(1), Time: 15_000}
+	postForkHeader := enginePayloadRLPHeader(postFork, cfg, enginePayloadHashOptions{})
+	require.NotNil(t, postForkHeader.WithdrawalsHash)
+	require.NotNil(t, postForkHeader.BlobGasUsed)
+	require.NotNil(t, postForkHeader.ExcessBlobGas)
+}
+
 func TestValidateExecutionPayloadTransactionsRejectsSetCodeEmptyAuthList(t *testing.T) {
 	t.Parallel()
 
@@ -553,6 +576,30 @@ func TestValidateExecutionRequestsRejectsTypeOnlyEntryWithoutLegacyPayloadFields
 	payload := &ExecutionPayloadV4{}
 	requests := []hexutil.Bytes{
 		{DepositRequestType},
+	}
+
+	err := validateExecutionRequests(requests, payload)
+	require.ErrorIs(t, err, errInvalidRequestEncoding)
+}
+
+func TestValidateExecutionRequestsAcceptsUnknownOpaqueTypeWithoutLegacyPayloadFields(t *testing.T) {
+	t.Parallel()
+
+	payload := &ExecutionPayloadV4{}
+	requests := []hexutil.Bytes{
+		{ConsolidationRequestType + 1, 0x00},
+	}
+
+	err := validateExecutionRequests(requests, payload)
+	require.NoError(t, err)
+}
+
+func TestValidateExecutionRequestsRejectsUnknownTypeOnlyEntryWithoutLegacyPayloadFields(t *testing.T) {
+	t.Parallel()
+
+	payload := &ExecutionPayloadV4{}
+	requests := []hexutil.Bytes{
+		{ConsolidationRequestType + 1},
 	}
 
 	err := validateExecutionRequests(requests, payload)

@@ -173,7 +173,7 @@ func includeWithdrawalsInPayloadBlockBody(header *block.Header, cfg *params.Chai
 	if cfg == nil {
 		return false
 	}
-	return cfg.IsShanghai(uint64FromUint256OrZero(header.Number))
+	return cfg.IsShanghaiAt(uint64FromUint256OrZero(header.Number), header.Time)
 }
 
 func enginePayloadRLPHeader(header *block.Header, cfg *params.ChainConfig, opts enginePayloadHashOptions) *ethRPCHeader {
@@ -192,7 +192,7 @@ func enginePayloadRLPHeader(header *block.Header, cfg *params.ChainConfig, opts 
 		root := withdrawalsRoot(opts.withdrawals)
 		withdrawalsHash = &root
 	}
-	if opts.includeBlobFields || (cfg != nil && (cfg.IsCancun(number) || cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time))) {
+	if opts.includeBlobFields || (cfg != nil && cfg.IsCancunAt(number, header.Time)) {
 		blobGasUsed = new(uint64)
 		excessBlobGas = new(uint64)
 		*blobGasUsed = header.BlobGasUsed

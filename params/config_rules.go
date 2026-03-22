@@ -28,7 +28,7 @@ type Rules struct {
 	IsHomestead, IsTangerineWhistle, IsSpuriousDragon       bool
 	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
 	IsBerlin, IsLondon, IsShanghai, IsCancun, IsPrague      bool
-	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam               bool // Pectra: EIP-7702, Osaka: EOF, Fusaka: Native AA, Glamsterdam: EIP-7904
+	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam              bool // Pectra: EIP-7702, Osaka: EOF, Fusaka: Native AA, Glamsterdam: EIP-7904
 	IsNano, IsMoran                                         bool
 	IsEip1559FeeCollector                                   bool
 	IsParlia, IsStarknet, IsAura, IsBeijing                 bool
@@ -62,8 +62,8 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsIstanbul:            c.IsIstanbul(num),
 		IsBerlin:              c.IsBerlin(num),
 		IsLondon:              c.IsLondon(num),
-		IsShanghai:            c.IsShanghai(num),
-		IsCancun:              c.IsCancun(num),
+		IsShanghai:            c.IsShanghaiAt(num, timestamp),
+		IsCancun:              c.IsCancunAt(num, timestamp),
 		IsPrague:              c.IsPrague(timestamp),
 		IsPectra:              c.IsPectra(timestamp),
 		IsOsaka:               c.IsOsaka(timestamp),
@@ -191,9 +191,35 @@ func (c *ChainConfig) IsShanghai(num uint64) bool {
 	return isForked(c.ShanghaiBlock, num)
 }
 
+// IsShanghaiTime returns whether time is either equal to the Shanghai fork time or greater.
+func (c *ChainConfig) IsShanghaiTime(time uint64) bool {
+	return isForked(c.ShanghaiTime, time)
+}
+
+// IsShanghaiAt returns whether Shanghai is active at the given block number or timestamp.
+func (c *ChainConfig) IsShanghaiAt(num uint64, time uint64) bool {
+	return c.IsShanghai(num) || c.IsShanghaiTime(time) || c.IsCancunAt(num, time)
+}
+
 // IsCancun returns whether num is either equal to the Cancun fork block or greater.
 func (c *ChainConfig) IsCancun(num uint64) bool {
 	return isForked(c.CancunBlock, num)
+}
+
+// IsCancunTime returns whether time is either equal to the Cancun fork time or greater.
+func (c *ChainConfig) IsCancunTime(time uint64) bool {
+	return isForked(c.CancunTime, time)
+}
+
+// IsCancunAt returns whether Cancun-or-later semantics are active at the given block number or timestamp.
+func (c *ChainConfig) IsCancunAt(num uint64, time uint64) bool {
+	return c.IsCancun(num) ||
+		c.IsCancunTime(time) ||
+		c.IsPrague(time) ||
+		c.IsPectra(time) ||
+		c.IsOsaka(time) ||
+		c.IsFusaka(time) ||
+		c.IsGlamsterdam(time)
 }
 
 // IsNano returns whether num is either equal to the Nano fork block or greater.

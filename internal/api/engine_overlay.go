@@ -94,11 +94,11 @@ func ethCompatibleHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.
 	if header.BaseFee != nil {
 		baseFee = header.BaseFee.ToBig()
 	}
-	if cfg != nil && cfg.IsShanghai(number) {
+	if cfg != nil && cfg.IsShanghaiAt(number, header.Time) {
 		root := withdrawalsRoot(nil)
 		withdrawals = &root
 	}
-	if cfg != nil && (cfg.IsCancun(number) || cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
+	if cfg != nil && cfg.IsCancunAt(number, header.Time) {
 		if withdrawals == nil {
 			root := withdrawalsRoot(nil)
 			withdrawals = &root
@@ -172,11 +172,11 @@ func ethCompatibleEngineBlockHash(blk block.IBlock, cfg *params.ChainConfig, opt
 	if header.BaseFee != nil {
 		baseFee = header.BaseFee.ToBig()
 	}
-	if opts.includeWithdrawals || (cfg != nil && cfg.IsShanghai(number)) {
+	if opts.includeWithdrawals || (cfg != nil && cfg.IsShanghaiAt(number, header.Time)) {
 		root := withdrawalsRoot(opts.withdrawals)
 		withdrawalsHash = &root
 	}
-	if opts.includeBlobFields || (cfg != nil && (cfg.IsCancun(number) || cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time))) {
+	if opts.includeBlobFields || (cfg != nil && cfg.IsCancunAt(number, header.Time)) {
 		blobGasUsed = new(uint64)
 		excessBlobGas = new(uint64)
 		*blobGasUsed = header.BlobGasUsed

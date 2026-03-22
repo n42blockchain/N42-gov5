@@ -220,6 +220,32 @@ func TestRulesWithTimestamp(t *testing.T) {
 	}
 }
 
+func TestRulesWithTimestampSupportsShanghaiCancunTime(t *testing.T) {
+	cfg := &ChainConfig{
+		ChainID:      big.NewInt(1),
+		ShanghaiTime: big.NewInt(10),
+		CancunTime:   big.NewInt(20),
+	}
+
+	rules := cfg.RulesWithTimestamp(0, 9)
+	if rules.IsShanghai || rules.IsCancun {
+		t.Fatal("Shanghai/Cancun should be inactive before timestamp activation")
+	}
+
+	rules = cfg.RulesWithTimestamp(0, 10)
+	if !rules.IsShanghai {
+		t.Fatal("Shanghai should activate at shanghaiTime")
+	}
+	if rules.IsCancun {
+		t.Fatal("Cancun should remain inactive before cancunTime")
+	}
+
+	rules = cfg.RulesWithTimestamp(0, 20)
+	if !rules.IsShanghai || !rules.IsCancun {
+		t.Fatal("Shanghai and Cancun should both be active at cancunTime")
+	}
+}
+
 func TestRulesWithTimestampForkInheritance(t *testing.T) {
 	cfg := &ChainConfig{
 		ChainID:   big.NewInt(1),

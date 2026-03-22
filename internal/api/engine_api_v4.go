@@ -208,7 +208,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 		requestsHash:       &requestsHash,
 	})
 	if payload.BlockHash != blockHash {
-		return invalidPayloadResponse("block hash mismatch"), nil
+		return invalidPayloadResponse("blockhash mismatch"), nil
 	}
 	if err := e.v1.validatePayloadExecution(blk, payload.ParentHash, parentBeaconBlockRoot, executionRequests); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
@@ -514,7 +514,14 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 			reqSize = vm.ConsolidationRequestSize
 			payloadLen = len(payload.ConsolidationRequests)
 		default:
-			return errUnknownRequestType
+			if len(req) == 1 {
+				return errInvalidRequestEncoding
+			}
+			// Unknown request types are opaque to the EL request parameter
+			// validation layer. They must flow through to later requests-hash or
+			// execution validation so the payload is marked INVALID instead of
+			// being rejected as an RPC invalid-params error.
+			continue
 		}
 
 		// When payload-local request arrays are absent, the executionRequests

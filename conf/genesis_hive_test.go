@@ -18,6 +18,7 @@ func TestApplyHiveGenesisEnvCreatesFakerConfig(t *testing.T) {
 		"HIVE_FORK_LONDON":               "0",
 		"HIVE_TERMINAL_TOTAL_DIFFICULTY": "0",
 		"HIVE_SHANGHAI_TIMESTAMP":        "0",
+		"HIVE_CANCUN_TIMESTAMP":          "15000",
 		"HIVE_PRAGUE_TIMESTAMP":          "15000",
 	}
 
@@ -49,8 +50,17 @@ func TestApplyHiveGenesisEnvCreatesFakerConfig(t *testing.T) {
 	if !genesis.Config.TerminalTotalDifficultyPassed {
 		t.Fatal("terminal total difficulty passed should be true when Hive TTD is set")
 	}
-	if genesis.Config.ShanghaiBlock == nil || genesis.Config.ShanghaiBlock.Uint64() != 0 {
-		t.Fatalf("unexpected shanghai activation: %v", genesis.Config.ShanghaiBlock)
+	if genesis.Config.ShanghaiTime == nil || genesis.Config.ShanghaiTime.Uint64() != 0 {
+		t.Fatalf("unexpected shanghai time: %v", genesis.Config.ShanghaiTime)
+	}
+	if genesis.Config.CancunTime == nil || genesis.Config.CancunTime.Uint64() != 15000 {
+		t.Fatalf("unexpected cancun time: %v", genesis.Config.CancunTime)
+	}
+	if genesis.Config.ShanghaiBlock != nil {
+		t.Fatalf("unexpected shanghai block override: %v", genesis.Config.ShanghaiBlock)
+	}
+	if genesis.Config.CancunBlock != nil {
+		t.Fatalf("unexpected cancun block override: %v", genesis.Config.CancunBlock)
 	}
 	if genesis.Config.PragueTime == nil || genesis.Config.PragueTime.Uint64() != 15000 {
 		t.Fatalf("unexpected prague time: %v", genesis.Config.PragueTime)

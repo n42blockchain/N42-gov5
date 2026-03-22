@@ -100,6 +100,34 @@ func TestEngineAPIV1InputValidationAndExchangeCapabilities(t *testing.T) {
 	}
 }
 
+func TestEngineAPIV2RejectsPreCancunBlobFieldsAsInvalidParams(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngineAPIV1(nil)
+	blobGasUsed := hexutil.Uint64(1)
+	excessBlobGas := hexutil.Uint64(1)
+
+	resp, err := engine.NewPayloadV2(context.Background(), &ExecutionPayloadV2{
+		ExecutionPayloadV1: ExecutionPayloadV1{},
+		Withdrawals:        []*Withdrawal{},
+		BlobGasUsed:        &blobGasUsed,
+		ExcessBlobGas:      &excessBlobGas,
+	})
+	if resp != nil {
+		t.Fatalf("NewPayloadV2() response = %#v, want nil", resp)
+	}
+	if err == nil {
+		t.Fatal("NewPayloadV2() error = nil, want invalid params")
+	}
+	coded, ok := err.(interface{ ErrorCode() int })
+	if !ok {
+		t.Fatalf("NewPayloadV2() error = %T, want error with code", err)
+	}
+	if coded.ErrorCode() != -32602 {
+		t.Fatalf("NewPayloadV2() error code = %d, want -32602", coded.ErrorCode())
+	}
+}
+
 func TestLocalTransitionConfigurationUsesChainConfigTTD(t *testing.T) {
 	t.Parallel()
 

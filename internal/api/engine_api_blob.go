@@ -167,6 +167,13 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
+	blockNumber := uint64(payload.BlockNumber)
+	timestamp := uint64(payload.Timestamp)
+	if cfg := e.v1().chainConfig(); cfg != nil && !cfg.IsCancunAt(blockNumber, timestamp) {
+		if payload.BlobGasUsed != nil || payload.ExcessBlobGas != nil || len(expectedBlobVersionedHashes) > 0 {
+			return nil, &engineInvalidParamsError{msg: "blob fields not allowed before Cancun"}
+		}
+	}
 	if parentBeaconBlockRoot == nil {
 		return invalidPayloadResponse("missing parent beacon block root"), nil
 	}
@@ -221,7 +228,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 		parentBeaconRoot:   parentBeaconBlockRoot,
 	})
 	if payload.BlockHash != blockHash {
-		return invalidPayloadResponse("block hash mismatch"), nil
+		return invalidPayloadResponse("blockhash mismatch"), nil
 	}
 	if err := e.v1().validatePayloadExecution(blk, payload.ParentHash, parentBeaconBlockRoot, nil); err != nil {
 		return invalidPayloadResponse(err.Error()), nil

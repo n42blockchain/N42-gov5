@@ -48,7 +48,9 @@ type ExecutionPayloadV1 struct {
 // ExecutionPayloadV2 represents a Shanghai Engine API payload.
 type ExecutionPayloadV2 struct {
 	ExecutionPayloadV1
-	Withdrawals []*Withdrawal `json:"withdrawals"`
+	Withdrawals   []*Withdrawal   `json:"withdrawals"`
+	BlobGasUsed   *hexutil.Uint64 `json:"blobGasUsed,omitempty"`
+	ExcessBlobGas *hexutil.Uint64 `json:"excessBlobGas,omitempty"`
 }
 
 // PayloadAttributesV1 represents Paris payload attributes.
@@ -163,7 +165,7 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 	}
 	blockHash := ethCompatibleBlockHash(blk, e.chainConfig())
 	if payload.BlockHash != blockHash {
-		return invalidPayloadResponse("block hash mismatch"), nil
+		return invalidPayloadResponse("blockhash mismatch"), nil
 	}
 	if err := e.validatePayloadExecution(blk, payload.ParentHash, nil, nil); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
@@ -186,6 +188,9 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if payload.Withdrawals == nil {
 		return invalidPayloadResponse("missing withdrawals"), nil
 	}
+	if payload.BlobGasUsed != nil || payload.ExcessBlobGas != nil {
+		return nil, &engineInvalidParamsError{msg: "blob fields not allowed before Cancun"}
+	}
 	blk, err := executionPayloadV2ToBlock(payload)
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
@@ -207,7 +212,7 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 		withdrawals:        payload.Withdrawals,
 	})
 	if payload.BlockHash != blockHash {
-		return invalidPayloadResponse("block hash mismatch"), nil
+		return invalidPayloadResponse("blockhash mismatch"), nil
 	}
 	if err := e.validatePayloadExecution(blk, payload.ParentHash, nil, nil); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
