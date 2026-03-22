@@ -34,7 +34,7 @@ import "container/list"
 // and other per-block data structures in the N42 codebase.
 
 // DefaultNodeCacheSize is the default number of decoded nodes to cache.
-const DefaultNodeCacheSize = 16384
+const DefaultNodeCacheSize = 65536
 
 type Tree struct {
 	root   Hash
@@ -531,6 +531,9 @@ func (t *Tree) EnableGC() {
 func (t *Tree) GC() *NodeGC {
 	return t.gc
 }
+
+// Store returns the backing node store.
+func (t *Tree) Store() NodeStore { return t.store }
 
 // CollectGarbage deletes unreachable nodes from the given store.
 // Returns the number of nodes deleted. No-op if GC is not enabled.
