@@ -21,6 +21,8 @@
     "period": 4,
     "baseTimeout": 30000,
     "maxTimeout": 120000,
-    "epochLength": 1000
+    "epochLength": 1000,
+    "fastPropose": true,
+    "minProposeDelayMs": 200
   }
 }

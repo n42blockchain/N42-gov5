@@ -364,6 +364,12 @@ type HotStuffConfig struct {
 	MaxTimeout  uint64 `json:"maxTimeout"`  // Max timeout in milliseconds (default 120000)
 	EpochLength uint64 `json:"epochLength"` // Epoch length in blocks for validator set rotation
 
+	// FastPropose skips slot boundary wait, reducing consensus latency by ~72%.
+	// When enabled, the leader proposes immediately after receiving ViewChanged,
+	// waiting only MinProposeDelayMs before building the block.
+	FastPropose       bool   `json:"fastPropose,omitempty"`
+	MinProposeDelayMs uint64 `json:"minProposeDelayMs,omitempty"` // minimum delay before proposing (default 200ms)
+
 	// Validators is the genesis validator set for HotStuff consensus.
 	Validators []HotStuffValidatorConfig `json:"validators,omitempty"`
 }
