@@ -17,10 +17,17 @@
 package stateless
 
 import (
+	"container/list"
 	"sync"
 
 	"github.com/n42blockchain/N42/common/types"
 )
+
+// codeCacheEntry stores a bytecode and its hash for LRU eviction.
+type codeCacheEntry struct {
+	hash types.Hash
+	code []byte
+}
 
 // CodeCache stores contract bytecodes in memory, keyed by code hash.
 // Used by stateless nodes to avoid re-fetching bytecodes with each witness.
@@ -29,10 +36,12 @@ import (
 // Subsequent blocks can reuse cached codes instead of requiring them in
 // every witness, reducing witness size for long-lived contracts.
 //
-// Thread-safe for concurrent reads and writes.
+// Thread-safe for concurrent reads and writes. Evicts the least-recently-used
+// entry when at capacity.
 type CodeCache struct {
 	mu    sync.RWMutex
-	codes map[types.Hash][]byte
+	items map[types.Hash]*list.Element
+	order *list.List
 	cap   int
 }
 
@@ -43,7 +52,8 @@ func NewCodeCache(capacity int) *CodeCache {
 		capacity = 4096
 	}
 	return &CodeCache{
-		codes: make(map[types.Hash][]byte, capacity),
+		items: make(map[types.Hash]*list.Element, capacity),
+		order: list.New(),
 		cap:   capacity,
 	}
 }
@@ -52,45 +62,56 @@ func NewCodeCache(capacity int) *CodeCache {
 // Returns (code, true) if found, (nil, false) if not cached.
 // The returned slice is a copy -- callers may modify it safely.
 func (c *CodeCache) Get(codeHash types.Hash) ([]byte, bool) {
-	c.mu.RLock()
-	code, ok := c.codes[codeHash]
-	c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	elem, ok := c.items[codeHash]
 	if !ok {
 		return nil, false
 	}
-	cp := make([]byte, len(code))
-	copy(cp, code)
+	c.order.MoveToFront(elem)
+	entry := elem.Value.(*codeCacheEntry)
+	cp := make([]byte, len(entry.code))
+	copy(cp, entry.code)
 	return cp, true
 }
 
 // Put stores a contract bytecode under its code hash.
-// If the cache is at capacity, the insertion is silently dropped.
+// If the cache is at capacity, the least-recently-used entry is evicted.
 // A nil or empty code slice is a valid entry (e.g., for self-destructed contracts).
 func (c *CodeCache) Put(codeHash types.Hash, code []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// If already present, update in place (no capacity change).
-	if _, exists := c.codes[codeHash]; exists {
+	// If already present, update in place and promote.
+	if elem, exists := c.items[codeHash]; exists {
+		entry := elem.Value.(*codeCacheEntry)
 		cp := make([]byte, len(code))
 		copy(cp, code)
-		c.codes[codeHash] = cp
+		entry.code = cp
+		c.order.MoveToFront(elem)
 		return
 	}
 
-	// Enforce capacity.
-	if len(c.codes) >= c.cap {
-		return
+	// Evict LRU entry if at capacity.
+	if c.order.Len() >= c.cap {
+		tail := c.order.Back()
+		if tail != nil {
+			evicted := c.order.Remove(tail).(*codeCacheEntry)
+			delete(c.items, evicted.hash)
+		}
 	}
 
 	cp := make([]byte, len(code))
 	copy(cp, code)
-	c.codes[codeHash] = cp
+	entry := &codeCacheEntry{hash: codeHash, code: cp}
+	elem := c.order.PushFront(entry)
+	c.items[codeHash] = elem
 }
 
 // Len returns the number of entries in the cache.
 func (c *CodeCache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return len(c.codes)
+	return c.order.Len()
 }
