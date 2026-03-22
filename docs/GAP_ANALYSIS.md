@@ -317,7 +317,7 @@
 
 ### 关键差距
 
-**Grafana Dashboard**：N42 现有 3 个 Grafana 面板 — `amc.json`(基础)、`amc_internal.json`(内部)、`n42_advanced.json`(7分组/20+面板: Sync Progress, DB I/O, TxPool Advanced, Snap Sync, ERC-4337 Bundler, P2P Network, Miner)。覆盖新增的所有指标。
+**Grafana Dashboard**：N42 现有 3 个 Grafana 面板 — `n42.json`(基础)、`n42_internal.json`(内部)、`n42_advanced.json`(7分组/20+面板: Sync Progress, DB I/O, TxPool Advanced, Snap Sync, ERC-4337 Bundler, P2P Network, Miner)。覆盖新增的所有指标。
 
 **N42 Metrics 审计备注**：经源码审计确认，N42 有 **250+ Prometheus 指标**（272 个 metric 注册调用），覆盖：系统/Go runtime (11)、链/同步 (12)、MDBX (30+)、P2P (20+)、TxPool (10)、快照 (10)、HotStuff (5)、Bundler (6)、ZK (9)、EVM 执行/状态/链/reorg/费用/交易/Engine API/RPC/JMT (55+)、Pipeline timing (8)、AI/Ingest (10+)。**与 geth 200+ 相当，不存在差距。**
 
