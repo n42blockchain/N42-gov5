@@ -16,6 +16,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/replay"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
@@ -35,7 +36,7 @@ func init() {
 
 var replayCommand = &cli.Command{
 	Name:  "replay",
-	Usage: "Replay old chain transactions and export to JSON (lossy — skips incompatible txs)",
+	Usage: "Replay old chain transactions into a new database (lossy — skips incompatible txs)",
 	Flags: []cli.Flag{
 		&cli.StringFlag{
 			Name:     "source",
@@ -43,14 +44,18 @@ var replayCommand = &cli.Command{
 			Required: true,
 		},
 		&cli.StringFlag{
+			Name:  "target",
+			Usage: "Target chain data directory for new database (if set, writes blocks to new DB)",
+		},
+		&cli.StringFlag{
 			Name:  "output",
-			Usage: "Output JSON file path (default: replay_result.json)",
+			Usage: "Output JSON stats file (default: replay_result.json)",
 			Value: "replay_result.json",
 		},
 		&cli.Uint64Flag{
 			Name:  "from",
-			Usage: "Start block number (default: 1)",
-			Value: 1,
+			Usage: "Start block number (default: 0)",
+			Value: 0,
 		},
 		&cli.Uint64Flag{
 			Name:  "to",
@@ -60,7 +65,7 @@ var replayCommand = &cli.Command{
 		&cli.IntFlag{
 			Name:  "batch",
 			Usage: "Blocks per progress report",
-			Value: 10000,
+			Value: 500000,
 		},
 	},
 	Action: runReplay,
@@ -94,18 +99,19 @@ type ReplayedBlock struct {
 }
 
 func runReplay(ctx *cli.Context) error {
-	// NOTE: Do NOT call modules.N42Init() or set kv.ChaindataTablesCfg here.
-	// The source database may be an older version without newer tables (e.g.,
-	// BlobSidecars). Opening without table config lets MDBX read existing
-	// tables without trying to create missing ones.
-
 	sourceDir := ctx.String("source")
+	targetDir := ctx.String("target")
 	outputFile := ctx.String("output")
 	fromBlock := ctx.Uint64("from")
 	toBlock := ctx.Uint64("to")
 	batchSize := ctx.Int("batch")
 
-	// Validate source directory.
+	// If --target is set, use the replay.Engine to write into a new DB.
+	if targetDir != "" {
+		return runReplayWithTarget(ctx.Context, sourceDir, targetDir, outputFile, fromBlock, toBlock, batchSize)
+	}
+
+	// Read-only analysis mode (no --target).
 	chaindataPath := filepath.Join(sourceDir, "chaindata")
 	if _, err := os.Stat(chaindataPath); err != nil {
 		return fmt.Errorf("source chaindata not found: %s", chaindataPath)
@@ -300,4 +306,66 @@ func runReplay(ctx *cli.Context) error {
 	fmt.Println("========================================")
 
 	return nil
+}
+
+// runReplayWithTarget uses internal/replay.Engine to read old blocks and write
+// filtered transactions into a new target database.
+func runReplayWithTarget(ctx context.Context, sourceDir, targetDir, outputFile string, fromBlock, toBlock uint64, batchSize int) error {
+	fmt.Println("========================================")
+	fmt.Println("N42 Chain Replay → New Database")
+	fmt.Println("========================================")
+	fmt.Printf("Source:    %s\n", sourceDir)
+	fmt.Printf("Target:    %s\n", targetDir)
+	fmt.Printf("Output:    %s\n", outputFile)
+	fmt.Printf("Range:     %d → %d (0=latest)\n", fromBlock, toBlock)
+	fmt.Println()
+
+	engine, err := replay.NewEngine(replay.Config{
+		SourcePath: sourceDir,
+		TargetPath: targetDir,
+		FromBlock:  fromBlock,
+		ToBlock:    toBlock,
+		BatchSize:  batchSize,
+		ProgressFn: func(s *replay.Stats) {
+			total := s.ToBlock - s.FromBlock + 1
+			pct := float64(s.CurrentBlock-s.FromBlock) / float64(total) * 100
+			fmt.Printf("  Block #%-10d  %5.1f%%  |  %d tx replayed, %d skipped  |  %.0f blocks/s\n",
+				s.CurrentBlock, pct,
+				s.TxReplayed.Load(), s.TxSkipped.Load(),
+				s.BlocksPerSecond())
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	stats, err := engine.Run(ctx)
+	if err != nil {
+		fmt.Printf("\nReplay stopped: %v\n", err)
+	}
+
+	// Print summary.
+	fmt.Println()
+	fmt.Println("========================================")
+	fmt.Println("REPLAY TO NEW DB COMPLETE")
+	fmt.Println("========================================")
+	fmt.Printf("Duration:           %s\n", stats.Elapsed())
+	fmt.Printf("Blocks processed:   %d\n", stats.BlocksProcessed.Load())
+	fmt.Printf("Blocks empty:       %d\n", stats.BlocksEmpty.Load())
+	fmt.Printf("Blocks missing:     %d\n", stats.BlocksMissing.Load())
+	fmt.Println("----------------------------------------")
+	fmt.Printf("Transactions total: %d\n", stats.TxTotal.Load())
+	fmt.Printf("Replayed:           %d\n", stats.TxReplayed.Load())
+	fmt.Printf("Skipped:            %d\n", stats.TxSkipped.Load())
+	fmt.Printf("Failed:             %d\n", stats.TxFailed.Load())
+	fmt.Println("Skip reasons:")
+	for reason, count := range stats.SkipReasons {
+		fmt.Printf("  %-20s %d\n", reason, count.Load())
+	}
+	fmt.Printf("Speed:              %.0f blocks/s\n", stats.BlocksPerSecond())
+	fmt.Println("----------------------------------------")
+	fmt.Printf("Target DB:          %s/chaindata\n", targetDir)
+	fmt.Println("========================================")
+
+	return err
 }
