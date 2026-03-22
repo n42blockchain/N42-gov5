@@ -36,8 +36,8 @@ var (
 // - Build: Auto-incremented on each build (486, 487, 488...)
 const (
 	VersionMajor       = 5   // Major version - annual release
-	VersionMinor       = 5   // Minor version - feature release
-	VersionBuild       = 767 // Build number - auto-incremented
+	VersionMinor       = 6   // Minor version - feature release
+	VersionBuild       = 768 // Build number - auto-incremented
 	VersionModifier    = ""  // Modifier component (alpha, beta, stable)
 	VersionKeyCreated  = "n42VersionCreated"
 	VersionKeyFinished = "n42VersionFinished"
