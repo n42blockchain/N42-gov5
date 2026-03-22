@@ -16,7 +16,7 @@
 
 package jmt
 
-// No external imports needed — NodeStore is defined in store.go within this package.
+import "container/list"
 
 // Tree is a Jellyfish Merkle Tree backed by a NodeStore.
 //
@@ -46,9 +46,10 @@ type Tree struct {
 	dirty map[Hash][]byte
 
 	// nodeCache is an LRU cache of decoded *Node objects keyed by content hash.
-	nodeCache    map[Hash]*nodeCacheEntry
-	nodeCacheCap int
-	nodeCacheSeq uint64 // per-tree sequence counter for LRU eviction
+	// Eviction is O(1) via a doubly-linked list (container/list).
+	nodeCache     map[Hash]*list.Element
+	nodeCacheLRU  *list.List
+	nodeCacheCap  int
 
 	// gc tracks node reference counts for garbage collection.
 	// When enabled, old nodes replaced during tree mutations are queued
@@ -57,8 +58,8 @@ type Tree struct {
 }
 
 type nodeCacheEntry struct {
+	hash Hash
 	node *Node
-	seq  uint64 // access sequence for LRU eviction
 }
 
 // New creates a new empty JMT with the given store and default Blake3 hasher.
@@ -68,7 +69,8 @@ func New(s NodeStore) *Tree {
 		store:        s,
 		hasher:       DefaultHasher(),
 		dirty:        make(map[Hash][]byte),
-		nodeCache:    make(map[Hash]*nodeCacheEntry, DefaultNodeCacheSize),
+		nodeCache:    make(map[Hash]*list.Element, DefaultNodeCacheSize),
+		nodeCacheLRU: list.New(),
 		nodeCacheCap: DefaultNodeCacheSize,
 	}
 }
@@ -80,7 +82,8 @@ func NewWithHasher(s NodeStore, h Hasher) *Tree {
 		store:        s,
 		hasher:       h,
 		dirty:        make(map[Hash][]byte),
-		nodeCache:    make(map[Hash]*nodeCacheEntry, DefaultNodeCacheSize),
+		nodeCache:    make(map[Hash]*list.Element, DefaultNodeCacheSize),
+		nodeCacheLRU: list.New(),
 		nodeCacheCap: DefaultNodeCacheSize,
 	}
 }
@@ -92,7 +95,8 @@ func NewFromRoot(s NodeStore, root Hash) *Tree {
 		store:        s,
 		hasher:       DefaultHasher(),
 		dirty:        make(map[Hash][]byte),
-		nodeCache:    make(map[Hash]*nodeCacheEntry, DefaultNodeCacheSize),
+		nodeCache:    make(map[Hash]*list.Element, DefaultNodeCacheSize),
+		nodeCacheLRU: list.New(),
 		nodeCacheCap: DefaultNodeCacheSize,
 	}
 }
@@ -489,7 +493,7 @@ func (t *Tree) FlushTo(target NodeStore) error {
 		// across subsequent payloads without hitting the store.
 		if t.nodeCache != nil {
 			if _, cached := t.nodeCache[h]; !cached {
-				if node, err := DecodeNode(data); err == nil {
+				if node, decErr := DecodeNode(data); decErr == nil {
 					t.cacheNode(h, node)
 				}
 			}
@@ -508,7 +512,8 @@ func (t *Tree) DirtyCount() int {
 func (t *Tree) Reset() {
 	t.root = EmptyHash
 	t.dirty = make(map[Hash][]byte)
-	t.nodeCache = make(map[Hash]*nodeCacheEntry, t.nodeCacheCap)
+	t.nodeCache = make(map[Hash]*list.Element, t.nodeCacheCap)
+	t.nodeCacheLRU.Init()
 }
 
 // EnableGC activates reference-counting garbage collection.
@@ -547,19 +552,25 @@ func (t *Tree) storeNode(n *Node) Hash {
 	return h
 }
 
-// loadNode retrieves a node by hash, checking dirty buffer first, then store.
+// loadNode retrieves a node by hash, checking the parsed node cache first,
+// then the dirty buffer (uncommitted writes), then the backing store.
 func (t *Tree) loadNode(h Hash) (*Node, error) {
-	// 1. Check dirty buffer (uncommitted writes)
-	if data, ok := t.dirty[h]; ok {
-		return DecodeNode(data)
-	}
-	// 2. Check parsed node cache (avoids re-decode + store lookup)
+	// 1. Check parsed node cache (avoids re-decode for both dirty and stored nodes)
 	if t.nodeCache != nil {
-		if entry, ok := t.nodeCache[h]; ok {
-			t.nodeCacheSeq++
-			entry.seq = t.nodeCacheSeq
-			return entry.node, nil
+		if elem, ok := t.nodeCache[h]; ok {
+			t.nodeCacheLRU.MoveToFront(elem)
+			return elem.Value.(*nodeCacheEntry).node, nil
 		}
+	}
+	// 2. Check dirty buffer (uncommitted writes)
+	if data, ok := t.dirty[h]; ok {
+		node, err := DecodeNode(data)
+		if err != nil {
+			return nil, err
+		}
+		// Cache the decoded node to avoid re-decoding on subsequent lookups.
+		t.cacheNode(h, node)
+		return node, nil
 	}
 	// 3. Load from backing store
 	data, err := t.store.Get(h)
@@ -575,27 +586,32 @@ func (t *Tree) loadNode(h Hash) (*Node, error) {
 	return node, nil
 }
 
-// cacheNode adds a decoded node to the LRU cache, evicting the oldest
-// entry if the cache is at capacity.
+// cacheNode adds a decoded node to the LRU cache, evicting the least
+// recently used entry in O(1) if the cache is at capacity.
 func (t *Tree) cacheNode(h Hash, n *Node) {
 	if t.nodeCache == nil || t.nodeCacheCap <= 0 {
 		return
 	}
-	t.nodeCacheSeq++
-	t.nodeCache[h] = &nodeCacheEntry{node: n, seq: t.nodeCacheSeq}
 
-	// Simple eviction: when over capacity, remove the oldest entry
-	if len(t.nodeCache) > t.nodeCacheCap {
-		var oldestHash Hash
-		oldestSeq := t.nodeCacheSeq
-		for k, v := range t.nodeCache {
-			if v.seq < oldestSeq {
-				oldestSeq = v.seq
-				oldestHash = k
-			}
-		}
-		delete(t.nodeCache, oldestHash)
+	// Already cached — promote to front.
+	if elem, ok := t.nodeCache[h]; ok {
+		t.nodeCacheLRU.MoveToFront(elem)
+		elem.Value.(*nodeCacheEntry).node = n
+		return
 	}
+
+	// Evict LRU entry if at capacity.
+	if t.nodeCacheLRU.Len() >= t.nodeCacheCap {
+		tail := t.nodeCacheLRU.Back()
+		if tail != nil {
+			evicted := t.nodeCacheLRU.Remove(tail).(*nodeCacheEntry)
+			delete(t.nodeCache, evicted.hash)
+		}
+	}
+
+	entry := &nodeCacheEntry{hash: h, node: n}
+	elem := t.nodeCacheLRU.PushFront(entry)
+	t.nodeCache[h] = elem
 }
 
 // NodeCacheSize returns the current number of cached decoded nodes.
@@ -603,5 +619,5 @@ func (t *Tree) NodeCacheSize() int {
 	if t.nodeCache == nil {
 		return 0
 	}
-	return len(t.nodeCache)
+	return t.nodeCacheLRU.Len()
 }

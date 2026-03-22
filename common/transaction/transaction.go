@@ -565,7 +565,8 @@ func isProtectedV(V *big.Int) bool {
 func (tx *Transaction) Protected() bool {
 	switch inner := tx.inner.(type) {
 	case *LegacyTx:
-		return inner.V.ToBig() != nil && isProtectedV(inner.V.ToBig())
+		v := inner.V.ToBig()
+		return v != nil && isProtectedV(v)
 	default:
 		return true
 	}

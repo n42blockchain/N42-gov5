@@ -164,11 +164,11 @@ func (a *Address) DecodeString(s string) bool {
 }
 
 func (a Address) Equal(other Address) bool {
-	return bytes.Equal(a[:], other[:])
+	return a == other
 }
 
 func (a *Address) IsNull() bool {
-	return bytes.Equal(a[:], nullAddress[:])
+	return *a == nullAddress
 }
 
 func (a Address) Marshal() ([]byte, error) {

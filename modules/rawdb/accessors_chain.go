@@ -576,6 +576,9 @@ func ReadRewards(db kv.Getter, hash types.Hash, number uint64) ([]*block.Reward,
 		return nil, fmt.Errorf("ReadBlockRewards failed: %w", err)
 	}
 	const recordSize = types.AddressLength + 32
+	if len(data) > 0 && len(data)%recordSize != 0 {
+		return nil, fmt.Errorf("ReadRewards: invalid data length %d, not a multiple of %d", len(data), recordSize)
+	}
 	rewards := make([]*block.Reward, len(data)/recordSize)
 	for i := range rewards {
 		offset := i * recordSize

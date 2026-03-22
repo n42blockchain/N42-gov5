@@ -90,20 +90,23 @@ func (h *Header) BaseFee64() *uint256.Int {
 	return h.BaseFee
 }
 
-func (h Header) Hash() types.Hash {
+func (h *Header) Hash() types.Hash {
 	if hash := h.hash.Load(); hash != nil {
 		return hash.(types.Hash)
 	}
 
-	if h.BaseFee == nil {
-		h.BaseFee = uint256.NewInt(0)
+	// Work on a shallow copy so we can fill nil fields without mutating h.
+	cpy := *h
+	if cpy.BaseFee == nil {
+		cpy.BaseFee = uint256.NewInt(0)
+	}
+	if cpy.Difficulty == nil {
+		cpy.Difficulty = uint256.NewInt(0)
 	}
 
-	if h.Difficulty == nil {
-		h.Difficulty = uint256.NewInt(0)
-	}
-
-	buf, err := json.Marshal(h)
+	// Use a type alias to prevent recursive MarshalJSON calls.
+	type headerForHash Header
+	buf, err := json.Marshal((*headerForHash)(&cpy))
 	if err != nil {
 		return types.Hash{}
 	}

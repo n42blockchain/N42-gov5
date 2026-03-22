@@ -105,7 +105,7 @@ func (b *Block) StateRoot() types.Hash {
 }
 
 func (b *Block) Hash() types.Hash {
-	return b.Header().Hash()
+	return b.header.Hash()
 }
 
 func (b *Block) Marshal() ([]byte, error) {
