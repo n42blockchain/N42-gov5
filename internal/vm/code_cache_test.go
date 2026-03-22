@@ -53,11 +53,11 @@ func TestCodeAnalysisCache_GetPut(t *testing.T) {
 		t.Fatalf("cache size = %d, want 1", cache.Size())
 	}
 
-	// Verify returned slice is a copy (mutating it doesn't affect cache).
-	got[0] = 999
+	// Verify returned slice is a shared reference (immutable contract).
+	// Callers MUST NOT mutate the returned slice.
 	got2, _ := cache.Get(h)
-	if got2[0] == 999 {
-		t.Fatal("Get returned a reference, not a copy")
+	if &got[0] != &got2[0] {
+		t.Fatal("Get should return the same backing array (zero-copy)")
 	}
 }
 
