@@ -128,6 +128,15 @@ func (p *CapPolicy) Evaluate(op *Operation) (bool, string) {
 	}
 	dateKey := ts.UTC().Format("2006-01-02")
 
+	// Prune stale date entries to prevent unbounded map growth.
+	if len(p.dailyUsed) > 2 {
+		for k := range p.dailyUsed {
+			if k != dateKey {
+				delete(p.dailyUsed, k)
+			}
+		}
+	}
+
 	used, ok := p.dailyUsed[dateKey]
 	if !ok {
 		used = uint256.NewInt(0)

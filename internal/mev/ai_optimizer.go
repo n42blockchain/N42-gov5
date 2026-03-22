@@ -27,6 +27,13 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
+// liquidationThreshold is the minimum value (100 ETH in wei) for a transfer
+// to be flagged as a potential liquidation event.
+var liquidationThreshold = new(uint256.Int).Mul(
+	uint256.NewInt(100),
+	uint256.NewInt(1_000_000_000_000_000_000),
+)
+
 // MEVOpportunity represents a detected MEV opportunity.
 type MEVOpportunity struct {
 	Type           string // "arbitrage", "liquidation", "sandwich"
@@ -224,11 +231,6 @@ func (opt *AIBlockOptimizer) DetectMEV(txs []*transaction.Transaction) []MEVOppo
 	}
 
 	// Detect large value transfers (potential liquidation).
-	// Threshold: 100 ETH equivalent (100 * 1e18 wei).
-	liquidationThreshold := new(uint256.Int).Mul(
-		uint256.NewInt(100),
-		uint256.NewInt(1_000_000_000_000_000_000),
-	)
 	for _, tx := range txs {
 		val := tx.Value()
 		if val != nil && val.Cmp(liquidationThreshold) >= 0 {

@@ -184,8 +184,10 @@ func (s *Server) handleConn(conn net.Conn) {
 // resource exhaustion.
 const maxBatchSize = 100_000
 
-// maxTxSize limits the byte size of a single transaction.
-const maxTxSize = 128 * 1024 // 128 KiB
+// maxTxSize limits the byte size of a single encoded transaction.
+// Set below the uint16 ceiling (65535) to reject oversized payloads
+// that still fit the 2-byte wire length field.
+const maxTxSize = 48 * 1024 // 48 KiB
 
 // readBatch reads and processes one batch of transactions from the
 // connection. It returns the number of successfully injected transactions.
@@ -220,6 +222,7 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 
 	var accepted uint32
 	var senderBuf [20]byte
+	txBuf := make([]byte, 0, 1024) // reusable buffer for tx bytes
 
 	for i := uint32(0); i < numTxs; i++ {
 		// Read tx_len (2 bytes LE).
@@ -232,9 +235,13 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 			return accepted, fmt.Errorf("ingest: tx size %d exceeds max %d", txLen, maxTxSize)
 		}
 
-		// Read tx bytes.
-		txBytes := make([]byte, txLen)
-		if _, err := io.ReadFull(r, txBytes); err != nil {
+		// Read tx bytes, reusing the buffer when capacity allows.
+		if cap(txBuf) >= int(txLen) {
+			txBuf = txBuf[:txLen]
+		} else {
+			txBuf = make([]byte, txLen)
+		}
+		if _, err := io.ReadFull(r, txBuf); err != nil {
 			return accepted, err
 		}
 
@@ -245,7 +252,7 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 
 		// Decode the transaction.
 		tx := new(transaction.Transaction)
-		if err := tx.Unmarshal(txBytes); err != nil {
+		if err := tx.Unmarshal(txBuf); err != nil {
 			s.rejected.Add(1)
 			continue
 		}

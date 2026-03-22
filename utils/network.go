@@ -34,6 +34,7 @@ func detectPublicIP() net.IP {
 		"https://icanhazip.com",
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
+	defer client.CloseIdleConnections()
 	for _, svc := range services {
 		resp, err := client.Get(svc)
 		if err != nil {

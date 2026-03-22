@@ -19,10 +19,8 @@ package zkverifier
 import (
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 
-	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/zkprover"
 )
@@ -59,9 +57,8 @@ var (
 
 // ZKMLVerifier verifies zero-knowledge proofs of ML inference correctness.
 // It validates proof structure, public inputs consistency, and proof data
-// integrity. Thread-safe for concurrent verification.
+// integrity. Thread-safe for concurrent verification via atomic counters.
 type ZKMLVerifier struct {
-	mu       sync.Mutex
 	verified uint64
 	failed   uint64
 }
@@ -129,13 +126,6 @@ func (v *ZKMLVerifier) VerifyZKMLProof(proof *zkprover.ZKMLProof) (bool, error) 
 			return false, fmt.Errorf("%w: proof data starts with zero hash", ErrZKMLIntegrityCheckFailed)
 		}
 	}
-
-	// Verify the proof binds to the declared public inputs by checking that
-	// the Keccak256 of the public inputs can be found in the proof data.
-	// This is a simulated binding check; a real verifier would use pairing
-	// checks (Groth16) or polynomial commitments (PLONK).
-	piCommitment := crypto.Keccak256Hash(proof.PublicInputs)
-	_ = piCommitment // Reserved for future cryptographic verification.
 
 	v.recordSuccess()
 	return true, nil

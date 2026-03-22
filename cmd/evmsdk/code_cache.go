@@ -75,7 +75,8 @@ func (c *CodeCache) Insert(codeHash types.Hash, bytecode []byte) {
 	// Evict LRU if at capacity.
 	if len(c.order) >= c.capacity {
 		evicted := c.order[0]
-		c.order = c.order[1:]
+		copy(c.order, c.order[1:])
+		c.order = c.order[:len(c.order)-1]
 		delete(c.cache, evicted)
 	}
 

@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"sync"
-	"sync/atomic"
 
 	"github.com/holiman/uint256"
 
@@ -28,7 +27,7 @@ var (
 type PaymasterService struct {
 	mu        sync.RWMutex
 	deposits  map[types.Address]*uint256.Int // deposit pool per owner
-	sponsored uint64                         // total operations sponsored (atomic)
+	sponsored uint64                         // total operations sponsored
 	nonce     uint64                         // monotonic nonce for paymaster data
 }
 
@@ -119,8 +118,7 @@ func (pm *PaymasterService) SponsorOperation(agentAddr types.Address, gasCost *u
 	pm.nonce++
 	nonce := pm.nonce
 
-	// Increment the sponsored counter atomically.
-	atomic.AddUint64(&pm.sponsored, 1)
+	pm.sponsored++
 
 	// Build paymaster data: sponsor address (20) + gas cost (32) + nonce (8).
 	data := make([]byte, 0, types.AddressLength+32+8)
@@ -160,7 +158,9 @@ func (pm *PaymasterService) Balance(owner types.Address) *uint256.Int {
 
 // TotalSponsored returns the total number of operations sponsored.
 func (pm *PaymasterService) TotalSponsored() uint64 {
-	return atomic.LoadUint64(&pm.sponsored)
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.sponsored
 }
 
 // DepositCount returns the number of addresses with non-zero deposits.

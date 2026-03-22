@@ -307,12 +307,16 @@ func (idx *AIIndexer) revertBlock(blockNum uint64) {
 	}
 	idx.transfers = filtered
 
-	// Remove events for the reverted block.
+	// Remove events for the reverted block. Zero out trailing slots to
+	// allow GC of Topics/Data slices held by removed ContractEvent values.
 	filteredEvents := idx.events[:0]
 	for _, e := range idx.events {
 		if e.BlockNumber != blockNum {
 			filteredEvents = append(filteredEvents, e)
 		}
+	}
+	for i := len(filteredEvents); i < len(idx.events); i++ {
+		idx.events[i] = ContractEvent{}
 	}
 	idx.events = filteredEvents
 
@@ -434,10 +438,3 @@ func (idx *AIIndexer) QueryGasMetrics(fromBlock, toBlock uint64) []GasMetrics {
 	return results
 }
 
-// min returns the smaller of a and b.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

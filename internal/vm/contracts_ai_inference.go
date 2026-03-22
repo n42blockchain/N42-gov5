@@ -60,9 +60,9 @@ type InferenceBackend interface {
 	ListModels(capability string) ([]types.Hash, error)
 }
 
-// Global inference backend, protected by mutex for thread-safe access.
+// Global inference backend, protected by RWMutex for thread-safe access.
 var (
-	globalInferenceBackendMu sync.Mutex
+	globalInferenceBackendMu sync.RWMutex
 	globalInferenceBackend   InferenceBackend
 )
 
@@ -76,8 +76,8 @@ func SetInferenceBackend(backend InferenceBackend) {
 
 // getInferenceBackend returns the current global inference backend.
 func getInferenceBackend() InferenceBackend {
-	globalInferenceBackendMu.Lock()
-	defer globalInferenceBackendMu.Unlock()
+	globalInferenceBackendMu.RLock()
+	defer globalInferenceBackendMu.RUnlock()
 	return globalInferenceBackend
 }
 

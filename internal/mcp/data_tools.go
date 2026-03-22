@@ -192,16 +192,6 @@ func (s *Server) registerDataTools(indexer AIIndexProvider) {
 
 			// Compute event signature distribution.
 			sigCounts := make(map[string]int)
-			if eventList, ok := events.(interface{ Len() int }); ok {
-				_ = eventList // events may be a slice; handle below
-			}
-
-			// Attempt to iterate if events is a slice of structs with EventSig.
-			type eventWithSig interface {
-				GetEventSig() types.Hash
-			}
-
-			// Since the result is interface{}, marshal/unmarshal to count sigs.
 			eventsJSON, marshalErr := json.Marshal(events)
 			var eventArray []struct {
 				EventSig string `json:"EventSig"`

@@ -23,7 +23,6 @@ type Service struct {
 	mu        sync.RWMutex
 	accounts  map[types.Address]*Account
 	paymaster *PaymasterService
-	maxKeys   int
 }
 
 // NewService creates a new agent service. If paymasterEnabled is true, a
@@ -31,13 +30,8 @@ type Service struct {
 // controls the upper bound on session keys per account (capped to
 // MaxSessionKeys if it exceeds the constant).
 func NewService(maxSessionKeys int, paymasterEnabled bool) *Service {
-	if maxSessionKeys <= 0 || maxSessionKeys > MaxSessionKeys {
-		maxSessionKeys = MaxSessionKeys
-	}
-
 	s := &Service{
 		accounts: make(map[types.Address]*Account),
-		maxKeys:  maxSessionKeys,
 	}
 
 	if paymasterEnabled {

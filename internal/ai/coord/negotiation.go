@@ -122,16 +122,28 @@ func NewTaskNegotiation(timeout time.Duration) *TaskNegotiation {
 }
 
 // cleanExpired cancels negotiations that have exceeded the timeout duration
-// while still in Open or Bidding status. Must be called with the write lock held.
+// while still in Open or Bidding status, and removes negotiations that have
+// been in a terminal state (Completed, Cancelled, Disputed) for longer than
+// the timeout to prevent unbounded map growth. Must be called with the write
+// lock held.
 func (tn *TaskNegotiation) cleanExpired() {
 	now := time.Now()
-	for _, neg := range tn.negotiations {
-		if neg.Status != NegotiationOpen && neg.Status != NegotiationBidding {
+	for id, neg := range tn.negotiations {
+		if neg.Status == NegotiationOpen || neg.Status == NegotiationBidding {
+			if now.After(neg.CreatedAt.Add(tn.timeout)) {
+				neg.Status = NegotiationCancelled
+				neg.UpdatedAt = now
+			}
 			continue
 		}
-		if now.After(neg.CreatedAt.Add(tn.timeout)) {
-			neg.Status = NegotiationCancelled
-			neg.UpdatedAt = now
+		// Remove terminal negotiations older than timeout to bound map growth.
+		if neg.Status == NegotiationCompleted || neg.Status == NegotiationCancelled || neg.Status == NegotiationDisputed {
+			if now.After(neg.UpdatedAt.Add(tn.timeout)) {
+				for _, b := range neg.Bids {
+					delete(tn.bidIndex, b.ID)
+				}
+				delete(tn.negotiations, id)
+			}
 		}
 	}
 }

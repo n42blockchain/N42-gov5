@@ -185,15 +185,14 @@ func (s *AttestationService) CreateAttestation(
 // for signing and verification:
 // attestID(32) || modelHash(32) || inputHash(32) || outputHash(32) || safetyLevel(1) || timestamp(8 big-endian)
 func canonicalBytes(att *InferenceAttestation) []byte {
-	buf := make([]byte, 0, types.HashLength*4+1+8)
+	const size = types.HashLength*4 + 1 + 8
+	buf := make([]byte, 0, size)
 	buf = append(buf, att.ID.Bytes()...)
 	buf = append(buf, att.ModelHash.Bytes()...)
 	buf = append(buf, att.InputHash.Bytes()...)
 	buf = append(buf, att.OutputHash.Bytes()...)
 	buf = append(buf, byte(att.SafetyLevel))
-	tsBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(tsBuf, uint64(att.CreatedAt.UnixNano()))
-	buf = append(buf, tsBuf...)
+	buf = binary.BigEndian.AppendUint64(buf, uint64(att.CreatedAt.UnixNano()))
 	return buf
 }
 

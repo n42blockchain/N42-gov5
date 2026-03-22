@@ -228,9 +228,7 @@ func (p *StreamPacket) EstimatedSize() int {
 // --- internal helpers ---
 
 func appendU32LE(buf []byte, v uint32) []byte {
-	b := make([]byte, 4)
-	binary.LittleEndian.PutUint32(b, v)
-	return append(buf, b...)
+	return binary.LittleEndian.AppendUint32(buf, v)
 }
 
 // reader is a simple cursor over a byte slice for sequential reads.
@@ -250,17 +248,22 @@ func (r *reader) readN(n int) ([]byte, error) {
 }
 
 func (r *reader) readU32LE() (uint32, error) {
-	b, err := r.readN(4)
-	if err != nil {
-		return 0, err
+	if r.pos+4 > len(r.data) {
+		return 0, ErrPacketTruncated
 	}
-	return binary.LittleEndian.Uint32(b), nil
+	v := binary.LittleEndian.Uint32(r.data[r.pos : r.pos+4])
+	r.pos += 4
+	return v, nil
 }
 
 func (r *reader) readLenPrefixed() ([]byte, error) {
 	length, err := r.readU32LE()
 	if err != nil {
 		return nil, err
+	}
+	// Guard against uint32-to-int overflow on 32-bit platforms (mobile SDK).
+	if length > uint32(len(r.data)) {
+		return nil, ErrPacketTruncated
 	}
 	return r.readN(int(length))
 }
