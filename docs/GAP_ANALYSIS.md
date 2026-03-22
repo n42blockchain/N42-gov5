@@ -722,7 +722,7 @@
 | 并行执行 | Block-STM 3.9x + 374 Ggas/s (32核) + 86 Ggas/s 批处理 | geth 无并行; reth prewarming | 实验性并行 | 🏆 **N42 领先** |
 | 执行吞吐量 | 374 Ggas/s (32核), 661K TPS, 153ns/call | reth: ~1 Ggas/s (live) | geth: ~0.2 Ggas/s | 🏆 **N42 领先** — Block-STM + JMT Blake3 |
 | 同步机制 | Full + Snap + Checkpoint + Backfill + Staged Sync 5 种模式 | Snap Sync 成熟 | Staged Sync + OtterSync | ✅ **完整** — OtterSync 解决超大数据集分发 (以太坊 20TB+)，N42 链规模下 5 种同步模式已覆盖全部场景 |
-| 状态存储 | MDBX flat + JMT Blake3 承诺 + 16384 节点 LRU + 引用计数 GC + DiffLayer 快照 + History Expiry | PBSS flat 成熟 | E3 三层 + segment | ✅ **完整** — flat state + JMT GC 在线裁剪等价 PBSS |
+| 状态存储 | MDBX flat + JMT Blake3 承诺 + 65K 节点 LRU 跨 payload 缓存 + CachedStore + 引用计数 GC + DiffLayer 快照 + History Expiry | PBSS flat 成熟 | E3 三层 + segment | ✅ **完整** — flat state + JMT GC 在线裁剪等价 PBSS |
 | 可观测性 | **250+** Prometheus 指标 + Live Tracing + 3 Grafana 面板 + JSON 日志 + 24h soak + OpenTelemetry | 200-300+ 指标 | Prometheus + diagnostics | 🏆 **N42 领先** — 250+ 超越 geth 200+，含 P2P/DB/Consensus/Cache/Sync/ZK 细分 |
 | RPC 完整性 | eth_* + debug_* + trace_* + Engine API v1-v4 完整 + Otterscan ots_* + GraphQL + Clef + MCP | 完整 | 完整 + Otterscan | ✅ **完整** |
 | 共识 | HotStuff-2 BFT 即时终局 + 验证者动态重配置 + APoA/APoS + BLS 聚合签名 | Beacon Chain PoS (~15min 终局) | Caplin 内置 CL | 🏆 **N42 领先** — 即时终局 + commit-then-activate 重配置 |
@@ -738,3 +738,4 @@
 | 存储分层 | NVMe/HDD 分层 (热/温/冷) | Erigon: NVMe/HDD 分离 | 无 | ✅ **完整** — 等价 Erigon |
 | BitTorrent 同步 | OtterSync (EraE 段 + manifest) | Erigon: OtterSync 默认 | 无 | ✅ **完整** — 等价 Erigon |
 | 历史证明压缩 | JMT archive (seg + RecSplit) | Erigon: Haystack v3.3 | 无 | ✅ **完整** — JMT 版 Haystack |
+| 无状态验证 | Stateless validator + witness P2P + CodeCache | reth: Ress (v1.3.1+, 14GB) | 无 | ✅ **完整** — 基础设施等价 Ress |

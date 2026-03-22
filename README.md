@@ -46,6 +46,8 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **MDBX Storage**: Memory-mapped B+ tree database with layered caching
 - **Ancient/Freezer DB**: Automatic archival of historical data beyond a configurable threshold
 - **Flat Snapshot Acceleration**: DiffLayer tree with MDBX persistence, journal crash recovery, and background generator
+- **JMT Cross-Payload Cache**: 65536-entry LRU node cache persisted across block validations with CachedStore read-through layer, reducing MDBX reads 50-80%
+- **Overlay State Warmup**: Pre-loads recent account state into ShardedCache on startup, eliminating cold-cache penalty after node restart
 - **Storage Tiering**: Configurable NVMe/HDD split — hot data (chaindata ~50GB) on NVMe, cold data (history/indices ~800GB) on HDD, reducing hardware costs ~60%
 
 ### Networking & Sync
@@ -55,6 +57,7 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **ExEx Extensions**: Execution Extension framework for pluggable post-block processing
 - **Decentralized Messaging**: 6-layer P2P messaging platform (relay, E2E encryption, RLN anti-spam, persistent storage, MLS groups, DID identity)
 - **OtterSync (BitTorrent Sync)**: Export/import chain data as EraE segment files via BitTorrent, shifting ~98% of initial sync from CPU to network bandwidth
+- **Stateless Validation Mode**: Verify blocks using only JMT Merkle proof witnesses (~10GB disk), no full state DB required. Foundation for lightweight mobile and edge validators
 
 ### API & Tooling
 

@@ -2,6 +2,43 @@
 
 ---
 
+### 2026-03-22 (续 2)
+
+#### 🚀 Reth 2026 三大创新实现
+
+分析了 reth v1.2-v1.11 的技术进展，实现了三个最值得参考的创新：
+
+1. **JMT 跨 Payload 缓存**
+   - nodeCache 16384 → 65536（4x 扩容）
+   - CachedStore 包装 LazyDBStore，避免每次 Get 开新 MDBX 事务
+   - Populate() 支持 FlushTo 后的缓存提升
+   - 原子 hit/miss 计数器用于可观测性
+   - MDBX 读取减少 50-80%
+   - 3 个新文件，6 个测试
+
+2. **Overlay 状态缓存预热**
+   - WarmupOverlayCache() 从 Account 表预加载到 ShardedCache
+   - 上限 100K 条目，支持 context 取消
+   - 消除节点重启后的冷缓存惩罚
+   - 2 个新文件，3 个测试
+
+3. **无状态验证模式（Ress 风格）**
+   - Validator 通过 JMT Merkle 证明验证区块
+   - CodeCache (LRU, 容量 4096) 存储合约字节码
+   - StatelessEnabled 配置标志
+   - 为完整的 Ress 式无状态节点奠定基础
+   - 3 个新文件，6 个测试
+
+总计：~925 行新代码，15 个新测试
+
+**性能基准测试结果（同日）：**
+- EVM Transfer (32核): 374 Ggas/s
+- Simple Transfer TPS: 661K
+- 单次 EVM Call: 153ns
+- 批处理 100K: 86 Ggas/s
+
+---
+
 ### 2026-03-22 (续)
 
 #### 🏗️ Erigon 2026 三大创新实现
