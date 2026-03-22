@@ -195,6 +195,11 @@ func (h *HotStuff) Engine() *ConsensusEngine {
 	return h.engine
 }
 
+// Config returns the HotStuff configuration.
+func (h *HotStuff) Config() *params.HotStuffConfig {
+	return h.config
+}
+
 // OutputCh returns the channel for receiving consensus output actions.
 func (h *HotStuff) OutputCh() <-chan EngineOutput {
 	return h.outputCh
