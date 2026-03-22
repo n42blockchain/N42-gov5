@@ -6,11 +6,14 @@ package hotstuff
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
+	vm "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 
@@ -144,6 +147,18 @@ func (s *Service) handleOutput(output EngineOutput) {
 			rm.MarkCommitted()
 		}
 		s.persistState()
+
+		// Derive block randomness from CommitQC aggregate signature.
+		// The CommitQC requires 2f+1 signers, making the aggregate signature
+		// unpredictable by any single validator (threshold VUF).
+		if output.QC != nil && len(output.QC.AggregateSignature) > 0 {
+			// randomness = keccak256(aggregateSignature || blockNumber_LE_8bytes)
+			var buf [8]byte
+			binary.LittleEndian.PutUint64(buf[:], uint64(output.View))
+			randomInput := append(output.QC.AggregateSignature, buf[:]...)
+			randomness := crypto.Keccak256Hash(randomInput)
+			vm.SetBlockRandomness(randomness)
+		}
 	case OutputViewChanged:
 		log.Debug("hotstuff: view changed", "view", output.View)
 		updateMetricsViewChanged(output.View)

@@ -17,9 +17,12 @@
 package hotstuff
 
 import (
+	"fmt"
 	"math/rand"
 	"testing"
+	"time"
 
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -811,4 +814,41 @@ func TestChaos7Node_ConvergenceFromDifferentViews(t *testing.T) {
 
 	t.Logf("convergence test: started at scattered views %v, converged, then ran %d rounds ending at view %d",
 		scatteredViews, successfulRounds, endView)
+}
+
+// TestChaos7Node_FastPropose verifies that consensus rounds complete quickly
+// when using direct message routing (simulating FastPropose behavior where
+// there is no slot boundary wait). Five rounds should complete well under
+// 5 seconds since messages are delivered synchronously without network delay.
+func TestChaos7Node_FastPropose(t *testing.T) {
+	// Create harness with 7 validators.
+	h := newChaosHarness(t, 7)
+
+	// Run 5 rounds and measure timing.
+	start := time.Now()
+	for view := ViewNumber(1); view <= 5; view++ {
+		blockHash := crypto.Keccak256Hash([]byte(fmt.Sprintf("fast-block-%d", view)))
+		h.runConsensusRound(view, blockHash)
+	}
+	elapsed := time.Since(start)
+
+	// With FastPropose (direct routing, no slot boundary delay), 5 rounds
+	// should complete well under 5 seconds.
+	if elapsed > 5*time.Second {
+		t.Errorf("FastPropose: 5 rounds took %v, expected < 5s", elapsed)
+	}
+
+	// Verify all 5 committed.
+	if len(h.committed) != 5 {
+		t.Errorf("committed %d blocks, want 5", len(h.committed))
+	}
+
+	// All engines should be at view 6.
+	for i, e := range h.engines {
+		if v := e.CurrentView(); v != 6 {
+			t.Errorf("engine %d at view %d, want 6", i, v)
+		}
+	}
+
+	t.Logf("FastPropose: 5 rounds completed in %v", elapsed)
 }
