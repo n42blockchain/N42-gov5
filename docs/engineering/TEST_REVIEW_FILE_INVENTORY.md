@@ -336,8 +336,8 @@ Generated: `2026-03-16`
 
 ### Phase 3 Consensus / Network / RPC / Node
 
-- `internal/amcdb`: `1`
-  - `internal/amcdb/lmdb/lmdb_test.go`
+- `internal/amcdb (REMOVED)`: `1`
+  - `internal/amcdb (REMOVED)/lmdb/lmdb_test.go`
 - `internal/api`: `22`
   - `internal/api/addrlock_test.go`
   - `internal/api/agg_sign_test.go`

@@ -808,16 +808,16 @@ Excluded paths: `devtest/`, `mainnet/`, `n42data/`, `build/`, `bin/`, `coverage`
 
 - `internal/allocs/mainnet.json`
 - `internal/allocs/testnet.json`
-#### `internal/amcdb` (8 files)
+#### `internal/amcdb (REMOVED)` (8 files)
 
-- `internal/amcdb/database.go`
-- `internal/amcdb/lmdb/db_rw.go`
-- `internal/amcdb/lmdb/errors.go`
-- `internal/amcdb/lmdb/iterater.go`
-- `internal/amcdb/lmdb/lmdb.go`
-- `internal/amcdb/lmdb/snapshot_rw.go`
-- `internal/amcdb/memdb/memdb.go`
-- `internal/amcdb/lmdb/lmdb_test.go`
+- `internal/amcdb (REMOVED)/database.go`
+- `internal/amcdb (REMOVED)/lmdb/db_rw.go`
+- `internal/amcdb (REMOVED)/lmdb/errors.go`
+- `internal/amcdb (REMOVED)/lmdb/iterater.go`
+- `internal/amcdb (REMOVED)/lmdb/lmdb.go`
+- `internal/amcdb (REMOVED)/lmdb/snapshot_rw.go`
+- `internal/amcdb (REMOVED)/memdb/memdb.go`
+- `internal/amcdb (REMOVED)/lmdb/lmdb_test.go`
 #### `internal/api` (62 files)
 
 - `internal/api/account.go`
@@ -2733,7 +2733,7 @@ Excluded paths: `devtest/`, `mainnet/`, `n42data/`, `build/`, `bin/`, `coverage`
 - `tests/test_report.txt`
 #### `tests/allocs` (1 files)
 
-- `tests/allocs/amc.json`
+- `tests/allocs/n42.json`
 #### `tools/bench` (6 files)
 
 - `tools/bench/cmd/metrics/main.go`
@@ -2763,8 +2763,8 @@ Excluded paths: `devtest/`, `mainnet/`, `n42data/`, `build/`, `bin/`, `coverage`
 - `deployments/influxdb/influx-configs`
 #### `deployments/prometheus` (7 files)
 
-- `deployments/prometheus/dashboards/amc.json`
-- `deployments/prometheus/dashboards/amc_internal.json`
+- `deployments/prometheus/dashboards/n42.json`
+- `deployments/prometheus/dashboards/n42_internal.json`
 - `deployments/prometheus/dashboards/dashboard.yml`
 - `deployments/prometheus/dashboards/n42_advanced.json`
 - `deployments/prometheus/datasources/prometheus.yml`
