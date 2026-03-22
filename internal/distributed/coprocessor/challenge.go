@@ -169,8 +169,8 @@ func (cm *ChallengeManager) ExpireWindow(tasks []*Task) []types.Hash {
 	return ready
 }
 
-// Prune removes resolved challenges older than maxAge.
-// Returns the number of pruned challenges.
+// Prune removes resolved challenges older than maxAge and cleans up
+// stale byTask index entries. Returns the number of pruned challenges.
 func (cm *ChallengeManager) Prune(maxAge time.Duration) int {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -180,6 +180,20 @@ func (cm *ChallengeManager) Prune(maxAge time.Duration) int {
 		if c.Status != ChallengePending && c.ResolvedAt.Before(cutoff) {
 			delete(cm.challenges, id)
 			pruned++
+		}
+	}
+	// Clean up stale byTask index entries
+	for taskID, ids := range cm.byTask {
+		alive := ids[:0]
+		for _, id := range ids {
+			if _, ok := cm.challenges[id]; ok {
+				alive = append(alive, id)
+			}
+		}
+		if len(alive) == 0 {
+			delete(cm.byTask, taskID)
+		} else {
+			cm.byTask[taskID] = alive
 		}
 	}
 	return pruned

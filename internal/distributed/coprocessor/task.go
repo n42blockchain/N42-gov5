@@ -16,11 +16,12 @@ import (
 // TaskManager manages the lifecycle of compute tasks.
 // Thread-safe for concurrent access.
 type TaskManager struct {
-	mu          sync.RWMutex
-	tasks       map[types.Hash]*Task
-	nonce       atomic.Uint64
-	maxPending  int
-	taskTimeout time.Duration
+	mu           sync.RWMutex
+	tasks        map[types.Hash]*Task
+	nonce        atomic.Uint64
+	maxPending   int
+	taskTimeout  time.Duration
+	pendingCount int // cached count of Pending + Proving tasks
 }
 
 // NewTaskManager creates a task manager with the given limits.
@@ -37,14 +38,7 @@ func (tm *TaskManager) Submit(programHash types.Hash, input []byte, submitter ty
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	// Check pending limit
-	pendingCount := 0
-	for _, t := range tm.tasks {
-		if t.Status == TaskPending || t.Status == TaskProving {
-			pendingCount++
-		}
-	}
-	if pendingCount >= tm.maxPending {
+	if tm.pendingCount >= tm.maxPending {
 		return types.Hash{}, fmt.Errorf("coprocessor: max pending tasks reached (%d)", tm.maxPending)
 	}
 
@@ -63,6 +57,7 @@ func (tm *TaskManager) Submit(programHash types.Hash, input []byte, submitter ty
 		Submitter:   submitter,
 		CreatedAt:   time.Now(),
 	}
+	tm.pendingCount++
 	return taskID, nil
 }
 
@@ -119,6 +114,13 @@ func (tm *TaskManager) UpdateStatus(id types.Hash, status TaskStatus, proofData,
 	if !validTransition(t.Status, status) {
 		return fmt.Errorf("invalid transition %s → %s for task %s", t.Status, status, id.Hex()[:10])
 	}
+	wasPending := t.Status == TaskPending || t.Status == TaskProving
+	isPending := status == TaskPending || status == TaskProving
+	if wasPending && !isPending {
+		tm.pendingCount--
+	} else if !wasPending && isPending {
+		tm.pendingCount++
+	}
 	t.Status = status
 	if len(proofData) > 0 {
 		t.ProofData = proofData
@@ -160,6 +162,9 @@ func (tm *TaskManager) SetOptimisticVerified(id types.Hash, proofData, publicOut
 	t, ok := tm.tasks[id]
 	if !ok {
 		return ErrTaskNotFound
+	}
+	if t.Status == TaskPending || t.Status == TaskProving {
+		tm.pendingCount--
 	}
 	t.Status = TaskOptimisticVerified
 	if len(proofData) > 0 {
@@ -249,6 +254,7 @@ func (tm *TaskManager) ExpireStale() int {
 			t.CompletedAt = time.Now()
 			t.Error = "task timed out"
 			t.Input = nil
+			tm.pendingCount--
 			expired++
 		}
 	}
@@ -259,13 +265,7 @@ func (tm *TaskManager) ExpireStale() int {
 func (tm *TaskManager) PendingCount() int {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
-	count := 0
-	for _, t := range tm.tasks {
-		if t.Status == TaskPending || t.Status == TaskProving {
-			count++
-		}
-	}
-	return count
+	return tm.pendingCount
 }
 
 // TotalCount returns the total number of tracked tasks.

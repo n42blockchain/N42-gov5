@@ -27,8 +27,8 @@ func (s *Service) generateErrorResponse(code byte, reason string) ([]byte, error
 // ReadStatusCode reads the response status code from a RPC stream.
 func ReadStatusCode(stream network.Stream, encoding encoder.NetworkEncoding) (uint8, string, error) {
 	SetStreamReadDeadline(stream, ttfbTimeout)
-	b := make([]byte, 1)
-	if _, err := stream.Read(b); err != nil {
+	var b [1]byte
+	if _, err := stream.Read(b[:]); err != nil {
 		return 0, "", err
 	}
 

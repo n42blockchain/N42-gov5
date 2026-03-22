@@ -393,15 +393,19 @@ func (s *Service) connectWithAllPeers(multiAddrs []multiaddr.Multiaddr) {
 		return
 	}
 	sem := make(chan struct{}, maxConcurrentPeerOps)
+	var wg sync.WaitGroup
 	for _, info := range addrInfos {
+		wg.Add(1)
 		sem <- struct{}{}
 		go func(info peer.AddrInfo) {
+			defer wg.Done()
 			defer func() { <-sem }()
 			if err := s.connectWithPeer(s.ctx, info); err != nil {
 				log.Trace("Could not connect with peer", "peer", info.String(), "err", err)
 			}
 		}(info)
 	}
+	wg.Wait()
 }
 
 func (s *Service) connectWithPeer(ctx context.Context, info peer.AddrInfo) error {
@@ -471,6 +475,7 @@ func (s *Service) ensureBootPeerConnections(bootnodes []multiaddr.Multiaddr) {
 		return
 	}
 	sem := make(chan struct{}, maxConcurrentPeerOps)
+	var wg sync.WaitGroup
 	for _, info := range addrInfos {
 		if connState, err := s.peers.ConnState(info.ID); err != nil || connState != peers.PeerDisconnected {
 			continue
@@ -478,12 +483,15 @@ func (s *Service) ensureBootPeerConnections(bootnodes []multiaddr.Multiaddr) {
 		if nextValidTime, err := s.peers.NextValidTime(info.ID); err != nil || !time.Now().After(nextValidTime) {
 			continue
 		}
+		wg.Add(1)
 		sem <- struct{}{}
 		go func(info peer.AddrInfo) {
+			defer wg.Done()
 			defer func() { <-sem }()
 			if err := s.connectWithPeer(s.ctx, info); err != nil {
 				log.Warn("Could not connect with bootnode", "peer", info.String(), "err", err)
 			}
 		}(info)
 	}
+	wg.Wait()
 }

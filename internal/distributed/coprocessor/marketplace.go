@@ -7,7 +7,6 @@
 package coprocessor
 
 import (
-	"sort"
 	"sync"
 	"time"
 
@@ -170,24 +169,26 @@ func selectLowestPrice(bids []*Bid) *Bid {
 	if len(bids) == 0 {
 		return nil
 	}
-	sorted := make([]*Bid, len(bids))
-	copy(sorted, bids)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Price < sorted[j].Price
-	})
-	return sorted[0]
+	best := bids[0]
+	for _, b := range bids[1:] {
+		if b.Price < best.Price {
+			best = b
+		}
+	}
+	return best
 }
 
 func selectFastestETA(bids []*Bid) *Bid {
 	if len(bids) == 0 {
 		return nil
 	}
-	sorted := make([]*Bid, len(bids))
-	copy(sorted, bids)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].ETA < sorted[j].ETA
-	})
-	return sorted[0]
+	best := bids[0]
+	for _, b := range bids[1:] {
+		if b.ETA < best.ETA {
+			best = b
+		}
+	}
+	return best
 }
 
 func (m *Marketplace) selectHighestReputation(bids []*Bid) *Bid {

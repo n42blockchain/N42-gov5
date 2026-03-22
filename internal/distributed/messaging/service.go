@@ -97,7 +97,7 @@ func (s *Store) Prune() int {
 			pruned++
 		}
 	}
-	// Rebuild topic indices
+	// Rebuild topic indices, removing empty topics to avoid map leak.
 	for topic := range s.byTopic {
 		filtered := s.byTopic[topic][:0]
 		for _, m := range s.byTopic[topic] {
@@ -105,7 +105,11 @@ func (s *Store) Prune() int {
 				filtered = append(filtered, m)
 			}
 		}
-		s.byTopic[topic] = filtered
+		if len(filtered) == 0 {
+			delete(s.byTopic, topic)
+		} else {
+			s.byTopic[topic] = filtered
+		}
 	}
 	return pruned
 }
@@ -122,7 +126,23 @@ func (s *Store) evictOldest() {
 		}
 	}
 	if !first {
+		oldMsg := s.messages[oldestID]
 		delete(s.messages, oldestID)
+		// Remove from topic index to prevent stale entries accumulating
+		// between Prune() cycles.
+		if oldMsg != nil {
+			topic := oldMsg.Topic
+			msgs := s.byTopic[topic]
+			for i, m := range msgs {
+				if m.ID == oldestID {
+					s.byTopic[topic] = append(msgs[:i], msgs[i+1:]...)
+					break
+				}
+			}
+			if len(s.byTopic[topic]) == 0 {
+				delete(s.byTopic, topic)
+			}
+		}
 	}
 }
 
@@ -174,6 +194,26 @@ func (rl *RateLimiter) Allow(senderID string) bool {
 	}
 	rl.windows[senderID] = append(cleaned, now)
 	return true
+}
+
+// PruneStale removes sender windows that have fully expired,
+// preventing unbounded growth of the windows map.
+func (rl *RateLimiter) PruneStale() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	cutoff := time.Now().Add(-rl.windowLen)
+	for sender, window := range rl.windows {
+		allExpired := true
+		for _, t := range window {
+			if t.After(cutoff) {
+				allExpired = false
+				break
+			}
+		}
+		if allExpired {
+			delete(rl.windows, sender)
+		}
+	}
 }
 
 // Service is the main messaging relay service.
@@ -338,6 +378,7 @@ func (s *Service) pruneLoop() {
 			return
 		case <-ticker.C:
 			s.store.Prune()
+			s.rateLimiter.PruneStale()
 		}
 	}
 }

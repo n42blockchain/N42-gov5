@@ -82,9 +82,10 @@ func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (
 func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*types_pb.Block, error) {
 	SetStreamReadDeadline(stream, respTimeout)
 
-	// Read status code (1 byte).
-	statusBuf := make([]byte, 1)
-	n, err := io.ReadFull(stream, statusBuf)
+	// Read status code (1 byte). Use stack-allocated array to avoid
+	// heap allocation on every chunk in a range response.
+	var statusBuf [1]byte
+	n, err := io.ReadFull(stream, statusBuf[:])
 	if err != nil {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			return nil, io.EOF
@@ -101,9 +102,9 @@ func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*typ
 		return nil, errors.Errorf("remote returned error code %d: %s", code, string(*msg))
 	}
 
-	// Read fork digest (4 bytes).
-	forkDigest := make([]byte, forkDigestLength)
-	n, err = io.ReadFull(stream, forkDigest)
+	// Read fork digest (4 bytes). Stack-allocated to avoid per-chunk heap allocation.
+	var forkDigest [forkDigestLength]byte
+	n, err = io.ReadFull(stream, forkDigest[:])
 	if err != nil {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			log.Debug("Stream ended after status code", "peer", stream.Conn().RemotePeer().String())
