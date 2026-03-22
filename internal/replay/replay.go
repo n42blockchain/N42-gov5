@@ -25,7 +25,6 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -126,8 +125,8 @@ func NewEngine(cfg Config) (*Engine, error) {
 		cfg.FromBlock = 1
 	}
 
-	modules.N42Init()
-	kv.ChaindataTablesCfg = modules.N42TableCfg
+	// Do NOT call modules.N42Init() — the source database may lack newer
+	// tables. MDBX is opened without table config for backward compatibility.
 
 	return &Engine{cfg: cfg, stats: NewStats()}, nil
 }
