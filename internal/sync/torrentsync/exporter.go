@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -124,6 +125,7 @@ func (e *Exporter) exportSegment(ctx context.Context, from, to uint64) (*Segment
 	}
 
 	if err := w.Finalize(); err != nil {
+		w.Close() // Finalize may fail before closing the file handle.
 		os.Remove(filePath)
 		return nil, fmt.Errorf("finalize era: %w", err)
 	}
@@ -144,12 +146,19 @@ func (e *Exporter) exportSegment(ctx context.Context, from, to uint64) (*Segment
 	}, nil
 }
 
-// hashFile computes the SHA256 hash and size of a file.
+// hashFile computes the SHA256 hash and size of a file using streaming
+// to avoid loading the entire file into memory.
 func hashFile(path string) (hexHash string, size int64, err error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
 	}
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:]), int64(len(data)), nil
+	defer f.Close()
+
+	h := sha256.New()
+	size, err = io.Copy(h, f)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), size, nil
 }

@@ -80,6 +80,7 @@ func NewWriter(ctx context.Context, outputDir string, fromBlock, toBlock uint64,
 		tmpDir:     tmpDir,
 		fromBlock:  fromBlock,
 		toBlock:    toBlock,
+		keys:       make([][]byte, 0, 4096),
 		logger:     logger,
 	}, nil
 }
