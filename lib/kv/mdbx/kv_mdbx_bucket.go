@@ -46,12 +46,18 @@ func (tx *MdbxTx) CreateBucket(name string) error {
 		return nil
 	}
 
-	// Bucket does not exist -- create it.
+	// Bucket does not exist.
+	// In ReadOnly or Accede mode, silently skip missing tables instead of
+	// failing. This allows opening old databases that lack newer tables
+	// (e.g., BlobSidecars, AccountHistoryKeys added in later versions).
+	if tx.db.ReadOnly() || tx.db.Accede() {
+		return nil
+	}
+
+	// Create the bucket in read-write mode.
 	flags := tx.db.buckets[name].Flags
 	var nativeFlags uint
-	if !tx.db.ReadOnly() && !tx.db.Accede() {
-		nativeFlags |= mdbx.Create
-	}
+	nativeFlags |= mdbx.Create
 	if flags&kv.DupSort != 0 {
 		nativeFlags |= mdbx.DupSort
 		flags ^= kv.DupSort
