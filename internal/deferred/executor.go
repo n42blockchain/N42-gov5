@@ -49,9 +49,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
-// sentinel for double-close protection
-var closedSentinel = struct{}{}
-
 // ExecutionResult holds the outcome of executing a block's transactions.
 type ExecutionResult struct {
 	// BlockNumber is the block that was executed.

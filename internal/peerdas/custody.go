@@ -17,6 +17,7 @@
 package peerdas
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"sort"
@@ -59,7 +60,7 @@ func CustodyColumns(nodeID []byte, custodyCount uint64) []uint64 {
 
 	// Sort columns by their hash (lexicographic on the 32-byte digest).
 	sort.Slice(scores, func(a, b int) bool {
-		return compareBytesLess(scores[a].hash[:], scores[b].hash[:])
+		return bytes.Compare(scores[a].hash[:], scores[b].hash[:]) < 0
 	})
 
 	result := make([]uint64, custodyCount)
@@ -98,7 +99,7 @@ func SampleColumns(blockHash types.Hash, count int) []uint64 {
 	}
 
 	sort.Slice(scores, func(a, b int) bool {
-		return compareBytesLess(scores[a].hash[:], scores[b].hash[:])
+		return bytes.Compare(scores[a].hash[:], scores[b].hash[:]) < 0
 	})
 
 	result := make([]uint64, count)
@@ -110,16 +111,3 @@ func SampleColumns(blockHash types.Hash, count int) []uint64 {
 	return result
 }
 
-// compareBytesLess performs a lexicographic less-than comparison on two
-// equal-length byte slices.
-func compareBytesLess(a, b []byte) bool {
-	for i := range a {
-		if a[i] < b[i] {
-			return true
-		}
-		if a[i] > b[i] {
-			return false
-		}
-	}
-	return false
-}

@@ -12,7 +12,6 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
-	"github.com/n42blockchain/N42/modules/state"
 )
 
 // NewEVMExecuteFunc creates an ExecuteFunc that runs real EVM execution
@@ -76,5 +75,3 @@ func NewCommitFunc() CommitFunc {
 	}
 }
 
-// compile-time check
-var _ = state.NewPlainState

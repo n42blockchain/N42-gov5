@@ -61,7 +61,6 @@ var (
 	ErrNonceTooHigh       = errors.New("nonce too high")
 	ErrInsufficientFunds  = errors.New("insufficient funds for gas * price + value")
 	ErrTipAboveFeeCap     = errors.New("max priority fee per gas higher than max fee per gas")
-	ErrInvalidSignature   = errors.New("invalid transaction signature")
 
 	pendingGauge = prometheus.GetOrCreateCounter("txpool_pending", true)
 	queuedGauge  = prometheus.GetOrCreateCounter("txpool_queued", true)
@@ -138,7 +137,6 @@ type TxsPool struct {
 	istanbul bool
 	eip2718  bool
 	eip1559  bool
-	shanghai bool
 
 	locals   *accountSet
 	pending  map[types.Address]*txsList
@@ -153,11 +151,8 @@ type TxsPool struct {
 	reqPromoteCh    chan *accountSet
 	queueTxEventCh  chan *transaction.Transaction
 	reorgDoneCh     chan chan struct{}
-	reorgShutdownCh chan struct{}
 
 	changesSinceReorg int
-
-	isRun uint32
 
 	deposit *deposit.Deposit
 

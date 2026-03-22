@@ -31,9 +31,6 @@ var (
 	// ErrEmptyBlockHash is returned when a DataColumn has a zero block hash.
 	ErrEmptyBlockHash = errors.New("peerdas: empty block hash")
 
-	// ErrEmptyKZGProof is returned when a DataColumn has an empty KZG proof.
-	ErrEmptyKZGProof = errors.New("peerdas: empty KZG proof")
-
 	// ErrServiceNotEnabled is returned when operations are called on a disabled service.
 	ErrServiceNotEnabled = errors.New("peerdas: service not enabled")
 
@@ -57,9 +54,6 @@ var (
 
 	// ErrKZGVerificationFailed is returned when KZG cell proof verification fails.
 	ErrKZGVerificationFailed = errors.New("peerdas: KZG cell proof verification failed")
-
-	// ErrKZGContextNotReady is returned when the PeerDAS KZG context is not initialized.
-	ErrKZGContextNotReady = errors.New("peerdas: KZG context not initialized")
 
 	// ErrNoBlobsProvided is returned when no blobs are provided for column production.
 	ErrNoBlobsProvided = errors.New("peerdas: no blobs provided")

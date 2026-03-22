@@ -62,7 +62,6 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 		reqPromoteCh:    make(chan *accountSet),
 		queueTxEventCh:  make(chan *transaction.Transaction),
 		reorgDoneCh:     make(chan chan struct{}),
-		reorgShutdownCh: make(chan struct{}),
 		gasPrice:        uint256.NewInt(DefaultTxPoolConfig.PriceLimit),
 	}
 
@@ -509,7 +508,8 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 
 	current := pool.bc.CurrentBlock()
 	isPrague := pool.chainconfig != nil && current != nil && pool.chainconfig.IsPrague(current.Time())
-	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, pool.shanghai, isPrague)
+	isShanghai := pool.chainconfig != nil && current != nil && current.Number64() != nil && pool.chainconfig.IsShanghai(current.Number64().Uint64()+1)
+	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague)
 	if err != nil {
 		return err
 	}

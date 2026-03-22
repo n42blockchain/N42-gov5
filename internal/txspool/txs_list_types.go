@@ -466,9 +466,6 @@ func (h *priceHeap) cmp(a, b *transaction.Transaction) int {
 			return c
 		}
 	}
-	if c := a.GasPrice().Cmp(b.GasPrice()); c != 0 {
-		return c
-	}
 	return a.GasPrice().Cmp(b.GasPrice())
 }
 
