@@ -908,11 +908,9 @@ func opSelfdestruct(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 	callerAddr := scope.Contract.Address()
 	beneficiaryAddr := types.Address(beneficiary.Bytes20())
 	balance := interpreter.evm.IntraBlockState().GetBalance(callerAddr)
-	if interpreter.evm.Config().Debug {
-		if interpreter.cfg.Debug {
-			interpreter.cfg.Tracer.CaptureEnter(SELFDESTRUCT, callerAddr, beneficiaryAddr, []byte{}, 0, balance /* code */)
-			interpreter.cfg.Tracer.CaptureExit([]byte{}, 0, nil)
-		}
+	if interpreter.cfg.Debug {
+		interpreter.cfg.Tracer.CaptureEnter(SELFDESTRUCT, callerAddr, beneficiaryAddr, []byte{}, 0, balance /* code */)
+		interpreter.cfg.Tracer.CaptureExit([]byte{}, 0, nil)
 	}
 	// Send balance to beneficiary
 	interpreter.evm.IntraBlockState().AddBalance(beneficiaryAddr, balance)

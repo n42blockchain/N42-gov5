@@ -781,9 +781,9 @@ func (c *Apoa) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, pa
 
 func calcDifficulty(snap *Snapshot, signer types.Address) *uint256.Int {
 	if snap.inturn(snap.Number+1, signer) {
-		return diffInTurn
+		return new(uint256.Int).Set(diffInTurn)
 	}
-	return diffNoTurn
+	return new(uint256.Int).Set(diffNoTurn)
 }
 
 // SealHash returns the hash of a block prior to it being sealed.

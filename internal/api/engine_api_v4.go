@@ -115,16 +115,23 @@ type GetPayloadResponseV4 struct {
 
 // EngineAPIv4 provides Engine API v4 methods for Pectra
 type EngineAPIv4 struct {
-	api *BlockChainAPI
+	api  *BlockChainAPI
+	blob *EngineAPIBlob // cached to avoid per-call allocation
+	v1   *EngineAPIV1   // cached to avoid per-call allocation
 }
 
 // NewEngineAPIv4 creates a new Engine API v4 instance
 func NewEngineAPIv4(api *BlockChainAPI) *EngineAPIv4 {
-	return &EngineAPIv4{api: api}
+	blob := &EngineAPIBlob{api: api}
+	return &EngineAPIv4{
+		api:  api,
+		blob: blob,
+		v1:   &EngineAPIV1{api: api},
+	}
 }
 
 func (e *EngineAPIv4) blobAPI() *EngineAPIBlob {
-	return &EngineAPIBlob{api: e.api}
+	return e.blob
 }
 
 // NewPayloadV4 processes a new execution payload with Pectra support
@@ -149,7 +156,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 	maxBlobGas := uint64(vm.PectraMaxBlobGasPerBlock)
 	maxBlobs := uint64(vm.PectraMaxBlobsPerBlock)
 	gasPerBlob := uint64(vm.PectraBlobGasPerBlob)
-	if cfg := e.blobAPI().v1().chainConfig(); cfg != nil {
+	if cfg := e.v1.chainConfig(); cfg != nil {
 		maxBlobGas = cfg.BlobMaxGasPerBlock(uint64(payload.Timestamp))
 		maxBlobs = cfg.BlobMaxBlobsPerBlock(uint64(payload.Timestamp))
 		gasPerBlob = cfg.BlobGasPerBlob(uint64(payload.Timestamp))
@@ -172,10 +179,10 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	if err := validateExecutionPayloadHeader(blockHeader(blk), e.blobAPI().v1().parentHeader(payload.ParentHash), e.blobAPI().v1().chainConfig()); err != nil {
+	if err := validateExecutionPayloadHeader(blockHeader(blk), e.v1.parentHeader(payload.ParentHash), e.v1.chainConfig()); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.blobAPI().v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
 
@@ -184,7 +191,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 		return nil, &engineInvalidParamsError{msg: err.Error()}
 	}
 	requestsHash := executionRequestsHash(executionRequests)
-	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.blobAPI().v1().chainConfig(), enginePayloadHashOptions{
+	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.v1.chainConfig(), enginePayloadHashOptions{
 		includeWithdrawals: true,
 		withdrawals:        payload.Withdrawals,
 		includeBlobFields:  true,
@@ -193,7 +200,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 	}); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	blockHash := ethCompatibleEngineBlockHash(blk, e.blobAPI().v1().chainConfig(), enginePayloadHashOptions{
+	blockHash := ethCompatibleEngineBlockHash(blk, e.v1.chainConfig(), enginePayloadHashOptions{
 		includeWithdrawals: true,
 		withdrawals:        payload.Withdrawals,
 		includeBlobFields:  true,
@@ -203,14 +210,14 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("block hash mismatch"), nil
 	}
-	if err := e.blobAPI().v1().validatePayloadExecution(blk, payload.ParentHash, parentBeaconBlockRoot, executionRequests); err != nil {
+	if err := e.v1.validatePayloadExecution(blk, payload.ParentHash, parentBeaconBlockRoot, executionRequests); err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	headHash := e.blobAPI().v1().currentHeadHash()
+	headHash := e.v1.currentHeadHash()
 	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
 		return syncingPayloadResponse(), nil
 	}
-	if overlay := e.blobAPI().v1().overlay(); overlay != nil {
+	if overlay := e.v1.overlay(); overlay != nil {
 		overlay.importBlock(blk, blockHash)
 	}
 	return validPayloadResponse(blockHash), nil
@@ -219,7 +226,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 // GetPayloadV4 retrieves a payload with Pectra fields
 // engine_getPayloadV4
 func (e *EngineAPIv4) GetPayloadV4(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV4, error) {
-	if built := e.blobAPI().v1().builtPayload(payloadID); built != nil && built.v4 != nil {
+	if built := e.v1.builtPayload(payloadID); built != nil && built.v4 != nil {
 		return &GetPayloadResponseV4{
 			ExecutionPayload:      built.v4,
 			BlockValue:            hexutil.Uint64(0),
@@ -241,11 +248,11 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if state == nil {
 		return invalidForkchoiceResponse("missing forkchoice state"), nil
 	}
-	head := e.blobAPI().v1().currentHead()
+	head := e.v1.currentHead()
 	if head == nil {
 		return syncingForkchoiceResponse(), nil
 	}
-	headHash := e.blobAPI().v1().currentHeadHash()
+	headHash := e.v1.currentHeadHash()
 	if state.HeadBlockHash != headHash {
 		return syncingForkchoiceResponse(), nil
 	}
@@ -261,7 +268,7 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if attrs.TargetBlobsPerBlock != nil {
 		target := uint64(*attrs.TargetBlobsPerBlock)
 		maxTarget := uint64(vm.PectraMaxBlobsPerBlock)
-		if cfg := e.blobAPI().v1().chainConfig(); cfg != nil {
+		if cfg := e.v1.chainConfig(); cfg != nil {
 			maxTarget = cfg.BlobMaxBlobsPerBlock(uint64(attrs.Timestamp))
 		}
 		if target > maxTarget {
@@ -271,7 +278,7 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return invalidForkchoiceResponse("payload timestamp must be greater than parent"), nil
 	}
-	payload := buildExecutionPayloadV4(head, headHash, attrs, e.blobAPI().v1().chainConfig())
+	payload := buildExecutionPayloadV4(head, headHash, attrs, e.v1.chainConfig())
 	if payload == nil {
 		return invalidForkchoiceResponse("failed to build payload"), nil
 	}
@@ -288,7 +295,7 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 		attrs.ParentBeaconBlockRoot[:],
 		targetBlobBytes[:],
 	)
-	if overlay := e.blobAPI().v1().overlay(); overlay != nil {
+	if overlay := e.v1.overlay(); overlay != nil {
 		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
 			v4:                payload,
 			v3:                &ExecutionPayloadV3{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions), Withdrawals: cloneWithdrawals(payload.Withdrawals), BlobGasUsed: payload.BlobGasUsed, ExcessBlobGas: payload.ExcessBlobGas},
@@ -313,7 +320,7 @@ func (e *EngineAPIv4) GetBlobsV1(ctx context.Context, versionedHashes []types.Ha
 	}
 
 	// Search through built payloads' blob bundles for matching hashes.
-	overlay := e.blobAPI().v1().overlay()
+	overlay := e.v1.overlay()
 	results := make([]*BlobAndProofV1, len(versionedHashes))
 
 	if overlay == nil {
@@ -378,7 +385,7 @@ func computeVersionedHash(commitment []byte) types.Hash {
 func (e *EngineAPIv4) GetPayloadBodiesByHashV1(ctx context.Context, hashes []types.Hash) ([]*ExecutionPayloadBodyV1, error) {
 	results := make([]*ExecutionPayloadBodyV1, len(hashes))
 
-	overlay := e.blobAPI().v1().overlay()
+	overlay := e.v1.overlay()
 	if overlay == nil {
 		return results, nil
 	}
@@ -400,18 +407,16 @@ func (e *EngineAPIv4) GetPayloadBodiesByHashV1(ctx context.Context, hashes []typ
 // GetPayloadBodiesByRangeV1 returns execution payload bodies for a range of blocks.
 // engine_getPayloadBodiesByRangeV1
 func (e *EngineAPIv4) GetPayloadBodiesByRangeV1(ctx context.Context, start hexutil.Uint64, count hexutil.Uint64) ([]*ExecutionPayloadBodyV1, error) {
-	if count == 0 || count > 1024 {
-		if count > 1024 {
-			count = 1024
-		}
-		if count == 0 {
-			return []*ExecutionPayloadBodyV1{}, nil
-		}
+	if count == 0 {
+		return []*ExecutionPayloadBodyV1{}, nil
+	}
+	if count > 1024 {
+		count = 1024
 	}
 
 	results := make([]*ExecutionPayloadBodyV1, count)
 
-	overlay := e.blobAPI().v1().overlay()
+	overlay := e.v1.overlay()
 	if overlay == nil {
 		return results, nil
 	}
@@ -567,8 +572,8 @@ func validateExecutionRequests(requests []hexutil.Bytes, payload *ExecutionPaylo
 func (e *EngineAPIv4) GetBlobScheduleV1(ctx context.Context) (*BlobScheduleResponse, error) {
 	target := uint64(vm.PectraTargetBlobsPerBlock)
 	max := uint64(vm.PectraMaxBlobsPerBlock)
-	if cfg := e.blobAPI().v1().chainConfig(); cfg != nil {
-		head := blockHeader(e.blobAPI().v1().currentHead())
+	if cfg := e.v1.chainConfig(); cfg != nil {
+		head := blockHeader(e.v1.currentHead())
 		timestamp := uint64(0)
 		if head != nil {
 			timestamp = head.Time
@@ -654,7 +659,6 @@ func (e *EngineAPIv4) GetForkCandidatesV1(ctx context.Context) (*ForkCandidateSt
 // =============================================================================
 
 var (
-	errBlobNotFound           = &engineError{"blob not found"}
 	errUnknownRequestType     = &engineError{"unknown request type"}
 	errInvalidRequestEncoding = &engineError{"invalid request encoding"}
 	errRequestCountMismatch   = &engineError{"request count mismatch"}

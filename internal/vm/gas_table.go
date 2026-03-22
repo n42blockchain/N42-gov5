@@ -437,7 +437,8 @@ func gasCallCode(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem 
 	return gas, nil
 }
 
-func gasDelegateCall(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
+// gasCallNoValue computes gas for DELEGATECALL and STATICCALL (no value transfer).
+func gasCallNoValue(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
 	gas, err := memoryGasCost(mem, memorySize)
 	if err != nil {
 		return 0, err
@@ -457,25 +458,12 @@ func gasDelegateCall(evm VMInterpreter, contract *Contract, stack *stack.Stack, 
 	return gas, nil
 }
 
-func gasStaticCall(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
-	gas, err := memoryGasCost(mem, memorySize)
-	if err != nil {
-		return 0, err
-	}
-
-	var callGasTemp uint64
-	callGasTemp, err = callGas(evm.ChainRules().IsTangerineWhistle, contract.Gas, gas, stack.Back(0))
-	evm.SetCallGasTemp(callGasTemp)
-
-	if err != nil {
-		return 0, err
-	}
-	var overflow bool
-	if gas, overflow = math.SafeAdd(gas, callGasTemp); overflow {
-		return 0, ErrGasUintOverflow
-	}
-	return gas, nil
-}
+// gasDelegateCall and gasStaticCall share the same implementation:
+// both are value-less call variants with identical gas accounting.
+var (
+	gasDelegateCall = gasCallNoValue
+	gasStaticCall   = gasCallNoValue
+)
 
 func gasSelfdestruct(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
 	var gas uint64

@@ -27,7 +27,6 @@ import (
 )
 
 type SystemCall func(contract types.Address, data []byte) ([]byte, error)
-type Call func(contract types.Address, data []byte) ([]byte, error)
 
 // ChainHeaderReader defines a small collection of methods needed to access the local
 // blockchain during header verification.

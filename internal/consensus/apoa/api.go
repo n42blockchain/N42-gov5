@@ -163,7 +163,6 @@ func (api *API) Status() (*status, error) {
 	var (
 		numBlocks = uint64(64)
 		current   = api.chain.CurrentBlock()
-		diff      = uint64(0)
 		optimals  = 0
 	)
 	if current == nil {
@@ -205,10 +204,12 @@ func (api *API) Status() (*status, error) {
 			return nil, fmt.Errorf("missing block %d", n)
 		}
 		blk := api.chain.GetBlock(h.Hash(), n)
+		if blk == nil {
+			return nil, fmt.Errorf("missing block %d", n)
+		}
 		if blk.Difficulty().Cmp(diffInTurn) == 0 {
 			optimals++
 		}
-		diff += blk.Difficulty().Uint64()
 		sealer, err := api.apoa.Author(h)
 		if err != nil {
 			return nil, err
@@ -255,7 +256,10 @@ func (api *API) GetSigner(rlpOrBlockNr *blockNumberOrHashOrRLP) (types.Address, 
 		blockNrOrHash := rlpOrBlockNr.BlockNumberOrHash
 		var header block.IHeader
 		if blockNrOrHash == nil {
-			header = api.chain.CurrentBlock().Header()
+			current := api.chain.CurrentBlock()
+			if current != nil {
+				header = current.Header()
+			}
 		} else if hash, ok := blockNrOrHash.Hash(); ok {
 			header, _ = api.chain.GetHeaderByHash(hash)
 		} else if number, ok := blockNrOrHash.Number(); ok {

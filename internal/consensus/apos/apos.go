@@ -117,12 +117,6 @@ var (
 	// list of signers different than the one the local node calculated.
 	errMismatchingCheckpointSigners = errors.New("mismatching signer list on checkpoint block")
 
-	// errInvalidMixDigest is returned if a block's mix digest is non-zero.
-	errInvalidMixDigest = errors.New("non-zero mix digest")
-
-	// errInvalidUncleHash is returned if a block contains an non-empty uncle list.
-	errInvalidUncleHash = errors.New("non empty uncle hash")
-
 	// errInvalidDifficulty is returned if the difficulty of a block neither 1 or 2.
 	errInvalidDifficulty = errors.New("invalid difficulty")
 
@@ -797,7 +791,7 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 			// Signer is among recents, only wait if the current block doesn't shift it out
 			if limit := uint64(len(snap.Signers)/2 + 1); number < limit || seen > number-limit {
 				///limit 1  seen 9999 number 9999- 8919
-				return errors.New(fmt.Sprintf("signed recently, must wait for others %d %d %d %s", limit, seen, number, signer.String()))
+				return fmt.Errorf("signed recently, must wait for others %d %d %d %s", limit, seen, number, signer.String())
 			}
 		}
 	}
@@ -907,9 +901,9 @@ func (c *APos) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, pa
 
 func calcDifficulty(snap *Snapshot, signer types.Address) *uint256.Int {
 	if snap.inturn(snap.Number+1, signer) {
-		return diffInTurn
+		return new(uint256.Int).Set(diffInTurn)
 	}
-	return diffNoTurn
+	return new(uint256.Int).Set(diffNoTurn)
 }
 
 // SealHash returns the hash of a block prior to it being sealed.

@@ -87,7 +87,7 @@ func (w *PlainStateWriter) DeleteAccount(address types.Address, original *accoun
 		return err
 	}
 	if original.Incarnation > 0 {
-		var b [8]byte
+		var b [2]byte
 		binary.BigEndian.PutUint16(b[:], original.Incarnation)
 		if err := w.db.Put(modules.IncarnationMap, address[:], b[:]); err != nil {
 			return err
