@@ -119,15 +119,14 @@ func runReplay(ctx *cli.Context) error {
 	fmt.Printf("Range:     %d → %d (0=latest)\n", fromBlock, toBlock)
 	fmt.Println()
 
-	// Open source database read-only with empty table config. The old database
-	// may lack newer tables (BlobSidecars, AccountHistoryKeys, etc.). Using an
-	// empty config + Accede flag tells MDBX to only open tables that already
-	// exist, without trying to create missing ones.
+	// Open source database read-only. Use Accede() mode which tells MDBX to
+	// only open tables that already exist in the database, silently skipping
+	// any missing ones. This is critical for old databases that lack newer
+	// tables like BlobSidecars or AccountHistoryKeys.
 	srcDB, err := mdbx.NewMDBX(log2.New()).
 		Path(chaindataPath).
-		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return kv.TableCfg{} }).
 		MapSize(2 * datasize.TB).
-		Flags(func(flags uint) uint { return flags | 0x20000 /* MDBX_RDONLY */ }).
+		Accede().
 		Open(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to open source database: %w", err)

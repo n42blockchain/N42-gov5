@@ -140,14 +140,13 @@ func (e *Engine) Stats() *Stats { return e.stats }
 func (e *Engine) Run(ctx context.Context) (*Stats, error) {
 	var err error
 
-	// Open source DB read-only with empty table config. Old databases may lack
-	// newer tables (BlobSidecars, AccountHistoryKeys, etc.). Empty config +
-	// RDONLY flag ensures MDBX only opens existing tables.
+	// Open source DB with Accede mode — only opens tables that already exist,
+	// silently skipping missing ones. Critical for old databases that lack
+	// newer tables (BlobSidecars, AccountHistoryKeys, etc.).
 	e.srcDB, err = mdbx.NewMDBX(log2.New()).
 		Path(e.cfg.SourcePath + "/chaindata").
-		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return kv.TableCfg{} }).
 		MapSize(2 * datasize.TB).
-		Flags(func(flags uint) uint { return flags | 0x20000 }).
+		Accede().
 		Open(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("replay: open source DB: %w", err)
