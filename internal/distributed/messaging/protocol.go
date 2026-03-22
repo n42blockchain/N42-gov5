@@ -4,6 +4,7 @@
 package messaging
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"encoding/binary"
 	"errors"
@@ -47,20 +48,10 @@ func ContentTopic(app, encoding, topic string) string {
 }
 
 // EnvelopeID computes the unique ID for an envelope using Keccak256.
+// Uses the same signing hash (everything except the signature).
 func EnvelopeID(env *Envelope) types.Hash {
-	h := sha3.NewLegacyKeccak256()
-	h.Write([]byte{env.Version})
-	h.Write(env.Sender)
-	h.Write([]byte(env.Topic))
-	h.Write(env.Payload)
-	var ts [8]byte
-	binary.BigEndian.PutUint64(ts[:], uint64(env.Timestamp))
-	h.Write(ts[:])
-	var nonce [8]byte
-	binary.BigEndian.PutUint64(nonce[:], env.Nonce)
-	h.Write(nonce[:])
 	var id types.Hash
-	copy(id[:], h.Sum(nil))
+	copy(id[:], envelopeSignHash(env))
 	return id
 }
 
@@ -207,15 +198,8 @@ func ValidateEnvelope(env *Envelope, maxSize int) error {
 		return fmt.Errorf("recover pubkey: %w", err)
 	}
 	compressed := crypto.CompressPubkey(pubkey)
-	if len(env.Sender) > 0 {
-		if len(compressed) != len(env.Sender) {
-			return errors.New("sender mismatch")
-		}
-		for i := range compressed {
-			if compressed[i] != env.Sender[i] {
-				return errors.New("sender mismatch")
-			}
-		}
+	if len(env.Sender) > 0 && !bytes.Equal(compressed, env.Sender) {
+		return errors.New("sender mismatch")
 	}
 
 	return nil

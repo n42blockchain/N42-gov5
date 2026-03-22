@@ -50,6 +50,9 @@ type RewardEvent struct {
 	Timestamp time.Time     `json:"timestamp"`
 }
 
+// maxEventHistory is the maximum number of slash/reward events retained.
+const maxEventHistory = 10000
+
 // SlashManager enforces economic penalties for misbehavior and distributes
 // rewards for successful task completion. Implements the Verify-or-Slash model.
 type SlashManager struct {
@@ -114,6 +117,12 @@ func (sm *SlashManager) Slash(providerAddr types.Address, condition SlashConditi
 		TaskID:    taskID,
 		Timestamp: time.Now(),
 	})
+	if len(sm.slashEvents) > maxEventHistory {
+		// Discard oldest half to amortize copy cost
+		n := len(sm.slashEvents)
+		copy(sm.slashEvents, sm.slashEvents[n/2:])
+		sm.slashEvents = sm.slashEvents[:n-n/2]
+	}
 	sm.mu.Unlock()
 
 	log.Warn("Provider slashed",
@@ -141,6 +150,11 @@ func (sm *SlashManager) Reward(providerAddr types.Address, amount uint64, taskID
 		TaskID:    taskID,
 		Timestamp: time.Now(),
 	})
+	if len(sm.rewardEvents) > maxEventHistory {
+		n := len(sm.rewardEvents)
+		copy(sm.rewardEvents, sm.rewardEvents[n/2:])
+		sm.rewardEvents = sm.rewardEvents[:n-n/2]
+	}
 	sm.mu.Unlock()
 }
 

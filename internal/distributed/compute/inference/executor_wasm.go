@@ -45,7 +45,7 @@ const (
 // execution. The current implementation provides the interface contract and
 // deterministic hashing for integration with the precompile and inference service.
 type WASMExecutor struct {
-	mu           sync.Mutex
+	mu           sync.RWMutex
 	modelCache   map[types.Hash][]byte // cached WASM module bytecode
 	maxModelSize int64
 	fuelLimit    uint64
@@ -107,9 +107,12 @@ func (e *WASMExecutor) UnloadModel(modelHash types.Hash) {
 
 // LoadedModels returns the hashes of all currently loaded WASM models.
 func (e *WASMExecutor) LoadedModels() []types.Hash {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 
+	if len(e.modelCache) == 0 {
+		return nil
+	}
 	hashes := make([]types.Hash, 0, len(e.modelCache))
 	for h := range e.modelCache {
 		hashes = append(hashes, h)
@@ -139,16 +142,16 @@ func (e *WASMExecutor) Execute(ctx context.Context, modelHash types.Hash, input 
 	}
 
 	// Look up the model in the cache.
-	e.mu.Lock()
+	e.mu.RLock()
 	wasmBytes, ok := e.modelCache[modelHash]
 	if !ok {
-		e.mu.Unlock()
+		e.mu.RUnlock()
 		return nil, fmt.Errorf("wasm executor: model %s not loaded", modelHash.Hex())
 	}
 	// Take a reference to the byte slice — safe because LoadModel stores a copy
 	// and the map entry is never mutated in place.
 	_ = wasmBytes
-	e.mu.Unlock()
+	e.mu.RUnlock()
 
 	// Compute deterministic request ID from model hash and input hash.
 	inputHash := crypto.Keccak256Hash(input)
