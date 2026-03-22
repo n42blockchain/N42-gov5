@@ -88,6 +88,7 @@ import (
 	"github.com/n42blockchain/N42/internal/sync/checkpoint"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
 	"github.com/n42blockchain/N42/internal/sync/snapsync"
+	"github.com/n42blockchain/N42/internal/sync/torrentsync"
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
@@ -185,6 +186,9 @@ type Node struct {
 	keyDirTemp bool   // If true, key directory will be removed by Stop
 
 	tracingShutdown func(context.Context) error // flushes and stops the OTel tracer provider
+
+	// OtterSync (BitTorrent-based chain sync via EraE segments)
+	torrentsyncService *torrentsync.Service
 
 	// Ingest server for stress testing
 	ingestServer *ingest.Server
@@ -927,6 +931,21 @@ func (n *Node) Start() error {
 		n.depositContract.Start()
 	}
 
+	// Import available EraE segments before starting P2P sync.
+	// This allows nodes to bootstrap from pre-computed chain data
+	// distributed via BitTorrent, skipping re-execution of historical blocks.
+	if n.config.TorrentSyncCfg.Enabled {
+		eraDir := filepath.Join(n.config.NodeCfg.DataDir, "era")
+		os.MkdirAll(eraDir, 0700)
+		svc := torrentsync.NewService(&n.config.TorrentSyncCfg, n.db, eraDir)
+		n.torrentsyncService = svc
+
+		log.Info("OtterSync: importing available EraE segments", "dir", eraDir)
+		if err := svc.Import(n.ctx); err != nil {
+			log.Warn("OtterSync import failed, continuing with P2P sync", "err", err)
+		}
+	}
+
 	// Start sync pipeline: checkpoint sync (optional) -> snap sync -> initial sync.
 	// Checkpoint sync validates a trusted block and sets it as the snap sync pivot.
 	// Snap sync downloads state at the pivot. Initial sync replays remaining blocks.
@@ -1472,6 +1491,11 @@ func (n *Node) stopServices() []error {
 			if n.coprocessorService != nil {
 				n.coprocessorService.Stop()
 			}
+			return nil
+		}},
+		// 2e. OtterSync (stateless — just nil the reference)
+		{"OtterSync", func() error {
+			n.torrentsyncService = nil
 			return nil
 		}},
 		// 2c. Deferred execution pipeline
