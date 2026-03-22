@@ -167,7 +167,7 @@ func (e *Engine) Run(ctx context.Context) (*Stats, error) {
 	// Detect end block.
 	if e.cfg.ToBlock == 0 {
 		if err := e.srcDB.View(ctx, func(tx kv.Tx) error {
-			e.cfg.ToBlock = e.findLatestBlock(tx)
+			e.cfg.ToBlock = FindLatestBlock(tx)
 			return nil
 		}); err != nil {
 			return nil, err
@@ -203,38 +203,28 @@ func (e *Engine) Run(ctx context.Context) (*Stats, error) {
 }
 
 // processBatch reads a range of blocks from source and writes to target.
+// Blocks are streamed one at a time rather than buffered into a slice,
+// keeping memory usage constant regardless of batch size.
 func (e *Engine) processBatch(ctx context.Context, from, to uint64) error {
-	// Read blocks from source.
-	type blockData struct {
-		blk  *block.Block
-		num  uint64
-	}
-	var blocks []blockData
-
-	if err := e.srcDB.View(ctx, func(tx kv.Tx) error {
-		for num := from; num <= to; num++ {
-			blk, err := rawdb.ReadBlockByNumber(tx, num)
-			if err != nil || blk == nil {
-				e.stats.BlocksMissing.Add(1)
-				continue
-			}
-			blocks = append(blocks, blockData{blk: blk, num: num})
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	// Write to target.
+	// Read each block from source inside a read tx, then immediately replay
+	// it inside a write tx. We open one write tx for the whole batch so the
+	// commit happens once at the end.
 	return e.dstDB.Update(ctx, func(dstTx kv.RwTx) error {
 		r := state.NewPlainStateReader(dstTx)
-		for _, bd := range blocks {
-			if err := e.replayBlock(dstTx, r, bd.blk, bd.num); err != nil {
-				// Lossy: log and continue on block-level errors.
-				e.stats.TxFailed.Add(1)
+		return e.srcDB.View(ctx, func(srcTx kv.Tx) error {
+			for num := from; num <= to; num++ {
+				blk, err := rawdb.ReadBlockByNumber(srcTx, num)
+				if err != nil || blk == nil {
+					e.stats.BlocksMissing.Add(1)
+					continue
+				}
+				if err := e.replayBlock(dstTx, r, blk, num); err != nil {
+					// Lossy: log and continue on block-level errors.
+					e.stats.TxFailed.Add(1)
+				}
 			}
-		}
-		return nil
+			return nil
+		})
 	})
 }
 
@@ -347,9 +337,24 @@ func (e *Engine) writeBlock(dstTx kv.RwTx, origBlk *block.Block, num uint64, txs
 	return rawdb.WriteTd(dstTx, hash, num, uint256.NewInt(num))
 }
 
-// findLatestBlock binary-searches for the highest block number in the source DB.
-func (e *Engine) findLatestBlock(tx kv.Tx) uint64 {
-	low, high := uint64(0), uint64(100_000_000)
+// FindLatestBlock binary-searches for the highest block number in the given DB
+// transaction. It uses an adaptive upper bound: starts at 1M and doubles until
+// an empty slot is found, then binary-searches within that range. This avoids
+// both the wasted iterations of a too-high fixed bound and the silent
+// truncation if the chain exceeds a hardcoded limit.
+func FindLatestBlock(tx kv.Tx) uint64 {
+	// Adaptive upper bound: find the first power-of-two range that contains
+	// an empty slot.
+	high := uint64(1_000_000)
+	for {
+		h, _ := rawdb.ReadCanonicalHash(tx, high)
+		if h == (types.Hash{}) {
+			break
+		}
+		high *= 2
+	}
+
+	low := uint64(0)
 	for low < high {
 		mid := (low + high + 1) / 2
 		h, _ := rawdb.ReadCanonicalHash(tx, mid)

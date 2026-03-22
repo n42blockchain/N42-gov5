@@ -23,12 +23,9 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
-// Deposit contract addresses to skip during replay.
-var skipAddresses = map[types.Address]bool{
-	types.HexToAddress("0x85A5E24ef94fe5bDD5055133E6bd00DcEA25F37D"): true, // DepositContract
-	types.HexToAddress("0xF762E4Aa8Da0B9FC8113ECBFf6c84B3a6B7B5544"): true, // DepositNFTContract
-	types.HexToAddress("0x8018c0ba6717FE077cB37Db5D6187B400ee76Eeb"): true, // DepositFUJIContract
-}
+// skipAddresses aliases the canonical list from the replay package to
+// avoid maintaining a duplicate copy.
+var skipAddresses = replay.DefaultSkipAddresses
 
 func init() {
 	rootCmd = append(rootCmd, replayCommand)
@@ -150,7 +147,7 @@ func runReplay(ctx *cli.Context) error {
 	// Determine end block.
 	err = srcDB.View(context.Background(), func(tx kv.Tx) error {
 		if toBlock == 0 {
-			// Find latest block.
+			// Verify genesis exists.
 			hash, rerr := rawdb.ReadCanonicalHash(tx, 0)
 			if rerr != nil {
 				return fmt.Errorf("cannot read genesis hash: %w", rerr)
@@ -158,18 +155,7 @@ func runReplay(ctx *cli.Context) error {
 			if hash == (types.Hash{}) {
 				return fmt.Errorf("source database has no genesis block")
 			}
-			// Binary search for latest block.
-			low, high := uint64(0), uint64(100_000_000)
-			for low < high {
-				mid := (low + high + 1) / 2
-				h, _ := rawdb.ReadCanonicalHash(tx, mid)
-				if h == (types.Hash{}) {
-					high = mid - 1
-				} else {
-					low = mid
-				}
-			}
-			toBlock = low
+			toBlock = replay.FindLatestBlock(tx)
 		}
 		stats.ToBlock = toBlock
 		return nil
@@ -180,9 +166,27 @@ func runReplay(ctx *cli.Context) error {
 
 	fmt.Printf("Replaying blocks %d → %d (%d blocks)\n\n", fromBlock, toBlock, toBlock-fromBlock+1)
 
-	// Process blocks.
-	var replayedBlocks []ReplayedBlock
+	// Process blocks. Stream JSON output to file to avoid OOM on large chains.
 	balances := make(map[types.Address]*uint256.Int)
+
+	outF, err := os.Create(outputFile)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer outF.Close()
+
+	// We write a JSON-Lines style block array to a temp file first,
+	// then assemble the final JSON output with stats + blocks.
+	// This keeps memory usage constant regardless of chain length.
+	blocksFile, err := os.CreateTemp("", "replay-blocks-*.jsonl")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	blocksPath := blocksFile.Name()
+	defer os.Remove(blocksPath)
+	blocksEnc := json.NewEncoder(blocksFile)
+
+	var blockCount uint64
 
 	err = srcDB.View(context.Background(), func(tx kv.Tx) error {
 		for num := fromBlock; num <= toBlock; num++ {
@@ -243,7 +247,10 @@ func runReplay(ctx *cli.Context) error {
 			}
 
 			if rb.TxCount > 0 {
-				replayedBlocks = append(replayedBlocks, rb)
+				if err := blocksEnc.Encode(rb); err != nil {
+					return fmt.Errorf("failed to write block %d: %w", num, err)
+				}
+				blockCount++
 			}
 
 			// Progress report.
@@ -257,6 +264,7 @@ func runReplay(ctx *cli.Context) error {
 		}
 		return nil
 	})
+	blocksFile.Close()
 	if err != nil {
 		return fmt.Errorf("replay failed: %w", err)
 	}
@@ -268,20 +276,36 @@ func runReplay(ctx *cli.Context) error {
 		stats.Accounts[addr.Hex()] = bal.Hex()
 	}
 
-	// Write output.
-	output := map[string]interface{}{
-		"stats":  stats,
-		"blocks": replayedBlocks,
-	}
+	// Assemble final JSON: stats header, then stream blocks from temp file.
+	outF.Seek(0, 0)
+	outF.Truncate(0)
+	fmt.Fprintf(outF, "{\n  \"stats\": ")
+	statsData, _ := json.MarshalIndent(stats, "  ", "  ")
+	outF.Write(statsData)
+	fmt.Fprintf(outF, ",\n  \"blocks\": [\n")
 
-	data, err := json.MarshalIndent(output, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal output: %w", err)
+	// Copy blocks from temp file into the JSON array.
+	if blockCount > 0 {
+		bf, _ := os.Open(blocksPath)
+		if bf != nil {
+			scanner := json.NewDecoder(bf)
+			var written uint64
+			for scanner.More() {
+				var raw json.RawMessage
+				if err := scanner.Decode(&raw); err != nil {
+					break
+				}
+				if written > 0 {
+					fmt.Fprintf(outF, ",\n")
+				}
+				fmt.Fprintf(outF, "    ")
+				outF.Write(raw)
+				written++
+			}
+			bf.Close()
+		}
 	}
-
-	if err := os.WriteFile(outputFile, data, 0644); err != nil {
-		return fmt.Errorf("failed to write output: %w", err)
-	}
+	fmt.Fprintf(outF, "\n  ]\n}\n")
 
 	// Print summary.
 	fmt.Println()
