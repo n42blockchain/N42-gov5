@@ -51,7 +51,6 @@ type TrainingProver struct {
 	records    map[types.Hash]*TrainingRecord
 	proofs     map[types.Hash]*TrainingProof
 	governance DatasetGovernance // nil = skip governance check
-	nonce      uint64
 }
 
 // NewTrainingProver creates a new TrainingProver with an empty registry.
@@ -138,7 +137,6 @@ func (p *TrainingProver) RegisterTraining(
 	}
 
 	p.records[recordID] = record
-	p.nonce++
 
 	return recordID, nil
 }
@@ -224,13 +222,14 @@ func generateTrainingProof(publicInputs []byte, trace *TrainingTrace) []byte {
 	//   for each epoch: commitment = H(commitment || weightsBeforeHash || weightsAfterHash || lossHash)
 	commitment := crypto.Keccak256(publicInputs)
 
+	// Reuse a single buffer across iterations to avoid per-epoch allocation.
+	commitParts := make([]byte, 32+32+32+32)
 	for i := range trace.EpochTraces {
 		epoch := &trace.EpochTraces[i]
-		commitParts := make([]byte, 0, 32+32+32+32)
-		commitParts = append(commitParts, commitment...)
-		commitParts = append(commitParts, epoch.WeightsBeforeHash[:]...)
-		commitParts = append(commitParts, epoch.WeightsAfterHash[:]...)
-		commitParts = append(commitParts, epoch.LossHash[:]...)
+		copy(commitParts[0:32], commitment)
+		copy(commitParts[32:64], epoch.WeightsBeforeHash[:])
+		copy(commitParts[64:96], epoch.WeightsAfterHash[:])
+		copy(commitParts[96:128], epoch.LossHash[:])
 		commitment = crypto.Keccak256(commitParts)
 	}
 
@@ -317,35 +316,31 @@ func (p *TrainingProver) RecordCount() int {
 // computeRecordID deterministically computes a training record ID as
 // Keccak256(modelHash || sorted datasetHashes || configHash).
 func computeRecordID(modelHash types.Hash, datasetHashes []types.Hash, configHash types.Hash) types.Hash {
-	sorted := make([]types.Hash, len(datasetHashes))
-	copy(sorted, datasetHashes)
-	sort.Slice(sorted, func(i, j int) bool {
-		return bytes.Compare(sorted[i][:], sorted[j][:]) < 0
-	})
-
-	parts := make([]byte, 0, 32+32*len(sorted)+32)
-	parts = append(parts, modelHash[:]...)
-	for _, h := range sorted {
-		parts = append(parts, h[:]...)
-	}
-	parts = append(parts, configHash[:]...)
-
-	return crypto.Keccak256Hash(parts)
+	parts := sortedHashConcat(datasetHashes)
+	full := make([]byte, 0, 32+len(parts)+32)
+	full = append(full, modelHash[:]...)
+	full = append(full, parts...)
+	full = append(full, configHash[:]...)
+	return crypto.Keccak256Hash(full)
 }
 
 // computeDatasetRootHash computes a root hash over the dataset hashes as
 // Keccak256(sorted concatenation of datasetHashes).
 func computeDatasetRootHash(datasetHashes []types.Hash) types.Hash {
-	sorted := make([]types.Hash, len(datasetHashes))
-	copy(sorted, datasetHashes)
+	return crypto.Keccak256Hash(sortedHashConcat(datasetHashes))
+}
+
+// sortedHashConcat returns the concatenated bytes of the given hashes in
+// sorted order. The input slice is not modified.
+func sortedHashConcat(hashes []types.Hash) []byte {
+	sorted := make([]types.Hash, len(hashes))
+	copy(sorted, hashes)
 	sort.Slice(sorted, func(i, j int) bool {
 		return bytes.Compare(sorted[i][:], sorted[j][:]) < 0
 	})
-
 	parts := make([]byte, 0, 32*len(sorted))
 	for _, h := range sorted {
 		parts = append(parts, h[:]...)
 	}
-
-	return crypto.Keccak256Hash(parts)
+	return parts
 }

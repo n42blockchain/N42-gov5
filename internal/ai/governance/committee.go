@@ -5,7 +5,6 @@ package governance
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -122,7 +121,11 @@ func (c *Committee) CastVote(vote *Vote) error {
 	}
 
 	// 2. Dataset existence and status check.
-	ds, ok := c.registry.getDatasetLocked(vote.DatasetID)
+	// Hold the registry lock to prevent races with concurrent registry mutations.
+	c.registry.mu.Lock()
+	defer c.registry.mu.Unlock()
+
+	ds, ok := c.registry.getDatasetUnsafe(vote.DatasetID)
 	if !ok {
 		return ErrDatasetNotFound
 	}
@@ -157,8 +160,7 @@ func (c *Committee) CastVote(vote *Vote) error {
 
 	// 6. Transition dataset to UnderReview on first vote.
 	if ds.Status == DatasetPending {
-		if err := c.registry.UpdateStatus(vote.DatasetID, DatasetUnderReview); err != nil {
-			log.Printf("governance: failed to update dataset %s status to UnderReview: %v", vote.DatasetID, err)
+		if err := c.registry.updateStatusUnsafe(vote.DatasetID, DatasetUnderReview); err != nil {
 			return fmt.Errorf("governance: failed to transition dataset to UnderReview: %w", err)
 		}
 	}
@@ -198,14 +200,17 @@ func (c *Committee) TallyVotes(datasetID types.Hash, category EthicsCategory) (*
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.registry.mu.RLock()
+	defer c.registry.mu.RUnlock()
+
 	return c.tallyVotesLocked(datasetID, category)
 }
 
 // tallyVotesLocked is the internal implementation of TallyVotes. The caller
-// MUST hold c.mu before calling.
+// MUST hold c.mu and at least a read lock on c.registry.mu before calling.
 func (c *Committee) tallyVotesLocked(datasetID types.Hash, category EthicsCategory) (*ReviewResult, error) {
 	// Verify dataset exists.
-	if _, ok := c.registry.getDatasetLocked(datasetID); !ok {
+	if _, ok := c.registry.getDatasetUnsafe(datasetID); !ok {
 		return nil, ErrDatasetNotFound
 	}
 
@@ -274,7 +279,10 @@ func (c *Committee) FinalizeReview(datasetID types.Hash) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	ds, ok := c.registry.getDatasetLocked(datasetID)
+	c.registry.mu.Lock()
+	defer c.registry.mu.Unlock()
+
+	ds, ok := c.registry.getDatasetUnsafe(datasetID)
 	if !ok {
 		return ErrDatasetNotFound
 	}
@@ -297,9 +305,9 @@ func (c *Committee) FinalizeReview(datasetID types.Hash) error {
 	}
 
 	if allPassed {
-		return c.registry.UpdateStatus(datasetID, DatasetApproved)
+		return c.registry.updateStatusUnsafe(datasetID, DatasetApproved)
 	}
-	return c.registry.UpdateStatus(datasetID, DatasetRejected)
+	return c.registry.updateStatusUnsafe(datasetID, DatasetRejected)
 }
 
 // GetResult returns the cached review result for a specific dataset and
@@ -341,10 +349,13 @@ func (c *Committee) RevokeDataset(datasetID types.Hash) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, ok := c.registry.getDatasetLocked(datasetID); !ok {
+	c.registry.mu.Lock()
+	defer c.registry.mu.Unlock()
+
+	if _, ok := c.registry.getDatasetUnsafe(datasetID); !ok {
 		return ErrDatasetNotFound
 	}
-	return c.registry.UpdateStatus(datasetID, DatasetRevoked)
+	return c.registry.updateStatusUnsafe(datasetID, DatasetRevoked)
 }
 
 // verifyVoteSignature verifies the secp256k1 recoverable signature on a vote.
@@ -380,9 +391,22 @@ func verifyVoteSignature(vote *Vote) error {
 	return nil
 }
 
-// getDatasetLocked returns the internal dataset pointer without copying.
-// The caller MUST hold at least a read lock on the registry.
-func (r *DatasetRegistry) getDatasetLocked(datasetID types.Hash) (*Dataset, bool) {
+// getDatasetUnsafe returns the internal dataset pointer without copying or
+// locking. The caller MUST hold a lock that prevents concurrent registry
+// mutation (either r.mu directly, or an external lock that serialises all
+// registry access).
+func (r *DatasetRegistry) getDatasetUnsafe(datasetID types.Hash) (*Dataset, bool) {
 	ds, ok := r.datasets[datasetID]
 	return ds, ok
+}
+
+// updateStatusUnsafe changes the status without acquiring r.mu.
+// The caller MUST hold an external lock that serialises registry writes.
+func (r *DatasetRegistry) updateStatusUnsafe(datasetID types.Hash, status DatasetStatus) error {
+	ds, ok := r.datasets[datasetID]
+	if !ok {
+		return ErrDatasetNotFound
+	}
+	ds.Status = status
+	return nil
 }

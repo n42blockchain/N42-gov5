@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -65,13 +64,9 @@ func (v *TrainingVerifier) VerifyTrainingProof(proof *TrainingProof) (bool, erro
 		return false, fmt.Errorf("%w: got %d bytes", ErrPublicInputsLength, len(proof.PublicInputs))
 	}
 
-	// Extract hashes from public inputs.
-	var piModelHash, piInitWeightsHash, piFinalWeightsHash, piConfigHash, piDatasetRootHash types.Hash
+	// Extract model hash from public inputs for consistency check.
+	var piModelHash types.Hash
 	copy(piModelHash[:], proof.PublicInputs[0:32])
-	copy(piInitWeightsHash[:], proof.PublicInputs[32:64])
-	copy(piFinalWeightsHash[:], proof.PublicInputs[64:96])
-	copy(piConfigHash[:], proof.PublicInputs[96:128])
-	copy(piDatasetRootHash[:], proof.PublicInputs[128:160])
 
 	// Verify consistency between public inputs and proof fields.
 	if piModelHash != proof.ModelHash {
@@ -91,13 +86,6 @@ func (v *TrainingVerifier) VerifyTrainingProof(proof *TrainingProof) (bool, erro
 			return false, fmt.Errorf("%w: proof data starts with zero hash", ErrInvalidTrainingProof)
 		}
 	}
-
-	// Verify the proof binds to the declared public inputs by computing the
-	// Keccak256 of the public inputs. This is a simulated binding check;
-	// a real verifier would use pairing checks (Groth16) or polynomial
-	// commitments (PLONK).
-	piCommitment := crypto.Keccak256Hash(proof.PublicInputs)
-	_ = piCommitment // Reserved for future cryptographic verification.
 
 	v.recordSuccess()
 	return true, nil

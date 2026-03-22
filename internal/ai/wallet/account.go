@@ -166,11 +166,8 @@ func (a *Account) ValidateSessionKey(
 	}
 
 	// Check spend limit: spentAmount + value must not exceed limit.
-	if value != nil && !value.IsZero() {
-		projected := new(uint256.Int).Add(sk.SpentAmount, value)
-		if projected.Cmp(sk.SpendLimit) > 0 {
-			return ErrSpendLimitExceed
-		}
+	if err := checkSpendLimit(sk, value); err != nil {
+		return err
 	}
 
 	// Check allowed contracts (empty list means all contracts are allowed).
@@ -267,13 +264,25 @@ func (a *Account) RecordSpend(keyID types.Hash, value *uint256.Int) error {
 		return ErrSessionKeyUnknown
 	}
 
+	if err := checkSpendLimit(sk, value); err != nil {
+		return err
+	}
+	if value != nil && !value.IsZero() {
+		sk.SpentAmount.Add(sk.SpentAmount, value)
+	}
+
+	return nil
+}
+
+// checkSpendLimit returns ErrSpendLimitExceed if adding value to the session
+// key's spent amount would exceed its limit. Must be called under the
+// account lock.
+func checkSpendLimit(sk *SessionKey, value *uint256.Int) error {
 	if value != nil && !value.IsZero() {
 		projected := new(uint256.Int).Add(sk.SpentAmount, value)
 		if projected.Cmp(sk.SpendLimit) > 0 {
 			return ErrSpendLimitExceed
 		}
-		sk.SpentAmount.Set(projected)
 	}
-
 	return nil
 }
