@@ -1,7 +1,7 @@
 # N42 全局功能缺失深度对比分析
 
 > 对比对象：go-ethereum (geth) v1.16+、reth v1.11+、Erigon 3.3.9、Sei v2/v3、Monad、Grevm 2.1、Aptos
-> 分析日期：2026-03-20（修订：分布式基础设施 (coprocessor/messaging/storage/notify)、250+ 指标、Pectra 9 EIP 完整、SP1 zkVM、JMT GC、Backfill Sync、Engine API v4 完整、Otterscan 完整、综合评分 85→91）
+> 分析日期：2026-03-22（修订：分布式基础设施 (coprocessor/messaging/storage/notify)、250+ 指标、Pectra 9 EIP 完整、SP1 zkVM、JMT GC、Backfill Sync、Engine API v4 完整、Otterscan 完整、Glamsterdam EIP-7904、EraE 存档、EIP-7834 批量 RPC、/simplify 审计 110 修复、综合评分 85→91→93）
 > 范围：以太坊及高性能公链客户端全局功能模块
 > 方法：N42 数据基于源码审计（行数/测试覆盖/集成状态），竞品数据标注来源（官方文档/白皮书/宣称/GitHub releases）
 
@@ -433,16 +433,16 @@
 |------|------|------|------|------------|-----|-------|-------|---------|
 | 状态管理 | 15% | 95 | 98 | 97 | 80 | 90 | 85 | **92** |
 | 同步机制 | 10% | 90 | 95 | 98 | 75 | 70 | 80 | **88** |
-| 执行层/EVM | 20% | 85 | 88 | 85 | 90 | 95 | 90* | **92** |
+| 执行层/EVM | 20% | 85 | 88 | 85 | 90 | 95 | 90* | **94** |
 | P2P 网络 | 10% | 95 | 90 | 92 | 80 | 80 | 75 | 83 |
 | 共识 | 10% | 90 | 90 | 93 | 85 | 95 | 90 | **90** |
-| RPC API | 10% | 95 | 95 | 96 | 60 | 70 | 60 | **94** |
+| RPC API | 10% | 95 | 95 | 96 | 60 | 70 | 60 | **95** |
 | 交易池 | 5% | 90 | 90 | 92 | 85 | 85 | 70 | 88 |
 | 工具链 | 5% | 95 | 70 | 80 | 50 | 30 | 60 | **84** |
 | 安全性 | 5% | 90 | 95 | 85 | 85 | 80 | 90 | **93** |
 | 可观测性 | 5% | 90 | 95 | 85 | 85 | 60 | 85 | **93** |
 | 扩展性 | 5% | 80 | 95 | 88 | 85 | 40 | 70 | **85** |
-| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **92** |
+| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **93** |
 
 > *Aptos 使用 Move VM，非直接可比
 
@@ -718,7 +718,7 @@
 
 | 维度 | N42 实际水平 | geth/reth 水平 | Erigon 3.3 水平 | 差距评估 |
 |------|-------------|---------------|----------------|----------|
-| EVM 兼容性 | Cancun✅ Pectra✅完整(9项EIP) EOF✅提前实现 Fusaka✅(PeerDAS+BPO+7825) | 完整 | 完整 | ✅ **完整** |
+| EVM 兼容性 | Cancun✅ Pectra✅完整(9项EIP) EOF✅提前实现 Fusaka✅(PeerDAS+BPO+7825) Glamsterdam EIP-7904 ✅ | 完整 | 完整 | ✅ **完整** |
 | 并行执行 | Block-STM 3.9x 加速 + Deferred Execution PoC + ShardedCache 预加载 | geth 无并行; reth prewarming | 实验性并行 | 🏆 **N42 领先** |
 | 同步机制 | Full + Snap + Checkpoint + Backfill + Staged Sync 5 种模式 | Snap Sync 成熟 | Staged Sync + OtterSync | ✅ **完整** — OtterSync 解决超大数据集分发 (以太坊 20TB+)，N42 链规模下 5 种同步模式已覆盖全部场景 |
 | 状态存储 | MDBX flat + JMT Blake3 承诺 + 16384 节点 LRU + 引用计数 GC + DiffLayer 快照 + History Expiry | PBSS flat 成熟 | E3 三层 + segment | ✅ **完整** — flat state + JMT GC 在线裁剪等价 PBSS |
@@ -728,6 +728,9 @@
 | 安全性 | PQ-STARK 后量子 + 3 轮审计 47+ 修复 + SafeGo + PQ 预编译隔离 + 加密 Mempool | Go GC 基础防护 | Go GC | 🏆 **N42 领先** — 唯一已集成 PQ 密码学的主流客户端 |
 | ZK 证明 | STARK/SNARK/SP1 三后端 + RISC-V64 guest + JMT GC + Verifier | 无 | Zilkworm 实验 | 🏆 **N42 领先** — 唯一具备完整 ZK 证明管线的主流客户端 |
 | 模块化部署 | RPCDaemon 独立二进制 + gRPC KV server + ExEx hook | 单体 (geth/reth 均不拆分) | RPC/TxPool/Sentry/CL 独立 | ✅ **完整** — RPCDaemon 已拆分核心读负载; TxPool/Sentry 拆分仅 Erigon 架构需要，geth/reth 均为单体 |
-| 测试覆盖 | 450+ 单元测试 + 29 fuzz + 150 AI 测试 + recovery/archive/soak smoke + EEST 本地 runner | 数千 + fuzzing | hive + EEST | ⚠️ **持续推进** — 测试基础设施完备，EEST blocker 逐个修复中; 非架构缺失 |
+| 测试覆盖 | 450+ 单元测试 + 150 AI 测试 + /simplify 审计 110 修复 + 29 fuzz + recovery/archive/soak smoke + EEST 本地 runner | 数千 + fuzzing | hive + EEST | ⚠️ **持续推进** — 测试基础设施完备，EEST blocker 逐个修复中; 非架构缺失 |
 | AI 原生平台 | Agent 钱包 + 推理预编译 + 数据治理 + 训练 ZK + 推理签名 + 区块优化 + 150 测试 | 无 | 无 | 🏆 **N42 领先** — 唯一在 L1 层面提供完整 AI 安全基础设施的区块链 |
 | 生态工具 | Otterscan + GraphQL + Clef + MCP + abigen + mobile SDK + RPCDaemon | 完整生态 | 完整 + diagnostics | ✅ **完整** |
+| Gas 优化 | Glamsterdam EIP-7904 (转账 4500 gas) | Glamsterdam (计划) | 计划 | 🏆 **N42 领先** — 率先实现 |
+| 历史格式 | EraE 存档格式 (随机访问) | EraE (v1.17.0) | 计划 | ✅ **完整** |
+| 批量 RPC | eth_getStorageValues (EIP-7834) | v1.17.1 | 无 | ✅ **完整** |
