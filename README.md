@@ -1,60 +1,64 @@
 # N42 Blockchain
 
-[![Go](https://img.shields.io/badge/go-1.21%2B-blue.svg)](https://golang.org)
+[![Go](https://img.shields.io/badge/go-1.25%2B-blue.svg)](https://golang.org)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/n42blockchain/n42/ci.yml?branch=main)](https://github.com/n42blockchain/n42/actions)
-[![GitHub License](https://img.shields.io/github/license/n42blockchain/n42)](https://github.com/n42blockchain/n42/blob/main/LICENSE)
-[![GitHub Issues](https://img.shields.io/github/issues/n42blockchain/n42)](https://github.com/n42blockchain/n42/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/n42blockchain/n42)](https://github.com/n42blockchain/n42/pulls)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub Stars](https://img.shields.io/github/stars/n42blockchain/n42)](https://github.com/n42blockchain/n42/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/n42blockchain/n42)](https://github.com/n42blockchain/n42/network/members)
 
 ## Introduction
 
-N42 establishes a secure, efficient, and globally connected digital ecosystem, giving developers unparalleled freedom and seamless interoperability for building applications. As a high-performance public blockchain, N42 is built using Go, leveraging its superior concurrency, scalability, and deployment simplicity to deliver a resilient and highly efficient infrastructure.
+N42 is a high-performance, AI-native Layer 1 blockchain built in Go. It combines Ethereum-compatible EVM execution with a mobile-first consensus architecture, pluggable BFT consensus, and a complete AI safety infrastructure — all at the protocol level.
 
-Featuring a modular, sharded architecture, N42 delivers high transaction throughput and advanced data processing — key elements for building globally connected digital infrastructure. Its permissionless framework enables effortless integration and efficient data exchange across a wide range of applications, paving the way for the next generation of decentralized internet services.
+Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile verification nodes, N42 delivers high transaction throughput with instant finality. Its permissionless framework enables effortless integration for building the next generation of decentralized AI-powered applications.
 
 **Disclaimer:** This software is currently a tech preview. We will do our best to keep it stable and avoid breaking changes, but we make no guarantees.
 
 ## Key Features
 
+### Consensus
+
+- **HotStuff-2 BFT**: Two-round optimistic consensus with instant finality, BLS12-381 aggregate signatures, adaptive pacemaker, and dynamic validator reconfiguration
+- **Authority PoS (APoS)**: Epoch-based validator rotation with tiered staking (token, NFT, testnet), checkpoint snapshots every 3000 blocks, and post-quantum STARK verification path
+- **Authority PoA (APoA)**: Lightweight proof-of-authority for private networks and development
+- **Mobile Verification**: Lightweight mobile nodes verify block state via BLS-signed attestations without re-executing EVM — enables smartphones as consensus participants
+
 ### Zero-Knowledge Proof System
 
-- **ZISK zkVM Fast-Path Proving**: Block producers generate ZK proofs after execution; validators verify proofs in milliseconds without re-executing the EVM, drastically reducing hardware requirements
+- **ZISK zkVM Fast-Path Proving**: Block producers generate ZK proofs after execution; validators verify proofs in milliseconds without re-executing the EVM
 - **RISC-V64 Guest Program**: Standalone EVM execution binary (`cmd/zkguest`) compiled to RISC-V64 for zkVM proving, with pure Go EVM core (no CGO)
-- **gRPC Prover Integration**: External ZISK prover cluster connection via gRPC, with configurable concurrency, timeouts, and proof types (STARK/SNARK)
-- **Soft Verification Mode**: Blocks with proofs are verified via ZK; blocks without proofs fall back to normal EVM execution (configurable to enforce proofs)
+- **gRPC Prover Integration**: External ZISK prover cluster connection via gRPC, with configurable concurrency, timeouts, and proof types (STARK/SNARK/SP1)
 - **Block Witness Infrastructure**: TracingReader-based witness capture during block production, binary encoding, LRU caching, and P2P witness request protocol
 
-### Consensus & Execution
+### Execution
 
-- **High-Performance EVM**: Block-STM parallel transaction execution with multi-version state
-- **Pluggable Consensus**: Authority PoA (`apoa`) and Authority PoS (`apos`) engines
+- **Block-STM Parallel EVM**: Optimistic parallel transaction execution with multi-version state, 3.9x speedup on independent workloads
+- **Deferred Execution Pipeline**: Consensus-execution separation for higher throughput
 - **EOF (EVM Object Format)**: Full support including EOFCREATE, RETURNCONTRACT, and sub-containers
-- **Blob Transactions (EIP-4844)**: Native support for blob-carrying transactions
-- **MEV Infrastructure**: Bundle pool and priority-based transaction ordering for block builders
-- **State Prefetching**: Predictive state loading for sender/recipient/access-list entries
+- **Blob Transactions (EIP-4844)**: Native support for blob-carrying transactions with V2 wire format
+- **Pectra EIPs (9 complete)**: EIP-7702, EIP-2537 BLS, EIP-6110, EIP-7251, EIP-7002, EIP-7623, EIP-2935, EIP-7685
 
 ### State & Storage
 
-- **Jellyfish Merkle Tree (JMT)**: Blake3-hashed state commitment with Merkle proofs, replacing legacy incremental Keccak
+- **Jellyfish Merkle Tree (JMT)**: Blake3-hashed state commitment with Merkle proofs and reference-counting GC for online pruning
 - **MDBX Storage**: Memory-mapped B+ tree database with layered caching
 - **Ancient/Freezer DB**: Automatic archival of historical data beyond a configurable threshold
-- **Flat Snapshot Acceleration**: In-memory snapshot tree with diff layers for fast state reads
+- **Flat Snapshot Acceleration**: DiffLayer tree with MDBX persistence, journal crash recovery, and background generator
 
 ### Networking & Sync
 
-- **Snap Sync**: Fast state synchronization with parallel downloading and verification
-- **P2P Networking**: libp2p-based with Kademlia DHT, peer scoring, and rate limiting
+- **5 Sync Modes**: Full, Snap, Checkpoint, Backfill, and Staged (7-stage pipeline with forward/unwind/prune)
+- **P2P Networking**: libp2p-based with Kademlia DHT, peer scoring, rate limiting, and NAT traversal
 - **ExEx Extensions**: Execution Extension framework for pluggable post-block processing
+- **Decentralized Messaging**: 6-layer P2P messaging platform (relay, E2E encryption, RLN anti-spam, persistent storage, MLS groups, DID identity)
 
 ### API & Tooling
 
-- **Comprehensive JSON-RPC**: Full Ethereum JSON-RPC including `eth_getProof`, `eth_createAccessList`, `debug_*`, and ZK proof endpoints (`zk_getBlockZKProof`, `zk_verifyBlockZKProof`, `zk_getProofStatus`)
-- **Witness RPC**: `eth_getBlockWitness` for retrieving block execution witnesses
-- **MCP Server**: Model Context Protocol server for AI-assisted blockchain interaction
-- **Chain Import/Export**: Length-prefixed protobuf format for offline block data transfer
-- **Database Inspector**: CLI tools for database stats, key inspection, and state dumps
+- **Comprehensive JSON-RPC**: Full Ethereum JSON-RPC including `eth_getProof`, `debug_*`, `trace_*`, Engine API v1-v4, Otterscan, and ZK proof endpoints
+- **MCP Server**: Model Context Protocol server for AI-assisted blockchain interaction with 16+ tools
+- **GraphQL API**: Full GraphQL endpoint with schema-driven queries
+- **RPCDaemon**: Standalone RPC server connecting to core node via gRPC for read scaling
+- **Mobile SDK**: iOS/Android SDK via gomobile with V2 wire format, BLS signing, and WebSocket/QUIC verification
 
 ### AI-Native Infrastructure
 
@@ -62,11 +66,23 @@ Featuring a modular, sharded architecture, N42 delivers high transaction through
 - **AI Inference Precompile (0x0301)**: Smart contracts call AI models on-chain — submit inference requests, read verified results, query model registry. Gas-metered with tiered verification (ZK/Optimistic/TEE)
 - **ZKML Verification**: Zero-knowledge proofs of ML inference correctness — circuit generation from model structure, execution trace capture, proof generation and verification
 - **AI Data Governance**: On-chain training data provenance with human ethics committee voting (quorum/threshold, secp256k1-signed ballots). Datasets must pass fairness, privacy, content safety, and transparency review before use in training
-- **ZK Training Verification**: Cryptographic proofs binding trained models to approved datasets and training processes. Prevents model forgery and weight tampering. Governance-gated registration
-- **ZK Inference Attestation**: Signed attestations for inference results with chain-of-custody validation. Multi-hop pipeline support (perception→planning→control) for autonomous driving and robotics safety. Three safety tiers: Standard, HighValue, Critical
+- **ZK Training Verification**: Cryptographic proofs binding trained models to approved datasets and training processes. Prevents model forgery and weight tampering
+- **ZK Inference Attestation**: Signed attestations for inference results with chain-of-custody validation. Multi-hop pipeline support (perception→planning→control) for autonomous driving and robotics safety
 - **AI Block Building**: AI-optimized transaction ordering with MEV detection, sandwich attack protection (fairness guard), and EWMA-based gas prediction
 - **Agent Discovery**: P2P agent registry with capability-based discovery, task negotiation protocol, and weighted reputation system
-- **AI Data Pipeline**: ExEx-powered incremental indexer for token transfers, contract events, address profiles, and gas analytics — O(1) structured queries via MCP
+
+### Distributed Infrastructure
+
+- **ZK Coprocessor**: Off-chain compute with tiered on-chain verification (ZK/Optimistic/TEE), provider marketplace, and economic slashing
+- **WASM Engine**: Sandboxed execution with fuel-based gas metering and host functions
+- **Storage Bridge**: IPFS/Filecoin bridge, BitTorrent seeder, content-addressed storage precompile (0x0300)
+- **Push Notifications**: Contract event → wallet stream delivery
+
+### Security
+
+- **Post-Quantum Cryptography**: Falcon, Dilithium2/3, SQIsign precompiles (isolated activation via `PQPrecompilesTime`)
+- **3 Rounds of Security Audit**: 47+ fixes across critical, high, medium severity
+- **Encrypted Mempool**: Transaction privacy before block inclusion
 
 ## Architecture
 
@@ -74,30 +90,47 @@ Featuring a modular, sharded architecture, N42 delivers high transaction through
 cmd/
   n42/              Main entry point and CLI commands
   zkguest/          RISC-V64 ZK guest program (standalone EVM for zkVM)
+  evmsdk/           Mobile SDK (iOS/Android via gomobile, V1/V2 wire format)
+  rpcdaemon/        Standalone RPC daemon (gRPC remote KV)
+  clef/             External signer (IPC + rules + audit log)
 internal/
-  consensus/        Pluggable consensus engines (apoa/, apos/)
+  consensus/        Pluggable consensus engines
+    apoa/             Authority PoA
+    apos/             Authority PoS (epoch, checkpoint, BLS, PQ-STARK)
+    hotstuff/         HotStuff-2 BFT (2-round, pacemaker, reconfiguration)
   miner/            Block production with MEV bundle support and witness capture
-  txspool/          Transaction pool with persistence
-  vm/               EVM execution engine with EOF support
-  avm/              N42 AVM (alternative VM)
-  sync/             Chain synchronization (snap sync, initial sync, witness P2P)
-  api/              JSON-RPC backend (eth, debug, zk, witness endpoints)
-  zkprover/         ZK prover service (gRPC client, input builder, guest program)
-  zkverifier/       ZK proof verifier (STARK/SNARK verification)
-  mcp/              Model Context Protocol server
+  txspool/          Transaction pool with persistence and encryption
+  vm/               EVM execution engine with EOF, BLS, P256, CAS, AI precompiles
+  sync/             Chain synchronization (full, snap, checkpoint, backfill, staged)
+  api/              JSON-RPC backend (eth, debug, trace, zk, engine, witness, graphql)
+  zkprover/         ZK prover service (STARK/SNARK/SP1, ZKML)
+  zkverifier/       ZK proof verifier (block proofs, ZKML)
+  mcp/              Model Context Protocol server (16+ tools)
   mev/              MEV relay + AI block optimizer
+  bundler/          ERC-4337 account abstraction bundler
+  peerdas/          PeerDAS data availability sampling (EIP-7594)
+  distributed/      Distributed infrastructure
+    coprocessor/      ZK coprocessor (tiered verification, marketplace, slashing)
+    compute/          WASM engine, batch MapReduce, AI inference (opML)
+    messaging/        P2P relay, E2E encryption, RLN, MLS groups, DID, SSE streaming
+    storage/          IPFS bridge, BitTorrent, eDonkey2000
+    notify/           Push notifications
+  ai/               AI-native infrastructure
+    wallet/           Agent wallets (session keys, spending policies, paymaster)
+    coord/            Agent coordination (discovery, negotiation, reputation)
+    governance/       Training data governance (ethics committee voting)
+    training/         ZK training verification (model provenance)
+    attestation/      ZK inference attestation (signed results, chain-of-custody)
 modules/
   state/            State management with JMT commitment and witness generation
   rawdb/            Raw database operations (MDBX + freezer)
 lib/
   jmt/              Jellyfish Merkle Tree implementation (Blake3, 16-ary)
-  kv/               Key-value store interfaces (mdbx/, memdb/)
-conf/               Node configuration (P2P, RPC, consensus, ZK prover settings)
-  ai/wallet/        AI agent wallets (session keys, spending policies, paymaster)
-  ai/coord/         AI agent coordination (discovery, negotiation, reputation)
-  ai/governance/    Training data governance (ethics committee voting)
-  ai/training/      ZK training verification (model provenance)
-  ai/attestation/   ZK inference attestation (signed results, chain-of-custody)
+  kv/               Key-value store interfaces (mdbx/, memdb/, remotedb/, layered/)
+params/             Chain parameters, genesis configs (embedded JSON)
+conf/               Node configuration (unified AICfg, all subsystem configs)
+contracts/          Smart contracts
+  deposit/            Tiered staking (token/, nftstake/, testnet/)
 ```
 
 ## System Requirements
@@ -105,20 +138,11 @@ conf/               Node configuration (P2P, RPC, consensus, ZK prover settings)
 - **Storage**: >= 200 GB (SSD or NVMe recommended; HDD not recommended)
 - **Memory**: >= 16 GB RAM
 - **CPU**: 64-bit architecture
-- **Go Version**: [>= 1.21](https://golang.org/doc/install)
-
-Current build/test environment: `go1.26.1`
+- **Go Version**: >= 1.25 (current build/test environment: `go1.26.1`)
 
 ## Building from Source
 
 ### Linux and macOS
-
-To build N42 from source, you must have the latest version of Go installed.
-
-- Installation instructions: [Go installation page](https://golang.org/doc/install)
-- Download Go: [Go download page](https://golang.org/dl/)
-
-Clone the repository and compile:
 
 ```sh
 git clone https://github.com/n42blockchain/n42.git
@@ -134,45 +158,39 @@ make zkguest
 # Output: build/bin/zkguest (linux/riscv64 ELF binary)
 ```
 
-### Windows
-
-Windows users may run N42 in three ways:
-
-- **Native binaries**: Build using [Chocolatey](https://chocolatey.org/)
-- **Docker**: See [docker-compose.yml](./docker-compose.yml)
-- **WSL2 (Windows Subsystem for Linux)**:
-    - Install and build as on Linux
-    - Ensure storage is on Linux filesystem for best performance
-
-### Docker Container
-
-Docker allows easy building and running without installing dependencies on the host OS.
-
-See: [docker-compose.yml](./docker-compose.yml), [Dockerfile](./Dockerfile)
-
-Convenient Docker commands:
+Build mobile SDK:
 
 ```sh
-make images # Build Docker images containing N42 binaries
-make up     # docker-compose up -d && docker-compose logs -f
-make down   # docker-compose down && clean docker data
-make start  # docker-compose start && docker-compose logs -f
-make stop   # docker-compose stop
+make android    # Output: build/mobile/android/evmsdk.aar
+make ios        # Output: build/mobile/evmsdk.xcframework
+```
+
+### Windows
+
+```powershell
+go build -o build/bin/n42.exe ./cmd/n42
+```
+
+Or use Docker / WSL2 (recommended for development).
+
+### Docker
+
+```sh
+make images   # Build Docker images containing N42 binaries
+make up       # docker-compose up -d && docker-compose logs -f
+make down     # docker-compose down && clean docker data
 ```
 
 ## Executables
 
-N42 includes the following executables:
-
 | Command | Description |
 |---------|-------------|
-| **`n42`** | Main CLI client, provides JSON RPC endpoints over HTTP transports. Use `n42 --help` for options. |
-| **`n42 migrate-jmt`** | Offline migration tool to build JMT state commitment from existing database. |
-| **`n42 import`** | Import blocks from a file. |
-| **`n42 export`** | Export blocks to a file. |
-| **`n42 db`** | Database inspection and maintenance commands. |
+| **`n42`** | Main CLI client. Use `n42 --help` for options. |
+| **`n42 migrate-jmt`** | Offline migration tool to build JMT state commitment. |
+| **`n42 import/export`** | Block import/export (protobuf format). |
+| **`n42 db`** | Database inspection (stats/list/get/inspect). |
 | **`n42 state-dump`** | Dump account state to JSON. |
-| **`zkguest`** | Standalone RISC-V64 EVM binary for ZK proof generation inside zkVM. |
+| **`zkguest`** | Standalone RISC-V64 EVM binary for ZK proving. |
 
 ## Network Ports
 
@@ -181,46 +199,68 @@ N42 includes the following executables:
 | 61015 | UDP      | Discovery v5                 | Public              |
 | 61016 | TCP      | libp2p Communication         | Public              |
 | 20012 | TCP      | JSON RPC over HTTP           | Public              |
-| 20013 | TCP      | JSON RPC over Websocket      | Public              |
+| 20013 | TCP      | JSON RPC over WebSocket      | Public              |
 | 20014 | TCP      | Secure JSON RPC (JWT Auth)   | Authenticated       |
-| 4000  | TCP      | Blockchain Explorer          | Public              |
 | 6060  | TCP      | Metrics & Profiling (pprof)  | Private             |
 | 8553  | TCP      | MCP Server (AI agents)       | Private             |
 | 8554  | TCP      | Message Stream (SSE)         | Private             |
+| 9090  | TCP      | gRPC KV (RPCDaemon)          | Private             |
 
 ## Configuration
 
-Key configuration options in `NodeConfig`:
+Key configuration options:
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `jmt_commitment` | `bool` | Enable JMT state commitment (requires `migrate-jmt` first) |
+| `jmt_commitment` | `bool` | Enable JMT state commitment |
 | `parallel_evm` | `bool` | Enable Block-STM parallel EVM execution |
-| `prefetch` | `bool` | Enable state prefetching for transaction processing |
-| `ancient_db` | `bool` | Enable ancient/freezer database for historical data |
-| `ancient_freeze_threshold` | `uint64` | Block threshold for freezing data to ancient DB |
+| `prefetch` | `bool` | Enable state prefetching |
+| `ancient_db` | `bool` | Enable ancient/freezer database |
 
-ZK Prover configuration (`ZKProverCfg`):
+ZK Prover (`ZKProverCfg`):
 
 | Option | Type | Description |
 |--------|------|-------------|
 | `enabled` | `bool` | Enable ZK proof generation |
-| `prover_addr` | `string` | gRPC address of external ZISK prover cluster |
-| `prover_timeout` | `int` | Proof generation timeout in seconds (default: 600) |
-| `proof_type` | `string` | Proof type: `"stark"` or `"snark"` |
-| `max_concurrent` | `int` | Maximum concurrent proof generation jobs |
-| `guest_binary` | `string` | Path to RISC-V64 ELF guest binary |
+| `prover_addr` | `string` | gRPC address of prover cluster |
+| `proof_type` | `string` | `"stark"`, `"snark"`, or `"sp1"` |
+| `max_concurrent` | `int` | Maximum concurrent proof jobs |
 
-AI configuration (`AICfg`):
+AI Infrastructure (`AICfg`):
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `governance.enabled` | `bool` | Enable training data governance with ethics committee |
-| `governance.committee_quorum` | `int` | Minimum votes for valid review decision (default: 3) |
-| `governance.committee_threshold` | `float64` | Approval ratio for pass (default: 0.67) |
-| `training.enabled` | `bool` | Enable ZK training process verification |
-| `attestation.enabled` | `bool` | Enable ZK inference attestation with chain-of-custody |
-| `attestation.ttl_sec` | `int` | Attestation expiry in seconds (default: 86400) |
+| `wallet.enabled` | `bool` | Enable AI agent wallets |
+| `wallet.max_session_keys` | `int` | Max session keys per account (default: 16) |
+| `wallet.paymaster_enabled` | `bool` | Enable gas sponsorship |
+| `coord.enabled` | `bool` | Enable agent discovery and coordination |
+| `governance.enabled` | `bool` | Enable training data governance |
+| `governance.committee_quorum` | `int` | Minimum votes for review (default: 3) |
+| `training.enabled` | `bool` | Enable ZK training verification |
+| `attestation.enabled` | `bool` | Enable ZK inference attestation |
+| `attestation.ttl_sec` | `int` | Attestation expiry (default: 86400) |
+| `mev_optimizer.enabled` | `bool` | Enable AI block building |
+| `mev_optimizer.fairness_mode` | `bool` | Enable sandwich detection (default: true) |
+
+## Running a Node
+
+```sh
+# Mainnet full node
+n42 --chain mainnet
+
+# Testnet
+n42 --chain testnet --http --http.api eth,net,web3
+
+# Sync from bootnode
+n42 --data.dir ./mainnet --chain mainnet \
+    --p2p.tcp-port 10186 --p2p.udp-port 10185 \
+    --p2p.min-sync-peers 1 \
+    --p2p.bootstrap-node "enr:..." \
+    --log.level info
+
+# Development mode
+n42 --chain private --p2p.no-discovery --dev.txgen
+```
 
 ## Development
 
@@ -235,6 +275,31 @@ make ci-full        # Full CI pipeline
 make bench-smoke    # Quick benchmarks on core packages
 ```
 
+### Test Suite
+
+```sh
+# AI infrastructure (150 tests, all race-safe)
+go test ./internal/ai/... -race -count=1
+
+# Consensus (HotStuff-2 7-node chaos tests)
+go test ./internal/consensus/hotstuff/ -run TestChaos -v
+
+# Mobile SDK (V1/V2 wire format, code cache)
+go test ./cmd/evmsdk/ -v
+
+# Distributed infrastructure (325 tests)
+go test ./internal/distributed/... -race -count=1
+```
+
 ## License
 
-N42 is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.en.html).
+N42 is dual-licensed:
+
+- **Core blockchain (node, consensus, EVM, P2P)**: [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.en.html) — ensures all derivative node implementations remain open source
+- **Libraries, SDK, and tools (`lib/`, `cmd/evmsdk/`, `modules/rpc/`)**: [MIT License](https://opensource.org/licenses/MIT) — allows integration into proprietary mobile apps and third-party tooling
+
+See [LICENSE](./LICENSE) and [LICENSE-MIT](./LICENSE-MIT) for details.
+
+## Contributing
+
+See [docs/developers/contribute.md](./docs/developers/contribute.md) for contribution guidelines and [docs/developers/codeofconduct.md](./docs/developers/codeofconduct.md) for our code of conduct.
