@@ -89,6 +89,12 @@ type NodeConfig struct {
 	// ZKProving enables ZK proof generation and/or verification.
 	ZKProving bool `json:"zk_proving" yaml:"zk_proving"`
 
+	// Stateless mode — validate blocks using witnesses only.
+	// When enabled, the node validates incoming blocks by verifying
+	// Merkle proofs in the block witness rather than maintaining
+	// full state. Requires witness propagation to be active.
+	StatelessEnabled bool `json:"stateless_enabled" yaml:"stateless_enabled"`
+
 	GraphQL GraphQLCfg `json:"graphql" yaml:"graphql"`
 
 	ExternalSigner        string `json:"external_signer" yaml:"external_signer"`
