@@ -19,7 +19,6 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
@@ -95,8 +94,10 @@ type ReplayedBlock struct {
 }
 
 func runReplay(ctx *cli.Context) error {
-	modules.N42Init()
-	kv.ChaindataTablesCfg = modules.N42TableCfg
+	// NOTE: Do NOT call modules.N42Init() or set kv.ChaindataTablesCfg here.
+	// The source database may be an older version without newer tables (e.g.,
+	// BlobSidecars). Opening without table config lets MDBX read existing
+	// tables without trying to create missing ones.
 
 	sourceDir := ctx.String("source")
 	outputFile := ctx.String("output")
