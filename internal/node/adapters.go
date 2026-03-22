@@ -24,6 +24,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/mcp"
@@ -227,4 +228,17 @@ func (b *mcpNodeBackend) SyncProgress() *mcp.SyncStatus {
 		HighestBlock: current,
 		Syncing:      false,
 	}
+}
+
+// ingestPoolAdapter adapts common.ITxsPool to the ingest.TxPool interface.
+type ingestPoolAdapter struct {
+	pool common.ITxsPool
+}
+
+func (a *ingestPoolAdapter) AddLocal(tx *transaction.Transaction) error {
+	return a.pool.AddLocal(tx)
+}
+
+func (a *ingestPoolAdapter) Stats() (pending, pendingAddrs, queued, queuedAddrs int) {
+	return a.pool.Stats()
 }

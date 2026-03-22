@@ -76,6 +76,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/exex"
+	"github.com/n42blockchain/N42/internal/ingest"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
 	"github.com/n42blockchain/N42/internal/mcp"
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
@@ -181,6 +182,9 @@ type Node struct {
 	keyDirTemp bool   // If true, key directory will be removed by Stop
 
 	tracingShutdown func(context.Context) error // flushes and stops the OTel tracer provider
+
+	// Ingest server for stress testing
+	ingestServer *ingest.Server
 
 	// Development tools
 	txGenerator *txgen.Generator // Transaction generator for testing
@@ -1089,6 +1093,22 @@ func (n *Node) Start() error {
 		}
 	}
 
+	// Start ingest server if enabled.
+	if n.config.IngestCfg.Enabled {
+		ingestPool := &ingestPoolAdapter{pool: n.txspool}
+		n.ingestServer = ingest.NewServer(
+			n.config.IngestCfg.Addr,
+			ingestPool,
+			n.config.IngestCfg.SoftTarget,
+			n.config.IngestCfg.HardCap,
+		)
+		if err := n.ingestServer.Start(); err != nil {
+			log.Error("Ingest server failed to start", "err", err)
+		} else {
+			log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr)
+		}
+	}
+
 	// Start transaction generator if enabled
 	if n.config.DevCfg.TxGenEnabled {
 		n.startTxGenerator()
@@ -1444,7 +1464,14 @@ func (n *Node) stopServices() []error {
 			}
 			return nil
 		}},
-		// 3c. Transaction generator
+		// 3c. Ingest server
+		{"Ingest server", func() error {
+			if n.ingestServer != nil {
+				n.ingestServer.Stop()
+			}
+			return nil
+		}},
+		// 3d. Transaction generator
 		{"Transaction generator", func() error {
 			if n.txGenerator != nil {
 				n.txGenerator.Stop()

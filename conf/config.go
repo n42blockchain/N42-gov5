@@ -69,6 +69,9 @@ type Config struct {
 
 	// AI infrastructure (unified)
 	AICfg            AICfg            `json:"ai" yaml:"ai"`
+
+	// Ingest server (stress testing)
+	IngestCfg        IngestCfg        `json:"ingest" yaml:"ingest"`
 }
 
 func SaveConfigToFile(file string, config Config) error {
