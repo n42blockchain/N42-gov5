@@ -82,6 +82,8 @@ func jumpTableCacheKey(rules *params.Rules) string {
 		{rules.IsCancun, "Ca"},
 		{rules.IsPectra, "Pe"},
 		{rules.IsOsaka, "O"},
+		{rules.IsFusaka, "Fu"},
+		{rules.IsGlamsterdam, "Gl"},
 	}
 
 	var b strings.Builder
@@ -99,6 +101,10 @@ func jumpTableCacheKey(rules *params.Rules) string {
 // newJumpTableForRules creates a new jump table for the given rules.
 func newJumpTableForRules(rules *params.Rules) JumpTable {
 	switch {
+	case rules.IsGlamsterdam:
+		return newGlamsterdamInstructionSet()
+	case rules.IsFusaka:
+		return newFusakaInstructionSet()
 	case rules.IsOsaka:
 		return newOsakaInstructionSet()
 	case rules.IsPectra:

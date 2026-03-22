@@ -284,6 +284,10 @@ var (
 	// gasSStoreEIP3529 implements gas cost for SSTORE according to EIP-3529
 	// Replace `SSTORE_CLEARS_SCHEDULE` with `SSTORE_RESET_GAS + ACCESS_LIST_STORAGE_KEY_COST` (4,800)
 	gasSStoreEIP3529 = makeGasSStoreFunc(params.SstoreClearsScheduleRefundEIP3529)
+
+	// gasSStoreGlamsterdam implements gas cost for SSTORE according to EIP-7904 (Glamsterdam)
+	// Uses the Glamsterdam clearing refund: SSTORE_RESET_GAS - COLD_SLOAD_COST + ACCESS_LIST_STORAGE_KEY_COST_GLAMSTERDAM (3,375)
+	gasSStoreGlamsterdam = makeGasSStoreFunc(params.SstoreClearsScheduleRefundGlamsterdam)
 )
 
 // makeSelfdestructGasFn creates the selfdestruct dynamic gas function for EIP-2929 and EIP-3529
