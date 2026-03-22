@@ -220,6 +220,30 @@ func TestRulesWithTimestamp(t *testing.T) {
 	}
 }
 
+func TestIsParisAtIncludesMergeAndLaterForks(t *testing.T) {
+	cfg := &ChainConfig{
+		ChainID:            big.NewInt(1),
+		LondonBlock:        big.NewInt(0),
+		MergeNetsplitBlock: big.NewInt(10),
+		ShanghaiTime:       big.NewInt(15_000),
+	}
+
+	if cfg.IsParisAt(5, 5) {
+		t.Fatal("IsParisAt should be false before merge netsplit/shanghai activation")
+	}
+	if !cfg.IsParisAt(10, 5) {
+		t.Fatal("IsParisAt should be true at merge netsplit activation")
+	}
+	if !cfg.IsParisAt(11, 15_000) {
+		t.Fatal("IsParisAt should remain true for Shanghai+ semantics")
+	}
+
+	rules := cfg.RulesWithTimestamp(10, 5)
+	if !rules.IsParis {
+		t.Fatal("RulesWithTimestamp should mark Paris active at merge netsplit")
+	}
+}
+
 func TestRulesWithTimestampSupportsShanghaiCancunTime(t *testing.T) {
 	cfg := &ChainConfig{
 		ChainID:      big.NewInt(1),

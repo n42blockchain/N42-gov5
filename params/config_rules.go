@@ -24,18 +24,18 @@ import "math/big"
 // Rules is a one time interface meaning that it shouldn't be used in between transition
 // phases.
 type Rules struct {
-	ChainID                                                 *big.Int
-	IsHomestead, IsTangerineWhistle, IsSpuriousDragon       bool
-	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
-	IsBerlin, IsLondon, IsShanghai, IsCancun, IsPrague      bool
-	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam              bool // Pectra: EIP-7702, Osaka: EOF, Fusaka: Native AA, Glamsterdam: EIP-7904
-	IsNano, IsMoran                                         bool
-	IsEip1559FeeCollector                                   bool
-	IsParlia, IsStarknet, IsAura, IsBeijing                 bool
-	IsPQPrecompiles                                         bool // N42 extension: post-quantum precompiles enabled
-	IsContentStore                                          bool // N42 extension: content-addressed storage precompile
-	IsAIInference                                           bool // N42 extension: AI inference precompile
-	IsRandomness                                            bool // N42 extension: on-chain randomness beacon precompile
+	ChainID                                                     *big.Int
+	IsHomestead, IsTangerineWhistle, IsSpuriousDragon           bool
+	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul     bool
+	IsBerlin, IsLondon, IsParis, IsShanghai, IsCancun, IsPrague bool
+	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam                  bool // Pectra: EIP-7702, Osaka: EOF, Fusaka: Native AA, Glamsterdam: EIP-7904
+	IsNano, IsMoran                                             bool
+	IsEip1559FeeCollector                                       bool
+	IsParlia, IsStarknet, IsAura, IsBeijing                     bool
+	IsPQPrecompiles                                             bool // N42 extension: post-quantum precompiles enabled
+	IsContentStore                                              bool // N42 extension: content-addressed storage precompile
+	IsAIInference                                               bool // N42 extension: AI inference precompile
+	IsRandomness                                                bool // N42 extension: on-chain randomness beacon precompile
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -62,6 +62,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsIstanbul:            c.IsIstanbul(num),
 		IsBerlin:              c.IsBerlin(num),
 		IsLondon:              c.IsLondon(num),
+		IsParis:               c.IsParisAt(num, timestamp),
 		IsShanghai:            c.IsShanghaiAt(num, timestamp),
 		IsCancun:              c.IsCancunAt(num, timestamp),
 		IsPrague:              c.IsPrague(timestamp),
@@ -103,6 +104,7 @@ func (r *Rules) applyForkInheritance() {
 	if r.IsPrague {
 		r.IsCancun = true
 		r.IsShanghai = true
+		r.IsParis = true
 		r.IsLondon = true
 		r.IsBerlin = true
 		r.IsIstanbul = true
@@ -174,6 +176,16 @@ func (c *ChainConfig) IsBerlin(num uint64) bool {
 // IsLondon returns whether num is either equal to the London fork block or greater.
 func (c *ChainConfig) IsLondon(num uint64) bool {
 	return isForked(c.LondonBlock, num)
+}
+
+// IsParis returns whether num is either equal to the Paris/Merge netsplit block or greater.
+func (c *ChainConfig) IsParis(num uint64) bool {
+	return isForked(c.MergeNetsplitBlock, num)
+}
+
+// IsParisAt returns whether Paris-or-later semantics are active at the given block number or timestamp.
+func (c *ChainConfig) IsParisAt(num uint64, time uint64) bool {
+	return c.IsParis(num) || c.IsShanghaiAt(num, time)
 }
 
 // IsArrowGlacier returns whether num is either equal to the Arrow Glacier (EIP-4345) fork block or greater.
