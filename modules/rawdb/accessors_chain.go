@@ -368,17 +368,20 @@ func ReadCanonicalBodyWithTransactions(db kv.Getter, hash types.Hash, number uin
 
 	verifies, err := ReadVerifies(db, hash, number)
 	if err != nil {
-		log.Error("Failed to read verifiers", "hash", hash, "block", number, "err", err)
-		return nil
+		// Non-fatal: verifier data may be in an incompatible format (old DB version).
+		// Continue with nil verifiers — this allows reading blocks from older databases
+		// where the Verifiers table has a different record size.
+		log.Trace("Skipping verifiers (incompatible format)", "block", number, "err", err)
+	} else {
+		body.Verifiers = verifies
 	}
-	body.Verifiers = verifies
 
 	rewards, err := ReadRewards(db, hash, number)
 	if err != nil {
-		log.Error("read reward failed", err)
-		return nil
+		log.Trace("Skipping rewards (incompatible format)", "block", number, "err", err)
+	} else {
+		body.Rewards = rewards
 	}
-	body.Rewards = rewards
 	return body
 }
 
