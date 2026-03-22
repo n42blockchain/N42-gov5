@@ -118,10 +118,11 @@ func runReplay(ctx *cli.Context) error {
 	fmt.Printf("Range:     %d → %d (0=latest)\n", fromBlock, toBlock)
 	fmt.Println()
 
-	// Open source database read-only.
+	// Open source database read-only. Do NOT use WithTableCfg — the old
+	// database may lack newer tables (e.g., BlobSidecars). MDBX_RDONLY
+	// prevents table creation and avoids "key not found" errors.
 	srcDB, err := mdbx.NewMDBX(log2.New()).
 		Path(chaindataPath).
-		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return kv.ChaindataTablesCfg }).
 		MapSize(2 * datasize.TB).
 		Flags(func(flags uint) uint { return flags | 0x20000 /* MDBX_RDONLY */ }).
 		Open(context.Background())
