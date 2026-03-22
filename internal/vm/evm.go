@@ -115,6 +115,12 @@ func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool)
 			return p, true
 		}
 	}
+	// N42 extension: on-chain randomness beacon precompile
+	if evm.chainRules.IsRandomness {
+		if p, ok := PrecompiledContractsRandomness[addr]; ok {
+			return p, true
+		}
+	}
 	return nil, false
 }
 

@@ -133,6 +133,7 @@ type Proposal struct {
 	Proposer   ValidatorIndex
 	Signature  []byte                   // BLS signature over (view, block_hash)
 	PrepareQC  *QuorumCertificate       // Piggybacked from previous view (chained mode)
+	TxRootHash types.Hash               // DA commitment: transaction root for data availability check (Baby Raptr)
 }
 
 // Vote is a Round 1 (Prepare) vote from a validator.

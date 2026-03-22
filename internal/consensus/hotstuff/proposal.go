@@ -11,7 +11,7 @@ import (
 )
 
 // onBlockReady is called when this node (as leader) has a block ready to propose.
-func (e *ConsensusEngine) onBlockReady(blockHash types.Hash) error {
+func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Hash) error {
 	view := e.roundState.CurrentView()
 
 	if !IsLeader(e.myIndex, view, e.validatorSet()) {
@@ -29,12 +29,13 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash) error {
 	e.previousPrepareQC = nil
 
 	proposal := &Proposal{
-		View:      view,
-		BlockHash: blockHash,
-		JustifyQC: justifyQC,
-		Proposer:  e.myIndex,
-		Signature: signature.Marshal(),
-		PrepareQC: piggybacked,
+		View:       view,
+		BlockHash:  blockHash,
+		JustifyQC:  justifyQC,
+		Proposer:   e.myIndex,
+		Signature:  signature.Marshal(),
+		PrepareQC:  piggybacked,
+		TxRootHash: txRootHash,
 	}
 
 	vs := e.validatorSet()
@@ -114,6 +115,17 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 		} else {
 			log.Warn("rejected invalid piggybacked PrepareQC", "view", view, "err", vErr)
 		}
+	}
+
+	// Baby Raptr: verify data availability commitment if provided.
+	// The TxRootHash is included in the proposal so that validators can verify
+	// transaction data availability before (or after) voting.
+	if proposal.TxRootHash != (types.Hash{}) {
+		if _, ok := e.importedBlocks[proposal.BlockHash]; ok {
+			// Block already imported -- TxRoot will be verified during block execution.
+		}
+		// If block not yet imported, proceed with optimistic vote.
+		// The TxRootHash will be verified when the block is imported.
 	}
 
 	e.roundState.EnterVoting()

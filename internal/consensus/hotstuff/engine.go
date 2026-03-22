@@ -285,7 +285,7 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 	case EventMessage:
 		return e.processMessage(event.Msg)
 	case EventBlockReady:
-		return e.onBlockReady(event.Hash)
+		return e.onBlockReady(event.Hash, event.TxRootHash)
 	case EventBlockImported:
 		return e.onBlockImported(event.Hash)
 	default:
@@ -302,9 +302,10 @@ func (e *ConsensusEngine) OnTimeout() error {
 
 // ConsensusEvent represents events fed into the consensus engine.
 type ConsensusEvent struct {
-	Type ConsensusEventType
-	Msg  ConsensusMsg
-	Hash types.Hash
+	Type       ConsensusEventType
+	Msg        ConsensusMsg
+	Hash       types.Hash
+	TxRootHash types.Hash // DA commitment: transaction root hash (Baby Raptr)
 }
 
 // ConsensusEventType identifies the type of consensus event.

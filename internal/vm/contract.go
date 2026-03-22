@@ -121,9 +121,18 @@ func (c *Contract) isCode(udest uint64) bool {
 		// Does parent context have the analysis?
 		analysis, exist := c.jumpdests[c.CodeHash]
 		if !exist {
-			// Do the analysis and save in parent context
-			// We do not need to store it in c.analysis
-			analysis = codeBitmap(c.Code)
+			// Check cross-block cache first (Aptos AIP-107 inspired).
+			if GlobalCodeAnalysisCache != nil {
+				analysis, exist = GlobalCodeAnalysisCache.Get(c.CodeHash)
+			}
+			if !exist {
+				// Do the analysis and save in parent context
+				analysis = codeBitmap(c.Code)
+				// Store in cross-block cache for future blocks.
+				if GlobalCodeAnalysisCache != nil {
+					GlobalCodeAnalysisCache.Put(c.CodeHash, analysis)
+				}
+			}
 			c.jumpdests[c.CodeHash] = analysis
 		}
 		// Also stash it in current contract for faster access
