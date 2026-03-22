@@ -1,7 +1,7 @@
 # N42 全局功能缺失深度对比分析
 
 > 对比对象：go-ethereum (geth) v1.16+、reth v1.11+、Erigon 3.3.9、Sei v2/v3、Monad、Grevm 2.1、Aptos
-> 分析日期：2026-03-22（修订：分布式基础设施 (coprocessor/messaging/storage/notify)、250+ 指标、Pectra 9 EIP 完整、SP1 zkVM、JMT GC、Backfill Sync、Engine API v4 完整、Otterscan 完整、Glamsterdam EIP-7904、EraE 存档、EIP-7834 批量 RPC、/simplify 审计 110 修复、综合评分 85→91→93）
+> 分析日期：2026-03-22（修订：分布式基础设施 (coprocessor/messaging/storage/notify)、250+ 指标、Pectra 9 EIP 完整、SP1 zkVM、JMT GC、Backfill Sync、Engine API v4 完整、Otterscan 完整、Glamsterdam EIP-7904、EraE 存档、EIP-7834 批量 RPC、/simplify 审计 110 修复、综合评分 85→91→93→94）
 > 范围：以太坊及高性能公链客户端全局功能模块
 > 方法：N42 数据基于源码审计（行数/测试覆盖/集成状态），竞品数据标注来源（官方文档/白皮书/宣称/GitHub releases）
 
@@ -442,7 +442,7 @@
 | 安全性 | 5% | 90 | 95 | 85 | 85 | 80 | 90 | **93** |
 | 可观测性 | 5% | 90 | 95 | 85 | 85 | 60 | 85 | **93** |
 | 扩展性 | 5% | 80 | 95 | 88 | 85 | 40 | 70 | **85** |
-| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **93** |
+| **加权总分** | 100% | **91** | **93** | **92** | **80** | **81** | **81** | **94** |
 
 > *Aptos 使用 Move VM，非直接可比
 
@@ -734,3 +734,6 @@
 | Gas 优化 | Glamsterdam EIP-7904 (转账 4500 gas) | Glamsterdam (计划) | 计划 | 🏆 **N42 领先** — 率先实现 |
 | 历史格式 | EraE 存档格式 (随机访问) | EraE (v1.17.0) | 计划 | ✅ **完整** |
 | 批量 RPC | eth_getStorageValues (EIP-7834) | v1.17.1 | 无 | ✅ **完整** |
+| 存储分层 | NVMe/HDD 分层 (热/温/冷) | Erigon: NVMe/HDD 分离 | 无 | ✅ **完整** — 等价 Erigon |
+| BitTorrent 同步 | OtterSync (EraE 段 + manifest) | Erigon: OtterSync 默认 | 无 | ✅ **完整** — 等价 Erigon |
+| 历史证明压缩 | JMT archive (seg + RecSplit) | Erigon: Haystack v3.3 | 无 | ✅ **完整** — JMT 版 Haystack |
