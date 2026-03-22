@@ -43,19 +43,29 @@ type FilterAPI struct {
 	filtersMu sync.Mutex
 	filters   map[jsonrpc.ID]*filter
 	timeout   time.Duration
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // NewFilterAPI returns a new FilterAPI instance.
 func NewFilterAPI(api Api, timeout time.Duration) *FilterAPI {
+	ctx, cancel := context.WithCancel(context.Background())
 	filterAPI := &FilterAPI{
 		api:     api,
 		events:  NewEventSystem(api),
 		filters: make(map[jsonrpc.ID]*filter),
 		timeout: timeout,
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	go filterAPI.timeoutLoop(timeout)
 
 	return filterAPI
+}
+
+// Close stops the timeout loop and releases resources.
+func (filterApi *FilterAPI) Close() {
+	filterApi.cancel()
 }
 
 // timeoutLoop runs at the interval set by 'timeout' and deletes filters
@@ -65,7 +75,11 @@ func (filterApi *FilterAPI) timeoutLoop(timeout time.Duration) {
 	ticker := time.NewTicker(timeout)
 	defer ticker.Stop()
 	for {
-		<-ticker.C
+		select {
+		case <-filterApi.ctx.Done():
+			return
+		case <-ticker.C:
+		}
 		filterApi.filtersMu.Lock()
 		for id, f := range filterApi.filters {
 			select {
@@ -352,6 +366,7 @@ func (filterApi *FilterAPI) UninstallFilter(id jsonrpc.ID) bool {
 	filterApi.filtersMu.Lock()
 	f, found := filterApi.filters[id]
 	if found {
+		f.deadline.Stop()
 		delete(filterApi.filters, id)
 	}
 	filterApi.filtersMu.Unlock()

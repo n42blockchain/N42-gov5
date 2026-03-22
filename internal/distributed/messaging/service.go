@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,11 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/log"
 )
+
+// funcPointer returns the raw pointer of a function value for comparison.
+func funcPointer(fn MessageHandler) uintptr {
+	return reflect.ValueOf(fn).Pointer()
+}
 
 // Message represents a single relay message.
 type Message struct {
@@ -329,6 +335,24 @@ func (s *Service) Subscribe(topic string, handler MessageHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handlers[topic] = append(s.handlers[topic], handler)
+}
+
+// Unsubscribe removes a handler from a topic by pointer equality.
+// This prevents handler list growth when subscribers are repeatedly added.
+func (s *Service) Unsubscribe(topic string, handler MessageHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	handlers := s.handlers[topic]
+	targetPtr := funcPointer(handler)
+	for i, h := range handlers {
+		if funcPointer(h) == targetPtr {
+			s.handlers[topic] = append(handlers[:i], handlers[i+1:]...)
+			if len(s.handlers[topic]) == 0 {
+				delete(s.handlers, topic)
+			}
+			return
+		}
+	}
 }
 
 // GetMessages retrieves stored messages by topic.
