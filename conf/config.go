@@ -73,6 +73,9 @@ type Config struct {
 	// AI infrastructure (unified)
 	AICfg            AICfg            `json:"ai" yaml:"ai"`
 
+	// OtterSync (BitTorrent-based chain sync)
+	TorrentSyncCfg   TorrentSyncCfg   `json:"torrent_sync" yaml:"torrent_sync"`
+
 	// Ingest server (stress testing)
 	IngestCfg        IngestCfg        `json:"ingest" yaml:"ingest"`
 }
