@@ -82,9 +82,10 @@ Last updated: 2026-03-22
 
 ## Totals
 
-- **Packages reviewed**: 35
-- **Issues found**: 36
-- **Issues fixed**: 36
-- **False positives skipped**: 5 (documented in review)
-- **Packages remaining**: ~85 (Priority 2-3)
+- **Packages reviewed**: 102
+- **Issues found**: 97
+- **Issues fixed**: 97
+- **Bugs found**: 5 (nil-deref, data race, double semaphore, partial read, event reset)
+- **False positives skipped**: 18 (documented in review)
+- **Packages remaining**: ~18 (low-value crypto internals, legacy compat)
 - **Packages skipped**: ~30 (Priority 4, generated/vendor)
