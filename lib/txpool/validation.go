@@ -122,7 +122,7 @@ func (p *TxPool) validateTx(txn *types.TxSlot, isLocal bool, stateCache kvcache.
 		}
 		return txpoolcfg.UnderPriced
 	}
-	gas, floorGas, reason := txpoolcfg.CalcIntrinsicGas(uint64(txn.DataLen), uint64(txn.DataNonZeroLen), uint64(authorizationLen), uint64(txn.AlAddrCount), uint64(txn.AlStorCount), txn.Creation, true, true, isShanghai, p.isPrague())
+	gas, floorGas, reason := txpoolcfg.CalcIntrinsicGas(uint64(txn.DataLen), uint64(txn.DataNonZeroLen), uint64(authorizationLen), uint64(txn.AlAddrCount), uint64(txn.AlStorCount), txn.Creation, true, true, isShanghai, p.isPrague(), p.isGlamsterdam())
 	if p.isPrague() && floorGas > gas {
 		gas = floorGas
 	}
@@ -264,6 +264,10 @@ func (p *TxPool) isPrague() bool {
 
 func (p *TxPool) isOsaka() bool {
 	return isTimeBasedForkActivated(&p.isPostOsaka, p.osakaTime)
+}
+
+func (p *TxPool) isGlamsterdam() bool {
+	return isTimeBasedForkActivated(&p.isPostGlamsterdam, p.glamsterdamTime)
 }
 
 func (p *TxPool) GetMaxBlobsPerBlock() uint64 {

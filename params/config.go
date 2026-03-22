@@ -163,7 +163,8 @@ type ChainConfig struct {
 	BPO3Time   *big.Int `json:"bpo3Time,omitempty"`
 	BPO4Time   *big.Int `json:"bpo4Time,omitempty"`
 	BPO5Time   *big.Int `json:"bpo5Time,omitempty"`
-	FusakaTime *big.Int `json:"fusakaTime,omitempty"`
+	FusakaTime      *big.Int `json:"fusakaTime,omitempty"`
+	GlamsterdamTime *big.Int `json:"glamsterdamTime,omitempty"` // EIP-7904 gas repricing
 
 	// N42 extension: post-quantum precompile activation (independent of standard forks).
 	// When set, PQ precompiles (Falcon 0x14, Dilithium2 0x15, Dilithium3 0x16, SQIsign 0x17)
@@ -551,6 +552,7 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "pectraTime", block: c.PectraTime, optional: true},
 		{name: "osakaTime", block: c.OsakaTime, optional: true},
 		{name: "fusakaTime", block: c.FusakaTime, optional: true},
+		{name: "glamsterdamTime", block: c.GlamsterdamTime, optional: true},
 	} {
 		if lastFork.name != "" {
 			if lastFork.block == nil && cur.block != nil {
@@ -636,6 +638,9 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head uint64) *ConfigC
 	}
 	if isForkIncompatible(c.FusakaTime, newcfg.FusakaTime, head) {
 		return newCompatError("Fusaka fork time", c.FusakaTime, newcfg.FusakaTime)
+	}
+	if isForkIncompatible(c.GlamsterdamTime, newcfg.GlamsterdamTime, head) {
+		return newCompatError("Glamsterdam fork time", c.GlamsterdamTime, newcfg.GlamsterdamTime)
 	}
 	return nil
 }

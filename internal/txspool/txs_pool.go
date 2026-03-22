@@ -509,7 +509,8 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	current := pool.bc.CurrentBlock()
 	isPrague := pool.chainconfig != nil && current != nil && pool.chainconfig.IsPrague(current.Time())
 	isShanghai := pool.chainconfig != nil && current != nil && current.Number64() != nil && pool.chainconfig.IsShanghai(current.Number64().Uint64()+1)
-	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague)
+	isGlamsterdam := pool.chainconfig != nil && current != nil && pool.chainconfig.IsGlamsterdam(current.Time())
+	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague, isGlamsterdam)
 	if err != nil {
 		return err
 	}

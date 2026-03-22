@@ -42,7 +42,7 @@ import (
 )
 
 func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, cache kvcache.Cache,
-	chainID uint256.Int, shanghaiTime, agraBlock, cancunTime, pragueTime, osakaTime *big.Int, blobSchedule *chain.BlobSchedule,
+	chainID uint256.Int, shanghaiTime, agraBlock, cancunTime, pragueTime, osakaTime, glamsterdamTime *big.Int, blobSchedule *chain.BlobSchedule,
 	feeCalculator FeeCalculator, logger log.Logger,
 ) (*TxPool, error) {
 	localsHistory, err := simplelru.NewLRU[string, struct{}](10_000, nil)
@@ -105,6 +105,7 @@ func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, 
 		{cancunTime, "cancunTime", &res.cancunTime},
 		{pragueTime, "pragueTime", &res.pragueTime},
 		{osakaTime, "osakaTime", &res.osakaTime},
+		{glamsterdamTime, "glamsterdamTime", &res.glamsterdamTime},
 	}
 	for _, fp := range forkParams {
 		ptr, err := bigIntToUint64Ptr(fp.value, fp.name)

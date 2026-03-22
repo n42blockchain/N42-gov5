@@ -28,7 +28,7 @@ type Rules struct {
 	IsHomestead, IsTangerineWhistle, IsSpuriousDragon       bool
 	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
 	IsBerlin, IsLondon, IsShanghai, IsCancun, IsPrague      bool
-	IsPectra, IsOsaka, IsFusaka                             bool // Pectra: EIP-7702, Osaka: EOF, Fusaka: Native AA
+	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam               bool // Pectra: EIP-7702, Osaka: EOF, Fusaka: Native AA, Glamsterdam: EIP-7904
 	IsNano, IsMoran                                         bool
 	IsEip1559FeeCollector                                   bool
 	IsParlia, IsStarknet, IsAura, IsBeijing                 bool
@@ -67,6 +67,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsPectra:              c.IsPectra(timestamp),
 		IsOsaka:               c.IsOsaka(timestamp),
 		IsFusaka:              c.IsFusaka(timestamp),
+		IsGlamsterdam:         c.IsGlamsterdam(timestamp),
 		IsNano:                c.IsNano(num),
 		IsMoran:               c.IsMoran(num),
 		IsEip1559FeeCollector: c.IsEip1559FeeCollector(num),
@@ -84,6 +85,9 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 func (r *Rules) applyForkInheritance() {
 	if r == nil {
 		return
+	}
+	if r.IsGlamsterdam {
+		r.IsFusaka = true
 	}
 	if r.IsFusaka {
 		r.IsOsaka = true
@@ -229,6 +233,12 @@ func (c *ChainConfig) IsOsaka(time uint64) bool {
 // Fusaka enables native account abstraction with protocol-level transaction validation.
 func (c *ChainConfig) IsFusaka(time uint64) bool {
 	return isForked(c.FusakaTime, time)
+}
+
+// IsGlamsterdam returns whether time is either equal to the Glamsterdam fork time or greater.
+// Glamsterdam implements EIP-7904 gas repricing, reducing simple transfer gas from 21000 to 4500.
+func (c *ChainConfig) IsGlamsterdam(time uint64) bool {
+	return isForked(c.GlamsterdamTime, time)
 }
 
 // IsPQPrecompiles returns whether time is at or past the PQ precompiles activation timestamp.

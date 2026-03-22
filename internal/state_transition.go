@@ -130,12 +130,20 @@ func (result *ExecutionResult) Revert() []byte {
 }
 
 // IntrinsicGas computes the 'intrinsic gas' for a message with the given data.
-func IntrinsicGas(data []byte, accessList transaction.AccessList, authList transaction.AuthorizationList, isContractCreation bool, isHomestead, isEIP2028 bool, isEIP3860 bool, isPrague bool) (uint64, error) {
+func IntrinsicGas(data []byte, accessList transaction.AccessList, authList transaction.AuthorizationList, isContractCreation bool, isHomestead, isEIP2028 bool, isEIP3860 bool, isPrague bool, isGlamsterdam bool) (uint64, error) {
 	var gas uint64
 	if isContractCreation && isHomestead {
-		gas = params.TxGasContractCreation
+		if isGlamsterdam {
+			gas = params.TxGasContractCreationGlamsterdam
+		} else {
+			gas = params.TxGasContractCreation
+		}
 	} else {
-		gas = params.TxGas
+		if isGlamsterdam {
+			gas = params.TxGasGlamsterdam
+		} else {
+			gas = params.TxGas
+		}
 	}
 
 	dataLen := uint64(len(data))
@@ -148,7 +156,9 @@ func IntrinsicGas(data []byte, accessList transaction.AccessList, authList trans
 		}
 
 		nonZeroGas := params.TxDataNonZeroGasFrontier
-		if isEIP2028 {
+		if isGlamsterdam {
+			nonZeroGas = params.TxDataNonZeroGasGlamsterdam
+		} else if isEIP2028 {
 			nonZeroGas = params.TxDataNonZeroGasEIP2028
 		}
 		if (math.MaxUint64-gas)/nonZeroGas < nz {
@@ -156,11 +166,15 @@ func IntrinsicGas(data []byte, accessList transaction.AccessList, authList trans
 		}
 		gas += nz * nonZeroGas
 
+		zeroGas := params.TxDataZeroGas
+		if isGlamsterdam {
+			zeroGas = params.TxDataZeroGasGlamsterdam
+		}
 		z := dataLen - nz
-		if (math.MaxUint64-gas)/params.TxDataZeroGas < z {
+		if (math.MaxUint64-gas)/zeroGas < z {
 			return 0, ErrGasUintOverflow
 		}
-		gas += z * params.TxDataZeroGas
+		gas += z * zeroGas
 
 		if isContractCreation && isEIP3860 {
 			lenWords := toWordSize(dataLen)
@@ -172,8 +186,14 @@ func IntrinsicGas(data []byte, accessList transaction.AccessList, authList trans
 	}
 
 	if accessList != nil {
-		gas += uint64(len(accessList)) * params.TxAccessListAddressGas
-		gas += uint64(accessList.StorageKeys()) * params.TxAccessListStorageKeyGas
+		accessListAddressGas := params.TxAccessListAddressGas
+		accessListStorageKeyGas := params.TxAccessListStorageKeyGas
+		if isGlamsterdam {
+			accessListAddressGas = params.TxAccessListAddressGasGlamsterdam
+			accessListStorageKeyGas = params.TxAccessListStorageKeyGasGlamsterdam
+		}
+		gas += uint64(len(accessList)) * accessListAddressGas
+		gas += uint64(accessList.StorageKeys()) * accessListStorageKeyGas
 	}
 	if isPrague && len(authList) > 0 {
 		if (math.MaxUint64-gas)/params.PerEmptyAccountCost < uint64(len(authList)) {
@@ -353,7 +373,7 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	rules := st.evm.ChainRules()
 
 	// Check intrinsic gas
-	gas, err := IntrinsicGas(st.data, st.msg.AccessList(), st.msg.AuthList(), contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague)
+	gas, err := IntrinsicGas(st.data, st.msg.AccessList(), st.msg.AuthList(), contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague, rules.IsGlamsterdam)
 	if err != nil {
 		return nil, err
 	}

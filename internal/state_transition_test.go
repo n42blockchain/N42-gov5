@@ -619,7 +619,7 @@ func TestApplyTransactionAuthorizedTxRefundsExistingAuthority(t *testing.T) {
 		StorageKeys: nil,
 	}}
 	authList := transaction.AuthorizationList{auth}
-	intrinsicGas, err := IntrinsicGas(nil, accessList, authList, false, true, true, true, true)
+	intrinsicGas, err := IntrinsicGas(nil, accessList, authList, false, true, true, true, true, false)
 	if err != nil {
 		t.Fatalf("IntrinsicGas error: %v", err)
 	}
