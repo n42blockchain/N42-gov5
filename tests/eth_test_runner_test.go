@@ -704,7 +704,7 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 	// The floor ensures data-heavy transactions pay a minimum cost
 	// Final gas used = max(standard_gas_used, floor_gas)
 	if rules.IsPrague {
-		floorDataGas := vm.FloorDataGas(txData)
+		floorDataGas := vm.FloorDataGas(txData, rules.IsGlamsterdam)
 		if gasUsed < floorDataGas {
 			// Adjust: consume at least floor gas
 			gasUsed = floorDataGas

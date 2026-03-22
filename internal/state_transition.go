@@ -385,7 +385,7 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	// EIP-7623: Floor data gas for Prague/Pectra
 	var floorDataGas uint64
 	if rules.IsPrague {
-		floorDataGas = vm2.FloorDataGas(st.data)
+		floorDataGas = vm2.FloorDataGas(st.data, rules.IsGlamsterdam)
 		if st.initialGas < floorDataGas {
 			return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.initialGas, floorDataGas)
 		}
