@@ -17,8 +17,6 @@
 package node
 
 import (
-	"os"
-
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/lib/common/datadir"
 	"github.com/n42blockchain/N42/log"
@@ -35,15 +33,7 @@ func applyStorageTier(cfg *conf.StorageTierCfg, dirs *datadir.Dirs) error {
 		return err
 	}
 
-	// Create tier directories.
-	for _, p := range []string{cfg.HotPath, cfg.WarmPath, cfg.ColdPath, cfg.DownloaderPath} {
-		if p != "" {
-			if err := os.MkdirAll(p, 0700); err != nil {
-				return err
-			}
-		}
-	}
-
+	// Validate() already ensures tier directories exist via MkdirAll.
 	datadir.ApplyTierOverrides(dirs, cfg.HotPath, cfg.WarmPath, cfg.ColdPath, cfg.DownloaderPath)
 
 	log.Info("Storage tiering applied",

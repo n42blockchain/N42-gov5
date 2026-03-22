@@ -6,10 +6,7 @@ package torrentsync
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -85,7 +82,9 @@ func (imp *Importer) ImportFile(ctx context.Context, eraPath string) (imported u
 			}
 
 			// Verify block hash chain: parent hash must match previous block's hash.
-			if imp.verify && num > first {
+			// For the first block in the segment (num == first), prevHash is either
+			// zero (genesis) or loaded from the DB (when first > 0).
+			if imp.verify && (num > first || (num == first && first > 0)) {
 				header, ok := blk.Header().(*block.Header)
 				if !ok {
 					return fmt.Errorf("block %d: unexpected header type", num)
@@ -121,19 +120,10 @@ func (imp *Importer) ImportFile(ctx context.Context, eraPath string) (imported u
 // ImportAll scans eraDir for .era files and imports them in order.
 // Returns the total number of blocks imported across all files.
 func (imp *Importer) ImportAll(ctx context.Context, eraDir string) (uint64, error) {
-	entries, err := os.ReadDir(eraDir)
+	files, err := listEraFiles(eraDir)
 	if err != nil {
-		return 0, fmt.Errorf("torrentsync: read dir: %w", err)
+		return 0, err
 	}
-
-	// Collect and sort .era files by name.
-	var files []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".era") {
-			files = append(files, filepath.Join(eraDir, entry.Name()))
-		}
-	}
-	sort.Strings(files)
 
 	var total uint64
 	for _, f := range files {

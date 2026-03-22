@@ -38,35 +38,29 @@ func EraFileName(fromBlock, toBlock uint64) string {
 // GenerateManifest scans eraDir for .era files and builds a Manifest.
 // It reads each file's index to determine the block range.
 func GenerateManifest(eraDir string, chainID uint64) (*Manifest, error) {
-	entries, err := os.ReadDir(eraDir)
+	files, err := listEraFiles(eraDir)
 	if err != nil {
-		return nil, fmt.Errorf("torrentsync: read era dir: %w", err)
+		return nil, err
 	}
 
-	var segments []SegmentInfo
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".era") {
-			continue
-		}
-		info, err := entry.Info()
+	segments := make([]SegmentInfo, 0, len(files))
+	for _, f := range files {
+		name := filepath.Base(f)
+		info, err := os.Stat(f)
 		if err != nil {
 			continue
 		}
 		seg := SegmentInfo{
-			FileName: entry.Name(),
+			FileName: name,
 			Size:     info.Size(),
 		}
 		// Parse from/to from the filename convention era-NNNNNN-NNNNNN.era.
-		n, _ := fmt.Sscanf(entry.Name(), "era-%d-%d.era", &seg.FromBlock, &seg.ToBlock)
+		n, _ := fmt.Sscanf(name, "era-%d-%d.era", &seg.FromBlock, &seg.ToBlock)
 		if n == 2 && seg.ToBlock >= seg.FromBlock {
 			seg.BlockCount = seg.ToBlock - seg.FromBlock + 1
 		}
 		segments = append(segments, seg)
 	}
-
-	sort.Slice(segments, func(i, j int) bool {
-		return segments[i].FromBlock < segments[j].FromBlock
-	})
 
 	return &Manifest{
 		ChainID:   chainID,
@@ -102,11 +96,31 @@ func SaveManifest(m *Manifest, path string) error {
 }
 
 // FindSegment returns the segment that contains blockNum, or nil if not found.
+// Uses binary search since Segments are sorted by FromBlock.
 func (m *Manifest) FindSegment(blockNum uint64) *SegmentInfo {
-	for i := range m.Segments {
-		if blockNum >= m.Segments[i].FromBlock && blockNum <= m.Segments[i].ToBlock {
-			return &m.Segments[i]
-		}
+	i := sort.Search(len(m.Segments), func(i int) bool {
+		return m.Segments[i].FromBlock > blockNum
+	})
+	// i is the first segment whose FromBlock > blockNum.
+	// The candidate is at i-1 (if it exists and its range covers blockNum).
+	if i > 0 && blockNum <= m.Segments[i-1].ToBlock {
+		return &m.Segments[i-1]
 	}
 	return nil
+}
+
+// listEraFiles returns sorted absolute paths of .era files in dir.
+func listEraFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("torrentsync: read dir %q: %w", dir, err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".era") {
+			files = append(files, filepath.Join(dir, entry.Name()))
+		}
+	}
+	sort.Strings(files)
+	return files, nil
 }
