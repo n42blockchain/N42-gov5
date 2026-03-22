@@ -57,7 +57,10 @@ func NewCodeAnalysisCache(capacity int) *CodeAnalysisCache {
 }
 
 // Get retrieves a cached code analysis by codeHash.
-// Returns a copy of the bitvec and true if found, or nil and false if not.
+// Returns the bitvec slice and true if found, or nil and false if not.
+//
+// The returned slice MUST NOT be mutated by callers. The bitvec is immutable
+// after creation by codeBitmap() and is shared across concurrent readers.
 func (c *CodeAnalysisCache) Get(codeHash types.Hash) ([]uint64, bool) {
 	c.mu.RLock()
 	elem, ok := c.cache[codeHash]
@@ -66,9 +69,9 @@ func (c *CodeAnalysisCache) Get(codeHash types.Hash) ([]uint64, bool) {
 		return nil, false
 	}
 	entry := elem.Value.(*codeEntry)
-	// Copy the analysis to avoid data races with concurrent callers.
-	result := make([]uint64, len(entry.analysis))
-	copy(result, entry.analysis)
+	// Return the slice directly — bitvec is immutable after creation.
+	// All callers (isCodeFromAnalysis) only read; no mutation ever occurs.
+	result := entry.analysis
 	c.mu.RUnlock()
 
 	// Promote to front under write lock.

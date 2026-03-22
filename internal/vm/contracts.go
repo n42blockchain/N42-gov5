@@ -301,11 +301,11 @@ func ActivePrecompiles(rules *params.Rules) []types.Address {
 	}
 	// N42 extension: append AI inference precompile address when enabled
 	if rules.IsAIInference {
-		addrs = append(addrs, collectAddresses(PrecompiledContractsAIInference)...)
+		addrs = append(addrs, PrecompiledAddressesAIInference...)
 	}
 	// N42 extension: append randomness beacon precompile address when enabled
 	if rules.IsRandomness {
-		addrs = append(addrs, collectAddresses(PrecompiledContractsRandomness)...)
+		addrs = append(addrs, PrecompiledAddressesRandomness...)
 	}
 	return addrs
 }
