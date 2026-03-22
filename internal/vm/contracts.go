@@ -303,6 +303,10 @@ func ActivePrecompiles(rules *params.Rules) []types.Address {
 	if rules.IsAIInference {
 		addrs = append(addrs, collectAddresses(PrecompiledContractsAIInference)...)
 	}
+	// N42 extension: append randomness beacon precompile address when enabled
+	if rules.IsRandomness {
+		addrs = append(addrs, collectAddresses(PrecompiledContractsRandomness)...)
+	}
 	return addrs
 }
 

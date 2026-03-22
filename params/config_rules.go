@@ -35,6 +35,7 @@ type Rules struct {
 	IsPQPrecompiles                                         bool // N42 extension: post-quantum precompiles enabled
 	IsContentStore                                          bool // N42 extension: content-addressed storage precompile
 	IsAIInference                                           bool // N42 extension: AI inference precompile
+	IsRandomness                                            bool // N42 extension: on-chain randomness beacon precompile
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -77,6 +78,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsPQPrecompiles:       c.IsPQPrecompiles(timestamp),
 		IsContentStore:        c.IsContentStore(timestamp),
 		IsAIInference:         c.IsAIInference(timestamp),
+		IsRandomness:          c.IsRandomness(timestamp),
 	}
 	rules.applyForkInheritance()
 	return rules
@@ -255,6 +257,11 @@ func (c *ChainConfig) IsContentStore(time uint64) bool {
 // IsAIInference returns whether time is at or past the AI inference precompile activation.
 func (c *ChainConfig) IsAIInference(time uint64) bool {
 	return isForked(c.AIInferenceTime, time)
+}
+
+// IsRandomness returns whether time is at or past the on-chain randomness beacon precompile activation.
+func (c *ChainConfig) IsRandomness(time uint64) bool {
+	return isForked(c.RandomnessTime, time)
 }
 
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.

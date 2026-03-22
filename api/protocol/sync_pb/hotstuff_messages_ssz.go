@@ -91,7 +91,7 @@ func (m *HotStuffTC) UnmarshalSSZ(buf []byte) error {
 // ============================================================================
 
 func (m *HotStuffProposal) SizeSSZ() int {
-	return 8 + sizeBytes(m.BlockHash) + sizeBytes(m.JustifyQC) + 4 + sizeBytes(m.Signature) + sizeBytes(m.PrepareQC)
+	return 8 + sizeBytes(m.BlockHash) + sizeBytes(m.JustifyQC) + 4 + sizeBytes(m.Signature) + sizeBytes(m.PrepareQC) + sizeBytes(m.TxRootHash)
 }
 
 func (m *HotStuffProposal) MarshalSSZ() ([]byte, error) {
@@ -107,6 +107,7 @@ func (m *HotStuffProposal) MarshalSSZTo(buf []byte) ([]byte, error) {
 	dst = putUint32(dst, m.Proposer)
 	dst = putBytes(dst, m.Signature)
 	dst = putBytes(dst, m.PrepareQC)
+	dst = putBytes(dst, m.TxRootHash)
 	return dst, nil
 }
 
@@ -128,7 +129,10 @@ func (m *HotStuffProposal) UnmarshalSSZ(buf []byte) error {
 	if m.Signature, off, err = readBytes(buf, off); err != nil {
 		return err
 	}
-	if m.PrepareQC, _, err = readBytes(buf, off); err != nil {
+	if m.PrepareQC, off, err = readBytes(buf, off); err != nil {
+		return err
+	}
+	if m.TxRootHash, _, err = readBytes(buf, off); err != nil {
 		return err
 	}
 	return nil

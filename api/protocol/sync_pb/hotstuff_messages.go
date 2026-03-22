@@ -29,6 +29,7 @@ type HotStuffProposal struct {
 	Proposer   uint32 `ssz-size:"4"`
 	Signature  []byte `ssz-max:"256"`
 	PrepareQC  []byte `ssz-max:"2048"` // optional piggybacked QC (0 length = absent)
+	TxRootHash []byte `ssz-size:"32"`  // DA commitment: transaction root hash (Baby Raptr)
 }
 
 // HotStuffVote is the wire format for a Round 1 (Prepare) vote.

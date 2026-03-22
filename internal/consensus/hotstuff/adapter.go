@@ -437,8 +437,9 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 	if ce != nil {
 		blockHash := sealed.Hash()
 		if err := ce.ProcessEvent(ConsensusEvent{
-			Type: EventBlockReady,
-			Hash: blockHash,
+			Type:       EventBlockReady,
+			Hash:       blockHash,
+			TxRootHash: sealed.TxHash(), // Baby Raptr: DA commitment
 		}); err != nil {
 			log.Debug("hotstuff: seal block event ignored", "err", err)
 		}

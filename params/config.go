@@ -181,6 +181,11 @@ type ChainConfig struct {
 	// When set, smart contracts can submit inference requests and read verified results.
 	AIInferenceTime *big.Int `json:"aiInferenceTime,omitempty"`
 
+	// N42 extension: on-chain randomness beacon precompile (0x0302).
+	// When set, smart contracts can access deterministic per-block randomness.
+	// Inspired by Aptos AIP-41.
+	RandomnessTime *big.Int `json:"randomnessTime,omitempty"`
+
 	BlobSchedule *BlobSchedule `json:"blobSchedule,omitempty"`
 
 	// BSC / custom fork fields

@@ -157,12 +157,13 @@ func encodeProposal(p *Proposal) ([]byte, error) {
 		}
 	}
 	wire := &sync_pb.HotStuffProposal{
-		View:      p.View,
-		BlockHash: p.BlockHash[:],
-		JustifyQC: justifyBytes,
-		Proposer:  p.Proposer,
-		Signature: p.Signature,
-		PrepareQC: prepareQCBytes,
+		View:       p.View,
+		BlockHash:  p.BlockHash[:],
+		JustifyQC:  justifyBytes,
+		Proposer:   p.Proposer,
+		Signature:  p.Signature,
+		PrepareQC:  prepareQCBytes,
+		TxRootHash: p.TxRootHash[:],
 	}
 	return wire.MarshalSSZ()
 }
@@ -178,12 +179,15 @@ func decodeProposal(data []byte) (*Proposal, error) {
 	}
 	var hash types.Hash
 	copy(hash[:], wire.BlockHash)
+	var txRootHash types.Hash
+	copy(txRootHash[:], wire.TxRootHash)
 	p := &Proposal{
-		View:      wire.View,
-		BlockHash: hash,
-		JustifyQC: *justifyQC,
-		Proposer:  wire.Proposer,
-		Signature: wire.Signature,
+		View:       wire.View,
+		BlockHash:  hash,
+		JustifyQC:  *justifyQC,
+		Proposer:   wire.Proposer,
+		Signature:  wire.Signature,
+		TxRootHash: txRootHash,
 	}
 	if len(wire.PrepareQC) > 0 {
 		pqc, err := decodeQC(wire.PrepareQC)
