@@ -67,11 +67,6 @@ var (
 		Value: 20012,
 		Usage: "HTTP-RPC server listening port",
 	}
-	wsPortFlag = &cli.IntFlag{
-		Name:  "ws.port",
-		Value: 20013,
-		Usage: "WebSocket-RPC server listening port",
-	}
 )
 
 func main() {
@@ -83,7 +78,6 @@ func main() {
 			privateAPIFlag,
 			httpAddrFlag,
 			httpPortFlag,
-			wsPortFlag,
 		},
 		Action: runRPCDaemon,
 	}

@@ -67,6 +67,7 @@ type tx struct {
 	streams            []kv.Closer
 	viewID, id         uint64
 	streamingRequested bool
+	closed             bool
 }
 
 type remoteCursor struct {
@@ -254,6 +255,10 @@ func (tx *tx) Commit() error {
 }
 
 func (tx *tx) Rollback() {
+	if tx.closed {
+		return
+	}
+	tx.closed = true
 	// don't close opened cursors - just close stream, server will cleanup everything well
 	tx.closeGrpcStream()
 	tx.db.roTxsLimiter.Release(1)

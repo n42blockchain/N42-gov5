@@ -480,27 +480,37 @@ func (c *BoundContract) WatchLogs(opts *WatchOpts, name string, query ...[]inter
 	return logs, sub, nil
 }
 
-// UnpackLog unpacks a retrieved log into the provided output structure.
-func (c *BoundContract) UnpackLog(out interface{}, event string, log block.Log) error {
+// validateLog checks that the log has topics and matches the given event ABI.
+// On success it returns the event ABI and the indexed arguments.
+func (c *BoundContract) validateLog(event string, log block.Log) (abi.Event, abi.Arguments, error) {
 	if len(log.Topics) == 0 {
-		return fmt.Errorf("log has no topics")
+		return abi.Event{}, nil, fmt.Errorf("log has no topics")
 	}
 	eventABI, exists := c.abi.Events[event]
 	if !exists {
-		return fmt.Errorf("event %s not found in ABI", event)
+		return abi.Event{}, nil, fmt.Errorf("event %s not found in ABI", event)
 	}
 	if log.Topics[0] != eventABI.ID {
-		return fmt.Errorf("event signature mismatch")
-	}
-	if len(log.Data) > 0 {
-		if err := c.abi.UnpackIntoInterface(out, event, log.Data); err != nil {
-			return err
-		}
+		return abi.Event{}, nil, fmt.Errorf("event signature mismatch")
 	}
 	var indexed abi.Arguments
 	for _, arg := range eventABI.Inputs {
 		if arg.Indexed {
 			indexed = append(indexed, arg)
+		}
+	}
+	return eventABI, indexed, nil
+}
+
+// UnpackLog unpacks a retrieved log into the provided output structure.
+func (c *BoundContract) UnpackLog(out interface{}, event string, log block.Log) error {
+	_, indexed, err := c.validateLog(event, log)
+	if err != nil {
+		return err
+	}
+	if len(log.Data) > 0 {
+		if err := c.abi.UnpackIntoInterface(out, event, log.Data); err != nil {
+			return err
 		}
 	}
 	return abi.ParseTopics(out, indexed, log.Topics[1:])
@@ -508,25 +518,13 @@ func (c *BoundContract) UnpackLog(out interface{}, event string, log block.Log) 
 
 // UnpackLogIntoMap unpacks a retrieved log into the provided map.
 func (c *BoundContract) UnpackLogIntoMap(out map[string]interface{}, event string, log block.Log) error {
-	if len(log.Topics) == 0 {
-		return fmt.Errorf("log has no topics")
-	}
-	eventABI, exists := c.abi.Events[event]
-	if !exists {
-		return fmt.Errorf("event %s not found in ABI", event)
-	}
-	if log.Topics[0] != eventABI.ID {
-		return fmt.Errorf("event signature mismatch")
+	_, indexed, err := c.validateLog(event, log)
+	if err != nil {
+		return err
 	}
 	if len(log.Data) > 0 {
 		if err := c.abi.UnpackIntoMap(out, event, log.Data); err != nil {
 			return err
-		}
-	}
-	var indexed abi.Arguments
-	for _, arg := range eventABI.Inputs {
-		if arg.Indexed {
-			indexed = append(indexed, arg)
 		}
 	}
 	return abi.ParseTopicsIntoMap(out, indexed, log.Topics[1:])

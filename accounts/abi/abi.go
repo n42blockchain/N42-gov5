@@ -87,8 +87,7 @@ func (abi ABI) getArguments(name string, data []byte) (Arguments, error) {
 			return nil, fmt.Errorf("abi: improperly formatted output: %s - Bytes: [%+v]", string(data), data)
 		}
 		args = method.Outputs
-	}
-	if event, ok := abi.Events[name]; ok {
+	} else if event, ok := abi.Events[name]; ok {
 		args = event.Inputs
 	}
 	if args == nil {
@@ -223,7 +222,7 @@ func (abi *ABI) ErrorByID(sigdata [4]byte) (*Error, error) {
 // ABI and returns nil if none found.
 func (abi *ABI) EventByID(topic types.Hash) (*Event, error) {
 	for _, event := range abi.Events {
-		if bytes.Equal(event.ID.Bytes(), topic.Bytes()) {
+		if event.ID == topic {
 			return &event, nil
 		}
 	}
