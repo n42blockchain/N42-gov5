@@ -94,6 +94,7 @@ import (
 	"github.com/n42blockchain/N42/internal/txspool"
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/internal/zkverifier"
+	"github.com/n42blockchain/N42/lib/common/datadir"
 	"github.com/n42blockchain/N42/lib/common/cmp"
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
@@ -227,6 +228,14 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		err             error
 	)
 
+	// Apply storage tier configuration before opening any databases.
+	if cfg.StorageTierCfg.Enabled {
+		dirs := datadir.New(cfg.NodeCfg.DataDir)
+		if err := applyStorageTier(&cfg.StorageTierCfg, &dirs); err != nil {
+			return nil, fmt.Errorf("storage tier: %w", err)
+		}
+	}
+
 	chainKv, err = OpenDatabase(ctx, cfg, nil, kv.ChainDB.String())
 	if err != nil {
 		return nil, err
@@ -345,7 +354,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			realBC.SetPrefetch(true)
 		}
 		if cfg.NodeCfg.AncientDB {
-			ancientPath := filepath.Join(cfg.NodeCfg.DataDir, "ancient")
+			ancientBase := cfg.NodeCfg.DataDir
+			if cfg.StorageTierCfg.Enabled && cfg.StorageTierCfg.ColdPath != "" {
+				ancientBase = cfg.StorageTierCfg.ColdPath
+			}
+			ancientPath := filepath.Join(ancientBase, "ancient")
 			threshold := cfg.NodeCfg.AncientFreezeThreshold
 			f, err := freezer.New(ancientPath, threshold)
 			if err != nil {
@@ -1731,7 +1744,12 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		return openLayeredDatabase(ctx, cfg, logger, name)
 	}
 
-	dbPath := filepath.Join(cfg.NodeCfg.DataDir, name)
+	// Use hot-tier path for chaindata when storage tiering is enabled.
+	baseDir := cfg.NodeCfg.DataDir
+	if cfg.StorageTierCfg.Enabled && cfg.StorageTierCfg.HotPath != "" {
+		baseDir = cfg.StorageTierCfg.HotPath
+	}
+	dbPath := filepath.Join(baseDir, name)
 	log.Info("Opening database", "name", name, "path", dbPath)
 
 	roTxsLimiter := semaphore.NewWeighted(int64(cmp.Max(32, runtime.GOMAXPROCS(-1)*8)))
@@ -1764,11 +1782,19 @@ func openLayeredDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logg
 
 	stateDBPath := cfg.LayeredDBCfg.StateDBPath
 	if stateDBPath == "" {
-		stateDBPath = filepath.Join(cfg.NodeCfg.DataDir, name+"-state")
+		stateBase := cfg.NodeCfg.DataDir
+		if cfg.StorageTierCfg.Enabled && cfg.StorageTierCfg.HotPath != "" {
+			stateBase = cfg.StorageTierCfg.HotPath
+		}
+		stateDBPath = filepath.Join(stateBase, name+"-state")
 	}
 	historyDBPath := cfg.LayeredDBCfg.HistoryDBPath
 	if historyDBPath == "" {
-		historyDBPath = filepath.Join(cfg.NodeCfg.DataDir, name+"-history")
+		histBase := cfg.NodeCfg.DataDir
+		if cfg.StorageTierCfg.Enabled && cfg.StorageTierCfg.ColdPath != "" {
+			histBase = cfg.StorageTierCfg.ColdPath
+		}
+		historyDBPath = filepath.Join(histBase, name+"-history")
 	}
 
 	log.Info("Opening layered database",
