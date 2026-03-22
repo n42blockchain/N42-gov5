@@ -158,8 +158,12 @@ func (s *Service) handleOutput(output EngineOutput) {
 					delay = 200 * time.Millisecond
 				}
 				go func() {
-					time.Sleep(delay)
-					s.blockProducer.TriggerBlockProduction()
+					select {
+					case <-time.After(delay):
+						s.blockProducer.TriggerBlockProduction()
+					case <-s.ctx.Done():
+						return
+					}
 				}()
 			} else {
 				s.blockProducer.TriggerBlockProduction()
