@@ -117,15 +117,11 @@ func WriteHeaderPooled(db kv.Putter, header *block.Header) {
 		log.Crit("Failed to store hash to number mapping", "err", err)
 	}
 
-	buf := GetBuf()
-	defer PutBuf(buf)
-
 	data, err := header.Marshal()
 	if err != nil {
 		log.Crit("failed to Marshal header", "err", err)
 	}
-	*buf = append(*buf, data...)
-	if err := db.Put(modules.Headers, modules.HeaderKey(numberU64, hash), *buf); err != nil {
+	if err := db.Put(modules.Headers, modules.HeaderKey(numberU64, hash), data); err != nil {
 		log.Crit("Failed to store header", "err", err)
 	}
 }

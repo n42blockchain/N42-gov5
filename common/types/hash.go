@@ -90,11 +90,7 @@ func (h Hash) Value() (driver.Value, error) {
 }
 
 func BytesHash(b []byte) Hash {
-	h3 := sha3.New256()
-	h3.Write(b)
-	var h Hash
-	copy(h[:], h3.Sum(nil))
-	return h
+	return sha3.Sum256(b)
 }
 
 func BytesToHash(b []byte) Hash {
@@ -185,7 +181,7 @@ func (h *Hash) UnmarshalJSON(input []byte) error {
 }
 
 func (h Hash) Equal(other Hash) bool {
-	return bytes.Equal(h[:], other[:])
+	return h == other
 }
 
 func HashDifference(a, b []Hash) []Hash {
@@ -227,7 +223,6 @@ func ReturnHasherToPool(h *Hasher) {
 	select {
 	case hasherPools <- h:
 	default:
-		fmt.Printf("Allowing Hasher to be garbage collected, pool is full\n")
 	}
 }
 

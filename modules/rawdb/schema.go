@@ -138,17 +138,16 @@ func DecodeBlockNumber(data []byte) uint64 {
 	return binary.BigEndian.Uint64(data)
 }
 
-// HeaderKey returns the database key for a header (block_num + hash)
+// HeaderKey returns the database key for a header (block_num + hash).
+// Delegates to modules.HeaderKey — the canonical implementation.
 func HeaderKey(number uint64, hash types.Hash) []byte {
-	key := make([]byte, 8+32)
-	binary.BigEndian.PutUint64(key[:8], number)
-	copy(key[8:], hash.Bytes())
-	return key
+	return modules.HeaderKey(number, hash)
 }
 
-// BlockBodyKey returns the database key for a block body (block_num + hash)
+// BlockBodyKey returns the database key for a block body (block_num + hash).
+// Delegates to modules.BlockBodyKey — the canonical implementation.
 func BlockBodyKey(number uint64, hash types.Hash) []byte {
-	return HeaderKey(number, hash) // Same format
+	return modules.BlockBodyKey(number, hash)
 }
 
 // TxLookupKey returns the database key for transaction lookup

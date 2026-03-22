@@ -43,7 +43,6 @@ type handler struct {
 
 	subLock    sync.Mutex
 	serverSubs map[ID]*Subscription
-	clientSubs map[string]*ClientSubscription // active client subscriptions
 
 	log log.Logger
 }
@@ -64,7 +63,6 @@ func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *
 		cancelRoot:     cancelRoot,
 		allowSubscribe: true,
 		serverSubs:     make(map[ID]*Subscription),
-		clientSubs:     make(map[string]*ClientSubscription),
 		log:            log.Root(),
 	}
 	if conn.remoteAddr() != "" {
@@ -199,7 +197,6 @@ func (h *handler) startCallProc(fn func(*callProc)) {
 }
 
 func (h *handler) handleImmediate(msg *jsonrpcMessage) bool {
-	start := time.Now()
 	switch {
 	case msg.isNotification():
 		if strings.HasSuffix(msg.Method, notificationMethodSuffix) {
@@ -208,6 +205,7 @@ func (h *handler) handleImmediate(msg *jsonrpcMessage) bool {
 		}
 		return false
 	case msg.isResponse():
+		start := time.Now()
 		h.handleResponse(msg)
 		h.log.Debug("Handled RPC response", "reqid", idForLog{msg.ID}, "t", time.Since(start))
 		return true
@@ -217,11 +215,8 @@ func (h *handler) handleImmediate(msg *jsonrpcMessage) bool {
 }
 
 func (h *handler) handleSubscriptionResult(msg *jsonrpcMessage) {
-	var result subscriptionResult
-	if err := json.Unmarshal(msg.Params, &result); err != nil {
-		h.log.Debug("Dropping invalid subscription message")
-		return
-	}
+	// Subscription result delivery is handled by the client dispatcher;
+	// the server-side handler only needs to acknowledge receipt.
 }
 
 func (h *handler) handleResponse(msg *jsonrpcMessage) {

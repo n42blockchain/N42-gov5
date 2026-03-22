@@ -133,9 +133,9 @@ func (tx *MdbxTx) IncrementSequence(bucket string, amount uint64) (uint64, error
 		currentV = binary.BigEndian.Uint64(v)
 	}
 
-	newVBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(newVBytes, currentV+amount)
-	err = c.Put([]byte(bucket), newVBytes)
+	var newVBytes [8]byte
+	binary.BigEndian.PutUint64(newVBytes[:], currentV+amount)
+	err = c.Put([]byte(bucket), newVBytes[:])
 	if err != nil {
 		return 0, err
 	}

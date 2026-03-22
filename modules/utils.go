@@ -53,11 +53,9 @@ func HeaderKey(number uint64, hash types.Hash) []byte {
 }
 
 // BlockBodyKey = num (uint64 big endian) + hash
+// Same format as HeaderKey — kept as a separate function for semantic clarity.
 func BlockBodyKey(number uint64, hash types.Hash) []byte {
-	k := make([]byte, NumberLength+types.HashLength)
-	binary.BigEndian.PutUint64(k, number)
-	copy(k[NumberLength:], hash[:])
-	return k
+	return HeaderKey(number, hash)
 }
 
 func BodyStorageValue(baseTx uint64, txAmount uint32) []byte {
