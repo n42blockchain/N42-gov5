@@ -298,11 +298,11 @@ func monitorFreeDiskSpace(sigc chan os.Signal, path string, freeDiskSpaceCritica
 			continue
 		}
 		if freeSpace < freeDiskSpaceCritical {
-			log.Error("Low disk space. Gracefully shutting down Geth to prevent database corruption.", "available", types.StorageSize(freeSpace), "path", path)
+			log.Error("Low disk space. Gracefully shutting down N42 to prevent database corruption.", "available", types.StorageSize(freeSpace), "path", path)
 			sigc <- syscall.SIGTERM
 			break
 		} else if freeSpace < 2*freeDiskSpaceCritical {
-			log.Warn("Disk space is running low. Geth will shutdown if disk space runs below critical level.", "available", types.StorageSize(freeSpace), "critical_level", types.StorageSize(freeDiskSpaceCritical), "path", path)
+			log.Warn("Disk space is running low. N42 will shutdown if disk space runs below critical level.", "available", types.StorageSize(freeSpace), "critical_level", types.StorageSize(freeDiskSpaceCritical), "path", path)
 		}
 		time.Sleep(30 * time.Second)
 	}

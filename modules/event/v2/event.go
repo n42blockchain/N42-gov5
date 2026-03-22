@@ -90,4 +90,9 @@ func (e *Event) Close() {
 	for _, scope := range e.feedsScope {
 		scope.Close()
 	}
+
+	// Reset state so the Event can be re-initialized on next use.
+	e.feeds = nil
+	e.feedsScope = nil
+	e.once = sync.Once{}
 }
