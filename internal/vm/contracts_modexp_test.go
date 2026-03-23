@@ -244,6 +244,59 @@ func TestModExpOsakaPrecompile(t *testing.T) {
 	}
 }
 
+func TestModExpExponentOneAvoidsAliasingBug(t *testing.T) {
+	baseLen := uint64(9)
+	expLen := uint64(1)
+	modLen := uint64(9)
+	input := make([]byte, 96+baseLen+expLen+modLen)
+	binary.BigEndian.PutUint64(input[24:32], baseLen)
+	binary.BigEndian.PutUint64(input[56:64], expLen)
+	binary.BigEndian.PutUint64(input[88:96], modLen)
+	copy(input[96:96+baseLen], []byte{0x04, 0x95, 0x42, 0xfc, 0xc5, 0x8a, 0x40, 0x0d, 0x00})
+	input[96+baseLen] = 0x01
+	copy(input[96+baseLen+expLen:], []byte{0x03, 0x9c, 0xa5, 0x00, 0x48, 0x8d, 0x63, 0x8e, 0xc7})
+
+	c := &bigModExp{eip2565: true}
+	result, err := c.Run(input)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	want := []byte{0x00, 0xf8, 0x9d, 0xfc, 0x7c, 0xfc, 0xdc, 0x7e, 0x39}
+	if got := result[len(result)-len(want):]; string(got) != string(want) {
+		t.Fatalf("Run() result = %x, want suffix %x", result, want)
+	}
+}
+
+func TestModExpPreOsakaAllowsOverflowingLengthsWhenBaseAndModAreZero(t *testing.T) {
+	input := make([]byte, 96)
+	input[32] = 0x80 // exponent length = 2^255, which overflows uint64
+
+	c := &bigModExp{eip2565: true}
+	if gas := c.RequiredGas(input); gas != 200 {
+		t.Fatalf("RequiredGas() = %d, want 200", gas)
+	}
+	result, err := c.Run(input)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result) != 0 {
+		t.Fatalf("Run() result = %x, want empty output", result)
+	}
+}
+
+func TestModExpOsakaRejectsOverflowingLengths(t *testing.T) {
+	input := make([]byte, 96)
+	input[32] = 0x80 // exponent length = 2^255, which must be rejected by EIP-7823
+
+	c := &bigModExp{eip2565: true, eip7823: true, eip7883: true}
+	if gas := c.RequiredGas(input); gas != math.MaxUint64 {
+		t.Fatalf("RequiredGas() = %d, want %d", gas, uint64(math.MaxUint64))
+	}
+	if _, err := c.Run(input); err == nil {
+		t.Fatal("Run() error = nil, want error")
+	}
+}
+
 func TestPrecompiledContractsOsakaActivatesModExpAndP256(t *testing.T) {
 	modexpAddr := types.BytesToAddress([]byte{5})
 	p256Addr := types.HexToAddress("0x0000000000000000000000000000000000000100")

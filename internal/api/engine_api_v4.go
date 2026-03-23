@@ -146,11 +146,21 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
+
+	// Engine API spec: newPayloadV4 must only be used for Pectra+ payloads.
+	// Only enforce when PectraTime is explicitly configured (nil = not activated yet).
+	if cfg := e.v1.chainConfig(); cfg != nil && cfg.PectraTime != nil && !cfg.IsPectra(uint64(payload.Timestamp)) {
+		return nil, &engineUnsupportedForkError{msg: "newPayloadV4 called for pre-Pectra timestamp, use newPayloadV3"}
+	}
+
 	if parentBeaconBlockRoot == nil {
 		return invalidPayloadResponse("missing parent beacon block root"), nil
 	}
 	if payload.Withdrawals == nil {
 		return invalidPayloadResponse("missing withdrawals in Pectra+ payload"), nil
+	}
+	if payload.BlobGasUsed == nil || payload.ExcessBlobGas == nil {
+		return nil, &engineInvalidParamsError{msg: "missing blob gas fields"}
 	}
 
 	maxBlobGas := uint64(vm.PectraMaxBlobGasPerBlock)

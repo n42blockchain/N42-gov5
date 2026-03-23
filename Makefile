@@ -169,7 +169,7 @@ open-output:
 .PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef
 .PHONY: race bench cover check install tidy help test-cover test-verbose perf-baseline
 .PHONY: version version-bump version-minor version-major maturity-smoke maturity-baseline
-.PHONY: ops-smoke interop-smoke soak-smoke release-check eest-log eest-watch
+.PHONY: ops-smoke interop-smoke soak-smoke release-check eest-log eest-watch eest-cycle
 
 # =============================================================================
 # 核心目标 (Core Targets)
@@ -202,6 +202,11 @@ eest-log:
 eest-watch:
 	@if [ -z "$(LOG)" ]; then echo "Usage: make eest-watch LOG=/abs/path/to/pytest.log [INTERVAL=300]"; exit 1; fi
 	@bash ./scripts/watch_eest_log.sh "$(LOG)" --interval "$(or $(INTERVAL),300)"
+
+eest-cycle:
+	@if [ -z "$(NAME)" ]; then echo "Usage: make eest-cycle NAME=<run-name> RUN='<command using $$EEST_LOG_FILE>' [INTERVAL=300] [STATE_DIR=/abs/path] [MAX_CYCLES=0] [ON_FAIL='cmd'] [VERIFY='cmd'] [COMMIT='cmd'] [PUSH='cmd'] [ON_PASS='cmd']"; exit 1; fi
+	@if [ -z "$(RUN)" ]; then echo "Usage: make eest-cycle NAME=<run-name> RUN='<command using $$EEST_LOG_FILE>' ..."; exit 1; fi
+	@bash ./scripts/eest_cycle.sh 		--name "$(NAME)" 		--run "$(RUN)" 		--interval "$(or $(INTERVAL),300)" 		$(if $(STATE_DIR),--state-dir "$(STATE_DIR)",) 		$(if $(LOG_DIR),--log-dir "$(LOG_DIR)",) 		$(if $(MAX_CYCLES),--max-cycles "$(MAX_CYCLES)",) 		$(if $(ON_FAIL),--on-fail "$(ON_FAIL)",) 		$(if $(VERIFY),--verify "$(VERIFY)",) 		$(if $(COMMIT),--commit "$(COMMIT)",) 		$(if $(PUSH),--push "$(PUSH)",) 		$(if $(ON_PASS),--on-pass "$(ON_PASS)",)
 
 # =============================================================================
 # Race 检测 (Race Detection)

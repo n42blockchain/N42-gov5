@@ -138,6 +138,52 @@ func TestEngineAPIBlobRejectsPreCancunBlobFieldsAsInvalidParams(t *testing.T) {
 	require.Contains(t, err.Error(), "blob fields not allowed before Cancun")
 }
 
+func TestEngineAPIBlobRejectsMissingPostCancunBlobFieldsAsInvalidParams(t *testing.T) {
+	t.Parallel()
+
+	genesisHeader := &block.Header{
+		Number:     uint256.NewInt(0),
+		Difficulty: uint256.NewInt(0),
+		GasLimit:   30_000_000,
+		Time:       0,
+		BaseFee:    uint256.NewInt(1),
+	}
+	genesisBlock := block.NewBlock(genesisHeader, nil)
+	chain := &canonicalCheckChainStub{
+		header: genesisHeader,
+		blk:    genesisBlock,
+	}
+	cfg := &params.ChainConfig{
+		BerlinBlock:  big.NewInt(0),
+		LondonBlock:  big.NewInt(0),
+		ShanghaiTime: big.NewInt(0),
+		CancunTime:   big.NewInt(15_000),
+	}
+	api := &API{
+		bc:            chain,
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
+	root := types.Hash{0x01}
+
+	resp, err := engine.NewPayloadV3(context.Background(), &ExecutionPayloadV3{
+		ParentHash:    ethCompatibleBlockHash(genesisBlock, cfg),
+		BlockNumber:   hexutil.Uint64(1),
+		Timestamp:     hexutil.Uint64(15_000),
+		GasLimit:      hexutil.Uint64(30_000_000),
+		BaseFeePerGas: hexutil.Uint64(1),
+		ExcessBlobGas: hexUint64Ptr(0),
+		Withdrawals:   []*Withdrawal{},
+	}, nil, &root)
+	require.Nil(t, resp)
+	require.Error(t, err)
+	var codedErr interface{ ErrorCode() int }
+	require.ErrorAs(t, err, &codedErr)
+	require.Equal(t, -32602, codedErr.ErrorCode())
+	require.Contains(t, err.Error(), "missing blob gas fields")
+}
+
 func TestEngineAPIBlobRejectsIntrinsicGasTooLowTransaction(t *testing.T) {
 	t.Parallel()
 
@@ -647,6 +693,37 @@ func TestEngineAPIv4RejectsMalformedExecutionRequestsAsInvalidParams(t *testing.
 	require.ErrorAs(t, err, &codedErr)
 	require.Equal(t, -32602, codedErr.ErrorCode())
 	require.Contains(t, err.Error(), "execution requests not in ascending type order")
+}
+
+func TestEngineAPIv4RejectsMissingBlobFieldsAsInvalidParams(t *testing.T) {
+	t.Parallel()
+
+	api, headHash := newEnginePayloadTestAPI()
+	engine := NewEngineAPIv4(NewBlockChainAPI(api))
+	beaconRoot := types.Hash{0x42}
+
+	resp, err := engine.NewPayloadV4(context.Background(), &ExecutionPayloadV4{
+		ParentHash:    headHash,
+		FeeRecipient:  types.Address{0x22},
+		StateRoot:     types.Hash{0x33},
+		ReceiptsRoot:  types.Hash{0x44},
+		LogsBloom:     make([]byte, 256),
+		PrevRandao:    types.Hash{0x55},
+		BlockNumber:   hexutil.Uint64(1),
+		GasLimit:      hexutil.Uint64(30_000_000),
+		GasUsed:       hexutil.Uint64(0),
+		Timestamp:     hexutil.Uint64(2),
+		BaseFeePerGas: hexutil.Uint64(1),
+		BlockHash:     types.Hash{0x66},
+		Transactions:  []hexutil.Bytes{},
+		Withdrawals:   []*Withdrawal{},
+	}, nil, &beaconRoot, nil)
+	require.Nil(t, resp)
+	require.Error(t, err)
+	var codedErr interface{ ErrorCode() int }
+	require.ErrorAs(t, err, &codedErr)
+	require.Equal(t, -32602, codedErr.ErrorCode())
+	require.Contains(t, err.Error(), "missing blob gas fields")
 }
 
 func TestEngineAPIBlobBuildsAndImportsMinimalPayloadV3(t *testing.T) {
