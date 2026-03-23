@@ -411,6 +411,53 @@ func TestCallUsesOsakaModExpGasByTimestamp(t *testing.T) {
 	}
 }
 
+func TestCallAllowsPreOsakaModExpOverflowingExponentLengthWithZeroModulus(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx := memdb.BeginRw(t, db)
+
+	modexpAddr := types.BytesToAddress([]byte{5})
+	input := make([]byte, 96)
+	input[32] = 0x80 // exponent length = 2^255, baseLen=0, modLen=0
+	suppliedGas := uint64(90000)
+
+	preOsakaCfg := &Config{
+		ChainConfig: testRuntimeChainConfig(),
+		Origin:      types.HexToAddress("0x1000000000000000000000000000000000000003"),
+		BlockNumber: big.NewInt(1),
+		Time:        big.NewInt(0),
+		GasLimit:    suppliedGas,
+		GasPrice:    uint256.NewInt(0),
+		Value:       uint256.NewInt(0),
+		State:       state.New(state.NewPlainState(tx, 1)),
+	}
+
+	ret, remainingGas, err := Call(modexpAddr, input, preOsakaCfg)
+	if err != nil {
+		t.Fatalf("Pre-Osaka runtime.Call failed: %v", err)
+	}
+	if len(ret) != 0 {
+		t.Fatalf("Pre-Osaka runtime.Call result = %x, want empty output", ret)
+	}
+	if gasUsed := suppliedGas - remainingGas; gasUsed != 200 {
+		t.Fatalf("Pre-Osaka runtime.Call gas used = %d, want 200", gasUsed)
+	}
+
+	osakaCfg := &Config{
+		ChainConfig: testRuntimeChainConfig(),
+		Origin:      types.HexToAddress("0x1000000000000000000000000000000000000004"),
+		BlockNumber: big.NewInt(1),
+		Time:        big.NewInt(1),
+		GasLimit:    suppliedGas,
+		GasPrice:    uint256.NewInt(0),
+		Value:       uint256.NewInt(0),
+		State:       state.New(state.NewPlainState(tx, 1)),
+	}
+
+	if _, _, err := Call(modexpAddr, input, osakaCfg); err != vm.ErrOutOfGas {
+		t.Fatalf("Osaka runtime.Call error = %v, want %v", err, vm.ErrOutOfGas)
+	}
+}
+
 func TestCallResolvesDelegationCodeInPectra(t *testing.T) {
 	db := memdb.NewTestDB(t)
 	tx := memdb.BeginRw(t, db)

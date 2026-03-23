@@ -46,9 +46,9 @@ while true; do
     "$script_dir/check_eest_log.sh" "$log_file" "$status_file"
 
     checked_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    passed=$(grep -Ec '(^|\]) PASSED( |$)|PASSED in ' "$log_file" 2>/dev/null || true)
-    failed=$(grep -Ec '(^|\]) FAILED( |$)|FAILED in ' "$log_file" 2>/dev/null || true)
-    errors=$(grep -Ec '(^|\]) ERROR( |$)|ERROR in ' "$log_file" 2>/dev/null || true)
+    passed=$(grep -Ec '(^|\]) PASSED( |$)|PASSED in |::.* PASSED( |$)' "$log_file" 2>/dev/null || true)
+    failed=$(grep -Ec '(^|\]) FAILED( |$)|FAILED in |::.* FAILED( |$)' "$log_file" 2>/dev/null || true)
+    errors=$(grep -Ec '(^|\]) ERROR( |$)|ERROR in |::.* ERROR( |$)' "$log_file" 2>/dev/null || true)
     summary=$(grep -E "={5,} .* passed.*" "$log_file" 2>/dev/null | tail -1 | tr '\t' ' ' || true)
     printf "%s\t%s\t%s\t%s\t%s\n" "$checked_at" "$passed" "$failed" "$errors" "$summary" >>"$history_file"
 

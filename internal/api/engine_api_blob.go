@@ -169,9 +169,17 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	}
 	blockNumber := uint64(payload.BlockNumber)
 	timestamp := uint64(payload.Timestamp)
-	if cfg := e.v1().chainConfig(); cfg != nil && !cfg.IsCancunAt(blockNumber, timestamp) {
-		if payload.BlobGasUsed != nil || payload.ExcessBlobGas != nil || len(expectedBlobVersionedHashes) > 0 {
-			return nil, &engineInvalidParamsError{msg: "blob fields not allowed before Cancun"}
+	// Engine API spec: newPayloadV3 must not be used for Pectra+ payloads.
+	if cfg := e.v1().chainConfig(); cfg != nil && cfg.PectraTime != nil && cfg.IsPectra(timestamp) {
+		return nil, &engineUnsupportedForkError{msg: "newPayloadV3 called for Pectra+ timestamp, use newPayloadV4"}
+	}
+	if cfg := e.v1().chainConfig(); cfg != nil {
+		if !cfg.IsCancunAt(blockNumber, timestamp) {
+			if payload.BlobGasUsed != nil || payload.ExcessBlobGas != nil || len(expectedBlobVersionedHashes) > 0 {
+				return nil, &engineInvalidParamsError{msg: "blob fields not allowed before Cancun"}
+			}
+		} else if payload.BlobGasUsed == nil || payload.ExcessBlobGas == nil {
+			return nil, &engineInvalidParamsError{msg: "missing blob gas fields"}
 		}
 	}
 	if parentBeaconBlockRoot == nil {
@@ -519,4 +527,19 @@ func (e *engineInvalidParamsError) Error() string {
 
 func (e *engineInvalidParamsError) ErrorCode() int {
 	return -32602
+}
+
+// engineUnsupportedForkError is returned when Engine API is called with a
+// payload version that does not match the fork active at the given timestamp.
+// Error code -38005 per Engine API specification.
+type engineUnsupportedForkError struct {
+	msg string
+}
+
+func (e *engineUnsupportedForkError) Error() string {
+	return e.msg
+}
+
+func (e *engineUnsupportedForkError) ErrorCode() int {
+	return -38005
 }

@@ -15,10 +15,10 @@ if [ ! -f "$log_file" ]; then
   exit 1
 fi
 
-passed=$(grep -Ec '(^|\]) PASSED( |$)|PASSED in ' "$log_file" 2>/dev/null || true)
-failed=$(grep -Ec '(^|\]) FAILED( |$)|FAILED in ' "$log_file" 2>/dev/null || true)
-errors=$(grep -Ec '(^|\]) ERROR( |$)|ERROR in ' "$log_file" 2>/dev/null || true)
-last_fail=$(grep -E '(^|\]) FAILED( |$)|FAILED in ' "$log_file" 2>/dev/null | tail -1 || true)
+passed=$(grep -Ec '(^|\]) PASSED( |$)|PASSED in |::.* PASSED( |$)' "$log_file" 2>/dev/null || true)
+failed=$(grep -Ec '(^|\]) FAILED( |$)|FAILED in |::.* FAILED( |$)' "$log_file" 2>/dev/null || true)
+errors=$(grep -Ec '(^|\]) ERROR( |$)|ERROR in |::.* ERROR( |$)' "$log_file" 2>/dev/null || true)
+last_fail=$(grep -E '(^|\]) FAILED( |$)|FAILED in |::.* FAILED( |$)' "$log_file" 2>/dev/null | tail -1 || true)
 summary_line=$(grep -E "={5,} .* passed.*" "$log_file" 2>/dev/null | tail -1 || true)
 tail_lines=$(tail -n 12 "$log_file" 2>/dev/null || true)
 timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
