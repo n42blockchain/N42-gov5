@@ -244,7 +244,7 @@ func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 }
 
 // shouldSkipPeerWait returns true if the node should skip waiting for peers:
-// MinSyncPeers==0 (standalone/dev), or genesis block with no bootstrap nodes.
+// MinSyncPeers==0 (standalone/dev), or genesis block with no bootstrap/static nodes.
 func (s *Service) shouldSkipPeerWait() bool {
 	cfg := s.cfg.P2P.GetConfig()
 	if cfg.MinSyncPeers == 0 {
@@ -253,7 +253,7 @@ func (s *Service) shouldSkipPeerWait() bool {
 	if !currentBlockNumber(s.cfg.Chain).IsZero() {
 		return false
 	}
-	return len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0
+	return len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0 && len(cfg.StaticPeers) == 0
 }
 
 // markSyncing marks node as currently syncing.

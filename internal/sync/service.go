@@ -19,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/utils"
 )
 
@@ -119,17 +120,23 @@ func NewService(ctx context.Context, opts ...Option) (*Service, error) {
 	return r, nil
 }
 
-// Start the regular sync service.
-func (s *Service) Start() {
+// RegisterHandlers registers P2P connection/disconnection handlers.
+// MUST be called BEFORE p2p.Start() to avoid the race condition where
+// static peers connect before handlers are registered.
+func (s *Service) RegisterHandlers() {
 	s.cfg.p2p.AddConnectionHandler(s.reValidatePeer, s.sendGoodbye)
 	s.cfg.p2p.AddDisconnectionHandler(func(_ context.Context, p peer.ID) error {
-		// Rate limit reconnection attempts for disconnected peers
 		if nextValidTime, err := s.cfg.p2p.Peers().NextValidTime(p); err == nil && time.Now().After(nextValidTime) {
 			s.cfg.p2p.Peers().SetNextValidTime(p, time.Now().Add(10*time.Minute))
 		}
 		return nil
 	})
 	s.cfg.p2p.AddPingMethod(s.sendPingRequest)
+	log.Info("Sync P2P handlers registered")
+}
+
+// Start begins periodic sync maintenance tasks. Call AFTER p2p.Start().
+func (s *Service) Start() {
 	s.maintainPeerStatuses()
 	s.resyncIfBehind()
 
