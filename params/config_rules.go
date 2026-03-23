@@ -89,6 +89,7 @@ func (r *Rules) applyForkInheritance() {
 	if r == nil {
 		return
 	}
+	// Walk the fork chain top-down: each fork implies all earlier forks.
 	if r.IsGlamsterdam {
 		r.IsFusaka = true
 	}
@@ -103,7 +104,11 @@ func (r *Rules) applyForkInheritance() {
 	}
 	if r.IsPrague {
 		r.IsCancun = true
+	}
+	if r.IsCancun {
 		r.IsShanghai = true
+	}
+	if r.IsShanghai {
 		r.IsParis = true
 		r.IsLondon = true
 		r.IsBerlin = true

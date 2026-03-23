@@ -302,6 +302,66 @@ func TestRulesWithTimestampForkInheritance(t *testing.T) {
 	}
 }
 
+func TestRulesWithTimestampCancunInheritsAllEarlierForks(t *testing.T) {
+	// Simulate HIVE: only CancunTime set, no block-based forks.
+	// This is the exact scenario for EEST blockchain_test_engine tests.
+	cfg := &ChainConfig{
+		ChainID:    big.NewInt(1),
+		CancunTime: big.NewInt(0),
+	}
+
+	rules := cfg.RulesWithTimestamp(0, 0)
+
+	if !rules.IsCancun {
+		t.Fatal("IsCancun should be true")
+	}
+	for name, enabled := range map[string]bool{
+		"IsShanghai":         rules.IsShanghai,
+		"IsLondon":           rules.IsLondon,
+		"IsBerlin":           rules.IsBerlin,
+		"IsIstanbul":         rules.IsIstanbul,
+		"IsPetersburg":       rules.IsPetersburg,
+		"IsConstantinople":   rules.IsConstantinople,
+		"IsByzantium":        rules.IsByzantium,
+		"IsSpuriousDragon":   rules.IsSpuriousDragon,
+		"IsTangerineWhistle": rules.IsTangerineWhistle,
+		"IsHomestead":        rules.IsHomestead,
+	} {
+		if !enabled {
+			t.Fatalf("%s should inherit as active at Cancun (IsCancun implies all earlier forks)", name)
+		}
+	}
+	// Must NOT imply later forks
+	if rules.IsPrague {
+		t.Fatal("IsPrague should NOT be set when only CancunTime is configured")
+	}
+	if rules.IsOsaka {
+		t.Fatal("IsOsaka should NOT be set when only CancunTime is configured")
+	}
+}
+
+func TestRulesWithTimestampShanghaiInheritsAllEarlierForks(t *testing.T) {
+	cfg := &ChainConfig{
+		ChainID:      big.NewInt(1),
+		ShanghaiTime: big.NewInt(0),
+	}
+
+	rules := cfg.RulesWithTimestamp(0, 0)
+
+	if !rules.IsShanghai {
+		t.Fatal("IsShanghai should be true")
+	}
+	if !rules.IsBerlin {
+		t.Fatal("IsBerlin should inherit from IsShanghai")
+	}
+	if !rules.IsHomestead {
+		t.Fatal("IsHomestead should inherit from IsShanghai")
+	}
+	if rules.IsCancun {
+		t.Fatal("IsCancun should NOT be set when only ShanghaiTime is configured")
+	}
+}
+
 func TestRulesWithTimestampDoesNotInferBlockForksFromLaterBlockForks(t *testing.T) {
 	cfg := &ChainConfig{
 		ChainID:               big.NewInt(1),
