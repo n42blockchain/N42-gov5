@@ -701,3 +701,86 @@ func bytesRepeat(b byte, n int) []byte {
 	}
 	return out
 }
+
+func TestApplyTransactionCancunModExpCallCodeOverflowingExponentLength(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+
+	cfg := testStateTransitionChainConfig()
+	cfg.PragueTime = nil
+	cfg.OsakaTime = nil
+
+	sender := types.HexToAddress("0xc9af978759eab5f729b72600e33db72470631d94")
+	contractAddr := types.HexToAddress("0x456758a1acd59a799ba43a581241cf4de3bc5a05")
+	coinbase := types.HexToAddress("0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba")
+	rawTx := types.FromHex1("0xf8c1800a83015f9094456758a1acd59a799ba43a581241cf4de3bc5a0580b86000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000026a01c3ab8bbd6afb6c57925d35628b4a43532f58589bf58556a06e929a205d24906a008b5a2bbdb188501f4d51289e37dafa7ebb5b49cfb41826dfe5a1bd56c8609d6")
+	balance, err := uint256.FromHex("0x3635c9adc5dea00000")
+	if err != nil {
+		t.Fatalf("uint256.FromHex: %v", err)
+	}
+
+	ibs.CreateAccount(sender, false)
+	ibs.AddBalance(sender, balance)
+	ibs.CreateAccount(contractAddr, true)
+	ibs.SetCode(contractAddr, types.FromHex1("0x36600060003760206103e8366000600060055af26001556103e85160025500"))
+
+	decodedTx, err := transaction.DecodeEthereumTransaction(rawTx)
+	if err != nil {
+		t.Fatalf("DecodeEthereumTransaction: %v", err)
+	}
+
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		GasLimit:   10_000_000_000,
+		Time:       1_000,
+		BaseFee:    uint256.NewInt(10),
+		Difficulty: uint256.NewInt(0),
+	}
+	gp := new(common.GasPool).AddGas(header.GasLimit)
+	usedGas := uint64(0)
+	zeroBeaconRoot := types.Hash{}
+	if err := ProcessBeaconBlockRoot(&zeroBeaconRoot, cfg, ibs, header, nil); err != nil {
+		t.Fatalf("ProcessBeaconBlockRoot: %v", err)
+	}
+	ibs.Prepare(decodedTx.Hash(), types.Hash{}, 0)
+
+	receipt, _, err := ApplyTransaction(
+		cfg,
+		func(uint64) types.Hash { return types.Hash{} },
+		nil,
+		&coinbase,
+		gp,
+		ibs,
+		state.NewNoopWriter(),
+		header,
+		decodedTx,
+		&usedGas,
+		vm2.Config{},
+	)
+	if err != nil {
+		t.Fatalf("ApplyTransaction error: %v", err)
+	}
+	if receipt == nil {
+		t.Fatal("ApplyTransaction returned nil receipt")
+	}
+	if receipt.Status != block.ReceiptStatusSuccessful {
+		t.Fatalf("receipt status = %d, want %d", receipt.Status, block.ReceiptStatusSuccessful)
+	}
+	if receipt.GasUsed != 46_148 {
+		t.Fatalf("receipt.GasUsed = %d, want 46148", receipt.GasUsed)
+	}
+	if usedGas != 46_148 {
+		t.Fatalf("usedGas = %d, want 46148", usedGas)
+	}
+	if nonce := ibs.GetNonce(sender); nonce != 1 {
+		t.Fatalf("sender nonce = %d, want 1", nonce)
+	}
+
+	slot1 := storageSlot(1)
+	var slot1Value uint256.Int
+	ibs.GetState(contractAddr, &slot1, &slot1Value)
+	if got := slot1Value.Uint64(); got != 1 {
+		t.Fatalf("storage[1] = %d, want 1", got)
+	}
+}
