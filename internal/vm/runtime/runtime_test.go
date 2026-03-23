@@ -458,6 +458,60 @@ func TestCallAllowsPreOsakaModExpOverflowingExponentLengthWithZeroModulus(t *tes
 	}
 }
 
+func TestCallCodeToPreOsakaModExpOverflowingExponentLengthWithZeroModulus(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(tx, 1))
+
+	contractAddr := types.HexToAddress("0x456758a1acd59a799ba43a581241cf4de3bc5a05")
+	callerAddr := types.HexToAddress("0xc9af978759eab5f729b72600e33db72470631d94")
+	contractCode := types.FromHex1("0x36600060003760206103e8366000600060055af26001556103e85160025500")
+	input := make([]byte, 96)
+	input[32] = 0x80 // exponent length = 2^255, baseLen=0, modLen=0
+	suppliedGas := uint64(68604)
+
+	ibs.CreateAccount(contractAddr, true)
+	ibs.SetCode(contractAddr, contractCode)
+	ibs.CreateAccount(callerAddr, false)
+
+	preOsakaCfg := &Config{
+		ChainConfig: testRuntimeChainConfig(),
+		Origin:      callerAddr,
+		BlockNumber: big.NewInt(1),
+		Time:        big.NewInt(0),
+		GasLimit:    suppliedGas,
+		GasPrice:    uint256.NewInt(0),
+		Value:       uint256.NewInt(0),
+		State:       ibs,
+	}
+
+	ret, remainingGas, err := Call(contractAddr, input, preOsakaCfg)
+	if err != nil {
+		t.Fatalf("Pre-Osaka runtime.Call failed: %v", err)
+	}
+	if len(ret) != 0 {
+		t.Fatalf("Pre-Osaka runtime.Call result = %x, want empty output", ret)
+	}
+	if gasUsed := suppliedGas - remainingGas; gasUsed != 24752 {
+		t.Fatalf("Pre-Osaka runtime.Call gas used = %d, want 24752", gasUsed)
+	}
+	slot1 := types.Hash{}
+	slot1[31] = 1
+	var slot1Value uint256.Int
+	ibs.GetState(contractAddr, &slot1, &slot1Value)
+	if got := slot1Value.Uint64(); got != 1 {
+		t.Fatalf("storage[1] = %d, want 1", got)
+	}
+
+	slot2 := types.Hash{}
+	slot2[31] = 2
+	var slot2Value uint256.Int
+	ibs.GetState(contractAddr, &slot2, &slot2Value)
+	if got := slot2Value.Uint64(); got != 0 {
+		t.Fatalf("storage[2] = %d, want 0", got)
+	}
+}
+
 func TestCallResolvesDelegationCodeInPectra(t *testing.T) {
 	db := memdb.NewTestDB(t)
 	tx := memdb.BeginRw(t, db)
