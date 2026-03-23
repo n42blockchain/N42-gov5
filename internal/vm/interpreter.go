@@ -26,6 +26,12 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
+// SlotAccessRecorder is an optional callback for recording storage slot accesses.
+// Used by the prefetch predictor to learn which slots are frequently read.
+type SlotAccessRecorder interface {
+	RecordSlotAccess(contract types.Address, slot types.Hash)
+}
+
 // Config are the configuration options for the Interpreter
 type Config struct {
 	Debug         bool      // Enables debugging
@@ -39,7 +45,8 @@ type Config struct {
 	StatelessExec bool      // true is certain conditions (like state trie root hash matching) need to be relaxed for stateless EVM execution
 	RestoreState  bool      // Revert all changes made to the state (useful for constant system calls)
 
-	ExtraEips []int // Additional EIPS that are to be enabled
+	ExtraEips    []int              // Additional EIPS that are to be enabled
+	SlotRecorder SlotAccessRecorder // If non-nil, called on every SLOAD for predictive prefetching
 }
 
 var pool = sync.Pool{

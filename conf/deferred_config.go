@@ -13,6 +13,10 @@ type DeferredExecConfig struct {
 	QueueSize int `json:"deferred_queue_size" yaml:"deferred_queue_size"`
 	// Workers is the number of concurrent execution workers. Default: 1.
 	Workers int `json:"deferred_workers" yaml:"deferred_workers"`
+	// DeepPipeline enables the 5-stage pipeline (prefetch, execute, commit, persist).
+	DeepPipeline bool `json:"deep_pipeline" yaml:"deep_pipeline"`
+	// PipelineDepth is the channel buffer size for the deep pipeline. Default: 4.
+	PipelineDepth int `json:"pipeline_depth" yaml:"pipeline_depth"`
 }
 
 // DefaultDeferredExecConfig returns defaults with deferred execution disabled.

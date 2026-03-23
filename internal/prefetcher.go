@@ -22,7 +22,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -31,24 +30,39 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
+// prefetchRequestType distinguishes different kinds of prefetch requests.
+type prefetchRequestType uint8
+
+const (
+	prefetchAccount prefetchRequestType = iota
+	prefetchStorage
+	prefetchCode
+)
+
+// prefetchRequest is a single I/O request dispatched to the async I/O pool.
+type prefetchRequest struct {
+	typ     prefetchRequestType
+	address types.Address
+	slot    types.Hash // only for prefetchStorage
+}
+
 // StatePrefetcher pre-loads state data from the database into cache before
-// EVM execution begins. It parses transactions statically to predict which
-// accounts and storage slots will be accessed, then reads them in background
-// goroutines. When the real execution starts, those reads hit the cache
-// instead of going to MDBX.
-//
-// The prefetcher uses the existing CachedStateReader mechanism — by issuing
-// reads through a StateReader wrapped with CachedStateReader, the cache is
-// populated as a side effect of the read.
+// EVM execution begins. Request generation (parsing transactions) is decoupled
+// from I/O execution (MDBX reads) via a bounded channel, enabling the I/O pool
+// to batch and overlap reads independently of the parsing goroutines.
 type StatePrefetcher struct {
-	config *params.ChainConfig
-	wg     sync.WaitGroup
-	cancel context.CancelFunc
+	config    *params.ChainConfig
+	predictor *PrefetchPredictor
+	genWg     sync.WaitGroup      // tracks request-generation goroutines
+	ioWg      sync.WaitGroup      // tracks I/O worker goroutines
+	cancel    context.CancelFunc
+	ioChan    chan prefetchRequest // bounded channel for async dispatch
 
 	// Metrics.
-	accountsPrefetched atomic.Int64
-	storagePrefetched  atomic.Int64
-	codePrefetched     atomic.Int64
+	accountsPrefetched  atomic.Int64
+	storagePrefetched   atomic.Int64
+	codePrefetched      atomic.Int64
+	predictedPrefetched atomic.Int64
 }
 
 // NewStatePrefetcher creates a new prefetcher.
@@ -56,13 +70,19 @@ func NewStatePrefetcher(config *params.ChainConfig) *StatePrefetcher {
 	return &StatePrefetcher{config: config}
 }
 
+// SetPredictor enables predictive slot prefetching based on historical access patterns.
+func (p *StatePrefetcher) SetPredictor(pred *PrefetchPredictor) {
+	p.predictor = pred
+}
+
 // Prefetch starts background goroutines that pre-load state for all
 // transactions in the block. The stateReader should be a CachedStateReader
 // (or chain: CachedStateReader → PlainStateReader) so that reads populate
 // the shared cache.
 //
-// The prefetcher is non-blocking: it returns immediately. Call Close() to
-// cancel and wait for completion.
+// Architecture: request generators parse transactions and submit prefetchRequest
+// structs to a bounded channel. A separate I/O pool drains the channel and
+// performs actual MDBX reads.
 func (p *StatePrefetcher) Prefetch(blk *block.Block, stateReader state.StateReader) {
 	txs := blk.Transactions()
 	if len(txs) == 0 {
@@ -80,7 +100,8 @@ func (p *StatePrefetcher) Prefetch(blk *block.Block, stateReader state.StateRead
 	// Cancel any previous prefetch to avoid goroutine leak.
 	if p.cancel != nil {
 		p.cancel()
-		p.wg.Wait()
+		p.genWg.Wait()
+		p.ioWg.Wait()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -89,18 +110,35 @@ func (p *StatePrefetcher) Prefetch(blk *block.Block, stateReader state.StateRead
 	signer := transaction.MakeSignerWithTimestamp(p.config, header.Number.ToBig(), header.Time)
 	coinbase := header.Coinbase
 
-	// Worker pool: bounded goroutines processing transactions.
-	workers := runtime.NumCPU()
-	if workers > len(txs) {
-		workers = len(txs)
+	// I/O channel: bounded to decouple request generation from I/O.
+	chanSize := len(txs) * 3 // ~3 requests per tx (sender + recipient + coinbase)
+	if chanSize > 4096 {
+		chanSize = 4096
+	}
+	p.ioChan = make(chan prefetchRequest, chanSize)
+
+	// Start I/O pool: fewer goroutines than generators.
+	ioWorkers := runtime.NumCPU() / 2
+	if ioWorkers < 2 {
+		ioWorkers = 2
+	}
+	for i := 0; i < ioWorkers; i++ {
+		p.ioWg.Add(1)
+		go p.ioWorker(ctx, stateReader)
+	}
+
+	// Request generation workers.
+	genWorkers := runtime.NumCPU()
+	if genWorkers > len(txs) {
+		genWorkers = len(txs)
 	}
 
 	work := make(chan *transaction.Transaction, len(txs))
 
-	for i := 0; i < workers; i++ {
-		p.wg.Add(1)
+	for i := 0; i < genWorkers; i++ {
+		p.genWg.Add(1)
 		go func() {
-			defer p.wg.Done()
+			defer p.genWg.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					log.Warn("State prefetcher panic recovered", "err", r)
@@ -110,83 +148,114 @@ func (p *StatePrefetcher) Prefetch(blk *block.Block, stateReader state.StateRead
 				if ctx.Err() != nil {
 					return
 				}
-				p.prefetchTx(ctx, tx, signer, coinbase, stateReader)
+				p.generateRequests(ctx, tx, signer, coinbase)
 			}
 		}()
 	}
 
-	// Feed transactions to workers.
+	// Feed transactions to generators, then close ioChan when all generators finish.
 	go func() {
+	feed:
 		for _, tx := range txs {
 			select {
 			case work <- tx:
 			case <-ctx.Done():
-				break
+				break feed
 			}
 		}
 		close(work)
+		p.genWg.Wait()
+		close(p.ioChan)
 	}()
 }
 
-// prefetchTx pre-loads state for a single transaction.
-func (p *StatePrefetcher) prefetchTx(ctx context.Context, tx *transaction.Transaction, signer transaction.Signer, coinbase types.Address, reader state.StateReader) {
-	// 1. Sender account (always accessed for nonce/balance).
+// generateRequests parses a transaction and submits prefetch requests to the I/O channel.
+// This method does NOT perform any I/O — it only generates request descriptors.
+func (p *StatePrefetcher) generateRequests(ctx context.Context, tx *transaction.Transaction, signer transaction.Signer, coinbase types.Address) {
 	sender, err := transaction.Sender(signer, tx)
 	if err != nil {
-		return // can't determine sender — skip
+		return
 	}
-	p.readAccount(ctx, reader, sender)
 
-	// 2. Recipient account (nil for contract creation).
+	p.submit(ctx, prefetchRequest{typ: prefetchAccount, address: sender})
+
 	if to := tx.To(); to != nil {
-		acc := p.readAccount(ctx, reader, *to)
-		// 3. If recipient has code, prefetch it.
-		if acc != nil && acc.CodeHash != (types.Hash{}) {
-			if ctx.Err() != nil {
-				return
-			}
-			_, _ = reader.ReadAccountCode(*to, acc.Incarnation, acc.CodeHash)
-			p.codePrefetched.Add(1)
-		}
+		p.submit(ctx, prefetchRequest{typ: prefetchAccount, address: *to})
+		p.submit(ctx, prefetchRequest{typ: prefetchCode, address: *to})
 	}
 
-	// 4. Access list entries (EIP-2930) — explicitly declared state access.
 	if accessList := tx.AccessList(); len(accessList) > 0 {
 		for _, tuple := range accessList {
-			if ctx.Err() != nil {
-				return
-			}
-			acc := p.readAccount(ctx, reader, tuple.Address)
-			if acc == nil {
-				continue
-			}
-			// Prefetch declared storage slots.
+			p.submit(ctx, prefetchRequest{typ: prefetchAccount, address: tuple.Address})
 			for i := range tuple.StorageKeys {
-				if ctx.Err() != nil {
-					return
-				}
-				key := tuple.StorageKeys[i]
-				_, _ = reader.ReadAccountStorage(tuple.Address, acc.Incarnation, &key)
-				p.storagePrefetched.Add(1)
+				p.submit(ctx, prefetchRequest{
+					typ:     prefetchStorage,
+					address: tuple.Address,
+					slot:    tuple.StorageKeys[i],
+				})
 			}
 		}
 	}
 
-	// 5. Coinbase account (accessed during reward distribution).
-	p.readAccount(ctx, reader, coinbase)
+	p.submit(ctx, prefetchRequest{typ: prefetchAccount, address: coinbase})
+
+	// Predictive prefetching: pre-load historically hot storage slots.
+	if p.predictor != nil && tx.To() != nil {
+		predicted := p.predictor.PredictSlots(*tx.To(), 8)
+		p.predictedPrefetched.Add(int64(len(predicted)))
+		for _, slot := range predicted {
+			p.submit(ctx, prefetchRequest{
+				typ:     prefetchStorage,
+				address: *tx.To(),
+				slot:    slot,
+			})
+		}
+	}
 }
 
-// readAccount reads account data and returns it. Returns nil if not found or cancelled.
-func (p *StatePrefetcher) readAccount(ctx context.Context, reader state.StateReader, addr types.Address) *account.StateAccount {
-	if ctx.Err() != nil {
-		return nil
+// submit sends a prefetch request to the I/O channel, respecting cancellation.
+func (p *StatePrefetcher) submit(ctx context.Context, req prefetchRequest) {
+	select {
+	case p.ioChan <- req:
+	case <-ctx.Done():
 	}
-	acc, err := reader.ReadAccountData(addr)
-	if err != nil {
-		return nil
+}
+
+// ioWorker drains prefetch requests from the channel and performs actual MDBX reads.
+func (p *StatePrefetcher) ioWorker(ctx context.Context, reader state.StateReader) {
+	defer p.ioWg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Warn("Prefetch I/O worker panic recovered", "err", r)
+		}
+	}()
+
+	for req := range p.ioChan {
+		if ctx.Err() != nil {
+			return
+		}
+
+		switch req.typ {
+		case prefetchAccount:
+			_, _ = reader.ReadAccountData(req.address)
+			p.accountsPrefetched.Add(1)
+
+		case prefetchStorage:
+			acc, _ := reader.ReadAccountData(req.address)
+			if acc != nil {
+				slot := req.slot
+				_, _ = reader.ReadAccountStorage(req.address, acc.Incarnation, &slot)
+				p.storagePrefetched.Add(1)
+			}
+
+		case prefetchCode:
+			acc, _ := reader.ReadAccountData(req.address)
+			if acc != nil && acc.CodeHash != (types.Hash{}) {
+				_, _ = reader.ReadAccountCode(req.address, acc.Incarnation, acc.CodeHash)
+				p.codePrefetched.Add(1)
+			}
+		}
 	}
-	p.accountsPrefetched.Add(1)
-	return acc
 }
 
 // Close cancels prefetching and waits for all goroutines to finish.
@@ -194,16 +263,19 @@ func (p *StatePrefetcher) Close() {
 	if p.cancel != nil {
 		p.cancel()
 	}
-	p.wg.Wait()
+	p.genWg.Wait()
+	p.ioWg.Wait()
 
 	accounts := p.accountsPrefetched.Load()
 	storage := p.storagePrefetched.Load()
 	code := p.codePrefetched.Load()
-	if accounts+storage+code > 0 {
+	predicted := p.predictedPrefetched.Load()
+	if accounts+storage+code+predicted > 0 {
 		log.Debug("State prefetch completed",
 			"accounts", accounts,
 			"storage", storage,
 			"code", code,
+			"predicted", predicted,
 		)
 	}
 }

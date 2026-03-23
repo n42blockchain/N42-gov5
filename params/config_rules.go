@@ -302,6 +302,11 @@ func (c *ChainConfig) IsRandomness(time uint64) bool {
 	return isForked(c.RandomnessTime, time)
 }
 
+// IsLtHash returns whether time is at or past the LtHash lattice state digest activation.
+func (c *ChainConfig) IsLtHash(time uint64) bool {
+	return isForked(c.LtHashTime, time)
+}
+
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.
 func (c *ChainConfig) IsEip1559FeeCollector(num uint64) bool {
 	return c.Eip1559FeeCollector != nil && isForked(c.Eip1559FeeCollectorTransition, num)

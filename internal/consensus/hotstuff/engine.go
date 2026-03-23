@@ -102,6 +102,7 @@ type ConsensusEngine struct {
 
 	// Block tracking
 	importedBlocks     map[types.Hash]bool
+	pendingTxRoots     map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
 	equivocationTracker map[ValidatorIndex]types.Hash
 
 	// Future message buffer
@@ -166,6 +167,7 @@ func NewConsensusEngineWithEpochManager(
 		pacemaker:           NewPacemaker(baseTimeoutMs, maxTimeoutMs),
 		outputCh:            outputCh,
 		importedBlocks:      make(map[types.Hash]bool),
+		pendingTxRoots:      make(map[types.Hash]types.Hash),
 		equivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:     make([]futureMsg, 0),
 		viewTiming:          newViewTiming(),
@@ -199,6 +201,7 @@ func WithRecoveredState(
 		pacemaker:           NewPacemaker(baseTimeoutMs, maxTimeoutMs),
 		outputCh:            outputCh,
 		importedBlocks:      make(map[types.Hash]bool),
+		pendingTxRoots:      make(map[types.Hash]types.Hash),
 		equivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:     make([]futureMsg, 0),
 		viewTiming:          newViewTiming(),
@@ -223,6 +226,13 @@ func (e *ConsensusEngine) CurrentPhase() Phase {
 
 func (e *ConsensusEngine) Pacemaker() *Pacemaker {
 	return e.pacemaker
+}
+
+// MyIndex returns this validator's index in the current validator set.
+func (e *ConsensusEngine) MyIndex() ValidatorIndex {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.myIndex
 }
 
 // RestoreState restores persisted consensus state for crash recovery.
@@ -287,7 +297,7 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 	case EventBlockReady:
 		return e.onBlockReady(event.Hash, event.TxRootHash)
 	case EventBlockImported:
-		return e.onBlockImported(event.Hash)
+		return e.onBlockImported(event.Hash, event.TxRootHash)
 	default:
 		return nil
 	}
@@ -422,6 +432,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	e.timeoutCollector = nil
 	e.prepareQC = nil
 	e.importedBlocks = make(map[types.Hash]bool)
+	e.pendingTxRoots = make(map[types.Hash]types.Hash)
 	e.equivocationTracker = make(map[ValidatorIndex]types.Hash)
 
 	// Preserve timing from committed view.

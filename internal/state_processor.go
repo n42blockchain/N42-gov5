@@ -41,9 +41,15 @@ import (
 
 // StateProcessor implements Processor and handles state transitions.
 type StateProcessor struct {
-	config *params.ChainConfig
-	bc     *BlockChain
-	engine consensus.Engine
+	config       *params.ChainConfig
+	bc           *BlockChain
+	engine       consensus.Engine
+	slotRecorder vm2.SlotAccessRecorder
+}
+
+// SetSlotRecorder enables SLOAD access recording for predictive prefetching.
+func (p *StateProcessor) SetSlotRecorder(r vm2.SlotAccessRecorder) {
+	p.slotRecorder = r
 }
 
 // NewStateProcessor initialises a new StateProcessor.
@@ -87,7 +93,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	)
 
 	chainConfig := p.config
-	cfg := vm2.Config{}
+	cfg := vm2.Config{SlotRecorder: p.slotRecorder}
 
 	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(blockNumber.ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibs)

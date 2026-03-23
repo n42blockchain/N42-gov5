@@ -124,6 +124,18 @@ type RootComputer interface {
 	ComputeRoot(accounts map[types.Address]*account.StateAccount, storage map[types.Address]map[types.Hash]*uint256.Int) (types.Hash, error)
 }
 
+// LtHashRootComputer extends RootComputer with original-data awareness
+// for LtHash incremental digest computation.
+type LtHashRootComputer interface {
+	RootComputer
+	ComputeRootWithOriginals(
+		accounts map[types.Address]*account.StateAccount,
+		originals map[types.Address]*account.StateAccount,
+		storage map[types.Address]map[types.Hash]*uint256.Int,
+		originalStorage map[types.Address]map[types.Hash]*uint256.Int,
+	) (jmtRoot types.Hash, ltHashRoot types.Hash, err error)
+}
+
 // Compile-time interface implementation checks
 var (
 	_ StateReader          = (*PlainStateReader)(nil)

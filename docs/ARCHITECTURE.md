@@ -9,7 +9,8 @@ Ethereum-compatible blockchain node written in Go.
 cmd/n42/           -> Entry point, CLI (urfave/cli v2)
 internal/           -> Core business logic (private, not importable)
   node/             -> Service orchestrator: creates & wires all components
-  consensus/        -> Pluggable consensus engines (apoa/apos)
+  consensus/        -> Pluggable consensus engines (apoa/apos/hotstuff)
+    hotstuff/       -> HotStuff-2 BFT (2-round, Rotor relay, DA verification)
   miner/            -> Block production and sealing
   txspool/          -> Transaction pool management
   vm/               -> EVM execution (interpreter, opcodes, gas)
@@ -18,7 +19,10 @@ internal/           -> Core business logic (private, not importable)
   sync/             -> Chain synchronization (initial-sync, snap-sync, checkpoint)
   p2p/              -> libp2p networking with Kademlia DHT
   exex/             -> Execution Extensions (post-block plugin system)
-  parallel/         -> Block-STM parallel EVM execution
+  parallel/         -> Block-STM parallel EVM execution + dependency predictor
+  deferred/         -> Deferred execution pipeline (3-stage + 5-stage deep pipeline)
+  tile/             -> Tile architecture (SPSC ring buffer, CPU affinity, crash recovery)
+  stateless/        -> Stateless block validation (witness-based, code cache)
   tracing/          -> OpenTelemetry distributed tracing
   tracers/          -> Debug/trace (js/ via goja, native/ Go tracers)
   metrics/          -> Runtime, chain, and txpool metrics
@@ -33,6 +37,10 @@ modules/            -> Data layer (importable by external packages)
   event/            -> Event subscription system
   changeset/        -> State changeset tracking
 lib/                -> Shared libraries (importable)
+  jmt/              -> Jellyfish Merkle Tree (Blake3, 16-ary, ref-counting GC)
+    archive/        -> Haystack JMT node compression (seg + RecSplit index)
+    store/          -> Node stores (MDBX, PooledDB, Lazy, Cached, Mem)
+  lthash/           -> LtHash lattice state digest (BLAKE3 XOF 2048-byte homomorphic)
   kv/               -> Key-value store interfaces
   kv/mdbx/          -> MDBX backend implementation
   kv/memdb/         -> In-memory backend (testing)
@@ -300,3 +308,59 @@ Together these reduce MDBX reads by 50-80% during steady-state operation.
 - Witness infrastructure: `modules/state/witness/` provides `BlockWitness`,
   `WitnessStateReader`, proof generation and verification
 - P2P witness protocol: `internal/sync/rpc_witness.go`
+
+## High-Performance Pipeline
+
+N42 implements a multi-stage block processing pipeline with lock-free IPC:
+
+```
+Block N:   [Consensus]     Leader + Rotor relay
+Block N-1: [Prefetch]      Async I/O + predicted slots
+Block N-2: [Execution]     Block-STM parallel EVM
+Block N-3: [Commitment]    JMT + LtHash state root
+Block N-4: [Persistence]   MDBX write transaction
+```
+
+### Tile Architecture (`internal/tile/`)
+
+Each pipeline stage runs as a **Tile** — a long-lived goroutine with:
+- **SPSC ring buffer** (`RingBuffer`): Lamport queue with cache-line-padded
+  head/tail pointers. Power-of-2 capacity with bitwise masking. ~50ns/op.
+- **CPU affinity**: Optional core pinning via `runtime.LockOSThread()` +
+  `unix.SchedSetaffinity()` (Linux only, no-op on other platforms).
+- **Crash recovery**: Auto-restart on panic with configurable max restarts
+  and cancellable restart delay.
+- **TileManager**: Orchestrates tile creation, wiring, start/stop, and
+  reorg recovery (`Reset()`).
+
+### LtHash State Digest (`lib/lthash/`)
+
+Homomorphic hash for O(k) incremental state verification:
+
+```
+newDigest = oldDigest ⊕ BLAKE3_XOF(newAccountData) ⊕ BLAKE3_XOF(oldAccountData)
+```
+
+- 2048-byte digest via BLAKE3 XOF mode (128-bit collision security)
+- Runs alongside JMT — JMT provides Merkle proofs, LtHash provides fast
+  full-validator verification
+- 32-byte summary (`BLAKE3(digest[:])`) stored in `Header.LtHashRoot`
+- Fork-gated via `LtHashTime` timestamp
+
+### Rotor Single-Hop Relay (`internal/consensus/hotstuff/rotor.go`)
+
+Deterministic relay-based block propagation:
+1. Leader computes relay assignments via `SHA256(view_number)` → Fisher-Yates shuffle
+2. All validators independently compute the same assignments
+3. Leader sends proposal directly to k relay nodes via libp2p streams
+4. Each relay forwards to its assigned subset of validators
+5. GossipSub broadcast as safety net for liveness
+
+### Predictive Prefetching
+
+Two-phase prefetch architecture:
+1. **Static analysis**: Parse transaction access lists, sender/recipient accounts
+2. **Learned prediction**: `PrefetchPredictor` tracks hot storage slots per contract
+   from SLOAD execution patterns, predicts top-N slots for next block
+3. **Async dispatch**: Request generators → bounded channel → I/O worker pool
+4. **Periodic decay**: Every 100 blocks, reduces old access counts (factor 0.9)

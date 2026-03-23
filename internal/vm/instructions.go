@@ -584,6 +584,9 @@ func opSload(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 	loc := scope.Stack.Peek()
 	interpreter.hasherBuf = loc.Bytes32()
 	interpreter.evm.IntraBlockState().GetState(scope.Contract.Address(), &interpreter.hasherBuf, loc)
+	if recorder := interpreter.cfg.SlotRecorder; recorder != nil {
+		recorder.RecordSlotAccess(scope.Contract.Address(), interpreter.hasherBuf)
+	}
 	return nil, nil
 }
 

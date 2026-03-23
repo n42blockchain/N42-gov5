@@ -94,6 +94,8 @@ message Header {
   // EIP-4844 blob gas fields (Cancun fork)
   uint64 BlobGasUsed = 17;
   uint64 ExcessBlobGas = 18;
+  // LtHash state digest root (BLAKE3 summary of 2048-byte lattice hash)
+  H256 LtHashRoot = 19;
 }
 
 message Verifier {

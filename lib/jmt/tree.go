@@ -34,7 +34,8 @@ import "container/list"
 // and other per-block data structures in the N42 codebase.
 
 // DefaultNodeCacheSize is the default number of decoded nodes to cache.
-const DefaultNodeCacheSize = 65536
+// Set to 128K to absorb the workload previously handled by CachedStore.
+const DefaultNodeCacheSize = 131072
 
 type Tree struct {
 	root   Hash
@@ -484,14 +485,25 @@ func (t *Tree) Flush() error {
 // FlushTo writes all dirty nodes to the given external store and clears the
 // buffer. This is used when the tree's primary store is in-memory but nodes
 // must be persisted to a different backend (e.g., an MDBX transaction).
+//
+// If target implements BatchNodeStore, PutBatch is used for efficiency.
 func (t *Tree) FlushTo(target NodeStore) error {
-	for h, data := range t.dirty {
-		if err := target.Put(h, data); err != nil {
+	if batch, ok := target.(BatchNodeStore); ok {
+		if err := batch.PutBatch(t.dirty); err != nil {
 			return err
 		}
-		// Promote dirty nodes to the parsed cache so they remain accessible
-		// across subsequent payloads without hitting the store.
-		if t.nodeCache != nil {
+	} else {
+		for h, data := range t.dirty {
+			if err := target.Put(h, data); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Promote dirty nodes to the parsed cache so they remain accessible
+	// across subsequent payloads without hitting the store.
+	if t.nodeCache != nil {
+		for h, data := range t.dirty {
 			if _, cached := t.nodeCache[h]; !cached {
 				if node, decErr := DecodeNode(data); decErr == nil {
 					t.cacheNode(h, node)
@@ -499,8 +511,26 @@ func (t *Tree) FlushTo(target NodeStore) error {
 			}
 		}
 	}
+
 	t.dirty = make(map[Hash][]byte)
 	return nil
+}
+
+// SnapshotDirty returns a deep copy of the dirty node map. Used by the deep
+// pipeline's commitment stage to capture mutations without flushing.
+func (t *Tree) SnapshotDirty() map[Hash][]byte {
+	snapshot := make(map[Hash][]byte, len(t.dirty))
+	for h, data := range t.dirty {
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		snapshot[h] = cp
+	}
+	return snapshot
+}
+
+// ClearDirty discards all unflushed mutations.
+func (t *Tree) ClearDirty() {
+	t.dirty = make(map[Hash][]byte)
 }
 
 // DirtyCount returns the number of unflushed nodes.

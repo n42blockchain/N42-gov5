@@ -54,6 +54,7 @@ func (e *ConsensusEngine) onTimeout() error {
 
 	// Clear pending block data.
 	e.importedBlocks = make(map[types.Hash]bool)
+	e.pendingTxRoots = make(map[types.Hash]types.Hash)
 
 	// Preserve any already-collected timeouts.
 	nValidators := e.validatorSet().Len()

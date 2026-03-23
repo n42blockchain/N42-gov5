@@ -69,6 +69,21 @@ func (s *MDBXStore) Has(hash jmt.Hash) (bool, error) {
 	return data != nil, nil
 }
 
+// PutBatch writes multiple nodes in a single operation within the same
+// MDBX transaction. More efficient than individual Put() calls when
+// flushing many dirty nodes.
+func (s *MDBXStore) PutBatch(entries map[jmt.Hash][]byte) error {
+	for h, data := range entries {
+		if err := s.tx.Put(s.table, h[:], data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Compile-time check: MDBXStore implements BatchNodeStore.
+var _ jmt.BatchNodeStore = (*MDBXStore)(nil)
+
 // ReadJMTRoot reads the latest persisted JMT root hash from the JMTRoot table.
 func ReadJMTRoot(tx kv.Tx) (jmt.Hash, error) {
 	data, err := tx.GetOne(JMTRootTable, []byte("root"))

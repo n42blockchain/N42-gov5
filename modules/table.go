@@ -176,6 +176,11 @@ const (
 	// value: blake3_hash (32 bytes)
 	JMTRoot = "JMTRoot"
 
+	// LtHashDigest stores the 2048-byte running LtHash state digest for crash recovery.
+	// key: "digest" (fixed)
+	// value: 2048 bytes (lattice hash digest)
+	LtHashDigest = "LtHashDigest"
+
 	// ContentStore stores content-addressed blobs for the CAS precompile.
 	// key: keccak256(data) (32 bytes)
 	// value: raw data (up to 24KB)
@@ -256,6 +261,7 @@ var n42Tables = []string{
 	TxPoolJournal,
 	JMTNode,
 	JMTRoot,
+	LtHashDigest,
 	ContentStore,
 	TorrentHashMap,
 	Ed2kHashMap,

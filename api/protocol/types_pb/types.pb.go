@@ -612,6 +612,14 @@ type Header struct {
 	// EIP-4844 blob gas fields (Cancun fork)
 	BlobGasUsed   uint64 `protobuf:"varint,17,opt,name=BlobGasUsed,proto3" json:"BlobGasUsed,omitempty"`
 	ExcessBlobGas uint64 `protobuf:"varint,18,opt,name=ExcessBlobGas,proto3" json:"ExcessBlobGas,omitempty"`
+	LtHashRoot    *H256  `protobuf:"bytes,19,opt,name=LtHashRoot,proto3" json:"LtHashRoot,omitempty"`
+}
+
+func (x *Header) GetLtHashRoot() *H256 {
+	if x != nil {
+		return x.LtHashRoot
+	}
+	return nil
 }
 
 func (x *Header) Reset() {

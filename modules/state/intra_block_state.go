@@ -109,6 +109,10 @@ type IntraBlockState struct {
 	// rootComputer is an optional pluggable state root implementation.
 	// When nil, the default incremental Keccak hash is used.
 	rootComputer RootComputer
+
+	// ltHashRoot stores the LtHash digest root computed during IntermediateRoot().
+	// Zero if LtHash is not active.
+	ltHashRoot types.Hash
 }
 
 // New creates a new IntraBlockState with the given state reader.
@@ -128,8 +132,17 @@ func New(stateReader StateReader) *IntraBlockState {
 
 // SetRootComputer sets a custom state root implementation (e.g., JMT).
 // When set, IntermediateRoot() delegates to this instead of the default Keccak hash.
+// If the RootComputer implements LtHashRootComputer, the LtHash digest is
+// also updated incrementally and available via LtHashRoot().
 func (sdb *IntraBlockState) SetRootComputer(rc RootComputer) {
 	sdb.rootComputer = rc
+}
+
+// LtHashRoot returns the LtHash state digest root, computed during
+// IntermediateRoot() if the RootComputer supports LtHash.
+// Returns zero hash if LtHash is not active.
+func (sdb *IntraBlockState) LtHashRoot() types.Hash {
+	return sdb.ltHashRoot
 }
 
 func (sdb *IntraBlockState) BeginWriteSnapshot() {
@@ -1021,20 +1034,56 @@ func (s *IntraBlockState) IntermediateRoot() types.Hash {
 }
 
 // computeRootViaComputer collects dirty accounts/storage and delegates
-// to the pluggable RootComputer.
+// to the pluggable RootComputer. If the computer supports LtHash
+// (LtHashRootComputer interface), original state is also collected for
+// incremental digest computation.
 func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	accounts := make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty))
 	storage := make(map[types.Address]map[types.Hash]*uint256.Int)
+
+	// Check if LtHash is supported — if so, collect originals.
+	ltRC, ltEnabled := s.rootComputer.(LtHashRootComputer)
+	var originals map[types.Address]*account.StateAccount
+	var originalStorage map[types.Address]map[types.Hash]*uint256.Int
+	if ltEnabled {
+		originals = make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty))
+		originalStorage = make(map[types.Address]map[types.Hash]*uint256.Int)
+	}
 
 	for addr := range s.stateObjectsDirty {
 		obj := s.getStateObject(addr)
 		if obj == nil || obj.deleted {
 			accounts[addr] = nil
+			if ltEnabled {
+				orig := new(account.StateAccount)
+				if obj != nil {
+					orig.Copy(&obj.original)
+					// Collect storage originals for deleted accounts so LtHash
+					// can remove their storage slots from the digest.
+					if len(obj.blockOriginStorage) > 0 {
+						origSlots := make(map[types.Hash]*uint256.Int, len(obj.blockOriginStorage))
+						slots := make(map[types.Hash]*uint256.Int, len(obj.blockOriginStorage))
+						for key, origVal := range obj.blockOriginStorage {
+							origSlots[key] = new(uint256.Int).Set(&origVal)
+							slots[key] = new(uint256.Int) // zero = deleted
+						}
+						storage[addr] = slots
+						originalStorage[addr] = origSlots
+					}
+				}
+				originals[addr] = orig
+			}
 			continue
 		}
 		acct := new(account.StateAccount)
 		acct.Copy(&obj.data)
 		accounts[addr] = acct
+
+		if ltEnabled {
+			orig := new(account.StateAccount)
+			orig.Copy(&obj.original)
+			originals[addr] = orig
+		}
 
 		if len(obj.dirtyStorage) == 0 {
 			continue
@@ -1044,6 +1093,28 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 			slots[key] = new(uint256.Int).Set(&value)
 		}
 		storage[addr] = slots
+
+		if ltEnabled && len(obj.dirtyStorage) > 0 {
+			origSlots := make(map[types.Hash]*uint256.Int, len(obj.dirtyStorage))
+			for key := range obj.dirtyStorage {
+				if origVal, ok := obj.blockOriginStorage[key]; ok {
+					origSlots[key] = new(uint256.Int).Set(&origVal)
+				} else {
+					origSlots[key] = new(uint256.Int) // zero = didn't exist
+				}
+			}
+			originalStorage[addr] = origSlots
+		}
+	}
+
+	// Use LtHash-aware path if available.
+	if ltEnabled {
+		jmtRoot, ltRoot, err := ltRC.ComputeRootWithOriginals(accounts, originals, storage, originalStorage)
+		if err != nil {
+			panic("JMT+LtHash root computation failed: " + err.Error())
+		}
+		s.ltHashRoot = ltRoot
+		return jmtRoot
 	}
 
 	root, err := s.rootComputer.ComputeRoot(accounts, storage)

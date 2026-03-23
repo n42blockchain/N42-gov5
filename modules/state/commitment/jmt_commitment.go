@@ -112,6 +112,15 @@ func (c *JMTCommitment) DirtyNodeCount() int {
 	return c.tree.DirtyCount()
 }
 
+// PrefetchPaths traverses the JMT along the given key hash paths, loading
+// nodes into the tree's in-memory cache. Errors are silently ignored
+// (prefetch is best-effort).
+func (c *JMTCommitment) PrefetchPaths(keyHashes []jmt.Hash) {
+	for _, kh := range keyHashes {
+		_, _ = c.tree.Get(kh)
+	}
+}
+
 // GetAccountProof generates a Merkle inclusion/exclusion proof for an account.
 func (c *JMTCommitment) GetAccountProof(addr types.Address) (*jmt.Proof, error) {
 	keyHash := AccountKeyHash(addr)
