@@ -937,13 +937,22 @@ func (h *Header) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 func (h *Header) UnmarshalSSZ(buf []byte) error {
 	var err error
 	size := uint64(len(buf))
-	if size < 664 {
+
+	// Accept both legacy format (408 bytes fixed, no Bloom) and
+	// current format (664 bytes fixed, with Bloom + MixDigest).
+	// Legacy format: fields 0-11 + Extra offset + Signature + MixDigest = 408
+	// Current format: fields 0-11 + Extra offset + Signature + Bloom + MixDigest = 664
+	const legacyFixedSize = 408
+	const currentFixedSize = 664
+
+	if size < legacyFixedSize {
 		return ssz.ErrSize
 	}
 
 	tail := buf
 	var o12 uint64
 
+	// Fields 0-11 are identical in both formats (276 bytes).
 	// Field (0) 'ParentHash'
 	if h.ParentHash == nil {
 		h.ParentHash = new(H256)
@@ -1025,32 +1034,57 @@ func (h *Header) UnmarshalSSZ(buf []byte) error {
 		return ssz.ErrOffset
 	}
 
-	if o12 < 664 {
+	// Detect format by Extra offset value.
+	if o12 >= currentFixedSize {
+		// Current format: Signature(96) + Bloom(256) + MixDigest(32)
+		if size < currentFixedSize {
+			return ssz.ErrSize
+		}
+
+		// Field (13) 'Signature'
+		if h.Signature == nil {
+			h.Signature = new(H768)
+		}
+		if err = h.Signature.UnmarshalSSZ(buf[280:376]); err != nil {
+			return err
+		}
+
+		// Field (14) 'Bloom'
+		if h.Bloom == nil {
+			h.Bloom = new(H2048)
+		}
+		if err = h.Bloom.UnmarshalSSZ(buf[376:632]); err != nil {
+			return err
+		}
+
+		// Field (15) 'MixDigest'
+		if h.MixDigest == nil {
+			h.MixDigest = new(H256)
+		}
+		if err = h.MixDigest.UnmarshalSSZ(buf[632:664]); err != nil {
+			return err
+		}
+	} else if o12 >= legacyFixedSize {
+		// Legacy format: Signature(96) + MixDigest(32), no Bloom
+		// Field (13) 'Signature'
+		if h.Signature == nil {
+			h.Signature = new(H768)
+		}
+		if err = h.Signature.UnmarshalSSZ(buf[280:376]); err != nil {
+			return err
+		}
+
+		// Field (15) 'MixDigest' (at offset 376 in legacy, no Bloom)
+		if h.MixDigest == nil {
+			h.MixDigest = new(H256)
+		}
+		if err = h.MixDigest.UnmarshalSSZ(buf[376:408]); err != nil {
+			return err
+		}
+
+		// Bloom not present in legacy format — leave as nil/zero
+	} else {
 		return ssz.ErrInvalidVariableOffset
-	}
-
-	// Field (13) 'Signature'
-	if h.Signature == nil {
-		h.Signature = new(H768)
-	}
-	if err = h.Signature.UnmarshalSSZ(buf[280:376]); err != nil {
-		return err
-	}
-
-	// Field (14) 'Bloom'
-	if h.Bloom == nil {
-		h.Bloom = new(H2048)
-	}
-	if err = h.Bloom.UnmarshalSSZ(buf[376:632]); err != nil {
-		return err
-	}
-
-	// Field (15) 'MixDigest'
-	if h.MixDigest == nil {
-		h.MixDigest = new(H256)
-	}
-	if err = h.MixDigest.UnmarshalSSZ(buf[632:664]); err != nil {
-		return err
 	}
 
 	// Field (12) 'Extra'
@@ -1819,7 +1853,8 @@ func (t *Transaction) UnmarshalSSZ(buf []byte) error {
 		return ssz.ErrOffset
 	}
 
-	if o7 < 392 {
+	// Accept both legacy (o7 >= 336) and current (o7 >= 392) formats.
+	if o7 < 336 {
 		return ssz.ErrInvalidVariableOffset
 	}
 
@@ -1879,38 +1914,44 @@ func (t *Transaction) UnmarshalSSZ(buf []byte) error {
 		return err
 	}
 
-	// Field (16) 'PqSigAlgo'
-	t.PqSigAlgo = ssz.UnmarshallUint32(buf[336:340])
+	// Fields 16-22 only present in current format (o7 >= 392).
+	// Legacy format (o7 < 392) skips PQ fields, blob fields, and access list.
+	isCurrentTxFormat := o7 >= 392
 
-	// Field (17) 'PqPubKeyMode'
-	t.PqPubKeyMode = ssz.UnmarshallUint32(buf[340:344])
+	if isCurrentTxFormat {
+		// Field (16) 'PqSigAlgo'
+		t.PqSigAlgo = ssz.UnmarshallUint32(buf[336:340])
 
-	// Offset (18) 'PqPubKeyData'
-	if o18 = ssz.ReadOffset(buf[344:348]); o18 > size || o8 > o18 {
-		return ssz.ErrOffset
-	}
+		// Field (17) 'PqPubKeyMode'
+		t.PqPubKeyMode = ssz.UnmarshallUint32(buf[340:344])
 
-	// Offset (19) 'PqSignature'
-	if o19 = ssz.ReadOffset(buf[348:352]); o19 > size || o18 > o19 {
-		return ssz.ErrOffset
-	}
+		// Offset (18) 'PqPubKeyData'
+		if o18 = ssz.ReadOffset(buf[344:348]); o18 > size || o8 > o18 {
+			return ssz.ErrOffset
+		}
 
-	// Field (20) 'BlobFeeCap'
-	if t.BlobFeeCap == nil {
-		t.BlobFeeCap = new(H256)
-	}
-	if err = t.BlobFeeCap.UnmarshalSSZ(buf[352:384]); err != nil {
-		return err
-	}
+		// Offset (19) 'PqSignature'
+		if o19 = ssz.ReadOffset(buf[348:352]); o19 > size || o18 > o19 {
+			return ssz.ErrOffset
+		}
 
-	// Offset (21) 'BlobHashes'
-	if o21 = ssz.ReadOffset(buf[384:388]); o21 > size || o19 > o21 {
-		return ssz.ErrOffset
-	}
+		// Field (20) 'BlobFeeCap'
+		if t.BlobFeeCap == nil {
+			t.BlobFeeCap = new(H256)
+		}
+		if err = t.BlobFeeCap.UnmarshalSSZ(buf[352:384]); err != nil {
+			return err
+		}
 
-	// Offset (22) 'AccessList'
-	if o22 = ssz.ReadOffset(buf[388:392]); o22 > size || o21 > o22 {
-		return ssz.ErrOffset
+		// Offset (21) 'BlobHashes'
+		if o21 = ssz.ReadOffset(buf[384:388]); o21 > size || o19 > o21 {
+			return ssz.ErrOffset
+		}
+
+		// Offset (22) 'AccessList'
+		if o22 = ssz.ReadOffset(buf[388:392]); o22 > size || o21 > o22 {
+			return ssz.ErrOffset
+		}
 	}
 
 	// Field (7) 'Data'
@@ -1926,50 +1967,57 @@ func (t *Transaction) UnmarshalSSZ(buf []byte) error {
 	}
 
 	// Field (8) 'Sign'
-	{
+	if isCurrentTxFormat {
+		// Current format: Sign ends at o18
+		buf = tail[o8:o18]
+	} else {
+		// Legacy format: Sign goes to end of data
 		buf = tail[o8:]
-		if len(buf) > 104857600 {
-			return ssz.ErrBytesLength
-		}
-		if cap(t.Sign) == 0 {
-			t.Sign = make([]byte, 0, len(buf))
-		}
-		t.Sign = append(t.Sign, buf...)
 	}
-
-	// Field (18) 'PqPubKeyData'
-	{
-		buf = tail[o18:o19]
-		if len(buf) > 2048 {
-			return ssz.ErrBytesLength
-		}
-		t.PqPubKeyData = append(t.PqPubKeyData[:0], buf...)
+	if len(buf) > 104857600 {
+		return ssz.ErrBytesLength
 	}
-
-	// Field (19) 'PqSignature'
-	{
-		buf = tail[o19:o21]
-		if len(buf) > 4096 {
-			return ssz.ErrBytesLength
-		}
-		t.PqSignature = append(t.PqSignature[:0], buf...)
+	if cap(t.Sign) == 0 {
+		t.Sign = make([]byte, 0, len(buf))
 	}
+	t.Sign = append(t.Sign, buf...)
 
-	// Field (21) 'BlobHashes'
-	{
-		buf = tail[o21:o22]
-		t.BlobHashes, err = sszUnmarshalH256List(buf, transactionSSZMaxBlobHashes)
-		if err != nil {
-			return err
+	// Fields 18-22 only in current format.
+	if isCurrentTxFormat {
+		// Field (18) 'PqPubKeyData'
+		{
+			buf = tail[o18:o19]
+			if len(buf) > 2048 {
+				return ssz.ErrBytesLength
+			}
+			t.PqPubKeyData = append(t.PqPubKeyData[:0], buf...)
 		}
-	}
 
-	// Field (22) 'AccessList'
-	{
-		buf = tail[o22:]
-		t.AccessList, err = sszUnmarshalAccessTupleList(buf, 4096)
-		if err != nil {
-			return err
+		// Field (19) 'PqSignature'
+		{
+			buf = tail[o19:o21]
+			if len(buf) > 4096 {
+				return ssz.ErrBytesLength
+			}
+			t.PqSignature = append(t.PqSignature[:0], buf...)
+		}
+
+		// Field (21) 'BlobHashes'
+		{
+			buf = tail[o21:o22]
+			t.BlobHashes, err = sszUnmarshalH256List(buf, transactionSSZMaxBlobHashes)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Field (22) 'AccessList'
+		{
+			buf = tail[o22:]
+			t.AccessList, err = sszUnmarshalAccessTupleList(buf, 4096)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return err

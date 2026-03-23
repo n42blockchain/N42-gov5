@@ -54,6 +54,9 @@ const (
 type Service struct {
 	started          atomic.Bool
 	isPreGenesis     atomic.Bool
+	handshakeReady   chan struct{}
+	handshakeOnce    sync.Once
+	protectedPeers   map[peer.ID]struct{}
 	pingMethod       func(ctx context.Context, id peer.ID) error
 	cancel           context.CancelFunc
 	cfg              *conf.P2PConfig
@@ -198,11 +201,16 @@ func (s *Service) Start() {
 	}
 
 	if len(s.cfg.StaticPeers) > 0 {
+		log.Info("Connecting to static peers", "count", len(s.cfg.StaticPeers), "peers", s.cfg.StaticPeers)
 		addrs, err := PeersFromStringAddrs(s.cfg.StaticPeers)
 		if err != nil {
-			log.Error("Could not connect to static peer", "err", err)
+			log.Error("Could not parse static peer addresses", "err", err)
+		} else {
+			log.Info("Parsed static peer multiaddrs", "count", len(addrs))
 		}
 		s.connectWithAllPeers(addrs)
+	} else {
+		log.Info("No static peers configured")
 	}
 	s.RefreshENR()
 
@@ -422,7 +430,7 @@ func (s *Service) connectWithPeer(ctx context.Context, info peer.AddrInfo) error
 	ctx, cancel := context.WithTimeout(ctx, maxDialTimeout)
 	defer cancel()
 
-	log.Debug("start connect", "peer info", info)
+	log.Info("Dialing peer", "id", info.ID, "addrs", info.Addrs)
 	if err := s.host.Connect(ctx, info); err != nil {
 		// Do not penalize peer for transient dial failures (peer id mismatch
 		// after key rotation, connection refused, timeout). Only increment
@@ -436,8 +444,10 @@ func (s *Service) connectWithPeer(ctx context.Context, info peer.AddrInfo) error
 			!strings.Contains(errMsg, "i/o timeout") {
 			s.Peers().Scorers().BadResponsesScorer().Increment(info.ID)
 		}
+		log.Warn("Peer dial failed", "id", info.ID, "err", err)
 		return err
 	}
+	log.Info("Peer connected successfully", "id", info.ID)
 	return nil
 }
 

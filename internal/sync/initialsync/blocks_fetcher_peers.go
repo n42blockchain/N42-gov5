@@ -117,7 +117,7 @@ func (f *blocksFetcher) shouldSkipPeerWait() bool {
 	if !currentBlockNumber(f.chain).IsZero() {
 		return false
 	}
-	return len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0
+	return len(cfg.BootstrapNodeAddr) == 0 && len(cfg.Discv5BootStrapAddr) == 0 && len(cfg.StaticPeers) == 0
 }
 
 // filterPeers returns transformed list of peers, weight sorted by scores and capacity remaining.

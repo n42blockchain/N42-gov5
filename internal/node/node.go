@@ -952,6 +952,11 @@ func (n *Node) Start() error {
 		return err
 	}
 
+	// Register sync handlers BEFORE P2P starts connecting peers.
+	// This prevents the race where static peers connect before
+	// the Status RPC handler is registered.
+	n.sync.RegisterHandlers()
+
 	log.PrintStartupProgress(3, 6, "P2P networking")
 	n.p2p.Start()
 
