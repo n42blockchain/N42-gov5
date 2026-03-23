@@ -153,5 +153,14 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 	if root := statedb.IntermediateRoot(); header.StateRoot() != root {
 		return fmt.Errorf("invalid merkle root (remote: %x local: %x)", header.Root, root)
 	}
+
+	// Validate LtHash state digest if fork is active.
+	if v.config.IsLtHash(header.Time) {
+		ltRoot := statedb.LtHashRoot()
+		if header.LtHashRoot != ltRoot {
+			return fmt.Errorf("invalid LtHash root (remote: %x local: %x)", header.LtHashRoot, ltRoot)
+		}
+	}
+
 	return nil
 }

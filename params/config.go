@@ -191,6 +191,11 @@ type ChainConfig struct {
 	// Inspired by Aptos AIP-41.
 	RandomnessTime *big.Int `json:"randomnessTime,omitempty"`
 
+	// N42 extension: LtHash lattice state digest activation.
+	// When set, each block computes a 2048-byte homomorphic hash of the state
+	// and stores BLAKE3(digest) in Header.LtHashRoot.
+	LtHashTime *big.Int `json:"ltHashTime,omitempty"`
+
 	BlobSchedule *BlobSchedule `json:"blobSchedule,omitempty"`
 
 	// BSC / custom fork fields

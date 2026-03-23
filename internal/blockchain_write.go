@@ -35,6 +35,8 @@ import (
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/lthash"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -202,6 +204,13 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			}
 		}
 
+		// Persist LtHash digest alongside JMT root.
+		if ibs != nil && bc.ltHashEnabled && bc.ltHashCommitment != nil {
+			if err := lthash.WriteLtHashDigest(tx, modules.LtHashDigest, bc.ltHashCommitment.Digest()); err != nil {
+				return fmt.Errorf("writing LtHash digest for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+		}
+
 		// Update snapshot tree with collected diffs.
 		if diffCollector != nil && bc.snapshotTree != nil {
 			if err := bc.snapshotTree.Update(
@@ -227,6 +236,11 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		return nil
 	}); err != nil {
 		return NonStatTy, err
+	}
+
+	// Refresh the JMT backing store's RO transaction so it sees the just-committed nodes.
+	if bc.jmtStoreRefresh != nil {
+		bc.jmtStoreRefresh()
 	}
 
 	if externTd != nil {
@@ -321,6 +335,12 @@ func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
 	headGasLimitGauge.Set(concreteBlock.GasLimit())
 	headTransactionsGauge.Set(uint64(len(concreteBlock.Transactions())))
 	nodeMetrics.SyncCurrentBlock.Set(blockNumber.Uint64())
+
+	// Periodically decay the prefetch predictor to favor recent access patterns.
+	if bc.prefetchPredictor != nil && blockNumber.Uint64()%100 == 0 {
+		bc.prefetchPredictor.Decay(0.9)
+	}
+
 	return nil
 }
 

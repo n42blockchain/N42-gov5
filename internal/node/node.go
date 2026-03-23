@@ -100,6 +100,7 @@ import (
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/lthash"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
@@ -186,6 +187,9 @@ type Node struct {
 	keyDirTemp bool   // If true, key directory will be removed by Stop
 
 	tracingShutdown func(context.Context) error // flushes and stops the OTel tracer provider
+
+	// Stateless validation mode (validates blocks via JMT witnesses, no full state DB)
+	statelessMode bool
 
 	// OtterSync (BitTorrent-based chain sync via EraE segments)
 	torrentsyncService *torrentsync.Service
@@ -363,6 +367,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		}
 		if cfg.NodeCfg.Prefetch {
 			realBC.SetPrefetch(true)
+			// Enable predictive slot prefetching alongside standard prefetching.
+			realBC.SetPrefetchPredictor(internal.NewPrefetchPredictor(64))
 		}
 		if cfg.NodeCfg.AncientDB {
 			ancientBase := cfg.NodeCfg.DataDir
@@ -416,26 +422,49 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 				jmtRoot, _ = jmtstore.ReadJMTRoot(rtx)
 				rtx.Rollback()
 			}
-			// Use LazyDBStore so the tree can read previously persisted nodes
-			// from MDBX on demand. Writes are buffered in tree.dirty and flushed
-			// to MDBX via FlushTo(MDBXStore) inside writeBlockWithState.
-			//
-			// CachedStore wraps LazyDBStore with a read-through LRU cache,
-			// avoiding per-Get MDBX transaction overhead. This reduces MDBX
-			// reads by 50-80% during steady-state block processing.
-			lazyStore := jmtstore.NewLazyDBStore(ctx, chainKv, modules.JMTNode)
-			cachedStore := jmtstore.NewCachedStore(lazyStore, 65536)
+			// PooledDBStore holds a long-lived RO transaction, avoiding per-Get()
+			// transaction overhead that LazyDBStore incurs. Combined with the
+			// tree's 128K-entry decoded node cache, this eliminates the need for
+			// the separate CachedStore byte-level cache.
+			pooledStore := jmtstore.NewPooledDBStore(ctx, chainKv, modules.JMTNode)
 			var tree *jmt.Tree
 			if jmtRoot == jmt.EmptyHash {
-				tree = jmt.New(cachedStore)
+				tree = jmt.New(pooledStore)
 			} else {
-				tree = jmt.NewFromRoot(cachedStore, jmtRoot)
+				tree = jmt.NewFromRoot(pooledStore, jmtRoot)
 			}
 			jmtCommit := commitment.NewJMTCommitment(tree)
 			realBC.SetJMTCommitment(jmtCommit)
+			realBC.SetJMTStoreRefresh(pooledStore.RefreshTx)
 			log.Info("JMT state commitment initialized",
 				"root", fmt.Sprintf("%x", jmtRoot[:8]),
-				"storeCacheSize", 65536,
+				"nodeCache", jmt.DefaultNodeCacheSize,
+			)
+
+			// Initialize LtHash lattice state digest (runs alongside JMT).
+			var ltDigest *lthash.Digest
+			if rtx, err := chainKv.BeginRo(ctx); err == nil {
+				var ltErr error
+				ltDigest, ltErr = lthash.ReadLtHashDigest(rtx, modules.LtHashDigest)
+				if ltErr != nil {
+					log.Warn("Failed to read LtHash digest, starting with empty", "err", ltErr)
+				}
+				rtx.Rollback()
+			}
+			if ltDigest == nil {
+				ltDigest = lthash.New()
+			}
+			ltCommit := commitment.NewLtHashCommitment(ltDigest)
+			realBC.SetLtHashCommitment(ltCommit)
+
+			// Create LtHash-aware root computer that wraps JMT.
+			jmtRC := commitment.NewJMTRootComputer(jmtCommit)
+			ltAwareRC := commitment.NewLtHashAwareRootComputer(jmtRC, ltCommit)
+			// Store the root computer on the blockchain for injection into IntraBlockState.
+			realBC.SetRootComputer(ltAwareRC)
+
+			log.Info("LtHash state digest initialized",
+				"digestNonZero", !ltDigest.IsZero(),
 			)
 		}
 	}
@@ -702,6 +731,12 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		tracingShutdown = func(context.Context) error { return nil }
 	}
 	node.tracingShutdown = tracingShutdown
+
+	// Stateless validation mode: validate blocks via Merkle proof witnesses only.
+	if cfg.NodeCfg.StatelessEnabled {
+		node.statelessMode = true
+		log.Info("Stateless validation mode enabled — blocks will be verified via JMT witnesses")
+	}
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))

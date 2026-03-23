@@ -34,6 +34,13 @@ type NodeStore interface {
 	Has(hash Hash) (bool, error)
 }
 
+// BatchNodeStore extends NodeStore with batch write support.
+// Implementations can optimize bulk writes (e.g., sorted MDBX cursor inserts).
+type BatchNodeStore interface {
+	NodeStore
+	PutBatch(entries map[Hash][]byte) error
+}
+
 // MemStore is an in-memory NodeStore for testing.
 type MemStore struct {
 	nodes map[Hash][]byte

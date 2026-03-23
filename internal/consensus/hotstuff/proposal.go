@@ -117,15 +117,11 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 		}
 	}
 
-	// Baby Raptr: verify data availability commitment if provided.
+	// Baby Raptr: track data availability commitment for post-import verification.
 	// The TxRootHash is included in the proposal so that validators can verify
-	// transaction data availability before (or after) voting.
-	if proposal.TxRootHash != (types.Hash{}) {
-		if _, ok := e.importedBlocks[proposal.BlockHash]; ok {
-			// Block already imported -- TxRoot will be verified during block execution.
-		}
-		// If block not yet imported, proceed with optimistic vote.
-		// The TxRootHash will be verified when the block is imported.
+	// transaction data availability after block import.
+	if proposal.TxRootHash != (types.Hash{}) && len(e.pendingTxRoots) < MaxImportedBlocks {
+		e.pendingTxRoots[proposal.BlockHash] = proposal.TxRootHash
 	}
 
 	e.roundState.EnterVoting()
@@ -209,11 +205,31 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 	})
 }
 
-// onBlockImported handles the BlockImported event.
-func (e *ConsensusEngine) onBlockImported(blockHash types.Hash) error {
+// onBlockImported handles the BlockImported event and verifies DA commitment.
+func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot types.Hash) error {
 	if len(e.importedBlocks) < MaxImportedBlocks {
 		e.importedBlocks[blockHash] = true
 	}
+
+	// Baby Raptr DA verification: compare the proposal's TxRootHash with
+	// the actual transaction root computed during block import.
+	if expectedTxRoot, ok := e.pendingTxRoots[blockHash]; ok {
+		delete(e.pendingTxRoots, blockHash)
+		if actualTxRoot != (types.Hash{}) && expectedTxRoot != actualTxRoot {
+			log.Warn("DA verification failed: TxRootHash mismatch",
+				"blockHash", blockHash,
+				"expected", expectedTxRoot,
+				"actual", actualTxRoot,
+			)
+			return &DAVerificationError{
+				BlockHash:    blockHash,
+				ExpectedRoot: expectedTxRoot,
+				ActualRoot:   actualTxRoot,
+			}
+		}
+		log.Debug("DA verification passed", "blockHash", blockHash, "txRoot", expectedTxRoot)
+	}
+
 	return nil
 }
 

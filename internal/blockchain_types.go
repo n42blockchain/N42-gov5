@@ -35,6 +35,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/internal/zkverifier"
@@ -132,17 +133,23 @@ type BlockChain struct {
 
 	errorCh chan error
 
-	process         Processor
-	parallelEVM     bool
-	prefetchEnabled bool
+	process            Processor
+	parallelEVM        bool
+	prefetchEnabled    bool
+	prefetchPredictor  *PrefetchPredictor
 
 	freezer       freezer.FreezerAPI
 	ancientReader *freezer.AncientReader
 
 	exexManager   *exex.Manager
 	snapshotTree  *snapshot.Tree
-	jmtCommitment *commitment.JMTCommitment
-	jmtEnabled    bool
+	jmtCommitment   *commitment.JMTCommitment
+	jmtEnabled      bool
+	jmtStoreRefresh func() // called after block commit to refresh JMT backing store tx
+
+	ltHashCommitment *commitment.LtHashCommitment
+	ltHashEnabled    bool
+	rootComputer     state.RootComputer
 
 	witnessCache *lru.Cache[types.Hash, *witness.BlockWitness]
 

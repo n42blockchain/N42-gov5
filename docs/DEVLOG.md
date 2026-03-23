@@ -2,6 +2,54 @@
 
 ---
 
+### 2026-03-22 (续 4): 高性能管道架构 + 增量状态验证
+
+#### Rotor 单跳区块传播
+- 确定性中继选择（SHA256(view_number) 种子，Fisher-Yates 洗牌）
+- 验证者 peer 注册表，支持 libp2p 直连流消息
+- GossipSub 回退保障活性
+- 文件: `internal/consensus/hotstuff/rotor.go` (346行), 18 个测试
+
+#### LtHash 增量格哈希状态验证
+- BLAKE3 XOF 2048 字节同态摘要
+- O(k) 每区块 vs O(k×depth) Merkle 遍历
+- 完整状态集成: RootComputer → IntraBlockState → 区块头 → MDBX 持久化
+- fork 激活: `LtHashTime` 时间戳
+- 文件: `lib/lthash/` (3 文件), `modules/state/commitment/` (2 文件), 12 测试
+- 基准: Add 2.1μs, Update 4.3μs, 100 元素批量 0.4ms
+
+#### Tile 架构 + 无锁 SPSC 环形缓冲区
+- Lamport 队列, cache line 隔离 head/tail (64 字节填充)
+- 2 的幂容量 + 位运算取模
+- CPU 核心绑定 (Linux SchedSetaffinity)
+- Tile 崩溃恢复 (可配置最大重启次数)
+- TileManager 编排 5-tile 管道
+- 文件: `internal/tile/` (7 文件), `conf/tile_config.go`, 15 测试
+- 基准: RingBuffer 50.6ns/op vs Channel 64.2ns/op
+
+#### 异步 I/O 状态预取器
+- 重写为 channel 异步架构: 请求生成器 → 有界 channel → I/O 工作池
+- SLOAD SlotAccessRecorder 喂数据给 PrefetchPredictor
+- BatchPredictSlots 单锁批量预测
+- 周期性 Decay(0.9) 每 100 区块
+
+#### 深度流水线 (5 阶段)
+- Prefetch → Execute → Commit → Persist 跨区块重叠
+- 有界 channel 背压 (深度默认 4)
+- Reorg 恢复: Reset()
+- 执行/提交错误时停止流水线（非静默丢弃）
+- 文件: `internal/deferred/deep_pipeline.go` (332行)
+
+#### 其他改进
+- PooledDBStore: 长生命 MDBX RO tx 替代 LazyDBStore+CachedStore
+- JMT BatchNodeStore + PutBatch 批量刷盘
+- JMT 节点缓存倍增至 131072 条目
+- DA 验证: HotStuff onBlockImported 校验 TxRootHash
+- 区块头 LtHashRoot 字段 + protobuf 序列化
+- 深度审计修复 12 个问题 (2 CRITICAL + 5 HIGH + 5 MEDIUM)
+
+---
+
 ### 2026-03-22 (续 2)
 
 #### 🚀 Reth 2026 三大创新实现

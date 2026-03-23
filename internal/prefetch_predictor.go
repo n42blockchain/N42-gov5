@@ -26,9 +26,10 @@ import (
 // PrefetchPredictor tracks frequently accessed storage slots per contract
 // for predictive prefetching. Learns from historical execution patterns.
 type PrefetchPredictor struct {
-	mu       sync.RWMutex
-	hotSlots map[types.Address]map[types.Hash]uint64 // contract -> slot -> count
-	maxSlots int
+	mu           sync.RWMutex
+	hotSlots     map[types.Address]map[types.Hash]uint64 // contract -> slot -> count
+	maxSlots     int                                      // per-contract slot cap
+	maxContracts int                                      // total tracked contract cap
 }
 
 // NewPrefetchPredictor creates a new predictor. maxSlots caps the number of
@@ -38,8 +39,9 @@ func NewPrefetchPredictor(maxSlots int) *PrefetchPredictor {
 		maxSlots = 64
 	}
 	return &PrefetchPredictor{
-		hotSlots: make(map[types.Address]map[types.Hash]uint64),
-		maxSlots: maxSlots,
+		hotSlots:     make(map[types.Address]map[types.Hash]uint64),
+		maxSlots:     maxSlots,
+		maxContracts: 8192,
 	}
 }
 
@@ -59,24 +61,23 @@ func (p *PrefetchPredictor) PredictSlots(contract types.Address, maxPrefetch int
 	if !ok || len(slots) == 0 {
 		return nil
 	}
+	return topSlots(slots, maxPrefetch)
+}
 
-	// Collect all slot counts.
+// topSlots returns the top-N most accessed slots from a slot→count map.
+// Caller must hold at least RLock on mu.
+func topSlots(slots map[types.Hash]uint64, max int) []types.Hash {
 	entries := make([]slotCount, 0, len(slots))
 	for slot, count := range slots {
 		entries = append(entries, slotCount{slot: slot, count: count})
 	}
-
-	// Sort descending by count.
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].count > entries[j].count
 	})
-
-	// Return top maxPrefetch.
-	n := maxPrefetch
+	n := max
 	if n > len(entries) {
 		n = len(entries)
 	}
-
 	result := make([]types.Hash, n)
 	for i := 0; i < n; i++ {
 		result[i] = entries[i].slot
@@ -92,19 +93,21 @@ func (p *PrefetchPredictor) RecordSlotAccess(contract types.Address, slot types.
 
 	slots, ok := p.hotSlots[contract]
 	if !ok {
+		// Enforce contract cap to prevent unbounded memory growth.
+		if len(p.hotSlots) >= p.maxContracts {
+			return
+		}
 		slots = make(map[types.Hash]uint64)
 		p.hotSlots[contract] = slots
 	}
 
-	// If slot already tracked, just increment.
 	if _, exists := slots[slot]; exists {
 		slots[slot]++
 		return
 	}
 
-	// New slot: check capacity.
+	// Evict least-accessed slot if at capacity.
 	if len(slots) >= p.maxSlots {
-		// Evict the slot with the lowest count.
 		var minSlot types.Hash
 		var minCount uint64
 		first := true
@@ -140,6 +143,23 @@ func (p *PrefetchPredictor) Decay(factor float64) {
 			delete(p.hotSlots, contract)
 		}
 	}
+}
+
+// BatchPredictSlots returns predicted slots for multiple contracts in a single
+// lock acquisition. More efficient than calling PredictSlots in a loop.
+func (p *PrefetchPredictor) BatchPredictSlots(contracts []types.Address, maxPerContract int) map[types.Address][]types.Hash {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	result := make(map[types.Address][]types.Hash, len(contracts))
+	for _, contract := range contracts {
+		slots, ok := p.hotSlots[contract]
+		if !ok || len(slots) == 0 {
+			continue
+		}
+		result[contract] = topSlots(slots, maxPerContract)
+	}
+	return result
 }
 
 // Stats returns the number of tracked contracts and total tracked slots.

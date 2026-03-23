@@ -73,6 +73,10 @@ type Header struct {
 	BlobGasUsed   uint64 `json:"blobGasUsed,omitempty"`
 	ExcessBlobGas uint64 `json:"excessBlobGas,omitempty"`
 
+	// LtHashRoot is the BLAKE3 summary of the 2048-byte LtHash state digest.
+	// Zero before the LtHash fork activation timestamp.
+	LtHashRoot types.Hash `json:"ltHashRoot,omitempty"`
+
 	hash atomic.Value
 
 	Signature types.Signature `json:"signature"`
@@ -136,6 +140,7 @@ func (h *Header) ToProtoMessage() proto.Message {
 		MixDigest:     utils.ConvertHashToH256(h.MixDigest),
 		BlobGasUsed:   h.BlobGasUsed,
 		ExcessBlobGas: h.ExcessBlobGas,
+		LtHashRoot:    utils.ConvertHashToH256(h.LtHashRoot),
 	}
 }
 
@@ -163,6 +168,7 @@ func (h *Header) FromProtoMessage(message proto.Message) error {
 	h.MixDigest = utils.ConvertH256ToHash(pbHeader.MixDigest)
 	h.BlobGasUsed = pbHeader.BlobGasUsed
 	h.ExcessBlobGas = pbHeader.ExcessBlobGas
+	h.LtHashRoot = utils.ConvertH256ToHash(pbHeader.LtHashRoot)
 	return nil
 }
 

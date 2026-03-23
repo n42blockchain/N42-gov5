@@ -22,6 +22,9 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **Authority PoS (APoS)**: Epoch-based validator rotation with tiered staking (token, NFT, testnet), checkpoint snapshots every 3000 blocks, and post-quantum STARK verification path
 - **Authority PoA (APoA)**: Lightweight proof-of-authority for private networks and development
 - **Mobile Verification**: Lightweight mobile nodes verify block state via BLS-signed attestations without re-executing EVM — enables smartphones as consensus participants
+- **Rotor Single-Hop Relay**: Deterministic relay-based block propagation — leader sends proposals directly to stake-weighted relay nodes who forward to validators in one hop. SHA256-seeded selection ensures all validators agree without communication. Gossip fallback for liveness
+- **On-Chain Randomness (0x0302)**: VRF beacon from CommitQC BLS aggregate signatures — unpredictable by any single validator (threshold VUF). Smart contracts access per-block randomness via precompile
+- **Baby Raptr DA Verification**: Data availability commitment in HotStuff proposals — TxRootHash tracked per-proposal and verified post-import to detect invalid state transitions
 
 ### Zero-Knowledge Proof System
 
@@ -38,6 +41,8 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **Blob Transactions (EIP-4844)**: Native support for blob-carrying transactions with V2 wire format
 - **Pectra EIPs (9 complete)**: EIP-7702, EIP-2537 BLS, EIP-6110, EIP-7251, EIP-7002, EIP-7623, EIP-2935, EIP-7685
 - **Glamsterdam Gas Repricing (EIP-7904)**: Simple transfers drop from 21000 to 4500 gas (-78.6%), data costs reduced 75%, contract creation 75% cheaper. Activated via timestamp fork
+- **Dependency Prediction**: Pre-execution tx reordering based on contract+selector grouping — clusters conflicting transactions for better Block-STM wave efficiency
+- **Predicted Executor**: Wraps Block-STM with prediction-based reordering, identity fallback for small batches (≤4 txs)
 - **Performance**: 374 Ggas/s execution throughput (32-core), 661K TPS simple transfers, 153ns per EVM call, 86 Ggas/s batch processing
 
 ### State & Storage
@@ -49,6 +54,10 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **JMT Cross-Payload Cache**: 65536-entry LRU node cache persisted across block validations with CachedStore read-through layer, reducing MDBX reads 50-80%
 - **Overlay State Warmup**: Pre-loads recent account state into ShardedCache on startup, eliminating cold-cache penalty after node restart
 - **Storage Tiering**: Configurable NVMe/HDD split — hot data (chaindata ~50GB) on NVMe, cold data (history/indices ~800GB) on HDD, reducing hardware costs ~60%
+- **LtHash Lattice State Digest**: Homomorphic hash for O(k) incremental state verification per block — `newDigest = oldDigest ⊕ BLAKE3_XOF(new) ⊕ BLAKE3_XOF(old)`. 2048-byte digest, 128-bit security. Runs alongside JMT for fast full-validator verification. Fork-gated via `LtHashTime`
+- **PooledDBStore**: Long-lived MDBX read transaction for JMT backing store, replacing per-Get() transaction overhead. Auto-refresh after block commits. Combined with 128K node cache
+- **JMT Batch Flush**: `BatchNodeStore` interface with `PutBatch()` for efficient bulk JMT node writes. `SnapshotDirty()`/`ClearDirty()` for pipeline commitment stage
+- **Haystack JMT Archive**: Compressed historical JMT nodes in seg files with RecSplit O(1) perfect hash index for `eth_getProof` on archived state
 
 ### Networking & Sync
 
@@ -58,6 +67,13 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **Decentralized Messaging**: 6-layer P2P messaging platform (relay, E2E encryption, RLN anti-spam, persistent storage, MLS groups, DID identity)
 - **OtterSync (BitTorrent Sync)**: Export/import chain data as EraE segment files via BitTorrent, shifting ~98% of initial sync from CPU to network bandwidth
 - **Stateless Validation Mode**: Verify blocks using only JMT Merkle proof witnesses (~10GB disk), no full state DB required. Foundation for lightweight mobile and edge validators
+
+### High-Performance Pipeline
+
+- **Deep Pipeline (5-Stage)**: Superscalar block processing — Prefetch ∥ Execute ∥ Commit ∥ Persist stages run on different blocks simultaneously. Channel-based backpressure with configurable depth, reorg recovery via Reset, halts on error to prevent state corruption
+- **Tile Architecture**: Lock-free SPSC ring buffer IPC between pipeline stages. Cache-line-padded Lamport queue (~50ns/op vs ~65ns channel). Optional CPU core pinning via `runtime.LockOSThread()` + Linux `SchedSetaffinity`. Crash recovery with configurable auto-restart
+- **Async I/O Prefetcher**: Request-generation goroutines parse transactions and dispatch to bounded I/O channel. Separate I/O worker pool performs MDBX reads concurrently with EVM execution
+- **Predictive Slot Prefetching**: SLOAD access recording feeds PrefetchPredictor — learns hot storage slots per contract from real execution. Top-N predicted slots prefetched before next block. Periodic decay adapts to workload changes. Batch prediction with single-lock acquisition
 
 ### API & Tooling
 
@@ -106,7 +122,7 @@ internal/
   consensus/        Pluggable consensus engines
     apoa/             Authority PoA
     apos/             Authority PoS (epoch, checkpoint, BLS, PQ-STARK)
-    hotstuff/         HotStuff-2 BFT (2-round, pacemaker, reconfiguration)
+    hotstuff/         HotStuff-2 BFT (2-round, pacemaker, reconfiguration, Rotor relay)
   miner/            Block production with MEV bundle support and witness capture
   txspool/          Transaction pool with persistence and encryption
   vm/               EVM execution engine with EOF, BLS, P256, CAS, AI precompiles
@@ -118,6 +134,10 @@ internal/
   mcp/              Model Context Protocol server (16+ tools)
   mev/              MEV relay + AI block optimizer
   bundler/          ERC-4337 account abstraction bundler
+  deferred/         Deferred execution pipeline (3-stage + 5-stage deep pipeline)
+  tile/             Tile architecture (SPSC ring buffer, CPU affinity, crash recovery)
+  parallel/         Block-STM parallel executor + dependency predictor
+  stateless/        Stateless block validation (witness-based, code cache)
   peerdas/          PeerDAS data availability sampling (EIP-7594)
   distributed/      Distributed infrastructure
     coprocessor/      ZK coprocessor (tiered verification, marketplace, slashing)
@@ -138,6 +158,8 @@ modules/
 lib/
   jmt/              Jellyfish Merkle Tree implementation (Blake3, 16-ary)
     archive/        Haystack JMT node compression (seg + RecSplit index)
+    store/          Node stores (MDBX, Lazy, Pooled, Cached, Mem)
+  lthash/           LtHash lattice state digest (BLAKE3 XOF, 2048-byte homomorphic)
   kv/               Key-value store interfaces (mdbx/, memdb/, remotedb/, layered/)
 params/             Chain parameters, genesis configs (embedded JSON)
 conf/               Node configuration (unified AICfg, all subsystem configs)

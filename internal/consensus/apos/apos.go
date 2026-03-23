@@ -714,6 +714,7 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 		return nil, nil, err
 	}
 	rawHeader.Root = state.IntermediateRoot()
+	rawHeader.LtHashRoot = state.LtHashRoot()
 	// Store the state root before finalization for verification purposes
 	beforeStateRoot, err := state.BeforeStateRoot()
 	if err != nil {

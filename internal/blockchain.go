@@ -148,6 +148,18 @@ func (bc *BlockChain) SetPrefetch(enabled bool) {
 	}
 }
 
+// SetPrefetchPredictor enables predictive slot prefetching based on historical access patterns.
+// Also wires the predictor as a SlotAccessRecorder so SLOAD feeds it learning data.
+func (bc *BlockChain) SetPrefetchPredictor(p *PrefetchPredictor) {
+	bc.prefetchPredictor = p
+	if p != nil {
+		log.Info("Predictive slot prefetching enabled")
+		if sp, ok := bc.process.(*StateProcessor); ok {
+			sp.SetSlotRecorder(p)
+		}
+	}
+}
+
 // SetFreezer attaches the ancient data freezer to the blockchain.
 // It accepts any implementation of freezer.FreezerAPI. If the concrete type
 // is *freezer.Freezer, an AncientReader is also created for high-level access.
@@ -188,6 +200,34 @@ func (bc *BlockChain) SetJMTCommitment(c *commitment.JMTCommitment) {
 	bc.jmtCommitment = c
 	bc.jmtEnabled = true
 	log.Info("JMT state commitment enabled (Blake3)")
+}
+
+// SetJMTStoreRefresh sets the callback to refresh the JMT backing store's
+// read transaction after each block commit.
+func (bc *BlockChain) SetJMTStoreRefresh(fn func()) {
+	bc.jmtStoreRefresh = fn
+}
+
+// SetLtHashCommitment enables the LtHash lattice state digest.
+func (bc *BlockChain) SetLtHashCommitment(c *commitment.LtHashCommitment) {
+	bc.ltHashCommitment = c
+	bc.ltHashEnabled = true
+	log.Info("LtHash lattice state digest enabled (BLAKE3 XOF 2048-byte)")
+}
+
+// LtHashCommitment returns the LtHash commitment, or nil if disabled.
+func (bc *BlockChain) LtHashCommitment() *commitment.LtHashCommitment {
+	return bc.ltHashCommitment
+}
+
+// SetRootComputer stores the RootComputer for injection into IntraBlockState.
+func (bc *BlockChain) SetRootComputer(rc state.RootComputer) {
+	bc.rootComputer = rc
+}
+
+// RootComputer returns the pluggable root computer (JMT + LtHash), or nil.
+func (bc *BlockChain) RootComputer() state.RootComputer {
+	return bc.rootComputer
 }
 
 // JMTCommitment returns the JMT commitment layer, or nil if not enabled.
@@ -680,6 +720,10 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			stateReader = state.NewCachedStateReader(stateReader, cache)
 		}
 		ibs := state.New(stateReader)
+		// Inject RootComputer for JMT + LtHash state root computation.
+		if bc.rootComputer != nil {
+			ibs.SetRootComputer(bc.rootComputer)
+		}
 		stateWriter := state.NewNoopWriter()
 
 		nopay, err := f(tx, ibs, stateReader, stateWriter)
@@ -756,6 +800,9 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			// Start state prefetching in background if cache is available.
 			if bc.prefetchEnabled {
 				prefetcher := NewStatePrefetcher(bc.chainConfig)
+				if bc.prefetchPredictor != nil {
+					prefetcher.SetPredictor(bc.prefetchPredictor)
+				}
 				prefetcher.Prefetch(concreteBlock, reader)
 				defer prefetcher.Close()
 			}

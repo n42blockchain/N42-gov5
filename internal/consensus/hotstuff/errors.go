@@ -117,3 +117,16 @@ type BlockHashMismatchError struct {
 func (e *BlockHashMismatchError) Error() string {
 	return fmt.Sprintf("block hash mismatch: expected %s, got %s", e.Expected.Hex(), e.Got.Hex())
 }
+
+// DAVerificationError is returned when a block's actual transaction root does not
+// match the TxRootHash committed in the proposal (Baby Raptr DA check).
+type DAVerificationError struct {
+	BlockHash    types.Hash
+	ExpectedRoot types.Hash
+	ActualRoot   types.Hash
+}
+
+func (e *DAVerificationError) Error() string {
+	return fmt.Sprintf("DA verification failed for block %s: expected tx root %s, actual %s",
+		e.BlockHash.Hex(), e.ExpectedRoot.Hex(), e.ActualRoot.Hex())
+}
