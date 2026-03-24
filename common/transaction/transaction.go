@@ -72,9 +72,18 @@ type Transactions []*Transaction
 
 func (s Transactions) Len() int { return len(s) }
 
-// EncodeIndex encodes the i'th transaction to w.
+// EncodeIndex encodes the i'th transaction to w (legacy format for DeriveSha).
 func (s Transactions) EncodeIndex(i int, w *bytes.Buffer) {
 	b, _ := s[i].Marshal()
+	w.Write(b)
+}
+
+// TransactionsV2 wraps Transactions with v2 encoding for Shanghai+ DeriveSha.
+type TransactionsV2 Transactions
+
+func (s TransactionsV2) Len() int { return len(s) }
+func (s TransactionsV2) EncodeIndex(i int, w *bytes.Buffer) {
+	b, _ := s[i].MarshalV2()
 	w.Write(b)
 }
 
@@ -97,6 +106,12 @@ func NewTx(inner TxData) *Transaction {
 // convertProtoToAddress converts an optional H160 proto field to *types.Address.
 func convertProtoToAddress(h160 *types_pb.H160) *types.Address {
 	if h160 == nil {
+		return nil
+	}
+	// SSZ deserialization always creates non-nil H160 (fixed-size field).
+	// Treat an all-zero H160 as nil to preserve contract creation semantics
+	// (To=nil means contract creation, To=0x00...00 is a valid address).
+	if h160.Lo == 0 && (h160.Hi == nil || (h160.Hi.Hi == 0 && h160.Hi.Lo == 0)) {
 		return nil
 	}
 	addr := utils.ConvertH160ToPAddress(h160)
@@ -355,6 +370,19 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 		pbTx.AccessList = convertAccessListToProto(accessList)
 	}
 
+	// NOTE: V, R, S are intentionally NOT set here. The legacy mainnet chain
+	// data was encoded without these fields (signatures are in the Sign field).
+	// Adding V/R/S would change proto.Marshal output and break DeriveSha hashes.
+	// They are added in ToProtoMessage() for RPC/storage use only.
+
+	return &pbTx
+}
+
+func (tx *Transaction) ToProtoMessage() proto.Message {
+	pbTx := tx.toProtoFields()
+	pbTx.Hash = utils.ConvertHashToH256(tx.Hash())
+
+	// Include V, R, S for RPC consumers (not used in DeriveSha hash).
 	v, r, s := tx.RawSignatureValues()
 	if v != nil {
 		pbTx.V = convertUint256IntToH256IfSet(v)
@@ -366,12 +394,6 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 		pbTx.S = convertUint256IntToH256IfSet(s)
 	}
 
-	return &pbTx
-}
-
-func (tx *Transaction) ToProtoMessage() proto.Message {
-	pbTx := tx.toProtoFields()
-	pbTx.Hash = utils.ConvertHashToH256(tx.Hash())
 	return pbTx
 }
 
@@ -390,7 +412,91 @@ func (tx *Transaction) WithSignatureValues(v, r, s *uint256.Int) (*Transaction, 
 	return tx, nil
 }
 
+// Marshal encodes the transaction to protobuf bytes. The encoding MUST match
+// the original mainnet format exactly because DeriveSha (transaction root hash)
+// is computed from these bytes. Any change to the encoding breaks chain
+// compatibility with existing block data.
 func (tx Transaction) Marshal() ([]byte, error) {
+	var pbTx types_pb.Transaction
+	pbTx.Type = uint64(tx.inner.txType())
+
+	switch t := tx.inner.(type) {
+	case *AccessListTx:
+		pbTx.ChainID = t.ChainID.Uint64()
+		pbTx.Nonce = tx.Nonce()
+		pbTx.Gas = tx.Gas()
+		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
+		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.Data = tx.Data()
+		if from := tx.From(); from != nil { pbTx.From = utils.ConvertAddressToH160(*from) }
+		pbTx.Sign = t.Sign
+	case *LegacyTx:
+		pbTx.Nonce = tx.Nonce()
+		pbTx.Gas = tx.Gas()
+		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
+		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.Data = tx.Data()
+		if from := tx.From(); from != nil { pbTx.From = utils.ConvertAddressToH160(*from) }
+		pbTx.Sign = t.Sign
+	case *DynamicFeeTx:
+		pbTx.ChainID = t.ChainID.Uint64()
+		pbTx.Nonce = tx.Nonce()
+		pbTx.Gas = tx.Gas()
+		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
+		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.Data = tx.Data()
+		if from := tx.From(); from != nil { pbTx.From = utils.ConvertAddressToH160(*from) }
+		pbTx.Sign = t.Sign
+		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
+		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+	case *BlobTx:
+		pbTx.ChainID = t.ChainID.Uint64()
+		pbTx.Nonce = tx.Nonce()
+		pbTx.Gas = tx.Gas()
+		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
+		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.Data = tx.Data()
+		if from := tx.From(); from != nil {
+			pbTx.From = utils.ConvertAddressToH160(*from)
+		}
+		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
+		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+		pbTx.BlobFeeCap = convertUint256IntToH256IfSet(t.BlobFeeCap)
+		pbTx.BlobHashes = utils.ConvertHashesToH256(t.BlobHashes)
+	case *PostQuantumTx:
+		pbTx.ChainID = t.ChainID.Uint64()
+		pbTx.Nonce = tx.Nonce()
+		pbTx.Gas = tx.Gas()
+		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
+		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
+		pbTx.Data = tx.Data()
+		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
+		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
+		pbTx.PqSigAlgo = uint32(t.SigAlgo)
+		pbTx.PqPubKeyMode = uint32(t.PubKeyMode)
+		pbTx.PqPubKeyData = t.PubKeyData
+		pbTx.PqSignature = t.PQSignature
+	}
+	if tx.To() != nil {
+		pbTx.To = utils.ConvertAddressToH160(*tx.To())
+	}
+	v, r, s := tx.RawSignatureValues()
+	if nil != v {
+		pbTx.V = utils.ConvertUint256IntToH256(v)
+	}
+	if nil != r {
+		pbTx.R = utils.ConvertUint256IntToH256(r)
+	}
+	if nil != s {
+		pbTx.S = utils.ConvertUint256IntToH256(s)
+	}
+	return proto.Marshal(&pbTx)
+}
+
+// MarshalV2 encodes the transaction using the new format (Shanghai+).
+// Includes AccessList, uses nil-safe conversions, and excludes V/R/S from
+// the hash-relevant encoding (they're in the Sign field).
+func (tx Transaction) MarshalV2() ([]byte, error) {
 	pbTx := tx.toProtoFields()
 	return proto.Marshal(pbTx)
 }

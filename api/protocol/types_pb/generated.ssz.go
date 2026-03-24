@@ -3,6 +3,8 @@
 package types_pb
 
 import (
+	"fmt"
+
 	ssz "github.com/prysmaticlabs/fastssz"
 )
 
@@ -723,7 +725,7 @@ func (b *Block) UnmarshalSSZ(buf []byte) error {
 	var err error
 	size := uint64(len(buf))
 	if size < 8 {
-		return ssz.ErrSize
+		return fmt.Errorf("Block SSZ too small: have %d bytes, need >=8: %w", size, ssz.ErrSize)
 	}
 
 	tail := buf
@@ -731,16 +733,16 @@ func (b *Block) UnmarshalSSZ(buf []byte) error {
 
 	// Offset (0) 'Header'
 	if o0 = ssz.ReadOffset(buf[0:4]); o0 > size {
-		return ssz.ErrOffset
+		return fmt.Errorf("Block Header offset %d > size %d: %w", o0, size, ssz.ErrOffset)
 	}
 
 	if o0 < 8 {
-		return ssz.ErrInvalidVariableOffset
+		return fmt.Errorf("Block Header offset %d < 8: %w", o0, ssz.ErrInvalidVariableOffset)
 	}
 
 	// Offset (1) 'Body'
 	if o1 = ssz.ReadOffset(buf[4:8]); o1 > size || o0 > o1 {
-		return ssz.ErrOffset
+		return fmt.Errorf("Block Body offset %d invalid (size=%d, headerOff=%d): %w", o1, size, o0, ssz.ErrOffset)
 	}
 
 	// Field (0) 'Header'
@@ -750,7 +752,7 @@ func (b *Block) UnmarshalSSZ(buf []byte) error {
 			b.Header = new(Header)
 		}
 		if err = b.Header.UnmarshalSSZ(buf); err != nil {
-			return err
+			return fmt.Errorf("Block.Header unmarshal (headerBytes=%d): %w", len(buf), err)
 		}
 	}
 
@@ -761,7 +763,7 @@ func (b *Block) UnmarshalSSZ(buf []byte) error {
 			b.Body = new(Body)
 		}
 		if err = b.Body.UnmarshalSSZ(buf); err != nil {
-			return err
+			return fmt.Errorf("Block.Body unmarshal (bodyBytes=%d): %w", len(buf), err)
 		}
 	}
 	return err
@@ -1447,8 +1449,11 @@ func (b *Body) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 func (b *Body) UnmarshalSSZ(buf []byte) error {
 	var err error
 	size := uint64(len(buf))
-	if size < 12 {
-		return ssz.ErrSize
+
+	// Accept both legacy 2-offset format (8 bytes: Txs+Verifiers) and
+	// current 3-offset format (12 bytes: Txs+Verifiers+Rewards).
+	if size < 8 {
+		return fmt.Errorf("Body SSZ too small: have %d bytes, need >=8: %w", size, ssz.ErrSize)
 	}
 
 	tail := buf
@@ -1456,29 +1461,40 @@ func (b *Body) UnmarshalSSZ(buf []byte) error {
 
 	// Offset (0) 'Txs'
 	if o0 = ssz.ReadOffset(buf[0:4]); o0 > size {
-		return ssz.ErrOffset
-	}
-
-	if o0 < 12 {
-		return ssz.ErrInvalidVariableOffset
+		return fmt.Errorf("Body Txs offset %d > size %d: %w", o0, size, ssz.ErrOffset)
 	}
 
 	// Offset (1) 'Verifiers'
 	if o1 = ssz.ReadOffset(buf[4:8]); o1 > size || o0 > o1 {
-		return ssz.ErrOffset
+		return fmt.Errorf("Body Verifiers offset %d invalid (size=%d, txsOff=%d): %w", o1, size, o0, ssz.ErrOffset)
 	}
 
-	// Offset (2) 'Rewards'
-	if o2 = ssz.ReadOffset(buf[8:12]); o2 > size || o1 > o2 {
-		return ssz.ErrOffset
+	// Detect format: 3-offset (current) vs 2-offset (legacy)
+	hasRewards := o0 >= 12 && size >= 12
+	if hasRewards {
+		// Offset (2) 'Rewards'
+		if o2 = ssz.ReadOffset(buf[8:12]); o2 > size || o1 > o2 {
+			return fmt.Errorf("Body Rewards offset %d invalid (size=%d, verOff=%d): %w", o2, size, o1, ssz.ErrOffset)
+		}
+	} else {
+		// Legacy 2-offset format: no Rewards field, Verifiers runs to end
+		if o0 < 8 {
+			return fmt.Errorf("Body Txs offset %d < 8 (legacy): %w", o0, ssz.ErrInvalidVariableOffset)
+		}
+		o2 = o1 // Verifiers run from o1 to end; Rewards section is empty
+		o1 = o1 // keep as-is
 	}
 
 	// Field (0) 'Txs'
 	{
-		buf = tail[o0:o1]
+		txEnd := o1
+		if hasRewards {
+			txEnd = o1
+		}
+		buf = tail[o0:txEnd]
 		num, err := ssz.DecodeDynamicLength(buf, 104857600)
 		if err != nil {
-			return err
+			return fmt.Errorf("Body.Txs decode length (bytes=%d): %w", len(buf), err)
 		}
 		b.Txs = make([]*Transaction, num)
 		err = ssz.UnmarshalDynamic(buf, num, func(indx int, buf []byte) (err error) {
@@ -1486,7 +1502,7 @@ func (b *Body) UnmarshalSSZ(buf []byte) error {
 				b.Txs[indx] = new(Transaction)
 			}
 			if err = b.Txs[indx].UnmarshalSSZ(buf); err != nil {
-				return err
+				return fmt.Errorf("Body.Txs[%d] unmarshal (bytes=%d): %w", indx, len(buf), err)
 			}
 			return nil
 		})
@@ -1500,7 +1516,7 @@ func (b *Body) UnmarshalSSZ(buf []byte) error {
 		buf = tail[o1:o2]
 		num, err := ssz.DivideInt2(len(buf), 68, 104857600)
 		if err != nil {
-			return err
+			return fmt.Errorf("Body.Verifiers size mismatch (bytes=%d, elemSize=68): %w", len(buf), err)
 		}
 		b.Verifiers = make([]*Verifier, num)
 		for ii := 0; ii < num; ii++ {
@@ -1518,7 +1534,7 @@ func (b *Body) UnmarshalSSZ(buf []byte) error {
 		buf = tail[o2:]
 		num, err := ssz.DivideInt2(len(buf), 52, 104857600)
 		if err != nil {
-			return err
+			return fmt.Errorf("Body.Rewards size mismatch (bytes=%d, elemSize=52): %w", len(buf), err)
 		}
 		b.Rewards = make([]*Reward, num)
 		for ii := 0; ii < num; ii++ {

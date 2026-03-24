@@ -17,10 +17,16 @@ func (l testDerivableList) EncodeIndex(i int, buf *bytes.Buffer) {
 	buf.Write(l.items[i])
 }
 
-func TestDeriveShaEmptyUsesEthereumEmptyTrieRoot(t *testing.T) {
+func TestDeriveShaEmptyLegacyUsesNilHash(t *testing.T) {
 	t.Parallel()
+	if got := DeriveSha(testDerivableList{}); got != NilHash {
+		t.Fatalf("DeriveSha(empty) = %s, want NilHash %s", got, NilHash)
+	}
+}
 
-	if got := DeriveSha(testDerivableList{}); got != EmptyRootHash {
-		t.Fatalf("DeriveSha(empty) = %s, want %s", got, EmptyRootHash)
+func TestDeriveShaV2EmptyUsesEmptyRootHash(t *testing.T) {
+	t.Parallel()
+	if got := DeriveShaV2(testDerivableList{}); got != EmptyRootHash {
+		t.Fatalf("DeriveShaV2(empty) = %s, want EmptyRootHash %s", got, EmptyRootHash)
 	}
 }

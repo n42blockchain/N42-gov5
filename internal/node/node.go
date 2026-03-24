@@ -316,6 +316,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		}
 	}
 
+
 	// Acquire the instance directory lock.
 	if err := node.openDataDir(cfg); err != nil {
 		return nil, err

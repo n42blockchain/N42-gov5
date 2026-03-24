@@ -54,8 +54,24 @@ func encodeForDerive(list DerivableList, i int, buf *bytes.Buffer) []byte {
 }
 
 // DeriveSha creates the tree hashes of transactions and receipts in a block header.
+// Uses NilHash for empty lists (legacy N42 mainnet convention).
 func DeriveSha(list DerivableList) (h types.Hash) {
+	return DeriveShaWith(list, true)
+}
+
+// DeriveShaV2 uses Ethereum-standard EmptyRootHash for empty lists.
+// Used for Shanghai+ blocks.
+func DeriveShaV2(list DerivableList) (h types.Hash) {
+	return DeriveShaWith(list, false)
+}
+
+// DeriveShaWith creates the tree hash. If legacy is true, empty lists
+// return NilHash (keccak256(nil)); otherwise EmptyRootHash (keccak256(RLP([]))).
+func DeriveShaWith(list DerivableList, legacy bool) (h types.Hash) {
 	if list == nil || list.Len() == 0 {
+		if legacy {
+			return NilHash
+		}
 		return EmptyRootHash
 	}
 
