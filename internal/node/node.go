@@ -467,6 +467,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			log.Info("LtHash state digest initialized",
 				"digestNonZero", !ltDigest.IsZero(),
 			)
+
+			// Enable JMT for block processing on fresh chains (private/dev)
+			// where all blocks are produced with JMT from genesis.
+			// Mainnet sync uses legacy GenerateRootHash() (needs state migration).
+			if cfg.NodeCfg.Chain == "private" {
+				realBC.EnableJMTForBlockProcessing()
+			}
 		}
 	}
 

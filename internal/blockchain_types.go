@@ -143,9 +143,10 @@ type BlockChain struct {
 
 	exexManager   *exex.Manager
 	snapshotTree  *snapshot.Tree
-	jmtCommitment   *commitment.JMTCommitment
-	jmtEnabled      bool
-	jmtStoreRefresh func() // called after block commit to refresh JMT backing store tx
+	jmtCommitment        *commitment.JMTCommitment
+	jmtEnabled           bool
+	jmtForBlockProcessing bool // true for fresh chains (private/dev) where JMT is used from genesis
+	jmtStoreRefresh      func() // called after block commit to refresh JMT backing store tx
 
 	ltHashCommitment *commitment.LtHashCommitment
 	ltHashEnabled    bool

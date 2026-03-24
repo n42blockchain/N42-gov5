@@ -24,21 +24,23 @@ import (
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/params"
 )
 
-// devnetGenesisBlock creates a minimal genesis for --dev / private chain mode.
-// It uses Clique (APoa) consensus with a 4-second block period and pre-funds
-// the configured etherbase (if any) so the node can immediately start mining.
+// devnetGenesisBlock creates a full-featured genesis for --dev / private mode.
+// All forks through Osaka are activated at genesis so that every subsystem
+// (JMT, PQ crypto, parallel execution, HotStuff-2, EIP-4844 blobs, EIP-2935
+// history, EIP-7702 AA, metrics, etc.) is exercised from block 0.
 func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
-	period := uint64(4)
-	if cfg.ChainCfg != nil && cfg.ChainCfg.Clique != nil && cfg.ChainCfg.Clique.Period > 0 {
-		period = cfg.ChainCfg.Clique.Period
+	period := uint64(3)
+	if cfg.ChainCfg != nil && cfg.ChainCfg.HotStuff != nil && cfg.ChainCfg.HotStuff.Period > 0 {
+		period = cfg.ChainCfg.HotStuff.Period
 	}
 
 	zero := big.NewInt(0)
 	chainConfig := &params.ChainConfig{
-		ChainID:               big.NewInt(94),
+		ChainID:               big.NewInt(942),
 		HomesteadBlock:        zero,
 		TangerineWhistleBlock: zero,
 		SpuriousDragonBlock:   zero,
@@ -50,21 +52,45 @@ func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
 		BerlinBlock:           zero,
 		LondonBlock:           zero,
 		ArrowGlacierBlock:     zero,
-		Consensus:             params.CliqueConsensus,
-		Clique: &params.CliqueConfig{
-			Period: period,
-			Epoch:  30000,
+		ShanghaiBlock:         zero,
+		CancunBlock:           zero,
+		PragueTime:            zero,
+		PectraTime:            zero,
+		OsakaTime:             zero,
+		// N42 extensions — all active from genesis
+		PQPrecompilesTime: zero,
+		ContentStoreTime:  zero,
+		AIInferenceTime:   zero,
+		RandomnessTime:    zero,
+		Consensus:         params.HotStuffConsensus,
+		HotStuff: &params.HotStuffConfig{
+			Period:        period,
+			BaseTimeout:   60000,
+			MaxTimeout:    120000,
+			EpochLength:   100,
+			FastPropose:   true,
+			MinProposeDelayMs: 200,
+		},
+		BlobSchedule: &params.BlobSchedule{
+			Cancun: &params.BlobConfig{
+				Target:                uint64Ptr(3),
+				Max:                   uint64Ptr(6),
+				BaseFeeUpdateFraction: uint64Ptr(3338477),
+			},
 		},
 	}
 
 	alloc := make(conf.GenesisAlloc)
+
+	// Pre-fund etherbase
 	if cfg.Miner.Etherbase != "" {
 		addr := types.HexToAddress(cfg.Miner.Etherbase)
 		alloc[addr] = conf.GenesisAccount{
-			Balance: "1000000000000000000000000000",
+			Balance: "1000000000000000000000000000", // 1B ETH
 		}
 	}
 
+	// Pre-fund 50 stress-test accounts
 	for i := 0; i < 50; i++ {
 		seed := fmt.Sprintf("n42-stress-test-key-%d", i)
 		h := sha256.Sum256([]byte(seed))
@@ -74,8 +100,32 @@ func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
 		}
 		addr := crypto.PubkeyToAddress(key.PublicKey)
 		alloc[types.Address(addr)] = conf.GenesisAccount{
-			Balance: "1000000000000000000000",
+			Balance: "1000000000000000000000", // 1000 ETH
 		}
+	}
+
+	// Deploy Prague system contracts (EIP-7002, EIP-7251, EIP-2935)
+	alloc[vm.WithdrawalRequestsAddress] = conf.GenesisAccount{
+		Balance: "0x0",
+		Nonce:   1,
+		Code:    types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604457602036146024575f5ffd5b620180005f350680515f80fd5b5f35801560495762018000153560495763ffffffff60023516545f5260205ff35b5f5ffd"),
+	}
+	alloc[vm.ConsolidationRequestsAddress] = conf.GenesisAccount{
+		Balance: "0x0",
+		Nonce:   1,
+		Code:    types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604457602036146024575f5ffd5b620180005f350680515f80fd5b5f35801560495762018000153560495763ffffffff60023516545f5260205ff35b5f5ffd"),
+	}
+	alloc[vm.HistoryStorageAddress] = conf.GenesisAccount{
+		Balance: "0x0",
+		Nonce:   1,
+		Code:    vm.HistoryStorageCode,
+	}
+
+	// Deploy beacon roots contract (EIP-4788)
+	alloc[params.BeaconRootsAddress] = conf.GenesisAccount{
+		Balance: "0x0",
+		Nonce:   1,
+		Code:    types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604d57602036146024575f5ffd5b5f35801560495762001fff810690815414603c575f5ffd5b62001fff01545f5260205ff35b5f5ffd5b62001fff42064281555f359062001fff015500"),
 	}
 
 	miners := []string{}
@@ -84,8 +134,11 @@ func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
 	}
 
 	return &conf.Genesis{
-		Config: chainConfig,
-		Alloc:  alloc,
-		Miners: miners,
+		Config:   chainConfig,
+		Alloc:    alloc,
+		Miners:   miners,
+		GasLimit: 30_000_000,
 	}
 }
+
+func uint64Ptr(v uint64) *uint64 { return &v }

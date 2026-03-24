@@ -240,6 +240,14 @@ func (bc *BlockChain) IsJMTEnabled() bool {
 	return bc.jmtEnabled
 }
 
+// EnableJMTForBlockProcessing enables JMT root computation during block
+// processing. Only safe for fresh chains (private/dev) where all blocks
+// are produced with JMT from genesis. Mainnet requires a state migration first.
+func (bc *BlockChain) EnableJMTForBlockProcessing() {
+	bc.jmtForBlockProcessing = true
+	log.Info("JMT enabled for block processing (fresh chain)")
+}
+
 // StoreWitness caches a block witness keyed by block hash.
 func (bc *BlockChain) StoreWitness(hash types.Hash, w *witness.BlockWitness) {
 	if w != nil {
@@ -720,12 +728,13 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			stateReader = state.NewCachedStateReader(stateReader, cache)
 		}
 		ibs := state.New(stateReader)
-		// NOTE: JMT rootComputer is NOT injected during block processing.
-		// The JMT tree requires a full state migration before it can produce
-		// correct roots. Until that migration is implemented (as a separate
-		// fork activation), all blocks use legacy GenerateRootHash() which
-		// matches the existing chain data.
-		// TODO: implement JMT state migration at a designated fork block.
+		// JMT rootComputer: only inject for fresh chains (private/dev) where
+		// all blocks are produced with JMT from genesis. For mainnet sync,
+		// existing chain data uses legacy GenerateRootHash() and JMT requires
+		// a full state migration before it can produce correct roots.
+		if bc.rootComputer != nil && bc.jmtForBlockProcessing {
+			ibs.SetRootComputer(bc.rootComputer)
+		}
 		stateWriter := state.NewNoopWriter()
 
 		nopay, err := f(tx, ibs, stateReader, stateWriter)
