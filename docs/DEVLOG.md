@@ -1591,3 +1591,96 @@ prune:
 ```
 
 **结论**: 无未完成计划。所有审计轮次和重构均已提交。待处理的是长期 TODO（主要为 API 与 P2P/miner 集成），需独立规划。
+
+---
+
+### 2026-03-23 ~ 2026-03-24: 链同步兼容 + EEST 修复 + 性能优化 + 路线图
+
+#### EEST Fork 继承修复 (c2a38f6)
+- `applyForkInheritance()` 缺少 `IsCancun→IsShanghai→全部前置 fork` 继承
+- HIVE 仅设 `HIVE_CANCUN_TIMESTAMP` 时，`IsBerlin=false` → 无 access list → gas 暴增
+- 修复后 modexp d30 三条 Cancun EEST 测试通过（57609/57609 → 收敛到 5 条 Prague）
+
+#### 链同步兼容（10M 区块验证）(3884128 ~ 175d355)
+- **Header.Hash()**: `headerHashFieldsLegacy` 排除 BlobGasUsed/ExcessBlobGas/LtHashRoot → Genesis hash 匹配 `138734b7`
+- **DeriveSha**: 空列表返回 NilHash（N42 mainnet 惯例），非 EmptyRootHash
+- **Transaction.Marshal()**: 恢复旧编码（含 V/R/S，直接 Convert，无 AccessList）→ 10M 区块 proto round-trip 全匹配
+- **SSZ To 字段**: 零地址 H160 视为 nil（合约创建兼容）
+- **SSZ Body**: 接受 2-offset 旧格式 + 详细诊断错误
+- **cancunTime→cancunBlock**: `cancunTime:11907216` 是区块号被当时间戳 → 所有区块误判为 Cancun
+- **JMT rootComputer**: 无条件注入导致 pre-Shanghai 区块 state root 不匹配 → 禁用（仅 private/dev 链启用）
+- **fork-gated legacy/v2**: `IsShanghaiAt` 门控 validator 选 legacy 或 V2 编码
+- **10M 区块全量 SSZ round-trip 扫描通过**，同步从 0 推进到 330 万块（receipt root 差异待后续 EVM trace）
+
+#### Prague 系统合约 (818aaf2, 9b67f66)
+- `ProcessPragueBlockStart()`: 部署 EIP-2935 历史合约 + 存储 parent hash
+- `ProcessPragueSystemCalls()`: 验证 EIP-7002/7251 合约代码存在 → 缺失则 INVALID
+- `HistoryServeWindow`: 8192→8191（EIP-2935 规范值）
+- `opBlockhash2935`: `IsPectra`→`IsPrague`（EIP-2935 在 Prague 激活）
+- 测试覆盖：系统合约缺失拒绝、parent hash 存储、pre-Prague no-op、genesis skip
+- **目标 5 条 EEST Prague 失败 → 待复测确认**
+
+#### 代码审计修复 (7ac533a, 0e6c3ed)
+- `internal/hashing.go`: 90 行重复 → 15 行委托 `common/hash`
+- Body SSZ legacy 2-offset 分支: `o2=o1` 边界错误修复 → `o2=size`
+- `ValidateState`: `requireBlockNumber` error 不再吞掉
+- `Marshal()`: ChainID nil 检查（4 处 panic 风险）
+- Body SSZ: `o0>=12` 防御性校验
+- `GetCode`→`GetCodeSize`（避免每块加载完整字节码）
+
+#### 全功能 Devnet (5eeba49)
+- `--dev` 启动: HotStuff-2 BFT(3s)、JMT+LtHash、全 fork(Osaka)、PQ 密码学、AI/CAS/随机数预编译
+- Prague 系统合约（EIP-7002/7251/2935/4788）预部署在 genesis alloc
+- `chainId: 942`，50 个压测账户预注资
+- JMT rootComputer 仅 private/dev 链启用
+
+#### 2026 路线图 + 深度评估 (94bc9ce ~ 3f83239)
+
+**竞品对标 Top 10**（`docs/ROADMAP_2026.md`）:
+| # | 功能 | 来源 | 优先级 |
+|---|------|------|--------|
+| 1 | 乐观共识提案 | Aptos Velociraptr | P1（降级） |
+| 2 | 链下 BLS 投票聚合 | Solana Votor | P1（重命名） |
+| 3 | DSMR 全流水线 | Avalanche Vryx | P1 |
+| 4 | 内存状态树 SALT | MegaETH | P3（降级） |
+| 5 | 内核旁路 XDP | Firedancer | **删除** |
+| 6 | Type-1 zkEVM | Polygon | P2 |
+| 7 | 跨链 IBC v2 | Cosmos | P2 |
+| 8 | EVM JIT/AOT | Starknet/reth | P2 |
+| 9 | 动态分片 | TON/NEAR | P3 |
+| 10 | io_uring 异步 I/O | Monad | P0 |
+
+**6 份深度评估报告**（`docs/EVAL_*.md`）:
+- 乐观共识提案: 100-200ms 改善但 9-12 周复杂度高 → 降 P1
+- BLS 投票聚合: N42 投票**已经是链下 BLS** → 重命名为"批量 BLS 验证"
+- DSMR 流水线: Tile+DeepPipeline 已建成 80% 但**全部未接入生产** → Tier A 部分流水线优先
+- SALT 内存状态: N42 2-20GB 热状态已**全驻 mmap** → 当前规模不必要
+- XDP 内核旁路: 网络容量 50-500x 余量 + Go GC 根本冲突 → **删除**
+- 3 项替代方案: Tile(不做) / QUIC(立即) / TxBatch(P0)
+
+#### 批量 BLS 签名验证 (53443f7)
+- `VerifyMultipleSignaturesVarMsg()`: 支持变长消息的 blst batch pairing
+- 投票缓冲 + 阈值触发批量验证（≥4 票或达 quorum）
+- 批量失败 → 逐条回退排查无效签名
+- **基准: 100 签名 50.4ms→3.5ms = 14.5x 加速**
+- 7 个测试 + 2 个基准全通过
+
+#### QUIC + GossipSub + Tx Gossip (1969908)
+- **QUIC 监听修复**: transport 已注册但没 UDP listen addr → 加 `/ip4/.../udp/.../quic-v1`
+- **GossipSub 队列**: 600→1024 防突发丢包
+- **交易 GossipSub 订阅**: 替代 10s bloom pull（`//todo txs?` 终于实现）
+- 全部 config-gated 可撤回: `QUICEnabled`, `TxGossipEnabled`
+- EEST 零影响（Engine API only）
+
+---
+
+## 当前状态
+
+```
+分支: main (1969908)
+版本: v5.6.772
+EEST: 42332/42337 (99.988%)，5 条 Prague 系统合约待复测
+同步: 0→330 万块通过（receipt root 差异在 block 3304451 待 EVM trace）
+Devnet: --dev 全功能启动就绪
+压测: QUIC + TxGossip 待双节点集群验证
+```
