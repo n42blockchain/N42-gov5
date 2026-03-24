@@ -75,11 +75,12 @@ func TestGenesisBlockToBlockUsesEthereumEmptyRoots(t *testing.T) {
 	if !ok || header == nil {
 		t.Fatalf("Header() type = %T, want *block.Header", blk.Header())
 	}
-	if header.TxHash != hash.EmptyRootHash {
-		t.Fatalf("TxHash = %s, want Ethereum empty tx root", header.TxHash)
+	// N42 mainnet uses NilHash (keccak256(nil)) for empty tx/receipt tries.
+	if header.TxHash != hash.NilHash {
+		t.Fatalf("TxHash = %s, want NilHash %s", header.TxHash, hash.NilHash)
 	}
-	if header.ReceiptHash != hash.EmptyRootHash {
-		t.Fatalf("ReceiptHash = %s, want Ethereum empty receipt root", header.ReceiptHash)
+	if header.ReceiptHash != hash.NilHash {
+		t.Fatalf("ReceiptHash = %s, want NilHash %s", header.ReceiptHash, hash.NilHash)
 	}
 	if header.Number == nil || header.Number.Cmp(uint256.NewInt(0)) != 0 {
 		t.Fatalf("Number = %v, want genesis number 0", header.Number)
