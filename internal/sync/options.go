@@ -47,3 +47,13 @@ func WithEarliestBlock(fn func() uint64) Option {
 		return nil
 	}
 }
+
+// WithTxPool enables transaction gossip subscription. Received transactions
+// are added to the pool via AddRemotes.
+func WithTxPool(pool TxPool) Option {
+	return func(s *Service) error {
+		s.cfg.txPool = pool
+		s.cfg.txGossipEnabled = pool != nil
+		return nil
+	}
+}

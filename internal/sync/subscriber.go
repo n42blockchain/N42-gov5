@@ -60,11 +60,15 @@ func (s *Service) registerSubscribers(digest [4]byte) {
 		s.blobSidecarSubscriber,
 		digest,
 	)
-	//todo txs?
-	//s.subscribe(
-	//	p2p.TransactionTopicFormat,
-	//	digest,
-	//)
+	if s.cfg.txGossipEnabled {
+		s.subscribe(
+			p2p.TransactionTopicFormat,
+			s.noopValidator,
+			s.txSubscriber,
+			digest,
+		)
+		log.Info("Subscribed to transaction gossip topic")
+	}
 }
 
 // subscribe to a given topic with a given validator and subscription handler.

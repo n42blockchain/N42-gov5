@@ -44,6 +44,18 @@ type P2PConfig struct {
 	DenyListCIDR        []string `json:"deny_list_cidr" yaml:"deny_list_cidr"`
 	MinSyncPeers        int      `json:"min_sync_peers" yaml:"min_sync_peers"`
 
+	// QUIC transport: listen on UDP for QUIC-v1 connections (default true).
+	QUICEnabled bool `json:"quic_enabled" yaml:"quic_enabled"`
+
+	// GossipSub tuning (0 = use defaults).
+	GossipSubQueueSize   int `json:"gossip_queue_size" yaml:"gossip_queue_size"`     // default 1024
+	GossipSubHeartbeatMs int `json:"gossip_heartbeat_ms" yaml:"gossip_heartbeat_ms"` // default 500
+
+	// Transaction gossip via GossipSub (default false; falls back to bloom pull).
+	TxGossipEnabled  bool `json:"tx_gossip_enabled" yaml:"tx_gossip_enabled"`
+	TxGossipBatchSize int  `json:"tx_gossip_batch_size" yaml:"tx_gossip_batch_size"` // default 50
+	TxGossipFlushMs   int  `json:"tx_gossip_flush_ms" yaml:"tx_gossip_flush_ms"`     // default 100
+
 	P2PLimit *P2PLimit
 }
 

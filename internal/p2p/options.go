@@ -47,6 +47,16 @@ func (s *Service) buildOptions(ip net.IP, priKey *ecdsa.PrivateKey) []libp2p.Opt
 	if err != nil {
 		log.Crit("Failed to p2p listen", "err", err)
 	}
+	listenAddrs := []ma.Multiaddr{listen}
+	if cfg.QUICEnabled {
+		// QUIC listens on the TCP port number (different protocol, no conflict).
+		// UDPPort is reserved for Discovery v5.
+		quicAddr, qErr := ma.NewMultiaddr(fmt.Sprintf("/ip4/%s/udp/%d/quic-v1", listenIP, cfg.TCPPort))
+		if qErr == nil {
+			listenAddrs = append(listenAddrs, quicAddr)
+			log.Info("QUIC listener enabled", "addr", quicAddr)
+		}
+	}
 	ifaceKey, err := utils.ConvertToInterfacePrivkey(priKey)
 	if err != nil {
 		log.Crit("Failed to retrieve private key", "err", err)
@@ -59,7 +69,7 @@ func (s *Service) buildOptions(ip net.IP, priKey *ecdsa.PrivateKey) []libp2p.Opt
 
 	options := []libp2p.Option{
 		privKeyOption(priKey),
-		libp2p.ListenAddrs(listen),
+		libp2p.ListenAddrs(listenAddrs...),
 		libp2p.UserAgent(params.Version),
 		libp2p.ConnectionGater(s),
 		libp2p.Transport(tcp.NewTCPTransport),
