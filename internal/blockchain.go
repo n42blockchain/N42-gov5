@@ -720,12 +720,12 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			stateReader = state.NewCachedStateReader(stateReader, cache)
 		}
 		ibs := state.New(stateReader)
-		// Inject RootComputer for JMT + LtHash state root computation.
-		// Only for Shanghai+ blocks; pre-Shanghai uses legacy GenerateRootHash
-		// to maintain state root compatibility with existing chain data.
-		if bc.rootComputer != nil && bc.Config() != nil && bc.Config().IsShanghaiAt(blockNr, 0) {
-			ibs.SetRootComputer(bc.rootComputer)
-		}
+		// NOTE: JMT rootComputer is NOT injected during block processing.
+		// The JMT tree requires a full state migration before it can produce
+		// correct roots. Until that migration is implemented (as a separate
+		// fork activation), all blocks use legacy GenerateRootHash() which
+		// matches the existing chain data.
+		// TODO: implement JMT state migration at a designated fork block.
 		stateWriter := state.NewNoopWriter()
 
 		nopay, err := f(tx, ibs, stateReader, stateWriter)
