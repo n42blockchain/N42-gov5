@@ -721,7 +721,9 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 		}
 		ibs := state.New(stateReader)
 		// Inject RootComputer for JMT + LtHash state root computation.
-		if bc.rootComputer != nil {
+		// Only for Shanghai+ blocks; pre-Shanghai uses legacy GenerateRootHash
+		// to maintain state root compatibility with existing chain data.
+		if bc.rootComputer != nil && bc.Config() != nil && bc.Config().IsShanghaiAt(blockNr, 0) {
 			ibs.SetRootComputer(bc.rootComputer)
 		}
 		stateWriter := state.NewNoopWriter()
