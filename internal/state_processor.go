@@ -98,6 +98,12 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(blockNumber.ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibs)
 	}
+
+	// EIP-2935: deploy history contract and store parent hash (Prague+).
+	if err := ProcessPragueBlockStart(chainConfig, ibs, concreteHeader); err != nil {
+		return nil, nil, nil, 0, err
+	}
+
 	noop := state.NewNoopWriter()
 
 	for i, tx := range b.Transactions() {

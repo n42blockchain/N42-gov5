@@ -72,6 +72,9 @@ func (e *EngineAPIV1) validatePayloadExecution(blk block.IBlock, parentHash type
 		if err := internalcore.ProcessBeaconBlockRoot(parentBeaconRoot, cfg, ibs, header, e.api.api.engine); err != nil {
 			return err
 		}
+		if err := internalcore.ProcessPragueBlockStart(cfg, ibs, header); err != nil {
+			return err
+		}
 
 		for i, txn := range concreteBlock.Transactions() {
 			ibs.Prepare(txn.Hash(), concreteBlock.Hash(), i)
