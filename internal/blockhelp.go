@@ -180,8 +180,36 @@ func ProcessBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainCon
 	return ibs.FinalizeTx(rules, state.NewNoopWriter())
 }
 
+// ProcessPragueBlockStart applies Prague/Pectra start-of-block system operations:
+//   - EIP-2935: deploy history storage contract (if not already deployed) and
+//     store the parent block hash in the ring buffer.
+//
+// Must be called BEFORE transaction execution, after ProcessBeaconBlockRoot.
+func ProcessPragueBlockStart(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header) error {
+	if chainConfig == nil || ibs == nil || header == nil {
+		return nil
+	}
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	rules := chainConfig.RulesWithTimestamp(headerNumber.Uint64(), header.Time)
+	if rules == nil || !rules.IsPrague {
+		return nil
+	}
+
+	// EIP-2935: deploy history contract if needed, then store parent hash.
+	vm.EnsureHistoryContractDeployed(ibs)
+	if headerNumber.Uint64() > 0 {
+		vm.StoreParentBlockHash(ibs, headerNumber.Uint64()-1, header.ParentHash)
+	}
+	return ibs.FinalizeTx(rules, state.NewNoopWriter())
+}
+
 // ProcessPragueSystemCalls applies Prague/Pectra end-of-block system contract
 // calls that may invalidate the payload if they error.
+// EIP-7002 (withdrawal requests) and EIP-7251 (consolidation requests) system
+// contracts MUST have code deployed at their addresses; otherwise the block is invalid.
 func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) ([]hexutil.Bytes, error) {
 	if chainConfig == nil || ibs == nil || header == nil {
 		return nil, nil
@@ -193,6 +221,14 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 	rules := chainConfig.RulesWithTimestamp(headerNumber.Uint64(), header.Time)
 	if rules == nil || !rules.IsPrague {
 		return nil, nil
+	}
+
+	// EIP-7002/EIP-7251: verify system contracts are deployed before calling them.
+	// If code is missing at the fork activation, the block MUST be invalid.
+	for _, addr := range []types.Address{vm.WithdrawalRequestsAddress, vm.ConsolidationRequestsAddress} {
+		if len(ibs.GetCode(addr)) == 0 {
+			return nil, fmt.Errorf("missing required Prague system contract at %s", addr.Hex())
+		}
 	}
 
 	noop := state.NewNoopWriter()

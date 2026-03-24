@@ -116,9 +116,10 @@ var (
 // Address derived as: rlp([0xfffffffffffffffffffffffffffffffffffffffe, 0])
 var HistoryStorageAddress = types.HexToAddress("0x0000F90827F1C53a10CB7A02335B175320002935")
 
-// HistoryServeWindow is the number of block hashes stored in the system contract
-// The contract stores the last HISTORY_SERVE_WINDOW block hashes in a ring buffer
-const HistoryServeWindow = 8192
+// HistoryServeWindow is the number of block hashes stored in the system contract.
+// The contract stores the last HISTORY_SERVE_WINDOW block hashes in a ring buffer.
+// Value 8191 per EIP-2935 specification (prime number for optimal distribution).
+const HistoryServeWindow = 8191
 
 // HistoryStorageCode is the deployed bytecode of the EIP-2935 system contract
 // This contract stores block hashes at slot = blockNumber % HISTORY_SERVE_WINDOW
@@ -558,7 +559,7 @@ type StateDB interface {
 	GetState(addr types.Address, key *types.Hash, value *uint256.Int)
 	SetState(addr types.Address, key *types.Hash, value uint256.Int)
 	GetCode(addr types.Address) []byte
-	SetCode(addr types.Address, code []byte) error
+	SetCode(addr types.Address, code []byte)
 }
 
 // =============================================================================

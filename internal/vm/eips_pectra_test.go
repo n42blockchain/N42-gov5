@@ -125,8 +125,8 @@ func TestHistoryStorageAddress(t *testing.T) {
 }
 
 func TestHistoryServeWindow(t *testing.T) {
-	if HistoryServeWindow != 8192 {
-		t.Errorf("HistoryServeWindow = %d, want 8192", HistoryServeWindow)
+	if HistoryServeWindow != 8191 {
+		t.Errorf("HistoryServeWindow = %d, want 8191 (EIP-2935 spec)", HistoryServeWindow)
 	}
 }
 
@@ -137,11 +137,11 @@ func TestHistoryStorageSlotCalculation(t *testing.T) {
 	}{
 		{0, 0},
 		{1, 1},
-		{8191, 8191},
-		{8192, 0},
-		{8193, 1},
-		{16384, 0},
-		{100000, 100000 % 8192},
+		{8190, 8190},
+		{8191, 0},
+		{8192, 1},
+		{16382, 0},
+		{100000, 100000 % 8191},
 	}
 
 	for _, tt := range tests {
