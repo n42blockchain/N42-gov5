@@ -49,7 +49,7 @@ func (l *LogExtension) OnNotification(_ context.Context, notif *exex.ExExNotific
 	}
 	receiptCount := len(notif.Receipts)
 
-	log.Info("ExEx event",
+	log.Debug("ExEx event",
 		"type", notif.Type.String(),
 		"number", notif.Number,
 		"hash", notif.Hash.String(),
