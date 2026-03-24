@@ -1477,21 +1477,16 @@ func (b *Body) UnmarshalSSZ(buf []byte) error {
 			return fmt.Errorf("Body Rewards offset %d invalid (size=%d, verOff=%d): %w", o2, size, o1, ssz.ErrOffset)
 		}
 	} else {
-		// Legacy 2-offset format: no Rewards field, Verifiers runs to end
+		// Legacy 2-offset format: no Rewards field, Verifiers runs to end.
 		if o0 < 8 {
 			return fmt.Errorf("Body Txs offset %d < 8 (legacy): %w", o0, ssz.ErrInvalidVariableOffset)
 		}
-		o2 = o1 // Verifiers run from o1 to end; Rewards section is empty
-		o1 = o1 // keep as-is
+		o2 = size // Verifiers run from o1 to end of buffer; no Rewards section.
 	}
 
 	// Field (0) 'Txs'
 	{
-		txEnd := o1
-		if hasRewards {
-			txEnd = o1
-		}
-		buf = tail[o0:txEnd]
+		buf = tail[o0:o1]
 		num, err := ssz.DecodeDynamicLength(buf, 104857600)
 		if err != nil {
 			return fmt.Errorf("Body.Txs decode length (bytes=%d): %w", len(buf), err)

@@ -545,7 +545,6 @@ func StoreParentBlockHash(statedb StateDB, parentNumber uint64, parentHash types
 // EnsureHistoryContractDeployed ensures the EIP-2935 history contract is deployed
 // This should be called during the Pectra fork transition
 func EnsureHistoryContractDeployed(statedb StateDB) {
-	// Check if contract is already deployed
 	if len(statedb.GetCode(HistoryStorageAddress)) > 0 {
 		return
 	}

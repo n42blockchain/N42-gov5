@@ -17,80 +17,20 @@
 package internal
 
 import (
-	"bytes"
-	"sync"
-
-	"golang.org/x/crypto/sha3"
-
-	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/utils"
 )
-
-// hasherPool holds LegacyKeccak256 hashers for rlpHash.
-var hasherPool = sync.Pool{
-	New: func() interface{} { return sha3.NewLegacyKeccak256() },
-}
-
-// encodeBufferPool holds temporary encoder buffers for DeriveSha and TX encoding.
-var encodeBufferPool = sync.Pool{
-	New: func() interface{} { return new(bytes.Buffer) },
-}
 
 // DerivableList is the input to DeriveSha.
-// It is implemented by the 'Transactions' and 'Receipts' types.
-// This is internal, do not use these methods.
-type DerivableList interface {
-	Len() int
-	EncodeIndex(int, *bytes.Buffer)
+// Re-exported from common/hash for use within the internal package.
+type DerivableList = hash.DerivableList
+
+// DeriveSha delegates to common/hash.DeriveSha (legacy, NilHash for empty).
+func DeriveSha(list DerivableList) types.Hash {
+	return hash.DeriveSha(list)
 }
 
-func encodeForDerive(list DerivableList, i int, buf *bytes.Buffer) []byte {
-	buf.Reset()
-	list.EncodeIndex(i, buf)
-	// It's really unfortunate that we need to do perform this copy.
-	// StackTrie holds onto the values until Hash is called, so the values
-	// written to it must not alias.
-	return utils.Copy(buf.Bytes())
+// DeriveShaV2 delegates to common/hash.DeriveShaV2 (EmptyRootHash for empty).
+func DeriveShaV2(list DerivableList) types.Hash {
+	return hash.DeriveShaV2(list)
 }
-
-// DeriveSha creates the tree hashes of transactions and receipts in a block header.
-// Legacy mode (NilHash for empty lists) — used for pre-Shanghai blocks.
-func DeriveSha(list DerivableList) (h types.Hash) {
-	return deriveShaWith(list, true)
-}
-
-// DeriveShaV2 uses Ethereum-standard EmptyRootHash for empty lists.
-// Used for Shanghai+ blocks.
-func DeriveShaV2(list DerivableList) (h types.Hash) {
-	return deriveShaWith(list, false)
-}
-
-func deriveShaWith(list DerivableList, legacy bool) (h types.Hash) {
-	if list == nil || list.Len() == 0 {
-		if legacy {
-			return hash.NilHash
-		}
-		return EmptyRootHash
-	}
-
-	sha := hasherPool.Get().(crypto.KeccakState)
-	defer hasherPool.Put(sha)
-	sha.Reset()
-
-	valueBuf := encodeBufferPool.Get().(*bytes.Buffer)
-	defer encodeBufferPool.Put(valueBuf)
-
-	for i := 0; i < list.Len(); i++ {
-		value := encodeForDerive(list, i, valueBuf)
-		sha.Write(value)
-	}
-	sha.Read(h[:])
-	return h
-}
-
-var (
-	// EmptyRootHash is the Ethereum empty trie root used for empty tx/receipt tries.
-	EmptyRootHash = types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
-)
