@@ -73,6 +73,9 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 
 	chainConfig := p.config
 	cfg := vm2.Config{}
+	if err := ProcessPragueBlockStart(chainConfig, ibs, concreteHeader); err != nil {
+		return nil, nil, nil, 0, err
+	}
 	// blockContext is a value type — each goroutine's NewEVM copies it, safe to share.
 	blockContext := NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, nil)
 

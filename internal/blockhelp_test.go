@@ -3,13 +3,18 @@ package internal
 import (
 	"bytes"
 	"encoding/binary"
+	"math/big"
 	"testing"
 
+	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
 )
 
 func TestCollectDepositExecutionRequestsIgnoresNonDepositLogs(t *testing.T) {
@@ -104,4 +109,98 @@ func makeValidDepositLogData() []byte {
 	}
 
 	return data
+}
+
+func TestProcessPragueSystemCallsRejectsEmptySystemContract(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		Consensus:             params.Faker,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
+		ShanghaiBlock:         big.NewInt(0),
+		CancunBlock:           big.NewInt(0),
+		PragueTime:            big.NewInt(0),
+	}
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Time:       1,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+
+	t.Run("withdrawal", func(t *testing.T) {
+		db := memdb.NewTestDB(t)
+		txDb := memdb.BeginRw(t, db)
+		ibs := state.New(state.NewPlainState(txDb, 1))
+		_, err := ProcessPragueSystemCalls(cfg, ibs, header, nil)
+		require.ErrorContains(t, err, "System contract address")
+		require.ErrorContains(t, err, vm.WithdrawalRequestsAddress.Hex())
+	})
+
+	t.Run("consolidation", func(t *testing.T) {
+		db := memdb.NewTestDB(t)
+		txDb := memdb.BeginRw(t, db)
+		ibs := state.New(state.NewPlainState(txDb, 1))
+		ibs.CreateAccount(vm.WithdrawalRequestsAddress, true)
+		ibs.SetCode(vm.WithdrawalRequestsAddress, []byte{byte(vm.STOP)})
+		_, err := ProcessPragueSystemCalls(cfg, ibs, header, nil)
+		require.ErrorContains(t, err, "System contract address")
+		require.ErrorContains(t, err, vm.ConsolidationRequestsAddress.Hex())
+	})
+}
+
+func TestProcessPragueBlockStartStoresParentHashWhenHistoryContractExists(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		Consensus:             params.Faker,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
+		ShanghaiBlock:         big.NewInt(0),
+		CancunBlock:           big.NewInt(0),
+		PragueTime:            big.NewInt(0),
+	}
+	parentHash := types.HexToHash("0x1234")
+	header := &block.Header{
+		ParentHash: parentHash,
+		Number:     uint256.NewInt(2),
+		Time:       1,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+	ibs.CreateAccount(vm.HistoryStorageAddress, true)
+	ibs.SetCode(vm.HistoryStorageAddress, vm.HistoryStorageCode)
+
+	require.NoError(t, ProcessPragueBlockStart(cfg, ibs, header))
+
+	slot := types.Hash{}
+	uint256.NewInt(1).WriteToSlice(slot[:])
+	var got uint256.Int
+	ibs.GetState(vm.HistoryStorageAddress, &slot, &got)
+	stored := types.Hash{}
+	got.WriteToSlice(stored[:])
+	require.Equal(t, parentHash, stored)
 }
