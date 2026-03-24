@@ -111,10 +111,9 @@ func makeValidDepositLogData() []byte {
 	return data
 }
 
-func TestProcessPragueSystemCallsRejectsEmptySystemContract(t *testing.T) {
-	t.Parallel()
-
-	cfg := &params.ChainConfig{
+// testPragueConfig returns a ChainConfig with all forks through Prague activated at genesis.
+func testPragueConfig() *params.ChainConfig {
+	return &params.ChainConfig{
 		ChainID:               big.NewInt(1),
 		Consensus:             params.Faker,
 		HomesteadBlock:        big.NewInt(0),
@@ -130,6 +129,12 @@ func TestProcessPragueSystemCallsRejectsEmptySystemContract(t *testing.T) {
 		CancunBlock:           big.NewInt(0),
 		PragueTime:            big.NewInt(0),
 	}
+}
+
+func TestProcessPragueSystemCallsRejectsEmptySystemContract(t *testing.T) {
+	t.Parallel()
+
+	cfg := testPragueConfig()
 	header := &block.Header{
 		Number:     uint256.NewInt(1),
 		Time:       1,
@@ -162,22 +167,7 @@ func TestProcessPragueSystemCallsRejectsEmptySystemContract(t *testing.T) {
 func TestProcessPragueBlockStartStoresParentHashWhenHistoryContractExists(t *testing.T) {
 	t.Parallel()
 
-	cfg := &params.ChainConfig{
-		ChainID:               big.NewInt(1),
-		Consensus:             params.Faker,
-		HomesteadBlock:        big.NewInt(0),
-		TangerineWhistleBlock: big.NewInt(0),
-		SpuriousDragonBlock:   big.NewInt(0),
-		ByzantiumBlock:        big.NewInt(0),
-		ConstantinopleBlock:   big.NewInt(0),
-		PetersburgBlock:       big.NewInt(0),
-		IstanbulBlock:         big.NewInt(0),
-		BerlinBlock:           big.NewInt(0),
-		LondonBlock:           big.NewInt(0),
-		ShanghaiBlock:         big.NewInt(0),
-		CancunBlock:           big.NewInt(0),
-		PragueTime:            big.NewInt(0),
-	}
+	cfg := testPragueConfig()
 	parentHash := types.HexToHash("0x1234")
 	header := &block.Header{
 		ParentHash: parentHash,
@@ -203,4 +193,47 @@ func TestProcessPragueBlockStartStoresParentHashWhenHistoryContractExists(t *tes
 	stored := types.Hash{}
 	got.WriteToSlice(stored[:])
 	require.Equal(t, parentHash, stored)
+}
+
+func TestProcessPragueBlockStartNoOpPrePrague(t *testing.T) {
+	t.Parallel()
+	cfg := &params.ChainConfig{
+		ChainID:    big.NewInt(1),
+		Consensus:  params.Faker,
+		LondonBlock: big.NewInt(0),
+	}
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Time:       1,
+		Difficulty: uint256.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+	require.NoError(t, ProcessPragueBlockStart(cfg, ibs, header))
+	// History contract should NOT be deployed for pre-Prague blocks.
+	require.Equal(t, 0, ibs.GetCodeSize(vm.HistoryStorageAddress))
+}
+
+func TestProcessPragueBlockStartGenesisSkipsParentStore(t *testing.T) {
+	t.Parallel()
+	cfg := testPragueConfig()
+	header := &block.Header{
+		Number:     uint256.NewInt(0),
+		Time:       0,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+	require.NoError(t, ProcessPragueBlockStart(cfg, ibs, header))
+	// Contract should be deployed even at genesis.
+	require.Greater(t, ibs.GetCodeSize(vm.HistoryStorageAddress), 0)
+	// But no parent hash stored (block 0 has no parent).
+	slot := types.Hash{}
+	var got uint256.Int
+	ibs.GetState(vm.HistoryStorageAddress, &slot, &got)
+	require.True(t, got.IsZero())
 }

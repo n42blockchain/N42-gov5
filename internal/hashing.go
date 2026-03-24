@@ -17,12 +17,17 @@
 package internal
 
 import (
+	"bytes"
+	"sync"
+
+	"golang.org/x/crypto/sha3"
+
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/utils"
 )
 
 // DerivableList is the input to DeriveSha.
-// Re-exported from common/hash for use within the internal package.
 type DerivableList = hash.DerivableList
 
 // DeriveSha delegates to common/hash.DeriveSha (legacy, NilHash for empty).
@@ -33,4 +38,19 @@ func DeriveSha(list DerivableList) types.Hash {
 // DeriveShaV2 delegates to common/hash.DeriveShaV2 (EmptyRootHash for empty).
 func DeriveShaV2(list DerivableList) types.Hash {
 	return hash.DeriveShaV2(list)
+}
+
+// hasherPool and encodeBufferPool are kept for use by internal tests
+// (blockchain_test.go). The production DeriveSha delegates to common/hash.
+var hasherPool = sync.Pool{
+	New: func() interface{} { return sha3.NewLegacyKeccak256() },
+}
+var encodeBufferPool = sync.Pool{
+	New: func() interface{} { return new(bytes.Buffer) },
+}
+
+func encodeForDerive(list DerivableList, i int, buf *bytes.Buffer) []byte {
+	buf.Reset()
+	list.EncodeIndex(i, buf)
+	return utils.Copy(buf.Bytes())
 }
