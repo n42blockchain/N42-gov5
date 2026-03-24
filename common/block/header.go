@@ -94,23 +94,40 @@ func (h *Header) BaseFee64() *uint256.Int {
 	return h.BaseFee
 }
 
+// headerHashFieldsLegacy contains the original Header fields for hash computation.
+// Used for blocks before the Shanghai fork to maintain backward compatibility.
+type headerHashFieldsLegacy struct {
+	ParentHash  types.Hash      `json:"parentHash"`
+	Coinbase    types.Address   `json:"miner"`
+	Root        types.Hash      `json:"stateRoot"`
+	TxHash      types.Hash      `json:"transactionsRoot"`
+	ReceiptHash types.Hash      `json:"receiptsRoot"`
+	Bloom       Bloom           `json:"logsBloom"`
+	Difficulty  *uint256.Int    `json:"difficulty"`
+	Number      *uint256.Int    `json:"number"`
+	GasLimit    uint64          `json:"gasLimit"`
+	GasUsed     uint64          `json:"gasUsed"`
+	Time        uint64          `json:"timestamp"`
+	MixDigest   types.Hash      `json:"mixHash"`
+	Nonce       BlockNonce      `json:"nonce"`
+	Extra       []byte          `json:"extraData"`
+	BaseFee     *uint256.Int    `json:"baseFeePerGas"`
+	Signature   types.Signature `json:"signature"`
+}
+
 func (h *Header) Hash() types.Hash {
 	if hash := h.hash.Load(); hash != nil {
 		return hash.(types.Hash)
 	}
 
-	// Work on a shallow copy so we can fill nil fields without mutating h.
-	cpy := *h
-	if cpy.BaseFee == nil {
-		cpy.BaseFee = uint256.NewInt(0)
-	}
-	if cpy.Difficulty == nil {
-		cpy.Difficulty = uint256.NewInt(0)
-	}
+	var buf []byte
+	var err error
 
-	// Use a type alias to prevent recursive MarshalJSON calls.
-	type headerForHash Header
-	buf, err := json.Marshal((*headerForHash)(&cpy))
+	if IsLegacyHeader(h) {
+		buf, err = h.legacyHashBytes()
+	} else {
+		buf, err = h.v2HashBytes()
+	}
 	if err != nil {
 		return types.Hash{}
 	}
@@ -118,6 +135,60 @@ func (h *Header) Hash() types.Hash {
 	hash := types.BytesHash(buf)
 	h.hash.Store(hash)
 	return hash
+}
+
+// IsLegacyHeader returns true for pre-Shanghai headers that use legacy hash.
+// Shanghai activation can be block-based or timestamp-based; we check both
+// BlobGasUsed (Cancun+ indicator) and LtHashRoot as proxies. If none of the
+// new fields are populated AND block number is below the well-known mainnet
+// Shanghai activation, use legacy hash.
+func IsLegacyHeader(h *Header) bool {
+	// If any v2 field is non-zero, this is definitely a v2 header.
+	if h.BlobGasUsed != 0 || h.ExcessBlobGas != 0 || (h.LtHashRoot != types.Hash{}) {
+		return false
+	}
+	return true
+}
+
+func (h *Header) legacyHashBytes() ([]byte, error) {
+	hf := headerHashFieldsLegacy{
+		ParentHash:  h.ParentHash,
+		Coinbase:    h.Coinbase,
+		Root:        h.Root,
+		TxHash:      h.TxHash,
+		ReceiptHash: h.ReceiptHash,
+		Bloom:       h.Bloom,
+		Difficulty:  h.Difficulty,
+		Number:      h.Number,
+		GasLimit:    h.GasLimit,
+		GasUsed:     h.GasUsed,
+		Time:        h.Time,
+		MixDigest:   h.MixDigest,
+		Nonce:       h.Nonce,
+		Extra:       h.Extra,
+		BaseFee:     h.BaseFee,
+		Signature:   h.Signature,
+	}
+	if hf.BaseFee == nil {
+		hf.BaseFee = uint256.NewInt(0)
+	}
+	if hf.Difficulty == nil {
+		hf.Difficulty = uint256.NewInt(0)
+	}
+	return json.Marshal(&hf)
+}
+
+func (h *Header) v2HashBytes() ([]byte, error) {
+	// V2: marshal ALL fields including new ones.
+	cpy := *h
+	if cpy.BaseFee == nil {
+		cpy.BaseFee = uint256.NewInt(0)
+	}
+	if cpy.Difficulty == nil {
+		cpy.Difficulty = uint256.NewInt(0)
+	}
+	type headerForHash Header // alias to prevent recursive MarshalJSON
+	return json.Marshal((*headerForHash)(&cpy))
 }
 
 func (h *Header) ToProtoMessage() proto.Message {

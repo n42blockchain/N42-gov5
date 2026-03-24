@@ -18,12 +18,14 @@ package internal
 
 import (
 	"bytes"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/utils"
 	"sync"
 
 	"golang.org/x/crypto/sha3"
+
+	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/hash"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/utils"
 )
 
 // hasherPool holds LegacyKeccak256 hashers for rlpHash.
@@ -54,8 +56,22 @@ func encodeForDerive(list DerivableList, i int, buf *bytes.Buffer) []byte {
 }
 
 // DeriveSha creates the tree hashes of transactions and receipts in a block header.
+// Legacy mode (NilHash for empty lists) — used for pre-Shanghai blocks.
 func DeriveSha(list DerivableList) (h types.Hash) {
+	return deriveShaWith(list, true)
+}
+
+// DeriveShaV2 uses Ethereum-standard EmptyRootHash for empty lists.
+// Used for Shanghai+ blocks.
+func DeriveShaV2(list DerivableList) (h types.Hash) {
+	return deriveShaWith(list, false)
+}
+
+func deriveShaWith(list DerivableList, legacy bool) (h types.Hash) {
 	if list == nil || list.Len() == 0 {
+		if legacy {
+			return hash.NilHash
+		}
 		return EmptyRootHash
 	}
 
