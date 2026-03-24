@@ -1469,9 +1469,12 @@ func (b *Body) UnmarshalSSZ(buf []byte) error {
 		return fmt.Errorf("Body Verifiers offset %d invalid (size=%d, txsOff=%d): %w", o1, size, o0, ssz.ErrOffset)
 	}
 
-	// Detect format: 3-offset (current) vs 2-offset (legacy)
+	// Detect format: 3-offset (current, o0>=12) vs 2-offset (legacy, o0==8).
 	hasRewards := o0 >= 12 && size >= 12
 	if hasRewards {
+		if o0 < 12 {
+			return fmt.Errorf("Body Txs offset %d < 12 in 3-offset format: %w", o0, ssz.ErrInvalidVariableOffset)
+		}
 		// Offset (2) 'Rewards'
 		if o2 = ssz.ReadOffset(buf[8:12]); o2 > size || o1 > o2 {
 			return fmt.Errorf("Body Rewards offset %d invalid (size=%d, verOff=%d): %w", o2, size, o1, ssz.ErrOffset)
