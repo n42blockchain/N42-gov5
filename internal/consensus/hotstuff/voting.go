@@ -6,8 +6,23 @@ package hotstuff
 import (
 	"time"
 
+	"github.com/n42blockchain/N42/common/crypto/bls/blst"
+	"github.com/n42blockchain/N42/common/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
 )
+
+// batchVerifyThreshold is the minimum number of buffered votes before batch
+// verification is attempted. Below this threshold, votes are verified
+// individually (batch overhead outweighs the benefit for very small sets).
+const batchVerifyThreshold = 4
+
+// pendingVote holds an unverified vote for batch BLS verification.
+type pendingVote struct {
+	voter    ValidatorIndex
+	sigBytes []byte
+	pk       common.PublicKey
+	message  []byte
+}
 
 // processVote processes a Round 1 (Prepare) vote from a validator.
 func (e *ConsensusEngine) processVote(vote *Vote) error {
@@ -53,31 +68,68 @@ func (e *ConsensusEngine) processVote(vote *Vote) error {
 		return nil
 	}
 
-	// Verify BLS signature (validator bounds already checked above).
 	pk, err := vs.GetPublicKey(vote.Voter)
 	if err != nil {
 		return err
 	}
 	msg := SigningMessage(view, vote.BlockHash)
-	if !VerifyBLSSignature(vote.Signature, pk, msg) {
-		return &InvalidSignatureError{View: view, ValidatorIndex: vote.Voter}
-	}
 
-	// Add verified vote from raw bytes.
-	if err := e.voteCollector.AddVerifiedVoteFromBytes(vote.Voter, vote.Signature); err != nil {
-		if _, ok := err.(*DuplicateVoteError); ok {
-			return nil
+	// Buffer vote for batch verification.
+	e.prepareVoteBuf = append(e.prepareVoteBuf, pendingVote{
+		voter:    vote.Voter,
+		sigBytes: vote.Signature,
+		pk:       pk,
+		message:  msg,
+	})
+
+	// Flush batch when enough votes buffered or quorum reachable.
+	pendingCount := len(e.prepareVoteBuf)
+	existingCount := 0
+	if e.voteCollector != nil {
+		existingCount = e.voteCollector.VoteCount()
+	}
+	quorum := vs.QuorumSize()
+	if pendingCount >= batchVerifyThreshold || (existingCount+pendingCount) >= quorum {
+		if err := e.flushPrepareVotes(); err != nil {
+			return err
 		}
-		return err
 	}
 
 	return e.tryFormPrepareQC()
+}
+
+// flushPrepareVotes batch-verifies all buffered Round 1 votes and adds valid
+// ones to the collector. Falls back to individual verification on batch failure.
+func (e *ConsensusEngine) flushPrepareVotes() error {
+	if len(e.prepareVoteBuf) == 0 {
+		return nil
+	}
+	buf := e.prepareVoteBuf
+	e.prepareVoteBuf = e.prepareVoteBuf[:0] // reset
+
+	valid := batchVerifyVotes(buf)
+	for _, pv := range valid {
+		if err := e.voteCollector.AddVerifiedVoteFromBytes(pv.voter, pv.sigBytes); err != nil {
+			if _, ok := err.(*DuplicateVoteError); ok {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // tryFormPrepareQC attempts to form a PrepareQC from collected Round 1 votes.
 func (e *ConsensusEngine) tryFormPrepareQC() error {
 	view := e.roundState.CurrentView()
 	vs := e.validatorSet()
+
+	// Flush remaining buffered votes before checking quorum.
+	if len(e.prepareVoteBuf) > 0 {
+		if err := e.flushPrepareVotes(); err != nil {
+			return err
+		}
+	}
 
 	if e.voteCollector == nil || !e.voteCollector.HasQuorum(vs.QuorumSize()) || e.prepareQC != nil {
 		return nil
@@ -143,30 +195,67 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 		return nil
 	}
 
-	// Verify BLS signature (validator bounds already checked above).
 	pk, err := vs.GetPublicKey(cv.Voter)
 	if err != nil {
 		return err
 	}
 	msg := CommitSigningMessage(view, cv.BlockHash)
-	if !VerifyBLSSignature(cv.Signature, pk, msg) {
-		return &InvalidSignatureError{View: view, ValidatorIndex: cv.Voter}
-	}
 
-	if err := e.commitCollector.AddVerifiedVoteFromBytes(cv.Voter, cv.Signature); err != nil {
-		if _, ok := err.(*DuplicateVoteError); ok {
-			return nil
+	// Buffer vote for batch verification.
+	e.commitVoteBuf = append(e.commitVoteBuf, pendingVote{
+		voter:    cv.Voter,
+		sigBytes: cv.Signature,
+		pk:       pk,
+		message:  msg,
+	})
+
+	// Flush batch when enough votes buffered or quorum reachable.
+	pendingCount := len(e.commitVoteBuf)
+	existingCount := 0
+	if e.commitCollector != nil {
+		existingCount = e.commitCollector.VoteCount()
+	}
+	quorum := vs.QuorumSize()
+	if pendingCount >= batchVerifyThreshold || (existingCount+pendingCount) >= quorum {
+		if err := e.flushCommitVotes(); err != nil {
+			return err
 		}
-		return err
 	}
 
 	return e.tryFormCommitQC()
+}
+
+// flushCommitVotes batch-verifies all buffered Round 2 votes.
+func (e *ConsensusEngine) flushCommitVotes() error {
+	if len(e.commitVoteBuf) == 0 {
+		return nil
+	}
+	buf := e.commitVoteBuf
+	e.commitVoteBuf = e.commitVoteBuf[:0]
+
+	valid := batchVerifyVotes(buf)
+	for _, pv := range valid {
+		if err := e.commitCollector.AddVerifiedVoteFromBytes(pv.voter, pv.sigBytes); err != nil {
+			if _, ok := err.(*DuplicateVoteError); ok {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // tryFormCommitQC attempts to form a Commit QC from collected Round 2 votes.
 func (e *ConsensusEngine) tryFormCommitQC() error {
 	view := e.roundState.CurrentView()
 	vs := e.validatorSet()
+
+	// Flush remaining buffered votes before checking quorum.
+	if len(e.commitVoteBuf) > 0 {
+		if err := e.flushCommitVotes(); err != nil {
+			return err
+		}
+	}
 
 	if e.commitCollector == nil || !e.commitCollector.HasQuorum(vs.QuorumSize()) {
 		return nil
@@ -221,4 +310,53 @@ func (e *ConsensusEngine) tryFormCommitQC() error {
 
 	actualView := e.roundState.CurrentView()
 	return e.emit(EngineOutput{Type: OutputViewChanged, View: actualView})
+}
+
+// batchVerifyVotes verifies a batch of pending votes using BLS batch pairing.
+// Returns only the votes with valid signatures. On batch failure, falls back
+// to individual verification to isolate the invalid signature(s).
+func batchVerifyVotes(votes []pendingVote) []pendingVote {
+	if len(votes) == 0 {
+		return nil
+	}
+	if len(votes) == 1 {
+		// Single vote: individual verify (batch overhead not worth it).
+		if VerifyBLSSignature(votes[0].sigBytes, votes[0].pk, votes[0].message) {
+			return votes
+		}
+		log.Warn("BLS vote verification failed (single)", "voter", votes[0].voter)
+		return nil
+	}
+
+	// Prepare batch arrays.
+	sigs := make([][]byte, len(votes))
+	msgs := make([][]byte, len(votes))
+	pks := make([]common.PublicKey, len(votes))
+	for i, v := range votes {
+		sigs[i] = v.sigBytes
+		msgs[i] = v.message
+		pks[i] = v.pk
+	}
+
+	// Batch verify all at once.
+	ok, err := blst.VerifyMultipleSignaturesVarMsg(sigs, msgs, pks)
+	if err == nil && ok {
+		return votes // All valid.
+	}
+
+	// Batch failed: fall back to individual verification to find bad votes.
+	if err != nil {
+		log.Warn("BLS batch verification error, falling back to individual", "err", err, "count", len(votes))
+	} else {
+		log.Warn("BLS batch verification failed, isolating invalid signatures", "count", len(votes))
+	}
+	valid := make([]pendingVote, 0, len(votes))
+	for _, v := range votes {
+		if VerifyBLSSignature(v.sigBytes, v.pk, v.message) {
+			valid = append(valid, v)
+		} else {
+			log.Warn("BLS vote verification failed (individual fallback)", "voter", v.voter)
+		}
+	}
+	return valid
 }
