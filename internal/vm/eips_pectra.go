@@ -481,8 +481,8 @@ func opBlockhash2935(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContex
 		return nil, nil
 	}
 
-	// EIP-2935: Check history storage for older blocks (Pectra)
-	if interpreter.evm.ChainRules().IsPectra {
+	// EIP-2935: Check history storage for older blocks (Prague)
+	if interpreter.evm.ChainRules().IsPrague {
 		// Check if within the history serve window
 		if currentBlock-num64 > HistoryServeWindow {
 			num.Clear()
