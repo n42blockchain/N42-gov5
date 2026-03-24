@@ -274,6 +274,60 @@ func VerifyMultipleSignatures(sigs [][]byte, msgs [][32]byte, pubKeys []common.P
 	return result, nil
 }
 
+// VerifyMultipleSignaturesVarMsg is like VerifyMultipleSignatures but accepts
+// variable-length messages (not restricted to [32]byte). Used for consensus
+// vote batch verification where messages are 40 or 46 bytes.
+func VerifyMultipleSignaturesVarMsg(sigs [][]byte, msgs [][]byte, pubKeys []common.PublicKey) (bool, error) {
+	if len(sigs) == 0 || len(pubKeys) == 0 {
+		return false, nil
+	}
+	length := len(sigs)
+	if length != len(pubKeys) || length != len(msgs) {
+		return false, pkgerrors.Errorf("provided signatures, pubkeys and messages have differing lengths. S: %d, P: %d, M: %d",
+			length, len(pubKeys), len(msgs))
+	}
+	rawSigs := new(blstSignature).BatchUncompress(sigs)
+	if len(rawSigs) == 0 {
+		return false, pkgerrors.New("could not unmarshal bytes into signature")
+	}
+	if len(rawSigs) != length {
+		return false, pkgerrors.Errorf("wanted %d decompressed signatures but got %d", length, len(rawSigs))
+	}
+	mulP1Aff := make([]*blstPublicKey, length)
+	rawMsgs := make([]blst.Message, length)
+
+	for i := 0; i < length; i++ {
+		pk, ok := unwrapPublicKey(pubKeys[i])
+		if !ok {
+			return false, errUninitializedPublicKey
+		}
+		mulP1Aff[i] = pk.p
+		rawMsgs[i] = msgs[i]
+	}
+	randGen := rand.NewGenerator()
+	randLock := new(sync.Mutex)
+
+	var randErr error
+	randFunc := func(scalar *blst.Scalar) {
+		var rbytes [scalarBytes]byte
+		randLock.Lock()
+		n, err := randGen.Read(rbytes[:])
+		randLock.Unlock()
+		if err != nil || n != scalarBytes {
+			randErr = errors.New("failed to read random bytes for multi-signature verification")
+			return
+		}
+		rbytes[len(rbytes)-1] |= 0x01
+		scalar.FromBEndian(rbytes[:])
+	}
+	dummySig := new(blstSignature)
+	result := dummySig.MultipleAggregateVerify(rawSigs, true, mulP1Aff, false, rawMsgs, dst, randFunc, randBitsEntropy)
+	if randErr != nil {
+		return false, randErr
+	}
+	return result, nil
+}
+
 // Marshal a signature into a LittleEndian byte slice.
 func (s *Signature) Marshal() []byte {
 	return s.s.Compress()

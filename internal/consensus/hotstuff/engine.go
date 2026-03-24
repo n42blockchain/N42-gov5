@@ -105,6 +105,11 @@ type ConsensusEngine struct {
 	pendingTxRoots     map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
 	equivocationTracker map[ValidatorIndex]types.Hash
 
+	// Batch BLS verification buffers (votes await batch pairing before
+	// being added to the collector). Reset on every view change.
+	prepareVoteBuf []pendingVote
+	commitVoteBuf  []pendingVote
+
 	// Future message buffer
 	futureMsgBuffer []futureMsg
 
@@ -434,6 +439,8 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	e.importedBlocks = make(map[types.Hash]bool)
 	e.pendingTxRoots = make(map[types.Hash]types.Hash)
 	e.equivocationTracker = make(map[ValidatorIndex]types.Hash)
+	e.prepareVoteBuf = e.prepareVoteBuf[:0]
+	e.commitVoteBuf = e.commitVoteBuf[:0]
 
 	// Preserve timing from committed view.
 	if e.viewTiming.CommitQCFormed != nil {
