@@ -481,13 +481,13 @@ func (tx Transaction) Marshal() ([]byte, error) {
 		pbTx.To = utils.ConvertAddressToH160(*tx.To())
 	}
 	v, r, s := tx.RawSignatureValues()
-	if nil != v {
+	if v != nil {
 		pbTx.V = utils.ConvertUint256IntToH256(v)
 	}
-	if nil != r {
+	if r != nil {
 		pbTx.R = utils.ConvertUint256IntToH256(r)
 	}
-	if nil != s {
+	if s != nil {
 		pbTx.S = utils.ConvertUint256IntToH256(s)
 	}
 	return proto.Marshal(&pbTx)

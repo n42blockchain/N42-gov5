@@ -226,7 +226,7 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 	// EIP-7002/EIP-7251: verify system contracts are deployed before calling them.
 	// If code is missing at the fork activation, the block MUST be invalid.
 	for _, addr := range []types.Address{vm.WithdrawalRequestsAddress, vm.ConsolidationRequestsAddress} {
-		if len(ibs.GetCode(addr)) == 0 {
+		if ibs.GetCodeSize(addr) == 0 {
 			return nil, fmt.Errorf("missing required Prague system contract at %s", addr.Hex())
 		}
 	}
