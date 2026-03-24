@@ -95,11 +95,23 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 		return ErrKnownBlock
 	}
 
-	if hash := DeriveSha(transaction.Transactions(b.Transactions())); hash != b.TxHash() {
-		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", hash, b.TxHash())
+	blockNum := blockNumber.Uint64()
+	headerTime := uint64(0)
+	if hdr, ok := b.Header().(*block.Header); ok {
+		headerTime = hdr.Time
+	}
+	isShanghai := v.config != nil && v.config.IsShanghaiAt(blockNum, headerTime)
+
+	var txHash types.Hash
+	if isShanghai {
+		txHash = DeriveShaV2(transaction.TransactionsV2(b.Transactions()))
+	} else {
+		txHash = DeriveSha(transaction.Transactions(b.Transactions()))
+	}
+	if txHash != b.TxHash() {
+		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", txHash, b.TxHash())
 	}
 
-	blockNum := blockNumber.Uint64()
 	if blockNum == 0 {
 		return nil
 	}
@@ -130,7 +142,14 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
 	}
 
-	receiptSha := DeriveSha(receipts)
+	blockNum, _ := requireBlockNumber(iBlock, "block number unavailable")
+	isShanghai := v.config != nil && v.config.IsShanghaiAt(blockNum.Uint64(), header.Time)
+	var receiptSha types.Hash
+	if isShanghai {
+		receiptSha = DeriveShaV2(receipts)
+	} else {
+		receiptSha = DeriveSha(receipts)
+	}
 	if receiptSha != header.ReceiptHash {
 		for i, tx := range iBlock.Body().Transactions() {
 			if i < len(receipts) {

@@ -115,7 +115,10 @@ func (e SszNetworkEncoder) DecodeWithMaxLength(r io.Reader, dst fastssz.Unmarsha
 	if _, err = io.ReadFull(snappyReader, buf); err != nil {
 		return fmt.Errorf("failed to read snappy data (expected %d bytes, msgMax=%d): %w", msgLen, msgMax, err)
 	}
-	return dst.UnmarshalSSZ(buf)
+	if err := dst.UnmarshalSSZ(buf); err != nil {
+		return fmt.Errorf("SSZ unmarshal failed (type=%T, bufLen=%d): %w", dst, len(buf), err)
+	}
+	return nil
 }
 
 // ProtocolSuffix returns the protocol ID suffix for SSZ+snappy encoding.

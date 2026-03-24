@@ -468,7 +468,7 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 				if err != nil {
 					return nil, err
 				}
-				log.Info("Stored checkpoint snapshot to disk", "number", number, "hash", hash)
+				log.Debug("Stored checkpoint snapshot to disk", "number", number, "hash", hash)
 				break
 			}
 		}
