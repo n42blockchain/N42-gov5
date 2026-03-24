@@ -43,7 +43,7 @@ var (
 
 const (
 	maxBadResponses      = 5
-	pubsubQueueSize      = 600
+	pubsubQueueSize      = 1024
 	maxDialTimeout       = 10 * time.Second
 	ttfbTimeout          = 10 * time.Second
 	reconnectBootNode    = 2 * time.Minute

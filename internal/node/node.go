@@ -612,6 +612,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if h := params.GenesisHashByChainName(cfg.NodeCfg.Chain); h != nil {
 		syncOpts = append(syncOpts, n42sync.WithOverrideGenesisHash(*h))
 	}
+	if cfg.P2PCfg.TxGossipEnabled && pool != nil {
+		syncOpts = append(syncOpts, n42sync.WithTxPool(pool))
+	}
 	syncServer, err := n42sync.NewService(ctx, syncOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sync service: %w", err)

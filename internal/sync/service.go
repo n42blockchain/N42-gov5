@@ -17,6 +17,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"
@@ -57,12 +58,19 @@ var (
 type validationFn func(ctx context.Context) (pubsub.ValidationResult, error)
 
 // config holds dependencies for the sync service.
+// TxPool is the interface for adding remote transactions received via gossip.
+type TxPool interface {
+	AddRemotes(txs []*transaction.Transaction) []error
+}
+
 type config struct {
 	p2p                  p2p.P2P
 	chain                common.IBlockChain
 	initialSync          Checker
 	earliestBlock        func() uint64      // returns earliest available block, 0 = all available
 	overrideGenesisHash  *types.Hash        // if set, use this for fork digest instead of actual genesis hash
+	txPool               TxPool             // transaction pool for gossiped txs (nil disables)
+	txGossipEnabled      bool               // enable GossipSub transaction subscription
 }
 
 // Service is responsible for handling all runtime p2p related operations as the
