@@ -422,7 +422,9 @@ func (tx Transaction) Marshal() ([]byte, error) {
 
 	switch t := tx.inner.(type) {
 	case *AccessListTx:
-		pbTx.ChainID = t.ChainID.Uint64()
+		if t.ChainID != nil {
+			pbTx.ChainID = t.ChainID.Uint64()
+		}
 		pbTx.Nonce = tx.Nonce()
 		pbTx.Gas = tx.Gas()
 		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
@@ -439,7 +441,9 @@ func (tx Transaction) Marshal() ([]byte, error) {
 		if from := tx.From(); from != nil { pbTx.From = utils.ConvertAddressToH160(*from) }
 		pbTx.Sign = t.Sign
 	case *DynamicFeeTx:
-		pbTx.ChainID = t.ChainID.Uint64()
+		if t.ChainID != nil {
+			pbTx.ChainID = t.ChainID.Uint64()
+		}
 		pbTx.Nonce = tx.Nonce()
 		pbTx.Gas = tx.Gas()
 		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
@@ -450,7 +454,9 @@ func (tx Transaction) Marshal() ([]byte, error) {
 		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
 		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
 	case *BlobTx:
-		pbTx.ChainID = t.ChainID.Uint64()
+		if t.ChainID != nil {
+			pbTx.ChainID = t.ChainID.Uint64()
+		}
 		pbTx.Nonce = tx.Nonce()
 		pbTx.Gas = tx.Gas()
 		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
@@ -464,7 +470,9 @@ func (tx Transaction) Marshal() ([]byte, error) {
 		pbTx.BlobFeeCap = convertUint256IntToH256IfSet(t.BlobFeeCap)
 		pbTx.BlobHashes = utils.ConvertHashesToH256(t.BlobHashes)
 	case *PostQuantumTx:
-		pbTx.ChainID = t.ChainID.Uint64()
+		if t.ChainID != nil {
+			pbTx.ChainID = t.ChainID.Uint64()
+		}
 		pbTx.Nonce = tx.Nonce()
 		pbTx.Gas = tx.Gas()
 		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())

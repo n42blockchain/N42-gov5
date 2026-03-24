@@ -142,7 +142,10 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
 	}
 
-	blockNum, _ := requireBlockNumber(iBlock, "block number unavailable")
+	blockNum, err := requireBlockNumber(iBlock, "block number unavailable")
+	if err != nil {
+		return err
+	}
 	isShanghai := v.config != nil && v.config.IsShanghaiAt(blockNum.Uint64(), header.Time)
 	var receiptSha types.Hash
 	if isShanghai {
