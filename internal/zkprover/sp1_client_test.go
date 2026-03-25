@@ -10,7 +10,7 @@ import (
 
 func TestSP1ClientSimulationSmoke(t *testing.T) {
 	// Create SP1 client in simulation mode (no network endpoint)
-	client := NewSP1ProverClient("")
+	client := NewSP1ProverClient("", "", "")
 	defer client.Close()
 
 	// Build a minimal guest input for smoke testing.
@@ -65,7 +65,7 @@ func TestSP1ClientSimulationSmoke(t *testing.T) {
 }
 
 func TestSP1ClientJobLifecycle(t *testing.T) {
-	client := NewSP1ProverClient("")
+	client := NewSP1ProverClient("", "", "")
 	defer client.Close()
 
 	ctx := context.Background()
@@ -93,7 +93,7 @@ func TestSP1ClientJobLifecycle(t *testing.T) {
 }
 
 func TestSP1ClientUnknownJob(t *testing.T) {
-	client := NewSP1ProverClient("")
+	client := NewSP1ProverClient("", "", "")
 	defer client.Close()
 
 	_, err := client.Status(context.Background(), "nonexistent-job")
@@ -103,12 +103,12 @@ func TestSP1ClientUnknownJob(t *testing.T) {
 }
 
 func TestSP1ClientModeString(t *testing.T) {
-	sim := NewSP1ProverClient("")
+	sim := NewSP1ProverClient("", "", "")
 	if sim.modeString() != "simulation" {
 		t.Errorf("expected simulation mode, got %s", sim.modeString())
 	}
 
-	net := NewSP1ProverClient("http://sp1.example.com:50051")
+	net := NewSP1ProverClient("http://sp1.example.com:50051", "", "")
 	if net.modeString() != "network" {
 		t.Errorf("expected network mode, got %s", net.modeString())
 	}
