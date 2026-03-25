@@ -343,6 +343,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		engine = apoa.New(cfg.ChainCfg.Clique, chainKv)
 	case params.AposConsensu:
 		engine = apos.New(cfg.ChainCfg.Apos, chainKv, cfg.ChainCfg)
+		apos.SetHardForkAllocDir(cfg.NodeCfg.DataDir)
 	case params.HotStuffConsensus:
 		engine = hotstuff.New(cfg.ChainCfg.HotStuff, cfg.ChainCfg)
 	case params.Faker:
