@@ -6,6 +6,7 @@ package apos
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/holiman/uint256"
@@ -22,28 +23,63 @@ type HardForkAllocation struct {
 	Amount  string `json:"amount"` // hex uint256 (e.g. "0x9B18AB5DF7180B6B8000000")
 }
 
-// hardforkAllocConfig is loaded once from the external JSON file.
 var (
-	hardforkAllocOnce   sync.Once
-	hardforkAllocations []HardForkAllocation
+	hardforkAllocOnce sync.Once
+	hardforkAllocMap  map[uint64][]HardForkAllocation // O(1) lookup by block
 )
 
 const hardforkAllocFile = "hardfork_alloc.json"
 
-// loadHardForkAllocations reads the allocation config from hardfork_alloc.json.
-// The file is optional — if not found, no allocations are applied.
+// SetHardForkAllocDir allows setting a custom search directory for the config
+// file (e.g. the node's DataDir). If not called, CWD is used.
+var hardforkAllocDir string
+
+func SetHardForkAllocDir(dir string) { hardforkAllocDir = dir }
+
 func loadHardForkAllocations() {
-	data, err := os.ReadFile(hardforkAllocFile)
+	hardforkAllocMap = make(map[uint64][]HardForkAllocation)
+
+	// Search in configured dir first, then CWD.
+	paths := []string{hardforkAllocFile}
+	if hardforkAllocDir != "" {
+		paths = append([]string{filepath.Join(hardforkAllocDir, hardforkAllocFile)}, paths...)
+	}
+
+	var data []byte
+	var err error
+	for _, p := range paths {
+		data, err = os.ReadFile(p)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
-		// File not found is normal (no hard-fork allocations configured).
+		if os.IsNotExist(err) {
+			log.Debug("No hardfork_alloc.json found (optional)")
+		} else {
+			log.Error("Failed to read hardfork_alloc.json", "err", err)
+		}
 		return
 	}
-	if err := json.Unmarshal(data, &hardforkAllocations); err != nil {
+
+	var raw []HardForkAllocation
+	if err := json.Unmarshal(data, &raw); err != nil {
 		log.Error("Failed to parse hardfork_alloc.json", "err", err)
 		return
 	}
-	if len(hardforkAllocations) > 0 {
-		log.Info("Loaded hard-fork allocations", "count", len(hardforkAllocations))
+
+	// Validate hex amounts eagerly and index by block number.
+	for _, a := range raw {
+		if _, err := uint256.FromHex(a.Amount); err != nil {
+			log.Error("Invalid hex amount in hardfork_alloc.json",
+				"block", a.Block, "address", a.Address, "amount", a.Amount, "err", err)
+			continue
+		}
+		hardforkAllocMap[a.Block] = append(hardforkAllocMap[a.Block], a)
+	}
+
+	if len(hardforkAllocMap) > 0 {
+		log.Info("Loaded hard-fork allocations", "entries", len(raw), "blocks", len(hardforkAllocMap))
 	}
 }
 
@@ -52,20 +88,19 @@ func loadHardForkAllocations() {
 func applyHardForkAllocations(blockNumber uint64, ibs *state.IntraBlockState) {
 	hardforkAllocOnce.Do(loadHardForkAllocations)
 
-	for _, alloc := range hardforkAllocations {
-		if alloc.Block != blockNumber {
-			continue
-		}
+	allocs, ok := hardforkAllocMap[blockNumber]
+	if !ok {
+		return // O(1) — no allocations for this block
+	}
+
+	for _, alloc := range allocs {
 		addr := types.HexToAddress(alloc.Address)
-		value, err := uint256.FromHex(alloc.Amount)
-		if err != nil {
-			log.Error("Invalid hard-fork allocation amount", "address", alloc.Address, "amount", alloc.Amount, "err", err)
-			continue
-		}
+		value, _ := uint256.FromHex(alloc.Amount) // validated at load time
 		if !ibs.Exist(addr) {
 			ibs.CreateAccount(addr, false)
 		}
 		ibs.AddBalance(addr, value)
-		log.Info("Hard-fork allocation applied", "block", blockNumber, "address", addr, "amount", value.ToBig())
+		log.Info("Hard-fork allocation applied",
+			"block", blockNumber, "address", addr, "amount", value.ToBig())
 	}
 }
