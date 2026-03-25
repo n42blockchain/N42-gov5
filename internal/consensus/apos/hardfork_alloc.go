@@ -4,9 +4,11 @@
 package apos
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/holiman/uint256"
@@ -23,9 +25,15 @@ type HardForkAllocation struct {
 	Amount  string `json:"amount"` // hex uint256 (e.g. "0x9B18AB5DF7180B6B8000000")
 }
 
+// parsedAllocation holds a validated, pre-parsed allocation ready to apply.
+type parsedAllocation struct {
+	addr  types.Address
+	value *uint256.Int
+}
+
 var (
 	hardforkAllocOnce sync.Once
-	hardforkAllocMap  map[uint64][]HardForkAllocation // O(1) lookup by block
+	hardforkAllocMap  map[uint64][]parsedAllocation // O(1) lookup by block
 )
 
 const hardforkAllocFile = "hardfork_alloc.json"
@@ -36,8 +44,19 @@ var hardforkAllocDir string
 
 func SetHardForkAllocDir(dir string) { hardforkAllocDir = dir }
 
+// validateAddress checks that the address is a valid 20-byte hex string.
+func validateAddress(addr string) bool {
+	s := strings.TrimPrefix(addr, "0x")
+	s = strings.TrimPrefix(s, "0X")
+	if len(s) != 40 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
 func loadHardForkAllocations() {
-	hardforkAllocMap = make(map[uint64][]HardForkAllocation)
+	hardforkAllocMap = make(map[uint64][]parsedAllocation)
 
 	// Search in configured dir first, then CWD.
 	paths := []string{hardforkAllocFile}
@@ -68,14 +87,36 @@ func loadHardForkAllocations() {
 		return
 	}
 
-	// Validate hex amounts eagerly and index by block number.
+	// Validate, parse, dedup-warn, and index by block number.
+	seen := make(map[string]bool) // "block:address" dedup key
 	for _, a := range raw {
-		if _, err := uint256.FromHex(a.Amount); err != nil {
+		// Validate address format (must be exactly 20 bytes / 40 hex chars).
+		if !validateAddress(a.Address) {
+			log.Error("Invalid address in hardfork_alloc.json (must be 40 hex chars)",
+				"block", a.Block, "address", a.Address)
+			continue
+		}
+		// Parse and validate amount.
+		value, err := uint256.FromHex(a.Amount)
+		if err != nil {
 			log.Error("Invalid hex amount in hardfork_alloc.json",
 				"block", a.Block, "address", a.Address, "amount", a.Amount, "err", err)
 			continue
 		}
-		hardforkAllocMap[a.Block] = append(hardforkAllocMap[a.Block], a)
+		// Warn on duplicates (same block+address).
+		key := strings.ToLower(a.Address)
+		dedupKey := string(rune(a.Block)) + ":" + key
+		if seen[dedupKey] {
+			log.Warn("Duplicate hardfork allocation (will apply both)",
+				"block", a.Block, "address", a.Address)
+		}
+		seen[dedupKey] = true
+
+		addr := types.HexToAddress(a.Address)
+		hardforkAllocMap[a.Block] = append(hardforkAllocMap[a.Block], parsedAllocation{
+			addr:  addr,
+			value: value,
+		})
 	}
 
 	if len(hardforkAllocMap) > 0 {
@@ -90,17 +131,15 @@ func applyHardForkAllocations(blockNumber uint64, ibs *state.IntraBlockState) {
 
 	allocs, ok := hardforkAllocMap[blockNumber]
 	if !ok {
-		return // O(1) — no allocations for this block
+		return
 	}
 
-	for _, alloc := range allocs {
-		addr := types.HexToAddress(alloc.Address)
-		value, _ := uint256.FromHex(alloc.Amount) // validated at load time
-		if !ibs.Exist(addr) {
-			ibs.CreateAccount(addr, false)
+	for _, a := range allocs {
+		if !ibs.Exist(a.addr) {
+			ibs.CreateAccount(a.addr, false)
 		}
-		ibs.AddBalance(addr, value)
+		ibs.AddBalance(a.addr, a.value)
 		log.Info("Hard-fork allocation applied",
-			"block", blockNumber, "address", addr, "amount", value.ToBig())
+			"block", blockNumber, "address", a.addr, "amount", a.value.ToBig())
 	}
 }
