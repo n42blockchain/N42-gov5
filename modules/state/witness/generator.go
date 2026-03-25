@@ -46,6 +46,14 @@ func NewGenerator(c *commitment.JMTCommitment) (*Generator, error) {
 // parentRoot is the state root before block execution (used as anchor).
 // tracer contains the set of accessed accounts, storage slots, and codes.
 // codes maps codeHash to bytecode for all contracts whose code was accessed.
+// SetAncestorHashes populates the witness with recent block hashes for BLOCKHASH.
+func (w *BlockWitness) SetAncestorHashes(hashes []types.Hash) {
+	if len(hashes) > 256 {
+		hashes = hashes[:256]
+	}
+	w.AncestorHashes = hashes
+}
+
 func (g *Generator) Generate(parentRoot types.Hash, tracer *TracingReader, codes map[types.Hash][]byte) (*BlockWitness, error) {
 	if tracer == nil {
 		return nil, errors.New("witness: Generate called with nil tracer")

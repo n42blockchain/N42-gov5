@@ -112,10 +112,23 @@ func Execute(input *GuestInput) *GuestOutput {
 		}
 	}
 
-	// Build a GetHash function that returns the parent block's hash.
-	// In the zkVM guest context, we only have access to the parent header,
-	// so BLOCKHASH is limited to the parent block only.
+	// Build a GetHash function from the witness ancestor hashes.
+	// AncestorHashes[0] = parent hash, [1] = grandparent, etc.
+	// Falls back to parent header hash if ancestors are not populated.
+	ancestorHashes := bw.AncestorHashes
+	var parentNum uint64
+	if parentHeader != nil && parentHeader.Number != nil {
+		parentNum = parentHeader.Number.Uint64()
+	}
 	getHash := func(n uint64) types.Hash {
+		if parentNum == 0 || n > parentNum || parentNum-n > 256 {
+			return types.Hash{}
+		}
+		idx := parentNum - n // 0 = parent, 1 = grandparent, ...
+		if int(idx) < len(ancestorHashes) {
+			return ancestorHashes[idx]
+		}
+		// Fallback for legacy witnesses without ancestor hashes.
 		if parentHeader != nil && parentHeader.Number != nil && parentHeader.Number.Uint64() == n {
 			return parentHeader.Hash()
 		}

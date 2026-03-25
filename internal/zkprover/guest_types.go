@@ -49,6 +49,7 @@ type ForkConfig struct {
 	IsEip1559FeeCollector bool
 	IsParlia              bool
 	IsAura                bool
+	IsPQPrecompiles       bool // Post-quantum precompiles (Falcon, Dilithium)
 }
 
 // GuestInput is the input data for the zkVM guest program.
@@ -169,6 +170,9 @@ func EncodeGuestInput(input *GuestInput) ([]byte, error) {
 	if input.ForkConfig.IsAura {
 		flags |= 1 << 21
 	}
+	if input.ForkConfig.IsPQPrecompiles {
+		flags |= 1 << 22
+	}
 	fb := make([]byte, 4)
 	binary.LittleEndian.PutUint32(fb, flags)
 	buf = append(buf, fb...)
@@ -245,6 +249,7 @@ func DecodeGuestInput(data []byte) (*GuestInput, error) {
 		IsEip1559FeeCollector: flags&(1<<19) != 0,
 		IsParlia:              flags&(1<<20) != 0,
 		IsAura:                flags&(1<<21) != 0,
+		IsPQPrecompiles:       flags&(1<<22) != 0,
 	}
 
 	return input, nil
