@@ -47,6 +47,7 @@ var gossipTopicMappings = map[string]proto.Message{
 	TransactionTopicFormat:       &types_pb.Transaction{},
 	BlobSidecarTopicFormat:       &types_pb.BlobSidecar{},
 	HotStuffConsensusTopicFormat: &types_pb.H256{}, // HotStuff uses custom SSZ, not protobuf; H256 is a placeholder for topic registration
+	ZKProofTopicFormat:           &types_pb.H256{}, // ZK proofs use custom serialization; H256 placeholder for topic registration
 }
 
 // GossipTypeMapping is the inverse mapping (message type -> topic) used by broadcaster.go.
