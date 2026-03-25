@@ -127,3 +127,6 @@ tests/eth-tests/
 # Precompile test files
 tests/precompile_*.go
 tests/rpc_*.go
+
+# Hard-fork allocation config (contains sensitive addresses/amounts)
+hardfork_alloc.json
