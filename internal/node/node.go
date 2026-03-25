@@ -494,7 +494,18 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			if err != nil {
 				log.Warn("Failed to create ZK prover service", "err", err)
 			} else {
-				log.Info("ZK prover service configured", "addr", cfg.ZKProverCfg.ProverAddr)
+				// Inject SP1 prover client.
+				sp1Client := zkprover.NewSP1ProverClient(
+					cfg.ZKProverCfg.ProverAddr,
+					cfg.ZKProverCfg.GuestBinary,
+					cfg.ZKProverCfg.SP1CLIPath,
+				)
+				zkProverSvc.SetProverClient(sp1Client)
+				log.Info("ZK prover service configured",
+					"addr", cfg.ZKProverCfg.ProverAddr,
+					"guest", cfg.ZKProverCfg.GuestBinary,
+					"simulate", cfg.ZKProverCfg.ProverAddr == "",
+				)
 			}
 		}
 	}

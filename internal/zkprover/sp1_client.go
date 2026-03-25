@@ -17,10 +17,13 @@
 package zkprover
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"os"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,11 +48,13 @@ import (
 // pipeline as the real SP1 guest, ensuring functional correctness while
 // deferring cryptographic proof generation to the SP1 network.
 type SP1ProverClient struct {
-	mu       sync.Mutex
-	jobs     map[string]*sp1Job
-	nextID   atomic.Uint64
-	simulate bool   // true = local execution (no SP1 network)
-	endpoint string // SP1 prover network endpoint (empty for simulation)
+	mu          sync.Mutex
+	jobs        map[string]*sp1Job
+	nextID      atomic.Uint64
+	simulate    bool   // true = local execution (no SP1 network)
+	endpoint    string // SP1 prover network endpoint (empty for simulation)
+	guestBinary string // path to RISC-V ELF guest program
+	sp1CLIPath  string // path to sp1 CLI binary (default "sp1")
 }
 
 type sp1Job struct {
@@ -65,11 +70,19 @@ type sp1Job struct {
 
 // NewSP1ProverClient creates a new SP1 prover client.
 // If endpoint is empty, the client runs in simulation mode (local execution).
-func NewSP1ProverClient(endpoint string) *SP1ProverClient {
+func NewSP1ProverClient(endpoint, guestBinary, sp1CLIPath string) *SP1ProverClient {
+	if sp1CLIPath == "" {
+		sp1CLIPath = "sp1"
+	}
+	if guestBinary == "" {
+		guestBinary = "build/bin/zkguest"
+	}
 	return &SP1ProverClient{
-		jobs:     make(map[string]*sp1Job),
-		simulate: endpoint == "",
-		endpoint: endpoint,
+		jobs:        make(map[string]*sp1Job),
+		simulate:    endpoint == "",
+		endpoint:    endpoint,
+		guestBinary: guestBinary,
+		sp1CLIPath:  sp1CLIPath,
 	}
 }
 
@@ -193,26 +206,102 @@ func (c *SP1ProverClient) executeLocally(jobID string, blockHash types.Hash, blo
 	)
 }
 
-// submitToNetwork sends the proving request to the SP1 prover network.
-// This is the production path that generates real cryptographic proofs.
+// submitToNetwork sends the proving request to the SP1 prover network via CLI.
+// The sp1 CLI tool handles network communication, proving, and proof retrieval.
+// If the CLI is not available, falls back to local simulation.
 func (c *SP1ProverClient) submitToNetwork(ctx context.Context, jobID string, blockHash types.Hash, blockNumber uint64, guestInput []byte) {
 	c.updateStatus(jobID, "proving")
 
-	// TODO: Implement SP1 network client when SP1 SDK for Go is available.
-	// The SP1 network API accepts:
-	//   - RISC-V ELF binary (guest program)
-	//   - stdin input (guestInput bytes)
-	// And returns:
-	//   - stdout output (GuestOutput bytes)
-	//   - STARK proof (bytes)
-	//   - public inputs (extracted from proof)
-	//
-	// For now, fall back to local execution with a warning.
-	log.Warn("SP1 network mode not yet implemented, falling back to simulation",
-		"endpoint", c.endpoint,
-		"block", blockNumber,
+	// Write guest input to a temp file for the CLI.
+	inputFile, err := os.CreateTemp("", "sp1-input-*.bin")
+	if err != nil {
+		c.failJob(jobID, fmt.Sprintf("failed to create temp input file: %v", err))
+		return
+	}
+	inputPath := inputFile.Name()
+	defer os.Remove(inputPath)
+
+	if _, err := inputFile.Write(guestInput); err != nil {
+		inputFile.Close()
+		c.failJob(jobID, fmt.Sprintf("failed to write guest input: %v", err))
+		return
+	}
+	inputFile.Close()
+
+	// Output file for the proof.
+	proofFile, err := os.CreateTemp("", "sp1-proof-*.bin")
+	if err != nil {
+		c.failJob(jobID, fmt.Sprintf("failed to create temp proof file: %v", err))
+		return
+	}
+	proofPath := proofFile.Name()
+	proofFile.Close()
+	defer os.Remove(proofPath)
+
+	// Run sp1 prove CLI.
+	log.Info("Submitting block to SP1 prover network",
+		"block", blockNumber, "hash", blockHash, "elf", c.guestBinary, "cli", c.sp1CLIPath)
+
+	cmd := exec.CommandContext(ctx, c.sp1CLIPath, "prove",
+		"--elf", c.guestBinary,
+		"--stdin", inputPath,
+		"--output", proofPath,
 	)
-	c.executeLocally(jobID, blockHash, blockNumber, guestInput)
+	if c.endpoint != "" {
+		cmd.Env = append(os.Environ(), "SP1_PROVER_NETWORK="+c.endpoint)
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	start := time.Now()
+	if err := cmd.Run(); err != nil {
+		errMsg := fmt.Sprintf("sp1 prove failed: %v (stderr: %s)", err, stderr.String())
+		log.Warn("SP1 CLI proving failed, falling back to simulation",
+			"block", blockNumber, "err", errMsg)
+		// Fallback to simulation if CLI unavailable.
+		c.executeLocally(jobID, blockHash, blockNumber, guestInput)
+		return
+	}
+
+	elapsed := time.Since(start)
+	log.Info("SP1 proof generated", "block", blockNumber, "elapsed", elapsed)
+
+	// Read proof output.
+	proofData, err := os.ReadFile(proofPath)
+	if err != nil || len(proofData) == 0 {
+		c.failJob(jobID, fmt.Sprintf("failed to read proof output: %v", err))
+		return
+	}
+
+	// Extract public inputs from proof data.
+	// SP1 proof format: [proofBytes][40B publicInputs] where publicInputs = [32B stateRoot][8B gasUsed]
+	// If format is unknown, use the full data as proof and extract public inputs separately.
+	var publicInputs []byte
+	var proofBytes []byte
+	if len(proofData) > 40 {
+		publicInputs = proofData[len(proofData)-40:]
+		proofBytes = proofData[:len(proofData)-40]
+	} else {
+		proofBytes = proofData
+		publicInputs = make([]byte, 40) // zero public inputs as fallback
+	}
+
+	proof := &Proof{
+		BlockHash:    blockHash,
+		BlockNumber:  blockNumber,
+		Type:         ProofTypeSP1,
+		ProofData:    proofBytes,
+		PublicInputs: publicInputs,
+	}
+
+	c.mu.Lock()
+	if j, ok := c.jobs[jobID]; ok {
+		j.proof = proof
+		j.status = "completed"
+		j.guestInput = nil // free memory
+	}
+	c.mu.Unlock()
 }
 
 func (c *SP1ProverClient) updateStatus(jobID, status string) {

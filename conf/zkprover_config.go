@@ -45,6 +45,14 @@ type ZKProverCfg struct {
 	// RequireProof when true, rejects blocks without valid ZK proofs.
 	// When false (default), blocks without proofs are processed normally via EVM execution.
 	RequireProof bool `json:"require_proof" yaml:"require_proof"`
+
+	// SP1 prover network configuration.
+	// SP1CLIPath is the path to the sp1 CLI binary (default: "sp1" in PATH).
+	SP1CLIPath string `json:"sp1_cli_path" yaml:"sp1_cli_path"`
+	// SP1APIEndpoint is the Succinct Prover Network REST API endpoint.
+	SP1APIEndpoint string `json:"sp1_api_endpoint" yaml:"sp1_api_endpoint"`
+	// SP1APIKey is the API key for Succinct Network authentication.
+	SP1APIKey string `json:"sp1_api_key" yaml:"sp1_api_key"`
 }
 
 // Validate checks that the ZKProverCfg fields are consistent.
@@ -83,5 +91,6 @@ func DefaultZKProverCfg() ZKProverCfg {
 		GuestBinary:   "build/bin/zkguest",
 		VerifyOnly:    false,
 		RequireProof:  false,
+		SP1CLIPath:    "sp1",
 	}
 }
