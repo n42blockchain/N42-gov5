@@ -713,6 +713,10 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Apply hard-fork balance injections from external config (not in git).
+	applyHardForkAllocations(header.Number64().Uint64(), state)
+
 	rawHeader.Root = state.IntermediateRoot()
 	rawHeader.LtHashRoot = state.LtHashRoot()
 	// Store the state root before finalization for verification purposes
