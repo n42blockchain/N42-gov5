@@ -12,6 +12,7 @@ const (
 	GossipBlobSidecarMessage       = "blob_sidecar"
 	GossipDataColumnMessage        = "data_column_sidecar"
 	GossipHotStuffConsensusMessage = "hotstuff_consensus"
+	GossipZKProofMessage           = "zk_proof"
 
 	// Topic format strings combining the protocol prefix with message type.
 	BlockTopicFormat              = GossipProtocolAndDigest + GossipBlockMessage
@@ -20,6 +21,7 @@ const (
 	BlobSidecarTopicFormat        = GossipProtocolAndDigest + GossipBlobSidecarMessage
 	DataColumnTopicFormat         = GossipProtocolAndDigest + GossipDataColumnMessage
 	HotStuffConsensusTopicFormat  = GossipProtocolAndDigest + GossipHotStuffConsensusMessage
+	ZKProofTopicFormat            = GossipProtocolAndDigest + GossipZKProofMessage
 
 	// Message relay topics (8 shards, Waku-style)
 	GossipMessagePrefix = "message/shard/"
