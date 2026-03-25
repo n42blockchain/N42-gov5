@@ -157,7 +157,7 @@ func (sdb *IntraBlockState) BeginWriteCodes() {
 func (sdb *IntraBlockState) CodeHashes() map[types.Hash][]byte {
 	for addr, stateObject := range sdb.stateObjects {
 		_, isDirty := sdb.stateObjectsDirty[addr]
-		if isDirty && !stateObject.selfdestructed && stateObject.code != nil && stateObject.dirtyCode {
+		if isDirty && (stateObject.created || !stateObject.selfdestructed) && stateObject.code != nil && stateObject.dirtyCode {
 			h := types.BytesToHash(stateObject.CodeHash())
 			sdb.codeMap[h] = stateObject.code
 		}
@@ -779,7 +779,7 @@ func updateAccount(EIP161Enabled bool, isAura bool, stateWriter StateWriter, add
 	}
 	// A selfdestructed account must never be written back in the same tx finalization
 	// pass, even if it was also created in this transaction.
-	if isDirty && !stateObject.selfdestructed && !emptyRemoval {
+	if isDirty && (stateObject.created || !stateObject.selfdestructed) && !emptyRemoval {
 		stateObject.deleted = false
 		// Write any contract code associated with the state object
 		if stateObject.code != nil && stateObject.dirtyCode {
@@ -807,7 +807,7 @@ func printAccount(addr types.Address, stateObject *stateObject, isDirty bool) {
 	if stateObject.selfdestructed || (isDirty && emptyRemoval) {
 		fmt.Printf("delete: %x\n", addr)
 	}
-	if isDirty && !stateObject.selfdestructed && !emptyRemoval {
+	if isDirty && (stateObject.created || !stateObject.selfdestructed) && !emptyRemoval {
 		// Write any contract code associated with the state object
 		if stateObject.code != nil && stateObject.dirtyCode {
 			fmt.Printf("UpdateCode: %x,%x\n", addr, stateObject.CodeHash())
