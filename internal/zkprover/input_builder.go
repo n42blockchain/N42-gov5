@@ -101,6 +101,7 @@ func BuildGuestInput(
 			IsEip1559FeeCollector: chainConfig.IsEip1559FeeCollector(blockNum),
 			IsParlia:              chainConfig.Parlia != nil,
 			IsAura:                chainConfig.Aura != nil,
+			IsPQPrecompiles:       chainConfig.IsPQPrecompiles(blockTime),
 		},
 	}
 

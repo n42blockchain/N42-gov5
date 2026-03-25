@@ -52,6 +52,11 @@ type BlockWitness struct {
 	// Codes contains the contract bytecode for all code accesses during
 	// block execution, keyed by code hash.
 	Codes []*state.HashCode `json:"codes"`
+
+	// AncestorHashes contains up to 256 recent block hashes for the
+	// BLOCKHASH opcode. Index 0 = parent, index 1 = grandparent, etc.
+	// In the guest (stateless) context, these are the only block hashes available.
+	AncestorHashes []types.Hash `json:"ancestor_hashes,omitempty"`
 }
 
 // Encode serializes a BlockWitness into bytes using JSON encoding.

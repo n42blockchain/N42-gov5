@@ -19,9 +19,13 @@
 package zkverifier
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -63,7 +67,9 @@ var (
 )
 
 // Verifier provides ZK proof verification for block state transitions.
-type Verifier struct{}
+type Verifier struct {
+	sp1CLIPath string // path to sp1 CLI for cryptographic verification
+}
 
 // NewVerifier creates a new ZK proof verifier.
 func NewVerifier() *Verifier {
@@ -71,9 +77,15 @@ func NewVerifier() *Verifier {
 }
 
 // CryptographicReady reports whether a real cryptographic verifier backend is
-// wired in. Before that point, this package only performs parallel side-checks.
+// wired in. When SP1CLIPath is set and the sp1 CLI is available, cryptographic
+// verification is active.
 func (v *Verifier) CryptographicReady() bool {
-	return false
+	return v.sp1CLIPath != ""
+}
+
+// SetSP1CLIPath configures the path to the sp1 CLI for proof verification.
+func (v *Verifier) SetSP1CLIPath(path string) {
+	v.sp1CLIPath = path
 }
 
 // Verify validates a ZK proof against expected block execution results.
@@ -197,14 +209,47 @@ func (v *Verifier) VerifySP1(proof *zkprover.Proof, expectedStateRoot types.Hash
 			ErrPublicInputsMismatch, expectedGasUsed, provenGasUsed)
 	}
 
-	// TODO: When SP1 Go SDK is available, call sp1.Verify(proof.ProofData, vkey, publicInputs)
-	// For now, public input validation provides structural correctness.
-	sp1StubOnce.Do(func() {
-		log.Info("SP1 proof verification active (public input validation mode)",
-			"note", "full cryptographic verification requires SP1 SDK integration")
-	})
+	// Cryptographic verification via sp1 CLI if available.
+	if v.sp1CLIPath != "" {
+		if err := v.verifySP1Crypto(proof); err != nil {
+			return fmt.Errorf("SP1 cryptographic verification failed: %w", err)
+		}
+	} else {
+		sp1StubOnce.Do(func() {
+			log.Info("SP1 proof verification active (public input validation mode)",
+				"note", "set SP1CLIPath for full cryptographic verification")
+		})
+	}
 
 	return nil
 }
 
 var sp1StubOnce sync.Once
+
+// verifySP1Crypto calls the sp1 CLI to cryptographically verify a proof.
+func (v *Verifier) verifySP1Crypto(proof *zkprover.Proof) error {
+	proofFile, err := os.CreateTemp("", "sp1-verify-*.bin")
+	if err != nil {
+		return fmt.Errorf("create temp proof file: %w", err)
+	}
+	proofPath := proofFile.Name()
+	defer os.Remove(proofPath)
+
+	if _, err := proofFile.Write(proof.ProofData); err != nil {
+		proofFile.Close()
+		return fmt.Errorf("write proof data: %w", err)
+	}
+	proofFile.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, v.sp1CLIPath, "verify", "--proof", proofPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("sp1 verify: %v (stderr: %s)", err, stderr.String())
+	}
+	return nil
+}

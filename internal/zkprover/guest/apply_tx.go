@@ -211,6 +211,9 @@ func forkToChainConfig(f ForkConfig, chainID uint64, blockNum *big.Int, blockTim
 	if f.IsEip1559FeeCollector {
 		cfg.Eip1559FeeCollectorTransition = blockNum
 	}
+	if f.IsPQPrecompiles {
+		cfg.PQPrecompilesTime = new(big.Int).SetUint64(blockTime)
+	}
 	return cfg
 }
 
