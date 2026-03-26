@@ -60,9 +60,8 @@ type HyperlaneDispatcher interface {
 type ZKRouter struct {
 	mu sync.RWMutex
 
-	// ZK path components (N42↔ETH direct bridge)
-	relayer     *Relayer
-	daPublisher *DAPublisher
+	// ZK path: state root publisher (N42→ETH settlement)
+	publisher   *BridgePublisher
 	stateProver StateProverFunc
 
 	// Hyperlane path (multi-chain)
@@ -104,16 +103,14 @@ type ZKRouterConfig struct {
 
 // NewZKRouter creates a new multi-chain router.
 func NewZKRouter(
-	relayer *Relayer,
-	daPublisher *DAPublisher,
+	publisher *BridgePublisher,
 	hyperlane HyperlaneDispatcher,
 	ethLC *EthLightClient,
 	stateProver StateProverFunc,
 	cfg *ZKRouterConfig,
 ) *ZKRouter {
 	r := &ZKRouter{
-		relayer:        relayer,
-		daPublisher:    daPublisher,
+		publisher:      publisher,
 		hyperlane:      hyperlane,
 		ethLightClient: ethLC,
 		stateProver:    stateProver,
@@ -248,11 +245,8 @@ func (r *ZKRouter) LatestVerifiedBlock(destChain uint32) (uint64, error) {
 
 	switch route.RouteType {
 	case RouteZK:
-		if r.relayer != nil {
-			return r.relayer.LastProvenBlock(), nil
-		}
-		if r.daPublisher != nil {
-			return r.daPublisher.LastPublished(), nil
+		if r.publisher != nil {
+			return r.publisher.LastProvenBlock(), nil
 		}
 		return 0, nil
 	case RouteHyperlane:

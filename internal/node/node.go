@@ -187,9 +187,9 @@ type Node struct {
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
 
 	// Cross-chain bridge (ZK proof + Hyperlane multi-chain)
-	bridgeRouter  *bridge.ZKRouter   // Multi-chain bridge router (nil if disabled)
-	bridgeRelayer *bridge.Relayer    // N42→ETH ZK proof relayer (nil if disabled)
-	bridgeCancel  context.CancelFunc // Cancels bridge goroutines on shutdown
+	bridgeRouter    *bridge.ZKRouter        // Multi-chain bridge router (nil if disabled)
+	bridgePublisher *bridge.BridgePublisher // N42→ETH state root publisher (nil if disabled)
+	bridgeCancel    context.CancelFunc      // Cancels bridge goroutines on shutdown
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -1280,26 +1280,16 @@ func (n *Node) Start() error {
 			}
 		}
 
-		// Relayer
-		relayerCfg := &bridge.RelayerConfig{
-			BatchSize: bcfg.RelayerBatchSize, PollInterval: bcfg.RelayerPollInterval,
-			StartBlock: bcfg.RelayerStartBlock,
+		// Bridge Publisher (unified N42→ETH state root anchoring)
+		pubCfg := &bridge.PublisherConfig{
+			BatchSize:    bcfg.PublisherBatchSize,
+			PollInterval: bcfg.PublisherPollInterval,
+			StartBlock:   bcfg.PublisherStartBlock,
 		}
-		n.bridgeRelayer = bridge.NewRelayer(n.blockChain, headerProver, nil, submitter, relayerCfg)
+		n.bridgePublisher = bridge.NewBridgePublisher(n.blockChain, nil, headerProver, submitter, pubCfg)
 		go func() {
-			if err := n.bridgeRelayer.Run(bridgeCtx); err != nil && err != context.Canceled {
-				log.Warn("Bridge relayer stopped", "err", err)
-			}
-		}()
-
-		// DA Publisher
-		daCfg := &bridge.DAPublisherConfig{
-			PublishInterval: bcfg.DAPublishInterval, PollInterval: bcfg.DAPollInterval,
-		}
-		daPublisher := bridge.NewDAPublisher(n.blockChain, headerProver, nil, submitter, daCfg)
-		go func() {
-			if err := daPublisher.Run(bridgeCtx); err != nil && err != context.Canceled {
-				log.Warn("DA publisher stopped", "err", err)
+			if err := n.bridgePublisher.Run(bridgeCtx); err != nil && err != context.Canceled {
+				log.Warn("Bridge publisher stopped", "err", err)
 			}
 		}()
 
@@ -1319,7 +1309,7 @@ func (n *Node) Start() error {
 
 		// ZKRouter
 		n.bridgeRouter = bridge.NewZKRouter(
-			n.bridgeRelayer, daPublisher, hyperlane, nil, nil, nil)
+			n.bridgePublisher, hyperlane, nil, nil, nil)
 
 		// Register bridge RPC namespace
 		bridgeAPI := api.NewBridgeAPI(n.bridgeRouter)
@@ -1661,7 +1651,7 @@ func (n *Node) stopServices() []error {
 				n.bridgeCancel()
 			}
 			n.bridgeRouter = nil
-			n.bridgeRelayer = nil
+			n.bridgePublisher = nil
 			return nil
 		}},
 		// 2e. Distributed infrastructure

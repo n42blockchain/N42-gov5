@@ -6,18 +6,13 @@ package conf
 import "time"
 
 // BridgeCfg holds the cross-chain bridge configuration.
-// Mirrors internal/bridge.Config but lives in conf/ to avoid import cycles.
 type BridgeCfg struct {
 	Enabled bool `json:"enabled" yaml:"enabled"`
 
-	// Relayer (N42→ETH ZK proof submission)
-	RelayerBatchSize    uint64        `json:"relayerBatchSize" yaml:"relayerBatchSize"`
-	RelayerPollInterval time.Duration `json:"relayerPollInterval" yaml:"relayerPollInterval"`
-	RelayerStartBlock   uint64        `json:"relayerStartBlock" yaml:"relayerStartBlock"`
-
-	// DA Publisher (periodic state root anchoring)
-	DAPublishInterval uint64        `json:"daPublishInterval" yaml:"daPublishInterval"`
-	DAPollInterval    time.Duration `json:"daPollInterval" yaml:"daPollInterval"`
+	// Publisher (N42→ETH state root anchoring via ZK proof)
+	PublisherBatchSize    uint64        `json:"publisherBatchSize" yaml:"publisherBatchSize"`
+	PublisherPollInterval time.Duration `json:"publisherPollInterval" yaml:"publisherPollInterval"`
+	PublisherStartBlock   uint64        `json:"publisherStartBlock" yaml:"publisherStartBlock"`
 
 	// Ethereum target chain
 	EthRPCEndpoint  string `json:"ethRpcEndpoint" yaml:"ethRpcEndpoint"`
