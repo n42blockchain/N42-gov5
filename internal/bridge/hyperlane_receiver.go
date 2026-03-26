@@ -110,8 +110,8 @@ func (r *HyperlaneReceiver) pollEvents(ctx context.Context) error {
 	}
 
 	// Chunk through blocks to avoid exceeding RPC provider limits
-	for fromBlock := last + 1; fromBlock <= currentBlock; fromBlock += maxLogsBlockRange + 1 {
-		toBlock := fromBlock + maxLogsBlockRange
+	for fromBlock := last + 1; fromBlock <= currentBlock; fromBlock += maxLogsBlockRange {
+		toBlock := fromBlock + maxLogsBlockRange - 1
 		if toBlock > currentBlock {
 			toBlock = currentBlock
 		}

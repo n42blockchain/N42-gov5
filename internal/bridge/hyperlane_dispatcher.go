@@ -84,8 +84,8 @@ func (h *HyperlaneMailboxBinding) Dispatch(
 	txParams := map[string]interface{}{
 		"from":  h.from.Hex(),
 		"to":    h.mailboxAddr.Hex(),
-		"data":  fmt.Sprintf("0x%x", calldata),
-		"value": fmt.Sprintf("0x%x", fee.ToBig()),
+		"data":  hexutil.Encode(calldata),
+		"value": hexutil.EncodeBig(fee.ToBig()),
 	}
 
 	var txHash string
@@ -119,7 +119,7 @@ func (h *HyperlaneMailboxBinding) QuoteDispatch(
 	callMsg := map[string]interface{}{
 		"from": h.from.Hex(),
 		"to":   h.mailboxAddr.Hex(),
-		"data": fmt.Sprintf("0x%x", calldata),
+		"data": hexutil.Encode(calldata),
 	}
 
 	var resultHex string

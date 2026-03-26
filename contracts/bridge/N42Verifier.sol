@@ -66,6 +66,7 @@ contract N42Verifier {
         require(endBlock >= startBlock, "invalid range");
         require(endBlock > latestVerifiedBlock, "already verified");
         require(stateRoot != bytes32(0), "zero state root");
+        require(sp1Verifier.code.length > 0, "SP1 verifier not a contract");
 
         // Encode public inputs: startBlock(8 LE) + endBlock(8 LE) + stateRoot(32)
         bytes memory publicInputs = abi.encodePacked(

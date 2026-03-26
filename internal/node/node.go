@@ -1304,7 +1304,7 @@ func (n *Node) Start() error {
 				fmt.Sprintf("http://127.0.0.1:%s", n.config.NodeCfg.HTTPPort),
 				types.HexToAddress(bcfg.HyperlaneMailbox),
 				bcfg.HyperlaneN42Domain,
-				types.Address{})
+				n.etherbase)
 			if err != nil {
 				log.Warn("Hyperlane dispatcher creation failed", "err", err)
 			}

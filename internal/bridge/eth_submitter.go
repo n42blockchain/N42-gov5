@@ -128,7 +128,8 @@ func (s *ETHSubmitter) Close() {
 }
 
 func (s *ETHSubmitter) waitForReceipt(ctx context.Context, txHash string) error {
-	timeout := time.After(5 * time.Minute)
+	timer := time.NewTimer(5 * time.Minute)
+	defer timer.Stop()
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
@@ -136,7 +137,7 @@ func (s *ETHSubmitter) waitForReceipt(ctx context.Context, txHash string) error 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-timeout:
+		case <-timer.C:
 			return fmt.Errorf("receipt timeout for tx %s", txHash)
 		case <-ticker.C:
 			var receipt json.RawMessage
@@ -145,6 +146,13 @@ func (s *ETHSubmitter) waitForReceipt(ctx context.Context, txHash string) error 
 				continue
 			}
 			if receipt != nil && string(receipt) != "null" {
+				// Verify transaction succeeded (status 0x1)
+				var r struct {
+					Status string `json:"status"`
+				}
+				if err := json.Unmarshal(receipt, &r); err == nil && r.Status != "0x1" {
+					return fmt.Errorf("tx %s reverted on-chain (status %s)", txHash, r.Status)
+				}
 				log.Info("ETH proof tx confirmed", "txHash", txHash)
 				return nil
 			}

@@ -121,6 +121,7 @@ contract N42Bridge {
 
         // Step 3: Process withdrawal
         processedWithdrawals[withdrawalNonce] = true;
+        totalDeposited[address(0)] -= amount;
 
         if (amount > largeWithdrawalThreshold) {
             // Large withdrawal: time-locked
