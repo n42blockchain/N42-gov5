@@ -67,6 +67,9 @@ func NewRelayer(
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = 100
 	}
+	if cfg.PollInterval == 0 {
+		cfg.PollInterval = 12 * time.Second
+	}
 	r := &Relayer{
 		chain:        chain,
 		headerProver: headerProver,

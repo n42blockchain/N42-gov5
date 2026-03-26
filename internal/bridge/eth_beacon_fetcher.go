@@ -157,8 +157,14 @@ func parseBeaconFinalityUpdate(body []byte) (*SyncCommitteeUpdate, error) {
 	}
 
 	// Parse sync aggregate
-	sigBytes := decodeHex(resp.Data.SyncAggregate.SyncCommitteeSignature)
-	bitsBytes := decodeHex(resp.Data.SyncAggregate.SyncCommitteeBits)
+	sigBytes, err := decodeHex(resp.Data.SyncAggregate.SyncCommitteeSignature)
+	if err != nil {
+		return nil, fmt.Errorf("decode signature hex: %w", err)
+	}
+	bitsBytes, err := decodeHex(resp.Data.SyncAggregate.SyncCommitteeBits)
+	if err != nil {
+		return nil, fmt.Errorf("decode bits hex: %w", err)
+	}
 
 	var bits [SyncCommitteeSize / 8]byte
 	copy(bits[:], bitsBytes)
@@ -175,8 +181,14 @@ func parseBeaconFinalityUpdate(body []byte) (*SyncCommitteeUpdate, error) {
 }
 
 func parseBeaconHeaderToEthHeader(bh beaconHeader) (*EthHeader, error) {
-	slot := parseDecimalUint64(bh.Beacon.Slot)
-	proposerIndex := parseDecimalUint64(bh.Beacon.ProposerIndex)
+	slot, err := strconv.ParseUint(bh.Beacon.Slot, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse slot %q: %w", bh.Beacon.Slot, err)
+	}
+	proposerIndex, err := strconv.ParseUint(bh.Beacon.ProposerIndex, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse proposer_index %q: %w", bh.Beacon.ProposerIndex, err)
+	}
 
 	return &EthHeader{
 		Slot:          slot,
@@ -187,18 +199,12 @@ func parseBeaconHeaderToEthHeader(bh beaconHeader) (*EthHeader, error) {
 	}, nil
 }
 
-func decodeHex(s string) []byte {
+func decodeHex(s string) ([]byte, error) {
 	if len(s) >= 2 && s[:2] == "0x" {
 		s = s[2:]
 	}
 	if len(s)%2 != 0 {
 		s = "0" + s
 	}
-	b, _ := hex.DecodeString(s)
-	return b
-}
-
-func parseDecimalUint64(s string) uint64 {
-	n, _ := strconv.ParseUint(s, 10, 64)
-	return n
+	return hex.DecodeString(s)
 }
