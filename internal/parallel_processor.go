@@ -194,7 +194,7 @@ func parallelApplyTx(
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	newExecutionMessagePolicy(cfg.StatelessExec, engine != nil).normalize(&msg)
+	NormalizeExecutionMessage(&msg, cfg.StatelessExec, engine != nil)
 
 	txContext := NewEVMTxContext(msg)
 	evm.Reset(txContext, ibs)

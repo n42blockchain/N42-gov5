@@ -17,6 +17,11 @@ func newExecutionMessagePolicy(statelessExec bool, hasConsensusEngine bool) exec
 	}
 }
 
+// NormalizeExecutionMessage applies the shared execution-path message defaults.
+func NormalizeExecutionMessage(msg *transaction.Message, statelessExec bool, hasConsensusEngine bool) {
+	newExecutionMessagePolicy(statelessExec, hasConsensusEngine).normalize(msg)
+}
+
 func (p executionMessagePolicy) normalize(msg *transaction.Message) {
 	if msg == nil {
 		return

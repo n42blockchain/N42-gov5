@@ -197,6 +197,7 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 		if err != nil {
 			return nil, err
 		}
+		internal.NormalizeExecutionMessage(&msg, true, false)
 		vmConfig := vm.Config{}
 		txContext := internal.NewEVMTxContext(msg)
 		blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), debug.api.engine, nil)
@@ -214,6 +215,7 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 	if err != nil {
 		return nil, err
 	}
+	internal.NormalizeExecutionMessage(&msg, true, false)
 
 	vmConfig := vm.Config{Tracer: tracer, NoBaseFee: true}
 	txContext := internal.NewEVMTxContext(msg)
