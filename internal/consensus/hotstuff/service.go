@@ -273,6 +273,8 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 	gossipBytes := buf.Bytes()
 	topic := s.gossipTopic + enc.ProtocolSuffix()
 
+	log.Info("hotstuff: broadcasting consensus message", "type", output.Message.Type, "topic", topic, "bytes", len(gossipBytes))
+
 	// Use Rotor single-hop relay for proposal broadcasts.
 	if output.Message.Type == MsgProposal && s.rotor != nil && s.rotor.Enabled() {
 		eng := s.engine.Engine()
@@ -360,6 +362,7 @@ func (s *Service) subscribeMessages() {
 
 	log.Info("hotstuff: subscribed to gossip topic", "topic", topic)
 
+	msgCount := 0
 	for {
 		msg, err := sub.Next(s.ctx)
 		if err != nil {
@@ -370,6 +373,10 @@ func (s *Service) subscribeMessages() {
 			continue
 		}
 
+		msgCount++
+		if msgCount <= 5 || msgCount%100 == 0 {
+			log.Info("hotstuff: received gossip message", "count", msgCount, "bytes", len(msg.Data))
+		}
 		s.processGossipMessage(msg.Data, enc)
 	}
 }
