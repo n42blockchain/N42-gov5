@@ -157,7 +157,7 @@ func (sdb *IntraBlockState) BeginWriteCodes() {
 func (sdb *IntraBlockState) CodeHashes() map[types.Hash][]byte {
 	for addr, stateObject := range sdb.stateObjects {
 		_, isDirty := sdb.stateObjectsDirty[addr]
-		if isDirty && (stateObject.created || !stateObject.selfdestructed) && stateObject.code != nil && stateObject.dirtyCode {
+		if isDirty && !stateObject.deleted && !stateObject.selfdestructed && stateObject.code != nil && stateObject.dirtyCode {
 			h := types.BytesToHash(stateObject.CodeHash())
 			sdb.codeMap[h] = stateObject.code
 		}
@@ -769,7 +769,7 @@ func (sdb *IntraBlockState) GetRefund() uint64 {
 	return sdb.refund
 }
 
-func updateAccount(EIP161Enabled bool, isAura bool, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
+func updateAccount(EIP161Enabled bool, isAura bool, isCancun bool, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
 	emptyRemoval := EIP161Enabled && stateObject.empty() && (!isAura || addr != SystemAddress)
 	if stateObject.selfdestructed || (isDirty && emptyRemoval) {
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
@@ -777,9 +777,11 @@ func updateAccount(EIP161Enabled bool, isAura bool, stateWriter StateWriter, add
 		}
 		stateObject.deleted = true
 	}
-	// A selfdestructed account must never be written back in the same tx finalization
-	// pass, even if it was also created in this transaction.
-	if isDirty && (stateObject.created || !stateObject.selfdestructed) && !emptyRemoval {
+	// Cancun+ must not resurrect contracts that were created and selfdestructed
+	// in the same transaction. Pre-Cancun keeps the legacy write-back behavior
+	// for sync compatibility.
+	allowWriteBack := !stateObject.selfdestructed || (!isCancun && stateObject.created)
+	if isDirty && allowWriteBack && !emptyRemoval {
 		stateObject.deleted = false
 		// Write any contract code associated with the state object
 		if stateObject.code != nil && stateObject.dirtyCode {
@@ -807,7 +809,7 @@ func printAccount(addr types.Address, stateObject *stateObject, isDirty bool) {
 	if stateObject.selfdestructed || (isDirty && emptyRemoval) {
 		fmt.Printf("delete: %x\n", addr)
 	}
-	if isDirty && (stateObject.created || !stateObject.selfdestructed) && !emptyRemoval {
+	if isDirty && !stateObject.deleted && !stateObject.selfdestructed && !emptyRemoval {
 		// Write any contract code associated with the state object
 		if stateObject.code != nil && stateObject.dirtyCode {
 			fmt.Printf("UpdateCode: %x,%x\n", addr, stateObject.CodeHash())
@@ -840,12 +842,13 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 			continue
 		}
 
-		if err := updateAccount(chainRules.IsSpuriousDragon, chainRules.IsAura, stateWriter, addr, so, true); err != nil {
+		if err := updateAccount(chainRules.IsSpuriousDragon, chainRules.IsAura, chainRules.IsCancun, stateWriter, addr, so, true); err != nil {
 			return err
 		}
 
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
+	sdb.clearCurrentTxFlags()
 	// Invalidate journal because reverting across transactions is not allowed.
 	sdb.clearJournalAndRefund()
 	return nil
@@ -860,6 +863,7 @@ func (sdb *IntraBlockState) SoftFinalise() {
 		}
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
+	sdb.clearCurrentTxFlags()
 	// Invalidate journal because reverting across transactions is not allowed.
 	sdb.clearJournalAndRefund()
 }
@@ -891,7 +895,7 @@ func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter S
 	}
 	for addr, stateObject := range sdb.stateObjects {
 		_, isDirty := sdb.stateObjectsDirty[addr]
-		if err := updateAccount(chainRules.IsSpuriousDragon, chainRules.IsAura, stateWriter, addr, stateObject, isDirty); err != nil {
+		if err := updateAccount(chainRules.IsSpuriousDragon, chainRules.IsAura, chainRules.IsCancun, stateWriter, addr, stateObject, isDirty); err != nil {
 			return err
 		}
 	}
@@ -924,6 +928,19 @@ func (sdb *IntraBlockState) clearJournalAndRefund() {
 	sdb.validRevisions = sdb.validRevisions[:0]
 	sdb.refund = 0
 	sdb.transientStorage = newTransientStorage()
+}
+
+// clearCurrentTxFlags resets per-transaction account lifecycle markers once the
+// current transaction has been finalized.
+func (sdb *IntraBlockState) clearCurrentTxFlags() {
+	for addr := range sdb.journal.dirties {
+		so, ok := sdb.stateObjects[addr]
+		if !ok || so.deleted {
+			continue
+		}
+		so.created = false
+		so.selfdestructed = false
+	}
 }
 
 // PrepareAccessList handles the preparatory steps for executing a state transition with
