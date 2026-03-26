@@ -8,8 +8,11 @@
 package bridge
 
 import (
+	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/zkprover"
+	"github.com/n42blockchain/N42/log"
 )
 
 // HeaderChainProof proves that a sequence of N42 block headers is valid,
@@ -167,8 +171,102 @@ func ProveHeaderRange(
 		EndBlock:     endBlock,
 		StateRoot:    types.Hash(stateRoot),
 		PublicInputs: publicInputs,
-		ProofData:    nil, // SP1 proof will be filled by prover
+		ProofData:    nil, // Local verification only; use ProveHeaderRangeWithSP1 for ZK proofs
 	}, nil
+}
+
+// ProveHeaderRangeWithSP1 generates a header chain proof with real SP1 ZK proving.
+// Falls back to ProveHeaderRange (nil ProofData) if prover is nil or unavailable.
+func ProveHeaderRangeWithSP1(
+	ctx context.Context,
+	chain common.IBlockChain,
+	vs *hotstuff.ValidatorSet,
+	prover *HeaderChainProver,
+	startBlock, endBlock uint64,
+) (*HeaderChainProof, error) {
+	// First generate and locally verify the proof structure
+	proof, err := ProveHeaderRange(chain, vs, startBlock, endBlock)
+	if err != nil {
+		return nil, err
+	}
+
+	// If no SP1 prover configured, return with nil ProofData (simulation mode)
+	if prover == nil || prover.prover == nil {
+		return proof, nil
+	}
+
+	// Build guest input for SP1 circuit
+	headers := make([]*block.Header, 0, endBlock-startBlock+1)
+	qcs := make([]hotstuff.QuorumCertificate, 0, endBlock-startBlock+1)
+	num256 := new(uint256.Int)
+	for num := startBlock; num <= endBlock; num++ {
+		num256.SetUint64(num)
+		blk, err := chain.GetBlockByNumber(num256)
+		if err != nil || blk == nil {
+			return proof, nil // fall back to non-ZK
+		}
+		hdr, ok := blk.Header().(*block.Header)
+		if !ok {
+			return proof, nil
+		}
+		headers = append(headers, hdr)
+		qcs = append(qcs, extractQCFromHeader(hdr))
+	}
+
+	input, err := BuildHeaderChainInput(headers, qcs, vs)
+	if err != nil {
+		log.Warn("Failed to build SP1 input, returning local proof", "err", err)
+		return proof, nil
+	}
+
+	// Serialize input for SP1 guest program
+	guestInput, err := json.Marshal(input)
+	if err != nil {
+		log.Warn("Failed to serialize SP1 input", "err", err)
+		return proof, nil
+	}
+
+	// Submit to SP1 prover
+	lastHash := headers[len(headers)-1].Hash()
+	jobID, err := prover.prover.Submit(ctx, lastHash, endBlock, guestInput)
+	if err != nil {
+		log.Warn("SP1 proof submission failed, using local proof", "err", err)
+		return proof, nil
+	}
+
+	log.Info("SP1 proof submitted", "jobID", jobID, "startBlock", startBlock, "endBlock", endBlock)
+
+	// Poll for proof completion (with timeout)
+	pollTimeout := 10 * time.Minute
+	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pollCtx.Done():
+			log.Warn("SP1 proof timed out, using local proof", "jobID", jobID)
+			return proof, nil
+		case <-ticker.C:
+			sp1Proof, err := prover.prover.Status(ctx, jobID)
+			if err != nil {
+				log.Warn("SP1 status check failed", "err", err, "jobID", jobID)
+				continue
+			}
+			if sp1Proof != nil {
+				proof.ProofData = sp1Proof.ProofData
+				log.Info("SP1 proof completed",
+					"jobID", jobID,
+					"proofSize", len(sp1Proof.ProofData),
+					"startBlock", startBlock,
+					"endBlock", endBlock,
+				)
+				return proof, nil
+			}
+		}
+	}
 }
 
 // VerifyHeaderChainLocally verifies a header chain without ZK, using direct
