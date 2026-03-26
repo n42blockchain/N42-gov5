@@ -60,3 +60,29 @@ func TestResolveConfiguredGenesisRejectsUnknownChain(t *testing.T) {
 		t.Fatal("expected unknown chain to be rejected")
 	}
 }
+
+func TestResolveConsensusEngineRejectsMissingChainConfig(t *testing.T) {
+	if _, err := resolveConsensusEngine(&conf.Config{}, nil); err == nil || err.Error() != "missing chain config" {
+		t.Fatalf("resolveConsensusEngine error = %v, want missing chain config", err)
+	}
+}
+
+func TestResolveConsensusEngineReturnsFaker(t *testing.T) {
+	engine, err := resolveConsensusEngine(&conf.Config{
+		ChainCfg: &params.ChainConfig{Consensus: params.Faker},
+	}, nil)
+	if err != nil {
+		t.Fatalf("resolveConsensusEngine returned error: %v", err)
+	}
+	if got := engine.Type(); got != params.Faker {
+		t.Fatalf("engine type = %q, want %q", got, params.Faker)
+	}
+}
+
+func TestResolveConsensusEngineRejectsUnknownConsensus(t *testing.T) {
+	if _, err := resolveConsensusEngine(&conf.Config{
+		ChainCfg: &params.ChainConfig{Consensus: params.ConsensusType("mystery")},
+	}, nil); err == nil {
+		t.Fatal("expected unknown consensus to be rejected")
+	}
+}

@@ -355,18 +355,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, err
 	}
 
-	switch cfg.ChainCfg.Consensus {
-	case params.CliqueConsensus:
-		engine = apoa.New(cfg.ChainCfg.Clique, chainKv)
-	case params.AposConsensu:
-		engine = apos.New(cfg.ChainCfg.Apos, chainKv, cfg.ChainCfg)
-		apos.SetHardForkAllocDir(cfg.NodeCfg.DataDir)
-	case params.HotStuffConsensus:
-		engine = hotstuff.New(cfg.ChainCfg.HotStuff, cfg.ChainCfg)
-	case params.Faker:
-		engine = apos.NewFaker()
-	default:
-		return nil, fmt.Errorf("invalid engine name %s", cfg.ChainCfg.Consensus)
+	engine, err = resolveConsensusEngine(cfg, chainKv)
+	if err != nil {
+		return nil, err
 	}
 
 	bc, err := internal.NewBlockChain(ctx, genesisBlock, engine, chainKv, p2p, cfg.ChainCfg)
@@ -847,6 +838,26 @@ func resolveConfiguredGenesis(cfg *conf.Config) (configuredGenesis, error) {
 		chainConfig: params.ChainConfigByChainName(cfg.NodeCfg.Chain),
 		genesisHash: genesisHash,
 	}, nil
+}
+
+func resolveConsensusEngine(cfg *conf.Config, chainKv kv.RwDB) (consensus.Engine, error) {
+	if cfg == nil || cfg.ChainCfg == nil {
+		return nil, errors.New("missing chain config")
+	}
+
+	switch cfg.ChainCfg.Consensus {
+	case params.CliqueConsensus:
+		return apoa.New(cfg.ChainCfg.Clique, chainKv), nil
+	case params.AposConsensu:
+		apos.SetHardForkAllocDir(cfg.NodeCfg.DataDir)
+		return apos.New(cfg.ChainCfg.Apos, chainKv, cfg.ChainCfg), nil
+	case params.HotStuffConsensus:
+		return hotstuff.New(cfg.ChainCfg.HotStuff, cfg.ChainCfg), nil
+	case params.Faker:
+		return apos.NewFaker(), nil
+	default:
+		return nil, fmt.Errorf("invalid engine name %s", cfg.ChainCfg.Consensus)
+	}
 }
 
 func bundlerChainID(chainCfg *params.ChainConfig) (uint64, error) {
