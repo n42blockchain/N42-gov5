@@ -66,6 +66,7 @@ const (
 	OutputSyncRequired         EngineOutputType = 6
 	OutputEquivocationDetected EngineOutputType = 7
 	OutputEpochTransition      EngineOutputType = 8
+	OutputEpochStaged          EngineOutputType = 9 // staged validator set needs persistence
 )
 
 // ConsensusEngine is the HotStuff-2 consensus state machine.
@@ -103,7 +104,8 @@ type ConsensusEngine struct {
 	// Block tracking
 	importedBlocks     map[types.Hash]bool
 	pendingTxRoots     map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
-	equivocationTracker map[ValidatorIndex]types.Hash
+	equivocationTracker       map[ValidatorIndex]types.Hash
+	commitEquivocationTracker map[ValidatorIndex]types.Hash
 
 	// Batch BLS verification buffers (votes await batch pairing before
 	// being added to the collector). Reset on every view change.
@@ -174,6 +176,7 @@ func NewConsensusEngineWithEpochManager(
 		importedBlocks:      make(map[types.Hash]bool),
 		pendingTxRoots:      make(map[types.Hash]types.Hash),
 		equivocationTracker: make(map[ValidatorIndex]types.Hash),
+		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:     make([]futureMsg, 0),
 		viewTiming:          newViewTiming(),
 	}
@@ -208,6 +211,7 @@ func WithRecoveredState(
 		importedBlocks:      make(map[types.Hash]bool),
 		pendingTxRoots:      make(map[types.Hash]types.Hash),
 		equivocationTracker: make(map[ValidatorIndex]types.Hash),
+		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:     make([]futureMsg, 0),
 		viewTiming:          newViewTiming(),
 	}
@@ -396,6 +400,14 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 			myAddr, _ := e.validatorSet().GetAddress(e.myIndex)
 
 			if newSet := e.reconfigMgr.ApplyAtEpochBoundary(); newSet != nil {
+				// Emit staged event so Service persists it for crash recovery.
+				if err := e.emit(EngineOutput{
+					Type:           OutputEpochStaged,
+					NewEpoch:       e.epochManager.CurrentEpoch() + 1,
+					ValidatorCount: newSet.Len(),
+				}); err != nil {
+					return err
+				}
 				// Update own index in the new set
 				newIdx := newSet.FindByAddress(myAddr)
 				if newIdx >= 0 {
@@ -442,6 +454,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	e.importedBlocks = make(map[types.Hash]bool)
 	e.pendingTxRoots = make(map[types.Hash]types.Hash)
 	e.equivocationTracker = make(map[ValidatorIndex]types.Hash)
+	e.commitEquivocationTracker = make(map[ValidatorIndex]types.Hash)
 	e.prepareVoteBuf = e.prepareVoteBuf[:0]
 	e.commitVoteBuf = e.commitVoteBuf[:0]
 

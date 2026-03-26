@@ -248,6 +248,20 @@ func (s *Service) handleOutput(output EngineOutput) {
 		if output.View-s.lastPersistedView >= s.persistInterval {
 			s.persistState()
 		}
+	case OutputEpochStaged:
+		// Persist staged validator set for crash recovery (fixes Property 7b).
+		log.Info("hotstuff: epoch staged, persisting for crash recovery", "epoch", output.NewEpoch, "validators", output.ValidatorCount)
+		if s.db != nil {
+			if ce := s.engine.Engine(); ce != nil {
+				if epoch, validators, f, ok := ce.EpochManager().StagedEpochInfo(); ok {
+					if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
+						return SaveStagedEpoch(tx, epoch, validators, f)
+					}); err != nil {
+						log.Error("failed to persist staged epoch", "err", err)
+					}
+				}
+			}
+		}
 	case OutputSyncRequired:
 		log.Warn("hotstuff: sync required", "localView", output.LocalView, "targetView", output.TargetView)
 	case OutputEquivocationDetected:
