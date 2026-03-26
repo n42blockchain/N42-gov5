@@ -113,13 +113,13 @@ contract ZKISM {
             "ZKISM: state inclusion proof failed"
         );
 
-        // 3. Verify minimum confirmations (endBlock must be at least minConfirmations behind latest)
-        if (minConfirmations > 0) {
-            require(
-                verifier.latestVerifiedBlock() >= endBlock,
-                "ZKISM: endBlock not yet verified"
-            );
-        }
+        // 3. Verify minimum confirmations depth
+        // The current proof's endBlock must be at least minConfirmations behind
+        // the latest verified block (i.e., additional proofs have been submitted after).
+        require(
+            verifier.latestVerifiedBlock() >= endBlock + minConfirmations,
+            "ZKISM: insufficient confirmations"
+        );
 
         // 4. Mark message as verified (idempotent — re-verification returns true)
         if (verifiedMessages[messageId]) {

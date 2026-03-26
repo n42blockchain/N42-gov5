@@ -211,7 +211,6 @@ func (r *ZKRouter) VerifyIncoming(proof []byte, stateRoot types.Hash) error {
 		finalized := r.ethLightClient.LatestFinalized()
 		if finalized != nil && finalized.StateRoot == stateRoot {
 			log.Info("Incoming ETH→N42 transfer: state root verified", "stateRoot", stateRoot)
-			hyperlaneReceiveTotal.Inc()
 			return nil
 		}
 		// State root not recognized — reject

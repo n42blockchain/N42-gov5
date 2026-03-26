@@ -21,16 +21,6 @@ var (
 		Help: "Total number of JMT state inclusion proofs generated",
 	})
 
-	depositsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "bridge_deposits_total",
-		Help: "Total cross-chain deposits",
-	})
-
-	withdrawalsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "bridge_withdrawals_total",
-		Help: "Total cross-chain withdrawals",
-	})
-
 	proofLatency = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "bridge_proof_submission_seconds",
 		Help:    "Time to submit a header chain proof to Ethereum",

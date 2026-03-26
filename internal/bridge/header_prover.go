@@ -71,6 +71,9 @@ func BuildHeaderChainInput(
 	qcs []hotstuff.QuorumCertificate,
 	vs *hotstuff.ValidatorSet,
 ) (*HeaderChainInput, error) {
+	if vs == nil {
+		return nil, fmt.Errorf("validator set is nil, cannot build SP1 input")
+	}
 	if len(headers) == 0 {
 		return nil, fmt.Errorf("no headers provided")
 	}

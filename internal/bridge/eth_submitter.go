@@ -72,13 +72,12 @@ func (s *ETHSubmitter) SubmitHeaderChainProof(ctx context.Context, proof *Header
 		return fmt.Errorf("nil proof")
 	}
 
-	proofData := proof.ProofData
-	if proofData == nil {
-		proofData = []byte{}
+	if len(proof.ProofData) == 0 {
+		return fmt.Errorf("cannot submit proof without ZK proof data (SP1 prover not configured?)")
 	}
 
 	calldata, err := s.verifierABI.Pack("verifyHeaderChain",
-		proofData,
+		proof.ProofData,
 		proof.StartBlock,
 		proof.EndBlock,
 		[32]byte(proof.StateRoot),
