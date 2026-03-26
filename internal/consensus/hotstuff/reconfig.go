@@ -86,6 +86,11 @@ func (rm *ReconfigurationManager) ProposeAddValidator(addr types.Address, pubKey
 		return fmt.Errorf("reconfig: BLS public key required for validator %s", addr.Hex())
 	}
 
+	// Guard: no proposals when a transition is already staged (Rust: EpochTransitionAlreadyStaged)
+	if rm.epochManager.HasStagedNext() {
+		return fmt.Errorf("reconfig: epoch transition already staged, wait for epoch boundary before proposing")
+	}
+
 	// Check not already in current set
 	if rm.epochManager.CurrentValidatorSet().FindByAddress(addr) >= 0 {
 		return fmt.Errorf("reconfig: validator %s already in active set", addr.Hex())
@@ -121,6 +126,11 @@ func (rm *ReconfigurationManager) ProposeAddValidator(addr types.Address, pubKey
 func (rm *ReconfigurationManager) ProposeRemoveValidator(addr types.Address) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
+
+	// Guard: no proposals when a transition is already staged
+	if rm.epochManager.HasStagedNext() {
+		return fmt.Errorf("reconfig: epoch transition already staged, wait for epoch boundary before proposing")
+	}
 
 	// Check exists in current set
 	if rm.epochManager.CurrentValidatorSet().FindByAddress(addr) < 0 {

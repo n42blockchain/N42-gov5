@@ -10,6 +10,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 )
 
 // ValidatorInfo holds the address and BLS public key of a validator.
@@ -81,6 +82,21 @@ func (vs *ValidatorSet) Contains(index ValidatorIndex) bool {
 func (vs *ValidatorSet) FindByAddress(addr types.Address) int {
 	for i, v := range vs.validators {
 		if v.Address == addr {
+			return i
+		}
+	}
+	return -1
+}
+
+// IndexOfPublicKey returns the validator index for the given BLS public key, or -1 if not found.
+// Used by SyncLocalValidatorIndex at epoch transitions (Rust: index_of_public_key).
+func (vs *ValidatorSet) IndexOfPublicKey(pk common.PublicKey) int {
+	if pk == nil {
+		return -1
+	}
+	target := pk.Marshal()
+	for i, v := range vs.validators {
+		if v.PublicKey != nil && bytes.Equal(v.PublicKey.Marshal(), target) {
 			return i
 		}
 	}
@@ -194,6 +210,8 @@ func (em *EpochManager) IsEpochBoundary(view uint64) bool {
 }
 
 // ValidatorSetForView returns the validator set for verifying QCs at the given view.
+// Resolves: current epoch → currentSet, next epoch → staged nextSet (if available),
+// historical epoch → historicalSets, fallback → currentSet.
 func (em *EpochManager) ValidatorSetForView(view uint64) *ValidatorSet {
 	if em.epochLength == 0 {
 		return em.currentSet
@@ -202,9 +220,15 @@ func (em *EpochManager) ValidatorSetForView(view uint64) *ValidatorSet {
 	if epoch == em.currentEpoch {
 		return em.currentSet
 	}
+	// Staged next epoch: resolve views in the transition window before advance.
+	if epoch == em.currentEpoch+1 && em.nextSet != nil {
+		return em.nextSet
+	}
 	if set, ok := em.historicalSets[epoch]; ok {
 		return set
 	}
+	log.Warn("ValidatorSetForView: no set for epoch, using current",
+		"view", view, "epoch", epoch, "currentEpoch", em.currentEpoch)
 	return em.currentSet
 }
 
