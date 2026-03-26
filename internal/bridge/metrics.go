@@ -41,4 +41,43 @@ var (
 		Name: "bridge_latest_verified_block",
 		Help: "Latest N42 block verified on Ethereum",
 	})
+
+	// DA Publisher metrics
+	daPublicationsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_da_publications_total",
+		Help: "Total DA publications to Ethereum",
+	})
+
+	// ETH Light Client metrics
+	ethLightClientUpdates = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_eth_light_client_updates_total",
+		Help: "Total ETH sync committee updates processed",
+	})
+
+	ethLatestFinalizedSlot = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "bridge_eth_latest_finalized_slot",
+		Help: "Latest ETH slot verified by light client",
+	})
+
+	// Hyperlane metrics
+	hyperlaneDispatchTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_hyperlane_dispatch_total",
+		Help: "Total messages dispatched via Hyperlane",
+	})
+
+	hyperlaneReceiveTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_hyperlane_receive_total",
+		Help: "Total messages received via Hyperlane",
+	})
+
+	// Router metrics
+	routerTransfersZK = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_router_transfers_zk_total",
+		Help: "Total transfers via ZK proof path",
+	})
+
+	routerTransfersHyperlane = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_router_transfers_hyperlane_total",
+		Help: "Total transfers via Hyperlane path",
+	})
 )
