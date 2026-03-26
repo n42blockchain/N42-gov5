@@ -103,6 +103,14 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 - **Storage Bridge**: IPFS/Filecoin bridge, BitTorrent seeder, content-addressed storage precompile (0x0300)
 - **Push Notifications**: Contract event → wallet stream delivery
 
+### Cross-Chain Bridge
+
+- **ZK-Native Bridge**: Cryptographic cross-chain verification via header proofs, state proofs, and evidence chains — no trusted relayers or multisig committees
+- **Trust Chain**: HotStuff-2 BLS aggregate signature → SP1 ZK proof → JMT Merkle state proof → Ethereum on-chain verification (N42Verifier.sol)
+- **Bridge Components**: HeaderProver and StateProver (`internal/bridge/`), Relayer for event monitoring and proof submission, Router for cross-chain message lifecycle
+- **Solidity Contracts**: N42Verifier.sol (ZK proof verification) and N42Bridge.sol (asset lock/release) in `contracts/bridge/`
+- **Phase 1 Complete**: N42 → Ethereum single-direction bridge operational
+
 ### Security
 
 - **Post-Quantum Cryptography**: Falcon, Dilithium2/3, SQIsign precompiles (isolated activation via `PQPrecompilesTime`)
@@ -151,6 +159,11 @@ internal/
     governance/       Training data governance (ethics committee voting)
     training/         ZK training verification (model provenance)
     attestation/      ZK inference attestation (signed results, chain-of-custody)
+  bridge/           ZK-native cross-chain bridge
+    header_prover     HotStuff-2 BLS → SP1 ZK header proof
+    state_prover      JMT Merkle state proof generation
+    relayer           Event monitoring + proof submission to target chain
+    router            Cross-chain message routing and lifecycle
 modules/
   state/            State management with JMT commitment and witness generation
   rawdb/            Raw database operations (MDBX + freezer)
@@ -165,6 +178,7 @@ params/             Chain parameters, genesis configs (embedded JSON)
 conf/               Node configuration (unified AICfg, all subsystem configs)
 contracts/          Smart contracts
   deposit/            Tiered staking (token/, nftstake/, testnet/)
+  bridge/             ZK bridge (N42Verifier.sol, N42Bridge.sol)
 ```
 
 ## System Requirements
