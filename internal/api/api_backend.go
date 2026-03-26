@@ -342,7 +342,9 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *block.B
 			syscall := func(contract types.Address, data []byte) ([]byte, error) {
 				return internal.SysCallContract(contract, data, *eth.BlockChain().Config(), statedb, blkHeader, eth.Engine())
 			}
-			msg.SetIsFree(eth.Engine().IsServiceTransaction(msg.From(), syscall))
+			internal.ApplyServiceTransactionPolicy(&msg, func(sender types.Address) bool {
+				return eth.Engine().IsServiceTransaction(sender, syscall)
+			})
 		}
 
 		txContext := internal.NewEVMTxContext(msg)
