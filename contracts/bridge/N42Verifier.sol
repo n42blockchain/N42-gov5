@@ -89,9 +89,7 @@ contract N42Verifier {
 
         // Store verified state root
         verifiedStateRoots[endBlock] = stateRoot;
-        if (endBlock > latestVerifiedBlock) {
-            latestVerifiedBlock = endBlock;
-        }
+        latestVerifiedBlock = endBlock;
 
         emit HeaderChainVerified(startBlock, endBlock, stateRoot);
         return true;
@@ -158,9 +156,6 @@ contract N42Verifier {
                 proof
             )
         );
-        if (success) {
-            emit StateInclusionVerified(stateRoot, key, value);
-        }
         return success;
     }
 

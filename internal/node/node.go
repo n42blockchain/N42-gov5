@@ -1267,7 +1267,7 @@ func (n *Node) Start() error {
 			submitter, err = bridge.NewETHSubmitter(
 				bcfg.EthRPCEndpoint,
 				types.HexToAddress(bcfg.VerifierAddress),
-				nil, nil) // chainID and privKey configured separately
+				n.etherbase)
 			if err != nil {
 				log.Warn("Bridge ETH submitter creation failed", "err", err)
 			}
