@@ -674,7 +674,7 @@ func (c *APos) Rewards(tx kv.RwTx, header block.IHeader, state *state.IntraBlock
 		Cmp(uint256.NewInt(0)) == 0 {
 		log.Info("begin setreward", "headnumber", headerNumber.ToBig().String())
 
-		rewardService := newReward(c.chainConfig)
+		rewardService := NewReward(c.chainConfig)
 		accRewards, err := rewardService.SetRewards(tx, headerNumber, setRewards)
 		if err != nil {
 			log.Error("setreward error", "err", err)
@@ -709,7 +709,7 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	if !ok {
 		return nil, nil, errors.New("invalid header type: expected *block.Header")
 	}
-	rewards, unpayMap, err := doReward(c.chainConfig, state, rawHeader, chain)
+	rewards, unpayMap, err := DoReward(c.chainConfig, state, rawHeader, chain)
 	if err != nil {
 		return nil, nil, err
 	}

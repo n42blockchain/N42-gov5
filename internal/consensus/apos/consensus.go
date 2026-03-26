@@ -103,7 +103,9 @@ func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHead
 	return rewardMap, unpayMap, nil
 }
 
-func doReward(chainConf *params.ChainConfig, state *state.IntraBlockState, header *block.Header, chain consensus.ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+// DoReward computes and applies epoch-based block rewards. Exported for use by
+// other consensus engines (e.g. HotStuff) that share the same reward scheme.
+func DoReward(chainConf *params.ChainConfig, state *state.IntraBlockState, header *block.Header, chain consensus.ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
 	beijing, overflow := uint256.FromBig(chainConf.BeijingBlock)
 	if overflow {
 		return nil, nil, errors.New("BeijingBlock overflows uint256")
@@ -118,7 +120,7 @@ func doReward(chainConf *params.ChainConfig, state *state.IntraBlockState, heade
 	// Security: ensure number >= beijing before subtraction to prevent underflow
 	if chainConf.IsBeijing(number.Uint64()) && number.Cmp(beijing) >= 0 && new(uint256.Int).Mod(new(uint256.Int).Sub(number, beijing), uint256.NewInt(chainConf.Apos.RewardEpoch)).
 		Cmp(uint256.NewInt(0)) == 0 {
-		r := newReward(chainConf)
+		r := NewReward(chainConf)
 		var (
 			err    error
 			payMap map[types.Address]*uint256.Int

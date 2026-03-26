@@ -49,6 +49,10 @@ const (
 
 var extraMagic = [extraMagicLen]byte{'N', '4', '2', 'H'}
 
+// RewardFunc computes and applies block rewards. Injected by node.go to avoid
+// circular dependency between hotstuff and apos packages.
+type RewardFunc func(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error)
+
 // HotStuff implements the consensus.Engine interface for HotStuff-2 BFT consensus.
 type HotStuff struct {
 	config      *params.HotStuffConfig
@@ -71,6 +75,16 @@ type HotStuff struct {
 
 	// Output channel for consensus actions
 	outputCh chan EngineOutput
+
+	// Block reward function, injected to avoid import cycles.
+	rewardFn RewardFunc
+}
+
+// SetRewardFunc injects the block reward function (typically apos.doReward).
+func (h *HotStuff) SetRewardFunc(fn RewardFunc) {
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	h.rewardFn = fn
 }
 
 // New creates a new HotStuff consensus engine.
@@ -94,7 +108,7 @@ func New(config *params.HotStuffConfig, chainConfig *params.ChainConfig) *HotStu
 		ctx:         ctx,
 		cancel:      cancel,
 		signatures:  signatures,
-		outputCh:    make(chan EngineOutput, 256),
+		outputCh:    make(chan EngineOutput, 1024),
 	}
 }
 
@@ -383,10 +397,27 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 }
 
 // Finalize runs any post-transaction state modifications (e.g. block rewards).
+// HotStuff delegates reward logic to the APoS reward module so that validators
+// receive the same epoch-based rewards regardless of which consensus engine is active.
 func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
-	// HotStuff currently does not implement custom rewards.
-	// This can be extended later with validator reward distribution.
-	return nil, nil, nil
+	header, ok := iHeader.(*block.Header)
+	if !ok {
+		return nil, nil, errors.New("invalid header type: expected *block.Header")
+	}
+
+	var rewards []*block.Reward
+	var unpayMap map[types.Address]*uint256.Int
+
+	if h.rewardFn != nil {
+		var err error
+		rewards, unpayMap, err = h.rewardFn(h.chainConfig, ibs, header, chain)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	header.Root = ibs.IntermediateRoot()
+	return rewards, unpayMap, nil
 }
 
 // FinalizeAndAssemble runs finalization and assembles the final block.

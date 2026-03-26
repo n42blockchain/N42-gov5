@@ -222,6 +222,14 @@ func (s *Service) handleOutput(output EngineOutput) {
 			"view", output.View, "validator", output.Validator,
 			"hash1", output.Hash1, "hash2", output.Hash2)
 		updateMetricsEquivocation()
+		// Persist evidence for future slashing.
+		if s.db != nil {
+			if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
+				return SaveEquivocationEvidence(tx, output.View, output.Validator, output.Hash1, output.Hash2)
+			}); err != nil {
+				log.Error("failed to persist equivocation evidence", "err", err)
+			}
+		}
 	case OutputEpochTransition:
 		log.Info("hotstuff: epoch transition", "epoch", output.NewEpoch, "validators", output.ValidatorCount)
 	}

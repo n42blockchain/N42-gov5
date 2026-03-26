@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
@@ -82,4 +83,14 @@ func LoadConsensusState(tx kv.Tx) (*ConsensusState, error) {
 		LockedQC:            *lockedQC,
 		LastCommittedQC:     *committedQC,
 	}, nil
+}
+
+// SaveEquivocationEvidence persists equivocation evidence for future slashing.
+func SaveEquivocationEvidence(tx kv.RwTx, view ViewNumber, validator ValidatorIndex, prevHash, newHash types.Hash) error {
+	key := fmt.Appendf(nil, "equivocation/%d/%d", view, validator)
+	// Value: prevHash(32) + newHash(32) = 64 bytes
+	val := make([]byte, 64)
+	copy(val[0:32], prevHash[:])
+	copy(val[32:64], newHash[:])
+	return tx.Put(modules.HotStuffState, key, val)
 }
