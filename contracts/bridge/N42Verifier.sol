@@ -59,7 +59,7 @@ contract N42Verifier {
         uint64 endBlock,
         bytes32 stateRoot
     ) external whenNotPaused returns (bool) {
-        require(endBlock > startBlock, "invalid range");
+        require(endBlock >= startBlock, "invalid range");
         require(endBlock > latestVerifiedBlock, "already verified");
         require(stateRoot != bytes32(0), "zero state root");
 
@@ -71,9 +71,9 @@ contract N42Verifier {
         );
 
         // Verify SP1 proof via the on-chain verifier gateway.
-        // Must decode return value — staticcall success only means "no revert",
-        // not that the proof is valid.
-        (bool callSuccess, bytes memory returnData) = sp1Verifier.staticcall(
+        // Standard ISP1Verifier.verifyProof reverts on invalid proof,
+        // returns void on success. A successful staticcall = valid proof.
+        (bool callSuccess, ) = sp1Verifier.staticcall(
             abi.encodeWithSignature(
                 "verifyProof(bytes32,bytes,bytes)",
                 headerChainVKey,
@@ -81,8 +81,7 @@ contract N42Verifier {
                 proof
             )
         );
-        require(callSuccess && returnData.length >= 32, "SP1 verifier call failed");
-        require(abi.decode(returnData, (bool)), "SP1 proof verification failed");
+        require(callSuccess, "SP1 proof verification failed");
 
         // Store verified state root
         verifiedStateRoots[endBlock] = stateRoot;

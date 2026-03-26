@@ -201,9 +201,10 @@ func (r *ZKRouter) addTransfer(txHash types.Hash, record *TransferRecord) {
 }
 
 // VerifyIncoming verifies an incoming cross-chain message.
-// NOTE: Full verification requires calling ethLightClient.VerifyMPTProof
-// for ETH sources. This is a routing layer — callers must provide the
-// complete proof parameters for actual verification.
+// Full verification requires calling ethLightClient.VerifyMPTProof directly
+// with the complete proof parameters (account, key, storage proofs).
+// This method validates the state root is known; callers MUST perform
+// full MPT/Hyperlane verification separately.
 func (r *ZKRouter) VerifyIncoming(proof []byte, stateRoot types.Hash) error {
 	if len(proof) == 0 {
 		return fmt.Errorf("empty proof")
@@ -212,16 +213,16 @@ func (r *ZKRouter) VerifyIncoming(proof []byte, stateRoot types.Hash) error {
 	if r.ethLightClient != nil {
 		finalized := r.ethLightClient.LatestFinalized()
 		if finalized != nil && finalized.StateRoot == stateRoot {
-			log.Info("Verifying incoming ETH→N42 transfer", "stateRoot", stateRoot)
-			// Actual MPT verification requires additional parameters (account, key, etc.)
-			// and is performed by the caller via ethLightClient.VerifyMPTProof directly.
+			log.Info("Incoming ETH→N42 transfer: state root verified", "stateRoot", stateRoot)
+			hyperlaneReceiveTotal.Inc()
 			return nil
 		}
+		// State root not recognized — reject
+		return fmt.Errorf("state root %s not verified by ETH light client", stateRoot)
 	}
 
-	log.Info("Verifying incoming Hyperlane message", "stateRoot", stateRoot)
-	hyperlaneReceiveTotal.Inc()
-	return nil
+	// No ETH light client configured — cannot verify
+	return fmt.Errorf("ETH light client not configured, cannot verify incoming proof")
 }
 
 // Status returns the current status of a cross-chain transfer.
