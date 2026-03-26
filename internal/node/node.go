@@ -1201,43 +1201,49 @@ func (n *Node) Start() error {
 		n.zkProverService.Start()
 	}
 
-	// Start AI wallet service if enabled.
-	if n.config.AICfg.Wallet.Enabled {
-		n.walletService = wallet.NewService(n.config.AICfg.Wallet.MaxSessionKeys, n.config.AICfg.Wallet.PaymasterEnabled)
-		log.Info("AI wallet service enabled",
-			"maxSessionKeys", n.config.AICfg.Wallet.MaxSessionKeys,
-			"paymaster", n.config.AICfg.Wallet.PaymasterEnabled,
-		)
+	aiEnabled := n.config.AICfg.Wallet.Enabled || n.config.AICfg.Governance.Enabled || n.config.AICfg.Training.Enabled || n.config.AICfg.Attestation.Enabled
+	if aiEnabled && !n.profile.SupportsAIRuntime() {
+		log.Warn("AI runtime services disabled for execution profile", "profile", n.profile.String())
 	}
-
-	// Start AI safety services.
-	if n.config.AICfg.Governance.Enabled {
-		reg := governance.NewDatasetRegistry(n.config.AICfg.Governance.MaxDatasets)
-		n.dataGovernance = governance.NewCommittee(governance.CommitteeConfig{
-			Quorum:    n.config.AICfg.Governance.CommitteeQuorum,
-			Threshold: n.config.AICfg.Governance.CommitteeThreshold,
-		}, reg)
-		log.Info("AI data governance enabled",
-			"quorum", n.config.AICfg.Governance.CommitteeQuorum,
-			"threshold", n.config.AICfg.Governance.CommitteeThreshold,
-		)
-	}
-	if n.config.AICfg.Training.Enabled {
-		var gov training.DatasetGovernance
-		if n.dataGovernance != nil {
-			gov = n.dataGovernance
+	if n.profile.SupportsAIRuntime() {
+		// Start AI wallet service if enabled.
+		if n.config.AICfg.Wallet.Enabled {
+			n.walletService = wallet.NewService(n.config.AICfg.Wallet.MaxSessionKeys, n.config.AICfg.Wallet.PaymasterEnabled)
+			log.Info("AI wallet service enabled",
+				"maxSessionKeys", n.config.AICfg.Wallet.MaxSessionKeys,
+				"paymaster", n.config.AICfg.Wallet.PaymasterEnabled,
+			)
 		}
-		n.trainingProver = training.NewTrainingProver(gov)
-		log.Info("ZK training verification enabled")
-	}
-	if n.config.AICfg.Attestation.Enabled {
-		ttl := time.Duration(n.config.AICfg.Attestation.TTLSec) * time.Second
-		n.attestationService = attestation.NewAttestationService(
-			nil, nil, ttl, n.config.AICfg.Attestation.MaxItems,
-		)
-		log.Info("ZK inference attestation enabled",
-			"ttl", n.config.AICfg.Attestation.TTLSec,
-		)
+
+		// Start AI safety services.
+		if n.config.AICfg.Governance.Enabled {
+			reg := governance.NewDatasetRegistry(n.config.AICfg.Governance.MaxDatasets)
+			n.dataGovernance = governance.NewCommittee(governance.CommitteeConfig{
+				Quorum:    n.config.AICfg.Governance.CommitteeQuorum,
+				Threshold: n.config.AICfg.Governance.CommitteeThreshold,
+			}, reg)
+			log.Info("AI data governance enabled",
+				"quorum", n.config.AICfg.Governance.CommitteeQuorum,
+				"threshold", n.config.AICfg.Governance.CommitteeThreshold,
+			)
+		}
+		if n.config.AICfg.Training.Enabled {
+			var gov training.DatasetGovernance
+			if n.dataGovernance != nil {
+				gov = n.dataGovernance
+			}
+			n.trainingProver = training.NewTrainingProver(gov)
+			log.Info("ZK training verification enabled")
+		}
+		if n.config.AICfg.Attestation.Enabled {
+			ttl := time.Duration(n.config.AICfg.Attestation.TTLSec) * time.Second
+			n.attestationService = attestation.NewAttestationService(
+				nil, nil, ttl, n.config.AICfg.Attestation.MaxItems,
+			)
+			log.Info("ZK inference attestation enabled",
+				"ttl", n.config.AICfg.Attestation.TTLSec,
+			)
+		}
 	}
 
 	// Start distributed infrastructure services when supported by the active profile.

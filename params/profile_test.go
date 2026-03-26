@@ -22,6 +22,9 @@ func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	if !p.SupportsDistributedRuntime() {
 		t.Fatal("expected n42 profile to support distributed runtime")
 	}
+	if !p.SupportsAIRuntime() {
+		t.Fatal("expected n42 profile to support AI runtime")
+	}
 }
 
 func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
@@ -46,6 +49,9 @@ func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
 			}
 			if p.SupportsDistributedRuntime() {
 				t.Fatal("expected ethereum EL profile not to support distributed runtime")
+			}
+			if p.SupportsAIRuntime() {
+				t.Fatal("expected ethereum EL profile not to support AI runtime")
 			}
 		})
 	}
