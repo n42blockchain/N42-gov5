@@ -32,8 +32,8 @@ var (
 	})
 
 	proofLatency = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "bridge_proof_generation_seconds",
-		Help:    "Time to generate a header chain ZK proof",
+		Name:    "bridge_proof_submission_seconds",
+		Help:    "Time to submit a header chain proof to Ethereum",
 		Buckets: []float64{1, 5, 10, 30, 60, 120, 300},
 	})
 
