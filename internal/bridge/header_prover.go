@@ -158,8 +158,8 @@ func fetchHeadersAndQCs(
 	return headers, qcs, nil
 }
 
-// ProveHeaderRange generates a header chain proof for a block range.
-// This is the shared implementation used by both Relayer and DAPublisher.
+// ProveHeaderRange generates a header chain proof for a block range (local verification only).
+// For ZK-backed proofs, use ProveHeaderRangeWithSP1.
 func ProveHeaderRange(
 	chain common.IBlockChain,
 	vs *hotstuff.ValidatorSet,
@@ -254,7 +254,7 @@ func ProveHeaderRangeWithSP1(
 			log.Warn("SP1 proof timed out, using local proof", "jobID", jobID)
 			return proof, nil
 		case <-ticker.C:
-			sp1Proof, err := prover.prover.Status(ctx, jobID)
+			sp1Proof, err := prover.prover.Status(pollCtx, jobID)
 			if err != nil {
 				log.Warn("SP1 status check failed", "err", err, "jobID", jobID)
 				continue

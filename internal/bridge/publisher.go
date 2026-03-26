@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/log"
 )
@@ -25,7 +24,6 @@ type ProofSubmitter interface {
 // ZK proofs + state roots to the Ethereum settlement layer.
 //
 // This is the single service that anchors N42 finality to Ethereum.
-// It replaces the previous Relayer + DAPublisher pair (which were redundant).
 //
 // Flow: poll chain → batch N blocks → local verify → SP1 ZK prove → submit to ETH
 //
@@ -42,9 +40,6 @@ type BridgePublisher struct {
 	batchSize    uint64
 	pollInterval time.Duration
 	lastBlock    atomic.Uint64 // thread-safe: accessed from Run() and external queries
-
-	// Smart publishing: skip when state unchanged (saves gas)
-	lastStateRoot types.Hash
 }
 
 // PublisherConfig holds bridge publisher configuration.
@@ -158,18 +153,9 @@ func (p *BridgePublisher) checkAndPublish(ctx context.Context) error {
 
 	headerProofsGenerated.Inc()
 
-	// Smart publishing: skip if state root hasn't changed
-	if proof.StateRoot == p.lastStateRoot && p.lastStateRoot != (types.Hash{}) {
-		log.Debug("State root unchanged, skipping ETH submission",
-			"stateRoot", proof.StateRoot,
-			"startBlock", startBlock,
-			"endBlock", endBlock,
-		)
-		p.lastBlock.Store(endBlock)
-		return nil
-	}
-
-	// Submit to Ethereum
+	// Always submit — even when stateRoot is unchanged, because the Verifier
+	// tracks (stateRoot, endBlock) pairs. Skipping would leave a coverage gap
+	// that prevents withdrawal proofs for blocks in the skipped range.
 	if p.submitter != nil {
 		submitStart := time.Now()
 		if err := p.submitter.SubmitHeaderChainProof(ctx, proof); err != nil {
@@ -180,7 +166,6 @@ func (p *BridgePublisher) checkAndPublish(ctx context.Context) error {
 	}
 
 	p.lastBlock.Store(endBlock)
-	p.lastStateRoot = proof.StateRoot
 	latestVerifiedBlock.Set(float64(endBlock))
 
 	log.Info("Bridge proof published to Ethereum",
