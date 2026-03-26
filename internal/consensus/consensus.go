@@ -59,6 +59,13 @@ type ChainHeaderReader interface {
 
 	// GetBlockByNumber retrieves a block from the database by number.
 	GetBlockByNumber(number *uint256.Int) (block.IBlock, error)
+}
+
+// N42ChainHeaderReader extends the generic consensus reader with N42-specific
+// reward and deposit accessors. It should be used only by N42 consensus and
+// reward paths, not by generic ETH EL execution code.
+type N42ChainHeaderReader interface {
+	ChainHeaderReader
 
 	// GetDepositInfo retrieves deposit information for an address.
 	GetDepositInfo(address types.Address) (*uint256.Int, *uint256.Int)

@@ -32,6 +32,11 @@ func TestChainHeaderReaderExists(t *testing.T) {
 	var _ consensus.ChainHeaderReader = (*testChainHeaderReader)(nil)
 }
 
+// TestN42ChainHeaderReaderExists verifies N42ChainHeaderReader is defined.
+func TestN42ChainHeaderReaderExists(t *testing.T) {
+	var _ consensus.N42ChainHeaderReader = (*testN42ChainHeaderReader)(nil)
+}
+
 // TestConsensusChainReaderEmbedsChainHeaderReader verifies that
 // ConsensusChainReader embeds ChainHeaderReader and ChainHeaderReader
 // methods are callable through it.
@@ -60,7 +65,7 @@ func TestEngineUsesConsensusChainReader(t *testing.T) {
 // TestChainHeaderReaderMethods verifies all ChainHeaderReader methods
 func TestChainHeaderReaderMethods(t *testing.T) {
 	var chr consensus.ChainHeaderReader = &testChainHeaderReader{}
-	
+
 	tests := []struct {
 		name   string
 		testFn func()
@@ -114,22 +119,8 @@ func TestChainHeaderReaderMethods(t *testing.T) {
 				_, _ = result, err
 			},
 		},
-		{
-			name: "GetDepositInfo(address) (*uint256.Int, *uint256.Int)",
-			testFn: func() {
-				r1, r2 := chr.GetDepositInfo(types.Address{})
-				_, _ = r1, r2
-			},
-		},
-		{
-			name: "GetAccountRewardUnpaid(account) (*uint256.Int, error)",
-			testFn: func() {
-				result, err := chr.GetAccountRewardUnpaid(types.Address{})
-				_, _ = result, err
-			},
-		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.testFn() // If this runs without panic, the method exists with correct signature
@@ -140,7 +131,7 @@ func TestChainHeaderReaderMethods(t *testing.T) {
 // TestConsensusChainReaderAdditionalMethods verifies ConsensusChainReader-only methods
 func TestConsensusChainReaderAdditionalMethods(t *testing.T) {
 	var ccr consensus.ConsensusChainReader = &testConsensusChainReader{}
-	
+
 	result := ccr.GetBlock(types.Hash{}, 0)
 	_ = result
 }
@@ -193,19 +184,22 @@ func (t *testChainHeaderReader) GetBlockByNumber(number *uint256.Int) (block.IBl
 	return nil, nil
 }
 
-func (t *testChainHeaderReader) GetDepositInfo(address types.Address) (*uint256.Int, *uint256.Int) {
+type testN42ChainHeaderReader struct {
+	testChainHeaderReader
+}
+
+func (t *testN42ChainHeaderReader) GetDepositInfo(address types.Address) (*uint256.Int, *uint256.Int) {
 	return nil, nil
 }
 
-func (t *testChainHeaderReader) GetAccountRewardUnpaid(account types.Address) (*uint256.Int, error) {
+func (t *testN42ChainHeaderReader) GetAccountRewardUnpaid(account types.Address) (*uint256.Int, error) {
 	return nil, nil
 }
 
 type testConsensusChainReader struct {
-	testChainHeaderReader
+	testN42ChainHeaderReader
 }
 
 func (t *testConsensusChainReader) GetBlock(hash types.Hash, number uint64) block.IBlock {
 	return nil
 }
-
