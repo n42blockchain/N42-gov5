@@ -131,7 +131,7 @@ func testPragueConfig() *params.ChainConfig {
 	}
 }
 
-func TestProcessPragueSystemCallsRejectsEmptySystemContract(t *testing.T) {
+func TestProcessPragueSystemCallsSkipsUndeployedSystemContracts(t *testing.T) {
 	t.Parallel()
 
 	cfg := testPragueConfig()
@@ -147,9 +147,9 @@ func TestProcessPragueSystemCallsRejectsEmptySystemContract(t *testing.T) {
 		db := memdb.NewTestDB(t)
 		txDb := memdb.BeginRw(t, db)
 		ibs := state.New(state.NewPlainState(txDb, 1))
-		_, err := ProcessPragueSystemCalls(cfg, ibs, header, nil)
-		require.ErrorContains(t, err, "System contract address")
-		require.ErrorContains(t, err, vm.WithdrawalRequestsAddress.Hex())
+		requests, err := ProcessPragueSystemCalls(cfg, ibs, header, nil)
+		require.NoError(t, err)
+		require.Empty(t, requests)
 	})
 
 	t.Run("consolidation", func(t *testing.T) {
@@ -158,9 +158,9 @@ func TestProcessPragueSystemCallsRejectsEmptySystemContract(t *testing.T) {
 		ibs := state.New(state.NewPlainState(txDb, 1))
 		ibs.CreateAccount(vm.WithdrawalRequestsAddress, true)
 		ibs.SetCode(vm.WithdrawalRequestsAddress, []byte{byte(vm.STOP)})
-		_, err := ProcessPragueSystemCalls(cfg, ibs, header, nil)
-		require.ErrorContains(t, err, "System contract address")
-		require.ErrorContains(t, err, vm.ConsolidationRequestsAddress.Hex())
+		requests, err := ProcessPragueSystemCalls(cfg, ibs, header, nil)
+		require.NoError(t, err)
+		require.Empty(t, requests)
 	})
 }
 
