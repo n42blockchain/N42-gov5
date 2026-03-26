@@ -1332,13 +1332,19 @@ func (n *Node) Start() error {
 			}
 		}
 
+		// Get ValidatorSet from HotStuff engine (if available)
+		var vs *hotstuff.ValidatorSet
+		if hs, ok := n.engine.(*hotstuff.HotStuff); ok && hs.Engine() != nil {
+			vs = hs.Engine().CurrentValidatorSet()
+		}
+
 		// Bridge Publisher (unified N42→ETH state root anchoring)
 		pubCfg := &bridge.PublisherConfig{
 			BatchSize:    bcfg.PublisherBatchSize,
 			PollInterval: bcfg.PublisherPollInterval,
 			StartBlock:   bcfg.PublisherStartBlock,
 		}
-		n.bridgePublisher = bridge.NewBridgePublisher(n.blockChain, nil, headerProver, submitter, pubCfg)
+		n.bridgePublisher = bridge.NewBridgePublisher(n.blockChain, vs, headerProver, submitter, pubCfg)
 		go func() {
 			if err := n.bridgePublisher.Run(bridgeCtx); err != nil && err != context.Canceled {
 				log.Warn("Bridge publisher stopped", "err", err)
@@ -1359,9 +1365,45 @@ func (n *Node) Start() error {
 			}
 		}
 
+		// ETH Light Client (reverse bridge: ETH→N42)
+		var ethLC *bridge.EthLightClient
+		if bcfg.EthLightClientEnabled && bcfg.EthBeaconEndpoint != "" {
+			blsVerifier := &bridge.BLSVerifierImpl{}
+			lcCfg := &bridge.EthLightClientConfig{}
+			var err error
+			ethLC, err = bridge.NewEthLightClient(lcCfg, blsVerifier)
+			if err != nil {
+				log.Warn("ETH light client creation failed (need bootstrap data)", "err", err)
+			} else {
+				// Start beacon fetcher goroutine
+				fetcher := bridge.NewBeaconFetcher(bcfg.EthBeaconEndpoint, ethLC, 12*time.Second)
+				go func() {
+					if err := fetcher.Run(bridgeCtx); err != nil && err != context.Canceled {
+						log.Warn("Beacon fetcher stopped", "err", err)
+					}
+				}()
+			}
+		}
+
+		// State prover (JMT state inclusion proofs)
+		var stateProver bridge.StateProverFunc
+		if realBC, ok := n.blockChain.(*internal.BlockChain); ok {
+			if jmtCommit := realBC.JMTCommitment(); jmtCommit != nil {
+				tree := jmtCommit.Tree()
+				stateProver = func(key []byte) (*bridge.StateInclusionProof, error) {
+					current := n.blockChain.CurrentBlock()
+					if current == nil {
+						return nil, fmt.Errorf("no current block")
+					}
+					stateRoot := types.Hash(current.StateRoot())
+					return bridge.ProveStateInclusion(tree, stateRoot, key)
+				}
+			}
+		}
+
 		// ZKRouter
 		n.bridgeRouter = bridge.NewZKRouter(
-			n.bridgePublisher, hyperlane, nil, nil, nil)
+			n.bridgePublisher, hyperlane, ethLC, stateProver, nil)
 
 		// Register bridge RPC namespace
 		bridgeAPI := api.NewBridgeAPI(n.bridgeRouter)
