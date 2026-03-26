@@ -233,6 +233,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 	for i, tx := range txs {
 		// Generate the next state snapshot fast without tracing
 		msg, _ := tx.AsMessage(signer, block.BaseFee64())
+		core.NormalizeExecutionMessage(&msg, true, false)
 		txctx := &Context{
 			BlockHash:   blockHash,
 			BlockNumber: blockNumber.ToBig(),

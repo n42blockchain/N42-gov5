@@ -158,7 +158,7 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 	if err != nil {
 		return nil, nil, err
 	}
-	newExecutionMessagePolicy(cfg.StatelessExec, engine != nil).normalize(&msg)
+	NormalizeExecutionMessage(&msg, cfg.StatelessExec, engine != nil)
 
 	txContext := NewEVMTxContext(msg)
 	if cfg.TraceJumpDest {
