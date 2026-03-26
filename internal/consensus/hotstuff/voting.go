@@ -188,6 +188,24 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 		return err
 	}
 
+	// CommitVote equivocation detection (mirrors processVote tracker).
+	if prevHash, exists := e.commitEquivocationTracker[cv.Voter]; exists {
+		if prevHash != cv.BlockHash {
+			log.Warn("commit-vote equivocation detected",
+				"view", view, "validator", cv.Voter, "prevHash", prevHash, "newHash", cv.BlockHash)
+			_ = e.emit(EngineOutput{
+				Type:      OutputEquivocationDetected,
+				View:      view,
+				Validator: cv.Voter,
+				Hash1:     prevHash,
+				Hash2:     cv.BlockHash,
+			})
+			return nil // discard conflicting commit vote
+		}
+	} else {
+		e.commitEquivocationTracker[cv.Voter] = cv.BlockHash
+	}
+
 	if e.commitCollector == nil {
 		return nil
 	}
