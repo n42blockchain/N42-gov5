@@ -161,6 +161,7 @@ type Node struct {
 	historyExpirer *HistoryExpirer
 	snapshotMgr    *snapshot.Manager
 
+	p2pGenesisHash  types.Hash              // genesis hash used for P2P fork digest
 	exexManager     *exex.Manager           // Execution Extensions manager
 	hotstuffService *hotstuff.Service       // HotStuff BFT consensus service (nil if not using HotStuff)
 	bundlerService  *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
@@ -677,6 +678,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		keyDir:     keyDir,
 		keyDirTemp: isEphem,
 
+		p2pGenesisHash: p2pGenesisHash,
 		p2p:            p2p,
 		sync:           syncServer,
 		is:             is,
@@ -909,7 +911,9 @@ func (n *Node) Start() error {
 
 	// Start HotStuff consensus service if applicable.
 	if hs, ok := n.engine.(*hotstuff.HotStuff); ok && hs.Engine() != nil {
-		gossipTopic := p2p.HotStuffConsensusTopicFormat
+		// Format gossip topic with fork digest (genesis hash prefix).
+		forkDigest := utils.ToBytes4(n.p2pGenesisHash[:])
+		gossipTopic := fmt.Sprintf(p2p.HotStuffConsensusTopicFormat, forkDigest)
 		rpcTopic := p2p.RPCHotStuffDirectTopicV1
 		svc := hotstuff.NewService(hs, n.p2p, n.db, gossipTopic, rpcTopic)
 		svc.SetBlockProducer(n.miner)
