@@ -904,7 +904,7 @@ func (n *Node) Start() error {
 			hs.Authorize(eb, blsKey)
 
 			// Inject reward function (delegates to apos reward logic).
-			hs.SetRewardFunc(func(chainCfg *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+			hs.SetRewardFunc(func(chainCfg *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.N42ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
 				return apos.DoReward(chainCfg, ibs, header, chain)
 			})
 

@@ -709,7 +709,11 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	if !ok {
 		return nil, nil, errors.New("invalid header type: expected *block.Header")
 	}
-	rewards, unpayMap, err := DoReward(c.chainConfig, state, rawHeader, chain)
+	n42Chain, ok := chain.(consensus.N42ChainHeaderReader)
+	if !ok {
+		return nil, nil, errors.New("apos requires n42 chain reward reader")
+	}
+	rewards, unpayMap, err := DoReward(c.chainConfig, state, rawHeader, n42Chain)
 	if err != nil {
 		return nil, nil, err
 	}

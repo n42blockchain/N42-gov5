@@ -51,7 +51,7 @@ var extraMagic = [extraMagicLen]byte{'N', '4', '2', 'H'}
 
 // RewardFunc computes and applies block rewards. Injected by node.go to avoid
 // circular dependency between hotstuff and apos packages.
-type RewardFunc func(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error)
+type RewardFunc func(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.N42ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error)
 
 // HotStuff implements the consensus.Engine interface for HotStuff-2 BFT consensus.
 type HotStuff struct {
@@ -415,8 +415,12 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 	var unpayMap map[types.Address]*uint256.Int
 
 	if h.rewardFn != nil {
+		n42Chain, ok := chain.(consensus.N42ChainHeaderReader)
+		if !ok {
+			return nil, nil, errors.New("hotstuff reward path requires n42 chain reward reader")
+		}
 		var err error
-		rewards, unpayMap, err = h.rewardFn(h.chainConfig, ibs, header, chain)
+		rewards, unpayMap, err = h.rewardFn(h.chainConfig, ibs, header, n42Chain)
 		if err != nil {
 			return nil, nil, err
 		}

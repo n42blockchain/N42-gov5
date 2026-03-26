@@ -16,7 +16,7 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHeaderReader) (map[types.Address]*uint256.Int, map[types.Address]*uint256.Int, error) {
+func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.N42ChainHeaderReader) (map[types.Address]*uint256.Int, map[types.Address]*uint256.Int, error) {
 	rewardMap := make(map[types.Address]*uint256.Int)
 	unpayMap := make(map[types.Address]*uint256.Int)
 
@@ -105,7 +105,7 @@ func AccumulateRewards(r *Reward, number *uint256.Int, chain consensus.ChainHead
 
 // DoReward computes and applies epoch-based block rewards. Exported for use by
 // other consensus engines (e.g. HotStuff) that share the same reward scheme.
-func DoReward(chainConf *params.ChainConfig, state *state.IntraBlockState, header *block.Header, chain consensus.ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+func DoReward(chainConf *params.ChainConfig, state *state.IntraBlockState, header *block.Header, chain consensus.N42ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
 	if chainConf == nil || chainConf.Apos == nil || chainConf.BeijingBlock == nil {
 		return nil, nil, nil // no reward config
 	}

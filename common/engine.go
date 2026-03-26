@@ -47,6 +47,13 @@ type ChainHeaderReader interface {
 
 	// GetBlockByNumber retrieves a block from the database by number.
 	GetBlockByNumber(number *uint256.Int) (block.IBlock, error)
+}
+
+// N42ChainHeaderReader extends the generic chain header reader with N42-specific
+// reward and deposit lookups. Ethereum EL profile code should depend on
+// ChainHeaderReader, not this extension interface.
+type N42ChainHeaderReader interface {
+	ChainHeaderReader
 
 	// GetDepositInfo retrieves deposit information for an address.
 	GetDepositInfo(address types.Address) (*uint256.Int, *uint256.Int)
@@ -85,4 +92,3 @@ type ConsensusEngine interface {
 	// Close terminates any background threads maintained by the consensus engine.
 	Close() error
 }
-
