@@ -52,6 +52,10 @@ func (p ProfileDescriptor) SupportsDistributedRuntime() bool {
 	return p.IsN42()
 }
 
+func (p ProfileDescriptor) SupportsAIRuntime() bool {
+	return p.IsN42()
+}
+
 func ResolveExecutionProfile(raw string) (ProfileDescriptor, error) {
 	normalized := strings.TrimSpace(strings.ToLower(raw))
 	if normalized == "" {
