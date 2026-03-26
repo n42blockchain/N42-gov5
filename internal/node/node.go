@@ -216,6 +216,13 @@ type configuredGenesis struct {
 	isPrivate   bool
 }
 
+func (g configuredGenesis) canonicalHash() (types.Hash, bool) {
+	if g.genesisHash == nil {
+		return types.Hash{}, false
+	}
+	return *g.genesisHash, true
+}
+
 const (
 	initializingState = iota
 	runningState
@@ -347,8 +354,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// evolution (e.g., added blob gas fields), but the chain data is identical.
 	// This ensures fork digest compatibility with peers running older versions.
 	p2pGenesisHash := genesisBlock.Hash()
-	if configuredGenesis.genesisHash != nil {
-		p2pGenesisHash = *configuredGenesis.genesisHash
+	if canonicalHash, ok := configuredGenesis.canonicalHash(); ok {
+		p2pGenesisHash = canonicalHash
 	}
 	p2p, err := p2p.NewService(ctx, p2pGenesisHash, cfg.P2PCfg, cfg.NodeCfg)
 	if err != nil {
@@ -629,8 +636,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		n42sync.WithChainService(bc),
 		n42sync.WithInitialSync(is),
 	}
-	if h := params.GenesisHashByChainName(cfg.NodeCfg.Chain); h != nil {
-		syncOpts = append(syncOpts, n42sync.WithOverrideGenesisHash(*h))
+	if canonicalHash, ok := configuredGenesis.canonicalHash(); ok {
+		syncOpts = append(syncOpts, n42sync.WithOverrideGenesisHash(canonicalHash))
 	}
 	if cfg.P2PCfg.TxGossipEnabled && pool != nil {
 		syncOpts = append(syncOpts, n42sync.WithTxPool(pool))
@@ -705,18 +712,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	// Print beautiful startup banner
 	actualGenesisHash := genesisBlock.Hash()
-	var (
-		expectedGenesisHash types.Hash
-		hasExpectedGenesis  bool
-	)
-	switch cfg.NodeCfg.Chain {
-	case "", "mainnet", "mainnet_compat":
-		expectedGenesisHash = params.MainnetGenesisHash
-		hasExpectedGenesis = true
-	case "testnet":
-		expectedGenesisHash = params.TestnetGenesisHash
-		hasExpectedGenesis = true
-	}
+	expectedGenesisHash, hasExpectedGenesis := configuredGenesis.canonicalHash()
 
 	// Get chain info from description
 	chainName := cfg.NodeCfg.Chain

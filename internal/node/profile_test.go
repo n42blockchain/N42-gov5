@@ -53,11 +53,21 @@ func TestResolveConfiguredGenesisKnownChainUsesCanonicalFixtures(t *testing.T) {
 	if resolved.chainConfig != params.MainnetChainConfig {
 		t.Fatal("expected mainnet chain config")
 	}
+	if canonicalHash, ok := resolved.canonicalHash(); !ok || canonicalHash != params.MainnetGenesisHash {
+		t.Fatalf("canonical hash = %s, ok=%v, want %s", canonicalHash, ok, params.MainnetGenesisHash)
+	}
 }
 
 func TestResolveConfiguredGenesisRejectsUnknownChain(t *testing.T) {
 	if _, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: "mystery"}}); err == nil {
 		t.Fatal("expected unknown chain to be rejected")
+	}
+}
+
+func TestResolveConfiguredGenesisPrivateChainHasNoCanonicalHash(t *testing.T) {
+	resolved := configuredGenesis{isPrivate: true}
+	if _, ok := resolved.canonicalHash(); ok {
+		t.Fatal("expected private chain to have no canonical hash")
 	}
 }
 
