@@ -21,6 +21,7 @@ import (
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/crypto/bls"
 	blscommon "github.com/n42blockchain/N42/common/crypto/bls/common"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )
@@ -63,18 +64,12 @@ type EthHeader struct {
 // Hash returns the SSZ hash-tree-root of the header.
 // Each field is zero-padded to 32 bytes (LE for uint64), then Merkle-ized.
 func (h *EthHeader) Hash() types.Hash {
-	// 5 leaves → pad to 8 (next power of 2) for Merkle tree
-	var leaves [8][32]byte
-
-	// Leaf 0: slot (uint64 LE, zero-padded to 32 bytes)
+	var leaves [8][32]byte // 5 fields padded to next power-of-2 for SSZ
 	binary.LittleEndian.PutUint64(leaves[0][:8], h.Slot)
-	// Leaf 1: proposer_index
 	binary.LittleEndian.PutUint64(leaves[1][:8], h.ProposerIndex)
-	// Leaf 2-4: hash fields (already 32 bytes)
 	leaves[2] = h.ParentRoot
 	leaves[3] = h.StateRoot
 	leaves[4] = h.BodyRoot
-	// Leaves 5-7: zero (padding)
 
 	return sszMerkleize(leaves[:])
 }
@@ -300,6 +295,11 @@ func (lc *EthLightClient) ProcessUpdate(ctx context.Context, update *SyncCommitt
 
 // addVerifiedRoot adds a root with ring-buffer eviction (bounded memory).
 func (lc *EthLightClient) addVerifiedRoot(slot uint64, root types.Hash) {
+	// Skip ring advancement if slot already exists (avoid wasting ring slots on duplicates).
+	if _, exists := lc.verifiedRoots[slot]; exists {
+		lc.verifiedRoots[slot] = root
+		return
+	}
 	// Evict oldest if at capacity
 	if len(lc.verifiedRoots) >= maxVerifiedRoots {
 		oldSlot := lc.verifiedSlotRing[lc.ringIdx]
@@ -527,91 +527,39 @@ func verifyMPTPath(root types.Hash, keyHash []byte, proof [][]byte) ([]byte, err
 
 // extractStorageRoot extracts the storage root (3rd field) from an RLP-encoded account.
 // Account: [nonce, balance, storageRoot, codeHash]
-//
-// NOTE: This uses simplified RLP length-prefix parsing. For production,
-// replace with proper rlp.DecodeBytes.
+// Uses common/rlp.Split for canonical RLP decoding.
 func extractStorageRoot(accountRLP []byte) (types.Hash, error) {
-	if len(accountRLP) < 70 {
-		return types.Hash{}, fmt.Errorf("account RLP too short: %d", len(accountRLP))
+	// Decode the outer list
+	content, _, err := rlp.SplitList(accountRLP)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("not an RLP list: %w", err)
 	}
 
-	// RLP list: first byte is list prefix (0xf8 + length byte, or 0xc0+len for short lists)
-	offset := 0
-	if accountRLP[0] >= 0xf8 {
-		// Long list: 0xf8 + (lenOfLen), then lenOfLen bytes of length
-		lenOfLen := int(accountRLP[0]) - 0xf7
-		offset = 1 + lenOfLen
-	} else if accountRLP[0] >= 0xc0 {
-		// Short list: 0xc0 + len
-		offset = 1
-	} else {
-		return types.Hash{}, fmt.Errorf("not an RLP list: prefix 0x%x", accountRLP[0])
-	}
-
-	// Skip field 0 (nonce) and field 1 (balance), then read field 2 (storageRoot)
-	pos := offset
+	// Skip field 0 (nonce) and field 1 (balance)
+	rest := content
 	for field := 0; field < 2; field++ {
-		if pos >= len(accountRLP) {
-			return types.Hash{}, fmt.Errorf("RLP truncated at field %d", field)
-		}
-		skip, err := rlpFieldLen(accountRLP, pos)
+		_, _, rest, err = rlp.Split(rest)
 		if err != nil {
 			return types.Hash{}, fmt.Errorf("RLP field %d: %w", field, err)
 		}
-		pos += skip
 	}
 
-	// Field 2 is storageRoot (32 bytes, RLP-encoded as 0xa0 + 32 bytes)
-	if pos >= len(accountRLP) || accountRLP[pos] != 0xa0 {
-		return types.Hash{}, fmt.Errorf("expected 32-byte storageRoot at offset %d, got 0x%x", pos, accountRLP[pos])
+	// Field 2 is storageRoot (32-byte string)
+	storageRootBytes, _, err := rlp.SplitString(rest)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("storageRoot: %w", err)
 	}
-	pos++ // skip 0xa0 prefix
-	if pos+32 > len(accountRLP) {
-		return types.Hash{}, fmt.Errorf("storageRoot truncated")
+	if len(storageRootBytes) != 32 {
+		return types.Hash{}, fmt.Errorf("storageRoot wrong length: %d", len(storageRootBytes))
 	}
+
 	var root types.Hash
-	copy(root[:], accountRLP[pos:pos+32])
+	copy(root[:], storageRootBytes)
 	return root, nil
 }
 
-// rlpFieldLen returns the total encoded length (prefix + data) of the RLP item at pos.
-func rlpFieldLen(data []byte, pos int) (int, error) {
-	if pos >= len(data) {
-		return 0, fmt.Errorf("position %d out of bounds (len %d)", pos, len(data))
-	}
-	b := data[pos]
-	switch {
-	case b < 0x80:
-		return 1, nil // single byte
-	case b <= 0xb7:
-		return 1 + int(b-0x80), nil // short string
-	case b <= 0xbf:
-		lenOfLen := int(b - 0xb7)
-		if pos+1+lenOfLen > len(data) {
-			return 0, fmt.Errorf("length prefix truncated")
-		}
-		dataLen := 0
-		for i := 0; i < lenOfLen; i++ {
-			dataLen = (dataLen << 8) | int(data[pos+1+i])
-		}
-		return 1 + lenOfLen + dataLen, nil // long string
-	case b <= 0xf7:
-		return 1 + int(b-0xc0), nil // short list
-	default:
-		lenOfLen := int(b - 0xf7)
-		if pos+1+lenOfLen > len(data) {
-			return 0, fmt.Errorf("list length prefix truncated")
-		}
-		dataLen := 0
-		for i := 0; i < lenOfLen; i++ {
-			dataLen = (dataLen << 8) | int(data[pos+1+i])
-		}
-		return 1 + lenOfLen + dataLen, nil // long list
-	}
-}
-
 // sszMerkleize computes the SSZ Merkle root of a set of 32-byte leaves.
-// Leaves must be a power-of-2 length.
+// Leaves must be a power-of-2 length. Operates in-place (mutates input).
 func sszMerkleize(leaves [][32]byte) types.Hash {
 	n := len(leaves)
 	if n == 0 {
@@ -621,17 +569,13 @@ func sszMerkleize(leaves [][32]byte) types.Hash {
 		return types.Hash(leaves[0])
 	}
 
-	// Copy leaves to avoid mutating input
-	nodes := make([][32]byte, n)
-	copy(nodes, leaves)
-
 	var buf [64]byte
 	for size := n; size > 1; size /= 2 {
 		for i := 0; i < size; i += 2 {
-			copy(buf[:32], nodes[i][:])
-			copy(buf[32:], nodes[i+1][:])
-			nodes[i/2] = sha256.Sum256(buf[:])
+			copy(buf[:32], leaves[i][:])
+			copy(buf[32:], leaves[i+1][:])
+			leaves[i/2] = sha256.Sum256(buf[:])
 		}
 	}
-	return types.Hash(nodes[0])
+	return types.Hash(leaves[0])
 }

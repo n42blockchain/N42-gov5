@@ -136,8 +136,10 @@ func ProveHeaderRange(
 	headers := make([]*block.Header, 0, count)
 	qcs := make([]hotstuff.QuorumCertificate, 0, count)
 
+	num256 := new(uint256.Int)
 	for num := startBlock; num <= endBlock; num++ {
-		blk, err := chain.GetBlockByNumber(uint256.NewInt(num))
+		num256.SetUint64(num)
+		blk, err := chain.GetBlockByNumber(num256)
 		if err != nil || blk == nil {
 			return nil, fmt.Errorf("block %d not found", num)
 		}
