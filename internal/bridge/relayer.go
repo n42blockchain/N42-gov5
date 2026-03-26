@@ -161,21 +161,33 @@ func (r *Relayer) checkAndProve(ctx context.Context) error {
 }
 
 // extractQCFromHeader extracts the HotStuff QC from header extra-data.
-// Returns genesis QC if no QC is embedded (pre-HotStuff blocks).
+// Extra-data layout: magic("N42H",4) + view(8,LE) + QC(variable SSZ) or BLS seal(96)
+// Returns genesis QC if no QC is embedded (pre-HotStuff or non-HotStuff blocks).
 func extractQCFromHeader(h *block.Header) hotstuff.QuorumCertificate {
-	// HotStuff extra-data layout: magic(4) + view(8) + QC(variable) or BLS seal(96)
-	const minExtra = 12
+	const magicLen = 4
+	const viewLen = 8
+	const minExtra = magicLen + viewLen // 12
 	const blsSigLen = 96
 
 	if len(h.Extra) <= minExtra {
 		return hotstuff.GenesisQC()
 	}
 
-	qcData := h.Extra[minExtra:]
-	if len(qcData) == blsSigLen {
+	// Verify HotStuff magic "N42H"
+	if string(h.Extra[:magicLen]) != "N42H" {
 		return hotstuff.GenesisQC()
 	}
 
-	// Placeholder — full QC extraction requires codec access
-	return hotstuff.GenesisQC()
+	qcData := h.Extra[minExtra:]
+	if len(qcData) == blsSigLen {
+		// BLS seal only (no embedded QC)
+		return hotstuff.GenesisQC()
+	}
+
+	// Decode the SSZ-encoded QC
+	qc, err := hotstuff.DecodeQC(qcData)
+	if err != nil {
+		return hotstuff.GenesisQC()
+	}
+	return *qc
 }

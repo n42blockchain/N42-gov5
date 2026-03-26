@@ -26,6 +26,9 @@ contract N42Verifier {
     /// @notice SP1 program verification key (identifies the N42 header chain circuit)
     bytes32 public headerChainVKey;
 
+    /// @notice SP1 program verification key for JMT state inclusion proofs
+    bytes32 public stateProofVKey;
+
     event HeaderChainVerified(uint256 indexed startBlock, uint256 indexed endBlock, bytes32 stateRoot);
     event StateInclusionVerified(bytes32 indexed stateRoot, bytes key, bytes value);
     event Paused(address indexed by);
@@ -41,10 +44,11 @@ contract N42Verifier {
         _;
     }
 
-    constructor(address _sp1Verifier, bytes32 _headerChainVKey) {
+    constructor(address _sp1Verifier, bytes32 _headerChainVKey, bytes32 _stateProofVKey) {
         owner = msg.sender;
         sp1Verifier = _sp1Verifier;
         headerChainVKey = _headerChainVKey;
+        stateProofVKey = _stateProofVKey;
     }
 
     /// @notice Verify an SP1 proof of N42 block header chain validity
@@ -121,17 +125,43 @@ contract N42Verifier {
         return _verifyJMTProof(stateRoot, key, value, jmtProof);
     }
 
-    /// @dev JMT proof verification — NOT YET IMPLEMENTED.
-    ///      Will be replaced with on-chain Blake3 Merkle verification
-    ///      or ZK-compressed state proof before mainnet deployment.
-    ///      DO NOT deploy to mainnet without replacing this function.
+    /// @dev JMT proof verification via ZK-compressed state proof.
+    ///      The off-chain relayer generates a JMT Merkle proof, then an SP1
+    ///      circuit verifies it (Blake3 hash chain) inside the zkVM.
+    ///      On-chain, we only verify the succinct SP1 proof (~300K gas).
+    ///
+    /// Proof format: publicInputs(96) + sp1Proof(variable)
+    ///   publicInputs = stateRoot(32) + keccak256(key)(32) + keccak256(value)(32)
     function _verifyJMTProof(
-        bytes32,
-        bytes calldata,
-        bytes calldata,
-        bytes calldata
-    ) internal pure returns (bool) {
-        revert("JMT proof verification not yet implemented — do not use in production");
+        bytes32 stateRoot,
+        bytes calldata key,
+        bytes calldata value,
+        bytes calldata jmtProof
+    ) internal view returns (bool) {
+        // Minimum: 96 bytes public inputs + at least 1 byte proof
+        require(jmtProof.length > 96, "JMT proof too short");
+
+        // Reconstruct and verify public inputs
+        bytes memory publicInputs = abi.encodePacked(
+            stateRoot,
+            keccak256(key),
+            keccak256(value)
+        );
+
+        // Verify SP1 proof of JMT inclusion
+        bytes memory proof = jmtProof[96:];
+        (bool success, ) = sp1Verifier.staticcall(
+            abi.encodeWithSignature(
+                "verifyProof(bytes32,bytes,bytes)",
+                stateProofVKey,
+                publicInputs,
+                proof
+            )
+        );
+        if (success) {
+            emit StateInclusionVerified(stateRoot, key, value);
+        }
+        return success;
     }
 
     // --- Emergency controls ---
@@ -140,6 +170,7 @@ contract N42Verifier {
     function unpause() external onlyOwner { paused = false; emit Unpaused(msg.sender); }
     function updateSP1Verifier(address _v) external onlyOwner { sp1Verifier = _v; }
     function updateVKey(bytes32 _vk) external onlyOwner { headerChainVKey = _vk; }
+    function updateStateProofVKey(bytes32 _vk) external onlyOwner { stateProofVKey = _vk; }
 
     // --- Helpers ---
 

@@ -94,6 +94,10 @@ func encodeQC(qc *QuorumCertificate) ([]byte, error) {
 	return wire.MarshalSSZ()
 }
 
+// DecodeQC decodes a QuorumCertificate from SSZ-encoded bytes.
+// Exported for use by the cross-chain bridge (QC extraction from block headers).
+func DecodeQC(data []byte) (*QuorumCertificate, error) { return decodeQC(data) }
+
 func decodeQC(data []byte) (*QuorumCertificate, error) {
 	wire := &sync_pb.HotStuffQC{}
 	if err := wire.UnmarshalSSZ(data); err != nil {
