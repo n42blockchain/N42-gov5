@@ -1706,7 +1706,7 @@ prune:
 ```
 分支: main (1969908)
 版本: v5.6.772
-EEST: 42332/42337 (99.988%)，5 条 Prague 系统合约待复测
+EEST: broad shard rerun 全绿，Paris+Shanghai 3573 / Cancun 17783 / Prague 20964 / Osaka 21583
 同步: 0→330 万块通过（receipt root 差异在 block 3304451 待 EVM trace）
 Devnet: --dev 全功能启动就绪
 压测: QUIC + TxGossip 待双节点集群验证
