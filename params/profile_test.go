@@ -16,6 +16,12 @@ func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	if p.String() != string(ExecutionProfileN42) {
 		t.Fatalf("string = %q, want %q", p.String(), ExecutionProfileN42)
 	}
+	if !p.SupportsBridgeRuntime() {
+		t.Fatal("expected n42 profile to support bridge runtime")
+	}
+	if !p.SupportsDistributedRuntime() {
+		t.Fatal("expected n42 profile to support distributed runtime")
+	}
 }
 
 func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
@@ -34,6 +40,12 @@ func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
 			}
 			if p.String() != string(ExecutionProfileEthereumEL) {
 				t.Fatalf("string = %q, want %q", p.String(), ExecutionProfileEthereumEL)
+			}
+			if p.SupportsBridgeRuntime() {
+				t.Fatal("expected ethereum EL profile not to support bridge runtime")
+			}
+			if p.SupportsDistributedRuntime() {
+				t.Fatal("expected ethereum EL profile not to support distributed runtime")
 			}
 		})
 	}

@@ -1240,31 +1240,37 @@ func (n *Node) Start() error {
 		)
 	}
 
-	// Start distributed infrastructure services.
-	if n.config.CoprocessorCfg.Enabled {
-		svc, err := dcoprocessor.NewService(&n.config.CoprocessorCfg)
-		if err != nil {
-			log.Error("Failed to create coprocessor service", "err", err)
-		} else {
-			n.coprocessorService = svc
-			svc.Start()
-			log.Info("ZK coprocessor service enabled")
+	// Start distributed infrastructure services when supported by the active profile.
+	distributedEnabled := n.config.CoprocessorCfg.Enabled || n.config.MessagingCfg.Enabled || n.config.StorageCfg.Enabled || n.config.NotifyCfg.Enabled
+	if distributedEnabled && !n.profile.SupportsDistributedRuntime() {
+		log.Warn("Distributed runtime services disabled for execution profile", "profile", n.profile.String())
+	}
+	if n.profile.SupportsDistributedRuntime() {
+		if n.config.CoprocessorCfg.Enabled {
+			svc, err := dcoprocessor.NewService(&n.config.CoprocessorCfg)
+			if err != nil {
+				log.Error("Failed to create coprocessor service", "err", err)
+			} else {
+				n.coprocessorService = svc
+				svc.Start()
+				log.Info("ZK coprocessor service enabled")
+			}
 		}
-	}
-	if n.config.MessagingCfg.Enabled {
-		n.messagingService = dmessaging.NewService(&n.config.MessagingCfg)
-		n.messagingService.Start()
-		log.Info("Messaging relay service enabled")
-	}
-	if n.config.StorageCfg.Enabled {
-		n.storageBridge = dstorage.NewBridge(&n.config.StorageCfg)
-		n.storageBridge.Start()
-		log.Info("Storage bridge service enabled")
-	}
-	if n.config.NotifyCfg.Enabled {
-		n.notifyService = dnotify.NewService(&n.config.NotifyCfg)
-		n.notifyService.Start()
-		log.Info("Push notification service enabled")
+		if n.config.MessagingCfg.Enabled {
+			n.messagingService = dmessaging.NewService(&n.config.MessagingCfg)
+			n.messagingService.Start()
+			log.Info("Messaging relay service enabled")
+		}
+		if n.config.StorageCfg.Enabled {
+			n.storageBridge = dstorage.NewBridge(&n.config.StorageCfg)
+			n.storageBridge.Start()
+			log.Info("Storage bridge service enabled")
+		}
+		if n.config.NotifyCfg.Enabled {
+			n.notifyService = dnotify.NewService(&n.config.NotifyCfg)
+			n.notifyService.Start()
+			log.Info("Push notification service enabled")
+		}
 	}
 
 	// Start web3:// protocol gateway if configured.
@@ -1291,8 +1297,11 @@ func (n *Node) Start() error {
 		}
 	}
 
-	// Start cross-chain bridge if configured.
-	if n.config.BridgeCfg.Enabled {
+	// Start cross-chain bridge if configured and supported by the active profile.
+	if n.config.BridgeCfg.Enabled && !n.profile.SupportsBridgeRuntime() {
+		log.Warn("Cross-chain bridge disabled for execution profile", "profile", n.profile.String())
+	}
+	if n.config.BridgeCfg.Enabled && n.profile.SupportsBridgeRuntime() {
 		bridgeCtx, bridgeCancel := context.WithCancel(n.ctx)
 		n.bridgeCancel = bridgeCancel
 		bcfg := &n.config.BridgeCfg
