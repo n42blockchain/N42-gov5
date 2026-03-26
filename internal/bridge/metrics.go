@@ -42,11 +42,6 @@ var (
 		Help: "Latest N42 block verified on Ethereum",
 	})
 
-	// DA Publisher metrics
-	daPublicationsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "bridge_da_publications_total",
-		Help: "Total DA publications to Ethereum",
-	})
 
 	// ETH Light Client metrics
 	ethLightClientUpdates = promauto.NewCounter(prometheus.CounterOpts{

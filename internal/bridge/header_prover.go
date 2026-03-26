@@ -303,3 +303,32 @@ func VerifyHeaderChainLocally(
 
 	return nil
 }
+
+// extractQCFromHeader extracts the HotStuff QC from header extra-data.
+// Extra-data layout: magic("N42H",4) + view(8,LE) + QC(variable SSZ) or BLS seal(96)
+// Returns genesis QC if no QC is embedded (pre-HotStuff or non-HotStuff blocks).
+func extractQCFromHeader(h *block.Header) hotstuff.QuorumCertificate {
+	const magicLen = 4
+	const viewLen = 8
+	const minExtra = magicLen + viewLen // 12
+	const blsSigLen = 96
+
+	if len(h.Extra) <= minExtra {
+		return hotstuff.GenesisQC()
+	}
+
+	if string(h.Extra[:magicLen]) != "N42H" {
+		return hotstuff.GenesisQC()
+	}
+
+	qcData := h.Extra[minExtra:]
+	if len(qcData) == blsSigLen {
+		return hotstuff.GenesisQC()
+	}
+
+	qc, err := hotstuff.DecodeQC(qcData)
+	if err != nil {
+		return hotstuff.GenesisQC()
+	}
+	return *qc
+}
