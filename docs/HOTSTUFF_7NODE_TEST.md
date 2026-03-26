@@ -144,9 +144,72 @@ for i in 0 1 2 3 4 5 6; do
 done
 ```
 
-## 七、动态增删验证者节点
+## 七、HotStuff RPC API
 
-### 7.1 移除节点
+HotStuff 共识引擎自动注册 `hotstuff` 命名空间到 HTTP RPC（无需手动 `--http.api`）。
+
+### 7.1 共识查询 API
+
+```bash
+# 当前 view 号
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"hotstuff_getCurrentView","params":[],"id":1}'
+# → {"result":561}
+
+# 验证者数量
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"hotstuff_getValidatorCount","params":[],"id":1}'
+# → {"result":7}
+
+# 当前节点是否是 leader
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"hotstuff_isCurrentLeader","params":[],"id":1}'
+# → {"result":true}
+
+# 当前共识阶段
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"hotstuff_getCurrentPhase","params":[],"id":1}'
+# → {"result":"WaitingForProposal"}
+
+# 连续超时次数（0 = 正常出块）
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"hotstuff_getConsecutiveTimeouts","params":[],"id":1}'
+# → {"result":0}
+```
+
+### 7.2 验证者管理 API（admin 命名空间）
+
+```bash
+# 提议添加验证者（需要有效 48 字节 BLS12-381 公钥）
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"admin_proposeAddValidator","params":["0xADDRESS","0xBLS_PUBKEY"],"id":1}'
+
+# 提议移除验证者
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"admin_proposeRemoveValidator","params":["0xADDRESS"],"id":1}'
+
+# 查看待处理的重配置变更
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"admin_pendingReconfigChanges","params":[],"id":1}'
+# → {"result":{"committed":true,"hasPending":true,"pendingAdds":0,"pendingRemoves":1}}
+```
+
+### 7.3 API 完整列表
+
+| 方法 | 命名空间 | 说明 |
+|------|---------|------|
+| `hotstuff_getCurrentView` | hotstuff | 当前 view 号 |
+| `hotstuff_getCurrentPhase` | hotstuff | 共识阶段（WaitingForProposal/Voting/PreCommit/Committed/TimedOut） |
+| `hotstuff_getValidatorCount` | hotstuff | 活跃验证者数量 |
+| `hotstuff_getConsecutiveTimeouts` | hotstuff | 连续超时计数（>0 表示网络不稳定） |
+| `hotstuff_isCurrentLeader` | hotstuff | 本节点是否为当前 view 的 leader |
+| `admin_proposeAddValidator` | admin | 提议添加验证者 |
+| `admin_proposeRemoveValidator` | admin | 提议移除验证者 |
+| `admin_pendingReconfigChanges` | admin | 查询待处理重配置 |
+
+## 八、动态增删验证者节点
+
+### 8.1 移除节点
 
 通过 admin RPC 提议移除 node6：
 
@@ -158,7 +221,7 @@ curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
 
 **预期**: `{"jsonrpc":"2.0","id":1,"result":null}`（null 表示成功）
 
-### 7.2 查看待处理变更
+### 8.2 查看待处理变更
 
 ```bash
 curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
@@ -175,7 +238,7 @@ curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
 - `committed: true` — 变更已被 CommitQC 确认（等待 epoch 边界激活）
 - `pendingRemoves: 1` — 1 个节点待移除
 
-### 7.3 添加节点
+### 8.3 添加节点
 
 需要新节点的地址和 BLS 公钥（48 字节 hex）：
 
@@ -191,7 +254,7 @@ curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
 - 不能添加已在 pending 列表中的地址
 - 如果已有 staged transition（pending 但已 committed），新提案会被拒绝
 
-### 7.4 变更生效时机
+### 8.4 变更生效时机
 
 变更**不会立即生效**。流程：
 
@@ -203,7 +266,7 @@ curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
 
 genesis.json 中 `epochLength: 1000`，即每 1000 个 view 切换一次 epoch。
 
-### 7.5 验证变更结果
+### 8.5 验证变更结果
 
 epoch 切换后检查日志：
 ```bash
@@ -212,13 +275,13 @@ grep "epoch transition\|staged\|reconfig" hotstuff_testnet/node0.log | tail -5
 
 **预期**: `hotstuff: epoch transition epoch=1 validators=6`（从 7 减到 6）
 
-## 八、停止所有节点
+## 九、停止所有节点
 
 ```bash
 pkill -f "n42.exe.*hotstuff_testnet"
 ```
 
-## 八、清理重新测试
+## 十、清理重新测试
 
 ```bash
 for i in 0 1 2 3 4 5 6; do
