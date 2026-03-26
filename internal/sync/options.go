@@ -48,6 +48,20 @@ func WithEarliestBlock(fn func() uint64) Option {
 	}
 }
 
+// BlockImportNotifier is called after a gossip block is imported into the chain.
+// Used by HotStuff to learn that a proposed block is now locally available.
+type BlockImportNotifier interface {
+	NotifyBlockImported(hash types.Hash, txHash types.Hash)
+}
+
+// WithBlockImportNotifier sets a notifier called after gossip blocks are imported.
+func WithBlockImportNotifier(n BlockImportNotifier) Option {
+	return func(s *Service) error {
+		s.cfg.blockImportNotifier = n
+		return nil
+	}
+}
+
 // WithTxPool enables transaction gossip subscription. Received transactions
 // are added to the pool via AddRemotes.
 func WithTxPool(pool TxPool) Option {

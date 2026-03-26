@@ -15,6 +15,7 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 
 	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	vm "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -70,6 +71,9 @@ type Service struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
+	// Pending block hashes requested by OutputExecuteBlock, waiting for gossip import.
+	pendingExecutions map[types.Hash]struct{}
+
 	// Rate-limit state persistence (persist every N views or on commit).
 	lastPersistedView ViewNumber
 	persistInterval   uint64
@@ -79,15 +83,16 @@ type Service struct {
 func NewService(engine *HotStuff, p2p P2PPublisher, db kv.RwDB, gossipTopic, rpcTopic string) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		engine:          engine,
-		p2p:             p2p,
-		db:              db,
-		gossipTopic:     gossipTopic,
-		rpcTopic:        rpcTopic,
-		rotor:           NewRotor(3),
-		ctx:             ctx,
-		cancel:          cancel,
-		persistInterval: 10,
+		engine:            engine,
+		p2p:               p2p,
+		db:                db,
+		gossipTopic:       gossipTopic,
+		rpcTopic:          rpcTopic,
+		rotor:             NewRotor(3),
+		ctx:               ctx,
+		cancel:            cancel,
+		persistInterval:   10,
+		pendingExecutions: make(map[types.Hash]struct{}),
 	}
 }
 
@@ -153,12 +158,19 @@ func (s *Service) processOutputs() {
 func (s *Service) handleOutput(output EngineOutput) {
 	switch output.Type {
 	case OutputBroadcast:
+		// Leader: broadcast block data via gossip BEFORE sending Proposal,
+		// so followers can import the block and vote on it.
+		if output.Message != nil && output.Message.Type == MsgProposal {
+			s.broadcastBlockData(output.Hash)
+		}
 		s.handleBroadcast(output)
 	case OutputSendToValidator:
 		s.handleSendToValidator(output)
 	case OutputExecuteBlock:
-		log.Debug("hotstuff: execute block requested", "hash", output.Hash)
-		// Block execution is handled by the miner/block processor.
+		// Record pending execution — when the block arrives via gossip and is
+		// imported, NotifyBlockImported will fire EventBlockImported.
+		log.Debug("hotstuff: execute block requested, awaiting gossip import", "hash", output.Hash)
+		s.pendingExecutions[output.Hash] = struct{}{}
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
 		updateMetricsBlockCommitted(output.View)
@@ -186,6 +198,10 @@ func (s *Service) handleOutput(output EngineOutput) {
 	case OutputViewChanged:
 		log.Debug("hotstuff: view changed", "view", output.View)
 		updateMetricsViewChanged(output.View)
+		// Clear stale pending executions from previous view.
+		for k := range s.pendingExecutions {
+			delete(s.pendingExecutions, k)
+		}
 		// Trigger block production if we are the new leader.
 		if s.engine.Engine().IsCurrentLeader() && s.blockProducer != nil {
 			cfg := s.engine.Config()
@@ -555,4 +571,36 @@ func (s *Service) setupRotorStreamHandler() {
 // Rotor returns the service's Rotor instance for external configuration.
 func (s *Service) Rotor() *Rotor {
 	return s.rotor
+}
+
+// broadcastBlockData is a placeholder for explicit leader block broadcast.
+// Currently the miner already broadcasts sealed blocks via the sync layer's
+// block gossip topic (SealedBlock → p2p.Broadcast in blockchain.go).
+// This method adds a small delay before sending the Proposal to give the
+// block gossip time to propagate to followers.
+func (s *Service) broadcastBlockData(_ types.Hash) {
+	// The miner's SealedBlock already gossips the block on the standard
+	// block topic. We just need the Proposal to arrive slightly after,
+	// giving followers time to import. A brief yield is sufficient.
+	time.Sleep(50 * time.Millisecond)
+}
+
+// NotifyBlockImported implements sync.BlockImportNotifier.
+// Called by the sync layer after a gossip block is successfully imported.
+// Matches against pending execution requests and notifies the engine.
+func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
+	if _, pending := s.pendingExecutions[hash]; pending {
+		delete(s.pendingExecutions, hash)
+		if ce := s.engine.Engine(); ce != nil {
+			if err := ce.ProcessEvent(ConsensusEvent{
+				Type:       EventBlockImported,
+				Hash:       hash,
+				TxRootHash: txHash,
+			}); err != nil {
+				log.Debug("hotstuff: EventBlockImported processing failed", "hash", hash, "err", err)
+			} else {
+				log.Debug("hotstuff: block imported, notified consensus engine", "hash", hash)
+			}
+		}
+	}
 }

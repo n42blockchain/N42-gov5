@@ -921,6 +921,9 @@ func (n *Node) Start() error {
 			log.Warn("HotStuff service failed to start", "err", err)
 		}
 		n.hotstuffService = svc
+
+		// Wire sync layer → HotStuff: notify engine when gossip blocks are imported.
+		n.sync.SetBlockImportNotifier(svc)
 	}
 
 	log.PrintStartupProgress(2, 6, "JSON-RPC services")

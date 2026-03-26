@@ -611,7 +611,9 @@ func (w *worker) workLoop(recommit time.Duration) error {
 			return err
 
 		case <-timer.C:
-			if w.isRunning() {
+			// HotStuff BFT: block production is leader-driven, not timer-driven.
+			// Only the leader triggers production via TriggerBlockProduction().
+			if w.isRunning() && w.engine.Type() != params.HotStuffConsensus {
 				commit(true, commitInterruptResubmit)
 			}
 
