@@ -438,8 +438,8 @@ func (h *HotStuff) FinalizeAndAssemble(chain consensus.ChainHeaderReader, iHeade
 		return nil, nil, nil, err
 	}
 
-	// Assemble the block.
-	b := block.NewBlock(header, txs)
+	// Assemble the block with computed TxHash and ReceiptHash.
+	b := block.NewBlockFromReceipt(header, txs, nil, receipts, rewards)
 	return b, rewards, balanceChanges, nil
 }
 
