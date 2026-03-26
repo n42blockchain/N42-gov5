@@ -72,7 +72,9 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 		ss[i] = blsP
 	}
 
-	if v.config.IsBeijing(blockNumber.Uint64()) {
+	// APoS aggregate signature verification (skip for HotStuff — it uses
+	// per-block BLS seal in extra-data, not header.Signature aggregate).
+	if v.config.IsBeijing(blockNumber.Uint64()) && v.config.Consensus != params.HotStuffConsensus {
 		header, ok := b.Header().(*block.Header)
 		if !ok {
 			return fmt.Errorf("ValidateBody: invalid header type assertion for block %v", b.Number64())
