@@ -495,14 +495,9 @@ func hashSyncCommittee(c *SyncCommittee) types.Hash {
 	return types.Hash(sha256.Sum256(final[:]))
 }
 
-// verifyMPTPath verifies an Ethereum MPT proof and returns the value.
-// It walks from root through RLP-encoded trie nodes, verifying the
-// Keccak256 hash chain at each step.
-//
-// NOTE: This implementation verifies the hash chain but uses simplified
-// value extraction. Full production use requires complete RLP node parsing
-// (branch 17-item, extension 2-item, leaf 2-item). DO NOT use for real
-// asset transfers until RLP parsing is complete.
+// verifyMPTPath verifies an Ethereum MPT proof against a state root.
+// Walks from root through RLP-encoded trie nodes (branch/extension/leaf),
+// verifying the Keccak256 hash chain and nibble path at each step.
 func verifyMPTPath(root types.Hash, keyHash []byte, proof [][]byte) ([]byte, error) {
 	if len(proof) == 0 {
 		return nil, fmt.Errorf("empty proof")
@@ -514,23 +509,137 @@ func verifyMPTPath(root types.Hash, keyHash []byte, proof [][]byte) ([]byte, err
 		return nil, fmt.Errorf("proof root mismatch: got %x, want %x", firstNodeHash, root)
 	}
 
-	// Verify hash chain: each node's hash must appear in the previous node
-	for i := 0; i < len(proof)-1; i++ {
-		nextHash := crypto.Keccak256(proof[i+1])
-		if !bytes.Contains(proof[i], nextHash) {
-			return nil, fmt.Errorf("broken hash chain at proof node %d", i)
+	// Convert key hash to nibbles (each byte → 2 nibbles)
+	nibbles := make([]byte, len(keyHash)*2)
+	for i, b := range keyHash {
+		nibbles[i*2] = b >> 4
+		nibbles[i*2+1] = b & 0x0f
+	}
+	nibblePos := 0
+
+	// Walk through proof nodes
+	for i, node := range proof {
+		// Decode the RLP list (trie node)
+		content, _, err := rlp.SplitList(node)
+		if err != nil {
+			return nil, fmt.Errorf("node %d: not an RLP list: %w", i, err)
+		}
+
+		// Count elements to determine node type
+		elements, err := rlpListElements(content)
+		if err != nil {
+			return nil, fmt.Errorf("node %d: parse elements: %w", i, err)
+		}
+
+		switch len(elements) {
+		case 17:
+			// Branch node: 16 children + value
+			if i == len(proof)-1 {
+				// Last node — value is in elements[16]
+				if len(elements[16]) == 0 {
+					return nil, nil // key not found
+				}
+				valBytes, _, err := rlp.SplitString(elements[16])
+				if err != nil {
+					return nil, fmt.Errorf("branch value: %w", err)
+				}
+				return valBytes, nil
+			}
+			// Not last node — follow the nibble path to next child
+			if nibblePos >= len(nibbles) {
+				return nil, fmt.Errorf("node %d: nibble path exhausted at branch", i)
+			}
+			childIdx := nibbles[nibblePos]
+			nibblePos++
+			if childIdx >= 16 {
+				return nil, fmt.Errorf("node %d: invalid nibble %d", i, childIdx)
+			}
+			// Verify child hash matches next proof node
+			if i+1 < len(proof) {
+				childHash := crypto.Keccak256(proof[i+1])
+				if !bytes.Contains(elements[childIdx], childHash) {
+					return nil, fmt.Errorf("node %d: branch child %d hash mismatch", i, childIdx)
+				}
+			}
+
+		case 2:
+			// Extension or Leaf node — decode the compact-encoded path
+			pathBytes, _, err := rlp.SplitString(elements[0])
+			if err != nil {
+				return nil, fmt.Errorf("node %d: decode path: %w", i, err)
+			}
+			if len(pathBytes) == 0 {
+				return nil, fmt.Errorf("node %d: empty path", i)
+			}
+
+			// Compact encoding: first nibble flags (0=ext-even, 1=ext-odd, 2=leaf-even, 3=leaf-odd)
+			firstNibble := pathBytes[0] >> 4
+			isLeaf := firstNibble >= 2
+			isOdd := firstNibble%2 == 1
+
+			// Extract path nibbles
+			var pathNibbles []byte
+			if isOdd {
+				pathNibbles = append(pathNibbles, pathBytes[0]&0x0f)
+			}
+			for _, b := range pathBytes[1:] {
+				pathNibbles = append(pathNibbles, b>>4, b&0x0f)
+			}
+
+			// Verify path nibbles match key nibbles at current position
+			if nibblePos+len(pathNibbles) > len(nibbles) {
+				return nil, fmt.Errorf("node %d: path exceeds key length", i)
+			}
+			for j, pn := range pathNibbles {
+				if nibbles[nibblePos+j] != pn {
+					return nil, fmt.Errorf("node %d: nibble mismatch at position %d", i, nibblePos+j)
+				}
+			}
+			nibblePos += len(pathNibbles)
+
+			if isLeaf {
+				// Leaf node — elements[1] is the value
+				valBytes, _, err := rlp.SplitString(elements[1])
+				if err != nil {
+					return nil, fmt.Errorf("leaf value: %w", err)
+				}
+				return valBytes, nil
+			}
+			// Extension node — verify child hash
+			if i+1 < len(proof) {
+				childHash := crypto.Keccak256(proof[i+1])
+				if !bytes.Contains(elements[1], childHash) {
+					return nil, fmt.Errorf("node %d: extension child hash mismatch", i)
+				}
+			}
+
+		default:
+			return nil, fmt.Errorf("node %d: unexpected element count %d (expected 2 or 17)", i, len(elements))
 		}
 	}
 
-	// Extract value from last node
-	// TODO: full RLP decoding for branch/extension/leaf node types
-	lastNode := proof[len(proof)-1]
-	if len(lastNode) == 0 {
-		return nil, nil
-	}
+	return nil, fmt.Errorf("proof walk completed without finding value")
+}
 
-	_ = keyHash // TODO: verify key path through nibbles matches keyHash
-	return lastNode, nil
+// rlpListElements splits an RLP list's content into its raw element byte slices.
+func rlpListElements(content []byte) ([][]byte, error) {
+	var elements [][]byte
+	rest := content
+	for len(rest) > 0 {
+		// Each call to rlp.Split returns (content, contentRest, restOfList, err)
+		_, elemRest, err := rlp.SplitString(rest)
+		if err != nil {
+			// Try as list
+			_, elemRest, err = rlp.SplitList(rest)
+			if err != nil {
+				return nil, fmt.Errorf("element parse error: %w", err)
+			}
+		}
+		elemLen := len(rest) - len(elemRest)
+		elements = append(elements, rest[:elemLen])
+		rest = elemRest
+	}
+	return elements, nil
 }
 
 // extractStorageRoot extracts the storage root (3rd field) from an RLP-encoded account.
