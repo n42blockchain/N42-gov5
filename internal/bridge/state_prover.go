@@ -39,6 +39,8 @@ func ProveStateInclusion(
 		return nil, fmt.Errorf("get JMT proof: %w", err)
 	}
 
+	stateProofsGenerated.Inc()
+
 	return &StateInclusionProof{
 		StateRoot: stateRoot,
 		Key:       key,

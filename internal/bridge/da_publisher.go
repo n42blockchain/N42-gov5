@@ -6,13 +6,10 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
-	"github.com/holiman/uint256"
-
 	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/log"
 )
@@ -21,8 +18,7 @@ import (
 // as a data availability / settlement layer. This anchors N42 finality to
 // Ethereum at regular intervals.
 //
-// Every `PublishInterval` blocks (~13 minutes at 100 blocks, 8s/block),
-// DAPublisher:
+// Every `PublishInterval` blocks (~13 minutes at 100 blocks, 8s/block):
 //  1. Collects block headers since last publication
 //  2. Verifies locally (HotStuff-2 QC chain)
 //  3. Generates ZK header chain proof (SP1)
@@ -35,9 +31,11 @@ type DAPublisher struct {
 	validatorSet *hotstuff.ValidatorSet
 
 	// Configuration
-	publishInterval uint64        // Blocks between publications (default: 100)
-	pollInterval    time.Duration // How often to check for new blocks
-	lastPublished   uint64        // Last block number published to ETH
+	publishInterval uint64
+	pollInterval    time.Duration
+
+	// Thread-safe: accessed from Run() goroutine and external queries.
+	lastPublished atomic.Uint64
 
 	// ETH submission
 	submitter ProofSubmitter
@@ -45,9 +43,9 @@ type DAPublisher struct {
 
 // DAPublisherConfig holds DA publisher configuration.
 type DAPublisherConfig struct {
-	PublishInterval uint64        `json:"publishInterval" yaml:"publishInterval"` // Blocks per publication
-	PollInterval    time.Duration `json:"pollInterval" yaml:"pollInterval"`       // Poll frequency
-	StartBlock      uint64        `json:"startBlock" yaml:"startBlock"`           // Block to start from
+	PublishInterval uint64        `json:"publishInterval" yaml:"publishInterval"`
+	PollInterval    time.Duration `json:"pollInterval" yaml:"pollInterval"`
+	StartBlock      uint64        `json:"startBlock" yaml:"startBlock"`
 }
 
 // DefaultDAPublisherConfig returns sensible defaults.
@@ -75,15 +73,16 @@ func NewDAPublisher(
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = 30 * time.Second
 	}
-	return &DAPublisher{
+	p := &DAPublisher{
 		chain:           chain,
 		headerProver:    headerProver,
 		validatorSet:    vs,
 		publishInterval: cfg.PublishInterval,
 		pollInterval:    cfg.PollInterval,
-		lastPublished:   cfg.StartBlock,
 		submitter:       submitter,
 	}
+	p.lastPublished.Store(cfg.StartBlock)
+	return p
 }
 
 // Run starts the DA publisher main loop.
@@ -91,7 +90,7 @@ func (p *DAPublisher) Run(ctx context.Context) error {
 	log.Info("DA publisher started",
 		"publishInterval", p.publishInterval,
 		"pollInterval", p.pollInterval,
-		"startBlock", p.lastPublished,
+		"startBlock", p.lastPublished.Load(),
 	)
 
 	ticker := time.NewTicker(p.pollInterval)
@@ -110,6 +109,11 @@ func (p *DAPublisher) Run(ctx context.Context) error {
 	}
 }
 
+// LastPublished returns the last published block number (thread-safe).
+func (p *DAPublisher) LastPublished() uint64 {
+	return p.lastPublished.Load()
+}
+
 // checkAndPublish checks if enough new blocks exist for a publication.
 func (p *DAPublisher) checkAndPublish(ctx context.Context) error {
 	current := p.chain.CurrentBlock()
@@ -117,13 +121,13 @@ func (p *DAPublisher) checkAndPublish(ctx context.Context) error {
 		return nil
 	}
 	currentNum := current.Number64().Uint64()
+	lastPub := p.lastPublished.Load()
 
-	// Need at least publishInterval new blocks
-	if currentNum < p.lastPublished+p.publishInterval {
+	if currentNum < lastPub+p.publishInterval {
 		return nil
 	}
 
-	startBlock := p.lastPublished + 1
+	startBlock := lastPub + 1
 	endBlock := startBlock + p.publishInterval - 1
 	if endBlock > currentNum {
 		endBlock = currentNum
@@ -135,13 +139,13 @@ func (p *DAPublisher) checkAndPublish(ctx context.Context) error {
 		"currentHead", currentNum,
 	)
 
-	// Collect headers for the range
-	proof, err := p.proveRange(ctx, startBlock, endBlock)
+	proof, err := ProveHeaderRange(p.chain, p.validatorSet, startBlock, endBlock)
 	if err != nil {
 		return fmt.Errorf("prove range %d-%d: %w", startBlock, endBlock, err)
 	}
 
-	// Submit to Ethereum
+	headerProofsGenerated.Inc()
+
 	if p.submitter != nil {
 		submitStart := time.Now()
 		if err := p.submitter.SubmitHeaderChainProof(ctx, proof); err != nil {
@@ -151,7 +155,8 @@ func (p *DAPublisher) checkAndPublish(ctx context.Context) error {
 		headerProofsSubmitted.Inc()
 	}
 
-	p.lastPublished = endBlock
+	daPublicationsTotal.Inc()
+	p.lastPublished.Store(endBlock)
 	latestVerifiedBlock.Set(float64(endBlock))
 
 	log.Info("DA publisher: state root anchored to Ethereum",
@@ -161,48 +166,4 @@ func (p *DAPublisher) checkAndPublish(ctx context.Context) error {
 	)
 
 	return nil
-}
-
-// proveRange generates a header chain proof for a block range.
-func (p *DAPublisher) proveRange(_ context.Context, startBlock, endBlock uint64) (*HeaderChainProof, error) {
-	count := endBlock - startBlock + 1
-	headers := make([]*block.Header, 0, count)
-	qcs := make([]hotstuff.QuorumCertificate, 0, count)
-
-	for num := startBlock; num <= endBlock; num++ {
-		blk, err := p.chain.GetBlockByNumber(uint256.NewInt(num))
-		if err != nil || blk == nil {
-			return nil, fmt.Errorf("block %d not found", num)
-		}
-		hdr, ok := blk.Header().(*block.Header)
-		if !ok {
-			return nil, fmt.Errorf("block %d: invalid header type", num)
-		}
-		headers = append(headers, hdr)
-		qcs = append(qcs, extractQCFromHeader(hdr))
-	}
-
-	// Verify locally before generating ZK proof
-	if err := VerifyHeaderChainLocally(headers, qcs, p.validatorSet); err != nil {
-		return nil, fmt.Errorf("local verification failed: %w", err)
-	}
-
-	lastHeader := headers[len(headers)-1]
-	stateRoot := lastHeader.Root
-	publicInputs := EncodePublicInputs(startBlock, endBlock, types.Hash(stateRoot))
-
-	headerProofsGenerated.Inc()
-
-	return &HeaderChainProof{
-		StartBlock:   startBlock,
-		EndBlock:     endBlock,
-		StateRoot:    types.Hash(stateRoot),
-		PublicInputs: publicInputs,
-		ProofData:    nil, // SP1 proof will be filled by prover
-	}, nil
-}
-
-// LastPublished returns the last published block number.
-func (p *DAPublisher) LastPublished() uint64 {
-	return p.lastPublished
 }

@@ -11,6 +11,9 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -120,6 +123,47 @@ func DecodePublicInputs(data []byte) (startBlock, endBlock uint64, stateRoot typ
 	endBlock = binary.LittleEndian.Uint64(data[8:16])
 	copy(stateRoot[:], data[16:48])
 	return
+}
+
+// ProveHeaderRange generates a header chain proof for a block range.
+// This is the shared implementation used by both Relayer and DAPublisher.
+func ProveHeaderRange(
+	chain common.IBlockChain,
+	vs *hotstuff.ValidatorSet,
+	startBlock, endBlock uint64,
+) (*HeaderChainProof, error) {
+	count := endBlock - startBlock + 1
+	headers := make([]*block.Header, 0, count)
+	qcs := make([]hotstuff.QuorumCertificate, 0, count)
+
+	for num := startBlock; num <= endBlock; num++ {
+		blk, err := chain.GetBlockByNumber(uint256.NewInt(num))
+		if err != nil || blk == nil {
+			return nil, fmt.Errorf("block %d not found", num)
+		}
+		hdr, ok := blk.Header().(*block.Header)
+		if !ok {
+			return nil, fmt.Errorf("block %d: invalid header type", num)
+		}
+		headers = append(headers, hdr)
+		qcs = append(qcs, extractQCFromHeader(hdr))
+	}
+
+	if err := VerifyHeaderChainLocally(headers, qcs, vs); err != nil {
+		return nil, fmt.Errorf("local verification failed: %w", err)
+	}
+
+	lastHeader := headers[len(headers)-1]
+	stateRoot := lastHeader.Root
+	publicInputs := EncodePublicInputs(startBlock, endBlock, types.Hash(stateRoot))
+
+	return &HeaderChainProof{
+		StartBlock:   startBlock,
+		EndBlock:     endBlock,
+		StateRoot:    types.Hash(stateRoot),
+		PublicInputs: publicInputs,
+		ProofData:    nil, // SP1 proof will be filled by prover
+	}, nil
 }
 
 // VerifyHeaderChainLocally verifies a header chain without ZK, using direct

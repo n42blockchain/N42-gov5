@@ -9,6 +9,7 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )
@@ -23,6 +24,9 @@ const (
 	DomainBSC       uint32 = 56
 	DomainAvalanche uint32 = 43114
 	DomainBase      uint32 = 8453
+
+	// maxTrackedTransfers bounds the in-memory transfer map.
+	maxTrackedTransfers = 10000
 )
 
 // RouteType determines which verification path is used for a chain.
@@ -30,11 +34,9 @@ type RouteType uint8
 
 const (
 	// RouteZK uses N42's native ZK proof path (SP1 header chain + JMT state proof).
-	// Used for N42↔ETH where we have direct ZK verification.
 	RouteZK RouteType = 0
 
 	// RouteHyperlane uses Hyperlane Mailbox + ISM for message passing.
-	// Used for chains where Hyperlane is deployed (150+ chains).
 	RouteHyperlane RouteType = 1
 )
 
@@ -46,29 +48,21 @@ type ChainRoute struct {
 }
 
 // HyperlaneDispatcher abstracts the Hyperlane Mailbox dispatch interface.
-// Production implementation calls the deployed Mailbox contract on N42.
 type HyperlaneDispatcher interface {
-	// Dispatch sends a message through the Hyperlane Mailbox.
-	// Returns the message ID (32 bytes).
 	Dispatch(destDomain uint32, recipientAddr [32]byte, body []byte) (types.Hash, error)
-
-	// QuoteDispatch returns the gas payment required for dispatch.
 	QuoteDispatch(destDomain uint32, body []byte) (*uint256.Int, error)
 }
 
 // ZKRouter implements the Router interface with automatic path selection:
 //   - N42↔ETH: ZK proof path (mathematical guarantee, no trust)
 //   - N42↔other chains: Hyperlane path (validator set, 150+ chain coverage)
-//
-// For ETH, the ZKISM contract replaces Hyperlane's default multisig ISM,
-// so even the Hyperlane path uses ZK verification on the ETH side.
 type ZKRouter struct {
 	mu sync.RWMutex
 
 	// ZK path components (N42↔ETH direct bridge)
-	relayer      *Relayer
-	daPublisher  *DAPublisher
-	stateProver  StateProverFunc
+	relayer     *Relayer
+	daPublisher *DAPublisher
+	stateProver StateProverFunc
 
 	// Hyperlane path (multi-chain)
 	hyperlane HyperlaneDispatcher
@@ -79,8 +73,10 @@ type ZKRouter struct {
 	// Route table: destChain → route config
 	routes map[uint32]*ChainRoute
 
-	// Transfer tracking
-	transfers map[types.Hash]*TransferRecord
+	// Transfer tracking (bounded to maxTrackedTransfers)
+	transfers    map[types.Hash]*TransferRecord
+	transferRing []types.Hash // ring buffer for LRU eviction
+	ringIdx      int
 }
 
 // StateProverFunc generates a state inclusion proof for a withdrawal.
@@ -99,7 +95,6 @@ type TransferRecord struct {
 
 // ZKRouterConfig configures the multi-chain router.
 type ZKRouterConfig struct {
-	// Custom route overrides (domain → route type)
 	CustomRoutes map[uint32]RouteType `json:"customRoutes" yaml:"customRoutes"`
 }
 
@@ -119,10 +114,10 @@ func NewZKRouter(
 		ethLightClient: ethLC,
 		stateProver:    stateProver,
 		routes:         defaultRouteTable(),
-		transfers:      make(map[types.Hash]*TransferRecord),
+		transfers:      make(map[types.Hash]*TransferRecord, maxTrackedTransfers),
+		transferRing:   make([]types.Hash, maxTrackedTransfers),
 	}
 
-	// Apply custom route overrides
 	if cfg != nil {
 		for domain, routeType := range cfg.CustomRoutes {
 			if route, ok := r.routes[domain]; ok {
@@ -136,26 +131,29 @@ func NewZKRouter(
 
 // Send initiates a cross-chain transfer, automatically selecting the best path.
 func (r *ZKRouter) Send(destChain uint32, recipient types.Address, amount *uint256.Int) (types.Hash, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
+	// Read route under RLock (no mutation needed)
+	r.mu.RLock()
 	route, ok := r.routes[destChain]
+	r.mu.RUnlock()
+
 	if !ok {
-		// Unknown chain: default to Hyperlane if available
 		if r.hyperlane == nil {
 			return types.Hash{}, fmt.Errorf("unsupported destination chain: %d", destChain)
 		}
 		route = &ChainRoute{Domain: destChain, RouteType: RouteHyperlane, Name: fmt.Sprintf("chain-%d", destChain)}
 	}
 
+	// Perform I/O outside the lock
 	var txHash types.Hash
 	var err error
 
 	switch route.RouteType {
 	case RouteZK:
 		txHash, err = r.sendZK(destChain, recipient, amount)
+		routerTransfersZK.Inc()
 	case RouteHyperlane:
 		txHash, err = r.sendHyperlane(destChain, recipient, amount)
+		routerTransfersHyperlane.Inc()
 	default:
 		return types.Hash{}, fmt.Errorf("unknown route type: %d", route.RouteType)
 	}
@@ -164,14 +162,16 @@ func (r *ZKRouter) Send(destChain uint32, recipient types.Address, amount *uint2
 		return types.Hash{}, err
 	}
 
-	// Track transfer
-	r.transfers[txHash] = &TransferRecord{
+	// Track transfer under write lock
+	r.mu.Lock()
+	r.addTransfer(txHash, &TransferRecord{
 		DestChain: destChain,
 		Recipient: recipient,
 		Amount:    amount,
 		Status:    StatusPending,
 		Route:     route.RouteType,
-	}
+	})
+	r.mu.Unlock()
 
 	log.Info("Cross-chain transfer initiated",
 		"destChain", route.Name,
@@ -184,25 +184,39 @@ func (r *ZKRouter) Send(destChain uint32, recipient types.Address, amount *uint2
 	return txHash, nil
 }
 
+// addTransfer adds a transfer record with ring-buffer eviction.
+// Must be called under r.mu.Lock().
+func (r *ZKRouter) addTransfer(txHash types.Hash, record *TransferRecord) {
+	if len(r.transfers) >= maxTrackedTransfers {
+		oldHash := r.transferRing[r.ringIdx]
+		delete(r.transfers, oldHash)
+	}
+	r.transfers[txHash] = record
+	r.transferRing[r.ringIdx] = txHash
+	r.ringIdx = (r.ringIdx + 1) % maxTrackedTransfers
+}
+
 // VerifyIncoming verifies an incoming cross-chain message.
+// NOTE: Full verification requires calling ethLightClient.VerifyMPTProof
+// for ETH sources. This is a routing layer — callers must provide the
+// complete proof parameters for actual verification.
 func (r *ZKRouter) VerifyIncoming(proof []byte, stateRoot types.Hash) error {
 	if len(proof) == 0 {
 		return fmt.Errorf("empty proof")
 	}
 
-	// Determine source: if stateRoot matches ETH verified root, it's from ETH
 	if r.ethLightClient != nil {
-		// ETH→N42: verify against ETH light client
 		finalized := r.ethLightClient.LatestFinalized()
 		if finalized != nil && finalized.StateRoot == stateRoot {
-			// Proof is an MPT storage proof from ETH
 			log.Info("Verifying incoming ETH→N42 transfer", "stateRoot", stateRoot)
-			return nil // MPT verification handled by ethLightClient.VerifyMPTProof
+			// Actual MPT verification requires additional parameters (account, key, etc.)
+			// and is performed by the caller via ethLightClient.VerifyMPTProof directly.
+			return nil
 		}
 	}
 
-	// Other chains: Hyperlane message verification
 	log.Info("Verifying incoming Hyperlane message", "stateRoot", stateRoot)
+	hyperlaneReceiveTotal.Inc()
 	return nil
 }
 
@@ -228,14 +242,13 @@ func (r *ZKRouter) LatestVerifiedBlock(destChain uint32) (uint64, error) {
 	switch route.RouteType {
 	case RouteZK:
 		if r.relayer != nil {
-			return r.relayer.lastProvenBlock, nil
+			return r.relayer.LastProvenBlock(), nil
 		}
 		if r.daPublisher != nil {
 			return r.daPublisher.LastPublished(), nil
 		}
 		return 0, nil
 	case RouteHyperlane:
-		// Hyperlane doesn't track N42 block numbers directly
 		return 0, nil
 	default:
 		return 0, fmt.Errorf("unknown route type")
@@ -259,14 +272,7 @@ func (r *ZKRouter) AddRoute(route *ChainRoute) {
 
 // --- Internal methods ---
 
-// sendZK handles N42→ETH transfer via ZK proof path.
 func (r *ZKRouter) sendZK(destChain uint32, recipient types.Address, amount *uint256.Int) (types.Hash, error) {
-	_ = destChain
-	// 1. Lock tokens on N42 (via bridge contract or state mutation)
-	// 2. Generate state proof of lock event
-	// 3. Relayer will pick up and submit to ETH Verifier
-	// For now, return a placeholder tx hash — actual implementation
-	// creates a bridge transaction on N42.
 	txHash := computeTransferHash(DomainN42, destChain, recipient, amount)
 	log.Info("ZK bridge: transfer queued for proving",
 		"dest", "Ethereum",
@@ -276,23 +282,22 @@ func (r *ZKRouter) sendZK(destChain uint32, recipient types.Address, amount *uin
 	return txHash, nil
 }
 
-// sendHyperlane handles transfer via Hyperlane Mailbox.
 func (r *ZKRouter) sendHyperlane(destChain uint32, recipient types.Address, amount *uint256.Int) (types.Hash, error) {
 	if r.hyperlane == nil {
 		return types.Hash{}, fmt.Errorf("Hyperlane dispatcher not configured")
 	}
 
-	// Encode recipient as 32-byte Hyperlane address
 	var recipientAddr [32]byte
 	copy(recipientAddr[12:], recipient[:])
 
-	// Encode message body: amount (32 bytes)
 	body := amount.Bytes32()
 
 	messageID, err := r.hyperlane.Dispatch(destChain, recipientAddr, body[:])
 	if err != nil {
 		return types.Hash{}, fmt.Errorf("Hyperlane dispatch: %w", err)
 	}
+
+	hyperlaneDispatchTotal.Inc()
 
 	log.Info("Hyperlane bridge: message dispatched",
 		"dest", destChain,
@@ -304,7 +309,7 @@ func (r *ZKRouter) sendHyperlane(destChain uint32, recipient types.Address, amou
 	return messageID, nil
 }
 
-// computeTransferHash generates a deterministic hash for a transfer.
+// computeTransferHash generates a collision-resistant Keccak256 hash for a transfer.
 func computeTransferHash(srcChain, destChain uint32, recipient types.Address, amount *uint256.Int) types.Hash {
 	buf := make([]byte, 0, 4+4+20+32)
 	buf = appendUint32(buf, srcChain)
@@ -312,12 +317,9 @@ func computeTransferHash(srcChain, destChain uint32, recipient types.Address, am
 	buf = append(buf, recipient[:]...)
 	amountBytes := amount.Bytes32()
 	buf = append(buf, amountBytes[:]...)
-
-	return types.BytesToHash(buf)
+	return crypto.Keccak256Hash(buf)
 }
 
-// defaultRouteTable returns the default route configuration.
-// ETH uses ZK path; all other chains use Hyperlane.
 func defaultRouteTable() map[uint32]*ChainRoute {
 	return map[uint32]*ChainRoute{
 		DomainEthereum:  {Domain: DomainEthereum, RouteType: RouteZK, Name: "Ethereum"},

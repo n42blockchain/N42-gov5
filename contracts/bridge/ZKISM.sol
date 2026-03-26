@@ -47,10 +47,12 @@ contract ZKISM {
         minConfirmations = _minConfirmations > 0 ? _minConfirmations : 1;
     }
 
+    /// @notice Hyperlane ISM module type constant
+    uint8 public constant ISM_TYPE_CUSTOM = 4;
+
     /// @notice IInterchainSecurityModule.moduleType — returns ISM type
-    /// @dev Type 4 = CUSTOM (not multisig, not routing)
     function moduleType() external pure returns (uint8) {
-        return 4; // ISM_TYPE_CUSTOM
+        return ISM_TYPE_CUSTOM;
     }
 
     /// @notice Verify a Hyperlane message using ZK proof of N42 state.
@@ -110,8 +112,10 @@ contract ZKISM {
             "ZKISM: insufficient confirmations"
         );
 
-        // 4. Mark message as verified (replay protection)
-        require(!verifiedMessages[messageId], "ZKISM: already verified");
+        // 4. Mark message as verified (idempotent — re-verification returns true)
+        if (verifiedMessages[messageId]) {
+            return true;
+        }
         verifiedMessages[messageId] = true;
 
         emit MessageVerified(messageId, endBlock, stateRoot);
