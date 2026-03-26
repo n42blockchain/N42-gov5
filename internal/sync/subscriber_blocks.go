@@ -11,7 +11,8 @@ import (
 
 // blockSubscriber handles incoming block messages from gossip.
 // Future blocks (ahead of the current chain tip) are queued; all others
-// are inserted immediately.
+// are inserted immediately. After successful import, the HotStuff consensus
+// engine is notified so it can proceed with voting on the proposed block.
 func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error {
 	blk := new(block.Block)
 	if err := blk.FromProtoMessage(msg); err != nil {
@@ -23,10 +24,10 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 	}
 
 	header := blk.Header()
-	log.Info("Subscriber received new block",
+	blockHash := header.Hash()
+	log.Debug("Subscriber received new block",
 		"number", blockNumber.Uint64(),
-		"hash", header.Hash(),
-		"stateRoot", header.StateRoot(),
+		"hash", blockHash,
 		"txs", len(blk.Transactions()),
 	)
 
@@ -42,5 +43,12 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 		s.setBadBlock(ctx, blk.Hash())
 		return err
 	}
+
+	// Notify HotStuff consensus that this block is now locally available.
+	// This allows validators to vote on proposals that reference this block.
+	if n := s.cfg.blockImportNotifier; n != nil {
+		n.NotifyBlockImported(blockHash, blk.TxHash())
+	}
+
 	return nil
 }

@@ -71,6 +71,13 @@ type config struct {
 	overrideGenesisHash  *types.Hash        // if set, use this for fork digest instead of actual genesis hash
 	txPool               TxPool             // transaction pool for gossiped txs (nil disables)
 	txGossipEnabled      bool               // enable GossipSub transaction subscription
+	blockImportNotifier  BlockImportNotifier // notified after gossip block import (HotStuff)
+}
+
+// SetBlockImportNotifier sets the notifier dynamically (used when HotStuff
+// service is created after the sync service).
+func (s *Service) SetBlockImportNotifier(n BlockImportNotifier) {
+	s.cfg.blockImportNotifier = n
 }
 
 // Service is responsible for handling all runtime p2p related operations as the
