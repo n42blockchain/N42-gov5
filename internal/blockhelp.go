@@ -181,8 +181,8 @@ func ProcessBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainCon
 }
 
 // ProcessPragueBlockStart applies Prague/Pectra start-of-block system operations:
-//   - EIP-2935: deploy history storage contract (if not already deployed) and
-//     store the parent block hash in the ring buffer.
+//   - EIP-2935: store the parent block hash in the ring buffer once the history
+//     contract has been deployed.
 //
 // Must be called BEFORE transaction execution, after ProcessBeaconBlockRoot.
 func ProcessPragueBlockStart(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header) error {
@@ -198,11 +198,12 @@ func ProcessPragueBlockStart(chainConfig *params.ChainConfig, ibs *state.IntraBl
 		return nil
 	}
 
-	// EIP-2935: deploy history contract if needed, then store parent hash.
-	vm.EnsureHistoryContractDeployed(ibs)
-	if headerNumber.Uint64() > 0 {
-		vm.StoreParentBlockHash(ibs, headerNumber.Uint64()-1, header.ParentHash)
+	// EIP-2935 deployment may happen before, on, or after the fork block depending
+	// on the fixture. Only store history once the contract actually exists.
+	if ibs.GetCodeSize(vm.HistoryStorageAddress) == 0 {
+		return nil
 	}
+	vm.StoreParentBlockHash(ibs, headerNumber.Uint64()-1, header.ParentHash)
 	return ibs.FinalizeTx(rules, state.NewNoopWriter())
 }
 

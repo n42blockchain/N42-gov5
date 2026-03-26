@@ -86,7 +86,7 @@ func TestFinalizeTxDeletesCreatedSelfdestructedContract(t *testing.T) {
 			t.Fatal("expected account to be marked selfdestructed before finalization")
 		}
 
-		if err := statedb.FinalizeTx(&params.Rules{IsSpuriousDragon: true}, writer); err != nil {
+		if err := statedb.FinalizeTx(&params.Rules{IsSpuriousDragon: true, IsCancun: true}, writer); err != nil {
 			return err
 		}
 
@@ -133,6 +133,124 @@ func TestCodeHashesSkipsCreatedSelfdestructedContract(t *testing.T) {
 
 		if got := statedb.CodeHashes(); len(got) != 0 {
 			t.Fatalf("expected no code hashes for created+selfdestructed contract, got %d", len(got))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFinalizeTxPreCancunRetainsCreatedSelfdestructedContract(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	addr := types.HexToAddress("0x10000000000000000000000000000000000000de")
+	db := memdb.NewTestDB(t)
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		statedb := New(NewPlainState(tx, 1))
+		writer := NewPlainStateWriter(tx, tx, 1)
+
+		statedb.CreateAccount(addr, true)
+		statedb.SetCode(addr, []byte{0x60, 0x00})
+		statedb.SetBalance(addr, uint256.NewInt(1))
+		statedb.Selfdestruct6780(addr, types.Address{})
+
+		if err := statedb.FinalizeTx(&params.Rules{IsSpuriousDragon: true}, writer); err != nil {
+			return err
+		}
+
+		if !statedb.Exist(addr) {
+			t.Fatal("expected pre-Cancun created+selfdestructed contract to be retained")
+		}
+		if statedb.GetCodeSize(addr) == 0 {
+			t.Fatal("expected retained pre-Cancun contract code to remain")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFinalizeTxClearsCreatedFlagForSurvivingContract(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	addr := types.HexToAddress("0x10000000000000000000000000000000000000ee")
+	db := memdb.NewTestDB(t)
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		statedb := New(NewPlainState(tx, 1))
+		statedb.CreateAccount(addr, true)
+		statedb.SetCode(addr, []byte{0x60, 0x00})
+
+		if !statedb.WasCreatedInCurrentTx(addr) {
+			t.Fatal("expected contract to be marked created before finalization")
+		}
+		if err := statedb.FinalizeTx(&params.Rules{IsSpuriousDragon: true, IsCancun: true}, NewNoopWriter()); err != nil {
+			return err
+		}
+		if statedb.WasCreatedInCurrentTx(addr) {
+			t.Fatal("expected created flag to be cleared after finalization")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSelfdestruct6780DoesNotDeleteContractCreatedInPreviousTx(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	addr := types.HexToAddress("0x10000000000000000000000000000000000000ef")
+	beneficiary := types.HexToAddress("0x10000000000000000000000000000000000000f0")
+	db := memdb.NewTestDB(t)
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		statedb := New(NewPlainState(tx, 1))
+		writer := NewPlainStateWriter(tx, tx, 1)
+
+		statedb.CreateAccount(addr, true)
+		statedb.SetCode(addr, []byte{0x60, 0x00})
+		statedb.SetBalance(addr, uint256.NewInt(7))
+		if err := statedb.FinalizeTx(&params.Rules{IsSpuriousDragon: true, IsCancun: true}, writer); err != nil {
+			return err
+		}
+
+		if statedb.WasCreatedInCurrentTx(addr) {
+			t.Fatal("expected created flag to be cleared before the next transaction")
+		}
+
+		statedb.AddBalance(beneficiary, uint256.NewInt(7))
+		statedb.Selfdestruct6780(addr, beneficiary)
+		if err := statedb.FinalizeTx(&params.Rules{IsSpuriousDragon: true, IsCancun: true}, writer); err != nil {
+			return err
+		}
+
+		if !statedb.Exist(addr) {
+			t.Fatal("expected contract created in a previous tx to survive EIP-6780 selfdestruct")
+		}
+		if statedb.GetCodeSize(addr) == 0 {
+			t.Fatal("expected surviving contract code to remain after EIP-6780 selfdestruct")
+		}
+		if !statedb.GetBalance(addr).IsZero() {
+			t.Fatal("expected selfdestructed contract balance to be cleared")
 		}
 		return nil
 	})

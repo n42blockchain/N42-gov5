@@ -522,14 +522,10 @@ func newPectraInstructionSet() JumpTable {
 // EIP-2935 System Contract Helpers
 // =============================================================================
 
-// StoreParentBlockHash stores the parent block hash in the EIP-2935 history contract
-// This should be called at the beginning of each block's execution
-// The hash is stored at slot = parentBlockNumber % HISTORY_SERVE_WINDOW
+// StoreParentBlockHash stores the parent block hash in the EIP-2935 history contract.
+// This should be called at the beginning of each block's execution, including block 1
+// where the genesis hash must be written to slot 0.
 func StoreParentBlockHash(statedb StateDB, parentNumber uint64, parentHash types.Hash) {
-	if parentNumber == 0 {
-		return // Skip genesis block
-	}
-
 	// Calculate storage slot: parentNumber % HISTORY_SERVE_WINDOW
 	slot := types.Hash{}
 	slotNum := new(uint256.Int).SetUint64(parentNumber % HistoryServeWindow)

@@ -195,11 +195,41 @@ func TestProcessPragueBlockStartStoresParentHashWhenHistoryContractExists(t *tes
 	require.Equal(t, parentHash, stored)
 }
 
+func TestProcessPragueBlockStartStoresGenesisHashAtSlotZeroWhenHistoryContractExists(t *testing.T) {
+	t.Parallel()
+
+	cfg := testPragueConfig()
+	parentHash := types.HexToHash("0xabcd")
+	header := &block.Header{
+		ParentHash: parentHash,
+		Number:     uint256.NewInt(1),
+		Time:       1,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+	ibs.CreateAccount(vm.HistoryStorageAddress, true)
+	ibs.SetCode(vm.HistoryStorageAddress, vm.HistoryStorageCode)
+
+	require.NoError(t, ProcessPragueBlockStart(cfg, ibs, header))
+
+	slot := types.Hash{}
+	var got uint256.Int
+	ibs.GetState(vm.HistoryStorageAddress, &slot, &got)
+	stored := types.Hash{}
+	got.WriteToSlice(stored[:])
+	require.Equal(t, parentHash, stored)
+}
+
 func TestProcessPragueBlockStartNoOpPrePrague(t *testing.T) {
 	t.Parallel()
 	cfg := &params.ChainConfig{
-		ChainID:    big.NewInt(1),
-		Consensus:  params.Faker,
+		ChainID:     big.NewInt(1),
+		Consensus:   params.Faker,
 		LondonBlock: big.NewInt(0),
 	}
 	header := &block.Header{
@@ -215,12 +245,12 @@ func TestProcessPragueBlockStartNoOpPrePrague(t *testing.T) {
 	require.Equal(t, 0, ibs.GetCodeSize(vm.HistoryStorageAddress))
 }
 
-func TestProcessPragueBlockStartGenesisSkipsParentStore(t *testing.T) {
+func TestProcessPragueBlockStartNoOpWhenHistoryContractMissing(t *testing.T) {
 	t.Parallel()
 	cfg := testPragueConfig()
 	header := &block.Header{
-		Number:     uint256.NewInt(0),
-		Time:       0,
+		Number:     uint256.NewInt(1),
+		Time:       1,
 		GasLimit:   30_000_000,
 		BaseFee:    uint256.NewInt(7),
 		Difficulty: uint256.NewInt(0),
@@ -229,9 +259,7 @@ func TestProcessPragueBlockStartGenesisSkipsParentStore(t *testing.T) {
 	txDb := memdb.BeginRw(t, db)
 	ibs := state.New(state.NewPlainState(txDb, 1))
 	require.NoError(t, ProcessPragueBlockStart(cfg, ibs, header))
-	// Contract should be deployed even at genesis.
-	require.Greater(t, ibs.GetCodeSize(vm.HistoryStorageAddress), 0)
-	// But no parent hash stored (block 0 has no parent).
+	require.Equal(t, 0, ibs.GetCodeSize(vm.HistoryStorageAddress))
 	slot := types.Hash{}
 	var got uint256.Int
 	ibs.GetState(vm.HistoryStorageAddress, &slot, &got)
