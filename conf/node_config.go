@@ -25,16 +25,17 @@ const datadirDefaultKeyStore = "keystore"
 
 type NodeConfig struct {
 	NodePrivate string `json:"private" yaml:"private"`
+	Profile     string `json:"profile" yaml:"profile"`
 	HTTP        bool   `json:"http" yaml:"http" `
 	HTTPHost    string `json:"http_host" yaml:"http_host" `
 	HTTPPort    string `json:"http_port" yaml:"http_port"`
 	HTTPApi     string `json:"http_api" yaml:"http_api"`
-	HTTPCors string `json:"http_cors" yaml:"http_cors"`
+	HTTPCors    string `json:"http_cors" yaml:"http_cors"`
 
-	WS     bool   `json:"ws" yaml:"ws" `
-	WSHost string `json:"ws_host" yaml:"ws_host" `
-	WSPort string `json:"ws_port" yaml:"ws_port"`
-	WSApi  string `json:"ws_api" yaml:"ws_api"`
+	WS               bool   `json:"ws" yaml:"ws" `
+	WSHost           string `json:"ws_host" yaml:"ws_host" `
+	WSPort           string `json:"ws_port" yaml:"ws_port"`
+	WSApi            string `json:"ws_api" yaml:"ws_api"`
 	WSOrigins        string `json:"ws_origins,omitempty" yaml:"ws_origins,omitempty"`
 	IPCPath          string `json:"ipc_path" yaml:"ipc_path"`
 	DataDir          string `json:"data_dir" yaml:"data_dir"`
@@ -54,7 +55,7 @@ type NodeConfig struct {
 	KeyStoreDir string `json:"key_store_dir" yaml:"key_store_dir"`
 
 	// Rate limiting configuration
-	HTTPRateLimit      int `json:"http_rate_limit" yaml:"http_rate_limit"`           // Max requests per second per IP (0 = disabled)
+	HTTPRateLimit      int `json:"http_rate_limit" yaml:"http_rate_limit"`             // Max requests per second per IP (0 = disabled)
 	HTTPRateLimitBurst int `json:"http_rate_limit_burst" yaml:"http_rate_limit_burst"` // Max burst size for rate limiting
 
 	// ParallelEVM enables Block-STM parallel transaction execution.

@@ -54,30 +54,27 @@ import (
 	"github.com/n42blockchain/N42/contracts/deposit/testnet"
 	"github.com/n42blockchain/N42/contracts/deposit/token"
 	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/ai/attestation"
+	"github.com/n42blockchain/N42/internal/ai/governance"
+	"github.com/n42blockchain/N42/internal/ai/training"
+	"github.com/n42blockchain/N42/internal/ai/wallet"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/api/graphql"
+	"github.com/n42blockchain/N42/internal/bridge"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/consensus/apoa"
+	"github.com/n42blockchain/N42/internal/consensus/apos"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
+	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/deferred"
 	dcoprocessor "github.com/n42blockchain/N42/internal/distributed/coprocessor"
 	dmessaging "github.com/n42blockchain/N42/internal/distributed/messaging"
 	dnotify "github.com/n42blockchain/N42/internal/distributed/notify"
 	dstorage "github.com/n42blockchain/N42/internal/distributed/storage"
-	"github.com/n42blockchain/N42/internal/ai/attestation"
-	"github.com/n42blockchain/N42/internal/ai/governance"
-	"github.com/n42blockchain/N42/internal/ai/training"
-	"github.com/n42blockchain/N42/internal/ai/wallet"
-	"github.com/n42blockchain/N42/lib/gointerfaces/remote"
-	"github.com/n42blockchain/N42/lib/kv/remotedbserver"
-	log3 "github.com/n42blockchain/N42/lib/log/v3"
-	"google.golang.org/grpc"
-	"github.com/n42blockchain/N42/internal/consensus/apoa"
-	"github.com/n42blockchain/N42/internal/consensus/apos"
-	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
-	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/exex"
-	"github.com/n42blockchain/N42/internal/ingest"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
+	"github.com/n42blockchain/N42/internal/ingest"
 	"github.com/n42blockchain/N42/internal/mcp"
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/miner"
@@ -93,30 +90,33 @@ import (
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txspool"
-	"github.com/n42blockchain/N42/internal/bridge"
+	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/internal/zkverifier"
-	"github.com/n42blockchain/N42/lib/common/datadir"
 	"github.com/n42blockchain/N42/lib/common/cmp"
+	"github.com/n42blockchain/N42/lib/common/datadir"
+	"github.com/n42blockchain/N42/lib/gointerfaces/remote"
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/lthash"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"github.com/n42blockchain/N42/lib/kv/remotedbserver"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	log3 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/lthash"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"github.com/n42blockchain/N42/modules/state/commitment"
-	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	statesnapshot "github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/utils"
+	"google.golang.org/grpc"
 )
 
 const datadirJWTKey = "jwtsecret" // Path within the datadir to the node's jwt secret
@@ -126,6 +126,7 @@ type Node struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	config       *conf.Config
+	profile      params.ProfileDescriptor
 	genesisBlock block.IBlock
 	etherbase    types.Address
 
@@ -162,20 +163,20 @@ type Node struct {
 	historyExpirer *HistoryExpirer
 	snapshotMgr    *snapshot.Manager
 
-	p2pGenesisHash  types.Hash              // genesis hash used for P2P fork digest
-	exexManager     *exex.Manager           // Execution Extensions manager
-	hotstuffService *hotstuff.Service       // HotStuff BFT consensus service (nil if not using HotStuff)
-	bundlerService  *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
-	peerdasService  *peerdas.Service        // PeerDAS (EIP-7594) data availability service (nil if disabled)
-	mcpServer        *mcp.Server             // MCP (Model Context Protocol) server for AI agents (nil if disabled)
-	deferredPipeline   *deferred.Pipeline             // Deferred execution pipeline (nil if disabled)
-	grpcServer         *grpc.Server                  // gRPC KV server for RPCDaemon (nil if disabled)
-	coprocessorService *dcoprocessor.Service          // ZK coprocessor (nil if disabled)
-	messagingService   *dmessaging.Service            // Decentralized messaging (nil if disabled)
-	storageBridge      *dstorage.Bridge               // IPFS/Filecoin storage bridge (nil if disabled)
-	notifyService      *dnotify.Service               // Push notifications (nil if disabled)
-	web3Gateway        *api.Web3Gateway               // web3:// protocol gateway (nil if disabled)
-	walletService      *wallet.Service                // AI agent wallet (nil if disabled)
+	p2pGenesisHash     types.Hash              // genesis hash used for P2P fork digest
+	exexManager        *exex.Manager           // Execution Extensions manager
+	hotstuffService    *hotstuff.Service       // HotStuff BFT consensus service (nil if not using HotStuff)
+	bundlerService     *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
+	peerdasService     *peerdas.Service        // PeerDAS (EIP-7594) data availability service (nil if disabled)
+	mcpServer          *mcp.Server             // MCP (Model Context Protocol) server for AI agents (nil if disabled)
+	deferredPipeline   *deferred.Pipeline      // Deferred execution pipeline (nil if disabled)
+	grpcServer         *grpc.Server            // gRPC KV server for RPCDaemon (nil if disabled)
+	coprocessorService *dcoprocessor.Service   // ZK coprocessor (nil if disabled)
+	messagingService   *dmessaging.Service     // Decentralized messaging (nil if disabled)
+	storageBridge      *dstorage.Bridge        // IPFS/Filecoin storage bridge (nil if disabled)
+	notifyService      *dnotify.Service        // Push notifications (nil if disabled)
+	web3Gateway        *api.Web3Gateway        // web3:// protocol gateway (nil if disabled)
+	walletService      *wallet.Service         // AI agent wallet (nil if disabled)
 
 	// AI safety infrastructure
 	dataGovernance     *governance.Committee           // Data governance (nil if disabled)
@@ -186,9 +187,9 @@ type Node struct {
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
 
 	// Cross-chain bridge (ZK proof + Hyperlane multi-chain)
-	bridgeRouter  *bridge.ZKRouter     // Multi-chain bridge router (nil if disabled)
-	bridgeRelayer *bridge.Relayer      // N42→ETH ZK proof relayer (nil if disabled)
-	bridgeCancel  context.CancelFunc   // Cancels bridge goroutines on shutdown
+	bridgeRouter  *bridge.ZKRouter   // Multi-chain bridge router (nil if disabled)
+	bridgeRelayer *bridge.Relayer    // N42→ETH ZK proof relayer (nil if disabled)
+	bridgeCancel  context.CancelFunc // Cancels bridge goroutines on shutdown
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -242,8 +243,14 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		genesisHash     types.Hash
 		genesisConfig   *conf.Genesis
 		chainConfig     *params.ChainConfig
+		profile         params.ProfileDescriptor
 		err             error
 	)
+
+	profile, err = params.ResolveExecutionProfile(cfg.NodeCfg.Profile)
+	if err != nil {
+		return nil, err
+	}
 
 	// Apply storage tier configuration before opening any databases.
 	if cfg.StorageTierCfg.Enabled {
@@ -322,7 +329,6 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			return nil, err
 		}
 	}
-
 
 	// Acquire the instance directory lock.
 	if err := node.openDataDir(cfg); err != nil {
@@ -660,6 +666,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		ctx:             ctx,
 		cancel:          cancel,
 		config:          cfg,
+		profile:         profile,
 		miner:           miner,
 		genesisBlock:    genesisBlock,
 		blockChain:      bc,

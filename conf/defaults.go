@@ -53,6 +53,10 @@ var (
 
 // ApplyDefaults fills in missing configuration values with sensible defaults.
 func ApplyDefaults(cfg *Config) {
+	if cfg.NodeCfg.Profile == "" {
+		cfg.NodeCfg.Profile = string(params.ExecutionProfileN42)
+	}
+
 	if cfg.NodeCfg.HTTPPort == "" {
 		cfg.NodeCfg.HTTPPort = DefaultHTTPPort
 	}
@@ -130,6 +134,10 @@ func ApplyDefaults(cfg *Config) {
 
 // Validate checks the configuration for errors.
 func Validate(cfg *Config) error {
+	if _, err := params.ResolveExecutionProfile(cfg.NodeCfg.Profile); err != nil {
+		return err
+	}
+
 	if cfg.ChainCfg == nil && cfg.NodeCfg.Chain != "private" {
 		return ErrMissingChainConfig
 	}
