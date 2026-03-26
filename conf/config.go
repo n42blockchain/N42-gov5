@@ -78,6 +78,9 @@ type Config struct {
 
 	// Ingest server (stress testing)
 	IngestCfg        IngestCfg        `json:"ingest" yaml:"ingest"`
+
+	// Cross-chain bridge (ZK proof + Hyperlane multi-chain)
+	BridgeCfg        BridgeCfg        `json:"bridge" yaml:"bridge"`
 }
 
 func SaveConfigToFile(file string, config Config) error {

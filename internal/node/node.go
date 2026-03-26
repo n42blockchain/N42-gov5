@@ -93,6 +93,7 @@ import (
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txspool"
+	"github.com/n42blockchain/N42/internal/bridge"
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/common/datadir"
@@ -183,6 +184,11 @@ type Node struct {
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
+
+	// Cross-chain bridge (ZK proof + Hyperlane multi-chain)
+	bridgeRouter  *bridge.ZKRouter     // Multi-chain bridge router (nil if disabled)
+	bridgeRelayer *bridge.Relayer      // N42→ETH ZK proof relayer (nil if disabled)
+	bridgeCancel  context.CancelFunc   // Cancels bridge goroutines on shutdown
 
 	keyDir     string // key store directory
 	keyDirTemp bool   // If true, key directory will be removed by Stop
@@ -1241,6 +1247,82 @@ func (n *Node) Start() error {
 		}
 	}
 
+	// Start cross-chain bridge if configured.
+	if n.config.BridgeCfg.Enabled {
+		bridgeCtx, bridgeCancel := context.WithCancel(n.ctx)
+		n.bridgeCancel = bridgeCancel
+		bcfg := &n.config.BridgeCfg
+
+		// HeaderChainProver (wraps SP1 if configured)
+		var sp1Client *zkprover.SP1ProverClient
+		if bcfg.SP1Endpoint != "" || bcfg.SP1GuestBinary != "" {
+			sp1Client = zkprover.NewSP1ProverClient(bcfg.SP1Endpoint, bcfg.SP1GuestBinary, "")
+		}
+		headerProver := bridge.NewHeaderChainProver(sp1Client)
+
+		// ETH proof submitter
+		var submitter bridge.ProofSubmitter
+		if bcfg.EthRPCEndpoint != "" && bcfg.VerifierAddress != "" {
+			var err error
+			submitter, err = bridge.NewETHSubmitter(
+				bcfg.EthRPCEndpoint,
+				types.HexToAddress(bcfg.VerifierAddress),
+				nil, nil) // chainID and privKey configured separately
+			if err != nil {
+				log.Warn("Bridge ETH submitter creation failed", "err", err)
+			}
+		}
+
+		// Relayer
+		relayerCfg := &bridge.RelayerConfig{
+			BatchSize: bcfg.RelayerBatchSize, PollInterval: bcfg.RelayerPollInterval,
+			StartBlock: bcfg.RelayerStartBlock,
+		}
+		n.bridgeRelayer = bridge.NewRelayer(n.blockChain, headerProver, nil, submitter, relayerCfg)
+		go func() {
+			if err := n.bridgeRelayer.Run(bridgeCtx); err != nil && err != context.Canceled {
+				log.Warn("Bridge relayer stopped", "err", err)
+			}
+		}()
+
+		// DA Publisher
+		daCfg := &bridge.DAPublisherConfig{
+			PublishInterval: bcfg.DAPublishInterval, PollInterval: bcfg.DAPollInterval,
+		}
+		daPublisher := bridge.NewDAPublisher(n.blockChain, headerProver, nil, submitter, daCfg)
+		go func() {
+			if err := daPublisher.Run(bridgeCtx); err != nil && err != context.Canceled {
+				log.Warn("DA publisher stopped", "err", err)
+			}
+		}()
+
+		// Hyperlane dispatcher
+		var hyperlane bridge.HyperlaneDispatcher
+		if bcfg.HyperlaneEnabled && bcfg.HyperlaneMailbox != "" {
+			var err error
+			hyperlane, err = bridge.NewHyperlaneMailboxBinding(
+				fmt.Sprintf("http://127.0.0.1:%s", n.config.NodeCfg.HTTPPort),
+				types.HexToAddress(bcfg.HyperlaneMailbox),
+				bcfg.HyperlaneN42Domain,
+				types.Address{})
+			if err != nil {
+				log.Warn("Hyperlane dispatcher creation failed", "err", err)
+			}
+		}
+
+		// ZKRouter
+		n.bridgeRouter = bridge.NewZKRouter(
+			n.bridgeRelayer, daPublisher, hyperlane, nil, nil, nil)
+
+		// Register bridge RPC namespace
+		bridgeAPI := api.NewBridgeAPI(n.bridgeRouter)
+		n.rpcAPIs = append(n.rpcAPIs, bridgeAPI.APIs()...)
+
+		log.Info("Cross-chain bridge enabled",
+			"ethRPC", bcfg.EthRPCEndpoint,
+			"hyperlane", bcfg.HyperlaneEnabled)
+	}
+
 	// Start transaction generator if enabled
 	if n.config.DevCfg.TxGenEnabled {
 		n.startTxGenerator()
@@ -1566,7 +1648,16 @@ func (n *Node) stopServices() []error {
 			n.dataGovernance = nil
 			return nil
 		}},
-		// 2d. Distributed infrastructure
+		// 2d. Cross-chain bridge
+		{"Bridge", func() error {
+			if n.bridgeCancel != nil {
+				n.bridgeCancel()
+			}
+			n.bridgeRouter = nil
+			n.bridgeRelayer = nil
+			return nil
+		}},
+		// 2e. Distributed infrastructure
 		{"Distributed services", func() error {
 			if n.notifyService != nil {
 				n.notifyService.Stop()
