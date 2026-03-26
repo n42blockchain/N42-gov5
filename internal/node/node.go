@@ -209,6 +209,13 @@ type Node struct {
 	txGenerator *txgen.Generator // Transaction generator for testing
 }
 
+type configuredGenesis struct {
+	genesis     *conf.Genesis
+	chainConfig *params.ChainConfig
+	genesisHash *types.Hash
+	isPrivate   bool
+}
+
 const (
 	initializingState = iota
 	runningState
@@ -253,6 +260,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 	cfg.NodeCfg.Profile = profile.String()
 
+	configuredGenesis, err := resolveConfiguredGenesis(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	// Apply storage tier configuration before opening any databases.
 	if cfg.StorageTierCfg.Enabled {
 		dirs := datadir.New(cfg.NodeCfg.DataDir)
@@ -291,19 +303,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	if genesisHash == (types.Hash{}) {
-		if cfg.NodeCfg.Chain == "private" {
-			// Private/dev chain: use a built-in devnet genesis so that
-			// --dev works out of the box without a separate config file.
-			genesisConfig = devnetGenesisBlock(cfg)
-			chainConfig = genesisConfig.Config
-		} else {
-			hashPtr := params.GenesisHashByChainName(cfg.NodeCfg.Chain)
-			if hashPtr == nil {
-				return nil, fmt.Errorf("unknown chain: %s", cfg.NodeCfg.Chain)
-			}
-			genesisHash = *hashPtr
-			genesisConfig = internal.GenesisByChainName(cfg.NodeCfg.Chain)
-			chainConfig = params.ChainConfigByChainName(cfg.NodeCfg.Chain)
+		genesisConfig = configuredGenesis.genesis
+		chainConfig = configuredGenesis.chainConfig
+		if !configuredGenesis.isPrivate {
+			genesisHash = *configuredGenesis.genesisHash
 		}
 		if err := chainKv.Update(ctx, func(tx kv.RwTx) error {
 			var writeErr error
@@ -311,7 +314,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			if writeErr != nil {
 				return writeErr
 			}
-			if cfg.NodeCfg.Chain == "private" {
+			if configuredGenesis.isPrivate {
 				genesisHash = genesisBlock.Hash()
 			}
 			return nil
@@ -321,10 +324,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	// Update ChainConfig on every startup for non-private chains.
-	if cfg.NodeCfg.Chain != "private" {
+	if !configuredGenesis.isPrivate {
 		if err := chainKv.Update(ctx, func(tx kv.RwTx) error {
-			genesisHash = *params.GenesisHashByChainName(cfg.NodeCfg.Chain)
-			genesisConfig = internal.GenesisByChainName(cfg.NodeCfg.Chain)
+			genesisHash = *configuredGenesis.genesisHash
+			genesisConfig = configuredGenesis.genesis
 			return WriteChainConfig(tx, genesisHash, genesisConfig)
 		}); err != nil {
 			return nil, err
@@ -344,8 +347,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// evolution (e.g., added blob gas fields), but the chain data is identical.
 	// This ensures fork digest compatibility with peers running older versions.
 	p2pGenesisHash := genesisBlock.Hash()
-	if h := params.GenesisHashByChainName(cfg.NodeCfg.Chain); h != nil {
-		p2pGenesisHash = *h
+	if configuredGenesis.genesisHash != nil {
+		p2pGenesisHash = *configuredGenesis.genesisHash
 	}
 	p2p, err := p2p.NewService(ctx, p2pGenesisHash, cfg.P2PCfg, cfg.NodeCfg)
 	if err != nil {
@@ -822,6 +825,28 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 func (n *Node) Profile() params.ProfileDescriptor {
 	return n.profile
+}
+
+func resolveConfiguredGenesis(cfg *conf.Config) (configuredGenesis, error) {
+	if cfg.NodeCfg.Chain == "private" {
+		genesis := devnetGenesisBlock(cfg)
+		return configuredGenesis{
+			genesis:     genesis,
+			chainConfig: genesis.Config,
+			isPrivate:   true,
+		}, nil
+	}
+
+	genesisHash := params.GenesisHashByChainName(cfg.NodeCfg.Chain)
+	if genesisHash == nil {
+		return configuredGenesis{}, fmt.Errorf("unknown chain: %s", cfg.NodeCfg.Chain)
+	}
+
+	return configuredGenesis{
+		genesis:     internal.GenesisByChainName(cfg.NodeCfg.Chain),
+		chainConfig: params.ChainConfigByChainName(cfg.NodeCfg.Chain),
+		genesisHash: genesisHash,
+	}, nil
 }
 
 func bundlerChainID(chainCfg *params.ChainConfig) (uint64, error) {
