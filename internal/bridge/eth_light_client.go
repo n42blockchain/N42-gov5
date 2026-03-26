@@ -240,7 +240,12 @@ func (lc *EthLightClient) ProcessUpdate(ctx context.Context, update *SyncCommitt
 	}
 
 	// 7. Verify finality proof (finalized_root in attested_header's state).
-	if len(update.FinalityBranch) > 0 {
+	// Finality branch is REQUIRED — without it, there is no cryptographic link
+	// between the attested header (signed by sync committee) and the finalized header.
+	if len(update.FinalityBranch) == 0 {
+		return fmt.Errorf("finality branch required")
+	}
+	{
 		finalizedRoot := update.FinalizedHeader.Hash()
 		if !verifyMerkleBranch(
 			finalizedRoot,
@@ -445,9 +450,12 @@ func computeSyncCommitteeSigningRoot(headerRoot types.Hash, genesisRoot types.Ha
 // verifyMerkleBranch verifies a Merkle proof against a root.
 // This is the standard beacon chain generalized index proof.
 func verifyMerkleBranch(leaf types.Hash, branch []types.Hash, depth, index int, root types.Hash) bool {
+	if len(branch) != depth {
+		return false
+	}
 	value := leaf
 	var buf [64]byte
-	for i := 0; i < depth && i < len(branch); i++ {
+	for i := 0; i < depth; i++ {
 		if (index>>i)&1 == 1 {
 			copy(buf[:32], branch[i][:])
 			copy(buf[32:], value[:])

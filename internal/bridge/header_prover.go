@@ -132,6 +132,9 @@ func ProveHeaderRange(
 	vs *hotstuff.ValidatorSet,
 	startBlock, endBlock uint64,
 ) (*HeaderChainProof, error) {
+	if startBlock > endBlock {
+		return nil, fmt.Errorf("invalid range: startBlock %d > endBlock %d", startBlock, endBlock)
+	}
 	count := endBlock - startBlock + 1
 	headers := make([]*block.Header, 0, count)
 	qcs := make([]hotstuff.QuorumCertificate, 0, count)

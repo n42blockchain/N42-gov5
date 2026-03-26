@@ -100,7 +100,15 @@ contract N42Bridge {
 
         // Step 1: Verify header chain (or use cached verification)
         if (!verifier.isVerified(endBlock)) {
-            verifier.verifyHeaderChain(headerProof, startBlock, endBlock, stateRoot);
+            require(
+                verifier.verifyHeaderChain(headerProof, startBlock, endBlock, stateRoot),
+                "header chain verification failed"
+            );
+        } else {
+            require(
+                verifier.verifiedStateRoots(endBlock) == stateRoot,
+                "state root mismatch"
+            );
         }
 
         // Step 2: Verify burn event exists in N42 state
