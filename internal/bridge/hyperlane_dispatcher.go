@@ -61,14 +61,14 @@ func NewHyperlaneMailboxBinding(
 // Dispatch sends a message through the Hyperlane Mailbox.
 // Returns the Hyperlane message ID (32 bytes).
 func (h *HyperlaneMailboxBinding) Dispatch(
+	ctx context.Context,
 	destDomain uint32,
 	recipientAddr [32]byte,
 	body []byte,
 ) (types.Hash, error) {
-	ctx := context.Background()
 
 	// 1. Quote dispatch fee
-	fee, err := h.QuoteDispatch(destDomain, body)
+	fee, err := h.QuoteDispatch(ctx, destDomain, body)
 	if err != nil {
 		log.Warn("Hyperlane quoteDispatch failed, using zero fee", "err", err)
 		fee = uint256.NewInt(0)
@@ -106,10 +106,10 @@ func (h *HyperlaneMailboxBinding) Dispatch(
 
 // QuoteDispatch returns the gas payment required for dispatch.
 func (h *HyperlaneMailboxBinding) QuoteDispatch(
+	ctx context.Context,
 	destDomain uint32,
 	body []byte,
 ) (*uint256.Int, error) {
-	ctx := context.Background()
 
 	calldata, err := h.mailboxABI.Pack("quoteDispatch", destDomain, body)
 	if err != nil {
