@@ -24,6 +24,10 @@ type ProfileDescriptor struct {
 	family ProfileFamily
 }
 
+func (p ProfileDescriptor) String() string {
+	return string(p.name)
+}
+
 func (p ProfileDescriptor) Name() ExecutionProfile {
 	return p.name
 }
