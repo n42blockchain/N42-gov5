@@ -5,15 +5,13 @@ package bridge
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"strings"
 	"time"
 
 	"github.com/n42blockchain/N42/accounts/abi"
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -33,22 +31,22 @@ const verifierABIJSON = `[{
 }]`
 
 // ETHSubmitter submits header chain proofs to the N42Verifier contract on Ethereum.
-// Implements the ProofSubmitter interface.
+// Uses eth_sendTransaction with an unlocked account on the ETH RPC endpoint.
+// For production with signed transactions, configure a signing middleware or
+// use a custody service.
 type ETHSubmitter struct {
 	client       *jsonrpc.Client
 	verifierAddr types.Address
 	verifierABI  abi.ABI
-	chainID      *big.Int
-	privKey      *ecdsa.PrivateKey
 	from         types.Address
 }
 
 // NewETHSubmitter creates a new Ethereum proof submitter.
+// from is the account address that must be unlocked on the ETH RPC endpoint.
 func NewETHSubmitter(
 	endpoint string,
 	verifierAddr types.Address,
-	chainID *big.Int,
-	privKey *ecdsa.PrivateKey,
+	from types.Address,
 ) (*ETHSubmitter, error) {
 	client, err := jsonrpc.DialHTTP(endpoint)
 	if err != nil {
@@ -60,28 +58,23 @@ func NewETHSubmitter(
 		return nil, fmt.Errorf("parse verifier ABI: %w", err)
 	}
 
-	pubKey := crypto.PubkeyToAddress(privKey.PublicKey)
-
 	return &ETHSubmitter{
 		client:       client,
 		verifierAddr: verifierAddr,
 		verifierABI:  parsed,
-		chainID:      chainID,
-		privKey:      privKey,
-		from:         pubKey,
+		from:         from,
 	}, nil
 }
 
-// SubmitHeaderChainProof submits a ZK proof to the N42Verifier contract on Ethereum.
+// SubmitHeaderChainProof submits a ZK proof to the N42Verifier contract.
 func (s *ETHSubmitter) SubmitHeaderChainProof(ctx context.Context, proof *HeaderChainProof) error {
 	if proof == nil {
 		return fmt.Errorf("nil proof")
 	}
 
-	// ABI-encode the calldata
 	proofData := proof.ProofData
 	if proofData == nil {
-		proofData = []byte{} // empty proof for simulation mode
+		proofData = []byte{}
 	}
 
 	calldata, err := s.verifierABI.Pack("verifyHeaderChain",
@@ -94,47 +87,28 @@ func (s *ETHSubmitter) SubmitHeaderChainProof(ctx context.Context, proof *Header
 		return fmt.Errorf("ABI encode: %w", err)
 	}
 
-	// Get nonce
-	var nonceHex string
-	if err := s.client.CallContext(ctx, &nonceHex, "eth_getTransactionCount",
-		s.from.Hex(), "pending"); err != nil {
-		return fmt.Errorf("get nonce: %w", err)
-	}
-	nonce := hexToBigInt(nonceHex)
-
-	// Get gas price
-	var gasPriceHex string
-	if err := s.client.CallContext(ctx, &gasPriceHex, "eth_gasPrice"); err != nil {
-		return fmt.Errorf("get gas price: %w", err)
-	}
-	gasPrice := hexToBigInt(gasPriceHex)
-
 	// Estimate gas
 	callMsg := map[string]interface{}{
 		"from": s.from.Hex(),
 		"to":   s.verifierAddr.Hex(),
-		"data": fmt.Sprintf("0x%x", calldata),
+		"data": hexutil.Encode(calldata),
 	}
 	var gasHex string
 	if err := s.client.CallContext(ctx, &gasHex, "eth_estimateGas", callMsg); err != nil {
-		log.Warn("Gas estimate failed, using default", "err", err)
-		gasHex = "0x7A120" // 500K gas default
-	}
-	gasLimit := hexToBigInt(gasHex)
-
-	// Build raw transaction (EIP-155)
-	tx := buildLegacyTx(nonce.Uint64(), s.verifierAddr, big.NewInt(0), gasLimit.Uint64(), gasPrice, calldata, s.chainID)
-
-	// Sign
-	signedTx, err := signTx(tx, s.chainID, s.privKey)
-	if err != nil {
-		return fmt.Errorf("sign tx: %w", err)
+		log.Warn("Gas estimate failed, using default 500K", "err", err)
+		gasHex = "0x7A120"
 	}
 
-	// Send
+	// Submit via eth_sendTransaction (requires unlocked account on ETH RPC)
+	txParams := map[string]interface{}{
+		"from": s.from.Hex(),
+		"to":   s.verifierAddr.Hex(),
+		"data": hexutil.Encode(calldata),
+		"gas":  gasHex,
+	}
+
 	var txHash string
-	if err := s.client.CallContext(ctx, &txHash, "eth_sendRawTransaction",
-		fmt.Sprintf("0x%x", signedTx)); err != nil {
+	if err := s.client.CallContext(ctx, &txHash, "eth_sendTransaction", txParams); err != nil {
 		return fmt.Errorf("send tx: %w", err)
 	}
 
@@ -145,7 +119,6 @@ func (s *ETHSubmitter) SubmitHeaderChainProof(ctx context.Context, proof *Header
 		"stateRoot", proof.StateRoot,
 	)
 
-	// Wait for receipt (with timeout)
 	return s.waitForReceipt(ctx, txHash)
 }
 
@@ -154,7 +127,6 @@ func (s *ETHSubmitter) Close() {
 	s.client.Close()
 }
 
-// waitForReceipt polls for a transaction receipt until confirmed or timeout.
 func (s *ETHSubmitter) waitForReceipt(ctx context.Context, txHash string) error {
 	timeout := time.After(5 * time.Minute)
 	ticker := time.NewTicker(3 * time.Second)
@@ -178,42 +150,4 @@ func (s *ETHSubmitter) waitForReceipt(ctx context.Context, txHash string) error 
 			}
 		}
 	}
-}
-
-// --- Transaction helpers (minimal, no go-ethereum dependency) ---
-
-// buildLegacyTx builds a legacy (EIP-155) transaction for RLP encoding.
-func buildLegacyTx(nonce uint64, to types.Address, value *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte, chainID *big.Int) []interface{} {
-	return []interface{}{
-		nonce,
-		gasPrice,
-		gasLimit,
-		to[:],
-		value,
-		data,
-		chainID,
-		uint(0),
-		uint(0),
-	}
-}
-
-// signTx signs a legacy transaction with EIP-155 replay protection.
-// Returns the RLP-encoded signed transaction.
-func signTx(tx []interface{}, chainID *big.Int, key *ecdsa.PrivateKey) ([]byte, error) {
-	// For production, this should use proper RLP encoding + signing.
-	// Minimal implementation: encode transaction fields, hash, sign.
-	// TODO: use common/rlp.EncodeToBytes for proper RLP encoding
-	_ = tx
-	_ = chainID
-	_ = key
-	return nil, fmt.Errorf("raw transaction signing not yet implemented — use ETH RPC with unlocked account for testing")
-}
-
-func hexToBigInt(hex string) *big.Int {
-	if len(hex) >= 2 && hex[:2] == "0x" {
-		hex = hex[2:]
-	}
-	n := new(big.Int)
-	n.SetString(hex, 16)
-	return n
 }

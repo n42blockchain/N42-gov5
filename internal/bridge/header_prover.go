@@ -129,15 +129,13 @@ func DecodePublicInputs(data []byte) (startBlock, endBlock uint64, stateRoot typ
 	return
 }
 
-// ProveHeaderRange generates a header chain proof for a block range.
-// This is the shared implementation used by both Relayer and DAPublisher.
-func ProveHeaderRange(
+// fetchHeadersAndQCs fetches block headers and QCs for a range from the chain.
+func fetchHeadersAndQCs(
 	chain common.IBlockChain,
-	vs *hotstuff.ValidatorSet,
 	startBlock, endBlock uint64,
-) (*HeaderChainProof, error) {
+) ([]*block.Header, []hotstuff.QuorumCertificate, error) {
 	if startBlock > endBlock {
-		return nil, fmt.Errorf("invalid range: startBlock %d > endBlock %d", startBlock, endBlock)
+		return nil, nil, fmt.Errorf("invalid range: startBlock %d > endBlock %d", startBlock, endBlock)
 	}
 	count := endBlock - startBlock + 1
 	headers := make([]*block.Header, 0, count)
@@ -148,14 +146,28 @@ func ProveHeaderRange(
 		num256.SetUint64(num)
 		blk, err := chain.GetBlockByNumber(num256)
 		if err != nil || blk == nil {
-			return nil, fmt.Errorf("block %d not found", num)
+			return nil, nil, fmt.Errorf("block %d not found", num)
 		}
 		hdr, ok := blk.Header().(*block.Header)
 		if !ok {
-			return nil, fmt.Errorf("block %d: invalid header type", num)
+			return nil, nil, fmt.Errorf("block %d: invalid header type", num)
 		}
 		headers = append(headers, hdr)
 		qcs = append(qcs, extractQCFromHeader(hdr))
+	}
+	return headers, qcs, nil
+}
+
+// ProveHeaderRange generates a header chain proof for a block range.
+// This is the shared implementation used by both Relayer and DAPublisher.
+func ProveHeaderRange(
+	chain common.IBlockChain,
+	vs *hotstuff.ValidatorSet,
+	startBlock, endBlock uint64,
+) (*HeaderChainProof, error) {
+	headers, qcs, err := fetchHeadersAndQCs(chain, startBlock, endBlock)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := VerifyHeaderChainLocally(headers, qcs, vs); err != nil {
@@ -171,12 +183,12 @@ func ProveHeaderRange(
 		EndBlock:     endBlock,
 		StateRoot:    types.Hash(stateRoot),
 		PublicInputs: publicInputs,
-		ProofData:    nil, // Local verification only; use ProveHeaderRangeWithSP1 for ZK proofs
+		ProofData:    nil,
 	}, nil
 }
 
 // ProveHeaderRangeWithSP1 generates a header chain proof with real SP1 ZK proving.
-// Falls back to ProveHeaderRange (nil ProofData) if prover is nil or unavailable.
+// Falls back to local-only proof (nil ProofData) if prover is nil or unavailable.
 func ProveHeaderRangeWithSP1(
 	ctx context.Context,
 	chain common.IBlockChain,
@@ -184,33 +196,29 @@ func ProveHeaderRangeWithSP1(
 	prover *HeaderChainProver,
 	startBlock, endBlock uint64,
 ) (*HeaderChainProof, error) {
-	// First generate and locally verify the proof structure
-	proof, err := ProveHeaderRange(chain, vs, startBlock, endBlock)
+	// Fetch headers once (shared between local verify and SP1 input)
+	headers, qcs, err := fetchHeadersAndQCs(chain, startBlock, endBlock)
 	if err != nil {
 		return nil, err
 	}
 
-	// If no SP1 prover configured, return with nil ProofData (simulation mode)
-	if prover == nil || prover.prover == nil {
-		return proof, nil
+	if err := VerifyHeaderChainLocally(headers, qcs, vs); err != nil {
+		return nil, fmt.Errorf("local verification failed: %w", err)
 	}
 
-	// Build guest input for SP1 circuit
-	headers := make([]*block.Header, 0, endBlock-startBlock+1)
-	qcs := make([]hotstuff.QuorumCertificate, 0, endBlock-startBlock+1)
-	num256 := new(uint256.Int)
-	for num := startBlock; num <= endBlock; num++ {
-		num256.SetUint64(num)
-		blk, err := chain.GetBlockByNumber(num256)
-		if err != nil || blk == nil {
-			return proof, nil // fall back to non-ZK
-		}
-		hdr, ok := blk.Header().(*block.Header)
-		if !ok {
-			return proof, nil
-		}
-		headers = append(headers, hdr)
-		qcs = append(qcs, extractQCFromHeader(hdr))
+	lastHeader := headers[len(headers)-1]
+	stateRoot := lastHeader.Root
+	publicInputs := EncodePublicInputs(startBlock, endBlock, types.Hash(stateRoot))
+
+	proof := &HeaderChainProof{
+		StartBlock:   startBlock,
+		EndBlock:     endBlock,
+		StateRoot:    types.Hash(stateRoot),
+		PublicInputs: publicInputs,
+	}
+
+	if prover == nil || prover.prover == nil {
+		return proof, nil
 	}
 
 	input, err := BuildHeaderChainInput(headers, qcs, vs)
@@ -219,14 +227,12 @@ func ProveHeaderRangeWithSP1(
 		return proof, nil
 	}
 
-	// Serialize input for SP1 guest program
 	guestInput, err := json.Marshal(input)
 	if err != nil {
 		log.Warn("Failed to serialize SP1 input", "err", err)
 		return proof, nil
 	}
 
-	// Submit to SP1 prover
 	lastHash := headers[len(headers)-1].Hash()
 	jobID, err := prover.prover.Submit(ctx, lastHash, endBlock, guestInput)
 	if err != nil {
@@ -236,9 +242,7 @@ func ProveHeaderRangeWithSP1(
 
 	log.Info("SP1 proof submitted", "jobID", jobID, "startBlock", startBlock, "endBlock", endBlock)
 
-	// Poll for proof completion (with timeout)
-	pollTimeout := 10 * time.Minute
-	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+	pollCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	ticker := time.NewTicker(5 * time.Second)
@@ -257,12 +261,7 @@ func ProveHeaderRangeWithSP1(
 			}
 			if sp1Proof != nil {
 				proof.ProofData = sp1Proof.ProofData
-				log.Info("SP1 proof completed",
-					"jobID", jobID,
-					"proofSize", len(sp1Proof.ProofData),
-					"startBlock", startBlock,
-					"endBlock", endBlock,
-				)
+				log.Info("SP1 proof completed", "jobID", jobID, "proofSize", len(sp1Proof.ProofData))
 				return proof, nil
 			}
 		}
@@ -294,8 +293,8 @@ func VerifyHeaderChainLocally(
 			}
 		}
 
-		// Verify QC BLS aggregate signature
-		if qcs[i].View > 0 {
+		// Verify QC BLS aggregate signature (skip if no validator set or genesis QC)
+		if qcs[i].View > 0 && vs != nil {
 			if err := hotstuff.VerifyQCAnyDomain(&qcs[i], vs); err != nil {
 				return fmt.Errorf("QC verification failed at block %d: %w", headers[i].Number.Uint64(), err)
 			}

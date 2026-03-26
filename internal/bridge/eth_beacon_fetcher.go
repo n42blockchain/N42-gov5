@@ -5,10 +5,12 @@ package bridge
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -155,8 +157,8 @@ func parseBeaconFinalityUpdate(body []byte) (*SyncCommitteeUpdate, error) {
 	}
 
 	// Parse sync aggregate
-	sigBytes := hexToBytes(resp.Data.SyncAggregate.SyncCommitteeSignature)
-	bitsBytes := hexToBytes(resp.Data.SyncAggregate.SyncCommitteeBits)
+	sigBytes := decodeHex(resp.Data.SyncAggregate.SyncCommitteeSignature)
+	bitsBytes := decodeHex(resp.Data.SyncAggregate.SyncCommitteeBits)
 
 	var bits [SyncCommitteeSize / 8]byte
 	copy(bits[:], bitsBytes)
@@ -173,8 +175,8 @@ func parseBeaconFinalityUpdate(body []byte) (*SyncCommitteeUpdate, error) {
 }
 
 func parseBeaconHeaderToEthHeader(bh beaconHeader) (*EthHeader, error) {
-	slot := parseUint64(bh.Beacon.Slot)
-	proposerIndex := parseUint64(bh.Beacon.ProposerIndex)
+	slot := parseDecimalUint64(bh.Beacon.Slot)
+	proposerIndex := parseDecimalUint64(bh.Beacon.ProposerIndex)
 
 	return &EthHeader{
 		Slot:          slot,
@@ -185,39 +187,18 @@ func parseBeaconHeaderToEthHeader(bh beaconHeader) (*EthHeader, error) {
 	}, nil
 }
 
-func hexToBytes(s string) []byte {
+func decodeHex(s string) []byte {
 	if len(s) >= 2 && s[:2] == "0x" {
 		s = s[2:]
 	}
 	if len(s)%2 != 0 {
 		s = "0" + s
 	}
-	b := make([]byte, len(s)/2)
-	for i := 0; i < len(b); i++ {
-		b[i] = hexNibble(s[2*i])<<4 | hexNibble(s[2*i+1])
-	}
+	b, _ := hex.DecodeString(s)
 	return b
 }
 
-func hexNibble(c byte) byte {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0'
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10
-	default:
-		return 0
-	}
-}
-
-func parseUint64(s string) uint64 {
-	var n uint64
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + uint64(c-'0')
-		}
-	}
+func parseDecimalUint64(s string) uint64 {
+	n, _ := strconv.ParseUint(s, 10, 64)
 	return n
 }

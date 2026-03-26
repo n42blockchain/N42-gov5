@@ -6,12 +6,12 @@ package bridge
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"strings"
 
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/accounts/abi"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -127,11 +127,10 @@ func (h *HyperlaneMailboxBinding) QuoteDispatch(
 		return nil, fmt.Errorf("quoteDispatch call: %w", err)
 	}
 
-	fee := new(big.Int)
-	if len(resultHex) >= 2 && resultHex[:2] == "0x" {
-		resultHex = resultHex[2:]
+	fee, err := hexutil.DecodeBig(resultHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode fee: %w", err)
 	}
-	fee.SetString(resultHex, 16)
 
 	result, overflow := uint256.FromBig(fee)
 	if overflow {
