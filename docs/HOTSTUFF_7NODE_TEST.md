@@ -144,7 +144,75 @@ for i in 0 1 2 3 4 5 6; do
 done
 ```
 
-## 七、停止所有节点
+## 七、动态增删验证者节点
+
+### 7.1 移除节点
+
+通过 admin RPC 提议移除 node6：
+
+```bash
+# 在任意节点上执行（通常在 node0）
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"admin_proposeRemoveValidator","params":["0x8bab5d41c3e0be2686e8ee92df442f97b61baa44"],"id":1}'
+```
+
+**预期**: `{"jsonrpc":"2.0","id":1,"result":null}`（null 表示成功）
+
+### 7.2 查看待处理变更
+
+```bash
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"admin_pendingReconfigChanges","params":[],"id":1}'
+```
+
+**预期**:
+```json
+{"result":{"committed":true,"hasPending":true,"pendingAdds":0,"pendingRemoves":1}}
+```
+
+字段说明：
+- `hasPending: true` — 有待处理的变更
+- `committed: true` — 变更已被 CommitQC 确认（等待 epoch 边界激活）
+- `pendingRemoves: 1` — 1 个节点待移除
+
+### 7.3 添加节点
+
+需要新节点的地址和 BLS 公钥（48 字节 hex）：
+
+```bash
+# 新节点的 BLS 公钥从 genesis.json 的 validators 字段获取
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"admin_proposeAddValidator","params":["0xNEW_ADDRESS","0xBLS_PUBKEY_HEX"],"id":1}'
+```
+
+**安全限制**:
+- BLS 公钥必须是有效的 48 字节 BLS12-381 公钥
+- 不能添加已在集合中的地址
+- 不能添加已在 pending 列表中的地址
+- 如果已有 staged transition（pending 但已 committed），新提案会被拒绝
+
+### 7.4 变更生效时机
+
+变更**不会立即生效**。流程：
+
+```
+1. Propose（提案）→ 加入 pending 列表
+2. Commit（确认）→ 包含变更的区块被 CommitQC 确认
+3. Epoch Boundary（epoch 边界）→ 新集合在下一 epoch 激活
+```
+
+genesis.json 中 `epochLength: 1000`，即每 1000 个 view 切换一次 epoch。
+
+### 7.5 验证变更结果
+
+epoch 切换后检查日志：
+```bash
+grep "epoch transition\|staged\|reconfig" hotstuff_testnet/node0.log | tail -5
+```
+
+**预期**: `hotstuff: epoch transition epoch=1 validators=6`（从 7 减到 6）
+
+## 八、停止所有节点
 
 ```bash
 pkill -f "n42.exe.*hotstuff_testnet"
@@ -161,6 +229,8 @@ done
 
 ## 已验证的结果（2026-03-26）
 
+### 共识出块
+
 | 指标 | 值 |
 |------|-----|
 | 节点数 | 7 |
@@ -170,6 +240,16 @@ done
 | View 进度 | 1 → 565 |
 | 共享区块 | ✅ 相同 block hash |
 | Panic | 0 |
+
+### 动态增删节点
+
+| 操作 | 结果 |
+|------|------|
+| `admin_proposeRemoveValidator` | ✅ 成功（result: null） |
+| `admin_proposeAddValidator` (无效 BLS key) | ✅ 正确拒绝（invalid BLS public key） |
+| `admin_pendingReconfigChanges` | ✅ 返回 pending 状态 |
+| 多次 remove 同时 pending | ✅ 允许（committed=false 时可叠加） |
+| staged 后再 propose | ✅ 被拒绝（EpochTransitionAlreadyStaged） |
 
 ## 常见问题
 
@@ -184,3 +264,12 @@ A: 必须 `export MSYS_NO_PATHCONV=1`，否则 `/ip4/...` 被转成 `C:/Program 
 
 **Q: "unknown ancestor" 错误？**
 A: 初始阶段各节点独立出块产生的分叉。共识收敛后不再出现。
+
+**Q: remove validator 后节点数没变？**
+A: 变更在 epoch 边界才生效。genesis 的 `epochLength: 1000` 意味着每 1000 个 view 切换。可以改小此值加速测试。
+
+**Q: `admin_proposeAddValidator` 返回 "invalid BLS public key"？**
+A: BLS 公钥必须是有效的 48 字节 BLS12-381 公钥（hex 编码 96 字符 + 0x 前缀）。用 `go run ./cmd/hotstuff-testnet` 生成测试密钥。
+
+**Q: epoch 切换后 hotstuff_getCurrentView 不可用？**
+A: HotStuff 查询 RPC 在 `hotstuff` 命名空间下，需要启动时 `--http.api "eth,net,web3,admin,hotstuff"` 才能访问。
