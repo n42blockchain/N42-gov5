@@ -72,6 +72,8 @@ type Service struct {
 	wg     sync.WaitGroup
 
 	// Pending block hashes requested by OutputExecuteBlock, waiting for gossip import.
+	// Protected by pendingMu (accessed from output goroutine + sync goroutine).
+	pendingMu         sync.Mutex
 	pendingExecutions map[types.Hash]struct{}
 
 	// Epoch schedule for pre-staging future validator sets (loaded from file).
@@ -187,7 +189,9 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// Record pending execution — when the block arrives via gossip and is
 		// imported, NotifyBlockImported will fire EventBlockImported.
 		log.Debug("hotstuff: execute block requested, awaiting gossip import", "hash", output.Hash)
+		s.pendingMu.Lock()
 		s.pendingExecutions[output.Hash] = struct{}{}
+		s.pendingMu.Unlock()
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
 		updateMetricsBlockCommitted(output.View)
@@ -216,9 +220,11 @@ func (s *Service) handleOutput(output EngineOutput) {
 		log.Debug("hotstuff: view changed", "view", output.View)
 		updateMetricsViewChanged(output.View)
 		// Clear stale pending executions from previous view.
+		s.pendingMu.Lock()
 		for k := range s.pendingExecutions {
 			delete(s.pendingExecutions, k)
 		}
+		s.pendingMu.Unlock()
 		// Trigger block production if we are the new leader.
 		if s.engine.Engine().IsCurrentLeader() && s.blockProducer != nil {
 			cfg := s.engine.Config()
@@ -253,7 +259,7 @@ func (s *Service) handleOutput(output EngineOutput) {
 		log.Info("hotstuff: epoch staged, persisting for crash recovery", "epoch", output.NewEpoch, "validators", output.ValidatorCount)
 		if s.db != nil {
 			if ce := s.engine.Engine(); ce != nil {
-				if epoch, validators, f, ok := ce.EpochManager().StagedEpochInfo(); ok {
+				if epoch, validators, f, ok := ce.StagedEpochInfoSafe(); ok {
 					if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
 						return SaveStagedEpoch(tx, epoch, validators, f)
 					}); err != nil {
@@ -292,10 +298,7 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// Pre-stage next epoch from schedule (Rust: pre-stage N+1 after activating N).
 		if s.epochSchedule != nil {
 			if ce := s.engine.Engine(); ce != nil {
-				em := ce.EpochManager()
-				if em != nil {
-					em.PreStageFromSchedule(s.epochSchedule)
-				}
+				ce.PreStageFromScheduleSafe(s.epochSchedule)
 			}
 		}
 
@@ -651,8 +654,14 @@ func (s *Service) broadcastBlockData(_ types.Hash) {
 // Called by the sync layer after a gossip block is successfully imported.
 // Matches against pending execution requests and notifies the engine.
 func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
-	if _, pending := s.pendingExecutions[hash]; pending {
+	s.pendingMu.Lock()
+	_, pending := s.pendingExecutions[hash]
+	if pending {
 		delete(s.pendingExecutions, hash)
+	}
+	s.pendingMu.Unlock()
+
+	if pending {
 		if ce := s.engine.Engine(); ce != nil {
 			if err := ce.ProcessEvent(ConsensusEvent{
 				Type:       EventBlockImported,

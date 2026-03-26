@@ -265,6 +265,20 @@ func (e *ConsensusEngine) EpochManager() *EpochManager {
 	return e.epochManager
 }
 
+// StagedEpochInfoSafe returns staged epoch info under the engine lock.
+func (e *ConsensusEngine) StagedEpochInfoSafe() (uint64, []ValidatorInfo, uint32, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.epochManager.StagedEpochInfo()
+}
+
+// PreStageFromScheduleSafe stages the next epoch under the engine lock.
+func (e *ConsensusEngine) PreStageFromScheduleSafe(schedule *EpochSchedule) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.epochManager.PreStageFromSchedule(schedule)
+}
+
 func (e *ConsensusEngine) IsCurrentLeader() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()

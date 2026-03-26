@@ -65,6 +65,9 @@ func NewRelayer(
 	if cfg == nil {
 		cfg = DefaultRelayerConfig()
 	}
+	if cfg.BatchSize == 0 {
+		cfg.BatchSize = 100
+	}
 	return &Relayer{
 		chain:           chain,
 		headerProver:    headerProver,
@@ -210,5 +213,3 @@ func extractQCFromHeader(h *block.Header) hotstuff.QuorumCertificate {
 	return hotstuff.GenesisQC() // Placeholder — full QC extraction requires codec access
 }
 
-// GetBlockByNumber is a helper type alias for chain access.
-type GetBlockByNumber = func(num uint64) block.IBlock

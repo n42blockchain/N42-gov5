@@ -70,8 +70,10 @@ contract N42Verifier {
             stateRoot
         );
 
-        // Verify SP1 proof via the on-chain verifier gateway
-        (bool success, ) = sp1Verifier.staticcall(
+        // Verify SP1 proof via the on-chain verifier gateway.
+        // Must decode return value — staticcall success only means "no revert",
+        // not that the proof is valid.
+        (bool callSuccess, bytes memory returnData) = sp1Verifier.staticcall(
             abi.encodeWithSignature(
                 "verifyProof(bytes32,bytes,bytes)",
                 headerChainVKey,
@@ -79,7 +81,8 @@ contract N42Verifier {
                 proof
             )
         );
-        require(success, "SP1 proof verification failed");
+        require(callSuccess && returnData.length >= 32, "SP1 verifier call failed");
+        require(abi.decode(returnData, (bool)), "SP1 proof verification failed");
 
         // Store verified state root
         verifiedStateRoots[endBlock] = stateRoot;
@@ -119,19 +122,17 @@ contract N42Verifier {
         return _verifyJMTProof(stateRoot, key, value, jmtProof);
     }
 
-    /// @dev JMT proof verification placeholder — will be replaced with
-    ///      either on-chain Blake3 Merkle verification or ZK-compressed proof
+    /// @dev JMT proof verification — NOT YET IMPLEMENTED.
+    ///      Will be replaced with on-chain Blake3 Merkle verification
+    ///      or ZK-compressed state proof before mainnet deployment.
+    ///      DO NOT deploy to mainnet without replacing this function.
     function _verifyJMTProof(
-        bytes32 stateRoot,
-        bytes calldata key,
-        bytes calldata value,
-        bytes calldata proof
+        bytes32,
+        bytes calldata,
+        bytes calldata,
+        bytes calldata
     ) internal pure returns (bool) {
-        // MVP: hash-based commitment check
-        // Production: full Blake3 JMT Merkle path verification
-        bytes32 commitment = keccak256(abi.encodePacked(stateRoot, key, value));
-        bytes32 proofCommitment = bytes32(proof[:32]);
-        return commitment == proofCommitment;
+        revert("JMT proof verification not yet implemented — do not use in production");
     }
 
     // --- Emergency controls ---
