@@ -194,11 +194,7 @@ func parallelApplyTx(
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	msg.SetCheckNonce(!cfg.StatelessExec)
-
-	if msg.FeeCap().IsZero() && engine != nil {
-		msg.SetIsFree(false)
-	}
+	newExecutionMessagePolicy(cfg.StatelessExec, engine != nil).normalize(&msg)
 
 	txContext := NewEVMTxContext(msg)
 	evm.Reset(txContext, ibs)
