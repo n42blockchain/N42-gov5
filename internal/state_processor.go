@@ -158,11 +158,7 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 	if err != nil {
 		return nil, nil, err
 	}
-	msg.SetCheckNonce(!cfg.StatelessExec)
-
-	if msg.FeeCap().IsZero() && engine != nil {
-		msg.SetIsFree(false)
-	}
+	newExecutionMessagePolicy(cfg.StatelessExec, engine != nil).normalize(&msg)
 
 	txContext := NewEVMTxContext(msg)
 	if cfg.TraceJumpDest {
