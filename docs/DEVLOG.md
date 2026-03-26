@@ -2,6 +2,33 @@
 
 ---
 
+### 2026-03-25: ZK-Native Cross-Chain Bridge (Phase 1: N42 to ETH)
+
+#### ZK Bridge Core (`internal/bridge/`)
+- **HeaderProver** (`header_prover.go`): converts HotStuff-2 BLS aggregate consensus signatures into SP1 ZK proofs, proving block header validity without exposing validator set details
+- **StateProver** (`state_prover.go`): generates JMT Merkle state proofs for specific accounts/storage at a given block height
+- **Relayer** (`relayer.go`): monitors N42 chain events, packages header proof + state proof into a complete evidence chain, submits to target chain
+- **Router** (`router.go`): cross-chain message routing, manages bridge request lifecycle and state tracking
+
+#### Bridge Contracts (`contracts/bridge/`)
+- **N42Verifier.sol**: Ethereum on-chain ZK proof verification contract, validates SP1 proof + JMT state proof
+- **N42Bridge.sol**: Ethereum bridge contract, handles asset lock/release and cross-chain message delivery
+
+#### Trust Chain
+```
+HotStuff-2 BLS consensus signature
+  -> SP1 ZK Proof (compresses BLS signature verification into succinct proof)
+    -> JMT State Proof (Merkle inclusion proof for state)
+      -> ETH N42Verifier.sol on-chain verification
+```
+
+#### Status
+- Phase 1 complete: N42 to ETH single-direction bridge
+- Phase 2 (planned): ETH to N42 reverse bridge
+- Documentation: `docs/GAP_ANALYSIS.md` section 15.1 updated
+
+---
+
 ### 2026-03-22 (续 4): 高性能管道架构 + 增量状态验证
 
 #### Rotor 单跳区块传播

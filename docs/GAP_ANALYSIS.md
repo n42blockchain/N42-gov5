@@ -418,10 +418,36 @@
 | 功能 | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |------|------|------|------------|-----|-------|-------|---------|
 | **IBC 跨链** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | N/A (非 Cosmos 链; IBC 不兼容) |
-| **桥接标准** | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ LayerZero | N/A (合约层实现; EVM 兼容性已支持标准桥接合约部署) |
-| **跨链消息传递** | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | N/A (合约层; LayerZero/Wormhole 等可直接部署) |
+| **ZK 原生跨链桥** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ **ZK-native bridge** (header proof + state proof + evidence chain) |
+| **桥接标准** | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ LayerZero | ✅ ZK bridge (N42→ETH Phase 1); EVM 兼容性已支持标准桥接合约部署 |
+| **跨链消息传递** | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | ✅ ZK bridge relayer 提供跨链证明中继 |
 | **EIP-3668 (CCIP-Read)** | ✅ | ✅ | ✅ | ❌ | ❌ | N/A | ✅ |
 | **Chain Abstraction** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ (全行业零实现; 研究阶段) |
+
+### 15.1 ZK-Native Cross-Chain Bridge
+
+N42 实现了 ZK 原生跨链桥，提供密码学级别的跨链验证安全性。信任链路：HotStuff-2 BLS 聚合签名 → SP1 ZK 证明 → JMT 状态证明 → ETH 链上验证。
+
+**核心组件**：
+
+| 组件 | 路径 | 说明 |
+|------|------|------|
+| **HeaderProver** | `internal/bridge/header_prover.go` | 将 HotStuff-2 BLS 共识签名转换为 SP1 ZK 证明，证明区块头有效性 |
+| **StateProver** | `internal/bridge/state_prover.go` | 生成 JMT Merkle 状态证明，证明特定账户/存储在某区块的状态 |
+| **Relayer** | `internal/bridge/relayer.go` | 监听 N42 链事件，打包 header proof + state proof 为完整 evidence chain，提交至目标链 |
+| **Router** | `internal/bridge/router.go` | 跨链消息路由，管理桥接请求的生命周期和状态跟踪 |
+| **N42Verifier.sol** | `contracts/bridge/N42Verifier.sol` | 以太坊链上 ZK 证明验证合约，验证 SP1 proof + JMT state proof |
+| **N42Bridge.sol** | `contracts/bridge/N42Bridge.sol` | 以太坊桥接合约，处理资产锁定/释放和跨链消息 |
+
+**信任链 (Trust Chain)**：
+```
+N42 HotStuff-2 BLS 共识签名
+  → SP1 ZK Proof (将 BLS 签名验证压缩为简洁证明)
+    → JMT State Proof (Merkle inclusion proof 证明状态)
+      → ETH N42Verifier.sol 链上验证
+```
+
+**当前状态**：Phase 1 完成 — N42→ETH 单向桥接。ETH→N42 反向桥接在 Phase 2 路线图中。
 
 ---
 
@@ -523,7 +549,7 @@
 | 44 | 多提议者 | N/A | HotStuff 流水线已满足; 无生产验证; 研究前沿 |
 | 45 | Inclusion List (FOCIL) | N/A | 等 Glamsterdam; HotStuff 无 PBS 审查问题 |
 | 46 | Cosmos IBC | N/A | 非 Cosmos 链 |
-| 47 | 桥接/跨链消息 | N/A | 合约层实现; EVM 兼容性已支持标准桥接部署 |
+| 47 | 桥接/跨链消息 | ✅ **ZK 原生桥** | Phase 1 完成: N42→ETH 单向 ZK bridge (header proof + state proof + evidence chain); `internal/bridge/` + `contracts/bridge/` |
 | 48 | Chain Abstraction | ❌ | 全行业零实现; 纯研究阶段 |
 
 ### 16.3 N42 独有优势（需保持/强化）
@@ -745,3 +771,4 @@
 | **深度流水线** | 5 阶段跨区块重叠 (Prefetch∥Execute∥Commit∥Persist) | Monad: Superscalar Pipeline (MonadDB, io_uring) | 无 | ✅ **完整** — 等价 Monad 流水线深度; MonadDB 级别 I/O 优化通过 PooledDBStore 部分实现 |
 | **异步 I/O 预取** | channel 异步派发 + I/O 工作池 + SLOAD 学习 + 预测预取 | Monad: MonadDB 异步 I/O (io_uring) | Sei: 依赖预测 | ✅ **完整** — 预测预取等价 Sei; 异步 I/O 池部分等价 Monad (Go goroutine vs io_uring) |
 | **依赖预测** | 合约+选择器分组预排序, Block-STM 波效率优化 | Sei: Dependency Prediction | 无 | ✅ **完整** — 等价 Sei 依赖预测 |
+| **ZK 原生跨链桥** | HotStuff-2 BLS → SP1 ZK proof → JMT state proof → ETH 验证 | 无 (geth/reth 无原生桥) | 无 | 🏆 **N42 领先** — 唯一具备 ZK 原生跨链桥的主流客户端; Phase 1 N42→ETH 完成 |
