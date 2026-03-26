@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/n42blockchain/N42/common/crypto/bls"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
@@ -83,6 +84,83 @@ func LoadConsensusState(tx kv.Tx) (*ConsensusState, error) {
 		LockedQC:            *lockedQC,
 		LastCommittedQC:     *committedQC,
 	}, nil
+}
+
+// Staged epoch persistence key
+var stagedEpochKey = []byte("staged_epoch")
+
+// SaveStagedEpoch persists the staged validator set so it survives crashes
+// between commit and epoch boundary (Rust: staged_epoch_info).
+func SaveStagedEpoch(tx kv.RwTx, epoch uint64, validators []ValidatorInfo, f uint32) error {
+	// Format: epoch(8) + f(4) + count(4) + [addr(20) + pkLen(4) + pk(48)]...
+	count := len(validators)
+	size := 8 + 4 + 4
+	for _, v := range validators {
+		pkBytes := v.PublicKey.Marshal()
+		size += 20 + 4 + len(pkBytes)
+	}
+
+	buf := make([]byte, size)
+	binary.LittleEndian.PutUint64(buf[0:8], epoch)
+	binary.LittleEndian.PutUint32(buf[8:12], f)
+	binary.LittleEndian.PutUint32(buf[12:16], uint32(count))
+
+	offset := 16
+	for _, v := range validators {
+		copy(buf[offset:offset+20], v.Address[:])
+		offset += 20
+		pkBytes := v.PublicKey.Marshal()
+		binary.LittleEndian.PutUint32(buf[offset:offset+4], uint32(len(pkBytes)))
+		offset += 4
+		copy(buf[offset:offset+len(pkBytes)], pkBytes)
+		offset += len(pkBytes)
+	}
+
+	return tx.Put(modules.HotStuffState, stagedEpochKey, buf[:offset])
+}
+
+// LoadStagedEpoch loads a previously staged epoch. Returns nil if none exists.
+func LoadStagedEpoch(tx kv.Tx) (epoch uint64, validators []ValidatorInfo, f uint32, err error) {
+	val, err := tx.GetOne(modules.HotStuffState, stagedEpochKey)
+	if err != nil {
+		return 0, nil, 0, fmt.Errorf("read staged epoch: %w", err)
+	}
+	if val == nil || len(val) < 16 {
+		return 0, nil, 0, nil // no staged epoch
+	}
+
+	epoch = binary.LittleEndian.Uint64(val[0:8])
+	f = binary.LittleEndian.Uint32(val[8:12])
+	count := binary.LittleEndian.Uint32(val[12:16])
+	validators = make([]ValidatorInfo, 0, count)
+
+	offset := 16
+	for i := uint32(0); i < count; i++ {
+		if offset+24 > len(val) {
+			return 0, nil, 0, fmt.Errorf("staged epoch data truncated at validator %d", i)
+		}
+		var addr types.Address
+		copy(addr[:], val[offset:offset+20])
+		offset += 20
+		pkLen := binary.LittleEndian.Uint32(val[offset : offset+4])
+		offset += 4
+		if offset+int(pkLen) > len(val) {
+			return 0, nil, 0, fmt.Errorf("staged epoch data truncated at validator %d pubkey", i)
+		}
+		pk, pErr := bls.PublicKeyFromBytes(val[offset : offset+int(pkLen)])
+		if pErr != nil {
+			return 0, nil, 0, fmt.Errorf("validator %d BLS key: %w", i, pErr)
+		}
+		offset += int(pkLen)
+		validators = append(validators, ValidatorInfo{Address: addr, PublicKey: pk})
+	}
+
+	return epoch, validators, f, nil
+}
+
+// ClearStagedEpoch removes persisted staged epoch data after advance.
+func ClearStagedEpoch(tx kv.RwTx) error {
+	return tx.Delete(modules.HotStuffState, stagedEpochKey)
 }
 
 // SaveEquivocationEvidence persists equivocation evidence for future slashing.

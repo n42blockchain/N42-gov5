@@ -185,6 +185,101 @@ func (em *EpochManager) CurrentValidatorSet() *ValidatorSet {
 	return em.currentSet
 }
 
+// NewEpochManagerFromEpoch creates an EpochManager starting at a non-genesis epoch.
+// Used for snapshot/checkpoint start (Rust: EpochManager::from_epoch).
+func NewEpochManagerFromEpoch(validatorSet *ValidatorSet, epochLength, startEpoch uint64) *EpochManager {
+	return &EpochManager{
+		epochLength:    epochLength,
+		currentEpoch:   startEpoch,
+		currentSet:     validatorSet,
+		historicalSets: make(map[uint64]*ValidatorSet),
+	}
+}
+
+// NewEpochManagerFromSchedule rebuilds an EpochManager with historical sets
+// from an epoch schedule. Used for node restart recovery (Rust: from_schedule).
+func NewEpochManagerFromSchedule(schedule *EpochSchedule, currentEpoch, epochLength uint64) (*EpochManager, error) {
+	if schedule == nil {
+		return nil, fmt.Errorf("nil epoch schedule")
+	}
+
+	// Find the entry for the current epoch
+	entry := schedule.GetForEpoch(currentEpoch)
+	if entry == nil {
+		return nil, fmt.Errorf("no schedule entry for epoch %d", currentEpoch)
+	}
+
+	validators, err := entry.ParseValidators()
+	if err != nil {
+		return nil, fmt.Errorf("parse current epoch validators: %w", err)
+	}
+
+	f := uint32((len(validators) - 1) / 3)
+	currentSet := NewValidatorSet(validators, f)
+
+	em := &EpochManager{
+		epochLength:    epochLength,
+		currentEpoch:   currentEpoch,
+		currentSet:     currentSet,
+		historicalSets: make(map[uint64]*ValidatorSet),
+	}
+
+	// Rebuild historical sets from recovery window
+	startRecovery := uint64(0)
+	if currentEpoch > maxHistoricalEpochs {
+		startRecovery = currentEpoch - maxHistoricalEpochs
+	}
+	for _, histEntry := range schedule.RecoveryWindow(startRecovery, currentEpoch-1) {
+		histValidators, err := histEntry.ParseValidators()
+		if err != nil {
+			log.Warn("skip historical epoch", "epoch", histEntry.Epoch, "err", err)
+			continue
+		}
+		histF := uint32((len(histValidators) - 1) / 3)
+		em.historicalSets[histEntry.Epoch] = NewValidatorSet(histValidators, histF)
+	}
+
+	return em, nil
+}
+
+// StagedEpochInfo returns the staged next epoch info for persistence.
+// Returns (epoch, validators, f, ok). ok=false if nothing staged.
+func (em *EpochManager) StagedEpochInfo() (uint64, []ValidatorInfo, uint32, bool) {
+	if em.nextSet == nil {
+		return 0, nil, 0, false
+	}
+	nextEpoch := em.currentEpoch + 1
+	validators := make([]ValidatorInfo, em.nextSet.Len())
+	for i := uint32(0); i < em.nextSet.Len(); i++ {
+		addr, _ := em.nextSet.GetAddress(ValidatorIndex(i))
+		pk, _ := em.nextSet.GetPublicKey(ValidatorIndex(i))
+		validators[i] = ValidatorInfo{Address: addr, PublicKey: pk}
+	}
+	return nextEpoch, validators, em.nextSet.FaultTolerance(), true
+}
+
+// PreStageFromSchedule looks up the next epoch in the schedule and stages it.
+// Called after AdvanceEpoch to pre-stage the following epoch.
+func (em *EpochManager) PreStageFromSchedule(schedule *EpochSchedule) bool {
+	if schedule == nil || em.nextSet != nil {
+		return false
+	}
+	nextEpoch := em.currentEpoch + 1
+	entry := schedule.GetForEpoch(nextEpoch)
+	if entry == nil || entry.Epoch != nextEpoch {
+		return false
+	}
+	validators, err := entry.ParseValidators()
+	if err != nil {
+		log.Warn("failed to parse scheduled validators", "epoch", nextEpoch, "err", err)
+		return false
+	}
+	f := uint32((len(validators) - 1) / 3)
+	em.StageNextEpoch(validators, f)
+	log.Info("Pre-staged next epoch from schedule", "epoch", nextEpoch, "validators", len(validators))
+	return true
+}
+
 // EpochsEnabled returns true if epoch transitions are active.
 func (em *EpochManager) EpochsEnabled() bool {
 	return em.epochLength > 0

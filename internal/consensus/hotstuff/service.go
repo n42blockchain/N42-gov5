@@ -74,6 +74,12 @@ type Service struct {
 	// Pending block hashes requested by OutputExecuteBlock, waiting for gossip import.
 	pendingExecutions map[types.Hash]struct{}
 
+	// Epoch schedule for pre-staging future validator sets (loaded from file).
+	epochSchedule *EpochSchedule
+
+	// P2P peer refresh callback on epoch transition (injected by node.go).
+	peerRefreshFn func()
+
 	// Rate-limit state persistence (persist every N views or on commit).
 	lastPersistedView ViewNumber
 	persistInterval   uint64
@@ -99,6 +105,17 @@ func NewService(engine *HotStuff, p2p P2PPublisher, db kv.RwDB, gossipTopic, rpc
 // SetBlockProducer sets the block producer for leader-driven block production.
 func (s *Service) SetBlockProducer(bp BlockProducer) {
 	s.blockProducer = bp
+}
+
+// SetEpochSchedule sets the epoch schedule for pre-staging future validator sets.
+func (s *Service) SetEpochSchedule(schedule *EpochSchedule) {
+	s.epochSchedule = schedule
+}
+
+// SetPeerRefreshFn sets the callback invoked on epoch transitions to refresh
+// P2P validator peer bindings (Rust: replace_expected_validator_peers_reliable).
+func (s *Service) SetPeerRefreshFn(fn func()) {
+	s.peerRefreshFn = fn
 }
 
 // Start begins the service goroutines.
@@ -248,6 +265,30 @@ func (s *Service) handleOutput(output EngineOutput) {
 		}
 	case OutputEpochTransition:
 		log.Info("hotstuff: epoch transition", "epoch", output.NewEpoch, "validators", output.ValidatorCount)
+
+		// Persist staged epoch state for crash recovery.
+		if s.db != nil {
+			if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
+				return ClearStagedEpoch(tx) // staged → active, clear persisted staged
+			}); err != nil {
+				log.Error("failed to clear staged epoch", "err", err)
+			}
+		}
+
+		// Pre-stage next epoch from schedule (Rust: pre-stage N+1 after activating N).
+		if s.epochSchedule != nil {
+			if ce := s.engine.Engine(); ce != nil {
+				em := ce.EpochManager()
+				if em != nil {
+					em.PreStageFromSchedule(s.epochSchedule)
+				}
+			}
+		}
+
+		// Notify P2P layer to refresh validator peer bindings.
+		if s.peerRefreshFn != nil {
+			s.peerRefreshFn()
+		}
 	}
 }
 
