@@ -289,27 +289,33 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 		return errors.New("timestamp must be after parent")
 	}
 
-	// Verify embedded QC if extra-data contains one.
+	// Extra-data after magic+view can contain either:
+	//   - A BLS seal signature (96 bytes) appended by Seal()
+	//   - An encoded QC from the consensus round
+	// Distinguish by size: BLS signature is exactly 96 bytes.
+	const blsSigLen = 96
 	if len(header.Extra) > extraMinLen {
 		qcData := header.Extra[extraMinLen:]
-		qc, err := decodeQC(qcData)
-		if err != nil {
-			return fmt.Errorf("invalid QC in extra-data: %w", err)
-		}
+		if len(qcData) == blsSigLen {
+			// BLS seal signature only — no QC to verify. Valid.
+		} else {
+			// Attempt QC decode and verification.
+			qc, err := decodeQC(qcData)
+			if err != nil {
+				return fmt.Errorf("invalid QC in extra-data: %w", err)
+			}
 
-		// Cross-check QC view against header view.
-		headerView := binary.LittleEndian.Uint64(header.Extra[extraMagicLen : extraMagicLen+extraViewLen])
-		if qc.View != headerView {
-			return fmt.Errorf("QC view %d does not match header view %d", qc.View, headerView)
-		}
+			headerView := binary.LittleEndian.Uint64(header.Extra[extraMagicLen : extraMagicLen+extraViewLen])
+			if qc.View != headerView {
+				return fmt.Errorf("QC view %d does not match header view %d", qc.View, headerView)
+			}
 
-		// If the consensus engine is initialized, verify QC signatures
-		// against the active validator set.
-		if ce := h.Engine(); ce != nil {
-			vs := ce.CurrentValidatorSet()
-			if vs != nil && !vs.IsEmpty() {
-				if err := VerifyQC(qc, vs); err != nil {
-					return fmt.Errorf("QC verification failed: %w", err)
+			if ce := h.Engine(); ce != nil {
+				vs := ce.CurrentValidatorSet()
+				if vs != nil && !vs.IsEmpty() {
+					if vErr := VerifyQC(qc, vs); vErr != nil {
+						return fmt.Errorf("QC verification failed: %w", vErr)
+					}
 				}
 			}
 		}
