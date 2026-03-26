@@ -6,6 +6,7 @@ package bridge
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/holiman/uint256"
 
@@ -77,6 +78,9 @@ type ZKRouter struct {
 	transfers    map[types.Hash]*TransferRecord
 	transferRing []types.Hash // ring buffer for LRU eviction
 	ringIdx      int
+
+	// Monotonic counter for transfer hash uniqueness
+	transferNonce atomic.Uint64
 }
 
 // StateProverFunc generates a state inclusion proof for a withdrawal.
@@ -234,7 +238,9 @@ func (r *ZKRouter) Status(txHash types.Hash) (BridgeStatus, error) {
 
 // LatestVerifiedBlock returns the latest N42 block verified on the target chain.
 func (r *ZKRouter) LatestVerifiedBlock(destChain uint32) (uint64, error) {
+	r.mu.RLock()
 	route, ok := r.routes[destChain]
+	r.mu.RUnlock()
 	if !ok {
 		return 0, fmt.Errorf("unsupported chain: %d", destChain)
 	}
@@ -273,7 +279,8 @@ func (r *ZKRouter) AddRoute(route *ChainRoute) {
 // --- Internal methods ---
 
 func (r *ZKRouter) sendZK(destChain uint32, recipient types.Address, amount *uint256.Int) (types.Hash, error) {
-	txHash := computeTransferHash(DomainN42, destChain, recipient, amount)
+	nonce := r.transferNonce.Add(1)
+	txHash := computeTransferHash(DomainN42, destChain, recipient, amount, nonce)
 	log.Info("ZK bridge: transfer queued for proving",
 		"dest", "Ethereum",
 		"recipient", recipient,
@@ -310,14 +317,29 @@ func (r *ZKRouter) sendHyperlane(destChain uint32, recipient types.Address, amou
 }
 
 // computeTransferHash generates a collision-resistant Keccak256 hash for a transfer.
-func computeTransferHash(srcChain, destChain uint32, recipient types.Address, amount *uint256.Int) types.Hash {
-	buf := make([]byte, 0, 4+4+20+32)
-	buf = appendUint32(buf, srcChain)
-	buf = appendUint32(buf, destChain)
-	buf = append(buf, recipient[:]...)
+// Includes a monotonic nonce to guarantee uniqueness for identical parameters.
+func computeTransferHash(srcChain, destChain uint32, recipient types.Address, amount *uint256.Int, nonce uint64) types.Hash {
+	var buf [4 + 4 + 20 + 32 + 8]byte
+	buf[0] = byte(srcChain)
+	buf[1] = byte(srcChain >> 8)
+	buf[2] = byte(srcChain >> 16)
+	buf[3] = byte(srcChain >> 24)
+	buf[4] = byte(destChain)
+	buf[5] = byte(destChain >> 8)
+	buf[6] = byte(destChain >> 16)
+	buf[7] = byte(destChain >> 24)
+	copy(buf[8:28], recipient[:])
 	amountBytes := amount.Bytes32()
-	buf = append(buf, amountBytes[:]...)
-	return crypto.Keccak256Hash(buf)
+	copy(buf[28:60], amountBytes[:])
+	buf[60] = byte(nonce)
+	buf[61] = byte(nonce >> 8)
+	buf[62] = byte(nonce >> 16)
+	buf[63] = byte(nonce >> 24)
+	buf[64] = byte(nonce >> 32)
+	buf[65] = byte(nonce >> 40)
+	buf[66] = byte(nonce >> 48)
+	buf[67] = byte(nonce >> 56)
+	return crypto.Keccak256Hash(buf[:])
 }
 
 func defaultRouteTable() map[uint32]*ChainRoute {

@@ -72,6 +72,13 @@ contract ZKISM {
         bytes calldata _metadata,
         bytes calldata _message
     ) external returns (bool) {
+        // Validate message originates from N42 chain.
+        // Hyperlane message format: version(1) + nonce(4) + origin(4) + sender(32) + ...
+        // Origin domain is at bytes[5:9].
+        require(_message.length >= 9, "ZKISM: message too short");
+        uint32 origin = uint32(bytes4(_message[5:9]));
+        require(origin == n42Domain, "ZKISM: invalid origin domain");
+
         // Decode proof metadata
         (
             bytes memory headerProof,
