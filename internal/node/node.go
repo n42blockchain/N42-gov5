@@ -251,6 +251,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.NodeCfg.Profile = profile.String()
 
 	// Apply storage tier configuration before opening any databases.
 	if cfg.StorageTierCfg.Enabled {
@@ -817,6 +818,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	success = true
 	chainKv = nil // prevent deferred cleanup from closing the DB now owned by node
 	return &node, nil
+}
+
+func (n *Node) Profile() params.ProfileDescriptor {
+	return n.profile
 }
 
 func bundlerChainID(chainCfg *params.ChainConfig) (uint64, error) {

@@ -13,6 +13,9 @@ func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	if !p.IsN42() {
 		t.Fatal("expected default profile to be n42")
 	}
+	if p.String() != string(ExecutionProfileN42) {
+		t.Fatalf("string = %q, want %q", p.String(), ExecutionProfileN42)
+	}
 }
 
 func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
@@ -28,6 +31,9 @@ func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
 			}
 			if !p.IsEthereumEL() {
 				t.Fatal("expected ethereum EL profile")
+			}
+			if p.String() != string(ExecutionProfileEthereumEL) {
+				t.Fatalf("string = %q, want %q", p.String(), ExecutionProfileEthereumEL)
 			}
 		})
 	}
