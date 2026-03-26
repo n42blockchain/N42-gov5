@@ -44,6 +44,14 @@ func (p ProfileDescriptor) IsN42() bool {
 	return p.family == ProfileFamilyN42
 }
 
+func (p ProfileDescriptor) SupportsBridgeRuntime() bool {
+	return p.IsN42()
+}
+
+func (p ProfileDescriptor) SupportsDistributedRuntime() bool {
+	return p.IsN42()
+}
+
 func ResolveExecutionProfile(raw string) (ProfileDescriptor, error) {
 	normalized := strings.TrimSpace(strings.ToLower(raw))
 	if normalized == "" {
