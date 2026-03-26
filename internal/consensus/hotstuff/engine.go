@@ -370,6 +370,9 @@ func (e *ConsensusEngine) emit(output EngineOutput) error {
 			}
 			log.Error("CRITICAL: BlockCommitted lost after 3 retries")
 		}
+		if output.Type != OutputBlockCommitted {
+			log.Warn("Consensus output dropped (channel full)", "type", output.Type, "view", e.roundState.CurrentView())
+		}
 		return ErrOutputChannelClosed
 	}
 }

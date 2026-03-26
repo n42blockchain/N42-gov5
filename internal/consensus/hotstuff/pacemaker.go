@@ -23,6 +23,9 @@ type Pacemaker struct {
 	maxTimeout  time.Duration
 	deadline    time.Time
 
+	// Reusable timer to avoid leaking goroutines on rapid view changes.
+	timer *time.Timer
+
 	// Adaptive timeout: ring buffer of recent commit latencies.
 	recentLatencies []time.Duration
 	latencyCursor   uint64
@@ -152,9 +155,34 @@ func (p *Pacemaker) ExtendDeadline(extra time.Duration) {
 }
 
 // TimeoutChan returns a channel that fires when the current view times out.
+// The timer is reused across calls to prevent goroutine/memory leaks.
 func (p *Pacemaker) TimeoutChan() <-chan time.Time {
-	p.mu.RLock()
-	deadline := p.deadline
-	p.mu.RUnlock()
-	return time.After(time.Until(deadline))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	remaining := time.Until(p.deadline)
+	if remaining <= 0 {
+		remaining = time.Millisecond // fire immediately
+	}
+	if p.timer == nil {
+		p.timer = time.NewTimer(remaining)
+	} else {
+		if !p.timer.Stop() {
+			select {
+			case <-p.timer.C:
+			default:
+			}
+		}
+		p.timer.Reset(remaining)
+	}
+	return p.timer.C
+}
+
+// StopTimer cleans up the reusable timer. Call during shutdown.
+func (p *Pacemaker) StopTimer() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.timer != nil {
+		p.timer.Stop()
+	}
 }

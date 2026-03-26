@@ -9,7 +9,7 @@ import (
 )
 
 func TestNewRewardUsesMaxLimitWhenMissing(t *testing.T) {
-	reward := newReward(&params.ChainConfig{
+	reward := NewReward(&params.ChainConfig{
 		Apos: &params.APosConfig{
 			RewardEpoch: 1,
 		},
@@ -25,7 +25,7 @@ func TestNewRewardUsesMaxLimitWhenMissing(t *testing.T) {
 
 func TestNewRewardUsesMaxLimitOnOverflow(t *testing.T) {
 	overflowLimit := new(big.Int).Lsh(big.NewInt(1), 300)
-	reward := newReward(&params.ChainConfig{
+	reward := NewReward(&params.ChainConfig{
 		Apos: &params.APosConfig{
 			RewardEpoch: 1,
 			RewardLimit: overflowLimit,

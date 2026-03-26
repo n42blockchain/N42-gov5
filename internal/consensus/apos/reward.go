@@ -84,7 +84,8 @@ func (r AccountRewards) Swap(i, j int) {
 	r[i], r[j] = r[j], r[i]
 }
 
-func newReward(chainConfig *params.ChainConfig) *Reward {
+// NewReward creates a Reward configuration from chain config.
+func NewReward(chainConfig *params.ChainConfig) *Reward {
 	rewardLimitBig := rewardLimitOrMax(chainConfig.Apos.RewardLimit)
 	return &Reward{
 		chainConfig: chainConfig,

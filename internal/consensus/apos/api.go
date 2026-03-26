@@ -311,7 +311,7 @@ func (api *API) GetRewards(address avmutil.Address, from jsonrpc.BlockNumberOrHa
 		return nil, err
 	}
 
-	rewardService := newReward(api.apos.chainConfig)
+	rewardService := NewReward(api.apos.chainConfig)
 	return rewardService.GetRewards(*avmtypes.ToastAddress(&address), resolvedFromBlock, resolvedToBlock, api.chain.GetBlockByNumber)
 }
 
@@ -543,7 +543,7 @@ func (api *API) VerifiedBlock(address avmutil.Address, from jsonrpc.BlockNumberO
 }
 
 func (api *API) GetAccountRewardUnpaid(address types.Address) (val *uint256.Int, err error) {
-	rewardService := newReward(api.apos.chainConfig)
+	rewardService := NewReward(api.apos.chainConfig)
 
 	api.apos.dbView(func(tx kv.Tx) error {
 		val, err = rewardService.getAccountRewardUnpaid(tx, address)

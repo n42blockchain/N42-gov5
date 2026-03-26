@@ -106,6 +106,18 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 		}
 	}
 
+	// Tail-fork detection: if the proposal's JustifyQC skips a view where
+	// we have a QC (the previous leader produced a valid block but the
+	// current leader is ignoring it), log a warning. A full Carry protocol
+	// mitigation would require validators to send recent votes to the
+	// incoming leader, but detection alone is valuable for monitoring.
+	if proposal.JustifyQC.View+1 < view && e.roundState.LockedQC().View == view-1 {
+		log.Warn("potential tail-fork: proposal skips previous view QC",
+			"view", view, "justifyQC.view", proposal.JustifyQC.View,
+			"lockedQC.view", e.roundState.LockedQC().View,
+			"proposer", proposal.Proposer)
+	}
+
 	e.roundState.UpdateLockedQC(&proposal.JustifyQC)
 
 	// Process piggybacked PrepareQC (chained mode).
