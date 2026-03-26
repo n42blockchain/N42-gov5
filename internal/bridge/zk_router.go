@@ -4,6 +4,7 @@
 package bridge
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -50,8 +51,8 @@ type ChainRoute struct {
 
 // HyperlaneDispatcher abstracts the Hyperlane Mailbox dispatch interface.
 type HyperlaneDispatcher interface {
-	Dispatch(destDomain uint32, recipientAddr [32]byte, body []byte) (types.Hash, error)
-	QuoteDispatch(destDomain uint32, body []byte) (*uint256.Int, error)
+	Dispatch(ctx context.Context, destDomain uint32, recipientAddr [32]byte, body []byte) (types.Hash, error)
+	QuoteDispatch(ctx context.Context, destDomain uint32, body []byte) (*uint256.Int, error)
 }
 
 // ZKRouter implements the Router interface with automatic path selection:
@@ -293,7 +294,7 @@ func (r *ZKRouter) sendHyperlane(destChain uint32, recipient types.Address, amou
 
 	body := amount.Bytes32()
 
-	messageID, err := r.hyperlane.Dispatch(destChain, recipientAddr, body[:])
+	messageID, err := r.hyperlane.Dispatch(context.Background(), destChain, recipientAddr, body[:])
 	if err != nil {
 		return types.Hash{}, fmt.Errorf("Hyperlane dispatch: %w", err)
 	}

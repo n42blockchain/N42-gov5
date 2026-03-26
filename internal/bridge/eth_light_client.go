@@ -42,8 +42,19 @@ const (
 	// MinSyncCommitteeParticipants is the minimum signatures for validity (>2/3).
 	MinSyncCommitteeParticipants = (SyncCommitteeSize * 2) / 3
 
-	// ForkVersionAltair is Altair (sync committee activation).
-	ForkVersionAltair = 0x01000000
+	// Ethereum fork versions (for BLS domain separation).
+	ForkVersionAltair    = 0x01000000
+	ForkVersionBellatrix = 0x02000000
+	ForkVersionCapella   = 0x03000000
+	ForkVersionDeneb     = 0x04000000
+	ForkVersionElectra   = 0x05000000
+
+	// Fork activation epochs (mainnet).
+	EpochAltair    uint64 = 74240
+	EpochBellatrix uint64 = 144896
+	EpochCapella   uint64 = 194048
+	EpochDeneb     uint64 = 269568
+	EpochElectra   uint64 = 364544 // Pectra, May 2025
 
 	// DomainSyncCommittee is the BLS domain for sync committee signatures.
 	DomainSyncCommittee = 0x07000000
@@ -421,10 +432,8 @@ func extractParticipantKeys(
 // computeSyncCommitteeSigningRoot computes the signing root for sync committee.
 // signingRoot = hash(headerRoot, computeDomain(DOMAIN_SYNC_COMMITTEE, forkVersion, genesisRoot))
 func computeSyncCommitteeSigningRoot(headerRoot types.Hash, genesisRoot types.Hash, slot uint64) [32]byte {
-	_ = slot // TODO: derive fork version from slot/epoch for multi-fork support
-
 	var forkVersion [4]byte
-	binary.LittleEndian.PutUint32(forkVersion[:], ForkVersionAltair)
+	binary.LittleEndian.PutUint32(forkVersion[:], forkVersionForSlot(slot))
 
 	var domainType [4]byte
 	binary.LittleEndian.PutUint32(domainType[:], DomainSyncCommittee)
@@ -468,13 +477,37 @@ func verifyMerkleBranch(leaf types.Hash, branch []types.Hash, depth, index int, 
 	return value == root
 }
 
-// hashSyncCommittee computes the hash-tree-root of a sync committee.
-// Proper SSZ: Merkle-ize the 512 pubkeys, then hash with aggregate key.
+// forkVersionForSlot returns the ETH fork version for a given slot.
+// Sync committee BLS domains use different fork versions per epoch.
+func forkVersionForSlot(slot uint64) uint32 {
+	epoch := slot / SlotsPerEpoch
+	switch {
+	case epoch >= EpochElectra:
+		return ForkVersionElectra
+	case epoch >= EpochDeneb:
+		return ForkVersionDeneb
+	case epoch >= EpochCapella:
+		return ForkVersionCapella
+	case epoch >= EpochBellatrix:
+		return ForkVersionBellatrix
+	default:
+		return ForkVersionAltair
+	}
+}
+
+// hashSyncCommittee computes the SSZ hash-tree-root of a sync committee.
+// Each 48-byte BLS pubkey is SSZ-serialized as 64 bytes (48 + 16 zero padding),
+// split into two 32-byte chunks, then hash-tree-rooted per pubkey.
 func hashSyncCommittee(c *SyncCommittee) types.Hash {
-	// Hash each pubkey padded to 64 bytes (48-byte key + 16 zero padding, then 2 chunks)
 	leaves := make([][32]byte, SyncCommitteeSize)
 	for i, pk := range c.PubKeys {
-		leaves[i] = sha256.Sum256(pk)
+		// SSZ: pad 48-byte pubkey to 64 bytes, split into 2 chunks, hash pair
+		var padded [64]byte
+		copy(padded[:], pk) // 48 bytes + 16 zero padding
+		var buf [64]byte
+		copy(buf[:32], padded[:32])
+		copy(buf[32:], padded[32:64])
+		leaves[i] = sha256.Sum256(buf[:])
 	}
 
 	// Merkle-ize the 512 leaves
