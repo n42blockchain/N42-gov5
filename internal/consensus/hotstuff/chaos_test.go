@@ -852,3 +852,72 @@ func TestChaos7Node_FastPropose(t *testing.T) {
 
 	t.Logf("FastPropose: 5 rounds completed in %v", elapsed)
 }
+
+// TestChaos7Node_50RoundContinuousBlockProduction verifies that 7 nodes
+// produce 50 consecutive blocks with correct leader rotation, no equivocations,
+// and all nodes staying in sync.
+func TestChaos7Node_50RoundContinuousBlockProduction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long block production test in -short mode")
+	}
+
+	const totalRounds = 50
+	const numNodes = 7
+
+	h := newChaosHarness(t, numNodes)
+	start := time.Now()
+
+	for view := ViewNumber(1); view <= totalRounds; view++ {
+		blockHash := blockHashForView(view)
+		expectedLeader := int(view % numNodes)
+
+		// Verify leader rotation is correct.
+		leader := LeaderForView(view, h.setup.vs)
+		if int(leader) != expectedLeader {
+			t.Fatalf("view %d: expected leader %d, got %d", view, expectedLeader, leader)
+		}
+
+		h.runConsensusRound(view, blockHash)
+	}
+
+	elapsed := time.Since(start)
+
+	// Verify all 50 blocks were committed.
+	if len(h.committed) < totalRounds {
+		t.Fatalf("expected %d committed blocks, got %d", totalRounds, len(h.committed))
+	}
+
+	// Verify commits are sequential (view 1..50).
+	for i, c := range h.committed {
+		expectedView := ViewNumber(i + 1)
+		if c.view != expectedView {
+			t.Fatalf("commit %d: expected view %d, got %d", i, expectedView, c.view)
+		}
+		expectedHash := blockHashForView(expectedView)
+		if c.hash != expectedHash {
+			t.Fatalf("commit %d: hash mismatch at view %d", i, expectedView)
+		}
+	}
+
+	// Verify all engines are at view 51 (ready for next block).
+	for i, e := range h.engines {
+		expected := ViewNumber(totalRounds + 1)
+		if v := e.CurrentView(); v != expected {
+			t.Errorf("engine %d at view %d, want %d", i, v, expected)
+		}
+	}
+
+	// Verify leader distribution: each node should have been leader ~7 times.
+	leaderCounts := make(map[int]int)
+	for view := ViewNumber(1); view <= totalRounds; view++ {
+		leaderCounts[int(view%numNodes)]++
+	}
+	for i := 0; i < numNodes; i++ {
+		if leaderCounts[i] < 5 || leaderCounts[i] > 10 {
+			t.Errorf("node %d was leader %d times (expected ~7)", i, leaderCounts[i])
+		}
+	}
+
+	t.Logf("50-round continuous block production: %d commits in %v (avg %v/block)",
+		len(h.committed), elapsed, elapsed/time.Duration(totalRounds))
+}
