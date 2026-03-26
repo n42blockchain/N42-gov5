@@ -13,6 +13,7 @@ import (
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/lib/common/fixedgas"
@@ -143,6 +144,41 @@ func buildBlobFeeSubtractionContractCode() []byte {
 		byte(vm2.ORIGIN), byte(vm2.GAS), byte(vm2.CALL),
 		byte(vm2.ORIGIN), byte(vm2.BALANCE), byte(vm2.PUSH1), 0x01, byte(vm2.SSTORE),
 		byte(vm2.STOP),
+	}
+}
+
+func TestTransitionChainPolicyDefaultsToCoinbase(t *testing.T) {
+	policy := newTransitionChainPolicy(&params.ChainConfig{})
+	coinbase := types.HexToAddress("0x1000000000000000000000000000000000000001")
+	if got := policy.priorityFeeRecipient(coinbase); got != coinbase {
+		t.Fatalf("priorityFeeRecipient() = %s, want %s", got, coinbase)
+	}
+	if policy.shouldForceGasBailout() {
+		t.Fatal("expected default policy not to force gas bailout")
+	}
+}
+
+func TestTransitionChainPolicyParliaUsesSystemAddress(t *testing.T) {
+	policy := newTransitionChainPolicy(&params.ChainConfig{Parlia: &params.ParliaConfig{}})
+	coinbase := types.HexToAddress("0x1000000000000000000000000000000000000001")
+	if got := policy.priorityFeeRecipient(coinbase); got != consensus.SystemAddress {
+		t.Fatalf("priorityFeeRecipient() = %s, want %s", got, consensus.SystemAddress)
+	}
+	if !policy.shouldForceGasBailout() {
+		t.Fatal("expected parlia policy to force gas bailout")
+	}
+}
+
+func TestTransitionChainPolicyEIP1559FeeCollectionRespectsFreeTx(t *testing.T) {
+	rules := params.Rules{IsLondon: true, IsEip1559FeeCollector: true}
+	policy := newTransitionChainPolicy(&params.ChainConfig{})
+	freeMsg := testSetCodeMessage{isFree: true}
+	paidMsg := testSetCodeMessage{isFree: false}
+	if policy.shouldCollectEIP1559Fee(freeMsg, &rules) {
+		t.Fatal("expected free tx not to collect EIP-1559 fee")
+	}
+	if !policy.shouldCollectEIP1559Fee(paidMsg, &rules) {
+		t.Fatal("expected paid tx to collect EIP-1559 fee")
 	}
 }
 

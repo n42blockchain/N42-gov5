@@ -71,8 +71,37 @@ type StateTransition struct {
 	sharedBuyGas        *uint256.Int
 	sharedBuyGasBalance *uint256.Int
 
+	policy transitionChainPolicy
+}
+
+type transitionChainPolicy struct {
 	isParlia bool
 	isBor    bool
+}
+
+func newTransitionChainPolicy(cfg *params.ChainConfig) transitionChainPolicy {
+	if cfg == nil {
+		return transitionChainPolicy{}
+	}
+	return transitionChainPolicy{
+		isParlia: cfg.Parlia != nil,
+		isBor:    cfg.Bor != nil,
+	}
+}
+
+func (p transitionChainPolicy) shouldForceGasBailout() bool {
+	return p.isParlia
+}
+
+func (p transitionChainPolicy) priorityFeeRecipient(coinbase types.Address) types.Address {
+	if p.isParlia {
+		return consensus.SystemAddress
+	}
+	return coinbase
+}
+
+func (p transitionChainPolicy) shouldCollectEIP1559Fee(msg Message, rules *params.Rules) bool {
+	return rules != nil && !msg.IsFree() && rules.IsLondon && rules.IsEip1559FeeCollector
 }
 
 // Message represents a message sent to a contract.
@@ -220,8 +249,7 @@ func NewStateTransition(evm vm2.VMInterface, msg Message, gp *common.GasPool) *S
 		sharedBuyGas:        uint256.NewInt(0),
 		sharedBuyGasBalance: uint256.NewInt(0),
 
-		isParlia: evm.ChainConfig().Parlia != nil,
-		isBor:    evm.ChainConfig().Bor != nil,
+		policy: newTransitionChainPolicy(evm.ChainConfig()),
 	}
 }
 
@@ -352,7 +380,7 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 // returning the evm execution result.
 func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*ExecutionResult, error) {
 	// BSC/Parlia always uses gas bailout for system transactions
-	if st.isParlia {
+	if st.policy.shouldForceGasBailout() {
 		gasBailout = true
 	}
 
@@ -455,14 +483,10 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 
 	amount := new(uint256.Int).SetUint64(st.gasUsed())
 	amount.Mul(amount, effectiveTip)
-	if st.isParlia {
-		st.state.AddBalance(consensus.SystemAddress, amount)
-	} else {
-		st.state.AddBalance(st.evm.Context().Coinbase, amount)
-	}
+	st.state.AddBalance(st.policy.priorityFeeRecipient(st.evm.Context().Coinbase), amount)
 
 	// EIP-1559 fee collection
-	if !msg.IsFree() && rules.IsLondon && rules.IsEip1559FeeCollector {
+	if st.policy.shouldCollectEIP1559Fee(msg, rules) {
 		burntContractAddress := *st.evm.ChainConfig().Eip1559FeeCollector
 		burnAmount := new(uint256.Int).Mul(new(uint256.Int).SetUint64(st.gasUsed()), st.evm.Context().BaseFee)
 		st.state.AddBalance(burntContractAddress, burnAmount)
