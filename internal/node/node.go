@@ -1389,10 +1389,24 @@ func (n *Node) startRPC() error {
 	n.httpAuth.healthProvider = hp
 
 	if n.config.NodeCfg.HTTP {
+		httpModules := utils.SplitAndTrim(n.config.NodeCfg.HTTPApi)
+		// Auto-expose HotStuff RPC when running HotStuff consensus.
+		if n.config.ChainCfg.Consensus == params.HotStuffConsensus {
+			hasHotstuff := false
+			for _, m := range httpModules {
+				if m == "hotstuff" {
+					hasHotstuff = true
+					break
+				}
+			}
+			if !hasHotstuff {
+				httpModules = append(httpModules, "hotstuff")
+			}
+		}
 		config := httpConfig{
 			CorsAllowedOrigins: utils.SplitAndTrim(n.config.NodeCfg.HTTPCors),
 			Vhosts:             []string{"*"},
-			Modules:            utils.SplitAndTrim(n.config.NodeCfg.HTTPApi),
+			Modules:            httpModules,
 			prefix:             "",
 			rateLimiter:        rl,
 		}
