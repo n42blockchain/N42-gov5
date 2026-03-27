@@ -72,15 +72,23 @@ func TestResolveConfiguredGenesisPrivateChainHasNoCanonicalHash(t *testing.T) {
 }
 
 func TestResolveConsensusEngineRejectsMissingChainConfig(t *testing.T) {
-	if _, err := resolveConsensusEngine(&conf.Config{}, nil); err == nil || err.Error() != "missing chain config" {
+	profile, err := params.ResolveExecutionProfile("n42")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	if _, err := resolveConsensusEngine(&conf.Config{}, profile, nil); err == nil || err.Error() != "missing chain config" {
 		t.Fatalf("resolveConsensusEngine error = %v, want missing chain config", err)
 	}
 }
 
 func TestResolveConsensusEngineReturnsFaker(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("eth")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
 	engine, err := resolveConsensusEngine(&conf.Config{
 		ChainCfg: &params.ChainConfig{Consensus: params.Faker},
-	}, nil)
+	}, profile, nil)
 	if err != nil {
 		t.Fatalf("resolveConsensusEngine returned error: %v", err)
 	}
@@ -90,9 +98,79 @@ func TestResolveConsensusEngineReturnsFaker(t *testing.T) {
 }
 
 func TestResolveConsensusEngineRejectsUnknownConsensus(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("n42")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
 	if _, err := resolveConsensusEngine(&conf.Config{
 		ChainCfg: &params.ChainConfig{Consensus: params.ConsensusType("mystery")},
-	}, nil); err == nil {
+	}, profile, nil); err == nil {
 		t.Fatal("expected unknown consensus to be rejected")
+	}
+}
+
+func TestResolveConsensusEngineRejectsN42OnlyConsensusForEthereumEL(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("eth")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	if _, err := resolveConsensusEngine(&conf.Config{
+		ChainCfg: &params.ChainConfig{Consensus: params.AposConsensu},
+	}, profile, nil); err == nil {
+		t.Fatal("expected ethereum EL profile to reject apos consensus")
+	}
+}
+
+func TestResolveAuxiliaryRuntimePlanN42KeepsConfiguredRuntimes(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("n42")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+
+	cfg := &conf.Config{}
+	cfg.MCPCfg.Enabled = true
+	cfg.Web3GatewayCfg.Enabled = true
+	cfg.IngestCfg.Enabled = true
+	cfg.DevCfg.TxGenEnabled = true
+	cfg.AICfg.Wallet.Enabled = true
+	cfg.CoprocessorCfg.Enabled = true
+	cfg.BridgeCfg.Enabled = true
+
+	plan := resolveAuxiliaryRuntimePlan(cfg, profile)
+	if !plan.startMCPServer || !plan.startWeb3Gateway || !plan.startIngestServer || !plan.startTxGenerator {
+		t.Fatal("expected n42 profile to keep auxiliary runtime plan enabled")
+	}
+	if !plan.startAIRuntime || !plan.startDistributed || !plan.startBridgeRuntime {
+		t.Fatal("expected n42 profile to keep n42 runtime plan enabled")
+	}
+	if len(plan.disabledByProfile) != 0 {
+		t.Fatalf("disabledByProfile = %v, want empty", plan.disabledByProfile)
+	}
+}
+
+func TestResolveAuxiliaryRuntimePlanEthereumELFiltersN42Runtimes(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("eth")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+
+	cfg := &conf.Config{}
+	cfg.MCPCfg.Enabled = true
+	cfg.Web3GatewayCfg.Enabled = true
+	cfg.IngestCfg.Enabled = true
+	cfg.DevCfg.TxGenEnabled = true
+	cfg.AICfg.Wallet.Enabled = true
+	cfg.CoprocessorCfg.Enabled = true
+	cfg.BridgeCfg.Enabled = true
+
+	plan := resolveAuxiliaryRuntimePlan(cfg, profile)
+	if plan.startMCPServer || plan.startAIRuntime || plan.startDistributed || plan.startBridgeRuntime {
+		t.Fatal("expected ethereum EL profile to filter n42-only runtimes")
+	}
+	if !plan.startWeb3Gateway || !plan.startIngestServer || !plan.startTxGenerator {
+		t.Fatal("expected ethereum EL profile to keep generic/developer runtimes")
+	}
+	if len(plan.disabledByProfile) != 4 {
+		t.Fatalf("disabledByProfile len = %d, want 4", len(plan.disabledByProfile))
 	}
 }

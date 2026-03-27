@@ -68,6 +68,17 @@ func (p ProfileDescriptor) SupportsDeveloperRuntime() bool {
 	return true
 }
 
+func (p ProfileDescriptor) SupportsConsensus(consensus ConsensusType) bool {
+	switch consensus {
+	case AposConsensu, HotStuffConsensus:
+		return p.IsN42()
+	case CliqueConsensus, Faker:
+		return true
+	default:
+		return false
+	}
+}
+
 func ResolveExecutionProfile(raw string) (ProfileDescriptor, error) {
 	normalized := strings.TrimSpace(strings.ToLower(raw))
 	if normalized == "" {
