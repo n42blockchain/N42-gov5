@@ -23,11 +23,11 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/crypto"
 	cmath "github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/u256"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/consensus"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
@@ -83,7 +83,7 @@ func newTransitionChainPolicy(cfg *params.ChainConfig) transitionChainPolicy {
 		return transitionChainPolicy{}
 	}
 	return transitionChainPolicy{
-		isParlia: cfg.Parlia != nil,
+		isParlia: cfg.UsesParliaRules(),
 	}
 }
 

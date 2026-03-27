@@ -517,6 +517,27 @@ func TestUsesBorSystemCallContext(t *testing.T) {
 	}
 }
 
+func TestUsesParliaAndAuraRules(t *testing.T) {
+	if !(&ChainConfig{Parlia: &ParliaConfig{}}).UsesParliaRules() {
+		t.Error("UsesParliaRules() should return true when Parlia config is present")
+	}
+	if (&ChainConfig{}).UsesParliaRules() {
+		t.Error("UsesParliaRules() should return false without Parlia config")
+	}
+	if !(&ChainConfig{Aura: &AuRaConfig{}}).UsesAuraRules() {
+		t.Error("UsesAuraRules() should return true when Aura config is present")
+	}
+	if (&ChainConfig{}).UsesAuraRules() {
+		t.Error("UsesAuraRules() should return false without Aura config")
+	}
+	if (*ChainConfig)(nil).UsesParliaRules() {
+		t.Error("UsesParliaRules() should return false for nil config")
+	}
+	if (*ChainConfig)(nil).UsesAuraRules() {
+		t.Error("UsesAuraRules() should return false for nil config")
+	}
+}
+
 func TestConfigCompatError(t *testing.T) {
 	err := &ConfigCompatError{
 		What:         "test fork",

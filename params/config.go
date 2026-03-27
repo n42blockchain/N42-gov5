@@ -306,6 +306,14 @@ func (c *ChainConfig) UsesBorSystemCallContext() bool {
 	return c != nil && c.Bor != nil
 }
 
+func (c *ChainConfig) UsesParliaRules() bool {
+	return c != nil && c.Parlia != nil
+}
+
+func (c *ChainConfig) UsesAuraRules() bool {
+	return c != nil && c.Aura != nil
+}
+
 // Description returns a human-readable description of ChainConfig.
 func (c *ChainConfig) Description() string {
 	network := NetworkNames[c.ChainID.String()]
