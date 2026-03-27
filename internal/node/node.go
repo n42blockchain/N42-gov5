@@ -1187,198 +1187,14 @@ func (n *Node) Start() error {
 		n.zkProverService.Start()
 	}
 
-	aiEnabled := n.config.AICfg.Wallet.Enabled || n.config.AICfg.Governance.Enabled || n.config.AICfg.Training.Enabled || n.config.AICfg.Attestation.Enabled
-	if aiEnabled && !n.profile.SupportsAIRuntime() {
-		log.Warn("AI runtime services disabled for execution profile", "profile", n.profile.String())
-	}
-	if n.profile.SupportsAIRuntime() {
-		// Start AI wallet service if enabled.
-		if n.config.AICfg.Wallet.Enabled {
-			n.walletService = wallet.NewService(n.config.AICfg.Wallet.MaxSessionKeys, n.config.AICfg.Wallet.PaymasterEnabled)
-			log.Info("AI wallet service enabled",
-				"maxSessionKeys", n.config.AICfg.Wallet.MaxSessionKeys,
-				"paymaster", n.config.AICfg.Wallet.PaymasterEnabled,
-			)
-		}
-
-		// Start AI safety services.
-		if n.config.AICfg.Governance.Enabled {
-			reg := governance.NewDatasetRegistry(n.config.AICfg.Governance.MaxDatasets)
-			n.dataGovernance = governance.NewCommittee(governance.CommitteeConfig{
-				Quorum:    n.config.AICfg.Governance.CommitteeQuorum,
-				Threshold: n.config.AICfg.Governance.CommitteeThreshold,
-			}, reg)
-			log.Info("AI data governance enabled",
-				"quorum", n.config.AICfg.Governance.CommitteeQuorum,
-				"threshold", n.config.AICfg.Governance.CommitteeThreshold,
-			)
-		}
-		if n.config.AICfg.Training.Enabled {
-			var gov training.DatasetGovernance
-			if n.dataGovernance != nil {
-				gov = n.dataGovernance
-			}
-			n.trainingProver = training.NewTrainingProver(gov)
-			log.Info("ZK training verification enabled")
-		}
-		if n.config.AICfg.Attestation.Enabled {
-			ttl := time.Duration(n.config.AICfg.Attestation.TTLSec) * time.Second
-			n.attestationService = attestation.NewAttestationService(
-				nil, nil, ttl, n.config.AICfg.Attestation.MaxItems,
-			)
-			log.Info("ZK inference attestation enabled",
-				"ttl", n.config.AICfg.Attestation.TTLSec,
-			)
-		}
-	}
-
-	// Start distributed infrastructure services when supported by the active profile.
-	distributedEnabled := n.config.CoprocessorCfg.Enabled || n.config.MessagingCfg.Enabled || n.config.StorageCfg.Enabled || n.config.NotifyCfg.Enabled
-	if distributedEnabled && !n.profile.SupportsDistributedRuntime() {
-		log.Warn("Distributed runtime services disabled for execution profile", "profile", n.profile.String())
-	}
-	if n.profile.SupportsDistributedRuntime() {
-		if n.config.CoprocessorCfg.Enabled {
-			svc, err := dcoprocessor.NewService(&n.config.CoprocessorCfg)
-			if err != nil {
-				log.Error("Failed to create coprocessor service", "err", err)
-			} else {
-				n.coprocessorService = svc
-				svc.Start()
-				log.Info("ZK coprocessor service enabled")
-			}
-		}
-		if n.config.MessagingCfg.Enabled {
-			n.messagingService = dmessaging.NewService(&n.config.MessagingCfg)
-			n.messagingService.Start()
-			log.Info("Messaging relay service enabled")
-		}
-		if n.config.StorageCfg.Enabled {
-			n.storageBridge = dstorage.NewBridge(&n.config.StorageCfg)
-			n.storageBridge.Start()
-			log.Info("Storage bridge service enabled")
-		}
-		if n.config.NotifyCfg.Enabled {
-			n.notifyService = dnotify.NewService(&n.config.NotifyCfg)
-			n.notifyService.Start()
-			log.Info("Push notification service enabled")
-		}
-	}
+	n.startAIRuntime()
+	n.startDistributedRuntime()
 
 	n.startWeb3Gateway()
 
 	n.startIngestServer()
 
-	// Start cross-chain bridge if configured and supported by the active profile.
-	if n.config.BridgeCfg.Enabled && !n.profile.SupportsBridgeRuntime() {
-		log.Warn("Cross-chain bridge disabled for execution profile", "profile", n.profile.String())
-	}
-	if n.config.BridgeCfg.Enabled && n.profile.SupportsBridgeRuntime() {
-		bridgeCtx, bridgeCancel := context.WithCancel(n.ctx)
-		n.bridgeCancel = bridgeCancel
-		bcfg := &n.config.BridgeCfg
-
-		// HeaderChainProver (wraps SP1 if configured)
-		var sp1Client *zkprover.SP1ProverClient
-		if bcfg.SP1Endpoint != "" || bcfg.SP1GuestBinary != "" {
-			sp1Client = zkprover.NewSP1ProverClient(bcfg.SP1Endpoint, bcfg.SP1GuestBinary, "")
-		}
-		headerProver := bridge.NewHeaderChainProver(sp1Client)
-
-		// ETH proof submitter
-		var submitter bridge.ProofSubmitter
-		if bcfg.EthRPCEndpoint != "" && bcfg.VerifierAddress != "" {
-			var err error
-			submitter, err = bridge.NewETHSubmitter(
-				bcfg.EthRPCEndpoint,
-				types.HexToAddress(bcfg.VerifierAddress),
-				n.etherbase)
-			if err != nil {
-				log.Warn("Bridge ETH submitter creation failed", "err", err)
-			}
-		}
-
-		// Get ValidatorSet from HotStuff engine (if available)
-		var vs *hotstuff.ValidatorSet
-		if hs, ok := n.engine.(*hotstuff.HotStuff); ok && hs.Engine() != nil {
-			vs = hs.Engine().CurrentValidatorSet()
-		}
-
-		// Bridge Publisher (unified N42→ETH state root anchoring)
-		pubCfg := &bridge.PublisherConfig{
-			BatchSize:    bcfg.PublisherBatchSize,
-			PollInterval: bcfg.PublisherPollInterval,
-			StartBlock:   bcfg.PublisherStartBlock,
-		}
-		n.bridgePublisher = bridge.NewBridgePublisher(n.blockChain, vs, headerProver, submitter, pubCfg)
-		go func() {
-			if err := n.bridgePublisher.Run(bridgeCtx); err != nil && err != context.Canceled {
-				log.Warn("Bridge publisher stopped", "err", err)
-			}
-		}()
-
-		// Hyperlane dispatcher
-		var hyperlane bridge.HyperlaneDispatcher
-		if bcfg.HyperlaneEnabled && bcfg.HyperlaneMailbox != "" {
-			var err error
-			hyperlane, err = bridge.NewHyperlaneMailboxBinding(
-				fmt.Sprintf("http://127.0.0.1:%s", n.config.NodeCfg.HTTPPort),
-				types.HexToAddress(bcfg.HyperlaneMailbox),
-				bcfg.HyperlaneN42Domain,
-				n.etherbase)
-			if err != nil {
-				log.Warn("Hyperlane dispatcher creation failed", "err", err)
-			}
-		}
-
-		// ETH Light Client (reverse bridge: ETH→N42)
-		var ethLC *bridge.EthLightClient
-		if bcfg.EthLightClientEnabled && bcfg.EthBeaconEndpoint != "" {
-			blsVerifier := &bridge.BLSVerifierImpl{}
-			lcCfg := &bridge.EthLightClientConfig{}
-			var err error
-			ethLC, err = bridge.NewEthLightClient(lcCfg, blsVerifier)
-			if err != nil {
-				log.Warn("ETH light client creation failed (need bootstrap data)", "err", err)
-			} else {
-				// Start beacon fetcher goroutine
-				fetcher := bridge.NewBeaconFetcher(bcfg.EthBeaconEndpoint, ethLC, 12*time.Second)
-				go func() {
-					if err := fetcher.Run(bridgeCtx); err != nil && err != context.Canceled {
-						log.Warn("Beacon fetcher stopped", "err", err)
-					}
-				}()
-			}
-		}
-
-		// State prover (JMT state inclusion proofs)
-		var stateProver bridge.StateProverFunc
-		if realBC, ok := n.blockChain.(*internal.BlockChain); ok {
-			if jmtCommit := realBC.JMTCommitment(); jmtCommit != nil {
-				tree := jmtCommit.Tree()
-				stateProver = func(key []byte) (*bridge.StateInclusionProof, error) {
-					current := n.blockChain.CurrentBlock()
-					if current == nil {
-						return nil, fmt.Errorf("no current block")
-					}
-					stateRoot := types.Hash(current.StateRoot())
-					return bridge.ProveStateInclusion(tree, stateRoot, key)
-				}
-			}
-		}
-
-		// ZKRouter
-		n.bridgeRouter = bridge.NewZKRouter(
-			n.bridgePublisher, hyperlane, ethLC, stateProver, nil)
-
-		// Register bridge RPC namespace
-		bridgeAPI := api.NewBridgeAPI(n.bridgeRouter)
-		n.rpcAPIs = append(n.rpcAPIs, bridgeAPI.APIs()...)
-
-		log.Info("Cross-chain bridge enabled",
-			"ethRPC", bcfg.EthRPCEndpoint,
-			"hyperlane", bcfg.HyperlaneEnabled)
-	}
+	n.startBridgeRuntime()
 
 	// Start transaction generator if enabled
 	if n.config.DevCfg.TxGenEnabled {
@@ -1457,6 +1273,189 @@ func (n *Node) startIngestServer() {
 	} else {
 		log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr)
 	}
+}
+
+func (n *Node) startAIRuntime() {
+	aiEnabled := n.config.AICfg.Wallet.Enabled || n.config.AICfg.Governance.Enabled || n.config.AICfg.Training.Enabled || n.config.AICfg.Attestation.Enabled
+	if aiEnabled && !n.profile.SupportsAIRuntime() {
+		log.Warn("AI runtime services disabled for execution profile", "profile", n.profile.String())
+	}
+	if !n.profile.SupportsAIRuntime() {
+		return
+	}
+	if n.config.AICfg.Wallet.Enabled {
+		n.walletService = wallet.NewService(n.config.AICfg.Wallet.MaxSessionKeys, n.config.AICfg.Wallet.PaymasterEnabled)
+		log.Info("AI wallet service enabled",
+			"maxSessionKeys", n.config.AICfg.Wallet.MaxSessionKeys,
+			"paymaster", n.config.AICfg.Wallet.PaymasterEnabled,
+		)
+	}
+	if n.config.AICfg.Governance.Enabled {
+		reg := governance.NewDatasetRegistry(n.config.AICfg.Governance.MaxDatasets)
+		n.dataGovernance = governance.NewCommittee(governance.CommitteeConfig{
+			Quorum:    n.config.AICfg.Governance.CommitteeQuorum,
+			Threshold: n.config.AICfg.Governance.CommitteeThreshold,
+		}, reg)
+		log.Info("AI data governance enabled",
+			"quorum", n.config.AICfg.Governance.CommitteeQuorum,
+			"threshold", n.config.AICfg.Governance.CommitteeThreshold,
+		)
+	}
+	if n.config.AICfg.Training.Enabled {
+		var gov training.DatasetGovernance
+		if n.dataGovernance != nil {
+			gov = n.dataGovernance
+		}
+		n.trainingProver = training.NewTrainingProver(gov)
+		log.Info("ZK training verification enabled")
+	}
+	if n.config.AICfg.Attestation.Enabled {
+		ttl := time.Duration(n.config.AICfg.Attestation.TTLSec) * time.Second
+		n.attestationService = attestation.NewAttestationService(
+			nil, nil, ttl, n.config.AICfg.Attestation.MaxItems,
+		)
+		log.Info("ZK inference attestation enabled",
+			"ttl", n.config.AICfg.Attestation.TTLSec,
+		)
+	}
+}
+
+func (n *Node) startDistributedRuntime() {
+	distributedEnabled := n.config.CoprocessorCfg.Enabled || n.config.MessagingCfg.Enabled || n.config.StorageCfg.Enabled || n.config.NotifyCfg.Enabled
+	if distributedEnabled && !n.profile.SupportsDistributedRuntime() {
+		log.Warn("Distributed runtime services disabled for execution profile", "profile", n.profile.String())
+	}
+	if !n.profile.SupportsDistributedRuntime() {
+		return
+	}
+	if n.config.CoprocessorCfg.Enabled {
+		svc, err := dcoprocessor.NewService(&n.config.CoprocessorCfg)
+		if err != nil {
+			log.Error("Failed to create coprocessor service", "err", err)
+		} else {
+			n.coprocessorService = svc
+			svc.Start()
+			log.Info("ZK coprocessor service enabled")
+		}
+	}
+	if n.config.MessagingCfg.Enabled {
+		n.messagingService = dmessaging.NewService(&n.config.MessagingCfg)
+		n.messagingService.Start()
+		log.Info("Messaging relay service enabled")
+	}
+	if n.config.StorageCfg.Enabled {
+		n.storageBridge = dstorage.NewBridge(&n.config.StorageCfg)
+		n.storageBridge.Start()
+		log.Info("Storage bridge service enabled")
+	}
+	if n.config.NotifyCfg.Enabled {
+		n.notifyService = dnotify.NewService(&n.config.NotifyCfg)
+		n.notifyService.Start()
+		log.Info("Push notification service enabled")
+	}
+}
+
+func (n *Node) startBridgeRuntime() {
+	if n.config.BridgeCfg.Enabled && !n.profile.SupportsBridgeRuntime() {
+		log.Warn("Cross-chain bridge disabled for execution profile", "profile", n.profile.String())
+	}
+	if !n.config.BridgeCfg.Enabled || !n.profile.SupportsBridgeRuntime() {
+		return
+	}
+	bridgeCtx, bridgeCancel := context.WithCancel(n.ctx)
+	n.bridgeCancel = bridgeCancel
+	bcfg := &n.config.BridgeCfg
+
+	var sp1Client *zkprover.SP1ProverClient
+	if bcfg.SP1Endpoint != "" || bcfg.SP1GuestBinary != "" {
+		sp1Client = zkprover.NewSP1ProverClient(bcfg.SP1Endpoint, bcfg.SP1GuestBinary, "")
+	}
+	headerProver := bridge.NewHeaderChainProver(sp1Client)
+
+	var submitter bridge.ProofSubmitter
+	if bcfg.EthRPCEndpoint != "" && bcfg.VerifierAddress != "" {
+		var err error
+		submitter, err = bridge.NewETHSubmitter(
+			bcfg.EthRPCEndpoint,
+			types.HexToAddress(bcfg.VerifierAddress),
+			n.etherbase)
+		if err != nil {
+			log.Warn("Bridge ETH submitter creation failed", "err", err)
+		}
+	}
+
+	var vs *hotstuff.ValidatorSet
+	if hs, ok := n.engine.(*hotstuff.HotStuff); ok && hs.Engine() != nil {
+		vs = hs.Engine().CurrentValidatorSet()
+	}
+
+	pubCfg := &bridge.PublisherConfig{
+		BatchSize:    bcfg.PublisherBatchSize,
+		PollInterval: bcfg.PublisherPollInterval,
+		StartBlock:   bcfg.PublisherStartBlock,
+	}
+	n.bridgePublisher = bridge.NewBridgePublisher(n.blockChain, vs, headerProver, submitter, pubCfg)
+	go func() {
+		if err := n.bridgePublisher.Run(bridgeCtx); err != nil && err != context.Canceled {
+			log.Warn("Bridge publisher stopped", "err", err)
+		}
+	}()
+
+	var hyperlane bridge.HyperlaneDispatcher
+	if bcfg.HyperlaneEnabled && bcfg.HyperlaneMailbox != "" {
+		var err error
+		hyperlane, err = bridge.NewHyperlaneMailboxBinding(
+			fmt.Sprintf("http://127.0.0.1:%s", n.config.NodeCfg.HTTPPort),
+			types.HexToAddress(bcfg.HyperlaneMailbox),
+			bcfg.HyperlaneN42Domain,
+			n.etherbase)
+		if err != nil {
+			log.Warn("Hyperlane dispatcher creation failed", "err", err)
+		}
+	}
+
+	var ethLC *bridge.EthLightClient
+	if bcfg.EthLightClientEnabled && bcfg.EthBeaconEndpoint != "" {
+		blsVerifier := &bridge.BLSVerifierImpl{}
+		lcCfg := &bridge.EthLightClientConfig{}
+		var err error
+		ethLC, err = bridge.NewEthLightClient(lcCfg, blsVerifier)
+		if err != nil {
+			log.Warn("ETH light client creation failed (need bootstrap data)", "err", err)
+		} else {
+			fetcher := bridge.NewBeaconFetcher(bcfg.EthBeaconEndpoint, ethLC, 12*time.Second)
+			go func() {
+				if err := fetcher.Run(bridgeCtx); err != nil && err != context.Canceled {
+					log.Warn("Beacon fetcher stopped", "err", err)
+				}
+			}()
+		}
+	}
+
+	var stateProver bridge.StateProverFunc
+	if realBC, ok := n.blockChain.(*internal.BlockChain); ok {
+		if jmtCommit := realBC.JMTCommitment(); jmtCommit != nil {
+			tree := jmtCommit.Tree()
+			stateProver = func(key []byte) (*bridge.StateInclusionProof, error) {
+				current := n.blockChain.CurrentBlock()
+				if current == nil {
+					return nil, fmt.Errorf("no current block")
+				}
+				stateRoot := types.Hash(current.StateRoot())
+				return bridge.ProveStateInclusion(tree, stateRoot, key)
+			}
+		}
+	}
+
+	n.bridgeRouter = bridge.NewZKRouter(
+		n.bridgePublisher, hyperlane, ethLC, stateProver, nil)
+
+	bridgeAPI := api.NewBridgeAPI(n.bridgeRouter)
+	n.rpcAPIs = append(n.rpcAPIs, bridgeAPI.APIs()...)
+
+	log.Info("Cross-chain bridge enabled",
+		"ethRPC", bcfg.EthRPCEndpoint,
+		"hyperlane", bcfg.HyperlaneEnabled)
 }
 
 // getAPIs return two sets of APIs, both the ones that do not require
