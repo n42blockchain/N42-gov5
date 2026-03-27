@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
@@ -326,6 +327,24 @@ func TestResolveHTTPModulesDoesNotAutoExposeHotStuffWithoutRegisteredAPI(t *test
 		if module == "hotstuff" {
 			t.Fatalf("modules = %v, did not expect hotstuff without registered API", modules)
 		}
+	}
+}
+
+func TestConsensusDisplayNameUsesFriendlyAPOSName(t *testing.T) {
+	if got := consensusDisplayName(params.AposConsensu); got != "Mobile Consensus" {
+		t.Fatalf("display name = %q, want %q", got, "Mobile Consensus")
+	}
+}
+
+func TestConsensusDisplayNameKeepsDefaultName(t *testing.T) {
+	if got := consensusDisplayName(params.HotStuffConsensus); got != string(params.HotStuffConsensus) {
+		t.Fatalf("display name = %q, want %q", got, params.HotStuffConsensus)
+	}
+}
+
+func TestAuthorizeWalletConsensusEngineRejectsUnsupportedEngine(t *testing.T) {
+	if authorizeWalletConsensusEngine(hotstuff.New(nil, &params.ChainConfig{}), types.Address{}, nil) {
+		t.Fatal("expected non-wallet consensus engine not to authorize via wallet helper")
 	}
 }
 
