@@ -10,8 +10,8 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/params"
 )
@@ -316,6 +316,63 @@ func TestVerifyHeader_InvalidQC(t *testing.T) {
 	}
 }
 
+func TestVerifyHeader_ValidQCWithTrailingSeal(t *testing.T) {
+	setup := newTestSetup(t, 4)
+	cfg := &params.HotStuffConfig{
+		BaseTimeout: 60000,
+		MaxTimeout:  120000,
+		Period:      3,
+	}
+	h := New(cfg, nil)
+	h.Authorize(setup.validators[0].Address, setup.keys[0])
+	if err := h.InitEngine(setup.validators, setup.f); err != nil {
+		t.Fatal(err)
+	}
+
+	blockHash := types.Hash{0xCD}
+	vc := NewVoteCollector(1, blockHash, setup.vs.Len())
+	for i := 0; i < 3; i++ {
+		msg := SigningMessage(1, blockHash)
+		sig := setup.keys[i].Sign(msg)
+		if err := vc.AddVote(ValidatorIndex(i), sig); err != nil {
+			t.Fatal(err)
+		}
+	}
+	qc, err := vc.BuildQC(setup.vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qcData, err := encodeQC(qc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	extra := make([]byte, extraMinLen)
+	copy(extra[:extraMagicLen], extraMagic[:])
+	binary.LittleEndian.PutUint64(extra[extraMagicLen:], 2)
+	extra = append(extra, qcData...)
+	extra = append(extra, make([]byte, extraSealLen)...)
+
+	parentHeader := &block.Header{
+		Number: uint256.NewInt(0),
+		Time:   1000,
+	}
+	childHeader := &block.Header{
+		ParentHash: parentHeader.Hash(),
+		Number:     uint256.NewInt(1),
+		Time:       1003,
+		Extra:      extra,
+	}
+
+	chain := newMockChainReader()
+	chain.headers[0] = parentHeader
+
+	err = h.VerifyHeader(chain, childHeader, true)
+	if err != nil {
+		t.Fatalf("VerifyHeader with QC+seal should pass: %v", err)
+	}
+}
+
 func TestVerifyHeader_GenesisBlock(t *testing.T) {
 	h := New(nil, nil)
 
@@ -385,6 +442,68 @@ func TestVerifyHeader_BadMagic(t *testing.T) {
 	err := h.VerifyHeader(chain, childHeader, true)
 	if err == nil {
 		t.Fatal("VerifyHeader with bad magic should fail")
+	}
+}
+
+func TestPrepareEmbedsLastCommittedQCInExtra(t *testing.T) {
+	setup := newTestSetup(t, 4)
+	cfg := &params.HotStuffConfig{
+		BaseTimeout: 60000,
+		MaxTimeout:  120000,
+		Period:      3,
+	}
+	h := New(cfg, nil)
+	h.Authorize(setup.validators[0].Address, setup.keys[0])
+	if err := h.InitEngine(setup.validators, setup.f); err != nil {
+		t.Fatal(err)
+	}
+
+	blockHash := types.Hash{0xEF}
+	vc := NewVoteCollector(1, blockHash, setup.vs.Len())
+	for i := 0; i < 3; i++ {
+		msg := CommitSigningMessage(1, blockHash)
+		sig := setup.keys[i].Sign(msg)
+		if err := vc.AddVote(ValidatorIndex(i), sig); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitQC, err := vc.BuildQCWithMessage(setup.vs, CommitSigningMessage(1, blockHash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.roundState.Commit(commitQC.Clone())
+	h.engine.roundState.AdvanceView(2)
+
+	parentHeader := &block.Header{
+		Number: uint256.NewInt(0),
+		Time:   1000,
+	}
+	childHeader := &block.Header{
+		Number: uint256.NewInt(1),
+	}
+
+	chain := newMockChainReader()
+	chain.headers[0] = parentHeader
+
+	if err := h.Prepare(chain, childHeader); err != nil {
+		t.Fatal(err)
+	}
+
+	view, qc, hasSeal, err := decodeHeaderExtra(childHeader.Extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view != 2 {
+		t.Fatalf("view = %d, want 2", view)
+	}
+	if hasSeal {
+		t.Fatal("did not expect seal before Seal()")
+	}
+	if qc == nil {
+		t.Fatal("expected committed QC to be embedded in extra")
+	}
+	if qc.View != commitQC.View || qc.BlockHash != commitQC.BlockHash {
+		t.Fatalf("embedded QC = (%d,%s), want (%d,%s)", qc.View, qc.BlockHash, commitQC.View, commitQC.BlockHash)
 	}
 }
 
