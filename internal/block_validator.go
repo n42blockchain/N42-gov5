@@ -20,10 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
@@ -74,7 +74,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 
 	// APoS aggregate signature verification (skip for HotStuff — it uses
 	// per-block BLS seal in extra-data, not header.Signature aggregate).
-	if v.config.IsBeijing(blockNumber.Uint64()) && v.config.Consensus != params.HotStuffConsensus {
+	if v.config.IsBeijing(blockNumber.Uint64()) && v.config.Consensus.UsesBeijingAggregateBodySignature() {
 		header, ok := b.Header().(*block.Header)
 		if !ok {
 			return fmt.Errorf("ValidateBody: invalid header type assertion for block %v", b.Number64())

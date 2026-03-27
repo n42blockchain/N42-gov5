@@ -35,6 +35,24 @@ func TestConsensusTypeUsesLegacyGenesisTrieRoots(t *testing.T) {
 	}
 }
 
+func TestConsensusTypeUsesTimerDrivenSealing(t *testing.T) {
+	if !CliqueConsensus.UsesTimerDrivenSealing() {
+		t.Fatal("expected clique consensus to use timer-driven sealing")
+	}
+	if HotStuffConsensus.UsesTimerDrivenSealing() {
+		t.Fatal("did not expect hotstuff consensus to use timer-driven sealing")
+	}
+}
+
+func TestConsensusTypeUsesBeijingAggregateBodySignature(t *testing.T) {
+	if !AposConsensu.UsesBeijingAggregateBodySignature() {
+		t.Fatal("expected apos consensus to use Beijing aggregate body signature checks")
+	}
+	if HotStuffConsensus.UsesBeijingAggregateBodySignature() {
+		t.Fatal("did not expect hotstuff consensus to use Beijing aggregate body signature checks")
+	}
+}
+
 func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	p, err := ResolveExecutionProfile("")
 	if err != nil {
