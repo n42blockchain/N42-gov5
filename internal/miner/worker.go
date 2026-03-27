@@ -60,7 +60,7 @@ var (
 )
 
 func usesTimerDrivenSealing(engine consensus.Engine) bool {
-	return engine == nil || engine.Type() != params.HotStuffConsensus
+	return engine == nil || engine.Type().UsesTimerDrivenSealing()
 }
 
 type task struct {

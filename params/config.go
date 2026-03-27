@@ -84,6 +84,14 @@ func (c ConsensusType) UsesLegacyGenesisTrieRoots() bool {
 	return c == AposConsensu
 }
 
+func (c ConsensusType) UsesTimerDrivenSealing() bool {
+	return c != HotStuffConsensus
+}
+
+func (c ConsensusType) UsesBeijingAggregateBodySignature() bool {
+	return c != HotStuffConsensus
+}
+
 // ---------------------------------------------------------------------------
 // Genesis hashes
 // ---------------------------------------------------------------------------
