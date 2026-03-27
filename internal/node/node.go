@@ -264,6 +264,40 @@ func (g configuredGenesis) canonicalHash() (types.Hash, bool) {
 	return *g.genesisHash, true
 }
 
+func resolveBridgeValidatorSet(engine consensus.Engine) *hotstuff.ValidatorSet {
+	hs, ok := engine.(*hotstuff.HotStuff)
+	if !ok || hs.Engine() == nil {
+		return nil
+	}
+	return hs.Engine().CurrentValidatorSet()
+}
+
+func hasRegisteredNamespace(apis []jsonrpc.API, namespace string) bool {
+	for _, api := range apis {
+		if api.Namespace == namespace {
+			return true
+		}
+	}
+	return false
+}
+
+func appendModuleIfMissing(modules []string, module string) []string {
+	for _, existing := range modules {
+		if existing == module {
+			return modules
+		}
+	}
+	return append(modules, module)
+}
+
+func resolveHTTPModules(httpAPI string, apis []jsonrpc.API, consensusPlan consensusRuntimePlan) []string {
+	modules := utils.SplitAndTrim(httpAPI)
+	if consensusPlan.registerHotStuffAdminAPI && hasRegisteredNamespace(apis, "hotstuff") {
+		modules = appendModuleIfMissing(modules, "hotstuff")
+	}
+	return modules
+}
+
 func resolveAuxiliaryRuntimePlan(cfg *conf.Config, profile params.ProfileDescriptor) auxiliaryRuntimePlan {
 	var plan auxiliaryRuntimePlan
 	if cfg == nil {
@@ -1521,17 +1555,12 @@ func (n *Node) startBridgeRuntime() {
 		}
 	}
 
-	var vs *hotstuff.ValidatorSet
-	if hs, ok := n.engine.(*hotstuff.HotStuff); ok && hs.Engine() != nil {
-		vs = hs.Engine().CurrentValidatorSet()
-	}
-
 	pubCfg := &bridge.PublisherConfig{
 		BatchSize:    bcfg.PublisherBatchSize,
 		PollInterval: bcfg.PublisherPollInterval,
 		StartBlock:   bcfg.PublisherStartBlock,
 	}
-	n.bridgePublisher = bridge.NewBridgePublisher(n.blockChain, vs, headerProver, submitter, pubCfg)
+	n.bridgePublisher = bridge.NewBridgePublisher(n.blockChain, resolveBridgeValidatorSet(n.engine), headerProver, submitter, pubCfg)
 	go func() {
 		if err := n.bridgePublisher.Run(bridgeCtx); err != nil && err != context.Canceled {
 			log.Warn("Bridge publisher stopped", "err", err)
@@ -1710,20 +1739,7 @@ func (n *Node) startRPC() error {
 	n.httpAuth.healthProvider = hp
 
 	if n.config.NodeCfg.HTTP {
-		httpModules := utils.SplitAndTrim(n.config.NodeCfg.HTTPApi)
-		// Auto-expose HotStuff RPC when running HotStuff consensus.
-		if n.config.ChainCfg.Consensus == params.HotStuffConsensus {
-			hasHotstuff := false
-			for _, m := range httpModules {
-				if m == "hotstuff" {
-					hasHotstuff = true
-					break
-				}
-			}
-			if !hasHotstuff {
-				httpModules = append(httpModules, "hotstuff")
-			}
-		}
+		httpModules := resolveHTTPModules(n.config.NodeCfg.HTTPApi, n.rpcAPIs, resolveConsensusRuntimePlan(n.engine))
 		config := httpConfig{
 			CorsAllowedOrigins: utils.SplitAndTrim(n.config.NodeCfg.HTTPCors),
 			Vhosts:             []string{"*"},

@@ -9,6 +9,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/params/networkname"
 )
@@ -273,6 +274,46 @@ func TestResolveConsensusSignerPlanHotStuffUsesBLS(t *testing.T) {
 	plan := resolveConsensusSignerPlan(hotstuff.New(nil, &params.ChainConfig{}))
 	if plan.mode != consensusSignerModeHotStuffBLS {
 		t.Fatalf("mode = %q, want %q", plan.mode, consensusSignerModeHotStuffBLS)
+	}
+}
+
+func TestResolveBridgeValidatorSetReturnsNilWithoutHotStuffEngine(t *testing.T) {
+	if vs := resolveBridgeValidatorSet(&apos.APos{}); vs != nil {
+		t.Fatal("expected non-hotstuff engine not to expose bridge validator set")
+	}
+	if vs := resolveBridgeValidatorSet(hotstuff.New(nil, &params.ChainConfig{})); vs != nil {
+		t.Fatal("expected hotstuff engine without consensus engine not to expose bridge validator set")
+	}
+}
+
+func TestResolveHTTPModulesAutoExposesHotStuffWhenRegistered(t *testing.T) {
+	modules := resolveHTTPModules(
+		"eth,net",
+		[]jsonrpc.API{{Namespace: "hotstuff"}},
+		resolveConsensusRuntimePlan(hotstuff.New(nil, &params.ChainConfig{})),
+	)
+	hasHotStuff := false
+	for _, module := range modules {
+		if module == "hotstuff" {
+			hasHotStuff = true
+			break
+		}
+	}
+	if !hasHotStuff {
+		t.Fatalf("modules = %v, want hotstuff auto-exposed", modules)
+	}
+}
+
+func TestResolveHTTPModulesDoesNotAutoExposeHotStuffWithoutRegisteredAPI(t *testing.T) {
+	modules := resolveHTTPModules(
+		"eth,net",
+		nil,
+		resolveConsensusRuntimePlan(hotstuff.New(nil, &params.ChainConfig{})),
+	)
+	for _, module := range modules {
+		if module == "hotstuff" {
+			t.Fatalf("modules = %v, did not expect hotstuff without registered API", modules)
+		}
 	}
 }
 
