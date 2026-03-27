@@ -1144,21 +1144,7 @@ func (n *Node) Start() error {
 		}
 	}
 
-	// MCP Server
-	if n.config.MCPCfg.Enabled {
-		mcpBackend := &mcpNodeBackend{node: n}
-		n.mcpServer = mcp.NewServer(mcpBackend, n.config.MCPCfg.AllowedTools)
-		host := n.config.MCPCfg.Host
-		if host == "" {
-			host = "127.0.0.1"
-		}
-		addr := fmt.Sprintf("%s:%d", host, n.config.MCPCfg.Port)
-		go func() {
-			if err := n.mcpServer.Start(addr); err != nil {
-				log.Error("MCP server failed to start", "err", err)
-			}
-		}()
-	}
+	n.startMCPServer()
 
 	// Start gRPC KV server for RPCDaemon if configured.
 	if addr := n.config.NodeCfg.PrivateAPIAddr; addr != "" {
@@ -1279,29 +1265,9 @@ func (n *Node) Start() error {
 		}
 	}
 
-	// Start web3:// protocol gateway if configured.
-	if n.config.Web3GatewayCfg.Enabled {
-		n.web3Gateway = api.NewWeb3Gateway(n.api, &n.config.Web3GatewayCfg)
-		if err := n.web3Gateway.Start(); err != nil {
-			log.Error("web3:// gateway failed to start", "err", err)
-		}
-	}
+	n.startWeb3Gateway()
 
-	// Start ingest server if enabled.
-	if n.config.IngestCfg.Enabled {
-		ingestPool := &ingestPoolAdapter{pool: n.txspool}
-		n.ingestServer = ingest.NewServer(
-			n.config.IngestCfg.Addr,
-			ingestPool,
-			n.config.IngestCfg.SoftTarget,
-			n.config.IngestCfg.HardCap,
-		)
-		if err := n.ingestServer.Start(); err != nil {
-			log.Error("Ingest server failed to start", "err", err)
-		} else {
-			log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr)
-		}
-	}
+	n.startIngestServer()
 
 	// Start cross-chain bridge if configured and supported by the active profile.
 	if n.config.BridgeCfg.Enabled && !n.profile.SupportsBridgeRuntime() {
@@ -1445,6 +1411,52 @@ func (n *Node) startTxGenerator() {
 
 	n.txGenerator.FundAccounts()
 	n.txGenerator.Start()
+}
+
+func (n *Node) startMCPServer() {
+	if !n.config.MCPCfg.Enabled {
+		return
+	}
+	mcpBackend := &mcpNodeBackend{node: n}
+	n.mcpServer = mcp.NewServer(mcpBackend, n.config.MCPCfg.AllowedTools)
+	host := n.config.MCPCfg.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	addr := fmt.Sprintf("%s:%d", host, n.config.MCPCfg.Port)
+	go func() {
+		if err := n.mcpServer.Start(addr); err != nil {
+			log.Error("MCP server failed to start", "err", err)
+		}
+	}()
+}
+
+func (n *Node) startWeb3Gateway() {
+	if !n.config.Web3GatewayCfg.Enabled {
+		return
+	}
+	n.web3Gateway = api.NewWeb3Gateway(n.api, &n.config.Web3GatewayCfg)
+	if err := n.web3Gateway.Start(); err != nil {
+		log.Error("web3:// gateway failed to start", "err", err)
+	}
+}
+
+func (n *Node) startIngestServer() {
+	if !n.config.IngestCfg.Enabled {
+		return
+	}
+	ingestPool := &ingestPoolAdapter{pool: n.txspool}
+	n.ingestServer = ingest.NewServer(
+		n.config.IngestCfg.Addr,
+		ingestPool,
+		n.config.IngestCfg.SoftTarget,
+		n.config.IngestCfg.HardCap,
+	)
+	if err := n.ingestServer.Start(); err != nil {
+		log.Error("Ingest server failed to start", "err", err)
+	} else {
+		log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr)
+	}
 }
 
 // getAPIs return two sets of APIs, both the ones that do not require
