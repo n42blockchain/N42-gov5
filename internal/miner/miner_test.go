@@ -24,6 +24,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -446,6 +447,18 @@ func TestIntervalConstants(t *testing.T) {
 
 	t.Logf("Interval constants are valid: minPeriod=%v, maxRecommit=%v, staleThreshold=%d",
 		minPeriodInterval, maxRecommitInterval, staleThreshold)
+}
+
+func TestUsesTimerDrivenSealingDefaultsToTrue(t *testing.T) {
+	if !usesTimerDrivenSealing(nil) {
+		t.Fatal("expected nil engine to default to timer-driven sealing")
+	}
+}
+
+func TestUsesTimerDrivenSealingDisablesHotStuff(t *testing.T) {
+	if usesTimerDrivenSealing(hotstuff.New(nil, &params.ChainConfig{})) {
+		t.Fatal("expected hotstuff engine not to use timer-driven sealing")
+	}
 }
 
 // =============================================================================
