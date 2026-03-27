@@ -21,7 +21,11 @@ func TestNodeProfileReturnsResolvedDescriptor(t *testing.T) {
 }
 
 func TestResolveConfiguredGenesisPrivateChainUsesDevnet(t *testing.T) {
-	resolved, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: "private"}})
+	profile, err := params.ResolveExecutionProfile("eth")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	resolved, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: "private"}}, profile)
 	if err != nil {
 		t.Fatalf("resolveConfiguredGenesis returned error: %v", err)
 	}
@@ -37,7 +41,11 @@ func TestResolveConfiguredGenesisPrivateChainUsesDevnet(t *testing.T) {
 }
 
 func TestResolveConfiguredGenesisKnownChainUsesCanonicalFixtures(t *testing.T) {
-	resolved, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: networkname.MainnetChainName}})
+	profile, err := params.ResolveExecutionProfile("n42")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	resolved, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: networkname.MainnetChainName}}, profile)
 	if err != nil {
 		t.Fatalf("resolveConfiguredGenesis returned error: %v", err)
 	}
@@ -59,7 +67,11 @@ func TestResolveConfiguredGenesisKnownChainUsesCanonicalFixtures(t *testing.T) {
 }
 
 func TestResolveConfiguredGenesisRejectsUnknownChain(t *testing.T) {
-	if _, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: "mystery"}}); err == nil {
+	profile, err := params.ResolveExecutionProfile("n42")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	if _, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: "mystery"}}, profile); err == nil {
 		t.Fatal("expected unknown chain to be rejected")
 	}
 }
@@ -68,6 +80,16 @@ func TestResolveConfiguredGenesisPrivateChainHasNoCanonicalHash(t *testing.T) {
 	resolved := configuredGenesis{isPrivate: true}
 	if _, ok := resolved.canonicalHash(); ok {
 		t.Fatal("expected private chain to have no canonical hash")
+	}
+}
+
+func TestResolveConfiguredGenesisRejectsN42ChainForEthereumEL(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("eth")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	if _, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: networkname.MainnetChainName}}, profile); err == nil {
+		t.Fatal("expected ethereum EL profile to reject n42 canonical chain")
 	}
 }
 
