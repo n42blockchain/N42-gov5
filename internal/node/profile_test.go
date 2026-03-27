@@ -126,6 +126,31 @@ func TestResolveConsensusEngineReturnsFaker(t *testing.T) {
 	}
 }
 
+func TestResolveSharedConsensusEngineReturnsClique(t *testing.T) {
+	engine, ok := resolveSharedConsensusEngine(&params.ChainConfig{
+		Consensus: params.CliqueConsensus,
+		Clique:    &params.CliqueConfig{},
+	}, nil)
+	if !ok {
+		t.Fatal("expected clique consensus to resolve as shared engine")
+	}
+	if got := engine.Type(); got != params.CliqueConsensus {
+		t.Fatalf("engine type = %q, want %q", got, params.CliqueConsensus)
+	}
+}
+
+func TestResolveN42ConsensusEngineReturnsHotStuff(t *testing.T) {
+	engine, err := resolveN42ConsensusEngine(&conf.Config{
+		ChainCfg: &params.ChainConfig{Consensus: params.HotStuffConsensus},
+	}, nil)
+	if err != nil {
+		t.Fatalf("resolveN42ConsensusEngine returned error: %v", err)
+	}
+	if got := engine.Type(); got != params.HotStuffConsensus {
+		t.Fatalf("engine type = %q, want %q", got, params.HotStuffConsensus)
+	}
+}
+
 func TestResolveConsensusEngineRejectsUnknownConsensus(t *testing.T) {
 	profile, err := params.ResolveExecutionProfile("n42")
 	if err != nil {
