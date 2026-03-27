@@ -61,7 +61,6 @@ import (
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/api/graphql"
 	"github.com/n42blockchain/N42/internal/bridge"
-	"github.com/n42blockchain/N42/internal/stateless"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
@@ -82,6 +81,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/peerdas"
 	"github.com/n42blockchain/N42/internal/snapshot"
+	"github.com/n42blockchain/N42/internal/stateless"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	"github.com/n42blockchain/N42/internal/sync/checkpoint"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
@@ -264,8 +264,13 @@ func (g configuredGenesis) canonicalHash() (types.Hash, bool) {
 	return *g.genesisHash, true
 }
 
-func resolveBridgeValidatorSet(engine consensus.Engine) *hotstuff.ValidatorSet {
+func resolveHotStuffEngine(engine consensus.Engine) (*hotstuff.HotStuff, bool) {
 	hs, ok := engine.(*hotstuff.HotStuff)
+	return hs, ok
+}
+
+func resolveBridgeValidatorSet(engine consensus.Engine) *hotstuff.ValidatorSet {
+	hs, ok := resolveHotStuffEngine(engine)
 	if !ok || hs.Engine() == nil {
 		return nil
 	}
@@ -1049,7 +1054,10 @@ func (n *Node) authorizeMiningEngine(etherbase types.Address) error {
 			return nil
 		}
 	case consensusSignerModeHotStuffBLS:
-		hs := n.engine.(*hotstuff.HotStuff)
+		hs, ok := resolveHotStuffEngine(n.engine)
+		if !ok {
+			return errors.New("hotstuff engine unavailable")
+		}
 		blsKey, blsErr := hotstuff.LoadBLSKeyFromDir(n.keyDir, etherbase)
 		if blsErr != nil {
 			log.Error("HotStuff BLS key unavailable", "err", blsErr)
@@ -1138,7 +1146,10 @@ func (n *Node) Start() error {
 	}
 
 	if consensusPlan.startHotStuffService {
-		hs := n.engine.(*hotstuff.HotStuff)
+		hs, ok := resolveHotStuffEngine(n.engine)
+		if !ok {
+			return errors.New("hotstuff engine unavailable")
+		}
 		// Format gossip topic with fork digest (genesis hash prefix).
 		forkDigest := utils.ToBytes4(n.p2pGenesisHash[:])
 		gossipTopic := fmt.Sprintf(p2p.HotStuffConsensusTopicFormat, forkDigest)
@@ -1206,7 +1217,10 @@ func (n *Node) Start() error {
 	}
 
 	if rpcPlan.registerHotStuffAdminAPI {
-		hs := n.engine.(*hotstuff.HotStuff)
+		hs, ok := resolveHotStuffEngine(n.engine)
+		if !ok {
+			return errors.New("hotstuff engine unavailable")
+		}
 		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
 			Namespace:     "admin",
 			Service:       api.NewHotStuffReconfigAPI(func() *hotstuff.HotStuff { return hs }),
