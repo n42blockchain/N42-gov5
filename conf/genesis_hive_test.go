@@ -4,6 +4,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -127,5 +128,56 @@ func TestApplyHiveGenesisEnvSupportsClique(t *testing.T) {
 	}
 	if genesis.Config.Clique.Epoch != 30000 {
 		t.Fatalf("unexpected clique epoch: got %d want 30000", genesis.Config.Clique.Epoch)
+	}
+}
+
+func TestCloneChainConfigPreservesExtendedFields(t *testing.T) {
+	t.Parallel()
+
+	feeCollector := types.HexToAddress("0x00000000000000000000000000000000000000f1")
+	src := &params.ChainConfig{
+		GlamsterdamTime:               big.NewInt(1),
+		PQPrecompilesTime:             big.NewInt(2),
+		ContentStoreTime:              big.NewInt(3),
+		AIInferenceTime:               big.NewInt(4),
+		RandomnessTime:                big.NewInt(5),
+		LtHashTime:                    big.NewInt(6),
+		Eip1559FeeCollector:           &feeCollector,
+		Eip1559FeeCollectorTransition: big.NewInt(7),
+		Aura:                          &params.AuRaConfig{},
+		Parlia:                        &params.ParliaConfig{},
+		Bor:                           &params.BorConfig{},
+	}
+
+	cloned := cloneChainConfig(src)
+	if cloned == nil {
+		t.Fatal("cloneChainConfig() returned nil")
+	}
+	if cloned.GlamsterdamTime == nil || cloned.GlamsterdamTime.Uint64() != 1 {
+		t.Fatalf("unexpected glamsterdam time: %v", cloned.GlamsterdamTime)
+	}
+	if cloned.PQPrecompilesTime == nil || cloned.PQPrecompilesTime.Uint64() != 2 {
+		t.Fatalf("unexpected pq precompile time: %v", cloned.PQPrecompilesTime)
+	}
+	if cloned.ContentStoreTime == nil || cloned.ContentStoreTime.Uint64() != 3 {
+		t.Fatalf("unexpected content store time: %v", cloned.ContentStoreTime)
+	}
+	if cloned.AIInferenceTime == nil || cloned.AIInferenceTime.Uint64() != 4 {
+		t.Fatalf("unexpected ai inference time: %v", cloned.AIInferenceTime)
+	}
+	if cloned.RandomnessTime == nil || cloned.RandomnessTime.Uint64() != 5 {
+		t.Fatalf("unexpected randomness time: %v", cloned.RandomnessTime)
+	}
+	if cloned.LtHashTime == nil || cloned.LtHashTime.Uint64() != 6 {
+		t.Fatalf("unexpected lthash time: %v", cloned.LtHashTime)
+	}
+	if cloned.Eip1559FeeCollector == nil || *cloned.Eip1559FeeCollector != feeCollector {
+		t.Fatalf("unexpected fee collector: %v", cloned.Eip1559FeeCollector)
+	}
+	if cloned.Aura == nil || cloned.Parlia == nil || cloned.Bor == nil {
+		t.Fatal("expected consensus sub-config pointers to be preserved")
+	}
+	if cloned.GlamsterdamTime == src.GlamsterdamTime || cloned.Eip1559FeeCollector == src.Eip1559FeeCollector || cloned.Bor == src.Bor {
+		t.Fatal("expected cloneChainConfig() to deep-copy pointer fields")
 	}
 }

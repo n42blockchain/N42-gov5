@@ -186,17 +186,47 @@ func cloneChainConfig(src *params.ChainConfig) *params.ChainConfig {
 	dst.PragueTime = cloneBig(src.PragueTime)
 	dst.PectraTime = cloneBig(src.PectraTime)
 	dst.OsakaTime = cloneBig(src.OsakaTime)
+	dst.GlamsterdamTime = cloneBig(src.GlamsterdamTime)
 	dst.BPO1Time = cloneBig(src.BPO1Time)
 	dst.BPO2Time = cloneBig(src.BPO2Time)
 	dst.BPO3Time = cloneBig(src.BPO3Time)
 	dst.BPO4Time = cloneBig(src.BPO4Time)
 	dst.BPO5Time = cloneBig(src.BPO5Time)
 	dst.FusakaTime = cloneBig(src.FusakaTime)
+	dst.PQPrecompilesTime = cloneBig(src.PQPrecompilesTime)
+	dst.ContentStoreTime = cloneBig(src.ContentStoreTime)
+	dst.AIInferenceTime = cloneBig(src.AIInferenceTime)
+	dst.RandomnessTime = cloneBig(src.RandomnessTime)
+	dst.LtHashTime = cloneBig(src.LtHashTime)
 	dst.NanoBlock = cloneBig(src.NanoBlock)
 	dst.MoranBlock = cloneBig(src.MoranBlock)
 	dst.BeijingBlock = cloneBig(src.BeijingBlock)
+	dst.Eip1559FeeCollector = cloneAddressPtr(src.Eip1559FeeCollector)
 	dst.Eip1559FeeCollectorTransition = cloneBig(src.Eip1559FeeCollectorTransition)
 	dst.BlobSchedule = cloneBlobSchedule(src.BlobSchedule)
+	cloneConsensusConfigs(src, &dst)
+	return &dst
+}
+
+func cloneBig(src *big.Int) *big.Int {
+	if src == nil {
+		return nil
+	}
+	return new(big.Int).Set(src)
+}
+
+func cloneAddressPtr(src *types.Address) *types.Address {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	return &cloned
+}
+
+func cloneConsensusConfigs(src, dst *params.ChainConfig) {
+	if src == nil || dst == nil {
+		return
+	}
 	if src.Clique != nil {
 		cliqueCopy := *src.Clique
 		dst.Clique = &cliqueCopy
@@ -225,14 +255,6 @@ func cloneChainConfig(src *params.ChainConfig) *params.ChainConfig {
 		hotStuffCopy := *src.HotStuff
 		dst.HotStuff = &hotStuffCopy
 	}
-	return &dst
-}
-
-func cloneBig(src *big.Int) *big.Int {
-	if src == nil {
-		return nil
-	}
-	return new(big.Int).Set(src)
 }
 
 func cloneBlobConfig(src *params.BlobConfig) *params.BlobConfig {
