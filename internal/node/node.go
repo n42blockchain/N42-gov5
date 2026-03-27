@@ -48,6 +48,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/contracts/deposit/nftstake"
@@ -116,7 +117,6 @@ import (
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	statesnapshot "github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/common/utils"
 	"google.golang.org/grpc"
 )
 
@@ -1028,16 +1028,36 @@ func resolveConsensusEngine(cfg *conf.Config, profile params.ProfileDescriptor, 
 		return nil, fmt.Errorf("execution profile %q does not support consensus %q", profile.String(), cfg.ChainCfg.Consensus)
 	}
 
-	switch cfg.ChainCfg.Consensus {
+	if engine, ok := resolveSharedConsensusEngine(cfg.ChainCfg, chainKv); ok {
+		return engine, nil
+	}
+	return resolveN42ConsensusEngine(cfg, chainKv)
+}
+
+func resolveSharedConsensusEngine(chainCfg *params.ChainConfig, chainKv kv.RwDB) (consensus.Engine, bool) {
+	if chainCfg == nil {
+		return nil, false
+	}
+	switch chainCfg.Consensus {
 	case params.CliqueConsensus:
-		return apoa.New(cfg.ChainCfg.Clique, chainKv), nil
+		return apoa.New(chainCfg.Clique, chainKv), true
+	case params.Faker:
+		return apos.NewFaker(), true
+	default:
+		return nil, false
+	}
+}
+
+func resolveN42ConsensusEngine(cfg *conf.Config, chainKv kv.RwDB) (consensus.Engine, error) {
+	if cfg == nil || cfg.ChainCfg == nil {
+		return nil, errors.New("missing chain config")
+	}
+	switch cfg.ChainCfg.Consensus {
 	case params.AposConsensu:
 		apos.SetHardForkAllocDir(cfg.NodeCfg.DataDir)
 		return apos.New(cfg.ChainCfg.Apos, chainKv, cfg.ChainCfg), nil
 	case params.HotStuffConsensus:
 		return hotstuff.New(cfg.ChainCfg.HotStuff, cfg.ChainCfg), nil
-	case params.Faker:
-		return apos.NewFaker(), nil
 	default:
 		return nil, fmt.Errorf("invalid engine name %s", cfg.ChainCfg.Consensus)
 	}
