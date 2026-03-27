@@ -21,7 +21,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/n42blockchain/N42/common/crypto/kzg"
+	"github.com/n42blockchain/N42/crypto/kzg"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	kv2 "github.com/n42blockchain/N42/lib/kv"

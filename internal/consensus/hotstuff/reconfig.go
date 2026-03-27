@@ -22,7 +22,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/n42blockchain/N42/common/crypto/bls/common"
+	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )

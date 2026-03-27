@@ -6,8 +6,8 @@ package hotstuff
 import (
 	"fmt"
 
-	"github.com/n42blockchain/N42/common/crypto/bls"
-	"github.com/n42blockchain/N42/common/crypto/bls/common"
+	"github.com/n42blockchain/N42/crypto/bls"
+	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/types"
 )
 

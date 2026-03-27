@@ -3,7 +3,7 @@ package hotstuff
 import (
 	"testing"
 
-	"github.com/n42blockchain/N42/common/crypto/bls/blst"
+	"github.com/n42blockchain/N42/crypto/bls/blst"
 	"github.com/n42blockchain/N42/common/types"
 )
 

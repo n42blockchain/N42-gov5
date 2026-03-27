@@ -6,8 +6,8 @@ package hotstuff
 import (
 	"time"
 
-	"github.com/n42blockchain/N42/common/crypto/bls/blst"
-	"github.com/n42blockchain/N42/common/crypto/bls/common"
+	"github.com/n42blockchain/N42/crypto/bls/blst"
+	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
 )
 

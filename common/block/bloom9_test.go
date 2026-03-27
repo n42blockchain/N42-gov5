@@ -22,7 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"testing"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 func TestBloom(t *testing.T) {

@@ -20,7 +20,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/n42blockchain/N42/common/crypto/bls"
+	"github.com/n42blockchain/N42/crypto/bls"
 )
 
 // decodeSecretKey decodes a hex-encoded private key string and returns the

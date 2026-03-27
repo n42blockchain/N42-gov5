@@ -25,7 +25,7 @@ import (
 
 	"github.com/go-kit/kit/transport/http/jsonrpc"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	commTyp "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"

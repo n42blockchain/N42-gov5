@@ -33,7 +33,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/n42blockchain/N42/common/crypto/stark"
+	"github.com/n42blockchain/N42/crypto/stark"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/log"

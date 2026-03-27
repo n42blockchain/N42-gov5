@@ -19,7 +19,7 @@ package peerdas
 import (
 	"fmt"
 
-	"github.com/n42blockchain/N42/common/crypto/kzg"
+	"github.com/n42blockchain/N42/crypto/kzg"
 	"github.com/n42blockchain/N42/common/transaction"
 )
 

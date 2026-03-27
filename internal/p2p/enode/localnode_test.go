@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 type failingLocalEntry struct{}

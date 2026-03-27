@@ -26,7 +26,7 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 )

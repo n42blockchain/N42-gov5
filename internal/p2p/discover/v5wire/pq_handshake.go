@@ -30,8 +30,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/crypto/kem/kyber/kyber768"
+	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/crypto/kem/kyber/kyber768"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"golang.org/x/crypto/hkdf"
 )

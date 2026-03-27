@@ -21,7 +21,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/n42blockchain/N42/common/crypto/kem/kyber/kyber768"
+	"github.com/n42blockchain/N42/crypto/kem/kyber/kyber768"
 )
 
 func TestNewHybridHandshake(t *testing.T) {

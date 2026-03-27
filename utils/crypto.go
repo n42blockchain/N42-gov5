@@ -8,7 +8,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/pkg/errors"
 
-	n42_crypto "github.com/n42blockchain/N42/common/crypto"
+	n42_crypto "github.com/n42blockchain/N42/crypto"
 )
 
 func ConvertFromInterfacePrivKey(privkey crypto.PrivKey) (*ecdsa.PrivateKey, error) {

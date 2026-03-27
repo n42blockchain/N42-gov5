@@ -13,7 +13,7 @@ import (
 	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/common/crypto/rand"
+	"github.com/n42blockchain/N42/crypto/rand"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/leakybucket"
 	n42sync "github.com/n42blockchain/N42/internal/sync"

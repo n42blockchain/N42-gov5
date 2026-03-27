@@ -38,7 +38,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/proto/sync_pb"
-	"github.com/n42blockchain/N42/common/crypto/rand"
+	"github.com/n42blockchain/N42/crypto/rand"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"

@@ -29,7 +29,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/n42blockchain/N42/common/crypto/bls"
+	"github.com/n42blockchain/N42/crypto/bls"
 )
 
 func Test() string {

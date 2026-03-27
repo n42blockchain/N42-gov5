@@ -17,7 +17,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
-	ncrypto "github.com/n42blockchain/N42/common/crypto"
+	ncrypto "github.com/n42blockchain/N42/crypto"
 )
 
 // MessagingKeyPair holds an X25519 key pair for ECDH.

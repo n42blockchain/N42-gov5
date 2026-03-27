@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 func TestCreateDID(t *testing.T) {
