@@ -76,7 +76,6 @@ type StateTransition struct {
 
 type transitionChainPolicy struct {
 	isParlia bool
-	isBor    bool
 }
 
 func newTransitionChainPolicy(cfg *params.ChainConfig) transitionChainPolicy {
@@ -85,7 +84,6 @@ func newTransitionChainPolicy(cfg *params.ChainConfig) transitionChainPolicy {
 	}
 	return transitionChainPolicy{
 		isParlia: cfg.Parlia != nil,
-		isBor:    cfg.Bor != nil,
 	}
 }
 
