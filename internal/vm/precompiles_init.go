@@ -73,35 +73,6 @@ func IsPrecompiled(addr types.Address, rules *params.Rules) bool {
 // for the specified rules, or nil if not found.
 // The switch order mirrors ActivePrecompiles in contracts.go.
 func GetPrecompiledContract(addr types.Address, rules *params.Rules) PrecompiledContract {
-	var precompiles map[types.Address]PrecompiledContract
-	switch {
-	case rules.IsMoran:
-		precompiles = PrecompiledContractsIsMoran
-	case rules.IsNano:
-		precompiles = PrecompiledContractsNano
-	case rules.IsFusaka:
-		precompiles = PrecompiledContractsFusaka
-	case rules.IsOsaka:
-		precompiles = PrecompiledContractsOsaka
-	case rules.IsPectra:
-		precompiles = PrecompiledContractsPectra
-	case rules.IsPrague:
-		precompiles = PrecompiledContractsPrague
-	case rules.IsCancun:
-		precompiles = PrecompiledContractsCancun
-	case rules.IsBerlin:
-		precompiles = PrecompiledContractsBerlin
-	case rules.IsIstanbul:
-		if rules.IsParlia {
-			precompiles = PrecompiledContractsIstanbulForBSC
-		} else {
-			precompiles = PrecompiledContractsIstanbul
-		}
-	case rules.IsByzantium:
-		precompiles = PrecompiledContractsByzantium
-	default:
-		precompiles = PrecompiledContractsHomestead
-	}
+	precompiles := legacyPrecompileContractsBySet(activeLegacyPrecompileSet(rules))
 	return precompiles[addr]
 }
-
