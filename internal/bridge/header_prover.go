@@ -140,11 +140,12 @@ func fetchHeadersAndQCs(
 	if startBlock > endBlock {
 		return nil, nil, fmt.Errorf("invalid range: startBlock %d > endBlock %d", startBlock, endBlock)
 	}
-	count := endBlock - startBlock + 1
-	const maxHeaderRange = 10000
-	if count > maxHeaderRange {
-		return nil, nil, fmt.Errorf("range too large: %d blocks (max %d)", count, maxHeaderRange)
+	const maxHeaderRange uint64 = 10000
+	// Check range before computing count to avoid uint64 overflow
+	if endBlock-startBlock >= maxHeaderRange {
+		return nil, nil, fmt.Errorf("range too large: %d blocks (max %d)", endBlock-startBlock+1, maxHeaderRange)
 	}
+	count := endBlock - startBlock + 1
 	headers := make([]*block.Header, 0, count)
 	qcs := make([]hotstuff.QuorumCertificate, 0, count)
 
