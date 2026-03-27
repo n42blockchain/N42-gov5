@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 
@@ -122,5 +123,61 @@ func TestGenesisBlockToBlockUsesExplicitHeaderFields(t *testing.T) {
 	}
 	if header.ExcessBlobGas != genesis.GenesisConfig.ExcessBlobGas {
 		t.Fatalf("ExcessBlobGas = %d, want %d", header.ExcessBlobGas, genesis.GenesisConfig.ExcessBlobGas)
+	}
+}
+
+func TestBuildConsensusExtraDataSortsSigners(t *testing.T) {
+	t.Parallel()
+
+	genesis := &conf.Genesis{
+		Config: &params.ChainConfig{Consensus: params.CliqueConsensus},
+		Miners: []string{
+			"0x0000000000000000000000000000000000000002",
+			"0x0000000000000000000000000000000000000001",
+		},
+	}
+
+	extraData, err := buildConsensusExtraData(genesis)
+	if err != nil {
+		t.Fatalf("buildConsensusExtraData() error = %v", err)
+	}
+	if len(extraData) != 32+2*types.AddressLength+65 {
+		t.Fatalf("extra data len = %d, want %d", len(extraData), 32+2*types.AddressLength+65)
+	}
+
+	first := types.HexToAddress("0x0000000000000000000000000000000000000001")
+	second := types.HexToAddress("0x0000000000000000000000000000000000000002")
+	if !bytes.Equal(extraData[32:32+types.AddressLength], first[:]) {
+		t.Fatalf("first signer bytes = %x, want %x", extraData[32:32+types.AddressLength], first[:])
+	}
+	if !bytes.Equal(extraData[32+types.AddressLength:32+2*types.AddressLength], second[:]) {
+		t.Fatalf("second signer bytes = %x, want %x", extraData[32+types.AddressLength:32+2*types.AddressLength], second[:])
+	}
+}
+
+func TestGenesisBlockToBlockUsesLegacyZeroRootsForAPOS(t *testing.T) {
+	t.Parallel()
+
+	genesis := &GenesisBlock{
+		GenesisConfig: &conf.Genesis{
+			Config: &params.ChainConfig{Consensus: params.AposConsensu},
+			Alloc:  conf.GenesisAlloc{},
+		},
+	}
+
+	blk, _, err := genesis.ToBlock()
+	if err != nil {
+		t.Fatalf("ToBlock() error = %v", err)
+	}
+
+	header, ok := blk.Header().(*block.Header)
+	if !ok || header == nil {
+		t.Fatalf("Header() type = %T, want *block.Header", blk.Header())
+	}
+	if header.TxHash != (types.Hash{}) {
+		t.Fatalf("TxHash = %s, want zero hash", header.TxHash)
+	}
+	if header.ReceiptHash != (types.Hash{}) {
+		t.Fatalf("ReceiptHash = %s, want zero hash", header.ReceiptHash)
 	}
 }
