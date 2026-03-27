@@ -372,7 +372,10 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	}
 	header.Extra = extra
 
-	// Set timestamp.
+	// Set timestamp (skip for genesis).
+	if header.Number.IsZero() {
+		return nil
+	}
 	var pNum uint256.Int
 	pNum.Sub(header.Number, uint256.NewInt(1))
 	parent := chain.GetHeaderByNumber(&pNum)
@@ -457,13 +460,14 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 	}
 
 	// Sign the seal hash with BLS.
-	sealHash := h.SealHash(b.Header())
-	sig := sk.Sign(sealHash[:])
+	sealDigest := h.SealHash(b.Header())
+	sig := sk.Sign(sealDigest[:])
 
-	// Append signature to extra data.
-	header.Extra = append(header.Extra, sig.Marshal()...)
+	// Copy header before mutating Extra to avoid corrupting the original block's header.
+	sealedHeader := block.CopyHeader(header)
+	sealedHeader.Extra = append(sealedHeader.Extra, sig.Marshal()...)
 
-	sealed := b.WithSeal(header)
+	sealed := b.WithSeal(sealedHeader)
 
 	// Feed the block hash into the consensus engine so the leader can
 	// broadcast a Proposal to start the HotStuff voting round.
@@ -522,10 +526,15 @@ func (h *HotStuff) Close() error {
 // Helpers
 // ============================================================================
 
-// sealHash computes the hash used for sealing (excludes signature from extra).
+// sealHash computes the hash used for sealing by stripping the BLS seal
+// (trailing 96 bytes) from Extra before hashing. This ensures the seal hash
+// is stable regardless of whether the signature has been appended.
 func sealHash(header *block.Header) types.Hash {
-	// Use the header hash excluding the seal (signature portion of extra data).
-	return header.Hash()
+	cpy := *header
+	if len(cpy.Extra) > extraSealLen {
+		cpy.Extra = cpy.Extra[:len(cpy.Extra)-extraSealLen]
+	}
+	return cpy.Hash()
 }
 
 // ExtractViewFromExtra extracts the view number from header extra-data.
