@@ -52,12 +52,11 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 		prevRandDao = &header.MixDigest
 	}
 
-	var transferFunc evmtypes.TransferFunc
-	if engine != nil && engine.Type() == params.BorConsensus {
-		transferFunc = BorTransfer
-	} else {
-		transferFunc = Transfer
+	consensusType := params.ConsensusType("")
+	if engine != nil {
+		consensusType = engine.Type()
 	}
+	policy := newExecutionChainPolicy(nil, consensusType)
 	headerNumber := uint64(0)
 	if number, err := requireHeaderNumber(header, "header number unavailable"); err == nil {
 		headerNumber = number.Uint64()
@@ -65,7 +64,7 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 
 	return evmtypes.BlockContext{
 		CanTransfer:   CanTransfer,
-		Transfer:      transferFunc,
+		Transfer:      policy.transferFunc(),
 		GetHash:       blockHashFunc,
 		Coinbase:      beneficiary,
 		BlockNumber:   headerNumber,
