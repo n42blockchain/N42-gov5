@@ -303,6 +303,29 @@ func resolveHTTPModules(httpAPI string, apis []jsonrpc.API, consensusPlan consen
 	return modules
 }
 
+func consensusDisplayName(consensusType params.ConsensusType) string {
+	if consensusType == params.AposConsensu {
+		return "Mobile Consensus"
+	}
+	return string(consensusType)
+}
+
+func authorizeWalletConsensusEngine(
+	engine consensus.Engine,
+	signer types.Address,
+	signFn func(accounts.Account, string, []byte) ([]byte, error),
+) bool {
+	if poa, ok := engine.(*apoa.Apoa); ok {
+		poa.Authorize(signer, signFn)
+		return true
+	}
+	if pos, ok := engine.(*apos.APos); ok {
+		pos.Authorize(signer, signFn)
+		return true
+	}
+	return false
+}
+
 func resolveAuxiliaryRuntimePlan(cfg *conf.Config, profile params.ProfileDescriptor) auxiliaryRuntimePlan {
 	var plan auxiliaryRuntimePlan
 	if cfg == nil {
@@ -884,10 +907,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if chainName == "" {
 		chainName = "mainnet"
 	}
-	consensusName := string(cfg.ChainCfg.Consensus)
-	if cfg.ChainCfg.Consensus == params.AposConsensu {
-		consensusName = "Mobile Consensus"
-	}
+	consensusName := consensusDisplayName(cfg.ChainCfg.Consensus)
 
 	// Print the pretty banner with system info
 	currentBlockNumber := uint64(0)
@@ -1045,12 +1065,7 @@ func (n *Node) authorizeMiningEngine(etherbase types.Address) error {
 			log.Error("Etherbase account unavailable locally", "err", findErr)
 			return fmt.Errorf("signer missing: %v", findErr)
 		}
-		if poa, ok := n.engine.(*apoa.Apoa); ok {
-			poa.Authorize(etherbase, wallet.SignData)
-			return nil
-		}
-		if pos, ok := n.engine.(*apos.APos); ok {
-			pos.Authorize(etherbase, wallet.SignData)
+		if authorizeWalletConsensusEngine(n.engine, etherbase, wallet.SignData) {
 			return nil
 		}
 	case consensusSignerModeHotStuffBLS:
