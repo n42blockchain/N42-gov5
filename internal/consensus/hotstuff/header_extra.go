@@ -43,10 +43,18 @@ func decodeHeaderExtra(extra []byte) (ViewNumber, *QuorumCertificate, bool, erro
 	}
 
 	if len(payload) > extraSealLen {
+		// Current layout: QC + BLS seal (96 bytes)
 		qc, err := decodeQC(payload[:len(payload)-extraSealLen])
 		if err == nil {
 			return view, qc, true, nil
 		}
+		// Fallback: try without stripping seal (legacy layout)
+		qc2, err2 := decodeQC(payload)
+		if err2 != nil {
+			// Both layouts failed — report both errors
+			return 0, nil, false, fmt.Errorf("invalid QC in extra-data (seal-stripped: %v; raw: %w)", err, err2)
+		}
+		return view, qc2, false, nil
 	}
 
 	qc, err := decodeQC(payload)

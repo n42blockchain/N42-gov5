@@ -50,7 +50,6 @@ const (
 	extraViewLen       = 8
 	extraMinLen        = extraMagicLen + extraViewLen
 	inmemorySignatures = 4096
-	inmemorySnapshots  = 128
 )
 
 var extraMagic = [extraMagicLen]byte{'N', '4', '2', 'H'}
@@ -276,7 +275,9 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 	}
 
 	// Verify timestamp is after parent.
-	parent := chain.GetHeaderByNumber(new(uint256.Int).Sub(header.Number, uint256.NewInt(1)))
+	var parentNum uint256.Int
+	parentNum.Sub(header.Number, uint256.NewInt(1))
+	parent := chain.GetHeaderByNumber(&parentNum)
 	if parent == nil {
 		return errors.New("unknown parent")
 	}
@@ -372,7 +373,9 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	header.Extra = extra
 
 	// Set timestamp.
-	parent := chain.GetHeaderByNumber(new(uint256.Int).Sub(header.Number, uint256.NewInt(1)))
+	var pNum uint256.Int
+	pNum.Sub(header.Number, uint256.NewInt(1))
+	parent := chain.GetHeaderByNumber(&pNum)
 	if parent != nil {
 		parentHeader, ok := parent.(*block.Header)
 		if ok {
