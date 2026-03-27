@@ -317,7 +317,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 	cfg.NodeCfg.Profile = profile.String()
 
-	configuredGenesis, err := resolveConfiguredGenesis(cfg)
+	configuredGenesis, err := resolveConfiguredGenesis(cfg, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -865,8 +865,12 @@ func (n *Node) Profile() params.ProfileDescriptor {
 	return n.profile
 }
 
-func resolveConfiguredGenesis(cfg *conf.Config) (configuredGenesis, error) {
-	if cfg.NodeCfg.Chain == "private" {
+func resolveConfiguredGenesis(cfg *conf.Config, profile params.ProfileDescriptor) (configuredGenesis, error) {
+	chainName := strings.TrimSpace(cfg.NodeCfg.Chain)
+	if !profile.SupportsConfiguredChain(chainName) {
+		return configuredGenesis{}, fmt.Errorf("execution profile %q does not support chain %q", profile.String(), chainName)
+	}
+	if chainName == "private" {
 		genesis := devnetGenesisBlock(cfg)
 		return configuredGenesis{
 			genesis:     genesis,
@@ -875,14 +879,14 @@ func resolveConfiguredGenesis(cfg *conf.Config) (configuredGenesis, error) {
 		}, nil
 	}
 
-	genesisHash := params.GenesisHashByChainName(cfg.NodeCfg.Chain)
+	genesisHash := params.GenesisHashByChainName(chainName)
 	if genesisHash == nil {
-		return configuredGenesis{}, fmt.Errorf("unknown chain: %s", cfg.NodeCfg.Chain)
+		return configuredGenesis{}, fmt.Errorf("unknown chain: %s", chainName)
 	}
 
 	return configuredGenesis{
-		genesis:     internal.GenesisByChainName(cfg.NodeCfg.Chain),
-		chainConfig: params.ChainConfigByChainName(cfg.NodeCfg.Chain),
+		genesis:     internal.GenesisByChainName(chainName),
+		chainConfig: params.ChainConfigByChainName(chainName),
 		genesisHash: genesisHash,
 	}, nil
 }

@@ -34,6 +34,9 @@ func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	if !p.SupportsDeveloperRuntime() {
 		t.Fatal("expected n42 profile to support developer runtime")
 	}
+	if !p.SupportsConfiguredChain("private") || !p.SupportsConfiguredChain("mainnet") || !p.SupportsConfiguredChain("testnet") {
+		t.Fatal("expected n42 profile to support configured n42 chains")
+	}
 	if !p.SupportsConsensus(AposConsensu) || !p.SupportsConsensus(HotStuffConsensus) {
 		t.Fatal("expected n42 profile to support n42 consensus engines")
 	}
@@ -76,6 +79,12 @@ func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
 			}
 			if !p.SupportsDeveloperRuntime() {
 				t.Fatal("expected ethereum EL profile to support developer runtime")
+			}
+			if !p.SupportsConfiguredChain("private") {
+				t.Fatal("expected ethereum EL profile to support private chain")
+			}
+			if p.SupportsConfiguredChain("mainnet") || p.SupportsConfiguredChain("testnet") {
+				t.Fatal("expected ethereum EL profile not to support n42 canonical chains")
 			}
 			if p.SupportsConsensus(AposConsensu) || p.SupportsConsensus(HotStuffConsensus) {
 				t.Fatal("expected ethereum EL profile not to support n42 consensus engines")

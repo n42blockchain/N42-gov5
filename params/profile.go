@@ -3,6 +3,8 @@ package params
 import (
 	"fmt"
 	"strings"
+
+	"github.com/n42blockchain/N42/params/networkname"
 )
 
 type ProfileFamily string
@@ -66,6 +68,17 @@ func (p ProfileDescriptor) SupportsWeb3GatewayRuntime() bool {
 
 func (p ProfileDescriptor) SupportsDeveloperRuntime() bool {
 	return true
+}
+
+func (p ProfileDescriptor) SupportsConfiguredChain(chain string) bool {
+	switch strings.TrimSpace(strings.ToLower(chain)) {
+	case "private":
+		return true
+	case networkname.MainnetChainName, networkname.TestnetChainName, "mainnet_compat":
+		return p.IsN42()
+	default:
+		return false
+	}
 }
 
 func (p ProfileDescriptor) SupportsConsensus(consensus ConsensusType) bool {
