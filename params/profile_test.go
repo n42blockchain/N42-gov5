@@ -34,6 +34,12 @@ func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	if !p.SupportsDeveloperRuntime() {
 		t.Fatal("expected n42 profile to support developer runtime")
 	}
+	if !p.SupportsConsensus(AposConsensu) || !p.SupportsConsensus(HotStuffConsensus) {
+		t.Fatal("expected n42 profile to support n42 consensus engines")
+	}
+	if !p.SupportsConsensus(CliqueConsensus) || !p.SupportsConsensus(Faker) {
+		t.Fatal("expected n42 profile to support shared consensus engines")
+	}
 }
 
 func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
@@ -70,6 +76,12 @@ func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
 			}
 			if !p.SupportsDeveloperRuntime() {
 				t.Fatal("expected ethereum EL profile to support developer runtime")
+			}
+			if p.SupportsConsensus(AposConsensu) || p.SupportsConsensus(HotStuffConsensus) {
+				t.Fatal("expected ethereum EL profile not to support n42 consensus engines")
+			}
+			if !p.SupportsConsensus(CliqueConsensus) || !p.SupportsConsensus(Faker) {
+				t.Fatal("expected ethereum EL profile to support shared consensus engines")
 			}
 		})
 	}

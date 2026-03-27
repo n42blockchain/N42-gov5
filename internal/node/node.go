@@ -127,6 +127,7 @@ type Node struct {
 	cancel       context.CancelFunc
 	config       *conf.Config
 	profile      params.ProfileDescriptor
+	runtimePlan  auxiliaryRuntimePlan
 	genesisBlock block.IBlock
 	etherbase    types.Address
 
@@ -216,11 +217,60 @@ type configuredGenesis struct {
 	isPrivate   bool
 }
 
+type auxiliaryRuntimePlan struct {
+	startMCPServer     bool
+	startWeb3Gateway   bool
+	startIngestServer  bool
+	startAIRuntime     bool
+	startDistributed   bool
+	startBridgeRuntime bool
+	startTxGenerator   bool
+	disabledByProfile  []string
+}
+
 func (g configuredGenesis) canonicalHash() (types.Hash, bool) {
 	if g.genesisHash == nil {
 		return types.Hash{}, false
 	}
 	return *g.genesisHash, true
+}
+
+func resolveAuxiliaryRuntimePlan(cfg *conf.Config, profile params.ProfileDescriptor) auxiliaryRuntimePlan {
+	var plan auxiliaryRuntimePlan
+	if cfg == nil {
+		return plan
+	}
+
+	addRuntime := func(name string, configured, supported bool) bool {
+		if configured && !supported {
+			plan.disabledByProfile = append(plan.disabledByProfile, name)
+		}
+		return configured && supported
+	}
+
+	aiConfigured := cfg.AICfg.Wallet.Enabled ||
+		cfg.AICfg.Governance.Enabled ||
+		cfg.AICfg.Training.Enabled ||
+		cfg.AICfg.Attestation.Enabled
+	distributedConfigured := cfg.CoprocessorCfg.Enabled ||
+		cfg.MessagingCfg.Enabled ||
+		cfg.StorageCfg.Enabled ||
+		cfg.NotifyCfg.Enabled
+
+	plan.startMCPServer = addRuntime("mcp", cfg.MCPCfg.Enabled, profile.SupportsMCPRuntime())
+	plan.startWeb3Gateway = addRuntime("web3_gateway", cfg.Web3GatewayCfg.Enabled, profile.SupportsWeb3GatewayRuntime())
+	plan.startIngestServer = addRuntime("ingest", cfg.IngestCfg.Enabled, profile.SupportsDeveloperRuntime())
+	plan.startAIRuntime = addRuntime("ai", aiConfigured, profile.SupportsAIRuntime())
+	plan.startDistributed = addRuntime("distributed", distributedConfigured, profile.SupportsDistributedRuntime())
+	plan.startBridgeRuntime = addRuntime("bridge", cfg.BridgeCfg.Enabled, profile.SupportsBridgeRuntime())
+	plan.startTxGenerator = addRuntime("tx_generator", cfg.DevCfg.TxGenEnabled, profile.SupportsDeveloperRuntime())
+	return plan
+}
+
+func (p auxiliaryRuntimePlan) logProfileDisabled(profile params.ProfileDescriptor) {
+	for _, runtime := range p.disabledByProfile {
+		log.Warn("Auxiliary runtime disabled for execution profile", "runtime", runtime, "profile", profile.String())
+	}
 }
 
 const (
@@ -362,7 +412,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, err
 	}
 
-	engine, err = resolveConsensusEngine(cfg, chainKv)
+	engine, err = resolveConsensusEngine(cfg, profile, chainKv)
 	if err != nil {
 		return nil, err
 	}
@@ -669,6 +719,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		cancel:          cancel,
 		config:          cfg,
 		profile:         profile,
+		runtimePlan:     resolveAuxiliaryRuntimePlan(cfg, profile),
 		miner:           miner,
 		genesisBlock:    genesisBlock,
 		blockChain:      bc,
@@ -836,9 +887,12 @@ func resolveConfiguredGenesis(cfg *conf.Config) (configuredGenesis, error) {
 	}, nil
 }
 
-func resolveConsensusEngine(cfg *conf.Config, chainKv kv.RwDB) (consensus.Engine, error) {
+func resolveConsensusEngine(cfg *conf.Config, profile params.ProfileDescriptor, chainKv kv.RwDB) (consensus.Engine, error) {
 	if cfg == nil || cfg.ChainCfg == nil {
 		return nil, errors.New("missing chain config")
+	}
+	if !profile.SupportsConsensus(cfg.ChainCfg.Consensus) {
+		return nil, fmt.Errorf("execution profile %q does not support consensus %q", profile.String(), cfg.ChainCfg.Consensus)
 	}
 
 	switch cfg.ChainCfg.Consensus {
@@ -1144,6 +1198,7 @@ func (n *Node) Start() error {
 		}
 	}
 
+	n.runtimePlan.logProfileDisabled(n.profile)
 	n.startMCPServer()
 
 	// Start gRPC KV server for RPCDaemon if configured.
@@ -1189,15 +1244,11 @@ func (n *Node) Start() error {
 
 	n.startAIRuntime()
 	n.startDistributedRuntime()
-
 	n.startWeb3Gateway()
-
 	n.startIngestServer()
-
 	n.startBridgeRuntime()
 
-	// Start transaction generator if enabled
-	if n.config.DevCfg.TxGenEnabled {
+	if n.runtimePlan.startTxGenerator {
 		n.startTxGenerator()
 	}
 
@@ -1208,8 +1259,7 @@ func (n *Node) Start() error {
 
 // startTxGenerator initializes and starts the transaction generator for development testing.
 func (n *Node) startTxGenerator() {
-	if !n.profile.SupportsDeveloperRuntime() {
-		log.Warn("Tx generator disabled for execution profile", "profile", n.profile.String())
+	if !n.runtimePlan.startTxGenerator {
 		return
 	}
 	txgenConfig := &txgen.Config{
@@ -1234,10 +1284,7 @@ func (n *Node) startTxGenerator() {
 }
 
 func (n *Node) startMCPServer() {
-	if n.config.MCPCfg.Enabled && !n.profile.SupportsMCPRuntime() {
-		log.Warn("MCP server disabled for execution profile", "profile", n.profile.String())
-	}
-	if !n.config.MCPCfg.Enabled || !n.profile.SupportsMCPRuntime() {
+	if !n.runtimePlan.startMCPServer {
 		return
 	}
 	mcpBackend := &mcpNodeBackend{node: n}
@@ -1255,10 +1302,7 @@ func (n *Node) startMCPServer() {
 }
 
 func (n *Node) startWeb3Gateway() {
-	if n.config.Web3GatewayCfg.Enabled && !n.profile.SupportsWeb3GatewayRuntime() {
-		log.Warn("web3 gateway disabled for execution profile", "profile", n.profile.String())
-	}
-	if !n.config.Web3GatewayCfg.Enabled || !n.profile.SupportsWeb3GatewayRuntime() {
+	if !n.runtimePlan.startWeb3Gateway {
 		return
 	}
 	n.web3Gateway = api.NewWeb3Gateway(n.api, &n.config.Web3GatewayCfg)
@@ -1268,10 +1312,7 @@ func (n *Node) startWeb3Gateway() {
 }
 
 func (n *Node) startIngestServer() {
-	if n.config.IngestCfg.Enabled && !n.profile.SupportsDeveloperRuntime() {
-		log.Warn("Ingest server disabled for execution profile", "profile", n.profile.String())
-	}
-	if !n.config.IngestCfg.Enabled || !n.profile.SupportsDeveloperRuntime() {
+	if !n.runtimePlan.startIngestServer {
 		return
 	}
 	ingestPool := &ingestPoolAdapter{pool: n.txspool}
@@ -1289,11 +1330,7 @@ func (n *Node) startIngestServer() {
 }
 
 func (n *Node) startAIRuntime() {
-	aiEnabled := n.config.AICfg.Wallet.Enabled || n.config.AICfg.Governance.Enabled || n.config.AICfg.Training.Enabled || n.config.AICfg.Attestation.Enabled
-	if aiEnabled && !n.profile.SupportsAIRuntime() {
-		log.Warn("AI runtime services disabled for execution profile", "profile", n.profile.String())
-	}
-	if !n.profile.SupportsAIRuntime() {
+	if !n.runtimePlan.startAIRuntime {
 		return
 	}
 	if n.config.AICfg.Wallet.Enabled {
@@ -1334,11 +1371,7 @@ func (n *Node) startAIRuntime() {
 }
 
 func (n *Node) startDistributedRuntime() {
-	distributedEnabled := n.config.CoprocessorCfg.Enabled || n.config.MessagingCfg.Enabled || n.config.StorageCfg.Enabled || n.config.NotifyCfg.Enabled
-	if distributedEnabled && !n.profile.SupportsDistributedRuntime() {
-		log.Warn("Distributed runtime services disabled for execution profile", "profile", n.profile.String())
-	}
-	if !n.profile.SupportsDistributedRuntime() {
+	if !n.runtimePlan.startDistributed {
 		return
 	}
 	if n.config.CoprocessorCfg.Enabled {
@@ -1369,10 +1402,7 @@ func (n *Node) startDistributedRuntime() {
 }
 
 func (n *Node) startBridgeRuntime() {
-	if n.config.BridgeCfg.Enabled && !n.profile.SupportsBridgeRuntime() {
-		log.Warn("Cross-chain bridge disabled for execution profile", "profile", n.profile.String())
-	}
-	if !n.config.BridgeCfg.Enabled || !n.profile.SupportsBridgeRuntime() {
+	if !n.runtimePlan.startBridgeRuntime {
 		return
 	}
 	bridgeCtx, bridgeCancel := context.WithCancel(n.ctx)
