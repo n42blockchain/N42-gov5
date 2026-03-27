@@ -243,6 +243,18 @@ type consensusRuntimePlan struct {
 	registerHotStuffAdminAPI bool
 }
 
+type consensusSignerMode string
+
+const (
+	consensusSignerModeNone        consensusSignerMode = "none"
+	consensusSignerModeWallet      consensusSignerMode = "wallet"
+	consensusSignerModeHotStuffBLS consensusSignerMode = "hotstuff-bls"
+)
+
+type consensusSignerPlan struct {
+	mode consensusSignerMode
+}
+
 func (g configuredGenesis) canonicalHash() (types.Hash, bool) {
 	if g.genesisHash == nil {
 		return types.Hash{}, false
@@ -312,6 +324,17 @@ func resolveConsensusRuntimePlan(engine consensus.Engine) consensusRuntimePlan {
 		plan.startHotStuffService = e.Engine() != nil
 	}
 	return plan
+}
+
+func resolveConsensusSignerPlan(engine consensus.Engine) consensusSignerPlan {
+	switch engine.(type) {
+	case *apoa.Apoa, *apos.APos:
+		return consensusSignerPlan{mode: consensusSignerModeWallet}
+	case *hotstuff.HotStuff:
+		return consensusSignerPlan{mode: consensusSignerModeHotStuffBLS}
+	default:
+		return consensusSignerPlan{mode: consensusSignerModeNone}
+	}
 }
 
 func resolveDepositContract(ctx context.Context, bc common.IBlockChain, db kv.RwDB, chainCfg *params.ChainConfig) (*deposit.Deposit, error) {
@@ -971,6 +994,43 @@ func bundlerChainID(chainCfg *params.ChainConfig) (uint64, error) {
 	return chainCfg.ChainID.Uint64(), nil
 }
 
+func (n *Node) authorizeMiningEngine(etherbase types.Address) error {
+	switch resolveConsensusSignerPlan(n.engine).mode {
+	case consensusSignerModeWallet:
+		wallet, findErr := n.accman.Find(accounts.Account{Address: etherbase})
+		if wallet == nil || findErr != nil {
+			log.Error("Etherbase account unavailable locally", "err", findErr)
+			return fmt.Errorf("signer missing: %v", findErr)
+		}
+		if poa, ok := n.engine.(*apoa.Apoa); ok {
+			poa.Authorize(etherbase, wallet.SignData)
+			return nil
+		}
+		if pos, ok := n.engine.(*apos.APos); ok {
+			pos.Authorize(etherbase, wallet.SignData)
+			return nil
+		}
+	case consensusSignerModeHotStuffBLS:
+		hs := n.engine.(*hotstuff.HotStuff)
+		blsKey, blsErr := hotstuff.LoadBLSKeyFromDir(n.keyDir, etherbase)
+		if blsErr != nil {
+			log.Error("HotStuff BLS key unavailable", "err", blsErr)
+			return fmt.Errorf("hotstuff BLS key missing for %s: %v", etherbase, blsErr)
+		}
+		hs.Authorize(etherbase, blsKey)
+
+		// Inject reward function (delegates to apos reward logic).
+		hs.SetRewardFunc(func(chainCfg *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.N42ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+			return apos.DoReward(chainCfg, ibs, header, chain)
+		})
+
+		if err := hs.InitEngineFromConfig(); err != nil {
+			return fmt.Errorf("hotstuff engine init failed: %w", err)
+		}
+	}
+	return nil
+}
+
 func (n *Node) Start() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
@@ -1024,39 +1084,8 @@ func (n *Node) Start() error {
 			}
 		}
 
-		// Authorize the consensus engine with the miner's signing function.
-		if poa, ok := n.engine.(*apoa.Apoa); ok {
-			wallet, findErr := n.accman.Find(accounts.Account{Address: eb})
-			if wallet == nil || findErr != nil {
-				log.Error("Etherbase account unavailable locally", "err", findErr)
-				return fmt.Errorf("signer missing: %v", findErr)
-			}
-			poa.Authorize(eb, wallet.SignData)
-		} else if pos, ok := n.engine.(*apos.APos); ok {
-			wallet, findErr := n.accman.Find(accounts.Account{Address: eb})
-			if wallet == nil || findErr != nil {
-				log.Error("Etherbase account unavailable locally", "err", findErr)
-				return fmt.Errorf("signer missing: %v", findErr)
-			}
-			pos.Authorize(eb, wallet.SignData)
-		} else if hs, ok := n.engine.(*hotstuff.HotStuff); ok {
-			// HotStuff uses BLS keys — load from keystore directory.
-			blsKey, blsErr := hotstuff.LoadBLSKeyFromDir(n.keyDir, eb)
-			if blsErr != nil {
-				log.Error("HotStuff BLS key unavailable", "err", blsErr)
-				return fmt.Errorf("hotstuff BLS key missing for %s: %v", eb, blsErr)
-			}
-			hs.Authorize(eb, blsKey)
-
-			// Inject reward function (delegates to apos reward logic).
-			hs.SetRewardFunc(func(chainCfg *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.N42ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
-				return apos.DoReward(chainCfg, ibs, header, chain)
-			})
-
-			// Initialize the consensus engine with the genesis validator set.
-			if err := hs.InitEngineFromConfig(); err != nil {
-				return fmt.Errorf("hotstuff engine init failed: %w", err)
-			}
+		if err := n.authorizeMiningEngine(eb); err != nil {
+			return err
 		}
 
 		n.miner.SetCoinbase(eb)

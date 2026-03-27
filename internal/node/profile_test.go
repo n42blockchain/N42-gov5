@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/params"
@@ -250,6 +252,27 @@ func TestResolveConsensusRuntimePlanHotStuffEnablesAdminAPI(t *testing.T) {
 	plan := resolveConsensusRuntimePlan(engine)
 	if !plan.registerHotStuffAdminAPI {
 		t.Fatal("expected hotstuff runtime plan to enable admin API")
+	}
+}
+
+func TestResolveConsensusSignerPlanWalletEngines(t *testing.T) {
+	for name, engine := range map[string]consensus.Engine{
+		"apoa": &apoa.Apoa{},
+		"apos": &apos.APos{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plan := resolveConsensusSignerPlan(engine)
+			if plan.mode != consensusSignerModeWallet {
+				t.Fatalf("mode = %q, want %q", plan.mode, consensusSignerModeWallet)
+			}
+		})
+	}
+}
+
+func TestResolveConsensusSignerPlanHotStuffUsesBLS(t *testing.T) {
+	plan := resolveConsensusSignerPlan(hotstuff.New(nil, &params.ChainConfig{}))
+	if plan.mode != consensusSignerModeHotStuffBLS {
+		t.Fatalf("mode = %q, want %q", plan.mode, consensusSignerModeHotStuffBLS)
 	}
 }
 
