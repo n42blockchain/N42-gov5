@@ -2,6 +2,18 @@ package params
 
 import "testing"
 
+func TestConsensusTypeDisplayNameUsesFriendlyAPOSName(t *testing.T) {
+	if got := AposConsensu.DisplayName(); got != "Mobile Consensus" {
+		t.Fatalf("display name = %q, want %q", got, "Mobile Consensus")
+	}
+}
+
+func TestConsensusTypeDisplayNameKeepsDefaultName(t *testing.T) {
+	if got := HotStuffConsensus.DisplayName(); got != string(HotStuffConsensus) {
+		t.Fatalf("display name = %q, want %q", got, HotStuffConsensus)
+	}
+}
+
 func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	p, err := ResolveExecutionProfile("")
 	if err != nil {
