@@ -505,6 +505,18 @@ func TestIsHeaderWithSeal(t *testing.T) {
 	}
 }
 
+func TestUsesBorSystemCallContext(t *testing.T) {
+	if (&ChainConfig{Bor: &BorConfig{}}).UsesBorSystemCallContext() == false {
+		t.Error("UsesBorSystemCallContext() should return true when Bor config is present")
+	}
+	if (&ChainConfig{}).UsesBorSystemCallContext() {
+		t.Error("UsesBorSystemCallContext() should return false without Bor config")
+	}
+	if (*ChainConfig)(nil).UsesBorSystemCallContext() {
+		t.Error("UsesBorSystemCallContext() should return false for nil config")
+	}
+}
+
 func TestConfigCompatError(t *testing.T) {
 	err := &ConfigCompatError{
 		What:         "test fork",
