@@ -19,7 +19,7 @@ package eth69
 import (
 	"github.com/holiman/uint256"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/utils"
 )
 

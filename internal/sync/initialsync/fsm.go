@@ -9,7 +9,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 const (

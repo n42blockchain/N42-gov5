@@ -23,7 +23,7 @@ import (
 	"go.opencensus.io/trace"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"

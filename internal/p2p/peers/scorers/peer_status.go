@@ -8,7 +8,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/utils"

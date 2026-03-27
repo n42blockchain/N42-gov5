@@ -11,7 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 
-	"github.com/n42blockchain/N42/api/protocol/msg_proto"
+	"github.com/n42blockchain/N42/proto/msg_proto"
 	"github.com/n42blockchain/N42/utils"
 )
 

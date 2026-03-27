@@ -30,8 +30,8 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_proto"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/proto/sync_proto"
+	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"

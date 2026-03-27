@@ -16,7 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/pkg/errors"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/utils"

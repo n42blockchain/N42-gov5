@@ -8,8 +8,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/proto/sync_pb"
+	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"

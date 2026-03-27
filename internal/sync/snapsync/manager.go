@@ -24,7 +24,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.org/x/sync/semaphore"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p"

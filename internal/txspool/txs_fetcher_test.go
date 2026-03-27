@@ -26,7 +26,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_proto"
+	"github.com/n42blockchain/N42/proto/sync_proto"
 )
 
 // =============================================================================

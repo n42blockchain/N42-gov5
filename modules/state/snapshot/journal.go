@@ -16,7 +16,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 
-	state_proto "github.com/n42blockchain/N42/api/protocol/state"
+	state_proto "github.com/n42blockchain/N42/proto/state"
 )
 
 // SerializeDiffLayer encodes a DiffLayer into bytes for journal persistence.

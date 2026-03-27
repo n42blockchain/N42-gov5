@@ -34,7 +34,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/api/protocol/msg_proto"
+	"github.com/n42blockchain/N42/proto/msg_proto"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"

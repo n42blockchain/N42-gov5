@@ -9,7 +9,7 @@ import (
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 	ssztype "github.com/n42blockchain/N42/common/types/ssz"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"

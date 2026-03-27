@@ -22,7 +22,7 @@ import (
 	"github.com/holiman/uint256"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/api/protocol/state"
+	"github.com/n42blockchain/N42/proto/state"
 	"github.com/n42blockchain/N42/common/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/utils"
