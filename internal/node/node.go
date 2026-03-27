@@ -237,6 +237,12 @@ type rpcExposurePlan struct {
 	registerHotStuffAdminAPI bool
 }
 
+type consensusRuntimePlan struct {
+	bindAPOSBlockChain       bool
+	startHotStuffService     bool
+	registerHotStuffAdminAPI bool
+}
+
 func (g configuredGenesis) canonicalHash() (types.Hash, bool) {
 	if g.genesisHash == nil {
 		return types.Hash{}, false
@@ -292,6 +298,18 @@ func resolveRPCExposurePlan(cfg *conf.Config, profile params.ProfileDescriptor, 
 	}
 	if cfg != nil {
 		plan.registerSnapshotAPI = cfg.SnapshotCfg.Enable
+	}
+	return plan
+}
+
+func resolveConsensusRuntimePlan(engine consensus.Engine) consensusRuntimePlan {
+	var plan consensusRuntimePlan
+	switch e := engine.(type) {
+	case *apos.APos:
+		plan.bindAPOSBlockChain = true
+	case *hotstuff.HotStuff:
+		plan.registerHotStuffAdminAPI = true
+		plan.startHotStuffService = e.Engine() != nil
 	}
 	return plan
 }
@@ -1045,12 +1063,15 @@ func (n *Node) Start() error {
 		n.miner.Start()
 	}
 
-	if pos, ok := n.engine.(*apos.APos); ok {
+	consensusPlan := resolveConsensusRuntimePlan(n.engine)
+
+	if consensusPlan.bindAPOSBlockChain {
+		pos := n.engine.(*apos.APos)
 		pos.SetBlockChain(n.blockChain)
 	}
 
-	// Start HotStuff consensus service if applicable.
-	if hs, ok := n.engine.(*hotstuff.HotStuff); ok && hs.Engine() != nil {
+	if consensusPlan.startHotStuffService {
+		hs := n.engine.(*hotstuff.HotStuff)
 		// Format gossip topic with fork digest (genesis hash prefix).
 		forkDigest := utils.ToBytes4(n.p2pGenesisHash[:])
 		gossipTopic := fmt.Sprintf(p2p.HotStuffConsensusTopicFormat, forkDigest)
@@ -1084,8 +1105,7 @@ func (n *Node) Start() error {
 		Service:   api.NewMevAPI(n.miner),
 	})
 
-	hs, hasHotStuffAdmin := n.engine.(*hotstuff.HotStuff)
-	rpcPlan := resolveRPCExposurePlan(n.config, n.profile, n.bundlerService != nil, hasHotStuffAdmin)
+	rpcPlan := resolveRPCExposurePlan(n.config, n.profile, n.bundlerService != nil, consensusPlan.registerHotStuffAdminAPI)
 
 	// Register bundler RPC and start service.
 	if rpcPlan.registerBundlerAPI {
@@ -1119,6 +1139,7 @@ func (n *Node) Start() error {
 	}
 
 	if rpcPlan.registerHotStuffAdminAPI {
+		hs := n.engine.(*hotstuff.HotStuff)
 		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
 			Namespace:     "admin",
 			Service:       api.NewHotStuffReconfigAPI(func() *hotstuff.HotStuff { return hs }),
