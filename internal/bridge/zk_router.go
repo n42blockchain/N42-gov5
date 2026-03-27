@@ -11,7 +11,7 @@ import (
 
 	"github.com/holiman/uint256"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )

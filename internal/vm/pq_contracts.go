@@ -29,9 +29,9 @@ package vm
 import (
 	"errors"
 
-	"github.com/n42blockchain/N42/common/crypto/dilithium/mode2"
-	"github.com/n42blockchain/N42/common/crypto/dilithium/mode3"
-	"github.com/n42blockchain/N42/common/crypto/falcon"
+	"github.com/n42blockchain/N42/crypto/dilithium/mode2"
+	"github.com/n42blockchain/N42/crypto/dilithium/mode3"
+	"github.com/n42blockchain/N42/crypto/falcon"
 	"github.com/n42blockchain/N42/common/types"
 )
 

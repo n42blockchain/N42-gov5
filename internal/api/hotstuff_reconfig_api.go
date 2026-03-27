@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/n42blockchain/N42/common/crypto/bls/blst"
+	"github.com/n42blockchain/N42/crypto/bls/blst"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 )

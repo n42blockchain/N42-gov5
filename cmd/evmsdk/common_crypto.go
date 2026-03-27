@@ -22,8 +22,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/crypto/ecies"
+	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/crypto/ecies"
 )
 
 func (e *EvmEngine) Decrypt(req *EmitRequest) (interface{}, error) {

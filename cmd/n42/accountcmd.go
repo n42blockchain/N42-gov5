@@ -25,7 +25,7 @@ import (
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/keystore"
 	"github.com/n42blockchain/N42/cmd/utils"
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/log"

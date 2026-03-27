@@ -22,7 +22,7 @@ import (
 
 	"github.com/erigontech/secp256k1"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/math"
 )

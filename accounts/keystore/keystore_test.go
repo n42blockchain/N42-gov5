@@ -29,7 +29,7 @@ import (
 
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 )

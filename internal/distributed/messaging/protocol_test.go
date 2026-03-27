@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 func TestEnvelopeEncodeDecode(t *testing.T) {

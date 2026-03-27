@@ -14,7 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/n42blockchain/N42/common/crypto/bls"
+	"github.com/n42blockchain/N42/crypto/bls"
 )
 
 type validator struct {

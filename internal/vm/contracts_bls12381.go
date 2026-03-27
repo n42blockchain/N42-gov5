@@ -23,7 +23,7 @@ import (
 	gnarkbls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 
-	"github.com/n42blockchain/N42/common/crypto/bls12381"
+	"github.com/n42blockchain/N42/crypto/bls12381"
 	"github.com/n42blockchain/N42/params"
 )
 

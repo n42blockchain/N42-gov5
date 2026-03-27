@@ -29,7 +29,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/n42blockchain/N42/accounts"
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 )
 

@@ -22,7 +22,7 @@ package vm
 import (
 	"errors"
 
-	"github.com/n42blockchain/N42/common/crypto/kzg"
+	"github.com/n42blockchain/N42/crypto/kzg"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"

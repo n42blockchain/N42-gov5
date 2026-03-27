@@ -11,7 +11,7 @@ import (
 
 	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p"

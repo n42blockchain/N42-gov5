@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/n42blockchain/N42/common/crypto/bls"
-	blscommon "github.com/n42blockchain/N42/common/crypto/bls/common"
+	"github.com/n42blockchain/N42/crypto/bls"
+	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/types"
 )
 

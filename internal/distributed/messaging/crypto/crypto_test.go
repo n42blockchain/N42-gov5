@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	ncrypto "github.com/n42blockchain/N42/common/crypto"
+	ncrypto "github.com/n42blockchain/N42/crypto"
 )
 
 func TestGenerateKeyPair(t *testing.T) {

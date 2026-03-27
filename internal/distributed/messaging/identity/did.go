@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"golang.org/x/crypto/sha3"
 )
 

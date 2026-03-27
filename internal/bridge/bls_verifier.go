@@ -6,8 +6,8 @@ package bridge
 import (
 	"fmt"
 
-	"github.com/n42blockchain/N42/common/crypto/bls"
-	blscommon "github.com/n42blockchain/N42/common/crypto/bls/common"
+	"github.com/n42blockchain/N42/crypto/bls"
+	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 )
 
 // BLSVerifierImpl implements SyncCommitteeBLSVerifier using the N42 BLS12-381 stack.

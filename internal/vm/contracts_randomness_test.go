@@ -22,7 +22,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 )
 

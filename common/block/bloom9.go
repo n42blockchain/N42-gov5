@@ -20,8 +20,8 @@ import (
 	"encoding/binary"
 	"math/big"
 
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/crypto/cryptopool"
+	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/crypto/cryptopool"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/lib/common/hexutility"
 )

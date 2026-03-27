@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 func TestParseV4RejectsHostWithoutResolvedIPs(t *testing.T) {

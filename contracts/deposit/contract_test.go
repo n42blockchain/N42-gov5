@@ -24,7 +24,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/common/crypto/bls"
+	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/common/hexutil"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/params"

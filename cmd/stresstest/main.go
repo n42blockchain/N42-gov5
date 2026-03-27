@@ -50,7 +50,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/common/crypto"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/rlp"
 )
 

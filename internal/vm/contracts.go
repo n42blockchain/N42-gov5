@@ -23,9 +23,9 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/avmutil"
-	"github.com/n42blockchain/N42/common/crypto"
-	"github.com/n42blockchain/N42/common/crypto/blake2b"
-	"github.com/n42blockchain/N42/common/crypto/bn256"
+	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/crypto/blake2b"
+	"github.com/n42blockchain/N42/crypto/bn256"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"

@@ -4,8 +4,8 @@
 package hotstuff
 
 import (
-	"github.com/n42blockchain/N42/common/crypto/bls"
-	"github.com/n42blockchain/N42/common/crypto/bls/common"
+	"github.com/n42blockchain/N42/crypto/bls"
+	"github.com/n42blockchain/N42/crypto/bls/common"
 )
 
 // VerifyBLSSignature verifies a BLS signature given raw signature bytes, a public key, and message.
