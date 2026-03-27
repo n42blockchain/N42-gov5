@@ -1,6 +1,10 @@
 package conf
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/n42blockchain/N42/params"
+)
 
 func TestApplyDefaultsSetsNodeProfile(t *testing.T) {
 	cfg := &Config{}
@@ -19,5 +23,31 @@ func TestValidateRejectsUnknownNodeProfile(t *testing.T) {
 	}
 	if err := Validate(cfg); err == nil {
 		t.Fatal("expected Validate to reject unknown profile")
+	}
+}
+
+func TestValidateRejectsUnsupportedChainForProfile(t *testing.T) {
+	cfg := &Config{
+		NodeCfg: NodeConfig{
+			Profile: "eth",
+			Chain:   "mainnet",
+		},
+		ChainCfg: params.MainnetChainConfig,
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected Validate to reject n42 chain for ethereum EL profile")
+	}
+}
+
+func TestValidateRejectsUnsupportedConsensusForProfile(t *testing.T) {
+	cfg := &Config{
+		NodeCfg: NodeConfig{
+			Profile: "eth",
+			Chain:   "private",
+		},
+		ChainCfg: &params.ChainConfig{Consensus: params.AposConsensu},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected Validate to reject apos consensus for ethereum EL profile")
 	}
 }
