@@ -1208,6 +1208,10 @@ func (n *Node) Start() error {
 
 // startTxGenerator initializes and starts the transaction generator for development testing.
 func (n *Node) startTxGenerator() {
+	if !n.profile.SupportsDeveloperRuntime() {
+		log.Warn("Tx generator disabled for execution profile", "profile", n.profile.String())
+		return
+	}
 	txgenConfig := &txgen.Config{
 		Enabled:        n.config.DevCfg.TxGenEnabled,
 		MaxTxsPerBlock: n.config.DevCfg.TxGenMaxPerBlock,
@@ -1230,10 +1234,10 @@ func (n *Node) startTxGenerator() {
 }
 
 func (n *Node) startMCPServer() {
-	if n.config.MCPCfg.Enabled && !n.profile.SupportsAIRuntime() {
+	if n.config.MCPCfg.Enabled && !n.profile.SupportsMCPRuntime() {
 		log.Warn("MCP server disabled for execution profile", "profile", n.profile.String())
 	}
-	if !n.config.MCPCfg.Enabled || !n.profile.SupportsAIRuntime() {
+	if !n.config.MCPCfg.Enabled || !n.profile.SupportsMCPRuntime() {
 		return
 	}
 	mcpBackend := &mcpNodeBackend{node: n}
@@ -1251,7 +1255,10 @@ func (n *Node) startMCPServer() {
 }
 
 func (n *Node) startWeb3Gateway() {
-	if !n.config.Web3GatewayCfg.Enabled {
+	if n.config.Web3GatewayCfg.Enabled && !n.profile.SupportsWeb3GatewayRuntime() {
+		log.Warn("web3 gateway disabled for execution profile", "profile", n.profile.String())
+	}
+	if !n.config.Web3GatewayCfg.Enabled || !n.profile.SupportsWeb3GatewayRuntime() {
 		return
 	}
 	n.web3Gateway = api.NewWeb3Gateway(n.api, &n.config.Web3GatewayCfg)
@@ -1261,7 +1268,10 @@ func (n *Node) startWeb3Gateway() {
 }
 
 func (n *Node) startIngestServer() {
-	if !n.config.IngestCfg.Enabled {
+	if n.config.IngestCfg.Enabled && !n.profile.SupportsDeveloperRuntime() {
+		log.Warn("Ingest server disabled for execution profile", "profile", n.profile.String())
+	}
+	if !n.config.IngestCfg.Enabled || !n.profile.SupportsDeveloperRuntime() {
 		return
 	}
 	ingestPool := &ingestPoolAdapter{pool: n.txspool}

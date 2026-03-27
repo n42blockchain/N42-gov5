@@ -25,6 +25,15 @@ func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	if !p.SupportsAIRuntime() {
 		t.Fatal("expected n42 profile to support AI runtime")
 	}
+	if !p.SupportsMCPRuntime() {
+		t.Fatal("expected n42 profile to support MCP runtime")
+	}
+	if !p.SupportsWeb3GatewayRuntime() {
+		t.Fatal("expected n42 profile to support web3 gateway runtime")
+	}
+	if !p.SupportsDeveloperRuntime() {
+		t.Fatal("expected n42 profile to support developer runtime")
+	}
 }
 
 func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
@@ -52,6 +61,15 @@ func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
 			}
 			if p.SupportsAIRuntime() {
 				t.Fatal("expected ethereum EL profile not to support AI runtime")
+			}
+			if p.SupportsMCPRuntime() {
+				t.Fatal("expected ethereum EL profile not to support MCP runtime")
+			}
+			if !p.SupportsWeb3GatewayRuntime() {
+				t.Fatal("expected ethereum EL profile to support web3 gateway runtime")
+			}
+			if !p.SupportsDeveloperRuntime() {
+				t.Fatal("expected ethereum EL profile to support developer runtime")
 			}
 		})
 	}

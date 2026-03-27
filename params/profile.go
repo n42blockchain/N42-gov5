@@ -56,6 +56,18 @@ func (p ProfileDescriptor) SupportsAIRuntime() bool {
 	return p.IsN42()
 }
 
+func (p ProfileDescriptor) SupportsMCPRuntime() bool {
+	return p.SupportsAIRuntime()
+}
+
+func (p ProfileDescriptor) SupportsWeb3GatewayRuntime() bool {
+	return true
+}
+
+func (p ProfileDescriptor) SupportsDeveloperRuntime() bool {
+	return true
+}
+
 func ResolveExecutionProfile(raw string) (ProfileDescriptor, error) {
 	normalized := strings.TrimSpace(strings.ToLower(raw))
 	if normalized == "" {
