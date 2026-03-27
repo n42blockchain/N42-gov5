@@ -69,6 +69,13 @@ const (
 	Faker             ConsensusType = "faker"
 )
 
+func (c ConsensusType) DisplayName() string {
+	if c == AposConsensu {
+		return "Mobile Consensus"
+	}
+	return string(c)
+}
+
 // ---------------------------------------------------------------------------
 // Genesis hashes
 // ---------------------------------------------------------------------------
@@ -282,13 +289,8 @@ func (c *ChainConfig) Description() string {
 		network = "unknown"
 	}
 
-	consensusName := string(c.Consensus)
-	if c.Consensus == AposConsensu {
-		consensusName = "Mobile Consensus"
-	}
-
 	return fmt.Sprintf("Version    %s\nChain      %v (%s)\nConsensus  %s\n",
-		VersionWithMeta, c.ChainID, network, consensusName)
+		VersionWithMeta, c.ChainID, network, c.Consensus.DisplayName())
 }
 
 // ---------------------------------------------------------------------------

@@ -303,13 +303,6 @@ func resolveHTTPModules(httpAPI string, apis []jsonrpc.API, consensusPlan consen
 	return modules
 }
 
-func consensusDisplayName(consensusType params.ConsensusType) string {
-	if consensusType == params.AposConsensu {
-		return "Mobile Consensus"
-	}
-	return string(consensusType)
-}
-
 func authorizeWalletConsensusEngine(
 	engine consensus.Engine,
 	signer types.Address,
@@ -907,7 +900,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if chainName == "" {
 		chainName = "mainnet"
 	}
-	consensusName := consensusDisplayName(cfg.ChainCfg.Consensus)
+	consensusName := cfg.ChainCfg.Consensus.DisplayName()
 
 	// Print the pretty banner with system info
 	currentBlockNumber := uint64(0)
