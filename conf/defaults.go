@@ -18,6 +18,8 @@ package conf
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/n42blockchain/N42/params"
@@ -134,12 +136,20 @@ func ApplyDefaults(cfg *Config) {
 
 // Validate checks the configuration for errors.
 func Validate(cfg *Config) error {
-	if _, err := params.ResolveExecutionProfile(cfg.NodeCfg.Profile); err != nil {
+	profile, err := params.ResolveExecutionProfile(cfg.NodeCfg.Profile)
+	if err != nil {
 		return err
+	}
+	chainName := strings.TrimSpace(cfg.NodeCfg.Chain)
+	if chainName != "" && !profile.SupportsConfiguredChain(chainName) {
+		return fmt.Errorf("execution profile %q does not support chain %q", profile.String(), chainName)
 	}
 
 	if cfg.ChainCfg == nil && cfg.NodeCfg.Chain != "private" {
 		return ErrMissingChainConfig
+	}
+	if cfg.ChainCfg != nil && !profile.SupportsConsensus(cfg.ChainCfg.Consensus) {
+		return fmt.Errorf("execution profile %q does not support consensus %q", profile.String(), cfg.ChainCfg.Consensus)
 	}
 
 	if cfg.NodeCfg.Miner {
