@@ -46,7 +46,7 @@ import (
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/turbo/rpchelper"
+	"github.com/n42blockchain/N42/internal/api/rpchelper"
 )
 
 const (
