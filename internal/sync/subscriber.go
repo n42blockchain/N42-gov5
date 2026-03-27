@@ -20,7 +20,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/peers"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 const pubsubMessageTimeout = 30 * time.Second

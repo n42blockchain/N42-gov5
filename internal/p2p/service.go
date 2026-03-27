@@ -33,7 +33,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/peers"
 	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
 	astLog "github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 var (

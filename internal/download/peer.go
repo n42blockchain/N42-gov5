@@ -27,7 +27,7 @@ import (
 	"github.com/n42blockchain/N42/common/message"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )

@@ -19,7 +19,7 @@ import (
 	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 const (

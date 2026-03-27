@@ -12,7 +12,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/n42blockchain/N42/proto/msg_proto"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 const (

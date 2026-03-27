@@ -13,7 +13,7 @@ import (
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 // ErrInvalidFetchedData is thrown if stream fails to provide requested blocks.

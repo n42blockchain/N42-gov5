@@ -22,7 +22,7 @@ import (
 	"github.com/holiman/uint256"
 	"reflect"
 
-	// "github.com/n42blockchain/N42/utils" cycle import
+	// "github.com/n42blockchain/N42/common/utils" cycle import
 	"strings"
 	"testing"
 

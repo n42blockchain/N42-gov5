@@ -17,7 +17,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/leakybucket"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 const (

@@ -23,7 +23,7 @@ import (
 	"github.com/n42blockchain/N42/internal/api/filters"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 // =============================================================================

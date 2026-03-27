@@ -25,7 +25,7 @@ import (
 	"github.com/n42blockchain/N42/proto/state"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 // StateAccount is the Ethereum consensus representation of accounts.

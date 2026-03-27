@@ -26,7 +26,7 @@ import (
 	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 const (

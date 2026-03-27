@@ -10,7 +10,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 const n42ENRKey = "n42Enr"
