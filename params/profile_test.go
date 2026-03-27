@@ -14,6 +14,27 @@ func TestConsensusTypeDisplayNameKeepsDefaultName(t *testing.T) {
 	}
 }
 
+func TestConsensusTypeUsesSignerListGenesisExtraData(t *testing.T) {
+	if !CliqueConsensus.UsesSignerListGenesisExtraData() {
+		t.Fatal("expected clique consensus to use signer-list genesis extra data")
+	}
+	if !AposConsensu.UsesSignerListGenesisExtraData() {
+		t.Fatal("expected apos consensus to use signer-list genesis extra data")
+	}
+	if HotStuffConsensus.UsesSignerListGenesisExtraData() {
+		t.Fatal("did not expect hotstuff consensus to use signer-list genesis extra data")
+	}
+}
+
+func TestConsensusTypeUsesLegacyGenesisTrieRoots(t *testing.T) {
+	if !AposConsensu.UsesLegacyGenesisTrieRoots() {
+		t.Fatal("expected apos consensus to use legacy genesis trie roots")
+	}
+	if CliqueConsensus.UsesLegacyGenesisTrieRoots() {
+		t.Fatal("did not expect clique consensus to use legacy genesis trie roots")
+	}
+}
+
 func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	p, err := ResolveExecutionProfile("")
 	if err != nil {
