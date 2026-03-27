@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/consensus/apos"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/params/networkname"
 )
@@ -230,6 +232,24 @@ func TestResolveRPCExposurePlanEthereumELDisablesZKProofAPI(t *testing.T) {
 	}
 	if plan.registerZKProofAPI {
 		t.Fatal("expected ethereum EL rpc exposure plan not to enable zk proof API")
+	}
+}
+
+func TestResolveConsensusRuntimePlanAPOSBindsBlockChain(t *testing.T) {
+	plan := resolveConsensusRuntimePlan(&apos.APos{})
+	if !plan.bindAPOSBlockChain {
+		t.Fatal("expected apos runtime plan to bind blockchain")
+	}
+	if plan.startHotStuffService || plan.registerHotStuffAdminAPI {
+		t.Fatal("did not expect apos runtime plan to enable hotstuff features")
+	}
+}
+
+func TestResolveConsensusRuntimePlanHotStuffEnablesAdminAPI(t *testing.T) {
+	engine := hotstuff.New(nil, &params.ChainConfig{})
+	plan := resolveConsensusRuntimePlan(engine)
+	if !plan.registerHotStuffAdminAPI {
+		t.Fatal("expected hotstuff runtime plan to enable admin API")
 	}
 }
 
