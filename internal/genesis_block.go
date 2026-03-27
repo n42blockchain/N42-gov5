@@ -176,32 +176,9 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		return nil, nil, err
 	}
 
-	var ExtraData []byte
-
-	switch g.GenesisConfig.Config.Consensus {
-	case params.CliqueConsensus, params.AposConsensu:
-
-		var signers []types.Address
-
-		for _, miner := range g.GenesisConfig.Miners {
-			addr, err := types.HexToString(miner)
-			if err != nil {
-				return nil, nil, fmt.Errorf("invalid miner:  %s", miner)
-			}
-			signers = append(signers, addr)
-		}
-		// Sort the signers and embed into the extra-data section
-		for i := 0; i < len(signers); i++ {
-			for j := i + 1; j < len(signers); j++ {
-				if bytes.Compare(signers[i][:], signers[j][:]) > 0 {
-					signers[i], signers[j] = signers[j], signers[i]
-				}
-			}
-		}
-		ExtraData = make([]byte, 32+len(signers)*types.AddressLength+65)
-		for i, signer := range signers {
-			copy(ExtraData[32+i*types.AddressLength:], signer[:])
-		}
+	extraData, err := buildConsensusExtraData(g.GenesisConfig)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	stateRoot := root
@@ -215,7 +192,7 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	// which produces the empty trie root, matching geth/reth behavior and
 	// required by Hive/EEST conformance tests.
 	var txHash, receiptHash types.Hash
-	if g.GenesisConfig.Config != nil && g.GenesisConfig.Config.Consensus != params.AposConsensu {
+	if !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
 		txHash = hash.DeriveSha(transaction.Transactions(nil))
 		receiptHash = hash.DeriveSha(block.Receipts(nil))
 	}
@@ -244,8 +221,8 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		BlobGasUsed:   g.GenesisConfig.BlobGasUsed,
 		ExcessBlobGas: g.GenesisConfig.ExcessBlobGas,
 	}
-	if len(ExtraData) > 0 {
-		head.Extra = ExtraData
+	if len(extraData) > 0 {
+		head.Extra = extraData
 	}
 
 	if g.GenesisConfig.GasLimit == 0 {
@@ -263,6 +240,42 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	}
 
 	return block.NewBlock(head, nil).(*block.Block), statedb, nil
+}
+
+func isSignerListConsensus(consensusType params.ConsensusType) bool {
+	return consensusType == params.CliqueConsensus || consensusType == params.AposConsensu
+}
+
+func buildConsensusExtraData(genesis *conf.Genesis) ([]byte, error) {
+	if genesis == nil || genesis.Config == nil || !isSignerListConsensus(genesis.Config.Consensus) {
+		return nil, nil
+	}
+
+	signers := make([]types.Address, 0, len(genesis.Miners))
+	for _, miner := range genesis.Miners {
+		addr, err := types.HexToString(miner)
+		if err != nil {
+			return nil, fmt.Errorf("invalid miner: %s", miner)
+		}
+		signers = append(signers, addr)
+	}
+	for i := 0; i < len(signers); i++ {
+		for j := i + 1; j < len(signers); j++ {
+			if bytes.Compare(signers[i][:], signers[j][:]) > 0 {
+				signers[i], signers[j] = signers[j], signers[i]
+			}
+		}
+	}
+
+	extraData := make([]byte, 32+len(signers)*types.AddressLength+65)
+	for i, signer := range signers {
+		copy(extraData[32+i*types.AddressLength:], signer[:])
+	}
+	return extraData, nil
+}
+
+func useLegacyGenesisTrieRoots(chainCfg *params.ChainConfig) bool {
+	return chainCfg != nil && chainCfg.Consensus == params.AposConsensu
 }
 
 func decodeGenesisBalance(input string) (*uint256.Int, error) {
