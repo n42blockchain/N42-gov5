@@ -34,7 +34,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/turbo/backup"
+	"github.com/n42blockchain/N42/internal/node/backup"
 )
 
 var (

@@ -33,7 +33,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
-	"github.com/n42blockchain/N42/turbo/rpchelper"
+	"github.com/n42blockchain/N42/internal/api/rpchelper"
 )
 
 const maxSearchBlock = 1000
