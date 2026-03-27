@@ -196,3 +196,38 @@ func TestResolveAuxiliaryRuntimePlanEthereumELFiltersN42Runtimes(t *testing.T) {
 		t.Fatalf("disabledByProfile len = %d, want 4", len(plan.disabledByProfile))
 	}
 }
+
+func TestResolveRPCExposurePlanN42EnablesZKProofAPI(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("n42")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	cfg := &conf.Config{}
+	cfg.SnapshotCfg.Enable = true
+
+	plan := resolveRPCExposurePlan(cfg, profile, true, true)
+	if !plan.registerBundlerAPI || !plan.registerSnapshotAPI || !plan.registerWitnessAPI {
+		t.Fatal("expected n42 rpc exposure plan to keep generic optional APIs")
+	}
+	if !plan.registerZKProofAPI || !plan.registerOtterscanAPI || !plan.registerHotStuffAdminAPI {
+		t.Fatal("expected n42 rpc exposure plan to keep n42 rpc extensions")
+	}
+}
+
+func TestResolveRPCExposurePlanEthereumELDisablesZKProofAPI(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("eth")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+
+	plan := resolveRPCExposurePlan(&conf.Config{}, profile, false, false)
+	if plan.registerBundlerAPI || plan.registerSnapshotAPI || plan.registerHotStuffAdminAPI {
+		t.Fatal("expected disabled optional services to remain disabled")
+	}
+	if !plan.registerWitnessAPI || !plan.registerOtterscanAPI {
+		t.Fatal("expected generic rpc exposure to stay enabled")
+	}
+	if plan.registerZKProofAPI {
+		t.Fatal("expected ethereum EL rpc exposure plan not to enable zk proof API")
+	}
+}
