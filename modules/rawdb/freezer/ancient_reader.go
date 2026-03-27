@@ -24,7 +24,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 // AncientReader provides high-level read access to frozen block data.

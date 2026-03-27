@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/internal/snapshot"
 )
 

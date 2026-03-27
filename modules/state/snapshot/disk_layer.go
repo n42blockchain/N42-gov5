@@ -16,7 +16,7 @@ import (
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 
-	state_proto "github.com/n42blockchain/N42/api/protocol/state"
+	state_proto "github.com/n42blockchain/N42/proto/state"
 )
 
 // DiskLayer is the bottom layer of the snapshot tree, backed by ShardedCache

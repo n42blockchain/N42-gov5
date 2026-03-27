@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/types"
 	"google.golang.org/protobuf/proto"
 )

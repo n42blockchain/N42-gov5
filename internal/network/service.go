@@ -34,7 +34,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 	"github.com/rcrowley/go-metrics"
 
-	"github.com/n42blockchain/N42/api/protocol/msg_proto"
+	"github.com/n42blockchain/N42/proto/msg_proto"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/message"
 	"github.com/n42blockchain/N42/conf"

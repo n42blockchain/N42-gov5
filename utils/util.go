@@ -28,7 +28,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"golang.org/x/crypto/sha3"
 
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/types"
 )
 

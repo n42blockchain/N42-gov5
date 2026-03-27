@@ -21,7 +21,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
-	state_proto "github.com/n42blockchain/N42/api/protocol/state"
+	state_proto "github.com/n42blockchain/N42/proto/state"
 	"github.com/n42blockchain/N42/modules/state"
 )
 

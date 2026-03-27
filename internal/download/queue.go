@@ -17,7 +17,7 @@
 package download
 
 import (
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/proto/types_pb"
 	"hash"
 	"sync"
 	"time"

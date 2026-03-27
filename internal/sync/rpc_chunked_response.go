@@ -7,7 +7,7 @@ import (
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/pkg/errors"
 
-	"github.com/n42blockchain/N42/api/protocol/types_pb"
+	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
 	types "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/p2p"

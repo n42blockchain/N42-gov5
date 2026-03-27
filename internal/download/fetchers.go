@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/api/protocol/sync_proto"
+	"github.com/n42blockchain/N42/proto/sync_proto"
 	"github.com/n42blockchain/N42/common/message"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"

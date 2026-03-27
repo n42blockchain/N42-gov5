@@ -11,8 +11,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 
-	"github.com/n42blockchain/N42/api/protocol/msg_proto"
-	"github.com/n42blockchain/N42/api/protocol/sync_pb"
+	"github.com/n42blockchain/N42/proto/msg_proto"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/utils"
 )
