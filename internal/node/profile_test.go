@@ -286,6 +286,18 @@ func TestResolveBridgeValidatorSetReturnsNilWithoutHotStuffEngine(t *testing.T) 
 	}
 }
 
+func TestResolveHotStuffEngineRejectsNonHotStuff(t *testing.T) {
+	if _, ok := resolveHotStuffEngine(&apos.APos{}); ok {
+		t.Fatal("expected non-hotstuff engine not to resolve as hotstuff")
+	}
+}
+
+func TestResolveHotStuffEngineAcceptsHotStuff(t *testing.T) {
+	if _, ok := resolveHotStuffEngine(hotstuff.New(nil, &params.ChainConfig{})); !ok {
+		t.Fatal("expected hotstuff engine to resolve")
+	}
+}
+
 func TestResolveHTTPModulesAutoExposesHotStuffWhenRegistered(t *testing.T) {
 	modules := resolveHTTPModules(
 		"eth,net",
