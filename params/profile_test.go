@@ -34,6 +34,9 @@ func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	if !p.SupportsDeveloperRuntime() {
 		t.Fatal("expected n42 profile to support developer runtime")
 	}
+	if !p.SupportsZKProofAPI() {
+		t.Fatal("expected n42 profile to support zk proof API")
+	}
 	if !p.SupportsConfiguredChain("private") || !p.SupportsConfiguredChain("mainnet") || !p.SupportsConfiguredChain("testnet") {
 		t.Fatal("expected n42 profile to support configured n42 chains")
 	}
@@ -79,6 +82,9 @@ func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
 			}
 			if !p.SupportsDeveloperRuntime() {
 				t.Fatal("expected ethereum EL profile to support developer runtime")
+			}
+			if p.SupportsZKProofAPI() {
+				t.Fatal("expected ethereum EL profile not to support zk proof API")
 			}
 			if !p.SupportsConfiguredChain("private") {
 				t.Fatal("expected ethereum EL profile to support private chain")

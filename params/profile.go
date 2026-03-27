@@ -70,6 +70,10 @@ func (p ProfileDescriptor) SupportsDeveloperRuntime() bool {
 	return true
 }
 
+func (p ProfileDescriptor) SupportsZKProofAPI() bool {
+	return p.IsN42()
+}
+
 func (p ProfileDescriptor) SupportsConfiguredChain(chain string) bool {
 	switch strings.TrimSpace(strings.ToLower(chain)) {
 	case "private":

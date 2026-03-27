@@ -228,6 +228,15 @@ type auxiliaryRuntimePlan struct {
 	disabledByProfile  []string
 }
 
+type rpcExposurePlan struct {
+	registerBundlerAPI       bool
+	registerSnapshotAPI      bool
+	registerWitnessAPI       bool
+	registerZKProofAPI       bool
+	registerOtterscanAPI     bool
+	registerHotStuffAdminAPI bool
+}
+
 func (g configuredGenesis) canonicalHash() (types.Hash, bool) {
 	if g.genesisHash == nil {
 		return types.Hash{}, false
@@ -271,6 +280,20 @@ func (p auxiliaryRuntimePlan) logProfileDisabled(profile params.ProfileDescripto
 	for _, runtime := range p.disabledByProfile {
 		log.Warn("Auxiliary runtime disabled for execution profile", "runtime", runtime, "profile", profile.String())
 	}
+}
+
+func resolveRPCExposurePlan(cfg *conf.Config, profile params.ProfileDescriptor, bundlerEnabled, hotstuffEnabled bool) rpcExposurePlan {
+	plan := rpcExposurePlan{
+		registerBundlerAPI:       bundlerEnabled,
+		registerWitnessAPI:       true,
+		registerZKProofAPI:       profile.SupportsZKProofAPI(),
+		registerOtterscanAPI:     true,
+		registerHotStuffAdminAPI: hotstuffEnabled,
+	}
+	if cfg != nil {
+		plan.registerSnapshotAPI = cfg.SnapshotCfg.Enable
+	}
+	return plan
 }
 
 const (
@@ -1052,8 +1075,11 @@ func (n *Node) Start() error {
 		Service:   api.NewMevAPI(n.miner),
 	})
 
+	hs, hasHotStuffAdmin := n.engine.(*hotstuff.HotStuff)
+	rpcPlan := resolveRPCExposurePlan(n.config, n.profile, n.bundlerService != nil, hasHotStuffAdmin)
+
 	// Register bundler RPC and start service.
-	if n.bundlerService != nil {
+	if rpcPlan.registerBundlerAPI {
 		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
 			Namespace: "eth",
 			Service:   api.NewBundlerAPI(n.bundlerService),
@@ -1061,28 +1087,29 @@ func (n *Node) Start() error {
 		n.bundlerService.Start(n.ctx)
 	}
 
-	// Register snapshot range-read API when snapshots are enabled.
-	if n.config.SnapshotCfg.Enable {
+	if rpcPlan.registerSnapshotAPI {
 		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
 			Namespace: "debug",
 			Service:   api.NewSnapshotAPI(n.db),
 		})
 	}
 
-	// Register witness API for stateless block verification.
-	n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
-		Namespace: "eth",
-		Service:   api.NewWitnessAPI(n.api),
-	})
+	if rpcPlan.registerWitnessAPI {
+		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
+			Namespace: "eth",
+			Service:   api.NewWitnessAPI(n.api),
+		})
+	}
 
-	// Register ZK proof query and verification API.
-	n.rpcAPIs = append(n.rpcAPIs, api.NewZKProofAPI(n.api).APIs()...)
+	if rpcPlan.registerZKProofAPI {
+		n.rpcAPIs = append(n.rpcAPIs, api.NewZKProofAPI(n.api).APIs()...)
+	}
 
-	// Register Otterscan block explorer API (ots_* namespace).
-	n.rpcAPIs = append(n.rpcAPIs, api.OtterscanApis(n.api)...)
+	if rpcPlan.registerOtterscanAPI {
+		n.rpcAPIs = append(n.rpcAPIs, api.OtterscanApis(n.api)...)
+	}
 
-	// Register HotStuff validator reconfiguration API if running HotStuff consensus.
-	if hs, ok := n.engine.(*hotstuff.HotStuff); ok {
+	if rpcPlan.registerHotStuffAdminAPI {
 		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
 			Namespace:     "admin",
 			Service:       api.NewHotStuffReconfigAPI(func() *hotstuff.HotStuff { return hs }),
