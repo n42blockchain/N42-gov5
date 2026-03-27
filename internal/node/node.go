@@ -1230,7 +1230,10 @@ func (n *Node) startTxGenerator() {
 }
 
 func (n *Node) startMCPServer() {
-	if !n.config.MCPCfg.Enabled {
+	if n.config.MCPCfg.Enabled && !n.profile.SupportsAIRuntime() {
+		log.Warn("MCP server disabled for execution profile", "profile", n.profile.String())
+	}
+	if !n.config.MCPCfg.Enabled || !n.profile.SupportsAIRuntime() {
 		return
 	}
 	mcpBackend := &mcpNodeBackend{node: n}
