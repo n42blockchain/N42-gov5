@@ -109,8 +109,8 @@ func buildGuestForkConfig(chainConfig *params.ChainConfig, blockNum, blockTime u
 		IsNano:                chainConfig.IsNano(blockNum),
 		IsMoran:               chainConfig.IsMoran(blockNum),
 		IsEip1559FeeCollector: chainConfig.IsEip1559FeeCollector(blockNum),
-		IsParlia:              chainConfig.Parlia != nil,
-		IsAura:                chainConfig.Aura != nil,
+		IsParlia:              chainConfig.UsesParliaRules(),
+		IsAura:                chainConfig.UsesAuraRules(),
 		IsPQPrecompiles:       chainConfig.IsPQPrecompiles(blockTime),
 	}
 }
