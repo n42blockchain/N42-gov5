@@ -59,6 +59,10 @@ var (
 	blockMiningTimer    = prometheus.GetOrCreateSummary("miner_block_mining_seconds")
 )
 
+func usesTimerDrivenSealing(engine consensus.Engine) bool {
+	return engine == nil || engine.Type() != params.HotStuffConsensus
+}
+
 type task struct {
 	receipts  []*block.Receipt
 	state     *state.IntraBlockState
@@ -613,7 +617,7 @@ func (w *worker) workLoop(recommit time.Duration) error {
 		case <-timer.C:
 			// HotStuff BFT: block production is leader-driven, not timer-driven.
 			// Only the leader triggers production via TriggerBlockProduction().
-			if w.isRunning() && w.engine.Type() != params.HotStuffConsensus {
+			if w.isRunning() && usesTimerDrivenSealing(w.engine) {
 				commit(true, commitInterruptResubmit)
 			}
 
