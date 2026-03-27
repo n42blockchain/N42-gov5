@@ -15,8 +15,8 @@ type executionChainPolicy struct {
 
 func newExecutionChainPolicy(chainCfg *params.ChainConfig, consensusType params.ConsensusType) executionChainPolicy {
 	return executionChainPolicy{
-		useBorTransfers:         consensusType == params.BorConsensus,
-		useBorSystemCallContext: chainCfg != nil && chainCfg.Bor != nil,
+		useBorTransfers:         consensusType.UsesBorTransferMode(),
+		useBorSystemCallContext: chainCfg.UsesBorSystemCallContext(),
 	}
 }
 

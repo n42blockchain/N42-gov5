@@ -53,6 +53,15 @@ func TestConsensusTypeUsesBeijingAggregateBodySignature(t *testing.T) {
 	}
 }
 
+func TestConsensusTypeUsesBorTransferMode(t *testing.T) {
+	if !BorConsensus.UsesBorTransferMode() {
+		t.Fatal("expected bor consensus to use Bor transfer mode")
+	}
+	if CliqueConsensus.UsesBorTransferMode() {
+		t.Fatal("did not expect clique consensus to use Bor transfer mode")
+	}
+}
+
 func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	p, err := ResolveExecutionProfile("")
 	if err != nil {

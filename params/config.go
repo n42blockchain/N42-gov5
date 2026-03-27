@@ -92,6 +92,10 @@ func (c ConsensusType) UsesBeijingAggregateBodySignature() bool {
 	return c != HotStuffConsensus
 }
 
+func (c ConsensusType) UsesBorTransferMode() bool {
+	return c == BorConsensus
+}
+
 // ---------------------------------------------------------------------------
 // Genesis hashes
 // ---------------------------------------------------------------------------
@@ -296,6 +300,10 @@ func (c *ChainConfig) String() string {
 // IsHeaderWithSeal returns true for consensus engines that include a seal in the header.
 func (c *ChainConfig) IsHeaderWithSeal() bool {
 	return c.Consensus == AuRaConsensus
+}
+
+func (c *ChainConfig) UsesBorSystemCallContext() bool {
+	return c != nil && c.Bor != nil
 }
 
 // Description returns a human-readable description of ChainConfig.
