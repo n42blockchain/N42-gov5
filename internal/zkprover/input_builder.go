@@ -78,34 +78,41 @@ func BuildGuestInput(
 		ParentHeader: parentBytes,
 		Transactions: txBytes,
 		Witness:      witnessBytes,
-		ForkConfig: ForkConfig{
-			IsHomestead:           chainConfig.IsHomestead(blockNum),
-			IsEIP150:              chainConfig.IsTangerineWhistle(blockNum),
-			IsEIP155:              chainConfig.IsSpuriousDragon(blockNum),
-			IsEIP158:              chainConfig.IsSpuriousDragon(blockNum),
-			IsByzantium:           chainConfig.IsByzantium(blockNum),
-			IsConstantinople:      chainConfig.IsConstantinople(blockNum),
-			IsPetersburg:          chainConfig.IsPetersburg(blockNum),
-			IsIstanbul:            chainConfig.IsIstanbul(blockNum),
-			IsBerlin:              chainConfig.IsBerlin(blockNum),
-			IsLondon:              chainConfig.IsLondon(blockNum),
-			IsShanghai:            chainConfig.IsShanghai(blockNum),
-			IsCancun:              chainConfig.IsCancun(blockNum),
-			IsBeijing:             chainConfig.IsBeijing(blockNum),
-			IsPrague:              chainConfig.IsPrague(blockTime),
-			IsPectra:              chainConfig.IsPectra(blockTime),
-			IsOsaka:               chainConfig.IsOsaka(blockTime),
-			IsFusaka:              chainConfig.IsFusaka(blockTime),
-			IsNano:                chainConfig.IsNano(blockNum),
-			IsMoran:               chainConfig.IsMoran(blockNum),
-			IsEip1559FeeCollector: chainConfig.IsEip1559FeeCollector(blockNum),
-			IsParlia:              chainConfig.Parlia != nil,
-			IsAura:                chainConfig.Aura != nil,
-			IsPQPrecompiles:       chainConfig.IsPQPrecompiles(blockTime),
-		},
+		ForkConfig:   buildGuestForkConfig(chainConfig, blockNum, blockTime),
 	}
 
 	return EncodeGuestInput(input)
+}
+
+func buildGuestForkConfig(chainConfig *params.ChainConfig, blockNum, blockTime uint64) ForkConfig {
+	if chainConfig == nil {
+		return ForkConfig{}
+	}
+	return ForkConfig{
+		IsHomestead:           chainConfig.IsHomestead(blockNum),
+		IsEIP150:              chainConfig.IsTangerineWhistle(blockNum),
+		IsEIP155:              chainConfig.IsSpuriousDragon(blockNum),
+		IsEIP158:              chainConfig.IsSpuriousDragon(blockNum),
+		IsByzantium:           chainConfig.IsByzantium(blockNum),
+		IsConstantinople:      chainConfig.IsConstantinople(blockNum),
+		IsPetersburg:          chainConfig.IsPetersburg(blockNum),
+		IsIstanbul:            chainConfig.IsIstanbul(blockNum),
+		IsBerlin:              chainConfig.IsBerlin(blockNum),
+		IsLondon:              chainConfig.IsLondon(blockNum),
+		IsShanghai:            chainConfig.IsShanghai(blockNum),
+		IsCancun:              chainConfig.IsCancun(blockNum),
+		IsBeijing:             chainConfig.IsBeijing(blockNum),
+		IsPrague:              chainConfig.IsPrague(blockTime),
+		IsPectra:              chainConfig.IsPectra(blockTime),
+		IsOsaka:               chainConfig.IsOsaka(blockTime),
+		IsFusaka:              chainConfig.IsFusaka(blockTime),
+		IsNano:                chainConfig.IsNano(blockNum),
+		IsMoran:               chainConfig.IsMoran(blockNum),
+		IsEip1559FeeCollector: chainConfig.IsEip1559FeeCollector(blockNum),
+		IsParlia:              chainConfig.Parlia != nil,
+		IsAura:                chainConfig.Aura != nil,
+		IsPQPrecompiles:       chainConfig.IsPQPrecompiles(blockTime),
+	}
 }
 
 func guestChainID(chainConfig *params.ChainConfig) (uint64, error) {
