@@ -242,12 +242,8 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	return block.NewBlock(head, nil).(*block.Block), statedb, nil
 }
 
-func isSignerListConsensus(consensusType params.ConsensusType) bool {
-	return consensusType == params.CliqueConsensus || consensusType == params.AposConsensu
-}
-
 func buildConsensusExtraData(genesis *conf.Genesis) ([]byte, error) {
-	if genesis == nil || genesis.Config == nil || !isSignerListConsensus(genesis.Config.Consensus) {
+	if genesis == nil || genesis.Config == nil || !genesis.Config.Consensus.UsesSignerListGenesisExtraData() {
 		return nil, nil
 	}
 
@@ -275,7 +271,7 @@ func buildConsensusExtraData(genesis *conf.Genesis) ([]byte, error) {
 }
 
 func useLegacyGenesisTrieRoots(chainCfg *params.ChainConfig) bool {
-	return chainCfg != nil && chainCfg.Consensus == params.AposConsensu
+	return chainCfg != nil && chainCfg.Consensus.UsesLegacyGenesisTrieRoots()
 }
 
 func decodeGenesisBalance(input string) (*uint256.Int, error) {

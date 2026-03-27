@@ -76,6 +76,14 @@ func (c ConsensusType) DisplayName() string {
 	return string(c)
 }
 
+func (c ConsensusType) UsesSignerListGenesisExtraData() bool {
+	return c == CliqueConsensus || c == AposConsensu
+}
+
+func (c ConsensusType) UsesLegacyGenesisTrieRoots() bool {
+	return c == AposConsensu
+}
+
 // ---------------------------------------------------------------------------
 // Genesis hashes
 // ---------------------------------------------------------------------------
