@@ -31,7 +31,6 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/vm"
-	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
@@ -85,16 +84,8 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 	)
 	vmConfig := vm.Config{NoReceipts: true}
 
-	isBor := chainConfig.Bor != nil
-	var txContext evmtypes.TxContext
-	var author *types.Address
-	if isBor {
-		author = &header.Coinbase
-		txContext = evmtypes.TxContext{}
-	} else {
-		author = &state.SystemAddress
-		txContext = NewEVMTxContext(msg)
-	}
+	policy := newExecutionChainPolicy(&chainConfig, params.ConsensusType(""))
+	author, txContext := policy.systemCallContext(header, msg)
 
 	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), engine, author)
 	evm := vm.NewEVM(blockContext, txContext, ibs, &chainConfig, vmConfig)
@@ -113,7 +104,7 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 		msg.Value(),
 		false,
 	)
-	if isBor && err != nil {
+	if policy.shouldIgnoreSystemCallError() && err != nil {
 		return nil, nil
 	}
 	return ret, err
