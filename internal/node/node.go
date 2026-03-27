@@ -296,6 +296,34 @@ func resolveRPCExposurePlan(cfg *conf.Config, profile params.ProfileDescriptor, 
 	return plan
 }
 
+func resolveDepositContract(ctx context.Context, bc common.IBlockChain, db kv.RwDB, chainCfg *params.ChainConfig) (*deposit.Deposit, error) {
+	if chainCfg == nil || chainCfg.Apos == nil {
+		return nil, nil
+	}
+
+	depositContracts := make(map[types.Address]deposit.DepositContract)
+	entries := []struct {
+		addr     string
+		name     string
+		contract deposit.DepositContract
+	}{
+		{chainCfg.Apos.DepositContract, "DepositContract", new(token.Contract)},
+		{chainCfg.Apos.DepositNFTContract, "DepositNFTContract", new(nftstake.Contract)},
+		{chainCfg.Apos.DepositFUJIContract, "DepositFUJIContract", new(testnet.Contract)},
+	}
+	for _, e := range entries {
+		if e.addr == "" {
+			continue
+		}
+		var addr types.Address
+		if !addr.DecodeString(e.addr) {
+			return nil, fmt.Errorf("cannot decode %s address: %s", e.name, e.addr)
+		}
+		depositContracts[addr] = e.contract
+	}
+	return deposit.NewDeposit(ctx, bc, db, depositContracts), nil
+}
+
 const (
 	initializingState = iota
 	runningState
@@ -656,28 +684,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		}
 	}
 
-	if cfg.ChainCfg.Apos != nil {
-		depositContracts := make(map[types.Address]deposit.DepositContract)
-		entries := []struct {
-			addr     string
-			name     string
-			contract deposit.DepositContract
-		}{
-			{cfg.ChainCfg.Apos.DepositContract, "DepositContract", new(token.Contract)},
-			{cfg.ChainCfg.Apos.DepositNFTContract, "DepositNFTContract", new(nftstake.Contract)},
-			{cfg.ChainCfg.Apos.DepositFUJIContract, "DepositFUJIContract", new(testnet.Contract)},
-		}
-		for _, e := range entries {
-			if e.addr == "" {
-				continue
-			}
-			var addr types.Address
-			if !addr.DecodeString(e.addr) {
-				return nil, fmt.Errorf("cannot decode %s address: %s", e.name, e.addr)
-			}
-			depositContracts[addr] = e.contract
-		}
-		depositContract = deposit.NewDeposit(ctx, bc, chainKv, depositContracts)
+	depositContract, err = resolveDepositContract(ctx, bc, chainKv, cfg.ChainCfg)
+	if err != nil {
+		return nil, err
 	}
 
 	pool, err := txspool.NewTxsPool(ctx, bc, depositContract)

@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"testing"
 
 	"github.com/n42blockchain/N42/conf"
@@ -229,5 +230,26 @@ func TestResolveRPCExposurePlanEthereumELDisablesZKProofAPI(t *testing.T) {
 	}
 	if plan.registerZKProofAPI {
 		t.Fatal("expected ethereum EL rpc exposure plan not to enable zk proof API")
+	}
+}
+
+func TestResolveDepositContractReturnsNilWithoutAposConfig(t *testing.T) {
+	depositContract, err := resolveDepositContract(context.Background(), nil, nil, &params.ChainConfig{})
+	if err != nil {
+		t.Fatalf("resolveDepositContract returned error: %v", err)
+	}
+	if depositContract != nil {
+		t.Fatal("expected nil deposit contract without apos config")
+	}
+}
+
+func TestResolveDepositContractRejectsInvalidAddress(t *testing.T) {
+	_, err := resolveDepositContract(context.Background(), nil, nil, &params.ChainConfig{
+		Apos: &params.APosConfig{
+			DepositContract: "not-an-address",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected invalid deposit contract address to be rejected")
 	}
 }
