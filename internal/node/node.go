@@ -116,7 +116,7 @@ import (
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	statesnapshot "github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 	"google.golang.org/grpc"
 )
 

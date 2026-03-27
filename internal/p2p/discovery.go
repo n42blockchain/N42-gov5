@@ -17,7 +17,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/params/networkname"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 // Listener defines the discovery V5 network interface that is used

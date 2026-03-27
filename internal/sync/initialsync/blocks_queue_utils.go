@@ -6,7 +6,7 @@ import (
 
 	"github.com/holiman/uint256"
 
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 // resetWithBlocks removes all state machines, then re-adds enough machines to contain all provided

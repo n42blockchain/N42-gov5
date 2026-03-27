@@ -14,7 +14,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 // =============================================================================

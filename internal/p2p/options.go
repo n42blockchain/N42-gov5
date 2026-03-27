@@ -14,7 +14,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 // MultiAddressBuilder takes in an ip address string and port to produce a go multiaddr format.

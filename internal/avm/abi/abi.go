@@ -25,7 +25,7 @@ import (
 	"math/big"
 
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 // The ABI holds information about a contract's context and available

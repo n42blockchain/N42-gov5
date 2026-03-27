@@ -8,7 +8,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 func requireBlockNumber(blk block.IBlock, msg string) (*uint256.Int, error) {

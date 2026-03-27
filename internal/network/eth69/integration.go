@@ -20,7 +20,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/proto/sync_pb"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 // ConvertStatusToProtobuf converts an eth/69 StatusPacket to protobuf format.

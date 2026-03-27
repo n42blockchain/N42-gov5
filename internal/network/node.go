@@ -42,7 +42,7 @@ import (
 	"github.com/n42blockchain/N42/common/message"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/utils"
+	"github.com/n42blockchain/N42/common/utils"
 )
 
 var (
