@@ -39,10 +39,10 @@ type HeaderChainProof struct {
 
 // HeaderChainInput is the witness data for the SP1 header chain circuit.
 type HeaderChainInput struct {
-	Headers         []SerializedHeader        // Encoded block headers
-	QCs             []hotstuff.QuorumCertificate // One QC per header
-	ValidatorPubKeys [][]byte                  // BLS public keys of the validator set
-	ValidatorCount  uint32                     // Number of validators
+	Headers          []SerializedHeader           // Encoded block headers
+	QCs              []hotstuff.QuorumCertificate // One QC per header
+	ValidatorPubKeys [][]byte                     // BLS public keys of the validator set
+	ValidatorCount   uint32                       // Number of validators
 }
 
 // SerializedHeader is a compact block header for the ZK circuit.
@@ -288,16 +288,39 @@ func VerifyHeaderChainLocally(
 			return fmt.Errorf("broken parent chain at block %d", headers[i].Number.Uint64())
 		}
 
-		// Verify QC view matches header
-		if qcs[i].View != headers[i].Number.Uint64() {
-			// Genesis QC (view=0) is exempt
-			if qcs[i].View != 0 {
-				return fmt.Errorf("QC view %d != header number %d", qcs[i].View, headers[i].Number.Uint64())
+		if qcs[i].View > 0 {
+			headerView, err := hotstuff.ExtractViewFromExtra(headers[i].Extra)
+			if err != nil {
+				return fmt.Errorf("extract header view at block %d: %w", headers[i].Number.Uint64(), err)
+			}
+
+			parentCommitLayout := qcs[i].BlockHash == headers[i].ParentHash && qcs[i].View <= headerView
+			legacySameViewLayout := qcs[i].View == headerView
+			if !parentCommitLayout && !legacySameViewLayout {
+				return fmt.Errorf(
+					"QC in header %d is incompatible: qc.view=%d header.view=%d qc.block=%s parent=%s",
+					headers[i].Number.Uint64(),
+					qcs[i].View,
+					headerView,
+					qcs[i].BlockHash,
+					headers[i].ParentHash,
+				)
+			}
+
+			// For the current layout, the header carries the most recent committed QC,
+			// which should certify the parent block. Older layouts embedded a same-view QC.
+			if parentCommitLayout && i > 0 && qcs[i].BlockHash != headers[i-1].Hash() {
+				return fmt.Errorf("QC block hash %s != previous header hash %s at block %d", qcs[i].BlockHash, headers[i-1].Hash(), headers[i].Number.Uint64())
 			}
 		}
 
-		// Verify QC BLS aggregate signature (skip if no validator set or genesis QC)
-		if qcs[i].View > 0 && vs != nil {
+		// Genesis / no-QC cases are exempt from aggregate verification.
+		if qcs[i].View == 0 {
+			continue
+		}
+
+		// Verify QC BLS aggregate signature.
+		if vs != nil {
 			if err := hotstuff.VerifyQCAnyDomain(&qcs[i], vs); err != nil {
 				return fmt.Errorf("QC verification failed at block %d: %w", headers[i].Number.Uint64(), err)
 			}
@@ -307,30 +330,12 @@ func VerifyHeaderChainLocally(
 	return nil
 }
 
-// extractQCFromHeader extracts the HotStuff QC from header extra-data.
-// Extra-data layout: magic("N42H",4) + view(8,LE) + QC(variable SSZ) or BLS seal(96)
-// Returns genesis QC if no QC is embedded (pre-HotStuff or non-HotStuff blocks).
+// extractQCFromHeader extracts the optional HotStuff QC from header extra-data.
+// It accepts both the legacy layouts and the current layout where header extra
+// may carry an embedded committed QC followed by the BLS seal.
 func extractQCFromHeader(h *block.Header) hotstuff.QuorumCertificate {
-	const magicLen = 4
-	const viewLen = 8
-	const minExtra = magicLen + viewLen // 12
-	const blsSigLen = 96
-
-	if len(h.Extra) <= minExtra {
-		return hotstuff.GenesisQC()
-	}
-
-	if string(h.Extra[:magicLen]) != "N42H" {
-		return hotstuff.GenesisQC()
-	}
-
-	qcData := h.Extra[minExtra:]
-	if len(qcData) == blsSigLen {
-		return hotstuff.GenesisQC()
-	}
-
-	qc, err := hotstuff.DecodeQC(qcData)
-	if err != nil {
+	qc, err := hotstuff.ExtractHeaderQC(h.Extra)
+	if err != nil || qc == nil {
 		return hotstuff.GenesisQC()
 	}
 	return *qc

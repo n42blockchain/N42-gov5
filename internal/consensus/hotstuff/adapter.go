@@ -24,10 +24,10 @@ import (
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto/bls"
-	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls"
+	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -36,9 +36,15 @@ import (
 )
 
 // Header extra-data layout:
-// [0..3]   = magic bytes "N42H" (4 bytes)
-// [4..11]  = view number (8 bytes LE)
-// [12..end] = encoded QC (variable length)
+// [0..3]    = magic bytes "N42H" (4 bytes)
+// [4..11]   = view number (8 bytes LE)
+// [12..N)   = optional last committed QC (SSZ, variable length)
+// [N..end]  = optional BLS seal signature (96 bytes)
+//
+// Backward compatibility:
+//   - legacy headers may contain only magic+view
+//   - legacy sealed headers may contain magic+view+seal
+//   - older experiments may contain magic+view+QC
 const (
 	extraMagicLen      = 4
 	extraViewLen       = 8
@@ -264,15 +270,9 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 		return nil
 	}
 
-	// Verify extra-data contains valid magic bytes.
-	if len(header.Extra) < extraMinLen {
-		return fmt.Errorf("extra-data too short: %d < %d", len(header.Extra), extraMinLen)
-	}
-
-	var magic [extraMagicLen]byte
-	copy(magic[:], header.Extra[:extraMagicLen])
-	if magic != extraMagic {
-		return fmt.Errorf("invalid extra-data magic: expected N42H, got %s", string(magic[:]))
+	headerView, qc, _, err := decodeHeaderExtra(header.Extra)
+	if err != nil {
+		return err
 	}
 
 	// Verify timestamp is after parent.
@@ -289,33 +289,16 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 		return errors.New("timestamp must be after parent")
 	}
 
-	// Extra-data after magic+view can contain either:
-	//   - A BLS seal signature (96 bytes) appended by Seal()
-	//   - An encoded QC from the consensus round
-	// Distinguish by size: BLS signature is exactly 96 bytes.
-	const blsSigLen = 96
-	if len(header.Extra) > extraMinLen {
-		qcData := header.Extra[extraMinLen:]
-		if len(qcData) == blsSigLen {
-			// BLS seal signature only — no QC to verify. Valid.
-		} else {
-			// Attempt QC decode and verification.
-			qc, err := decodeQC(qcData)
-			if err != nil {
-				return fmt.Errorf("invalid QC in extra-data: %w", err)
-			}
+	if qc != nil {
+		if qc.View > headerView {
+			return fmt.Errorf("QC view %d exceeds header view %d", qc.View, headerView)
+		}
 
-			headerView := binary.LittleEndian.Uint64(header.Extra[extraMagicLen : extraMagicLen+extraViewLen])
-			if qc.View != headerView {
-				return fmt.Errorf("QC view %d does not match header view %d", qc.View, headerView)
-			}
-
-			if ce := h.Engine(); ce != nil {
-				vs := ce.CurrentValidatorSet()
-				if vs != nil && !vs.IsEmpty() {
-					if vErr := VerifyQC(qc, vs); vErr != nil {
-						return fmt.Errorf("QC verification failed: %w", vErr)
-					}
+		if ce := h.Engine(); ce != nil {
+			vs := ce.CurrentValidatorSet()
+			if vs != nil && !vs.IsEmpty() {
+				if vErr := VerifyQCAnyDomain(qc, vs); vErr != nil {
+					return fmt.Errorf("QC verification failed: %w", vErr)
 				}
 			}
 		}
@@ -373,13 +356,19 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 
 	// Encode view number in extra-data.
 	var view ViewNumber
+	var committedQC *QuorumCertificate
 	if ce := h.Engine(); ce != nil {
 		view = ce.CurrentView()
+		lastCommittedQC := ce.LastCommittedQC()
+		if !isEmptyHeaderQC(&lastCommittedQC) {
+			committedQC = &lastCommittedQC
+		}
 	}
 
-	extra := make([]byte, extraMinLen)
-	copy(extra[:extraMagicLen], extraMagic[:])
-	binary.LittleEndian.PutUint64(extra[extraMagicLen:], view)
+	extra, err := buildHeaderExtra(view, committedQC)
+	if err != nil {
+		return err
+	}
 	header.Extra = extra
 
 	// Set timestamp.
