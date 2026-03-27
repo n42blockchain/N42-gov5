@@ -65,35 +65,7 @@ func (evm *EVM) precompile(addr types.Address) (PrecompiledContract, bool) {
 // precompileLegacy provides backward compatibility with global precompile maps.
 // This will be removed once migration to Registry is complete.
 func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool) {
-	var precompiles map[types.Address]PrecompiledContract
-	switch {
-	case evm.chainRules.IsMoran:
-		precompiles = PrecompiledContractsIsMoran
-	case evm.chainRules.IsNano:
-		precompiles = PrecompiledContractsNano
-	case evm.chainRules.IsFusaka:
-		precompiles = PrecompiledContractsFusaka
-	case evm.chainRules.IsOsaka:
-		precompiles = PrecompiledContractsOsaka
-	case evm.chainRules.IsPectra:
-		precompiles = PrecompiledContractsPectra
-	case evm.chainRules.IsPrague:
-		precompiles = PrecompiledContractsPrague
-	case evm.chainRules.IsCancun:
-		precompiles = PrecompiledContractsCancun
-	case evm.chainRules.IsBerlin:
-		precompiles = PrecompiledContractsBerlin
-	case evm.chainRules.IsIstanbul:
-		if evm.chainRules.IsParlia {
-			precompiles = PrecompiledContractsIstanbulForBSC
-		} else {
-			precompiles = PrecompiledContractsIstanbul
-		}
-	case evm.chainRules.IsByzantium:
-		precompiles = PrecompiledContractsByzantium
-	default:
-		precompiles = PrecompiledContractsHomestead
-	}
+	precompiles := legacyPrecompileContractsBySet(activeLegacyPrecompileSet(evm.chainRules))
 	if p, ok := precompiles[addr]; ok {
 		return p, true
 	}
