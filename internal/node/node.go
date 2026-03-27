@@ -61,6 +61,7 @@ import (
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/api/graphql"
 	"github.com/n42blockchain/N42/internal/bridge"
+	"github.com/n42blockchain/N42/internal/stateless"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
@@ -198,7 +199,8 @@ type Node struct {
 	tracingShutdown func(context.Context) error // flushes and stops the OTel tracer provider
 
 	// Stateless validation mode (validates blocks via JMT witnesses, no full state DB)
-	statelessMode bool
+	statelessMode      bool
+	statelessValidator *stateless.Validator // nil unless statelessMode is enabled
 
 	// OtterSync (BitTorrent-based chain sync via EraE segments)
 	torrentsyncService *torrentsync.Service
@@ -888,7 +890,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// Stateless validation mode: validate blocks via Merkle proof witnesses only.
 	if cfg.NodeCfg.StatelessEnabled {
 		node.statelessMode = true
-		log.Info("Stateless validation mode enabled — blocks will be verified via JMT witnesses")
+		node.statelessValidator = stateless.NewValidator(cfg.ChainCfg)
+		log.Info("Stateless validation mode enabled — blocks will be verified via JMT witnesses",
+			"codeCacheSize", 4096)
 	}
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
