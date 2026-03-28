@@ -176,6 +176,11 @@ const (
 	// value: blake3_hash (32 bytes)
 	JMTRoot = "JMTRoot"
 
+	// JMTVersionRoots maps block height to JMT root hash for historical state proofs.
+	// key: block height (8 bytes, big-endian uint64)
+	// value: blake3_hash (32 bytes)
+	JMTVersionRoots = "JMTVersionRoots"
+
 	// LtHashDigest stores the 2048-byte running LtHash state digest for crash recovery.
 	// key: "digest" (fixed)
 	// value: 2048 bytes (lattice hash digest)
@@ -261,6 +266,7 @@ var n42Tables = []string{
 	TxPoolJournal,
 	JMTNode,
 	JMTRoot,
+	JMTVersionRoots,
 	LtHashDigest,
 	ContentStore,
 	TorrentHashMap,

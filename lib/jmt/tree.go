@@ -42,6 +42,11 @@ type Tree struct {
 	store  NodeStore
 	hasher Hasher
 
+	// version is the monotonically increasing version number (typically block
+	// height) of the tree. It is bumped by the caller after each batch of
+	// mutations to enable historical state queries and migration tracking.
+	version uint64
+
 	// dirty tracks nodes written during the current mutation batch
 	// that have not yet been flushed to the store.
 	dirty map[Hash][]byte
@@ -105,6 +110,34 @@ func NewFromRoot(s NodeStore, root Hash) *Tree {
 // Root returns the current root hash. EmptyHash for an empty tree.
 func (t *Tree) Root() Hash {
 	return t.root
+}
+
+// NewFromRootReadOnly opens a JMT from a known root with a small cache,
+// optimized for read-only proof queries. Uses 1/128th the cache of a full
+// tree since proof paths are at most ~64 nodes deep.
+func NewFromRootReadOnly(s NodeStore, root Hash) *Tree {
+	const readOnlyCacheSize = 1024
+	return &Tree{
+		root:         root,
+		store:        s,
+		hasher:       DefaultHasher(),
+		dirty:        make(map[Hash][]byte),
+		nodeCache:    make(map[Hash]*list.Element, readOnlyCacheSize),
+		nodeCacheLRU: list.New(),
+		nodeCacheCap: readOnlyCacheSize,
+	}
+}
+
+// Version returns the current tree version (typically the last processed block height).
+func (t *Tree) Version() uint64 {
+	return t.version
+}
+
+// SetVersion sets the tree version. Call after processing a block to associate
+// the current root with a block height. This enables historical state queries
+// and migration progress tracking.
+func (t *Tree) SetVersion(v uint64) {
+	t.version = v
 }
 
 // Get looks up the value associated with the given key hash.

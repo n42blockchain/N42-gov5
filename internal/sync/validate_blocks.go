@@ -69,14 +69,15 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 		return pubsub.ValidationReject, err
 	}
 
-	if s.cfg.chain.HasBlock(header.Root, headerNumber.Uint64()) {
+	blockHash := header.Hash()
+	if s.cfg.chain.HasBlock(blockHash, headerNumber.Uint64()) {
 		return pubsub.ValidationIgnore, nil
 	}
 
 	// Check if parent is a bad block and then reject the block.
 	if s.hasBadBlock(header.ParentHash) {
-		s.setBadBlock(ctx, header.Root)
-		err := fmt.Errorf("received block with root %#x that has an invalid parent %#x", header.Root, header.ParentHash)
+		s.setBadBlock(ctx, blockHash)
+		err := fmt.Errorf("received block with hash %#x that has an invalid parent %#x", blockHash, header.ParentHash)
 		log.Debug("Received block with an invalid parent", "err", err)
 		return pubsub.ValidationReject, err
 	}
@@ -86,11 +87,10 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 		return pubsub.ValidationIgnore, nil
 	}
 
-	// Handle block when the parent is unknown.
-	// Safety check: ensure block number is > 0 before subtracting to prevent underflow.
-	if headerNumber.Uint64() > 0 && !s.cfg.chain.HasBlock(header.ParentHash, headerNumber.Uint64()-1) {
-		// TODO: implement orphan block handling
-	}
+	// If the parent is unknown, the block is an orphan. Accept it so
+	// blockSubscriber can queue it as a future block via AddFutureBlock.
+	// This avoids rejecting legitimate blocks during rapid gossip bursts
+	// where the parent may arrive moments later.
 
 	msg.ValidatorData = iBlock.ToProtoMessage() // Used in downstream subscriber
 

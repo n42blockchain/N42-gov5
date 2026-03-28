@@ -41,9 +41,13 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/lib/jmt"
+	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -395,9 +399,10 @@ func (s *BlockChainAPI) Accounts() []types.Address {
 // When JMT is not enabled, a simplified proof is returned containing a
 // hash of the account data for basic integrity checking.
 //
-// Historical block queries are supported via the state history system
-// (changesets + temporal DB), but JMT Merkle proofs are only available
-// for the latest state since the JMT tree reflects the current tip.
+// GetProof returns the Merkle proof for an account and optional storage keys.
+// Supports historical blocks: if a block number/hash is specified and the JMT
+// version root index contains an entry at or before that height, a historical
+// JMT tree is reconstructed for proof generation (requires old nodes not GC'd).
 func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, storageKeys []string, blockNrOrHash jsonrpc.BlockNumberOrHash) (*AccountResult, error) {
 	tx, err := s.api.db.BeginRo(ctx)
 	if err != nil {
@@ -414,11 +419,30 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 	nonce := ibs.GetNonce(address)
 	codeHash := ibs.GetCodeHash(address)
 
-	// Try to generate real JMT Merkle proofs if the commitment engine is available.
-	var accountProofStrings []string
+	// Resolve which JMT tree to use for proof generation. For historical
+	// blocks, create a single read-only snapshot and reuse it for all proofs.
+	var jmtCommit *commitment.JMTCommitment
+	var proofTree *jmt.Tree // nil = use jmtCommit directly (current state)
 	if bc, ok := s.api.BlockChain().(*internal.BlockChain); ok && bc.JMTCommitment() != nil {
-		jmtCommit := bc.JMTCommitment()
-		if proof, err := jmtCommit.GetAccountProof(address); err == nil && proof != nil {
+		jmtCommit = bc.JMTCommitment()
+		if effectiveRoot := s.resolveJMTRoot(tx, blockNrOrHash); effectiveRoot != (types.Hash{}) && effectiveRoot != jmtCommit.Root() {
+			if snap, err := jmtCommit.SnapshotAt(effectiveRoot); err == nil {
+				proofTree = snap
+			}
+		}
+	}
+
+	// Account proof.
+	var accountProofStrings []string
+	if jmtCommit != nil {
+		var proof *jmt.Proof
+		var err error
+		if proofTree != nil {
+			proof, err = proofTree.GetProof(commitment.AccountKeyHash(address))
+		} else {
+			proof, err = jmtCommit.GetAccountProof(address)
+		}
+		if err == nil && proof != nil {
 			accountProofStrings = make([]string, len(proof.Path))
 			for i, entry := range proof.Path {
 				accountProofStrings[i] = hexutil.Encode(entry.NodeData)
@@ -445,8 +469,15 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 		ibs.GetState(address, &k, &value)
 
 		var proofStrings []string
-		if bc, ok := s.api.BlockChain().(*internal.BlockChain); ok && bc.JMTCommitment() != nil {
-			if proof, err := bc.JMTCommitment().GetStorageProof(address, k); err == nil && proof != nil {
+		if jmtCommit != nil {
+			var proof *jmt.Proof
+			var err error
+			if proofTree != nil {
+				proof, err = proofTree.GetProof(commitment.StorageKeyHash(address, k))
+			} else {
+				proof, err = jmtCommit.GetStorageProof(address, k)
+			}
+			if err == nil && proof != nil {
 				proofStrings = make([]string, len(proof.Path))
 				for j, entry := range proof.Path {
 					proofStrings[j] = hexutil.Encode(entry.NodeData)
@@ -481,6 +512,37 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 		StorageHash:  storageHash,
 		StorageProof: storageProof,
 	}, nil
+}
+
+// resolveJMTRoot determines the effective JMT state root for the given block.
+// Returns zero hash for latest/pending (caller uses current tree).
+// For specific block numbers, looks up the JMTVersionRoots table.
+func (s *BlockChainAPI) resolveJMTRoot(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) types.Hash {
+	if blockNr, ok := blockNrOrHash.Number(); ok {
+		switch blockNr {
+		case jsonrpc.LatestBlockNumber, jsonrpc.PendingBlockNumber,
+			jsonrpc.SafeBlockNumber, jsonrpc.FinalizedBlockNumber:
+			return types.Hash{}
+		case jsonrpc.EarliestBlockNumber:
+			root, _, _ := jmtstore.ReadJMTVersionRootAt(tx, 0)
+			var h types.Hash
+			copy(h[:], root[:])
+			return h
+		}
+		root, _, _ := jmtstore.ReadJMTVersionRootAt(tx, uint64(blockNr))
+		var h types.Hash
+		copy(h[:], root[:])
+		return h
+	}
+	if hash, ok := blockNrOrHash.Hash(); ok {
+		if header, err := rawdb.ReadHeaderByHash(tx, hash); err == nil && header != nil {
+			root, _, _ := jmtstore.ReadJMTVersionRootAt(tx, header.Number.Uint64())
+			var h types.Hash
+			copy(h[:], root[:])
+			return h
+		}
+	}
+	return types.Hash{}
 }
 
 // BlockscoutCompatibilityInfo contains Blockscout compatibility metadata.

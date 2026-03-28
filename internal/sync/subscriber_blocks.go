@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -40,6 +41,15 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 	}
 
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
+		// If parent is missing, queue as future block instead of marking bad.
+		// The parent may arrive moments later via gossip.
+		// Check by message substring since multiple packages define independent
+		// ErrUnknownAncestor sentinels (internal, consensus, consensus/misc).
+		if isAncestorError(err) {
+			log.Debug("Block parent not yet available, queuing as future",
+				"number", blockNumber.Uint64(), "hash", blockHash)
+			return s.cfg.chain.AddFutureBlock(blk)
+		}
 		s.setBadBlock(ctx, blk.Hash())
 		return err
 	}
@@ -51,4 +61,15 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 	}
 
 	return nil
+}
+
+// isAncestorError checks if the error indicates a missing parent block.
+// Uses substring matching because multiple packages define independent
+// ErrUnknownAncestor / ErrPrunedAncestor sentinels.
+func isAncestorError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "unknown ancestor") || strings.Contains(msg, "pruned ancestor")
 }
