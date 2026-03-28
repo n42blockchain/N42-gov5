@@ -138,8 +138,7 @@ func (c *JMTCommitment) GetStorageProof(addr types.Address, slot types.Hash) (*j
 // suitable for proof queries. The caller should reuse the snapshot for
 // multiple proofs at the same height to avoid redundant allocations.
 func (c *JMTCommitment) SnapshotAt(root types.Hash) (*jmt.Tree, error) {
-	var h jmt.Hash
-	copy(h[:], root[:])
+	h := jmt.Hash(root)
 	if h == jmt.EmptyHash {
 		return nil, jmt.ErrNotFound
 	}
