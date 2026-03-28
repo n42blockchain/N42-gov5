@@ -44,6 +44,7 @@ import (
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
@@ -524,25 +525,27 @@ func (s *BlockChainAPI) resolveJMTRoot(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumb
 			jsonrpc.SafeBlockNumber, jsonrpc.FinalizedBlockNumber:
 			return types.Hash{}
 		case jsonrpc.EarliestBlockNumber:
-			root, _, _ := jmtstore.ReadJMTVersionRootAt(tx, 0)
-			var h types.Hash
-			copy(h[:], root[:])
-			return h
+			return jmtRootAtHeight(tx, 0)
 		}
-		root, _, _ := jmtstore.ReadJMTVersionRootAt(tx, uint64(blockNr))
-		var h types.Hash
-		copy(h[:], root[:])
-		return h
+		return jmtRootAtHeight(tx, uint64(blockNr))
 	}
 	if hash, ok := blockNrOrHash.Hash(); ok {
 		if header, err := rawdb.ReadHeaderByHash(tx, hash); err == nil && header != nil {
-			root, _, _ := jmtstore.ReadJMTVersionRootAt(tx, header.Number.Uint64())
-			var h types.Hash
-			copy(h[:], root[:])
-			return h
+			return jmtRootAtHeight(tx, header.Number.Uint64())
 		}
 	}
 	return types.Hash{}
+}
+
+// jmtRootAtHeight looks up the JMT root at or before the given height.
+// Returns zero hash on error or if no root is recorded.
+func jmtRootAtHeight(tx kv.Tx, height uint64) types.Hash {
+	root, _, err := jmtstore.ReadJMTVersionRootAt(tx, height)
+	if err != nil {
+		log.Warn("Failed to read JMT version root", "height", height, "err", err)
+		return types.Hash{}
+	}
+	return types.Hash(root)
 }
 
 // BlockscoutCompatibilityInfo contains Blockscout compatibility metadata.

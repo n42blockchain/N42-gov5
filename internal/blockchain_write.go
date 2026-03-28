@@ -196,10 +196,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if err := bc.jmtCommitment.Tree().FlushTo(mdbxNodeStore); err != nil {
 				return fmt.Errorf("flushing JMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
 			}
-			bc.jmtCommitment.Tree().SetVersion(blockNumber.Uint64())
-			rootTypesHash := bc.jmtCommitment.Root()
-			var jmtRoot jmt.Hash
-			copy(jmtRoot[:], rootTypesHash[:])
+			jmtRoot := jmt.Hash(bc.jmtCommitment.Root())
 			if err := jmtstore.WriteJMTRoot(tx, jmtRoot); err != nil {
 				return fmt.Errorf("writing JMT root for block %d failed: %w", blockNumber.Uint64(), err)
 			}
@@ -209,6 +206,8 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if err := jmtstore.WriteJMTVersionRoot(tx, blockNumber.Uint64(), jmtRoot); err != nil {
 				return fmt.Errorf("writing JMT version root for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			// Update in-memory version after all DB writes succeed within this tx.
+			bc.jmtCommitment.Tree().SetVersion(blockNumber.Uint64())
 		}
 
 		// Persist LtHash digest alongside JMT root.
