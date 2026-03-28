@@ -201,34 +201,38 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 // One write transaction covers the entire batch for efficiency.
 func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 	return e.dstDB.Update(ctx, func(dstTx kv.RwTx) error {
-		// JMT tree uses MDBX for reading existing nodes and internal dirty map
-		// for buffering new writes. FlushTo at batch end writes all dirty nodes
-		// to MDBX in one batch — this is already memory-buffered by design.
-		nodeStore := jmtstore.NewMDBXStore(dstTx, jmtstore.JMTNodeTable)
-		jmtRoot, err := jmtstore.ReadJMTRoot(dstTx)
-		if err != nil {
-			return fmt.Errorf("read JMT root: %w", err)
-		}
-
+		// JMT + LtHash are optional. When disabled (--jmt=false), replay only
+		// writes PlainState + block data — much faster for Phase A of two-phase
+		// replay. Phase B uses migrate-jmt to build JMT from PlainState.
 		var tree *jmt.Tree
-		if jmtRoot == jmt.EmptyHash {
-			tree = jmt.New(nodeStore)
-		} else {
-			tree = jmt.NewFromRoot(nodeStore, jmtRoot)
+		var nodeStore *jmtstore.MDBXStore
+		var jmtCommit *commitment.JMTCommitment
+		var ltCommit *commitment.LtHashCommitment
+		var ltRC state.RootComputer
+
+		if e.cfg.EnableJMT {
+			nodeStore = jmtstore.NewMDBXStore(dstTx, jmtstore.JMTNodeTable)
+			jmtRoot, err := jmtstore.ReadJMTRoot(dstTx)
+			if err != nil {
+				return fmt.Errorf("read JMT root: %w", err)
+			}
+			if jmtRoot == jmt.EmptyHash {
+				tree = jmt.New(nodeStore)
+			} else {
+				tree = jmt.NewFromRoot(nodeStore, jmtRoot)
+			}
+			jmtCommit = commitment.NewJMTCommitment(tree)
+
+			if e.cfg.EnableLtHash {
+				ltDigest, err := lthash.ReadLtHashDigest(dstTx, "LtHashDigest")
+				if err != nil {
+					return fmt.Errorf("read LtHash digest: %w", err)
+				}
+				ltCommit = commitment.NewLtHashCommitment(ltDigest)
+				jmtRC := commitment.NewJMTRootComputer(jmtCommit)
+				ltRC = commitment.NewLtHashAwareRootComputer(jmtRC, ltCommit)
+			}
 		}
-
-		jmtCommit := commitment.NewJMTCommitment(tree)
-
-		// Initialize LtHash digest (resume from persisted or start fresh).
-		ltDigest, err := lthash.ReadLtHashDigest(dstTx, "LtHashDigest")
-		if err != nil {
-			return fmt.Errorf("read LtHash digest: %w", err)
-		}
-		ltCommit := commitment.NewLtHashCommitment(ltDigest)
-
-		// Set up the root computer so IntermediateRoot() flows through JMT+LtHash.
-		jmtRC := commitment.NewJMTRootComputer(jmtCommit)
-		ltRC := commitment.NewLtHashAwareRootComputer(jmtRC, ltCommit)
 
 		// Track the running new-chain block number. For resume, this equals
 		// the JMT version + 1. For fresh start, it starts at from.
@@ -246,8 +250,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			return fmt.Errorf("read parent info at target block %d: %w", newBlockNum-1, err)
 		}
 
-		// Genesis initialization: if starting from block 0 or 1 with an empty tree.
-		if from <= 1 && jmtRoot == jmt.EmptyHash {
+		// Genesis initialization: if starting from block 0 or 1 and no blocks yet.
+		jmtEmpty := tree == nil || tree.Root() == jmt.EmptyHash
+		if from <= 1 && (jmtEmpty || !e.cfg.EnableJMT) {
 			r := state.NewPlainStateReader(dstTx)
 			w := state.NewPlainStateWriterNoHistory(dstTx)
 			ibs := state.New(r)
@@ -277,8 +282,13 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				if e.cfg.FillGaps && prevTime > 0 {
 					gapTimes := CalcGapBlockTimes(prevTime, srcTime, e.cfg.GapPeriod, e.cfg.GapTolerance)
 					for _, gapTime := range gapTimes {
-						gapJmtRoot := jmtCommit.Root()
-						gapLtRoot := ltCommit.Root()
+						var gapJmtRoot, gapLtRoot types.Hash
+						if jmtCommit != nil {
+							gapJmtRoot = jmtCommit.Root()
+						}
+						if ltCommit != nil {
+							gapLtRoot = ltCommit.Root()
+						}
 						gapHeader := &block.Header{
 							ParentHash: parentHash,
 							Number:     uint256.NewInt(newBlockNum),
@@ -302,7 +312,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				r := state.NewPlainStateReader(dstTx)
 				w := state.NewPlainStateWriterNoHistory(dstTx)
 				ibs := state.New(r)
-				ibs.SetRootComputer(ltRC)
+				if ltRC != nil {
+					ibs.SetRootComputer(ltRC)
+				}
 
 				replayedTxs := e.replayBlockTxs(ibs, srcBlk, num)
 
@@ -312,10 +324,14 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					return fmt.Errorf("finalize block %d: %w", num, err)
 				}
 
-				// Compute JMT + LtHash roots via IntermediateRoot, which
-				// flows through the LtHashAwareRootComputer.
-				jmtStateRoot := ibs.IntermediateRoot()
-				ltStateRoot := ibs.LtHashRoot()
+				// Compute state roots (JMT+LtHash if enabled, zero otherwise).
+				var jmtStateRoot, ltStateRoot types.Hash
+				if e.cfg.EnableJMT {
+					jmtStateRoot = ibs.IntermediateRoot()
+					if e.cfg.EnableLtHash {
+						ltStateRoot = ibs.LtHashRoot()
+					}
+				}
 
 				// Build the new block header.
 				newHeader := &block.Header{
@@ -346,29 +362,28 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				e.stats.BlocksProcessed.Add(1)
 			}
 
-			// End of batch: flush accumulated JMT dirty nodes to MDBX.
-			if err := tree.FlushTo(nodeStore); err != nil {
-				return fmt.Errorf("JMT flush: %w", err)
-			}
-
+			// End of batch: flush JMT + LtHash if enabled.
 			lastVersion := newBlockNum - 1
-			tree.SetVersion(lastVersion)
-
-			if err := jmtstore.WriteJMTRoot(dstTx, tree.Root()); err != nil {
-				return fmt.Errorf("write JMT root: %w", err)
+			if tree != nil {
+				if err := tree.FlushTo(nodeStore); err != nil {
+					return fmt.Errorf("JMT flush: %w", err)
+				}
+				tree.SetVersion(lastVersion)
+				if err := jmtstore.WriteJMTRoot(dstTx, tree.Root()); err != nil {
+					return fmt.Errorf("write JMT root: %w", err)
+				}
+				if err := jmtstore.WriteJMTVersion(dstTx, lastVersion); err != nil {
+					return fmt.Errorf("write JMT version: %w", err)
+				}
+				jRoot := jmtCommit.Root()
+				if err := jmtstore.WriteJMTVersionRoot(dstTx, lastVersion, jmt.Hash(jRoot)); err != nil {
+					return fmt.Errorf("write JMT version root: %w", err)
+				}
 			}
-			if err := jmtstore.WriteJMTVersion(dstTx, lastVersion); err != nil {
-				return fmt.Errorf("write JMT version: %w", err)
-			}
-			// Record per-block version→root mapping for the batch endpoint.
-			jRoot := jmtCommit.Root()
-			if err := jmtstore.WriteJMTVersionRoot(dstTx, lastVersion, jmt.Hash(jRoot)); err != nil {
-				return fmt.Errorf("write JMT version root: %w", err)
-			}
-
-			// Persist LtHash digest.
-			if err := lthash.WriteLtHashDigest(dstTx, "LtHashDigest", ltCommit.Digest()); err != nil {
-				return fmt.Errorf("write LtHash digest: %w", err)
+			if ltCommit != nil {
+				if err := lthash.WriteLtHashDigest(dstTx, "LtHashDigest", ltCommit.Digest()); err != nil {
+					return fmt.Errorf("write LtHash digest: %w", err)
+				}
 			}
 
 			// Record the source chain height for resume (distinct from new chain
