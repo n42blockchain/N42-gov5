@@ -335,6 +335,8 @@ func GenesisByChainName(chain string) *conf.Genesis {
 		return mainnetGenesisBlock()
 	case "mainnet_compat":
 		return mainnetCompatGenesisBlock()
+	case "mainnet_v2":
+		return mainnetV2GenesisBlock()
 	case networkname.TestnetChainName:
 		return testnetGenesisBlock()
 	default:
@@ -348,6 +350,19 @@ func GenesisByChainName(chain string) *conf.Genesis {
 func mainnetCompatGenesisBlock() *conf.Genesis {
 	return &conf.Genesis{
 		Config:    params.MainnetCompatChainConfig,
+		Nonce:     0,
+		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
+		Timestamp: 1678174066,
+		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
+		Number:    0,
+	}
+}
+
+// mainnetV2GenesisBlock returns a replay-v2 mainnet genesis block with all
+// forks activated from genesis plus hard-fork allocs and system contracts.
+func mainnetV2GenesisBlock() *conf.Genesis {
+	return &conf.Genesis{
+		Config:    params.MainnetV2ChainConfig,
 		Nonce:     0,
 		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
 		Timestamp: 1678174066,
