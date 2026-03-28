@@ -30,6 +30,10 @@ var (
 
 	// BeaconRootsAddress is the EIP-4788 system contract that stores parent beacon roots.
 	BeaconRootsAddress = types.HexToAddress("0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02")
+
+	// BeaconRootsCode is the canonical deployed bytecode of the EIP-4788
+	// beacon roots contract.
+	BeaconRootsCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604d57602036146024575f5ffd5b5f35801560495762001fff810690815414603c575f5ffd5b62001fff01545f5260205ff35b5f5ffd5b62001fff42064281555f359062001fff015500")
 )
 
 const (
@@ -103,15 +107,15 @@ const (
 
 	// EIP-7904: Glamsterdam gas repricing constants.
 	// Simple transfers drop from 21000 to 4500 gas.
-	TxGasGlamsterdam                     uint64 = 4500
-	TxGasContractCreationGlamsterdam     uint64 = 12500 // TxGasGlamsterdam + CreateGasGlamsterdam
-	TxDataZeroGasGlamsterdam             uint64 = 1
-	TxDataNonZeroGasGlamsterdam          uint64 = 4
-	TxAccessListAddressGasGlamsterdam    uint64 = 600
-	TxAccessListStorageKeyGasGlamsterdam uint64 = 475
-	CallNewAccountGasGlamsterdam         uint64 = 6250
-	CreateGasGlamsterdam                 uint64 = 8000
-	Create2GasGlamsterdam                uint64 = 8000
+	TxGasGlamsterdam                      uint64 = 4500
+	TxGasContractCreationGlamsterdam      uint64 = 12500 // TxGasGlamsterdam + CreateGasGlamsterdam
+	TxDataZeroGasGlamsterdam              uint64 = 1
+	TxDataNonZeroGasGlamsterdam           uint64 = 4
+	TxAccessListAddressGasGlamsterdam     uint64 = 600
+	TxAccessListStorageKeyGasGlamsterdam  uint64 = 475
+	CallNewAccountGasGlamsterdam          uint64 = 6250
+	CreateGasGlamsterdam                  uint64 = 8000
+	Create2GasGlamsterdam                 uint64 = 8000
 	SstoreClearsScheduleRefundGlamsterdam uint64 = 3375 // SstoreResetGasEIP2200 - ColdSloadCostEIP2929 + TxAccessListStorageKeyGasGlamsterdam
 
 	// These have been changed during the course of the chain
