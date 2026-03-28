@@ -320,3 +320,36 @@ func TestCollectPragueExecutionRequestsIncludesDepositRequests(t *testing.T) {
 	require.Len(t, requests, 1)
 	require.Equal(t, byte(vm.DepositRequestType), requests[0][0])
 }
+
+func TestProcessExecutionBlockStartDelegatesPragueBlockStart(t *testing.T) {
+	t.Parallel()
+
+	cfg := testPragueConfig()
+	parentHash := types.HexToHash("0x1234")
+	beaconRoot := types.HexToHash("0xbeef")
+	header := &block.Header{
+		ParentHash: parentHash,
+		Number:     uint256.NewInt(2),
+		Time:       1,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+	ibs.CreateAccount(vm.HistoryStorageAddress, true)
+	ibs.SetCode(vm.HistoryStorageAddress, vm.HistoryStorageCode)
+
+	require.NoError(t, ProcessExecutionBlockStart(&beaconRoot, cfg, ibs, header, nil))
+
+	// Prague history storage hook.
+	historySlot := types.Hash{}
+	uint256.NewInt(1).WriteToSlice(historySlot[:])
+	var historyValue uint256.Int
+	ibs.GetState(vm.HistoryStorageAddress, &historySlot, &historyValue)
+	storedParentHash := types.Hash{}
+	historyValue.WriteToSlice(storedParentHash[:])
+	require.Equal(t, parentHash, storedParentHash)
+}
