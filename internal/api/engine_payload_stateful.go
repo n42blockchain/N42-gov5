@@ -91,7 +91,7 @@ func (e *EngineAPIV1) validatePayloadExecution(blk block.IBlock, parentHash type
 			rules = cfg.RulesWithTimestamp(uint64FromUint256OrZero(header.Number), header.Time)
 		}
 		if rules != nil && rules.IsPrague {
-			actualRequests, err := internalcore.CollectPragueExecutionRequests(receipts, cfg, ibs, header, e.api.api.engine)
+			actualRequests, err := internalcore.ProcessExecutionBlockEnd(receipts, cfg, ibs, header, e.api.api.engine)
 			if err != nil {
 				return err
 			}
