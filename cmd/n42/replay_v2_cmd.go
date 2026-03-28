@@ -38,7 +38,7 @@ var replayV2Command = &cli.Command{
 		&cli.BoolFlag{Name: "snapshot-at-end", Usage: "Create snapshot after replay", Value: true},
 		&cli.BoolFlag{Name: "export-era", Usage: "Export EraE segments after replay", Value: false},
 		&cli.Uint64Flag{Name: "era-segment-size", Usage: "Blocks per EraE segment", Value: 8192},
-		&cli.IntFlag{Name: "batch", Usage: "Blocks per MDBX commit", Value: 10000},
+		&cli.IntFlag{Name: "batch", Usage: "Blocks per MDBX commit (larger = fewer commits, more memory)", Value: 100000},
 		&cli.Uint64Flag{Name: "from", Usage: "Start block number", Value: 0},
 		&cli.Uint64Flag{Name: "to", Usage: "End block number (0=auto)", Value: 0},
 		&cli.StringFlag{Name: "output", Usage: "Stats output file", Value: "replay_v2_stats.json"},
