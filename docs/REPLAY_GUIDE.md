@@ -174,6 +174,27 @@
 
 ---
 
+## 3.5 数据压缩策略
+
+对重放产生的数据进行评估，合适的部分使用 Zstd 压缩：
+
+| 数据类型 | 压缩方式 | 原因 |
+|---------|---------|------|
+| **EraE 段文件** | Zstd Level 3 | 分发体积 ~60-80GB → ~20-30GB，BT/HTTP 传输 2-3x 提速 |
+| **JMT 归档 (archive/)** | seg 字典压缩 | 已有 `lib/seg/` 实现，历史节点归档后压缩比 3-5x |
+| **Snapshot 批量传输** | Zstd Level 3 | 已有实现 (`internal/snapshot/compress.go`) |
+| **JMT 节点 (JMTNode 表)** | 不压缩 | 随机读写热路径，~40 bytes/节点压缩收益低 |
+| **PlainState 表** | 不压缩 | EVM 执行热路径 |
+| **JMTVersionRoots 索引** | 不压缩 | 固定 40 bytes/条目，cursor seek 需原始排序 |
+| **Block Headers/Bodies** | 不压缩 | MDBX 内存映射直读 |
+| **P2P 消息** | Snappy | 已有实现，低延迟优先 |
+| **RPC 响应** | Gzip | 已有 HTTP 中间件（`rpcstack.go`） |
+| **Proof 传输** | Gzip (HTTP) / Snappy (P2P) | 已有，~2.5KB/proof 无需额外处理 |
+
+**EraE v2 格式**: 新增 version=2 使用 Zstd 压缩记录，version=1 保持未压缩向后兼容。Reader 自动检测版本。
+
+---
+
 ## 四、Post-Replay 导出
 
 ### 4.1 Snapshot 快照
