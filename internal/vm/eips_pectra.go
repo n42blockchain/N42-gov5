@@ -163,6 +163,10 @@ var WithdrawalRequestsAddress = types.HexToAddress("0x00000961EF480EB55E80D19AD8
 // aligned with the active Prague/Osaka execution-spec-tests fixtures.
 var ConsolidationRequestsAddress = types.HexToAddress("0x0000BBDDC7CE488642FB579F8B00F3A590007251")
 
+// ExecutionRequestQueueCode is the canonical deployed bytecode shared by the
+// Prague execution-request queue contracts (EIP-7002 / EIP-7251).
+var ExecutionRequestQueueCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604457602036146024575f5ffd5b620180005f350680515f80fd5b5f35801560495762018000153560495763ffffffff60023516545f5260205ff35b5f5ffd")
+
 // =============================================================================
 // EIP-7002: Execution Layer Triggerable Withdrawals (Pectra)
 // https://eips.ethereum.org/EIPS/eip-7002

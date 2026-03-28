@@ -21,10 +21,10 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
-	"github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/crypto"
+	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -64,11 +64,11 @@ func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
 		RandomnessTime:    zero,
 		Consensus:         params.HotStuffConsensus,
 		HotStuff: &params.HotStuffConfig{
-			Period:        period,
-			BaseTimeout:   60000,
-			MaxTimeout:    120000,
-			EpochLength:   100,
-			FastPropose:   true,
+			Period:            period,
+			BaseTimeout:       60000,
+			MaxTimeout:        120000,
+			EpochLength:       100,
+			FastPropose:       true,
 			MinProposeDelayMs: 200,
 		},
 		BlobSchedule: &params.BlobSchedule{
@@ -105,20 +105,8 @@ func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
 	}
 
 	// Deploy Prague system contracts (EIP-7002, EIP-7251, EIP-2935)
-	alloc[vm.WithdrawalRequestsAddress] = conf.GenesisAccount{
-		Balance: "0x0",
-		Nonce:   1,
-		Code:    types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604457602036146024575f5ffd5b620180005f350680515f80fd5b5f35801560495762018000153560495763ffffffff60023516545f5260205ff35b5f5ffd"),
-	}
-	alloc[vm.ConsolidationRequestsAddress] = conf.GenesisAccount{
-		Balance: "0x0",
-		Nonce:   1,
-		Code:    types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604457602036146024575f5ffd5b620180005f350680515f80fd5b5f35801560495762018000153560495763ffffffff60023516545f5260205ff35b5f5ffd"),
-	}
-	alloc[vm.HistoryStorageAddress] = conf.GenesisAccount{
-		Balance: "0x0",
-		Nonce:   1,
-		Code:    vm.HistoryStorageCode,
+	for _, deployment := range internalcore.PragueSystemContractDeployments() {
+		alloc[deployment.Address] = deployment.Account
 	}
 
 	// Deploy beacon roots contract (EIP-4788)
