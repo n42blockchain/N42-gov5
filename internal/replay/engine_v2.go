@@ -5,6 +5,7 @@ package replay
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 
@@ -135,14 +136,18 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 	e.stats.ToBlock = e.cfg.ToBlock
 	e.log.Info("replay-v2 starting", "from", e.cfg.FromBlock, "to", e.cfg.ToBlock)
 
-	// Check for resume point in target DB.
+	// Check for resume point in target DB. Use a dedicated key to track the
+	// SOURCE chain height (not the new chain height, which includes gap-fill
+	// blocks and may exceed the source block count).
 	resumeBlock := uint64(0)
 	if err := e.dstDB.View(ctx, func(tx kv.Tx) error {
-		ver, verErr := jmtstore.ReadJMTVersion(tx)
-		if verErr != nil {
-			return verErr
+		data, err := tx.GetOne(jmtstore.JMTRootTable, []byte("replay_src_height"))
+		if err != nil {
+			return err
 		}
-		resumeBlock = ver
+		if data != nil && len(data) >= 8 {
+			resumeBlock = binary.BigEndian.Uint64(data)
+		}
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("replay-v2: read resume point: %w", err)
@@ -151,11 +156,11 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 	startBlock := e.cfg.FromBlock
 	if resumeBlock > 0 && resumeBlock >= startBlock {
 		startBlock = resumeBlock + 1
-		e.log.Info("resuming from checkpoint", "resumeBlock", resumeBlock, "startBlock", startBlock)
+		e.log.Info("resuming from checkpoint", "lastSourceBlock", resumeBlock, "startBlock", startBlock)
 	}
 
 	if startBlock > e.cfg.ToBlock {
-		e.log.Info("already complete", "lastBlock", resumeBlock)
+		e.log.Info("already complete", "lastSourceBlock", resumeBlock)
 		return e.stats, nil
 	}
 
@@ -362,10 +367,17 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				return fmt.Errorf("write LtHash digest: %w", err)
 			}
 
+			// Record the source chain height for resume (distinct from new chain
+			// height which includes gap-fill blocks).
+			var srcBuf [8]byte
+			binary.BigEndian.PutUint64(srcBuf[:], to)
+			if err := dstTx.Put(jmtstore.JMTRootTable, []byte("replay_src_height"), srcBuf[:]); err != nil {
+				return fmt.Errorf("write replay src height: %w", err)
+			}
+
 			e.log.Info("batch committed",
-				"from", from, "to", to,
+				"srcFrom", from, "srcTo", to,
 				"newChainHead", lastVersion,
-				"jmtDirtyNodes", jmtCommit.DirtyNodeCount(),
 			)
 			return nil
 		})
