@@ -69,10 +69,7 @@ func (e *EngineAPIV1) validatePayloadExecution(blk block.IBlock, parentHash type
 		usedGas := uint64(0)
 		receipts := make(block.Receipts, 0, len(concreteBlock.Transactions()))
 		cfg := e.chainConfig()
-		if err := internalcore.ProcessBeaconBlockRoot(parentBeaconRoot, cfg, ibs, header, e.api.api.engine); err != nil {
-			return err
-		}
-		if err := internalcore.ProcessPragueBlockStart(cfg, ibs, header); err != nil {
+		if err := internalcore.ProcessExecutionBlockStart(parentBeaconRoot, cfg, ibs, header, e.api.api.engine); err != nil {
 			return err
 		}
 

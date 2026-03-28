@@ -171,6 +171,15 @@ func ProcessBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainCon
 	return ibs.FinalizeTx(rules, state.NewNoopWriter())
 }
 
+// ProcessExecutionBlockStart applies shared start-of-block execution hooks in
+// canonical order.
+func ProcessExecutionBlockStart(parentBeaconRoot *types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) error {
+	if err := ProcessBeaconBlockRoot(parentBeaconRoot, chainConfig, ibs, header, engine); err != nil {
+		return err
+	}
+	return ProcessPragueBlockStart(chainConfig, ibs, header)
+}
+
 // ProcessPragueBlockStart applies Prague/Pectra start-of-block system operations:
 //   - EIP-2935: store the parent block hash in the ring buffer once the history
 //     contract has been deployed.

@@ -22,9 +22,9 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/metrics"
@@ -99,8 +99,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		misc.ApplyDAOHardFork(ibs)
 	}
 
-	// EIP-2935: deploy history contract and store parent hash (Prague+).
-	if err := ProcessPragueBlockStart(chainConfig, ibs, concreteHeader); err != nil {
+	if err := ProcessExecutionBlockStart(nil, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
 	}
 
