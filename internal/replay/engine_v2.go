@@ -201,7 +201,9 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 // One write transaction covers the entire batch for efficiency.
 func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 	return e.dstDB.Update(ctx, func(dstTx kv.RwTx) error {
-		// Initialize JMT tree backed by the target DB.
+		// JMT tree uses MDBX for reading existing nodes and internal dirty map
+		// for buffering new writes. FlushTo at batch end writes all dirty nodes
+		// to MDBX in one batch — this is already memory-buffered by design.
 		nodeStore := jmtstore.NewMDBXStore(dstTx, jmtstore.JMTNodeTable)
 		jmtRoot, err := jmtstore.ReadJMTRoot(dstTx)
 		if err != nil {
@@ -344,8 +346,8 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				e.stats.BlocksProcessed.Add(1)
 			}
 
-			// End of batch: flush JMT nodes and persist checkpoints.
-			if err := jmtCommit.Flush(); err != nil {
+			// End of batch: flush accumulated JMT dirty nodes to MDBX.
+			if err := tree.FlushTo(nodeStore); err != nil {
 				return fmt.Errorf("JMT flush: %w", err)
 			}
 
@@ -496,3 +498,4 @@ func (e *EngineV2) writeNewBlock(dstTx kv.RwTx, blk *block.Block, num uint64) er
 	}
 	return nil
 }
+
