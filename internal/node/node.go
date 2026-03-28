@@ -632,10 +632,12 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// Initialize JMT state commitment if configured.
 	if cfg.NodeCfg.JMTCommitment {
 		if realBC, ok := bc.(*internal.BlockChain); ok {
-			// Read the last persisted JMT root from DB.
+			// Read the last persisted JMT root and version from DB.
 			var jmtRoot jmt.Hash
+			var jmtVersion uint64
 			if rtx, err := chainKv.BeginRo(ctx); err == nil {
 				jmtRoot, _ = jmtstore.ReadJMTRoot(rtx)
+				jmtVersion, _ = jmtstore.ReadJMTVersion(rtx)
 				rtx.Rollback()
 			}
 			// PooledDBStore holds a long-lived RO transaction, avoiding per-Get()
@@ -649,11 +651,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			} else {
 				tree = jmt.NewFromRoot(pooledStore, jmtRoot)
 			}
+			tree.SetVersion(jmtVersion)
 			jmtCommit := commitment.NewJMTCommitment(tree)
 			realBC.SetJMTCommitment(jmtCommit)
 			realBC.SetJMTStoreRefresh(pooledStore.RefreshTx)
 			log.Info("JMT state commitment initialized",
 				"root", fmt.Sprintf("%x", jmtRoot[:8]),
+				"version", jmtVersion,
 				"nodeCache", jmt.DefaultNodeCacheSize,
 			)
 

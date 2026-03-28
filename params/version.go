@@ -37,7 +37,11 @@ var (
 const (
 	VersionMajor       = 5   // Major version - annual release
 	VersionMinor       = 6   // Minor version - feature release
-	VersionBuild       = 824 // Build number - auto-incremented
+<<<<<<< HEAD
+	VersionBuild       = 827 // Build number - auto-incremented
+=======
+	VersionBuild       = 827 // Build number - auto-incremented
+>>>>>>> d4c77bb (feat(jmt): historical proof generation + sync fixes + deep audit)
 	VersionModifier    = ""  // Modifier component (alpha, beta, stable)
 	VersionKeyCreated  = "n42VersionCreated"
 	VersionKeyFinished = "n42VersionFinished"

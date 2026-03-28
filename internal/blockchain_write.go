@@ -196,11 +196,18 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if err := bc.jmtCommitment.Tree().FlushTo(mdbxNodeStore); err != nil {
 				return fmt.Errorf("flushing JMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			bc.jmtCommitment.Tree().SetVersion(blockNumber.Uint64())
 			rootTypesHash := bc.jmtCommitment.Root()
 			var jmtRoot jmt.Hash
 			copy(jmtRoot[:], rootTypesHash[:])
 			if err := jmtstore.WriteJMTRoot(tx, jmtRoot); err != nil {
 				return fmt.Errorf("writing JMT root for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			if err := jmtstore.WriteJMTVersion(tx, blockNumber.Uint64()); err != nil {
+				return fmt.Errorf("writing JMT version for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			if err := jmtstore.WriteJMTVersionRoot(tx, blockNumber.Uint64(), jmtRoot); err != nil {
+				return fmt.Errorf("writing JMT version root for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 		}
 

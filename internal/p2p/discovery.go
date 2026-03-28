@@ -282,7 +282,7 @@ func PeersFromStringAddrs(addrs []string) ([]ma.Multiaddr, error) {
 func parseBootStrapAddrs(addrs []string, nodeCfg conf.NodeConfig) (discv5Nodes []string) {
 	if len(addrs) == 0 {
 		switch nodeCfg.Chain {
-		case networkname.MainnetChainName:
+		case networkname.MainnetChainName, "mainnet_compat":
 			addrs = params.MainnetBootnodes
 		case networkname.TestnetChainName:
 			addrs = params.TestnetBootnodes
