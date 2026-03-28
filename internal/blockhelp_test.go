@@ -265,3 +265,58 @@ func TestProcessPragueBlockStartNoOpWhenHistoryContractMissing(t *testing.T) {
 	ibs.GetState(vm.HistoryStorageAddress, &slot, &got)
 	require.True(t, got.IsZero())
 }
+
+func TestCollectPragueExecutionRequestsPrePragueIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:     big.NewInt(1),
+		Consensus:   params.Faker,
+		LondonBlock: big.NewInt(0),
+	}
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Time:       1,
+		Difficulty: uint256.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+
+	requests, err := CollectPragueExecutionRequests(nil, cfg, ibs, header, nil)
+	require.NoError(t, err)
+	require.Nil(t, requests)
+}
+
+func TestCollectPragueExecutionRequestsIncludesDepositRequests(t *testing.T) {
+	t.Parallel()
+
+	cfg := testPragueConfig()
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Time:       1,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+
+	receipts := block.Receipts{
+		&block.Receipt{
+			Logs: []*block.Log{
+				{
+					Address: vm.DepositContractAddress,
+					Topics:  []types.Hash{vm.DepositEventSignature},
+					Data:    makeValidDepositLogData(),
+				},
+			},
+		},
+	}
+
+	requests, err := CollectPragueExecutionRequests(receipts, cfg, ibs, header, nil)
+	require.NoError(t, err)
+	require.Len(t, requests, 1)
+	require.Equal(t, byte(vm.DepositRequestType), requests[0][0])
+}

@@ -188,10 +188,11 @@ func ProcessPragueBlockStart(chainConfig *params.ChainConfig, ibs *state.IntraBl
 	if rules == nil || !rules.IsPrague {
 		return nil
 	}
+	registry := resolvePragueSystemContractRegistry(rules)
 
 	// EIP-2935 deployment may happen before, on, or after the fork block depending
 	// on the fixture. Only store history once the contract actually exists.
-	if ibs.GetCodeSize(vm.HistoryStorageAddress) == 0 {
+	if ibs.GetCodeSize(registry.historyStorage) == 0 {
 		return nil
 	}
 	vm.StoreParentBlockHash(ibs, headerNumber.Uint64()-1, header.ParentHash)
@@ -214,16 +215,11 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 	if rules == nil || !rules.IsPrague {
 		return nil, nil
 	}
+	registry := resolvePragueSystemContractRegistry(rules)
 
 	noop := state.NewNoopWriter()
 	requests := make([]hexutil.Bytes, 0, 2)
-	for _, systemCall := range []struct {
-		contract    types.Address
-		requestType byte
-	}{
-		{contract: vm.WithdrawalRequestsAddress, requestType: vm.WithdrawalRequestType},
-		{contract: vm.ConsolidationRequestsAddress, requestType: vm.ConsolidationRequestType},
-	} {
+	for _, systemCall := range registry.executionRequests {
 		// EIP-7002/EIP-7251: skip system call if contract not deployed.
 		// The requests hash mismatch will surface as INVALID if the test
 		// expects non-empty requests from a missing contract.
@@ -241,6 +237,32 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 		}
 	}
 	return requests, nil
+}
+
+// CollectPragueExecutionRequests assembles Prague execution requests from both
+// deposit receipts and Prague end-of-block system calls.
+func CollectPragueExecutionRequests(receipts block.Receipts, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) ([]hexutil.Bytes, error) {
+	if chainConfig == nil || ibs == nil || header == nil {
+		return nil, nil
+	}
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return nil, err
+	}
+	rules := chainConfig.RulesWithTimestamp(headerNumber.Uint64(), header.Time)
+	if rules == nil || !rules.IsPrague {
+		return nil, nil
+	}
+
+	requests, err := CollectDepositExecutionRequests(receipts)
+	if err != nil {
+		return nil, err
+	}
+	pragueRequests, err := ProcessPragueSystemCalls(chainConfig, ibs, header, engine)
+	if err != nil {
+		return nil, err
+	}
+	return append(requests, pragueRequests...), nil
 }
 
 // FinalizeBlockExecution finalizes block execution by running engine finalization
