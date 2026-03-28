@@ -158,6 +158,12 @@ func TestHistoryStorageCode(t *testing.T) {
 	}
 }
 
+func TestExecutionRequestQueueCode(t *testing.T) {
+	if len(ExecutionRequestQueueCode) == 0 {
+		t.Fatal("ExecutionRequestQueueCode should not be empty")
+	}
+}
+
 // EIP-7251 Max Effective Balance Tests
 
 func TestMaxEffectiveBalanceEIP7251(t *testing.T) {
