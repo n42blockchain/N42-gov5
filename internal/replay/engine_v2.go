@@ -228,18 +228,20 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		jmtRC := commitment.NewJMTRootComputer(jmtCommit)
 		ltRC := commitment.NewLtHashAwareRootComputer(jmtRC, ltCommit)
 
-		// Read previous block hash and timestamp for gap filling and parent linkage.
-		parentHash, prevTime, err := e.readParentInfo(dstTx, from)
-		if err != nil {
-			return fmt.Errorf("read parent info at %d: %w", from, err)
-		}
-
 		// Track the running new-chain block number. For resume, this equals
 		// the JMT version + 1. For fresh start, it starts at from.
 		newBlockNum := from
 		ver, _ := jmtstore.ReadJMTVersion(dstTx)
 		if ver > 0 && ver >= from {
 			newBlockNum = ver + 1
+		}
+
+		// Read previous block hash and timestamp from the TARGET chain's last
+		// block (newBlockNum-1), NOT from the source block number. Gap filling
+		// makes the target chain longer than the source, so block numbers diverge.
+		parentHash, prevTime, err := e.readParentInfo(dstTx, newBlockNum)
+		if err != nil {
+			return fmt.Errorf("read parent info at target block %d: %w", newBlockNum-1, err)
 		}
 
 		// Genesis initialization: if starting from block 0 or 1 with an empty tree.
