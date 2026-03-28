@@ -124,7 +124,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	if !cfg.StatelessExec && *usedGas != concreteHeader.GasUsed {
 		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, concreteHeader.GasUsed)
 	}
-	if _, err := ProcessPragueSystemCalls(chainConfig, ibs, concreteHeader, p.engine); err != nil {
+	if _, err := ProcessExecutionBlockEnd(nil, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
 	}
 

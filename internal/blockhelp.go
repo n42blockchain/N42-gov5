@@ -248,9 +248,9 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 	return requests, nil
 }
 
-// CollectPragueExecutionRequests assembles Prague execution requests from both
-// deposit receipts and Prague end-of-block system calls.
-func CollectPragueExecutionRequests(receipts block.Receipts, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) ([]hexutil.Bytes, error) {
+// ProcessExecutionBlockEnd applies shared end-of-block execution hooks and
+// returns any execution requests emitted by the active fork.
+func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) ([]hexutil.Bytes, error) {
 	if chainConfig == nil || ibs == nil || header == nil {
 		return nil, nil
 	}
@@ -272,6 +272,12 @@ func CollectPragueExecutionRequests(receipts block.Receipts, chainConfig *params
 		return nil, err
 	}
 	return append(requests, pragueRequests...), nil
+}
+
+// CollectPragueExecutionRequests assembles Prague execution requests from both
+// deposit receipts and Prague end-of-block system calls.
+func CollectPragueExecutionRequests(receipts block.Receipts, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) ([]hexutil.Bytes, error) {
+	return ProcessExecutionBlockEnd(receipts, chainConfig, ibs, header, engine)
 }
 
 // FinalizeBlockExecution finalizes block execution by running engine finalization

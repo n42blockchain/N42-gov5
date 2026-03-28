@@ -266,7 +266,7 @@ func TestProcessPragueBlockStartNoOpWhenHistoryContractMissing(t *testing.T) {
 	require.True(t, got.IsZero())
 }
 
-func TestCollectPragueExecutionRequestsPrePragueIsEmpty(t *testing.T) {
+func TestProcessExecutionBlockEndPrePragueIsEmpty(t *testing.T) {
 	t.Parallel()
 
 	cfg := &params.ChainConfig{
@@ -283,12 +283,12 @@ func TestCollectPragueExecutionRequestsPrePragueIsEmpty(t *testing.T) {
 	txDb := memdb.BeginRw(t, db)
 	ibs := state.New(state.NewPlainState(txDb, 1))
 
-	requests, err := CollectPragueExecutionRequests(nil, cfg, ibs, header, nil)
+	requests, err := ProcessExecutionBlockEnd(nil, cfg, ibs, header, nil)
 	require.NoError(t, err)
 	require.Nil(t, requests)
 }
 
-func TestCollectPragueExecutionRequestsIncludesDepositRequests(t *testing.T) {
+func TestProcessExecutionBlockEndIncludesDepositRequests(t *testing.T) {
 	t.Parallel()
 
 	cfg := testPragueConfig()
@@ -315,7 +315,7 @@ func TestCollectPragueExecutionRequestsIncludesDepositRequests(t *testing.T) {
 		},
 	}
 
-	requests, err := CollectPragueExecutionRequests(receipts, cfg, ibs, header, nil)
+	requests, err := ProcessExecutionBlockEnd(receipts, cfg, ibs, header, nil)
 	require.NoError(t, err)
 	require.Len(t, requests, 1)
 	require.Equal(t, byte(vm.DepositRequestType), requests[0][0])

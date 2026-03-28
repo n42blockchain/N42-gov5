@@ -155,7 +155,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	if usedGas != concreteHeader.GasUsed {
 		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
 	}
-	if _, err := ProcessPragueSystemCalls(p.config, ibs, concreteHeader, p.engine); err != nil {
+	if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
 	}
 
