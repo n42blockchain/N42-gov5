@@ -12,11 +12,11 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/crypto"
 	internalcore "github.com/n42blockchain/N42/internal"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -1109,7 +1109,7 @@ func TestEngineAPIv4AcceptsBeaconRootTimestampPayload(t *testing.T) {
 				params.BeaconRootsAddress: {
 					Balance: "0x0",
 					Nonce:   1,
-					Code:    types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604d57602036146024575f5ffd5b5f35801560495762001fff810690815414603c575f5ffd5b62001fff01545f5260205ff35b5f5ffd5b62001fff42064281555f359062001fff015500"),
+					Code:    params.BeaconRootsCode,
 				},
 			},
 			Number:     0,
