@@ -21,6 +21,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/lthash"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
@@ -75,11 +76,27 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 // Stats returns the current replay statistics.
 func (e *EngineV2) Stats() *Stats { return e.stats }
 
+// Close releases database resources. Call after Run() and RunPostExport().
+func (e *EngineV2) Close() {
+	if e.srcDB != nil {
+		e.srcDB.Close()
+	}
+	if e.dstDB != nil {
+		e.dstDB.Close()
+	}
+}
+
 // Run executes the replay-v2 pipeline. It opens both databases, reads blocks
 // from source, filters transactions, fills gaps, computes JMT+LtHash roots,
 // and writes the new chain to the target database.
 func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 	var err error
+
+	// Initialize N42 table schema and register all tables (including JMTNode,
+	// JMTRoot, JMTVersionRoots, LtHashDigest) into ChaindataTablesCfg so the
+	// target DB creates them on first open.
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
 
 	// Open source DB with Accede mode — only opens tables that already exist,
 	// silently skipping missing ones. Critical for old databases that lack
@@ -92,7 +109,7 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("replay-v2: open source DB: %w", err)
 	}
-	defer e.srcDB.Close()
+	// Source DB closed in Close(). Do NOT defer here — RunPostExport needs dstDB.
 
 	// Open/create target DB with full table schema.
 	e.dstDB, err = mdbx.NewMDBX(e.log).
@@ -101,9 +118,9 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 		MapSize(2 * datasize.TB).
 		Open(ctx)
 	if err != nil {
+		e.srcDB.Close()
 		return nil, fmt.Errorf("replay-v2: open target DB: %w", err)
 	}
-	defer e.dstDB.Close()
 
 	// Detect end block from source if not specified.
 	if e.cfg.ToBlock == 0 {

@@ -91,6 +91,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	defer engine.Close()
 
 	start := time.Now()
 	stats, err := engine.Run(ctx)
