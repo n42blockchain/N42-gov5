@@ -17,15 +17,16 @@
 package account
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/holiman/uint256"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/proto/state"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/proto/state"
 )
 
 // StateAccount is the Ethereum consensus representation of accounts.
@@ -60,14 +61,11 @@ func NewAccount() StateAccount {
 }
 
 func (a *StateAccount) EncodingLengthForStorage() uint {
-	pb := a.ToProtoMessage()
-	return uint(proto.Size(pb))
+	return uint(a.EncodingLengthForStorageV2())
 }
 
 func (a *StateAccount) EncodeForStorage(buffer []byte) {
-	pb := a.ToProtoMessage()
-	data, _ := proto.Marshal(pb)
-	copy(buffer, data)
+	a.EncodeForStorageV2(buffer)
 }
 
 // Copy makes a a full, independent deep copy of image.
@@ -90,11 +88,7 @@ func (a *StateAccount) Reset() {
 }
 
 func (a *StateAccount) DecodeForStorage(enc []byte) error {
-	a.Reset()
-	if len(enc) == 0 {
-		return nil
-	}
-	return a.Unmarshal(enc)
+	return a.DecodeForStorageV2(enc)
 }
 
 func (a *StateAccount) SelfCopy() *StateAccount {
@@ -171,4 +165,119 @@ func (a *StateAccount) applyProtoFields(pAccount *state.Account) {
 	a.Root = utils.ConvertH256ToHash(pAccount.Root)
 	a.CodeHash = utils.ConvertH256ToHash(pAccount.CodeHash)
 	a.Incarnation = uint16(pAccount.Incarnation)
+}
+
+// EncodeForStorageV2 encodes using Erigon-style variable-length format.
+// Format: [fieldBits:1B][nonce:varint][balance:lenB+data][incarnation:varint][codeHash:32B]
+// Fields with default values are omitted. Empty account = 1 byte.
+func (a *StateAccount) EncodeForStorageV2(buf []byte) int {
+	var fieldBits byte
+	pos := 1
+
+	if a.Nonce > 0 {
+		fieldBits |= 1
+		n := binary.PutUvarint(buf[pos:], a.Nonce)
+		pos += n
+	}
+	if !a.Balance.IsZero() {
+		fieldBits |= 2
+		balBytes := a.Balance.Bytes32()
+		start := 0
+		for start < 31 && balBytes[start] == 0 {
+			start++
+		}
+		trimLen := 32 - start
+		buf[pos] = byte(trimLen)
+		pos++
+		copy(buf[pos:pos+trimLen], balBytes[start:])
+		pos += trimLen
+	}
+	if a.Incarnation > 0 {
+		fieldBits |= 4
+		n := binary.PutUvarint(buf[pos:], uint64(a.Incarnation))
+		pos += n
+	}
+	if !IsEmptyCodeHash(a.CodeHash) {
+		fieldBits |= 8
+		copy(buf[pos:pos+32], a.CodeHash[:])
+		pos += 32
+	}
+	buf[0] = fieldBits
+	return pos
+}
+
+// EncodingLengthForStorageV2 returns the encoded length without writing.
+func (a *StateAccount) EncodingLengthForStorageV2() int {
+	n := 1 // fieldBits
+	if a.Nonce > 0 {
+		n += uvarintSize(a.Nonce)
+	}
+	if !a.Balance.IsZero() {
+		balBytes := a.Balance.Bytes32()
+		start := 0
+		for start < 31 && balBytes[start] == 0 {
+			start++
+		}
+		n += 1 + (32 - start)
+	}
+	if a.Incarnation > 0 {
+		n += uvarintSize(uint64(a.Incarnation))
+	}
+	if !IsEmptyCodeHash(a.CodeHash) {
+		n += 32
+	}
+	return n
+}
+
+// DecodeForStorageV2 decodes a V2-encoded account.
+func (a *StateAccount) DecodeForStorageV2(enc []byte) error {
+	a.Reset()
+	if len(enc) == 0 {
+		return nil
+	}
+	fieldBits := enc[0]
+	pos := 1
+
+	if fieldBits&1 != 0 {
+		v, n := binary.Uvarint(enc[pos:])
+		a.Nonce = v
+		pos += n
+	}
+	if fieldBits&2 != 0 {
+		if pos >= len(enc) {
+			return fmt.Errorf("truncated balance length")
+		}
+		balLen := int(enc[pos])
+		pos++
+		if pos+balLen > len(enc) {
+			return fmt.Errorf("truncated balance data")
+		}
+		var balBytes [32]byte
+		copy(balBytes[32-balLen:], enc[pos:pos+balLen])
+		a.Balance.SetBytes32(balBytes[:])
+		pos += balLen
+	}
+	if fieldBits&4 != 0 {
+		v, n := binary.Uvarint(enc[pos:])
+		a.Incarnation = uint16(v)
+		pos += n
+	}
+	if fieldBits&8 != 0 {
+		if pos+32 > len(enc) {
+			return fmt.Errorf("truncated codeHash")
+		}
+		copy(a.CodeHash[:], enc[pos:pos+32])
+		pos += 32
+	}
+	a.Initialised = true
+	return nil
+}
+
+func uvarintSize(v uint64) int {
+	n := 1
+	for v >= 0x80 {
+		v >>= 7
+		n++
+	}
+	return n
 }
