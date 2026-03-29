@@ -88,6 +88,16 @@ func (a *StateAccount) Reset() {
 }
 
 func (a *StateAccount) DecodeForStorage(enc []byte) error {
+	if len(enc) == 0 {
+		a.Reset()
+		return nil
+	}
+	// Auto-detect format: V2 uses only low 4 bits of fieldBits (max 0x0F).
+	// Protobuf field tags start at 0x08 (field 1, varint) but fields 2+
+	// produce tags >= 0x10. If first byte > 0x0F, try protobuf decode.
+	if enc[0] > 0x0F {
+		return a.Unmarshal(enc)
+	}
 	return a.DecodeForStorageV2(enc)
 }
 
@@ -170,9 +180,10 @@ func (a *StateAccount) applyProtoFields(pAccount *state.Account) {
 // MarshalV2 encodes a StateAccount into a new byte slice using V2 format.
 // Convenience method that combines length calculation and encoding in one call.
 func (a *StateAccount) MarshalV2() []byte {
-	buf := make([]byte, 74) // max possible: 1 + 10 + 33 + 10 + 32 = 86, 74 is tight upper
-	n := a.EncodeForStorageV2(buf)
-	return buf[:n]
+	n := a.EncodingLengthForStorageV2()
+	buf := make([]byte, n)
+	a.EncodeForStorageV2(buf)
+	return buf
 }
 
 // EncodeForStorageV2 encodes using Erigon-style variable-length format.
@@ -272,6 +283,9 @@ func (a *StateAccount) DecodeForStorageV2(enc []byte) error {
 		v, n := binary.Uvarint(enc[pos:])
 		if n <= 0 {
 			return fmt.Errorf("malformed incarnation varint")
+		}
+		if v > 0xFFFF {
+			return fmt.Errorf("incarnation %d exceeds uint16 range", v)
 		}
 		a.Incarnation = uint16(v)
 		pos += n
