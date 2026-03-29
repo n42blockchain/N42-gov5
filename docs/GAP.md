@@ -13,7 +13,7 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 在 2026-03-19 的集中收口周期中，完成了五个阶段的系统性 gap 闭合：
 
 1. **PQ 预编译已从标准 fork surface 彻底隔离**：`ChainConfig.PQPrecompilesTime` 独立开关控制，标准 Prague/Pectra/Osaka/Fusaka 的 precompile map 和 warm access 均不含 PQ 地址，标准 Hive/EEST 对 PQ 零感知。
-2. **Archive 能力已确认完备**：archive 模式是默认配置，per-block changeset + TemporalDB 时间旅行 + 历史 RPC 查询（GetBalance/Code/StorageAt at 历史 block）已全链路可用；`eth_getProof` 已升级为真实 JMT Merkle 证明。
+2. **Archive 能力已确认完备**：archive 模式是默认配置，per-block changeset + TemporalDB 时间旅行 + 历史 RPC 查询（GetBalance/Code/StorageAt at 历史 block）已全链路可用；`eth_getProof` 已升级为 JMT-based Merkle proof 主路径，但仍不是 canonical Ethereum MPT 证明语义。
 3. **Staged Sync 框架已就位**：7 stage 管线（Headers→Bodies→Senders→Execution→HashState→Commitment→Finish），支持 forward/unwind/prune，per-stage 持久化进度。
 4. **运行时可观测性显著增强**：Prometheus 指标从 ~127 扩展到 182+（新增 EVM 执行、链/reorg、费用市场、交易生命周期、Engine API、RPC、JMT 等 55 个指标），24h soak 测试固化。
 5. **RPCDaemon 独立部署、JMT 节点缓存、Deferred Execution 管线**均已落地。
@@ -44,7 +44,7 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 
 | 维度 | 分数 | 当前判断 |
 |---|---:|---|
-| 状态与存储 | 4 | JMT Blake3 承诺 + 引用计数 GC 在线裁剪 + snapshot 持久化 + archive 默认 + `eth_getProof` JMT 证明 + IPFS 存储桥接 |
+| 状态与存储 | 4 | JMT Blake3 承诺 + 引用计数 GC 在线裁剪 + snapshot 持久化 + archive 默认 + `eth_getProof` JMT-based proof + IPFS 存储桥接 |
 | 同步与恢复 | 4 | Full + Snap + Checkpoint + Backfill + Staged Sync 5 种模式 |
 | 执行架构 | 4 | Block-STM 并行 + Deferred Execution + ZK 协处理器（链下计算+链上验证） + AI 推理预编译（0x0301） |
 | 接口与工具 | 4 | Engine API v1-v4 完整 + Otterscan + GraphQL + Clef + MCP + RPCDaemon + 消息中继 + 推送通知 + AI Agent 钱包 + 数据治理 |
@@ -59,7 +59,7 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 ### 3.1 状态、证明与快照
 
 - JMT Blake3 状态承诺 + 跨 payload 节点 LRU 缓存：[`../lib/jmt/`](../lib/jmt/)
-- `eth_getProof` 真实 JMT Merkle 证明（account + storage proof）：[`../internal/api/blockscout.go`](../internal/api/blockscout.go)
+- `eth_getProof` JMT-based Merkle 证明主路径（account + storage proof，非 canonical Ethereum MPT 语义）：[`../internal/api/blockscout.go`](../internal/api/blockscout.go)
 - JMT 状态承诺 + proof 接口：[`../modules/state/commitment/jmt_commitment.go`](../modules/state/commitment/jmt_commitment.go)
 - witness / stateless 路线：[`../modules/state/witness/`](../modules/state/witness/)
 - snapshot / diff layer / journal：[`../modules/state/snapshot/`](../modules/state/snapshot/)
@@ -185,7 +185,7 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 ### 5.3 Archive 能力确认
 
 - archive 模式已是默认配置（per-block changeset + TemporalDB + 历史 RPC 查询全链路可用）
-- `eth_getProof` 升级为真实 JMT Merkle 证明（account + storage proof）
+- `eth_getProof` 升级为 JMT-based Merkle 证明主路径（account + storage proof，非 canonical Ethereum MPT 语义）
 - archive-depth smoke 脚本
 
 ### 5.4 Staged Sync 框架
