@@ -687,7 +687,7 @@ func parseAccountForTasks(encoded []byte) (valid bool, incarnation uint16, codeH
 	}
 
 	var acc account.StateAccount
-	if err := acc.Unmarshal(encoded); err != nil {
+	if err := acc.DecodeForStorage(encoded); err != nil {
 		return false, 0, nil
 	}
 

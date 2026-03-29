@@ -167,6 +167,14 @@ func (a *StateAccount) applyProtoFields(pAccount *state.Account) {
 	a.Incarnation = uint16(pAccount.Incarnation)
 }
 
+// MarshalV2 encodes a StateAccount into a new byte slice using V2 format.
+// Convenience method that combines length calculation and encoding in one call.
+func (a *StateAccount) MarshalV2() []byte {
+	buf := make([]byte, 74) // max possible: 1 + 10 + 33 + 10 + 32 = 86, 74 is tight upper
+	n := a.EncodeForStorageV2(buf)
+	return buf[:n]
+}
+
 // EncodeForStorageV2 encodes using Erigon-style variable-length format.
 // Format: [fieldBits:1B][nonce:varint][balance:lenB+data][incarnation:varint][codeHash:32B]
 // Fields with default values are omitted. Empty account = 1 byte.
@@ -240,6 +248,9 @@ func (a *StateAccount) DecodeForStorageV2(enc []byte) error {
 
 	if fieldBits&1 != 0 {
 		v, n := binary.Uvarint(enc[pos:])
+		if n <= 0 {
+			return fmt.Errorf("malformed nonce varint")
+		}
 		a.Nonce = v
 		pos += n
 	}
@@ -249,7 +260,7 @@ func (a *StateAccount) DecodeForStorageV2(enc []byte) error {
 		}
 		balLen := int(enc[pos])
 		pos++
-		if pos+balLen > len(enc) {
+		if balLen > 32 || pos+balLen > len(enc) {
 			return fmt.Errorf("truncated balance data")
 		}
 		var balBytes [32]byte
@@ -259,6 +270,9 @@ func (a *StateAccount) DecodeForStorageV2(enc []byte) error {
 	}
 	if fieldBits&4 != 0 {
 		v, n := binary.Uvarint(enc[pos:])
+		if n <= 0 {
+			return fmt.Errorf("malformed incarnation varint")
+		}
 		a.Incarnation = uint16(v)
 		pos += n
 	}

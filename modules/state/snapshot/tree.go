@@ -204,8 +204,7 @@ func (t *Tree) mergeDiffIntoCache(dl *DiffLayer) {
 		if acc == nil {
 			continue
 		}
-		enc := make([]byte, acc.EncodingLengthForStorageV2())
-		acc.EncodeForStorageV2(enc)
+		enc := acc.MarshalV2()
 		cache.Put(modules.Account, addr.Bytes(), enc)
 	}
 
@@ -240,9 +239,7 @@ func (t *Tree) persistDiffToDisk(dl *DiffLayer) {
 			if acc == nil {
 				continue
 			}
-			enc := make([]byte, acc.EncodingLengthForStorageV2())
-			acc.EncodeForStorageV2(enc)
-			if err := rawdb.WriteSnapshotAccount(tx, addr, enc); err != nil {
+			if err := rawdb.WriteSnapshotAccount(tx, addr, acc.MarshalV2()); err != nil {
 				return err
 			}
 		}

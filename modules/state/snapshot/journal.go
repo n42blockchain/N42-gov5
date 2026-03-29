@@ -66,8 +66,7 @@ func SerializeDiffLayer(dl *DiffLayer) ([]byte, error) {
 			binary.BigEndian.PutUint32(countBuf[:], 0)
 			buf = append(buf, countBuf[:]...)
 		} else {
-			enc := make([]byte, acc.EncodingLengthForStorageV2())
-			acc.EncodeForStorageV2(enc)
+			enc := acc.MarshalV2()
 			binary.BigEndian.PutUint32(countBuf[:], uint32(len(enc)))
 			buf = append(buf, countBuf[:]...)
 			buf = append(buf, enc...)

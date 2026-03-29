@@ -168,7 +168,7 @@ func populateSourceState(t *testing.T, db kv.RwDB) (types.Address, types.Hash) {
 				Balance:     *uint256.NewInt(uint64(1_000_000 + i*100)),
 				CodeHash:    emptyHash,
 			}
-			data, err := acc.Marshal()
+			data, err := acc.MarshalV2(), error(nil)
 			if err != nil {
 				return err
 			}
@@ -185,7 +185,7 @@ func populateSourceState(t *testing.T, db kv.RwDB) (types.Address, types.Hash) {
 			CodeHash:    usdtCodeHash,
 			Incarnation: 1,
 		}
-		usdtData, err := usdtAcc.Marshal()
+		usdtData, err := usdtAcc.MarshalV2(), error(nil)
 		if err != nil {
 			return err
 		}
@@ -451,7 +451,7 @@ func verifyContractState(t *testing.T, db kv.RwDB, addr types.Address, codeHash 
 			return nil
 		}
 		var acc account.StateAccount
-		if err := acc.Unmarshal(data); err != nil {
+		if err := acc.DecodeForStorage(data); err != nil {
 			t.Errorf("unmarshal USDT account: %v", err)
 			return nil
 		}
