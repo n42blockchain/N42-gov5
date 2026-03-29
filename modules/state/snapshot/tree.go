@@ -6,10 +6,8 @@ package snapshot
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -206,12 +204,8 @@ func (t *Tree) mergeDiffIntoCache(dl *DiffLayer) {
 		if acc == nil {
 			continue
 		}
-		pb := acc.ToProtoMessage()
-		enc, err := proto.Marshal(pb)
-		if err != nil {
-			log.Warn("Snapshot: marshal account for cache failed", "addr", addr.Hex(), "err", err)
-			continue
-		}
+		enc := make([]byte, acc.EncodingLengthForStorageV2())
+		acc.EncodeForStorageV2(enc)
 		cache.Put(modules.Account, addr.Bytes(), enc)
 	}
 
@@ -246,11 +240,8 @@ func (t *Tree) persistDiffToDisk(dl *DiffLayer) {
 			if acc == nil {
 				continue
 			}
-			pb := acc.ToProtoMessage()
-			enc, err := proto.Marshal(pb)
-			if err != nil {
-				return fmt.Errorf("snapshot: marshal account %s: %w", addr.Hex(), err)
-			}
+			enc := make([]byte, acc.EncodingLengthForStorageV2())
+			acc.EncodeForStorageV2(enc)
 			if err := rawdb.WriteSnapshotAccount(tx, addr, enc); err != nil {
 				return err
 			}
