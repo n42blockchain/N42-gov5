@@ -414,6 +414,9 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 	if proofProvider != nil {
 		accountProofStrings, err = proofProvider.AccountProof(tx, address, blockNrOrHash)
 		if err != nil {
+			if proofProviderErrorsAreFatal(proofProvider) {
+				return nil, err
+			}
 			accountProofStrings = nil
 		}
 	}
@@ -443,6 +446,9 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 		if proofProvider != nil {
 			proofStrings, err = proofProvider.StorageProof(tx, address, k, blockNrOrHash)
 			if err != nil {
+				if proofProviderErrorsAreFatal(proofProvider) {
+					return nil, err
+				}
 				proofStrings = nil
 			}
 		}
@@ -461,6 +467,8 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 	if proofProvider != nil {
 		if computed, err := proofProvider.StorageHash(tx, address, slots, values, blockNrOrHash); err == nil {
 			storageHash = computed
+		} else if proofProviderErrorsAreFatal(proofProvider) {
+			return nil, err
 		}
 	}
 
@@ -496,6 +504,14 @@ func computeQueryTupleStorageHash(slots []types.Hash, values []*uint256.Int) typ
 		data = append(data, word[:]...)
 	}
 	return crypto.Keccak256Hash(data)
+}
+
+func proofProviderErrorsAreFatal(provider internal.StateProofProvider) bool {
+	if provider == nil {
+		return false
+	}
+	desc := provider.Descriptor()
+	return desc.Backend == internal.StateProofBackendEthereumMPT || desc.Semantics == internal.StateProofSemanticsCanonicalEIP1186
 }
 
 // BlockscoutCompatibilityInfo contains Blockscout compatibility metadata.

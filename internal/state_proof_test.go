@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -86,5 +87,33 @@ func TestJMTStateProofProviderStorageHashMatchesCurrentQueryTupleScheme(t *testi
 	want := crypto.Keccak256Hash(expectedData)
 	if got != want {
 		t.Fatalf("unexpected storage hash: got %s want %s", got, want)
+	}
+}
+
+func TestEthereumMPTStateProofProviderFailsClosed(t *testing.T) {
+	provider := NewEthereumMPTStateProofProvider()
+	desc := provider.Descriptor()
+
+	if desc.Backend != StateProofBackendEthereumMPT {
+		t.Fatalf("expected ethereum-mpt backend, got %q", desc.Backend)
+	}
+	if desc.ProofRootScheme != state.RootSchemeEthereumMPT {
+		t.Fatalf("expected ethereum-mpt proof root scheme, got %q", desc.ProofRootScheme)
+	}
+	if desc.Semantics != StateProofSemanticsCanonicalEIP1186 {
+		t.Fatalf("expected canonical-eip1186 semantics, got %q", desc.Semantics)
+	}
+	if desc.StorageHash != StorageHashSemanticsCanonicalTrieRoot {
+		t.Fatalf("expected canonical trie-root storage hash semantics, got %q", desc.StorageHash)
+	}
+
+	if _, err := provider.AccountProof(nil, types.Address{}, jsonrpc.BlockNumberOrHash{}); !errors.Is(err, ErrCanonicalStateProofNotImplemented) {
+		t.Fatalf("expected canonical-not-implemented error from AccountProof, got %v", err)
+	}
+	if _, err := provider.StorageProof(nil, types.Address{}, types.Hash{}, jsonrpc.BlockNumberOrHash{}); !errors.Is(err, ErrCanonicalStateProofNotImplemented) {
+		t.Fatalf("expected canonical-not-implemented error from StorageProof, got %v", err)
+	}
+	if _, err := provider.StorageHash(nil, types.Address{}, nil, nil, jsonrpc.BlockNumberOrHash{}); !errors.Is(err, ErrCanonicalStateProofNotImplemented) {
+		t.Fatalf("expected canonical-not-implemented error from StorageHash, got %v", err)
 	}
 }

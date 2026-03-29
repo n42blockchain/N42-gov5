@@ -4,6 +4,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/holiman/uint256"
@@ -68,6 +69,10 @@ type StateProofProvider interface {
 	StorageProof(tx kv.Tx, address types.Address, slot types.Hash, blockNrOrHash jsonrpc.BlockNumberOrHash) ([]string, error)
 	StorageHash(tx kv.Tx, address types.Address, slots []types.Hash, values []*uint256.Int, blockNrOrHash jsonrpc.BlockNumberOrHash) (types.Hash, error)
 }
+
+// ErrCanonicalStateProofNotImplemented marks a fail-closed canonical MPT proof
+// path that has been wired conceptually but not implemented yet.
+var ErrCanonicalStateProofNotImplemented = errors.New("canonical Ethereum MPT state proof provider not implemented")
 
 // DefaultStateProofDescriptor returns the fallback descriptor when no trie-backed
 // proof provider is wired. This matches the existing hash-anchor placeholder path.
@@ -263,4 +268,41 @@ func jmtRootAtHeight(tx kv.Tx, height uint64) (types.Hash, error) {
 		return types.Hash{}, err
 	}
 	return types.Hash(root), nil
+}
+
+// EthereumMPTStateProofProvider is a placeholder for the future canonical
+// Ethereum MPT proof path. It is intentionally fail-closed: once explicitly
+// wired, RPC callers should see a clear not-implemented error rather than
+// silently falling back to non-canonical proof semantics.
+type EthereumMPTStateProofProvider struct{}
+
+// NewEthereumMPTStateProofProvider creates a canonical-MPT proof provider stub.
+func NewEthereumMPTStateProofProvider() *EthereumMPTStateProofProvider {
+	return &EthereumMPTStateProofProvider{}
+}
+
+// Descriptor reports the target semantics of the future canonical provider.
+func (*EthereumMPTStateProofProvider) Descriptor() StateProofDescriptor {
+	return StateProofDescriptor{
+		Backend:            StateProofBackendEthereumMPT,
+		ProofRootScheme:    state.RootSchemeEthereumMPT,
+		Semantics:          StateProofSemanticsCanonicalEIP1186,
+		StorageHash:        StorageHashSemanticsCanonicalTrieRoot,
+		SupportsHistorical: true,
+	}
+}
+
+// AccountProof is not implemented yet for the canonical MPT path.
+func (*EthereumMPTStateProofProvider) AccountProof(kv.Tx, types.Address, jsonrpc.BlockNumberOrHash) ([]string, error) {
+	return nil, ErrCanonicalStateProofNotImplemented
+}
+
+// StorageProof is not implemented yet for the canonical MPT path.
+func (*EthereumMPTStateProofProvider) StorageProof(kv.Tx, types.Address, types.Hash, jsonrpc.BlockNumberOrHash) ([]string, error) {
+	return nil, ErrCanonicalStateProofNotImplemented
+}
+
+// StorageHash is not implemented yet for the canonical MPT path.
+func (*EthereumMPTStateProofProvider) StorageHash(kv.Tx, types.Address, []types.Hash, []*uint256.Int, jsonrpc.BlockNumberOrHash) (types.Hash, error) {
+	return types.Hash{}, ErrCanonicalStateProofNotImplemented
 }
