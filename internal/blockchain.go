@@ -34,7 +34,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/proto/msg_proto"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -54,6 +53,7 @@ import (
 	"github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
+	"github.com/n42blockchain/N42/proto/msg_proto"
 )
 
 // =============================================================================
@@ -199,6 +199,7 @@ func (bc *BlockChain) SnapshotTree() *snapshot.Tree {
 func (bc *BlockChain) SetJMTCommitment(c *commitment.JMTCommitment) {
 	bc.jmtCommitment = c
 	bc.jmtEnabled = true
+	bc.SetStateProofProvider(NewJMTStateProofProvider(c))
 	log.Info("JMT state commitment enabled (Blake3)")
 }
 
