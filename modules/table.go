@@ -181,6 +181,17 @@ const (
 	// value: blake3_hash (32 bytes)
 	JMTVersionRoots = "JMTVersionRoots"
 
+	// BMTNode stores Binary Merkle Tree nodes, path-addressed.
+	// key: version(8B) + bitlen(2B) + packed_path(var)
+	// value: hash(32B) for internal nodes, inline data(<32B) for leaves
+	BMTNode = "BMTNode"
+
+	// BMTRoot stores the latest BMT root hash and version for recovery.
+	BMTRoot = "BMTRoot"
+
+	// BMTVersionRoots maps block height to BMT root hash for historical proofs.
+	BMTVersionRoots = "BMTVersionRoots"
+
 	// LtHashDigest stores the 2048-byte running LtHash state digest for crash recovery.
 	// key: "digest" (fixed)
 	// value: 2048 bytes (lattice hash digest)
@@ -267,6 +278,9 @@ var n42Tables = []string{
 	JMTNode,
 	JMTRoot,
 	JMTVersionRoots,
+	BMTNode,
+	BMTRoot,
+	BMTVersionRoots,
 	LtHashDigest,
 	ContentStore,
 	TorrentHashMap,
