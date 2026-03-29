@@ -29,6 +29,7 @@ var replayV2Command = &cli.Command{
 		&cli.StringFlag{Name: "source", Usage: "Source chain data directory", Required: true},
 		&cli.StringFlag{Name: "target", Usage: "Target chain data directory", Required: true},
 		&cli.StringFlag{Name: "chain", Usage: "Chain config name", Value: "mainnet_v2"},
+		&cli.StringFlag{Name: "tree", Usage: "Tree type: jmt or bmt", Value: "jmt"},
 		&cli.BoolFlag{Name: "jmt", Usage: "Enable JMT state commitment", Value: true},
 		&cli.BoolFlag{Name: "lthash", Usage: "Enable LtHash digest", Value: true},
 		&cli.BoolFlag{Name: "no-gc", Usage: "Disable JMT GC (full history)", Value: true},
@@ -57,6 +58,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 		cfg.ChainConfig = cc
 	}
 
+	cfg.TreeType = cliCtx.String("tree")
 	cfg.EnableJMT = cliCtx.Bool("jmt")
 	cfg.EnableLtHash = cliCtx.Bool("lthash")
 	cfg.DisableGC = cliCtx.Bool("no-gc")

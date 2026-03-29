@@ -16,6 +16,8 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/lib/bmt"
+	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -141,7 +143,11 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 	// blocks and may exceed the source block count).
 	resumeBlock := uint64(0)
 	if err := e.dstDB.View(ctx, func(tx kv.Tx) error {
-		data, err := tx.GetOne(jmtstore.JMTRootTable, []byte("replay_src_height"))
+		resumeTable := jmtstore.JMTRootTable
+		if e.cfg.TreeType == "bmt" {
+			resumeTable = bmtstore.BMTRootTable
+		}
+		data, err := tx.GetOne(resumeTable, []byte("replay_src_height"))
 		if err != nil {
 			return err
 		}
@@ -201,45 +207,82 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 // One write transaction covers the entire batch for efficiency.
 func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 	return e.dstDB.Update(ctx, func(dstTx kv.RwTx) error {
-		// JMT + LtHash are optional. When disabled (--jmt=false), replay only
-		// writes PlainState + block data — much faster for Phase A of two-phase
-		// replay. Phase B uses migrate-jmt to build JMT from PlainState.
+		// JMT/BMT + LtHash are optional. When disabled (--jmt=false), replay
+		// only writes PlainState + block data — much faster for Phase A of
+		// two-phase replay. Phase B uses migrate-jmt to build JMT from PlainState.
 		var tree *jmt.Tree
 		var nodeStore *jmtstore.MDBXStore
 		var jmtCommit *commitment.JMTCommitment
+		var bmtTree *bmt.Tree
+		var bmtNodeStore *bmtstore.MDBXStore
+		var bmtCommit *commitment.BMTCommitment
+		var bmtRC state.RootComputer
 		var ltCommit *commitment.LtHashCommitment
 		var ltRC state.RootComputer
+		useBMT := e.cfg.TreeType == "bmt"
 
 		if e.cfg.EnableJMT {
-			nodeStore = jmtstore.NewMDBXStore(dstTx, jmtstore.JMTNodeTable)
-			jmtRoot, err := jmtstore.ReadJMTRoot(dstTx)
-			if err != nil {
-				return fmt.Errorf("read JMT root: %w", err)
-			}
-			if jmtRoot == jmt.EmptyHash {
-				tree = jmt.New(nodeStore)
-			} else {
-				tree = jmt.NewFromRoot(nodeStore, jmtRoot)
-			}
-			jmtCommit = commitment.NewJMTCommitment(tree)
-
-			if e.cfg.EnableLtHash {
-				ltDigest, err := lthash.ReadLtHashDigest(dstTx, "LtHashDigest")
+			if useBMT {
+				// BMT path
+				bmtNodeStore = bmtstore.NewMDBXStore(dstTx, bmtstore.BMTNodeTable)
+				bmtRoot, err := bmtstore.ReadBMTRoot(dstTx)
 				if err != nil {
-					return fmt.Errorf("read LtHash digest: %w", err)
+					return fmt.Errorf("read BMT root: %w", err)
 				}
-				ltCommit = commitment.NewLtHashCommitment(ltDigest)
-				jmtRC := commitment.NewJMTRootComputer(jmtCommit)
-				ltRC = commitment.NewLtHashAwareRootComputer(jmtRC, ltCommit)
+				if bmtRoot == bmt.EmptyHash {
+					bmtTree = bmt.New(bmtNodeStore)
+				} else {
+					bmtTree = bmt.NewWithVersion(bmtNodeStore, 0)
+				}
+				bmtCommit = commitment.NewBMTCommitment(bmtTree)
+				bmtRC = commitment.NewBMTRootComputer(bmtCommit)
+
+				if e.cfg.EnableLtHash {
+					ltDigest, err := lthash.ReadLtHashDigest(dstTx, "LtHashDigest")
+					if err != nil {
+						return fmt.Errorf("read LtHash digest: %w", err)
+					}
+					ltCommit = commitment.NewLtHashCommitment(ltDigest)
+				}
+			} else {
+				// JMT path (default)
+				nodeStore = jmtstore.NewMDBXStore(dstTx, jmtstore.JMTNodeTable)
+				jmtRoot, err := jmtstore.ReadJMTRoot(dstTx)
+				if err != nil {
+					return fmt.Errorf("read JMT root: %w", err)
+				}
+				if jmtRoot == jmt.EmptyHash {
+					tree = jmt.New(nodeStore)
+				} else {
+					tree = jmt.NewFromRoot(nodeStore, jmtRoot)
+				}
+				jmtCommit = commitment.NewJMTCommitment(tree)
+
+				if e.cfg.EnableLtHash {
+					ltDigest, err := lthash.ReadLtHashDigest(dstTx, "LtHashDigest")
+					if err != nil {
+						return fmt.Errorf("read LtHash digest: %w", err)
+					}
+					ltCommit = commitment.NewLtHashCommitment(ltDigest)
+					jmtRC := commitment.NewJMTRootComputer(jmtCommit)
+					ltRC = commitment.NewLtHashAwareRootComputer(jmtRC, ltCommit)
+				}
 			}
 		}
 
 		// Track the running new-chain block number. For resume, this equals
-		// the JMT version + 1. For fresh start, it starts at from.
+		// the tree version + 1. For fresh start, it starts at from.
 		newBlockNum := from
-		ver, _ := jmtstore.ReadJMTVersion(dstTx)
-		if ver > 0 && ver >= from {
-			newBlockNum = ver + 1
+		if useBMT {
+			ver, _ := bmtstore.ReadBMTVersion(dstTx)
+			if ver > 0 && ver >= from {
+				newBlockNum = ver + 1
+			}
+		} else {
+			ver, _ := jmtstore.ReadJMTVersion(dstTx)
+			if ver > 0 && ver >= from {
+				newBlockNum = ver + 1
+			}
 		}
 
 		// Read previous block hash and timestamp from the TARGET chain's last
@@ -251,8 +294,13 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		}
 
 		// Genesis initialization: if starting from block 0 or 1 and no blocks yet.
-		jmtEmpty := tree == nil || tree.Root() == jmt.EmptyHash
-		if from <= 1 && (jmtEmpty || !e.cfg.EnableJMT) {
+		treeEmpty := true
+		if useBMT {
+			treeEmpty = bmtTree == nil || bmtTree.Root() == bmt.EmptyHash
+		} else {
+			treeEmpty = tree == nil || tree.Root() == jmt.EmptyHash
+		}
+		if from <= 1 && (treeEmpty || !e.cfg.EnableJMT) {
 			r := state.NewPlainStateReader(dstTx)
 			w := state.NewPlainStateWriterNoHistory(dstTx)
 			ibs := state.New(r)
@@ -282,9 +330,11 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				if e.cfg.FillGaps && prevTime > 0 {
 					gapTimes := CalcGapBlockTimes(prevTime, srcTime, e.cfg.GapPeriod, e.cfg.GapTolerance)
 					for _, gapTime := range gapTimes {
-						var gapJmtRoot, gapLtRoot types.Hash
-						if jmtCommit != nil {
-							gapJmtRoot = jmtCommit.Root()
+						var gapTreeRoot, gapLtRoot types.Hash
+						if useBMT && bmtCommit != nil {
+							gapTreeRoot = bmtCommit.Root()
+						} else if jmtCommit != nil {
+							gapTreeRoot = jmtCommit.Root()
 						}
 						if ltCommit != nil {
 							gapLtRoot = ltCommit.Root()
@@ -293,7 +343,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							ParentHash: parentHash,
 							Number:     uint256.NewInt(newBlockNum),
 							Time:       gapTime,
-							Root:       gapJmtRoot,
+							Root:       gapTreeRoot,
 							GasLimit:   30_000_000,
 							BaseFee:    uint256.NewInt(params.InitialBaseFee),
 							LtHashRoot: gapLtRoot,
@@ -312,7 +362,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				r := state.NewPlainStateReader(dstTx)
 				w := state.NewPlainStateWriterNoHistory(dstTx)
 				ibs := state.New(r)
-				if ltRC != nil {
+				if useBMT && bmtRC != nil {
+					ibs.SetRootComputer(bmtRC)
+				} else if ltRC != nil {
 					ibs.SetRootComputer(ltRC)
 				}
 
@@ -362,9 +414,24 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				e.stats.BlocksProcessed.Add(1)
 			}
 
-			// End of batch: flush JMT + LtHash if enabled.
+			// End of batch: flush tree + LtHash if enabled.
 			lastVersion := newBlockNum - 1
-			if tree != nil {
+			if useBMT && bmtTree != nil {
+				if err := bmtTree.FlushTo(bmtNodeStore); err != nil {
+					return fmt.Errorf("BMT flush: %w", err)
+				}
+				bmtTree.SetVersion(lastVersion)
+				if err := bmtstore.WriteBMTRoot(dstTx, bmtTree.Root()); err != nil {
+					return fmt.Errorf("write BMT root: %w", err)
+				}
+				if err := bmtstore.WriteBMTVersion(dstTx, lastVersion); err != nil {
+					return fmt.Errorf("write BMT version: %w", err)
+				}
+				bRoot := bmtCommit.Root()
+				if err := bmtstore.WriteBMTVersionRoot(dstTx, lastVersion, bRoot); err != nil {
+					return fmt.Errorf("write BMT version root: %w", err)
+				}
+			} else if tree != nil {
 				if err := tree.FlushTo(nodeStore); err != nil {
 					return fmt.Errorf("JMT flush: %w", err)
 				}
@@ -388,9 +455,13 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 
 			// Record the source chain height for resume (distinct from new chain
 			// height which includes gap-fill blocks).
+			resumeTable := jmtstore.JMTRootTable
+			if useBMT {
+				resumeTable = bmtstore.BMTRootTable
+			}
 			var srcBuf [8]byte
 			binary.BigEndian.PutUint64(srcBuf[:], to)
-			if err := dstTx.Put(jmtstore.JMTRootTable, []byte("replay_src_height"), srcBuf[:]); err != nil {
+			if err := dstTx.Put(resumeTable, []byte("replay_src_height"), srcBuf[:]); err != nil {
 				return fmt.Errorf("write replay src height: %w", err)
 			}
 

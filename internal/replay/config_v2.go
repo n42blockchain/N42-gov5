@@ -20,6 +20,7 @@ type ConfigV2 struct {
 	EnableJMT    bool
 	EnableLtHash bool
 	DisableGC    bool
+	TreeType     string // "jmt" or "bmt"
 
 	FillGaps     bool
 	GapPeriod    uint64
@@ -41,6 +42,7 @@ func DefaultConfigV2() ConfigV2 {
 		EnableJMT:       true,
 		EnableLtHash:    true,
 		DisableGC:       true,
+		TreeType:        "jmt",
 		FillGaps:        true,
 		GapPeriod:       8,
 		GapTolerance:    15,
