@@ -18,10 +18,8 @@ package state
 
 import (
 	"encoding/binary"
-	"fmt"
 
 	"github.com/holiman/uint256"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -57,11 +55,8 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 			return err
 		}
 	}
-	pb := account.ToProtoMessage()
-	data, err := proto.Marshal(pb)
-	if err != nil {
-		return fmt.Errorf("failed to marshal account data: %w", err)
-	}
+	data := make([]byte, account.EncodingLengthForStorageV2())
+	account.EncodeForStorageV2(data)
 	return w.db.Put(modules.Account, address[:], data)
 }
 
