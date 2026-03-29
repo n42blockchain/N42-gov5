@@ -137,7 +137,7 @@ Long-lived MDBX read-only transaction for JMT node lookups, replacing the per-Ge
 `BatchNodeStore` interface extends `NodeStore` with `PutBatch(entries map[Hash][]byte)` for efficient bulk writes. `Tree.FlushTo()` detects `BatchNodeStore` and uses the fast path. `SnapshotDirty()` captures dirty nodes for the deep pipeline's commitment stage without flushing. `ClearDirty()` discards unflushed mutations.
 
 ### Haystack JMT Archive
-Compressed historical JMT nodes stored in seg files with RecSplit O(1) perfect hash index. Enables `eth_getProof` queries on archived state without keeping all nodes in the live MDBX database.
+Compressed historical JMT nodes stored in seg files with RecSplit O(1) perfect hash index. Provides archive storage and lookup primitives for historical JMT proof workloads; wiring this directly into RPC proof serving is a separate integration step.
 
 - **Files**: `lib/jmt/archive/`
 

@@ -46,7 +46,7 @@ Documentation for the standard Ethereum JSON-RPC API methods can be found on [et
 | `eth_getBalance` | Returns account balance |
 | `eth_getCode` | Returns contract code |
 | `eth_getStorageAt` | Returns storage value |
-| `eth_getProof` | Returns Merkle proof for account/storage |
+| `eth_getProof` | Returns JMT-based account/storage proof data (partial EIP-1186 semantics) |
 
 ### Execution
 

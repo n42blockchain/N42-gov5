@@ -138,7 +138,7 @@ HotStuff-2 BLS consensus signature
 3. **Haystack JMT 节点压缩**
    - JMT 节点以 hash+data 对存入 seg 压缩段
    - RecSplit 完美哈希索引提供 O(1) 查找
-   - 支持从压缩存档提供历史 eth_getProof
+   - 为历史 JMT proof 提供压缩存档存储与 O(1) 查找基础
    - 3 个新文件，4 个测试
 
 **同时实现的 Geth 2026 特性：**
