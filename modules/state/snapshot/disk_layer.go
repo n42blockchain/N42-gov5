@@ -7,7 +7,6 @@ import (
 	"context"
 	"sync/atomic"
 
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -16,7 +15,6 @@ import (
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 
-	state_proto "github.com/n42blockchain/N42/proto/state"
 )
 
 // DiskLayer is the bottom layer of the snapshot tree, backed by ShardedCache
@@ -87,12 +85,8 @@ func (dl *DiskLayer) Account(addr types.Address) (*account.StateAccount, bool) {
 		return nil, false
 	}
 
-	pb := new(state_proto.Account)
-	if err := proto.Unmarshal(data, pb); err != nil {
-		return nil, false
-	}
 	acc := new(account.StateAccount)
-	if err := acc.FromProtoMessage(pb); err != nil {
+	if err := acc.DecodeForStorageV2(data); err != nil {
 		return nil, false
 	}
 
