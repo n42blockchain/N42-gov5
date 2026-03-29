@@ -44,9 +44,7 @@ func (w *CachedStateWriter) UpdateAccountData(address types.Address, original, a
 		return err
 	}
 	if w.cache != nil && acct != nil {
-		enc := make([]byte, acct.EncodingLengthForStorageV2())
-		acct.EncodeForStorageV2(enc)
-		w.cache.Put(modules.Account, address.Bytes(), enc)
+		w.cache.Put(modules.Account, address.Bytes(), acct.MarshalV2())
 	}
 	return nil
 }

@@ -137,7 +137,5 @@ func DecodeAccount(data []byte) (*account.StateAccount, error) {
 
 // encodeAccount encodes a StateAccount using V2 variable-length format.
 func encodeAccount(acc *account.StateAccount) ([]byte, error) {
-	buf := make([]byte, acc.EncodingLengthForStorageV2())
-	acc.EncodeForStorageV2(buf)
-	return buf, nil
+	return acc.MarshalV2(), nil
 }

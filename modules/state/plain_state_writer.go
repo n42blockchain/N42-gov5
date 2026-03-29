@@ -55,9 +55,7 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 			return err
 		}
 	}
-	data := make([]byte, account.EncodingLengthForStorageV2())
-	account.EncodeForStorageV2(data)
-	return w.db.Put(modules.Account, address[:], data)
+	return w.db.Put(modules.Account, address[:], account.MarshalV2())
 }
 
 func (w *PlainStateWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
