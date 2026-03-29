@@ -41,8 +41,8 @@ func TestCalcGapBlocks(t *testing.T) {
 
 func TestDefaultConfigV2(t *testing.T) {
 	cfg := DefaultConfigV2()
-	if cfg.BatchSize != 10000 {
-		t.Fatalf("BatchSize = %d, want 10000", cfg.BatchSize)
+	if cfg.BatchSize != 100000 {
+		t.Fatalf("BatchSize = %d, want 100000", cfg.BatchSize)
 	}
 	if !cfg.EnableJMT || !cfg.EnableLtHash || !cfg.DisableGC {
 		t.Fatal("JMT/LtHash/DisableGC should be enabled by default")
