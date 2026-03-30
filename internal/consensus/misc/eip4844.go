@@ -28,29 +28,40 @@ import (
 // It checks that BlobGasUsed is within limits and ExcessBlobGas is correctly
 // derived from the parent header.
 func VerifyEIP4844Header(parent, header *block.Header, cfg *params.ChainConfig) error {
+	blobGasUsed := derefUint64(header.BlobGasUsed)
 	// Verify blob gas used does not exceed maximum.
-	if header.BlobGasUsed > params.MaxBlobGasPerBlock {
+	if blobGasUsed > params.MaxBlobGasPerBlock {
 		return fmt.Errorf("blob gas used %d exceeds maximum %d",
-			header.BlobGasUsed, params.MaxBlobGasPerBlock)
+			blobGasUsed, params.MaxBlobGasPerBlock)
 	}
 
 	// Verify blob gas used is a multiple of gas per blob.
-	if header.BlobGasUsed%params.BlobTxBlobGasPerBlob != 0 {
+	if blobGasUsed%params.BlobTxBlobGasPerBlob != 0 {
 		return fmt.Errorf("blob gas used %d is not a multiple of %d",
-			header.BlobGasUsed, params.BlobTxBlobGasPerBlob)
+			blobGasUsed, params.BlobTxBlobGasPerBlob)
 	}
 
 	// Verify excess blob gas is correctly computed from parent.
-	expectedExcess := transaction.CalcExcessBlobGas(parent.ExcessBlobGas, parent.BlobGasUsed)
+	parentExcess := derefUint64(parent.ExcessBlobGas)
+	parentBlobGas := derefUint64(parent.BlobGasUsed)
+	expectedExcess := transaction.CalcExcessBlobGas(parentExcess, parentBlobGas)
 	if cfg != nil {
-		expectedExcess = cfg.CalcExcessBlobGasWithBaseFee(parent.ExcessBlobGas, parent.BlobGasUsed, parent.BaseFee, header.Time)
+		expectedExcess = cfg.CalcExcessBlobGasWithBaseFee(parentExcess, parentBlobGas, parent.BaseFee, header.Time)
 	}
-	if header.ExcessBlobGas != expectedExcess {
+	headerExcess := derefUint64(header.ExcessBlobGas)
+	if headerExcess != expectedExcess {
 		return fmt.Errorf("incorrect excess blob gas: have %d, want %d",
-			header.ExcessBlobGas, expectedExcess)
+			headerExcess, expectedExcess)
 	}
 
 	return nil
+}
+
+func derefUint64(p *uint64) uint64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // CalcBlobGasUsed computes the total blob gas consumed by blob transactions

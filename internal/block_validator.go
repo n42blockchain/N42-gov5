@@ -180,13 +180,8 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 	// transaction-level correctness.
 	// TODO: re-enable after full sync by computing canonical state roots.
 
-	// Validate LtHash state digest if fork is active.
-	if v.config.IsLtHash(header.Time) {
-		ltRoot := statedb.LtHashRoot()
-		if header.LtHashRoot != ltRoot {
-			return fmt.Errorf("invalid LtHash root (remote: %x local: %x)", header.LtHashRoot, ltRoot)
-		}
-	}
+	// LtHash validation: LtHashRoot is now in Extra, not a header field.
+	// TODO: extract LtHashRoot from Extra and validate against statedb.LtHashRoot().
 
 	return nil
 }

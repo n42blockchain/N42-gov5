@@ -40,7 +40,11 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 	if header.BaseFee != nil {
 		baseFee.SetFromBig(header.BaseFee.ToBig())
 	}
-	blobBaseFee := transaction.CalcBlobFee(header.ExcessBlobGas)
+	excessBlobGas := uint64(0)
+	if header.ExcessBlobGas != nil {
+		excessBlobGas = *header.ExcessBlobGas
+	}
+	blobBaseFee := transaction.CalcBlobFee(excessBlobGas)
 	difficulty := new(big.Int)
 	if header.Difficulty != nil {
 		difficulty = header.Difficulty.ToBig()
@@ -72,7 +76,7 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 		Difficulty:    difficulty,
 		BaseFee:       &baseFee,
 		BlobBaseFee:   blobBaseFee,
-		ExcessBlobGas: header.ExcessBlobGas,
+		ExcessBlobGas: excessBlobGas,
 		GasLimit:      header.GasLimit,
 		PrevRanDao:    prevRandDao,
 	}

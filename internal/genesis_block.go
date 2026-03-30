@@ -218,8 +218,8 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		MixDigest:     g.GenesisConfig.Mixhash,
 		Nonce:         block.EncodeNonce(g.GenesisConfig.Nonce),
 		BaseFee:       g.GenesisConfig.BaseFee,
-		BlobGasUsed:   g.GenesisConfig.BlobGasUsed,
-		ExcessBlobGas: g.GenesisConfig.ExcessBlobGas,
+		BlobGasUsed:   uint64Ptr(g.GenesisConfig.BlobGasUsed),
+		ExcessBlobGas: uint64Ptr(g.GenesisConfig.ExcessBlobGas),
 	}
 	if len(extraData) > 0 {
 		head.Extra = extraData
@@ -327,6 +327,13 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 	}
 
 	return block, statedb, nil
+}
+
+func uint64Ptr(v uint64) *uint64 {
+	if v == 0 {
+		return nil
+	}
+	return &v
 }
 
 func GenesisByChainName(chain string) *conf.Genesis {

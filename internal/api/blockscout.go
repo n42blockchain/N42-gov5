@@ -362,8 +362,8 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 			blobGasUsed := hexutil.Uint64(tx.BlobGas())
 			br.BlobGasUsed = &blobGasUsed
 			var excessBlobGas uint64
-			if bh, ok := blk.Header().(*block.Header); ok && bh != nil {
-				excessBlobGas = bh.ExcessBlobGas
+			if bh, ok := blk.Header().(*block.Header); ok && bh != nil && bh.ExcessBlobGas != nil {
+				excessBlobGas = *bh.ExcessBlobGas
 			}
 			blobFee := transaction.CalcBlobFee(excessBlobGas)
 			br.BlobGasPrice = (*hexutil.Big)(blobFee.ToBig())
@@ -630,7 +630,11 @@ func (s *BlockChainAPI) BlobBaseFee(ctx context.Context) (*hexutil.Big, error) {
 	if !ok || header == nil {
 		return (*hexutil.Big)(new(big.Int)), nil
 	}
-	blobFee := transaction.CalcBlobFee(header.ExcessBlobGas)
+	var excessBlobGas uint64
+	if header.ExcessBlobGas != nil {
+		excessBlobGas = *header.ExcessBlobGas
+	}
+	blobFee := transaction.CalcBlobFee(excessBlobGas)
 	return (*hexutil.Big)(blobFee.ToBig()), nil
 }
 
