@@ -32,13 +32,15 @@ type ConfigV2 struct {
 
 	SkipAddresses map[types.Address]bool
 
+	LogFile    string // structured log output file (empty = stderr only)
+	StatsFile  string // stats JSON output file (updated every batch)
 	ProgressFn func(current, total uint64, bps float64)
 }
 
 // DefaultConfigV2 returns a ConfigV2 with sensible defaults.
 func DefaultConfigV2() ConfigV2 {
 	return ConfigV2{
-		BatchSize:       100000,
+		BatchSize:       50000,
 		EnableJMT:       true,
 		EnableLtHash:    true,
 		DisableGC:       true,

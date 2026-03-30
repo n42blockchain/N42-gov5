@@ -33,6 +33,7 @@ import (
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/lib/jmt"
+	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/lthash"
@@ -203,11 +204,20 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if err := jmtstore.WriteJMTVersion(tx, blockNumber.Uint64()); err != nil {
 				return fmt.Errorf("writing JMT version for block %d failed: %w", blockNumber.Uint64(), err)
 			}
-			if err := jmtstore.WriteJMTVersionRoot(tx, blockNumber.Uint64(), jmtRoot); err != nil {
-				return fmt.Errorf("writing JMT version root for block %d failed: %w", blockNumber.Uint64(), err)
-			}
 			// Update in-memory version after all DB writes succeed within this tx.
 			bc.jmtCommitment.Tree().SetVersion(blockNumber.Uint64())
+		}
+
+		// Flush BMT dirty nodes into the current MDBX transaction.
+		if ibs != nil && bc.bmtEnabled && bc.bmtCommitment != nil {
+			bmtNodeStore := bmtstore.NewMDBXStore(tx, bmtstore.BMTNodeTable)
+			if err := bc.bmtCommitment.Tree().FlushTo(bmtNodeStore); err != nil {
+				return fmt.Errorf("flushing BMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			bmtRoot := bc.bmtCommitment.Root()
+			if err := bmtstore.WriteBMTRoot(tx, bmtRoot); err != nil {
+				return fmt.Errorf("writing BMT root for block %d failed: %w", blockNumber.Uint64(), err)
+			}
 		}
 
 		// Persist LtHash digest alongside JMT root.

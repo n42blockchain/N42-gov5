@@ -22,30 +22,22 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
-// HashSize is the length of a BMT hash in bytes.
 const HashSize = 32
 
-// Hash is a 32-byte Blake3 digest used throughout the BMT.
+// Node type tags — first byte of stored value distinguishes node kind.
+const (
+	leafTag     byte = 0x4C // 'L' — leaf node
+	internalTag byte = 0x49 // 'I' — internal node
+)
+
 type Hash = types.Hash
 
-var (
-	// EmptyHash is the zero hash, representing an empty subtree.
-	EmptyHash = Hash{}
+type NodeValue []byte
 
-	// ErrNotFound is returned when a node is not present in the store.
+var (
+	EmptyHash   = Hash{}
 	ErrNotFound = errors.New("bmt: not found")
 )
 
-// NodeValue is stored in the tree. Length distinguishes type:
-//
-//	== 32: internal node (hash of left||right)
-//	< 32:  inline leaf (V2 encoded account/storage value)
-//	== 33: leaf whose data is exactly 32 bytes (data + 0x01 tag)
-//	> 33:  extended leaf data
-type NodeValue []byte
-
-// IsHashPointer returns true if this value is exactly 32 bytes (an internal node hash).
-func (v NodeValue) IsHashPointer() bool { return len(v) == HashSize }
-
-// IsInline returns true if this value is non-empty and not a hash pointer.
-func (v NodeValue) IsInline() bool { return len(v) > 0 && len(v) != HashSize }
+func isLeaf(v NodeValue) bool     { return len(v) > 0 && v[0] == leafTag }
+func isInternal(v NodeValue) bool { return len(v) == 1+2*HashSize && v[0] == internalTag }

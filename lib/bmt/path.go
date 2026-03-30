@@ -16,7 +16,7 @@
 
 package bmt
 
-import "encoding/binary"
+// Path operations for BMT key traversal.
 
 // MaxDepth is the maximum tree depth (256-bit key hash = 256 bits).
 const MaxDepth = 256
@@ -103,13 +103,4 @@ func (p Path) Equal(other Path) bool {
 // String returns a key suitable for map lookups.
 func (p Path) String() string {
 	return string(append([]byte{byte(p.BitLen)}, p.Bytes...))
-}
-
-// EncodeMDBXKey creates: version(8B) + bitlen(2B) + packed path bytes.
-func (p Path) EncodeMDBXKey(version uint64) []byte {
-	key := make([]byte, 10+len(p.Bytes))
-	binary.BigEndian.PutUint64(key[:8], version)
-	binary.BigEndian.PutUint16(key[8:10], uint16(p.BitLen))
-	copy(key[10:], p.Bytes)
-	return key
 }

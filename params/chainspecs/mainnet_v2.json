@@ -23,6 +23,7 @@
   "fusakaTime": 0,
   "glamsterdamTime": 0,
   "ltHashTime": 0,
+  "stateScheme": "bmt-blake3",
   "consensus": "apos",
   "apos": {
     "period": 8,

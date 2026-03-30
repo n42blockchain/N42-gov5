@@ -13,9 +13,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/jmt"
-	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
@@ -262,12 +260,16 @@ func resolveJMTRoot(tx kv.Tx, commit *commitment.JMTCommitment, blockNrOrHash js
 }
 
 func jmtRootAtHeight(tx kv.Tx, height uint64) (types.Hash, error) {
-	root, _, err := jmtstore.ReadJMTVersionRootAt(tx, height)
+	// Read state root from block header — no separate VersionRoots table needed.
+	h, err := rawdb.ReadCanonicalHash(tx, height)
 	if err != nil {
-		log.Warn("Failed to read JMT version root", "height", height, "err", err)
 		return types.Hash{}, err
 	}
-	return types.Hash(root), nil
+	header := rawdb.ReadHeader(tx, h, height)
+	if header == nil {
+		return types.Hash{}, fmt.Errorf("header not found at height %d", height)
+	}
+	return header.Root, nil
 }
 
 // EthereumMPTStateProofProvider is a placeholder for the future canonical

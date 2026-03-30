@@ -6,16 +6,23 @@ package replay
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
-	"math/big"
+	"os"
+	"runtime"
+	"time"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/internal"
+	vm2 "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/lib/bmt"
 	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	"github.com/n42blockchain/N42/lib/jmt"
@@ -35,11 +42,14 @@ import (
 // transactions, fills timeline gaps, builds new headers with JMT+LtHash
 // roots, and writes to a new database.
 type EngineV2 struct {
-	cfg   ConfigV2
-	srcDB kv.RwDB
-	dstDB kv.RwDB
-	stats *Stats
-	log   log2.Logger
+	cfg         ConfigV2
+	srcDB       kv.RwDB
+	dstDB       kv.RwDB
+	stats       *Stats
+	log         log2.Logger
+	replayCache   *layered.ShardedCache // Erigon-style cross-batch state cache
+	bmtTree       *bmt.Tree            // retained after replay for final flush
+	witnessReader *WitnessStateReader  // records per-block state access
 }
 
 // NewEngineV2 creates a replay-v2 engine. Call Run() to execute.
@@ -69,10 +79,22 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 		cfg.GapTolerance = 15
 	}
 
+	logger := log2.New("module", "replay-v2")
+
+	// Write structured logs to file.
+	if cfg.LogFile != "" {
+		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			logger.SetHandler(log2.StreamHandler(f, log2.LogfmtFormat()))
+		}
+	} else {
+		logger.SetHandler(log2.StderrHandler)
+	}
+
 	return &EngineV2{
 		cfg:   cfg,
 		stats: NewStats(),
-		log:   log2.New("module", "replay-v2"),
+		log:   logger,
 	}, nil
 }
 
@@ -193,10 +215,31 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 		}
 	}
 
+	// Final flush: write current BMT tree nodes to MDBX (only the latest
+	// state — ~35K nodes after prune). This is the complete tree that the
+	// node loads at startup for consensus, block production, and proofs.
+	if e.bmtTree != nil && e.bmtTree.DirtyLen() > 0 {
+		flushStart := time.Now()
+		nodeCount := e.bmtTree.DirtyLen()
+		if err := e.dstDB.Update(ctx, func(tx kv.RwTx) error {
+			bmtNodeStore := bmtstore.NewMDBXStore(tx, bmtstore.BMTNodeTable)
+			return e.bmtTree.FlushTo(bmtNodeStore)
+		}); err != nil {
+			return e.stats, fmt.Errorf("final BMT flush: %w", err)
+		}
+		e.log.Info("final BMT flush",
+			"nodes", nodeCount,
+			"time", time.Since(flushStart).Round(time.Millisecond),
+			"root", e.bmtTree.Root().Hex()[:16],
+		)
+	}
+
 	e.log.Info("replay-v2 complete",
 		"blocks", e.stats.BlocksProcessed.Load(),
 		"txReplayed", e.stats.TxReplayed.Load(),
-		"txSkipped", e.stats.TxSkipped.Load(),
+		"txFailed", e.stats.TxFailed.Load(),
+		"receiptMatch", e.stats.ReceiptMatch.Load(),
+		"receiptMismatch", e.stats.ReceiptMismatch.Load(),
 		"elapsed", e.stats.Elapsed(),
 	)
 	return e.stats, nil
@@ -232,7 +275,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				if bmtRoot == bmt.EmptyHash {
 					bmtTree = bmt.New(bmtNodeStore)
 				} else {
-					bmtTree = bmt.NewWithVersion(bmtNodeStore, 0)
+					bmtTree = bmt.NewFromRoot(bmtNodeStore, bmtRoot)
 				}
 				bmtCommit = commitment.NewBMTCommitment(bmtTree)
 				bmtRC = commitment.NewBMTRootComputer(bmtCommit)
@@ -293,7 +336,8 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			return fmt.Errorf("read parent info at target block %d: %w", newBlockNum-1, err)
 		}
 
-		// Genesis initialization: if starting from block 0 or 1 and no blocks yet.
+		// Genesis initialization: write full genesis alloc (2,322 accounts)
+		// plus hard-fork allocs and system contracts — same as node sync from scratch.
 		treeEmpty := true
 		if useBMT {
 			treeEmpty = bmtTree == nil || bmtTree.Root() == bmt.EmptyHash
@@ -301,18 +345,24 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			treeEmpty = tree == nil || tree.Root() == jmt.EmptyHash
 		}
 		if from <= 1 && (treeEmpty || !e.cfg.EnableJMT) {
+			genesis := internal.GenesisByChainName("mainnet_v2")
+			if genesis != nil {
+				gb := &internal.GenesisBlock{GenesisConfig: genesis}
+				if _, _, err := gb.WriteGenesisState(dstTx); err != nil {
+					return fmt.Errorf("write genesis state: %w", err)
+				}
+				e.log.Info("genesis state initialized from alloc",
+					"accounts", len(genesis.Alloc))
+			}
+			// Also apply hard-fork allocs and system contracts on top.
 			r := state.NewPlainStateReader(dstTx)
 			w := state.NewPlainStateWriterNoHistory(dstTx)
 			ibs := state.New(r)
-
 			InitGenesisState(ibs)
 			rules := e.cfg.ChainConfig.Rules(0)
 			if err := ibs.FinalizeTx(rules, w); err != nil {
 				return fmt.Errorf("genesis finalize: %w", err)
 			}
-			e.log.Info("genesis state initialized",
-				"hardforkAllocs", len(DefaultHardForkAllocs()),
-				"systemContracts", len(DefaultSystemContracts()))
 		}
 
 		return e.srcDB.View(ctx, func(srcTx kv.Tx) error {
@@ -339,18 +389,24 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 						if ltCommit != nil {
 							gapLtRoot = ltCommit.Root()
 						}
+						// Gap block header matches normal empty block format exactly.
+						emptyReceiptHash := hash.DeriveSha(block.Receipts(nil))
+						emptyTxHash := hash.DeriveSha(transaction.Transactions(nil))
 						gapHeader := &block.Header{
-							ParentHash: parentHash,
-							Number:     uint256.NewInt(newBlockNum),
-							Time:       gapTime,
-							Root:       gapTreeRoot,
-							GasLimit:   30_000_000,
-							BaseFee:    uint256.NewInt(params.InitialBaseFee),
-							LtHashRoot: gapLtRoot,
+							ParentHash:  parentHash,
+							Number:      uint256.NewInt(newBlockNum),
+							Time:        gapTime,
+							Root:        gapTreeRoot,
+							TxHash:      emptyTxHash,
+							ReceiptHash: emptyReceiptHash,
+							GasLimit:    srcHeader.GasLimit,
+							BaseFee:     srcHeader.BaseFee,
+							Coinbase:    srcHeader.Coinbase,
+							LtHashRoot:  gapLtRoot,
 						}
 						gapBlk := block.NewBlock(gapHeader, nil)
-						if writeErr := e.writeNewBlock(dstTx, gapBlk.(*block.Block), newBlockNum); err != nil {
-							return writeErr
+						if err := e.writeNewBlock(dstTx, gapBlk.(*block.Block), newBlockNum); err != nil {
+							return err
 						}
 
 						parentHash = gapBlk.Hash()
@@ -358,42 +414,90 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					}
 				}
 
-				// Replay the source block's transactions.
-				r := state.NewPlainStateReader(dstTx)
-				w := state.NewPlainStateWriterNoHistory(dstTx)
-				ibs := state.New(r)
+				// Erigon ShardedCache: cross-batch write-through for PlainState.
+				if e.replayCache == nil {
+					e.replayCache = layered.NewShardedCache(256, 512*1024)
+				}
+				// Rebuild reader chain per-block: PlainState(dstTx) → Cache → Witness.
+				// dstTx changes per batch; witnessReader.Reset() clears per-block data.
+				baseReader := state.NewPlainStateReader(dstTx)
+				cachedReader := state.NewCachedStateReader(baseReader, e.replayCache)
+				if e.witnessReader == nil {
+					e.witnessReader = NewWitnessStateReader(cachedReader)
+				} else {
+					e.witnessReader.inner = cachedReader
+					e.witnessReader.Reset()
+				}
+				// State writer: PlainState + ChangeSet + cache write-through.
+				csWriter := state.NewPlainStateWriter(dstTx, dstTx, newBlockNum)
+				w := state.NewCachedStateWriter(csWriter, e.replayCache)
+				ibs := state.New(e.witnessReader)
 				if useBMT && bmtRC != nil {
 					ibs.SetRootComputer(bmtRC)
 				} else if ltRC != nil {
 					ibs.SetRootComputer(ltRC)
 				}
 
-				replayedTxs := e.replayBlockTxs(ibs, srcBlk, num)
+				replayedTxs, receipts, usedGas := e.replayBlockTxs(ibs, w, srcBlk, srcHeader, dstTx)
 
-				// Finalize state changes via the writer.
+				// Apply block rewards from source block's Body.Rewards.
+				// This replicates what consensus.Finalize() does without needing
+				// the full consensus engine or deposit contract queries.
+				srcBody, _ := srcBlk.Body().(*block.Body)
+				if srcBody != nil {
+					for _, reward := range srcBody.Rewards {
+						if reward.Amount != nil && !reward.Amount.IsZero() {
+							ibs.AddBalance(reward.Address, reward.Amount)
+						}
+					}
+				}
+
+				// Finalize all state changes (tx + rewards) via the writer.
 				rules := e.cfg.ChainConfig.Rules(num)
 				if err := ibs.FinalizeTx(rules, w); err != nil {
-					return fmt.Errorf("finalize block %d: %w", num, err)
+					return fmt.Errorf("finalize block %d: %w", newBlockNum, err)
+				}
+				// Flush ChangeSets + History for this block.
+				if err := csWriter.WriteChangeSets(); err != nil {
+					return fmt.Errorf("write changesets block %d: %w", newBlockNum, err)
+				}
+				if err := csWriter.WriteHistory(); err != nil {
+					return fmt.Errorf("write history block %d: %w", newBlockNum, err)
+				}
+
+				// Set tree version for JMT path (BMT is content-addressed, no version needed).
+				if !useBMT && tree != nil {
+					tree.SetVersion(newBlockNum)
 				}
 
 				// Compute state roots (JMT+LtHash if enabled, zero otherwise).
-				var jmtStateRoot, ltStateRoot types.Hash
+				var stateRoot, ltStateRoot types.Hash
 				if e.cfg.EnableJMT {
-					jmtStateRoot = ibs.IntermediateRoot()
+					stateRoot = ibs.IntermediateRoot()
 					if e.cfg.EnableLtHash {
 						ltStateRoot = ibs.LtHashRoot()
 					}
 				}
 
-				// Build the new block header.
+				// Compute receipt/tx roots and bloom (reuse existing hash infrastructure).
+				receiptHash := hash.DeriveSha(block.Receipts(receipts))
+				txHash := hash.DeriveSha(transaction.Transactions(replayedTxs))
+				bloom := block.CreateBloom(receipts)
+
+				// Build the new block header with ALL fields populated.
 				newHeader := &block.Header{
-					ParentHash: parentHash,
-					Number:     uint256.NewInt(newBlockNum),
-					Time:       srcTime,
-					Root:       jmtStateRoot,
-					GasLimit:   30_000_000,
-					BaseFee:    uint256.NewInt(params.InitialBaseFee),
-					LtHashRoot: ltStateRoot,
+					ParentHash:  parentHash,
+					Number:      uint256.NewInt(newBlockNum),
+					Time:        srcTime,
+					Root:        stateRoot,
+					TxHash:      txHash,
+					ReceiptHash: receiptHash,
+					Bloom:       bloom,
+					GasUsed:     usedGas,
+					GasLimit:    srcHeader.GasLimit,
+					BaseFee:     srcHeader.BaseFee,
+					Coinbase:    srcHeader.Coinbase,
+					LtHashRoot:  ltStateRoot,
 				}
 
 				var newBlk *block.Block
@@ -404,32 +508,91 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					e.stats.BlocksEmpty.Add(1)
 				}
 
-				if writeErr := e.writeNewBlock(dstTx, newBlk, newBlockNum); err != nil {
+				if writeErr := e.writeNewBlock(dstTx, newBlk, newBlockNum); writeErr != nil {
 					return writeErr
+				}
+
+				// Write receipts to target DB.
+				if len(receipts) > 0 {
+					if err := rawdb.WriteReceipts(dstTx, newBlockNum, receipts); err != nil {
+						return fmt.Errorf("write receipts block %d: %w", newBlockNum, err)
+					}
+				}
+
+				// Receipt hash verification: compare replay vs source.
+				if srcHeader.ReceiptHash != (types.Hash{}) {
+					if receiptHash == srcHeader.ReceiptHash {
+						e.stats.ReceiptMatch.Add(1)
+					} else {
+						e.stats.ReceiptMismatch.Add(1)
+					}
+				}
+				e.stats.GasUsedTotal.Add(usedGas)
+
+				// Save per-block execution witness (input data stream for mobile SDK).
+				var witnessKey [8]byte
+				binary.BigEndian.PutUint64(witnessKey[:], newBlockNum)
+				witnessData := e.witnessReader.Serialize()
+				if witnessData == nil {
+					witnessData = []byte{} // empty witness for blocks with no state access
+				}
+				if err := dstTx.Put(modules.BlockWitness, witnessKey[:], witnessData); err != nil {
+					return fmt.Errorf("write block witness %d: %w", newBlockNum, err)
 				}
 
 				parentHash = newBlk.Hash()
 				prevTime = srcTime
 				newBlockNum++
 				e.stats.BlocksProcessed.Add(1)
+
+				// Periodic monitoring log every 100K blocks.
+				if newBlockNum%100000 == 0 {
+					var m runtime.MemStats
+					runtime.ReadMemStats(&m)
+					elapsed := time.Since(e.stats.StartTime)
+					blkps := float64(e.stats.BlocksProcessed.Load()) / elapsed.Seconds()
+					e.log.Info("replay progress",
+						"block", newBlockNum,
+						"pct", fmt.Sprintf("%.1f%%", float64(newBlockNum)/float64(e.cfg.ToBlock)*100),
+						"blk/s", fmt.Sprintf("%.0f", blkps),
+						"receiptOK", e.stats.ReceiptMatch.Load(),
+						"receiptFail", e.stats.ReceiptMismatch.Load(),
+						"txOK", e.stats.TxReplayed.Load(),
+						"txFail", e.stats.TxFailed.Load(),
+						"gasTotal", e.stats.GasUsedTotal.Load(),
+						"heapMB", m.HeapAlloc/1024/1024,
+						"cacheHitRate", func() string {
+						if e.replayCache == nil { return "n/a" }
+						h, m, _ := e.replayCache.Stats()
+						if h+m == 0 { return "0%" }
+						return fmt.Sprintf("%.1f%%", float64(h)/float64(h+m)*100)
+					}(),
+						"elapsed", elapsed.Round(time.Second),
+					)
+				}
 			}
 
-			// End of batch: flush tree + LtHash if enabled.
+			// End of batch: flush tree nodes + write recovery metadata.
 			lastVersion := newBlockNum - 1
 			if useBMT && bmtTree != nil {
-				if err := bmtTree.FlushTo(bmtNodeStore); err != nil {
-					return fmt.Errorf("BMT flush: %w", err)
-				}
-				bmtTree.SetVersion(lastVersion)
+				dirtyCount := bmtTree.DirtyLen()
+				// Skip persisting BMT nodes to MDBX — root is computed in-memory,
+				// headers already have the correct Root. Tree nodes can be rebuilt
+				// later from PlainState. This eliminates the 15s/batch flush bottleneck.
+				// Prune unreachable nodes to keep dirty map bounded.
+				bmtTree.PruneDirty()
+				e.bmtTree = bmtTree // retain for final flush
+				e.log.Info("batch done",
+					"blocks", fmt.Sprintf("%d-%d", from, lastVersion),
+					"dirtyNodes", dirtyCount,
+					"afterPrune", bmtTree.DirtyLen(),
+					"bmtRoot", bmtTree.Root().Hex()[:16],
+				)
 				if err := bmtstore.WriteBMTRoot(dstTx, bmtTree.Root()); err != nil {
 					return fmt.Errorf("write BMT root: %w", err)
 				}
 				if err := bmtstore.WriteBMTVersion(dstTx, lastVersion); err != nil {
 					return fmt.Errorf("write BMT version: %w", err)
-				}
-				bRoot := bmtCommit.Root()
-				if err := bmtstore.WriteBMTVersionRoot(dstTx, lastVersion, bRoot); err != nil {
-					return fmt.Errorf("write BMT version root: %w", err)
 				}
 			} else if tree != nil {
 				if err := tree.FlushTo(nodeStore); err != nil {
@@ -441,10 +604,6 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				}
 				if err := jmtstore.WriteJMTVersion(dstTx, lastVersion); err != nil {
 					return fmt.Errorf("write JMT version: %w", err)
-				}
-				jRoot := jmtCommit.Root()
-				if err := jmtstore.WriteJMTVersionRoot(dstTx, lastVersion, jmt.Hash(jRoot)); err != nil {
-					return fmt.Errorf("write JMT version root: %w", err)
 				}
 			}
 			if ltCommit != nil {
@@ -468,81 +627,79 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			e.log.Info("batch committed",
 				"srcFrom", from, "srcTo", to,
 				"newChainHead", lastVersion,
+				"txOK", e.stats.TxReplayed.Load(),
+				"txFail", e.stats.TxFailed.Load(),
+				"receiptOK", e.stats.ReceiptMatch.Load(),
+				"receiptFail", e.stats.ReceiptMismatch.Load(),
 			)
+			// Write stats to file every batch.
+			if e.cfg.StatsFile != "" {
+				e.stats.CurrentBlock = to
+				if data, err := json.MarshalIndent(e.stats, "", "  "); err == nil {
+					os.WriteFile(e.cfg.StatsFile, data, 0644)
+				}
+			}
 			return nil
 		})
 	})
 }
 
-// replayBlockTxs filters and replays the transactions from a source block
-// using lossy replay (simple value transfers + contract deployments).
-// Returns the list of replayed transactions.
-func (e *EngineV2) replayBlockTxs(ibs *state.IntraBlockState, srcBlk *block.Block, num uint64) []*transaction.Transaction {
+// replayBlockTxs executes the source block's transactions through the full EVM.
+// Uses the same ApplyTransaction path as sync and mining — no wheel reinvention.
+// Returns the replayed transactions, receipts, and total gas used.
+func (e *EngineV2) replayBlockTxs(
+	ibs *state.IntraBlockState,
+	stateWriter state.StateWriter,
+	srcBlk *block.Block,
+	srcHeader *block.Header,
+	dstTx kv.Tx,
+) ([]*transaction.Transaction, block.Receipts, uint64) {
 	txs := srcBlk.Transactions()
 	if len(txs) == 0 {
-		return nil
+		return nil, nil, 0
 	}
 
-	blockNum := new(big.Int).SetUint64(num)
-	var replayed []*transaction.Transaction
+	gp := new(common.GasPool).AddGas(srcHeader.GasLimit)
+	var (
+		usedGas  uint64
+		replayed []*transaction.Transaction
+		receipts block.Receipts
+	)
 
-	for _, tx := range txs {
+	// Block hash lookup for BLOCKHASH opcode — read from target chain.
+	blockHashFunc := func(n uint64) types.Hash {
+		h, _ := rawdb.ReadCanonicalHash(dstTx, n)
+		return h
+	}
+
+	vmCfg := vm2.Config{}
+
+	for i, tx := range txs {
 		e.stats.TxTotal.Add(1)
 
-		// Filter: deposit contract.
-		if to := tx.To(); to != nil && e.cfg.SkipAddresses[*to] {
-			e.stats.TxSkipped.Add(1)
-			e.stats.skipReason("deposit_contract")
-			continue
-		}
-
-		// Filter: empty contract creation.
-		if tx.To() == nil && len(tx.Data()) == 0 {
-			e.stats.TxSkipped.Add(1)
-			e.stats.skipReason("empty_create")
-			continue
-		}
-
-		// Recover sender. Try old chain ID (94) first since source data uses that.
-		signer := transaction.MakeSigner(&params.ChainConfig{ChainID: big.NewInt(94)}, blockNum)
-		from, err := transaction.Sender(signer, tx)
+		ibs.Prepare(tx.Hash(), srcBlk.Hash(), i)
+		receipt, _, err := internal.ApplyTransaction(
+			e.cfg.ChainConfig, blockHashFunc, nil, &srcHeader.Coinbase,
+			gp, ibs, stateWriter, srcHeader, tx, &usedGas, vmCfg,
+		)
 		if err != nil {
-			// Fallback: try new chain config signer.
-			newSigner := transaction.MakeSigner(e.cfg.ChainConfig, blockNum)
-			from, err = transaction.Sender(newSigner, tx)
-			if err != nil {
-				e.stats.TxSkipped.Add(1)
-				e.stats.skipReason("sender_unknown")
-				continue
+			e.stats.TxFailed.Add(1)
+			e.stats.skipReason("evm_error")
+			// Log first few errors for diagnosis.
+			if e.stats.TxFailed.Load() <= 10 {
+				e.log.Warn("tx apply failed",
+					"block", srcHeader.Number.Uint64(),
+					"txIdx", i,
+					"err", err,
+				)
 			}
+			continue
 		}
-
-		// Execute the transaction via simple transfer (lossy: no full EVM).
-		value := tx.Value()
-		if value != nil && !value.IsZero() {
-			senderBal := ibs.GetBalance(from)
-			if senderBal.Cmp(value) >= 0 {
-				ibs.SubBalance(from, value)
-				if tx.To() != nil {
-					ibs.AddBalance(*tx.To(), value)
-				}
-			}
-		}
-
-		// Track nonce.
-		ibs.SetNonce(from, ibs.GetNonce(from)+1)
-
-		// Contract deployment: store code.
-		if tx.To() == nil && len(tx.Data()) > 0 {
-			contractAddr := crypto.CreateAddress(from, tx.Nonce())
-			ibs.CreateAccount(contractAddr, true)
-			ibs.SetCode(contractAddr, tx.Data())
-		}
-
 		replayed = append(replayed, tx)
+		receipts = append(receipts, receipt)
 		e.stats.TxReplayed.Add(1)
 	}
-	return replayed
+	return replayed, receipts, usedGas
 }
 
 // readParentInfo reads the parent hash and timestamp for the block before `from`.

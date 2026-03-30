@@ -24,84 +24,64 @@ type Proof struct {
 	Depth    int    // number of levels traversed
 }
 
-// GetProof generates a Merkle inclusion proof for the given key hash.
-// Returns the proof with sibling hashes at each level from the leaf to the root.
+// GetProof generates a Merkle inclusion proof by traversing hash pointers
+// from root to leaf, collecting sibling hashes along the way.
 func (t *Tree) GetProof(keyHash Hash) (*Proof, error) {
 	path := FromKeyHash(keyHash)
-	current := EmptyPath()
-
+	current := t.root
 	var siblings []Hash
 
 	for depth := 0; depth < MaxDepth; depth++ {
-		val, err := t.getNode(current)
-		if err != nil || val == nil {
-			// Key not found: return absence proof with siblings collected so far
-			return &Proof{
-				Key:      keyHash,
-				Value:    nil,
-				Siblings: siblings,
-				Depth:    depth,
-			}, ErrNotFound
+		if current == EmptyHash {
+			return &Proof{Key: keyHash, Siblings: siblings, Depth: depth}, ErrNotFound
 		}
-
-		// Check if this is a leaf
-		if !val.IsHashPointer() {
-			storedKey, ok := t.leafKeys[current.String()]
+		data, err := t.getNode(current)
+		if err != nil {
+			return &Proof{Key: keyHash, Siblings: siblings, Depth: depth}, ErrNotFound
+		}
+		if isLeaf(data) {
+			storedKey, ok := extractLeafKeyHash(data)
 			if !ok || storedKey != keyHash {
 				return nil, ErrNotFound
 			}
 			return &Proof{
 				Key:      keyHash,
-				Value:    decodeLeafValue(val),
+				Value:    decodeLeafValue(data),
 				Siblings: siblings,
 				Depth:    depth,
 			}, nil
 		}
-
-		// Internal node: collect sibling hash and descend
-		bit := path.Bit(depth)
-		var siblingPath Path
-		if bit == 0 {
-			siblingPath = current.Append(1)
+		// Internal: collect sibling, descend
+		left, right := decodeInternalNode(data)
+		if path.Bit(depth) == 0 {
+			siblings = append(siblings, right)
+			current = left
 		} else {
-			siblingPath = current.Append(0)
+			siblings = append(siblings, left)
+			current = right
 		}
-
-		sibVal, sibErr := t.getNode(siblingPath)
-		if sibErr != nil || sibVal == nil {
-			siblings = append(siblings, EmptyHash)
-		} else {
-			siblings = append(siblings, toHash(sibVal))
-		}
-
-		current = current.Append(bit)
 	}
-
 	return nil, ErrNotFound
 }
 
-// VerifyProof verifies a Merkle inclusion proof against a known root hash.
+// VerifyProof checks a Merkle proof against a known root hash.
 func VerifyProof(root Hash, proof *Proof) bool {
 	if proof == nil || proof.Value == nil {
 		return false
 	}
-
 	path := FromKeyHash(proof.Key)
 
 	// Start with the leaf hash
-	encoded := encodeLeafValue(proof.Value)
+	encoded := encodeLeafValue(proof.Key, proof.Value)
 	current := toHash(encoded)
 
 	// Walk from leaf back to root using siblings
 	for i := len(proof.Siblings) - 1; i >= 0; i-- {
-		depth := i
-		bit := path.Bit(depth)
-		if bit == 0 {
+		if path.Bit(i) == 0 {
 			current = HashNode(current[:], proof.Siblings[i][:])
 		} else {
 			current = HashNode(proof.Siblings[i][:], current[:])
 		}
 	}
-
 	return current == root
 }

@@ -148,6 +148,9 @@ type BlockChain struct {
 	jmtForBlockProcessing bool   // true for fresh chains (private/dev) where JMT is used from genesis
 	jmtStoreRefresh       func() // called after block commit to refresh JMT backing store tx
 
+	bmtCommitment *commitment.BMTCommitment
+	bmtEnabled    bool
+
 	ltHashCommitment   *commitment.LtHashCommitment
 	ltHashEnabled      bool
 	rootComputer       state.RootComputer
