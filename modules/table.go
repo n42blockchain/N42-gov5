@@ -176,26 +176,25 @@ const (
 	// value: blake3_hash (32 bytes)
 	JMTRoot = "JMTRoot"
 
-	// JMTVersionRoots maps block height to JMT root hash for historical state proofs.
-	// key: block height (8 bytes, big-endian uint64)
-	// value: blake3_hash (32 bytes)
-	JMTVersionRoots = "JMTVersionRoots"
-
-	// BMTNode stores Binary Merkle Tree nodes, path-addressed.
-	// key: version(8B) + bitlen(2B) + packed_path(var)
-	// value: hash(32B) for internal nodes, inline data(<32B) for leaves
+	// BMTNode stores content-addressed Binary Merkle Tree nodes.
+	// key: blake3_hash (32 bytes)
+	// value: internal(65B) or leaf(33+B)
 	BMTNode = "BMTNode"
 
 	// BMTRoot stores the latest BMT root hash and version for recovery.
 	BMTRoot = "BMTRoot"
 
-	// BMTVersionRoots maps block height to BMT root hash for historical proofs.
-	BMTVersionRoots = "BMTVersionRoots"
-
 	// LtHashDigest stores the 2048-byte running LtHash state digest for crash recovery.
 	// key: "digest" (fixed)
 	// value: 2048 bytes (lattice hash digest)
 	LtHashDigest = "LtHashDigest"
+
+	// BlockWitness stores per-block execution witness (input data stream).
+	// A stateless client (mobile SDK) can verify/execute a block using only
+	// the block header + transactions + this witness, without full state.
+	// key: block number (8 bytes, big-endian)
+	// value: serialized witness (accounts + storage + code accessed), nil for empty blocks
+	BlockWitness = "BlockWitness"
 
 	// ContentStore stores content-addressed blobs for the CAS precompile.
 	// key: keccak256(data) (32 bytes)
@@ -277,11 +276,10 @@ var n42Tables = []string{
 	TxPoolJournal,
 	JMTNode,
 	JMTRoot,
-	JMTVersionRoots,
 	BMTNode,
 	BMTRoot,
-	BMTVersionRoots,
 	LtHashDigest,
+	BlockWitness,
 	ContentStore,
 	TorrentHashMap,
 	Ed2kHashMap,

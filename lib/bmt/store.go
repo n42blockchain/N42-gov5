@@ -16,42 +16,26 @@
 
 package bmt
 
-import "fmt"
-
-// NodeStore abstracts the persistence layer for BMT nodes.
-// Nodes are stored by (version, path) rather than content-addressed hash.
-// Implementations must be safe for use from a single goroutine;
-// callers are responsible for external synchronization if needed.
+// NodeStore is a content-addressed store for BMT nodes.
+// Nodes are keyed by their Blake3 hash — no version or path in the key.
+// Structural sharing between tree versions happens naturally:
+// unchanged subtrees share the same hash and the same store entry.
 type NodeStore interface {
-	// Get retrieves a node value by version and path.
-	// Returns ErrNotFound if the node is not present.
-	Get(version uint64, path Path) (NodeValue, error)
-
-	// Put stores a node value at the given version and path.
-	Put(version uint64, path Path, value NodeValue) error
-
-	// Delete removes a node by version and path. Not an error if absent.
-	Delete(version uint64, path Path) error
+	Get(hash Hash) (NodeValue, error)
+	Put(hash Hash, value NodeValue) error
 }
 
-// MemStore is an in-memory NodeStore for testing.
+// MemStore is an in-memory content-addressed NodeStore for testing.
 type MemStore struct {
-	nodes map[string]NodeValue
+	nodes map[Hash]NodeValue
 }
 
-// NewMemStore creates a new empty in-memory store.
 func NewMemStore() *MemStore {
-	return &MemStore{nodes: make(map[string]NodeValue)}
+	return &MemStore{nodes: make(map[Hash]NodeValue)}
 }
 
-// makeKey creates a composite key from version and path.
-func makeKey(version uint64, path Path) string {
-	return fmt.Sprintf("%d:%s", version, path.String())
-}
-
-func (m *MemStore) Get(version uint64, path Path) (NodeValue, error) {
-	key := makeKey(version, path)
-	data, ok := m.nodes[key]
+func (m *MemStore) Get(hash Hash) (NodeValue, error) {
+	data, ok := m.nodes[hash]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -60,21 +44,11 @@ func (m *MemStore) Get(version uint64, path Path) (NodeValue, error) {
 	return cp, nil
 }
 
-func (m *MemStore) Put(version uint64, path Path, value NodeValue) error {
-	key := makeKey(version, path)
+func (m *MemStore) Put(hash Hash, value NodeValue) error {
 	cp := make(NodeValue, len(value))
 	copy(cp, value)
-	m.nodes[key] = cp
+	m.nodes[hash] = cp
 	return nil
 }
 
-func (m *MemStore) Delete(version uint64, path Path) error {
-	key := makeKey(version, path)
-	delete(m.nodes, key)
-	return nil
-}
-
-// Len returns the number of nodes in the store.
-func (m *MemStore) Len() int {
-	return len(m.nodes)
-}
+func (m *MemStore) Len() int { return len(m.nodes) }

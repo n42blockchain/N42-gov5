@@ -30,8 +30,8 @@ const JMTNodeTable = "JMTNode"
 // JMTRootTable stores the latest JMT root hash and version for recovery.
 const JMTRootTable = "JMTRoot"
 
-// JMTVersionRootsTable maps block height (big-endian uint64) to JMT root hash.
-// This enables historical state proof generation by looking up the root at any height.
+// JMTVersionRootsTable is DEPRECATED — state root lives in block header.
+// Kept as constant for backward compatibility with existing databases.
 const JMTVersionRootsTable = "JMTVersionRoots"
 
 // MDBXStore implements jmt.NodeStore backed by an MDBX read-write transaction.

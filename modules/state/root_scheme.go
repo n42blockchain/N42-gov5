@@ -13,6 +13,8 @@ const (
 	RootSchemeLegacyKeccak RootScheme = "legacy-keccak"
 	// RootSchemeJMTBlake3 is the Jellyfish Merkle Tree root using Blake3-addressed nodes.
 	RootSchemeJMTBlake3 RootScheme = "jmt-blake3"
+	// RootSchemeBMTBlake3 is the Binary Merkle Tree root using Blake3 path-addressed nodes.
+	RootSchemeBMTBlake3 RootScheme = "bmt-blake3"
 	// RootSchemeEthereumMPT is the canonical Ethereum account/storage MPT root.
 	RootSchemeEthereumMPT RootScheme = "ethereum-mpt"
 )
@@ -21,4 +23,21 @@ const (
 // that can describe the effective state-root semantics they produce.
 type RootSchemeReporter interface {
 	RootScheme() RootScheme
+}
+
+// ValidateScheme returns true if s is a known state commitment scheme.
+func ValidateScheme(s string) bool {
+	switch RootScheme(s) {
+	case RootSchemeLegacyKeccak, RootSchemeJMTBlake3, RootSchemeBMTBlake3:
+		return true
+	}
+	return s == "" // empty = default (legacy-keccak)
+}
+
+// DefaultScheme returns "legacy-keccak" when the config field is empty.
+func DefaultScheme(s string) RootScheme {
+	if s == "" {
+		return RootSchemeLegacyKeccak
+	}
+	return RootScheme(s)
 }

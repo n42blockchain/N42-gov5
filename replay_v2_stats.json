@@ -1,7 +1,7 @@
 {
   "FromBlock": 1,
-  "ToBlock": 11904401,
-  "CurrentBlock": 11904401,
+  "ToBlock": 11976947,
+  "CurrentBlock": 11976947,
   "BlocksProcessed": {},
   "BlocksEmpty": {},
   "BlocksMissing": {},
@@ -15,5 +15,8 @@
     "evm_error": {},
     "sender_unknown": {}
   },
-  "StartTime": "2026-03-28T15:26:23.4613593-04:00"
+  "StartTime": "2026-03-29T18:06:48.121418-04:00",
+  "ReceiptMatch": {},
+  "ReceiptMismatch": {},
+  "GasUsedTotal": {}
 }

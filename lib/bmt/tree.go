@@ -16,387 +16,458 @@
 
 package bmt
 
-// Tree is a Binary Merkle Tree backed by a NodeStore.
+// Tree is a content-addressed Binary Merkle Tree backed by a NodeStore.
 //
-// The tree is a binary trie keyed by Blake3 hashes (256 bits).
-// Two node types keep the structure compact:
-//   - Internal node: stores Blake3(left || right) as its value (exactly 32 bytes)
-//   - Leaf node: stores the actual data (inline if <32B, tagged if ==32B)
+// Nodes are stored by their Blake3 hash, not by tree position. This gives
+// free versioning through structural sharing: when a leaf changes, only the
+// path from leaf to root gets new nodes; unchanged subtrees are reused.
+// Old roots can still traverse their original nodes — no explicit version
+// numbers needed.
 //
-// Nodes are addressed by their bit-path from the root, not by content hash.
-// The dirty map buffers in-memory mutations before flushing to the store.
+// Two node types:
+//   - Internal: internalTag(1) + leftHash(32) + rightHash(32) = 65 bytes
+//     DB key = Blake3(leftHash || rightHash)
+//   - Leaf:     leafTag(1) + keyHash(32) + value(N) = 33+ bytes
+//     DB key = HashLeaf(leafData)
 //
-// NOT THREAD SAFE: Tree methods must not be called concurrently.
-// The caller is responsible for external synchronization if the tree
-// is shared across goroutines.
+// NOT THREAD SAFE.
 type Tree struct {
-	dirty   map[string]NodeValue // path.String() -> value (nil means deleted)
-	store   NodeStore
-	version uint64
-
-	// leafKeys tracks which paths are leaves (storing the full key hash).
-	// This is needed for leaf splitting: when inserting a key that collides
-	// at a path prefix with an existing leaf, we must know the existing
-	// leaf's full key hash to determine where the two diverge.
-	leafKeys map[string]Hash // path.String() -> full key hash
+	dirty map[Hash]NodeValue // newly created nodes (hash → data)
+	store NodeStore          // persistent content-addressed store
+	root  Hash               // current root hash
 }
 
-// New creates a new empty BMT with the given store.
+// New creates a new empty BMT.
 func New(s NodeStore) *Tree {
-	return &Tree{
-		dirty:    make(map[string]NodeValue),
-		store:    s,
-		version:  0,
-		leafKeys: make(map[string]Hash),
-	}
+	return &Tree{dirty: make(map[Hash]NodeValue), store: s, root: EmptyHash}
 }
 
-// NewWithVersion creates a BMT at a specific version for historical reads.
-func NewWithVersion(s NodeStore, version uint64) *Tree {
-	return &Tree{
-		dirty:    make(map[string]NodeValue),
-		store:    s,
-		version:  version,
-		leafKeys: make(map[string]Hash),
-	}
+// NewFromRoot creates a BMT rooted at an existing hash.
+func NewFromRoot(s NodeStore, root Hash) *Tree {
+	return &Tree{dirty: make(map[Hash]NodeValue), store: s, root: root}
 }
 
-// Root returns the current root hash of the tree.
-// Returns EmptyHash for an empty tree.
-func (t *Tree) Root() Hash {
-	root := EmptyPath()
-	val, err := t.getNode(root)
-	if err != nil || val == nil {
-		return EmptyHash
-	}
-	return toHash(val)
-}
+// Root returns the current root hash. EmptyHash for an empty tree.
+func (t *Tree) Root() Hash { return t.root }
 
-// Get retrieves the value associated with the given key hash.
-// Returns ErrNotFound if the key is not in the tree.
+// DirtyLen returns the number of unflushed nodes in the dirty map.
+func (t *Tree) DirtyLen() int { return len(t.dirty) }
+
+// Get retrieves the value for a key hash. Returns ErrNotFound if absent.
 func (t *Tree) Get(keyHash Hash) ([]byte, error) {
 	path := FromKeyHash(keyHash)
-	current := EmptyPath()
-
-	for depth := 0; depth < MaxDepth; depth++ {
-		val, err := t.getNode(current)
-		if err != nil {
-			return nil, ErrNotFound
-		}
-		if val == nil {
-			return nil, ErrNotFound
-		}
-
-		// Check if this is a leaf (not a hash pointer = not an internal node)
-		if !val.IsHashPointer() {
-			// It's a leaf. Verify this is actually the key we're looking for.
-			storedKey, ok := t.leafKeys[current.String()]
-			if !ok {
-				return nil, ErrNotFound
-			}
-			if storedKey != keyHash {
-				return nil, ErrNotFound
-			}
-			return decodeLeafValue(val), nil
-		}
-
-		// Internal node: descend based on the bit at this depth
-		bit := path.Bit(depth)
-		current = current.Append(bit)
-	}
-
-	return nil, ErrNotFound
+	return t.get(t.root, path, keyHash, 0)
 }
 
-// Put inserts or updates a key-value pair in the tree.
+func (t *Tree) get(nodeHash Hash, keyPath Path, keyHash Hash, depth int) ([]byte, error) {
+	if nodeHash == EmptyHash {
+		return nil, ErrNotFound
+	}
+	data, err := t.getNode(nodeHash)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	if isLeaf(data) {
+		storedKey, ok := extractLeafKeyHash(data)
+		if !ok || storedKey != keyHash {
+			return nil, ErrNotFound
+		}
+		return decodeLeafValue(data), nil
+	}
+	left, right := decodeInternalNode(data)
+	if keyPath.Bit(depth) == 0 {
+		return t.get(left, keyPath, keyHash, depth+1)
+	}
+	return t.get(right, keyPath, keyHash, depth+1)
+}
+
+// Put inserts or updates a key-value pair.
 func (t *Tree) Put(keyHash Hash, value []byte) error {
-	path := FromKeyHash(keyHash)
-	encoded := encodeLeafValue(value)
-	current := EmptyPath()
+	encoded := encodeLeafValue(keyHash, value)
+	leafHash := toHash(encoded)
+	t.setNode(leafHash, encoded)
 
-	for depth := 0; depth < MaxDepth; depth++ {
-		val, err := t.getNode(current)
-		if err != nil || val == nil {
-			// Empty slot: place the leaf here
-			t.setNode(current, encoded)
-			t.leafKeys[current.String()] = keyHash
-			t.updateAncestors(current)
-			return nil
-		}
-
-		// Check if this is a leaf
-		if !val.IsHashPointer() {
-			// Existing leaf at this path. Check if it's the same key.
-			existingKey, ok := t.leafKeys[current.String()]
-			if !ok {
-				// Shouldn't happen, but treat as empty
-				t.setNode(current, encoded)
-				t.leafKeys[current.String()] = keyHash
-				t.updateAncestors(current)
-				return nil
-			}
-
-			if existingKey == keyHash {
-				// Same key: update value in place
-				t.setNode(current, encoded)
-				t.updateAncestors(current)
-				return nil
-			}
-
-			// Different key: need to split. Remove existing leaf and
-			// create internal nodes until the two keys diverge.
-			existingPath := FromKeyHash(existingKey)
-			existingValue := val
-
-			// Remove the existing leaf from this position
-			t.deleteNode(current)
-			delete(t.leafKeys, current.String())
-
-			// Find the divergence point and create internal nodes
-			splitAt := current
-			for d := depth; d < MaxDepth; d++ {
-				existingBit := existingPath.Bit(d)
-				newBit := path.Bit(d)
-
-				if existingBit != newBit {
-					// They diverge here: place both leaves
-					existingChild := splitAt.Append(existingBit)
-					newChild := splitAt.Append(newBit)
-
-					t.setNode(existingChild, existingValue)
-					t.leafKeys[existingChild.String()] = existingKey
-
-					t.setNode(newChild, encoded)
-					t.leafKeys[newChild.String()] = keyHash
-
-					// Create internal node at splitAt
-					t.computeInternalNode(splitAt)
-
-					// Update all ancestors from splitAt up to root
-					t.updateAncestors(splitAt)
-					return nil
-				}
-
-				// Same bit: create an internal node and go deeper
-				splitAt = splitAt.Append(existingBit)
-			}
-
-			// Keys are identical (should never happen since we checked above)
-			return nil
-		}
-
-		// Internal node: descend
-		bit := path.Bit(depth)
-		current = current.Append(bit)
-	}
-
+	keyPath := FromKeyHash(keyHash)
+	t.root = t.insert(t.root, keyPath, keyHash, 0, leafHash)
 	return nil
 }
 
-// Delete removes a key from the tree.
+func (t *Tree) insert(nodeHash Hash, keyPath Path, keyHash Hash, depth int, leafHash Hash) Hash {
+	if nodeHash == EmptyHash {
+		return leafHash
+	}
+	data, err := t.getNode(nodeHash)
+	if err != nil {
+		return leafHash
+	}
+	if isLeaf(data) {
+		existingKey, ok := extractLeafKeyHash(data)
+		if !ok {
+			return leafHash
+		}
+		if existingKey == keyHash {
+			return leafHash // same key: replace
+		}
+		// Different key: split
+		existingPath := FromKeyHash(existingKey)
+		return t.splitLeaves(nodeHash, existingPath, leafHash, keyPath, depth)
+	}
+	// Internal: descend
+	left, right := decodeInternalNode(data)
+	if keyPath.Bit(depth) == 0 {
+		newLeft := t.insert(left, keyPath, keyHash, depth+1, leafHash)
+		return t.makeInternal(newLeft, right)
+	}
+	newRight := t.insert(right, keyPath, keyHash, depth+1, leafHash)
+	return t.makeInternal(left, newRight)
+}
+
+func (t *Tree) splitLeaves(existingHash Hash, existingPath Path, newHash Hash, newPath Path, depth int) Hash {
+	if depth >= MaxDepth {
+		return newHash
+	}
+	eBit := existingPath.Bit(depth)
+	nBit := newPath.Bit(depth)
+	if eBit != nBit {
+		if nBit == 0 {
+			return t.makeInternal(newHash, existingHash)
+		}
+		return t.makeInternal(existingHash, newHash)
+	}
+	child := t.splitLeaves(existingHash, existingPath, newHash, newPath, depth+1)
+	if eBit == 0 {
+		return t.makeInternal(child, EmptyHash)
+	}
+	return t.makeInternal(EmptyHash, child)
+}
+
+// Delete removes a key. Returns ErrNotFound if absent.
 func (t *Tree) Delete(keyHash Hash) error {
-	path := FromKeyHash(keyHash)
-	current := EmptyPath()
-
-	// Find the leaf
-	for depth := 0; depth < MaxDepth; depth++ {
-		val, err := t.getNode(current)
-		if err != nil || val == nil {
-			return ErrNotFound
-		}
-
-		if !val.IsHashPointer() {
-			// Leaf node
-			storedKey, ok := t.leafKeys[current.String()]
-			if !ok || storedKey != keyHash {
-				return ErrNotFound
-			}
-
-			// Remove the leaf
-			t.deleteNode(current)
-			delete(t.leafKeys, current.String())
-
-			// Collapse single-child ancestors
-			t.collapseAncestors(current)
-			return nil
-		}
-
-		// Internal node: descend
-		bit := path.Bit(depth)
-		current = current.Append(bit)
+	keyPath := FromKeyHash(keyHash)
+	newRoot, err := t.remove(t.root, keyPath, keyHash, 0)
+	if err != nil {
+		return err
 	}
-
-	return ErrNotFound
-}
-
-// FlushTo writes all dirty entries to the target store and clears the dirty map.
-func (t *Tree) FlushTo(target NodeStore) error {
-	for pathStr, val := range t.dirty {
-		p := decodePathString(pathStr)
-		if val == nil {
-			if err := target.Delete(t.version, p); err != nil {
-				return err
-			}
-		} else {
-			if err := target.Put(t.version, p, val); err != nil {
-				return err
-			}
-		}
-	}
-	t.dirty = make(map[string]NodeValue)
+	t.root = newRoot
 	return nil
 }
 
-// Version returns the current version of the tree.
-func (t *Tree) Version() uint64 {
-	return t.version
-}
-
-// SetVersion sets the tree version (typically block height).
-func (t *Tree) SetVersion(v uint64) {
-	t.version = v
-}
-
-// getNode reads a node, checking dirty map first, then store.
-func (t *Tree) getNode(p Path) (NodeValue, error) {
-	key := p.String()
-	if val, ok := t.dirty[key]; ok {
-		return val, nil // may be nil (tombstone)
+func (t *Tree) remove(nodeHash Hash, keyPath Path, keyHash Hash, depth int) (Hash, error) {
+	if nodeHash == EmptyHash {
+		return EmptyHash, ErrNotFound
 	}
-	return t.store.Get(t.version, p)
-}
-
-// setNode writes a node to the dirty map.
-func (t *Tree) setNode(p Path, val NodeValue) {
-	t.dirty[p.String()] = val
-}
-
-// deleteNode marks a node as deleted in the dirty map.
-func (t *Tree) deleteNode(p Path) {
-	t.dirty[p.String()] = nil
-}
-
-// computeInternalNode computes the hash of an internal node from its children.
-func (t *Tree) computeInternalNode(p Path) {
-	leftChild := p.Append(0)
-	rightChild := p.Append(1)
-
-	leftVal, leftErr := t.getNode(leftChild)
-	rightVal, rightErr := t.getNode(rightChild)
-
-	var leftBytes, rightBytes []byte
-	if leftErr == nil && leftVal != nil {
-		leftBytes = leftVal
-	} else {
-		leftBytes = EmptyHash[:]
+	data, err := t.getNode(nodeHash)
+	if err != nil {
+		return EmptyHash, ErrNotFound
 	}
-	if rightErr == nil && rightVal != nil {
-		rightBytes = rightVal
-	} else {
-		rightBytes = EmptyHash[:]
-	}
-
-	hash := HashNode(leftBytes, rightBytes)
-	t.setNode(p, NodeValue(hash[:]))
-}
-
-// updateAncestors recomputes internal node hashes from a node up to the root.
-func (t *Tree) updateAncestors(p Path) {
-	// Walk from p's parent up to the root
-	for depth := p.BitLen - 1; depth >= 0; depth-- {
-		parent := p.Prefix(depth)
-		t.computeInternalNode(parent)
-		p = parent
-	}
-}
-
-// collapseAncestors handles deletion cleanup: after removing a leaf,
-// if its sibling is the only child, promote the sibling upward.
-func (t *Tree) collapseAncestors(deletedPath Path) {
-	current := deletedPath
-	for current.BitLen > 0 {
-		parent := current.Prefix(current.BitLen - 1)
-		sibling := current.Sibling()
-
-		sibVal, sibErr := t.getNode(sibling)
-		if sibErr != nil || sibVal == nil {
-			// No sibling: remove parent too, keep collapsing
-			t.deleteNode(parent)
-			delete(t.leafKeys, parent.String())
-			current = parent
-			continue
+	if isLeaf(data) {
+		storedKey, _ := extractLeafKeyHash(data)
+		if storedKey != keyHash {
+			return nodeHash, ErrNotFound
 		}
-
-		// Sibling exists. If it's a leaf, promote it to parent.
-		if !sibVal.IsHashPointer() {
-			sibKey, ok := t.leafKeys[sibling.String()]
-			if ok {
-				// Move sibling leaf up to parent
-				t.setNode(parent, sibVal)
-				t.leafKeys[parent.String()] = sibKey
-
-				// Remove sibling from old position
-				t.deleteNode(sibling)
-				delete(t.leafKeys, sibling.String())
-
-				// Continue collapsing upward
-				current = parent
-				continue
-			}
+		return EmptyHash, nil
+	}
+	left, right := decodeInternalNode(data)
+	var newLeft, newRight Hash
+	if keyPath.Bit(depth) == 0 {
+		nl, err := t.remove(left, keyPath, keyHash, depth+1)
+		if err != nil {
+			return nodeHash, err
 		}
+		newLeft, newRight = nl, right
+	} else {
+		nr, err := t.remove(right, keyPath, keyHash, depth+1)
+		if err != nil {
+			return nodeHash, err
+		}
+		newLeft, newRight = left, nr
+	}
+	// Collapse: both empty → empty
+	if newLeft == EmptyHash && newRight == EmptyHash {
+		return EmptyHash, nil
+	}
+	// Collapse: one side empty, other is leaf → promote leaf
+	if newLeft == EmptyHash {
+		if rd, e := t.getNode(newRight); e == nil && isLeaf(rd) {
+			return newRight, nil
+		}
+	}
+	if newRight == EmptyHash {
+		if ld, e := t.getNode(newLeft); e == nil && isLeaf(ld) {
+			return newLeft, nil
+		}
+	}
+	return t.makeInternal(newLeft, newRight), nil
+}
 
-		// Sibling is an internal node or we can't collapse further.
-		// Recompute parent and all ancestors.
-		t.updateAncestors(current)
+// FlushTo writes all dirty nodes to the target store and clears the dirty map.
+func (t *Tree) FlushTo(target NodeStore) error {
+	for hash, data := range t.dirty {
+		if err := target.Put(hash, data); err != nil {
+			return err
+		}
+	}
+	t.dirty = make(map[Hash]NodeValue)
+	return nil
+}
+
+// PruneDirty removes unreachable nodes from the dirty map, keeping only nodes
+// reachable from the current root. This bounds memory when tree nodes are NOT
+// flushed to persistent storage (replay mode: compute root in-memory only).
+func (t *Tree) PruneDirty() {
+	if len(t.dirty) == 0 || t.root == EmptyHash {
 		return
 	}
-
-	// We collapsed all the way to root — update root if needed
-	if current.BitLen == 0 {
-		// Check if root still has a value
-		rootVal, err := t.getNode(EmptyPath())
-		if err != nil || rootVal == nil {
-			// Tree is empty
-			return
+	reachable := make(map[Hash]struct{}, len(t.dirty)/2)
+	t.walkReachable(t.root, reachable)
+	for h := range t.dirty {
+		if _, ok := reachable[h]; !ok {
+			delete(t.dirty, h)
 		}
 	}
 }
 
-// encodeLeafValue encodes leaf data for storage.
-// Values exactly 32 bytes get a 0x01 tag appended to distinguish from internal nodes.
-func encodeLeafValue(value []byte) NodeValue {
-	if len(value) == HashSize {
-		result := make(NodeValue, HashSize+1)
-		copy(result, value)
-		result[HashSize] = 0x01 // tag byte
-		return result
+func (t *Tree) walkReachable(h Hash, reachable map[Hash]struct{}) {
+	if h == EmptyHash {
+		return
 	}
-	result := make(NodeValue, len(value))
-	copy(result, value)
-	return result
+	if _, ok := reachable[h]; ok {
+		return // already visited
+	}
+	data, ok := t.dirty[h]
+	if !ok {
+		return // in store, not in dirty
+	}
+	reachable[h] = struct{}{}
+	if isInternal(data) {
+		left, right := decodeInternalNode(data)
+		t.walkReachable(left, reachable)
+		t.walkReachable(right, reachable)
+	}
 }
 
-// decodeLeafValue decodes a stored leaf back to the original value.
+// ETLCollector is the subset of etl.Collector needed by FlushToCollector.
+// This avoids importing the etl package from lib/bmt.
+type ETLCollector interface {
+	Collect(k, v []byte) error
+}
+
+// FlushToCollector writes all dirty nodes to an ETL collector for sorted
+// sequential MDBX loading. Much faster than random Put() calls for large batches.
+func (t *Tree) FlushToCollector(collector ETLCollector) error {
+	for hash, data := range t.dirty {
+		if err := collector.Collect(hash[:], data); err != nil {
+			return err
+		}
+	}
+	t.dirty = make(map[Hash]NodeValue)
+	return nil
+}
+
+// --- internal helpers ---
+
+func (t *Tree) getNode(hash Hash) (NodeValue, error) {
+	if hash == EmptyHash {
+		return nil, ErrNotFound
+	}
+	if data, ok := t.dirty[hash]; ok {
+		return data, nil
+	}
+	return t.store.Get(hash)
+}
+
+func (t *Tree) setNode(hash Hash, data NodeValue) {
+	t.dirty[hash] = data
+}
+
+func (t *Tree) makeInternal(left, right Hash) Hash {
+	data := encodeInternalNode(left, right)
+	hash := internalNodeHash(left, right)
+	t.setNode(hash, data)
+	return hash
+}
+
+// --- node encoding ---
+
+func encodeInternalNode(left, right Hash) NodeValue {
+	v := make(NodeValue, 1+2*HashSize)
+	v[0] = internalTag
+	copy(v[1:1+HashSize], left[:])
+	copy(v[1+HashSize:], right[:])
+	return v
+}
+
+func decodeInternalNode(v NodeValue) (left, right Hash) {
+	copy(left[:], v[1:1+HashSize])
+	copy(right[:], v[1+HashSize:])
+	return
+}
+
+func internalNodeHash(left, right Hash) Hash {
+	return HashNode(left[:], right[:])
+}
+
+func encodeLeafValue(keyHash Hash, value []byte) NodeValue {
+	v := make(NodeValue, 1+HashSize+len(value))
+	v[0] = leafTag
+	copy(v[1:1+HashSize], keyHash[:])
+	copy(v[1+HashSize:], value)
+	return v
+}
+
 func decodeLeafValue(v NodeValue) []byte {
-	if len(v) == HashSize+1 && v[HashSize] == 0x01 {
-		// Tagged 32-byte value
-		result := make([]byte, HashSize)
-		copy(result, v[:HashSize])
-		return result
+	if len(v) < 1+HashSize || v[0] != leafTag {
+		return nil
 	}
-	result := make([]byte, len(v))
-	copy(result, v)
-	return result
+	payload := v[1+HashSize:]
+	out := make([]byte, len(payload))
+	copy(out, payload)
+	return out
 }
 
-// decodePathString reconstructs a Path from its String() representation.
-func decodePathString(s string) Path {
-	if len(s) == 0 {
-		return EmptyPath()
+func extractLeafKeyHash(v NodeValue) (Hash, bool) {
+	if len(v) < 1+HashSize || v[0] != leafTag {
+		return Hash{}, false
 	}
-	b := []byte(s)
-	bitLen := int(b[0])
-	pathBytes := make([]byte, len(b)-1)
-	copy(pathBytes, b[1:])
-	return Path{Bytes: pathBytes, BitLen: bitLen}
+	var h Hash
+	copy(h[:], v[1:1+HashSize])
+	return h, true
+}
+
+// BatchEntry is a key-value pair for batch insertion.
+type BatchEntry struct {
+	Key   Hash
+	Value []byte
+}
+
+// PutBatch inserts multiple key-value pairs in a single top-down traversal.
+// Each internal node is created only ONCE from the final state of both children,
+// eliminating the intermediate root garbage that individual Put() calls produce.
+// For N entries at depth D: O(N×D) nodes instead of O(N²×D_near_root).
+func (t *Tree) PutBatch(entries []BatchEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	// Prepare: encode leaves, compute hashes, build sorted work items.
+	items := make([]batchItem, len(entries))
+	for i, e := range entries {
+		encoded := encodeLeafValue(e.Key, e.Value)
+		leafHash := toHash(encoded)
+		t.setNode(leafHash, encoded)
+		items[i] = batchItem{path: FromKeyHash(e.Key), keyHash: e.Key, leafHash: leafHash}
+	}
+	// Sort by key hash for bit-partitioning.
+	sortBatchItems(items)
+	// Deduplicate: last write wins for same key.
+	deduped := items[:0]
+	for i, it := range items {
+		if i > 0 && it.keyHash == items[i-1].keyHash {
+			deduped[len(deduped)-1] = it
+		} else {
+			deduped = append(deduped, it)
+		}
+	}
+	t.root = t.insertBatch(t.root, deduped, 0)
+	return nil
+}
+
+type batchItem struct {
+	path     Path
+	keyHash  Hash
+	leafHash Hash
+}
+
+func sortBatchItems(items []batchItem) {
+	// Simple insertion sort for small N (typical: 10-50 items per block).
+	for i := 1; i < len(items); i++ {
+		key := items[i]
+		j := i - 1
+		for j >= 0 && comparePath(items[j].keyHash, key.keyHash) > 0 {
+			items[j+1] = items[j]
+			j--
+		}
+		items[j+1] = key
+	}
+}
+
+func comparePath(a, b Hash) int {
+	for i := 0; i < HashSize; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
+// insertBatch recursively inserts sorted items into the subtree rooted at nodeHash.
+// Items are partitioned by bit at current depth: left (bit=0) and right (bit=1).
+// Each internal node is created exactly once from the final children.
+func (t *Tree) insertBatch(nodeHash Hash, items []batchItem, depth int) Hash {
+	if len(items) == 0 {
+		return nodeHash
+	}
+	if len(items) == 1 {
+		// Single item: use regular insert (handles leaf splitting etc.)
+		return t.insert(nodeHash, items[0].path, items[0].keyHash, depth, items[0].leafHash)
+	}
+
+	// Partition items by bit at depth.
+	pivot := 0
+	for pivot < len(items) && items[pivot].path.Bit(depth) == 0 {
+		pivot++
+	}
+	leftItems := items[:pivot]
+	rightItems := items[pivot:]
+
+	if nodeHash == EmptyHash {
+		// Empty subtree: build from scratch.
+		left := t.insertBatch(EmptyHash, leftItems, depth+1)
+		right := t.insertBatch(EmptyHash, rightItems, depth+1)
+		if left == EmptyHash {
+			return right
+		}
+		if right == EmptyHash {
+			return left
+		}
+		return t.makeInternal(left, right)
+	}
+
+	data, err := t.getNode(nodeHash)
+	if err != nil {
+		return t.insertBatch(EmptyHash, items, depth)
+	}
+
+	if isLeaf(data) {
+		// Existing leaf: add it to items and rebuild.
+		existingKey, ok := extractLeafKeyHash(data)
+		if !ok {
+			return t.insertBatch(EmptyHash, items, depth)
+		}
+		// Check if any item replaces this leaf.
+		replaced := false
+		for _, it := range items {
+			if it.keyHash == existingKey {
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			// Keep existing leaf alongside new items.
+			combined := make([]batchItem, len(items)+1)
+			combined[0] = batchItem{path: FromKeyHash(existingKey), keyHash: existingKey, leafHash: nodeHash}
+			copy(combined[1:], items)
+			sortBatchItems(combined)
+			return t.insertBatch(EmptyHash, combined, depth)
+		}
+		return t.insertBatch(EmptyHash, items, depth)
+	}
+
+	// Internal node: recurse into both children.
+	left, right := decodeInternalNode(data)
+	newLeft := t.insertBatch(left, leftItems, depth+1)
+	newRight := t.insertBatch(right, rightItems, depth+1)
+	return t.makeInternal(newLeft, newRight)
 }

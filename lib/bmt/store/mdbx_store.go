@@ -24,36 +24,28 @@ import (
 )
 
 const (
-	// BMTNodeTable is the MDBX table name for BMT nodes.
-	// key: version(8B) + bitlen(2B) + packed_path(var)
-	// value: hash(32B) for internal nodes, inline data(<32B) for leaves
+	// BMTNodeTable stores content-addressed BMT nodes.
+	// key: blake3_hash(32B)   value: node_data (65B internal / 33+B leaf)
 	BMTNodeTable = "BMTNode"
 
-	// BMTRootTable stores the latest BMT root hash and version for recovery.
+	// BMTRootTable stores the latest BMT root hash for crash recovery.
 	BMTRootTable = "BMTRoot"
 
-	// BMTVersionRootsTable maps block height to BMT root hash for historical proofs.
-	BMTVersionRootsTable = "BMTVersionRoots"
 )
 
-// MDBXStore implements bmt.NodeStore backed by an MDBX read-write transaction.
-// Each instance wraps a single kv.RwTx -- create a new MDBXStore per DB
-// transaction (inside ChainDB.Update).
+// MDBXStore implements bmt.NodeStore as a content-addressed store.
+// Each node is keyed by its Blake3 hash — simple GetOne, no cursor seek.
 type MDBXStore struct {
 	tx    kv.RwTx
 	table string
 }
 
-// NewMDBXStore creates a NodeStore that reads/writes BMT nodes in the given
-// MDBX transaction and table.
 func NewMDBXStore(tx kv.RwTx, table string) *MDBXStore {
 	return &MDBXStore{tx: tx, table: table}
 }
 
-// Get retrieves a serialized BMT node by version and path.
-func (s *MDBXStore) Get(version uint64, path bmt.Path) (bmt.NodeValue, error) {
-	key := path.EncodeMDBXKey(version)
-	data, err := s.tx.GetOne(s.table, key)
+func (s *MDBXStore) Get(hash bmt.Hash) (bmt.NodeValue, error) {
+	data, err := s.tx.GetOne(s.table, hash[:])
 	if err != nil {
 		return nil, err
 	}
@@ -65,28 +57,19 @@ func (s *MDBXStore) Get(version uint64, path bmt.Path) (bmt.NodeValue, error) {
 	return cp, nil
 }
 
-// Put stores a serialized BMT node at the given version and path.
-func (s *MDBXStore) Put(version uint64, path bmt.Path, value bmt.NodeValue) error {
-	key := path.EncodeMDBXKey(version)
-	return s.tx.Put(s.table, key, value)
+func (s *MDBXStore) Put(hash bmt.Hash, value bmt.NodeValue) error {
+	return s.tx.Put(s.table, hash[:], value)
 }
 
-// Delete removes a BMT node by version and path.
-func (s *MDBXStore) Delete(version uint64, path bmt.Path) error {
-	key := path.EncodeMDBXKey(version)
-	return s.tx.Delete(s.table, key)
-}
-
-// Compile-time check: MDBXStore implements bmt.NodeStore.
+// Compile-time check.
 var _ bmt.NodeStore = (*MDBXStore)(nil)
 
-// WriteBMTRoot persists the latest BMT root hash for crash recovery.
+// --- Recovery & version-root helpers (separate tables) ---
+
 func WriteBMTRoot(tx kv.RwTx, root bmt.Hash) error {
 	return tx.Put(BMTRootTable, []byte("root"), root[:])
 }
 
-// ReadBMTRoot reads the latest persisted BMT root hash.
-// Returns EmptyHash if no root has been written yet.
 func ReadBMTRoot(tx kv.Tx) (bmt.Hash, error) {
 	data, err := tx.GetOne(BMTRootTable, []byte("root"))
 	if err != nil {
@@ -100,14 +83,12 @@ func ReadBMTRoot(tx kv.Tx) (bmt.Hash, error) {
 	return h, nil
 }
 
-// WriteBMTVersion persists the tree version (block height) for progress tracking.
 func WriteBMTVersion(tx kv.RwTx, version uint64) error {
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], version)
 	return tx.Put(BMTRootTable, []byte("version"), buf[:])
 }
 
-// ReadBMTVersion reads the last persisted tree version (block height).
 func ReadBMTVersion(tx kv.Tx) (uint64, error) {
 	data, err := tx.GetOne(BMTRootTable, []byte("version"))
 	if err != nil {
@@ -119,27 +100,3 @@ func ReadBMTVersion(tx kv.Tx) (uint64, error) {
 	return binary.BigEndian.Uint64(data), nil
 }
 
-// WriteBMTVersionRoot records the BMT root hash at a specific block height.
-// This builds an index for historical state proof generation.
-func WriteBMTVersionRoot(tx kv.RwTx, height uint64, root bmt.Hash) error {
-	var key [8]byte
-	binary.BigEndian.PutUint64(key[:], height)
-	return tx.Put(BMTVersionRootsTable, key[:], root[:])
-}
-
-// ReadBMTVersionRoot retrieves the BMT root hash at an exact block height.
-// Returns EmptyHash if no root is recorded for that height.
-func ReadBMTVersionRoot(tx kv.Tx, height uint64) (bmt.Hash, error) {
-	var key [8]byte
-	binary.BigEndian.PutUint64(key[:], height)
-	data, err := tx.GetOne(BMTVersionRootsTable, key[:])
-	if err != nil {
-		return bmt.EmptyHash, err
-	}
-	if data == nil || len(data) < bmt.HashSize {
-		return bmt.EmptyHash, nil
-	}
-	var h bmt.Hash
-	copy(h[:], data[:bmt.HashSize])
-	return h, nil
-}

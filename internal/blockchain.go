@@ -209,6 +209,13 @@ func (bc *BlockChain) SetJMTStoreRefresh(fn func()) {
 	bc.jmtStoreRefresh = fn
 }
 
+// SetBMTCommitment enables the Binary Merkle Tree state commitment.
+func (bc *BlockChain) SetBMTCommitment(c *commitment.BMTCommitment) {
+	bc.bmtCommitment = c
+	bc.bmtEnabled = true
+	log.Info("BMT state commitment enabled (Blake3, content-addressed)")
+}
+
 // SetLtHashCommitment enables the LtHash lattice state digest.
 func (bc *BlockChain) SetLtHashCommitment(c *commitment.LtHashCommitment) {
 	bc.ltHashCommitment = c

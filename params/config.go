@@ -224,6 +224,12 @@ type ChainConfig struct {
 	// and stores BLAKE3(digest) in Header.LtHashRoot.
 	LtHashTime *big.Int `json:"ltHashTime,omitempty"`
 
+	// StateScheme determines the state commitment algorithm for Header.Root.
+	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
+	// configured scheme does not match the database.
+	// Values: "legacy-keccak" (default), "jmt-blake3", "bmt-blake3"
+	StateScheme string `json:"stateScheme,omitempty"`
+
 	BlobSchedule *BlobSchedule `json:"blobSchedule,omitempty"`
 
 	// BSC / custom fork fields
