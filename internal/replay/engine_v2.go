@@ -294,10 +294,17 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		var ltCommit *commitment.LtHashCommitment
 		var ltRC state.RootComputer
 		useBMT := e.cfg.TreeType == "bmt"
+		useMPT := e.cfg.TreeType == "mpt"
+		var mptRC state.RootComputer
 
 		if e.cfg.EnableJMT {
-			if useBMT {
-				// BMT path
+			switch {
+			case useMPT:
+				// MPT path — standard Ethereum state root (Keccak256 + HexPatriciaHashed)
+				mptRC = commitment.NewMPTRootComputer()
+
+			case useBMT:
+				// BMT path — Binary Merkle Tree (Blake3, content-addressed)
 				bmtNodeStore = bmtstore.NewMDBXStore(dstTx, bmtstore.BMTNodeTable)
 				bmtRoot, err := bmtstore.ReadBMTRoot(dstTx)
 				if err != nil {
@@ -311,15 +318,8 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				bmtCommit = commitment.NewBMTCommitment(bmtTree)
 				bmtRC = commitment.NewBMTRootComputer(bmtCommit)
 
-				if e.cfg.EnableLtHash {
-					ltDigest, err := lthash.ReadLtHashDigest(dstTx, "LtHashDigest")
-					if err != nil {
-						return fmt.Errorf("read LtHash digest: %w", err)
-					}
-					ltCommit = commitment.NewLtHashCommitment(ltDigest)
-				}
-			} else {
-				// JMT path (default)
+			default:
+				// JMT path
 				nodeStore = jmtstore.NewMDBXStore(dstTx, jmtstore.JMTNodeTable)
 				jmtRoot, err := jmtstore.ReadJMTRoot(dstTx)
 				if err != nil {
@@ -456,7 +456,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				csWriter := state.NewPlainStateWriter(dstTx, dstTx, newBlockNum)
 				w := state.NewCachedStateWriter(csWriter, e.replayCache)
 				ibs := state.New(e.witnessReader)
-				if useBMT && bmtRC != nil {
+				if useMPT && mptRC != nil {
+					ibs.SetRootComputer(mptRC)
+				} else if useBMT && bmtRC != nil {
 					ibs.SetRootComputer(bmtRC)
 				} else if ltRC != nil {
 					ibs.SetRootComputer(ltRC)
