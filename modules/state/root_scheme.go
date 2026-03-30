@@ -25,15 +25,6 @@ type RootSchemeReporter interface {
 	RootScheme() RootScheme
 }
 
-// ValidateScheme returns true if s is a known state commitment scheme.
-func ValidateScheme(s string) bool {
-	switch RootScheme(s) {
-	case RootSchemeLegacyKeccak, RootSchemeJMTBlake3, RootSchemeBMTBlake3:
-		return true
-	}
-	return s == "" // empty = default (legacy-keccak)
-}
-
 // DefaultScheme returns "legacy-keccak" when the config field is empty.
 func DefaultScheme(s string) RootScheme {
 	if s == "" {

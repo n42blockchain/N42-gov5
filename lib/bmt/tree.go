@@ -16,6 +16,8 @@
 
 package bmt
 
+import "bytes"
+
 // Tree is a content-addressed Binary Merkle Tree backed by a NodeStore.
 //
 // Nodes are stored by their Blake3 hash, not by tree position. This gives
@@ -220,6 +222,10 @@ func (t *Tree) PruneDirty() {
 	}
 	reachable := make(map[Hash]struct{}, len(t.dirty)/2)
 	t.walkReachable(t.root, reachable)
+	// Skip deletion if <25% garbage (walk cost not worth it).
+	if len(reachable) >= len(t.dirty)*3/4 {
+		return
+	}
 	for h := range t.dirty {
 		if _, ok := reachable[h]; !ok {
 			delete(t.dirty, h)
@@ -391,15 +397,7 @@ func sortBatchItems(items []batchItem) {
 }
 
 func comparePath(a, b Hash) int {
-	for i := 0; i < HashSize; i++ {
-		if a[i] < b[i] {
-			return -1
-		}
-		if a[i] > b[i] {
-			return 1
-		}
-	}
-	return 0
+	return bytes.Compare(a[:], b[:])
 }
 
 // insertBatch recursively inserts sorted items into the subtree rooted at nodeHash.

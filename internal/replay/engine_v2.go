@@ -38,6 +38,12 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
+// Precomputed hashes for empty blocks (avoid recomputing per gap block).
+var (
+	emptyReceiptHash = hash.DeriveSha(block.Receipts(nil))
+	emptyTxHash      = hash.DeriveSha(transaction.Transactions(nil))
+)
+
 // EngineV2 is the replay-v2 engine that reads old chain blocks, filters
 // transactions, fills timeline gaps, builds new headers with JMT+LtHash
 // roots, and writes to a new database.
@@ -411,11 +417,6 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 						} else if jmtCommit != nil {
 							gapTreeRoot = jmtCommit.Root()
 						}
-						// LtHashRoot is now encoded in Extra, not a Header field.
-						// if ltCommit != nil { gapLtRoot = ltCommit.Root() }
-						// Gap block header matches normal empty block format exactly.
-						emptyReceiptHash := hash.DeriveSha(block.Receipts(nil))
-						emptyTxHash := hash.DeriveSha(transaction.Transactions(nil))
 						gapHeader := &block.Header{
 							ParentHash:  parentHash,
 							Number:      uint256.NewInt(newBlockNum),

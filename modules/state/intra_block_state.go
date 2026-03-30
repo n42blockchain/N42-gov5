@@ -1168,15 +1168,6 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	return root
 }
 
-// DirtyAddresses returns addresses modified in this block (for cache invalidation).
-func (sdb *IntraBlockState) DirtyAddresses() []types.Address {
-	addrs := make([]types.Address, 0, len(sdb.stateObjectsDirty))
-	for addr := range sdb.stateObjectsDirty {
-		addrs = append(addrs, addr)
-	}
-	return addrs
-}
-
 // DirtyAccountData returns dirty accounts and their storage for leaf journal.
 // Returns: accounts map (addr→encoded or nil=deleted), storage map (addr→slot→value).
 func (sdb *IntraBlockState) DirtyAccountData() (

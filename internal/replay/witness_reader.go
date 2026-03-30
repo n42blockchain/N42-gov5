@@ -152,9 +152,9 @@ func (w *WitnessStateReader) Serialize() []byte {
 
 // Reset clears the recorded state for the next block.
 func (w *WitnessStateReader) Reset() {
-	w.accounts = make(map[types.Address][]byte)
-	w.storage = make(map[storageWKey][]byte)
-	w.code = make(map[types.Hash][]byte)
+	clear(w.accounts)
+	clear(w.storage)
+	clear(w.code)
 }
 
 // Len returns total recorded entries.
