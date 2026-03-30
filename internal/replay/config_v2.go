@@ -41,11 +41,11 @@ type ConfigV2 struct {
 // DefaultConfigV2 returns a ConfigV2 with sensible defaults.
 func DefaultConfigV2() ConfigV2 {
 	return ConfigV2{
-		BatchSize:       50000,
+		BatchSize:       10000,
 		EnableJMT:       true,
 		EnableLtHash:    true,
 		DisableGC:       true,
-		TreeType:        "jmt",
+		TreeType:        "mpt",
 		FillGaps:        true,
 		GapPeriod:       8,
 		GapTolerance:    15,
