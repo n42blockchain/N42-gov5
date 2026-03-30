@@ -168,8 +168,15 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 		if _, ok := result["withdrawals"]; !ok {
 			result["withdrawals"] = []interface{}{}
 		}
-		result["blobGasUsed"] = hexutil.Uint64(header.BlobGasUsed)
-		result["excessBlobGas"] = hexutil.Uint64(header.ExcessBlobGas)
+		var bgu, ebg uint64
+		if header.BlobGasUsed != nil {
+			bgu = *header.BlobGasUsed
+		}
+		if header.ExcessBlobGas != nil {
+			ebg = *header.ExcessBlobGas
+		}
+		result["blobGasUsed"] = hexutil.Uint64(bgu)
+		result["excessBlobGas"] = hexutil.Uint64(ebg)
 		result["parentBeaconBlockRoot"] = avmtypes.FromastHash(types.Hash{})
 	}
 	if cfg != nil && (cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {

@@ -652,7 +652,15 @@ func (c *APos) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	}
 
 	// EIP-4844: Set excess blob gas from parent.
-	rawHeader.ExcessBlobGas = c.chainConfig.CalcExcessBlobGasWithBaseFee(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed, parentHeader.BaseFee, rawHeader.Time)
+	var pExcess, pUsed uint64
+	if parentHeader.ExcessBlobGas != nil {
+		pExcess = *parentHeader.ExcessBlobGas
+	}
+	if parentHeader.BlobGasUsed != nil {
+		pUsed = *parentHeader.BlobGasUsed
+	}
+	excessBlobGas := c.chainConfig.CalcExcessBlobGasWithBaseFee(pExcess, pUsed, parentHeader.BaseFee, rawHeader.Time)
+	rawHeader.ExcessBlobGas = &excessBlobGas
 
 	return nil
 }
@@ -722,7 +730,7 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	applyHardForkAllocations(header.Number64().Uint64(), state)
 
 	rawHeader.Root = state.IntermediateRoot()
-	rawHeader.LtHashRoot = state.LtHashRoot()
+	// LtHashRoot is now encoded in Extra, not a separate header field.
 	// Store the state root before finalization for verification purposes
 	beforeStateRoot, err := state.BeforeStateRoot()
 	if err != nil {
@@ -731,7 +739,8 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	rawHeader.MixDigest = beforeStateRoot
 
 	// EIP-4844: Calculate blob gas used from included transactions.
-	rawHeader.BlobGasUsed = misc.CalcBlobGasUsed(txs)
+	blobGasUsed := misc.CalcBlobGasUsed(txs)
+	rawHeader.BlobGasUsed = &blobGasUsed
 
 	return rewards, unpayMap, nil
 }

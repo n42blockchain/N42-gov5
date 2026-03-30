@@ -380,15 +380,14 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				if e.cfg.FillGaps && prevTime > 0 {
 					gapTimes := CalcGapBlockTimes(prevTime, srcTime, e.cfg.GapPeriod, e.cfg.GapTolerance)
 					for _, gapTime := range gapTimes {
-						var gapTreeRoot, gapLtRoot types.Hash
+						var gapTreeRoot types.Hash
 						if useBMT && bmtCommit != nil {
 							gapTreeRoot = bmtCommit.Root()
 						} else if jmtCommit != nil {
 							gapTreeRoot = jmtCommit.Root()
 						}
-						if ltCommit != nil {
-							gapLtRoot = ltCommit.Root()
-						}
+						// LtHashRoot is now encoded in Extra, not a Header field.
+						// if ltCommit != nil { gapLtRoot = ltCommit.Root() }
 						// Gap block header matches normal empty block format exactly.
 						emptyReceiptHash := hash.DeriveSha(block.Receipts(nil))
 						emptyTxHash := hash.DeriveSha(transaction.Transactions(nil))
@@ -402,7 +401,6 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							GasLimit:    srcHeader.GasLimit,
 							BaseFee:     srcHeader.BaseFee,
 							Coinbase:    srcHeader.Coinbase,
-							LtHashRoot:  gapLtRoot,
 						}
 						gapBlk := block.NewBlock(gapHeader, nil)
 						if err := e.writeNewBlock(dstTx, gapBlk.(*block.Block), newBlockNum); err != nil {
@@ -471,12 +469,11 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				}
 
 				// Compute state roots (JMT+LtHash if enabled, zero otherwise).
-				var stateRoot, ltStateRoot types.Hash
+				var stateRoot types.Hash
 				if e.cfg.EnableJMT {
 					stateRoot = ibs.IntermediateRoot()
-					if e.cfg.EnableLtHash {
-						ltStateRoot = ibs.LtHashRoot()
-					}
+					// LtHashRoot is now encoded in Extra, not a Header field.
+					// if e.cfg.EnableLtHash { _ = ibs.LtHashRoot() }
 				}
 
 				// Compute receipt/tx roots and bloom (reuse existing hash infrastructure).
@@ -497,7 +494,6 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					GasLimit:    srcHeader.GasLimit,
 					BaseFee:     srcHeader.BaseFee,
 					Coinbase:    srcHeader.Coinbase,
-					LtHashRoot:  ltStateRoot,
 				}
 
 				var newBlk *block.Block

@@ -51,34 +51,45 @@ func (n *BlockNonce) UnmarshalText(input []byte) error {
 	return hexutil.UnmarshalFixedText("BlockNonce", input, n[:])
 }
 
+// Header represents a block header in the N42 blockchain.
+// Fields 1-21 are 100% Ethereum Pectra compatible (same RLP/JSON wire format).
+// N42 extensions (LtHashRoot, tree roots, BLS signatures) are encoded in Extra.
 type Header struct {
-	ParentHash  types.Hash    `json:"parentHash"       gencodec:"required"`
-	Coinbase    types.Address `json:"miner"`
-	Root        types.Hash    `json:"stateRoot"        gencodec:"required"`
-	TxHash      types.Hash    `json:"transactionsRoot" gencodec:"required"`
-	ReceiptHash types.Hash    `json:"receiptsRoot"     gencodec:"required"`
-	Bloom       Bloom         `json:"logsBloom"        gencodec:"required"`
-	Difficulty  *uint256.Int  `json:"difficulty"       gencodec:"required"`
-	Number      *uint256.Int  `json:"number"           gencodec:"required"`
-	GasLimit    uint64        `json:"gasLimit"         gencodec:"required"`
-	GasUsed     uint64        `json:"gasUsed"          gencodec:"required"`
-	Time        uint64        `json:"timestamp"        gencodec:"required"`
-	MixDigest   types.Hash    `json:"mixHash"`
-	Nonce       BlockNonce    `json:"nonce"`
-	Extra       []byte        `json:"extraData"        gencodec:"required"`
+	// --- Standard Ethereum fields (1-15, EL genesis) ---
+	ParentHash  types.Hash    `json:"parentHash"       gencodec:"required"` // 1
+	UncleHash   types.Hash    `json:"sha3Uncles"       gencodec:"required"` // 2  NEW: always emptyUncleHash post-merge
+	Coinbase    types.Address `json:"miner"`                                // 3
+	Root        types.Hash    `json:"stateRoot"        gencodec:"required"` // 4  MPT root (standard), BMT/JMT in Extra
+	TxHash      types.Hash    `json:"transactionsRoot" gencodec:"required"` // 5
+	ReceiptHash types.Hash    `json:"receiptsRoot"     gencodec:"required"` // 6
+	Bloom       Bloom         `json:"logsBloom"        gencodec:"required"` // 7
+	Difficulty  *uint256.Int  `json:"difficulty"       gencodec:"required"` // 8  always 0 post-merge
+	Number      *uint256.Int  `json:"number"           gencodec:"required"` // 9
+	GasLimit    uint64        `json:"gasLimit"         gencodec:"required"` // 10
+	GasUsed     uint64        `json:"gasUsed"          gencodec:"required"` // 11
+	Time        uint64        `json:"timestamp"        gencodec:"required"` // 12
+	Extra       []byte        `json:"extraData"        gencodec:"required"` // 13 N42: QC+seal+roots+mobileBLS
+	MixDigest   types.Hash    `json:"mixHash"`                              // 14 prevRandao post-merge
+	Nonce       BlockNonce    `json:"nonce"`                                // 15 always 0 post-merge
 
-	BaseFee *uint256.Int `json:"baseFeePerGas" rlp:"optional"`
+	// --- EIP-1559 (London) ---
+	BaseFee *uint256.Int `json:"baseFeePerGas" rlp:"optional"` // 16
 
-	// EIP-4844 blob gas fields (Cancun fork)
-	BlobGasUsed   uint64 `json:"blobGasUsed,omitempty"`
-	ExcessBlobGas uint64 `json:"excessBlobGas,omitempty"`
+	// --- EIP-4895 (Shanghai) ---
+	WithdrawalsHash *types.Hash `json:"withdrawalsRoot,omitempty"` // 17 NEW
 
-	// LtHashRoot is the BLAKE3 summary of the 2048-byte LtHash state digest.
-	// Zero before the LtHash fork activation timestamp.
-	LtHashRoot types.Hash `json:"ltHashRoot,omitempty"`
+	// --- EIP-4844 (Cancun) ---
+	BlobGasUsed      *uint64     `json:"blobGasUsed,omitempty"`      // 18 CHANGED: pointer
+	ExcessBlobGas    *uint64     `json:"excessBlobGas,omitempty"`    // 19 CHANGED: pointer
+	ParentBeaconRoot *types.Hash `json:"parentBeaconBlockRoot,omitempty"` // 20 NEW
+
+	// --- EIP-7685 (Prague/Pectra) ---
+	RequestsHash *types.Hash `json:"requestsRoot,omitempty"` // 21 NEW
 
 	hash atomic.Value
 
+	// Signature is the proposer's secp256k1 signature (legacy APoS).
+	// For HotStuff consensus, the BLS seal is in Extra instead.
 	Signature types.Signature `json:"signature"`
 }
 
@@ -138,13 +149,10 @@ func (h *Header) Hash() types.Hash {
 }
 
 // IsLegacyHeader returns true for pre-Shanghai headers that use legacy hash.
-// Shanghai activation can be block-based or timestamp-based; we check both
-// BlobGasUsed (Cancun+ indicator) and LtHashRoot as proxies. If none of the
-// new fields are populated AND block number is below the well-known mainnet
-// Shanghai activation, use legacy hash.
+// Post-Shanghai headers have WithdrawalsHash, BlobGasUsed, or other new fields.
 func IsLegacyHeader(h *Header) bool {
-	// If any v2 field is non-zero, this is definitely a v2 header.
-	if h.BlobGasUsed != 0 || h.ExcessBlobGas != 0 || (h.LtHashRoot != types.Hash{}) {
+	if h.WithdrawalsHash != nil || h.BlobGasUsed != nil || h.ExcessBlobGas != nil ||
+		h.ParentBeaconRoot != nil || h.RequestsHash != nil {
 		return false
 	}
 	return true
@@ -209,9 +217,8 @@ func (h *Header) ToProtoMessage() proto.Message {
 		Signature:     utils.ConvertSignatureToH768(h.Signature),
 		Bloom:         utils.ConvertBytesToH2048(h.Bloom.Bytes()),
 		MixDigest:     utils.ConvertHashToH256(h.MixDigest),
-		BlobGasUsed:   h.BlobGasUsed,
-		ExcessBlobGas: h.ExcessBlobGas,
-		LtHashRoot:    utils.ConvertHashToH256(h.LtHashRoot),
+		BlobGasUsed:   ptrToUint64(h.BlobGasUsed),
+		ExcessBlobGas: ptrToUint64(h.ExcessBlobGas),
 	}
 }
 
@@ -237,10 +244,22 @@ func (h *Header) FromProtoMessage(message proto.Message) error {
 	h.Signature = utils.ConvertH768ToSignature(pbHeader.Signature)
 	h.Bloom = utils.ConvertH2048ToBloom(pbHeader.Bloom)
 	h.MixDigest = utils.ConvertH256ToHash(pbHeader.MixDigest)
-	h.BlobGasUsed = pbHeader.BlobGasUsed
-	h.ExcessBlobGas = pbHeader.ExcessBlobGas
-	h.LtHashRoot = utils.ConvertH256ToHash(pbHeader.LtHashRoot)
+	if pbHeader.BlobGasUsed != 0 {
+		v := pbHeader.BlobGasUsed
+		h.BlobGasUsed = &v
+	}
+	if pbHeader.ExcessBlobGas != 0 {
+		v := pbHeader.ExcessBlobGas
+		h.ExcessBlobGas = &v
+	}
 	return nil
+}
+
+func ptrToUint64(p *uint64) uint64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 func (h *Header) Marshal() ([]byte, error) {
