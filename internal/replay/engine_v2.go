@@ -50,6 +50,7 @@ type EngineV2 struct {
 	replayCache   *layered.ShardedCache // Erigon-style cross-batch state cache
 	bmtTree       *bmt.Tree            // retained after replay for final flush
 	witnessReader *WitnessStateReader  // records per-block state access
+	leafJournal   *LeafJournal         // per-block leaf changes for tree building
 }
 
 // NewEngineV2 creates a replay-v2 engine. Call Run() to execute.
@@ -91,11 +92,23 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 		logger.SetHandler(log2.StderrHandler)
 	}
 
-	return &EngineV2{
+	e := &EngineV2{
 		cfg:   cfg,
 		stats: NewStats(),
 		log:   logger,
-	}, nil
+	}
+
+	// Open leaf journal if configured.
+	if cfg.LeafJournal != "" {
+		lj, err := NewLeafJournal(cfg.LeafJournal)
+		if err != nil {
+			return nil, fmt.Errorf("open leaf journal: %w", err)
+		}
+		e.leafJournal = lj
+		logger.Info("leaf journal enabled", "path", cfg.LeafJournal)
+	}
+
+	return e, nil
 }
 
 // Stats returns the current replay statistics.
@@ -232,6 +245,18 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 			"time", time.Since(flushStart).Round(time.Millisecond),
 			"root", e.bmtTree.Root().Hex()[:16],
 		)
+	}
+
+	// Close leaf journal.
+	if e.leafJournal != nil {
+		if err := e.leafJournal.Close(); err != nil {
+			e.log.Warn("leaf journal close error", "err", err)
+		}
+		stat, _ := os.Stat(e.cfg.LeafJournal)
+		if stat != nil {
+			e.log.Info("leaf journal written", "path", e.cfg.LeafJournal,
+				"size", fmt.Sprintf("%.1f MB", float64(stat.Size())/(1024*1024)))
+		}
 	}
 
 	e.log.Info("replay-v2 complete",
@@ -474,6 +499,25 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					stateRoot = ibs.IntermediateRoot()
 					// LtHashRoot is now encoded in Extra, not a Header field.
 					// if e.cfg.EnableLtHash { _ = ibs.LtHashRoot() }
+				}
+
+				// Write leaf changes to journal (for later tree building).
+				if e.leafJournal != nil {
+					accts, stor := ibs.DirtyAccountData()
+					var entries []LeafEntry
+					for addr, val := range accts {
+						keyHash := commitment.AccountKeyHash(addr)
+						entries = append(entries, LeafEntry{Key: types.Hash(keyHash), Value: val})
+					}
+					for addr, slots := range stor {
+						for slot, val := range slots {
+							keyHash := commitment.StorageKeyHash(addr, slot)
+							entries = append(entries, LeafEntry{Key: types.Hash(keyHash), Value: val})
+						}
+					}
+					if err := e.leafJournal.WriteBlock(newBlockNum, entries); err != nil {
+						return fmt.Errorf("write leaf journal block %d: %w", newBlockNum, err)
+					}
 				}
 
 				// Compute receipt/tx roots and bloom (reuse existing hash infrastructure).

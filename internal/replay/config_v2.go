@@ -32,8 +32,9 @@ type ConfigV2 struct {
 
 	SkipAddresses map[types.Address]bool
 
-	LogFile    string // structured log output file (empty = stderr only)
-	StatsFile  string // stats JSON output file (updated every batch)
+	LogFile      string // structured log output file (empty = stderr only)
+	StatsFile    string // stats JSON output file (updated every batch)
+	LeafJournal  string // leaf change journal file (empty = disabled)
 	ProgressFn func(current, total uint64, bps float64)
 }
 

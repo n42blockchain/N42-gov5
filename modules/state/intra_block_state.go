@@ -1177,6 +1177,43 @@ func (sdb *IntraBlockState) DirtyAddresses() []types.Address {
 	return addrs
 }
 
+// DirtyAccountData returns dirty accounts and their storage for leaf journal.
+// Returns: accounts map (addr→encoded or nil=deleted), storage map (addr→slot→value).
+func (sdb *IntraBlockState) DirtyAccountData() (
+	accounts map[types.Address][]byte,
+	storage map[types.Address]map[types.Hash][]byte,
+) {
+	accounts = make(map[types.Address][]byte, len(sdb.stateObjectsDirty))
+	storage = make(map[types.Address]map[types.Hash][]byte)
+
+	for addr := range sdb.stateObjectsDirty {
+		obj := sdb.getStateObject(addr)
+		if obj == nil || obj.deleted {
+			accounts[addr] = nil
+			continue
+		}
+		accounts[addr] = obj.data.MarshalV2()
+
+		if len(obj.dirtyStorage) > 0 {
+			slots := make(map[types.Hash][]byte, len(obj.dirtyStorage))
+			for slot, value := range obj.dirtyStorage {
+				if value.IsZero() {
+					slots[slot] = nil
+				} else {
+					b := value.Bytes32()
+					start := 0
+					for start < 31 && b[start] == 0 {
+						start++
+					}
+					slots[slot] = b[start:]
+				}
+			}
+			storage[addr] = slots
+		}
+	}
+	return
+}
+
 func (sdb *IntraBlockState) HasSelfdestructed(addr types.Address) bool {
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted {

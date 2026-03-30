@@ -44,6 +44,7 @@ var replayV2Command = &cli.Command{
 		&cli.Uint64Flag{Name: "to", Usage: "End block number (0=auto)", Value: 0},
 		&cli.StringFlag{Name: "output", Usage: "Stats output file", Value: "replay_v2_stats.json"},
 		&cli.StringFlag{Name: "log", Usage: "Structured log file (empty=stderr only)", Value: ""},
+		&cli.StringFlag{Name: "leaf-journal", Usage: "Leaf change journal file for tree building (empty=disabled)", Value: ""},
 	},
 	Action: runReplayV2,
 }
@@ -73,6 +74,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 	cfg.FromBlock = cliCtx.Uint64("from")
 	cfg.ToBlock = cliCtx.Uint64("to")
 	cfg.LogFile = cliCtx.String("log")
+	cfg.LeafJournal = cliCtx.String("leaf-journal")
 	cfg.StatsFile = cliCtx.String("output")
 
 	cfg.ProgressFn = func(current, total uint64, bps float64) {
