@@ -135,7 +135,7 @@ func (w *ChangeSetWriter) WriteChangeSets() error {
 		return err
 	}
 	if err = changeset.Mapper[modules.AccountChangeSet].Encode(w.blockNumber, accountChanges, func(k, v []byte) error {
-		return w.db.AppendDup(modules.AccountChangeSet, k, v)
+		return w.db.Put(modules.AccountChangeSet, k, v)
 	}); err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func (w *ChangeSetWriter) WriteChangeSets() error {
 		return nil
 	}
 	return changeset.Mapper[modules.StorageChangeSet].Encode(w.blockNumber, storageChanges, func(k, v []byte) error {
-		return w.db.AppendDup(modules.StorageChangeSet, k, v)
+		return w.db.Put(modules.StorageChangeSet, k, v)
 	})
 }
 
