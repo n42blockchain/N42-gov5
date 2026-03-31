@@ -19,11 +19,8 @@ package commitment
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"math/bits"
-
-	"github.com/n42blockchain/N42/lib/log/v3"
 
 	"github.com/n42blockchain/N42/lib/rlp"
 )
@@ -84,13 +81,14 @@ func (hph *HexPatriciaHashed) unfoldBranchNode(row int, deleted bool, depth int)
 	if err != nil {
 		return false, err
 	}
-	if !hph.rootChecked && hph.currentKeyLen == 0 && len(branchData) == 0 {
-		// Special case - empty or deleted root
-		hph.rootChecked = true
+	if len(branchData) == 0 {
+		if !hph.rootChecked && hph.currentKeyLen == 0 {
+			hph.rootChecked = true
+		}
 		return false, nil
 	}
-	if len(branchData) == 0 {
-		log.Warn("got empty branch data during unfold", "key", hex.EncodeToString(hexToCompact(hph.currentKey[:hph.currentKeyLen])), "row", row, "depth", depth, "deleted", deleted)
+	if len(branchData) < 2 {
+		return false, fmt.Errorf("branchData too short: %d bytes at key %x", len(branchData), hexToCompact(hph.currentKey[:hph.currentKeyLen]))
 	}
 	hph.branchBefore[row] = true
 	bitmap := binary.BigEndian.Uint16(branchData[0:])
