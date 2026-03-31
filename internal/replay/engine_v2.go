@@ -353,13 +353,25 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 
 		// Track the running new-chain block number.
 		// With gap filling, newBlockNum diverges from source block number.
-		// All modes write to BMTVersion to track the actual target chain
-		// head, ensuring ChangeSet AppendDup sees ascending keys across batches.
+		// Read target chain head from the replay metadata key.
 		newBlockNum := from
-		if ver, _ := bmtstore.ReadBMTVersion(dstTx); ver > 0 && ver >= from {
-			newBlockNum = ver + 1
-		} else if ver, _ := jmtstore.ReadJMTVersion(dstTx); ver > 0 && ver >= from {
-			newBlockNum = ver + 1
+		resumeTable := jmtstore.JMTRootTable
+		if useBMT {
+			resumeTable = bmtstore.BMTRootTable
+		}
+		if headData, _ := dstTx.GetOne(resumeTable, []byte("replay_chain_head")); len(headData) >= 8 {
+			head := binary.BigEndian.Uint64(headData)
+			if head > 0 && head >= from {
+				newBlockNum = head + 1
+			}
+		}
+		// Fallback: try tree-specific version tables.
+		if newBlockNum == from {
+			if ver, _ := bmtstore.ReadBMTVersion(dstTx); ver > 0 && ver >= from {
+				newBlockNum = ver + 1
+			} else if ver, _ := jmtstore.ReadJMTVersion(dstTx); ver > 0 && ver >= from {
+				newBlockNum = ver + 1
+			}
 		}
 
 		// Read previous block hash and timestamp from the TARGET chain's last
@@ -415,7 +427,11 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					gapTimes := CalcGapBlockTimes(prevTime, srcTime, e.cfg.GapPeriod, e.cfg.GapTolerance)
 					for _, gapTime := range gapTimes {
 						var gapTreeRoot types.Hash
-						if useBMT && bmtCommit != nil {
+						if useMPT && mptRC != nil {
+							// MPT: reuse last computed root (state unchanged for gap blocks).
+							r, _ := mptRC.ComputeRoot(nil, nil)
+							gapTreeRoot = r
+						} else if useBMT && bmtCommit != nil {
 							gapTreeRoot = bmtCommit.Root()
 						} else if jmtCommit != nil {
 							gapTreeRoot = jmtCommit.Root()
@@ -625,15 +641,15 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			}
 
 			// End of batch: write recovery metadata.
-			// All modes write lastVersion so the next batch starts newBlockNum
-			// from the correct target chain head (critical for gap-fill + AppendDup).
 			lastVersion := newBlockNum - 1
-			if useMPT {
-				// MPT uses BMTVersion table to track target chain head.
-				if err := bmtstore.WriteBMTVersion(dstTx, lastVersion); err != nil {
-					return fmt.Errorf("write MPT version: %w", err)
-				}
+
+			// Write target chain head for all modes (critical for gap-fill + AppendDup).
+			var headBuf [8]byte
+			binary.BigEndian.PutUint64(headBuf[:], lastVersion)
+			if err := dstTx.Put(resumeTable, []byte("replay_chain_head"), headBuf[:]); err != nil {
+				return fmt.Errorf("write replay chain head: %w", err)
 			}
+
 			if useBMT && bmtTree != nil {
 				dirtyCount := bmtTree.DirtyLen()
 				// Skip persisting BMT nodes to MDBX — root is computed in-memory,
