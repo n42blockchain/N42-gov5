@@ -53,10 +53,11 @@ type EngineV2 struct {
 	dstDB       kv.RwDB
 	stats       *Stats
 	log         log2.Logger
-	replayCache   *layered.ShardedCache // Erigon-style cross-batch state cache
-	bmtTree       *bmt.Tree            // retained after replay for final flush
-	witnessReader *WitnessStateReader  // records per-block state access
-	leafJournal   *LeafJournal         // per-block leaf changes for tree building
+	replayCache   *layered.ShardedCache    // Erigon-style cross-batch state cache
+	bmtTree       *bmt.Tree               // retained after replay for final flush
+	mptRC         state.RootComputer      // MPT root computer (persists across batches)
+	witnessReader *WitnessStateReader     // records per-block state access
+	leafJournal   *LeafJournal            // per-block leaf changes for tree building
 }
 
 // NewEngineV2 creates a replay-v2 engine. Call Run() to execute.
@@ -300,8 +301,14 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		if e.cfg.EnableJMT {
 			switch {
 			case useMPT:
-				// MPT path — standard Ethereum state root (Keccak256 + HexPatriciaHashed)
-				mptRC = commitment.NewMPTRootComputer()
+				// MPT path — reuse across batches to preserve branch data.
+				if e.mptRC == nil {
+					e.mptRC = commitment.NewMPTRootComputer()
+				} else {
+					// Reset HPH internal grid state between batches, keeping branches.
+					e.mptRC.(*commitment.MPTRootComputer).ResetTrie()
+				}
+				mptRC = e.mptRC
 
 			case useBMT:
 				// BMT path — Binary Merkle Tree (Blake3, content-addressed)

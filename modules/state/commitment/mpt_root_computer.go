@@ -65,6 +65,13 @@ func NewMPTRootComputer() *MPTRootComputer {
 	return m
 }
 
+// ResetTrie resets HPH internal state between batches while preserving
+// the in-memory branch data. This is required because ProcessUpdates
+// expects a clean grid at the start of each batch.
+func (m *MPTRootComputer) ResetTrie() {
+	m.trie.Reset()
+}
+
 // RootScheme reports that this produces standard Ethereum MPT roots.
 func (*MPTRootComputer) RootScheme() state.RootScheme {
 	return state.RootSchemeEthereumMPT
