@@ -351,19 +351,15 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			}
 		}
 
-		// Track the running new-chain block number. For resume, this equals
-		// the tree version + 1. For fresh start, it starts at from.
+		// Track the running new-chain block number.
+		// With gap filling, newBlockNum diverges from source block number.
+		// All modes write to BMTVersion to track the actual target chain
+		// head, ensuring ChangeSet AppendDup sees ascending keys across batches.
 		newBlockNum := from
-		if useBMT {
-			ver, _ := bmtstore.ReadBMTVersion(dstTx)
-			if ver > 0 && ver >= from {
-				newBlockNum = ver + 1
-			}
-		} else {
-			ver, _ := jmtstore.ReadJMTVersion(dstTx)
-			if ver > 0 && ver >= from {
-				newBlockNum = ver + 1
-			}
+		if ver, _ := bmtstore.ReadBMTVersion(dstTx); ver > 0 && ver >= from {
+			newBlockNum = ver + 1
+		} else if ver, _ := jmtstore.ReadJMTVersion(dstTx); ver > 0 && ver >= from {
+			newBlockNum = ver + 1
 		}
 
 		// Read previous block hash and timestamp from the TARGET chain's last
@@ -628,8 +624,16 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				}
 			}
 
-			// End of batch: flush tree nodes + write recovery metadata.
+			// End of batch: write recovery metadata.
+			// All modes write lastVersion so the next batch starts newBlockNum
+			// from the correct target chain head (critical for gap-fill + AppendDup).
 			lastVersion := newBlockNum - 1
+			if useMPT {
+				// MPT uses BMTVersion table to track target chain head.
+				if err := bmtstore.WriteBMTVersion(dstTx, lastVersion); err != nil {
+					return fmt.Errorf("write MPT version: %w", err)
+				}
+			}
 			if useBMT && bmtTree != nil {
 				dirtyCount := bmtTree.DirtyLen()
 				// Skip persisting BMT nodes to MDBX — root is computed in-memory,
