@@ -118,7 +118,10 @@ func (m *MPTRootComputer) ComputeRoot(
 			var pk [52]byte
 			copy(pk[:20], addr[:])
 			copy(pk[20:], slot[:])
-			hk := keccakToNibbles(pk[:])
+			// Storage hashed key: keccak(addr) + keccak(slot) = 128 nibbles
+			// HPH uses first 64 nibbles to locate the account, then next 64
+			// nibbles to navigate the storage trie (depth 64-128).
+			hk := storageKeccakToNibbles(addr[:], slot[:])
 
 			if val == nil || val.IsZero() {
 				entries = append(entries, entry{
@@ -193,6 +196,30 @@ func keccakToNibbles(data []byte) []byte {
 	for i, b := range hash {
 		nibbles[i*2] = b >> 4
 		nibbles[i*2+1] = b & 0x0f
+	}
+	return nibbles
+}
+
+// storageKeccakToNibbles produces 128 nibbles: keccak(addr) || keccak(slot).
+// HPH uses the first 64 nibbles for the account trie path and the next 64
+// for the storage trie path (grid rows 0-63 for account, 64-127 for storage).
+func storageKeccakToNibbles(addr, slot []byte) []byte {
+	hasher := sha3.NewLegacyKeccak256()
+	hasher.Write(addr)
+	addrHash := hasher.Sum(nil)
+
+	hasher.Reset()
+	hasher.Write(slot)
+	slotHash := hasher.Sum(nil)
+
+	nibbles := make([]byte, 128)
+	for i, b := range addrHash {
+		nibbles[i*2] = b >> 4
+		nibbles[i*2+1] = b & 0x0f
+	}
+	for i, b := range slotHash {
+		nibbles[64+i*2] = b >> 4
+		nibbles[64+i*2+1] = b & 0x0f
 	}
 	return nibbles
 }
