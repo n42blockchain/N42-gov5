@@ -46,6 +46,22 @@ func NewMPTRootComputer() *MPTRootComputer {
 	storageFn := func(plainKey []byte, cell *libcommit.Cell) error { return nil }
 
 	m.trie = libcommit.NewHexPatriciaHashed(length.Addr, branchFn, accountFn, storageFn)
+
+	// Immediately persist branch data during fold() so unfold() within
+	// the same ProcessUpdates call can find it.
+	// EncodeBranch produces [touchMap:2B][afterMap:2B][cells...].
+	// unfoldBranchNode expects [afterMap:2B][cells...] (touchMap stripped).
+	m.trie.SetPutBranchFn(func(updateKey []byte, branchData []byte) {
+		if len(branchData) < 4 {
+			return
+		}
+		// Skip touchMap (first 2 bytes), store from afterMap onwards.
+		stripped := branchData[2:]
+		cp := make([]byte, len(stripped))
+		copy(cp, stripped)
+		m.branches[string(updateKey)] = cp
+	})
+
 	return m
 }
 
@@ -146,13 +162,13 @@ func (m *MPTRootComputer) ComputeRoot(
 	if err != nil {
 		return types.Hash{}, err
 	}
-	// Store branch node updates for subsequent blocks' unfold operations.
+	// Branch updates from ProcessUpdates are already handled by putBranchFn
+	// during fold(). Only handle deletions (empty branch data) here.
 	for k, v := range branchUpdates {
-		if len(v) > 0 {
-			m.branches[k] = v
-		} else {
+		if len(v) == 0 {
 			delete(m.branches, k)
 		}
+		// Non-empty entries are already stored by putBranchFn.
 	}
 
 	var h types.Hash

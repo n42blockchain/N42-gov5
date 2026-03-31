@@ -71,6 +71,10 @@ type HexPatriciaHashed struct {
 	accountFn func(plainKey []byte, cell *Cell) error
 	// Function used to fetch storage with given plain key
 	storageFn func(plainKey []byte, cell *Cell) error
+	// Optional callback: immediately persist branch data during fold().
+	// Without this, branch data from fold() is only available in the
+	// ProcessUpdates return value, causing unfold() within the same call to fail.
+	putBranchFn func(updateKey []byte, branchData []byte)
 
 	hashAuxBuffer [128]byte     // buffer to compute cell hash or write hash-related things
 	auxBuffer     *bytes.Buffer // auxiliary buffer used during branch updates encoding

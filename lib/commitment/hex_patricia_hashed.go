@@ -464,6 +464,9 @@ func (hph *HexPatriciaHashed) ReviewKeys(plainKeys, hashedKeys [][]byte) (rootHa
 				return nil, nil, fmt.Errorf("fold: %w", err)
 			} else if branchData != nil {
 				branchNodeUpdates[string(updateKey)] = branchData
+				if hph.putBranchFn != nil {
+					hph.putBranchFn(updateKey, branchData)
+				}
 			}
 		}
 		// Now unfold until we step on an empty cell
@@ -523,6 +526,14 @@ func (hph *HexPatriciaHashed) ReviewKeys(plainKeys, hashedKeys [][]byte) (rootHa
 }
 
 func (hph *HexPatriciaHashed) SetTrace(trace bool) { hph.trace = trace }
+
+// SetPutBranchFn sets a callback invoked during fold() to immediately persist
+// branch data. This is essential when using ProcessUpdates — without it,
+// unfold() within the same ProcessUpdates call cannot find branch data
+// produced by earlier fold() calls in the same invocation.
+func (hph *HexPatriciaHashed) SetPutBranchFn(fn func(updateKey []byte, branchData []byte)) {
+	hph.putBranchFn = fn
+}
 
 func (hph *HexPatriciaHashed) Variant() TrieVariant { return VariantHexPatriciaTrie }
 
@@ -743,6 +754,9 @@ func (hph *HexPatriciaHashed) ProcessUpdates(plainKeys, hashedKeys [][]byte, upd
 				return nil, nil, fmt.Errorf("fold: %w", err)
 			} else if branchData != nil {
 				branchNodeUpdates[string(updateKey)] = branchData
+				if hph.putBranchFn != nil {
+					hph.putBranchFn(updateKey, branchData)
+				}
 			}
 		}
 		// Now unfold until we step on an empty cell
