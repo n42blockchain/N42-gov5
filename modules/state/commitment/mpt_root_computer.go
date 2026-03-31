@@ -21,48 +21,77 @@ import (
 //
 // The HexPatriciaHashed trie internally uses Keccak256 for key hashing and
 // RLP for account encoding — no external encoding adaptation needed.
+// MPTBranchStore provides read/write access to MPT branch nodes.
+// Implementations can use MDBX (production) or in-memory map (testing).
+type MPTBranchStore interface {
+	GetBranch(prefix []byte) ([]byte, error)
+	PutBranch(prefix []byte, data []byte) error
+}
+
+// memBranchStore is an in-memory branch store with LRU eviction.
+type memBranchStore struct {
+	data map[string][]byte
+}
+
+func newMemBranchStore() *memBranchStore {
+	return &memBranchStore{data: make(map[string][]byte)}
+}
+
+func (s *memBranchStore) GetBranch(prefix []byte) ([]byte, error) {
+	if d, ok := s.data[string(prefix)]; ok {
+		return d, nil
+	}
+	return nil, nil
+}
+
+func (s *memBranchStore) PutBranch(prefix []byte, data []byte) error {
+	if len(data) == 0 {
+		delete(s.data, string(prefix))
+	} else {
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		s.data[string(prefix)] = cp
+	}
+	return nil
+}
+
+func (s *memBranchStore) Len() int { return len(s.data) }
+
 type MPTRootComputer struct {
 	trie     *libcommit.HexPatriciaHashed
-	branches map[string][]byte // in-memory branch node store
+	branches *memBranchStore
 }
 
 // NewMPTRootComputer creates a root computer backed by HexPatriciaHashed.
-// Branch node data is stored in memory across blocks. Account/storage
-// callbacks return "not found" — all data comes through Updates.
 func NewMPTRootComputer() *MPTRootComputer {
 	m := &MPTRootComputer{
-		branches: make(map[string][]byte),
+		branches: newMemBranchStore(),
 	}
 
-	// Branch callback: load previously-folded branch nodes from in-memory store.
 	branchFn := func(prefix []byte) ([]byte, error) {
-		if data, ok := m.branches[string(prefix)]; ok {
-			return data, nil
-		}
-		return nil, nil
+		return m.branches.GetBranch(prefix)
 	}
-	// Account/storage callbacks: not needed — all data comes through Updates.
 	accountFn := func(plainKey []byte, cell *libcommit.Cell) error { return nil }
 	storageFn := func(plainKey []byte, cell *libcommit.Cell) error { return nil }
 
 	m.trie = libcommit.NewHexPatriciaHashed(length.Addr, branchFn, accountFn, storageFn)
 
-	// Immediately persist branch data during fold() so unfold() within
-	// the same ProcessUpdates call can find it.
 	// EncodeBranch produces [touchMap:2B][afterMap:2B][cells...].
 	// unfoldBranchNode expects [afterMap:2B][cells...] (touchMap stripped).
 	m.trie.SetPutBranchFn(func(updateKey []byte, branchData []byte) {
 		if len(branchData) < 4 {
 			return
 		}
-		// Skip touchMap (first 2 bytes), store from afterMap onwards.
 		stripped := branchData[2:]
-		cp := make([]byte, len(stripped))
-		copy(cp, stripped)
-		m.branches[string(updateKey)] = cp
+		m.branches.PutBranch(updateKey, stripped)
 	})
 
 	return m
+}
+
+// BranchCount returns the number of stored branch nodes (for monitoring).
+func (m *MPTRootComputer) BranchCount() int {
+	return m.branches.Len()
 }
 
 // ResetTrie resets HPH internal state between batches while preserving
@@ -176,9 +205,8 @@ func (m *MPTRootComputer) ComputeRoot(
 	// during fold(). Only handle deletions (empty branch data) here.
 	for k, v := range branchUpdates {
 		if len(v) == 0 {
-			delete(m.branches, k)
+			m.branches.PutBranch([]byte(k), nil)
 		}
-		// Non-empty entries are already stored by putBranchFn.
 	}
 
 	var h types.Hash

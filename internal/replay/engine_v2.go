@@ -617,6 +617,12 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 						if h+m == 0 { return "0%" }
 						return fmt.Sprintf("%.1f%%", float64(h)/float64(h+m)*100)
 					}(),
+					"mptBranches", func() int {
+						if rc, ok := e.mptRC.(*commitment.MPTRootComputer); ok {
+							return rc.BranchCount()
+						}
+						return 0
+					}(),
 						"elapsed", elapsed.Round(time.Second),
 					)
 				}
