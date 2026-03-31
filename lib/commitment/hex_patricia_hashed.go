@@ -81,14 +81,18 @@ func (hph *HexPatriciaHashed) unfoldBranchNode(row int, deleted bool, depth int)
 	if err != nil {
 		return false, err
 	}
-	if len(branchData) == 0 {
-		if !hph.rootChecked && hph.currentKeyLen == 0 {
-			hph.rootChecked = true
-		}
+	if !hph.rootChecked && hph.currentKeyLen == 0 && len(branchData) == 0 {
+		// Special case - empty or deleted root
+		hph.rootChecked = true
 		return false, nil
 	}
-	if len(branchData) < 2 {
-		return false, fmt.Errorf("branchData too short: %d bytes at key %x", len(branchData), hexToCompact(hph.currentKey[:hph.currentKeyLen]))
+	if len(branchData) == 0 {
+		// No branch data at this prefix. Treat as an empty branch —
+		// set branchBefore but leave touchMap/afterMap as 0 so no cells
+		// are processed. This allows activeRows to increment and breaks
+		// the unfold loop (prevents infinite loop).
+		hph.branchBefore[row] = false
+		return true, nil // "unfolded" an empty node
 	}
 	hph.branchBefore[row] = true
 	bitmap := binary.BigEndian.Uint16(branchData[0:])
