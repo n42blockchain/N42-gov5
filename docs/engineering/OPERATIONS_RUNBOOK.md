@@ -3,6 +3,11 @@
 > 更新日期：2026-03-17
 > 适用范围：当前主仓可执行 gate，对应 `make maturity-baseline`、`make ops-smoke`、`make interop-smoke`、`make soak-smoke`、`make release-check`
 
+说明：
+
+1. `make maturity-baseline` 只跑包级 gate，不启动临时节点。
+2. `make interop-smoke` 会启动临时 `n42 --ethdev` 节点，再执行 RPC / Blockscout / Hive / EEST 互操作检查。
+
 ---
 
 ## 1. 发布前基线
@@ -40,6 +45,11 @@
 1. `make ops-smoke`
 2. `make interop-smoke`
 
+其中：
+
+1. `ops-smoke` 面向当前节点运行时指标和短压测。
+2. `interop-smoke` 面向 Ethereum EL 私链互操作，固定使用临时 `--ethdev` 节点。
+
 ## 3. 升级步骤
 
 1. 在待发布代码上执行 `make release-check`。
@@ -47,7 +57,7 @@
 3. 停节点，替换二进制与配置。
 4. 启动节点后执行健康检查。
 5. 观察 metrics / pprof / RPC 至少一个短周期。
-6. 如是 Engine 对接环境，再执行一次 `make interop-smoke` 或至少跑 Hive `engine-auth`。
+6. 如是 Engine 对接环境，再执行一次 `make interop-smoke` 或至少跑 Hive `engine-auth`；这里的 interop gate 会临时起一条 `--ethdev` 节点，不复用线上 datadir。
 
 ## 4. 回滚步骤
 

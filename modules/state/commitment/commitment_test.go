@@ -88,11 +88,10 @@ func TestAccountEncodingRoundTrip(t *testing.T) {
 	}
 	original.Balance.SetUint64(1000000)
 	original.CodeHash = types.BytesHash([]byte("code"))
-	original.Root = types.BytesHash([]byte("root"))
 
 	encoded := EncodeAccountValue(original)
-	if len(encoded) != accountEncodingSize {
-		t.Fatalf("expected %d bytes, got %d", accountEncodingSize, len(encoded))
+	if len(encoded) == 0 {
+		t.Fatal("encoded account should not be empty")
 	}
 
 	var decoded account.StateAccount
@@ -115,9 +114,6 @@ func TestAccountEncodingRoundTrip(t *testing.T) {
 	if decoded.CodeHash != original.CodeHash {
 		t.Fatal("CodeHash mismatch")
 	}
-	if decoded.Root != original.Root {
-		t.Fatal("Root mismatch")
-	}
 }
 
 func TestAccountEncodingZeroValues(t *testing.T) {
@@ -127,8 +123,33 @@ func TestAccountEncodingZeroValues(t *testing.T) {
 	if err := DecodeAccountValue(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Initialised || decoded.Nonce != 0 || !decoded.Balance.IsZero() {
+	// V2 encoding: DecodeForStorageV2 calls Reset() which sets Initialised=true.
+	// All value fields should still be zero.
+	if decoded.Nonce != 0 || !decoded.Balance.IsZero() || decoded.Incarnation != 0 {
 		t.Fatal("zero account should decode to zero values")
+	}
+}
+
+func TestAccountEncodingCompactness(t *testing.T) {
+	// V2 variable-length encoding should be much smaller than the old 107 bytes.
+	a := &account.StateAccount{
+		Initialised: true,
+		Nonce:       42,
+		Incarnation: 3,
+	}
+	a.Balance.SetUint64(1000000)
+	a.CodeHash = types.BytesHash([]byte("code"))
+
+	encoded := EncodeAccountValue(a)
+	if len(encoded) >= 107 {
+		t.Fatalf("V2 encoding should be less than 107 bytes, got %d", len(encoded))
+	}
+
+	// Empty account should be 1 byte.
+	empty := &account.StateAccount{}
+	emptyEncoded := EncodeAccountValue(empty)
+	if len(emptyEncoded) != 1 {
+		t.Fatalf("empty V2 encoding should be 1 byte, got %d", len(emptyEncoded))
 	}
 }
 

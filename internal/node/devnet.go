@@ -28,7 +28,7 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-// devnetGenesisBlock creates a full-featured genesis for --dev / private mode.
+// devnetGenesisBlock creates the N42 full-featured genesis for --dev / private mode.
 // All forks through Osaka are activated at genesis so that every subsystem
 // (JMT, PQ crypto, parallel execution, HotStuff-2, EIP-4844 blobs, EIP-2935
 // history, EIP-7702 AA, metrics, etc.) is exercised from block 0.
@@ -125,6 +125,75 @@ func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
 		Config:   chainConfig,
 		Alloc:    alloc,
 		Miners:   miners,
+		GasLimit: 30_000_000,
+	}
+}
+
+// ethDevGenesisBlock creates a minimal Ethereum EL private-chain genesis for
+// --ethdev / --profile eth --chain private. It keeps the surface standard:
+// Faker consensus for local single-process sealing, standard Ethereum forks
+// through Osaka active from genesis, and no N42-specific precompile toggles.
+func ethDevGenesisBlock(cfg *conf.Config) *conf.Genesis {
+	zero := big.NewInt(0)
+	chainConfig := &params.ChainConfig{
+		ChainID:                       big.NewInt(1337),
+		Consensus:                     params.Faker,
+		HomesteadBlock:                zero,
+		TangerineWhistleBlock:         zero,
+		SpuriousDragonBlock:           zero,
+		ByzantiumBlock:                zero,
+		ConstantinopleBlock:           zero,
+		PetersburgBlock:               zero,
+		IstanbulBlock:                 zero,
+		MuirGlacierBlock:              zero,
+		BerlinBlock:                   zero,
+		LondonBlock:                   zero,
+		TerminalTotalDifficulty:       zero,
+		TerminalTotalDifficultyPassed: true,
+		MergeNetsplitBlock:            zero,
+		ShanghaiTime:                  zero,
+		CancunTime:                    zero,
+		PragueTime:                    zero,
+		OsakaTime:                     zero,
+		BlobSchedule: &params.BlobSchedule{
+			Cancun: &params.BlobConfig{
+				Target:                uint64Ptr(3),
+				Max:                   uint64Ptr(6),
+				BaseFeeUpdateFraction: uint64Ptr(params.BlobTxBlobGaspriceUpdateFraction),
+			},
+			Prague: &params.BlobConfig{
+				Target:                uint64Ptr(6),
+				Max:                   uint64Ptr(9),
+				BaseFeeUpdateFraction: uint64Ptr(5007716),
+			},
+			Osaka: &params.BlobConfig{
+				Target:                uint64Ptr(6),
+				Max:                   uint64Ptr(9),
+				BaseFeeUpdateFraction: uint64Ptr(5007716),
+			},
+		},
+	}
+
+	alloc := make(conf.GenesisAlloc)
+	if cfg.Miner.Etherbase != "" {
+		addr := types.HexToAddress(cfg.Miner.Etherbase)
+		alloc[addr] = conf.GenesisAccount{
+			Balance: "1000000000000000000000000000", // 1B ETH
+		}
+	}
+
+	for _, deployment := range internalcore.PragueSystemContractDeployments() {
+		alloc[deployment.Address] = deployment.Account
+	}
+	alloc[params.BeaconRootsAddress] = conf.GenesisAccount{
+		Balance: "0x0",
+		Nonce:   1,
+		Code:    params.BeaconRootsCode,
+	}
+
+	return &conf.Genesis{
+		Config:   chainConfig,
+		Alloc:    alloc,
 		GasLimit: 30_000_000,
 	}
 }

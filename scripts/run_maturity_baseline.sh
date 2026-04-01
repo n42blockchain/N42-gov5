@@ -5,10 +5,13 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 result_root="${MATURITY_RESULTS_DIR:-$repo_root/build/maturity-baseline}"
 mode="smoke"
+execution_model="package-test baseline (no ephemeral node boot)"
 
 usage() {
   cat <<'EOF'
 Usage: scripts/run_maturity_baseline.sh [--full] [--result-dir DIR]
+
+This script records package-level smoke/core gates only. It does not boot a node.
 
 Options:
   --full            Run the focused smoke suite plus core baseline gates.
@@ -157,6 +160,7 @@ fi
   echo "- Go: \`$go_version\`"
   echo "- Repo: \`$repo_root\`"
   echo "- Run dir: \`$run_dir\`"
+  echo "- Execution model: \`$execution_model\`"
   echo "- Overall status: \`$( [[ $overall_rc -eq 0 ]] && echo PASS || echo FAIL )\`"
   echo
   echo "## Surface Smoke"

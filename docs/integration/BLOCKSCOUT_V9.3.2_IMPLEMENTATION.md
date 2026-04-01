@@ -33,7 +33,7 @@ N42 blockchain now provides **full compatibility** with Blockscout v9.3.2, the l
 - ✅ `eth_getCode` - Contract bytecode
 - ✅ `eth_getStorageAt` - Contract storage
 - ✅ `eth_getTransactionCount` - Account nonce
-- ✅ `eth_getProof` - Merkle proof
+- ✅ `eth_getProof` - JMT-based account/storage proof data (partial EIP-1186 semantics)
 
 #### Block Methods (5 methods)
 - ✅ `eth_getBlockByNumber` - Block by number

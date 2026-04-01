@@ -363,6 +363,62 @@ func TestEntireCloneHandlesNilHeaderAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestEntireCloneDeepCopiesHeaderForkPointers(t *testing.T) {
+	withdrawalsHash := types.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	parentBeaconRoot := types.HexToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	requestsHash := types.HexToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+	blobGasUsed := uint64(3)
+	excessBlobGas := uint64(5)
+
+	original := Entire{
+		Header: &block.Header{
+			Number:           uint256.NewInt(100),
+			Difficulty:       uint256.NewInt(0),
+			BaseFee:          uint256.NewInt(1),
+			WithdrawalsHash:  &withdrawalsHash,
+			BlobGasUsed:      &blobGasUsed,
+			ExcessBlobGas:    &excessBlobGas,
+			ParentBeaconRoot: &parentBeaconRoot,
+			RequestsHash:     &requestsHash,
+		},
+	}
+	original.Header.Hash()
+
+	cloned := original.Clone()
+	if cloned.Header == nil {
+		t.Fatal("Clone should preserve header")
+	}
+	if cloned.Header.WithdrawalsHash == original.Header.WithdrawalsHash {
+		t.Fatal("Clone should deep copy WithdrawalsHash")
+	}
+	if cloned.Header.BlobGasUsed == original.Header.BlobGasUsed {
+		t.Fatal("Clone should deep copy BlobGasUsed")
+	}
+	if cloned.Header.ExcessBlobGas == original.Header.ExcessBlobGas {
+		t.Fatal("Clone should deep copy ExcessBlobGas")
+	}
+	if cloned.Header.ParentBeaconRoot == original.Header.ParentBeaconRoot {
+		t.Fatal("Clone should deep copy ParentBeaconRoot")
+	}
+	if cloned.Header.RequestsHash == original.Header.RequestsHash {
+		t.Fatal("Clone should deep copy RequestsHash")
+	}
+
+	*cloned.Header.BlobGasUsed = 9
+	*cloned.Header.WithdrawalsHash = types.HexToHash("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+	cloned.Header.Number = uint256.NewInt(101)
+
+	if *original.Header.BlobGasUsed != blobGasUsed {
+		t.Fatalf("original BlobGasUsed mutated to %d", *original.Header.BlobGasUsed)
+	}
+	if *original.Header.WithdrawalsHash != withdrawalsHash {
+		t.Fatalf("original WithdrawalsHash mutated to %s", original.Header.WithdrawalsHash.Hex())
+	}
+	if cloned.Header.Hash() == original.Header.Hash() {
+		t.Fatal("Clone should not reuse cached header hash")
+	}
+}
+
 // =============================================================================
 // Item Tests
 // =============================================================================

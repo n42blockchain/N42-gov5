@@ -5,6 +5,7 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -39,5 +40,12 @@ func TestExecutionPayloadV1ToBlockUsesEthereumRawTransactionsRoot(t *testing.T) 
 	}
 	if blk.TxHash() != wantRoot {
 		t.Fatalf("TxHash() = %s, want %s", blk.TxHash(), wantRoot)
+	}
+}
+
+func TestBuildExecutionPayloadV1UsesEthereumEmptyReceiptRoot(t *testing.T) {
+	payload := buildExecutionPayloadV1(nil, types.Hash{}, &PayloadAttributesV1{}, nil)
+	if payload.ReceiptsRoot != hash.EmptyRootHash {
+		t.Fatalf("ReceiptsRoot = %s, want %s", payload.ReceiptsRoot, hash.EmptyRootHash)
 	}
 }

@@ -45,18 +45,25 @@ type Header struct {
 	Root        avmutil.Hash    `json:"stateRoot"        gencodec:"required"`
 	TxHash      avmutil.Hash    `json:"transactionsRoot" gencodec:"required"`
 	ReceiptHash avmutil.Hash    `json:"receiptsRoot"     gencodec:"required"`
-	Bloom       Bloom          `json:"logsBloom"        gencodec:"required"`
-	Difficulty  *big.Int       `json:"difficulty"       gencodec:"required"`
-	Number      *big.Int       `json:"number"           gencodec:"required"`
-	GasLimit    uint64         `json:"gasLimit"         gencodec:"required"`
-	GasUsed     uint64         `json:"gasUsed"          gencodec:"required"`
-	Time        uint64         `json:"timestamp"        gencodec:"required"`
-	Extra       []byte         `json:"extraData"        gencodec:"required"`
+	Bloom       Bloom           `json:"logsBloom"        gencodec:"required"`
+	Difficulty  *big.Int        `json:"difficulty"       gencodec:"required"`
+	Number      *big.Int        `json:"number"           gencodec:"required"`
+	GasLimit    uint64          `json:"gasLimit"         gencodec:"required"`
+	GasUsed     uint64          `json:"gasUsed"          gencodec:"required"`
+	Time        uint64          `json:"timestamp"        gencodec:"required"`
+	Extra       []byte          `json:"extraData"        gencodec:"required"`
 	MixDigest   avmutil.Hash    `json:"mixHash"`
-	Nonce       BlockNonce     `json:"nonce"`
+	Nonce       BlockNonce      `json:"nonce"`
 
 	// BaseFee was added by EIP-1559 and is ignored in legacy headers.
 	BaseFee *big.Int `json:"baseFeePerGas" rlp:"optional"`
+
+	// Post-London Ethereum header extensions.
+	WithdrawalsHash  *avmutil.Hash `json:"withdrawalsRoot,omitempty" rlp:"optional"`
+	BlobGasUsed      *uint64       `json:"blobGasUsed,omitempty" rlp:"optional"`
+	ExcessBlobGas    *uint64       `json:"excessBlobGas,omitempty" rlp:"optional"`
+	ParentBeaconRoot *avmutil.Hash `json:"parentBeaconBlockRoot,omitempty" rlp:"optional"`
+	RequestsHash     *avmutil.Hash `json:"requestsHash,omitempty" rlp:"optional"`
 }
 
 // Hash returns the block hash of the header, which is simply the keccak256 hash of its
@@ -86,23 +93,28 @@ func (h *Header) Size() avmutil.StorageSize {
 // MarshalJSON marshals as JSON.
 func (h Header) MarshalJSON() ([]byte, error) {
 	type Header struct {
-		ParentHash  avmutil.Hash    `json:"parentHash"       gencodec:"required"`
-		UncleHash   avmutil.Hash    `json:"sha3Uncles"       gencodec:"required"`
-		Coinbase    avmutil.Address `json:"miner"`
-		Root        avmutil.Hash    `json:"stateRoot"        gencodec:"required"`
-		TxHash      avmutil.Hash    `json:"transactionsRoot" gencodec:"required"`
-		ReceiptHash avmutil.Hash    `json:"receiptsRoot"     gencodec:"required"`
-		Bloom       Bloom          `json:"logsBloom"        gencodec:"required"`
-		Difficulty  *hexutil.Big   `json:"difficulty"       gencodec:"required"`
-		Number      *hexutil.Big   `json:"number"           gencodec:"required"`
-		GasLimit    hexutil.Uint64 `json:"gasLimit"         gencodec:"required"`
-		GasUsed     hexutil.Uint64 `json:"gasUsed"          gencodec:"required"`
-		Time        hexutil.Uint64 `json:"timestamp"        gencodec:"required"`
-		Extra       hexutil.Bytes  `json:"extraData"        gencodec:"required"`
-		MixDigest   avmutil.Hash    `json:"mixHash"`
-		Nonce       BlockNonce     `json:"nonce"`
-		BaseFee     *hexutil.Big   `json:"baseFeePerGas" rlp:"optional"`
-		Hash        avmutil.Hash    `json:"hash"`
+		ParentHash       avmutil.Hash    `json:"parentHash"       gencodec:"required"`
+		UncleHash        avmutil.Hash    `json:"sha3Uncles"       gencodec:"required"`
+		Coinbase         avmutil.Address `json:"miner"`
+		Root             avmutil.Hash    `json:"stateRoot"        gencodec:"required"`
+		TxHash           avmutil.Hash    `json:"transactionsRoot" gencodec:"required"`
+		ReceiptHash      avmutil.Hash    `json:"receiptsRoot"     gencodec:"required"`
+		Bloom            Bloom           `json:"logsBloom"        gencodec:"required"`
+		Difficulty       *hexutil.Big    `json:"difficulty"       gencodec:"required"`
+		Number           *hexutil.Big    `json:"number"           gencodec:"required"`
+		GasLimit         hexutil.Uint64  `json:"gasLimit"         gencodec:"required"`
+		GasUsed          hexutil.Uint64  `json:"gasUsed"          gencodec:"required"`
+		Time             hexutil.Uint64  `json:"timestamp"        gencodec:"required"`
+		Extra            hexutil.Bytes   `json:"extraData"        gencodec:"required"`
+		MixDigest        avmutil.Hash    `json:"mixHash"`
+		Nonce            BlockNonce      `json:"nonce"`
+		BaseFee          *hexutil.Big    `json:"baseFeePerGas" rlp:"optional"`
+		WithdrawalsHash  *avmutil.Hash   `json:"withdrawalsRoot,omitempty" rlp:"optional"`
+		BlobGasUsed      *hexutil.Uint64 `json:"blobGasUsed,omitempty" rlp:"optional"`
+		ExcessBlobGas    *hexutil.Uint64 `json:"excessBlobGas,omitempty" rlp:"optional"`
+		ParentBeaconRoot *avmutil.Hash   `json:"parentBeaconBlockRoot,omitempty" rlp:"optional"`
+		RequestsHash     *avmutil.Hash   `json:"requestsHash,omitempty" rlp:"optional"`
+		Hash             avmutil.Hash    `json:"hash"`
 	}
 	var enc Header
 	enc.ParentHash = h.ParentHash
@@ -121,6 +133,11 @@ func (h Header) MarshalJSON() ([]byte, error) {
 	enc.MixDigest = h.MixDigest
 	enc.Nonce = h.Nonce
 	enc.BaseFee = (*hexutil.Big)(h.BaseFee)
+	enc.WithdrawalsHash = h.WithdrawalsHash
+	enc.BlobGasUsed = uint64PtrToHexutil(h.BlobGasUsed)
+	enc.ExcessBlobGas = uint64PtrToHexutil(h.ExcessBlobGas)
+	enc.ParentBeaconRoot = h.ParentBeaconRoot
+	enc.RequestsHash = h.RequestsHash
 	enc.Hash = h.Hash()
 	return json.Marshal(&enc)
 }
@@ -128,22 +145,27 @@ func (h Header) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON unmarshals from JSON.
 func (h *Header) UnmarshalJSON(input []byte) error {
 	type Header struct {
-		ParentHash  *avmutil.Hash    `json:"parentHash"       gencodec:"required"`
-		UncleHash   *avmutil.Hash    `json:"sha3Uncles"       gencodec:"required"`
-		Coinbase    *avmutil.Address `json:"miner"`
-		Root        *avmutil.Hash    `json:"stateRoot"        gencodec:"required"`
-		TxHash      *avmutil.Hash    `json:"transactionsRoot" gencodec:"required"`
-		ReceiptHash *avmutil.Hash    `json:"receiptsRoot"     gencodec:"required"`
-		Bloom       *Bloom          `json:"logsBloom"        gencodec:"required"`
-		Difficulty  *hexutil.Big    `json:"difficulty"       gencodec:"required"`
-		Number      *hexutil.Big    `json:"number"           gencodec:"required"`
-		GasLimit    *hexutil.Uint64 `json:"gasLimit"         gencodec:"required"`
-		GasUsed     *hexutil.Uint64 `json:"gasUsed"          gencodec:"required"`
-		Time        *hexutil.Uint64 `json:"timestamp"        gencodec:"required"`
-		Extra       *hexutil.Bytes  `json:"extraData"        gencodec:"required"`
-		MixDigest   *avmutil.Hash    `json:"mixHash"`
-		Nonce       *BlockNonce     `json:"nonce"`
-		BaseFee     *hexutil.Big    `json:"baseFeePerGas" rlp:"optional"`
+		ParentHash       *avmutil.Hash    `json:"parentHash"       gencodec:"required"`
+		UncleHash        *avmutil.Hash    `json:"sha3Uncles"       gencodec:"required"`
+		Coinbase         *avmutil.Address `json:"miner"`
+		Root             *avmutil.Hash    `json:"stateRoot"        gencodec:"required"`
+		TxHash           *avmutil.Hash    `json:"transactionsRoot" gencodec:"required"`
+		ReceiptHash      *avmutil.Hash    `json:"receiptsRoot"     gencodec:"required"`
+		Bloom            *Bloom           `json:"logsBloom"        gencodec:"required"`
+		Difficulty       *hexutil.Big     `json:"difficulty"       gencodec:"required"`
+		Number           *hexutil.Big     `json:"number"           gencodec:"required"`
+		GasLimit         *hexutil.Uint64  `json:"gasLimit"         gencodec:"required"`
+		GasUsed          *hexutil.Uint64  `json:"gasUsed"          gencodec:"required"`
+		Time             *hexutil.Uint64  `json:"timestamp"        gencodec:"required"`
+		Extra            *hexutil.Bytes   `json:"extraData"        gencodec:"required"`
+		MixDigest        *avmutil.Hash    `json:"mixHash"`
+		Nonce            *BlockNonce      `json:"nonce"`
+		BaseFee          *hexutil.Big     `json:"baseFeePerGas" rlp:"optional"`
+		WithdrawalsHash  *avmutil.Hash    `json:"withdrawalsRoot,omitempty" rlp:"optional"`
+		BlobGasUsed      *hexutil.Uint64  `json:"blobGasUsed,omitempty" rlp:"optional"`
+		ExcessBlobGas    *hexutil.Uint64  `json:"excessBlobGas,omitempty" rlp:"optional"`
+		ParentBeaconRoot *avmutil.Hash    `json:"parentBeaconBlockRoot,omitempty" rlp:"optional"`
+		RequestsHash     *avmutil.Hash    `json:"requestsHash,omitempty" rlp:"optional"`
 	}
 	var dec Header
 	if err := json.Unmarshal(input, &dec); err != nil {
@@ -209,5 +231,26 @@ func (h *Header) UnmarshalJSON(input []byte) error {
 	if dec.BaseFee != nil {
 		h.BaseFee = (*big.Int)(dec.BaseFee)
 	}
+	h.WithdrawalsHash = dec.WithdrawalsHash
+	h.BlobGasUsed = hexutilUint64PtrToUint64(dec.BlobGasUsed)
+	h.ExcessBlobGas = hexutilUint64PtrToUint64(dec.ExcessBlobGas)
+	h.ParentBeaconRoot = dec.ParentBeaconRoot
+	h.RequestsHash = dec.RequestsHash
 	return nil
+}
+
+func uint64PtrToHexutil(v *uint64) *hexutil.Uint64 {
+	if v == nil {
+		return nil
+	}
+	u := hexutil.Uint64(*v)
+	return &u
+}
+
+func hexutilUint64PtrToUint64(v *hexutil.Uint64) *uint64 {
+	if v == nil {
+		return nil
+	}
+	u := uint64(*v)
+	return &u
 }

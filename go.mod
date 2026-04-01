@@ -15,6 +15,7 @@ require (
 	github.com/deckarep/golang-set/v2 v2.8.0
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/erigontech/mdbx-go v0.40.0
+	github.com/ethereum/go-ethereum v1.16.7
 	github.com/fjl/gencodec v0.1.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-kit/kit v0.13.0
@@ -29,7 +30,7 @@ require (
 	github.com/hashicorp/golang-lru v1.0.2
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/holiman/bloomfilter/v2 v2.0.3
-	github.com/holiman/uint256 v1.2.3 // DO NOT UPGRADE: v1.3+ changes MarshalJSON format, breaking MainnetGenesisHash (0x138734b7...)
+	github.com/holiman/uint256 v1.3.2 // resolved via replace below to v1.2.3 to preserve current MarshalJSON/MainnetGenesisHash semantics
 	github.com/kr/pretty v0.3.1
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/libp2p/go-libp2p-kad-dht v0.38.0
@@ -64,6 +65,8 @@ require (
 	gopkg.in/yaml.v2 v2.4.0
 )
 
+replace github.com/holiman/uint256 => github.com/holiman/uint256 v1.2.3
+
 require (
 	github.com/anacrolix/dht/v2 v2.23.0
 	github.com/anacrolix/go-libutp v1.3.2
@@ -73,6 +76,7 @@ require (
 	github.com/crate-crypto/go-eth-kzg v1.5.0
 	github.com/edsrzf/mmap-go v1.2.0
 	github.com/erigontech/erigon-snapshot v1.3.0
+	github.com/erigontech/fastkeccak v0.1.0
 	github.com/erigontech/interfaces v0.0.0-20260309190044-b1ca32817912
 	github.com/erigontech/secp256k1 v1.2.0
 	github.com/erigontech/speedtest v0.0.2
@@ -82,6 +86,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
 	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/puzpuzpuz/xsync/v4 v4.4.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/rs/dnscache v0.0.0-20230804202142-fc85eb664529
 	github.com/shirou/gopsutil/v4 v4.26.2
@@ -98,6 +103,8 @@ require (
 )
 
 require (
+	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
+	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/ajwerner/btree v0.1.1 // indirect
 	github.com/alecthomas/atomic v0.1.0-alpha2 // indirect
 	github.com/anacrolix/chansync v0.7.0 // indirect
@@ -125,6 +132,7 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
+	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
@@ -132,7 +140,11 @@ require (
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
+	github.com/emicklei/dot v1.6.2 // indirect
+	github.com/ethereum/c-kzg-4844/v2 v2.1.5 // indirect
+	github.com/ethereum/go-verkle v0.2.2 // indirect
 	github.com/felixge/fgprof v0.9.5 // indirect
+	github.com/ferranbt/fastssz v0.1.4 // indirect
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
 	github.com/garslo/gogen v0.0.0-20230926014519-f497ca02dd4c // indirect
@@ -197,6 +209,7 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/nxadm/tail v1.4.11 // indirect
+	github.com/olekukonko/tablewriter v0.0.5 // indirect
 	github.com/opencontainers/runtime-spec v1.3.0 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
@@ -233,6 +246,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
+	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect

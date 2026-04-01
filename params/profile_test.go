@@ -106,6 +106,9 @@ func TestResolveExecutionProfileDefaultsToN42(t *testing.T) {
 	if !p.SupportsConsensus(CliqueConsensus) || !p.SupportsConsensus(Faker) {
 		t.Fatal("expected n42 profile to support shared consensus engines")
 	}
+	if p.SupportsConsensus(EtHashConsensus) {
+		t.Fatal("expected n42 profile not to support ethash consensus")
+	}
 }
 
 func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
@@ -155,7 +158,7 @@ func TestResolveExecutionProfileEthereumAliases(t *testing.T) {
 			if p.SupportsConsensus(AposConsensu) || p.SupportsConsensus(HotStuffConsensus) {
 				t.Fatal("expected ethereum EL profile not to support n42 consensus engines")
 			}
-			if !p.SupportsConsensus(CliqueConsensus) || !p.SupportsConsensus(Faker) {
+			if !p.SupportsConsensus(CliqueConsensus) || !p.SupportsConsensus(Faker) || !p.SupportsConsensus(EtHashConsensus) {
 				t.Fatal("expected ethereum EL profile to support shared consensus engines")
 			}
 		})

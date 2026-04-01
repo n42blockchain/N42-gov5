@@ -286,7 +286,7 @@ Operators can split data across storage tiers via `storage_tier` config:
 
 - Nodes stored as hash+data word pairs in `lib/seg/` compressed segments
 - `lib/recsplit/` RecSplit index provides O(1) lookup by node hash
-- Enables `eth_getProof` for historical blocks from compressed archives
+- Provides the storage/index foundation for historical JMT proof serving from compressed archives
 
 ### JMT Performance
 

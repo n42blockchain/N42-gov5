@@ -62,8 +62,7 @@ type Entire struct {
 func (e Entire) Clone() Entire {
 	c := Entire{}
 	if e.Header != nil {
-		copyHeader := *e.Header
-		c.Header = &copyHeader
+		c.Header = block.CopyHeader(e.Header)
 	}
 	c.Proof = e.Proof
 

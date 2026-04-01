@@ -58,6 +58,7 @@ run_step soak-smoke "$run_dir/soak-smoke.log" bash scripts/run_soak_smoke.sh
   echo
   echo "- Generated at: \`$(date -u +"%Y-%m-%d %H:%M:%SZ")\`"
   echo "- Run dir: \`$run_dir\`"
+  echo "- Interop node mode: \`--ethdev\`"
   echo "- Overall status: \`$( [[ $overall_rc -eq 0 ]] && echo PASS || echo FAIL )\`"
   echo
   echo "| Step | Status | Duration | Command | Log |"

@@ -44,8 +44,8 @@ func TestRandomnessPrecompileAddress(t *testing.T) {
 func TestRandomnessGetRandom(t *testing.T) {
 	// Set a known randomness value.
 	r := crypto.Keccak256Hash([]byte("test-randomness"))
-	SetBlockRandomness(r)
-	defer SetBlockRandomness(types.Hash{})
+	SetBlockRandomness(1, r)
+	defer SetBlockRandomness(0, types.Hash{})
 
 	c := &randomnessBeacon{}
 	input := []byte{rngGetRandom}
@@ -66,8 +66,8 @@ func TestRandomnessGetRandom(t *testing.T) {
 
 func TestRandomnessGetRandomInRange(t *testing.T) {
 	r := crypto.Keccak256Hash([]byte("range-test"))
-	SetBlockRandomness(r)
-	defer SetBlockRandomness(types.Hash{})
+	SetBlockRandomness(1, r)
+	defer SetBlockRandomness(0, types.Hash{})
 
 	c := &randomnessBeacon{}
 
@@ -111,8 +111,8 @@ func TestRandomnessGetRandomInRangeZeroMax(t *testing.T) {
 
 func TestRandomnessGetRandomWithSeed(t *testing.T) {
 	r := crypto.Keccak256Hash([]byte("seed-test"))
-	SetBlockRandomness(r)
-	defer SetBlockRandomness(types.Hash{})
+	SetBlockRandomness(1, r)
+	defer SetBlockRandomness(0, types.Hash{})
 
 	c := &randomnessBeacon{}
 
@@ -203,7 +203,7 @@ func TestRandomnessGas(t *testing.T) {
 
 func TestRandomnessNoBackend(t *testing.T) {
 	// With zero randomness (default), getRandom should return keccak256(zeroHash).
-	SetBlockRandomness(types.Hash{})
+	SetBlockRandomness(0, types.Hash{})
 	c := &randomnessBeacon{}
 
 	out, err := c.Run([]byte{rngGetRandom})

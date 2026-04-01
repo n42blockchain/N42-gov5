@@ -296,7 +296,7 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 		}
 
 		if ce := h.Engine(); ce != nil {
-			vs := ce.CurrentValidatorSet()
+			vs := ce.ValidatorSetForView(qc.View)
 			if vs != nil && !vs.IsEmpty() {
 				if vErr := VerifyQCAnyDomain(qc, vs); vErr != nil {
 					return fmt.Errorf("QC verification failed: %w", vErr)
@@ -409,16 +409,17 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 	var rewards []*block.Reward
 	var unpayMap map[types.Address]*uint256.Int
 
-	if h.rewardFn != nil {
-		n42Chain, ok := chain.(consensus.N42ChainHeaderReader)
-		if !ok {
-			return nil, nil, errors.New("hotstuff reward path requires n42 chain reward reader")
-		}
-		var err error
-		rewards, unpayMap, err = h.rewardFn(h.chainConfig, ibs, header, n42Chain)
-		if err != nil {
-			return nil, nil, err
-		}
+	if h.rewardFn == nil {
+		return nil, nil, errors.New("hotstuff: reward function not set; call SetRewardFunc before block production")
+	}
+	n42Chain, ok := chain.(consensus.N42ChainHeaderReader)
+	if !ok {
+		return nil, nil, errors.New("hotstuff reward path requires n42 chain reward reader")
+	}
+	var err error
+	rewards, unpayMap, err = h.rewardFn(h.chainConfig, ibs, header, n42Chain)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	header.Root = ibs.IntermediateRoot()

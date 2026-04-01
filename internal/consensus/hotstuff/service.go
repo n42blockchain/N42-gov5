@@ -62,7 +62,8 @@ type Service struct {
 	gossipTopic string // fully qualified gossip topic string
 	rpcTopic    string // fully qualified RPC topic string
 
-	blockProducer BlockProducer
+	blockProducer    BlockProducer
+	slashingExecutor *SlashingExecutor
 
 	// Rotor single-hop relay for proposal broadcast.
 	rotor *Rotor
@@ -109,6 +110,11 @@ func (s *Service) SetBlockProducer(bp BlockProducer) {
 	s.blockProducer = bp
 }
 
+// SetSlashingExecutor injects the equivocation slashing executor.
+func (s *Service) SetSlashingExecutor(se *SlashingExecutor) {
+	s.slashingExecutor = se
+}
+
 // SetEpochSchedule sets the epoch schedule for pre-staging future validator sets.
 func (s *Service) SetEpochSchedule(schedule *EpochSchedule) {
 	s.epochSchedule = schedule
@@ -131,6 +137,11 @@ func (s *Service) Start() error {
 		if err := s.recoverState(); err != nil {
 			log.Warn("hotstuff: failed to recover persisted state", "err", err)
 		}
+	}
+
+	// Auto-stop pacemaker timer on service shutdown.
+	if ce := s.engine.Engine(); ce != nil {
+		ce.Pacemaker().WatchContext(s.ctx)
 	}
 
 	// Register Rotor relay stream handler for direct validator messaging.
@@ -201,6 +212,15 @@ func (s *Service) handleOutput(output EngineOutput) {
 		}
 		s.persistState()
 
+		// Process pending equivocation slashing.
+		if s.slashingExecutor != nil {
+			if n, err := s.slashingExecutor.ProcessPendingSlashing(s.ctx); err != nil {
+				log.Error("hotstuff: slashing execution failed", "err", err)
+			} else if n > 0 {
+				log.Warn("hotstuff: validators slashed for equivocation", "count", n)
+			}
+		}
+
 		// Derive block randomness from CommitQC aggregate signature.
 		// The CommitQC requires 2f+1 signers, making the aggregate signature
 		// unpredictable by any single validator (threshold VUF).
@@ -214,7 +234,7 @@ func (s *Service) handleOutput(output EngineOutput) {
 			copy(randomInput, output.QC.AggregateSignature)
 			copy(randomInput[sigLen:], buf[:])
 			randomness := crypto.Keccak256Hash(randomInput)
-			vm.SetBlockRandomness(randomness)
+			vm.SetBlockRandomness(uint64(output.View), randomness)
 		}
 	case OutputViewChanged:
 		log.Debug("hotstuff: view changed", "view", output.View)
@@ -513,7 +533,14 @@ func (s *Service) persistState() {
 	}
 
 	if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
-		return SaveConsensusState(tx, state)
+		if err := SaveConsensusState(tx, state); err != nil {
+			return err
+		}
+		// Atomically persist staged epoch data in the same transaction.
+		if epoch, validators, f, ok := ce.StagedEpochInfoSafe(); ok {
+			return SaveStagedEpoch(tx, epoch, validators, f)
+		}
+		return nil
 	}); err != nil {
 		log.Warn("hotstuff: failed to persist state", "err", err)
 		return

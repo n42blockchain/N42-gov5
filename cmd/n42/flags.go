@@ -53,6 +53,7 @@ const (
 // 最简单的启动方式：
 //   n42                          # 启动主网全节点
 //   n42 --testnet                # 启动测试网节点
+//   n42 --ethdev                 # 启动 Ethereum EL 私有链模式
 //   n42 --http                   # 启用 RPC（默认 127.0.0.1:8545）
 //
 // 常用组合：
@@ -77,11 +78,26 @@ var QuickStartFlags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:     "dev",
-		Usage:    "启动开发者模式 (本地单节点，无需同步)",
+		Usage:    "启动 N42 开发者模式 (本地单节点，无需同步，JMT/HotStuff)",
 		Category: "QUICK START",
 		Action: func(ctx *cli.Context, b bool) error {
 			if b {
 				DefaultConfig.NodeCfg.Chain = "private"
+				DefaultConfig.NodeCfg.Profile = "n42"
+				DefaultConfig.P2PCfg.NoDiscovery = true
+				DefaultConfig.P2PCfg.MaxPeers = 0
+			}
+			return nil
+		},
+	},
+	&cli.BoolFlag{
+		Name:     "ethdev",
+		Usage:    "启动 Ethereum EL 私有链模式 (本地单节点，无需同步，Hive/EEST 推荐)",
+		Category: "QUICK START",
+		Action: func(ctx *cli.Context, b bool) error {
+			if b {
+				DefaultConfig.NodeCfg.Chain = "private"
+				DefaultConfig.NodeCfg.Profile = "eth"
 				DefaultConfig.P2PCfg.NoDiscovery = true
 				DefaultConfig.P2PCfg.MaxPeers = 0
 			}
@@ -104,15 +120,15 @@ var QuickStartFlags = []cli.Flag{
 
 	// 常用别名
 	&cli.BoolFlag{
-		Name:     "mine",
-		Usage:    "启用挖矿/验证 (等同于 --engine.miner)",
-		Category: "QUICK START",
+		Name:        "mine",
+		Usage:       "启用挖矿/验证 (等同于 --engine.miner)",
+		Category:    "QUICK START",
 		Destination: &DefaultConfig.NodeCfg.Miner,
 	},
 	&cli.StringFlag{
-		Name:     "etherbase",
-		Usage:    "挖矿奖励接收地址 (等同于 --engine.etherbase)",
-		Category: "QUICK START",
+		Name:        "etherbase",
+		Usage:       "挖矿奖励接收地址 (等同于 --engine.etherbase)",
+		Category:    "QUICK START",
 		Destination: &DefaultConfig.Miner.Etherbase,
 	},
 

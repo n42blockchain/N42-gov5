@@ -17,6 +17,7 @@
 package block
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -24,6 +25,8 @@ import (
 
 	"github.com/holiman/uint256"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/n42blockchain/N42/lib/rlp"
 
 	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/hash"
@@ -78,6 +81,12 @@ func (r Rewards) Less(i, j int) bool {
 
 func (r Rewards) Swap(i, j int) {
 	r[i], r[j] = r[j], r[i]
+}
+
+// EncodeIndex implements DerivableList for computing withdrawalsRoot via DeriveSha.
+// Encoding: RLP([address(20B), amount(big.Int)])
+func (r Rewards) EncodeIndex(i int, w *bytes.Buffer) {
+	rlp.Encode(w, []interface{}{r[i].Address, r[i].Amount.ToBig()})
 }
 
 func (r *Reward) ToProtoMessage() proto.Message {

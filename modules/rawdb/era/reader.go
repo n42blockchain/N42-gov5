@@ -145,9 +145,9 @@ func (r *Reader) ReadRecord(blockNumber uint64) (blockData, receiptsData []byte,
 	}
 	offset += 8
 
-	// Read block data.
-	blockData = make([]byte, blockLen)
-	if _, err := r.file.ReadAt(blockData, offset); err != nil {
+	// Read compressed block data.
+	compressedBlock := make([]byte, blockLen)
+	if _, err := r.file.ReadAt(compressedBlock, offset); err != nil {
 		return nil, nil, fmt.Errorf("era: read block data: %w", err)
 	}
 	offset += int64(blockLen)
@@ -162,10 +162,20 @@ func (r *Reader) ReadRecord(blockNumber uint64) (blockData, receiptsData []byte,
 	}
 	offset += 8
 
-	// Read receipts data.
-	receiptsData = make([]byte, receiptsLen)
-	if _, err := r.file.ReadAt(receiptsData, offset); err != nil {
+	// Read compressed receipts data.
+	compressedReceipts := make([]byte, receiptsLen)
+	if _, err := r.file.ReadAt(compressedReceipts, offset); err != nil {
 		return nil, nil, fmt.Errorf("era: read receipts data: %w", err)
+	}
+
+	// Decompress both payloads.
+	blockData, err = decompressRecord(compressedBlock)
+	if err != nil {
+		return nil, nil, fmt.Errorf("era: decompress block data: %w", err)
+	}
+	receiptsData, err = decompressRecord(compressedReceipts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("era: decompress receipts data: %w", err)
 	}
 
 	return blockData, receiptsData, nil

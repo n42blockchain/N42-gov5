@@ -9,12 +9,19 @@ result_root="${INTEROP_RESULTS_DIR:-$repo_root/build/interop-smoke}"
 http_port="${INTEROP_HTTP_PORT:-38565}"
 metrics_port="${INTEROP_METRICS_PORT:-39081}"
 pprof_port="${INTEROP_PPROF_PORT:-39080}"
+node_mode_flag="--ethdev"
+execution_model="ephemeral Ethereum EL private node"
+stub_mode="${INTEROP_SMOKE_STUB:-0}"
+stub_fail_step="${INTEROP_SMOKE_STUB_FAIL_STEP:-}"
 run_id="${INTEROP_RUN_ID:-$(smoke_timestamp)}"
 run_dir="$result_root/$run_id"
 
 usage() {
   cat <<'EOF'
 Usage: scripts/run_interop_smoke.sh [--result-dir DIR]
+
+This script boots a temporary n42 node in Ethereum EL private mode (\`--ethdev\`)
+before running RPC / Blockscout / Hive / EEST interop checks.
 EOF
 }
 
@@ -56,6 +63,45 @@ cleanup() {
 }
 trap cleanup EXIT
 
+run_stub_step() {
+  local step="$1"
+
+  if [[ "$stub_mode" != "1" ]]; then
+    return 2
+  fi
+
+  case "$step" in
+    build-node)
+      mkdir -p "$(dirname "$n42_bin")"
+      : >"$n42_bin"
+      ;;
+    start-node)
+      mkdir -p "$data_dir"
+      : >"$password_file"
+      : >"$node_log"
+      etherbase="0x1111111111111111111111111111111111111111"
+      ;;
+    rpc-smoke|blockscout-smoke|shutdown)
+      ;;
+    hive-engine-auth)
+      mkdir -p "$run_dir/hive-auth-results"
+      ;;
+    eest-collect)
+      mkdir -p "$run_dir/eest-collect"
+      ;;
+    *)
+      echo "unknown stub step: $step" >&2
+      return 1
+      ;;
+  esac
+
+  if [[ -n "$stub_fail_step" && "$stub_fail_step" == "$step" ]]; then
+    echo "stubbed failure at $step" >&2
+    return 1
+  fi
+  return 0
+}
+
 record_step() {
   local name="$1"
   local status="$2"
@@ -89,18 +135,38 @@ run_step() {
 }
 
 build_node_step() {
+  if [[ "$stub_mode" == "1" ]]; then
+    run_stub_step build-node
+    return $?
+  fi
   smoke_build_binary "$n42_bin" ./cmd/n42
 }
 
 start_node_step() {
+  if [[ "$stub_mode" == "1" ]]; then
+    run_stub_step start-node
+    return $?
+  fi
   mkdir -p "$data_dir"
   : >"$password_file"
   etherbase="$(smoke_create_account "$n42_bin" "$data_dir" "$password_file")"
-  node_pid="$(smoke_start_dev_node "$n42_bin" "$data_dir" "$password_file" "$etherbase" "$http_port" "$metrics_port" "$pprof_port" "$node_log")"
+  case "$node_mode_flag" in
+    --ethdev)
+      node_pid="$(smoke_start_ethdev_node "$n42_bin" "$data_dir" "$password_file" "$etherbase" "$http_port" "$metrics_port" "$pprof_port" "$node_log")"
+      ;;
+    *)
+      echo "unsupported interop node mode: $node_mode_flag" >&2
+      return 2
+      ;;
+  esac
   smoke_wait_for_rpc "$rpc_url" "$node_pid" "$node_log" 60
 }
 
 rpc_smoke_step() {
+  if [[ "$stub_mode" == "1" ]]; then
+    run_stub_step rpc-smoke
+    return $?
+  fi
   smoke_rpc_assert_result "$rpc_url" eth_blockNumber "[]" >/dev/null
   smoke_rpc_assert_result "$rpc_url" eth_chainId "[]" >/dev/null
   smoke_rpc_assert_result "$rpc_url" eth_getBlockByNumber '["latest", false]' >/dev/null
@@ -109,6 +175,10 @@ rpc_smoke_step() {
 }
 
 blockscout_smoke_step() {
+  if [[ "$stub_mode" == "1" ]]; then
+    run_stub_step blockscout-smoke
+    return $?
+  fi
   smoke_rpc_assert_result "$rpc_url" eth_getCode '["0x0000000000000000000000000000000000000000","latest"]' >/dev/null
   smoke_rpc_assert_result "$rpc_url" eth_getLogs '[{"fromBlock":"0x0","toBlock":"latest"}]' >/dev/null
   smoke_rpc_assert_result "$rpc_url" eth_call '[{"to":"0x0000000000000000000000000000000000000000"},"latest"]' >/dev/null
@@ -116,6 +186,10 @@ blockscout_smoke_step() {
 }
 
 hive_auth_step() {
+  if [[ "$stub_mode" == "1" ]]; then
+    run_stub_step hive-engine-auth
+    return $?
+  fi
   local results_dir="$run_dir/hive-auth-results"
   local attempt
   mkdir -p "$results_dir"
@@ -148,6 +222,10 @@ hive_auth_step() {
 }
 
 eest_collect_step() {
+  if [[ "$stub_mode" == "1" ]]; then
+    run_stub_step eest-collect
+    return $?
+  fi
   local results_dir="$run_dir/eest-collect"
   mkdir -p "$results_dir"
   (
@@ -162,6 +240,11 @@ eest_collect_step() {
 }
 
 shutdown_step() {
+  if [[ "$stub_mode" == "1" ]]; then
+    run_stub_step shutdown
+    node_pid=""
+    return $?
+  fi
   smoke_stop_process "$node_pid"
   node_pid=""
 }
@@ -180,6 +263,8 @@ run_step shutdown "$run_dir/shutdown.log" shutdown_step || true
   echo "- Generated at: \`$(date -u +"%Y-%m-%d %H:%M:%SZ")\`"
   echo "- Run dir: \`$run_dir\`"
   echo "- RPC URL: \`$rpc_url\`"
+  echo "- Execution model: \`$execution_model\`"
+  echo "- Node mode: \`$node_mode_flag\`"
   echo "- Hive auth: \`tests/eth-hive --sim ethereum/engine --sim.limit engine-auth/\`"
   echo "- EEST collect input: \`stable@latest\`"
   echo "- Overall status: \`$( [[ $overall_rc -eq 0 ]] && echo PASS || echo FAIL )\`"

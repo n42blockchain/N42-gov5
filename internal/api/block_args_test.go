@@ -82,8 +82,8 @@ func TestRPCMarshalHeaderOmitsPostForkFieldsBeforeShanghai(t *testing.T) {
 		Number:        uint256.NewInt(0),
 		Time:          9,
 		BaseFee:       uint256.NewInt(1),
-		BlobGasUsed:   11,
-		ExcessBlobGas: 22,
+		BlobGasUsed:   ptrToUint64(11),
+		ExcessBlobGas: ptrToUint64(22),
 	}
 	cfg := &params.ChainConfig{
 		LondonBlock:   big.NewInt(0),
@@ -140,8 +140,8 @@ func TestRPCMarshalHeaderIncludesBlobFieldsAtCancun(t *testing.T) {
 		Number:        uint256.NewInt(20),
 		Time:          9,
 		BaseFee:       uint256.NewInt(1),
-		BlobGasUsed:   11,
-		ExcessBlobGas: 22,
+		BlobGasUsed:   ptrToUint64(11),
+		ExcessBlobGas: ptrToUint64(22),
 	}
 	cfg := &params.ChainConfig{
 		LondonBlock:   big.NewInt(0),
@@ -179,8 +179,8 @@ func TestRPCMarshalHeaderIncludesRequestsHashAtPrague(t *testing.T) {
 		Number:        uint256.NewInt(0),
 		Time:          0,
 		BaseFee:       uint256.NewInt(1),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(0),
 	}
 	cfg := &params.ChainConfig{
 		LondonBlock:   big.NewInt(0),
@@ -212,8 +212,8 @@ func TestEthCompatibleHeaderHashMatchesHiveGenesisSample(t *testing.T) {
 		Time:          0x1234,
 		Extra:         hexutil.MustDecode("0x0000000000000000000000000000000000000000000000000000000000000000658bdf435d810c91414ec09147daa6db624063790000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"),
 		BaseFee:       uint256.MustFromHex("0x3b9aca00"),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(0),
 		Bloom:         block.BytesToBloom(make([]byte, 256)),
 		Nonce:         block.EncodeNonce(0),
 	}
@@ -244,8 +244,8 @@ func TestEthCompatibleHeaderHashMatchesCancunConsumeEngineGenesisSample(t *testi
 		Time:          0,
 		Extra:         hexutil.MustDecode("0x00"),
 		BaseFee:       uint256.NewInt(7),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(0),
 		Bloom:         block.BytesToBloom(make([]byte, 256)),
 		Nonce:         block.EncodeNonce(0),
 	}
@@ -276,8 +276,8 @@ func TestEthCompatibleHeaderHashMatchesConsumeEngineGenesisSample(t *testing.T) 
 		Time:          0,
 		Extra:         hexutil.MustDecode("0x00"),
 		BaseFee:       uint256.NewInt(7),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(0),
 		Bloom:         block.BytesToBloom(make([]byte, 256)),
 		Nonce:         block.EncodeNonce(0),
 	}
@@ -307,8 +307,8 @@ func TestEthCompatibleHeaderHashIncludesRequestsHashAtPrague(t *testing.T) {
 		Time:          0,
 		Extra:         hexutil.MustDecode("0x00"),
 		BaseFee:       uint256.NewInt(7),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(0),
 		Bloom:         block.BytesToBloom(make([]byte, 256)),
 		Nonce:         block.EncodeNonce(0),
 	}
@@ -337,8 +337,8 @@ func TestEthCompatibleHeaderHashIncludesRequestsHashAtPrague(t *testing.T) {
 		Nonce:            block.EncodeNonce(header.Nonce.Uint64()),
 		BaseFee:          header.BaseFee.ToBig(),
 		WithdrawalsHash:  ptrToHash(withdrawalsRoot(nil)),
-		BlobGasUsed:      ptrToUint64(header.BlobGasUsed),
-		ExcessBlobGas:    ptrToUint64(header.ExcessBlobGas),
+		BlobGasUsed:      header.BlobGasUsed,
+		ExcessBlobGas:    header.ExcessBlobGas,
 		ParentBeaconRoot: ptrToHash(types.Hash{}),
 		RequestsHash:     &requestsHash,
 	})

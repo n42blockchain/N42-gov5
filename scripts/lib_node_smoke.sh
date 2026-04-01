@@ -67,6 +67,36 @@ smoke_start_dev_node() {
   printf '%s\n' "$!"
 }
 
+smoke_start_ethdev_node() {
+  local bin="$1"
+  local datadir="$2"
+  local password_file="$3"
+  local etherbase="$4"
+  local http_port="$5"
+  local metrics_port="$6"
+  local pprof_port="$7"
+  local log_file="$8"
+
+  "$bin" \
+    --ethdev \
+    --mine \
+    --etherbase "$etherbase" \
+    --data.dir "$datadir" \
+    --http \
+    --http.addr 127.0.0.1 \
+    --http.port "$http_port" \
+    --http.api "eth,net,web3,txpool,debug" \
+    --metrics \
+    --metrics.addr 127.0.0.1 \
+    --metrics.port "$metrics_port" \
+    --pprof \
+    --pprof.port "$pprof_port" \
+    --password "$password_file" \
+    --log.level warn \
+    >"$log_file" 2>&1 &
+  printf '%s\n' "$!"
+}
+
 smoke_wait_for_rpc() {
   local rpc_url="$1"
   local pid="$2"

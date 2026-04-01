@@ -633,7 +633,7 @@ func (c *Apoa) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 		return nil, nil, errors.New("invalid header type: expected *block.Header")
 	}
 	rawHeader.Root = state.IntermediateRoot()
-	rawHeader.LtHashRoot = state.LtHashRoot()
+	// LtHashRoot moved to Extra: // rawHeader.LtHashRoot = state.LtHashRoot()
 	return nil, nil, nil
 }
 

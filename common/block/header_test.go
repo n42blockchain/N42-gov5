@@ -21,8 +21,18 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+	commonhash "github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
+
+func uint64Ptr(v uint64) *uint64 {
+	return &v
+}
+
+func hashPtr(v types.Hash) *types.Hash {
+	return &v
+}
 
 func TestBlockNonceSize(t *testing.T) {
 	var nonce BlockNonce
@@ -244,6 +254,69 @@ func TestCopyHeaderNilFields(t *testing.T) {
 	}
 }
 
+func TestCopyHeaderDeepCopiesForkFieldsAndResetsHashCache(t *testing.T) {
+	withdrawalsHash := types.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	parentBeaconRoot := types.HexToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	requestsHash := types.HexToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+	blobGasUsed := uint64(7)
+	excessBlobGas := uint64(11)
+
+	original := &Header{
+		Number:           uint256.NewInt(1),
+		Difficulty:       uint256.NewInt(0),
+		BaseFee:          uint256.NewInt(1),
+		WithdrawalsHash:  &withdrawalsHash,
+		BlobGasUsed:      &blobGasUsed,
+		ExcessBlobGas:    &excessBlobGas,
+		ParentBeaconRoot: &parentBeaconRoot,
+		RequestsHash:     &requestsHash,
+	}
+	originalHash := original.Hash()
+
+	copied := CopyHeader(original)
+	if copied.WithdrawalsHash == original.WithdrawalsHash {
+		t.Fatal("CopyHeader should deep copy WithdrawalsHash")
+	}
+	if copied.BlobGasUsed == original.BlobGasUsed {
+		t.Fatal("CopyHeader should deep copy BlobGasUsed")
+	}
+	if copied.ExcessBlobGas == original.ExcessBlobGas {
+		t.Fatal("CopyHeader should deep copy ExcessBlobGas")
+	}
+	if copied.ParentBeaconRoot == original.ParentBeaconRoot {
+		t.Fatal("CopyHeader should deep copy ParentBeaconRoot")
+	}
+	if copied.RequestsHash == original.RequestsHash {
+		t.Fatal("CopyHeader should deep copy RequestsHash")
+	}
+
+	*copied.BlobGasUsed = 99
+	*copied.ExcessBlobGas = 101
+	*copied.WithdrawalsHash = types.HexToHash("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+	*copied.ParentBeaconRoot = types.HexToHash("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+	*copied.RequestsHash = types.HexToHash("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	copied.Number = uint256.NewInt(2)
+
+	if *original.BlobGasUsed != blobGasUsed {
+		t.Fatalf("original BlobGasUsed mutated to %d", *original.BlobGasUsed)
+	}
+	if *original.ExcessBlobGas != excessBlobGas {
+		t.Fatalf("original ExcessBlobGas mutated to %d", *original.ExcessBlobGas)
+	}
+	if *original.WithdrawalsHash != withdrawalsHash {
+		t.Fatalf("original WithdrawalsHash mutated to %s", original.WithdrawalsHash.Hex())
+	}
+	if *original.ParentBeaconRoot != parentBeaconRoot {
+		t.Fatalf("original ParentBeaconRoot mutated to %s", original.ParentBeaconRoot.Hex())
+	}
+	if *original.RequestsHash != requestsHash {
+		t.Fatalf("original RequestsHash mutated to %s", original.RequestsHash.Hex())
+	}
+	if copied.Hash() == originalHash {
+		t.Fatal("CopyHeader should reset cached hash on the copy")
+	}
+}
+
 func TestCopyReward(t *testing.T) {
 	rewards := []*Reward{
 		{
@@ -288,6 +361,7 @@ func TestCopyRewardEmpty(t *testing.T) {
 func TestHeaderMarshalUnmarshal(t *testing.T) {
 	original := &Header{
 		ParentHash:  types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		UncleHash:   types.HexToHash("0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"),
 		Coinbase:    types.HexToAddress("0x1234567890123456789012345678901234567890"),
 		Root:        types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
 		TxHash:      types.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111"),
@@ -323,6 +397,9 @@ func TestHeaderMarshalUnmarshal(t *testing.T) {
 	if decoded.Coinbase != original.Coinbase {
 		t.Error("Marshal/Unmarshal: Coinbase mismatch")
 	}
+	if decoded.UncleHash != original.UncleHash {
+		t.Error("Marshal/Unmarshal: UncleHash mismatch")
+	}
 	if decoded.Number.Cmp(original.Number) != 0 {
 		t.Error("Marshal/Unmarshal: Number mismatch")
 	}
@@ -343,6 +420,50 @@ func TestHeaderMarshalUnmarshal(t *testing.T) {
 	}
 }
 
+func TestHeaderMarshalUnmarshalPreservesForkFieldPresence(t *testing.T) {
+	withdrawalsHash := types.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	parentBeaconRoot := types.HexToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	requestsHash := types.HexToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+
+	original := &Header{
+		UncleHash:        types.HexToHash("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+		Number:           uint256.NewInt(1),
+		Difficulty:       uint256.NewInt(0),
+		BaseFee:          uint256.NewInt(1),
+		WithdrawalsHash:  &withdrawalsHash,
+		BlobGasUsed:      uint64Ptr(0),
+		ExcessBlobGas:    uint64Ptr(0),
+		ParentBeaconRoot: &parentBeaconRoot,
+		RequestsHash:     &requestsHash,
+	}
+
+	data, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Header.Marshal error: %v", err)
+	}
+
+	decoded := &Header{}
+	if err := decoded.Unmarshal(data); err != nil {
+		t.Fatalf("Header.Unmarshal error: %v", err)
+	}
+
+	if decoded.BlobGasUsed == nil || *decoded.BlobGasUsed != 0 {
+		t.Fatalf("Marshal/Unmarshal: BlobGasUsed = %v, want explicit zero", decoded.BlobGasUsed)
+	}
+	if decoded.ExcessBlobGas == nil || *decoded.ExcessBlobGas != 0 {
+		t.Fatalf("Marshal/Unmarshal: ExcessBlobGas = %v, want explicit zero", decoded.ExcessBlobGas)
+	}
+	if decoded.WithdrawalsHash == nil || *decoded.WithdrawalsHash != withdrawalsHash {
+		t.Fatalf("Marshal/Unmarshal: WithdrawalsHash = %v, want %s", decoded.WithdrawalsHash, withdrawalsHash.Hex())
+	}
+	if decoded.ParentBeaconRoot == nil || *decoded.ParentBeaconRoot != parentBeaconRoot {
+		t.Fatalf("Marshal/Unmarshal: ParentBeaconRoot = %v, want %s", decoded.ParentBeaconRoot, parentBeaconRoot.Hex())
+	}
+	if decoded.RequestsHash == nil || *decoded.RequestsHash != requestsHash {
+		t.Fatalf("Marshal/Unmarshal: RequestsHash = %v, want %s", decoded.RequestsHash, requestsHash.Hex())
+	}
+}
+
 func TestHeaderUnmarshalInvalidData(t *testing.T) {
 	h := &Header{}
 	err := h.Unmarshal([]byte{0x00, 0x01, 0x02})
@@ -353,17 +474,63 @@ func TestHeaderUnmarshalInvalidData(t *testing.T) {
 
 func TestHeaderToProtoMessage(t *testing.T) {
 	h := &Header{
-		ParentHash: types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
-		Number:     uint256.NewInt(100),
-		GasLimit:   8000000,
-		Time:       1234567890,
-		Difficulty: uint256.NewInt(1000),
-		BaseFee:    uint256.NewInt(1000000000),
+		ParentHash:      types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		UncleHash:       types.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111"),
+		Number:          uint256.NewInt(100),
+		GasLimit:        8000000,
+		Time:            1234567890,
+		Difficulty:      uint256.NewInt(1000),
+		BaseFee:         uint256.NewInt(1000000000),
+		BlobGasUsed:     uint64Ptr(0),
+		RequestsHash:    hashPtr(types.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222")),
+		WithdrawalsHash: hashPtr(types.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333")),
 	}
 
-	proto := h.ToProtoMessage()
-	if proto == nil {
+	protoMsg := h.ToProtoMessage()
+	if protoMsg == nil {
 		t.Error("Header.ToProtoMessage should not return nil")
+	}
+	protoHeader, ok := protoMsg.(*types_pb.Header)
+	if !ok {
+		t.Fatalf("Header.ToProtoMessage type = %T, want *types_pb.Header", protoMsg)
+	}
+	if protoHeader.UncleHash == nil {
+		t.Fatal("Header.ToProtoMessage should populate UncleHash")
+	}
+	if !protoHeader.HasBlobGasUsed || protoHeader.BlobGasUsed != 0 {
+		t.Fatalf("Header.ToProtoMessage should preserve explicit zero blob gas presence, got has=%v value=%d", protoHeader.HasBlobGasUsed, protoHeader.BlobGasUsed)
+	}
+	if protoHeader.WithdrawalsHash == nil {
+		t.Fatal("Header.ToProtoMessage should populate WithdrawalsHash")
+	}
+	if protoHeader.RequestsHash == nil {
+		t.Fatal("Header.ToProtoMessage should populate RequestsHash")
+	}
+}
+
+func TestHeaderFromProtoMessageBackfillsLegacyBlobPresenceAndEmptyUncles(t *testing.T) {
+	h := &Header{}
+	legacyProto := (&Header{
+		Number:     uint256.NewInt(1),
+		Difficulty: uint256.NewInt(0),
+		BaseFee:    uint256.NewInt(0),
+	}).ToProtoMessage().(*types_pb.Header)
+	legacyProto.UncleHash = nil
+	legacyProto.BlobGasUsed = 9
+	legacyProto.ExcessBlobGas = 12
+
+	err := h.FromProtoMessage(legacyProto)
+	if err != nil {
+		t.Fatalf("Header.FromProtoMessage error: %v", err)
+	}
+	if h.UncleHash != commonhash.EmptyUncleHash {
+		t.Fatalf("Header.FromProtoMessage UncleHash = %s, want empty uncle hash", h.UncleHash.Hex())
+	}
+	if h.BlobGasUsed == nil || *h.BlobGasUsed != 9 {
+		t.Fatalf("Header.FromProtoMessage BlobGasUsed = %v, want 9", h.BlobGasUsed)
+	}
+	if h.ExcessBlobGas == nil || *h.ExcessBlobGas != 12 {
+		t.Fatalf("Header.FromProtoMessage ExcessBlobGas = %v, want 12", h.ExcessBlobGas)
 	}
 }
 

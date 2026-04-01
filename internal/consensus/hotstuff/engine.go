@@ -118,6 +118,9 @@ type ConsensusEngine struct {
 	// Timing
 	viewTiming         ViewTiming
 	lastCommittedTiming *ViewTiming
+
+	// Set when this validator is removed at an epoch boundary.
+	removed bool
 }
 
 type futureMsg struct {
@@ -265,6 +268,13 @@ func (e *ConsensusEngine) EpochManager() *EpochManager {
 	return e.epochManager
 }
 
+// ValidatorSetForView returns the correct validator set for verifying QCs at the given view.
+func (e *ConsensusEngine) ValidatorSetForView(view ViewNumber) *ValidatorSet {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.epochManager.ValidatorSetForView(uint64(view))
+}
+
 // StagedEpochInfoSafe returns staged epoch info under the engine lock.
 func (e *ConsensusEngine) StagedEpochInfoSafe() (uint64, []ValidatorInfo, uint32, bool) {
 	e.mu.Lock()
@@ -313,6 +323,9 @@ func (e *ConsensusEngine) ConsecutiveTimeouts() uint32 {
 func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.removed {
+		return ErrValidatorRemoved
+	}
 
 	switch event.Type {
 	case EventMessage:
@@ -330,7 +343,25 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 func (e *ConsensusEngine) OnTimeout() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.removed {
+		return ErrValidatorRemoved
+	}
 	return e.onTimeout()
+}
+
+// SetRemoved marks this engine as removed from the validator set.
+func (e *ConsensusEngine) SetRemoved() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.removed = true
+	e.pacemaker.Stop()
+}
+
+// IsRemoved returns whether this validator has been removed.
+func (e *ConsensusEngine) IsRemoved() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.removed
 }
 
 // ConsensusEvent represents events fed into the consensus engine.
@@ -375,24 +406,20 @@ func (e *ConsensusEngine) emit(output EngineOutput) error {
 	case e.outputCh <- output:
 		return nil
 	default:
-		// For BlockCommitted events, retry with brief sleeps.
-		if output.Type == OutputBlockCommitted {
-			for attempt := 1; attempt <= 3; attempt++ {
-				time.Sleep(time.Millisecond)
-				select {
-				case e.outputCh <- output:
-					log.Warn("BlockCommitted delivered after retry", "attempt", attempt)
-					return nil
-				default:
-				}
-			}
-			log.Error("CRITICAL: BlockCommitted lost after 3 retries")
-		}
-		if output.Type != OutputBlockCommitted {
-			log.Warn("Consensus output dropped (channel full)", "type", output.Type, "view", e.roundState.CurrentView())
-		}
-		return ErrOutputChannelClosed
 	}
+	// Channel full — log and drop. Never sleep with engine lock held.
+	if isCriticalOutput(output.Type) {
+		log.Error("CRITICAL: consensus output channel full, dropping", "type", output.Type, "view", e.roundState.CurrentView())
+	}
+	mxOutputDrops.Inc()
+	log.Warn("consensus output dropped (channel full)", "type", output.Type, "view", e.roundState.CurrentView())
+	return ErrOutputChannelClosed
+}
+
+func isCriticalOutput(t EngineOutputType) bool {
+	return t == OutputBlockCommitted || t == OutputBroadcast ||
+		t == OutputSendToValidator || t == OutputEquivocationDetected ||
+		t == OutputEpochTransition
 }
 
 func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
@@ -429,13 +456,13 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 				} else {
 					log.Warn("This node removed from validator set at epoch boundary",
 						"address", myAddr.Hex(), "epoch", e.epochManager.CurrentEpoch()+1)
-					// Emit removal signal so the outer node can transition to observer mode
-					if err := e.emit(EngineOutput{
+					_ = e.emit(EngineOutput{
 						Type:    OutputEpochTransition,
 						Removed: true,
-					}); err != nil {
-						return err
-					}
+					})
+					e.removed = true
+					e.pacemaker.Stop()
+					return nil // stop consensus participation immediately
 				}
 			}
 		}

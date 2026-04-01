@@ -155,7 +155,7 @@ func VerifyCodeIntegrity(ctx context.Context, db kv.RoDB) error {
 			}
 
 			var acc account.StateAccount
-			if err := acc.Unmarshal(v); err != nil {
+			if err := acc.DecodeForStorage(v); err != nil {
 				continue
 			}
 

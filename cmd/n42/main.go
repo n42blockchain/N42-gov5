@@ -33,11 +33,14 @@ const usageText = `n42 [options] [command]
 快速启动：
   n42                             启动主网全节点
   n42 --testnet                   启动测试网节点
+  n42 --ethdev                    启动 Ethereum EL 私有链模式
   n42 --http                      启用 HTTP RPC (127.0.0.1:8545)
   n42 --http --http.addr 0.0.0.0  对外开放 RPC
 
 数据同步：
   n42 --data.dir /data/n42        指定数据目录
+  n42 init --profile eth --chain eth-mainnet --data.dir /data/eth <genesis.json>
+                                  初始化专用 Ethereum 数据目录
 
 挖矿/验证：
   n42 --mine --etherbase 0x...    启用挖矿

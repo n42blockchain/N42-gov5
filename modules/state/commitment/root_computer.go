@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/jmt"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // JMTRootComputer implements state.RootComputer using the JMT.
@@ -33,6 +34,11 @@ type JMTRootComputer struct {
 // NewJMTRootComputer wraps a JMTCommitment as a RootComputer.
 func NewJMTRootComputer(c *JMTCommitment) *JMTRootComputer {
 	return &JMTRootComputer{commitment: c}
+}
+
+// RootScheme reports that this root computer produces JMT/Blake3 state roots.
+func (*JMTRootComputer) RootScheme() state.RootScheme {
+	return state.RootSchemeJMTBlake3
 }
 
 // ComputeRoot applies all dirty accounts and storage to the JMT and returns

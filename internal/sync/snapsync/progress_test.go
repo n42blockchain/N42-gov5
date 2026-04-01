@@ -165,7 +165,7 @@ func TestParseAccountForTasks(t *testing.T) {
 		Balance:     *uint256.NewInt(1000),
 		CodeHash:    emptyCodeHash,
 	}
-	eoaData, err := eoa.Marshal()
+	eoaData, err := eoa.MarshalV2(), error(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestParseAccountForTasks(t *testing.T) {
 		CodeHash:    contractCodeHash,
 		Incarnation: 1,
 	}
-	contractData, err := contract.Marshal()
+	contractData, err := contract.MarshalV2(), error(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestParseAccountForTasks(t *testing.T) {
 		Incarnation: 3,
 		CodeHash:    emptyCodeHash,
 	}
-	destroyedData, err := destroyedContract.Marshal()
+	destroyedData, err := destroyedContract.MarshalV2(), error(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

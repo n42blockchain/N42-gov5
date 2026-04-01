@@ -20,12 +20,12 @@ func TestVerifyEIP4844Header_Valid(t *testing.T) {
 	expectedExcess := transaction.CalcExcessBlobGas(parentExcessBlobGas, parentBlobGasUsed)
 
 	parent := &block.Header{
-		BlobGasUsed:   parentBlobGasUsed,
-		ExcessBlobGas: parentExcessBlobGas,
+		BlobGasUsed:   u64ptr(parentBlobGasUsed),
+		ExcessBlobGas: u64ptr(parentExcessBlobGas),
 	}
 	child := &block.Header{
-		BlobGasUsed:   params.BlobTxBlobGasPerBlob * 2, // 2 blobs
-		ExcessBlobGas: expectedExcess,
+		BlobGasUsed:   u64ptr(params.BlobTxBlobGasPerBlob * 2), // 2 blobs
+		ExcessBlobGas: u64ptr(expectedExcess),
 	}
 
 	err := VerifyEIP4844Header(parent, child, nil)
@@ -36,13 +36,13 @@ func TestVerifyEIP4844Header_Valid(t *testing.T) {
 
 func TestVerifyEIP4844Header_ZeroBlobs(t *testing.T) {
 	parent := &block.Header{
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   u64ptr(0),
+		ExcessBlobGas: u64ptr(0),
 	}
 	expectedExcess := transaction.CalcExcessBlobGas(0, 0)
 	child := &block.Header{
-		BlobGasUsed:   0,
-		ExcessBlobGas: expectedExcess,
+		BlobGasUsed:   u64ptr(0),
+		ExcessBlobGas: u64ptr(expectedExcess),
 	}
 
 	err := VerifyEIP4844Header(parent, child, nil)
@@ -53,12 +53,12 @@ func TestVerifyEIP4844Header_ZeroBlobs(t *testing.T) {
 
 func TestVerifyEIP4844Header_ExcessBlobGasMismatch(t *testing.T) {
 	parent := &block.Header{
-		BlobGasUsed:   params.BlobTxBlobGasPerBlob * 3,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   u64ptr(params.BlobTxBlobGasPerBlob * 3),
+		ExcessBlobGas: u64ptr(0),
 	}
 	child := &block.Header{
-		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
-		ExcessBlobGas: 999999, // Wrong value
+		BlobGasUsed:   u64ptr(params.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: u64ptr(999999), // Wrong value
 	}
 
 	err := VerifyEIP4844Header(parent, child, nil)
@@ -69,12 +69,12 @@ func TestVerifyEIP4844Header_ExcessBlobGasMismatch(t *testing.T) {
 
 func TestVerifyEIP4844Header_BlobGasExceedsMax(t *testing.T) {
 	parent := &block.Header{
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   u64ptr(0),
+		ExcessBlobGas: u64ptr(0),
 	}
 	child := &block.Header{
-		BlobGasUsed:   params.MaxBlobGasPerBlock + params.BlobTxBlobGasPerBlob, // Exceeds max
-		ExcessBlobGas: transaction.CalcExcessBlobGas(0, 0),
+		BlobGasUsed:   u64ptr(params.MaxBlobGasPerBlock + params.BlobTxBlobGasPerBlob), // Exceeds max
+		ExcessBlobGas: u64ptr(transaction.CalcExcessBlobGas(0, 0)),
 	}
 
 	err := VerifyEIP4844Header(parent, child, nil)
@@ -85,12 +85,12 @@ func TestVerifyEIP4844Header_BlobGasExceedsMax(t *testing.T) {
 
 func TestVerifyEIP4844Header_BlobGasNotMultiple(t *testing.T) {
 	parent := &block.Header{
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   u64ptr(0),
+		ExcessBlobGas: u64ptr(0),
 	}
 	child := &block.Header{
-		BlobGasUsed:   params.BlobTxBlobGasPerBlob + 1, // Not a multiple
-		ExcessBlobGas: transaction.CalcExcessBlobGas(0, 0),
+		BlobGasUsed:   u64ptr(params.BlobTxBlobGasPerBlob + 1), // Not a multiple
+		ExcessBlobGas: u64ptr(transaction.CalcExcessBlobGas(0, 0)),
 	}
 
 	err := VerifyEIP4844Header(parent, child, nil)
@@ -102,12 +102,12 @@ func TestVerifyEIP4844Header_BlobGasNotMultiple(t *testing.T) {
 func TestVerifyEIP4844Header_MaxBlobs(t *testing.T) {
 	// Exactly at the maximum should be valid.
 	parent := &block.Header{
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   u64ptr(0),
+		ExcessBlobGas: u64ptr(0),
 	}
 	child := &block.Header{
-		BlobGasUsed:   params.MaxBlobGasPerBlock,
-		ExcessBlobGas: transaction.CalcExcessBlobGas(0, 0),
+		BlobGasUsed:   u64ptr(params.MaxBlobGasPerBlock),
+		ExcessBlobGas: u64ptr(transaction.CalcExcessBlobGas(0, 0)),
 	}
 
 	err := VerifyEIP4844Header(parent, child, nil)
@@ -124,12 +124,12 @@ func TestVerifyEIP4844Header_ExcessAccumulation(t *testing.T) {
 	expectedExcess := transaction.CalcExcessBlobGas(parentExcess, parentUsed)
 
 	parent := &block.Header{
-		BlobGasUsed:   parentUsed,
-		ExcessBlobGas: parentExcess,
+		BlobGasUsed:   u64ptr(parentUsed),
+		ExcessBlobGas: u64ptr(parentExcess),
 	}
 	child := &block.Header{
-		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
-		ExcessBlobGas: expectedExcess,
+		BlobGasUsed:   u64ptr(params.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: u64ptr(expectedExcess),
 	}
 
 	err := VerifyEIP4844Header(parent, child, nil)
@@ -151,13 +151,13 @@ func TestVerifyEIP4844Header_OsakaReservePrice(t *testing.T) {
 	parent := &block.Header{
 		Time:          1,
 		BaseFee:       uint256.NewInt(108),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 6 * params.BlobTxBlobGasPerBlob,
+		BlobGasUsed:   u64ptr(0),
+		ExcessBlobGas: u64ptr(6 * params.BlobTxBlobGasPerBlob),
 	}
 	child := &block.Header{
 		Time:          2,
-		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
-		ExcessBlobGas: 6 * params.BlobTxBlobGasPerBlob,
+		BlobGasUsed:   u64ptr(params.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: u64ptr(6 * params.BlobTxBlobGasPerBlob),
 	}
 
 	err := VerifyEIP4844Header(parent, child, cfg)
@@ -190,4 +190,8 @@ func TestCalcBlobGasUsed_NonBlobTxs(t *testing.T) {
 	if gas != 0 {
 		t.Fatalf("expected 0 for non-blob transactions, got %d", gas)
 	}
+}
+
+func u64ptr(v uint64) *uint64 {
+	return &v
 }

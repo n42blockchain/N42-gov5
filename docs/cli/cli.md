@@ -31,7 +31,8 @@ COMMANDS:
    help, h  Shows a list of commands or help for one command
 
 GLOBAL OPTIONS:
-   --chain value             The chain to sync (mainnet, testnet, devnet) (default: "mainnet")
+   --chain value             The chain to sync (mainnet, testnet, eth-mainnet, eth-testnet, private) (default: "mainnet")
+   --profile value           Execution profile family (n42, eth)
    --datadir value           Data directory for the databases and keystore (default: "~/.n42")
    --help, -h                show help (default: false)
    --version, -v             print the version (default: false)
@@ -103,4 +104,13 @@ n42 node --datadir /path/to/data
 
 ```bash
 n42 node --chain testnet
+```
+
+### Start an Ethereum EL private chain
+
+```bash
+n42 --ethdev
+
+# Equivalent explicit form
+n42 --profile eth --chain private
 ```

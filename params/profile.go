@@ -78,8 +78,10 @@ func (p ProfileDescriptor) SupportsConfiguredChain(chain string) bool {
 	switch strings.TrimSpace(strings.ToLower(chain)) {
 	case "private":
 		return true
-	case networkname.MainnetChainName, networkname.TestnetChainName, "mainnet_compat":
+	case networkname.MainnetChainName, networkname.TestnetChainName, "mainnet_compat", "mainnet_v2":
 		return p.IsN42()
+	case networkname.EthereumMainnetChainName, networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:
+		return p.IsEthereumEL()
 	default:
 		return false
 	}
@@ -89,6 +91,8 @@ func (p ProfileDescriptor) SupportsConsensus(consensus ConsensusType) bool {
 	switch consensus {
 	case AposConsensu, HotStuffConsensus:
 		return p.IsN42()
+	case EtHashConsensus:
+		return p.IsEthereumEL()
 	case CliqueConsensus, Faker:
 		return true
 	default:

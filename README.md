@@ -59,7 +59,7 @@ Latest validation (2026-03-26): Hive/EEST broad consume-engine shard reruns are 
 - **LtHash Lattice State Digest**: Homomorphic hash for O(k) incremental state verification per block — `newDigest = oldDigest ⊕ BLAKE3_XOF(new) ⊕ BLAKE3_XOF(old)`. 2048-byte digest, 128-bit security. Runs alongside JMT for fast full-validator verification. Fork-gated via `LtHashTime`
 - **PooledDBStore**: Long-lived MDBX read transaction for JMT backing store, replacing per-Get() transaction overhead. Auto-refresh after block commits. Combined with 128K node cache
 - **JMT Batch Flush**: `BatchNodeStore` interface with `PutBatch()` for efficient bulk JMT node writes. `SnapshotDirty()`/`ClearDirty()` for pipeline commitment stage
-- **Haystack JMT Archive**: Compressed historical JMT nodes in seg files with RecSplit O(1) perfect hash index for `eth_getProof` on archived state
+- **Haystack JMT Archive**: Compressed historical JMT nodes in seg files with RecSplit O(1) perfect hash index for historical JMT proof/archive workloads
 
 ### Networking & Sync
 
@@ -79,7 +79,7 @@ Latest validation (2026-03-26): Hive/EEST broad consume-engine shard reruns are 
 
 ### API & Tooling
 
-- **Comprehensive JSON-RPC**: Full Ethereum JSON-RPC including `eth_getProof`, `debug_*`, `trace_*`, Engine API v1-v4, Otterscan, and ZK proof endpoints
+- **Comprehensive JSON-RPC**: Broad Ethereum-style JSON-RPC coverage including `eth_getProof` (JMT-based / partial EIP-1186 semantics), `debug_*`, `trace_*`, Engine API v1-v4, Otterscan, and ZK proof endpoints
 - **MCP Server**: Model Context Protocol server for AI-assisted blockchain interaction with 16+ tools
 - **GraphQL API**: Full GraphQL endpoint with schema-driven queries
 - **RPCDaemon**: Standalone RPC server connecting to core node via gRPC for read scaling

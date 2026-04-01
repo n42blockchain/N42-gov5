@@ -19,7 +19,8 @@ package node
 import "errors"
 
 var (
-	ErrDatadirUsed = errors.New("datadir already used by another process")
-	ErrNodeStopped = errors.New("node not started")
-	ErrNodeRunning = errors.New("node already running")
+	ErrDatadirUsed            = errors.New("datadir already used by another process")
+	ErrDatadirNetworkMismatch = errors.New("datadir network binding mismatch")
+	ErrNodeStopped            = errors.New("node not started")
+	ErrNodeRunning            = errors.New("node already running")
 )

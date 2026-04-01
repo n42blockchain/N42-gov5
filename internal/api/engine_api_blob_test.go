@@ -395,8 +395,8 @@ func TestEngineAPIBlobRejectsGasLimitBelowMinimumWhenParentResolvedViaCurrentHea
 		GasUsed:       0,
 		Time:          0,
 		BaseFee:       uint256.NewInt(7),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(0),
 	}
 	genesisBlock := block.NewBlock(genesisHeader, nil)
 	chain := &canonicalCheckChainStub{
@@ -488,8 +488,8 @@ func TestEngineAPIBlobRejectsStaticExcessBlobGasFromZeroOnBlobsAboveTarget(t *te
 		GasUsed:       0,
 		Time:          1,
 		BaseFee:       uint256.NewInt(1),
-		BlobGasUsed:   7 * params.BlobTxBlobGasPerBlob,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(7 * params.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: ptrToUint64(0),
 	}
 	genesisBlock := block.NewBlock(genesisHeader, nil)
 	chain := &canonicalCheckChainStub{
@@ -502,7 +502,6 @@ func TestEngineAPIBlobRejectsStaticExcessBlobGasFromZeroOnBlobsAboveTarget(t *te
 		ShanghaiBlock: big.NewInt(0),
 		CancunBlock:   big.NewInt(0),
 		PragueTime:    big.NewInt(0),
-		PectraTime:    big.NewInt(0),
 		OsakaTime:     big.NewInt(0),
 	}
 	api := &API{
@@ -559,8 +558,8 @@ func TestEngineAPIBlobAcceptsOsakaReservePriceBoundaryPayload(t *testing.T) {
 		GasUsed:       0,
 		Time:          1,
 		BaseFee:       uint256.NewInt(108),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 6 * params.BlobTxBlobGasPerBlob,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(6 * params.BlobTxBlobGasPerBlob),
 	}
 	genesisBlock := block.NewBlock(genesisHeader, nil)
 	chain := &canonicalCheckChainStub{
@@ -573,7 +572,6 @@ func TestEngineAPIBlobAcceptsOsakaReservePriceBoundaryPayload(t *testing.T) {
 		ShanghaiBlock: big.NewInt(0),
 		CancunBlock:   big.NewInt(0),
 		PragueTime:    big.NewInt(0),
-		PectraTime:    big.NewInt(0),
 		OsakaTime:     big.NewInt(0),
 	}
 	api := &API{
@@ -823,8 +821,8 @@ func newEnginePayloadTestAPI() (*API, types.Hash) {
 		GasUsed:       0,
 		Time:          1,
 		BaseFee:       uint256.NewInt(1),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(0),
 	}
 	genesisBlock := block.NewBlock(genesisHeader, nil)
 	chain := &canonicalCheckChainStub{
@@ -837,7 +835,6 @@ func newEnginePayloadTestAPI() (*API, types.Hash) {
 		ShanghaiBlock: big.NewInt(0),
 		CancunBlock:   big.NewInt(0),
 		PragueTime:    big.NewInt(0),
-		PectraTime:    big.NewInt(0),
 		OsakaTime:     big.NewInt(0),
 	}
 	api := &API{

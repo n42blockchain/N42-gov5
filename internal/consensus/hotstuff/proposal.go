@@ -145,7 +145,13 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 		return err
 	}
 
-	// Optimistic Voting: vote immediately after proposal validation.
+	// Double-vote prevention: only send one Round 1 vote per view.
+	if e.roundState.HasVotedInView(view) {
+		log.Debug("suppressing duplicate prepare vote", "view", view)
+		return nil
+	}
+	// Record vote BEFORE sending to prevent re-attempt if emit fails.
+	e.roundState.RecordVote(view, proposal.BlockHash)
 	log.Info("optimistic vote: voting immediately after proposal validation",
 		"view", view, "blockHash", proposal.BlockHash)
 	return e.sendVote(view, proposal.BlockHash)
@@ -161,6 +167,12 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 
 	if err := VerifyQC(&pqc.QC, e.validatorSet()); err != nil {
 		return err
+	}
+
+	// Double-vote prevention: only send one Round 2 commit vote per view.
+	if e.roundState.HasCommitVotedInView(view) {
+		log.Debug("suppressing duplicate commit vote", "view", view)
+		return nil
 	}
 
 	e.roundState.UpdateLockedQC(&pqc.QC)
@@ -180,6 +192,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 
 	now := time.Now()
 	e.viewTiming.CommitVoteSent = &now
+	e.roundState.RecordCommitVote(view) // record before send to prevent re-attempt
 
 	return e.emit(EngineOutput{
 		Type:   OutputSendToValidator,

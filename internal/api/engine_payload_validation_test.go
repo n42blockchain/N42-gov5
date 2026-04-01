@@ -393,8 +393,8 @@ func TestValidateExecutionPayloadHeaderRejectsIncorrectExcessBlobGasForOsakaSche
 		GasUsed:       0,
 		Time:          1,
 		BaseFee:       uint256.NewInt(1),
-		BlobGasUsed:   7 * params.BlobTxBlobGasPerBlob,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(7 * params.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: ptrToUint64(0),
 	}
 	header := &block.Header{
 		Number:        uint256.NewInt(1),
@@ -402,8 +402,8 @@ func TestValidateExecutionPayloadHeaderRejectsIncorrectExcessBlobGasForOsakaSche
 		GasUsed:       0,
 		Time:          2,
 		BaseFee:       uint256.NewInt(1),
-		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(params.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: ptrToUint64(0),
 	}
 
 	err := validateExecutionPayloadHeader(header, parent, cfg)
@@ -428,8 +428,8 @@ func TestValidateExecutionPayloadHeaderAcceptsOsakaReservePriceExcessBlobGas(t *
 		GasUsed:       0,
 		Time:          1,
 		BaseFee:       uint256.NewInt(108),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 6 * params.BlobTxBlobGasPerBlob,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(6 * params.BlobTxBlobGasPerBlob),
 	}
 	header := &block.Header{
 		Number:        uint256.NewInt(1),
@@ -437,8 +437,8 @@ func TestValidateExecutionPayloadHeaderAcceptsOsakaReservePriceExcessBlobGas(t *
 		GasUsed:       0,
 		Time:          2,
 		BaseFee:       uint256.NewInt(95),
-		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
-		ExcessBlobGas: 6 * params.BlobTxBlobGasPerBlob,
+		BlobGasUsed:   ptrToUint64(params.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: ptrToUint64(6 * params.BlobTxBlobGasPerBlob),
 	}
 
 	err := validateExecutionPayloadHeader(header, parent, cfg)
@@ -463,8 +463,8 @@ func TestValidateExecutionPayloadHeaderAcceptsZeroExcessBlobGasBelowTargetEvenWi
 		GasUsed:       0,
 		Time:          1,
 		BaseFee:       uint256.NewInt(108),
-		BlobGasUsed:   0,
-		ExcessBlobGas: 3 * params.BlobTxBlobGasPerBlob,
+		BlobGasUsed:   ptrToUint64(0),
+		ExcessBlobGas: ptrToUint64(3 * params.BlobTxBlobGasPerBlob),
 	}
 	header := &block.Header{
 		Number:        uint256.NewInt(1),
@@ -472,8 +472,8 @@ func TestValidateExecutionPayloadHeaderAcceptsZeroExcessBlobGasBelowTargetEvenWi
 		GasUsed:       0,
 		Time:          2,
 		BaseFee:       uint256.NewInt(95),
-		BlobGasUsed:   params.BlobTxBlobGasPerBlob,
-		ExcessBlobGas: 0,
+		BlobGasUsed:   ptrToUint64(params.BlobTxBlobGasPerBlob),
+		ExcessBlobGas: ptrToUint64(0),
 	}
 
 	err := validateExecutionPayloadHeader(header, parent, cfg)

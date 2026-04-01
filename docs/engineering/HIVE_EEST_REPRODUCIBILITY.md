@@ -74,6 +74,13 @@ EEST 相关命令统一走 `uv run --python 3.13`。
 - 生成 `tests/eth-hive/n42-clients.yaml`
 - 启动 `hive --dev`
 
+这里需要区分两层：
+
+- Hive 自己跑的是 `hive --dev`
+- N42 作为 Ethereum EL 私链节点时，当前固定入口是 `n42 --ethdev`
+
+不要把 Hive 的 `--dev` 和 N42 的 `--dev` 混成同一个模式。当前 Hive/EEST 互操作口径下，N42 应使用 `--ethdev`，而不是 N42 的 HotStuff/JMT `--dev`
+
 ### 跑 broad shards
 
 ```bash

@@ -74,28 +74,30 @@ message Block{
 }
 
 message Header {
-  H256 ParentHash = 1 ;
-  H160 Coinbase = 2 ;
-  H256 Root = 3 ;
-  H256 TxHash = 4 ;
-  H256 ReceiptHash = 5 ;
+  H256 ParentHash = 1;
+  H160 Coinbase = 2;
+  H256 Root = 3;
+  H256 TxHash = 4;
+  H256 ReceiptHash = 5;
   H256 Difficulty = 6;
   H256 Number = 7;
   uint64 GasLimit = 8;
   uint64 GasUsed = 9;
   uint64 Time = 10;
   uint64 Nonce = 11;
-  H256 BaseFee = 12 ;
-  // 65+32 byte (clique)
+  H256 BaseFee = 12;
   bytes Extra = 13  [(ext.ssz_max) = "117"];
-  H768 Signature = 14;
+  H768 Signature = 14;  // deprecated: kept for wire compat, no longer in Go struct
   H2048 Bloom = 15;
   H256 MixDigest = 16;
-  // EIP-4844 blob gas fields (Cancun fork)
   uint64 BlobGasUsed = 17;
   uint64 ExcessBlobGas = 18;
-  // LtHash state digest root (BLAKE3 summary of 2048-byte lattice hash)
   H256 LtHashRoot = 19;
+  // ETH Pectra standard fields (added for full round-trip fidelity)
+  H256 UncleHash = 20;
+  H256 WithdrawalsHash = 21;
+  H256 ParentBeaconRoot = 22;
+  H256 RequestsHash = 23;
 }
 
 message Verifier {

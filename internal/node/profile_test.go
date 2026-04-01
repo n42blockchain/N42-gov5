@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -45,6 +46,29 @@ func TestResolveConfiguredGenesisPrivateChainUsesDevnet(t *testing.T) {
 	if resolved.genesisHash != nil {
 		t.Fatal("expected private chain not to expose canonical genesis hash")
 	}
+	if resolved.chainConfig.Consensus != params.Faker {
+		t.Fatalf("consensus = %q, want %q", resolved.chainConfig.Consensus, params.Faker)
+	}
+	if resolved.chainConfig.ChainID == nil || resolved.chainConfig.ChainID.Uint64() != 1337 {
+		t.Fatalf("chain id = %v, want 1337", resolved.chainConfig.ChainID)
+	}
+}
+
+func TestResolveConfiguredGenesisPrivateN42ChainUsesN42Devnet(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("n42")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	resolved, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: "private"}}, profile)
+	if err != nil {
+		t.Fatalf("resolveConfiguredGenesis returned error: %v", err)
+	}
+	if resolved.chainConfig == nil {
+		t.Fatal("expected n42 private chain config")
+	}
+	if resolved.chainConfig.Consensus != params.HotStuffConsensus {
+		t.Fatalf("consensus = %q, want %q", resolved.chainConfig.Consensus, params.HotStuffConsensus)
+	}
 }
 
 func TestResolveConfiguredGenesisKnownChainUsesCanonicalFixtures(t *testing.T) {
@@ -70,6 +94,29 @@ func TestResolveConfiguredGenesisKnownChainUsesCanonicalFixtures(t *testing.T) {
 	}
 	if canonicalHash, ok := resolved.canonicalHash(); !ok || canonicalHash != params.MainnetGenesisHash {
 		t.Fatalf("canonical hash = %s, ok=%v, want %s", canonicalHash, ok, params.MainnetGenesisHash)
+	}
+}
+
+func TestResolveConfiguredGenesisEthereumMainnetRequiresExplicitInit(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("eth")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	resolved, err := resolveConfiguredGenesis(&conf.Config{NodeCfg: conf.NodeConfig{Chain: networkname.EthereumMainnetChainName}}, profile)
+	if err != nil {
+		t.Fatalf("resolveConfiguredGenesis returned error: %v", err)
+	}
+	if resolved.genesis != nil {
+		t.Fatal("expected public ethereum preset not to embed genesis allocs")
+	}
+	if resolved.chainConfig != params.EthereumMainnetChainConfig {
+		t.Fatal("expected ethereum mainnet chain config")
+	}
+	if resolved.genesisHash == nil || *resolved.genesisHash != params.EthereumMainnetGenesisHash {
+		t.Fatalf("genesis hash = %v, want %s", resolved.genesisHash, params.EthereumMainnetGenesisHash)
+	}
+	if !resolved.requiresExplicitInit {
+		t.Fatal("expected ethereum mainnet preset to require explicit init")
 	}
 }
 
@@ -126,6 +173,23 @@ func TestResolveConsensusEngineReturnsFaker(t *testing.T) {
 	}
 }
 
+func TestResolveConsensusEngineRejectsPublicEthereumPreset(t *testing.T) {
+	profile, err := params.ResolveExecutionProfile("eth")
+	if err != nil {
+		t.Fatalf("ResolveExecutionProfile returned error: %v", err)
+	}
+	_, err = resolveConsensusEngine(&conf.Config{
+		NodeCfg:  conf.NodeConfig{Chain: networkname.EthereumMainnetChainName},
+		ChainCfg: params.EthereumMainnetChainConfig,
+	}, profile, nil)
+	if err == nil {
+		t.Fatal("expected public ethereum preset to fail closed")
+	}
+	if got := err.Error(); got == "" || !containsAll(got, "public Ethereum preset", networkname.EthereumMainnetChainName) {
+		t.Fatalf("error = %q, want public ethereum preset message", got)
+	}
+}
+
 func TestResolveSharedConsensusEngineReturnsClique(t *testing.T) {
 	engine, ok := resolveSharedConsensusEngine(&params.ChainConfig{
 		Consensus: params.CliqueConsensus,
@@ -161,6 +225,15 @@ func TestResolveConsensusEngineRejectsUnknownConsensus(t *testing.T) {
 	}, profile, nil); err == nil {
 		t.Fatal("expected unknown consensus to be rejected")
 	}
+}
+
+func containsAll(value string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(value, part) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestResolveConsensusEngineRejectsN42OnlyConsensusForEthereumEL(t *testing.T) {

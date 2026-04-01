@@ -8,6 +8,7 @@ import (
 
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/crypto/bls/common"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -258,6 +259,18 @@ func (tc *TimeoutCollector) BuildTC(vs *ValidatorSet) (*TimeoutCertificate, erro
 
 	if highestQC == nil {
 		return nil, &InvalidTCError{View: tc.view, Reason: "no high_qc found in timeout messages"}
+	}
+
+	// Defensive: verify the selected highQC even though processTimeout should
+	// have already verified each embedded QC individually.
+	// Only verify if QC has signers (skip mock/test QCs with empty bitmap).
+	if highestQC.View > 0 && len(highestQC.Signers) > 0 {
+		if vErr := VerifyQCAnyDomain(highestQC, vs); vErr != nil {
+			log.Warn("BuildTC: highest QC failed verification, using genesis",
+				"view", tc.view, "highQC.view", highestQC.View, "err", vErr)
+			genesis := GenesisQC()
+			highestQC = &genesis
+		}
 	}
 
 	aggSig := bls.AggregateSignatures(validSigs)

@@ -21,12 +21,15 @@ import (
 	"fmt"
 	"strings"
 
+	mdbxlib "github.com/erigontech/mdbx-go/mdbx"
 	"github.com/urfave/cli/v2"
 
 	common "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/modules"
 )
 
 var dbCommand = &cli.Command{
@@ -35,13 +38,19 @@ var dbCommand = &cli.Command{
 	Subcommands: []*cli.Command{
 		{
 			Name:      "stats",
-			Usage:     "Show table sizes and record counts",
+			Usage:     "Show table sizes, record counts, and page statistics (lightweight, no node init)",
 			ArgsUsage: "",
-			Action:    dbStats,
+			Action:    dbStatsLight,
 			Flags: []cli.Flag{
-				DataDirFlag,
+				&cli.StringFlag{
+					Name:    "datadir",
+					Aliases: []string{"data.dir"},
+					Usage:   "Data directory containing chaindata/",
+					Value:   "./n42data",
+				},
 			},
-			Description: `Display all database tables with record counts and disk usage.`,
+			Description: `Display all database tables with record counts, page stats, and disk usage.
+Opens the DB directly without full node initialization — safe to run while the node is stopped.`,
 		},
 		{
 			Name:      "list",
@@ -89,14 +98,24 @@ Use --start to seek to a specific position.`,
 	},
 }
 
-// dbStats shows table sizes and record counts (same as existing exportDBState but standalone).
-func dbStats(ctx *cli.Context) error {
-	stack, err := node.NewNode(ctx, &DefaultConfig)
+// dbStatsLight opens the MDBX database directly (no full node init) and prints
+// detailed table statistics similar to `reth db stats`.
+func dbStatsLight(ctx *cli.Context) error {
+	dataDir := ctx.String("datadir")
+	dbPath := dataDir + "/chaindata"
+
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+
+	db, err := mdbx.NewMDBX(log2.New()).
+		Path(dbPath).
+		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return kv.ChaindataTablesCfg }).
+		Accede().
+		Open(ctx.Context)
 	if err != nil {
-		return err
+		return fmt.Errorf("open DB at %s: %w", dbPath, err)
 	}
-	db := stack.Database()
-	defer stack.Close()
+	defer db.Close()
 
 	roTX, err := db.BeginRo(ctx.Context)
 	if err != nil {
@@ -106,34 +125,79 @@ func dbStats(ctx *cli.Context) error {
 
 	migrator, ok := roTX.(kv.BucketMigrator)
 	if !ok {
-		return fmt.Errorf("cannot open db as BucketMigrator")
+		return fmt.Errorf("cannot list tables")
 	}
 	buckets, err := migrator.ListBuckets()
 	if err != nil {
-		return fmt.Errorf("failed to list buckets: %w", err)
+		return err
 	}
 
+	// Print header
+	fmt.Println()
+	fmt.Printf("| %-30s | %12s | %12s | %12s | %15s | %12s |\n",
+		"Table Name", "# Entries", "Branch Pages", "Leaf Pages", "Overflow Pages", "Total Size")
+	fmt.Printf("|%s|%s|%s|%s|%s|%s|\n",
+		strings.Repeat("-", 32), strings.Repeat("-", 14), strings.Repeat("-", 14),
+		strings.Repeat("-", 14), strings.Repeat("-", 17), strings.Repeat("-", 14))
+
 	var totalSize uint64
-	fmt.Printf("%-35s %12s %12s\n", "TABLE", "COUNT", "SIZE")
-	fmt.Printf("%s\n", strings.Repeat("-", 62))
+	var totalEntries uint64
+
+	type bucketStatter interface {
+		BucketStat(string) (*mdbxlib.Stat, error)
+	}
 
 	for _, bucket := range buckets {
 		size, _ := roTX.BucketSize(bucket)
-		totalSize += size
-		cursor, err := roTX.Cursor(bucket)
-		if err != nil {
-			log.Warn("Failed to create cursor", "bucket", bucket, "err", err)
+		cursor, cErr := roTX.Cursor(bucket)
+		if cErr != nil {
 			continue
 		}
 		count, _ := cursor.Count()
 		cursor.Close()
-		if count != 0 {
-			fmt.Printf("%-35s %12d %12s\n", bucket, count, common.StorageSize(size))
+
+		if count == 0 && size == 0 {
+			continue
+		}
+
+		totalSize += size
+		totalEntries += count
+
+		var branchPages, leafPages, overflowPages uint64
+		if mdbxTx, ok := roTX.(bucketStatter); ok {
+			if st, stErr := mdbxTx.BucketStat(bucket); stErr == nil {
+				branchPages = st.BranchPages
+				leafPages = st.LeafPages
+				overflowPages = st.OverflowPages
+			}
+		}
+
+		fmt.Printf("| %-30s | %12d | %12d | %12d | %15d | %12s |\n",
+			bucket, count, branchPages, leafPages, overflowPages,
+			common.StorageSize(size))
+	}
+
+	fmt.Printf("|%s|%s|%s|%s|%s|%s|\n",
+		strings.Repeat("-", 32), strings.Repeat("-", 14), strings.Repeat("-", 14),
+		strings.Repeat("-", 14), strings.Repeat("-", 17), strings.Repeat("-", 14))
+	fmt.Printf("| %-30s | %12d | %12s | %12s | %15s | %12s |\n",
+		"TOTAL", totalEntries, "", "", "", common.StorageSize(totalSize))
+
+	// Freelist
+	if mdbxTx, ok := roTX.(bucketStatter); ok {
+		if st, stErr := mdbxTx.BucketStat("freelist"); stErr == nil {
+			freePages := st.LeafPages + st.BranchPages + st.OverflowPages
+			if freePages > 0 {
+				// Estimate page size from total DB
+				pageSize := uint64(4096) // MDBX default
+				freeSize := freePages * pageSize
+				fmt.Printf("| %-30s | %12d | %12s | %12s | %15s | %12s |\n",
+					"Freelist", st.Entries, "", "", "", common.StorageSize(freeSize))
+			}
 		}
 	}
-	fmt.Printf("%s\n", strings.Repeat("-", 62))
-	fmt.Printf("%-35s %12s %12s\n", "TOTAL", "", common.StorageSize(totalSize))
 
+	fmt.Println()
 	return nil
 }
 

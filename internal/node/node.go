@@ -98,6 +98,8 @@ import (
 	"github.com/n42blockchain/N42/lib/common/cmp"
 	"github.com/n42blockchain/N42/lib/common/datadir"
 	"github.com/n42blockchain/N42/lib/gointerfaces/remote"
+	"github.com/n42blockchain/N42/lib/bmt"
+	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -213,10 +215,11 @@ type Node struct {
 }
 
 type configuredGenesis struct {
-	genesis     *conf.Genesis
-	chainConfig *params.ChainConfig
-	genesisHash *types.Hash
-	isPrivate   bool
+	genesis              *conf.Genesis
+	chainConfig          *params.ChainConfig
+	genesisHash          *types.Hash
+	isPrivate            bool
+	requiresExplicitInit bool
 }
 
 type auxiliaryRuntimePlan struct {
@@ -508,7 +511,20 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, err
 	}
 
+	// Acquire the instance directory lock.
+	if err := node.openDataDir(cfg); err != nil {
+		return nil, err
+	}
+	dirLockNode.dirLock = node.dirLock // track for cleanup on error
+
 	if genesisHash == (types.Hash{}) {
+		if err := ValidateDataDirNetworkBinding(cfg, configuredGenesis.chainConfig, configuredGenesis.genesisHash); err != nil {
+			return nil, err
+		}
+		if configuredGenesis.requiresExplicitInit {
+			return nil, explicitInitRequiredError(cfg.NodeCfg.Chain, cfg.NodeCfg.DataDir)
+		}
+
 		genesisConfig = configuredGenesis.genesis
 		chainConfig = configuredGenesis.chainConfig
 		if !configuredGenesis.isPrivate {
@@ -527,6 +543,39 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		}); err != nil {
 			return nil, err
 		}
+		if err := PersistDataDirNetworkBinding(cfg, chainConfig, genesisHash); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := ensureDataDirNetworkBinding(cfg, chainConfig, genesisHash); err != nil {
+			return nil, err
+		}
+	}
+
+	// Enforce StateScheme immutability: once written to the DB, it cannot change.
+	if chainConfig != nil && chainConfig.StateScheme != "" {
+		wantScheme := configuredGenesis.chainConfig.StateScheme
+		if wantScheme == "" {
+			wantScheme = "legacy-keccak"
+		}
+		if chainConfig.StateScheme != wantScheme {
+			return nil, fmt.Errorf("state scheme mismatch: db has %q, config wants %q — "+
+				"changing the state commitment algorithm after genesis is not allowed",
+				chainConfig.StateScheme, wantScheme)
+		}
+	}
+
+	// Enforce StateScheme immutability: once written to the DB, it cannot change.
+	if chainConfig != nil && chainConfig.StateScheme != "" {
+		wantScheme := configuredGenesis.chainConfig.StateScheme
+		if wantScheme == "" {
+			wantScheme = "legacy-keccak"
+		}
+		if chainConfig.StateScheme != wantScheme {
+			return nil, fmt.Errorf("state scheme mismatch: db has %q, config wants %q — "+
+				"changing the state commitment algorithm after genesis is not allowed",
+				chainConfig.StateScheme, wantScheme)
+		}
 	}
 
 	// Update ChainConfig on every startup for non-private chains.
@@ -534,17 +583,18 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		if err := chainKv.Update(ctx, func(tx kv.RwTx) error {
 			genesisHash = *configuredGenesis.genesisHash
 			genesisConfig = configuredGenesis.genesis
-			return WriteChainConfig(tx, genesisHash, genesisConfig)
+			if genesisConfig != nil {
+				return WriteChainConfig(tx, genesisHash, genesisConfig)
+			}
+			if err := rawdb.WriteChainConfig(tx, genesisHash, configuredGenesis.chainConfig); err != nil {
+				log.Error("failed to write chain config", "err", err)
+				return err
+			}
+			return nil
 		}); err != nil {
 			return nil, err
 		}
 	}
-
-	// Acquire the instance directory lock.
-	if err := node.openDataDir(cfg); err != nil {
-		return nil, err
-	}
-	dirLockNode.dirLock = node.dirLock // track for cleanup on error
 
 	cfg.ChainCfg = chainConfig
 
@@ -629,19 +679,24 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		realBC.SetExExManager(exexMgr)
 	}
 
-	// Initialize JMT state commitment if configured.
-	if cfg.NodeCfg.JMTCommitment {
-		if realBC, ok := bc.(*internal.BlockChain); ok {
-			// Read the last persisted JMT root from DB.
+	// Initialize state commitment tree based on ChainConfig.StateScheme.
+	// Falls back to NodeConfig.JMTCommitment for backward compatibility.
+	stateScheme := state.DefaultScheme(chainConfig.StateScheme)
+	if stateScheme == state.RootSchemeLegacyKeccak && cfg.NodeCfg.JMTCommitment {
+		stateScheme = state.RootSchemeJMTBlake3 // backward compat
+	}
+
+	if realBC, ok := bc.(*internal.BlockChain); ok {
+		switch stateScheme {
+		case state.RootSchemeJMTBlake3:
+			// --- JMT initialization (existing production code) ---
 			var jmtRoot jmt.Hash
+			var jmtVersion uint64
 			if rtx, err := chainKv.BeginRo(ctx); err == nil {
 				jmtRoot, _ = jmtstore.ReadJMTRoot(rtx)
+				jmtVersion, _ = jmtstore.ReadJMTVersion(rtx)
 				rtx.Rollback()
 			}
-			// PooledDBStore holds a long-lived RO transaction, avoiding per-Get()
-			// transaction overhead that LazyDBStore incurs. Combined with the
-			// tree's 128K-entry decoded node cache, this eliminates the need for
-			// the separate CachedStore byte-level cache.
 			pooledStore := jmtstore.NewPooledDBStore(ctx, chainKv, modules.JMTNode)
 			var tree *jmt.Tree
 			if jmtRoot == jmt.EmptyHash {
@@ -649,46 +704,83 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			} else {
 				tree = jmt.NewFromRoot(pooledStore, jmtRoot)
 			}
+			tree.SetVersion(jmtVersion)
 			jmtCommit := commitment.NewJMTCommitment(tree)
 			realBC.SetJMTCommitment(jmtCommit)
 			realBC.SetJMTStoreRefresh(pooledStore.RefreshTx)
-			log.Info("JMT state commitment initialized",
-				"root", fmt.Sprintf("%x", jmtRoot[:8]),
-				"nodeCache", jmt.DefaultNodeCacheSize,
-			)
 
-			// Initialize LtHash lattice state digest (runs alongside JMT).
-			var ltDigest *lthash.Digest
-			if rtx, err := chainKv.BeginRo(ctx); err == nil {
-				var ltErr error
-				ltDigest, ltErr = lthash.ReadLtHashDigest(rtx, modules.LtHashDigest)
-				if ltErr != nil {
-					log.Warn("Failed to read LtHash digest, starting with empty", "err", ltErr)
-				}
-				rtx.Rollback()
-			}
-			if ltDigest == nil {
-				ltDigest = lthash.New()
-			}
+			// LtHash runs alongside JMT.
+			ltDigest := e_initLtHash(ctx, chainKv)
 			ltCommit := commitment.NewLtHashCommitment(ltDigest)
 			realBC.SetLtHashCommitment(ltCommit)
 
-			// Create LtHash-aware root computer that wraps JMT.
 			jmtRC := commitment.NewJMTRootComputer(jmtCommit)
 			ltAwareRC := commitment.NewLtHashAwareRootComputer(jmtRC, ltCommit)
-			// Store the root computer on the blockchain for injection into IntraBlockState.
 			realBC.SetRootComputer(ltAwareRC)
 
-			log.Info("LtHash state digest initialized",
-				"digestNonZero", !ltDigest.IsZero(),
-			)
-
-			// Enable JMT for block processing on fresh chains (private/dev)
-			// where all blocks are produced with JMT from genesis.
-			// Mainnet sync uses legacy GenerateRootHash() (needs state migration).
 			if cfg.NodeCfg.Chain == "private" {
 				realBC.EnableJMTForBlockProcessing()
 			}
+			log.Info("State commitment: JMT-Blake3",
+				"root", fmt.Sprintf("%x", jmtRoot[:8]),
+				"version", jmtVersion,
+			)
+
+		case state.RootSchemeBMTBlake3:
+			// --- BMT initialization (content-addressed Binary Merkle Tree) ---
+			var bmtRoot bmt.Hash
+			if rtx, err := chainKv.BeginRo(ctx); err == nil {
+				bmtRoot, _ = bmtstore.ReadBMTRoot(rtx)
+				rtx.Rollback()
+			}
+			// BMT uses content-addressed storage — MDBXStore tx is set per-block in writeBlockWithState.
+			bmtNodeStore := bmtstore.NewMDBXStore(nil, bmtstore.BMTNodeTable)
+			_ = bmtNodeStore // store reference kept via commitment
+			var tree *bmt.Tree
+			if bmtRoot == bmt.EmptyHash {
+				tree = bmt.New(bmt.NewMemStore()) // in-memory until tx available
+			} else {
+				tree = bmt.NewFromRoot(bmt.NewMemStore(), bmtRoot)
+			}
+			bmtCommit := commitment.NewBMTCommitment(tree)
+			realBC.SetBMTCommitment(bmtCommit)
+			bmtRC := commitment.NewBMTRootComputer(bmtCommit)
+			realBC.SetRootComputer(bmtRC)
+
+			log.Info("State commitment: BMT-Blake3",
+				"root", fmt.Sprintf("%x", bmtRoot[:8]),
+			)
+
+		case state.RootSchemeEthereumMPT:
+			// --- MPT initialization (standard Ethereum HexPatriciaHashed) ---
+			mptRC := commitment.NewPersistentMPTRootComputer()
+			var mptRoot types.Hash
+			var mptBlock uint64
+			if rtx, err := chainKv.BeginRo(ctx); err == nil {
+				mptRoot, err = commitment.ReadMPTRoot(rtx)
+					if err != nil { log.Warn("Failed to read MPT root", "err", err) }
+				// Restore HPH trie state from checkpoint (Erigon SeekCommitment pattern).
+				if blockNum, trieState, err := commitment.ReadMPTTrieState(rtx); err == nil && len(trieState) > 0 {
+					if err := mptRC.RestoreTrieState(trieState); err != nil {
+						log.Warn("Failed to restore MPT trie state, will rebuild", "block", blockNum, "err", err)
+					} else {
+						mptBlock = blockNum
+					}
+				}
+				rtx.Rollback()
+			}
+			realBC.SetMPTRootComputer(mptRC)
+			realBC.SetRootComputer(mptRC)
+			log.Info("State commitment: Ethereum-MPT (HexPatriciaHashed)",
+				"root", fmt.Sprintf("%x", mptRoot[:8]),
+				"checkpoint", mptBlock,
+			)
+
+		case state.RootSchemeLegacyKeccak:
+			log.Info("State commitment: Legacy-Keccak (no tree)")
+
+		default:
+			return nil, fmt.Errorf("unsupported state scheme: %s", stateScheme)
 		}
 	}
 
@@ -1001,6 +1093,9 @@ func resolveConfiguredGenesis(cfg *conf.Config, profile params.ProfileDescriptor
 	}
 	if chainName == "private" {
 		genesis := devnetGenesisBlock(cfg)
+		if profile.IsEthereumEL() {
+			genesis = ethDevGenesisBlock(cfg)
+		}
 		return configuredGenesis{
 			genesis:     genesis,
 			chainConfig: genesis.Config,
@@ -1012,11 +1107,17 @@ func resolveConfiguredGenesis(cfg *conf.Config, profile params.ProfileDescriptor
 	if genesisHash == nil {
 		return configuredGenesis{}, fmt.Errorf("unknown chain: %s", chainName)
 	}
+	chainConfig := params.ChainConfigByChainName(chainName)
+	if chainConfig == nil {
+		return configuredGenesis{}, fmt.Errorf("unknown chain config: %s", chainName)
+	}
+	genesis := internal.GenesisByChainName(chainName)
 
 	return configuredGenesis{
-		genesis:     internal.GenesisByChainName(chainName),
-		chainConfig: params.ChainConfigByChainName(chainName),
-		genesisHash: genesisHash,
+		genesis:              genesis,
+		chainConfig:          chainConfig,
+		genesisHash:          genesisHash,
+		requiresExplicitInit: genesis == nil,
 	}, nil
 }
 
@@ -1027,11 +1128,43 @@ func resolveConsensusEngine(cfg *conf.Config, profile params.ProfileDescriptor, 
 	if !profile.SupportsConsensus(cfg.ChainCfg.Consensus) {
 		return nil, fmt.Errorf("execution profile %q does not support consensus %q", profile.String(), cfg.ChainCfg.Consensus)
 	}
+	if cfg.ChainCfg.Consensus == params.EtHashConsensus && isPublicEthereumChain(cfg.NodeCfg.Chain) {
+		return nil, publicEthereumPresetUnavailableError(cfg.NodeCfg.Chain)
+	}
 
 	if engine, ok := resolveSharedConsensusEngine(cfg.ChainCfg, chainKv); ok {
 		return engine, nil
 	}
 	return resolveN42ConsensusEngine(cfg, chainKv)
+}
+
+func isPublicEthereumChain(chain string) bool {
+	switch strings.TrimSpace(chain) {
+	case "eth-mainnet", "eth-sepolia":
+		return true
+	default:
+		return false
+	}
+}
+
+func explicitInitRequiredError(chain, dataDir string) error {
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" {
+		dataDir = "<datadir>"
+	}
+	return fmt.Errorf(
+		"chain %q requires explicit genesis initialization in a dedicated datadir; run `n42 init --profile eth --chain %s --data.dir %s <genesis.json>` first",
+		chain,
+		chain,
+		dataDir,
+	)
+}
+
+func publicEthereumPresetUnavailableError(chain string) error {
+	return fmt.Errorf(
+		"public Ethereum preset %q is bound to canonical MPT/genesis/forks, but live Ethereum consensus/sync is not wired in this binary yet; use `--profile eth --chain private` for Hive/EEST or a different datadir with preinitialized data",
+		chain,
+	)
 }
 
 func resolveSharedConsensusEngine(chainCfg *params.ChainConfig, chainKv kv.RwDB) (consensus.Engine, bool) {
@@ -2382,6 +2515,19 @@ func WriteGenesisBlock(db kv.RwTx, genesis *conf.Genesis) (*block.Block, error) 
 		return nil, err
 	}
 	return genBlock, nil
+}
+
+// e_initLtHash reads or creates the LtHash lattice state digest.
+func e_initLtHash(ctx context.Context, db kv.RwDB) *lthash.Digest {
+	var ltDigest *lthash.Digest
+	if rtx, err := db.BeginRo(ctx); err == nil {
+		ltDigest, _ = lthash.ReadLtHashDigest(rtx, modules.LtHashDigest)
+		rtx.Rollback()
+	}
+	if ltDigest == nil {
+		ltDigest = lthash.New()
+	}
+	return ltDigest
 }
 
 func WriteChainConfig(db kv.RwTx, genesisHash types.Hash, genesis *conf.Genesis) error {

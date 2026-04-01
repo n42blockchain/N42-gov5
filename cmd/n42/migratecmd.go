@@ -22,9 +22,7 @@ import (
 	"time"
 
 	"github.com/urfave/cli/v2"
-	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/proto/state"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/node"
@@ -34,7 +32,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/state/commitment"
-	"github.com/n42blockchain/N42/common/utils"
 )
 
 func init() {
@@ -100,7 +97,7 @@ func migrateJMT(ctx *cli.Context) error {
 			var addr types.Address
 			copy(addr[:], k[:20])
 
-			acct, decErr := decodeProtoAccount(v)
+			acct, decErr := decodeAccount(v)
 			if decErr != nil {
 				log.Warn("Skipping account with decode error", "addr", addr, "err", decErr)
 				return nil, nil
@@ -359,7 +356,7 @@ func verifyJMTMigration(ctx *cli.Context, db kv.RwDB, expectedRoot jmt.Hash, tot
 			}
 
 			// Verify the encoded account matches byte-for-byte.
-			acct, _ := decodeProtoAccount(v)
+			acct, _ := decodeAccount(v)
 			if acct != nil {
 				expected := commitment.EncodeAccountValue(acct)
 				if !bytes.Equal(got, expected) {
@@ -401,29 +398,12 @@ func (s *readOnlyMDBXStore) Has(hash jmt.Hash) (bool, error) {
 	return data != nil, nil
 }
 
-// decodeProtoAccount converts protobuf-encoded bytes into a StateAccount.
-func decodeProtoAccount(data []byte) (*account.StateAccount, error) {
-	pb := new(state.Account)
-	if err := proto.Unmarshal(data, pb); err != nil {
+// decodeAccount decodes a V2-encoded StateAccount from storage bytes.
+func decodeAccount(data []byte) (*account.StateAccount, error) {
+	acct := new(account.StateAccount)
+	if err := acct.DecodeForStorage(data); err != nil {
 		return nil, err
 	}
-
-	acct := &account.StateAccount{
-		Initialised: pb.Initialised,
-		Nonce:       pb.Nonce,
-		Incarnation: uint16(pb.Incarnation),
-	}
-
-	if pb.Balance != nil {
-		acct.Balance = *utils.ConvertH256ToUint256Int(pb.Balance)
-	}
-	if pb.Root != nil {
-		acct.Root = utils.ConvertH256ToHash(pb.Root)
-	}
-	if pb.CodeHash != nil {
-		acct.CodeHash = utils.ConvertH256ToHash(pb.CodeHash)
-	}
-
 	return acct, nil
 }
 

@@ -24,9 +24,9 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/proto/types_pb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -106,12 +106,6 @@ func NewTx(inner TxData) *Transaction {
 // convertProtoToAddress converts an optional H160 proto field to *types.Address.
 func convertProtoToAddress(h160 *types_pb.H160) *types.Address {
 	if h160 == nil {
-		return nil
-	}
-	// SSZ deserialization always creates non-nil H160 (fixed-size field).
-	// Treat an all-zero H160 as nil to preserve contract creation semantics
-	// (To=nil means contract creation, To=0x00...00 is a valid address).
-	if h160.Lo == 0 && (h160.Hi == nil || (h160.Hi.Hi == 0 && h160.Hi.Lo == 0)) {
 		return nil
 	}
 	addr := utils.ConvertH160ToPAddress(h160)
@@ -417,88 +411,18 @@ func (tx *Transaction) WithSignatureValues(v, r, s *uint256.Int) (*Transaction, 
 // is computed from these bytes. Any change to the encoding breaks chain
 // compatibility with existing block data.
 func (tx Transaction) Marshal() ([]byte, error) {
-	var pbTx types_pb.Transaction
-	pbTx.Type = uint64(tx.inner.txType())
-
-	switch t := tx.inner.(type) {
-	case *AccessListTx:
-		if t.ChainID != nil {
-			pbTx.ChainID = t.ChainID.Uint64()
-		}
-		pbTx.Nonce = tx.Nonce()
-		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
-		pbTx.Data = tx.Data()
-		if from := tx.From(); from != nil { pbTx.From = utils.ConvertAddressToH160(*from) }
-		pbTx.Sign = t.Sign
-	case *LegacyTx:
-		pbTx.Nonce = tx.Nonce()
-		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
-		pbTx.Data = tx.Data()
-		if from := tx.From(); from != nil { pbTx.From = utils.ConvertAddressToH160(*from) }
-		pbTx.Sign = t.Sign
-	case *DynamicFeeTx:
-		if t.ChainID != nil {
-			pbTx.ChainID = t.ChainID.Uint64()
-		}
-		pbTx.Nonce = tx.Nonce()
-		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
-		pbTx.Data = tx.Data()
-		if from := tx.From(); from != nil { pbTx.From = utils.ConvertAddressToH160(*from) }
-		pbTx.Sign = t.Sign
-		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
-		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
-	case *BlobTx:
-		if t.ChainID != nil {
-			pbTx.ChainID = t.ChainID.Uint64()
-		}
-		pbTx.Nonce = tx.Nonce()
-		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
-		pbTx.Data = tx.Data()
-		if from := tx.From(); from != nil {
-			pbTx.From = utils.ConvertAddressToH160(*from)
-		}
-		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
-		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
-		pbTx.BlobFeeCap = convertUint256IntToH256IfSet(t.BlobFeeCap)
-		pbTx.BlobHashes = utils.ConvertHashesToH256(t.BlobHashes)
-	case *PostQuantumTx:
-		if t.ChainID != nil {
-			pbTx.ChainID = t.ChainID.Uint64()
-		}
-		pbTx.Nonce = tx.Nonce()
-		pbTx.Gas = tx.Gas()
-		pbTx.GasPrice = utils.ConvertUint256IntToH256(tx.GasPrice())
-		pbTx.Value = utils.ConvertUint256IntToH256(tx.Value())
-		pbTx.Data = tx.Data()
-		pbTx.FeePerGas = utils.ConvertUint256IntToH256(t.GasFeeCap)
-		pbTx.PriorityFeePerGas = utils.ConvertUint256IntToH256(t.GasTipCap)
-		pbTx.PqSigAlgo = uint32(t.SigAlgo)
-		pbTx.PqPubKeyMode = uint32(t.PubKeyMode)
-		pbTx.PqPubKeyData = t.PubKeyData
-		pbTx.PqSignature = t.PQSignature
-	}
-	if tx.To() != nil {
-		pbTx.To = utils.ConvertAddressToH160(*tx.To())
-	}
+	pbTx := tx.toProtoFields()
 	v, r, s := tx.RawSignatureValues()
 	if v != nil {
-		pbTx.V = utils.ConvertUint256IntToH256(v)
+		pbTx.V = convertUint256IntToH256IfSet(v)
 	}
 	if r != nil {
-		pbTx.R = utils.ConvertUint256IntToH256(r)
+		pbTx.R = convertUint256IntToH256IfSet(r)
 	}
 	if s != nil {
-		pbTx.S = utils.ConvertUint256IntToH256(s)
+		pbTx.S = convertUint256IntToH256IfSet(s)
 	}
-	return proto.Marshal(&pbTx)
+	return proto.Marshal(pbTx)
 }
 
 // MarshalV2 encodes the transaction using the new format (Shanghai+).

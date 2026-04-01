@@ -13,6 +13,7 @@ import (
 var (
 	ErrOutputChannelClosed = fmt.Errorf("consensus output channel full or closed")
 	ErrInvalidMessage      = fmt.Errorf("invalid or corrupted consensus message")
+	ErrValidatorRemoved    = fmt.Errorf("validator has been removed from the active set")
 	ErrEpochScheduleEmpty  = fmt.Errorf("epoch schedule must not be empty")
 )
 

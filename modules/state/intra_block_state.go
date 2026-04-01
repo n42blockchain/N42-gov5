@@ -28,11 +28,11 @@ import (
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 )
@@ -769,8 +769,33 @@ func (sdb *IntraBlockState) GetRefund() uint64 {
 	return sdb.refund
 }
 
-func updateAccount(EIP161Enabled bool, isAura bool, isCancun bool, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
-	emptyRemoval := EIP161Enabled && stateObject.empty() && (!isAura || addr != SystemAddress)
+type accountWritePolicy struct {
+	removeEmptyAccounts                  bool
+	preserveAuraSystemAccount            bool
+	allowLegacyCreatedSelfdestructReplay bool
+}
+
+func newAccountWritePolicy(chainRules *params.Rules) accountWritePolicy {
+	if chainRules == nil {
+		return accountWritePolicy{}
+	}
+	return accountWritePolicy{
+		removeEmptyAccounts:                  chainRules.IsSpuriousDragon,
+		preserveAuraSystemAccount:            chainRules.IsAura,
+		allowLegacyCreatedSelfdestructReplay: !chainRules.IsCancun,
+	}
+}
+
+func (p accountWritePolicy) shouldRemoveEmptyAccount(addr types.Address, stateObject *stateObject) bool {
+	return p.removeEmptyAccounts && stateObject.empty() && (!p.preserveAuraSystemAccount || addr != SystemAddress)
+}
+
+func (p accountWritePolicy) shouldAllowWriteBack(stateObject *stateObject) bool {
+	return !stateObject.selfdestructed || (p.allowLegacyCreatedSelfdestructReplay && stateObject.created)
+}
+
+func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
+	emptyRemoval := policy.shouldRemoveEmptyAccount(addr, stateObject)
 	if stateObject.selfdestructed || (isDirty && emptyRemoval) {
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
@@ -780,7 +805,7 @@ func updateAccount(EIP161Enabled bool, isAura bool, isCancun bool, stateWriter S
 	// Cancun+ must not resurrect contracts that were created and selfdestructed
 	// in the same transaction. Pre-Cancun keeps the legacy write-back behavior
 	// for sync compatibility.
-	allowWriteBack := !stateObject.selfdestructed || (!isCancun && stateObject.created)
+	allowWriteBack := policy.shouldAllowWriteBack(stateObject)
 	if isDirty && allowWriteBack && !emptyRemoval {
 		stateObject.deleted = false
 		// Write any contract code associated with the state object
@@ -829,6 +854,7 @@ func printAccount(addr types.Address, stateObject *stateObject, isDirty bool) {
 
 // FinalizeTx should be called after every transaction.
 func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter StateWriter) error {
+	policy := newAccountWritePolicy(chainRules)
 	for addr, bi := range sdb.balanceInc {
 		if !bi.transferred {
 			sdb.getStateObject(addr)
@@ -842,7 +868,7 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 			continue
 		}
 
-		if err := updateAccount(chainRules.IsSpuriousDragon, chainRules.IsAura, chainRules.IsCancun, stateWriter, addr, so, true); err != nil {
+		if err := updateAccount(policy, stateWriter, addr, so, true); err != nil {
 			return err
 		}
 
@@ -890,12 +916,13 @@ func (sdb *IntraBlockState) BalanceIncreaseSet() map[types.Address]uint256.Int {
 }
 
 func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter StateWriter) error {
+	policy := newAccountWritePolicy(chainRules)
 	for addr := range sdb.journal.dirties {
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
 	for addr, stateObject := range sdb.stateObjects {
 		_, isDirty := sdb.stateObjectsDirty[addr]
-		if err := updateAccount(chainRules.IsSpuriousDragon, chainRules.IsAura, chainRules.IsCancun, stateWriter, addr, stateObject, isDirty); err != nil {
+		if err := updateAccount(policy, stateWriter, addr, stateObject, isDirty); err != nil {
 			return err
 		}
 	}
@@ -1139,6 +1166,43 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		panic("JMT root computation failed: " + err.Error())
 	}
 	return root
+}
+
+// DirtyAccountData returns dirty accounts and their storage for leaf journal.
+// Returns: accounts map (addr→encoded or nil=deleted), storage map (addr→slot→value).
+func (sdb *IntraBlockState) DirtyAccountData() (
+	accounts map[types.Address][]byte,
+	storage map[types.Address]map[types.Hash][]byte,
+) {
+	accounts = make(map[types.Address][]byte, len(sdb.stateObjectsDirty))
+	storage = make(map[types.Address]map[types.Hash][]byte)
+
+	for addr := range sdb.stateObjectsDirty {
+		obj := sdb.getStateObject(addr)
+		if obj == nil || obj.deleted {
+			accounts[addr] = nil
+			continue
+		}
+		accounts[addr] = obj.data.MarshalV2()
+
+		if len(obj.dirtyStorage) > 0 {
+			slots := make(map[types.Hash][]byte, len(obj.dirtyStorage))
+			for slot, value := range obj.dirtyStorage {
+				if value.IsZero() {
+					slots[slot] = nil
+				} else {
+					b := value.Bytes32()
+					start := 0
+					for start < 31 && b[start] == 0 {
+						start++
+					}
+					slots[slot] = b[start:]
+				}
+			}
+			storage[addr] = slots
+		}
+	}
+	return
 }
 
 func (sdb *IntraBlockState) HasSelfdestructed(addr types.Address) bool {
