@@ -471,7 +471,7 @@ func (sm *SnapshotManager) executeSnapshotStorageTask(ctx context.Context, task 
 			return err
 		}
 		var acc account.StateAccount
-		if err := acc.Unmarshal(data); err != nil {
+		if err := acc.DecodeForStorage(data); err != nil {
 			return nil
 		}
 		incarnation = acc.Incarnation

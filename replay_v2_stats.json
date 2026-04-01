@@ -1,0 +1,22 @@
+{
+  "FromBlock": 1,
+  "ToBlock": 11976947,
+  "CurrentBlock": 11976947,
+  "BlocksProcessed": {},
+  "BlocksEmpty": {},
+  "BlocksMissing": {},
+  "TxTotal": {},
+  "TxReplayed": {},
+  "TxSkipped": {},
+  "TxFailed": {},
+  "SkipReasons": {
+    "deposit_contract": {},
+    "empty_create": {},
+    "evm_error": {},
+    "sender_unknown": {}
+  },
+  "StartTime": "2026-03-29T18:06:48.121418-04:00",
+  "ReceiptMatch": {},
+  "ReceiptMismatch": {},
+  "GasUsedTotal": {}
+}

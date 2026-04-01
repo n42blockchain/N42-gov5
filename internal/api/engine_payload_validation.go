@@ -96,15 +96,29 @@ func validateExecutionPayloadBlobHeader(header, parent *block.Header, cfg *param
 	}
 	gasPerBlob := cfg.BlobGasPerBlob(header.Time)
 	maxBlobGas := cfg.BlobMaxGasPerBlock(header.Time)
-	if header.BlobGasUsed > maxBlobGas {
-		return fmt.Errorf("blob gas used %d exceeds maximum %d", header.BlobGasUsed, maxBlobGas)
+	var hdrBlobGasUsed, hdrExcessBlobGas uint64
+	if header.BlobGasUsed != nil {
+		hdrBlobGasUsed = *header.BlobGasUsed
 	}
-	if header.BlobGasUsed%gasPerBlob != 0 {
-		return fmt.Errorf("blob gas used %d is not a multiple of %d", header.BlobGasUsed, gasPerBlob)
+	if header.ExcessBlobGas != nil {
+		hdrExcessBlobGas = *header.ExcessBlobGas
 	}
-	expectedExcess := cfg.CalcExcessBlobGasWithBaseFee(parent.ExcessBlobGas, parent.BlobGasUsed, parent.BaseFee, header.Time)
-	if header.ExcessBlobGas != expectedExcess {
-		return fmt.Errorf("incorrect excess blob gas: have %d, want %d", header.ExcessBlobGas, expectedExcess)
+	if hdrBlobGasUsed > maxBlobGas {
+		return fmt.Errorf("blob gas used %d exceeds maximum %d", hdrBlobGasUsed, maxBlobGas)
+	}
+	if hdrBlobGasUsed%gasPerBlob != 0 {
+		return fmt.Errorf("blob gas used %d is not a multiple of %d", hdrBlobGasUsed, gasPerBlob)
+	}
+	var parentExcess, parentUsed uint64
+	if parent.ExcessBlobGas != nil {
+		parentExcess = *parent.ExcessBlobGas
+	}
+	if parent.BlobGasUsed != nil {
+		parentUsed = *parent.BlobGasUsed
+	}
+	expectedExcess := cfg.CalcExcessBlobGasWithBaseFee(parentExcess, parentUsed, parent.BaseFee, header.Time)
+	if hdrExcessBlobGas != expectedExcess {
+		return fmt.Errorf("incorrect excess blob gas: have %d, want %d", hdrExcessBlobGas, expectedExcess)
 	}
 	return nil
 }
@@ -195,8 +209,12 @@ func enginePayloadRLPHeader(header *block.Header, cfg *params.ChainConfig, opts 
 	if opts.includeBlobFields || (cfg != nil && cfg.IsCancunAt(number, header.Time)) {
 		blobGasUsed = new(uint64)
 		excessBlobGas = new(uint64)
-		*blobGasUsed = header.BlobGasUsed
-		*excessBlobGas = header.ExcessBlobGas
+		if header.BlobGasUsed != nil {
+			*blobGasUsed = *header.BlobGasUsed
+		}
+		if header.ExcessBlobGas != nil {
+			*excessBlobGas = *header.ExcessBlobGas
+		}
 	}
 	if opts.requestsHash != nil {
 		requestsHash = opts.requestsHash

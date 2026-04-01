@@ -26,7 +26,6 @@ import (
 	"github.com/holiman/uint256"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -134,15 +133,8 @@ func ReadHeader(db kv.Getter, hash types.Hash, number uint64) *block.Header {
 	}
 
 	header := new(block.Header)
-	pbHeader := new(types_pb.Header)
-
-	if err := proto.Unmarshal(data, pbHeader); err != nil {
-		log.Error("Invalid block header RAW", "hash", hash, "err", err)
-		return nil
-	}
-
-	if err := header.FromProtoMessage(pbHeader); err != nil {
-		log.Error("header FromProtoMessage failed", "err", err)
+	if err := header.Unmarshal(data); err != nil {
+		log.Error("Invalid block header", "hash", hash, "err", err)
 		return nil
 	}
 	return header
@@ -165,12 +157,8 @@ func ReadHeadersByNumber(db kv.Tx, number uint64) ([]*block.Header, error) {
 		}
 
 		header := new(block.Header)
-		pbHeader := new(types_pb.Header)
-		if err := proto.Unmarshal(v, pbHeader); err != nil {
-			return nil, fmt.Errorf("invalid block header RAW: hash=%x, err=%w", k[8:], err)
-		}
-		if err := header.FromProtoMessage(pbHeader); err != nil {
-			return nil, fmt.Errorf("invalid block pbHeader: hash=%x, err =%w", k[8:], err)
+		if err := header.Unmarshal(v); err != nil {
+			return nil, fmt.Errorf("invalid block header: hash=%x, err=%w", k[8:], err)
 		}
 		res = append(res, header)
 	}

@@ -407,9 +407,9 @@ func TestDiskLayer_ReadFromDB(t *testing.T) {
 		Incarnation: 1,
 	}
 
-	// Write account to SnapshotAccount table.
-	pb := acc.ToProtoMessage()
-	enc, _ := proto.Marshal(pb)
+	// Write account to SnapshotAccount table using V2 encoding.
+	enc := make([]byte, acc.EncodingLengthForStorageV2())
+	acc.EncodeForStorageV2(enc)
 	if err := db.Update(ctx, func(tx kv.RwTx) error {
 		return rawdb.WriteSnapshotAccount(tx, addr, enc)
 	}); err != nil {

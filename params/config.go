@@ -101,7 +101,7 @@ func (c ConsensusType) UsesBorTransferMode() bool {
 // ---------------------------------------------------------------------------
 
 var (
-	MainnetGenesisHash = types.HexToHash("0x138734b7044254e5ecbabf8056f5c2b73cd0847aaa5acac7345507cbeab387b8")
+	MainnetGenesisHash = types.HexToHash("0xd330606118c0180cc785628c3da5327e01a80703a5acf42153bb62adabec35ea")
 	TestnetGenesisHash = types.HexToHash("0x5c0555d9ec963f58c63112862294e7e4836b12802304c23f2ec480a8f55cc5bb")
 )
 
@@ -112,6 +112,8 @@ var (
 var (
 	MainnetChainConfig       = readChainSpec("chainspecs/mainnet.json")
 	MainnetCompatChainConfig = readChainSpec("chainspecs/mainnet_compat.json") // backward-compatible (no Shanghai+), matches legacy genesis hash
+	MainnetV2ChainConfig     = readChainSpec("chainspecs/mainnet_v2.json")    // all forks from genesis (replay-v2)
+	MainnetMPTChainConfig    = readChainSpec("chainspecs/mainnet_mpt.json")  // replay-v2 with ethereum-mpt state roots
 	TestnetChainConfig       = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
@@ -222,6 +224,12 @@ type ChainConfig struct {
 	// When set, each block computes a 2048-byte homomorphic hash of the state
 	// and stores BLAKE3(digest) in Header.LtHashRoot.
 	LtHashTime *big.Int `json:"ltHashTime,omitempty"`
+
+	// StateScheme determines the state commitment algorithm for Header.Root.
+	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
+	// configured scheme does not match the database.
+	// Values: "legacy-keccak" (default), "jmt-blake3", "bmt-blake3"
+	StateScheme string `json:"stateScheme,omitempty"`
 
 	BlobSchedule *BlobSchedule `json:"blobSchedule,omitempty"`
 
@@ -504,6 +512,10 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 		return MainnetChainConfig
 	case "mainnet_compat":
 		return MainnetCompatChainConfig
+	case "mainnet_v2":
+		return MainnetV2ChainConfig
+	case "mainnet_mpt":
+		return MainnetMPTChainConfig
 	case networkname.TestnetChainName:
 		return TestnetChainConfig
 	default:
@@ -517,6 +529,8 @@ func GenesisHashByChainName(chain string) *types.Hash {
 		return &MainnetGenesisHash
 	case networkname.TestnetChainName:
 		return &TestnetGenesisHash
+	case "mainnet_v2":
+		return &MainnetGenesisHash
 	default:
 		return nil
 	}

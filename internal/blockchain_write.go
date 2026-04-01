@@ -33,6 +33,7 @@ import (
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/lib/jmt"
+	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/lthash"
@@ -196,11 +197,33 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if err := bc.jmtCommitment.Tree().FlushTo(mdbxNodeStore); err != nil {
 				return fmt.Errorf("flushing JMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
 			}
-			rootTypesHash := bc.jmtCommitment.Root()
-			var jmtRoot jmt.Hash
-			copy(jmtRoot[:], rootTypesHash[:])
+			jmtRoot := jmt.Hash(bc.jmtCommitment.Root())
 			if err := jmtstore.WriteJMTRoot(tx, jmtRoot); err != nil {
 				return fmt.Errorf("writing JMT root for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			if err := jmtstore.WriteJMTVersion(tx, blockNumber.Uint64()); err != nil {
+				return fmt.Errorf("writing JMT version for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			// Update in-memory version after all DB writes succeed within this tx.
+			bc.jmtCommitment.Tree().SetVersion(blockNumber.Uint64())
+		}
+
+		// Flush BMT dirty nodes into the current MDBX transaction.
+		if ibs != nil && bc.bmtEnabled && bc.bmtCommitment != nil {
+			bmtNodeStore := bmtstore.NewMDBXStore(tx, bmtstore.BMTNodeTable)
+			if err := bc.bmtCommitment.Tree().FlushTo(bmtNodeStore); err != nil {
+				return fmt.Errorf("flushing BMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			bmtRoot := bc.bmtCommitment.Root()
+			if err := bmtstore.WriteBMTRoot(tx, bmtRoot); err != nil {
+				return fmt.Errorf("writing BMT root for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+		}
+
+		// Flush MPT branches + trie state checkpoint for crash recovery.
+		if ibs != nil && bc.mptEnabled && bc.mptRootComputer != nil {
+			if err := bc.mptRootComputer.SaveCheckpoint(tx, blockNumber.Uint64(), blk.StateRoot()); err != nil {
+				return fmt.Errorf("MPT checkpoint for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 		}
 

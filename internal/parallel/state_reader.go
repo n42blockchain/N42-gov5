@@ -17,11 +17,9 @@
 package parallel
 
 import (
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
-	state_proto "github.com/n42blockchain/N42/proto/state"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
@@ -128,18 +126,16 @@ func (r *ParallelStateReader) ReadAccountIncarnation(address types.Address) (uin
 	return r.base.ReadAccountIncarnation(address)
 }
 
-// DecodeAccount decodes a protobuf-encoded StateAccount.
+// DecodeAccount decodes a V2-encoded StateAccount.
 func DecodeAccount(data []byte) (*account.StateAccount, error) {
-	var pbAccount state_proto.Account
-	if err := proto.Unmarshal(data, &pbAccount); err != nil {
+	acc := new(account.StateAccount)
+	if err := acc.DecodeForStorageV2(data); err != nil {
 		return nil, err
 	}
-	acc := new(account.StateAccount)
-	acc.FromProtoMessage(&pbAccount)
 	return acc, nil
 }
 
-// encodeAccount encodes a StateAccount to protobuf.
+// encodeAccount encodes a StateAccount using V2 variable-length format.
 func encodeAccount(acc *account.StateAccount) ([]byte, error) {
-	return proto.Marshal(acc.ToProtoMessage())
+	return acc.MarshalV2(), nil
 }

@@ -57,7 +57,7 @@ func TestSnapshotSyncIntegration(t *testing.T) {
 				Balance:     *uint256.NewInt(uint64(1000 + i)),
 				CodeHash:    emptyCodeHash,
 			}
-			data, err := acc.Marshal()
+			data, err := acc.MarshalV2(), error(nil)
 			if err != nil {
 				return err
 			}
@@ -76,7 +76,7 @@ func TestSnapshotSyncIntegration(t *testing.T) {
 			CodeHash:    contractCodeHash,
 			Incarnation: 1,
 		}
-		cData, err := contract.Marshal()
+		cData, err := contract.MarshalV2(), error(nil)
 		if err != nil {
 			return err
 		}

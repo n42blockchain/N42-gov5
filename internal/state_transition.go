@@ -75,24 +75,27 @@ type StateTransition struct {
 }
 
 type transitionChainPolicy struct {
-	isParlia bool
+	forceGasBailout            bool
+	priorityFeeToSystemAddress bool
 }
 
 func newTransitionChainPolicy(cfg *params.ChainConfig) transitionChainPolicy {
 	if cfg == nil {
 		return transitionChainPolicy{}
 	}
+	parliaSemantics := cfg.UsesParliaRules()
 	return transitionChainPolicy{
-		isParlia: cfg.UsesParliaRules(),
+		forceGasBailout:            parliaSemantics,
+		priorityFeeToSystemAddress: parliaSemantics,
 	}
 }
 
 func (p transitionChainPolicy) shouldForceGasBailout() bool {
-	return p.isParlia
+	return p.forceGasBailout
 }
 
 func (p transitionChainPolicy) priorityFeeRecipient(coinbase types.Address) types.Address {
-	if p.isParlia {
+	if p.priorityFeeToSystemAddress {
 		return consensus.SystemAddress
 	}
 	return coinbase

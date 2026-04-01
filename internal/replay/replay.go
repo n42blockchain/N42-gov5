@@ -10,6 +10,7 @@ package replay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"sync/atomic"
@@ -63,6 +64,11 @@ type Stats struct {
 	TxFailed        atomic.Uint64
 	SkipReasons     map[string]*atomic.Uint64
 	StartTime       time.Time
+
+	// Verification counters
+	ReceiptMatch    atomic.Uint64 // blocks where receipt hash matches source
+	ReceiptMismatch atomic.Uint64 // blocks where receipt hash differs from source
+	GasUsedTotal    atomic.Uint64 // cumulative gas used by replayed transactions
 }
 
 // NewStats creates a Stats instance with initialized skip reason counters.
@@ -82,6 +88,51 @@ func (s *Stats) skipReason(reason string) {
 	if c, ok := s.SkipReasons[reason]; ok {
 		c.Add(1)
 	}
+}
+
+// MarshalJSON serializes Stats with atomic values properly loaded.
+func (s *Stats) MarshalJSON() ([]byte, error) {
+	skipReasons := make(map[string]uint64, len(s.SkipReasons))
+	for k, v := range s.SkipReasons {
+		skipReasons[k] = v.Load()
+	}
+	return json.Marshal(struct {
+		FromBlock       uint64            `json:"fromBlock"`
+		ToBlock         uint64            `json:"toBlock"`
+		CurrentBlock    uint64            `json:"currentBlock"`
+		BlocksProcessed uint64            `json:"blocksProcessed"`
+		BlocksEmpty     uint64            `json:"blocksEmpty"`
+		BlocksMissing   uint64            `json:"blocksMissing"`
+		TxTotal         uint64            `json:"txTotal"`
+		TxReplayed      uint64            `json:"txReplayed"`
+		TxSkipped       uint64            `json:"txSkipped"`
+		TxFailed        uint64            `json:"txFailed"`
+		SkipReasons     map[string]uint64 `json:"skipReasons"`
+		StartTime       time.Time         `json:"startTime"`
+		Elapsed         string            `json:"elapsed"`
+		BlkPerSec       float64           `json:"blkPerSec"`
+		ReceiptMatch    uint64            `json:"receiptMatch"`
+		ReceiptMismatch uint64            `json:"receiptMismatch"`
+		GasUsedTotal    uint64            `json:"gasUsedTotal"`
+	}{
+		FromBlock:       s.FromBlock,
+		ToBlock:         s.ToBlock,
+		CurrentBlock:    s.CurrentBlock,
+		BlocksProcessed: s.BlocksProcessed.Load(),
+		BlocksEmpty:     s.BlocksEmpty.Load(),
+		BlocksMissing:   s.BlocksMissing.Load(),
+		TxTotal:         s.TxTotal.Load(),
+		TxReplayed:      s.TxReplayed.Load(),
+		TxSkipped:       s.TxSkipped.Load(),
+		TxFailed:        s.TxFailed.Load(),
+		SkipReasons:     skipReasons,
+		StartTime:       s.StartTime,
+		Elapsed:         s.Elapsed().Round(time.Second).String(),
+		BlkPerSec:       s.BlocksPerSecond(),
+		ReceiptMatch:    s.ReceiptMatch.Load(),
+		ReceiptMismatch: s.ReceiptMismatch.Load(),
+		GasUsedTotal:    s.GasUsedTotal.Load(),
+	})
 }
 
 // Elapsed returns time since replay started.

@@ -191,12 +191,8 @@ func ReadHeadersBatch(tx kv.Tx, fromBlock, toBlock uint64) (map[uint64]*block.He
 		}
 
 		header := new(block.Header)
-		pbHeader := new(types_pb.Header)
-		if err := proto.Unmarshal(v, pbHeader); err != nil {
+		if err := header.Unmarshal(v); err != nil {
 			return nil, fmt.Errorf("ReadHeadersBatch: unmarshal header at block %d: %w", blockNum, err)
-		}
-		if err := header.FromProtoMessage(pbHeader); err != nil {
-			return nil, fmt.Errorf("ReadHeadersBatch: convert header at block %d: %w", blockNum, err)
 		}
 		result[blockNum] = header
 	}
