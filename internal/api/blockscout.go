@@ -35,10 +35,10 @@ import (
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -362,8 +362,8 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 			blobGasUsed := hexutil.Uint64(tx.BlobGas())
 			br.BlobGasUsed = &blobGasUsed
 			var excessBlobGas uint64
-			if bh, ok := blk.Header().(*block.Header); ok && bh != nil {
-				excessBlobGas = bh.ExcessBlobGas
+			if bh, ok := blk.Header().(*block.Header); ok && bh != nil && bh.ExcessBlobGas != nil {
+				excessBlobGas = *bh.ExcessBlobGas
 			}
 			blobFee := transaction.CalcBlobFee(excessBlobGas)
 			br.BlobGasPrice = (*hexutil.Big)(blobFee.ToBig())
@@ -385,19 +385,12 @@ func (s *BlockChainAPI) Accounts() []types.Address {
 
 // GetProof returns account and storage values with verification data.
 //
-// GetProof returns account and storage Merkle proofs per EIP-1186.
+// Proof generation is intentionally routed through the blockchain's configured
+// StateProofProvider so the current JMT-based path and a future canonical
+// Ethereum MPT backend can be swapped independently of the RPC layer.
 //
-// When the JMT (Jellyfish Merkle Tree) state commitment is enabled,
-// AccountProof and StorageProof contain real JMT Merkle proof nodes
-// (hex-encoded serialized trie nodes from root to leaf) that can be
-// cryptographically verified against the block's state root.
-//
-// When JMT is not enabled, a simplified proof is returned containing a
-// hash of the account data for basic integrity checking.
-//
-// Historical block queries are supported via the state history system
-// (changesets + temporal DB), but JMT Merkle proofs are only available
-// for the latest state since the JMT tree reflects the current tip.
+// When no trie-backed provider is wired, a simplified hash anchor is returned
+// for the account proof and storage proofs remain empty.
 func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, storageKeys []string, blockNrOrHash jsonrpc.BlockNumberOrHash) (*AccountResult, error) {
 	tx, err := s.api.db.BeginRo(ctx)
 	if err != nil {
@@ -414,15 +407,17 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 	nonce := ibs.GetNonce(address)
 	codeHash := ibs.GetCodeHash(address)
 
-	// Try to generate real JMT Merkle proofs if the commitment engine is available.
+	proofProvider, _ := s.stateProofProvider()
+
+	// Account proof.
 	var accountProofStrings []string
-	if bc, ok := s.api.BlockChain().(*internal.BlockChain); ok && bc.JMTCommitment() != nil {
-		jmtCommit := bc.JMTCommitment()
-		if proof, err := jmtCommit.GetAccountProof(address); err == nil && proof != nil {
-			accountProofStrings = make([]string, len(proof.Path))
-			for i, entry := range proof.Path {
-				accountProofStrings[i] = hexutil.Encode(entry.NodeData)
+	if proofProvider != nil {
+		accountProofStrings, err = proofProvider.AccountProof(tx, address, blockNrOrHash)
+		if err != nil {
+			if proofProviderErrorsAreFatal(proofProvider) {
+				return nil, err
 			}
+			accountProofStrings = nil
 		}
 	}
 	// Fallback: hash-based proof when JMT is not available.
@@ -438,19 +433,23 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 
 	// Build storage proofs.
 	storageProof := make([]StorageResult, len(storageKeys))
-	storageHashData := make([]byte, 0, len(storageKeys)*64)
+	slots := make([]types.Hash, len(storageKeys))
+	values := make([]*uint256.Int, len(storageKeys))
 	for i, key := range storageKeys {
 		var value uint256.Int
 		k := types.HexToHash(key)
 		ibs.GetState(address, &k, &value)
+		slots[i] = k
+		values[i] = value.Clone()
 
 		var proofStrings []string
-		if bc, ok := s.api.BlockChain().(*internal.BlockChain); ok && bc.JMTCommitment() != nil {
-			if proof, err := bc.JMTCommitment().GetStorageProof(address, k); err == nil && proof != nil {
-				proofStrings = make([]string, len(proof.Path))
-				for j, entry := range proof.Path {
-					proofStrings[j] = hexutil.Encode(entry.NodeData)
+		if proofProvider != nil {
+			proofStrings, err = proofProvider.StorageProof(tx, address, k, blockNrOrHash)
+			if err != nil {
+				if proofProviderErrorsAreFatal(proofProvider) {
+					return nil, err
 				}
+				proofStrings = nil
 			}
 		}
 		if proofStrings == nil {
@@ -462,14 +461,15 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 			Value: (*hexutil.Big)(value.ToBig()),
 			Proof: proofStrings,
 		}
-		storageHashData = append(storageHashData, k.Bytes()...)
-		b32 := value.Bytes32()
-		storageHashData = append(storageHashData, b32[:]...)
 	}
 
-	storageHash := types.Hash{}
-	if len(storageHashData) > 0 {
-		storageHash = crypto.Keccak256Hash(storageHashData)
+	storageHash := computeQueryTupleStorageHash(slots, values)
+	if proofProvider != nil {
+		if computed, err := proofProvider.StorageHash(tx, address, slots, values, blockNrOrHash); err == nil {
+			storageHash = computed
+		} else if proofProviderErrorsAreFatal(proofProvider) {
+			return nil, err
+		}
 	}
 
 	return &AccountResult{
@@ -481,6 +481,37 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 		StorageHash:  storageHash,
 		StorageProof: storageProof,
 	}, nil
+}
+
+func (s *BlockChainAPI) stateProofProvider() (internal.StateProofProvider, internal.StateProofDescriptor) {
+	if bc, ok := s.api.BlockChain().(*internal.BlockChain); ok {
+		return bc.StateProofProvider(), bc.StateProofDescriptor()
+	}
+	return nil, internal.DefaultStateProofDescriptor(state.RootSchemeUnknown)
+}
+
+func computeQueryTupleStorageHash(slots []types.Hash, values []*uint256.Int) types.Hash {
+	if len(slots) == 0 || len(slots) != len(values) {
+		return types.Hash{}
+	}
+	data := make([]byte, 0, len(slots)*64)
+	for i, slot := range slots {
+		data = append(data, slot.Bytes()...)
+		var word [32]byte
+		if values[i] != nil {
+			word = values[i].Bytes32()
+		}
+		data = append(data, word[:]...)
+	}
+	return crypto.Keccak256Hash(data)
+}
+
+func proofProviderErrorsAreFatal(provider internal.StateProofProvider) bool {
+	if provider == nil {
+		return false
+	}
+	desc := provider.Descriptor()
+	return desc.Backend == internal.StateProofBackendEthereumMPT || desc.Semantics == internal.StateProofSemanticsCanonicalEIP1186
 }
 
 // BlockscoutCompatibilityInfo contains Blockscout compatibility metadata.
@@ -599,7 +630,11 @@ func (s *BlockChainAPI) BlobBaseFee(ctx context.Context) (*hexutil.Big, error) {
 	if !ok || header == nil {
 		return (*hexutil.Big)(new(big.Int)), nil
 	}
-	blobFee := transaction.CalcBlobFee(header.ExcessBlobGas)
+	var excessBlobGas uint64
+	if header.ExcessBlobGas != nil {
+		excessBlobGas = *header.ExcessBlobGas
+	}
+	blobFee := transaction.CalcBlobFee(excessBlobGas)
 	return (*hexutil.Big)(blobFee.ToBig()), nil
 }
 

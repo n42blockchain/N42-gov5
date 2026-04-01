@@ -612,12 +612,44 @@ type Header struct {
 	// EIP-4844 blob gas fields (Cancun fork)
 	BlobGasUsed   uint64 `protobuf:"varint,17,opt,name=BlobGasUsed,proto3" json:"BlobGasUsed,omitempty"`
 	ExcessBlobGas uint64 `protobuf:"varint,18,opt,name=ExcessBlobGas,proto3" json:"ExcessBlobGas,omitempty"`
-	LtHashRoot    *H256  `protobuf:"bytes,19,opt,name=LtHashRoot,proto3" json:"LtHashRoot,omitempty"`
+	LtHashRoot       *H256  `protobuf:"bytes,19,opt,name=LtHashRoot,proto3" json:"LtHashRoot,omitempty"`
+	UncleHash        *H256  `protobuf:"bytes,20,opt,name=UncleHash,proto3" json:"UncleHash,omitempty"`
+	WithdrawalsHash  *H256  `protobuf:"bytes,21,opt,name=WithdrawalsHash,proto3" json:"WithdrawalsHash,omitempty"`
+	ParentBeaconRoot *H256  `protobuf:"bytes,22,opt,name=ParentBeaconRoot,proto3" json:"ParentBeaconRoot,omitempty"`
+	RequestsHash     *H256  `protobuf:"bytes,23,opt,name=RequestsHash,proto3" json:"RequestsHash,omitempty"`
 }
 
 func (x *Header) GetLtHashRoot() *H256 {
 	if x != nil {
 		return x.LtHashRoot
+	}
+	return nil
+}
+
+func (x *Header) GetUncleHash() *H256 {
+	if x != nil {
+		return x.UncleHash
+	}
+	return nil
+}
+
+func (x *Header) GetWithdrawalsHash() *H256 {
+	if x != nil {
+		return x.WithdrawalsHash
+	}
+	return nil
+}
+
+func (x *Header) GetParentBeaconRoot() *H256 {
+	if x != nil {
+		return x.ParentBeaconRoot
+	}
+	return nil
+}
+
+func (x *Header) GetRequestsHash() *H256 {
+	if x != nil {
+		return x.RequestsHash
 	}
 	return nil
 }

@@ -63,7 +63,7 @@
 
 - MDBX 作为底层 KV 存储具有优秀的读写性能（memory-mapped B+tree）
 - `lib/kv/layered/` LayeredDB 分层存储（State DB + History DB）是合理的架构选择
-- **JMT (Jellyfish Merkle Tree) Blake3 状态承诺**：16-ary 稀疏 trie + Extension 路径压缩 + Blake3-256 内容寻址节点。与 Aptos 的 JMT 同源设计。支持 Merkle inclusion/exclusion proof（eth_getProof），BatchUpdate 1000 key ~3.5ms。双写架构：flat Account/Storage 表保持 O(1) 读性能，JMT 并行更新提供可验证状态根。含离线迁移工具（`n42 migrate-jmt`），分批事务 + cursor checkpoint 断点恢复。33 个测试 + 基准测试全面覆盖。Blake3 天然具备 128-bit 量子安全性（Grover 降半），优于 Verkle 的 Pedersen（Shor 完全破解）
+- **JMT (Jellyfish Merkle Tree) Blake3 状态承诺**：16-ary 稀疏 trie + Extension 路径压缩 + Blake3-256 内容寻址节点。与 Aptos 的 JMT 同源设计。支持 JMT Merkle inclusion/exclusion proof（当前 `eth_getProof` 走 JMT-based / partial EIP-1186 语义），BatchUpdate 1000 key ~3.5ms。双写架构：flat Account/Storage 表保持 O(1) 读性能，JMT 并行更新提供可验证状态根。含离线迁移工具（`n42 migrate-jmt`），分批事务 + cursor checkpoint 断点恢复。33 个测试 + 基准测试全面覆盖。Blake3 天然具备 128-bit 量子安全性（Grover 降半），优于 Verkle 的 Pedersen（Shor 完全破解）
 
 ---
 
@@ -195,7 +195,7 @@
 | API | geth | reth | Erigon 3.3 | Sei | Monad | Aptos | **N42** |
 |-----|------|------|------------|-----|-------|-------|---------|
 | **eth_* 标准** | ✅ 完整 | ✅ 完整 | ✅ 完整 | ✅ 部分 | ✅ | N/A | ✅ 大部分 |
-| **eth_getProof** | ✅ MPT proof | ✅ | ✅ +历史proof | ✅ | ✅ | N/A | ✅ JMT Merkle proof |
+| **eth_getProof** | ✅ MPT proof | ✅ | ✅ +历史proof | ✅ | ✅ | N/A | ✅ JMT-based proof（非 canonical MPT） |
 | **eth_createAccessList** | ✅ | ✅ | ✅ +StateOverrides | ❌ | ✅ | N/A | ✅ 迭代式 AccessListTracer |
 | **eth_simulateV1** | ✅ | ✅ | ✅ | ❌ | ❌ | N/A | ✅ |
 | **eth_getBlockReceipts** | ✅ | ✅ | ✅ | ❌ | ✅ | N/A | ✅ |
@@ -485,7 +485,7 @@ N42 HotStuff-2 BLS 共识签名
 | 3 | Panic Recovery | ✅ SafeGo + 8 处关键 goroutine |
 | 4 | Fuzzing 测试 | ✅ 29 fuzz 函数 |
 | 5 | Engine API v1-v4 | ✅ 完整 (含 getBlobsV1 + getPayloadBodies) |
-| 6 | eth_getProof | ✅ 真实 JMT Merkle 证明 (account + storage) |
+| 6 | eth_getProof | ✅ JMT-based Merkle proof 主路径 (account + storage，非 canonical MPT) |
 | 7 | PQ 预编译隔离 | ✅ ChainConfig.PQPrecompilesTime 独立开关, 标准 fork 零感知 |
 | 8 | 安全审计 | ✅ 3 轮深度审计, 47+ bug 修复 (CRITICAL/HIGH/MEDIUM) |
 

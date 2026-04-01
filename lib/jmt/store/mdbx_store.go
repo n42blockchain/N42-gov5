@@ -17,6 +17,8 @@
 package store
 
 import (
+	"encoding/binary"
+
 	"github.com/n42blockchain/N42/lib/jmt"
 	"github.com/n42blockchain/N42/lib/kv"
 )
@@ -25,8 +27,12 @@ import (
 // Defined here so callers can reference it when registering the table.
 const JMTNodeTable = "JMTNode"
 
-// JMTRootTable stores the latest JMT root hash for recovery.
+// JMTRootTable stores the latest JMT root hash and version for recovery.
 const JMTRootTable = "JMTRoot"
+
+// JMTVersionRootsTable is DEPRECATED — state root lives in block header.
+// Kept as constant for backward compatibility with existing databases.
+const JMTVersionRootsTable = "JMTVersionRoots"
 
 // MDBXStore implements jmt.NodeStore backed by an MDBX read-write transaction.
 // Each instance wraps a single kv.RwTx — create a new MDBXStore per DB
@@ -101,4 +107,97 @@ func ReadJMTRoot(tx kv.Tx) (jmt.Hash, error) {
 // WriteJMTRoot persists the JMT root hash for crash recovery.
 func WriteJMTRoot(tx kv.RwTx, root jmt.Hash) error {
 	return tx.Put(JMTRootTable, []byte("root"), root[:])
+}
+
+// ReadJMTVersion reads the last persisted tree version (block height).
+func ReadJMTVersion(tx kv.Tx) (uint64, error) {
+	data, err := tx.GetOne(JMTRootTable, []byte("version"))
+	if err != nil {
+		return 0, err
+	}
+	if data == nil || len(data) < 8 {
+		return 0, nil
+	}
+	return binary.BigEndian.Uint64(data), nil
+}
+
+// WriteJMTVersion persists the tree version (block height) for progress tracking.
+func WriteJMTVersion(tx kv.RwTx, version uint64) error {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], version)
+	return tx.Put(JMTRootTable, []byte("version"), buf[:])
+}
+
+// WriteJMTVersionRoot records the JMT root hash at a specific block height.
+// This builds an index for historical state proof generation.
+func WriteJMTVersionRoot(tx kv.RwTx, height uint64, root jmt.Hash) error {
+	var key [8]byte
+	binary.BigEndian.PutUint64(key[:], height)
+	return tx.Put(JMTVersionRootsTable, key[:], root[:])
+}
+
+// ReadJMTVersionRoot retrieves the JMT root hash at an exact block height.
+// Returns EmptyHash if no root is recorded for that height.
+func ReadJMTVersionRoot(tx kv.Tx, height uint64) (jmt.Hash, error) {
+	var key [8]byte
+	binary.BigEndian.PutUint64(key[:], height)
+	data, err := tx.GetOne(JMTVersionRootsTable, key[:])
+	if err != nil {
+		return jmt.EmptyHash, err
+	}
+	if data == nil || len(data) < jmt.HashSize {
+		return jmt.EmptyHash, nil
+	}
+	var h jmt.Hash
+	copy(h[:], data[:jmt.HashSize])
+	return h, nil
+}
+
+// ReadJMTVersionRootAt retrieves the JMT root hash effective at any block height,
+// including heights where no state change occurred. It finds the latest entry
+// at or before the given height using a cursor seek.
+// Returns (root, actualHeight, error). EmptyHash if no root exists at or before height.
+func ReadJMTVersionRootAt(tx kv.Tx, height uint64) (root jmt.Hash, actualHeight uint64, err error) {
+	cursor, err := tx.Cursor(JMTVersionRootsTable)
+	if err != nil {
+		return jmt.EmptyHash, 0, err
+	}
+	defer cursor.Close()
+
+	// Seek to the target height. If exact match, use it.
+	// If no exact match, MDBX cursor lands on the next key — go back one.
+	var seekKey [8]byte
+	binary.BigEndian.PutUint64(seekKey[:], height)
+
+	k, v, err := cursor.Seek(seekKey[:])
+	if err != nil {
+		return jmt.EmptyHash, 0, err
+	}
+
+	if k == nil {
+		// Target height past all entries — get the last (highest) entry.
+		k, v, err = cursor.Last()
+		if err != nil {
+			return jmt.EmptyHash, 0, err
+		}
+	} else if len(k) == 8 && binary.BigEndian.Uint64(k) == height {
+		// Exact match.
+		if len(v) >= jmt.HashSize {
+			copy(root[:], v[:jmt.HashSize])
+			return root, height, nil
+		}
+	} else {
+		// Seek landed on a key > target — go to previous entry.
+		k, v, err = cursor.Prev()
+		if err != nil {
+			return jmt.EmptyHash, 0, err
+		}
+	}
+
+	if k == nil || len(k) < 8 || len(v) < jmt.HashSize {
+		return jmt.EmptyHash, 0, nil
+	}
+	actualHeight = binary.BigEndian.Uint64(k)
+	copy(root[:], v[:jmt.HashSize])
+	return root, actualHeight, nil
 }

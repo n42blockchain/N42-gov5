@@ -507,3 +507,6 @@ type TemporalTx interface {
 	HistoryRange(name History, fromTs, toTs int, asc order.By, limit int) (it iter.KV, err error)
 	DomainRange(name Domain, fromKey, toKey []byte, ts uint64, asc order.By, limit int) (it iter.KV, err error)
 }
+
+// Step represents a state version step (temporal domain).
+type Step = uint64

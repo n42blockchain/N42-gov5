@@ -100,8 +100,16 @@ func main() {
 			// Check what Finalize modifies
 			if blk != nil {
 				hdr := blk.Header().(*block.Header)
-				fmt.Printf("Block header BlobGasUsed=%d ExcessBlobGas=%d\n", hdr.BlobGasUsed, hdr.ExcessBlobGas)
-				fmt.Printf("Block header LtHashRoot=%s\n", hdr.LtHashRoot.Hex()[:18])
+				var bgu, ebg uint64
+				if hdr.BlobGasUsed != nil {
+					bgu = *hdr.BlobGasUsed
+				}
+				if hdr.ExcessBlobGas != nil {
+					ebg = *hdr.ExcessBlobGas
+				}
+				fmt.Printf("Block header BlobGasUsed=%d ExcessBlobGas=%d\n", bgu, ebg)
+				// LtHashRoot is now encoded in Extra, not a Header field
+				// fmt.Printf("Block header LtHashRoot=%s\n", hdr.LtHashRoot.Hex()[:18])
 				fmt.Printf("Block header MixDigest=%s\n", hdr.MixDigest.Hex()[:18])
 			}
 		}

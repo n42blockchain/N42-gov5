@@ -133,6 +133,36 @@ func (c *JMTCommitment) GetStorageProof(addr types.Address, slot types.Hash) (*j
 	return c.tree.GetProof(keyHash)
 }
 
+// SnapshotAt creates a read-only JMT tree rooted at a historical root hash.
+// The returned tree shares the same backing store but uses a small cache
+// suitable for proof queries. The caller should reuse the snapshot for
+// multiple proofs at the same height to avoid redundant allocations.
+func (c *JMTCommitment) SnapshotAt(root types.Hash) (*jmt.Tree, error) {
+	h := jmt.Hash(root)
+	if h == jmt.EmptyHash {
+		return nil, jmt.ErrNotFound
+	}
+	return jmt.NewFromRootReadOnly(c.tree.Store(), h), nil
+}
+
+// GetAccountProofAt generates a Merkle proof for an account at a historical root.
+func (c *JMTCommitment) GetAccountProofAt(addr types.Address, root types.Hash) (*jmt.Proof, error) {
+	snapshot, err := c.SnapshotAt(root)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot.GetProof(AccountKeyHash(addr))
+}
+
+// GetStorageProofAt generates a Merkle proof for a storage slot at a historical root.
+func (c *JMTCommitment) GetStorageProofAt(addr types.Address, slot types.Hash, root types.Hash) (*jmt.Proof, error) {
+	snapshot, err := c.SnapshotAt(root)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot.GetProof(StorageKeyHash(addr, slot))
+}
+
 // isAccountEmpty checks if an account should be pruned from the JMT.
 func isAccountEmpty(a *account.StateAccount) bool {
 	return a.Nonce == 0 && a.Balance.IsZero() && !a.Initialised

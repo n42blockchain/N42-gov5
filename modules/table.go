@@ -176,10 +176,60 @@ const (
 	// value: blake3_hash (32 bytes)
 	JMTRoot = "JMTRoot"
 
+	// BMTNode stores content-addressed Binary Merkle Tree nodes.
+	// key: blake3_hash (32 bytes)
+	// value: internal(65B) or leaf(33+B)
+	BMTNode = "BMTNode"
+
+	// BMTRoot stores the latest BMT root hash and version for recovery.
+	BMTRoot = "BMTRoot"
+
+	// HashedAccounts stores accounts keyed by keccak256(address).
+	// Used by CalcTrieRoot (erigon2.7 trie) for standard Ethereum state root.
+	// key: keccak256(address) [32B]
+	// value: account encoded (V2 format)
+	HashedAccounts = "HashedAccount"
+
+	// HashedStorage stores storage keyed by keccak256(address) + incarnation.
+	// DupSort: key = keccak256(address)[32B] + incarnation[8B], value = keccak256(slot)[32B] + value
+	HashedStorage = "HashedStorage"
+
+	// TrieOfAccounts stores intermediate trie node hashes for the account trie.
+	// key: nibble prefix (variable length)
+	// value: MarshalTrieNode(hasState, hasTree, hasHash, hashes)
+	TrieOfAccounts = "TrieAccount"
+
+	// TrieOfStorage stores intermediate trie node hashes for storage tries.
+	// DupSort: key = accountHash[32B] + incarnation[8B] + nibble prefix
+	TrieOfStorage = "TrieStorage"
+
+	// MPTBranch stores Ethereum MPT (HexPatriciaHashed) branch nodes.
+	// key: nibble prefix (variable length)
+	// value: [afterMap:2B][cell encodings...]
+	MPTBranch = "MPTBranch"
+
+	// MPTRoot stores the latest MPT state root hash for crash recovery.
+	// key: "root" (fixed)
+	// value: state root hash (32 bytes)
+	MPTRoot = "MPTRoot"
+
 	// LtHashDigest stores the 2048-byte running LtHash state digest for crash recovery.
 	// key: "digest" (fixed)
 	// value: 2048 bytes (lattice hash digest)
 	LtHashDigest = "LtHashDigest"
+
+	// BlockWitness stores per-block execution witness (input data stream).
+	// A stateless client (mobile SDK) can verify/execute a block using only
+	// the block header + transactions + this witness, without full state.
+	// key: block number (8 bytes, big-endian)
+	// value: serialized witness (accounts + storage + code accessed), nil for empty blocks
+	BlockWitness = "BlockWitness"
+
+	// ConsensusEvidence stores per-block consensus evidence (QC + mobile BLS).
+	// Moved out of Header.Extra to keep extraData ≤32 bytes (ETH standard).
+	// key: block_number (8 bytes, big-endian)
+	// value: ConsensusEvidence (compact binary, 140-1600 bytes)
+	ConsensusEvidence = "ConsensusEvidence"
 
 	// ContentStore stores content-addressed blobs for the CAS precompile.
 	// key: keccak256(data) (32 bytes)
@@ -261,7 +311,17 @@ var n42Tables = []string{
 	TxPoolJournal,
 	JMTNode,
 	JMTRoot,
+	BMTNode,
+	BMTRoot,
+	ConsensusEvidence,
+	HashedAccounts,
+	HashedStorage,
+	TrieOfAccounts,
+	TrieOfStorage,
+	MPTBranch,
+	MPTRoot,
 	LtHashDigest,
+	BlockWitness,
 	ContentStore,
 	TorrentHashMap,
 	Ed2kHashMap,
@@ -283,6 +343,13 @@ var N42TableCfg = kv.TableCfg{
 		DupFromLen:                54,
 		DupToLen:                  34,
 	},
+	HashedStorage: {
+		Flags:                     kv.DupSort,
+		AutoDupSortKeysConversion: true,
+		DupFromLen:                72,
+		DupToLen:                  40,
+	},
+	TrieOfStorage: {Flags: kv.DupSort},
 }
 
 func N42Init() {

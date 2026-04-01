@@ -170,3 +170,4 @@ func lazyEnvIntBounded(envVarName string) func() int {
 		return 0
 	})
 }
+var KVReadLevelledMetrics = false

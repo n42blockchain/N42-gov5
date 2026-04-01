@@ -78,7 +78,7 @@ func (p ProfileDescriptor) SupportsConfiguredChain(chain string) bool {
 	switch strings.TrimSpace(strings.ToLower(chain)) {
 	case "private":
 		return true
-	case networkname.MainnetChainName, networkname.TestnetChainName, "mainnet_compat":
+	case networkname.MainnetChainName, networkname.TestnetChainName, "mainnet_compat", "mainnet_v2":
 		return p.IsN42()
 	default:
 		return false
