@@ -23,10 +23,7 @@ import (
 // EncodeAccountValue serializes a StateAccount using Erigon-style variable-length
 // format for storage as a JMT leaf value. Empty fields are omitted.
 func EncodeAccountValue(a *account.StateAccount) []byte {
-	n := a.EncodingLengthForStorageV2()
-	buf := make([]byte, n)
-	a.EncodeForStorageV2(buf)
-	return buf
+	return a.MarshalV2()
 }
 
 // DecodeAccountValue deserializes a JMT leaf value back into a StateAccount.

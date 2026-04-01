@@ -32,6 +32,8 @@ type ConfigV2 struct {
 
 	SkipAddresses map[types.Address]bool
 
+	VerifyMPT    bool   // per-block: rebuild MPT from PlainState and verify root
+
 	LogFile      string // structured log output file (empty = stderr only)
 	StatsFile    string // stats JSON output file (updated every batch)
 	LeafJournal  string // leaf change journal file (empty = disabled)

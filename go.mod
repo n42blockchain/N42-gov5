@@ -73,6 +73,7 @@ require (
 	github.com/crate-crypto/go-eth-kzg v1.5.0
 	github.com/edsrzf/mmap-go v1.2.0
 	github.com/erigontech/erigon-snapshot v1.3.0
+	github.com/erigontech/fastkeccak v0.1.0
 	github.com/erigontech/interfaces v0.0.0-20260309190044-b1ca32817912
 	github.com/erigontech/secp256k1 v1.2.0
 	github.com/erigontech/speedtest v0.0.2
@@ -82,6 +83,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
 	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/puzpuzpuz/xsync/v4 v4.4.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/rs/dnscache v0.0.0-20230804202142-fc85eb664529
 	github.com/shirou/gopsutil/v4 v4.26.2

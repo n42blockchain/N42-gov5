@@ -29,7 +29,7 @@ var replayV2Command = &cli.Command{
 		&cli.StringFlag{Name: "source", Usage: "Source chain data directory", Required: true},
 		&cli.StringFlag{Name: "target", Usage: "Target chain data directory", Required: true},
 		&cli.StringFlag{Name: "chain", Usage: "Chain config name", Value: "mainnet_v2"},
-		&cli.StringFlag{Name: "tree", Usage: "Tree type: jmt or bmt", Value: "jmt"},
+		&cli.StringFlag{Name: "tree", Usage: "Tree type: jmt, bmt, mpt, or trie", Value: "jmt"},
 		&cli.BoolFlag{Name: "jmt", Usage: "Enable JMT state commitment", Value: true},
 		&cli.BoolFlag{Name: "lthash", Usage: "Enable LtHash digest", Value: true},
 		&cli.BoolFlag{Name: "no-gc", Usage: "Disable JMT GC (full history)", Value: true},
@@ -45,6 +45,7 @@ var replayV2Command = &cli.Command{
 		&cli.StringFlag{Name: "output", Usage: "Stats output file", Value: "replay_v2_stats.json"},
 		&cli.StringFlag{Name: "log", Usage: "Structured log file (empty=stderr only)", Value: ""},
 		&cli.StringFlag{Name: "leaf-journal", Usage: "Leaf change journal file for tree building (empty=disabled)", Value: ""},
+		&cli.BoolFlag{Name: "verify-mpt", Usage: "Per-block: rebuild MPT root from PlainState and verify (slow)", Value: false},
 	},
 	Action: runReplayV2,
 }
@@ -76,6 +77,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 	cfg.LogFile = cliCtx.String("log")
 	cfg.LeafJournal = cliCtx.String("leaf-journal")
 	cfg.StatsFile = cliCtx.String("output")
+	cfg.VerifyMPT = cliCtx.Bool("verify-mpt")
 
 	cfg.ProgressFn = func(current, total uint64, bps float64) {
 		pct := float64(current) / float64(total) * 100
