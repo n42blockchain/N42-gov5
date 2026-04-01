@@ -344,6 +344,8 @@ func GenesisByChainName(chain string) *conf.Genesis {
 		return mainnetCompatGenesisBlock()
 	case "mainnet_v2":
 		return mainnetV2GenesisBlock()
+	case "mainnet_mpt":
+		return mainnetMPTGenesisBlock()
 	case networkname.TestnetChainName:
 		return testnetGenesisBlock()
 	default:
@@ -370,6 +372,18 @@ func mainnetCompatGenesisBlock() *conf.Genesis {
 func mainnetV2GenesisBlock() *conf.Genesis {
 	return &conf.Genesis{
 		Config:    params.MainnetV2ChainConfig,
+		Nonce:     0,
+		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
+		Timestamp: 1678174066,
+		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
+		Number:    0,
+	}
+}
+
+// mainnetMPTGenesisBlock returns a replay-v2 genesis with ethereum-mpt state roots.
+func mainnetMPTGenesisBlock() *conf.Genesis {
+	return &conf.Genesis{
+		Config:    params.MainnetMPTChainConfig,
 		Nonce:     0,
 		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
 		Timestamp: 1678174066,

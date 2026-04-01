@@ -19,6 +19,7 @@ package account
 import (
 	"encoding/binary"
 	"fmt"
+	"math/bits"
 
 	"github.com/holiman/uint256"
 	"google.golang.org/protobuf/proto"
@@ -92,9 +93,8 @@ func (a *StateAccount) DecodeForStorage(enc []byte) error {
 		a.Reset()
 		return nil
 	}
-	// Auto-detect format: V2 uses only low 4 bits of fieldBits (max 0x0F).
-	// Protobuf field tags start at 0x08 (field 1, varint) but fields 2+
-	// produce tags >= 0x10. If first byte > 0x0F, try protobuf decode.
+	// Auto-detect: V2 uses low 4 bits of fieldBits (max 0x0F).
+	// Protobuf field tags >= 0x10 for fields 2+.
 	if enc[0] > 0x0F {
 		return a.Unmarshal(enc)
 	}
@@ -301,6 +301,94 @@ func (a *StateAccount) DecodeForStorageV2(enc []byte) error {
 	return nil
 }
 
+// EncodingLengthForHashing returns the RLP-encoded length of the account
+// for trie hashing (nonce, balance, root, codeHash — no incarnation).
+func (a *StateAccount) EncodingLengthForHashing() uint {
+	balanceBytes := 0
+	if !a.Balance.LtUint64(128) {
+		balanceBytes = a.Balance.ByteLen()
+	}
+	nonceBytes := intLenExcludingHead(a.Nonce)
+	structLength := balanceBytes + nonceBytes + 2
+	structLength += 66 // Two 32-byte arrays (root + codeHash) + 2 length prefixes
+	return uint(rlpListPrefixLen(structLength) + structLength)
+}
+
+// EncodeForHashing writes the RLP encoding of the account for trie hashing.
+// Format: RLP([nonce, balance, root, codeHash])
+func (a *StateAccount) EncodeForHashing(buffer []byte) {
+	balanceBytes := 0
+	if !a.Balance.LtUint64(128) {
+		balanceBytes = a.Balance.ByteLen()
+	}
+	nonceBytes := intLenExcludingHead(a.Nonce)
+	var structLength = uint(balanceBytes + nonceBytes + 2)
+	structLength += 66
+
+	var pos int
+	if structLength < 56 {
+		buffer[0] = byte(192 + structLength)
+		pos = 1
+	} else {
+		lengthBytes := (bits.Len(structLength) + 7) / 8
+		buffer[0] = byte(247 + lengthBytes)
+		for i := lengthBytes; i > 0; i-- {
+			buffer[i] = byte(structLength)
+			structLength >>= 8
+		}
+		pos = lengthBytes + 1
+	}
+
+	// Nonce
+	if a.Nonce < 128 && a.Nonce != 0 {
+		buffer[pos] = byte(a.Nonce)
+	} else {
+		buffer[pos] = byte(128 + nonceBytes)
+		var nonce = a.Nonce
+		for i := nonceBytes; i > 0; i-- {
+			buffer[pos+i] = byte(nonce)
+			nonce >>= 8
+		}
+	}
+	pos += 1 + nonceBytes
+
+	// Balance
+	if a.Balance.LtUint64(128) && !a.Balance.IsZero() {
+		buffer[pos] = byte(a.Balance.Uint64())
+		pos++
+	} else {
+		buffer[pos] = byte(128 + balanceBytes)
+		pos++
+		a.Balance.WriteToSlice(buffer[pos : pos+balanceBytes])
+		pos += balanceBytes
+	}
+
+	// Root
+	buffer[pos] = 128 + 32
+	pos++
+	copy(buffer[pos:], a.Root[:])
+	pos += 32
+
+	// CodeHash
+	buffer[pos] = 128 + 32
+	pos++
+	copy(buffer[pos:], a.CodeHash[:])
+}
+
+func intLenExcludingHead(i uint64) int {
+	if i < 0x80 {
+		return 0
+	}
+	return (bits.Len64(i) + 7) / 8
+}
+
+func rlpListPrefixLen(contentLen int) int {
+	if contentLen < 56 {
+		return 1
+	}
+	return 1 + (bits.Len(uint(contentLen))+7)/8
+}
+
 func uvarintSize(v uint64) int {
 	n := 1
 	for v >= 0x80 {
@@ -309,3 +397,4 @@ func uvarintSize(v uint64) int {
 	}
 	return n
 }
+

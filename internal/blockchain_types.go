@@ -151,6 +151,9 @@ type BlockChain struct {
 	bmtCommitment *commitment.BMTCommitment
 	bmtEnabled    bool
 
+	mptRootComputer *commitment.MPTRootComputer
+	mptEnabled      bool
+
 	ltHashCommitment   *commitment.LtHashCommitment
 	ltHashEnabled      bool
 	rootComputer       state.RootComputer

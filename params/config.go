@@ -113,6 +113,7 @@ var (
 	MainnetChainConfig       = readChainSpec("chainspecs/mainnet.json")
 	MainnetCompatChainConfig = readChainSpec("chainspecs/mainnet_compat.json") // backward-compatible (no Shanghai+), matches legacy genesis hash
 	MainnetV2ChainConfig     = readChainSpec("chainspecs/mainnet_v2.json")    // all forks from genesis (replay-v2)
+	MainnetMPTChainConfig    = readChainSpec("chainspecs/mainnet_mpt.json")  // replay-v2 with ethereum-mpt state roots
 	TestnetChainConfig       = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
@@ -513,6 +514,8 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 		return MainnetCompatChainConfig
 	case "mainnet_v2":
 		return MainnetV2ChainConfig
+	case "mainnet_mpt":
+		return MainnetMPTChainConfig
 	case networkname.TestnetChainName:
 		return TestnetChainConfig
 	default:
@@ -527,7 +530,7 @@ func GenesisHashByChainName(chain string) *types.Hash {
 	case networkname.TestnetChainName:
 		return &TestnetGenesisHash
 	case "mainnet_v2":
-		return nil // genesis hash computed at first run
+		return &MainnetGenesisHash
 	default:
 		return nil
 	}

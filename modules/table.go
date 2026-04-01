@@ -184,6 +184,35 @@ const (
 	// BMTRoot stores the latest BMT root hash and version for recovery.
 	BMTRoot = "BMTRoot"
 
+	// HashedAccounts stores accounts keyed by keccak256(address).
+	// Used by CalcTrieRoot (erigon2.7 trie) for standard Ethereum state root.
+	// key: keccak256(address) [32B]
+	// value: account encoded (V2 format)
+	HashedAccounts = "HashedAccount"
+
+	// HashedStorage stores storage keyed by keccak256(address) + incarnation.
+	// DupSort: key = keccak256(address)[32B] + incarnation[8B], value = keccak256(slot)[32B] + value
+	HashedStorage = "HashedStorage"
+
+	// TrieOfAccounts stores intermediate trie node hashes for the account trie.
+	// key: nibble prefix (variable length)
+	// value: MarshalTrieNode(hasState, hasTree, hasHash, hashes)
+	TrieOfAccounts = "TrieAccount"
+
+	// TrieOfStorage stores intermediate trie node hashes for storage tries.
+	// DupSort: key = accountHash[32B] + incarnation[8B] + nibble prefix
+	TrieOfStorage = "TrieStorage"
+
+	// MPTBranch stores Ethereum MPT (HexPatriciaHashed) branch nodes.
+	// key: nibble prefix (variable length)
+	// value: [afterMap:2B][cell encodings...]
+	MPTBranch = "MPTBranch"
+
+	// MPTRoot stores the latest MPT state root hash for crash recovery.
+	// key: "root" (fixed)
+	// value: state root hash (32 bytes)
+	MPTRoot = "MPTRoot"
+
 	// LtHashDigest stores the 2048-byte running LtHash state digest for crash recovery.
 	// key: "digest" (fixed)
 	// value: 2048 bytes (lattice hash digest)
@@ -278,6 +307,12 @@ var n42Tables = []string{
 	JMTRoot,
 	BMTNode,
 	BMTRoot,
+	HashedAccounts,
+	HashedStorage,
+	TrieOfAccounts,
+	TrieOfStorage,
+	MPTBranch,
+	MPTRoot,
 	LtHashDigest,
 	BlockWitness,
 	ContentStore,
@@ -301,6 +336,13 @@ var N42TableCfg = kv.TableCfg{
 		DupFromLen:                54,
 		DupToLen:                  34,
 	},
+	HashedStorage: {
+		Flags:                     kv.DupSort,
+		AutoDupSortKeysConversion: true,
+		DupFromLen:                72,
+		DupToLen:                  40,
+	},
+	TrieOfStorage: {Flags: kv.DupSort},
 }
 
 func N42Init() {

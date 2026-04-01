@@ -4,31 +4,27 @@
 package commitment
 
 import (
-	"sort"
+	"bytes"
+	"context"
+	"encoding/binary"
+	"fmt"
+	"hash"
 
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/lib/common/empty"
 	"github.com/n42blockchain/N42/common/types"
 	libcommit "github.com/n42blockchain/N42/lib/commitment"
 	"github.com/n42blockchain/N42/lib/common/length"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
-// MPTRootComputer implements state.RootComputer using Erigon's HexPatriciaHashed
-// trie. It produces standard Ethereum MPT state roots identical to geth.
-//
-// The HexPatriciaHashed trie internally uses Keccak256 for key hashing and
-// RLP for account encoding — no external encoding adaptation needed.
-// MPTBranchStore provides read/write access to MPT branch nodes.
-// Implementations can use MDBX (production) or in-memory map (testing).
-type MPTBranchStore interface {
-	GetBranch(prefix []byte) ([]byte, error)
-	PutBranch(prefix []byte, data []byte) error
-}
+// --- Branch store (memory + MDBX) ---
 
-// memBranchStore is an in-memory branch store with LRU eviction.
 type memBranchStore struct {
 	data map[string][]byte
 }
@@ -37,14 +33,14 @@ func newMemBranchStore() *memBranchStore {
 	return &memBranchStore{data: make(map[string][]byte)}
 }
 
-func (s *memBranchStore) GetBranch(prefix []byte) ([]byte, error) {
+func (s *memBranchStore) Get(prefix []byte) ([]byte, error) {
 	if d, ok := s.data[string(prefix)]; ok {
 		return d, nil
 	}
 	return nil, nil
 }
 
-func (s *memBranchStore) PutBranch(prefix []byte, data []byte) error {
+func (s *memBranchStore) Put(prefix []byte, data []byte) {
 	if len(data) == 0 {
 		delete(s.data, string(prefix))
 	} else {
@@ -52,128 +48,414 @@ func (s *memBranchStore) PutBranch(prefix []byte, data []byte) error {
 		copy(cp, data)
 		s.data[string(prefix)] = cp
 	}
-	return nil
 }
 
 func (s *memBranchStore) Len() int { return len(s.data) }
 
-type MPTRootComputer struct {
-	trie     *libcommit.HexPatriciaHashed
-	branches *memBranchStore
+type mdbxBranchStore struct {
+	roTx  kv.Tx
+	table string
 }
 
-// NewMPTRootComputer creates a root computer backed by HexPatriciaHashed.
-func NewMPTRootComputer() *MPTRootComputer {
-	m := &MPTRootComputer{
-		branches: newMemBranchStore(),
+func newMDBXBranchStore(table string) *mdbxBranchStore {
+	return &mdbxBranchStore{table: table}
+}
+
+func (s *mdbxBranchStore) Get(prefix []byte) ([]byte, error) {
+	if s.roTx == nil {
+		return nil, nil
 	}
-
-	branchFn := func(prefix []byte) ([]byte, error) {
-		return m.branches.GetBranch(prefix)
+	data, err := s.roTx.GetOne(s.table, prefix)
+	if err != nil || data == nil {
+		return nil, err
 	}
-	accountFn := func(plainKey []byte, cell *libcommit.Cell) error { return nil }
-	storageFn := func(plainKey []byte, cell *libcommit.Cell) error { return nil }
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	return cp, nil
+}
 
-	m.trie = libcommit.NewHexPatriciaHashed(length.Addr, branchFn, accountFn, storageFn)
+func (s *mdbxBranchStore) SetReadTx(tx kv.Tx) { s.roTx = tx }
 
-	// EncodeBranch produces [touchMap:2B][afterMap:2B][cells...].
-	// unfoldBranchNode expects [afterMap:2B][cells...] (touchMap stripped).
-	m.trie.SetPutBranchFn(func(updateKey []byte, branchData []byte) {
-		if len(branchData) < 4 {
-			return
+// --- PlainState reader ---
+
+type PlainStateMPTReader struct {
+	tx kv.Tx
+}
+
+func NewPlainStateMPTReader(tx kv.Tx) *PlainStateMPTReader {
+	return &PlainStateMPTReader{tx: tx}
+}
+
+func (r *PlainStateMPTReader) ReadAccountData(addr types.Address) (*account.StateAccount, error) {
+	data, err := r.tx.GetOne(modules.Account, addr[:])
+	if err != nil || data == nil {
+		return nil, err
+	}
+	var acct account.StateAccount
+	if err := acct.DecodeForStorage(data); err != nil {
+		return nil, err
+	}
+	if acct.CodeHash == (types.Hash{}) {
+		acct.CodeHash = empty.CodeHash
+	}
+	return &acct, nil
+}
+
+func (r *PlainStateMPTReader) ReadAccountStorage(addr types.Address, slot types.Hash) ([]byte, error) {
+	acctData, err := r.tx.GetOne(modules.Account, addr[:])
+	if err != nil {
+		return nil, err
+	}
+	var incarnation uint16 = 1
+	if len(acctData) > 0 {
+		var acct account.StateAccount
+		if err := acct.DecodeForStorage(acctData); err == nil && acct.Incarnation > 0 {
+			incarnation = acct.Incarnation
 		}
-		stripped := branchData[2:]
-		m.branches.PutBranch(updateKey, stripped)
-	})
+	}
+	var key [54]byte
+	copy(key[:20], addr[:])
+	key[20] = byte(incarnation >> 8)
+	key[21] = byte(incarnation)
+	copy(key[22:], slot[:])
+	data, err := r.tx.GetOne(modules.Storage, key[:])
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
 
+func (r *PlainStateMPTReader) ReadAllStorage(addr types.Address) (map[types.Hash]*uint256.Int, error) {
+	acctData, err := r.tx.GetOne(modules.Account, addr[:])
+	if err != nil {
+		return nil, err
+	}
+	var incarnation uint16 = 1
+	if len(acctData) > 0 {
+		var acct account.StateAccount
+		if err := acct.DecodeForStorage(acctData); err == nil && acct.Incarnation > 0 {
+			incarnation = acct.Incarnation
+		}
+	}
+	var prefix [22]byte
+	copy(prefix[:20], addr[:])
+	prefix[20] = byte(incarnation >> 8)
+	prefix[21] = byte(incarnation)
+
+	c, err := r.tx.Cursor(modules.Storage)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+
+	result := make(map[types.Hash]*uint256.Int)
+	for k, v, err := c.Seek(prefix[:]); k != nil; k, v, err = c.Next() {
+		if err != nil {
+			return nil, err
+		}
+		if len(k) < 22 || !bytes.Equal(k[:22], prefix[:]) {
+			break
+		}
+		if len(k) != 54 {
+			continue
+		}
+		var slot types.Hash
+		copy(slot[:], k[22:54])
+		val := new(uint256.Int)
+		if len(v) > 0 {
+			val.SetBytes(v)
+		}
+		if !val.IsZero() {
+			result[slot] = val
+		}
+	}
+	return result, nil
+}
+
+
+// --- Persistence helpers ---
+
+func WriteMPTRoot(tx kv.RwTx, root types.Hash) error {
+	return tx.Put(modules.MPTRoot, []byte("root"), root[:])
+}
+
+func ReadMPTRoot(tx kv.Tx) (types.Hash, error) {
+	data, err := tx.GetOne(modules.MPTRoot, []byte("root"))
+	if err != nil {
+		return types.Hash{}, err
+	}
+	if data == nil || len(data) < 32 {
+		return types.Hash{}, nil
+	}
+	var h types.Hash
+	copy(h[:], data[:32])
+	return h, nil
+}
+
+func WriteMPTTrieState(tx kv.RwTx, blockNum uint64, trieState []byte) error {
+	buf := make([]byte, 12+len(trieState))
+	binary.BigEndian.PutUint64(buf[0:8], blockNum)
+	binary.BigEndian.PutUint32(buf[8:12], uint32(len(trieState)))
+	copy(buf[12:], trieState)
+	return tx.Put(modules.MPTRoot, []byte("trie_state"), buf)
+}
+
+func ReadMPTTrieState(tx kv.Tx) (blockNum uint64, trieState []byte, err error) {
+	data, err := tx.GetOne(modules.MPTRoot, []byte("trie_state"))
+	if err != nil {
+		return 0, nil, err
+	}
+	if data == nil || len(data) < 12 {
+		return 0, nil, nil
+	}
+	blockNum = binary.BigEndian.Uint64(data[0:8])
+	stateLen := binary.BigEndian.Uint32(data[8:12])
+	if uint32(len(data)-12) < stateLen {
+		return 0, nil, fmt.Errorf("mpt trie state truncated")
+	}
+	trieState = make([]byte, stateLen)
+	copy(trieState, data[12:12+stateLen])
+	return blockNum, trieState, nil
+}
+
+// --- PatriciaContext implementation ---
+
+// mptContext implements libcommit.PatriciaContext backed by mem/MDBX branch store
+// and PlainState account/storage reader.
+type mptContext struct {
+	mem     *memBranchStore
+	persist *mdbxBranchStore
+	reader  *PlainStateMPTReader
+}
+
+func (c *mptContext) Branch(prefix []byte) ([]byte, kv.Step, error) {
+	if d, ok := c.mem.data[string(prefix)]; ok {
+		return d, 0, nil
+	}
+	if c.persist != nil {
+		data, err := c.persist.Get(prefix)
+		return data, 0, err
+	}
+	return nil, 0, nil
+}
+
+func (c *mptContext) PutBranch(prefix []byte, data []byte, prevData []byte) error {
+	if len(data) == 0 {
+		c.mem.Put(prefix, nil)
+	} else {
+		c.mem.Put(prefix, data)
+	}
+	return nil
+}
+
+func (c *mptContext) Account(plainKey []byte) (*libcommit.Update, error) {
+	if c.reader == nil || len(plainKey) < 20 {
+		return &libcommit.Update{Flags: libcommit.DeleteUpdate}, nil
+	}
+	var addr types.Address
+	copy(addr[:], plainKey[:20])
+	acct, err := c.reader.ReadAccountData(addr)
+	if err != nil {
+		return nil, err
+	}
+	if acct == nil {
+		return &libcommit.Update{Flags: libcommit.DeleteUpdate}, nil
+	}
+	u := &libcommit.Update{
+		Flags:    libcommit.BalanceUpdate | libcommit.NonceUpdate | libcommit.CodeUpdate,
+		Nonce:    acct.Nonce,
+		CodeHash: acct.CodeHash,
+	}
+	u.Balance.Set(&acct.Balance)
+	if acct.CodeHash == (types.Hash{}) || acct.CodeHash == empty.CodeHash {
+		u.CodeHash = empty.CodeHash
+	}
+	return u, nil
+}
+
+func (c *mptContext) Storage(plainKey []byte) (*libcommit.Update, error) {
+	if c.reader == nil || len(plainKey) < 52 {
+		return &libcommit.Update{Flags: libcommit.DeleteUpdate}, nil
+	}
+	var addr types.Address
+	copy(addr[:], plainKey[:20])
+	var slot types.Hash
+	copy(slot[:], plainKey[20:52])
+	val, err := c.reader.ReadAccountStorage(addr, slot)
+	if err != nil {
+		return nil, err
+	}
+	if len(val) == 0 {
+		return &libcommit.Update{Flags: libcommit.DeleteUpdate}, nil
+	}
+	u := &libcommit.Update{
+		Flags:      libcommit.StorageUpdate,
+		StorageLen: int8(len(val)),
+	}
+	copy(u.Storage[:], val)
+	return u, nil
+}
+
+func (c *mptContext) TxNum() uint64 { return 0 }
+
+// --- MPTRootComputer ---
+
+type MPTRootComputer struct {
+	trie    *libcommit.HexPatriciaHashed
+	ctx     *mptContext
+	mem     *memBranchStore
+	persist *mdbxBranchStore
+	updates *libcommit.Updates // reused across ComputeRoot calls
+	hasher  func([]byte) []byte
+}
+
+func NewMPTRootComputer() *MPTRootComputer {
+	return newMPTRootComputer(nil)
+}
+
+func NewPersistentMPTRootComputer() *MPTRootComputer {
+	persist := newMDBXBranchStore(modules.MPTBranch)
+	return newMPTRootComputer(persist)
+}
+
+func newMPTRootComputer(persist *mdbxBranchStore) *MPTRootComputer {
+	mem := newMemBranchStore()
+	ctx := &mptContext{mem: mem, persist: persist}
+	m := &MPTRootComputer{
+		mem:     mem,
+		persist: persist,
+		ctx:     ctx,
+		trie: libcommit.NewHexPatriciaHashed(int16(length.Addr), ctx),
+	}
+	// Reuse a single keccak hasher across calls (closure captures it).
+	keccak := sha3.NewLegacyKeccak256()
+	m.hasher = func(key []byte) []byte {
+		if len(key) == length.Addr {
+			return keccakToNibbles(keccak, key)
+		}
+		return storageKeccakToNibbles(keccak, key[:length.Addr], key[length.Addr:])
+	}
 	return m
 }
 
-// BranchCount returns the number of stored branch nodes (for monitoring).
-func (m *MPTRootComputer) BranchCount() int {
-	return m.branches.Len()
+func (m *MPTRootComputer) SetStateReader(r *PlainStateMPTReader) {
+	m.ctx.reader = r
 }
 
-// ResetTrie resets HPH internal state between batches while preserving
-// the in-memory branch data. This is required because ProcessUpdates
-// expects a clean grid at the start of each batch.
+func (m *MPTRootComputer) SetReadTx(tx kv.Tx) {
+	if m.persist != nil {
+		m.persist.SetReadTx(tx)
+	}
+}
+
+func (m *MPTRootComputer) Trie() *libcommit.HexPatriciaHashed {
+	return m.trie
+}
+
+func (m *MPTRootComputer) BranchCount() int {
+	return m.mem.Len()
+}
+
 func (m *MPTRootComputer) ResetTrie() {
 	m.trie.Reset()
 }
 
-// RootScheme reports that this produces standard Ethereum MPT roots.
-func (*MPTRootComputer) RootScheme() state.RootScheme {
+func (m *MPTRootComputer) RootScheme() state.RootScheme {
 	return state.RootSchemeEthereumMPT
 }
 
-// ComputeRoot applies dirty accounts and storage to the MPT and returns
-// the new root hash. The root is compatible with geth's state root.
+func (m *MPTRootComputer) FlushBranches(tx kv.RwTx) error {
+	for k, v := range m.mem.data {
+		if len(v) == 0 {
+			if err := tx.Delete(modules.MPTBranch, []byte(k)); err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Put(modules.MPTBranch, []byte(k), v); err != nil {
+				return err
+			}
+		}
+	}
+	// Do NOT clear mem.data — HPH needs branch data for subsequent
+	// unfold operations across batch boundaries.
+	return nil
+}
+
+func (m *MPTRootComputer) EncodeTrieState() ([]byte, error) {
+	return m.trie.EncodeCurrentState(nil)
+}
+
+func (m *MPTRootComputer) RestoreTrieState(trieState []byte) error {
+	if len(trieState) == 0 {
+		return nil
+	}
+	return m.trie.SetState(trieState)
+}
+
+func (m *MPTRootComputer) SaveCheckpoint(tx kv.RwTx, blockNum uint64, root types.Hash) error {
+	if err := m.FlushBranches(tx); err != nil {
+		return fmt.Errorf("flush branches: %w", err)
+	}
+	if err := WriteMPTRoot(tx, root); err != nil {
+		return fmt.Errorf("write root: %w", err)
+	}
+	trieState, err := m.EncodeTrieState()
+	if err != nil {
+		return fmt.Errorf("encode trie state: %w", err)
+	}
+	if err := WriteMPTTrieState(tx, blockNum, trieState); err != nil {
+		return fmt.Errorf("write trie state: %w", err)
+	}
+	return nil
+}
+
+// --- ComputeRoot using Erigon's Process() API ---
+
+// ComputeRoot computes the MPT state root from dirty accounts+storage.
+// Uses Erigon's HexPatriciaHashed Process() which achieves O(dirty) per call
+// via stateHash memoization and PatriciaContext lazy loading.
 func (m *MPTRootComputer) ComputeRoot(
 	accounts map[types.Address]*account.StateAccount,
 	storage map[types.Address]map[types.Hash]*uint256.Int,
 ) (types.Hash, error) {
-	// Collect all updates: accounts + storage slots.
-	type entry struct {
-		plainKey  []byte
-		hashedKey []byte
-		update    libcommit.Update
+	// Build Updates for HPH Process() using ModeUpdate (btree, no ETL alloc).
+	// TouchPlainKey with TouchAccount/TouchStorage callbacks that decode
+	// the encoded account/storage bytes and set Update fields.
+	if m.updates == nil {
+		m.updates = libcommit.NewUpdates(libcommit.ModeUpdate, "", m.hasher)
+	} else {
+		m.updates.Reset()
 	}
-	entries := make([]entry, 0, len(accounts)+len(storage)*4)
 
 	for addr, acct := range accounts {
-		pk := addr.Bytes() // 20 bytes
-		hk := keccakToNibbles(pk)
-
+		pk := string(addr.Bytes())
 		if acct == nil || isAccountEmpty(acct) {
-			entries = append(entries, entry{
-				plainKey:  pk,
-				hashedKey: hk,
-				update:    libcommit.Update{Flags: libcommit.DeleteUpdate},
-			})
+			m.updates.TouchPlainKey(pk, nil, m.updates.TouchAccount)
 			continue
 		}
-
-		var u libcommit.Update
-		u.Flags = libcommit.BalanceUpdate | libcommit.NonceUpdate | libcommit.CodeUpdate
-		u.Balance.Set(&acct.Balance)
-		u.Nonce = acct.Nonce
-		copy(u.CodeHashOrStorage[:], acct.CodeHash[:])
-		entries = append(entries, entry{plainKey: pk, hashedKey: hk, update: u})
+		enc := acct.MarshalV2()
+		m.updates.TouchPlainKey(pk, enc, m.updates.TouchAccount)
 	}
 
 	for addr, slots := range storage {
 		for slot, val := range slots {
-			// Storage plain key: address(20) + slot(32) = 52 bytes
 			var pk [52]byte
 			copy(pk[:20], addr[:])
 			copy(pk[20:], slot[:])
-			// Storage hashed key: keccak(addr) + keccak(slot) = 128 nibbles
-			// HPH uses first 64 nibbles to locate the account, then next 64
-			// nibbles to navigate the storage trie (depth 64-128).
-			hk := storageKeccakToNibbles(addr[:], slot[:])
-
 			if val == nil || val.IsZero() {
-				entries = append(entries, entry{
-					plainKey:  pk[:],
-					hashedKey: hk,
-					update:    libcommit.Update{Flags: libcommit.DeleteUpdate},
-				})
+				m.updates.TouchPlainKey(string(pk[:]), nil, m.updates.TouchStorage)
 			} else {
-				var u libcommit.Update
-				u.Flags = libcommit.StorageUpdate
 				b := val.Bytes32()
-				copy(u.CodeHashOrStorage[:], b[:])
-				u.ValLength = 32
-				// Trim leading zeros for compact storage.
-				for u.ValLength > 0 && u.CodeHashOrStorage[32-u.ValLength] == 0 {
-					u.ValLength--
+				start := 0
+				for start < 31 && b[start] == 0 {
+					start++
 				}
-				entries = append(entries, entry{plainKey: pk[:], hashedKey: hk, update: u})
+				m.updates.TouchPlainKey(string(pk[:]), b[start:], m.updates.TouchStorage)
 			}
 		}
 	}
 
-	if len(entries) == 0 {
+	if m.updates.Size() == 0 {
 		root, err := m.trie.RootHash()
 		if err != nil {
 			return types.Hash{}, err
@@ -183,30 +465,9 @@ func (m *MPTRootComputer) ComputeRoot(
 		return h, nil
 	}
 
-	// HexPatriciaHashed requires keys sorted by hashedKey (nibble order).
-	sort.Slice(entries, func(i, j int) bool {
-		return compareBytes(entries[i].hashedKey, entries[j].hashedKey) < 0
-	})
-
-	plainKeys := make([][]byte, len(entries))
-	hashedKeys := make([][]byte, len(entries))
-	updates := make([]libcommit.Update, len(entries))
-	for i, e := range entries {
-		plainKeys[i] = e.plainKey
-		hashedKeys[i] = e.hashedKey
-		updates[i] = e.update
-	}
-
-	root, branchUpdates, err := m.trie.ProcessUpdates(plainKeys, hashedKeys, updates)
+	root, err := m.trie.Process(context.Background(), m.updates, "", nil, libcommit.WarmupConfig{})
 	if err != nil {
 		return types.Hash{}, err
-	}
-	// Branch updates from ProcessUpdates are already handled by putBranchFn
-	// during fold(). Only handle deletions (empty branch data) here.
-	for k, v := range branchUpdates {
-		if len(v) == 0 {
-			m.branches.PutBranch([]byte(k), nil)
-		}
 	}
 
 	var h types.Hash
@@ -214,10 +475,10 @@ func (m *MPTRootComputer) ComputeRoot(
 	return h, nil
 }
 
-// keccakToNibbles computes Keccak256(data) and expands to hex nibbles.
-// Each byte of the hash becomes two nibble bytes (0x0-0xF).
-func keccakToNibbles(data []byte) []byte {
-	hasher := sha3.NewLegacyKeccak256()
+// --- Keccak helpers ---
+
+func keccakToNibbles(hasher hash.Hash, data []byte) []byte {
+	hasher.Reset()
 	hasher.Write(data)
 	hash := hasher.Sum(nil)
 	nibbles := make([]byte, len(hash)*2)
@@ -228,18 +489,13 @@ func keccakToNibbles(data []byte) []byte {
 	return nibbles
 }
 
-// storageKeccakToNibbles produces 128 nibbles: keccak(addr) || keccak(slot).
-// HPH uses the first 64 nibbles for the account trie path and the next 64
-// for the storage trie path (grid rows 0-63 for account, 64-127 for storage).
-func storageKeccakToNibbles(addr, slot []byte) []byte {
-	hasher := sha3.NewLegacyKeccak256()
+func storageKeccakToNibbles(hasher hash.Hash, addr, slot []byte) []byte {
+	hasher.Reset()
 	hasher.Write(addr)
 	addrHash := hasher.Sum(nil)
-
 	hasher.Reset()
 	hasher.Write(slot)
 	slotHash := hasher.Sum(nil)
-
 	nibbles := make([]byte, 128)
 	for i, b := range addrHash {
 		nibbles[i*2] = b >> 4
@@ -252,14 +508,3 @@ func storageKeccakToNibbles(addr, slot []byte) []byte {
 	return nibbles
 }
 
-func compareBytes(a, b []byte) int {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		if a[i] < b[i] {
-			return -1
-		}
-		if a[i] > b[i] {
-			return 1
-		}
-	}
-	return len(a) - len(b)
-}

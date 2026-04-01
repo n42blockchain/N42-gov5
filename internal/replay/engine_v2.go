@@ -16,8 +16,10 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
@@ -40,8 +42,9 @@ import (
 
 // Precomputed hashes for empty blocks (avoid recomputing per gap block).
 var (
-	emptyReceiptHash = hash.DeriveSha(block.Receipts(nil))
-	emptyTxHash      = hash.DeriveSha(transaction.Transactions(nil))
+	emptyReceiptHash  = hash.DeriveSha(block.Receipts(nil))
+	emptyTxHash       = hash.DeriveSha(transaction.Transactions(nil))
+	emptyCodeHashValue = crypto.Keccak256Hash(nil) // keccak256("") for CodeHash normalization
 )
 
 // EngineV2 is the replay-v2 engine that reads old chain blocks, filters
@@ -56,6 +59,7 @@ type EngineV2 struct {
 	replayCache   *layered.ShardedCache    // Erigon-style cross-batch state cache
 	bmtTree       *bmt.Tree               // retained after replay for final flush
 	mptRC         state.RootComputer      // MPT root computer (persists across batches)
+	trieRC        *commitment.TrieRootComputer // CalcTrieRoot incremental (persists across batches)
 	witnessReader *WitnessStateReader     // records per-block state access
 	leafJournal   *LeafJournal            // per-block leaf changes for tree building
 }
@@ -254,6 +258,21 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 		)
 	}
 
+	// Log final MPT state (checkpoint already saved in last batch).
+	if rc, ok := e.mptRC.(*commitment.MPTRootComputer); ok && rc != nil {
+		if err := e.dstDB.View(ctx, func(tx kv.Tx) error {
+			root, _ := commitment.ReadMPTRoot(tx)
+			blockNum, _, _ := commitment.ReadMPTTrieState(tx)
+			e.log.Info("MPT state persisted",
+				"root", fmt.Sprintf("%x", root[:8]),
+				"checkpoint", blockNum,
+			)
+			return nil
+		}); err != nil {
+			e.log.Warn("read MPT checkpoint failed", "err", err)
+		}
+	}
+
 	// Close leaf journal.
 	if e.leafJournal != nil {
 		if err := e.leafJournal.Close(); err != nil {
@@ -296,17 +315,38 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		var ltRC state.RootComputer
 		useBMT := e.cfg.TreeType == "bmt"
 		useMPT := e.cfg.TreeType == "mpt"
+		useTrie := e.cfg.TreeType == "trie"
 		var mptRC state.RootComputer
+		var trieRC *commitment.TrieRootComputer
+
+		// CalcTrieRoot incremental — independent of JMT flag.
+		if useTrie {
+			if e.trieRC == nil {
+				e.trieRC = commitment.NewTrieRootComputer()
+			}
+			trieRC = e.trieRC
+			trieRC.SetRwTx(dstTx)
+		}
 
 		if e.cfg.EnableJMT {
 			switch {
+			case useTrie:
+				// Already initialized above.
+
 			case useMPT:
-				// MPT path — reuse across batches to preserve branch data.
+				// MPT path — reuse across batches to preserve branch data and trie state.
+				// Do NOT reset between batches — HPH state must be continuous for
+				// correct incremental root computation.
 				if e.mptRC == nil {
-					e.mptRC = commitment.NewMPTRootComputer()
-				} else {
-					// Reset HPH internal grid state between batches, keeping branches.
-					e.mptRC.(*commitment.MPTRootComputer).ResetTrie()
+					rc := commitment.NewPersistentMPTRootComputer()
+					// Restore trie state from previous batch/run if available.
+					if rtx, err := e.dstDB.BeginRo(ctx); err == nil {
+						if _, trieState, err := commitment.ReadMPTTrieState(rtx); err == nil && len(trieState) > 0 {
+							_ = rc.RestoreTrieState(trieState)
+						}
+						rtx.Rollback()
+					}
+					e.mptRC = rc
 				}
 				mptRC = e.mptRC
 
@@ -394,10 +434,11 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			genesis := internal.GenesisByChainName("mainnet_v2")
 			if genesis != nil {
 				gb := &internal.GenesisBlock{GenesisConfig: genesis}
-				if _, _, err := gb.WriteGenesisState(dstTx); err != nil {
-					return fmt.Errorf("write genesis state: %w", err)
+				// Full genesis Write: state + block 0 + canonical hash + ChainConfig + HeadBlockHash.
+				if _, _, err := gb.Write(dstTx); err != nil {
+					return fmt.Errorf("write genesis: %w", err)
 				}
-				e.log.Info("genesis state initialized from alloc",
+				e.log.Info("genesis block written",
 					"accounts", len(genesis.Alloc))
 			}
 			// Also apply hard-fork allocs and system contracts on top.
@@ -409,6 +450,56 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			if err := ibs.FinalizeTx(rules, w); err != nil {
 				return fmt.Errorf("genesis finalize: %w", err)
 			}
+
+			// MPT: feed all genesis accounts into HPH so the trie contains
+			// the full state from block 0.
+			if useMPT && mptRC != nil {
+				if rc, ok := mptRC.(*commitment.MPTRootComputer); ok {
+					rc.SetStateReader(commitment.NewPlainStateMPTReader(dstTx))
+				}
+				genesisAccounts, genesisStorage, err := e.readAllState(dstTx)
+				if err != nil {
+					return fmt.Errorf("read genesis state for MPT: %w", err)
+				}
+				if root, err := mptRC.ComputeRoot(genesisAccounts, genesisStorage); err != nil {
+					return fmt.Errorf("MPT genesis root: %w", err)
+				} else {
+					e.log.Info("MPT genesis state loaded",
+						"accounts", len(genesisAccounts),
+						"storage", len(genesisStorage),
+						"root", fmt.Sprintf("%x", root[:8]),
+					)
+				}
+			}
+
+			// Trie: populate HashedAccounts/Storage from genesis PlainState,
+			// then compute initial root via full CalcTrieRoot (no dirty keys).
+			if useTrie && trieRC != nil {
+				if err := trieRC.InitFromPlainState(); err != nil {
+					return fmt.Errorf("trie genesis init: %w", err)
+				}
+				// Compute root with empty dirty set — CalcTrieRoot reads HashedAccounts directly.
+				emptyAccts := map[types.Address]*account.StateAccount{}
+				emptyStor := map[types.Address]map[types.Hash]*uint256.Int{}
+				if root, err := trieRC.ComputeRoot(emptyAccts, emptyStor); err != nil {
+					return fmt.Errorf("trie genesis root: %w", err)
+				} else {
+					e.log.Info("Trie genesis state loaded",
+						"root", fmt.Sprintf("%x", root[:8]),
+					)
+				}
+			}
+		}
+
+		// Set MPT StateReader once per batch (dstTx is constant within batch).
+		if useMPT && mptRC != nil {
+			if rc, ok := mptRC.(*commitment.MPTRootComputer); ok {
+				rc.SetStateReader(commitment.NewPlainStateMPTReader(dstTx))
+			}
+		}
+		// Update TrieRC tx per batch.
+		if useTrie && trieRC != nil {
+			trieRC.SetRwTx(dstTx)
 		}
 
 		return e.srcDB.View(ctx, func(srcTx kv.Tx) error {
@@ -475,7 +566,10 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				csWriter := state.NewPlainStateWriter(dstTx, dstTx, newBlockNum)
 				w := state.NewCachedStateWriter(csWriter, e.replayCache)
 				ibs := state.New(e.witnessReader)
-				if useMPT && mptRC != nil {
+				if useTrie && trieRC != nil {
+					ibs.SetRootComputer(trieRC)
+				} else if useMPT && mptRC != nil {
+					// StateReader set once per batch above.
 					ibs.SetRootComputer(mptRC)
 				} else if useBMT && bmtRC != nil {
 					ibs.SetRootComputer(bmtRC)
@@ -515,12 +609,47 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					tree.SetVersion(newBlockNum)
 				}
 
-				// Compute state roots (JMT+LtHash if enabled, zero otherwise).
+				// Compute state roots.
 				var stateRoot types.Hash
-				if e.cfg.EnableJMT {
+				if e.cfg.EnableJMT || useTrie {
 					stateRoot = ibs.IntermediateRoot()
-					// LtHashRoot is now encoded in Extra, not a Header field.
-					// if e.cfg.EnableLtHash { _ = ibs.LtHashRoot() }
+
+					if (useMPT || useTrie) && e.cfg.VerifyMPT {
+						verifyAccts, verifyStor, err := e.readAllState(dstTx)
+						if err != nil {
+							return fmt.Errorf("verify read state block %d: %w", newBlockNum, err)
+						}
+						freshRC := commitment.NewMPTRootComputer()
+						freshRC.SetStateReader(commitment.NewPlainStateMPTReader(dstTx))
+						verifyRoot, err := freshRC.ComputeRoot(verifyAccts, verifyStor)
+						if err != nil {
+							return fmt.Errorf("verify compute root block %d: %w", newBlockNum, err)
+						}
+						if verifyRoot != stateRoot {
+							// Debug: compare dirty vs PlainState for first 3 mismatched accounts
+							accts, stor := ibs.DirtyAccountData()
+							var diff string
+							for addr, enc := range accts {
+								psAcct, ok := verifyAccts[addr]
+								if !ok {
+									diff += fmt.Sprintf("\n  %x: in dirty but not in PlainState", addr[:4])
+									continue
+								}
+								var dirtyAcct account.StateAccount
+								if enc != nil {
+									dirtyAcct.DecodeForStorage(enc)
+								}
+								if dirtyAcct.Nonce != psAcct.Nonce || dirtyAcct.Balance.Cmp(&psAcct.Balance) != 0 || dirtyAcct.CodeHash != psAcct.CodeHash {
+									diff += fmt.Sprintf("\n  %x: dirty(n=%d b=%s ch=%x) ps(n=%d b=%s ch=%x)",
+										addr[:4], dirtyAcct.Nonce, dirtyAcct.Balance.String(), dirtyAcct.CodeHash[:4],
+										psAcct.Nonce, psAcct.Balance.String(), psAcct.CodeHash[:4])
+								}
+							}
+							_ = stor
+							return fmt.Errorf("MPT ROOT MISMATCH at block %d: incremental=%x rebuild=%x accounts=%d storage=%d dirty=%d%s",
+								newBlockNum, stateRoot, verifyRoot, len(verifyAccts), len(verifyStor), len(accts), diff)
+						}
+					}
 				}
 
 				// Write leaf changes to journal (for later tree building).
@@ -560,6 +689,10 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					GasLimit:    srcHeader.GasLimit,
 					BaseFee:     srcHeader.BaseFee,
 					Coinbase:    srcHeader.Coinbase,
+					Difficulty:  srcHeader.Difficulty,
+					Extra:       srcHeader.Extra,
+					MixDigest:   srcHeader.MixDigest,
+					Nonce:       srcHeader.Nonce,
 				}
 
 				var newBlk *block.Block
@@ -643,6 +776,12 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			// End of batch: write recovery metadata.
 			lastVersion := newBlockNum - 1
 
+			// Update head pointers — node startup reads these.
+			if lastHash, err := rawdb.ReadCanonicalHash(dstTx, lastVersion); err == nil && lastHash != (types.Hash{}) {
+				rawdb.WriteHeadBlockHash(dstTx, lastHash)
+				rawdb.WriteHeadHeaderHash(dstTx, lastHash)
+			}
+
 			// Write target chain head for all modes (critical for gap-fill + AppendDup).
 			var headBuf [8]byte
 			binary.BigEndian.PutUint64(headBuf[:], lastVersion)
@@ -682,6 +821,31 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					return fmt.Errorf("write JMT version: %w", err)
 				}
 			}
+			// MPT: flush branches + trie state + root to MDBX per batch.
+			if useMPT {
+				if rc, ok := e.mptRC.(*commitment.MPTRootComputer); ok {
+					// Get the latest state root from the last block header.
+					lastBlockKey := modules.EncodeBlockNumber(lastVersion)
+					lastHash, _ := dstTx.GetOne(modules.HeaderCanonical, lastBlockKey)
+					var mptRoot types.Hash
+					if len(lastHash) >= 32 {
+						var hash types.Hash
+						copy(hash[:], lastHash)
+						if hdr := rawdb.ReadHeader(dstTx, hash, lastVersion); hdr != nil {
+							mptRoot = hdr.StateRoot()
+						}
+					}
+					if err := rc.SaveCheckpoint(dstTx, lastVersion, mptRoot); err != nil {
+						return fmt.Errorf("MPT checkpoint: %w", err)
+					}
+					e.log.Info("MPT checkpoint saved",
+						"block", lastVersion,
+						"root", fmt.Sprintf("%x", mptRoot[:8]),
+						"branches", rc.BranchCount(),
+					)
+				}
+			}
+
 			if ltCommit != nil {
 				if err := lthash.WriteLtHashDigest(dstTx, "LtHashDigest", ltCommit.Digest()); err != nil {
 					return fmt.Errorf("write LtHash digest: %w", err)
@@ -693,6 +857,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			resumeTable := jmtstore.JMTRootTable
 			if useBMT {
 				resumeTable = bmtstore.BMTRootTable
+			}
+			if useMPT {
+				resumeTable = modules.MPTRoot
 			}
 			var srcBuf [8]byte
 			binary.BigEndian.PutUint64(srcBuf[:], to)
@@ -780,6 +947,84 @@ func (e *EngineV2) replayBlockTxs(
 
 // readParentInfo reads the parent hash and timestamp for the block before `from`.
 // If from==1 or from==0, returns the zero hash and zero timestamp (genesis).
+// readAllState reads all accounts and storage from the database for feeding
+// into MPT. This is used after genesis initialization to ensure the HPH trie
+// contains the complete state (Erigon RebuildCommitmentFiles pattern).
+func (e *EngineV2) readAllState(tx kv.Tx) (
+	map[types.Address]*account.StateAccount,
+	map[types.Address]map[types.Hash]*uint256.Int,
+	error,
+) {
+	accounts := make(map[types.Address]*account.StateAccount)
+
+	c, err := tx.Cursor(modules.Account)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer c.Close()
+
+	for k, v, err := c.First(); k != nil; k, v, err = c.Next() {
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(k) != 20 {
+			continue
+		}
+		var acct account.StateAccount
+		if err := acct.DecodeForStorage(v); err != nil {
+			return nil, nil, fmt.Errorf("decode account %x: %w", k, err)
+		}
+		// Normalize empty CodeHash (protobuf may store zero hash).
+		if acct.CodeHash == (types.Hash{}) {
+			acct.CodeHash = emptyCodeHashValue
+		}
+		var addr types.Address
+		copy(addr[:], k)
+		cp := acct.SelfCopy()
+		accounts[addr] = cp
+	}
+
+	storageMap := make(map[types.Address]map[types.Hash]*uint256.Int)
+
+	sc, err := tx.Cursor(modules.Storage)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer sc.Close()
+
+	for k, v, err := sc.First(); k != nil; k, v, err = sc.Next() {
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(k) < 52 {
+			continue
+		}
+		var addr types.Address
+		copy(addr[:], k[:20])
+		var slot types.Hash
+		if len(k) == 54 {
+			copy(slot[:], k[22:54])
+		} else if len(k) >= 60 {
+			copy(slot[:], k[28:60])
+		} else {
+			continue
+		}
+		val := new(uint256.Int)
+		if len(v) > 0 {
+			val.SetBytes(v)
+		}
+		if val.IsZero() {
+			continue
+		}
+		if storageMap[addr] == nil {
+			storageMap[addr] = make(map[types.Hash]*uint256.Int)
+		}
+		storageMap[addr][slot] = val
+	}
+
+	return accounts, storageMap, nil
+}
+
 func (e *EngineV2) readParentInfo(dstTx kv.Tx, from uint64) (types.Hash, uint64, error) {
 	if from <= 1 {
 		return types.Hash{}, 0, nil
@@ -812,7 +1057,8 @@ func (e *EngineV2) writeNewBlock(dstTx kv.RwTx, blk *block.Block, num uint64) er
 	if err := rawdb.WriteCanonicalHash(dstTx, hash, num); err != nil {
 		return fmt.Errorf("write canonical hash %d: %w", num, err)
 	}
-	if err := rawdb.WriteTd(dstTx, hash, num, uint256.NewInt(num)); err != nil {
+	// TD = 0 for post-merge (PoS). N42 is PoS from genesis.
+	if err := rawdb.WriteTd(dstTx, hash, num, uint256.NewInt(0)); err != nil {
 		return fmt.Errorf("write td %d: %w", num, err)
 	}
 	return nil

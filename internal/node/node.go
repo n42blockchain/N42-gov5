@@ -716,6 +716,31 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 				"root", fmt.Sprintf("%x", bmtRoot[:8]),
 			)
 
+		case state.RootSchemeEthereumMPT:
+			// --- MPT initialization (standard Ethereum HexPatriciaHashed) ---
+			mptRC := commitment.NewPersistentMPTRootComputer()
+			var mptRoot types.Hash
+			var mptBlock uint64
+			if rtx, err := chainKv.BeginRo(ctx); err == nil {
+				mptRoot, err = commitment.ReadMPTRoot(rtx)
+					if err != nil { log.Warn("Failed to read MPT root", "err", err) }
+				// Restore HPH trie state from checkpoint (Erigon SeekCommitment pattern).
+				if blockNum, trieState, err := commitment.ReadMPTTrieState(rtx); err == nil && len(trieState) > 0 {
+					if err := mptRC.RestoreTrieState(trieState); err != nil {
+						log.Warn("Failed to restore MPT trie state, will rebuild", "block", blockNum, "err", err)
+					} else {
+						mptBlock = blockNum
+					}
+				}
+				rtx.Rollback()
+			}
+			realBC.SetMPTRootComputer(mptRC)
+			realBC.SetRootComputer(mptRC)
+			log.Info("State commitment: Ethereum-MPT (HexPatriciaHashed)",
+				"root", fmt.Sprintf("%x", mptRoot[:8]),
+				"checkpoint", mptBlock,
+			)
+
 		case state.RootSchemeLegacyKeccak:
 			log.Info("State commitment: Legacy-Keccak (no tree)")
 

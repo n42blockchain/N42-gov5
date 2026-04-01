@@ -216,6 +216,13 @@ func (bc *BlockChain) SetBMTCommitment(c *commitment.BMTCommitment) {
 	log.Info("BMT state commitment enabled (Blake3, content-addressed)")
 }
 
+// SetMPTRootComputer enables persistent Ethereum MPT state root computation.
+func (bc *BlockChain) SetMPTRootComputer(rc *commitment.MPTRootComputer) {
+	bc.mptRootComputer = rc
+	bc.mptEnabled = true
+	log.Info("MPT state commitment enabled (Ethereum-compatible, HexPatriciaHashed)")
+}
+
 // SetLtHashCommitment enables the LtHash lattice state digest.
 func (bc *BlockChain) SetLtHashCommitment(c *commitment.LtHashCommitment) {
 	bc.ltHashCommitment = c
@@ -736,12 +743,16 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			stateReader = state.NewCachedStateReader(stateReader, cache)
 		}
 		ibs := state.New(stateReader)
-		// JMT rootComputer: only inject for fresh chains (private/dev) where
-		// all blocks are produced with JMT from genesis. For mainnet sync,
-		// existing chain data uses legacy GenerateRootHash() and JMT requires
-		// a full state migration before it can produce correct roots.
+		// Inject root computer for tree-based state root computation.
+		// JMT: only for fresh chains where all blocks use JMT from genesis.
+		// MPT: always inject when enabled (branches persisted in MDBX).
 		if bc.rootComputer != nil && bc.jmtForBlockProcessing {
 			ibs.SetRootComputer(bc.rootComputer)
+		}
+		if bc.mptEnabled && bc.mptRootComputer != nil {
+			bc.mptRootComputer.SetReadTx(tx)
+			bc.mptRootComputer.SetStateReader(commitment.NewPlainStateMPTReader(tx))
+			ibs.SetRootComputer(bc.mptRootComputer)
 		}
 		stateWriter := state.NewNoopWriter()
 

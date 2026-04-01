@@ -220,6 +220,13 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			}
 		}
 
+		// Flush MPT branches + trie state checkpoint for crash recovery.
+		if ibs != nil && bc.mptEnabled && bc.mptRootComputer != nil {
+			if err := bc.mptRootComputer.SaveCheckpoint(tx, blockNumber.Uint64(), blk.StateRoot()); err != nil {
+				return fmt.Errorf("MPT checkpoint for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+		}
+
 		// Persist LtHash digest alongside JMT root.
 		if ibs != nil && bc.ltHashEnabled && bc.ltHashCommitment != nil {
 			if err := lthash.WriteLtHashDigest(tx, modules.LtHashDigest, bc.ltHashCommitment.Digest()); err != nil {
