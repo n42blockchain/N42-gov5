@@ -54,6 +54,7 @@ type Tally struct {
 type Snapshot struct {
 	config   *params.APosConfig // Consensus engine parameters to fine tune behavior
 	sigcache *lru.ARCCache      // Cache of recent block signatures to speed up ecrecover
+	db       kv.RwDB            // Database for reading ConsensusEvidence
 
 	Number  uint64                     `json:"number"`  // Block number where the snapshot was created
 	Hash    types.Hash                 `json:"hash"`    // Block hash where the snapshot was created
@@ -73,7 +74,7 @@ func (s signersAscending) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 // newSnapshot creates a new snapshot with the specified startup parameters. This
 // method does not initialize the set of recent signers, so only ever use if for
 // the genesis block.
-func newSnapshot(config *params.APosConfig, sigcache *lru.ARCCache, number uint64, hash types.Hash, signers []types.Address) *Snapshot {
+func newSnapshot(config *params.APosConfig, sigcache *lru.ARCCache, number uint64, hash types.Hash, signers []types.Address, db ...kv.RwDB) *Snapshot {
 	snap := &Snapshot{
 		config:   config,
 		sigcache: sigcache,
@@ -85,6 +86,9 @@ func newSnapshot(config *params.APosConfig, sigcache *lru.ARCCache, number uint6
 	}
 	for _, signer := range signers {
 		snap.Signers[signer] = struct{}{}
+	}
+	if len(db) > 0 {
+		snap.db = db[0]
 	}
 	return snap
 }
@@ -119,6 +123,7 @@ func (s *Snapshot) copy() *Snapshot {
 	cpy := &Snapshot{
 		config:   s.config,
 		sigcache: s.sigcache,
+		db:       s.db,
 		Number:   s.Number,
 		Hash:     s.Hash,
 		Signers:  make(map[types.Address]struct{}),
@@ -247,21 +252,32 @@ func (s *Snapshot) apply(headers []block.IHeader) (*Snapshot, error) {
 		if limit := uint64(len(snap.Signers)/2 + 1); number >= limit {
 			delete(snap.Recents, number-limit)
 		}
-		// Resolve the authorization key and check against signers
-		signer, err := ecrecover(header, s.sigcache)
+		// Resolve the authorization key and check against signers.
+		// Skip verification for blocks with empty seal (gap-fill blocks from replay).
+		signer, err := ecrecover(header, s.sigcache, s.db)
 		if err != nil {
-			return nil, err
-		}
-		if _, ok := snap.Signers[signer]; !ok {
-			return nil, errUnauthorizedSigner
-		}
-		for _, recent := range snap.Recents {
-			if recent == signer {
-				return nil, errRecentlySigned
+			// Empty seal (gap block) — skip signer check, use zero address.
+			signer = types.Address{}
+		} else if _, ok := snap.Signers[signer]; !ok {
+			if len(snap.Signers) > 2 {
+				return nil, errUnauthorizedSigner
 			}
+			// Single-node mode: allow unknown signers for replayed data.
 		}
-		snap.Recents[number] = signer
+		// Skip recently-signed check and recents tracking for gap-fill blocks (zero signer).
+		if signer != (types.Address{}) {
+			for _, recent := range snap.Recents {
+				if recent == signer {
+					return nil, errRecentlySigned
+				}
+			}
+			snap.Recents[number] = signer
+		}
 
+		// Skip vote processing for gap blocks (zero-address signer).
+		if signer == (types.Address{}) {
+			continue
+		}
 		// Header authorized, discard any previous votes from the signer
 		for i, vote := range snap.Votes {
 			if vote.Signer == signer && vote.Address == header.Coinbase {

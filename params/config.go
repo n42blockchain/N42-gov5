@@ -101,7 +101,7 @@ func (c ConsensusType) UsesBorTransferMode() bool {
 // ---------------------------------------------------------------------------
 
 var (
-	MainnetGenesisHash = types.HexToHash("0x138734b7044254e5ecbabf8056f5c2b73cd0847aaa5acac7345507cbeab387b8")
+	MainnetGenesisHash = types.HexToHash("0x594aad383881f3af7a4e7ecfa0f07589f0211a9794bb4ff105ae13d1360e497f")
 	TestnetGenesisHash = types.HexToHash("0x5c0555d9ec963f58c63112862294e7e4836b12802304c23f2ec480a8f55cc5bb")
 )
 
@@ -112,6 +112,8 @@ var (
 var (
 	MainnetChainConfig       = readChainSpec("chainspecs/mainnet.json")
 	MainnetCompatChainConfig = readChainSpec("chainspecs/mainnet_compat.json") // backward-compatible (no Shanghai+), matches legacy genesis hash
+	MainnetV2ChainConfig     = readChainSpec("chainspecs/mainnet_v2.json")    // all forks from genesis (replay-v2)
+	MainnetMPTChainConfig    = readChainSpec("chainspecs/mainnet_mpt.json")  // replay-v2 with ethereum-mpt state roots
 	TestnetChainConfig       = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
@@ -222,6 +224,12 @@ type ChainConfig struct {
 	// When set, each block computes a 2048-byte homomorphic hash of the state
 	// and stores BLAKE3(digest) in Header.LtHashRoot.
 	LtHashTime *big.Int `json:"ltHashTime,omitempty"`
+
+	// StateScheme determines the state commitment algorithm for Header.Root.
+	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
+	// configured scheme does not match the database.
+	// Values: "legacy-keccak" (default), "jmt-blake3", "bmt-blake3"
+	StateScheme string `json:"stateScheme,omitempty"`
 
 	BlobSchedule *BlobSchedule `json:"blobSchedule,omitempty"`
 
@@ -496,16 +504,26 @@ func NewSnapshotConfig(checkpointInterval uint64, inmemorySnapshots int, inmemor
 var NetworkNames = map[string]string{
 	"100100100": "testnet",
 	"94":        "mainnet",
+	"1":         networkname.EthereumMainnetChainName,
+	"11155111":  networkname.EthereumSepoliaChainName,
 }
 
 func ChainConfigByChainName(chain string) *ChainConfig {
 	switch chain {
-	case networkname.MainnetChainName:
+	case networkname.MainnetChainName, networkname.N42MainnetAlias:
 		return MainnetChainConfig
 	case "mainnet_compat":
 		return MainnetCompatChainConfig
+	case "mainnet_v2":
+		return MainnetV2ChainConfig
+	case "mainnet_mpt":
+		return MainnetMPTChainConfig
 	case networkname.TestnetChainName:
 		return TestnetChainConfig
+	case networkname.EthereumMainnetChainName:
+		return EthereumMainnetChainConfig
+	case networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:
+		return EthereumSepoliaChainConfig
 	default:
 		return nil
 	}
@@ -513,10 +531,12 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 
 func GenesisHashByChainName(chain string) *types.Hash {
 	switch chain {
-	case networkname.MainnetChainName, "mainnet_compat":
+	case networkname.MainnetChainName, networkname.N42MainnetAlias, "mainnet_compat":
 		return &MainnetGenesisHash
-	case networkname.TestnetChainName:
+	case networkname.TestnetChainName, networkname.N42TestnetAlias:
 		return &TestnetGenesisHash
+	case "mainnet_v2":
+		return &MainnetGenesisHash
 	default:
 		return nil
 	}
@@ -528,6 +548,10 @@ func ChainConfigByGenesisHash(genesisHash types.Hash) *ChainConfig {
 		return MainnetChainConfig
 	case genesisHash == TestnetGenesisHash:
 		return TestnetChainConfig
+	case genesisHash == EthereumMainnetGenesisHash:
+		return EthereumMainnetChainConfig
+	case genesisHash == EthereumSepoliaGenesisHash:
+		return EthereumSepoliaChainConfig
 	default:
 		return nil
 	}
@@ -535,10 +559,14 @@ func ChainConfigByGenesisHash(genesisHash types.Hash) *ChainConfig {
 
 func NetworkIDByChainName(chain string) uint64 {
 	switch chain {
-	case networkname.MainnetChainName:
+	case networkname.MainnetChainName, networkname.N42MainnetAlias:
 		return 97
-	case networkname.TestnetChainName:
+	case networkname.TestnetChainName, networkname.N42TestnetAlias:
 		return 10042
+	case networkname.EthereumMainnetChainName:
+		return 1
+	case networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:
+		return 11155111
 	default:
 		config := ChainConfigByChainName(chain)
 		if config == nil {

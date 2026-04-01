@@ -12,10 +12,10 @@ import (
 
 	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 )
@@ -469,6 +469,10 @@ func FromN42Header(iHeader block.IHeader) *Header {
 	if header.BaseFee != nil {
 		baseFee = header.BaseFee.ToBig()
 	}
+	uncleHash := header.UncleHash
+	if uncleHash == (types.Hash{}) {
+		uncleHash = EmptyUncleHash
+	}
 
 	bloom := new(Bloom)
 	bloom.SetBytes(header.Bloom.Bytes())
@@ -483,23 +487,44 @@ func FromN42Header(iHeader block.IHeader) *Header {
 	}
 
 	return &Header{
-		ParentHash:  FromastHash(header.ParentHash),
-		UncleHash:   FromastHash(EmptyUncleHash),
-		Coinbase:    *FromastAddress(&header.Coinbase),
-		Root:        FromastHash(header.Root),
-		TxHash:      FromastHash(header.TxHash),
-		ReceiptHash: FromastHash(header.ReceiptHash),
-		Difficulty:  difficulty,
-		Number:      number,
-		GasLimit:    header.GasLimit,
-		GasUsed:     header.GasUsed,
-		Time:        header.Time,
-		Extra:       header.Extra,
-		MixDigest:   FromastHash(header.MixDigest),
-		Nonce:       EncodeNonce(header.Nonce.Uint64()),
-		BaseFee:     baseFee,
-		Bloom:       *bloom,
+		ParentHash:       FromastHash(header.ParentHash),
+		UncleHash:        FromastHash(uncleHash),
+		Coinbase:         *FromastAddress(&header.Coinbase),
+		Root:             FromastHash(header.Root),
+		TxHash:           FromastHash(header.TxHash),
+		ReceiptHash:      FromastHash(header.ReceiptHash),
+		Difficulty:       difficulty,
+		Number:           number,
+		GasLimit:         header.GasLimit,
+		GasUsed:          header.GasUsed,
+		Time:             header.Time,
+		Extra:            avmutil.CopyBytes(header.Extra),
+		MixDigest:        FromastHash(header.MixDigest),
+		Nonce:            EncodeNonce(header.Nonce.Uint64()),
+		BaseFee:          baseFee,
+		WithdrawalsHash:  fromastHashPtr(header.WithdrawalsHash),
+		BlobGasUsed:      uint64PtrCopy(header.BlobGasUsed),
+		ExcessBlobGas:    uint64PtrCopy(header.ExcessBlobGas),
+		ParentBeaconRoot: fromastHashPtr(header.ParentBeaconRoot),
+		RequestsHash:     fromastHashPtr(header.RequestsHash),
+		Bloom:            *bloom,
 	}
+}
+
+func fromastHashPtr(v *types.Hash) *avmutil.Hash {
+	if v == nil {
+		return nil
+	}
+	h := FromastHash(*v)
+	return &h
+}
+
+func uint64PtrCopy(v *uint64) *uint64 {
+	if v == nil {
+		return nil
+	}
+	u := *v
+	return &u
 }
 
 func rlpHash(x interface{}) (h avmutil.Hash) {

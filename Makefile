@@ -250,12 +250,12 @@ check: fmt vet lint
 
 # 成熟度 smoke：聚焦外部 surface 和恢复性
 maturity-smoke: go-version
-	@echo "==> bash scripts/run_maturity_baseline.sh"
+	@echo "==> bash scripts/run_maturity_baseline.sh (package-test baseline; no node boot)"
 	bash scripts/run_maturity_baseline.sh
 
 # 成熟度基线：smoke + 核心 gate，结果写入 build/maturity-baseline/
 maturity-baseline: go-version
-	@echo "==> bash scripts/run_maturity_baseline.sh --full"
+	@echo "==> bash scripts/run_maturity_baseline.sh --full (package-test baseline; no node boot)"
 	bash scripts/run_maturity_baseline.sh --full
 
 ops-smoke: go-version
@@ -263,7 +263,7 @@ ops-smoke: go-version
 	bash scripts/run_ops_smoke.sh
 
 interop-smoke: go-version
-	@echo "==> bash scripts/run_interop_smoke.sh"
+	@echo "==> bash scripts/run_interop_smoke.sh (ephemeral --ethdev node)"
 	bash scripts/run_interop_smoke.sh
 
 soak-smoke: go-version
@@ -367,10 +367,10 @@ help:
 	@echo "    vet           - 静态分析 (go vet)"
 	@echo "    lint          - Lint 检查 (golangci-lint)"
 	@echo "    check         - 组合检查 (fmt + vet + lint)"
-	@echo "    maturity-smoke    - 外部 surface / 恢复性 smoke gate"
-	@echo "    maturity-baseline - smoke + build/vet/test/lint/race-core 基线记录"
+	@echo "    maturity-smoke    - 外部 surface / 恢复性 smoke gate（不启动节点）"
+	@echo "    maturity-baseline - smoke + build/vet/test/lint/race-core 基线记录（不启动节点）"
 	@echo "    ops-smoke         - 节点 metrics/pprof/RPC/短压测运行时 gate"
-	@echo "    interop-smoke     - RPC/Blockscout/Hive/EEST collect interop gate"
+	@echo "    interop-smoke     - RPC/Blockscout/Hive/EEST interop gate（临时 --ethdev 节点）"
 	@echo "    soak-smoke        - 重启循环 + 短压测 soak gate"
 	@echo "    release-check     - maturity-baseline + ops/interop/soak 发布 gate"
 	@echo ""

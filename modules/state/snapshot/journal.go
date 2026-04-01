@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"sort"
 
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -16,7 +15,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 
-	state_proto "github.com/n42blockchain/N42/proto/state"
 )
 
 // SerializeDiffLayer encodes a DiffLayer into bytes for journal persistence.
@@ -68,11 +66,7 @@ func SerializeDiffLayer(dl *DiffLayer) ([]byte, error) {
 			binary.BigEndian.PutUint32(countBuf[:], 0)
 			buf = append(buf, countBuf[:]...)
 		} else {
-			pb := acc.ToProtoMessage()
-			enc, err := proto.Marshal(pb)
-			if err != nil {
-				return nil, fmt.Errorf("snapshot: marshal account %s: %w", addr.Hex(), err)
-			}
+			enc := acc.MarshalV2()
 			binary.BigEndian.PutUint32(countBuf[:], uint32(len(enc)))
 			buf = append(buf, countBuf[:]...)
 			buf = append(buf, enc...)
@@ -189,12 +183,8 @@ func DeserializeDiffLayer(data []byte) (*DiffLayer, error) {
 		if err != nil {
 			return nil, err
 		}
-		pb := new(state_proto.Account)
-		if err := proto.Unmarshal(accData, pb); err != nil {
-			return nil, fmt.Errorf("snapshot: unmarshal account %s: %w", addr.Hex(), err)
-		}
 		acc := new(account.StateAccount)
-		if err := acc.FromProtoMessage(pb); err != nil {
+		if err := acc.DecodeForStorageV2(accData); err != nil {
 			return nil, fmt.Errorf("snapshot: decode account %s: %w", addr.Hex(), err)
 		}
 		accounts[addr] = acc

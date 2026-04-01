@@ -12,7 +12,7 @@
 #   ./scripts/run_eest_local.sh all                 # Run all shards
 #
 # Prerequisites:
-#   - N42 node running with Engine API enabled (port 20014)
+#   - N42 node running in Ethereum EL private mode (`--ethdev`) with Engine API enabled (port 20014)
 #   - curl and jq installed
 
 set -euo pipefail

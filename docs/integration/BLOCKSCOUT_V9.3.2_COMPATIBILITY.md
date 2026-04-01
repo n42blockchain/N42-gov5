@@ -64,7 +64,7 @@ N42 implements all required Ethereum JSON-RPC endpoints for Blockscout v9.3.2:
 | `eth_getCode` | ✅ | Get contract code | `api.go:355` |
 | `eth_getStorageAt` | ✅ | Get storage value | `api.go:373` |
 | `eth_getTransactionCount` | ✅ | Get account nonce | `api.go:1013` |
-| `eth_getProof` | ✅ | Get Merkle proof | `blockscout.go:372` |
+| `eth_getProof` | ✅ | Get JMT-based account/storage proof data | `blockscout.go:372` |
 
 ### Block Methods
 
@@ -487,7 +487,8 @@ N42 uses Proof-of-Authority (PoA) or Proof-of-Stake (PoS) consensus:
 `eth_getProof` provides partial support:
 - ✅ Account balance, nonce, code hash
 - ✅ Storage values
-- ⚠️ Merkle proofs (placeholder, not yet implemented)
+- ✅ JMT proof path for account/storage nodes
+- ⚠️ Not canonical Ethereum MPT / full EIP-1186 semantics
 
 ### Trace API
 

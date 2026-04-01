@@ -65,7 +65,7 @@
 1. `Phase 0` 的最小 gate 已固定为 `make maturity-smoke` 和 `make maturity-baseline`，基线覆盖 `Engine API`、GraphQL、Clef、external signer、node auth/genesis、keystore、genesis config、checkpoint、snapshot、freezer、history expiry recovery、txpool journal。
 2. `Phase 1` 已把 `Engine API` 推进到真实 Hive `engine-auth` 绿测，GraphQL / Clef / external signer / node auth+genesis 已进入固定 smoke，并补上了 `EIP-3668 (CCIP-Read)` 支持。
 3. `Phase 2` 已把 keystore watcher 漏事件补扫、snapshot journal、txpool journal、checkpoint 半写入恢复、freezer 元数据滞后恢复和 `history expiry` 重启续跑纳入自动化回归。
-4. `Phase 4` 已固定 `make interop-smoke`、`make soak-smoke` 和 `make release-check`，覆盖 RPC / Blockscout / Hive `engine-auth` / EEST collect-only / 重启循环 / 短压测。
+4. `Phase 4` 已固定 `make interop-smoke`、`make soak-smoke` 和 `make release-check`，覆盖 RPC / Blockscout / Hive `engine-auth` / EEST collect-only / 重启循环 / 短压测；其中 `interop-smoke` 使用临时 `n42 --ethdev` 节点，`maturity-baseline` 仍只跑包级 gate。
 5. `Phase 5` 已把最小 runbook、发布 checklist 和 metrics 基线文档落到仓库。
 
 仍未完成：
@@ -257,7 +257,7 @@
 
 当前进展：
 
-1. `make interop-smoke` 已固定执行 RPC / Blockscout / Hive `engine-auth` / EEST collect-only。
+1. `make interop-smoke` 已固定执行 RPC / Blockscout / Hive `engine-auth` / EEST collect-only，并固定使用临时 `--ethdev` 节点。
 2. `make soak-smoke` 已固定执行 3 轮重启 + 短压测循环。
 3. `scripts/run_interop_smoke.sh` 已把 Hive 基础设施 flake 与语义失败分开，通过 cleanup + retry 把 `API 500` 归类为环境抖动而不是实现回归。
 4. `make release-check` 已把 `maturity-baseline + ops-smoke + interop-smoke + soak-smoke` 收成单一发布 gate。

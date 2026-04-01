@@ -65,25 +65,48 @@ var (
 	errRandomnessZeroMax      = errors.New("randomness: max must be > 0")
 )
 
-// Global block randomness, protected by RWMutex for thread-safe access.
-var (
-	globalRandomnessMu    sync.RWMutex
-	globalBlockRandomness types.Hash
-)
+// Block randomness ring buffer (256 entries) with thread-safe access.
+const randomnessHistorySize = 256
 
-// SetBlockRandomness sets the global block randomness value.
-// Called at the start of each block by the consensus layer.
-func SetBlockRandomness(r types.Hash) {
-	globalRandomnessMu.Lock()
-	defer globalRandomnessMu.Unlock()
-	globalBlockRandomness = r
+var globalRandomness struct {
+	mu      sync.RWMutex
+	entries [randomnessHistorySize]struct {
+		blockNum uint64
+		value    types.Hash
+	}
+	latest types.Hash
 }
 
-// getBlockRandomness returns the current global block randomness.
+// SetBlockRandomness stores randomness for a block number.
+// Called at block start (from parent CommitQC), before transaction execution.
+func SetBlockRandomness(blockNum uint64, r types.Hash) {
+	globalRandomness.mu.Lock()
+	defer globalRandomness.mu.Unlock()
+	idx := blockNum % randomnessHistorySize
+	globalRandomness.entries[idx] = struct {
+		blockNum uint64
+		value    types.Hash
+	}{blockNum, r}
+	globalRandomness.latest = r
+}
+
+// getBlockRandomness returns the latest block randomness.
 func getBlockRandomness() types.Hash {
-	globalRandomnessMu.RLock()
-	defer globalRandomnessMu.RUnlock()
-	return globalBlockRandomness
+	globalRandomness.mu.RLock()
+	defer globalRandomness.mu.RUnlock()
+	return globalRandomness.latest
+}
+
+// GetBlockRandomnessAt returns randomness for a specific block (up to 256 blocks back).
+func GetBlockRandomnessAt(blockNum uint64) (types.Hash, bool) {
+	globalRandomness.mu.RLock()
+	defer globalRandomness.mu.RUnlock()
+	idx := blockNum % randomnessHistorySize
+	entry := globalRandomness.entries[idx]
+	if entry.blockNum == blockNum {
+		return entry.value, true
+	}
+	return types.Hash{}, false
 }
 
 // randomnessBeacon implements the on-chain randomness precompile at address 0x0302.

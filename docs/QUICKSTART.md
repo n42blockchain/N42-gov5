@@ -41,7 +41,24 @@ go run ./cmd/n42
 ./n42 --dev
 
 # 等同于
-./n42 --chain private --p2p.no-discovery --p2p.max-peers 0
+./n42 --profile n42 --chain private --p2p.no-discovery --p2p.max-peers 0
+```
+
+### Ethereum EL 私有链模式（Hive/EEST 推荐）
+
+```bash
+./n42 --ethdev
+
+# 等同于
+./n42 --profile eth --chain private --p2p.no-discovery --p2p.max-peers 0
+```
+
+### Ethereum canonical preset 初始化
+
+```bash
+# 专用 datadir，初始化后不可与其他 network/profile 混用
+./n42 init --profile eth --chain eth-mainnet --data.dir /path/to/eth-mainnet <genesis.json>
+./n42 init --profile eth --chain eth-testnet --data.dir /path/to/eth-sepolia <genesis.json>
 ```
 
 ## 启用 RPC
@@ -87,6 +104,15 @@ go run ./cmd/n42
 
 # 或使用别名
 ./n42 --datadir /path/to/data
+```
+
+### datadir 绑定规则
+
+```bash
+# 一个 datadir 只能绑定一个 chain/profile/commitment
+# 切换网络时请显式换目录
+./n42 --chain mainnet --data.dir /data/n42-mainnet
+./n42 --ethdev --data.dir /data/n42-ethdev
 ```
 
 ### 监控磁盘空间
@@ -344,4 +370,3 @@ curl -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' \
   http://localhost:8545
 ```
-

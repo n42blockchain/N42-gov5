@@ -436,10 +436,18 @@ var (
 
 	ChainFlag = &cli.StringFlag{
 		Name:        "chain",
-		Usage:       "区块链网络 (mainnet, testnet, private)",
+		Usage:       "区块链网络 (mainnet, testnet, eth-mainnet, eth-testnet, private)",
 		Category:    "NETWORK",
 		Value:       networkname.MainnetChainName,
 		Destination: &DefaultConfig.NodeCfg.Chain,
+	}
+
+	ProfileFlag = &cli.StringFlag{
+		Name:        "profile",
+		Usage:       "执行配置族 (n42, eth)",
+		Category:    "NETWORK",
+		Value:       "",
+		Destination: &DefaultConfig.NodeCfg.Profile,
 	}
 )
 
@@ -544,6 +552,7 @@ var (
 	settingFlag = []cli.Flag{
 		DataDirFlag,
 		ChainFlag,
+		ProfileFlag,
 		MinFreeDiskSpaceFlag,
 	}
 	accountFlag = []cli.Flag{

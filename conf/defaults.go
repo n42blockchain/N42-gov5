@@ -53,6 +53,23 @@ var (
 	ErrInvalidTxGenInterval = errors.New("txgen interval must be positive")
 )
 
+func NormalizeNetworkSelection(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	preset, err := params.ResolveNetworkPreset(cfg.NodeCfg.Chain, cfg.NodeCfg.Profile)
+	if err != nil {
+		return err
+	}
+	cfg.NodeCfg.Chain = preset.Chain
+	cfg.NodeCfg.Profile = preset.Profile.String()
+	cfg.NodeCfg.JMTCommitment = preset.Commitment == params.StateCommitmentPresetJMT
+	if cfg.NodeCfg.Chain != "private" {
+		cfg.ChainCfg = params.ChainConfigByChainName(cfg.NodeCfg.Chain)
+	}
+	return nil
+}
+
 // ApplyDefaults fills in missing configuration values with sensible defaults.
 func ApplyDefaults(cfg *Config) {
 	if cfg.NodeCfg.Profile == "" {
@@ -116,11 +133,6 @@ func ApplyDefaults(cfg *Config) {
 		cfg.SnapSyncCfg.SyncThreshold = DefaultSnapSyncThreshold
 	}
 
-	// Pre-load chain config from embedded chain specs if not already set.
-	if cfg.ChainCfg == nil && cfg.NodeCfg.Chain != "" && cfg.NodeCfg.Chain != "private" {
-		cfg.ChainCfg = params.ChainConfigByChainName(cfg.NodeCfg.Chain)
-	}
-
 	if cfg.DevCfg.TxGenEnabled {
 		if cfg.DevCfg.TxGenInterval == 0 {
 			cfg.DevCfg.TxGenInterval = time.Second
@@ -136,6 +148,10 @@ func ApplyDefaults(cfg *Config) {
 
 // Validate checks the configuration for errors.
 func Validate(cfg *Config) error {
+	if err := NormalizeNetworkSelection(cfg); err != nil {
+		return err
+	}
+
 	profile, err := params.ResolveExecutionProfile(cfg.NodeCfg.Profile)
 	if err != nil {
 		return err
@@ -173,5 +189,8 @@ func Validate(cfg *Config) error {
 // ValidateAndApplyDefaults applies defaults and then validates the configuration.
 func ValidateAndApplyDefaults(cfg *Config) error {
 	ApplyDefaults(cfg)
+	if err := NormalizeNetworkSelection(cfg); err != nil {
+		return err
+	}
 	return Validate(cfg)
 }

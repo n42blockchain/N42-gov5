@@ -49,6 +49,15 @@ func (e *ConsensusEngine) onTimeout() error {
 	}
 
 	log.Warn("view timed out", "view", view)
+
+	// Flush any pending vote buffers before transitioning.
+	if len(e.prepareVoteBuf) > 0 {
+		_ = e.flushPrepareVotes()
+	}
+	if len(e.commitVoteBuf) > 0 {
+		_ = e.flushCommitVotes()
+	}
+
 	e.roundState.Timeout()
 	e.pacemaker.ResetForView(view, e.roundState.ConsecutiveTimeouts())
 

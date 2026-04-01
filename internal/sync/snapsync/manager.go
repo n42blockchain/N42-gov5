@@ -679,15 +679,15 @@ func (m *Manager) removeTask(list *[]*RangeTask, task *RangeTask) {
 // Returns incarnation > 0 if the account has storage, and codeHash (as raw bytes)
 // if it is non-empty.
 //
-// Account data in the Account table is protobuf-encoded via
-// StateAccount.ToProtoMessage() → proto.Marshal().
+// Account data in the Account table uses V2 variable-length encoding
+// (Erigon-style fieldBits+varint). DecodeForStorage auto-detects legacy protobuf.
 func parseAccountForTasks(encoded []byte) (valid bool, incarnation uint16, codeHash []byte) {
 	if len(encoded) == 0 {
 		return true, 0, nil
 	}
 
 	var acc account.StateAccount
-	if err := acc.Unmarshal(encoded); err != nil {
+	if err := acc.DecodeForStorage(encoded); err != nil {
 		return false, 0, nil
 	}
 

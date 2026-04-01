@@ -61,35 +61,39 @@ func NewWriter(path string, networkID uint64) (*Writer, error) {
 }
 
 // Append writes a block record (block data + receipts data) to the archive.
-// Records must be appended in block number order.
+// Records must be appended in block number order. Data is Zstd-compressed
+// before writing to reduce archive size (~2-3x for typical block data).
 func (w *Writer) Append(blockNumber uint64, blockData, receiptsData []byte) error {
 	if w.finalized {
 		return errors.New("era: writer already finalized")
 	}
 
+	// Compress both payloads.
+	compressedBlock := compressRecord(blockData)
+	compressedReceipts := compressRecord(receiptsData)
+
 	// Record format: blockDataLen(8) + blockData + receiptsDataLen(8) + receiptsData
+	// Lengths refer to the compressed size on disk.
 	recordOffset := w.offset
 
-	// Write block data length and data.
 	var lenBuf [8]byte
-	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(blockData)))
+	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(compressedBlock)))
 	if _, err := w.file.Write(lenBuf[:]); err != nil {
 		return fmt.Errorf("era: write block data length: %w", err)
 	}
-	if _, err := w.file.Write(blockData); err != nil {
+	if _, err := w.file.Write(compressedBlock); err != nil {
 		return fmt.Errorf("era: write block data: %w", err)
 	}
 
-	// Write receipts data length and data.
-	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(receiptsData)))
+	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(compressedReceipts)))
 	if _, err := w.file.Write(lenBuf[:]); err != nil {
 		return fmt.Errorf("era: write receipts data length: %w", err)
 	}
-	if _, err := w.file.Write(receiptsData); err != nil {
+	if _, err := w.file.Write(compressedReceipts); err != nil {
 		return fmt.Errorf("era: write receipts data: %w", err)
 	}
 
-	recordSize := int64(8 + len(blockData) + 8 + len(receiptsData))
+	recordSize := int64(8 + len(compressedBlock) + 8 + len(compressedReceipts))
 	w.offset += recordSize
 
 	w.index = append(w.index, IndexEntry{

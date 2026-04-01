@@ -163,6 +163,87 @@ func ClearStagedEpoch(tx kv.RwTx) error {
 	return tx.Delete(modules.HotStuffState, stagedEpochKey)
 }
 
+// --- Vote persistence for crash recovery ---
+
+var pendingVotesKey = []byte("pending_votes")
+
+// PendingVotesState captures in-flight vote state for crash recovery.
+type PendingVotesState struct {
+	View         ViewNumber
+	BlockHash    types.Hash
+	PrepareVotes map[ValidatorIndex][]byte // validator → raw BLS sig bytes
+	CommitVotes  map[ValidatorIndex][]byte
+}
+
+// SavePendingVotes persists pending votes to the database.
+// Format: view(8) + blockHash(32) + prepareCount(4) + [idx(4)+sigLen(4)+sig(var)]... + commitCount(4) + ...
+func SavePendingVotes(tx kv.RwTx, pv *PendingVotesState) error {
+	if pv == nil {
+		return tx.Delete(modules.HotStuffState, pendingVotesKey)
+	}
+	size := 8 + 32 + 4 + 4
+	for _, sig := range pv.PrepareVotes {
+		size += 4 + 4 + len(sig)
+	}
+	for _, sig := range pv.CommitVotes {
+		size += 4 + 4 + len(sig)
+	}
+	buf := make([]byte, size)
+	pos := 0
+	binary.LittleEndian.PutUint64(buf[pos:], uint64(pv.View)); pos += 8
+	copy(buf[pos:], pv.BlockHash[:]); pos += 32
+	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.PrepareVotes))); pos += 4
+	for idx, sig := range pv.PrepareVotes {
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx)); pos += 4
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig))); pos += 4
+		copy(buf[pos:], sig); pos += len(sig)
+	}
+	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.CommitVotes))); pos += 4
+	for idx, sig := range pv.CommitVotes {
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx)); pos += 4
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig))); pos += 4
+		copy(buf[pos:], sig); pos += len(sig)
+	}
+	return tx.Put(modules.HotStuffState, pendingVotesKey, buf[:pos])
+}
+
+// LoadPendingVotes loads persisted pending votes.
+func LoadPendingVotes(tx kv.Tx) (*PendingVotesState, error) {
+	data, err := tx.GetOne(modules.HotStuffState, pendingVotesKey)
+	if err != nil || len(data) < 44 {
+		return nil, err
+	}
+	pv := &PendingVotesState{
+		PrepareVotes: make(map[ValidatorIndex][]byte),
+		CommitVotes:  make(map[ValidatorIndex][]byte),
+	}
+	pos := 0
+	pv.View = ViewNumber(binary.LittleEndian.Uint64(data[pos:])); pos += 8
+	copy(pv.BlockHash[:], data[pos:]); pos += 32
+
+	readVotes := func() (map[ValidatorIndex][]byte, int) {
+		count := int(binary.LittleEndian.Uint32(data[pos:])); pos += 4
+		m := make(map[ValidatorIndex][]byte, count)
+		for i := 0; i < count && pos+8 <= len(data); i++ {
+			idx := ValidatorIndex(binary.LittleEndian.Uint32(data[pos:])); pos += 4
+			sLen := int(binary.LittleEndian.Uint32(data[pos:])); pos += 4
+			if pos+sLen > len(data) { break }
+			sig := make([]byte, sLen)
+			copy(sig, data[pos:pos+sLen]); pos += sLen
+			m[idx] = sig
+		}
+		return m, pos
+	}
+	pv.PrepareVotes, pos = readVotes()
+	pv.CommitVotes, _ = readVotes()
+	return pv, nil
+}
+
+// ClearPendingVotes removes persisted pending votes after commit.
+func ClearPendingVotes(tx kv.RwTx) error {
+	return tx.Delete(modules.HotStuffState, pendingVotesKey)
+}
+
 // SaveEquivocationEvidence persists equivocation evidence for future slashing.
 func SaveEquivocationEvidence(tx kv.RwTx, view ViewNumber, validator ValidatorIndex, prevHash, newHash types.Hash) error {
 	key := fmt.Appendf(nil, "equivocation/%d/%d", view, validator)

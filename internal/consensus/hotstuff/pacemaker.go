@@ -4,6 +4,7 @@
 package hotstuff
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"time"
@@ -24,7 +25,9 @@ type Pacemaker struct {
 	deadline    time.Time
 
 	// Reusable timer to avoid leaking goroutines on rapid view changes.
-	timer *time.Timer
+	timer        *time.Timer
+	watchStarted bool
+	stopped      bool
 
 	// Adaptive timeout: ring buffer of recent commit latencies.
 	recentLatencies []time.Duration
@@ -154,11 +157,24 @@ func (p *Pacemaker) ExtendDeadline(extra time.Duration) {
 	p.mu.Unlock()
 }
 
+// Stop permanently disables the pacemaker (no more timeouts).
+func (p *Pacemaker) Stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopped = true
+	if p.timer != nil {
+		p.timer.Stop()
+	}
+}
+
 // TimeoutChan returns a channel that fires when the current view times out.
 // The timer is reused across calls to prevent goroutine/memory leaks.
 func (p *Pacemaker) TimeoutChan() <-chan time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.stopped {
+		return nil // nil channel blocks forever
+	}
 
 	remaining := time.Until(p.deadline)
 	if remaining <= 0 {
@@ -185,4 +201,20 @@ func (p *Pacemaker) StopTimer() {
 	if p.timer != nil {
 		p.timer.Stop()
 	}
+}
+
+// WatchContext starts a goroutine that stops the timer when ctx is cancelled.
+// Prevents timer leak on node shutdown. Only the first call takes effect.
+func (p *Pacemaker) WatchContext(ctx context.Context) {
+	p.mu.Lock()
+	if p.watchStarted || p.stopped {
+		p.mu.Unlock()
+		return
+	}
+	p.watchStarted = true
+	p.mu.Unlock()
+	go func() {
+		<-ctx.Done()
+		p.StopTimer()
+	}()
 }

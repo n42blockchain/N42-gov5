@@ -3,6 +3,7 @@ package internal
 import (
 	"bytes"
 	"errors"
+	"math/big"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -76,12 +77,11 @@ func TestGenesisBlockToBlockUsesEthereumEmptyRoots(t *testing.T) {
 	if !ok || header == nil {
 		t.Fatalf("Header() type = %T, want *block.Header", blk.Header())
 	}
-	// N42 mainnet uses NilHash (keccak256(nil)) for empty tx/receipt tries.
-	if header.TxHash != hash.NilHash {
-		t.Fatalf("TxHash = %s, want NilHash %s", header.TxHash, hash.NilHash)
+	if header.TxHash != hash.EmptyRootHash {
+		t.Fatalf("TxHash = %s, want EmptyRootHash %s", header.TxHash, hash.EmptyRootHash)
 	}
-	if header.ReceiptHash != hash.NilHash {
-		t.Fatalf("ReceiptHash = %s, want NilHash %s", header.ReceiptHash, hash.NilHash)
+	if header.ReceiptHash != hash.EmptyRootHash {
+		t.Fatalf("ReceiptHash = %s, want EmptyRootHash %s", header.ReceiptHash, hash.EmptyRootHash)
 	}
 	if header.Number == nil || header.Number.Cmp(uint256.NewInt(0)) != 0 {
 		t.Fatalf("Number = %v, want genesis number 0", header.Number)
@@ -93,7 +93,7 @@ func TestGenesisBlockToBlockUsesExplicitHeaderFields(t *testing.T) {
 
 	genesis := &GenesisBlock{
 		GenesisConfig: &conf.Genesis{
-			Config:        &params.ChainConfig{},
+			Config:        &params.ChainConfig{CancunBlock: big.NewInt(0)},
 			Alloc:         conf.GenesisAlloc{},
 			StateRoot:     types.HexToHash("0x95a6b74fbcb35dd5bd4dc03e03236164da625fc661cadfe58674b7cd27e664e1"),
 			TxHash:        hash.EmptyRootHash,
@@ -118,11 +118,11 @@ func TestGenesisBlockToBlockUsesExplicitHeaderFields(t *testing.T) {
 	if header.ReceiptHash != genesis.GenesisConfig.ReceiptHash {
 		t.Fatalf("ReceiptHash = %s, want %s", header.ReceiptHash, genesis.GenesisConfig.ReceiptHash)
 	}
-	if header.BlobGasUsed != genesis.GenesisConfig.BlobGasUsed {
-		t.Fatalf("BlobGasUsed = %d, want %d", header.BlobGasUsed, genesis.GenesisConfig.BlobGasUsed)
+	if header.BlobGasUsed == nil || *header.BlobGasUsed != genesis.GenesisConfig.BlobGasUsed {
+		t.Fatalf("BlobGasUsed = %v, want %d", header.BlobGasUsed, genesis.GenesisConfig.BlobGasUsed)
 	}
-	if header.ExcessBlobGas != genesis.GenesisConfig.ExcessBlobGas {
-		t.Fatalf("ExcessBlobGas = %d, want %d", header.ExcessBlobGas, genesis.GenesisConfig.ExcessBlobGas)
+	if header.ExcessBlobGas == nil || *header.ExcessBlobGas != genesis.GenesisConfig.ExcessBlobGas {
+		t.Fatalf("ExcessBlobGas = %v, want %d", header.ExcessBlobGas, genesis.GenesisConfig.ExcessBlobGas)
 	}
 }
 

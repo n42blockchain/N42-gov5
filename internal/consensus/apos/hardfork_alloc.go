@@ -139,7 +139,7 @@ func applyHardForkAllocations(blockNumber uint64, ibs *state.IntraBlockState) {
 			ibs.CreateAccount(a.addr, false)
 		}
 		ibs.AddBalance(a.addr, a.value)
-		log.Info("Hard-fork allocation applied",
+		log.Debug("Hard-fork allocation applied",
 			"block", blockNumber, "address", a.addr, "amount", a.value.ToBig())
 	}
 }

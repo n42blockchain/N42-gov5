@@ -8,6 +8,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // LtHashAwareRootComputer wraps a JMTRootComputer and adds parallel LtHash
@@ -22,6 +23,15 @@ type LtHashAwareRootComputer struct {
 // JMT state root and LtHash digest in a single pass.
 func NewLtHashAwareRootComputer(jmt *JMTRootComputer, lt *LtHashCommitment) *LtHashAwareRootComputer {
 	return &LtHashAwareRootComputer{jmt: jmt, lthash: lt}
+}
+
+// RootScheme reports the underlying state-root semantics. LtHash runs alongside
+// the primary root and does not change the state root scheme itself.
+func (r *LtHashAwareRootComputer) RootScheme() state.RootScheme {
+	if r == nil || r.jmt == nil {
+		return state.RootSchemeUnknown
+	}
+	return r.jmt.RootScheme()
 }
 
 // ComputeRoot delegates to JMT for backward compatibility.

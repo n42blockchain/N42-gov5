@@ -3,6 +3,8 @@
 
 package hotstuff
 
+import "github.com/n42blockchain/N42/common/types"
+
 // RoundState tracks the state of the current consensus round (view).
 //
 // Each view progresses through phases:
@@ -16,6 +18,11 @@ type RoundState struct {
 	lockedQC            QuorumCertificate // highest QC (safety lock)
 	lastCommittedQC     QuorumCertificate // most recently committed
 	consecutiveTimeouts uint32
+
+	// Double-vote prevention: track which view we've already voted in.
+	votedInView       ViewNumber // Round 1 (Prepare) vote sent for this view
+	commitVotedInView ViewNumber // Round 2 (Commit) vote sent for this view
+	votedHash         types.Hash // block hash voted for in votedInView
 }
 
 // NewRoundState creates a new round state starting at view 1.
@@ -95,6 +102,27 @@ func (rs *RoundState) AdvanceView(newView ViewNumber) {
 	}
 	rs.currentView = newView
 	rs.phase = PhaseWaitingForProposal
+}
+
+// HasVotedInView returns true if a Round 1 vote was already sent for this view.
+func (rs *RoundState) HasVotedInView(view ViewNumber) bool {
+	return rs.votedInView == view && view > 0
+}
+
+// RecordVote records that a Round 1 vote was sent for this view.
+func (rs *RoundState) RecordVote(view ViewNumber, hash types.Hash) {
+	rs.votedInView = view
+	rs.votedHash = hash
+}
+
+// HasCommitVotedInView returns true if a Round 2 commit vote was already sent.
+func (rs *RoundState) HasCommitVotedInView(view ViewNumber) bool {
+	return rs.commitVotedInView == view && view > 0
+}
+
+// RecordCommitVote records that a Round 2 commit vote was sent for this view.
+func (rs *RoundState) RecordCommitVote(view ViewNumber) {
+	rs.commitVotedInView = view
 }
 
 // Timeout transitions to timed-out phase and increments the backoff counter.

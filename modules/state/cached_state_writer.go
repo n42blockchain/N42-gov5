@@ -18,7 +18,6 @@ package state
 
 import (
 	"github.com/holiman/uint256"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -45,10 +44,7 @@ func (w *CachedStateWriter) UpdateAccountData(address types.Address, original, a
 		return err
 	}
 	if w.cache != nil && acct != nil {
-		pb := acct.ToProtoMessage()
-		if enc, err := proto.Marshal(pb); err == nil {
-			w.cache.Put(modules.Account, address.Bytes(), enc)
-		}
+		w.cache.Put(modules.Account, address.Bytes(), acct.MarshalV2())
 	}
 	return nil
 }

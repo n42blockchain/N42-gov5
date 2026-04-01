@@ -14,6 +14,7 @@ var (
 	metricViewChanges     = prometheus.GetOrCreateCounter("hotstuff_view_changes", false)
 	metricTimeouts        = prometheus.GetOrCreateCounter("hotstuff_timeouts", false)
 	metricEquivocations   = prometheus.GetOrCreateCounter("hotstuff_equivocations", false)
+	mxOutputDrops         = prometheus.GetOrCreateCounter("hotstuff_output_drops", false)
 )
 
 func updateMetricsBlockCommitted(view ViewNumber) {

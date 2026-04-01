@@ -188,13 +188,13 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	// Determine TxHash and ReceiptHash for the genesis block.
 	// For N42's own chains (APoS consensus), use zero hashes to preserve backward
 	// compatibility with the original genesis hash (0x138734b7...).
-	// For standard Ethereum chains (ethash, clique, etc.), use DeriveSha(nil)
-	// which produces the empty trie root, matching geth/reth behavior and
+	// For standard Ethereum chains (ethash, clique, etc.), use the V2 empty
+	// trie roots, matching geth/reth behavior and
 	// required by Hive/EEST conformance tests.
 	var txHash, receiptHash types.Hash
 	if !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
-		txHash = hash.DeriveSha(transaction.Transactions(nil))
-		receiptHash = hash.DeriveSha(block.Receipts(nil))
+		txHash = hash.DeriveShaV2(transaction.TransactionsV2(nil))
+		receiptHash = hash.DeriveShaV2(block.Receipts(nil))
 	}
 	if g.GenesisConfig.TxHash != (types.Hash{}) {
 		txHash = g.GenesisConfig.TxHash
@@ -218,8 +218,8 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		MixDigest:     g.GenesisConfig.Mixhash,
 		Nonce:         block.EncodeNonce(g.GenesisConfig.Nonce),
 		BaseFee:       g.GenesisConfig.BaseFee,
-		BlobGasUsed:   g.GenesisConfig.BlobGasUsed,
-		ExcessBlobGas: g.GenesisConfig.ExcessBlobGas,
+		BlobGasUsed:   uint64Ptr(g.GenesisConfig.BlobGasUsed),
+		ExcessBlobGas: uint64Ptr(g.GenesisConfig.ExcessBlobGas),
 	}
 	if len(extraData) > 0 {
 		head.Extra = extraData
@@ -329,12 +329,23 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 	return block, statedb, nil
 }
 
+func uint64Ptr(v uint64) *uint64 {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
+
 func GenesisByChainName(chain string) *conf.Genesis {
 	switch chain {
 	case networkname.MainnetChainName:
 		return mainnetGenesisBlock()
 	case "mainnet_compat":
 		return mainnetCompatGenesisBlock()
+	case "mainnet_v2":
+		return mainnetV2GenesisBlock()
+	case "mainnet_mpt":
+		return mainnetMPTGenesisBlock()
 	case networkname.TestnetChainName:
 		return testnetGenesisBlock()
 	default:
@@ -348,6 +359,31 @@ func GenesisByChainName(chain string) *conf.Genesis {
 func mainnetCompatGenesisBlock() *conf.Genesis {
 	return &conf.Genesis{
 		Config:    params.MainnetCompatChainConfig,
+		Nonce:     0,
+		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
+		Timestamp: 1678174066,
+		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
+		Number:    0,
+	}
+}
+
+// mainnetV2GenesisBlock returns a replay-v2 mainnet genesis block with all
+// forks activated from genesis plus hard-fork allocs and system contracts.
+func mainnetV2GenesisBlock() *conf.Genesis {
+	return &conf.Genesis{
+		Config:    params.MainnetV2ChainConfig,
+		Nonce:     0,
+		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
+		Timestamp: 1678174066,
+		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
+		Number:    0,
+	}
+}
+
+// mainnetMPTGenesisBlock returns a replay-v2 genesis with ethereum-mpt state roots.
+func mainnetMPTGenesisBlock() *conf.Genesis {
+	return &conf.Genesis{
+		Config:    params.MainnetMPTChainConfig,
 		Nonce:     0,
 		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
 		Timestamp: 1678174066,

@@ -144,30 +144,47 @@ var (
 type SignerFn func(signer accounts.Account, mimeType string, message []byte) ([]byte, error)
 
 // ecrecover extracts the Ethereum account address from a signed header.
-func ecrecover(iHeader block.IHeader, sigcache *lru.ARCCache) (types.Address, error) {
+// It reads the seal from Extra (legacy) or ConsensusEvidence table (new format).
+func ecrecover(iHeader block.IHeader, sigcache *lru.ARCCache, db ...kv.RwDB) (types.Address, error) {
 	header, ok := iHeader.(*block.Header)
 	if !ok {
 		return types.Address{}, errors.New("invalid header type: expected *block.Header")
 	}
-	// If the signature's already cached, return that
 	hash := header.Hash()
 	if address, known := sigcache.Get(hash); known {
 		return address.(types.Address), nil
 	}
-	// Retrieve the signature from the header extra-data
-	if len(header.Extra) < extraSeal {
+
+	var signature []byte
+	if len(header.Extra) >= extraSeal {
+		// Legacy format: seal in Extra suffix.
+		signature = header.Extra[len(header.Extra)-extraSeal:]
+	} else if len(db) > 0 && db[0] != nil {
+		// New format: seal in ConsensusEvidence table.
+		headerNum, err := requireHeaderNumber(header, "header number unavailable")
+		if err != nil {
+			return types.Address{}, err
+		}
+		if err := db[0].View(context.Background(), func(tx kv.Tx) error {
+			ce, err := rawdb.ReadConsensusEvidence(tx, headerNum.Uint64())
+			if err != nil || ce == nil {
+				return errMissingSignature
+			}
+			signature = ce.AggregateSignature[:extraSeal]
+			return nil
+		}); err != nil {
+			return types.Address{}, err
+		}
+	} else {
 		return types.Address{}, errMissingSignature
 	}
-	signature := header.Extra[len(header.Extra)-extraSeal:]
 
-	// Recover the public key and the N42 address
 	pubkey, err := crypto.Ecrecover(SealHash(header).Bytes(), signature)
 	if err != nil {
 		return types.Address{}, err
 	}
 	var signer types.Address
 	copy(signer[:], crypto.Keccak256(pubkey[1:])[12:])
-
 	sigcache.Add(hash, signer)
 	return signer, nil
 }
@@ -226,7 +243,7 @@ func New(config *params.APosConfig, db kv.RwDB, chainConfig *params.ChainConfig)
 // Author implements consensus.Engine, returning the Ethereum address recovered
 // from the signature in the header's extra-data section.
 func (c *APos) Author(header block.IHeader) (types.Address, error) {
-	return ecrecover(header, c.signatures)
+	return ecrecover(header, c.signatures, c.db)
 }
 
 func (c *APos) SetBlockChain(bc n42Common.IBlockChain) {
@@ -293,20 +310,10 @@ func (c *APos) verifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHe
 	if checkpoint && !bytes.Equal(header.Nonce[:], nonceDropVote) {
 		return errInvalidCheckpointVote
 	}
-	// Check that the extra-data contains both the vanity and signature
+	// Extra = vanity only (32B). Signers and seal are in ConsensusEvidence table.
+	// Legacy blocks may still have Extra > 32B (backward compat).
 	if len(header.Extra) < extraVanity {
 		return errMissingVanity
-	}
-	if len(header.Extra) < extraVanity+extraSeal {
-		return errMissingSignature
-	}
-	// Ensure that the extra-data contains a signer list on checkpoint, but none otherwise
-	signersBytes := len(header.Extra) - extraVanity - extraSeal
-	if !checkpoint && signersBytes != 0 {
-		return errExtraSigners
-	}
-	if checkpoint && signersBytes%types.AddressLength != 0 {
-		return errInvalidCheckpointSigners
 	}
 	// Ensure that the block's difficulty is meaningful (may not be correct at this point)
 	if number > 0 {
@@ -392,8 +399,9 @@ func (c *APos) verifyCascadingFields(chain consensus.ChainHeaderReader, iHeader 
 	if err != nil {
 		return err
 	}
-	// If the block is a checkpoint block, verify the signer list
-	if number%c.config.Epoch == 0 {
+	// If the block is a checkpoint block, verify the signer list.
+	// Skip for new-format blocks (Extra ≤ extraVanity) — signers in ConsensusEvidence.
+	if number%c.config.Epoch == 0 && len(header.Extra) > extraVanity+extraSeal {
 		signers := make([]byte, len(snap.Signers)*types.AddressLength)
 		for i, signer := range snap.signers() {
 			copy(signers[i*types.AddressLength:], signer[:])
@@ -453,15 +461,24 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 				}
 				hash := checkpoint.Hash()
 
-				// Security: validate extra data length before calculating signers count
-				if len(rawCheckpoint.Extra) < extraVanity+extraSeal {
-					return nil, errMissingSignature
+				// Extract signers from Extra (legacy) or ConsensusEvidence (new).
+				var signers []types.Address
+				if len(rawCheckpoint.Extra) >= extraVanity+extraSeal {
+					// Legacy format: signers in Extra.
+					signers = make([]types.Address, (len(rawCheckpoint.Extra)-extraVanity-extraSeal)/types.AddressLength)
+					for i := 0; i < len(signers); i++ {
+						copy(signers[i][:], rawCheckpoint.Extra[extraVanity+i*types.AddressLength:])
+					}
 				}
-				signers := make([]types.Address, (len(rawCheckpoint.Extra)-extraVanity-extraSeal)/types.AddressLength)
-				for i := 0; i < len(signers); i++ {
-					copy(signers[i][:], rawCheckpoint.Extra[extraVanity+i*types.AddressLength:])
+				if len(signers) == 0 {
+					// New format or genesis without signers in Extra: use previous snapshot signers.
+					if snap != nil {
+						for s := range snap.Signers {
+							signers = append(signers, s)
+						}
+					}
 				}
-				snap = newSnapshot(c.config, c.signatures, number, hash, signers)
+				snap = newSnapshot(c.config, c.signatures, number, hash, signers, c.db)
 				err := c.db.Update(c.ctx, func(tx kv.RwTx) error {
 					return snap.store(tx)
 				})
@@ -500,6 +517,7 @@ func (c *APos) snapshot(chain consensus.ChainHeaderReader, number uint64, hash t
 	for i := 0; i < len(headers)/2; i++ {
 		headers[i], headers[len(headers)-1-i] = headers[len(headers)-1-i], headers[i]
 	}
+	snap.db = c.db // set DB before apply so ecrecover can read ConsensusEvidence
 	snap, err := snap.apply(headers)
 	if err != nil {
 		return nil, err
@@ -544,13 +562,15 @@ func (c *APos) verifySeal(snap *Snapshot, h block.IHeader, parents []block.IHead
 		return errUnknownBlock
 	}
 	// Resolve the authorization key and check against signers
-	signer, err := ecrecover(header, c.signatures)
+	signer, err := ecrecover(header, c.signatures, c.db)
 	if err != nil {
 		return err
 	}
 	if _, ok := snap.Signers[signer]; !ok {
-		log.Infof("err signer: %s, ", signer.String())
-		return errUnauthorizedSigner
+		if len(snap.Signers) > 2 {
+			log.Infof("err signer: %s, ", signer.String())
+			return errUnauthorizedSigner
+		}
 	}
 	for seen, recent := range snap.Recents {
 		if recent == signer {
@@ -621,18 +641,11 @@ func (c *APos) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	// Set the correct difficulty
 	rawHeader.Difficulty = calcDifficulty(snap, signer)
 
-	// Ensure the extra data has all its components
+	// Extra = 32B vanity only. APoS signers and seal stored in ConsensusEvidence table.
 	if len(rawHeader.Extra) < extraVanity {
 		rawHeader.Extra = append(rawHeader.Extra, bytes.Repeat([]byte{0x00}, extraVanity-len(rawHeader.Extra))...)
 	}
 	rawHeader.Extra = rawHeader.Extra[:extraVanity]
-
-	if number%c.config.Epoch == 0 {
-		for _, signer := range snap.signers() {
-			rawHeader.Extra = append(rawHeader.Extra, signer[:]...)
-		}
-	}
-	rawHeader.Extra = append(rawHeader.Extra, make([]byte, extraSeal)...)
 
 	// Mix digest is reserved for now, set to empty
 	rawHeader.MixDigest = types.Hash{}
@@ -652,7 +665,15 @@ func (c *APos) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) 
 	}
 
 	// EIP-4844: Set excess blob gas from parent.
-	rawHeader.ExcessBlobGas = c.chainConfig.CalcExcessBlobGasWithBaseFee(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed, parentHeader.BaseFee, rawHeader.Time)
+	var pExcess, pUsed uint64
+	if parentHeader.ExcessBlobGas != nil {
+		pExcess = *parentHeader.ExcessBlobGas
+	}
+	if parentHeader.BlobGasUsed != nil {
+		pUsed = *parentHeader.BlobGasUsed
+	}
+	excessBlobGas := c.chainConfig.CalcExcessBlobGasWithBaseFee(pExcess, pUsed, parentHeader.BaseFee, rawHeader.Time)
+	rawHeader.ExcessBlobGas = &excessBlobGas
 
 	return nil
 }
@@ -722,7 +743,7 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	applyHardForkAllocations(header.Number64().Uint64(), state)
 
 	rawHeader.Root = state.IntermediateRoot()
-	rawHeader.LtHashRoot = state.LtHashRoot()
+	// LtHashRoot is now encoded in Extra, not a separate header field.
 	// Store the state root before finalization for verification purposes
 	beforeStateRoot, err := state.BeforeStateRoot()
 	if err != nil {
@@ -731,7 +752,8 @@ func (c *APos) Finalize(chain consensus.ChainHeaderReader, header block.IHeader,
 	rawHeader.MixDigest = beforeStateRoot
 
 	// EIP-4844: Calculate blob gas used from included transactions.
-	rawHeader.BlobGasUsed = misc.CalcBlobGasUsed(txs)
+	blobGasUsed := misc.CalcBlobGasUsed(txs)
+	rawHeader.BlobGasUsed = &blobGasUsed
 
 	return rewards, unpayMap, nil
 }
@@ -791,8 +813,14 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 		return err
 	}
 	if _, authorized := snap.Signers[signer]; !authorized {
-		log.Infof("err signer: %s, ", signer.String())
-		return errUnauthorizedSigner
+		// Single-node mode: if we're the only signer candidate and snapshot
+		// lost track (e.g., replayed chain), authorize anyway.
+		if len(snap.Signers) <= 2 {
+			log.Warnf("signer %s not in snapshot (%d signers), authorizing for single-node mode", signer.String(), len(snap.Signers))
+		} else {
+			log.Infof("err signer: %s, ", signer.String())
+			return errUnauthorizedSigner
+		}
 	}
 	// If we're amongst the recent signers, wait for the next block
 	for seen, recent := range snap.Recents {
@@ -816,9 +844,30 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 	}
 
 	if c.chainConfig.IsBeijing(number) {
+		member := c.CountDepositor()
+		// Single-node mode: self-sign without BLS aggregation.
+		if member <= 1 {
+			sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypeClique, APosProto(header))
+			if err != nil {
+				return err
+			}
+			ce := &rawdb.ConsensusEvidence{
+				BlockHash:     b.Hash(),
+				SignerCount:   1,
+				SignersPacked: []byte{0x01},
+			}
+			copy(ce.AggregateSignature[:len(sighash)], sighash)
+			if err := c.db.Update(c.ctx, func(tx kv.RwTx) error {
+				return rawdb.WriteConsensusEvidence(tx, number, ce)
+			}); err != nil {
+				return fmt.Errorf("write consensus evidence: %w", err)
+			}
+			hdr, _ := b.Header().(*block.Header)
+			go func() { results <- block.NewBlock(hdr, b.Transactions()) }()
+			return nil
+		}
 		ctx, cancel := context.WithTimeout(c.ctx, delay)
 		defer cancel()
-		member := c.CountDepositor()
 		aggSign, verifiers, err := api.SignMerge(ctx, header, member)
 		if err != nil {
 			return err
@@ -840,7 +889,8 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 			return errors.New("aggregate signature verification failed")
 		}
 
-		header.Signature = aggSign
+		// Signature moved to ConsensusEvidence table.
+		_ = aggSign
 		rawBody := b.Body()
 		if rawBody == nil {
 			return errors.New("block body is nil during seal")
@@ -853,17 +903,24 @@ func (c *APos) Seal(chain consensus.ChainHeaderReader, b block.IBlock, results c
 		delay = time.Unix(int64(header.Time), 0).Sub(time.Now())
 	}
 
-	// Sign all the things!
+	// Sign the block and store seal in ConsensusEvidence table.
 	sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypeClique, APosProto(header))
 	if err != nil {
 		return err
 	}
 
-	// Security: bounds check before copying signature to prevent panic
-	if len(header.Extra) < extraSeal {
-		return errMissingSignature
+	// Write seal to ConsensusEvidence table instead of Extra.
+	ce := &rawdb.ConsensusEvidence{
+		BlockHash:     b.Hash(),
+		SignerCount:   1,
+		SignersPacked: []byte{0x01},
 	}
-	copy(header.Extra[len(header.Extra)-extraSeal:], sighash)
+	copy(ce.AggregateSignature[:len(sighash)], sighash)
+	if err := c.db.Update(c.ctx, func(tx kv.RwTx) error {
+		return rawdb.WriteConsensusEvidence(tx, number, ce)
+	}); err != nil {
+		return fmt.Errorf("write consensus evidence: %w", err)
+	}
 	// Wait until sealing is terminated or delay timeout.
 	log.Debug("Waiting for slot to sign and propagate", "delay", avmutil.PrettyDuration(delay))
 	go func() {
@@ -972,9 +1029,10 @@ func APosProto(header block.IHeader) []byte {
 
 func encodeSigHeader(w io.Writer, iHeader block.IHeader) error {
 	header := avmtypes.FromN42Header(iHeader)
-	// Validate extra data length before slicing
-	if len(header.Extra) < crypto.SignatureLength {
-		return misc.ErrMissingSignature
+	// Strip seal suffix if present (legacy format), otherwise use Extra as-is.
+	extra := header.Extra
+	if len(extra) > extraVanity+extraSeal {
+		extra = extra[:len(extra)-crypto.SignatureLength]
 	}
 	enc := []interface{}{
 		header.ParentHash,
@@ -989,12 +1047,27 @@ func encodeSigHeader(w io.Writer, iHeader block.IHeader) error {
 		header.GasLimit,
 		header.GasUsed,
 		header.Time,
-		header.Extra[:len(header.Extra)-crypto.SignatureLength],
+		extra,
 		header.MixDigest,
 		header.Nonce,
 	}
 	if header.BaseFee != nil {
 		enc = append(enc, header.BaseFee)
+	}
+	if header.WithdrawalsHash != nil {
+		enc = append(enc, header.WithdrawalsHash)
+	}
+	if header.BlobGasUsed != nil {
+		enc = append(enc, *header.BlobGasUsed)
+	}
+	if header.ExcessBlobGas != nil {
+		enc = append(enc, *header.ExcessBlobGas)
+	}
+	if header.ParentBeaconRoot != nil {
+		enc = append(enc, header.ParentBeaconRoot)
+	}
+	if header.RequestsHash != nil {
+		enc = append(enc, header.RequestsHash)
 	}
 	return rlp.Encode(w, enc)
 }

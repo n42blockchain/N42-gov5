@@ -83,7 +83,7 @@ type DomainCommitted struct {
 func NewCommittedDomain(d *Domain, mode CommitmentMode, trieVariant commitment.TrieVariant, logger log.Logger) *DomainCommitted {
 	return &DomainCommitted{
 		Domain:       d,
-		patriciaTrie: commitment.InitializeTrie(trieVariant),
+		patriciaTrie: func() commitment.Trie { t, _ := commitment.InitializeTrieAndUpdates(trieVariant, commitment.ModeDirect, ""); return t }(),
 		commTree:     btree.NewG[*CommitmentItem](32, commitmentItemLess),
 		keccak:       sha3.NewLegacyKeccak256(),
 		mode:         mode,
@@ -112,7 +112,7 @@ func (d *DomainCommitted) TouchPlainKeyAccount(c *CommitmentItem, val []byte) {
 		c.update.Flags = commitment.DeleteUpdate
 		return
 	}
-	c.update.DecodeForStorage(val)
+	c.update.Decode(val, 0)
 	c.update.Flags = commitment.BalanceUpdate | commitment.NonceUpdate
 	item, found := d.commTree.Get(&CommitmentItem{hashedKey: c.hashedKey})
 	if !found {
@@ -120,17 +120,17 @@ func (d *DomainCommitted) TouchPlainKeyAccount(c *CommitmentItem, val []byte) {
 	}
 	if item.update.Flags&commitment.CodeUpdate != 0 {
 		c.update.Flags |= commitment.CodeUpdate
-		copy(c.update.CodeHashOrStorage[:], item.update.CodeHashOrStorage[:])
+		copy(c.update.CodeHash[:], item.update.CodeHash[:])
 	}
 }
 
 func (d *DomainCommitted) TouchPlainKeyStorage(c *CommitmentItem, val []byte) {
-	c.update.ValLength = len(val)
+	c.update.StorageLen = int8(len(val))
 	if len(val) == 0 {
 		c.update.Flags = commitment.DeleteUpdate
 	} else {
 		c.update.Flags = commitment.StorageUpdate
-		copy(c.update.CodeHashOrStorage[:], val)
+		copy(c.update.Storage[:], val)
 	}
 }
 
@@ -140,7 +140,7 @@ func (d *DomainCommitted) TouchPlainKeyCode(c *CommitmentItem, val []byte) {
 	if !found {
 		d.keccak.Reset()
 		d.keccak.Write(val)
-		copy(c.update.CodeHashOrStorage[:], d.keccak.Sum(nil))
+		copy(c.update.CodeHash[:], d.keccak.Sum(nil))
 		return
 	}
 	if item.update.Flags&commitment.BalanceUpdate != 0 {
@@ -156,7 +156,7 @@ func (d *DomainCommitted) TouchPlainKeyCode(c *CommitmentItem, val []byte) {
 	} else {
 		d.keccak.Reset()
 		d.keccak.Write(val)
-		copy(c.update.CodeHashOrStorage[:], d.keccak.Sum(nil))
+		copy(c.update.CodeHash[:], d.keccak.Sum(nil))
 	}
 }
 
@@ -214,37 +214,8 @@ func (d *DomainCommitted) hashAndNibblizeKey(key []byte) []byte {
 
 // Evaluates commitment for processed state. Commit=true - store trie state after evaluation
 func (d *DomainCommitted) ComputeCommitment(trace bool) (rootHash []byte, branchNodeUpdates map[string]commitment.BranchData, err error) {
-	defer func(s time.Time) { d.comTook = time.Since(s) }(time.Now())
-
-	touchedKeys, hashedKeys, updates := d.TouchedKeyList()
-	d.comKeys = uint64(len(touchedKeys))
-
-	if len(touchedKeys) == 0 {
-		rootHash, err = d.patriciaTrie.RootHash()
-		return rootHash, nil, err
-	}
-
-	// data accessing functions should be set once before
-	d.patriciaTrie.Reset()
-	d.patriciaTrie.SetTrace(trace)
-
-	switch d.mode {
-	case CommitmentModeDirect:
-		rootHash, branchNodeUpdates, err = d.patriciaTrie.ReviewKeys(touchedKeys, hashedKeys)
-		if err != nil {
-			return nil, nil, err
-		}
-	case CommitmentModeUpdate:
-		rootHash, branchNodeUpdates, err = d.patriciaTrie.ProcessUpdates(touchedKeys, hashedKeys, updates)
-		if err != nil {
-			return nil, nil, err
-		}
-	case CommitmentModeDisabled:
-		return nil, nil, nil
-	default:
-		return nil, nil, fmt.Errorf("invalid commitment mode: %d", d.mode)
-	}
-	return rootHash, branchNodeUpdates, err
+	// Not yet adapted to new Erigon Process() API. Replay uses MPTRootComputer.
+	return nil, nil, fmt.Errorf("DomainCommitted.ComputeCommitment: not yet adapted to Erigon Process() API")
 }
 
 var keyCommitmentState = []byte("state")

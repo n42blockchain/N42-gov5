@@ -23,8 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/holiman/uint256"
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 
@@ -33,12 +33,12 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/modules/state/snapshot"
-	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 )
@@ -89,7 +89,7 @@ var (
 type WriteStatus byte
 
 const (
-	NonStatTy   WriteStatus = iota
+	NonStatTy WriteStatus = iota
 	CanonStatTy
 	SideStatTy
 )
@@ -100,10 +100,10 @@ const (
 	maxFutureBlocks     = 256
 	maxTimeFutureBlocks = 5 * 60 // 5 minutes
 
-	headerCacheLimit   = 1024
-	tdCacheLimit       = 512
-	numberCacheLimit   = 2048
-	witnessCacheLimit  = 256
+	headerCacheLimit  = 1024
+	tdCacheLimit      = 512
+	numberCacheLimit  = 2048
+	witnessCacheLimit = 256
 )
 
 // =============================================================================
@@ -133,24 +133,31 @@ type BlockChain struct {
 
 	errorCh chan error
 
-	process            Processor
-	parallelEVM        bool
-	prefetchEnabled    bool
-	prefetchPredictor  *PrefetchPredictor
+	process           Processor
+	parallelEVM       bool
+	prefetchEnabled   bool
+	prefetchPredictor *PrefetchPredictor
 
 	freezer       freezer.FreezerAPI
 	ancientReader *freezer.AncientReader
 
-	exexManager   *exex.Manager
-	snapshotTree  *snapshot.Tree
-	jmtCommitment        *commitment.JMTCommitment
-	jmtEnabled           bool
-	jmtForBlockProcessing bool // true for fresh chains (private/dev) where JMT is used from genesis
-	jmtStoreRefresh      func() // called after block commit to refresh JMT backing store tx
+	exexManager           *exex.Manager
+	snapshotTree          *snapshot.Tree
+	jmtCommitment         *commitment.JMTCommitment
+	jmtEnabled            bool
+	jmtForBlockProcessing bool   // true for fresh chains (private/dev) where JMT is used from genesis
+	jmtStoreRefresh       func() // called after block commit to refresh JMT backing store tx
 
-	ltHashCommitment *commitment.LtHashCommitment
-	ltHashEnabled    bool
-	rootComputer     state.RootComputer
+	bmtCommitment *commitment.BMTCommitment
+	bmtEnabled    bool
+
+	mptRootComputer *commitment.MPTRootComputer
+	mptEnabled      bool
+
+	ltHashCommitment   *commitment.LtHashCommitment
+	ltHashEnabled      bool
+	rootComputer       state.RootComputer
+	stateProofProvider StateProofProvider
 
 	witnessCache *lru.Cache[types.Hash, *witness.BlockWitness]
 

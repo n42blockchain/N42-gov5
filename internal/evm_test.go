@@ -255,21 +255,21 @@ type mockMessage struct {
 	isFree     bool
 }
 
-func (m mockMessage) From() types.Address                        { return m.from }
-func (m mockMessage) To() *types.Address                         { return m.to }
-func (m mockMessage) GasPrice() *uint256.Int                    { return m.gasPrice }
-func (m mockMessage) FeeCap() *uint256.Int                      { return m.feeCap }
-func (m mockMessage) Tip() *uint256.Int                         { return m.tip }
-func (m mockMessage) BlobFeeCap() *uint256.Int                  { return m.blobFeeCap }
-func (m mockMessage) BlobHashes() []types.Hash                  { return m.blobHashes }
-func (m mockMessage) Gas() uint64                               { return m.gas }
-func (m mockMessage) Value() *uint256.Int                       { return m.value }
-func (m mockMessage) Nonce() uint64                             { return m.nonce }
-func (m mockMessage) CheckNonce() bool                          { return m.checkNonce }
-func (m mockMessage) Data() []byte                              { return m.data }
-func (m mockMessage) AccessList() transaction.AccessList        { return m.accessList }
-func (m mockMessage) AuthList() transaction.AuthorizationList   { return m.authList }
-func (m mockMessage) IsFree() bool                              { return m.isFree }
+func (m mockMessage) From() types.Address                     { return m.from }
+func (m mockMessage) To() *types.Address                      { return m.to }
+func (m mockMessage) GasPrice() *uint256.Int                  { return m.gasPrice }
+func (m mockMessage) FeeCap() *uint256.Int                    { return m.feeCap }
+func (m mockMessage) Tip() *uint256.Int                       { return m.tip }
+func (m mockMessage) BlobFeeCap() *uint256.Int                { return m.blobFeeCap }
+func (m mockMessage) BlobHashes() []types.Hash                { return m.blobHashes }
+func (m mockMessage) Gas() uint64                             { return m.gas }
+func (m mockMessage) Value() *uint256.Int                     { return m.value }
+func (m mockMessage) Nonce() uint64                           { return m.nonce }
+func (m mockMessage) CheckNonce() bool                        { return m.checkNonce }
+func (m mockMessage) Data() []byte                            { return m.data }
+func (m mockMessage) AccessList() transaction.AccessList      { return m.accessList }
+func (m mockMessage) AuthList() transaction.AuthorizationList { return m.authList }
+func (m mockMessage) IsFree() bool                            { return m.isFree }
 
 func TestNewEVMTxContextCarriesBlobHashes(t *testing.T) {
 	hashes := []types.Hash{
@@ -432,7 +432,7 @@ func TestNewEVMBlockContextPreservesBaseFee(t *testing.T) {
 func TestNewEVMBlockContextPopulatesBlobFeeFields(t *testing.T) {
 	author := types.Address{0x42}
 	header := &block.Header{
-		ExcessBlobGas: transaction.BlobTxTargetBlobGasPerBlock,
+		ExcessBlobGas: u64ptr(transaction.BlobTxTargetBlobGasPerBlock),
 	}
 
 	ctx := NewEVMBlockContext(header, nil, nil, &author)
@@ -440,12 +440,12 @@ func TestNewEVMBlockContextPopulatesBlobFeeFields(t *testing.T) {
 	if ctx.BlobBaseFee == nil {
 		t.Fatal("BlobBaseFee should be initialized")
 	}
-	want := transaction.CalcBlobFee(header.ExcessBlobGas)
+	want := transaction.CalcBlobFee(*header.ExcessBlobGas)
 	if ctx.BlobBaseFee.Cmp(want) != 0 {
 		t.Fatalf("BlobBaseFee = %v, want %v", ctx.BlobBaseFee, want)
 	}
-	if ctx.ExcessBlobGas != header.ExcessBlobGas {
-		t.Fatalf("ExcessBlobGas = %d, want %d", ctx.ExcessBlobGas, header.ExcessBlobGas)
+	if ctx.ExcessBlobGas != *header.ExcessBlobGas {
+		t.Fatalf("ExcessBlobGas = %d, want %d", ctx.ExcessBlobGas, *header.ExcessBlobGas)
 	}
 }
 

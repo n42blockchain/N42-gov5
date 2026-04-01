@@ -106,8 +106,12 @@ func ethCompatibleHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.
 		beaconRoot = new(types.Hash)
 		blobGasUsed = new(uint64)
 		excessBlobGas = new(uint64)
-		*blobGasUsed = header.BlobGasUsed
-		*excessBlobGas = header.ExcessBlobGas
+		if header.BlobGasUsed != nil {
+			*blobGasUsed = *header.BlobGasUsed
+		}
+		if header.ExcessBlobGas != nil {
+			*excessBlobGas = *header.ExcessBlobGas
+		}
 	}
 	if cfg != nil && (cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
 		root := executionRequestsHash(nil)
@@ -179,8 +183,12 @@ func ethCompatibleEngineBlockHash(blk block.IBlock, cfg *params.ChainConfig, opt
 	if opts.includeBlobFields || (cfg != nil && cfg.IsCancunAt(number, header.Time)) {
 		blobGasUsed = new(uint64)
 		excessBlobGas = new(uint64)
-		*blobGasUsed = header.BlobGasUsed
-		*excessBlobGas = header.ExcessBlobGas
+		if header.BlobGasUsed != nil {
+			*blobGasUsed = *header.BlobGasUsed
+		}
+		if header.ExcessBlobGas != nil {
+			*excessBlobGas = *header.ExcessBlobGas
+		}
 	}
 	if opts.requestsHash != nil {
 		requestsHash = opts.requestsHash
@@ -356,10 +364,12 @@ func executionPayloadV3ToBlock(payload *ExecutionPayloadV3) (block.IBlock, error
 		return blk, nil
 	}
 	if payload.BlobGasUsed != nil {
-		header.BlobGasUsed = uint64(*payload.BlobGasUsed)
+		v := uint64(*payload.BlobGasUsed)
+		header.BlobGasUsed = &v
 	}
 	if payload.ExcessBlobGas != nil {
-		header.ExcessBlobGas = uint64(*payload.ExcessBlobGas)
+		v := uint64(*payload.ExcessBlobGas)
+		header.ExcessBlobGas = &v
 	}
 	return blk.WithSeal(header), nil
 }
@@ -427,6 +437,10 @@ func buildExecutionPayloadV1(parent block.IBlock, parentHash types.Hash, attrs *
 		baseFee         uint64
 		blockNumber     uint64 = 1
 	)
+	_, emptyTxRoot, err := encodeEthereumTransactions(nil)
+	if err != nil {
+		emptyTxRoot = types.Hash{}
+	}
 	if parent != nil {
 		parentStateRoot = parent.StateRoot()
 		gasLimit = parent.GasLimit()
@@ -437,8 +451,8 @@ func buildExecutionPayloadV1(parent block.IBlock, parentHash types.Hash, attrs *
 		ParentHash:  parentHash,
 		Coinbase:    attrs.SuggestedFeeRecipient,
 		Root:        parentStateRoot,
-		TxHash:      hash.DeriveSha(transaction.Transactions(nil)),
-		ReceiptHash: hash.DeriveSha(block.Receipts(nil)),
+		TxHash:      emptyTxRoot,
+		ReceiptHash: hash.DeriveShaV2(block.Receipts(nil)),
 		Bloom:       block.BytesToBloom(nil),
 		Difficulty:  uint256.NewInt(0),
 		Number:      uint256.NewInt(blockNumber),
@@ -490,10 +504,17 @@ func buildExecutionPayloadV3(parent block.IBlock, parentHash types.Hash, attrs *
 	excessBlobGas := uint64(0)
 	if parent != nil {
 		if parentHeader, ok := parent.Header().(*block.Header); ok && parentHeader != nil {
+			var pExcess, pUsed uint64
+			if parentHeader.ExcessBlobGas != nil {
+				pExcess = *parentHeader.ExcessBlobGas
+			}
+			if parentHeader.BlobGasUsed != nil {
+				pUsed = *parentHeader.BlobGasUsed
+			}
 			if cfg != nil {
-				excessBlobGas = cfg.CalcExcessBlobGasWithBaseFee(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed, parentHeader.BaseFee, uint64(attrs.Timestamp))
+				excessBlobGas = cfg.CalcExcessBlobGasWithBaseFee(pExcess, pUsed, parentHeader.BaseFee, uint64(attrs.Timestamp))
 			} else {
-				excessBlobGas = CalcExcessBlobGas(parentHeader.ExcessBlobGas, parentHeader.BlobGasUsed)
+				excessBlobGas = CalcExcessBlobGas(pExcess, pUsed)
 			}
 		}
 	}

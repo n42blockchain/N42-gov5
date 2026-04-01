@@ -24,9 +24,9 @@
 其中：
 
 1. `make maturity-smoke` 只跑聚焦的外部 surface / 恢复性 smoke。
-2. `make maturity-baseline` 跑同一套 smoke，并额外执行核心基线命令，结果写入 `build/maturity-baseline/<timestamp>/summary.md`。
+2. `make maturity-baseline` 跑同一套 smoke，并额外执行核心基线命令，结果写入 `build/maturity-baseline/<timestamp>/summary.md`。这条命令只跑包级 gate，不启动临时节点。
 3. `make ops-smoke` 固定验证 RPC、metrics、pprof 和短压测。
-4. `make interop-smoke` 固定验证 RPC / Blockscout / Hive `engine-auth` / EEST collect-only。
+4. `make interop-smoke` 固定验证 RPC / Blockscout / Hive `engine-auth` / EEST collect-only，并使用临时 `n42 --ethdev` 节点。
 5. `make soak-smoke` 固定验证重启循环和短时负载。
 6. `make release-check` 串行执行 `maturity-baseline + ops-smoke + interop-smoke + soak-smoke`。
 
@@ -80,6 +80,7 @@
 1. 先跑 `make maturity-smoke`
 2. 需要形成可追溯记录时跑 `make maturity-baseline`
 3. 对运行时或互操作面有改动时，再跑 `make ops-smoke`、`make interop-smoke`
+4. 如果改动涉及 Hive / EEST / Ethereum EL 互操作，优先看 `interop-smoke` 的 `--ethdev` summary，而不是把 `maturity-baseline` 当成替代品
 
 版本发布前：
 

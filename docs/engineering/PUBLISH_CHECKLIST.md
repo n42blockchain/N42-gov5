@@ -21,6 +21,11 @@
 4. `make soak-smoke`
 5. `make release-check`
 
+说明：
+
+1. `maturity-baseline` 只覆盖包级 gate，不启动临时节点。
+2. `interop-smoke` 会启动临时 `n42 --ethdev` 节点，并执行 RPC / Blockscout / Hive / EEST 互操作检查。
+
 最低要求：
 
 1. 所有 step `PASS`

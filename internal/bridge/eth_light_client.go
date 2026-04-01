@@ -18,11 +18,10 @@ import (
 	"math/bits"
 	"sync"
 
-	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
 	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
-	"github.com/n42blockchain/N42/common/rlp"
-	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/ethmpt"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -109,7 +108,7 @@ type SyncCommitteeUpdate struct {
 // SyncAggregate contains the sync committee's aggregate BLS signature.
 type SyncAggregate struct {
 	SyncCommitteeBits      [SyncCommitteeSize / 8]byte // Participation bitmap
-	SyncCommitteeSignature []byte                       // BLS12-381 aggregate sig (96 bytes)
+	SyncCommitteeSignature []byte                      // BLS12-381 aggregate sig (96 bytes)
 }
 
 // ParticipantCount returns how many committee members signed.
@@ -356,12 +355,8 @@ func (lc *EthLightClient) GetVerifiedStateRoot(slot uint64) (types.Hash, bool) {
 	return root, ok
 }
 
-// VerifyMPTProof verifies an Ethereum MPT (Merkle Patricia Trie) storage proof
-// against a verified state root. This proves a value exists in ETH state.
-//
-// NOTE: MPT path verification requires full RLP decoding + Keccak256 hash
-// chaining. This is not yet production-ready — DO NOT use for real asset
-// transfers until verifyMPTPath is fully implemented.
+// VerifyMPTProof verifies a canonical Ethereum MPT account+storage proof
+// against a verified execution state root.
 func (lc *EthLightClient) VerifyMPTProof(
 	slot uint64,
 	accountAddr types.Address,
@@ -378,8 +373,8 @@ func (lc *EthLightClient) VerifyMPTProof(
 		return fmt.Errorf("slot %d not verified", slot)
 	}
 
-	// Verify account exists in state trie
-	accountRLP, err := verifyMPTPath(stateRoot, crypto.Keccak256(accountAddr[:]), accountProof)
+	// Verify account exists in the canonical Ethereum state trie.
+	accountRLP, err := ethmpt.VerifyAccountProof(stateRoot, accountAddr, accountProof)
 	if err != nil {
 		return fmt.Errorf("account proof invalid: %w", err)
 	}
@@ -387,14 +382,14 @@ func (lc *EthLightClient) VerifyMPTProof(
 		return fmt.Errorf("account does not exist")
 	}
 
-	// Extract storage root from account RLP
-	storageRoot, err := extractStorageRoot(accountRLP)
+	// Extract the canonical storage trie root from the account leaf.
+	storageRoot, err := ethmpt.StorageRootFromAccountRLP(accountRLP)
 	if err != nil {
 		return fmt.Errorf("extract storage root: %w", err)
 	}
 
-	// Verify storage value in account's storage trie
-	value, err := verifyMPTPath(storageRoot, crypto.Keccak256(storageKey[:]), storageProof)
+	// Verify the value inside the account's canonical storage trie.
+	value, err := ethmpt.VerifyStorageProof(storageRoot, storageKey, storageProof)
 	if err != nil {
 		return fmt.Errorf("storage proof invalid: %w", err)
 	}
@@ -526,186 +521,6 @@ func hashSyncCommittee(c *SyncCommittee) types.Hash {
 	copy(final[:32], leaves[0][:])
 	copy(final[32:], aggHash[:])
 	return types.Hash(sha256.Sum256(final[:]))
-}
-
-// verifyMPTPath verifies an Ethereum MPT proof against a state root.
-// Walks from root through RLP-encoded trie nodes (branch/extension/leaf),
-// verifying the Keccak256 hash chain and nibble path at each step.
-func verifyMPTPath(root types.Hash, keyHash []byte, proof [][]byte) ([]byte, error) {
-	if len(proof) == 0 {
-		return nil, fmt.Errorf("empty proof")
-	}
-
-	// Verify root matches first node
-	firstNodeHash := crypto.Keccak256Hash(proof[0])
-	if firstNodeHash != root {
-		return nil, fmt.Errorf("proof root mismatch: got %x, want %x", firstNodeHash, root)
-	}
-
-	// Convert key hash to nibbles (each byte → 2 nibbles)
-	nibbles := make([]byte, len(keyHash)*2)
-	for i, b := range keyHash {
-		nibbles[i*2] = b >> 4
-		nibbles[i*2+1] = b & 0x0f
-	}
-	nibblePos := 0
-
-	// Walk through proof nodes
-	for i, node := range proof {
-		// Decode the RLP list (trie node)
-		content, _, err := rlp.SplitList(node)
-		if err != nil {
-			return nil, fmt.Errorf("node %d: not an RLP list: %w", i, err)
-		}
-
-		// Count elements to determine node type
-		elements, err := rlpListElements(content)
-		if err != nil {
-			return nil, fmt.Errorf("node %d: parse elements: %w", i, err)
-		}
-
-		switch len(elements) {
-		case 17:
-			// Branch node: 16 children + value
-			if i == len(proof)-1 {
-				// Last node — value is in elements[16]
-				if len(elements[16]) == 0 {
-					return nil, nil // key not found
-				}
-				valBytes, _, err := rlp.SplitString(elements[16])
-				if err != nil {
-					return nil, fmt.Errorf("branch value: %w", err)
-				}
-				return valBytes, nil
-			}
-			// Not last node — follow the nibble path to next child
-			if nibblePos >= len(nibbles) {
-				return nil, fmt.Errorf("node %d: nibble path exhausted at branch", i)
-			}
-			childIdx := nibbles[nibblePos]
-			nibblePos++
-			if childIdx >= 16 {
-				return nil, fmt.Errorf("node %d: invalid nibble %d", i, childIdx)
-			}
-			// Verify child hash matches next proof node
-			if i+1 < len(proof) {
-				childHash := crypto.Keccak256(proof[i+1])
-				if !bytes.Contains(elements[childIdx], childHash) {
-					return nil, fmt.Errorf("node %d: branch child %d hash mismatch", i, childIdx)
-				}
-			}
-
-		case 2:
-			// Extension or Leaf node — decode the compact-encoded path
-			pathBytes, _, err := rlp.SplitString(elements[0])
-			if err != nil {
-				return nil, fmt.Errorf("node %d: decode path: %w", i, err)
-			}
-			if len(pathBytes) == 0 {
-				return nil, fmt.Errorf("node %d: empty path", i)
-			}
-
-			// Compact encoding: first nibble flags (0=ext-even, 1=ext-odd, 2=leaf-even, 3=leaf-odd)
-			firstNibble := pathBytes[0] >> 4
-			isLeaf := firstNibble >= 2
-			isOdd := firstNibble%2 == 1
-
-			// Extract path nibbles
-			var pathNibbles []byte
-			if isOdd {
-				pathNibbles = append(pathNibbles, pathBytes[0]&0x0f)
-			}
-			for _, b := range pathBytes[1:] {
-				pathNibbles = append(pathNibbles, b>>4, b&0x0f)
-			}
-
-			// Verify path nibbles match key nibbles at current position
-			if nibblePos+len(pathNibbles) > len(nibbles) {
-				return nil, fmt.Errorf("node %d: path exceeds key length", i)
-			}
-			for j, pn := range pathNibbles {
-				if nibbles[nibblePos+j] != pn {
-					return nil, fmt.Errorf("node %d: nibble mismatch at position %d", i, nibblePos+j)
-				}
-			}
-			nibblePos += len(pathNibbles)
-
-			if isLeaf {
-				// Leaf node — elements[1] is the value
-				valBytes, _, err := rlp.SplitString(elements[1])
-				if err != nil {
-					return nil, fmt.Errorf("leaf value: %w", err)
-				}
-				return valBytes, nil
-			}
-			// Extension node — verify child hash
-			if i+1 < len(proof) {
-				childHash := crypto.Keccak256(proof[i+1])
-				if !bytes.Contains(elements[1], childHash) {
-					return nil, fmt.Errorf("node %d: extension child hash mismatch", i)
-				}
-			}
-
-		default:
-			return nil, fmt.Errorf("node %d: unexpected element count %d (expected 2 or 17)", i, len(elements))
-		}
-	}
-
-	return nil, fmt.Errorf("proof walk completed without finding value")
-}
-
-// rlpListElements splits an RLP list's content into its raw element byte slices.
-func rlpListElements(content []byte) ([][]byte, error) {
-	var elements [][]byte
-	rest := content
-	for len(rest) > 0 {
-		// Each call to rlp.Split returns (content, contentRest, restOfList, err)
-		_, elemRest, err := rlp.SplitString(rest)
-		if err != nil {
-			// Try as list
-			_, elemRest, err = rlp.SplitList(rest)
-			if err != nil {
-				return nil, fmt.Errorf("element parse error: %w", err)
-			}
-		}
-		elemLen := len(rest) - len(elemRest)
-		elements = append(elements, rest[:elemLen])
-		rest = elemRest
-	}
-	return elements, nil
-}
-
-// extractStorageRoot extracts the storage root (3rd field) from an RLP-encoded account.
-// Account: [nonce, balance, storageRoot, codeHash]
-// Uses common/rlp.Split for canonical RLP decoding.
-func extractStorageRoot(accountRLP []byte) (types.Hash, error) {
-	// Decode the outer list
-	content, _, err := rlp.SplitList(accountRLP)
-	if err != nil {
-		return types.Hash{}, fmt.Errorf("not an RLP list: %w", err)
-	}
-
-	// Skip field 0 (nonce) and field 1 (balance)
-	rest := content
-	for field := 0; field < 2; field++ {
-		_, _, rest, err = rlp.Split(rest)
-		if err != nil {
-			return types.Hash{}, fmt.Errorf("RLP field %d: %w", field, err)
-		}
-	}
-
-	// Field 2 is storageRoot (32-byte string)
-	storageRootBytes, _, err := rlp.SplitString(rest)
-	if err != nil {
-		return types.Hash{}, fmt.Errorf("storageRoot: %w", err)
-	}
-	if len(storageRootBytes) != 32 {
-		return types.Hash{}, fmt.Errorf("storageRoot wrong length: %d", len(storageRootBytes))
-	}
-
-	var root types.Hash
-	copy(root[:], storageRootBytes)
-	return root, nil
 }
 
 // sszMerkleize computes the SSZ Merkle root of a set of 32-byte leaves.

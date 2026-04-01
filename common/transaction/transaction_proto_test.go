@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/proto/types_pb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -129,13 +129,10 @@ func TestTransactionProtoRoundTripPreservesZeroAddress(t *testing.T) {
 	if err := decoded.Unmarshal(data); err != nil {
 		t.Fatalf("Unmarshal() error: %v", err)
 	}
-
-	// Legacy: zero address → nil (contract creation semantics)
-	if decoded.To() != nil {
-		t.Fatalf("Legacy: To() = %v, want nil (zero address treated as contract creation)", decoded.To())
+	if decoded.To() == nil || *decoded.To() != zero {
+		t.Fatalf("Marshal/Unmarshal: To() = %v, want zero address", decoded.To())
 	}
 
-	// V2 Marshal: zero address is preserved as a valid address.
 	dataV2, err := original.MarshalV2()
 	if err != nil {
 		t.Fatalf("MarshalV2() error: %v", err)
@@ -145,8 +142,9 @@ func TestTransactionProtoRoundTripPreservesZeroAddress(t *testing.T) {
 	if err := decodedV2.Unmarshal(dataV2); err != nil {
 		t.Fatalf("Unmarshal(v2) error: %v", err)
 	}
-	// V2 also goes through convertProtoToAddress which maps zero→nil for SSZ compat.
-	// For true V2 zero-address preservation, a separate code path is needed post-Shanghai.
+	if decodedV2.To() == nil || *decodedV2.To() != zero {
+		t.Fatalf("MarshalV2/Unmarshal: To() = %v, want zero address", decodedV2.To())
+	}
 }
 
 func TestTransactionProtoRoundTripPreservesContractCreation(t *testing.T) {
@@ -258,19 +256,28 @@ func TestTransactionProtoRoundTripPreservesAccessList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// V2 encoding preserves AccessList for all tx types (Shanghai+).
-			data, err := tt.tx.MarshalV2()
-			if err != nil {
-				t.Fatalf("Marshal() error: %v", err)
-			}
+			for _, encode := range []struct {
+				name string
+				fn   func() ([]byte, error)
+			}{
+				{name: "marshal", fn: tt.tx.Marshal},
+				{name: "marshal-v2", fn: tt.tx.MarshalV2},
+			} {
+				t.Run(encode.name, func(t *testing.T) {
+					data, err := encode.fn()
+					if err != nil {
+						t.Fatalf("encode error: %v", err)
+					}
 
-			var decoded Transaction
-			if err := decoded.Unmarshal(data); err != nil {
-				t.Fatalf("Unmarshal() error: %v", err)
-			}
+					var decoded Transaction
+					if err := decoded.Unmarshal(data); err != nil {
+						t.Fatalf("Unmarshal() error: %v", err)
+					}
 
-			if !reflect.DeepEqual(decoded.AccessList(), accessList) {
-				t.Fatalf("AccessList() = %#v, want %#v", decoded.AccessList(), accessList)
+					if !reflect.DeepEqual(decoded.AccessList(), accessList) {
+						t.Fatalf("AccessList() = %#v, want %#v", decoded.AccessList(), accessList)
+					}
+				})
 			}
 		})
 	}
