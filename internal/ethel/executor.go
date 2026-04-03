@@ -403,6 +403,9 @@ func (e *Executor) writeOutputs(blockNum uint64, result *blockResult, writer sta
 		}
 	}
 
+	// TODO: 4. Trie history — per-block MPT node diffs for historical state proofs.
+	// TODO: 5. Execution input stream — per-block EVM input data for stateless replay.
+
 	return nil
 }
 
