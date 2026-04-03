@@ -71,14 +71,6 @@ func main() {
 				Usage: "Log gas mismatches but continue execution",
 			},
 			&cli.BoolFlag{
-				Name:  "no-indices",
-				Usage: "Skip writing TxLookup and LogIndex (faster sync)",
-			},
-			&cli.BoolFlag{
-				Name:  "no-history",
-				Usage: "Skip writing AccountsHistory/StorageHistory bitmaps (faster sync)",
-			},
-			&cli.BoolFlag{
 				Name:  "no-outputs",
 				Usage: "Skip writing output freezer (receipts, senders, witness, etc.)",
 			},
@@ -101,8 +93,6 @@ func run(c *cli.Context) error {
 	commitInterval := c.Uint64("commit")
 	verifyInterval := c.Uint64("verify")
 	skipErrors := c.Bool("skip-errors")
-	noIndices := c.Bool("no-indices")
-	noHistory := c.Bool("no-history")
 	noOutputs := c.Bool("no-outputs")
 
 	// Open Geth ancient freezer.
@@ -163,8 +153,6 @@ func run(c *cli.Context) error {
 		CommitInterval: commitInterval,
 		VerifyInterval: verifyInterval,
 		SkipErrors:     skipErrors,
-		NoIndices:      noIndices,
-		NoHistory:      noHistory,
 		NoOutputs:      noOutputs,
 	}
 
