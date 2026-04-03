@@ -1115,6 +1115,14 @@ func (s *IntraBlockState) IntermediateRoot() types.Hash {
 // (LtHashRootComputer interface), original state is also collected for
 // incremental digest computation.
 func (s *IntraBlockState) computeRootViaComputer() types.Hash {
+	// Materialize pending balanceInc entries so they appear in stateObjectsDirty.
+	for addr, bi := range s.balanceInc {
+		if !bi.transferred {
+			s.getStateObject(addr)
+			s.stateObjectsDirty[addr] = struct{}{}
+		}
+	}
+
 	accounts := make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty))
 	storage := make(map[types.Address]map[types.Hash]*uint256.Int)
 

@@ -16,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -89,7 +90,14 @@ func (e *Executor) Run(ctx context.Context) error {
 		return nil
 	}
 
-	// Pad output freezer to match startBlock (freezer requires sequential item 0,1,2...).
+	// Initialize HashedAccounts from PlainState if verify enabled and not yet populated.
+	if e.cfg.VerifyInterval > 0 {
+		if err := InitHashState(tx); err != nil {
+			return fmt.Errorf("init hash state: %w", err)
+		}
+	}
+
+	// Pad output freezer to match startBlock.
 	if e.outFreezer != nil {
 		if err := e.padOutputFreezer(startBlock); err != nil {
 			return fmt.Errorf("pad output freezer: %w", err)
@@ -181,6 +189,11 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
 
+	// Attach HashOnlyComputer to keep HashedAccounts in sync incrementally.
+	if e.cfg.VerifyInterval > 0 {
+		ibs.SetRootComputer(NewHashOnlyComputer(tx))
+	}
+
 	// 3. Process block (DAO fork, system contracts, EVM).
 	result, err := e.processBlock(header, body, ibs)
 	if err != nil {
@@ -198,7 +211,13 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		}
 	}
 
-	// 5. Commit state changes to writer.
+	// 5. Flush HashOnlyComputer (updates HashedAccounts from dirty IBS)
+	// before CommitBlock clears the dirty set.
+	if e.cfg.VerifyInterval > 0 {
+		ibs.IntermediateRoot()
+	}
+
+	// 6. Commit state changes to writer.
 	rules := e.chainCfg.Rules(header.Number.Uint64())
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return fmt.Errorf("commit block state: %w", err)
@@ -210,17 +229,25 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		return fmt.Errorf("write history: %w", err)
 	}
 
-	// 6. Write execution outputs to output freezer.
+	// 6. Write indices (TxLookup + LogIndex) for RPC support.
+	if err := WriteBlockIndices(tx, blockNum, body.Transactions); err != nil {
+		return fmt.Errorf("write tx indices: %w", err)
+	}
+	if err := rawdb.WriteLogIndex(tx, blockNum, result.Receipts); err != nil {
+		return fmt.Errorf("write log index: %w", err)
+	}
+
+	// 7. Write execution outputs to output freezer.
 	if e.outFreezer != nil {
 		if err := e.writeOutputs(blockNum, result, writer, witnessReader, tx); err != nil {
 			return fmt.Errorf("write outputs: %w", err)
 		}
 	}
 
-	// 7. Verify state root (if enabled).
-	// Use full re-hash from Account/Storage tables.
+	// 8. Verify state root (if enabled).
+	// HashedAccounts are kept in sync by HashOnlyComputer; only CalcTrieRoot needed.
 	if shouldVerify {
-		computedRoot, err := FullStateRootVerify(tx)
+		computedRoot, err := CalcStateRoot(tx)
 		if err != nil {
 			return fmt.Errorf("state root computation: %w", err)
 		}
