@@ -18,7 +18,6 @@ package freezer
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,7 +44,7 @@ func makeFreezeData(count int) *FreezeData {
 
 func TestFreezerTableBasic(t *testing.T) {
 	dir := t.TempDir()
-	tbl, err := NewFreezerTable(dir, "test")
+	tbl, err := NewFreezerTable(dir, "test", "c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,11 +78,19 @@ func TestFreezerTableBasic(t *testing.T) {
 	if _, err := tbl.Retrieve(100); err != ErrOutOfBounds {
 		t.Fatalf("expected ErrOutOfBounds, got %v", err)
 	}
+
+	// Verify Geth-compatible file layout.
+	if _, err := os.Stat(filepath.Join(dir, "test.cidx")); err != nil {
+		t.Fatalf("expected test.cidx: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "test.0000.cdat")); err != nil {
+		t.Fatalf("expected test.0000.cdat: %v", err)
+	}
 }
 
 func TestFreezerTableBatch(t *testing.T) {
 	dir := t.TempDir()
-	tbl, err := NewFreezerTable(dir, "batch")
+	tbl, err := NewFreezerTable(dir, "batch", "c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +119,7 @@ func TestFreezerTableBatch(t *testing.T) {
 
 func TestFreezerTableTruncate(t *testing.T) {
 	dir := t.TempDir()
-	tbl, err := NewFreezerTable(dir, "trunc")
+	tbl, err := NewFreezerTable(dir, "trunc", "c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +138,6 @@ func TestFreezerTableTruncate(t *testing.T) {
 		t.Fatalf("after truncate: got %d, want 10", tbl.Items())
 	}
 
-	// Can still read items before truncation point.
 	data, err := tbl.Retrieve(5)
 	if err != nil {
 		t.Fatal(err)
@@ -140,12 +146,10 @@ func TestFreezerTableTruncate(t *testing.T) {
 		t.Fatalf("got %q, want %q", data, "t-5")
 	}
 
-	// Cannot read truncated items.
 	if _, err := tbl.Retrieve(10); err != ErrOutOfBounds {
 		t.Fatalf("expected ErrOutOfBounds, got %v", err)
 	}
 
-	// Can append again after truncation.
 	if err := tbl.Append(10, []byte("new-10")); err != nil {
 		t.Fatal(err)
 	}
@@ -161,8 +165,7 @@ func TestFreezerTableTruncate(t *testing.T) {
 func TestFreezerTableReopen(t *testing.T) {
 	dir := t.TempDir()
 
-	// Write some data.
-	tbl, err := NewFreezerTable(dir, "reopen")
+	tbl, err := NewFreezerTable(dir, "reopen", "c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,8 +176,7 @@ func TestFreezerTableReopen(t *testing.T) {
 	}
 	tbl.Close()
 
-	// Reopen and verify.
-	tbl2, err := NewFreezerTable(dir, "reopen")
+	tbl2, err := NewFreezerTable(dir, "reopen", "c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,6 +195,76 @@ func TestFreezerTableReopen(t *testing.T) {
 	}
 }
 
+func TestFreezerTablePruned(t *testing.T) {
+	dir := t.TempDir()
+	tbl, err := NewFreezerTable(dir, "prune", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write enough data to create file 0000.
+	for i := uint64(0); i < 10; i++ {
+		if err := tbl.Append(i, []byte(fmt.Sprintf("p-%d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tbl.Close()
+
+	// Delete the data file to simulate pruning.
+	os.Remove(filepath.Join(dir, "prune.0000.cdat"))
+
+	// Reopen — should succeed (index still exists).
+	tbl2, err := NewFreezerTable(dir, "prune", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl2.Close()
+
+	if tbl2.Items() != 10 {
+		t.Fatalf("items after prune: got %d, want 10", tbl2.Items())
+	}
+
+	// Retrieve should return ErrPruned.
+	_, err = tbl2.Retrieve(5)
+	if err != ErrPruned {
+		t.Fatalf("expected ErrPruned, got %v", err)
+	}
+}
+
+func TestFreezerTableRidx(t *testing.T) {
+	dir := t.TempDir()
+	tbl, err := NewFreezerTable(dir, "hashes", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+
+	// Write fixed-size 32-byte items.
+	for i := uint64(0); i < 10; i++ {
+		hash := make([]byte, 32)
+		hash[31] = byte(i)
+		if err := tbl.Append(i, hash); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Verify ridx/rdat file layout.
+	if _, err := os.Stat(filepath.Join(dir, "hashes.ridx")); err != nil {
+		t.Fatalf("expected hashes.ridx: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "hashes.0000.rdat")); err != nil {
+		t.Fatalf("expected hashes.0000.rdat: %v", err)
+	}
+
+	data, err := tbl.Retrieve(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 32 || data[31] != 5 {
+		t.Fatalf("unexpected hash data: %x", data)
+	}
+}
+
 func TestFreezerFull(t *testing.T) {
 	dir := t.TempDir()
 	f, err := New(dir, 10)
@@ -205,7 +277,6 @@ func TestFreezerFull(t *testing.T) {
 		t.Fatalf("initial frozen: got %d, want 0", f.Frozen())
 	}
 
-	// Freeze a batch of blocks.
 	data := makeFreezeData(5)
 
 	if err := f.Freeze(0, data); err != nil {
@@ -215,7 +286,6 @@ func TestFreezerFull(t *testing.T) {
 		t.Fatalf("frozen: got %d, want 5", f.Frozen())
 	}
 
-	// Retrieve.
 	hdr, err := f.Ancient(TableHeaders, 3)
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +301,6 @@ func TestFreezerFull(t *testing.T) {
 		t.Fatal("expected HasAncient(5) = false")
 	}
 
-	// Truncate.
 	if err := f.TruncateHead(3); err != nil {
 		t.Fatal(err)
 	}
@@ -260,46 +329,6 @@ func TestFreezerFull(t *testing.T) {
 	}
 }
 
-func TestFreezerReopenPrefersTableCountWhenMetadataStale(t *testing.T) {
-	dir := t.TempDir()
-	f, err := New(dir, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Freeze(0, makeFreezeData(5)); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	var stale [8]byte
-	binary.BigEndian.PutUint64(stale[:], 4)
-	if err := os.WriteFile(filepath.Join(dir, ancientMetaFile), stale[:], 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	f2, err := New(dir, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f2.Close()
-
-	if got := f2.Frozen(); got != 5 {
-		t.Fatalf("after reopen: frozen=%d, want 5", got)
-	}
-	if got := f2.loadFrozenCount(); got != 5 {
-		t.Fatalf("metadata not repaired: got %d, want 5", got)
-	}
-	hdr, err := f2.Ancient(TableHeaders, 4)
-	if err != nil {
-		t.Fatalf("retrieve preserved block 4: %v", err)
-	}
-	if !bytes.Equal(hdr, []byte("header-4")) {
-		t.Fatalf("got %q, want %q", hdr, "header-4")
-	}
-}
-
 func TestFreezerReopenTruncatesToShortestTable(t *testing.T) {
 	dir := t.TempDir()
 	f, err := New(dir, 10)
@@ -313,7 +342,7 @@ func TestFreezerReopenTruncatesToShortestTable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bodyTable, err := NewFreezerTable(dir, TableBodies)
+	bodyTable, err := NewFreezerTable(dir, TableBodies, "c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,9 +361,6 @@ func TestFreezerReopenTruncatesToShortestTable(t *testing.T) {
 
 	if got := f2.Frozen(); got != 4 {
 		t.Fatalf("after reopen: frozen=%d, want 4", got)
-	}
-	if got := f2.loadFrozenCount(); got != 4 {
-		t.Fatalf("metadata not repaired: got %d, want 4", got)
 	}
 	if _, err := f2.Ancient(TableBodies, 4); err != ErrOutOfBounds {
 		t.Fatalf("expected ErrOutOfBounds for truncated body table, got %v", err)

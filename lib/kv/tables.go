@@ -551,6 +551,8 @@ var (
 // This list will be sorted in `init` method.
 // ChaindataTablesCfg - can be used to find index in sorted version of ChaindataTables list by name
 var ChaindataTables = []string{
+	"Account",  // modules.Account: address -> account encoded (Erigon V2)
+	"Storage",  // modules.Storage: address+incarnation+key -> value
 	E2AccountsHistory,
 	E2StorageHistory,
 	Code,

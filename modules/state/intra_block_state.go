@@ -352,6 +352,35 @@ func (sdb *IntraBlockState) Exist(addr types.Address) bool {
 	return s != nil && !s.deleted
 }
 
+// ExistPure checks if an address exists WITHOUT materializing balanceInc
+// entries into stateObjects. This avoids side effects (journal entries)
+// that can escape EVM snapshot/revert boundaries.
+// Used by gas cost calculations which must be side-effect-free.
+func (sdb *IntraBlockState) ExistPure(addr types.Address) bool {
+	// Check live objects.
+	if obj := sdb.stateObjects[addr]; obj != nil {
+		return !obj.deleted
+	}
+	// Check nilAccounts cache (known non-existent).
+	if _, ok := sdb.nilAccounts[addr]; ok {
+		// Unlike getStateObject, do NOT materialize balanceInc here.
+		// A pending balance increment does not constitute existence
+		// for gas calculation purposes (geth parity).
+		return false
+	}
+	// Read from DB.
+	account, err := sdb.stateReader.ReadAccountData(addr)
+	if err != nil {
+		sdb.setErrorUnsafe(err)
+		return false
+	}
+	if account == nil {
+		sdb.nilAccounts[addr] = struct{}{}
+		return false
+	}
+	return true
+}
+
 // Empty returns whether the state object is either non-existent
 // or empty according to the EIP161 specification (balance = nonce = code = 0)
 func (sdb *IntraBlockState) Empty(addr types.Address) bool {
@@ -791,7 +820,14 @@ func (p accountWritePolicy) shouldRemoveEmptyAccount(addr types.Address, stateOb
 }
 
 func (p accountWritePolicy) shouldAllowWriteBack(stateObject *stateObject) bool {
-	return !stateObject.selfdestructed || (p.allowLegacyCreatedSelfdestructReplay && stateObject.created)
+	if stateObject.selfdestructed {
+		// Selfdestructed accounts must not be written back.
+		// Pre-Cancun allowed created+selfdestructed replay, but this caused
+		// phantom empty accounts with incarnation to persist in DB, breaking
+		// Exist() parity with geth for DAO-era blocks.
+		return false
+	}
+	return true
 }
 
 func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
@@ -883,14 +919,11 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 func (sdb *IntraBlockState) SoftFinalise() {
 	for addr := range sdb.journal.dirties {
 		if _, exist := sdb.stateObjects[addr]; !exist {
-			// Dirty entry may exist without a stateObject due to the ripeMD precompile
-			// edge case (block 1714175). Safe to ignore.
 			continue
 		}
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
 	sdb.clearCurrentTxFlags()
-	// Invalidate journal because reverting across transactions is not allowed.
 	sdb.clearJournalAndRefund()
 }
 
