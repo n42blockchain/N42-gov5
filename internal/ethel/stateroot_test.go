@@ -49,7 +49,7 @@ func TestStateRootBlock1(t *testing.T) {
 		VerifyInterval: 1, // verify every block
 	}
 
-	executor := NewExecutor(f, db, chainCfg, engine, cfg)
+	executor := NewExecutor(f, db, chainCfg, engine, cfg, nil)
 	err = executor.Run(context.Background())
 	if err != nil {
 		t.Fatalf("execution with state root verification failed: %v", err)
@@ -95,7 +95,7 @@ func TestStateRootBlock50K(t *testing.T) {
 		VerifyInterval: 10000,
 	}
 
-	executor := NewExecutor(f, db, chainCfg, engine, cfg)
+	executor := NewExecutor(f, db, chainCfg, engine, cfg, nil)
 	err = executor.Run(context.Background())
 	if err != nil {
 		t.Fatalf("executor with state root verification failed: %v", err)
@@ -140,7 +140,7 @@ func TestStateRootBlock1000(t *testing.T) {
 		VerifyInterval: 100, // verify every 100 blocks
 	}
 
-	executor := NewExecutor(f, db, chainCfg, engine, cfg)
+	executor := NewExecutor(f, db, chainCfg, engine, cfg, nil)
 	err = executor.Run(context.Background())
 	if err != nil {
 		t.Fatalf("execution with state root verification failed: %v", err)

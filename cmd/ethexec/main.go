@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/n42blockchain/N42/internal/ethel"
@@ -128,6 +129,15 @@ func run(c *cli.Context) error {
 		log.Info("Genesis state loaded", "accounts", count)
 	}
 
+	// Open output freezer for receipts, senders, changesets.
+	outAncientPath := filepath.Join(datadir, "ancient")
+	outFreezer, err := freezer.New(outAncientPath, 0)
+	if err != nil {
+		return fmt.Errorf("open output freezer: %w", err)
+	}
+	defer outFreezer.Close()
+	log.Info("Output freezer opened", "path", outAncientPath)
+
 	// Set up executor.
 	chainCfg := params.EthereumMainnetChainConfig
 	engine := ethel.NewEthReplayEngine(chainCfg)
@@ -140,7 +150,7 @@ func run(c *cli.Context) error {
 		SkipErrors:     skipErrors,
 	}
 
-	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg)
+	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
 
 	// Run with graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
