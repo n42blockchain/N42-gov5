@@ -4,17 +4,17 @@
 package ethel
 
 import (
-	"encoding/binary"
 	"fmt"
 
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-// Reorg rolls back the PlainState to the given target block number by
-// replaying changesets in reverse (applying original values).
-func Reorg(db kv.RwDB, targetBlock uint64) error {
+// Reorg rolls back PlainState to the given target block by reading
+// changesets from the output freezer and applying original values.
+func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
 	tx, err := db.BeginRw(nil)
 	if err != nil {
 		return err
@@ -23,23 +23,55 @@ func Reorg(db kv.RwDB, targetBlock uint64) error {
 
 	currentHead := ReadProgress(tx)
 	if currentHead <= targetBlock {
-		return nil // already at or before target
+		return nil
 	}
 
 	log.Info("Reorg: rolling back state", "from", currentHead, "to", targetBlock)
 
-	// Roll back block by block from currentHead down to targetBlock+1.
+	accTable := outFreezer.Table(freezer.TableAccountChanges)
+	stoTable := outFreezer.Table(freezer.TableStorageChanges)
+
 	for blockNum := currentHead; blockNum > targetBlock; blockNum-- {
-		if err := revertBlock(tx, blockNum); err != nil {
-			return fmt.Errorf("revert block %d: %w", blockNum, err)
+		// Revert account changes from freezer.
+		if accTable != nil {
+			accData, err := accTable.Retrieve(blockNum)
+			if err == nil && len(accData) > 0 {
+				addrs, values, err := DecodeAccountChanges(accData)
+				if err != nil {
+					return fmt.Errorf("decode account changes at %d: %w", blockNum, err)
+				}
+				for i, addr := range addrs {
+					if len(values[i]) == 0 {
+						tx.Delete(modules.Account, addr[:])
+					} else {
+						tx.Put(modules.Account, addr[:], values[i])
+					}
+				}
+			}
+		}
+
+		// Revert storage changes from freezer.
+		if stoTable != nil {
+			stoData, err := stoTable.Retrieve(blockNum)
+			if err == nil && len(stoData) > 0 {
+				keys, values, err := DecodeStorageChanges(stoData)
+				if err != nil {
+					return fmt.Errorf("decode storage changes at %d: %w", blockNum, err)
+				}
+				for i, key := range keys {
+					if len(values[i]) == 0 {
+						tx.Delete(modules.Storage, key)
+					} else {
+						tx.Put(modules.Storage, key, values[i])
+					}
+				}
+			}
 		}
 	}
 
-	// Update progress.
 	if err := WriteProgress(tx, targetBlock); err != nil {
 		return err
 	}
-
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -47,101 +79,3 @@ func Reorg(db kv.RwDB, targetBlock uint64) error {
 	log.Info("Reorg complete", "head", targetBlock)
 	return nil
 }
-
-// revertBlock applies the original (pre-execution) values from changesets
-// to restore PlainState to the state before this block was executed.
-func revertBlock(tx kv.RwTx, blockNum uint64) error {
-	// Revert account changes.
-	if err := revertAccountChanges(tx, blockNum); err != nil {
-		return err
-	}
-	// Revert storage changes.
-	if err := revertStorageChanges(tx, blockNum); err != nil {
-		return err
-	}
-	return nil
-}
-
-// revertAccountChanges reads the AccountChangeSet for blockNum and restores
-// original account values in the Account table.
-func revertAccountChanges(tx kv.RwTx, blockNum uint64) error {
-	c, err := tx.CursorDupSort(modules.AccountChangeSet)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-
-	var blockKey [8]byte
-	binary.BigEndian.PutUint64(blockKey[:], blockNum)
-
-	// AccountChangeSet: DupSort value = address(20) + encoded_original_account
-	for _, v, err := c.SeekExact(blockKey[:]); v != nil; _, v, err = c.NextDup() {
-		if err != nil {
-			return err
-		}
-		if len(v) < 20 {
-			continue
-		}
-		addr := v[:20]
-		origVal := v[20:]
-		if len(origVal) == 0 {
-			// Account didn't exist before this block.
-			if err := tx.Delete(modules.Account, addr); err != nil {
-				return err
-			}
-		} else {
-			// Restore original account data.
-			if err := tx.Put(modules.Account, addr, origVal); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Delete the changeset entry itself.
-	if err := tx.Delete(modules.AccountChangeSet, blockKey[:]); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// revertStorageChanges reads the StorageChangeSet for blockNum and restores
-// original storage values.
-func revertStorageChanges(tx kv.RwTx, blockNum uint64) error {
-	c, err := tx.CursorDupSort(modules.StorageChangeSet)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-
-	var blockKey [8]byte
-	binary.BigEndian.PutUint64(blockKey[:], blockNum)
-
-	// StorageChangeSet dupSort value = address(20) + incarnation(2) + storageKey(32) + originalValue
-	for _, v, err := c.SeekExact(blockKey[:]); v != nil; _, v, err = c.NextDup() {
-		if err != nil {
-			return err
-		}
-		if len(v) < 54 { // 20+2+32
-			continue
-		}
-		compositeKey := v[:54] // address + incarnation + slot
-		origVal := v[54:]
-		if len(origVal) == 0 {
-			if err := tx.Delete(modules.Storage, compositeKey); err != nil {
-				return err
-			}
-		} else {
-			if err := tx.Put(modules.Storage, compositeKey, origVal); err != nil {
-				return err
-			}
-		}
-	}
-
-	if err := tx.Delete(modules.StorageChangeSet, blockKey[:]); err != nil {
-		return err
-	}
-
-	return nil
-}
-
