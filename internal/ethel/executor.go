@@ -80,7 +80,9 @@ func (e *Executor) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	// cleanup ensures the current tx is rolled back on exit.
+	cleanup := func() { tx.Rollback() }
+	defer func() { cleanup() }()
 
 	// Resume from last committed block if restarting.
 	startBlock := e.cfg.StartBlock
@@ -112,6 +114,8 @@ func (e *Executor) Run(ctx context.Context) error {
 
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
 		if ctx.Err() != nil {
+			log.Info("Shutting down executor", "lastBlock", blockNum-1)
+			// Save progress for the last committed block before exit.
 			return ctx.Err()
 		}
 
@@ -141,9 +145,12 @@ func (e *Executor) Run(ctx context.Context) error {
 
 			tx, err = e.db.BeginRw(ctx)
 			if err != nil {
+				// ctx cancelled — tx is nil, cleanup is a no-op.
+				cleanup = func() {}
 				return err
 			}
-			// No defer — tx is committed or rolled back explicitly.
+			// Update cleanup to rollback the new tx on exit.
+			cleanup = func() { tx.Rollback() }
 		}
 	}
 
@@ -154,6 +161,7 @@ func (e *Executor) Run(ctx context.Context) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	cleanup = func() {} // committed successfully, no rollback needed
 
 	elapsed := time.Since(startTime)
 	total := endBlock - startBlock + 1
