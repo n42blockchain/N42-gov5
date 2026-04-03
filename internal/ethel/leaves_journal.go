@@ -30,17 +30,16 @@ func EncodeLeavesJournal(
 ) []byte {
 	buf := make([]byte, 0, 4096)
 
-	// Account leaves: changeset keys are plain addresses.
-	numAcc := 0
-	if accCS != nil {
-		numAcc = accCS.Len()
-	}
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(numAcc))
+	// Account leaves: write placeholder count, backpatch after loop.
+	countPos := len(buf)
+	buf = binary.LittleEndian.AppendUint32(buf, 0) // placeholder
+	numAcc := uint32(0)
 	if accCS != nil {
 		for _, c := range accCS.Changes {
 			if len(c.Key) < 20 {
 				continue
 			}
+			numAcc++
 			var addr types.Address
 			copy(addr[:], c.Key[:20])
 			hashedAddr := crypto.Keccak256(addr[:])
@@ -58,17 +57,19 @@ func EncodeLeavesJournal(
 		}
 	}
 
-	// Storage leaves: changeset keys are compositeKey (addr+inc+slot).
-	numSto := 0
-	if stoCS != nil {
-		numSto = stoCS.Len()
-	}
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(numSto))
+	// Backpatch account count.
+	binary.LittleEndian.PutUint32(buf[countPos:], numAcc)
+
+	// Storage leaves: write placeholder count, backpatch after loop.
+	stoCountPos := len(buf)
+	buf = binary.LittleEndian.AppendUint32(buf, 0) // placeholder
+	numSto := uint32(0)
 	if stoCS != nil {
 		for _, c := range stoCS.Changes {
-			if len(c.Key) < 54 { // addr(20)+inc(2)+slot(32)
+			if len(c.Key) < 54 {
 				continue
 			}
+			numSto++
 			hashedAddr := crypto.Keccak256(c.Key[:20])
 			hashedSlot := crypto.Keccak256(c.Key[22:54])
 			buf = append(buf, hashedAddr...)
@@ -88,6 +89,9 @@ func EncodeLeavesJournal(
 			}
 		}
 	}
+
+	// Backpatch storage count.
+	binary.LittleEndian.PutUint32(buf[stoCountPos:], numSto)
 
 	return buf
 }
