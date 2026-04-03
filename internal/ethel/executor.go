@@ -273,6 +273,7 @@ func (e *Executor) processBlock(tx kv.RwTx, header *block.Header, body *GethBody
 
 	var receipts block.Receipts
 	senders := make([]types.Address, 0, len(txs))
+	signer := transaction.MakeSigner(e.chainCfg, header.Number.ToBig())
 
 	for i, txn := range txs {
 		ibs.Prepare(txn.Hash(), blockHash, i)
@@ -287,8 +288,6 @@ func (e *Executor) processBlock(tx kv.RwTx, header *block.Header, body *GethBody
 			receipts = append(receipts, receipt)
 		}
 
-		// Recover sender from signature.
-		signer := transaction.MakeSigner(e.chainCfg, header.Number.ToBig())
 		sender, err := transaction.Sender(signer, txn)
 		if err != nil {
 			return nil, fmt.Errorf("tx %d sender: %w", i, err)
@@ -388,74 +387,58 @@ func (e *Executor) cacheHeader(num uint64, h *block.Header) {
 }
 
 // writeOutputs writes execution results to the output freezer.
-func (e *Executor) writeOutputs(blockNum uint64, result *blockResult, writer state.WriterWithChangeSets, witness *WitnessStateReader, tx kv.Tx) error {
+// All 6 tables must receive an append for every block to maintain alignment.
+func (e *Executor) writeOutputs(blockNum uint64, result *blockResult, writer state.WriterWithChangeSets, witness *WitnessStateReader, dbTx kv.Tx) error {
 	of := e.outFreezer
-
-	// 1. Receipts: RLP-encode the list.
-	receiptsTable, err := of.EnsureTable(freezer.TableReceipts, "c")
-	if err != nil {
-		return err
+	appendTo := func(table, ext string, data []byte) error {
+		tbl, err := of.EnsureTable(table, ext)
+		if err != nil {
+			return err
+		}
+		return tbl.Append(blockNum, data)
 	}
+
+	// 1. Receipts.
 	var receiptsRLP []byte
 	if len(result.Receipts) > 0 {
+		var err error
 		receiptsRLP, err = rlp.EncodeToBytes(result.Receipts)
 		if err != nil {
 			return fmt.Errorf("encode receipts: %w", err)
 		}
 	}
-	if err := receiptsTable.Append(blockNum, receiptsRLP); err != nil {
-		return fmt.Errorf("append receipts: %w", err)
+	if err := appendTo(freezer.TableReceipts, "c", receiptsRLP); err != nil {
+		return fmt.Errorf("receipts: %w", err)
 	}
 
-	// 2. Senders: concatenate 20-byte addresses.
-	sendersTable, err := of.EnsureTable(freezer.TableSenders, "c")
-	if err != nil {
-		return err
-	}
+	// 2. Senders.
 	sendersBuf := make([]byte, 0, len(result.Senders)*20)
 	for _, s := range result.Senders {
 		sendersBuf = append(sendersBuf, s[:]...)
 	}
-	if err := sendersTable.Append(blockNum, sendersBuf); err != nil {
-		return fmt.Errorf("append senders: %w", err)
+	if err := appendTo(freezer.TableSenders, "c", sendersBuf); err != nil {
+		return fmt.Errorf("senders: %w", err)
 	}
 
-	// 3. Changesets: get from PlainStateWriter and RLP-encode.
+	// 3-4. Changesets + Leaves journal (single csw extraction).
+	var accCSBytes, stoCSBytes, leavesData []byte
 	if psw, ok := writer.(*state.PlainStateWriter); ok {
-		csw := psw.ChangeSetWriter()
-		if csw != nil {
-			accCS, _ := csw.GetAccountChanges()
-			accTable, err := of.EnsureTable(freezer.TableAccountChanges, "c")
+		if csw := psw.ChangeSetWriter(); csw != nil {
+			accCS, err := csw.GetAccountChanges()
 			if err != nil {
-				return err
+				return fmt.Errorf("get account changes: %w", err)
 			}
-			accBytes := encodeChanges(accCS)
-			if err := accTable.Append(blockNum, accBytes); err != nil {
-				return fmt.Errorf("append account changes: %w", err)
-			}
-
-			stoCS, _ := csw.GetStorageChanges()
-			stoTable, err := of.EnsureTable(freezer.TableStorageChanges, "c")
+			stoCS, err := csw.GetStorageChanges()
 			if err != nil {
-				return err
+				return fmt.Errorf("get storage changes: %w", err)
 			}
-			stoBytes := encodeChanges(stoCS)
-			if err := stoTable.Append(blockNum, stoBytes); err != nil {
-				return fmt.Errorf("append storage changes: %w", err)
-			}
-		}
-	}
 
-	// 4. Leaves journal: per-block trie leaf changes (hashed keys + new values).
-	if psw, ok := writer.(*state.PlainStateWriter); ok {
-		csw := psw.ChangeSetWriter()
-		if csw != nil {
-			accCS, _ := csw.GetAccountChanges()
-			stoCS, _ := csw.GetStorageChanges()
+			accCSBytes = encodeChanges(accCS)
+			stoCSBytes = encodeChanges(stoCS)
 
-			leavesData := EncodeLeavesJournal(accCS, stoCS,
+			leavesData = EncodeLeavesJournal(accCS, stoCS,
 				func(addr types.Address) *account.StateAccount {
-					v, err := tx.GetOne("Account", addr[:])
+					v, err := dbTx.GetOne("Account", addr[:])
 					if err != nil || v == nil {
 						return nil
 					}
@@ -468,31 +451,31 @@ func (e *Executor) writeOutputs(blockNum uint64, result *blockResult, writer sta
 				func(addr types.Address, key types.Hash) []byte {
 					compositeKey := make([]byte, 54)
 					copy(compositeKey[:20], addr[:])
-					// incarnation = 0 for simple lookup
 					copy(compositeKey[22:], key[:])
-					v, _ := tx.GetOne("Storage", compositeKey)
+					v, _ := dbTx.GetOne("Storage", compositeKey)
 					return v
 				},
 			)
-			leavesTable, err := of.EnsureTable(freezer.TableLeavesJournal, "c")
-			if err != nil {
-				return err
-			}
-			if err := leavesTable.Append(blockNum, leavesData); err != nil {
-				return fmt.Errorf("append leaves journal: %w", err)
-			}
 		}
 	}
+	// Always append (empty if no csw) to maintain table alignment.
+	if err := appendTo(freezer.TableAccountChanges, "c", accCSBytes); err != nil {
+		return fmt.Errorf("account changes: %w", err)
+	}
+	if err := appendTo(freezer.TableStorageChanges, "c", stoCSBytes); err != nil {
+		return fmt.Errorf("storage changes: %w", err)
+	}
+	if err := appendTo(freezer.TableLeavesJournal, "c", leavesData); err != nil {
+		return fmt.Errorf("leaves journal: %w", err)
+	}
 
-	// 5. Block witness: minimal state access set for stateless replay (no code).
+	// 5. Block witness.
+	var witnessData []byte
 	if witness != nil {
-		witnessTable, err := of.EnsureTable(freezer.TableBlockWitness, "c")
-		if err != nil {
-			return err
-		}
-		if err := witnessTable.Append(blockNum, witness.Encode()); err != nil {
-			return fmt.Errorf("append block witness: %w", err)
-		}
+		witnessData = witness.Encode()
+	}
+	if err := appendTo(freezer.TableBlockWitness, "c", witnessData); err != nil {
+		return fmt.Errorf("block witness: %w", err)
 	}
 
 	return nil

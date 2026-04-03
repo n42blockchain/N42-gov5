@@ -45,11 +45,13 @@ func (w *WitnessStateReader) ReadAccountStorage(address types.Address, incarnati
 	if err != nil {
 		return nil, err
 	}
-	if w.storage[address] == nil {
-		w.storage[address] = make(map[types.Hash][]byte)
+	slots, ok := w.storage[address]
+	if !ok {
+		slots = make(map[types.Hash][]byte)
+		w.storage[address] = slots
 	}
-	if _, seen := w.storage[address][*key]; !seen {
-		w.storage[address][*key] = val // nil/empty means slot doesn't exist
+	if _, seen := slots[*key]; !seen {
+		slots[*key] = val
 	}
 	return val, nil
 }
