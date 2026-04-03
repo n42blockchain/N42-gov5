@@ -15,7 +15,6 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -34,11 +33,9 @@ type ExecutorConfig struct {
 	EndBlock uint64
 	// SkipErrors if true, log gas mismatches but continue execution.
 	SkipErrors bool
-	// NoIndices if true, skip writing TxLookup and LogIndex (faster sync).
-	NoIndices bool
-	// NoHistory if true, skip writing AccountsHistory/StorageHistory bitmaps.
-	// These can be rebuilt as a background stage after sync.
-	NoHistory bool
+	// Note: History bitmaps (AccountsHistory/StorageHistory) and log indices
+	// (TxLookup/LogTopicIndex/LogAddressIndex) are NOT written during sync.
+	// They are rebuilt as a batch stage after sync completes.
 	// NoOutputs if true, skip writing output freezer (receipts, senders, etc.).
 	NoOutputs bool
 }
@@ -244,27 +241,14 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		return fmt.Errorf("commit block state: %w", err)
 	}
 	t2a := time.Now()
-	if err := writer.WriteChangeSets(); err != nil {
-		return fmt.Errorf("write changesets: %w", err)
-	}
+	// ChangeSets are written to output freezer only (not MDBX).
+	// MDBX changeset tables are only needed for History bitmaps (not written
+	// during sync) and reorg rollback (uses freezer changesets instead).
+	// History bitmaps and log indices are NOT written during sync.
+	// They are rebuilt as a batch stage after sync completes (much faster).
 	t2b := time.Now()
-	if !e.cfg.NoHistory {
-		if err := writer.WriteHistory(); err != nil {
-			return fmt.Errorf("write history: %w", err)
-		}
-	}
-	t2c := time.Now()
-
-	t3 := time.Now()
-	// 7. Write indices (TxLookup + LogIndex) for RPC support.
-	if !e.cfg.NoIndices {
-		if err := WriteBlockIndices(tx, blockNum, body.Transactions); err != nil {
-			return fmt.Errorf("write tx indices: %w", err)
-		}
-		if err := rawdb.WriteLogIndex(tx, blockNum, result.Receipts); err != nil {
-			return fmt.Errorf("write log index: %w", err)
-		}
-	}
+	t2c := t2b
+	t3 := t2b
 
 	t4 := time.Now()
 	// 8. Write execution outputs to output freezer.
