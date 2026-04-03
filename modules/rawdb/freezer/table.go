@@ -84,13 +84,14 @@ type FreezerTable struct {
 	path string // base directory (all files live here)
 	ext  string // "c" for cidx/cdat, "r" for ridx/rdat
 
-	mu        sync.RWMutex
-	indexFile *os.File            // single index file
-	indexBuf  *bufio.Writer       // buffered index writer
-	dataFiles map[uint16]*os.File // data files keyed by file number
-	dataBuf   *bufio.Writer       // buffered writer for head data file
-	headFile  uint16              // current data file number for appends
-	headSize  int64               // tracked size of head data file (avoids Stat)
+	mu          sync.RWMutex
+	indexFile   *os.File            // single index file
+	indexBuf    *bufio.Writer       // buffered index writer
+	dataFiles   map[uint16]*os.File // data files keyed by file number
+	dataFilesRW map[uint16]bool     // tracks which files are opened RDWR (vs read-only)
+	dataBuf     *bufio.Writer       // buffered writer for head data file
+	headFile    uint16              // current data file number for appends
+	headSize    int64               // tracked size of head data file (avoids Stat)
 
 	items  atomic.Uint64 // total number of items stored
 	closed atomic.Bool
@@ -119,9 +120,10 @@ func NewFreezerTable(path, name, ext string) (*FreezerTable, error) {
 		name:      name,
 		path:      path,
 		ext:       ext,
-		indexFile: idxFile,
-		indexBuf:  bufio.NewWriterSize(idxFile, writeBufferSize),
-		dataFiles: make(map[uint16]*os.File),
+		indexFile:   idxFile,
+		indexBuf:    bufio.NewWriterSize(idxFile, writeBufferSize),
+		dataFiles:   make(map[uint16]*os.File),
+		dataFilesRW: make(map[uint16]bool),
 	}
 
 	// Determine item count from index file size.
@@ -428,9 +430,16 @@ func (t *FreezerTable) readIndex(item uint64) (indexEntry, error) {
 }
 
 // createDataFile opens or creates a data file for writing. Caller must hold Lock.
+// If a read-only handle exists in cache (from openDataFileRO), it is closed
+// and replaced with a read-write handle.
 func (t *FreezerTable) createDataFile(num uint16) (*os.File, error) {
 	if f, ok := t.dataFiles[num]; ok {
-		return f, nil
+		if t.dataFilesRW[num] {
+			return f, nil // already RDWR
+		}
+		// Close read-only handle before re-opening as RDWR.
+		f.Close()
+		delete(t.dataFiles, num)
 	}
 	name := filepath.Join(t.path, fmt.Sprintf("%s.%04d.%sdat", t.name, num, t.ext))
 	f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0644)
@@ -438,6 +447,7 @@ func (t *FreezerTable) createDataFile(num uint16) (*os.File, error) {
 		return nil, fmt.Errorf("freezer: create data file %d: %w", num, err)
 	}
 	t.dataFiles[num] = f
+	t.dataFilesRW[num] = true
 	return f, nil
 }
 
