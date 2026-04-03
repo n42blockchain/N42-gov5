@@ -55,6 +55,11 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 			return err
 		}
 	}
+	// Skip MDBX write if account data hasn't actually changed.
+	// Many accounts are "dirty" (touched by Exist/GetBalance) but unmodified.
+	if original != nil && original.Equals(account) {
+		return nil
+	}
 	return w.db.Put(modules.Account, address[:], account.MarshalV2())
 }
 
