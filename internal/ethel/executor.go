@@ -390,16 +390,9 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer sta
 		return tbl.Append(blockNum, data)
 	}
 
-	// 1. Receipts.
-	var receiptsRLP []byte
-	if len(result.Receipts) > 0 {
-		var err error
-		receiptsRLP, err = rlp.EncodeToBytes(result.Receipts)
-		if err != nil {
-			return fmt.Errorf("encode receipts: %w", err)
-		}
-	}
-	if err := appendTo(freezer.TableReceipts, "c", receiptsRLP); err != nil {
+	// 1. Receipts (compact encoding: no bloom, varint gas, ~80% smaller than RLP).
+	receiptsData := EncodeReceiptsCompact(result.Receipts)
+	if err := appendTo(freezer.TableReceipts, "c", receiptsData); err != nil {
 		return fmt.Errorf("receipts: %w", err)
 	}
 
