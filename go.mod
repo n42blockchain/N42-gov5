@@ -80,6 +80,7 @@ require (
 	github.com/erigontech/interfaces v0.0.0-20260309190044-b1ca32817912
 	github.com/erigontech/secp256k1 v1.2.0
 	github.com/erigontech/speedtest v0.0.2
+	github.com/ethereum/go-verkle v0.2.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/klauspost/compress v1.18.4
 	github.com/mattn/go-colorable v0.1.14
@@ -142,7 +143,6 @@ require (
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/emicklei/dot v1.6.2 // indirect
 	github.com/ethereum/c-kzg-4844/v2 v2.1.5 // indirect
-	github.com/ethereum/go-verkle v0.2.2 // indirect
 	github.com/felixge/fgprof v0.9.5 // indirect
 	github.com/ferranbt/fastssz v0.1.4 // indirect
 	github.com/filecoin-project/go-clock v0.1.0 // indirect

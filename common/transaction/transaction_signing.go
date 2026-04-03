@@ -69,6 +69,8 @@ func MakeSignerWithTimestamp(config *params.ChainConfig, blockNumber *big.Int, t
 		return NewLondonSigner(config.ChainID)
 	case rules.IsBerlin:
 		return NewEIP2930Signer(config.ChainID)
+	case rules.IsSpuriousDragon:
+		return NewEIP155Signer(config.ChainID)
 	case rules.IsEip1559FeeCollector:
 		return NewEIP155Signer(config.ChainID)
 	case rules.IsHomestead:

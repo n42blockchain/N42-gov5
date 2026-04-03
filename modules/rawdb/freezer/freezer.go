@@ -18,7 +18,6 @@ package freezer
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -42,19 +41,45 @@ const (
 
 	// Maximum blocks to freeze in one batch.
 	freezeBatchSize = 30_000
-
-	// ancientMetaFile stores the number of frozen blocks persistently.
-	ancientMetaFile = "frozen_blocks"
 )
 
 // Table names for frozen block data.
+// Geth-compatible tables use .cidx/.cdat for variable-size data
+// and .ridx/.rdat for fixed-size data.
 const (
-	TableHeaders    = "headers"
-	TableBodies     = "bodies"
-	TableReceipts   = "receipts"
-	TableHashes     = "hashes"
-	TableDifficulty = "difficulty"
+	TableHeaders    = "headers"    // blockNum → header RLP (cidx/cdat)
+	TableBodies     = "bodies"     // blockNum → body RLP (cidx/cdat)
+	TableReceipts   = "receipts"   // blockNum → receipts RLP (cidx/cdat)
+	TableHashes     = "hashes"     // blockNum → canonical hash 32B (ridx/rdat)
+	TableDifficulty = "diffs"      // blockNum → total difficulty (ridx/rdat)
+
+	// Extended tables for ETH EL execution.
+	TableSenders        = "senders"         // blockNum → concatenated sender addresses 20B×N (cidx/cdat)
+	TableAccountChanges = "account_changes" // blockNum → account changeset (cidx/cdat)
+	TableStorageChanges = "storage_changes" // blockNum → storage changeset (cidx/cdat)
 )
+
+// tableSpec defines how a table should be opened.
+type tableSpec struct {
+	name string
+	ext  string // "c" or "r"
+}
+
+// coreTableSpecs are the Geth-compatible tables (always opened).
+var coreTableSpecs = []tableSpec{
+	{TableHeaders, "c"},
+	{TableBodies, "c"},
+	{TableReceipts, "c"},
+	{TableHashes, "r"},
+	{TableDifficulty, "r"},
+}
+
+// extendedTableSpecs are ETH EL execution tables (opened when present or on first write).
+var extendedTableSpecs = []tableSpec{
+	{TableSenders, "c"},
+	{TableAccountChanges, "c"},
+	{TableStorageChanges, "c"},
+}
 
 // FreezeFunc is called by the background freezer to retrieve block data
 // from the hot database. It receives (start, count) and returns parallel
@@ -71,6 +96,7 @@ type FreezeData struct {
 }
 
 // Freezer manages the immutable ancient chain data store.
+// All files live in a single flat directory (Geth-compatible layout).
 type Freezer struct {
 	path   string
 	tables map[string]*FreezerTable
@@ -85,6 +111,8 @@ type Freezer struct {
 }
 
 // New creates or opens a Freezer at the given path.
+// It opens all core tables (headers, bodies, receipts, hashes, diffs).
+// Extended tables (senders, changesets) are opened if their index files exist.
 func New(path string, threshold uint64) (*Freezer, error) {
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return nil, fmt.Errorf("freezer: mkdir: %w", err)
@@ -100,66 +128,82 @@ func New(path string, threshold uint64) (*Freezer, error) {
 		threshold: threshold,
 	}
 
-	// Open all tables.
-	for _, name := range []string{TableHeaders, TableBodies, TableReceipts, TableHashes, TableDifficulty} {
-		t, err := NewFreezerTable(path, name)
+	// Open core tables (must exist or be created).
+	for _, spec := range coreTableSpecs {
+		t, err := NewFreezerTable(path, spec.name, spec.ext)
 		if err != nil {
 			f.Close()
-			return nil, fmt.Errorf("freezer: open table %s: %w", name, err)
+			return nil, fmt.Errorf("freezer: open table %s: %w", spec.name, err)
 		}
-		f.tables[name] = t
+		f.tables[spec.name] = t
 	}
 
-	// Recover the frozen count from the tables themselves. The metadata file is
-	// only advisory: a crash between syncing the tables and updating the
-	// metadata should not cause valid ancient data to be truncated on restart.
-	persisted := f.loadFrozenCount()
-	var (
-		items       uint64
-		maxItems    uint64
-		initialized bool
-	)
-	for _, t := range f.tables {
+	// Open extended tables only if their index files already exist.
+	for _, spec := range extendedTableSpecs {
+		idxPath := filepath.Join(path, fmt.Sprintf("%s.%sidx", spec.name, spec.ext))
+		if _, err := os.Stat(idxPath); err == nil {
+			t, err := NewFreezerTable(path, spec.name, spec.ext)
+			if err != nil {
+				f.Close()
+				return nil, fmt.Errorf("freezer: open table %s: %w", spec.name, err)
+			}
+			f.tables[spec.name] = t
+		}
+	}
+
+	// Recover frozen count from the minimum of core table item counts.
+	var items uint64
+	var initialized bool
+	for _, spec := range coreTableSpecs {
+		t := f.tables[spec.name]
 		count := t.Items()
-		if !initialized {
+		if !initialized || count < items {
 			items = count
-			maxItems = count
 			initialized = true
-			continue
-		}
-		if count < items {
-			items = count
-		}
-		if count > maxItems {
-			maxItems = count
 		}
 	}
 	if !initialized {
 		items = 0
 	}
-	if persisted != items || maxItems != items {
-		log.Warn("Freezer count mismatch detected, recovering from table minimum",
-			"persisted", persisted, "table_min", items, "table_max", maxItems)
-	}
-	for name, t := range f.tables {
-		if t.Items() <= items {
-			continue
-		}
-		log.Warn("Freezer table item count mismatch, truncating to recovered count",
-			"table", name, "items", t.Items(), "target", items)
-		if err := t.TruncateHead(items); err != nil {
-			f.Close()
-			return nil, err
+
+	// Truncate core tables to the minimum count for consistency.
+	for _, spec := range coreTableSpecs {
+		t := f.tables[spec.name]
+		if t.Items() > items {
+			log.Warn("Freezer table count mismatch, truncating",
+				"table", spec.name, "items", t.Items(), "target", items)
+			if err := t.TruncateHead(items); err != nil {
+				f.Close()
+				return nil, err
+			}
 		}
 	}
 	f.frozen.Store(items)
-	if persisted != items {
-		f.saveFrozenCount(items)
-	}
 	freezerFrozenBlocks.Set(items)
 
 	log.Info("Freezer opened", "path", path, "frozen", items)
 	return f, nil
+}
+
+// Table returns a named table for direct access. Returns nil if not found.
+func (f *Freezer) Table(name string) *FreezerTable {
+	return f.tables[name]
+}
+
+// EnsureTable opens or creates an extended table that may not exist yet.
+func (f *Freezer) EnsureTable(name, ext string) (*FreezerTable, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if t, ok := f.tables[name]; ok {
+		return t, nil
+	}
+	t, err := NewFreezerTable(f.path, name, ext)
+	if err != nil {
+		return nil, err
+	}
+	f.tables[name] = t
+	return t, nil
 }
 
 // Frozen returns the number of frozen blocks.
@@ -173,6 +217,7 @@ func (f *Freezer) HasAncient(number uint64) bool {
 }
 
 // Ancient retrieves an item from the specified table by block number.
+// Returns ErrPruned if the data has been pruned (not an error, expected).
 func (f *Freezer) Ancient(table string, number uint64) ([]byte, error) {
 	t, ok := f.tables[table]
 	if !ok {
@@ -202,7 +247,6 @@ func (f *Freezer) Freeze(start uint64, data *FreezeData) error {
 		return errors.New("freezer: mismatched data lengths")
 	}
 
-	// Append to each table.
 	type tableData struct {
 		name  string
 		items [][]byte
@@ -220,7 +264,6 @@ func (f *Freezer) Freeze(start uint64, data *FreezeData) error {
 		}
 	}
 
-	// Sync all tables.
 	for _, t := range f.tables {
 		if err := t.Sync(); err != nil {
 			return fmt.Errorf("freezer: sync: %w", err)
@@ -228,9 +271,7 @@ func (f *Freezer) Freeze(start uint64, data *FreezeData) error {
 	}
 
 	f.frozen.Add(count)
-	f.saveFrozenCount(f.frozen.Load())
 	freezerFrozenBlocks.Set(f.frozen.Load())
-
 	return nil
 }
 
@@ -249,7 +290,6 @@ func (f *Freezer) TruncateHead(from uint64) error {
 		}
 	}
 	f.frozen.Store(from)
-	f.saveFrozenCount(from)
 
 	log.Warn("Freezer truncated", "from", from)
 	return nil
@@ -286,7 +326,6 @@ func (f *Freezer) doFreeze(headFn func() uint64, freezeFn FreezeFunc, cleanupFn 
 	head := headFn()
 	frozen := f.frozen.Load()
 
-	// Only freeze blocks that are sufficiently behind head.
 	if head <= f.threshold || head-f.threshold <= frozen {
 		return
 	}
@@ -308,7 +347,6 @@ func (f *Freezer) doFreeze(headFn func() uint64, freezeFn FreezeFunc, cleanupFn 
 		return
 	}
 
-	// Clean up frozen data from hot database.
 	if cleanupFn != nil {
 		if err := cleanupFn(frozen, count); err != nil {
 			log.Warn("Freezer: failed to cleanup hot DB", "start", frozen, "count", count, "err", err)
@@ -342,23 +380,4 @@ func (f *Freezer) Sync() error {
 		}
 	}
 	return nil
-}
-
-func (f *Freezer) loadFrozenCount() uint64 {
-	data, err := os.ReadFile(filepath.Join(f.path, ancientMetaFile))
-	if err != nil {
-		return 0
-	}
-	if len(data) < 8 {
-		return 0
-	}
-	return binary.BigEndian.Uint64(data)
-}
-
-func (f *Freezer) saveFrozenCount(count uint64) {
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], count)
-	if err := os.WriteFile(filepath.Join(f.path, ancientMetaFile), buf[:], 0644); err != nil {
-		log.Error("Freezer: failed to save frozen count", "count", count, "err", err)
-	}
 }

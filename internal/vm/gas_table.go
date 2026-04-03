@@ -22,10 +22,25 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/math"
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm/stack"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
+
+// existPure checks account existence without side effects.
+// Gas cost functions must not create journal entries (which would escape
+// the EVM snapshot scope). The standard Exist() on IntraBlockState may
+// materialize a balanceInc entry into a stateObject via getStateObject,
+// adding a createObjectChange outside the snapshot. This function avoids
+// that by using ExistPure when available.
+func existPure(sdb common.StateDB, addr types.Address) bool {
+	if ibs, ok := sdb.(*state.IntraBlockState); ok {
+		return ibs.ExistPure(addr)
+	}
+	return sdb.Exist(addr)
+}
 
 // memoryGasCost calculates the quadratic gas for memory expansion. It does so
 // only for the memory region that is expanded, not the total memory.
@@ -385,7 +400,7 @@ func gasCall(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Mem
 		if transfersValue && evm.IntraBlockState().Empty(address) {
 			gas += callNewAccountGas
 		}
-	} else if !evm.IntraBlockState().Exist(address) {
+	} else if !existPure(evm.IntraBlockState(), address) {
 		gas += callNewAccountGas
 	}
 	if transfersValue {
@@ -481,7 +496,7 @@ func gasSelfdestruct(evm VMInterpreter, contract *Contract, stack *stack.Stack, 
 			if evm.IntraBlockState().Empty(address) && !evm.IntraBlockState().GetBalance(contract.Address()).IsZero() {
 				gas += params.CreateBySelfdestructGas
 			}
-		} else if !evm.IntraBlockState().Exist(address) {
+		} else if !existPure(evm.IntraBlockState(), address) {
 			gas += params.CreateBySelfdestructGas
 		}
 	}

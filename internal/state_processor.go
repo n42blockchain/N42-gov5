@@ -119,6 +119,9 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 				receipts = append(receipts, receipt)
 			}
 		}
+		// Note: FinalizeTx (called inside applyTransaction) already handles
+		// per-tx state finalization including empty account deletion.
+		// No need to call SoftFinalise here.
 	}
 
 	if !cfg.StatelessExec && *usedGas != concreteHeader.GasUsed {

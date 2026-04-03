@@ -59,12 +59,13 @@ func (r *AncientReader) ReadCanonicalHash(number uint64) (types.Hash, error) {
 	return types.BytesToHash(data), nil
 }
 
-// ReadHeaderRaw retrieves the raw protobuf-encoded header for a frozen block.
+// ReadHeaderRaw retrieves the raw encoded header for a frozen block.
+// The encoding may be protobuf (N42 mode) or RLP (ETH EL mode).
 func (r *AncientReader) ReadHeaderRaw(number uint64) ([]byte, error) {
 	return r.freezer.Ancient(TableHeaders, number)
 }
 
-// ReadHeader retrieves and decodes a frozen block header.
+// ReadHeader retrieves and decodes a frozen block header (protobuf format).
 func (r *AncientReader) ReadHeader(number uint64) (*block.Header, error) {
 	raw, err := r.ReadHeaderRaw(number)
 	if err != nil {
@@ -79,12 +80,12 @@ func (r *AncientReader) ReadHeader(number uint64) (*block.Header, error) {
 	return h, nil
 }
 
-// ReadBodyRaw retrieves the raw protobuf-encoded body for a frozen block.
+// ReadBodyRaw retrieves the raw encoded body for a frozen block.
 func (r *AncientReader) ReadBodyRaw(number uint64) ([]byte, error) {
 	return r.freezer.Ancient(TableBodies, number)
 }
 
-// ReadReceiptsRaw retrieves the raw protobuf-encoded receipts for a frozen block.
+// ReadReceiptsRaw retrieves the raw encoded receipts for a frozen block.
 func (r *AncientReader) ReadReceiptsRaw(number uint64) ([]byte, error) {
 	return r.freezer.Ancient(TableReceipts, number)
 }
@@ -98,4 +99,32 @@ func (r *AncientReader) ReadTd(number uint64) (*uint256.Int, error) {
 	td := new(uint256.Int)
 	td.SetBytes(data)
 	return td, nil
+}
+
+// ReadSendersRaw retrieves the raw sender data for a frozen block.
+// Format: concatenated 20-byte addresses (20B × txCount).
+func (r *AncientReader) ReadSendersRaw(number uint64) ([]byte, error) {
+	t := r.freezer.Table(TableSenders)
+	if t == nil {
+		return nil, fmt.Errorf("freezer: senders table not available")
+	}
+	return t.Retrieve(number)
+}
+
+// ReadAccountChangesRaw retrieves account changeset for a frozen block.
+func (r *AncientReader) ReadAccountChangesRaw(number uint64) ([]byte, error) {
+	t := r.freezer.Table(TableAccountChanges)
+	if t == nil {
+		return nil, fmt.Errorf("freezer: account_changes table not available")
+	}
+	return t.Retrieve(number)
+}
+
+// ReadStorageChangesRaw retrieves storage changeset for a frozen block.
+func (r *AncientReader) ReadStorageChangesRaw(number uint64) ([]byte, error) {
+	t := r.freezer.Table(TableStorageChanges)
+	if t == nil {
+		return nil, fmt.Errorf("freezer: storage_changes table not available")
+	}
+	return t.Retrieve(number)
 }
