@@ -369,3 +369,72 @@ func TestFreezerReopenTruncatesToShortestTable(t *testing.T) {
 		t.Fatalf("expected header table to be truncated to 4 items, got %v", err)
 	}
 }
+
+func TestFreezerTableOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	tbl, err := NewFreezerTable(dir, "overwrite", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+
+	// Write 10 items.
+	for i := uint64(0); i < 10; i++ {
+		if err := tbl.Append(i, []byte(fmt.Sprintf("v%d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if tbl.Items() != 10 {
+		t.Fatalf("items: got %d, want 10", tbl.Items())
+	}
+
+	// Overwrite item 5 with new data.
+	if err := tbl.Append(5, []byte("NEW5")); err != nil {
+		t.Fatalf("overwrite at 5: %v", err)
+	}
+	// Items should now be 6 (0-5, items 6-9 truncated).
+	if tbl.Items() != 6 {
+		t.Fatalf("after overwrite: items=%d, want 6", tbl.Items())
+	}
+
+	// Verify overwritten data.
+	data, err := tbl.Retrieve(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "NEW5" {
+		t.Fatalf("item 5: got %q, want %q", data, "NEW5")
+	}
+
+	// Old items still intact.
+	data, err = tbl.Retrieve(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "v3" {
+		t.Fatalf("item 3: got %q, want %q", data, "v3")
+	}
+
+	// Can append after overwrite.
+	if err := tbl.Append(6, []byte("v6-new")); err != nil {
+		t.Fatal(err)
+	}
+	if tbl.Items() != 7 {
+		t.Fatalf("after re-append: items=%d, want 7", tbl.Items())
+	}
+
+	// Overwrite at 0 (full rewrite).
+	if err := tbl.Append(0, []byte("ZERO")); err != nil {
+		t.Fatal(err)
+	}
+	if tbl.Items() != 1 {
+		t.Fatalf("after overwrite-0: items=%d, want 1", tbl.Items())
+	}
+	data, err = tbl.Retrieve(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ZERO" {
+		t.Fatalf("item 0: got %q, want %q", data, "ZERO")
+	}
+}

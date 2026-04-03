@@ -166,8 +166,14 @@ func (t *FreezerTable) Append(item uint64, data []byte) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if item != t.items.Load() {
-		return fmt.Errorf("freezer: append out of order: want %d, got %d", t.items.Load(), item)
+	current := t.items.Load()
+	if item < current {
+		// Overwrite mode: truncate from this point, then re-append.
+		if err := t.truncateHeadLocked(item); err != nil {
+			return fmt.Errorf("freezer: truncate for overwrite at %d: %w", item, err)
+		}
+	} else if item != current {
+		return fmt.Errorf("freezer: append out of order: want %d, got %d", current, item)
 	}
 
 	// Check if we need to rotate data files.
@@ -480,7 +486,11 @@ func (t *FreezerTable) TruncateHead(from uint64) error {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.truncateHeadLocked(from)
+}
 
+// truncateHeadLocked is the inner truncation logic. Caller must hold t.mu.
+func (t *FreezerTable) truncateHeadLocked(from uint64) error {
 	if from >= t.items.Load() {
 		return nil
 	}
@@ -499,15 +509,13 @@ func (t *FreezerTable) TruncateHead(from uint64) error {
 	if _, err := t.indexFile.Seek(0, io.SeekEnd); err != nil {
 		return err
 	}
-	// Re-create index buffer after seek.
 	t.indexBuf.Reset(t.indexFile)
 	if err := t.indexFile.Sync(); err != nil {
 		return fmt.Errorf("freezer: sync after truncate: %w", err)
 	}
 
 	t.items.Store(from)
-
-	t.headSize = 0 // will be recalculated on next Append
+	t.headSize = 0
 	if from > 0 {
 		lastIdx, err := t.readIndex(from - 1)
 		if err != nil {
