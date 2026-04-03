@@ -106,6 +106,17 @@ func ResolveNetworkPreset(chain, rawProfile string) (NetworkPreset, error) {
 			Commitment:           StateCommitmentPresetEthereumMPT,
 			RequiresExplicitInit: true,
 		}, nil
+	case networkname.EthereumHoleskyChainName:
+		profile, err := resolveExpectedProfile(ExecutionProfileEthereumEL)
+		if err != nil {
+			return NetworkPreset{}, err
+		}
+		return NetworkPreset{
+			Chain:                networkname.EthereumHoleskyChainName,
+			Profile:              profile,
+			Commitment:           StateCommitmentPresetEthereumMPT,
+			RequiresExplicitInit: true,
+		}, nil
 	case "private":
 		var profile ProfileDescriptor
 		var err error

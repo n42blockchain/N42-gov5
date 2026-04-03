@@ -506,6 +506,7 @@ var NetworkNames = map[string]string{
 	"94":        "mainnet",
 	"1":         networkname.EthereumMainnetChainName,
 	"11155111":  networkname.EthereumSepoliaChainName,
+	"17000":     networkname.EthereumHoleskyChainName,
 }
 
 func ChainConfigByChainName(chain string) *ChainConfig {
@@ -524,6 +525,8 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 		return EthereumMainnetChainConfig
 	case networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:
 		return EthereumSepoliaChainConfig
+	case networkname.EthereumHoleskyChainName:
+		return EthereumHoleskyChainConfig
 	default:
 		return nil
 	}
@@ -537,6 +540,12 @@ func GenesisHashByChainName(chain string) *types.Hash {
 		return &TestnetGenesisHash
 	case "mainnet_v2":
 		return &MainnetGenesisHash
+	case networkname.EthereumMainnetChainName:
+		return &EthereumMainnetGenesisHash
+	case networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:
+		return &EthereumSepoliaGenesisHash
+	case networkname.EthereumHoleskyChainName:
+		return &EthereumHoleskyGenesisHash
 	default:
 		return nil
 	}
@@ -552,6 +561,8 @@ func ChainConfigByGenesisHash(genesisHash types.Hash) *ChainConfig {
 		return EthereumMainnetChainConfig
 	case genesisHash == EthereumSepoliaGenesisHash:
 		return EthereumSepoliaChainConfig
+	case genesisHash == EthereumHoleskyGenesisHash:
+		return EthereumHoleskyChainConfig
 	default:
 		return nil
 	}
@@ -567,6 +578,8 @@ func NetworkIDByChainName(chain string) uint64 {
 		return 1
 	case networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:
 		return 11155111
+	case networkname.EthereumHoleskyChainName:
+		return 17000
 	default:
 		config := ChainConfigByChainName(chain)
 		if config == nil {
