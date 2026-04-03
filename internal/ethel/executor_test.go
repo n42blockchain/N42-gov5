@@ -31,7 +31,7 @@ func TestExecutorFirst100Blocks(t *testing.T) {
 		CommitInterval: 100,
 	}
 
-	executor := NewExecutor(f, db, chainCfg, engine, cfg)
+	executor := NewExecutor(f, db, chainCfg, engine, cfg, nil)
 
 	if err := executor.Run(context.Background()); err != nil {
 		t.Fatalf("executor failed: %v", err)
@@ -66,7 +66,7 @@ func TestExecutorFirstTxBlock(t *testing.T) {
 		CommitInterval: 10000,
 	}
 
-	executor := NewExecutor(f, db, chainCfg, engine, cfg)
+	executor := NewExecutor(f, db, chainCfg, engine, cfg, nil)
 	err = executor.Run(context.Background())
 	if err != nil {
 		// Expected to fail at block 46147 (first tx, no genesis state).

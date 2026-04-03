@@ -57,7 +57,7 @@ func TestExecutorWithGenesis100K(t *testing.T) {
 		CommitInterval: 10000,
 	}
 
-	executor := NewExecutor(f, db, chainCfg, engine, cfg)
+	executor := NewExecutor(f, db, chainCfg, engine, cfg, nil)
 	if err := executor.Run(context.Background()); err != nil {
 		t.Fatalf("executor failed: %v", err)
 	}
