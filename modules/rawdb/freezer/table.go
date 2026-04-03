@@ -29,11 +29,6 @@ import (
 )
 
 const (
-	// writeBufferSize is the buffer size for buffered data/index file writes.
-	writeBufferSize = 256 * 1024 // 256 KiB
-)
-
-const (
 	// indexEntrySize is the byte size of each Geth-compatible index entry:
 	// fileNum(2B BE) + offset(4B BE) = 6 bytes.
 	indexEntrySize = 6
@@ -41,6 +36,9 @@ const (
 	// maxFileSize is the maximum size of a single data file before rotation.
 	// Uses 2×10^9 (2 GB) to match Geth's freezer format, not 2 GiB.
 	maxFileSize = 2_000_000_000
+
+	// writeBufferSize is the buffer size for buffered data/index file writes.
+	writeBufferSize = 256 * 1024 // 256 KiB
 )
 
 var (
