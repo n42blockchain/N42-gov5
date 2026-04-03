@@ -41,6 +41,9 @@ func TestExecutorFirst100Blocks(t *testing.T) {
 }
 
 func TestExecutorFirstTxBlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long test in short mode")
+	}
 	skipIfNoGeth(t)
 
 	// Open Geth ancient data.
