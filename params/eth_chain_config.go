@@ -18,6 +18,7 @@ func ethBigInt(value string) *big.Int {
 var (
 	EthereumMainnetGenesisHash = types.HexToHash("0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3")
 	EthereumSepoliaGenesisHash = types.HexToHash("0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9")
+	EthereumHoleskyGenesisHash = types.HexToHash("0xb5f7f912443c940f21fd611f12828d75b534364ed9e95ca4e307572b4e500310")
 
 	EthereumMainnetChainConfig = &ChainConfig{
 		ChainName:               networkname.EthereumMainnetChainName,
@@ -70,6 +71,31 @@ var (
 		OsakaTime:               big.NewInt(1760427360),
 		BPO1Time:                big.NewInt(1761017184),
 		BPO2Time:                big.NewInt(1761607008),
+		Ethash:                  new(EthashConfig),
+	}
+
+	// Holesky is the primary Ethereum PoS testnet (launched Sep 2023).
+	// All forks from genesis, PoS from block 0 (TTD=0).
+	EthereumHoleskyChainConfig = &ChainConfig{
+		ChainName:               networkname.EthereumHoleskyChainName,
+		ChainID:                 big.NewInt(17000),
+		Consensus:               EtHashConsensus,
+		HomesteadBlock:          big.NewInt(0),
+		DAOForkSupport:          false,
+		TangerineWhistleBlock:   big.NewInt(0),
+		SpuriousDragonBlock:     big.NewInt(0),
+		ByzantiumBlock:          big.NewInt(0),
+		ConstantinopleBlock:     big.NewInt(0),
+		PetersburgBlock:         big.NewInt(0),
+		IstanbulBlock:           big.NewInt(0),
+		MuirGlacierBlock:        big.NewInt(0),
+		BerlinBlock:             big.NewInt(0),
+		LondonBlock:             big.NewInt(0),
+		TerminalTotalDifficulty: big.NewInt(0),
+		TerminalTotalDifficultyPassed: true,
+		ShanghaiTime:            big.NewInt(1696000704),
+		CancunTime:              big.NewInt(1707305664),
+		PragueTime:              big.NewInt(1742224320),
 		Ethash:                  new(EthashConfig),
 	}
 )

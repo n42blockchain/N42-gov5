@@ -1141,7 +1141,7 @@ func resolveConsensusEngine(cfg *conf.Config, profile params.ProfileDescriptor, 
 
 func isPublicEthereumChain(chain string) bool {
 	switch strings.TrimSpace(chain) {
-	case "eth-mainnet", "eth-sepolia":
+	case "eth-mainnet", "eth-sepolia", "eth-holesky":
 		return true
 	default:
 		return false
