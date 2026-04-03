@@ -571,6 +571,15 @@ func (t *Tree) DirtyCount() int {
 	return len(t.dirty)
 }
 
+// DirtyBytes returns the total serialized size of unflushed nodes (key+value).
+func (t *Tree) DirtyBytes() int64 {
+	var total int64
+	for h, data := range t.dirty {
+		total += int64(len(h)) + int64(len(data))
+	}
+	return total
+}
+
 // Reset clears the tree to an empty state, discarding all dirty nodes.
 func (t *Tree) Reset() {
 	t.root = EmptyHash
