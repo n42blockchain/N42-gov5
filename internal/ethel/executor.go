@@ -8,23 +8,17 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/rlp"
-	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/changeset"
 	"github.com/n42blockchain/N42/internal/consensus"
-	"github.com/n42blockchain/N42/internal/consensus/misc"
-	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
-
-	iinternal "github.com/n42blockchain/N42/internal"
 )
 
 // ExecutorConfig holds configuration for the block executor.
@@ -188,7 +182,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
 
 	// 3. Process block (DAO fork, system contracts, EVM).
-	result, err := e.processBlock(tx, header, body, ibs, writer)
+	result, err := e.processBlock(header, body, ibs)
 	if err != nil {
 		return err
 	}
@@ -240,76 +234,14 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	return nil
 }
 
-// blockResult holds per-block execution outputs for freezer storage.
-type blockResult struct {
-	GasUsed  uint64
-	Receipts block.Receipts
-	Senders  []types.Address
-}
-
-// processBlock runs the EVM for all transactions in a block.
-func (e *Executor) processBlock(tx kv.RwTx, header *block.Header, body *GethBodyResult, ibs *state.IntraBlockState, writer state.WriterWithChangeSets) (*blockResult, error) {
-	txs := body.Transactions
-	usedGas := new(uint64)
-	gp := new(common.GasPool)
-	gp.AddGas(header.GasLimit)
-
-	cfg := vm2.Config{}
-
-	// DAO fork.
-	if e.chainCfg.DAOForkSupport && e.chainCfg.DAOForkBlock != nil &&
-		e.chainCfg.DAOForkBlock.Cmp(header.Number.ToBig()) == 0 {
-		misc.ApplyDAOHardFork(ibs)
-	}
-
-	// Pre-block system calls (beacon root, etc.).
-	if err := iinternal.ProcessExecutionBlockStart(nil, e.chainCfg, ibs, header, e.engine); err != nil {
-		return nil, err
-	}
-
-	noop := state.NewNoopWriter()
-	blockHashFunc := e.makeBlockHashFunc(header)
-	blockHash := header.Hash()
-
-	var receipts block.Receipts
-	senders := make([]types.Address, 0, len(txs))
-	signer := transaction.MakeSigner(e.chainCfg, header.Number.ToBig())
-
-	for i, txn := range txs {
-		ibs.Prepare(txn.Hash(), blockHash, i)
-		receipt, _, err := iinternal.ApplyTransaction(
-			e.chainCfg, blockHashFunc, e.engine, nil, gp,
-			ibs, noop, header, txn, usedGas, cfg,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("tx %d: %w", i, err)
-		}
-		if receipt != nil {
-			receipts = append(receipts, receipt)
-		}
-
-		sender, err := transaction.Sender(signer, txn)
-		if err != nil {
-			return nil, fmt.Errorf("tx %d sender: %w", i, err)
-		}
-		senders = append(senders, sender)
-	}
-
-	// Post-block system calls.
-	if _, err := iinternal.ProcessExecutionBlockEnd(nil, e.chainCfg, ibs, header, e.engine); err != nil {
-		return nil, err
-	}
-
-	// Finalize (block rewards + uncle rewards).
-	var uncleHeaders []block.IHeader
+// BlockResult is defined in process.go. This comment prevents confusion.
+// processBlock delegates to the shared ProcessBlock function.
+func (e *Executor) processBlock(header *block.Header, body *GethBodyResult, ibs *state.IntraBlockState) (*BlockResult, error) {
+	var uncles []block.IHeader
 	for _, u := range body.Uncles {
-		uncleHeaders = append(uncleHeaders, u)
+		uncles = append(uncles, u)
 	}
-	if _, _, err := e.engine.Finalize(nil, header, ibs, txs, uncleHeaders); err != nil {
-		return nil, fmt.Errorf("finalize: %w", err)
-	}
-
-	return &blockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders}, nil
+	return ProcessBlock(e.chainCfg, e.engine, header, body.Transactions, uncles, ibs, e.makeBlockHashFunc(header))
 }
 
 // readHeader reads and decodes a Geth RLP header from the freezer.
@@ -388,7 +320,7 @@ func (e *Executor) cacheHeader(num uint64, h *block.Header) {
 
 // writeOutputs writes execution results to the output freezer.
 // All 6 tables must receive an append for every block to maintain alignment.
-func (e *Executor) writeOutputs(blockNum uint64, result *blockResult, writer state.WriterWithChangeSets, witness *WitnessStateReader, dbTx kv.Tx) error {
+func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer state.WriterWithChangeSets, witness *WitnessStateReader, dbTx kv.Tx) error {
 	of := e.outFreezer
 	appendTo := func(table, ext string, data []byte) error {
 		tbl, err := of.EnsureTable(table, ext)

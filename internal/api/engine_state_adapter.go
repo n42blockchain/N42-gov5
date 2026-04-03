@@ -1,35 +1,29 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// engine_state_adapter.go bridges the Engine API with the ETH EL state
-// management layer. When running in ETH EL profile, NewPayload executes
-// blocks with persistent state writes, and ForkchoiceUpdated manages
-// the canonical chain head.
+// engine_state_adapter.go bridges the Engine API with persistent state execution
+// for the ETH EL profile.
 
 package api
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 
-	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
-	internalcore "github.com/n42blockchain/N42/internal"
-	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/ethel"
-	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
 
-// EngineStateAdapter bridges Engine API with persistent state execution
-// for the ETH EL profile. It executes payloads, persists state to MDBX,
-// appends receipts/changesets to the Freezer, and verifies state roots.
+// EngineStateAdapter bridges Engine API with persistent state execution.
 type EngineStateAdapter struct {
 	db       kv.RwDB
 	freezer  *freezer.Freezer
@@ -37,18 +31,13 @@ type EngineStateAdapter struct {
 	engine   consensus.Engine
 }
 
-// NewEngineStateAdapter creates a new adapter for ETH EL Engine API.
+// NewEngineStateAdapter creates a new adapter.
 func NewEngineStateAdapter(db kv.RwDB, f *freezer.Freezer, cfg *params.ChainConfig, engine consensus.Engine) *EngineStateAdapter {
-	return &EngineStateAdapter{
-		db:       db,
-		freezer:  f,
-		chainCfg: cfg,
-		engine:   engine,
-	}
+	return &EngineStateAdapter{db: db, freezer: f, chainCfg: cfg, engine: engine}
 }
 
-// ExecutePayload executes a block from the CL via Engine API with persistent
-// state writes. Returns (valid, stateRoot, error).
+// ExecutePayload executes a block from the CL, persists state, verifies root.
+// Returns (valid bool, stateRoot, error).
 func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash, error) {
 	header := blk.Header().(*block.Header)
 	blockNum := header.Number.Uint64()
@@ -64,18 +53,25 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 	writer := state.NewPlainStateWriter(tx, tx, blockNum)
 	ibs := state.New(reader)
 
-	// Attach TrieRootComputer for state root verification.
-	ethel.SetupStateRootComputer(tx, ibs)
+	// Build BLOCKHASH function from DB.
+	blockHashFunc := func(n uint64) types.Hash {
+		h, err := rawdb.ReadCanonicalHash(tx, n)
+		if err != nil {
+			return types.Hash{}
+		}
+		return h
+	}
 
-	// Execute block.
-	gasUsed, err := a.processBlock(tx, blk, header, ibs, writer)
+	// Execute using shared ProcessBlock.
+	var uncles []block.IHeader // post-merge: no uncles
+	result, err := ethel.ProcessBlock(a.chainCfg, a.engine, header, blk.Transactions(), uncles, ibs, blockHashFunc)
 	if err != nil {
 		return false, types.Hash{}, fmt.Errorf("execute block %d: %w", blockNum, err)
 	}
 
 	// Verify gas.
-	if gasUsed != header.GasUsed {
-		return false, types.Hash{}, fmt.Errorf("gas mismatch: got %d, want %d", gasUsed, header.GasUsed)
+	if result.GasUsed != header.GasUsed {
+		return false, types.Hash{}, fmt.Errorf("gas mismatch: got %d, want %d", result.GasUsed, header.GasUsed)
 	}
 
 	// Commit state.
@@ -90,74 +86,70 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 		return false, types.Hash{}, err
 	}
 
-	// Verify state root via full re-hash.
+	// Verify state root.
 	computedRoot, err := ethel.FullStateRootVerify(tx)
 	if err != nil {
-		return false, types.Hash{}, fmt.Errorf("state root computation: %w", err)
+		return false, types.Hash{}, fmt.Errorf("state root: %w", err)
 	}
 	if computedRoot != header.Root {
-		log.Error("State root mismatch",
-			"block", blockNum,
-			"computed", computedRoot.Hex(),
-			"expected", header.Root.Hex())
+		log.Error("State root mismatch", "block", blockNum,
+			"computed", computedRoot.Hex(), "expected", header.Root.Hex())
 		return false, computedRoot, nil
+	}
+
+	// Write canonical chain pointers.
+	hash := header.Hash()
+	if err := rawdb.WriteCanonicalHash(tx, hash, blockNum); err != nil {
+		return false, types.Hash{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
 		return false, types.Hash{}, err
 	}
 
-	log.Info("Payload executed and verified",
-		"block", blockNum,
-		"root", header.Root.Hex(),
-		"txs", len(blk.Transactions()),
-		"gas", gasUsed)
-
+	log.Info("Payload executed", "block", blockNum, "root", header.Root.Hex(),
+		"txs", len(blk.Transactions()), "gas", result.GasUsed)
 	return true, computedRoot, nil
 }
 
-// processBlock runs EVM execution for a single block.
-func (a *EngineStateAdapter) processBlock(tx kv.RwTx, blk *block.Block, header *block.Header, ibs *state.IntraBlockState, writer state.WriterWithChangeSets) (uint64, error) {
-	usedGas := new(uint64)
-	gp := new(common.GasPool)
-	gp.AddGas(header.GasLimit)
+// ForkchoiceUpdated updates the canonical chain head.
+func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash types.Hash) error {
+	tx, err := a.db.BeginRw(context.Background())
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
-	cfg := vm2.Config{}
-
-	// DAO fork.
-	if a.chainCfg.DAOForkSupport && a.chainCfg.DAOForkBlock != nil &&
-		a.chainCfg.DAOForkBlock.Cmp(header.Number.ToBig()) == 0 {
-		misc.ApplyDAOHardFork(ibs)
+	// Write forkchoice state.
+	var buf [96]byte
+	copy(buf[0:32], headHash[:])
+	copy(buf[32:64], safeHash[:])
+	copy(buf[64:96], finalizedHash[:])
+	if err := tx.Put(kv.LastForkchoice, []byte("lastForkchoice"), buf[:]); err != nil {
+		return err
 	}
 
-	// Pre-block system calls.
-	if err := internalcore.ProcessExecutionBlockStart(nil, a.chainCfg, ibs, header, a.engine); err != nil {
-		return 0, err
+	// Update head block pointer.
+	// Look up block number from hash.
+	headerNum := rawdb.ReadHeaderNumber(tx, headHash)
+	if headerNum == nil {
+		return fmt.Errorf("head block not found: %s", headHash.Hex())
+	}
+	var numBuf [8]byte
+	binary.BigEndian.PutUint64(numBuf[:], *headerNum)
+	if err := tx.Put(kv.HeadBlockKey, []byte("LastBlock"), numBuf[:]); err != nil {
+		return err
 	}
 
-	noop := state.NewNoopWriter()
-	blockHash := header.Hash()
-
-	for i, txn := range blk.Transactions() {
-		ibs.Prepare(txn.Hash(), blockHash, i)
-		_, _, err := internalcore.ApplyTransaction(
-			a.chainCfg, func(n uint64) types.Hash { return types.Hash{} },
-			a.engine, nil, gp, ibs, noop, header, txn, usedGas, cfg,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("tx %d: %w", i, err)
-		}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 
-	// Post-block system calls.
-	if _, err := internalcore.ProcessExecutionBlockEnd(nil, a.chainCfg, ibs, header, a.engine); err != nil {
-		return 0, err
-	}
+	log.Info("Forkchoice updated", "head", headHash.Hex()[:10], "block", *headerNum)
+	return nil
+}
 
-	// Finalize (block rewards — post-merge returns nil).
-	if _, _, err := a.engine.Finalize(nil, header, ibs, blk.Transactions(), nil); err != nil {
-		return 0, err
-	}
-
-	return *usedGas, nil
+// Reorg rolls back state to the given block number using changesets.
+func (a *EngineStateAdapter) Reorg(targetBlock uint64) error {
+	return ethel.Reorg(a.db, targetBlock)
 }
