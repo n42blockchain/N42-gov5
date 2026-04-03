@@ -17,6 +17,7 @@
 package freezer
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -28,12 +29,18 @@ import (
 )
 
 const (
+	// writeBufferSize is the buffer size for buffered data/index file writes.
+	writeBufferSize = 256 * 1024 // 256 KiB
+)
+
+const (
 	// indexEntrySize is the byte size of each Geth-compatible index entry:
 	// fileNum(2B BE) + offset(4B BE) = 6 bytes.
 	indexEntrySize = 6
 
 	// maxFileSize is the maximum size of a single data file before rotation.
-	maxFileSize = 2 * 1024 * 1024 * 1024 // 2 GiB
+	// Uses 2×10^9 (2 GB) to match Geth's freezer format, not 2 GiB.
+	maxFileSize = 2_000_000_000
 )
 
 var (
@@ -81,8 +88,11 @@ type FreezerTable struct {
 
 	mu        sync.RWMutex
 	indexFile *os.File            // single index file
+	indexBuf  *bufio.Writer       // buffered index writer
 	dataFiles map[uint16]*os.File // data files keyed by file number
+	dataBuf   *bufio.Writer       // buffered writer for head data file
 	headFile  uint16              // current data file number for appends
+	headSize  int64               // tracked size of head data file (avoids Stat)
 
 	items  atomic.Uint64 // total number of items stored
 	closed atomic.Bool
@@ -104,11 +114,15 @@ func NewFreezerTable(path, name, ext string) (*FreezerTable, error) {
 		return nil, fmt.Errorf("freezer: open index %s: %w", idxPath, err)
 	}
 
+	// Seek to end for buffered append.
+	idxFile.Seek(0, io.SeekEnd)
+
 	t := &FreezerTable{
 		name:      name,
 		path:      path,
 		ext:       ext,
 		indexFile: idxFile,
+		indexBuf:  bufio.NewWriterSize(idxFile, writeBufferSize),
 		dataFiles: make(map[uint16]*os.File),
 	}
 
@@ -128,8 +142,13 @@ func NewFreezerTable(path, name, ext string) (*FreezerTable, error) {
 			return nil, err
 		}
 		t.headFile = lastIdx.fileNum
-		// Try to open head file; ignore ErrNotExist (pruned).
 		_ = t.tryOpenDataFile(lastIdx.fileNum)
+		// Initialize head size for fast offset tracking.
+		if df, ok := t.dataFiles[lastIdx.fileNum]; ok {
+			if fi, err := df.Stat(); err == nil {
+				t.headSize = fi.Size()
+			}
+		}
 	}
 
 	return t, nil
@@ -154,36 +173,43 @@ func (t *FreezerTable) Append(item uint64, data []byte) error {
 	}
 
 	// Check if we need to rotate data files.
-	df, err := t.createDataFile(t.headFile)
-	if err != nil {
-		return err
-	}
-	info, err := df.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size()+int64(len(data)) > maxFileSize {
+	if t.headSize+int64(len(data)) > maxFileSize {
+		// Flush current data buffer before rotating.
+		if t.dataBuf != nil {
+			if err := t.dataBuf.Flush(); err != nil {
+				return fmt.Errorf("freezer: flush before rotate: %w", err)
+			}
+		}
 		t.headFile++
-		df, err = t.createDataFile(t.headFile)
+		t.headSize = 0
+		t.dataBuf = nil
+	}
+	if t.dataBuf == nil {
+		df, err := t.createDataFile(t.headFile)
 		if err != nil {
 			return err
 		}
-		info, err = df.Stat()
-		if err != nil {
-			return err
+		// Get actual size on first use (handles pre-existing files).
+		if t.headSize == 0 {
+			if fi, err := df.Stat(); err == nil {
+				t.headSize = fi.Size()
+			}
 		}
+		df.Seek(0, io.SeekEnd)
+		t.dataBuf = bufio.NewWriterSize(df, writeBufferSize)
 	}
 
-	offset := uint32(info.Size())
+	offset := uint32(t.headSize)
 
-	// Write data.
-	if _, err := df.Write(data); err != nil {
+	// Buffered data write.
+	if _, err := t.dataBuf.Write(data); err != nil {
 		return fmt.Errorf("freezer: write data: %w", err)
 	}
+	t.headSize += int64(len(data))
 
-	// Write index entry.
+	// Buffered index write.
 	idx := indexEntry{fileNum: t.headFile, offset: offset}
-	if _, err := t.indexFile.Write(encodeIndex(idx)); err != nil {
+	if _, err := t.indexBuf.Write(encodeIndex(idx)); err != nil {
 		return fmt.Errorf("freezer: write index: %w", err)
 	}
 
@@ -198,10 +224,16 @@ func (t *FreezerTable) Retrieve(item uint64) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, ErrClosed
 	}
-	// Write lock needed because openDataFileRO may cache file handles.
-	// TODO: Use RLock + upgrade pattern or sync.Map for better concurrency.
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Flush write buffers so ReadAt sees all data.
+	if t.indexBuf != nil {
+		t.indexBuf.Flush()
+	}
+	if t.dataBuf != nil {
+		t.dataBuf.Flush()
+	}
 
 	if item >= t.items.Load() {
 		return nil, ErrOutOfBounds
@@ -329,6 +361,17 @@ func (t *FreezerTable) Sync() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// Flush buffered writes before syncing.
+	if t.indexBuf != nil {
+		if err := t.indexBuf.Flush(); err != nil {
+			return err
+		}
+	}
+	if t.dataBuf != nil {
+		if err := t.dataBuf.Flush(); err != nil {
+			return err
+		}
+	}
 	if err := t.indexFile.Sync(); err != nil {
 		return err
 	}
@@ -349,6 +392,17 @@ func (t *FreezerTable) Close() error {
 	defer t.mu.Unlock()
 
 	var errs []error
+	// Flush buffers before closing.
+	if t.indexBuf != nil {
+		if err := t.indexBuf.Flush(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if t.dataBuf != nil {
+		if err := t.dataBuf.Flush(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if err := t.indexFile.Close(); err != nil {
 		errs = append(errs, err)
 	}
@@ -413,44 +467,11 @@ func (t *FreezerTable) AppendBatch(startItem uint64, items [][]byte) error {
 	if len(items) == 0 {
 		return nil
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if startItem != t.items.Load() {
-		return fmt.Errorf("freezer: batch append out of order: want %d, got %d", t.items.Load(), startItem)
-	}
-
 	for i, data := range items {
-		df, err := t.createDataFile(t.headFile)
-		if err != nil {
+		if err := t.Append(startItem+uint64(i), data); err != nil {
 			return err
-		}
-		info, err := df.Stat()
-		if err != nil {
-			return err
-		}
-		if info.Size()+int64(len(data)) > maxFileSize {
-			t.headFile++
-			df, err = t.createDataFile(t.headFile)
-			if err != nil {
-				return err
-			}
-			info, err = df.Stat()
-			if err != nil {
-				return err
-			}
-		}
-
-		offset := uint32(info.Size())
-		if _, err := df.Write(data); err != nil {
-			return fmt.Errorf("freezer: batch write data item %d: %w", startItem+uint64(i), err)
-		}
-		idx := indexEntry{fileNum: t.headFile, offset: offset}
-		if _, err := t.indexFile.Write(encodeIndex(idx)); err != nil {
-			return fmt.Errorf("freezer: batch write index item %d: %w", startItem+uint64(i), err)
 		}
 	}
-	t.items.Add(uint64(len(items)))
 	return nil
 }
 
@@ -466,18 +487,29 @@ func (t *FreezerTable) TruncateHead(from uint64) error {
 		return nil
 	}
 
+	// Flush and reset buffers before truncation.
+	if t.indexBuf != nil {
+		t.indexBuf.Flush()
+	}
+	if t.dataBuf != nil {
+		t.dataBuf.Flush()
+		t.dataBuf = nil
+	}
 	if err := t.indexFile.Truncate(int64(from) * indexEntrySize); err != nil {
 		return fmt.Errorf("freezer: truncate index: %w", err)
 	}
 	if _, err := t.indexFile.Seek(0, io.SeekEnd); err != nil {
 		return err
 	}
+	// Re-create index buffer after seek.
+	t.indexBuf.Reset(t.indexFile)
 	if err := t.indexFile.Sync(); err != nil {
 		return fmt.Errorf("freezer: sync after truncate: %w", err)
 	}
 
 	t.items.Store(from)
 
+	t.headSize = 0 // will be recalculated on next Append
 	if from > 0 {
 		lastIdx, err := t.readIndex(from - 1)
 		if err != nil {
