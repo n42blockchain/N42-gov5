@@ -172,8 +172,12 @@ func run(c *cli.Context) error {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
-		log.Info("Received shutdown signal")
+		log.Info("Received shutdown signal, finishing current block...")
 		cancel()
+		// Second signal = force exit.
+		<-sig
+		log.Info("Force exit")
+		os.Exit(1)
 	}()
 
 	return executor.Run(ctx)
