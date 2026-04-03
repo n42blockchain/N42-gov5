@@ -67,7 +67,6 @@ func EncodeLeavesJournal(
 	}
 	type addrLeaves struct {
 		hashedAddr [32]byte
-		plainAddr  types.Address
 		slots      []slotLeaf
 	}
 
@@ -88,7 +87,6 @@ func EncodeLeavesJournal(
 				lastAddr = thisAddr
 				copy(lastHashedAddr[:], crypto.Keccak256(thisAddr[:]))
 				groups = append(groups, addrLeaves{hashedAddr: lastHashedAddr})
-				copy(groups[len(groups)-1].plainAddr[:], thisAddr[:])
 				cur = &groups[len(groups)-1]
 			}
 
@@ -105,7 +103,6 @@ func EncodeLeavesJournal(
 		}
 	}
 
-	addrCountPos := len(buf)
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(groups)))
 	for _, g := range groups {
 		buf = append(buf, g.hashedAddr[:]...)
@@ -120,7 +117,5 @@ func EncodeLeavesJournal(
 			}
 		}
 	}
-	_ = addrCountPos // already written inline
-
 	return buf
 }
