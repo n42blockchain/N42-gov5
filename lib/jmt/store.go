@@ -82,3 +82,10 @@ func (m *MemStore) Has(hash Hash) (bool, error) {
 func (m *MemStore) Len() int {
 	return len(m.nodes)
 }
+
+// ForEach iterates over all nodes in the store.
+func (m *MemStore) ForEach(fn func(hash Hash, data []byte)) {
+	for h, d := range m.nodes {
+		fn(h, d)
+	}
+}

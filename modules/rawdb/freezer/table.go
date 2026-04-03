@@ -198,8 +198,8 @@ func (t *FreezerTable) Retrieve(item uint64) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, ErrClosed
 	}
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	if item >= t.items.Load() {
 		return nil, ErrOutOfBounds
@@ -299,32 +299,6 @@ func (t *FreezerTable) Retrieve(item uint64) ([]byte, error) {
 	return data, nil
 }
 
-// itemSize calculates the byte length of an item by looking at the next
-// entry's offset. For the last item or cross-file items, uses data file size.
-// Caller must hold at least RLock.
-func (t *FreezerTable) itemSize(item uint64, idx indexEntry) (uint32, error) {
-	if item+1 < t.items.Load() {
-		next, err := t.readIndex(item + 1)
-		if err != nil {
-			return 0, err
-		}
-		if next.fileNum == idx.fileNum {
-			return next.offset - idx.offset, nil
-		}
-		// Cross file boundary: item extends to end of current file.
-		sz, err := t.getDataFileSize(idx.fileNum)
-		if err != nil {
-			return 0, err
-		}
-		return sz - idx.offset, nil
-	}
-	// Last item: extends to end of its data file.
-	sz, err := t.getDataFileSize(idx.fileNum)
-	if err != nil {
-		return 0, err
-	}
-	return sz - idx.offset, nil
-}
 
 // getDataFileSize returns the byte size of a data file.
 // Caller must hold at least RLock.

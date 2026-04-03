@@ -17,15 +17,9 @@ import (
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
 
-// SetupStateRootComputerPublic is the exported version of setupStateRootComputer.
-func SetupStateRootComputerPublic(tx kv.RwTx, ibs *state.IntraBlockState) *commitment.TrieRootComputer {
-	return setupStateRootComputer(tx, ibs)
-}
-
-// setupStateRootComputer creates and attaches a TrieRootComputer to the
-// IntraBlockState so that state root is computed incrementally after
-// each block's CommitBlock.
-func setupStateRootComputer(tx kv.RwTx, ibs *state.IntraBlockState) *commitment.TrieRootComputer {
+// SetupStateRootComputer creates and attaches a TrieRootComputer to the
+// IntraBlockState so that state root is computed incrementally.
+func SetupStateRootComputer(tx kv.RwTx, ibs *state.IntraBlockState) *commitment.TrieRootComputer {
 	trc := commitment.NewTrieRootComputer()
 	trc.SetRwTx(tx)
 	ibs.SetRootComputer(trc)

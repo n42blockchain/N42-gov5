@@ -124,7 +124,7 @@ func (e *Executor) Run(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			defer tx.Rollback()
+			// No defer — tx is committed or rolled back explicitly.
 		}
 	}
 
