@@ -211,8 +211,9 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		}
 	}
 
-	// 5. Flush HashOnlyComputer (updates HashedAccounts from dirty IBS)
-	// before CommitBlock clears the dirty set.
+	// 5. Flush dirty accounts to HashedAccounts via HashOnlyComputer.
+	// Must run every block (not just verify blocks) to keep HashedAccounts
+	// incrementally in sync. Cost is O(dirty) per block, not O(all).
 	if e.cfg.VerifyInterval > 0 {
 		ibs.IntermediateRoot()
 	}
@@ -229,7 +230,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		return fmt.Errorf("write history: %w", err)
 	}
 
-	// 6. Write indices (TxLookup + LogIndex) for RPC support.
+	// 7. Write indices (TxLookup + LogIndex) for RPC support.
 	if err := WriteBlockIndices(tx, blockNum, body.Transactions); err != nil {
 		return fmt.Errorf("write tx indices: %w", err)
 	}

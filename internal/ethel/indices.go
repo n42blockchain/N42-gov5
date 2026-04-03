@@ -6,7 +6,6 @@ package ethel
 import (
 	"encoding/binary"
 
-	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -26,32 +25,8 @@ func WriteBlockIndices(tx kv.RwTx, blockNum uint64, txs []*transaction.Transacti
 	return nil
 }
 
-// WriteReceiptLogs writes log index entries for all receipts in a block.
-// This enables eth_getLogs filtering by topic and address.
-func WriteReceiptLogs(tx kv.RwTx, blockNum uint64, receipts block.Receipts) error {
-	if len(receipts) == 0 {
-		return nil
-	}
-
-	var blockKey [8]byte
-	binary.BigEndian.PutUint64(blockKey[:], blockNum)
-
-	for _, receipt := range receipts {
-		for _, l := range receipt.Logs {
-			// Log entry: blockNum(8) + txIndex(4) + logIndex(4) → address + topics + data
-			// For now, just write the log to the Log table keyed by blockNum.
-			// Full bitmap indices (LogTopicIndex, LogAddressIndex) are expensive
-			// and should be a separate background stage.
-			_ = l
-		}
-	}
-
-	// TODO: Full log bitmap indices for topic/address filtering.
-	// This requires the same RoaringBitmap approach as Erigon's LogIndex stage.
-	// For Phase 0, basic TxLookup is sufficient for most RPC queries.
-
-	return nil
-}
+// Log bitmap indices are written via rawdb.WriteLogIndex() called from executor.go.
+// No additional stub needed here.
 
 // LookupTransaction retrieves the block number for a transaction hash.
 func LookupTransaction(tx kv.Tx, txHash types.Hash) (uint64, bool, error) {
