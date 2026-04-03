@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -94,6 +95,13 @@ func (e *Executor) Run(ctx context.Context) error {
 		return nil
 	}
 
+	// Pad output freezer to match startBlock (freezer requires sequential item 0,1,2...).
+	if e.outFreezer != nil {
+		if err := e.padOutputFreezer(startBlock); err != nil {
+			return fmt.Errorf("pad output freezer: %w", err)
+		}
+	}
+
 	startTime := time.Now()
 
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
@@ -166,7 +174,14 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	e.cacheHeader(blockNum, header)
 
 	// 2. Set up state reader/writer.
-	reader := state.NewPlainStateReader(tx)
+	// Wrap reader with WitnessStateReader to capture block witness.
+	plainReader := state.NewPlainStateReader(tx)
+	var witnessReader *WitnessStateReader
+	var reader state.StateReader = plainReader
+	if e.outFreezer != nil {
+		witnessReader = NewWitnessStateReader(plainReader)
+		reader = witnessReader
+	}
 	writer := state.NewPlainStateWriter(tx, tx, blockNum)
 	ibs := state.New(reader)
 
@@ -201,9 +216,9 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		return fmt.Errorf("write history: %w", err)
 	}
 
-	// 6. Write execution outputs to output freezer (receipts, senders, changesets).
+	// 6. Write execution outputs to output freezer.
 	if e.outFreezer != nil {
-		if err := e.writeOutputs(blockNum, result, writer); err != nil {
+		if err := e.writeOutputs(blockNum, result, writer, witnessReader, tx); err != nil {
 			return fmt.Errorf("write outputs: %w", err)
 		}
 	}
@@ -336,6 +351,34 @@ func (e *Executor) makeBlockHashFunc(ref *block.Header) func(n uint64) types.Has
 	}
 }
 
+// padOutputFreezer writes empty entries for blocks 0..startBlock-1 so that
+// the output freezer's item numbering aligns with block numbers.
+func (e *Executor) padOutputFreezer(startBlock uint64) error {
+	tables := []struct {
+		name string
+		ext  string
+	}{
+		{freezer.TableReceipts, "c"},
+		{freezer.TableSenders, "c"},
+		{freezer.TableAccountChanges, "c"},
+		{freezer.TableStorageChanges, "c"},
+		{freezer.TableLeavesJournal, "c"},
+		{freezer.TableBlockWitness, "c"},
+	}
+	for _, t := range tables {
+		tbl, err := e.outFreezer.EnsureTable(t.name, t.ext)
+		if err != nil {
+			return err
+		}
+		for tbl.Items() < startBlock {
+			if err := tbl.Append(tbl.Items(), []byte{}); err != nil {
+				return fmt.Errorf("pad %s at %d: %w", t.name, tbl.Items(), err)
+			}
+		}
+	}
+	return nil
+}
+
 // cacheHeader adds a header to the cache, evicting old entries.
 func (e *Executor) cacheHeader(num uint64, h *block.Header) {
 	e.headerCache[num] = h
@@ -345,7 +388,7 @@ func (e *Executor) cacheHeader(num uint64, h *block.Header) {
 }
 
 // writeOutputs writes execution results to the output freezer.
-func (e *Executor) writeOutputs(blockNum uint64, result *blockResult, writer state.WriterWithChangeSets) error {
+func (e *Executor) writeOutputs(blockNum uint64, result *blockResult, writer state.WriterWithChangeSets, witness *WitnessStateReader, tx kv.Tx) error {
 	of := e.outFreezer
 
 	// 1. Receipts: RLP-encode the list.
@@ -403,8 +446,54 @@ func (e *Executor) writeOutputs(blockNum uint64, result *blockResult, writer sta
 		}
 	}
 
-	// TODO: 4. Trie history — per-block MPT node diffs for historical state proofs.
-	// TODO: 5. Execution input stream — per-block EVM input data for stateless replay.
+	// 4. Leaves journal: per-block trie leaf changes (hashed keys + new values).
+	if psw, ok := writer.(*state.PlainStateWriter); ok {
+		csw := psw.ChangeSetWriter()
+		if csw != nil {
+			accCS, _ := csw.GetAccountChanges()
+			stoCS, _ := csw.GetStorageChanges()
+
+			leavesData := EncodeLeavesJournal(accCS, stoCS,
+				func(addr types.Address) *account.StateAccount {
+					v, err := tx.GetOne("Account", addr[:])
+					if err != nil || v == nil {
+						return nil
+					}
+					var a account.StateAccount
+					if a.DecodeForStorage(v) != nil {
+						return nil
+					}
+					return &a
+				},
+				func(addr types.Address, key types.Hash) []byte {
+					compositeKey := make([]byte, 54)
+					copy(compositeKey[:20], addr[:])
+					// incarnation = 0 for simple lookup
+					copy(compositeKey[22:], key[:])
+					v, _ := tx.GetOne("Storage", compositeKey)
+					return v
+				},
+			)
+			leavesTable, err := of.EnsureTable(freezer.TableLeavesJournal, "c")
+			if err != nil {
+				return err
+			}
+			if err := leavesTable.Append(blockNum, leavesData); err != nil {
+				return fmt.Errorf("append leaves journal: %w", err)
+			}
+		}
+	}
+
+	// 5. Block witness: minimal state access set for stateless replay (no code).
+	if witness != nil {
+		witnessTable, err := of.EnsureTable(freezer.TableBlockWitness, "c")
+		if err != nil {
+			return err
+		}
+		if err := witnessTable.Append(blockNum, witness.Encode()); err != nil {
+			return fmt.Errorf("append block witness: %w", err)
+		}
+	}
 
 	return nil
 }

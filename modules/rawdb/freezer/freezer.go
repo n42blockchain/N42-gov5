@@ -57,6 +57,8 @@ const (
 	TableSenders        = "senders"         // blockNum → concatenated sender addresses 20B×N (cidx/cdat)
 	TableAccountChanges = "account_changes" // blockNum → account changeset (cidx/cdat)
 	TableStorageChanges = "storage_changes" // blockNum → storage changeset (cidx/cdat)
+	TableLeavesJournal  = "leaves_journal"  // blockNum → trie leaf changes per block (cidx/cdat)
+	TableBlockWitness   = "block_witness"   // blockNum → minimal state access set for replay (cidx/cdat)
 )
 
 // tableSpec defines how a table should be opened.
