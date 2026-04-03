@@ -12,16 +12,20 @@ import (
 	"github.com/n42blockchain/N42/modules/changeset"
 )
 
-// EncodeLeavesJournal builds a leaves journal entry from account and storage
-// changesets. Each entry records the hashed key and NEW value (post-execution)
-// for every changed leaf in the block.
+// EncodeLeavesJournal builds a leaves journal from changesets.
+// Records the hashed key + NEW value (post-execution) for every changed leaf.
 //
-// Format:
+// Account section:
 //
-//	[numAccountLeaves:4LE]
-//	  for each: [hashedAddr:32][valLen:2LE][newValue...]  (valLen=0 means deleted)
-//	[numStorageLeaves:4LE]
-//	  for each: [hashedAddr:32][hashedSlot:32][valLen:2LE][newValue...]
+//	[numAccounts:4LE]
+//	per account: [hashedAddr:32][valLen:1][newValue:N]
+//
+// Storage section (address-grouped to avoid repeating hashedAddr):
+//
+//	[numAddrs:4LE]
+//	per address:
+//	  [hashedAddr:32][numSlots:2LE]
+//	  per slot: [hashedSlot:32][valLen:1][newValue:0-32]
 func EncodeLeavesJournal(
 	accCS *changeset.ChangeSet,
 	stoCS *changeset.ChangeSet,
@@ -30,9 +34,9 @@ func EncodeLeavesJournal(
 ) []byte {
 	buf := make([]byte, 0, 4096)
 
-	// Account leaves: write placeholder count, backpatch after loop.
+	// --- Account leaves ---
 	countPos := len(buf)
-	buf = binary.LittleEndian.AppendUint32(buf, 0) // placeholder
+	buf = binary.LittleEndian.AppendUint32(buf, 0)
 	numAcc := uint32(0)
 	if accCS != nil {
 		for _, c := range accCS.Changes {
@@ -40,58 +44,83 @@ func EncodeLeavesJournal(
 				continue
 			}
 			numAcc++
+			buf = append(buf, crypto.Keccak256(c.Key[:20])...)
+
 			var addr types.Address
 			copy(addr[:], c.Key[:20])
-			hashedAddr := crypto.Keccak256(addr[:])
-			buf = append(buf, hashedAddr...)
-
-			// Get the NEW value (post-execution) from current state.
 			acc := getAccount(addr)
 			if acc == nil {
-				buf = binary.LittleEndian.AppendUint16(buf, 0) // deleted
+				buf = append(buf, 0)
 			} else {
 				encoded := acc.MarshalV2()
-				buf = binary.LittleEndian.AppendUint16(buf, uint16(len(encoded)))
+				buf = append(buf, byte(len(encoded)))
 				buf = append(buf, encoded...)
 			}
 		}
 	}
-
-	// Backpatch account count.
 	binary.LittleEndian.PutUint32(buf[countPos:], numAcc)
 
-	// Storage leaves: write placeholder count, backpatch after loop.
-	stoCountPos := len(buf)
-	buf = binary.LittleEndian.AppendUint32(buf, 0) // placeholder
-	numSto := uint32(0)
+	// --- Storage leaves (address-grouped) ---
+	type slotLeaf struct {
+		hashedSlot [32]byte
+		value      []byte
+	}
+	type addrLeaves struct {
+		hashedAddr [32]byte
+		plainAddr  types.Address
+		slots      []slotLeaf
+	}
+
+	var groups []addrLeaves
+	var lastAddr [20]byte
+	var lastHashedAddr [32]byte
+	var cur *addrLeaves
+
 	if stoCS != nil {
 		for _, c := range stoCS.Changes {
 			if len(c.Key) < 54 {
 				continue
 			}
-			numSto++
-			hashedAddr := crypto.Keccak256(c.Key[:20])
-			hashedSlot := crypto.Keccak256(c.Key[22:54])
-			buf = append(buf, hashedAddr...)
-			buf = append(buf, hashedSlot...)
+			var thisAddr [20]byte
+			copy(thisAddr[:], c.Key[:20])
 
-			// Get the NEW value from current state.
+			if cur == nil || thisAddr != lastAddr {
+				lastAddr = thisAddr
+				copy(lastHashedAddr[:], crypto.Keccak256(thisAddr[:]))
+				groups = append(groups, addrLeaves{hashedAddr: lastHashedAddr})
+				copy(groups[len(groups)-1].plainAddr[:], thisAddr[:])
+				cur = &groups[len(groups)-1]
+			}
+
+			var hs [32]byte
+			copy(hs[:], crypto.Keccak256(c.Key[22:54]))
+
 			var addr types.Address
 			copy(addr[:], c.Key[:20])
 			var slotKey types.Hash
 			copy(slotKey[:], c.Key[22:54])
 			val := getStorage(addr, slotKey)
-			if val == nil {
-				buf = binary.LittleEndian.AppendUint16(buf, 0) // deleted
-			} else {
-				buf = binary.LittleEndian.AppendUint16(buf, uint16(len(val)))
-				buf = append(buf, val...)
-			}
+
+			cur.slots = append(cur.slots, slotLeaf{hashedSlot: hs, value: val})
 		}
 	}
 
-	// Backpatch storage count.
-	binary.LittleEndian.PutUint32(buf[stoCountPos:], numSto)
+	addrCountPos := len(buf)
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(groups)))
+	for _, g := range groups {
+		buf = append(buf, g.hashedAddr[:]...)
+		buf = binary.LittleEndian.AppendUint16(buf, uint16(len(g.slots)))
+		for _, s := range g.slots {
+			buf = append(buf, s.hashedSlot[:]...)
+			if s.value == nil {
+				buf = append(buf, 0)
+			} else {
+				buf = append(buf, byte(len(s.value)))
+				buf = append(buf, s.value...)
+			}
+		}
+	}
+	_ = addrCountPos // already written inline
 
 	return buf
 }
