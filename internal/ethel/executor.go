@@ -199,6 +199,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		witnessReader = NewWitnessStateReader(plainReader)
 		reader = witnessReader
 	}
+	// Writer with changeset tracking (for freezer output), but no MDBX changeset writes.
 	writer := state.NewPlainStateWriter(tx, tx, blockNum)
 	ibs := state.New(reader)
 
