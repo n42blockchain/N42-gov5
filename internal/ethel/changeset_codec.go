@@ -9,6 +9,7 @@ package ethel
 
 import (
 	"encoding/binary"
+	"fmt"
 	"sort"
 
 	"github.com/n42blockchain/N42/modules/changeset"
@@ -94,4 +95,68 @@ func appendUint16LE(buf []byte, v uint16) []byte {
 	var tmp [2]byte
 	binary.LittleEndian.PutUint16(tmp[:], v)
 	return append(buf, tmp[:]...)
+}
+
+// DecodeAccountChanges decodes compact account changeset bytes.
+// Returns list of (address, originalValue) pairs.
+func DecodeAccountChanges(data []byte) (addrs [][20]byte, values [][]byte, err error) {
+	if len(data) < 2 {
+		return nil, nil, nil
+	}
+	count := int(binary.LittleEndian.Uint16(data[0:2]))
+	pos := 2
+	for i := 0; i < count; i++ {
+		if pos+21 > len(data) {
+			return nil, nil, fmt.Errorf("truncated account entry %d", i)
+		}
+		var addr [20]byte
+		copy(addr[:], data[pos:pos+20])
+		pos += 20
+		valLen := int(data[pos])
+		pos++
+		if pos+valLen > len(data) {
+			return nil, nil, fmt.Errorf("truncated account value %d", i)
+		}
+		addrs = append(addrs, addr)
+		values = append(values, data[pos:pos+valLen])
+		pos += valLen
+	}
+	return addrs, values, nil
+}
+
+// DecodeStorageChanges decodes address-grouped storage changeset bytes.
+// Returns list of (compositeKey[54], originalValue) pairs.
+func DecodeStorageChanges(data []byte) (keys [][]byte, values [][]byte, err error) {
+	if len(data) < 2 {
+		return nil, nil, nil
+	}
+	addrCount := int(binary.LittleEndian.Uint16(data[0:2]))
+	pos := 2
+	for g := 0; g < addrCount; g++ {
+		if pos+24 > len(data) { // addr(20)+inc(2)+slotCount(2)
+			return nil, nil, fmt.Errorf("truncated addr group %d", g)
+		}
+		prefix := data[pos : pos+22] // addr(20)+inc(2)
+		pos += 22
+		slotCount := int(binary.LittleEndian.Uint16(data[pos : pos+2]))
+		pos += 2
+		for s := 0; s < slotCount; s++ {
+			if pos+33 > len(data) { // key(32)+valLen(1)
+				return nil, nil, fmt.Errorf("truncated slot %d in group %d", s, g)
+			}
+			compositeKey := make([]byte, 54)
+			copy(compositeKey[:22], prefix)
+			copy(compositeKey[22:], data[pos:pos+32])
+			pos += 32
+			valLen := int(data[pos])
+			pos++
+			if pos+valLen > len(data) {
+				return nil, nil, fmt.Errorf("truncated slot value %d in group %d", s, g)
+			}
+			keys = append(keys, compositeKey)
+			values = append(values, data[pos:pos+valLen])
+			pos += valLen
+		}
+	}
+	return keys, values, nil
 }

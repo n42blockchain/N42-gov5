@@ -151,5 +151,5 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 
 // Reorg rolls back state to the given block number using changesets.
 func (a *EngineStateAdapter) Reorg(targetBlock uint64) error {
-	return ethel.Reorg(a.db, targetBlock)
+	return ethel.Reorg(a.db, a.freezer, targetBlock)
 }
