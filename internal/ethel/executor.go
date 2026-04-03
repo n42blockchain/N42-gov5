@@ -9,10 +9,8 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/account"
-	"encoding/binary"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/modules/changeset"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -418,8 +416,8 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer sta
 				return fmt.Errorf("get storage changes: %w", err)
 			}
 
-			accCSBytes = encodeChanges(accCS)
-			stoCSBytes = encodeChanges(stoCS)
+			accCSBytes = EncodeAccountChanges(accCS)
+			stoCSBytes = EncodeStorageChanges(stoCS)
 
 			leavesData = EncodeLeavesJournal(accCS, stoCS,
 				func(addr types.Address) *account.StateAccount {
@@ -466,26 +464,3 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer sta
 	return nil
 }
 
-// encodeChanges serializes a ChangeSet to compact flat bytes.
-// Format: [count:4LE] + per entry: [keyLen:2LE][key][valLen:2LE][val]
-// Keys are already Erigon V2 format (address for accounts, compositeKey for storage).
-// Values are already V2 compact encoding (bitflag + varint fields).
-func encodeChanges(cs *changeset.ChangeSet) []byte {
-	if cs == nil || cs.Len() == 0 {
-		return nil
-	}
-	// Estimate size: 4 + N*(2+avgKey+2+avgVal)
-	buf := make([]byte, 0, 4+cs.Len()*40)
-	var tmp [4]byte
-	binary.LittleEndian.PutUint16(tmp[:2], uint16(cs.Len()))
-	buf = append(buf, tmp[:2]...)
-	for _, c := range cs.Changes {
-		binary.LittleEndian.PutUint16(tmp[:2], uint16(len(c.Key)))
-		buf = append(buf, tmp[:2]...)
-		buf = append(buf, c.Key...)
-		binary.LittleEndian.PutUint16(tmp[:2], uint16(len(c.Value)))
-		buf = append(buf, tmp[:2]...)
-		buf = append(buf, c.Value...)
-	}
-	return buf
-}
