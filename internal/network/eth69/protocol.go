@@ -151,3 +151,87 @@ func IsProtocolVersionSupported(version uint) bool {
 	}
 	return false
 }
+
+// --- Wire protocol packet types for eth/68-69 ---
+
+// HashOrNumber allows referencing a block by hash or number.
+type HashOrNumber struct {
+	Hash   types.Hash // Block hash (preferred)
+	Number uint64     // Block number (if Hash is zero)
+}
+
+// GetBlockHeadersPacket represents a GetBlockHeaders request.
+type GetBlockHeadersPacket struct {
+	RequestID uint64       // Request identifier for matching responses
+	Origin    HashOrNumber // Block to start from
+	Amount    uint64       // Number of headers to retrieve
+	Skip      uint64       // Blocks to skip between consecutive headers
+	Reverse   bool         // Query direction (false = ascending)
+}
+
+// BlockHeadersPacket is the response to GetBlockHeaders.
+type BlockHeadersPacket struct {
+	RequestID uint64   // Matching request identifier
+	Headers   [][]byte // RLP-encoded headers
+}
+
+// GetBlockBodiesPacket requests block bodies by hash.
+type GetBlockBodiesPacket struct {
+	RequestID uint64       // Request identifier
+	Hashes    []types.Hash // Block hashes to retrieve bodies for
+}
+
+// BlockBodiesPacket is the response to GetBlockBodies.
+type BlockBodiesPacket struct {
+	RequestID uint64   // Matching request identifier
+	Bodies    [][]byte // RLP-encoded block bodies
+}
+
+// NewBlockHashesEntry is one entry in NewBlockHashes announcement.
+type NewBlockHashesEntry struct {
+	Hash   types.Hash
+	Number uint64
+}
+
+// NewBlockHashesPacket announces new block hashes to peers.
+type NewBlockHashesPacket []NewBlockHashesEntry
+
+// TransactionsPacket broadcasts full transactions.
+type TransactionsPacket [][]byte // RLP-encoded transactions
+
+// NewBlockPacket announces a new complete block.
+type NewBlockPacket struct {
+	Block []byte // RLP-encoded block (header + body)
+	TD    []byte // Total difficulty (RLP-encoded uint256)
+}
+
+// NewPooledTransactionHashesPacket announces transaction hashes in the pool.
+type NewPooledTransactionHashesPacket struct {
+	Types  []byte       // Transaction type per hash
+	Sizes  []uint32     // Transaction size per hash
+	Hashes []types.Hash // Transaction hashes
+}
+
+// GetPooledTransactionsPacket requests pooled transactions by hash.
+type GetPooledTransactionsPacket struct {
+	RequestID uint64
+	Hashes    []types.Hash
+}
+
+// PooledTransactionsPacket is the response to GetPooledTransactions.
+type PooledTransactionsPacket struct {
+	RequestID    uint64
+	Transactions [][]byte // RLP-encoded transactions
+}
+
+// GetReceiptsPacket requests receipts by block hash.
+type GetReceiptsPacket struct {
+	RequestID uint64
+	Hashes    []types.Hash
+}
+
+// ReceiptsPacket is the response to GetReceipts.
+type ReceiptsPacket struct {
+	RequestID uint64
+	Receipts  [][][]byte // RLP-encoded receipts per block
+}
