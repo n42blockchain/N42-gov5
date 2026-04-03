@@ -36,6 +36,9 @@ type ExecutorConfig struct {
 	SkipErrors bool
 	// NoIndices if true, skip writing TxLookup and LogIndex (faster sync).
 	NoIndices bool
+	// NoHistory if true, skip writing AccountsHistory/StorageHistory bitmaps.
+	// These can be rebuilt as a background stage after sync.
+	NoHistory bool
 	// NoOutputs if true, skip writing output freezer (receipts, senders, etc.).
 	NoOutputs bool
 }
@@ -245,8 +248,10 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		return fmt.Errorf("write changesets: %w", err)
 	}
 	t2b := time.Now()
-	if err := writer.WriteHistory(); err != nil {
-		return fmt.Errorf("write history: %w", err)
+	if !e.cfg.NoHistory {
+		if err := writer.WriteHistory(); err != nil {
+			return fmt.Errorf("write history: %w", err)
+		}
 	}
 	t2c := time.Now()
 
