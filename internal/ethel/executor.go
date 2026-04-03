@@ -279,8 +279,8 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	t5 := time.Now()
 
-	// Performance log every 1000 blocks.
-	if blockNum%1000 == 0 && blockNum > 0 {
+	// Performance log every 1000 blocks (skip if block was trivially fast).
+	if total := t5.Sub(t0); blockNum%1000 == 0 && blockNum > 0 && total > 0 {
 		log.Info("Block timing",
 			"block", blockNum,
 			"setup", t1.Sub(t0),
@@ -288,7 +288,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 			"commit", t3.Sub(t2),
 			"indices", t4.Sub(t3),
 			"outputs", t5.Sub(t4),
-			"total", t5.Sub(t0))
+			"total", total)
 	}
 
 	return nil
