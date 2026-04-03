@@ -70,6 +70,14 @@ func main() {
 				Name:  "skip-errors",
 				Usage: "Log gas mismatches but continue execution",
 			},
+			&cli.BoolFlag{
+				Name:  "no-indices",
+				Usage: "Skip writing TxLookup and LogIndex (faster sync)",
+			},
+			&cli.BoolFlag{
+				Name:  "no-outputs",
+				Usage: "Skip writing output freezer (receipts, senders, witness, etc.)",
+			},
 		},
 		Action: run,
 	}
@@ -89,6 +97,8 @@ func run(c *cli.Context) error {
 	commitInterval := c.Uint64("commit")
 	verifyInterval := c.Uint64("verify")
 	skipErrors := c.Bool("skip-errors")
+	noIndices := c.Bool("no-indices")
+	noOutputs := c.Bool("no-outputs")
 
 	// Open Geth ancient freezer.
 	log.Info("Opening Geth ancient data", "path", ancientPath)
@@ -148,6 +158,8 @@ func run(c *cli.Context) error {
 		CommitInterval: commitInterval,
 		VerifyInterval: verifyInterval,
 		SkipErrors:     skipErrors,
+		NoIndices:      noIndices,
+		NoOutputs:      noOutputs,
 	}
 
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)

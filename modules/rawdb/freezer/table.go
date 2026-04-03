@@ -198,6 +198,8 @@ func (t *FreezerTable) Retrieve(item uint64) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, ErrClosed
 	}
+	// Write lock needed because openDataFileRO may cache file handles.
+	// TODO: Use RLock + upgrade pattern or sync.Map for better concurrency.
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

@@ -35,6 +35,10 @@ type ExecutorConfig struct {
 	EndBlock uint64
 	// SkipErrors if true, log gas mismatches but continue execution.
 	SkipErrors bool
+	// NoIndices if true, skip writing TxLookup and LogIndex (faster sync).
+	NoIndices bool
+	// NoOutputs if true, skip writing output freezer (receipts, senders, etc.).
+	NoOutputs bool
 }
 
 // Executor reads blocks from a Geth-compatible Freezer and re-executes
@@ -162,6 +166,7 @@ func (e *Executor) Run(ctx context.Context) error {
 
 // executeBlock processes a single block.
 func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64) error {
+	t0 := time.Now()
 	// 1. Read header and body from freezer.
 	header, err := e.readHeader(blockNum)
 	if err != nil {
@@ -176,11 +181,10 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	e.cacheHeader(blockNum, header)
 
 	// 2. Set up state reader/writer.
-	// Wrap reader with WitnessStateReader to capture block witness.
 	plainReader := state.NewPlainStateReader(tx)
 	var witnessReader *WitnessStateReader
 	var reader state.StateReader = plainReader
-	if e.outFreezer != nil {
+	if e.outFreezer != nil && !e.cfg.NoOutputs {
 		witnessReader = NewWitnessStateReader(plainReader)
 		reader = witnessReader
 	}
@@ -194,6 +198,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		ibs.SetRootComputer(NewHashOnlyComputer(tx))
 	}
 
+	t1 := time.Now()
 	// 3. Process block (DAO fork, system contracts, EVM).
 	result, err := e.processBlock(header, body, ibs)
 	if err != nil {
@@ -218,6 +223,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		ibs.IntermediateRoot()
 	}
 
+	t2 := time.Now()
 	// 6. Commit state changes to writer.
 	rules := e.chainCfg.Rules(header.Number.Uint64())
 	if err := ibs.CommitBlock(rules, writer); err != nil {
@@ -230,16 +236,20 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		return fmt.Errorf("write history: %w", err)
 	}
 
+	t3 := time.Now()
 	// 7. Write indices (TxLookup + LogIndex) for RPC support.
-	if err := WriteBlockIndices(tx, blockNum, body.Transactions); err != nil {
-		return fmt.Errorf("write tx indices: %w", err)
-	}
-	if err := rawdb.WriteLogIndex(tx, blockNum, result.Receipts); err != nil {
-		return fmt.Errorf("write log index: %w", err)
+	if !e.cfg.NoIndices {
+		if err := WriteBlockIndices(tx, blockNum, body.Transactions); err != nil {
+			return fmt.Errorf("write tx indices: %w", err)
+		}
+		if err := rawdb.WriteLogIndex(tx, blockNum, result.Receipts); err != nil {
+			return fmt.Errorf("write log index: %w", err)
+		}
 	}
 
-	// 7. Write execution outputs to output freezer.
-	if e.outFreezer != nil {
+	t4 := time.Now()
+	// 8. Write execution outputs to output freezer.
+	if e.outFreezer != nil && !e.cfg.NoOutputs {
 		if err := e.writeOutputs(blockNum, result, writer, witnessReader, tx); err != nil {
 			return fmt.Errorf("write outputs: %w", err)
 		}
@@ -257,6 +267,20 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 				blockNum, computedRoot.Hex(), header.Root.Hex())
 		}
 		log.Info("State root verified", "block", blockNum, "root", header.Root.Hex())
+	}
+
+	t5 := time.Now()
+
+	// Performance log every 1000 blocks.
+	if blockNum%1000 == 0 && blockNum > 0 {
+		log.Info("Block timing",
+			"block", blockNum,
+			"setup", t1.Sub(t0),
+			"evm", t2.Sub(t1),
+			"commit", t3.Sub(t2),
+			"indices", t4.Sub(t3),
+			"outputs", t5.Sub(t4),
+			"total", t5.Sub(t0))
 	}
 
 	return nil
