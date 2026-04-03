@@ -75,6 +75,10 @@ func main() {
 				Usage: "Skip writing TxLookup and LogIndex (faster sync)",
 			},
 			&cli.BoolFlag{
+				Name:  "no-history",
+				Usage: "Skip writing AccountsHistory/StorageHistory bitmaps (faster sync)",
+			},
+			&cli.BoolFlag{
 				Name:  "no-outputs",
 				Usage: "Skip writing output freezer (receipts, senders, witness, etc.)",
 			},
@@ -98,6 +102,7 @@ func run(c *cli.Context) error {
 	verifyInterval := c.Uint64("verify")
 	skipErrors := c.Bool("skip-errors")
 	noIndices := c.Bool("no-indices")
+	noHistory := c.Bool("no-history")
 	noOutputs := c.Bool("no-outputs")
 
 	// Open Geth ancient freezer.
@@ -159,6 +164,7 @@ func run(c *cli.Context) error {
 		VerifyInterval: verifyInterval,
 		SkipErrors:     skipErrors,
 		NoIndices:      noIndices,
+		NoHistory:      noHistory,
 		NoOutputs:      noOutputs,
 	}
 
