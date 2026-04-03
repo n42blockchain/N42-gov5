@@ -23,6 +23,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 )
@@ -81,12 +82,18 @@ type TransitionConfigurationV1 struct {
 
 // EngineAPIV1 provides Paris/Shanghai compatible Engine API methods.
 type EngineAPIV1 struct {
-	api *BlockChainAPI
+	api          *BlockChainAPI
+	stateAdapter *EngineStateAdapter // optional: when set, NewPayload persists state (ETH EL mode)
 }
 
 // NewEngineAPIV1 creates a new Engine API v1/v2 handler.
 func NewEngineAPIV1(api *BlockChainAPI) *EngineAPIV1 {
 	return &EngineAPIV1{api: api}
+}
+
+// SetStateAdapter enables persistent state execution for ETH EL mode.
+func (e *EngineAPIV1) SetStateAdapter(adapter *EngineStateAdapter) {
+	e.stateAdapter = adapter
 }
 
 // EngineAPIs returns the authenticated Engine API namespaces exposed by the node.
@@ -167,17 +174,7 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("blockhash mismatch"), nil
 	}
-	if err := e.validatePayloadExecution(blk, payload.ParentHash, nil, nil); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
-	}
-	headHash := e.currentHeadHash()
-	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
-		return syncingPayloadResponse(), nil
-	}
-	if overlay := e.overlay(); overlay != nil {
-		overlay.importBlock(blk, blockHash)
-	}
-	return validPayloadResponse(blockHash), nil
+	return e.executeOrValidate(blk, blockHash, payload.ParentHash, nil, nil)
 }
 
 // NewPayloadV2 processes a Shanghai execution payload.
@@ -214,17 +211,7 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("blockhash mismatch"), nil
 	}
-	if err := e.validatePayloadExecution(blk, payload.ParentHash, nil, nil); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
-	}
-	headHash := e.currentHeadHash()
-	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
-		return syncingPayloadResponse(), nil
-	}
-	if overlay := e.overlay(); overlay != nil {
-		overlay.importBlock(blk, blockHash)
-	}
-	return validPayloadResponse(blockHash), nil
+	return e.executeOrValidate(blk, blockHash, payload.ParentHash, nil, nil)
 }
 
 // GetPayloadV1 retrieves a Paris payload.
@@ -250,6 +237,12 @@ func (e *EngineAPIV1) GetPayloadV2(ctx context.Context, payloadID PayloadID) (*G
 func (e *EngineAPIV1) ForkchoiceUpdatedV1(ctx context.Context, state *ForkchoiceStateV1, attrs *PayloadAttributesV1) (*ForkchoiceUpdatedResponseV3, error) {
 	if state == nil {
 		return invalidForkchoiceResponse("missing forkchoice state"), nil
+	}
+	// ETH EL mode: persist forkchoice to DB.
+	if e.stateAdapter != nil {
+		if err := e.stateAdapter.ForkchoiceUpdated(state.HeadBlockHash, state.SafeBlockHash, state.FinalizedBlockHash); err != nil {
+			log.Warn("ForkchoiceUpdated error", "err", err)
+		}
 	}
 	head := e.currentHead()
 	if head == nil {
@@ -427,6 +420,38 @@ func validPayloadResponse(hash types.Hash) *PayloadStatusV1 {
 		Status:          PayloadStatusValid,
 		LatestValidHash: &hash,
 	}
+}
+
+// executeOrValidate either persists state (ETH EL) or just validates (N42).
+func (e *EngineAPIV1) executeOrValidate(blk block.IBlock, blockHash, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes) (*PayloadStatusV1, error) {
+	// ETH EL mode: execute and persist.
+	if e.stateAdapter != nil {
+		concreteBlock, ok := blk.(*block.Block)
+		if !ok {
+			return invalidPayloadResponse("unexpected block type"), nil
+		}
+		valid, stateRoot, err := e.stateAdapter.ExecutePayload(concreteBlock)
+		if err != nil {
+			return invalidPayloadResponse(err.Error()), nil
+		}
+		if !valid {
+			return &PayloadStatusV1{Status: PayloadStatusInvalid, LatestValidHash: &stateRoot}, nil
+		}
+		return validPayloadResponse(blockHash), nil
+	}
+
+	// N42 mode: validate only.
+	if err := e.validatePayloadExecution(blk, parentHash, parentBeaconRoot, expectedRequests); err != nil {
+		return invalidPayloadResponse(err.Error()), nil
+	}
+	headHash := e.currentHeadHash()
+	if headHash == (types.Hash{}) || parentHash != headHash {
+		return syncingPayloadResponse(), nil
+	}
+	if overlay := e.overlay(); overlay != nil {
+		overlay.importBlock(blk, blockHash)
+	}
+	return validPayloadResponse(blockHash), nil
 }
 
 func validForkchoiceResponse(hash types.Hash, payloadID *PayloadID) *ForkchoiceUpdatedResponseV3 {

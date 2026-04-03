@@ -153,8 +153,9 @@ type Node struct {
 	snapSync        *snapsync.Service
 	accman          *accounts.Manager
 
-	api     *api.API
-	rpcAPIs []jsonrpc.API
+	api                 *api.API
+	rpcAPIs             []jsonrpc.API
+	engineStateAdapter  *api.EngineStateAdapter // ETH EL mode only
 
 	http           *httpServer
 	ipc            *ipcServer
@@ -1334,7 +1335,18 @@ func (n *Node) Start() error {
 		Namespace: "admin",
 		Service:   api.NewAdminAPI(n.api),
 	})
-	n.rpcAPIs = append(n.rpcAPIs, api.EngineAPIs(n.api)...)
+	engineAPIs := api.EngineAPIs(n.api)
+	// ETH EL mode: wire state adapter into Engine API for persistent execution.
+	if n.profile.IsEthereumEL() {
+		if adapter := n.engineStateAdapter; adapter != nil {
+			for i := range engineAPIs {
+				if v1, ok := engineAPIs[i].Service.(*api.EngineAPIV1); ok {
+					v1.SetStateAdapter(adapter)
+				}
+			}
+		}
+	}
+	n.rpcAPIs = append(n.rpcAPIs, engineAPIs...)
 	n.rpcAPIs = append(n.rpcAPIs, tracers.APIs(n.api)...)
 	n.rpcAPIs = append(n.rpcAPIs, debug.APIs()...)
 
