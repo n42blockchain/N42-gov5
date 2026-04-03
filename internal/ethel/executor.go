@@ -240,15 +240,8 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return fmt.Errorf("commit block state: %w", err)
 	}
-	t2a := time.Now()
-	// ChangeSets are written to output freezer only (not MDBX).
-	// MDBX changeset tables are only needed for History bitmaps (not written
-	// during sync) and reorg rollback (uses freezer changesets instead).
-	// History bitmaps and log indices are NOT written during sync.
-	// They are rebuilt as a batch stage after sync completes (much faster).
-	t2b := time.Now()
-	t2c := t2b
-	t3 := t2b
+	// ChangeSets → output freezer only. History/LogIndex → batch stage after sync.
+	t3 := time.Now()
 
 	t4 := time.Now()
 	// 8. Write execution outputs to output freezer.
@@ -275,12 +268,10 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	t5 := time.Now()
 
 	// Collect timing samples for P50/P99 analysis.
-	total := t5.Sub(t0)
 	e.collectTiming(blockNum, timingSample{
-		read: t1.Sub(t0), evm: t2.Sub(t1),
-		commitBlock: t2a.Sub(t2), writeCS: t2b.Sub(t2a), writeHist: t2c.Sub(t2b),
-		commit: t3.Sub(t2), indices: t4.Sub(t3), outputs: t5.Sub(t4),
-		total: total, txCount: len(body.Transactions), gasUsed: result.GasUsed,
+		read: t1.Sub(t0), evm: t2.Sub(t1), commit: t3.Sub(t2),
+		outputs: t5.Sub(t4), total: t5.Sub(t0),
+		txCount: len(body.Transactions), gasUsed: result.GasUsed,
 	})
 
 	return nil
@@ -371,11 +362,9 @@ func (e *Executor) cacheHeader(num uint64, h *block.Header) {
 }
 
 type timingSample struct {
-	read, evm                          time.Duration
-	commitBlock, writeCS, writeHist    time.Duration // commit sub-steps
-	commit, indices, outputs, total    time.Duration
-	txCount                            int
-	gasUsed                            uint64
+	read, evm, commit, outputs, total time.Duration
+	txCount                           int
+	gasUsed                           uint64
 }
 
 func (e *Executor) collectTiming(blockNum uint64, s timingSample) {
@@ -418,10 +407,7 @@ func (e *Executor) reportTimings(blockNum uint64) {
 		"P50_evm", p50.evm,
 		"P99_total", p99.total,
 		"P99_evm", p99.evm,
-		"P99_commitBlk", p99.commitBlock,
-		"P99_writeCS", p99.writeCS,
-		"P99_writeHist", p99.writeHist,
-		"P99_indices", p99.indices,
+		"P99_commit", p99.commit,
 		"P99_outputs", p99.outputs,
 		"WORST_total", worst.total,
 	)
