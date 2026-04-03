@@ -52,3 +52,12 @@ func (m *MemStore) Put(hash Hash, value NodeValue) error {
 }
 
 func (m *MemStore) Len() int { return len(m.nodes) }
+
+// TotalBytes returns total storage used by all nodes (key + value).
+func (m *MemStore) TotalBytes() int64 {
+	var total int64
+	for _, v := range m.nodes {
+		total += int64(32 + len(v)) // Hash(32) + value
+	}
+	return total
+}

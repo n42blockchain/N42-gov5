@@ -231,10 +231,3 @@ func DecodeGethBody(data []byte) (*GethBodyResult, error) {
 	return &GethBodyResult{Transactions: txs, Uncles: uncles}, nil
 }
 
-// DecodeGethReceipts decodes Geth-format RLP-encoded receipts.
-// Geth stores receipts as a flat RLP list per block.
-func DecodeGethReceipts(data []byte) (block.Receipts, error) {
-	// For now, return nil — we will generate receipts from execution.
-	// This decoder is for verification/comparison only.
-	return nil, nil
-}

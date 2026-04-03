@@ -12,11 +12,9 @@ import (
 	"strings"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
@@ -120,7 +118,5 @@ func InitEthGenesisState(tx kv.RwTx, genesisPath string) (int, error) {
 	}
 
 	log.Info("Initialized ETH genesis state", "accounts", count)
-	_ = modules.Account // ensure import
-	_ = account.StateAccount{} // ensure import
 	return count, nil
 }

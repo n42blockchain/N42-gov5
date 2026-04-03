@@ -10,9 +10,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/trie"
 )
 
 // VerifyAccountsAgainstReth compares a sample of accounts from the N42 MDBX
@@ -123,91 +121,6 @@ func decodeRethCompactAccount(data []byte) (nonce uint64, balance *uint256.Int, 
 	return 0, new(uint256.Int), nil, fmt.Errorf("reth compact decoder not yet implemented")
 }
 
-// HashStateAndCalcRoot populates HashedAccounts/HashedStorage from PlainState,
-// then computes the MPT state root using CalcTrieRoot.
-// This is a full (non-incremental) computation — expensive but definitive.
-func HashStateAndCalcRoot(rwTx kv.RwTx) (types.Hash, error) {
-	// Phase 1: Hash all accounts from "Account" → "HashedAccounts"
-	accCursor, err := rwTx.Cursor("Account")
-	if err != nil {
-		return types.Hash{}, fmt.Errorf("open Account cursor: %w", err)
-	}
-	defer accCursor.Close()
-
-	accCount := 0
-	for k, v, err := accCursor.First(); k != nil; k, v, err = accCursor.Next() {
-		if err != nil {
-			return types.Hash{}, err
-		}
-		if len(k) != 20 {
-			continue
-		}
-		// keccak256(address)
-		hashedKey := crypto.Keccak256(k)
-
-		// Decode to normalize CodeHash.
-		var acc account.StateAccount
-		if err := acc.DecodeForStorage(v); err != nil {
-			return types.Hash{}, fmt.Errorf("decode account: %w", err)
-		}
-		emptyHash := types.Hash{}
-		if acc.CodeHash == emptyHash {
-			acc.CodeHash = crypto.Keccak256Hash(nil)
-		}
-		enc := acc.MarshalV2()
-
-		if err := rwTx.Put(kv.HashedAccounts, hashedKey, enc); err != nil {
-			return types.Hash{}, fmt.Errorf("put HashedAccounts: %w", err)
-		}
-		accCount++
-	}
-
-	// Phase 2: Hash all storage from "Storage" → "HashedStorage"
-	stoCursor, err := rwTx.Cursor("Storage")
-	if err != nil {
-		return types.Hash{}, fmt.Errorf("open Storage cursor: %w", err)
-	}
-	defer stoCursor.Close()
-
-	stoCount := 0
-	for k, v, err := stoCursor.First(); k != nil; k, v, err = stoCursor.Next() {
-		if err != nil {
-			return types.Hash{}, err
-		}
-		// Storage key = address(20) + incarnation(2) + storageKey(32) = 54 bytes
-		if len(k) < 54 {
-			continue
-		}
-		addrHash := crypto.Keccak256(k[:20])
-		incarnation := k[20:22] // 2-byte incarnation
-		slotHash := crypto.Keccak256(k[22:54])
-
-		// HashedStorage uses DupSort with AutoDupSortKeysConversion:
-		// Full key (72B) = addressHash(32) + incarnation(8) + slotHash(32)
-		// MDBX auto-converts to: key(40) = addressHash(32) + incarnation(8), dup(32) = slotHash(32)
-		// value = storage value
-		incBuf := make([]byte, 8)
-		copy(incBuf[6:8], incarnation) // 2-byte incarnation → 8-byte BE
-
-		hashedKey := make([]byte, 72)
-		copy(hashedKey[0:32], addrHash)
-		copy(hashedKey[32:40], incBuf)
-		copy(hashedKey[40:72], slotHash)
-
-		if err := rwTx.Put(kv.HashedStorage, hashedKey, v); err != nil {
-			return types.Hash{}, fmt.Errorf("put HashedStorage: %w", err)
-		}
-		stoCount++
-	}
-
-	fmt.Printf("HashState: %d accounts, %d storage slots\n", accCount, stoCount)
-
-	// Phase 3: CalcTrieRoot using FlatDBTrieLoader.
-	loader := trie.NewFlatDBTrieLoader("ethel-verify", trie.NewRetainList(0), nil, nil, false)
-	root, err := loader.CalcTrieRoot(rwTx, nil)
-	if err != nil {
-		return types.Hash{}, fmt.Errorf("CalcTrieRoot: %w", err)
-	}
-
-	return root, nil
-}
+// HashStateAndCalcRoot is an alias for FullStateRootVerify.
+// Deprecated: use FullStateRootVerify directly.
+var HashStateAndCalcRoot = FullStateRootVerify

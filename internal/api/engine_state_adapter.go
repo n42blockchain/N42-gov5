@@ -65,7 +65,7 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 	ibs := state.New(reader)
 
 	// Attach TrieRootComputer for state root verification.
-	ethel.SetupStateRootComputerPublic(tx, ibs)
+	ethel.SetupStateRootComputer(tx, ibs)
 
 	// Execute block.
 	gasUsed, err := a.processBlock(tx, blk, header, ibs, writer)
