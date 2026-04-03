@@ -240,12 +240,15 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return fmt.Errorf("commit block state: %w", err)
 	}
+	t2a := time.Now()
 	if err := writer.WriteChangeSets(); err != nil {
 		return fmt.Errorf("write changesets: %w", err)
 	}
+	t2b := time.Now()
 	if err := writer.WriteHistory(); err != nil {
 		return fmt.Errorf("write history: %w", err)
 	}
+	t2c := time.Now()
 
 	t3 := time.Now()
 	// 7. Write indices (TxLookup + LogIndex) for RPC support.
@@ -284,7 +287,12 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	// Collect timing samples for P50/P99 analysis.
 	total := t5.Sub(t0)
-	e.collectTiming(blockNum, total, t1.Sub(t0), t2.Sub(t1), t3.Sub(t2), t4.Sub(t3), t5.Sub(t4), len(body.Transactions), result.GasUsed)
+	e.collectTiming(blockNum, timingSample{
+		read: t1.Sub(t0), evm: t2.Sub(t1),
+		commitBlock: t2a.Sub(t2), writeCS: t2b.Sub(t2a), writeHist: t2c.Sub(t2b),
+		commit: t3.Sub(t2), indices: t4.Sub(t3), outputs: t5.Sub(t4),
+		total: total, txCount: len(body.Transactions), gasUsed: result.GasUsed,
+	})
 
 	return nil
 }
@@ -374,19 +382,18 @@ func (e *Executor) cacheHeader(num uint64, h *block.Header) {
 }
 
 type timingSample struct {
-	read, evm, commit, indices, outputs, total time.Duration
-	txCount                                    int
-	gasUsed                                    uint64
+	read, evm                          time.Duration
+	commitBlock, writeCS, writeHist    time.Duration // commit sub-steps
+	commit, indices, outputs, total    time.Duration
+	txCount                            int
+	gasUsed                            uint64
 }
 
-func (e *Executor) collectTiming(blockNum uint64, total, read, evm, commit, indices, outputs time.Duration, txCount int, gasUsed uint64) {
+func (e *Executor) collectTiming(blockNum uint64, s timingSample) {
 	if e.timingWindow == 0 {
 		e.timingWindow = 1000
 	}
-	e.timingSamples = append(e.timingSamples, timingSample{
-		read: read, evm: evm, commit: commit, indices: indices, outputs: outputs, total: total,
-		txCount: txCount, gasUsed: gasUsed,
-	})
+	e.timingSamples = append(e.timingSamples, s)
 	if len(e.timingSamples) >= e.timingWindow {
 		e.reportTimings(blockNum)
 		e.timingSamples = e.timingSamples[:0]
@@ -400,7 +407,6 @@ func (e *Executor) reportTimings(blockNum uint64) {
 		return
 	}
 
-	// Sort by total for percentiles.
 	sort.Slice(s, func(i, j int) bool { return s[i].total < s[j].total })
 
 	p50 := s[n*50/100]
@@ -421,13 +427,14 @@ func (e *Executor) reportTimings(blockNum uint64) {
 		"avgGas", totalGas/uint64(n),
 		"P50_total", p50.total,
 		"P50_evm", p50.evm,
-		"P50_commit", p50.commit,
 		"P99_total", p99.total,
 		"P99_evm", p99.evm,
-		"P99_commit", p99.commit,
+		"P99_commitBlk", p99.commitBlock,
+		"P99_writeCS", p99.writeCS,
+		"P99_writeHist", p99.writeHist,
 		"P99_indices", p99.indices,
+		"P99_outputs", p99.outputs,
 		"WORST_total", worst.total,
-		"WORST_evm", worst.evm,
 	)
 }
 
