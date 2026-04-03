@@ -1,0 +1,115 @@
+{
+  "journal_path": "D:/N42/mpt-full/leaves.journal",
+  "blocks_processed": 100000,
+  "entries_processed": 6901,
+  "elapsed_sec": 0.8952367,
+  "jmt": {
+    "storage_bytes": 9632151,
+    "total_nodes": 29674,
+    "avg_node_size": 324.5990092336726,
+    "root_time_avg_us": 0.74431,
+    "blocks_per_sec": 1343526.2189141621,
+    "proof_size_avg": 1413.437,
+    "proof_size_p50": 1435,
+    "proof_size_p99": 1564,
+    "proof_gen_time_avg_us": 4.179,
+    "proof_depth_avg": 4.677,
+    "proof_verify_time_avg_us": 0,
+    "hist_proof_supported": true,
+    "hist_storage_bytes": 9632151
+  },
+  "mpt": {
+    "storage_bytes": 191750,
+    "total_branches": 919,
+    "avg_branch_size": 208.65070729053318,
+    "root_time_avg_us": 2.16101,
+    "blocks_per_sec": 462746.58608706115,
+    "proof_supported": true,
+    "proof_size_avg": 924.9574468085107,
+    "proof_size_p50": 916,
+    "proof_size_p99": 1107,
+    "proof_depth_avg": 2,
+    "proof_gen_time_avg_us": 111.95744680851064
+  },
+  "bmt": {
+    "storage_bytes": 6938712,
+    "total_nodes": 73091,
+    "avg_node_size": 94.93250879041196,
+    "root_time_avg_us": 0.88717,
+    "blocks_per_sec": 1127179.6837133807,
+    "proof_size_avg": 401.4749498997996,
+    "proof_size_p50": 384,
+    "proof_size_p99": 576,
+    "proof_depth_avg": 12.546092184368737,
+    "proof_gen_time_avg_us": 3.6372745490981964,
+    "proof_verify_time_avg_us": 3.715430861723447
+  },
+  "verkle": {
+    "unique_keys": 2817,
+    "root_time_avg_us": 4.81082,
+    "blocks_per_sec": 207864.77149425668,
+    "proof_size_est": 610,
+    "proof_depth_est": 2
+  },
+  "jmt_path": {
+    "total_nodes": 27116,
+    "storage_bytes": 10667757,
+    "live_leaves": 2817,
+    "root_time_avg_us": 0.02639,
+    "blocks_per_sec": 37893141.34141721,
+    "proof_size_est": 1440,
+    "proof_depth_est": 3
+  },
+  "binary_path": {
+    "total_nodes": 81105,
+    "storage_bytes": 5120722,
+    "live_leaves": 2817,
+    "root_time_avg_us": 0.03152,
+    "blocks_per_sec": 31725888.324873097,
+    "proof_size_est": 384,
+    "proof_depth_est": 12
+  },
+  "kzg": {
+    "live_leaves": 2817,
+    "storage_bytes": 732225,
+    "root_time_avg_us": 27.614,
+    "blocks_per_sec": 36213.514883754615,
+    "proof_size_est": 96,
+    "proof_depth_est": 1,
+    "crypto_time_est_us": 400
+  },
+  "growth_snapshots": [
+    {
+      "block_num": 50000,
+      "jmt_bytes": 8785831,
+      "jmt_nodes": 27115,
+      "mpt_bytes": 182893,
+      "mpt_branches": 874,
+      "bmt_bytes": 6322907,
+      "bmt_nodes": 66620,
+      "verkle_keys": 2689,
+      "jmt_path_nodes": 24948,
+      "jmt_path_bytes": 9810271,
+      "binary_nodes": 74059,
+      "binary_bytes": 4674614,
+      "kzg_leaves": 2689,
+      "kzg_bytes": 674731
+    },
+    {
+      "block_num": 100000,
+      "jmt_bytes": 9632151,
+      "jmt_nodes": 29674,
+      "mpt_bytes": 191750,
+      "mpt_branches": 919,
+      "bmt_bytes": 6938712,
+      "bmt_nodes": 73091,
+      "verkle_keys": 2817,
+      "jmt_path_nodes": 27116,
+      "jmt_path_bytes": 10667757,
+      "binary_nodes": 81105,
+      "binary_bytes": 5120722,
+      "kzg_leaves": 2817,
+      "kzg_bytes": 732225
+    }
+  ]
+}
