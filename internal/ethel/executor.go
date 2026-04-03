@@ -6,6 +6,7 @@ package ethel
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -49,6 +50,10 @@ type Executor struct {
 	engine      consensus.Engine
 	cfg         ExecutorConfig
 	headerCache map[uint64]*block.Header // small LRU for BLOCKHASH
+
+	// Timing collection for P50/P99 analysis.
+	timingSamples []timingSample
+	timingWindow  int // samples per window (default 1000)
 }
 
 // NewExecutor creates a new block executor.
@@ -277,17 +282,9 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	t5 := time.Now()
 
-	// Performance log every 1000 blocks (skip if block was trivially fast).
-	if total := t5.Sub(t0); blockNum%1000 == 0 && blockNum > 0 && total > 0 {
-		log.Info("Block timing",
-			"block", blockNum,
-			"setup", t1.Sub(t0),
-			"evm", t2.Sub(t1),
-			"commit", t3.Sub(t2),
-			"indices", t4.Sub(t3),
-			"outputs", t5.Sub(t4),
-			"total", total)
-	}
+	// Collect timing samples for P50/P99 analysis.
+	total := t5.Sub(t0)
+	e.collectTiming(blockNum, total, t1.Sub(t0), t2.Sub(t1), t3.Sub(t2), t4.Sub(t3), t5.Sub(t4), len(body.Transactions), result.GasUsed)
 
 	return nil
 }
@@ -374,6 +371,64 @@ func (e *Executor) cacheHeader(num uint64, h *block.Header) {
 	if num >= 256 {
 		delete(e.headerCache, num-256)
 	}
+}
+
+type timingSample struct {
+	read, evm, commit, indices, outputs, total time.Duration
+	txCount                                    int
+	gasUsed                                    uint64
+}
+
+func (e *Executor) collectTiming(blockNum uint64, total, read, evm, commit, indices, outputs time.Duration, txCount int, gasUsed uint64) {
+	if e.timingWindow == 0 {
+		e.timingWindow = 1000
+	}
+	e.timingSamples = append(e.timingSamples, timingSample{
+		read: read, evm: evm, commit: commit, indices: indices, outputs: outputs, total: total,
+		txCount: txCount, gasUsed: gasUsed,
+	})
+	if len(e.timingSamples) >= e.timingWindow {
+		e.reportTimings(blockNum)
+		e.timingSamples = e.timingSamples[:0]
+	}
+}
+
+func (e *Executor) reportTimings(blockNum uint64) {
+	s := e.timingSamples
+	n := len(s)
+	if n == 0 {
+		return
+	}
+
+	// Sort by total for percentiles.
+	sort.Slice(s, func(i, j int) bool { return s[i].total < s[j].total })
+
+	p50 := s[n*50/100]
+	p99 := s[n*99/100]
+	worst := s[n-1]
+
+	var totalGas uint64
+	var totalTx int
+	for _, v := range s {
+		totalGas += v.gasUsed
+		totalTx += v.txCount
+	}
+
+	log.Info("Block P50/P99",
+		"block", blockNum,
+		"samples", n,
+		"avgTx", totalTx/n,
+		"avgGas", totalGas/uint64(n),
+		"P50_total", p50.total,
+		"P50_evm", p50.evm,
+		"P50_commit", p50.commit,
+		"P99_total", p99.total,
+		"P99_evm", p99.evm,
+		"P99_commit", p99.commit,
+		"P99_indices", p99.indices,
+		"WORST_total", worst.total,
+		"WORST_evm", worst.evm,
+	)
 }
 
 // writeOutputs writes execution results to the output freezer.
