@@ -24,6 +24,7 @@ import (
 	"github.com/c2h5oh/datasize"
 
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/internal/txlookup"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
@@ -130,6 +131,17 @@ func main() {
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
 				},
 				Action: runVerifyJournal,
+			},
+			{
+				Name:  "txlookup-build",
+				Usage: "Build RecSplit segments for tx hash → block number lookup",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
+					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
+					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
+				},
+				Action: runTxLookupBuild,
 			},
 		},
 	}
@@ -311,6 +323,31 @@ func runVerifyJournal(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 	return verifier.Run(ctx)
+}
+
+func runTxLookupBuild(c *cli.Context) error {
+	ancientPath := c.String("ancient")
+	datadir := c.String("datadir")
+	startBlock := c.Uint64("start")
+	endBlock := c.Uint64("end")
+
+	f, err := freezer.New(ancientPath, 0)
+	if err != nil {
+		return fmt.Errorf("open input freezer: %w", err)
+	}
+	defer f.Close()
+	log.Info("Input freezer opened", "frozen", f.Frozen())
+
+	if endBlock == 0 {
+		endBlock = f.Frozen()
+	}
+
+	outputDir := filepath.Join(datadir, "txlookup")
+	builder := txlookup.NewSegmentBuilder(f, outputDir)
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+	return builder.BuildRange(ctx, startBlock, endBlock)
 }
 
 func runBodyCompact(c *cli.Context) error {
