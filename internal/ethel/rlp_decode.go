@@ -159,10 +159,19 @@ type gethBody struct {
 	// Withdrawals are optional (Shanghai+), handled manually
 }
 
+// Withdrawal represents an EIP-4895 validator withdrawal.
+type Withdrawal struct {
+	Index     uint64
+	Validator uint64
+	Address   types.Address
+	Amount    uint64 // in Gwei
+}
+
 // GethBodyResult holds the decoded body components.
 type GethBodyResult struct {
 	Transactions []*transaction.Transaction
 	Uncles       []*block.Header
+	Withdrawals  []*Withdrawal // nil pre-Shanghai
 }
 
 // DecodeGethBody decodes a Geth-format RLP-encoded body.
@@ -228,6 +237,175 @@ func DecodeGethBody(data []byte) (*GethBodyResult, error) {
 		uncles = append(uncles, u)
 	}
 
-	return &GethBodyResult{Transactions: txs, Uncles: uncles}, nil
+	// Decode withdrawals (optional, Shanghai+).
+	var withdrawals []*Withdrawal
+	if len(elems) >= 3 {
+		var wdRaws []rlp.RawValue
+		if err := rlp.DecodeBytes(elems[2], &wdRaws); err != nil {
+			return nil, fmt.Errorf("ethel: decode withdrawals list: %w", err)
+		}
+		withdrawals = make([]*Withdrawal, len(wdRaws))
+		for i, wRaw := range wdRaws {
+			w, err := decodeGethWithdrawal(wRaw)
+			if err != nil {
+				return nil, fmt.Errorf("ethel: withdrawal %d: %w", i, err)
+			}
+			withdrawals[i] = w
+		}
+	}
+
+	return &GethBodyResult{Transactions: txs, Uncles: uncles, Withdrawals: withdrawals}, nil
+}
+
+func decodeGethWithdrawal(data []byte) (*Withdrawal, error) {
+	var elems []rlp.RawValue
+	if err := rlp.DecodeBytes(data, &elems); err != nil {
+		return nil, fmt.Errorf("decode withdrawal: %w", err)
+	}
+	if len(elems) < 4 {
+		return nil, fmt.Errorf("withdrawal has %d fields, need 4", len(elems))
+	}
+	w := &Withdrawal{}
+	if err := rlp.DecodeBytes(elems[0], &w.Index); err != nil {
+		return nil, fmt.Errorf("decode index: %w", err)
+	}
+	if err := rlp.DecodeBytes(elems[1], &w.Validator); err != nil {
+		return nil, fmt.Errorf("decode validator: %w", err)
+	}
+	if err := rlp.DecodeBytes(elems[2], &w.Address); err != nil {
+		return nil, fmt.Errorf("decode address: %w", err)
+	}
+	if err := rlp.DecodeBytes(elems[3], &w.Amount); err != nil {
+		return nil, fmt.Errorf("decode amount: %w", err)
+	}
+	return w, nil
+}
+
+// DecodeGethReceipts decodes Geth ancient receipts (ReceiptForStorage RLP).
+// Geth stores receipts as: snappy(rlp([receipt0, receipt1, ...])).
+// Each receipt is either:
+//   - Legacy: rlp([statusOrPostState, cumulativeGas, bloom, logs])
+//   - Typed (EIP-2718): rlp_string(type || rlp([status, cumulativeGas, bloom, logs]))
+//
+// Log format: rlp([address, topics, data])
+func DecodeGethReceipts(data []byte) (block.Receipts, error) {
+	raw, err := decompressGeth(data)
+	if err != nil {
+		return nil, fmt.Errorf("ethel: decompress receipts: %w", err)
+	}
+	// Empty block — zero receipts.
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	// Top-level: list of receipts.
+	var receiptRaws []rlp.RawValue
+	if err := rlp.DecodeBytes(raw, &receiptRaws); err != nil {
+		return nil, fmt.Errorf("ethel: decode receipts list: %w", err)
+	}
+
+	receipts := make(block.Receipts, 0, len(receiptRaws))
+	for i, rRaw := range receiptRaws {
+		r, err := decodeGethReceipt(rRaw)
+		if err != nil {
+			return nil, fmt.Errorf("ethel: receipt %d: %w", i, err)
+		}
+		receipts = append(receipts, r)
+	}
+	return receipts, nil
+}
+
+func decodeGethReceipt(data []byte) (*block.Receipt, error) {
+	r := &block.Receipt{}
+
+	payload := []byte(data)
+
+	// Typed receipt: RLP string wrapping type || rlp(fields).
+	if len(payload) > 0 && payload[0] >= 0x80 && payload[0] < 0xc0 {
+		var inner []byte
+		if err := rlp.DecodeBytes(payload, &inner); err != nil {
+			return nil, fmt.Errorf("unwrap typed receipt: %w", err)
+		}
+		payload = inner
+	}
+
+	// Check for type prefix (non-RLP byte < 0x80).
+	if len(payload) > 0 && payload[0] < 0x80 {
+		r.Type = payload[0]
+		payload = payload[1:]
+	}
+
+	// Geth ReceiptForStorage format: [PostStateOrStatus, CumulativeGas, Logs]
+	// Note: Bloom is NOT stored (recomputed from logs). Only 3 fields.
+	var elems []rlp.RawValue
+	if err := rlp.DecodeBytes(payload, &elems); err != nil {
+		return nil, fmt.Errorf("decode receipt fields: %w", err)
+	}
+	if len(elems) < 3 {
+		return nil, fmt.Errorf("receipt has %d fields, need >= 3", len(elems))
+	}
+
+	// Field 0: status or post-state root.
+	var statusBytes []byte
+	if err := rlp.DecodeBytes(elems[0], &statusBytes); err != nil {
+		return nil, fmt.Errorf("decode status: %w", err)
+	}
+	if len(statusBytes) <= 1 {
+		// Post-Byzantium status.
+		if len(statusBytes) == 1 && statusBytes[0] == 1 {
+			r.Status = block.ReceiptStatusSuccessful
+		} else {
+			r.Status = block.ReceiptStatusFailed
+		}
+	} else {
+		// Pre-Byzantium: post-state root (32 bytes). No status concept,
+		// all txs "succeed". PostState not stored in compact format
+		// (same as Reth) — recoverable via re-execution.
+		r.Status = block.ReceiptStatusSuccessful
+	}
+
+	// Field 1: cumulativeGasUsed.
+	if err := rlp.DecodeBytes(elems[1], &r.CumulativeGasUsed); err != nil {
+		return nil, fmt.Errorf("decode cumulativeGas: %w", err)
+	}
+
+	// Field 2: logs (Geth ReceiptForStorage stores logs as LogForStorage).
+	var logRaws []rlp.RawValue
+	if err := rlp.DecodeBytes(elems[2], &logRaws); err != nil {
+		return nil, fmt.Errorf("decode logs list: %w", err)
+	}
+	r.Logs = make([]*block.Log, len(logRaws))
+	for i, lRaw := range logRaws {
+		l, err := decodeGethLog(lRaw)
+		if err != nil {
+			return nil, fmt.Errorf("log %d: %w", i, err)
+		}
+		r.Logs[i] = l
+	}
+
+	return r, nil
+}
+
+func decodeGethLog(data []byte) (*block.Log, error) {
+	// Log: [address, topics, data]
+	var elems []rlp.RawValue
+	if err := rlp.DecodeBytes(data, &elems); err != nil {
+		return nil, fmt.Errorf("decode log: %w", err)
+	}
+	if len(elems) < 3 {
+		return nil, fmt.Errorf("log has %d fields, need 3", len(elems))
+	}
+
+	l := &block.Log{}
+	if err := rlp.DecodeBytes(elems[0], &l.Address); err != nil {
+		return nil, fmt.Errorf("decode log address: %w", err)
+	}
+	if err := rlp.DecodeBytes(elems[1], &l.Topics); err != nil {
+		return nil, fmt.Errorf("decode log topics: %w", err)
+	}
+	if err := rlp.DecodeBytes(elems[2], &l.Data); err != nil {
+		return nil, fmt.Errorf("decode log data: %w", err)
+	}
+	return l, nil
 }
 

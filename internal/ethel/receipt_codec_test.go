@@ -10,42 +10,70 @@ import (
 
 func makeTestReceipts() block.Receipts {
 	return block.Receipts{
-		// Simple transfer: no logs.
+		// Simple transfer: no logs, Legacy type.
 		{
 			Type:              0,
 			Status:            block.ReceiptStatusSuccessful,
 			CumulativeGasUsed: 21000,
 			Logs:              []*block.Log{},
 		},
-		// Contract call: 2 logs with topics.
+		// EIP-2930 AccessList (type 1).
 		{
-			Type:              2, // DynamicFee
+			Type:              1,
+			Status:            block.ReceiptStatusSuccessful,
+			CumulativeGasUsed: 42000,
+			Logs:              []*block.Log{},
+		},
+		// EIP-1559 DynamicFee (type 2): 2 logs with topics.
+		{
+			Type:              2,
 			Status:            block.ReceiptStatusSuccessful,
 			CumulativeGasUsed: 150000,
 			Logs: []*block.Log{
 				{
 					Address: types.HexToAddress("0xdAC17F958D2ee523a2206206994597C13D831ec7"),
 					Topics: []types.Hash{
-						types.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"), // Transfer
+						types.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"),
 						types.HexToHash("0x0000000000000000000000001234567890abcdef1234567890abcdef12345678"),
 						types.HexToHash("0x000000000000000000000000abcdefabcdefabcdefabcdefabcdefabcdefabcd"),
 					},
-					Data: make([]byte, 32), // amount
+					Data: make([]byte, 32),
 				},
 				{
 					Address: types.HexToAddress("0xdAC17F958D2ee523a2206206994597C13D831ec7"),
 					Topics: []types.Hash{
-						types.HexToHash("0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"), // Approval
+						types.HexToHash("0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"),
 					},
 					Data: make([]byte, 64),
 				},
 			},
 		},
-		// Failed tx.
+		// Failed tx (type 2).
 		{
 			Type:              2,
 			Status:            block.ReceiptStatusFailed,
 			CumulativeGasUsed: 250000,
+			Logs:              []*block.Log{},
+		},
+		// EIP-4844 Blob (type 3) — extended type.
+		{
+			Type:              3,
+			Status:            block.ReceiptStatusSuccessful,
+			CumulativeGasUsed: 300000,
+			Logs:              []*block.Log{},
+		},
+		// EIP-7702 SetCode (type 4) — extended type.
+		{
+			Type:              4,
+			Status:            block.ReceiptStatusSuccessful,
+			CumulativeGasUsed: 400000,
+			Logs:              []*block.Log{},
+		},
+		// Edge case: gas = 0 (gasLen = 0 bytes).
+		{
+			Type:              0,
+			Status:            block.ReceiptStatusFailed,
+			CumulativeGasUsed: 0,
 			Logs:              []*block.Log{},
 		},
 	}
@@ -90,6 +118,34 @@ func TestCompactReceiptRoundtrip(t *testing.T) {
 			if len(l.Data) != len(ol.Data) {
 				t.Errorf("receipt %d log %d: data len %d != %d", i, j, len(l.Data), len(ol.Data))
 			}
+		}
+	}
+}
+
+// TestCompactExtendedTypes verifies types >= 3 use the extended byte path.
+func TestCompactExtendedTypes(t *testing.T) {
+	for _, txType := range []uint8{3, 4, 5, 127} {
+		r := block.Receipts{{
+			Type:              txType,
+			Status:            block.ReceiptStatusSuccessful,
+			CumulativeGasUsed: 100000,
+			Logs:              []*block.Log{},
+		}}
+		data := EncodeReceiptsCompact(r)
+		// flags byte should have identifier 3.
+		if data[0]&0x03 != 3 {
+			t.Errorf("type %d: identifier bits = %d, want 3", txType, data[0]&0x03)
+		}
+		// Second byte should be actual type.
+		if data[1] != txType {
+			t.Errorf("type %d: extended byte = %d", txType, data[1])
+		}
+		decoded, err := DecodeReceiptsCompact(data)
+		if err != nil {
+			t.Fatalf("type %d: decode: %v", txType, err)
+		}
+		if decoded[0].Type != txType {
+			t.Errorf("type %d: roundtrip got %d", txType, decoded[0].Type)
 		}
 	}
 }
