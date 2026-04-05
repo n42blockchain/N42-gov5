@@ -16,7 +16,9 @@ import (
 )
 
 // SegmentSize is the number of blocks per L1 segment.
-const SegmentSize = 500_000
+// 1M blocks balances file count (20 files for full chain) vs max segment
+// size (~2 GB for tx-dense ranges). Larger segments reduce miss-scan cost.
+const SegmentSize = 1_000_000
 
 // TxSegment is a read-only RecSplit-indexed tx hash lookup segment.
 // It maps txHash → blockNumber for a contiguous range of blocks.
