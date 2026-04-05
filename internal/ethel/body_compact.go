@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/golang/snappy"
 	"github.com/holiman/uint256"
 	"github.com/klauspost/compress/zstd"
 
@@ -629,7 +630,7 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 		"blocks", endBlock-startBlock,
 		"resumeSegments", existingSegments)
 
-	var totalGethBytes, totalCompactBytes int64
+	var totalGethBytes, totalRawBytes, totalCompactBytes int64
 	var segCount int
 	t0 := time.Now()
 
@@ -651,6 +652,9 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 				return fmt.Errorf("read body %d: %w", segStart+i, err)
 			}
 			totalGethBytes += int64(len(bodyData))
+			if rawLen, err := snappy.DecodedLen(bodyData); err == nil {
+				totalRawBytes += int64(rawLen)
+			}
 
 			body, err := DecodeGethBody(bodyData)
 			if err != nil {
@@ -710,12 +714,17 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 		if segCount%100 == 0 {
 			elapsed := time.Since(t0)
 			pct := float64(segStart+count-startBlock) / float64(endBlock-startBlock) * 100
-			ratio := float64(totalCompactBytes) / float64(totalGethBytes) * 100
+			ratioSnappy := float64(totalCompactBytes) / float64(totalGethBytes) * 100
+			ratioRaw := float64(0)
+			if totalRawBytes > 0 {
+				ratioRaw = float64(totalCompactBytes) / float64(totalRawBytes) * 100
+			}
 			blkPerSec := float64(segStart+count-startBlock) / elapsed.Seconds()
 			log.Info("Body compact",
 				"block", segStart+count-1,
 				"pct", fmt.Sprintf("%.1f%%", pct),
-				"ratio", fmt.Sprintf("%.1f%%", ratio),
+				"vs_snappy", fmt.Sprintf("%.1f%%", ratioSnappy),
+				"vs_raw", fmt.Sprintf("%.1f%%", ratioRaw),
 				"blk/s", fmt.Sprintf("%.0f", blkPerSec),
 				"file", headFile)
 		}
@@ -728,13 +737,18 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 		log.Info("Body compact: no blocks to process")
 		return nil
 	}
-	ratio := float64(totalCompactBytes) / float64(totalGethBytes) * 100
+	ratioSnappy := float64(totalCompactBytes) / float64(totalGethBytes) * 100
+	ratioRaw := float64(0)
+	if totalRawBytes > 0 {
+		ratioRaw = float64(totalCompactBytes) / float64(totalRawBytes) * 100
+	}
 	log.Info("Body compact complete",
 		"blocks", endBlock-startBlock, "segments", segCount,
-		"geth", fmt.Sprintf("%.2f GB", float64(totalGethBytes)/1e9),
+		"raw_rlp", fmt.Sprintf("%.2f GB", float64(totalRawBytes)/1e9),
+		"geth_snappy", fmt.Sprintf("%.2f GB", float64(totalGethBytes)/1e9),
 		"compact", fmt.Sprintf("%.2f GB", float64(totalCompactBytes)/1e9),
-		"ratio", fmt.Sprintf("%.1f%%", ratio),
-		"saved", fmt.Sprintf("%.1f%%", 100-ratio),
+		"vs_snappy", fmt.Sprintf("%.1f%%", ratioSnappy),
+		"vs_raw", fmt.Sprintf("%.1f%%", ratioRaw),
 		"files", headFile+1,
 		"elapsed", time.Since(t0).Truncate(time.Second))
 	return nil

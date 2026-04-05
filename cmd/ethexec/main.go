@@ -119,6 +119,18 @@ func main() {
 				},
 				Action: runBodyCompact,
 			},
+			{
+				Name:  "verify-journal",
+				Usage: "Replay leaves_journal to rebuild PlainState, verify state root against headers",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to output MDBX + output freezer directory", Required: true},
+					&cli.StringFlag{Name: "genesis", Usage: "Path to Ethereum genesis.json", Required: true},
+					&cli.Uint64Flag{Name: "verify", Usage: "Verify state root every N blocks (0=disabled)", Value: 100000},
+					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
+				},
+				Action: runVerifyJournal,
+			},
 		},
 	}
 
@@ -233,6 +245,72 @@ func run(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 	return executor.Run(ctx)
+}
+
+func runVerifyJournal(c *cli.Context) error {
+	ancientPath := c.String("ancient")
+	datadir := c.String("datadir")
+	genesisPath := c.String("genesis")
+	verifyInterval := c.Uint64("verify")
+	endBlock := c.Uint64("end")
+
+	// Open Geth input freezer (headers).
+	inputF, err := freezer.New(ancientPath, 0)
+	if err != nil {
+		return fmt.Errorf("open input freezer: %w", err)
+	}
+	defer inputF.Close()
+
+	// Open output freezer (leaves_journal).
+	outAncient := filepath.Join(datadir, "ancient")
+	outF, err := freezer.New(outAncient, 0)
+	if err != nil {
+		return fmt.Errorf("open output freezer: %w", err)
+	}
+	defer outF.Close()
+
+	// Open MDBX in a temporary directory — never touches the existing datadir MDBX.
+	verifyDir, err := os.MkdirTemp("", "ethexec-verify-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(verifyDir)
+	log.Info("Using temp MDBX", "path", verifyDir)
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(verifyDir).
+		Label(kv.ChainDB).
+		PageSize(4096).
+		WriteMap().
+		DirtySpace(uint64(512 * datasize.MB)).
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open mdbx: %w", err)
+	}
+	defer db.Close()
+
+	// Load genesis state.
+	log.Info("Loading genesis state", "path", genesisPath)
+	tx, err := db.BeginRw(context.Background())
+	if err != nil {
+		return err
+	}
+	count, err := ethel.InitEthGenesisState(tx, genesisPath)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("init genesis: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit genesis: %w", err)
+	}
+	log.Info("Genesis loaded", "accounts", count)
+
+	verifier := ethel.NewJournalVerifier(db, inputF, outF, verifyInterval, endBlock)
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+	return verifier.Run(ctx)
 }
 
 func runBodyCompact(c *cli.Context) error {

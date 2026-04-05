@@ -328,6 +328,11 @@ func (t *FreezerTable) Append(item uint64, data []byte) error {
 // SetBatchSize enables batch read mode. Once set, Retrieve uses O(1) batch lookup.
 func (t *FreezerTable) setBatchSize(bs int) { t.batchSize = bs }
 
+// ForceBatchSize explicitly sets the batch size for reading. Use when the
+// auto-detection in NewFreezerTableCompressed fails (e.g. mid-point happens
+// to land on a batch boundary where consecutive entries have different offsets).
+func (t *FreezerTable) ForceBatchSize(bs int) { t.batchSize = bs }
+
 // AppendBatchBlob writes a pre-encoded batch blob and creates N cidx entries
 // all pointing to the same offset. Used for batch compression.
 func (t *FreezerTable) AppendBatchBlob(startItem uint64, count int, blob []byte) error {
