@@ -37,6 +37,9 @@ type BlockResult struct {
 //   - uncles: uncle headers (for reward calculation, nil post-merge)
 //   - ibs: in-memory state database
 //   - blockHashFunc: BLOCKHASH opcode implementation
+// ProcessBlock executes all transactions in a block.
+// If precomputedSenders is provided (non-nil), senders are injected directly
+// into transactions via SetFrom, skipping expensive ecrecover.
 func ProcessBlock(
 	chainCfg *params.ChainConfig,
 	engine consensus.Engine,
@@ -45,6 +48,7 @@ func ProcessBlock(
 	uncles []block.IHeader,
 	ibs *state.IntraBlockState,
 	blockHashFunc func(uint64) types.Hash,
+	precomputedSenders []types.Address,
 ) (*BlockResult, error) {
 	usedGas := new(uint64)
 	gp := new(common.GasPool)
@@ -68,6 +72,16 @@ func ProcessBlock(
 
 	var receipts block.Receipts
 	senders := make([]types.Address, 0, len(txs))
+
+	// Inject pre-computed senders to skip ecrecover in AsMessage().
+	if precomputedSenders != nil {
+		for i, txn := range txs {
+			if i < len(precomputedSenders) {
+				txn.SetFrom(precomputedSenders[i])
+			}
+		}
+	}
+
 	signer := transaction.MakeSigner(chainCfg, header.Number.ToBig())
 
 	for i, txn := range txs {
@@ -83,11 +97,16 @@ func ProcessBlock(
 			receipts = append(receipts, receipt)
 		}
 
-		sender, err := transaction.Sender(signer, txn)
-		if err != nil {
-			return nil, fmt.Errorf("tx %d sender: %w", i, err)
+		// Use pre-computed sender or recover from signature.
+		if precomputedSenders != nil && i < len(precomputedSenders) {
+			senders = append(senders, precomputedSenders[i])
+		} else {
+			sender, err := transaction.Sender(signer, txn)
+			if err != nil {
+				return nil, fmt.Errorf("tx %d sender: %w", i, err)
+			}
+			senders = append(senders, sender)
 		}
-		senders = append(senders, sender)
 	}
 
 	// Post-block system calls.
@@ -96,8 +115,12 @@ func ProcessBlock(
 	}
 
 	// Finalize (block rewards + uncle rewards).
-	if _, _, err := engine.Finalize(nil, header, ibs, txs, uncles); err != nil {
-		return nil, fmt.Errorf("finalize: %w", err)
+	// Skip for genesis block (block 0) — Ethereum genesis has no execution
+	// and no coinbase reward. Its state root is purely from the alloc.
+	if header.Number.Uint64() > 0 {
+		if _, _, err := engine.Finalize(nil, header, ibs, txs, uncles); err != nil {
+			return nil, fmt.Errorf("finalize: %w", err)
+		}
 	}
 
 	return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders}, nil

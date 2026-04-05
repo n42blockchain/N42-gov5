@@ -51,6 +51,20 @@ type Executor struct {
 	cfg         ExecutorConfig
 	headerCache map[uint64]*block.Header // small LRU for BLOCKHASH
 
+	// Write buffer: accumulates state changes in memory, flushed to MDBX
+	// only at commit boundaries. Eliminates per-block MDBX Put overhead.
+	stateBuf         *state.PlainStateBuffer
+	lastProgressTime time.Time
+	prefetcher       *prefetcher
+
+	// Pre-computed senders from sender-recovery stage.
+	senderFreezer *freezer.Freezer
+	senderTable   *freezer.FreezerTable
+	senderMisses  uint64
+
+	// Output batcher: accumulates entries, writes in batches.
+	outBatcher *outputBatcher
+
 	// Timing collection for P50/P99 analysis.
 	timingSamples []timingSample
 	timingWindow  int // samples per window (default 1000)
@@ -69,7 +83,14 @@ func NewExecutor(f *freezer.Freezer, db kv.RwDB, chainCfg *params.ChainConfig, e
 		engine:      engine,
 		cfg:         cfg,
 		headerCache: make(map[uint64]*block.Header, 260),
+		stateBuf:    state.NewPlainStateBuffer(),
 	}
+}
+
+// SetSenderFreezer sets the pre-computed senders freezer (from sender-recovery stage).
+func (e *Executor) SetSenderFreezer(f *freezer.Freezer) {
+	e.senderFreezer = f
+	e.senderTable = f.Table("senders")
 }
 
 // Run executes blocks from StartBlock to EndBlock.
@@ -106,20 +127,43 @@ func (e *Executor) Run(ctx context.Context) error {
 		}
 	}
 
-	// Pad output freezer to match startBlock.
-	if e.outFreezer != nil {
-		if err := e.padOutputFreezer(startBlock); err != nil {
-			return fmt.Errorf("pad output freezer: %w", err)
+	// Initialize output batcher and align tables to startBlock.
+	if e.outFreezer != nil && !e.cfg.NoOutputs {
+		batcher, err := newOutputBatcher(e.outFreezer)
+		if err != nil {
+			return fmt.Errorf("init output batcher: %w", err)
+		}
+		e.outBatcher = batcher
+		defer batcher.Close()
+		if err := batcher.alignOnResume(startBlock); err != nil {
+			return fmt.Errorf("align output tables: %w", err)
+		}
+		// Pad senders if not pre-computed.
+		if e.senderTable == nil {
+			if err := e.padSendersTable(startBlock); err != nil {
+				return fmt.Errorf("pad senders: %w", err)
+			}
 		}
 	}
 
 	startTime := time.Now()
+	e.lastProgressTime = startTime
+
+	// Start background prefetcher to warm MDBX page cache.
+	e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg)
+	e.prefetcher.start()
+	defer e.prefetcher.stop()
 
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
 		if ctx.Err() != nil {
 			log.Info("Shutting down executor", "lastBlock", blockNum-1)
 			// Save progress for the last committed block before exit.
 			return ctx.Err()
+		}
+
+		// Prefetch next block's state while we execute this one.
+		if blockNum+1 <= endBlock {
+			e.prefetcher.prefetchBlock(blockNum + 1)
 		}
 
 		if err := e.executeBlock(ctx, tx, blockNum); err != nil {
@@ -132,6 +176,23 @@ func (e *Executor) Run(ctx context.Context) error {
 
 		// Periodic commit.
 		if blockNum > 0 && blockNum%e.cfg.CommitInterval == 0 {
+			// Flush only full batches — keep partial batch in memory so entries
+			// remain aligned within their 64-entry batch boundary.
+			if e.outBatcher != nil {
+				if _, err := e.outBatcher.flushFullBatches(); err != nil {
+					return fmt.Errorf("flush output batcher at block %d: %w", blockNum, err)
+				}
+			}
+			// Flush write buffer to MDBX.
+			bufAccs, bufStos := e.stateBuf.Stats()
+			cacheHits, cacheMisses := e.stateBuf.CacheStats()
+			t0Flush := time.Now()
+			if err := e.stateBuf.FlushToMDBX(tx); err != nil {
+				return fmt.Errorf("flush buffer at block %d: %w", blockNum, err)
+			}
+			flushDur := time.Since(t0Flush)
+			e.stateBuf.Clear()
+
 			// Save progress before commit.
 			if err := WriteProgress(tx, blockNum); err != nil {
 				return fmt.Errorf("write progress at block %d: %w", blockNum, err)
@@ -139,12 +200,32 @@ func (e *Executor) Run(ctx context.Context) error {
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("commit at block %d: %w", blockNum, err)
 			}
-			elapsed := time.Since(startTime)
-			blkPerSec := float64(blockNum-startBlock+1) / elapsed.Seconds()
-			log.Info("EthEL progress",
+			now := time.Now()
+			intervalBlks := e.cfg.CommitInterval
+			intervalSec := now.Sub(e.lastProgressTime).Seconds()
+			if intervalSec < 0.001 {
+				intervalSec = 0.001
+			}
+			blkPerSec := float64(intervalBlks) / intervalSec
+			e.lastProgressTime = now
+			hitRate := float64(0)
+			if cacheHits+cacheMisses > 0 {
+				hitRate = float64(cacheHits) / float64(cacheHits+cacheMisses) * 100
+			}
+			fields := []interface{}{
 				"block", blockNum,
 				"blk/s", fmt.Sprintf("%.0f", blkPerSec),
-				"elapsed", elapsed.Truncate(time.Second))
+				"elapsed", now.Sub(startTime).Truncate(time.Second),
+				"bufFlush", flushDur.Truncate(time.Millisecond),
+				"bufAccs", bufAccs,
+				"bufStos", bufStos,
+				"cacheHit%", fmt.Sprintf("%.1f", hitRate),
+			}
+			if e.senderMisses > 0 {
+				fields = append(fields, "senderMiss", e.senderMisses)
+				e.senderMisses = 0
+			}
+			log.Info("EthEL progress", fields...)
 
 			tx, err = e.db.BeginRw(ctx)
 			if err != nil {
@@ -157,7 +238,16 @@ func (e *Executor) Run(ctx context.Context) error {
 		}
 	}
 
-	// Final commit with progress.
+	// Final flush + commit.
+	if e.outBatcher != nil {
+		if err := e.outBatcher.flushAll(); err != nil {
+			return fmt.Errorf("flush output batcher final: %w", err)
+		}
+	}
+	if err := e.stateBuf.FlushToMDBX(tx); err != nil {
+		return fmt.Errorf("flush buffer final: %w", err)
+	}
+	e.stateBuf.Clear()
 	if err := WriteProgress(tx, endBlock); err != nil {
 		return fmt.Errorf("write final progress: %w", err)
 	}
@@ -191,16 +281,17 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	// Cache header for BLOCKHASH opcode.
 	e.cacheHeader(blockNum, header)
 
-	// 2. Set up state reader/writer.
-	plainReader := state.NewPlainStateReader(tx)
+	// 2. Set up state reader/writer with write buffer.
+	// Reader checks in-memory buffer first, falls through to MDBX.
+	bufReader := state.NewBufferedPlainStateReader(e.stateBuf, tx)
 	var witnessReader *WitnessStateReader
-	var reader state.StateReader = plainReader
+	var reader state.StateReader = bufReader
 	if e.outFreezer != nil && !e.cfg.NoOutputs {
-		witnessReader = NewWitnessStateReader(plainReader)
+		witnessReader = NewWitnessStateReader(bufReader)
 		reader = witnessReader
 	}
-	// Writer with changeset tracking (for freezer output), but no MDBX changeset writes.
-	writer := state.NewPlainStateWriter(tx, tx, blockNum)
+	// Writer goes to in-memory buffer (no MDBX Put per block).
+	writer := state.NewBufferedPlainStateWriter(e.stateBuf, tx, blockNum)
 	ibs := state.New(reader)
 
 	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
@@ -212,7 +303,32 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	t1 := time.Now()
 	// 3. Process block (DAO fork, system contracts, EVM).
-	result, err := e.processBlock(header, body, ibs)
+	// Load pre-computed senders if available and in range.
+	var senders []types.Address
+	if e.senderTable != nil && blockNum < e.senderTable.Items() {
+		senderData, err := e.senderTable.Retrieve(blockNum)
+		if err != nil {
+			if e.senderMisses == 0 {
+				log.Warn("Sender retrieve error", "block", blockNum, "err", err, "items", e.senderTable.Items())
+			}
+		} else {
+			txCount := len(body.Transactions)
+			senderCount := len(senderData) / 20
+			if senderCount == txCount {
+				senders = make([]types.Address, senderCount)
+				for i := 0; i < senderCount; i++ {
+					copy(senders[i][:], senderData[i*20:(i+1)*20])
+				}
+			} else if e.senderMisses == 0 {
+				log.Warn("Sender count mismatch", "block", blockNum, "txs", txCount, "senders", senderCount, "dataLen", len(senderData))
+			}
+		}
+	}
+	if e.senderTable != nil && senders == nil && len(body.Transactions) > 0 {
+		e.senderMisses++
+	}
+
+	result, err := e.processBlock(header, body, ibs, senders)
 	if err != nil {
 		return err
 	}
@@ -236,16 +352,14 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	}
 
 	t2 := time.Now()
-	// 6. Commit state changes to writer.
+	// 6. Commit state changes to in-memory buffer (no MDBX writes).
 	rules := e.chainCfg.Rules(header.Number.Uint64())
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return fmt.Errorf("commit block state: %w", err)
 	}
-	// ChangeSets → output freezer only. History/LogIndex → batch stage after sync.
 	t3 := time.Now()
 
-	t4 := time.Now()
-	// 8. Write execution outputs to output freezer.
+	// 7. Write execution outputs to output freezer.
 	if e.outFreezer != nil && !e.cfg.NoOutputs {
 		if err := e.writeOutputs(blockNum, result, writer, witnessReader, tx); err != nil {
 			return fmt.Errorf("write outputs: %w", err)
@@ -271,7 +385,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	// Collect timing samples for P50/P99 analysis.
 	e.collectTiming(blockNum, timingSample{
 		read: t1.Sub(t0), evm: t2.Sub(t1), commit: t3.Sub(t2),
-		outputs: t5.Sub(t4), total: t5.Sub(t0),
+		outputs: t5.Sub(t3), total: t5.Sub(t0),
 		txCount: len(body.Transactions), gasUsed: result.GasUsed,
 	})
 
@@ -280,12 +394,12 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 // BlockResult is defined in process.go. This comment prevents confusion.
 // processBlock delegates to the shared ProcessBlock function.
-func (e *Executor) processBlock(header *block.Header, body *GethBodyResult, ibs *state.IntraBlockState) (*BlockResult, error) {
+func (e *Executor) processBlock(header *block.Header, body *GethBodyResult, ibs *state.IntraBlockState, senders []types.Address) (*BlockResult, error) {
 	var uncles []block.IHeader
 	for _, u := range body.Uncles {
 		uncles = append(uncles, u)
 	}
-	return ProcessBlock(e.chainCfg, e.engine, header, body.Transactions, uncles, ibs, e.makeBlockHashFunc(header))
+	return ProcessBlock(e.chainCfg, e.engine, header, body.Transactions, uncles, ibs, e.makeBlockHashFunc(header), senders)
 }
 
 // readHeader reads and decodes a Geth RLP header from the freezer.
@@ -326,32 +440,23 @@ func (e *Executor) makeBlockHashFunc(ref *block.Header) func(n uint64) types.Has
 	}
 }
 
-// padOutputFreezer writes empty entries for blocks 0..startBlock-1 so that
-// the output freezer's item numbering aligns with block numbers.
-func (e *Executor) padOutputFreezer(startBlock uint64) error {
-	tables := []struct {
-		name string
-		ext  string
-	}{
-		{freezer.TableReceipts, "c"},
-		{freezer.TableSenders, "c"},
-		{freezer.TableAccountChanges, "c"},
-		{freezer.TableStorageChanges, "c"},
-		{freezer.TableLeavesJournal, "c"},
-		{freezer.TableBlockWitness, "c"},
+// padSendersTable pads the senders table for blocks 0..startBlock-1
+// when senders are NOT pre-computed by the sender-recovery stage.
+// If the table already has data (from a prior sender-recovery run),
+// existing data is preserved — only gaps below startBlock are filled.
+func (e *Executor) padSendersTable(startBlock uint64) error {
+	tbl, err := e.outFreezer.EnsureTableCompressed(freezer.TableSenders, "c")
+	if err != nil {
+		return err
 	}
-	for _, t := range tables {
-		tbl, err := e.outFreezer.EnsureTable(t.name, t.ext)
-		if err != nil {
-			return err
-		}
-		for tbl.Items() < startBlock {
-			if err := tbl.Append(tbl.Items(), []byte{}); err != nil {
-				return fmt.Errorf("pad %s at %d: %w", t.name, tbl.Items(), err)
-			}
-		}
+	items := tbl.Items()
+	if items >= startBlock {
+		log.Info("Senders table already at or past startBlock, no padding needed",
+			"items", items, "startBlock", startBlock)
+		return nil
 	}
-	return nil
+	log.Info("Padding senders table", "from", items, "to", startBlock, "gap", startBlock-items)
+	return padTableTo(tbl, startBlock, e.outBatcher.enc)
 }
 
 // cacheHeader adds a header to the cache, evicting old entries.
@@ -370,7 +475,7 @@ type timingSample struct {
 
 func (e *Executor) collectTiming(blockNum uint64, s timingSample) {
 	if e.timingWindow == 0 {
-		e.timingWindow = 1000
+		e.timingWindow = 10000
 	}
 	e.timingSamples = append(e.timingSamples, s)
 	if len(e.timingSamples) >= e.timingWindow {
@@ -399,52 +504,46 @@ func (e *Executor) reportTimings(blockNum uint64) {
 		totalTx += v.txCount
 	}
 
-	log.Info("Block P50/P99",
+	ms := func(d time.Duration) string { return fmt.Sprintf("%.1f", float64(d.Microseconds())/1000) }
+	log.Info("P50/P99",
 		"block", blockNum,
-		"samples", n,
-		"avgTx", totalTx/n,
-		"avgGas", totalGas/uint64(n),
-		"P50_total", p50.total,
-		"P50_evm", p50.evm,
-		"P99_total", p99.total,
-		"P99_evm", p99.evm,
-		"P99_commit", p99.commit,
-		"P99_outputs", p99.outputs,
-		"WORST_total", worst.total,
+		"tx", totalTx/n,
+		"gas", totalGas/uint64(n),
+		"P50", ms(p50.total),
+		"P50evm", ms(p50.evm),
+		"P99", ms(p99.total),
+		"P99evm", ms(p99.evm),
+		"P99commit", ms(p99.commit),
+		"P99out", ms(p99.outputs),
+		"worst", ms(worst.total),
 	)
 }
 
-// writeOutputs writes execution results to the output freezer.
-// All 6 tables must receive an append for every block to maintain alignment.
-func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer state.WriterWithChangeSets, witness *WitnessStateReader, dbTx kv.Tx) error {
-	of := e.outFreezer
-	appendTo := func(table, ext string, data []byte) error {
-		tbl, err := of.EnsureTable(table, ext)
-		if err != nil {
-			return err
-		}
-		return tbl.Append(blockNum, data)
-	}
+// writeOutputs accumulates block results into the output batcher.
+// Batches are flushed automatically when full (execBatchSize entries).
+func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *state.BufferedPlainStateWriter, witness *WitnessStateReader, dbTx kv.Tx) error {
+	b := e.outBatcher
 
-	// 1. Receipts (compact encoding: no bloom, varint gas, ~80% smaller than RLP).
+	// 1. Receipts.
 	receiptsData := EncodeReceiptsCompact(result.Receipts)
-	if err := appendTo(freezer.TableReceipts, "c", receiptsData); err != nil {
+	if err := b.addEntry(freezer.TableReceipts, "c", receiptsData); err != nil {
 		return fmt.Errorf("receipts: %w", err)
 	}
 
-	// 2. Senders.
-	sendersBuf := make([]byte, 0, len(result.Senders)*20)
-	for _, s := range result.Senders {
-		sendersBuf = append(sendersBuf, s[:]...)
-	}
-	if err := appendTo(freezer.TableSenders, "c", sendersBuf); err != nil {
-		return fmt.Errorf("senders: %w", err)
-	}
-
-	// 3-4. Changesets + Leaves journal (single csw extraction).
+	// 2. Changesets + Leaves journal.
 	var accCSBytes, stoCSBytes, leavesData []byte
-	if psw, ok := writer.(*state.PlainStateWriter); ok {
-		if csw := psw.ChangeSetWriter(); csw != nil {
+	if blockNum == 0 {
+		// Genesis block: journal contains ALL genesis accounts/storage
+		// so that the journal alone can reconstruct full PlainState.
+		// No changesets for genesis (alloc was loaded via InitEthGenesisState).
+		var err error
+		leavesData, err = EncodeGenesisJournal(dbTx)
+		if err != nil {
+			return fmt.Errorf("encode genesis journal: %w", err)
+		}
+	} else {
+		csw := writer.ChangeSetWriter()
+		if csw != nil {
 			accCS, err := csw.GetAccountChanges()
 			if err != nil {
 				return fmt.Errorf("get account changes: %w", err)
@@ -457,46 +556,48 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer sta
 			accCSBytes = EncodeAccountChanges(accCS)
 			stoCSBytes = EncodeStorageChanges(stoCS)
 
+			// Use buffered reader for current values (buffer → MDBX fallthrough).
+			bufReader := state.NewBufferedPlainStateReader(e.stateBuf, dbTx)
 			leavesData = EncodeLeavesJournal(accCS, stoCS,
 				func(addr types.Address) *account.StateAccount {
-					v, err := dbTx.GetOne("Account", addr[:])
-					if err != nil || v == nil {
+					a, err := bufReader.ReadAccountData(addr)
+					if err != nil {
 						return nil
 					}
-					var a account.StateAccount
-					if a.DecodeForStorage(v) != nil {
-						return nil
-					}
-					return &a
+					return a
 				},
 				func(addr types.Address, key types.Hash) []byte {
-					compositeKey := make([]byte, 54)
-					copy(compositeKey[:20], addr[:])
-					copy(compositeKey[22:], key[:])
-					v, _ := dbTx.GetOne("Storage", compositeKey)
+					v, err := bufReader.ReadAccountStorage(addr, 0, &key)
+					if err != nil {
+						return nil
+					}
 					return v
 				},
 			)
 		}
 	}
-	// Always append (empty if no csw) to maintain table alignment.
-	if err := appendTo(freezer.TableAccountChanges, "c", accCSBytes); err != nil {
+	if err := b.addEntry(freezer.TableAccountChanges, "c", accCSBytes); err != nil {
 		return fmt.Errorf("account changes: %w", err)
 	}
-	if err := appendTo(freezer.TableStorageChanges, "c", stoCSBytes); err != nil {
+	if err := b.addEntry(freezer.TableStorageChanges, "c", stoCSBytes); err != nil {
 		return fmt.Errorf("storage changes: %w", err)
 	}
-	if err := appendTo(freezer.TableLeavesJournal, "c", leavesData); err != nil {
+	if err := b.addEntry(freezer.TableLeavesJournal, "c", leavesData); err != nil {
 		return fmt.Errorf("leaves journal: %w", err)
 	}
 
-	// 5. Block witness.
+	// 3. Block witness.
 	var witnessData []byte
 	if witness != nil {
 		witnessData = witness.Encode()
 	}
-	if err := appendTo(freezer.TableBlockWitness, "c", witnessData); err != nil {
+	if err := b.addEntry(freezer.TableBlockWitness, "c", witnessData); err != nil {
 		return fmt.Errorf("block witness: %w", err)
+	}
+
+	// Flush complete batches.
+	if _, err := b.flushFullBatches(); err != nil {
+		return fmt.Errorf("flush batches: %w", err)
 	}
 
 	return nil
