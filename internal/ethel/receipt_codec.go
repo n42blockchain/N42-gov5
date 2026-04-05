@@ -1,9 +1,33 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// receipt_codec.go implements a compact receipt encoding inspired by Reth's
-// Compact codec. Strips bloom filter (256B) and all derived fields.
-// ~3 bytes for a simple transfer vs ~200+ bytes in full RLP.
+// receipt_codec.go — compact receipt encoding following the Reth Compact
+// codec design (paradigmxyz/reth crates/codecs/src/alloy/receipt.rs).
+//
+// Strips bloom (256B), txHash, gasUsed, contractAddr, blockHash/Number,
+// logIndex, and pre-Byzantium PostState (recoverable via re-execution).
+//
+// Flags byte layout (matches Reth):
+//
+//	bit 0-1:   txType identifier — 2 bits
+//	             0 = Legacy, 1 = EIP-2930, 2 = EIP-1559
+//	             3 = extended (actual type in next byte)
+//	bit 2:     success — 0 = failed, 1 = successful
+//	bit 3-6:   gasLen  — 4 bits (0-8 bytes of cumulativeGas)
+//	bit 7:     reserved (0)
+//
+// Per receipt:
+//
+//	[flags: 1]
+//	[txType: 1]                     — only if identifier == 3
+//	[cumulativeGas: gasLen bytes, big-endian trimmed]
+//	[logCount: varint]
+//	per log:
+//	  [address: 20]
+//	  [topicCount: 1]
+//	  [topics: 32*N]
+//	  [dataLen: varint]
+//	  [data: N]
 
 package ethel
 
@@ -16,24 +40,11 @@ import (
 )
 
 // EncodeReceiptsCompact encodes a block's receipts in compact format.
-// Per receipt:
-//
-//	[flags:1] bit0=status, bit1-2=txType, bit3-6=gasLen
-//	[cumulativeGas: gasLen bytes, big-endian trimmed]
-//	[logCount: varint]
-//	per log:
-//	  [address: 20]
-//	  [topicCount: 1]
-//	  [topics: 32*N]
-//	  [dataLen: varint]
-//	  [data: N]
-//
-// NOT stored: bloom, txHash, gasUsed, contractAddr, blockHash/Number, logIndex
 func EncodeReceiptsCompact(receipts block.Receipts) []byte {
 	if len(receipts) == 0 {
 		return nil
 	}
-	buf := make([]byte, 0, len(receipts)*32) // rough estimate
+	buf := make([]byte, 0, len(receipts)*32)
 	for _, r := range receipts {
 		buf = encodeOneReceipt(buf, r)
 	}
@@ -41,24 +52,39 @@ func EncodeReceiptsCompact(receipts block.Receipts) []byte {
 }
 
 func encodeOneReceipt(buf []byte, r *block.Receipt) []byte {
-	// Flags byte: status(1) | txType(2) | gasLen(4)
 	var flags byte
-	if r.Status == block.ReceiptStatusSuccessful {
-		flags |= 0x01
+
+	// bit 0-1: txType identifier (Reth scheme).
+	txID := r.Type
+	if txID >= 3 {
+		txID = 3 // extended
 	}
-	flags |= (r.Type & 0x03) << 1
+	flags |= txID & 0x03
+
+	// bit 2: success.
+	if r.Status == block.ReceiptStatusSuccessful {
+		flags |= 0x04
+	}
 
 	// Cumulative gas: trim leading zeros.
 	var gasBuf [8]byte
 	binary.BigEndian.PutUint64(gasBuf[:], r.CumulativeGasUsed)
 	gasStart := 0
-	for gasStart < 7 && gasBuf[gasStart] == 0 {
+	for gasStart < 8 && gasBuf[gasStart] == 0 {
 		gasStart++
 	}
-	gasLen := 8 - gasStart
+	gasLen := 8 - gasStart // 0-8
+
+	// bit 3-6: gasLen (4 bits, 0-8).
 	flags |= byte(gasLen&0x0F) << 3
 
 	buf = append(buf, flags)
+
+	// Extended type byte (Reth: identifier==3 → write actual type).
+	if txID == 3 {
+		buf = append(buf, r.Type)
+	}
+
 	buf = append(buf, gasBuf[gasStart:]...)
 
 	// Logs.
@@ -101,21 +127,42 @@ func decodeOneReceipt(data []byte, pos int) (*block.Receipt, int, error) {
 	pos++
 
 	r := &block.Receipt{}
-	if flags&0x01 != 0 {
+
+	// bit 0-1: txType identifier.
+	txID := flags & 0x03
+	if txID < 3 {
+		r.Type = txID
+	} else {
+		// Extended: read actual type byte.
+		if pos >= len(data) {
+			return nil, pos, fmt.Errorf("truncated extended txType")
+		}
+		r.Type = data[pos]
+		pos++
+	}
+
+	// bit 2: success.
+	if flags&0x04 != 0 {
 		r.Status = block.ReceiptStatusSuccessful
 	} else {
 		r.Status = block.ReceiptStatusFailed
 	}
-	r.Type = (flags >> 1) & 0x03
+
+	// bit 3-6: gasLen (0-8).
 	gasLen := int((flags >> 3) & 0x0F)
+	if gasLen > 8 {
+		return nil, pos, fmt.Errorf("invalid gasLen %d", gasLen)
+	}
 
 	if pos+gasLen > len(data) {
 		return nil, pos, fmt.Errorf("truncated gas")
 	}
-	var gasBuf [8]byte
-	copy(gasBuf[8-gasLen:], data[pos:pos+gasLen])
-	r.CumulativeGasUsed = binary.BigEndian.Uint64(gasBuf[:])
-	pos += gasLen
+	if gasLen > 0 {
+		var gasBuf [8]byte
+		copy(gasBuf[8-gasLen:], data[pos:pos+gasLen])
+		r.CumulativeGasUsed = binary.BigEndian.Uint64(gasBuf[:])
+		pos += gasLen
+	}
 
 	// Logs.
 	logCount, n := readVarint(data[pos:])
