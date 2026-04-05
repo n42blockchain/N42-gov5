@@ -13,6 +13,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -130,6 +131,15 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 				} else {
 					if err := tx.Put(modules.Account, a[:], e.value); err != nil {
 						return err
+					}
+					// Maintain PlainContractCode for changeset revert.
+					var acc account.StateAccount
+					if err := acc.DecodeForStorage(e.value); err == nil &&
+						acc.Incarnation > 0 && !acc.IsEmptyCodeHash() {
+						key := modules.PlainGenerateStoragePrefix(a[:], acc.Incarnation)
+						if err := tx.Put(modules.PlainContractCode, key, acc.CodeHash[:]); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -410,6 +420,8 @@ func (v *JournalVerifier) revertTest(ctx context.Context, endBlock uint64) error
 }
 
 // applyJournalEntry decodes and writes journal leaves to MDBX.
+// Also maintains PlainContractCode for contract accounts so that
+// changeset revert can recover codeHash.
 func applyJournalEntry(tx kv.RwTx, data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -426,6 +438,15 @@ func applyJournalEntry(tx kv.RwTx, data []byte) error {
 		} else {
 			if err := tx.Put(modules.Account, leaf.Address[:], leaf.Value); err != nil {
 				return err
+			}
+			// Maintain PlainContractCode for contract accounts.
+			var acc account.StateAccount
+			if err := acc.DecodeForStorage(leaf.Value); err == nil &&
+				acc.Incarnation > 0 && !acc.IsEmptyCodeHash() {
+				key := modules.PlainGenerateStoragePrefix(leaf.Address[:], acc.Incarnation)
+				if err := tx.Put(modules.PlainContractCode, key, acc.CodeHash[:]); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -447,6 +468,10 @@ func applyJournalEntry(tx kv.RwTx, data []byte) error {
 
 // applyChangeset reads account+storage changesets for blockNum and writes
 // the OLD values back to MDBX, effectively reverting that block.
+//
+// Changeset account values have codeHash omitted (omitHashes=true in Erigon
+// convention). For contract accounts (incarnation > 0), the codeHash is
+// recovered from the PlainContractCode table (addr+incarnation → codeHash).
 func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum uint64) error {
 	accData, err := accTbl.Retrieve(blockNum)
 	if err != nil {
@@ -463,7 +488,12 @@ func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum u
 					return err
 				}
 			} else {
-				if err := tx.Put(modules.Account, addr[:], values[i]); err != nil {
+				// Recover codeHash from PlainContractCode if omitted.
+				restored, err := recoverCodeHash(tx, addr[:], values[i])
+				if err != nil {
+					return err
+				}
+				if err := tx.Put(modules.Account, addr[:], restored); err != nil {
 					return err
 				}
 			}
@@ -492,6 +522,34 @@ func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum u
 		}
 	}
 	return nil
+}
+
+// recoverCodeHash restores the codeHash in a V2-encoded account value.
+// Changeset entries use omitHashes=true (Erigon convention), which replaces
+// codeHash with emptyCodeHash. For contract accounts (incarnation > 0),
+// the real codeHash is looked up from the PlainContractCode table.
+func recoverCodeHash(tx kv.Tx, addr, encodedValue []byte) ([]byte, error) {
+	var acc account.StateAccount
+	if err := acc.DecodeForStorage(encodedValue); err != nil {
+		return encodedValue, nil // can't decode, return as-is
+	}
+	if acc.Incarnation == 0 {
+		return encodedValue, nil // EOA, no code to recover
+	}
+	if !acc.IsEmptyCodeHash() {
+		return encodedValue, nil // codeHash already present
+	}
+	// Look up codeHash from PlainContractCode.
+	codeHash, err := tx.GetOne(modules.PlainContractCode,
+		modules.PlainGenerateStoragePrefix(addr, acc.Incarnation))
+	if err != nil {
+		return nil, err
+	}
+	if len(codeHash) > 0 {
+		copy(acc.CodeHash[:], codeHash)
+		return acc.MarshalV2(), nil
+	}
+	return encodedValue, nil
 }
 
 // clearAllState deletes all entries from Account and Storage tables.
