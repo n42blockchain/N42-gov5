@@ -61,7 +61,7 @@ func (c *AccountCSCompactor) Run(ctx context.Context, startBlock, endBlock uint6
 	defer enc.Close()
 
 	// Open idx file.
-	idxPath := filepath.Join(c.outputDir, "account_cs.idx")
+	idxPath := filepath.Join(c.outputDir, "acctcs.cidx")
 	idxFile, err := os.OpenFile(idxPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err
@@ -85,7 +85,7 @@ func (c *AccountCSCompactor) Run(ctx context.Context, startBlock, endBlock uint6
 		var lastEntry [8]byte
 		idxFile.ReadAt(lastEntry[:], int64(existingSegs-1)*8)
 		headFile = binary.LittleEndian.Uint16(lastEntry[0:2])
-		datPath := filepath.Join(c.outputDir, fmt.Sprintf("account_cs.%04d.dat", headFile))
+		datPath := filepath.Join(c.outputDir, fmt.Sprintf("acctcs.%04d.cdat", headFile))
 		if fi, err := os.Stat(datPath); err == nil {
 			headSize = fi.Size()
 		}
@@ -123,7 +123,7 @@ func (c *AccountCSCompactor) Run(ctx context.Context, startBlock, endBlock uint6
 		}
 
 		// Write dat.
-		datPath := filepath.Join(c.outputDir, fmt.Sprintf("account_cs.%04d.dat", headFile))
+		datPath := filepath.Join(c.outputDir, fmt.Sprintf("acctcs.%04d.cdat", headFile))
 		datFile, err := os.OpenFile(datPath, os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {
 			return err
@@ -411,7 +411,7 @@ type AccountCSReader struct {
 }
 
 func OpenAccountCS(dir string) (*AccountCSReader, error) {
-	idxPath := filepath.Join(dir, "account_cs.idx")
+	idxPath := filepath.Join(dir, "acctcs.cidx")
 	idf, err := os.Open(idxPath)
 	if err != nil {
 		return nil, err
@@ -480,7 +480,7 @@ func (r *AccountCSReader) loadSegment(segNum int64) error {
 
 	df, ok := r.dataFiles[fileNum]
 	if !ok {
-		path := filepath.Join(r.dir, fmt.Sprintf("account_cs.%04d.dat", fileNum))
+		path := filepath.Join(r.dir, fmt.Sprintf("acctcs.%04d.cdat", fileNum))
 		f, err := os.Open(path)
 		if err != nil {
 			return err
