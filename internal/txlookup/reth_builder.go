@@ -140,7 +140,7 @@ func (b *RethBuilder) buildOneFromReth(ctx context.Context, startBlock, endBlock
 		if len(k) != 32 || len(v) < 8 {
 			continue
 		}
-		txNum := binary.BigEndian.Uint64(v)
+		txNum := binary.LittleEndian.Uint64(v) // Reth stores values in LE
 		// Fast filter by txNum range before expensive binary search.
 		if txNum < minTxNum || txNum >= maxTxNum {
 			continue
