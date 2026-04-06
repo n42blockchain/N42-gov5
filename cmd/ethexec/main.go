@@ -440,29 +440,30 @@ func runCSCompact(c *cli.Context) error {
 		if err != nil {
 			return err
 		}
-		for _, tbl := range []string{"AccountChangeSet", "StorageChangeSet"} {
+		// Try both Erigon (no 's') and Reth ('s' suffix) table names.
+		for _, tbl := range []string{
+			"AccountChangeSet", "StorageChangeSet",
+			"AccountChangeSets", "StorageChangeSets",
+		} {
 			cursor, err := tx.Cursor(tbl)
 			if err != nil {
-				log.Warn("Cannot open table", "table", tbl, "err", err)
 				continue
 			}
 			k, _, err := cursor.Last()
 			cursor.Close()
-			if err != nil {
-				log.Warn("Cursor.Last failed", "table", tbl, "err", err)
+			if err != nil || k == nil || len(k) < 8 {
 				continue
 			}
-			if k == nil {
-				log.Warn("Table empty", "table", tbl)
-				continue
+			// Detect byte order: Erigon uses BE, Reth uses LE.
+			bnBE := binary.BigEndian.Uint64(k[:8])
+			bnLE := binary.LittleEndian.Uint64(k[:8])
+			bn := bnBE
+			if bnLE > 0 && bnLE < 1<<32 && (bnBE == 0 || bnBE > 1<<32) {
+				bn = bnLE // Reth LE format
 			}
-			log.Info("Table last key", "table", tbl, "keyLen", len(k),
-				"blockNum", binary.BigEndian.Uint64(k[:8]))
-			if len(k) >= 8 {
-				bn := binary.BigEndian.Uint64(k[:8])
-				if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
-					endBlock = bn + 1
-				}
+			log.Info("Table last key", "table", tbl, "keyLen", len(k), "blockNum", bn)
+			if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
+				endBlock = bn + 1
 			}
 		}
 		tx.Rollback()
@@ -509,18 +510,27 @@ func runHistoryBuild(c *cli.Context) error {
 
 	if endBlock == 0 {
 		tx, _ := db.BeginRo(context.Background())
-		for _, tbl := range []string{"AccountChangeSet", "StorageChangeSet"} {
+		for _, tbl := range []string{
+			"AccountChangeSet", "StorageChangeSet",
+			"AccountChangeSets", "StorageChangeSets",
+		} {
 			cursor, err := tx.Cursor(tbl)
 			if err != nil {
 				continue
 			}
 			k, _, _ := cursor.Last()
 			cursor.Close()
-			if len(k) >= 8 {
-				bn := binary.BigEndian.Uint64(k[:8])
-				if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
-					endBlock = bn + 1
-				}
+			if len(k) < 8 {
+				continue
+			}
+			bnBE := binary.BigEndian.Uint64(k[:8])
+			bnLE := binary.LittleEndian.Uint64(k[:8])
+			bn := bnBE
+			if bnLE > 0 && bnLE < 1<<32 && (bnBE == 0 || bnBE > 1<<32) {
+				bn = bnLE
+			}
+			if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
+				endBlock = bn + 1
 			}
 		}
 		tx.Rollback()

@@ -103,6 +103,32 @@ func (db *MdbxKV) CHandle() unsafe.Pointer {
 	return db.env.CHandle()
 }
 
+// discoverDBIs scans the root DBI to find all named databases and
+// registers them in db.buckets so they can be opened by openDBIs.
+// This enables reading foreign MDBX files (e.g., Reth) without
+// pre-registering their table names.
+func (db *MdbxKV) discoverDBIs() error {
+	return db.env.View(func(tx *mdbx.Txn) error {
+		root, err := tx.OpenRoot(0)
+		if err != nil {
+			return err
+		}
+		cursor, err := tx.OpenCursor(root)
+		if err != nil {
+			return err
+		}
+		defer cursor.Close()
+
+		for k, _, err := cursor.Get(nil, nil, mdbx.First); err == nil && k != nil; k, _, err = cursor.Get(nil, nil, mdbx.Next) {
+			name := string(k)
+			if _, exists := db.buckets[name]; !exists {
+				db.buckets[name] = kv.TableCfgItem{}
+			}
+		}
+		return nil
+	})
+}
+
 // openDBIs - first trying to open existing DBI's in RO transaction
 // otherwise re-try by RW transaction
 // it allow open DB from another process - even if main process holding long RW transaction
