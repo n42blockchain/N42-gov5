@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
 
 	"github.com/n42blockchain/N42/lib/recsplit"
 )
@@ -111,7 +113,9 @@ func (w *SegmentStoreWriter) WriteSegment(data []byte, recSplitPath string) (uin
 	// Rename RecSplit to sequential number.
 	riPath := filepath.Join(w.dir, fmt.Sprintf("%06d.ri", segNum))
 	if recSplitPath != riPath {
-		os.Rename(recSplitPath, riPath)
+		if err := renameWithRetry(recSplitPath, riPath); err != nil {
+			return 0, fmt.Errorf("rename recsplit %s → %s: %w", recSplitPath, riPath, err)
+		}
 	}
 
 	w.headSize += frameSize
@@ -240,4 +244,21 @@ func (r *SegmentStoreReader) Close() {
 	for _, idx := range r.riFiles {
 		idx.Close()
 	}
+}
+
+// renameWithRetry handles Windows file locking delays (antivirus, indexer).
+// On non-Windows platforms, this is a single os.Rename call.
+func renameWithRetry(src, dst string) error {
+	err := os.Rename(src, dst)
+	if err == nil || runtime.GOOS != "windows" {
+		return err
+	}
+	// Windows: retry up to 5 times with short backoff.
+	for i := 0; i < 5; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if err = os.Rename(src, dst); err == nil {
+			return nil
+		}
+	}
+	return err
 }

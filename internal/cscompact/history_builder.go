@@ -226,8 +226,8 @@ func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, en
 			return fmt.Errorf("collect seg %d: %w", segStart, err)
 		}
 
-		// Build RecSplit to temp file, then let store rename it.
-		tmpIdx := filepath.Join(dir, "tmp_build.ri")
+		// Build RecSplit to temp file with unique name to avoid Windows lock conflicts.
+		tmpIdx := filepath.Join(dir, fmt.Sprintf("tmp_%d.ri", segStart))
 		datBuf, err := b.buildSegment(ctx, entries, tmpIdx, segStart, segEnd)
 		if err != nil {
 			os.Remove(tmpIdx)
