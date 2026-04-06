@@ -3,7 +3,6 @@ package cscompact
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"os"
 	"runtime"
 	"testing"
@@ -272,11 +271,25 @@ func TestAccountCSReadBlock(t *testing.T) {
 	}
 }
 
-func BenchmarkAccountCSEncode(b *testing.B) {
-	db := openErigonRO(&testing.T{})
-	if db == nil {
-		b.Skip("Erigon not available")
+func openErigonForBench(b *testing.B) kv.RoDB {
+	b.Helper()
+	erigonDB := `e:\erigon2\chaindata`
+	if _, err := os.Stat(erigonDB); err != nil {
+		b.Skip("Erigon data not found")
 	}
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(erigonDB).Label(kv.ChainDB).Readonly().Accede().
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		b.Fatal(err)
+	}
+	return db
+}
+
+func BenchmarkAccountCSEncode(b *testing.B) {
+	db := openErigonForBench(b)
 	defer db.Close()
 
 	compactor := NewAccountCSCompactor(db, b.TempDir())
@@ -292,10 +305,7 @@ func BenchmarkAccountCSEncode(b *testing.B) {
 }
 
 func BenchmarkAccountCSDecode(b *testing.B) {
-	db := openErigonRO(&testing.T{})
-	if db == nil {
-		b.Skip("Erigon not available")
-	}
+	db := openErigonForBench(b)
 	defer db.Close()
 
 	compactor := NewAccountCSCompactor(db, b.TempDir())
@@ -312,9 +322,4 @@ func BenchmarkAccountCSDecode(b *testing.B) {
 	}
 	b.ReportMetric(float64(len(entries)), "entries/op")
 	b.ReportMetric(float64(len(compressed)), "bytes/op")
-}
-
-// helper for benchmark — skip properly if no Erigon
-func init() {
-	_ = fmt.Sprintf // suppress unused import
 }
