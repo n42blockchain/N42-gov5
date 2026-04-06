@@ -63,6 +63,7 @@ func main() {
 		&cli.Uint64Flag{Name: "verify", Usage: "State root verification interval (0=disabled)", Value: 0},
 		&cli.BoolFlag{Name: "skip-errors", Usage: "Log gas mismatches but continue execution"},
 		&cli.BoolFlag{Name: "no-outputs", Usage: "Skip writing output freezer (receipts, senders, witness, etc.)"},
+		&cli.StringFlag{Name: "history-dir", Usage: "Enable inline history segment building to this directory"},
 		&cli.BoolFlag{Name: "pprof", Usage: "Enable mutex/block profiling for pprof flame graphs"},
 	}
 
@@ -288,6 +289,13 @@ func run(c *cli.Context) error {
 		log.Info("Pre-computed senders detected", "items", senderTbl.Items())
 	}
 
+	// Enable inline history segment building if --history-dir is set.
+	if histDir := c.String("history-dir"); histDir != "" {
+		if err := executor.SetHistoryDir(histDir); err != nil {
+			return fmt.Errorf("set history dir: %w", err)
+		}
+	}
+
 	ctx, cancel := withShutdown()
 	defer cancel()
 	return executor.Run(ctx)
@@ -443,13 +451,24 @@ func runCSCompact(c *cli.Context) error {
 		for _, tbl := range []string{"AccountChangeSet", "StorageChangeSet"} {
 			cursor, err := tx.Cursor(tbl)
 			if err != nil {
+				log.Warn("Cannot open table", "table", tbl, "err", err)
 				continue
 			}
-			k, _, _ := cursor.Last()
+			k, _, err := cursor.Last()
 			cursor.Close()
+			if err != nil {
+				log.Warn("Cursor.Last failed", "table", tbl, "err", err)
+				continue
+			}
+			if k == nil {
+				log.Warn("Table empty", "table", tbl)
+				continue
+			}
+			log.Info("Table last key", "table", tbl, "keyLen", len(k),
+				"blockNum", binary.BigEndian.Uint64(k[:8]))
 			if len(k) >= 8 {
 				bn := binary.BigEndian.Uint64(k[:8])
-				if bn > 0 && bn < 1<<32 && bn+1 > endBlock { // sanity: < 4B blocks
+				if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
 					endBlock = bn + 1
 				}
 			}
@@ -498,12 +517,23 @@ func runHistoryBuild(c *cli.Context) error {
 
 	if endBlock == 0 {
 		tx, _ := db.BeginRo(context.Background())
-		cursor, _ := tx.Cursor("AccountHistory")
-		k, _, _ := cursor.Last()
-		cursor.Close()
+		for _, tbl := range []string{"AccountChangeSet", "StorageChangeSet"} {
+			cursor, err := tx.Cursor(tbl)
+			if err != nil {
+				continue
+			}
+			k, _, _ := cursor.Last()
+			cursor.Close()
+			if len(k) >= 8 {
+				bn := binary.BigEndian.Uint64(k[:8])
+				if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
+					endBlock = bn + 1
+				}
+			}
+		}
 		tx.Rollback()
-		if len(k) >= 28 {
-			endBlock = binary.BigEndian.Uint64(k[20:28]) + 1
+		if endBlock == 0 {
+			return fmt.Errorf("cannot determine end block from changeset tables")
 		}
 		log.Info("Detected end block", "endBlock", endBlock)
 	}
