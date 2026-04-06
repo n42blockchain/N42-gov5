@@ -541,7 +541,7 @@ func runHistoryBuild(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 
-	histDir := filepath.Join(datadir, "history")
+	histDir := filepath.Join(datadir, "chain")
 
 	fromCS := c.Bool("from-changesets")
 
@@ -582,7 +582,7 @@ func runTxLookupBuild(c *cli.Context) error {
 		endBlock = f.Frozen()
 	}
 
-	outputDir := filepath.Join(datadir, "txlookup")
+	outputDir := filepath.Join(datadir, "chain")
 	builder := txlookup.NewSegmentBuilder(f, outputDir)
 
 	ctx, cancel := withShutdown()

@@ -195,8 +195,8 @@ type HistoryReader struct {
 	cachedSegment  *HistorySegment
 }
 
-func NewHistoryReader(dir string) (*HistoryReader, error) {
-	store, err := OpenSegmentStore(dir)
+func NewHistoryReader(dir, prefix string) (*HistoryReader, error) {
+	store, err := OpenSegmentStore(dir, prefix)
 	if err != nil {
 		return nil, err
 	}

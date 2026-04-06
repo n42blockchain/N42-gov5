@@ -23,8 +23,7 @@ func TestHistoryFromChangesets(t *testing.T) {
 	buildTime := time.Since(t0)
 
 	// Open via HistoryReader (freezer-style).
-	histDir := filepath.Join(tmpDir, "account_hist")
-	reader, err := NewHistoryReader(histDir)
+	reader, err := NewHistoryReader(tmpDir, "accthist")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +34,7 @@ func TestHistoryFromChangesets(t *testing.T) {
 	t.Logf("  Build time: %v (vs 7min from history bitmaps)", buildTime)
 
 	// List files in the directory.
-	entries, _ := os.ReadDir(histDir)
+	entries, _ := os.ReadDir(tmpDir)
 	for _, e := range entries {
 		fi, _ := e.Info()
 		t.Logf("  file: %-25s %8d bytes", e.Name(), fi.Size())
