@@ -15,6 +15,8 @@ const (
 	RootSchemeJMTBlake3 RootScheme = "jmt-blake3"
 	// RootSchemeBMTBlake3 is the Binary Merkle Tree root using Blake3 path-addressed nodes.
 	RootSchemeBMTBlake3 RootScheme = "bmt-blake3"
+	// RootSchemeVerkle is the Verkle tree root using IPA/Banderwagon commitments (experimental).
+	RootSchemeVerkle RootScheme = "verkle"
 	// RootSchemeEthereumMPT is the canonical Ethereum account/storage MPT root.
 	RootSchemeEthereumMPT RootScheme = "ethereum-mpt"
 )

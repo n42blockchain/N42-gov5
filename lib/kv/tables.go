@@ -231,11 +231,14 @@ Invariants:
 const TrieOfAccounts = "TrieAccount"
 const TrieOfStorage = "TrieStorage"
 
-// Mapping [block number] => [Verkle Root]
+// VerkleRoots is a LEGACY Erigon table (block# → verkle root). Deprecated.
 const VerkleRoots = "VerkleRoots"
 
-// Mapping [Verkle Root] => [Rlp-Encoded Verkle Node]
+// VerkleTrie is a LEGACY Erigon table (root → RLP node). Deprecated.
 const VerkleTrie = "VerkleTrie"
+
+// VerkleNode and VerkleRoot are defined in lib/verkle/store/ (content-addressed).
+// Registered in ChaindataTables via modules/table.go.
 
 const (
 	// DatabaseInfo is used to store information about data layout.
@@ -662,6 +665,8 @@ var ChaindataTables = []string{
 
 	VerkleRoots,
 	VerkleTrie,
+	"VerkleNode",  // content-addressed nodes (lib/verkle/store)
+	"VerkleRoot",  // root + version recovery (lib/verkle/store)
 	// Beacon stuff
 	BeaconState,
 	BeaconBlocks,

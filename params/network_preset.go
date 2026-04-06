@@ -12,6 +12,8 @@ type StateCommitmentPreset string
 
 const (
 	StateCommitmentPresetJMT         StateCommitmentPreset = "jmt-blake3"
+	StateCommitmentPresetBMT         StateCommitmentPreset = "bmt-blake3"
+	StateCommitmentPresetVerkle      StateCommitmentPreset = "verkle"
 	StateCommitmentPresetEthereumMPT StateCommitmentPreset = "ethereum-mpt"
 )
 

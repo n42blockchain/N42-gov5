@@ -184,6 +184,13 @@ const (
 	// BMTRoot stores the latest BMT root hash and version for recovery.
 	BMTRoot = "BMTRoot"
 
+	// VerkleNode stores content-addressed Verkle nodes.
+	// key: commitment_bytes (64 bytes)   value: serialized_node (97B internal / 288B+ leaf)
+	VerkleNode = "VerkleNode"
+
+	// VerkleRoot stores the latest Verkle root commitment and version for recovery.
+	VerkleRoot = "VerkleRoot"
+
 	// HashedAccounts stores accounts keyed by keccak256(address).
 	// Used by CalcTrieRoot (erigon2.7 trie) for standard Ethereum state root.
 	// key: keccak256(address) [32B]
@@ -313,6 +320,8 @@ var n42Tables = []string{
 	JMTRoot,
 	BMTNode,
 	BMTRoot,
+	VerkleNode,
+	VerkleRoot,
 	ConsensusEvidence,
 	HashedAccounts,
 	HashedStorage,
