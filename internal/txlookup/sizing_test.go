@@ -91,8 +91,8 @@ func TestTxDensityProfile(t *testing.T) {
 					txInSeg += r.txCount
 				}
 			}
-			// Size: ~5.5 bytes/key (idx) + 4 bytes/key (dat)
-			segBytes := txInSeg * 10 // rough total per tx
+			// V2: ~5.5 bytes/key (idx) + ~1 byte/block (EF dat)
+			segBytes := txInSeg*6 + segSize*2
 			if segBytes > maxSegBytes {
 				maxSegBytes = segBytes
 			}
