@@ -20,8 +20,8 @@ type TxBlockEntry struct {
 	BlockNum uint64
 }
 
-// LoadTransactionBlocks reads the Reth TransactionBlocks table into a sorted slice.
-// Format: key=txNum(8B LE), value=blockNum(8B LE).
+// LoadTransactionBlocks reads the TransactionBlocks table into a sorted slice.
+// Format: key=txNum(8B BE), value=blockNum(8B BE).
 func LoadTransactionBlocks(db kv.RoDB, ctx context.Context) ([]TxBlockEntry, error) {
 	tx, err := db.BeginRo(ctx)
 	if err != nil {
@@ -44,8 +44,8 @@ func LoadTransactionBlocks(db kv.RoDB, ctx context.Context) ([]TxBlockEntry, err
 			continue
 		}
 		entries = append(entries, TxBlockEntry{
-			TxNum:    binary.LittleEndian.Uint64(k),
-			BlockNum: binary.LittleEndian.Uint64(v),
+			TxNum:    binary.BigEndian.Uint64(k),
+			BlockNum: binary.BigEndian.Uint64(v),
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -65,19 +65,11 @@ func TxNumToBlockNum(entries []TxBlockEntry, txNum uint64) uint64 {
 	return entries[idx].BlockNum
 }
 
-// DetectBlockNum reads a key and returns the block number, auto-detecting
-// BE (Erigon) vs LE (Reth) byte order.
+// DetectBlockNum reads a BE-encoded block number from a key.
+// Both Erigon and Reth use Big-Endian encoding for MDBX keys.
 func DetectBlockNum(k []byte) uint64 {
 	if len(k) < 8 {
 		return 0
 	}
-	be := binary.BigEndian.Uint64(k[:8])
-	le := binary.LittleEndian.Uint64(k[:8])
-	if be > 0 && be < 1<<32 {
-		return be
-	}
-	if le < 1<<32 {
-		return le
-	}
-	return be
+	return binary.BigEndian.Uint64(k[:8])
 }

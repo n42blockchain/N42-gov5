@@ -77,24 +77,23 @@ func (b *RethBuilder) BuildRange(ctx context.Context, startBlock, endBlock uint6
 }
 
 // txNumRange returns the [minTxNum, maxTxNum) range for a block range.
+// txnBlocks is sorted by TxNum, and BlockNum is monotonically increasing
+// (each entry = first tx of a new block), so both fields are co-sorted.
 func txNumRange(txnBlocks []cscompact.TxBlockEntry, startBlock, endBlock uint64) (uint64, uint64) {
-	// Find first txNum >= startBlock.
-	startIdx := sort.Search(len(txnBlocks), func(i int) bool {
-		return txnBlocks[i].BlockNum >= startBlock
-	})
-	var minTxNum uint64
-	if startIdx < len(txnBlocks) {
-		minTxNum = txnBlocks[startIdx].TxNum
+	var minTxNum, maxTxNum uint64
+	foundMin := false
+	for _, e := range txnBlocks {
+		if !foundMin && e.BlockNum >= startBlock {
+			minTxNum = e.TxNum
+			foundMin = true
+		}
+		if e.BlockNum >= endBlock {
+			maxTxNum = e.TxNum
+			break
+		}
 	}
-	// Find first txNum >= endBlock.
-	endIdx := sort.Search(len(txnBlocks), func(i int) bool {
-		return txnBlocks[i].BlockNum >= endBlock
-	})
-	var maxTxNum uint64
-	if endIdx < len(txnBlocks) {
-		maxTxNum = txnBlocks[endIdx].TxNum
-	} else if len(txnBlocks) > 0 {
-		maxTxNum = txnBlocks[len(txnBlocks)-1].TxNum + 100_000_000 // upper bound
+	if maxTxNum == 0 && len(txnBlocks) > 0 {
+		maxTxNum = txnBlocks[len(txnBlocks)-1].TxNum + 100_000_000
 	}
 	return minTxNum, maxTxNum
 }
@@ -138,7 +137,7 @@ func (b *RethBuilder) buildOneFromReth(ctx context.Context, startBlock, endBlock
 		if len(k) != 32 || len(v) < 8 {
 			continue
 		}
-		txNum := binary.LittleEndian.Uint64(v)
+		txNum := binary.BigEndian.Uint64(v)
 		// Fast filter by txNum range before expensive binary search.
 		if txNum < minTxNum || txNum >= maxTxNum {
 			continue
