@@ -206,10 +206,7 @@ func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, en
 		log.Info("Resuming history build", "from", startBlock, "existingSegments", existingSegs)
 	}
 
-	csTable := "AccountChangeSet"
-	if b.keyLen == 52 {
-		csTable = "StorageChangeSet"
-	}
+	csTable := b.detectCSTable(ctx)
 
 	for segStart := (startBlock / HistSegmentSize) * HistSegmentSize; segStart < endBlock; segStart += HistSegmentSize {
 		if ctx.Err() != nil {
@@ -271,6 +268,59 @@ func (b *HistoryBuilder) buildDatBytes(entries []histKeyData) ([]byte, error) {
 }
 
 // collectFromChangesets reads changeset table sequentially by block.
+// detectCSTable probes the MDBX for changeset table names.
+// Returns the correct table name (Erigon or Reth) and whether it uses LE byte order.
+func (b *HistoryBuilder) detectCSTable(ctx context.Context) string {
+	// Try Erigon names first (no 's'), then Reth names (with 's').
+	candidates := []string{"AccountChangeSet", "AccountChangeSets"}
+	if b.keyLen == 52 {
+		candidates = []string{"StorageChangeSet", "StorageChangeSets"}
+	}
+	tx, err := b.db.BeginRo(ctx)
+	if err != nil {
+		return candidates[0]
+	}
+	defer tx.Rollback()
+	for _, tbl := range candidates {
+		cursor, err := tx.Cursor(tbl)
+		if err != nil {
+			continue
+		}
+		k, _, _ := cursor.First()
+		cursor.Close()
+		if k != nil && len(k) >= 8 {
+			log.Info("Detected changeset table", "table", tbl, "keyLen", len(k))
+			return tbl
+		}
+	}
+	return candidates[0]
+}
+
+// detectByteOrder checks first key to determine BE (Erigon) or LE (Reth).
+func detectByteOrder(k []byte) (blockNum uint64, isLE bool) {
+	if len(k) < 8 {
+		return 0, false
+	}
+	be := binary.BigEndian.Uint64(k[:8])
+	le := binary.LittleEndian.Uint64(k[:8])
+	// Heuristic: valid block numbers are < 1<<32. If BE gives a valid
+	// number and LE doesn't, it's BE (Erigon). Otherwise LE (Reth).
+	if be > 0 && be < 1<<32 {
+		return be, false
+	}
+	if le < 1<<32 {
+		return le, true
+	}
+	return be, false
+}
+
+func readBlockNum(k []byte, isLE bool) uint64 {
+	if isLE {
+		return binary.LittleEndian.Uint64(k[:8])
+	}
+	return binary.BigEndian.Uint64(k[:8])
+}
+
 func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable string, startBlock, endBlock uint64) ([]histKeyData, error) {
 	tx, err := b.db.BeginRo(ctx)
 	if err != nil {
@@ -284,10 +334,22 @@ func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable stri
 	}
 	defer cursor.Close()
 
+	// Detect byte order from first key.
+	firstK, _, _ := cursor.First()
+	_, isLE := detectByteOrder(firstK)
+	if isLE {
+		log.Info("Detected Reth LE byte order", "table", csTable)
+	}
+
 	keyMap := make(map[string][]uint64)
 
+	// Seek to startBlock.
 	var seekKey [8]byte
-	binary.BigEndian.PutUint64(seekKey[:], startBlock)
+	if isLE {
+		binary.LittleEndian.PutUint64(seekKey[:], startBlock)
+	} else {
+		binary.BigEndian.PutUint64(seekKey[:], startBlock)
+	}
 	k, v, err := cursor.Seek(seekKey[:])
 	if err != nil {
 		return nil, err
@@ -303,7 +365,7 @@ func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable stri
 			continue
 		}
 
-		blockNum := binary.BigEndian.Uint64(k[:8])
+		blockNum := readBlockNum(k, isLE)
 		if blockNum >= endBlock {
 			break
 		}
@@ -316,10 +378,12 @@ func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable stri
 					keyMap[mapKey] = append(keyMap[mapKey], blockNum)
 				}
 			} else {
-				// StorageChangeSet: key=blockNum(8)+addr(20)+incarnation(8), value=slot(32)+oldValue
-				if len(k) >= 36 && len(v) >= 32 {
+				// StorageChangeSet:
+				//   Erigon: key=blockNum(8)+addr(20)+incarnation(8)=36B, value=slot(32)+oldValue
+				//   Reth:   key=blockNum(8)+addr(20)=28B, value=slot(32)+oldValue
+				if len(k) >= 28 && len(v) >= 32 {
 					var compositeKey [52]byte
-					copy(compositeKey[:20], k[8:28]) // addr
+					copy(compositeKey[:20], k[8:28]) // addr (same offset for both)
 					copy(compositeKey[20:], v[:32])   // slot
 					mapKey := string(compositeKey[:])
 					keyMap[mapKey] = append(keyMap[mapKey], blockNum)

@@ -416,6 +416,15 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 		db.buckets[name] = cfg
 	}
 
+	// In Accede mode, discover all existing named DBIs from the root DB
+	// so that foreign databases (e.g., Reth MDBX) can be read without
+	// pre-registering their table names.
+	if opts.HasFlag(mdbx.Accede) {
+		if err := db.discoverDBIs(); err != nil {
+			opts.log.Warn("DBI discovery failed (non-fatal)", "err", err)
+		}
+	}
+
 	buckets := bucketSlice(db.buckets)
 	if err := db.openDBIs(buckets); err != nil {
 		return nil, err
