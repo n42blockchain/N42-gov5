@@ -58,6 +58,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ai/attestation"
 	"github.com/n42blockchain/N42/internal/ai/governance"
 	"github.com/n42blockchain/N42/internal/ai/training"
+	"github.com/n42blockchain/N42/internal/ai/coord"
 	"github.com/n42blockchain/N42/internal/ai/wallet"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/api/graphql"
@@ -73,6 +74,7 @@ import (
 	dmessaging "github.com/n42blockchain/N42/internal/distributed/messaging"
 	dnotify "github.com/n42blockchain/N42/internal/distributed/notify"
 	dstorage "github.com/n42blockchain/N42/internal/distributed/storage"
+	dstorageEd2k "github.com/n42blockchain/N42/internal/distributed/storage/ed2k"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
 	"github.com/n42blockchain/N42/internal/ingest"
@@ -86,6 +88,7 @@ import (
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 	"github.com/n42blockchain/N42/internal/sync/checkpoint"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
+	"github.com/n42blockchain/N42/internal/sync/backfill"
 	"github.com/n42blockchain/N42/internal/sync/snapsync"
 	"github.com/n42blockchain/N42/internal/sync/torrentsync"
 	"github.com/n42blockchain/N42/internal/tracers"
@@ -98,10 +101,13 @@ import (
 	"github.com/n42blockchain/N42/lib/common/cmp"
 	"github.com/n42blockchain/N42/lib/common/datadir"
 	"github.com/n42blockchain/N42/lib/gointerfaces/remote"
+	gverkle "github.com/ethereum/go-verkle"
 	"github.com/n42blockchain/N42/lib/bmt"
 	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
+	libverkle "github.com/n42blockchain/N42/lib/verkle"
+	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
@@ -178,10 +184,13 @@ type Node struct {
 	grpcServer         *grpc.Server            // gRPC KV server for RPCDaemon (nil if disabled)
 	coprocessorService *dcoprocessor.Service   // ZK coprocessor (nil if disabled)
 	messagingService   *dmessaging.Service     // Decentralized messaging (nil if disabled)
-	storageBridge      *dstorage.Bridge        // IPFS/Filecoin storage bridge (nil if disabled)
+	storageBridge      *dstorage.Bridge              // IPFS/Filecoin storage bridge (nil if disabled)
+	storageResolver    *dstorage.UniversalResolver   // Multi-protocol content resolver (nil if disabled)
 	notifyService      *dnotify.Service        // Push notifications (nil if disabled)
 	web3Gateway        *api.Web3Gateway        // web3:// protocol gateway (nil if disabled)
+	backfillService    *backfill.Service       // Background history backfill (nil if disabled)
 	walletService      *wallet.Service         // AI agent wallet (nil if disabled)
+	agentRegistry      *coord.AgentRegistry    // AI agent discovery & coordination (nil if disabled)
 
 	// AI safety infrastructure
 	dataGovernance     *governance.Committee           // Data governance (nil if disabled)
@@ -750,6 +759,26 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 			log.Info("State commitment: BMT-Blake3",
 				"root", fmt.Sprintf("%x", bmtRoot[:8]),
+			)
+
+		case state.RootSchemeVerkle:
+			// --- Verkle initialization (experimental, IPA/Banderwagon) ---
+			// Read persisted version for crash recovery logging.
+			var verkleVersion uint64
+			if rtx, err := chainKv.BeginRo(ctx); err == nil {
+				verkleVersion, _ = verklestore.ReadVerkleVersion(rtx)
+				rtx.Rollback()
+			}
+			// In-memory tree; per-block FlushTo writes to MDBX in writeBlockWithState.
+			verkleRoot := gverkle.New()
+			verkleStore := libverkle.NewMemStore()
+			verkleCommit := commitment.NewVerkleCommitment(verkleRoot, verkleStore)
+			realBC.SetVerkleCommitment(verkleCommit)
+			verkleRC := commitment.NewVerkleRootComputer(verkleCommit)
+			realBC.SetRootComputer(verkleRC)
+
+			log.Info("State commitment: Verkle (IPA/Banderwagon, experimental)",
+				"persisted_block", verkleVersion,
 			)
 
 		case state.RootSchemeEthereumMPT:
@@ -1454,6 +1483,14 @@ func (n *Node) Start() error {
 		}
 		n.snapSync.Start()
 		n.is.Start()
+
+		// Start background history backfill after snap sync pivot is established.
+		backfillCfg := backfill.DefaultConfig()
+		if backfillCfg.Enabled {
+			currentBlock := n.blockChain.CurrentBlock().Number64().Uint64()
+			n.backfillService = backfill.New(n.db, n.p2p, n.blockChain, backfillCfg)
+			n.backfillService.Start(currentBlock)
+		}
 	})
 
 	// Start snapshot acceleration cache warmer if enabled.
@@ -1683,6 +1720,16 @@ func (n *Node) startAIRuntime() {
 			"ttl", n.config.AICfg.Attestation.TTLSec,
 		)
 	}
+	if n.config.AICfg.Coord.Enabled {
+		maxAgents := n.config.AICfg.Coord.MaxAgentsPerNode
+		if maxAgents <= 0 {
+			maxAgents = 10000
+		}
+		n.agentRegistry = coord.NewAgentRegistry(maxAgents)
+		log.Info("AI agent coordination enabled",
+			"maxAgents", maxAgents,
+		)
+	}
 }
 
 func (n *Node) startDistributedRuntime() {
@@ -1696,18 +1743,72 @@ func (n *Node) startDistributedRuntime() {
 		} else {
 			n.coprocessorService = svc
 			svc.Start()
-			log.Info("ZK coprocessor service enabled")
+			log.Info("ZK coprocessor service enabled",
+				"tier", n.config.CoprocessorCfg.DefaultVerificationTier,
+				"marketplace", n.config.CoprocessorCfg.EnableMarketplace,
+			)
 		}
+	}
+	// Log compute engine availability (engines are started on-demand by coprocessor).
+	cc := &n.config.ComputeCfg
+	if cc.WASMEnabled || cc.BatchEnabled || cc.InferenceEnabled {
+		log.Info("Distributed compute engines configured",
+			"wasm", cc.WASMEnabled,
+			"batch", cc.BatchEnabled,
+			"inference", cc.InferenceEnabled,
+		)
 	}
 	if n.config.MessagingCfg.Enabled {
 		n.messagingService = dmessaging.NewService(&n.config.MessagingCfg)
 		n.messagingService.Start()
-		log.Info("Messaging relay service enabled")
+
+		// Wire P2P relay if enabled and P2P layer is available.
+		if n.config.MessagingCfg.P2PRelayEnabled && n.p2p != nil {
+			relay := dmessaging.NewRelay(&n.config.MessagingCfg, n.messagingService, n.p2p, nil)
+			if err := relay.Start(); err != nil {
+				log.Error("Failed to start messaging relay", "err", err)
+			} else {
+				n.messagingService.SetRelay(relay)
+			}
+		}
+
+		log.Info("Messaging service enabled",
+			"relay", n.config.MessagingCfg.P2PRelayEnabled,
+			"encryption", n.config.MessagingCfg.EncryptionEnabled,
+			"rln", n.config.MessagingCfg.RLNEnabled,
+			"persistence", n.config.MessagingCfg.PersistenceEnabled,
+			"groups", n.config.MessagingCfg.GroupsEnabled,
+			"stream", n.config.MessagingCfg.StreamServerEnabled,
+			"did", n.config.MessagingCfg.DIDEnabled,
+		)
 	}
 	if n.config.StorageCfg.Enabled {
 		n.storageBridge = dstorage.NewBridge(&n.config.StorageCfg)
 		n.storageBridge.Start()
-		log.Info("Storage bridge service enabled")
+
+		// Build UniversalResolver with all available backends.
+		contentBridge := dstorage.NewContentBridge(n.storageBridge.IPFSClient(), false)
+		ed2kBridge := dstorageEd2k.NewBridge()
+		// CAS callback reads from MDBX ContentStore table; nil if not available.
+		var casGet func([32]byte) ([]byte, error)
+		if n.db != nil {
+			casGet = func(hash [32]byte) ([]byte, error) {
+				rtx, err := n.db.BeginRo(context.Background())
+				if err != nil {
+					return nil, err
+				}
+				defer rtx.Rollback()
+				return rtx.GetOne(modules.ContentStore, hash[:])
+			}
+		}
+		n.storageResolver = dstorage.NewUniversalResolver(
+			n.storageBridge,
+			nil, // torrent bridge (requires running client, optional)
+			ed2kBridge,
+			contentBridge,
+			casGet,
+		)
+		log.Info("Storage bridge + universal resolver enabled")
 	}
 	if n.config.NotifyCfg.Enabled {
 		n.notifyService = dnotify.NewService(&n.config.NotifyCfg)
@@ -2084,10 +2185,11 @@ func (n *Node) stopServices() []error {
 			n.walletService = nil
 			return nil
 		}},
-		{"AI safety", func() error {
+		{"AI safety + coord", func() error {
 			n.attestationService = nil
 			n.trainingProver = nil
 			n.dataGovernance = nil
+			n.agentRegistry = nil
 			return nil
 		}},
 		// 2d. Cross-chain bridge
@@ -2095,7 +2197,10 @@ func (n *Node) stopServices() []error {
 			if n.bridgeCancel != nil {
 				n.bridgeCancel()
 			}
-			n.bridgeRouter = nil
+			if n.bridgeRouter != nil {
+				n.bridgeRouter.Close()
+				n.bridgeRouter = nil
+			}
 			n.bridgePublisher = nil
 			return nil
 		}},
@@ -2107,6 +2212,7 @@ func (n *Node) stopServices() []error {
 			if n.messagingService != nil {
 				n.messagingService.Stop()
 			}
+			n.storageResolver = nil
 			if n.storageBridge != nil {
 				n.storageBridge.Stop()
 			}
@@ -2191,7 +2297,19 @@ func (n *Node) stopServices() []error {
 		}},
 		// 4. Miner
 		{"Miner", func() error { n.miner.Close(); return nil }},
-		// 5. Snap sync + Initial sync (depends on P2P + blockchain, must stop before blockchain closes)
+		// 4b. Backfill service (stop before sync services)
+		{"Backfill sync", func() error {
+			if n.backfillService != nil {
+				n.backfillService.Stop()
+			}
+			return nil
+		}},
+		// 5. Checkpoint sync + Snap sync + Initial sync
+		// Note: checkpointSync relies on node context cancellation (done above).
+		{"Checkpoint sync", func() error {
+			n.checkpointSync = nil
+			return nil
+		}},
 		{"Snap sync", func() error { return n.snapSync.Stop() }},
 		{"Initial sync", func() error { return n.is.Stop() }},
 		// 6. Sync service (depends on P2P + blockchain, must stop before blockchain closes)
@@ -2230,6 +2348,30 @@ func (n *Node) stopServices() []error {
 					}
 				}
 			}
+			return nil
+		}},
+		// 10c. Verkle tree flush (persist nodes before blockchain closes)
+		{"Verkle flush", func() error {
+			realBC, ok := n.blockChain.(*internal.BlockChain)
+			if !ok {
+				return nil
+			}
+			vc := realBC.VerkleCommitment()
+			if vc == nil {
+				return nil
+			}
+			nodes, bytes, err := vc.Flush()
+			if err != nil {
+				log.Warn("Failed to flush Verkle tree", "err", err)
+			} else if nodes > 0 {
+				log.Info("Verkle tree flushed on shutdown", "nodes", nodes, "bytes", bytes)
+			}
+			return nil
+		}},
+		// 10d. Release references to stateless helpers (no goroutines to stop)
+		{"ZK verifier + stateless", func() error {
+			n.zkVerifier = nil
+			n.statelessValidator = nil
 			return nil
 		}},
 		// 11. Blockchain (flush and close DB, after all consumers stopped)

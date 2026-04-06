@@ -190,72 +190,11 @@ func (b *HistoryBuilder) collectKeys(ctx context.Context, startBlock, endBlock u
 }
 
 func (b *HistoryBuilder) writeDat(path string, entries []histKeyData) error {
-	// Layout:
-	// [4B magic][4B keyCount][4B flags]
-	// [4B × keyCount: offset table]
-	// [adaptive values...]
-
-	keyCount := len(entries)
-	headerSize := 12
-	offsetTableSize := keyCount * 4
-	dataStart := headerSize + offsetTableSize
-
-	// First pass: calculate data sizes.
-	var dataBuf []byte
-	offsets := make([]uint32, keyCount)
-
-	for i, e := range entries {
-		offsets[i] = uint32(dataStart + len(dataBuf))
-
-		count := len(e.blocks)
-		if count <= 254 {
-			dataBuf = append(dataBuf, byte(count))
-		} else {
-			dataBuf = append(dataBuf, 0xFF)
-			var cb [4]byte
-			binary.LittleEndian.PutUint32(cb[:], uint32(count))
-			dataBuf = append(dataBuf, cb[:]...)
-		}
-
-		// Delta-encode block numbers.
-		prev := uint64(0)
-		for _, bn := range e.blocks {
-			delta := bn - prev
-			dataBuf = appendVarint(dataBuf, delta)
-			prev = bn
-		}
-	}
-
-	// Write file.
-	totalSize := dataStart + len(dataBuf)
-	buf := make([]byte, totalSize)
-
-	// Header.
-	copy(buf[:4], histDatMagic)
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(keyCount))
-	binary.LittleEndian.PutUint32(buf[8:12], 0) // flags
-
-	// Offset table.
-	for i, off := range offsets {
-		binary.LittleEndian.PutUint32(buf[headerSize+i*4:], off)
-	}
-
-	// Data.
-	copy(buf[dataStart:], dataBuf)
-
-	// zstd compress entire dat.
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+	data, err := b.buildDatBytes(entries)
 	if err != nil {
 		return err
 	}
-	compressed := enc.EncodeAll(buf, nil)
-	enc.Close()
-
-	// Only use compressed if smaller.
-	if len(compressed) < len(buf) {
-		return os.WriteFile(path, compressed, 0644)
-	}
-	return os.WriteFile(path, buf, 0644)
+	return os.WriteFile(path, data, 0644)
 }
 
 func (b *HistoryBuilder) writeEmpty(idxPath, datPath string) error {

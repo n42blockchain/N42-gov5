@@ -721,18 +721,25 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					}
 				}
 
-				// Write leaf changes to journal (for later tree building).
+				// Write leaf changes to journal (plain keys, V2 format).
 				if e.leafJournal != nil {
 					accts, stor := ibs.DirtyAccountData()
 					var entries []LeafEntry
 					for addr, val := range accts {
-						keyHash := commitment.AccountKeyHash(addr)
-						entries = append(entries, LeafEntry{Key: types.Hash(keyHash), Value: val})
+						entries = append(entries, LeafEntry{
+							Tag:     TagAccount,
+							Address: addr,
+							Value:   val,
+						})
 					}
 					for addr, slots := range stor {
 						for slot, val := range slots {
-							keyHash := commitment.StorageKeyHash(addr, slot)
-							entries = append(entries, LeafEntry{Key: types.Hash(keyHash), Value: val})
+							entries = append(entries, LeafEntry{
+								Tag:     TagStorage,
+								Address: addr,
+								Slot:    slot,
+								Value:   val,
+							})
 						}
 					}
 					if err := e.leafJournal.WriteBlock(newBlockNum, entries); err != nil {

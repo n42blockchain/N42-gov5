@@ -34,7 +34,7 @@ func TestProcessBlockEmpty(t *testing.T) {
 	blockHashFunc := func(n uint64) types.Hash { return types.Hash{} }
 
 	result, err := ProcessBlock(chainCfg, engine, header,
-		[]*transaction.Transaction{}, nil, ibs, blockHashFunc)
+		[]*transaction.Transaction{}, nil, ibs, blockHashFunc, nil)
 	if err != nil {
 		t.Fatalf("ProcessBlock empty: %v", err)
 	}

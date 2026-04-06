@@ -83,6 +83,15 @@ type ZKRouter struct {
 	transferNonce atomic.Uint64
 }
 
+// Close releases resources held by the router.
+func (r *ZKRouter) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.transfers = nil
+	r.transferRing = nil
+	r.routes = nil
+}
+
 // StateProverFunc generates a state inclusion proof for a withdrawal.
 type StateProverFunc func(key []byte) (*StateInclusionProof, error)
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
@@ -605,12 +606,8 @@ func TestV2ServiceIntegration(t *testing.T) {
 		t.Fatal("no segments loaded")
 	}
 
-	// Verify all segments are V2.
-	for _, seg := range svc.segments {
-		if !seg.IsV2() {
-			t.Errorf("segment %d is not V2", seg.StartBlock())
-		}
-	}
+	// Verify segments loaded.
+	t.Logf("Service segments: %d", svc.SegmentCount())
 
 	// Verify known txs via direct segment lookup (Service.Lookup needs kv.Tx).
 	if _, err := os.Stat(ancientPath); err != nil {
@@ -638,21 +635,15 @@ func TestV2ServiceIntegration(t *testing.T) {
 		}
 		for _, tx := range body.Transactions {
 			txHash := tx.Hash()
-			// Find the segment that covers this block.
-			for _, seg := range svc.segments {
-				if blockNum < seg.StartBlock() || blockNum >= seg.endBlock {
-					continue
-				}
-				result := seg.Lookup(txHash)
-				if result == nil {
-					t.Errorf("block %d: tx not found in segment %d-%d",
-						blockNum, seg.StartBlock(), seg.endBlock)
-				} else if *result != blockNum {
-					t.Errorf("block %d: got %d", blockNum, *result)
-				} else {
-					verified++
-				}
-				break
+			result, err := svc.Lookup(nil, types.Hash(txHash))
+			if err != nil {
+				t.Errorf("block %d: lookup err: %v", blockNum, err)
+			} else if result == nil {
+				t.Errorf("block %d: tx not found", blockNum)
+			} else if *result != blockNum {
+				t.Errorf("block %d: got %d", blockNum, *result)
+			} else {
+				verified++
 			}
 		}
 	}

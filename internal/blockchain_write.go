@@ -35,6 +35,7 @@ import (
 	"github.com/n42blockchain/N42/lib/jmt"
 	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
+	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/lthash"
 	"github.com/n42blockchain/N42/modules"
@@ -217,6 +218,17 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			bmtRoot := bc.bmtCommitment.Root()
 			if err := bmtstore.WriteBMTRoot(tx, bmtRoot); err != nil {
 				return fmt.Errorf("writing BMT root for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+		}
+
+		// Flush Verkle dirty nodes into the current MDBX transaction.
+		if ibs != nil && bc.verkleEnabled && bc.verkleCommitment != nil {
+			verkleNodeStore := verklestore.NewMDBXStore(tx, verklestore.VerkleNodeTable)
+			if _, _, err := bc.verkleCommitment.FlushTo(verkleNodeStore); err != nil {
+				return fmt.Errorf("flushing Verkle nodes for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			if err := verklestore.WriteVerkleVersion(tx, blockNumber.Uint64()); err != nil {
+				return fmt.Errorf("writing Verkle version for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 		}
 

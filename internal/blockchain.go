@@ -216,6 +216,13 @@ func (bc *BlockChain) SetBMTCommitment(c *commitment.BMTCommitment) {
 	log.Info("BMT state commitment enabled (Blake3, content-addressed)")
 }
 
+// SetVerkleCommitment enables the Verkle tree state commitment (experimental).
+func (bc *BlockChain) SetVerkleCommitment(c *commitment.VerkleCommitment) {
+	bc.verkleCommitment = c
+	bc.verkleEnabled = true
+	log.Info("Verkle state commitment enabled (IPA/Banderwagon, experimental)")
+}
+
 // SetMPTRootComputer enables persistent Ethereum MPT state root computation.
 func (bc *BlockChain) SetMPTRootComputer(rc *commitment.MPTRootComputer) {
 	bc.mptRootComputer = rc
@@ -253,6 +260,16 @@ func (bc *BlockChain) JMTCommitment() *commitment.JMTCommitment {
 // IsJMTEnabled returns true if JMT state commitment is active.
 func (bc *BlockChain) IsJMTEnabled() bool {
 	return bc.jmtEnabled
+}
+
+// VerkleCommitment returns the Verkle commitment layer, or nil if not enabled.
+func (bc *BlockChain) VerkleCommitment() *commitment.VerkleCommitment {
+	return bc.verkleCommitment
+}
+
+// VerkleEnabled returns true if Verkle state commitment is active.
+func (bc *BlockChain) VerkleEnabled() bool {
+	return bc.verkleEnabled
 }
 
 // EnableJMTForBlockProcessing enables JMT root computation during block
