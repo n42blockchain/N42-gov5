@@ -86,6 +86,10 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 	t0 := time.Now()
 	blockCount := endBlock - startBlock
 
+	log.Info("Building txindex segment",
+		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
+		"blockCount", blockCount)
+
 	// Pass 1: count transactions per block.
 	txPerBlock := make([]uint32, blockCount)
 	totalTx := 0
@@ -101,7 +105,7 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 		txPerBlock[blockNum-startBlock] = uint32(len(body.Transactions))
 		totalTx += len(body.Transactions)
 
-		if (blockNum-startBlock)%100000 == 0 && blockNum > startBlock {
+		if (blockNum-startBlock)%50000 == 0 && blockNum > startBlock {
 			elapsed := time.Since(t0)
 			pct := float64(blockNum-startBlock) / float64(blockCount) * 100
 			log.Info("Segment scan progress",
