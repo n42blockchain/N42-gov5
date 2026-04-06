@@ -21,7 +21,7 @@ type TxBlockEntry struct {
 }
 
 // LoadTransactionBlocks reads the TransactionBlocks table into a sorted slice.
-// Format: key=txNum(8B BE), value=blockNum(8B BE).
+// Format: key=txNum(8B BE), value=blockNum(8B LE).
 func LoadTransactionBlocks(db kv.RoDB, ctx context.Context) ([]TxBlockEntry, error) {
 	tx, err := db.BeginRo(ctx)
 	if err != nil {
@@ -45,7 +45,7 @@ func LoadTransactionBlocks(db kv.RoDB, ctx context.Context) ([]TxBlockEntry, err
 		}
 		entries = append(entries, TxBlockEntry{
 			TxNum:    binary.BigEndian.Uint64(k),
-			BlockNum: binary.BigEndian.Uint64(v),
+			BlockNum: binary.LittleEndian.Uint64(v), // Reth stores values in LE
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool {
