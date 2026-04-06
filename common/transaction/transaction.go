@@ -472,15 +472,18 @@ func (tx *Transaction) AccessList() AccessList      { return tx.inner.accessList
 func (tx *Transaction) AuthList() AuthorizationList { return tx.inner.authList() }
 
 func (tx *Transaction) SetFrom(addr types.Address) {
+	a := addr
 	switch t := tx.inner.(type) {
-	case *AccessListTx:
-		t.From = &addr
 	case *LegacyTx:
-		t.From = &addr
+		t.From = &a
+	case *AccessListTx:
+		t.From = &a
 	case *DynamicFeeTx:
-		t.From = &addr
-	case *PostQuantumTx:
-		// PostQuantumTx address is derived from PQ public key
+		t.From = &a
+	case *BlobTx:
+		t.fromCache = &a
+	case *SetCodeTx:
+		t.fromCache = &a
 	}
 }
 
