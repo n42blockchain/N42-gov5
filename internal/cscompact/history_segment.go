@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/klauspost/compress/zstd"
+
 	"github.com/n42blockchain/N42/lib/recsplit"
 )
 
@@ -60,6 +62,17 @@ func OpenHistorySegment(idxPath, datPath string) (*HistorySegment, error) {
 			datFile.Close()
 			idx.Close()
 			return nil, fmt.Errorf("read dat: %w", err)
+		}
+	}
+
+	// Try zstd decompress (dat may be compressed).
+	if len(dat) > 4 && string(dat[:4]) != histDatMagic {
+		dec, err := zstd.NewReader(nil)
+		if err == nil {
+			if decompressed, err := dec.DecodeAll(dat, nil); err == nil && len(decompressed) >= 12 && string(decompressed[:4]) == histDatMagic {
+				dat = decompressed
+			}
+			dec.Close()
 		}
 	}
 

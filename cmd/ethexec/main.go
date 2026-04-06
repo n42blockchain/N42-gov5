@@ -173,6 +173,7 @@ func main() {
 					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
 					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=auto)", Value: 0},
+					&cli.BoolFlag{Name: "from-changesets", Usage: "Build from changeset tables (fast) instead of history bitmaps (slow)"},
 				},
 				Action: runHistoryBuild,
 			},
@@ -506,14 +507,25 @@ func runHistoryBuild(c *cli.Context) error {
 
 	histDir := filepath.Join(datadir, "history")
 
-	log.Info("=== Account History ===")
+	fromCS := c.Bool("from-changesets")
+
+	log.Info("=== Account History ===", "fromChangesets", fromCS)
 	accBuilder := cscompact.NewAccountHistoryBuilder(db, histDir)
-	if err := accBuilder.BuildRange(ctx, startBlock, endBlock); err != nil {
-		return fmt.Errorf("account history: %w", err)
+	if fromCS {
+		if err := accBuilder.BuildFromChangesets(ctx, startBlock, endBlock); err != nil {
+			return fmt.Errorf("account history: %w", err)
+		}
+	} else {
+		if err := accBuilder.BuildRange(ctx, startBlock, endBlock); err != nil {
+			return fmt.Errorf("account history: %w", err)
+		}
 	}
 
-	log.Info("=== Storage History ===")
+	log.Info("=== Storage History ===", "fromChangesets", fromCS)
 	stoBuilder := cscompact.NewStorageHistoryBuilder(db, histDir)
+	if fromCS {
+		return stoBuilder.BuildFromChangesets(ctx, startBlock, endBlock)
+	}
 	return stoBuilder.BuildRange(ctx, startBlock, endBlock)
 }
 

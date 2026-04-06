@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/RoaringBitmap/roaring/roaring64"
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/recsplit"
@@ -296,6 +297,18 @@ func (b *HistoryBuilder) writeDat(path string, entries []histKeyData) error {
 	// Data.
 	copy(buf[dataStart:], dataBuf)
 
+	// zstd compress entire dat.
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+	if err != nil {
+		return err
+	}
+	compressed := enc.EncodeAll(buf, nil)
+	enc.Close()
+
+	// Only use compressed if smaller.
+	if len(compressed) < len(buf) {
+		return os.WriteFile(path, compressed, 0644)
+	}
 	return os.WriteFile(path, buf, 0644)
 }
 
@@ -319,4 +332,200 @@ func (b *HistoryBuilder) writeEmpty(idxPath, datPath string) error {
 		return err
 	}
 	return rs.Build(context.Background())
+}
+
+// BuildFromChangesets builds history segments by reading Erigon changeset tables
+// (AccountChangeSet/StorageChangeSet) sequentially by block. 10-14x faster than
+// BuildRange which scans the entire history bitmap table.
+func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, endBlock uint64) error {
+	if err := os.MkdirAll(b.outputDir, 0755); err != nil {
+		return err
+	}
+
+	csTable := "AccountChangeSet"
+	if b.keyLen == 52 {
+		csTable = "StorageChangeSet"
+	}
+
+	for segStart := (startBlock / HistSegmentSize) * HistSegmentSize; segStart < endBlock; segStart += HistSegmentSize {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		segEnd := segStart + HistSegmentSize
+		if segEnd > endBlock {
+			segEnd = endBlock
+		}
+
+		baseName := HistSegmentFileName(b.prefix, segStart, segEnd)
+		idxPath := filepath.Join(b.outputDir, baseName+".idx")
+		datPath := filepath.Join(b.outputDir, baseName+".dat")
+
+		if _, err := os.Stat(idxPath); err == nil {
+			log.Info("History segment exists, skipping", "name", baseName)
+			continue
+		}
+
+		entries, err := b.collectFromChangesets(ctx, csTable, segStart, segEnd)
+		if err != nil {
+			return fmt.Errorf("collect %s: %w", baseName, err)
+		}
+
+		if err := b.buildFromKeyMap(ctx, entries, idxPath, datPath, segStart, segEnd); err != nil {
+			return fmt.Errorf("build %s: %w", baseName, err)
+		}
+	}
+	return nil
+}
+
+// collectFromChangesets reads changeset table sequentially by block.
+func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable string, startBlock, endBlock uint64) ([]histKeyData, error) {
+	tx, err := b.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	cursor, err := tx.Cursor(csTable)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close()
+
+	keyMap := make(map[string][]uint64)
+
+	var seekKey [8]byte
+	binary.BigEndian.PutUint64(seekKey[:], startBlock)
+	k, v, err := cursor.Seek(seekKey[:])
+	if err != nil {
+		return nil, err
+	}
+
+	var totalEntries uint64
+	for k != nil {
+		if len(k) < 8 {
+			k, v, err = cursor.Next()
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		blockNum := binary.BigEndian.Uint64(k[:8])
+		if blockNum >= endBlock {
+			break
+		}
+
+		if blockNum >= startBlock {
+			if b.keyLen == 20 {
+				// AccountChangeSet: key=blockNum(8), value=addr(20)+oldValue
+				if len(v) >= 20 {
+					mapKey := string(v[:20])
+					keyMap[mapKey] = append(keyMap[mapKey], blockNum)
+				}
+			} else {
+				// StorageChangeSet: key=blockNum(8)+addr(20)+incarnation(8), value=slot(32)+oldValue
+				if len(k) >= 36 && len(v) >= 32 {
+					var compositeKey [52]byte
+					copy(compositeKey[:20], k[8:28]) // addr
+					copy(compositeKey[20:], v[:32])   // slot
+					mapKey := string(compositeKey[:])
+					keyMap[mapKey] = append(keyMap[mapKey], blockNum)
+				}
+			}
+			totalEntries++
+		}
+
+		k, v, err = cursor.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		if totalEntries%5_000_000 == 0 && totalEntries > 0 {
+			log.Info("  changeset scan progress",
+				"entries", totalEntries,
+				"uniqueKeys", len(keyMap),
+				"block", blockNum)
+		}
+	}
+
+	// Sort and deduplicate.
+	entries := make([]histKeyData, 0, len(keyMap))
+	for mapKey, blocks := range keyMap {
+		sort.Slice(blocks, func(i, j int) bool { return blocks[i] < blocks[j] })
+		deduped := blocks[:0]
+		for i, b := range blocks {
+			if i == 0 || b != blocks[i-1] {
+				deduped = append(deduped, b)
+			}
+		}
+		entries = append(entries, histKeyData{key: []byte(mapKey), blocks: deduped})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].key, entries[j].key) < 0
+	})
+
+	log.Info("Changeset scan complete",
+		"entries", totalEntries,
+		"uniqueKeys", len(entries),
+		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1))
+
+	return entries, nil
+}
+
+// BuildFromKeyMap builds a single segment from pre-collected key data.
+// Reusable by both BuildFromChangesets and future exec integration.
+func (b *HistoryBuilder) buildFromKeyMap(ctx context.Context, entries []histKeyData, idxPath, datPath string, startBlock, endBlock uint64) error {
+	t0 := time.Now()
+
+	if len(entries) == 0 {
+		return b.writeEmpty(idxPath, datPath)
+	}
+
+	log.Info("Building history segment",
+		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
+		"keys", len(entries))
+
+	// Build RecSplit.
+	logger := log2.New()
+	rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
+		KeyCount:           len(entries),
+		BucketSize:         2000,
+		LeafSize:           8,
+		Enums:              false,
+		LessFalsePositives: true,
+		IndexFile:          idxPath,
+		BaseDataID:         startBlock,
+		TmpDir:             os.TempDir(),
+	}, logger)
+	if err != nil {
+		return err
+	}
+	for i, e := range entries {
+		if err := rs.AddKey(e.key, uint64(i)); err != nil {
+			return err
+		}
+	}
+	if err := rs.Build(ctx); err != nil {
+		return err
+	}
+
+	// Write dat.
+	if err := b.writeDat(datPath, entries); err != nil {
+		os.Remove(idxPath)
+		return err
+	}
+
+	elapsed := time.Since(t0)
+	idxFi, _ := os.Stat(idxPath)
+	datFi, _ := os.Stat(datPath)
+	avgBytes := float64(idxFi.Size()+datFi.Size()) / float64(len(entries))
+	log.Info("History segment built",
+		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
+		"keys", len(entries),
+		"idx", fmt.Sprintf("%.1f KB", float64(idxFi.Size())/1024),
+		"dat", fmt.Sprintf("%.1f KB", float64(datFi.Size())/1024),
+		"avg", fmt.Sprintf("%.1f B/key", avgBytes),
+		"elapsed", elapsed.Truncate(time.Second))
+
+	return nil
 }
