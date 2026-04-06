@@ -94,15 +94,18 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 		return nil
 	}
 
-	finishBlock := func() {
+	finishBlock := func() error {
 		if currentBlock := prevBlockNum; currentBlock >= startBlock && currentBlock < endBlock {
 			batch = append(batch, append([]byte{}, currentSenders...))
 			totalBlocks++
 			if len(batch) >= freezer.BatchSize {
-				flushBatch()
+				if err := flushBatch(); err != nil {
+					return err
+				}
 			}
 		}
 		currentSenders = currentSenders[:0]
+		return nil
 	}
 
 	for k, v, err := cursor.First(); k != nil; k, v, err = cursor.Next() {
@@ -116,7 +119,7 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 			continue
 		}
 
-		txNum := binary.LittleEndian.Uint64(k)
+		txNum := binary.BigEndian.Uint64(k)
 
 		// Linear advance: move txBlockIdx forward until txBlocks[txBlockIdx+1].TxNum > txNum.
 		for txBlockIdx+1 < len(txBlocks) && txBlocks[txBlockIdx+1].TxNum <= txNum {
@@ -133,7 +136,9 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 
 		if first || blockNum != prevBlockNum {
 			if !first {
-				finishBlock()
+				if err := finishBlock(); err != nil {
+					return err
+				}
 			}
 			// Fill empty blocks.
 			if !first && blockNum > prevBlockNum+1 {
@@ -142,7 +147,9 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 						batch = append(batch, nil)
 						totalBlocks++
 						if len(batch) >= freezer.BatchSize {
-							flushBatch()
+							if err := flushBatch(); err != nil {
+								return err
+							}
 						}
 					}
 				}
@@ -164,9 +171,13 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 	}
 
 	if len(currentSenders) > 0 || !first {
-		finishBlock()
+		if err := finishBlock(); err != nil {
+			return err
+		}
 	}
-	flushBatch()
+	if err := flushBatch(); err != nil {
+		return err
+	}
 
 	elapsed := time.Since(t0)
 	log.Info("Senders export complete",

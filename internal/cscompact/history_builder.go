@@ -296,31 +296,6 @@ func (b *HistoryBuilder) detectCSTable(ctx context.Context) string {
 	return candidates[0]
 }
 
-// detectByteOrder checks first key to determine BE (Erigon) or LE (Reth).
-func detectByteOrder(k []byte) (blockNum uint64, isLE bool) {
-	if len(k) < 8 {
-		return 0, false
-	}
-	be := binary.BigEndian.Uint64(k[:8])
-	le := binary.LittleEndian.Uint64(k[:8])
-	// Heuristic: valid block numbers are < 1<<32. If BE gives a valid
-	// number and LE doesn't, it's BE (Erigon). Otherwise LE (Reth).
-	if be > 0 && be < 1<<32 {
-		return be, false
-	}
-	if le < 1<<32 {
-		return le, true
-	}
-	return be, false
-}
-
-func readBlockNum(k []byte, isLE bool) uint64 {
-	if isLE {
-		return binary.LittleEndian.Uint64(k[:8])
-	}
-	return binary.BigEndian.Uint64(k[:8])
-}
-
 func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable string, startBlock, endBlock uint64) ([]histKeyData, error) {
 	tx, err := b.db.BeginRo(ctx)
 	if err != nil {
@@ -334,22 +309,10 @@ func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable stri
 	}
 	defer cursor.Close()
 
-	// Detect byte order from first key.
-	firstK, _, _ := cursor.First()
-	_, isLE := detectByteOrder(firstK)
-	if isLE {
-		log.Info("Detected Reth LE byte order", "table", csTable)
-	}
-
 	keyMap := make(map[string][]uint64)
 
-	// Seek to startBlock.
 	var seekKey [8]byte
-	if isLE {
-		binary.LittleEndian.PutUint64(seekKey[:], startBlock)
-	} else {
-		binary.BigEndian.PutUint64(seekKey[:], startBlock)
-	}
+	binary.BigEndian.PutUint64(seekKey[:], startBlock)
 	k, v, err := cursor.Seek(seekKey[:])
 	if err != nil {
 		return nil, err
@@ -365,7 +328,7 @@ func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable stri
 			continue
 		}
 
-		blockNum := readBlockNum(k, isLE)
+		blockNum := binary.BigEndian.Uint64(k[:8])
 		if blockNum >= endBlock {
 			break
 		}

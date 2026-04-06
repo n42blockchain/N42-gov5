@@ -778,7 +778,7 @@ func detectRethEndBlock(db kv.RoDB) uint64 {
 		_, v, _ := cursor.Last()
 		cursor.Close()
 		if len(v) >= 8 {
-			bn := binary.LittleEndian.Uint64(v)
+			bn := binary.BigEndian.Uint64(v)
 			if bn > 0 && bn < 1<<32 {
 				return bn + 1
 			}
