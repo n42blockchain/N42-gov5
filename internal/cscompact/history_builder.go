@@ -13,11 +13,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/RoaringBitmap/roaring/roaring64"
-	"github.com/klauspost/compress/zstd"
 
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/recsplit"
@@ -108,12 +106,7 @@ func (b *HistoryBuilder) collectKeys(ctx context.Context, startBlock, endBlock u
 	}
 	defer cursor.Close()
 
-	// Map: key prefix → accumulated block numbers.
-	type accum struct {
-		key    []byte
-		blocks []uint64
-	}
-	keyMap := make(map[string]*accum)
+	keyMap := make(map[string][]uint64)
 	totalShards := 0
 
 	for k, v, err := cursor.First(); k != nil; k, v, err = cursor.Next() {
@@ -150,14 +143,7 @@ func (b *HistoryBuilder) collectKeys(ctx context.Context, startBlock, endBlock u
 			continue
 		}
 
-		a, ok := keyMap[prefix]
-		if !ok {
-			keyCopy := make([]byte, b.keyLen)
-			copy(keyCopy, k[:b.keyLen])
-			a = &accum{key: keyCopy}
-			keyMap[prefix] = a
-		}
-		a.blocks = append(a.blocks, filtered...)
+		keyMap[prefix] = append(keyMap[prefix], filtered...)
 		totalShards++
 
 		if totalShards%500000 == 0 {
@@ -167,25 +153,7 @@ func (b *HistoryBuilder) collectKeys(ctx context.Context, startBlock, endBlock u
 		}
 	}
 
-	// Sort and deduplicate block lists, sort keys.
-	entries := make([]histKeyData, 0, len(keyMap))
-	for _, a := range keyMap {
-		sort.Slice(a.blocks, func(i, j int) bool { return a.blocks[i] < a.blocks[j] })
-		// Deduplicate.
-		deduped := a.blocks[:0]
-		for i, b := range a.blocks {
-			if i == 0 || b != a.blocks[i-1] {
-				deduped = append(deduped, b)
-			}
-		}
-		entries = append(entries, histKeyData{key: a.key, blocks: deduped})
-	}
-
-	// Sort entries by key for deterministic RecSplit ordering.
-	sort.Slice(entries, func(i, j int) bool {
-		return bytes.Compare(entries[i].key, entries[j].key) < 0
-	})
-
+	entries := sortAndDedup(keyMap)
 	return entries, totalShards, nil
 }
 
@@ -280,117 +248,27 @@ func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, en
 func (b *HistoryBuilder) buildSegment(ctx context.Context, entries []histKeyData, idxPath string, startBlock, endBlock uint64) ([]byte, error) {
 	t0 := time.Now()
 
-	if len(entries) == 0 {
-		// Empty RecSplit.
-		logger := log2.New()
-		rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
-			KeyCount: 0, IndexFile: idxPath, TmpDir: os.TempDir(),
-		}, logger)
-		if err != nil {
-			return nil, err
-		}
-		if err := rs.Build(ctx); err != nil {
-			return nil, err
-		}
-		// Empty dat.
-		buf := make([]byte, 12)
-		copy(buf[:4], histDatMagic)
-		return buf, nil
-	}
-
-	log.Info("Building history segment",
-		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
-		"keys", len(entries))
-
-	// Build RecSplit.
-	logger := log2.New()
-	rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
-		KeyCount:           len(entries),
-		BucketSize:         2000,
-		LeafSize:           8,
-		Enums:              false,
-		LessFalsePositives: true,
-		IndexFile:          idxPath,
-		BaseDataID:         startBlock,
-		TmpDir:             os.TempDir(),
-	}, logger)
-	if err != nil {
-		return nil, err
-	}
-	for i, e := range entries {
-		if err := rs.AddKey(e.key, uint64(i)); err != nil {
-			return nil, err
-		}
-	}
-	if err := rs.Build(ctx); err != nil {
-		return nil, err
-	}
-
-	// Build dat bytes (in memory, then zstd).
-	datBytes, err := b.buildDatBytes(entries)
+	datBytes, err := buildHistSegment(entries, idxPath, startBlock, endBlock)
 	if err != nil {
 		return nil, err
 	}
 
-	elapsed := time.Since(t0)
-	log.Info("History segment built",
-		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
-		"keys", len(entries),
-		"dat", fmt.Sprintf("%.1f KB", float64(len(datBytes))/1024),
-		"avg", fmt.Sprintf("%.1f B/key", float64(len(datBytes))/float64(len(entries))),
-		"elapsed", elapsed.Truncate(time.Second))
+	if len(entries) > 0 {
+		elapsed := time.Since(t0)
+		log.Info("History segment built",
+			"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
+			"keys", len(entries),
+			"dat", fmt.Sprintf("%.1f KB", float64(len(datBytes))/1024),
+			"avg", fmt.Sprintf("%.1f B/key", float64(len(datBytes))/float64(len(entries))),
+			"elapsed", elapsed.Truncate(time.Second))
+	}
 
 	return datBytes, nil
 }
 
 // buildDatBytes creates the zstd-compressed dat content.
 func (b *HistoryBuilder) buildDatBytes(entries []histKeyData) ([]byte, error) {
-	keyCount := len(entries)
-	headerSize := 12
-	offsetTableSize := keyCount * 4
-	dataStart := headerSize + offsetTableSize
-
-	var dataBuf []byte
-	offsets := make([]uint32, keyCount)
-
-	for i, e := range entries {
-		offsets[i] = uint32(dataStart + len(dataBuf))
-		count := len(e.blocks)
-		if count <= 254 {
-			dataBuf = append(dataBuf, byte(count))
-		} else {
-			dataBuf = append(dataBuf, 0xFF)
-			var cb [4]byte
-			binary.LittleEndian.PutUint32(cb[:], uint32(count))
-			dataBuf = append(dataBuf, cb[:]...)
-		}
-		prev := uint64(0)
-		for _, bn := range e.blocks {
-			dataBuf = appendVarint(dataBuf, bn-prev)
-			prev = bn
-		}
-	}
-
-	totalSize := dataStart + len(dataBuf)
-	buf := make([]byte, totalSize)
-	copy(buf[:4], histDatMagic)
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(keyCount))
-	for i, off := range offsets {
-		binary.LittleEndian.PutUint32(buf[headerSize+i*4:], off)
-	}
-	copy(buf[dataStart:], dataBuf)
-
-	// zstd compress.
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
-	if err != nil {
-		return buf, nil
-	}
-	compressed := enc.EncodeAll(buf, nil)
-	enc.Close()
-	if len(compressed) < len(buf) {
-		return compressed, nil
-	}
-	return buf, nil
+	return buildHistDatBytes(entries)
 }
 
 // collectFromChangesets reads changeset table sequentially by block.
@@ -464,21 +342,7 @@ func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable stri
 		}
 	}
 
-	// Sort and deduplicate.
-	entries := make([]histKeyData, 0, len(keyMap))
-	for mapKey, blocks := range keyMap {
-		sort.Slice(blocks, func(i, j int) bool { return blocks[i] < blocks[j] })
-		deduped := blocks[:0]
-		for i, b := range blocks {
-			if i == 0 || b != blocks[i-1] {
-				deduped = append(deduped, b)
-			}
-		}
-		entries = append(entries, histKeyData{key: []byte(mapKey), blocks: deduped})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return bytes.Compare(entries[i].key, entries[j].key) < 0
-	})
+	entries := sortAndDedup(keyMap)
 
 	log.Info("Changeset scan complete",
 		"entries", totalEntries,
