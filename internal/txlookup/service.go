@@ -38,7 +38,7 @@ type txSegmentCached struct {
 
 // NewService opens all existing segments using SegmentStoreReader.
 func NewService(segmentDir string) (*Service, error) {
-	store, err := cscompact.OpenSegmentStore(segmentDir)
+	store, err := cscompact.OpenSegmentStore(segmentDir, "txindex")
 	if err != nil {
 		return nil, err
 	}

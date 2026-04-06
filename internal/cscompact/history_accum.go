@@ -35,16 +35,15 @@ type HistoryAccumulator struct {
 }
 
 func NewAccountHistoryAccumulator(outputDir string) (*HistoryAccumulator, error) {
-	return newHistoryAccumulator(outputDir, "account_hist")
+	return newHistoryAccumulator(outputDir, "accthist")
 }
 
 func NewStorageHistoryAccumulator(outputDir string) (*HistoryAccumulator, error) {
-	return newHistoryAccumulator(outputDir, "storage_hist")
+	return newHistoryAccumulator(outputDir, "storhist")
 }
 
 func newHistoryAccumulator(outputDir, prefix string) (*HistoryAccumulator, error) {
-	dir := filepath.Join(outputDir, prefix)
-	store, err := NewSegmentStoreWriter(dir)
+	store, err := NewSegmentStoreWriter(outputDir, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +51,7 @@ func newHistoryAccumulator(outputDir, prefix string) (*HistoryAccumulator, error
 	segStart := store.SegmentCount() * HistSegmentSize
 
 	return &HistoryAccumulator{
-		dir:      dir,
+		dir:      outputDir,
 		prefix:   prefix,
 		store:    store,
 		keyMap:   make(map[string][]uint64),
@@ -116,7 +115,7 @@ func (a *HistoryAccumulator) flushSegment(startBlock, endBlock uint64) error {
 		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
 		"keys", len(entries))
 
-	tmpIdx := filepath.Join(a.dir, fmt.Sprintf("tmp_%d.ri", startBlock))
+	tmpIdx := filepath.Join(a.dir, fmt.Sprintf("tmp_%s_%d.ri", a.prefix, startBlock))
 	datBuf, err := buildHistSegment(entries, tmpIdx, startBlock, endBlock)
 	if err != nil {
 		os.Remove(tmpIdx)

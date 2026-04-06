@@ -34,14 +34,14 @@ type HistoryBuilder struct {
 func NewAccountHistoryBuilder(db kv.RoDB, outputDir string) *HistoryBuilder {
 	return &HistoryBuilder{
 		db: db, outputDir: outputDir,
-		tableName: "AccountHistory", prefix: "account_hist", keyLen: 20,
+		tableName: "AccountHistory", prefix: "accthist", keyLen: 20,
 	}
 }
 
 func NewStorageHistoryBuilder(db kv.RoDB, outputDir string) *HistoryBuilder {
 	return &HistoryBuilder{
 		db: db, outputDir: outputDir,
-		tableName: "StorageHistory", prefix: "storage_hist", keyLen: 52,
+		tableName: "StorageHistory", prefix: "storhist", keyLen: 52,
 	}
 }
 
@@ -192,8 +192,7 @@ func (b *HistoryBuilder) writeEmpty(idxPath, datPath string) error {
 // BuildRange which scans the entire history bitmap table.
 // Uses freezer-style file management via SegmentStoreWriter.
 func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, endBlock uint64) error {
-	dir := filepath.Join(b.outputDir, b.prefix)
-	store, err := NewSegmentStoreWriter(dir)
+	store, err := NewSegmentStoreWriter(b.outputDir, b.prefix)
 	if err != nil {
 		return err
 	}
@@ -227,7 +226,7 @@ func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, en
 		}
 
 		// Build RecSplit to temp file with unique name to avoid Windows lock conflicts.
-		tmpIdx := filepath.Join(dir, fmt.Sprintf("tmp_%d.ri", segStart))
+		tmpIdx := filepath.Join(b.outputDir, fmt.Sprintf("tmp_%s_%d.ri", b.prefix, segStart))
 		datBuf, err := b.buildSegment(ctx, entries, tmpIdx, segStart, segEnd)
 		if err != nil {
 			os.Remove(tmpIdx)

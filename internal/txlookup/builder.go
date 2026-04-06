@@ -41,7 +41,7 @@ func SegmentFileName(startBlock, endBlock uint64) string {
 
 // BuildRange builds all segments for the given block range using freezer-style storage.
 func (b *SegmentBuilder) BuildRange(ctx context.Context, startBlock, endBlock uint64) error {
-	store, err := cscompact.NewSegmentStoreWriter(b.outputDir)
+	store, err := cscompact.NewSegmentStoreWriter(b.outputDir, "txindex")
 	if err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func (b *SegmentBuilder) BuildRange(ctx context.Context, startBlock, endBlock ui
 			segEnd = b.inputFreezer.Frozen()
 		}
 
-		tmpIdx := filepath.Join(b.outputDir, "tmp_build.ri")
+		tmpIdx := filepath.Join(b.outputDir, fmt.Sprintf("tmp_txindex_%d.ri", segStart))
 		datBytes, err := b.buildOne(ctx, segStart, segEnd, tmpIdx)
 		if err != nil {
 			os.Remove(tmpIdx)
