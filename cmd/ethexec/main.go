@@ -433,14 +433,14 @@ func runCSCompact(c *cli.Context) error {
 	defer db.Close()
 	log.Info("Erigon MDBX opened READ-ONLY", "path", erigonDB)
 
-	// Determine end block from DB if not specified.
+	// Determine end block from changeset tables (NOT history — history
+	// uses 0xFFFFFFFF shard markers that overflow).
 	if endBlock == 0 {
 		tx, err := db.BeginRo(context.Background())
 		if err != nil {
 			return err
 		}
-		// Try multiple table names to find max block.
-		for _, tbl := range []string{"AccountChangeSet", "AccountHistory", "AccountsHistory"} {
+		for _, tbl := range []string{"AccountChangeSet", "StorageChangeSet"} {
 			cursor, err := tx.Cursor(tbl)
 			if err != nil {
 				continue
@@ -449,16 +449,16 @@ func runCSCompact(c *cli.Context) error {
 			cursor.Close()
 			if len(k) >= 8 {
 				bn := binary.BigEndian.Uint64(k[:8])
-				if bn > endBlock {
+				if bn > 0 && bn < 1<<32 && bn+1 > endBlock { // sanity: < 4B blocks
 					endBlock = bn + 1
-					log.Info("Detected end block", "table", tbl, "endBlock", endBlock)
 				}
 			}
 		}
 		tx.Rollback()
 		if endBlock == 0 {
-			return fmt.Errorf("cannot determine end block from any history table")
+			return fmt.Errorf("cannot determine end block from changeset tables")
 		}
+		log.Info("Detected end block", "endBlock", endBlock)
 	}
 
 	outputDir := filepath.Join(datadir, "cscompact")
