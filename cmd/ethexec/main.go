@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/c2h5oh/datasize"
 
+	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/txlookup"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -142,6 +144,26 @@ func main() {
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
 				},
 				Action: runTxLookupBuild,
+			},
+			{
+				Name:  "cs-analyze",
+				Usage: "Analyze Erigon changeset tables for compression (READ-ONLY)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "erigon-db", Usage: "Path to Erigon chaindata directory", Required: true},
+					&cli.Uint64Flag{Name: "sample", Usage: "Sample N blocks (0=all)", Value: 100000},
+				},
+				Action: runCSAnalyze,
+			},
+			{
+				Name:  "cs-compact",
+				Usage: "Compress Erigon changeset tables into columnar segments (READ-ONLY source)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "erigon-db", Usage: "Path to Erigon chaindata directory", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
+					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
+					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all in DB)", Value: 0},
+				},
+				Action: runCSCompact,
 			},
 		},
 	}
@@ -323,6 +345,111 @@ func runVerifyJournal(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 	return verifier.Run(ctx)
+}
+
+func runCSAnalyze(c *cli.Context) error {
+	erigonDB := c.String("erigon-db")
+	sampleBlocks := c.Uint64("sample")
+
+	// Open Erigon MDBX READ-ONLY (Accede = open existing, no create/modify).
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(erigonDB).
+		Label(kv.ChainDB).
+		Readonly(). // CRITICAL: read-only access to protect source data
+		Accede().   // accept existing DB parameters
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open erigon mdbx: %w", err)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		return fmt.Errorf("begin ro tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := cscompact.AnalyzeChangesets(tx, sampleBlocks)
+	if err != nil {
+		return err
+	}
+
+	log.Info("=== Analysis Summary ===")
+	log.Info("AccountCS",
+		"entries", result.AccTotalEntries,
+		"uniqueAddrs", result.AccUniqueAddrs,
+		"avgVal", fmt.Sprintf("%.1fB", result.AccAvgValLen),
+		"zeroVals", result.AccZeroValues)
+	for i, a := range result.TopAccAddrs {
+		log.Info(fmt.Sprintf("  Top Account #%d", i+1),
+			"addr", fmt.Sprintf("%x", a.Addr[:6]),
+			"count", a.Count)
+	}
+	log.Info("StorageCS",
+		"entries", result.StoTotalEntries,
+		"uniqueAddrs", result.StoUniqueAddrs,
+		"avgVal", fmt.Sprintf("%.1fB", result.StoAvgValLen),
+		"zeroVals", result.StoZeroValues)
+	for i, a := range result.TopStoAddrs {
+		log.Info(fmt.Sprintf("  Top Storage #%d", i+1),
+			"addr", fmt.Sprintf("%x", a.Addr[:6]),
+			"count", a.Count)
+	}
+	return nil
+}
+
+func runCSCompact(c *cli.Context) error {
+	erigonDB := c.String("erigon-db")
+	datadir := c.String("datadir")
+	startBlock := c.Uint64("start")
+	endBlock := c.Uint64("end")
+
+	// Open Erigon MDBX READ-ONLY.
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(erigonDB).
+		Label(kv.ChainDB).
+		Readonly().
+		Accede().
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open erigon mdbx: %w", err)
+	}
+	defer db.Close()
+	log.Info("Erigon MDBX opened READ-ONLY", "path", erigonDB)
+
+	// Determine end block from DB if not specified.
+	if endBlock == 0 {
+		tx, err := db.BeginRo(context.Background())
+		if err != nil {
+			return err
+		}
+		// Find max block in AccountChangeSet.
+		cursor, err := tx.Cursor(cscompact.ErigonAccountChangeSet)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		k, _, err := cursor.Last()
+		cursor.Close()
+		tx.Rollback()
+		if err != nil || len(k) < 8 {
+			return fmt.Errorf("cannot determine end block: %w", err)
+		}
+		endBlock = binary.BigEndian.Uint64(k[:8]) + 1
+		log.Info("Detected end block", "endBlock", endBlock)
+	}
+
+	// AccountCS compression.
+	outputDir := filepath.Join(datadir, "cscompact")
+	compactor := cscompact.NewAccountCSCompactor(db, outputDir)
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+	return compactor.Run(ctx, startBlock, endBlock)
 }
 
 func runTxLookupBuild(c *cli.Context) error {
