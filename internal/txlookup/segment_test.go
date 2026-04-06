@@ -195,7 +195,10 @@ func openSegmentV2Standalone(dat []byte, startBlock uint64) (*TxSegment, error) 
 	blockCount := uint64(binary.LittleEndian.Uint32(dat[4:8]))
 	txCount := binary.LittleEndian.Uint64(dat[8:16])
 
-	ef, _ := eliasfano32.ReadEliasFano(dat[16:])
+	var ef *eliasfano32.EliasFano
+	if blockCount > 0 && txCount > 0 && len(dat) > 16 {
+		ef, _ = eliasfano32.ReadEliasFano(dat[16:])
+	}
 
 	return &TxSegment{
 		startBlock: startBlock,
