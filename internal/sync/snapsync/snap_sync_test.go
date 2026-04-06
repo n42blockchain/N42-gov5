@@ -183,7 +183,6 @@ func populateSourceState(t *testing.T, db kv.RwDB) (types.Address, types.Hash) {
 			Nonce:       1,
 			Balance:     *uint256.NewInt(0),
 			CodeHash:    usdtCodeHash,
-			Incarnation: 1,
 		}
 		usdtData, err := usdtAcc.MarshalV2(), error(nil)
 		if err != nil {
@@ -199,7 +198,7 @@ func populateSourceState(t *testing.T, db kv.RwDB) (types.Address, types.Hash) {
 			binary.BigEndian.PutUint64(buf[:], uint64(i))
 			storageKey := crypto.Keccak256Hash(buf[:])
 			compositeKey := modules.PlainGenerateCompositeStorageKey(
-				usdtAddr[:], 1, storageKey[:],
+				usdtAddr[:], storageKey[:],
 			)
 			value := uint256.NewInt(uint64(1000 * (i + 1)))
 			if err := tx.Put(modules.Storage, compositeKey, value.Bytes()); err != nil {
@@ -454,9 +453,6 @@ func verifyContractState(t *testing.T, db kv.RwDB, addr types.Address, codeHash 
 		if err := acc.DecodeForStorage(data); err != nil {
 			t.Errorf("unmarshal USDT account: %v", err)
 			return nil
-		}
-		if acc.Incarnation != 1 {
-			t.Errorf("USDT incarnation: want 1, got %d", acc.Incarnation)
 		}
 		if acc.CodeHash != codeHash {
 			t.Errorf("USDT codeHash mismatch")

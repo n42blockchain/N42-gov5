@@ -185,7 +185,6 @@ func TestJournalSerializeDeserialize(t *testing.T) {
 	acc := &account.StateAccount{
 		Nonce:       5,
 		Balance:     *uint256.NewInt(1000),
-		Incarnation: 1,
 	}
 
 	dl := NewDiffLayer(
@@ -404,7 +403,6 @@ func TestDiskLayer_ReadFromDB(t *testing.T) {
 	acc := &account.StateAccount{
 		Nonce:       10,
 		Balance:     *uint256.NewInt(5000),
-		Incarnation: 1,
 	}
 
 	// Write account to SnapshotAccount table using V2 encoding.
@@ -694,8 +692,8 @@ func TestTree_FlattenWithStorage(t *testing.T) {
 	tree.Update(2, root2, root1, nil, nil, nil)
 
 	// Verify storage was persisted.
-	compositeKey1 := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), 0, key1.Bytes())
-	compositeKey2 := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), 0, key2.Bytes())
+	compositeKey1 := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), key1.Bytes())
+	compositeKey2 := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), key2.Bytes())
 
 	if err := db.View(ctx, func(tx kv.Tx) error {
 		v1, err := rawdb.ReadSnapshotStorage(tx, compositeKey1)
@@ -728,7 +726,7 @@ func TestDiskLayer_StorageRead(t *testing.T) {
 	key := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000001")
 	val := []byte{0x42, 0x43}
 
-	compositeKey := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), 0, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), key.Bytes())
 	if err := db.Update(ctx, func(tx kv.RwTx) error {
 		return rawdb.WriteSnapshotStorage(tx, compositeKey, val)
 	}); err != nil {
@@ -903,8 +901,8 @@ func TestSnapshotStorageByAddressDelete(t *testing.T) {
 	key1 := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000001")
 	key2 := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000002")
 
-	ck1 := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), 0, key1.Bytes())
-	ck2 := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), 0, key2.Bytes())
+	ck1 := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), key1.Bytes())
+	ck2 := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), key2.Bytes())
 
 	if err := db.Update(ctx, func(tx kv.RwTx) error {
 		if err := rawdb.WriteSnapshotStorage(tx, ck1, []byte{0x01}); err != nil {

@@ -174,31 +174,29 @@ func TestParseAccountForTasks(t *testing.T) {
 		t.Errorf("eoa: valid=%v inc=%d code=%v", valid, inc, code)
 	}
 
-	// Contract: incarnation=1, non-empty codeHash.
+	// Contract: non-empty codeHash.
 	contractCodeHash := types.BytesHash(crypto.Keccak256([]byte("contract code")))
 	contract := account.StateAccount{
 		Initialised: true,
 		Nonce:       1,
 		Balance:     *uint256.NewInt(0),
 		CodeHash:    contractCodeHash,
-		Incarnation: 1,
 	}
 	contractData, err := contract.MarshalV2(), error(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	valid, inc, code = parseAccountForTasks(contractData)
-	if !valid || inc != 1 {
-		t.Errorf("contract: valid=%v expected inc=1, got %d", valid, inc)
+	if !valid || inc != 0 {
+		t.Errorf("contract: valid=%v expected inc=0, got %d", valid, inc)
 	}
 	if code == nil || !bytes.Equal(code, contractCodeHash[:]) {
 		t.Errorf("contract: expected codeHash=%x, got %x", contractCodeHash[:], code)
 	}
 
-	// Contract with incarnation but empty codeHash (destroyed and recreated).
+	// Contract with empty codeHash (destroyed and recreated).
 	destroyedContract := account.StateAccount{
 		Initialised: true,
-		Incarnation: 3,
 		CodeHash:    emptyCodeHash,
 	}
 	destroyedData, err := destroyedContract.MarshalV2(), error(nil)
@@ -206,8 +204,8 @@ func TestParseAccountForTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	valid, inc, code = parseAccountForTasks(destroyedData)
-	if !valid || inc != 3 {
-		t.Errorf("destroyed: valid=%v expected inc=3, got %d", valid, inc)
+	if !valid || inc != 0 {
+		t.Errorf("destroyed: valid=%v expected inc=0, got %d", valid, inc)
 	}
 	if code != nil {
 		t.Errorf("destroyed: expected nil codeHash, got %x", code)

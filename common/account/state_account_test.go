@@ -56,7 +56,6 @@ func TestStateAccountCopy(t *testing.T) {
 	original := StateAccount{
 		Initialised: true,
 		Nonce:       100,
-		Incarnation: 5,
 	}
 	original.Balance.SetUint64(1000000000000000000)
 	original.Root = types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
@@ -80,9 +79,6 @@ func TestStateAccountCopy(t *testing.T) {
 	if copied.CodeHash != original.CodeHash {
 		t.Error("Copy: CodeHash mismatch")
 	}
-	if copied.Incarnation != original.Incarnation {
-		t.Error("Copy: Incarnation mismatch")
-	}
 
 	// Verify deep copy - modifying copied shouldn't affect original
 	copied.Nonce = 999
@@ -97,7 +93,6 @@ func TestSelfCopy(t *testing.T) {
 	original := StateAccount{
 		Initialised: true,
 		Nonce:       50,
-		Incarnation: 3,
 	}
 	original.Balance.SetUint64(5000000000)
 
@@ -130,7 +125,6 @@ func TestReset(t *testing.T) {
 	acc := StateAccount{
 		Initialised: false,
 		Nonce:       100,
-		Incarnation: 5,
 	}
 	acc.Balance.SetUint64(1000000000)
 	acc.Root = types.HexToHash("0x1234")
@@ -143,9 +137,6 @@ func TestReset(t *testing.T) {
 	}
 	if acc.Nonce != 0 {
 		t.Error("Reset should set Nonce to 0")
-	}
-	if acc.Incarnation != 0 {
-		t.Error("Reset should set Incarnation to 0")
 	}
 	if !acc.Balance.IsZero() {
 		t.Error("Reset should set Balance to zero")
@@ -219,30 +210,6 @@ func TestIsEmptyRoot(t *testing.T) {
 }
 
 // =============================================================================
-// Incarnation Tests
-// =============================================================================
-
-func TestGetSetIncarnation(t *testing.T) {
-	acc := NewAccount()
-
-	if acc.GetIncarnation() != 0 {
-		t.Error("NewAccount should have incarnation 0")
-	}
-
-	acc.SetIncarnation(42)
-	if acc.GetIncarnation() != 42 {
-		t.Errorf("GetIncarnation should return 42, got %d", acc.GetIncarnation())
-	}
-
-	acc.SetIncarnation(65535) // max uint16
-	if acc.GetIncarnation() != 65535 {
-		t.Errorf("GetIncarnation should return 65535, got %d", acc.GetIncarnation())
-	}
-
-	t.Logf("✓ Get/SetIncarnation works correctly")
-}
-
-// =============================================================================
 // Equals Tests
 // =============================================================================
 
@@ -251,15 +218,13 @@ func TestEquals(t *testing.T) {
 	codeHash2 := types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 
 	acc1 := StateAccount{
-		Nonce:       100,
-		Incarnation: 5,
+		Nonce: 100,
 	}
 	acc1.Balance.SetUint64(1000)
 	acc1.CodeHash = codeHash1
 
 	acc2 := StateAccount{
-		Nonce:       100,
-		Incarnation: 5,
+		Nonce: 100,
 	}
 	acc2.Balance.SetUint64(1000)
 	acc2.CodeHash = codeHash1
@@ -289,12 +254,6 @@ func TestEquals(t *testing.T) {
 	}
 	acc2.CodeHash = codeHash1
 
-	// Test different incarnation
-	acc2.Incarnation = 6
-	if acc1.Equals(&acc2) {
-		t.Error("Accounts with different incarnation should not be equal")
-	}
-
 	t.Logf("✓ Equals works correctly")
 }
 
@@ -305,8 +264,7 @@ func TestEquals(t *testing.T) {
 func TestMarshalUnmarshal(t *testing.T) {
 	original := StateAccount{
 		Initialised: true,
-		Nonce:       100,
-		Incarnation: 5,
+		Nonce: 100,
 	}
 	original.Balance.SetUint64(1000000000000000000)
 	original.Root = types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
@@ -341,9 +299,6 @@ func TestMarshalUnmarshal(t *testing.T) {
 	if decoded.CodeHash != original.CodeHash {
 		t.Error("Marshal/Unmarshal: CodeHash mismatch")
 	}
-	if decoded.Incarnation != original.Incarnation {
-		t.Error("Marshal/Unmarshal: Incarnation mismatch")
-	}
 
 	t.Logf("✓ Marshal/Unmarshal roundtrip works correctly")
 }
@@ -366,8 +321,7 @@ func TestUnmarshalInvalidData(t *testing.T) {
 func TestEncodeDecodeForStorage(t *testing.T) {
 	original := StateAccount{
 		Initialised: true,
-		Nonce:       100,
-		Incarnation: 5,
+		Nonce: 100,
 	}
 	original.Balance.SetUint64(1000000000000000000)
 	original.Root = types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
@@ -424,7 +378,6 @@ func TestToProtoMessage(t *testing.T) {
 	acc := StateAccount{
 		Initialised: true,
 		Nonce:       100,
-		Incarnation: 5,
 	}
 	acc.Balance.SetUint64(1000)
 
@@ -440,7 +393,6 @@ func TestFromProtoMessage(t *testing.T) {
 	original := StateAccount{
 		Initialised: true,
 		Nonce:       100,
-		Incarnation: 5,
 	}
 	original.Balance.SetUint64(1000)
 
@@ -510,7 +462,6 @@ func BenchmarkStateAccountCopy(b *testing.B) {
 	original := StateAccount{
 		Initialised: true,
 		Nonce:       100,
-		Incarnation: 5,
 	}
 	original.Balance.SetUint64(1000000000000000000)
 
@@ -525,7 +476,6 @@ func BenchmarkMarshal(b *testing.B) {
 	acc := StateAccount{
 		Initialised: true,
 		Nonce:       100,
-		Incarnation: 5,
 	}
 	acc.Balance.SetUint64(1000000000000000000)
 

@@ -91,11 +91,11 @@ func (m *mockStateReader) ReadAccountCodeSize(address types.Address, incarnation
 func (m *mockStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	acc, ok := m.accounts[address]
+	_, ok := m.accounts[address]
 	if !ok {
 		return 0, nil
 	}
-	return acc.Incarnation, nil
+	return 1, nil
 }
 
 // waitForAccountReads polls until the expected number of account reads is reached or timeout.
@@ -236,10 +236,9 @@ func TestPrefetcher_PrefetchesSenderAndRecipient(t *testing.T) {
 	// Populate recipient as a contract account with code.
 	codeHash := types.HexToHash("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
 	reader.accounts[recipient] = &account.StateAccount{
-		Nonce:       1,
-		Balance:     *uint256.NewInt(0),
-		CodeHash:    codeHash,
-		Incarnation: 1,
+		Nonce:    1,
+		Balance:  *uint256.NewInt(0),
+		CodeHash: codeHash,
 	}
 	reader.code[recipient] = []byte{0x60, 0x00, 0x60, 0x00, 0xfd} // dummy code
 

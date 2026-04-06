@@ -58,7 +58,6 @@ func TestIntegration_WitnessGenerateVerifyRead(t *testing.T) {
 		acct := &account.StateAccount{
 			Nonce:       uint64(i + 1),
 			Initialised: true,
-			Incarnation: 1,
 		}
 		acct.Balance.SetUint64(uint64((i + 1) * 10000))
 		addresses[i].acct = acct

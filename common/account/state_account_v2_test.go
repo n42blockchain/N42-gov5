@@ -40,7 +40,6 @@ func TestV2RoundTrip(t *testing.T) {
 		{"contract", func() StateAccount {
 			a := NewAccount()
 			a.Nonce = 1
-			a.Incarnation = 1
 			a.CodeHash = types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
 			return a
 		}(), 0},
@@ -67,9 +66,6 @@ func TestV2RoundTrip(t *testing.T) {
 			}
 			if dec.Balance.Cmp(&tt.acc.Balance) != 0 {
 				t.Errorf("balance: got %s, want %s", dec.Balance.String(), tt.acc.Balance.String())
-			}
-			if dec.Incarnation != tt.acc.Incarnation {
-				t.Errorf("incarnation: got %d, want %d", dec.Incarnation, tt.acc.Incarnation)
 			}
 			if dec.CodeHash != tt.acc.CodeHash {
 				t.Errorf("codeHash: got %x, want %x", dec.CodeHash, tt.acc.CodeHash)
