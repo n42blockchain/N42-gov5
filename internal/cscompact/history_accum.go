@@ -116,7 +116,7 @@ func (a *HistoryAccumulator) flushSegment(startBlock, endBlock uint64) error {
 		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
 		"keys", len(entries))
 
-	tmpIdx := filepath.Join(a.dir, "tmp_build.ri")
+	tmpIdx := filepath.Join(a.dir, fmt.Sprintf("tmp_%d.ri", startBlock))
 	datBuf, err := buildHistSegment(entries, tmpIdx, startBlock, endBlock)
 	if err != nil {
 		os.Remove(tmpIdx)
