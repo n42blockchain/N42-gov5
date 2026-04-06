@@ -100,8 +100,8 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 		if err := acc.DecodeForStorage(data); err != nil {
 			return nil, err
 		}
-		if acc.Incarnation > 0 && acc.IsEmptyCodeHash() {
-			codeHash, err := tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(key, acc.Incarnation))
+		if acc.IsEmptyCodeHash() {
+			codeHash, err := tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(key))
 			if err != nil {
 				return nil, err
 			}

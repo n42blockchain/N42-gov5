@@ -106,8 +106,8 @@ func ReadStorageRange(tx kv.Tx, snapshotHeight uint64, address types.Address, in
 			nextLoc = &hash
 			return false, nil
 		}
-		// Build composite key: address(20) + incarnation(2) + loc(32)
-		key := modules.PlainGenerateCompositeStorageKey(addr, incarnation, loc)
+		// Build composite key: address(20) + loc(32)
+		key := modules.PlainGenerateCompositeStorageKey(addr, loc)
 		val := make([]byte, len(v))
 		copy(val, v)
 		entries = append(entries, StorageEntry{Key: key, Value: val})

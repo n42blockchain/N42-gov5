@@ -68,9 +68,7 @@ func (m *MemoryState) ReadAccountCodeSize(address types.Address, incarnation uin
 }
 
 func (m *MemoryState) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	if acc, ok := m.accounts[address]; ok {
-		return acc.Incarnation, nil
-	}
+	// incarnation removed from StateAccount — always return 0
 	return 0, nil
 }
 

@@ -102,7 +102,7 @@ func (s *PlainState) ForEachStorage(addr types.Address, startLocation types.Hash
 		log.Error("Error decoding account", "err", err)
 		return err
 	}
-	binary.BigEndian.PutUint16(k[types.AddressLength:], acc.Incarnation)
+	binary.BigEndian.PutUint16(k[types.AddressLength:], 0)
 	copy(k[types.AddressLength+types.IncarnationLength:], startLocation[:])
 	var lastKey types.Hash
 	overrideCounter := 0
@@ -120,7 +120,7 @@ func (s *PlainState) ForEachStorage(addr types.Address, startLocation types.Hash
 		})
 	}
 	numDeletes := st.Len() - overrideCounter
-	if err := WalkAsOfStorage(s.tx, addr, acc.Incarnation, startLocation, s.blockNr, func(kAddr, kLoc, vs []byte) (bool, error) {
+	if err := WalkAsOfStorage(s.tx, addr, 0, startLocation, s.blockNr, func(kAddr, kLoc, vs []byte) (bool, error) {
 		if !bytes.Equal(kAddr, addr[:]) {
 			return false, nil
 		}
@@ -178,10 +178,10 @@ func (s *PlainState) ReadAccountData(address types.Address) (*account.StateAccou
 	if err = a.DecodeForStorage(enc); err != nil {
 		return nil, err
 	}
-	// Restore codeHash from PlainContractCode if the account has an incarnation
-	// but the stored encoding omitted the hash (omitHashes optimization).
-	if a.Incarnation > 0 && a.IsEmptyCodeHash() {
-		if codeHash, err1 := s.tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:], a.Incarnation)); err1 == nil {
+	// Restore codeHash from PlainContractCode if the stored encoding
+	// omitted the hash (omitHashes optimization).
+	if a.IsEmptyCodeHash() {
+		if codeHash, err1 := s.tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:])); err1 == nil {
 			if len(codeHash) > 0 {
 				a.CodeHash = types.BytesToHash(codeHash)
 			}
@@ -196,7 +196,7 @@ func (s *PlainState) ReadAccountData(address types.Address) (*account.StateAccou
 }
 
 func (s *PlainState) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	enc, err := GetAsOf(s.tx, s.storageHistoryC, s.storageChangesC, true /* storage */, compositeKey, s.blockNr)
 	if err != nil {
 		return nil, err
@@ -241,10 +241,8 @@ func (s *PlainState) ReadAccountIncarnation(address types.Address) (uint16, erro
 	if err = acc.DecodeForStorage(enc); err != nil {
 		return 0, err
 	}
-	if acc.Incarnation == 0 {
-		return 0, nil
-	}
-	return acc.Incarnation - 1, nil
+	// incarnation removed from StateAccount — always return 0
+	return 0, nil
 }
 
 func (s *PlainState) UpdateAccountData(address types.Address, original, account *account.StateAccount) error {

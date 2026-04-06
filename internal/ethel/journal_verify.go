@@ -134,9 +134,8 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 					}
 					// Maintain PlainContractCode for changeset revert.
 					var acc account.StateAccount
-					if err := acc.DecodeForStorage(e.value); err == nil &&
-						acc.Incarnation > 0 && !acc.IsEmptyCodeHash() {
-						key := modules.PlainGenerateStoragePrefix(a[:], acc.Incarnation)
+					if err := acc.DecodeForStorage(e.value); err == nil && !acc.IsEmptyCodeHash() {
+						key := modules.PlainGenerateStoragePrefix(a[:])
 						if err := tx.Put(modules.PlainContractCode, key, acc.CodeHash[:]); err != nil {
 							return err
 						}
@@ -208,7 +207,7 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 			}
 			for _, leaf := range storage {
 				key := modules.PlainGenerateCompositeStorageKey(
-					leaf.Address[:], leaf.Incarnation, leaf.Slot[:])
+					leaf.Address[:], leaf.Slot[:])
 				storBuf[string(key)] = storValue{value: leaf.Value}
 			}
 
@@ -441,9 +440,8 @@ func applyJournalEntry(tx kv.RwTx, data []byte) error {
 			}
 			// Maintain PlainContractCode for contract accounts.
 			var acc account.StateAccount
-			if err := acc.DecodeForStorage(leaf.Value); err == nil &&
-				acc.Incarnation > 0 && !acc.IsEmptyCodeHash() {
-				key := modules.PlainGenerateStoragePrefix(leaf.Address[:], acc.Incarnation)
+			if err := acc.DecodeForStorage(leaf.Value); err == nil && !acc.IsEmptyCodeHash() {
+				key := modules.PlainGenerateStoragePrefix(leaf.Address[:])
 				if err := tx.Put(modules.PlainContractCode, key, acc.CodeHash[:]); err != nil {
 					return err
 				}
@@ -452,7 +450,7 @@ func applyJournalEntry(tx kv.RwTx, data []byte) error {
 	}
 	for _, leaf := range storage {
 		key := modules.PlainGenerateCompositeStorageKey(
-			leaf.Address[:], leaf.Incarnation, leaf.Slot[:])
+			leaf.Address[:], leaf.Slot[:])
 		if leaf.Value == nil {
 			if err := tx.Delete(modules.Storage, key); err != nil {
 				return err
@@ -533,15 +531,12 @@ func recoverCodeHash(tx kv.Tx, addr, encodedValue []byte) ([]byte, error) {
 	if err := acc.DecodeForStorage(encodedValue); err != nil {
 		return encodedValue, nil // can't decode, return as-is
 	}
-	if acc.Incarnation == 0 {
-		return encodedValue, nil // EOA, no code to recover
-	}
 	if !acc.IsEmptyCodeHash() {
 		return encodedValue, nil // codeHash already present
 	}
 	// Look up codeHash from PlainContractCode.
 	codeHash, err := tx.GetOne(modules.PlainContractCode,
-		modules.PlainGenerateStoragePrefix(addr, acc.Incarnation))
+		modules.PlainGenerateStoragePrefix(addr))
 	if err != nil {
 		return nil, err
 	}

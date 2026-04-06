@@ -300,9 +300,7 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 			}
 			ibs.SetBalance(ae.addr, &acc.Balance)
 			ibs.SetNonce(ae.addr, acc.Nonce)
-			if acc.Incarnation > 0 {
-				ibs.SetIncarnation(ae.addr, acc.Incarnation)
-			}
+			// incarnation removed from StateAccount
 		}
 	}
 

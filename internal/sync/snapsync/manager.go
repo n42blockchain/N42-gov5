@@ -696,7 +696,7 @@ func parseAccountForTasks(encoded []byte) (valid bool, incarnation uint16, codeH
 		copy(codeHash, acc.CodeHash[:])
 	}
 
-	return true, acc.Incarnation, codeHash
+	return true, 0, codeHash
 }
 
 // sendGetAccountRange wraps the sync package's SendGetAccountRange.

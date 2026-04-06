@@ -102,17 +102,7 @@ func (r *PlainStateMPTReader) ReadAccountData(addr types.Address) (*account.Stat
 }
 
 func (r *PlainStateMPTReader) ReadAccountStorage(addr types.Address, slot types.Hash) ([]byte, error) {
-	acctData, err := r.tx.GetOne(modules.Account, addr[:])
-	if err != nil {
-		return nil, err
-	}
-	var incarnation uint16 = 1
-	if len(acctData) > 0 {
-		var acct account.StateAccount
-		if err := acct.DecodeForStorage(acctData); err == nil && acct.Incarnation > 0 {
-			incarnation = acct.Incarnation
-		}
-	}
+	var incarnation uint16 = 0
 	var key [54]byte
 	copy(key[:20], addr[:])
 	key[20] = byte(incarnation >> 8)
@@ -130,13 +120,8 @@ func (r *PlainStateMPTReader) ReadAllStorage(addr types.Address) (map[types.Hash
 	if err != nil {
 		return nil, err
 	}
-	var incarnation uint16 = 1
-	if len(acctData) > 0 {
-		var acct account.StateAccount
-		if err := acct.DecodeForStorage(acctData); err == nil && acct.Incarnation > 0 {
-			incarnation = acct.Incarnation
-		}
-	}
+	_ = acctData // incarnation removed from StateAccount
+	var incarnation uint16 = 0
 	var prefix [22]byte
 	copy(prefix[:20], addr[:])
 	prefix[20] = byte(incarnation >> 8)

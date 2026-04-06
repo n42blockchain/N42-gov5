@@ -210,7 +210,7 @@ func (t *Tree) mergeDiffIntoCache(dl *DiffLayer) {
 
 	for addr, slots := range dl.storage {
 		for key, val := range slots {
-			compositeKey := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), 0, key.Bytes())
+			compositeKey := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), key.Bytes())
 			cache.Put(modules.Storage, compositeKey, val)
 		}
 	}
@@ -247,7 +247,7 @@ func (t *Tree) persistDiffToDisk(dl *DiffLayer) {
 		// Storage changes: write to SnapshotStorage.
 		for addr, slots := range dl.storage {
 			for key, val := range slots {
-				compositeKey := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), 0, key.Bytes())
+				compositeKey := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), key.Bytes())
 				if val == nil {
 					if err := rawdb.DeleteSnapshotStorage(tx, compositeKey); err != nil {
 						return err

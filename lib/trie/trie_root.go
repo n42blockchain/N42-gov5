@@ -248,7 +248,7 @@ func (l *FlatDBTrieLoader) CalcTrieRoot(tx kv.Tx, quit <-chan struct{}) (types.H
 				return EmptyRoot, err
 			}
 			copy(l.accAddrHashWithInc[:], k)
-			binary.BigEndian.PutUint64(l.accAddrHashWithInc[32:], uint64(l.accountValue.Incarnation))
+			binary.BigEndian.PutUint64(l.accAddrHashWithInc[32:], 0)
 			accWithInc := l.accAddrHashWithInc[:]
 			for ihKS, ihVS, hasTreeS, err2 := storageTrie.SeekToAccount(accWithInc); ; ihKS, ihVS, hasTreeS, err2 = storageTrie.Next() {
 				if err2 != nil {
@@ -550,7 +550,7 @@ func (r *RootHashAggregator) genStructStorage() error {
 			fullKey[i*2] = b / 16
 			fullKey[i*2+1] = b % 16
 		}
-		for i, b := range binary.BigEndian.AppendUint64(nil, uint64(r.a.Incarnation)) {
+		for i, b := range binary.BigEndian.AppendUint64(nil, 0) {
 			fullKey[2*length.Hash+i*2] = b / 16
 			fullKey[2*length.Hash+i*2+1] = b % 16
 		}
@@ -623,7 +623,7 @@ func (r *RootHashAggregator) genStructAccount() error {
 		if r.a.Nonce != 0 {
 			r.accData.FieldSet |= AccountFieldNonceOnly
 		}
-		r.accData.Incarnation = uint64(r.a.Incarnation)
+		r.accData.Incarnation = 0
 		data = &r.accData
 	}
 	r.wasIHStorage = false

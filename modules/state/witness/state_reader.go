@@ -181,9 +181,6 @@ func (r *WitnessStateReader) ReadAccountCodeSize(address types.Address, incarnat
 
 // ReadAccountIncarnation returns the incarnation from the decoded account.
 func (r *WitnessStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	acct, ok := r.accounts[address]
-	if !ok || acct == nil {
-		return 0, nil
-	}
-	return acct.Incarnation, nil
+	// incarnation removed from StateAccount — always return 0
+	return 0, nil
 }

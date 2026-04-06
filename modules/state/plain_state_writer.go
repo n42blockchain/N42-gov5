@@ -17,7 +17,7 @@
 package state
 
 import (
-	"encoding/binary"
+	"bytes"
 
 	"github.com/holiman/uint256"
 
@@ -72,7 +72,7 @@ func (w *PlainStateWriter) UpdateAccountCode(address types.Address, incarnation 
 	if err := w.db.Put(modules.Code, codeHash[:], code); err != nil {
 		return err
 	}
-	return w.db.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:], incarnation), codeHash[:])
+	return w.db.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:]), codeHash[:])
 }
 
 func (w *PlainStateWriter) DeleteAccount(address types.Address, original *account.StateAccount) error {
@@ -84,13 +84,7 @@ func (w *PlainStateWriter) DeleteAccount(address types.Address, original *accoun
 	if err := w.db.Delete(modules.Account, address[:]); err != nil {
 		return err
 	}
-	if original.Incarnation > 0 {
-		var b [2]byte
-		binary.BigEndian.PutUint16(b[:], original.Incarnation)
-		if err := w.db.Put(modules.IncarnationMap, address[:], b[:]); err != nil {
-			return err
-		}
-	}
+	// IncarnationMap removed — incarnation no longer used
 	return nil
 }
 
@@ -103,7 +97,7 @@ func (w *PlainStateWriter) WriteAccountStorage(address types.Address, incarnatio
 	if *original == *value {
 		return nil
 	}
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 
 	v := value.Bytes()
 	if len(v) == 0 {
@@ -115,6 +109,44 @@ func (w *PlainStateWriter) WriteAccountStorage(address types.Address, incarnatio
 func (w *PlainStateWriter) CreateContract(address types.Address) error {
 	if w.csw != nil {
 		if err := w.csw.CreateContract(address); err != nil {
+			return err
+		}
+	}
+	// Wipe all existing storage for this address (replaces incarnation).
+	// After EIP-6780, SELFDESTRUCT only fires in same-tx as CREATE,
+	// so storage is nearly empty — this wipe is almost free.
+	return w.wipeAccountStorage(address)
+}
+
+type cursorProvider interface {
+	Cursor(table string) (kv.Cursor, error)
+}
+
+func (w *PlainStateWriter) wipeAccountStorage(addr types.Address) error {
+	prefix := addr[:]
+	cp, ok := w.db.(cursorProvider)
+	if !ok {
+		// No cursor support (e.g. ethdb.Database batch) — nothing to wipe from disk.
+		return nil
+	}
+	cursor, err := cp.Cursor(modules.Storage)
+	if err != nil {
+		return err
+	}
+	var keysToDelete [][]byte
+	for k, _, err := cursor.Seek(prefix); k != nil; k, _, err = cursor.Next() {
+		if err != nil {
+			cursor.Close()
+			return err
+		}
+		if len(k) < 20 || !bytes.HasPrefix(k[:20], prefix) {
+			break
+		}
+		keysToDelete = append(keysToDelete, append([]byte{}, k...))
+	}
+	cursor.Close()
+	for _, k := range keysToDelete {
+		if err := w.db.Delete(modules.Storage, k); err != nil {
 			return err
 		}
 	}

@@ -245,8 +245,7 @@ func TestRLPRoundTripAccount(t *testing.T) {
 	// after the package move from internal/avm/rlp to common/rlp
 
 	original := &account.StateAccount{
-		Nonce:       42,
-		Incarnation: 1,
+		Nonce: 42,
 	}
 	original.Balance = *uint256.NewInt(1000000)
 
