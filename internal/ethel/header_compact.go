@@ -326,17 +326,17 @@ func NewHeaderCompactStage(input *freezer.Freezer, outputPath string) *HeaderCom
 func (s *HeaderCompactStage) Run(ctx context.Context) error {
 	endBlock := s.inputFreezer.Frozen()
 
-	// Open data file (headers.bin).
+	// Open data file (headers.cdat).
 	out, err := os.Create(s.outputPath)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
-	// Open index file (headers.idx) — one 8B LE offset per segment.
+	// Open index file (headers.cidx) — one 8B LE offset per segment.
 	// To read block N: seg = N/8192, offset = idx[seg*8 .. seg*8+8],
-	// seek headers.bin to offset, read [4B size][zstd data].
-	idxPath := strings.TrimSuffix(s.outputPath, ".bin") + ".idx"
+	// seek headers.cdat to offset, read [4B size][zstd data].
+	idxPath := strings.TrimSuffix(s.outputPath, ".cdat") + ".cidx"
 	idx, err := os.Create(idxPath)
 	if err != nil {
 		return err
@@ -387,7 +387,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 		// Encode columnar segment.
 		compressed := encodeHeaderSegment(headers, enc)
 
-		// Write index entry: offset of this segment in headers.bin.
+		// Write index entry: offset of this segment in headers.cdat.
 		var offBuf [8]byte
 		binary.LittleEndian.PutUint64(offBuf[:], uint64(fileOffset))
 		if _, err := idx.Write(offBuf[:]); err != nil {
@@ -440,7 +440,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 // ---------- Reader ----------
 
 // HeaderCompactReader provides random and sequential access to headers
-// stored in headers.bin + headers.idx. The current segment is cached so
+// stored in headers.cdat + headers.cidx. The current segment is cached so
 // that consecutive reads within the same 8192-block segment are free.
 type HeaderCompactReader struct {
 	dataFile *os.File
@@ -453,13 +453,13 @@ type HeaderCompactReader struct {
 	cachedHeaders []*block.Header // decoded headers for cachedSeg
 }
 
-// OpenHeaderCompact opens a headers.bin + headers.idx pair for reading.
+// OpenHeaderCompact opens a headers.cdat + headers.cidx pair for reading.
 func OpenHeaderCompact(dataPath string) (*HeaderCompactReader, error) {
 	df, err := os.Open(dataPath)
 	if err != nil {
 		return nil, fmt.Errorf("open data: %w", err)
 	}
-	idxPath := strings.TrimSuffix(dataPath, ".bin") + ".idx"
+	idxPath := strings.TrimSuffix(dataPath, ".cdat") + ".cidx"
 	idf, err := os.Open(idxPath)
 	if err != nil {
 		df.Close()

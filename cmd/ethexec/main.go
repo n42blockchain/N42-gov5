@@ -627,7 +627,7 @@ func runBodyCompact(c *cli.Context) error {
 	defer f.Close()
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
-	outputDir := filepath.Join(datadir, "bodies")
+	outputDir := filepath.Join(datadir, "chain")
 	stage := ethel.NewBodyCompactStage(f, outputDir)
 
 	ctx, cancel := withShutdown()
@@ -646,10 +646,11 @@ func runHeaderCompact(c *cli.Context) error {
 	defer f.Close()
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
-	if err := os.MkdirAll(datadir, 0755); err != nil {
+	chainDir := filepath.Join(datadir, "chain")
+	if err := os.MkdirAll(chainDir, 0755); err != nil {
 		return err
 	}
-	outputPath := filepath.Join(datadir, "headers.bin")
+	outputPath := filepath.Join(chainDir, "headers.cdat")
 
 	stage := ethel.NewHeaderCompactStage(f, outputPath)
 
