@@ -101,7 +101,7 @@ func (r *HistoryStateReader) ReadAccountData(address types.Address) (*account.St
 }
 
 func (r *HistoryStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	v, err := r.db.GetOne(modules.Storage, compositeKey)
 	if err != nil {
 		return nil, err

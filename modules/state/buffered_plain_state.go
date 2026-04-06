@@ -21,8 +21,7 @@ import (
 var deletedSentinel = []byte{}
 
 type storageEntry struct {
-	incarnation uint16
-	value       []byte
+	value []byte
 }
 
 // accountCacheEntry wraps a cached account. The sync.Map stores interface{},
@@ -40,6 +39,7 @@ type PlainStateBuffer struct {
 	code           map[types.Hash][]byte
 	contractCode   map[string][]byte
 	incarnationMap map[types.Address][]byte
+	contractWipes  []types.Address // addresses needing MDBX storage wipe on flush
 
 	// Read cache: lock-free via sync.Map.
 	// readAccounts: key=types.Address, value=*accountCacheEntry (nil acct = absent)
@@ -103,7 +103,33 @@ func (b *PlainStateBuffer) FlushToMDBX(tx kv.RwTx) error {
 		}
 	}
 
-	// 2. Storage: build composite keys, sort, then write.
+	// 2. Wipe storage for contracts that were recreated (replaces incarnation).
+	for _, addr := range b.contractWipes {
+		prefix := addr[:]
+		cursor, err := tx.Cursor(modules.Storage)
+		if err != nil {
+			return err
+		}
+		var keysToDelete [][]byte
+		for k, _, err := cursor.Seek(prefix); k != nil; k, _, err = cursor.Next() {
+			if err != nil {
+				cursor.Close()
+				return err
+			}
+			if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
+				break
+			}
+			keysToDelete = append(keysToDelete, append([]byte{}, k...))
+		}
+		cursor.Close()
+		for _, k := range keysToDelete {
+			if err := tx.Delete(modules.Storage, k); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 3. Storage: build composite keys, sort, then write.
 	type stoKV struct {
 		key   []byte
 		value []byte
@@ -115,7 +141,7 @@ func (b *PlainStateBuffer) FlushToMDBX(tx kv.RwTx) error {
 	stoEntries := make([]stoKV, 0, stoCount)
 	for addr, slots := range b.storage {
 		for hash, entry := range slots {
-			compositeKey := modules.PlainGenerateCompositeStorageKey(addr[:], entry.incarnation, hash[:])
+			compositeKey := modules.PlainGenerateCompositeStorageKey(addr[:], hash[:])
 			stoEntries = append(stoEntries, stoKV{key: compositeKey, value: entry.value})
 		}
 	}
@@ -134,7 +160,7 @@ func (b *PlainStateBuffer) FlushToMDBX(tx kv.RwTx) error {
 		}
 	}
 
-	// 3. Code, ContractCode, IncarnationMap — small tables, sort for consistency.
+	// 4. Code, ContractCode — small tables, sort for consistency.
 	codeHashes := make([]types.Hash, 0, len(b.code))
 	for hash := range b.code {
 		codeHashes = append(codeHashes, hash)
@@ -158,19 +184,7 @@ func (b *PlainStateBuffer) FlushToMDBX(tx kv.RwTx) error {
 			return err
 		}
 	}
-
-	incAddrs := make([]types.Address, 0, len(b.incarnationMap))
-	for addr := range b.incarnationMap {
-		incAddrs = append(incAddrs, addr)
-	}
-	sort.Slice(incAddrs, func(i, j int) bool {
-		return bytes.Compare(incAddrs[i][:], incAddrs[j][:]) < 0
-	})
-	for _, addr := range incAddrs {
-		if err := tx.Put(modules.IncarnationMap, addr[:], b.incarnationMap[addr]); err != nil {
-			return err
-		}
-	}
+	// IncarnationMap removed — no longer needed
 	return nil
 }
 
@@ -275,7 +289,7 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 	}
 	// 3. MDBX → cache.
 	r.buf.misses.Add(1)
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address[:], incarnation, key[:])
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address[:], key[:])
 	enc, err := r.db.GetOne(modules.Storage, compositeKey)
 	if err != nil {
 		return nil, err
@@ -373,7 +387,7 @@ func (w *BufferedPlainStateWriter) UpdateAccountCode(address types.Address, inca
 		}
 	}
 	w.buf.code[codeHash] = code
-	w.buf.contractCode[string(modules.PlainGenerateStoragePrefix(address[:], incarnation))] = codeHash[:]
+	w.buf.contractCode[string(modules.PlainGenerateStoragePrefix(address[:]))] = codeHash[:]
 	return nil
 }
 
@@ -384,11 +398,7 @@ func (w *BufferedPlainStateWriter) DeleteAccount(address types.Address, original
 		}
 	}
 	w.buf.accounts[address] = deletedSentinel
-	if original.Incarnation > 0 {
-		var b [2]byte
-		binary.BigEndian.PutUint16(b[:], original.Incarnation)
-		w.buf.incarnationMap[address] = b[:]
-	}
+	// IncarnationMap removed — incarnation no longer used
 	return nil
 }
 
@@ -408,9 +418,9 @@ func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, in
 	}
 	v := value.Bytes()
 	if len(v) == 0 {
-		slots[*key] = storageEntry{incarnation: incarnation, value: deletedSentinel}
+		slots[*key] = storageEntry{value: deletedSentinel}
 	} else {
-		slots[*key] = storageEntry{incarnation: incarnation, value: v}
+		slots[*key] = storageEntry{value: v}
 	}
 	return nil
 }
@@ -421,6 +431,10 @@ func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
 			return err
 		}
 	}
+	// Clear buffered storage for this address.
+	delete(w.buf.storage, address)
+	// Record address for MDBX storage wipe during FlushToMDBX.
+	w.buf.contractWipes = append(w.buf.contractWipes, address)
 	return nil
 }
 

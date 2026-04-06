@@ -223,7 +223,7 @@ func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint25
 	hb.acc.Nonce = nonce
 	hb.acc.Balance.Set(balance)
 	hb.acc.Initialised = true
-	hb.acc.Incarnation = uint16(incarnation)
+	// hb.acc.Incarnation removed — incarnation no longer stored in StateAccount
 
 	popped := 0
 	var root node
@@ -295,7 +295,7 @@ func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *ui
 	hb.acc.Nonce = nonce
 	hb.acc.Balance.Set(balance)
 	hb.acc.Initialised = true
-	hb.acc.Incarnation = uint16(incarnation)
+	// hb.acc.Incarnation removed — incarnation no longer stored in StateAccount
 
 	popped := 0
 	if fieldSet&AccountFieldStorageOnly != 0 {

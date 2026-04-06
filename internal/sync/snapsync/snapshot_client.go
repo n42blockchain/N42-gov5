@@ -474,7 +474,7 @@ func (sm *SnapshotManager) executeSnapshotStorageTask(ctx context.Context, task 
 		if err := acc.DecodeForStorage(data); err != nil {
 			return nil
 		}
-		incarnation = acc.Incarnation
+		incarnation = 0
 		return nil
 	})
 
@@ -518,7 +518,7 @@ func (sm *SnapshotManager) executeSnapshotStorageTask(ctx context.Context, task 
 	if err := sm.db.Update(ctx, func(tx kv.RwTx) error {
 		for _, e := range entries {
 			// Server sends loc(32) as key — reconstruct full storage key.
-			fullKey := modules.PlainGenerateCompositeStorageKey(task.Account, incarnation, e.Key)
+			fullKey := modules.PlainGenerateCompositeStorageKey(task.Account, e.Key)
 			if err := tx.Put(modules.Storage, fullKey, e.Value); err != nil {
 				return err
 			}

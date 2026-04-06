@@ -80,7 +80,7 @@ func (r *CachedStateReader) ReadAccountData(address types.Address) (*account.Sta
 }
 
 func (r *CachedStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 
 	if r.cache != nil {
 		if v, ok := r.cache.Get(modules.Storage, compositeKey); ok {

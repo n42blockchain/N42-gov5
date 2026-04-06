@@ -138,7 +138,7 @@ func exportState(ctx *cli.Context) error {
 			Balance: acc.Balance.ToBig().String(),
 		}
 
-		if includeCode && acc.Incarnation > 0 {
+		if includeCode && !acc.IsEmptyCodeHash() {
 			code, err := roTX.GetOne(modules.Code, acc.CodeHash[:])
 			if err == nil && len(code) > 0 {
 				da.Code = fmt.Sprintf("0x%x", code)
@@ -152,9 +152,9 @@ func exportState(ctx *cli.Context) error {
 				// Storage key: address(20) + incarnation(2) + storageKey(32)
 				prefix := make([]byte, 22)
 				copy(prefix, k)
-				// Use actual incarnation from account
-				prefix[20] = byte(acc.Incarnation >> 8)
-				prefix[21] = byte(acc.Incarnation)
+				// incarnation removed — always 0
+				prefix[20] = 0
+				prefix[21] = 0
 
 				for sk, sv, err := storageCursor.Seek(prefix); sk != nil; sk, sv, err = storageCursor.Next() {
 					if err != nil {

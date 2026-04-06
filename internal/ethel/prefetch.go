@@ -127,7 +127,7 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 		if len(enc) > 0 {
 			var a account.StateAccount
 			if a.DecodeForStorage(enc) == nil {
-				incarnations[addr] = a.Incarnation
+				incarnations[addr] = 0
 				p.stateBuf.CacheAccount(addr, &a)
 			}
 		} else {
@@ -138,9 +138,8 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	// Prefetch storage slots and populate cache.
 	for _, tx := range body.Transactions {
 		for _, entry := range tx.AccessList() {
-			inc := incarnations[entry.Address]
 			for _, key := range entry.StorageKeys {
-				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], inc, key[:])
+				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], key[:])
 				enc, _ := roTx.GetOne(modules.Storage, compositeKey)
 				var cached []byte
 				if len(enc) > 0 {

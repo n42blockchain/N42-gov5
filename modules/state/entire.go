@@ -138,7 +138,7 @@ func (s *Snapshot) ReadAccountStorage(address types.Address, incarnation uint16,
 	if s.written {
 		return nil, nil
 	}
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	index, ok := s.storage[*(*string)(unsafe.Pointer(&compositeKey))]
 	if !ok {
 		if s.getOneFun != nil {
@@ -229,7 +229,7 @@ func (s *Snapshot) AddStorage(address types.Address, key *types.Hash, incarnatio
 	if !s.written || len(value) == 0 {
 		return
 	}
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	s.Items = append(s.Items, &Item{Key: compositeKey, Value: value})
 	s.storage[*(*string)(unsafe.Pointer(&compositeKey))] = len(s.Items) - 1
 }

@@ -38,7 +38,6 @@ type StateAccount struct {
 	Balance     uint256.Int
 	Root        types.Hash
 	CodeHash    types.Hash // hash of the bytecode
-	Incarnation uint16
 }
 
 const (
@@ -76,13 +75,11 @@ func (a *StateAccount) Copy(image *StateAccount) {
 	a.Balance.Set(&image.Balance)
 	copy(a.Root[:], image.Root[:])
 	copy(a.CodeHash[:], image.CodeHash[:])
-	a.Incarnation = image.Incarnation
 }
 
 func (a *StateAccount) Reset() {
 	a.Initialised = true
 	a.Nonce = 0
-	a.Incarnation = 0
 	a.Balance.Clear()
 	copy(a.Root[:], emptyRoot[:])
 	copy(a.CodeHash[:], emptyCodeHash[:])
@@ -119,19 +116,10 @@ func (a *StateAccount) IsEmptyRoot() bool {
 	return a.Root == emptyRoot || a.Root == types.Hash{}
 }
 
-func (a *StateAccount) GetIncarnation() uint16 {
-	return a.Incarnation
-}
-
-func (a *StateAccount) SetIncarnation(v uint16) {
-	a.Incarnation = v
-}
-
 func (a *StateAccount) Equals(acc *StateAccount) bool {
 	return a.Nonce == acc.Nonce &&
 		a.CodeHash == acc.CodeHash &&
-		a.Balance.Cmp(&acc.Balance) == 0 &&
-		a.Incarnation == acc.Incarnation
+		a.Balance.Cmp(&acc.Balance) == 0
 }
 
 func (a *StateAccount) Marshal() ([]byte, error) {
@@ -154,7 +142,7 @@ func (a *StateAccount) ToProtoMessage() proto.Message {
 		Balance:     utils.ConvertUint256IntToH256(&a.Balance),
 		Root:        utils.ConvertHashToH256(a.Root),
 		CodeHash:    utils.ConvertHashToH256(a.CodeHash),
-		Incarnation: uint64(a.Incarnation),
+		Incarnation: 0, // deprecated: incarnation removed
 	}
 }
 
@@ -174,7 +162,7 @@ func (a *StateAccount) applyProtoFields(pAccount *state.Account) {
 	a.Balance = *utils.ConvertH256ToUint256Int(pAccount.Balance)
 	a.Root = utils.ConvertH256ToHash(pAccount.Root)
 	a.CodeHash = utils.ConvertH256ToHash(pAccount.CodeHash)
-	a.Incarnation = uint16(pAccount.Incarnation)
+	// a.Incarnation removed — ignore pAccount.Incarnation for backward compat
 }
 
 // MarshalV2 encodes a StateAccount into a new byte slice using V2 format.
@@ -187,8 +175,8 @@ func (a *StateAccount) MarshalV2() []byte {
 }
 
 // EncodeForStorageV2 encodes using Erigon-style variable-length format.
-// Format: [fieldBits:1B][nonce:varint][balance:lenB+data][incarnation:varint][codeHash:32B]
-// Fields with default values are omitted. Empty account = 1 byte.
+// Format: [fieldBits:1B][nonce:varint][balance:lenB+data][codeHash:32B]
+// Bit 4 (incarnation) is never written — kept for backward-compat decode only.
 func (a *StateAccount) EncodeForStorageV2(buf []byte) int {
 	var fieldBits byte
 	pos := 1
@@ -211,11 +199,7 @@ func (a *StateAccount) EncodeForStorageV2(buf []byte) int {
 		copy(buf[pos:pos+trimLen], balBytes[start:])
 		pos += trimLen
 	}
-	if a.Incarnation > 0 {
-		fieldBits |= 4
-		n := binary.PutUvarint(buf[pos:], uint64(a.Incarnation))
-		pos += n
-	}
+	// bit 4 (incarnation) removed — never written
 	if !IsEmptyCodeHash(a.CodeHash) {
 		fieldBits |= 8
 		copy(buf[pos:pos+32], a.CodeHash[:])
@@ -239,9 +223,7 @@ func (a *StateAccount) EncodingLengthForStorageV2() int {
 		}
 		n += 1 + (32 - start)
 	}
-	if a.Incarnation > 0 {
-		n += uvarintSize(uint64(a.Incarnation))
-	}
+	// incarnation removed — no longer counted
 	if !IsEmptyCodeHash(a.CodeHash) {
 		n += 32
 	}
@@ -280,14 +262,11 @@ func (a *StateAccount) DecodeForStorageV2(enc []byte) error {
 		pos += balLen
 	}
 	if fieldBits&4 != 0 {
-		v, n := binary.Uvarint(enc[pos:])
+		// Backward compat: skip incarnation varint from old data.
+		_, n := binary.Uvarint(enc[pos:])
 		if n <= 0 {
 			return fmt.Errorf("malformed incarnation varint")
 		}
-		if v > 0xFFFF {
-			return fmt.Errorf("incarnation %d exceeds uint16 range", v)
-		}
-		a.Incarnation = uint16(v)
 		pos += n
 	}
 	if fieldBits&8 != 0 {

@@ -117,7 +117,7 @@ func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, incarnation
 		return nil
 	}
 
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 
 	w.storageChanges[string(compositeKey)] = original.Bytes()
 	w.storageChanged[address] = true

@@ -76,7 +76,7 @@ func NewProofRetainer(addr types.Address, a *account.StateAccount, storageKeys [
 
 		var compactEncoded [72]byte
 		copy(compactEncoded[:32], addrHash[:])
-		binary.BigEndian.PutUint64(compactEncoded[32:40], uint64(a.Incarnation))
+		binary.BigEndian.PutUint64(compactEncoded[32:40], 0)
 		copy(compactEncoded[40:], storageHash[:])
 		storageHexKeys[i] = rl.AddKey(compactEncoded[:])
 	}

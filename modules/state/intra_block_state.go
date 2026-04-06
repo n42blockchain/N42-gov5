@@ -491,13 +491,13 @@ func (sdb *IntraBlockState) GetCodeSize(addr types.Address) int {
 	if stateObject.code != nil {
 		return len(stateObject.code)
 	}
-	codeSize, err := sdb.stateReader.ReadAccountCodeSize(addr, stateObject.data.Incarnation, stateObject.data.CodeHash)
+	codeSize, err := sdb.stateReader.ReadAccountCodeSize(addr, 0, stateObject.data.CodeHash)
 	if err != nil {
 		sdb.setErrorUnsafe(err)
 	}
 	if codeSize > 0 && sdb.codeMap != nil {
 		codeHash := types.BytesToHash(stateObject.CodeHash())
-		code, _ := sdb.stateReader.ReadAccountCode(addr, stateObject.data.Incarnation, codeHash)
+		code, _ := sdb.stateReader.ReadAccountCode(addr, 0, codeHash)
 		sdb.codeMap[codeHash] = code
 	}
 	return codeSize
@@ -627,19 +627,12 @@ func (sdb *IntraBlockState) SetStorage(addr types.Address, storage Storage) {
 	}
 }
 
-// SetIncarnation sets incarnation for account if account exists
+// SetIncarnation is a no-op. Incarnation has been removed from StateAccount.
 func (sdb *IntraBlockState) SetIncarnation(addr types.Address, incarnation uint16) {
-	stateObject := sdb.GetOrNewStateObject(addr)
-	if stateObject != nil {
-		stateObject.setIncarnation(incarnation)
-	}
 }
 
+// GetIncarnation always returns 0. Incarnation has been removed from StateAccount.
 func (sdb *IntraBlockState) GetIncarnation(addr types.Address) uint16 {
-	stateObject := sdb.getStateObject(addr)
-	if stateObject != nil {
-		return stateObject.data.Incarnation
-	}
 	return 0
 }
 
@@ -739,21 +732,8 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 	sdb.traceAccountRead(addr)
 	sdb.traceAccountWrite(addr)
 
-	var prevInc uint16
 	previous := sdb.getStateObject(addr)
-	if contractCreation {
-		if previous != nil && previous.selfdestructed {
-			prevInc = previous.data.Incarnation
-		} else {
-			inc, err := sdb.stateReader.ReadAccountIncarnation(addr)
-			if sdb.trace && err != nil {
-				log.Error("error while ReadAccountIncarnation", "err", err)
-			}
-			if err == nil {
-				prevInc = inc
-			}
-		}
-	}
+	// incarnation removed — storage wipe handled separately
 
 	newObj := sdb.createObject(addr, previous)
 	if previous != nil {
@@ -763,7 +743,6 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 
 	if contractCreation {
 		newObj.created = true
-		newObj.data.Incarnation = prevInc + 1
 	} else {
 		newObj.selfdestructed = false
 	}
@@ -846,7 +825,7 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 		stateObject.deleted = false
 		// Write any contract code associated with the state object
 		if stateObject.code != nil && stateObject.dirtyCode {
-			if err := stateWriter.UpdateAccountCode(addr, stateObject.data.Incarnation, stateObject.data.CodeHash, stateObject.code); err != nil {
+			if err := stateWriter.UpdateAccountCode(addr, 0, stateObject.data.CodeHash, stateObject.code); err != nil {
 				return err
 			}
 		}
@@ -1082,7 +1061,6 @@ func (s *IntraBlockState) GenerateRootHash() types.Hash {
 		}
 		data := obj.data
 		if err := rlp.Encode(sha, []interface{}{
-			data.Incarnation,
 			data.Balance,
 			data.Nonce,
 			data.Initialised,

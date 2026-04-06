@@ -74,7 +74,7 @@ func (w *CachedStateWriter) WriteAccountStorage(address types.Address, incarnati
 		return err
 	}
 	if w.cache != nil {
-		compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+		compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 		v := value.Bytes()
 		if len(v) == 0 {
 			w.cache.Delete(modules.Storage, compositeKey)

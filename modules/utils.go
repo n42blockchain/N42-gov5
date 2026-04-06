@@ -98,21 +98,18 @@ func GenerateStoragePrefix(addressHash []byte, incarnation uint16) []byte {
 	return prefix
 }
 
-// address hash + incarnation prefix (for plain state)
-func PlainGenerateStoragePrefix(address []byte, incarnation uint16) []byte {
-	prefix := make([]byte, types.AddressLength+NumberLength)
+// PlainGenerateStoragePrefix returns the address prefix for storage key scans.
+func PlainGenerateStoragePrefix(address []byte) []byte {
+	prefix := make([]byte, types.AddressLength)
 	copy(prefix, address)
-	binary.BigEndian.PutUint16(prefix[types.AddressLength:], incarnation)
 	return prefix
 }
 
-// AddrHash + incarnation + KeyHash
-// For contract storage (for plain state)
-func PlainGenerateCompositeStorageKey(address []byte, incarnation uint16, key []byte) []byte {
-	compositeKey := make([]byte, types.AddressLength+types.IncarnationLength+types.HashLength)
+// PlainGenerateCompositeStorageKey builds a storage key: addr(20) + slot(32) = 52B.
+func PlainGenerateCompositeStorageKey(address []byte, key []byte) []byte {
+	compositeKey := make([]byte, types.AddressLength+types.HashLength)
 	copy(compositeKey, address)
-	binary.BigEndian.PutUint16(compositeKey[types.AddressLength:], incarnation)
-	copy(compositeKey[types.AddressLength+types.IncarnationLength:], key)
+	copy(compositeKey[types.AddressLength:], key)
 	return compositeKey
 }
 

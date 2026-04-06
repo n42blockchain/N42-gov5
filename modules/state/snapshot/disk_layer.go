@@ -107,7 +107,7 @@ func (dl *DiskLayer) Storage(addr types.Address, key types.Hash) ([]byte, bool) 
 	}
 	defer tx.Rollback()
 
-	compositeKey := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), 0, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), key.Bytes())
 	data, err := rawdb.ReadSnapshotStorage(tx, compositeKey)
 	if err != nil || data == nil {
 		return nil, false

@@ -55,7 +55,7 @@ func (r *PlainStateReader) ReadAccountData(address types.Address) (*account.Stat
 }
 
 func (r *PlainStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), incarnation, key.Bytes())
+	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	enc, err := r.db.GetOne(modules.Storage, compositeKey)
 	if err != nil {
 		return nil, err

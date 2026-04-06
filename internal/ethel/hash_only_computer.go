@@ -57,19 +57,8 @@ func (h *HashOnlyComputer) ComputeRoot(
 	// Phase 2: Update HashedStorage.
 	for addr, slots := range storage {
 		addrHash := crypto.Keccak256(addr[:])
+		// incarnation removed from StateAccount — always use 0
 		var incarnation uint64
-		if acct, ok := accounts[addr]; ok && acct != nil {
-			incarnation = uint64(acct.Incarnation)
-		} else {
-			// Read from HashedAccounts.
-			v, err := h.tx.GetOne(modules.HashedAccounts, addrHash)
-			if err == nil && len(v) > 0 {
-				var a account.StateAccount
-				if err := a.DecodeForStorage(v); err == nil {
-					incarnation = uint64(a.Incarnation)
-				}
-			}
-		}
 
 		for slot, val := range slots {
 			slotHash := crypto.Keccak256(slot[:])
