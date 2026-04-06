@@ -81,6 +81,9 @@ type BlobTx struct {
 
 	// Sidecar (optional, for transaction propagation)
 	Sidecar *BlobTxSidecar `rlp:"-"` // Not RLP encoded in network messages
+
+	// Derived fields (cached)
+	fromCache *types.Address `rlp:"-"`
 }
 
 // BlobTxSidecar contains the blobs and their proofs for a blob transaction
@@ -169,7 +172,7 @@ func (tx *BlobTx) gasFeeCap() *uint256.Int { return tx.GasFeeCap }
 func (tx *BlobTx) value() *uint256.Int     { return tx.Value }
 func (tx *BlobTx) nonce() uint64           { return tx.Nonce }
 func (tx *BlobTx) to() *types.Address      { return &tx.To }
-func (tx *BlobTx) from() *types.Address    { return nil } // Computed from signature
+func (tx *BlobTx) from() *types.Address    { return tx.fromCache }
 func (tx *BlobTx) sign() []byte            { return nil }
 
 func (tx *BlobTx) hash() types.Hash {
