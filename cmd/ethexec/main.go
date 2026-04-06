@@ -480,16 +480,20 @@ func runCSCompact(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 
-	// AccountCS compression.
-	log.Info("=== AccountCS compression ===")
+	// Detect table names (Erigon vs Reth).
+	acctTable := detectRealTable(db, "AccountChangeSets", "AccountChangeSet")
+	storTable := detectRealTable(db, "StorageChangeSets", "StorageChangeSet")
+
+	log.Info("=== AccountCS compression ===", "table", acctTable)
 	accComp := cscompact.NewAccountCSCompactor(db, outputDir)
+	accComp.SetTableName(acctTable)
 	if err := accComp.Run(ctx, startBlock, endBlock); err != nil {
 		return fmt.Errorf("account cs: %w", err)
 	}
 
-	// StorageCS compression.
-	log.Info("=== StorageCS compression ===")
+	log.Info("=== StorageCS compression ===", "table", storTable)
 	stoComp := cscompact.NewStorageCSCompactor(db, outputDir)
+	stoComp.SetTableName(storTable)
 	return stoComp.Run(ctx, startBlock, endBlock)
 }
 
@@ -765,6 +769,28 @@ func runSenderRecovery(c *cli.Context) error {
 
 	stage := ethel.NewSenderStage(f, of, params.EthereumMainnetChainConfig, workers)
 	return stage.Run(ctx)
+}
+
+// detectRealTable returns the first table name that has real DupSort data
+// (small values), distinguishing from root DBI fallback (large blobs).
+func detectRealTable(db kv.RoDB, candidates ...string) string {
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		return candidates[0]
+	}
+	defer tx.Rollback()
+	for _, tbl := range candidates {
+		cursor, err := tx.Cursor(tbl)
+		if err != nil {
+			continue
+		}
+		k, v, _ := cursor.First()
+		cursor.Close()
+		if k != nil && len(k) >= 8 && len(v) <= 64 {
+			return tbl
+		}
+	}
+	return candidates[0]
 }
 
 // detectRethEndBlock finds the highest block number from Reth's TransactionBlocks

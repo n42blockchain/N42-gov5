@@ -41,11 +41,14 @@ type StorageCSEntry struct {
 type StorageCSCompactor struct {
 	db        kv.RoDB
 	outputDir string
+	tableName string
 }
 
 func NewStorageCSCompactor(db kv.RoDB, outputDir string) *StorageCSCompactor {
-	return &StorageCSCompactor{db: db, outputDir: outputDir}
+	return &StorageCSCompactor{db: db, outputDir: outputDir, tableName: ErigonStorageChangeSet}
 }
+
+func (c *StorageCSCompactor) SetTableName(name string) { c.tableName = name }
 
 func (c *StorageCSCompactor) Run(ctx context.Context, startBlock, endBlock uint64) error {
 	if err := os.MkdirAll(c.outputDir, 0755); err != nil {
@@ -166,7 +169,7 @@ func (c *StorageCSCompactor) readSegment(startBlock, endBlock uint64) (
 	}
 	defer tx.Rollback()
 
-	cursor, err := tx.Cursor(ErigonStorageChangeSet)
+	cursor, err := tx.Cursor(c.tableName)
 	if err != nil {
 		return nil, nil, 0, err
 	}

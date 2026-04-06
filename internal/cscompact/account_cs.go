@@ -43,11 +43,14 @@ type AccountCSEntry struct {
 type AccountCSCompactor struct {
 	db        kv.RoDB
 	outputDir string
+	tableName string // "AccountChangeSet" or "AccountChangeSets"
 }
 
 func NewAccountCSCompactor(db kv.RoDB, outputDir string) *AccountCSCompactor {
-	return &AccountCSCompactor{db: db, outputDir: outputDir}
+	return &AccountCSCompactor{db: db, outputDir: outputDir, tableName: ErigonAccountChangeSet}
 }
+
+func (c *AccountCSCompactor) SetTableName(name string) { c.tableName = name }
 
 func (c *AccountCSCompactor) Run(ctx context.Context, startBlock, endBlock uint64) error {
 	if err := os.MkdirAll(c.outputDir, 0755); err != nil {
@@ -178,7 +181,7 @@ func (c *AccountCSCompactor) readSegment(startBlock, endBlock uint64) (
 	}
 	defer tx.Rollback()
 
-	cursor, err := tx.Cursor(ErigonAccountChangeSet)
+	cursor, err := tx.Cursor(c.tableName)
 	if err != nil {
 		return nil, nil, 0, err
 	}
