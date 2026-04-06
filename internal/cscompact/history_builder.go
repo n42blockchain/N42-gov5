@@ -84,69 +84,15 @@ type histKeyData struct {
 }
 
 func (b *HistoryBuilder) buildOne(ctx context.Context, startBlock, endBlock uint64, idxPath, datPath string) error {
-	t0 := time.Now()
-
-	// Step 1: Collect all unique keys and their block lists for this segment range.
 	entries, totalShards, err := b.collectKeys(ctx, startBlock, endBlock)
 	if err != nil {
 		return err
 	}
-
-	log.Info("Building history segment",
+	log.Info("Collected from history bitmaps",
 		"table", b.tableName,
-		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
 		"uniqueKeys", len(entries),
 		"totalShards", totalShards)
-
-	if len(entries) == 0 {
-		return b.writeEmpty(idxPath, datPath)
-	}
-
-	// Step 2: Build RecSplit index.
-	logger := log2.New()
-	rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
-		KeyCount:           len(entries),
-		BucketSize:         2000,
-		LeafSize:           8,
-		Enums:              false,
-		LessFalsePositives: true,
-		IndexFile:          idxPath,
-		BaseDataID:         startBlock,
-		TmpDir:             os.TempDir(),
-	}, logger)
-	if err != nil {
-		return err
-	}
-
-	for i, e := range entries {
-		if err := rs.AddKey(e.key, uint64(i)); err != nil {
-			return fmt.Errorf("addKey %d: %w", i, err)
-		}
-	}
-
-	if err := rs.Build(ctx); err != nil {
-		return fmt.Errorf("recsplit build: %w", err)
-	}
-
-	// Step 3: Write adaptive value dat file.
-	if err := b.writeDat(datPath, entries); err != nil {
-		os.Remove(idxPath)
-		return err
-	}
-
-	elapsed := time.Since(t0)
-	idxFi, _ := os.Stat(idxPath)
-	datFi, _ := os.Stat(datPath)
-	avgBytes := float64(idxFi.Size()+datFi.Size()) / float64(len(entries))
-	log.Info("History segment built",
-		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
-		"keys", len(entries),
-		"idx", fmt.Sprintf("%.1f KB", float64(idxFi.Size())/1024),
-		"dat", fmt.Sprintf("%.1f KB", float64(datFi.Size())/1024),
-		"avg", fmt.Sprintf("%.1f B/key", avgBytes),
-		"elapsed", elapsed.Truncate(time.Second))
-
-	return nil
+	return b.buildFromKeyMap(ctx, entries, idxPath, datPath, startBlock, endBlock)
 }
 
 func (b *HistoryBuilder) collectKeys(ctx context.Context, startBlock, endBlock uint64) ([]histKeyData, int, error) {

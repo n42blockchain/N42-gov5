@@ -13,6 +13,7 @@
 package cscompact
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -350,25 +351,11 @@ func VerifyAccountCS(ctx context.Context, db kv.RoDB, segFile string, startBlock
 		}
 
 		// Compare word with original value.
-		if len(word) != len(v) {
+		if !bytes.Equal(word, v) {
 			mismatches++
 			if mismatches <= 5 {
 				log.Error("V3 verify mismatch", "entry", verified, "block", blockNum,
 					"segLen", len(word), "mdbxLen", len(v))
-			}
-		} else {
-			match := true
-			for i := range word {
-				if word[i] != v[i] {
-					match = false
-					break
-				}
-			}
-			if !match {
-				mismatches++
-				if mismatches <= 5 {
-					log.Error("V3 verify content mismatch", "entry", verified, "block", blockNum)
-				}
 			}
 		}
 
