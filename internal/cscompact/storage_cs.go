@@ -59,7 +59,11 @@ func (c *StorageCSCompactor) Run(ctx context.Context, startBlock, endBlock uint6
 	defer enc.Close()
 
 	idxPath := filepath.Join(c.outputDir, "storcs.cidx")
-	idxFile, err := os.OpenFile(idxPath, os.O_RDWR|os.O_CREATE, 0644)
+	flags := os.O_RDWR | os.O_CREATE
+	if startBlock == 0 {
+		flags |= os.O_TRUNC
+	}
+	idxFile, err := os.OpenFile(idxPath, flags, 0644)
 	if err != nil {
 		return err
 	}
