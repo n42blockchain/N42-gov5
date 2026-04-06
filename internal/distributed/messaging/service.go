@@ -270,9 +270,13 @@ func (s *Service) Start() {
 	)
 }
 
-// Stop gracefully shuts down the service.
+// Stop gracefully shuts down the service and its P2P relay (if attached).
 func (s *Service) Stop() {
 	s.once.Do(func() {
+		// Stop relay first to prevent incoming messages during shutdown.
+		if s.relay != nil {
+			s.relay.Stop()
+		}
 		s.cancel()
 		s.wg.Wait()
 		log.Info("Messaging service stopped",

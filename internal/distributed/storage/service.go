@@ -205,6 +205,11 @@ func NewBridge(cfg *conf.StorageCfg) *Bridge {
 	return &Bridge{cfg: cfg, client: client, ctx: ctx, cancel: cancel}
 }
 
+// IPFSClient returns the underlying IPFS HTTP client for ContentBridge usage.
+func (b *Bridge) IPFSClient() *IPFSClient {
+	return b.client
+}
+
 // Start begins the storage bridge service.
 func (b *Bridge) Start() {
 	log.Info("Storage bridge started", "ipfs", b.cfg.IPFSAPIAddr, "gateway", b.cfg.GatewayURL)

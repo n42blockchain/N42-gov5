@@ -98,6 +98,7 @@ func (w *SegmentStoreWriter) WriteSegment(data []byte, recSplitPath string) (uin
 	binary.LittleEndian.PutUint32(sizeBuf[:], uint32(len(data)))
 	datFile.Write(sizeBuf[:])
 	datFile.Write(data)
+	datFile.Sync()
 	datFile.Close()
 
 	// Write idx entry.
@@ -105,6 +106,7 @@ func (w *SegmentStoreWriter) WriteSegment(data []byte, recSplitPath string) (uin
 	binary.LittleEndian.PutUint16(idxEntry[0:2], w.headFile)
 	binary.LittleEndian.PutUint32(idxEntry[4:8], uint32(w.headSize))
 	w.idxFile.Write(idxEntry[:])
+	w.idxFile.Sync()
 
 	// Rename RecSplit to sequential number.
 	riPath := filepath.Join(w.dir, fmt.Sprintf("%06d.ri", segNum))

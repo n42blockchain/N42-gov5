@@ -151,6 +151,9 @@ type BlockChain struct {
 	bmtCommitment *commitment.BMTCommitment
 	bmtEnabled    bool
 
+	verkleCommitment *commitment.VerkleCommitment
+	verkleEnabled    bool
+
 	mptRootComputer *commitment.MPTRootComputer
 	mptEnabled      bool
 

@@ -13,27 +13,28 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
-// LeafJournal records per-block leaf changes (key+value) to a sequential file.
+// LeafJournal records per-block leaf changes to a sequential file.
 // This is the "output" of each block — the minimal data needed to build
 // any state commitment tree (BMT/JMT/MPT/Verkle) without re-executing EVM.
+//
+// V2 format uses plain keys (not hashed). Trees hash on-the-fly.
 //
 // File format (append-only, no seeking):
 //
 //	[blockNum: 8B big-endian]
-//	[count:    4B big-endian]  (number of leaf entries, 0 for empty blocks)
+//	[count:    4B big-endian]  (number of entries, 0 for empty blocks)
 //	for each entry:
-//	  [key:    32B]            (Blake3 hash of address or address+slot)
-//	  [valLen: 2B big-endian]  (0 = deletion)
-//	  [val:    valLen bytes]
-//
-// To rebuild tree at block N:
-//
-//	state = empty map
-//	for block 0..N:
-//	  for each (key, val) in block's entries:
-//	    if val == nil: delete(state, key)
-//	    else: state[key] = val
-//	  root = Tree.BuildFromState(state)
+//	  [tag:    1B]  0x01=account, 0x02=storage
+//	  if account:
+//	    [addr:    20B]
+//	    [valLen:  2B big-endian] (0 = deletion)
+//	    [val:     valLen bytes]  (MarshalV2 encoded)
+//	  if storage:
+//	    [addr:    20B]
+//	    [inc:     2B big-endian] (incarnation)
+//	    [slot:    32B]
+//	    [valLen:  2B big-endian] (0 = deletion)
+//	    [val:     valLen bytes]
 type LeafJournal struct {
 	f   *os.File
 	w   *bufio.Writer
@@ -52,10 +53,27 @@ func NewLeafJournal(path string) (*LeafJournal, error) {
 	}, nil
 }
 
-// LeafEntry is a single key-value change in a block.
+const (
+	// TagAccount marks an account entry in the journal.
+	TagAccount byte = 0x01
+	// TagStorage marks a storage entry in the journal.
+	TagStorage byte = 0x02
+)
+
+// LeafEntry is a single key-value change in a block (plain key format).
 type LeafEntry struct {
-	Key   types.Hash // Blake3(address) or Blake3(address+slot)
-	Value []byte     // new value (nil or empty = deletion)
+	Tag         byte           // TagAccount or TagStorage
+	Address     types.Address  // plain address (20B)
+	Incarnation uint16         // storage incarnation (0 for accounts)
+	Slot        types.Hash     // storage slot (zero for accounts)
+	Value       []byte         // new value (nil or empty = deletion)
+}
+
+// Key returns the legacy 32B hashed key for backward compatibility
+// with tree builders. Deprecated: use Address/Slot directly.
+func (e *LeafEntry) Key() types.Hash {
+	// For backward compat only — callers should hash on-the-fly per tree type.
+	return types.Hash{}
 }
 
 // WriteBlock writes all leaf changes for a block. Empty blocks write header only (count=0).
@@ -73,13 +91,34 @@ func (j *LeafJournal) WriteBlock(blockNum uint64, entries []LeafEntry) error {
 		return err
 	}
 
-	// Entries
 	for _, e := range entries {
-		// key: 32 bytes
-		if _, err := j.w.Write(e.Key[:]); err != nil {
+		// tag: 1 byte
+		if err := j.w.WriteByte(e.Tag); err != nil {
 			j.err = err
 			return err
 		}
+
+		// addr: 20 bytes (both account and storage)
+		if _, err := j.w.Write(e.Address[:]); err != nil {
+			j.err = err
+			return err
+		}
+
+		if e.Tag == TagStorage {
+			// incarnation: 2 bytes
+			var inc [2]byte
+			binary.BigEndian.PutUint16(inc[:], e.Incarnation)
+			if _, err := j.w.Write(inc[:]); err != nil {
+				j.err = err
+				return err
+			}
+			// slot: 32 bytes
+			if _, err := j.w.Write(e.Slot[:]); err != nil {
+				j.err = err
+				return err
+			}
+		}
+
 		// valLen: 2 bytes
 		var vl [2]byte
 		binary.BigEndian.PutUint16(vl[:], uint16(len(e.Value)))
@@ -149,10 +188,34 @@ func (r *LeafJournalReader) ReadBlock() (*BlockEntries, error) {
 
 	entries := make([]LeafEntry, count)
 	for i := uint32(0); i < count; i++ {
-		var key types.Hash
-		if _, err := io.ReadFull(r.r, key[:]); err != nil {
-			return nil, fmt.Errorf("read key at block %d entry %d: %w", blockNum, i, err)
+		// tag: 1 byte
+		tag, err := r.r.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("read tag at block %d entry %d: %w", blockNum, i, err)
 		}
+
+		// addr: 20 bytes
+		var addr types.Address
+		if _, err := io.ReadFull(r.r, addr[:]); err != nil {
+			return nil, fmt.Errorf("read addr at block %d entry %d: %w", blockNum, i, err)
+		}
+
+		var inc uint16
+		var slot types.Hash
+		if tag == TagStorage {
+			// incarnation: 2 bytes
+			var incBuf [2]byte
+			if _, err := io.ReadFull(r.r, incBuf[:]); err != nil {
+				return nil, fmt.Errorf("read inc at block %d entry %d: %w", blockNum, i, err)
+			}
+			inc = binary.BigEndian.Uint16(incBuf[:])
+			// slot: 32 bytes
+			if _, err := io.ReadFull(r.r, slot[:]); err != nil {
+				return nil, fmt.Errorf("read slot at block %d entry %d: %w", blockNum, i, err)
+			}
+		}
+
+		// valLen: 2 bytes
 		var vl [2]byte
 		if _, err := io.ReadFull(r.r, vl[:]); err != nil {
 			return nil, fmt.Errorf("read valLen at block %d entry %d: %w", blockNum, i, err)
@@ -165,7 +228,14 @@ func (r *LeafJournalReader) ReadBlock() (*BlockEntries, error) {
 				return nil, fmt.Errorf("read val at block %d entry %d: %w", blockNum, i, err)
 			}
 		}
-		entries[i] = LeafEntry{Key: key, Value: val}
+
+		entries[i] = LeafEntry{
+			Tag:         tag,
+			Address:     addr,
+			Incarnation: inc,
+			Slot:        slot,
+			Value:       val,
+		}
 	}
 
 	return &BlockEntries{BlockNum: blockNum, Entries: entries}, nil

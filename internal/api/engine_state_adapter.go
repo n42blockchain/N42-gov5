@@ -64,7 +64,7 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 
 	// Execute using shared ProcessBlock.
 	var uncles []block.IHeader // post-merge: no uncles
-	result, err := ethel.ProcessBlock(a.chainCfg, a.engine, header, blk.Transactions(), uncles, ibs, blockHashFunc)
+	result, err := ethel.ProcessBlock(a.chainCfg, a.engine, header, blk.Transactions(), uncles, ibs, blockHashFunc, nil)
 	if err != nil {
 		return false, types.Hash{}, fmt.Errorf("execute block %d: %w", blockNum, err)
 	}
