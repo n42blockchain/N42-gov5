@@ -596,23 +596,7 @@ func runTxLookupBuild(c *cli.Context) error {
 		log.Info("MDBX opened READ-ONLY for txindex", "path", erigonDB)
 
 		if endBlock == 0 {
-			// Detect from BlockBodyIndices or TransactionBlocks.
-			tx, _ := db.BeginRo(context.Background())
-			for _, tbl := range []string{"BlockBodyIndices", "CanonicalHeaders"} {
-				cursor, err := tx.Cursor(tbl)
-				if err != nil {
-					continue
-				}
-				k, _, _ := cursor.Last()
-				cursor.Close()
-				if len(k) >= 8 {
-					bn := binary.LittleEndian.Uint64(k[:8])
-					if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
-						endBlock = bn + 1
-					}
-				}
-			}
-			tx.Rollback()
+			endBlock = detectRethEndBlock(db)
 			if endBlock == 0 {
 				return fmt.Errorf("cannot detect end block from MDBX")
 			}
@@ -751,27 +735,7 @@ func runSenderRecovery(c *cli.Context) error {
 		log.Info("MDBX opened READ-ONLY for senders", "path", erigonDB)
 
 		if endBlock == 0 {
-			tx, _ := db.BeginRo(context.Background())
-			cursor, err := tx.Cursor("BlockBodyIndices")
-			if err == nil {
-				lk, _, _ := cursor.Last()
-				cursor.Close()
-				if lk != nil && len(lk) >= 8 {
-					endBlock = binary.LittleEndian.Uint64(lk) + 1
-				}
-			}
-			if endBlock == 0 {
-				// Fallback: count from CanonicalHeaders
-				cursor2, err := tx.Cursor("CanonicalHeaders")
-				if err == nil {
-					lk, _, _ := cursor2.Last()
-					cursor2.Close()
-					if lk != nil && len(lk) >= 8 {
-						endBlock = binary.LittleEndian.Uint64(lk) + 1
-					}
-				}
-			}
-			tx.Rollback()
+			endBlock = detectRethEndBlock(db)
 			if endBlock == 0 {
 				return fmt.Errorf("cannot detect end block from MDBX")
 			}
@@ -807,4 +771,53 @@ func runSenderRecovery(c *cli.Context) error {
 
 	stage := ethel.NewSenderStage(f, of, params.EthereumMainnetChainConfig, workers)
 	return stage.Run(ctx)
+}
+
+// detectRethEndBlock finds the highest block number from Reth's TransactionBlocks
+// table (last value = last blockNum). Works for both Reth and Erigon MDBX.
+func detectRethEndBlock(db kv.RoDB) uint64 {
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		return 0
+	}
+	defer tx.Rollback()
+
+	// Best source: TransactionBlocks last entry's value = highest blockNum.
+	cursor, err := tx.Cursor("TransactionBlocks")
+	if err == nil {
+		_, v, _ := cursor.Last()
+		cursor.Close()
+		if len(v) >= 8 {
+			bn := binary.LittleEndian.Uint64(v)
+			if bn > 0 && bn < 1<<32 {
+				return bn + 1
+			}
+		}
+	}
+
+	// Fallback: scan changeset tables.
+	for _, tbl := range []string{
+		"AccountChangeSets", "StorageChangeSets",
+		"AccountChangeSet", "StorageChangeSet",
+	} {
+		cursor, err := tx.Cursor(tbl)
+		if err != nil {
+			continue
+		}
+		k, _, _ := cursor.Last()
+		cursor.Close()
+		if len(k) < 8 {
+			continue
+		}
+		bnBE := binary.BigEndian.Uint64(k[:8])
+		bnLE := binary.LittleEndian.Uint64(k[:8])
+		bn := bnBE
+		if bnLE > 0 && bnLE < 1<<32 && (bnBE == 0 || bnBE > 1<<32) {
+			bn = bnLE
+		}
+		if bn > 0 && bn < 1<<32 {
+			return bn + 1
+		}
+	}
+	return 0
 }
