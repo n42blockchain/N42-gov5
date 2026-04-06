@@ -13,7 +13,7 @@ import (
 
 // TestAnalyzeAccountHistory profiles account history modification patterns.
 func TestAnalyzeAccountHistory(t *testing.T) {
-	db := openRethRO(t)
+	db := openErigonRO(t)
 	defer db.Close()
 
 	tx, err := db.BeginRo(t.Context())
@@ -84,8 +84,7 @@ func openRethRO(t *testing.T) kv.RoDB {
 }
 
 func TestAnalyzeStorageHistory(t *testing.T) {
-	// Use Reth DB which has real history data (Erigon data is incomplete).
-	db := openRethRO(t)
+	db := openErigonRO(t)
 	defer db.Close()
 
 	tx, err := db.BeginRo(t.Context())

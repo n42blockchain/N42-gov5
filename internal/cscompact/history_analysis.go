@@ -10,6 +10,7 @@
 package cscompact
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 
@@ -47,17 +48,19 @@ type HotKeyInfo struct {
 	Bytes uint64
 }
 
-// AnalyzeAccountHistory scans Erigon AccountsHistory table.
+// AnalyzeAccountHistory scans Erigon AccountHistory table.
+// Erigon v2.7: key = addr(20B) + shardId(8B), value = roaring64 bitmap.
 func AnalyzeAccountHistory(tx kv.Tx, sampleKeys uint64) (*HistoryAnalysis, error) {
-	return analyzeHistory(tx, "AccountsHistory", sampleKeys)
+	return analyzeHistory(tx, "AccountHistory", 20, sampleKeys)
 }
 
-// AnalyzeStorageHistory scans Erigon StoragesHistory table.
+// AnalyzeStorageHistory scans Erigon StorageHistory table.
+// Erigon v2.7: key = addr(20B) + slot(32B) + shardId(8B), value = roaring64 bitmap.
 func AnalyzeStorageHistory(tx kv.Tx, sampleKeys uint64) (*HistoryAnalysis, error) {
-	return analyzeHistory(tx, "StoragesHistory", sampleKeys)
+	return analyzeHistory(tx, "StorageHistory", 52, sampleKeys)
 }
 
-func analyzeHistory(tx kv.Tx, tableName string, sampleKeys uint64) (*HistoryAnalysis, error) {
+func analyzeHistory(tx kv.Tx, tableName string, prefixLen int, sampleKeys uint64) (*HistoryAnalysis, error) {
 	cursor, err := tx.Cursor(tableName)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", tableName, err)
@@ -135,11 +138,11 @@ func analyzeHistory(tx kv.Tx, tableName string, sampleKeys uint64) (*HistoryAnal
 		}
 		cursorEntries++
 
-		// Extract key prefix (without shardId suffix 8B).
-		if len(k) < 8 {
+		// Extract key prefix (addr or addr+slot, without shardId suffix 8B).
+		if len(k) < prefixLen+8 {
 			continue
 		}
-		prefix := string(k[:len(k)-8])
+		prefix := string(k[:prefixLen])
 
 		if current == nil || current.prefix != prefix {
 			processKey(current)
@@ -159,14 +162,14 @@ func analyzeHistory(tx kv.Tx, tableName string, sampleKeys uint64) (*HistoryAnal
 			}
 		}
 
-		// Reth/Erigon history values vary by version. Safely count block
-		// numbers by dividing value size by typical entry width.
-		// Most formats use 4 or 8 bytes per block number.
-		count := uint64(len(v)) / 4
-		if count == 0 {
-			count = 1
+		// Erigon v2.7: value is roaring64.Bitmap serialized via WriteTo/ReadFrom.
+		bm := roaring64.New()
+		if _, err := bm.ReadFrom(bytes.NewReader(v)); err == nil {
+			current.totalBits += bm.GetCardinality()
+		} else {
+			// Fallback: estimate from size.
+			current.totalBits += uint64(len(v)) / 4
 		}
-		current.totalBits += count
 		current.totalSize += uint64(len(k) + len(v))
 	}
 	processKey(current) // last key
