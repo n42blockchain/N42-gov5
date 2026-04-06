@@ -119,13 +119,23 @@ func (db *MdbxKV) discoverDBIs() error {
 		}
 		defer cursor.Close()
 
-		for k, _, err := cursor.Get(nil, nil, mdbx.First); err == nil && k != nil; k, _, err = cursor.Get(nil, nil, mdbx.Next) {
+		var lastErr error
+		count := 0
+		for k, _, err := cursor.Get(nil, nil, mdbx.First); k != nil; k, _, err = cursor.Get(nil, nil, mdbx.Next) {
+			if err != nil {
+				lastErr = err
+				break
+			}
 			name := string(k)
 			if _, exists := db.buckets[name]; !exists {
 				db.buckets[name] = kv.TableCfgItem{}
+				count++
+			}
+			if count > 500 { // sanity limit
+				break
 			}
 		}
-		return nil
+		return lastErr
 	})
 }
 

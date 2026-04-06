@@ -139,7 +139,7 @@ func (w *PlainStateWriter) wipeAccountStorage(addr types.Address) error {
 			cursor.Close()
 			return err
 		}
-		if len(k) < 20 || !bytes.HasPrefix(k[:20], prefix) {
+		if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
 			break
 		}
 		keysToDelete = append(keysToDelete, append([]byte{}, k...))

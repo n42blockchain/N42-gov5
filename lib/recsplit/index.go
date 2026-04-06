@@ -264,6 +264,9 @@ func (idx *Index) Close() {
 
 // OpenIndexFromBytes creates an Index from in-memory bytes without mmap.
 // The caller must keep data alive for the lifetime of the returned Index.
+// Note: parseData uses unsafe.Pointer to cast []byte to []uint64. Go's runtime
+// allocator aligns heap allocations to at least 8 bytes on 64-bit platforms,
+// so this is safe in practice. If used with non-heap data, ensure 8-byte alignment.
 func OpenIndexFromBytes(data []byte, name string) (*Index, error) {
 	idx := &Index{
 		fileName: name,
