@@ -177,7 +177,7 @@ func buildHistSegment(entries []histKeyData, idxPath string, startBlock, endBloc
 	if len(entries) == 0 {
 		logger := log2.New()
 		rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
-			KeyCount: 0, IndexFile: idxPath, TmpDir: os.TempDir(),
+			KeyCount: 0, BucketSize: 1, IndexFile: idxPath, TmpDir: os.TempDir(),
 		}, logger)
 		if err != nil {
 			return nil, err

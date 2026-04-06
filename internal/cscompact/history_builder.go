@@ -271,10 +271,14 @@ func (b *HistoryBuilder) buildDatBytes(entries []histKeyData) ([]byte, error) {
 // detectCSTable probes the MDBX for changeset table names.
 // Returns the correct table name (Erigon or Reth) and whether it uses LE byte order.
 func (b *HistoryBuilder) detectCSTable(ctx context.Context) string {
-	// Try Erigon names first (no 's'), then Reth names (with 's').
-	candidates := []string{"AccountChangeSet", "AccountChangeSets"}
+	// Try Reth names first (with 's'), then Erigon (no 's').
+	// Order matters: in Accede mode, non-existent DBI names silently
+	// fall back to the root DBI, returning bogus data. Reth tables
+	// are DupSort with small per-entry values (20B or 32B), while
+	// root DBI entries are large blobs (~4KB). Check Reth first.
+	candidates := []string{"AccountChangeSets", "AccountChangeSet"}
 	if b.keyLen == 52 {
-		candidates = []string{"StorageChangeSet", "StorageChangeSets"}
+		candidates = []string{"StorageChangeSets", "StorageChangeSet"}
 	}
 	tx, err := b.db.BeginRo(ctx)
 	if err != nil {
@@ -282,14 +286,21 @@ func (b *HistoryBuilder) detectCSTable(ctx context.Context) string {
 	}
 	defer tx.Rollback()
 	for _, tbl := range candidates {
-		cursor, err := tx.Cursor(tbl)
+		cursor, err := tx.CursorDupSort(tbl)
 		if err != nil {
+			// Not a DupSort table or doesn't exist — try next.
 			continue
 		}
-		k, _, _ := cursor.First()
+		k, v, _ := cursor.First()
 		cursor.Close()
-		if k != nil && len(k) >= 8 {
-			log.Info("Detected changeset table", "table", tbl, "keyLen", len(k))
+		if k == nil || len(k) < 8 {
+			continue
+		}
+		// Real changeset tables are DupSort with small values
+		// (addr=20B for account, slot=32B for storage).
+		// Root DBI fallback produces large blob values (~4KB).
+		if len(v) <= 64 {
+			log.Info("Detected changeset table", "table", tbl, "keyLen", len(k), "valLen", len(v))
 			return tbl
 		}
 	}
