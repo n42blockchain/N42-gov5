@@ -28,8 +28,8 @@ import (
 )
 
 const (
-	// CSSegmentSize is the number of blocks per changeset segment.
-	CSSegmentSize = 1_000_000
+	// CSSegmentSize aligns with header/body compact segments.
+	CSSegmentSize = 8192
 	csMaxFileSize = 2_000_000_000 // 2 GB
 )
 

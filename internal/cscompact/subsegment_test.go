@@ -34,7 +34,7 @@ func TestSubSegmentSizing(t *testing.T) {
 	defer dec.Close()
 
 	// Test different sub-segment sizes.
-	for _, subSegBlocks := range []int{1000, 5000, 10000, 50000, 100000} {
+	for _, subSegBlocks := range []int{1000, 5000, 8192, 10000, 50000, 100000} {
 		totalCompressed := 0
 		segCount := 0
 		var maxDecodeTime time.Duration
@@ -240,7 +240,7 @@ func TestCompressionStrategiesComparison(t *testing.T) {
 	// Sub-segment comparison.
 	t.Logf("")
 	t.Logf("=== Sub-segment sizing (tradeoff: ratio vs latency) ===")
-	for _, subBlocks := range []int{500, 1000, 2000, 5000, 10000} {
+	for _, subBlocks := range []int{500, 1000, 2000, 5000, 8192, 10000} {
 		totalComp := 0
 		segCount := 0
 		blockOffset := 0
