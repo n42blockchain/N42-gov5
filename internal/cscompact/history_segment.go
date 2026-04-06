@@ -1,0 +1,236 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+//
+// history_segment.go — read-only RecSplit-indexed history lookup.
+// Maps key(addr or addr+slot) → sorted block numbers where key changed.
+// 96.9% of storage keys are single-write → 1 varint blockNum.
+
+package cscompact
+
+import (
+	"encoding/binary"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/n42blockchain/N42/lib/recsplit"
+)
+
+const (
+	HistSegmentSize = 1_000_000 // blocks per history segment
+	histDatMagic    = "HV01"
+)
+
+// HistorySegment is a read-only RecSplit-indexed history segment.
+type HistorySegment struct {
+	startBlock uint64
+	endBlock   uint64
+	idx        *recsplit.Index
+	reader     *recsplit.IndexReader
+	dat        []byte   // mmap'd or loaded
+	datFile    *os.File
+	keyCount   uint64
+}
+
+// OpenHistorySegment opens idx + dat files for a history segment.
+func OpenHistorySegment(idxPath, datPath string) (*HistorySegment, error) {
+	idx, err := recsplit.OpenIndex(idxPath)
+	if err != nil {
+		return nil, fmt.Errorf("open idx: %w", err)
+	}
+
+	datFile, err := os.Open(datPath)
+	if err != nil {
+		idx.Close()
+		return nil, fmt.Errorf("open dat: %w", err)
+	}
+
+	fi, err := datFile.Stat()
+	if err != nil {
+		datFile.Close()
+		idx.Close()
+		return nil, err
+	}
+
+	dat := make([]byte, fi.Size())
+	if fi.Size() > 0 {
+		if _, err := datFile.ReadAt(dat, 0); err != nil {
+			datFile.Close()
+			idx.Close()
+			return nil, fmt.Errorf("read dat: %w", err)
+		}
+	}
+
+	// Parse header.
+	if len(dat) < 12 || string(dat[:4]) != histDatMagic {
+		datFile.Close()
+		idx.Close()
+		return nil, fmt.Errorf("invalid dat magic")
+	}
+	keyCount := binary.LittleEndian.Uint32(dat[4:8])
+	// flags := binary.LittleEndian.Uint32(dat[8:12]) // reserved
+
+	if uint64(keyCount) != idx.KeyCount() {
+		datFile.Close()
+		idx.Close()
+		return nil, fmt.Errorf("keyCount mismatch: dat=%d idx=%d", keyCount, idx.KeyCount())
+	}
+
+	startBlock := idx.BaseDataID()
+
+	return &HistorySegment{
+		startBlock: startBlock,
+		endBlock:   startBlock + HistSegmentSize,
+		idx:        idx,
+		reader:     recsplit.NewIndexReader(idx),
+		dat:        dat,
+		datFile:    datFile,
+		keyCount:   uint64(keyCount),
+	}, nil
+}
+
+// Lookup finds the largest block number <= blockNum where key changed.
+// Returns (foundBlock, true) or (0, false).
+func (s *HistorySegment) Lookup(key []byte, blockNum uint64) (uint64, bool) {
+	if s.idx.Empty() {
+		return 0, false
+	}
+
+	ordinal, found := s.reader.Lookup(key)
+	if !found {
+		return 0, false
+	}
+	if ordinal >= s.keyCount {
+		return 0, false
+	}
+
+	// Read adaptive value at ordinal's offset.
+	// Offset table: after 12B header, offsets[keyCount] × 4B LE.
+	offsetTableStart := uint64(12)
+	offsetPos := offsetTableStart + ordinal*4
+	if offsetPos+4 > uint64(len(s.dat)) {
+		return 0, false
+	}
+	dataOffset := binary.LittleEndian.Uint32(s.dat[offsetPos : offsetPos+4])
+	pos := int(dataOffset)
+
+	if pos >= len(s.dat) {
+		return 0, false
+	}
+
+	// Read writeCount.
+	count := int(s.dat[pos])
+	pos++
+	if count == 0xFF {
+		if pos+4 > len(s.dat) {
+			return 0, false
+		}
+		count = int(binary.LittleEndian.Uint32(s.dat[pos:]))
+		pos += 4
+	}
+
+	if count == 0 {
+		return 0, false
+	}
+
+	// Read block numbers (delta-encoded).
+	blocks := make([]uint64, 0, count)
+	prev := uint64(0)
+	for i := 0; i < count; i++ {
+		delta, n := binary.Uvarint(s.dat[pos:])
+		if n <= 0 {
+			break
+		}
+		pos += n
+		prev += delta
+		blocks = append(blocks, prev)
+	}
+
+	// Find largest block <= blockNum.
+	idx := sort.Search(len(blocks), func(i int) bool {
+		return blocks[i] > blockNum
+	}) - 1
+
+	if idx < 0 {
+		return 0, false
+	}
+	return blocks[idx], true
+}
+
+func (s *HistorySegment) KeyCount() uint64    { return s.keyCount }
+func (s *HistorySegment) StartBlock() uint64  { return s.startBlock }
+
+func (s *HistorySegment) Close() {
+	if s.idx != nil {
+		s.idx.Close()
+	}
+	if s.datFile != nil {
+		s.datFile.Close()
+	}
+}
+
+// HistSegmentFileName returns base name for a history segment.
+func HistSegmentFileName(prefix string, startBlock, endBlock uint64) string {
+	return fmt.Sprintf("%s.%06d-%06d", prefix, startBlock/1000, endBlock/1000)
+}
+
+// HistoryService provides tiered history lookup across segments.
+type HistoryService struct {
+	segmentDir string
+	prefix     string // "account_hist" or "storage_hist"
+	segments   []*HistorySegment
+}
+
+func NewHistoryService(dir, prefix string) (*HistoryService, error) {
+	s := &HistoryService{segmentDir: dir, prefix: prefix}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return s, nil
+		}
+		return nil, err
+	}
+
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".idx") || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		baseName := strings.TrimSuffix(e.Name(), ".idx")
+		idxPath := filepath.Join(dir, baseName+".idx")
+		datPath := filepath.Join(dir, baseName+".dat")
+
+		if _, err := os.Stat(datPath); err != nil {
+			continue
+		}
+		seg, err := OpenHistorySegment(idxPath, datPath)
+		if err != nil {
+			continue
+		}
+		s.segments = append(s.segments, seg)
+	}
+
+	// Sort newest first.
+	sort.Slice(s.segments, func(i, j int) bool {
+		return s.segments[i].startBlock > s.segments[j].startBlock
+	})
+	return s, nil
+}
+
+func (s *HistoryService) Lookup(key []byte, blockNum uint64) (uint64, bool) {
+	for _, seg := range s.segments {
+		if blockNum >= seg.startBlock && blockNum < seg.endBlock {
+			if b, ok := seg.Lookup(key, blockNum); ok {
+				return b, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func (s *HistoryService) Close() {
+	for _, seg := range s.segments {
+		seg.Close()
+	}
+}
