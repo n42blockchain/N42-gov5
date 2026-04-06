@@ -74,7 +74,6 @@ func TestSnapshotSyncIntegration(t *testing.T) {
 			Nonce:       1,
 			Balance:     *uint256.NewInt(0),
 			CodeHash:    contractCodeHash,
-			Incarnation: 1,
 		}
 		cData, err := contract.MarshalV2(), error(nil)
 		if err != nil {
@@ -88,7 +87,7 @@ func TestSnapshotSyncIntegration(t *testing.T) {
 		for i := 0; i < numStorageSlots; i++ {
 			sKey := make([]byte, 32)
 			sKey[31] = byte(i)
-			fullKey := modules.PlainGenerateCompositeStorageKey(contractAddr, 1, sKey)
+			fullKey := modules.PlainGenerateCompositeStorageKey(contractAddr, sKey)
 			val := make([]byte, 32)
 			val[0] = byte(i + 1)
 			if err := tx.Put(modules.Storage, fullKey, val); err != nil {
@@ -183,8 +182,8 @@ func TestSnapshotSyncIntegration(t *testing.T) {
 			prefix := req.Account
 			var k, v []byte
 			if len(req.Start) > 0 {
-				// Reconstruct full key: account(20) + incarnation(2) + start(32)
-				seekKey := modules.PlainGenerateCompositeStorageKey(req.Account, req.Incarnation, req.Start)
+				// Reconstruct full key: account(20) + start(32)
+				seekKey := modules.PlainGenerateCompositeStorageKey(req.Account, req.Start)
 				k, v, err = c.Seek(seekKey)
 			} else {
 				k, v, err = c.Seek(prefix)

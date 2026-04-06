@@ -84,7 +84,6 @@ func TestAccountEncodingRoundTrip(t *testing.T) {
 	original := &account.StateAccount{
 		Initialised: true,
 		Nonce:       42,
-		Incarnation: 3,
 	}
 	original.Balance.SetUint64(1000000)
 	original.CodeHash = types.BytesHash([]byte("code"))
@@ -108,9 +107,6 @@ func TestAccountEncodingRoundTrip(t *testing.T) {
 	if decoded.Balance.Cmp(&original.Balance) != 0 {
 		t.Fatalf("Balance mismatch: %v != %v", decoded.Balance, original.Balance)
 	}
-	if decoded.Incarnation != original.Incarnation {
-		t.Fatal("Incarnation mismatch")
-	}
 	if decoded.CodeHash != original.CodeHash {
 		t.Fatal("CodeHash mismatch")
 	}
@@ -125,7 +121,7 @@ func TestAccountEncodingZeroValues(t *testing.T) {
 	}
 	// V2 encoding: DecodeForStorageV2 calls Reset() which sets Initialised=true.
 	// All value fields should still be zero.
-	if decoded.Nonce != 0 || !decoded.Balance.IsZero() || decoded.Incarnation != 0 {
+	if decoded.Nonce != 0 || !decoded.Balance.IsZero() {
 		t.Fatal("zero account should decode to zero values")
 	}
 }
@@ -135,7 +131,6 @@ func TestAccountEncodingCompactness(t *testing.T) {
 	a := &account.StateAccount{
 		Initialised: true,
 		Nonce:       42,
-		Incarnation: 3,
 	}
 	a.Balance.SetUint64(1000000)
 	a.CodeHash = types.BytesHash([]byte("code"))

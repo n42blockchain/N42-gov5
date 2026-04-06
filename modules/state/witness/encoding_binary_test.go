@@ -517,7 +517,6 @@ func TestVerifyBlockStatelessWithExec_Valid(t *testing.T) {
 		Initialised: true,
 		Nonce:       1,
 		Balance:     *uint256.NewInt(1000),
-		Incarnation: 1,
 	}
 	acctValue := commitment.EncodeAccountValue(acct)
 
@@ -584,7 +583,6 @@ func TestVerifyBlockStateless_WithTxsParam(t *testing.T) {
 		Initialised: true,
 		Nonce:       5,
 		Balance:     *uint256.NewInt(500),
-		Incarnation: 1,
 	}
 	acctValue := commitment.EncodeAccountValue(acct)
 
