@@ -2,8 +2,7 @@
 // This file is part of the N42 library.
 //
 // reth_senders.go extracts pre-computed senders from Reth MDBX
-// TransactionSenders table and writes them as batch-64 compressed
-// chain/senders.cidx + senders.NNNN.cdat files.
+// TransactionSenders table and writes batch-64 compressed segments.
 //
 // Reth format: TransactionSenders key=txNum(8B LE), value=sender(20B)
 // TransactionBlocks key=txNum(8B LE), value=blockNum(8B LE) (sparse)
@@ -14,7 +13,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -35,30 +33,21 @@ func NewRethSenderExporter(db kv.RoDB, outputDir string) *RethSenderExporter {
 	return &RethSenderExporter{db: db, outputDir: outputDir}
 }
 
-// txBlockEntry for the sorted TransactionBlocks lookup.
-type txBlockEntry struct {
-	txNum    uint64
-	blockNum uint64
-}
-
 func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock uint64) error {
 	t0 := time.Now()
 
-	// 1. Load TransactionBlocks (sparse txNum→blockNum mapping).
-	txBlocks, err := e.loadTxBlocks(ctx)
+	txBlocks, err := cscompact.LoadTransactionBlocks(e.db, ctx)
 	if err != nil {
 		return fmt.Errorf("load TransactionBlocks: %w", err)
 	}
 	log.Info("TransactionBlocks loaded", "entries", len(txBlocks))
 
-	// 2. Open segment store for output.
 	store, err := cscompact.NewSegmentStoreWriter(e.outputDir, "senders")
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	// Resume.
 	existingSegs := store.SegmentCount()
 	if existingSegs > 0 {
 		resumeBlock := existingSegs * uint64(freezer.BatchSize)
@@ -68,7 +57,6 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 		}
 	}
 
-	// 3. Scan TransactionSenders, group by block, write batches.
 	tx, err := e.db.BeginRo(ctx)
 	if err != nil {
 		return err
@@ -84,16 +72,15 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 	enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
 	defer enc.Close()
 
-	// Accumulate senders per block, flush in batch-64.
-	type blockSenders struct {
-		blockNum uint64
-		senders  []byte // concatenated 20B addresses
-	}
-
 	var batch [][]byte
-	var currentBlock uint64
 	var currentSenders []byte
+	var prevBlockNum uint64
 	var totalBlocks, totalTx uint64
+	first := true
+
+	// Linear advance through txBlocks instead of binary search per entry.
+	// txBlocks is sorted by txNum; cursor iterates txNum in order.
+	txBlockIdx := 0
 
 	flushBatch := func() error {
 		if len(batch) == 0 {
@@ -108,21 +95,16 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 	}
 
 	finishBlock := func() {
-		if currentBlock >= startBlock && currentBlock < endBlock {
+		if currentBlock := prevBlockNum; currentBlock >= startBlock && currentBlock < endBlock {
 			batch = append(batch, append([]byte{}, currentSenders...))
 			totalBlocks++
 			if len(batch) >= freezer.BatchSize {
-				if err := flushBatch(); err != nil {
-					log.Warn("flush error", "err", err)
-				}
+				flushBatch()
 			}
 		}
 		currentSenders = currentSenders[:0]
 	}
 
-	// Iterate all senders sequentially (txNum order).
-	prevBlockNum := uint64(0)
-	first := true
 	for k, v, err := cursor.First(); k != nil; k, v, err = cursor.Next() {
 		if err != nil {
 			return err
@@ -135,7 +117,15 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 		}
 
 		txNum := binary.LittleEndian.Uint64(k)
-		blockNum := txNumToBlock(txBlocks, txNum)
+
+		// Linear advance: move txBlockIdx forward until txBlocks[txBlockIdx+1].TxNum > txNum.
+		for txBlockIdx+1 < len(txBlocks) && txBlocks[txBlockIdx+1].TxNum <= txNum {
+			txBlockIdx++
+		}
+		var blockNum uint64
+		if txBlockIdx < len(txBlocks) {
+			blockNum = txBlocks[txBlockIdx].BlockNum
+		}
 
 		if blockNum >= endBlock {
 			break
@@ -145,11 +135,11 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 			if !first {
 				finishBlock()
 			}
-			// Fill empty blocks between prevBlockNum and blockNum.
+			// Fill empty blocks.
 			if !first && blockNum > prevBlockNum+1 {
 				for gap := prevBlockNum + 1; gap < blockNum && gap < endBlock; gap++ {
 					if gap >= startBlock {
-						batch = append(batch, nil) // empty block
+						batch = append(batch, nil)
 						totalBlocks++
 						if len(batch) >= freezer.BatchSize {
 							flushBatch()
@@ -157,7 +147,6 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 					}
 				}
 			}
-			currentBlock = blockNum
 			prevBlockNum = blockNum
 			first = false
 		}
@@ -174,13 +163,10 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 		}
 	}
 
-	// Finish last block + flush remaining.
 	if len(currentSenders) > 0 || !first {
 		finishBlock()
 	}
-	if err := flushBatch(); err != nil {
-		return err
-	}
+	flushBatch()
 
 	elapsed := time.Since(t0)
 	log.Info("Senders export complete",
@@ -189,46 +175,4 @@ func (e *RethSenderExporter) Export(ctx context.Context, startBlock, endBlock ui
 		"segments", store.SegmentCount(),
 		"elapsed", elapsed.Truncate(time.Second))
 	return nil
-}
-
-func (e *RethSenderExporter) loadTxBlocks(ctx context.Context) ([]txBlockEntry, error) {
-	tx, err := e.db.BeginRo(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	cursor, err := tx.Cursor("TransactionBlocks")
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close()
-
-	var entries []txBlockEntry
-	for k, v, err := cursor.First(); k != nil; k, v, err = cursor.Next() {
-		if err != nil {
-			return nil, err
-		}
-		if len(k) < 8 || len(v) < 8 {
-			continue
-		}
-		entries = append(entries, txBlockEntry{
-			txNum:    binary.LittleEndian.Uint64(k),
-			blockNum: binary.LittleEndian.Uint64(v),
-		})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].txNum < entries[j].txNum
-	})
-	return entries, nil
-}
-
-func txNumToBlock(txBlocks []txBlockEntry, txNum uint64) uint64 {
-	idx := sort.Search(len(txBlocks), func(i int) bool {
-		return txBlocks[i].txNum > txNum
-	}) - 1
-	if idx < 0 {
-		return 0
-	}
-	return txBlocks[idx].blockNum
 }

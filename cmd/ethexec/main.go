@@ -459,12 +459,7 @@ func runCSCompact(c *cli.Context) error {
 				continue
 			}
 			// Detect byte order: Erigon uses BE, Reth uses LE.
-			bnBE := binary.BigEndian.Uint64(k[:8])
-			bnLE := binary.LittleEndian.Uint64(k[:8])
-			bn := bnBE
-			if bnLE > 0 && bnLE < 1<<32 && (bnBE == 0 || bnBE > 1<<32) {
-				bn = bnLE // Reth LE format
-			}
+			bn := cscompact.DetectBlockNum(k)
 			log.Info("Table last key", "table", tbl, "keyLen", len(k), "blockNum", bn)
 			if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
 				endBlock = bn + 1
@@ -527,12 +522,7 @@ func runHistoryBuild(c *cli.Context) error {
 			if len(k) < 8 {
 				continue
 			}
-			bnBE := binary.BigEndian.Uint64(k[:8])
-			bnLE := binary.LittleEndian.Uint64(k[:8])
-			bn := bnBE
-			if bnLE > 0 && bnLE < 1<<32 && (bnBE == 0 || bnBE > 1<<32) {
-				bn = bnLE
-			}
+			bn := cscompact.DetectBlockNum(k)
 			if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
 				endBlock = bn + 1
 			}
@@ -809,12 +799,7 @@ func detectRethEndBlock(db kv.RoDB) uint64 {
 		if len(k) < 8 {
 			continue
 		}
-		bnBE := binary.BigEndian.Uint64(k[:8])
-		bnLE := binary.LittleEndian.Uint64(k[:8])
-		bn := bnBE
-		if bnLE > 0 && bnLE < 1<<32 && (bnBE == 0 || bnBE > 1<<32) {
-			bn = bnLE
-		}
+		bn := cscompact.DetectBlockNum(k)
 		if bn > 0 && bn < 1<<32 {
 			return bn + 1
 		}
