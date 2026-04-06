@@ -138,7 +138,8 @@ func main() {
 				Name:  "txlookup-build",
 				Usage: "Build RecSplit segments for tx hash → block number lookup",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory"},
+					&cli.StringFlag{Name: "erigon-db", Usage: "Path to Reth/Erigon MDBX (reads TransactionHashNumbers)"},
 					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
 					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
@@ -569,10 +570,60 @@ func runHistoryBuild(c *cli.Context) error {
 
 func runTxLookupBuild(c *cli.Context) error {
 	ancientPath := c.String("ancient")
+	erigonDB := c.String("erigon-db")
 	datadir := c.String("datadir")
 	startBlock := c.Uint64("start")
 	endBlock := c.Uint64("end")
 
+	outputDir := filepath.Join(datadir, "chain")
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	// Reth/Erigon MDBX path — read from TransactionHashNumbers + TransactionBlocks.
+	if erigonDB != "" {
+		logger := log2.New()
+		db, err := mdbx.NewMDBX(logger).
+			Path(erigonDB).Label(kv.ChainDB).Readonly().Accede().
+			DBVerbosity(kv.DBVerbosityLvl(2)).
+			Open(context.Background())
+		if err != nil {
+			return fmt.Errorf("open mdbx: %w", err)
+		}
+		defer db.Close()
+		log.Info("MDBX opened READ-ONLY for txindex", "path", erigonDB)
+
+		if endBlock == 0 {
+			// Detect from BlockBodyIndices or TransactionBlocks.
+			tx, _ := db.BeginRo(context.Background())
+			for _, tbl := range []string{"BlockBodyIndices", "CanonicalHeaders"} {
+				cursor, err := tx.Cursor(tbl)
+				if err != nil {
+					continue
+				}
+				k, _, _ := cursor.Last()
+				cursor.Close()
+				if len(k) >= 8 {
+					bn := binary.LittleEndian.Uint64(k[:8])
+					if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
+						endBlock = bn + 1
+					}
+				}
+			}
+			tx.Rollback()
+			if endBlock == 0 {
+				return fmt.Errorf("cannot detect end block from MDBX")
+			}
+			log.Info("Detected end block", "endBlock", endBlock)
+		}
+
+		builder := txlookup.NewRethBuilder(db, outputDir)
+		return builder.BuildRange(ctx, startBlock, endBlock)
+	}
+
+	// Geth ancient freezer path.
+	if ancientPath == "" {
+		return fmt.Errorf("--ancient or --erigon-db is required")
+	}
 	f, err := freezer.New(ancientPath, 0)
 	if err != nil {
 		return fmt.Errorf("open input freezer: %w", err)
@@ -584,11 +635,7 @@ func runTxLookupBuild(c *cli.Context) error {
 		endBlock = f.Frozen()
 	}
 
-	outputDir := filepath.Join(datadir, "chain")
 	builder := txlookup.NewSegmentBuilder(f, outputDir)
-
-	ctx, cancel := withShutdown()
-	defer cancel()
 	return builder.BuildRange(ctx, startBlock, endBlock)
 }
 
