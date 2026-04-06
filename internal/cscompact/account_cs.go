@@ -299,3 +299,214 @@ func appendVarint(buf []byte, v uint64) []byte {
 	n := binary.PutUvarint(tmp[:], v)
 	return append(buf, tmp[:n]...)
 }
+
+// DecodeAccountCSSegment decompresses and decodes a segment.
+// Returns entries in original order + per-block entry counts.
+func DecodeAccountCSSegment(compressed []byte, dec *zstd.Decoder) (
+	[]AccountCSEntry, []uint32, error,
+) {
+	raw, err := dec.DecodeAll(compressed, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("zstd decompress: %w", err)
+	}
+	if len(raw) < 4 {
+		return nil, nil, fmt.Errorf("segment too short: %d", len(raw))
+	}
+	pos := 0
+
+	// Block count.
+	blockCount := int(binary.LittleEndian.Uint32(raw[pos : pos+4]))
+	pos += 4
+
+	// Entries per block.
+	entriesPerBlock := make([]uint32, blockCount)
+	totalEntries := 0
+	for i := 0; i < blockCount; i++ {
+		v, n := binary.Uvarint(raw[pos:])
+		if n <= 0 {
+			return nil, nil, fmt.Errorf("bad varint at block %d", i)
+		}
+		pos += n
+		entriesPerBlock[i] = uint32(v)
+		totalEntries += int(v)
+	}
+
+	entries := make([]AccountCSEntry, totalEntries)
+
+	// Address column.
+	if pos >= len(raw) {
+		return nil, nil, fmt.Errorf("truncated at addr mode")
+	}
+	mode := raw[pos]
+	pos++
+
+	if mode == 1 {
+		// Dictionary mode.
+		dictLen, n := binary.Uvarint(raw[pos:])
+		if n <= 0 {
+			return nil, nil, fmt.Errorf("bad dict len")
+		}
+		pos += n
+		dict := make([]types.Address, dictLen)
+		for i := uint64(0); i < dictLen; i++ {
+			if pos+20 > len(raw) {
+				return nil, nil, fmt.Errorf("truncated dict")
+			}
+			copy(dict[i][:], raw[pos:pos+20])
+			pos += 20
+		}
+		for i := 0; i < totalEntries; i++ {
+			idx, n := binary.Uvarint(raw[pos:])
+			if n <= 0 {
+				return nil, nil, fmt.Errorf("bad addr index")
+			}
+			pos += n
+			if idx >= dictLen {
+				return nil, nil, fmt.Errorf("addr index out of range")
+			}
+			entries[i].Address = dict[idx]
+		}
+	} else {
+		// Raw mode.
+		for i := 0; i < totalEntries; i++ {
+			if pos+20 > len(raw) {
+				return nil, nil, fmt.Errorf("truncated raw addr")
+			}
+			copy(entries[i].Address[:], raw[pos:pos+20])
+			pos += 20
+		}
+	}
+
+	// Old value column.
+	for i := 0; i < totalEntries; i++ {
+		if pos >= len(raw) {
+			return nil, nil, fmt.Errorf("truncated at value %d", i)
+		}
+		valLen := int(raw[pos])
+		pos++
+		if valLen > 0 {
+			if pos+valLen > len(raw) {
+				return nil, nil, fmt.Errorf("truncated value %d", i)
+			}
+			entries[i].OldValue = make([]byte, valLen)
+			copy(entries[i].OldValue, raw[pos:pos+valLen])
+			pos += valLen
+		}
+	}
+
+	return entries, entriesPerBlock, nil
+}
+
+// AccountCSReader provides segment-cached access to compressed changesets.
+type AccountCSReader struct {
+	dir       string
+	idxFile   *os.File
+	dec       *zstd.Decoder
+	segments  uint64
+	dataFiles map[uint16]*os.File
+
+	cachedSeg     int64
+	cachedEntries []AccountCSEntry
+	cachedPerBlk  []uint32
+}
+
+func OpenAccountCS(dir string) (*AccountCSReader, error) {
+	idxPath := filepath.Join(dir, "account_cs.idx")
+	idf, err := os.Open(idxPath)
+	if err != nil {
+		return nil, err
+	}
+	fi, _ := idf.Stat()
+	dec, err := zstd.NewReader(nil)
+	if err != nil {
+		idf.Close()
+		return nil, err
+	}
+	return &AccountCSReader{
+		dir:       dir,
+		idxFile:   idf,
+		dec:       dec,
+		segments:  uint64(fi.Size()) / 8,
+		dataFiles: make(map[uint16]*os.File),
+		cachedSeg: -1,
+	}, nil
+}
+
+func (r *AccountCSReader) Close() {
+	r.dec.Close()
+	r.idxFile.Close()
+	for _, f := range r.dataFiles {
+		f.Close()
+	}
+}
+
+// ReadBlock returns changeset entries for a specific block.
+func (r *AccountCSReader) ReadBlock(blockNum uint64) ([]AccountCSEntry, error) {
+	segNum := int64(blockNum / CSSegmentSize)
+	relBlock := int(blockNum % CSSegmentSize)
+
+	if segNum != r.cachedSeg {
+		if err := r.loadSegment(segNum); err != nil {
+			return nil, err
+		}
+	}
+
+	// Find entries for this block using entriesPerBlock.
+	offset := 0
+	for i := 0; i < relBlock && i < len(r.cachedPerBlk); i++ {
+		offset += int(r.cachedPerBlk[i])
+	}
+	if relBlock >= len(r.cachedPerBlk) {
+		return nil, nil
+	}
+	count := int(r.cachedPerBlk[relBlock])
+	if offset+count > len(r.cachedEntries) {
+		return nil, fmt.Errorf("entry range out of bounds")
+	}
+	return r.cachedEntries[offset : offset+count], nil
+}
+
+func (r *AccountCSReader) loadSegment(segNum int64) error {
+	if uint64(segNum) >= r.segments {
+		return fmt.Errorf("segment %d out of range (%d)", segNum, r.segments)
+	}
+
+	var entryBuf [8]byte
+	if _, err := r.idxFile.ReadAt(entryBuf[:], segNum*8); err != nil {
+		return err
+	}
+	fileNum := binary.LittleEndian.Uint16(entryBuf[0:2])
+	offset := binary.LittleEndian.Uint32(entryBuf[4:8])
+
+	df, ok := r.dataFiles[fileNum]
+	if !ok {
+		path := filepath.Join(r.dir, fmt.Sprintf("account_cs.%04d.dat", fileNum))
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		r.dataFiles[fileNum] = f
+		df = f
+	}
+
+	var sizeBuf [4]byte
+	if _, err := df.ReadAt(sizeBuf[:], int64(offset)); err != nil {
+		return err
+	}
+	compSize := binary.LittleEndian.Uint32(sizeBuf[:])
+
+	compressed := make([]byte, compSize)
+	if _, err := df.ReadAt(compressed, int64(offset)+4); err != nil {
+		return err
+	}
+
+	entries, perBlock, err := DecodeAccountCSSegment(compressed, r.dec)
+	if err != nil {
+		return err
+	}
+
+	r.cachedSeg = segNum
+	r.cachedEntries = entries
+	r.cachedPerBlk = perBlock
+	return nil
+}
