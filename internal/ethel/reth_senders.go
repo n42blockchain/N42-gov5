@@ -4,8 +4,8 @@
 // reth_senders.go extracts pre-computed senders from Reth MDBX
 // TransactionSenders table and writes batch-64 compressed segments.
 //
-// Reth format: TransactionSenders key=txNum(8B LE), value=sender(20B)
-// TransactionBlocks key=txNum(8B LE), value=blockNum(8B LE) (sparse)
+// Reth format: TransactionSenders key=txNum(8B BE), value=sender(20B)
+// TransactionBlocks key=txNum(8B BE), value=blockNum(8B BE) (sparse)
 
 package ethel
 

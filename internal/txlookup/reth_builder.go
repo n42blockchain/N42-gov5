@@ -80,19 +80,22 @@ func (b *RethBuilder) BuildRange(ctx context.Context, startBlock, endBlock uint6
 // txnBlocks is sorted by TxNum, and BlockNum is monotonically increasing
 // (each entry = first tx of a new block), so both fields are co-sorted.
 func txNumRange(txnBlocks []cscompact.TxBlockEntry, startBlock, endBlock uint64) (uint64, uint64) {
-	var minTxNum, maxTxNum uint64
-	foundMin := false
-	for _, e := range txnBlocks {
-		if !foundMin && e.BlockNum >= startBlock {
-			minTxNum = e.TxNum
-			foundMin = true
-		}
-		if e.BlockNum >= endBlock {
-			maxTxNum = e.TxNum
-			break
-		}
+	// Binary search: both TxNum and BlockNum are co-sorted (monotonic).
+	startIdx := sort.Search(len(txnBlocks), func(i int) bool {
+		return txnBlocks[i].BlockNum >= startBlock
+	})
+	endIdx := sort.Search(len(txnBlocks), func(i int) bool {
+		return txnBlocks[i].BlockNum >= endBlock
+	})
+
+	var minTxNum uint64
+	if startIdx < len(txnBlocks) {
+		minTxNum = txnBlocks[startIdx].TxNum
 	}
-	if maxTxNum == 0 && len(txnBlocks) > 0 {
+	var maxTxNum uint64
+	if endIdx < len(txnBlocks) {
+		maxTxNum = txnBlocks[endIdx].TxNum
+	} else if len(txnBlocks) > 0 {
 		maxTxNum = txnBlocks[len(txnBlocks)-1].TxNum + 100_000_000
 	}
 	return minTxNum, maxTxNum
