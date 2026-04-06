@@ -439,20 +439,26 @@ func runCSCompact(c *cli.Context) error {
 		if err != nil {
 			return err
 		}
-		// Find max block in AccountChangeSet.
-		cursor, err := tx.Cursor(cscompact.ErigonAccountChangeSet)
-		if err != nil {
-			tx.Rollback()
-			return err
+		// Try multiple table names to find max block.
+		for _, tbl := range []string{"AccountChangeSet", "AccountHistory", "AccountsHistory"} {
+			cursor, err := tx.Cursor(tbl)
+			if err != nil {
+				continue
+			}
+			k, _, _ := cursor.Last()
+			cursor.Close()
+			if len(k) >= 8 {
+				bn := binary.BigEndian.Uint64(k[:8])
+				if bn > endBlock {
+					endBlock = bn + 1
+					log.Info("Detected end block", "table", tbl, "endBlock", endBlock)
+				}
+			}
 		}
-		k, _, err := cursor.Last()
-		cursor.Close()
 		tx.Rollback()
-		if err != nil || len(k) < 8 {
-			return fmt.Errorf("cannot determine end block: %w", err)
+		if endBlock == 0 {
+			return fmt.Errorf("cannot determine end block from any history table")
 		}
-		endBlock = binary.BigEndian.Uint64(k[:8]) + 1
-		log.Info("Detected end block", "endBlock", endBlock)
 	}
 
 	outputDir := filepath.Join(datadir, "cscompact")
