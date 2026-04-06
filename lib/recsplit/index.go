@@ -131,6 +131,14 @@ func OpenIndex(indexFilePath string) (*Index, error) {
 	idx.data = idx.mmapHandle1[:idx.size]
 	defer idx.EnableReadAhead().DisableReadAhead()
 
+	if err := idx.parseData(fName); err != nil {
+		return nil, err
+	}
+	return idx, nil
+}
+
+// parseData parses the index data structure from idx.data (already set by caller).
+func (idx *Index) parseData(fName string) error {
 	// Read number of keys and bytes per record
 	idx.baseDataID = binary.BigEndian.Uint64(idx.data[:8])
 	idx.keyCount = binary.BigEndian.Uint64(idx.data[8:16])
@@ -139,7 +147,7 @@ func OpenIndex(indexFilePath string) (*Index, error) {
 	offset := 16 + 1 + int(idx.keyCount)*idx.bytesPerRec
 
 	if offset < 0 {
-		return nil, fmt.Errorf("file %s %w. offset is: %d which is below zero", fName, IncompatibleErr, offset)
+		return fmt.Errorf("file %s %w. offset is: %d which is below zero", fName, IncompatibleErr, offset)
 	}
 
 	// Bucket count, bucketSize, leafSize
@@ -168,7 +176,7 @@ func OpenIndex(indexFilePath string) (*Index, error) {
 	}
 	features := Features(idx.data[offset])
 	if err := onlyKnownFeatures(features); err != nil {
-		return nil, fmt.Errorf("file %s %w", fName, err)
+		return fmt.Errorf("file %s %w", fName, err)
 	}
 
 	idx.enums = features&Enums != No
@@ -183,7 +191,7 @@ func OpenIndex(indexFilePath string) (*Index, error) {
 			arrSz := binary.BigEndian.Uint64(idx.data[offset:])
 			offset += 8
 			if arrSz != idx.keyCount {
-				return nil, fmt.Errorf("%w. size of existence filter %d != keys count %d", IncompatibleErr, arrSz, idx.keyCount)
+				return fmt.Errorf("%w. size of existence filter %d != keys count %d", IncompatibleErr, arrSz, idx.keyCount)
 			}
 			idx.existence = idx.data[offset : offset+int(arrSz)]
 			offset += int(arrSz)
@@ -215,7 +223,7 @@ func OpenIndex(indexFilePath string) (*Index, error) {
 			return NewIndexReader(idx)
 		},
 	}
-	return idx, nil
+	return nil
 }
 
 func onlyKnownFeatures(features Features) error {
@@ -252,6 +260,22 @@ func (idx *Index) Close() {
 		}
 		idx.f = nil
 	}
+}
+
+// OpenIndexFromBytes creates an Index from in-memory bytes without mmap.
+// The caller must keep data alive for the lifetime of the returned Index.
+func OpenIndexFromBytes(data []byte, name string) (*Index, error) {
+	idx := &Index{
+		fileName: name,
+		size:     int64(len(data)),
+	}
+	// Keep a reference to prevent GC. data is NOT mmap'd — caller owns it.
+	idx.data = data
+
+	if err := idx.parseData(name); err != nil {
+		return nil, err
+	}
+	return idx, nil
 }
 
 func (idx *Index) skipBits(m uint16) int {
