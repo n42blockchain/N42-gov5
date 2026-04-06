@@ -165,6 +165,17 @@ func main() {
 				},
 				Action: runCSCompact,
 			},
+			{
+				Name:  "history-build",
+				Usage: "Build RecSplit history segments from Erigon MDBX (READ-ONLY)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "erigon-db", Usage: "Path to Erigon chaindata directory", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
+					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
+					&cli.Uint64Flag{Name: "end", Usage: "End block (0=auto)", Value: 0},
+				},
+				Action: runHistoryBuild,
+			},
 		},
 	}
 
@@ -459,6 +470,51 @@ func runCSCompact(c *cli.Context) error {
 	log.Info("=== StorageCS compression ===")
 	stoComp := cscompact.NewStorageCSCompactor(db, outputDir)
 	return stoComp.Run(ctx, startBlock, endBlock)
+}
+
+func runHistoryBuild(c *cli.Context) error {
+	erigonDB := c.String("erigon-db")
+	datadir := c.String("datadir")
+	startBlock := c.Uint64("start")
+	endBlock := c.Uint64("end")
+
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(erigonDB).Label(kv.ChainDB).Readonly().Accede().
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open erigon mdbx: %w", err)
+	}
+	defer db.Close()
+	log.Info("Erigon MDBX opened READ-ONLY", "path", erigonDB)
+
+	if endBlock == 0 {
+		tx, _ := db.BeginRo(context.Background())
+		cursor, _ := tx.Cursor("AccountHistory")
+		k, _, _ := cursor.Last()
+		cursor.Close()
+		tx.Rollback()
+		if len(k) >= 28 {
+			endBlock = binary.BigEndian.Uint64(k[20:28]) + 1
+		}
+		log.Info("Detected end block", "endBlock", endBlock)
+	}
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	histDir := filepath.Join(datadir, "history")
+
+	log.Info("=== Account History ===")
+	accBuilder := cscompact.NewAccountHistoryBuilder(db, histDir)
+	if err := accBuilder.BuildRange(ctx, startBlock, endBlock); err != nil {
+		return fmt.Errorf("account history: %w", err)
+	}
+
+	log.Info("=== Storage History ===")
+	stoBuilder := cscompact.NewStorageHistoryBuilder(db, histDir)
+	return stoBuilder.BuildRange(ctx, startBlock, endBlock)
 }
 
 func runTxLookupBuild(c *cli.Context) error {
