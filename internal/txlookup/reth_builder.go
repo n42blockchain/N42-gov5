@@ -32,7 +32,6 @@ func NewRethBuilder(db kv.RoDB, outputDir string) *RethBuilder {
 	return &RethBuilder{db: db, outputDir: outputDir}
 }
 
-// BuildRange builds txindex segments from Reth TransactionHashNumbers table.
 func (b *RethBuilder) BuildRange(ctx context.Context, startBlock, endBlock uint64) error {
 	store, err := cscompact.NewSegmentStoreWriter(b.outputDir, "txindex")
 	if err != nil {
@@ -47,13 +46,13 @@ func (b *RethBuilder) BuildRange(ctx context.Context, startBlock, endBlock uint6
 		log.Info("Resuming txindex build from Reth", "from", startBlock, "segments", existingSegs)
 	}
 
-	// Load TransactionBlocks index (txNum → blockNum, sparse).
-	txnBlocks, err := b.loadTxnBlocks(ctx)
+	txnBlocks, err := cscompact.LoadTransactionBlocks(b.db, ctx)
 	if err != nil {
 		return fmt.Errorf("load TransactionBlocks: %w", err)
 	}
 	log.Info("TransactionBlocks loaded", "entries", len(txnBlocks))
 
+	// Compute txNum range for each segment to avoid full-table scan.
 	for segStart := (startBlock / SegmentSize) * SegmentSize; segStart < endBlock; segStart += SegmentSize {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -77,59 +76,35 @@ func (b *RethBuilder) BuildRange(ctx context.Context, startBlock, endBlock uint6
 	return nil
 }
 
-// txnBlockEntry is a sorted entry for binary search: txNum → blockNum.
-type txnBlockEntry struct {
-	txNum    uint64
-	blockNum uint64
-}
-
-// loadTxnBlocks reads the TransactionBlocks table into a sorted slice.
-func (b *RethBuilder) loadTxnBlocks(ctx context.Context) ([]txnBlockEntry, error) {
-	tx, err := b.db.BeginRo(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	cursor, err := tx.Cursor("TransactionBlocks")
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close()
-
-	var entries []txnBlockEntry
-	for k, v, err := cursor.First(); k != nil; k, v, err = cursor.Next() {
-		if err != nil {
-			return nil, err
-		}
-		if len(k) < 8 || len(v) < 8 {
-			continue
-		}
-		txNum := binary.LittleEndian.Uint64(k)
-		blockNum := binary.LittleEndian.Uint64(v)
-		entries = append(entries, txnBlockEntry{txNum: txNum, blockNum: blockNum})
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].txNum < entries[j].txNum
+// txNumRange returns the [minTxNum, maxTxNum) range for a block range.
+func txNumRange(txnBlocks []cscompact.TxBlockEntry, startBlock, endBlock uint64) (uint64, uint64) {
+	// Find first txNum >= startBlock.
+	startIdx := sort.Search(len(txnBlocks), func(i int) bool {
+		return txnBlocks[i].BlockNum >= startBlock
 	})
-	return entries, nil
-}
-
-// txNumToBlockNum does binary search to find blockNum for a given txNum.
-func txNumToBlockNum(txnBlocks []txnBlockEntry, txNum uint64) uint64 {
-	idx := sort.Search(len(txnBlocks), func(i int) bool {
-		return txnBlocks[i].txNum > txNum
-	}) - 1
-	if idx < 0 {
-		return 0
+	var minTxNum uint64
+	if startIdx < len(txnBlocks) {
+		minTxNum = txnBlocks[startIdx].TxNum
 	}
-	return txnBlocks[idx].blockNum
+	// Find first txNum >= endBlock.
+	endIdx := sort.Search(len(txnBlocks), func(i int) bool {
+		return txnBlocks[i].BlockNum >= endBlock
+	})
+	var maxTxNum uint64
+	if endIdx < len(txnBlocks) {
+		maxTxNum = txnBlocks[endIdx].TxNum
+	} else if len(txnBlocks) > 0 {
+		maxTxNum = txnBlocks[len(txnBlocks)-1].TxNum + 100_000_000 // upper bound
+	}
+	return minTxNum, maxTxNum
 }
 
-func (b *RethBuilder) buildOneFromReth(ctx context.Context, startBlock, endBlock uint64, idxPath string, txnBlocks []txnBlockEntry) ([]byte, error) {
+func (b *RethBuilder) buildOneFromReth(ctx context.Context, startBlock, endBlock uint64, idxPath string, txnBlocks []cscompact.TxBlockEntry) ([]byte, error) {
 	t0 := time.Now()
 	blockCount := endBlock - startBlock
+
+	// Compute txNum range to limit scan scope.
+	minTxNum, maxTxNum := txNumRange(txnBlocks, startBlock, endBlock)
 
 	tx, err := b.db.BeginRo(ctx)
 	if err != nil {
@@ -143,7 +118,6 @@ func (b *RethBuilder) buildOneFromReth(ctx context.Context, startBlock, endBlock
 	}
 	defer cursor.Close()
 
-	// Collect all txHash→blockNum pairs in the block range.
 	type txEntry struct {
 		hash     [32]byte
 		blockNum uint64
@@ -152,6 +126,8 @@ func (b *RethBuilder) buildOneFromReth(ctx context.Context, startBlock, endBlock
 	var txEntries []txEntry
 	txPerBlock := make(map[uint64]uint32)
 
+	// Scan all entries (hash-ordered, no range seek possible).
+	// But skip entries outside [minTxNum, maxTxNum) using txNum from value.
 	for k, v, err := cursor.First(); k != nil; k, v, err = cursor.Next() {
 		if err != nil {
 			return nil, err
@@ -163,7 +139,11 @@ func (b *RethBuilder) buildOneFromReth(ctx context.Context, startBlock, endBlock
 			continue
 		}
 		txNum := binary.LittleEndian.Uint64(v)
-		blockNum := txNumToBlockNum(txnBlocks, txNum)
+		// Fast filter by txNum range before expensive binary search.
+		if txNum < minTxNum || txNum >= maxTxNum {
+			continue
+		}
+		blockNum := cscompact.TxNumToBlockNum(txnBlocks, txNum)
 		if blockNum < startBlock || blockNum >= endBlock {
 			continue
 		}
@@ -194,12 +174,10 @@ func (b *RethBuilder) buildOneFromReth(ctx context.Context, startBlock, endBlock
 		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
 		"txCount", totalTx)
 
-	// Sort by hash for RecSplit (deterministic ordering).
 	sort.Slice(txEntries, func(i, j int) bool {
 		return string(txEntries[i].hash[:]) < string(txEntries[j].hash[:])
 	})
 
-	// Build RecSplit.
 	logger := log2.New()
 	rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
 		KeyCount:           totalTx,
@@ -223,7 +201,6 @@ func (b *RethBuilder) buildOneFromReth(ctx context.Context, startBlock, endBlock
 		return nil, err
 	}
 
-	// Build Elias-Fano block boundaries.
 	txPerBlockArr := make([]uint32, blockCount)
 	for bn, cnt := range txPerBlock {
 		txPerBlockArr[bn-startBlock] = cnt
