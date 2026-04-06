@@ -86,11 +86,14 @@ func main() {
 			},
 			{
 				Name:  "sender-recovery",
-				Usage: "Parallel sender recovery from Geth ancient bodies (run before exec)",
+				Usage: "Extract senders from Geth ancient bodies or Reth MDBX",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory"},
+					&cli.StringFlag{Name: "erigon-db", Usage: "Path to Reth/Erigon MDBX (reads TransactionSenders)"},
 					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
-					&cli.IntFlag{Name: "workers", Usage: "Number of parallel workers", Value: 0},
+					&cli.IntFlag{Name: "workers", Usage: "Number of parallel workers (Geth mode only)", Value: 0},
+					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
+					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
 				},
 				Action: runSenderRecovery,
 			},
@@ -726,10 +729,65 @@ func runReceiptCopy(c *cli.Context) error {
 
 func runSenderRecovery(c *cli.Context) error {
 	ancientPath := c.String("ancient")
+	erigonDB := c.String("erigon-db")
 	datadir := c.String("datadir")
-	workers := c.Int("workers")
+	startBlock := c.Uint64("start")
+	endBlock := c.Uint64("end")
 
-	// Open Geth input freezer (read-only).
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	// Reth MDBX path — read from TransactionSenders.
+	if erigonDB != "" {
+		logger := log2.New()
+		db, err := mdbx.NewMDBX(logger).
+			Path(erigonDB).Label(kv.ChainDB).Readonly().Accede().
+			DBVerbosity(kv.DBVerbosityLvl(2)).
+			Open(context.Background())
+		if err != nil {
+			return fmt.Errorf("open mdbx: %w", err)
+		}
+		defer db.Close()
+		log.Info("MDBX opened READ-ONLY for senders", "path", erigonDB)
+
+		if endBlock == 0 {
+			tx, _ := db.BeginRo(context.Background())
+			cursor, err := tx.Cursor("BlockBodyIndices")
+			if err == nil {
+				lk, _, _ := cursor.Last()
+				cursor.Close()
+				if lk != nil && len(lk) >= 8 {
+					endBlock = binary.LittleEndian.Uint64(lk) + 1
+				}
+			}
+			if endBlock == 0 {
+				// Fallback: count from CanonicalHeaders
+				cursor2, err := tx.Cursor("CanonicalHeaders")
+				if err == nil {
+					lk, _, _ := cursor2.Last()
+					cursor2.Close()
+					if lk != nil && len(lk) >= 8 {
+						endBlock = binary.LittleEndian.Uint64(lk) + 1
+					}
+				}
+			}
+			tx.Rollback()
+			if endBlock == 0 {
+				return fmt.Errorf("cannot detect end block from MDBX")
+			}
+			log.Info("Detected end block", "endBlock", endBlock)
+		}
+
+		outputDir := filepath.Join(datadir, "chain")
+		exporter := ethel.NewRethSenderExporter(db, outputDir)
+		return exporter.Export(ctx, startBlock, endBlock)
+	}
+
+	// Geth ancient path.
+	if ancientPath == "" {
+		return fmt.Errorf("--ancient or --erigon-db is required")
+	}
+	workers := c.Int("workers")
 	f, err := freezer.New(ancientPath, 0)
 	if err != nil {
 		return fmt.Errorf("open input freezer: %w", err)
@@ -737,7 +795,6 @@ func runSenderRecovery(c *cli.Context) error {
 	defer f.Close()
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
-	// Write senders directly to the output ancient directory.
 	ancientOut := filepath.Join(datadir, "ancient")
 	if err := os.MkdirAll(ancientOut, 0755); err != nil {
 		return err
@@ -749,8 +806,5 @@ func runSenderRecovery(c *cli.Context) error {
 	defer of.Close()
 
 	stage := ethel.NewSenderStage(f, of, params.EthereumMainnetChainConfig, workers)
-
-	ctx, cancel := withShutdown()
-	defer cancel()
 	return stage.Run(ctx)
 }
