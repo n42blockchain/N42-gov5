@@ -26,22 +26,22 @@ import (
 type HistoryBuilder struct {
 	db        kv.RoDB
 	outputDir string
-	tableName string // "AccountHistory" or "StorageHistory"
-	prefix    string // "account_hist" or "storage_hist"
+	tableName string // "AccountsHistory" or "StoragesHistory"
+	prefix    string // "accthist" or "storhist"
 	keyLen    int    // 20 (account) or 52 (storage: addr+slot)
 }
 
 func NewAccountHistoryBuilder(db kv.RoDB, outputDir string) *HistoryBuilder {
 	return &HistoryBuilder{
 		db: db, outputDir: outputDir,
-		tableName: "AccountHistory", prefix: "accthist", keyLen: 20,
+		tableName: "AccountsHistory", prefix: "accthist", keyLen: 20,
 	}
 }
 
 func NewStorageHistoryBuilder(db kv.RoDB, outputDir string) *HistoryBuilder {
 	return &HistoryBuilder{
 		db: db, outputDir: outputDir,
-		tableName: "StorageHistory", prefix: "storhist", keyLen: 52,
+		tableName: "StoragesHistory", prefix: "storhist", keyLen: 52,
 	}
 }
 
