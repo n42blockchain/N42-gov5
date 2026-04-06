@@ -530,9 +530,7 @@ func runBenchState(cliCtx *cli.Context) error {
 			if runJMT {
 				jmtEntries := make([]jmt.BatchEntry, len(entries))
 				for i, e := range entries {
-					var h jmt.Hash
-					copy(h[:], e.Key[:])
-					jmtEntries[i] = jmt.BatchEntry{KeyHash: h, Value: e.Value}
+					jmtEntries[i] = jmt.BatchEntry{KeyHash: entryBlake3Key(e), Value: e.Value}
 				}
 				sort.Slice(jmtEntries, func(i, j int) bool {
 					return bytes.Compare(jmtEntries[i].KeyHash[:], jmtEntries[j].KeyHash[:]) < 0
@@ -553,7 +551,7 @@ func runBenchState(cliCtx *cli.Context) error {
 			if runBMT {
 				bmtEntries := make([]bmt.BatchEntry, len(entries))
 				for i, e := range entries {
-					bmtEntries[i] = bmt.BatchEntry{Key: e.Key, Value: e.Value}
+					bmtEntries[i] = bmt.BatchEntry{Key: bmt.Hash(entryBlake3Key(e)), Value: e.Value}
 				}
 				sort.Slice(bmtEntries, func(i, j int) bool {
 					return bytes.Compare(bmtEntries[i].Key[:], bmtEntries[j].Key[:]) < 0
@@ -582,7 +580,10 @@ func runBenchState(cliCtx *cli.Context) error {
 					return nibbles
 				})
 				for _, e := range entries {
-					pk := string(e.Key[:20])
+					if e.Tag != replay.TagAccount {
+						continue // MPT bench only handles accounts
+					}
+					pk := string(e.Address[:])
 					if len(e.Value) == 0 {
 						delete(mptState, pk)
 						updates.TouchPlainKey(pk, nil, updates.TouchAccount)
@@ -611,7 +612,7 @@ func runBenchState(cliCtx *cli.Context) error {
 				var vval [32]byte
 				panicked := false
 				for _, e := range entries {
-					vkey := toVerkleKey(e.Key)
+					vkey := toVerkleKey(entryBlake3Key(e))
 					vval = [32]byte{}
 					if len(e.Value) > 0 {
 						copy(vval[:], e.Value)
@@ -649,7 +650,7 @@ func runBenchState(cliCtx *cli.Context) error {
 			if runSim {
 				simEntries := make([]bmt.BatchEntry, len(entries))
 				for i, e := range entries {
-					simEntries[i] = bmt.BatchEntry{Key: e.Key, Value: e.Value}
+					simEntries[i] = bmt.BatchEntry{Key: bmt.Hash(entryBlake3Key(e)), Value: e.Value}
 				}
 				pathTree16.putBatch(simEntries)
 				pathTree2.putBatch(simEntries)
@@ -659,8 +660,7 @@ func runBenchState(cliCtx *cli.Context) error {
 			// Collect live keys for proof sampling
 			for _, e := range entries {
 				if len(e.Value) > 0 {
-					var h jmt.Hash
-					copy(h[:], e.Key[:])
+					h := entryBlake3Key(e)
 					if len(liveKeys) < proofSamples*10 {
 						liveKeys = append(liveKeys, h)
 					} else {
@@ -1050,6 +1050,18 @@ func avg(vals []int) float64 {
 		sum += v
 	}
 	return float64(sum) / float64(len(vals))
+}
+
+// entryBlake3Key computes the Blake3 hash key from a plain-key LeafEntry.
+// Account: Blake3(addr). Storage: Blake3(addr || slot).
+func entryBlake3Key(e replay.LeafEntry) [32]byte {
+	if e.Tag == replay.TagStorage {
+		var buf [52]byte
+		copy(buf[:20], e.Address[:])
+		copy(buf[20:], e.Slot[:])
+		return blake3.Sum256(buf[:])
+	}
+	return blake3.Sum256(e.Address[:])
 }
 
 // toVerkleKey converts a journal key to a Verkle-safe 32-byte key.
