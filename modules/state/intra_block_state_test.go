@@ -259,6 +259,176 @@ func TestSelfdestruct6780DoesNotDeleteContractCreatedInPreviousTx(t *testing.T) 
 	}
 }
 
+// TestSelfDestructStorageWipe verifies that SELFDESTRUCT + CreateAccount at the same
+// address clears all old storage. This is the core correctness property that incarnation
+// was designed to guarantee — we must maintain it after removing incarnation.
+func TestSelfDestructStorageWipe(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	addr := types.HexToAddress("0x1000000000000000000000000000000000000001")
+	beneficiary := types.HexToAddress("0x1000000000000000000000000000000000000002")
+	slot0 := types.Hash{0x00}
+	slot1 := types.Hash{0x01}
+	db := memdb.NewTestDB(t)
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		writer := NewPlainStateWriter(tx, tx, 1)
+
+		// Block 1: deploy contract, write storage.
+		sdb := New(NewPlainState(tx, 1))
+		sdb.CreateAccount(addr, true)
+		sdb.SetCode(addr, []byte{0x60, 0x00})
+		sdb.SetBalance(addr, uint256.NewInt(100))
+		sdb.SetState(addr, &slot0, *uint256.NewInt(42))
+		sdb.SetState(addr, &slot1, *uint256.NewInt(99))
+		if err := sdb.FinalizeTx(&params.Rules{IsSpuriousDragon: true}, writer); err != nil {
+			return err
+		}
+		if err := sdb.CommitBlock(&params.Rules{IsSpuriousDragon: true}, writer); err != nil {
+			return err
+		}
+
+		// Verify storage was written.
+		var v0, v1 uint256.Int
+		sdb.GetState(addr, &slot0, &v0)
+		sdb.GetState(addr, &slot1, &v1)
+		if v0 != *uint256.NewInt(42) || v1 != *uint256.NewInt(99) {
+			t.Fatalf("storage not written: slot0=%v slot1=%v", v0, v1)
+		}
+
+		// Block 2: SELFDESTRUCT the contract (pre-Cancun behavior: full wipe).
+		sdb.AddBalance(beneficiary, uint256.NewInt(100))
+		sdb.Selfdestruct(addr)
+		if err := sdb.FinalizeTx(&params.Rules{IsSpuriousDragon: true}, writer); err != nil {
+			return err
+		}
+		if err := sdb.CommitBlock(&params.Rules{IsSpuriousDragon: true}, writer); err != nil {
+			return err
+		}
+
+		// Block 3: re-create contract at same address.
+		sdb.CreateAccount(addr, true)
+		sdb.SetCode(addr, []byte{0x60, 0x01})
+		sdb.SetBalance(addr, uint256.NewInt(50))
+
+		// CRITICAL: old storage MUST be gone.
+		sdb.GetState(addr, &slot0, &v0)
+		sdb.GetState(addr, &slot1, &v1)
+		if !v0.IsZero() {
+			t.Fatalf("old storage[0] leaked after SELFDESTRUCT+CREATE: got %v, want 0", v0)
+		}
+		if !v1.IsZero() {
+			t.Fatalf("old storage[1] leaked after SELFDESTRUCT+CREATE: got %v, want 0", v1)
+		}
+
+		// Write new storage and verify.
+		sdb.SetState(addr, &slot0, *uint256.NewInt(999))
+		sdb.GetState(addr, &slot0, &v0)
+		if v0 != *uint256.NewInt(999) {
+			t.Fatalf("new storage write failed: got %v, want 999", v0)
+		}
+
+		if err := sdb.FinalizeTx(&params.Rules{IsSpuriousDragon: true}, writer); err != nil {
+			return err
+		}
+		return sdb.CommitBlock(&params.Rules{IsSpuriousDragon: true}, writer)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload from DB and verify persistence.
+	err = db.View(context.Background(), func(tx kv.Tx) error {
+		sdb := New(NewPlainStateReader(tx))
+		var v0, v1 uint256.Int
+		sdb.GetState(addr, &slot0, &v0)
+		sdb.GetState(addr, &slot1, &v1)
+		if v0 != *uint256.NewInt(999) {
+			t.Fatalf("persisted storage[0] wrong: got %v, want 999", v0)
+		}
+		if !v1.IsZero() {
+			t.Fatalf("persisted storage[1] should be 0: got %v", v1)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMultipleSelfDestructCycles verifies that repeated SELFDESTRUCT + CREATE2
+// at the same address provides storage isolation each time.
+func TestMultipleSelfDestructCycles(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	addr := types.HexToAddress("0x2000000000000000000000000000000000000001")
+	slot := types.Hash{0x42}
+	db := memdb.NewTestDB(t)
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		writer := NewPlainStateWriter(tx, tx, 1)
+		rules := &params.Rules{IsSpuriousDragon: true}
+
+		for cycle := uint64(1); cycle <= 3; cycle++ {
+			sdb := New(NewPlainState(tx, cycle))
+
+			// Create contract and write a unique value.
+			sdb.CreateAccount(addr, true)
+			sdb.SetCode(addr, []byte{byte(cycle)})
+			sdb.SetState(addr, &slot, *uint256.NewInt(cycle * 100))
+
+			// Verify value is set.
+			var v uint256.Int
+			sdb.GetState(addr, &slot, &v)
+			if v != *uint256.NewInt(cycle*100) {
+				t.Fatalf("cycle %d: expected %d, got %v", cycle, cycle*100, v)
+			}
+
+			if err := sdb.FinalizeTx(rules, writer); err != nil {
+				return err
+			}
+			if err := sdb.CommitBlock(rules, writer); err != nil {
+				return err
+			}
+
+			// SELFDESTRUCT.
+			sdb.Selfdestruct(addr)
+			if err := sdb.FinalizeTx(rules, writer); err != nil {
+				return err
+			}
+			if err := sdb.CommitBlock(rules, writer); err != nil {
+				return err
+			}
+
+			// After SELFDESTRUCT, verify storage is gone.
+			sdb2 := New(NewPlainState(tx, cycle))
+			sdb2.CreateAccount(addr, true) // triggers incarnation++ or storage wipe
+			sdb2.GetState(addr, &slot, &v)
+			if !v.IsZero() {
+				t.Fatalf("cycle %d: storage leaked after SELFDESTRUCT: got %v", cycle, v)
+			}
+
+			// Clean up for next cycle.
+			if err := sdb2.FinalizeTx(rules, writer); err != nil {
+				return err
+			}
+			if err := sdb2.CommitBlock(rules, writer); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A snapshotTest checks that reverting IntraBlockState snapshots properly undoes all changes
 // captured by the snapshot. Instances of this test with pseudorandom content are created
 // by Generate.
