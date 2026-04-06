@@ -444,21 +444,24 @@ func runCSCompact(c *cli.Context) error {
 		if err != nil {
 			return err
 		}
-		// Try both Erigon (no 's') and Reth ('s' suffix) table names.
+		// Try Reth names first (with 's'), then Erigon (no 's').
 		for _, tbl := range []string{
-			"AccountChangeSet", "StorageChangeSet",
 			"AccountChangeSets", "StorageChangeSets",
+			"AccountChangeSet", "StorageChangeSet",
 		} {
 			cursor, err := tx.Cursor(tbl)
 			if err != nil {
 				continue
 			}
-			k, _, err := cursor.Last()
+			k, v, err := cursor.Last()
 			cursor.Close()
 			if err != nil || k == nil || len(k) < 8 {
 				continue
 			}
-			// Detect byte order: Erigon uses BE, Reth uses LE.
+			// Skip root DBI fallback (large blob values, not real changesets).
+			if len(v) > 64 {
+				continue
+			}
 			bn := cscompact.DetectBlockNum(k)
 			log.Info("Table last key", "table", tbl, "keyLen", len(k), "blockNum", bn)
 			if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
@@ -510,16 +513,16 @@ func runHistoryBuild(c *cli.Context) error {
 	if endBlock == 0 {
 		tx, _ := db.BeginRo(context.Background())
 		for _, tbl := range []string{
-			"AccountChangeSet", "StorageChangeSet",
 			"AccountChangeSets", "StorageChangeSets",
+			"AccountChangeSet", "StorageChangeSet",
 		} {
 			cursor, err := tx.Cursor(tbl)
 			if err != nil {
 				continue
 			}
-			k, _, _ := cursor.Last()
+			k, v, _ := cursor.Last()
 			cursor.Close()
-			if len(k) < 8 {
+			if len(k) < 8 || len(v) > 64 {
 				continue
 			}
 			bn := cscompact.DetectBlockNum(k)
