@@ -443,13 +443,22 @@ func runCSCompact(c *cli.Context) error {
 		log.Info("Detected end block", "endBlock", endBlock)
 	}
 
-	// AccountCS compression.
 	outputDir := filepath.Join(datadir, "cscompact")
-	compactor := cscompact.NewAccountCSCompactor(db, outputDir)
 
 	ctx, cancel := withShutdown()
 	defer cancel()
-	return compactor.Run(ctx, startBlock, endBlock)
+
+	// AccountCS compression.
+	log.Info("=== AccountCS compression ===")
+	accComp := cscompact.NewAccountCSCompactor(db, outputDir)
+	if err := accComp.Run(ctx, startBlock, endBlock); err != nil {
+		return fmt.Errorf("account cs: %w", err)
+	}
+
+	// StorageCS compression.
+	log.Info("=== StorageCS compression ===")
+	stoComp := cscompact.NewStorageCSCompactor(db, outputDir)
+	return stoComp.Run(ctx, startBlock, endBlock)
 }
 
 func runTxLookupBuild(c *cli.Context) error {
