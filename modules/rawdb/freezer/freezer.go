@@ -18,6 +18,7 @@ package freezer
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +26,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/log"
@@ -61,6 +64,43 @@ const (
 	TableBlockWitness   = "block_witness"   // blockNum → minimal state access set for replay (cidx/cdat)
 )
 
+// BatchSize is the unified batch size for all freezer tables.
+// Used by executor (online), sender-recovery, and compact (offline).
+// 64 entries per batch ≈ 200-400KB compressed, random read ~0.3ms.
+const BatchSize = 64
+
+// EncodeBatch builds a length-prefixed batch and compresses it.
+// Format: [len0:4LE][data0][len1:4LE][data1]...
+// Returns compressed data if smaller, otherwise raw.
+func EncodeBatch(entries [][]byte, enc *zstd.Encoder) []byte {
+	rawSize := 0
+	for _, e := range entries {
+		rawSize += 4 + len(e)
+	}
+	batch := make([]byte, 0, rawSize)
+	for _, e := range entries {
+		var lb [4]byte
+		binary.LittleEndian.PutUint32(lb[:], uint32(len(e)))
+		batch = append(batch, lb[:]...)
+		batch = append(batch, e...)
+	}
+	if len(batch) == 0 || enc == nil {
+		return batch
+	}
+	comp := enc.EncodeAll(batch, make([]byte, 0, len(batch)/2))
+	if len(comp) < len(batch) {
+		return comp
+	}
+	return batch
+}
+
+// WriteBatch writes a batch to a FreezerTable: one blob, N cidx entries sharing same offset.
+// Enables batch read mode on the table.
+func WriteBatch(tbl *FreezerTable, entries [][]byte, encoded []byte) error {
+	tbl.setBatchSize(BatchSize)
+	return tbl.AppendBatchBlob(tbl.Items(), len(entries), encoded)
+}
+
 // tableSpec defines how a table should be opened.
 type tableSpec struct {
 	name string
@@ -68,19 +108,26 @@ type tableSpec struct {
 }
 
 // coreTableSpecs are the Geth-compatible tables (always opened).
+// Receipts is NOT included here — it lives in extendedTableSpecs because
+// the output freezer writes it in batch-compressed format. Including it
+// in core would cause New() to truncate it to 0 when the other core
+// tables (headers, bodies, …) are empty.
 var coreTableSpecs = []tableSpec{
 	{TableHeaders, "c"},
 	{TableBodies, "c"},
-	{TableReceipts, "c"},
 	{TableHashes, "r"},
 	{TableDifficulty, "r"},
 }
 
 // extendedTableSpecs are ETH EL execution tables (opened when present or on first write).
+// Opened with NewFreezerTableCompressed for batch-mode auto-detection.
 var extendedTableSpecs = []tableSpec{
+	{TableReceipts, "c"},
 	{TableSenders, "c"},
 	{TableAccountChanges, "c"},
 	{TableStorageChanges, "c"},
+	{TableLeavesJournal, "c"},
+	{TableBlockWitness, "c"},
 }
 
 // FreezeFunc is called by the background freezer to retrieve block data
@@ -140,11 +187,11 @@ func New(path string, threshold uint64) (*Freezer, error) {
 		f.tables[spec.name] = t
 	}
 
-	// Open extended tables only if their index files already exist.
+	// Open extended tables (with compression support) if their index files exist.
 	for _, spec := range extendedTableSpecs {
 		idxPath := filepath.Join(path, fmt.Sprintf("%s.%sidx", spec.name, spec.ext))
 		if _, err := os.Stat(idxPath); err == nil {
-			t, err := NewFreezerTable(path, spec.name, spec.ext)
+			t, err := NewFreezerTableCompressed(path, spec.name, spec.ext)
 			if err != nil {
 				f.Close()
 				return nil, fmt.Errorf("freezer: open table %s: %w", spec.name, err)
@@ -154,29 +201,35 @@ func New(path string, threshold uint64) (*Freezer, error) {
 	}
 
 	// Recover frozen count from the minimum of core table item counts.
+	// Only consider tables that actually have data (count > 0) to avoid
+	// truncating everything to 0 when some core tables are unused (e.g.,
+	// the output freezer has headers/bodies empty but receipts populated).
 	var items uint64
 	var initialized bool
 	for _, spec := range coreTableSpecs {
 		t := f.tables[spec.name]
 		count := t.Items()
+		if count == 0 {
+			continue // skip unused tables
+		}
 		if !initialized || count < items {
 			items = count
 			initialized = true
 		}
 	}
-	if !initialized {
-		items = 0
-	}
 
-	// Truncate core tables to the minimum count for consistency.
-	for _, spec := range coreTableSpecs {
-		t := f.tables[spec.name]
-		if t.Items() > items {
-			log.Warn("Freezer table count mismatch, truncating",
-				"table", spec.name, "items", t.Items(), "target", items)
-			if err := t.TruncateHead(items); err != nil {
-				f.Close()
-				return nil, err
+	// Truncate core tables to the minimum count for consistency,
+	// but only when we found at least one non-empty core table.
+	if items > 0 {
+		for _, spec := range coreTableSpecs {
+			t := f.tables[spec.name]
+			if t.Items() > items {
+				log.Warn("Freezer table count mismatch, truncating",
+					"table", spec.name, "items", t.Items(), "target", items)
+				if err := t.TruncateHead(items); err != nil {
+					f.Close()
+					return nil, err
+				}
 			}
 		}
 	}
@@ -201,6 +254,33 @@ func (f *Freezer) EnsureTable(name, ext string) (*FreezerTable, error) {
 		return t, nil
 	}
 	t, err := NewFreezerTable(f.path, name, ext)
+	if err != nil {
+		return nil, err
+	}
+	f.tables[name] = t
+	return t, nil
+}
+
+// EnsureTableCompressed creates or returns a table with per-entry zstd compression.
+// If the table already exists but was opened without compression (e.g. by New()
+// as a core table), it is closed and re-opened as compressed so that batch-mode
+// auto-detection and zstd decompression work correctly.
+func (f *Freezer) EnsureTableCompressed(name, ext string) (*FreezerTable, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if t, ok := f.tables[name]; ok {
+		if t.compressed {
+			return t, nil
+		}
+		// Table exists but was opened non-compressed. Flush buffered
+		// writes, then close and reopen so that batch-mode auto-detect
+		// and zstd codec are initialized.
+		t.Sync()
+		t.Close()
+		delete(f.tables, name)
+	}
+	t, err := NewFreezerTableCompressed(f.path, name, ext)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +341,18 @@ func (f *Freezer) Freeze(start uint64, data *FreezeData) error {
 		{TableDifficulty, data.Difficulty},
 	}
 	for _, td := range batch {
-		if err := f.tables[td.name].AppendBatch(start, td.items); err != nil {
+		t := f.tables[td.name]
+		if t == nil {
+			// Receipts (and possibly others) may be in extendedTableSpecs,
+			// not opened by New(). Lazily create the table.
+			var err error
+			t, err = NewFreezerTable(f.path, td.name, "c")
+			if err != nil {
+				return fmt.Errorf("freezer: create table %s: %w", td.name, err)
+			}
+			f.tables[td.name] = t
+		}
+		if err := t.AppendBatch(start, td.items); err != nil {
 			return fmt.Errorf("freezer: append %s: %w", td.name, err)
 		}
 	}
