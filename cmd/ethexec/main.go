@@ -475,7 +475,7 @@ func runCSCompact(c *cli.Context) error {
 		log.Info("Detected end block", "endBlock", endBlock)
 	}
 
-	outputDir := filepath.Join(datadir, "cscompact")
+	outputDir := filepath.Join(datadir, "chain")
 
 	ctx, cancel := withShutdown()
 	defer cancel()

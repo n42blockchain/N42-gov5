@@ -58,7 +58,7 @@ func (c *StorageCSCompactor) Run(ctx context.Context, startBlock, endBlock uint6
 	}
 	defer enc.Close()
 
-	idxPath := filepath.Join(c.outputDir, "storage_cs.idx")
+	idxPath := filepath.Join(c.outputDir, "storcs.cidx")
 	idxFile, err := os.OpenFile(idxPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err
@@ -79,7 +79,7 @@ func (c *StorageCSCompactor) Run(ctx context.Context, startBlock, endBlock uint6
 		var lastEntry [8]byte
 		idxFile.ReadAt(lastEntry[:], int64(existingSegs-1)*8)
 		headFile = binary.LittleEndian.Uint16(lastEntry[0:2])
-		datPath := filepath.Join(c.outputDir, fmt.Sprintf("storage_cs.%04d.dat", headFile))
+		datPath := filepath.Join(c.outputDir, fmt.Sprintf("storcs.%04d.cdat", headFile))
 		if fi, err := os.Stat(datPath); err == nil {
 			headSize = fi.Size()
 		}
@@ -113,7 +113,7 @@ func (c *StorageCSCompactor) Run(ctx context.Context, startBlock, endBlock uint6
 			headSize = 0
 		}
 
-		datPath := filepath.Join(c.outputDir, fmt.Sprintf("storage_cs.%04d.dat", headFile))
+		datPath := filepath.Join(c.outputDir, fmt.Sprintf("storcs.%04d.cdat", headFile))
 		datFile, err := os.OpenFile(datPath, os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {
 			return err
