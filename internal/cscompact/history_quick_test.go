@@ -22,25 +22,24 @@ func TestHistoryFromChangesets(t *testing.T) {
 	}
 	buildTime := time.Since(t0)
 
-	baseName := HistSegmentFileName("account_hist", 0, 1_000_000)
-	idxPath := filepath.Join(tmpDir, baseName+".idx")
-	datPath := filepath.Join(tmpDir, baseName+".dat")
-
-	idxFi, _ := os.Stat(idxPath)
-	datFi, _ := os.Stat(datPath)
-
-	seg, err := OpenHistorySegment(idxPath, datPath)
+	// Open via HistoryReader (freezer-style).
+	histDir := filepath.Join(tmpDir, "account_hist")
+	reader, err := NewHistoryReader(histDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer seg.Close()
+	defer reader.Close()
 
-	t.Logf("From Changesets (0-1M blocks):")
-	t.Logf("  Keys: %d", seg.KeyCount())
-	t.Logf("  Idx: %d bytes (%.1f B/key)", idxFi.Size(), float64(idxFi.Size())/float64(seg.KeyCount()+1))
-	t.Logf("  Dat: %d bytes (%.1f B/key)", datFi.Size(), float64(datFi.Size())/float64(seg.KeyCount()+1))
-	t.Logf("  Total: %.1f B/key", float64(idxFi.Size()+datFi.Size())/float64(seg.KeyCount()+1))
+	t.Logf("From Changesets (0-1M blocks, freezer-style):")
+	t.Logf("  Segments: %d", reader.store.SegmentCount())
 	t.Logf("  Build time: %v (vs 7min from history bitmaps)", buildTime)
+
+	// List files in the directory.
+	entries, _ := os.ReadDir(histDir)
+	for _, e := range entries {
+		fi, _ := e.Info()
+		t.Logf("  file: %-25s %8d bytes", e.Name(), fi.Size())
+	}
 }
 
 // TestHistoryQuickBuild builds using old method (history bitmaps) for comparison.

@@ -11,9 +11,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -189,61 +187,84 @@ func HistSegmentFileName(prefix string, startBlock, endBlock uint64) string {
 	return fmt.Sprintf("%s.%06d-%06d", prefix, startBlock/1000, endBlock/1000)
 }
 
-// HistoryService provides tiered history lookup across segments.
-type HistoryService struct {
-	segmentDir string
-	prefix     string // "account_hist" or "storage_hist"
-	segments   []*HistorySegment
+// HistoryReader provides tiered history lookup using SegmentStoreReader.
+type HistoryReader struct {
+	store          *SegmentStoreReader
+	segmentSize    uint64
+	cachedSegNum   int64
+	cachedSegment  *HistorySegment
 }
 
-func NewHistoryService(dir, prefix string) (*HistoryService, error) {
-	s := &HistoryService{segmentDir: dir, prefix: prefix}
-	entries, err := os.ReadDir(dir)
+func NewHistoryReader(dir string) (*HistoryReader, error) {
+	store, err := OpenSegmentStore(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return s, nil
-		}
 		return nil, err
 	}
-
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".idx") || !strings.HasPrefix(e.Name(), prefix) {
-			continue
-		}
-		baseName := strings.TrimSuffix(e.Name(), ".idx")
-		idxPath := filepath.Join(dir, baseName+".idx")
-		datPath := filepath.Join(dir, baseName+".dat")
-
-		if _, err := os.Stat(datPath); err != nil {
-			continue
-		}
-		seg, err := OpenHistorySegment(idxPath, datPath)
-		if err != nil {
-			continue
-		}
-		s.segments = append(s.segments, seg)
-	}
-
-	// Sort newest first.
-	sort.Slice(s.segments, func(i, j int) bool {
-		return s.segments[i].startBlock > s.segments[j].startBlock
-	})
-	return s, nil
+	return &HistoryReader{
+		store:        store,
+		segmentSize:  HistSegmentSize,
+		cachedSegNum: -1,
+	}, nil
 }
 
-func (s *HistoryService) Lookup(key []byte, blockNum uint64) (uint64, bool) {
-	for _, seg := range s.segments {
-		if blockNum >= seg.startBlock && blockNum < seg.endBlock {
-			if b, ok := seg.Lookup(key, blockNum); ok {
-				return b, true
+func (r *HistoryReader) Lookup(key []byte, blockNum uint64) (uint64, bool) {
+	segNum := int64(blockNum / r.segmentSize)
+	if uint64(segNum) >= r.store.SegmentCount() {
+		return 0, false
+	}
+
+	if segNum != r.cachedSegNum {
+		if err := r.loadSegment(segNum); err != nil {
+			return 0, false
+		}
+	}
+	if r.cachedSegment == nil {
+		return 0, false
+	}
+	return r.cachedSegment.Lookup(key, blockNum)
+}
+
+func (r *HistoryReader) loadSegment(segNum int64) error {
+	data, err := r.store.ReadSegmentData(uint64(segNum))
+	if err != nil {
+		return err
+	}
+
+	// zstd decompress if needed.
+	if len(data) > 4 && string(data[:4]) != histDatMagic {
+		dec, err := zstd.NewReader(nil)
+		if err == nil {
+			if decompressed, err := dec.DecodeAll(data, nil); err == nil {
+				data = decompressed
 			}
+			dec.Close()
 		}
 	}
-	return 0, false
+
+	if len(data) < 12 || string(data[:4]) != histDatMagic {
+		return fmt.Errorf("invalid dat for segment %d", segNum)
+	}
+
+	keyCount := binary.LittleEndian.Uint32(data[4:8])
+
+	reader, err := r.store.GetRecSplitReader(uint64(segNum))
+	if err != nil {
+		return err
+	}
+	idx, _ := r.store.GetRecSplitIndex(uint64(segNum))
+
+	r.cachedSegNum = segNum
+	r.cachedSegment = &HistorySegment{
+		startBlock: uint64(segNum) * r.segmentSize,
+		endBlock:   uint64(segNum+1) * r.segmentSize,
+		idx:        idx,
+		reader:     reader,
+		dat:        data,
+		keyCount:   uint64(keyCount),
+	}
+	return nil
 }
 
-func (s *HistoryService) Close() {
-	for _, seg := range s.segments {
-		seg.Close()
-	}
+func (r *HistoryReader) Close() {
+	r.store.Close()
 }
