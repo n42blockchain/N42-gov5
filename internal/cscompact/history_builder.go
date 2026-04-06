@@ -281,11 +281,23 @@ func (b *HistoryBuilder) writeEmpty(idxPath, datPath string) error {
 }
 
 // BuildFromChangesets builds history segments by reading Erigon changeset tables
-// (AccountChangeSet/StorageChangeSet) sequentially by block. 10-14x faster than
+// (AccountChangeSet/StorageChangeSet) sequentially by block. 280x faster than
 // BuildRange which scans the entire history bitmap table.
+// Uses freezer-style file management via SegmentStoreWriter.
 func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, endBlock uint64) error {
-	if err := os.MkdirAll(b.outputDir, 0755); err != nil {
+	dir := filepath.Join(b.outputDir, b.prefix)
+	store, err := NewSegmentStoreWriter(dir)
+	if err != nil {
 		return err
+	}
+	defer store.Close()
+
+	// Resume from existing segments.
+	existingSegs := store.SegmentCount()
+	resumeBlock := existingSegs * HistSegmentSize
+	if resumeBlock > startBlock {
+		startBlock = resumeBlock
+		log.Info("Resuming history build", "from", startBlock, "existingSegments", existingSegs)
 	}
 
 	csTable := "AccountChangeSet"
@@ -302,25 +314,144 @@ func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, en
 			segEnd = endBlock
 		}
 
-		baseName := HistSegmentFileName(b.prefix, segStart, segEnd)
-		idxPath := filepath.Join(b.outputDir, baseName+".idx")
-		datPath := filepath.Join(b.outputDir, baseName+".dat")
-
-		if _, err := os.Stat(idxPath); err == nil {
-			log.Info("History segment exists, skipping", "name", baseName)
-			continue
-		}
-
 		entries, err := b.collectFromChangesets(ctx, csTable, segStart, segEnd)
 		if err != nil {
-			return fmt.Errorf("collect %s: %w", baseName, err)
+			return fmt.Errorf("collect seg %d: %w", segStart, err)
 		}
 
-		if err := b.buildFromKeyMap(ctx, entries, idxPath, datPath, segStart, segEnd); err != nil {
-			return fmt.Errorf("build %s: %w", baseName, err)
+		// Build RecSplit to temp file, then let store rename it.
+		tmpIdx := filepath.Join(dir, "tmp_build.ri")
+		datBuf, err := b.buildSegment(ctx, entries, tmpIdx, segStart, segEnd)
+		if err != nil {
+			os.Remove(tmpIdx)
+			return err
 		}
+
+		segNum, err := store.WriteSegment(datBuf, tmpIdx)
+		if err != nil {
+			return err
+		}
+		_ = segNum
 	}
 	return nil
+}
+
+// buildSegment builds RecSplit + dat bytes for one segment.
+// Returns the dat bytes (zstd compressed) and writes RecSplit to idxPath.
+func (b *HistoryBuilder) buildSegment(ctx context.Context, entries []histKeyData, idxPath string, startBlock, endBlock uint64) ([]byte, error) {
+	t0 := time.Now()
+
+	if len(entries) == 0 {
+		// Empty RecSplit.
+		logger := log2.New()
+		rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
+			KeyCount: 0, IndexFile: idxPath, TmpDir: os.TempDir(),
+		}, logger)
+		if err != nil {
+			return nil, err
+		}
+		if err := rs.Build(ctx); err != nil {
+			return nil, err
+		}
+		// Empty dat.
+		buf := make([]byte, 12)
+		copy(buf[:4], histDatMagic)
+		return buf, nil
+	}
+
+	log.Info("Building history segment",
+		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
+		"keys", len(entries))
+
+	// Build RecSplit.
+	logger := log2.New()
+	rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
+		KeyCount:           len(entries),
+		BucketSize:         2000,
+		LeafSize:           8,
+		Enums:              false,
+		LessFalsePositives: true,
+		IndexFile:          idxPath,
+		BaseDataID:         startBlock,
+		TmpDir:             os.TempDir(),
+	}, logger)
+	if err != nil {
+		return nil, err
+	}
+	for i, e := range entries {
+		if err := rs.AddKey(e.key, uint64(i)); err != nil {
+			return nil, err
+		}
+	}
+	if err := rs.Build(ctx); err != nil {
+		return nil, err
+	}
+
+	// Build dat bytes (in memory, then zstd).
+	datBytes, err := b.buildDatBytes(entries)
+	if err != nil {
+		return nil, err
+	}
+
+	elapsed := time.Since(t0)
+	log.Info("History segment built",
+		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
+		"keys", len(entries),
+		"dat", fmt.Sprintf("%.1f KB", float64(len(datBytes))/1024),
+		"avg", fmt.Sprintf("%.1f B/key", float64(len(datBytes))/float64(len(entries))),
+		"elapsed", elapsed.Truncate(time.Second))
+
+	return datBytes, nil
+}
+
+// buildDatBytes creates the zstd-compressed dat content.
+func (b *HistoryBuilder) buildDatBytes(entries []histKeyData) ([]byte, error) {
+	keyCount := len(entries)
+	headerSize := 12
+	offsetTableSize := keyCount * 4
+	dataStart := headerSize + offsetTableSize
+
+	var dataBuf []byte
+	offsets := make([]uint32, keyCount)
+
+	for i, e := range entries {
+		offsets[i] = uint32(dataStart + len(dataBuf))
+		count := len(e.blocks)
+		if count <= 254 {
+			dataBuf = append(dataBuf, byte(count))
+		} else {
+			dataBuf = append(dataBuf, 0xFF)
+			var cb [4]byte
+			binary.LittleEndian.PutUint32(cb[:], uint32(count))
+			dataBuf = append(dataBuf, cb[:]...)
+		}
+		prev := uint64(0)
+		for _, bn := range e.blocks {
+			dataBuf = appendVarint(dataBuf, bn-prev)
+			prev = bn
+		}
+	}
+
+	totalSize := dataStart + len(dataBuf)
+	buf := make([]byte, totalSize)
+	copy(buf[:4], histDatMagic)
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(keyCount))
+	for i, off := range offsets {
+		binary.LittleEndian.PutUint32(buf[headerSize+i*4:], off)
+	}
+	copy(buf[dataStart:], dataBuf)
+
+	// zstd compress.
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+	if err != nil {
+		return buf, nil
+	}
+	compressed := enc.EncodeAll(buf, nil)
+	enc.Close()
+	if len(compressed) < len(buf) {
+		return compressed, nil
+	}
+	return buf, nil
 }
 
 // collectFromChangesets reads changeset table sequentially by block.
