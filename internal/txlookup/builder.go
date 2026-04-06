@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
@@ -38,10 +39,20 @@ func SegmentFileName(startBlock, endBlock uint64) string {
 	return fmt.Sprintf("txlookup-%06d-%06d", startBlock/1000, endBlock/1000)
 }
 
-// BuildRange builds all segments for the given block range.
+// BuildRange builds all segments for the given block range using freezer-style storage.
 func (b *SegmentBuilder) BuildRange(ctx context.Context, startBlock, endBlock uint64) error {
-	if err := os.MkdirAll(b.outputDir, 0755); err != nil {
+	store, err := cscompact.NewSegmentStoreWriter(b.outputDir)
+	if err != nil {
 		return err
+	}
+	defer store.Close()
+
+	// Resume from existing segments.
+	existingSegs := store.SegmentCount()
+	resumeBlock := existingSegs * SegmentSize
+	if resumeBlock > startBlock {
+		startBlock = resumeBlock
+		log.Info("Resuming txlookup build", "from", startBlock, "segments", existingSegs)
 	}
 
 	for segStart := (startBlock / SegmentSize) * SegmentSize; segStart < endBlock; segStart += SegmentSize {
@@ -56,24 +67,22 @@ func (b *SegmentBuilder) BuildRange(ctx context.Context, startBlock, endBlock ui
 			segEnd = b.inputFreezer.Frozen()
 		}
 
-		baseName := SegmentFileName(segStart, segEnd)
-		idxPath := filepath.Join(b.outputDir, baseName+".idx")
-		datPath := filepath.Join(b.outputDir, baseName+".dat")
-
-		// Skip if already built.
-		if _, err := os.Stat(idxPath); err == nil {
-			log.Info("Segment exists, skipping", "segment", baseName)
-			continue
+		tmpIdx := filepath.Join(b.outputDir, "tmp_build.ri")
+		datBytes, err := b.buildOne(ctx, segStart, segEnd, tmpIdx)
+		if err != nil {
+			os.Remove(tmpIdx)
+			return fmt.Errorf("build segment %d-%d: %w", segStart, segEnd, err)
 		}
 
-		if err := b.buildOne(ctx, segStart, segEnd, idxPath, datPath); err != nil {
-			return fmt.Errorf("build segment %s: %w", baseName, err)
+		if _, err := store.WriteSegment(datBytes, tmpIdx); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint64, idxPath, datPath string) error {
+// buildOne builds a single segment, returns dat bytes and writes RecSplit to idxPath.
+func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint64, idxPath string) ([]byte, error) {
 	t0 := time.Now()
 	blockCount := endBlock - startBlock
 
@@ -83,11 +92,11 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 	for blockNum := startBlock; blockNum < endBlock; blockNum++ {
 		bodyData, err := b.inputFreezer.Ancient(freezer.TableBodies, blockNum)
 		if err != nil {
-			return fmt.Errorf("read body %d: %w", blockNum, err)
+			return nil, fmt.Errorf("read body %d: %w", blockNum, err)
 		}
 		body, err := ethel.DecodeGethBody(bodyData)
 		if err != nil {
-			return fmt.Errorf("decode body %d: %w", blockNum, err)
+			return nil, fmt.Errorf("decode body %d: %w", blockNum, err)
 		}
 		txPerBlock[blockNum-startBlock] = uint32(len(body.Transactions))
 		totalTx += len(body.Transactions)
@@ -118,14 +127,14 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 
 	if totalTx == 0 {
 		log.Info("Empty segment (no transactions)", "blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1))
-		if err := writeEmptyDatV2(datPath, blockCount); err != nil {
-			return err
-		}
 		rs, err := newRecSplit(0)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return rs.Build(ctx)
+		if err := rs.Build(ctx); err != nil {
+			return nil, err
+		}
+		return buildEmptyDatV2(blockCount), nil
 	}
 
 	log.Info("Building segment",
@@ -134,69 +143,51 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 
 	rs, err := newRecSplit(totalTx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Pass 2: add tx hashes to RecSplit (no .dat writes needed per-tx).
+	// Pass 2: add tx hashes to RecSplit.
 	ordinal := uint64(0)
 	for blockNum := startBlock; blockNum < endBlock; blockNum++ {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
-
 		bodyData, err := b.inputFreezer.Ancient(freezer.TableBodies, blockNum)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		body, err := ethel.DecodeGethBody(bodyData)
 		if err != nil {
-			return err
+			return nil, err
 		}
-
 		for _, tx := range body.Transactions {
 			txHash := tx.Hash()
 			if err := rs.AddKey(txHash[:], ordinal); err != nil {
-				return fmt.Errorf("addKey block %d: %w", blockNum, err)
+				return nil, fmt.Errorf("addKey block %d: %w", blockNum, err)
 			}
 			ordinal++
 		}
 	}
 
-	// Build RecSplit index.
 	log.Info("Building RecSplit index", "txCount", totalTx)
 	if err := rs.Build(ctx); err != nil {
-		return fmt.Errorf("recsplit build: %w", err)
+		return nil, fmt.Errorf("recsplit build: %w", err)
 	}
 
-	// Build Elias-Fano block boundaries and write V2 .dat.
-	if err := writeDatV2(datPath, blockCount, uint64(totalTx), txPerBlock); err != nil {
-		os.Remove(idxPath)
-		return fmt.Errorf("write dat v2: %w", err)
-	}
+	// Build Elias-Fano block boundaries as dat bytes.
+	datBytes := buildDatV2Bytes(blockCount, uint64(totalTx), txPerBlock)
 
 	elapsed := time.Since(t0)
-	idxFi, _ := os.Stat(idxPath)
-	datFi, _ := os.Stat(datPath)
 	log.Info("Segment built",
 		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1),
 		"txCount", totalTx,
-		"idx", fmt.Sprintf("%.1f MB", float64(idxFi.Size())/1e6),
-		"dat", fmt.Sprintf("%.1f KB", float64(datFi.Size())/1e3),
-		"compression", fmt.Sprintf("%.0fx", float64(totalTx)*4/float64(datFi.Size())),
+		"dat", fmt.Sprintf("%.1f KB", float64(len(datBytes))/1e3),
 		"elapsed", elapsed.Truncate(time.Second))
-	return nil
+	return datBytes, nil
 }
 
-// writeDatV2 writes Elias-Fano encoded block boundaries.
-// Format: [4]magic + [4]blockCount + [8]txCount + [variable]EliasFano
-//
-// The EF sequence has blockCount+1 entries storing cumulative tx counts:
-//
-//	ef[0] = 0
-//	ef[i] = sum of txPerBlock[0..i-1]
-//	ef[blockCount] = totalTx
-func writeDatV2(path string, blockCount, totalTx uint64, txPerBlock []uint32) error {
-	// Build Elias-Fano: blockCount+1 entries, max value = totalTx.
+// buildDatV2Bytes returns Elias-Fano encoded dat as bytes (no file write).
+func buildDatV2Bytes(blockCount, totalTx uint64, txPerBlock []uint32) []byte {
 	ef := eliasfano32.NewEliasFano(blockCount+1, totalTx)
 	cumTx := uint64(0)
 	ef.AddOffset(0)
@@ -206,7 +197,6 @@ func writeDatV2(path string, blockCount, totalTx uint64, txPerBlock []uint32) er
 	}
 	ef.Build()
 
-	// Serialize.
 	var header [16]byte
 	copy(header[:4], datMagicV2[:])
 	binary.LittleEndian.PutUint32(header[4:8], uint32(blockCount))
@@ -215,14 +205,22 @@ func writeDatV2(path string, blockCount, totalTx uint64, txPerBlock []uint32) er
 	var buf []byte
 	buf = append(buf, header[:]...)
 	buf = ef.AppendBytes(buf)
-
-	return os.WriteFile(path, buf, 0644)
+	return buf
 }
 
-func writeEmptyDatV2(path string, blockCount uint64) error {
+// buildEmptyDatV2 returns empty V2 dat bytes.
+func buildEmptyDatV2(blockCount uint64) []byte {
 	var header [16]byte
 	copy(header[:4], datMagicV2[:])
 	binary.LittleEndian.PutUint32(header[4:8], uint32(blockCount))
-	binary.LittleEndian.PutUint64(header[8:16], 0)
-	return os.WriteFile(path, header[:], 0644)
+	return header[:]
+}
+
+// Legacy file-writing wrappers (used by old tests).
+func writeDatV2(path string, blockCount, totalTx uint64, txPerBlock []uint32) error {
+	return os.WriteFile(path, buildDatV2Bytes(blockCount, totalTx, txPerBlock), 0644)
+}
+
+func writeEmptyDatV2(path string, blockCount uint64) error {
+	return os.WriteFile(path, buildEmptyDatV2(blockCount), 0644)
 }

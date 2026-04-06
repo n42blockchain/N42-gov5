@@ -11,72 +11,52 @@
 package txlookup
 
 import (
+	"encoding/binary"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 )
 
 // Service provides tiered tx hash lookup (L0 MDBX + L1 RecSplit segments).
 type Service struct {
-	segmentDir string
-	segments   []*TxSegment // sorted by startBlock descending (newest first)
+	store    *cscompact.SegmentStoreReader
+	segments []*txSegmentCached // sorted by startBlock descending
 }
 
-// NewService opens all existing segments in the given directory.
+type txSegmentCached struct {
+	segNum     uint64
+	startBlock uint64
+	seg        *TxSegment // lazy loaded
+}
+
+// NewService opens all existing segments using SegmentStoreReader.
 func NewService(segmentDir string) (*Service, error) {
-	s := &Service{segmentDir: segmentDir}
-	if err := s.loadSegments(); err != nil {
+	store, err := cscompact.OpenSegmentStore(segmentDir)
+	if err != nil {
 		return nil, err
 	}
-	return s, nil
-}
 
-func (s *Service) loadSegments() error {
-	entries, err := os.ReadDir(s.segmentDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // no segments yet
-		}
-		return err
+	s := &Service{store: store}
+	for i := uint64(0); i < store.SegmentCount(); i++ {
+		s.segments = append(s.segments, &txSegmentCached{
+			segNum:     i,
+			startBlock: i * SegmentSize,
+		})
 	}
 
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".idx") {
-			continue
-		}
-		if !strings.HasPrefix(e.Name(), "txlookup-") {
-			continue
-		}
-		baseName := strings.TrimSuffix(e.Name(), ".idx")
-		idxPath := filepath.Join(s.segmentDir, baseName+".idx")
-		datPath := filepath.Join(s.segmentDir, baseName+".dat")
-
-		if _, err := os.Stat(datPath); err != nil {
-			continue // incomplete segment
-		}
-
-		seg, err := OpenSegment(idxPath, datPath)
-		if err != nil {
-			log.Warn("Failed to open tx segment", "name", baseName, "err", err)
-			continue
-		}
-		s.segments = append(s.segments, seg)
-	}
-
-	// Sort by startBlock descending — query newest segments first.
+	// Sort newest first.
 	sort.Slice(s.segments, func(i, j int) bool {
 		return s.segments[i].startBlock > s.segments[j].startBlock
 	})
 
 	log.Info("TxLookup segments loaded", "count", len(s.segments))
-	return nil
+	return s, nil
 }
 
 // Lookup queries L0 (MDBX) then L1 (segments) for txHash → blockNumber.
@@ -92,38 +72,69 @@ func (s *Service) Lookup(tx kv.Tx, txHash types.Hash) (*uint64, error) {
 	}
 
 	// L1: RecSplit segments (newest first).
-	for _, seg := range s.segments {
-		if result := seg.Lookup(txHash); result != nil {
+	for _, sc := range s.segments {
+		if sc.seg == nil {
+			seg, err := s.loadSegment(sc)
+			if err != nil {
+				continue
+			}
+			sc.seg = seg
+		}
+		if result := sc.seg.Lookup(txHash); result != nil {
 			return result, nil
 		}
 	}
 
-	return nil, nil // not found
+	return nil, nil
 }
 
-// SegmentCount returns the number of loaded L1 segments.
+func (s *Service) loadSegment(sc *txSegmentCached) (*TxSegment, error) {
+	data, err := s.store.ReadSegmentData(sc.segNum)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := s.store.GetRecSplitReader(sc.segNum)
+	if err != nil {
+		return nil, err
+	}
+	idx, _ := s.store.GetRecSplitIndex(sc.segNum)
+
+	// Parse dat format (V1 or V2).
+	seg := &TxSegment{
+		startBlock: sc.startBlock,
+		endBlock:   sc.startBlock + SegmentSize,
+		idx:        idx,
+		reader:     reader,
+	}
+
+	if len(data) >= 16 && string(data[:4]) == string(datMagicV2[:]) {
+		// V2: Elias-Fano.
+		seg.blockCount = uint64(binary.LittleEndian.Uint32(data[4:8]))
+		seg.txCount = binary.LittleEndian.Uint64(data[8:16])
+		seg.endBlock = seg.startBlock + seg.blockCount
+		if seg.blockCount > 0 && seg.txCount > 0 && len(data) >= 32 {
+			ef, _ := eliasfano32.ReadEliasFano(data[16:])
+			seg.ef = ef
+		}
+	} else {
+		// V1: raw uint32 array.
+		seg.txCount = idx.KeyCount()
+		seg.dat = data
+	}
+	return seg, nil
+}
+
 func (s *Service) SegmentCount() int { return len(s.segments) }
 
-// Stats returns summary statistics.
 func (s *Service) Stats() string {
-	totalTx := uint64(0)
-	for _, seg := range s.segments {
-		totalTx += seg.TxCount()
-	}
-	return fmt.Sprintf("segments=%d totalTx=%d", len(s.segments), totalTx)
+	return fmt.Sprintf("segments=%d", len(s.segments))
 }
 
-// Close releases all segment resources.
 func (s *Service) Close() {
-	for _, seg := range s.segments {
-		seg.Close()
-	}
-	s.segments = nil
+	s.store.Close()
 }
 
-// decodeBlockNum decodes a big-endian block number from TxLookup value.
 func decodeBlockNum(v []byte) uint64 {
-	// TxLookup values are big-endian encoded uint256 (variable length).
 	n := uint64(0)
 	for _, b := range v {
 		n = n<<8 | uint64(b)
