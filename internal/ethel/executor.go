@@ -13,7 +13,6 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
-	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
@@ -66,10 +65,6 @@ type Executor struct {
 	// Output batcher: accumulates entries, writes in batches.
 	outBatcher *outputBatcher
 
-	// History accumulators: build RecSplit history segments inline during execution.
-	accHistAccum *cscompact.HistoryAccumulator
-	stoHistAccum *cscompact.HistoryAccumulator
-
 	// Timing collection for P50/P99 analysis.
 	timingSamples []timingSample
 	timingWindow  int // samples per window (default 1000)
@@ -96,27 +91,6 @@ func NewExecutor(f *freezer.Freezer, db kv.RwDB, chainCfg *params.ChainConfig, e
 func (e *Executor) SetSenderFreezer(f *freezer.Freezer) {
 	e.senderFreezer = f
 	e.senderTable = f.Table("senders")
-}
-
-// SetHistoryDir enables inline history segment building during execution.
-// Segments are flushed to outputDir/account_hist/ and outputDir/storage_hist/.
-func (e *Executor) SetHistoryDir(outputDir string) error {
-	accAccum, err := cscompact.NewAccountHistoryAccumulator(outputDir)
-	if err != nil {
-		return fmt.Errorf("init account history accumulator: %w", err)
-	}
-	stoAccum, err := cscompact.NewStorageHistoryAccumulator(outputDir)
-	if err != nil {
-		accAccum.Close(0)
-		return fmt.Errorf("init storage history accumulator: %w", err)
-	}
-	e.accHistAccum = accAccum
-	e.stoHistAccum = stoAccum
-	log.Info("History accumulators initialized",
-		"dir", outputDir,
-		"existingAccSegs", accAccum.SegmentCount(),
-		"existingStoSegs", stoAccum.SegmentCount())
-	return nil
 }
 
 // Run executes blocks from StartBlock to EndBlock.
@@ -270,17 +244,6 @@ func (e *Executor) Run(ctx context.Context) error {
 			return fmt.Errorf("flush output batcher final: %w", err)
 		}
 	}
-	// Flush remaining history accumulator data.
-	if e.accHistAccum != nil {
-		if err := e.accHistAccum.Close(endBlock); err != nil {
-			log.Warn("Failed to flush account history accumulator", "err", err)
-		}
-	}
-	if e.stoHistAccum != nil {
-		if err := e.stoHistAccum.Close(endBlock); err != nil {
-			log.Warn("Failed to flush storage history accumulator", "err", err)
-		}
-	}
 	if err := e.stateBuf.FlushToMDBX(tx); err != nil {
 		return fmt.Errorf("flush buffer final: %w", err)
 	}
@@ -400,17 +363,6 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	if e.outFreezer != nil && !e.cfg.NoOutputs {
 		if err := e.writeOutputs(blockNum, result, writer, witnessReader, tx); err != nil {
 			return fmt.Errorf("write outputs: %w", err)
-		}
-		// Advance history accumulators (flush full segments automatically).
-		if e.accHistAccum != nil {
-			if err := e.accHistAccum.AdvanceBlock(blockNum); err != nil {
-				return fmt.Errorf("account history advance: %w", err)
-			}
-		}
-		if e.stoHistAccum != nil {
-			if err := e.stoHistAccum.AdvanceBlock(blockNum); err != nil {
-				return fmt.Errorf("storage history advance: %w", err)
-			}
 		}
 	}
 
@@ -603,21 +555,6 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 
 			accCSBytes = EncodeAccountChanges(accCS)
 			stoCSBytes = EncodeStorageChanges(stoCS)
-
-			// Feed changed keys to history accumulators.
-			if e.accHistAccum != nil {
-				for _, c := range accCS.Changes {
-					e.accHistAccum.AddAccountKey(c.Key, blockNum)
-				}
-			}
-			if e.stoHistAccum != nil {
-				for _, c := range stoCS.Changes {
-					// StorageChangeSet key = addr(20)+incarnation(8), value = slot(32)+oldValue
-					if len(c.Key) >= 20 && len(c.Value) >= 32 {
-						e.stoHistAccum.AddStorageKey(c.Key[:20], c.Value[:32], blockNum)
-					}
-				}
-			}
 
 			// Use buffered reader for current values (buffer → MDBX fallthrough).
 			bufReader := state.NewBufferedPlainStateReader(e.stateBuf, dbTx)

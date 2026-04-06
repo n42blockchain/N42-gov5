@@ -63,7 +63,6 @@ func main() {
 		&cli.Uint64Flag{Name: "verify", Usage: "State root verification interval (0=disabled)", Value: 0},
 		&cli.BoolFlag{Name: "skip-errors", Usage: "Log gas mismatches but continue execution"},
 		&cli.BoolFlag{Name: "no-outputs", Usage: "Skip writing output freezer (receipts, senders, witness, etc.)"},
-		&cli.StringFlag{Name: "history-dir", Usage: "Enable inline history segment building to this directory"},
 		&cli.BoolFlag{Name: "pprof", Usage: "Enable mutex/block profiling for pprof flame graphs"},
 	}
 
@@ -287,13 +286,6 @@ func run(c *cli.Context) error {
 	if senderTbl := outFreezer.Table("senders"); senderTbl != nil && senderTbl.Items() > 0 {
 		executor.SetSenderFreezer(outFreezer)
 		log.Info("Pre-computed senders detected", "items", senderTbl.Items())
-	}
-
-	// Enable inline history segment building if --history-dir is set.
-	if histDir := c.String("history-dir"); histDir != "" {
-		if err := executor.SetHistoryDir(histDir); err != nil {
-			return fmt.Errorf("set history dir: %w", err)
-		}
 	}
 
 	ctx, cancel := withShutdown()

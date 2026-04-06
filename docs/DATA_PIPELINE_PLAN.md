@@ -17,18 +17,18 @@ All chain data divided into 3 categories by access pattern:
 
 | Data | File Prefix | Source | Compression |
 |------|-------------|--------|-------------|
-| state leaf diffs | `leaves` | EVM exec | batch-64 + zstd |
-| account changesets | `acctcs` | EVM exec | columnar dict + zstd |
-| storage changesets | `storcs` | EVM exec | columnar dict + zstd |
-| block witnesses | `witness` | EVM exec | batch-64 + zstd |
+| state leaf diffs | `leaves` | EVM exec (计算) | batch-64 + zstd |
+| account changesets | `acctcs` | Erigon AccountChangeSet / EVM追高产出 | columnar dict + zstd |
+| storage changesets | `storcs` | Erigon StorageChangeSet / EVM追高产出 | columnar dict + zstd |
+| block witnesses | `witness` | EVM exec (计算) | batch-64 + zstd |
 
-### Category C — Index (key-ordered, random access, locally built)
+### Category C — Index (key-ordered, random access, separate stage)
 
 | Data | File Prefix | Source | Compression |
 |------|-------------|--------|-------------|
-| tx hash index | `txindex` | RecSplit(bodies) | RecSplit + Elias-Fano |
-| account history | `accthist` | RecSplit(acctcs) | RecSplit + varint + zstd |
-| storage history | `storhist` | RecSplit(storcs) | RecSplit + varint + zstd |
+| tx hash index | `txindex` | Keccak256(tx.RLP) from bodies | RecSplit + Elias-Fano |
+| account history | `accthist` | Erigon AccountsHistory table | RecSplit + varint + zstd |
+| storage history | `storhist` | Erigon StoragesHistory table | RecSplit + varint + zstd |
 
 **Key insight:** Category A+B can be downloaded via BT. Category C must be built locally (RecSplit is CPU-bound, not worth distributing).
 
@@ -209,9 +209,11 @@ H_head = current network head     (e.g. 20,050,000)
 for block = H_bt + 1 .. H_head:
     header, body = P2P.FetchBlock(block)
     Execute(header, body)               # full EVM
-    Accumulate(leaves, receipts, cs, witness)
+    Output: leaves, receipts, acctcs, storcs, witness
     if accumulated >= 8192:
         FlushSegment()                  # write to chain/*.cdat
+
+# accthist/storhist NOT computed here — deferred to separate stage
 ```
 
 ### Phase 4: Live Sync (consensus)
@@ -225,18 +227,18 @@ LIVE SYNC LOOP:
 
     # Write to MDBX hot buffer
     MDBX.Put(PlainState changes)
-    MDBX.Put(hot leaves / receipts / cs / witness)
-
-    # Accumulate for segment flush
-    histAccumulator.AddChanges(block)
+    MDBX.Put(hot leaves / receipts / acctcs / storcs / witness)
 
     if hotBlocks >= 8192:
         # Background: freeze oldest 8192 blocks → chain/*.cdat
         FreezeSegment()
-        # Background: build RecSplit indices
-        BuildIndices()
         # Background: create torrent + seed to network
         SeedTorrent()
+
+# Separate stage (background, non-blocking):
+#   txindex:  built from bodies  (Keccak256(tx.RLP) → blockNum, RecSplit)
+#   accthist: built from Erigon AccountsHistory or acctcs (RecSplit)
+#   storhist: built from Erigon StoragesHistory or storcs (RecSplit)
 ```
 
 ---
@@ -264,17 +266,22 @@ Encoding per type:
 After freeze: delete frozen blocks from MDBX
 ```
 
-### Thread 2: Index Builder (MEDIUM priority)
+### Thread 2: Index Builder (MEDIUM priority, separate stage)
 
-Triggers after new segments are frozen. CPU-bound.
+Background stage, not inline with EVM execution. CPU-bound.
 
 ```
-Input:  chain/bodies.*.cdat, chain/acctcs.*.cdat, chain/storcs.*.cdat
-Output: chain/txindex.cidx+cdat, chain/accthist.cidx+cdat, chain/storhist.cidx+cdat
+txindex:
+  Input:  chain/bodies.*.cdat (scan tx, compute Keccak256(tx.RLP))
+  Output: chain/txindex.cidx+cdat (RecSplit + Elias-Fano)
 
-txindex:  RecSplit(txHash→blockNum) + Elias-Fano block boundaries
-accthist: RecSplit(addr→blocks[]) + delta-varint + zstd
-storhist: RecSplit(addr+slot→blocks[]) + delta-varint + zstd
+accthist:
+  Input:  Erigon AccountsHistory table or chain/acctcs.*.cdat
+  Output: chain/accthist.cidx+cdat (RecSplit + delta-varint + zstd)
+
+storhist:
+  Input:  Erigon StoragesHistory table or chain/storcs.*.cdat
+  Output: chain/storhist.cidx+cdat (RecSplit + delta-varint + zstd)
 ```
 
 ### Thread 3: Torrent Seeder (LOW priority)
@@ -333,11 +340,11 @@ P4 (locally built):  txindex + accthist + storhist  ← NOT downloaded
 │     │                                                        │
 │     ├─ headers  → verify chain                               │
 │     ├─ leaves   → replay PlainState (no EVM)  → state at H_bt│
-│     ├─ bodies   → [bg] build txindex                         │
+│     ├─ bodies   → ready                                      │
 │     ├─ senders  → ready                                      │
 │     ├─ receipts → ready                                      │
-│     ├─ acctcs   → [bg] build accthist                        │
-│     └─ storcs   → [bg] build storhist                        │
+│     ├─ acctcs   → ready                                      │
+│     └─ storcs   → ready                                      │
 │                                                              │
 │  State ready: headers + leaves replayed to H_bt              │
 └──────────────────────────────────────────────────────────────┘
@@ -346,10 +353,11 @@ P4 (locally built):  txindex + accthist + storhist  ← NOT downloaded
 ┌──────────────────────────────────────────────────────────────┐
 │                   EVM CATCH-UP (H_bt → H_head)               │
 │                                                              │
-│  P2P blocks ──→ EVM Execute ──→ all outputs                  │
-│     block H_bt+1 .. H_head      (leaves, receipts, cs, etc.) │
-│                                                              │
-│  Accumulated outputs → chain/*.cdat (every 8192 blocks)      │
+│  P2P blocks ──→ EVM Execute ──→ outputs                      │
+│     block H_bt+1 .. H_head      leaves, receipts, acctcs,    │
+│                                 storcs, witness               │
+│  Accumulated → chain/*.cdat (every 8192 blocks)              │
+│  accthist/storhist: NOT here, separate stage later           │
 └──────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -360,8 +368,12 @@ P4 (locally built):  txindex + accthist + storhist  ← NOT downloaded
 │                                                              │
 │  Every 8192 blocks:                                          │
 │    [bg] Freeze → chain/*.cdat                                │
-│    [bg] Build indices (txindex, accthist, storhist)           │
 │    [bg] Create torrent + seed                                │
+│                                                              │
+│  Separate stage (async):                                     │
+│    txindex  ← bodies    (RecSplit)                            │
+│    accthist ← acctcs    (RecSplit)                            │
+│    storhist ← storcs    (RecSplit)                            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
