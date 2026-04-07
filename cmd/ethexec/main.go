@@ -240,15 +240,17 @@ func run(c *cli.Context) error {
 		return err
 	}
 	logger := log2.New()
+	// Windows counts writable mmap as committed memory. Avoid WriteMap()
+	// and use conservative MapSize. MDBX auto-grows via GrowthStep.
+	// Reth's 2.1TB MDBX works fine because it opens Readonly (no commit charge).
 	db, err := mdbx.NewMDBX(logger).
 		Path(datadir).
 		Label(kv.ChainDB).
 		PageSize(4096).
 		MapSize(64 * datasize.GB).
-		GrowthStep(4 * datasize.GB).
-		WriteMap().
+		GrowthStep(2 * datasize.GB).
 		WriteMergeThreshold(4 * 8192).
-		DirtySpace(uint64(1 * datasize.GB)).
+		DirtySpace(uint64(512 * datasize.MB)).
 		DBVerbosity(kv.DBVerbosityLvl(2)).
 		Open(context.Background())
 	if err != nil {
@@ -360,10 +362,9 @@ func runVerifyJournal(c *cli.Context) error {
 		Path(dbPath).
 		Label(kv.ChainDB).
 		PageSize(4096).
-		MapSize(64 * datasize.GB).
-		GrowthStep(4 * datasize.GB).
-		WriteMap().
-		DirtySpace(uint64(1 * datasize.GB)).
+		MapSize(4 * datasize.GB).
+		GrowthStep(1 * datasize.GB).
+		DirtySpace(uint64(256 * datasize.MB)).
 		DBVerbosity(kv.DBVerbosityLvl(2)).
 		Open(context.Background())
 	if err != nil {
@@ -815,7 +816,7 @@ func runRebuildState(c *cli.Context) error {
 		Path(datadir).
 		Label(kv.ChainDB).
 		PageSize(4096).
-		MapSize(64 * datasize.GB).
+		MapSize(1 * datasize.GB).   // start small, auto-grows via GrowthStep
 		GrowthStep(1 * datasize.GB).
 		DirtySpace(uint64(128 * datasize.MB)).
 		DBVerbosity(kv.DBVerbosityLvl(2)).
