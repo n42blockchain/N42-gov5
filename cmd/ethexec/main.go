@@ -898,26 +898,16 @@ func runRebuildState(c *cli.Context) error {
 	}
 
 	logger := log2.New()
-	// MapSize determines Windows commit charge (even for empty file).
-	// Start at 2GB, reopen with larger size if MDBX_MAP_FULL.
-	mapSizeGB := 2
-	var db kv.RwDB
-	for {
-		var err error
-		db, err = mdbx.NewMDBX(logger).
-			Path(datadir).
-			Label(kv.ChainDB).
-			PageSize(4096).
-			MapSize(datasize.ByteSize(mapSizeGB) * datasize.GB).
-			GrowthStep(2 * datasize.GB).
-			DirtySpace(uint64(128 * datasize.MB)).
-			DBVerbosity(kv.DBVerbosityLvl(2)).
-			Open(context.Background())
-		if err != nil {
-			return fmt.Errorf("open mdbx: %w", err)
-		}
-		log.Info("MDBX opened", "mapSizeGB", mapSizeGB)
-		break
+	db, err := mdbx.NewMDBX(logger).
+		Path(datadir).
+		Label(kv.ChainDB).
+		PageSize(4096).
+		MapSize(64 * datasize.GB).
+		GrowthStep(2 * datasize.GB).
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open mdbx: %w", err)
 	}
 	defer db.Close()
 
