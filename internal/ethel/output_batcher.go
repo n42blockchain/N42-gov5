@@ -169,6 +169,10 @@ func (b *outputBatcher) flushOneBatch(n int) error {
 		}
 
 		// Normal write — table needs all n entries.
+		// Skip tables with 0 entries (e.g. --leaves-only mode skips receipts/changesets).
+		if len(tb.entries) == 0 {
+			continue
+		}
 		if len(tb.entries) < n {
 			return fmt.Errorf("output batcher: table %s has %d entries, need %d", name, len(tb.entries), n)
 		}
