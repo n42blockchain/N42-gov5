@@ -28,9 +28,27 @@ const memLimitGB = 50 // flush when Go heap exceeds this (leave room for MDBX + 
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
 	t0 := time.Now()
 
-	journalTbl, err := freezer.NewFreezerTable(ancientDir, "leaves_journal", "c")
-	if err != nil {
-		return fmt.Errorf("open leaves_journal: %w", err)
+	// Try leaves_journal (freezer table) first, then leaves (SegmentStore).
+	// Try leaves_journal first, then leaves. Both are batch-64 compressed.
+	// Must use NewFreezerTableCompressed for batch auto-detection.
+	var journalTbl *freezer.FreezerTable
+	for _, name := range []string{"leaves_journal", "leaves"} {
+		tbl, err := freezer.NewFreezerTableCompressed(ancientDir, name, "c")
+		if err != nil {
+			continue
+		}
+		if tbl.Items() > 0 {
+			// Check first non-zero block for real data.
+			if d, err := tbl.Retrieve(0); err == nil && len(d) > 8 {
+				journalTbl = tbl
+				log.Info("Using leaves table", "name", name, "items", tbl.Items())
+				break
+			}
+		}
+		tbl.Close()
+	}
+	if journalTbl == nil {
+		return fmt.Errorf("no valid leaves data found in %s", ancientDir)
 	}
 	defer journalTbl.Close()
 	items := journalTbl.Items()
