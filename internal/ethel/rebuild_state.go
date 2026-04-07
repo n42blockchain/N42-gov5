@@ -29,35 +29,17 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	t0 := time.Now()
 
 	// Try leaves_journal (freezer table) first, then leaves (SegmentStore).
-	// Open leaves table with batch-64 support.
-	// Use NewFreezerTable + ForceBatchSize to avoid NewFreezerTableCompressed
-	// which scans directory for zdict files and may touch other large files.
-	var journalTbl *freezer.FreezerTable
-	for _, name := range []string{"leaves", "leaves_journal"} {
-		tbl, err := freezer.NewFreezerTable(ancientDir, name, "c")
-		if err != nil {
-			continue
-		}
-		if tbl.Items() == 0 {
-			tbl.Close()
-			continue
-		}
-		tbl.ForceBatchSize(freezer.BatchSize)
-		tbl.SetCompressed(true)
-		if d, err := tbl.Retrieve(0); err == nil && len(d) > 8 {
-			journalTbl = tbl
-			log.Info("Using leaves table", "name", name, "items", tbl.Items())
-			break
-		}
-		tbl.Close()
+	// Open leaves table (batch-64 compressed, leaves.cidx + leaves.NNNN.cdat).
+	leavesTbl, err := freezer.NewFreezerTable(ancientDir, "leaves", "c")
+	if err != nil {
+		return fmt.Errorf("open leaves: %w", err)
 	}
-	if journalTbl == nil {
-		return fmt.Errorf("no valid leaves data found in %s", ancientDir)
-	}
-	defer journalTbl.Close()
-	items := journalTbl.Items()
+	defer leavesTbl.Close()
+	leavesTbl.ForceBatchSize(freezer.BatchSize)
+	leavesTbl.SetCompressed(true)
+	items := leavesTbl.Items()
 	if items == 0 {
-		return fmt.Errorf("leaves_journal is empty")
+		return fmt.Errorf("leaves table is empty (leaves.cidx has 0 entries)")
 	}
 	if endBlock == 0 || endBlock > items {
 		endBlock = items
@@ -86,7 +68,7 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 			return ctx.Err()
 		}
 
-		data, err := journalTbl.Retrieve(blockNum)
+		data, err := leavesTbl.Retrieve(blockNum)
 		if err != nil {
 			return fmt.Errorf("read block %d: %w", blockNum, err)
 		}
