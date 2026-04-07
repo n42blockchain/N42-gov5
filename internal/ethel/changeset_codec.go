@@ -3,7 +3,7 @@
 //
 // changeset_codec.go implements compact changeset encoding for the freezer.
 // Account changesets: [count:2LE] + per entry: [addr:20][valLen:1][value]
-// Storage changesets: address-grouped to avoid repeating addr+inc per slot.
+// Storage changesets: address-grouped to avoid repeating addr per slot.
 
 package ethel
 
@@ -17,7 +17,6 @@ import (
 
 // EncodeAccountChanges encodes account changesets compactly.
 // Format: [count:2LE] + per entry: [addr:20][valLen:1][value:0-N]
-// Values are already Erigon V2 compact (bitflag + varint).
 func EncodeAccountChanges(cs *changeset.ChangeSet) []byte {
 	if cs == nil || cs.Len() == 0 {
 		return nil
@@ -29,7 +28,7 @@ func EncodeAccountChanges(cs *changeset.ChangeSet) []byte {
 		if len(c.Key) < 20 {
 			continue
 		}
-		buf = append(buf, c.Key[:20]...) // address
+		buf = append(buf, c.Key[:20]...)
 		buf = append(buf, byte(len(c.Value)))
 		buf = append(buf, c.Value...)
 	}
@@ -41,51 +40,48 @@ func EncodeAccountChanges(cs *changeset.ChangeSet) []byte {
 //
 //	[addrCount:2LE]
 //	per address:
-//	  [addr:20][incarnation:2BE][slotCount:2LE]
+//	  [addr:20][slotCount:2LE]
 //	  per slot:
 //	    [slotKey:32][valLen:1][value:0-32]
-//
-// Grouping avoids repeating the 22-byte addr+inc prefix per slot.
 func EncodeStorageChanges(cs *changeset.ChangeSet) []byte {
 	if cs == nil || cs.Len() == 0 {
 		return nil
 	}
 	sort.Sort(cs)
 
-	// Group by address+incarnation (first 22 bytes of key).
 	type slotEntry struct {
 		key   []byte // 32 bytes
-		value []byte // 0-32 bytes
+		value []byte
 	}
 	type addrGroup struct {
-		prefix [22]byte // addr(20) + incarnation(2)
-		slots  []slotEntry
+		addr  [20]byte
+		slots []slotEntry
 	}
 
 	var groups []addrGroup
 	var cur *addrGroup
 	for _, c := range cs.Changes {
-		if len(c.Key) < 54 { // addr(20)+inc(2)+slot(32)
+		if len(c.Key) < 52 { // addr(20)+slot(32)
 			continue
 		}
-		var prefix [22]byte
-		copy(prefix[:], c.Key[:22])
-		if cur == nil || cur.prefix != prefix {
-			groups = append(groups, addrGroup{prefix: prefix})
+		var addr [20]byte
+		copy(addr[:], c.Key[:20])
+		if cur == nil || cur.addr != addr {
+			groups = append(groups, addrGroup{addr: addr})
 			cur = &groups[len(groups)-1]
 		}
-		cur.slots = append(cur.slots, slotEntry{key: c.Key[22:54], value: c.Value})
+		cur.slots = append(cur.slots, slotEntry{key: c.Key[20:52], value: c.Value})
 	}
 
-	buf := make([]byte, 0, 2+len(groups)*26+cs.Len()*36)
+	buf := make([]byte, 0, 2+len(groups)*24+cs.Len()*36)
 	buf = appendUint16LE(buf, uint16(len(groups)))
 	for _, g := range groups {
-		buf = append(buf, g.prefix[:]...)           // addr(20)+inc(2)
+		buf = append(buf, g.addr[:]...)                 // addr(20)
 		buf = appendUint16LE(buf, uint16(len(g.slots)))
 		for _, s := range g.slots {
-			buf = append(buf, s.key...)              // slotKey(32)
-			buf = append(buf, byte(len(s.value)))    // valLen(1)
-			buf = append(buf, s.value...)             // value(0-32)
+			buf = append(buf, s.key...)                 // slotKey(32)
+			buf = append(buf, byte(len(s.value)))
+			buf = append(buf, s.value...)
 		}
 	}
 	return buf
@@ -98,7 +94,6 @@ func appendUint16LE(buf []byte, v uint16) []byte {
 }
 
 // DecodeAccountChanges decodes compact account changeset bytes.
-// Returns list of (address, originalValue) pairs.
 func DecodeAccountChanges(data []byte) (addrs [][20]byte, values [][]byte, err error) {
 	if len(data) < 2 {
 		return nil, nil, nil
@@ -125,7 +120,7 @@ func DecodeAccountChanges(data []byte) (addrs [][20]byte, values [][]byte, err e
 }
 
 // DecodeStorageChanges decodes address-grouped storage changeset bytes.
-// Returns list of (compositeKey[54], originalValue) pairs.
+// Returns list of (compositeKey[52], originalValue) pairs.
 func DecodeStorageChanges(data []byte) (keys [][]byte, values [][]byte, err error) {
 	if len(data) < 2 {
 		return nil, nil, nil
@@ -133,20 +128,20 @@ func DecodeStorageChanges(data []byte) (keys [][]byte, values [][]byte, err erro
 	addrCount := int(binary.LittleEndian.Uint16(data[0:2]))
 	pos := 2
 	for g := 0; g < addrCount; g++ {
-		if pos+24 > len(data) { // addr(20)+inc(2)+slotCount(2)
+		if pos+22 > len(data) { // addr(20)+slotCount(2)
 			return nil, nil, fmt.Errorf("truncated addr group %d", g)
 		}
-		prefix := data[pos : pos+22] // addr(20)+inc(2)
-		pos += 22
+		prefix := data[pos : pos+20] // addr(20)
+		pos += 20
 		slotCount := int(binary.LittleEndian.Uint16(data[pos : pos+2]))
 		pos += 2
 		for s := 0; s < slotCount; s++ {
-			if pos+33 > len(data) { // key(32)+valLen(1)
+			if pos+33 > len(data) {
 				return nil, nil, fmt.Errorf("truncated slot %d in group %d", s, g)
 			}
-			compositeKey := make([]byte, 54)
-			copy(compositeKey[:22], prefix)
-			copy(compositeKey[22:], data[pos:pos+32])
+			compositeKey := make([]byte, 52)
+			copy(compositeKey[:20], prefix)
+			copy(compositeKey[20:], data[pos:pos+32])
 			pos += 32
 			valLen := int(data[pos])
 			pos++
