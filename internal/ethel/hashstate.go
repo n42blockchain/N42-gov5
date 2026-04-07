@@ -4,7 +4,6 @@
 package ethel
 
 import (
-	"encoding/binary"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -122,18 +121,13 @@ func hashAllStorage(tx kv.RwTx) error {
 		if err != nil {
 			return err
 		}
-		if len(k) < 54 {
+		if len(k) < 52 {
 			continue
 		}
-		addrHash := crypto.Keccak256(k[:20])
-		incarnation := binary.BigEndian.Uint16(k[20:22])
-		slotHash := crypto.Keccak256(k[22:54])
-
+		// Plain: addr(20)+slot(32)=52B → Hashed: addrHash(32)+inc0(8)+slotHash(32)=72B
 		var compositeKey [72]byte
-		copy(compositeKey[:32], addrHash)
-		binary.BigEndian.PutUint64(compositeKey[32:40], uint64(incarnation))
-		copy(compositeKey[40:72], slotHash)
-
+		copy(compositeKey[:32], crypto.Keccak256(k[:20]))
+		copy(compositeKey[40:72], crypto.Keccak256(k[20:52]))
 		if err := tx.Put(kv.HashedStorage, compositeKey[:], v); err != nil {
 			return err
 		}
@@ -206,20 +200,12 @@ func InitHashState(tx kv.RwTx) error {
 		if err != nil {
 			return err
 		}
-		if len(k) < 54 {
+		if len(k) < 52 {
 			continue
 		}
-		addrHash := crypto.Keccak256(k[:20])
-		incarnation := k[20:22] // 2-byte
-		slotHash := crypto.Keccak256(k[22:54])
-
-		// HashedStorage DupSort: full key = addrHash(32) + inc(8) + slotHash(32) = 72
 		var compositeKey [72]byte
-		copy(compositeKey[:32], addrHash)
-		// Zero-pad 2-byte incarnation to 8-byte BE
-		binary.BigEndian.PutUint64(compositeKey[32:40], uint64(binary.BigEndian.Uint16(incarnation)))
-		copy(compositeKey[40:72], slotHash)
-
+		copy(compositeKey[:32], crypto.Keccak256(k[:20]))
+		copy(compositeKey[40:72], crypto.Keccak256(k[20:52]))
 		if err := tx.Put(kv.HashedStorage, compositeKey[:], v); err != nil {
 			return fmt.Errorf("put HashedStorage: %w", err)
 		}

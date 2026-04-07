@@ -355,8 +355,8 @@ var N42TableCfg = kv.TableCfg{
 	HashedStorage: {
 		Flags:                     kv.DupSort,
 		AutoDupSortKeysConversion: true,
-		DupFromLen:                64, // addrHash(32)+slotHash(32), no incarnation
-		DupToLen:                  32, // DupSort key = addrHash(32)
+		DupFromLen:                72, // addrHash(32)+incarnation(8)+slotHash(32)
+		DupToLen:                  40, // DupSort key = addrHash(32)+incarnation(8)
 	},
 	TrieOfStorage: {Flags: kv.DupSort},
 }
