@@ -814,20 +814,16 @@ func runRebuildState(c *cli.Context) error {
 	logger := log2.New()
 	// Use Accede if MDBX exists (reads geometry from file, no extra mmap).
 	// Otherwise create new with small MapSize.
-	mdbxPath := filepath.Join(datadir, "mdbx.dat")
+	// On Windows, non-readonly MDBX mmap uses PAGE_READWRITE which counts
+	// the entire Geo.Upper as committed memory. Force small geometry.
 	mdbxBuilder := mdbx.NewMDBX(logger).
 		Path(datadir).
 		Label(kv.ChainDB).
+		PageSize(4096).
+		MapSize(64 * datasize.GB).    // upper limit for PlainState rebuild
+		GrowthStep(1 * datasize.GB).
+		DirtySpace(uint64(128 * datasize.MB)).
 		DBVerbosity(kv.DBVerbosityLvl(2))
-	if _, err := os.Stat(mdbxPath); err == nil {
-		mdbxBuilder = mdbxBuilder.Accede()
-		log.Info("Opening existing MDBX with Accede (no extra mmap)")
-	} else {
-		mdbxBuilder = mdbxBuilder.
-			PageSize(4096).
-			MapSize(1 * datasize.GB).
-			GrowthStep(1 * datasize.GB)
-	}
 	db, err := mdbxBuilder.Open(context.Background())
 	if err != nil {
 		return fmt.Errorf("open mdbx: %w", err)

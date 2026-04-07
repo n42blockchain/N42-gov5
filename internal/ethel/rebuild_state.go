@@ -23,7 +23,7 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-const memLimitGB = 80 // flush when Go heap exceeds this
+const memLimitGB = 50 // flush when Go heap exceeds this (leave room for MDBX + OS)
 
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
 	t0 := time.Now()
