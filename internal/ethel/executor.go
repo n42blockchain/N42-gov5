@@ -18,6 +18,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -322,8 +323,16 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
 
-	// Attach HashOnlyComputer to keep HashedAccounts in sync incrementally.
-	if e.cfg.VerifyInterval > 0 {
+	// On verify blocks, use TrieRootComputer (computes real CalcTrieRoot).
+	// On other blocks, use HashOnlyComputer (cheap incremental hashed table update).
+	// Pre-Byzantium blocks also need TrieRootComputer for per-tx PostState in receipts.
+	preByzantium := !e.chainCfg.IsByzantium(blockNum)
+	needTRC := shouldVerify || (preByzantium && e.cfg.VerifyInterval > 0)
+	if needTRC {
+		trc := commitment.NewTrieRootComputer()
+		trc.SetRwTx(tx)
+		ibs.SetRootComputer(trc)
+	} else if e.cfg.VerifyInterval > 0 {
 		ibs.SetRootComputer(NewHashOnlyComputer(tx))
 	}
 
@@ -348,12 +357,31 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 			return fmt.Errorf("gas mismatch: got %d, want %d", result.GasUsed, header.GasUsed)
 		}
 	}
-
-	// 5. Flush dirty accounts to HashedAccounts via HashOnlyComputer.
-	// Must run every block (not just verify blocks) to keep HashedAccounts
-	// incrementally in sync. Cost is O(dirty) per block, not O(all).
-	if e.cfg.VerifyInterval > 0 {
-		ibs.IntermediateRoot()
+	// 4b. Verify receipt hash.
+	if len(result.Receipts) > 0 {
+		receiptHash := EthReceiptHash(result.Receipts)
+		if receiptHash != header.ReceiptHash {
+			if e.cfg.SkipErrors {
+				log.Warn("Receipt hash mismatch (skipped)",
+					"block", blockNum, "got", receiptHash.Hex(), "want", header.ReceiptHash.Hex())
+			} else {
+				return fmt.Errorf("receipt hash mismatch at block %d: got %s, want %s",
+					blockNum, receiptHash.Hex(), header.ReceiptHash.Hex())
+			}
+		}
+	}
+	// 5. Flush dirty state to HashedAccounts/HashedStorage.
+	// On verify blocks (TrieRootComputer): also computes CalcTrieRoot → real root.
+	// On other blocks (HashOnlyComputer): just updates hashed tables → zero hash.
+	// Pre-Byzantium blocks already called IntermediateRoot per-tx for PostState,
+	// so only call here for non-pre-Byzantium or when it wasn't called yet.
+	var blockRoot types.Hash
+	if e.cfg.VerifyInterval > 0 && !preByzantium {
+		blockRoot = ibs.IntermediateRoot()
+	} else if e.cfg.VerifyInterval > 0 && preByzantium {
+		// Pre-Byzantium already called IntermediateRoot per-tx.
+		// Call once more to capture post-Finalize state root.
+		blockRoot = ibs.IntermediateRoot()
 	}
 
 	t2 := time.Now()
@@ -372,19 +400,13 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	}
 
 	// 8. Verify state root (if enabled).
-	// HashedAccounts are kept in sync by HashOnlyComputer; only CalcTrieRoot needed.
+	// TrieRootComputer already computed the real root in step 5.
 	if shouldVerify {
-		computedRoot, err := CalcStateRoot(tx)
-		if err != nil {
-			return fmt.Errorf("state root computation: %w", err)
-		}
-		if computedRoot != header.Root {
+		if blockRoot != header.Root {
 			return fmt.Errorf("state root mismatch at block %d: computed %s, expected %s",
-				blockNum, computedRoot.Hex(), header.Root.Hex())
+				blockNum, blockRoot.Hex(), header.Root.Hex())
 		}
-		if blockNum%e.cfg.VerifyInterval == 0 {
-			log.Info("State root verified", "block", blockNum, "root", header.Root.Hex())
-		}
+		log.Info("State root verified", "block", blockNum, "root", header.Root.Hex())
 	}
 
 	t5 := time.Now()

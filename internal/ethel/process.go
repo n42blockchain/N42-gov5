@@ -84,6 +84,8 @@ func ProcessBlock(
 
 	signer := transaction.MakeSigner(chainCfg, header.Number.ToBig())
 
+	preByzantium := !chainCfg.IsByzantium(header.Number.Uint64())
+
 	for i, txn := range txs {
 		ibs.Prepare(txn.Hash(), blockHash, i)
 		receipt, _, err := iinternal.ApplyTransaction(
@@ -94,6 +96,11 @@ func ProcessBlock(
 			return nil, fmt.Errorf("tx %d: %w", i, err)
 		}
 		if receipt != nil {
+			// Pre-Byzantium: set PostState = intermediate state root after each tx.
+			if preByzantium {
+				root := ibs.IntermediateRoot()
+				receipt.PostState = root[:]
+			}
 			receipts = append(receipts, receipt)
 		}
 
