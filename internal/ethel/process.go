@@ -84,7 +84,10 @@ func ProcessBlock(
 
 	signer := transaction.MakeSigner(chainCfg, header.Number.ToBig())
 
+	// Pre-Byzantium receipt PostState requires per-tx IntermediateRoot.
+	// Only compute when a real RootComputer is set (verify blocks with TrieRootComputer).
 	preByzantium := !chainCfg.IsByzantium(header.Number.Uint64())
+	computePostState := preByzantium && ibs.HasRootComputer()
 
 	for i, txn := range txs {
 		ibs.Prepare(txn.Hash(), blockHash, i)
@@ -96,8 +99,7 @@ func ProcessBlock(
 			return nil, fmt.Errorf("tx %d: %w", i, err)
 		}
 		if receipt != nil {
-			// Pre-Byzantium: set PostState = intermediate state root after each tx.
-			if preByzantium {
+			if computePostState {
 				root := ibs.IntermediateRoot()
 				receipt.PostState = root[:]
 			}

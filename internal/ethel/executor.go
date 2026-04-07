@@ -323,12 +323,9 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
 
-	// On verify blocks, use TrieRootComputer (computes real CalcTrieRoot).
-	// On other blocks, use HashOnlyComputer (cheap incremental hashed table update).
-	// Pre-Byzantium blocks also need TrieRootComputer for per-tx PostState in receipts.
-	preByzantium := !e.chainCfg.IsByzantium(blockNum)
-	needTRC := shouldVerify || (preByzantium && e.cfg.VerifyInterval > 0)
-	if needTRC {
+	// TrieRootComputer only on verify blocks (computes real CalcTrieRoot).
+	// HashOnlyComputer on other blocks (cheap incremental hashed table update).
+	if shouldVerify {
 		trc := commitment.NewTrieRootComputer()
 		trc.SetRwTx(tx)
 		ibs.SetRootComputer(trc)
@@ -338,7 +335,6 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	t1 := time.Now()
 	// 3. Process block (DAO fork, system contracts, EVM).
-	// Load pre-computed senders if available.
 	var senders []types.Address
 	senders = e.loadSenders(blockNum, len(body.Transactions))
 
@@ -357,35 +353,15 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 			return fmt.Errorf("gas mismatch: got %d, want %d", result.GasUsed, header.GasUsed)
 		}
 	}
-	// 4b. Verify receipt hash.
-	if len(result.Receipts) > 0 {
-		receiptHash := EthReceiptHash(result.Receipts)
-		if receiptHash != header.ReceiptHash {
-			if e.cfg.SkipErrors {
-				log.Warn("Receipt hash mismatch (skipped)",
-					"block", blockNum, "got", receiptHash.Hex(), "want", header.ReceiptHash.Hex())
-			} else {
-				return fmt.Errorf("receipt hash mismatch at block %d: got %s, want %s",
-					blockNum, receiptHash.Hex(), header.ReceiptHash.Hex())
-			}
-		}
-	}
-	// 5. Flush dirty state to HashedAccounts/HashedStorage.
-	// On verify blocks (TrieRootComputer): also computes CalcTrieRoot → real root.
-	// On other blocks (HashOnlyComputer): just updates hashed tables → zero hash.
-	// Pre-Byzantium blocks already called IntermediateRoot per-tx for PostState,
-	// so only call here for non-pre-Byzantium or when it wasn't called yet.
+
+	// 5. Flush dirty state to HashedAccounts/HashedStorage and compute root.
 	var blockRoot types.Hash
-	if e.cfg.VerifyInterval > 0 && !preByzantium {
-		blockRoot = ibs.IntermediateRoot()
-	} else if e.cfg.VerifyInterval > 0 && preByzantium {
-		// Pre-Byzantium already called IntermediateRoot per-tx.
-		// Call once more to capture post-Finalize state root.
+	if e.cfg.VerifyInterval > 0 {
 		blockRoot = ibs.IntermediateRoot()
 	}
 
 	t2 := time.Now()
-	// 6. Commit state changes to in-memory buffer (no MDBX writes).
+	// 6. Commit state changes to in-memory buffer.
 	rules := e.chainCfg.Rules(header.Number.Uint64())
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return fmt.Errorf("commit block state: %w", err)
@@ -399,9 +375,15 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		}
 	}
 
-	// 8. Verify state root (if enabled).
-	// TrieRootComputer already computed the real root in step 5.
+	// 8. Verify receipt hash and state root on verify blocks.
 	if shouldVerify {
+		if len(result.Receipts) > 0 {
+			receiptHash := EthReceiptHash(result.Receipts)
+			if receiptHash != header.ReceiptHash {
+				return fmt.Errorf("receipt hash mismatch at block %d: got %s, want %s",
+					blockNum, receiptHash.Hex(), header.ReceiptHash.Hex())
+			}
+		}
 		if blockRoot != header.Root {
 			return fmt.Errorf("state root mismatch at block %d: computed %s, expected %s",
 				blockNum, blockRoot.Hex(), header.Root.Hex())
