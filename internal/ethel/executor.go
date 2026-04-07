@@ -60,7 +60,7 @@ type Executor struct {
 	// Pre-computed senders from sender-recovery stage.
 	senderFreezer *freezer.Freezer
 	senderTable   *freezer.FreezerTable
-	senderStore   *senderSegmentReader // SegmentStore-based senders (chain/senders.cidx)
+	senderStore   *SenderSegmentReader // SegmentStore-based senders (chain/senders.cidx)
 	senderMisses  uint64
 
 	// Output batcher: accumulates entries, writes in batches.
@@ -95,7 +95,7 @@ func (e *Executor) SetSenderFreezer(f *freezer.Freezer) {
 }
 
 // SetSenderStore sets the SegmentStore-based senders reader (chain/senders.cidx).
-func (e *Executor) SetSenderStore(r *senderSegmentReader) {
+func (e *Executor) SetSenderStore(r *SenderSegmentReader) {
 	e.senderStore = r
 }
 

@@ -15,8 +15,8 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-// senderSegmentReader reads senders from SegmentStore batch-64 format.
-type senderSegmentReader struct {
+// SenderSegmentReader reads senders from SegmentStore batch-64 format.
+type SenderSegmentReader struct {
 	store     *cscompact.SegmentStoreReader
 	dec       *zstd.Decoder
 	cachedBatch uint64
@@ -24,7 +24,7 @@ type senderSegmentReader struct {
 }
 
 // OpenSenderStore opens a senders SegmentStore for reading.
-func OpenSenderStore(chainDir string) (*senderSegmentReader, error) {
+func OpenSenderStore(chainDir string) (*SenderSegmentReader, error) {
 	store, err := cscompact.OpenSegmentStore(chainDir, "senders")
 	if err != nil {
 		return nil, err
@@ -34,7 +34,7 @@ func OpenSenderStore(chainDir string) (*senderSegmentReader, error) {
 		return nil, nil
 	}
 	dec, _ := zstd.NewReader(nil)
-	return &senderSegmentReader{
+	return &SenderSegmentReader{
 		store:       store,
 		dec:         dec,
 		cachedBatch: ^uint64(0), // invalid, forces first load
@@ -42,12 +42,12 @@ func OpenSenderStore(chainDir string) (*senderSegmentReader, error) {
 }
 
 // MaxBlock returns the highest block number covered by this store.
-func (r *senderSegmentReader) MaxBlock() uint64 {
+func (r *SenderSegmentReader) MaxBlock() uint64 {
 	return r.store.SegmentCount() * uint64(freezer.BatchSize)
 }
 
 // ReadBlock returns the concatenated sender addresses (20B each) for a block.
-func (r *senderSegmentReader) ReadBlock(blockNum uint64) ([]byte, error) {
+func (r *SenderSegmentReader) ReadBlock(blockNum uint64) ([]byte, error) {
 	batchNum := blockNum / uint64(freezer.BatchSize)
 	if batchNum >= r.store.SegmentCount() {
 		return nil, nil
@@ -67,7 +67,7 @@ func (r *senderSegmentReader) ReadBlock(blockNum uint64) ([]byte, error) {
 	return r.cachedData[idx], nil
 }
 
-func (r *senderSegmentReader) loadBatch(batchNum uint64) error {
+func (r *SenderSegmentReader) loadBatch(batchNum uint64) error {
 	raw, err := r.store.ReadSegmentData(batchNum)
 	if err != nil {
 		return err
@@ -100,7 +100,7 @@ func (r *senderSegmentReader) loadBatch(batchNum uint64) error {
 	return nil
 }
 
-func (r *senderSegmentReader) Close() {
+func (r *SenderSegmentReader) Close() {
 	if r.store != nil {
 		r.store.Close()
 	}
