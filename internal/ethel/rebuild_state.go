@@ -130,16 +130,32 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 		"storage", len(storKeys),
 		"sortTime", sortElapsed.Truncate(time.Second))
 
-	// 4. Write to MDBX with Append (sequential, fastest).
-	log.Info("Writing PlainState to MDBX...")
+	// 4. Clear existing Account/Storage tables, then write sorted data.
+	log.Info("Clearing existing PlainState tables...")
 	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	if err := tx.ClearBucket(modules.Account); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("clear Account table: %w", err)
+	}
+	if err := tx.ClearBucket(modules.Storage); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("clear Storage table: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit clear: %w", err)
+	}
+
+	log.Info("Writing PlainState to MDBX...")
+	tx, err = db.BeginRw(ctx)
 	if err != nil {
 		return err
 	}
 
 	for i, addr := range acctKeys {
 		if err := tx.Append(modules.Account, addr[:], acctMap[addr]); err != nil {
-			// Append requires strict ordering; fall back to Put.
 			if err := tx.Put(modules.Account, addr[:], acctMap[addr]); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("write account %d: %w", i, err)
