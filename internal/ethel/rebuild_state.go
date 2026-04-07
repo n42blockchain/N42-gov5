@@ -25,7 +25,7 @@ import (
 // directly to MDBX. Each leaf is a Put (upsert) — MDBX handles dedup.
 // Block 0 contains genesis accounts, no genesis.json needed.
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
-	inputFreezer *freezer.Freezer, endBlock uint64,
+	endBlock uint64,
 ) error {
 	t0 := time.Now()
 
@@ -153,12 +153,16 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 		"elapsed", elapsed.Truncate(time.Second),
 		"blk/s", fmt.Sprintf("%.0f", float64(endBlock)/elapsed.Seconds()))
 
-	// Verify state root.
-	verifyStateRoot(ctx, db, inputFreezer, endBlock-1, t0)
 	return nil
 }
 
-func verifyStateRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Freezer, blockNum uint64, t0 time.Time) {
+// VerifyRebuildRoot verifies the rebuilt PlainState root against a header.
+func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Freezer, endBlock uint64) {
+	if endBlock == 0 {
+		return
+	}
+	blockNum := endBlock - 1
+	t0 := time.Now()
 	log.Info("Computing state root for verification...", "block", blockNum)
 
 	headerData, err := inputFreezer.Ancient(freezer.TableHeaders, blockNum)

@@ -806,13 +806,6 @@ func runRebuildState(c *cli.Context) error {
 	datadir := c.String("datadir")
 	endBlock := c.Uint64("end")
 
-	// Open Geth input freezer (for header verification).
-	inputF, err := freezer.New(ancientPath, 0)
-	if err != nil {
-		return fmt.Errorf("open input freezer: %w", err)
-	}
-	defer inputF.Close()
-
 	outAncient := filepath.Join(datadir, "ancient")
 
 	// Open MDBX for writing PlainState.
@@ -833,7 +826,21 @@ func runRebuildState(c *cli.Context) error {
 
 	ctx, cancel := withShutdown()
 	defer cancel()
-	return ethel.RebuildState(ctx, db, outAncient, inputF, endBlock)
+
+	if err := ethel.RebuildState(ctx, db, outAncient, endBlock); err != nil {
+		return err
+	}
+
+	// Open Geth input freezer AFTER rebuild (only for header root verification).
+	// Deferred to avoid mmap'ing 1.1TB of Geth ancient data during rebuild.
+	inputF, err := freezer.New(ancientPath, 0)
+	if err != nil {
+		log.Warn("Cannot open Geth freezer for verification", "err", err)
+		return nil
+	}
+	defer inputF.Close()
+	ethel.VerifyRebuildRoot(ctx, db, inputF, endBlock)
+	return nil
 }
 
 // detectRealTable returns the first table name that has real DupSort data
