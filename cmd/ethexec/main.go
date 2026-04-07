@@ -884,21 +884,29 @@ func runRebuildState(c *cli.Context) error {
 
 	outAncient := filepath.Join(datadir, "ancient")
 
-	// Open MDBX for writing PlainState.
+	// Auto-delete existing mdbx.dat for clean rebuild.
+	// ClearBucket on a full Storage table (40GB+) causes 185GB commit charge
+	// on Windows — MDBX must dirty all B+tree pages to free them.
+	mdbxPath := filepath.Join(datadir, "mdbx.dat")
+	mdbxLck := filepath.Join(datadir, "mdbx.lck")
+	if fi, err := os.Stat(mdbxPath); err == nil && fi.Size() > 1024*1024 {
+		log.Info("Removing old MDBX for clean rebuild",
+			"path", mdbxPath,
+			"size", fmt.Sprintf("%.1f GB", float64(fi.Size())/1e9))
+		os.Remove(mdbxPath)
+		os.Remove(mdbxLck)
+	}
+
 	logger := log2.New()
-	// Use Accede if MDBX exists (reads geometry from file, no extra mmap).
-	// Otherwise create new with small MapSize.
-	// On Windows, non-readonly MDBX mmap uses PAGE_READWRITE which counts
-	// the entire Geo.Upper as committed memory. Force small geometry.
-	mdbxBuilder := mdbx.NewMDBX(logger).
+	db, err := mdbx.NewMDBX(logger).
 		Path(datadir).
 		Label(kv.ChainDB).
 		PageSize(4096).
-		MapSize(64 * datasize.GB).    // upper limit for PlainState rebuild
+		MapSize(64 * datasize.GB).
 		GrowthStep(1 * datasize.GB).
 		DirtySpace(uint64(128 * datasize.MB)).
-		DBVerbosity(kv.DBVerbosityLvl(2))
-	db, err := mdbxBuilder.Open(context.Background())
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
 	if err != nil {
 		return fmt.Errorf("open mdbx: %w", err)
 	}
