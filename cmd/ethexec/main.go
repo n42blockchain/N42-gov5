@@ -821,10 +821,9 @@ func runRebuildState(c *cli.Context) error {
 		Path(datadir).
 		Label(kv.ChainDB).
 		PageSize(4096).
-		MapSize(2 * datasize.TB).
-		GrowthStep(4 * datasize.GB).
-		WriteMap().
-		DirtySpace(uint64(256 * datasize.MB)). // smaller to avoid OOM during rebuild
+		MapSize(256 * datasize.GB).
+		GrowthStep(1 * datasize.GB).
+		DirtySpace(uint64(128 * datasize.MB)).
 		DBVerbosity(kv.DBVerbosityLvl(2)).
 		Open(context.Background())
 	if err != nil {
