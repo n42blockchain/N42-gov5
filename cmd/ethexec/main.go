@@ -384,9 +384,13 @@ func run(c *cli.Context) error {
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
 
 	// Check for pre-computed senders: try SegmentStore in chain/, ancient/, then old freezer.
-	// TODO: SegmentStore senders from Reth may not match Geth body tx ordering.
-	// Disabled until verified. Using ecrecover from signatures for now.
-	log.Info("Senders: using ecrecover from tx signatures (no pre-computed senders)")
+	// Check for pre-computed senders in output freezer (chain/freezer/senders).
+	if senderTbl := outFreezer.Table("senders"); senderTbl != nil && senderTbl.Items() > 0 {
+		executor.SetSenderFreezer(outFreezer)
+		log.Info("Pre-computed senders detected", "items", senderTbl.Items())
+	} else {
+		log.Info("No pre-computed senders, using ecrecover from signatures")
+	}
 
 	// TODO: compact body reader has signature decoding issues (V/R/S columns).
 	// Disabled until fixed. Using Geth freezer for now.
@@ -821,7 +825,7 @@ func runReceiptCopy(c *cli.Context) error {
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
 	// Write receipts to the output ancient directory.
-	ancientOut := filepath.Join(datadir, "chain")
+	ancientOut := filepath.Join(datadir, "chain", "freezer")
 	if err := os.MkdirAll(ancientOut, 0755); err != nil {
 		return err
 	}
@@ -886,7 +890,7 @@ func runSenderRecovery(c *cli.Context) error {
 	defer f.Close()
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
-	ancientOut := filepath.Join(datadir, "chain")
+	ancientOut := filepath.Join(datadir, "chain", "freezer")
 	if err := os.MkdirAll(ancientOut, 0755); err != nil {
 		return err
 	}
