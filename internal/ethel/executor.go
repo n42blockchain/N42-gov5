@@ -14,6 +14,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
@@ -65,6 +66,10 @@ type Executor struct {
 	senderStore   *SenderSegmentReader // SegmentStore-based senders (chain/senders.cidx)
 	senderMisses  uint64
 
+	// Compact readers for columnar headers/bodies (alternative to Geth freezer).
+	compactHeaders *HeaderCompactReader
+	compactBodies  *BodyCompactReader
+
 	// Output batcher: accumulates entries, writes in batches.
 	outBatcher *outputBatcher
 
@@ -99,6 +104,12 @@ func (e *Executor) SetSenderFreezer(f *freezer.Freezer) {
 // SetSenderStore sets the SegmentStore-based senders reader (chain/senders.cidx).
 func (e *Executor) SetSenderStore(r *SenderSegmentReader) {
 	e.senderStore = r
+}
+
+// SetCompactReaders sets columnar header/body readers (alternative to Geth freezer).
+func (e *Executor) SetCompactReaders(hr *HeaderCompactReader, br *BodyCompactReader) {
+	e.compactHeaders = hr
+	e.compactBodies = br
 }
 
 // Run executes blocks from StartBlock to EndBlock.
@@ -389,8 +400,11 @@ func (e *Executor) processBlock(header *block.Header, body *GethBodyResult, ibs 
 	return ProcessBlock(e.chainCfg, e.engine, header, body.Transactions, uncles, ibs, e.makeBlockHashFunc(header), senders)
 }
 
-// readHeader reads and decodes a Geth RLP header from the freezer.
+// readHeader reads a header from compact reader or Geth freezer.
 func (e *Executor) readHeader(blockNum uint64) (*block.Header, error) {
+	if e.compactHeaders != nil {
+		return e.compactHeaders.ReadHeader(blockNum)
+	}
 	data, err := e.freezer.Ancient(freezer.TableHeaders, blockNum)
 	if err != nil {
 		return nil, fmt.Errorf("read header: %w", err)
@@ -398,8 +412,26 @@ func (e *Executor) readHeader(blockNum uint64) (*block.Header, error) {
 	return DecodeGethHeader(data)
 }
 
-// readBody reads and decodes a Geth RLP body from the freezer.
+// readBody reads a body from compact reader or Geth freezer.
 func (e *Executor) readBody(blockNum uint64) (*GethBodyResult, error) {
+	if e.compactBodies != nil {
+		decoded, err := e.compactBodies.ReadBody(blockNum)
+		if err != nil {
+			return nil, fmt.Errorf("read body: %w", err)
+		}
+		result := &GethBodyResult{
+			Transactions: decoded.Txs,
+			Withdrawals:  decoded.Withdrawals,
+		}
+		// Decode uncle RLP if present (pre-merge blocks only).
+		for _, rlpBytes := range decoded.UncleRLP {
+			var uncle block.Header
+			if err := rlp.DecodeBytes(rlpBytes, &uncle); err == nil {
+				result.Uncles = append(result.Uncles, &uncle)
+			}
+		}
+		return result, nil
+	}
 	data, err := e.freezer.Ancient(freezer.TableBodies, blockNum)
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)

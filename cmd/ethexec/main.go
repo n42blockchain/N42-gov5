@@ -393,6 +393,28 @@ func run(c *cli.Context) error {
 		log.Info("Pre-computed senders detected (freezer)", "items", senderTbl.Items())
 	}
 
+	// Try compact headers/bodies from chain/ or ancient/ directories.
+	for _, dir := range []string{filepath.Join(datadir, "chain"), filepath.Join(datadir, "ancient")} {
+		headerPath := filepath.Join(dir, "headers.cdat")
+		if _, err := os.Stat(headerPath); err != nil {
+			continue
+		}
+		hr, err := ethel.OpenHeaderCompact(headerPath)
+		if err != nil {
+			log.Warn("Cannot open compact headers", "dir", dir, "err", err)
+			continue
+		}
+		br, err := ethel.OpenBodyCompact(dir)
+		if err != nil {
+			hr.Close()
+			log.Warn("Cannot open compact bodies", "dir", dir, "err", err)
+			continue
+		}
+		executor.SetCompactReaders(hr, br)
+		log.Info("Using compact headers/bodies", "dir", dir)
+		break
+	}
+
 	ctx, cancel := withShutdown()
 	defer cancel()
 	return executor.Run(ctx)
