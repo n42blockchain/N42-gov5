@@ -38,6 +38,8 @@ type ExecutorConfig struct {
 	// They are rebuilt as a batch stage after sync completes.
 	// NoOutputs if true, skip writing output freezer (receipts, senders, etc.).
 	NoOutputs bool
+	// LeavesOnly if true, only write leaves_journal and block_witness (skip receipts, changesets, senders).
+	LeavesOnly bool
 }
 
 // Executor reads blocks from a Geth-compatible Freezer and re-executes
@@ -547,10 +549,12 @@ func (e *Executor) reportTimings(blockNum uint64) {
 func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *state.BufferedPlainStateWriter, witness *WitnessStateReader, dbTx kv.Tx) error {
 	b := e.outBatcher
 
-	// 1. Receipts.
-	receiptsData := EncodeReceiptsCompact(result.Receipts)
-	if err := b.addEntry(freezer.TableReceipts, "c", receiptsData); err != nil {
-		return fmt.Errorf("receipts: %w", err)
+	// 1. Receipts (skip in LeavesOnly mode).
+	if !e.cfg.LeavesOnly {
+		receiptsData := EncodeReceiptsCompact(result.Receipts)
+		if err := b.addEntry(freezer.TableReceipts, "c", receiptsData); err != nil {
+			return fmt.Errorf("receipts: %w", err)
+		}
 	}
 
 	// 2. Changesets + Leaves journal.
@@ -599,11 +603,13 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 			)
 		}
 	}
-	if err := b.addEntry(freezer.TableAccountChanges, "c", accCSBytes); err != nil {
-		return fmt.Errorf("account changes: %w", err)
-	}
-	if err := b.addEntry(freezer.TableStorageChanges, "c", stoCSBytes); err != nil {
-		return fmt.Errorf("storage changes: %w", err)
+	if !e.cfg.LeavesOnly {
+		if err := b.addEntry(freezer.TableAccountChanges, "c", accCSBytes); err != nil {
+			return fmt.Errorf("account changes: %w", err)
+		}
+		if err := b.addEntry(freezer.TableStorageChanges, "c", stoCSBytes); err != nil {
+			return fmt.Errorf("storage changes: %w", err)
+		}
 	}
 	if err := b.addEntry(freezer.TableLeavesJournal, "c", leavesData); err != nil {
 		return fmt.Errorf("leaves journal: %w", err)

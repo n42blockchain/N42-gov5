@@ -64,6 +64,7 @@ func main() {
 		&cli.Uint64Flag{Name: "verify", Usage: "State root verification interval (0=disabled)", Value: 0},
 		&cli.BoolFlag{Name: "skip-errors", Usage: "Log gas mismatches but continue execution"},
 		&cli.BoolFlag{Name: "no-outputs", Usage: "Skip writing output freezer (receipts, senders, witness, etc.)"},
+		&cli.BoolFlag{Name: "leaves-only", Usage: "Only write leaves_journal and block_witness (skip receipts, changesets)"},
 		&cli.BoolFlag{Name: "pprof", Usage: "Enable mutex/block profiling for pprof flame graphs"},
 	}
 
@@ -292,6 +293,7 @@ func run(c *cli.Context) error {
 	verifyInterval := c.Uint64("verify")
 	skipErrors := c.Bool("skip-errors")
 	noOutputs := c.Bool("no-outputs")
+	leavesOnly := c.Bool("leaves-only")
 
 	// Open Geth ancient freezer.
 	log.Info("Opening Geth ancient data", "path", ancientPath)
@@ -370,6 +372,7 @@ func run(c *cli.Context) error {
 		VerifyInterval: verifyInterval,
 		SkipErrors:     skipErrors,
 		NoOutputs:      noOutputs,
+		LeavesOnly:     leavesOnly,
 	}
 
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
