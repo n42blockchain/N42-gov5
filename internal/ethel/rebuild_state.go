@@ -2,7 +2,7 @@
 // This file is part of the N42 library.
 //
 // rebuild_state.go rebuilds PlainState from leaves journal files.
-// Reads all leaves into memory, sorts, then writes to MDBX with Append.
+// Reads leaves in chunks, flushes to MDBX when memory exceeds limit.
 
 package ethel
 
@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"runtime"
 	"sort"
 	"time"
 
@@ -21,15 +22,17 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
+const memoryLimitBytes = 100 * 1024 * 1024 * 1024 // 100 GB
+
 // RebuildState reads leaves from a freezer table, accumulates in memory,
-// then writes sorted PlainState to MDBX via Append.
-// Genesis state is included in leaves block 0 — no genesis.json needed.
+// flushes to MDBX when memory exceeds limit. No genesis.json needed —
+// block 0 leaves contain all genesis accounts.
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 	inputFreezer *freezer.Freezer, endBlock uint64,
 ) error {
 	t0 := time.Now()
 
-	// Open leaves_journal table directly (bypass freezer's frozen limit).
+	// Open leaves_journal table directly (bypass freezer frozen limit).
 	journalTbl, err := freezer.NewFreezerTable(ancientDir, "leaves_journal", "c")
 	if err != nil {
 		return fmt.Errorf("open leaves_journal: %w", err)
@@ -44,12 +47,30 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 	}
 	log.Info("Reading leaves journal", "blocks", endBlock, "items", items)
 
-	// Account: addr(20) → V2-encoded value
-	acctMap := make(map[types.Address][]byte, 500_000)
-	// Storage: addr(20)+slot(32)=52B → raw value
-	storMap := make(map[string][]byte, 5_000_000)
+	// Clear existing Account/Storage tables.
+	log.Info("Clearing existing PlainState tables...")
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	if err := tx.ClearBucket(modules.Account); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("clear Account: %w", err)
+	}
+	if err := tx.ClearBucket(modules.Storage); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("clear Storage: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit clear: %w", err)
+	}
 
+	// Accumulate leaves in memory, flush when memory exceeds limit.
+	acctMap := make(map[types.Address][]byte, 1_000_000)
+	storMap := make(map[string][]byte, 10_000_000)
+	flushCount := 0
 	lastLogTime := time.Now()
+
 	for blockNum := uint64(0); blockNum < endBlock; blockNum++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -60,7 +81,7 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 			return fmt.Errorf("read block %d: %w", blockNum, err)
 		}
 		if len(data) < 8 {
-			continue // empty block
+			continue
 		}
 
 		accounts, storage, err := DecodeLeavesJournal(data)
@@ -70,7 +91,7 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 
 		for _, a := range accounts {
 			if len(a.Value) == 0 {
-				delete(acctMap, a.Address)
+				acctMap[a.Address] = nil // mark deleted
 			} else {
 				acctMap[a.Address] = a.Value
 			}
@@ -81,13 +102,18 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 			copy(key[20:], s.Slot[:])
 			k := string(key[:])
 			if len(s.Value) == 0 {
-				delete(storMap, k)
+				storMap[k] = nil // mark deleted
 			} else {
 				storMap[k] = s.Value
 			}
 		}
 
+		// Periodic progress + memory check.
 		if time.Since(lastLogTime) > 5*time.Second {
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			allocGB := float64(m.Alloc) / 1e9
+			sysGB := float64(m.Sys) / 1e9
 			elapsed := time.Since(t0)
 			pct := float64(blockNum) / float64(endBlock) * 100
 			log.Info("Reading leaves",
@@ -95,109 +121,63 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 				"pct", fmt.Sprintf("%.1f%%", pct),
 				"accounts", len(acctMap),
 				"storage", len(storMap),
+				"allocGB", fmt.Sprintf("%.1f", allocGB),
+				"sysGB", fmt.Sprintf("%.1f", sysGB),
 				"elapsed", elapsed.Truncate(time.Second))
 			lastLogTime = time.Now()
+
+			// Flush if memory exceeds limit.
+			if m.Alloc > memoryLimitBytes {
+				log.Info("Memory limit reached, flushing to MDBX...",
+					"allocGB", fmt.Sprintf("%.1f", allocGB),
+					"accounts", len(acctMap),
+					"storage", len(storMap))
+				if err := flushMaps(ctx, db, acctMap, storMap); err != nil {
+					return err
+				}
+				acctMap = make(map[types.Address][]byte, 1_000_000)
+				storMap = make(map[string][]byte, 10_000_000)
+				runtime.GC()
+				flushCount++
+				log.Info("Flush complete, continuing", "flushCount", flushCount)
+			}
 		}
 	}
 
-	readElapsed := time.Since(t0)
-	log.Info("Leaves loaded into memory",
-		"blocks", endBlock,
+	// Final flush.
+	log.Info("Final flush to MDBX...",
 		"accounts", len(acctMap),
 		"storage", len(storMap),
-		"elapsed", readElapsed.Truncate(time.Second))
-
-	// 3. Sort keys for Append.
-	log.Info("Sorting account keys...")
-	acctKeys := make([]types.Address, 0, len(acctMap))
-	for addr := range acctMap {
-		acctKeys = append(acctKeys, addr)
-	}
-	sort.Slice(acctKeys, func(i, j int) bool {
-		return bytes.Compare(acctKeys[i][:], acctKeys[j][:]) < 0
-	})
-
-	log.Info("Sorting storage keys...")
-	storKeys := make([]string, 0, len(storMap))
-	for k := range storMap {
-		storKeys = append(storKeys, k)
-	}
-	sort.Strings(storKeys)
-
-	sortElapsed := time.Since(t0) - readElapsed
-	log.Info("Sort complete",
-		"accounts", len(acctKeys),
-		"storage", len(storKeys),
-		"sortTime", sortElapsed.Truncate(time.Second))
-
-	// 4. Clear existing Account/Storage tables, then write sorted data.
-	log.Info("Clearing existing PlainState tables...")
-	tx, err := db.BeginRw(ctx)
-	if err != nil {
+		"flushCount", flushCount)
+	if err := flushMaps(ctx, db, acctMap, storMap); err != nil {
 		return err
 	}
-	if err := tx.ClearBucket(modules.Account); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("clear Account table: %w", err)
-	}
-	if err := tx.ClearBucket(modules.Storage); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("clear Storage table: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit clear: %w", err)
-	}
+	acctMap = nil
+	storMap = nil
+	runtime.GC()
 
-	log.Info("Writing PlainState to MDBX...")
+	readElapsed := time.Since(t0)
+	log.Info("PlainState rebuild complete",
+		"blocks", endBlock,
+		"flushes", flushCount+1,
+		"elapsed", readElapsed.Truncate(time.Second))
+
+	// Write progress marker.
 	tx, err = db.BeginRw(ctx)
 	if err != nil {
 		return err
 	}
-
-	for i, addr := range acctKeys {
-		if err := tx.Append(modules.Account, addr[:], acctMap[addr]); err != nil {
-			if err := tx.Put(modules.Account, addr[:], acctMap[addr]); err != nil {
-				tx.Rollback()
-				return fmt.Errorf("write account %d: %w", i, err)
-			}
-		}
-		if i > 0 && i%500_000 == 0 {
-			log.Info("  accounts written", "count", i)
-		}
-	}
-
-	for i, k := range storKeys {
-		v := storMap[k]
-		if err := tx.Append(modules.Storage, []byte(k), v); err != nil {
-			if err := tx.Put(modules.Storage, []byte(k), v); err != nil {
-				tx.Rollback()
-				return fmt.Errorf("write storage %d: %w", i, err)
-			}
-		}
-		if i > 0 && i%2_000_000 == 0 {
-			log.Info("  storage written", "count", i)
-		}
-	}
-
-	// Write progress marker.
 	var progBuf [8]byte
 	binary.BigEndian.PutUint64(progBuf[:], endBlock-1)
 	if err := tx.Put("DbInfo", []byte("ethel_progress"), progBuf[:]); err != nil {
 		tx.Rollback()
 		return err
 	}
-
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return err
 	}
 
-	writeElapsed := time.Since(t0) - readElapsed - sortElapsed
-	log.Info("PlainState written",
-		"accounts", len(acctKeys),
-		"storage", len(storKeys),
-		"writeTime", writeElapsed.Truncate(time.Second))
-
-	// 5. Verify state root against header.
+	// Verify state root.
 	log.Info("Computing state root for verification...")
 	headerData, err := inputFreezer.Ancient(freezer.TableHeaders, endBlock-1)
 	if err != nil {
@@ -214,7 +194,6 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 	if err != nil {
 		return err
 	}
-	// Init hash state for root computation.
 	if err := InitHashState(tx2); err != nil {
 		tx2.Rollback()
 		log.Warn("InitHashState failed", "err", err)
@@ -247,16 +226,67 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 	return nil
 }
 
-// ReadHeaderRoot reads a header's state root from the input freezer.
-func ReadHeaderRoot(inputFreezer *freezer.Freezer, blockNum uint64) (types.Hash, error) {
-	data, err := inputFreezer.Ancient(freezer.TableHeaders, blockNum)
-	if err != nil {
-		return types.Hash{}, err
+// flushMaps writes account and storage maps to MDBX using sorted Put.
+// Deleted entries (nil value) are written as Delete.
+func flushMaps(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]byte, storMap map[string][]byte) error {
+	if len(acctMap) == 0 && len(storMap) == 0 {
+		return nil
 	}
-	header, err := DecodeGethHeader(data)
-	if err != nil {
-		return types.Hash{}, err
-	}
-	return header.Root, nil
-}
+	t0 := time.Now()
 
+	// Sort account keys.
+	acctKeys := make([]types.Address, 0, len(acctMap))
+	for addr := range acctMap {
+		acctKeys = append(acctKeys, addr)
+	}
+	sort.Slice(acctKeys, func(i, j int) bool {
+		return bytes.Compare(acctKeys[i][:], acctKeys[j][:]) < 0
+	})
+
+	// Sort storage keys.
+	storKeys := make([]string, 0, len(storMap))
+	for k := range storMap {
+		storKeys = append(storKeys, k)
+	}
+	sort.Strings(storKeys)
+
+	// Write to MDBX.
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, addr := range acctKeys {
+		v := acctMap[addr]
+		if v == nil {
+			tx.Delete(modules.Account, addr[:])
+		} else {
+			if err := tx.Put(modules.Account, addr[:], v); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("put account: %w", err)
+			}
+		}
+	}
+
+	for _, k := range storKeys {
+		v := storMap[k]
+		if v == nil {
+			tx.Delete(modules.Storage, []byte(k))
+		} else {
+			if err := tx.Put(modules.Storage, []byte(k), v); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("put storage: %w", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit flush: %w", err)
+	}
+
+	log.Info("Flush written",
+		"accounts", len(acctKeys),
+		"storage", len(storKeys),
+		"elapsed", time.Since(t0).Truncate(time.Second))
+	return nil
+}
