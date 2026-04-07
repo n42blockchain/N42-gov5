@@ -43,22 +43,9 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 	}
 	log.Info("Rebuild PlainState from leaves", "blocks", endBlock, "items", items)
 
-	// Clear Account and Storage tables one at a time to limit dirty pages.
-	for _, tbl := range []string{modules.Account, modules.Storage} {
-		log.Info("Clearing table...", "table", tbl)
-		tx, err := db.BeginRw(ctx)
-		if err != nil {
-			return err
-		}
-		if err := tx.ClearBucket(tbl); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("clear %s: %w", tbl, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit clear %s: %w", tbl, err)
-		}
-	}
-	log.Info("Tables cleared")
+	// Note: caller should delete mdbx.dat before running rebuild-state.
+	// ClearBucket on a 40GB+ file with WriteMap causes OOM (all pages become dirty).
+	log.Info("Using empty MDBX — caller must delete mdbx.dat beforehand")
 
 	// Replay leaves directly to MDBX.
 	const commitInterval = 10_000 // commit frequently to bound dirty pages
