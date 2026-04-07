@@ -44,6 +44,21 @@ func CalcStateRoot(tx kv.RwTx) (types.Hash, error) {
 	return root, nil
 }
 
+// RebuildHashedState clears and rebuilds HashedAccounts/HashedStorage from
+// plain Account/Storage tables. Call before TrieRootComputer on verify blocks
+// to eliminate any drift from HashOnlyComputer incremental updates.
+func RebuildHashedState(tx kv.RwTx) error {
+	for _, tbl := range []string{kv.HashedAccounts, kv.HashedStorage} {
+		if err := tx.ClearBucket(tbl); err != nil {
+			return fmt.Errorf("clear %s: %w", tbl, err)
+		}
+	}
+	if err := hashAllAccounts(tx); err != nil {
+		return err
+	}
+	return hashAllStorage(tx)
+}
+
 // FullStateRootVerify does a complete re-hash and MPT root computation.
 // It clears HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage,
 // re-hashes everything from Account/Storage, then runs CalcTrieRoot.
