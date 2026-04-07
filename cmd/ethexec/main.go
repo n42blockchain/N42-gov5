@@ -139,6 +139,17 @@ func main() {
 				Action: runVerifyJournal,
 			},
 			{
+				Name:  "rebuild-state",
+				Usage: "Rebuild PlainState from leaves_journal (in-memory accumulate + sorted Append)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to output MDBX + freezer directory", Required: true},
+					&cli.StringFlag{Name: "genesis", Usage: "Path to Ethereum genesis.json", Required: true},
+					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all available)", Value: 0},
+				},
+				Action: runRebuildState,
+			},
+			{
 				Name:  "txlookup-build",
 				Usage: "Build RecSplit segments for tx hash → block number lookup",
 				Flags: []cli.Flag{
@@ -789,6 +800,49 @@ func runSenderRecovery(c *cli.Context) error {
 
 	stage := ethel.NewSenderStage(f, of, params.EthereumMainnetChainConfig, workers)
 	return stage.Run(ctx)
+}
+
+func runRebuildState(c *cli.Context) error {
+	ancientPath := c.String("ancient")
+	datadir := c.String("datadir")
+	genesisPath := c.String("genesis")
+	endBlock := c.Uint64("end")
+
+	// Open Geth input freezer (for header verification).
+	inputF, err := freezer.New(ancientPath, 0)
+	if err != nil {
+		return fmt.Errorf("open input freezer: %w", err)
+	}
+	defer inputF.Close()
+
+	// Open output freezer (contains leaves_journal).
+	outAncient := filepath.Join(datadir, "ancient")
+	outF, err := freezer.New(outAncient, 0)
+	if err != nil {
+		return fmt.Errorf("open output freezer: %w", err)
+	}
+	defer outF.Close()
+
+	// Open MDBX for writing PlainState.
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(datadir).
+		Label(kv.ChainDB).
+		PageSize(4096).
+		MapSize(2 * datasize.TB).
+		GrowthStep(4 * datasize.GB).
+		WriteMap().
+		DirtySpace(uint64(1 * datasize.GB)).
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open mdbx: %w", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+	return ethel.RebuildState(ctx, db, outF, inputF, endBlock, genesisPath)
 }
 
 // detectRealTable returns the first table name that has real DupSort data
