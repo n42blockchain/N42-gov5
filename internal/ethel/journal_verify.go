@@ -52,7 +52,7 @@ type storValue struct {
 }
 
 func (v *JournalVerifier) Run(ctx context.Context) error {
-	journalTbl := v.outFreezer.Table("leaves_journal")
+	journalTbl := v.outFreezer.Table("leaves")
 	if journalTbl == nil {
 		return fmt.Errorf("leaves_journal table not found in output freezer")
 	}
@@ -338,7 +338,7 @@ func (v *JournalVerifier) revertTest(ctx context.Context, endBlock uint64) error
 		return fmt.Errorf("clear state: %w", err)
 	}
 
-	journalTbl := v.outFreezer.Table("leaves_journal")
+	journalTbl := v.outFreezer.Table("leaves")
 	journalTbl.ForceBatchSize(freezer.BatchSize)
 
 	for b := uint64(0); b <= maxBlock; b++ {
