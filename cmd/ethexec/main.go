@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/c2h5oh/datasize"
 
@@ -150,12 +151,14 @@ func main() {
 			},
 			{
 				Name:  "mem-test",
-				Usage: "Open MDBX and print memory usage (debug)",
+				Usage: "Open MDBX, optionally clear tables, print memory (debug)",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "datadir", Required: true},
+					&cli.BoolFlag{Name: "clear", Usage: "Test ClearBucket on Account+Storage"},
 				},
 				Action: func(c *cli.Context) error {
 					datadir := c.String("datadir")
+					doClear := c.Bool("clear")
 					logger := log2.New()
 					db, err := mdbx.NewMDBX(logger).
 						Path(datadir).Label(kv.ChainDB).
@@ -168,13 +171,54 @@ func main() {
 					if err != nil {
 						return err
 					}
+					defer db.Close()
+
+					// Count entries.
+					tx, _ := db.BeginRo(context.Background())
+					for _, tbl := range []string{"Account", "Storage", "PlainContractCode", "HashedAccounts", "HashedStorage"} {
+						cursor, err := tx.Cursor(tbl)
+						if err != nil { continue }
+						k, _, _ := cursor.First()
+						if k == nil {
+							log.Info("Table empty", "table", tbl)
+						} else {
+							count, _ := cursor.Count()
+							log.Info("Table", "name", tbl, "entries", count)
+						}
+						cursor.Close()
+					}
+					tx.Rollback()
+
 					var m runtime.MemStats
 					runtime.ReadMemStats(&m)
-					log.Info("MDBX opened", "goAllocMB", m.Alloc/1e6, "goSysMB", m.Sys/1e6)
-					log.Info("Check Task Manager for this process Commit Size")
-					log.Info("Press Ctrl+C to exit")
+					log.Info("After open", "goAllocMB", m.Alloc/1e6)
+					log.Info("Check Task Manager Commit Size NOW. Press Enter to continue...")
+					fmt.Scanln()
+
+					if doClear {
+						for _, tbl := range []string{"Account", "Storage"} {
+							log.Info("ClearBucket starting", "table", tbl)
+							t0 := time.Now()
+							tx2, _ := db.BeginRw(context.Background())
+							if err := tx2.ClearBucket(tbl); err != nil {
+								tx2.Rollback()
+								log.Error("ClearBucket failed", "table", tbl, "err", err)
+								continue
+							}
+							if err := tx2.Commit(); err != nil {
+								log.Error("Commit failed", "table", tbl, "err", err)
+								continue
+							}
+							log.Info("ClearBucket done", "table", tbl, "elapsed", time.Since(t0))
+							runtime.ReadMemStats(&m)
+							log.Info("After clear", "table", tbl, "goAllocMB", m.Alloc/1e6)
+							log.Info("Check Task Manager Commit Size NOW. Press Enter to continue...")
+							fmt.Scanln()
+						}
+					}
+
+					log.Info("Done. Press Ctrl+C to exit")
 					select {}
-					_ = db
 					return nil
 				},
 			},
