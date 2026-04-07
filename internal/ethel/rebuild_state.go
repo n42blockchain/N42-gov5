@@ -23,28 +23,13 @@ import (
 
 // RebuildState reads leaves from a freezer table, accumulates in memory,
 // then writes sorted PlainState to MDBX via Append.
+// Genesis state is included in leaves block 0 — no genesis.json needed.
 func RebuildState(ctx context.Context, db kv.RwDB, outFreezer *freezer.Freezer,
-	inputFreezer *freezer.Freezer, endBlock uint64, genesisPath string,
+	inputFreezer *freezer.Freezer, endBlock uint64,
 ) error {
 	t0 := time.Now()
 
-	// 1. Load genesis.
-	log.Info("Loading genesis state", "path", genesisPath)
-	tx, err := db.BeginRw(ctx)
-	if err != nil {
-		return err
-	}
-	count, err := InitEthGenesisState(tx, genesisPath)
-	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("init genesis: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	log.Info("Genesis loaded", "accounts", count)
-
-	// 2. Read all leaves into memory maps.
+	// Read all leaves into memory maps (block 0 = genesis).
 	journalTbl := outFreezer.Table("leaves_journal")
 	if journalTbl == nil {
 		return fmt.Errorf("leaves_journal table not found")
@@ -146,7 +131,7 @@ func RebuildState(ctx context.Context, db kv.RwDB, outFreezer *freezer.Freezer,
 
 	// 4. Write to MDBX with Append (sequential, fastest).
 	log.Info("Writing PlainState to MDBX...")
-	tx, err = db.BeginRw(ctx)
+	tx, err := db.BeginRw(ctx)
 	if err != nil {
 		return err
 	}
