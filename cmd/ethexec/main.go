@@ -140,11 +140,10 @@ func main() {
 			},
 			{
 				Name:  "rebuild-state",
-				Usage: "Rebuild PlainState from leaves_journal (in-memory accumulate + sorted Append)",
+				Usage: "Rebuild PlainState from leaves_journal (genesis in block 0, no genesis.json needed)",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
 					&cli.StringFlag{Name: "datadir", Usage: "Path to output MDBX + freezer directory", Required: true},
-					&cli.StringFlag{Name: "genesis", Usage: "Path to Ethereum genesis.json", Required: true},
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all available)", Value: 0},
 				},
 				Action: runRebuildState,
@@ -805,7 +804,6 @@ func runSenderRecovery(c *cli.Context) error {
 func runRebuildState(c *cli.Context) error {
 	ancientPath := c.String("ancient")
 	datadir := c.String("datadir")
-	genesisPath := c.String("genesis")
 	endBlock := c.Uint64("end")
 
 	// Open Geth input freezer (for header verification).
@@ -842,7 +840,7 @@ func runRebuildState(c *cli.Context) error {
 
 	ctx, cancel := withShutdown()
 	defer cancel()
-	return ethel.RebuildState(ctx, db, outF, inputF, endBlock, genesisPath)
+	return ethel.RebuildState(ctx, db, outF, inputF, endBlock)
 }
 
 // detectRealTable returns the first table name that has real DupSort data
