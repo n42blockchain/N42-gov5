@@ -102,13 +102,8 @@ func (r *PlainStateMPTReader) ReadAccountData(addr types.Address) (*account.Stat
 }
 
 func (r *PlainStateMPTReader) ReadAccountStorage(addr types.Address, slot types.Hash) ([]byte, error) {
-	var incarnation uint16 = 0
-	var key [54]byte
-	copy(key[:20], addr[:])
-	key[20] = byte(incarnation >> 8)
-	key[21] = byte(incarnation)
-	copy(key[22:], slot[:])
-	data, err := r.tx.GetOne(modules.Storage, key[:])
+	key := modules.PlainGenerateCompositeStorageKey(addr[:], slot[:])
+	data, err := r.tx.GetOne(modules.Storage, key)
 	if err != nil {
 		return nil, err
 	}
@@ -116,16 +111,7 @@ func (r *PlainStateMPTReader) ReadAccountStorage(addr types.Address, slot types.
 }
 
 func (r *PlainStateMPTReader) ReadAllStorage(addr types.Address) (map[types.Hash]*uint256.Int, error) {
-	acctData, err := r.tx.GetOne(modules.Account, addr[:])
-	if err != nil {
-		return nil, err
-	}
-	_ = acctData // incarnation removed from StateAccount
-	var incarnation uint16 = 0
-	var prefix [22]byte
-	copy(prefix[:20], addr[:])
-	prefix[20] = byte(incarnation >> 8)
-	prefix[21] = byte(incarnation)
+	prefix := addr[:]
 
 	c, err := r.tx.Cursor(modules.Storage)
 	if err != nil {
@@ -134,18 +120,18 @@ func (r *PlainStateMPTReader) ReadAllStorage(addr types.Address) (map[types.Hash
 	defer c.Close()
 
 	result := make(map[types.Hash]*uint256.Int)
-	for k, v, err := c.Seek(prefix[:]); k != nil; k, v, err = c.Next() {
+	for k, v, err := c.Seek(prefix); k != nil; k, v, err = c.Next() {
 		if err != nil {
 			return nil, err
 		}
-		if len(k) < 22 || !bytes.Equal(k[:22], prefix[:]) {
+		if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
 			break
 		}
-		if len(k) != 54 {
+		if len(k) != 52 {
 			continue
 		}
 		var slot types.Hash
-		copy(slot[:], k[22:54])
+		copy(slot[:], k[20:52])
 		val := new(uint256.Int)
 		if len(v) > 0 {
 			val.SetBytes(v)
