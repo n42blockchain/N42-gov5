@@ -813,13 +813,7 @@ func runRebuildState(c *cli.Context) error {
 	}
 	defer inputF.Close()
 
-	// Open output freezer (contains leaves_journal).
 	outAncient := filepath.Join(datadir, "ancient")
-	outF, err := freezer.New(outAncient, 0)
-	if err != nil {
-		return fmt.Errorf("open output freezer: %w", err)
-	}
-	defer outF.Close()
 
 	// Open MDBX for writing PlainState.
 	logger := log2.New()
@@ -840,7 +834,7 @@ func runRebuildState(c *cli.Context) error {
 
 	ctx, cancel := withShutdown()
 	defer cancel()
-	return ethel.RebuildState(ctx, db, outF, inputF, endBlock)
+	return ethel.RebuildState(ctx, db, outAncient, inputF, endBlock)
 }
 
 // detectRealTable returns the first table name that has real DupSort data

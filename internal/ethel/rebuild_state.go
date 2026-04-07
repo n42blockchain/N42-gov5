@@ -24,16 +24,17 @@ import (
 // RebuildState reads leaves from a freezer table, accumulates in memory,
 // then writes sorted PlainState to MDBX via Append.
 // Genesis state is included in leaves block 0 — no genesis.json needed.
-func RebuildState(ctx context.Context, db kv.RwDB, outFreezer *freezer.Freezer,
+func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 	inputFreezer *freezer.Freezer, endBlock uint64,
 ) error {
 	t0 := time.Now()
 
-	// Read all leaves into memory maps (block 0 = genesis).
-	journalTbl := outFreezer.Table("leaves_journal")
-	if journalTbl == nil {
-		return fmt.Errorf("leaves_journal table not found")
+	// Open leaves_journal table directly (bypass freezer's frozen limit).
+	journalTbl, err := freezer.NewFreezerTable(ancientDir, "leaves_journal", "c")
+	if err != nil {
+		return fmt.Errorf("open leaves_journal: %w", err)
 	}
+	defer journalTbl.Close()
 	items := journalTbl.Items()
 	if items == 0 {
 		return fmt.Errorf("leaves_journal is empty")
