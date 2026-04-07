@@ -134,6 +134,7 @@ func main() {
 					&cli.StringFlag{Name: "genesis", Usage: "Path to Ethereum genesis.json", Required: true},
 					&cli.Uint64Flag{Name: "verify", Usage: "Verify state root every N blocks (0=disabled)", Value: 100000},
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
+					&cli.BoolFlag{Name: "rebuild", Usage: "Write PlainState to datadir MDBX (not temp)"},
 				},
 				Action: runVerifyJournal,
 			},
@@ -329,20 +330,29 @@ func runVerifyJournal(c *cli.Context) error {
 	}
 	defer outF.Close()
 
-	// Open MDBX in a temporary directory — never touches the existing datadir MDBX.
-	verifyDir, err := os.MkdirTemp("", "ethexec-verify-*")
-	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+	rebuild := c.Bool("rebuild")
+	var dbPath string
+	if rebuild {
+		dbPath = datadir
+		log.Info("REBUILD mode: writing PlainState to datadir MDBX", "path", dbPath)
+	} else {
+		var err2 error
+		dbPath, err2 = os.MkdirTemp("", "ethexec-verify-*")
+		if err2 != nil {
+			return fmt.Errorf("create temp dir: %w", err2)
+		}
+		defer os.RemoveAll(dbPath)
+		log.Info("Using temp MDBX", "path", dbPath)
 	}
-	defer os.RemoveAll(verifyDir)
-	log.Info("Using temp MDBX", "path", verifyDir)
 	logger := log2.New()
 	db, err := mdbx.NewMDBX(logger).
-		Path(verifyDir).
+		Path(dbPath).
 		Label(kv.ChainDB).
 		PageSize(4096).
+		MapSize(2 * datasize.TB).
+		GrowthStep(4 * datasize.GB).
 		WriteMap().
-		DirtySpace(uint64(512 * datasize.MB)).
+		DirtySpace(uint64(1 * datasize.GB)).
 		DBVerbosity(kv.DBVerbosityLvl(2)).
 		Open(context.Background())
 	if err != nil {
