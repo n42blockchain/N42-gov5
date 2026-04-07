@@ -29,21 +29,25 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	t0 := time.Now()
 
 	// Try leaves_journal (freezer table) first, then leaves (SegmentStore).
-	// Try leaves_journal first, then leaves. Both are batch-64 compressed.
-	// Must use NewFreezerTableCompressed for batch auto-detection.
+	// Open leaves table with batch-64 support.
+	// Use NewFreezerTable + ForceBatchSize to avoid NewFreezerTableCompressed
+	// which scans directory for zdict files and may touch other large files.
 	var journalTbl *freezer.FreezerTable
-	for _, name := range []string{"leaves_journal", "leaves"} {
-		tbl, err := freezer.NewFreezerTableCompressed(ancientDir, name, "c")
+	for _, name := range []string{"leaves", "leaves_journal"} {
+		tbl, err := freezer.NewFreezerTable(ancientDir, name, "c")
 		if err != nil {
 			continue
 		}
-		if tbl.Items() > 0 {
-			// Check first non-zero block for real data.
-			if d, err := tbl.Retrieve(0); err == nil && len(d) > 8 {
-				journalTbl = tbl
-				log.Info("Using leaves table", "name", name, "items", tbl.Items())
-				break
-			}
+		if tbl.Items() == 0 {
+			tbl.Close()
+			continue
+		}
+		tbl.ForceBatchSize(freezer.BatchSize)
+		tbl.SetCompressed(true)
+		if d, err := tbl.Retrieve(0); err == nil && len(d) > 8 {
+			journalTbl = tbl
+			log.Info("Using leaves table", "name", name, "items", tbl.Items())
+			break
 		}
 		tbl.Close()
 	}
