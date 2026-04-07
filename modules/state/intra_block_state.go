@@ -823,6 +823,14 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
 		}
+		// Reth-style: wipe ALL storage when account is destroyed.
+		// Without incarnation, old storage is not auto-isolated and must be
+		// explicitly deleted or it persists and corrupts the state root.
+		if stateObject.selfdestructed {
+			if err := stateWriter.CreateContract(addr); err != nil {
+				return err
+			}
+		}
 		stateObject.deleted = true
 	}
 	// Cancun+ must not resurrect contracts that were created and selfdestructed
@@ -1107,6 +1115,11 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 			s.getStateObject(addr)
 			s.stateObjectsDirty[addr] = struct{}{}
 		}
+	}
+	// Merge journal.dirties — Finalize (block rewards) and post-block system
+	// calls write to journal but there's no FinalizeTx after them.
+	for addr := range s.journal.dirties {
+		s.stateObjectsDirty[addr] = struct{}{}
 	}
 
 	accounts := make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty))
