@@ -5,7 +5,6 @@ package commitment
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 
 	"github.com/holiman/uint256"
@@ -97,16 +96,14 @@ func (t *TrieRootComputer) ComputeRoot(
 	// Phase 2: Update HashedStorage for dirty storage slots.
 	for addr, slots := range storage {
 		addrHash := t.keccakAddr(addr)
-		// incarnation removed from StateAccount — always use 0
-		var incarnation uint64
 
 		for slot, val := range slots {
 			slotHash := t.keccakHash(slot)
 
-			// Composite key: addrHash[32] + incarnation[8] + slotHash[32] = 72 bytes.
+			// compositeKey: addrHash(32) + zero_incarnation(8) + slotHash(32) = 72B
 			var compositeKey [72]byte
 			copy(compositeKey[:32], addrHash[:])
-			binary.BigEndian.PutUint64(compositeKey[32:40], incarnation)
+			// [32:40] stays zero — incarnation removed from state model
 			copy(compositeKey[40:], slotHash[:])
 
 			// Add to RetainList.
@@ -258,21 +255,12 @@ func (t *TrieRootComputer) InitFromPlainState() error {
 		addrHash := t.keccakAddr(addr)
 
 		var slot types.Hash
-		var incarnation uint64
-		if len(k) == 54 {
-			incarnation = uint64(binary.BigEndian.Uint16(k[20:22]))
-			copy(slot[:], k[22:54])
-		} else if len(k) >= 60 {
-			incarnation = binary.BigEndian.Uint64(k[20:28])
-			copy(slot[:], k[28:60])
-		} else {
-			continue
-		}
+		copy(slot[:], k[20:52])
 		slotHash := t.keccakHash(slot)
 
 		var compositeKey [72]byte
 		copy(compositeKey[:32], addrHash[:])
-		binary.BigEndian.PutUint64(compositeKey[32:40], incarnation)
+		// [32:40] stays zero — incarnation removed
 		copy(compositeKey[40:], slotHash[:])
 
 		if err := t.tx.Put(modules.HashedStorage, compositeKey[:], v); err != nil {

@@ -256,6 +256,28 @@ func main() {
 				Action: runCSCompact,
 			},
 			{
+				Name:  "storcs-compact",
+				Usage: "Compress only StorageChangeSets (skip AccountCS)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "erigon-db", Usage: "Path to Erigon/Reth MDBX", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
+					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
+					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
+				},
+				Action: runStorCSCompact,
+			},
+			{
+				Name:  "storhist-build",
+				Usage: "Build only StorageHistory RecSplit segments",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "erigon-db", Usage: "Path to Erigon/Reth MDBX", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
+					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
+					&cli.Uint64Flag{Name: "end", Usage: "End block (0=auto)", Value: 0},
+				},
+				Action: runStorHistBuild,
+			},
+			{
 				Name:  "history-build",
 				Usage: "Build RecSplit history segments from Erigon MDBX (READ-ONLY)",
 				Flags: []cli.Flag{
@@ -628,6 +650,99 @@ func runCSCompact(c *cli.Context) error {
 	stoComp := cscompact.NewStorageCSCompactor(db, outputDir)
 	stoComp.SetTableName(storTable)
 	return stoComp.Run(ctx, startBlock, endBlock)
+}
+
+// openErigonDB opens an Erigon/Reth MDBX database in read-only Accede mode.
+func openErigonDB(path string) (kv.RwDB, error) {
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(path).Label(kv.ChainDB).Readonly().Accede().
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("open erigon mdbx: %w", err)
+	}
+	log.Info("Erigon MDBX opened READ-ONLY", "path", path)
+	return db, nil
+}
+
+// detectEndBlock probes the given table names and returns the highest block+1.
+func detectEndBlock(db kv.RwDB, tables ...string) (uint64, error) {
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var endBlock uint64
+	for _, tbl := range tables {
+		cursor, err := tx.Cursor(tbl)
+		if err != nil {
+			continue
+		}
+		k, v, _ := cursor.Last()
+		cursor.Close()
+		if len(k) < 8 || len(v) > 64 {
+			continue
+		}
+		bn := cscompact.DetectBlockNum(k)
+		if bn > 0 && bn < 1<<32 && bn+1 > endBlock {
+			endBlock = bn + 1
+		}
+	}
+	if endBlock == 0 {
+		return 0, fmt.Errorf("cannot determine end block from tables %v", tables)
+	}
+	log.Info("Detected end block", "endBlock", endBlock)
+	return endBlock, nil
+}
+
+func runStorCSCompact(c *cli.Context) error {
+	db, err := openErigonDB(c.String("erigon-db"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	startBlock := c.Uint64("start")
+	endBlock := c.Uint64("end")
+	if endBlock == 0 {
+		endBlock, err = detectEndBlock(db, "StorageChangeSets", "StorageChangeSet")
+		if err != nil {
+			return err
+		}
+	}
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	storTable := detectRealTable(db, "StorageChangeSets", "StorageChangeSet")
+	log.Info("=== StorageCS compression ===", "table", storTable)
+	stoComp := cscompact.NewStorageCSCompactor(db, filepath.Join(c.String("datadir"), "chain"))
+	stoComp.SetTableName(storTable)
+	return stoComp.Run(ctx, startBlock, endBlock)
+}
+
+func runStorHistBuild(c *cli.Context) error {
+	db, err := openErigonDB(c.String("erigon-db"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	startBlock := c.Uint64("start")
+	endBlock := c.Uint64("end")
+	if endBlock == 0 {
+		endBlock, err = detectEndBlock(db, "StorageChangeSets", "StorageChangeSet")
+		if err != nil {
+			return err
+		}
+	}
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	stoBuilder := cscompact.NewStorageHistoryBuilder(db, filepath.Join(c.String("datadir"), "chain"))
+	return stoBuilder.BuildFromChangesets(ctx, startBlock, endBlock)
 }
 
 func runHistoryBuild(c *cli.Context) error {
