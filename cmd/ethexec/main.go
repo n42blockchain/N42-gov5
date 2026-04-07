@@ -233,7 +233,8 @@ func run(c *cli.Context) error {
 	// PageSize 4KB matches OS page size for optimal mmap performance.
 	// WriteMap: direct mmap writes (no shadow copy), ~20% faster on Windows.
 	// DirtySpace 1GB: allows large write batches before spill (128GB RAM machine).
-	// MapSize 512GB: headroom for full mainnet state + growth.
+	// MapSize: Windows counts mmap reservation as committed memory.
+	// Keep conservative to avoid OOM. MDBX auto-grows via GrowthStep.
 	log.Info("Opening MDBX database", "path", datadir)
 	if err := os.MkdirAll(datadir, 0755); err != nil {
 		return err
@@ -243,7 +244,7 @@ func run(c *cli.Context) error {
 		Path(datadir).
 		Label(kv.ChainDB).
 		PageSize(4096).
-		MapSize(2 * datasize.TB).
+		MapSize(64 * datasize.GB).
 		GrowthStep(4 * datasize.GB).
 		WriteMap().
 		WriteMergeThreshold(4 * 8192).
@@ -359,7 +360,7 @@ func runVerifyJournal(c *cli.Context) error {
 		Path(dbPath).
 		Label(kv.ChainDB).
 		PageSize(4096).
-		MapSize(2 * datasize.TB).
+		MapSize(64 * datasize.GB).
 		GrowthStep(4 * datasize.GB).
 		WriteMap().
 		DirtySpace(uint64(1 * datasize.GB)).
@@ -814,7 +815,7 @@ func runRebuildState(c *cli.Context) error {
 		Path(datadir).
 		Label(kv.ChainDB).
 		PageSize(4096).
-		MapSize(256 * datasize.GB).
+		MapSize(64 * datasize.GB).
 		GrowthStep(1 * datasize.GB).
 		DirtySpace(uint64(128 * datasize.MB)).
 		DBVerbosity(kv.DBVerbosityLvl(2)).
