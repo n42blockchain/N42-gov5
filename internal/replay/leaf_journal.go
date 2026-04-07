@@ -62,11 +62,10 @@ const (
 
 // LeafEntry is a single key-value change in a block (plain key format).
 type LeafEntry struct {
-	Tag         byte           // TagAccount or TagStorage
-	Address     types.Address  // plain address (20B)
-	Incarnation uint16         // storage incarnation (0 for accounts)
-	Slot        types.Hash     // storage slot (zero for accounts)
-	Value       []byte         // new value (nil or empty = deletion)
+	Tag     byte          // TagAccount or TagStorage
+	Address types.Address // plain address (20B)
+	Slot    types.Hash    // storage slot (zero for accounts)
+	Value   []byte        // new value (nil or empty = deletion)
 }
 
 // Key returns the legacy 32B hashed key for backward compatibility
@@ -105,9 +104,8 @@ func (j *LeafJournal) WriteBlock(blockNum uint64, entries []LeafEntry) error {
 		}
 
 		if e.Tag == TagStorage {
-			// incarnation: 2 bytes
+			// incarnation: 2 bytes (always 0, kept for format compat)
 			var inc [2]byte
-			binary.BigEndian.PutUint16(inc[:], e.Incarnation)
 			if _, err := j.w.Write(inc[:]); err != nil {
 				j.err = err
 				return err
@@ -200,15 +198,13 @@ func (r *LeafJournalReader) ReadBlock() (*BlockEntries, error) {
 			return nil, fmt.Errorf("read addr at block %d entry %d: %w", blockNum, i, err)
 		}
 
-		var inc uint16
 		var slot types.Hash
 		if tag == TagStorage {
-			// incarnation: 2 bytes
+			// Skip incarnation (2B, always 0, kept for format compat).
 			var incBuf [2]byte
 			if _, err := io.ReadFull(r.r, incBuf[:]); err != nil {
 				return nil, fmt.Errorf("read inc at block %d entry %d: %w", blockNum, i, err)
 			}
-			inc = binary.BigEndian.Uint16(incBuf[:])
 			// slot: 32 bytes
 			if _, err := io.ReadFull(r.r, slot[:]); err != nil {
 				return nil, fmt.Errorf("read slot at block %d entry %d: %w", blockNum, i, err)
@@ -230,11 +226,10 @@ func (r *LeafJournalReader) ReadBlock() (*BlockEntries, error) {
 		}
 
 		entries[i] = LeafEntry{
-			Tag:         tag,
-			Address:     addr,
-			Incarnation: inc,
-			Slot:        slot,
-			Value:       val,
+			Tag:     tag,
+			Address: addr,
+			Slot:    slot,
+			Value:   val,
 		}
 	}
 

@@ -64,8 +64,9 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 		return nil, ethdb.ErrKeyNotFound
 	}
 	if storage {
+		// Storage key = addr(20) + slot(32) = 52B, no incarnation.
 		if !bytes.Equal(k[:types.AddressLength], key[:types.AddressLength]) ||
-			!bytes.Equal(k[types.AddressLength:types.AddressLength+types.HashLength], key[types.AddressLength+types.IncarnationLength:]) {
+			!bytes.Equal(k[types.AddressLength:types.AddressLength+types.HashLength], key[types.AddressLength:]) {
 			return nil, ethdb.ErrKeyNotFound
 		}
 	} else {
@@ -116,16 +117,13 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 	return data, nil
 }
 
-// startKey is the concatenation of address and incarnation (BigEndian 8 byte)
+// WalkAsOfStorage walks storage at a historical point in time.
+// Storage key = address(20) + slot(32) = 52B (incarnation removed).
 func WalkAsOfStorage(tx kv.Tx, address types.Address, incarnation uint16, startLocation types.Hash, timestamp uint64, walker func(k1, k2, v []byte) (bool, error)) error {
-	var startkey = make([]byte, types.AddressLength+types.IncarnationLength+types.HashLength)
+	// Storage key: addr(20) + slot(32) = 52B, no incarnation.
+	var startkey = make([]byte, types.AddressLength+types.HashLength)
 	copy(startkey, address.Bytes())
-	binary.BigEndian.PutUint16(startkey[types.AddressLength:], incarnation)
-	copy(startkey[types.AddressLength+types.IncarnationLength:], startLocation.Bytes())
-
-	var startkeyNoInc = make([]byte, types.AddressLength+types.HashLength)
-	copy(startkeyNoInc, address.Bytes())
-	copy(startkeyNoInc[types.AddressLength:], startLocation.Bytes())
+	copy(startkey[types.AddressLength:], startLocation.Bytes())
 
 	// Main cursor for current storage state.
 	mCursor, err := tx.Cursor(modules.Storage)
@@ -136,10 +134,10 @@ func WalkAsOfStorage(tx kv.Tx, address types.Address, incarnation uint16, startL
 	mainCursor := ethdb.NewSplitCursor(
 		mCursor,
 		startkey,
-		8*(types.AddressLength+types.IncarnationLength),
-		types.AddressLength,                                          /* part1end */
-		types.AddressLength+types.IncarnationLength,                  /* part2start */
-		types.AddressLength+types.IncarnationLength+types.HashLength, /* part3start */
+		8*types.AddressLength,
+		types.AddressLength,                  /* part1end */
+		types.AddressLength,                  /* part2start */
+		types.AddressLength+types.HashLength, /* part3start */
 	)
 
 	// History cursor for historic data.
@@ -150,7 +148,7 @@ func WalkAsOfStorage(tx kv.Tx, address types.Address, incarnation uint16, startL
 	defer shCursor.Close()
 	var hCursor = ethdb.NewSplitCursor(
 		shCursor,
-		startkeyNoInc,
+		startkey,
 		8*types.AddressLength,
 		types.AddressLength,                  /* part1end */
 		types.AddressLength,                  /* part2start */
@@ -201,11 +199,11 @@ func WalkAsOfStorage(tx kv.Tx, address types.Address, incarnation uint16, startL
 			changeSetBlock := found
 
 			if ok {
-				// Extract value from the changeSet
-				csKey := make([]byte, 8+types.AddressLength+types.IncarnationLength)
+				// Extract value from the changeSet.
+				// StorageChangeSet key = blockNum(8) + addr(20) = 28B.
+				csKey := make([]byte, 8+types.AddressLength)
 				copy(csKey, modules.EncodeBlockNumber(changeSetBlock))
-				copy(csKey[8:], address[:]) // address + incarnation
-				binary.BigEndian.PutUint16(csKey[8+types.AddressLength:], incarnation)
+				copy(csKey[8:], address[:])
 				kData := csKey
 				data, err3 := csCursor.SeekBothRange(csKey, hLoc)
 				if err3 != nil {

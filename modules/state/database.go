@@ -23,13 +23,11 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
+// Incarnation constants — deprecated (incarnation removed from state model).
+// Kept for backward compatibility with old imports.
 const (
-	// FirstContractIncarnation is the first incarnation for contract accounts.
-	// After 1, it increases by 1 on each contract recreation.
 	FirstContractIncarnation = 1
-
-	// NonContractIncarnation is the incarnation for non-contract (EOA) accounts.
-	NonContractIncarnation = 0
+	NonContractIncarnation   = 0
 )
 
 // NoopWriter is a StateWriter implementation that does nothing.
