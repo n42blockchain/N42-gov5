@@ -355,16 +355,17 @@ func run(c *cli.Context) error {
 	// Open output freezer in chain/ directory.
 	// Uses empty coreTableSpecs — no auto-create/truncate of headers/bodies.
 	// All tables are opened on-demand via EnsureTableCompressed.
-	outChainPath := filepath.Join(datadir, "chain")
-	if err := os.MkdirAll(outChainPath, 0755); err != nil {
+	// Output freezer in chain/freezer/ — isolated from compact files in chain/.
+	outFreezerPath := filepath.Join(datadir, "chain", "freezer")
+	if err := os.MkdirAll(outFreezerPath, 0755); err != nil {
 		return err
 	}
-	outFreezer, err := freezer.New(outChainPath, 0)
+	outFreezer, err := freezer.New(outFreezerPath, 0)
 	if err != nil {
 		return fmt.Errorf("open output freezer: %w", err)
 	}
 	defer outFreezer.Close()
-	log.Info("Output freezer opened", "path", outChainPath)
+	log.Info("Output freezer opened", "path", outFreezerPath)
 
 	// Set up executor.
 	chainCfg := params.EthereumMainnetChainConfig
