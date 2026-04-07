@@ -42,6 +42,22 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	}
 	log.Info("Rebuild PlainState from leaves", "blocks", endBlock, "memLimitGB", memLimitGB)
 
+	// Clear Account/Storage tables (safe without WriteMap — only dirty pages use RAM).
+	for _, tbl := range []string{modules.Account, modules.Storage} {
+		log.Info("Clearing table", "table", tbl)
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		if err := tx.ClearBucket(tbl); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("clear %s: %w", tbl, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit clear %s: %w", tbl, err)
+		}
+	}
+
 	acctMap := make(map[types.Address][]byte, 1_000_000)
 	storMap := make(map[string][]byte, 10_000_000)
 	flushCount := 0
