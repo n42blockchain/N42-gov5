@@ -30,26 +30,25 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-const DefaultIncarnation = uint64(1)
 
 var ErrNotFound = errors.New("not found")
 
 func NewStorageChangeSet() *ChangeSet {
 	return &ChangeSet{
 		Changes: make([]Change, 0),
-		keyLen:  length.Addr + length.Hash + modules.Incarnation,
+		keyLen:  length.Addr + length.Hash, // 52B: addr(20) + slot(32), no incarnation
 	}
 }
 
 func EncodeStorage(blockN uint64, s *ChangeSet, f func(k, v []byte) error) error {
 	sort.Sort(s)
-	addrIncLen := length.Addr + modules.Incarnation
 	for _, cs := range s.Changes {
-		newK := make([]byte, length.BlockNum+addrIncLen)
+		// key = blockNum(8) + addr(20), value = slot(32) + oldValue
+		newK := make([]byte, length.BlockNum+length.Addr)
 		binary.BigEndian.PutUint64(newK, blockN)
-		copy(newK[length.BlockNum:], cs.Key[:addrIncLen])
+		copy(newK[length.BlockNum:], cs.Key[:length.Addr])
 		newV := make([]byte, 0, length.Hash+len(cs.Value))
-		newV = append(append(newV, cs.Key[addrIncLen:]...), cs.Value...)
+		newV = append(append(newV, cs.Key[length.Addr:]...), cs.Value...)
 		if err := f(newK, newV); err != nil {
 			return err
 		}
@@ -62,25 +61,24 @@ func DecodeStorage(dbKey, dbValue []byte) (uint64, []byte, []byte, error) {
 	if len(dbValue) < length.Hash {
 		return 0, nil, nil, fmt.Errorf("storage changes purged for block %d", blockN)
 	}
-	k := make([]byte, length.Addr+modules.Incarnation+length.Hash)
-	dbKey = dbKey[length.BlockNum:] // remove BlockN bytes
+	// key = addr(20) + slot(32) = 52B
+	k := make([]byte, length.Addr+length.Hash)
+	dbKey = dbKey[length.BlockNum:]
 	copy(k, dbKey)
 	copy(k[len(dbKey):], dbValue[:length.Hash])
 	v := dbValue[length.Hash:]
 	if len(v) == 0 {
 		v = nil
 	}
-
 	return blockN, k, v, nil
 }
 
 func FindStorage(c kv.CursorDupSort, blockNumber uint64, k []byte) ([]byte, error) {
-	addrIncLen := length.Addr + modules.Incarnation
-	addrWithInc, loc := k[:addrIncLen], k[addrIncLen:]
+	addr, loc := k[:length.Addr], k[length.Addr:]
 
-	seek := make([]byte, length.BlockNum+addrIncLen)
+	seek := make([]byte, length.BlockNum+length.Addr)
 	binary.BigEndian.PutUint64(seek, blockNumber)
-	copy(seek[length.BlockNum:], addrWithInc)
+	copy(seek[length.BlockNum:], addr)
 
 	v, err := c.SeekBothRange(seek, loc)
 	if err != nil {
