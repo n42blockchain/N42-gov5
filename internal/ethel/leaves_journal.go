@@ -54,13 +54,12 @@ func EncodeGenesisJournal(tx kv.Tx) ([]byte, error) {
 		value []byte
 	}
 	type addrGroup struct {
-		addr [20]byte
-		inc  uint16
+		addr  [20]byte
 		slots []slotEntry
 	}
 
 	var groups []addrGroup
-	var lastKey [22]byte // addr(20) + inc(2)
+	var lastAddr [20]byte
 	var cur *addrGroup
 
 	stoCursor, err := tx.Cursor("Storage")
@@ -73,28 +72,25 @@ func EncodeGenesisJournal(tx kv.Tx) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(k) < 54 {
+		if len(k) < 52 {
 			continue
 		}
-		var thisKey [22]byte
-		copy(thisKey[:], k[:22])
-		if cur == nil || thisKey != lastKey {
-			lastKey = thisKey
-			var addr [20]byte
-			copy(addr[:], k[:20])
-			inc := binary.BigEndian.Uint16(k[20:22])
-			groups = append(groups, addrGroup{addr: addr, inc: inc})
+		var thisAddr [20]byte
+		copy(thisAddr[:], k[:20])
+		if cur == nil || thisAddr != lastAddr {
+			lastAddr = thisAddr
+			groups = append(groups, addrGroup{addr: thisAddr})
 			cur = &groups[len(groups)-1]
 		}
 		var slot [32]byte
-		copy(slot[:], k[22:54])
+		copy(slot[:], k[20:52])
 		cur.slots = append(cur.slots, slotEntry{slot: slot, value: append([]byte{}, v...)})
 	}
 
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(groups)))
 	for _, g := range groups {
 		buf = append(buf, g.addr[:]...)
-		buf = binary.BigEndian.AppendUint16(buf, g.inc)
+		buf = binary.BigEndian.AppendUint16(buf, 0) // incarnation=0, kept for format compat
 		buf = binary.LittleEndian.AppendUint16(buf, uint16(len(g.slots)))
 		for _, s := range g.slots {
 			buf = append(buf, s.slot[:]...)
@@ -226,10 +222,9 @@ type AccountLeaf struct {
 
 // StorageLeaf is a decoded storage slot from a leaves journal.
 type StorageLeaf struct {
-	Address     types.Address
-	Incarnation uint16
-	Slot        types.Hash
-	Value       []byte // nil = deleted
+	Address types.Address
+	Slot    types.Hash
+	Value   []byte // nil = deleted
 }
 
 // DecodeLeavesJournal decodes a plain-key leaves journal.
@@ -286,8 +281,7 @@ func DecodeLeavesJournal(data []byte) ([]AccountLeaf, []StorageLeaf, error) {
 		copy(addr[:], data[pos:pos+20])
 		pos += 20
 
-		inc := binary.BigEndian.Uint16(data[pos:])
-		pos += 2
+		pos += 2 // skip incarnation (2B, always 0, kept for format compat)
 
 		numSlots := binary.LittleEndian.Uint16(data[pos:])
 		pos += 2
@@ -298,7 +292,6 @@ func DecodeLeavesJournal(data []byte) ([]AccountLeaf, []StorageLeaf, error) {
 			}
 			var leaf StorageLeaf
 			leaf.Address = addr
-			leaf.Incarnation = inc
 			copy(leaf.Slot[:], data[pos:pos+32])
 			pos += 32
 

@@ -18,7 +18,6 @@ package state
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 
 	"github.com/google/btree"
@@ -91,19 +90,9 @@ func (s *PlainState) GetBlockNr() uint64 {
 
 func (s *PlainState) ForEachStorage(addr types.Address, startLocation types.Hash, cb func(key, seckey types.Hash, value uint256.Int) bool, maxResults int) error {
 	st := btree.New(16)
-	var k [types.AddressLength + types.IncarnationLength + types.HashLength]byte
+	var k [types.AddressLength + types.HashLength]byte
 	copy(k[:], addr[:])
-	accData, err := GetAsOf(s.tx, s.accHistoryC, s.accChangesC, false /* storage */, addr[:], s.blockNr)
-	if err != nil {
-		return err
-	}
-	var acc account.StateAccount
-	if err := acc.DecodeForStorage(accData); err != nil {
-		log.Error("Error decoding account", "err", err)
-		return err
-	}
-	binary.BigEndian.PutUint16(k[types.AddressLength:], 0)
-	copy(k[types.AddressLength+types.IncarnationLength:], startLocation[:])
+	copy(k[types.AddressLength:], startLocation[:])
 	var lastKey types.Hash
 	overrideCounter := 0
 	min := &storageItem{key: startLocation}
