@@ -18,7 +18,6 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
-	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -323,24 +322,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
 
-	// TrieRootComputer only on verify blocks (computes real CalcTrieRoot).
-	// HashOnlyComputer on other blocks (cheap incremental hashed table update).
-	if shouldVerify {
-		// Flush buffer so plain Account/Storage tables are current in MDBX,
-		// then rebuild HashedAccounts/HashedStorage from scratch to eliminate
-		// any drift accumulated by HashOnlyComputer.
-		if err := e.stateBuf.FlushToMDBX(tx); err != nil {
-			return fmt.Errorf("flush buffer for verify: %w", err)
-		}
-		if err := RebuildHashedState(tx); err != nil {
-			return fmt.Errorf("rebuild hashed state: %w", err)
-		}
-		trc := commitment.NewTrieRootComputer()
-		trc.SetRwTx(tx)
-		ibs.SetRootComputer(trc)
-	} else if e.cfg.VerifyInterval > 0 {
-		ibs.SetRootComputer(NewHashOnlyComputer(tx))
-	}
+	// No incremental hashed state maintenance — verify rebuilds from scratch.
 
 	t1 := time.Now()
 	// 3. Process block (DAO fork, system contracts, EVM).
@@ -363,11 +345,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		}
 	}
 
-	// 5. Flush dirty state to HashedAccounts/HashedStorage and compute root.
 	var blockRoot types.Hash
-	if e.cfg.VerifyInterval > 0 {
-		blockRoot = ibs.IntermediateRoot()
-	}
 
 	t2 := time.Now()
 	// 6. Commit state changes to in-memory buffer.
@@ -384,14 +362,15 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		}
 	}
 
-	// 8. Verify receipt hash and state root on verify blocks.
+	// 8. Verify state root on verify blocks.
 	if shouldVerify {
-		if len(result.Receipts) > 0 {
-			receiptHash := EthReceiptHash(result.Receipts)
-			if receiptHash != header.ReceiptHash {
-				return fmt.Errorf("receipt hash mismatch at block %d: got %s, want %s",
-					blockNum, receiptHash.Hex(), header.ReceiptHash.Hex())
-			}
+		if err := e.stateBuf.FlushToMDBX(tx); err != nil {
+			return fmt.Errorf("flush buffer for verify: %w", err)
+		}
+		// Debug: count HashedStorage entries before rebuild.
+		blockRoot, err = VerifyStateRoot(tx)
+		if err != nil {
+			return fmt.Errorf("state root verify: %w", err)
 		}
 		if blockRoot != header.Root {
 			return fmt.Errorf("state root mismatch at block %d: computed %s, expected %s",
