@@ -134,6 +134,7 @@ func (e *Executor) Run(ctx context.Context) error {
 		log.Info("Resuming execution", "from", startBlock, "lastCommitted", saved)
 	}
 
+
 	if startBlock > endBlock {
 		log.Info("Already past target", "at", startBlock-1, "target", endBlock)
 		return nil
