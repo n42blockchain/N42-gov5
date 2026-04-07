@@ -266,6 +266,10 @@ func (f *Freezer) EnsureTable(name, ext string) (*FreezerTable, error) {
 		return nil, err
 	}
 	f.tables[name] = t
+	// Update frozen count if this table has more items.
+	if items := t.Items(); items > f.frozen.Load() {
+		f.frozen.Store(items)
+	}
 	return t, nil
 }
 
