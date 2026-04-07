@@ -326,6 +326,15 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	// TrieRootComputer only on verify blocks (computes real CalcTrieRoot).
 	// HashOnlyComputer on other blocks (cheap incremental hashed table update).
 	if shouldVerify {
+		// Flush buffer so plain Account/Storage tables are current in MDBX,
+		// then rebuild HashedAccounts/HashedStorage from scratch to eliminate
+		// any drift accumulated by HashOnlyComputer.
+		if err := e.stateBuf.FlushToMDBX(tx); err != nil {
+			return fmt.Errorf("flush buffer for verify: %w", err)
+		}
+		if err := RebuildHashedState(tx); err != nil {
+			return fmt.Errorf("rebuild hashed state: %w", err)
+		}
 		trc := commitment.NewTrieRootComputer()
 		trc.SetRwTx(tx)
 		ibs.SetRootComputer(trc)

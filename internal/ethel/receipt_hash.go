@@ -60,7 +60,33 @@ func (rs ethReceiptList) EncodeIndex(i int, w *bytes.Buffer) {
 	}
 }
 
-// EthReceiptHash computes the Ethereum-standard receipt root hash.
+// EthReceiptHash computes the Ethereum-standard receipt root hash
+// using MPT trie (not N42's simplified keccak-concat DeriveSha).
 func EthReceiptHash(receipts []*block.Receipt) types.Hash {
-	return hash.DeriveSha(ethReceiptList(receipts))
+	return ethDeriveSha(ethReceiptList(receipts))
+}
+
+// ethDeriveSha computes the MPT trie root of a DerivableList.
+// key = RLP(uint(index)), value = item encoding.
+// This matches go-ethereum's types.DeriveSha with StackTrie.
+func ethDeriveSha(list hash.DerivableList) types.Hash {
+	if list == nil || list.Len() == 0 {
+		// Empty trie root = keccak256(RLP("")) = keccak256(0x80)
+		return types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+	}
+
+	// Build key-value pairs: RLP(index) → item encoding.
+	var keybuf bytes.Buffer
+	var valbuf bytes.Buffer
+
+	// Use a simple ordered-insert trie: for small lists, direct MPT construction.
+	t := newSimpleTrie()
+	for i := 0; i < list.Len(); i++ {
+		keybuf.Reset()
+		rlp.Encode(&keybuf, uint(i))
+		valbuf.Reset()
+		list.EncodeIndex(i, &valbuf)
+		t.update(keybuf.Bytes(), valbuf.Bytes())
+	}
+	return t.hash()
 }
