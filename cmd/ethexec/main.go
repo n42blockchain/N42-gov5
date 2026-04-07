@@ -884,26 +884,12 @@ func runRebuildState(c *cli.Context) error {
 
 	outAncient := filepath.Join(datadir, "ancient")
 
-	// Auto-delete existing mdbx.dat for clean rebuild.
-	// ClearBucket on a full Storage table (40GB+) causes 185GB commit charge
-	// on Windows — MDBX must dirty all B+tree pages to free them.
-	mdbxPath := filepath.Join(datadir, "mdbx.dat")
-	mdbxLck := filepath.Join(datadir, "mdbx.lck")
-	if fi, err := os.Stat(mdbxPath); err == nil && fi.Size() > 1024*1024 {
-		log.Info("Removing old MDBX for clean rebuild",
-			"path", mdbxPath,
-			"size", fmt.Sprintf("%.1f GB", float64(fi.Size())/1e9))
-		os.Remove(mdbxPath)
-		os.Remove(mdbxLck)
-	}
-
+	// Open existing MDBX with Accede (use stored geometry, no extra commit charge).
 	logger := log2.New()
 	db, err := mdbx.NewMDBX(logger).
 		Path(datadir).
 		Label(kv.ChainDB).
-		PageSize(4096).
-		MapSize(64 * datasize.GB).
-		GrowthStep(2 * datasize.GB).
+		Accede().
 		DBVerbosity(kv.DBVerbosityLvl(2)).
 		Open(context.Background())
 	if err != nil {

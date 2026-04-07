@@ -53,10 +53,23 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 		"goSysMB", m0.Sys/1e6)
 	log.Info("If Task Manager shows high Commit Size, check OTHER processes (reth, etc)")
 
-	// Note: ClearBucket on a full Storage table (40GB, billions of entries)
-	// causes 185GB commit charge on Windows. Not safe to clear in-place.
-	// Caller must delete mdbx.dat before running rebuild-state.
-	// We verify the tables are empty to catch mistakes early.
+	// Clear Account/Storage tables using ClearBucket (Drop + recreate DBI).
+	// On current MDBX without WriteMap this is safe — only dirty pages use RAM.
+	log.Info("Clearing Account/Storage tables...")
+	for _, tbl := range []string{modules.Account, modules.Storage} {
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		if err := tx.ClearBucket(tbl); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("clear %s: %w", tbl, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit clear %s: %w", tbl, err)
+		}
+		log.Info("Table cleared", "table", tbl)
+	}
 
 	acctMap := make(map[types.Address][]byte, 1_000_000)
 	storMap := make(map[string][]byte, 10_000_000)
