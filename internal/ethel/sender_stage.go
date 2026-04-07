@@ -43,6 +43,9 @@ func NewSenderStage(input, output *freezer.Freezer, chainCfg *params.ChainConfig
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
+	// Ensure input freezer has headers/bodies tables (coreTableSpecs is empty).
+	input.EnsureTable("headers", "c")
+	input.EnsureTable("bodies", "c")
 	return &SenderStage{
 		inputFreezer:  input,
 		outputFreezer: output,
