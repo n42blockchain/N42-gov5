@@ -149,6 +149,36 @@ func main() {
 				Action: runRebuildState,
 			},
 			{
+				Name:  "mem-test",
+				Usage: "Open MDBX and print memory usage (debug)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "datadir", Required: true},
+				},
+				Action: func(c *cli.Context) error {
+					datadir := c.String("datadir")
+					logger := log2.New()
+					db, err := mdbx.NewMDBX(logger).
+						Path(datadir).Label(kv.ChainDB).
+						PageSize(4096).
+						MapSize(64 * datasize.GB).
+						GrowthStep(1 * datasize.GB).
+						DirtySpace(uint64(128 * datasize.MB)).
+						DBVerbosity(kv.DBVerbosityLvl(2)).
+						Open(context.Background())
+					if err != nil {
+						return err
+					}
+					var m runtime.MemStats
+					runtime.ReadMemStats(&m)
+					log.Info("MDBX opened", "goAllocMB", m.Alloc/1e6, "goSysMB", m.Sys/1e6)
+					log.Info("Check Task Manager for this process Commit Size")
+					log.Info("Press Ctrl+C to exit")
+					select {}
+					_ = db
+					return nil
+				},
+			},
+			{
 				Name:  "txlookup-build",
 				Usage: "Build RecSplit segments for tx hash → block number lookup",
 				Flags: []cli.Flag{

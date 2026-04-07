@@ -42,20 +42,23 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	}
 	log.Info("Rebuild PlainState from leaves", "blocks", endBlock, "memLimitGB", memLimitGB)
 
-	// Clear Account/Storage tables (safe without WriteMap — only dirty pages use RAM).
-	for _, tbl := range []string{modules.Account, modules.Storage} {
-		log.Info("Clearing table", "table", tbl)
-		tx, err := db.BeginRw(ctx)
-		if err != nil {
-			return err
-		}
-		if err := tx.ClearBucket(tbl); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("clear %s: %w", tbl, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit clear %s: %w", tbl, err)
-		}
+	// MDBX must be empty (fresh file). ClearBucket on a 40GB+ database
+	// causes 185GB commit charge on Windows (MDBX dirties all pages).
+	// Caller should delete mdbx.dat before running rebuild-state.
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	cnt := uint64(0)
+	cursor, _ := tx.Cursor(modules.Account)
+	if cursor != nil {
+		k, _, _ := cursor.First()
+		if k != nil { cnt++ }
+		cursor.Close()
+	}
+	tx.Rollback()
+	if cnt > 0 {
+		return fmt.Errorf("MDBX Account table is not empty. Delete mdbx.dat first:\n  del %s\\mdbx.dat\n  del %s\\mdbx.lck", ancientDir, ancientDir)
 	}
 
 	acctMap := make(map[types.Address][]byte, 1_000_000)
@@ -136,7 +139,7 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	runtime.GC()
 
 	// Write progress.
-	tx, err := db.BeginRw(ctx)
+	tx, err = db.BeginRw(ctx)
 	if err != nil {
 		return err
 	}
@@ -220,6 +223,39 @@ func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]by
 		"storage", len(storKeys),
 		"elapsed", time.Since(t0).Truncate(time.Second))
 	return nil
+}
+
+// deleteBatch deletes up to limit keys from a table in one transaction.
+// Returns the number of keys deleted. Call repeatedly until 0.
+func deleteBatch(ctx context.Context, db kv.RwDB, table string, limit int) (int, error) {
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return 0, err
+	}
+	cursor, err := tx.RwCursor(table)
+	if err != nil {
+		tx.Rollback()
+		return 0, err
+	}
+	deleted := 0
+	for k, _, err := cursor.First(); k != nil && deleted < limit; k, _, err = cursor.Next() {
+		if err != nil {
+			cursor.Close()
+			tx.Rollback()
+			return 0, err
+		}
+		if err := cursor.DeleteCurrent(); err != nil {
+			cursor.Close()
+			tx.Rollback()
+			return 0, err
+		}
+		deleted++
+	}
+	cursor.Close()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return deleted, nil
 }
 
 // VerifyRebuildRoot verifies rebuilt PlainState against header state root.
