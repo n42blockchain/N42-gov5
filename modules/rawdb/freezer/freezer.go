@@ -112,12 +112,10 @@ type tableSpec struct {
 // the output freezer writes it in batch-compressed format. Including it
 // in core would cause New() to truncate it to 0 when the other core
 // tables (headers, bodies, …) are empty.
-var coreTableSpecs = []tableSpec{
-	{TableHeaders, "c"},
-	{TableBodies, "c"},
-	// TableHashes and TableDifficulty removed — hashes derivable from headers,
-	// difficulty always 0 post-PoS. No longer auto-created.
-}
+// coreTableSpecs: empty — headers/bodies are produced by compact tools
+// (columnar format), not freezer tables. All output tables (leaves,
+// witness, receipts, etc.) are opened on-demand via EnsureTableCompressed.
+var coreTableSpecs = []tableSpec{}
 
 // extendedTableSpecs are ETH EL execution tables (opened when present or on first write).
 // Opened with NewFreezerTableCompressed for batch-mode auto-detection.
