@@ -63,12 +63,9 @@ func (c *AccountCSCompactor) Run(ctx context.Context, startBlock, endBlock uint6
 	}
 	defer enc.Close()
 
-	// Open idx file. If startBlock==0, truncate to force full rebuild.
+	// Open idx file. Resume from existing data if present.
 	idxPath := filepath.Join(c.outputDir, "acctcs.cidx")
 	flags := os.O_RDWR | os.O_CREATE
-	if startBlock == 0 {
-		flags |= os.O_TRUNC
-	}
 	idxFile, err := os.OpenFile(idxPath, flags, 0644)
 	if err != nil {
 		return err
