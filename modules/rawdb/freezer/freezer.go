@@ -115,8 +115,8 @@ type tableSpec struct {
 var coreTableSpecs = []tableSpec{
 	{TableHeaders, "c"},
 	{TableBodies, "c"},
-	{TableHashes, "r"},
-	{TableDifficulty, "r"},
+	// TableHashes and TableDifficulty removed — hashes derivable from headers,
+	// difficulty always 0 post-PoS. No longer auto-created.
 }
 
 // extendedTableSpecs are ETH EL execution tables (opened when present or on first write).
