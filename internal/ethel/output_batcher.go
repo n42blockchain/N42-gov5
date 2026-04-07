@@ -262,18 +262,25 @@ func padTableTo(tbl *freezer.FreezerTable, targetItems uint64, enc *zstd.Encoder
 	return nil
 }
 
-// alignOnResume prepares all output tables for resumed execution.
-// Records existing item counts; does NOT truncate.
-func (b *outputBatcher) alignOnResume(startBlock uint64) error {
+// alignOnResume prepares output tables for resumed execution.
+// leavesOnly=true only aligns leaves + witness tables.
+func (b *outputBatcher) alignOnResume(startBlock uint64, leavesOnly bool) error {
 	b.nextItem = startBlock
 
-	for _, name := range []string{
+	tables := []string{
 		freezer.TableReceipts,
 		freezer.TableAccountChanges,
 		freezer.TableStorageChanges,
 		freezer.TableLeavesJournal,
 		freezer.TableBlockWitness,
-	} {
+	}
+	if leavesOnly {
+		tables = []string{
+			freezer.TableLeavesJournal,
+			freezer.TableBlockWitness,
+		}
+	}
+	for _, name := range tables {
 		tbl, err := b.freezer.EnsureTableCompressed(name, "c")
 		if err != nil {
 			return err

@@ -154,7 +154,7 @@ func (e *Executor) Run(ctx context.Context) error {
 		}
 		e.outBatcher = batcher
 		defer batcher.Close()
-		if err := batcher.alignOnResume(startBlock); err != nil {
+		if err := batcher.alignOnResume(startBlock, e.cfg.LeavesOnly); err != nil {
 			return fmt.Errorf("align output tables: %w", err)
 		}
 		// Pad senders if not pre-computed.
