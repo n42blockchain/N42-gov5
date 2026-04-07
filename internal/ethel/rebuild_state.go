@@ -2,16 +2,18 @@
 // This file is part of the N42 library.
 //
 // rebuild_state.go rebuilds PlainState from leaves journal.
-// Directly Put to MDBX (upsert) — no in-memory map, zero OOM risk.
-// Commits every N blocks to keep MDBX dirty pages bounded.
+// Accumulates in memory maps (last-write-wins dedup), flushes to MDBX
+// when memory exceeds limit. No WriteMap — MDBX uses copy-on-write.
 
 package ethel
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"runtime"
+	"sort"
 	"time"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -21,12 +23,9 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-// RebuildState reads leaves from leaves_journal and writes PlainState
-// directly to MDBX. Each leaf is a Put (upsert) — MDBX handles dedup.
-// Block 0 contains genesis accounts, no genesis.json needed.
-func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
-	endBlock uint64,
-) error {
+const memLimitGB = 80 // flush when Go heap exceeds this
+
+func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
 	t0 := time.Now()
 
 	journalTbl, err := freezer.NewFreezerTable(ancientDir, "leaves_journal", "c")
@@ -41,31 +40,20 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 	if endBlock == 0 || endBlock > items {
 		endBlock = items
 	}
-	log.Info("Rebuild PlainState from leaves", "blocks", endBlock, "items", items)
+	log.Info("Rebuild PlainState from leaves", "blocks", endBlock, "memLimitGB", memLimitGB)
 
-	// Note: caller should delete mdbx.dat before running rebuild-state.
-	// ClearBucket on a 40GB+ file with WriteMap causes OOM (all pages become dirty).
-	log.Info("Using empty MDBX — caller must delete mdbx.dat beforehand")
-
-	// Replay leaves directly to MDBX.
-	const commitInterval = 10_000 // commit frequently to bound dirty pages
-	tx, err := db.BeginRw(ctx)
-	if err != nil {
-		return err
-	}
-
-	var totalAcct, totalStor uint64
+	acctMap := make(map[types.Address][]byte, 1_000_000)
+	storMap := make(map[string][]byte, 10_000_000)
+	flushCount := 0
 	lastLogTime := time.Now()
 
 	for blockNum := uint64(0); blockNum < endBlock; blockNum++ {
 		if ctx.Err() != nil {
-			tx.Rollback()
 			return ctx.Err()
 		}
 
 		data, err := journalTbl.Retrieve(blockNum)
 		if err != nil {
-			tx.Rollback()
 			return fmt.Errorf("read block %d: %w", blockNum, err)
 		}
 		if len(data) < 8 {
@@ -74,100 +62,162 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 
 		accounts, storage, err := DecodeLeavesJournal(data)
 		if err != nil {
-			tx.Rollback()
 			return fmt.Errorf("decode block %d: %w", blockNum, err)
 		}
 
 		for _, a := range accounts {
 			if len(a.Value) == 0 {
-				tx.Delete(modules.Account, a.Address[:])
+				acctMap[a.Address] = nil
 			} else {
-				if err := tx.Put(modules.Account, a.Address[:], a.Value); err != nil {
-					tx.Rollback()
-					return fmt.Errorf("put account block %d: %w", blockNum, err)
-				}
+				acctMap[a.Address] = a.Value
 			}
-			totalAcct++
 		}
-
 		for _, s := range storage {
-			key := make([]byte, 52)
+			var key [52]byte
 			copy(key[:20], s.Address[:])
 			copy(key[20:], s.Slot[:])
 			if len(s.Value) == 0 {
-				tx.Delete(modules.Storage, key)
+				storMap[string(key[:])] = nil
 			} else {
-				if err := tx.Put(modules.Storage, key, s.Value); err != nil {
-					tx.Rollback()
-					return fmt.Errorf("put storage block %d: %w", blockNum, err)
-				}
-			}
-			totalStor++
-		}
-
-		// Periodic commit to keep dirty pages bounded.
-		if blockNum > 0 && blockNum%commitInterval == 0 {
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("commit at block %d: %w", blockNum, err)
-			}
-			tx, err = db.BeginRw(ctx)
-			if err != nil {
-				return err
+				storMap[string(key[:])] = s.Value
 			}
 		}
 
-		// Progress log.
-		if time.Since(lastLogTime) > 10*time.Second {
+		if time.Since(lastLogTime) > 5*time.Second {
 			var m runtime.MemStats
 			runtime.ReadMemStats(&m)
+			allocGB := float64(m.Alloc) / 1e9
 			pct := float64(blockNum) / float64(endBlock) * 100
-			blkPerSec := float64(blockNum) / time.Since(t0).Seconds()
-			log.Info("Rebuilding PlainState",
+			log.Info("Reading leaves",
 				"block", blockNum,
 				"pct", fmt.Sprintf("%.1f%%", pct),
-				"blk/s", fmt.Sprintf("%.0f", blkPerSec),
-				"acctWrites", totalAcct,
-				"storWrites", totalStor,
-				"allocMB", m.Alloc/1024/1024,
+				"accounts", len(acctMap),
+				"storage", len(storMap),
+				"allocGB", fmt.Sprintf("%.1f", allocGB),
 				"elapsed", time.Since(t0).Truncate(time.Second))
 			lastLogTime = time.Now()
+
+			if allocGB > float64(memLimitGB) {
+				log.Info("Memory limit, flushing to MDBX...", "allocGB", fmt.Sprintf("%.1f", allocGB))
+				if err := flushToMDBX(ctx, db, acctMap, storMap); err != nil {
+					return err
+				}
+				acctMap = make(map[types.Address][]byte, 1_000_000)
+				storMap = make(map[string][]byte, 10_000_000)
+				runtime.GC()
+				flushCount++
+			}
 		}
 	}
 
-	// Final commit + progress marker.
-	var progBuf [8]byte
-	binary.BigEndian.PutUint64(progBuf[:], endBlock-1)
-	if err := tx.Put("DbInfo", []byte("ethel_progress"), progBuf[:]); err != nil {
-		tx.Rollback()
+	// Final flush.
+	log.Info("Final flush", "accounts", len(acctMap), "storage", len(storMap), "totalFlushes", flushCount)
+	if err := flushToMDBX(ctx, db, acctMap, storMap); err != nil {
 		return err
 	}
+	acctMap = nil
+	storMap = nil
+	runtime.GC()
+
+	// Write progress.
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], endBlock-1)
+	tx.Put("DbInfo", []byte("ethel_progress"), buf[:])
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("final commit: %w", err)
+		return err
 	}
 
-	elapsed := time.Since(t0)
 	log.Info("PlainState rebuild complete",
 		"blocks", endBlock,
-		"acctWrites", totalAcct,
-		"storWrites", totalStor,
-		"elapsed", elapsed.Truncate(time.Second),
-		"blk/s", fmt.Sprintf("%.0f", float64(endBlock)/elapsed.Seconds()))
-
+		"flushes", flushCount+1,
+		"elapsed", time.Since(t0).Truncate(time.Second))
 	return nil
 }
 
-// VerifyRebuildRoot verifies the rebuilt PlainState root against a header.
+func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]byte, storMap map[string][]byte) error {
+	if len(acctMap) == 0 && len(storMap) == 0 {
+		return nil
+	}
+	t0 := time.Now()
+
+	// Sort account keys.
+	acctKeys := make([]types.Address, 0, len(acctMap))
+	for a := range acctMap {
+		acctKeys = append(acctKeys, a)
+	}
+	sort.Slice(acctKeys, func(i, j int) bool {
+		return bytes.Compare(acctKeys[i][:], acctKeys[j][:]) < 0
+	})
+
+	// Sort storage keys.
+	storKeys := make([]string, 0, len(storMap))
+	for k := range storMap {
+		storKeys = append(storKeys, k)
+	}
+	sort.Strings(storKeys)
+
+	// Write sorted — MDBX Put is upsert, handles duplicates across flushes.
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+
+	for i, addr := range acctKeys {
+		v := acctMap[addr]
+		if v == nil {
+			tx.Delete(modules.Account, addr[:])
+		} else {
+			if err := tx.Put(modules.Account, addr[:], v); err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+		if i > 0 && i%1_000_000 == 0 {
+			log.Info("  writing accounts", "progress", i, "total", len(acctKeys))
+		}
+	}
+
+	for i, k := range storKeys {
+		v := storMap[k]
+		if v == nil {
+			tx.Delete(modules.Storage, []byte(k))
+		} else {
+			if err := tx.Put(modules.Storage, []byte(k), v); err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+		if i > 0 && i%5_000_000 == 0 {
+			log.Info("  writing storage", "progress", i, "total", len(storKeys))
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit flush: %w", err)
+	}
+	log.Info("Flush done",
+		"accounts", len(acctKeys),
+		"storage", len(storKeys),
+		"elapsed", time.Since(t0).Truncate(time.Second))
+	return nil
+}
+
+// VerifyRebuildRoot verifies rebuilt PlainState against header state root.
 func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Freezer, endBlock uint64) {
 	if endBlock == 0 {
 		return
 	}
 	blockNum := endBlock - 1
 	t0 := time.Now()
-	log.Info("Computing state root for verification...", "block", blockNum)
+	log.Info("Verifying state root...", "block", blockNum)
 
 	headerData, err := inputFreezer.Ancient(freezer.TableHeaders, blockNum)
 	if err != nil {
-		log.Warn("Cannot read header", "block", blockNum, "err", err)
+		log.Warn("Cannot read header", "err", err)
 		return
 	}
 	header, err := DecodeGethHeader(headerData)
@@ -185,33 +235,18 @@ func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Fr
 		log.Warn("InitHashState failed", "err", err)
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		return
-	}
+	tx.Commit()
 
-	tx2, err := db.BeginRw(ctx)
-	if err != nil {
-		return
-	}
-	computedRoot, err := CalcStateRoot(tx2)
+	tx2, _ := db.BeginRw(ctx)
+	root, err := CalcStateRoot(tx2)
 	tx2.Rollback()
 	if err != nil {
 		log.Warn("CalcStateRoot failed", "err", err)
 		return
 	}
-
-	if computedRoot == header.Root {
-		log.Info("State root VERIFIED",
-			"block", blockNum,
-			"root", header.Root.Hex(),
-			"elapsed", time.Since(t0).Truncate(time.Second))
+	if root == header.Root {
+		log.Info("State root VERIFIED", "block", blockNum, "root", root.Hex(), "elapsed", time.Since(t0).Truncate(time.Second))
 	} else {
-		log.Error("State root MISMATCH",
-			"block", blockNum,
-			"computed", computedRoot.Hex(),
-			"expected", header.Root.Hex())
+		log.Error("State root MISMATCH", "block", blockNum, "computed", root.Hex(), "expected", header.Root.Hex())
 	}
 }
-
-// Ensure types.Address is used (avoid import cycle).
-var _ = types.Address{}
