@@ -352,14 +352,19 @@ func run(c *cli.Context) error {
 		log.Info("Genesis state loaded", "accounts", count)
 	}
 
-	// Open output freezer for receipts, senders, changesets.
-	outAncientPath := filepath.Join(datadir, "ancient")
-	outFreezer, err := freezer.New(outAncientPath, 0)
+	// Open output freezer in chain/ directory.
+	// Uses empty coreTableSpecs — no auto-create/truncate of headers/bodies.
+	// All tables are opened on-demand via EnsureTableCompressed.
+	outChainPath := filepath.Join(datadir, "chain")
+	if err := os.MkdirAll(outChainPath, 0755); err != nil {
+		return err
+	}
+	outFreezer, err := freezer.New(outChainPath, 0)
 	if err != nil {
 		return fmt.Errorf("open output freezer: %w", err)
 	}
 	defer outFreezer.Close()
-	log.Info("Output freezer opened", "path", outAncientPath)
+	log.Info("Output freezer opened", "path", outChainPath)
 
 	// Set up executor.
 	chainCfg := params.EthereumMainnetChainConfig
@@ -434,9 +439,9 @@ func runVerifyJournal(c *cli.Context) error {
 	}
 	defer inputF.Close()
 
-	// Open output freezer (leaves_journal).
-	outAncient := filepath.Join(datadir, "ancient")
-	outF, err := freezer.New(outAncient, 0)
+	// Open output freezer (leaves).
+	outChain := filepath.Join(datadir, "chain")
+	outF, err := freezer.New(outChain, 0)
 	if err != nil {
 		return fmt.Errorf("open output freezer: %w", err)
 	}
@@ -823,7 +828,7 @@ func runReceiptCopy(c *cli.Context) error {
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
 	// Write receipts to the output ancient directory.
-	ancientOut := filepath.Join(datadir, "ancient")
+	ancientOut := filepath.Join(datadir, "chain")
 	if err := os.MkdirAll(ancientOut, 0755); err != nil {
 		return err
 	}
@@ -888,7 +893,7 @@ func runSenderRecovery(c *cli.Context) error {
 	defer f.Close()
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
-	ancientOut := filepath.Join(datadir, "ancient")
+	ancientOut := filepath.Join(datadir, "chain")
 	if err := os.MkdirAll(ancientOut, 0755); err != nil {
 		return err
 	}
@@ -907,7 +912,7 @@ func runRebuildState(c *cli.Context) error {
 	datadir := c.String("datadir")
 	endBlock := c.Uint64("end")
 
-	outAncient := filepath.Join(datadir, "ancient")
+	chainDir := filepath.Join(datadir, "chain")
 
 	// Open existing MDBX with Accede (use stored geometry, no extra commit charge).
 	logger := log2.New()
@@ -925,7 +930,7 @@ func runRebuildState(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 
-	if err := ethel.RebuildState(ctx, db, outAncient, endBlock); err != nil {
+	if err := ethel.RebuildState(ctx, db, chainDir, endBlock); err != nil {
 		return err
 	}
 
