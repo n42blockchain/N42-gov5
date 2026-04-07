@@ -384,20 +384,9 @@ func run(c *cli.Context) error {
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
 
 	// Check for pre-computed senders: try SegmentStore in chain/, ancient/, then old freezer.
-	var senderReader *ethel.SenderSegmentReader
-	for _, dir := range []string{filepath.Join(datadir, "chain"), filepath.Join(datadir, "ancient")} {
-		if r, err := ethel.OpenSenderStore(dir); err == nil && r != nil {
-			senderReader = r
-			log.Info("Pre-computed senders detected (SegmentStore)", "dir", dir, "maxBlock", r.MaxBlock())
-			break
-		}
-	}
-	if senderReader != nil {
-		executor.SetSenderStore(senderReader)
-	} else if senderTbl := outFreezer.Table("senders"); senderTbl != nil && senderTbl.Items() > 0 {
-		executor.SetSenderFreezer(outFreezer)
-		log.Info("Pre-computed senders detected (freezer)", "items", senderTbl.Items())
-	}
+	// TODO: SegmentStore senders from Reth may not match Geth body tx ordering.
+	// Disabled until verified. Using ecrecover from signatures for now.
+	log.Info("Senders: using ecrecover from tx signatures (no pre-computed senders)")
 
 	// TODO: compact body reader has signature decoding issues (V/R/S columns).
 	// Disabled until fixed. Using Geth freezer for now.
