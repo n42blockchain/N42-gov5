@@ -57,11 +57,11 @@ const (
 	TableDifficulty = "diffs"      // blockNum → total difficulty (ridx/rdat)
 
 	// Extended tables for ETH EL execution.
-	TableSenders        = "senders"         // blockNum → concatenated sender addresses 20B×N (cidx/cdat)
-	TableAccountChanges = "account_changes" // blockNum → account changeset (cidx/cdat)
-	TableStorageChanges = "storage_changes" // blockNum → storage changeset (cidx/cdat)
-	TableLeavesJournal  = "leaves_journal"  // blockNum → trie leaf changes per block (cidx/cdat)
-	TableBlockWitness   = "block_witness"   // blockNum → minimal state access set for replay (cidx/cdat)
+	TableSenders        = "senders"   // blockNum → concatenated sender addresses 20B×N
+	TableAccountChanges = "acctcs"    // blockNum → account changeset
+	TableStorageChanges = "storcs"    // blockNum → storage changeset
+	TableLeavesJournal  = "leaves"    // blockNum → trie leaf changes per block
+	TableBlockWitness   = "witness"   // blockNum → minimal state access set for replay
 )
 
 // BatchSize is the unified batch size for all freezer tables.
