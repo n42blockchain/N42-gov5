@@ -333,6 +333,14 @@ func (t *FreezerTable) setBatchSize(bs int) { t.batchSize = bs }
 // to land on a batch boundary where consecutive entries have different offsets).
 func (t *FreezerTable) ForceBatchSize(bs int) { t.batchSize = bs }
 
+// SetCompressed enables compressed batch read mode with zstd decoder.
+func (t *FreezerTable) SetCompressed(v bool) {
+	t.compressed = v
+	if v && t.zstdDec == nil {
+		t.zstdDec, _ = zstd.NewReader(nil)
+	}
+}
+
 // AppendBatchBlob writes a pre-encoded batch blob and creates N cidx entries
 // all pointing to the same offset. Used for batch compression.
 func (t *FreezerTable) AppendBatchBlob(startItem uint64, count int, blob []byte) error {
