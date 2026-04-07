@@ -60,6 +60,7 @@ type Executor struct {
 	// Pre-computed senders from sender-recovery stage.
 	senderFreezer *freezer.Freezer
 	senderTable   *freezer.FreezerTable
+	senderStore   *senderSegmentReader // SegmentStore-based senders (chain/senders.cidx)
 	senderMisses  uint64
 
 	// Output batcher: accumulates entries, writes in batches.
@@ -91,6 +92,11 @@ func NewExecutor(f *freezer.Freezer, db kv.RwDB, chainCfg *params.ChainConfig, e
 func (e *Executor) SetSenderFreezer(f *freezer.Freezer) {
 	e.senderFreezer = f
 	e.senderTable = f.Table("senders")
+}
+
+// SetSenderStore sets the SegmentStore-based senders reader (chain/senders.cidx).
+func (e *Executor) SetSenderStore(r *senderSegmentReader) {
+	e.senderStore = r
 }
 
 // Run executes blocks from StartBlock to EndBlock.
@@ -303,30 +309,9 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	t1 := time.Now()
 	// 3. Process block (DAO fork, system contracts, EVM).
-	// Load pre-computed senders if available and in range.
+	// Load pre-computed senders if available.
 	var senders []types.Address
-	if e.senderTable != nil && blockNum < e.senderTable.Items() {
-		senderData, err := e.senderTable.Retrieve(blockNum)
-		if err != nil {
-			if e.senderMisses == 0 {
-				log.Warn("Sender retrieve error", "block", blockNum, "err", err, "items", e.senderTable.Items())
-			}
-		} else {
-			txCount := len(body.Transactions)
-			senderCount := len(senderData) / 20
-			if senderCount == txCount {
-				senders = make([]types.Address, senderCount)
-				for i := 0; i < senderCount; i++ {
-					copy(senders[i][:], senderData[i*20:(i+1)*20])
-				}
-			} else if e.senderMisses == 0 {
-				log.Warn("Sender count mismatch", "block", blockNum, "txs", txCount, "senders", senderCount, "dataLen", len(senderData))
-			}
-		}
-	}
-	if e.senderTable != nil && senders == nil && len(body.Transactions) > 0 {
-		e.senderMisses++
-	}
+	senders = e.loadSenders(blockNum, len(body.Transactions))
 
 	result, err := e.processBlock(header, body, ibs, senders)
 	if err != nil {
@@ -442,6 +427,44 @@ func (e *Executor) makeBlockHashFunc(ref *block.Header) func(n uint64) types.Has
 
 // padSendersTable pads the senders table for blocks 0..startBlock-1
 // when senders are NOT pre-computed by the sender-recovery stage.
+// loadSenders tries SegmentStore first, then freezer, returns nil if unavailable.
+func (e *Executor) loadSenders(blockNum uint64, txCount int) []types.Address {
+	// Try SegmentStore (chain/senders.cidx).
+	if e.senderStore != nil && blockNum < e.senderStore.MaxBlock() {
+		data, err := e.senderStore.ReadBlock(blockNum)
+		if err == nil && len(data) >= 20 {
+			senderCount := len(data) / 20
+			if senderCount == txCount {
+				senders := make([]types.Address, senderCount)
+				for i := 0; i < senderCount; i++ {
+					copy(senders[i][:], data[i*20:(i+1)*20])
+				}
+				return senders
+			}
+		}
+	}
+
+	// Fallback: old freezer format (ancient/senders).
+	if e.senderTable != nil && blockNum < e.senderTable.Items() {
+		senderData, err := e.senderTable.Retrieve(blockNum)
+		if err == nil {
+			senderCount := len(senderData) / 20
+			if senderCount == txCount {
+				senders := make([]types.Address, senderCount)
+				for i := 0; i < senderCount; i++ {
+					copy(senders[i][:], senderData[i*20:(i+1)*20])
+				}
+				return senders
+			}
+		}
+	}
+
+	if (e.senderStore != nil || e.senderTable != nil) && txCount > 0 {
+		e.senderMisses++
+	}
+	return nil
+}
+
 // If the table already has data (from a prior sender-recovery run),
 // existing data is preserved — only gaps below startBlock are filled.
 func (e *Executor) padSendersTable(startBlock uint64) error {
