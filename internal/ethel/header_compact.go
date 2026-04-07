@@ -551,6 +551,13 @@ func (r *HeaderCompactReader) loadSegment(segNum int64) error {
 	if err != nil {
 		return fmt.Errorf("decode segment %d: %w", segNum, err)
 	}
+	// Fill in Number field (not stored in columnar format, = segment_start + index).
+	baseBlock := uint64(segNum) * HeaderSegmentSize
+	for i, h := range headers {
+		if h.Number == nil {
+			h.Number = new(uint256.Int).SetUint64(baseBlock + uint64(i))
+		}
+	}
 
 	r.cachedSeg = segNum
 	r.cachedHeaders = headers
