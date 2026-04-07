@@ -1123,24 +1123,31 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 
 	for addr := range s.stateObjectsDirty {
 		obj := s.getStateObject(addr)
-		if obj == nil || obj.deleted {
+		// Selfdestructed accounts must be treated as deleted for hashed state,
+		// even though obj.deleted is only set later in CommitBlock/MakeWriteSet.
+		// Without incarnation, old storage is not auto-isolated — must be explicitly deleted.
+		if obj == nil || obj.deleted || obj.selfdestructed {
 			accounts[addr] = nil
+			// Collect storage slots for deletion so HashOnlyComputer removes them
+			// from HashedStorage. Without this, stale slots accumulate.
+			if obj != nil && len(obj.blockOriginStorage) > 0 {
+				slots := make(map[types.Hash]*uint256.Int, len(obj.blockOriginStorage))
+				for key := range obj.blockOriginStorage {
+					slots[key] = new(uint256.Int) // zero = deleted
+				}
+				storage[addr] = slots
+				if ltEnabled {
+					origSlots := make(map[types.Hash]*uint256.Int, len(obj.blockOriginStorage))
+					for key, origVal := range obj.blockOriginStorage {
+						origSlots[key] = new(uint256.Int).Set(&origVal)
+					}
+					originalStorage[addr] = origSlots
+				}
+			}
 			if ltEnabled {
 				orig := new(account.StateAccount)
 				if obj != nil {
 					orig.Copy(&obj.original)
-					// Collect storage originals for deleted accounts so LtHash
-					// can remove their storage slots from the digest.
-					if len(obj.blockOriginStorage) > 0 {
-						origSlots := make(map[types.Hash]*uint256.Int, len(obj.blockOriginStorage))
-						slots := make(map[types.Hash]*uint256.Int, len(obj.blockOriginStorage))
-						for key, origVal := range obj.blockOriginStorage {
-							origSlots[key] = new(uint256.Int).Set(&origVal)
-							slots[key] = new(uint256.Int) // zero = deleted
-						}
-						storage[addr] = slots
-						originalStorage[addr] = origSlots
-					}
 				}
 				originals[addr] = orig
 			}

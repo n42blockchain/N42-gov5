@@ -4,6 +4,7 @@
 package ethel
 
 import (
+	"bytes"
 	"encoding/binary"
 
 	"github.com/holiman/uint256"
@@ -91,7 +92,8 @@ func (h *HashOnlyComputer) deleteAccountStorage(addrHash []byte) {
 	}
 	defer c.Close()
 
-	// HashedStorage DupSort key prefix = addrHash(32) + incarnation(8) = 40 bytes
+	// Collect keys first, then delete — cursor Delete + Next skips entries.
+	var toDelete [][]byte
 	prefix := make([]byte, 40)
 	copy(prefix[:32], addrHash)
 
@@ -99,17 +101,12 @@ func (h *HashOnlyComputer) deleteAccountStorage(addrHash []byte) {
 		if err != nil {
 			break
 		}
-		// Check prefix match (first 32 bytes = addrHash).
-		match := true
-		for i := 0; i < 32; i++ {
-			if k[i] != addrHash[i] {
-				match = false
-				break
-			}
-		}
-		if !match {
+		if !bytes.Equal(k[:32], addrHash) {
 			break
 		}
+		toDelete = append(toDelete, append([]byte{}, k...))
+	}
+	for _, k := range toDelete {
 		h.tx.Delete(modules.HashedStorage, k)
 	}
 }
