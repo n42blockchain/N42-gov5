@@ -38,7 +38,7 @@ const (
 	//value - contract code
 	Code    = "Code"    // contract code hash -> contract code
 	Account = "Account" // address(un hashed) -> account encoded
-	Storage = "Storage" // address (un hashed) + incarnation + storage key (un hashed) -> storage value(types.Hash)
+	Storage = "Storage" // address(20B) + slot(32B) -> storage value
 	Reward  = "Reward"  // ...
 	Deposit = "Deposit" // Deposit info
 
