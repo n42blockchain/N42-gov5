@@ -14,6 +14,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 
 	iinternal "github.com/n42blockchain/N42/internal"
@@ -85,9 +86,10 @@ func ProcessBlock(
 	signer := transaction.MakeSigner(chainCfg, header.Number.ToBig())
 
 	// Pre-Byzantium receipt PostState requires per-tx IntermediateRoot.
-	// Only compute when a real RootComputer is set (verify blocks with TrieRootComputer).
+	// Only compute on verify blocks (TrieRootComputer, not HashOnlyComputer).
 	preByzantium := !chainCfg.IsByzantium(header.Number.Uint64())
-	computePostState := preByzantium && ibs.HasRootComputer()
+	_, hasTRC := ibs.GetRootComputer().(*commitment.TrieRootComputer)
+	computePostState := preByzantium && hasTRC
 
 	for i, txn := range txs {
 		ibs.Prepare(txn.Hash(), blockHash, i)

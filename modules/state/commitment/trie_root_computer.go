@@ -171,7 +171,9 @@ func (t *TrieRootComputer) ComputeRoot(
 		return nil
 	}
 
-	loader := trie.NewFlatDBTrieLoader("trie-root", rl, accCollector, storCollector, false)
+	// Use empty RetainList — trie tables were just cleared, so there are
+	// no cached intermediate hashes. CalcTrieRoot must do a full rebuild.
+	loader := trie.NewFlatDBTrieLoader("trie-root", trie.NewRetainList(0), accCollector, storCollector, false)
 	root, err := loader.CalcTrieRoot(t.tx, nil)
 	if err != nil {
 		return types.Hash{}, fmt.Errorf("CalcTrieRoot: %w", err)
