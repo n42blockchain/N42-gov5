@@ -281,6 +281,7 @@ func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 		items := tbl.Items()
 
 		if items < startBlock {
+			// Table behind — pad with empty batches up to startBlock.
 			gap := startBlock - items
 			log.Info("Output table behind execution, padding",
 				"table", name, "items", items, "startBlock", startBlock, "gap", gap)
@@ -288,9 +289,9 @@ func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 				return fmt.Errorf("pad %s: %w", name, err)
 			}
 		} else if items > startBlock {
-			log.Info("Output table ahead of execution, preserving existing data",
-				"table", name, "items", items, "startBlock", startBlock,
-				"skip", items-startBlock)
+			// Table ahead — will skip entries until we reach items.
+			log.Info("Output table ahead, skipping existing",
+				"table", name, "items", items, "startBlock", startBlock)
 		}
 
 		b.tables[name] = &tableBatch{
