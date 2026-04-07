@@ -142,6 +142,10 @@ func (sdb *IntraBlockState) HasRootComputer() bool {
 	return sdb.rootComputer != nil
 }
 
+func (sdb *IntraBlockState) GetRootComputer() RootComputer {
+	return sdb.rootComputer
+}
+
 // LtHashRoot returns the LtHash state digest root, computed during
 // IntermediateRoot() if the RootComputer supports LtHash.
 // Returns zero hash if LtHash is not active.
