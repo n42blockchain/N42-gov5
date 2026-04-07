@@ -218,8 +218,8 @@ func New(path string, threshold uint64) (*Freezer, error) {
 		}
 	}
 
-	// Truncate core tables to the minimum count for consistency,
-	// but only when we found at least one non-empty core table.
+	// Align core tables: only truncate tables that are AHEAD of the minimum,
+	// never truncate to 0 (that would destroy data when some tables are empty by design).
 	if items > 0 {
 		for _, spec := range coreTableSpecs {
 			t := f.tables[spec.name]
@@ -231,6 +231,15 @@ func New(path string, threshold uint64) (*Freezer, error) {
 					return nil, err
 				}
 			}
+		}
+	}
+
+	// Use the maximum across ALL tables (core + extended) for frozen count.
+	// This ensures extended tables (receipts, senders, leaves, etc.) are
+	// accessible even when core tables (headers, bodies) are empty.
+	for _, t := range f.tables {
+		if c := t.Items(); c > items {
+			items = c
 		}
 	}
 	f.frozen.Store(items)
