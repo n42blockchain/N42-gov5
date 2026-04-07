@@ -42,23 +42,20 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	}
 	log.Info("Rebuild PlainState from leaves", "blocks", endBlock, "memLimitGB", memLimitGB)
 
-	// MDBX must be empty (fresh file). ClearBucket on a 40GB+ database
-	// causes 185GB commit charge on Windows (MDBX dirties all pages).
-	// Caller should delete mdbx.dat before running rebuild-state.
-	tx, err := db.BeginRw(ctx)
-	if err != nil {
-		return err
-	}
-	cnt := uint64(0)
-	cursor, _ := tx.Cursor(modules.Account)
-	if cursor != nil {
-		k, _, _ := cursor.First()
-		if k != nil { cnt++ }
-		cursor.Close()
-	}
-	tx.Rollback()
-	if cnt > 0 {
-		return fmt.Errorf("MDBX Account table is not empty. Delete mdbx.dat first:\n  del %s\\mdbx.dat\n  del %s\\mdbx.lck", ancientDir, ancientDir)
+	// Clear Account/Storage tables. Verified safe on Windows (14GB commit).
+	for _, tbl := range []string{modules.Account, modules.Storage} {
+		log.Info("Clearing table", "table", tbl)
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		if err := tx.ClearBucket(tbl); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("clear %s: %w", tbl, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit clear %s: %w", tbl, err)
+		}
 	}
 
 	acctMap := make(map[types.Address][]byte, 1_000_000)
@@ -139,7 +136,7 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	runtime.GC()
 
 	// Write progress.
-	tx, err = db.BeginRw(ctx)
+	tx, err := db.BeginRw(ctx)
 	if err != nil {
 		return err
 	}
