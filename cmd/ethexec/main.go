@@ -286,10 +286,14 @@ func run(c *cli.Context) error {
 
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
 
-	// Check if sender-recovery stage has pre-computed senders in the output freezer.
-	if senderTbl := outFreezer.Table("senders"); senderTbl != nil && senderTbl.Items() > 0 {
+	// Check for pre-computed senders: try SegmentStore (chain/) first, then freezer (ancient/).
+	chainDir := filepath.Join(datadir, "chain")
+	if senderReader, err := ethel.OpenSenderStore(chainDir); err == nil && senderReader != nil {
+		executor.SetSenderStore(senderReader)
+		log.Info("Pre-computed senders detected (SegmentStore)", "maxBlock", senderReader.MaxBlock())
+	} else if senderTbl := outFreezer.Table("senders"); senderTbl != nil && senderTbl.Items() > 0 {
 		executor.SetSenderFreezer(outFreezer)
-		log.Info("Pre-computed senders detected", "items", senderTbl.Items())
+		log.Info("Pre-computed senders detected (freezer)", "items", senderTbl.Items())
 	}
 
 	ctx, cancel := withShutdown()
