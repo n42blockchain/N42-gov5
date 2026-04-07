@@ -280,26 +280,62 @@ func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 		}
 		items := tbl.Items()
 
+		// Align table to startBlock.
+		if items > startBlock {
+			log.Info("Truncating table to startBlock",
+				"table", name, "items", items, "startBlock", startBlock)
+			if err := tbl.TruncateHead(startBlock); err != nil {
+				return fmt.Errorf("truncate %s: %w", name, err)
+			}
+			items = startBlock
+		}
 		if items < startBlock {
-			// Table behind — pad with empty batches up to startBlock.
 			gap := startBlock - items
-			log.Info("Output table behind execution, padding",
+			log.Info("Padding table to startBlock",
 				"table", name, "items", items, "startBlock", startBlock, "gap", gap)
 			if err := padTableTo(tbl, startBlock, b.enc); err != nil {
 				return fmt.Errorf("pad %s: %w", name, err)
 			}
-		} else if items > startBlock {
-			// Table ahead — will skip entries until we reach items.
-			log.Info("Output table ahead, skipping existing",
-				"table", name, "items", items, "startBlock", startBlock)
+			items = startBlock
 		}
 
-		b.tables[name] = &tableBatch{
+		tb := &tableBatch{
 			name:          name,
 			ext:           "c",
 			tbl:           tbl,
-			existingItems: tbl.Items(),
+			existingItems: items,
 		}
+
+		// Recover partial batch: if items not on batch-64 boundary,
+		// read back the incomplete batch, truncate to batch start,
+		// pre-load entries so next flush rewrites the full batch.
+		tail := items % uint64(freezer.BatchSize)
+		if tail > 0 {
+			batchStart := items - tail
+			var recovered [][]byte
+			for i := batchStart; i < items; i++ {
+				d, err := tbl.Retrieve(i)
+				if err != nil {
+					break
+				}
+				recovered = append(recovered, d)
+			}
+			if uint64(len(recovered)) == tail {
+				log.Info("Recovering partial batch",
+					"table", name, "batchStart", batchStart, "tail", tail)
+				if err := tbl.TruncateHead(batchStart); err != nil {
+					return fmt.Errorf("truncate partial %s: %w", name, err)
+				}
+				tb.entries = recovered
+				tb.existingItems = batchStart
+				// Adjust nextItem to batch start so batcher counts correctly.
+				if batchStart < b.nextItem {
+					b.nextItem = batchStart
+				}
+			}
+		}
+
+		b.tables[name] = tb
 		b.order = append(b.order, name)
 	}
 	return nil
