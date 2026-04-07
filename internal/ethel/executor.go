@@ -304,6 +304,24 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		return err
 	}
 
+	if blockNum >= 46250 && blockNum <= 46255 {
+		log.Info("Block detail",
+			"block", blockNum,
+			"txs", len(body.Transactions),
+			"uncles", len(body.Uncles),
+			"gasLimit", header.GasLimit)
+		for i, tx := range body.Transactions {
+			log.Info("  tx",
+				"block", blockNum,
+				"idx", i,
+				"hash", tx.Hash().Hex(),
+				"nonce", tx.Nonce(),
+				"to", tx.To(),
+				"value", tx.Value(),
+				"gas", tx.Gas())
+		}
+	}
+
 	// Cache header for BLOCKHASH opcode.
 	e.cacheHeader(blockNum, header)
 
@@ -320,7 +338,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	writer := state.NewBufferedPlainStateWriter(e.stateBuf, tx, blockNum)
 	ibs := state.New(reader)
 
-	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
+	shouldVerify := e.cfg.VerifyInterval > 0 && (blockNum%e.cfg.VerifyInterval == 0 || (blockNum >= 46000 && blockNum <= 50000))
 
 	// Attach HashOnlyComputer to keep HashedAccounts in sync incrementally.
 	if e.cfg.VerifyInterval > 0 {

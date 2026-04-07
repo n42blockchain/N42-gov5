@@ -399,7 +399,9 @@ func run(c *cli.Context) error {
 		log.Info("Pre-computed senders detected (freezer)", "items", senderTbl.Items())
 	}
 
-	// Try compact headers/bodies from chain/ or ancient/ directories.
+	// TODO: compact body reader has signature decoding issues (V/R/S columns).
+	// Disabled until fixed. Using Geth freezer for now.
+	if false {
 	for _, dir := range []string{filepath.Join(datadir, "chain"), filepath.Join(datadir, "ancient")} {
 		headerPath := filepath.Join(dir, "headers.cdat")
 		if _, err := os.Stat(headerPath); err != nil {
@@ -420,6 +422,7 @@ func run(c *cli.Context) error {
 		log.Info("Using compact headers/bodies", "dir", dir)
 		break
 	}
+	} // end if false
 
 	ctx, cancel := withShutdown()
 	defer cancel()
