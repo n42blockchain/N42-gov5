@@ -43,27 +43,26 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string,
 	}
 	log.Info("Rebuild PlainState from leaves", "blocks", endBlock, "items", items)
 
-	// Clear existing PlainState.
-	log.Info("Clearing Account/Storage tables...")
-	tx, err := db.BeginRw(ctx)
-	if err != nil {
-		return err
+	// Clear Account and Storage tables one at a time to limit dirty pages.
+	for _, tbl := range []string{modules.Account, modules.Storage} {
+		log.Info("Clearing table...", "table", tbl)
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		if err := tx.ClearBucket(tbl); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("clear %s: %w", tbl, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit clear %s: %w", tbl, err)
+		}
 	}
-	if err := tx.ClearBucket(modules.Account); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("clear Account: %w", err)
-	}
-	if err := tx.ClearBucket(modules.Storage); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("clear Storage: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit clear: %w", err)
-	}
+	log.Info("Tables cleared")
 
 	// Replay leaves directly to MDBX.
-	const commitInterval = 100_000 // commit every 100K blocks
-	tx, err = db.BeginRw(ctx)
+	const commitInterval = 10_000 // commit frequently to bound dirty pages
+	tx, err := db.BeginRw(ctx)
 	if err != nil {
 		return err
 	}
