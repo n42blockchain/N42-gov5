@@ -212,6 +212,8 @@ func (b *PlainStateBuffer) Clear() {
 	b.misses.Store(0)
 }
 
+func (b *PlainStateBuffer) ContractWipes() []types.Address { return b.contractWipes }
+
 func (b *PlainStateBuffer) Stats() (accounts, storage int) {
 	for _, slots := range b.storage {
 		storage += len(slots)

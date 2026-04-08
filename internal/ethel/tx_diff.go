@@ -87,8 +87,7 @@ func RunTxDiff(
 			return fmt.Errorf("commit tx %d: %w", i, err)
 		}
 
-		// No flush — just accumulate in buffer like batch mode.
-		root := types.Hash{}
+			root := types.Hash{} // Skip per-tx root computation for speed.
 
 		// Log dirty accounts from this tx.
 		to := "nil"
@@ -127,6 +126,11 @@ func RunTxDiff(
 		dumpAccountDiff(tx, preRoot)
 	}
 
+	// Dump buffer stats.
+	bufAccs, bufStos := stateBuf.Stats()
+	log.Info("Buffer after per-tx CommitBlock",
+		"accounts", bufAccs, "storage", bufStos,
+		"wipes", len(stateBuf.ContractWipes()))
 	log.Info("=== TX DIFF END ===")
 	return nil
 }
