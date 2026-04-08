@@ -833,11 +833,18 @@ func (p accountWritePolicy) shouldAllowWriteBack(stateObject *stateObject) bool 
 }
 
 func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
+	return updateAccountEx(policy, stateWriter, addr, stateObject, isDirty, false)
+}
+
+func updateAccountEx(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool, useBlockFlags bool) error {
 	emptyRemoval := policy.shouldRemoveEmptyAccount(addr, stateObject)
-	// selfdestructedInBlock survives clearCurrentTxFlags (unlike selfdestructed).
-	shouldDelete := stateObject.selfdestructed || stateObject.selfdestructedInBlock || (isDirty && emptyRemoval)
-	// Recreated = selfdestructed then CREATE'd in same block. Wipe but don't delete.
-	recreated := stateObject.selfdestructedInBlock && stateObject.createdInBlock
+	// useBlockFlags=true (CommitBlock): check selfdestructedInBlock (survives clearCurrentTxFlags).
+	// useBlockFlags=false (FinalizeTx): only check selfdestructed (current tx flag).
+	shouldDelete := stateObject.selfdestructed || (isDirty && emptyRemoval)
+	if useBlockFlags && stateObject.selfdestructedInBlock {
+		shouldDelete = true
+	}
+	recreated := useBlockFlags && stateObject.selfdestructedInBlock && stateObject.createdInBlock
 	if shouldDelete && !recreated {
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
@@ -846,15 +853,14 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 			return err
 		}
 		stateObject.deleted = true
-	} else if shouldDelete || stateObject.createdInBlock {
-		// Wipe old storage but don't delete — account was recreated after SELFDESTRUCT.
+	} else if useBlockFlags && (recreated || stateObject.createdInBlock) {
+		// Wipe old storage but don't delete — account was recreated.
 		if err := stateWriter.CreateContract(addr); err != nil {
 			return err
 		}
 	}
 	allowWriteBack := policy.shouldAllowWriteBack(stateObject)
-	// Block write-back for accounts that were selfdestructed and not recreated.
-	if stateObject.selfdestructedInBlock && !recreated {
+	if useBlockFlags && stateObject.selfdestructedInBlock && !recreated {
 		allowWriteBack = false
 	}
 	if isDirty && allowWriteBack && !emptyRemoval {
@@ -917,13 +923,8 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 			continue
 		}
 
-		// Set deleted flag for subsequent tx's Exist() check — but do NOT
-		// call full updateAccount which runs updateTrie(noop) that corrupts
-		// originStorage with dirty values. The actual state writes happen
-		// in CommitBlock → MakeWriteSet → updateAccount(real writer).
-		emptyRemoval := policy.shouldRemoveEmptyAccount(addr, so)
-		if so.selfdestructed || emptyRemoval {
-			so.deleted = true
+		if err := updateAccount(policy, stateWriter, addr, so, true); err != nil {
+			return err
 		}
 
 		sdb.stateObjectsDirty[addr] = struct{}{}
@@ -972,7 +973,7 @@ func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter S
 	}
 	for addr, stateObject := range sdb.stateObjects {
 		_, isDirty := sdb.stateObjectsDirty[addr]
-		if err := updateAccount(policy, stateWriter, addr, stateObject, isDirty); err != nil {
+		if err := updateAccountEx(policy, stateWriter, addr, stateObject, isDirty, true); err != nil {
 			return err
 		}
 	}
