@@ -363,7 +363,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return fmt.Errorf("commit block state: %w", err)
 	}
-	if blockNum == 116525 {
+	if false {
 		bufAccs, bufStos := e.stateBuf.Stats()
 		log.Info("Buffer after BATCH CommitBlock",
 			"accounts", bufAccs, "storage", bufStos,
