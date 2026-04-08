@@ -39,7 +39,8 @@ type PlainStateBuffer struct {
 	code           map[types.Hash][]byte
 	contractCode   map[string][]byte
 	incarnationMap map[types.Address][]byte
-	contractWipes  []types.Address // addresses needing MDBX storage wipe on flush
+	contractWipes  []types.Address           // addresses needing MDBX storage wipe on flush
+	wipedStorage   map[types.Address]struct{} // addresses whose storage was wiped — reads bypass cache/MDBX
 
 	// Read cache: lock-free via sync.Map.
 	// readAccounts: key=types.Address, value=*accountCacheEntry (nil acct = absent)
@@ -60,6 +61,7 @@ func NewPlainStateBuffer() *PlainStateBuffer {
 		code:           make(map[types.Hash][]byte, 64),
 		contractCode:   make(map[string][]byte, 64),
 		incarnationMap: make(map[types.Address][]byte),
+		wipedStorage:   make(map[types.Address]struct{}),
 	}
 }
 
@@ -208,6 +210,8 @@ func (b *PlainStateBuffer) Clear() {
 	b.code = make(map[types.Hash][]byte, 64)
 	b.contractCode = make(map[string][]byte, 64)
 	b.incarnationMap = make(map[types.Address][]byte)
+	b.contractWipes = b.contractWipes[:0]
+	b.wipedStorage = make(map[types.Address]struct{})
 	b.hits.Store(0)
 	b.misses.Store(0)
 }
@@ -280,6 +284,11 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 			}
 			return entry.value, nil
 		}
+	}
+	// 1b. If storage was wiped (SELFDESTRUCT/CREATE), slots not in the
+	// write buffer are gone — don't fall through to stale cache/MDBX.
+	if _, wiped := r.buf.wipedStorage[address]; wiped {
+		return nil, nil
 	}
 	// 2. Read cache (lock-free).
 	if slotsI, ok := r.buf.readStorage.Load(address); ok {
@@ -437,6 +446,10 @@ func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
 	}
 	// Clear buffered storage for this address.
 	delete(w.buf.storage, address)
+	// Invalidate read cache — stale values from MDBX must not be returned.
+	w.buf.readStorage.Delete(address)
+	// Mark as wiped so ReadAccountStorage returns nil for slots not in buffer.
+	w.buf.wipedStorage[address] = struct{}{}
 	// Record address for MDBX storage wipe during FlushToMDBX.
 	w.buf.contractWipes = append(w.buf.contractWipes, address)
 	return nil
