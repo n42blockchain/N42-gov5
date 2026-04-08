@@ -1,0 +1,24 @@
+{
+  "fromBlock": 1,
+  "toBlock": 11719350,
+  "currentBlock": 11719350,
+  "blocksProcessed": 11719350,
+  "blocksEmpty": 1926909,
+  "blocksMissing": 0,
+  "txTotal": 21477418,
+  "txReplayed": 21477417,
+  "txSkipped": 0,
+  "txFailed": 1,
+  "skipReasons": {
+    "deposit_contract": 0,
+    "empty_create": 0,
+    "evm_error": 1,
+    "sender_unknown": 0
+  },
+  "startTime": "2026-04-01T14:39:49.6053704-04:00",
+  "elapsed": "56m49s",
+  "blkPerSec": 3437.5621869452407,
+  "receiptMatch": 1926909,
+  "receiptMismatch": 9792441,
+  "gasUsedTotal": 102560448426
+}

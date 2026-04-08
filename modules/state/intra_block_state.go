@@ -923,16 +923,9 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 			continue
 		}
 
-		// Temporarily nil dirtyStorage to prevent updateTrie(noop) from
-		// polluting originStorage — this would corrupt cross-tx gas calc
-		// and state writes via GetCommittedState.
-		savedDirty := so.dirtyStorage
-		so.dirtyStorage = make(Storage)
 		if err := updateAccount(policy, stateWriter, addr, so, true); err != nil {
-			so.dirtyStorage = savedDirty
 			return err
 		}
-		so.dirtyStorage = savedDirty
 
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
