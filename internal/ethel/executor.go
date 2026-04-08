@@ -327,8 +327,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	var senders []types.Address
 	senders = e.loadSenders(blockNum, len(body.Transactions))
 
-	// TX diff mode at specific block.
-	if blockNum == 116525 {
+	if false {
 		var uncles []block.IHeader
 		for _, u := range body.Uncles {
 			uncles = append(uncles, u)
@@ -340,7 +339,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		return fmt.Errorf("TX diff completed at block %d — stopping", blockNum)
 	}
 
-	result, err := e.processBlock(header, body, ibs, senders)
+	result, err := e.processBlock(header, body, ibs, senders, writer)
 	if err != nil {
 		return err
 	}
@@ -407,12 +406,12 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 // BlockResult is defined in process.go. This comment prevents confusion.
 // processBlock delegates to the shared ProcessBlock function.
-func (e *Executor) processBlock(header *block.Header, body *GethBodyResult, ibs *state.IntraBlockState, senders []types.Address) (*BlockResult, error) {
+func (e *Executor) processBlock(header *block.Header, body *GethBodyResult, ibs *state.IntraBlockState, senders []types.Address, writer state.StateWriter) (*BlockResult, error) {
 	var uncles []block.IHeader
 	for _, u := range body.Uncles {
 		uncles = append(uncles, u)
 	}
-	return ProcessBlock(e.chainCfg, e.engine, header, body.Transactions, uncles, ibs, e.makeBlockHashFunc(header), senders)
+	return ProcessBlock(e.chainCfg, e.engine, header, body.Transactions, uncles, ibs, e.makeBlockHashFunc(header), senders, writer)
 }
 
 // readHeader reads a header from compact reader or Geth freezer.

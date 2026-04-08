@@ -87,11 +87,8 @@ func RunTxDiff(
 			return fmt.Errorf("commit tx %d: %w", i, err)
 		}
 
-		// Flush buffer and compute root.
-		if err := stateBuf.FlushToMDBX(tx); err != nil {
-			return err
-		}
-		root, _ := VerifyStateRoot(tx)
+		// No flush — just accumulate in buffer like batch mode.
+		root := types.Hash{}
 
 		// Log dirty accounts from this tx.
 		to := "nil"
@@ -106,10 +103,7 @@ func RunTxDiff(
 			"from", from, "to", to,
 			"value", txn.Value(), "gas", txn.Gas(), "gasUsed", *usedGas)
 
-		// Re-create ibs for next tx (fresh state reader from updated buffer).
-		bufReader = state.NewBufferedPlainStateReader(stateBuf, tx)
-		ibs = state.New(bufReader)
-		writer = state.NewBufferedPlainStateWriter(stateBuf, tx, blockNum)
+		// Keep same ibs — no re-create, no flush. Only CommitBlock after each tx.
 	}
 
 	// Post-block system calls.

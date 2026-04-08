@@ -49,6 +49,7 @@ func ProcessBlock(
 	ibs *state.IntraBlockState,
 	blockHashFunc func(uint64) types.Hash,
 	precomputedSenders []types.Address,
+	stateWriter ...state.StateWriter,
 ) (*BlockResult, error) {
 	usedGas := new(uint64)
 	gp := new(common.GasPool)
@@ -67,13 +68,11 @@ func ProcessBlock(
 		return nil, err
 	}
 
-	noop := state.NewNoopWriter()
 	blockHash := header.Hash()
 
 	var receipts block.Receipts
 	senders := make([]types.Address, 0, len(txs))
 
-	// Inject pre-computed senders to skip ecrecover in AsMessage().
 	if precomputedSenders != nil {
 		for i, txn := range txs {
 			if i < len(precomputedSenders) {
@@ -84,11 +83,7 @@ func ProcessBlock(
 
 	signer := transaction.MakeSigner(chainCfg, header.Number.ToBig())
 
-	// Pre-Byzantium receipt PostState requires per-tx IntermediateRoot.
-	// Disabled for now to avoid TrieRootComputer side effects on HashedStorage.
-	// Receipt hash verification skips pre-Byzantium blocks without PostState.
-	computePostState := false
-	_ = computePostState
+	noop := state.NewNoopWriter()
 
 	for i, txn := range txs {
 		ibs.Prepare(txn.Hash(), blockHash, i)
@@ -100,10 +95,6 @@ func ProcessBlock(
 			return nil, fmt.Errorf("tx %d: %w", i, err)
 		}
 		if receipt != nil {
-			if computePostState {
-				root := ibs.IntermediateRoot()
-				receipt.PostState = root[:]
-			}
 			receipts = append(receipts, receipt)
 		}
 
@@ -117,6 +108,7 @@ func ProcessBlock(
 			}
 			senders = append(senders, sender)
 		}
+
 	}
 
 	// Post-block system calls.

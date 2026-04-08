@@ -103,7 +103,9 @@ func (b *PlainStateBuffer) FlushToMDBX(tx kv.RwTx) error {
 		}
 	}
 
-	// 2. Wipe storage for contracts that were recreated (replaces incarnation).
+	// 2. Wipe storage for contracts that were recreated/destroyed.
+	// Only wipe MDBX (old data). Buffer entries from CREATE in the same
+	// block will be written in step 3 and are the correct new state.
 	for _, addr := range b.contractWipes {
 		prefix := addr[:]
 		cursor, err := tx.Cursor(modules.Storage)
