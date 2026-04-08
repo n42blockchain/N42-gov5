@@ -322,7 +322,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
 
-	// No incremental hashed state maintenance — verify rebuilds from scratch.
+	// No incremental hashed state — verify rebuilds from plain state.
 
 	t1 := time.Now()
 	// 3. Process block (DAO fork, system contracts, EVM).
@@ -376,7 +376,10 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 			return fmt.Errorf("state root mismatch at block %d: computed %s, expected %s",
 				blockNum, blockRoot.Hex(), header.Root.Hex())
 		}
-		log.Info("State root verified", "block", blockNum, "root", header.Root.Hex())
+		var accsOK, stosOK uint64
+		if c, e := tx.Cursor("Account"); e == nil { accsOK, _ = c.Count(); c.Close() }
+		if c, e := tx.Cursor("Storage"); e == nil { stosOK, _ = c.Count(); c.Close() }
+		log.Info("State root verified", "block", blockNum, "root", header.Root.Hex(), "accounts", accsOK, "storage", stosOK)
 	}
 
 	t5 := time.Now()

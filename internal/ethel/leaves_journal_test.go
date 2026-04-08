@@ -129,9 +129,7 @@ func TestEncodeLeavesJournal_StorageGrouped(t *testing.T) {
 	if stos[0].Address[19] != 0x42 || stos[3].Address[19] != 0x99 {
 		t.Errorf("address mismatch")
 	}
-	if stos[0].Incarnation != 1 {
-		t.Errorf("incarnation: got %d, want 1", stos[0].Incarnation)
-	}
+	// Incarnation removed from StorageLeaf — skip check.
 	// Plain slot keys (not hashed).
 	if stos[0].Slot[31] != 0x01 || stos[1].Slot[31] != 0x02 {
 		t.Errorf("slot key mismatch")
