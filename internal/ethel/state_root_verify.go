@@ -7,6 +7,9 @@
 package ethel
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
@@ -97,7 +100,24 @@ func VerifyStateRoot(tx kv.RwTx) (types.Hash, error) {
 		accountTrie.update(addrHash, accRLP)
 	}
 
-	return accountTrie.hash(), nil
+	root := accountTrie.hash()
+
+	// Debug: dump precompile addresses if present.
+	if os.Getenv("DUMP_TRIE") == "1" {
+		for i := 0; i <= 8; i++ {
+			var addr types.Address
+			addr[19] = byte(i)
+			v, _ := tx.GetOne("Account", addr[:])
+			if v != nil {
+				var a account.StateAccount
+				a.DecodeForStorage(v)
+				fmt.Printf("  precompile 0x%02x: nonce=%d bal=%s code=%x\n",
+					i, a.Nonce, a.Balance.String(), a.CodeHash[:4])
+			}
+		}
+	}
+
+	return root, nil
 }
 
 func encodeAccountRLP(acc *account.StateAccount) []byte {

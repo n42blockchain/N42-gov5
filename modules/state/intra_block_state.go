@@ -823,13 +823,10 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
 		}
-		// Reth-style: wipe ALL storage when account is destroyed.
-		// Without incarnation, old storage is not auto-isolated and must be
-		// explicitly deleted or it persists and corrupts the state root.
-		if stateObject.selfdestructed {
-			if err := stateWriter.CreateContract(addr); err != nil {
-				return err
-			}
+		// Wipe ALL storage when account is destroyed (Reth-style).
+		// Without incarnation, old storage must be explicitly deleted.
+		if err := stateWriter.CreateContract(addr); err != nil {
+			return err
 		}
 		stateObject.deleted = true
 	}
