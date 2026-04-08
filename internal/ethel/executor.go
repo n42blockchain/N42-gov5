@@ -322,12 +322,23 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
 
-	// No incremental hashed state — verify rebuilds from plain state.
-
 	t1 := time.Now()
 	// 3. Process block (DAO fork, system contracts, EVM).
 	var senders []types.Address
 	senders = e.loadSenders(blockNum, len(body.Transactions))
+
+	// TX diff mode at specific block.
+	if blockNum == 116525 {
+		var uncles []block.IHeader
+		for _, u := range body.Uncles {
+			uncles = append(uncles, u)
+		}
+		if err := RunTxDiff(e.chainCfg, e.engine, header, body.Transactions, uncles,
+			e.stateBuf, tx, e.makeBlockHashFunc(header), senders); err != nil {
+			return err
+		}
+		return fmt.Errorf("TX diff completed at block %d — stopping", blockNum)
+	}
 
 	result, err := e.processBlock(header, body, ibs, senders)
 	if err != nil {
