@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
@@ -25,7 +26,7 @@ func VerifyStateRoot(tx kv.RwTx) (types.Hash, error) {
 	emptyCodeHash := crypto.Keccak256Hash(nil)
 
 	// Build the main account trie.
-	accountTrie := newSimpleTrie()
+	accountTrie := hash.NewMPTTrie()
 
 	accCursor, err := tx.Cursor("Account")
 	if err != nil {
@@ -59,7 +60,7 @@ func VerifyStateRoot(tx kv.RwTx) (types.Hash, error) {
 		}
 
 		// Build storage trie for this account.
-		storageTrie := newSimpleTrie()
+		storageTrie := hash.NewMPTTrie()
 		hasStorage := false
 		for stoK != nil && stoErr == nil {
 			if len(stoK) < 20 {
@@ -79,7 +80,7 @@ func VerifyStateRoot(tx kv.RwTx) (types.Hash, error) {
 				slotHash := crypto.Keccak256(stoK[20:52])
 				// Storage trie value = RLP(trimmed_value)
 				valRLP, _ := rlp.EncodeToBytes(stoV)
-				storageTrie.update(slotHash, valRLP)
+				storageTrie.Update(slotHash, valRLP)
 				hasStorage = true
 			}
 			stoK, stoV, stoErr = stoCursor.Next()
@@ -87,7 +88,7 @@ func VerifyStateRoot(tx kv.RwTx) (types.Hash, error) {
 
 		var storageRoot types.Hash
 		if hasStorage {
-			storageRoot = storageTrie.hash()
+			storageRoot = storageTrie.Hash()
 		} else {
 			storageRoot = emptyRoot
 		}
@@ -97,10 +98,10 @@ func VerifyStateRoot(tx kv.RwTx) (types.Hash, error) {
 		accRLP := encodeAccountRLP(&acc)
 
 		addrHash := crypto.Keccak256(k[:20])
-		accountTrie.update(addrHash, accRLP)
+		accountTrie.Update(addrHash, accRLP)
 	}
 
-	root := accountTrie.hash()
+	root := accountTrie.Hash()
 
 	// Debug: dump precompile addresses if present.
 	if os.Getenv("DUMP_TRIE") == "1" {
