@@ -717,6 +717,13 @@ func (sdb *IntraBlockState) createObject(addr types.Address, previous *stateObje
 	}
 	newobj = newObject(sdb, addr, ac, original)
 	newobj.setNonce(0) // sets the object to dirty
+	// Inherit block-level flags from previous object — these survive
+	// clearCurrentTxFlags and are needed by CommitBlock's updateAccount.
+	if previous != nil {
+		if previous.selfdestructedInBlock {
+			newobj.selfdestructedInBlock = true
+		}
+	}
 	if previous == nil {
 		sdb.journal.append(createObjectChange{account: &addr})
 	} else {
@@ -823,21 +830,26 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 	// Use selfdestructedInBlock — selfdestructed is cleared by clearCurrentTxFlags
 	// between transactions, but CommitBlock needs to know if account was
 	// selfdestructed at any point during the block.
-	if stateObject.selfdestructed || stateObject.selfdestructedInBlock || (isDirty && emptyRemoval) {
+	emptyRemoval = policy.shouldRemoveEmptyAccount(addr, stateObject)
+	shouldDelete := stateObject.selfdestructed || (isDirty && emptyRemoval)
+	// selfdestructedInBlock means old storage needs wiping, but the account
+	// might have been recreated (not currently selfdestructed).
+	needsWipe := stateObject.selfdestructedInBlock || stateObject.createdInBlock
+	if shouldDelete {
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
 		}
-		// Wipe ALL storage when account is destroyed (Reth-style).
 		if err := stateWriter.CreateContract(addr); err != nil {
 			return err
 		}
 		stateObject.deleted = true
+	} else if needsWipe {
+		// Wipe old storage but don't delete the account — it was recreated.
+		if err := stateWriter.CreateContract(addr); err != nil {
+			return err
+		}
 	}
 	allowWriteBack := policy.shouldAllowWriteBack(stateObject)
-	// Also block write-back for accounts selfdestructed during this block.
-	if stateObject.selfdestructedInBlock {
-		allowWriteBack = false
-	}
 	if isDirty && allowWriteBack && !emptyRemoval {
 		stateObject.deleted = false
 		// Write any contract code associated with the state object
