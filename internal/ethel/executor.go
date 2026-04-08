@@ -363,6 +363,12 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return fmt.Errorf("commit block state: %w", err)
 	}
+	if blockNum == 116525 {
+		bufAccs, bufStos := e.stateBuf.Stats()
+		log.Info("Buffer after BATCH CommitBlock",
+			"accounts", bufAccs, "storage", bufStos,
+			"wipes", len(e.stateBuf.ContractWipes()))
+	}
 	t3 := time.Now()
 
 	// 7. Write execution outputs to output freezer.

@@ -820,21 +820,24 @@ func (p accountWritePolicy) shouldAllowWriteBack(stateObject *stateObject) bool 
 
 func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
 	emptyRemoval := policy.shouldRemoveEmptyAccount(addr, stateObject)
-	if stateObject.selfdestructed || (isDirty && emptyRemoval) {
+	// Use selfdestructedInBlock — selfdestructed is cleared by clearCurrentTxFlags
+	// between transactions, but CommitBlock needs to know if account was
+	// selfdestructed at any point during the block.
+	if stateObject.selfdestructed || stateObject.selfdestructedInBlock || (isDirty && emptyRemoval) {
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
 		}
 		// Wipe ALL storage when account is destroyed (Reth-style).
-		// Without incarnation, old storage must be explicitly deleted.
 		if err := stateWriter.CreateContract(addr); err != nil {
 			return err
 		}
 		stateObject.deleted = true
 	}
-	// Cancun+ must not resurrect contracts that were created and selfdestructed
-	// in the same transaction. Pre-Cancun keeps the legacy write-back behavior
-	// for sync compatibility.
 	allowWriteBack := policy.shouldAllowWriteBack(stateObject)
+	// Also block write-back for accounts selfdestructed during this block.
+	if stateObject.selfdestructedInBlock {
+		allowWriteBack = false
+	}
 	if isDirty && allowWriteBack && !emptyRemoval {
 		stateObject.deleted = false
 		// Write any contract code associated with the state object
