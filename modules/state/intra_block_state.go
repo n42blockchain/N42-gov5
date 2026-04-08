@@ -761,6 +761,13 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 		newObj.createdInBlock = true
 	} else {
 		newObj.selfdestructed = false
+		// Non-contract CreateAccount: if previous was selfdestructed, we need
+		// to wipe its storage. Mark createdInBlock to trigger wipe in CommitBlock,
+		// but clear selfdestructedInBlock so the new empty account gets written back.
+		if previous != nil && previous.selfdestructedInBlock {
+			newObj.createdInBlock = true
+		}
+		newObj.selfdestructedInBlock = false
 	}
 }
 
@@ -827,15 +834,11 @@ func (p accountWritePolicy) shouldAllowWriteBack(stateObject *stateObject) bool 
 
 func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
 	emptyRemoval := policy.shouldRemoveEmptyAccount(addr, stateObject)
-	// Use selfdestructedInBlock — selfdestructed is cleared by clearCurrentTxFlags
-	// between transactions, but CommitBlock needs to know if account was
-	// selfdestructed at any point during the block.
-	emptyRemoval = policy.shouldRemoveEmptyAccount(addr, stateObject)
-	shouldDelete := stateObject.selfdestructed || (isDirty && emptyRemoval)
-	// selfdestructedInBlock means old storage needs wiping, but the account
-	// might have been recreated (not currently selfdestructed).
-	needsWipe := stateObject.selfdestructedInBlock || stateObject.createdInBlock
-	if shouldDelete {
+	// selfdestructedInBlock survives clearCurrentTxFlags (unlike selfdestructed).
+	shouldDelete := stateObject.selfdestructed || stateObject.selfdestructedInBlock || (isDirty && emptyRemoval)
+	// Recreated = selfdestructed then CREATE'd in same block. Wipe but don't delete.
+	recreated := stateObject.selfdestructedInBlock && stateObject.createdInBlock
+	if shouldDelete && !recreated {
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
 		}
@@ -843,13 +846,17 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 			return err
 		}
 		stateObject.deleted = true
-	} else if needsWipe {
-		// Wipe old storage but don't delete the account — it was recreated.
+	} else if shouldDelete || stateObject.createdInBlock {
+		// Wipe old storage but don't delete — account was recreated after SELFDESTRUCT.
 		if err := stateWriter.CreateContract(addr); err != nil {
 			return err
 		}
 	}
 	allowWriteBack := policy.shouldAllowWriteBack(stateObject)
+	// Block write-back for accounts that were selfdestructed and not recreated.
+	if stateObject.selfdestructedInBlock && !recreated {
+		allowWriteBack = false
+	}
 	if isDirty && allowWriteBack && !emptyRemoval {
 		stateObject.deleted = false
 		// Write any contract code associated with the state object
