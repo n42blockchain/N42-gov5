@@ -85,12 +85,10 @@ type stateObject struct {
 	// Cache flags.
 	// When an object is marked suicided it will be delete from the trie
 	// during the "update" phase of the state transition.
-	dirtyCode            bool // true if the code was updated
-	selfdestructed       bool
-	selfdestructedInBlock bool // survives clearCurrentTxFlags for CommitBlock
-	deleted              bool // true if account was deleted during the lifetime of this object
-	created              bool // true if this object represents a newly created contract
-	createdInBlock       bool // survives clearCurrentTxFlags for CommitBlock
+	dirtyCode      bool // true if the code was updated
+	selfdestructed bool
+	deleted        bool // true if account was deleted during the lifetime of this object
+	created        bool // true if this object represents a newly created contract
 }
 
 // empty returns whether the account is considered empty.
@@ -134,7 +132,6 @@ func (so *stateObject) setError(err error) {
 
 func (so *stateObject) markSelfdestructed() {
 	so.selfdestructed = true
-	so.selfdestructedInBlock = true
 }
 
 func (so *stateObject) touch() {

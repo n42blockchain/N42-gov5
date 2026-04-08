@@ -757,8 +757,6 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 
 	if contractCreation {
 		newObj.created = true
-		newObj.createdInBlock = true
-		// Contract creation needs storage wipe (replaces incarnation).
 		sdb.storageWipes[addr] = struct{}{}
 	} else {
 		newObj.selfdestructed = false
