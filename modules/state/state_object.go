@@ -89,6 +89,7 @@ type stateObject struct {
 	selfdestructed bool
 	deleted        bool // true if account was deleted during the lifetime of this object
 	created        bool // true if this object represents a newly created contract
+	createdInBlock bool // true if created at any point during this block (not cleared by FinalizeTx)
 }
 
 // empty returns whether the account is considered empty.

@@ -751,6 +751,7 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 
 	if contractCreation {
 		newObj.created = true
+		newObj.createdInBlock = true
 	} else {
 		newObj.selfdestructed = false
 	}
@@ -842,7 +843,7 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 				return err
 			}
 		}
-		if stateObject.created {
+		if stateObject.created || stateObject.createdInBlock {
 			if err := stateWriter.CreateContract(addr); err != nil {
 				return err
 			}
@@ -891,19 +892,21 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 	for addr := range sdb.journal.dirties {
 		so, exist := sdb.stateObjects[addr]
 		if !exist {
-			// Dirty entry may exist without a stateObject due to the ripeMD precompile
-			// edge case (block 1714175). Safe to ignore.
 			continue
 		}
 
-		if err := updateAccount(policy, stateWriter, addr, so, true); err != nil {
-			return err
+		// Set deleted flag for subsequent tx's Exist() check — but do NOT
+		// call full updateAccount which runs updateTrie(noop) that corrupts
+		// originStorage with dirty values. The actual state writes happen
+		// in CommitBlock → MakeWriteSet → updateAccount(real writer).
+		emptyRemoval := policy.shouldRemoveEmptyAccount(addr, so)
+		if so.selfdestructed || emptyRemoval {
+			so.deleted = true
 		}
 
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
 	sdb.clearCurrentTxFlags()
-	// Invalidate journal because reverting across transactions is not allowed.
 	sdb.clearJournalAndRefund()
 	return nil
 }
