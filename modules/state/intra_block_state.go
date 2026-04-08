@@ -923,8 +923,14 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 			continue
 		}
 
-		if err := updateAccount(policy, stateWriter, addr, so, true); err != nil {
-			return err
+		// Only set deleted flag — do NOT call full updateAccount.
+		// updateAccount(noop) would call updateTrie(noop) which updates
+		// originStorage, but that's Erigon's intended behavior and is
+		// harmless for gas. However, with selfdestructedInBlock the full
+		// updateAccount path is broken (gas mismatch at 80233).
+		emptyRemoval := policy.shouldRemoveEmptyAccount(addr, so)
+		if so.selfdestructed || emptyRemoval {
+			so.deleted = true
 		}
 
 		sdb.stateObjectsDirty[addr] = struct{}{}
