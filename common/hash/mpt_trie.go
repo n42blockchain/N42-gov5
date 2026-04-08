@@ -1,69 +1,77 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// mpt_hash.go — minimal MPT root hash for receipt/tx root verification.
-// Implements Ethereum's Modified Merkle Patricia Trie root computation
-// for ordered key-value lists (receipt trie, transaction trie).
+// mpt_trie.go — Ethereum-compatible MPT root hash for DerivableList.
+// Implements the Modified Merkle Patricia Trie root computation matching
+// go-ethereum's DeriveSha with StackTrie. Used for receipt/tx/withdrawal
+// roots when ETH-compatibility is required.
 
-package ethel
+package hash
 
 import (
+	"bytes"
+
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 )
 
-// mptNode represents a node in the Merkle Patricia Trie.
-type mptNode interface {
-	mptNode()
+// DeriveShaETH computes the Ethereum-standard MPT trie root of a
+// DerivableList. This is the canonical method used by geth for
+// receipt roots, transaction roots, and withdrawal roots.
+//
+// N42 native blocks use DeriveSha (keccak-concat) for simplicity.
+// ETH EL mode and cross-chain verification use DeriveShaETH.
+func DeriveShaETH(list DerivableList) types.Hash {
+	if list == nil || list.Len() == 0 {
+		return EmptyRootHash
+	}
+
+	var keybuf, valbuf bytes.Buffer
+	t := NewMPTTrie()
+	for i := 0; i < list.Len(); i++ {
+		keybuf.Reset()
+		rlp.Encode(&keybuf, uint(i))
+		valbuf.Reset()
+		list.EncodeIndex(i, &valbuf)
+		t.Update(keybuf.Bytes(), valbuf.Bytes())
+	}
+	return t.Hash()
 }
+
+// --- MPT trie implementation ---
+
+type mptNode interface{ mptNode() }
 
 type mptLeaf struct {
-	key   []byte // remaining nibbles
-	value []byte // RLP-encoded value
+	key   []byte
+	value []byte
 }
-
-type mptBranch struct {
-	children [17]mptNode // 0-15 = nibble children, 16 = value
-}
-
+type mptBranch struct{ children [17]mptNode }
 type mptExtension struct {
-	key   []byte  // shared nibbles
+	key   []byte
 	child mptNode
-}
-
-type mptHashNode struct {
-	hash types.Hash
 }
 
 func (*mptLeaf) mptNode()      {}
 func (*mptBranch) mptNode()    {}
 func (*mptExtension) mptNode() {}
-func (*mptHashNode) mptNode()  {}
 
-// simpleTrie builds an MPT from ordered key-value pairs.
-type simpleTrie struct {
-	root mptNode
+// MPTTrie builds a Merkle Patricia Trie from key-value pairs and
+// computes the root hash. Exported for use in state root verification.
+type MPTTrie struct{ root mptNode }
+
+func NewMPTTrie() *MPTTrie { return &MPTTrie{} }
+
+func (t *MPTTrie) Update(key, value []byte) {
+	t.root = mptInsert(t.root, keyToNibbles(key), value)
 }
 
-func newSimpleTrie() *simpleTrie {
-	return &simpleTrie{}
-}
-
-func (t *simpleTrie) update(key, value []byte) {
-	nibbles := keyToNibbles(key)
-	t.root = insertNode(t.root, nibbles, value)
-}
-
-func (t *simpleTrie) hash() types.Hash {
+func (t *MPTTrie) Hash() types.Hash {
 	if t.root == nil {
-		return types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+		return EmptyRootHash
 	}
-	enc := encodeNode(t.root)
-	if len(enc) < 32 {
-		return crypto.Keccak256Hash(enc)
-	}
-	return crypto.Keccak256Hash(enc)
+	return crypto.Keccak256Hash(mptEncode(t.root))
 }
 
 func keyToNibbles(key []byte) []byte {
@@ -75,7 +83,60 @@ func keyToNibbles(key []byte) []byte {
 	return nibbles
 }
 
-func commonPrefixLen(a, b []byte) int {
+func mptInsert(node mptNode, nibbles, value []byte) mptNode {
+	if node == nil {
+		return &mptLeaf{key: nibbles, value: value}
+	}
+	switch n := node.(type) {
+	case *mptLeaf:
+		cp := commonPrefix(n.key, nibbles)
+		if cp == len(n.key) && cp == len(nibbles) {
+			return &mptLeaf{key: nibbles, value: value}
+		}
+		branch := &mptBranch{}
+		if cp == len(n.key) {
+			branch.children[16] = &mptLeaf{value: n.value}
+			branch.children[nibbles[cp]] = mptInsert(nil, nibbles[cp+1:], value)
+		} else if cp == len(nibbles) {
+			branch.children[16] = &mptLeaf{value: value}
+			branch.children[n.key[cp]] = &mptLeaf{key: n.key[cp+1:], value: n.value}
+		} else {
+			branch.children[n.key[cp]] = &mptLeaf{key: n.key[cp+1:], value: n.value}
+			branch.children[nibbles[cp]] = &mptLeaf{key: nibbles[cp+1:], value: value}
+		}
+		if cp > 0 {
+			return &mptExtension{key: nibbles[:cp], child: branch}
+		}
+		return branch
+	case *mptBranch:
+		if len(nibbles) == 0 {
+			n.children[16] = &mptLeaf{value: value}
+		} else {
+			n.children[nibbles[0]] = mptInsert(n.children[nibbles[0]], nibbles[1:], value)
+		}
+		return n
+	case *mptExtension:
+		cp := commonPrefix(n.key, nibbles)
+		if cp == len(n.key) {
+			n.child = mptInsert(n.child, nibbles[cp:], value)
+			return n
+		}
+		branch := &mptBranch{}
+		if cp+1 == len(n.key) {
+			branch.children[n.key[cp]] = n.child
+		} else {
+			branch.children[n.key[cp]] = &mptExtension{key: n.key[cp+1:], child: n.child}
+		}
+		branch.children[nibbles[cp]] = mptInsert(nil, nibbles[cp+1:], value)
+		if cp > 0 {
+			return &mptExtension{key: nibbles[:cp], child: branch}
+		}
+		return branch
+	}
+	return node
+}
+
+func commonPrefix(a, b []byte) int {
 	n := len(a)
 	if len(b) < n {
 		n = len(b)
@@ -88,80 +149,19 @@ func commonPrefixLen(a, b []byte) int {
 	return n
 }
 
-func insertNode(node mptNode, nibbles, value []byte) mptNode {
-	if node == nil {
-		return &mptLeaf{key: nibbles, value: value}
-	}
-
+func mptEncode(node mptNode) []byte {
 	switch n := node.(type) {
 	case *mptLeaf:
-		cp := commonPrefixLen(n.key, nibbles)
-		if cp == len(n.key) && cp == len(nibbles) {
-			// Same key — update value.
-			return &mptLeaf{key: nibbles, value: value}
-		}
-		// Split into branch.
-		branch := &mptBranch{}
-		if cp == len(n.key) {
-			branch.children[16] = &mptLeaf{key: nil, value: n.value}
-			branch.children[nibbles[cp]] = insertNode(nil, nibbles[cp+1:], value)
-		} else if cp == len(nibbles) {
-			branch.children[16] = &mptLeaf{key: nil, value: value}
-			branch.children[n.key[cp]] = &mptLeaf{key: n.key[cp+1:], value: n.value}
-		} else {
-			branch.children[n.key[cp]] = &mptLeaf{key: n.key[cp+1:], value: n.value}
-			branch.children[nibbles[cp]] = &mptLeaf{key: nibbles[cp+1:], value: value}
-		}
-		if cp > 0 {
-			return &mptExtension{key: nibbles[:cp], child: branch}
-		}
-		return branch
-
-	case *mptBranch:
-		if len(nibbles) == 0 {
-			n.children[16] = &mptLeaf{key: nil, value: value}
-		} else {
-			n.children[nibbles[0]] = insertNode(n.children[nibbles[0]], nibbles[1:], value)
-		}
-		return n
-
-	case *mptExtension:
-		cp := commonPrefixLen(n.key, nibbles)
-		if cp == len(n.key) {
-			n.child = insertNode(n.child, nibbles[cp:], value)
-			return n
-		}
-		// Split extension.
-		branch := &mptBranch{}
-		if cp+1 == len(n.key) {
-			branch.children[n.key[cp]] = n.child
-		} else {
-			branch.children[n.key[cp]] = &mptExtension{key: n.key[cp+1:], child: n.child}
-		}
-		branch.children[nibbles[cp]] = insertNode(nil, nibbles[cp+1:], value)
-		if cp > 0 {
-			return &mptExtension{key: nibbles[:cp], child: branch}
-		}
-		return branch
-	}
-	return node
-}
-
-// encodeNode returns the RLP encoding of a node. If >= 32 bytes, returns the hash.
-func encodeNode(node mptNode) []byte {
-	switch n := node.(type) {
-	case *mptLeaf:
-		hp := hexPrefixEncode(n.key, true)
+		hp := hexPrefix(n.key, true)
 		enc, _ := rlp.EncodeToBytes([]interface{}{hp, n.value})
 		return enc
-
 	case *mptBranch:
 		var items [17]interface{}
 		for i := 0; i < 16; i++ {
 			if n.children[i] == nil {
 				items[i] = []byte{}
 			} else {
-				child := encodeNode(n.children[i])
+				child := mptEncode(n.children[i])
 				if len(child) >= 32 {
 					items[i] = crypto.Keccak256(child)
 				} else {
@@ -176,10 +176,9 @@ func encodeNode(node mptNode) []byte {
 		}
 		enc, _ := rlp.EncodeToBytes(items)
 		return enc
-
 	case *mptExtension:
-		hp := hexPrefixEncode(n.key, false)
-		child := encodeNode(n.child)
+		hp := hexPrefix(n.key, false)
+		child := mptEncode(n.child)
 		var childRef interface{}
 		if len(child) >= 32 {
 			childRef = crypto.Keccak256(child)
@@ -188,15 +187,12 @@ func encodeNode(node mptNode) []byte {
 		}
 		enc, _ := rlp.EncodeToBytes([]interface{}{hp, childRef})
 		return enc
-
-	case *mptHashNode:
-		return n.hash[:]
 	}
 	return nil
 }
 
-// hexPrefixEncode implements the hex-prefix encoding from the Yellow Paper.
-func hexPrefixEncode(nibbles []byte, leaf bool) []byte {
+// hexPrefix implements the hex-prefix encoding (Yellow Paper Appendix C).
+func hexPrefix(nibbles []byte, leaf bool) []byte {
 	var prefix byte
 	if leaf {
 		prefix = 2
