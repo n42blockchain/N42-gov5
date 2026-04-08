@@ -211,7 +211,7 @@ func (b *PlainStateBuffer) Clear() {
 	b.contractCode = make(map[string][]byte, 64)
 	b.incarnationMap = make(map[types.Address][]byte)
 	b.contractWipes = b.contractWipes[:0]
-	b.wipedStorage = make(map[types.Address]struct{})
+	clear(b.wipedStorage)
 	b.hits.Store(0)
 	b.misses.Store(0)
 }
@@ -285,10 +285,13 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 			return entry.value, nil
 		}
 	}
-	// 1b. If storage was wiped (SELFDESTRUCT/CREATE), slots not in the
-	// write buffer are gone — don't fall through to stale cache/MDBX.
-	if _, wiped := r.buf.wipedStorage[address]; wiped {
-		return nil, nil
+	// 1b. If storage was wiped (SELFDESTRUCT/CREATE within this batch),
+	// slots not in the write buffer are gone — stale cache/MDBX values
+	// from before the wipe must not be returned.
+	if len(r.buf.wipedStorage) > 0 {
+		if _, wiped := r.buf.wipedStorage[address]; wiped {
+			return nil, nil
+		}
 	}
 	// 2. Read cache (lock-free).
 	if slotsI, ok := r.buf.readStorage.Load(address); ok {
