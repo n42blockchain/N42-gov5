@@ -908,14 +908,13 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 			continue
 		}
 
-		// Only set deleted flag — do NOT call full updateAccount.
-		// updateAccount(noop) would call updateTrie(noop) which updates
-		// originStorage, but that's Erigon's intended behavior and is
-		// harmless for gas. However, with selfdestructedInBlock the full
-		// updateAccount path is broken (gas mismatch at 80233).
-		emptyRemoval := policy.shouldRemoveEmptyAccount(addr, so)
-		if so.selfdestructed || emptyRemoval {
-			so.deleted = true
+		// Call updateAccount with noop writer. This sets deleted flag and
+		// runs updateTrie(noop) which updates originStorage — both are
+		// necessary for correct cross-tx EVM behavior.
+		// Storage wipe is handled by storageWipes map in MakeWriteSet,
+		// not by stateObject flags, so no flag inheritance issues.
+		if err := updateAccount(policy, stateWriter, addr, so, true); err != nil {
+			return err
 		}
 
 		sdb.stateObjectsDirty[addr] = struct{}{}
