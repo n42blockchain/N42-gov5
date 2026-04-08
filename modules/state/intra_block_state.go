@@ -856,7 +856,7 @@ func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, a
 				return err
 			}
 		}
-		if stateObject.created || stateObject.createdInBlock {
+		if stateObject.created {
 			if err := stateWriter.CreateContract(addr); err != nil {
 				return err
 			}
