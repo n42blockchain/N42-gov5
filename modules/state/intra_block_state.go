@@ -106,6 +106,11 @@ type IntraBlockState struct {
 	// EIP-1153: Transient storage
 	transientStorage transientStorage
 
+	// storageWipes tracks addresses that need storage wiped during CommitBlock.
+	// Set by Selfdestruct and contract CreateAccount. Not affected by revert
+	// (unlike stateObject flags which are journaled).
+	storageWipes map[types.Address]struct{}
+
 	// rootComputer is an optional pluggable state root implementation.
 	// When nil, the default incremental Keccak hash is used.
 	rootComputer RootComputer
@@ -127,6 +132,7 @@ func New(stateReader StateReader) *IntraBlockState {
 		accessList:        newAccessList(),
 		balanceInc:        map[types.Address]*BalanceIncrease{},
 		transientStorage:  newTransientStorage(),
+		storageWipes:      map[types.Address]struct{}{},
 	}
 }
 
@@ -717,13 +723,6 @@ func (sdb *IntraBlockState) createObject(addr types.Address, previous *stateObje
 	}
 	newobj = newObject(sdb, addr, ac, original)
 	newobj.setNonce(0) // sets the object to dirty
-	// Inherit block-level flags from previous object — these survive
-	// clearCurrentTxFlags and are needed by CommitBlock's updateAccount.
-	if previous != nil {
-		if previous.selfdestructedInBlock {
-			newobj.selfdestructedInBlock = true
-		}
-	}
 	if previous == nil {
 		sdb.journal.append(createObjectChange{account: &addr})
 	} else {
@@ -759,15 +758,10 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 	if contractCreation {
 		newObj.created = true
 		newObj.createdInBlock = true
+		// Contract creation needs storage wipe (replaces incarnation).
+		sdb.storageWipes[addr] = struct{}{}
 	} else {
 		newObj.selfdestructed = false
-		// Non-contract CreateAccount: if previous was selfdestructed, we need
-		// to wipe its storage. Mark createdInBlock to trigger wipe in CommitBlock,
-		// but clear selfdestructedInBlock so the new empty account gets written back.
-		if previous != nil && previous.selfdestructedInBlock {
-			newObj.createdInBlock = true
-		}
-		newObj.selfdestructedInBlock = false
 	}
 }
 
@@ -833,19 +827,13 @@ func (p accountWritePolicy) shouldAllowWriteBack(stateObject *stateObject) bool 
 }
 
 func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
-	return updateAccountEx(policy, stateWriter, addr, stateObject, isDirty, false)
+	return updateAccountWithWipe(policy, stateWriter, addr, stateObject, isDirty, false)
 }
 
-func updateAccountEx(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool, useBlockFlags bool) error {
+func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool, needsWipe bool) error {
 	emptyRemoval := policy.shouldRemoveEmptyAccount(addr, stateObject)
-	// useBlockFlags=true (CommitBlock): check selfdestructedInBlock (survives clearCurrentTxFlags).
-	// useBlockFlags=false (FinalizeTx): only check selfdestructed (current tx flag).
 	shouldDelete := stateObject.selfdestructed || (isDirty && emptyRemoval)
-	if useBlockFlags && stateObject.selfdestructedInBlock {
-		shouldDelete = true
-	}
-	recreated := useBlockFlags && stateObject.selfdestructedInBlock && stateObject.createdInBlock
-	if shouldDelete && !recreated {
+	if shouldDelete {
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
 		}
@@ -853,16 +841,13 @@ func updateAccountEx(policy accountWritePolicy, stateWriter StateWriter, addr ty
 			return err
 		}
 		stateObject.deleted = true
-	} else if useBlockFlags && (recreated || stateObject.createdInBlock) {
-		// Wipe old storage but don't delete — account was recreated.
+	} else if needsWipe {
+		// Wipe old storage but don't delete — account was recreated after SELFDESTRUCT.
 		if err := stateWriter.CreateContract(addr); err != nil {
 			return err
 		}
 	}
 	allowWriteBack := policy.shouldAllowWriteBack(stateObject)
-	if useBlockFlags && stateObject.selfdestructedInBlock && !recreated {
-		allowWriteBack = false
-	}
 	if isDirty && allowWriteBack && !emptyRemoval {
 		stateObject.deleted = false
 		// Write any contract code associated with the state object
@@ -979,7 +964,8 @@ func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter S
 	}
 	for addr, stateObject := range sdb.stateObjects {
 		_, isDirty := sdb.stateObjectsDirty[addr]
-		if err := updateAccountEx(policy, stateWriter, addr, stateObject, isDirty, true); err != nil {
+		_, needsWipe := sdb.storageWipes[addr]
+		if err := updateAccountWithWipe(policy, stateWriter, addr, stateObject, isDirty, needsWipe); err != nil {
 			return err
 		}
 	}
@@ -1306,6 +1292,8 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 	})
 	stateObject.markSelfdestructed()
 	stateObject.data.Balance.Clear()
+	// Mark for storage wipe in CommitBlock (not journaled — survives revert).
+	sdb.storageWipes[addr] = struct{}{}
 	return true
 }
 
