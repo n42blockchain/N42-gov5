@@ -161,6 +161,7 @@ type (
 func (ch createObjectChange) revert(s *IntraBlockState) {
 	delete(s.stateObjects, *ch.account)
 	delete(s.stateObjectsDirty, *ch.account)
+	delete(s.storageWipes, *ch.account)
 }
 
 func (ch createObjectChange) dirtied() *types.Address {
@@ -169,6 +170,10 @@ func (ch createObjectChange) dirtied() *types.Address {
 
 func (ch resetObjectChange) revert(s *IntraBlockState) {
 	s.setStateObject(*ch.account, ch.prev)
+	// If the previous object wasn't created as a contract, remove storageWipes.
+	if ch.prev == nil || !ch.prev.created {
+		delete(s.storageWipes, *ch.account)
+	}
 }
 
 func (ch resetObjectChange) dirtied() *types.Address {
@@ -180,6 +185,10 @@ func (ch selfdestructChange) revert(s *IntraBlockState) {
 	if obj != nil {
 		obj.selfdestructed = ch.prev
 		obj.setBalance(&ch.prevbalance)
+	}
+	// Also revert storageWipes if this SELFDESTRUCT is being undone.
+	if !ch.prev {
+		delete(s.storageWipes, *ch.account)
 	}
 }
 

@@ -41,13 +41,18 @@ func IsGenesisInitialized(tx kv.Tx) bool {
 // InitEthGenesisState loads an Ethereum genesis alloc JSON file and writes
 // the initial state to the MDBX database. Skips if state already exists.
 func InitEthGenesisState(tx kv.RwTx, genesisPath string) (int, error) {
-	if IsGenesisInitialized(tx) {
-		log.Info("Genesis state already initialized, skipping")
-		return 0, nil
-	}
 	data, err := os.ReadFile(genesisPath)
 	if err != nil {
 		return 0, fmt.Errorf("read genesis: %w", err)
+	}
+	return InitEthGenesisStateFromBytes(tx, data)
+}
+
+// InitEthGenesisStateFromBytes loads genesis state from JSON bytes.
+func InitEthGenesisStateFromBytes(tx kv.RwTx, data []byte) (int, error) {
+	if IsGenesisInitialized(tx) {
+		log.Info("Genesis state already initialized, skipping")
+		return 0, nil
 	}
 
 	// Parse the alloc section.

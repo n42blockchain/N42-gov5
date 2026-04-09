@@ -200,16 +200,15 @@ func (e *Executor) Run(ctx context.Context) error {
 			return fmt.Errorf("block %d: %w", blockNum, err)
 		}
 
-		// Periodic commit.
+		// Periodic flush (within same tx) and conditional commit.
 		if blockNum > 0 && blockNum%e.cfg.CommitInterval == 0 {
-			// Flush only full batches — keep partial batch in memory so entries
-			// remain aligned within their 64-entry batch boundary.
+			// Flush output batches.
 			if e.outBatcher != nil {
 				if _, err := e.outBatcher.flushFullBatches(); err != nil {
 					return fmt.Errorf("flush output batcher at block %d: %w", blockNum, err)
 				}
 			}
-			// Flush write buffer to MDBX.
+			// Flush write buffer to MDBX (within same tx — NOT committed yet).
 			bufAccs, bufStos := e.stateBuf.Stats()
 			cacheHits, cacheMisses := e.stateBuf.CacheStats()
 			t0Flush := time.Now()
@@ -219,20 +218,11 @@ func (e *Executor) Run(ctx context.Context) error {
 			flushDur := time.Since(t0Flush)
 			e.stateBuf.Clear()
 
-			// Save progress before commit.
-			if err := WriteProgress(tx, blockNum); err != nil {
-				return fmt.Errorf("write progress at block %d: %w", blockNum, err)
-			}
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("commit at block %d: %w", blockNum, err)
-			}
+			// Progress log.
 			now := time.Now()
-			intervalBlks := e.cfg.CommitInterval
 			intervalSec := now.Sub(e.lastProgressTime).Seconds()
-			if intervalSec < 0.001 {
-				intervalSec = 0.001
-			}
-			blkPerSec := float64(intervalBlks) / intervalSec
+			if intervalSec < 0.001 { intervalSec = 0.001 }
+			blkPerSec := float64(e.cfg.CommitInterval) / intervalSec
 			e.lastProgressTime = now
 			hitRate := float64(0)
 			if cacheHits+cacheMisses > 0 {
@@ -243,8 +233,7 @@ func (e *Executor) Run(ctx context.Context) error {
 				"blk/s", fmt.Sprintf("%.0f", blkPerSec),
 				"elapsed", now.Sub(startTime).Truncate(time.Second),
 				"bufFlush", flushDur.Truncate(time.Millisecond),
-				"bufAccs", bufAccs,
-				"bufStos", bufStos,
+				"bufAccs", bufAccs, "bufStos", bufStos,
 				"cacheHit%", fmt.Sprintf("%.1f", hitRate),
 			}
 			if e.senderMisses > 0 {
@@ -253,14 +242,43 @@ func (e *Executor) Run(ctx context.Context) error {
 			}
 			log.Info("EthEL progress", fields...)
 
+			// Always commit at commitInterval for safety.
+			if err := WriteProgress(tx, blockNum); err != nil {
+				return fmt.Errorf("write progress at block %d: %w", blockNum, err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit at block %d: %w", blockNum, err)
+			}
 			tx, err = e.db.BeginRw(ctx)
 			if err != nil {
-				// ctx cancelled — tx is nil, cleanup is a no-op.
 				cleanup = func() {}
 				return err
 			}
-			// Update cleanup to rollback the new tx on exit.
 			cleanup = func() { tx.Rollback() }
+
+			// Verify state root at verify boundaries.
+			// On success: stop so user can backup MDBX.
+			// On failure: report and stop (state already committed — user restores backup).
+			if e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0 {
+				blockRoot, verifyErr := VerifyStateRoot(tx)
+				if verifyErr != nil {
+					return fmt.Errorf("state root verify at block %d: %w", blockNum, verifyErr)
+				}
+				hdr, hErr := e.readHeader(blockNum)
+				if hErr != nil {
+					return fmt.Errorf("read header for verify at block %d: %w", blockNum, hErr)
+				}
+				if blockRoot != hdr.Root {
+					log.Error("State root MISMATCH",
+						"block", blockNum,
+						"computed", blockRoot.Hex(),
+						"expected", hdr.Root.Hex())
+					return fmt.Errorf("state root mismatch at block %d — restore backup and re-run with smaller --verify",
+						blockNum)
+				}
+				log.Info("State root verified", "block", blockNum,
+					"root", hdr.Root.Hex())
+			}
 		}
 	}
 
@@ -320,7 +338,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	writer := state.NewBufferedPlainStateWriter(e.stateBuf, tx, blockNum)
 	ibs := state.New(reader)
 
-	shouldVerify := e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0
+	// State root verification moved to main loop (Run) for rollback support.
 
 	t1 := time.Now()
 	// 3. Process block (DAO fork, system contracts, EVM).
@@ -355,48 +373,28 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 		}
 	}
 
-	var blockRoot types.Hash
-
 	t2 := time.Now()
 	// 6. Commit state changes to in-memory buffer.
+	// Capture wipes length BEFORE CommitBlock so we can extract per-block wipes.
+	wipesBefore := len(e.stateBuf.ContractWipes())
 	rules := e.chainCfg.Rules(header.Number.Uint64())
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return fmt.Errorf("commit block state: %w", err)
-	}
-	if false {
-		bufAccs, bufStos := e.stateBuf.Stats()
-		log.Info("Buffer after BATCH CommitBlock",
-			"accounts", bufAccs, "storage", bufStos,
-			"wipes", len(e.stateBuf.ContractWipes()))
 	}
 	t3 := time.Now()
 
 	// 7. Write execution outputs to output freezer.
 	if e.outFreezer != nil && !e.cfg.NoOutputs {
-		if err := e.writeOutputs(blockNum, result, writer, witnessReader, tx); err != nil {
+		// Extract only THIS block's wipes (not accumulated from prior blocks).
+		allWipes := e.stateBuf.ContractWipes()
+		blockWipes := allWipes[wipesBefore:]
+		if err := e.writeOutputs(blockNum, result, writer, witnessReader, tx, blockWipes); err != nil {
 			return fmt.Errorf("write outputs: %w", err)
 		}
 	}
 
-	// 8. Verify state root on verify blocks.
-	if shouldVerify {
-		if err := e.stateBuf.FlushToMDBX(tx); err != nil {
-			return fmt.Errorf("flush buffer for verify: %w", err)
-		}
-		// Debug: count HashedStorage entries before rebuild.
-		blockRoot, err = VerifyStateRoot(tx)
-		if err != nil {
-			return fmt.Errorf("state root verify: %w", err)
-		}
-		if blockRoot != header.Root {
-			return fmt.Errorf("state root mismatch at block %d: computed %s, expected %s",
-				blockNum, blockRoot.Hex(), header.Root.Hex())
-		}
-		var accsOK, stosOK uint64
-		if c, e := tx.Cursor("Account"); e == nil { accsOK, _ = c.Count(); c.Close() }
-		if c, e := tx.Cursor("Storage"); e == nil { stosOK, _ = c.Count(); c.Close() }
-		log.Info("State root verified", "block", blockNum, "root", header.Root.Hex(), "accounts", accsOK, "storage", stosOK)
-	}
+	// 8. State root verification is handled by the main loop (Run)
+	//    after commit, to enable rollback on mismatch.
 
 	t5 := time.Now()
 
@@ -486,14 +484,18 @@ func (e *Executor) loadSenders(blockNum uint64, txCount int) []types.Address {
 	// Try SegmentStore (chain/senders.cidx).
 	if e.senderStore != nil && blockNum < e.senderStore.MaxBlock() {
 		data, err := e.senderStore.ReadBlock(blockNum)
-		if err == nil && len(data) >= 20 {
+		if err == nil {
 			senderCount := len(data) / 20
-			if senderCount == txCount {
+			if senderCount == txCount && txCount > 0 {
 				senders := make([]types.Address, senderCount)
 				for i := 0; i < senderCount; i++ {
 					copy(senders[i][:], data[i*20:(i+1)*20])
 				}
 				return senders
+			}
+			// Empty blocks (txCount==0) with nil/empty data → not a miss.
+			if txCount == 0 {
+				return nil
 			}
 		}
 	}
@@ -503,12 +505,15 @@ func (e *Executor) loadSenders(blockNum uint64, txCount int) []types.Address {
 		senderData, err := e.senderTable.Retrieve(blockNum)
 		if err == nil {
 			senderCount := len(senderData) / 20
-			if senderCount == txCount {
+			if senderCount == txCount && txCount > 0 {
 				senders := make([]types.Address, senderCount)
 				for i := 0; i < senderCount; i++ {
 					copy(senders[i][:], senderData[i*20:(i+1)*20])
 				}
 				return senders
+			}
+			if txCount == 0 {
+				return nil
 			}
 		}
 	}
@@ -598,7 +603,7 @@ func (e *Executor) reportTimings(blockNum uint64) {
 
 // writeOutputs accumulates block results into the output batcher.
 // Batches are flushed automatically when full (execBatchSize entries).
-func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *state.BufferedPlainStateWriter, witness *WitnessStateReader, dbTx kv.Tx) error {
+func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *state.BufferedPlainStateWriter, witness *WitnessStateReader, dbTx kv.Tx, blockWipes []types.Address) error {
 	b := e.outBatcher
 
 	// 1. Receipts (skip in LeavesOnly mode).
@@ -652,6 +657,7 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 					}
 					return v
 				},
+				blockWipes,
 			)
 		}
 	}

@@ -1289,7 +1289,6 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 	})
 	stateObject.markSelfdestructed()
 	stateObject.data.Balance.Clear()
-	// Mark for storage wipe in CommitBlock (not journaled — survives revert).
 	sdb.storageWipes[addr] = struct{}{}
 	return true
 }

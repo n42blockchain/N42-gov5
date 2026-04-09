@@ -34,11 +34,9 @@ func TestEncodeStorageChanges_Grouped(t *testing.T) {
 
 	// Same address, 3 different slots
 	makeKey := func(addrByte, slotByte byte) []byte {
-		key := make([]byte, 54) // addr(20)+inc(2)+slot(32)
+		key := make([]byte, 52) // addr(20)+slot(32)
 		key[19] = addrByte
-		key[20] = 0    // incarnation high
-		key[21] = 1    // incarnation low = 1
-		key[53] = slotByte
+		key[51] = slotByte
 		return key
 	}
 
@@ -60,7 +58,7 @@ func TestEncodeStorageChanges_Grouped(t *testing.T) {
 	}
 
 	// Compare with naive flat encoding
-	naiveSize := 2 + 4*(4+54) + (1 + 2 + 0 + 1) // count + 4 entries with keyLen/valLen overhead
+	naiveSize := 2 + 4*(4+52) + (1 + 2 + 0 + 1) // count + 4 entries with keyLen/valLen overhead
 	t.Logf("Grouped: %d bytes, Naive would be: ~%d bytes, Saved: ~%d%%",
 		len(data), naiveSize, (naiveSize-len(data))*100/naiveSize)
 }

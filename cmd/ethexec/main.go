@@ -57,7 +57,7 @@ func main() {
 	execFlags := []cli.Flag{
 		&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory"},
 		&cli.StringFlag{Name: "datadir", Usage: "Path to output MDBX database"},
-		&cli.StringFlag{Name: "genesis", Usage: "Path to Ethereum genesis.json (for initial state)"},
+		&cli.StringFlag{Name: "genesis", Usage: "Path to Ethereum genesis.json (default: built-in mainnet)"},
 		&cli.Uint64Flag{Name: "start", Usage: "Start block number", Value: 0},
 		&cli.Uint64Flag{Name: "end", Usage: "End block number (0 = all available)", Value: 0},
 		&cli.Uint64Flag{Name: "commit", Usage: "Commit interval (blocks)", Value: 10000},
@@ -77,6 +77,25 @@ func main() {
 		Flags:  execFlags,
 		Action: run,
 		Commands: []*cli.Command{
+			{
+				Name:  "dumpgenesis",
+				Usage: "Export the built-in Ethereum mainnet genesis JSON to stdout or file",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "Output file path (default: stdout)"},
+				},
+				Action: func(c *cli.Context) error {
+					data := params.EthMainnetGenesisJSON()
+					if out := c.String("output"); out != "" {
+						if err := os.WriteFile(out, data, 0644); err != nil {
+							return err
+						}
+						fmt.Printf("Genesis written to %s (%d bytes)\n", out, len(data))
+						return nil
+					}
+					os.Stdout.Write(data)
+					return nil
+				},
+			},
 			{
 				Name:  "compact",
 				Usage: "Batch-compress all output freezer tables to a new directory",
@@ -132,7 +151,8 @@ func main() {
 				Usage: "Replay leaves_journal to rebuild PlainState, verify state root against headers",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
-					&cli.StringFlag{Name: "datadir", Usage: "Path to output MDBX + output freezer directory", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to temp MDBX (or rebuild target)", Required: true},
+					&cli.StringFlag{Name: "leaves", Usage: "Path to leaves freezer dir (default: datadir/chain/freezer)"},
 					&cli.StringFlag{Name: "genesis", Usage: "Path to Ethereum genesis.json", Required: true},
 					&cli.Uint64Flag{Name: "verify", Usage: "Verify state root every N blocks (0=disabled)", Value: 100000},
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
@@ -149,6 +169,22 @@ func main() {
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all available)", Value: 0},
 				},
 				Action: runRebuildState,
+			},
+			{
+				Name:  "verify-senders",
+				Usage: "Spot-check pre-computed senders against ecrecover (random sampling)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to chain directory (with senders.cidx)", Required: true},
+					&cli.IntFlag{Name: "samples", Usage: "Number of random blocks to check", Value: 200},
+				},
+				Action: func(c *cli.Context) error {
+					ancientPath := c.String("ancient")
+					chainDir := c.String("datadir") + "/chain"
+					samples := c.Int("samples")
+					chainCfg := params.MainnetChainConfig
+					return verifySenders(chainDir, ancientPath, chainCfg, samples)
+				},
 			},
 			{
 				Name:  "mem-test",
@@ -356,14 +392,20 @@ func run(c *cli.Context) error {
 	}
 	defer db.Close()
 
-	// Load genesis state if provided.
-	if genesisPath != "" {
-		log.Info("Loading Ethereum genesis state", "path", genesisPath)
+	// Load genesis state.
+	{
 		tx, err := db.BeginRw(context.Background())
 		if err != nil {
 			return err
 		}
-		count, err := ethel.InitEthGenesisState(tx, genesisPath)
+		var count int
+		if genesisPath != "" {
+			log.Info("Loading Ethereum genesis state", "path", genesisPath)
+			count, err = ethel.InitEthGenesisState(tx, genesisPath)
+		} else {
+			log.Info("Loading Ethereum genesis state (built-in mainnet)")
+			count, err = ethel.InitEthGenesisStateFromBytes(tx, params.EthMainnetGenesisJSON())
+		}
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("init genesis: %w", err)
@@ -405,12 +447,41 @@ func run(c *cli.Context) error {
 
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
 
-	// Check for pre-computed senders: try SegmentStore in chain/, ancient/, then old freezer.
-	// Check for pre-computed senders in output freezer (chain/freezer/senders).
-	if senderTbl := outFreezer.Table("senders"); senderTbl != nil && senderTbl.Items() > 0 {
-		executor.SetSenderFreezer(outFreezer)
-		log.Info("Pre-computed senders detected", "items", senderTbl.Items())
-	} else {
+	// Pre-computed senders (input data). Auto-detect:
+	// 1. Freezer table format (chain/freezer/senders.cidx) — from sender-recovery --ancient
+	// 2. SegmentStore format (chain/senders.cidx) — from sender-recovery --erigon-db
+	senderFound := false
+	// Check freezer table in output freezer and additional freezer dirs.
+	for _, dir := range []string{
+		outFreezerPath,
+		filepath.Join(datadir, "chain", "freezer"),
+	} {
+		sf, sErr := freezer.New(dir, 0)
+		if sErr != nil {
+			continue
+		}
+		if tbl := sf.Table("senders"); tbl != nil && tbl.Items() > 0 {
+			executor.SetSenderFreezer(sf)
+			log.Info("Pre-computed senders loaded (freezer)", "path", dir, "items", tbl.Items())
+			senderFound = true
+			break
+		}
+		sf.Close()
+	}
+	// Fallback: SegmentStore format.
+	if !senderFound {
+		for _, dir := range []string{filepath.Join(datadir, "chain"), ancientPath} {
+			sr, sErr := ethel.OpenSenderStore(dir)
+			if sErr != nil || sr == nil {
+				continue
+			}
+			executor.SetSenderStore(sr)
+			log.Info("Pre-computed senders loaded (segment)", "path", dir, "maxBlock", sr.MaxBlock())
+			senderFound = true
+			break
+		}
+	}
+	if !senderFound {
 		log.Info("No pre-computed senders, using ecrecover from signatures")
 	}
 
@@ -458,11 +529,15 @@ func runVerifyJournal(c *cli.Context) error {
 	}
 	defer inputF.Close()
 
-	// Open output freezer (leaves).
-	outChain := filepath.Join(datadir, "chain")
-	outF, err := freezer.New(outChain, 0)
+	// Open leaves freezer.
+	leavesDir := c.String("leaves")
+	if leavesDir == "" {
+		leavesDir = filepath.Join(datadir, "chain", "freezer")
+	}
+	log.Info("Opening leaves freezer", "path", leavesDir)
+	outF, err := freezer.New(leavesDir, 0)
 	if err != nil {
-		return fmt.Errorf("open output freezer: %w", err)
+		return fmt.Errorf("open leaves freezer: %w", err)
 	}
 	defer outF.Close()
 
@@ -496,12 +571,18 @@ func runVerifyJournal(c *cli.Context) error {
 	defer db.Close()
 
 	// Load genesis state.
-	log.Info("Loading genesis state", "path", genesisPath)
 	tx, err := db.BeginRw(context.Background())
 	if err != nil {
 		return err
 	}
-	count, err := ethel.InitEthGenesisState(tx, genesisPath)
+	var count int
+	if genesisPath != "" {
+		log.Info("Loading genesis state", "path", genesisPath)
+		count, err = ethel.InitEthGenesisState(tx, genesisPath)
+	} else {
+		log.Info("Loading genesis state (built-in mainnet)")
+		count, err = ethel.InitEthGenesisStateFromBytes(tx, params.EthMainnetGenesisJSON())
+	}
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("init genesis: %w", err)

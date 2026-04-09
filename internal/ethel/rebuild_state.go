@@ -89,9 +89,19 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 			continue
 		}
 
-		accounts, storage, err := DecodeLeavesJournal(data)
+		accounts, storage, wipes, err := DecodeLeavesJournal(data)
 		if err != nil {
 			return fmt.Errorf("decode block %d: %w", blockNum, err)
+		}
+
+		// Apply wipes: delete all storage for selfdestructed addresses.
+		for _, addr := range wipes {
+			prefix := string(addr[:])
+			for k := range storMap {
+				if len(k) >= 20 && k[:20] == prefix {
+					storMap[k] = nil
+				}
+			}
 		}
 
 		for _, a := range accounts {

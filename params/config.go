@@ -52,6 +52,15 @@ func readChainSpec(filename string) *ChainConfig {
 	return spec
 }
 
+// EthMainnetGenesisJSON returns the embedded Ethereum mainnet genesis JSON.
+func EthMainnetGenesisJSON() []byte {
+	data, err := chainspecs.ReadFile("chainspecs/eth_mainnet_genesis.json")
+	if err != nil {
+		panic(fmt.Sprintf("read embedded eth mainnet genesis: %v", err))
+	}
+	return data
+}
+
 // ---------------------------------------------------------------------------
 // Consensus type constants
 // ---------------------------------------------------------------------------

@@ -90,7 +90,6 @@ func EncodeGenesisJournal(tx kv.Tx) ([]byte, error) {
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(groups)))
 	for _, g := range groups {
 		buf = append(buf, g.addr[:]...)
-		buf = binary.BigEndian.AppendUint16(buf, 0) // incarnation=0, kept for format compat
 		buf = binary.LittleEndian.AppendUint16(buf, uint16(len(g.slots)))
 		for _, s := range g.slots {
 			buf = append(buf, s.slot[:]...)
@@ -117,13 +116,17 @@ func EncodeGenesisJournal(tx kv.Tx) ([]byte, error) {
 //
 //	[numAddrs:4LE]
 //	per address:
-//	  [plainAddr:20][incarnation:2BE][numSlots:2LE]
+//	  [plainAddr:20][numSlots:2LE]
 //	  per slot: [plainSlot:32][valLen:1][newValue:0-32]  (valLen=0 means deleted)
+//
+//	[numWipes:4LE]  (appended after storage section)
+//	per wipe: [plainAddr:20]  (SELFDESTRUCT: delete ALL storage for this address)
 func EncodeLeavesJournal(
 	accCS *changeset.ChangeSet,
 	stoCS *changeset.ChangeSet,
 	getAccount func(addr types.Address) *account.StateAccount,
 	getStorage func(addr types.Address, key types.Hash) []byte,
+	wipes []types.Address,
 ) []byte {
 	buf := make([]byte, 0, 4096)
 
@@ -155,13 +158,12 @@ func EncodeLeavesJournal(
 
 	// --- Storage leaves (address-grouped) ---
 	type slotLeaf struct {
-		plainSlot [32]byte
+		plainSlot types.Hash
 		value     []byte
 	}
 	type addrLeaves struct {
-		plainAddr   [20]byte
-		incarnation uint16
-		slots       []slotLeaf
+		plainAddr [20]byte
+		slots     []slotLeaf
 	}
 
 	var groups []addrLeaves
@@ -170,7 +172,8 @@ func EncodeLeavesJournal(
 
 	if stoCS != nil {
 		for _, c := range stoCS.Changes {
-			if len(c.Key) < 54 {
+			// Plain composite key: addr(20) + slot(32) = 52 bytes.
+			if len(c.Key) < 52 {
 				continue
 			}
 			var thisAddr [20]byte
@@ -178,19 +181,15 @@ func EncodeLeavesJournal(
 
 			if cur == nil || thisAddr != lastAddr {
 				lastAddr = thisAddr
-				inc := binary.BigEndian.Uint16(c.Key[20:22])
-				groups = append(groups, addrLeaves{plainAddr: thisAddr, incarnation: inc})
+				groups = append(groups, addrLeaves{plainAddr: thisAddr})
 				cur = &groups[len(groups)-1]
 			}
 
-			var slot [32]byte
-			copy(slot[:], c.Key[22:54])
-
 			var addr types.Address
 			copy(addr[:], c.Key[:20])
-			var slotKey types.Hash
-			copy(slotKey[:], c.Key[22:54])
-			val := getStorage(addr, slotKey)
+			var slot types.Hash
+			copy(slot[:], c.Key[20:52])
+			val := getStorage(addr, slot)
 
 			cur.slots = append(cur.slots, slotLeaf{plainSlot: slot, value: val})
 		}
@@ -199,7 +198,6 @@ func EncodeLeavesJournal(
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(groups)))
 	for _, g := range groups {
 		buf = append(buf, g.plainAddr[:]...)
-		buf = binary.BigEndian.AppendUint16(buf, g.incarnation)
 		buf = binary.LittleEndian.AppendUint16(buf, uint16(len(g.slots)))
 		for _, s := range g.slots {
 			buf = append(buf, s.plainSlot[:]...)
@@ -211,6 +209,13 @@ func EncodeLeavesJournal(
 			}
 		}
 	}
+
+	// --- Wipe list (SELFDESTRUCT: delete all storage for these addresses) ---
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(wipes)))
+	for _, addr := range wipes {
+		buf = append(buf, addr[:]...)
+	}
+
 	return buf
 }
 
@@ -228,10 +233,10 @@ type StorageLeaf struct {
 }
 
 // DecodeLeavesJournal decodes a plain-key leaves journal.
-// Returns account leaves and storage leaves for PlainState replay or trie update.
-func DecodeLeavesJournal(data []byte) ([]AccountLeaf, []StorageLeaf, error) {
+// Returns account leaves, storage leaves, and wipe addresses for PlainState replay.
+func DecodeLeavesJournal(data []byte) ([]AccountLeaf, []StorageLeaf, []types.Address, error) {
 	if len(data) < 8 {
-		return nil, nil, fmt.Errorf("leaves journal too short: %d bytes", len(data))
+		return nil, nil, nil, fmt.Errorf("leaves journal too short: %d bytes", len(data))
 	}
 	pos := 0
 
@@ -242,21 +247,21 @@ func DecodeLeavesJournal(data []byte) ([]AccountLeaf, []StorageLeaf, error) {
 	accounts := make([]AccountLeaf, 0, numAcc)
 	for i := uint32(0); i < numAcc; i++ {
 		if pos+20 > len(data) {
-			return nil, nil, fmt.Errorf("truncated at account %d", i)
+			return nil, nil, nil, fmt.Errorf("truncated at account %d", i)
 		}
 		var leaf AccountLeaf
 		copy(leaf.Address[:], data[pos:pos+20])
 		pos += 20
 
 		if pos >= len(data) {
-			return nil, nil, fmt.Errorf("truncated at account %d valLen", i)
+			return nil, nil, nil, fmt.Errorf("truncated at account %d valLen", i)
 		}
 		valLen := int(data[pos])
 		pos++
 
 		if valLen > 0 {
 			if pos+valLen > len(data) {
-				return nil, nil, fmt.Errorf("truncated at account %d value", i)
+				return nil, nil, nil, fmt.Errorf("truncated at account %d value", i)
 			}
 			leaf.Value = make([]byte, valLen)
 			copy(leaf.Value, data[pos:pos+valLen])
@@ -267,28 +272,26 @@ func DecodeLeavesJournal(data []byte) ([]AccountLeaf, []StorageLeaf, error) {
 
 	// --- Storage ---
 	if pos+4 > len(data) {
-		return nil, nil, fmt.Errorf("truncated at storage header")
+		return nil, nil, nil, fmt.Errorf("truncated at storage header")
 	}
 	numAddrs := binary.LittleEndian.Uint32(data[pos:])
 	pos += 4
 
 	var storage []StorageLeaf
 	for i := uint32(0); i < numAddrs; i++ {
-		if pos+24 > len(data) {
-			return nil, nil, fmt.Errorf("truncated at storage group %d", i)
+		if pos+22 > len(data) {
+			return nil, nil, nil, fmt.Errorf("truncated at storage group %d", i)
 		}
 		var addr types.Address
 		copy(addr[:], data[pos:pos+20])
 		pos += 20
-
-		pos += 2 // skip incarnation (2B, always 0, kept for format compat)
 
 		numSlots := binary.LittleEndian.Uint16(data[pos:])
 		pos += 2
 
 		for j := uint16(0); j < numSlots; j++ {
 			if pos+32 > len(data) {
-				return nil, nil, fmt.Errorf("truncated at slot %d/%d", i, j)
+				return nil, nil, nil, fmt.Errorf("truncated at slot %d/%d", i, j)
 			}
 			var leaf StorageLeaf
 			leaf.Address = addr
@@ -296,14 +299,14 @@ func DecodeLeavesJournal(data []byte) ([]AccountLeaf, []StorageLeaf, error) {
 			pos += 32
 
 			if pos >= len(data) {
-				return nil, nil, fmt.Errorf("truncated at slot %d/%d valLen", i, j)
+				return nil, nil, nil, fmt.Errorf("truncated at slot %d/%d valLen", i, j)
 			}
 			valLen := int(data[pos])
 			pos++
 
 			if valLen > 0 {
 				if pos+valLen > len(data) {
-					return nil, nil, fmt.Errorf("truncated at slot %d/%d value", i, j)
+					return nil, nil, nil, fmt.Errorf("truncated at slot %d/%d value", i, j)
 				}
 				leaf.Value = make([]byte, valLen)
 				copy(leaf.Value, data[pos:pos+valLen])
@@ -313,5 +316,21 @@ func DecodeLeavesJournal(data []byte) ([]AccountLeaf, []StorageLeaf, error) {
 		}
 	}
 
-	return accounts, storage, nil
+	// --- Wipe list (optional, appended by newer encoder) ---
+	var wipes []types.Address
+	if pos+4 <= len(data) {
+		numWipes := binary.LittleEndian.Uint32(data[pos:])
+		pos += 4
+		for i := uint32(0); i < numWipes; i++ {
+			if pos+20 > len(data) {
+				break
+			}
+			var addr types.Address
+			copy(addr[:], data[pos:pos+20])
+			pos += 20
+			wipes = append(wipes, addr)
+		}
+	}
+
+	return accounts, storage, wipes, nil
 }
