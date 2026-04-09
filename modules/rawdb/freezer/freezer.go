@@ -121,7 +121,11 @@ var coreTableSpecs = []tableSpec{}
 // extendedTableSpecs are ETH EL execution tables (opened when present or on first write).
 // Opened with NewFreezerTableCompressed for batch-mode auto-detection.
 var extendedTableSpecs = []tableSpec{
+	{TableHeaders, "c"},
+	{TableBodies, "c"},
 	{TableReceipts, "c"},
+	{TableHashes, "r"},
+	{TableDifficulty, "r"},
 	{TableSenders, "c"},
 	{TableAccountChanges, "c"},
 	{TableStorageChanges, "c"},

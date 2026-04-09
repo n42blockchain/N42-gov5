@@ -10,16 +10,17 @@ import (
 )
 
 func TestEncodeLeavesJournal_Empty(t *testing.T) {
-	data := EncodeLeavesJournal(nil, nil, nil, nil)
-	if len(data) != 8 { // 4 acc count + 4 addr count
-		t.Errorf("empty: got %d bytes, want 8", len(data))
+	data := EncodeLeavesJournal(nil, nil, nil, nil, nil)
+	// 4 acc count + 4 addr count + 4 wipe count = 12
+	if len(data) != 12 {
+		t.Errorf("empty: got %d bytes, want 12", len(data))
 	}
-	accs, stos, err := DecodeLeavesJournal(data)
+	accs, stos, wipes, err := DecodeLeavesJournal(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(accs) != 0 || len(stos) != 0 {
-		t.Errorf("expected empty, got %d accs %d stos", len(accs), len(stos))
+	if len(accs) != 0 || len(stos) != 0 || len(wipes) != 0 {
+		t.Errorf("expected empty, got %d accs %d stos %d wipes", len(accs), len(stos), len(wipes))
 	}
 }
 
@@ -35,6 +36,7 @@ func TestEncodeLeavesJournal_AccountsOnly(t *testing.T) {
 	data := EncodeLeavesJournal(accCS, nil,
 		func(a types.Address) *account.StateAccount { return acc },
 		nil,
+		nil,
 	)
 
 	numAcc := binary.LittleEndian.Uint32(data[0:4])
@@ -48,7 +50,7 @@ func TestEncodeLeavesJournal_AccountsOnly(t *testing.T) {
 	}
 
 	// Roundtrip decode.
-	accs, stos, err := DecodeLeavesJournal(data)
+	accs, stos, _, err := DecodeLeavesJournal(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,9 +78,10 @@ func TestEncodeLeavesJournal_AccountDeleted(t *testing.T) {
 	data := EncodeLeavesJournal(accCS, nil,
 		func(a types.Address) *account.StateAccount { return nil }, // deleted
 		nil,
+		nil,
 	)
 
-	accs, _, err := DecodeLeavesJournal(data)
+	accs, _, _, err := DecodeLeavesJournal(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +93,11 @@ func TestEncodeLeavesJournal_AccountDeleted(t *testing.T) {
 func TestEncodeLeavesJournal_StorageGrouped(t *testing.T) {
 	stoCS := changeset.NewStorageChangeSet()
 
+	// Plain composite key: addr(20) + slot(32) = 52 bytes.
 	makeKey := func(addrByte, slotByte byte) []byte {
-		key := make([]byte, 54)
+		key := make([]byte, 52)
 		key[19] = addrByte
-		key[21] = 1 // inc=1
-		key[53] = slotByte
+		key[51] = slotByte
 		return key
 	}
 	stoCS.Add(makeKey(0x42, 0x01), []byte{0xAA})
@@ -107,6 +110,7 @@ func TestEncodeLeavesJournal_StorageGrouped(t *testing.T) {
 	data := EncodeLeavesJournal(nil, stoCS,
 		nil,
 		func(a types.Address, k types.Hash) []byte { return []byte{0xCC} },
+		nil,
 	)
 
 	addrCount := binary.LittleEndian.Uint32(data[4:8])
@@ -115,7 +119,7 @@ func TestEncodeLeavesJournal_StorageGrouped(t *testing.T) {
 	}
 
 	// Roundtrip decode.
-	accs, stos, err := DecodeLeavesJournal(data)
+	accs, stos, _, err := DecodeLeavesJournal(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,10 +133,31 @@ func TestEncodeLeavesJournal_StorageGrouped(t *testing.T) {
 	if stos[0].Address[19] != 0x42 || stos[3].Address[19] != 0x99 {
 		t.Errorf("address mismatch")
 	}
-	// Incarnation removed from StorageLeaf — skip check.
 	// Plain slot keys (not hashed).
 	if stos[0].Slot[31] != 0x01 || stos[1].Slot[31] != 0x02 {
 		t.Errorf("slot key mismatch")
 	}
 	t.Logf("Storage journal (grouped): %d bytes, %d slots", len(data), len(stos))
+}
+
+func TestEncodeLeavesJournal_Wipes(t *testing.T) {
+	wipes := []types.Address{
+		types.HexToAddress("0x1111111111111111111111111111111111111111"),
+		types.HexToAddress("0x2222222222222222222222222222222222222222"),
+	}
+	data := EncodeLeavesJournal(nil, nil, nil, nil, wipes)
+
+	accs, stos, decoded, err := DecodeLeavesJournal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accs) != 0 || len(stos) != 0 {
+		t.Errorf("expected no accs/stos")
+	}
+	if len(decoded) != 2 {
+		t.Fatalf("expected 2 wipes, got %d", len(decoded))
+	}
+	if decoded[0] != wipes[0] || decoded[1] != wipes[1] {
+		t.Errorf("wipe addresses mismatch")
+	}
 }

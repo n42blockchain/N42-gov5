@@ -108,7 +108,7 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 
 	// Two typed maps: zero-allocation keys for accounts, composite string for storage.
 	acctBuf := make(map[types.Address]acctValue)
-	storBuf := make(map[string]storValue) // key = composite 54-byte string
+	storBuf := make(map[string]storValue) // key = composite 52-byte string (addr+slot)
 	var applied, verified, mismatches uint64
 	t0 := time.Now()
 
@@ -197,9 +197,19 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 		}
 
 		if len(data) > 0 {
-			accounts, storage, err := DecodeLeavesJournal(data)
+			accounts, storage, wipes, err := DecodeLeavesJournal(data)
 			if err != nil {
 				return fmt.Errorf("decode journal block %d: %w", blockNum, err)
+			}
+
+			// Apply wipes FIRST: delete all storage for selfdestructed addresses.
+			for _, addr := range wipes {
+				if err := flushBuf(); err != nil {
+					return err
+				}
+				if err := deleteStorageByPrefix(tx, addr); err != nil {
+					return err
+				}
 			}
 
 			for _, leaf := range accounts {
@@ -425,9 +435,15 @@ func applyJournalEntry(tx kv.RwTx, data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
-	accounts, storage, err := DecodeLeavesJournal(data)
+	accounts, storage, wipes, err := DecodeLeavesJournal(data)
 	if err != nil {
 		return err
+	}
+	// Apply wipes first.
+	for _, addr := range wipes {
+		if err := deleteStorageByPrefix(tx, addr); err != nil {
+			return err
+		}
 	}
 	for _, leaf := range accounts {
 		if leaf.Value == nil {
@@ -468,8 +484,8 @@ func applyJournalEntry(tx kv.RwTx, data []byte) error {
 // the OLD values back to MDBX, effectively reverting that block.
 //
 // Changeset account values have codeHash omitted (omitHashes=true in Erigon
-// convention). For contract accounts (incarnation > 0), the codeHash is
-// recovered from the PlainContractCode table (addr+incarnation → codeHash).
+// convention). For contract accounts, the codeHash is recovered from the
+// PlainContractCode table (addr → codeHash).
 func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum uint64) error {
 	accData, err := accTbl.Retrieve(blockNum)
 	if err != nil {
@@ -524,8 +540,8 @@ func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum u
 
 // recoverCodeHash restores the codeHash in a V2-encoded account value.
 // Changeset entries use omitHashes=true (Erigon convention), which replaces
-// codeHash with emptyCodeHash. For contract accounts (incarnation > 0),
-// the real codeHash is looked up from the PlainContractCode table.
+// codeHash with emptyCodeHash. For contract accounts, the real codeHash
+// is looked up from the PlainContractCode table.
 func recoverCodeHash(tx kv.Tx, addr, encodedValue []byte) ([]byte, error) {
 	var acc account.StateAccount
 	if err := acc.DecodeForStorage(encodedValue); err != nil {
@@ -545,6 +561,32 @@ func recoverCodeHash(tx kv.Tx, addr, encodedValue []byte) ([]byte, error) {
 		return acc.MarshalV2(), nil
 	}
 	return encodedValue, nil
+}
+
+// deleteStorageByPrefix deletes all storage entries for a given address.
+func deleteStorageByPrefix(tx kv.RwTx, addr types.Address) error {
+	cursor, err := tx.Cursor(modules.Storage)
+	if err != nil {
+		return err
+	}
+	var keysToDelete [][]byte
+	for k, _, err := cursor.Seek(addr[:]); k != nil; k, _, err = cursor.Next() {
+		if err != nil {
+			cursor.Close()
+			return err
+		}
+		if len(k) < 20 || !bytes.Equal(k[:20], addr[:]) {
+			break
+		}
+		keysToDelete = append(keysToDelete, append([]byte{}, k...))
+	}
+	cursor.Close()
+	for _, k := range keysToDelete {
+		if err := tx.Delete(modules.Storage, k); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // clearAllState deletes all entries from Account and Storage tables.
