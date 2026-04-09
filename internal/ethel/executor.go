@@ -188,7 +188,7 @@ func (e *Executor) Run(ctx context.Context) error {
 		}
 
 		// Prefetch next block's state while we execute this one.
-		if blockNum+1 <= endBlock {
+		if e.prefetcher != nil && blockNum+1 <= endBlock {
 			e.prefetcher.prefetchBlock(blockNum + 1)
 		}
 

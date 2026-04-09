@@ -194,17 +194,7 @@ func (b *PlainStateBuffer) FlushToMDBX(tx kv.RwTx) error {
 
 // Clear resets write buffer. Invalidates read cache entries for written keys.
 func (b *PlainStateBuffer) Clear() {
-	for addr := range b.accounts {
-		b.readAccounts.Delete(addr)
-	}
-	for addr, slots := range b.storage {
-		if slotsI, ok := b.readStorage.Load(addr); ok {
-			sm := slotsI.(*sync.Map)
-			for hash := range slots {
-				sm.Delete(hash)
-			}
-		}
-	}
+	// Reset write buffers.
 	b.accounts = make(map[types.Address][]byte, 4096)
 	b.storage = make(map[types.Address]map[types.Hash]storageEntry, 4096)
 	b.code = make(map[types.Hash][]byte, 64)
@@ -212,6 +202,13 @@ func (b *PlainStateBuffer) Clear() {
 	b.incarnationMap = make(map[types.Address][]byte)
 	b.contractWipes = b.contractWipes[:0]
 	clear(b.wipedStorage)
+	// Clear entire read cache — the prefetcher runs with its own MDBX
+	// read snapshot which may predate the flush, so its cached values
+	// can be stale. After flush all data is in MDBX (hot pages), so
+	// re-reading is cheap.
+	b.readAccounts = sync.Map{}
+	b.readStorage = sync.Map{}
+	b.readCode = sync.Map{}
 	b.hits.Store(0)
 	b.misses.Store(0)
 }
