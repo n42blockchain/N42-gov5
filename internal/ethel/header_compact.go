@@ -19,12 +19,13 @@
 package ethel
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
-	"strings"
+	"path/filepath"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -35,6 +36,8 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
+
+const headerMaxFileSize = 2_000_000_000 // 2 GB per dat file
 
 // HeaderSegmentSize is the number of blocks per columnar segment.
 const HeaderSegmentSize = 8192
@@ -314,34 +317,82 @@ func encodeDeltaU64(buf []byte, values []uint64) []byte {
 // ---------- Stage ----------
 
 // HeaderCompactStage reads Geth ancient headers and writes columnar-compressed segments.
+// Output: headers.NNNN.cdat (≤2GB each) + headers.cidx (8B per segment).
 type HeaderCompactStage struct {
 	inputFreezer *freezer.Freezer
-	outputPath   string
+	outputDir    string
 }
 
-func NewHeaderCompactStage(input *freezer.Freezer, outputPath string) *HeaderCompactStage {
-	return &HeaderCompactStage{inputFreezer: input, outputPath: outputPath}
+func NewHeaderCompactStage(input *freezer.Freezer, outputDir string) *HeaderCompactStage {
+	return &HeaderCompactStage{inputFreezer: input, outputDir: outputDir}
+}
+
+// headerIdxEntry stores fileNum (2B) + reserved (2B) + offset (4B) = 8B, matching body idx layout.
+type headerIdxEntry struct {
+	fileNum uint16
+	offset  uint32
+}
+
+func encodeHeaderIdx(e headerIdxEntry) []byte {
+	var buf [8]byte
+	binary.LittleEndian.PutUint16(buf[0:2], e.fileNum)
+	// buf[2:4] reserved
+	binary.LittleEndian.PutUint32(buf[4:8], e.offset)
+	return buf[:]
+}
+
+func decodeHeaderIdx(buf []byte) headerIdxEntry {
+	return headerIdxEntry{
+		fileNum: binary.LittleEndian.Uint16(buf[0:2]),
+		offset:  binary.LittleEndian.Uint32(buf[4:8]),
+	}
 }
 
 func (s *HeaderCompactStage) Run(ctx context.Context) error {
+	// Ensure headers table is opened (not in coreTableSpecs).
+	if _, err := s.inputFreezer.EnsureTable(freezer.TableHeaders, "c"); err != nil {
+		return fmt.Errorf("open headers table: %w", err)
+	}
+
 	endBlock := s.inputFreezer.Frozen()
+	if err := os.MkdirAll(s.outputDir, 0755); err != nil {
+		return err
+	}
 
-	// Open data file (headers.cdat).
-	out, err := os.Create(s.outputPath)
+	// Determine resume point from existing idx.
+	idxPath := filepath.Join(s.outputDir, "headers.cidx")
+	idxFile, err := os.OpenFile(idxPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer idxFile.Close()
 
-	// Open index file (headers.cidx) — one 8B LE offset per segment.
-	// To read block N: seg = N/8192, offset = idx[seg*8 .. seg*8+8],
-	// seek headers.cdat to offset, read [4B size][zstd data].
-	idxPath := strings.TrimSuffix(s.outputPath, ".cdat") + ".cidx"
-	idx, err := os.Create(idxPath)
+	idxInfo, err := idxFile.Stat()
 	if err != nil {
 		return err
 	}
-	defer idx.Close()
+	existingSegments := uint64(idxInfo.Size()) / 8
+	startBlock := existingSegments * HeaderSegmentSize
+	if startBlock >= endBlock {
+		log.Info("Header compact: already up to date", "at", startBlock)
+		return nil
+	}
+	idxFile.Seek(0, io.SeekEnd)
+	idxBuf := bufio.NewWriter(idxFile)
+
+	// Determine head dat file and size from last idx entry.
+	var headFile uint16
+	var headSize int64
+	if existingSegments > 0 {
+		var lastEntry [8]byte
+		idxFile.ReadAt(lastEntry[:], int64(existingSegments-1)*8)
+		e := decodeHeaderIdx(lastEntry[:])
+		headFile = e.fileNum
+		datPath := filepath.Join(s.outputDir, fmt.Sprintf("headers.%04d.cdat", headFile))
+		if fi, err := os.Stat(datPath); err == nil {
+			headSize = fi.Size()
+		}
+	}
 
 	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
 	if err != nil {
@@ -349,37 +400,69 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 	}
 	defer enc.Close()
 
-	log.Info("Header compact starting", "blocks", endBlock,
-		"segmentSize", HeaderSegmentSize,
-		"data", s.outputPath, "index", idxPath)
+	// Open current dat file.
+	var datFile *os.File
+	var datBuf *bufio.Writer
+	openDat := func() error {
+		if datFile != nil {
+			datBuf.Flush()
+			datFile.Close()
+			datFile = nil
+			datBuf = nil
+		}
+		path := filepath.Join(s.outputDir, fmt.Sprintf("headers.%04d.cdat", headFile))
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+		if err != nil {
+			return err
+		}
+		f.Seek(0, io.SeekEnd)
+		datFile = f
+		datBuf = bufio.NewWriterSize(f, 256*1024)
+		return nil
+	}
+	if err := openDat(); err != nil {
+		return err
+	}
+	defer func() {
+		if datBuf != nil {
+			datBuf.Flush()
+		}
+		if datFile != nil {
+			datFile.Close()
+		}
+	}()
+
+	log.Info("Header compact starting",
+		"from", startBlock, "to", endBlock-1,
+		"blocks", endBlock-startBlock,
+		"resumeSegments", existingSegments)
 
 	var totalGethBytes, totalCompactBytes int64
-	var fileOffset int64
 	var segCount int
 	t0 := time.Now()
 
-	for startBlock := uint64(0); startBlock < endBlock; startBlock += HeaderSegmentSize {
+	for segStart := startBlock; segStart < endBlock; segStart += HeaderSegmentSize {
 		if ctx.Err() != nil {
 			break
 		}
 
 		count := uint64(HeaderSegmentSize)
-		if startBlock+count > endBlock {
-			count = endBlock - startBlock
+		if segStart+count > endBlock {
+			count = endBlock - segStart
 		}
 
 		// Read and decode headers.
 		headers := make([]*block.Header, 0, count)
 		for i := uint64(0); i < count; i++ {
-			data, err := s.inputFreezer.Ancient(freezer.TableHeaders, startBlock+i)
+			data, err := s.inputFreezer.Ancient(freezer.TableHeaders, segStart+i)
 			if err != nil {
-				return fmt.Errorf("read header %d: %w", startBlock+i, err)
+				return fmt.Errorf("read header %d: %w", segStart+i, err)
 			}
 			totalGethBytes += int64(len(data))
 
 			h, err := DecodeGethHeader(data)
 			if err != nil {
-				return fmt.Errorf("decode header %d: %w", startBlock+i, err)
+				return fmt.Errorf("decode header %d: %w", segStart+i, err)
 			}
 			headers = append(headers, h)
 		}
@@ -387,39 +470,58 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 		// Encode columnar segment.
 		compressed := encodeHeaderSegment(headers, enc)
 
-		// Write index entry: offset of this segment in headers.cdat.
-		var offBuf [8]byte
-		binary.LittleEndian.PutUint64(offBuf[:], uint64(fileOffset))
-		if _, err := idx.Write(offBuf[:]); err != nil {
+		// File rotation.
+		segSize := int64(4 + len(compressed))
+		if headSize+segSize > headerMaxFileSize {
+			datBuf.Flush()
+			datFile.Close()
+			headFile++
+			headSize = 0
+			if err := openDat(); err != nil {
+				return err
+			}
+		}
+
+		// Write idx entry.
+		idxEntry := encodeHeaderIdx(headerIdxEntry{fileNum: headFile, offset: uint32(headSize)})
+		if _, err := idxBuf.Write(idxEntry); err != nil {
 			return err
 		}
 
 		// Write framed data: [4B LE size][zstd data].
 		var sizeBuf [4]byte
 		binary.LittleEndian.PutUint32(sizeBuf[:], uint32(len(compressed)))
-		if _, err := out.Write(sizeBuf[:]); err != nil {
+		if _, err := datBuf.Write(sizeBuf[:]); err != nil {
 			return err
 		}
-		if _, err := out.Write(compressed); err != nil {
+		if _, err := datBuf.Write(compressed); err != nil {
 			return err
 		}
-		segSize := int64(4 + len(compressed))
-		fileOffset += segSize
+		headSize += segSize
 		totalCompactBytes += segSize
 		segCount++
 
+		// Flush idx periodically for crash safety.
+		if segCount%10 == 0 {
+			idxBuf.Flush()
+			datBuf.Flush()
+		}
+
 		if segCount%100 == 0 {
 			elapsed := time.Since(t0)
-			pct := float64(startBlock+count) / float64(endBlock) * 100
+			pct := float64(segStart+count-startBlock) / float64(endBlock-startBlock) * 100
 			ratio := float64(totalCompactBytes) / float64(totalGethBytes) * 100
-			blkPerSec := float64(startBlock+count) / elapsed.Seconds()
+			blkPerSec := float64(segStart+count-startBlock) / elapsed.Seconds()
 			log.Info("Header compact",
-				"block", startBlock+count-1,
+				"block", segStart+count-1,
 				"pct", fmt.Sprintf("%.1f%%", pct),
 				"ratio", fmt.Sprintf("%.1f%%", ratio),
 				"blk/s", fmt.Sprintf("%.0f", blkPerSec))
 		}
 	}
+
+	// Final flush.
+	idxBuf.Flush()
 
 	if totalGethBytes == 0 {
 		log.Info("Header compact: no blocks to process")
@@ -427,12 +529,12 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 	}
 	ratio := float64(totalCompactBytes) / float64(totalGethBytes) * 100
 	log.Info("Header compact complete",
-		"blocks", endBlock, "segments", segCount,
+		"blocks", endBlock-startBlock, "segments", segCount,
 		"geth", fmt.Sprintf("%.2f GB", float64(totalGethBytes)/1e9),
 		"compact", fmt.Sprintf("%.2f GB", float64(totalCompactBytes)/1e9),
 		"ratio", fmt.Sprintf("%.1f%%", ratio),
 		"saved", fmt.Sprintf("%.1f%%", 100-ratio),
-		"idx", fmt.Sprintf("%d entries, %d bytes", segCount, segCount*8),
+		"files", headFile+1,
 		"elapsed", time.Since(t0).Truncate(time.Second))
 	return nil
 }
@@ -440,46 +542,39 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 // ---------- Reader ----------
 
 // HeaderCompactReader provides random and sequential access to headers
-// stored in headers.cdat + headers.cidx. The current segment is cached so
-// that consecutive reads within the same 8192-block segment are free.
+// stored in headers.NNNN.cdat + headers.cidx. Caches current segment.
 type HeaderCompactReader struct {
-	dataFile *os.File
-	idxFile  *os.File
-	dec      *zstd.Decoder
-	segments uint64 // total segments in index
+	dir       string
+	idxFile   *os.File
+	dataFiles map[uint16]*os.File
+	dec       *zstd.Decoder
+	segments  uint64
 
-	// Segment cache — holds the last decompressed segment.
-	cachedSeg     int64           // -1 = none
-	cachedHeaders []*block.Header // decoded headers for cachedSeg
+	cachedSeg     int64
+	cachedHeaders []*block.Header
 }
 
-// OpenHeaderCompact opens a headers.cdat + headers.cidx pair for reading.
-func OpenHeaderCompact(dataPath string) (*HeaderCompactReader, error) {
-	df, err := os.Open(dataPath)
-	if err != nil {
-		return nil, fmt.Errorf("open data: %w", err)
-	}
-	idxPath := strings.TrimSuffix(dataPath, ".cdat") + ".cidx"
+// OpenHeaderCompact opens a headers.cidx + headers.NNNN.cdat set for reading.
+func OpenHeaderCompact(dir string) (*HeaderCompactReader, error) {
+	idxPath := filepath.Join(dir, "headers.cidx")
 	idf, err := os.Open(idxPath)
 	if err != nil {
-		df.Close()
 		return nil, fmt.Errorf("open index: %w", err)
 	}
 	fi, err := idf.Stat()
 	if err != nil {
-		df.Close()
 		idf.Close()
 		return nil, err
 	}
 	dec, err := zstd.NewReader(nil)
 	if err != nil {
-		df.Close()
 		idf.Close()
 		return nil, err
 	}
 	return &HeaderCompactReader{
-		dataFile:  df,
+		dir:       dir,
 		idxFile:   idf,
+		dataFiles: make(map[uint16]*os.File),
 		dec:       dec,
 		segments:  uint64(fi.Size()) / 8,
 		cachedSeg: -1,
@@ -490,7 +585,9 @@ func OpenHeaderCompact(dataPath string) (*HeaderCompactReader, error) {
 func (r *HeaderCompactReader) Close() {
 	r.dec.Close()
 	r.idxFile.Close()
-	r.dataFile.Close()
+	for _, f := range r.dataFiles {
+		f.Close()
+	}
 }
 
 // Segments returns the number of segments in the file.
@@ -523,22 +620,34 @@ func (r *HeaderCompactReader) loadSegment(segNum int64) error {
 		return fmt.Errorf("segment %d out of range (%d segments)", segNum, r.segments)
 	}
 
-	// Read offset from index.
-	var offBuf [8]byte
-	if _, err := r.idxFile.ReadAt(offBuf[:], segNum*8); err != nil {
+	// Read idx entry.
+	var entryBuf [8]byte
+	if _, err := r.idxFile.ReadAt(entryBuf[:], segNum*8); err != nil {
 		return fmt.Errorf("read index: %w", err)
 	}
-	offset := int64(binary.LittleEndian.Uint64(offBuf[:]))
+	e := decodeHeaderIdx(entryBuf[:])
+
+	// Open/cache dat file.
+	df, ok := r.dataFiles[e.fileNum]
+	if !ok {
+		path := filepath.Join(r.dir, fmt.Sprintf("headers.%04d.cdat", e.fileNum))
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("open dat %d: %w", e.fileNum, err)
+		}
+		r.dataFiles[e.fileNum] = f
+		df = f
+	}
 
 	// Read framed data: [4B size][compressed].
 	var sizeBuf [4]byte
-	if _, err := r.dataFile.ReadAt(sizeBuf[:], offset); err != nil {
+	if _, err := df.ReadAt(sizeBuf[:], int64(e.offset)); err != nil {
 		return fmt.Errorf("read size: %w", err)
 	}
 	compSize := binary.LittleEndian.Uint32(sizeBuf[:])
 
 	compressed := make([]byte, compSize)
-	if _, err := r.dataFile.ReadAt(compressed, offset+4); err != nil {
+	if _, err := df.ReadAt(compressed, int64(e.offset)+4); err != nil {
 		return fmt.Errorf("read data: %w", err)
 	}
 

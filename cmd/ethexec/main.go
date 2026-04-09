@@ -418,11 +418,11 @@ func run(c *cli.Context) error {
 	// Disabled until fixed. Using Geth freezer for now.
 	if false {
 	for _, dir := range []string{filepath.Join(datadir, "chain"), filepath.Join(datadir, "ancient")} {
-		headerPath := filepath.Join(dir, "headers.cdat")
-		if _, err := os.Stat(headerPath); err != nil {
+		idxPath := filepath.Join(dir, "headers.cidx")
+		if _, err := os.Stat(idxPath); err != nil {
 			continue
 		}
-		hr, err := ethel.OpenHeaderCompact(headerPath)
+		hr, err := ethel.OpenHeaderCompact(dir)
 		if err != nil {
 			log.Warn("Cannot open compact headers", "dir", dir, "err", err)
 			continue
@@ -901,13 +901,9 @@ func runHeaderCompact(c *cli.Context) error {
 	defer f.Close()
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
-	chainDir := filepath.Join(datadir, "chain")
-	if err := os.MkdirAll(chainDir, 0755); err != nil {
-		return err
-	}
-	outputPath := filepath.Join(chainDir, "headers.cdat")
+	outputDir := filepath.Join(datadir, "chain")
 
-	stage := ethel.NewHeaderCompactStage(f, outputPath)
+	stage := ethel.NewHeaderCompactStage(f, outputDir)
 
 	ctx, cancel := withShutdown()
 	defer cancel()

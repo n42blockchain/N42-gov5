@@ -396,14 +396,11 @@ func (sdb *IntraBlockState) ExistPure(addr types.Address) bool {
 }
 
 // Empty returns whether the state object is either non-existent
-// or empty according to the EIP161 specification (balance = nonce = code = 0).
-// Unlike Exist(), this does NOT check the deleted flag — a selfdestructed
-// contract with nonce>0 or code is NOT empty per EIP-161, matching geth's
-// StateDB.Empty() behavior.
+// or empty according to the EIP161 specification (balance = nonce = code = 0)
 func (sdb *IntraBlockState) Empty(addr types.Address) bool {
 	sdb.traceAccountRead(addr)
 	so := sdb.getStateObject(addr)
-	return so == nil || so.empty()
+	return so == nil || so.deleted || so.empty()
 }
 
 // HasNonEmptyStorage returns true if the account has any non-zero storage entries.

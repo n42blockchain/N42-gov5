@@ -547,6 +547,11 @@ func decodeBodyIdx(buf []byte) bodyIdxEntry {
 }
 
 func (s *BodyCompactStage) Run(ctx context.Context) error {
+	// Ensure bodies table is opened (not in coreTableSpecs).
+	if _, err := s.inputFreezer.EnsureTable(freezer.TableBodies, "c"); err != nil {
+		return fmt.Errorf("open bodies table: %w", err)
+	}
+
 	endBlock := s.inputFreezer.Frozen()
 	if err := os.MkdirAll(s.outputDir, 0755); err != nil {
 		return err
