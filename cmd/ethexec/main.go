@@ -174,6 +174,17 @@ func main() {
 				Action: runRebuildState,
 			},
 			{
+				Name:  "unwind",
+				Usage: "Roll PlainState back to --target by applying OLD values from V2 changesets, then verify root",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory (for header verification)", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to existing MDBX directory whose PlainState will be rolled back", Required: true},
+					&cli.StringFlag{Name: "leaves", Usage: "Path to V2 changesets freezer dir (default: <datadir>/chain/freezer)"},
+					&cli.Uint64Flag{Name: "target", Usage: "Target block (PlainState ends up at this height)", Required: true},
+				},
+				Action: runUnwind,
+			},
+			{
 				Name:  "compare-root",
 				Usage: "Compute state root at a given block via Traditional MPT and HPH, compare with header",
 				Flags: []cli.Flag{
@@ -1165,6 +1176,54 @@ func runRebuildState(c *cli.Context) error {
 		return err
 	}
 	ethel.VerifyRebuildRoot(ctx, db, inputF, endBlock)
+	return nil
+}
+
+func runUnwind(c *cli.Context) error {
+	ancientPath := c.String("ancient")
+	datadir := c.String("datadir")
+	leavesDir := c.String("leaves")
+	targetBlock := c.Uint64("target")
+
+	if leavesDir == "" {
+		leavesDir = filepath.Join(datadir, "chain", "freezer")
+	}
+
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(datadir).
+		Label(kv.ChainDB).
+		Accede().
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open mdbx: %w", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	// Open output freezer (acctcs/storcs) — Reorg reads OLD values from here.
+	outFreezer, err := freezer.New(leavesDir, 0)
+	if err != nil {
+		return fmt.Errorf("open output freezer: %w", err)
+	}
+	defer outFreezer.Close()
+
+	// Open Geth input freezer for the post-unwind state-root verification.
+	inputF, err := freezer.New(ancientPath, 0)
+	if err != nil {
+		return fmt.Errorf("open geth ancient: %w", err)
+	}
+	defer inputF.Close()
+
+	if err := ethel.Reorg(db, outFreezer, targetBlock); err != nil {
+		return fmt.Errorf("reorg: %w", err)
+	}
+	// VerifyRebuildRoot verifies at endBlock-1, so pass target+1 to verify
+	// at the post-unwind head.
+	ethel.VerifyRebuildRoot(ctx, db, inputF, targetBlock+1)
 	return nil
 }
 
