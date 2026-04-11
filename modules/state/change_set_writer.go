@@ -136,6 +136,32 @@ func (w *ChangeSetWriter) CreateContract(address types.Address) error {
 	return nil
 }
 
+// recordStorageWipe adds (slot, old_value) entries to storageChanges for a
+// contract being destroyed via SELFDESTRUCT, with first-wins semantics:
+// entries already present (from an earlier SSTORE in the same block) are
+// preserved, so the block-origin value wins over any post-SSTORE value.
+//
+// Without this, storageChanges would omit all slots that existed before the
+// destruction but were not individually SSTORE'd in the same block, making
+// backward unwind past a SELFDESTRUCT impossible. Mirrors reth's
+// write_state_reverts wiped-storage enumeration.
+func (w *ChangeSetWriter) recordStorageWipe(address types.Address, slots map[types.Hash][]byte) {
+	if len(slots) == 0 {
+		return
+	}
+	for slot, v := range slots {
+		compositeKey := modules.PlainGenerateCompositeStorageKey(address[:], slot[:])
+		if _, exists := w.storageChanges[string(compositeKey)]; exists {
+			continue
+		}
+		// Copy to decouple from caller's buffer.
+		cp := make([]byte, len(v))
+		copy(cp, v)
+		w.storageChanges[string(compositeKey)] = cp
+	}
+	w.storageChanged[address] = true
+}
+
 func (w *ChangeSetWriter) WriteChangeSets() error {
 	accountChanges, err := w.GetAccountChanges()
 	if err != nil {

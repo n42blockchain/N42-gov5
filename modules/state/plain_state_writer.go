@@ -25,6 +25,7 @@ package state
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/holiman/uint256"
 
@@ -114,15 +115,58 @@ func (w *PlainStateWriter) WriteAccountStorage(address types.Address, incarnatio
 }
 
 func (w *PlainStateWriter) CreateContract(address types.Address) error {
+	// Before the wipe, enumerate pre-destruction slots and record them in
+	// the storage changeset with first-wins semantics, so backward unwind
+	// past a SELFDESTRUCT can restore the wiped state. Mirrors reth's
+	// write_state_reverts wiped-storage enumeration path.
+	//
+	// After EIP-6780, SELFDESTRUCT only fires in same-tx as CREATE, so
+	// storage is nearly empty and the scan is almost free.
 	if w.csw != nil {
+		slots, err := w.collectPreWipeSlots(address)
+		if err != nil {
+			return fmt.Errorf("collect pre-wipe slots for %x: %w", address, err)
+		}
+		w.csw.recordStorageWipe(address, slots)
 		if err := w.csw.CreateContract(address); err != nil {
 			return err
 		}
 	}
-	// Wipe all existing storage for this address (replaces incarnation).
-	// After EIP-6780, SELFDESTRUCT only fires in same-tx as CREATE,
-	// so storage is nearly empty — this wipe is almost free.
 	return w.wipeAccountStorage(address)
+}
+
+// collectPreWipeSlots returns all MDBX storage slots currently persisted for
+// the given address. Because PlainStateWriter writes directly to MDBX on
+// each SSTORE (no buffer layer), slots touched earlier in the same block
+// already appear with their post-SSTORE values; csw's first-wins preserves
+// the block-origin values captured by the earlier WriteAccountStorage calls.
+func (w *PlainStateWriter) collectPreWipeSlots(address types.Address) (map[types.Hash][]byte, error) {
+	out := make(map[types.Hash][]byte)
+	cp, ok := w.db.(cursorProvider)
+	if !ok {
+		return out, nil
+	}
+	cursor, err := cp.Cursor(modules.Storage)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close()
+	prefix := address[:]
+	for k, v, err := cursor.Seek(prefix); k != nil; k, v, err = cursor.Next() {
+		if err != nil {
+			return nil, err
+		}
+		if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
+			break
+		}
+		if len(k) != 52 || len(v) == 0 {
+			continue
+		}
+		var slot types.Hash
+		copy(slot[:], k[20:52])
+		out[slot] = v
+	}
+	return out, nil
 }
 
 type cursorProvider interface {
