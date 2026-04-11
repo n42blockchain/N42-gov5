@@ -1,14 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// reorg.go — PlainState rollback using stored changesets.
+// reorg.go — PlainState rollback using stored V2 changesets.
 //
-// Reorg walks the output freezer's account and storage changeset tables
-// from the current head backwards to the given target block and applies
-// the stored original values back into MDBX, which unwinds the executor's
-// state without re-running transactions. Length-zero changeset values
-// mean "deleted — drop the key", matching the encoding produced by
-// EncodeAccountChanges / EncodeStorageChanges in changeset_codec.go.
+// Reorg walks the output freezer's unified account and storage changeset
+// tables from the current head backwards to the target block and applies
+// each entry's OLD value back into MDBX. This unwinds the executor's
+// state without re-running the EVM. Length-zero OLD values mean the key
+// did not exist before the block — unwind deletes it. Matches the V2
+// encoding produced by EncodeAccountChangesV2 / EncodeStorageChangesV2
+// in changeset_codec.go.
 
 package ethel
 
@@ -41,37 +42,37 @@ func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
 	stoTable := outFreezer.Table(freezer.TableStorageChanges)
 
 	for blockNum := currentHead; blockNum > targetBlock; blockNum-- {
-		// Revert account changes from freezer.
+		// Revert account changes from freezer (apply OLD values).
 		if accTable != nil {
 			accData, err := accTable.Retrieve(blockNum)
 			if err == nil && len(accData) > 0 {
-				addrs, values, err := DecodeAccountChanges(accData)
+				entries, err := DecodeAccountChangesV2(accData)
 				if err != nil {
 					return fmt.Errorf("decode account changes at %d: %w", blockNum, err)
 				}
-				for i, addr := range addrs {
-					if len(values[i]) == 0 {
-						tx.Delete(modules.Account, addr[:])
+				for _, e := range entries {
+					if len(e.OldValue) == 0 {
+						tx.Delete(modules.Account, e.Address[:])
 					} else {
-						tx.Put(modules.Account, addr[:], values[i])
+						tx.Put(modules.Account, e.Address[:], e.OldValue)
 					}
 				}
 			}
 		}
 
-		// Revert storage changes from freezer.
+		// Revert storage changes from freezer (apply OLD values).
 		if stoTable != nil {
 			stoData, err := stoTable.Retrieve(blockNum)
 			if err == nil && len(stoData) > 0 {
-				keys, values, err := DecodeStorageChanges(stoData)
+				entries, err := DecodeStorageChangesV2(stoData)
 				if err != nil {
 					return fmt.Errorf("decode storage changes at %d: %w", blockNum, err)
 				}
-				for i, key := range keys {
-					if len(values[i]) == 0 {
-						tx.Delete(modules.Storage, key)
+				for _, e := range entries {
+					if len(e.OldValue) == 0 {
+						tx.Delete(modules.Storage, e.CompositeKey)
 					} else {
-						tx.Put(modules.Storage, key, values[i])
+						tx.Put(modules.Storage, e.CompositeKey, e.OldValue)
 					}
 				}
 			}

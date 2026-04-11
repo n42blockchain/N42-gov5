@@ -20,7 +20,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -625,16 +624,22 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 		}
 	}
 
-	// 2. Changesets + Leaves journal.
-	var accCSBytes, stoCSBytes, leavesData []byte
+	// 2. Unified V2 changesets — per-entry carries both old and new values,
+	// so forward replay (rebuild-state) and backward unwind (reorg) share
+	// a single data source and neither needs the EVM. The legacy leaves
+	// journal is no longer written; block 0 uses a dedicated genesis
+	// encoder that walks the initial PlainState and emits the V2 blobs
+	// with oldLen=0.
+	var accCSBytes, stoCSBytes []byte
 	if blockNum == 0 {
-		// Genesis block: journal contains ALL genesis accounts/storage
-		// so that the journal alone can reconstruct full PlainState.
-		// No changesets for genesis (alloc was loaded via InitEthGenesisState).
 		var err error
-		leavesData, err = EncodeGenesisJournal(dbTx)
+		accCSBytes, err = EncodeGenesisAccountsV2(newGenesisAccountIterator(dbTx))
 		if err != nil {
-			return fmt.Errorf("encode genesis journal: %w", err)
+			return fmt.Errorf("encode genesis accounts: %w", err)
+		}
+		stoCSBytes, err = EncodeGenesisStoragesV2(newGenesisStorageIterator(dbTx))
+		if err != nil {
+			return fmt.Errorf("encode genesis storages: %w", err)
 		}
 	} else {
 		csw := writer.ChangeSetWriter()
@@ -648,28 +653,24 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 				return fmt.Errorf("get storage changes: %w", err)
 			}
 
-			accCSBytes = EncodeAccountChanges(accCS)
-			stoCSBytes = EncodeStorageChanges(stoCS)
-
-			// Use buffered reader for current values (buffer → MDBX fallthrough).
+			// Buffered reader sees the post-block state (write buffer
+			// shadowing MDBX). new-value callbacks read through it.
 			bufReader := state.NewBufferedPlainStateReader(e.stateBuf, dbTx)
-			leavesData = EncodeLeavesJournal(accCS, stoCS,
-				func(addr types.Address) *account.StateAccount {
-					a, err := bufReader.ReadAccountData(addr)
-					if err != nil {
-						return nil
-					}
-					return a
-				},
-				func(addr types.Address, key types.Hash) []byte {
-					v, err := bufReader.ReadAccountStorage(addr, 0, &key)
-					if err != nil {
-						return nil
-					}
-					return v
-				},
-				blockWipes,
-			)
+
+			accCSBytes = EncodeAccountChangesV2(accCS, func(addr types.Address) []byte {
+				a, err := bufReader.ReadAccountData(addr)
+				if err != nil || a == nil {
+					return nil
+				}
+				return a.MarshalV2()
+			})
+			stoCSBytes = EncodeStorageChangesV2(stoCS, func(addr types.Address, slot types.Hash) []byte {
+				v, err := bufReader.ReadAccountStorage(addr, 0, &slot)
+				if err != nil {
+					return nil
+				}
+				return v
+			})
 		}
 	}
 	if !e.cfg.LeavesOnly {
@@ -680,9 +681,8 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 			return fmt.Errorf("storage changes: %w", err)
 		}
 	}
-	if err := b.addEntry(freezer.TableLeavesJournal, "c", leavesData); err != nil {
-		return fmt.Errorf("leaves journal: %w", err)
-	}
+	_ = blockWipes // Retained for signature parity; wipes are now implicit in
+	// storcs entries (each wiped slot has oldLen>0, newLen=0).
 
 	// 3. Block witness.
 	var witnessData []byte

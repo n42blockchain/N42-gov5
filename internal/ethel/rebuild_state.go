@@ -43,6 +43,12 @@ type RebuildOptions struct {
 	// expected state root at each verify boundary. Required if VerifyInterval
 	// > 0.
 	InputFreezer *freezer.Freezer
+	// StartBlock — when > 0, leaves replay begins from this block
+	// (inclusive) instead of 0 and the existing Account/Storage tables in
+	// the destination MDBX are NOT cleared. Used to splice a fresh leaves
+	// segment from a different freezer onto an already-rebuilt state, e.g.
+	// to bridge over a corrupted hole by reusing a clean snapshot.
+	StartBlock uint64
 }
 
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
@@ -50,53 +56,79 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 }
 
 // RebuildStateWith is RebuildState with optional periodic verification.
+//
+// Forward replay reads per-block V2 changesets from acctcs and storcs and
+// applies each entry's NEW value to PlainState. This is the "no-EVM
+// forward generate" path — the EVM never runs, we just stream diffs.
+// Backward unwind uses the same tables via reorg.go which reads OLD
+// values from the same entries.
 func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64, opts RebuildOptions) error {
 	t0 := time.Now()
 
-	// Try leaves_journal (freezer table) first, then leaves (SegmentStore).
-	// Open leaves table read-only (batch-64 compressed, leaves.cidx + leaves.NNNN.cdat).
-	// Read-only is critical: rebuild-state must NEVER modify the source leaves
-	// data. Without this, freezer.NewFreezerTable would truncate partial cidx
-	// entries on open, mutating the file.
-	leavesTbl, err := freezer.NewFreezerTableReadOnly(ancientDir, "leaves", "c")
+	// Open acctcs + storcs in read-only mode. Both tables share the
+	// same batch-64 compressed format and must be aligned per block.
+	acctTbl, err := freezer.NewFreezerTableReadOnly(ancientDir, "acctcs", "c")
 	if err != nil {
-		return fmt.Errorf("open leaves: %w", err)
+		return fmt.Errorf("open acctcs: %w", err)
 	}
-	defer leavesTbl.Close()
-	leavesTbl.ForceBatchSize(freezer.BatchSize)
-	leavesTbl.SetCompressed(true)
-	items := leavesTbl.Items()
+	defer acctTbl.Close()
+	acctTbl.ForceBatchSize(freezer.BatchSize)
+	acctTbl.SetCompressed(true)
+
+	stoTbl, err := freezer.NewFreezerTableReadOnly(ancientDir, "storcs", "c")
+	if err != nil {
+		return fmt.Errorf("open storcs: %w", err)
+	}
+	defer stoTbl.Close()
+	stoTbl.ForceBatchSize(freezer.BatchSize)
+	stoTbl.SetCompressed(true)
+
+	items := acctTbl.Items()
 	if items == 0 {
-		return fmt.Errorf("leaves table is empty (leaves.cidx has 0 entries)")
+		return fmt.Errorf("acctcs table is empty (acctcs.cidx has 0 entries)")
+	}
+	if stoItems := stoTbl.Items(); stoItems < items {
+		items = stoItems
 	}
 	if endBlock == 0 || endBlock > items {
 		endBlock = items
 	}
+	startBlock := opts.StartBlock
+	if startBlock >= endBlock {
+		return fmt.Errorf("start %d >= end %d", startBlock, endBlock)
+	}
 	var m0 runtime.MemStats
 	runtime.ReadMemStats(&m0)
-	log.Info("Rebuild PlainState from leaves",
-		"blocks", endBlock,
+	log.Info("Rebuild PlainState from V2 changesets",
+		"start", startBlock,
+		"end", endBlock,
+		"blocks", endBlock-startBlock,
 		"memLimitGB", memLimitGB,
 		"goAllocMB", m0.Alloc/1e6,
 		"goSysMB", m0.Sys/1e6)
 	log.Info("If Task Manager shows high Commit Size, check OTHER processes (reth, etc)")
 
-	// Clear Account/Storage tables using ClearBucket (Drop + recreate DBI).
-	// On current MDBX without WriteMap this is safe — only dirty pages use RAM.
-	log.Info("Clearing Account/Storage tables...")
-	for _, tbl := range []string{modules.Account, modules.Storage} {
-		tx, err := db.BeginRw(ctx)
-		if err != nil {
-			return err
+	if startBlock == 0 {
+		// Clear Account/Storage tables using ClearBucket (Drop + recreate DBI).
+		// On current MDBX without WriteMap this is safe — only dirty pages use RAM.
+		log.Info("Clearing Account/Storage tables...")
+		for _, tbl := range []string{modules.Account, modules.Storage} {
+			tx, err := db.BeginRw(ctx)
+			if err != nil {
+				return err
+			}
+			if err := tx.ClearBucket(tbl); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("clear %s: %w", tbl, err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit clear %s: %w", tbl, err)
+			}
+			log.Info("Table cleared", "table", tbl)
 		}
-		if err := tx.ClearBucket(tbl); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("clear %s: %w", tbl, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit clear %s: %w", tbl, err)
-		}
-		log.Info("Table cleared", "table", tbl)
+	} else {
+		log.Info("Resume mode — preserving existing Account/Storage tables",
+			"startBlock", startBlock)
 	}
 
 	acctMap := make(map[types.Address][]byte, 1_000_000)
@@ -167,49 +199,56 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		return nil
 	}
 
-	for blockNum := uint64(0); blockNum < endBlock; blockNum++ {
+	for blockNum := startBlock; blockNum < endBlock; blockNum++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
-		data, err := leavesTbl.Retrieve(blockNum)
+		// Forward replay: apply NEW values from the V2 changesets.
+		accData, err := acctTbl.Retrieve(blockNum)
 		if err != nil {
-			return fmt.Errorf("read block %d: %w", blockNum, err)
+			return fmt.Errorf("read acctcs block %d: %w", blockNum, err)
 		}
-		if len(data) < 8 {
-			continue
-		}
-
-		accounts, storage, wipes, err := DecodeLeavesJournal(data)
-		if err != nil {
-			return fmt.Errorf("decode block %d: %w", blockNum, err)
-		}
-
-		// Apply wipes: drop the entire per-address bucket from the in-memory
-		// segment map AND record it in wipeSet so flushToMDBX also removes
-		// any slots already persisted in MDBX from earlier segments.
-		for _, addr := range wipes {
-			delete(storMap, addr)
-			wipeSet[addr] = struct{}{}
-		}
-
-		for _, a := range accounts {
-			if len(a.Value) == 0 {
-				acctMap[a.Address] = nil
-			} else {
-				acctMap[a.Address] = a.Value
+		if len(accData) > 0 {
+			entries, err := DecodeAccountChangesV2(accData)
+			if err != nil {
+				return fmt.Errorf("decode acctcs block %d: %w", blockNum, err)
+			}
+			for _, e := range entries {
+				if len(e.NewValue) == 0 {
+					acctMap[e.Address] = nil
+				} else {
+					acctMap[e.Address] = e.NewValue
+				}
 			}
 		}
-		for _, s := range storage {
-			inner, ok := storMap[s.Address]
-			if !ok {
-				inner = make(map[types.Hash][]byte, 8)
-				storMap[s.Address] = inner
+
+		stoData, err := stoTbl.Retrieve(blockNum)
+		if err != nil {
+			return fmt.Errorf("read storcs block %d: %w", blockNum, err)
+		}
+		if len(stoData) > 0 {
+			entries, err := DecodeStorageChangesV2(stoData)
+			if err != nil {
+				return fmt.Errorf("decode storcs block %d: %w", blockNum, err)
 			}
-			if len(s.Value) == 0 {
-				inner[s.Slot] = nil
-			} else {
-				inner[s.Slot] = s.Value
+			for _, e := range entries {
+				var addr types.Address
+				var slot types.Hash
+				copy(addr[:], e.CompositeKey[:20])
+				copy(slot[:], e.CompositeKey[20:])
+				inner, ok := storMap[addr]
+				if !ok {
+					inner = make(map[types.Hash][]byte, 8)
+					storMap[addr] = inner
+				}
+				// newLen=0 covers both SSTORE-to-zero and the implicit
+				// SELFDESTRUCT wipe — per-slot tombstone drops the row
+				// on next flush. Unlike the legacy wipes-list path, no
+				// address-level prefix delete is needed: CreateContract's
+				// pre-wipe enumeration means every wiped slot has its
+				// own entry here.
+				inner[slot] = e.NewValue
 			}
 		}
 

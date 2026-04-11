@@ -52,15 +52,22 @@ type storValue struct {
 }
 
 func (v *JournalVerifier) Run(ctx context.Context) error {
-	journalTbl := v.outFreezer.Table("leaves")
-	if journalTbl == nil {
-		return fmt.Errorf("leaves_journal table not found in output freezer")
+	// V2: replay from the unified acctcs + storcs tables. Both must be
+	// present and block-aligned; the legacy leaves_journal is no longer
+	// produced and not consulted.
+	acctTbl := v.outFreezer.Table(freezer.TableAccountChanges)
+	stoTbl := v.outFreezer.Table(freezer.TableStorageChanges)
+	if acctTbl == nil || stoTbl == nil {
+		return fmt.Errorf("acctcs/storcs table not found in output freezer")
 	}
-	// Force batch mode — journal was written with WriteBatch(batch=64).
-	journalTbl.ForceBatchSize(freezer.BatchSize)
-	maxJournal := journalTbl.Items()
+	acctTbl.ForceBatchSize(freezer.BatchSize)
+	stoTbl.ForceBatchSize(freezer.BatchSize)
+	maxJournal := acctTbl.Items()
+	if stoTbl.Items() < maxJournal {
+		maxJournal = stoTbl.Items()
+	}
 	if maxJournal == 0 {
-		return fmt.Errorf("leaves_journal is empty")
+		return fmt.Errorf("acctcs/storcs is empty")
 	}
 
 	endBlock := v.endBlock
@@ -191,36 +198,32 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 			break
 		}
 
-		data, err := journalTbl.Retrieve(blockNum)
+		accData, err := acctTbl.Retrieve(blockNum)
 		if err != nil {
-			return fmt.Errorf("read journal block %d: %w", blockNum, err)
+			return fmt.Errorf("read acctcs block %d: %w", blockNum, err)
+		}
+		stoData, err := stoTbl.Retrieve(blockNum)
+		if err != nil {
+			return fmt.Errorf("read storcs block %d: %w", blockNum, err)
 		}
 
-		if len(data) > 0 {
-			accounts, storage, wipes, err := DecodeLeavesJournal(data)
+		if len(accData) > 0 {
+			entries, err := DecodeAccountChangesV2(accData)
 			if err != nil {
-				return fmt.Errorf("decode journal block %d: %w", blockNum, err)
+				return fmt.Errorf("decode acctcs block %d: %w", blockNum, err)
 			}
-
-			// Apply wipes FIRST: delete all storage for selfdestructed addresses.
-			for _, addr := range wipes {
-				if err := flushBuf(); err != nil {
-					return err
-				}
-				if err := deleteStorageByPrefix(tx, addr); err != nil {
-					return err
-				}
+			for _, e := range entries {
+				acctBuf[e.Address] = acctValue{value: e.NewValue}
 			}
-
-			for _, leaf := range accounts {
-				acctBuf[leaf.Address] = acctValue{value: leaf.Value}
+		}
+		if len(stoData) > 0 {
+			entries, err := DecodeStorageChangesV2(stoData)
+			if err != nil {
+				return fmt.Errorf("decode storcs block %d: %w", blockNum, err)
 			}
-			for _, leaf := range storage {
-				key := modules.PlainGenerateCompositeStorageKey(
-					leaf.Address[:], leaf.Slot[:])
-				storBuf[string(key)] = storValue{value: leaf.Value}
+			for _, e := range entries {
+				storBuf[string(e.CompositeKey)] = storValue{value: e.NewValue}
 			}
-
 		}
 		applied++
 
@@ -314,8 +317,8 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 // revertTest replays journal once forward to endBlock-1, then reverts
 // backwards through checkpoints, verifying each state root. O(N) total.
 func (v *JournalVerifier) revertTest(ctx context.Context, endBlock uint64) error {
-	accTbl := v.outFreezer.Table("account_changes")
-	stoTbl := v.outFreezer.Table("storage_changes")
+	accTbl := v.outFreezer.Table(freezer.TableAccountChanges)
+	stoTbl := v.outFreezer.Table(freezer.TableStorageChanges)
 	if accTbl == nil || stoTbl == nil {
 		log.Warn("Revert test skipped: changeset tables not found")
 		return nil
@@ -348,18 +351,20 @@ func (v *JournalVerifier) revertTest(ctx context.Context, endBlock uint64) error
 		return fmt.Errorf("clear state: %w", err)
 	}
 
-	journalTbl := v.outFreezer.Table("leaves")
-	journalTbl.ForceBatchSize(freezer.BatchSize)
-
 	for b := uint64(0); b <= maxBlock; b++ {
-		data, err := journalTbl.Retrieve(b)
+		accData, err := accTbl.Retrieve(b)
 		if err != nil {
 			tx.Rollback()
-			return fmt.Errorf("journal read %d: %w", b, err)
+			return fmt.Errorf("acctcs read %d: %w", b, err)
 		}
-		if err := applyJournalEntry(tx, data); err != nil {
+		stoData, err := stoTbl.Retrieve(b)
+		if err != nil {
 			tx.Rollback()
-			return fmt.Errorf("apply journal %d: %w", b, err)
+			return fmt.Errorf("storcs read %d: %w", b, err)
+		}
+		if err := applyChangesetForward(tx, accData, stoData); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("apply forward %d: %w", b, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -428,52 +433,52 @@ func (v *JournalVerifier) revertTest(ctx context.Context, endBlock uint64) error
 	return nil
 }
 
-// applyJournalEntry decodes and writes journal leaves to MDBX.
-// Also maintains PlainContractCode for contract accounts so that
-// changeset revert can recover codeHash.
-func applyJournalEntry(tx kv.RwTx, data []byte) error {
-	if len(data) == 0 {
-		return nil
-	}
-	accounts, storage, wipes, err := DecodeLeavesJournal(data)
-	if err != nil {
-		return err
-	}
-	// Apply wipes first.
-	for _, addr := range wipes {
-		if err := deleteStorageByPrefix(tx, addr); err != nil {
+// applyChangesetForward reads per-block V2 changesets and applies each
+// entry's NEW value to MDBX. This is the forward-replay path that
+// replaces the legacy applyJournalEntry (which decoded leaves journal
+// blobs). PlainContractCode is maintained from any non-empty codeHash in
+// the new account values, so later changeset revert via applyChangeset
+// can still recover codeHash for omitHashes old values.
+func applyChangesetForward(tx kv.RwTx, accData, stoData []byte) error {
+	if len(accData) > 0 {
+		entries, err := DecodeAccountChangesV2(accData)
+		if err != nil {
 			return err
 		}
-	}
-	for _, leaf := range accounts {
-		if leaf.Value == nil {
-			if err := tx.Delete(modules.Account, leaf.Address[:]); err != nil {
-				return err
+		for _, e := range entries {
+			if len(e.NewValue) == 0 {
+				if err := tx.Delete(modules.Account, e.Address[:]); err != nil {
+					return err
+				}
+				continue
 			}
-		} else {
-			if err := tx.Put(modules.Account, leaf.Address[:], leaf.Value); err != nil {
+			if err := tx.Put(modules.Account, e.Address[:], e.NewValue); err != nil {
 				return err
 			}
 			// Maintain PlainContractCode for contract accounts.
 			var acc account.StateAccount
-			if err := acc.DecodeForStorage(leaf.Value); err == nil && !acc.IsEmptyCodeHash() {
-				key := modules.PlainGenerateStoragePrefix(leaf.Address[:])
+			if err := acc.DecodeForStorage(e.NewValue); err == nil && !acc.IsEmptyCodeHash() {
+				key := modules.PlainGenerateStoragePrefix(e.Address[:])
 				if err := tx.Put(modules.PlainContractCode, key, acc.CodeHash[:]); err != nil {
 					return err
 				}
 			}
 		}
 	}
-	for _, leaf := range storage {
-		key := modules.PlainGenerateCompositeStorageKey(
-			leaf.Address[:], leaf.Slot[:])
-		if leaf.Value == nil {
-			if err := tx.Delete(modules.Storage, key); err != nil {
-				return err
-			}
-		} else {
-			if err := tx.Put(modules.Storage, key, leaf.Value); err != nil {
-				return err
+	if len(stoData) > 0 {
+		entries, err := DecodeStorageChangesV2(stoData)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if len(e.NewValue) == 0 {
+				if err := tx.Delete(modules.Storage, e.CompositeKey); err != nil {
+					return err
+				}
+			} else {
+				if err := tx.Put(modules.Storage, e.CompositeKey, e.NewValue); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -483,31 +488,30 @@ func applyJournalEntry(tx kv.RwTx, data []byte) error {
 // applyChangeset reads account+storage changesets for blockNum and writes
 // the OLD values back to MDBX, effectively reverting that block.
 //
-// Changeset account values have codeHash omitted (omitHashes=true in Erigon
-// convention). For contract accounts, the codeHash is recovered from the
-// PlainContractCode table (addr → codeHash).
+// Changeset account OLD values preserve the legacy Erigon omitHashes
+// convention (codeHash zeroed for contract accounts). recoverCodeHash
+// restores the real codeHash from PlainContractCode at apply time.
 func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum uint64) error {
 	accData, err := accTbl.Retrieve(blockNum)
 	if err != nil {
 		return fmt.Errorf("read acc cs: %w", err)
 	}
 	if len(accData) > 0 {
-		addrs, values, err := DecodeAccountChanges(accData)
+		entries, err := DecodeAccountChangesV2(accData)
 		if err != nil {
 			return fmt.Errorf("decode acc cs: %w", err)
 		}
-		for i, addr := range addrs {
-			if len(values[i]) == 0 {
-				if err := tx.Delete(modules.Account, addr[:]); err != nil {
+		for _, e := range entries {
+			if len(e.OldValue) == 0 {
+				if err := tx.Delete(modules.Account, e.Address[:]); err != nil {
 					return err
 				}
 			} else {
-				// Recover codeHash from PlainContractCode if omitted.
-				restored, err := recoverCodeHash(tx, addr[:], values[i])
+				restored, err := recoverCodeHash(tx, e.Address[:], e.OldValue)
 				if err != nil {
 					return err
 				}
-				if err := tx.Put(modules.Account, addr[:], restored); err != nil {
+				if err := tx.Put(modules.Account, e.Address[:], restored); err != nil {
 					return err
 				}
 			}
@@ -519,17 +523,17 @@ func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum u
 		return fmt.Errorf("read sto cs: %w", err)
 	}
 	if len(stoData) > 0 {
-		keys, values, err := DecodeStorageChanges(stoData)
+		entries, err := DecodeStorageChangesV2(stoData)
 		if err != nil {
 			return fmt.Errorf("decode sto cs: %w", err)
 		}
-		for i, key := range keys {
-			if len(values[i]) == 0 {
-				if err := tx.Delete(modules.Storage, key); err != nil {
+		for _, e := range entries {
+			if len(e.OldValue) == 0 {
+				if err := tx.Delete(modules.Storage, e.CompositeKey); err != nil {
 					return err
 				}
 			} else {
-				if err := tx.Put(modules.Storage, key, values[i]); err != nil {
+				if err := tx.Put(modules.Storage, e.CompositeKey, e.OldValue); err != nil {
 					return err
 				}
 			}
