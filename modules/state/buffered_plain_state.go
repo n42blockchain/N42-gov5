@@ -14,6 +14,7 @@ package state
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -447,7 +448,17 @@ func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, in
 }
 
 func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
+	// Before the wipe, collect pre-destruction slot values from the layered
+	// state (buffer over MDBX) and record them in the storage changeset, so
+	// backward unwind can restore them. Mirrors reth's write_state_reverts
+	// wiped-storage enumeration path. First-wins in csw preserves
+	// block-origin values already written by earlier SSTORE calls.
 	if w.csw != nil {
+		slots, err := w.collectPreWipeSlots(address)
+		if err != nil {
+			return fmt.Errorf("collect pre-wipe slots for %x: %w", address, err)
+		}
+		w.csw.recordStorageWipe(address, slots)
 		if err := w.csw.CreateContract(address); err != nil {
 			return err
 		}
@@ -461,6 +472,60 @@ func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
 	// Record address for MDBX storage wipe during FlushToMDBX.
 	w.buf.contractWipes = append(w.buf.contractWipes, address)
 	return nil
+}
+
+// collectPreWipeSlots returns the current visible (buffer ∪ MDBX) storage
+// slots for an address, excluding slots whose current buffered value is
+// empty/deleted. Layer precedence: buffer > MDBX.
+func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (map[types.Hash][]byte, error) {
+	out := make(map[types.Hash][]byte)
+
+	// 1. Slots live in the write buffer — these shadow MDBX.
+	bufSlots, hasBuf := w.buf.storage[address]
+	if hasBuf {
+		for slot, entry := range bufSlots {
+			if len(entry.value) == 0 {
+				// Deleted/empty in buffer: skip. csw already has the
+				// pre-delete value from the earlier WriteAccountStorage call
+				// that produced this buffer entry.
+				continue
+			}
+			out[slot] = entry.value
+		}
+	}
+
+	// 2. Slots in MDBX that are NOT shadowed by a buffer entry.
+	if w.csw.db != nil {
+		cursor, err := w.csw.db.Cursor(modules.Storage)
+		if err != nil {
+			return nil, err
+		}
+		prefix := address[:]
+		for k, v, err := cursor.Seek(prefix); k != nil; k, v, err = cursor.Next() {
+			if err != nil {
+				cursor.Close()
+				return nil, err
+			}
+			if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
+				break
+			}
+			if len(k) != 52 || len(v) == 0 {
+				continue
+			}
+			var slot types.Hash
+			copy(slot[:], k[20:52])
+			// Buffer shadows MDBX.
+			if hasBuf {
+				if _, shadowed := bufSlots[slot]; shadowed {
+					continue
+				}
+			}
+			out[slot] = v
+		}
+		cursor.Close()
+	}
+
+	return out, nil
 }
 
 func (w *BufferedPlainStateWriter) WriteChangeSets() error {
