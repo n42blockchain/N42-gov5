@@ -87,9 +87,8 @@ type HexPatriciaHashed struct {
 	auxBuffer     *bytes.Buffer // auxiliary buffer used during branch updates encoding
 	branchEncoder *BranchEncoder
 
-	mounted      bool                 // true if this trie is mounted to some root trie
-	mountedNib   int                  // if 0 <= nib <= 15 means mounted to some root. If -1, means it's a storage subtrie so must not be folded above depth 63
-	mountedTries []*HexPatriciaHashed // list of mounted tries to unmount
+	mounted    bool // true if this trie is mounted to some root trie
+	mountedNib int  // if 0 <= nib <= 15 means mounted to some root. If -1, means it's a storage subtrie so must not be folded above depth 63
 
 	memoizationOff bool // if true, do not rely on memoized hashes
 	//temp buffers
@@ -179,8 +178,6 @@ func (hph *HexPatriciaHashed) resetForReuse() {
 	// reuse map, don't reallocate
 	clear(hph.hadToLoadL)
 
-	// reuse slice backing
-	hph.mountedTries = hph.mountedTries[:0]
 	hph.mounted = false
 	hph.mountedNib = 0
 
