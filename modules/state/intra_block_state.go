@@ -111,6 +111,15 @@ type IntraBlockState struct {
 	// (unlike stateObject flags which are journaled).
 	storageWipes map[types.Address]struct{}
 
+	// priorTxWipes is the subset of storageWipes that was committed by an
+	// earlier transaction in this block (via FinalizeTx). GetCommittedState
+	// consults this to short-circuit reads of contracts that were destroyed
+	// + (optionally) recreated in a previous tx. We do NOT use the live
+	// storageWipes for the read short-circuit because pre-Cancun semantics
+	// require a self-destructed contract to remain readable for the rest of
+	// the same tx that destroyed it.
+	priorTxWipes map[types.Address]struct{}
+
 	// rootComputer is an optional pluggable state root implementation.
 	// When nil, the default incremental Keccak hash is used.
 	rootComputer RootComputer
@@ -133,6 +142,7 @@ func New(stateReader StateReader) *IntraBlockState {
 		balanceInc:        map[types.Address]*BalanceIncrease{},
 		transientStorage:  newTransientStorage(),
 		storageWipes:      map[types.Address]struct{}{},
+		priorTxWipes:      map[types.Address]struct{}{},
 	}
 }
 
@@ -917,6 +927,13 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
+	// Promote any wipes that happened in this tx into priorTxWipes so the
+	// next tx in this block sees the contract's storage as empty (matches
+	// the pre-Cancun "destroyed at end of tx" rule). Within the current tx
+	// the live storageWipes still drives MakeWriteSet at end-of-block.
+	for addr := range sdb.storageWipes {
+		sdb.priorTxWipes[addr] = struct{}{}
+	}
 	sdb.clearCurrentTxFlags()
 	sdb.clearJournalAndRefund()
 	return nil
@@ -928,6 +945,9 @@ func (sdb *IntraBlockState) SoftFinalise() {
 			continue
 		}
 		sdb.stateObjectsDirty[addr] = struct{}{}
+	}
+	for addr := range sdb.storageWipes {
+		sdb.priorTxWipes[addr] = struct{}{}
 	}
 	sdb.clearCurrentTxFlags()
 	sdb.clearJournalAndRefund()

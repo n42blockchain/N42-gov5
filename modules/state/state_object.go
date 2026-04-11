@@ -184,15 +184,17 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 		out.Clear()
 		return
 	}
-	// If this address has been wiped earlier in the current block (via
-	// SELFDESTRUCT or CREATE/CREATE2 reset), the buffered/MDBX storage
-	// from prior blocks is stale — the end-of-block CreateContract will
-	// drop it. Treat the slot as 0 for any reads in subsequent txs of
-	// the same block. Without this, gas accounting reuses stale slot
-	// values across txs (e.g. metamorphic-contract setRoutes patterns
-	// where the bot was destroyed-and-recreated within the block).
+	// If this address was wiped by a PRIOR transaction in the current
+	// block (via SELFDESTRUCT or CREATE/CREATE2 reset), the buffered/MDBX
+	// storage from earlier blocks is stale — the end-of-block CreateContract
+	// will drop it. Treat the slot as 0 for any reads in this and later txs
+	// of the same block. We must NOT use the live storageWipes here: pre-
+	// Cancun semantics keep a self-destructed contract readable for the
+	// rest of the same tx that destroyed it, so the wipe only takes effect
+	// across the tx boundary (FinalizeTx promotes storageWipes into
+	// priorTxWipes).
 	if so.db != nil {
-		if _, wiped := so.db.storageWipes[so.address]; wiped {
+		if _, wiped := so.db.priorTxWipes[so.address]; wiped {
 			out.Clear()
 			so.originStorage[*key] = *out
 			so.blockOriginStorage[*key] = *out
