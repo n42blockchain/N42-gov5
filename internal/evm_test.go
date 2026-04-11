@@ -449,6 +449,19 @@ func TestNewEVMBlockContextPopulatesBlobFeeFields(t *testing.T) {
 	}
 }
 
+func TestNewEVMBlockContextFallsBackToHeaderCoinbase(t *testing.T) {
+	coinbase := types.HexToAddress("0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba")
+	header := &block.Header{
+		Coinbase: coinbase,
+	}
+
+	ctx := NewEVMBlockContext(header, nil, nil, nil)
+
+	if ctx.Coinbase != coinbase {
+		t.Fatalf("Coinbase = %v, want %v", ctx.Coinbase, coinbase)
+	}
+}
+
 func TestGetHashFnRejectsMissingRefHeaderNumber(t *testing.T) {
 	called := false
 	getHash := GetHashFn(&block.Header{}, func(hash types.Hash, number uint64) *block.Header {

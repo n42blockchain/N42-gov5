@@ -21,6 +21,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 // =============================================================================
@@ -202,6 +203,77 @@ func TestAuthListCopy(t *testing.T) {
 	}
 }
 
+func signAuthorizationForRecoverTest(t *testing.T, auth *Authorization) *Authorization {
+	t.Helper()
+
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	hash := auth.SigningHash()
+	sig, err := crypto.Sign(hash[:], key)
+	if err != nil {
+		t.Fatalf("sign auth: %v", err)
+	}
+	auth.R = uint256.NewInt(0).SetBytes(sig[:32])
+	auth.S = uint256.NewInt(0).SetBytes(sig[32:64])
+	auth.V = uint256.NewInt(uint64(sig[64]))
+	return auth
+}
+
+func TestAuthorizationRecoverSignerRejectsLegacyVValues(t *testing.T) {
+	auth := signAuthorizationForRecoverTest(t, &Authorization{
+		ChainID: *uint256.NewInt(1),
+		Address: types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Nonce:   1,
+	})
+
+	auth.V = uint256.NewInt(27)
+	if _, err := auth.RecoverSigner(); err != ErrInvalidAuthorizationSignature {
+		t.Fatalf("RecoverSigner() err = %v, want %v", err, ErrInvalidAuthorizationSignature)
+	}
+
+	auth.V = uint256.NewInt(28)
+	if _, err := auth.RecoverSigner(); err != ErrInvalidAuthorizationSignature {
+		t.Fatalf("RecoverSigner() err = %v, want %v", err, ErrInvalidAuthorizationSignature)
+	}
+}
+
+func TestAuthorizationRecoverSignerRejectsHighSValues(t *testing.T) {
+	auth := signAuthorizationForRecoverTest(t, &Authorization{
+		ChainID: *uint256.NewInt(1),
+		Address: types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Nonce:   1,
+	})
+
+	auth.S = uint256.NewInt(0).SetBytes(types.Hex2Bytes("7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a1"))
+	if _, err := auth.RecoverSigner(); err != ErrInvalidAuthorizationSignature {
+		t.Fatalf("RecoverSigner() err = %v, want %v", err, ErrInvalidAuthorizationSignature)
+	}
+}
+
+func TestEffectiveGasTipReturnsGethCompatibleFeeCapError(t *testing.T) {
+	tx := NewTx(&DynamicFeeTx{
+		ChainID:   uint256.NewInt(1),
+		Nonce:     0,
+		GasTipCap: uint256.NewInt(1),
+		GasFeeCap: uint256.NewInt(1),
+		Gas:       21_000,
+		Value:     uint256.NewInt(0),
+		V:         uint256.NewInt(0),
+		R:         uint256.NewInt(1),
+		S:         uint256.NewInt(1),
+	})
+
+	_, err := tx.EffectiveGasTip(uint256.NewInt(2))
+	if err == nil {
+		t.Fatal("EffectiveGasTip() error = nil, want non-nil")
+	}
+	if err.Error() != "max fee per gas less than block base fee" {
+		t.Fatalf("EffectiveGasTip() err = %q", err.Error())
+	}
+}
+
 // =============================================================================
 // SetCodeTx Copy Tests
 // =============================================================================
@@ -209,14 +281,14 @@ func TestAuthListCopy(t *testing.T) {
 func TestSetCodeTxCopy(t *testing.T) {
 	addr := types.HexToAddress("0x1234567890123456789012345678901234567890")
 	tx := &SetCodeTx{
-		ChainID:   uint256.NewInt(1),
-		Nonce:     42,
-		GasTipCap: uint256.NewInt(1000000000),
-		GasFeeCap: uint256.NewInt(2000000000),
-		Gas:       21000,
-		To:        &addr,
-		Value:     uint256.NewInt(1000000000000000000),
-		Data:      []byte{0x01, 0x02, 0x03},
+		ChainID:    uint256.NewInt(1),
+		Nonce:      42,
+		GasTipCap:  uint256.NewInt(1000000000),
+		GasFeeCap:  uint256.NewInt(2000000000),
+		Gas:        21000,
+		To:         &addr,
+		Value:      uint256.NewInt(1000000000000000000),
+		Data:       []byte{0x01, 0x02, 0x03},
 		AccessList: AccessList{{Address: addr, StorageKeys: []types.Hash{{}}}},
 		AuthList: AuthorizationList{{
 			ChainID: *uint256.NewInt(1),
@@ -380,18 +452,18 @@ func BenchmarkSetCodeTxHash(b *testing.B) {
 func BenchmarkSetCodeTxCopy(b *testing.B) {
 	addr := types.HexToAddress("0x1234567890123456789012345678901234567890")
 	tx := &SetCodeTx{
-		ChainID:   uint256.NewInt(1),
-		Nonce:     42,
-		GasTipCap: uint256.NewInt(1000000000),
-		GasFeeCap: uint256.NewInt(2000000000),
-		Gas:       21000,
-		To:        &addr,
-		Value:     uint256.NewInt(1000000000000000000),
-		Data:      []byte{0x01, 0x02, 0x03},
+		ChainID:    uint256.NewInt(1),
+		Nonce:      42,
+		GasTipCap:  uint256.NewInt(1000000000),
+		GasFeeCap:  uint256.NewInt(2000000000),
+		Gas:        21000,
+		To:         &addr,
+		Value:      uint256.NewInt(1000000000000000000),
+		Data:       []byte{0x01, 0x02, 0x03},
 		AccessList: AccessList{{Address: addr, StorageKeys: []types.Hash{{}}}},
-		V:         uint256.NewInt(27),
-		R:         uint256.NewInt(12345),
-		S:         uint256.NewInt(67890),
+		V:          uint256.NewInt(27),
+		R:          uint256.NewInt(12345),
+		S:          uint256.NewInt(67890),
 	}
 
 	b.ResetTimer()

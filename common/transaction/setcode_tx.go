@@ -34,10 +34,10 @@ import (
 	"math/big"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 // SetCodeTxType is the transaction type for EIP-7702 SetCode transactions
@@ -105,16 +105,18 @@ func (auth *Authorization) RecoverSigner() (types.Address, error) {
 		return types.Address{}, ErrInvalidAuthorizationSignature
 	}
 
+	v := auth.V.Uint64()
+	if v > 1 {
+		return types.Address{}, ErrInvalidAuthorizationSignature
+	}
+	if !crypto.ValidateSignatureValues(byte(v), auth.R, auth.S, true) {
+		return types.Address{}, ErrInvalidAuthorizationSignature
+	}
+
 	// Create signature bytes
 	sig := make([]byte, 65)
 	auth.R.WriteToSlice(sig[0:32])
 	auth.S.WriteToSlice(sig[32:64])
-
-	// Convert V to recovery ID (0 or 1)
-	v := auth.V.Uint64()
-	if v >= 27 {
-		v -= 27
-	}
 	sig[64] = byte(v)
 
 	// Recover public key
@@ -183,8 +185,8 @@ type SetCodeTx struct {
 	S *uint256.Int
 
 	// Derived fields (cached)
-	txHash     types.Hash
-	fromCache  *types.Address
+	txHash    types.Hash
+	fromCache *types.Address
 }
 
 // txType returns the transaction type
