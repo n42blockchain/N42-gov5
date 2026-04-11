@@ -783,13 +783,23 @@ func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
 	return nil
 }
 
-// collectPreWipeSlots returns the current visible (buffer ∪ MDBX) storage
-// slots for an address, excluding slots whose current buffered value is
-// empty/deleted. Layer precedence: buffer > MDBX.
+// collectPreWipeSlots returns the current visible (buffer ∪ in-flight
+// snapshot ∪ MDBX) storage slots for an address, excluding slots whose
+// current visible value is empty/deleted. Layer precedence:
+// active buffer > in-flight snapshot > MDBX.
+//
+// The in-flight snapshot layer is critical with async PlainStateBuffer
+// flushing: w.csw.db is a kv.Tx (RoTx) whose snapshot is taken AFTER
+// the previous bg flush committed but BEFORE the current handoff
+// commits. So MDBX(roTx) misses the entire previous commit interval's
+// writes. Without merging the in-flight snapshot here, a SELFDESTRUCT
+// of a contract whose slots were SSTORE'd in the previous interval
+// would skip those slots in the wipe enumeration → storcs would be
+// missing tombstones → forward replay produces a wrong state root.
 func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (map[types.Hash][]byte, error) {
 	out := make(map[types.Hash][]byte)
 
-	// 1. Slots live in the write buffer — these shadow MDBX.
+	// 1. Slots live in the write buffer — these shadow everything.
 	bufSlots, hasBuf := w.buf.storage[address]
 	if hasBuf {
 		for slot, entry := range bufSlots {
@@ -803,7 +813,40 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 		}
 	}
 
-	// 2. Slots in MDBX that are NOT shadowed by a buffer entry.
+	// 2. In-flight snapshot — bg flush in progress. These slots are NOT
+	// yet visible to MDBX(w.csw.db) but logically exist. Active buffer
+	// shadows; the snapshot is otherwise additive.
+	var snapSlots map[types.Hash]storageEntry
+	if w.buf.hasInFlight.Load() {
+		if snap := w.buf.inFlight.Load(); snap != nil {
+			if s, ok := snap.storage[address]; ok {
+				snapSlots = s
+				for slot, entry := range s {
+					if hasBuf {
+						if _, shadowed := bufSlots[slot]; shadowed {
+							continue
+						}
+					}
+					if len(entry.value) == 0 {
+						// Deleted in the in-flight interval: skip — the
+						// per-slot tombstone for that interval already
+						// went to storcs at its boundary block.
+						continue
+					}
+					out[slot] = entry.value
+				}
+			}
+			// If the in-flight snapshot wiped the address, MDBX may still
+			// hold orphan slots (the bg goroutine's wipe phase will run
+			// inside its tx, but our RoTx still sees them). They are
+			// logically gone — skip the MDBX scan for this address.
+			if _, wiped := snap.wipedStorage[address]; wiped {
+				return out, nil
+			}
+		}
+	}
+
+	// 3. Slots in MDBX that are NOT shadowed by buffer or in-flight.
 	if w.csw.db != nil {
 		cursor, err := w.csw.db.Cursor(modules.Storage)
 		if err != nil {
@@ -826,6 +869,12 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 			// Buffer shadows MDBX.
 			if hasBuf {
 				if _, shadowed := bufSlots[slot]; shadowed {
+					continue
+				}
+			}
+			// In-flight snapshot shadows MDBX.
+			if snapSlots != nil {
+				if _, shadowed := snapSlots[slot]; shadowed {
 					continue
 				}
 			}
