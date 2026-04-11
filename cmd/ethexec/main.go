@@ -1211,7 +1211,6 @@ func runUnwind(c *cli.Context) error {
 	}
 	defer outFreezer.Close()
 
-	// Open Geth input freezer for the post-unwind state-root verification.
 	inputF, err := freezer.New(ancientPath, 0)
 	if err != nil {
 		return fmt.Errorf("open geth ancient: %w", err)

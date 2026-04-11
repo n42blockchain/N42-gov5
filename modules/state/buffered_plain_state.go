@@ -135,11 +135,6 @@ type PlainStateBuffer struct {
 	// rotated to a new MDBX tx whose snapshot includes the previous
 	// background commit.
 	inFlight atomic.Pointer[BufferSnapshot]
-	// hasInFlight is a fast-path flag for the reader hot loop: an
-	// atomic.Bool load is cheaper than the pointer load + nil check, and
-	// in steady-state (no flush in flight) it short-circuits the entire
-	// in-flight lookup branch.
-	hasInFlight atomic.Bool
 
 	// Read cache: byte-budget LRU per kind so a hot storage workload
 	// can't starve the account cache. The composite storage key is
@@ -262,7 +257,6 @@ func (b *PlainStateBuffer) SnapshotForFlush() *BufferSnapshot {
 	b.wipedStorage = make(map[types.Address]struct{})
 
 	b.inFlight.Store(snap)
-	b.hasInFlight.Store(true)
 	return snap
 }
 
@@ -281,7 +275,6 @@ func nextMapCap(prev, floor int) int {
 // last bg flush has committed).
 func (b *PlainStateBuffer) ClearInFlight() {
 	b.inFlight.Store(nil)
-	b.hasInFlight.Store(false)
 }
 
 // ApplyTo writes the snapshot's contents to MDBX in the same order and
@@ -490,23 +483,18 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 		return &a, nil
 	}
 	// 1b. In-flight snapshot (background flush in progress; data may
-	// not yet be visible to our MDBX tx snapshot). The hasInFlight bool
-	// is the steady-state fast path: an atomic.Bool load is cheaper than
-	// the Pointer load + nil check, and most reads happen with no flush
-	// in flight.
-	if r.buf.hasInFlight.Load() {
-		if snap := r.buf.inFlight.Load(); snap != nil {
-				if enc, ok := snap.accounts[address]; ok {
-				r.buf.hits.Add(1)
-				if len(enc) == 0 {
-					return nil, nil
-				}
-				var a account.StateAccount
-				if err := a.DecodeForStorage(enc); err != nil {
-					return nil, err
-				}
-				return &a, nil
+	// not yet be visible to our MDBX tx snapshot).
+	if snap := r.buf.inFlight.Load(); snap != nil {
+		if enc, ok := snap.accounts[address]; ok {
+			r.buf.hits.Add(1)
+			if len(enc) == 0 {
+				return nil, nil
 			}
+			var a account.StateAccount
+			if err := a.DecodeForStorage(enc); err != nil {
+				return nil, err
+			}
+			return &a, nil
 		}
 	}
 	// 2. LRU read cache.
@@ -563,22 +551,20 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 		}
 	}
 	// 1c. In-flight snapshot (background flush in progress).
-	if r.buf.hasInFlight.Load() {
-		if snap := r.buf.inFlight.Load(); snap != nil {
-			if slots, ok := snap.storage[address]; ok {
-				if entry, ok2 := slots[*key]; ok2 {
-					r.buf.hits.Add(1)
-					if len(entry.value) == 0 {
-						return nil, nil
-					}
-					return entry.value, nil
+	if snap := r.buf.inFlight.Load(); snap != nil {
+		if slots, ok := snap.storage[address]; ok {
+			if entry, ok2 := slots[*key]; ok2 {
+				r.buf.hits.Add(1)
+				if len(entry.value) == 0 {
+					return nil, nil
 				}
+				return entry.value, nil
 			}
-			// Wiped contracts in the in-flight snapshot: any slot not
-			// listed in snap.storage is gone (the wipe already executed).
-			if _, wiped := snap.wipedStorage[address]; wiped {
-				return nil, nil
-			}
+		}
+		// Wiped contracts in the in-flight snapshot: any slot not
+		// listed in snap.storage is gone (the wipe already executed).
+		if _, wiped := snap.wipedStorage[address]; wiped {
+			return nil, nil
 		}
 	}
 	// 2. LRU read cache (composite key).
@@ -617,12 +603,10 @@ func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, incarn
 		r.buf.hits.Add(1)
 		return code, nil
 	}
-	if r.buf.hasInFlight.Load() {
-		if snap := r.buf.inFlight.Load(); snap != nil {
-			if code, ok := snap.code[codeHash]; ok {
-				r.buf.hits.Add(1)
-				return code, nil
-			}
+	if snap := r.buf.inFlight.Load(); snap != nil {
+		if code, ok := snap.code[codeHash]; ok {
+			r.buf.hits.Add(1)
+			return code, nil
 		}
 	}
 	if v, present := r.buf.readCode.Get(codeHash); present {
@@ -797,10 +781,19 @@ func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
 // would skip those slots in the wipe enumeration → storcs would be
 // missing tombstones → forward replay produces a wrong state root.
 func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (map[types.Hash][]byte, error) {
-	out := make(map[types.Hash][]byte)
+	// snap is captured once for the entire function so the MDBX-shadowing
+	// loop sees the same snapshot we enumerated, even if the bg flush
+	// completes mid-call and clears w.buf.inFlight.
+	snap := w.buf.inFlight.Load()
+	bufSlots, hasBuf := w.buf.storage[address]
+
+	hint := len(bufSlots)
+	if snap != nil {
+		hint += len(snap.storage[address])
+	}
+	out := make(map[types.Hash][]byte, hint)
 
 	// 1. Slots live in the write buffer — these shadow everything.
-	bufSlots, hasBuf := w.buf.storage[address]
 	if hasBuf {
 		for slot, entry := range bufSlots {
 			if len(entry.value) == 0 {
@@ -817,32 +810,30 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 	// yet visible to MDBX(w.csw.db) but logically exist. Active buffer
 	// shadows; the snapshot is otherwise additive.
 	var snapSlots map[types.Hash]storageEntry
-	if w.buf.hasInFlight.Load() {
-		if snap := w.buf.inFlight.Load(); snap != nil {
-			if s, ok := snap.storage[address]; ok {
-				snapSlots = s
-				for slot, entry := range s {
-					if hasBuf {
-						if _, shadowed := bufSlots[slot]; shadowed {
-							continue
-						}
-					}
-					if len(entry.value) == 0 {
-						// Deleted in the in-flight interval: skip — the
-						// per-slot tombstone for that interval already
-						// went to storcs at its boundary block.
+	if snap != nil {
+		if s, ok := snap.storage[address]; ok {
+			snapSlots = s
+			for slot, entry := range s {
+				if hasBuf {
+					if _, shadowed := bufSlots[slot]; shadowed {
 						continue
 					}
-					out[slot] = entry.value
 				}
+				if len(entry.value) == 0 {
+					// Deleted in the in-flight interval: skip — the
+					// per-slot tombstone for that interval already
+					// went to storcs at its boundary block.
+					continue
+				}
+				out[slot] = entry.value
 			}
-			// If the in-flight snapshot wiped the address, MDBX may still
-			// hold orphan slots (the bg goroutine's wipe phase will run
-			// inside its tx, but our RoTx still sees them). They are
-			// logically gone — skip the MDBX scan for this address.
-			if _, wiped := snap.wipedStorage[address]; wiped {
-				return out, nil
-			}
+		}
+		// If the in-flight snapshot wiped the address, MDBX may still
+		// hold orphan slots (the bg goroutine's wipe phase will run
+		// inside its tx, but our RoTx still sees them). They are
+		// logically gone — skip the MDBX scan for this address.
+		if _, wiped := snap.wipedStorage[address]; wiped {
+			return out, nil
 		}
 	}
 
