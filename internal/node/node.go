@@ -985,6 +985,17 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// are required to add the backends later on.
 	accman := accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: cfg.NodeCfg.InsecureUnlockAllowed})
 
+	var engineStateAdapter *api.EngineStateAdapter
+	if profile.IsEthereumEL() {
+		var adapterFreezer *freezer.Freezer
+		if realBC, ok := bc.(*internal.BlockChain); ok {
+			if f, ok := realBC.Freezer().(*freezer.Freezer); ok {
+				adapterFreezer = f
+			}
+		}
+		engineStateAdapter = api.NewEngineStateAdapter(chainKv, adapterFreezer, cfg.ChainCfg, engine)
+	}
+
 	node = Node{
 		cliCtx:          cliCtx,
 		ctx:             ctx,
@@ -1012,9 +1023,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		ipc:             newIPCServer(&cfg.NodeCfg),
 		etherbase:       types.HexToAddress(cfg.Miner.Etherbase),
 
-		accman:     accman,
-		keyDir:     keyDir,
-		keyDirTemp: isEphem,
+		accman:             accman,
+		keyDir:             keyDir,
+		keyDirTemp:         isEphem,
+		engineStateAdapter: engineStateAdapter,
 
 		p2pGenesisHash: p2pGenesisHash,
 		p2p:            p2p,
@@ -1389,8 +1401,13 @@ func (n *Node) Start() error {
 	if n.profile.IsEthereumEL() {
 		if adapter := n.engineStateAdapter; adapter != nil {
 			for i := range engineAPIs {
-				if v1, ok := engineAPIs[i].Service.(*api.EngineAPIV1); ok {
-					v1.SetStateAdapter(adapter)
+				switch svc := engineAPIs[i].Service.(type) {
+				case *api.EngineAPIV1:
+					svc.SetStateAdapter(adapter)
+				case *api.EngineAPIBlob:
+					svc.SetStateAdapter(adapter)
+				case *api.EngineAPIv4:
+					svc.SetStateAdapter(adapter)
 				}
 			}
 		}

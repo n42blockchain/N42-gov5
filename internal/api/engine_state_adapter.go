@@ -12,10 +12,10 @@ package api
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/ethel"
@@ -106,8 +106,12 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 		return false, computedRoot, nil
 	}
 
-	// Write canonical chain pointers.
+	// Persist the executed payload so subsequent head/header lookups can
+	// resolve Engine eth-compatible hashes back to the underlying block.
 	hash := header.Hash()
+	if err := writeEnginePayloadBlock(tx, blk); err != nil {
+		return false, types.Hash{}, err
+	}
 	if err := rawdb.WriteCanonicalHash(tx, hash, blockNum); err != nil {
 		return false, types.Hash{}, err
 	}
@@ -129,32 +133,37 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 	}
 	defer tx.Rollback()
 
-	// Write forkchoice state.
-	var buf [96]byte
-	copy(buf[0:32], headHash[:])
-	copy(buf[32:64], safeHash[:])
-	copy(buf[64:96], finalizedHash[:])
-	if err := tx.Put(kv.LastForkchoice, []byte("lastForkchoice"), buf[:]); err != nil {
+	storedHeadHash, err := a.resolveCanonicalStoredHash(tx, headHash)
+	if err != nil {
 		return err
 	}
-
-	// Update head block pointer.
-	// Look up block number from hash.
-	headerNum := rawdb.ReadHeaderNumber(tx, headHash)
-	if headerNum == nil {
+	if storedHeadHash == (types.Hash{}) {
 		return fmt.Errorf("head block not found: %s", headHash.Hex())
 	}
-	var numBuf [8]byte
-	binary.BigEndian.PutUint64(numBuf[:], *headerNum)
-	if err := tx.Put(kv.HeadBlockKey, []byte("LastBlock"), numBuf[:]); err != nil {
+	if safeHash != (types.Hash{}) {
+		if _, err := a.resolveCanonicalStoredHash(tx, safeHash); err != nil {
+			return err
+		}
+	}
+	if finalizedHash != (types.Hash{}) {
+		if _, err := a.resolveCanonicalStoredHash(tx, finalizedHash); err != nil {
+			return err
+		}
+	}
+
+	rawdb.WriteHeadBlockHash(tx, storedHeadHash)
+	if err := rawdb.WriteHeadHeaderHash(tx, storedHeadHash); err != nil {
 		return err
 	}
+	headerNum := rawdb.ReadHeaderNumber(tx, storedHeadHash)
 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 
-	log.Info("Forkchoice updated", "head", headHash.Hex()[:10], "block", *headerNum)
+	if headerNum != nil {
+		log.Info("Forkchoice updated", "head", headHash.Hex()[:10], "block", *headerNum)
+	}
 	return nil
 }
 
@@ -239,4 +248,56 @@ func (a *EngineStateAdapter) HeaderByHash(hash types.Hash) *block.Header {
 		return nil
 	}
 	return headHdr
+}
+
+func (a *EngineStateAdapter) resolveCanonicalStoredHash(tx kv.Tx, engineHash types.Hash) (types.Hash, error) {
+	if engineHash == (types.Hash{}) {
+		return types.Hash{}, nil
+	}
+	if hdr, err := rawdb.ReadHeaderByHash(tx, engineHash); err == nil && hdr != nil {
+		return engineHash, nil
+	}
+	for number := uint64(0); ; number++ {
+		storedHash, err := rawdb.ReadCanonicalHash(tx, number)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		if storedHash == (types.Hash{}) {
+			return types.Hash{}, nil
+		}
+		blk, err := rawdb.ReadBlockByHash(tx, storedHash)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		if blk != nil && ethCompatibleBlockHash(blk, a.chainCfg) == engineHash {
+			return storedHash, nil
+		}
+		hdr, err := rawdb.ReadHeaderByHash(tx, storedHash)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		if hdr != nil && ethCompatibleHeaderHash(hdr, a.chainCfg) == engineHash {
+			return storedHash, nil
+		}
+	}
+}
+
+func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block) error {
+	header, ok := blk.Header().(*block.Header)
+	if !ok || header == nil {
+		return fmt.Errorf("unexpected header type")
+	}
+	rawBody := &block.RawBody{Transactions: make([][]byte, 0, len(blk.Transactions()))}
+	for _, txn := range blk.Transactions() {
+		encoded, err := transaction.EncodeEthereumTransaction(txn)
+		if err != nil {
+			return err
+		}
+		rawBody.Transactions = append(rawBody.Transactions, encoded)
+	}
+	if _, _, err := rawdb.WriteRawBody(tx, header.Hash(), header.Number.Uint64(), rawBody); err != nil {
+		return err
+	}
+	rawdb.WriteHeader(tx, header)
+	return nil
 }

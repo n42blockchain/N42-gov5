@@ -15,10 +15,13 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
+
+	"github.com/holiman/uint256"
 )
 
 // ExecutionPayloadV1 represents a Paris Engine API payload.
@@ -700,6 +703,17 @@ func (e *EngineAPIV1) executeOrValidateWithBody(blk block.IBlock, blockHash, par
 
 	// ETH EL mode: execute and persist.
 	if e.stateAdapter != nil {
+		needsPreValidation := parentBeaconRoot != nil || expectedRequests != nil || bodyWithdrawals(body) != nil
+		canPreValidate := e.api != nil && e.api.api != nil && e.api.api.BlockChain() != nil
+		if needsPreValidation && canPreValidate {
+			validationBlock, ok := cloneExecutionValidationBlock(blk)
+			if !ok {
+				return invalidPayloadResponse("unexpected block type"), nil
+			}
+			if _, _, err := e.executePayloadOnParentStateWithWithdrawals(validationBlock, parentHash, parentBeaconRoot, expectedRequests, bodyWithdrawals(body)); err != nil {
+				return e.invalidPayloadStatus(err.Error(), blk, blockHash, &parentHash, body), nil
+			}
+		}
 		concreteBlock, ok := blk.(*block.Block)
 		if !ok {
 			return invalidPayloadResponse("unexpected block type"), nil
@@ -729,6 +743,50 @@ func (e *EngineAPIV1) executeOrValidateWithBody(blk block.IBlock, blockHash, par
 		overlay.stageBlockWithBody(blk, blockHash, overlayState, receipts, true, body)
 	}
 	return validPayloadResponse(blockHash), nil
+}
+
+func cloneExecutionValidationBlock(blk block.IBlock) (block.IBlock, bool) {
+	concreteBlock, ok := blk.(*block.Block)
+	if !ok || concreteBlock == nil {
+		return nil, false
+	}
+	header := blockHeader(concreteBlock)
+	if header == nil {
+		return nil, false
+	}
+	headerCopy := *header
+	headerCopy.Extra = append([]byte(nil), header.Extra...)
+	if header.Number != nil {
+		headerCopy.Number = new(uint256.Int).Set(header.Number)
+	}
+	if header.Difficulty != nil {
+		headerCopy.Difficulty = new(uint256.Int).Set(header.Difficulty)
+	}
+	if header.BaseFee != nil {
+		headerCopy.BaseFee = new(uint256.Int).Set(header.BaseFee)
+	}
+	if header.WithdrawalsHash != nil {
+		withdrawalsHash := *header.WithdrawalsHash
+		headerCopy.WithdrawalsHash = &withdrawalsHash
+	}
+	if header.BlobGasUsed != nil {
+		blobGasUsed := *header.BlobGasUsed
+		headerCopy.BlobGasUsed = &blobGasUsed
+	}
+	if header.ExcessBlobGas != nil {
+		excessBlobGas := *header.ExcessBlobGas
+		headerCopy.ExcessBlobGas = &excessBlobGas
+	}
+	if header.ParentBeaconRoot != nil {
+		parentBeaconRoot := *header.ParentBeaconRoot
+		headerCopy.ParentBeaconRoot = &parentBeaconRoot
+	}
+	if header.RequestsHash != nil {
+		requestsHash := *header.RequestsHash
+		headerCopy.RequestsHash = &requestsHash
+	}
+	txs := append([]*transaction.Transaction(nil), concreteBlock.Transactions()...)
+	return block.NewBlock(&headerCopy, txs), true
 }
 
 func bodyWithdrawals(body *ExecutionPayloadBodyV1) []*Withdrawal {

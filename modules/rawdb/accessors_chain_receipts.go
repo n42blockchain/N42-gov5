@@ -28,7 +28,6 @@ import (
 	"math"
 
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -144,8 +143,8 @@ func ReadReceiptByTxHash(db kv.Tx, txHash types.Hash) (*block.Receipt, uint64, u
 		if err != nil || txnRaw == nil {
 			continue
 		}
-		var txn transaction.Transaction
-		if err := txn.Unmarshal(txnRaw); err != nil {
+		txn, err := decodeStoredTransaction(txnRaw)
+		if err != nil {
 			continue
 		}
 		if txn.Hash() == txHash && int(i) < len(receipts) {

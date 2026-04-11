@@ -151,15 +151,31 @@ const (
 // EngineAPIBlob provides Engine API methods for EIP-4844 blob transactions
 type EngineAPIBlob struct {
 	api *BlockChainAPI
+	v1i *EngineAPIV1
 }
 
 // NewEngineAPIBlob creates a new Engine API blob instance
 func NewEngineAPIBlob(api *BlockChainAPI) *EngineAPIBlob {
-	return &EngineAPIBlob{api: api}
+	return &EngineAPIBlob{
+		api: api,
+		v1i: &EngineAPIV1{api: api},
+	}
 }
 
 func (e *EngineAPIBlob) v1() *EngineAPIV1 {
-	return &EngineAPIV1{api: e.api}
+	if e == nil {
+		return nil
+	}
+	if e.v1i == nil {
+		e.v1i = &EngineAPIV1{api: e.api}
+	}
+	return e.v1i
+}
+
+func (e *EngineAPIBlob) SetStateAdapter(adapter *EngineStateAdapter) {
+	if v1 := e.v1(); v1 != nil {
+		v1.SetStateAdapter(adapter)
+	}
 }
 
 // NewPayloadV3 processes a new execution payload with blob support

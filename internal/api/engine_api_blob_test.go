@@ -207,7 +207,7 @@ func TestEngineAPIBlobRejectsIntrinsicGasTooLowTransaction(t *testing.T) {
 	raw, err := transaction.EncodeEthereumTransaction(tx)
 	require.NoError(t, err)
 
-	resp, err := engine.NewPayloadV3(context.Background(), &ExecutionPayloadV3{
+	payload := &ExecutionPayloadV3{
 		ParentHash:    headHash,
 		FeeRecipient:  types.Address{0x22},
 		StateRoot:     types.Hash{0x33},
@@ -219,12 +219,21 @@ func TestEngineAPIBlobRejectsIntrinsicGasTooLowTransaction(t *testing.T) {
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
 		BaseFeePerGas: hexutil.Uint64(1),
-		BlockHash:     types.Hash{0x66},
 		Transactions:  []hexutil.Bytes{raw},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(0),
 		ExcessBlobGas: hexUint64Ptr(0),
-	}, nil, &beaconRoot)
+	}
+	blk, err := executionPayloadV3ToBlock(payload)
+	require.NoError(t, err)
+	payload.BlockHash = ethCompatibleEngineBlockHash(blk, api.chainConfig, enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   &beaconRoot,
+	})
+
+	resp, err := engine.NewPayloadV3(context.Background(), payload, nil, &beaconRoot)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, resp.Status)
 	require.NotNil(t, resp.ValidationError)
