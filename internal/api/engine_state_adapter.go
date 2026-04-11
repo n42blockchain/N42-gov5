@@ -193,7 +193,19 @@ func (a *EngineStateAdapter) CurrentHeadHash() types.Hash {
 		return types.Hash{}
 	}
 	defer tx.Rollback()
-	return rawdb.ReadHeadBlockHash(tx)
+	headHash := rawdb.ReadHeadBlockHash(tx)
+	if headHash == (types.Hash{}) {
+		return types.Hash{}
+	}
+	blk, err := rawdb.ReadBlockByHash(tx, headHash)
+	if err == nil && blk != nil {
+		return ethCompatibleBlockHash(blk, a.chainCfg)
+	}
+	hdr, err := rawdb.ReadHeaderByHash(tx, headHash)
+	if err != nil || hdr == nil {
+		return types.Hash{}
+	}
+	return ethCompatibleHeaderHash(hdr, a.chainCfg)
 }
 
 // HeaderByHash returns the EL block header for the given hash, or nil
@@ -208,8 +220,23 @@ func (a *EngineStateAdapter) HeaderByHash(hash types.Hash) *block.Header {
 	}
 	defer tx.Rollback()
 	hdr, err := rawdb.ReadHeaderByHash(tx, hash)
-	if err != nil || hdr == nil {
+	if err == nil && hdr != nil {
+		return hdr
+	}
+	headHash := rawdb.ReadHeadBlockHash(tx)
+	if headHash == (types.Hash{}) {
 		return nil
 	}
-	return hdr
+	blk, err := rawdb.ReadBlockByHash(tx, headHash)
+	if err != nil || blk == nil {
+		return nil
+	}
+	if ethCompatibleBlockHash(blk, a.chainCfg) != hash {
+		return nil
+	}
+	headHdr, ok := blk.Header().(*block.Header)
+	if !ok {
+		return nil
+	}
+	return headHdr
 }
