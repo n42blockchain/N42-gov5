@@ -8,7 +8,7 @@
 // each entry's OLD value back into MDBX. This unwinds the executor's
 // state without re-running the EVM. Length-zero OLD values mean the key
 // did not exist before the block — unwind deletes it. Matches the V2
-// encoding produced by EncodeAccountChangesV2 / EncodeStorageChangesV2
+// encoding produced by EncodeAccountChanges / EncodeStorageChanges
 // in changeset_codec.go.
 
 package ethel
@@ -46,7 +46,7 @@ func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
 		if accTable != nil {
 			accData, err := accTable.Retrieve(blockNum)
 			if err == nil && len(accData) > 0 {
-				entries, err := DecodeAccountChangesV2(accData)
+				entries, err := DecodeAccountChanges(accData)
 				if err != nil {
 					return fmt.Errorf("decode account changes at %d: %w", blockNum, err)
 				}
@@ -64,7 +64,7 @@ func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
 		if stoTable != nil {
 			stoData, err := stoTable.Retrieve(blockNum)
 			if err == nil && len(stoData) > 0 {
-				entries, err := DecodeStorageChangesV2(stoData)
+				entries, err := DecodeStorageChanges(stoData)
 				if err != nil {
 					return fmt.Errorf("decode storage changes at %d: %w", blockNum, err)
 				}

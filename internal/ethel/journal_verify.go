@@ -208,7 +208,7 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 		}
 
 		if len(accData) > 0 {
-			entries, err := DecodeAccountChangesV2(accData)
+			entries, err := DecodeAccountChanges(accData)
 			if err != nil {
 				return fmt.Errorf("decode acctcs block %d: %w", blockNum, err)
 			}
@@ -217,7 +217,7 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 			}
 		}
 		if len(stoData) > 0 {
-			entries, err := DecodeStorageChangesV2(stoData)
+			entries, err := DecodeStorageChanges(stoData)
 			if err != nil {
 				return fmt.Errorf("decode storcs block %d: %w", blockNum, err)
 			}
@@ -441,7 +441,7 @@ func (v *JournalVerifier) revertTest(ctx context.Context, endBlock uint64) error
 // can still recover codeHash for omitHashes old values.
 func applyChangesetForward(tx kv.RwTx, accData, stoData []byte) error {
 	if len(accData) > 0 {
-		entries, err := DecodeAccountChangesV2(accData)
+		entries, err := DecodeAccountChanges(accData)
 		if err != nil {
 			return err
 		}
@@ -466,7 +466,7 @@ func applyChangesetForward(tx kv.RwTx, accData, stoData []byte) error {
 		}
 	}
 	if len(stoData) > 0 {
-		entries, err := DecodeStorageChangesV2(stoData)
+		entries, err := DecodeStorageChanges(stoData)
 		if err != nil {
 			return err
 		}
@@ -497,7 +497,7 @@ func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum u
 		return fmt.Errorf("read acc cs: %w", err)
 	}
 	if len(accData) > 0 {
-		entries, err := DecodeAccountChangesV2(accData)
+		entries, err := DecodeAccountChanges(accData)
 		if err != nil {
 			return fmt.Errorf("decode acc cs: %w", err)
 		}
@@ -523,7 +523,7 @@ func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum u
 		return fmt.Errorf("read sto cs: %w", err)
 	}
 	if len(stoData) > 0 {
-		entries, err := DecodeStorageChangesV2(stoData)
+		entries, err := DecodeStorageChanges(stoData)
 		if err != nil {
 			return fmt.Errorf("decode sto cs: %w", err)
 		}

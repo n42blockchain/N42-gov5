@@ -210,7 +210,7 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 			return fmt.Errorf("read acctcs block %d: %w", blockNum, err)
 		}
 		if len(accData) > 0 {
-			entries, err := DecodeAccountChangesV2(accData)
+			entries, err := DecodeAccountChanges(accData)
 			if err != nil {
 				return fmt.Errorf("decode acctcs block %d: %w", blockNum, err)
 			}
@@ -228,7 +228,7 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 			return fmt.Errorf("read storcs block %d: %w", blockNum, err)
 		}
 		if len(stoData) > 0 {
-			entries, err := DecodeStorageChangesV2(stoData)
+			entries, err := DecodeStorageChanges(stoData)
 			if err != nil {
 				return fmt.Errorf("decode storcs block %d: %w", blockNum, err)
 			}

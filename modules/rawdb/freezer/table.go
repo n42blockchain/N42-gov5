@@ -30,7 +30,64 @@ const (
 
 	// writeBufferSize is the buffer size for buffered data/index file writes.
 	writeBufferSize = 256 * 1024 // 256 KiB
+
+	// cidxHeaderSize is the byte size of the optional N42 cidx header that
+	// precedes index entries. Files without the header (legacy / Geth-format)
+	// store entries starting at byte 0.
+	cidxHeaderSize = 16
+
+	// cidxFlag* are bitfield flags carried in the cidx header.
+	cidxFlagCompressed = 0x01 // entries are zstd-compressed (.cdat blobs)
+	cidxFlagBatchMode  = 0x02 // entries are grouped into BatchSize-item batches
 )
+
+// cidxMagic is the 4-byte file-format identifier at the start of every
+// N42-extended cidx file. Legacy Geth-format cidx files do NOT have this
+// prefix; the open path auto-detects format by reading the first 4 bytes.
+var cidxMagic = [4]byte{'N', 'C', 'I', 'X'}
+
+// cidxHeader is the in-memory representation of the on-disk cidx header.
+//
+// Wire layout (16 bytes, little-endian where applicable):
+//
+//	[0:4]   magic = "NCIX"
+//	[4]     version  (currently 1)
+//	[5]     flags    (cidxFlag* bitfield)
+//	[6]     batchSize (typically 64; 0 = unset / non-batch)
+//	[7]     entrySize (typically indexEntrySize=6)
+//	[8:16]  reserved (zero, future use)
+type cidxHeader struct {
+	version   uint8
+	flags     uint8
+	batchSize uint8
+	entrySize uint8
+}
+
+func encodeCidxHeader(h cidxHeader) []byte {
+	buf := make([]byte, cidxHeaderSize)
+	copy(buf[0:4], cidxMagic[:])
+	buf[4] = h.version
+	buf[5] = h.flags
+	buf[6] = h.batchSize
+	buf[7] = h.entrySize
+	// bytes [8:16] reserved, left as zero
+	return buf
+}
+
+func decodeCidxHeader(buf []byte) (cidxHeader, bool) {
+	if len(buf) < cidxHeaderSize {
+		return cidxHeader{}, false
+	}
+	if buf[0] != cidxMagic[0] || buf[1] != cidxMagic[1] || buf[2] != cidxMagic[2] || buf[3] != cidxMagic[3] {
+		return cidxHeader{}, false
+	}
+	return cidxHeader{
+		version:   buf[4],
+		flags:     buf[5],
+		batchSize: buf[6],
+		entrySize: buf[7],
+	}, true
+}
 
 var (
 	ErrOutOfBounds = errors.New("freezer: item out of bounds")
@@ -90,6 +147,13 @@ type FreezerTable struct {
 	headFile    uint16              // current data file number for appends
 	headSize    int64               // tracked size of head data file (avoids Stat)
 
+	// idxHeaderSize is the byte offset where actual index entries start.
+	// 0 for legacy / Geth-format cidx files (no header), cidxHeaderSize for
+	// N42-extended cidx files. All index reads/writes/truncates must add
+	// this offset to (item * indexEntrySize).
+	idxHeaderSize int64
+	idxHeader     cidxHeader // populated only when idxHeaderSize > 0
+
 	items  atomic.Uint64 // total number of items stored
 	closed atomic.Bool
 	// readonly disables all mutating operations and opens files O_RDONLY,
@@ -146,11 +210,6 @@ func newFreezerTable(path, name, ext string, readonly bool) (*FreezerTable, erro
 		return nil, fmt.Errorf("freezer: open index %s: %w", idxPath, err)
 	}
 
-	// Seek to end for buffered append (write mode only).
-	if !readonly {
-		idxFile.Seek(0, io.SeekEnd)
-	}
-
 	t := &FreezerTable{
 		name:        name,
 		path:        path,
@@ -160,33 +219,77 @@ func newFreezerTable(path, name, ext string, readonly bool) (*FreezerTable, erro
 		dataFilesRW: make(map[uint16]bool),
 		readonly:    readonly,
 	}
-	if !readonly {
-		t.indexBuf = bufio.NewWriterSize(idxFile, writeBufferSize)
-	}
 
-	// Determine item count from index file size.
+	// Detect or initialize the cidx header.
 	info, err := idxFile.Stat()
 	if err != nil {
 		idxFile.Close()
 		return nil, err
 	}
 	idxSize := info.Size()
-	if rem := idxSize % indexEntrySize; rem != 0 {
+
+	switch {
+	case idxSize >= cidxHeaderSize:
+		// File is large enough to potentially contain a header. Probe magic.
+		var probe [cidxHeaderSize]byte
+		if _, err := idxFile.ReadAt(probe[:], 0); err != nil {
+			idxFile.Close()
+			return nil, fmt.Errorf("freezer: probe cidx header %s: %w", name, err)
+		}
+		if h, ok := decodeCidxHeader(probe[:]); ok {
+			t.idxHeaderSize = cidxHeaderSize
+			t.idxHeader = h
+		}
+	case idxSize == 0 && !readonly:
+		// Brand-new file: write the header. Default to entrySize=indexEntrySize;
+		// flags/batchSize get patched by SetCompressed/setBatchSize when those
+		// are configured by the caller.
+		header := cidxHeader{
+			version:   1,
+			flags:     0,
+			batchSize: 0,
+			entrySize: indexEntrySize,
+		}
+		if _, err := idxFile.WriteAt(encodeCidxHeader(header), 0); err != nil {
+			idxFile.Close()
+			return nil, fmt.Errorf("freezer: write cidx header %s: %w", name, err)
+		}
+		idxSize = cidxHeaderSize
+		t.idxHeaderSize = cidxHeaderSize
+		t.idxHeader = header
+	case idxSize > 0 && idxSize < cidxHeaderSize:
+		// Legacy file with fewer bytes than the header. Treat as header-less.
+	}
+
+	// Seek to end for buffered append (write mode only). Must happen AFTER
+	// any header write so the buffered writer's offset is correct.
+	if !readonly {
+		idxFile.Seek(0, io.SeekEnd)
+		t.indexBuf = bufio.NewWriterSize(idxFile, writeBufferSize)
+	}
+
+	// Compute item count, accounting for the optional header.
+	dataSize := idxSize - t.idxHeaderSize
+	if dataSize < 0 {
+		dataSize = 0
+	}
+	if rem := dataSize % indexEntrySize; rem != 0 {
 		if readonly {
 			// Read-only: just round down without modifying disk.
-			idxSize -= rem
+			dataSize -= rem
 			log.Debug("Freezer (RO): ignoring partial index entry", "table", name, "ignored", rem)
 		} else {
-			idxSize -= rem
-			if err := idxFile.Truncate(idxSize); err != nil {
+			truncTo := t.idxHeaderSize + (dataSize - rem)
+			if err := idxFile.Truncate(truncTo); err != nil {
 				idxFile.Close()
 				return nil, fmt.Errorf("freezer: truncate partial index %s: %w", name, err)
 			}
 			idxFile.Seek(0, io.SeekEnd)
+			dataSize -= rem
 			log.Warn("Freezer: truncated partial index entry", "table", name, "removed", rem)
 		}
 	}
-	t.items.Store(uint64(idxSize) / indexEntrySize)
+	t.items.Store(uint64(dataSize) / indexEntrySize)
 
 	// Open the head data file if items exist.
 	if t.items.Load() > 0 {
@@ -227,6 +330,7 @@ func newFreezerTableCompressed(path, name, ext string, readonly bool) (*FreezerT
 		return nil, err
 	}
 	t.compressed = true
+	t.maybePatchHeader(func(h *cidxHeader) { h.flags |= cidxFlagCompressed })
 	// Auto-detect batch format: check if two consecutive mid-file entries
 	// share the same (fileNum, offset). Only need >= 2 items.
 	if t.items.Load() >= 2 {
@@ -360,18 +464,63 @@ func (t *FreezerTable) Append(item uint64, data []byte) error {
 }
 
 // SetBatchSize enables batch read mode. Once set, Retrieve uses O(1) batch lookup.
-func (t *FreezerTable) setBatchSize(bs int) { t.batchSize = bs }
+func (t *FreezerTable) setBatchSize(bs int) {
+	t.batchSize = bs
+	t.maybePatchHeader(func(h *cidxHeader) {
+		if bs > 0 {
+			h.flags |= cidxFlagBatchMode
+			if bs <= 0xFF {
+				h.batchSize = uint8(bs)
+			}
+		}
+	})
+}
 
 // ForceBatchSize explicitly sets the batch size for reading. Use when the
 // auto-detection in NewFreezerTableCompressed fails (e.g. mid-point happens
 // to land on a batch boundary where consecutive entries have different offsets).
-func (t *FreezerTable) ForceBatchSize(bs int) { t.batchSize = bs }
+func (t *FreezerTable) ForceBatchSize(bs int) {
+	t.batchSize = bs
+	t.maybePatchHeader(func(h *cidxHeader) {
+		if bs > 0 {
+			h.flags |= cidxFlagBatchMode
+			if bs <= 0xFF {
+				h.batchSize = uint8(bs)
+			}
+		}
+	})
+}
 
 // SetCompressed enables compressed batch read mode with zstd decoder.
 func (t *FreezerTable) SetCompressed(v bool) {
 	t.compressed = v
 	if v && t.zstdDec == nil {
 		t.zstdDec, _ = zstd.NewReader(nil)
+	}
+	t.maybePatchHeader(func(h *cidxHeader) {
+		if v {
+			h.flags |= cidxFlagCompressed
+		} else {
+			h.flags &^= cidxFlagCompressed
+		}
+	})
+}
+
+// maybePatchHeader updates a single header field on disk if the table has
+// an N42-extended cidx header (idxHeaderSize > 0) and the table is open
+// for writes. Read-only and legacy (header-less) tables are no-ops.
+func (t *FreezerTable) maybePatchHeader(mutate func(*cidxHeader)) {
+	if t.idxHeaderSize == 0 || t.readonly || t.indexFile == nil {
+		return
+	}
+	mutate(&t.idxHeader)
+	encoded := encodeCidxHeader(t.idxHeader)
+	// WriteAt is a positional write that does not move the append cursor,
+	// so the buffered indexBuf appending after EOF stays correct.
+	if _, err := t.indexFile.WriteAt(encoded, 0); err != nil {
+		// Best-effort: header patching is a metadata convenience, not
+		// load-bearing. Worst case the on-disk header lags by one open.
+		log.Debug("Freezer: cidx header patch failed", "table", t.name, "err", err)
 	}
 }
 
@@ -772,7 +921,7 @@ func (t *FreezerTable) Close() error {
 // readIndex reads the index entry for the given item. Caller must hold at least RLock.
 func (t *FreezerTable) readIndex(item uint64) (indexEntry, error) {
 	var buf [indexEntrySize]byte
-	if _, err := t.indexFile.ReadAt(buf[:], int64(item)*indexEntrySize); err != nil {
+	if _, err := t.indexFile.ReadAt(buf[:], t.idxHeaderSize+int64(item)*indexEntrySize); err != nil {
 		return indexEntry{}, fmt.Errorf("freezer: read index item %d: %w", item, err)
 	}
 	return decodeIndex(buf[:]), nil
@@ -881,7 +1030,7 @@ func (t *FreezerTable) truncateHeadLocked(from uint64) error {
 		}
 	}
 
-	if err := t.indexFile.Truncate(int64(from) * indexEntrySize); err != nil {
+	if err := t.indexFile.Truncate(t.idxHeaderSize + int64(from)*indexEntrySize); err != nil {
 		return fmt.Errorf("freezer: truncate index: %w", err)
 	}
 	if _, err := t.indexFile.Seek(0, io.SeekEnd); err != nil {

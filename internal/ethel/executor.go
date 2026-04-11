@@ -174,12 +174,7 @@ func (e *Executor) Run(ctx context.Context) error {
 		if err := batcher.alignOnResume(startBlock, e.cfg.LeavesOnly); err != nil {
 			return fmt.Errorf("align output tables: %w", err)
 		}
-		// Pad senders if not pre-computed.
-		if e.senderTable == nil {
-			if err := e.padSendersTable(startBlock); err != nil {
-				return fmt.Errorf("pad senders: %w", err)
-			}
-		}
+		// Senders/receipts deprecated: no padding or per-block writes.
 	}
 
 	startTime := time.Now()
@@ -374,6 +369,9 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 
 	// 4. Verify gas used.
 	if result.GasUsed != header.GasUsed {
+		// Diagnostic: locate the FIRST mis-charged transaction by comparing
+		// per-tx cumulative gas against geth's stored receipts.
+		e.dumpGasMismatch(blockNum, header, body, result)
 		if e.cfg.SkipErrors {
 			log.Warn("Gas mismatch (skipped)",
 				"block", blockNum, "got", result.GasUsed, "want", header.GasUsed,
@@ -616,15 +614,13 @@ func (e *Executor) reportTimings(blockNum uint64) {
 func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *state.BufferedPlainStateWriter, witness *WitnessStateReader, dbTx kv.Tx, blockWipes []types.Address) error {
 	b := e.outBatcher
 
-	// 1. Receipts (skip in LeavesOnly mode).
-	if !e.cfg.LeavesOnly {
-		receiptsData := EncodeReceiptsCompact(result.Receipts)
-		if err := b.addEntry(freezer.TableReceipts, "c", receiptsData); err != nil {
-			return fmt.Errorf("receipts: %w", err)
-		}
-	}
+	// 1. Receipts/senders: not written. Both tables are being deprecated;
+	// receipts can be re-derived by replaying transactions when needed,
+	// and senders are produced by the dedicated sender-recovery stage on
+	// demand. We keep the function parameter shape so callers don't need
+	// to change.
 
-	// 2. Unified V2 changesets — per-entry carries both old and new values,
+	// 2. Unified changesets — per-entry carries both old and new values,
 	// so forward replay (rebuild-state) and backward unwind (reorg) share
 	// a single data source and neither needs the EVM. The legacy leaves
 	// journal is no longer written; block 0 uses a dedicated genesis
@@ -633,11 +629,11 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 	var accCSBytes, stoCSBytes []byte
 	if blockNum == 0 {
 		var err error
-		accCSBytes, err = EncodeGenesisAccountsV2(newGenesisAccountIterator(dbTx))
+		accCSBytes, err = EncodeGenesisAccounts(newGenesisAccountIterator(dbTx))
 		if err != nil {
 			return fmt.Errorf("encode genesis accounts: %w", err)
 		}
-		stoCSBytes, err = EncodeGenesisStoragesV2(newGenesisStorageIterator(dbTx))
+		stoCSBytes, err = EncodeGenesisStorages(newGenesisStorageIterator(dbTx))
 		if err != nil {
 			return fmt.Errorf("encode genesis storages: %w", err)
 		}
@@ -657,14 +653,14 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 			// shadowing MDBX). new-value callbacks read through it.
 			bufReader := state.NewBufferedPlainStateReader(e.stateBuf, dbTx)
 
-			accCSBytes = EncodeAccountChangesV2(accCS, func(addr types.Address) []byte {
+			accCSBytes = EncodeAccountChanges(accCS, func(addr types.Address) []byte {
 				a, err := bufReader.ReadAccountData(addr)
 				if err != nil || a == nil {
 					return nil
 				}
 				return a.MarshalV2()
 			})
-			stoCSBytes = EncodeStorageChangesV2(stoCS, func(addr types.Address, slot types.Hash) []byte {
+			stoCSBytes = EncodeStorageChanges(stoCS, func(addr types.Address, slot types.Hash) []byte {
 				v, err := bufReader.ReadAccountStorage(addr, 0, &slot)
 				if err != nil {
 					return nil
@@ -699,5 +695,66 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 	}
 
 	return nil
+}
+
+// dumpGasMismatch is a diagnostic invoked when a block's total gas used
+// disagrees with the geth header. It loads geth's stored receipts for
+// the same block, walks them in tx order alongside the freshly-computed
+// N42 receipts, and prints the first transaction whose per-tx gas
+// (CumulativeGasUsed delta) differs. Best-effort: logs nothing fatal if
+// geth receipts can't be fetched.
+func (e *Executor) dumpGasMismatch(blockNum uint64, header *block.Header, body *GethBodyResult, result *BlockResult) {
+	if e.freezer == nil {
+		return
+	}
+	rawReceipts, err := e.freezer.Ancient(freezer.TableReceipts, blockNum)
+	if err != nil {
+		log.Warn("Gas-mismatch dump: cannot read geth receipts", "block", blockNum, "err", err)
+		return
+	}
+	gethReceipts, err := DecodeGethReceipts(rawReceipts)
+	if err != nil {
+		log.Warn("Gas-mismatch dump: cannot decode geth receipts", "block", blockNum, "err", err)
+		return
+	}
+
+	n := len(result.Receipts)
+	if len(gethReceipts) < n {
+		n = len(gethReceipts)
+	}
+	var prevN42, prevGeth uint64
+	for i := 0; i < n; i++ {
+		n42Cum := result.Receipts[i].CumulativeGasUsed
+		gethCum := gethReceipts[i].CumulativeGasUsed
+		n42Tx := n42Cum - prevN42
+		gethTx := gethCum - prevGeth
+		prevN42, prevGeth = n42Cum, gethCum
+		if n42Tx != gethTx {
+			var txHash types.Hash
+			if i < len(body.Transactions) {
+				txHash = body.Transactions[i].Hash()
+			}
+			log.Error("Gas-mismatch FIRST diff",
+				"block", blockNum,
+				"txIndex", i,
+				"txHash", txHash.Hex(),
+				"n42Gas", n42Tx,
+				"gethGas", gethTx,
+				"diff", int64(gethTx)-int64(n42Tx),
+				"n42Cum", n42Cum,
+				"gethCum", gethCum,
+				"txType", result.Receipts[i].Type,
+				"status", result.Receipts[i].Status,
+			)
+			return
+		}
+	}
+	log.Error("Gas-mismatch dump: per-tx gas matches in shared range; block totals still differ",
+		"block", blockNum,
+		"n42Receipts", len(result.Receipts),
+		"gethReceipts", len(gethReceipts),
+		"n42Gas", result.GasUsed,
+		"gethGas", header.GasUsed,
+	)
 }
 

@@ -272,20 +272,19 @@ func padTableTo(tbl *freezer.FreezerTable, targetItems uint64, enc *zstd.Encoder
 }
 
 // alignOnResume prepares output tables for resumed execution.
-// leavesOnly=true only aligns leaves + witness tables.
+// leavesOnly=true only aligns the witness table (receipts/senders are
+// no longer produced; the leaves journal is gone too — its forward-replay
+// role is covered by the unified acctcs/storcs encoding).
 func (b *outputBatcher) alignOnResume(startBlock uint64, leavesOnly bool) error {
 	b.nextItem = startBlock
 
 	tables := []string{
-		freezer.TableReceipts,
 		freezer.TableAccountChanges,
 		freezer.TableStorageChanges,
-		freezer.TableLeavesJournal,
 		freezer.TableBlockWitness,
 	}
 	if leavesOnly {
 		tables = []string{
-			freezer.TableLeavesJournal,
 			freezer.TableBlockWitness,
 		}
 	}
