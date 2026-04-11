@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -22,8 +24,8 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel"
 	vmcore "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
 	logv3 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/state"
@@ -270,11 +272,10 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 		CancunBlock:           big.NewInt(0),
 		PragueTime:            big.NewInt(0),
 	}
+	fixture := loadStablePragueModexpFixture(t)
 
 	beaconRootsAddr := params.BeaconRootsAddress
 	historyAddr := vmcore.HistoryStorageAddress
-	withdrawalQueueAddr := vmcore.WithdrawalRequestsAddress
-	consolidationQueueAddr := vmcore.ConsolidationRequestsAddress
 	modexpReaderAddr := types.HexToAddress("0x2af898aa328a87cfb23fbaf9302887d7c37df8fe")
 	sender := types.HexToAddress("0xe88c5d94c986f78708f74a3ed89b9ea177cbb8e5")
 	feeRecipient := types.HexToAddress("0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba")
@@ -282,43 +283,15 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 
 	genesis := &internalcore.GenesisBlock{
 		GenesisConfig: &conf.Genesis{
-			Config: cfg,
-			Alloc: conf.GenesisAlloc{
-				beaconRootsAddr: {
-					Balance: "0x0",
-					Nonce:   1,
-					Code:    params.BeaconRootsCode,
-				},
-				historyAddr: {
-					Balance: "0x0",
-					Nonce:   1,
-					Code:    vmcore.HistoryStorageCode,
-				},
-				withdrawalQueueAddr: {
-					Balance: "0x0",
-					Nonce:   1,
-					Code:    vmcore.WithdrawalRequestQueueCode,
-				},
-				consolidationQueueAddr: {
-					Balance: "0x0",
-					Nonce:   1,
-					Code:    vmcore.ConsolidationRequestQueueCode,
-				},
-				modexpReaderAddr: {
-					Balance: "0x0",
-					Nonce:   1,
-					Code:    types.Hex2Bytes("3660006000375a600060003660006000600560c8f25a906000553d60015561007a0190036002553d600060003e3d600020600355"),
-				},
-				sender: {
-					Balance: "0x3635c9adc5dea00000",
-				},
-			},
+			Config:     cfg,
+			Alloc:      fixture.Pre,
 			Number:     0,
 			GasLimit:   0x07270e00,
 			Difficulty: uint256.NewInt(0),
 			Timestamp:  0,
 			BaseFee:    uint256.NewInt(7),
 			Coinbase:   types.Address{},
+			ExtraData:  fixture.GenesisExtraData,
 		},
 	}
 
@@ -334,13 +307,15 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 	})
 	require.NoError(t, err)
 	require.NotNil(t, genesisBlock)
+	require.Equal(t, fixture.GenesisBlockHash, ethCompatibleBlockHash(genesisBlock, cfg))
 
 	rawTx := hexutil.MustDecode("0x02f9011801808007830238a0942af898aa328a87cfb23fbaf9302887d7c37df8fe80b8b4000000000000000000000000000000000000000000000000000000000000002800000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000028e8e77626586f73b955364c7b4bbf0bb7f7685ebd40e852b164633a4acbd3244c000102030405060701fffffff01681d2220bfea4bb888a5543db8c0916274ddb1ea93b144c042c01d8164c950001020304050607c080a0efac5255b8dc509c4604cf399f583589203c5f2b2ed59d0cbe7fd14e1866a8eda07c0b0f0c7f988e91c064f0290249de70ca5e0f0ce0833987844ed38abd46a55c")
 	tx, err := transaction.DecodeEthereumTransaction(rawTx)
 	require.NoError(t, err)
+	parentHash := ethCompatibleBlockHash(genesisBlock, cfg)
 
 	header := &block.Header{
-		ParentHash:       genesisBlock.Hash(),
+		ParentHash:       parentHash,
 		Number:           uint256.NewInt(1),
 		GasLimit:         0x07270e00,
 		Time:             0x3e8,
@@ -397,7 +372,7 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 		historySlot := types.Hash{}
 		ibs.GetState(historyAddr, &historySlot, &slot)
 		historyValue := slot.Bytes32()
-		require.Equal(t, genesisBlock.Hash().Bytes(), historyValue[:])
+		require.Equal(t, parentHash.Bytes(), historyValue[:])
 
 		slot0 := types.Hash{}
 		ibs.GetState(modexpReaderAddr, &slot0, &slot)
@@ -439,7 +414,7 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 
 		persisted.GetState(historyAddr, &historySlot, &persistedValue)
 		persistedHistoryValue := persistedValue.Bytes32()
-		require.Equal(t, genesisBlock.Hash().Bytes(), persistedHistoryValue[:])
+		require.Equal(t, parentHash.Bytes(), persistedHistoryValue[:])
 
 		persisted.GetState(modexpReaderAddr, &slot0, &persistedValue)
 		require.Equal(t, uint64(1), persistedValue.Uint64())
@@ -452,6 +427,28 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 		require.Equal(t, types.HexToHash("0x7f8a6c56dfa7eb36c5813257a65db0d4503a9c3b69afc9247d97efb4af16ac18").Bytes(), persistedSlot3Value[:])
 		require.Equal(t, uint64(1), persisted.GetNonce(sender))
 		require.Equal(t, "0x3635c9adc5de941454", persisted.GetBalance(sender).Hex())
+		for addr, expectedAccount := range fixture.PostState {
+			require.Equalf(t, expectedAccount.Nonce, persisted.GetNonce(addr), "nonce mismatch for %s", addr.Hex())
+
+			expectedBalance := new(big.Int)
+			if expectedAccount.Balance != "" {
+				ok := false
+				expectedBalance, ok = expectedBalance.SetString(strings.TrimPrefix(expectedAccount.Balance, "0x"), 16)
+				require.Truef(t, ok, "invalid expected balance for %s", addr.Hex())
+			}
+			require.Zerof(t, persisted.GetBalance(addr).ToBig().Cmp(expectedBalance), "balance mismatch for %s", addr.Hex())
+
+			expectedCode := append([]byte(nil), expectedAccount.Code...)
+			actualCode := append([]byte(nil), persisted.GetCode(addr)...)
+			require.Equalf(t, expectedCode, actualCode, "code mismatch for %s", addr.Hex())
+
+			for slotHash, expectedValue := range expectedAccount.Storage {
+				var actualValue uint256.Int
+				persisted.GetState(addr, &slotHash, &actualValue)
+				actualBytes := actualValue.Bytes32()
+				require.Equalf(t, expectedValue.Bytes(), actualBytes[:], "storage mismatch for %s slot %s", addr.Hex(), slotHash.Hex())
+			}
+		}
 
 		verifyErr := error(nil)
 		verifiedRoot, verifyErr = ethel.VerifyStateRoot(txdb)
@@ -461,7 +458,355 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 		return nil
 	})
 	require.NoError(t, err)
+	require.Equal(t, types.HexToHash("0xe64924afb5c8caf763266ec9f9a12a6510c52ea3e3f4281ee9db9b51277b0b1d"), verifiedRoot)
+	require.Equal(t, verifiedRoot, fullVerifiedRoot)
+
+	payloadHeader := block.CopyHeader(header)
+	payloadHeader.Root = verifiedRoot
+	payloadHeader.GasUsed = 0x1b3f4
+	payloadHeader.ReceiptHash = expectedReceiptsRoot
+	payloadHeader.Bloom = expectedBloom
+	payloadHeaderHash := ethCompatibleHeaderHash(payloadHeader, cfg)
+	payloadTx, err := transaction.DecodeEthereumTransaction(rawTx)
+	require.NoError(t, err)
+	execDB := memdb.NewTestDB(t)
+	var execGenesisBlock *block.Block
+	err = execDB.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, _, err := genesis.Write(tx)
+		if err != nil {
+			return err
+		}
+		execGenesisBlock = blk
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotNil(t, execGenesisBlock)
+	require.Equal(t, fixture.GenesisBlockHash, ethCompatibleBlockHash(execGenesisBlock, cfg))
+
+	execPayload := block.NewBlock(payloadHeader, []*transaction.Transaction{payloadTx}).(*block.Block)
+	require.Equal(t, payloadHeaderHash, ethCompatibleBlockHash(execPayload, cfg))
+	valid, stateRoot, err := NewEngineStateAdapter(execDB, nil, cfg, &apiTestEngine{}).ExecutePayload(execPayload)
+	require.NoError(t, err)
+	require.True(t, valid)
+	require.Equal(t, verifiedRoot, stateRoot)
 	t.Logf("in-memory root=%s verified root=%s full root=%s receiptsRoot=%s bloom=%x", expectedRoot, verifiedRoot, fullVerifiedRoot, expectedReceiptsRoot, expectedBloom.Bytes())
+}
+
+func TestEngineAPIv4AcceptsStablePragueModexpCallcodeFixture(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	cfg := &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		Consensus:             params.Faker,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
+		ShanghaiBlock:         big.NewInt(0),
+		CancunBlock:           big.NewInt(0),
+		PragueTime:            big.NewInt(0),
+	}
+	stateFixture := loadStablePragueModexpFixture(t)
+	payloadFixture := loadStablePragueModexpEnginePayloadFixture(t)
+
+	for _, tc := range []struct {
+		name   string
+		openDB func(*testing.T) kv.RwDB
+	}{
+		{
+			name: "memdb",
+			openDB: func(t *testing.T) kv.RwDB {
+				return memdb.NewTestDB(t)
+			},
+		},
+		{
+			name: "mdbx_reopen",
+			openDB: func(t *testing.T) kv.RwDB {
+				path := filepath.Join(t.TempDir(), "chaindata")
+				open := func() kv.RwDB {
+					db, err := mdbx.NewMDBX(logv3.New()).
+						Path(path).
+						Label(kv.ChainDB).
+						Open(context.Background())
+					require.NoError(t, err)
+					return db
+				}
+				db := open()
+				db.Close()
+				return open()
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := tc.openDB(t)
+			if closer, ok := db.(interface{ Close() }); ok {
+				t.Cleanup(func() { closer.Close() })
+			}
+
+			genesis := &internalcore.GenesisBlock{
+				GenesisConfig: &conf.Genesis{
+					Config:     cfg,
+					Alloc:      stateFixture.Pre,
+					Number:     0,
+					GasLimit:   0x07270e00,
+					Difficulty: uint256.NewInt(0),
+					Timestamp:  0,
+					BaseFee:    uint256.NewInt(7),
+					Coinbase:   types.Address{},
+					ExtraData:  stateFixture.GenesisExtraData,
+				},
+			}
+
+			var genesisBlock *block.Block
+			err := db.Update(context.Background(), func(tx kv.RwTx) error {
+				blk, _, err := genesis.Write(tx)
+				if err != nil {
+					return err
+				}
+				genesisBlock = blk
+				return nil
+			})
+			require.NoError(t, err)
+			require.NotNil(t, genesisBlock)
+			require.Equal(t, stateFixture.GenesisBlockHash, ethCompatibleBlockHash(genesisBlock, cfg))
+
+			payload := *payloadFixture.Payload
+			require.Equal(t, ethCompatibleBlockHash(genesisBlock, cfg), payload.ParentHash)
+
+			blk, err := executionPayloadV4ToBlock(&payload)
+			require.NoError(t, err)
+			blk = applyExecutionPayloadForkFields(blk, nil, nil, nil, &payloadFixture.ParentBeaconBlockRoot, payloadFixture.ExecutionRequests)
+			requestsHash := executionRequestsHash(payloadFixture.ExecutionRequests)
+			require.Equal(t, payload.BlockHash, ethCompatibleEngineBlockHash(blk, cfg, enginePayloadHashOptions{
+				includeWithdrawals: true,
+				withdrawals:        payload.Withdrawals,
+				includeBlobFields:  true,
+				parentBeaconRoot:   &payloadFixture.ParentBeaconBlockRoot,
+				requestsHash:       &requestsHash,
+			}))
+
+			chain := &canonicalCheckChainStub{
+				header: genesisBlock.Header().(*block.Header),
+				blk:    genesisBlock,
+				config: cfg,
+				db:     db,
+			}
+			api := &API{
+				bc:            chain,
+				db:            db,
+				engine:        &apiTestEngine{},
+				chainConfig:   cfg,
+				engineOverlay: newEngineOverlay(),
+			}
+			engine := NewEngineAPIv4(NewBlockChainAPI(api))
+			engine.v1.SetStateAdapter(NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{}))
+
+			resp, err := engine.NewPayloadV4(
+				context.Background(),
+				&payload,
+				payloadFixture.ExpectedBlobVersionedHashes,
+				&payloadFixture.ParentBeaconBlockRoot,
+				cloneHexutilBytesList(payloadFixture.ExecutionRequests),
+			)
+			require.NoError(t, err)
+			require.Equal(t, PayloadStatusValid, resp.Status)
+			require.NotNil(t, resp.LatestValidHash)
+			require.Equal(t, payload.BlockHash, *resp.LatestValidHash)
+		})
+	}
+}
+
+type stablePragueModexpFixture struct {
+	Pre              conf.GenesisAlloc `json:"pre"`
+	PostState        conf.GenesisAlloc `json:"postState"`
+	GenesisBlockHash types.Hash
+	GenesisExtraData []byte
+}
+
+type stablePragueModexpEnginePayloadFixture struct {
+	Payload                     *ExecutionPayloadV4
+	ExpectedBlobVersionedHashes []types.Hash
+	ParentBeaconBlockRoot       types.Hash
+	ExecutionRequests           []hexutil.Bytes
+}
+
+type stablePragueModexpFixtureJSON struct {
+	Pre                map[string]stablePragueModexpAccountJSON `json:"pre"`
+	PostState          map[string]stablePragueModexpAccountJSON `json:"postState"`
+	GenesisBlockHeader stablePragueModexpGenesisHeaderJSON      `json:"genesisBlockHeader"`
+	EngineNewPayloads  []stablePragueModexpEngineCallJSON       `json:"engineNewPayloads"`
+}
+
+type stablePragueModexpGenesisHeaderJSON struct {
+	Hash      string `json:"hash"`
+	ExtraData string `json:"extraData"`
+}
+
+type stablePragueModexpEngineCallJSON struct {
+	Params                   []json.RawMessage `json:"params"`
+	NewPayloadVersion        string            `json:"newPayloadVersion"`
+	ForkchoiceUpdatedVersion string            `json:"forkchoiceUpdatedVersion"`
+}
+
+type stablePragueModexpAccountJSON struct {
+	Balance string            `json:"balance"`
+	Code    string            `json:"code"`
+	Storage map[string]string `json:"storage"`
+	Nonce   string            `json:"nonce"`
+}
+
+const stablePragueModexpFixtureKey = "tests/osaka/eip7883_modexp_gas_increase/test_modexp_thresholds.py::test_modexp_call_operations[fork_Prague-blockchain_test_engine_from_state_test-base-heavy-call_opcode_CALLCODE]"
+
+func stablePragueModexpFixturePath(t *testing.T) string {
+	t.Helper()
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+
+	var candidates []string
+	if cacheDir, err := os.UserCacheDir(); err == nil {
+		candidates = append(candidates, filepath.Join(
+			cacheDir,
+			"ethereum-execution-spec-tests",
+			"cached_downloads",
+			"ethereum",
+			"execution-spec-tests",
+			"v5.4.0",
+			"fixtures_stable",
+			"fixtures",
+			"blockchain_tests_engine",
+			"osaka",
+			"eip7883_modexp_gas_increase",
+			"test_modexp_call_operations.json",
+		))
+	}
+	candidates = append(candidates, filepath.Join(
+		filepath.Dir(currentFile),
+		"..", "..", "..",
+		"erigon2.7",
+		"tests",
+		"execution-spec-tests",
+		"blockchain_tests_engine",
+		"osaka",
+		"eip7883_modexp_gas_increase",
+		"test_modexp_call_operations.json",
+	))
+
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	t.Skipf("stable EEST fixture missing; checked: %s", strings.Join(candidates, ", "))
+	return ""
+}
+
+func loadStablePragueModexpFixtureJSON(t *testing.T) stablePragueModexpFixtureJSON {
+	t.Helper()
+
+	raw, err := os.ReadFile(stablePragueModexpFixturePath(t))
+	require.NoError(t, err)
+
+	var fixtures map[string]stablePragueModexpFixtureJSON
+	require.NoError(t, json.Unmarshal(raw, &fixtures))
+
+	fixtureJSON, ok := fixtures[stablePragueModexpFixtureKey]
+	require.True(t, ok)
+	return fixtureJSON
+}
+
+func loadStablePragueModexpFixture(t *testing.T) stablePragueModexpFixture {
+	t.Helper()
+	fixtureJSON := loadStablePragueModexpFixtureJSON(t)
+	var err error
+	genesisExtraData, err := hexutil.Decode(fixtureJSON.GenesisBlockHeader.ExtraData)
+	require.NoError(t, err)
+	fixture := stablePragueModexpFixture{
+		Pre:              decodeStablePragueModexpAlloc(t, fixtureJSON.Pre),
+		PostState:        decodeStablePragueModexpAlloc(t, fixtureJSON.PostState),
+		GenesisBlockHash: types.HexToHash(fixtureJSON.GenesisBlockHeader.Hash),
+		GenesisExtraData: genesisExtraData,
+	}
+	require.NotEmpty(t, fixture.Pre)
+	return fixture
+}
+
+func loadStablePragueModexpEnginePayloadFixture(t *testing.T) stablePragueModexpEnginePayloadFixture {
+	t.Helper()
+
+	fixtureJSON := loadStablePragueModexpFixtureJSON(t)
+	require.NotEmpty(t, fixtureJSON.EngineNewPayloads)
+	call := fixtureJSON.EngineNewPayloads[0]
+	require.Equal(t, "4", call.NewPayloadVersion)
+	require.Len(t, call.Params, 4)
+
+	var payload ExecutionPayloadV4
+	require.NoError(t, json.Unmarshal(call.Params[0], &payload))
+
+	var blobVersionedHashes []types.Hash
+	require.NoError(t, json.Unmarshal(call.Params[1], &blobVersionedHashes))
+
+	var parentBeaconBlockRoot types.Hash
+	require.NoError(t, json.Unmarshal(call.Params[2], &parentBeaconBlockRoot))
+
+	var executionRequests []hexutil.Bytes
+	require.NoError(t, json.Unmarshal(call.Params[3], &executionRequests))
+
+	return stablePragueModexpEnginePayloadFixture{
+		Payload:                     &payload,
+		ExpectedBlobVersionedHashes: blobVersionedHashes,
+		ParentBeaconBlockRoot:       parentBeaconBlockRoot,
+		ExecutionRequests:           executionRequests,
+	}
+}
+
+func decodeStablePragueModexpAlloc(t *testing.T, raw map[string]stablePragueModexpAccountJSON) conf.GenesisAlloc {
+	t.Helper()
+
+	alloc := make(conf.GenesisAlloc, len(raw))
+	for addrHex, account := range raw {
+		genesisAccount := conf.GenesisAccount{
+			Balance: account.Balance,
+		}
+		if account.Code != "" {
+			code, err := hexutil.Decode(account.Code)
+			require.NoError(t, err)
+			genesisAccount.Code = code
+		}
+		if account.Nonce != "" {
+			nonce, err := parseFixtureUint64(account.Nonce)
+			require.NoError(t, err)
+			genesisAccount.Nonce = nonce
+		}
+		if len(account.Storage) > 0 {
+			genesisAccount.Storage = make(map[types.Hash]types.Hash, len(account.Storage))
+			for slotHex, valueHex := range account.Storage {
+				genesisAccount.Storage[types.HexToHash(slotHex)] = types.HexToHash(valueHex)
+			}
+		}
+		alloc[types.HexToAddress(addrHex)] = genesisAccount
+	}
+	return alloc
+}
+
+func parseFixtureUint64(raw string) (uint64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	if strings.HasPrefix(raw, "0x") || strings.HasPrefix(raw, "0X") {
+		return strconv.ParseUint(raw[2:], 16, 64)
+	}
+	return strconv.ParseUint(raw, 10, 64)
 }
 
 func hiveFirstEmptyPayload() *ExecutionPayloadV1 {
