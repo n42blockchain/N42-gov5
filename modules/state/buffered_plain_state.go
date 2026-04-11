@@ -90,6 +90,32 @@ const (
 	hashKeyLen             = 32
 )
 
+// BufferSnapshot is an immutable view of a write buffer at handoff time.
+// SnapshotForFlush moves the active maps into a snapshot, leaving the
+// PlainStateBuffer with fresh empty maps. The snapshot is read-only
+// thereafter; the background flusher iterates it to write to MDBX, and
+// the reader path falls through to it for reads of keys that were dirty
+// at handoff time but whose MDBX commit hasn't completed yet.
+//
+// Concurrent access pattern:
+//   - Single producer: SnapshotForFlush (executor goroutine)
+//   - Single mutator: ApplyTo (background flusher goroutine, READ-ONLY on
+//     the maps; only iterates and copies values to MDBX)
+//   - Multiple readers: BufferedPlainStateReader checks the snapshot
+//     after the active buffer
+//
+// Maps are not deeply copied; the snapshot OWNS the original maps and
+// the active PlainStateBuffer gets new empty ones. This makes the
+// handoff O(1).
+type BufferSnapshot struct {
+	accounts      map[types.Address][]byte
+	storage       map[types.Address]map[types.Hash]storageEntry
+	code          map[types.Hash][]byte
+	contractCode  map[string][]byte
+	contractWipes []types.Address
+	wipedStorage  map[types.Address]struct{}
+}
+
 // PlainStateBuffer holds write buffer + bounded LRU read caches.
 type PlainStateBuffer struct {
 	// Write buffer (single-writer, executor only).
@@ -100,6 +126,15 @@ type PlainStateBuffer struct {
 	incarnationMap map[types.Address][]byte
 	contractWipes  []types.Address            // addresses needing MDBX storage wipe on flush
 	wipedStorage   map[types.Address]struct{} // addresses whose storage was wiped — reads bypass cache/MDBX
+
+	// inFlight is the snapshot currently being written to MDBX by the
+	// background flusher (if any). Reader path: active buffer →
+	// inFlight.Load() → LRU → MDBX. The pointer is replaced atomically
+	// at every handoff; the previous snapshot is dropped (and GC'd) once
+	// the next handoff installs a fresher one and the main thread has
+	// rotated to a new MDBX tx whose snapshot includes the previous
+	// background commit.
+	inFlight atomic.Pointer[BufferSnapshot]
 
 	// Read cache: byte-budget LRU per kind so a hot storage workload
 	// can't starve the account cache. The composite storage key is
@@ -297,6 +332,199 @@ func (b *PlainStateBuffer) FlushToMDBX(tx kv.RwTx) error {
 	return nil
 }
 
+// SnapshotForFlush moves the active write buffer maps into a fresh
+// BufferSnapshot and resets the active buffer to empty maps. The snapshot
+// is the source of truth for the next FlushToMDBX call (sync or async)
+// and is also installed as the in-flight snapshot so concurrent reader
+// goroutines can still find the dirty values during the background
+// commit window.
+//
+// O(1): the maps are moved by pointer, not deep-copied.
+//
+// Caller is responsible for either calling snap.ApplyTo(tx) immediately
+// (synchronous flush) OR handing the snapshot to a background goroutine
+// AND calling SetInFlight(snap) so the reader path can fall through to
+// it.
+func (b *PlainStateBuffer) SnapshotForFlush() *BufferSnapshot {
+	snap := &BufferSnapshot{
+		accounts:      b.accounts,
+		storage:       b.storage,
+		code:          b.code,
+		contractCode:  b.contractCode,
+		contractWipes: b.contractWipes,
+		wipedStorage:  b.wipedStorage,
+	}
+	b.accounts = make(map[types.Address][]byte, 4096)
+	b.storage = make(map[types.Address]map[types.Hash]storageEntry, 4096)
+	b.code = make(map[types.Hash][]byte, 64)
+	b.contractCode = make(map[string][]byte, 64)
+	b.contractWipes = nil
+	b.wipedStorage = make(map[types.Address]struct{})
+	return snap
+}
+
+// SetInFlight installs the snapshot as the current in-flight buffer for
+// reader fallthrough. Replaces any previous in-flight; the previous one
+// becomes garbage as soon as no reader still references it.
+func (b *PlainStateBuffer) SetInFlight(snap *BufferSnapshot) {
+	b.inFlight.Store(snap)
+}
+
+// ClearInFlight drops the in-flight pointer (used at shutdown after the
+// last bg flush has committed).
+func (b *PlainStateBuffer) ClearInFlight() {
+	b.inFlight.Store(nil)
+}
+
+// ApplyTo writes the snapshot's contents to MDBX in the same order and
+// format as the legacy synchronous flush path. Sort-then-Put preserves
+// MDBX B+-tree locality; storage wipes happen between accounts and
+// storage so freshly-CREATEd contract slots aren't deleted by the
+// subsequent address-prefix wipe.
+//
+// The snapshot maps are read-only after this call; the caller must not
+// mutate them.
+func (snap *BufferSnapshot) ApplyTo(tx kv.RwTx) error {
+	// 1. Accounts: sort by address.
+	acctAddrs := make([]types.Address, 0, len(snap.accounts))
+	for addr := range snap.accounts {
+		acctAddrs = append(acctAddrs, addr)
+	}
+	sort.Slice(acctAddrs, func(i, j int) bool {
+		return bytes.Compare(acctAddrs[i][:], acctAddrs[j][:]) < 0
+	})
+	for _, addr := range acctAddrs {
+		v := snap.accounts[addr]
+		if len(v) == 0 {
+			if err := tx.Delete(modules.Account, addr[:]); err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Put(modules.Account, addr[:], v); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 2. Wipe storage for SELFDESTRUCT'd contracts.
+	for _, addr := range snap.contractWipes {
+		prefix := addr[:]
+		cursor, err := tx.Cursor(modules.Storage)
+		if err != nil {
+			return err
+		}
+		var keysToDelete [][]byte
+		for k, _, err := cursor.Seek(prefix); k != nil; k, _, err = cursor.Next() {
+			if err != nil {
+				cursor.Close()
+				return err
+			}
+			if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
+				break
+			}
+			keysToDelete = append(keysToDelete, append([]byte{}, k...))
+		}
+		cursor.Close()
+		for _, k := range keysToDelete {
+			if err := tx.Delete(modules.Storage, k); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 3. Storage: sorted composite keys.
+	type stoKV struct {
+		key   []byte
+		value []byte
+	}
+	stoCount := 0
+	for _, slots := range snap.storage {
+		stoCount += len(slots)
+	}
+	stoEntries := make([]stoKV, 0, stoCount)
+	for addr, slots := range snap.storage {
+		for hash, entry := range slots {
+			compositeKey := modules.PlainGenerateCompositeStorageKey(addr[:], hash[:])
+			stoEntries = append(stoEntries, stoKV{key: compositeKey, value: entry.value})
+		}
+	}
+	sort.Slice(stoEntries, func(i, j int) bool {
+		return bytes.Compare(stoEntries[i].key, stoEntries[j].key) < 0
+	})
+	for _, kv := range stoEntries {
+		if len(kv.value) == 0 {
+			if err := tx.Delete(modules.Storage, kv.key); err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Put(modules.Storage, kv.key, kv.value); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 4. Code + ContractCode.
+	codeHashes := make([]types.Hash, 0, len(snap.code))
+	for hash := range snap.code {
+		codeHashes = append(codeHashes, hash)
+	}
+	sort.Slice(codeHashes, func(i, j int) bool {
+		return bytes.Compare(codeHashes[i][:], codeHashes[j][:]) < 0
+	})
+	for _, hash := range codeHashes {
+		if err := tx.Put(modules.Code, hash[:], snap.code[hash]); err != nil {
+			return err
+		}
+	}
+
+	ccKeys := make([]string, 0, len(snap.contractCode))
+	for prefix := range snap.contractCode {
+		ccKeys = append(ccKeys, prefix)
+	}
+	sort.Strings(ccKeys)
+	for _, prefix := range ccKeys {
+		if err := tx.Put(modules.PlainContractCode, []byte(prefix), snap.contractCode[prefix]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// InvalidateLRUForSnapshot evicts dirty keys from the read cache. Called
+// from the background flusher AFTER the tx commit so the post-commit
+// MDBX state is consistent with the cache. Concurrent main-thread reads
+// against the LRU are safe (LRU has its own mutex).
+//
+// We deliberately do NOT touch the readStorage entries for slots in
+// snap.contractWipes — the wipedSlots collected at SELFDESTRUCT time
+// are already represented as per-slot tombstones in snap.storage and
+// will be evicted by the storage loop below.
+func (b *PlainStateBuffer) InvalidateLRUForSnapshot(snap *BufferSnapshot) {
+	for addr := range snap.accounts {
+		b.readAccounts.Delete(addr)
+	}
+	for addr, slots := range snap.storage {
+		for slot := range slots {
+			var ck [storageCompositeKeyLen]byte
+			copy(ck[:20], addr[:])
+			copy(ck[20:], slot[:])
+			b.readStorage.Delete(ck)
+		}
+	}
+	for h := range snap.code {
+		b.readCode.Delete(h)
+	}
+}
+
+// Stats reports current write-buffer cardinalities (excluding any
+// in-flight snapshot still being committed).
+func (snap *BufferSnapshot) Stats() (accounts, storage int) {
+	for _, slots := range snap.storage {
+		storage += len(slots)
+	}
+	return len(snap.accounts), storage
+}
+
 // Clear resets write buffer and selectively invalidates LRU entries that
 // this flush just wrote to MDBX. Entries for keys that did NOT change in
 // this commit window are kept across the flush — hot data analysis shows
@@ -379,7 +607,7 @@ func NewBufferedPlainStateReader(buf *PlainStateBuffer, db kv.Getter) *BufferedP
 }
 
 func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
-	// 1. Write buffer.
+	// 1. Active write buffer.
 	if enc, ok := r.buf.accounts[address]; ok {
 		r.buf.hits.Add(1)
 		if len(enc) == 0 {
@@ -390,6 +618,21 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 			return nil, err
 		}
 		return &a, nil
+	}
+	// 1b. In-flight snapshot (background flush in progress; data may
+	// not yet be visible to our MDBX tx snapshot).
+	if snap := r.buf.inFlight.Load(); snap != nil {
+		if enc, ok := snap.accounts[address]; ok {
+			r.buf.hits.Add(1)
+			if len(enc) == 0 {
+				return nil, nil
+			}
+			var a account.StateAccount
+			if err := a.DecodeForStorage(enc); err != nil {
+				return nil, err
+			}
+			return &a, nil
+		}
 	}
 	// 2. LRU read cache.
 	if v, present := r.buf.readAccounts.Get(address); present {
@@ -426,7 +669,7 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 }
 
 func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
-	// 1. Write buffer.
+	// 1. Active write buffer.
 	if slots, ok := r.buf.storage[address]; ok {
 		if entry, ok2 := slots[*key]; ok2 {
 			r.buf.hits.Add(1)
@@ -441,6 +684,23 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 	// from before the wipe must not be returned.
 	if len(r.buf.wipedStorage) > 0 {
 		if _, wiped := r.buf.wipedStorage[address]; wiped {
+			return nil, nil
+		}
+	}
+	// 1c. In-flight snapshot (background flush in progress).
+	if snap := r.buf.inFlight.Load(); snap != nil {
+		if slots, ok := snap.storage[address]; ok {
+			if entry, ok2 := slots[*key]; ok2 {
+				r.buf.hits.Add(1)
+				if len(entry.value) == 0 {
+					return nil, nil
+				}
+				return entry.value, nil
+			}
+		}
+		// Wiped contracts in the in-flight snapshot: any slot not
+		// listed in snap.storage is gone (the wipe already executed).
+		if _, wiped := snap.wipedStorage[address]; wiped {
 			return nil, nil
 		}
 	}
@@ -478,6 +738,11 @@ func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, incarn
 	}
 	if code, ok := r.buf.code[codeHash]; ok {
 		return code, nil
+	}
+	if snap := r.buf.inFlight.Load(); snap != nil {
+		if code, ok := snap.code[codeHash]; ok {
+			return code, nil
+		}
 	}
 	if v, present := r.buf.readCode.Get(codeHash); present {
 		return v, nil
@@ -523,7 +788,12 @@ type BufferedPlainStateWriter struct {
 	csw *ChangeSetWriter
 }
 
-func NewBufferedPlainStateWriter(buf *PlainStateBuffer, changeSetsDB kv.RwTx, blockNumber uint64) *BufferedPlainStateWriter {
+// NewBufferedPlainStateWriter constructs a writer for per-block use.
+// The tx parameter is kv.Tx (read-only) because per-block execution
+// only reads from MDBX (e.g. cursor scans in collectPreWipeSlots).
+// All writes go to the in-memory buffer; the buffer is later flushed
+// to MDBX by the executor's commit-interval flush path (sync or async).
+func NewBufferedPlainStateWriter(buf *PlainStateBuffer, changeSetsDB kv.Tx, blockNumber uint64) *BufferedPlainStateWriter {
 	return &BufferedPlainStateWriter{
 		buf: buf,
 		csw: NewChangeSetWriterPlain(changeSetsDB, blockNumber),
@@ -575,18 +845,9 @@ func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, in
 			return err
 		}
 	}
-	// IMPORTANT: do NOT short-circuit on `*original == *value` here. The
-	// `original` argument is the BLOCK-START value (from blockOriginStorage),
-	// while `value` is the FINAL dirty value at the end of the calling
-	// transaction. If a slot was written to an intermediate value earlier
-	// in the same block (so buf.storage[address][key] holds that
-	// intermediate) and the current tx writes back to the block-start
-	// value, a short-circuit would leave the stale intermediate in the
-	// buffer. Subsequent blocks would then read the wrong "committed"
-	// value via GetCommittedState, mis-routing EIP-2200 SSTORE handling
-	// (notably spurious path-2.2.2.1 hits with refund 19200) and
-	// producing gas mismatches against geth. Always update the buffer
-	// to reflect the latest written value.
+	if *original == *value {
+		return nil
+	}
 	slots := w.buf.storage[address]
 	if slots == nil {
 		slots = make(map[types.Hash]storageEntry, 8)

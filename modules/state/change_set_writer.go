@@ -37,8 +37,16 @@ import (
 )
 
 // ChangeSetWriter is a mock StateWriter that accumulates changes in-memory into ChangeSets.
+//
+// db is held as kv.Tx (read-only) so per-block construction can pass an
+// RoTx safely; methods that mutate MDBX (WriteChangeSets, WriteHistory)
+// type-assert to kv.RwTx and return an error if the assertion fails.
+// Per-block executor flow only uses db for cursor reads (in
+// collectPreWipeSlots); the RwTx-needing paths are exercised exclusively
+// by the genesis initializer which constructs the writer with a real
+// kv.RwTx.
 type ChangeSetWriter struct {
-	db             kv.RwTx
+	db             kv.Tx
 	accountChanges map[types.Address][]byte
 	storageChanged map[types.Address]bool
 	storageChanges map[string][]byte
@@ -52,7 +60,7 @@ func NewChangeSetWriter() *ChangeSetWriter {
 		storageChanges: make(map[string][]byte),
 	}
 }
-func NewChangeSetWriterPlain(db kv.RwTx, blockNumber uint64) *ChangeSetWriter {
+func NewChangeSetWriterPlain(db kv.Tx, blockNumber uint64) *ChangeSetWriter {
 	return &ChangeSetWriter{
 		db:             db,
 		accountChanges: make(map[types.Address][]byte),
@@ -163,12 +171,16 @@ func (w *ChangeSetWriter) recordStorageWipe(address types.Address, slots map[typ
 }
 
 func (w *ChangeSetWriter) WriteChangeSets() error {
+	rwTx, ok := w.db.(kv.RwTx)
+	if !ok {
+		return fmt.Errorf("WriteChangeSets requires a kv.RwTx; got %T", w.db)
+	}
 	accountChanges, err := w.GetAccountChanges()
 	if err != nil {
 		return err
 	}
 	if err = changeset.Mapper[modules.AccountChangeSet].Encode(w.blockNumber, accountChanges, func(k, v []byte) error {
-		return w.db.AppendDup(modules.AccountChangeSet, k, v)
+		return rwTx.AppendDup(modules.AccountChangeSet, k, v)
 	}); err != nil {
 		return err
 	}
@@ -181,16 +193,20 @@ func (w *ChangeSetWriter) WriteChangeSets() error {
 		return nil
 	}
 	return changeset.Mapper[modules.StorageChangeSet].Encode(w.blockNumber, storageChanges, func(k, v []byte) error {
-		return w.db.AppendDup(modules.StorageChangeSet, k, v)
+		return rwTx.AppendDup(modules.StorageChangeSet, k, v)
 	})
 }
 
 func (w *ChangeSetWriter) WriteHistory() error {
+	rwTx, ok := w.db.(kv.RwTx)
+	if !ok {
+		return fmt.Errorf("WriteHistory requires a kv.RwTx; got %T", w.db)
+	}
 	accountChanges, err := w.GetAccountChanges()
 	if err != nil {
 		return err
 	}
-	if err = writeIndex(w.blockNumber, accountChanges, modules.AccountsHistory, w.db); err != nil {
+	if err = writeIndex(w.blockNumber, accountChanges, modules.AccountsHistory, rwTx); err != nil {
 		return err
 	}
 
@@ -198,7 +214,7 @@ func (w *ChangeSetWriter) WriteHistory() error {
 	if err != nil {
 		return err
 	}
-	return writeIndex(w.blockNumber, storageChanges, modules.StorageHistory, w.db)
+	return writeIndex(w.blockNumber, storageChanges, modules.StorageHistory, rwTx)
 }
 
 func (w *ChangeSetWriter) PrintChangedAccounts() {
