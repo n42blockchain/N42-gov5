@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BLS12-381 field constants and top-level parameters.
+// Hardcodes the base field modulus p, scalar field order r, the
+// curve B constant and tower generators used throughout fp / fp2
+// / fp6 / fp12 arithmetic. Consumed by g1 / g2 point decoders and
+// the pairing Engine at initialization time.
 
 //nolint:gofmt
 package bls12381

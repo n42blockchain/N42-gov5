@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Random-access reader for JMT archive segments produced by compressor.go.
+// NodeArchiveReader pairs a seg.Decompressor with a recsplit.Index so a
+// node can be fetched by hash in O(1) without scanning the segment.
+// OpenReader opens the matching .seg and .idx files, wiring the two
+// handles into a single reader that also knows how to close both sides
+// cleanly on error during construction.
 
 package archive
 

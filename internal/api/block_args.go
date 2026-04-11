@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Block and transaction JSON marshalling helpers for RPC responses.
+// RPCMarshalBlock formats a block.IBlock into the canonical eth_getBlock*
+// map representation, optionally inlining transactions in either hash-only
+// or full-object form, and honours a blockHashOverride for engine API
+// payload responses where the canonical hash differs from the computed one.
 
 package api
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ABI-to-source generator driving `abigen`.
+// Bind() parses a list of contract ABIs (plus optional bytecode and
+// fqcontract names), normalizes identifiers against Go/Java/ObjC
+// reserved words and emits a compile-ready file via text/template.
+// Lang enum selects LangGo/LangJava/LangObjC output and bindType*
+// helpers map Solidity primitives and tuples to target types.
 
 // Package bind generates Ethereum contract Go bindings.
 //

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// VerifyGaslimit enforces the per-block gas limit change rules.
+// Uses unsigned arithmetic to avoid int64 overflow, limits the
+// absolute change to parentGasLimit / params.GasLimitBoundDivisor
+// and rejects headers with a gas limit below params.MinGasLimit
+// (5000). Matches the yellowpaper gas limit transition function.
 
 package misc
 

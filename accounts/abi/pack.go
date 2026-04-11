@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Low-level element encoders driving Arguments.Pack.
+// packElement dispatches on Type.T (IntTy, UintTy, StringTy, AddressTy,
+// BoolTy, BytesTy, FixedBytesTy, FunctionTy) and emits 32-byte padded
+// words. packBytesSlice prepends the U256 length header and right-pads
+// to a 32-byte boundary. packNum normalizes signed/unsigned ints and
+// *big.Int into U256 two's-complement words.
 
 package abi
 

@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Merkle unit for the utils package.
+// Exports helpers such as IsValidMerkleBranch and PreparateRootsForHashing.
+// Miscellaneous consensus-layer utilities.
 
 //go:build n42el
 

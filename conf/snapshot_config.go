@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Periodic state snapshot configuration.
+// SnapshotConfig schedules snapshot creation every Interval blocks
+// at HEAD - SafetyMargin, retaining up to MaxRetained generations.
+// The pruner respects snapshot boundaries so changesets between
+// the oldest snapshot and HEAD stay on disk for recoverability.
 
 package conf
 

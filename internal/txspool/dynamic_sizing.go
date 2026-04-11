@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Dynamic pool sizing helper. Adjusts the in-memory transaction pool
+// capacity based on runtime memory pressure using runtime.MemStats so
+// a node under heavy load sheds old entries before OOM. Exports
+// Prometheus gauges for the current size and the most recent
+// adjustment reason.
 
 package txspool
 

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Integer width conversion helpers used by the EVM and gas layer.
+// SafeUint64ToInt64, SafeUint64ToInt, SafeUint64ToUint32 and
+// SafeInt64ToInt each return (converted, ok) where ok is false when
+// the source value would overflow the destination type. These avoid
+// silent wraparound on 32-bit targets and give call sites a direct
+// path to surface ErrGasUintOverflow-style errors instead of
+// propagating corrupted values.
 
 package vm
 

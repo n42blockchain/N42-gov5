@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// BridgeAPI exposes JSON-RPC methods for cross-chain bridge operations.
+// Wraps the bridge.Router to surface transfer status queries and returns
+// a structured BridgeStatusResult (status string + numeric code) suitable
+// for light clients tracking pending deposits and withdrawals between
+// N42 and external chains.
 
 package api
 

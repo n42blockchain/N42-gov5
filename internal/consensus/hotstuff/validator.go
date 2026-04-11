@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Validator set types and lookup helpers for HotStuff-2.
+// ValidatorInfo pairs an Address with a BLS public key. The package
+// provides sorted-set helpers backed by bytes.Compare for
+// deterministic committee ordering, plus membership and leader
+// selection utilities consumed by rotor.go and quorum.go.
 
 package hotstuff
 

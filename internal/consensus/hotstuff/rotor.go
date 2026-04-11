@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Rotor drives deterministic leader rotation across libp2p peers.
+// Uses sha256 over (epoch, view, validator set) to produce a stable
+// ordering, then selects the round leader via modulo indexing. Holds
+// atomic counters for the current epoch and view and synchronises
+// rotation updates with a sync.Mutex so concurrent callers agree on
+// the next proposer identity.
 
 package hotstuff
 

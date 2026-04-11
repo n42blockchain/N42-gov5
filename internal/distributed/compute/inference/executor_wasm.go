@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// WASMExecutor implements InferenceExecutor backed by a WASM model
+// cache. Enforces DefaultMaxModelSize and DefaultFuelLimit, hashes
+// model bytes by keccak256 and returns deterministic InferenceResult
+// values so opML fraud proofs can re-run identical executions.
 
 package inference
 

@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// `bench-state` subcommand for the n42 binary.
+// Micro-benchmarks the three state-commitment backends (MPT, JMT,
+// BMT) plus verkle against replayed blocks, measuring insert /
+// commit / proof throughput. Uses lib/jmt, lib/bmt, lib/commitment
+// and internal/replay over mdbx to exercise each tree with the
+// same workload for apples-to-apples comparison.
 
 package main
 

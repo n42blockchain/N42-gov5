@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EraE archive format constants, Header and IndexEntry types.
+// Defines MagicBytes ("eraE"), Version 1, HeaderSize 14,
+// IndexEntrySize 16 and FooterSize 8. EncodeHeader/DecodeHeader
+// serialize the 4+2+8 magic||version||networkID header. Sentinel
+// errors ErrInvalidMagic, ErrInvalidVersion, ErrBlockNotFound
+// and ErrEmptyArchive surface decode and lookup failures.
 
 package era
 

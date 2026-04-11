@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Optimal ate pairing engine for BLS12-381.
+// Declares Engine plus the pair helper which binds a PointG1 with
+// a PointG2 input. Accumulates Miller-loop and final-exponentiation
+// stages into an Fp12 target value used by signature and KZG
+// verification.
 
 package bls12381
 

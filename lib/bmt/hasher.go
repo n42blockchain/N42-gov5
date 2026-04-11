@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Blake3 hashing primitives for the N42 binary Merkle tree (BMT).
+// HashNode concatenates left || right children before Blake3-256, HashLeaf
+// prepends a 0x00 domain separator to the value, and HashKey maps raw keys
+// into the 32-byte path space. The toHash helper normalises NodeValue
+// inputs, hashing inline payloads and passing precomputed 32-byte digests
+// through unchanged so internal and leaf nodes share one code path.
 
 package bmt
 

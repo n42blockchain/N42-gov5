@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// noopTracer. Zero-overhead placeholder implementing the full
+// tracer interface but discarding every event. Useful as a
+// regression baseline and as a default target when higher-level
+// code needs a non-nil tracer instance.
 
 package native
 

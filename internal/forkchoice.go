@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Fork choice rule. Compares two competing heads by total difficulty
+// (pre-merge) or by PoS attestation weight, breaking ties on block
+// time and hash. Used by BlockChain.reorg to decide whether a newly
+// imported chain wins over the current canonical head.
 
 package internal
 

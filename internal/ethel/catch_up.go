@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// catch_up.go — top-level catch-up entry point for eth-el.
+//
+// CatchUpConfig wires the input and output freezers, the MDBX database,
+// the chain config, the consensus engine, and the commit interval into a
+// single call. CatchUp initialises genesis state when requested, resumes
+// from ReadProgress, and drives an Executor from localHead+1 up to the
+// frozen tip. Once caught up, the caller switches to the engineAPI
+// live loop so the consensus layer can drive NewPayload forward.
 
 package ethel
 

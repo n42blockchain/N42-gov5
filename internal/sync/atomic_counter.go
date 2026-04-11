@@ -13,6 +13,10 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Lock-free AtomicInt64 counter wrapping sync/atomic.Int64. Provides
+// Load, Store, Add, Inc and Dec helpers used by the sync subsystem for
+// simple concurrent counters without taking a mutex.
 
 package sync
 

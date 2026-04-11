@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// LazyQueue is a two-level priority queue whose priorities may drift
+// with time. Callers supply PriorityCallback + MaxPriorityCallback;
+// the queue buckets items into two sstacks by upper-bound estimate
+// and a periodic Refresh moves stale entries between buckets. Used
+// by the peer scoring subsystem where per-peer rank changes as new
+// latency samples arrive.
 
 package prque
 

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Clef-backed accounts.Backend and Wallet implementation.
+// ExternalBackend hosts a single ExternalSigner that dials a Clef IPC
+// endpoint over jsonrpc and serves accounts.Wallet by forwarding
+// SignData/SignText/SignTx through account_signData, account_signTypedData
+// and account_signTransaction. Wraps the raw RPC reply in
+// signTransactionResult and caches account_list results behind a
+// RWMutex so every call into the external signer is proxied safely.
 
 package external
 

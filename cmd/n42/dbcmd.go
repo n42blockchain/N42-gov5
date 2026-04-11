@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// `db` subcommand: database inspection and debugging tools.
+// Registers dbCommand with subcommands that open the MDBX
+// environment read-only and print bucket stats, raw key / value
+// dumps, head metadata and freezer head pointers. Works against
+// the modules schema used by internal/node to aid diagnosis of
+// on-disk state without running the full node.
 
 package main
 

@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Minimal Hyperlane IMailbox ABI definitions used by the dispatcher
+// and receiver. Exposes only the functions the bridge actually needs:
+// dispatch, quoteDispatch, localDomain, latestDispatchedId and the
+// corresponding event topics. Avoids pulling in the full Hyperlane
+// client dependency tree.
 
 package bridge
 

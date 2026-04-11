@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// DiffCollector intercepts writes to build snapshot DiffLayers.
+// Wraps a state.WriterWithChangeSets and records UpdateAccountData,
+// DeleteAccount and storage writes into parallel accounts/accountDels
+// /storage maps while forwarding to the inner writer unchanged.
+// After CommitBlock the captured maps are promoted into a new
+// DiffLayer added to the snapshot Tree.
 
 package snapshot
 

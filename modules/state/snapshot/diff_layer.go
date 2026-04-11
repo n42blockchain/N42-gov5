@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// DiffLayer: per-block diff node in the snapshot acceleration tree.
+// Each DiffLayer points at a parent Layer (DiffLayer or DiskLayer)
+// and holds accounts, an explicit accountDels set to distinguish
+// deletion from absence, and storage slot diffs. stale, lock and
+// memory fields support safe concurrent lookups, reorg invalidation
+// and approximate accounting for flatten-to-disk thresholds.
 
 package snapshot
 

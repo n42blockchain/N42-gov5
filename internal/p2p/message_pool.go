@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Size-class pooled buffer allocator for libp2p message payloads.
+// MessagePool holds 16 sync.Pools covering size classes from 256 bytes
+// to 8 MiB in power-of-two steps. messageSizeClass maps a requested
+// byte count to the smallest matching class and returns -1 when the
+// request exceeds the largest pool. Reduces allocation churn on hot
+// gossip and RPC paths that repeatedly read and discard short
+// messages.
 
 package p2p
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Witness Generator backed by a JMTCommitment.
+// NewGenerator validates its JMTCommitment argument. Generate consumes
+// a TracingReader-produced access set plus a codeHash->bytecode map
+// and produces a BlockWitness containing minimal JMT Merkle proofs
+// anchored at parentRoot. SetAncestorHashes attaches recent block
+// hashes so stateless execution can serve the BLOCKHASH opcode.
 
 package witness
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// CoreEngine simplified consensus engine interface.
+// Provides the minimal VerifyHeader / VerifyHeaders surface that the
+// block import pipeline needs, decoupled from the richer Engine in
+// consensus.go. VerifyHeaders supports batch verification with a quit
+// channel and async result channel for concurrent validation.
 
 package consensus
 

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM gas accounting primitives. Exports the canonical gas-tier
+// constants (GasQuickStep, GasFastestStep, GasFastStep, GasMidStep,
+// GasSlowStep, GasExtStep) shared by every opcode's constantGas field.
+// Provides safeMul/safeAdd uint64 helpers that report overflow without
+// panicking, toWordSize for byte-to-word rounding, and callGas which
+// implements the EIP-150 63/64 rule so callers cannot re-forward more
+// gas than they hold.
 
 package vm
 

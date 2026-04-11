@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Consensus engine interfaces and chain readers.
+// Defines SystemCall, the system contract invocation callback, and
+// ChainHeaderReader, the minimal chain access surface required for
+// header verification. Callers use this interface to fetch the chain
+// config, current block and historical headers by hash or number.
 
 package consensus
 

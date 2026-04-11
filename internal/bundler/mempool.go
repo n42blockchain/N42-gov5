@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// UserOperation mempool for the ERC-4337 bundler. Thread-safe pool
+// indexing UserOps by hash, enforcing capacity (ErrPoolFull),
+// deduplication (ErrDuplicateOp) and replacement rules. Uses
+// sha3.NewLegacyKeccak256 for UserOpHash derivation and exposes
+// add/remove/getNext primitives driven by the BundlerService.
 
 package bundler
 

@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Hard-fork balance injection utilities for the APOS engine.
+// HardForkAllocation is the JSON wire format (block, address, hex
+// uint256 amount) loaded from a config file. parsedAllocation caches
+// the validated address and uint256 amount ready for application,
+// writing directly into modules/state at the specified block height.
 
 package apos
 

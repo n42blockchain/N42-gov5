@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Directory scanner feeding the account cache.
+// fileCache holds a mapset of previously seen paths and the latest
+// observed modification time. scan() walks the keystore directory,
+// filters editor backups, hidden files and symlinks via nonKeyFile,
+// and returns create/delete/update path sets plus timing logs so the
+// outer accountCache can refresh its indexes deterministically after
+// each filesystem event.
 
 package keystore
 

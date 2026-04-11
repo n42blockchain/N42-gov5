@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Merkle proof verification for BlockWitness contents.
+// VerifyWitness walks every account and storage KeyProof and runs
+// the JMT proof verification algorithm against the parent state
+// root. Sentinel errors ErrInvalidAccountProof, ErrInvalidStorageProof
+// and ErrProofValueMismatch describe the first failure mode seen,
+// letting callers distinguish shape from content mismatches.
 
 package witness
 

@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// SlashManager records SlashEvent entries against misbehaving
+// providers under the SlashCondition enum (Timeout, InvalidProof,
+// ChallengeUpheld). Implements the Verify-or-Slash economic model
+// that keeps optimistic tasks honest without on-chain re-execution.
 
 package coprocessor
 

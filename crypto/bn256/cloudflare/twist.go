@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// G2 twist curve arithmetic for BN256.
+// twistPoint implements y^2 = x^3 + 3/xi over GF(p^2) in Jacobian
+// coordinates with cached t = z^2. twistB provides the curve
+// constant. G2 is the n-torsion subgroup used as the second
+// input to the optimal ate pairing.
 
 package bn256
 

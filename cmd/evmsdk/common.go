@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Shared constants, flags and log helpers for the mobile evmsdk.
+// Declares VERSION, EngineStateRunning / EngineStateStopped, config
+// and request paths plus the verification debug log filename and
+// the isDebug runtime toggle. Uses holiman/uint256 and the N42 log
+// package for SDK-wide diagnostics.
 
 package evmsdk
 

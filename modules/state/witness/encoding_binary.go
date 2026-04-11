@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Compact binary codec for BlockWitness.
+// Wire layout: parentRoot(32) followed by account proofs, storage
+// proofs and code entries each prefixed with u32 counts. Each
+// KeyProof carries keyHash, optional originalKey, value and the
+// jmt path entries with per-node data and nibble indices.
+// errBinaryWitnessShort and errBinaryWitnessTooLarge bound decoding.
 
 package witness
 

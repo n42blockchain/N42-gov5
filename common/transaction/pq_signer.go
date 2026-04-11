@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Post-quantum signer implementation. Verifies Falcon-512, SQIsign,
+// Dilithium2 and Dilithium3 signatures for the 0x05 PQ transaction
+// type. Compile-time asserts tie the local DilithiumN*{PublicKey,
+// Signature}Size constants to the real values in crypto/dilithium.
+// ErrUnsupportedPQAlgorithm and ErrPQSignatureVerificationFailed
+// report unknown algorithm IDs and failed verifications.
 
 // Post-Quantum Signer Implementation
 // This signer handles post-quantum transaction signature verification

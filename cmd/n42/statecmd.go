@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// `export state` subcommand: dump world state to JSON.
+// Extends exportCommand with a subcommand that walks every account
+// and storage slot through internal/node and common/account types
+// and writes them as JSON for offline analysis or genesis seeding.
 
 package main
 

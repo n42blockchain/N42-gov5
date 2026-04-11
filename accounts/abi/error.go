@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Solidity custom error descriptor.
+// Error wraps a name, Inputs, canonical Sig ("name(type,...)") and
+// four-byte ID derived from Keccak256(Sig) via NewError. Unpack
+// matches revert data against the four-byte selector and decodes the
+// remaining payload through Arguments.Unpack so callers can surface
+// typed revert reasons alongside normal method returns.
 
 package abi
 

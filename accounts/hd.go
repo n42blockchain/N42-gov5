@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BIP-32/BIP-44 derivation paths for HD wallets.
+// Exposes DefaultRootDerivationPath, DefaultBaseDerivationPath and
+// LegacyLedgerBaseDerivationPath for Ethereum (m/44'/60'/0'/0[/...]).
+// DerivationPath []uint32 supports ParseDerivationPath of absolute
+// ("m/...") and relative forms, String/MarshalJSON/UnmarshalJSON for
+// config round-trips, and DefaultIterator/LedgerLiveIterator that
+// increment the correct path component for SelfDerive discovery.
 
 package accounts
 

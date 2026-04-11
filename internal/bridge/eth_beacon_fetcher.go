@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// BeaconFetcher: ETH beacon-API poller that feeds sync committee light
+// client updates into EthLightClient on a configurable interval
+// (default 12s). Handles HTTP retrieval with a 30s timeout, hex
+// decoding of finality update payloads and propagates the parsed
+// headers for downstream BLS verification. Drives the ETH->N42
+// reverse bridge liveness.
 
 package bridge
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core types for ZK inference attestation: InferenceAttestation,
+// SignedAttestation, AttestationChain and the SafetyLevel enum
+// (Standard, HighValue, Critical). Defines the canonical byte
+// encoding used for signing and the sentinel errors returned by
+// service operations.
 
 package attestation
 

@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Resets unit for the statechange package.
+// Exports helpers such as ProcessEth1DataReset, ProcessSlashingsReset,
+// ProcessRandaoMixesReset, and ProcessParticipationFlagUpdates.
+// Per-slot and per-epoch state change routines.
 
 //go:build n42el
 

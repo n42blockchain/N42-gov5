@@ -1,5 +1,15 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// rebuild_state.go — PlainState reconstruction from the leaves journal.
+//
+// RebuildState and RebuildStateWith open the freezer "leaves" table
+// read-only, stream every per-block entry through DecodeJournal, and
+// materialise PlainState into MDBX without re-executing any transactions.
+// The in-memory accumulator is flushed whenever the Go heap exceeds
+// memLimitGB. RebuildOptions.VerifyInterval enables periodic state-root
+// verification against the input freezer's headers so the operator
+// knows within N blocks if the journal is corrupt.
 
 package ethel
 

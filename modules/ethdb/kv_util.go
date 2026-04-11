@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// splitCursor adapter for composite storage keys.
+// Wraps a kv.Cursor so Seek/Next return (key1,key2,key3,val) tuples
+// extracted at fixed offsets part1end/part2start/part3start, enabling
+// incarnation-agnostic traversal without key reconstruction.
+// matchKey enforces a matchBits prefix using Bytesmask to constrain
+// iteration to a caller-defined composite prefix.
 
 package ethdb
 

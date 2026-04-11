@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Read-side of the log index backed by sharded roaring bitmaps.
+// BlocksForAddress and BlocksForTopic return the sorted block numbers
+// in [from, to] that may contain matching logs, delegating to
+// blocksForKey which fetches roaring chunks via bitmapdb.Get and
+// trims them to the requested range with RemoveRange.
 
 package rawdb
 

@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Program Registry mapping programHash to a verification key. Used by
+// the coprocessor service to look up the correct ZK verifier for a
+// submitted task. Register clones the vk bytes and enforces unique
+// program hashes across the process.
 
 package coprocessor
 

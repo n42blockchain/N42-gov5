@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BMTRootComputer: RootComputer adapter over a BMTCommitment.
+// Implements state.RootComputer with RootScheme RootSchemeBMTBlake3.
+// ComputeRoot turns the (accounts, storage) dirty maps into a single
+// bmt.BatchEntry list for a top-down PutBatch traversal, avoiding
+// intermediate root garbage from per-key Put calls.
+// Deletions currently fall back to individual UpdateAccount calls.
 
 package commitment
 

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Manager multiplexing multiple accounts.Backend instances.
+// Manager keeps a reflect.Type-keyed backend map, a merged wallets
+// slice and an event.Feed fed by backend subscriptions through an
+// update goroutine sized by managerSubBufferSize. Exposes NewManager,
+// AddBackend, Backends, Wallets, Wallet, Accounts, Find, Subscribe
+// and Close, plus a Config gate for InsecureUnlockAllowed and an
+// internal newBackendEvent hook for hot-plugging backends.
 
 package accounts
 

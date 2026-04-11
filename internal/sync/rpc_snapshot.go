@@ -13,6 +13,10 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Server-side snapshot RPC handlers. snapshotInfoRPCHandler advertises
+// available snapshot heights from the local snapshot.ListSnapshots
+// registry so peers can pick a compatible checkpoint to download.
 
 package sync
 

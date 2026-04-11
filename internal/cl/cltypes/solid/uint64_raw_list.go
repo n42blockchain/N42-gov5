@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Uint64 raw list unit for the solid package.
+// Defines the RawUint64List types.
+// Provides constructors NewRawUint64List.
+// Exports helpers such as NewRawUint64List, SetCap, Clear, and Append.
+// Fixed-layout SSZ containers with in-place encoding.
 
 //go:build n42el
 

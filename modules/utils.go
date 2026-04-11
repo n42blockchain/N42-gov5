@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared key-encoding helpers used across rawdb and state.
+// NumberLength (8) and Incarnation (2) define the width of block
+// numbers and incarnation counters in composite keys.
+// EncodeBlockNumber/DecodeBlockNumber pack and unpack big-endian
+// uint64 block numbers. HeaderKey and BlockBodyKey build the
+// number||hash composite keys used in header/body buckets.
 
 package modules
 

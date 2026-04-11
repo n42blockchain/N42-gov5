@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Value-copyable URL type identifying wallets and accounts.
+// A stripped-down alternative to net/url.URL with only Scheme and
+// Path, no percent-encoding, and no pointers so Account values stay
+// cheaply copyable. Provides parseURL, String, TerminalString (for
+// log output truncation), Cmp for stable ordering by scheme then
+// path, and MarshalJSON/UnmarshalJSON for Web3 Secret Storage and
+// config round-trips.
 
 package accounts
 

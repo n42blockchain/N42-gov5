@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// StorageSize float-backed human-readable byte-size type. String
+// and TerminalString scale to B / KiB / MiB / GiB / TiB with two
+// decimal places, using the kiB / miB / giB / tiB power-of-two
+// constants for thresholds. Used by log output, RPC responses and
+// metrics gauges that expose database or cache sizes.
 
 package types
 

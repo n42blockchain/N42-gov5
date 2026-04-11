@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Transaction-scoped MDBX implementation of jmt.NodeStore. MDBXStore
+// wraps a single kv.RwTx so every flush ties its writes to the enclosing
+// block commit inside ChainDB.Update. JMTNodeTable holds serialized
+// nodes keyed by their Blake3 hash, JMTRootTable persists the latest
+// root + version for crash recovery, and the deprecated JMTVersionRoots
+// constant is retained purely for backward compatibility with old
+// databases that still have the table defined.
 
 package store
 

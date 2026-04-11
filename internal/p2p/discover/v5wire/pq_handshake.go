@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Hybrid post-quantum Discovery v5 handshake. Combines classical
+// secp256k1 ECDH with Kyber-768 key encapsulation and derives the
+// shared secret via HKDF(ecdhSecret || kyberSecret, ...). Exports the
+// Kyber size constants (KyberPublicKeySize, KyberPrivateKeySize,
+// KyberCiphertextSize, KyberSharedKeySize) and ecdhUncompressedPubLen.
+// Error sentinels cover handshake disable, key-gen/encap/decap
+// failures and malformed Kyber artefacts.
 
 // Post-Quantum Hybrid Handshake
 //

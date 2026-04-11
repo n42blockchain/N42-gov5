@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared helpers for tracer test suites: golden-file loading,
+// chain config fixtures, block and state builders so each native /
+// JS tracer test file only needs to supply the scenario-specific
+// inputs.
 
 package tracetest
 

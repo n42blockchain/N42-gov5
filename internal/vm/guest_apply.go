@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Self-contained message application entry point for the zkVM guest.
+// ApplyMessageForGuest reproduces the full transaction state-transition
+// fee model - buyGas, EVM call or create, refundGas, coinbase tip
+// payment - without importing package internal, so the guest binary
+// stays dependency-light. GuestExecutionResult returns UsedGas, Err and
+// ReturnData. Errors errGuestInvalidEVM, errGuestIntrinsicGas,
+// errGuestNonceMismatch and errGuestBuyGas classify validation failures.
 
 package vm
 

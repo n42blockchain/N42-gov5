@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Cryptographically secure random integer helpers.
+// SecureIntn and SecureInt63n return uniform values in [0, n) using
+// crypto/rand. Both panic if n <= 0 and on any crand.Int failure,
+// which is treated as an unrecoverable entropy outage. Preferred by
+// consensus code over math/rand to avoid predictable jitter on PoA
+// signer scheduling.
 
 package misc
 

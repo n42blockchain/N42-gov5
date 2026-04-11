@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Fixed-width integer helpers. Re-exports the stdlib MaxInt* /
+// MinInt* / MaxUint* limits, defines HexOrDecimal64 whose
+// UnmarshalText / MarshalText accept 0x hex or decimal strings,
+// and exposes ParseUint64, SafeAdd / SafeSub / SafeMul overflow
+// checks plus random range helpers used by gas schedulers and
+// configuration parsing.
 
 package math
 

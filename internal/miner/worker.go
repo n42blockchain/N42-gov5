@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Block building worker. Pulls pending transactions from the txpool,
+// applies them to a fresh IntraBlockState snapshot, collects receipts
+// and computes the candidate header. Handles uncles, reorgs, proposer
+// signalling and panic recovery via runtime/debug so a single bad tx
+// cannot kill the mining loop. Feeds sealed blocks back to miner.go.
 
 package miner
 

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// DumpAccount JSON serialization structure used by state dumps.
+// Encodes balance, nonce, storage root, code hash, optional code and
+// storage map for iterative state traversal APIs. Address and SecureKey
+// are optional fields populated in line-by-line dump mode.
 
 package api
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// WarmupOverlayCache pre-loads the layered ShardedCache on startup.
+// Opens a read tx over modules.Account, walks up to maxWarmupEntries
+// (100,000) key/value pairs and inserts them into the cache to reduce
+// cold-start misses after a node restart. The blocks parameter is
+// reserved for future range-limited warmup filtering.
 
 package state
 

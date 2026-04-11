@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// TxsPool: main N42 transaction pool. Orchestrates validation,
+// per-account sorted lists, promotion between queued and pending
+// sub-pools, replay-on-reorg handling and event broadcasts. Exposes
+// Add/AddLocal, Pending, ContentFrom and Stop lifecycle APIs used by
+// the miner, JSON-RPC and P2P fanout paths.
 
 package txspool
 

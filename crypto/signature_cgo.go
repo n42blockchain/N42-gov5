@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// CGO-backed secp256k1 signature helpers.
+// Guarded by !nacl && !js && cgo && !gofuzz, this file bridges
+// crypto/ecdsa to the erigontech/secp256k1 CGO library. Exposes
+// Ecrecover, EcrecoverWithContext and SigToPub for fast public
+// key recovery on the hot transaction-validation path.
 
 //go:build !nacl && !js && cgo && !gofuzz
 

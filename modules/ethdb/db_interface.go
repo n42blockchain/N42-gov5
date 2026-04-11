@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core Database interface abstraction over the lib/kv backend.
+// Declares DBGetter, Database, MinDatabase, and DbWithPendingMutations
+// interfaces that wrap kv.Getter/Putter/Deleter/Closer for bucket-keyed
+// access, plus TxFlags (RW/RO) and ErrKeyNotFound sentinel.
+// DbWithPendingMutations exposes the begin/commit/rollback pattern used
+// by olddb mutation layers on top of native MDBX transactions.
 
 package ethdb
 

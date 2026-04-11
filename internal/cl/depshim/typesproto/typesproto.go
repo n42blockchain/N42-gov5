@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Typesproto unit for the typesproto package.
+// Defines the RequestsBundle types.
+// Exports helpers such as GetRequests.
+// Generated proto type shims.
 
 //go:build n42el
 

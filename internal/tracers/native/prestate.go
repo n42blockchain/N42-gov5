@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// prestateTracer. Records the minimal account + storage snapshot a
+// transaction touches so it can be replayed deterministically on
+// another node. Also supports a diff mode returning pre and post
+// state used by simulation tooling.
 
 package native
 

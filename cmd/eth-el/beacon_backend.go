@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// n42el-tagged beacon backend for the eth-el binary.
+// Adapts internal/ethel.Node to the Caplin eladapter.Backend
+// interface through the chaindbProvider seam and the chainHash
+// helper that converts depshim Hash to common/types.Hash. Guarded
+// by the n42el build tag so non-EL builds ship without pulling
+// the internal/cl subtree.
 
 //go:build n42el
 

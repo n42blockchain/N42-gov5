@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Default GossipSub topic names and the TopicMappings table.
+// GossipPrefix is "n42/1/" and the canonical topics are
+// new_block, sync_state and new_transaction. TopicMappings lists
+// the allowed topics so the pubsub subscription filter can validate
+// inbound joins without extra config.
 
 package message
 

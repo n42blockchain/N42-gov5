@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared public types for the chain package: ChainEvent, NewBlockEvent,
+// ChainHeadEvent, Reorg structs and other value types emitted on the
+// blockchain event bus. Consumers in miner, RPC and sync subscribe
+// through BlockChain.SubscribeChainEvent using these definitions.
 
 package internal
 

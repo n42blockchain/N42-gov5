@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// HyperlaneMailboxBinding implements HyperlaneDispatcher by talking to
+// the Hyperlane Mailbox contract deployed on the local N42 chain.
+// Dispatching a cross-chain message becomes an N42 transaction to the
+// Mailbox, which the Hyperlane relayer network then delivers to the
+// destination domain. Handles ABI encoding, quoteDispatch fee lookup
+// and eth_sendTransaction plumbing via jsonrpc.Client.
 
 package bridge
 

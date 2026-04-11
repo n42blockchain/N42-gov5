@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Content-addressed Binary Merkle Tree core. Tree threads a NodeStore with
+// a dirty map of newly created nodes and a current root hash, giving free
+// versioning through structural sharing: only the path from a modified
+// leaf back to the root produces new nodes. Internal nodes serialise as
+// tag + left + right (65 bytes) and leaves as tag + keyHash + value, both
+// keyed by their Blake3 hash. New / NewFromRoot / Root / DirtyLen / Get
+// form the public entry points; note the tree is NOT goroutine safe.
 
 package bmt
 

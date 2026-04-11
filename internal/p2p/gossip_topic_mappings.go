@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// GossipSub topic-to-message type registry. GossipTopicRegistry holds
+// a thread-safe map of topic name to proto.Message plus an inverse
+// reflect.Type index. gossipTopicMappings declares the canonical
+// bindings for BlockTopicFormat, TransactionTopicFormat,
+// BlobSidecarTopicFormat plus placeholders for HotStuff consensus and
+// ZK proof topics (which use custom SSZ serialization). GossipType
+// Mapping provides the reverse lookup used by the broadcaster.
 
 package p2p
 

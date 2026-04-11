@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Fp prime-field element encoding for BLS12-381.
+// fromBytes parses a 48-byte big-endian representation into an
+// internal fe (field element) with range checking, feeding the
+// rest of the arithmetic stack (mul, square, add). Also exposes
+// the helpers used by higher-level EC point decoders.
 
 package bls12381
 

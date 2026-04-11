@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared CLI helpers for account resolution and error reporting.
+// MakeAddress turns a hex address or keystore index into an
+// accounts.Account, abstracting over keystore.KeyStore access.
+// Also exposes Fatalf for consistent "log + os.Exit(1)" behaviour
+// across subcommands and thin helpers around common/types and
+// common/avmutil.
 
 package utils
 

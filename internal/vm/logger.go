@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Tracing interfaces consumed by debug tracers and state tests. The
+// EVMLogger interface covers transaction-level (CaptureTxStart/End),
+// call-frame (CaptureStart/End, CaptureEnter/Exit) and opcode-level
+// (CaptureState, CaptureFault) hooks, with pointer-to-live-VM-state
+// callers that must be copied if retained. FlushableTracer adds a
+// Flush step for tracers that buffer traces until the enclosing
+// transaction completes.
 
 package vm
 

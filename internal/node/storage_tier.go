@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Storage tier configuration helper. Maps conf.Config storage
+// directives onto MDBX + freezer layout, setting up hot/cold paths
+// and applying per-table retention rules read from the node
+// configuration file.
 
 package node
 

@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// HyperlaneReceiver monitors the Hyperlane Mailbox contract on N42 for
+// incoming Process(uint32,bytes32,address) events and updates bridge
+// metrics accordingly. Paginates eth_getLogs queries using
+// maxLogsBlockRange (2000) to stay within RPC provider limits, caches
+// the keccak256 event topic, and tracks lastBlock atomically to
+// resume polling after restarts.
 
 package bridge
 

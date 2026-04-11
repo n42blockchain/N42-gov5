@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ENSAPI implements Ethereum Name Service resolution over JSON-RPC.
+// Delegates to BlockChainAPI for chain access and to common/ens for
+// normalization and name validation. ResolveName performs forward
+// lookup (name to address) after UTS-46 normalization, used by wallet
+// integrations and block explorers for human-readable addresses.
 
 package api
 

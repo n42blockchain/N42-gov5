@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// G2 twist-curve group operations for BLS12-381.
+// Declares PointG2 as a length-3 array of fe2 (affine when z = 1,
+// Jacobian otherwise) and the G2 group arithmetic: add, double,
+// negate, scalar multiplication and encode / decode used as the
+// second input group of the optimal ate pairing.
 
 //noling:golint
 package bls12381

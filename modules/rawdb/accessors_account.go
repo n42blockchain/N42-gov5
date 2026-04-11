@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Flat account table accessors for the modules.Account bucket.
+// GetAccount looks up an encoded account by 20-byte address and
+// decodes it into account.StateAccount via DecodeForStorage, returning
+// a (found, err) pair with found=false on empty value.
 
 package rawdb
 

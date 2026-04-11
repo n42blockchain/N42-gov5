@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Database StateWriter that emits changesets and history indexes.
+// originalAccountData produces the pre-image bytes for account diffs,
+// optionally zeroing CodeHash/Root when omitHashes is set for
+// hash-insensitive replay.
+// writeIndex updates the bitmap-based history index buckets via
+// bitmapdb.Get64, merging per-block changes into a roaring64 index.
 
 package state
 

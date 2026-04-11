@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// txNoncer: virtual account nonce cache the pool uses to reason
+// about pending chains of transactions without hitting the
+// underlying state DB on every lookup. Backed by a sync.Mutex map
+// from address to the next pending nonce, refreshed from the state
+// reader on demand.
 
 package txspool
 

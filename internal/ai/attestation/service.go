@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AttestationService: creates, signs, verifies and chains ZK
+// inference attestations. Wires TrainingVerification and
+// ZKProofProvider interfaces so it can confirm model provenance
+// without depending on the concrete governance / training / zkprover
+// packages. Handles TTL pruning, AttestationChain multi-hop
+// validation and Critical SafetyLevel enforcement.
 
 package attestation
 

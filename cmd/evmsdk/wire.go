@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// V2 wire-format header parser for the mobile SDK protocol.
+// Declares WireMagic0 / WireMagic1 ("N2"), WireVersion1,
+// WireHeaderSize (4 bytes) and the FlagHasBytecodes flag.
+// Exposes ErrWireTooShort / ErrWireInvalidMagic /
+// ErrWireUnsupportedVersion so callers can reject stale or
+// corrupt transport frames before decoding a StreamPacket.
 
 package evmsdk
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// DAO hard-fork constants for Ethereum mainnet compatibility.
+// Provides DAOForkBlockExtra marker, DAOForkExtraRange, the
+// DAORefundContract sink and the DAODrainList of drained accounts.
+// Consumed by header validation and state transition to apply the
+// DAO rescue balance migration on the fork block.
 
 package params
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM Log record produced by LOG0..LOG4 opcodes. Carries the
+// emitting Address, topic list, raw Data and the context fields
+// (BlockNumber, TxHash, TxIndex, BlockHash, Index, Removed) needed
+// for eth_getLogs filtering and reorg handling. ToProtoMessage /
+// FromProtoMessage map to proto/types_pb.Log for gossip and RPC
+// via the H160 / H256 converters in common/utils.
 
 package block
 

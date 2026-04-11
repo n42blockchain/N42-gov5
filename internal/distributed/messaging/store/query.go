@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// QueryEngine provides structured lookups over the PersistentStore.
+// QueryFilter supports topic, time range, sender, content type and a
+// cursor-based Limit, while QueryResult returns matched MessageRecords
+// plus the NextCursor used for pagination across large result sets.
 
 package store
 

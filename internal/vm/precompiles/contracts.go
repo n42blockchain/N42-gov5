@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Thin factory facade over the vm package's precompile implementations.
+// NewEcrecover, NewSha256, NewRipemd160, NewDataCopy, NewBigModExp,
+// NewBn256Add, NewBn256ScalarMul and NewBn256Pairing return
+// PrecompiledContract values produced by the corresponding vm.GetXxx
+// helpers. Lets the registry package stay decoupled from the concrete
+// vm types while still constructing the canonical set of Ethereum
+// precompiles.
 
 package precompiles
 

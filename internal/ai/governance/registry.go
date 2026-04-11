@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// DatasetRegistry: concurrent-safe map of training datasets keyed by
+// content hash. Indexes datasets by owner and by linked model hash
+// so a model audit can enumerate the datasets that trained it.
+// Consumed by the Committee and by ai/training when verifying
+// provenance.
 
 package governance
 

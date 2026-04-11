@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Relay bridges the messaging Service with libp2p GossipSub. Messages
+// are sharded across DefaultMessageShards topics using the
+// MessageTopicFormat /n42/msg/shard/%d, deduped via a
+// defaultSeenCacheSize ring buffer, and published through P2PPublisher.
 
 package messaging
 

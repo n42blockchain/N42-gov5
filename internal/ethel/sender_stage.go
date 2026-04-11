@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// sender_stage.go — parallel ecrecover pipeline for block senders.
+//
+// SenderStage streams block bodies from the input freezer through a pool
+// of goroutines that run ecrecover on every transaction using a signer
+// built from the chain config fork rules, then writes the 20-byte
+// sender addresses (batch-64 zstd) into the output freezer's "senders"
+// table via a reorder buffer. Running senders as a standalone pass lets
+// the executor re-use pre-computed senders and skip ecrecover during
+// the hot execution loop.
 
 package ethel
 

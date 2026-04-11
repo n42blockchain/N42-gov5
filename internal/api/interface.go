@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// RPC method metrics collection: calls, errors, latency percentiles.
+// MethodStat records per-method call and error counts. RPCMetrics
+// protects concurrent writers with an RWMutex and maintains per-method
+// latency histories, last-call timestamps, and total counters for
+// dashboards that expose hot and cold methods across namespaces.
 
 package api
 

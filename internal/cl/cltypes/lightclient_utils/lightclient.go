@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Lightclient unit for the lightclient_utils package.
+// Exports helpers such as CreateLightClientUpdate, BlockToLightClientHeader,
+// and CreateLightClientBootstrap.
+// Light-client update construction helpers.
 
 //go:build n42el
 

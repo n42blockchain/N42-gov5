@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Access list tracer. Observes SLOAD / SSTORE and EXTCODEHASH opcodes
+// during EVM execution to build the EIP-2930 access list a dry-run
+// would need, enabling eth_createAccessList RPC and gas warm-slot
+// optimisation.
 
 package logger
 

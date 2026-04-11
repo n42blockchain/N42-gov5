@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Non-Windows stub for packet-too-big detection.
+// Build-tagged !windows. isPacketTooBig always returns false, since
+// the WSAEMSGSIZE condition is a Windows-only IPC surface and Unix
+// sockets surface fragmentation through different error codes.
 
 //go:build !windows
 // +build !windows

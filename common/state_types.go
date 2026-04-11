@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// StateDB is the common-layer interface for EVM state-database
+// operations: account existence, balance, nonce, code and storage,
+// transient storage, access-list tracking, snapshot / revert,
+// self-destruct, and EIP-4844 blob-related helpers. Implemented by
+// IntraBlockState in modules/state; internal/vm/evmtypes aliases
+// it for backward compatibility. Not thread-safe; callers must
+// synchronize access themselves.
 
 package common
 

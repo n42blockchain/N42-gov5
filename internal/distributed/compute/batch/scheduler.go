@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Scheduler manages the batch job lifecycle. SubmitJob splits a Job
+// into map tasks over a list of DataRef partitions, enforces
+// maxJobTasks and maxParallel, tracks per-task progress and retries
+// failing shards across available compute providers.
 
 package batch
 

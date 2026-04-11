@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Transaction fetcher. Tracks which transaction hashes were announced
+// by which libp2p peers and pulls the full transactions on demand via
+// the sync_proto request/response protocol, honouring a retry budget
+// and per-peer rate limits to avoid amplification.
 
 package txspool
 

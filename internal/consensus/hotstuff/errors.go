@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// HotStuff-2 consensus error sentinels.
+// ErrOutputChannelClosed signals that the engine output channel is
+// full or closed. ErrInvalidMessage wraps malformed or corrupted
+// consensus payloads. ErrValidatorRemoved marks messages from an
+// evicted validator. ErrEpochScheduleEmpty guards the startup path
+// when no validator set configuration is loaded.
 
 package hotstuff
 

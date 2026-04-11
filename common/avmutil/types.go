@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM Hash and Address primitive types. Hash is a 32-byte Keccak256
+// digest; Address is a 20-byte account identifier. Provides Bytes /
+// Hex / String / Big conversions, JSON + SQL driver marshaling, and
+// the hashT / addressT reflect.Types used by AVM RLP and ABI codecs.
+// BytesToHash hashes its input via SHA3-256, distinct from the
+// Ethereum convention used in common/types.
 
 package avmutil
 

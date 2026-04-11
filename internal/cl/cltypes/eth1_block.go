@@ -1,5 +1,13 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Eth1 block unit for the cltypes package.
+// Defines the Eth1Block types.
+// Provides constructors NewEth1Block, NewEth1BlockFromExecutionHeader, and
+// NewEth1BlockFromHeaderAndBody.
+// Exports helpers such as NewEth1Block, NewEth1BlockFromExecutionHeader,
+// NewEth1BlockFromHeaderAndBody, and Static.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared CLI command registry and network flag definitions.
+// Declares the rootCmd slice that every subcommand file appends to
+// in its init(), plus the common network / bootstrap / static-peer
+// urfave/cli flag groups (privateKey, listenAddress, bootstraps,
+// p2pStaticPeers, p2pBootstrapNode, p2pDenyList) consumed by
+// node startup.
 
 package main
 

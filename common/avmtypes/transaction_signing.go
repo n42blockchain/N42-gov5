@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM transaction signing surface. MakeSigner picks a Signer based
+// on ChainConfig + block number (Frontier / Homestead / EIP-2930 /
+// London), sigCache memoizes the derived sender address per Signer
+// instance, and the exported Err* sentinels enumerate signature
+// and chain-id validation failures. Uses secp256k1 via the project
+// crypto package and uint256 for V/R/S math.
 
 package avmtypes
 

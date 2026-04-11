@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Sentinel errors shared by every accounts backend.
+// Exposes ErrUnknownAccount, ErrUnknownWallet, ErrNotSupported,
+// ErrInvalidPassphrase, ErrWalletAlreadyOpen and ErrWalletClosed so
+// callers can use errors.Is for fine-grained dispatch. Declares
+// AuthNeededError plus NewAuthNeededError, signalling that a backend
+// (e.g. hardware wallet, clef, keystore) needs a passphrase, PIN or
+// out-of-band confirmation before a sign operation can succeed.
 
 package accounts
 

@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Bitlist unit for the solid package.
+// Defines the BitList and BitSlice types.
+// Provides constructors NewBitList and NewBitSlice.
+// Exports helpers such as NewBitList, BitlistFromBytes, SetLimit, and
+// GetBitAt.
+// Fixed-layout SSZ containers with in-place encoding.
 
 //go:build n42el
 

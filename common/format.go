@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Human-readable time formatting helpers. PrettyDuration trims
+// sub-millisecond fractional precision off a time.Duration string
+// via prettyDurationRe. PrettyAge rounds a timestamp to the single
+// largest significant unit (years / months / weeks / days / hours
+// / minutes / seconds) using the ageUnits table, matching the
+// ethstats + geth log conventions.
 
 package common
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM pre-EIP-2718 legacy transaction payload. LegacyTx carries the
+// classic nonce / gasPrice / gas / to / value / data / V,R,S fields
+// used by regular Ethereum transactions. NewTransaction and
+// NewContractCreation are deprecated constructors kept for callers
+// that still hand-build unsigned txs; new code should use NewTx on
+// the generic Transaction wrapper.
 
 package avmtypes
 

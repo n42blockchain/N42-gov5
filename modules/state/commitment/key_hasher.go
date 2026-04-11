@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Blake3-based key hashing for JMT account/storage leaves.
+// AccountKeyHash hashes an address; StorageKeyHash concatenates
+// address(20) || slot(32) into a 52-byte buffer and hashes the
+// result via jmt.HashKey. The concatenation ensures no collisions
+// between accounts and between different accounts' storage slots.
 
 package commitment
 

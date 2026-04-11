@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Runtime selection of the BLS12-381 field multiplier.
+// Guarded by (amd64 && blsasm) or (amd64 && blsadx) build tags, the
+// init() hook downgrades the multiplier to the non-ADX path when
+// enableADX is false or the CPU lacks ADX / BMI2. Feeds the mul
+// function pointer used by fp arithmetic.
 
 //go:build (amd64 && blsasm) || (amd64 && blsadx)
 

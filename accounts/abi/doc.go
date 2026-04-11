@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Package documentation stub for the abi package.
+// Holds the godoc block describing the Ethereum ABI type system
+// supported by this package: strongly typed, statically known at
+// compile time, with automatic signed/unsigned and bit-size casting
+// for scalar ints, and no implicit element-wise slice casting.
+// No runtime code lives here.
 
 // Package abi implements the Ethereum ABI (Application Binary
 // Interface).

@@ -1,5 +1,13 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// progress.go — throttled per-segment progress logging for catch-up.
+//
+// progressLogger is the catchup counterpart of the bootstrap helper of
+// the same name. Log lines use "segment" as the identifier key instead
+// of "asset" and a separate type is kept rather than sharing code so
+// that neither subpackage needs to depend on the other. Throttles on an
+// interval and always flushes the terminal 100% line.
 
 package catchup
 

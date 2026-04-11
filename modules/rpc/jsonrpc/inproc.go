@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// In-process JSON-RPC client transport via net.Pipe.
+// DialInProc wires a net.Pipe pair so that one side is handed to
+// Server.ServeCodec and the other becomes a ServerCodec for the
+// returned *Client. Useful for unit tests and for embedded RPC
+// consumers that avoid real socket or HTTP machinery.
 
 package jsonrpc
 

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Streaming JSON StructLog writer. Serialises each opcode event
+// directly to an io.Writer using encoding/json so large traces can
+// be consumed incrementally by the caller without buffering the
+// full execution trace in memory.
 
 package logger
 

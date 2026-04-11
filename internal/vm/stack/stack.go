@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM evaluation stack backed by a []uint256.Int slice. Stack provides
+// Push, PushN, Pop, Peek, Back and Swap primitives used by every
+// opcode handler, with a sync.Pool (stackPool) in New that recycles
+// pre-sized 16-entry stacks to avoid per-call allocations. Stack
+// depth is capped at 1024 and enforced by the jump table's baseCheck
+// (not by these methods directly).
 package stack
 
 import (

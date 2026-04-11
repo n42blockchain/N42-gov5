@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Prefix-bounded cursor walk helpers.
+// Walk iterates a kv.Cursor starting at startkey while the current key
+// matches a (fixedbits, mask) prefix constraint, invoking walker(k,v)
+// until it returns false or the prefix is exited.
+// Bytesmask computes the (fixedbytes, trailingMask) pair used to honor
+// non-byte-aligned fixedbits prefixes.
 
 package ethdb
 

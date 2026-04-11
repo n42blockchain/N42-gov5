@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// webrtc_fetcher.go — WebRTC data-channel Fetcher implementation.
+//
+// WebRTCFetcher implements the "variant B" transport from WEBRTC_NOTES:
+// a simple HTTPS request-response signaling exchange followed by a
+// one-way DataChannel stream from a single origin sender. It is not
+// WebTorrent — there is no swarm, tracker or mesh. The shape matches
+// HTTPFetcher and TorrentFetcher so MultiSourceFetcher can dispatch it
+// transparently, and the on-disk artifact is written atomically via
+// .part → rename after SHA256 verification.
 
 package fetch
 

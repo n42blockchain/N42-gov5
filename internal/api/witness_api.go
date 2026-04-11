@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// WitnessAPI exposes block witnesses for stateless verification clients.
+// GetBlockWitness resolves a block via jsonrpc.BlockNumberOrHash and
+// returns the state.witness.BlockWitness containing proofs and touched
+// state needed to re-execute the block without the full state trie,
+// enabling light clients and ZK provers to validate block execution.
 
 package api
 

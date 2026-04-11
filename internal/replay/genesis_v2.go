@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Genesis configuration for the v2 replay engine. Defines HardForkAlloc
+// (balance injections originally placed at block 7601200) and
+// SystemContract (EIP-2935 history storage and Pectra system contracts)
+// so the rebuilt chain embeds them at block 0.
 
 package replay
 

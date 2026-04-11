@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Downloader issues eth/69 GetBlockHeaders and GetBlockBodies requests
+// to connected devp2p peers. RequestHeaders builds the HashOrNumber
+// request packet and sends it over a gethp2p.MsgReadWriter while
+// responses are dispatched asynchronously by the ETH handler.
 
 package devp2p
 

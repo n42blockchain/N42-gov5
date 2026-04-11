@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Supporting types for the per-account transaction list: nonce-heap
+// shim, priced heap adapter backed by common/prque and the
+// txSortedMap used to iterate pending transactions in nonce order
+// with O(log n) insert / remove.
 
 package txspool
 

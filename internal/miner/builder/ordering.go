@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Transaction ordering heap for the local block builder. Implements a
+// container/heap-based priority queue keyed on effective miner tip
+// (uint256) while respecting per-sender nonce order. Produces the
+// iterator consumed by the worker when assembling the next block's
+// transaction list.
 
 package builder
 

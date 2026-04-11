@@ -1,5 +1,13 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// N42 native receipt types and Receipts list codec. Defines the
+// ReceiptStatusFailed / ReceiptStatusSuccessful status constants,
+// the Marshal / Unmarshal protobuf bridge and EncodeIndex which
+// emits the native (Status, CumulativeGasUsed, Logs) tuple via
+// storedReceipt + storedLog — intentionally missing Type and
+// Bloom, so the derived root is NOT compatible with Ethereum's
+// standard receipt trie root.
 
 package block
 

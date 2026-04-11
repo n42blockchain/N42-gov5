@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Miscellaneous hashing, hex and protobuf conversion helpers.
+// Hash256toS / Keccak256 wrap SHA3 keccak256 on raw input. The
+// Convert* helpers bridge between proto/types_pb H160/H256 wire
+// types and common/types Address / Hash / uint256.Int values,
+// used by gRPC KV, P2P gossip and RPC handlers to shuffle state
+// in and out of the protobuf representation.
 
 package utils
 

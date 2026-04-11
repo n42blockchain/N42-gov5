@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// StateProcessor: canonical block-execution entry point. Iterates a
+// block's transactions, applies each one via ApplyTransaction
+// against the supplied IntraBlockState, updates the cumulative gas
+// used and returns the resulting receipts, logs and bloom filter
+// used by the block validator.
 
 package internal
 

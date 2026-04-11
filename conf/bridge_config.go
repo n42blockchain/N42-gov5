@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Cross-chain bridge configuration.
+// Holds BridgeCfg for the N42 -> Ethereum state-root publisher
+// (batch size, poll interval, SP1 prover endpoint, verifier and
+// bridge contract addresses) plus the reverse ETH light-client
+// path and optional Hyperlane multi-chain mailbox / ISM wiring.
 
 package conf
 

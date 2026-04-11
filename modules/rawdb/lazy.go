@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// LazyReceipt zero-copy wrapper over protobuf-encoded receipt bytes.
+// Defers full decode until field access via a sync.Once-guarded parse,
+// with a second pbOnce for cheap scalar-only reads through the
+// types_pb.Receipt intermediate.
+// Note: raw bytes reference MDBX memory-mapped pages and are only
+// valid inside the enclosing read transaction; call Copy() to detach.
 
 package rawdb
 

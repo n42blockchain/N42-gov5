@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// N42 on-chain randomness beacon precompile at 0x0302. The
+// randomnessBeacon type serves three selectors - rngGetRandom,
+// rngGetRandomInRange and rngGetRandomWithSeed - producing bytes32 or
+// bounded uint256 outputs from the beacon source. PrecompiledContracts
+// Randomness and PrecompiledAddressesRandomness form the dispatch set,
+// populated in init() and kept independent of standard fork precompile
+// maps.
 
 package vm
 

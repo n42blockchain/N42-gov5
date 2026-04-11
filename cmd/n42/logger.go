@@ -13,5 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Logging initialization for the n42 CLI.
+// Translates conf.LoggerConfig (level, file path, rotation and
+// compression) into a configured logger handler and injects it
+// into the global log package used across the node. Also wires
+// file rotation (max size, max backups, max age, compress).
 
 package main

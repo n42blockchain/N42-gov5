@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM developer diagnostics. Report prints a "please file an issue"
+// banner with the caller's file:line and a full stack trace to
+// stderr, used as a panic escape in hard-to-reproduce bug sites.
+// PrintDeprecationWarning renders a boxed notice used by AVM
+// subsystems when exposing soon-to-be-removed APIs.
 
 package avmutil
 

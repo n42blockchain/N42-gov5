@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Miner orchestrator. Owns the mining loop, accepts new chain-head
+// events and delegates block assembly to the worker, block sealing to
+// the consensus engine. Exposes Start / Stop / SetEtherbase and wires
+// in the optional AIOptimizer for MEV-aware transaction ordering and
+// the deferred executor when consensus-execution separation is
+// enabled.
 
 package miner
 

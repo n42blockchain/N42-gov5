@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// muxTracer. Runs multiple child tracers in parallel against the
+// same EVM execution so a single debug call can return callTracer,
+// prestateTracer and 4byteTracer output in one pass, avoiding the
+// cost of re-executing the transaction.
 
 package native
 

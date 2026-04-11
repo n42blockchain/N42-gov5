@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Per-IP HTTP rate limiter middleware.
+// RateLimitConfig carries RequestsPerSecond, BurstSize, CleanupInterval
+// and EntryTTL; DefaultRateLimitConfig supplies sane defaults.
+// The limiter maintains a map of token buckets keyed by client IP,
+// background-evicts expired entries, and wraps an http.Handler to
+// reject over-quota requests with HTTP 429.
 
 package jsonrpc
 

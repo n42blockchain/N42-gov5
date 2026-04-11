@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Hashing unit for the raw package.
+// Defines the beaconStateHasher types.
+// Exports helpers such as HashSSZ, PrintLeaves, CurrentSyncCommitteeBranch,
+// and NextSyncCommitteeBranch.
 
 //go:build n42el
 

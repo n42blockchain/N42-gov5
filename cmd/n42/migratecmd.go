@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// `migrate-jmt` subcommand: re-build JMT commitments in place.
+// Rehashes PlainState account and storage entries through
+// lib/jmt.Tree with jmtstore.MDBX backing and updates the JMT
+// commitment via modules/state/commitment. Used when moving an
+// existing database to the JMT scheme after an MPT / BMT run.
 
 package main
 

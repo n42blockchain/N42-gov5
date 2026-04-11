@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// OpenBSD-specific free-disk-space implementation.
+// Provides getFreeDiskSpace using unix.Statfs for the OpenBSD
+// syscall ABI which differs from other BSDs. Selected via the
+// openbsd build tag so it only compiles on that platform.
 
 //go:build openbsd
 // +build openbsd

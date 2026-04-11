@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Abstraction boundary between the EVM and its callers. VMInterpreter
+// embeds VMCaller and exposes ChainRules, ChainConfig, IntraBlockState,
+// Context (BlockContext), TxContext, Config plus the CallGasTemp
+// register, cancellation and Reset hooks used by the interpreter loop.
+// Lets consensus, tracing and the prefetcher depend on a narrow surface
+// area instead of the concrete *EVM type.
 
 package vm
 

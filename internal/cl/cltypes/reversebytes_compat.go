@@ -1,5 +1,9 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Reversebytes compat unit for the cltypes package.
+// Beacon chain SSZ data structures used across phases.
+// Part of the n42el consensus-layer build.
 
 //go:build n42el
 

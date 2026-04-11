@@ -1,5 +1,13 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// progress.go — throttled per-asset progress logging for bootstrap.
+//
+// progressLogger rate-limits fetch.ProgressFunc callbacks so that large
+// leaves-journal downloads emit one line per asset every interval rather
+// than once per MB. It always flushes a final "100%" line when the asset
+// reports completion so operators can tell finished downloads apart from
+// stalled ones.
 
 package bootstrap
 

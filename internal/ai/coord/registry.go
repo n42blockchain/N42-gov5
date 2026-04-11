@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// AgentRegistry: on-node discovery store for AI agents. Agents stake
+// at least minStake (1 ETH) and declare capabilities; lookups return
+// matching agents sorted by reputation score. Sentinel errors
+// (ErrAgentExists, ErrAgentNotFound, ErrInsufficientStake) are
+// exposed to callers running the negotiation protocol.
 
 package coord
 

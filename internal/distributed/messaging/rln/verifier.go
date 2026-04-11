@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// RLN proof Verifier. VerifyProof checks the MembershipTree root,
+// confirms the Merkle path for the prover's commitment index and
+// validates the Shamir share, so two shares in the same epoch let
+// a higher-level component recover the identity secret and slash.
 
 package rln
 

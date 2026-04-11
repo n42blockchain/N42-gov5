@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Helper surface for precompile bookkeeping. PrecompilesInitialized
+// sanity-checks that the Homestead/Byzantium/Istanbul/Berlin address
+// slices have been populated by init(). PrecompileCount returns a map
+// of per-fork counts (Homestead through Fusaka plus the BSC-specific
+// Nano/Moran variants). GetPrecompiledAddresses is a thin wrapper
+// around ActivePrecompiles for callers that already hold a
+// params.Rules.
 
 package vm
 

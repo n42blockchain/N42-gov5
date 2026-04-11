@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// View timeout handling for the HotStuff-2 engine.
+// onTimeout is invoked by the pacemaker when the current view
+// exceeds its deadline. It transitions the round state to
+// PhaseTimedOut, broadcasts a TimeoutMsg signed with the local BLS
+// key and drives view change recovery without breaking safety locks.
 
 package hotstuff
 

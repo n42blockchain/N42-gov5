@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Configuration surface for the layered KV engine. Config holds the
+// Enable flag, override paths for the hot StateDB and cold HistoryDB,
+// and tuning knobs for the sharded read cache (CacheShards,
+// CacheCapacity, MaxMemoryMB). Validate applies DefaultCacheShards,
+// DefaultCacheCapacity and DefaultMaxMemoryMB, and rejects shard
+// counts above 1024 or non-power-of-two values so shard indexing can
+// use a fast bitmask modulo.
 
 package layered
 

@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// historical.go — historical state provider for JSON-RPC queries.
+//
+// HistoricalState serves eth_getBalance, eth_getCode, eth_getStorageAt
+// and eth_call at arbitrary past block numbers by reading the current
+// PlainState and replaying account and storage changesets backwards from
+// the tip. A dedicated BlockContext per query isolates the historical
+// view so that concurrent JSON-RPC requests do not interfere with the
+// executor's write path.
 
 package ethel
 

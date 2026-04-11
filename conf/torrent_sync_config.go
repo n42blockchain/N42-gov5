@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// OtterSync (BitTorrent EraE chain-sync) configuration.
+// TorrentSyncCfg sets SegmentSize (default 8192 blocks per EraE
+// file), WebSeeds HTTP fallback list, ManifestURLs for torrent
+// manifests and VerifyBlocks to hash-chain-check imported segments.
+// DefaultTorrentSyncCfg starts disabled with verification on.
 
 package conf
 

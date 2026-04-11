@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Ethereum-style 20-byte Address primitive. Defines AddressLength,
+// IncarnationLength and the internal Address32Length alongside the
+// nullAddress sentinel. Provides BytesToAddress / SetBytes, hex /
+// checksum string conversions, JSON + SQL driver support and
+// libp2p-crypto hook-ins. Core identifier used across txpool,
+// state, RPC and P2P messaging.
 
 package types
 

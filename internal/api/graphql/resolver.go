@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Resolver bridges GraphQL queries to the internal api.API backend.
+// Caps log range scans at maxLogsBlockRange (2000 blocks) to prevent
+// unbounded historical queries from stalling the database. Thin wrapper
+// that exposes block, transaction, account and log lookups as GraphQL
+// fields consumed by wallets and indexers.
 
 package graphql
 

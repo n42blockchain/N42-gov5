@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Generator: background builder for the flat snapshot tables.
+// Scans modules.Account and modules.Storage, committing progress
+// every genBatchSize (10000) entries and logging at genLogInterval
+// (30s). Maintains a done channel, aborted flag and atomic progress
+// counter so Run can be resumed from a persisted generation marker
+// after restart or aborted by SetGenAborted.
 
 package snapshot
 

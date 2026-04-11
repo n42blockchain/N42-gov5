@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// flatCallTracer. Produces Parity/OpenEthereum-style flat trace
+// entries (one record per call frame, indexed by traceAddress)
+// compatible with trace_transaction and trace_block RPC endpoints
+// used by indexers and block explorers.
 
 package native
 

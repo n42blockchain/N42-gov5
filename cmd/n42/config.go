@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Built-in default conf.Config baseline for the n42 binary.
+// DefaultConfig pre-populates NodeCfg (datadir, HTTP / WS bind,
+// default API set), network bootstrap and other subsystems so the
+// binary can start without a YAML file. CLI flags and -config
+// overrides are merged on top of this baseline before node boot.
 
 package main
 

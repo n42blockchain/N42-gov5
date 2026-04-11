@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-7702 SetCode transaction (type 0x04). Declares the
+// SetCodeTxType constant, the 0x05 AuthorizationMagic prefix used
+// when signing Authorization tuples, and the
+// ErrInvalidAuthorizationSignature / ErrInvalidAuthorizationChainID
+// error set. The wrapped SetCodeTx payload lets an EOA
+// temporarily adopt contract code for a single transaction as part
+// of the Pectra hardfork.
 
 // EIP-7702: Set EOA account code
 // https://eips.ethereum.org/EIPS/eip-7702

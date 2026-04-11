@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// hash_only_computer.go — cheap HashedState-only state commitment.
+//
+// HashOnlyComputer implements state.RootComputer but only updates the
+// HashedAccounts and HashedStorage tables, skipping the CalcTrieRoot
+// pass. It is used for non-verify blocks during replay so that hashed
+// tables stay in sync with PlainState without paying the trie-build cost
+// every block. A full state-root verification via CalcStateRoot is only
+// performed at VerifyInterval boundaries.
 
 package ethel
 

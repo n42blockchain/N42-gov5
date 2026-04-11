@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JSON-RPC wire protocol codec.
+// Defines vsn ("2.0"), serviceMethodSeparator and subscribe/
+// notification/unsubscribe suffixes used for routing. maxBatchSize
+// (1000) caps inbound batch requests and defaultWriteTimeout is 10s.
+// jsonrpcMessage is the canonical request/response envelope and
+// subscriptionResult wraps server-sent subscription notifications.
 
 package jsonrpc
 

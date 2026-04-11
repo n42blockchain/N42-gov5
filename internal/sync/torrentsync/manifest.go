@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Manifest and SegmentInfo types describing an EraE archive set. Holds
+// chain id, per-segment block ranges, file sizes and SHA256 integrity
+// hashes. EraFileName produces the deterministic "era-NNNNNN-NNNNNN.era"
+// naming and GenerateManifest scans a directory to build a Manifest.
 
 package torrentsync
 

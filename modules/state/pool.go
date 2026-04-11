@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// sync.Pool-backed object recycling for state hot paths.
+// BalancePool reuses *uint256.Int instances via GetPooledBalance/
+// PutPooledBalance to avoid allocation churn in GetBalance/SetBalance
+// loops, with Clear on return to prevent data leakage across calls.
+// StorageKeyPool recycles *[32]byte buffers for temporary slot keys.
 
 package state
 

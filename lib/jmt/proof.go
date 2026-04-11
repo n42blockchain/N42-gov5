@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Merkle inclusion and exclusion proofs for the JMT. ProofEntry records
+// one serialized node and the nibble taken on descent (-1 marks the
+// terminal leaf entry). Proof groups the queried key hash, an optional
+// value and the full Path from root down. Tree.GetProof walks from
+// t.root through NibblePath positions, serializing each visited node via
+// EncodeNode, so a caller receives enough data to independently re-hash
+// the branch and verify inclusion or the point of divergence.
 
 package jmt
 

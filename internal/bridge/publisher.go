@@ -1,5 +1,13 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// BridgePublisher: the single N42->ETH finality anchor. Periodically
+// batches a configurable number of blocks, runs HotStuff-2 validator
+// set checks through HeaderChainProver, and pushes the resulting SP1
+// ZK proof to Ethereum via the ProofSubmitter interface. Decoupled
+// from concrete dispatchers and the node; interacts with the chain
+// through common.IBlockChain only. Supports dry-run (nil submitter)
+// and local-only (nil prover) modes for development.
 
 package bridge
 

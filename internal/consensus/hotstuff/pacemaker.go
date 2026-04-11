@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Pacemaker drives HotStuff view timeouts with exponential backoff.
+// Implements the Jolteon-style formula
+// min(effective_base * 2^consecutive_timeouts, max_timeout).
+// In adaptive mode the effective base tracks max(configured_base,
+// 2 * p95 commit latency), preventing premature timeouts while
+// retaining responsiveness under healthy network conditions.
 
 package hotstuff
 

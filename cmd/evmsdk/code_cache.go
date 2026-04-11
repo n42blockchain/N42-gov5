@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// In-process LRU cache of contract bytecodes keyed by code hash.
+// CodeCache is used by the mobile verification engine to avoid
+// re-fetching large bytecodes across blocks. NewCodeCache clamps
+// capacity to at least 1; Get / Put / Contains are RW-mutex guarded
+// and maintain a simple tail-MRU ordering slice.
 
 package evmsdk
 

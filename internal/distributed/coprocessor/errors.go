@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Sentinel errors for the coprocessor package. Covers task lifecycle
+// (ErrTaskNotFound, ErrTaskNotPending), tiered verification
+// (ErrUnsupportedTier, ErrBondRequired, ErrInvalidAttestation),
+// challenges and provider registration failures.
 
 package coprocessor
 

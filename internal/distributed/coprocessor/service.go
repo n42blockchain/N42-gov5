@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Coprocessor Service wiring the Registry, TaskManager, TieredVerifier,
+// ChallengeManager, ProviderRegistry, Marketplace and SlashManager
+// into a single lifecycle. NewService validates the CoprocessorCfg
+// before constructing subcomponents and exposes Start / Stop hooks.
 
 package coprocessor
 

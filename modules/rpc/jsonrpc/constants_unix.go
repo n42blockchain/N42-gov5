@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Unix max_path_size constant via cgo sockaddr_un introspection.
+// Build-tagged for darwin/dragonfly/freebsd/linux/netbsd/openbsd/
+// solaris/nacl. Calls a tiny C helper to return
+// sizeof(sockaddr_un.sun_path) so the IPC code enforces the
+// platform-specific socket path length limit at dial/listen time.
 
 //go:build darwin || dragonfly || freebsd || linux || nacl || netbsd || openbsd || solaris
 // +build darwin dragonfly freebsd linux nacl netbsd openbsd solaris

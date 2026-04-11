@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Word-level decoder helpers shared by Arguments.Unpack.
+// ReadInteger returns a typed int/uint (8/16/32/64 or *big.Int) from
+// a 32-byte word, enforcing MaxUint256 and MaxInt256 bounds. readBool
+// rejects non-canonical encodings; readFixedBytes, readFunctionType,
+// forEachUnpack and toGoType walk dynamic offsets, length headers and
+// tuple layouts to materialize Go values from ABI calldata or logs.
 
 package abi
 

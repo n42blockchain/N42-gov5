@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// KeyStore accounts.Backend built on a local directory.
+// Wraps a keyStore storage (keyStorePassphrase or keyStorePlain) with
+// an accountCache, an unlocked address map, an event.Feed of wallet
+// arrival/departure events and an importMu guarding concurrent imports.
+// Exposes NewKeyStore, NewPlaintextKeyStore, KeyStoreScheme, the
+// ErrLocked/ErrNoMatch/ErrDecrypt/ErrAccountAlreadyExists sentinels,
+// and Unlock/Lock/TimedUnlock/SignHash/SignTx lifecycle methods.
 
 // Package keystore implements encrypted storage of secp256k1 private keys.
 //

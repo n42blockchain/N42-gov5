@@ -13,6 +13,15 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Transaction layer for LayeredDB. layeredTx holds a stateTx and a
+// historyTx plus the ShardedCache, and txFor dispatches each call to
+// the correct underlying kv.Tx based on IsColdTable. GetOne and Has
+// consult the cache first for IsCachedTable tables, fall through to
+// the physical tx on miss, and populate the cache on the return
+// path. ForEach/ForPrefix/ForAmount are forwarded directly. Commit
+// flushes the history tx before the state tx so a crash mid-commit
+// leaves the hot view at most one step ahead of history.
 
 package layered
 

@@ -14,6 +14,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Erigon. If not, see <http://www.gnu.org/licenses/>.
+//
+// Beacon state unit for the abstract package.
+// Defines the BeaconState, BeaconStateUpgradable, BeaconStateExtension, and
+// BeaconStateBasic types.
+// Abstract interfaces for beacon state access.
 
 //go:build n42el
 

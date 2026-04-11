@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Interfaces unit for the solid package.
+// Defines the Uint64ListSSZ, Uint64VectorSSZ, HashListSSZ, and HashVectorSSZ
+// types.
+// Fixed-layout SSZ containers with in-place encoding.
 
 //go:build n42el
 

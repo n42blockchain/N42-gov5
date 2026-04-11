@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Package-level doc plus the core asynchronous Executor. Defines
+// ExecutionResult (block number, hash, post-exec state root, gas, tx
+// count) and the worker-pool driven executor that dequeues ordered
+// blocks from the consensus layer, runs the supplied ExecuteFunc, and
+// publishes results so block N+1's header can carry state root of N.
 
 // Package deferred implements deferred (asynchronous) block execution,
 // inspired by Monad and Aptos architectures.

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Earliest-block pointer and bulk block deletion helpers.
+// ReadEarliestBlock/WriteEarliestBlock persist the lowest available
+// block number under modules.DatabaseInfo for pruning clients.
+// DeleteBlockData removes header, body, receipts, logs, senders and
+// total difficulty records for a single (number,hash) pair in a
+// single transaction during history pruning.
 
 package rawdb
 

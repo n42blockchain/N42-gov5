@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Impl unit for the funcmap package.
+// Defines the Impl types.
+// Exports helpers such as FullValidate, VerifyBlockSignature,
+// VerifyTransition, and ProcessBlockHeader.
 
 //go:build n42el
 

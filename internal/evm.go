@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM context adapters. Builds vm.BlockContext and vm.TxContext
+// snapshots from a BlockChain + header pair so the EVM sees a
+// consistent view of block number, base fee, coinbase and
+// difficulty, honouring EIP-1559 and EIP-3198 rules.
 
 package internal
 

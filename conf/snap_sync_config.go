@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Snap sync configuration.
+// SnapSyncConfig tunes the state sync protocol: PivotDistance,
+// MaxConcurrency, MaxBytesPerReq, MinSnapPeers and the SyncThreshold
+// in blocks behind HEAD that triggers snap mode. Default constants
+// DefaultSnap* give a conservative 64-pivot / 16-concurrency
+// envelope suitable for mainnet bootstrapping.
 
 package conf
 

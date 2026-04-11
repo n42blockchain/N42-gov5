@@ -13,6 +13,10 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// RangeTask and TaskKind definitions for snap-sync work units. Each
+// task carries a key range (or code hash list), assigned peer id,
+// retry count and deadline bounded by maxTaskRetries and taskTimeout.
 
 package snapsync
 

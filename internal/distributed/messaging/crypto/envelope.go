@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// EncryptedEnvelope plus SealEnvelope / OpenEnvelope helpers. Uses a
+// fresh ephemeral X25519 key, ECDH with the recipient, HKDF-SHA256
+// key derivation and XChaCha20-Poly1305 AEAD so the 24-byte nonce is
+// safe even without a session counter.
 
 package crypto
 

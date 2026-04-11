@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Validator deposit record accessors for the modules.Deposit bucket.
+// PutDeposit serializes a (BLS public key, uint256 amount) tuple into
+// a PublicKeyLength+32 blob keyed by address. GetDeposit restores
+// both fields with a bls.PublicKeyFromBytes validation step, used by
+// the staking contract integration and validator set rebuilds.
 
 package rawdb
 

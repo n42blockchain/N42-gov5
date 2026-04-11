@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Terminal line-reader and prompt abstraction.
+// Declares the UserPrompter interface (PromptInput / PromptPassword /
+// PromptConfirm) plus the singleton Stdin line reader built on
+// github.com/peterh/liner so subcommands share one input buffer
+// across password, free-form and yes / no prompts.
 
 package prompt
 

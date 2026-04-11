@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Block receipt persistence for the modules.Receipts bucket.
+// HasReceipts probes existence by block number; ReadRawReceipts
+// returns the unmarshaled block.Receipts without metadata fields.
+// ReadReceipts rehydrates full metadata (tx hash, block hash, gas
+// used) by joining against headers and bodies for RPC consumers.
 
 package rawdb
 

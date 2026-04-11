@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Tracing JSON-RPC API surface: debug_traceTransaction,
+// debug_traceBlock, debug_traceCall and the companion block /
+// chain variants. Resolves block by number or hash, runs the
+// requested tracer (native, JS, logger) against a forked EVM
+// state and returns the structured trace payload.
 
 package tracers
 

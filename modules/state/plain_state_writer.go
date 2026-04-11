@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// PlainStateWriter: plain-state writer with optional changeset capture.
+// putDel is the Putter/Deleter intersection used for the target DB.
+// NewPlainStateWriter wires a ChangeSetWriter for history buckets;
+// NewPlainStateWriterNoHistory disables changeset recording for
+// state rebuild paths. UpdateAccountData skips MDBX writes when
+// original.Equals(new) to avoid redundant writes on read-only touches.
 
 package state
 

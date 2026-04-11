@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// IPFS/Filecoin storage bridge configuration.
+// StorageCfg wraps the IPFS API endpoint, MaxPinSize / MaxGetSize
+// byte limits, PinTimeout / GetTimeout second budgets and a
+// GatewayURL for HTTP fallback. DefaultStorageCfg targets a local
+// ipfs daemon on :5001 with 1 MiB caps and the public ipfs.io
+// gateway.
 
 package conf
 

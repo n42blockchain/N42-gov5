@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Devnet bootstrap helpers. Produces a deterministic genesis, chain
+// config and keypair set for single-process integration tests and
+// local dev clusters. Uses sha256 derivation to generate reproducible
+// validator addresses.
 
 package node
 

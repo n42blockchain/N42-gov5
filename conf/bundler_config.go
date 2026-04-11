@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ERC-4337 bundler service configuration.
+// BundlerConfig toggles the account-abstraction UserOperation pool
+// and its RPC endpoints (MaxPoolSize, MaxBundleSize,
+// BundleIntervalSec). Consumed by internal/bundler when wiring the
+// pool, simulator and bundle-submit loop into the node.
 
 package conf
 

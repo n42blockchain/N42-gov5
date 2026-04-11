@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-4844 point evaluation precompile at 0x0a. Verifies a KZG proof for
+// a blob commitment at evaluation point z producing value y, given the
+// versioned hash derived from the commitment. Input is a fixed
+// pointEvaluationInputLength 192 bytes (versioned_hash|z|y|commitment|
+// proof); output is 64 bytes encoding FIELD_ELEMENTS_PER_BLOB and the
+// BLS12-381 scalar field modulus blsModulus. Used to cheaply verify blob
+// data availability on-chain.
 
 // EIP-4844: Shard Blob Transactions - Precompiled Contracts
 // Reference: https://eips.ethereum.org/EIPS/eip-4844

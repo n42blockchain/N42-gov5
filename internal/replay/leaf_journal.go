@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// LeafJournal writer for per-block leaf changes. Emits an append-only
+// sequential file with [blockNum][count][tag][addr/slot][value]
+// entries covering account and storage mutations, so any commitment
+// tree (BMT/JMT/MPT) can be rebuilt without re-executing the EVM.
 
 package replay
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// N42 block Body: Txs list, Verifiers signing the block, Rewards
+// paid to the block producer and an optional ZkProof used for the
+// fast-path fraud-proof verification. ToProtoMessage /
+// FromProtoMessage convert between Body and proto/types_pb.Body
+// for gossip and MDBX persistence.
 
 package block
 

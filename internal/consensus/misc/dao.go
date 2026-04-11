@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// DAO hard-fork extra-data validation helpers.
+// Defines ErrBadProDAOExtra and ErrBadNoDAOExtra for pro-fork and
+// no-fork disagreements, and documents the [fork, fork+10) header
+// range rules. VerifyDAOHeaderExtraData (currently commented out)
+// enforces pro-fork nodes require the unique marker and no-fork
+// nodes reject it, preventing accidental cross-fork block acceptance.
 
 package misc
 

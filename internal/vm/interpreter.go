@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVMInterpreter main loop and its configuration. Config captures
+// debug/tracer/NoRecursion/NoBaseFee/SkipAnalysis and stateless flags
+// plus ExtraEips and a SlotAccessRecorder hook called on every SLOAD to
+// train the predictive state prefetcher. SlotAccessRecorder is a
+// lightweight interface so callers opt in without pulling the prefetch
+// package. A sync.Pool recycles Memory instances to keep interpreter
+// allocation off the hot path.
 package vm
 
 import (

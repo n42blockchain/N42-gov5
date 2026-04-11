@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Pectra fork EIP implementations. Centers on EIP-7702 EOA delegation:
+// defines delegationPrefixArray {0xef, 0x01, 0x00} and DelegationPrefix,
+// exposes HasDelegation to recognise the 23-byte delegated-code layout,
+// and fixes gas costs PerAuthBaseCost (12500) and PerEmptyAccountCost
+// (25000) charged per authorization tuple and freshly created account.
+// Used by the EVM's SetCode path to route calls through delegated
+// contracts.
 
 // Pectra EIPs implementation
 // Reference: go-ethereum and erigon implementations

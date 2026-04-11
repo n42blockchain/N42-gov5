@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Tiered storage path configuration.
+// StorageTierCfg lets operators split data across devices: HotPath
+// (NVMe chaindata, ~50 GB), WarmPath (NVMe domain snapshots,
+// ~300 GB), ColdPath (HDD-friendly history / indices / freezer,
+// ~800 GB) and DownloaderPath. DefaultStorageTierCfg leaves the
+// feature disabled so all data stays under a single datadir.
 
 package conf
 

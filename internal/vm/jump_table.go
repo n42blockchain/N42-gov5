@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JumpTable and per-opcode operation metadata used by the interpreter.
+// operation bundles executionFunc, constantGas, dynamicGas (gasFunc),
+// maxStack, numPop/numPush (delta/alpha per the Yellow Paper), push/
+// swap/dup flags and a memorySize callback. This file also instantiates
+// the per-fork instruction sets: frontier, homestead, tangerineWhistle,
+// spuriousDragon, byzantium, constantinople, istanbul, berlin and
+// later variants.
 
 package vm
 

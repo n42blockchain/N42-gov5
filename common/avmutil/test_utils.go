@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM test fixture helpers. LoadJSON reads a file and unmarshals it
+// into a Go value, wrapping json.SyntaxError with a human-readable
+// file:line using the findLine helper. Used by AVM precompile and
+// state-transition unit tests to load golden fixtures.
 
 package avmutil
 

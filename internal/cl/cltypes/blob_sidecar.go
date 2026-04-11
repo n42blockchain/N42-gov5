@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Blob sidecar unit for the cltypes package.
+// Defines the BlobSidecar and BlobIdentifier types.
+// Provides constructors NewBlobSidecar.
+// Exports helpers such as NewBlobSidecar, EncodeSSZ, UnmarshalJSON, and
+// EncodingSizeSSZ.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

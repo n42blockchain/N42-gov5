@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Legacy unencrypted keyStorePlain backend.
+// Implements the keyStore interface using raw plainKeyJSON files on
+// disk. GetKey reads a file, decodes the JSON, and verifies the
+// declared address matches the requested one; StoreKey marshals a
+// Key and hands it to writeKeyFile for atomic write. JoinPath
+// resolves relative filenames against keysDirPath. Retained only
+// for testing and NewPlaintextKeyStore compatibility.
 
 package keystore
 

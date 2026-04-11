@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Small utilities shared by Method, Event and Error constructors.
+// sanitizeInputs fills in arg<N> placeholders for unnamed arguments
+// and builds the human-readable and canonical-type name lists.
+// buildSignature joins those into "name(type1,type2,...)" form, and
+// ResolveNameConflict appends a numeric suffix to disambiguate
+// overloaded identifiers when binding generators hit collisions.
 
 package abi
 

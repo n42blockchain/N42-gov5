@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core MCP tools registration and dispatcher. Wires the tools/list,
+// tools/call protocol methods and registers the built-in chain
+// inspection tools (get_block, get_transaction, call_contract,
+// estimate_gas) on top of the Server's JSON-RPC router.
 
 package mcp
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared types, configuration and sentinel errors for the N42
+// transaction pool: TxPoolConfig defaults, TxStatus enum, journal
+// entry record, and ErrAlreadyKnown / ErrUnderpriced / ErrTxPoolFull
+// style errors consumed by both the local pool and the encrypted
+// variant.
 
 package txspool
 

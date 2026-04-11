@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// PoA block header seal hash computation.
+// SealHash returns the Keccak256 of a header with the trailing seal
+// bytes stripped, which is the digest signed by the authorised
+// signer. MustSealHash is a panic variant for call sites where an
+// encoding failure would indicate an unrecoverable bug. Uses an LRU
+// to memoise hashes across repeated lookups.
 
 package misc
 

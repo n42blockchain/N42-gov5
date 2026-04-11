@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ZKProofAPI surfaces zero-knowledge proof queries and verification.
+// Holds a zkverifier.Verifier and delegates block lookups to the shared
+// *API instance. ZKProofResult is the JSON-RPC response type carrying
+// the block number, proof type and serialized proof bytes so clients
+// can fetch and independently verify chain state without trusting the node.
 
 package api
 

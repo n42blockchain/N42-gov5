@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Lightweight list iterator over a RawValue. NewListIterator
+// validates that the input is an RLP list and then Next() walks
+// each element in-place without heap allocation. Value() returns
+// the raw encoded element and Err() reports any trailing decode
+// failure — used by RPC and trie helpers that need element-wise
+// scans without full unmarshalling.
 
 package rlp
 

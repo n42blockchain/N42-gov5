@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Top-level HotStuff service: pub/sub wiring and libp2p transport.
+// Owns the libp2p pubsub handle, peer identity, crypto primitives and
+// the main event loop that fans consensus messages to the engine.
+// Serialises output via a sync.Mutex and handles peer connection
+// lifecycles so the engine sees a stable validator view.
 
 package hotstuff
 

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Hand-rolled parser for human-readable function selectors.
+// ParseSelector accepts strings like "foo(uint256,(address,bytes)[])"
+// and returns a SelectorMarshaling with Name, Type and Inputs built
+// from ArgumentMarshaling entries, suitable for feeding NewType and
+// NewMethod without a full JSON ABI. Internal helpers parseToken,
+// parseIdentifier, parseElementaryType and parseCompositeType drive
+// a small recursive-descent state machine.
 
 package abi
 

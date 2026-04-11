@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Chain configuration registry and embedded chainspec loader.
+// Declares ConsensusType constants, ChainConfig fork schedule, genesis
+// wiring and helpers such as readChainSpec and EthMainnetGenesisJSON
+// that resolve JSON specs from the embedded chainspecs FS. Drives fork
+// activation for Homestead through Glamsterdam plus N42 extensions
+// (PQPrecompilesTime, AIInferenceTime, ContentStoreTime, Randomness).
 
 package params
 

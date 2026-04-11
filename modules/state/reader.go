@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// HistoryStateReader: state-as-of-block reader using history cursors.
+// NewStateHistoryReader opens AccountsHistory, StorageHistory,
+// AccountChangeSet and StorageChangeSet cursors on tx and binds a
+// blockNr pivot. The reader resolves account and storage values at
+// that historical checkpoint by combining the history bitmap lookup
+// with the corresponding dupsort changeset entry.
 
 package state
 

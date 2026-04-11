@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// `rebuild-trie` subcommand: backup state-root path via CalcTrieRoot.
+// Hashes PlainState keys with keccak256, populates HashedAccounts
+// and HashedStorage tables and then runs lib/trie CalcTrieRoot
+// (Erigon 2.7 FlatDBTrieLoader) to compute the standard Ethereum
+// state root. Provides a reference implementation to cross-check
+// the HPH-based rebuild-mpt path.
 
 package main
 

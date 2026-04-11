@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// GossipSubValidator enforcing RLN rate limits on inbound messages.
+// Uses DefaultEpochDuration of 10 seconds, returns Accept / Reject /
+// Ignore for future, stale or invalid-proof envelopes, and drives
+// Shamir secret recovery when a spammer exceeds the per-epoch limit.
 
 package rln
 

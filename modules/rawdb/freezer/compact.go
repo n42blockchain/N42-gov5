@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Offline freezer compaction that rewrites all output tables with batch
+// zstd compression. CompactAll processes TableReceipts, TableSenders,
+// TableAccountChanges, TableStorageChanges, TableLeavesJournal and
+// TableBlockWitness in parallel via CompactTable, producing fresh
+// cidx/cdat files in dstDir numbered from 0000 upward.
 
 package freezer
 

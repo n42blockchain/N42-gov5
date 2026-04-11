@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared low-level helpers used across the EVM package. calcMemSize64 and
+// calcMemSize64WithUint compute memory expansion size with overflow
+// detection for uint256 operands. getData returns a zero-padded slice of
+// calldata/memory for the start/size pair without panicking on
+// out-of-range reads. These primitives back gas metering and opcode
+// implementations that touch EVM memory and input data.
 package vm
 
 import (

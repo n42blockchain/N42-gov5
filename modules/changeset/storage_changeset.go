@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Storage changeset encoder/decoder for per-block contract slot diffs.
+// NewStorageChangeSet uses 52-byte keys (addr||slot) without incarnation.
+// EncodeStorage packs blockNum+addr as dup key and slot+oldValue as
+// dup value for MDBX CursorDupSort layout.
+// DecodeStorage and FindStorage recover (addr,slot,prevValue) tuples
+// by seeking on (blockNumber, addr) prefixes in the history bucket.
 
 package changeset
 

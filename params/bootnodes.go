@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Bootstrap node lists for the N42 P2P discovery layer.
+// Exposes MainnetBootnodes and TestnetBootnodes as enode URL slices
+// used by devp2p discovery to seed the initial peer table. Each entry
+// is a signed ENR embedding secp256k1 pubkey, IP and UDP port.
 
 package params
 

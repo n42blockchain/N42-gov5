@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Root configuration for the cmd/eth-el execution-layer binary.
+// EthELCfg bundles DataDir, Network preset plus storage, bootstrap,
+// catch-up, Engine API, torrent, OtterSync and optional Caplin beacon
+// sub-configs so the CLI flag loader wires one struct into the node.
+// EthELStorageCfg tunes the chaindata MDBX environment (MapSize,
+// PageSize) with Windows-aware defaults.
 
 package conf
 

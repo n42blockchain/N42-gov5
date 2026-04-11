@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// MCP resource handlers. Implements the resources/list and
+// resources/read protocol verbs, translating URI patterns such as
+// n42://block/{number} and n42://tx/{hash} into blockchain lookups
+// so AI agents can materialise chain state as MCP resources.
 
 package mcp
 

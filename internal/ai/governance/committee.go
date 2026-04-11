@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Ethics committee voting. CommitteeConfig declares quorum and
+// approval threshold, Committee aggregates secp256k1-signed votes
+// per (datasetID, category), recovering voter addresses via
+// crypto.SigToPub. Finalises a dataset to Approved or Rejected once
+// quorum is reached across the required ethics categories.
 
 package governance
 

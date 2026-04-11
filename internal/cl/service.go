@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Service unit for the cl package.
+// Defines the Service types.
+// Provides constructors NewService.
+// Exports helpers such as NewService, Engine, DB, and Start.
 
 //go:build n42el
 

@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Envelope wire format for the messaging relay. EnvelopeVersion1
+// layout carries sender, topic, payload, timestamp and signature,
+// bounded by MaxEnvelopeSize and MaxTimestampDrift. Topics follow
+// the ContentTopicFormat /n42/msg/1/{app}/{encoding}/{content}.
 
 package messaging
 

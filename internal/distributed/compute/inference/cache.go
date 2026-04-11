@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ResultCache keyed by request hash for verified inference results.
+// Holds CachedResult entries with bounded LRU order and a TTL so both
+// the EVM AI inference precompile and the inference service can reuse
+// completed outputs without re-running expensive model execution.
 
 package inference
 

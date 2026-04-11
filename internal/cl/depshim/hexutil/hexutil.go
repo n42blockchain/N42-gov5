@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Hexutil unit for the hexutil package.
+// Exports helpers such as Decode, MustDecode, DecodeUint64, and
+// EncodeUint64.
+// Hex encoding utilities for JSON marshalling.
 
 //go:build n42el
 

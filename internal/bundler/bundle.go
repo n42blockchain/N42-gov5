@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BundleBuilder: ERC-4337 handleOps calldata constructor. Packs
+// validated UserOperations into an EntryPoint-compatible ABI payload,
+// handling uint256 big-int encoding via holiman/uint256 and keccak256
+// hashing for bundle IDs. Produces transaction bytes ready to feed
+// into the standard transaction pool.
 
 package bundler
 

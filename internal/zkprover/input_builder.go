@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// InputBuilder: assembles the witness blob (block header, receipts,
+// MPT / JMT proofs, transaction senders) that the ZK guest program
+// needs to re-execute a block deterministically. Pulls inputs from
+// the local chain state and serialises them into the shared guest
+// type layout.
 
 package zkprover
 

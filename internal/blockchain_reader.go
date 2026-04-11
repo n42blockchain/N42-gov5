@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BlockChain read helpers. Exposes methods like GetBlockByNumber,
+// GetHeaderByHash, StateAt, GetReceiptsByHash and GetLogsByNumber
+// used by the RPC layer and sync pipeline. Operates against
+// read-only MDBX transactions so callers never block the insert
+// pipeline.
 
 package internal
 

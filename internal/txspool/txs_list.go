@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Per-account transaction list. Holds pending and queued
+// transactions for a single sender ordered by nonce, with a
+// container/heap view for cost/gasPrice-based eviction. Handles
+// replacement on nonce collisions subject to a minimum price bump.
 
 package txspool
 

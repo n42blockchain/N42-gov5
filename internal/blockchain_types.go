@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core BlockChain value types, constants and configuration knobs
+// (BodyCacheLimit, ReceiptsCacheLimit, MaxFutureBlocks, snapshot
+// settings). Kept in a separate file so blockchain.go stays focused
+// on lifecycle while tests can reference the constants directly.
 
 package internal
 

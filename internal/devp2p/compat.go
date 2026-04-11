@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Compatibility helpers that map N42 chain configuration to the Ethereum
+// devp2p handshake. networkID resolves the numeric network id from a
+// ChainConfig, and newForkID computes the eth/69 forkID checksum chain
+// from block- and time-based hardfork schedules.
 
 package devp2p
 

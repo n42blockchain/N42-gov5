@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BlockChain core lifecycle and chain-insert orchestration. Owns the
+// canonical head pointer, manages import locks, drives header /
+// block validation through BlockValidator and StateProcessor, and
+// integrates the freezer, pruner and state commitment layers. Types
+// and constants live in blockchain_types.go; read and write helper
+// methods live in blockchain_reader.go and blockchain_write.go.
 
 package internal
 

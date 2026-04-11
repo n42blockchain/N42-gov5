@@ -13,6 +13,17 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ai_indexer.go — post-execution indexer for AI-agent data queries.
+//
+// AIIndexer implements exex.Extension and consumes block commit and
+// revert notifications to build thread-safe in-memory indices of ERC20
+// and ERC721 token transfers, generic contract events, per-address
+// activity profiles and per-block gas metrics. Transfers are detected
+// via the canonical Transfer(address,address,uint256) topic hash.
+// Index capacities are bounded by defaultMaxTransfers / Events /
+// GasMetrics so a long-running node cannot unbounded-grow memory; the
+// MCP data tools read the same indices through a read-only snapshot.
 
 package extensions
 

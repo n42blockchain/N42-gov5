@@ -1,5 +1,9 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Crypto unit for the crypto package.
+// Exports helpers such as PubkeyToAddress.
+// Crypto primitive shims used by CL code.
 
 //go:build n42el
 

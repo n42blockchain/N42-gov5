@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// peerScorer ranks snap-sync peers by observed success rate and
+// response latency. Uses an explorationRate to sample non-best peers,
+// applies a failurePenaltyWindow on errors and bans peers that exceed
+// banThreshold invalid responses for banDuration.
 
 package snapsync
 

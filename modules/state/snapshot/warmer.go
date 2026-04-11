@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Warmer pre-populates the snapshot cache on startup.
+// DefaultWarmupAccounts (500000) caps the number of modules.Account
+// entries scanned and inserted into the layered.ShardedCache so the
+// first blocks after a restart hit warm memory instead of MDBX. A
+// zero or negative maxAccounts falls back to the default.
 
 package snapshot
 

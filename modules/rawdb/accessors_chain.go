@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Canonical chain and header accessors over MDBX buckets.
+// ReadCanonicalHash/WriteCanonicalHash maintain the blockNum->hash
+// mapping in modules.HeaderCanonical; TruncateCanonicalHash rewinds
+// it past a pivot for reorgs. Paired with helpers for total difficulty,
+// headers, bodies, and sender lists used by the execution pipeline.
 
 package rawdb
 

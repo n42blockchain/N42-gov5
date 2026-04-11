@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// HotStuff durable state persistence via the kv store.
+// hotstuffStateKey is the single MDBX key under which the engine
+// writes its view, locked QC, highest QC and vote history blobs.
+// Load and Save functions round-trip the state across restarts so
+// recovery cannot equivocate after a crash mid-round.
 
 package hotstuff
 

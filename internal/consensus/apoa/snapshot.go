@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// APOA signer snapshot and vote tracking.
+// Vote records a single signer authorization change at a given block.
+// Tally accumulates per-candidate vote scores used to decide when an
+// authorization threshold is met. Snapshots are cached in an LRU and
+// periodically persisted via modules/rawdb for fast replay on restart.
 
 package apoa
 

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP activation registry for the EVM jump table. The activators map
+// associates EIP numbers (1344, 1884, 2200, 2929, 3198, 3529, 3855, 3860)
+// with enableXXXX functions that patch a JumpTable in place - adjusting
+// gas costs, opcode semantics or introducing new opcodes like CHAINID
+// and PUSH0. EnableEIP dispatches on the EIP number and re-runs
+// validateAndFillMaxStack so every modified opcode retains a correct
+// maximum stack entry.
 
 package vm
 

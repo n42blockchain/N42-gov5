@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Quadratic extension field Fp12 for BLS12-381 pairings.
+// Declares fp12 as a pair of fp6 elements and fp12temp for
+// scratch storage used by Frobenius, Square and Mul kernels.
+// Provides the final target field for the optimal ate pairing
+// used by signature verification.
 
 package bls12381
 

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Miner subsystem configuration.
+// MinerConfig holds the Etherbase coinbase, GasCeil target, default
+// GasPrice floor and block Recommit interval used by the block
+// builder when a consensus engine requests a new payload.
 
 package conf
 

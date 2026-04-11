@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Callable contract function descriptor.
+// Declares FunctionType (Constructor, Fallback, Receive, Function),
+// StateMutability, legacy Constant/Payable flags, Inputs and Outputs.
+// NewMethod precomputes Sig and the four-byte ID (Keccak256[:4]) plus
+// a printable representation so BoundContract Pack/Unpack and the
+// abigen templates can work off a fully normalized value.
 
 package abi
 

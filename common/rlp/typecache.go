@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Per-type decoder / writer cache. typeCache memoizes a typeinfo
+// entry (decoder, writer and their construction errors) keyed by
+// reflect type + struct tag so repeated encode/decode calls skip
+// the reflection scan. The tags struct parses rlp:"nil",
+// rlp:"optional" and rlp:"tail" annotations used by consensus and
+// transaction struct definitions.
 
 package rlp
 

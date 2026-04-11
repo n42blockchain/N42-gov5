@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Block chain insert pipeline. Implements InsertChain,
+// insertBlockLocked and reorg handling: verifies each candidate
+// block with BlockValidator, runs the StateProcessor against a
+// cloned IntraBlockState, writes receipts, emits chain events and
+// rewinds on fork switch.
 
 package internal
 

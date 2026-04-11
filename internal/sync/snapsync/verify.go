@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// VerifyDownloadedState performs basic integrity checks on the flat
+// state pulled by snap-sync. Populates StateStats with account,
+// storage and code counts and returns ErrEmptyState / ErrStateCorrupted
+// before block replay confirms the state transition chain.
 
 package snapsync
 

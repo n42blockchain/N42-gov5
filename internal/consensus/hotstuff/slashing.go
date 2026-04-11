@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Slashing detection and evidence persistence for HotStuff-2.
+// Detects validator equivocation (two votes in the same view for
+// different blocks) and surround-vote violations. Evidence is stored
+// via modules/rawdb keyed by the offending validator and block height
+// so governance can later apply slashing penalties on chain.
 
 package hotstuff
 

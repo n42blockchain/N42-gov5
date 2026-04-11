@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Canonical MDBX bucket name registry for the N42 data model.
+// Groups table constants into PlainState (Account, Storage, Code,
+// Reward, Deposit, ContractCode, IncarnationMap), HistoryState
+// (AccountChangeSet, AccountsHistory, StorageChangeSet), and
+// DatabaseInfo/ChainConfig metadata tables. These names are the
+// authoritative identifiers used by all rawdb/state accessors.
 
 package modules
 

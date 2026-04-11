@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Cfg unit for the beacon_router_configuration package.
+// Defines the RouterConfiguration types.
+// Exports helpers such as UnwrapEndpointsList.
+// Beacon API HTTP router configuration.
 
 //go:build n42el
 

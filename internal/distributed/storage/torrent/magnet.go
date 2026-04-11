@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Magnet URI parsing for the torrent bridge. MagnetParams captures
+// InfoHash, Name, Trackers and WebSeeds extracted from a
+// magnet:?xt=urn:btih:... URI, so CAS content can be published or
+// resolved via compact magnet links.
 
 package torrent
 

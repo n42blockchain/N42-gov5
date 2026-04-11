@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Persistence helpers for snap-sync progress state. SavePivotBlock /
+// LoadPivotBlock and related getters write keyPivotBlock, keyAccountCursor
+// and keyState into the SnapSyncProgress table so a restarted node can
+// resume from StateRunning without losing cursor position.
 
 package snapsync
 

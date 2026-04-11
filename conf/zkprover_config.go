@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ZK prover subsystem configuration.
+// ZKProverCfg wires the external ZISK prover cluster: ProverAddr
+// gRPC endpoint, ProverTimeout, ProofType ("stark" / "snark"),
+// MaxConcurrent proving jobs and the GuestBinary path for the
+// RISC-V64 zkVM guest used by cmd/zkguest to trace execution.
 
 package conf
 

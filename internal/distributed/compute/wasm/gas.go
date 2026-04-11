@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Fuel-based gas metering helpers for the WASM engine. SafeGasAdd and
+// SafeGasMul clamp arithmetic at math.MaxUint64 on overflow. GasTable
+// maps instruction categories (BaseInstruction, MemoryLoad, MemoryGrow,
+// BranchInstruction, CallInstruction) to fuel costs for wazero.
 
 package wasm
 

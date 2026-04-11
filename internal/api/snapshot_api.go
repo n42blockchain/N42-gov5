@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// SnapshotAPI exposes state snapshot inspection under the debug namespace.
+// Backed by a kv.RwDB handle to the internal snapshot manager, methods
+// such as GetSnapshotInfo return a SnapshotInfoResult containing the
+// latest snapshot metadata and the total retained count. Gated on the
+// snapshot manager being active in node configuration.
 
 package api
 

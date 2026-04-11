@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Live on-disk keystore index.
+// accountCache scans keydir, builds the accountsByURL list and a
+// byAddr multimap, and reloads itself on fsnotify events or via the
+// minReloadInterval throttle. AmbiguousAddrError surfaces addresses
+// that map to multiple key files so callers can resolve by URL.
+// newAccountCache pairs the cache with a fileCache+watcher pair so
+// add/delete notifications propagate into the parent KeyStore.
 
 package keystore
 

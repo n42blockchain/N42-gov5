@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Process registry updates unit for the statechange package.
+// Defines the minimizeQueuedValidator types.
+// Exports helpers such as ProcessRegistryUpdates.
+// Per-slot and per-epoch state change routines.
 
 //go:build n42el
 

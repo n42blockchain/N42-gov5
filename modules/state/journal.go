@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Journal of reversible state modifications for IntraBlockState.
+// journalEntry is the common interface with revert and dirtied hooks.
+// journal stores entries plus a dirties map counting per-address edit
+// hits so reverts can efficiently prune dirty-account tracking.
+// append inserts a new entry and increments the dirty counter; revert
+// walks entries from a snapshot index back, invoking each revert hook.
 
 package state
 

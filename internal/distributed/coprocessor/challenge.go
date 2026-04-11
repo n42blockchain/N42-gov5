@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// ChallengeManager and Challenge types for optimistic verification
+// disputes. ChallengeStatus transitions through Pending, Upheld,
+// Rejected and Expired states, driving slash events against misbehaving
+// providers when a fraud proof dispute is resolved.
 
 package coprocessor
 

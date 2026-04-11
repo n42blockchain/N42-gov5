@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-7212/EIP-7951 P-256 (secp256r1) signature verification precompile.
+// Decodes a fixed P256VerifyInputLength 160-byte input (msgHash|r|s|x|y),
+// reconstructs an *ecdsa.PublicKey on elliptic.P256() and verifies the
+// signature. Returns a 32-byte 0x01 on success or empty on failure.
+// P256VerifyGas is priced at 6900 per the Osaka schedule. Enables
+// WebAuthn, passkey and secure-enclave attestations to be validated
+// directly in EVM.
 
 package vm
 

@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// High-throughput ingest server configuration.
+// IngestCfg enables the binary TCP transaction-injection endpoint
+// used by stress tests: Addr bind, SoftTarget / HardCap queue
+// thresholds. DefaultIngestCfg returns the server disabled on
+// :9100 with a 50k/100k soft/hard envelope.
 
 package conf
 

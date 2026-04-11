@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Tree: the snapshot acceleration tree of stacked DiffLayers.
+// DefaultMaxDiffLayers (128) caps the height before oldest layers
+// flatten into the DiskLayer cache. Sentinel errors ErrParentNotFound,
+// ErrLayerExists and ErrSnapshotStale cover add/lookup failures.
+// NewTree seeds a DiskLayer at headBlock/headRoot and registers it in
+// the root->Layer map; SetDB enables persistent flatten-to-disk mode.
 
 package snapshot
 

@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// node.go — process root for the eth-el binary.
+//
+// Node owns the chaindata MDBX handle, the input/output freezers, and
+// the ordered list of Services that implement bootstrap, catch-up, and
+// the live Engine API loop. NewNode wires storage paths from conf.EthELCfg;
+// RegisterExtras allows plug-ins such as Caplin to be mounted before
+// Start. Start opens storage, then starts every Service in registration
+// order; Stop walks the reverse list. Both calls are idempotent so
+// signal handlers can invoke Stop multiple times safely.
 
 package ethel
 

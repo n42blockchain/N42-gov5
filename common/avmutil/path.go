@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM filesystem + node-name helpers. MakeName formats a libp2p user
+// agent string as name/vX/OS/GoVersion, FileExist is the standard
+// os.Stat-based existence predicate, and AbsolutePath joins a data
+// directory with a filename unless the filename is already absolute.
 
 package avmutil
 

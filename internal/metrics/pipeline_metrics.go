@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Deep pipeline metrics. Tracks per-stage latency (prefetch,
+// execution, commitment, persistence) plus channel backlog depth
+// and backpressure events for the deferred-execution DeepPipeline
+// inspired by Monad's Superscalar architecture.
 
 package metrics
 

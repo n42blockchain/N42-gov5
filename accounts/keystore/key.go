@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Plaintext Key value and Web3 Secret Storage schemas.
+// Key bundles a UUID v4, types.Address and in-memory *ecdsa.PrivateKey
+// plus MarshalJSON/UnmarshalJSON for the legacy plainKeyJSON form.
+// Declares CryptoJSON, cipherparamsJSON, encryptedKeyJSONV1/V3 and
+// the keyStore interface (GetKey/StoreKey/JoinPath) that plain and
+// passphrase backends implement. Constants like version = 3 tag the
+// output format written to disk.
 package keystore
 
 import (

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AddrLocker provides per-address mutual exclusion for transaction signing.
+// Serializes nonce assignment so two concurrent requests cannot read the
+// same pending nonce before the first signed transaction is broadcast.
+// Backing map is guarded by a top-level mutex and lazily initialised.
 
 package api
 

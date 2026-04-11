@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ProduceColumns: turns a block's blob sidecars into NumberOfColumns
+// (128) DataColumns as specified by EIP-7594. Each resulting column
+// aggregates the i-th cell across every blob in the block together
+// with the cell KZG proof and the source blob commitment, ready to be
+// stored or gossiped to custody peers.
 
 package peerdas
 

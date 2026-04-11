@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// TaskManager tracks compute tasks keyed by hash. Enforces maxPending
+// and taskTimeout, maintains a cached pendingCount, and provides
+// atomic status transitions via validTransition plus TransitionToProving
+// and TransitionToChallenged to prevent TOCTOU races.
 
 package coprocessor
 

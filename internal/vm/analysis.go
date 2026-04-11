@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JUMPDEST analysis helpers for EVM bytecode. codeBitmap scans contract
+// code and returns a packed uint64 bitmap marking byte positions that are
+// immediate operands of PUSH1-PUSH32 opcodes, so the interpreter can
+// reject jumps into PUSH data. The bitmap is padded by 4 bytes so that a
+// trailing PUSH32 does not write past its backing slice.
 package vm
 
 // codeBitmap collects data locations in code.

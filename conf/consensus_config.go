@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Consensus engine selection and per-engine parameters.
+// ConsensusConfig picks the engine by name and exposes APoaConfig
+// (PoA epoch, checkpoint interval, in-memory snapshot / signature
+// caches) and APosConfig (PoS epoch, reward epoch, RewardLimit,
+// DepositContract / DepositNFTContract addresses) alongside gas
+// floor / ceil targets used by the miner.
 
 package conf
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Default constants, sentinel errors and normalization helpers.
+// Exports DefaultHTTPPort / DefaultWSPort / DefaultAuthRPCPort /
+// DefaultP2PPort, DefaultDBCacheSize, DefaultGasPrice and cache
+// limits used across subsystems. Declares Err* validation errors
+// and NormalizeNetworkSelection which resolves Chain+Profile via
+// params.ResolveNetworkPreset to keep presets consistent.
 
 package conf
 

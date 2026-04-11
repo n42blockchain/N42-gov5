@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Post-quantum transaction type (PostQuantumTxType = 0x05). Enumerates
+// PQAlgoFalcon512, PQAlgoSQIsign, PQAlgoDilithium2 and PQAlgoDilithium3
+// as the supported signature algorithm identifiers, trading off size
+// vs speed (Falcon-512 ~666 B, SQIsign ~177 B, Dilithium2 ~2420 B).
+// The wrapped PQTx struct carries chain/nonce/gas/to/value/data plus
+// the chosen algorithm, public key (full or hash) and signature bytes.
 
 // Post-Quantum Transaction Type (Type 0x05)
 // This transaction type supports post-quantum cryptographic signatures

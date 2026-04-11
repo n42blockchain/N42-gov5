@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// APOS signer snapshot with vote tallying and LRU caching.
+// Vote captures an authorization change cast by a signer at a given
+// block. Tally accumulates candidate scores to determine when the
+// authorization threshold is reached. Snapshots are cached in an LRU
+// and persisted via rawdb so node restarts can replay them quickly.
 
 package apos
 

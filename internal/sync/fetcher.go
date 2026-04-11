@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BlockFetcher interface abstracting block download strategies. Exposes
+// FetchBlocks / FetchBlocksByHash, Start / Stop and a FetcherMetrics
+// accessor so alternative implementations (round-robin, parallel, mock)
+// can be plugged into the sync service and unit tests.
 
 package sync
 

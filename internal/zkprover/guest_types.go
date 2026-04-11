@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Host-side data types shared with the ZISK guest program. Defines
+// the serialization format (binary.BigEndian encoded block, sender
+// table, access list and trace header) that matches what the guest
+// expects on stdin when generating a proof.
 
 package zkprover
 

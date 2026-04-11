@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Vote buffering and batch verification for HotStuff-2.
+// batchVerifyThreshold sets the minimum number of buffered votes
+// before the engine attempts bls/blst batch verification; below the
+// threshold votes are verified individually since batch setup cost
+// outweighs the benefit. Feeds verified votes into VoteCollector.
 
 package hotstuff
 

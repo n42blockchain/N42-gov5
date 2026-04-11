@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Merkle inclusion and absence proofs for the BMT. Proof carries the key
+// hash, leaf value, collected sibling hashes and the depth at which the
+// walk stopped. Tree.GetProof descends root-to-leaf along the bit path,
+// pushing the sibling on each step and returning ErrNotFound for empty
+// branches or mismatched stored keys so callers can distinguish presence,
+// absence and corruption without re-reading nodes.
 
 package bmt
 

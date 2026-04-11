@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// N42-specific AI inference precompile at address 0x0301. Exposes four
+// selectors (requestInference, getResult, getModel, listModels) routed to
+// an InferenceBackend implemented by internal/distributed/compute/
+// inference. PrecompiledContractsAIInference is the dispatch map and
+// PrecompiledAddressesAIInference is populated in init(). Activation is
+// gated on ChainConfig.AIInferenceTime; it lives outside the standard
+// fork precompile sets.
 
 package vm
 

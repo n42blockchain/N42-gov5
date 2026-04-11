@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Default constants and CLI flag definitions.
+// Exposes DefaultHTTPPort / DefaultWSPort / DefaultP2PTCPPort /
+// DefaultP2PUDPPort / DefaultPprofPort / DefaultMetricsPort /
+// DefaultAuthRPCPort and datadir / IPC / log defaults plus the
+// shared urfave/cli flag groups consumed by the root command.
 
 package main
 

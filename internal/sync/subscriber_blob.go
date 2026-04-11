@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// GossipSub subscriber for EIP-4844 blob sidecars. blobSidecarSubscriber
+// decodes the types_pb.BlobSidecar proto, validates it via sc.Validate
+// and persists it through rawdb so block verification can pair each
+// block with its committed blobs.
 
 package sync
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core ABI container and entry points for contract binding.
+// Defines the ABI struct holding Constructor, Methods, Events, Errors,
+// Fallback and Receive, plus JSON() to decode a contract ABI from a
+// Reader. Exposes Pack/Unpack/UnpackIntoInterface/UnpackIntoMap and
+// MethodById/EventByID/ErrorByID lookups used by bind and rpc tooling.
 
 package abi
 

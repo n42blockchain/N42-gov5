@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Stateless block verification entry point.
+// VerifyBlockStateless cross-checks the expected parentRoot against
+// BlockWitness.ParentRoot, validates every Merkle proof via
+// VerifyWitness, and returns the verified parent root for the caller
+// to construct a WitnessStateReader and re-execute transactions.
+// ErrParentRootMismatch surfaces the consistency failure.
 
 package witness
 

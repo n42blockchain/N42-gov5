@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// N42 block-layer 2048-bit bloom filter. Bloom is the 256-byte log
+// bloom used in headers; Add/Test/SetBytes provide read and write
+// while BytesToBloom builds one from a raw byte slice. Hashing uses
+// the crypto/cryptopool Keccak256 pool for allocation reuse and the
+// lib/common/hexutility helpers for hex marshaling.
 
 package block
 

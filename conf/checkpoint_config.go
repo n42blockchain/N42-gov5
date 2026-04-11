@@ -1,6 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
+// Trusted checkpoint sync configuration.
+// Declares CheckpointConfig (enable flag, block number, block hash)
+// with IsEnabled and Validate helpers, the Checkpoint record type
+// and MainnetCheckpoints / TestnetCheckpoints lists used to fast
+// forward new nodes to a known-good state before snap sync resumes.
+//
 // The N42 library is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or

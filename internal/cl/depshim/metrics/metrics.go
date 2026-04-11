@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Metrics unit for the metrics package.
+// Defines the Counter, Gauge, Histogram, and Summary types.
+// Provides constructors NewCounter, NewGauge, NewHistogram, and NewSummary.
+// Exports helpers such as Inc, Add, Get, and Set.
+// Metric registration shims.
 
 //go:build n42el
 

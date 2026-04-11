@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// sync.Pool-backed LegacyTx allocator. TxDataPool reuses LegacyTx
+// instances with pre-allocated uint256 GasPrice / Value fields to
+// avoid repeated allocations on the txpool hot path.
+// GetPooledLegacyTx acquires an instance; PutPooledLegacyTx clears
+// every field before returning it so stale state never leaks
+// between requests.
 
 package transaction
 

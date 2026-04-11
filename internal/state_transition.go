@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// StateTransition: per-transaction execution driver. Handles nonce
+// and balance checks, buys gas, creates or calls the target
+// contract through the EVM, refunds unused gas and commits or
+// reverts the IntraBlockState accordingly. Central entry point
+// invoked by ApplyTransaction.
 
 package internal
 

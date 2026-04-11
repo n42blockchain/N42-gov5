@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Importer reads EraE segment files and reinserts the blocks into the
+// local KV database. ImportFile opens a segment via era.OpenReader and
+// optionally runs block-level verification driven by the verify flag
+// set at NewImporter time.
 
 package torrentsync
 

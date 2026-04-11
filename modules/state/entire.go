@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EntireCode snapshot format for offline replay bundles.
+// EntireCode groups a CoinBase address, an Entire state block with
+// header/uncles/transactions/Snap/Proof/Senders, contract code
+// HashCode entries and reward records.
+// HashCodes implements sort.Interface for deterministic encoding.
+// Used by external verification and witness export tools.
 
 package state
 

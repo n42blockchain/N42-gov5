@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Parallel state transition processor. Splits a block's transactions
+// into conflict-free batches based on sender and access list,
+// executes each batch in its own EVM instance and merges the
+// resulting state deltas. Falls back to sequential execution on
+// conflict or error.
 
 package internal
 

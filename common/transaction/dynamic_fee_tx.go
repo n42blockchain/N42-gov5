@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-1559 DynamicFeeTx payload used by the generic Transaction
+// type. Holds ChainID, nonce, GasTipCap / GasFeeCap (max priority
+// and max fee per gas), gas, to / from, value, calldata, access
+// list and the Sign blob plus V/R/S uint256 signature components.
+// copy() returns a deep clone satisfying the TxData interface so
+// signer pipelines can mutate clones without aliasing.
 
 package transaction
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Log event index writer over LogAddressIndex and LogTopicIndex.
+// WriteLogIndex extracts unique addresses and topics from a block's
+// receipts and adds the block number into sharded roaring bitmaps
+// keyed by addr(20)+shard(4) and topic(32)+shard(4). Shards cap the
+// MDBX value size so oversized bitmaps stay under the page threshold
+// by rolling into a new chunk when the bitmap grows too large.
 
 package rawdb
 

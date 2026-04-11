@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// BLSVerifierImpl: concrete SyncCommitteeBLSVerifier built on the N42
+// BLS12-381 stack (crypto/bls). Used by the ETH light client to verify
+// sync committee aggregate signatures via FastAggregateVerify against
+// a 32-byte signing root. Wraps error handling for empty pubkey sets
+// and malformed signature bytes.
 
 package bridge
 

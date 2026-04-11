@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// PoA consensus error sentinels shared by header validators.
+// ErrUnknownBlock, ErrInvalidCheckpointBeneficiary, ErrInvalidVote,
+// ErrInvalidCheckpointVote, ErrMissingVanity and ErrMissingSignature
+// cover the core checkpoint and extra-data validation failures. Kept
+// private to this subpackage so engine specifics do not leak.
 
 package misc
 

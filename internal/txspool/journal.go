@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Persistent transaction journal. Serialises locally submitted
+// transactions to an append-only file so they survive a node
+// restart, and replays them into the pool during warm-up. Journal
+// rotation truncates stale entries after reinjection succeeds.
 
 package txspool
 

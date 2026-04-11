@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Development and testing knobs.
+// DevConfig drives the built-in transaction generator used by
+// devnets: TxGenEnabled, TxGenMaxPerBlock (0-31), TxGenInterval
+// and TxGenGasPrice. DefaultDevConfig returns txgen off with a
+// 2-second cadence matching the devnet block time.
 
 package conf
 

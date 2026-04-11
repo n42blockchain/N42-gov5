@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JMTCommitment bridges dirty-tracking to a Jellyfish Merkle Tree.
+// Wraps a lib/jmt.Tree and exposes UpdateAccount/UpdateStorage/Root
+// per-block entrypoints with FlushTo(store) for external persistence.
+// Like BMTCommitment, runs in parallel with PlainStateWriter so the
+// flat Account/Storage tables continue to serve fast point lookups
+// while the JMT produces the Blake3 cryptographic root.
 
 package commitment
 

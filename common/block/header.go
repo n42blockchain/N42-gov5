@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// N42 block Header and BlockNonce. Fields 1-21 match Ethereum Pectra
+// exactly (same RLP / JSON wire format); N42-specific extensions
+// (LtHashRoot, tree roots, BLS signatures) live inside Extra. Also
+// defines BlockNonce (8-byte nonce) with Encode/Decode and
+// hexutil-backed MarshalText / UnmarshalText for JSON-RPC output.
 
 package block
 

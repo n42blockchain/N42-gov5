@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// process.go — shared per-block execution core.
+//
+// ProcessBlock takes a header, a slice of transactions, uncles, and an
+// IntraBlockState, then drives the EVM through every transaction using
+// the chain config fork rules and the consensus engine's Finalize hook.
+// Pre-computed senders can be injected to skip ecrecover. The returned
+// BlockResult carries gas used, receipts and senders. The function is
+// shared by the batch Executor and the Engine API adapter so both paths
+// produce byte-identical receipts and state transitions.
 
 package ethel
 

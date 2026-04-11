@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Seeder manages automatic BitTorrent seeding of on-chain CAS content.
+// SeedEntry tracks ContentHash, InfoHash, name, size and SeedingSince
+// time; when the CAS precompile stores new content the seeder wraps it
+// in a torrent and keeps uploading to the swarm.
 
 package torrent
 

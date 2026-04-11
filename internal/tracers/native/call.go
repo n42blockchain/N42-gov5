@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// callTracer. Builds a hierarchical call tree of a transaction's
+// CALL / CREATE / SELFDESTRUCT frames with gas used, input, output
+// and revert reason decoded. Output matches the canonical geth
+// callTracer JSON format so existing tooling keeps working.
 
 package native
 

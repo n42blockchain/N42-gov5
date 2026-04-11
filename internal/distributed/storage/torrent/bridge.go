@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Bridge between N42 keccak256 CAS hashes and BitTorrent infohashes.
+// HashMapping records the ContentHash, the derived metainfo.Hash and
+// the bencoded MetaInfo used for seeding, so uploads through the CAS
+// precompile automatically become downloadable via anacrolix/torrent.
 
 package torrent
 

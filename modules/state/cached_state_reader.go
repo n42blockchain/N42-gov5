@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// CachedStateReader: StateReader wrapper backed by a cross-block cache.
+// NewCachedStateReader composes an inner StateReader with a
+// layered.ShardedCache. ReadAccountData checks modules.Account keys in
+// the cache before falling back to the inner reader, decoding with
+// account.DecodeForStorage and evicting corrupted entries on decode
+// failure. A nil cache reduces overhead to the plain inner reader.
 
 package state
 

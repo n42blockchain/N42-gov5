@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// SP1 backend client. Talks to the Succinct Labs SP1 prover daemon
+// over its JSON protocol, handling request encoding, asynchronous
+// polling for proof readiness and response decoding into the shared
+// Proof type. One of three interchangeable prover backends alongside
+// STARK and SNARK.
 
 package zkprover
 

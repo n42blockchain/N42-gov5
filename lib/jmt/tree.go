@@ -13,6 +13,15 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core Tree type for the Jellyfish Merkle Tree. Tree owns a root hash,
+// a NodeStore, a Hasher, a monotonically increasing version counter, a
+// dirty map of unflushed nodes and an LRU nodeCache (container/list
+// based, capped at DefaultNodeCacheSize = 131072 entries) that absorbs
+// the role previously played by CachedStore. An optional NodeGC tracks
+// reference counts so mutations can queue replaced nodes for deletion.
+// The tree is NOT goroutine-safe; callers synchronise externally, in
+// line with IntraBlockState and other per-block data structures.
 
 package jmt
 

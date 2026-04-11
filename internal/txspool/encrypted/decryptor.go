@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Transaction decryptor for the threshold-encrypted mempool. Wraps an
+// AES-CTR stream cipher with HMAC-SHA256 authentication, deriving
+// per-transaction keys from the keyper-released epoch secret. Used at
+// block assembly time to unseal enqueued ciphertexts in deterministic
+// order.
 
 package encrypted
 

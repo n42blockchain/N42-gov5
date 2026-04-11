@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Sentinel error values and structured error types returned by the EVM
+// during contract execution. Covers out-of-gas, call depth, invalid
+// jumps, revert, max code size, write protection, return data bounds,
+// nonce and gas overflow, invalid code/retsub and subroutine misuse.
+// ErrStackUnderflow/ErrStackOverflow report stackLen versus required
+// so tracers and tests can inspect the exact mismatch. errStopToken is
+// an internal loop-termination sentinel never surfaced to callers.
 package vm
 
 import (

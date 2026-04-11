@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Signing backend and JSON-RPC surface for Clef.
+// Bridges accounts.Manager and keystore.KeyStore to the external
+// signer protocol: list accounts, sign typed data, sign legacy /
+// dynamic fee transactions (via uint256 balances) and feed each
+// request through the rules engine and AuditLogger before touching
+// any secret key material.
 
 package main
 

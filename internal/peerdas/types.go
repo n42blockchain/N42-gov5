@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core PeerDAS data types and EIP-7594 constants: NumberOfColumns
+// (128), CustodyRequirement (4), SamplesPerSlot (8) and the
+// DataColumn / ColumnSidecar structs shared across custody, producer
+// and store. Defines the wire representation used by the libp2p
+// custody streaming protocol.
 
 package peerdas
 

@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Tile-based block-processing pipeline configuration.
+// TileConfig swaps the channel pipeline for pinned goroutines on
+// lock-free SPSC ring buffers: RingSize (power of 2), MaxRestarts,
+// RestartDelayMs and per-stage CPU-core pinning for Net / Consensus
+// / Execute / Commit / Persist tiles. DefaultTileConfig returns
+// the feature disabled.
 
 package conf
 

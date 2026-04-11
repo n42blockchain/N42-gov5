@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// SnapshotManager downloads state at a fixed snapshot height using the
+// WalkAsOf-based server protocol. Discovers snapshot heights, submits
+// account/storage/code RangeTasks and decodes zstd-compressed batches
+// into the local DB before the catch-up replay phase.
 
 package snapsync
 

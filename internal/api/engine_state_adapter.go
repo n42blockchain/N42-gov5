@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// EngineStateAdapter bridges the Engine API with persistent state execution.
+// Wraps a kv.RwDB, freezer, chain configuration and consensus engine so
+// that ExecutePayload can run a CL-supplied block through the EVM,
+// commit the resulting state and verify the declared state root. Provides
+// the thin glue layer between newPayload/forkchoiceUpdated RPC handlers
+// and the internal ethel execution pipeline.
 
 package api
 

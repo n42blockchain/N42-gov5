@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// WebSocket transport for JSON-RPC using gorilla/websocket.
+// wsReadBuffer/wsWriteBuffer (1 KiB each), wsPingInterval (60s),
+// wsPingWriteTimeout (5s), wsPongTimeout (30s) and wsMessageSizeLimit
+// (15 MiB) bound connection resources. Server.WebsocketHandler builds
+// an http.Handler that validates Origin against allowedOrigins and
+// upgrades requests into ServerCodec-backed JSON-RPC sessions.
 
 package jsonrpc
 

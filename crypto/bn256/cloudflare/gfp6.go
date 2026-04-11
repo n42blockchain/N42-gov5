@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Cubic extension field Fp6 for BN256.
+// Implements gfP6 = x*tau^2 + y*tau + z over gfP2 with
+// tau^3 = xi = i + 9. Intermediate tower layer between Fp2 and
+// Fp12 during BN256 pairing evaluation.
 
 package bn256
 

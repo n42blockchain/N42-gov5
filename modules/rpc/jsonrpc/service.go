@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Reflect-based service and callback registry.
+// Caches sentinel reflect.Type values (contextType, errorType,
+// subscriptionType, stringType) used to validate method signatures.
+// serviceRegistry maps namespace -> service {callbacks, subscriptions}
+// and callback captures the method value, argument types, return
+// types and per-call context/subscription flags.
 
 package jsonrpc
 

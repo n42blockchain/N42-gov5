@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Account reward bookkeeping accessors for the modules.Reward bucket.
+// PutAccountReward/GetAccountReward persist a uint256.Int accumulated
+// reward keyed by "account:<addr>" strings, used by the validator
+// payout and coinbase credit paths.
 
 package rawdb
 

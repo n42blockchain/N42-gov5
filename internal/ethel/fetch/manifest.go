@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// manifest.go — on-wire JSON manifest describing a set of Assets.
+//
+// Manifest is the published document that bootstrap and catchup load to
+// learn which files they need to fetch and from where. ManifestKind
+// tags leaves-journal vs chain-segment manifests so a misconfigured
+// service catches obvious loader-kind mismatches early. ManifestVersion
+// is bumped on any non-backward-compatible schema change. LoadManifest
+// reads a manifest from an HTTPS URL or local path, verifies the
+// top-level signature when present, and returns a typed struct.
 
 package fetch
 

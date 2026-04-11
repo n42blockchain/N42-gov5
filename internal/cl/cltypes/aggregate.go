@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Aggregate unit for the cltypes package.
+// Defines the AggregateAndProof, SignedAggregateAndProof, and SyncAggregate
+// types.
+// Provides constructors NewSyncAggregate and NewSyncAggregateWithSize.
+// Exports helpers such as EncodeSSZ, Static, DecodeSSZ, and EncodingSizeSSZ.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// `export` / `import` / `backup` subcommands for chain data.
+// Streams blocks out of and into the MDBX store using kv and
+// modules.Schema, with uint256-sized balances and internal/node
+// backup helpers. Supports range filters, checkpoint restore and
+// delegates to internal/node/backup for consistent on-disk copies.
 
 package main
 

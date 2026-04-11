@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// stateObject: in-memory representation of a single Ethereum account.
+// Code and Storage are convenience types for raw contract code and
+// per-slot uint256 values. emptyCodeHash and emptyCodeHashH cache the
+// Keccak256 of empty code to compare against StateAccount.CodeHash.
+// stateObject carries the account snapshot plus dirty storage, code
+// and destructed flags that IntraBlockState drives during tx execution.
 
 package state
 

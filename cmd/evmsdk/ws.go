@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// WebSocket transport for the mobile verification SDK.
+// WebSocketService wraps a pair of gorilla/websocket connections
+// (read + write) to a relay address, reconnecting and closing
+// exactly once via sync.Once. NewWebSocketService dials both
+// legs and hands back a ready-to-use duplex channel used by the
+// App to stream verification jobs and signed attestations.
 
 package evmsdk
 

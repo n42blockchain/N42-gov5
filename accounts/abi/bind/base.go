@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BoundContract runtime used by every generated binding.
+// Declares SignerFn, CallOpts, TransactOpts, FilterOpts, WatchOpts and
+// MetaData, plus NewBoundContract/DeployContract/NewBoundContractFromMetaData.
+// Implements Call, Transact, RawTransact, FilterLogs, WatchLogs,
+// UnpackLog/UnpackLogIntoMap, EIP-3668 CCIP-Read redirect following and
+// 1559-aware gas estimation gated by basefeeWiggleMultiplier.
 
 package bind
 

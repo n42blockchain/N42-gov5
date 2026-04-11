@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// log_extension.go — minimal example ExEx extension.
+//
+// LogExtension implements exex.Extension by logging every commit and
+// revert notification it receives. It serves as both a reference
+// implementation for new extensions and a useful development-time
+// debug sink so operators can confirm that the execution extension
+// pipeline is wired up correctly without installing a full indexer.
 
 package extensions
 

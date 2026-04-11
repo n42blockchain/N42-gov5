@@ -13,6 +13,10 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Top-level SyncState machine: Idle, InitialSync, CatchUp and Synced.
+// Provides String formatting and the transition helpers used by the
+// sync service and node metrics to report the current stage.
 
 package sync
 

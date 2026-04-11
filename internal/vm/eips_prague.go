@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Prague fork EIP implementations. enable7939 installs EIP-7939 CLZ
+// (0x1e) into a JumpTable at GasFastStep. opClz counts leading zero
+// bits in the top 256-bit stack word, returning 256 for a zero input
+// and otherwise walking bytes from MSB to find the first non-zero byte
+// and combining byte-count zeros with math/bits.LeadingZeros8. Building
+// block for compact bit-packed numerics in on-chain code.
 
 package vm
 

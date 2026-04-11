@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// service.go — Service lifecycle interface used by ethel.Node.
+//
+// Service is the minimal Start/Stop contract every component plugged
+// into a Node must satisfy. Node starts services in registration order
+// and stops them in reverse, mirroring the pattern used by the messaging
+// stack. Persistent services spawn goroutines in Start and honour
+// ctx.Done; one-shot services run to completion synchronously and
+// return nil from Stop. Keeping the contract this narrow lets the Node
+// treat bootstrap, catchup and engineapi uniformly.
 
 package ethel
 

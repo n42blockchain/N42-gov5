@@ -13,6 +13,15 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Sharded LRU read cache for the layered KV store. ShardedCache fans
+// keys across cacheShard instances, each guarding a map plus a
+// container/list LRU with its own RWMutex to minimise contention on
+// the block-execution hot path. Entries are keyed by (table, key) via
+// cacheKey; nil values act as a negative cache. Lookups take a read
+// lock and lazily promote hits to the LRU front, while Put evicts the
+// tail once the shard reaches capacity. Hit/miss counters are exposed
+// through Stats for the metrics.go gauges.
 
 package layered
 

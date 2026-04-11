@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// TieredVerifier plus the Verifier interface for ZK, Optimistic and
+// TEE tiers. OptimisticVerifier accepts bonded results subject to a
+// challenge window, TEEVerifier validates Intel SGX/TDX attestation
+// quotes, and VerificationConfig holds per-tier bond and window values.
 
 package coprocessor
 

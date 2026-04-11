@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Node: top-level N42 process orchestrator. Creates and wires the
+// database, consensus engine (apoa / apos / hotstuff), miner, txpool,
+// P2P, JSON-RPC, MCP, ZK prover, deferred executor, gRPC KV server and
+// distributed messaging / compute services, then manages the full
+// lifecycle via Start and Stop. Also owns graceful shutdown ordering
+// across subsystems.
 
 package node
 

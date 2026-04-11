@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// MEV-Boost relay HTTP client. Implements the builder-spec endpoints
+// (/eth/v1/builder/validators, /eth/v1/builder/header, blinded block
+// submission) with a bounded relayTimeout (4s) and maxResponseBytes
+// (10 MiB) guard against hostile relays. Handles validator registration,
+// signed header fetching and blinded-block unblinding for the proposer.
 
 // Package mev implements MEV-Boost integration for N42,
 // enabling communication with external block builders through relay infrastructure.

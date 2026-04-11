@@ -1,5 +1,13 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Freezer orchestrator for the geth-compatible ancient store.
+// Defines DefaultFreezeThreshold (90k behind head), freezeInterval
+// and freezeBatchSize plus Table* names (headers/bodies/receipts
+// plus N42 extensions: senders, acctcs, storcs, leaves, witness).
+// BatchSize (64) is the unified batch size for online executor,
+// sender-recovery and offline compact paths. EncodeBatch builds
+// the length-prefixed, zstd-compressed batch payload.
 
 package freezer
 

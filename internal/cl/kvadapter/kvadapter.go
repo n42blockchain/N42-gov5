@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Kvadapter unit for the kvadapter package.
+// Defines the Config types.
+// Exports helpers such as DefaultConfig and Open.
 
 //go:build n42el
 

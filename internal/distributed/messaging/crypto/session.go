@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Bilateral Session with chain-key ratcheting for forward secrecy.
+// Derives a unique message key per SendCounter / RecvCounter, then
+// ratchets SendChainKey and RecvChainKey forward so a compromise of
+// the current state cannot decrypt past messages.
 
 package crypto
 

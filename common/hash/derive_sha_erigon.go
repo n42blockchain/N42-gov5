@@ -1,5 +1,13 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// DeriveShaErigon computes the canonical Ethereum MPT trie root of
+// a DerivableList (transaction / receipt / withdrawal roots) using
+// erigon's streaming HashBuilder + GenStructStep algorithm. Builds
+// nibble-sorted (keyHex, value) entries, feeds them through a
+// rlphacks.RlpSerializableBytes stream and returns EmptyRootHash
+// for empty inputs. Used whenever ETH-compatible root hashing is
+// required on N42 blocks and ETH EL profile output.
 
 package hash
 

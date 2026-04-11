@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// GraphQL schema types for blocks and transactions per EIP-1767.
+// Block encodes number, hash, parent, timestamp, gas fields, miner,
+// trie roots, logs bloom, difficulty, size, base fee and extra data.
+// Transaction mirrors the EIP-1559/2930 shape so clients can query a
+// consistent object model across legacy and typed transactions.
 
 package graphql
 

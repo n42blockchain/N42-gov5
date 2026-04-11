@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core EVM execution environment. Hosts the precompile lookup path
+// through the PrecompileRegistry interface (registry-based or legacy
+// global maps) including fallbacks for N42 extension sets: PQ
+// precompiles, content-addressed storage, AI inference and randomness.
+// emptyCodeHash is the Keccak256 of nil used by CREATE to block
+// redeployment onto already-deployed accounts. Wires chainRules-gated
+// dispatch for each fork and N42-specific precompile block.
 package vm
 
 import (

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BatchWriter for efficient grouped MDBX writes.
+// Wraps a kv.RwTx with a pending counter and a configurable flush
+// limit (default 10000) so callers can accumulate Put operations
+// and auto-flush when the threshold is crossed. A sync.Mutex
+// serializes concurrent callers sharing the same batch.
 
 package rawdb
 

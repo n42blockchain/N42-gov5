@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Clef external signer binary for N42.
+// Runs a standalone signing daemon that keeps private keys outside
+// the node process and exposes an IPC JSON-RPC API for signing
+// transactions and typed data. Wires urfave/cli, rule-based
+// approval (rules.go), tamper-evident AuditLogger (audit.go) and
+// the Signer backend (signer.go) into a single long-running
+// process.
 
 // Package main implements the Clef external signer for N42.
 // Clef is a standalone signing daemon that manages keys externally

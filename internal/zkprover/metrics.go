@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Prometheus metrics for the ZK prover service: proofs requested,
+// proofs generated, proof latency histogram and prover queue depth.
+// Registered through the shared common/metrics facade so they
+// surface on the node's metrics endpoint.
 
 package zkprover
 

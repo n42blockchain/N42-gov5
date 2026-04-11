@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Abstract block-layer interfaces. IHeader, IBody and IBlock let
+// consumers work against headers, bodies and full blocks without
+// importing the concrete Header / Body / Block structs. Keeps the
+// common layer loosely coupled from internal/consensus and the
+// miner so alternative block implementations can be swapped in.
 
 package block
 

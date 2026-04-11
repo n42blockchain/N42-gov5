@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Text/template view model and source templates for abigen output.
+// Declares tmplData, tmplContract, tmplMethod, tmplEvent and tmplStruct
+// carrying the preprocessed ABI seen by each language template, plus
+// tmplSource keyed by Lang (LangGo/LangJava/LangObjC) holding the
+// actual Go source blueprint for contract, deploy, call, transact,
+// filter, watch and parse helpers used by Bind().
 
 package bind
 

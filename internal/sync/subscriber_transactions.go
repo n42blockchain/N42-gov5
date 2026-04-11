@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// GossipSub subscriber for mempool transactions. txSubscriber decodes
+// types_pb.Transaction, converts to the internal transaction.Transaction
+// type and adds it to the txPool via AddRemotes, swallowing decode
+// errors so misbehaving peers are not immediately penalised.
 
 package sync
 

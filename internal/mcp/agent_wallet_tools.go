@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// MCP agent wallet tools. Registers create-account, get-balance and
+// account-count JSON-RPC methods backed by the AgentWalletProvider
+// interface so remote AI agents can manage their N42 session keys
+// and paymaster deposits without running an HTTP stack of their own.
 
 package mcp
 

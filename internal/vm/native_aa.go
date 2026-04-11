@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Protocol-level native Account Abstraction support staged for the
+// Fusaka hard fork. Defines the AccountType* constants (EOA, Contract,
+// AA) that give the protocol a first-class notion of smart-contract
+// accounts, and the shared data structures used to validate and
+// dispatch native AA transactions. Bridges the EIP-3074/5003/5806
+// lineage with EIP-7702 delegation and the future full native AA
+// specification.
 
 // Native Account Abstraction (Fusaka)
 //

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM execution metrics: per-opcode latency histograms, gas used
+// distributions, precompile invocation counts and snapshot / journal
+// bookkeeping timers used to diagnose execution hot spots in the
+// intra-block state machine.
 
 package metrics
 

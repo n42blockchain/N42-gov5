@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// ETHSubmitter: posts generated HeaderChainProof bundles to the
+// N42Verifier contract on Ethereum. Uses a trimmed verifierABIJSON
+// exposing only verifyHeaderChain(proof, startBlock, endBlock,
+// stateRoot), and relies on the node's jsonrpc.Client with
+// eth_sendTransaction against an unlocked account. Intended to be
+// wrapped by a signing middleware or custody service in production.
 
 package bridge
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Local builder-API surface exposed to the proposer. Defines the
+// MinerBackend interface (PendingBlock, SealedBlockValue) decoupling
+// the builder API from any concrete miner, the ExecutionPayload JSON
+// wire format used to reconstruct a full execution-layer block from a
+// signed blinded block response, and the ErrNoPendingBlock / ErrNilRelay
+// sentinel errors.
 
 package mev
 

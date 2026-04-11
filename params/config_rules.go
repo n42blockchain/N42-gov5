@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Per-block fork-rules resolution for the EVM and N42 extensions.
+// Defines the Rules struct (IsHomestead..IsGlamsterdam, IsPQPrecompiles,
+// IsContentStore, IsAIInference, IsRandomness) and ChainConfig.Rules /
+// RulesWithTimestamp which select the active fork set from block number
+// and header timestamp. Used by the interpreter and gas tables.
 
 package params
 

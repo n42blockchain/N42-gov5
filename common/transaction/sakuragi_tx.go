@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// SakuragiTx is a compact internal transaction payload used by the
+// Sakuragi (N42 native) execution path. Stores nonce, gas price,
+// gas, to / from, value, calldata and the signature blob inline
+// (uint256 values held by value rather than by pointer) to minimise
+// allocations when building native blocks.
 
 package transaction
 

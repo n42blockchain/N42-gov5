@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM environment construction for the standalone runtime harness.
+// NewEnv turns a runtime Config into a ready-to-run *vm.EVM by
+// assembling a TxContext (Origin, GasPrice) and BlockContext with
+// internal.CanTransfer/Transfer callbacks, the user-supplied
+// GetHashFn, Coinbase, BlockNumber, Time, Difficulty, GasLimit and
+// BaseFee. Called by Execute and Call entry points in runtime.go.
 
 package runtime
 

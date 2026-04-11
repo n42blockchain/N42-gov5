@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// SnapshotStateReader: Layer-first StateReader adapter.
+// Consults a snapshot Layer chain for accounts and storage before
+// falling back to an inner state.StateReader (CachedStateReader or
+// PlainStateReader). When the Layer reports an explicit deletion it
+// returns (nil, nil) without descending to the inner reader,
+// providing sub-millisecond reads for recently modified state.
 
 package snapshot
 

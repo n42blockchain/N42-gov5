@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Snapshot journal serialization for in-memory DiffLayers.
+// SerializeDiffLayer emits a compact binary blob holding block
+// number, root, parent root, updated accounts, deletions and
+// per-address storage slot diffs. The format is
+// block||root||parent||numA||[addr+data]||numDel||[addr]||numS||
+// [addr+numSlots+[key+val]]... for journaled reload after restart.
 
 package snapshot
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JMTRootComputer: RootComputer adapter over a JMTCommitment.
+// Implements state.RootComputer with RootScheme RootSchemeJMTBlake3.
+// ComputeRoot builds a jmt.BatchEntry slice from the dirty accounts
+// and storage maps and delegates to the JMT batch path, including
+// nil-value deletions for self-destructed accounts and emptied slots.
 
 package commitment
 

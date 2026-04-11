@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Account changeset encoder/decoder for per-block account state diffs.
+// NewAccountChangeSet allocates a ChangeSet keyed by 20-byte addresses.
+// EncodeAccounts packs blockNum->(addr||oldValue) records sorted by key
+// via modules.EncodeBlockNumber for MDBX dupsort storage.
+// DecodeAccounts extracts (blockN, addr, oldValue) from raw dbKey/dbValue.
 
 package changeset
 

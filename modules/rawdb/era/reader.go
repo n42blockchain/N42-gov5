@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Reader for EraE archive files.
+// OpenReader opens the *os.File, parses the 14-byte Header via
+// DecodeHeader, reads the trailing footer to find index count and
+// offset, and loads the IndexEntry slice sorted by BlockNumber.
+// Subsequent Read calls binary-search the index and decompress the
+// stored zstd record via the pooled decoder.
 
 package era
 

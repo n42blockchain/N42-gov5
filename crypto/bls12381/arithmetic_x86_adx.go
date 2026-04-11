@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ADX / BMI2 opt-in flag for the BLS12-381 assembly backend.
+// Under the amd64 && blsadx build tag this file defines
+// `const enableADX = true`, requesting the ADX / BMI2 fast path.
+// Runtime code still falls back to plain ASM when the host CPU
+// lacks those extensions.
 
 //go:build amd64 && blsadx
 
