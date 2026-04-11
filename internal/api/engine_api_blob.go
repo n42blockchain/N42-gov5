@@ -23,6 +23,7 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -215,20 +216,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	if err := validateExecutionPayloadHeader(blockHeader(blk), e.v1().parentHeader(payload.ParentHash), e.v1().chainConfig()); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
-	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
-	}
-	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.v1().chainConfig(), enginePayloadHashOptions{
-		includeWithdrawals: true,
-		withdrawals:        payload.Withdrawals,
-		includeBlobFields:  true,
-		parentBeaconRoot:   parentBeaconBlockRoot,
-	}); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
-	}
+	blk = applyExecutionPayloadForkFields(blk, nil, nil, nil, parentBeaconBlockRoot, nil)
 	blockHash := ethCompatibleEngineBlockHash(blk, e.v1().chainConfig(), enginePayloadHashOptions{
 		includeWithdrawals: true,
 		withdrawals:        payload.Withdrawals,
@@ -238,15 +226,57 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("blockhash mismatch"), nil
 	}
-	if err := e.v1().validatePayloadExecution(blk, payload.ParentHash, parentBeaconBlockRoot, nil); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
+	body := &ExecutionPayloadBodyV1{
+		Transactions: cloneHexutilBytesList(payload.Transactions),
+		Withdrawals:  clonePayloadBodyWithdrawals(payload.Withdrawals),
+	}
+	parent := e.v1().parentHeader(payload.ParentHash)
+	if latestValidHash, ok := e.v1().rejectedAncestorLatestValidHash(payload.ParentHash); ok {
+		return e.v1().invalidPayloadStatus(engineRejectedAncestorReason, blk, blockHash, latestValidHash, body), nil
+	}
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
+		return e.v1().invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+	}
+	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.v1().chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   parentBeaconBlockRoot,
+	}); err != nil {
+		return e.v1().invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), parent, e.v1().chainConfig()); err != nil {
+		return e.v1().invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+	}
+	var (
+		overlayState *engineStateOverlay
+		receipts     block.Receipts
+	)
+	if parent != nil && e.v1().stateAdapter == nil {
+		overlayState, receipts, err = e.v1().executePayloadOnParentStateAndValidateWithWithdrawals(blk, payload.ParentHash, parentBeaconBlockRoot, nil, payload.Withdrawals)
+		if err != nil {
+			return e.v1().invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+		}
+	}
+	if parent == nil {
+		if overlay := e.v1().overlay(); overlay != nil {
+			overlay.stageBlockWithBody(blk, blockHash, nil, nil, false, body)
+		}
+		return acceptedPayloadResponse(), nil
+	}
+	if e.v1().stateAdapter != nil {
+		return e.v1().executeOrValidateWithBody(blk, blockHash, payload.ParentHash, parentBeaconBlockRoot, nil, body)
 	}
 	headHash := e.v1().currentHeadHash()
 	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
-		return syncingPayloadResponse(), nil
+		if overlay := e.v1().overlay(); overlay != nil {
+			overlay.stageBlockWithBody(blk, blockHash, overlayState, receipts, true, body)
+		}
+		return acceptedPayloadResponse(), nil
 	}
 	if overlay := e.v1().overlay(); overlay != nil {
-		overlay.importBlock(blk, blockHash)
+		overlay.stageBlockWithBody(blk, blockHash, overlayState, receipts, true, body)
+		overlay.importBlockWithBody(blk, blockHash, receipts, body)
 	}
 	return validPayloadResponse(blockHash), nil
 }
@@ -271,27 +301,26 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	if state == nil {
 		return invalidForkchoiceResponse("missing forkchoice state"), nil
 	}
-	head := e.v1().currentHead()
-	if head == nil {
-		return syncingForkchoiceResponse(), nil
-	}
-	headHash := e.v1().currentHeadHash()
-	if state.HeadBlockHash != headHash {
-		return syncingForkchoiceResponse(), nil
+	head, headHash, syncResp, err := e.v1().resolveForkchoiceState(state)
+	if syncResp != nil || err != nil {
+		return syncResp, err
 	}
 	if attrs == nil {
 		return validForkchoiceResponse(headHash, nil), nil
 	}
 	if attrs.Withdrawals == nil {
-		return invalidForkchoiceResponse("missing withdrawals"), nil
+		return nil, &engineInvalidPayloadAttributesError{msg: "missing withdrawals"}
 	}
 	if attrs.ParentBeaconBlockRoot == nil {
-		return invalidForkchoiceResponse("missing parent beacon block root"), nil
+		return nil, &engineInvalidPayloadAttributesError{msg: "missing parent beacon block root"}
 	}
 	if uint64(attrs.Timestamp) <= head.Time() {
-		return invalidForkchoiceResponse("payload timestamp must be greater than parent"), nil
+		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
-	payload := buildExecutionPayloadV3(head, headHash, attrs, e.v1().chainConfig())
+	payload := e.buildExecutionPayloadV3Stateful(head, headHash, attrs)
+	if payload == nil {
+		payload = buildExecutionPayloadV3(head, headHash, attrs, e.v1().chainConfig())
+	}
 	if payload == nil {
 		return invalidForkchoiceResponse("failed to build payload"), nil
 	}
@@ -300,6 +329,7 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 		headHash,
 		uint64(attrs.Timestamp),
 		attrs.SuggestedFeeRecipient,
+		attrs.PrevRandao,
 		withdrawalsRoot[:],
 		attrs.ParentBeaconBlockRoot[:],
 	)
@@ -347,6 +377,51 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	return validForkchoiceResponse(headHash, &payloadID), nil
 }
 
+func (e *EngineAPIBlob) buildExecutionPayloadV3Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV3) *ExecutionPayloadV3 {
+	if attrs == nil {
+		return nil
+	}
+	result := e.v1().buildExecutionPayloadStateful(parent, parentHash, &PayloadAttributesV1{
+		Timestamp:             attrs.Timestamp,
+		PrevRandao:            attrs.PrevRandao,
+		SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
+	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot)
+	if result == nil || result.block == nil {
+		return nil
+	}
+	v1 := blockToExecutionPayloadV1(result.block, e.v1().chainConfig())
+	header := blockHeader(result.block)
+	if v1 == nil || header == nil || header.BlobGasUsed == nil || header.ExcessBlobGas == nil {
+		return nil
+	}
+	payload := &ExecutionPayloadV3{
+		ParentHash:    v1.ParentHash,
+		FeeRecipient:  v1.FeeRecipient,
+		StateRoot:     v1.StateRoot,
+		ReceiptsRoot:  v1.ReceiptsRoot,
+		LogsBloom:     append(hexutil.Bytes(nil), v1.LogsBloom...),
+		PrevRandao:    v1.PrevRandao,
+		BlockNumber:   v1.BlockNumber,
+		GasLimit:      v1.GasLimit,
+		GasUsed:       v1.GasUsed,
+		Timestamp:     v1.Timestamp,
+		ExtraData:     append(hexutil.Bytes(nil), v1.ExtraData...),
+		BaseFeePerGas: v1.BaseFeePerGas,
+		BlockHash:     v1.BlockHash,
+		Transactions:  cloneHexutilBytesList(v1.Transactions),
+		Withdrawals:   cloneWithdrawals(attrs.Withdrawals),
+		BlobGasUsed:   hexutilUint64Ptr(*header.BlobGasUsed),
+		ExcessBlobGas: hexutilUint64Ptr(*header.ExcessBlobGas),
+	}
+	payload.BlockHash = ethCompatibleEngineBlockHash(result.block, e.v1().chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   attrs.ParentBeaconBlockRoot,
+	})
+	return payload
+}
+
 // GetBlobsBundleV1 retrieves the blobs bundle for a payload
 // engine_getBlobsBundleV1
 func (e *EngineAPIBlob) GetBlobsBundleV1(ctx context.Context, payloadID PayloadID) (*BlobsBundleV1, error) {
@@ -372,13 +447,14 @@ type ForkchoiceStateV1 struct {
 // =============================================================================
 
 func invalidPayloadResponse(reason string) *PayloadStatusV1 {
+	return invalidPayloadResponseWithLatestValid(reason, nil)
+}
+
+func invalidPayloadResponseWithLatestValid(reason string, latestValidHash *types.Hash) *PayloadStatusV1 {
 	log.Info("Engine payload invalid", "reason", reason)
-	// Per Engine API spec, INVALID status MUST include latestValidHash.
-	// Use zero hash when the last valid block is unknown.
-	zeroHash := types.Hash{}
 	return &PayloadStatusV1{
 		Status:          PayloadStatusInvalid,
-		LatestValidHash: &zeroHash,
+		LatestValidHash: latestValidHash,
 		ValidationError: &reason,
 	}
 }
@@ -388,6 +464,17 @@ func invalidForkchoiceResponse(reason string) *ForkchoiceUpdatedResponseV3 {
 	return &ForkchoiceUpdatedResponseV3{
 		PayloadStatus: PayloadStatusV1{
 			Status:          PayloadStatusInvalid,
+			ValidationError: &reason,
+		},
+	}
+}
+
+func invalidForkchoiceResponseWithLatestValid(reason string, latestValidHash *types.Hash) *ForkchoiceUpdatedResponseV3 {
+	log.Info("Engine forkchoice invalid", "reason", reason)
+	return &ForkchoiceUpdatedResponseV3{
+		PayloadStatus: PayloadStatusV1{
+			Status:          PayloadStatusInvalid,
+			LatestValidHash: latestValidHash,
 			ValidationError: &reason,
 		},
 	}
@@ -527,6 +614,42 @@ func (e *engineInvalidParamsError) Error() string {
 
 func (e *engineInvalidParamsError) ErrorCode() int {
 	return -32602
+}
+
+type engineTooLargeRequestError struct {
+	msg string
+}
+
+func (e *engineTooLargeRequestError) Error() string {
+	return e.msg
+}
+
+func (e *engineTooLargeRequestError) ErrorCode() int {
+	return -38004
+}
+
+type engineInvalidForkchoiceStateError struct {
+	msg string
+}
+
+func (e *engineInvalidForkchoiceStateError) Error() string {
+	return e.msg
+}
+
+func (e *engineInvalidForkchoiceStateError) ErrorCode() int {
+	return -38002
+}
+
+type engineInvalidPayloadAttributesError struct {
+	msg string
+}
+
+func (e *engineInvalidPayloadAttributesError) Error() string {
+	return e.msg
+}
+
+func (e *engineInvalidPayloadAttributesError) ErrorCode() int {
+	return -38003
 }
 
 // engineUnsupportedForkError is returned when Engine API is called with a

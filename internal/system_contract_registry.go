@@ -42,7 +42,7 @@ func PragueSystemContractDeployments() []SystemContractDeployment {
 			Account: conf.GenesisAccount{
 				Balance: "0x0",
 				Nonce:   1,
-				Code:    vm.ExecutionRequestQueueCode,
+				Code:    vm.WithdrawalRequestQueueCode,
 			},
 		},
 		{
@@ -50,7 +50,7 @@ func PragueSystemContractDeployments() []SystemContractDeployment {
 			Account: conf.GenesisAccount{
 				Balance: "0x0",
 				Nonce:   1,
-				Code:    vm.ExecutionRequestQueueCode,
+				Code:    vm.ConsolidationRequestQueueCode,
 			},
 		},
 		{

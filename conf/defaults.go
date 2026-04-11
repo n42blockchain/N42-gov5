@@ -67,6 +67,7 @@ func NormalizeNetworkSelection(cfg *Config) error {
 	if cfg.NodeCfg.Chain != "private" {
 		cfg.ChainCfg = params.ChainConfigByChainName(cfg.NodeCfg.Chain)
 	}
+	params.ApplyStateCommitmentPreset(cfg.ChainCfg, preset.Commitment)
 	return nil
 }
 

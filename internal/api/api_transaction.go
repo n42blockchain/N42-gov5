@@ -10,6 +10,7 @@ import (
 	"github.com/n42blockchain/N42/accounts"
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	avmcommon "github.com/n42blockchain/N42/common/avmutil"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -127,9 +128,25 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 		blockHash   = avmtypes.ToastHash(avmcommon.Hash{})
 		blockNumber uint64
 		index       uint64
+		receipt     *block.Receipt
 		err         error
 	)
+	if s.api != nil && s.api.engineOverlay != nil {
+		if lookup := s.api.engineOverlay.txLookup(avmtypes.ToastHash(hash)); lookup != nil {
+			tx = lookup.tx
+			blockHash = lookup.blockHash
+			blockNumber = lookup.blockNumber
+			index = lookup.index
+			receipts := s.api.engineOverlay.receiptsByBlockHash(blockHash)
+			if len(receipts) > int(index) {
+				receipt = receipts[index]
+			}
+		}
+	}
 	if dbErr := s.api.Database().View(ctx, func(t kv.Tx) error {
+		if tx != nil {
+			return nil
+		}
 		tx, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(t, avmtypes.ToastHash(hash))
 		if err != nil {
 			return err
@@ -144,23 +161,24 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 	if tx == nil {
 		return nil, nil
 	}
-	receipts, err := s.api.BlockChain().GetReceipts(blockHash)
-
-	if err != nil {
-		return nil, err
+	if receipt == nil {
+		receipts, err := s.api.BlockChain().GetReceipts(blockHash)
+		if err != nil {
+			return nil, err
+		}
+		if len(receipts) <= int(index) {
+			return nil, nil
+		}
+		receipt = receipts[index]
 	}
-	if len(receipts) <= int(index) {
-		return nil, nil
-	}
-	receipt := receipts[index]
 
-	from := tx.From()
+	from := rpcTransactionFrom(tx)
 	fields := map[string]interface{}{
 		"blockHash":         avmtypes.FromastHash(blockHash),
 		"blockNumber":       hexutil.Uint64(blockNumber),
 		"transactionHash":   hash,
 		"transactionIndex":  hexutil.Uint64(index),
-		"from":              avmtypes.FromastAddress(from),
+		"from":              from,
 		"to":                avmtypes.FromastAddress(tx.To()),
 		"gasUsed":           hexutil.Uint64(receipt.GasUsed),
 		"cumulativeGasUsed": hexutil.Uint64(receipt.CumulativeGasUsed),
@@ -169,9 +187,14 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 		"type":              hexutil.Uint(tx.Type()),
 	}
 	// Assign the effective gas price paid
-	header, err := s.api.BlockChain().GetHeaderByHash(blockHash)
-	if err != nil {
-		return nil, err
+	var header block.IHeader
+	if blk, _ := s.getBlockByHash(blockHash); blk != nil {
+		header = blk.Header()
+	} else {
+		header, err = s.api.BlockChain().GetHeaderByHash(blockHash)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if header == nil {
 		return nil, errors.New("header not found for receipt")
@@ -224,6 +247,19 @@ func (s *TransactionAPI) GetTransactionByHash(ctx context.Context, hash avmcommo
 		index       uint64
 		err         error
 	)
+	if s.api != nil && s.api.engineOverlay != nil {
+		if lookup := s.api.engineOverlay.txLookup(avmtypes.ToastHash(hash)); lookup != nil {
+			blk, _ := s.getBlockByHash(lookup.blockHash)
+			if blk == nil || blk.Header() == nil {
+				return nil, nil
+			}
+			headerBaseFee := blk.Header().BaseFee64()
+			if headerBaseFee == nil {
+				headerBaseFee = new(uint256.Int)
+			}
+			return newRPCTransaction(lookup.tx, lookup.blockHash, lookup.blockNumber, lookup.index, headerBaseFee.ToBig()), nil
+		}
+	}
 	if err := s.api.Database().View(ctx, func(t kv.Tx) error {
 		tx, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(t, avmtypes.ToastHash(hash))
 		return err

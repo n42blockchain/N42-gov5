@@ -64,8 +64,14 @@ func validateExecutionPayloadHeader(header, parent *block.Header, cfg *params.Ch
 	if header == nil {
 		return errors.New("missing execution payload header")
 	}
+	if len(header.Extra) > 32 {
+		return fmt.Errorf("invalid extraData: length %d exceeds 32 bytes", len(header.Extra))
+	}
+	if header.GasLimit < params.MinGasLimit {
+		return fmt.Errorf("invalid gas limit: have %d, min %d", header.GasLimit, params.MinGasLimit)
+	}
 	if header.GasLimit > params.MaxGasLimit {
-		return fmt.Errorf("invalid gasLimit: have %v, max %v", header.GasLimit, params.MaxGasLimit)
+		return fmt.Errorf("invalid gas limit: have %v, max %v", header.GasLimit, params.MaxGasLimit)
 	}
 	if header.GasUsed > header.GasLimit {
 		return fmt.Errorf("invalid gasUsed: have %d, gasLimit %d", header.GasUsed, header.GasLimit)
@@ -73,13 +79,27 @@ func validateExecutionPayloadHeader(header, parent *block.Header, cfg *params.Ch
 	if parent == nil {
 		return nil
 	}
-	blockNumber := uint64FromUint256OrZero(header.Number)
+	parentNumber, err := requireHeaderNumber(parent, "parent header number unavailable")
+	if err != nil {
+		return err
+	}
+	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
+	if err != nil {
+		return err
+	}
+	if headerNumber.Uint64() != parentNumber.Uint64()+1 {
+		return fmt.Errorf("invalid block number: have %d, want %d", headerNumber.Uint64(), parentNumber.Uint64()+1)
+	}
+	blockNumber := headerNumber.Uint64()
 	if cfg != nil && cfg.IsLondon(blockNumber) {
 		if err := misc.VerifyEip1559Header(cfg, parent, header); err != nil {
 			return err
 		}
 	} else if err := misc.VerifyGaslimit(parent.GasLimit, header.GasLimit); err != nil {
 		return err
+	}
+	if header.Time <= parent.Time {
+		return fmt.Errorf("invalid timestamp: have %d, parent %d", header.Time, parent.Time)
 	}
 	if cfg != nil {
 		rules := cfg.RulesWithTimestamp(blockNumber, header.Time)

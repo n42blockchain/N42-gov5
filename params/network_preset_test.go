@@ -43,6 +43,22 @@ func TestResolveNetworkPresetSupportsReplayVariants(t *testing.T) {
 	}
 }
 
+func TestApplyStateCommitmentPresetSetsMissingStateScheme(t *testing.T) {
+	cfg := &ChainConfig{}
+	ApplyStateCommitmentPreset(cfg, StateCommitmentPresetEthereumMPT)
+	if cfg.StateScheme != StateCommitmentPresetEthereumMPT.StateScheme() {
+		t.Fatalf("state scheme = %q, want %q", cfg.StateScheme, StateCommitmentPresetEthereumMPT.StateScheme())
+	}
+}
+
+func TestApplyStateCommitmentPresetPreservesExplicitStateScheme(t *testing.T) {
+	cfg := &ChainConfig{StateScheme: "legacy-keccak"}
+	ApplyStateCommitmentPreset(cfg, StateCommitmentPresetEthereumMPT)
+	if cfg.StateScheme != "legacy-keccak" {
+		t.Fatalf("state scheme = %q, want %q", cfg.StateScheme, "legacy-keccak")
+	}
+}
+
 func TestInferNetworkPresetFromChainConfigRecognizesReplayVariants(t *testing.T) {
 	preset, ok := InferNetworkPresetFromChainConfig(&ChainConfig{
 		ChainID:       big.NewInt(94),

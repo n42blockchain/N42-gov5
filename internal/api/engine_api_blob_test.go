@@ -808,6 +808,20 @@ func TestEngineAPIv4BuildsAndImportsMinimalPayloadV4(t *testing.T) {
 	require.NotNil(t, secondResp.PayloadID)
 	require.NotEqual(t, *forkchoiceResp.PayloadID, *secondResp.PayloadID)
 
+	thirdResp, err := engine.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{
+		HeadBlockHash: headHash,
+	}, &PayloadAttributesV4{
+		Timestamp:             2,
+		PrevRandao:            typesHashFromHexByte(0x34),
+		SuggestedFeeRecipient: types.Address{0x66},
+		Withdrawals:           []*Withdrawal{},
+		ParentBeaconBlockRoot: &beaconRoot,
+		TargetBlobsPerBlock:   &targetBlobs,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, thirdResp.PayloadID)
+	require.NotEqual(t, *forkchoiceResp.PayloadID, *thirdResp.PayloadID)
+
 	newPayloadResp, err := engine.NewPayloadV4(context.Background(), payloadResp.ExecutionPayload, nil, &beaconRoot, payloadResp.ExecutionRequests)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, newPayloadResp.Status)

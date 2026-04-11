@@ -117,26 +117,23 @@ func (s *BlockChainAPI) getBlockByNumber(number jsonrpc.BlockNumber) (block.IBlo
 	if err != nil {
 		return nil, err
 	}
-	if s.api != nil && s.api.engineOverlay != nil {
-		if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
-			if blk := s.api.engineOverlay.headBlock(s.api.BlockChain().CurrentBlock()); blk != nil {
-				return blk, nil
-			}
-		} else if resolvedNumber >= 0 {
-			if blk := s.api.engineOverlay.blockByNumber(uint64(resolvedNumber.Int64())); blk != nil {
-				return blk, nil
-			}
+	if resolvedNumber < jsonrpc.EarliestBlockNumber {
+		if blk := s.api.resolveForkchoiceTaggedBlock(resolvedNumber); blk != nil {
+			return blk, nil
 		}
+		return nil, nil
 	}
-	if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
-		return s.api.BlockChain().CurrentBlock(), nil
+	if s.api != nil && s.api.engineOverlay != nil {
+		if blk := s.api.engineOverlay.blockByNumber(uint64(resolvedNumber.Int64())); blk != nil {
+			return blk, nil
+		}
 	}
 	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(resolvedNumber.Int64())))
 }
 
 func (s *BlockChainAPI) getBlockByHash(hash types.Hash) (block.IBlock, error) {
 	if s.api != nil && s.api.engineOverlay != nil {
-		if blk := s.api.engineOverlay.blockByHash(hash); blk != nil {
+		if blk := s.api.engineOverlay.canonicalBlockByHash(hash); blk != nil {
 			return blk, nil
 		}
 	}
@@ -196,26 +193,23 @@ func (s *TransactionAPI) getBlockByNumber(number jsonrpc.BlockNumber) (block.IBl
 	if err != nil {
 		return nil, err
 	}
-	if s.api != nil && s.api.engineOverlay != nil {
-		if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
-			if blk := s.api.engineOverlay.headBlock(s.api.BlockChain().CurrentBlock()); blk != nil {
-				return blk, nil
-			}
-		} else if resolvedNumber >= 0 {
-			if blk := s.api.engineOverlay.blockByNumber(uint64(resolvedNumber.Int64())); blk != nil {
-				return blk, nil
-			}
+	if resolvedNumber < jsonrpc.EarliestBlockNumber {
+		if blk := s.api.resolveForkchoiceTaggedBlock(resolvedNumber); blk != nil {
+			return blk, nil
 		}
+		return nil, nil
 	}
-	if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
-		return s.api.BlockChain().CurrentBlock(), nil
+	if s.api != nil && s.api.engineOverlay != nil {
+		if blk := s.api.engineOverlay.blockByNumber(uint64(resolvedNumber.Int64())); blk != nil {
+			return blk, nil
+		}
 	}
 	return s.api.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(resolvedNumber.Int64())))
 }
 
 func (s *TransactionAPI) getBlockByHash(hash types.Hash) (block.IBlock, error) {
 	if s.api != nil && s.api.engineOverlay != nil {
-		if blk := s.api.engineOverlay.blockByHash(hash); blk != nil {
+		if blk := s.api.engineOverlay.canonicalBlockByHash(hash); blk != nil {
 			return blk, nil
 		}
 	}

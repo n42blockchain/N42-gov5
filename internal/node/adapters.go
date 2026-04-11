@@ -19,6 +19,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -37,7 +38,8 @@ import (
 // admin_* RPC methods can return real peer data without the api package
 // importing the p2p package directly.
 type p2pAdminAdapter struct {
-	svc p2p.P2P
+	svc  p2p.P2P
+	node *Node
 }
 
 func (a *p2pAdminAdapter) PeerInfos() []*api.PeerInfo {
@@ -60,6 +62,13 @@ func (a *p2pAdminAdapter) PeerInfos() []*api.PeerInfo {
 
 func (a *p2pAdminAdapter) SelfNodeID() string {
 	return a.svc.PeerID().String()
+}
+
+func (a *p2pAdminAdapter) SelfEnode() string {
+	if a == nil || a.node == nil {
+		return ""
+	}
+	return a.node.selfEnodeURL()
 }
 
 func (a *p2pAdminAdapter) SelfENR() string {
@@ -88,6 +97,12 @@ func (a *p2pAdminAdapter) SelfListenAddrs() []string {
 }
 
 func (a *p2pAdminAdapter) AddPeer(addr string) error {
+	if strings.HasPrefix(addr, "enode://") {
+		if a == nil || a.node == nil || a.node.devp2pServer == nil {
+			return fmt.Errorf("admin_addPeer: devp2p server unavailable for %q", addr)
+		}
+		return a.node.devp2pServer.AddPeer(addr)
+	}
 	ma, err := multiaddr.NewMultiaddr(addr)
 	if err != nil {
 		return fmt.Errorf("admin_addPeer: invalid multiaddr %q: %w", addr, err)
@@ -106,6 +121,12 @@ func (a *p2pAdminAdapter) AddPeer(addr string) error {
 }
 
 func (a *p2pAdminAdapter) RemovePeer(peerID string) error {
+	if strings.HasPrefix(peerID, "enode://") {
+		if a == nil || a.node == nil || a.node.devp2pServer == nil {
+			return fmt.Errorf("admin_removePeer: devp2p server unavailable for %q", peerID)
+		}
+		return a.node.devp2pServer.RemovePeer(peerID)
+	}
 	pid, err := libp2ppeer.Decode(peerID)
 	if err != nil {
 		return fmt.Errorf("admin_removePeer: invalid peer ID %q: %w", peerID, err)

@@ -14,6 +14,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -78,6 +79,7 @@ func initGenesis(cliCtx *cli.Context) error {
 	DefaultConfig.NodeCfg.Chain = preset.Chain
 	DefaultConfig.NodeCfg.Profile = preset.Profile.String()
 	DefaultConfig.NodeCfg.JMTCommitment = preset.Commitment == params.StateCommitmentPresetJMT
+	params.ApplyStateCommitmentPreset(genesis.Config, preset.Commitment)
 	DefaultConfig.ChainCfg = genesis.Config
 
 	if err := node.ValidateDataDirNetworkBinding(&DefaultConfig, genesis.Config, nil); err != nil {
@@ -113,6 +115,15 @@ func initGenesis(cliCtx *cli.Context) error {
 	}
 	if err := node.PersistDataDirNetworkBinding(&DefaultConfig, genesis.Config, genesisBlock.Hash()); err != nil {
 		utils.Fatalf("Failed to persist datadir network binding: %v", err)
+	}
+	if preset.Profile.IsEthereumEL() {
+		ethGenesisHash, err := internalcore.EthereumCompatibleGenesisHash(genesis)
+		if err != nil {
+			utils.Fatalf("Failed to compute Ethereum-compatible genesis hash: %v", err)
+		}
+		if err := node.PersistEthereumGenesisHash(DefaultConfig.NodeCfg.DataDir, ethGenesisHash); err != nil {
+			utils.Fatalf("Failed to persist Ethereum-compatible genesis hash: %v", err)
+		}
 	}
 	log.Info("Successfully wrote genesis state", "hash", genesisBlock.Hash())
 	return nil

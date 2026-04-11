@@ -35,6 +35,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api/filters"
+	"github.com/n42blockchain/N42/internal/api/rpchelper"
 	"github.com/n42blockchain/N42/internal/avm/abi"
 	"github.com/n42blockchain/N42/internal/consensus"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
@@ -46,7 +47,6 @@ import (
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/internal/api/rpchelper"
 )
 
 const (
@@ -66,6 +66,8 @@ type P2PAdmin interface {
 	PeerInfos() []*PeerInfo
 	// SelfNodeID returns the local node's libp2p peer ID string.
 	SelfNodeID() string
+	// SelfEnode returns the local node's devp2p enode URL when available.
+	SelfEnode() string
 	// SelfENR returns the local node's serialised ENR string (empty if unavailable).
 	SelfENR() string
 	// SelfListenAddrs returns the multiaddrs the node is listening on.
@@ -193,6 +195,9 @@ func (n *API) GetEvm(ctx context.Context, msg internal.Message, ibs evmtypes.Int
 }
 
 func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.IntraBlockState {
+	if ibs := n.overlayState(tx, blockNrOrHash); ibs != nil {
+		return ibs
+	}
 	_, blockHash, err := rpchelper.GetCanonicalBlockNumber(blockNrOrHash, tx)
 	if err != nil {
 		return nil
@@ -205,6 +210,130 @@ func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.
 
 	stateReader := state.NewPlainState(tx, *blockNr+1)
 	return state.New(stateReader)
+}
+
+func (n *API) blockByEngineHash(hash types.Hash) block.IBlock {
+	if n == nil || n.bc == nil || hash == (types.Hash{}) {
+		return nil
+	}
+	if n.engineOverlay != nil {
+		if blk := n.engineOverlay.blockByHash(hash); blk != nil {
+			return blk
+		}
+	}
+	blk, _ := n.bc.GetBlockByHash(hash)
+	return blk
+}
+
+// ForkchoiceHeadBlock returns the latest block visible through the Engine overlay.
+func (n *API) ForkchoiceHeadBlock() block.IBlock {
+	return n.resolveForkchoiceTaggedBlock(jsonrpc.LatestBlockNumber)
+}
+
+// ForkchoiceBlockByNumber returns the canonical block visible through the Engine overlay.
+func (n *API) ForkchoiceBlockByNumber(number uint64) block.IBlock {
+	if n == nil || n.bc == nil {
+		return nil
+	}
+	if n.engineOverlay != nil {
+		if blk := n.engineOverlay.blockByNumber(number); blk != nil {
+			return blk
+		}
+	}
+	blk, _ := n.bc.GetBlockByNumber(uint256.NewInt(number))
+	return blk
+}
+
+// ForkchoiceBlockByHash returns a block visible through the Engine overlay or base chain.
+func (n *API) ForkchoiceBlockByHash(hash types.Hash) block.IBlock {
+	return n.blockByEngineHash(hash)
+}
+
+// ForkchoiceBlockHash returns the Engine-visible hash for the given block.
+func (n *API) ForkchoiceBlockHash(blk block.IBlock) types.Hash {
+	if blk == nil {
+		return types.Hash{}
+	}
+	if n != nil && n.engineOverlay != nil {
+		return n.engineOverlay.hashForBlock(blk, n.chainConfig)
+	}
+	return ethCompatibleBlockHash(blk, n.chainConfig)
+}
+
+func (n *API) resolveForkchoiceTaggedBlock(number jsonrpc.BlockNumber) block.IBlock {
+	if n == nil || n.bc == nil {
+		return nil
+	}
+	current := n.bc.CurrentBlock()
+	if n.engineOverlay == nil {
+		if number == jsonrpc.LatestBlockNumber || number == jsonrpc.PendingBlockNumber || number == jsonrpc.SafeBlockNumber || number == jsonrpc.FinalizedBlockNumber {
+			return current
+		}
+		return nil
+	}
+	switch number {
+	case jsonrpc.LatestBlockNumber, jsonrpc.PendingBlockNumber:
+		return n.engineOverlay.headBlock(current)
+	case jsonrpc.SafeBlockNumber:
+		safeHash, _ := n.engineOverlay.forkchoiceHashes()
+		return n.blockByEngineHash(safeHash)
+	case jsonrpc.FinalizedBlockNumber:
+		_, finalizedHash := n.engineOverlay.forkchoiceHashes()
+		return n.blockByEngineHash(finalizedHash)
+	default:
+		return nil
+	}
+}
+
+func (n *API) resolveForkchoiceTaggedHeader(number jsonrpc.BlockNumber) *block.Header {
+	blk := n.resolveForkchoiceTaggedBlock(number)
+	if blk == nil {
+		return nil
+	}
+	return blockHeader(blk)
+}
+
+func (n *API) overlayState(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) *state.IntraBlockState {
+	if n == nil || n.engineOverlay == nil || n.bc == nil || n.db == nil || tx == nil {
+		return nil
+	}
+	var (
+		blk  block.IBlock
+		hash types.Hash
+	)
+	if blockNr, ok := blockNrOrHash.Number(); ok {
+		switch blockNr {
+		case jsonrpc.LatestBlockNumber, jsonrpc.PendingBlockNumber:
+			blk = n.resolveForkchoiceTaggedBlock(blockNr)
+		case jsonrpc.SafeBlockNumber, jsonrpc.FinalizedBlockNumber:
+			blk = n.resolveForkchoiceTaggedBlock(blockNr)
+		default:
+			if blockNr >= 0 {
+				blk = n.engineOverlay.blockByNumber(uint64(blockNr.Int64()))
+			}
+		}
+		if blk == nil {
+			return nil
+		}
+		hash = n.engineOverlay.hashForBlock(blk, n.chainConfig)
+	} else if blockHash, ok := blockNrOrHash.Hash(); ok {
+		hash = blockHash
+		blk = n.engineOverlay.blockByHash(blockHash)
+	} else {
+		return nil
+	}
+	if blk == nil {
+		return nil
+	}
+	overlayState := n.engineOverlay.stateOverlayByHash(hash)
+	if overlayState == nil {
+		return nil
+	}
+	_, ibs, err := newOverlayStateView(n.db, tx, uint64FromUint256OrZero(blk.Number64()), overlayState)
+	if err != nil {
+		return nil
+	}
+	return ibs
 }
 
 func (n *API) GetChainConfig() *params.ChainConfig {
@@ -313,7 +442,7 @@ func (s *BlockChainAPI) EarliestBlock() hexutil.Uint64 {
 }
 
 func normalizeBlockNumberForHistory(number jsonrpc.BlockNumber, bc common.IBlockChain) (jsonrpc.BlockNumber, error) {
-	if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber {
+	if number == jsonrpc.PendingBlockNumber || number == jsonrpc.LatestBlockNumber || number == jsonrpc.SafeBlockNumber || number == jsonrpc.FinalizedBlockNumber {
 		return number, nil
 	}
 	if number < 0 {
@@ -560,9 +689,7 @@ func DoCall(ctx context.Context, api *API, args TransactionArgs, blockNrOrHash j
 			return nil, resolveErr
 		}
 		if resolvedBlockNr < jsonrpc.EarliestBlockNumber {
-			if cb := api.BlockChain().CurrentBlock(); cb != nil {
-				header = cb.Header()
-			}
+			header = api.resolveForkchoiceTaggedHeader(resolvedBlockNr)
 		} else {
 			header = api.BlockChain().GetHeaderByNumber(uint256.NewInt(uint64(resolvedBlockNr.Int64())))
 		}
@@ -696,8 +823,8 @@ func BlockByNumber(ctx context.Context, number jsonrpc.BlockNumber, n *API) (blo
 	if err != nil {
 		return nil, err
 	}
-	if resolvedNumber == jsonrpc.PendingBlockNumber || resolvedNumber == jsonrpc.LatestBlockNumber {
-		return n.BlockChain().CurrentBlock(), nil
+	if resolvedNumber < jsonrpc.EarliestBlockNumber {
+		return n.resolveForkchoiceTaggedBlock(resolvedNumber), nil
 	}
 	return n.BlockChain().GetBlockByNumber(uint256.NewInt(uint64(resolvedNumber)))
 }

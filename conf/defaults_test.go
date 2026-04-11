@@ -75,6 +75,9 @@ func TestNormalizeNetworkSelectionCanonicalizesEthereumPreset(t *testing.T) {
 	if cfg.ChainCfg != params.EthereumSepoliaChainConfig {
 		t.Fatal("expected canonical sepolia chain config")
 	}
+	if cfg.ChainCfg.StateScheme != params.StateCommitmentPresetEthereumMPT.StateScheme() {
+		t.Fatalf("state scheme = %q, want %q", cfg.ChainCfg.StateScheme, params.StateCommitmentPresetEthereumMPT.StateScheme())
+	}
 }
 
 func TestNormalizeNetworkSelectionOverridesCanonicalChainConfig(t *testing.T) {
@@ -94,5 +97,25 @@ func TestNormalizeNetworkSelectionOverridesCanonicalChainConfig(t *testing.T) {
 	}
 	if !cfg.NodeCfg.JMTCommitment {
 		t.Fatal("expected n42 canonical mainnet to use JMT commitment")
+	}
+}
+
+func TestNormalizeNetworkSelectionAppliesEthereumPrivateStateScheme(t *testing.T) {
+	cfg := &Config{
+		NodeCfg: NodeConfig{
+			Chain:   "private",
+			Profile: "eth",
+		},
+		ChainCfg: &params.ChainConfig{Consensus: params.Faker},
+	}
+
+	if err := NormalizeNetworkSelection(cfg); err != nil {
+		t.Fatalf("NormalizeNetworkSelection returned error: %v", err)
+	}
+	if cfg.ChainCfg == nil {
+		t.Fatal("expected private chain config to be preserved")
+	}
+	if cfg.ChainCfg.StateScheme != params.StateCommitmentPresetEthereumMPT.StateScheme() {
+		t.Fatalf("state scheme = %q, want %q", cfg.ChainCfg.StateScheme, params.StateCommitmentPresetEthereumMPT.StateScheme())
 	}
 }

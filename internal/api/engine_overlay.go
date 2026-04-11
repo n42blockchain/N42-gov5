@@ -16,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -28,28 +29,55 @@ type engineBuiltPayload struct {
 	executionRequests []hexutil.Bytes
 }
 
+type engineOverlayTxLookup struct {
+	tx          *transaction.Transaction
+	blockHash   types.Hash
+	blockNumber uint64
+	index       uint64
+}
+
+type engineStateOverlay struct {
+	accounts map[types.Address][]byte
+	storage  map[types.Address]map[types.Hash][]byte
+	codes    map[types.Hash][]byte
+}
+
 const (
 	maxOverlayBlocks   = 1024 // max imported blocks to retain
 	maxOverlayPayloads = 128  // max built payloads to retain
 )
 
 type engineOverlay struct {
-	mu            sync.RWMutex
-	head          block.IBlock
-	blocksByNum   map[uint64]block.IBlock
-	blocksByHash  map[types.Hash]block.IBlock
-	hashesByNum   map[uint64]types.Hash
-	builtPayloads map[PayloadID]*engineBuiltPayload
+	mu                  sync.RWMutex
+	head                block.IBlock
+	safeHash            types.Hash
+	finalizedHash       types.Hash
+	blocksByNum         map[uint64]block.IBlock
+	blocksByHash        map[types.Hash]block.IBlock
+	hashesByNum         map[uint64]types.Hash
+	payloadBodiesByHash map[types.Hash]*ExecutionPayloadBodyV1
+	validatedByHash     map[types.Hash]bool
+	rejectedByHash      map[types.Hash]*types.Hash
+	stateByHash         map[types.Hash]*engineStateOverlay
+	receiptsByHash      map[types.Hash]block.Receipts
+	txLookupByHash      map[types.Hash]*engineOverlayTxLookup
+	builtPayloads       map[PayloadID]*engineBuiltPayload
 }
 
 type ethereumRawTransactions [][]byte
 
 func newEngineOverlay() *engineOverlay {
 	return &engineOverlay{
-		blocksByNum:   make(map[uint64]block.IBlock),
-		blocksByHash:  make(map[types.Hash]block.IBlock),
-		hashesByNum:   make(map[uint64]types.Hash),
-		builtPayloads: make(map[PayloadID]*engineBuiltPayload),
+		blocksByNum:         make(map[uint64]block.IBlock),
+		blocksByHash:        make(map[types.Hash]block.IBlock),
+		hashesByNum:         make(map[uint64]types.Hash),
+		payloadBodiesByHash: make(map[types.Hash]*ExecutionPayloadBodyV1),
+		validatedByHash:     make(map[types.Hash]bool),
+		rejectedByHash:      make(map[types.Hash]*types.Hash),
+		stateByHash:         make(map[types.Hash]*engineStateOverlay),
+		receiptsByHash:      make(map[types.Hash]block.Receipts),
+		txLookupByHash:      make(map[types.Hash]*engineOverlayTxLookup),
+		builtPayloads:       make(map[PayloadID]*engineBuiltPayload),
 	}
 }
 
@@ -96,14 +124,19 @@ func ethCompatibleHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.
 	}
 	if cfg != nil && cfg.IsShanghaiAt(number, header.Time) {
 		root := withdrawalsRoot(nil)
+		if header.WithdrawalsHash != nil {
+			root = *header.WithdrawalsHash
+		}
 		withdrawals = &root
 	}
 	if cfg != nil && cfg.IsCancunAt(number, header.Time) {
 		if withdrawals == nil {
 			root := withdrawalsRoot(nil)
+			if header.WithdrawalsHash != nil {
+				root = *header.WithdrawalsHash
+			}
 			withdrawals = &root
 		}
-		beaconRoot = new(types.Hash)
 		blobGasUsed = new(uint64)
 		excessBlobGas = new(uint64)
 		if header.BlobGasUsed != nil {
@@ -112,9 +145,16 @@ func ethCompatibleHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.
 		if header.ExcessBlobGas != nil {
 			*excessBlobGas = *header.ExcessBlobGas
 		}
+		beaconRoot = new(types.Hash)
+		if header.ParentBeaconRoot != nil {
+			*beaconRoot = *header.ParentBeaconRoot
+		}
 	}
 	if cfg != nil && (cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
 		root := executionRequestsHash(nil)
+		if header.RequestsHash != nil {
+			root = *header.RequestsHash
+		}
 		requestsHash = &root
 	}
 	return hash.RlpHash(&ethRPCHeader{
@@ -221,12 +261,12 @@ func ethCompatibleEngineBlockHash(blk block.IBlock, cfg *params.ChainConfig, opt
 	})
 }
 
-func makePayloadID(parentHash types.Hash, timestamp uint64, feeRecipient types.Address) PayloadID {
-	return makePayloadIDWithExtras(parentHash, timestamp, feeRecipient)
+func makePayloadID(parentHash types.Hash, timestamp uint64, feeRecipient types.Address, prevRandao types.Hash) PayloadID {
+	return makePayloadIDWithExtras(parentHash, timestamp, feeRecipient, prevRandao)
 }
 
-func makePayloadIDWithExtras(parentHash types.Hash, timestamp uint64, feeRecipient types.Address, extras ...[]byte) PayloadID {
-	size := len(parentHash) + 8 + len(feeRecipient)
+func makePayloadIDWithExtras(parentHash types.Hash, timestamp uint64, feeRecipient types.Address, prevRandao types.Hash, extras ...[]byte) PayloadID {
+	size := len(parentHash) + 8 + len(feeRecipient) + len(prevRandao)
 	for _, extra := range extras {
 		size += len(extra)
 	}
@@ -238,6 +278,8 @@ func makePayloadIDWithExtras(parentHash types.Hash, timestamp uint64, feeRecipie
 	offset += 8
 	copy(input[offset:], feeRecipient[:])
 	offset += len(feeRecipient)
+	copy(input[offset:], prevRandao[:])
+	offset += len(prevRandao)
 	for _, extra := range extras {
 		copy(input[offset:], extra)
 		offset += len(extra)
@@ -267,7 +309,7 @@ func (txs ethereumRawTransactions) EncodeIndex(i int, w *bytes.Buffer) {
 
 func encodeEthereumTransactions(txs []*transaction.Transaction) ([]hexutil.Bytes, types.Hash, error) {
 	if len(txs) == 0 {
-		return nil, deriveEthereumListHash(ethereumRawTransactions(nil)), nil
+		return make([]hexutil.Bytes, 0), deriveEthereumListHash(ethereumRawTransactions(nil)), nil
 	}
 	rawTxs := make(ethereumRawTransactions, 0, len(txs))
 	encodedTxs := make([]hexutil.Bytes, 0, len(txs))
@@ -300,6 +342,38 @@ func decodeTransactions(encoded []hexutil.Bytes) ([]*transaction.Transaction, er
 	return txs, nil
 }
 
+func applyExecutionPayloadForkFields(blk block.IBlock, withdrawals []*Withdrawal, blobGasUsed, excessBlobGas *hexutil.Uint64, parentBeaconBlockRoot *types.Hash, executionRequests []hexutil.Bytes) block.IBlock {
+	if blk == nil {
+		return nil
+	}
+	header := blockHeader(blk)
+	if header == nil {
+		return blk
+	}
+	header = block.CopyHeader(header)
+	if withdrawals != nil {
+		root := withdrawalsRoot(withdrawals)
+		header.WithdrawalsHash = &root
+	}
+	if blobGasUsed != nil {
+		v := uint64(*blobGasUsed)
+		header.BlobGasUsed = &v
+	}
+	if excessBlobGas != nil {
+		v := uint64(*excessBlobGas)
+		header.ExcessBlobGas = &v
+	}
+	if parentBeaconBlockRoot != nil {
+		root := *parentBeaconBlockRoot
+		header.ParentBeaconRoot = &root
+	}
+	if executionRequests != nil {
+		root := executionRequestsHash(executionRequests)
+		header.RequestsHash = &root
+	}
+	return blk.WithSeal(header)
+}
+
 func executionPayloadV1ToBlock(payload *ExecutionPayloadV1) (block.IBlock, error) {
 	txs, err := decodeTransactions(payload.Transactions)
 	if err != nil {
@@ -311,6 +385,7 @@ func executionPayloadV1ToBlock(payload *ExecutionPayloadV1) (block.IBlock, error
 	}
 	header := &block.Header{
 		ParentHash:  payload.ParentHash,
+		UncleHash:   hash.EmptyUncleHash,
 		Coinbase:    payload.FeeRecipient,
 		Root:        payload.StateRoot,
 		TxHash:      txRoot,
@@ -333,7 +408,11 @@ func executionPayloadV2ToBlock(payload *ExecutionPayloadV2) (block.IBlock, error
 	if payload == nil {
 		return nil, nil
 	}
-	return executionPayloadV1ToBlock(&payload.ExecutionPayloadV1)
+	blk, err := executionPayloadV1ToBlock(&payload.ExecutionPayloadV1)
+	if err != nil || blk == nil {
+		return blk, err
+	}
+	return applyExecutionPayloadForkFields(blk, payload.Withdrawals, payload.BlobGasUsed, payload.ExcessBlobGas, nil, nil), nil
 }
 
 func executionPayloadV3ToBlock(payload *ExecutionPayloadV3) (block.IBlock, error) {
@@ -359,26 +438,14 @@ func executionPayloadV3ToBlock(payload *ExecutionPayloadV3) (block.IBlock, error
 	if err != nil || blk == nil {
 		return blk, err
 	}
-	header, ok := blk.Header().(*block.Header)
-	if !ok || header == nil {
-		return blk, nil
-	}
-	if payload.BlobGasUsed != nil {
-		v := uint64(*payload.BlobGasUsed)
-		header.BlobGasUsed = &v
-	}
-	if payload.ExcessBlobGas != nil {
-		v := uint64(*payload.ExcessBlobGas)
-		header.ExcessBlobGas = &v
-	}
-	return blk.WithSeal(header), nil
+	return applyExecutionPayloadForkFields(blk, payload.Withdrawals, payload.BlobGasUsed, payload.ExcessBlobGas, nil, nil), nil
 }
 
 func executionPayloadV4ToBlock(payload *ExecutionPayloadV4) (block.IBlock, error) {
 	if payload == nil {
 		return nil, nil
 	}
-	return executionPayloadV3ToBlock(&ExecutionPayloadV3{
+	blk, err := executionPayloadV3ToBlock(&ExecutionPayloadV3{
 		ParentHash:    payload.ParentHash,
 		FeeRecipient:  payload.FeeRecipient,
 		StateRoot:     payload.StateRoot,
@@ -397,6 +464,10 @@ func executionPayloadV4ToBlock(payload *ExecutionPayloadV4) (block.IBlock, error
 		BlobGasUsed:   payload.BlobGasUsed,
 		ExcessBlobGas: payload.ExcessBlobGas,
 	})
+	if err != nil || blk == nil {
+		return blk, err
+	}
+	return applyExecutionPayloadForkFields(blk, payload.Withdrawals, payload.BlobGasUsed, payload.ExcessBlobGas, nil, nil), nil
 }
 
 func blockToExecutionPayloadV1(blk block.IBlock, cfg *params.ChainConfig) *ExecutionPayloadV1 {
@@ -446,9 +517,13 @@ func buildExecutionPayloadV1(parent block.IBlock, parentHash types.Hash, attrs *
 		gasLimit = parent.GasLimit()
 		blockNumber = uint64FromUint256OrZero(parent.Number64()) + 1
 		baseFee = uint64FromUint256OrZero(parent.BaseFee64())
+		if parentHeader := blockHeader(parent); parentHeader != nil && cfg != nil {
+			baseFee = misc.CalcBaseFee(cfg, parentHeader).Uint64()
+		}
 	}
 	header := &block.Header{
 		ParentHash:  parentHash,
+		UncleHash:   hash.EmptyUncleHash,
 		Coinbase:    attrs.SuggestedFeeRecipient,
 		Root:        parentStateRoot,
 		TxHash:      emptyTxRoot,
@@ -704,7 +779,123 @@ func (o *engineOverlay) storeBuiltPayload(id PayloadID, payload *engineBuiltPayl
 	}
 }
 
-func (o *engineOverlay) importBlock(blk block.IBlock, blockHash types.Hash) {
+func cloneReceipt(receipt *block.Receipt) *block.Receipt {
+	if receipt == nil {
+		return nil
+	}
+	cloned := *receipt
+	cloned.PostState = append([]byte(nil), receipt.PostState...)
+	if receipt.BlockNumber != nil {
+		cloned.BlockNumber = uint256.NewInt(receipt.BlockNumber.Uint64())
+	}
+	if receipt.Logs != nil {
+		cloned.Logs = append([]*block.Log(nil), receipt.Logs...)
+	}
+	return &cloned
+}
+
+func cloneReceipts(receipts block.Receipts) block.Receipts {
+	if receipts == nil {
+		return nil
+	}
+	cloned := make(block.Receipts, 0, len(receipts))
+	for _, receipt := range receipts {
+		cloned = append(cloned, cloneReceipt(receipt))
+	}
+	return cloned
+}
+
+func cloneHashPtr(hash *types.Hash) *types.Hash {
+	if hash == nil {
+		return nil
+	}
+	cloned := *hash
+	return &cloned
+}
+
+func (o *engineOverlay) storeBlockDataLocked(blk block.IBlock, blockHash types.Hash, overlayState *engineStateOverlay, receipts block.Receipts, validated bool, exposeTransactions bool, body *ExecutionPayloadBodyV1) {
+	if blk == nil {
+		return
+	}
+	o.blocksByHash[blockHash] = blk
+	if validated {
+		o.validatedByHash[blockHash] = true
+	}
+	if overlayState != nil {
+		o.stateByHash[blockHash] = cloneEngineStateOverlay(overlayState)
+	}
+	if body != nil {
+		o.payloadBodiesByHash[blockHash] = cloneExecutionPayloadBody(body)
+	} else if _, exists := o.payloadBodiesByHash[blockHash]; !exists {
+		o.payloadBodiesByHash[blockHash] = payloadBodyFromBlock(blk, nil)
+	}
+	if receipts == nil {
+		return
+	}
+	clonedReceipts := cloneReceipts(receipts)
+	o.receiptsByHash[blockHash] = clonedReceipts
+	blockNumber := uint64FromUint256OrZero(blk.Number64())
+	for i, tx := range blk.Transactions() {
+		if tx == nil {
+			continue
+		}
+		if i < len(clonedReceipts) && clonedReceipts[i] != nil {
+			clonedReceipts[i].TxHash = tx.Hash()
+			clonedReceipts[i].BlockHash = blockHash
+			clonedReceipts[i].BlockNumber = uint256.NewInt(blockNumber)
+			clonedReceipts[i].TransactionIndex = uint(i)
+		}
+		if exposeTransactions {
+			o.txLookupByHash[tx.Hash()] = &engineOverlayTxLookup{
+				tx:          tx,
+				blockHash:   blockHash,
+				blockNumber: blockNumber,
+				index:       uint64(i),
+			}
+		}
+	}
+}
+
+func (o *engineOverlay) stageBlock(blk block.IBlock, blockHash types.Hash, overlayState *engineStateOverlay, receipts block.Receipts, validated bool) {
+	o.stageBlockWithBody(blk, blockHash, overlayState, receipts, validated, nil)
+}
+
+func (o *engineOverlay) stageBlockWithBody(blk block.IBlock, blockHash types.Hash, overlayState *engineStateOverlay, receipts block.Receipts, validated bool, body *ExecutionPayloadBodyV1) {
+	if o == nil || blk == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if blockHash == (types.Hash{}) {
+		blockHash = ethCompatibleBlockHash(blk, nil)
+	}
+	o.storeBlockDataLocked(blk, blockHash, overlayState, receipts, validated, false, body)
+	if blk.Number64() != nil && len(o.blocksByHash) > maxOverlayBlocks {
+		o.evictOldBlocks(blk.Number64().Uint64())
+	}
+}
+
+func (o *engineOverlay) stageRejectedBlockWithBody(blk block.IBlock, blockHash types.Hash, latestValidHash *types.Hash, body *ExecutionPayloadBodyV1) {
+	if o == nil || blk == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if blockHash == (types.Hash{}) {
+		blockHash = ethCompatibleBlockHash(blk, nil)
+	}
+	o.storeBlockDataLocked(blk, blockHash, nil, nil, false, false, body)
+	o.rejectedByHash[blockHash] = cloneHashPtr(latestValidHash)
+	if blk.Number64() != nil && len(o.blocksByHash) > maxOverlayBlocks {
+		o.evictOldBlocks(blk.Number64().Uint64())
+	}
+}
+
+func (o *engineOverlay) importBlock(blk block.IBlock, blockHash types.Hash, receipts block.Receipts) {
+	o.importBlockWithBody(blk, blockHash, receipts, nil)
+}
+
+func (o *engineOverlay) importBlockWithBody(blk block.IBlock, blockHash types.Hash, receipts block.Receipts, body *ExecutionPayloadBodyV1) {
 	if o == nil || blk == nil || blk.Number64() == nil {
 		return
 	}
@@ -712,17 +903,66 @@ func (o *engineOverlay) importBlock(blk block.IBlock, blockHash types.Hash) {
 	defer o.mu.Unlock()
 	number := blk.Number64().Uint64()
 	o.head = blk
-	o.blocksByNum[number] = blk
 	if blockHash == (types.Hash{}) {
 		blockHash = ethCompatibleBlockHash(blk, nil)
 	}
-	o.hashesByNum[number] = blockHash
-	o.blocksByHash[blockHash] = blk
+	o.storeBlockDataLocked(blk, blockHash, nil, receipts, true, false, body)
+	o.rebuildCanonicalChainLocked(blk, blockHash)
 
 	// Evict oldest blocks if limit exceeded to prevent unbounded memory growth
-	if len(o.blocksByNum) > maxOverlayBlocks {
+	if len(o.blocksByHash) > maxOverlayBlocks {
 		o.evictOldBlocks(number)
 	}
+}
+
+func (o *engineOverlay) rebuildCanonicalChainLocked(head block.IBlock, headHash types.Hash) {
+	o.blocksByNum = make(map[uint64]block.IBlock)
+	o.hashesByNum = make(map[uint64]types.Hash)
+	o.txLookupByHash = make(map[types.Hash]*engineOverlayTxLookup)
+	for depth := 0; depth <= maxOverlayBlocks && head != nil && head.Number64() != nil; depth++ {
+		number := head.Number64().Uint64()
+		if _, exists := o.hashesByNum[number]; exists {
+			break
+		}
+		o.blocksByNum[number] = head
+		o.hashesByNum[number] = headHash
+		receipts := o.receiptsByHash[headHash]
+		for i, tx := range head.Transactions() {
+			if tx == nil {
+				continue
+			}
+			if i >= len(receipts) || receipts[i] == nil {
+				continue
+			}
+			o.txLookupByHash[tx.Hash()] = &engineOverlayTxLookup{
+				tx:          tx,
+				blockHash:   headHash,
+				blockNumber: number,
+				index:       uint64(i),
+			}
+		}
+		header := blockHeader(head)
+		if header == nil {
+			break
+		}
+		parentHash := header.ParentHash
+		parent := o.blocksByHash[parentHash]
+		if parent == nil {
+			break
+		}
+		head = parent
+		headHash = parentHash
+	}
+}
+
+func (o *engineOverlay) setForkchoiceHashes(safeHash, finalizedHash types.Hash) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.safeHash = safeHash
+	o.finalizedHash = finalizedHash
 }
 
 // evictOldBlocks removes blocks older than the cutoff to bound memory usage.
@@ -732,13 +972,26 @@ func (o *engineOverlay) evictOldBlocks(currentNum uint64) {
 	if currentNum > maxOverlayBlocks {
 		cutoff = currentNum - maxOverlayBlocks
 	}
+	for h, blk := range o.blocksByHash {
+		if blk == nil || blk.Number64() == nil || blk.Number64().Uint64() >= cutoff {
+			continue
+		}
+		delete(o.blocksByHash, h)
+		delete(o.validatedByHash, h)
+		delete(o.rejectedByHash, h)
+		delete(o.stateByHash, h)
+		delete(o.receiptsByHash, h)
+		delete(o.payloadBodiesByHash, h)
+		for txHash, lookup := range o.txLookupByHash {
+			if lookup != nil && lookup.blockHash == h {
+				delete(o.txLookupByHash, txHash)
+			}
+		}
+	}
 	for num := range o.blocksByNum {
 		if num < cutoff {
-			if h, ok := o.hashesByNum[num]; ok {
-				delete(o.blocksByHash, h)
-				delete(o.hashesByNum, num)
-			}
 			delete(o.blocksByNum, num)
+			delete(o.hashesByNum, num)
 		}
 	}
 }
@@ -773,17 +1026,157 @@ func (o *engineOverlay) blockByHash(hash types.Hash) block.IBlock {
 	return o.blocksByHash[hash]
 }
 
+func (o *engineOverlay) canonicalBlockByHash(hash types.Hash) block.IBlock {
+	if o == nil || hash == (types.Hash{}) {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	blk := o.blocksByHash[hash]
+	if blk == nil || blk.Number64() == nil {
+		return nil
+	}
+	if o.hashesByNum[blk.Number64().Uint64()] != hash {
+		return nil
+	}
+	return blk
+}
+
+func (o *engineOverlay) blockValidated(hash types.Hash) bool {
+	if o == nil || hash == (types.Hash{}) {
+		return false
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.validatedByHash[hash]
+}
+
+func (o *engineOverlay) rejectedLatestValidHash(hash types.Hash) (*types.Hash, bool) {
+	if o == nil || hash == (types.Hash{}) {
+		return nil, false
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	latestValidHash, ok := o.rejectedByHash[hash]
+	return cloneHashPtr(latestValidHash), ok
+}
+
+func (o *engineOverlay) payloadBodyByHash(hash types.Hash) *ExecutionPayloadBodyV1 {
+	if o == nil || hash == (types.Hash{}) {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return cloneExecutionPayloadBody(o.payloadBodiesByHash[hash])
+}
+
+func (o *engineOverlay) payloadBodyByNumber(number uint64) *ExecutionPayloadBodyV1 {
+	if o == nil {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	hash, ok := o.hashesByNum[number]
+	if !ok {
+		return nil
+	}
+	return cloneExecutionPayloadBody(o.payloadBodiesByHash[hash])
+}
+
+func (o *engineOverlay) stateOverlayByHash(hash types.Hash) *engineStateOverlay {
+	if o == nil || hash == (types.Hash{}) {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return cloneEngineStateOverlay(o.stateByHash[hash])
+}
+
+func (o *engineOverlay) receiptsByBlockHash(hash types.Hash) block.Receipts {
+	if o == nil || hash == (types.Hash{}) {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return cloneReceipts(o.receiptsByHash[hash])
+}
+
+func (o *engineOverlay) txLookup(hash types.Hash) *engineOverlayTxLookup {
+	if o == nil || hash == (types.Hash{}) {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	lookup := o.txLookupByHash[hash]
+	if lookup == nil {
+		return nil
+	}
+	cloned := *lookup
+	return &cloned
+}
+
+func (o *engineOverlay) forkchoiceHashes() (types.Hash, types.Hash) {
+	if o == nil {
+		return types.Hash{}, types.Hash{}
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.safeHash, o.finalizedHash
+}
+
 func (o *engineOverlay) hashForBlock(blk block.IBlock, cfg *params.ChainConfig) types.Hash {
 	if blk == nil {
 		return types.Hash{}
 	}
 	if o != nil && blk.Number64() != nil {
 		o.mu.RLock()
-		hashOverride, ok := o.hashesByNum[blk.Number64().Uint64()]
+		canonicalBlk, ok := o.blocksByNum[blk.Number64().Uint64()]
+		hashOverride, hashOK := o.hashesByNum[blk.Number64().Uint64()]
 		o.mu.RUnlock()
-		if ok {
+		if ok && hashOK && canonicalBlk == blk {
 			return hashOverride
 		}
 	}
 	return ethCompatibleBlockHash(blk, cfg)
+}
+
+func cloneOverlayCodeMap(src map[types.Hash][]byte) map[types.Hash][]byte {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[types.Hash][]byte, len(src))
+	for codeHash, code := range src {
+		dst[codeHash] = append([]byte(nil), code...)
+	}
+	return dst
+}
+
+func cloneEngineStateOverlay(src *engineStateOverlay) *engineStateOverlay {
+	if src == nil {
+		return nil
+	}
+	dst := &engineStateOverlay{
+		accounts: make(map[types.Address][]byte, len(src.accounts)),
+		storage:  make(map[types.Address]map[types.Hash][]byte, len(src.storage)),
+		codes:    cloneOverlayCodeMap(src.codes),
+	}
+	for addr, accountData := range src.accounts {
+		if accountData == nil {
+			dst.accounts[addr] = nil
+			continue
+		}
+		dst.accounts[addr] = append([]byte(nil), accountData...)
+	}
+	for addr, slots := range src.storage {
+		copiedSlots := make(map[types.Hash][]byte, len(slots))
+		for slot, value := range slots {
+			if value == nil {
+				copiedSlots[slot] = nil
+				continue
+			}
+			copiedSlots[slot] = append([]byte(nil), value...)
+		}
+		dst.storage[addr] = copiedSlots
+	}
+	return dst
 }

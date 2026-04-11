@@ -45,10 +45,16 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 	}
 	defer tx.Rollback()
 
-	// Set up state.
-	reader := state.NewPlainStateReader(tx)
+	// Execute against the parent snapshot, i.e. the state at the start of this block.
+	// This matches the stateful Engine payload builder path and preserves historical
+	// account metadata such as code hashes reconstructed from change history.
+	reader := state.NewPlainState(tx, blockNum)
 	writer := state.NewPlainStateWriter(tx, tx, blockNum)
 	ibs := state.New(reader)
+	ethel.SetupStateRootComputer(tx, ibs)
+	if err := ethel.InitHashState(tx); err != nil {
+		return false, types.Hash{}, err
+	}
 
 	// Build BLOCKHASH function from DB.
 	blockHashFunc := func(n uint64) types.Hash {
@@ -71,7 +77,8 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 		return false, types.Hash{}, fmt.Errorf("gas mismatch: got %d, want %d", result.GasUsed, header.GasUsed)
 	}
 
-	// Commit state.
+	// Commit block state into the transaction, then verify the canonical
+	// Ethereum MPT root before exposing any changes to the database.
 	rules := a.chainCfg.Rules(blockNum)
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return false, types.Hash{}, err
@@ -82,11 +89,9 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 	if err := writer.WriteHistory(); err != nil {
 		return false, types.Hash{}, err
 	}
-
-	// Verify state root.
-	computedRoot, err := ethel.FullStateRootVerify(tx)
+	computedRoot, err := ethel.VerifyStateRoot(tx)
 	if err != nil {
-		return false, types.Hash{}, fmt.Errorf("state root: %w", err)
+		return false, types.Hash{}, fmt.Errorf("verify state root: %w", err)
 	}
 	if computedRoot != header.Root {
 		log.Error("State root mismatch", "block", blockNum,

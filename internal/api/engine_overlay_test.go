@@ -1,14 +1,18 @@
 package api
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
+	"github.com/n42blockchain/N42/params"
 )
 
 func TestExecutionPayloadV1ToBlockUsesEthereumRawTransactionsRoot(t *testing.T) {
@@ -47,5 +51,32 @@ func TestBuildExecutionPayloadV1UsesEthereumEmptyReceiptRoot(t *testing.T) {
 	payload := buildExecutionPayloadV1(nil, types.Hash{}, &PayloadAttributesV1{}, nil)
 	if payload.ReceiptsRoot != hash.EmptyRootHash {
 		t.Fatalf("ReceiptsRoot = %s, want %s", payload.ReceiptsRoot, hash.EmptyRootHash)
+	}
+	if payload.Transactions == nil {
+		t.Fatal("Transactions is nil, want empty list")
+	}
+	if len(payload.Transactions) != 0 {
+		t.Fatalf("len(Transactions) = %d, want 0", len(payload.Transactions))
+	}
+}
+
+func TestBuildExecutionPayloadV1CalculatesNextBaseFee(t *testing.T) {
+	cfg := &params.ChainConfig{LondonBlock: big.NewInt(0)}
+	parentHeader := &block.Header{
+		Number:     uint256.NewInt(0),
+		GasLimit:   30_000_000,
+		GasUsed:    0,
+		BaseFee:    uint256.NewInt(params.InitialBaseFee),
+		Difficulty: uint256.NewInt(0),
+	}
+	parent := block.NewBlock(parentHeader, nil)
+
+	payload := buildExecutionPayloadV1(parent, types.Hash{}, &PayloadAttributesV1{
+		Timestamp: 1,
+	}, cfg)
+
+	want := misc.CalcBaseFee(cfg, parentHeader).Uint64()
+	if uint64(payload.BaseFeePerGas) != want {
+		t.Fatalf("BaseFeePerGas = %d, want %d", uint64(payload.BaseFeePerGas), want)
 	}
 }
