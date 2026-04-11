@@ -1,0 +1,187 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+
+package engineapi
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/api"
+	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/params"
+)
+
+// Service runs the auth-RPC HTTP listener that the consensus layer talks
+// to. It exposes the engine_* JSON-RPC namespaces backed by N42's
+// existing api.EngineAPIv4 / EngineAPIBlob / EngineAPIV1, all switched
+// into "EthEL mode" via api.EngineStateAdapter so that NewPayload and
+// ForkchoiceUpdated read and write the chaindata MDBX directly.
+//
+// The service is intentionally narrower than internal/node's full
+// rpcstack: only the engine namespace is registered, no admin / eth /
+// debug methods, no WS upgrade. JWT (HS256, Engine API spec §3.1) is
+// mandatory whenever the listener is enabled.
+//
+// The package lives one level below internal/ethel because
+// internal/api/engine_state_adapter.go imports internal/ethel for
+// ProcessBlock / FullStateRootVerify / Reorg, which would create an
+// import cycle if this Service lived in the parent package.
+type Service struct {
+	cfg      conf.EngineAPICfg
+	chainCfg *params.ChainConfig
+	engine   consensus.Engine
+	db       kv.RwDB
+	freezer  *freezer.Freezer
+
+	listener net.Listener
+	server   *http.Server
+	rpc      *jsonrpc.Server
+
+	apiCore *api.API
+	adapter *api.EngineStateAdapter
+}
+
+// New builds the service. The DB and freezer must be the same handles
+// owned by the eth-el Node so that adapter writes land in the chaindata
+// MDBX every other Node service reads from.
+func New(cfg conf.EngineAPICfg, chainCfg *params.ChainConfig, engine consensus.Engine, db kv.RwDB, f *freezer.Freezer) *Service {
+	return &Service{
+		cfg:      cfg,
+		chainCfg: chainCfg,
+		engine:   engine,
+		db:       db,
+		freezer:  f,
+	}
+}
+
+func (s *Service) Name() string { return "engineAPI" }
+
+func (s *Service) Start(_ context.Context) error {
+	if !s.cfg.Enabled {
+		log.Info("eth-el: engineAPI disabled")
+		return nil
+	}
+
+	jwtSecret, err := loadOrCreateJWTSecret(s.cfg.JWTSecretPath)
+	if err != nil {
+		return fmt.Errorf("jwt secret: %w", err)
+	}
+
+	// Build the underlying api.API with nil bc / txpool / accounts. The
+	// engine namespace only consults BlockChain() through nil-safe
+	// helpers (currentHead returns nil → SYNCING) and never touches
+	// txspool or accountManager. State writes go through the
+	// EngineStateAdapter wired below.
+	s.apiCore = api.NewAPI(nil, s.db, s.engine, nil, nil, s.chainCfg)
+	s.adapter = api.NewEngineStateAdapter(s.db, s.freezer, s.chainCfg, s.engine)
+
+	apis := api.EngineAPIs(s.apiCore)
+	for _, a := range apis {
+		if v1, ok := a.Service.(*api.EngineAPIV1); ok {
+			v1.SetStateAdapter(s.adapter)
+		}
+	}
+
+	rpcSrv := jsonrpc.NewServer()
+	for _, a := range apis {
+		if err := rpcSrv.RegisterName(a.Namespace, a.Service); err != nil {
+			return fmt.Errorf("register %s: %w", a.Namespace, err)
+		}
+	}
+	s.rpc = rpcSrv
+
+	mux := http.NewServeMux()
+	mux.Handle("/", newJWTHandler(jwtSecret, rpcSrv))
+
+	addr := net.JoinHostPort(s.cfg.Host, fmt.Sprintf("%d", s.cfg.Port))
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+	s.listener = listener
+	s.server = &http.Server{
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	go func() {
+		if err := s.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("eth-el: engineAPI listener exited", "err", err)
+		}
+	}()
+
+	log.Info("eth-el: engineAPI listening",
+		"addr", addr,
+		"jwt", s.cfg.JWTSecretPath,
+		"namespaces", "engine",
+	)
+	return nil
+}
+
+func (s *Service) Stop() error {
+	if s.server == nil {
+		return nil
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.server.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("engineAPI shutdown: %w", err)
+	}
+	if s.rpc != nil {
+		s.rpc.Stop()
+	}
+	s.server = nil
+	s.listener = nil
+	return nil
+}
+
+// loadOrCreateJWTSecret reads a 32-byte hex-encoded secret from path. If
+// path is empty or the file does not exist, a fresh secret is generated
+// and (when path != "") persisted. The auto-create branch matches what
+// geth/erigon do for first-run convenience; an explicit --engine.jwt
+// path remains the recommended setup for shared CL+EL deployments.
+func loadOrCreateJWTSecret(path string) ([]byte, error) {
+	if path != "" {
+		if data, err := os.ReadFile(path); err == nil {
+			secret := strings.TrimSpace(string(data))
+			secret = strings.TrimPrefix(secret, "0x")
+			b, err := hex.DecodeString(secret)
+			if err != nil {
+				return nil, fmt.Errorf("decode jwt secret: %w", err)
+			}
+			if len(b) != 32 {
+				return nil, fmt.Errorf("jwt secret must be 32 bytes, got %d", len(b))
+			}
+			return b, nil
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, err
+	}
+	if path != "" {
+		if err := os.WriteFile(path, []byte(hex.EncodeToString(secret)), 0o600); err != nil {
+			return nil, fmt.Errorf("write jwt secret: %w", err)
+		}
+		log.Info("eth-el: generated JWT secret", "path", path)
+	}
+	return secret, nil
+}

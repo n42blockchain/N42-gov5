@@ -1,0 +1,142 @@
+// Copyright 2021-2026 The N42 Authors
+// This file is part of the N42 library.
+
+//go:build n42el
+
+package solid
+
+import (
+	"encoding/json"
+
+	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
+	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
+	"github.com/n42blockchain/N42/lib/types/ssz"
+)
+
+type TransactionsSSZ struct {
+	underlying [][]byte    // underlying transaction list
+	root       common.Hash // root
+}
+
+func (t *TransactionsSSZ) UnmarshalJSON(buf []byte) error {
+	tmp := []hexutil.Bytes{}
+	t.root = common.Hash{}
+	if err := json.Unmarshal(buf, &tmp); err != nil {
+		return err
+	}
+	t.underlying = nil
+	for _, tx := range tmp {
+		t.underlying = append(t.underlying, tx)
+	}
+	return nil
+}
+
+func (t TransactionsSSZ) MarshalJSON() ([]byte, error) {
+	tmp := make([]hexutil.Bytes, 0, len(t.underlying))
+	for _, tx := range t.underlying {
+		tmp = append(tmp, tx)
+	}
+	return json.Marshal(tmp)
+}
+
+func (*TransactionsSSZ) Clone() clonable.Clonable {
+	return &TransactionsSSZ{}
+}
+
+func (*TransactionsSSZ) Static() bool {
+	return false
+}
+
+func (t *TransactionsSSZ) DecodeSSZ(buf []byte, _ int) error {
+	if len(buf) == 0 {
+		return nil
+	}
+	if len(buf) < 4 {
+		return ssz.ErrLowBufferSize
+	}
+	t.root = common.Hash{}
+	length := ssz.DecodeOffset(buf[:4]) / 4
+	if length == 0 {
+		t.underlying = nil
+		return nil
+	}
+	if uint32(len(buf)) < length*4 {
+		return ssz.ErrLowBufferSize
+	}
+	t.underlying = make([][]byte, length)
+	for i := uint32(0); i < length; i++ {
+		offsetPosition := i * 4
+		startTx := ssz.DecodeOffset(buf[offsetPosition:])
+		var endTx uint32
+		if i == length-1 {
+			endTx = uint32(len(buf))
+		} else {
+			endTx = ssz.DecodeOffset(buf[offsetPosition+4:])
+		}
+		if endTx < startTx {
+			return ssz.ErrBadOffset
+		}
+		if len(buf) < int(endTx) {
+			return ssz.ErrLowBufferSize
+		}
+		t.underlying[i] = buf[startTx:endTx]
+	}
+	return nil
+}
+
+func (t *TransactionsSSZ) EncodeSSZ(buf []byte) (dst []byte, err error) {
+	dst = buf
+	txOffset := len(t.underlying) * 4
+	for _, tx := range t.underlying {
+		dst = append(dst, ssz.OffsetSSZ(uint32(txOffset))...)
+		txOffset += len(tx)
+	}
+	// Write all transactions
+	for _, tx := range t.underlying {
+		dst = append(dst, tx...)
+	}
+	return dst, nil
+}
+
+func (t *TransactionsSSZ) HashSSZ() ([32]byte, error) {
+	var err error
+	if t.root != (common.Hash{}) {
+		return t.root, nil
+	}
+	t.root, err = merkle_tree.TransactionsListRoot(t.underlying)
+	return t.root, err
+}
+
+func (t *TransactionsSSZ) EncodingSizeSSZ() (size int) {
+	if t == nil {
+		return 0
+	}
+	for _, tx := range t.underlying {
+		size += len(tx) + 4
+	}
+	return
+}
+
+func NewTransactionsSSZFromTransactions(txs [][]byte) *TransactionsSSZ {
+	return &TransactionsSSZ{
+		underlying: txs,
+	}
+}
+
+func (t *TransactionsSSZ) UnderlyngReference() [][]byte {
+	return t.underlying
+}
+
+func (t *TransactionsSSZ) ForEach(fn func(tx []byte, idx int, total int) bool) {
+	if t == nil {
+		return
+	}
+	for idx, tx := range t.underlying {
+		ok := fn(tx, idx, len(t.underlying))
+		if !ok {
+			break
+		}
+	}
+}

@@ -1,0 +1,242 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+//
+// eth-el is N42's Ethereum mainnet execution-layer node. It bootstraps
+// PlainState from a BitTorrent-distributed leaves journal, catches up
+// from the resulting recent height to chain tip via downloaded segments,
+// and then exposes the standard Engine API for a CL (external Lighthouse
+// or embedded Caplin) to drive live block validation.
+//
+// See internal/ethel/ARCHITECTURE.md for the full design.
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	_ "net/http/pprof"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+
+	"github.com/c2h5oh/datasize"
+	"github.com/urfave/cli/v2"
+
+	"github.com/n42blockchain/N42/conf"
+	storagetorrent "github.com/n42blockchain/N42/internal/distributed/storage/torrent"
+	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/internal/ethel/bootstrap"
+	"github.com/n42blockchain/N42/internal/ethel/catchup"
+	"github.com/n42blockchain/N42/internal/ethel/engineapi"
+	"github.com/n42blockchain/N42/internal/ethel/fetch"
+	"github.com/n42blockchain/N42/log"
+)
+
+func main() {
+	app := &cli.App{
+		Name:   "eth-el",
+		Usage:  "N42 Ethereum mainnet execution-layer node",
+		Flags:  flags(),
+		Action: run,
+	}
+
+	// pprof endpoint for ad-hoc profiling.
+	go func() { _ = http.ListenAndServe("localhost:6061", nil) }()
+
+	if err := app.Run(os.Args); err != nil {
+		log.Error("eth-el exited", "err", err)
+		os.Exit(1)
+	}
+}
+
+func flags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "datadir", Usage: "Working directory (chaindata, freezer, torrent, caplin)", Required: true},
+		&cli.StringFlag{Name: "network", Usage: "Network preset (mainnet|sepolia|holesky|hoodi)", Value: "mainnet"},
+
+		// Storage tuning.
+		&cli.Uint64Flag{Name: "storage.mapsize.gb", Usage: "MDBX mmap reservation, GiB", Value: 64},
+		&cli.Uint64Flag{Name: "storage.pagesize", Usage: "MDBX page size, bytes", Value: 4096},
+
+		// Bootstrap.
+		&cli.BoolFlag{Name: "bootstrap.enabled", Usage: "Run leaves-journal bootstrap on startup", Value: true},
+		&cli.StringFlag{Name: "bootstrap.manifest", Usage: "Manifest URL or magnet for the leaves journal segment set"},
+		&cli.Uint64Flag{Name: "bootstrap.end-block", Usage: "Cap the rebuild range (0 = use all leaves)"},
+
+		// Catch-up.
+		&cli.StringFlag{Name: "catchup.manifest", Usage: "Segments manifest URL or file path (empty: local freezer only)"},
+		&cli.Uint64Flag{Name: "catchup.commit-interval", Usage: "MDBX commit interval (blocks)", Value: 10000},
+		&cli.Uint64Flag{Name: "catchup.verify-interval", Usage: "State-root verification interval (0 = disabled)"},
+
+		// Engine API.
+		&cli.BoolFlag{Name: "engine.enabled", Usage: "Serve Engine API for the CL", Value: true},
+		&cli.StringFlag{Name: "engine.host", Usage: "Engine API listen host", Value: "127.0.0.1"},
+		&cli.IntFlag{Name: "engine.port", Usage: "Engine API listen port", Value: 20014},
+		&cli.StringFlag{Name: "engine.jwt", Usage: "Path to the 32-byte JWT shared secret file (required when engine.enabled)"},
+
+		// WebRTC fetcher (direct DataChannel; not WebTorrent).
+		&cli.BoolFlag{Name: "webrtc.enabled", Usage: "Enable the WebRTC DataChannel fetcher (webrtc: sources in manifests)"},
+
+		// BitTorrent downloader (shared with bootstrap + catchup fetchers).
+		&cli.BoolFlag{Name: "torrent.enabled", Usage: "Enable the BitTorrent fetcher (magnet links in manifests)"},
+		&cli.StringFlag{Name: "torrent.datadir", Usage: "BitTorrent working directory (default: <datadir>/torrent)"},
+		&cli.StringFlag{Name: "torrent.listen", Usage: "BitTorrent listen address", Value: ":42069"},
+		&cli.IntFlag{Name: "torrent.upload.kbps", Usage: "Upload rate limit in KB/s (0 = unlimited)"},
+		&cli.IntFlag{Name: "torrent.download.kbps", Usage: "Download rate limit in KB/s (0 = unlimited)"},
+		&cli.BoolFlag{Name: "torrent.dht", Usage: "Enable DHT peer discovery", Value: true},
+		&cli.BoolFlag{Name: "torrent.pex", Usage: "Enable PEX peer exchange", Value: true},
+
+		// Caplin (embedded CL). Inert unless built with -tags n42el.
+		&cli.BoolFlag{Name: "caplin.enabled", Usage: "Run an embedded Caplin consensus layer (requires -tags n42el)"},
+		&cli.StringFlag{Name: "caplin.network", Usage: "Caplin network preset", Value: "mainnet"},
+		&cli.StringFlag{Name: "caplin.datadir", Usage: "Caplin data directory (default: <datadir>/caplin)"},
+		&cli.IntFlag{Name: "caplin.sentinel.port", Usage: "Caplin sentinel libp2p TCP port", Value: 9000},
+		&cli.IntFlag{Name: "caplin.sentinel.discovery.port", Usage: "Caplin sentinel discv5 UDP port", Value: 9000},
+		&cli.StringFlag{Name: "caplin.checkpoint.url", Usage: "Beacon checkpoint-sync URL"},
+	}
+}
+
+func run(c *cli.Context) error {
+	cfg := assembleConfig(c)
+
+	node, err := ethel.NewNode(cfg)
+	if err != nil {
+		return fmt.Errorf("new node: %w", err)
+	}
+
+	// Shared download layer. HTTPFetcher is always wired; TorrentFetcher
+	// is added only when --torrent.enabled is set so the default
+	// configuration does not spin up a DHT + libp2p listener just to
+	// pull a single HTTPS manifest.
+	//
+	// Both bootstrap and catchup factory services consume this same
+	// Fetcher instance so the torrent client is shared (and so is its
+	// upload bandwidth accounting).
+	fetchers := []fetch.Fetcher{
+		fetch.NewHTTPFetcher(fetch.HTTPFetcherOptions{}),
+	}
+	if c.Bool("webrtc.enabled") {
+		fetchers = append(fetchers, fetch.NewWebRTCFetcher(fetch.WebRTCFetcherOptions{}))
+		log.Info("eth-el: webrtc fetcher enabled")
+	}
+	var torrentClient *storagetorrent.Client
+	if cfg.Torrent.Enabled {
+		torrentClient, err = storagetorrent.NewClient(&cfg.Torrent)
+		if err != nil {
+			return fmt.Errorf("start torrent client: %w", err)
+		}
+		torrentClient.Start()
+		defer torrentClient.Stop()
+		fetchers = append(fetchers, fetch.NewTorrentFetcher(torrentClient, fetch.TorrentFetcherOptions{}))
+		log.Info("eth-el: torrent fetcher enabled",
+			"listen", cfg.Torrent.ListenAddr,
+			"dht", cfg.Torrent.EnableDHT,
+			"datadir", cfg.Torrent.DataDir,
+		)
+	}
+	fetcher := fetch.NewMultiSourceFetcher(fetchers...)
+
+	// Factory-registered services run in registration order. Order
+	// matters: bootstrap lands a PlainState before catch-up tries to
+	// replay on top of it; engineAPI comes after both so it is
+	// already listening when the CL reconnects after a restart.
+	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
+		return bootstrap.New(cfg.Bootstrap, n, fetcher)
+	})
+	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
+		return catchup.New(catchup.Config{
+			CatchUp:  cfg.CatchUp,
+			Manifest: cfg.CatchUp.Manifest,
+		}, n, fetcher)
+	})
+	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
+		return engineapi.New(cfg.EngineAPI, n.ChainConfig(), n.Engine(), n.RwDB(), n.OutFreezer())
+	})
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	// Optional Caplin sidecar. The wire layer is split into beacon_wire.go
+	// (n42el) and beacon_wire_stub.go (!n42el). Default builds resolve to
+	// the stub so this call is free of side effects.
+	caplin, err := startCaplin(ctx, cfg.Beacon, node)
+	if err != nil {
+		return fmt.Errorf("start caplin: %w", err)
+	}
+	defer caplin.Stop()
+
+	if err := node.Start(ctx); err != nil {
+		return fmt.Errorf("start node: %w", err)
+	}
+	defer node.Stop()
+
+	<-ctx.Done()
+	log.Info("eth-el: shutdown signal received")
+	return nil
+}
+
+func assembleConfig(c *cli.Context) conf.EthELCfg {
+	cfg := conf.DefaultEthELCfg()
+
+	cfg.DataDir = c.String("datadir")
+	cfg.Network = c.String("network")
+
+	cfg.Storage.MapSize = datasize.ByteSize(c.Uint64("storage.mapsize.gb")) * datasize.GB
+	if v := c.Uint64("storage.pagesize"); v != 0 {
+		cfg.Storage.PageSize = v
+	}
+
+	cfg.Bootstrap.Enabled = c.Bool("bootstrap.enabled")
+	cfg.Bootstrap.Manifest = c.String("bootstrap.manifest")
+	cfg.Bootstrap.EndBlock = c.Uint64("bootstrap.end-block")
+
+	cfg.CatchUp.Manifest = c.String("catchup.manifest")
+	cfg.CatchUp.CommitInterval = c.Uint64("catchup.commit-interval")
+	cfg.CatchUp.VerifyInterval = c.Uint64("catchup.verify-interval")
+
+	cfg.EngineAPI.Enabled = c.Bool("engine.enabled")
+	cfg.EngineAPI.Host = c.String("engine.host")
+	cfg.EngineAPI.Port = c.Int("engine.port")
+	cfg.EngineAPI.JWTSecretPath = c.String("engine.jwt")
+
+	cfg.Torrent.Enabled = c.Bool("torrent.enabled")
+	if tdir := c.String("torrent.datadir"); tdir != "" {
+		cfg.Torrent.DataDir = tdir
+	} else {
+		cfg.Torrent.DataDir = filepath.Join(cfg.DataDir, "torrent")
+	}
+	cfg.Torrent.ListenAddr = c.String("torrent.listen")
+	cfg.Torrent.UploadRateKB = c.Int("torrent.upload.kbps")
+	cfg.Torrent.DownloadRateKB = c.Int("torrent.download.kbps")
+	cfg.Torrent.EnableDHT = c.Bool("torrent.dht")
+	cfg.Torrent.EnablePEX = c.Bool("torrent.pex")
+
+	cfg.Beacon.Enabled = c.Bool("caplin.enabled")
+	cfg.Beacon.Network = c.String("caplin.network")
+	cfg.Beacon.DataDir = c.String("caplin.datadir")
+	cfg.Beacon.SentinelPort = c.Int("caplin.sentinel.port")
+	cfg.Beacon.SentinelDiscoveryPort = c.Int("caplin.sentinel.discovery.port")
+	cfg.Beacon.CheckpointSyncURL = c.String("caplin.checkpoint.url")
+
+	return cfg
+}
+
+// withShutdown returns a context that cancels on the first SIGINT/SIGTERM
+// and forces an exit on the second. The pattern matches cmd/ethexec so
+// behavior is consistent across N42 binaries.
+func withShutdown() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		log.Info("eth-el: shutdown signal received, draining...")
+		cancel()
+		<-sig
+		log.Warn("eth-el: second signal — forcing exit")
+		os.Exit(1)
+	}()
+	return ctx, cancel
+}

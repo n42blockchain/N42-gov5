@@ -1,18 +1,5 @@
-// Copyright 2022-2026 The N42 Authors
+// Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
-//
-// The N42 library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The N42 library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
 package api
 
@@ -341,7 +328,20 @@ func (e *EngineAPIV1) overlay() *engineOverlay {
 }
 
 func (e *EngineAPIV1) currentHead() block.IBlock {
-	if e == nil || e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil {
+	if e == nil {
+		return nil
+	}
+	// EthEL mode: read from chaindata via the state adapter. The eth-el
+	// node constructs an EngineAPIV1 with nil bc and a non-nil
+	// stateAdapter; without this branch ForkchoiceUpdated would always
+	// return SYNCING because the BlockChain path returns nil.
+	if e.stateAdapter != nil {
+		if blk := e.stateAdapter.CurrentHead(); blk != nil {
+			return blk
+		}
+		return nil
+	}
+	if e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil {
 		return nil
 	}
 	base := e.api.api.BlockChain().CurrentBlock()
@@ -352,6 +352,9 @@ func (e *EngineAPIV1) currentHead() block.IBlock {
 }
 
 func (e *EngineAPIV1) currentHeadHash() types.Hash {
+	if e != nil && e.stateAdapter != nil {
+		return e.stateAdapter.CurrentHeadHash()
+	}
 	head := e.currentHead()
 	if overlay := e.overlay(); overlay != nil {
 		return overlay.hashForBlock(head, e.chainConfig())
@@ -367,6 +370,12 @@ func (e *EngineAPIV1) parentHeader(hash types.Hash) *block.Header {
 		if blk := overlay.blockByHash(hash); blk != nil {
 			return blockHeader(blk)
 		}
+	}
+	// EthEL mode: read from chaindata via the state adapter. Without
+	// this the nil-bc path (used by cmd/eth-el) cannot resolve the
+	// parent header for NewPayload verification.
+	if e != nil && e.stateAdapter != nil {
+		return e.stateAdapter.HeaderByHash(hash)
 	}
 	if e == nil || e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil {
 		return nil

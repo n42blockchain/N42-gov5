@@ -1,4 +1,4 @@
-// Copyright 2022-2026 The N42 Authors
+// Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
 
 // Package torrent provides a BitTorrent bridge for N42's content-addressed storage.
@@ -144,7 +144,7 @@ func (c *Client) Download(ctx context.Context, t *torrent.Torrent) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-t.Complete.On():
+	case <-t.Complete().On():
 		return nil
 	}
 }
