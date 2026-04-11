@@ -723,6 +723,8 @@ func (e *Executor) dumpGasMismatch(blockNum uint64, header *block.Header, body *
 		n = len(gethReceipts)
 	}
 	var prevN42, prevGeth uint64
+	totalDiffs := 0
+	totalDiffSum := int64(0)
 	for i := 0; i < n; i++ {
 		n42Cum := result.Receipts[i].CumulativeGasUsed
 		gethCum := gethReceipts[i].CumulativeGasUsed
@@ -730,25 +732,30 @@ func (e *Executor) dumpGasMismatch(blockNum uint64, header *block.Header, body *
 		gethTx := gethCum - prevGeth
 		prevN42, prevGeth = n42Cum, gethCum
 		if n42Tx != gethTx {
+			totalDiffs++
+			d := int64(gethTx) - int64(n42Tx)
+			totalDiffSum += d
 			var txHash types.Hash
 			if i < len(body.Transactions) {
 				txHash = body.Transactions[i].Hash()
 			}
-			log.Error("Gas-mismatch FIRST diff",
+			log.Error("Gas-mismatch tx",
 				"block", blockNum,
 				"txIndex", i,
 				"txHash", txHash.Hex(),
 				"n42Gas", n42Tx,
 				"gethGas", gethTx,
-				"diff", int64(gethTx)-int64(n42Tx),
-				"n42Cum", n42Cum,
-				"gethCum", gethCum,
+				"diff", d,
 				"txType", result.Receipts[i].Type,
 				"status", result.Receipts[i].Status,
 			)
-			return
 		}
 	}
+	log.Error("Gas-mismatch totals",
+		"block", blockNum,
+		"diffs", totalDiffs,
+		"sumDiff", totalDiffSum,
+	)
 	log.Error("Gas-mismatch dump: per-tx gas matches in shared range; block totals still differ",
 		"block", blockNum,
 		"n42Receipts", len(result.Receipts),
