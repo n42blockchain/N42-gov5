@@ -69,6 +69,7 @@ type Executor struct {
 	stateBuf         *state.PlainStateBuffer
 	lastProgressTime time.Time
 	prefetcher       *prefetcher
+	asyncFlush       *asyncFlusher // background PlainStateBuffer flusher
 
 	// Pre-computed senders from sender-recovery stage.
 	senderFreezer *freezer.Freezer
@@ -135,30 +136,36 @@ func (e *Executor) Run(ctx context.Context) error {
 		endBlock = e.freezer.Frozen() - 1
 	}
 
-	tx, err := e.db.BeginRw(ctx)
+	// One-time setup uses a write tx; the main exec loop later
+	// switches to a RoTx so the background flusher can hold its own
+	// RwTx concurrently. The setup tx covers ReadProgress + the
+	// optional InitHashState pre-fill below; both fit in a single
+	// short transaction.
+	setupTx, err := e.db.BeginRw(ctx)
 	if err != nil {
 		return err
 	}
-	// cleanup ensures the current tx is rolled back on exit.
-	cleanup := func() { tx.Rollback() }
-	defer func() { cleanup() }()
-
-	// Resume from last committed block if restarting.
 	startBlock := e.cfg.StartBlock
-	if saved := ReadProgress(tx); saved > 0 && saved >= startBlock {
+	if saved := ReadProgress(setupTx); saved > 0 && saved >= startBlock {
 		startBlock = saved + 1
 		log.Info("Resuming execution", "from", startBlock, "lastCommitted", saved)
 	}
+	// Caller may set the cleanup chain for the loop tx below.
+	var tx kv.Tx
+	cleanup := func() {}
+	defer func() { cleanup() }()
 
 
 	if startBlock > endBlock {
+		setupTx.Rollback()
 		log.Info("Already past target", "at", startBlock-1, "target", endBlock)
 		return nil
 	}
 
 	// Initialize HashedAccounts from PlainState if verify enabled and not yet populated.
 	if e.cfg.VerifyInterval > 0 {
-		if err := InitHashState(tx); err != nil {
+		if err := InitHashState(setupTx); err != nil {
+			setupTx.Rollback()
 			return fmt.Errorf("init hash state: %w", err)
 		}
 	}
@@ -167,15 +174,27 @@ func (e *Executor) Run(ctx context.Context) error {
 	if e.outFreezer != nil && !e.cfg.NoOutputs {
 		batcher, err := newOutputBatcher(e.outFreezer)
 		if err != nil {
+			setupTx.Rollback()
 			return fmt.Errorf("init output batcher: %w", err)
 		}
 		e.outBatcher = batcher
 		defer batcher.Close()
 		if err := batcher.alignOnResume(startBlock, e.cfg.LeavesOnly); err != nil {
+			setupTx.Rollback()
 			return fmt.Errorf("align output tables: %w", err)
 		}
 		// Senders/receipts deprecated: no padding or per-block writes.
 	}
+
+	// Commit the setup tx and switch to a RoTx for the main loop.
+	if err := setupTx.Commit(); err != nil {
+		return fmt.Errorf("commit setup tx: %w", err)
+	}
+	tx, err = e.db.BeginRo(ctx)
+	if err != nil {
+		return err
+	}
+	cleanup = func() { tx.Rollback() }
 
 	startTime := time.Now()
 	e.lastProgressTime = startTime
@@ -184,6 +203,13 @@ func (e *Executor) Run(ctx context.Context) error {
 	e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg)
 	e.prefetcher.start()
 	defer e.prefetcher.stop()
+
+	// Start the background PlainStateBuffer flusher. At every commit
+	// interval the executor hands off the buffer snapshot and the bg
+	// goroutine opens its OWN RwTx to apply + commit. Main thread
+	// keeps a separate RoTx for reads, hiding the ~25 s flush time at
+	// the 11M-block scale.
+	e.asyncFlush = newAsyncFlusher(e.stateBuf, e.db, ctx)
 
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
 		if ctx.Err() != nil {
@@ -205,28 +231,58 @@ func (e *Executor) Run(ctx context.Context) error {
 			return fmt.Errorf("block %d: %w", blockNum, err)
 		}
 
-		// Periodic flush (within same tx) and conditional commit.
+		// Periodic flush + commit.
 		if blockNum > 0 && blockNum%e.cfg.CommitInterval == 0 {
-			// Flush output batches.
+			// 1. Wait for the previous async flush to complete BEFORE
+			// handing off the new one. Steady-state: this is zero-cost
+			// because exec_time >= flush_time at the 11M-block scale.
+			if err := e.asyncFlush.waitPrev(); err != nil {
+				return fmt.Errorf("wait prev flush at block %d: %w", blockNum, err)
+			}
+
+			// 2. Flush output batches synchronously (cheap, ~ms).
 			if e.outBatcher != nil {
 				if _, err := e.outBatcher.flushFullBatches(); err != nil {
 					return fmt.Errorf("flush output batcher at block %d: %w", blockNum, err)
 				}
 			}
-			// Flush write buffer to MDBX (within same tx — NOT committed yet).
+
+			// 3. Capture stats BEFORE the snapshot moves the maps.
 			bufAccs, bufStos := e.stateBuf.Stats()
 			cacheHits, cacheMisses := e.stateBuf.CacheStats()
-			t0Flush := time.Now()
-			if err := e.stateBuf.FlushToMDBX(tx); err != nil {
-				return fmt.Errorf("flush buffer at block %d: %w", blockNum, err)
-			}
-			flushDur := time.Since(t0Flush)
-			e.stateBuf.Clear()
 
-			// Progress log.
+			// 4. Hand the buffer to the background flusher. The bg
+			// goroutine opens its OWN RwTx, applies the snapshot,
+			// writes progress, commits, and invalidates the LRU.
+			// SnapshotForFlush atomically resets the active buffer
+			// AND installs the snapshot as in-flight so the reader
+			// path can still find dirty values during the bg commit
+			// window.
+			if err := e.asyncFlush.hand(blockNum); err != nil {
+				return fmt.Errorf("hand to async flusher at block %d: %w", blockNum, err)
+			}
+
+			// 5. Rotate main thread's RoTx so reads pick up the
+			// last-finished bg commit (which we waited for in step
+			// 1). The new tx's snapshot is taken AFTER that commit
+			// landed; data still being committed by the in-flight
+			// goroutine is invisible to MDBX(newTx) but the reader
+			// picks it up via the in-flight snapshot pointer.
+			tx.Rollback()
+			tx, err = e.db.BeginRo(ctx)
+			if err != nil {
+				cleanup = func() {}
+				return err
+			}
+			cleanup = func() { tx.Rollback() }
+
+			// 7. Progress log (uses the PREVIOUS flush's duration; the
+			// current handoff is still in flight).
 			now := time.Now()
 			intervalSec := now.Sub(e.lastProgressTime).Seconds()
-			if intervalSec < 0.001 { intervalSec = 0.001 }
+			if intervalSec < 0.001 {
+				intervalSec = 0.001
+			}
 			blkPerSec := float64(e.cfg.CommitInterval) / intervalSec
 			e.lastProgressTime = now
 			hitRate := float64(0)
@@ -237,9 +293,10 @@ func (e *Executor) Run(ctx context.Context) error {
 				"block", blockNum,
 				"blk/s", fmt.Sprintf("%.0f", blkPerSec),
 				"elapsed", now.Sub(startTime).Truncate(time.Second),
-				"bufFlush", flushDur.Truncate(time.Millisecond),
+				"bufFlush", e.asyncFlush.lastFlushDuration().Truncate(time.Millisecond),
 				"bufAccs", bufAccs, "bufStos", bufStos,
 				"cacheHit%", fmt.Sprintf("%.1f", hitRate),
+				"async", "y",
 			}
 			if e.senderMisses > 0 {
 				fields = append(fields, "senderMiss", e.senderMisses)
@@ -247,28 +304,38 @@ func (e *Executor) Run(ctx context.Context) error {
 			}
 			log.Info("EthEL progress", fields...)
 
-			// Always commit at commitInterval for safety.
-			if err := WriteProgress(tx, blockNum); err != nil {
-				return fmt.Errorf("write progress at block %d: %w", blockNum, err)
-			}
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("commit at block %d: %w", blockNum, err)
-			}
-			tx, err = e.db.BeginRw(ctx)
-			if err != nil {
-				cleanup = func() {}
-				return err
-			}
-			cleanup = func() { tx.Rollback() }
-
-			// Verify state root at verify boundaries.
-			// On success: stop so user can backup MDBX.
-			// On failure: report and stop (state already committed — user restores backup).
+			// 8. Verify state root at verify boundaries. Verify needs
+			// the data to be visible in MDBX (and writes intermediate
+			// hashed-state tables), so we MUST wait for the in-flight
+			// bg flush to complete and then run verify under its own
+			// short-lived RwTx.
 			if e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0 {
-				blockRoot, verifyErr := VerifyStateRoot(tx)
+				if err := e.asyncFlush.waitPrev(); err != nil {
+					return fmt.Errorf("wait pre-verify flush at block %d: %w", blockNum, err)
+				}
+				// Release main RoTx so we can open a RwTx for verify.
+				tx.Rollback()
+				verifyTx, vErr := e.db.BeginRw(ctx)
+				if vErr != nil {
+					cleanup = func() {}
+					return vErr
+				}
+				blockRoot, verifyErr := VerifyStateRoot(verifyTx)
 				if verifyErr != nil {
+					verifyTx.Rollback()
 					return fmt.Errorf("state root verify at block %d: %w", blockNum, verifyErr)
 				}
+				if cErr := verifyTx.Commit(); cErr != nil {
+					return fmt.Errorf("commit verify tx at block %d: %w", blockNum, cErr)
+				}
+				// Reopen main RoTx so the next exec interval sees the
+				// newly committed hashed-state tables.
+				tx, err = e.db.BeginRo(ctx)
+				if err != nil {
+					cleanup = func() {}
+					return err
+				}
+				cleanup = func() { tx.Rollback() }
 				hdr, hErr := e.readHeader(blockNum)
 				if hErr != nil {
 					return fmt.Errorf("read header for verify at block %d: %w", blockNum, hErr)
@@ -288,22 +355,34 @@ func (e *Executor) Run(ctx context.Context) error {
 	}
 
 	// Final flush + commit.
+	//
+	// Drain the in-flight bg flush first (the one for the most-recent
+	// commit interval).
+	if err := e.asyncFlush.waitPrev(); err != nil {
+		return fmt.Errorf("wait final pending flush: %w", err)
+	}
+
+	// Output batcher: synchronous flush of any partial batches.
 	if e.outBatcher != nil {
 		if err := e.outBatcher.flushAll(); err != nil {
 			return fmt.Errorf("flush output batcher final: %w", err)
 		}
 	}
-	if err := e.stateBuf.FlushToMDBX(tx); err != nil {
-		return fmt.Errorf("flush buffer final: %w", err)
+
+	// Hand off the leftover write buffer (last partial commit window)
+	// through the same async path, then drain.
+	if err := e.asyncFlush.hand(endBlock); err != nil {
+		return fmt.Errorf("hand final flush: %w", err)
 	}
-	e.stateBuf.Clear()
-	if err := WriteProgress(tx, endBlock); err != nil {
-		return fmt.Errorf("write final progress: %w", err)
+	if err := e.asyncFlush.waitPrev(); err != nil {
+		return fmt.Errorf("wait final flush: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	cleanup = func() {} // committed successfully, no rollback needed
+	e.stateBuf.ClearInFlight()
+
+	// Main RoTx is now stale; rotate so any caller using the executor
+	// after Run() returns observes the latest committed state.
+	tx.Rollback()
+	cleanup = func() {} // bg already committed; nothing left to roll back
 
 	elapsed := time.Since(startTime)
 	total := endBlock - startBlock + 1
@@ -315,7 +394,11 @@ func (e *Executor) Run(ctx context.Context) error {
 }
 
 // executeBlock processes a single block.
-func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64) error {
+//
+// tx is kv.Tx (read-only) — block execution only reads state from MDBX
+// (writes go to PlainStateBuffer). The async commit-interval flusher
+// is the only path that opens a kv.RwTx.
+func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) error {
 	t0 := time.Now()
 	// 1. Read header and body from freezer.
 	header, err := e.readHeader(blockNum)
@@ -350,17 +433,8 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.RwTx, blockNum uint64
 	var senders []types.Address
 	senders = e.loadSenders(blockNum, len(body.Transactions))
 
-	if false {
-		var uncles []block.IHeader
-		for _, u := range body.Uncles {
-			uncles = append(uncles, u)
-		}
-		if err := RunTxDiff(e.chainCfg, e.engine, header, body.Transactions, uncles,
-			e.stateBuf, tx, e.makeBlockHashFunc(header), senders); err != nil {
-			return err
-		}
-		return fmt.Errorf("TX diff completed at block %d — stopping", blockNum)
-	}
+	// (Legacy RunTxDiff harness removed — required a RwTx; the per-block
+	// path is RoTx-only now.)
 
 	result, err := e.processBlock(header, body, ibs, senders, writer)
 	if err != nil {
