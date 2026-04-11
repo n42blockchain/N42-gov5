@@ -1,18 +1,5 @@
-// Copyright 2022-2026 The N42 Authors
+// Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
-//
-// The N42 library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The N42 library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
 package freezer
 
@@ -166,8 +153,22 @@ type Freezer struct {
 // It opens all core tables (headers, bodies, receipts, hashes, diffs).
 // Extended tables (senders, changesets) are opened if their index files exist.
 func New(path string, threshold uint64) (*Freezer, error) {
-	if err := os.MkdirAll(path, 0755); err != nil {
-		return nil, fmt.Errorf("freezer: mkdir: %w", err)
+	return openFreezer(path, threshold, false)
+}
+
+// NewReadOnly opens an existing Freezer without modifying any files.
+// All tables are opened O_RDONLY; partial-index truncation, file creation,
+// and core-table alignment are skipped. Mutating operations on the returned
+// Freezer (Append, TruncateHead, etc.) return errors.
+func NewReadOnly(path string) (*Freezer, error) {
+	return openFreezer(path, DefaultFreezeThreshold, true)
+}
+
+func openFreezer(path string, threshold uint64, readonly bool) (*Freezer, error) {
+	if !readonly {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			return nil, fmt.Errorf("freezer: mkdir: %w", err)
+		}
 	}
 
 	if threshold == 0 {
@@ -180,27 +181,47 @@ func New(path string, threshold uint64) (*Freezer, error) {
 		threshold: threshold,
 	}
 
-	// Open core tables (must exist or be created).
+	// Open core tables. In readonly mode, only open if the cidx exists.
 	for _, spec := range coreTableSpecs {
-		t, err := NewFreezerTable(path, spec.name, spec.ext)
-		if err != nil {
-			f.Close()
-			return nil, fmt.Errorf("freezer: open table %s: %w", spec.name, err)
-		}
-		f.tables[spec.name] = t
-	}
-
-	// Open extended tables (with compression support) if their index files exist.
-	for _, spec := range extendedTableSpecs {
 		idxPath := filepath.Join(path, fmt.Sprintf("%s.%sidx", spec.name, spec.ext))
-		if _, err := os.Stat(idxPath); err == nil {
-			t, err := NewFreezerTableCompressed(path, spec.name, spec.ext)
+		if readonly {
+			if _, err := os.Stat(idxPath); err != nil {
+				continue // skip absent core table in RO mode
+			}
+			t, err := NewFreezerTableReadOnly(path, spec.name, spec.ext)
+			if err != nil {
+				f.Close()
+				return nil, fmt.Errorf("freezer: open table %s: %w", spec.name, err)
+			}
+			f.tables[spec.name] = t
+		} else {
+			t, err := NewFreezerTable(path, spec.name, spec.ext)
 			if err != nil {
 				f.Close()
 				return nil, fmt.Errorf("freezer: open table %s: %w", spec.name, err)
 			}
 			f.tables[spec.name] = t
 		}
+	}
+
+	// Open extended tables (with compression support) if their index files exist.
+	for _, spec := range extendedTableSpecs {
+		idxPath := filepath.Join(path, fmt.Sprintf("%s.%sidx", spec.name, spec.ext))
+		if _, err := os.Stat(idxPath); err != nil {
+			continue
+		}
+		var t *FreezerTable
+		var err error
+		if readonly {
+			t, err = NewFreezerTableCompressedReadOnly(path, spec.name, spec.ext)
+		} else {
+			t, err = NewFreezerTableCompressed(path, spec.name, spec.ext)
+		}
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("freezer: open table %s: %w", spec.name, err)
+		}
+		f.tables[spec.name] = t
 	}
 
 	// Recover frozen count from the minimum of core table item counts.
@@ -210,7 +231,10 @@ func New(path string, threshold uint64) (*Freezer, error) {
 	var items uint64
 	var initialized bool
 	for _, spec := range coreTableSpecs {
-		t := f.tables[spec.name]
+		t, ok := f.tables[spec.name]
+		if !ok {
+			continue // not opened (RO mode and missing)
+		}
 		count := t.Items()
 		if count == 0 {
 			continue // skip unused tables
@@ -223,9 +247,13 @@ func New(path string, threshold uint64) (*Freezer, error) {
 
 	// Align core tables: only truncate tables that are AHEAD of the minimum,
 	// never truncate to 0 (that would destroy data when some tables are empty by design).
-	if items > 0 {
+	// Skipped in readonly mode — alignment requires writes.
+	if items > 0 && !readonly {
 		for _, spec := range coreTableSpecs {
-			t := f.tables[spec.name]
+			t, ok := f.tables[spec.name]
+			if !ok {
+				continue
+			}
 			if t.Items() > items {
 				log.Warn("Freezer table count mismatch, truncating",
 					"table", spec.name, "items", t.Items(), "target", items)

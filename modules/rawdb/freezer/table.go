@@ -1,18 +1,5 @@
-// Copyright 2022-2026 The N42 Authors
+// Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
-//
-// The N42 library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The N42 library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
 package freezer
 
@@ -96,7 +83,7 @@ type FreezerTable struct {
 
 	mu          sync.RWMutex
 	indexFile   *os.File            // single index file
-	indexBuf    *bufio.Writer       // buffered index writer
+	indexBuf    *bufio.Writer       // buffered index writer (nil if readonly)
 	dataFiles   map[uint16]*os.File // data files keyed by file number
 	dataFilesRW map[uint16]bool     // tracks which files are opened RDWR (vs read-only)
 	dataBuf     *bufio.Writer       // buffered writer for head data file
@@ -105,6 +92,9 @@ type FreezerTable struct {
 
 	items  atomic.Uint64 // total number of items stored
 	closed atomic.Bool
+	// readonly disables all mutating operations and opens files O_RDONLY,
+	// guaranteeing the on-disk leaves data is never modified.
+	readonly bool
 
 	// Per-entry zstd compression: Append compresses, Retrieve decompresses.
 	compressed bool
@@ -121,35 +111,60 @@ type FreezerTable struct {
 // NewFreezerTable opens or creates a Geth-compatible freezer table.
 // The ext parameter selects file extensions: "c" for .cidx/.cdat, "r" for .ridx/.rdat.
 func NewFreezerTable(path, name, ext string) (*FreezerTable, error) {
+	return newFreezerTable(path, name, ext, false)
+}
+
+// NewFreezerTableReadOnly opens an existing freezer table without ever
+// touching the on-disk files. The cidx file must already exist; this
+// function never creates files, never truncates partial entries, and
+// rejects all subsequent mutating calls.
+func NewFreezerTableReadOnly(path, name, ext string) (*FreezerTable, error) {
+	return newFreezerTable(path, name, ext, true)
+}
+
+func newFreezerTable(path, name, ext string, readonly bool) (*FreezerTable, error) {
 	if ext == "" {
 		ext = "c"
 	}
-	if err := os.MkdirAll(path, 0755); err != nil {
-		return nil, fmt.Errorf("freezer: mkdir %s: %w", path, err)
+	if !readonly {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			return nil, fmt.Errorf("freezer: mkdir %s: %w", path, err)
+		}
 	}
 
 	idxPath := filepath.Join(path, fmt.Sprintf("%s.%sidx", name, ext))
-	idxFile, err := os.OpenFile(idxPath, os.O_RDWR|os.O_CREATE, 0644)
+	var (
+		idxFile *os.File
+		err     error
+	)
+	if readonly {
+		idxFile, err = os.OpenFile(idxPath, os.O_RDONLY, 0)
+	} else {
+		idxFile, err = os.OpenFile(idxPath, os.O_RDWR|os.O_CREATE, 0644)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("freezer: open index %s: %w", idxPath, err)
 	}
 
-	// Seek to end for buffered append.
-	idxFile.Seek(0, io.SeekEnd)
+	// Seek to end for buffered append (write mode only).
+	if !readonly {
+		idxFile.Seek(0, io.SeekEnd)
+	}
 
 	t := &FreezerTable{
-		name:      name,
-		path:      path,
-		ext:       ext,
+		name:        name,
+		path:        path,
+		ext:         ext,
 		indexFile:   idxFile,
-		indexBuf:    bufio.NewWriterSize(idxFile, writeBufferSize),
 		dataFiles:   make(map[uint16]*os.File),
 		dataFilesRW: make(map[uint16]bool),
+		readonly:    readonly,
+	}
+	if !readonly {
+		t.indexBuf = bufio.NewWriterSize(idxFile, writeBufferSize)
 	}
 
 	// Determine item count from index file size.
-	// Truncate to a multiple of indexEntrySize to discard partial entries
-	// left by interrupted writes (e.g. batch flush cut short by signal).
 	info, err := idxFile.Stat()
 	if err != nil {
 		idxFile.Close()
@@ -157,13 +172,19 @@ func NewFreezerTable(path, name, ext string) (*FreezerTable, error) {
 	}
 	idxSize := info.Size()
 	if rem := idxSize % indexEntrySize; rem != 0 {
-		idxSize -= rem
-		if err := idxFile.Truncate(idxSize); err != nil {
-			idxFile.Close()
-			return nil, fmt.Errorf("freezer: truncate partial index %s: %w", name, err)
+		if readonly {
+			// Read-only: just round down without modifying disk.
+			idxSize -= rem
+			log.Debug("Freezer (RO): ignoring partial index entry", "table", name, "ignored", rem)
+		} else {
+			idxSize -= rem
+			if err := idxFile.Truncate(idxSize); err != nil {
+				idxFile.Close()
+				return nil, fmt.Errorf("freezer: truncate partial index %s: %w", name, err)
+			}
+			idxFile.Seek(0, io.SeekEnd)
+			log.Warn("Freezer: truncated partial index entry", "table", name, "removed", rem)
 		}
-		idxFile.Seek(0, io.SeekEnd)
-		log.Warn("Freezer: truncated partial index entry", "table", name, "removed", rem)
 	}
 	t.items.Store(uint64(idxSize) / indexEntrySize)
 
@@ -191,7 +212,17 @@ func NewFreezerTable(path, name, ext string) (*FreezerTable, error) {
 // If per-file dictionaries exist ({table}.NNNN.zdict, created by CompactTable),
 // they are loaded for both encoding and decoding.
 func NewFreezerTableCompressed(path, name, ext string) (*FreezerTable, error) {
-	t, err := NewFreezerTable(path, name, ext)
+	return newFreezerTableCompressed(path, name, ext, false)
+}
+
+// NewFreezerTableCompressedReadOnly opens an existing compressed freezer table
+// without ever modifying its files. See NewFreezerTableReadOnly.
+func NewFreezerTableCompressedReadOnly(path, name, ext string) (*FreezerTable, error) {
+	return newFreezerTableCompressed(path, name, ext, true)
+}
+
+func newFreezerTableCompressed(path, name, ext string, readonly bool) (*FreezerTable, error) {
+	t, err := newFreezerTable(path, name, ext, readonly)
 	if err != nil {
 		return nil, err
 	}
@@ -257,6 +288,9 @@ func (t *FreezerTable) Items() uint64 {
 func (t *FreezerTable) Append(item uint64, data []byte) error {
 	if t.closed.Load() {
 		return ErrClosed
+	}
+	if t.readonly {
+		return fmt.Errorf("freezer: table %s is read-only", t.name)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -346,6 +380,9 @@ func (t *FreezerTable) SetCompressed(v bool) {
 func (t *FreezerTable) AppendBatchBlob(startItem uint64, count int, blob []byte) error {
 	if t.closed.Load() {
 		return ErrClosed
+	}
+	if t.readonly {
+		return fmt.Errorf("freezer: table %s is read-only", t.name)
 	}
 	if count <= 0 {
 		return nil
@@ -667,6 +704,9 @@ func (t *FreezerTable) Has(item uint64) bool {
 
 // Sync flushes all data and index files to disk.
 func (t *FreezerTable) Sync() error {
+	if t.readonly {
+		return nil // nothing to flush
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -803,6 +843,9 @@ func (t *FreezerTable) TruncateHead(from uint64) error {
 	if t.closed.Load() {
 		return ErrClosed
 	}
+	if t.readonly {
+		return fmt.Errorf("freezer: table %s is read-only", t.name)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.truncateHeadLocked(from)
@@ -822,6 +865,22 @@ func (t *FreezerTable) truncateHeadLocked(from uint64) error {
 		t.dataBuf.Flush()
 		t.dataBuf = nil
 	}
+
+	// Invalidate batch cache — it may hold entries being truncated.
+	t.batchCacheData = nil
+
+	// Read the first removed item's cdat offset BEFORE truncating cidx.
+	// This tells us where orphaned data starts in the cdat file.
+	var removedIdx indexEntry
+	var haveRemovedIdx bool
+	if from < t.items.Load() {
+		idx, err := t.readIndex(from)
+		if err == nil {
+			removedIdx = idx
+			haveRemovedIdx = true
+		}
+	}
+
 	if err := t.indexFile.Truncate(int64(from) * indexEntrySize); err != nil {
 		return fmt.Errorf("freezer: truncate index: %w", err)
 	}
@@ -834,15 +893,98 @@ func (t *FreezerTable) truncateHeadLocked(from uint64) error {
 	}
 
 	t.items.Store(from)
-	t.headSize = 0
-	if from > 0 {
-		lastIdx, err := t.readIndex(from - 1)
-		if err != nil {
-			return err
-		}
-		t.headFile = lastIdx.fileNum
-	} else {
+	if from == 0 {
 		t.headFile = 0
+		t.headSize = 0
+		return nil
+	}
+
+	lastIdx, err := t.readIndex(from - 1)
+	if err != nil {
+		return err
+	}
+	t.headFile = lastIdx.fileNum
+
+	// Truncate cdat to remove orphaned data after the last retained batch.
+	// Without this, orphaned blobs corrupt retrieveBatch range calculations.
+	if haveRemovedIdx {
+		if removedIdx.fileNum == lastIdx.fileNum {
+			// Same file: truncate at the orphaned data start offset.
+			df, err := t.createDataFile(removedIdx.fileNum)
+			if err == nil {
+				df.Truncate(int64(removedIdx.offset))
+			}
+			t.headSize = int64(removedIdx.offset)
+		} else {
+			// Cross-file: removed items are in a later file. Delete every
+			// orphaned data file with fileNum >= removedIdx.fileNum, then
+			// reset headSize from the last retained file.
+			//
+			// We scan the directory rather than iterate a fixed window so a
+			// single TruncateHead can clean up an arbitrary number of
+			// segments — the previous bounded loop left orphans behind when
+			// the truncation crossed more than ~10 .cdat files at once,
+			// which accumulated unbounded waste over kill+resume cycles.
+			if err := t.deleteOrphanFilesLocked(removedIdx.fileNum); err != nil {
+				return err
+			}
+			df, err := t.createDataFile(lastIdx.fileNum)
+			if err == nil {
+				if fi, err := df.Stat(); err == nil {
+					t.headSize = fi.Size()
+				}
+			}
+		}
+	} else {
+		// Couldn't read removed index — use file stat as fallback.
+		df, err := t.createDataFile(lastIdx.fileNum)
+		if err == nil {
+			if fi, err := df.Stat(); err == nil {
+				t.headSize = fi.Size()
+			}
+		}
+	}
+	return nil
+}
+
+// deleteOrphanFilesLocked removes every <name>.NNNN.<ext>dat file in the
+// table directory whose segment number is >= startFileNum, closing any
+// open handles first. Caller must hold t.mu.
+func (t *FreezerTable) deleteOrphanFilesLocked(startFileNum uint16) error {
+	entries, err := os.ReadDir(t.path)
+	if err != nil {
+		return fmt.Errorf("freezer: read dir for orphan cleanup: %w", err)
+	}
+	prefix := t.name + "."
+	suffix := "." + t.ext + "dat"
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fname := e.Name()
+		if len(fname) < len(prefix)+4+len(suffix) {
+			continue
+		}
+		if fname[:len(prefix)] != prefix || fname[len(fname)-len(suffix):] != suffix {
+			continue
+		}
+		var parsed uint32
+		// %04d width is the convention; accept any width that parses cleanly.
+		if _, err := fmt.Sscanf(fname[len(prefix):len(fname)-len(suffix)], "%d", &parsed); err != nil {
+			continue
+		}
+		if parsed < uint32(startFileNum) || parsed > 0xffff {
+			continue
+		}
+		fnum := uint16(parsed)
+		if f, ok := t.dataFiles[fnum]; ok {
+			f.Close()
+			delete(t.dataFiles, fnum)
+			delete(t.dataFilesRW, fnum)
+		}
+		if err := os.Remove(filepath.Join(t.path, fname)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("freezer: remove orphan %s: %w", fname, err)
+		}
 	}
 	return nil
 }

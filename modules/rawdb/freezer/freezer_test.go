@@ -1,18 +1,5 @@
-// Copyright 2022-2026 The N42 Authors
+// Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
-//
-// The N42 library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The N42 library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
 package freezer
 
@@ -114,6 +101,69 @@ func TestFreezerTableBatch(t *testing.T) {
 	}
 	if !bytes.Equal(data, []byte("batch-25")) {
 		t.Fatalf("got %q, want %q", data, "batch-25")
+	}
+}
+
+// TestDeleteOrphanFilesLocked verifies that orphan .cdat files with
+// arbitrary segment numbers are removed in a single pass — not the old
+// hardcoded 11-file window which left segments beyond the window orphaned
+// across kill+resume cycles.
+func TestDeleteOrphanFilesLocked(t *testing.T) {
+	dir := t.TempDir()
+	tbl, err := NewFreezerTable(dir, "orphan", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+
+	// Lay out fake orphan .cdat files spanning a 30-segment range,
+	// straddling the old hardcoded 10-file window. We also place an
+	// "below cutoff" file at fileNum 4 that must NOT be deleted, and
+	// a same-table-but-wrong-extension file that must be left alone.
+	cutoff := uint16(7)
+	orphanNums := []uint16{4, 7, 8, 9, 10, 12, 17, 19, 27, 29}
+	for _, fnum := range orphanNums {
+		name := filepath.Join(dir, fmt.Sprintf("orphan.%04d.cdat", fnum))
+		if err := os.WriteFile(name, []byte("fake"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Different table — must NOT be touched.
+	if err := os.WriteFile(filepath.Join(dir, "other.0007.cdat"), []byte("other"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Same table, raw (.rdat) extension — must NOT be touched (this table is .cdat).
+	if err := os.WriteFile(filepath.Join(dir, "orphan.0007.rdat"), []byte("raw"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tbl.mu.Lock()
+	if err := tbl.deleteOrphanFilesLocked(cutoff); err != nil {
+		tbl.mu.Unlock()
+		t.Fatal(err)
+	}
+	tbl.mu.Unlock()
+
+	// Files with fnum < cutoff must survive; files with fnum >= cutoff must be gone.
+	for _, fnum := range orphanNums {
+		name := filepath.Join(dir, fmt.Sprintf("orphan.%04d.cdat", fnum))
+		_, err := os.Stat(name)
+		switch {
+		case fnum < cutoff:
+			if err != nil {
+				t.Errorf("file %d below cutoff was deleted: %v", fnum, err)
+			}
+		default:
+			if !os.IsNotExist(err) {
+				t.Errorf("orphan %d was NOT deleted (Stat err = %v)", fnum, err)
+			}
+		}
+	}
+	// Sentinels must survive.
+	for _, name := range []string{"other.0007.cdat", "orphan.0007.rdat"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("sentinel %s was wrongly deleted: %v", name, err)
+		}
 	}
 }
 
