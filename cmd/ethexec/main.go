@@ -162,11 +162,14 @@ func main() {
 			},
 			{
 				Name:  "rebuild-state",
-				Usage: "Rebuild PlainState from leaves_journal (genesis in block 0, no genesis.json needed)",
+				Usage: "Rebuild PlainState from leaves journal (genesis self-contained in block 0)",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
-					&cli.StringFlag{Name: "datadir", Usage: "Path to output MDBX + freezer directory", Required: true},
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory (for header verification)", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to output MDBX directory", Required: true},
+					&cli.StringFlag{Name: "leaves", Usage: "Path to leaves freezer dir (default: <datadir>/chain/freezer)"},
+					&cli.Uint64Flag{Name: "start", Usage: "Start block (>0 = resume mode, do NOT clear existing PlainState)", Value: 0},
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all available)", Value: 0},
+					&cli.Uint64Flag{Name: "verify", Usage: "Periodic state-root verify interval (0=verify only at end)", Value: 0},
 				},
 				Action: runRebuildState,
 			},
@@ -1110,18 +1113,34 @@ func runSenderRecovery(c *cli.Context) error {
 func runRebuildState(c *cli.Context) error {
 	ancientPath := c.String("ancient")
 	datadir := c.String("datadir")
+	leavesDir := c.String("leaves")
+	startBlock := c.Uint64("start")
 	endBlock := c.Uint64("end")
+	verifyInterval := c.Uint64("verify")
 
-	chainDir := filepath.Join(datadir, "chain")
+	if leavesDir == "" {
+		leavesDir = filepath.Join(datadir, "chain", "freezer")
+	}
 
-	// Open existing MDBX with Accede (use stored geometry, no extra commit charge).
 	logger := log2.New()
-	db, err := mdbx.NewMDBX(logger).
+	// Auto-detect: if MDBX exists at datadir, use Accede (preserve geometry);
+	// otherwise create with default geometry (rebuild from scratch).
+	hasMDBX := false
+	if fi, err := os.Stat(filepath.Join(datadir, "mdbx.dat")); err == nil && fi.Size() > 0 {
+		hasMDBX = true
+	}
+	mdbxBuilder := mdbx.NewMDBX(logger).
 		Path(datadir).
 		Label(kv.ChainDB).
-		Accede().
-		DBVerbosity(kv.DBVerbosityLvl(2)).
-		Open(context.Background())
+		PageSize(4096).
+		MapSize(2 * datasize.TB).
+		GrowthStep(4 * datasize.GB).
+		DirtySpace(uint64(2 * datasize.GB)).
+		DBVerbosity(kv.DBVerbosityLvl(2))
+	if hasMDBX {
+		mdbxBuilder = mdbxBuilder.Accede()
+	}
+	db, err := mdbxBuilder.Open(context.Background())
 	if err != nil {
 		return fmt.Errorf("open mdbx: %w", err)
 	}
@@ -1130,18 +1149,21 @@ func runRebuildState(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 
-	if err := ethel.RebuildState(ctx, db, chainDir, endBlock); err != nil {
-		return err
-	}
-
-	// Open Geth input freezer AFTER rebuild (only for header root verification).
-	// Deferred to avoid mmap'ing 1.1TB of Geth ancient data during rebuild.
+	// Open Geth input freezer up front for periodic verify and final verify.
 	inputF, err := freezer.New(ancientPath, 0)
 	if err != nil {
-		log.Warn("Cannot open Geth freezer for verification", "err", err)
-		return nil
+		return fmt.Errorf("open geth ancient: %w", err)
 	}
 	defer inputF.Close()
+
+	opts := ethel.RebuildOptions{
+		StartBlock:     startBlock,
+		VerifyInterval: verifyInterval,
+		InputFreezer:   inputF,
+	}
+	if err := ethel.RebuildStateWith(ctx, db, leavesDir, endBlock, opts); err != nil {
+		return err
+	}
 	ethel.VerifyRebuildRoot(ctx, db, inputF, endBlock)
 	return nil
 }
