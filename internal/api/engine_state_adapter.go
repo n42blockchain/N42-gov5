@@ -1,8 +1,5 @@
-// Copyright 2022-2026 The N42 Authors
+// Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
-//
-// engine_state_adapter.go bridges the Engine API with persistent state execution
-// for the ETH EL profile.
 
 package api
 
@@ -152,4 +149,55 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 // Reorg rolls back state to the given block number using changesets.
 func (a *EngineStateAdapter) Reorg(targetBlock uint64) error {
 	return ethel.Reorg(a.db, a.freezer, targetBlock)
+}
+
+// CurrentHead returns the current chain tip block as recorded in chaindata.
+// It is used by the EngineAPIV1 nil-bc fallback so that
+// engine_forkchoiceUpdated calls report VALID (not SYNCING) once the
+// EthEL adapter has executed up to the head. Returns nil when chaindata
+// has no head pointer yet.
+func (a *EngineStateAdapter) CurrentHead() *block.Block {
+	tx, err := a.db.BeginRo(context.Background())
+	if err != nil {
+		return nil
+	}
+	defer tx.Rollback()
+	headHash := rawdb.ReadHeadBlockHash(tx)
+	if headHash == (types.Hash{}) {
+		return nil
+	}
+	blk, err := rawdb.ReadBlockByHash(tx, headHash)
+	if err != nil || blk == nil {
+		return nil
+	}
+	return blk
+}
+
+// CurrentHeadHash returns the current head block hash without materialising
+// the body. Cheaper than CurrentHead when the caller only needs the hash.
+func (a *EngineStateAdapter) CurrentHeadHash() types.Hash {
+	tx, err := a.db.BeginRo(context.Background())
+	if err != nil {
+		return types.Hash{}
+	}
+	defer tx.Rollback()
+	return rawdb.ReadHeadBlockHash(tx)
+}
+
+// HeaderByHash returns the EL block header for the given hash, or nil
+// if chaindata does not have it. Used by the EngineAPIV1 nil-bc
+// fallback path for parentHeader lookups: without it, the EL side of
+// NewPayload cannot resolve the parent when the CL asks whether a
+// received payload extends the current head.
+func (a *EngineStateAdapter) HeaderByHash(hash types.Hash) *block.Header {
+	tx, err := a.db.BeginRo(context.Background())
+	if err != nil {
+		return nil
+	}
+	defer tx.Rollback()
+	hdr, err := rawdb.ReadHeaderByHash(tx, hash)
+	if err != nil || hdr == nil {
+		return nil
+	}
+	return hdr
 }

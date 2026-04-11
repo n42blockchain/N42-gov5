@@ -68,14 +68,10 @@ require (
 replace github.com/holiman/uint256 => github.com/holiman/uint256 v1.2.3
 
 require (
-	github.com/anacrolix/dht/v2 v2.23.0
-	github.com/anacrolix/go-libutp v1.3.2
-	github.com/anacrolix/log v0.17.0
 	github.com/anacrolix/torrent v1.61.0
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/crate-crypto/go-eth-kzg v1.5.0
 	github.com/edsrzf/mmap-go v1.2.0
-	github.com/erigontech/erigon-snapshot v1.3.0
 	github.com/erigontech/fastkeccak v0.1.0
 	github.com/erigontech/interfaces v0.0.0-20260309190044-b1ca32817912
 	github.com/erigontech/secp256k1 v1.2.0
@@ -87,11 +83,12 @@ require (
 	github.com/mattn/go-isatty v0.0.20
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
 	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/prysmaticlabs/gohashtree v0.0.5-beta
 	github.com/puzpuzpuz/xsync/v4 v4.4.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
-	github.com/rs/dnscache v0.0.0-20230804202142-fc85eb664529
 	github.com/shirou/gopsutil/v4 v4.26.2
 	github.com/spaolacci/murmur3 v1.1.0
+	github.com/thomaso-mirodin/intmath v0.0.0-20160323211736-5dc6d854e46e
 	github.com/tidwall/btree v1.8.1
 	go.opentelemetry.io/otel v1.42.0
 	go.opentelemetry.io/otel/sdk v1.42.0
@@ -106,11 +103,14 @@ require (
 require (
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
-	github.com/ajwerner/btree v0.1.1 // indirect
 	github.com/alecthomas/atomic v0.1.0-alpha2 // indirect
+	github.com/anacrolix/btree v0.0.0-20251201064447-d86c3fa41bd8 // indirect
 	github.com/anacrolix/chansync v0.7.0 // indirect
+	github.com/anacrolix/dht/v2 v2.23.0 // indirect
 	github.com/anacrolix/envpprof v1.5.0 // indirect
 	github.com/anacrolix/generics v0.2.0 // indirect
+	github.com/anacrolix/go-libutp v1.3.2 // indirect
+	github.com/anacrolix/log v0.17.1-0.20251118025802-918f1157b7bb // indirect
 	github.com/anacrolix/missinggo v1.3.0 // indirect
 	github.com/anacrolix/missinggo/perf v1.0.0 // indirect
 	github.com/anacrolix/missinggo/v2 v2.10.0 // indirect
@@ -214,18 +214,15 @@ require (
 	github.com/pion/datachannel v1.6.0 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
 	github.com/pion/dtls/v3 v3.1.2 // indirect
-	github.com/pion/ice/v2 v2.3.38 // indirect
-	github.com/pion/ice/v4 v4.2.1 // indirect
+	github.com/pion/ice/v4 v4.2.2 // indirect
 	github.com/pion/interceptor v0.1.44 // indirect
 	github.com/pion/logging v0.2.4 // indirect
-	github.com/pion/mdns v0.0.12 // indirect
 	github.com/pion/mdns/v2 v2.1.0 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.16 // indirect
 	github.com/pion/rtp v1.10.1 // indirect
-	github.com/pion/sctp v1.9.3 // indirect
+	github.com/pion/sctp v1.9.4 // indirect
 	github.com/pion/sdp/v3 v3.0.18 // indirect
-	github.com/pion/srtp/v2 v2.0.20 // indirect
 	github.com/pion/srtp/v3 v3.0.10 // indirect
 	github.com/pion/stun v0.6.1 // indirect
 	github.com/pion/stun/v2 v2.0.0 // indirect
@@ -233,20 +230,19 @@ require (
 	github.com/pion/transport/v2 v2.2.10 // indirect
 	github.com/pion/transport/v3 v3.1.1 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
-	github.com/pion/turn/v2 v2.1.6 // indirect
 	github.com/pion/turn/v4 v4.1.4 // indirect
-	github.com/pion/webrtc/v3 v3.3.6 // indirect
-	github.com/pion/webrtc/v4 v4.2.9 // indirect
+	github.com/pion/webrtc/v4 v4.2.11 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/polydawn/refmt v0.89.1-0.20231129105047-37766d95467a // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/prysmaticlabs/gohashtree v0.0.5-beta // indirect
+	github.com/protolambda/ctxlock v0.1.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/rs/dnscache v0.0.0-20230804202142-fc85eb664529 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7 // indirect
@@ -295,8 +291,6 @@ replace github.com/VictoriaMetrics/metrics => github.com/ledgerwatch/victoria-me
 // 2. Using build tags to exclude on mobile platforms
 // Risk: Third-party maintainer could introduce malicious code.
 replace github.com/elastic/gosigar => github.com/Jackmeng1985/gosigar v0.14.2-fix-ios
-
-replace github.com/anacrolix/torrent => github.com/erigontech/torrent v1.54.2-alpha-8
 
 replace github.com/erigontech/erigon-snapshot => github.com/ledgerwatch/erigon-snapshot v1.3.1-0.20240805114253-42da880260bb
 

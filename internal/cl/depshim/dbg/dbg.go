@@ -1,0 +1,20 @@
+// Copyright 2021-2026 The N42 Authors
+// This file is part of the N42 library.
+
+//go:build n42el
+
+// Package dbg re-exports the tiny subset of erigon/common/dbg that the cl/
+// tree references. Both Stack and the deadlock-detection toggle are
+// satisfied by N42's lib/common/dbg.
+package dbg
+
+import libdbg "github.com/n42blockchain/N42/lib/common/dbg"
+
+// Stack returns the current goroutine stack as a string.
+var Stack = libdbg.Stack
+
+// CaplinSyncedDataMangerDeadlockDetection toggles a deadlock-detection
+// goroutine in Caplin's synced-data manager. The N42 fork keeps it disabled
+// — flipping it would only add background work for a feature we do not need
+// in production.
+const CaplinSyncedDataMangerDeadlockDetection = false
