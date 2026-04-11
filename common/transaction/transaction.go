@@ -1,18 +1,5 @@
-// Copyright 2022-2026 The N42 Authors
+// Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
-//
-// The N42 library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The N42 library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
 package transaction
 
@@ -72,13 +59,16 @@ type Transactions []*Transaction
 
 func (s Transactions) Len() int { return len(s) }
 
-// EncodeIndex encodes the i'th transaction to w (legacy format for DeriveSha).
+// EncodeIndex emits the N42 native protobuf encoding (used by
+// hash.DeriveSha for N42 native transaction roots). NOT compatible with
+// Ethereum's standard transaction trie root — use EthTransactions for that.
 func (s Transactions) EncodeIndex(i int, w *bytes.Buffer) {
 	b, _ := s[i].Marshal()
 	w.Write(b)
 }
 
-// TransactionsV2 wraps Transactions with v2 encoding for Shanghai+ DeriveSha.
+// TransactionsV2 is the Shanghai+ N42 native variant of Transactions; same
+// "not ETH-compatible" caveat applies.
 type TransactionsV2 Transactions
 
 func (s TransactionsV2) Len() int { return len(s) }
@@ -406,10 +396,11 @@ func (tx *Transaction) WithSignatureValues(v, r, s *uint256.Int) (*Transaction, 
 	return tx, nil
 }
 
-// Marshal encodes the transaction to protobuf bytes. The encoding MUST match
-// the original mainnet format exactly because DeriveSha (transaction root hash)
-// is computed from these bytes. Any change to the encoding breaks chain
-// compatibility with existing block data.
+// Marshal encodes the transaction to N42 native protobuf bytes (wire
+// protocol, KV storage, N42 native DeriveSha). Changing the encoding
+// breaks N42 native chain compatibility. NOT the standard Ethereum raw
+// transaction encoding — use EncodeEthereumTransaction for ETH-compatible
+// serialization.
 func (tx Transaction) Marshal() ([]byte, error) {
 	pbTx := tx.toProtoFields()
 	v, r, s := tx.RawSignatureValues()
