@@ -1,9 +1,5 @@
-// Copyright 2022-2026 The N42 Authors
+// Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
-//
-// rebuild_state.go rebuilds PlainState from leaves journal.
-// Accumulates in memory maps (last-write-wins dedup), flushes to MDBX
-// when memory exceeds limit. No WriteMap — MDBX uses copy-on-write.
 
 package ethel
 
@@ -25,12 +21,34 @@ import (
 
 const memLimitGB = 100 // flush when Go heap exceeds this
 
+// RebuildOptions controls intermediate verification during RebuildState.
+type RebuildOptions struct {
+	// VerifyInterval enables periodic state-root verification at every Nth
+	// block. 0 disables (verify only at the end via VerifyRebuildRoot).
+	// At each boundary the in-memory maps are flushed to MDBX, HashedState
+	// is rebuilt from PlainState, and the computed state root is compared
+	// against the header root from inputFreezer.
+	VerifyInterval uint64
+	// InputFreezer holds Geth-format ancient headers, used to look up the
+	// expected state root at each verify boundary. Required if VerifyInterval
+	// > 0.
+	InputFreezer *freezer.Freezer
+}
+
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
+	return RebuildStateWith(ctx, db, ancientDir, endBlock, RebuildOptions{})
+}
+
+// RebuildStateWith is RebuildState with optional periodic verification.
+func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64, opts RebuildOptions) error {
 	t0 := time.Now()
 
 	// Try leaves_journal (freezer table) first, then leaves (SegmentStore).
-	// Open leaves table (batch-64 compressed, leaves.cidx + leaves.NNNN.cdat).
-	leavesTbl, err := freezer.NewFreezerTable(ancientDir, "leaves", "c")
+	// Open leaves table read-only (batch-64 compressed, leaves.cidx + leaves.NNNN.cdat).
+	// Read-only is critical: rebuild-state must NEVER modify the source leaves
+	// data. Without this, freezer.NewFreezerTable would truncate partial cidx
+	// entries on open, mutating the file.
+	leavesTbl, err := freezer.NewFreezerTableReadOnly(ancientDir, "leaves", "c")
 	if err != nil {
 		return fmt.Errorf("open leaves: %w", err)
 	}
@@ -72,9 +90,72 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	}
 
 	acctMap := make(map[types.Address][]byte, 1_000_000)
-	storMap := make(map[string][]byte, 10_000_000)
+	// storMap is keyed by address first, slot second. This makes wipes O(1)
+	// (delete entire address bucket) instead of O(N) over all slots — a
+	// critical perf fix once SELFDESTRUCT becomes common (block ~1M+).
+	storMap := make(map[types.Address]map[types.Hash][]byte, 1_000_000)
+	// wipeSet collects addresses whose ALL storage must be cleared from
+	// MDBX at next flush. Without this, wipes that occur in segment N
+	// only delete from segment N's in-memory map; storage written to MDBX
+	// in segment N-1 stays orphaned and corrupts the next state root.
+	wipeSet := make(map[types.Address]struct{})
 	flushCount := 0
 	lastLogTime := time.Now()
+
+	// doVerify flushes the segment to MDBX, then rebuilds HashedAccounts/
+	// HashedStorage and computes the state root via FlatDBTrieLoader.
+	// Each call is O(current_state_size); use --verify 0 for fast rebuild.
+	doVerify := func(blockNum uint64) error {
+		log.Info("Verify boundary reached, flushing to MDBX",
+			"block", blockNum, "accounts", len(acctMap),
+			"addrs", len(storMap), "wipes", len(wipeSet))
+		if err := flushToMDBX(ctx, db, acctMap, storMap, wipeSet); err != nil {
+			return fmt.Errorf("flush before verify: %w", err)
+		}
+		acctMap = make(map[types.Address][]byte, 1_000_000)
+		storMap = make(map[types.Address]map[types.Hash][]byte, 1_000_000)
+		wipeSet = make(map[types.Address]struct{})
+		runtime.GC()
+		flushCount++
+
+		log.Info("Computing state root", "block", blockNum)
+		if err := resetAndInitHashState(ctx, db); err != nil {
+			return fmt.Errorf("init hash state at block %d: %w", blockNum, err)
+		}
+		tx2, err := db.BeginRw(ctx)
+		if err != nil {
+			return fmt.Errorf("verify begin tx2: %w", err)
+		}
+		root, err := CalcStateRoot(tx2)
+		tx2.Rollback()
+		if err != nil {
+			return fmt.Errorf("calc state root at block %d: %w", blockNum, err)
+		}
+		// Read the header at blockNum from the input freezer.
+		hdrData, err := opts.InputFreezer.Ancient(freezer.TableHeaders, blockNum)
+		if err != nil {
+			log.Warn("Cannot read header for verify", "block", blockNum, "err", err)
+			return nil
+		}
+		hdr, err := DecodeGethHeader(hdrData)
+		if err != nil {
+			log.Warn("Cannot decode header for verify", "block", blockNum, "err", err)
+			return nil
+		}
+		if root == hdr.Root {
+			log.Info("STATE ROOT VERIFIED",
+				"block", blockNum,
+				"root", root.Hex(),
+				"elapsed", time.Since(t0).Truncate(time.Second))
+		} else {
+			log.Error("STATE ROOT MISMATCH",
+				"block", blockNum,
+				"computed", root.Hex(),
+				"expected", hdr.Root.Hex())
+			return fmt.Errorf("state root mismatch at block %d", blockNum)
+		}
+		return nil
+	}
 
 	for blockNum := uint64(0); blockNum < endBlock; blockNum++ {
 		if ctx.Err() != nil {
@@ -94,14 +175,12 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 			return fmt.Errorf("decode block %d: %w", blockNum, err)
 		}
 
-		// Apply wipes: delete all storage for selfdestructed addresses.
+		// Apply wipes: drop the entire per-address bucket from the in-memory
+		// segment map AND record it in wipeSet so flushToMDBX also removes
+		// any slots already persisted in MDBX from earlier segments.
 		for _, addr := range wipes {
-			prefix := string(addr[:])
-			for k := range storMap {
-				if len(k) >= 20 && k[:20] == prefix {
-					storMap[k] = nil
-				}
-			}
+			delete(storMap, addr)
+			wipeSet[addr] = struct{}{}
 		}
 
 		for _, a := range accounts {
@@ -112,14 +191,26 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 			}
 		}
 		for _, s := range storage {
-			var key [52]byte
-			copy(key[:20], s.Address[:])
-			copy(key[20:], s.Slot[:])
-			if len(s.Value) == 0 {
-				storMap[string(key[:])] = nil
-			} else {
-				storMap[string(key[:])] = s.Value
+			inner, ok := storMap[s.Address]
+			if !ok {
+				inner = make(map[types.Hash][]byte, 8)
+				storMap[s.Address] = inner
 			}
+			if len(s.Value) == 0 {
+				inner[s.Slot] = nil
+			} else {
+				inner[s.Slot] = s.Value
+			}
+		}
+
+		// Periodic verify: at blockNum where (blockNum+1) % VerifyInterval == 0
+		// (i.e., we just applied the last block of an interval).
+		if opts.VerifyInterval > 0 && opts.InputFreezer != nil &&
+			(blockNum+1)%opts.VerifyInterval == 0 {
+			if err := doVerify(blockNum); err != nil {
+				return err
+			}
+			lastLogTime = time.Now()
 		}
 
 		if time.Since(lastLogTime) > 5*time.Second {
@@ -131,18 +222,19 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 				"block", blockNum,
 				"pct", fmt.Sprintf("%.1f%%", pct),
 				"accounts", len(acctMap),
-				"storage", len(storMap),
+				"addrs", len(storMap),
 				"allocGB", fmt.Sprintf("%.1f", allocGB),
 				"elapsed", time.Since(t0).Truncate(time.Second))
 			lastLogTime = time.Now()
 
 			if allocGB > float64(memLimitGB) {
 				log.Info("Memory limit, flushing to MDBX...", "allocGB", fmt.Sprintf("%.1f", allocGB))
-				if err := flushToMDBX(ctx, db, acctMap, storMap); err != nil {
+				if err := flushToMDBX(ctx, db, acctMap, storMap, wipeSet); err != nil {
 					return err
 				}
 				acctMap = make(map[types.Address][]byte, 1_000_000)
-				storMap = make(map[string][]byte, 10_000_000)
+				storMap = make(map[types.Address]map[types.Hash][]byte, 1_000_000)
+				wipeSet = make(map[types.Address]struct{})
 				runtime.GC()
 				flushCount++
 			}
@@ -150,12 +242,14 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	}
 
 	// Final flush.
-	log.Info("Final flush", "accounts", len(acctMap), "storage", len(storMap), "totalFlushes", flushCount)
-	if err := flushToMDBX(ctx, db, acctMap, storMap); err != nil {
+	log.Info("Final flush", "accounts", len(acctMap), "addrs", len(storMap),
+		"wipes", len(wipeSet), "totalFlushes", flushCount)
+	if err := flushToMDBX(ctx, db, acctMap, storMap, wipeSet); err != nil {
 		return err
 	}
 	acctMap = nil
 	storMap = nil
+	wipeSet = nil
 	runtime.GC()
 
 	// Write progress.
@@ -177,8 +271,36 @@ func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock u
 	return nil
 }
 
-func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]byte, storMap map[string][]byte) error {
-	if len(acctMap) == 0 && len(storMap) == 0 {
+// resetAndInitHashState clears HashedAccounts/HashedStorage then rebuilds
+// them from PlainState. The clear is required because InitHashState
+// short-circuits when HashedAccounts is non-empty, which would otherwise
+// leave us computing roots from stale hashed state on a second verify.
+func resetAndInitHashState(ctx context.Context, db kv.RwDB) error {
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	if err := tx.ClearBucket(kv.HashedAccounts); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("clear HashedAccounts: %w", err)
+	}
+	if err := tx.ClearBucket(kv.HashedStorage); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("clear HashedStorage: %w", err)
+	}
+	if err := InitHashState(tx); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]byte, storMap map[types.Address]map[types.Hash][]byte, wipeSet map[types.Address]struct{}) error {
+	totalSlots := 0
+	for _, slots := range storMap {
+		totalSlots += len(slots)
+	}
+	if len(acctMap) == 0 && totalSlots == 0 && len(wipeSet) == 0 {
 		return nil
 	}
 	t0 := time.Now()
@@ -192,17 +314,84 @@ func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]by
 		return bytes.Compare(acctKeys[i][:], acctKeys[j][:]) < 0
 	})
 
-	// Sort storage keys.
-	storKeys := make([]string, 0, len(storMap))
-	for k := range storMap {
-		storKeys = append(storKeys, k)
+	// Build sorted composite-key list for storage.
+	type stoEntry struct {
+		key   []byte
+		value []byte
 	}
-	sort.Strings(storKeys)
+	storEntries := make([]stoEntry, 0, totalSlots)
+	for addr, slots := range storMap {
+		for slot, value := range slots {
+			compositeKey := make([]byte, 52)
+			copy(compositeKey[:20], addr[:])
+			copy(compositeKey[20:], slot[:])
+			storEntries = append(storEntries, stoEntry{key: compositeKey, value: value})
+		}
+	}
+	sort.Slice(storEntries, func(i, j int) bool {
+		return bytes.Compare(storEntries[i].key, storEntries[j].key) < 0
+	})
 
 	// Write sorted — MDBX Put is upsert, handles duplicates across flushes.
 	tx, err := db.BeginRw(ctx)
 	if err != nil {
 		return err
+	}
+
+	// Phase 0: process wipes. For each wiped address, delete every storage
+	// slot in MDBX whose key starts with that address. The newly written
+	// slots in storMap (from CREATE-after-SELFDESTRUCT or contract reuse)
+	// are written in phase 2 below and overwrite the deletions cleanly.
+	//
+	// Two-pass design: first collect all keys to delete with one cursor
+	// (closed cleanly between addresses), then delete them outside the
+	// cursor loop. Mixing tx.Delete with an open cursor on the same table
+	// invalidates the cursor's iteration state and can silently miss
+	// subsequent slots — exactly the bug that produced wrong roots at 6M+.
+	if len(wipeSet) > 0 {
+		// Sort wiped addresses for sequential cursor seeks (faster on B+tree).
+		wipeAddrs := make([]types.Address, 0, len(wipeSet))
+		for addr := range wipeSet {
+			wipeAddrs = append(wipeAddrs, addr)
+		}
+		sort.Slice(wipeAddrs, func(i, j int) bool {
+			return bytes.Compare(wipeAddrs[i][:], wipeAddrs[j][:]) < 0
+		})
+
+		// Pass 1: collect keys to delete.
+		var allKeysToDelete [][]byte
+		cursor, err := tx.Cursor(modules.Storage)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("open storage cursor for wipe: %w", err)
+		}
+		for _, addr := range wipeAddrs {
+			prefix := addr[:]
+			for k, _, err := cursor.Seek(prefix); k != nil; k, _, err = cursor.Next() {
+				if err != nil {
+					cursor.Close()
+					tx.Rollback()
+					return err
+				}
+				if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
+					break
+				}
+				allKeysToDelete = append(allKeysToDelete, append([]byte{}, k...))
+			}
+		}
+		cursor.Close()
+
+		// Pass 2: delete all collected keys (cursor is closed, no invalidation).
+		for _, k := range allKeysToDelete {
+			if err := tx.Delete(modules.Storage, k); err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+		if len(allKeysToDelete) > 0 {
+			log.Info("  wiped storage entries from MDBX",
+				"addrs", len(wipeSet), "slots", len(allKeysToDelete))
+		}
 	}
 
 	for i, addr := range acctKeys {
@@ -220,18 +409,17 @@ func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]by
 		}
 	}
 
-	for i, k := range storKeys {
-		v := storMap[k]
-		if v == nil {
-			tx.Delete(modules.Storage, []byte(k))
+	for i, e := range storEntries {
+		if e.value == nil {
+			tx.Delete(modules.Storage, e.key)
 		} else {
-			if err := tx.Put(modules.Storage, []byte(k), v); err != nil {
+			if err := tx.Put(modules.Storage, e.key, e.value); err != nil {
 				tx.Rollback()
 				return err
 			}
 		}
 		if i > 0 && i%5_000_000 == 0 {
-			log.Info("  writing storage", "progress", i, "total", len(storKeys))
+			log.Info("  writing storage", "progress", i, "total", len(storEntries))
 		}
 	}
 
@@ -240,7 +428,7 @@ func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]by
 	}
 	log.Info("Flush done",
 		"accounts", len(acctKeys),
-		"storage", len(storKeys),
+		"storage", len(storEntries),
 		"elapsed", time.Since(t0).Truncate(time.Second))
 	return nil
 }
@@ -298,16 +486,10 @@ func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Fr
 		return
 	}
 
-	tx, err := db.BeginRw(ctx)
-	if err != nil {
+	if err := resetAndInitHashState(ctx, db); err != nil {
+		log.Warn("resetAndInitHashState failed", "err", err)
 		return
 	}
-	if err := InitHashState(tx); err != nil {
-		tx.Rollback()
-		log.Warn("InitHashState failed", "err", err)
-		return
-	}
-	tx.Commit()
 
 	tx2, _ := db.BeginRw(ctx)
 	root, err := CalcStateRoot(tx2)
