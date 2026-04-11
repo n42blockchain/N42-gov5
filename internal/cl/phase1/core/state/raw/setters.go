@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Setters unit for the raw package.
+// Exports helpers such as SetVersion, SetSlot, SetFork, and
+// SetLatestBlockHeader.
+// Part of the n42el consensus-layer build.
 
 //go:build n42el
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Sentinel error values used across the JMT package. ErrNotFound signals
+// a missing key or node, ErrInvalidNode reports node deserialisation
+// failures, ErrInvalidProof is returned when a Merkle proof fails
+// verification, ErrEmptyBatch guards against no-op batch updates, and
+// ErrReadOnly is raised when a write touches a read-only store. Callers
+// use errors.Is against these values rather than matching strings.
 
 package jmt
 

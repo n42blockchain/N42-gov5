@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// MPT branch-node stores and Erigon-style hashed state helpers.
+// memBranchStore is an in-memory map[prefix]->node used for tests
+// and transient builds; mdbxBranchStore wraps a kv.Tx against a
+// named branch table for production persistence.
+// Both implement the Get/Put contract expected by the HPH/Erigon
+// trie loader integration used to produce standard Ethereum roots.
 
 package commitment
 

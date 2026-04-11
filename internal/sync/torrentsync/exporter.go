@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Exporter writes frozen chain data from the KV store to EraE segment
+// files under eraDir. NewExporter configures a default segmentSize of
+// 8192 blocks and ExportRange walks the rawdb archive producing the
+// EraE files consumed by torrent-based distribution.
 
 package torrentsync
 

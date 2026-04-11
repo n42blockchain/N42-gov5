@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// HTTP request handler for the GraphQL endpoint.
+// Routes root-level GraphQL fields (block, transaction, account, logs)
+// using precompiled regular expressions with word boundaries to avoid
+// prefix collisions such as blockTransaction matching block. Enforces
+// a 1 MiB maxRequestBodySize limit on incoming request bodies.
 
 package graphql
 

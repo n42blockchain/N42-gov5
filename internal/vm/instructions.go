@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Opcode implementation functions used by the EVM jump table.
+// Covers arithmetic (opAdd, opSub, opMul, opDiv, opSdiv, opMod, opExp),
+// bitwise, comparison, hashing (KECCAK256), environment (ADDRESS,
+// CALLER, CALLVALUE, CALLDATA*), block context (NUMBER, TIMESTAMP,
+// DIFFICULTY/PREVRANDAO, GASLIMIT), memory and storage ops, logs,
+// control flow (JUMP/JUMPI/PC) and call/create variants. Each opFoo
+// matches the executionFunc signature consumed by operation entries.
 
 package vm
 

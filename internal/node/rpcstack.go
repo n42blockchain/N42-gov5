@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// HTTP / WebSocket / IPC RPC server stack. Wraps net/http with CORS,
+// gzip compression, vhost checks and configurable timeouts, then
+// mounts the registered JSON-RPC modules. Also owns the lifecycle
+// Start / Stop dance called from Node.
 
 package node
 

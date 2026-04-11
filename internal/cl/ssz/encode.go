@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Encode unit for the ssz2 package.
+// Defines the Sized, ObjectSSZ, and SizedObjectSSZ types.
+// Exports helpers such as MarshalSSZ.
 
 //go:build n42el
 

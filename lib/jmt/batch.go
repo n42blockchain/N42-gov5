@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Batch update path for the Jellyfish Merkle Tree. BatchEntry bundles a
+// KeyHash with a value (nil meaning delete) and Tree.BatchUpdate applies
+// a set of mutations atomically in one traversal. Entries are copied,
+// sorted by key hash to maximise prefix locality, then deduplicated with
+// last-writer-wins semantics so a block can commit its full dirty set
+// in a single pass while loading each shared ancestor node only once.
 
 package jmt
 

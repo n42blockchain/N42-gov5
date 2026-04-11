@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Package documentation entry point for internal/vm/runtime. Hosts
+// the package-level comment describing the basic standalone execution
+// model for running EVM code outside of a full chain environment, used
+// by tests, fuzzing and one-shot bytecode evaluation tools. Contains
+// no executable declarations beyond the bare package runtime clause.
 
 // Package runtime provides a basic execution model for executing EVM code.
 package runtime

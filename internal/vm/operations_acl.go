@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Access-list aware gas calculations for EIP-2929/EIP-2930.
+// IsStandardPrecompile identifies addresses 0x01-0x09, which are always
+// warm. makeGasSStoreFunc returns a gasFunc that honours the SSTORE
+// reentrancy sentry (SstoreSentryGasEIP2200) and then charges
+// ColdSloadCostEIP2929 or warm cost based on whether the slot is in
+// the transaction access list. Similar helpers back SLOAD, CALL*,
+// EXTCODECOPY and friends under the access-list rules.
 
 package vm
 

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AIBlockOptimizer: scoring-based block assembler that reorders pending
+// transactions to maximise proposer value while honouring fairness
+// constraints. Computes scoredTx entries from effective tip, gas
+// efficiency and original index for stable sort, detects arbitrage and
+// liquidation patterns (DetectMEV, liquidationThreshold = 100 ETH) and
+// flags potential sandwich attacks via FairnessGuard. Returns optimised
+// ordering plus a slice of MEVOpportunity descriptors.
 
 package mev
 

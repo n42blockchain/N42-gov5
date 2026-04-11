@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared engine error sentinels for PoA-style consensus.
+// Defines ErrUnknownBlock, ErrInvalidCheckpointBeneficiary,
+// ErrInvalidVote, ErrInvalidCheckpointVote, ErrMissingVanity and
+// ErrMissingSignature. Kept in an internal common package so engine
+// specifics do not leak into the wider codebase if engines are swapped.
 
 package common
 

@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// V2 stream packet codec for mobile verification data.
+// Declares StreamPacket (BlockHash plus ordered read log, tx list
+// and bytecode bundle) and decoder safety caps MaxTxCount /
+// MaxBytecodeCount. ErrPacketTruncated / ErrTxCountExceeded /
+// ErrBytecodeExceeded report malformed or oversized inputs before
+// any allocation.
 
 package evmsdk
 

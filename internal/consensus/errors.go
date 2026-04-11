@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Consensus-package-wide error sentinels for header validation.
+// ErrUnknownAncestor, ErrUnknownAncestorTD and ErrPrunedAncestor cover
+// missing or pruned parent state. ErrFutureBlock guards against
+// timestamps ahead of local wall time. ErrInvalidNumber and
+// ErrNotEnoughSign flag number and BLS quorum violations respectively.
 
 package consensus
 

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Cubic extension field Fp6 for BLS12-381.
+// Declares fp6 over fp2 plus the fp6Temp scratch buffer used by
+// square / multiply kernels. Fp6 is the intermediate tower layer
+// between Fp2 and Fp12 during pairing computation.
 
 package bls12381
 

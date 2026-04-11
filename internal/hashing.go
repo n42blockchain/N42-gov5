@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Block-level hashing helpers. Wraps the MPT and JMT derivation
+// functions (DeriveShaETH, DeriveSha, TxRoot, ReceiptRoot) used to
+// fill in a header's tx / receipt / withdrawal roots during block
+// assembly and verification.
 
 package internal
 

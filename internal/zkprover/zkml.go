@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ZKMLProver: generates ZK proofs for ML inference. Derives a
+// circuit shape from the target model's layer structure, consumes
+// an ExecutionTrace witness and emits a proof whose 96-byte public
+// inputs are modelHash || inputHash || outputHash. Used by the
+// coprocessor tier to vouch for off-chain AI inference results.
 
 package zkprover
 

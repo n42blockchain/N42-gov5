@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Reflection glue between ABI types and Go runtime values.
+// ConvertType and ConvertTypeWithError coerce decoded interface{}
+// outputs into user-provided prototype types. indirect, reflectIntKind
+// and mustArrayToByteSlice handle pointer unwrapping, int/uint kind
+// mapping and fixed-byte-array-to-slice conversion. set and setSlice
+// assign fields to struct targets in Unpack/Copy paths.
 
 package abi
 

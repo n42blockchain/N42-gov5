@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Key-value database backend configuration.
+// DatabaseConfig selects the DBType (mdbx / memdb / remotedb), the
+// on-disk DBPath, DBName and list of SubDB buckets, plus MDBX
+// MaxDB and MaxReaders caps and the IsMem / Debug toggles used by
+// the kv factory when opening the underlying environment.
 
 package conf
 

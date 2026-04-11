@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Types unit for the types package.
+// Defines the Header, Withdrawal, RawBody, and Block types.
+// Exports helpers such as BytesToBloom, Hash, and DeriveSha.
+// Shim for upstream blockchain type aliases.
 
 //go:build n42el
 

@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// MLS KeyPackage construction. CipherSuiteID selects
+// MLS_128_HPKEX25519_CHACHA20POLY1305_SHA256_Ed25519 and
+// DefaultKeyPackageLifetime sets a 30-day expiry. CreateKeyPackage
+// generates the HPKE init key and signs the credential for group add.
 
 package group
 

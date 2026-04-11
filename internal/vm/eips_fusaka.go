@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Fusaka fork EIP implementations. Hosts the execution-layer portions of
+// EIP-7823 (MODEXP upper bound), EIP-7825 (transaction gas limit),
+// EIP-7883 (MODEXP gas cost), EIP-7892 (blob-only hard fork parameter),
+// EIP-7907 (contract code size metering raised to MaxCodeSizeFusaka
+// 48KB), EIP-7918 (blob base fee cap) and EIP-7935 (default gas limit).
+// Consensus-layer bits (PeerDAS, proposer lookahead) are intentionally
+// out of scope.
 
 // Fusaka EIPs implementation
 // Reference: ACDE #214 (Ethereum Execution Layer Core Developer Meeting)

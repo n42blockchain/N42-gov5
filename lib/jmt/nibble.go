@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Nibble path representation for the 16-ary JMT. NibblePath packs up to
+// NibbleCount = 64 nibbles into a 32-byte array with an explicit length,
+// letting the tree traverse a hash one 4-bit step at a time without
+// allocating a []byte per node. NewNibblePath builds a full path from a
+// Blake3 Hash, NewNibblePathFromSlice validates and packs an explicit
+// nibble slice, and Len reports how many leading nibbles are valid.
 
 package jmt
 

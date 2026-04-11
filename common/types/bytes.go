@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Byte-slice helpers. FromHex1 parses a 0x-prefixed (optionally
+// odd-length) hex string, Hex2Bytes decodes plain hex bytes and
+// has0xPrefix is the standard prefix check. KeyCmp implements a
+// length-aware lexicographic comparison used by MDBX cursors and
+// trie walkers when one key is a strict prefix of another.
 
 package types
 

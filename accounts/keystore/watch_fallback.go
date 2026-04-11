@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// No-op watcher stub for platforms without fsnotify support.
+// Build tag covers Windows, iOS, linux/arm64 and any non-POSIX
+// systems that lack a usable inotify/kqueue backend. Declares the
+// same watcher type used by account_cache but with start/close/
+// enabled all no-ops; enabled() returns false so the cache falls
+// back to the time-based minReloadInterval polling path rather than
+// relying on filesystem event notifications.
 
 //go:build (darwin && !cgo) || ios || (linux && arm64) || windows || (!darwin && !freebsd && !linux && !netbsd && !solaris)
 // +build darwin,!cgo ios linux,arm64 windows !darwin,!freebsd,!linux,!netbsd,!solaris

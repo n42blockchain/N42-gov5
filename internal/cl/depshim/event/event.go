@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Event unit for the event package.
+// Defines the Subscription, Feed, and feedSub types.
+// Exports helpers such as Err, Unsubscribe, Subscribe, and Send.
+// Minimal event feed for in-process subscriptions.
 
 //go:build n42el
 

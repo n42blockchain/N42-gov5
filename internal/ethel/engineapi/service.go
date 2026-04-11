@@ -1,5 +1,16 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// service.go — auth-RPC HTTP listener for the Ethereum Engine API.
+//
+// Service exposes the engine_* JSON-RPC namespace (NewPayload,
+// ForkchoiceUpdated, GetPayload, GetBlobs) backed by the existing
+// internal/api EngineAPI types switched into EthEL mode via
+// EngineStateAdapter so that consensus-layer calls read and write the
+// chaindata MDBX directly. JWT authentication (HS256, Engine API spec
+// section 3.1) is mandatory whenever the listener is enabled. No admin
+// or debug namespaces and no WebSocket upgrade are mounted — the
+// surface is intentionally narrower than internal/node's rpcstack.
 
 package engineapi
 

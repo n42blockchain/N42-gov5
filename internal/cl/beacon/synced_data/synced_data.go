@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Synced data unit for the synced_data package.
+// Defines the SyncedDataManager types.
+// Provides constructors NewSyncedDataManager.
+// Exports helpers such as NewSyncedDataManager, OnHeadState, ViewHeadState,
+// and ViewPreviousHeadState.
+// Shared snapshot of the latest synced beacon state.
 
 //go:build n42el
 

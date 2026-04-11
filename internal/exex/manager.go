@@ -13,6 +13,17 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// manager.go — Extension interface and per-extension dispatch manager.
+//
+// Extension defines the Start / OnNotification / Stop contract that
+// every execution extension plugin must implement. The Manager owns a
+// buffered channel (defaultBufSize = 64) and fans out post-execution
+// block notifications to each registered extension in its own
+// goroutine, so a slow indexer does not stall the core blockchain
+// commit path. Start is called once on node startup, Stop is called
+// on graceful shutdown, and context cancellation propagates to every
+// extension so long-running work can exit promptly.
 
 package exex
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared HeaderValidator for PoA consensus engines.
+// HeaderValidator holds the epoch length and exposes common header
+// validation logic so apoa and apos can share checkpoint detection,
+// extra-data vanity/seal checks and parent timestamp rules.
+// requireHeaderNumber is a small helper rejecting nil headers.
 
 package misc
 

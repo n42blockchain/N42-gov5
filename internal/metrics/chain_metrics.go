@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Chain-level Prometheus metrics. Declares counters and histograms
+// tracking block import throughput, head advancement, reorg depth
+// and consensus engine latency, registered against the shared
+// common/metrics registry.
 
 package metrics
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Windows WSAEMSGSIZE detection for oversized IPC datagrams.
+// isPacketTooBig inspects a *net.OpError / *os.SyscallError chain
+// and returns true when the underlying syscall.Errno matches
+// _WSAEMSGSIZE (10040), allowing callers to recover from
+// message-too-large conditions on named pipes and datagrams.
 
 //go:build windows
 // +build windows

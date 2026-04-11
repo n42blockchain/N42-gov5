@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Distributed compute engine configuration.
+// ComputeCfg toggles the WASM runtime (memory, exec time, gas
+// multiplier), MapReduce batch jobs (MaxJobTasks, MaxParallelTasks)
+// and opML AI inference (MaxModelSizeMB). DefaultComputeCfg returns
+// all engines disabled; Validate enforces positive limits when any
+// engine is enabled.
 
 package conf
 

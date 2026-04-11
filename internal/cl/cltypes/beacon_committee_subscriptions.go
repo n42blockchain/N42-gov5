@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Beacon committee subscriptions unit for the cltypes package.
+// Defines the BeaconCommitteeSubscription types.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

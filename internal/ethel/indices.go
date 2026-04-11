@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// indices.go — TxLookup and log-index maintenance helpers.
+//
+// WriteBlockIndices appends a tx-hash → block-number entry to kv.TxLookup
+// for every transaction in a block, which powers eth_getTransactionByHash
+// and eth_getTransactionReceipt. LookupTransaction is the read-side
+// helper. Log topic and address bitmap indices are written elsewhere
+// (see rawdb.WriteLogIndex from executor.go); this file intentionally
+// only covers TxLookup so the dependency graph stays small.
 
 package ethel
 

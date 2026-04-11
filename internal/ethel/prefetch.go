@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// prefetch.go — background MDBX page warm-up for the executor.
+//
+// prefetcher runs in a dedicated goroutine and consumes block numbers
+// from the executor. While block N executes, it reads block N+1's body
+// from the input freezer, recovers touched addresses and storage slots,
+// and issues read-only MDBX lookups so the operating system page cache
+// is primed ahead of the real execution pass. The channel is bounded to
+// a tiny lookahead (2 blocks) to keep memory pressure predictable.
 
 package ethel
 

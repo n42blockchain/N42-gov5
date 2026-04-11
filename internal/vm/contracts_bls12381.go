@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-2537 BLS12-381 precompiles: G1/G2 add and multi-exp, pairing check
+// and field-to-curve mapping. decodeG1PointInSubgroup and
+// decodeG2PointInSubgroup parse encoded points and reject those outside
+// the correct prime-order subgroup. bls12381MultiExpGas implements the
+// discount table for multi-scalar multiplication gas. Errors cover
+// invalid input length, bad field element encodings, and subgroup
+// failures.
 
 package vm
 

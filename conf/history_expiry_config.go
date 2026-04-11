@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-4444 history expiry configuration.
+// HistoryExpiryConfig controls pruning of headers, bodies, receipts,
+// logs and senders older than Retention blocks behind HEAD.
+// DefaultHistoryRetention (100000), DefaultHistoryBatchLimit (5000)
+// and DefaultHistoryInterval (1000) cap per-cycle IO so the expiry
+// pass can run online without stalling block import.
 
 package conf
 

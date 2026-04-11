@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Timestamp gap-filling helper for replay. CalcGapBlockTimes returns
+// the synthetic timestamps for empty blocks inserted between two real
+// blocks whose delta exceeds the configured tolerance, keeping block
+// production continuous across source-chain outages.
 
 package replay
 

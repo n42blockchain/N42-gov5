@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// VoteCollector aggregates BLS votes into QuorumCertificates.
+// Buffers incoming signed votes for a specific view and, once the
+// 2f+1 threshold is reached, aggregates them into a single
+// QuorumCertificate using crypto/bls aggregation primitives. Rejects
+// duplicate or off-view votes and logs equivocation for slashing.
 
 package hotstuff
 

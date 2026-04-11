@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Config unit for the clparams package.
+// Defines the CaplinConfig, NetworkConfig, VersionScheduleEntry, and
+// BlobParameters types.
+// Exports helpers such as IsDevnet, HaveInvalidDevnetParams, RelayUrlExist,
+// and MinEpochsForBlockRequests.
+// Consensus-layer chain parameters and runtime configuration.
 
 //go:build n42el
 

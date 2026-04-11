@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Core V1 block-verification pipeline for the mobile SDK.
+// verify() materializes a code map from state.EntireCode, runs
+// the transactions through internal/vm under consensus/apos and
+// consensus/misc over modules/state and modules/ethdb/olddb, and
+// returns the resulting state root. Consumed by the N42 App to
+// independently verify signed blocks on mobile devices.
 
 package evmsdk
 

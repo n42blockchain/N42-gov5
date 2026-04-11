@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Block-level gas accounting primitive. GasPool is a uint64 alias
+// tracking the remaining gas budget while executing transactions
+// in a block. AddGas panics on overflow, SubGas returns
+// ErrGasLimitReached when the pool is exhausted, Gas reads the
+// current level and the zero value is a valid empty pool.
 
 package common
 

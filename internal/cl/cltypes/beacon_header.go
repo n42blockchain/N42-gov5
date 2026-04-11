@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Beacon header unit for the cltypes package.
+// Defines the BeaconBlockHeader and SignedBeaconBlockHeader types.
+// Exports helpers such as Copy, EncodeSSZ, DecodeSSZ, and HashSSZ.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

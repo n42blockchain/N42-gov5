@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// MDBX-backed content-addressed BMT node store. BMTNodeTable keys nodes by
+// their 32-byte Blake3 hash; BMTRootTable persists the latest root so the
+// tree can be recovered after a crash. MDBXStore.Get/Put wrap kv.RwTx with
+// GetOne lookups and defensive byte copies, so the tree works with a plain
+// key-value handle without needing cursors or range scans.
 
 package store
 

@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Prometheus counters for the snapshot acceleration subsystem.
+// Exposes diff layer count, aggregate memory, flatten count,
+// per-layer hit/miss rates, disk-layer hit rate, cache warmup
+// volume, persistent flush stats and generator duration. All are
+// registered through common/metrics prometheus facade.
 
 package snapshot
 

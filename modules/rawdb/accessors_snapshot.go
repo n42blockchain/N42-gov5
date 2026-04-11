@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// State snapshot metadata and account/storage CRUD accessors.
+// Holds snapshotDiskRootKey, snapshotGenMarkerKey, snapshotGenCompleteKey
+// pointers under modules.DatabaseInfo. Read/Write/Delete SnapshotAccount
+// and SnapshotStorage helpers manage the flat snapshot mirror, while
+// DeleteSnapshotStorageByAddress prefix-scans modules.SnapshotStorage
+// to purge all slots belonging to a self-destructed account.
 
 package rawdb
 

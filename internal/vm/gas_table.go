@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Dynamic gas calculation for stateful EVM opcodes. existPure checks
+// account existence without creating journal entries that would escape
+// an EVM snapshot, preferring IntraBlockState.ExistPure when available.
+// memoryGasCost implements the quadratic memory expansion formula with
+// the 0x1FFFFFFFE0 overflow guard so large newMemSize values cannot
+// wrap uint64. Companion helpers feed the gasXxx callbacks installed
+// into the jump table for SLOAD/SSTORE, CALL*, CREATE* and log opcodes.
 
 package vm
 

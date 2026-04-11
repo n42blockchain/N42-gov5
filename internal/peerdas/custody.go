@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-7594 custody selection. Derives a per-node deterministic ordering
+// of column indices via sha256 over (nodeID, columnIdx), uses the
+// columnScore helper to sort the list, and returns the subset a node
+// must custody plus the randomised availability sample set. Keeps
+// custody decisions stable across restarts so peers can predict each
+// other's holdings.
 
 package peerdas
 

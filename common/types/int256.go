@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// uint256 / big.Int helpers bridging into the Hash type. Int256Min
+// returns the smaller of two *uint256.Int values with nil-aware
+// semantics, and BigToHash converts a big.Int into a left-aligned
+// 32-byte Hash (cropping from the left when overflowing). Small
+// surface used by balance math and RPC conversion helpers.
 
 package types
 

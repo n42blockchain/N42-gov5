@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Interface declarations consumed by the blockchain package: the
+// canonical ChainContext, Processor, Validator, Prefetcher and
+// related hooks. Kept in one file so downstream packages can mock
+// individual components without importing the full BlockChain
+// implementation.
 
 package internal
 

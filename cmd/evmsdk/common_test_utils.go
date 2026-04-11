@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Non-test diagnostic helpers shipped with the mobile SDK binary.
+// Test() dumps the current engine state to a string for live
+// debug consoles, serializing EE to JSON and including VERSION.
+// Safe to call from production code; named _test_utils because
+// it mirrors helpers also used by the unit tests.
 
 package evmsdk
 

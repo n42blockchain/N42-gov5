@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Goja JavaScript tracer runtime. Wraps the dop251/goja ECMAScript
+// engine so user-supplied JS tracer programs can receive per-step
+// EVM callbacks (step, fault, result), with JSON-friendly marshaling
+// of stack, memory, gas and storage values into the VM.
 
 package js
 

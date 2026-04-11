@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JSON + encoding.Text marshalers for hex-prefixed values used by
+// Ethereum-style RPC. Declares Bytes, Big, Uint and Uint64 wrapper
+// types with MarshalText / UnmarshalText / MarshalJSON /
+// UnmarshalJSON methods, the empty-slice "0x" special case and
+// reflection-based bytesT / bigT / uintT / uint64T descriptors
+// consumed by the rpc package codec.
 
 package hexutil
 

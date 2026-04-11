@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ExecutionTrace capture for ZKML. Records per-layer intermediate
+// activation tensors during model inference so the ZKMLProver can
+// build a witness that proves the model output matches the public
+// modelHash and inputHash. JSON-serialisable for storage in the
+// coprocessor task store.
 
 package zkprover
 

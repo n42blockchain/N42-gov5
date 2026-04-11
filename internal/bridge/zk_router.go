@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// ZK Router: unified Router implementation that picks a verification
+// path per destination chain. Defines the Hyperlane-style domain ID
+// constants (DomainEthereum, DomainN42, DomainArbitrum, Optimism,
+// Polygon, BSC, Avalanche, Base), the RouteType tags (RouteZK,
+// RouteHyperlane, ...) and an in-memory transfer tracker bounded by
+// maxTrackedTransfers (10000 entries).
 
 package bridge
 

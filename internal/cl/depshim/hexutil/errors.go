@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Errors unit for the hexutil package.
+// Defines the decError types.
+// Hex encoding utilities for JSON marshalling.
 
 //go:build n42el
 

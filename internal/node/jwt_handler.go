@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// HTTP middleware that enforces EIP-3675 JWT authentication on the
+// engine-api endpoint. Verifies the HS256 bearer token against the
+// shared secret, rejects requests with skewed iat claims and wraps
+// the underlying net/http handler transparently.
 
 package node
 

@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// progress.go — last-committed-block marker stored in MDBX.
+//
+// ReadProgress and WriteProgress persist the block number of the last
+// successfully committed batch under a single fixed key so that the
+// executor can resume after a restart without scanning PlainState. The
+// value is written inside the same MDBX transaction as the state batch
+// it describes, which makes resume atomic with the freezer commit
+// protocol in output_batcher.go.
 
 package ethel
 

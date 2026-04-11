@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Hash-to-curve SWU mapping for BLS12-381 G1.
+// swuMapG1 implements the simplified Shallue-van de Woestijne-Ulas
+// method from draft-irtf-cfrg-hash-to-curve-06, mapping a field
+// element u into an affine (x, y) pair on the isogenous curve
+// before the final isogeny correction.
 
 package bls12381
 

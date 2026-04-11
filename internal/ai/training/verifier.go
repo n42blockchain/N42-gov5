@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// TrainingVerifier: structural and public-input consistency check
+// for TrainingProof objects. Mirrors the ZKMLVerifier pattern —
+// validates encoding length, hash field layout and cross-references
+// against the DatasetGovernance registry without running the full
+// ZK verifier (that hook lives in zkverifier).
 
 package training
 

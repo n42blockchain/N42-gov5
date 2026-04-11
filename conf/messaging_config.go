@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Decentralized messaging service configuration.
+// MessagingCfg covers the six messaging layers: P2P relay (shards,
+// envelope / dedup caps), RLN anti-spam (epoch, merkle depth, rate
+// limit), E2E encryption and key rotation, persistent CAS store,
+// MLS group sessions and the SSE stream server plus DID identity.
+// DefaultMessagingCfg returns every feature disabled by default.
 
 package conf
 

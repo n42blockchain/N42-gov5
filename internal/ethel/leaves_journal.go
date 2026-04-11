@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// leaves_journal.go — self-contained leaves-journal encoder/decoder.
+//
+// EncodeGenesisJournal walks the full PlainState and emits a compact
+// binary stream of every Account and Storage slot, grouped by address so
+// repeated 20-byte prefixes are written once. Used at block 0 so that
+// replaying from journal[0] rebuilds state without a separate genesis
+// JSON. EncodeBlockJournal and DecodeJournal handle per-block deltas for
+// incremental leaves-based bootstrap, matching the format consumed by
+// RebuildState when the freezer "leaves" table is present.
 
 package ethel
 

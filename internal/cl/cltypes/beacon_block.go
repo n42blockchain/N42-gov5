@@ -1,5 +1,14 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Beacon block unit for the cltypes package.
+// Defines the SignedBeaconBlock, BeaconBlock, BeaconBody, and
+// DenebBeaconBlock types.
+// Provides constructors NewSignedBeaconBlock, NewBeaconBlock, NewBeaconBody,
+// and NewDenebBeaconBlock.
+// Exports helpers such as NewSignedBeaconBlock, Blinded,
+// SignedBeaconBlockHeader, and Version.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

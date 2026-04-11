@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// PoA consensus protocol constants shared by apoa and apos engines.
+// DefaultEpochLength (30000 blocks), ExtraVanity (32-byte prefix),
+// ExtraSeal (65-byte secp256k1 suffix), InmemorySnapshots (128) and
+// InmemorySignatures (4096) LRU caps, plus WiggleTime (500ms random
+// delay) allowing multiple signers to avoid in-turn collisions.
 
 package misc
 

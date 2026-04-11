@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Shuffle unit for the eth2shuffle package.
+// Exports helpers such as PermuteIndex and UnpermuteIndex.
+// Part of the n42el consensus-layer build.
 
 //go:build n42el
 

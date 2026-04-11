@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Leader-side block proposal emission for HotStuff-2.
+// onBlockReady is invoked when the local node (as leader for the
+// current view) has a block hash and tx root ready to broadcast.
+// Guards non-leaders via IsLeader against the validator set and
+// wires the proposal into the engine output channel under the
+// current view number.
 
 package hotstuff
 

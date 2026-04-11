@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Structured logging adapter that forwards selected metrics to the
+// node's log pipeline, emitting periodic snapshot lines so operators
+// can spot trend changes without scraping Prometheus. Driven by a
+// background ticker wired from the metrics init function.
 
 package metrics
 

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Reorg audit log. Records every chain head switch (old head, new
+// head, common ancestor, transaction churn, duration) behind a
+// sync.Mutex so operators can post-mortem unexpected reorgs without
+// replaying the full debug trace path.
 
 package internal
 

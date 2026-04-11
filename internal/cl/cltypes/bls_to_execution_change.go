@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Bls to execution change unit for the cltypes package.
+// Defines the BLSToExecutionChange and SignedBLSToExecutionChange types.
+// Exports helpers such as EncodeSSZ, HashSSZ, DecodeSSZ, and
+// EncodingSizeSSZ.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

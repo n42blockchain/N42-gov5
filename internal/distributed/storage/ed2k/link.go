@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Parser and formatter for ed2k:// file links. Link holds the name,
+// size, file Hash, optional AICH RootHash and Sources URL. ParseLink
+// handles the "ed2k://|file|<name>|<size>|<hash>|/" layout with the
+// h=, p= and s= extension fields.
 
 package ed2k
 

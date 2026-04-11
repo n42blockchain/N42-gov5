@@ -13,6 +13,15 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// schema.go — MDBX table names and index row types for the AI indexer.
+//
+// TokenTransfer, ContractEvent, AddressProfile and GasMetrics are the
+// row structs persisted by AIIndexer. ERC20 transfers store Value as a
+// decimal string of the token amount; ERC721 transfers store the
+// tokenID in the same field and set IsERC721 so downstream readers can
+// tell them apart. The Table* constants name the MDBX buckets used by
+// the persistent storage mode of the indexer.
 
 package extensions
 

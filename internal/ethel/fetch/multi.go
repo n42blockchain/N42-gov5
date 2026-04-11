@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// multi.go — MultiSourceFetcher transport dispatcher.
+//
+// MultiSourceFetcher composes a set of per-transport Fetchers and, on
+// each Asset.Fetch call, selects the highest-priority Source whose kind
+// matches one of the registered fetchers. Sources are tried in
+// descending Priority and on failure the dispatcher falls through to
+// the next candidate, so a hanging CDN mirror automatically rotates to
+// a BitTorrent swarm or WebRTC relay. Close fan-outs Close to every
+// underlying Fetcher so resource cleanup is a single call.
 
 package fetch
 

@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Header extra-data encoding for HotStuff-2 blocks.
+// buildHeaderExtra writes the fixed-size magic prefix, the current
+// view number in little-endian uint64 form and the committed
+// QuorumCertificate into the block header extra field. extraSealLen
+// reserves 96 bytes for the trailing BLS seal appended at sealing time.
 
 package hotstuff
 

@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// verify.go — cross-database account consistency auditor.
+//
+// VerifyAccountsAgainstReth samples a configurable number of entries
+// from the N42 Account table and compares the decoded Erigon V2 account
+// against the same address in a Reth PlainAccountState table decoded
+// from Reth's Compact codec. It reports matched counts and a list of
+// human-readable mismatches. Used during porting work to catch subtle
+// encoding drift between the two storage layouts.
 
 package ethel
 

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// G1 curve arithmetic for the BN256 (Optimal Ate) pairing.
+// Declares curvePoint (elliptic curve y^2 = x^3 + 3 in Jacobian
+// coordinates with cached t = z^2) and the curveB constant, the
+// base field used for the first pairing input group.
 
 package bn256
 

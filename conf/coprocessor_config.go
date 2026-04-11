@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Distributed compute coprocessor configuration.
+// CoprocessorCfg sets concurrency and timeouts for the task scheduler,
+// picks the default verification tier (ZK / Optimistic / TEE) with
+// challenge window and bond, and controls the provider marketplace
+// stake and slashing percentage. DefaultCoprocessorCfg starts fully
+// disabled; Validate enforces positive task limits.
 
 package conf
 

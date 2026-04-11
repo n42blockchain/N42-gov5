@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// BLS key loading from an on-disk keystore directory.
+// LoadBLSKeyFromDir resolves a validator BLS secret key for a given
+// address by scanning the configured keystore path, using crypto/bls
+// and blscommon for decoding. Used during HotStuff engine bootstrap
+// to install the local signer before joining a consensus round.
 
 package hotstuff
 

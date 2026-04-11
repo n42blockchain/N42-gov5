@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Account subsystem configuration.
+// Defines AccountConfig which carries keystore unlock data (currently
+// the PasswordFile path) used by node bootstrap to auto-unlock miner
+// and signer accounts without interactive prompts.
 
 package conf
 

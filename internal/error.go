@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Sentinel errors returned by the core chain machinery:
+// ErrKnownBlock, ErrFutureBlock, ErrPrunedAncestor, ErrNonceTooLow
+// and friends. Callers (miner, sync, RPC) use these for branching
+// logic without string-matching.
 
 package internal
 

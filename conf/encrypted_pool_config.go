@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Encrypted (anti-MEV) transaction pool configuration.
+// EncryptedPoolCfg controls the threshold-encrypted mempool with
+// MaxSize and BlockWindow bounds and exposes DefaultEncryptedPoolMaxSize
+// and DefaultEncryptedPoolBlockWindow plus Min/Max bounds used by
+// Validate to keep memory usage safe under adversarial load.
 
 package conf
 

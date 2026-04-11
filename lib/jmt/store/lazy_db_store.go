@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Lazy MDBX-backed jmt.NodeStore that opens a short-lived read-only
+// transaction per Get/Has call. LazyDBStore is used at node startup to
+// let the JMT load previously persisted nodes without holding a long
+// transaction open; writes are intentionally no-ops because the tree
+// buffers mutations in its dirty map and flushes them via FlushTo inside
+// the block-commit transaction. The stored bytes are copied out of the
+// MDBX buffer before the txn rollback so the caller owns the slice.
 
 package store
 

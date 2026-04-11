@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Fp prime-field representation for BN256.
+// Declares gfP as a 4-word uint64 Montgomery element and the
+// newGFp constructor for signed integer inputs. Provides the
+// base type that gfP2 / gfP6 / gfP12 extension fields build on
+// for the BN256 pairing engine.
 
 package bn256
 

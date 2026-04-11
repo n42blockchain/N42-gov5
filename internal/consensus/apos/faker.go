@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Faker is a testing consensus engine that accepts all blocks as valid.
+// Implements consensus.Engine so unit tests can bypass real validation
+// and still exercise the block production pipeline. sealMu serialises
+// Seal calls and lastSealedNum prevents duplicate blocks at the same
+// height, which is critical for deterministic test runs.
 
 package apos
 

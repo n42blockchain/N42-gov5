@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Legacy (pre-EIP-2718) transaction payload for the N42 Transaction
+// wrapper. LegacyTx carries nonce, gasPrice, gas, to / from, value,
+// data, V/R/S signature components and a cached Sign blob. The
+// deprecated NewTransaction constructor is preserved for older
+// call sites; new code should use NewTx on Transaction.
 
 package transaction
 

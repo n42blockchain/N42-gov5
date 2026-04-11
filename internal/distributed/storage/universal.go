@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Universal content resolver spanning multiple storage protocols.
+// Protocol enumerates CAS, IPFS, BitTorrent and ed2k backends, while
+// ContentResult and ContentInfo aggregate per-protocol identifiers
+// (CID, InfoHash) for a single Keccak256 content hash.
 
 package storage
 

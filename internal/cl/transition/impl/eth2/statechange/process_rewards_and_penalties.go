@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Process rewards and penalties unit for the statechange package.
+// Exports helpers such as ProcessRewardsAndPenalties.
+// Per-slot and per-epoch state change routines.
 
 //go:build n42el
 

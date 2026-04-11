@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Merge unit for the merge package.
+// Declares the BlockNonce type aliases.
+// Merge-fork helper shims.
 
 //go:build n42el
 

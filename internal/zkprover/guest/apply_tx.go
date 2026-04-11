@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ApplyTx: applies a single transaction inside the ZISK zkVM guest
+// program, producing the state delta and gas used used to build the
+// public inputs of the execution proof. Matches the host-side EVM
+// semantics exactly so the generated proof is verifiable by the
+// N42 settlement layer.
 
 package guest
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Common-layer blockchain interfaces. IHeaderChain exposes header
+// lookups and InsertHeader; IBlockChain extends it with block
+// insertion, Start, GenesisBlock, SealedBlock, engine
+// setter/getter and GetBlocksFromHash. Types live in common/* only
+// so the interfaces do not pull in internal/consensus or
+// modules/state, letting the sync layer swap implementations.
 
 package common
 

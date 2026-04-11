@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Deferred execution pipeline configuration.
+// DeferredExecConfig decouples consensus ordering from state
+// execution: Enabled toggles the async worker, QueueSize / Workers
+// size the queue, and DeepPipeline plus PipelineDepth enable the
+// 5-stage prefetch / execute / commit / persist pipeline.
 
 package conf
 

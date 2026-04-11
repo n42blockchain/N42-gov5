@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Zstd codec pools for EraE archive record compression.
+// encoderPool and decoderPool reuse *zstd.Encoder/*zstd.Decoder
+// instances at SpeedDefault (level 3), the speed/ratio sweet spot
+// for protobuf-encoded block data (~2-3x compression). getEncoder
+// and getDecoder provide the lazy-init pool accessors.
 
 package era
 

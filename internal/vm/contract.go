@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM call frame representation. Contract holds the caller/self
+// ContractRef pair, the executing bytecode and CodeHash, calldata Input,
+// remaining Gas, transferred value, and cached JUMPDEST analysis
+// (jumpdests map plus per-frame analysis bitvec). AccountRef is a
+// lightweight ContractRef backed by a raw Address, used when spinning up
+// frames during EVM initialisation.
 
 package vm
 

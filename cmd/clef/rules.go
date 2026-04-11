@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JSON-backed rules engine for Clef approval decisions.
+// RuleConfig parses rules.json to decide whether a signing request
+// is auto-approved, denied or escalated to the human operator.
+// Offers a simple, auditable alternative to a full JavaScript VM
+// rules engine while still supporting per-method and per-address
+// policies.
 
 package main
 

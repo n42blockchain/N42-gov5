@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Operations unit for the eth2 package.
+// Defines the indexedAttestationVerificationResult types.
+// Exports helpers such as FullValidate, ProcessProposerSlashing,
+// ProcessAttesterSlashing, and ProcessDeposit.
 
 //go:build n42el
 

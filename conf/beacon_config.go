@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Configuration for the embedded Caplin beacon-chain node.
+// Defines BeaconCfg (network preset, datadir, sentinel P2P ports,
+// bootnode ENRs, checkpoint sync URL and optional /eth/v1/beacon
+// REST API) plus DefaultBeaconCfg which returns Caplin fully
+// disabled so the EL can run standalone without CL dependencies.
 
 package conf
 

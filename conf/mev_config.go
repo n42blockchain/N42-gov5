@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// MEV-Boost relay client configuration.
+// MEVBoostCfg enables the relay bid flow with a list of RelayURLs
+// (capped at MaxRelayURLs) and a MinBidWei decimal string threshold.
+// DefaultMinBidWei is "0", accepting any profitable block;
+// DefaultMEVBoostCfg returns the client disabled.
 
 package conf
 

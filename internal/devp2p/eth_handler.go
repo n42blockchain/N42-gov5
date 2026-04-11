@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// EthHandler processes eth/68 and eth/69 wire messages for the ETH EL
+// profile. BlockProvider abstracts chain access (CurrentHead, lookup
+// by number and hash) so the handler can answer GetBlockHeaders and
+// related queries using the N42 chain state with the configured genesis.
 
 package devp2p
 

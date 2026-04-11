@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Training types for ZK proof generation. Defines TrainingRecord,
+// EpochTrace (weights before/after, loss, gradient hashes) and the
+// 160-byte TrainingProof public input encoding: modelHash ||
+// initWeightsHash || finalWeightsHash || configHash ||
+// datasetRootHash.
 
 package training
 

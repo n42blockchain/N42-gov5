@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM 2048-bit bloom filter for logs and addresses. Bloom is the
+// 256-byte fixed array; BytesToBloom/SetBytes/Add/Test cover the
+// read and write side. The internal bloomValues helper computes
+// the three 11-bit hash slots using Keccak256 over the input,
+// while Big exposes the filter as a big.Int for RLP encoding and
+// header integration in the avmtypes block types.
 package avmtypes
 
 import (

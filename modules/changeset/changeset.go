@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core ChangeSet type for account/storage history tracking.
+// ChangeSet stores a sorted list of Change{Key,Value} records with a
+// fixed keyLen invariant and implements sort.Interface for deterministic
+// ordering before encoding. Used by account_changeset.go and
+// storage_changeset.go to serialize per-block history entries into
+// MDBX history buckets via Encoder/Decoder function pairs.
 
 package changeset
 

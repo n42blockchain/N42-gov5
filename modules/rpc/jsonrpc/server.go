@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JSON-RPC Server core with per-codec dispatch.
+// Constant JSONRPCApi ("rpc") names the built-in meta service.
+// Server holds a serviceRegistry, an ID generator, a run atomic
+// flag and a mapset.Set of live codecs. NewServer seeds the
+// built-in RPCService, and RegisterName proxies service method
+// registration into the underlying serviceRegistry.
 
 package jsonrpc
 

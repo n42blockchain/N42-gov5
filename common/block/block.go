@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// N42 Block type and the auxiliary Verify consensus record. Block
+// pairs a Header with a Body and caches hash + rlp size via
+// sync/atomic.Value, alongside ReceiveAt/ReceivedFrom metadata used
+// by the sync layer. Verify holds a validator's Address + PublicKey
+// and its ToProtoMessage / FromProtoMessage convert between the
+// in-memory form and proto/types_pb.Verifier for P2P gossip.
 
 package block
 

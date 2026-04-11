@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// `fix-genesis` subcommand: repair replay databases.
+// Writes block 0 and ChainConfig into a database that was built
+// via replay tooling and therefore lacks the canonical genesis
+// record, so the full node can open it without failing genesis
+// hash checks. Targets the --datadir path for the selected --chain
+// preset.
 
 package main
 

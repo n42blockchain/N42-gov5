@@ -1,5 +1,13 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Generic Transaction wrapper and TxData interface. Enumerates
+// LegacyTxType / AccessListTxType / DynamicFeeTxType alongside
+// reserved slots for SetCodeTxType (EIP-7702) and PostQuantumTxType.
+// TxData is the per-type behavioural contract (chainID, gas, value,
+// nonce, to, signature values, encode / decode) implemented by
+// each txdata struct in this package, while Transaction itself
+// caches hash / size via sync/atomic for hot-path reuse.
 
 package transaction
 

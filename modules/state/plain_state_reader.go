@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// PlainStateReader for reading un-hashed account/storage tables.
+// ReadAccountData fetches and decodes an encoded StateAccount from
+// modules.Account via DecodeForStorage.
+// ReadAccountStorage composes a plain storage key using
+// modules.PlainGenerateCompositeStorageKey and reads modules.Storage.
+// The reader is stateless and holds only a kv.Getter reference.
 
 package state
 

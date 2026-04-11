@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// RoundState tracks the state of the current consensus round (view).
+// A view progresses through phases WaitingForProposal to Voting to
+// PreCommit to Committed; a timeout at any point transitions to
+// TimedOut and triggers a view change. Holds the current view, phase
+// and lockedQC (the safety lock preventing double-commits).
 
 package hotstuff
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Writer for building EraE archive files.
+// NewWriter creates the file, writes the 14-byte header, and tracks
+// the running file offset plus a growing IndexEntry slice. Append
+// zstd-compresses block+receipts data and records the IndexEntry.
+// Finalize flushes the serialized index and footer (entry count) to
+// close the archive, after which further calls are rejected.
 
 package era
 

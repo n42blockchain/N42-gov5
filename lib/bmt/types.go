@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core type aliases and constants for the BMT package. Hash is an alias
+// for common/types.Hash and NodeValue wraps the raw serialised bytes of
+// a node. Stored values are self-identifying: the first byte is leafTag
+// ('L' = 0x4C) or internalTag ('I' = 0x49), enabling the isLeaf / isInternal
+// predicates used throughout insert, proof and walk code. EmptyHash and
+// ErrNotFound supply the sentinel values returned for missing children.
 
 package bmt
 

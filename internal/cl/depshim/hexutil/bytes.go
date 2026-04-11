@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Bytes unit for the hexutil package.
+// Declares the Bytes type aliases.
+// Exports helpers such as MarshalText, UnmarshalJSON, and UnmarshalText.
+// Hex encoding utilities for JSON marshalling.
 
 //go:build n42el
 

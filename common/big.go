@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Preallocated math/big constants (Big0..Big257) shared across the
+// top-level common package. Reused by gas accounting, price math
+// and EVM opcode dispatch to avoid repeatedly allocating tiny
+// big.Int values on hot paths.
 
 package common
 

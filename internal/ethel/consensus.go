@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// consensus.go — minimal Ethereum-mainnet replay consensus engine.
+//
+// EthReplayEngine implements consensus.Engine for offline re-execution of
+// imported mainnet data. Header verification and seal checking are no-ops
+// (the source is trusted Geth ancient), but block rewards, uncle rewards,
+// DAO fork payouts, and all post-merge / post-Shanghai withdrawal and
+// finalisation rules are computed exactly so that state roots and receipt
+// roots match live chain history.
 
 package ethel
 

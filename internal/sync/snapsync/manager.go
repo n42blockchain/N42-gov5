@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Manager orchestrates snap-sync state downloads from multiple peers.
+// Uses semaphore-gated writes (maxConcurrentDBWrites) and batch caps
+// (maxResponseEntries) to pull accounts, storage slots and bytecodes
+// from the network, with emptyCodeHash used to skip empty accounts.
 
 package snapsync
 

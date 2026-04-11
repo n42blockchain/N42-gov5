@@ -13,6 +13,15 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// notification.go — post-execution event types delivered to extensions.
+//
+// NotificationType distinguishes NotificationCommit (a block was just
+// committed to the canonical chain) from NotificationRevert (a block
+// was reverted during a chain reorganisation). ExExNotification carries
+// the block header, receipts and reorg metadata so extensions can
+// update derived state incrementally without re-reading from MDBX.
+// The String method produces a human-readable label for logging.
 
 package exex
 

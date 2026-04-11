@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Native-token denomination constants for N42.
+// Exports Wei, GWei and N (1 N = 1e18 wei) multipliers used across
+// balance arithmetic, gas accounting and RPC encoding helpers to
+// keep unit conversions free of magic numbers.
 
 package params
 

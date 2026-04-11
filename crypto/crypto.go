@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core cryptographic helpers for N42 addresses and signatures.
+// Wraps crypto/ecdsa over secp256k1 with Keccak-256 hashing (via
+// golang.org/x/crypto/sha3) and uint256 balance math. Exposes
+// address derivation, key-file load / save, hex parsing through
+// common/hexutil and RLP-based transaction pre-images consumed
+// by signing code throughout the node.
 package crypto
 
 import (

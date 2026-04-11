@@ -1,5 +1,14 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Light client unit for the cltypes package.
+// Defines the LightClientHeader, LightClientUpdate, LightClientBootstrap,
+// and LightClientFinalityUpdate types.
+// Provides constructors NewLightClientHeader, NewLightClientUpdate,
+// NewLightClientBootstrap, and NewLightClientFinalityUpdate.
+// Exports helpers such as NewLightClientHeader, Version, EncodeSSZ, and
+// DecodeSSZ.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

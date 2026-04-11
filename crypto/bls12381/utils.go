@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Miscellaneous numeric helpers for BLS12-381.
+// bigFromHex parses a hex constant through holiman/uint256 and
+// returns a math/big.Int, falling back to zero on parse failure.
+// Used to materialize the hard-coded curve constants referenced
+// by fp / g1 / g2 initialization.
 
 package bls12381
 

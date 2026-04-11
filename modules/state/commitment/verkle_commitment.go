@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// VerkleCommitment bridges dirty-tracking to a go-verkle tree.
+// Wraps a gverkle.VerkleNode root plus a libverkle.NodeStore with a
+// Resolver for lazy node loading. UpdateAccount/UpdateStorage apply
+// per-block diffs, Root commits and returns the 32-byte state hash,
+// and Flush persists new nodes to the backing store. Runs in
+// parallel with PlainStateWriter like the JMT/BMT commitments.
 
 package commitment
 

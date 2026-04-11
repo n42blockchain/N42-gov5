@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Byte-buffer sync.Pool for rawdb serialization hot paths.
+// defaultBufSize (4096) matches an MDBX page. GetBuf/PutBuf cycle
+// reusable *[]byte handles to avoid per-call allocation in the
+// frequent block and receipt write/encode paths.
 
 package rawdb
 

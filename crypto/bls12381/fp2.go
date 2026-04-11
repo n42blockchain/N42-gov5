@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Quadratic extension field Fp2 for BLS12-381.
+// Defines fp2 as a pair of fe field elements with fp2Temp scratch
+// buffers. Implements the extension arithmetic that G2 curve
+// points are defined over (twisted curve over Fp2).
 
 package bls12381
 

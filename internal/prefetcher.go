@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// State prefetcher. Runs concurrently with block execution,
+// speculatively loading accounts and storage slots the predicted
+// transaction workload will touch. Uses a context cancellation
+// hook so the prefetch goroutines exit cleanly when a block
+// commits or aborts.
 
 package internal
 

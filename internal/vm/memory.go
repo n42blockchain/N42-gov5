@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Memory implements the linear memory model of the EVM. The Memory
+// type wraps a byte store plus lastGasCost for incremental expansion
+// pricing. NewMemory returns an empty memory pre-allocated to 4 KiB.
+// Set, Set32, Get, GetPtr and Resize provide bounds-checked reads and
+// writes; ErrInvalidMemoryAccess is returned when an operation exceeds
+// the currently resized region. Used by every MLOAD/MSTORE/MCOPY and
+// data-copying opcode.
 
 package vm
 

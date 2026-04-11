@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// fetcher.go — Fetcher interface and shared sentinel errors.
+//
+// Fetcher is the transport-agnostic contract implemented by HTTPFetcher,
+// TorrentFetcher and WebRTCFetcher. Kinds() advertises which Source
+// kinds the fetcher can handle and Fetch downloads exactly one Source
+// to a local path with SHA256 verification and progress callbacks.
+// ErrNoSourcesAvailable is returned when no fetcher matches any Source
+// on an Asset; ErrChecksumMismatch is returned on SHA256 failure and
+// the implementation must remove the partial file before returning it.
 
 package fetch
 

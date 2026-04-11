@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Extra data unit for the solid package.
+// Defines the ExtraData types.
+// Provides constructors NewExtraData.
+// Exports helpers such as NewExtraData, UnmarshalJSON, MarshalJSON, and
+// Clone.
+// Fixed-layout SSZ containers with in-place encoding.
 
 //go:build n42el
 

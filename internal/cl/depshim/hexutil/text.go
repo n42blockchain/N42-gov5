@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Text unit for the hexutil package.
+// Exports helpers such as UnmarshalFixedText.
+// Hex encoding utilities for JSON marshalling.
 
 //go:build n42el
 

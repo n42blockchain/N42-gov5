@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// web3:// protocol gateway (ERC-6860) configuration.
+// Web3GatewayCfg runs an HTTP front-end that translates web3://
+// URLs into EVM calls to serve on-chain content. Exposes Host,
+// Port (default 8080) and CacheSeconds response TTL.
+// DefaultWeb3GatewayCfg starts the gateway disabled on localhost.
 
 package conf
 

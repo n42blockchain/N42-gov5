@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Internal deterministic key generation for Falcon-512.
+// generateKeyPairFromSeed drives a SHAKE256 XOF over an input
+// seed to sample the secret polynomials f and g (with small
+// coefficients) and retries up to 100 times via ensureInvertible
+// until f is invertible modulo the ring polynomial.
 
 package falcon
 

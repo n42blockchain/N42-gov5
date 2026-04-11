@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// MDBX-backed Verkle tree NodeStore. VerkleNodeTable keys content-
+// addressed nodes by their 64-byte commitment (97 bytes for internals,
+// 288+ bytes for leaves) while VerkleRootTable persists the current
+// root commitment plus version for crash recovery. MDBXStore wraps a
+// single kv.RwTx so writes are tied to the enclosing block commit, and
+// Get copies bytes out of the MDBX buffer so callers can retain the
+// slice safely after the transaction ends.
 
 package store
 

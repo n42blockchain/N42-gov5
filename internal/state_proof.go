@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// State inclusion proof helpers. Builds JMT / MPT Merkle proofs for
+// a given (address, slot) at a specified state root so RPC callers
+// (eth_getProof) and the bridge subsystem can verify account data
+// against a header commitment without a trusted full node.
 
 package internal
 

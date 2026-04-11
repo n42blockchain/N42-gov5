@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Top-level snap-sync Service. Waits for a minimum peer count, picks a
+// pivot block from peer consensus, drives Manager to download the full
+// state, verifies it, then signals initial-sync to resume forward from
+// the pivot. Holds synced / syncing atomic flags for the node status API.
 
 package snapsync
 

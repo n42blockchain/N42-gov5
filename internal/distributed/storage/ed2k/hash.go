@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// ed2k file-hash computation. Hash splits input into ChunkSize
+// (9728000 byte) blocks, applies MD4 to each and then MD4s the
+// concatenation of block hashes. Defines ChunkSize and HashSize
+// constants used by the ed2k bridge and link parser.
 
 package ed2k
 

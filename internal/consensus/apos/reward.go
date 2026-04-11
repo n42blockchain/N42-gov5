@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// APOS validator reward computation and reporting types.
+// RewardResponse aggregates per-block rewards for an address with a
+// total, while RewardResponseValue records value, timestamp and block
+// number for each entry. Sourced from the deposit contract events and
+// persisted block rewards looked up via rawdb during RPC queries.
 
 package apos
 

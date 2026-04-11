@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// In-flight tracer request tracker. Bounds concurrent long-running
+// trace operations so a misbehaving debug client cannot exhaust the
+// node's state copy pool; exposes cancellation hooks driven by the
+// HTTP request context.
 
 package tracers
 

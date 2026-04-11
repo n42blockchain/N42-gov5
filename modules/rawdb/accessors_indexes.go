@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Transaction hash -> (block, index) lookup index accessors.
+// TxLookupEntry carries BlockHash, BlockIndex and per-block Index
+// metadata. ReadTxLookupEntry returns the positional block number
+// for a txn hash; WriteTxLookupEntries iterates block.Transactions
+// and persists one lookup entry per tx into modules.TxLookup.
 
 package rawdb
 

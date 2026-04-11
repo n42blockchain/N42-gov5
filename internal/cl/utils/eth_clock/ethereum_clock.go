@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Ethereum clock unit for the eth_clock package.
+// Defines the EthereumClock, forkNode, and ethereumClockImpl types.
+// Provides constructors NewEthereumClock.
+// Exports helpers such as NewEthereumClock, GetSlotTime, GetCurrentSlot, and
+// GetEpochAtSlot.
 
 //go:build n42el
 

@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Aggregator for the MapReduce reduce phase. Collects per-partition
+// map outputs keyed by jobID, runs the user-supplied ReduceFunc via
+// RegisterReduceFunc and feeds the final result back to the scheduler
+// for submission as a verifiable task output.
 
 package batch
 

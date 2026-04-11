@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Process-wide cache of immutable JumpTable instances keyed by chain
+// rules. GetCachedJumpTable returns a shared table for the given rules
+// or builds one on miss via newJumpTableForRules, using an RWMutex fast
+// path plus double-check on the slow path. Because tables are read-only
+// once constructed they are safe to share across concurrent EVMs, and
+// the cache avoids rebuilding and re-running validation on every new
+// transaction.
 
 package vm
 

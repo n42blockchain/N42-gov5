@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// InstrumentedReader: StateReader wrapper with per-call timing counters.
+// Wraps an inner StateReader with atomic read{Account,Storage,Code,
+// CodeSize,Incarn}Count and read*Time nanosecond accumulators.
+// Enabled flag toggles the instrumentation hot path so production
+// builds can create a zero-overhead pass-through. LogStats prints
+// aggregated counters for profiling and regression analysis.
 
 package state
 

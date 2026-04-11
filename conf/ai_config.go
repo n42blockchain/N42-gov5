@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Aggregate configuration for the AI infrastructure stack.
+// Defines AICfg as a root container plus WalletCfg, CoordCfg,
+// GovernanceCfg, TrainingCfg, AttestationCfg and MEVOptimizerCfg
+// sub-structs that feed agent wallet, discovery, data governance,
+// ZK training verification, inference attestation and AI-driven
+// MEV block building. All subsystems default to disabled.
 
 package conf
 

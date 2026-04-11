@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Json unit for the hexutil package.
+// Declares the Big, Uint64, Uint16, and Uint type aliases.
+// Exports helpers such as UnmarshalFixedUnprefixedText, MarshalText,
+// UnmarshalJSON, and UnmarshalText.
+// Hex encoding utilities for JSON marshalling.
 
 //go:build n42el
 

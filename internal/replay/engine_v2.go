@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// EngineV2, the main driver of replay-v2. Streams blocks from the
+// source database, re-executes them through internal/vm, updates JMT
+// or BMT commitments, optionally records a leaf journal and writes
+// results back via rawdb, layered kv and mdbx with LtHash verification.
 
 package replay
 

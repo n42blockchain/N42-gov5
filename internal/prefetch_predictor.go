@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Prefetch predictor. Scores candidate state slots by recent access
+// frequency, sorts them and publishes the top-N keys to the state
+// prefetcher goroutine so they can be warmed before the EVM touches
+// them during the next block.
 
 package internal
 

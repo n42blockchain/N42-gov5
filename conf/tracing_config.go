@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// OpenTelemetry distributed tracing configuration.
+// TracingConfig toggles OTLP span export to an OTel collector:
+// Enable flag, Endpoint (OTLP/HTTP, e.g. localhost:4318) and
+// SampleRate in [0.0, 1.0]. All instrumentation falls back to
+// no-ops when tracing is disabled.
 
 package conf
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Package documentation file for jmt/store. The core jmt.NodeStore
+// interface lives in the parent jmt package so this sub-package can
+// host backend implementations (MDBX, LazyDB, pooled, cached) without
+// creating an import cycle. Separating heavier dependencies here keeps
+// consumers that only need the pure tree logic from transitively
+// pulling in kv, recsplit and seg.
 
 // Package store provides external NodeStore implementations (e.g., MDBX)
 // for the JMT. The core NodeStore interface is defined in the parent jmt

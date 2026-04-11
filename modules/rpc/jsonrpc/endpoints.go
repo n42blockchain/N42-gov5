@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// IPC endpoint helper StartIPCEndpoint.
+// Builds a Server, registers the provided API namespaces via
+// RegisterName (deduplicating with regMap/registered), begins
+// listening on the IPC endpoint string and returns the listener,
+// server and any registration error for the caller to manage.
 
 package jsonrpc
 

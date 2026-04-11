@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Indexed event topic encoder and decoder.
+// MakeTopics flattens a filter query into [][]Hash by left-padding
+// addresses, ints and big.Ints, hashing strings and byte slices via
+// Keccak256 and reflect-walking arrays and fixed byte sequences.
+// ParseTopics and ParseTopicsIntoMap reverse the process, populating
+// Go struct fields or maps from log topic[1:] using the Indexed
+// Arguments in an event descriptor.
 
 package abi
 

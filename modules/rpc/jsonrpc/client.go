@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JSON-RPC client core: request routing, subscriptions, reconnect.
+// Declares ErrClientQuit, ErrNoResult, ErrSubscriptionQueueOverflow
+// and related sentinels plus defaultDialTimeout (10s) and
+// subscribeTimeout (5s). maxClientSubscriptionBuffer (20000) bounds
+// the per-subscription linked-list backlog before the subscriber is
+// dropped to protect the dispatcher from slow consumers.
 
 package jsonrpc
 

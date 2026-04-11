@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-1153 transient storage (TSTORE/TLOAD) implementation.
+// transientStorage is a map[Address]Storage cleared at the end of
+// each transaction. Set and Get provide per-(address, slot) access,
+// returning the zero uint256.Int on miss.
+// Copy performs a deep clone used when IntraBlockState snapshots
+// transient state for nested call frames.
 
 package state
 

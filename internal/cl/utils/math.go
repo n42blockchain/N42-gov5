@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Math unit for the utils package.
+// Exports helpers such as IsPowerOf2, PowerOf2, and IntegerSquareRoot.
+// Miscellaneous consensus-layer utilities.
 
 //go:build n42el
 

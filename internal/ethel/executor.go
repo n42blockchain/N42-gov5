@@ -1,5 +1,16 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// executor.go — batch block executor that drives the eth-el replay.
+//
+// Executor reads headers, bodies, senders and receipts from a Geth-format
+// input Freezer, re-executes every transaction through the shared
+// ProcessBlock path, and writes receipts, senders, changesets, and the
+// leaves journal to an output Freezer. A PlainStateBuffer accumulates
+// state mutations between commit boundaries so that MDBX only sees one
+// batch per CommitInterval. VerifyInterval toggles periodic state-root
+// verification; LeavesOnly and NoOutputs trim the output set for special
+// runs such as journal regeneration.
 
 package ethel
 

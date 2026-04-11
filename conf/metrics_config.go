@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Prometheus metrics endpoint configuration.
+// MetricsConfig toggles the /metrics HTTP exporter and its bind
+// Port and HTTP prefix, consumed by the metrics subsystem when
+// wiring the 250+ Prometheus counters exposed by the node.
 
 package conf
 

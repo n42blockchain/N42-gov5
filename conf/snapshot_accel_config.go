@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Snapshot acceleration layer configuration.
+// SnapshotAccelConfig manages the in-memory diff-layer tree that
+// short-circuits MDBX reads: MaxDiffLayers caps the tree depth,
+// WarmupOnStart pre-populates the ShardedCache from the Account
+// table and DefaultMaxDiffLayers / DefaultWarmupAccounts give a
+// 128-layer / 500k-account baseline.
 
 package conf
 

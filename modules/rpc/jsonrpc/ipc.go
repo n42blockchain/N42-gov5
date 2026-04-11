@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Cross-platform IPC transport entry points.
+// Server.ServeListener accepts connections in a loop, logs temporary
+// errors via IsTemporaryError and spawns ServeCodec on NewCodec(conn)
+// for each accepted peer. DialIPC creates a client that connects via
+// newIPCConnection (OS-specific) and wraps the net.Conn with NewCodec.
 
 package jsonrpc
 

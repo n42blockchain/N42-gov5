@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// UserOperation validator: runs ERC-4337 pre-validation checks
+// (init code, paymaster, signature, gas fields) against a
+// StateReader view of account state. Also implements
+// AgentSessionValidator for AI agent session keys, delegating to
+// ai/wallet session policies before admitting an op into the
+// mempool.
 
 package bundler
 

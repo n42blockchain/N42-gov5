@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-4844 blob sidecar persistence accessors.
+// blobSidecarKey packs blockNum(8)||blockHash(32) for deterministic
+// ordering. WriteBlobSidecars length-prefix encodes a []*BlobSidecar
+// slice via encodeBlobSidecars and stores it in the blob bucket.
+// Read/Has/Delete helpers mirror the same key layout for recovery
+// and pruning of expired KZG sidecar data.
 
 package rawdb
 

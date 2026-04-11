@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Process-wide LRU cache for contract bytecode JUMPDEST analysis results,
+// keyed by codeHash. CodeAnalysisCache wraps a container/list LRU with a
+// sync.RWMutex so parallel EVM instances (Block-STM) can share the same
+// bitvec across blocks and avoid re-running O(n) codeBitmap() on hot
+// contracts. GlobalCodeAnalysisCache is the process singleton; nil means
+// the cache is disabled. Inspired by Aptos AIP-107.
 
 package vm
 

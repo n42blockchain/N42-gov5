@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Historical data pruning configuration.
+// Declares PruneMode ("archive", "full") and PruneConfig with
+// BlockRetention window and PruneInterval cadence. The archive
+// mode keeps full history; full mode trims changesets older than
+// BlockRetention while respecting snapshot boundaries.
 
 package conf
 

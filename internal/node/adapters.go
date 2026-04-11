@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Subsystem adapter glue exposed on the Node type. Wires the
+// blockchain, txpool, consensus engine and downloader into the
+// common interfaces expected by the RPC, miner and P2P stacks so
+// concrete dependencies can be swapped during testing.
 
 package node
 

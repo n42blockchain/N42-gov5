@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Five-stage deep execution pipeline (DeepPipeline) modelled on Monad's
+// Superscalar architecture: Consensus / Prefetch / Execution / Commitment /
+// Persistence. Each stage processes a different block concurrently, wired
+// through typed buffered channels (prefetchCh, executeCh, commitCh,
+// persistCh) with backpressure. Stage functions (PrefetchFunc,
+// DeepExecuteFunc, DeepCommitFunc, DeepPersistFunc) are injected by the
+// caller; DeepBlock and DeepCommitJob flow between them, while state roots
+// are tracked per block via sync.Map and lastPersisted.
 
 package deferred
 

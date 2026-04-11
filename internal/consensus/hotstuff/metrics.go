@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Prometheus counters for HotStuff-2 consensus health monitoring.
+// Tracks metricCurrentView (monotonic per view tick),
+// metricBlocksCommitted, metricViewChanges, metricTimeouts,
+// metricEquivocations and mxOutputDrops. Registered via the
+// common/metrics wrapper so they appear on the standard /metrics
+// endpoint alongside other subsystem counters.
 
 package hotstuff
 

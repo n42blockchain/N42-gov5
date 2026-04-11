@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Bit-path utilities for BMT key traversal. Path stores a packed big-endian
+// bit sequence (Bytes + BitLen) up to MaxDepth = 256 bits, matching the
+// width of a Blake3 key hash. EmptyPath, FromKeyHash, Bit, and Prefix build
+// and slice paths during insert/lookup, letting the tree descend one bit
+// at a time from the root down to a leaf without heap-allocating nibbles.
 
 package bmt
 

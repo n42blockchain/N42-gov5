@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// KZG verification wrapper for PeerDAS. The Verifier type holds a
+// kzg.PeerDASContext and exposes cell-level proof checking used when
+// peers deliver DataColumns during sampling or custody transfer.
+// Validates that each column cell matches the blob's KZG commitment
+// using the EIP-7594 cell proof scheme.
 
 package peerdas
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Historical state lookups over changeset history buckets.
+// GetAsOf fetches the value of an Account or Storage key as of a
+// given block timestamp, first trying FindByHistory over the
+// AccountChangeSet/StorageChangeSet cursors and falling back to the
+// live value in modules.Account/Storage on ErrKeyNotFound.
+// Uses changeset.Mapper IndexChunkKey to navigate history chunks.
 
 package state
 

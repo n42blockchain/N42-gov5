@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Prometheus counters and gauges for the ERC-4337 bundler: ops
+// received, validated, rejected, bundles sent / failed and current
+// pool size. Registered against the shared common/metrics registry
+// so they surface alongside the rest of the node's observability.
 
 package bundler
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Genesis block construction. Loads a ChainConfig + Allocs document,
+// seeds the initial state trie, computes the genesis state root and
+// produces the block 0 header consumed by the BlockChain on first
+// boot. Also verifies hash compatibility against built-in presets
+// (mainnet, sepolia, devnet).
 
 package internal
 

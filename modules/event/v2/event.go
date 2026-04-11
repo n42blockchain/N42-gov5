@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Global type-keyed event hub built atop Feed/SubscriptionScope.
+// GlobalEvent demultiplexes Subscribe/Send calls by reflect type name,
+// lazily creating a Feed and SubscriptionScope per channel element type.
+// Guarantees a single init via sync.Once and protects the feeds map with
+// an RWMutex so concurrent Subscribe and Send share the same scope.
 
 package v2
 

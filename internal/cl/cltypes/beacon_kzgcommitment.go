@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Beacon kzgcommitment unit for the cltypes package.
+// Declares the Blob, KZGProof, and KZGCommitment type aliases.
+// Exports helpers such as MarshalJSON, UnmarshalJSON, Copy, and EncodeSSZ.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

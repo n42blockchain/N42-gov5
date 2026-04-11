@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ReconfigurationManager for safe validator set changes.
+// Implements the commit-then-activate protocol from HotStuff-2 and
+// Jolteon: PROPOSE a change, COMMIT it with the current set under a
+// CommitQC, STAGE the new set at the epoch boundary via
+// EpochManager.StageNextEpoch, and ACTIVATE on the first view of the
+// next epoch. Ensures deterministic, fault-tolerant committee rotation.
 
 package hotstuff
 

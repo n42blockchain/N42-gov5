@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Config type for the ERC-4337 bundler service. JSON/YAML tagged
+// settings covering enable flag, EntryPoint contract address,
+// mempool sizing, bundle interval, gas limits and the set of RPC
+// endpoints exposed (eth_sendUserOperation, eth_getUserOperation*,
+// eth_supportedEntryPoints). Consumed by BundlerService at startup.
 
 package bundler
 

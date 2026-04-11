@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Pooled allocation of LegacyKeccak256 hasher instances.
+// hasherPool is a sync.Pool that reuses sha3.NewLegacyKeccak256
+// hash.Hash values to avoid per-call allocation on hot paths.
+// NewLegacyKeccak256 resets before hand-out; ReturnToPoolKeccak256
+// wipes and returns instances after use.
 
 package cryptopool
 

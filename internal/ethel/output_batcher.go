@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// output_batcher.go — freezer append batcher for execution outputs.
+//
+// outputBatcher accumulates per-block receipts, senders, changesets and
+// leaves-journal entries in memory and flushes them to the underlying
+// freezer.Freezer in aligned batches so that segment files stay tightly
+// packed. Tables that already contain entries for the current range are
+// spot-checked on startup and skipped until nextItem passes the existing
+// boundary, which makes a restart idempotent without rewriting data.
 
 package ethel
 

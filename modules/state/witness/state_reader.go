@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// WitnessStateReader: state.StateReader backed by a BlockWitness.
+// Decodes account proofs, storage proofs and code entries from a
+// BlockWitness into address/slot/code lookup maps so that stateless
+// light clients can re-execute an EVM block without a database.
+// Compile-time asserts the state.StateReader interface is satisfied.
+// Requires OriginalKey preimages on every KeyProof for indexing.
 
 package witness
 

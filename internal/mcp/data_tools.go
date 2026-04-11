@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// MCP data tools: registers on-chain query endpoints exposing token
+// transfers, address profiles, gas analytics and contract events
+// indexed by the ExEx AI indexer. Gives AI agents a high level,
+// paginated view over the chain without having to run their own
+// archive node.
 
 package mcp
 

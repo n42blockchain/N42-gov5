@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Reflection type checks shared by Pack and Unpack paths.
+// sliceTypeCheck validates slice and array kind, length and nesting
+// against an ABI Type. typeCheck dispatches scalar vs slice/array
+// validation and enforces FixedBytesTy length equality. typeErr and
+// formatSliceString build human-readable mismatch messages, and
+// errBadBool is the sentinel for improperly encoded boolean values.
 
 package abi
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Build-time version metadata for the N42 node binary.
+// Holds GitCommit, GitBranch and GitTag injected via -ldflags plus
+// the Major.Minor.Build triple (VersionMajor, VersionMinor,
+// VersionBuild, VersionModifier) and the VersionKeyCreated /
+// VersionKeyFinished database keys used by migration bookkeeping.
 
 package params
 

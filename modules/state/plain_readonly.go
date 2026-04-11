@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// PlainState: historical state snapshot for a given block number.
+// Opens AccountsHistory/StorageHistory cursors plus Account/Storage
+// changeset dupsort cursors and uses a btree.BTree per-contract
+// storageItem cache to iterate slot order efficiently.
+// storageItem wraps key/seckey/value and implements btree.Item Less
+// for ordering by raw slot key bytes.
 
 package state
 

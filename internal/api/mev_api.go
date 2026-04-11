@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// MevAPI exposes MEV bundle submission methods via JSON-RPC.
+// BundleSubmitter abstracts the miner builder.BundlePool so the API
+// can be wired into tests or standalone bundlers. SendBundleArgs is
+// the Flashbots-compatible request payload accepted by eth_sendBundle
+// for searchers submitting atomic transaction groups.
 
 package api
 

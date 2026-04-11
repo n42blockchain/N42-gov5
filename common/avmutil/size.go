@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM human-readable byte-size formatting. StorageSize is a float64
+// wrapper whose String / TerminalString methods auto-scale to KiB,
+// MiB, GiB or TiB for logs and RPC output. Powers-of-two thresholds
+// are defined via the internal _KiB.._TiB constants.
 
 package avmutil
 

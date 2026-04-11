@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Merkle root unit for the merkle_tree package.
+// Exports helpers such as HashTreeRoot, HashByteSlice,
+// MerkleRootFromFlatLeaves, and MerkleRootFromFlatFromIntermediateLevel.
+// Generalized merkle tree hashing utilities.
 
 //go:build n42el
 

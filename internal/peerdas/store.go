@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// MDBX-backed column store for PeerDAS. Uses a 40-byte key
+// (blockHash[32] || columnIndex[big-endian uint64]) via the columnKey
+// helper so columns for a given block are contiguous. Wraps kv.RwDB
+// read/write transactions to put, get and range-iterate custody
+// columns without pulling the whole blob back into memory.
 
 package peerdas
 

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// State and history Pruner. Runs on a background context, iterating
+// MDBX buckets in chunks to delete state entries older than the
+// configured retention window while keeping the JMT reference
+// counts consistent with online GC.
 
 package node
 

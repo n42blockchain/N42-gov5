@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Interface unit for the synced_data package.
+// Defines the SyncedData types.
+// Shared snapshot of the latest synced beacon state.
 
 //go:build n42el
 

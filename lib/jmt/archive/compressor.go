@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Segment writer that packs JMT nodes into compressed archive files.
+// NodeArchiveWriter streams (nodeHash, encodedNode) pairs through a
+// seg.Compressor, then builds a RecSplit .idx alongside the .seg for
+// O(1) random-access lookup by hash. SegmentFileName enforces the
+// canonical "v1-FROMBLOCK-TOBLOCK-jmtnodes.seg" naming used by the
+// archive layer so writer and reader agree on path layout.
 
 package archive
 

@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// MCP agent discovery tools. Exposes FindAgents, RequestTask, dispute
+// and reputation queries through the Model Context Protocol JSON-RPC
+// surface so external AI agents can locate capable workers on the
+// N42 coordination layer. Delegates to an AgentProvider interface
+// implemented by internal/ai/coord.
 
 package mcp
 

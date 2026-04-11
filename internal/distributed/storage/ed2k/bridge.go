@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Bridge between N42 keccak256 CAS hashes and ed2k / MD4 file hashes.
+// HashMapping stores the content hash, the ed2k hash, size and name
+// so that ComputeAndMap can publish local content to eDonkey networks
+// and reverse lookups can recover the CAS key from an ed2k identifier.
 
 package ed2k
 

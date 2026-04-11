@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// OtterSync Service orchestrating EraE export and import. Wires an
+// Exporter and Importer over a conf.TorrentSyncCfg and exposes the
+// high-level Export entrypoint used by the node to publish chain
+// archives for torrent distribution.
 
 package torrentsync
 

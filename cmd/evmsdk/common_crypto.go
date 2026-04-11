@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// ECDSA / ECIES crypto helpers exposed to the mobile SDK.
+// EvmEngine.Decrypt parses a hex ECDSA private key via
+// crypto.HexToECDSA and runs crypto/ecies to decrypt request
+// payloads. Used by the mobile client to authenticate inbound
+// verification jobs from the N42 relay.
 
 package evmsdk
 

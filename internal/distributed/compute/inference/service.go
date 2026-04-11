@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Inference service driving the opML request lifecycle. Tracks
+// RequestStatus transitions (Pending → Processing → OptimisticVerified
+// → Verified / Failed / Challenged), dispatches to an InferenceExecutor
+// and publishes results into the ResultCache consumed by the precompile.
 
 package inference
 

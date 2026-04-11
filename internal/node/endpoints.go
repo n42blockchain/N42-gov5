@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// JSON-RPC endpoint wiring helpers. Builds the list of exposed RPC
+// modules for the HTTP, WebSocket, IPC and authenticated transports
+// from the node configuration and hands the resulting handlers to
+// modules/rpc/jsonrpc.
 
 package node
 

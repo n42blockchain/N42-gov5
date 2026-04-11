@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Reputation system for AI agents. Computes an overall score from
+// four weighted sub-signals: completion rate (40), non-dispute rate
+// (30), response time (20) and staked amount (10). New agents start
+// at defaultReputation (50) and scores decay over time so inactive
+// agents lose standing.
 
 package coord
 

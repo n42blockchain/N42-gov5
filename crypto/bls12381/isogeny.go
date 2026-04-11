@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// 11-isogeny correction for BLS12-381 G1 hash-to-curve.
+// isogenyMapG1 implements the fixed-degree map from draft-irtf-
+// cfrg-hash-to-curve-06 appendix C.2 that takes a point on the
+// SWU iso curve and maps it back onto the true BLS12-381 G1
+// curve after swuMapG1.
 
 //nolint:gofmt
 package bls12381

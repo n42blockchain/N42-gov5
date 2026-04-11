@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// DIDResolver for did:n42 documents with in-memory LRU caching.
+// defaultCacheSize of 1024 entries and defaultCacheTTL of 1 hour back
+// Register / Resolve / Update / Deactivate over a local registry map,
+// so higher layers do not pay resolution cost on every message.
 
 package identity
 

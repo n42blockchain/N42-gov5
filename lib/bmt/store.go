@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// NodeStore interface and MemStore reference implementation for the BMT.
+// Nodes are content-addressed by their Blake3 hash so unchanged subtrees
+// are automatically deduplicated between tree versions. The interface
+// exposes Get/Put; MemStore keeps nodes in a map[Hash]NodeValue with
+// defensive copies on both sides and is used by unit tests and tools
+// that need an isolated in-process store.
 
 package bmt
 

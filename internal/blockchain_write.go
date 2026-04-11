@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BlockChain write helpers. Persists headers, bodies, receipts,
+// state and canonical mappings through rawdb, promotes the chain
+// head pointer under the insert lock and coordinates flushes with
+// the freezer. Complements the read helpers in blockchain_reader.go.
 
 package internal
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Shared API, codec, and BlockNumber types.
+// API binds a Namespace to a Service implementation with an
+// Authenticated flag. ServerCodec and jsonWriter are the transport
+// contracts used by Server.ServeCodec (readBatch, writeJSON, closed,
+// remoteAddr). BlockNumber mirrors eth_getBlockByNumber semantics
+// including latest/pending/earliest tags.
 
 package jsonrpc
 

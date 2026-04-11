@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// PaymasterService: per-owner deposit pool sponsoring gas for AI
+// agent UserOperations. Supports deposit / withdraw, op sponsoring
+// with tagged paymaster data and sentinel errors
+// (ErrInsufficientDeposit, ErrZeroAmount) for the bundler to
+// surface to clients.
 
 package wallet
 

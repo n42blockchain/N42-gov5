@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Verkle tree persistence abstraction. CommitmentKey is the 64-byte
+// uncompressed Banderwagon commitment used as a content-addressed key,
+// and ErrNotFound signals a missing node. NodeStore exposes Get / Put /
+// Has over those keys, while BatchNodeStore adds PutBatch for efficient
+// MDBX cursor inserts. Flush walks an in-memory go-verkle root, uses
+// BatchSerialize to convert projective coordinates to affine in one
+// shot, then streams the resulting nodes into the target store.
 
 package verkle
 

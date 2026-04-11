@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Persistence abstraction for JMT nodes. NodeStore defines the minimal
+// Get / Put / Delete / Has surface used by the tree, and BatchNodeStore
+// extends it with PutBatch so MDBX-style backends can exploit sorted
+// bulk inserts. MemStore is the in-process reference implementation used
+// by unit tests: it stores nodes in a map[Hash][]byte with defensive
+// copies on read so callers cannot mutate another goroutine's view.
 
 package jmt
 

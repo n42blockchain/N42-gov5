@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Encrypted Web3 Secret Storage v3 keyStorePassphrase backend.
+// Derives an AES-128-CTR key from a passphrase using scrypt (with
+// StandardScryptN/P and LightScryptN/P presets) or legacy PBKDF2-SHA256,
+// authenticates ciphertext with a Keccak256 MAC over (derivedKey[16:],
+// ciphertext), and round-trips keys through encryptedKeyJSONV3.
+// GetKey/StoreKey handle atomic file writes and optional read-back
+// verification controlled by skipKeyFileVerification.
 /*
 
 This key store behaves as KeyStorePlain with the difference that

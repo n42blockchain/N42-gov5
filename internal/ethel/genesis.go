@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// genesis.go — Ethereum genesis alloc loader for eth-el chaindata.
+//
+// InitEthGenesisState and InitEthGenesisStateFromBytes parse a standard
+// mainnet genesis JSON (alloc section with balance, nonce, code and
+// storage slots), decode hex-prefixed addresses and values, and write the
+// initial state into the MDBX Account/Code/Storage tables using the Reth-
+// style plain layout. IsGenesisInitialized is idempotent so running the
+// loader on an already-populated database is a safe no-op.
 
 package ethel
 

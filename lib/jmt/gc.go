@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Reference-counting garbage collection for content-addressed JMT nodes.
+// Because nodes are keyed by blake3(serialized), a mutation that rewrites
+// a subtree leaves the old node behind; NodeGC tracks a per-hash ref map
+// and a pendingDelete list to reclaim unreachable state. IncRef / DecRef
+// are threaded through Tree mutations and CollectGarbage drains the
+// pending set against the store — the JMT counterpart to geth PBSS-style
+// online trie pruning, adapted for hash-indexed (not path-indexed) storage.
 
 package jmt
 

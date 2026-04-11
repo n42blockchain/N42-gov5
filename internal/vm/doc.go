@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Package-level documentation entry point for internal/vm. Hosts the
+// single godoc comment block describing the EVM implementation in this
+// package - a byte-code virtual machine that loops over contract code
+// and executes opcodes per the Ethereum yellow paper. Contains no
+// executable declarations beyond the bare package vm clause.
 
 /*
 package vm implements the Ethereum Virtual Machine.

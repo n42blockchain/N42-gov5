@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// InstrumentedVM wraps an EVM with lightweight timing and counter
+// metrics without patching the hot interpreter loop. Tracks call,
+// create, static-call and delegate-call counts and cumulative time in
+// nanoseconds plus the maximum observed call depth. Toggleable via the
+// enabled flag so production builds can keep the wrapper cold. Used by
+// NewInstrumentedVM and LogStats for performance profiling of EVM
+// execution.
 
 package vm
 

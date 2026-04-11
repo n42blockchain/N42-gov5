@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Gas Price Oracle configuration.
+// Declares GpoConfig (Blocks window, Percentile, MaxHeader/BlockHistory,
+// Default / MaxPrice / IgnorePrice) and DefaultMaxPrice /
+// DefaultIgnorePrice constants plus the FullNodeGPO preset used by
+// eth_gasPrice and eth_feeHistory to suggest tips from recent blocks.
 
 package conf
 

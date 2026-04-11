@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// State unit for the raw package.
+// Defines the BeaconState types.
+// Provides constructors New.
+// Exports helpers such as SetValidatorSet, MarshalJSON, Validators, and
+// SetEvents.
 
 //go:build n42el
 

@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// HostFunctions registry for the sandboxed WASM engine. HostFunc
+// entries expose CAS load/store callbacks, keccak256 helpers and a
+// deterministic log buffer with no filesystem or network access,
+// enforcing the sandbox policy described in NewHostFunctions.
 
 package wasm
 

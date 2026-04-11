@@ -1,5 +1,13 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// EthTransactions is a DerivableList wrapper that emits standard
+// Ethereum raw-transaction encoding (legacy RLP or EIP-2718 typed
+// envelope) per element so it can be paired with DeriveShaErigon
+// to compute the canonical Ethereum tx trie root. Distinct from
+// the plain Transactions type whose EncodeIndex produces protobuf
+// bytes for N42's keccak-concat DeriveSha — the two encodings
+// are intentionally not interchangeable.
 
 package transaction
 

@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// eDonkey/ed2k hash bridge configuration.
+// Ed2kCfg enables ed2k link generation and content verification
+// with MaxFileSize and ChunkSize (default 9728000 bytes, the
+// canonical ed2k block). DefaultEd2kCfg starts the bridge disabled
+// with a 1 GiB size cap.
 
 package conf
 

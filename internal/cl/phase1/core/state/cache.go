@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Cache unit for the state package.
+// Defines the CachingBeaconState types.
+// Provides constructors New.
+// Exports helpers such as SetPreviousStateRoot and InitBeaconState.
 
 //go:build n42el
 

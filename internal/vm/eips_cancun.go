@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Cancun fork EIP implementations for the EVM. enable1153 installs
+// EIP-1153 transient storage opcodes TLOAD (0x5c) and TSTORE (0x5d) into
+// a JumpTable, both priced at WarmStorageReadCostEIP2929. Transient
+// slots live for a single transaction and are cleared on commit,
+// providing cheap in-transaction scratch storage for reentrancy locks
+// and similar patterns. Paired opTload/opTstore handlers implement the
+// load/store semantics.
 
 package vm
 

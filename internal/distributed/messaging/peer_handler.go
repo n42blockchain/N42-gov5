@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// libp2p stream handler for the /n42/msg/store_query/1.0.0 protocol.
+// Serves StoreQueryRequest filters (topic, time range) bounded by
+// maxStoreQueryResults and storeQueryTimeout, returning historical
+// envelopes from the local persistent store to requesting peers.
 
 package messaging
 

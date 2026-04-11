@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// 4byte tracer. Collects function-selector (first 4 bytes of calldata)
+// frequencies across all CALL/DELEGATECALL/STATICCALL frames during
+// a transaction, grouped by callee size — the canonical workload for
+// building an on-chain function signature database.
 
 package native
 

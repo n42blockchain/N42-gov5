@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Standalone EVM execution entry points. The Config struct collects
+// ChainConfig, Difficulty, Origin, Coinbase, BlockNumber, Time,
+// GasLimit, GasPrice, Value, Debug flag, vm.Config, BaseFee plus a
+// State *IntraBlockState and GetHashFn. setDefaults fills in zero
+// fields with sane defaults (mainnet-ish chain rules) so tests can
+// construct Execute/Create/Call invocations with a minimal Config.
 
 package runtime
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Monotonic clock abstraction layered over runtime.nanotime. AbsTime
+// is a monotonic nanosecond timestamp with Add / Sub helpers; Now()
+// reads the current value via go:linkname. The Clock interface is
+// implemented by the real System clock here and by the Simulated
+// clock in simclock.go so timer-driven code stays testable.
 
 // Package mclock is a wrapper for a monotonic clock source
 package mclock

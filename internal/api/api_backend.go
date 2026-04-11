@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// API backend adapter bridging the RPC layer to the internal blockchain.
+// Exposes ChainConfig and CurrentBlock accessors plus helpers such as
+// canonicalHashForNumber that resolve canonical chain lookups against
+// the internal.BlockChain instance. Provides the thin abstraction used
+// by transaction, state and tracing RPC handlers.
 
 package api
 

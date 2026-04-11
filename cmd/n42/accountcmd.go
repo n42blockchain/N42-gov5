@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// CLI wallet and account subcommands for the n42 binary.
+// Registers the `wallet` and related keystore commands (import /
+// list / new) that back urfave/cli actions with accounts.Manager
+// and keystore.KeyStore. Bridges password prompting, presale
+// wallet import and node-bound account listing to the operator.
 
 package main
 

@@ -13,6 +13,15 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Core Account/Wallet/Backend abstractions.
+// Declares the Account value type, the Wallet interface covering
+// Status/Open/Close/Accounts/Derive/SelfDerive and all SignHash,
+// SignTx and SignData variants used by software and hardware wallets.
+// Defines the Backend subscription interface, WalletEvent,
+// WalletEventType and MIME-type constants (MimetypeTypedData,
+// MimetypeClique, MimetypeDataWithValidator, MimetypeTextPlain).
+// TextHash implements EIP-191 personal_sign prefixed hashing.
 
 // Package accounts implements high level Ethereum account management.
 package accounts

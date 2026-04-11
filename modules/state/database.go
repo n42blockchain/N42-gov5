@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Incarnation constants and NoopWriter StateWriter.
+// FirstContractIncarnation and NonContractIncarnation are retained
+// for backward compatibility after the incarnation removal and are
+// no longer consulted in the write path.
+// NoopWriter implements StateWriter with empty method bodies, used
+// in tests and speculative execution paths that must discard state.
 
 package state
 

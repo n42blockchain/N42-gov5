@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Clonable unit for the clonable package.
+// Declares the Clonable type aliases.
+// Clonable interface used by SSZ types.
 
 //go:build n42el
 

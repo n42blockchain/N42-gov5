@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// RLP streaming decoder. Declares the EOL sentinel plus the
+// ErrExpectedString / ErrExpectedList / ErrCanonInt /
+// ErrCanonSize / ErrElemTooLarge / ErrValueTooLarge /
+// ErrMoreThanOneValue / ErrWrongTxTypePrefix error set and the
+// Stream / Decoder types that parse lists, integers, big.Int /
+// uint256.Int, strings and arbitrary reflect-based values.
 
 package rlp
 

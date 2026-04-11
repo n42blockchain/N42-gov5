@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// CachedStateWriter: WriterWithChangeSets wrapper keeping a cache coherent.
+// UpdateAccountData forwards to the inner writer then Put's the
+// encoded account into the layered.ShardedCache under modules.Account.
+// UpdateAccountCode mirrors code writes into modules.Code. A nil cache
+// degrades to a transparent pass-through for cheap opt-out.
 
 package state
 

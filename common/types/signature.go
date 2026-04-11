@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BLS-sized Signature and PublicKey fixed-byte primitives.
+// SignatureLength is 96 bytes, PublicKeyLength is 48 bytes,
+// matching BLS12-381 aggregate signatures used by the HotStuff
+// consensus layer. Provides Hex / String / Bytes / Size / SetBytes
+// plus JSON text marshaling, and the reflect types signatureT /
+// publicKeyT for higher-level codec registration.
 
 package types
 

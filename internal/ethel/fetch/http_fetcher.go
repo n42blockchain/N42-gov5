@@ -1,5 +1,16 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// http_fetcher.go — HTTP/HTTPS Fetcher implementation.
+//
+// HTTPFetcher downloads SourceHTTPS (and optionally SourceHTTP when
+// AllowPlaintext is set) entries from a rotating list of mirror URLs,
+// streams the body to a .part file, and renames it into place after
+// SHA256 verification so failures never leave a valid-looking stub.
+// Parallel range requests are planned but not yet enabled; the current
+// implementation uses a single sequential GET per mirror with automatic
+// rotation on transport failure. Progress callbacks are throttled by
+// ProgressInterval so log lines do not flood on fast links.
 
 package fetch
 

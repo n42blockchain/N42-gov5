@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// liveTracer: real-time EVM event stream. Unlike post-hoc tracers,
+// this hook fires during normal block production so downstream
+// consumers (log indexer, MEV detector, explorer subscriptions)
+// can observe every opcode and call frame with minimal latency.
 
 package native
 

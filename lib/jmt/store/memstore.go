@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Documentation stub for the jmt/store sub-package. The in-memory
+// MemStore used by unit tests is declared in the parent jmt package to
+// avoid an import cycle, so this file only carries the package comment
+// for store implementations that depend on heavier backends such as
+// MDBX. Runtime code lives in cached_store.go, lazy_db_store.go,
+// mdbx_store.go, pooled_db_store.go and store.go.
 
 // Package store provides external NodeStore implementations.
 // The in-memory MemStore used for testing lives in the parent jmt package

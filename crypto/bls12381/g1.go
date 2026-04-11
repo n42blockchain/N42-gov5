@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// G1 curve group operations for BLS12-381.
+// Declares PointG1 as a length-3 array of fe (affine when z == 1,
+// Jacobian otherwise) and the G1 group operations: add, double,
+// negate, scalar multiplication and encode / decode used by the
+// pairing engine and signature verification paths.
 
 //nolint:golint
 package bls12381

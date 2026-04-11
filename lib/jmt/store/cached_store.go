@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// LRU read-through cache in front of any jmt.NodeStore. CachedStore wraps
+// an inner store with a map + container/list LRU of serialized node
+// bytes, keyed by jmt.Hash, plus atomic hit/miss counters for metrics.
+// This avoids opening a fresh MDBX read transaction per Get when the
+// backing store is a LazyDBStore. NewCachedStore applies a default
+// capacity of 4096 entries and Get promotes touched nodes to the front.
 
 package store
 

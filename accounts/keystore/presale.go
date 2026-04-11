@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Legacy Ethereum presale wallet importer.
+// importPreSaleKey and decryptPreSaleKey parse the pyethsaletool JSON
+// wallet, derive a 16-byte AES key via PBKDF2-SHA256 (2000 rounds,
+// password-as-salt), AES-CBC decrypt the 16-byte-IV'd seed, hash the
+// seed with Keccak256 to obtain the secp256k1 private key, and
+// sanity-check the derived address against EthAddr before persisting
+// it as a normal v3 key file via StoreKey.
 
 package keystore
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Generic probabilistic-set bloom filter over holiman's
+// bloomfilter/v2. hasher implements the hash.Hash64 interface by
+// buffering the most recent Write and emitting an 8-byte digest.
+// probCollide is the target 1e-7 false-positive rate used when
+// sizing the filter. Used by log indexing and sync deduplication,
+// distinct from the header log bloom in common/block/bloom9.go.
 
 package types
 

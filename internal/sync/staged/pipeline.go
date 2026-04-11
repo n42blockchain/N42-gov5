@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Pipeline executes a slice of Stage entries in order up to a target
+// block. Tracks running state via atomic flags, persists per-stage
+// progress and handles unwinding via unwindTo when a stage reports a
+// reorg that requires earlier stages to rewind first.
 
 package staged
 

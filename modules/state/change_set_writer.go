@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ChangeSetWriter: StateWriter that accumulates per-block changesets.
+// Holds accountChanges, storageChanges and a storageChanged flag map
+// keyed by address. NewChangeSetWriterPlain binds an MDBX tx and
+// block number for direct persistence; the plain in-memory constructor
+// is used by tests. GetAccountChanges materializes a *changeset.ChangeSet
+// via changeset.NewAccountChangeSet for encoding and flush.
 
 package state
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Post-quantum transaction public-key compression. Defines
+// PubKeyModeFull (first-time tx carries the full PQ public key for
+// registration) and PubKeyModeHash (subsequent txs carry only the
+// 32-byte Keccak256 reference to an on-chain registry). Used to
+// cut Falcon-512 / Dilithium2 / Dilithium3 / SQIsign transaction
+// sizes by hundreds to thousands of bytes after first use.
 
 // Post-Quantum Transaction Optimization
 //

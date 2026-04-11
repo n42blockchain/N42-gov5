@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Validator unit for the solid package.
+// Declares the Validator type aliases.
+// Provides constructors NewValidator and NewValidatorFromParameters.
+// Exports helpers such as NewValidator, NewValidatorFromParameters, CopyTo,
+// and HashSSZ.
+// Fixed-layout SSZ containers with in-place encoding.
 
 //go:build n42el
 

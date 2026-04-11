@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Free-disk-space query for Linux and generic Unix platforms.
+// Implements getFreeDiskSpace via unix.Statfs to read the
+// available-block count and multiply by the block size. Guarded
+// by the !windows && !openbsd build tag so that darwin / linux /
+// freebsd share this fallback path.
 
 //go:build !windows && !openbsd
 // +build !windows,!openbsd

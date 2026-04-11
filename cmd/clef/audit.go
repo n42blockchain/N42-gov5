@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Clef audit log for tamper-evident signing.
+// Defines AuditLogger which serializes every sign request, account
+// access and administrative action to an append-only file with a
+// timestamp, method name, address, approval status and reason.
+// Writes are mutex-guarded so concurrent signers produce a totally
+// ordered, forensically-reviewable trail.
 
 package main
 

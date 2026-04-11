@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// hashstate.go — HashedState rebuild and state-root computation helpers.
+//
+// SetupStateRootComputer attaches a commitment.TrieRootComputer to an
+// IntraBlockState so that the executor can compute roots incrementally.
+// CalcStateRoot rebuilds the full state trie from the HashedAccounts and
+// HashedStorage tables via trie.FlatDBTrieLoader.CalcTrieRoot, clearing
+// TrieOfAccounts and TrieOfStorage first so the result is reproducible.
+// InitHashState populates HashedState from scratch by walking PlainState
+// after a bulk import such as leaves_journal replay.
 
 package ethel
 

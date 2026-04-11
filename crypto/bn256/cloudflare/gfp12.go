@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Sextic extension field Fp12 for BN256.
+// Implements Fp12 as a quadratic extension of gfP6 where omega^2
+// equals tau, following Devegili et al. "Multiplication and
+// Squaring on Pairing-Friendly Fields". Final target field for
+// the BN256 optimal ate pairing.
 
 package bn256
 

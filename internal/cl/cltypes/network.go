@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Network unit for the cltypes package.
+// Defines the Metadata, Ping, Root, and LightClientUpdatesByRangeRequest
+// types.
+// Exports helpers such as EncodeSSZ, EncodingSizeSSZ, DecodeSSZ, and
+// MarshalJSON.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

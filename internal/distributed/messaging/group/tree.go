@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// MLS binary RatchetTree implementation. LeafNode and ParentNode
+// compose the TreeKEM ratchet tree with O(log n) path updates on
+// member add, remove or key rotation. AddLeaf assigns sequential
+// leaf indices for the group session.
 
 package group
 

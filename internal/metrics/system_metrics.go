@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Process-level system metrics. Collects runtime memory stats, GC
+// pause histograms, goroutine counts and CPU load via Go's runtime
+// package, exposing them as Prometheus gauges the node publishes on
+// the /debug/metrics endpoint.
 
 package metrics
 

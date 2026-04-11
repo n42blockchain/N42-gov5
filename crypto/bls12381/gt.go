@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// GT target-group representation for BLS12-381 pairings.
+// Aliases E = fe12 and wraps it in the GT struct over an fp12
+// backing. Exposes multiplication, exponentiation and equality
+// used by the Miller loop and final exponentiation in the
+// pairing Engine.
 
 //nolint:stylecheck
 package bls12381

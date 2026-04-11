@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Common unit for the common package.
+// Provides constructors NewUint64.
+// Exports helpers such as Bytes2Hex and NewUint64.
+// Common type shims used by CL code.
 
 //go:build n42el
 

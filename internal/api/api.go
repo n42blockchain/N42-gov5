@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Top-level JSON-RPC API wiring for the eth_/net_/admin_ namespaces.
+// Defines the P2PAdmin abstraction used to expose peer information and
+// RPC-wide constants such as rpcEVMTimeout, rpcGasCap and the 128 KiB
+// maxCallDataSize guard for eth_call. Brings together filters, rpchelper
+// and internal chain subsystems behind a narrow surface consumed by the
+// HTTP/WebSocket transports in modules/rpc.
 
 package api
 

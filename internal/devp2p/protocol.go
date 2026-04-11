@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Wire types for the eth/69 devp2p protocol. forkID carries the four-
+// byte fork checksum and next-fork block, statusPacket mirrors the
+// geth/Hive status handshake (protocol version, network id, genesis,
+// forkID, latest block) and hashOrNumber selects between block keys.
 
 package devp2p
 

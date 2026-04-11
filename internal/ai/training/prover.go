@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// TrainingProver: generates hash-chain ZK proofs that a model was
+// trained from governance-approved datasets. Talks to the
+// DatasetGovernance interface (decoupled from ai/governance) to
+// check IsApproved before registering a TrainingRecord and consumes
+// TrainingTrace epoch checkpoints as witness data.
 
 package training
 

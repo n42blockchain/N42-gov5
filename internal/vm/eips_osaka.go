@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Osaka fork EIP implementations, primarily EOF (EIP-3540/3670/4200/
+// 4750/5450). Defines gas constants for the EOF instruction set -
+// GasRJUMP, GasRJUMPI, GasRJUMPV, GasCALLF, GasRETF, GasJUMPF - plus
+// data-section access (GasDataLoad, GasDataLoadN, GasDataSize,
+// GasDataCopy), stack manipulation (GasDUPN, GasSWAPN, GasEXCHANGE) and
+// EOF contract creation (GasEOFCREATE, GasRETURNCONTRACT). Also stages
+// Verkle tree preparation and light client hooks.
 
 // Osaka EIPs implementation
 // Reference: go-ethereum and erigon implementations

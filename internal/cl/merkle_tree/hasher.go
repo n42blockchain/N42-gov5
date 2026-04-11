@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Hasher unit for the merkle_tree package.
+// Defines the merkleHasher types.
+// Generalized merkle tree hashing utilities.
 
 //go:build n42el
 

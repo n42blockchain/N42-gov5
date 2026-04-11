@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// RLP encoder entry points. Defines the EmptyStringCode (0x80) and
+// EmptyListCode (0xC0) prefixes plus their preencoded EmptyString
+// / EmptyList byte slices. The Encoder interface lets custom types
+// override encoding via EncodeRLP; the reflect-based writer
+// pipeline handles Go primitives, pointers, slices, arrays, maps
+// and structs following the yellowpaper RLP rules.
 
 package rlp
 

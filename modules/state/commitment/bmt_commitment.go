@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BMTCommitment bridges dirty-tracking to a Binary Merkle Tree.
+// Wraps a lib/bmt.Tree and exposes UpdateAccount/UpdateStorage/Root
+// entrypoints used from IntermediateRoot.
+// Does not replace PlainStateWriter — flat tables are still written
+// in parallel so point lookups remain fast and only the cryptographic
+// root is produced via the BMT commitment layer.
 
 package commitment
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Password prompt helpers for CLI account flows.
+// GetPassPhrase reads a password from stdin through the shared
+// prompt.Stdin liner without echoing it, optionally asks for
+// confirmation and fails loudly via Fatalf on read error. Used
+// by keystore unlock and new-account creation paths.
 package utils
 
 import (

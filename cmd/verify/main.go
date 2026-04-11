@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// verify command entry point.
+// Starts a long-running verification worker that talks to a running
+// N42 node over JSON-RPC and WebSocket (via jsonrpc and gorilla
+// websocket), subscribes to new heads through internal/api, and
+// cross-checks each block against local BLS signatures from
+// crypto and crypto/bls. Handles signal-based graceful shutdown.
 package main
 
 import (

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BundlerAPI implements the ERC-4337 account abstraction JSON-RPC.
+// Wraps bundler.BundlerService and defines SendUserOperationArgs, the
+// wire-level representation of a UserOperation with sender, nonce,
+// init/call data, gas caps, fee fields, paymaster data and signature.
+// Converts between the RPC struct and the internal vm.UserOperation.
 
 package api
 

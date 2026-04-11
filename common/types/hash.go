@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// 32-byte Hash primitive used throughout N42. Defines HashLength,
+// the hashT / addressT reflect descriptors, Bytes / Big / Hex /
+// TerminalString / String accessors, a SHA3-Keccak256 back-end for
+// hashing and the BytesToHash / BigToHash / HexToHash constructors.
+// Also used as tx / block / receipt / state-root identifier.
 
 package types
 

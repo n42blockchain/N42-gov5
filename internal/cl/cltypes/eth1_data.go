@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Eth1 data unit for the cltypes package.
+// Defines the Eth1Data types.
+// Provides constructors NewEth1Data.
+// Exports helpers such as NewEth1Data, Copy, Equal, and EncodeSSZ.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

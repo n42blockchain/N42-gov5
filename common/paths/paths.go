@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Default data-directory resolution for the n42 node. DefaultDataDir
+// returns ~/Library/n42 on macOS, %LOCALAPPDATA%\n42 (with a legacy
+// %APPDATA%\Roaming\n42 fallback) on Windows and $XDG_DATA_HOME/n42
+// or ~/.local/share/n42 on Linux/Unix. homeDir / windowsAppData /
+// isNonEmptyDir are the internal helpers driving the selection.
 
 package paths
 

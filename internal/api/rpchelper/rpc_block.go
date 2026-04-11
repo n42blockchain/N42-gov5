@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Latest, finalized and safe block number accessors for RPC tags.
+// GetLatestBlockNumber reads the current block header via rawdb.
+// GetFinalizedBlockNumber and GetSafeBlockNumber currently alias to
+// latest as placeholders until finality and safety tracking land,
+// matching the semantics expected by eth_getBlockByNumber tag resolution.
 
 package rpchelper
 

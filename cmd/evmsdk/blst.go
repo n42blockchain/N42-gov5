@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// BLS signing wrappers exposed to the mobile SDK.
+// decodeSecretKey parses a 32-byte hex-encoded BLS private key into
+// a crypto/bls.SecretKey via SecretKeyFromRandom32Byte. BlsSign
+// hashes a hex message and produces a BLS signature suitable for
+// consumption by the N42 verifier pipeline.
 
 package evmsdk
 

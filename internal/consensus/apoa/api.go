@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// APOA JSON-RPC API for signer and voting inspection.
+// API wraps a consensus.ConsensusChainReader and the *Apoa engine so
+// RPC handlers can fetch signer sets and historical snapshots for a
+// given block. resolveHeader maps nil or LatestBlockNumber to the
+// chain head, matching the tag semantics used by admin and debug calls.
 
 package apoa
 

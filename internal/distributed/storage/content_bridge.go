@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Bridge between N42 keccak256 content hashes and IPFS CIDv1
+// identifiers. Keccak256ToCIDv1 and CIDv1ToKeccak256 implement a
+// simplified raw-codec multibase encoding so CAS precompile outputs
+// can be published to IPFS gateways and resolved back to local hashes.
 
 package storage
 

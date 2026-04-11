@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Constructors for TransactOpts transaction signers used by bind.
+// Provides NewTransactor, NewKeyStoreTransactor, NewKeyedTransactor
+// and their WithChainID EIP-155 variants, plus NewClefTransactor for
+// external signing via clef. Exposes ErrNoChainID and ErrNotAuthorized
+// sentinels and wraps keystore decryption and Homestead/LatestSigner
+// selection into a single ready-to-use signer closure.
 
 package bind
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Minimal P2P surface area required by the sync package. SyncP2P
+// bundles PeerProvider (ConnectedPeers, BestPeers), BlockRequester,
+// TopicSubscriber and PeerScorer into a single interface so sync
+// logic can be tested against mocks and swapped between libp2p
+// backends. PeerID aliases libp2p's peer.ID to avoid pulling the
+// dependency into callers and keeps the package boundary narrow.
 
 package p2p
 

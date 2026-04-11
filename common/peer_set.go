@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Peer bookkeeping types used by the sync layer. Peer wraps an
+// IPeer with CurrentHeight and AddTimer; PeerMap is indexed by
+// libp2p peer.ID and ToSlice renders it as a PeerSet sortable by
+// descending height (highest peer first) via Len / Less / Swap,
+// used to pick the best sync source.
 
 package common
 

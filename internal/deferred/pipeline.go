@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Three-stage consensus/execution/commit Pipeline built on top of
+// Executor. Coordinates the CommitFunc persistence callback, exposes
+// stateRootFn for block N+1 header assembly, and runs a background
+// commit loop at PipelineConfig.commitInterval. Tracks lastCommitted
+// under a RWMutex and handles graceful shutdown of the commit goroutine.
 
 package deferred
 

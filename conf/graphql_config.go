@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// GraphQL endpoint configuration.
+// GraphQLCfg toggles the GraphQL handler and exposes its mount path
+// (Endpoint, defaulting to /graphql). DefaultGraphQLCfg returns the
+// handler disabled; EffectiveEndpoint falls back to /graphql when
+// Endpoint is empty.
 
 package conf
 

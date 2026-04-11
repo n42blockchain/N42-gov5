@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// HTTP transport for JSON-RPC client and server.
+// maxRequestContentLength (32 MiB) bounds request size with enough
+// headroom for Osaka/EIP-7934 engine payloads. acceptedContentTypes
+// lists application/json plus the two jsonrequest variants. httpConn
+// wraps net/http.Client with a close channel and the writeJSON path
+// is intentionally disabled (errHTTPWriteUnsupported) for plain HTTP.
 
 package jsonrpc
 

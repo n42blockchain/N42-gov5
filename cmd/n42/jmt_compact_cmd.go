@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// `jmt-compact` subcommand: offline JMT pruning and archival.
+// Copies a source datadir into a target datadir, keeping only
+// JMT nodes reachable from the HEAD root in MDBX while streaming
+// historical nodes to compressed seg+idx archive files. Source is
+// opened read-only; other tables are copied verbatim so the
+// resulting node stays fully runnable.
 
 package main
 

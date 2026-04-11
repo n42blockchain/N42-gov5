@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM byte-slice helpers. CopyBytes / ToHex / FromHex / Hex2Bytes
+// and the has0xPrefix predicate provide the low-level conversions
+// used by the AVM hex encoder, RLP encoder and JSON marshalers.
+// Also declares the Package common doc anchor for avmutil.
 
 // Package common contains various helper functions.
 package avmutil

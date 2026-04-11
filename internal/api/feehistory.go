@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// eth_feeHistory implementation for EIP-1559 fee market data.
+// Computes base fees, gas used ratios and reward percentiles across a
+// block range with up to maxBlockFetchers parallel block loads. Guards
+// against invalid percentile inputs and requests past the chain head
+// via errInvalidPercentile and errRequestBeyondHead sentinels.
 
 package api
 

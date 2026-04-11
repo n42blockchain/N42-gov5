@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ABI type system (Type) and its string parser.
+// Defines the IntTy/UintTy/BoolTy/StringTy/Slice/Array/Tuple/Address/
+// FixedBytes/Bytes/Hash/FixedPoint/FunctionTy enumerator and the
+// recursive Type struct holding Elem, Size, Tuple fields and the
+// underlying reflect.Type. NewType parses a Solidity type string
+// (with brackets, tuples and components) and getTypeSize/requiresLengthPrefix
+// drive dynamic vs static encoding decisions.
 
 package abi
 

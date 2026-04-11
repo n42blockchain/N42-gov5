@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Minimal KV database interfaces (IDBReader, IDBWriter, IIterator,
+// IDatabase and friends) used as an abstraction boundary above the
+// concrete MDBX / memdb / remotedb backends in lib/kv. Callers must
+// Close iterators on MDBX to release read transactions.
 
 package db
 

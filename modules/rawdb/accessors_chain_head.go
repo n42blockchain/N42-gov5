@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Chain head pointer accessors for current header/block lookups.
+// ReadCurrentBlockNumber/ReadCurrentHeader/ReadCurrentBlock resolve
+// the head via ReadHeadHeaderHash and ReadHeaderNumber, while
+// ReadHeadHeaderHash/ReadHeadBlockHash fetch the named pointers
+// modules.HeadHeaderKey and modules.HeadBlockKey from DatabaseInfo.
 
 package rawdb
 

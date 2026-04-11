@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Range-scan receipt reader optimized for sequential history access.
+// ReadReceiptsBatch opens a single cursor on modules.Receipts and walks
+// keys in [fromBlock, toBlock] order, decoding each entry with
+// types_pb protobuf and returning a map[blockNum][]*block.Receipt.
+// Cursor scans avoid N GetOne calls and exploit MDBX B+ tree locality.
 
 package rawdb
 

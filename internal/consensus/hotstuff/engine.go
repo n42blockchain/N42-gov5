@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// HotStuff-2 ConsensusEngine core state and protocol constants.
+// Defines FutureViewWindow, the maximum number of views ahead a
+// future message may be buffered. Owns the in-memory engine state:
+// validator set, current view, pacemaker reference, local BLS key,
+// vote collector and message buffers protected by a sync.Mutex.
 
 package hotstuff
 

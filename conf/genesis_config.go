@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Genesis block definition and JSON encoding.
+// Genesis holds ChainConfig, Nonce, Timestamp, ExtraData, GasLimit,
+// Difficulty (uint256), Mixhash, Coinbase, StateRoot / TxHash /
+// ReceiptHash, Miners list and a GenesisAlloc balance map. Consumed
+// by chain initialization to seed state and by genesis-hash helpers
+// to pin network identity.
 
 package conf
 

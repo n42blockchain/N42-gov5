@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ERC-4337 Account Abstraction support in the EVM package. Defines the
+// canonical EntryPoint addresses (EntryPointV06, EntryPointV07) and the
+// SenderCreator helper, plus the UserOperation gas baseline constants -
+// UserOperationCallGasLimit, VerificationGasLimit, PreVerificationGas
+// and PaymasterPostOpGasLimit - used by the bundler and native_aa paths
+// before Pectra protocol-level account abstraction.
 
 // ERC-4337: Account Abstraction Using Alt Mempool
 // This file implements the ERC-4337 specification for account abstraction

@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Default struct-log tracer. Captures a per-opcode StructLog entry
+// with PC, gas, stack, memory and storage snapshots, emitting them
+// through the standard EVM tracer hooks. Drives the
+// debug_traceTransaction default output format.
 
 package logger
 

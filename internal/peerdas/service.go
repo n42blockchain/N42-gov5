@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// PeerDAS Service and Config. The Service owns the KZG Verifier, MDBX
+// column Store and custody scheduler; lifecycle hooks start a
+// background sampler loop that periodically picks SamplesPerSlot
+// columns, fetches them via the P2P custody protocol and checks
+// availability. Disabled by default through Config.Enabled.
 
 package peerdas
 

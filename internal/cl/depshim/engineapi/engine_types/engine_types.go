@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Engine types unit for the engine_types package.
+// Defines the PayloadAttributes, Withdrawal, BlobsBundle, and
+// ForkChoiceState types.
+// Engine API payload and fork-choice types.
 
 //go:build n42el
 

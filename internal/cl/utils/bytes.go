@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Bytes unit for the utils package.
+// Exports helpers such as Uint32ToBytes4, Bytes4ToUint32, BytesToBytes4, and
+// Uint64ToLE.
+// Miscellaneous consensus-layer utilities.
 
 //go:build n42el
 

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Post-quantum signature verification precompiles at addresses 0x14-
+// 0x17. Exposes PQFalconVerifyAddr (Falcon-512), PQDilithium2VerifyAddr,
+// PQDilithium3VerifyAddr and PQSQIsignVerifyAddr, each priced via a
+// calibrated gas constant (FalconVerifyGas 3500, Dilithium2VerifyGas
+// 4000, Dilithium3VerifyGas 5000). Activation is gated on
+// ChainRules.IsPQPrecompiles, keeping these N42 extensions isolated
+// from standard Ethereum fork precompile sets.
 
 // Post-Quantum Precompiled Contracts
 // This file implements precompiled contracts for post-quantum cryptographic

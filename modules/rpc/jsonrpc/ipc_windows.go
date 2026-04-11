@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Windows named-pipe IPC transport backed by npipe.
+// ipcListen delegates to npipe.Listen on the configured endpoint
+// string. newIPCConnection honors the caller ctx.Deadline, falling
+// back to defaultPipeDialTimeout (2s) and dialing the named pipe to
+// produce a net.Conn suitable for wrapping with NewCodec.
 
 //go:build windows
 // +build windows

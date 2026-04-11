@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Sentinel errors for the PeerDAS (EIP-7594) subsystem:
+// ErrNilColumn for missing column inputs, ErrColumnIndexOutOfRange
+// when an index is >= NumberOfColumns, plus wrapped errors for
+// invalid KZG proofs and storage lookup misses. Kept in a single
+// file so callers can match against a stable surface.
 
 package peerdas
 

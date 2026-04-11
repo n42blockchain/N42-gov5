@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Prometheus metric counters for JSON-RPC dispatch.
+// rpcRequestGauge and failedRequestGauge track total and failed
+// request counts. createRPCMetricsLabel formats a per-method label
+// string with success/failure status for use as a series key.
+// rpcMetricsLabels caches the (valid, failure) label maps.
 
 package jsonrpc
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Base prime-field element type for BLS12-381.
+// Declares the fe (field element) representation used by the
+// assembly multiplier, plus hex / random helpers built on
+// crypto/rand and encoding/hex for test-vector parsing and
+// random-element generation during pairing setup.
 
 //nolint:stylecheck
 package bls12381

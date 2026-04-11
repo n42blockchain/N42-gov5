@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Core types for training data governance: Dataset, Vote,
+// ReviewResult plus enums DatasetStatus (Pending, UnderReview,
+// Approved, Rejected) and EthicsCategory (Fairness, Privacy,
+// ContentSafety, Transparency). Also defines the sentinel errors
+// returned by the Committee and DatasetRegistry.
 
 package governance
 

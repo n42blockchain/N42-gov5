@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Block number resolution helpers shared by RPC method implementations.
+// GetBlockNumber and GetCanonicalBlockNumber convert a
+// jsonrpc.BlockNumberOrHash into a concrete block number and hash,
+// enforcing canonical requirements and returning a typed
+// nonCanonocalHashError (JSON-RPC code -32603) for non-canonical hashes.
 
 package rpchelper
 

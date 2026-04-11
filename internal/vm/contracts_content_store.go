@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// N42 content-addressed storage precompile at 0x0300. The contentStore
+// implementation exposes four selectors - casStore, casLoad, casExists
+// and casSize - backed by a ContentStoreDB wired in at block-processing
+// time. Writes are rejected in static call context. Callers address blobs
+// by keccak hash, enabling on-chain access to off-chain CAS data used by
+// the distributed compute and messaging stacks.
 
 package vm
 

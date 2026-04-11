@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Preallocated holiman/uint256.Int constants (Num0, Num1, Num2,
+// Num4, Num8, Num27, Num32, Num35) shared across the codebase.
+// Reused by secp256k1 recovery-id math and EVM opcode fast paths
+// to avoid repeatedly allocating tiny uint256 values.
 package u256
 
 import (

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// sync.Pool recyclers for hot-path EVM allocations. Uint256Pool
+// (GetUint256/PutUint256) hands out pre-zeroed *uint256.Int values and
+// clears them on return, avoiding garbage for every stack push or
+// arithmetic intermediate. ByteSlicePool (GetByteSlice) recycles
+// 32-byte word buffers for memory copies. Used extensively by
+// instructions and memory helpers to keep per-opcode allocations off
+// the GC heap.
 
 package vm
 

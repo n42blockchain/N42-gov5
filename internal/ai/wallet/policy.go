@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Spending policies for AI agent accounts. The SpendingPolicy
+// interface plus concrete implementations: RatePolicy (sliding
+// window), CapPolicy (per-tx and daily caps), AllowlistPolicy
+// (contract + selector allowlist) and CompositePolicy combining
+// them with AND / OR semantics.
 
 package wallet
 

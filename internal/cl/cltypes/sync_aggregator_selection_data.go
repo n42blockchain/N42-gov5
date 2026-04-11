@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Sync aggregator selection data unit for the cltypes package.
+// Defines the SyncAggregatorSelectionData types.
+// Exports helpers such as Static, Copy, EncodeSSZ, and DecodeSSZ.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

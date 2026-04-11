@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Optional cache accessor for the layered KV store. ExtractCache
+// performs a type assertion on a kv.RwDB and returns the wrapped
+// ShardedCache when the underlying implementation is a LayeredDB,
+// or nil otherwise. This lets callers (warmers, metrics collectors,
+// tests) reach the read cache without forcing a hard import of the
+// concrete LayeredDB type across the codebase.
 
 package layered
 

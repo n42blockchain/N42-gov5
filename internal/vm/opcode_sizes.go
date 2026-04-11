@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Lookup table of per-opcode instruction sizes, opcode byte plus
+// any immediate operands. opcodeSizes is an int8[256] populated in
+// init(): single-byte default, PUSH1-PUSH32 set to 2..33, EOF RJUMP/
+// RJUMPI/CALLF/JUMPF/DATALOADN to 3, DUPN/SWAPN/EXCHANGE/EOFCREATE/
+// RETURNCONTRACT to 2, and RJUMPV marked -1 because its length is
+// data-dependent. Replaces a large switch used by eofOpcodeSize for
+// faster jumpdest walks.
 
 package vm
 

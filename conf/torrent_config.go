@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Distributed BitTorrent storage bridge configuration.
+// TorrentDistCfg drives the CAS <-> torrent bridge for on-chain
+// content distribution: DataDir, ListenAddr, rate limits,
+// MaxActiveTorrents, DHT / PEX toggles, SeedOnStore and PieceSize
+// (256 KiB). Independent of the snapshot downloader torrent path.
 
 package conf
 

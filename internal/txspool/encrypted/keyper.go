@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Keyper committee: multi-party key release for the encrypted
+// transaction pool. Collects keyper shares per epoch, reconstructs
+// the release secret once the threshold is reached and hands it to
+// the Decryptor so sealed transactions can be revealed only after
+// their ordering is fixed.
 
 package encrypted
 

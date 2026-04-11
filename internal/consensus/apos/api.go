@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// APOS JSON-RPC API for validator information and rewards.
+// MinedBlock encodes a single validator-mined block (number, timestamp
+// and reward). Search helpers iterate backwards up to maxSearchBlock
+// blocks and resolve headers via rpchelper. Depends on the deposit
+// contract bindings for stake and reward computation.
 
 package apos
 

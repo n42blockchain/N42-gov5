@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Windows-specific free-disk-space implementation.
+// Calls GetDiskFreeSpaceEx through golang.org/x/sys/windows with
+// a UTF-16 path converter to report bytes available on the target
+// volume. Provides the Windows leg of getFreeDiskSpace used by the
+// datadir sizing sanity check.
 
 package main
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ChainConfig persistence keyed by genesis hash.
+// ReadChainConfig/WriteChainConfig JSON-encode *params.ChainConfig
+// into modules.ChainConfig under modules.ConfigKey(genesisHash).
+// ReadChainConfig also runs params.NormalizeConsensus to migrate
+// legacy chain parameter layouts on load.
 
 package rawdb
 

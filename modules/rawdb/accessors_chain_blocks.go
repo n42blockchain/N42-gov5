@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// High-level block assembly helpers on top of the rawdb primitives.
+// ReadBlock stitches a stored header together with a canonical body
+// via ReadCanonicalBodyWithTransactions to return a *block.Block, and
+// ReadBlockWithSenders additionally loads per-tx sender addresses.
+// HasBlock short-circuits on StorageBodyRAW without decoding txs.
 
 package rawdb
 

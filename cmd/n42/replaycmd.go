@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// `replay` subcommand: legacy lossy chain-replay tool.
+// Streams transactions from a source database into a new target
+// database via internal/replay, skipping incompatible transactions
+// listed in replay.DefaultSkipAddresses. Used for pre-v2 datadir
+// conversions where exact state parity is not required.
 
 package main
 

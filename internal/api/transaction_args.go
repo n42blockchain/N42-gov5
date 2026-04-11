@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// TransactionArgs is the RPC wire format for eth_* tx submission.
+// Carries from/to/gas, legacy and EIP-1559 fee fields, value, data,
+// access list, chain id and optional blob parameters. Used by
+// eth_sendTransaction, eth_call, eth_estimateGas and eth_signTransaction
+// to construct an internal transaction.Transaction after validation.
 
 package api
 

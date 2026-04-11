@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// PoA block difficulty calculation and validation.
+// The Inturn interface lets engines report whether a signer is
+// in-turn for a given block. CalcDifficulty returns DiffInTurn (2)
+// for in-turn signers and DiffNoTurn (1) otherwise, mirroring Clique
+// semantics. ValidateDifficulty rejects any value other than 1 or 2.
 
 package misc
 

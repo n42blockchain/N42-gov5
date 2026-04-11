@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Participation flags unit for the cltypes package.
+// Declares the ParticipationFlags and ParticipationFlagsList type aliases.
+// Exports helpers such as Add, HasFlag, Copy, and
+// ParticipationFlagsListFromBytes.
+// Beacon chain SSZ data structures used across phases.
 
 //go:build n42el
 

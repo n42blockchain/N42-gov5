@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// TaskNegotiation: full task lifecycle for AI agent coordination.
+// Defines NegotiationStatus (Requested, Bidding, Accepted, Working,
+// Completed, Disputed) and the methods request / bid / accept /
+// complete / dispute. Holds an on-chain escrow once a bid is
+// accepted, tracks deadlines and emits completion events for the
+// reputation system.
 
 package coord
 

@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// torrent_fetcher.go — BitTorrent Fetcher implementation.
+//
+// TorrentFetcher wraps internal/distributed/storage/torrent.Client
+// through a narrow torrentClient interface so the unit tests can mock
+// the swarm without starting a real libp2p / DHT stack. Fetch resolves
+// the SourceTorrent magnet URI via AddMagnet, waits up to InfoTimeout
+// for the info dict, downloads the single artifact file and finally
+// verifies its SHA256 against the Asset declaration before renaming it
+// into place. Progress callbacks are throttled by ProgressInterval.
 
 package fetch
 

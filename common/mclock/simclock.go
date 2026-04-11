@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Simulated virtual Clock for deterministic timer tests. Simulated
+// holds a virtual "now" and a simTimerHeap of scheduled events;
+// Run advances the clock, firing any expired simTimer entries
+// (which implement ChanTimer) via do() callbacks. Lets tests
+// exercise timeout-driven code paths without relying on Go
+// scheduling or real wall-clock sleeps.
 
 package mclock
 

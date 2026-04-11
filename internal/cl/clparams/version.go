@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Version unit for the clparams package.
+// Declares the StateVersion type aliases.
+// Exports helpers such as Before, After, Equal, and BeforeOrEqual.
+// Consensus-layer chain parameters and runtime configuration.
 
 //go:build n42el
 

@@ -13,6 +13,10 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Client-side helpers to request EIP-4844 blob sidecars from a remote
+// peer. SendBlobSidecarsByRange opens a p2p stream for the typed
+// request, reads the status code, and decodes a BlobSidecarsResponse.
 
 package sync
 

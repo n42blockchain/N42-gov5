@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// GasPredictor: exponential-weighted moving-average gas-price estimator
+// over a sliding window of recent GasObservation samples (block number,
+// base fee, gas used, gas limit, tx count, timestamp). Uses
+// defaultGasWindowSize = 32 and defaultAlpha = 0.3 to produce a
+// GasPrediction for the next block with a confidence score derived
+// from the window fill level.
 
 package mev
 

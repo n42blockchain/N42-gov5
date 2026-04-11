@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// SyncProtocol advertises per-topic availability (TimeRange) between
+// nodes and computes missing intervals for store-and-forward recovery.
+// AdvertiseAvailability publishes local ranges so peers can diff them
+// against their own coverage and pull the gaps from PersistentStore.
 
 package store
 

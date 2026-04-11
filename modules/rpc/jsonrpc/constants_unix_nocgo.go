@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Pure-Go fallback for max_path_size on Unix without cgo.
+// Build-tagged !cgo && !windows to satisfy the constant used by the
+// IPC code path when cgo is disabled. Hard-codes 108, the classical
+// Linux sockaddr_un.sun_path limit documented in unix(7).
 
 //go:build !cgo && !windows
 // +build !cgo,!windows

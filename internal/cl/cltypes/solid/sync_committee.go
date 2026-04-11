@@ -1,5 +1,13 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Sync committee unit for the solid package.
+// Defines the SyncCommittee types.
+// Provides constructors NewSyncCommittee, NewSyncCommitteeWithSize, and
+// NewSyncCommitteeFromParameters.
+// Exports helpers such as NewSyncCommittee, NewSyncCommitteeWithSize,
+// NewSyncCommitteeFromParameters, and CommitteeSize.
+// Fixed-layout SSZ containers with in-place encoding.
 
 //go:build n42el
 

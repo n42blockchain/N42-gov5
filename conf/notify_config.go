@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Push notification service configuration.
+// NotifyCfg bounds per-subscriber state for the contract-event
+// bridge: MaxHistory ring size, MaxSubscribers cap, per-client
+// BufferSize and MaxHistoryAddresses watch-list limit. Consumed
+// by internal/distributed/notify when streaming events to wallets.
 
 package conf
 

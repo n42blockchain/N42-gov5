@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Initial state unit for the initial_state package.
+// Exports helpers such as GetGenesisState and IsGenesisStateSupported.
+// Pre-baked network initial state loaders.
 
 //go:build n42el
 

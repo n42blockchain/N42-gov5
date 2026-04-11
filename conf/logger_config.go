@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Logger subsystem configuration.
+// LoggerConfig sets the log file, Level (trace..fatal) and rotation
+// policy (MaxSize, MaxBackups, MaxAge, Compress, TotalSizeCap).
+// Relative LogFile paths are resolved under DataDir/log; rotated
+// files are renamed to name-timestamp.ext and optionally gzipped.
 
 package conf
 

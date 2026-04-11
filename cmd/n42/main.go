@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Process entry point for the n42 binary.
+// Force-imports internal/tracers/js and internal/tracers/native to
+// trigger their side-effect tracer registration, defines the
+// multi-language usageText banner and calls urfave/cli to dispatch
+// the shared root command set built from rootCmd plus the node
+// run flow.
 
 package main
 

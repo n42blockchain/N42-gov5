@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Model Context Protocol (MCP) server configuration.
+// MCPCfg toggles the MCP JSON-RPC endpoint used by AI agents to
+// query on-chain data: Host (default 127.0.0.1), Port (default
+// 8553) and AllowedTools whitelist. DefaultMCPCfg returns the
+// server disabled and bound to localhost.
 
 package conf
 

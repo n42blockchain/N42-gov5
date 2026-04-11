@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BatchProposal type for multi-block HotStuff-2 rounds.
+// Defines MaxBatchSize = 16 and error sentinels ErrEmptyBatch,
+// ErrMismatchedRoots and ErrBatchTooLarge. Carries View, block and
+// tx-root hash slices, the justifying QC, proposer index and
+// signature. Design-only scaffolding for future Autobahn-style
+// multi-proposer extensions to the core engine.
 
 package hotstuff
 

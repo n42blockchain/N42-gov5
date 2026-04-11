@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Top-level service and subsystem interfaces shared across the
+// node. Service is the Stop() contract used by the ServiceRegistry.
+// IDownloader covers initial-sync header/body/tx pipelines and
+// ConnHandler is the P2P raw-message entry point. Other interfaces
+// define txpool, P2P host abstraction, pubsub handles and message
+// dispatch — kept on common-layer types so internal packages can
+// wire them without circular imports.
 
 package common
 

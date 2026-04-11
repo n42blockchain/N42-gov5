@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Amsterdam fork EIP activation. Introduces EIP-7843, the SLOTNUM
+// opcode (0x4b) that pushes the current block's beacon-chain slot onto
+// the EVM stack at GasQuickStep. opSlotNum reads BlockContext.Slot from
+// the interpreter and returns 0 when unavailable (pre-Merge or when the
+// block producer has not populated the field). enable7843 installs the
+// operation into a JumpTable and registers itself in activators on
+// init.
 
 // Amsterdam EIPs implementation
 // Reference: go-ethereum Amsterdam fork

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Root Config aggregate and YAML loader for the N42 node.
+// Wires every subsystem config (NodeCfg, NetworkCfg, LoggerCfg,
+// DatabaseCfg, P2P, GPO, Miner, Prune, Snap/Snapshot, Bundler,
+// Tracing, PeerDAS, MCP, GraphQL, MEV-Boost, EncryptedPool,
+// ZKProver, DeferredExec, Web3Gateway, etc.) into a single tree
+// and loads / merges YAML files via gopkg.in/yaml.v2.
 
 package conf
 

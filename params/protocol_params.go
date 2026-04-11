@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM gas schedule and protocol-level constants.
+// Defines GasLimitBoundDivisor, Min/Max/GenesisGasLimit, TxGas and
+// TxGasContractCreation, Sstore* costs, call stipends and the
+// EIP-4788 BeaconRootsAddress plus its canonical BeaconRootsCode.
+// Acts as the single source of truth consumed by gas accounting,
+// header validation and system-contract deployment.
 
 package params
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Hash type and Hasher abstraction for the Jellyfish Merkle Tree. Hash is
+// a fixed 32-byte Blake3 digest with EmptyHash as the all-zero sentinel
+// for empty subtrees. The Hasher interface exposes Hash(data) and
+// HashTwo(a, b) so the tree is not hard-wired to any specific digest;
+// Blake3Hasher is the default implementation using lukechampine.com/blake3
+// and DefaultHasher returns a zero-value instance suitable for sharing.
 
 package jmt
 

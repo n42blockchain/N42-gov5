@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// ZKMLVerifier: validates ZKML proofs produced by zkprover.zkml.
+// Checks proof structure, public input length (96 bytes) and
+// consistency of the modelHash / inputHash / outputHash fields
+// against the referenced model registry. Used by the coprocessor
+// tiered verifier when routing inference tasks.
 
 package zkverifier
 

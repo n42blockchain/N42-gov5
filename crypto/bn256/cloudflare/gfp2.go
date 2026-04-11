@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Quadratic extension field Fp2 for BN256.
+// Declares gfP2 as `x*i + y` with `i^2 = -1` over the base gfP,
+// the building block for twistPoint (G2) and all higher tower
+// fields used by the BN256 pairing.
 
 package bn256
 

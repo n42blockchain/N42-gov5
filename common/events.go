@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Internal event-bus payload types. NewLocalTxsEvent / NewTxsEvent
+// carry transaction batches from the txpool; NewLogsEvent,
+// RemovedLogsEvent and NewPendingLogsEvent flow EVM logs to
+// subscribers across reorgs; PeerJoinEvent / PeerDropEvent and
+// DownloaderStartEvent / DownloaderFinishEvent report network and
+// sync lifecycle; ChainHighestBlock carries the canonical head.
 
 package common
 

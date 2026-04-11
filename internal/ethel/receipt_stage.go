@@ -1,5 +1,15 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// receipt_stage.go — parallel receipt re-encoding pipeline.
+//
+// ReceiptStage reads raw snappy-RLP receipts from a Geth ancient
+// freezer, decodes them on a pool of worker goroutines, re-encodes each
+// block with EncodeReceiptsCompact, and writes the batch-64 zstd output
+// into the target freezer's "receipts" table via a reorder buffer.
+// It is invoked as a standalone import pass when receipts are imported
+// separately from blocks, and produces the same on-disk format as the
+// live Executor so downstream readers do not need to know the source.
 
 package ethel
 

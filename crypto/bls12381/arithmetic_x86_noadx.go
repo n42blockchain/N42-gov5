@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Non-ADX default for the BLS12-381 assembly backend.
+// Under amd64 && blsasm this file sets `const enableADX = false`
+// so the plain x86_64 ASM multiplier is selected even on hosts
+// that support ADX / BMI2, matching the legacy default.
 
 //go:build amd64 && blsasm
 

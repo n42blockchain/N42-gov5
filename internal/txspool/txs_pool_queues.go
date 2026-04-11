@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Pending and queued sub-queue helpers for TxsPool. Implements
+// promotion from queued to pending once gaps are filled, demotion
+// back on reorg and eviction by lowest effective tip using the
+// common/prque priced heap.
 
 package txspool
 

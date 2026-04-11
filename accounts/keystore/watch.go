@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// fsnotify-based keystore directory watcher (POSIX builds).
+// Build tag selects platforms that provide inotify/kqueue through
+// github.com/fsnotify/fsnotify. newWatcher binds a watcher to an
+// accountCache; start spawns the loop goroutine that translates
+// Create/Write/Remove/Rename/Chmod events into maybeReload calls so
+// key files added or deleted outside the process are picked up
+// without waiting for the minReloadInterval polling fallback.
 
 //go:build (darwin && !ios && cgo) || freebsd || (linux && !arm64) || netbsd || solaris
 // +build darwin,!ios,cgo freebsd linux,!arm64 netbsd solaris

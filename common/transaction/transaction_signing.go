@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// N42 transaction signer entry points. MakeSigner picks a Signer
+// from ChainConfig + block number for the active fork, sigCache
+// memoizes derived sender addresses per signer, and the Err*
+// sentinels flag bad V/R/S values, unsupported tx types, wrong
+// chain IDs and malformed signatures. Uses secp256k1 via the
+// project crypto package plus common/u256 for V/R/S big math.
 
 package transaction
 

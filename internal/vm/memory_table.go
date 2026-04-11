@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// memorySizeFunc callbacks that declare how much EVM memory each
+// opcode touches. memoryKeccak256, memoryCallDataCopy, memoryReturn
+// DataCopy, memoryCodeCopy, memoryExtCodeCopy, memoryMLoad,
+// memoryMStore, memoryMStore8 and memoryCreate/memoryCreate2 delegate
+// to calcMemSize64 or calcMemSize64WithUint so the interpreter can
+// charge quadratic expansion gas before the opcode runs. Indexed from
+// the operation.memorySize field of the JumpTable.
 
 package vm
 

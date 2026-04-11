@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// keystoreWallet adapter exposing a KeyStore entry as accounts.Wallet.
+// Each instance wraps one Account + parent *KeyStore and reports
+// Locked/Unlocked Status from the keystore.unlocked map. Open, Close,
+// Derive and SelfDerive are no-ops; SignHash, SignData, SignText and
+// SignTx (plus WithPassphrase variants) forward to the parent
+// KeyStore after a Contains check, returning ErrUnknownAccount when
+// the request targets an address outside this wallet.
 
 package keystore
 

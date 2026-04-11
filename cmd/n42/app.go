@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Entry-point plumbing for the n42 CLI application.
+// Wires the urfave/cli App lifecycle around conf.Config: opens the
+// DB, constructs internal/node.Node, starts pprof / signal
+// handlers and blocks on SIGINT / SIGTERM for graceful shutdown.
+// Also loads keystore accounts and performs start-up sanity logging.
 
 package main
 

@@ -1,5 +1,9 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Fork unit for the fork package.
+// Exports helpers such as ComputeDomain, ComputeSigningRoot, and Domain.
+// Fork digest and signing domain computation.
 
 //go:build n42el
 

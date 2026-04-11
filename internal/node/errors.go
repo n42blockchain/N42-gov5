@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Sentinel errors raised by node lifecycle code: ErrNodeStopped,
+// ErrDatadirUsed, ErrServiceUnknown and friends. Kept in a single
+// place so callers (RPC wrappers, signal handlers, tests) can match
+// against a stable set.
 
 package node
 

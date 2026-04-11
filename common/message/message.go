@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// P2P message type registry. MessageType enumerates MsgConnect,
+// MsgPingReq / MsgPingResp, MsgSystem, MsgAppHandshake,
+// MsgApplication, MsgDownloader, MsgNewBlock, MsgDisconnect and
+// MsgTransaction with IsValid and String helpers for logging.
+// Used by the libp2p stream handlers to route inbound frames.
 
 package message
 

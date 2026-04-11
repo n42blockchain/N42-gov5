@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// OpCode type and the enumeration of every EVM instruction byte.
+// OpCode aliases byte and exposes IsPush (PUSH1-PUSH32) and
+// IsStaticJump (JUMP) classification helpers. Groups the instruction
+// set into ranges: 0x00 arithmetic (STOP..SIGNEXTEND), 0x10
+// comparison/bitwise, 0x20 KECCAK256, 0x30 environment, 0x40 block
+// context, 0x50 stack/memory/storage, 0x60 push, 0xa0 log, 0xf0 create
+// and call. The canonical opcode reference for the whole package.
 package vm
 
 import (

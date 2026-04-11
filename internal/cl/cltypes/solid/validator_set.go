@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Validator set unit for the solid package.
+// Defines the Phase0Data and ValidatorSet types.
+// Provides constructors NewValidatorSet and NewValidatorSetWithLength.
+// Exports helpers such as NewValidatorSet, NewValidatorSetWithLength,
+// Append, and Cap.
+// Fixed-layout SSZ containers with in-place encoding.
 
 //go:build n42el
 

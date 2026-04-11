@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// reorg.go — PlainState rollback using stored changesets.
+//
+// Reorg walks the output freezer's account and storage changeset tables
+// from the current head backwards to the given target block and applies
+// the stored original values back into MDBX, which unwinds the executor's
+// state without re-running transactions. Length-zero changeset values
+// mean "deleted — drop the key", matching the encoding produced by
+// EncodeAccountChanges / EncodeStorageChanges in changeset_codec.go.
 
 package ethel
 

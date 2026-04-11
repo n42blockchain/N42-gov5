@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Wire format codec for HotStuff ConsensusMsg messages.
+// EncodeConsensusMsg serialises a ConsensusMsg to bytes using the
+// proto/sync_pb payload shapes. Switches on msg.Type to pick the
+// correct subtype encoding (proposal, vote, timeout, view-change, etc.)
+// and returns the framed byte slice ready for libp2p dispatch.
 
 package hotstuff
 

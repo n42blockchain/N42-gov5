@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// ConfigV2 struct tuning the replay-v2 engine. Holds source and target
+// DB paths, block range, BatchSize, commitment tree flags (EnableJMT,
+// EnableLtHash, TreeType), gap-filling thresholds, EraE export
+// options, MPT verification toggle and structured log destinations.
 
 package replay
 

@@ -13,6 +13,10 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Prometheus counters for the snap-sync subsystem: accounts, storage,
+// bytecodes, bytes received, task errors, timeouts, missing codes and
+// invalid accounts, exposed through common/metrics for dashboards.
 
 package snapsync
 

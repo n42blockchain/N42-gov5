@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Gas price Oracle for eth_gasPrice recommendations.
+// Samples up to sampleNumber transactions from recent blocks and builds
+// an LRU-backed suggestion cache keyed by chain head hash. Suitable for
+// both light and full clients and honours chain configuration via the
+// injected common.IBlockChain and miner interfaces.
 
 package api
 

@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Provider types for the distributed compute network. Each Provider
+// carries an address, stake, advertised Capabilities and a 0-10000
+// basis-point Reputation score. ProviderStatus cycles between Active,
+// Suspended and Slashed based on task outcomes and challenges.
 
 package coprocessor
 

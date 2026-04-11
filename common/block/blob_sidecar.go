@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-4844 BlobSidecar type and size constants. BlobSize is 4096
+// field elements x 32 bytes; KZGCommitmentSize and KZGProofSize are
+// each 48 bytes; MaxBlobsPerBlock caps the per-block sidecar count
+// and CommitmentInclusionProofDepth fixes the Merkle proof height.
+// BlobSidecar bundles the blob, its KZG commitment + proof, the
+// owning block number/hash, the originating tx hash and the Merkle
+// inclusion proof used by consensus-layer data-availability checks.
 
 package block
 

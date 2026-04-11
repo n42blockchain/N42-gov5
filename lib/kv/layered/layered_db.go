@@ -13,6 +13,15 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// LayeredDB wires two MDBX instances behind a single kv.RwDB: a
+// compact state DB for hot tables (accounts, storage, code) and a
+// larger history DB for cold tables (changesets, indices, receipts,
+// logs). NewLayeredDB builds the pair together with a ShardedCache
+// fronting hot reads. dbFor routes each table via IsColdTable so new
+// unclassified tables default to the state DB, preserving backward
+// compatibility. AllTables merges the TableCfg from both underlying
+// DBs, and StateDB/HistoryDB/Cache expose components for direct use.
 
 package layered
 

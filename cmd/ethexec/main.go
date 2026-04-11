@@ -171,6 +171,17 @@ func main() {
 				Action: runRebuildState,
 			},
 			{
+				Name:  "compare-root",
+				Usage: "Compute state root at a given block via Traditional MPT and HPH, compare with header",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "datadir", Usage: "Path to MDBX with populated PlainState", Required: true},
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory (for header root)", Required: true},
+					&cli.Uint64Flag{Name: "block", Usage: "Block number to verify", Required: true},
+					&cli.StringFlag{Name: "mode", Usage: "mpt | hph | both", Value: "both"},
+				},
+				Action: runCompareRoot,
+			},
+			{
 				Name:  "verify-senders",
 				Usage: "Spot-check pre-computed senders against ecrecover (random sampling)",
 				Flags: []cli.Flag{

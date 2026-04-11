@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Post-replay export helpers. RunPostExport produces a final snapshot,
+// EraE archive segments via torrentsync and a CheckpointEntry JSON
+// listing trusted block heights, so other nodes can fast-sync from
+// the freshly-rebuilt database.
 
 package replay
 

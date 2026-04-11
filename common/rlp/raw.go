@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// RawValue passthrough type plus size helpers. RawValue is a byte
+// slice whose content is forwarded through encode/decode without
+// validation, enabling precomputed encodings and lazy decoding.
+// stringEncodedSize and StringSize compute the wire length of a
+// string or byte value, used by higher-level encoders to
+// preallocate buffers.
 
 package rlp
 

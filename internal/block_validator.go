@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// BlockValidator: enforces block body integrity (transaction root,
+// receipt root, gas used, uncle rules) after state execution. Reuses
+// the shared ChainConfig fork table so consensus rules change
+// deterministically at hard fork boundaries.
 
 package internal
 

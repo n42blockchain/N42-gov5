@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Roaring bitmap utilities for indexed blockchain history.
+// Provides sync.Pool-backed NewBitmap/NewBitmap64 allocators and
+// ReturnToPool helpers to avoid GC pressure on hot index paths.
+// ChunkLimit (~1950 bytes) bounds serialized bitmap chunks below
+// MDBX overflow page threshold. CutLeft splits bitmaps into
+// size-capped prefixes for chunked storage in log/history indexes.
 
 package bitmapdb
 

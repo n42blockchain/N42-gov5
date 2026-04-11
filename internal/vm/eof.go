@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM Object Format (EOF) container parsing and validation. Implements
+// EIPs 3540/3670/4200/4750/5450/6206/7480/7620/7698 - container header
+// recognition via EOFMagic 0xEF00 and EOFVersion1, section type IDs
+// (Code, Container, Data, Terminator) and the rules used to validate
+// code sections, static relative jumps, CALLF/RETF/JUMPF function
+// layout, stack validity and data-section access. Shared by the EVM
+// interpreter and the EOF creation path.
 
 // EOF (EVM Object Format) Implementation
 // Reference implementations from go-ethereum and erigon

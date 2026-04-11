@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// `migrate-tiers` subcommand: split datadir into storage tiers.
+// Moves chaindata / tmp onto Hot (NVMe), snapshot domain / accessor
+// onto Warm, and history / indices / freezer onto Cold paths. Uses
+// lib/common/datadir to resolve logical directories and writes a
+// conf.StorageTierCfg entry that subsequent runs consume.
 
 package main
 

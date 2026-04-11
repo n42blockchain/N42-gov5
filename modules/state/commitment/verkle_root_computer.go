@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// VerkleRootComputer: RootComputer adapter over a VerkleCommitment.
+// Implements state.RootComputer with RootScheme RootSchemeVerkle.
+// ComputeRoot iterates dirty accounts and storage and forwards each
+// mutation to the underlying VerkleCommitment.UpdateAccount/
+// UpdateStorage calls before returning the committed tree root.
 
 package commitment
 

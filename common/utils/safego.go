@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Panic-safe goroutine launchers. SafeGo wraps a goroutine in a
+// deferred recover that logs the panic with a label plus full
+// stack trace (4 KiB buffer) instead of crashing the process.
+// SafeGoWithWG additionally decrements a sync.WaitGroup on exit —
+// callers must Add(1) beforehand — so shutdown logic can reliably
+// wait even when a worker panics.
 
 package utils
 

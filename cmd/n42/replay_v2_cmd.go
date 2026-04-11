@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// `replay-v2` subcommand: full-chain re-execution with JMT commitment.
+// Reads blocks from a source datadir and replays them into a target
+// database through internal/replay with JMT + LtHash state
+// commitment, optional gap filling for missing epochs and an EraE
+// export step. Flags select tree type (jmt / bmt / mpt / trie) and
+// control snapshot creation at the end of the run.
 
 package main
 

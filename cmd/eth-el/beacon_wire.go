@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// n42el-tagged Caplin service wiring for eth-el.
+// Defines caplinHandle which owns the running cl.Service and the
+// startCaplin helper that lazily builds an eladapter.Backend over
+// an ethel.Node once its DB is ready. Only compiled when the
+// n42el build tag is set so the default eth-el build has no cl
+// dependency.
 
 //go:build n42el
 

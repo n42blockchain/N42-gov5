@@ -1,5 +1,10 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Machine unit for the machine package.
+// Defines the Interface, BlockProcessor, BlockValidator, and SlotProcessor
+// types.
+// Part of the n42el consensus-layer build.
 
 // Package machine is the interface for eth2 state transition
 //go:build n42el

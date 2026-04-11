@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Transaction Message type — a fully derived tx implementing the
+// core.Message contract used by EVM state transitions. Captures
+// from / to, nonce, amount, gas limit, gas price, fee cap, tip,
+// blob fee cap, blob hashes, calldata, access list, authorization
+// list, checkNonce flag and isFree marker. NewMessage is the
+// constructor called by the signer once V/R/S have been verified.
 
 package transaction
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// History expiry policy. Periodically prunes ancient blocks, receipts
+// and log indexes that fall outside the configured retention window,
+// coordinating with the freezer so only compressed, append-only
+// history is kept long term. Driven by a background goroutine on the
+// Node.
 
 package node
 

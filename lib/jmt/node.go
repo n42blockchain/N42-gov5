@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Node type definitions for the Jellyfish Merkle Tree. NodeType tags one
+// of three shapes: NodeTypeInternal, NodeTypeLeaf or NodeTypeExtension.
+// InternalNode holds 16 ChildEntry slots for the nibble branches; LeafNode
+// binds a full KeyHash to a ValueHash plus inline Value bytes; and
+// ExtensionNode compresses a run of single-child internals into a shared
+// NibblePath + child hash. Node is the tagged union used by encoding,
+// traversal and hashing code throughout the jmt package.
 
 package jmt
 

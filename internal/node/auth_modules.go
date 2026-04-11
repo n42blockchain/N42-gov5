@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Authenticated JSON-RPC module registration. Filters the RPC API
+// list exposed on the engine / authenticated endpoint (port 20014)
+// so only consensus-layer endpoints (engine_*, eth_*, debug_*) are
+// reachable through the JWT-protected transport.
 
 package node
 

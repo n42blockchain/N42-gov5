@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// AVM EIP-1559 dynamic-fee transaction payload. DynamicFeeTx holds
+// ChainID, nonce, GasTipCap and GasFeeCap (maxPriorityFeePerGas /
+// maxFeePerGas), gas limit, destination, value, calldata, access
+// list and V/R/S signature components. The copy method produces a
+// deep clone matching the TxData interface contract so the signer
+// pipeline can mutate clones safely.
 
 package avmtypes
 

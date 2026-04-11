@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Allocation pools for encode / decode hot paths. BufferPool hands
+// out sync.Pool-backed bytes.Buffer instances (buffers above 64 KiB
+// are dropped on Put to bound memory). ByteSlicePool holds 20 size
+// classes from 64 B up to 32 MiB for scratch byte slices used by
+// the RLP, protobuf and gossip encoders.
 
 package encoding
 

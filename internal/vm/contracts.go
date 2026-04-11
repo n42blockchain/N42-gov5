@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Standard Ethereum precompiled contracts and their per-fork dispatch
+// tables. Defines the PrecompiledContract interface (RequiredGas + Run)
+// and exports the Homestead, Byzantium, Istanbul, Berlin and Cancun
+// precompile address maps used by the EVM when resolving calls to
+// addresses 0x01-0x0a (ecrecover, sha256, ripemd160, dataCopy, bigModExp,
+// bn256 add/mul/pairing, blake2F). Per-contract Run implementations
+// decode inputs and enforce gas pricing from params.
 package vm
 
 import (

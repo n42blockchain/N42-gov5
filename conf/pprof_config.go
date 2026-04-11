@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// pprof profiling endpoint configuration.
+// PprofConfig toggles the net/http/pprof handler, its listen Port
+// and runtime tuning flags (MaxCpu GOMAXPROCS, TraceMutex,
+// TraceBlock) used to expose CPU, mutex and block profiles to
+// external collectors like go tool pprof.
 
 package conf
 

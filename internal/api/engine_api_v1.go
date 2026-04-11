@@ -1,5 +1,11 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Engine API v1/v2 payload types for Paris and Shanghai forks.
+// ExecutionPayloadV1 is the Paris wire format with parent/state/receipts
+// roots, logs bloom, prevRandao, gas limit/used, timestamp, base fee,
+// block hash and RLP-encoded transaction list. ExecutionPayloadV2
+// extends it with withdrawals plus optional Cancun blob gas fields.
 
 package api
 

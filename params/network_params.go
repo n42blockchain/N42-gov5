@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Network-wide non-consensus parameters shared between clients.
+// Defines BloomBitsBlocks / BloomBitsBlocksClient / BloomConfirms,
+// CHTFrequency, BloomTrieFrequency, HelperTrieConfirmations and
+// CheckpointFrequency constants used by the light-client indexer,
+// bloom-bit rotation and checkpoint sync flows.
 
 package params
 

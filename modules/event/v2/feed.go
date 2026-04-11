@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Feed implements one-to-many channel-based event dispatch.
+// Each Feed is single-type: the element type is locked on the first
+// Send or Subscribe call and subsequent mismatches panic via
+// feedTypeError. A reflect.Select-driven sendCases list holds the
+// active subscriber channels, guarded by a one-slot sendLock channel
+// and a removeSub interrupt channel for concurrent unsubscribes.
 
 package v2
 

@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Immutable per-chain Registry of precompiled contracts. Replaces the
+// global map plus init() pattern with a Registry built from chainConfig
+// and blockNumber, addressable by types.Address and holding a sorted
+// list for ActivePrecompiles. Optional instrumentation counters
+// (lookupCount/lookupTimeNs, callCount/callTimeNs) can be toggled via
+// RegistryOption. Safe for concurrent use so the same instance can be
+// shared by every EVM in a block.
 
 // Package precompiles provides a registry-based approach for managing
 // precompiled contracts, replacing the global map-based approach.

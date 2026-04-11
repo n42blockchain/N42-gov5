@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Block re-execution and state-root verification core.
+// Replays each incoming block through internal/vm with its
+// transactions from common/transaction over modules/state and
+// modules/ethdb/olddb, running through consensus/apos and
+// consensus/misc to apply fork-specific rewards and EIP-1559
+// logic. Emits diagnostics on any divergence from the header root.
 
 package main
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Layer interface for nodes in the snapshot acceleration tree.
+// Root, BlockNumber and Parent describe tree topology; Stale flags
+// reorg invalidation. Account and Storage return an explicit
+// (value, found) pair where found=false means the layer chain has
+// no information, and a nil value with found=true represents an
+// intentional deletion in one of the layers.
 
 package snapshot
 

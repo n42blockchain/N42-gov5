@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Transaction bundle primitives for the local block builder. Models
+// ordered, atomic transaction bundles (Flashbots-style) with
+// acceptance deadlines, holiman/uint256 effective tip accounting and
+// locking to protect concurrent inclusion decisions from multiple
+// worker goroutines.
 
 package builder
 

@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EVM LOG descriptor used by filters and generated bindings.
+// Event tracks Name, RawName (for overload disambiguation), the
+// Anonymous flag, Inputs and the canonical Sig plus Keccak256-derived
+// ID hash used as topic[0]. NewEvent sanitizes unnamed inputs and
+// precomputes the printable string, signature and ID in one shot so
+// filter code can match logs without re-hashing per call.
 
 package abi
 

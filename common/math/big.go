@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Integer math helpers for big.Int and uint256. Precomputes tt255
+// / tt256 / tt256m1 / tt63 limits, exposes MaxBig256 / MaxBig63,
+// and defines HexOrDecimal256 with JSON / text marshaling that
+// accepts either 0x hex or decimal input. Also ships BigPow,
+// BigMax, BigMin, U256, S256 and related routines used throughout
+// the EVM, gas accounting and RPC layer.
 
 // Package math provides integer math utilities.
 package math

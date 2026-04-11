@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// EpochSchedule loads a pre-planned sequence of validator sets.
+// Parses epoch_schedule.json at node startup and exposes a sorted
+// slice of validator set configurations indexed by epoch number.
+// Allows operators to plan committee rotations, validator additions
+// and removals in advance and have them activate deterministically.
 
 package hotstuff
 

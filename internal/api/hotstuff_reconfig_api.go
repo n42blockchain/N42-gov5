@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// HotStuffReconfigAPI exposes admin RPC methods for validator set changes.
+// Wraps a closure returning the active hotstuff.HotStuff engine so the
+// API remains usable even when consensus is not currently running.
+// ProposeAddValidator ingests a 48-byte BLS12-381 public key in hex and
+// enqueues the change to take effect at the next epoch boundary.
 
 package api
 

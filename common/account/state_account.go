@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// StateAccount is the consensus representation of an Ethereum-style
+// account held in the main account trie: nonce, balance, storage root
+// and code hash. NewAccount seeds empty-root and empty-code defaults.
+// Encode/Decode delegate to the V2 helpers for MDBX storage and the
+// proto/state protobuf wire format. Mimetype constants cover validator,
+// typed data and clique/parlia/bor header signing domains.
 
 package account
 

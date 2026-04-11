@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// sort.Interface adapters keyed by URL.
+// AccountsByURL ([]Account) and WalletsByURL ([]Wallet) implement
+// Len/Less/Swap so the Manager and individual backends can present a
+// stable ordering across reloads. Less delegates to URL.Cmp which
+// compares Scheme then Path lexicographically, matching how keystore
+// and hardware wallets expose their account namespace to upper
+// layers and RPC callers.
 
 package accounts
 

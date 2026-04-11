@@ -1,5 +1,12 @@
 // Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Aggregate-signature structure and verification shared helpers.
+// Defines AggSign (block Number, StateRoot, Sign, PublicKey,
+// Address) used by the mobile verifier to report signed
+// attestations back to the relay, and shared crypto / transport
+// wiring (jsonrpc, common/hexutil, modules/state, sha3) used by
+// verify_v2_exec and verify_hooks.
 
 package evmsdk
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// js/wasm stub implementations for the IPC transport.
+// Build-tagged js. ipcListen and newIPCConnection return
+// errNotSupported because unix sockets and named pipes are not
+// available in the browser runtime, keeping the package linkable
+// when the jsonrpc module is built for js/wasm targets.
 
 //go:build js
 // +build js

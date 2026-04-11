@@ -1,5 +1,10 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Devp2p adapter: bridges N42's internal block / header types to the
+// classic Ethereum devp2p BlockProvider interface so the node can
+// speak to legacy geth peers. Converts between n42 common/block and
+// go-ethereum crypto/types representations on the fly.
 
 package node
 

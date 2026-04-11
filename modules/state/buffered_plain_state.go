@@ -1,5 +1,13 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// PlainStateBuffer: write buffer plus lock-free read cache for hot EVM.
+// Maintains dirty account/storage/code maps plus contractWipes and
+// wipedStorage sets for MDBX storage purges on flush. Read paths use
+// sync.Map-backed readAccounts/readStorage/readCode caches so hot EVM
+// lookups avoid locks entirely; accountCacheEntry wraps nil-on-absent
+// cached accounts, storageEntry carries raw slot bytes and atomic
+// hits/misses counters expose cache effectiveness to metrics.
 
 package state
 

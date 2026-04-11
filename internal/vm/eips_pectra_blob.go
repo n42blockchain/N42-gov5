@@ -13,6 +13,14 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Pectra blob-related EIP implementations: EIP-7691 blob throughput
+// increase, EIP-7623 calldata cost bump and EIP-7840 blob schedule
+// config hooks. Exposes Cancun baseline constants (CancunTargetBlobs
+// PerBlock, CancunMaxBlobsPerBlock, CancunBlobGasPerBlob) alongside the
+// raised Pectra parameters (PectraTargetBlobsPerBlock and friends) so
+// fee computation can scale the blob target/max gas per block from the
+// active fork.
 
 // Pectra Blob Upgrades
 // This file implements blob-related EIPs for the Pectra hard fork:

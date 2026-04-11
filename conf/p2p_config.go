@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// P2P networking configuration.
+// NetWorkConfig exposes ListenersAddress / BootstrapPeers and the
+// LocalPeerKey for the base networking layer. P2PConfig covers the
+// libp2p stack: discovery toggles, StaticPeers, Discv5BootStrapAddr,
+// UPnP, relay and host metadata plus TCPPort and datadir paths used
+// by internal/p2p to build the libp2p host.
 
 package conf
 

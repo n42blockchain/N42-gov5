@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Subscription primitives and scope management for Feed consumers.
+// Subscription defines the Err/Unsubscribe contract; NewSubscription
+// runs a producer goroutine whose unsub channel signals cancellation.
+// SubscriptionScope.Track bundles multiple subscriptions for bulk
+// Close, and funcSub implements the one-shot error delivery pattern.
 
 package v2
 

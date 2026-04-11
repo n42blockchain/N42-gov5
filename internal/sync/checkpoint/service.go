@@ -13,6 +13,11 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Trusted-checkpoint bootstrap service. Downloads a single block matching
+// a user-supplied hash from peers, verifies it, and seeds the database so
+// the node can start from a recent point instead of syncing from genesis.
+// Defines ErrHashMismatch, ErrNoPeers and ErrBlockNotReceived errors.
 
 package checkpoint
 

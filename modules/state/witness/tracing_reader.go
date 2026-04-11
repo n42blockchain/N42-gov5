@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// TracingReader: state.StateReader wrapper that records accesses.
+// Delegates each Read* call to inner and also records the touched
+// address, slot or code hash behind a sync.Mutex for later use by
+// the witness Generator. errorStateReader is a sentinel inner
+// reader that fails every read, used when callers pass nil to
+// surface the configuration error during tracing.
 
 package witness
 

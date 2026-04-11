@@ -1,5 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Service: top-level coordinator for the AI Agent Wallet protocol.
+// Owns Account records, session keys, attached SpendingPolicy
+// instances and the PaymasterService. Exposes CreateAccount,
+// lookup and per-account mutation helpers while guarding access
+// with ErrAccountNotFound / ErrAccountExists.
 
 package wallet
 

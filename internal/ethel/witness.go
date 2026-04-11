@@ -1,5 +1,14 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// witness.go — block-witness recorder wrapping a StateReader.
+//
+// WitnessStateReader wraps any state.StateReader and logs the value of
+// every state access (account and storage) in execution order into a
+// length-prefixed byte stream. The resulting BlockWitness contains no
+// addresses or keys — the replayer reconstructs them by re-running the
+// same access sequence — which keeps witnesses small. Code is
+// intentionally omitted and must be obtained from the code table.
 
 package ethel
 

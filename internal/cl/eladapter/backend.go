@@ -1,5 +1,12 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// Backend unit for the eladapter package.
+// Defines the Backend and Adapter types.
+// Provides constructors New and NewPayload.
+// Exports helpers such as NewPayload, ForkChoiceUpdate, SupportInsertion,
+// and InsertBlocks.
+// Execution-layer adapter bridging CL and EL.
 
 //go:build n42el
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// EIP-2930 access list types plus the AccessListTx transaction
+// data. AccessTuple pairs an Address with its pre-warmed storage
+// key list; AccessList.StorageKeys sums the key counts. AccessListTx
+// carries ChainID / nonce / gas / value / to / from / data /
+// access list and signature values for type-0x01 transactions.
 
 package transaction
 

@@ -13,6 +13,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Optimal ate pairing Miller-loop kernels for BN256.
+// lineFunctionAdd and its sibling lineFunctionDouble implement
+// the mixed-addition line evaluation from "Faster Computation of
+// the Tate Pairing". Accumulated line values feed the final Fp12
+// exponentiation that produces the pairing output.
 
 package bn256
 

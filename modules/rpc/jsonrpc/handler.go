@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Per-connection JSON-RPC request/response handler.
+// The handler struct owns a serviceRegistry, unsubscribe callback,
+// subscription ID generator, respWait map of in-flight requestOp
+// entries and a sync.WaitGroup over live call goroutines. rootCtx
+// propagates shutdown via cancelRoot, serverSubs tracks outgoing
+// Subscription objects and allowSubscribe gates subscribe calls.
 
 package jsonrpc
 

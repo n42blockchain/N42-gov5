@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Post-submission wait helpers for bind clients.
+// WaitMined polls a DeployBackend on a one-second ticker until a
+// receipt is returned or ctx is canceled. WaitDeployed extends this
+// for contract-creation transactions and verifies non-empty code at
+// the resulting address, rejecting Homestead-era empty-constructor
+// deployments. Exposes the NotFound sentinel.
 
 package bind
 

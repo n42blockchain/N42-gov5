@@ -13,6 +13,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Stack limit helper shared by the jump table. maxStack computes an
+// operation's maximum allowed pre-execution stack depth as
+// params.StackLimit + numPop - numPush so that executing the opcode
+// cannot push the stack past StackLimit. Every operation entry in the
+// JumpTable populates its maxStack field through this function during
+// validateAndFillMaxStack.
 
 package vm
 

@@ -13,6 +13,15 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
+//
+// Prometheus bridge for the layered KV cache. Declares the
+// layered_cache_hits_total, layered_cache_misses_total,
+// layered_cache_entries and layered_cache_hit_rate gauges and
+// provides ShardedCache.CollectMetrics, which reads Stats() and
+// pushes the values into the gauges along with the derived hit
+// ratio. LayeredDB.CollectMetrics is a thin wrapper that lets a
+// background ticker or RwTx hook update cache metrics for the
+// whole layered database with a single call.
 
 package layered
 
