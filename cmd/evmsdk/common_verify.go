@@ -1,18 +1,5 @@
-// Copyright 2022-2026 The N42 Authors
+// Copyright 2021-2026 The N42 Authors
 // This file is part of the N42 library.
-//
-// The N42 library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The N42 library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
 package evmsdk
 
@@ -22,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"time"
 
 	"github.com/go-kit/kit/transport/http/jsonrpc"
 
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	commTyp "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
@@ -136,7 +125,16 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 	}
 
 	blockNumber := bean.Entire.Header.Number.Uint64()
+	blockHash := bean.Entire.Header.Hash()
 	simpleLog("start verify ", "blockNr", blockNumber)
+
+	// Multi-producer dedup: if another producer's push of the same block
+	// already produced a signed result, return that cached result instead
+	// of re-running the EVM. The hook is nil for non-mobile callers.
+	if skip, cached := callShouldSkip(blockNumber, blockHash); skip {
+		simpleLog("vertify dedup hit", "blockNr", blockNumber)
+		return cached, nil
+	}
 
 	var hash commTyp.Hash
 	hasher := sha3.NewLegacyKeccak256()
@@ -186,14 +184,30 @@ func (e *EvmEngine) vertify(in []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// Cache for subsequent producer pushes of the same block.
+	callCache(blockNumber, blockHash, resBytes)
+
 	return resBytes, nil
 }
 
 // globalCodeCache is a package-level code cache shared across V2 verifications.
+// Mobile parallel verifiers benefit from cross-block code reuse — once a
+// contract has been received in any packet, subsequent packets can omit it
+// from their Bytecodes section.
 var globalCodeCache = NewCodeCache(4096)
 
 // verifyV2 handles V2 stream packet verification.
-// Called from vertify() when V2 wire format is detected.
+//
+// Flow:
+//  1. Decode the StreamPacket
+//  2. Re-execute the block via ExecuteAndVerifyV2 (real EVM, real receipts)
+//  3. If receipts root matches header, BLS-sign a VerificationReceipt
+//  4. Marshal the receipt as JSON for the WebSocket transport
+//
+// On any failure (decode, execution, root mismatch) verifyV2 returns an
+// error and does NOT produce a signed receipt — the IDC node will see no
+// receipt for this block from this verifier, which is the correct
+// failure-quiet behavior.
 func (e *EvmEngine) verifyV2(data []byte) ([]byte, error) {
 	pkt, err := DecodeStreamPacket(data)
 	if err != nil {
@@ -201,50 +215,61 @@ func (e *EvmEngine) verifyV2(data []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	blockNumber, err := pkt.HeaderInfo()
-	if err != nil {
-		simpleLog("extract V2 header info error,err=", err)
-		return nil, err
-	}
-
-	simpleLog("start V2 verify", "blockNr", blockNumber)
-
-	// Update code cache with received bytecodes.
-	for _, entry := range pkt.Bytecodes {
-		globalCodeCache.Insert(entry.Hash, entry.Code)
-	}
-
-	// Build the AggSign result (same format as V1 for backward compat).
-	res := AggSign{}
-	res.Number = blockNumber
-	copy(res.StateRoot[:], pkt.BlockHash[:])
-
-	if pubkIfce, err := BlsPublicKey(e.PrivKey); err == nil {
-		if pubkStr, ok := pubkIfce.(string); ok {
-			pubkBytes, err := hex.DecodeString(pubkStr)
-			if err == nil {
-				copy(res.PublicKey[:], pubkBytes)
-			}
+	// Multi-producer dedup: same (number, hash) coming via a different
+	// producer connection short-circuits to the cached signed result.
+	// Header decode is needed for the block number; cheap relative to EVM.
+	var hdrForDedup block.Header
+	dedupReady := hdrForDedup.Unmarshal(pkt.HeaderRLP) == nil && hdrForDedup.Number != nil
+	if dedupReady {
+		num := hdrForDedup.Number.Uint64()
+		if skip, cached := callShouldSkip(num, pkt.BlockHash); skip {
+			simpleLog("verifyV2 dedup hit", "blockNr", num)
+			return cached, nil
 		}
 	}
 
-	simpleLog("V2 stateRoot:", "stateRoot", hexutil.Encode(res.StateRoot[:]))
+	result, err := ExecuteAndVerifyV2(pkt, globalCodeCache, nil)
+	if err != nil {
+		simpleLog("V2 re-execution failed", "err", err)
+		return nil, err
+	}
+
+	simpleLog("V2 verify ok",
+		"blockNr", result.BlockNumber,
+		"txs", result.TxCount,
+		"readLog", result.WitnessReadLogLen,
+		"newCodes", result.UncachedBytecodes,
+		"receiptsRoot", hexutil.Encode(result.ComputedReceiptsRoot[:]))
 
 	sk, err := decodeSecretKey(e.PrivKey)
 	if err != nil {
 		return nil, err
 	}
 
-	copy(res.Sign[:], sk.Sign(res.StateRoot[:]).Marshal())
+	receipt := VerificationReceipt{
+		BlockHash:            result.BlockHash,
+		BlockNumber:          result.BlockNumber,
+		ComputedReceiptsRoot: result.ComputedReceiptsRoot,
+		TimestampMs:          uint64(time.Now().UnixMilli()),
+	}
 
-	simpleLog("V2 sign stateRoot:", "Sign", hexutil.Encode(res.Sign[:]))
+	if pubkIfce, err := BlsPublicKey(e.PrivKey); err == nil {
+		if pubkStr, ok := pubkIfce.(string); ok {
+			if pubkBytes, derr := hex.DecodeString(pubkStr); derr == nil {
+				copy(receipt.VerifierPubkey[:], pubkBytes)
+			}
+		}
+	}
 
-	res.Address = commTyp.HexToAddress(e.Account)
+	copy(receipt.Signature[:], sk.Sign(receipt.SigningMessage()).Marshal())
 
-	resBytes, err := json.Marshal(res)
+	resBytes, err := json.Marshal(receipt)
 	if err != nil {
 		return nil, err
 	}
+
+	// Cache for subsequent producer pushes of the same block.
+	callCache(result.BlockNumber, result.BlockHash, resBytes)
 
 	return resBytes, nil
 }
