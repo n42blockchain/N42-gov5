@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
@@ -189,27 +191,12 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if err != nil {
 		return invalidPayloadResponse(err.Error()), nil
 	}
-	if err := validateExecutionPayloadHeader(blockHeader(blk), e.v1.parentHeader(payload.ParentHash), e.v1.chainConfig()); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
-	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
-	}
-
 	// Validate execution requests (EIP-7685)
 	if err := validateExecutionRequests(executionRequests, payload); err != nil {
 		return nil, &engineInvalidParamsError{msg: err.Error()}
 	}
+	blk = applyExecutionPayloadForkFields(blk, nil, nil, nil, parentBeaconBlockRoot, executionRequests)
 	requestsHash := executionRequestsHash(executionRequests)
-	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.v1.chainConfig(), enginePayloadHashOptions{
-		includeWithdrawals: true,
-		withdrawals:        payload.Withdrawals,
-		includeBlobFields:  true,
-		parentBeaconRoot:   parentBeaconBlockRoot,
-		requestsHash:       &requestsHash,
-	}); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
-	}
 	blockHash := ethCompatibleEngineBlockHash(blk, e.v1.chainConfig(), enginePayloadHashOptions{
 		includeWithdrawals: true,
 		withdrawals:        payload.Withdrawals,
@@ -220,15 +207,58 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if payload.BlockHash != blockHash {
 		return invalidPayloadResponse("blockhash mismatch"), nil
 	}
-	if err := e.v1.validatePayloadExecution(blk, payload.ParentHash, parentBeaconBlockRoot, executionRequests); err != nil {
-		return invalidPayloadResponse(err.Error()), nil
+	body := &ExecutionPayloadBodyV1{
+		Transactions: cloneHexutilBytesList(payload.Transactions),
+		Withdrawals:  clonePayloadBodyWithdrawals(payload.Withdrawals),
+	}
+	parent := e.v1.parentHeader(payload.ParentHash)
+	if latestValidHash, ok := e.v1.rejectedAncestorLatestValidHash(payload.ParentHash); ok {
+		return e.v1.invalidPayloadStatus(engineRejectedAncestorReason, blk, blockHash, latestValidHash, body), nil
+	}
+	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
+		return e.v1.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+	}
+	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.v1.chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   parentBeaconBlockRoot,
+		requestsHash:       &requestsHash,
+	}); err != nil {
+		return e.v1.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+	}
+	if err := validateExecutionPayloadHeader(blockHeader(blk), parent, e.v1.chainConfig()); err != nil {
+		return e.v1.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+	}
+	var (
+		overlayState *engineStateOverlay
+		receipts     block.Receipts
+	)
+	if parent != nil && e.v1.stateAdapter == nil {
+		overlayState, receipts, err = e.v1.executePayloadOnParentStateAndValidateWithWithdrawals(blk, payload.ParentHash, parentBeaconBlockRoot, executionRequests, payload.Withdrawals)
+		if err != nil {
+			return e.v1.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+		}
+	}
+	if parent == nil {
+		if overlay := e.v1.overlay(); overlay != nil {
+			overlay.stageBlockWithBody(blk, blockHash, nil, nil, false, body)
+		}
+		return acceptedPayloadResponse(), nil
+	}
+	if e.v1.stateAdapter != nil {
+		return e.v1.executeOrValidateWithBody(blk, blockHash, payload.ParentHash, parentBeaconBlockRoot, executionRequests, body)
 	}
 	headHash := e.v1.currentHeadHash()
 	if headHash == (types.Hash{}) || payload.ParentHash != headHash {
-		return syncingPayloadResponse(), nil
+		if overlay := e.v1.overlay(); overlay != nil {
+			overlay.stageBlockWithBody(blk, blockHash, overlayState, receipts, true, body)
+		}
+		return acceptedPayloadResponse(), nil
 	}
 	if overlay := e.v1.overlay(); overlay != nil {
-		overlay.importBlock(blk, blockHash)
+		overlay.stageBlockWithBody(blk, blockHash, overlayState, receipts, true, body)
+		overlay.importBlockWithBody(blk, blockHash, receipts, body)
 	}
 	return validPayloadResponse(blockHash), nil
 }
@@ -258,22 +288,18 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if state == nil {
 		return invalidForkchoiceResponse("missing forkchoice state"), nil
 	}
-	head := e.v1.currentHead()
-	if head == nil {
-		return syncingForkchoiceResponse(), nil
-	}
-	headHash := e.v1.currentHeadHash()
-	if state.HeadBlockHash != headHash {
-		return syncingForkchoiceResponse(), nil
+	head, headHash, syncResp, err := e.v1.resolveForkchoiceState(state)
+	if syncResp != nil || err != nil {
+		return syncResp, err
 	}
 	if attrs == nil {
 		return validForkchoiceResponse(headHash, nil), nil
 	}
 	if attrs.Withdrawals == nil {
-		return invalidForkchoiceResponse("missing withdrawals"), nil
+		return nil, &engineInvalidPayloadAttributesError{msg: "missing withdrawals"}
 	}
 	if attrs.ParentBeaconBlockRoot == nil {
-		return invalidForkchoiceResponse("missing parent beacon block root"), nil
+		return nil, &engineInvalidPayloadAttributesError{msg: "missing parent beacon block root"}
 	}
 	if attrs.TargetBlobsPerBlock != nil {
 		target := uint64(*attrs.TargetBlobsPerBlock)
@@ -286,9 +312,13 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 		}
 	}
 	if uint64(attrs.Timestamp) <= head.Time() {
-		return invalidForkchoiceResponse("payload timestamp must be greater than parent"), nil
+		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
-	payload := buildExecutionPayloadV4(head, headHash, attrs, e.v1.chainConfig())
+	payload, executionRequests := e.buildExecutionPayloadV4Stateful(head, headHash, attrs)
+	if payload == nil {
+		payload = buildExecutionPayloadV4(head, headHash, attrs, e.v1.chainConfig())
+		executionRequests = []hexutil.Bytes{}
+	}
 	if payload == nil {
 		return invalidForkchoiceResponse("failed to build payload"), nil
 	}
@@ -301,6 +331,7 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 		headHash,
 		uint64(attrs.Timestamp),
 		attrs.SuggestedFeeRecipient,
+		attrs.PrevRandao,
 		withdrawalsRoot[:],
 		attrs.ParentBeaconBlockRoot[:],
 		targetBlobBytes[:],
@@ -312,7 +343,7 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 			v2:                &ExecutionPayloadV2{ExecutionPayloadV1: ExecutionPayloadV1{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions)}, Withdrawals: cloneWithdrawals(payload.Withdrawals)},
 			v1:                &ExecutionPayloadV1{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions)},
 			blobsBundle:       &BlobsBundleV1{Commitments: []hexutil.Bytes{}, Proofs: []hexutil.Bytes{}, Blobs: []hexutil.Bytes{}},
-			executionRequests: []hexutil.Bytes{},
+			executionRequests: cloneHexutilBytesList(executionRequests),
 		})
 	}
 	return validForkchoiceResponse(headHash, &payloadID), nil
@@ -396,20 +427,21 @@ func (e *EngineAPIv4) GetPayloadBodiesByHashV1(ctx context.Context, hashes []typ
 	results := make([]*ExecutionPayloadBodyV1, len(hashes))
 
 	overlay := e.v1.overlay()
-	if overlay == nil {
-		return results, nil
-	}
-
-	overlay.mu.RLock()
-	defer overlay.mu.RUnlock()
-
 	for i, hash := range hashes {
-		blk, ok := overlay.blocksByHash[hash]
-		if !ok || blk == nil {
+		if overlay != nil {
+			if body := overlay.payloadBodyByHash(hash); body != nil {
+				results[i] = body
+				continue
+			}
+		}
+		if e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil {
 			continue
 		}
-		body := payloadBodyFromBlock(blk)
-		results[i] = body
+		blk, err := e.api.api.BlockChain().GetBlockByHash(hash)
+		if err != nil || blk == nil {
+			continue
+		}
+		results[i] = payloadBodyFromBlock(blk, nil)
 	}
 	return results, nil
 }
@@ -417,30 +449,33 @@ func (e *EngineAPIv4) GetPayloadBodiesByHashV1(ctx context.Context, hashes []typ
 // GetPayloadBodiesByRangeV1 returns execution payload bodies for a range of blocks.
 // engine_getPayloadBodiesByRangeV1
 func (e *EngineAPIv4) GetPayloadBodiesByRangeV1(ctx context.Context, start hexutil.Uint64, count hexutil.Uint64) ([]*ExecutionPayloadBodyV1, error) {
-	if count == 0 {
-		return []*ExecutionPayloadBodyV1{}, nil
+	if start == 0 || count == 0 {
+		return nil, &engineInvalidParamsError{msg: fmt.Sprintf("invalid start or count, start: %d count: %d", start, count)}
 	}
 	if count > 1024 {
-		count = 1024
+		return nil, &engineTooLargeRequestError{msg: fmt.Sprintf("requested count too large: %d", count)}
 	}
 
-	results := make([]*ExecutionPayloadBodyV1, count)
+	results := make([]*ExecutionPayloadBodyV1, 0, count)
 
 	overlay := e.v1.overlay()
-	if overlay == nil {
-		return results, nil
-	}
-
-	overlay.mu.RLock()
-	defer overlay.mu.RUnlock()
-
 	for i := uint64(0); i < uint64(count); i++ {
 		num := uint64(start) + i
-		blk, ok := overlay.blocksByNum[num]
-		if !ok || blk == nil {
-			continue
+		var body *ExecutionPayloadBodyV1
+		if overlay != nil {
+			body = overlay.payloadBodyByNumber(num)
 		}
-		results[i] = payloadBodyFromBlock(blk)
+		if body == nil {
+			if e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil {
+				break
+			}
+			blk, err := e.api.api.BlockChain().GetBlockByNumber(uint256.NewInt(num))
+			if err != nil || blk == nil {
+				break
+			}
+			body = payloadBodyFromBlock(blk, nil)
+		}
+		results = append(results, body)
 	}
 	return results, nil
 }
@@ -451,19 +486,83 @@ type ExecutionPayloadBodyV1 struct {
 	Withdrawals  []*Withdrawal   `json:"withdrawals"`
 }
 
+func cloneExecutionPayloadBody(body *ExecutionPayloadBodyV1) *ExecutionPayloadBodyV1 {
+	if body == nil {
+		return nil
+	}
+	return &ExecutionPayloadBodyV1{
+		Transactions: cloneHexutilBytesList(body.Transactions),
+		Withdrawals:  clonePayloadBodyWithdrawals(body.Withdrawals),
+	}
+}
+
 // payloadBodyFromBlock extracts the payload body from a block.
-func payloadBodyFromBlock(blk block.IBlock) *ExecutionPayloadBodyV1 {
+func payloadBodyFromBlock(blk block.IBlock, withdrawals []*Withdrawal) *ExecutionPayloadBodyV1 {
 	txs := blk.Transactions()
-	encodedTxs := make([]hexutil.Bytes, len(txs))
-	for i, tx := range txs {
-		if data, err := tx.Marshal(); err == nil {
-			encodedTxs[i] = data
+	encodedTxs, _, err := encodeEthereumTransactions(txs)
+	if err != nil {
+		encodedTxs = nil
+	}
+	bodyWithdrawals := clonePayloadBodyWithdrawals(withdrawals)
+	if bodyWithdrawals == nil {
+		if header := blockHeader(blk); header != nil && header.WithdrawalsHash != nil {
+			bodyWithdrawals = []*Withdrawal{}
 		}
 	}
 	return &ExecutionPayloadBodyV1{
 		Transactions: encodedTxs,
-		Withdrawals:  []*Withdrawal{}, // N42 uses deposit contracts instead of protocol withdrawals
+		Withdrawals:  bodyWithdrawals,
 	}
+}
+
+func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV4) (*ExecutionPayloadV4, []hexutil.Bytes) {
+	if attrs == nil {
+		return nil, nil
+	}
+	result := e.v1.buildExecutionPayloadStateful(parent, parentHash, &PayloadAttributesV1{
+		Timestamp:             attrs.Timestamp,
+		PrevRandao:            attrs.PrevRandao,
+		SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
+	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot)
+	if result == nil || result.block == nil {
+		return nil, nil
+	}
+	v1 := blockToExecutionPayloadV1(result.block, e.v1.chainConfig())
+	header := blockHeader(result.block)
+	if v1 == nil || header == nil || header.BlobGasUsed == nil || header.ExcessBlobGas == nil {
+		return nil, nil
+	}
+	payload := &ExecutionPayloadV4{
+		ParentHash:            v1.ParentHash,
+		FeeRecipient:          v1.FeeRecipient,
+		StateRoot:             v1.StateRoot,
+		ReceiptsRoot:          v1.ReceiptsRoot,
+		LogsBloom:             append(hexutil.Bytes(nil), v1.LogsBloom...),
+		PrevRandao:            v1.PrevRandao,
+		BlockNumber:           v1.BlockNumber,
+		GasLimit:              v1.GasLimit,
+		GasUsed:               v1.GasUsed,
+		Timestamp:             v1.Timestamp,
+		ExtraData:             append(hexutil.Bytes(nil), v1.ExtraData...),
+		BaseFeePerGas:         v1.BaseFeePerGas,
+		BlockHash:             v1.BlockHash,
+		Transactions:          cloneHexutilBytesList(v1.Transactions),
+		Withdrawals:           cloneWithdrawals(attrs.Withdrawals),
+		BlobGasUsed:           hexutilUint64Ptr(*header.BlobGasUsed),
+		ExcessBlobGas:         hexutilUint64Ptr(*header.ExcessBlobGas),
+		DepositRequests:       []DepositRequest{},
+		WithdrawalRequests:    []WithdrawalRequest{},
+		ConsolidationRequests: []ConsolidationRequest{},
+	}
+	requestsHash := executionRequestsHash(result.executionRequests)
+	payload.BlockHash = ethCompatibleEngineBlockHash(result.block, e.v1.chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   attrs.ParentBeaconBlockRoot,
+		requestsHash:       &requestsHash,
+	})
+	return payload, cloneHexutilBytesList(result.executionRequests)
 }
 
 // =============================================================================

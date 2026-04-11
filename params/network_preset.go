@@ -24,6 +24,17 @@ type NetworkPreset struct {
 	RequiresExplicitInit bool
 }
 
+func (preset StateCommitmentPreset) StateScheme() string {
+	return string(preset)
+}
+
+func ApplyStateCommitmentPreset(chainCfg *ChainConfig, preset StateCommitmentPreset) {
+	if chainCfg == nil || chainCfg.StateScheme != "" {
+		return
+	}
+	chainCfg.StateScheme = preset.StateScheme()
+}
+
 func ResolveNetworkPreset(chain, rawProfile string) (NetworkPreset, error) {
 	normalizedChain := strings.TrimSpace(strings.ToLower(chain))
 	if normalizedChain == "" {

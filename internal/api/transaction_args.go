@@ -361,16 +361,31 @@ func setDynamicFeeFields(result *RPCTransaction, tx *transaction.Transaction, v 
 	}
 }
 
+func rpcTransactionFrom(tx *transaction.Transaction) avmcommon.Address {
+	var zero avmcommon.Address
+	if tx == nil {
+		return zero
+	}
+	if from := tx.From(); from != nil {
+		return *avmtypes.FromastAddress(from)
+	}
+	signer := transaction.LatestSignerForChainID(uint256ToBigOrZero(tx.ChainId()))
+	from, err := transaction.Sender(signer, tx)
+	if err != nil {
+		return zero
+	}
+	return *avmtypes.FromastAddress(&from)
+}
+
 // newRPCTransaction returns a transaction that will serialize to the RPC
 // representation, with the given location metadata set (if available).
 func newRPCTransaction(tx *transaction.Transaction, blockHash types.Hash, blockNumber uint64, index uint64, baseFee *big.Int) *RPCTransaction {
 
 	v, r, s := tx.RawSignatureValues()
-	from := tx.From()
 	hash := tx.Hash()
 	result := &RPCTransaction{
 		Type:     hexutil.Uint64(tx.Type()),
-		From:     *avmtypes.FromastAddress(from),
+		From:     rpcTransactionFrom(tx),
 		Gas:      hexutil.Uint64(tx.Gas()),
 		GasPrice: (*hexutil.Big)(tx.GasPrice().ToBig()),
 		Hash:     avmtypes.FromastHash(hash),

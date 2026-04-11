@@ -157,7 +157,11 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 
 	number := uint64FromUint256OrZero(header.Number)
 	if cfg != nil && cfg.IsShanghaiAt(number, header.Time) {
-		result["withdrawalsRoot"] = avmtypes.FromastHash(withdrawalsRoot(nil))
+		withdrawalsHash := withdrawalsRoot(nil)
+		if header.WithdrawalsHash != nil {
+			withdrawalsHash = *header.WithdrawalsHash
+		}
+		result["withdrawalsRoot"] = avmtypes.FromastHash(withdrawalsHash)
 		result["withdrawals"] = []interface{}{}
 	}
 	if cfg != nil && cfg.IsCancunAt(number, header.Time) {
@@ -176,10 +180,18 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 		}
 		result["blobGasUsed"] = hexutil.Uint64(bgu)
 		result["excessBlobGas"] = hexutil.Uint64(ebg)
-		result["parentBeaconBlockRoot"] = avmtypes.FromastHash(types.Hash{})
+		parentBeaconRoot := types.Hash{}
+		if header.ParentBeaconRoot != nil {
+			parentBeaconRoot = *header.ParentBeaconRoot
+		}
+		result["parentBeaconBlockRoot"] = avmtypes.FromastHash(parentBeaconRoot)
 	}
 	if cfg != nil && (cfg.IsPrague(header.Time) || cfg.IsPectra(header.Time) || cfg.IsOsaka(header.Time)) {
-		result["requestsHash"] = avmtypes.FromastHash(executionRequestsHash(nil))
+		requestsHash := executionRequestsHash(nil)
+		if header.RequestsHash != nil {
+			requestsHash = *header.RequestsHash
+		}
+		result["requestsHash"] = avmtypes.FromastHash(requestsHash)
 	}
 
 	return result

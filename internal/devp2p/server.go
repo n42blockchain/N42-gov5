@@ -9,6 +9,7 @@ package devp2p
 
 import (
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
@@ -58,8 +59,8 @@ func NewServer(cfg ServerConfig, handler *EthHandler) *Server {
 func (s *Server) Start() error {
 	ethProto := gethp2p.Protocol{
 		Name:    "eth",
-		Version: eth69.ETH68,
-		Length:  17, // eth/68 message count
+		Version: eth69.ETH69,
+		Length:  18, // eth/69 message count
 		Run:     s.handler.runPeer,
 	}
 
@@ -107,4 +108,31 @@ func (s *Server) PeerCount() int {
 		return s.srv.PeerCount()
 	}
 	return 0
+}
+
+// AddPeer adds a static devp2p peer by enode URL.
+func (s *Server) AddPeer(rawURL string) error {
+	if s == nil || s.srv == nil {
+		return errors.New("devp2p server not running")
+	}
+	node, err := enode.ParseV4(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse enode: %w", err)
+	}
+	s.srv.AddTrustedPeer(node)
+	s.srv.AddPeer(node)
+	return nil
+}
+
+// RemovePeer removes a static devp2p peer by enode URL.
+func (s *Server) RemovePeer(rawURL string) error {
+	if s == nil || s.srv == nil {
+		return errors.New("devp2p server not running")
+	}
+	node, err := enode.ParseV4(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse enode: %w", err)
+	}
+	s.srv.RemovePeer(node)
+	return nil
 }

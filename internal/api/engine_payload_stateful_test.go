@@ -26,6 +26,16 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
+func syncExecutionPayloadV4OutputsFromBlock(t *testing.T, payload *ExecutionPayloadV4, blk block.IBlock) {
+	t.Helper()
+
+	header := blockHeader(blk)
+	require.NotNil(t, header)
+	payload.StateRoot = header.Root
+	payload.ReceiptsRoot = header.ReceiptHash
+	payload.LogsBloom = append(payload.LogsBloom[:0], header.Bloom.Bytes()...)
+}
+
 func TestEngineAPIv4AcceptsOsakaSetCodeDelegationPayload(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg
@@ -173,6 +183,7 @@ func TestEngineAPIv4AcceptsOsakaSetCodeDelegationPayload(t *testing.T) {
 
 	err = engine.blobAPI().v1().validatePayloadExecution(blk, parentHash, &beaconRoot, nil)
 	require.NoError(t, err)
+	syncExecutionPayloadV4OutputsFromBlock(t, payload, blk)
 
 	requestsHash := executionRequestsHash(nil)
 	payload.BlockHash = ethCompatibleEngineBlockHash(blk, cfg, enginePayloadHashOptions{
@@ -341,6 +352,7 @@ func TestEngineAPIv4AcceptsSetCodeResetAuthorizationPayload(t *testing.T) {
 
 	err = engine.blobAPI().v1().validatePayloadExecution(blk, parentHash, &beaconRoot, nil)
 	require.NoError(t, err)
+	syncExecutionPayloadV4OutputsFromBlock(t, payload, blk)
 
 	requestsHash := executionRequestsHash(nil)
 	payload.BlockHash = ethCompatibleEngineBlockHash(blk, cfg, enginePayloadHashOptions{
@@ -487,6 +499,7 @@ func TestEngineAPIv4AcceptsSetCodeInvalidMaxAuthorizationChainIDFixture(t *testi
 	require.NoError(t, err)
 	err = engine.blobAPI().v1().validatePayloadExecution(blk, parentHash, &beaconRoot, nil)
 	require.NoError(t, err)
+	syncExecutionPayloadV4OutputsFromBlock(t, payload, blk)
 
 	requestsHash := executionRequestsHash(nil)
 	payload.BlockHash = ethCompatibleEngineBlockHash(blk, cfg, enginePayloadHashOptions{
@@ -1048,6 +1061,9 @@ func TestEngineAPIv4AcceptsPragueOpaqueWithdrawalRequests(t *testing.T) {
 
 	blk, err := executionPayloadV4ToBlock(payload)
 	require.NoError(t, err)
+	err = engine.blobAPI().v1().validatePayloadExecution(blk, parentHash, &beaconRoot, executionRequests)
+	require.NoError(t, err)
+	syncExecutionPayloadV4OutputsFromBlock(t, payload, blk)
 	requestsHash := executionRequestsHash(executionRequests)
 	payload.BlockHash = ethCompatibleEngineBlockHash(blk, cfg, enginePayloadHashOptions{
 		includeWithdrawals: true,
@@ -1203,6 +1219,164 @@ func TestEngineAPIv4AcceptsBeaconRootTimestampPayload(t *testing.T) {
 
 	err = engine.blobAPI().v1().validatePayloadExecution(blk, parentHash, &beaconRoot, nil)
 	require.NoError(t, err)
+	syncExecutionPayloadV4OutputsFromBlock(t, payload, blk)
+
+	requestsHash := executionRequestsHash(nil)
+	payload.BlockHash = ethCompatibleEngineBlockHash(blk, cfg, enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        payload.Withdrawals,
+		includeBlobFields:  true,
+		parentBeaconRoot:   &beaconRoot,
+		requestsHash:       &requestsHash,
+	})
+
+	resp, err := engine.NewPayloadV4(context.Background(), payload, nil, &beaconRoot, nil)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, resp.Status)
+	require.NotNil(t, resp.LatestValidHash)
+	require.Equal(t, payload.BlockHash, *resp.LatestValidHash)
+}
+
+func TestEngineAPIv4StateAdapterAcceptsBeaconRootTimestampPayload(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	cfg := &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		Consensus:             params.Faker,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
+		ShanghaiBlock:         big.NewInt(0),
+		CancunBlock:           big.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+
+	senderKey, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	sender := crypto.PubkeyToAddress(senderKey.PublicKey)
+	caller := types.HexToAddress("0x1000000000000000000000000000000000000001")
+	coinbase := types.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	genesis := &internalcore.GenesisBlock{
+		GenesisConfig: &conf.Genesis{
+			Config: cfg,
+			Alloc: conf.GenesisAlloc{
+				sender: {
+					Balance: "0x3635c9adc5dea00000",
+				},
+				caller: {
+					Balance: "0x0",
+					Code:    buildBeaconRootCallerContract(),
+				},
+				params.BeaconRootsAddress: {
+					Balance: "0x0",
+					Nonce:   1,
+					Code:    params.BeaconRootsCode,
+				},
+			},
+			Number:     0,
+			GasLimit:   30_000_000,
+			Difficulty: uint256.NewInt(0),
+			Timestamp:  1,
+			BaseFee:    uint256.NewInt(7),
+			Coinbase:   coinbase,
+		},
+	}
+
+	var genesisBlock *block.Block
+	err = db.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, _, err := genesis.Write(tx)
+		if err != nil {
+			return err
+		}
+		genesisBlock = blk
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotNil(t, genesisBlock)
+
+	var timestampArg types.Hash
+	binary.BigEndian.PutUint64(timestampArg[24:], 12)
+	beaconRoot := types.Hash{0x44}
+	tx := transaction.NewTx(&transaction.DynamicFeeTx{
+		ChainID:   uint256.NewInt(1),
+		Nonce:     0,
+		GasTipCap: uint256.NewInt(0),
+		GasFeeCap: uint256.NewInt(7),
+		Gas:       1_000_000,
+		To:        &caller,
+		Value:     uint256.NewInt(0),
+		Data:      timestampArg[:],
+	})
+	signedTx, err := transaction.SignTx(tx, transaction.NewLondonSigner(big.NewInt(1)), senderKey)
+	require.NoError(t, err)
+	rawTx, err := transaction.EncodeEthereumTransaction(signedTx)
+	require.NoError(t, err)
+
+	header := &block.Header{
+		ParentHash: genesisBlock.Hash(),
+		Number:     uint256.NewInt(1),
+		GasLimit:   30_000_000,
+		Time:       12,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+		Coinbase:   coinbase,
+		GasUsed:    0,
+	}
+	usedGas := engineTestUsedGasWithBeaconRoot(t, db, cfg, header, signedTx, &beaconRoot)
+	require.Greater(t, usedGas, uint64(100_000))
+
+	parentHash := ethCompatibleBlockHash(genesisBlock, cfg)
+	chain := &canonicalCheckChainStub{
+		header: genesisBlock.Header().(*block.Header),
+		blk:    genesisBlock,
+		config: cfg,
+		db:     db,
+	}
+	api := &API{
+		bc:            chain,
+		db:            db,
+		engine:        &apiTestEngine{},
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIv4(NewBlockChainAPI(api))
+	engine.v1.SetStateAdapter(NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{}))
+
+	payload := &ExecutionPayloadV4{
+		ParentHash:    parentHash,
+		FeeRecipient:  coinbase,
+		StateRoot:     types.Hash{0x01},
+		ReceiptsRoot:  types.Hash{0x02},
+		LogsBloom:     make([]byte, 256),
+		PrevRandao:    types.Hash{0x03},
+		BlockNumber:   hexutil.Uint64(1),
+		GasLimit:      hexutil.Uint64(header.GasLimit),
+		GasUsed:       hexutil.Uint64(usedGas),
+		Timestamp:     hexutil.Uint64(header.Time),
+		BaseFeePerGas: hexutil.Uint64(header.BaseFee.Uint64()),
+		Transactions:  []hexutil.Bytes{rawTx},
+		Withdrawals:   []*Withdrawal{},
+		BlobGasUsed:   hexUint64Ptr(0),
+		ExcessBlobGas: hexUint64Ptr(0),
+	}
+	blk, err := executionPayloadV4ToBlock(payload)
+	require.NoError(t, err)
+
+	err = engine.blobAPI().v1().validatePayloadExecution(blk, parentHash, &beaconRoot, nil)
+	require.NoError(t, err)
+	syncExecutionPayloadV4OutputsFromBlock(t, payload, blk)
 
 	requestsHash := executionRequestsHash(nil)
 	payload.BlockHash = ethCompatibleEngineBlockHash(blk, cfg, enginePayloadHashOptions{

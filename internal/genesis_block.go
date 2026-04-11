@@ -19,6 +19,7 @@ package internal
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/binary"
 	"encoding/json"
@@ -42,6 +43,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/ethcompat"
 )
 
 var ErrGenesisNoConfig = errors.New("genesis has no chain configuration")
@@ -77,6 +79,14 @@ type GenesisBlock struct {
 	Hash          string
 	GenesisConfig *conf.Genesis
 	//	ChainConfig *params.ChainConfig
+}
+
+func EthereumCompatibleGenesisHash(genesis *conf.Genesis) (types.Hash, error) {
+	blk, _, err := (&GenesisBlock{GenesisConfig: genesis}).ToBlock()
+	if err != nil {
+		return types.Hash{}, err
+	}
+	return blk.Hash(), nil
 }
 
 func (g *GenesisBlock) Write(tx kv.RwTx) (*block.Block, *state.IntraBlockState, error) {
@@ -169,6 +179,13 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 			return
 		}
 		root = statedb.GenerateRootHash()
+		if g.GenesisConfig.StateRoot == (types.Hash{}) && !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
+			root, err = ethcompat.VerifyStateRoot(tx)
+			if err != nil {
+				errCh <- fmt.Errorf("failed to verify ethereum genesis state root: %w", err)
+				return
+			}
+		}
 		errCh <- nil
 	}()
 
@@ -221,6 +238,9 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		BlobGasUsed:   uint64Ptr(g.GenesisConfig.BlobGasUsed),
 		ExcessBlobGas: uint64Ptr(g.GenesisConfig.ExcessBlobGas),
 	}
+	if !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
+		head.UncleHash = hash.EmptyUncleHash
+	}
 	if len(extraData) > 0 {
 		head.Extra = extraData
 	}
@@ -238,8 +258,30 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 			head.BaseFee = uint256.NewInt(params.InitialBaseFee)
 		}
 	}
+	if cfg := g.GenesisConfig.Config; cfg != nil {
+		if cfg.IsShanghaiAt(g.GenesisConfig.Number, uint64(g.GenesisConfig.Timestamp)) {
+			root := hash.EmptyRootHash
+			head.WithdrawalsHash = &root
+		}
+		if cfg.IsCancunAt(g.GenesisConfig.Number, uint64(g.GenesisConfig.Timestamp)) {
+			if head.WithdrawalsHash == nil {
+				root := hash.EmptyRootHash
+				head.WithdrawalsHash = &root
+			}
+			head.ParentBeaconRoot = new(types.Hash)
+		}
+		if cfg.IsPrague(uint64(g.GenesisConfig.Timestamp)) || cfg.IsPectra(uint64(g.GenesisConfig.Timestamp)) || cfg.IsOsaka(uint64(g.GenesisConfig.Timestamp)) {
+			root := emptyExecutionRequestsHash()
+			head.RequestsHash = &root
+		}
+	}
 
 	return block.NewBlock(head, nil).(*block.Block), statedb, nil
+}
+
+func emptyExecutionRequestsHash() types.Hash {
+	sum := sha256.Sum256(nil)
+	return types.BytesToHash(sum[:])
 }
 
 func buildConsensusExtraData(genesis *conf.Genesis) ([]byte, error) {
@@ -293,10 +335,11 @@ func normalizeGenesisHexQuantity(input string) string {
 }
 
 func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.IntraBlockState, error) {
-	block, statedb, err := g.ToBlock()
+	block, _, err := g.ToBlock()
 	if err != nil {
 		return nil, nil, err
 	}
+	statedb := state.New(state.NewPlainStateReader(tx))
 	for address, account := range g.GenesisConfig.Alloc {
 		if len(account.Code) > 0 || len(account.Storage) > 0 {
 			// Special case for weird tests - inaccessible storage
@@ -316,8 +359,30 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 	}
 
 	blockWriter := state.NewPlainStateWriter(tx, tx, g.GenesisConfig.Number)
-	if err := statedb.CommitBlock(&params.Rules{}, blockWriter); err != nil {
+	for address, account := range g.GenesisConfig.Alloc {
+		balance, err := decodeGenesisBalance(account.Balance)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid balance for address %s: %w", address.Hex(), err)
+		}
+		statedb.AddBalance(address, balance)
+		statedb.SetCode(address, account.Code)
+		statedb.SetNonce(address, account.Nonce)
+		for key, value := range account.Storage {
+			k := key
+			val := uint256.NewInt(0).SetBytes(value.Bytes())
+			statedb.SetState(address, &k, *val)
+		}
+		if len(account.Code) > 0 || len(account.Storage) > 0 {
+			statedb.SetIncarnation(address, state.FirstContractIncarnation)
+		}
+	}
+	if err := statedb.FinalizeTx(g.GenesisConfig.Config.Rules(0), blockWriter); err != nil {
 		return nil, statedb, fmt.Errorf("cannot write state: %w", err)
+	}
+	if verifiedRoot, err := ethcompat.VerifyStateRoot(tx); err != nil {
+		return nil, statedb, fmt.Errorf("cannot verify genesis state root: %w", err)
+	} else if block.StateRoot() != verifiedRoot {
+		return nil, statedb, fmt.Errorf("genesis state root mismatch: header=%s computed=%s", block.StateRoot(), verifiedRoot)
 	}
 	if err := blockWriter.WriteChangeSets(); err != nil {
 		return nil, statedb, fmt.Errorf("cannot write change sets: %w", err)

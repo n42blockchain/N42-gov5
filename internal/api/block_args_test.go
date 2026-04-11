@@ -1,11 +1,13 @@
 package api
 
 import (
+	"encoding/json"
 	"math/big"
 	"testing"
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
@@ -102,10 +104,17 @@ func TestRPCMarshalHeaderOmitsPostForkFieldsBeforeShanghai(t *testing.T) {
 func TestRPCMarshalHeaderIncludesWithdrawalsAtShanghai(t *testing.T) {
 	t.Parallel()
 
+	wantRoot := withdrawalsRoot([]*Withdrawal{{
+		Index:          1,
+		ValidatorIndex: 2,
+		Address:        types.HexToAddress("0x1000"),
+		Amount:         3,
+	}})
 	header := &block.Header{
-		Number:  uint256.NewInt(10),
-		Time:    9,
-		BaseFee: uint256.NewInt(1),
+		Number:          uint256.NewInt(10),
+		Time:            9,
+		BaseFee:         uint256.NewInt(1),
+		WithdrawalsHash: ptrToHash(wantRoot),
 	}
 	cfg := &params.ChainConfig{
 		LondonBlock:   big.NewInt(0),
@@ -118,8 +127,7 @@ func TestRPCMarshalHeaderIncludesWithdrawalsAtShanghai(t *testing.T) {
 	if !ok {
 		t.Fatal("RPCMarshalHeader() missing withdrawalsRoot at Shanghai")
 	}
-	wantRoot := avmutil.Hash(withdrawalsRoot(nil))
-	if got != wantRoot {
+	if got != avmutil.Hash(wantRoot) {
 		t.Fatalf("RPCMarshalHeader() withdrawalsRoot = %s, want %s", got.Hex(), wantRoot.Hex())
 	}
 	if _, ok := fields["withdrawals"]; !ok {
@@ -136,12 +144,21 @@ func TestRPCMarshalHeaderIncludesWithdrawalsAtShanghai(t *testing.T) {
 func TestRPCMarshalHeaderIncludesBlobFieldsAtCancun(t *testing.T) {
 	t.Parallel()
 
+	wantRoot := withdrawalsRoot([]*Withdrawal{{
+		Index:          4,
+		ValidatorIndex: 5,
+		Address:        types.HexToAddress("0x2000"),
+		Amount:         6,
+	}})
+	wantBeaconRoot := types.HexToHash("0x1234")
 	header := &block.Header{
-		Number:        uint256.NewInt(20),
-		Time:          9,
-		BaseFee:       uint256.NewInt(1),
-		BlobGasUsed:   ptrToUint64(11),
-		ExcessBlobGas: ptrToUint64(22),
+		Number:           uint256.NewInt(20),
+		Time:             9,
+		BaseFee:          uint256.NewInt(1),
+		BlobGasUsed:      ptrToUint64(11),
+		ExcessBlobGas:    ptrToUint64(22),
+		WithdrawalsHash:  ptrToHash(wantRoot),
+		ParentBeaconRoot: &wantBeaconRoot,
 	}
 	cfg := &params.ChainConfig{
 		LondonBlock:   big.NewInt(0),
@@ -160,12 +177,11 @@ func TestRPCMarshalHeaderIncludesBlobFieldsAtCancun(t *testing.T) {
 	if !ok {
 		t.Fatal("RPCMarshalHeader() missing withdrawalsRoot at Cancun")
 	}
-	wantRoot := avmutil.Hash(withdrawalsRoot(nil))
-	if gotRoot != wantRoot {
+	if gotRoot != avmutil.Hash(wantRoot) {
 		t.Fatalf("RPCMarshalHeader() withdrawalsRoot = %s, want %s", gotRoot.Hex(), wantRoot.Hex())
 	}
-	if gotBeaconRoot, ok := fields["parentBeaconBlockRoot"].(avmutil.Hash); !ok || gotBeaconRoot != (avmutil.Hash{}) {
-		t.Fatalf("RPCMarshalHeader() parentBeaconBlockRoot = %#v, want zero hash", fields["parentBeaconBlockRoot"])
+	if gotBeaconRoot, ok := fields["parentBeaconBlockRoot"].(avmutil.Hash); !ok || gotBeaconRoot != avmutil.Hash(wantBeaconRoot) {
+		t.Fatalf("RPCMarshalHeader() parentBeaconBlockRoot = %#v, want %s", fields["parentBeaconBlockRoot"], wantBeaconRoot.Hex())
 	}
 	if _, ok := fields["withdrawals"]; !ok {
 		t.Fatal("RPCMarshalHeader() missing withdrawals at Cancun")
@@ -175,12 +191,14 @@ func TestRPCMarshalHeaderIncludesBlobFieldsAtCancun(t *testing.T) {
 func TestRPCMarshalHeaderIncludesRequestsHashAtPrague(t *testing.T) {
 	t.Parallel()
 
+	wantRequestsHash := types.HexToHash("0x5678")
 	header := &block.Header{
 		Number:        uint256.NewInt(0),
 		Time:          0,
 		BaseFee:       uint256.NewInt(1),
 		BlobGasUsed:   ptrToUint64(0),
 		ExcessBlobGas: ptrToUint64(0),
+		RequestsHash:  &wantRequestsHash,
 	}
 	cfg := &params.ChainConfig{
 		LondonBlock:   big.NewInt(0),
@@ -194,9 +212,8 @@ func TestRPCMarshalHeaderIncludesRequestsHashAtPrague(t *testing.T) {
 	if !ok {
 		t.Fatal("RPCMarshalHeader() missing requestsHash at Prague")
 	}
-	want := avmutil.Hash(executionRequestsHash(nil))
-	if got != want {
-		t.Fatalf("RPCMarshalHeader() requestsHash = %s, want %s", got.Hex(), want.Hex())
+	if got != avmutil.Hash(wantRequestsHash) {
+		t.Fatalf("RPCMarshalHeader() requestsHash = %s, want %s", got.Hex(), wantRequestsHash.Hex())
 	}
 }
 
@@ -345,6 +362,134 @@ func TestEthCompatibleHeaderHashIncludesRequestsHashAtPrague(t *testing.T) {
 	got := ethCompatibleHeaderHash(header, cfg)
 	if got != want {
 		t.Fatalf("ethCompatibleHeaderHash() = %s, want %s", got, want)
+	}
+}
+
+func TestEthCompatibleHeaderHashUsesActualForkFieldValues(t *testing.T) {
+	t.Parallel()
+
+	withdrawalsHash := withdrawalsRoot([]*Withdrawal{{
+		Index:          1,
+		ValidatorIndex: 2,
+		Address:        types.HexToAddress("0x1000"),
+		Amount:         3,
+	}})
+	parentBeaconRoot := types.HexToHash("0x1234")
+	requestsHash := types.HexToHash("0x5678")
+	header := &block.Header{
+		Root:             types.HexToHash("0x95a6b74fbcb35dd5bd4dc03e03236164da625fc661cadfe58674b7cd27e664e1"),
+		TxHash:           types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"),
+		ReceiptHash:      types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"),
+		Difficulty:       uint256.NewInt(0),
+		Number:           uint256.NewInt(1),
+		GasLimit:         0x07270e00,
+		GasUsed:          0,
+		Time:             1,
+		Extra:            hexutil.MustDecode("0x00"),
+		BaseFee:          uint256.NewInt(7),
+		WithdrawalsHash:  &withdrawalsHash,
+		BlobGasUsed:      ptrToUint64(11),
+		ExcessBlobGas:    ptrToUint64(22),
+		ParentBeaconRoot: &parentBeaconRoot,
+		RequestsHash:     &requestsHash,
+		Bloom:            block.BytesToBloom(make([]byte, 256)),
+		Nonce:            block.EncodeNonce(0),
+	}
+	cfg := &params.ChainConfig{
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(0),
+		CancunBlock:   big.NewInt(0),
+		PragueTime:    big.NewInt(0),
+	}
+
+	want := hash.RlpHash(&ethRPCHeader{
+		ParentHash:       header.ParentHash,
+		UncleHash:        hash.EmptyUncleHash,
+		Coinbase:         header.Coinbase,
+		Root:             header.Root,
+		TxHash:           header.TxHash,
+		ReceiptHash:      header.ReceiptHash,
+		Bloom:            block.BytesToBloom(header.Bloom.Bytes()),
+		Difficulty:       uint256ToBigOrZero(header.Difficulty),
+		Number:           uint256ToBigOrZero(header.Number),
+		GasLimit:         header.GasLimit,
+		GasUsed:          header.GasUsed,
+		Time:             header.Time,
+		Extra:            header.Extra,
+		MixDigest:        header.MixDigest,
+		Nonce:            block.EncodeNonce(header.Nonce.Uint64()),
+		BaseFee:          header.BaseFee.ToBig(),
+		WithdrawalsHash:  &withdrawalsHash,
+		BlobGasUsed:      header.BlobGasUsed,
+		ExcessBlobGas:    header.ExcessBlobGas,
+		ParentBeaconRoot: &parentBeaconRoot,
+		RequestsHash:     &requestsHash,
+	})
+	got := ethCompatibleHeaderHash(header, cfg)
+	if got != want {
+		t.Fatalf("ethCompatibleHeaderHash() = %s, want %s", got, want)
+	}
+	assertRPCHeaderRoundTripHashMatches(t, header, cfg)
+}
+
+func TestExecutionPayloadV2ToBlockPreservesExplicitEmptyWithdrawalsHash(t *testing.T) {
+	t.Parallel()
+
+	payload := &ExecutionPayloadV2{
+		ExecutionPayloadV1: ExecutionPayloadV1{
+			ParentHash:    types.HexToHash("0x01"),
+			FeeRecipient:  types.HexToAddress("0x1000"),
+			StateRoot:     types.HexToHash("0x02"),
+			ReceiptsRoot:  types.HexToHash("0x03"),
+			LogsBloom:     make([]byte, 256),
+			PrevRandao:    types.HexToHash("0x04"),
+			BlockNumber:   1,
+			GasLimit:      30_000_000,
+			GasUsed:       0,
+			Timestamp:     2,
+			ExtraData:     []byte{},
+			BaseFeePerGas: 7,
+			Transactions:  []hexutil.Bytes{},
+		},
+		Withdrawals: []*Withdrawal{},
+	}
+	blk, err := executionPayloadV2ToBlock(payload)
+	if err != nil {
+		t.Fatalf("executionPayloadV2ToBlock() error = %v", err)
+	}
+	header := blockHeader(blk)
+	if header == nil || header.WithdrawalsHash == nil {
+		t.Fatal("executionPayloadV2ToBlock() did not populate withdrawalsRoot")
+	}
+	wantRoot := withdrawalsRoot(payload.Withdrawals)
+	if *header.WithdrawalsHash != wantRoot {
+		t.Fatalf("executionPayloadV2ToBlock() withdrawalsRoot = %s, want %s", header.WithdrawalsHash.Hex(), wantRoot.Hex())
+	}
+	cfg := &params.ChainConfig{
+		LondonBlock:   big.NewInt(0),
+		ShanghaiBlock: big.NewInt(0),
+	}
+	assertRPCHeaderRoundTripHashMatches(t, header, cfg)
+}
+
+func assertRPCHeaderRoundTripHashMatches(t *testing.T, header *block.Header, cfg *params.ChainConfig) {
+	t.Helper()
+
+	fields := RPCMarshalHeader(header, cfg)
+	wantHash, ok := fields["hash"].(avmutil.Hash)
+	if !ok {
+		t.Fatalf("RPCMarshalHeader() hash type = %T", fields["hash"])
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("json.Marshal(RPCMarshalHeader()) error = %v", err)
+	}
+	var ethHeader avmtypes.Header
+	if err := json.Unmarshal(raw, &ethHeader); err != nil {
+		t.Fatalf("json.Unmarshal(Ethereum-compatible Header) error = %v", err)
+	}
+	if got := ethHeader.Hash().Hex(); got != wantHash.Hex() {
+		t.Fatalf("RPC header round-trip hash = %s, want %s", got, wantHash.Hex())
 	}
 }
 

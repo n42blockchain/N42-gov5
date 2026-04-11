@@ -52,6 +52,9 @@ func TestResolveConfiguredGenesisPrivateChainUsesDevnet(t *testing.T) {
 	if resolved.chainConfig.ChainID == nil || resolved.chainConfig.ChainID.Uint64() != 1337 {
 		t.Fatalf("chain id = %v, want 1337", resolved.chainConfig.ChainID)
 	}
+	if resolved.chainConfig.StateScheme != params.StateCommitmentPresetEthereumMPT.StateScheme() {
+		t.Fatalf("state scheme = %q, want %q", resolved.chainConfig.StateScheme, params.StateCommitmentPresetEthereumMPT.StateScheme())
+	}
 }
 
 func TestResolveConfiguredGenesisPrivateN42ChainUsesN42Devnet(t *testing.T) {
@@ -111,6 +114,9 @@ func TestResolveConfiguredGenesisEthereumMainnetRequiresExplicitInit(t *testing.
 	}
 	if resolved.chainConfig != params.EthereumMainnetChainConfig {
 		t.Fatal("expected ethereum mainnet chain config")
+	}
+	if resolved.chainConfig.StateScheme != params.StateCommitmentPresetEthereumMPT.StateScheme() {
+		t.Fatalf("state scheme = %q, want %q", resolved.chainConfig.StateScheme, params.StateCommitmentPresetEthereumMPT.StateScheme())
 	}
 	if resolved.genesisHash == nil || *resolved.genesisHash != params.EthereumMainnetGenesisHash {
 		t.Fatalf("genesis hash = %v, want %s", resolved.genesisHash, params.EthereumMainnetGenesisHash)

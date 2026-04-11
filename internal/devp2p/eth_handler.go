@@ -8,21 +8,17 @@ import (
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
 
+	n42block "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/network/eth69"
-	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 )
 
 // BlockProvider reads chain data for serving to peers.
 type BlockProvider interface {
-	// CurrentHead returns the current chain head block number and hash.
-	CurrentHead() (uint64, types.Hash)
-	// GetHeaderRLP returns the RLP-encoded header for a block number.
-	GetHeaderRLP(number uint64) ([]byte, error)
-	// GetBodyRLP returns the RLP-encoded body for a block number.
-	GetBodyRLP(number uint64) ([]byte, error)
+	CurrentHead() (*n42block.Header, types.Hash, error)
+	GetHeaderByNumber(number uint64) (*n42block.Header, error)
+	GetHeaderByHash(hash types.Hash) (*n42block.Header, error)
 }
 
 // EthHandler processes eth/68-69 protocol messages.
@@ -31,16 +27,28 @@ type EthHandler struct {
 	provider    BlockProvider
 	networkID   uint64
 	genesis     types.Hash
+	genesisTime uint64
 }
 
 // NewEthHandler creates a new eth protocol message handler.
-func NewEthHandler(cfg *params.ChainConfig, provider BlockProvider) *EthHandler {
+func NewEthHandler(cfg *params.ChainConfig, genesisHash types.Hash, genesisTime uint64, provider BlockProvider) (*EthHandler, error) {
+	if genesisHash == (types.Hash{}) {
+		return nil, fmt.Errorf("genesis hash unavailable")
+	}
 	return &EthHandler{
 		chainConfig: cfg,
 		provider:    provider,
-		networkID:   params.NetworkIDByChainName(cfg.ChainName),
-		genesis:     *params.GenesisHashByChainName(cfg.ChainName),
+		networkID:   networkID(cfg),
+		genesis:     genesisHash,
+		genesisTime: genesisTime,
+	}, nil
+}
+
+func (h *EthHandler) currentForkID(head *n42block.Header) forkID {
+	if head == nil {
+		return forkID{}
 	}
+	return newForkID(h.chainConfig, h.genesis, h.genesisTime, head.Number64().Uint64(), head.Time)
 }
 
 // runPeer is called by the p2p server for each new peer connection.
@@ -48,20 +56,20 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 	log.Info("devp2p peer connected", "id", peer.ID().String()[:16], "name", peer.Name())
 
 	// Handshake: send our status.
-	headNum, headHash := h.provider.CurrentHead()
-	status := eth69.StatusPacket{
-		ProtocolVersion: uint32(eth69.ETH68),
+	head, headHash, err := h.provider.CurrentHead()
+	if err != nil {
+		return fmt.Errorf("current head: %w", err)
+	}
+	status := statusPacket{
+		ProtocolVersion: uint32(69),
 		NetworkID:       h.networkID,
 		Genesis:         h.genesis,
+		ForkID:          h.currentForkID(head),
 		EarliestBlock:   0,
-		LatestBlock:     headNum,
+		LatestBlock:     head.Number64().Uint64(),
 		LatestBlockHash: headHash,
 	}
-	statusRLP, err := rlp.EncodeToBytes(&status)
-	if err != nil {
-		return fmt.Errorf("encode status: %w", err)
-	}
-	if err := gethp2p.Send(rw, eth69.StatusMsg, statusRLP); err != nil {
+	if err := gethp2p.Send(rw, 0, &status); err != nil {
 		return fmt.Errorf("send status: %w", err)
 	}
 
@@ -70,10 +78,10 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 	if err != nil {
 		return err
 	}
-	if msg.Code != eth69.StatusMsg {
+	if msg.Code != 0 {
 		return fmt.Errorf("expected status message, got %d", msg.Code)
 	}
-	var peerStatus eth69.StatusPacket
+	var peerStatus statusPacket
 	if err := msg.Decode(&peerStatus); err != nil {
 		return fmt.Errorf("decode peer status: %w", err)
 	}
@@ -107,35 +115,35 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 	defer msg.Discard()
 
 	switch msg.Code {
-	case eth69.NewBlockHashesMsg:
+	case 1:
 		// Peer announces new block hashes — log and ignore for now.
 		log.Debug("devp2p: new block hashes", "peer", peer.ID().String()[:16])
 		return nil
 
-	case eth69.TransactionsMsg:
+	case 2:
 		// Peer broadcasts transactions — forward to mempool (TODO).
 		return nil
 
-	case eth69.GetBlockHeadersMsg:
+	case 3:
 		return h.handleGetBlockHeaders(rw, msg)
 
-	case eth69.GetBlockBodiesMsg:
+	case 5:
 		return h.handleGetBlockBodies(rw, msg)
 
-	case eth69.NewBlockMsg:
+	case 7:
 		log.Debug("devp2p: new block", "peer", peer.ID().String()[:16])
 		return nil
 
-	case eth69.NewPooledTransactionHashesMsg:
+	case 8:
 		return nil // ignore
 
-	case eth69.GetPooledTransactionsMsg:
+	case 9:
 		return nil // TODO: serve from txpool
 
-	case eth69.GetReceiptsMsg:
+	case 15:
 		return nil // TODO: serve from freezer
 
-	case eth69.BlockRangeUpdateMsg:
+	case 17:
 		return nil // eth/69 range update, log only
 
 	default:
@@ -145,24 +153,33 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 
 // handleGetBlockHeaders serves block headers to a requesting peer.
 func (h *EthHandler) handleGetBlockHeaders(rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
-	var req eth69.GetBlockHeadersPacket
+	var req getBlockHeadersPacket
 	if err := msg.Decode(&req); err != nil {
 		return err
 	}
 
-	headers := make([][]byte, 0, req.Amount)
+	headers := make([]*n42block.Header, 0, req.Amount)
 	num := req.Origin.Number
 	if req.Origin.Hash != (types.Hash{}) {
-		// TODO: resolve hash to number
-		return nil
+		header, err := h.provider.GetHeaderByHash(req.Origin.Hash)
+		if err != nil {
+			return err
+		}
+		if header == nil {
+			return gethp2p.Send(rw, 4, &blockHeadersPacket{RequestID: req.RequestID})
+		}
+		num = header.Number64().Uint64()
 	}
 
 	for i := uint64(0); i < req.Amount && i < 1024; i++ {
-		hdr, err := h.provider.GetHeaderRLP(num)
-		if err != nil || hdr == nil {
+		hdr, err := h.provider.GetHeaderByNumber(num)
+		if err != nil {
+			return err
+		}
+		if hdr == nil {
 			break
 		}
-		headers = append(headers, hdr)
+		headers = append(headers, n42block.CopyHeader(hdr))
 		if req.Reverse {
 			if num <= req.Skip+1 {
 				break
@@ -173,25 +190,23 @@ func (h *EthHandler) handleGetBlockHeaders(rw gethp2p.MsgReadWriter, msg gethp2p
 		}
 	}
 
-	resp := eth69.BlockHeadersPacket{
+	resp := blockHeadersPacket{
 		RequestID: req.RequestID,
 		Headers:   headers,
 	}
-	return gethp2p.Send(rw, eth69.BlockHeadersMsg, &resp)
+	return gethp2p.Send(rw, 4, &resp)
 }
 
 // handleGetBlockBodies serves block bodies to a requesting peer.
 func (h *EthHandler) handleGetBlockBodies(rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
-	var req eth69.GetBlockBodiesPacket
+	var req getBlockBodiesPacket
 	if err := msg.Decode(&req); err != nil {
 		return err
 	}
 
-	// TODO: resolve hashes to block numbers and serve bodies.
-	// For now, return empty response.
-	resp := eth69.BlockBodiesPacket{
+	resp := blockBodiesPacket{
 		RequestID: req.RequestID,
 		Bodies:    nil,
 	}
-	return gethp2p.Send(rw, eth69.BlockBodiesMsg, &resp)
+	return gethp2p.Send(rw, 6, &resp)
 }

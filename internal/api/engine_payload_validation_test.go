@@ -375,6 +375,46 @@ func TestValidateExecutionPayloadHeaderRejectsGasUsedAboveGasLimit(t *testing.T)
 	require.EqualError(t, err, "invalid gasUsed: have 11, gasLimit 10")
 }
 
+func TestValidateExecutionPayloadHeaderRejectsTimestampNotGreaterThanParent(t *testing.T) {
+	t.Parallel()
+
+	parent := &block.Header{
+		Number:   uint256.NewInt(7),
+		GasLimit: 30_000_000,
+		Time:     10,
+		BaseFee:  uint256.NewInt(7),
+	}
+	header := &block.Header{
+		Number:   uint256.NewInt(8),
+		GasLimit: 30_000_000,
+		Time:     10,
+		BaseFee:  uint256.NewInt(7),
+	}
+
+	err := validateExecutionPayloadHeader(header, parent, &params.ChainConfig{LondonBlock: big.NewInt(0)})
+	require.EqualError(t, err, "invalid timestamp: have 10, parent 10")
+}
+
+func TestValidateExecutionPayloadHeaderRejectsNonConsecutiveBlockNumber(t *testing.T) {
+	t.Parallel()
+
+	parent := &block.Header{
+		Number:   uint256.NewInt(7),
+		GasLimit: 30_000_000,
+		Time:     10,
+		BaseFee:  uint256.NewInt(7),
+	}
+	header := &block.Header{
+		Number:   uint256.NewInt(9),
+		GasLimit: 30_000_000,
+		Time:     11,
+		BaseFee:  uint256.NewInt(7),
+	}
+
+	err := validateExecutionPayloadHeader(header, parent, &params.ChainConfig{LondonBlock: big.NewInt(0)})
+	require.EqualError(t, err, "invalid block number: have 9, want 8")
+}
+
 func TestValidateExecutionPayloadHeaderRejectsIncorrectExcessBlobGasForOsakaSchedule(t *testing.T) {
 	t.Parallel()
 

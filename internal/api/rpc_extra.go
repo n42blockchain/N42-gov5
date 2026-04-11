@@ -87,6 +87,7 @@ func (admin *AdminAPI) NodeInfo() *NodeInfo {
 	if admin.api != nil {
 		if p := admin.api.p2p; p != nil {
 			info.ID = p.SelfNodeID()
+			info.Enode = p.SelfEnode()
 			info.ENR = p.SelfENR()
 			addrs := p.SelfListenAddrs()
 			if len(addrs) > 0 {

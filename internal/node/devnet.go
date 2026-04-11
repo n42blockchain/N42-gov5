@@ -138,6 +138,7 @@ func ethDevGenesisBlock(cfg *conf.Config) *conf.Genesis {
 	chainConfig := &params.ChainConfig{
 		ChainID:                       big.NewInt(1337),
 		Consensus:                     params.Faker,
+		StateScheme:                   params.StateCommitmentPresetEthereumMPT.StateScheme(),
 		HomesteadBlock:                zero,
 		TangerineWhistleBlock:         zero,
 		SpuriousDragonBlock:           zero,

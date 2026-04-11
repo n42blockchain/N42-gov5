@@ -64,7 +64,7 @@ func ProcessBlock(
 	}
 
 	// Pre-block system calls (beacon root, Prague system contracts, etc.).
-	if err := iinternal.ProcessExecutionBlockStart(nil, chainCfg, ibs, header, engine); err != nil {
+	if err := iinternal.ProcessExecutionBlockStart(header.ParentBeaconRoot, chainCfg, ibs, header, engine); err != nil {
 		return nil, err
 	}
 
@@ -111,8 +111,8 @@ func ProcessBlock(
 
 	}
 
-	// Post-block system calls.
-	if _, err := iinternal.ProcessExecutionBlockEnd(nil, chainCfg, ibs, header, engine); err != nil {
+	// Post-block system calls depend on the receipts emitted by executed transactions.
+	if _, err := iinternal.ProcessExecutionBlockEnd(receipts, chainCfg, ibs, header, engine); err != nil {
 		return nil, err
 	}
 

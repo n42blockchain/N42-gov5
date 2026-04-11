@@ -19,13 +19,14 @@ const (
 )
 
 type dataDirNetworkManifest struct {
-	Version     int    `json:"version"`
-	Chain       string `json:"chain"`
-	Profile     string `json:"profile"`
-	Commitment  string `json:"commitment"`
-	ChainID     string `json:"chain_id,omitempty"`
-	Consensus   string `json:"consensus,omitempty"`
-	GenesisHash string `json:"genesis_hash,omitempty"`
+	Version             int    `json:"version"`
+	Chain               string `json:"chain"`
+	Profile             string `json:"profile"`
+	Commitment          string `json:"commitment"`
+	ChainID             string `json:"chain_id,omitempty"`
+	Consensus           string `json:"consensus,omitempty"`
+	GenesisHash         string `json:"genesis_hash,omitempty"`
+	EthereumGenesisHash string `json:"ethereum_genesis_hash,omitempty"`
 }
 
 func ValidateDataDirNetworkBinding(cfg *conf.Config, chainCfg *params.ChainConfig, genesisHash *types.Hash) error {
@@ -185,6 +186,32 @@ func writeDataDirNetworkManifest(dataDir string, manifest dataDirNetworkManifest
 	}
 	raw = append(raw, '\n')
 	return os.WriteFile(dataDirNetworkManifestPath(dataDir), raw, 0o644)
+}
+
+func PersistEthereumGenesisHash(dataDir string, genesisHash types.Hash) error {
+	if dataDir == "" || genesisHash == (types.Hash{}) {
+		return nil
+	}
+	manifest, err := readDataDirNetworkManifest(dataDir)
+	if err != nil {
+		return err
+	}
+	if manifest == nil {
+		manifest = &dataDirNetworkManifest{Version: dataDirNetworkManifestVersion}
+	}
+	manifest.EthereumGenesisHash = genesisHash.Hex()
+	return writeDataDirNetworkManifest(dataDir, *manifest)
+}
+
+func ReadEthereumGenesisHash(dataDir string) (types.Hash, bool, error) {
+	if dataDir == "" {
+		return types.Hash{}, false, nil
+	}
+	manifest, err := readDataDirNetworkManifest(dataDir)
+	if err != nil || manifest == nil || manifest.EthereumGenesisHash == "" {
+		return types.Hash{}, false, err
+	}
+	return types.HexToHash(manifest.EthereumGenesisHash), true, nil
 }
 
 func dataDirNetworkManifestPath(dataDir string) string {

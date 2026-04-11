@@ -40,6 +40,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 
+	gverkle "github.com/ethereum/go-verkle"
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/external"
 	"github.com/n42blockchain/N42/accounts/keystore"
@@ -56,9 +57,9 @@ import (
 	"github.com/n42blockchain/N42/contracts/deposit/token"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/ai/attestation"
+	"github.com/n42blockchain/N42/internal/ai/coord"
 	"github.com/n42blockchain/N42/internal/ai/governance"
 	"github.com/n42blockchain/N42/internal/ai/training"
-	"github.com/n42blockchain/N42/internal/ai/coord"
 	"github.com/n42blockchain/N42/internal/ai/wallet"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/api/graphql"
@@ -70,6 +71,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/deferred"
+	ethdevp2p "github.com/n42blockchain/N42/internal/devp2p"
 	dcoprocessor "github.com/n42blockchain/N42/internal/distributed/coprocessor"
 	dmessaging "github.com/n42blockchain/N42/internal/distributed/messaging"
 	dnotify "github.com/n42blockchain/N42/internal/distributed/notify"
@@ -86,9 +88,9 @@ import (
 	"github.com/n42blockchain/N42/internal/snapshot"
 	"github.com/n42blockchain/N42/internal/stateless"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
+	"github.com/n42blockchain/N42/internal/sync/backfill"
 	"github.com/n42blockchain/N42/internal/sync/checkpoint"
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
-	"github.com/n42blockchain/N42/internal/sync/backfill"
 	"github.com/n42blockchain/N42/internal/sync/snapsync"
 	"github.com/n42blockchain/N42/internal/sync/torrentsync"
 	"github.com/n42blockchain/N42/internal/tracers"
@@ -98,16 +100,13 @@ import (
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/internal/zkverifier"
+	"github.com/n42blockchain/N42/lib/bmt"
+	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	"github.com/n42blockchain/N42/lib/common/cmp"
 	"github.com/n42blockchain/N42/lib/common/datadir"
 	"github.com/n42blockchain/N42/lib/gointerfaces/remote"
-	gverkle "github.com/ethereum/go-verkle"
-	"github.com/n42blockchain/N42/lib/bmt"
-	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
-	libverkle "github.com/n42blockchain/N42/lib/verkle"
-	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
@@ -116,6 +115,8 @@ import (
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	log3 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/lthash"
+	libverkle "github.com/n42blockchain/N42/lib/verkle"
+	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -153,15 +154,16 @@ type Node struct {
 	txspool         common.ITxsPool
 	depositContract *deposit.Deposit
 	p2p             p2p.P2P
+	devp2pServer    *ethdevp2p.Server
 	sync            *n42sync.Service
 	is              *initialsync.Service
 	checkpointSync  *checkpoint.Service
 	snapSync        *snapsync.Service
 	accman          *accounts.Manager
 
-	api                 *api.API
-	rpcAPIs             []jsonrpc.API
-	engineStateAdapter  *api.EngineStateAdapter // ETH EL mode only
+	api                *api.API
+	rpcAPIs            []jsonrpc.API
+	engineStateAdapter *api.EngineStateAdapter // ETH EL mode only
 
 	http           *httpServer
 	ipc            *ipcServer
@@ -174,23 +176,23 @@ type Node struct {
 	historyExpirer *HistoryExpirer
 	snapshotMgr    *snapshot.Manager
 
-	p2pGenesisHash     types.Hash              // genesis hash used for P2P fork digest
-	exexManager        *exex.Manager           // Execution Extensions manager
-	hotstuffService    *hotstuff.Service       // HotStuff BFT consensus service (nil if not using HotStuff)
-	bundlerService     *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
-	peerdasService     *peerdas.Service        // PeerDAS (EIP-7594) data availability service (nil if disabled)
-	mcpServer          *mcp.Server             // MCP (Model Context Protocol) server for AI agents (nil if disabled)
-	deferredPipeline   *deferred.Pipeline      // Deferred execution pipeline (nil if disabled)
-	grpcServer         *grpc.Server            // gRPC KV server for RPCDaemon (nil if disabled)
-	coprocessorService *dcoprocessor.Service   // ZK coprocessor (nil if disabled)
-	messagingService   *dmessaging.Service     // Decentralized messaging (nil if disabled)
-	storageBridge      *dstorage.Bridge              // IPFS/Filecoin storage bridge (nil if disabled)
-	storageResolver    *dstorage.UniversalResolver   // Multi-protocol content resolver (nil if disabled)
-	notifyService      *dnotify.Service        // Push notifications (nil if disabled)
-	web3Gateway        *api.Web3Gateway        // web3:// protocol gateway (nil if disabled)
-	backfillService    *backfill.Service       // Background history backfill (nil if disabled)
-	walletService      *wallet.Service         // AI agent wallet (nil if disabled)
-	agentRegistry      *coord.AgentRegistry    // AI agent discovery & coordination (nil if disabled)
+	p2pGenesisHash     types.Hash                  // genesis hash used for P2P fork digest
+	exexManager        *exex.Manager               // Execution Extensions manager
+	hotstuffService    *hotstuff.Service           // HotStuff BFT consensus service (nil if not using HotStuff)
+	bundlerService     *bundler.BundlerService     // ERC-4337 bundler service (nil if disabled)
+	peerdasService     *peerdas.Service            // PeerDAS (EIP-7594) data availability service (nil if disabled)
+	mcpServer          *mcp.Server                 // MCP (Model Context Protocol) server for AI agents (nil if disabled)
+	deferredPipeline   *deferred.Pipeline          // Deferred execution pipeline (nil if disabled)
+	grpcServer         *grpc.Server                // gRPC KV server for RPCDaemon (nil if disabled)
+	coprocessorService *dcoprocessor.Service       // ZK coprocessor (nil if disabled)
+	messagingService   *dmessaging.Service         // Decentralized messaging (nil if disabled)
+	storageBridge      *dstorage.Bridge            // IPFS/Filecoin storage bridge (nil if disabled)
+	storageResolver    *dstorage.UniversalResolver // Multi-protocol content resolver (nil if disabled)
+	notifyService      *dnotify.Service            // Push notifications (nil if disabled)
+	web3Gateway        *api.Web3Gateway            // web3:// protocol gateway (nil if disabled)
+	backfillService    *backfill.Service           // Background history backfill (nil if disabled)
+	walletService      *wallet.Service             // AI agent wallet (nil if disabled)
+	agentRegistry      *coord.AgentRegistry        // AI agent discovery & coordination (nil if disabled)
 
 	// AI safety infrastructure
 	dataGovernance     *governance.Committee           // Data governance (nil if disabled)
@@ -556,6 +558,15 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		if err := PersistDataDirNetworkBinding(cfg, chainConfig, genesisHash); err != nil {
 			return nil, err
 		}
+		if profile.IsEthereumEL() && genesisConfig != nil {
+			ethGenesisHash, hashErr := internal.EthereumCompatibleGenesisHash(genesisConfig)
+			if hashErr != nil {
+				return nil, hashErr
+			}
+			if err := PersistEthereumGenesisHash(cfg.NodeCfg.DataDir, ethGenesisHash); err != nil {
+				return nil, err
+			}
+		}
 	} else {
 		if err := ensureDataDirNetworkBinding(cfg, chainConfig, genesisHash); err != nil {
 			return nil, err
@@ -788,7 +799,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			var mptBlock uint64
 			if rtx, err := chainKv.BeginRo(ctx); err == nil {
 				mptRoot, err = commitment.ReadMPTRoot(rtx)
-					if err != nil { log.Warn("Failed to read MPT root", "err", err) }
+				if err != nil {
+					log.Warn("Failed to read MPT root", "err", err)
+				}
 				// Restore HPH trie state from checkpoint (Erigon SeekCommitment pattern).
 				if blockNum, trieState, err := commitment.ReadMPTTrieState(rtx); err == nil && len(trieState) > 0 {
 					if err := mptRC.RestoreTrieState(trieState); err != nil {
@@ -1071,7 +1084,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))
-	node.api.SetP2P(&p2pAdminAdapter{svc: p2p})
+	node.api.SetP2P(&p2pAdminAdapter{svc: p2p, node: &node})
 	node.api.SetMiner(&minerAdminAdapter{m: miner})
 
 	// Create ERC-4337 bundler service if enabled.
@@ -1442,6 +1455,9 @@ func (n *Node) Start() error {
 
 	log.PrintStartupProgress(3, 6, "P2P networking")
 	n.p2p.Start()
+	if err := n.startEthereumDevP2P(); err != nil {
+		return err
+	}
 
 	log.PrintStartupProgress(4, 6, "Sync service")
 	n.sync.Start()
@@ -2384,6 +2400,13 @@ func (n *Node) stopServices() []error {
 			return nil
 		}},
 		// 12. P2P networking (transport layer, last to go)
+		{"Ethereum devp2p", func() error {
+			if n.devp2pServer != nil {
+				n.devp2pServer.Stop()
+				n.devp2pServer = nil
+			}
+			return nil
+		}},
 		{"P2P network", func() error { return n.p2p.Stop() }},
 	}
 

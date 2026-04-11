@@ -121,10 +121,9 @@ var HistoryStorageAddress = types.HexToAddress("0x0000F90827F1C53a10CB7A02335B17
 // Value 8191 per EIP-2935 specification (prime number for optimal distribution).
 const HistoryServeWindow = 8191
 
-// HistoryStorageCode is the deployed bytecode of the EIP-2935 system contract
-// This contract stores block hashes at slot = blockNumber % HISTORY_SERVE_WINDOW
-// and allows reading via BLOCKHASH opcode for blocks within the serve window
-var HistoryStorageCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe1460575767ffffffffffffffff5765015150a06020527f0167ffffffffffffffff8111615058578060005b905b60008360408203523390523661003f57610000565b6020357f806101c557610000576000604035523290")
+// HistoryStorageCode is the canonical deployed bytecode of the EIP-2935
+// history storage contract used by current EEST Prague/Osaka fixtures.
+var HistoryStorageCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604657602036036042575f35600143038111604257611fff81430311604257611fff9006545f5260205ff35b5f5ffd5b5f35611fff60014303065500")
 
 // SetHistoryStorageSlotGas is the gas cost for the system call to store a block hash
 const SetHistoryStorageSlotGas = 21000
@@ -163,9 +162,15 @@ var WithdrawalRequestsAddress = types.HexToAddress("0x00000961EF480EB55E80D19AD8
 // aligned with the active Prague/Osaka execution-spec-tests fixtures.
 var ConsolidationRequestsAddress = types.HexToAddress("0x0000BBDDC7CE488642FB579F8B00F3A590007251")
 
-// ExecutionRequestQueueCode is the canonical deployed bytecode shared by the
-// Prague execution-request queue contracts (EIP-7002 / EIP-7251).
-var ExecutionRequestQueueCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604457602036146024575f5ffd5b620180005f350680515f80fd5b5f35801560495762018000153560495763ffffffff60023516545f5260205ff35b5f5ffd")
+// WithdrawalRequestQueueCode is the canonical deployed bytecode for the
+// Prague EIP-7002 withdrawal request queue contract used by current EEST
+// Prague/Osaka fixtures.
+var WithdrawalRequestQueueCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe1460cb5760115f54807fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff146101f457600182026001905f5b5f82111560685781019083028483029004916001019190604d565b909390049250505036603814608857366101f457346101f4575f5260205ff35b34106101f457600154600101600155600354806003026004013381556001015f35815560010160203590553360601b5f5260385f601437604c5fa0600101600355005b6003546002548082038060101160df575060105b5f5b8181146101835782810160030260040181604c02815460601b8152601401816001015481526020019060020154807fffffffffffffffffffffffffffffffff00000000000000000000000000000000168252906010019060401c908160381c81600701538160301c81600601538160281c81600501538160201c81600401538160181c81600301538160101c81600201538160081c81600101535360010160e1565b910180921461019557906002556101a0565b90505f6002555f6003555b5f54807fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff14156101cd57505f5b6001546002828201116101e25750505f6101e8565b01600290035b5f555f600155604c025ff35b5f5ffd")
+
+// ConsolidationRequestQueueCode is the canonical deployed bytecode for the
+// Prague EIP-7251 consolidation request queue contract used by current EEST
+// Prague/Osaka fixtures.
+var ConsolidationRequestQueueCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe1460d35760115f54807fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff1461019a57600182026001905f5b5f82111560685781019083028483029004916001019190604d565b9093900492505050366060146088573661019a573461019a575f5260205ff35b341061019a57600154600101600155600354806004026004013381556001015f358155600101602035815560010160403590553360601b5f5260605f60143760745fa0600101600355005b6003546002548082038060021160e7575060025b5f5b8181146101295782810160040260040181607402815460601b815260140181600101548152602001816002015481526020019060030154905260010160e9565b910180921461013b5790600255610146565b90505f6002555f6003555b5f54807fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff141561017357505f5b6001546001828201116101885750505f61018e565b01600190035b5f555f6001556074025ff35b5f5ffd")
 
 // =============================================================================
 // EIP-7002: Execution Layer Triggerable Withdrawals (Pectra)

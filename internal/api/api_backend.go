@@ -72,12 +72,14 @@ func (b *API) canonicalHashForNumber(number *uint256.Int) (types.Hash, error) {
 // HeaderByNumber returns the block header for the given block number.
 // Returns the latest header when rpc.LatestBlockNumber is specified.
 func (b *API) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*block.Header, error) {
-	if number == rpc.LatestBlockNumber {
-		header := b.CurrentBlock()
-		if header == nil {
+	if number < rpc.EarliestBlockNumber {
+		if header := b.resolveForkchoiceTaggedHeader(number); header != nil {
+			return header, nil
+		}
+		if number == rpc.LatestBlockNumber || number == rpc.PendingBlockNumber {
 			return nil, errors.New("current block not available")
 		}
-		return header, nil
+		return nil, nil
 	}
 
 	iHeader := b.bc.GetHeaderByNumber(uint256.NewInt(uint64(number.Int64())))
@@ -135,24 +137,18 @@ func (b *API) HeaderByHash(ctx context.Context, hash types.Hash) (*block.Header,
 // BlockByNumber returns the block for the given block number.
 // Returns the latest block when rpc.LatestBlockNumber is specified.
 func (b *API) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*block.Block, error) {
-	if number == rpc.LatestBlockNumber {
-		header := b.bc.CurrentBlock()
-		if header == nil {
+	if number < rpc.EarliestBlockNumber {
+		if blk := b.resolveForkchoiceTaggedBlock(number); blk != nil {
+			concrete, ok := blk.(*block.Block)
+			if !ok {
+				return nil, errors.New("unexpected block type")
+			}
+			return concrete, nil
+		}
+		if number == rpc.LatestBlockNumber || number == rpc.PendingBlockNumber {
 			return nil, errors.New("current block not available")
 		}
-		headerNumber, err := requireUint256(header.Number64(), "current block number unavailable")
-		if err != nil {
-			return nil, err
-		}
-		iBlock := b.bc.GetBlock(header.Hash(), headerNumber.Uint64())
-		if iBlock == nil {
-			return nil, errors.New("current block body not found")
-		}
-		blk, ok := iBlock.(*block.Block)
-		if !ok {
-			return nil, errors.New("unexpected block type")
-		}
-		return blk, nil
+		return nil, nil
 	}
 
 	iBlock, err := b.bc.GetBlockByNumber(uint256.NewInt(uint64(number)))

@@ -78,6 +78,27 @@ func TestNodeInfoJSON(t *testing.T) {
 	t.Logf("✓ NodeInfo JSON serialization works correctly")
 }
 
+type stubP2PAdmin struct{}
+
+func (stubP2PAdmin) PeerInfos() []*PeerInfo    { return nil }
+func (stubP2PAdmin) SelfNodeID() string        { return "peer-id" }
+func (stubP2PAdmin) SelfEnode() string         { return "enode://abc@127.0.0.1:30304" }
+func (stubP2PAdmin) SelfENR() string           { return "" }
+func (stubP2PAdmin) SelfListenAddrs() []string { return nil }
+func (stubP2PAdmin) AddPeer(string) error      { return nil }
+func (stubP2PAdmin) RemovePeer(string) error   { return nil }
+func (stubP2PAdmin) HighestPeerBlock() uint64  { return 0 }
+
+func TestNodeInfoIncludesEnodeFromP2P(t *testing.T) {
+	admin := &AdminAPI{api: &API{}}
+	admin.api.SetP2P(stubP2PAdmin{})
+
+	info := admin.NodeInfo()
+	if info.Enode != "enode://abc@127.0.0.1:30304" {
+		t.Fatalf("NodeInfo.Enode = %q, want devp2p enode", info.Enode)
+	}
+}
+
 func TestPeers(t *testing.T) {
 	admin := &AdminAPI{}
 	peers := admin.Peers()
