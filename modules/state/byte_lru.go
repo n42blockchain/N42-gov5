@@ -99,6 +99,26 @@ func (c *byteLRU[K]) Put(key K, value []byte, cost int) {
 func (c *byteLRU[K]) Delete(key K) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.deleteLocked(key)
+}
+
+// DeleteBatch removes a batch of keys under a single mutex acquisition.
+// Used by InvalidateLRUForSnapshot, which evicts the entire dirty set
+// after a background flush — taking the lock once instead of N times
+// avoids cache-line ping-pong with concurrent reader Get() calls.
+func (c *byteLRU[K]) DeleteBatch(keys []K) {
+	if len(keys) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, k := range keys {
+		c.deleteLocked(k)
+	}
+}
+
+// deleteLocked removes a key. Caller must hold c.mu.
+func (c *byteLRU[K]) deleteLocked(key K) bool {
 	elem, ok := c.items[key]
 	if !ok {
 		return false

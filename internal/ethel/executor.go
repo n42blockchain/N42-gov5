@@ -210,6 +210,7 @@ func (e *Executor) Run(ctx context.Context) error {
 	// keeps a separate RoTx for reads, hiding the ~25 s flush time at
 	// the 11M-block scale.
 	e.asyncFlush = newAsyncFlusher(e.stateBuf, e.db, ctx)
+	var lastFlushDur time.Duration
 
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
 		if ctx.Err() != nil {
@@ -236,8 +237,12 @@ func (e *Executor) Run(ctx context.Context) error {
 			// 1. Wait for the previous async flush to complete BEFORE
 			// handing off the new one. Steady-state: this is zero-cost
 			// because exec_time >= flush_time at the 11M-block scale.
-			if err := e.asyncFlush.waitPrev(); err != nil {
+			dur, err := e.asyncFlush.waitPrev()
+			if err != nil {
 				return fmt.Errorf("wait prev flush at block %d: %w", blockNum, err)
+			}
+			if dur > 0 {
+				lastFlushDur = dur
 			}
 
 			// 2. Flush output batches synchronously (cheap, ~ms).
@@ -276,7 +281,7 @@ func (e *Executor) Run(ctx context.Context) error {
 			}
 			cleanup = func() { tx.Rollback() }
 
-			// 7. Progress log (uses the PREVIOUS flush's duration; the
+			// 6. Progress log (uses the PREVIOUS flush's duration; the
 			// current handoff is still in flight).
 			now := time.Now()
 			intervalSec := now.Sub(e.lastProgressTime).Seconds()
@@ -293,7 +298,7 @@ func (e *Executor) Run(ctx context.Context) error {
 				"block", blockNum,
 				"blk/s", fmt.Sprintf("%.0f", blkPerSec),
 				"elapsed", now.Sub(startTime).Truncate(time.Second),
-				"bufFlush", e.asyncFlush.lastFlushDuration().Truncate(time.Millisecond),
+				"bufFlush", lastFlushDur.Truncate(time.Millisecond),
 				"bufAccs", bufAccs, "bufStos", bufStos,
 				"cacheHit%", fmt.Sprintf("%.1f", hitRate),
 				"async", "y",
@@ -304,14 +309,18 @@ func (e *Executor) Run(ctx context.Context) error {
 			}
 			log.Info("EthEL progress", fields...)
 
-			// 8. Verify state root at verify boundaries. Verify needs
+			// 7. Verify state root at verify boundaries. Verify needs
 			// the data to be visible in MDBX (and writes intermediate
 			// hashed-state tables), so we MUST wait for the in-flight
 			// bg flush to complete and then run verify under its own
 			// short-lived RwTx.
 			if e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0 {
-				if err := e.asyncFlush.waitPrev(); err != nil {
+				dur, err := e.asyncFlush.waitPrev()
+				if err != nil {
 					return fmt.Errorf("wait pre-verify flush at block %d: %w", blockNum, err)
+				}
+				if dur > 0 {
+					lastFlushDur = dur
 				}
 				// Release main RoTx so we can open a RwTx for verify.
 				tx.Rollback()
@@ -358,7 +367,7 @@ func (e *Executor) Run(ctx context.Context) error {
 	//
 	// Drain the in-flight bg flush first (the one for the most-recent
 	// commit interval).
-	if err := e.asyncFlush.waitPrev(); err != nil {
+	if _, err := e.asyncFlush.waitPrev(); err != nil {
 		return fmt.Errorf("wait final pending flush: %w", err)
 	}
 
@@ -374,7 +383,7 @@ func (e *Executor) Run(ctx context.Context) error {
 	if err := e.asyncFlush.hand(endBlock); err != nil {
 		return fmt.Errorf("hand final flush: %w", err)
 	}
-	if err := e.asyncFlush.waitPrev(); err != nil {
+	if _, err := e.asyncFlush.waitPrev(); err != nil {
 		return fmt.Errorf("wait final flush: %w", err)
 	}
 	e.stateBuf.ClearInFlight()
@@ -663,16 +672,24 @@ func (e *Executor) reportTimings(blockNum uint64) {
 
 	var totalGas uint64
 	var totalTx int
+	var totalDur time.Duration
 	for _, v := range s {
 		totalGas += v.gasUsed
 		totalTx += v.txCount
+		totalDur += v.total
+	}
+	// Mgas/s throughput across the window. Guard against div-by-zero
+	// when the window's total elapsed time rounds to 0.
+	mgasPerSec := 0.0
+	if totalDur > 0 {
+		mgasPerSec = float64(totalGas) / totalDur.Seconds() / 1e6
 	}
 
 	ms := func(d time.Duration) string { return fmt.Sprintf("%.1f", float64(d.Microseconds())/1000) }
 	log.Info("P50/P99",
 		"block", blockNum,
 		"tx", totalTx/n,
-		"gas", totalGas/uint64(n),
+		"gas", fmt.Sprintf("%.1f", mgasPerSec),
 		"P50", ms(p50.total),
 		"P50evm", ms(p50.evm),
 		"P99", ms(p99.total),

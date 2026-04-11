@@ -135,6 +135,11 @@ type PlainStateBuffer struct {
 	// rotated to a new MDBX tx whose snapshot includes the previous
 	// background commit.
 	inFlight atomic.Pointer[BufferSnapshot]
+	// hasInFlight is a fast-path flag for the reader hot loop: an
+	// atomic.Bool load is cheaper than the pointer load + nil check, and
+	// in steady-state (no flush in flight) it short-circuits the entire
+	// in-flight lookup branch.
+	hasInFlight atomic.Bool
 
 	// Read cache: byte-budget LRU per kind so a hot storage workload
 	// can't starve the account cache. The composite storage key is
@@ -220,131 +225,19 @@ func (b *PlainStateBuffer) CacheStorage(address types.Address, key types.Hash, v
 	b.readStorage.Put(ck, value, cost)
 }
 
-func (b *PlainStateBuffer) FlushToMDBX(tx kv.RwTx) error {
-	// Sort keys before writing — MDBX B+ tree performs dramatically better
-	// with sequential inserts (avoids random page faults).
-
-	// 1. Accounts: sort by address.
-	acctAddrs := make([]types.Address, 0, len(b.accounts))
-	for addr := range b.accounts {
-		acctAddrs = append(acctAddrs, addr)
-	}
-	sort.Slice(acctAddrs, func(i, j int) bool {
-		return bytes.Compare(acctAddrs[i][:], acctAddrs[j][:]) < 0
-	})
-	for _, addr := range acctAddrs {
-		v := b.accounts[addr]
-		if len(v) == 0 {
-			if err := tx.Delete(modules.Account, addr[:]); err != nil {
-				return err
-			}
-		} else {
-			if err := tx.Put(modules.Account, addr[:], v); err != nil {
-				return err
-			}
-		}
-	}
-
-	// 2. Wipe storage for contracts that were recreated/destroyed.
-	// Only wipe MDBX (old data). Buffer entries from CREATE in the same
-	// block will be written in step 3 and are the correct new state.
-	for _, addr := range b.contractWipes {
-		prefix := addr[:]
-		cursor, err := tx.Cursor(modules.Storage)
-		if err != nil {
-			return err
-		}
-		var keysToDelete [][]byte
-		for k, _, err := cursor.Seek(prefix); k != nil; k, _, err = cursor.Next() {
-			if err != nil {
-				cursor.Close()
-				return err
-			}
-			if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
-				break
-			}
-			keysToDelete = append(keysToDelete, append([]byte{}, k...))
-		}
-		cursor.Close()
-		for _, k := range keysToDelete {
-			if err := tx.Delete(modules.Storage, k); err != nil {
-				return err
-			}
-		}
-	}
-
-	// 3. Storage: build composite keys, sort, then write.
-	type stoKV struct {
-		key   []byte
-		value []byte
-	}
-	stoCount := 0
-	for _, slots := range b.storage {
-		stoCount += len(slots)
-	}
-	stoEntries := make([]stoKV, 0, stoCount)
-	for addr, slots := range b.storage {
-		for hash, entry := range slots {
-			compositeKey := modules.PlainGenerateCompositeStorageKey(addr[:], hash[:])
-			stoEntries = append(stoEntries, stoKV{key: compositeKey, value: entry.value})
-		}
-	}
-	sort.Slice(stoEntries, func(i, j int) bool {
-		return bytes.Compare(stoEntries[i].key, stoEntries[j].key) < 0
-	})
-	for _, kv := range stoEntries {
-		if len(kv.value) == 0 {
-			if err := tx.Delete(modules.Storage, kv.key); err != nil {
-				return err
-			}
-		} else {
-			if err := tx.Put(modules.Storage, kv.key, kv.value); err != nil {
-				return err
-			}
-		}
-	}
-
-	// 4. Code, ContractCode — small tables, sort for consistency.
-	codeHashes := make([]types.Hash, 0, len(b.code))
-	for hash := range b.code {
-		codeHashes = append(codeHashes, hash)
-	}
-	sort.Slice(codeHashes, func(i, j int) bool {
-		return bytes.Compare(codeHashes[i][:], codeHashes[j][:]) < 0
-	})
-	for _, hash := range codeHashes {
-		if err := tx.Put(modules.Code, hash[:], b.code[hash]); err != nil {
-			return err
-		}
-	}
-
-	ccKeys := make([]string, 0, len(b.contractCode))
-	for prefix := range b.contractCode {
-		ccKeys = append(ccKeys, prefix)
-	}
-	sort.Strings(ccKeys)
-	for _, prefix := range ccKeys {
-		if err := tx.Put(modules.PlainContractCode, []byte(prefix), b.contractCode[prefix]); err != nil {
-			return err
-		}
-	}
-	// IncarnationMap removed — no longer needed
-	return nil
-}
-
 // SnapshotForFlush moves the active write buffer maps into a fresh
-// BufferSnapshot and resets the active buffer to empty maps. The snapshot
-// is the source of truth for the next FlushToMDBX call (sync or async)
-// and is also installed as the in-flight snapshot so concurrent reader
-// goroutines can still find the dirty values during the background
-// commit window.
+// BufferSnapshot, resets the active buffer to empty maps sized from the
+// previous interval's actuals, AND installs the snapshot as in-flight
+// so concurrent reader goroutines can still find dirty values during
+// the background commit window.
 //
 // O(1): the maps are moved by pointer, not deep-copied.
 //
-// Caller is responsible for either calling snap.ApplyTo(tx) immediately
-// (synchronous flush) OR handing the snapshot to a background goroutine
-// AND calling SetInFlight(snap) so the reader path can fall through to
-// it.
+// The snapshot is automatically installed as the in-flight pointer; the
+// caller is responsible for calling snap.ApplyTo(tx) (sync or via the
+// background flusher) and InvalidateLRUForSnapshot AFTER MDBX commit.
+// At shutdown, ClearInFlight drops the pointer once the final flush is
+// committed.
 func (b *PlainStateBuffer) SnapshotForFlush() *BufferSnapshot {
 	snap := &BufferSnapshot{
 		accounts:      b.accounts,
@@ -354,26 +247,41 @@ func (b *PlainStateBuffer) SnapshotForFlush() *BufferSnapshot {
 		contractWipes: b.contractWipes,
 		wipedStorage:  b.wipedStorage,
 	}
-	b.accounts = make(map[types.Address][]byte, 4096)
-	b.storage = make(map[types.Address]map[types.Hash]storageEntry, 4096)
-	b.code = make(map[types.Hash][]byte, 64)
-	b.contractCode = make(map[string][]byte, 64)
+	// Pre-size the next interval's maps from this interval's actuals so
+	// we don't pay 8+ rehash cycles per commit-interval at the 11M-block
+	// scale (bufAccs ~900K, bufStos addrs ~50K).
+	nextAcctCap := nextMapCap(len(b.accounts), 4096)
+	nextStoAddrCap := nextMapCap(len(b.storage), 4096)
+	nextCodeCap := nextMapCap(len(b.code), 64)
+	nextCCodeCap := nextMapCap(len(b.contractCode), 64)
+	b.accounts = make(map[types.Address][]byte, nextAcctCap)
+	b.storage = make(map[types.Address]map[types.Hash]storageEntry, nextStoAddrCap)
+	b.code = make(map[types.Hash][]byte, nextCodeCap)
+	b.contractCode = make(map[string][]byte, nextCCodeCap)
 	b.contractWipes = nil
 	b.wipedStorage = make(map[types.Address]struct{})
+
+	b.inFlight.Store(snap)
+	b.hasInFlight.Store(true)
 	return snap
 }
 
-// SetInFlight installs the snapshot as the current in-flight buffer for
-// reader fallthrough. Replaces any previous in-flight; the previous one
-// becomes garbage as soon as no reader still references it.
-func (b *PlainStateBuffer) SetInFlight(snap *BufferSnapshot) {
-	b.inFlight.Store(snap)
+// nextMapCap returns a capacity hint that is the previous size rounded
+// up to the next pow2, with a floor. Avoids 8+ rehash cycles when the
+// active map fills back to its previous size.
+func nextMapCap(prev, floor int) int {
+	want := prev * 2
+	if want < floor {
+		return floor
+	}
+	return want
 }
 
 // ClearInFlight drops the in-flight pointer (used at shutdown after the
 // last bg flush has committed).
 func (b *PlainStateBuffer) ClearInFlight() {
 	b.inFlight.Store(nil)
+	b.hasInFlight.Store(false)
 }
 
 // ApplyTo writes the snapshot's contents to MDBX in the same order and
@@ -500,20 +408,32 @@ func (snap *BufferSnapshot) ApplyTo(tx kv.RwTx) error {
 // are already represented as per-slot tombstones in snap.storage and
 // will be evicted by the storage loop below.
 func (b *PlainStateBuffer) InvalidateLRUForSnapshot(snap *BufferSnapshot) {
+	acctKeys := make([]types.Address, 0, len(snap.accounts))
 	for addr := range snap.accounts {
-		b.readAccounts.Delete(addr)
+		acctKeys = append(acctKeys, addr)
 	}
+	b.readAccounts.DeleteBatch(acctKeys)
+
+	stoCount := 0
+	for _, slots := range snap.storage {
+		stoCount += len(slots)
+	}
+	stoKeys := make([][storageCompositeKeyLen]byte, 0, stoCount)
 	for addr, slots := range snap.storage {
 		for slot := range slots {
 			var ck [storageCompositeKeyLen]byte
 			copy(ck[:20], addr[:])
 			copy(ck[20:], slot[:])
-			b.readStorage.Delete(ck)
+			stoKeys = append(stoKeys, ck)
 		}
 	}
+	b.readStorage.DeleteBatch(stoKeys)
+
+	codeKeys := make([]types.Hash, 0, len(snap.code))
 	for h := range snap.code {
-		b.readCode.Delete(h)
+		codeKeys = append(codeKeys, h)
 	}
+	b.readCode.DeleteBatch(codeKeys)
 }
 
 // Stats reports current write-buffer cardinalities (excluding any
@@ -523,56 +443,6 @@ func (snap *BufferSnapshot) Stats() (accounts, storage int) {
 		storage += len(slots)
 	}
 	return len(snap.accounts), storage
-}
-
-// Clear resets write buffer and selectively invalidates LRU entries that
-// this flush just wrote to MDBX. Entries for keys that did NOT change in
-// this commit window are kept across the flush — hot data analysis shows
-// most state lookups hit the same long-tailed set of accounts/slots, so
-// blowing the entire cache on every commit interval discards 90%+ of
-// valid entries.
-//
-// Correctness: a cached read entry is "stale" iff the key's value was
-// modified between the cache fill and the read. The only mutating event
-// in this commit window is the flush itself, which modifies exactly the
-// keys in b.accounts / b.storage / b.code / b.wipedStorage. Every other
-// cached entry is unchanged in MDBX. Evicting only the dirty set is
-// therefore both correct and minimal.
-//
-// For wiped contracts (SELFDESTRUCT), we don't have an efficient
-// "delete all slots for this address" on a flat composite-key LRU.
-// Instead we rely on the per-slot tombstone entries the wipe path
-// already records via collectPreWipeSlots — those slots are in
-// b.storage and will be evicted by the per-slot loop below.
-func (b *PlainStateBuffer) Clear() {
-	for addr := range b.accounts {
-		b.readAccounts.Delete(addr)
-	}
-	for addr, slots := range b.storage {
-		for slot := range slots {
-			var ck [storageCompositeKeyLen]byte
-			copy(ck[:20], addr[:])
-			copy(ck[20:], slot[:])
-			b.readStorage.Delete(ck)
-		}
-	}
-	for h := range b.code {
-		b.readCode.Delete(h)
-	}
-
-	// Reset write buffers.
-	b.accounts = make(map[types.Address][]byte, 4096)
-	b.storage = make(map[types.Address]map[types.Hash]storageEntry, 4096)
-	b.code = make(map[types.Hash][]byte, 64)
-	b.contractCode = make(map[string][]byte, 64)
-	b.incarnationMap = make(map[types.Address][]byte)
-	b.contractWipes = b.contractWipes[:0]
-	clear(b.wipedStorage)
-
-	// Reset cache hit counters so the next commit-interval log line
-	// reports per-window stats (matching the existing dashboard).
-	b.hits.Store(0)
-	b.misses.Store(0)
 }
 
 // ResetReadCache drops all LRU contents. Used by paths that open a
@@ -620,18 +490,23 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 		return &a, nil
 	}
 	// 1b. In-flight snapshot (background flush in progress; data may
-	// not yet be visible to our MDBX tx snapshot).
-	if snap := r.buf.inFlight.Load(); snap != nil {
-		if enc, ok := snap.accounts[address]; ok {
-			r.buf.hits.Add(1)
-			if len(enc) == 0 {
-				return nil, nil
+	// not yet be visible to our MDBX tx snapshot). The hasInFlight bool
+	// is the steady-state fast path: an atomic.Bool load is cheaper than
+	// the Pointer load + nil check, and most reads happen with no flush
+	// in flight.
+	if r.buf.hasInFlight.Load() {
+		if snap := r.buf.inFlight.Load(); snap != nil {
+				if enc, ok := snap.accounts[address]; ok {
+				r.buf.hits.Add(1)
+				if len(enc) == 0 {
+					return nil, nil
+				}
+				var a account.StateAccount
+				if err := a.DecodeForStorage(enc); err != nil {
+					return nil, err
+				}
+				return &a, nil
 			}
-			var a account.StateAccount
-			if err := a.DecodeForStorage(enc); err != nil {
-				return nil, err
-			}
-			return &a, nil
 		}
 	}
 	// 2. LRU read cache.
@@ -688,20 +563,22 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 		}
 	}
 	// 1c. In-flight snapshot (background flush in progress).
-	if snap := r.buf.inFlight.Load(); snap != nil {
-		if slots, ok := snap.storage[address]; ok {
-			if entry, ok2 := slots[*key]; ok2 {
-				r.buf.hits.Add(1)
-				if len(entry.value) == 0 {
-					return nil, nil
+	if r.buf.hasInFlight.Load() {
+		if snap := r.buf.inFlight.Load(); snap != nil {
+			if slots, ok := snap.storage[address]; ok {
+				if entry, ok2 := slots[*key]; ok2 {
+					r.buf.hits.Add(1)
+					if len(entry.value) == 0 {
+						return nil, nil
+					}
+					return entry.value, nil
 				}
-				return entry.value, nil
 			}
-		}
-		// Wiped contracts in the in-flight snapshot: any slot not
-		// listed in snap.storage is gone (the wipe already executed).
-		if _, wiped := snap.wipedStorage[address]; wiped {
-			return nil, nil
+			// Wiped contracts in the in-flight snapshot: any slot not
+			// listed in snap.storage is gone (the wipe already executed).
+			if _, wiped := snap.wipedStorage[address]; wiped {
+				return nil, nil
+			}
 		}
 	}
 	// 2. LRU read cache (composite key).
@@ -737,16 +614,22 @@ func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, incarn
 		return nil, nil
 	}
 	if code, ok := r.buf.code[codeHash]; ok {
+		r.buf.hits.Add(1)
 		return code, nil
 	}
-	if snap := r.buf.inFlight.Load(); snap != nil {
-		if code, ok := snap.code[codeHash]; ok {
-			return code, nil
+	if r.buf.hasInFlight.Load() {
+		if snap := r.buf.inFlight.Load(); snap != nil {
+			if code, ok := snap.code[codeHash]; ok {
+				r.buf.hits.Add(1)
+				return code, nil
+			}
 		}
 	}
 	if v, present := r.buf.readCode.Get(codeHash); present {
+		r.buf.hits.Add(1)
 		return v, nil
 	}
+	r.buf.misses.Add(1)
 	code, err := r.db.GetOne(modules.Code, codeHash[:])
 	if err != nil {
 		return nil, err
