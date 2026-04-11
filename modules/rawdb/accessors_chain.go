@@ -253,13 +253,7 @@ func CanonicalTxnByID(db kv.Getter, id uint64) (*transaction.Transaction, error)
 	if err != nil {
 		return nil, err
 	}
-
-	tx := new(transaction.Transaction)
-	if err := tx.Unmarshal(v); err != nil {
-		return nil, err
-	}
-
-	return tx, nil
+	return decodeStoredTransaction(v)
 }
 
 func CanonicalTransactions(db kv.Getter, baseTxId uint64, amount uint32) ([]*transaction.Transaction, error) {
@@ -273,8 +267,8 @@ func CanonicalTransactions(db kv.Getter, baseTxId uint64, amount uint32) ([]*tra
 
 	if err := db.ForAmount(modules.BlockTx, txIdKey, amount, func(k, v []byte) error {
 		var decodeErr error
-		tx := new(transaction.Transaction)
-		if decodeErr = tx.Unmarshal(v); nil != decodeErr {
+		tx, decodeErr := decodeStoredTransaction(v)
+		if decodeErr != nil {
 			return decodeErr
 		}
 		txs[i] = tx
@@ -285,6 +279,14 @@ func CanonicalTransactions(db kv.Getter, baseTxId uint64, amount uint32) ([]*tra
 	}
 	txs = txs[:i] // user may request big "amount", but db can return small "amount". Return as much as we found.
 	return txs, nil
+}
+
+func decodeStoredTransaction(raw []byte) (*transaction.Transaction, error) {
+	tx := new(transaction.Transaction)
+	if err := tx.Unmarshal(raw); err == nil {
+		return tx, nil
+	}
+	return transaction.DecodeEthereumTransaction(raw)
 }
 
 func WriteTransactions(db kv.RwTx, txs []*transaction.Transaction, baseTxId uint64) error {

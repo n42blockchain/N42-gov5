@@ -14,15 +14,19 @@ mkdir -p "$local_src"
 rsync -a --delete \
   --exclude '.git/' \
   --exclude '.codex-cache/' \
+  --exclude '.DS_Store' \
   --exclude 'AGENTS.md' \
   --exclude 'benchmarks/results/' \
   --exclude 'build/' \
+  --exclude 'conversation-*.txt' \
   --exclude 'devtest/' \
   --exclude 'mainnet/' \
   --exclude 'n42data/' \
   --exclude 'tests/' \
   --exclude 'docs/' \
   --exclude 'tmp/' \
+  --exclude '*.out' \
+  --exclude '*.test' \
   --exclude 'tests/eth-hive/clients/n42/n42-local/' \
   "$repo_root/" "$local_src/"
 
@@ -55,6 +59,16 @@ ENTRYPOINT ["/n42.sh"]
 EOF
 
 cp "$client_dir/Dockerfile" "$client_dir/Dockerfile.local"
+
+cat >"$client_dir/.dockerignore" <<'EOF'
+n42-local/.DS_Store
+n42-local/**/.DS_Store
+n42-local/conversation-*.txt
+n42-local/*.out
+n42-local/**/*.out
+n42-local/*.test
+n42-local/**/*.test
+EOF
 
 cat >"$client_dir/enode.sh" <<'EOF'
 #!/usr/bin/env bash

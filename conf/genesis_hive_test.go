@@ -68,6 +68,71 @@ func TestApplyHiveGenesisEnvCreatesFakerConfig(t *testing.T) {
 	}
 }
 
+func TestApplyHiveGenesisEnvFallsBackToHiveNetworkIDForChainID(t *testing.T) {
+	t.Parallel()
+
+	genesis := &Genesis{}
+	env := map[string]string{
+		"HIVE_NETWORK_ID": "1",
+	}
+
+	applied := ApplyHiveGenesisEnv(genesis, func(key string) (string, bool) {
+		value, ok := env[key]
+		return value, ok
+	})
+	if !applied {
+		t.Fatal("ApplyHiveGenesisEnv should report applied overrides")
+	}
+	if genesis.Config == nil {
+		t.Fatal("genesis.Config should not be nil")
+	}
+	if genesis.Config.Consensus != params.Faker {
+		t.Fatalf("unexpected consensus: got %q want %q", genesis.Config.Consensus, params.Faker)
+	}
+	if genesis.Config.ChainID == nil || genesis.Config.ChainID.Uint64() != 1 {
+		t.Fatalf("unexpected chain id: %v", genesis.Config.ChainID)
+	}
+}
+
+func TestApplyHiveGenesisEnvDefaultsAncestorForksForTimestampForks(t *testing.T) {
+	t.Parallel()
+
+	genesis := &Genesis{}
+	env := map[string]string{
+		"HIVE_NETWORK_ID":         "1",
+		"HIVE_SHANGHAI_TIMESTAMP": "0",
+		"HIVE_CANCUN_TIMESTAMP":   "0",
+		"HIVE_PRAGUE_TIMESTAMP":   "0",
+	}
+
+	applied := ApplyHiveGenesisEnv(genesis, func(key string) (string, bool) {
+		value, ok := env[key]
+		return value, ok
+	})
+	if !applied {
+		t.Fatal("ApplyHiveGenesisEnv should report applied overrides")
+	}
+	if genesis.Config == nil {
+		t.Fatal("genesis.Config should not be nil")
+	}
+	for name, got := range map[string]*big.Int{
+		"HomesteadBlock":        genesis.Config.HomesteadBlock,
+		"TangerineWhistleBlock": genesis.Config.TangerineWhistleBlock,
+		"SpuriousDragonBlock":   genesis.Config.SpuriousDragonBlock,
+		"ByzantiumBlock":        genesis.Config.ByzantiumBlock,
+		"ConstantinopleBlock":   genesis.Config.ConstantinopleBlock,
+		"PetersburgBlock":       genesis.Config.PetersburgBlock,
+		"IstanbulBlock":         genesis.Config.IstanbulBlock,
+		"MuirGlacierBlock":      genesis.Config.MuirGlacierBlock,
+		"BerlinBlock":           genesis.Config.BerlinBlock,
+		"LondonBlock":           genesis.Config.LondonBlock,
+	} {
+		if got == nil || got.Sign() != 0 {
+			t.Fatalf("%s = %v, want 0", name, got)
+		}
+	}
+}
+
 func TestApplyHiveGenesisEnvSupportsBPOForkTimestamps(t *testing.T) {
 	t.Parallel()
 

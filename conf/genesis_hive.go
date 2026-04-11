@@ -27,7 +27,11 @@ func ApplyHiveGenesisEnv(genesis *Genesis, lookup func(string) (string, bool)) b
 		cfg = &params.ChainConfig{}
 	}
 
-	if value, ok := envBig(get, "HIVE_CHAIN_ID"); ok {
+	// Hive commonly provides HIVE_NETWORK_ID without an explicit HIVE_CHAIN_ID
+	// for private Engine/EEST clients. When the genesis JSON also omits a
+	// config.chainId, fall back to HIVE_NETWORK_ID so signed transaction
+	// recovery still uses the intended EIP-155 chain domain.
+	if value, ok := envBig(get, "HIVE_CHAIN_ID", "HIVE_NETWORK_ID"); ok {
 		cfg.ChainID = value
 	}
 	if value, ok := envBig(get, "HIVE_FORK_HOMESTEAD"); ok {
@@ -116,6 +120,7 @@ func ApplyHiveGenesisEnv(genesis *Genesis, lookup func(string) (string, bool)) b
 		}
 	}
 
+	applyHiveForkDefaults(cfg)
 	genesis.Config = params.NormalizeConsensus(cfg)
 	return true
 }
@@ -123,6 +128,7 @@ func ApplyHiveGenesisEnv(genesis *Genesis, lookup func(string) (string, bool)) b
 func hasHiveGenesisEnv(lookup hiveEnvLookup) bool {
 	keys := []string{
 		"HIVE_CHAIN_ID",
+		"HIVE_NETWORK_ID",
 		"HIVE_FORK_HOMESTEAD",
 		"HIVE_FORK_DAO_BLOCK",
 		"HIVE_FORK_TANGERINE",
@@ -155,6 +161,45 @@ func hasHiveGenesisEnv(lookup hiveEnvLookup) bool {
 		}
 	}
 	return false
+}
+
+func applyHiveForkDefaults(cfg *params.ChainConfig) {
+	if cfg == nil {
+		return
+	}
+
+	// When Hive/EEST activates a time-based post-merge fork from genesis, it
+	// often omits the already-implied legacy block forks. Fill those ancestors
+	// so transaction execution matches the intended Ethereum ruleset.
+	if cfg.ShanghaiTime != nil || cfg.CancunTime != nil || cfg.PragueTime != nil || cfg.OsakaTime != nil {
+		ensureZeroBig(&cfg.HomesteadBlock)
+		ensureZeroBig(&cfg.TangerineWhistleBlock)
+		ensureZeroBig(&cfg.SpuriousDragonBlock)
+		ensureZeroBig(&cfg.ByzantiumBlock)
+		ensureZeroBig(&cfg.ConstantinopleBlock)
+		ensureZeroBig(&cfg.PetersburgBlock)
+		ensureZeroBig(&cfg.IstanbulBlock)
+		ensureZeroBig(&cfg.MuirGlacierBlock)
+		ensureZeroBig(&cfg.BerlinBlock)
+		ensureZeroBig(&cfg.LondonBlock)
+		ensureZeroBig(&cfg.ArrowGlacierBlock)
+		ensureZeroBig(&cfg.GrayGlacierBlock)
+	}
+	if cfg.CancunTime != nil || cfg.PragueTime != nil || cfg.OsakaTime != nil {
+		ensureZeroBig(&cfg.ShanghaiTime)
+	}
+	if cfg.PragueTime != nil || cfg.OsakaTime != nil {
+		ensureZeroBig(&cfg.CancunTime)
+	}
+	if cfg.OsakaTime != nil {
+		ensureZeroBig(&cfg.PragueTime)
+	}
+}
+
+func ensureZeroBig(dst **big.Int) {
+	if *dst == nil {
+		*dst = big.NewInt(0)
+	}
 }
 
 func cloneChainConfig(src *params.ChainConfig) *params.ChainConfig {

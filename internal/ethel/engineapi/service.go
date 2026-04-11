@@ -102,8 +102,13 @@ func (s *Service) Start(_ context.Context) error {
 
 	apis := api.EngineAPIs(s.apiCore)
 	for _, a := range apis {
-		if v1, ok := a.Service.(*api.EngineAPIV1); ok {
-			v1.SetStateAdapter(s.adapter)
+		switch svc := a.Service.(type) {
+		case *api.EngineAPIV1:
+			svc.SetStateAdapter(s.adapter)
+		case *api.EngineAPIBlob:
+			svc.SetStateAdapter(s.adapter)
+		case *api.EngineAPIv4:
+			svc.SetStateAdapter(s.adapter)
 		}
 	}
 

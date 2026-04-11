@@ -1352,7 +1352,7 @@ func TestEngineAPIv4StateAdapterAcceptsBeaconRootTimestampPayload(t *testing.T) 
 		engineOverlay: newEngineOverlay(),
 	}
 	engine := NewEngineAPIv4(NewBlockChainAPI(api))
-	engine.v1.SetStateAdapter(NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{}))
+	engine.SetStateAdapter(NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{}))
 
 	payload := &ExecutionPayloadV4{
 		ParentHash:    parentHash,

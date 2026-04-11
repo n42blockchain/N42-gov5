@@ -124,11 +124,23 @@ type EngineAPIv4 struct {
 
 // NewEngineAPIv4 creates a new Engine API v4 instance
 func NewEngineAPIv4(api *BlockChainAPI) *EngineAPIv4 {
-	blob := &EngineAPIBlob{api: api}
+	blob := NewEngineAPIBlob(api)
 	return &EngineAPIv4{
 		api:  api,
 		blob: blob,
 		v1:   &EngineAPIV1{api: api},
+	}
+}
+
+func (e *EngineAPIv4) SetStateAdapter(adapter *EngineStateAdapter) {
+	if e == nil {
+		return
+	}
+	if e.blob != nil {
+		e.blob.SetStateAdapter(adapter)
+	}
+	if e.v1 != nil {
+		e.v1.SetStateAdapter(adapter)
 	}
 }
 
