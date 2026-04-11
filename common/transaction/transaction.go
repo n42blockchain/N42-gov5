@@ -26,7 +26,7 @@ import (
 )
 
 var (
-	ErrGasFeeCapTooLow = fmt.Errorf("fee cap less than base fee")
+	ErrGasFeeCapTooLow = fmt.Errorf("max fee per gas less than block base fee")
 	ErrUnmarshalHash   = fmt.Errorf("transaction hash verification failed")
 )
 

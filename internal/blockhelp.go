@@ -229,12 +229,8 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 	noop := state.NewNoopWriter()
 	requests := make([]hexutil.Bytes, 0, 2)
 	for _, systemCall := range registry.executionRequests {
-		// EIP-7002/EIP-7251: skip system call if contract not deployed.
-		// The requests hash mismatch will surface as INVALID if the test
-		// expects non-empty requests from a missing contract.
 		if ibs.GetCodeSize(systemCall.contract) == 0 {
-			requests = appendExecutionRequest(requests, systemCall.requestType, nil)
-			continue
+			return nil, fmt.Errorf("System contract address %s has empty code", systemCall.contract.Hex())
 		}
 		ret, err := SysCallContract(systemCall.contract, nil, *chainConfig, ibs, header, engine)
 		if err != nil {

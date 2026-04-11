@@ -10,9 +10,9 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/consensus"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
@@ -337,6 +337,78 @@ func TestApplyMessageClearsDelegationWhenAuthorizationResets(t *testing.T) {
 	}
 	if nonce := ibs.GetNonce(authSigner); nonce != 2 {
 		t.Fatalf("auth signer nonce = %d, want 2", nonce)
+	}
+	if code := ibs.GetCode(authSigner); len(code) != 0 {
+		t.Fatalf("auth signer code len = %d, want 0", len(code))
+	}
+}
+
+func TestApplyMessageIgnoresInvalidAuthorizationSignature(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(tx, 1))
+
+	senderKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate sender key: %v", err)
+	}
+	authKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate auth key: %v", err)
+	}
+
+	sender := crypto.PubkeyToAddress(senderKey.PublicKey)
+	authSigner := crypto.PubkeyToAddress(authKey.PublicKey)
+	target := types.HexToAddress("0x3d8e2d77bca8c0ed68f6d4860444bad2cc2cd661")
+	coinbase := types.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	ibs.CreateAccount(sender, false)
+	ibs.AddBalance(sender, uint256.NewInt(10_000_000_000_000_000))
+	ibs.CreateAccount(authSigner, false)
+	ibs.CreateAccount(target, true)
+	ibs.SetCode(target, []byte{byte(vm2.STOP)})
+
+	auth := signAuthorization(t, authKey, &transaction.Authorization{
+		ChainID: *uint256.NewInt(1),
+		Address: target,
+		Nonce:   0,
+	})
+	auth.S = uint256.NewInt(0).SetBytes(types.Hex2Bytes("7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a1"))
+
+	to := authSigner
+	msg := testSetCodeMessage{
+		from:     sender,
+		to:       &to,
+		gasPrice: uint256.NewInt(7),
+		feeCap:   uint256.NewInt(7),
+		tip:      uint256.NewInt(0),
+		gas:      200_000,
+		value:    uint256.NewInt(0),
+		authList: transaction.AuthorizationList{auth},
+	}
+
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		GasLimit:   30_000_000,
+		Time:       1,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+	config := testStateTransitionChainConfig()
+	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, &coinbase)
+	txCtx := evmtypes.TxContext{Origin: msg.From(), GasPrice: msg.GasPrice()}
+	evm := vm2.NewEVM(blockCtx, txCtx, ibs, config, vm2.Config{})
+	gp := new(common.GasPool).AddGas(header.GasLimit)
+
+	result, err := ApplyMessage(evm, msg, gp, true, false)
+	if err != nil {
+		t.Fatalf("ApplyMessage error: %v", err)
+	}
+	if result.Err != nil {
+		t.Fatalf("ApplyMessage execution error: %v (usedGas=%d)", result.Err, result.UsedGas)
+	}
+	if nonce := ibs.GetNonce(authSigner); nonce != 0 {
+		t.Fatalf("auth signer nonce = %d, want 0", nonce)
 	}
 	if code := ibs.GetCode(authSigner); len(code) != 0 {
 		t.Fatalf("auth signer code len = %d, want 0", len(code))

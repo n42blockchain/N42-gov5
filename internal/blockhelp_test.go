@@ -131,7 +131,7 @@ func testPragueConfig() *params.ChainConfig {
 	}
 }
 
-func TestProcessPragueSystemCallsSkipsUndeployedSystemContracts(t *testing.T) {
+func TestProcessPragueSystemCallsRejectsUndeployedExecutionRequestContracts(t *testing.T) {
 	t.Parallel()
 
 	cfg := testPragueConfig()
@@ -148,8 +148,9 @@ func TestProcessPragueSystemCallsSkipsUndeployedSystemContracts(t *testing.T) {
 		txDb := memdb.BeginRw(t, db)
 		ibs := state.New(state.NewPlainState(txDb, 1))
 		requests, err := ProcessPragueSystemCalls(cfg, ibs, header, nil)
-		require.NoError(t, err)
-		require.Empty(t, requests)
+		require.Nil(t, requests)
+		require.ErrorContains(t, err, "System contract address")
+		require.ErrorContains(t, err, vm.WithdrawalRequestsAddress.Hex())
 	})
 
 	t.Run("consolidation", func(t *testing.T) {
@@ -159,8 +160,9 @@ func TestProcessPragueSystemCallsSkipsUndeployedSystemContracts(t *testing.T) {
 		ibs.CreateAccount(vm.WithdrawalRequestsAddress, true)
 		ibs.SetCode(vm.WithdrawalRequestsAddress, []byte{byte(vm.STOP)})
 		requests, err := ProcessPragueSystemCalls(cfg, ibs, header, nil)
-		require.NoError(t, err)
-		require.Empty(t, requests)
+		require.Nil(t, requests)
+		require.ErrorContains(t, err, "System contract address")
+		require.ErrorContains(t, err, vm.ConsolidationRequestsAddress.Hex())
 	})
 }
 
@@ -302,6 +304,10 @@ func TestProcessExecutionBlockEndIncludesDepositRequests(t *testing.T) {
 	db := memdb.NewTestDB(t)
 	txDb := memdb.BeginRw(t, db)
 	ibs := state.New(state.NewPlainState(txDb, 1))
+	ibs.CreateAccount(vm.WithdrawalRequestsAddress, true)
+	ibs.SetCode(vm.WithdrawalRequestsAddress, []byte{byte(vm.STOP)})
+	ibs.CreateAccount(vm.ConsolidationRequestsAddress, true)
+	ibs.SetCode(vm.ConsolidationRequestsAddress, []byte{byte(vm.STOP)})
 
 	receipts := block.Receipts{
 		&block.Receipt{

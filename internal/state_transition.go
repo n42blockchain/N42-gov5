@@ -465,14 +465,11 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 
 	if refunds {
 		if rules.IsLondon {
-			st.refundGas(params.RefundQuotientEIP3529)
+			st.refundGas(params.RefundQuotientEIP3529, floorDataGas)
 		} else {
-			st.refundGas(params.RefundQuotient)
+			st.refundGas(params.RefundQuotient, floorDataGas)
 		}
-	}
-
-	// EIP-7623: Apply floor data gas after execution
-	if rules.IsPrague && floorDataGas > 0 {
+	} else if rules.IsPrague && floorDataGas > 0 {
 		if gasUsed := st.gasUsed(); gasUsed < floorDataGas {
 			st.gas = st.initialGas - floorDataGas
 		}
@@ -506,12 +503,18 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	}, nil
 }
 
-func (st *StateTransition) refundGas(refundQuotient uint64) {
+func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64) {
 	refund := st.gasUsed() / refundQuotient
 	if refund > st.state.GetRefund() {
 		refund = st.state.GetRefund()
 	}
 	st.gas += refund
+	if floorDataGas > 0 {
+		maxRemainingGas := st.initialGas - floorDataGas
+		if st.gas > maxRemainingGas {
+			st.gas = maxRemainingGas
+		}
+	}
 
 	remaining := new(uint256.Int).Mul(new(uint256.Int).SetUint64(st.gas), st.gasPrice)
 	st.state.AddBalance(st.msg.From(), remaining)
