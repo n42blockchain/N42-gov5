@@ -5,12 +5,11 @@
 //
 // Executor reads headers, bodies, senders and receipts from a Geth-format
 // input Freezer, re-executes every transaction through the shared
-// ProcessBlock path, and writes receipts, senders, changesets, and the
-// leaves journal to an output Freezer. A PlainStateBuffer accumulates
-// state mutations between commit boundaries so that MDBX only sees one
+// ProcessBlock path, and writes changesets (acctcs/storcs) and block
+// witness to an output Freezer. A PlainStateBuffer accumulates state
+// mutations between commit boundaries so that MDBX only sees one
 // batch per CommitInterval. VerifyInterval toggles periodic state-root
-// verification; LeavesOnly and NoOutputs trim the output set for special
-// runs such as journal regeneration.
+// verification; NoOutputs skips output writing entirely.
 
 package ethel
 
@@ -49,8 +48,6 @@ type ExecutorConfig struct {
 	// They are rebuilt as a batch stage after sync completes.
 	// NoOutputs if true, skip writing output freezer (receipts, senders, etc.).
 	NoOutputs bool
-	// LeavesOnly if true, only write leaves_journal and block_witness (skip receipts, changesets, senders).
-	LeavesOnly bool
 }
 
 // Executor reads blocks from a Geth-compatible Freezer and re-executes
@@ -99,6 +96,19 @@ func NewExecutor(f *freezer.Freezer, db kv.RwDB, chainCfg *params.ChainConfig, e
 	if f != nil {
 		f.EnsureTable("headers", "c")
 		f.EnsureTable("bodies", "c")
+	}
+	// Snap commit interval to a multiple of freezer BatchSize so MDBX
+	// progress is always batch-aligned. This eliminates most partial-
+	// batch scenarios on resume, reducing the recovery window to at
+	// most 1 entry (due to 0-indexed block numbering).
+	if bs := uint64(freezer.BatchSize); cfg.CommitInterval%bs != 0 {
+		aligned := (cfg.CommitInterval / bs) * bs
+		if aligned == 0 {
+			aligned = bs
+		}
+		log.Info("Aligning commit interval to batch size",
+			"requested", cfg.CommitInterval, "aligned", aligned, "batchSize", bs)
+		cfg.CommitInterval = aligned
 	}
 	return &Executor{
 		freezer:     f,
@@ -179,7 +189,7 @@ func (e *Executor) Run(ctx context.Context) error {
 		}
 		e.outBatcher = batcher
 		defer batcher.Close()
-		if err := batcher.alignOnResume(startBlock, e.cfg.LeavesOnly); err != nil {
+		if err := batcher.alignOnResume(startBlock); err != nil {
 			setupTx.Rollback()
 			return fmt.Errorf("align output tables: %w", err)
 		}
@@ -782,13 +792,11 @@ func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *st
 			})
 		}
 	}
-	if !e.cfg.LeavesOnly {
-		if err := b.addEntry(freezer.TableAccountChanges, "c", accCSBytes); err != nil {
-			return fmt.Errorf("account changes: %w", err)
-		}
-		if err := b.addEntry(freezer.TableStorageChanges, "c", stoCSBytes); err != nil {
-			return fmt.Errorf("storage changes: %w", err)
-		}
+	if err := b.addEntry(freezer.TableAccountChanges, "c", accCSBytes); err != nil {
+		return fmt.Errorf("account changes: %w", err)
+	}
+	if err := b.addEntry(freezer.TableStorageChanges, "c", stoCSBytes); err != nil {
+		return fmt.Errorf("storage changes: %w", err)
 	}
 	_ = blockWipes // Retained for signature parity; wipes are now implicit in
 	// storcs entries (each wiped slot has oldLen>0, newLen=0).
