@@ -1058,12 +1058,25 @@ func (t *FreezerTable) truncateHeadLocked(from uint64) error {
 	// Without this, orphaned blobs corrupt retrieveBatch range calculations.
 	if haveRemovedIdx {
 		if removedIdx.fileNum == lastIdx.fileNum {
-			// Same file: truncate at the orphaned data start offset.
-			df, err := t.createDataFile(removedIdx.fileNum)
-			if err == nil {
-				df.Truncate(int64(removedIdx.offset))
+			if removedIdx.offset != lastIdx.offset {
+				// Different blobs in the same file: truncate at the orphaned start.
+				df, err := t.createDataFile(removedIdx.fileNum)
+				if err == nil {
+					df.Truncate(int64(removedIdx.offset))
+				}
+				t.headSize = int64(removedIdx.offset)
+			} else {
+				// Same batch blob (batch mode): the last retained entry and the
+				// first removed entry share the same compressed blob. Do NOT
+				// truncate — the blob is needed by the retained entries. Leave
+				// headSize at the end of the blob (current file size).
+				df, err := t.createDataFile(lastIdx.fileNum)
+				if err == nil {
+					if fi, err := df.Stat(); err == nil {
+						t.headSize = fi.Size()
+					}
+				}
 			}
-			t.headSize = int64(removedIdx.offset)
 		} else {
 			// Cross-file: removed items are in a later file. Delete every
 			// orphaned data file with fileNum >= removedIdx.fileNum, then
