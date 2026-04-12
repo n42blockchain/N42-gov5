@@ -470,25 +470,14 @@ func run(c *cli.Context) error {
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
 
 	// Pre-computed senders (input data). Auto-detect:
-	// 1. Freezer table format (chain/freezer/senders.cidx) — from sender-recovery --ancient
+	// 1. Freezer table format (senders.cidx in output freezer) — from sender-recovery --ancient
 	// 2. SegmentStore format (chain/senders.cidx) — from sender-recovery --erigon-db
 	senderFound := false
-	// Check freezer table in output freezer and additional freezer dirs.
-	for _, dir := range []string{
-		outFreezerPath,
-		filepath.Join(datadir, "chain", "freezer"),
-	} {
-		sf, sErr := freezer.New(dir, 0)
-		if sErr != nil {
-			continue
-		}
-		if tbl := sf.Table("senders"); tbl != nil && tbl.Items() > 0 {
-			executor.SetSenderFreezer(sf)
-			log.Info("Pre-computed senders loaded (freezer)", "path", dir, "items", tbl.Items())
-			senderFound = true
-			break
-		}
-		sf.Close()
+	// Check if the output freezer already has a senders table (same Freezer instance, no re-open).
+	if tbl := outFreezer.Table("senders"); tbl != nil && tbl.Items() > 0 {
+		executor.SetSenderFreezer(outFreezer)
+		log.Info("Pre-computed senders loaded (freezer)", "path", outFreezerPath, "items", tbl.Items())
+		senderFound = true
 	}
 	// Fallback: SegmentStore format.
 	if !senderFound {
