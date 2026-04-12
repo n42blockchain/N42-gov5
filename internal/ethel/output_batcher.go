@@ -276,6 +276,8 @@ func padTableTo(tbl *freezer.FreezerTable, targetItems uint64, enc *zstd.Encoder
 // partial batches so the next flush writes a complete batch-64 block.
 func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 	b.nextItem = startBlock
+	log.Info("alignOnResume starting",
+		"startBlock", startBlock)
 
 	tables := []string{
 		freezer.TableAccountChanges,
@@ -310,7 +312,7 @@ func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 					"clear MDBX (rm mdbx.dat) or restore the output freezer",
 					name, items, startBlock, gap, maxPadGap)
 			}
-			log.Info("Padding table to startBlock",
+			log.Warn("Padding table with EMPTY entries (changesets lost on prior shutdown)",
 				"table", name, "items", items, "startBlock", startBlock, "gap", gap)
 			if err := padTableTo(tbl, startBlock, b.enc); err != nil {
 				return fmt.Errorf("pad %s: %w", name, err)

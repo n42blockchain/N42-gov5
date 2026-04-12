@@ -228,10 +228,19 @@ func (e *Executor) Run(ctx context.Context) error {
 	var prevHits, prevMisses uint64
 	var prevAH, prevAM, prevSH, prevSM, prevCH, prevCM uint64
 
+	lastOKBlock := startBlock - 1 // tracks last successfully executed block
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
 		if ctx.Err() != nil {
 			log.Info("Shutting down executor", "lastBlock", blockNum-1)
-			// Save progress for the last committed block before exit.
+			// Flush remaining output entries so the freezer stays in sync
+			// with MDBX progress. Without this, the commit-boundary block's
+			// changeset is lost (still in memory), and resume pads an EMPTY
+			// entry — corrupting the changeset stream for rebuild-state.
+			if e.outBatcher != nil {
+				if err := e.outBatcher.flushAll(); err != nil {
+					log.Warn("Failed to flush output batcher on shutdown", "err", err)
+				}
+			}
 			return ctx.Err()
 		}
 
@@ -247,6 +256,7 @@ func (e *Executor) Run(ctx context.Context) error {
 			}
 			return fmt.Errorf("block %d: %w", blockNum, err)
 		}
+		lastOKBlock = blockNum
 
 		// Periodic flush + commit.
 		if blockNum > 0 && blockNum%e.cfg.CommitInterval == 0 {
@@ -411,8 +421,9 @@ func (e *Executor) Run(ctx context.Context) error {
 	}
 
 	// Hand off the leftover write buffer (last partial commit window)
-	// through the same async path, then drain.
-	if err := e.asyncFlush.hand(endBlock); err != nil {
+	// through the same async path, then drain. Use lastOKBlock (not
+	// endBlock) so that skipped-error blocks don't advance progress.
+	if err := e.asyncFlush.hand(lastOKBlock); err != nil {
 		return fmt.Errorf("hand final flush: %w", err)
 	}
 	if _, err := e.asyncFlush.waitPrev(); err != nil {
@@ -479,6 +490,11 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) 
 
 	result, err := e.processBlock(header, body, ibs, senders, writer)
 	if err != nil {
+		// On gas limit exhaustion, processBlock returns a partial result
+		// with receipts up to the failing tx — use it for diagnostics.
+		if result != nil {
+			e.dumpGasMismatch(blockNum, header, body, result)
+		}
 		return err
 	}
 
