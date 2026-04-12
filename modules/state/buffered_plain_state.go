@@ -147,6 +147,13 @@ type PlainStateBuffer struct {
 
 	hits   atomic.Uint64
 	misses atomic.Uint64
+
+	// Per-tier hit/miss counters. Used by the executor's progress log to
+	// break down where the misses are concentrated (account/storage/code)
+	// so the operator can decide which LRU budget to grow.
+	acctHits, acctMisses atomic.Uint64
+	stoHits, stoMisses   atomic.Uint64
+	codeHits, codeMisses atomic.Uint64
 }
 
 // NewPlainStateBuffer creates a buffer with the default cache budget.
@@ -184,6 +191,15 @@ func NewPlainStateBufferWithBudget(b CacheBudget) *PlainStateBuffer {
 
 func (b *PlainStateBuffer) CacheStats() (hits, misses uint64) {
 	return b.hits.Load(), b.misses.Load()
+}
+
+// TierStats returns per-tier (hits, misses) for accounts, storage, and code.
+// Hits include all 3 buffer layers (active, in-flight, LRU); misses are
+// MDBX fall-throughs.
+func (b *PlainStateBuffer) TierStats() (acctH, acctM, stoH, stoM, codeH, codeM uint64) {
+	return b.acctHits.Load(), b.acctMisses.Load(),
+		b.stoHits.Load(), b.stoMisses.Load(),
+		b.codeHits.Load(), b.codeMisses.Load()
 }
 
 // LRUStats reports per-tier byte usage and entry counts.
@@ -391,42 +407,71 @@ func (snap *BufferSnapshot) ApplyTo(tx kv.RwTx) error {
 	return nil
 }
 
-// InvalidateLRUForSnapshot evicts dirty keys from the read cache. Called
-// from the background flusher AFTER the tx commit so the post-commit
-// MDBX state is consistent with the cache. Concurrent main-thread reads
-// against the LRU are safe (LRU has its own mutex).
+// RefreshLRUForSnapshot pre-populates the read cache with the snapshot's
+// just-flushed values. Called from the background flusher AFTER the
+// MDBX commit. Concurrent main-thread reads against the LRU are safe
+// (LRU has its own mutex).
 //
-// We deliberately do NOT touch the readStorage entries for slots in
-// snap.contractWipes — the wipedSlots collected at SELFDESTRUCT time
-// are already represented as per-slot tombstones in snap.storage and
-// will be evicted by the storage loop below.
-func (b *PlainStateBuffer) InvalidateLRUForSnapshot(snap *BufferSnapshot) {
+// Why Put instead of Delete: the previous design Deleted every dirty
+// key on the theory that the LRU value might be stale after the commit.
+// But the snapshot's value IS what just landed in MDBX, so it's
+// authoritative — we can update the LRU instead of evicting it.
+// Eviction forces the next read to round-trip to MDBX; refresh keeps
+// the entire just-flushed working set hot. At the 11M-block scale this
+// is ~800K keys per commit interval that would otherwise become cold
+// misses on the next interval's first access.
+//
+// Wiped contracts (SELFDESTRUCT) are represented as per-slot tombstones
+// in snap.storage with empty value, so they get refreshed as negative
+// cache entries — exactly what we want.
+func (b *PlainStateBuffer) RefreshLRUForSnapshot(snap *BufferSnapshot) {
 	acctKeys := make([]types.Address, 0, len(snap.accounts))
-	for addr := range snap.accounts {
+	acctVals := make([][]byte, 0, len(snap.accounts))
+	acctCosts := make([]int, 0, len(snap.accounts))
+	for addr, v := range snap.accounts {
 		acctKeys = append(acctKeys, addr)
+		acctVals = append(acctVals, v)
+		acctCosts = append(acctCosts, addrKeyLen+len(v)+cacheOverheadPerEntry)
 	}
-	b.readAccounts.DeleteBatch(acctKeys)
+	b.readAccounts.PutBatch(acctKeys, acctVals, acctCosts)
 
 	stoCount := 0
 	for _, slots := range snap.storage {
 		stoCount += len(slots)
 	}
 	stoKeys := make([][storageCompositeKeyLen]byte, 0, stoCount)
+	stoVals := make([][]byte, 0, stoCount)
+	stoCosts := make([]int, 0, stoCount)
 	for addr, slots := range snap.storage {
-		for slot := range slots {
+		for slot, entry := range slots {
 			var ck [storageCompositeKeyLen]byte
 			copy(ck[:20], addr[:])
 			copy(ck[20:], slot[:])
 			stoKeys = append(stoKeys, ck)
+			// Tombstone (deletedSentinel) → cache as nil so the LRU
+			// returns the negative answer on subsequent reads instead
+			// of falling through to MDBX where the row may still exist
+			// briefly post-commit.
+			if len(entry.value) == 0 {
+				stoVals = append(stoVals, nil)
+				stoCosts = append(stoCosts, storageCompositeKeyLen+cacheOverheadPerEntry)
+			} else {
+				stoVals = append(stoVals, entry.value)
+				stoCosts = append(stoCosts, storageCompositeKeyLen+len(entry.value)+cacheOverheadPerEntry)
+			}
 		}
 	}
-	b.readStorage.DeleteBatch(stoKeys)
+	b.readStorage.PutBatch(stoKeys, stoVals, stoCosts)
 
 	codeKeys := make([]types.Hash, 0, len(snap.code))
-	for h := range snap.code {
+	codeVals := make([][]byte, 0, len(snap.code))
+	codeCosts := make([]int, 0, len(snap.code))
+	for h, code := range snap.code {
 		codeKeys = append(codeKeys, h)
+		codeVals = append(codeVals, code)
+		codeCosts = append(codeCosts, hashKeyLen+len(code)+cacheOverheadPerEntry)
 	}
-	b.readCode.DeleteBatch(codeKeys)
+	b.readCode.PutBatch(codeKeys, codeVals, codeCosts)
 }
 
 // Stats reports current write-buffer cardinalities (excluding any
@@ -473,6 +518,7 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 	// 1. Active write buffer.
 	if enc, ok := r.buf.accounts[address]; ok {
 		r.buf.hits.Add(1)
+		r.buf.acctHits.Add(1)
 		if len(enc) == 0 {
 			return nil, nil
 		}
@@ -487,6 +533,7 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 	if snap := r.buf.inFlight.Load(); snap != nil {
 		if enc, ok := snap.accounts[address]; ok {
 			r.buf.hits.Add(1)
+			r.buf.acctHits.Add(1)
 			if len(enc) == 0 {
 				return nil, nil
 			}
@@ -500,6 +547,7 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 	// 2. LRU read cache.
 	if v, present := r.buf.readAccounts.Get(address); present {
 		r.buf.hits.Add(1)
+		r.buf.acctHits.Add(1)
 		if len(v) == 0 {
 			return nil, nil
 		}
@@ -511,6 +559,7 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 	}
 	// 3. MDBX → cache.
 	r.buf.misses.Add(1)
+	r.buf.acctMisses.Add(1)
 	enc, err := r.db.GetOne(modules.Account, address[:])
 	if err != nil {
 		return nil, err
@@ -536,6 +585,7 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 	if slots, ok := r.buf.storage[address]; ok {
 		if entry, ok2 := slots[*key]; ok2 {
 			r.buf.hits.Add(1)
+			r.buf.stoHits.Add(1)
 			if len(entry.value) == 0 {
 				return nil, nil
 			}
@@ -555,6 +605,7 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 		if slots, ok := snap.storage[address]; ok {
 			if entry, ok2 := slots[*key]; ok2 {
 				r.buf.hits.Add(1)
+				r.buf.stoHits.Add(1)
 				if len(entry.value) == 0 {
 					return nil, nil
 				}
@@ -573,6 +624,7 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 	copy(ck[20:], key[:])
 	if v, present := r.buf.readStorage.Get(ck); present {
 		r.buf.hits.Add(1)
+		r.buf.stoHits.Add(1)
 		if len(v) == 0 {
 			return nil, nil
 		}
@@ -580,6 +632,7 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 	}
 	// 3. MDBX → cache.
 	r.buf.misses.Add(1)
+	r.buf.stoMisses.Add(1)
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address[:], key[:])
 	enc, err := r.db.GetOne(modules.Storage, compositeKey)
 	if err != nil {
@@ -601,19 +654,23 @@ func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, incarn
 	}
 	if code, ok := r.buf.code[codeHash]; ok {
 		r.buf.hits.Add(1)
+		r.buf.codeHits.Add(1)
 		return code, nil
 	}
 	if snap := r.buf.inFlight.Load(); snap != nil {
 		if code, ok := snap.code[codeHash]; ok {
 			r.buf.hits.Add(1)
+			r.buf.codeHits.Add(1)
 			return code, nil
 		}
 	}
 	if v, present := r.buf.readCode.Get(codeHash); present {
 		r.buf.hits.Add(1)
+		r.buf.codeHits.Add(1)
 		return v, nil
 	}
 	r.buf.misses.Add(1)
+	r.buf.codeMisses.Add(1)
 	code, err := r.db.GetOne(modules.Code, codeHash[:])
 	if err != nil {
 		return nil, err
