@@ -642,7 +642,14 @@ func (w *worker) workLoop(recommit time.Duration) error {
 }
 
 func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header) error {
-	env.txs = []*transaction.Transaction{}
+	// Pre-allocate with estimated max tx count to avoid append-growth
+	// in the hot commit loop. 21000 is the minimum gas per tx.
+	estCap := int(env.gasPool.Gas() / 21000)
+	if estCap > 1024 {
+		estCap = 1024 // cap to avoid over-allocation on high gas limits
+	}
+	env.txs = make([]*transaction.Transaction, 0, estCap)
+	env.receipts = make(block.Receipts, 0, estCap)
 
 	header := env.header
 	noop := state.NewNoopWriter()
