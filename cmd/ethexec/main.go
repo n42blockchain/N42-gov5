@@ -184,6 +184,53 @@ func main() {
 				Action: runUnwind,
 			},
 			{
+				Name:  "reset-progress",
+				Usage: "Force-set the ethel progress marker without touching PlainState",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "datadir", Usage: "Path to MDBX directory", Required: true},
+					&cli.Uint64Flag{Name: "target", Usage: "Block number to set as last-committed", Required: true},
+				},
+				Action: func(c *cli.Context) error {
+					logger := log2.New()
+					db, err := mdbx.NewMDBX(logger).
+						Path(c.String("datadir")).
+						Label(kv.ChainDB).
+						Accede().
+						DBVerbosity(kv.DBVerbosityLvl(2)).
+						Open(context.Background())
+					if err != nil {
+						return fmt.Errorf("open mdbx: %w", err)
+					}
+					defer db.Close()
+					tx, err := db.BeginRw(context.Background())
+					if err != nil {
+						return err
+					}
+					defer tx.Rollback()
+					old := ethel.ReadProgress(tx)
+					target := c.Uint64("target")
+					if err := ethel.WriteProgress(tx, target); err != nil {
+						return err
+					}
+					if err := tx.Commit(); err != nil {
+						return err
+					}
+					log.Info("Progress reset", "old", old, "new", target)
+					return nil
+				},
+			},
+			{
+				Name:  "scan-cs",
+				Usage: "Scan changeset tables for corruption, report bad batch ranges",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "datadir", Usage: "Path to data directory with output freezer", Required: true},
+					&cli.StringFlag{Name: "leaves", Usage: "Path to freezer dir (default: <datadir>/chain/freezer)"},
+					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
+					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
+				},
+				Action: runScanCS,
+			},
+			{
 				Name:  "compare-root",
 				Usage: "Compute state root at a given block via Traditional MPT and HPH, compare with header",
 				Flags: []cli.Flag{
@@ -1157,6 +1204,8 @@ func runRebuildState(c *cli.Context) error {
 		StartBlock:     startBlock,
 		VerifyInterval: verifyInterval,
 		InputFreezer:   inputF,
+		ChainConfig:    params.EthereumMainnetChainConfig,
+		GethFreezer:    inputF,
 	}
 	if err := ethel.RebuildStateWith(ctx, db, leavesDir, endBlock, opts); err != nil {
 		return err
@@ -1276,4 +1325,98 @@ func detectRethEndBlock(db kv.RoDB) uint64 {
 		}
 	}
 	return 0
+}
+
+func runScanCS(c *cli.Context) error {
+	datadir := c.String("datadir")
+	leavesDir := c.String("leaves")
+	startBlock := c.Uint64("start")
+	endBlock := c.Uint64("end")
+
+	if leavesDir == "" {
+		leavesDir = filepath.Join(datadir, "chain", "freezer")
+	}
+
+	type tableInfo struct {
+		name string
+		tbl  *freezer.FreezerTable
+		decode func([]byte) error
+	}
+
+	acctTbl, err := freezer.NewFreezerTableReadOnly(leavesDir, "acctcs", "c")
+	if err != nil {
+		return fmt.Errorf("open acctcs: %w", err)
+	}
+	defer acctTbl.Close()
+	acctTbl.ForceBatchSize(freezer.BatchSize)
+	acctTbl.SetCompressed(true)
+
+	stoTbl, err := freezer.NewFreezerTableReadOnly(leavesDir, "storcs", "c")
+	if err != nil {
+		return fmt.Errorf("open storcs: %w", err)
+	}
+	defer stoTbl.Close()
+	stoTbl.ForceBatchSize(freezer.BatchSize)
+	stoTbl.SetCompressed(true)
+
+	tables := []tableInfo{
+		{"acctcs", acctTbl, func(data []byte) error {
+			if len(data) == 0 { return nil }
+			_, err := ethel.DecodeAccountChanges(data)
+			return err
+		}},
+		{"storcs", stoTbl, func(data []byte) error {
+			if len(data) == 0 { return nil }
+			_, err := ethel.DecodeStorageChanges(data)
+			return err
+		}},
+	}
+
+	for _, ti := range tables {
+		items := ti.tbl.Items()
+		end := endBlock
+		if end == 0 || end > items {
+			end = items
+		}
+		start := startBlock
+		fmt.Printf("\n=== %s: items=%d scan=%d..%d ===\n", ti.name, items, start, end)
+
+		inBad := false
+		badStart := uint64(0)
+		badCount := 0
+		goodCount := 0
+		lastGood := uint64(0)
+
+		// Scan every block individually
+		for blk := start; blk < end; blk++ {
+			data, err := ti.tbl.Retrieve(blk)
+			blockOK := err == nil
+			if blockOK {
+				blockOK = ti.decode(data) == nil
+			}
+
+			if !blockOK {
+				if !inBad {
+					inBad = true
+					badStart = blk
+					badCount++
+				}
+			} else {
+				if inBad {
+					fmt.Printf("  BAD: blocks %d - %d (%d blocks)\n", badStart, blk-1, blk-badStart)
+					inBad = false
+				}
+				goodCount++
+				lastGood = blk
+			}
+			if blk > 0 && blk%5000000 == 0 {
+				fmt.Printf("  ... scanned %d/%d\n", blk, end)
+			}
+		}
+		if inBad {
+			fmt.Printf("  BAD: blocks %d - %d (to end)\n", badStart, end-1)
+		}
+		fmt.Printf("  good batches: %d, bad regions: %d, lastGoodBlock: %d\n", goodCount, badCount, lastGood)
+	}
+	return nil
 }

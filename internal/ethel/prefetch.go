@@ -16,7 +16,6 @@ import (
 	"context"
 	"sync"
 
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -187,33 +186,26 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	}
 	defer roTx.Rollback()
 
-	// Read accounts from MDBX and populate the shared read cache.
-	incarnations := make(map[types.Address]uint16, len(addrs))
+	// Touch accounts in MDBX to warm the OS page cache. The read itself
+	// brings the B+-tree pages into memory; we deliberately do NOT write
+	// to the shared LRU cache here because the prefetcher's RoTx may be
+	// stale (opened before the background flusher's MDBX commit). If we
+	// cached those stale values, a late CacheAccount call could overwrite
+	// the correct entry that RefreshLRUForSnapshot just installed,
+	// causing subsequent reads to return wrong data (e.g. wrong Empty()
+	// result → 25000 gas mismatch → gas pool exhaustion).
 	for addr := range addrs {
-		enc, _ := roTx.GetOne(modules.Account, addr[:])
-		if len(enc) > 0 {
-			var a account.StateAccount
-			if a.DecodeForStorage(enc) == nil {
-				incarnations[addr] = 0
-				p.stateBuf.CacheAccount(addr, &a)
-			}
-		} else {
-			p.stateBuf.CacheAccount(addr, nil)
-		}
+		roTx.GetOne(modules.Account, addr[:])
 	}
 
-	// Prefetch storage slots and populate cache.
+	// Touch storage slots in MDBX to warm the page cache (post-Berlin
+	// access-list entries only). Same rationale: read for page warming,
+	// no LRU write.
 	for _, tx := range body.Transactions {
 		for _, entry := range tx.AccessList() {
 			for _, key := range entry.StorageKeys {
 				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], key[:])
-				enc, _ := roTx.GetOne(modules.Storage, compositeKey)
-				var cached []byte
-				if len(enc) > 0 {
-					cached = make([]byte, len(enc))
-					copy(cached, enc)
-				}
-				p.stateBuf.CacheStorage(entry.Address, key, cached)
+				roTx.GetOne(modules.Storage, compositeKey)
 			}
 		}
 	}
