@@ -90,6 +90,15 @@ func (f *asyncFlusher) waitPrev() (time.Duration, error) {
 // it's persisted via WriteProgress inside the same tx so recovery
 // observes a consistent (state, progress) pair.
 func (f *asyncFlusher) hand(blockNum uint64) error {
+	return f.handWithRemainder(blockNum, nil)
+}
+
+// handWithRemainder is like hand but also persists changeset remainder
+// entries atomically with the state commit. On resume, these entries
+// are restored into the output batcher so the changeset stream has no
+// gaps — without writing partial batches to the freezer (which would
+// break cdat determinism).
+func (f *asyncFlusher) handWithRemainder(blockNum uint64, csRemainder map[string][]byte) error {
 	if f.inFlight {
 		return errors.New("asyncFlusher: hand called while previous flush still pending — must waitPrev first")
 	}
@@ -106,17 +115,16 @@ func (f *asyncFlusher) hand(blockNum uint64) error {
 		if err == nil {
 			err = WriteProgress(bgTx, blockNum)
 		}
+		// Save changeset remainder in the same transaction.
+		if err == nil {
+			err = WriteCSRemainder(bgTx, csRemainder)
+		}
 		if err == nil {
 			err = bgTx.Commit()
 		} else if bgTx != nil {
 			bgTx.Rollback()
 		}
 		if err == nil {
-			// Refresh LRU with the just-flushed working set AFTER MDBX
-			// commit. The snapshot's values ARE what landed in MDBX, so
-			// they're authoritative — Put-not-Delete keeps the entire
-			// flushed set hot for the next interval instead of forcing
-			// every key back through MDBX on first re-access.
 			f.buf.RefreshLRUForSnapshot(snap)
 		}
 		f.resultCh <- asyncFlushResult{err: err, dur: time.Since(t0)}

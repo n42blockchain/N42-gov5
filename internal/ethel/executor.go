@@ -183,7 +183,13 @@ func (e *Executor) Run(ctx context.Context) error {
 			setupTx.Rollback()
 			return fmt.Errorf("align output tables: %w", err)
 		}
-		// Senders/receipts deprecated: no padding or per-block writes.
+		// Restore changeset remainder saved by the previous run's MDBX
+		// commit. These are the < 64 entries that didn't form a full
+		// batch — they were saved atomically with state + progress.
+		csRem := ReadCSRemainder(setupTx)
+		if len(csRem) > 0 {
+			batcher.preloadRemainder(csRem)
+		}
 	}
 
 	// Commit the setup tx and switch to a RoTx for the main loop.
@@ -257,17 +263,21 @@ func (e *Executor) Run(ctx context.Context) error {
 				lastFlushDur = dur
 			}
 
-			// 2. Flush ALL output entries (including partial batch) and
-			// fsync BEFORE MDBX commit. On resume output >= MDBX, no
-			// gap possible. retrieveBatch handles partial batches via
-			// cidx offset scanning (not 64-aligned arithmetic).
+			// 2. Flush only FULL batches to output freezer, then
+			// fsync to disk BEFORE MDBX commit. This ordering
+			// guarantees output is never behind MDBX on power loss.
+			// The remainder (< 64 entries) is saved to MDBX
+			// atomically with state + progress, so ctrl+c never
+			// loses entries AND cdat stays deterministic.
+			var csRemainder map[string][]byte
 			if e.outBatcher != nil {
-				if err := e.outBatcher.flushAll(); err != nil {
+				if _, err := e.outBatcher.flushFullBatches(); err != nil {
 					return fmt.Errorf("flush output batcher at block %d: %w", blockNum, err)
 				}
 				if err := e.outBatcher.sync(); err != nil {
 					return fmt.Errorf("sync output batcher at block %d: %w", blockNum, err)
 				}
+				csRemainder = e.outBatcher.remainder()
 			}
 
 			// 3. Capture stats BEFORE the snapshot moves the maps.
@@ -285,14 +295,14 @@ func (e *Executor) Run(ctx context.Context) error {
 			prevSH, prevSM = sh, sm
 			prevCH, prevCM = ch, cm
 
-			// 4. Hand the buffer to the background flusher. The bg
-			// goroutine opens its OWN RwTx, applies the snapshot,
-			// writes progress, commits, and invalidates the LRU.
+			// 4. Hand the buffer + changeset remainder to the bg
+			// flusher. The remainder is saved to MDBX atomically
+			// with the state + progress in the same RwTx.
 			// SnapshotForFlush atomically resets the active buffer
 			// AND installs the snapshot as in-flight so the reader
 			// path can still find dirty values during the bg commit
 			// window.
-			if err := e.asyncFlush.hand(blockNum); err != nil {
+			if err := e.asyncFlush.handWithRemainder(blockNum, csRemainder); err != nil {
 				return fmt.Errorf("hand to async flusher at block %d: %w", blockNum, err)
 			}
 
@@ -405,20 +415,19 @@ func (e *Executor) Run(ctx context.Context) error {
 		return fmt.Errorf("wait final pending flush: %w", err)
 	}
 
-	// Output batcher: flush all entries + fsync before final MDBX commit.
+	// Output batcher: flush full batches, save remainder to MDBX.
+	var finalRemainder map[string][]byte
 	if e.outBatcher != nil {
-		if err := e.outBatcher.flushAll(); err != nil {
+		if _, err := e.outBatcher.flushFullBatches(); err != nil {
 			return fmt.Errorf("flush output batcher final: %w", err)
 		}
-		if err := e.outBatcher.sync(); err != nil {
-			return fmt.Errorf("sync output batcher final: %w", err)
-		}
+		finalRemainder = e.outBatcher.remainder()
 	}
 
 	// Hand off the leftover write buffer (last partial commit window)
-	// through the same async path, then drain. Use lastOKBlock (not
-	// endBlock) so that skipped-error blocks don't advance progress.
-	if err := e.asyncFlush.hand(lastOKBlock); err != nil {
+	// through the same async path, then drain. Remainder is saved
+	// atomically with state + progress.
+	if err := e.asyncFlush.handWithRemainder(lastOKBlock, finalRemainder); err != nil {
 		return fmt.Errorf("hand final flush: %w", err)
 	}
 	if _, err := e.asyncFlush.waitPrev(); err != nil {
