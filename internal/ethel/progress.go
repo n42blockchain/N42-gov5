@@ -36,3 +36,40 @@ func WriteProgress(tx kv.RwTx, blockNum uint64) error {
 	binary.BigEndian.PutUint64(buf[:], blockNum)
 	return tx.Put(kv.SyncStageProgress, []byte(progressKey), buf[:])
 }
+
+const csRemainderPrefix = "ethel-cs-remainder-"
+
+// WriteCSRemainder saves unflushed changeset entries (< 64, one batch
+// worth of remainder per table) into MDBX. Written atomically with
+// state + progress so ctrl+c never loses entries without needing
+// partial batches in the freezer (preserving cdat determinism).
+// Pass nil to clear any previously saved remainder.
+func WriteCSRemainder(tx kv.RwTx, data map[string][]byte) error {
+	// Always clear old entries first.
+	for _, name := range []string{"acctcs", "storcs", "witness"} {
+		key := []byte(csRemainderPrefix + name)
+		if err := tx.Delete(kv.SyncStageProgress, key); err != nil {
+			return err
+		}
+	}
+	for name, blob := range data {
+		key := []byte(csRemainderPrefix + name)
+		if err := tx.Put(kv.SyncStageProgress, key, blob); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReadCSRemainder reads previously saved changeset remainder entries.
+func ReadCSRemainder(tx kv.Tx) map[string][]byte {
+	result := make(map[string][]byte)
+	for _, name := range []string{"acctcs", "storcs", "witness"} {
+		key := []byte(csRemainderPrefix + name)
+		v, err := tx.GetOne(kv.SyncStageProgress, key)
+		if err == nil && len(v) > 0 {
+			result[name] = v
+		}
+	}
+	return result
+}

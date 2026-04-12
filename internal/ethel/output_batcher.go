@@ -14,6 +14,7 @@ package ethel
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/klauspost/compress/zstd"
@@ -63,6 +64,76 @@ func newOutputBatcher(f *freezer.Freezer) (*outputBatcher, error) {
 func (b *outputBatcher) Close() {
 	if b.enc != nil {
 		b.enc.Close()
+	}
+}
+
+// remainder returns the unflushed entries per table as a serialized map.
+// Each value is a length-prefixed blob: [count:4LE][len0:4LE][data0]...
+// Used to persist remainder in MDBX so ctrl+c doesn't lose entries.
+func (b *outputBatcher) remainder() map[string][]byte {
+	result := make(map[string][]byte)
+	for _, name := range b.order {
+		tb := b.tables[name]
+		if len(tb.entries) == 0 {
+			continue
+		}
+		// Serialize: [count:4LE][len0:4LE][data0][len1:4LE][data1]...
+		size := 4
+		for _, e := range tb.entries {
+			size += 4 + len(e)
+		}
+		buf := make([]byte, 0, size)
+		var tmp [4]byte
+		binary.LittleEndian.PutUint32(tmp[:], uint32(len(tb.entries)))
+		buf = append(buf, tmp[:]...)
+		for _, e := range tb.entries {
+			binary.LittleEndian.PutUint32(tmp[:], uint32(len(e)))
+			buf = append(buf, tmp[:]...)
+			buf = append(buf, e...)
+		}
+		result[name] = buf
+	}
+	return result
+}
+
+// preloadRemainder restores entries saved by a prior run's remainder().
+// Called during alignOnResume before the executor starts processing.
+func (b *outputBatcher) preloadRemainder(data map[string][]byte) {
+	for name, blob := range data {
+		tb := b.tables[name]
+		if tb == nil {
+			continue
+		}
+		if len(blob) < 4 {
+			continue
+		}
+		count := int(binary.LittleEndian.Uint32(blob[:4]))
+		pos := 4
+		for i := 0; i < count && pos+4 <= len(blob); i++ {
+			entryLen := int(binary.LittleEndian.Uint32(blob[pos:]))
+			pos += 4
+			if pos+entryLen > len(blob) {
+				break
+			}
+			tb.entries = append(tb.entries, blob[pos:pos+entryLen])
+			pos += entryLen
+		}
+		if len(tb.entries) > 0 {
+			// Adjust existingItems and nextItem backward to account
+			// for the pre-loaded entries.
+			preloaded := uint64(len(tb.entries))
+			if tb.existingItems >= preloaded {
+				tb.existingItems -= preloaded
+			}
+			if b.nextItem > preloaded {
+				newNext := b.nextItem - preloaded
+				if newNext < b.nextItem {
+					b.nextItem = newNext
+				}
+			}
+			log.Info("Preloaded remainder entries",
+				"table", name, "count", len(tb.entries))
+		}
 	}
 }
 
