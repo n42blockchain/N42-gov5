@@ -14,6 +14,7 @@
 package ethel
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common"
@@ -23,6 +24,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 
@@ -102,6 +104,21 @@ func ProcessBlock(
 			ibs, noop, header, txn, usedGas, cfg,
 		)
 		if err != nil {
+			if errors.Is(err, common.ErrGasLimitReached) {
+				log.Error("Gas pool exhausted",
+					"block", header.Number.Uint64(),
+					"txIndex", i,
+					"txHash", txn.Hash().Hex(),
+					"txGasLimit", txn.Gas(),
+					"poolRemaining", gp.Gas(),
+					"usedGasSoFar", *usedGas,
+					"blockGasLimit", header.GasLimit,
+					"totalTxs", len(txs),
+				)
+				// Return partial result so caller can diff against geth receipts.
+				return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders},
+					fmt.Errorf("tx %d: %w", i, err)
+			}
 			return nil, fmt.Errorf("tx %d: %w", i, err)
 		}
 		if receipt != nil {

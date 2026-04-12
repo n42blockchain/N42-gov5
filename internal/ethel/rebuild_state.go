@@ -18,15 +18,19 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"runtime"
 	"sort"
 	"time"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
 )
 
 const memLimitGB = 100 // flush when Go heap exceeds this
@@ -49,6 +53,11 @@ type RebuildOptions struct {
 	// segment from a different freezer onto an already-rebuilt state, e.g.
 	// to bridge over a corrupted hole by reusing a clean snapshot.
 	StartBlock uint64
+	// ChainConfig + GethFreezer enable EVM fallback: when a changeset
+	// entry is corrupt, flush in-memory state to MDBX, execute the block
+	// via EVM to produce the correct state transition, then continue.
+	ChainConfig  *params.ChainConfig
+	GethFreezer  *freezer.Freezer // input freezer for reading headers/bodies
 }
 
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
@@ -228,9 +237,37 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 			return fmt.Errorf("read storcs block %d: %w", blockNum, err)
 		}
 		if len(stoData) > 0 {
-			entries, err := DecodeStorageChanges(stoData)
-			if err != nil {
-				return fmt.Errorf("decode storcs block %d: %w", blockNum, err)
+			entries, decErr := DecodeStorageChanges(stoData)
+			if decErr != nil {
+				if opts.ChainConfig == nil || opts.GethFreezer == nil {
+					return fmt.Errorf("decode storcs block %d: %w (pass --ancient to enable EVM fallback)", blockNum, decErr)
+				}
+				// EVM fallback: revert the acctcs NEW values we just applied
+				// (use OLD values) so MDBX state is at blockNum-1, then
+				// execute blockNum via EVM.
+				log.Warn("Corrupt storcs entry — falling back to EVM execution",
+					"block", blockNum, "err", decErr)
+				if len(accData) > 0 {
+					revert, _ := DecodeAccountChanges(accData)
+					for _, e := range revert {
+						if len(e.OldValue) == 0 {
+							acctMap[e.Address] = nil
+						} else {
+							acctMap[e.Address] = e.OldValue
+						}
+					}
+				}
+				if err := flushToMDBX(ctx, db, acctMap, storMap, wipeSet); err != nil {
+					return fmt.Errorf("flush before EVM fallback at %d: %w", blockNum, err)
+				}
+				acctMap = make(map[types.Address][]byte, 1_000_000)
+				storMap = make(map[types.Address]map[types.Hash][]byte, 1_000_000)
+				wipeSet = make(map[types.Address]struct{})
+				flushCount++
+				if err := rebuildEVMFallback(ctx, db, opts, blockNum); err != nil {
+					return fmt.Errorf("EVM fallback at block %d: %w", blockNum, err)
+				}
+				continue
 			}
 			for _, e := range entries {
 				var addr types.Address
@@ -552,4 +589,111 @@ func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Fr
 	} else {
 		log.Error("State root MISMATCH", "block", blockNum, "computed", root.Hex(), "expected", header.Root.Hex())
 	}
+}
+
+// rebuildEVMFallback executes a single block via EVM against the current
+// MDBX PlainState and commits the resulting state changes. Used when a
+// changeset entry is corrupt and cannot be decoded.
+func rebuildEVMFallback(ctx context.Context, db kv.RwDB, opts RebuildOptions, blockNum uint64) error {
+	headerData, err := opts.GethFreezer.Ancient(freezer.TableHeaders, blockNum)
+	if err != nil {
+		return fmt.Errorf("read header: %w", err)
+	}
+	header, err := DecodeGethHeader(headerData)
+	if err != nil {
+		return fmt.Errorf("decode header: %w", err)
+	}
+	bodyData, err := opts.GethFreezer.Ancient(freezer.TableBodies, blockNum)
+	if err != nil {
+		return fmt.Errorf("read body: %w", err)
+	}
+	body, err := DecodeGethBody(bodyData)
+	if err != nil {
+		return fmt.Errorf("decode body: %w", err)
+	}
+
+	var uncles []block.IHeader
+	for _, u := range body.Uncles {
+		uncles = append(uncles, u)
+	}
+
+	engine := NewEthReplayEngine(opts.ChainConfig)
+
+	rwTx, err := db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	defer rwTx.Rollback()
+
+	reader := state.NewPlainStateReader(rwTx)
+	// Use rwTx as both the put/del target and changeset DB.
+	writer := state.NewPlainStateWriter(rwTx, rwTx, blockNum)
+	ibs := state.New(reader)
+
+	blockHashFunc := func(n uint64) types.Hash {
+		if n >= blockNum {
+			return types.Hash{}
+		}
+		hData, err := opts.GethFreezer.Ancient(freezer.TableHeaders, n)
+		if err != nil {
+			return types.Hash{}
+		}
+		h, err := DecodeGethHeader(hData)
+		if err != nil {
+			return types.Hash{}
+		}
+		return h.Hash()
+	}
+
+	result, err := ProcessBlock(opts.ChainConfig, engine, header, body.Transactions, uncles, ibs, blockHashFunc, nil, writer)
+	if err != nil {
+		return fmt.Errorf("execute block: %w", err)
+	}
+
+	rules := opts.ChainConfig.Rules(header.Number.Uint64())
+	if err := ibs.CommitBlock(rules, writer); err != nil {
+		return fmt.Errorf("commit block: %w", err)
+	}
+
+	// Generate and save the correct changeset for later freezer splicing.
+	csw := writer.ChangeSetWriter()
+	if csw != nil {
+		stoCS, _ := csw.GetStorageChanges()
+		accCS, _ := csw.GetAccountChanges()
+		// newValueOf reads from the MDBX tx which now has the post-commit state.
+		postReader := state.NewPlainStateReader(rwTx)
+		stoCSBytes := EncodeStorageChanges(stoCS, func(addr types.Address, slot types.Hash) []byte {
+			v, err := postReader.ReadAccountStorage(addr, 0, &slot)
+			if err != nil {
+				return nil
+			}
+			return v
+		})
+		accCSBytes := EncodeAccountChanges(accCS, func(addr types.Address) []byte {
+			a, err := postReader.ReadAccountData(addr)
+			if err != nil || a == nil {
+				return nil
+			}
+			return a.MarshalV2()
+		})
+		patchFile := fmt.Sprintf("storcs_patch_%d.bin", blockNum)
+		if err := os.WriteFile(patchFile, stoCSBytes, 0644); err != nil {
+			log.Warn("Failed to save storcs patch", "file", patchFile, "err", err)
+		} else {
+			log.Info("Saved correct storcs patch", "file", patchFile, "bytes", len(stoCSBytes))
+		}
+		patchFile2 := fmt.Sprintf("acctcs_patch_%d.bin", blockNum)
+		if err := os.WriteFile(patchFile2, accCSBytes, 0644); err != nil {
+			log.Warn("Failed to save acctcs patch", "file", patchFile2, "err", err)
+		} else {
+			log.Info("Saved correct acctcs patch", "file", patchFile2, "bytes", len(accCSBytes))
+		}
+	}
+
+	if err := rwTx.Commit(); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+
+	log.Info("EVM fallback complete", "block", blockNum, "gasUsed", result.GasUsed, "txs", len(body.Transactions))
+	return nil
 }
