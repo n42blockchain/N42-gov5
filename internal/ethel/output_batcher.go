@@ -300,6 +300,16 @@ func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 		}
 		if items < startBlock {
 			gap := startBlock - items
+			// If the gap is larger than a few commit intervals, the output
+			// freezer was likely deleted while MDBX was kept. Padding millions
+			// of empty entries would hang; fail fast so the operator can either
+			// clear MDBX too or restore the freezer.
+			const maxPadGap = 100_000
+			if gap > maxPadGap {
+				return fmt.Errorf("output table %s has %d items but MDBX expects block %d (gap %d > max %d); "+
+					"clear MDBX (rm mdbx.dat) or restore the output freezer",
+					name, items, startBlock, gap, maxPadGap)
+			}
 			log.Info("Padding table to startBlock",
 				"table", name, "items", items, "startBlock", startBlock, "gap", gap)
 			if err := padTableTo(tbl, startBlock, b.enc); err != nil {
