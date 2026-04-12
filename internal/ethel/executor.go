@@ -199,8 +199,10 @@ func (e *Executor) Run(ctx context.Context) error {
 	startTime := time.Now()
 	e.lastProgressTime = startTime
 
-	// Start background prefetcher to warm MDBX page cache.
-	e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg)
+	// Start background prefetcher to warm MDBX page cache. Pass the
+	// pre-computed senders sources so prefetcher doesn't waste time
+	// re-doing ecrecover that the executor already avoids.
+	e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg, e.senderStore, e.senderTable)
 	e.prefetcher.start()
 	defer e.prefetcher.stop()
 

@@ -29,6 +29,14 @@ import (
 // prefetcher warms MDBX page cache by pre-reading state data for upcoming blocks.
 // Runs in a background goroutine. While block N executes, it reads addresses
 // from block N+1's transactions and touches their MDBX pages.
+//
+// Senders: ecrecover at ~80μs/tx × 200+ tx/block = ~18 ms/block of CPU.
+// At post-Constantinople blk/s rates this dominates the prefetcher's cycle
+// time and starves it from doing the MDBX work that actually warms the
+// cache. If the executor has pre-computed senders (segment store or
+// freezer table), the prefetcher uses them too — falling back to
+// ecrecover only on miss. Lookup is the same precedence as
+// Executor.loadSenders.
 type prefetcher struct {
 	freezer  *freezer.Freezer
 	db       kv.RoDB
@@ -38,18 +46,24 @@ type prefetcher struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	blockCh  chan uint64
+
+	// Pre-computed senders sources, shared with the executor's main path.
+	senderStore *SenderSegmentReader
+	senderTable *freezer.FreezerTable
 }
 
-func newPrefetcher(ctx context.Context, f *freezer.Freezer, db kv.RoDB, buf *state.PlainStateBuffer, chainCfg *params.ChainConfig) *prefetcher {
+func newPrefetcher(ctx context.Context, f *freezer.Freezer, db kv.RoDB, buf *state.PlainStateBuffer, chainCfg *params.ChainConfig, senderStore *SenderSegmentReader, senderTable *freezer.FreezerTable) *prefetcher {
 	ctx, cancel := context.WithCancel(ctx)
 	return &prefetcher{
-		freezer:  f,
-		db:       db,
-		stateBuf: buf,
-		chainCfg: chainCfg,
-		ctx:      ctx,
-		cancel:   cancel,
-		blockCh:  make(chan uint64, 2),
+		freezer:     f,
+		db:          db,
+		stateBuf:    buf,
+		chainCfg:    chainCfg,
+		ctx:         ctx,
+		cancel:      cancel,
+		blockCh:     make(chan uint64, 2),
+		senderStore: senderStore,
+		senderTable: senderTable,
 	}
 }
 
@@ -82,6 +96,38 @@ func (p *prefetcher) loop() {
 	}
 }
 
+// loadSenders returns the pre-computed senders for blockNum, or nil if
+// none of the configured sources can satisfy the request. Mirrors
+// Executor.loadSenders precedence: SegmentStore → freezer table.
+func (p *prefetcher) loadSenders(blockNum uint64, txCount int) []types.Address {
+	if txCount == 0 {
+		return nil
+	}
+	if p.senderStore != nil && blockNum < p.senderStore.MaxBlock() {
+		if data, err := p.senderStore.ReadBlock(blockNum); err == nil {
+			if n := len(data) / 20; n == txCount {
+				out := make([]types.Address, n)
+				for i := 0; i < n; i++ {
+					copy(out[i][:], data[i*20:(i+1)*20])
+				}
+				return out
+			}
+		}
+	}
+	if p.senderTable != nil && blockNum < p.senderTable.Items() {
+		if data, err := p.senderTable.Retrieve(blockNum); err == nil {
+			if n := len(data) / 20; n == txCount {
+				out := make([]types.Address, n)
+				for i := 0; i < n; i++ {
+					copy(out[i][:], data[i*20:(i+1)*20])
+				}
+				return out
+			}
+		}
+	}
+	return nil
+}
+
 func (p *prefetcher) doFetch(blockNum uint64) {
 	data, err := p.freezer.Ancient(freezer.TableBodies, blockNum)
 	if err != nil {
@@ -95,23 +141,35 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 		return
 	}
 
-	// Recover senders (ecrecover) — cached in tx.from after first call.
-	headerData, err := p.freezer.Ancient(freezer.TableHeaders, blockNum)
-	if err != nil {
-		return
-	}
-	header, err := DecodeGethHeader(headerData)
-	if err != nil {
-		return
-	}
-	signer := transaction.MakeSigner(p.chainCfg, header.Number.ToBig())
+	// Senders: prefer the pre-computed source the executor uses; only
+	// ecrecover (with the per-block signer) on cache miss. At ~80μs per
+	// recovery × 200+ tx/block, ecrecover is what kept the prefetcher
+	// from keeping up with exec on busy DeFi-era blocks.
+	senders := p.loadSenders(blockNum, len(body.Transactions))
 
 	addrs := make(map[types.Address]struct{}, len(body.Transactions)*3)
-	for _, tx := range body.Transactions {
-		// Sender (ecrecover — most expensive but highest value for cache).
-		if sender, err := transaction.Sender(signer, tx); err == nil {
-			addrs[sender] = struct{}{}
+	if senders == nil {
+		// Fallback path: full ecrecover. Build the signer once per block.
+		headerData, err := p.freezer.Ancient(freezer.TableHeaders, blockNum)
+		if err != nil {
+			return
 		}
+		header, err := DecodeGethHeader(headerData)
+		if err != nil {
+			return
+		}
+		signer := transaction.MakeSigner(p.chainCfg, header.Number.ToBig())
+		for _, tx := range body.Transactions {
+			if sender, err := transaction.Sender(signer, tx); err == nil {
+				addrs[sender] = struct{}{}
+			}
+		}
+	} else {
+		for _, s := range senders {
+			addrs[s] = struct{}{}
+		}
+	}
+	for _, tx := range body.Transactions {
 		if to := tx.To(); to != nil {
 			addrs[*to] = struct{}{}
 		}
