@@ -66,6 +66,19 @@ func (b *outputBatcher) Close() {
 	}
 }
 
+// sync fsyncs only the tables this batcher owns (acctcs/storcs/witness),
+// skipping read-only tables like senders that may deny write access.
+func (b *outputBatcher) sync() error {
+	for _, tb := range b.tables {
+		if tb.tbl != nil {
+			if err := tb.tbl.Sync(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // addEntry adds one block's data for a table.
 // For tables that already have data at this position, the entry is silently
 // dropped to avoid accumulating memory that will never be written.
