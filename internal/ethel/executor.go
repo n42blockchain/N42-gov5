@@ -97,16 +97,17 @@ func NewExecutor(f *freezer.Freezer, db kv.RwDB, chainCfg *params.ChainConfig, e
 		f.EnsureTable("headers", "c")
 		f.EnsureTable("bodies", "c")
 	}
-	// Snap commit interval to a multiple of freezer BatchSize so MDBX
-	// progress is always batch-aligned. This eliminates most partial-
-	// batch scenarios on resume, reducing the recovery window to at
-	// most 1 entry (due to 0-indexed block numbering).
-	if bs := uint64(freezer.BatchSize); cfg.CommitInterval%bs != 0 {
-		aligned := (cfg.CommitInterval / bs) * bs
+	// Snap commit interval to 64*N − 1 so that blocks 0..commitInterval
+	// produce exactly N full batches of 64 entries (no partial batch).
+	// This eliminates the "1 leftover entry" problem: at each commit
+	// boundary, flushFullBatches writes everything and nothing stays
+	// in memory. On resume, output == MDBX + 1 with no gap.
+	if bs := uint64(freezer.BatchSize); (cfg.CommitInterval+1)%bs != 0 {
+		aligned := ((cfg.CommitInterval+1)/bs)*bs - 1
 		if aligned == 0 {
-			aligned = bs
+			aligned = bs - 1 // minimum: 63
 		}
-		log.Info("Aligning commit interval to batch size",
+		log.Info("Aligning commit interval to batch boundary",
 			"requested", cfg.CommitInterval, "aligned", aligned, "batchSize", bs)
 		cfg.CommitInterval = aligned
 	}
@@ -267,13 +268,11 @@ func (e *Executor) Run(ctx context.Context) error {
 				lastFlushDur = dur
 			}
 
-			// 2. Flush ALL output entries (including the commit-boundary
-			// block's partial batch) and fsync to disk BEFORE handing
-			// the state to the MDBX flusher. This guarantees that on
-			// resume the output freezer is at or ahead of MDBX — never
-			// behind — so no gap needs padding.
+			// 2. Flush output batches. With commitInterval = 64*N − 1,
+			// blocks 0..K produce exactly (K+1)/64 full batches with
+			// zero remainder — so flushFullBatches writes everything.
 			if e.outBatcher != nil {
-				if err := e.outBatcher.flushAll(); err != nil {
+				if _, err := e.outBatcher.flushFullBatches(); err != nil {
 					return fmt.Errorf("flush output batcher at block %d: %w", blockNum, err)
 				}
 				if err := e.outBatcher.sync(); err != nil {
