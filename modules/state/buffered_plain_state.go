@@ -67,17 +67,28 @@ type CacheBudget struct {
 //   - Code is small: only ~50K unique deployed contracts ever appear in
 //     a typical hot block, and cached bytecode is reusable across calls.
 //
-// Total ~28.5 GB (~22% of RAM on a 128 GB host). Empirical tuning at
-// block 4.8M with V2 changesets + RefreshLRU showed sto% plateauing at
-// ~86% with the older 12 GB budget; doubling to 24 GB lifts the
-// post-flush working set above the eviction line for the heaviest
-// DeFi-era intervals. Tunable via the CacheBudget struct on
-// PlainStateBuffer construction.
+// Total ~5.5 GB (~4% of RAM on a 128 GB host). With S3-FIFO admission
+// (see s3fifo.go) the account and storage tiers are scan-resistant —
+// the per-commit-interval RefreshLRU dump (~770K one-touch writes) no
+// longer pollutes the main LRU body, so a much smaller budget hits
+// the same or higher rates as the previous 28.5 GB pure-LRU setup.
+//
+// Sizing rationale (block 4.96M, post-Constantinople DeFi era):
+//   - Account hot working set ~500K entries (precompiles + top tokens
+//     + active wallets) → 1 GB gives ~7M-entry headroom for 99%+
+//   - Storage hot working set ~10M slots (DeFi pool reserves, hot
+//     allowances, oracle prices) → 4 GB gives 22M-entry headroom for
+//     95-97% with S3-FIFO scan resistance
+//   - Code: 50K unique deployed contracts × ~5KB avg = 250 MB; 512 MB
+//     keeps the existing 100% hit rate with comfortable margin
+//
+// Code stays on byteLRU because there is no scan problem (every code
+// blob is hash-addressed and reused across many calls).
 func DefaultCacheBudget() CacheBudget {
 	return CacheBudget{
-		AccountBytes: 4 << 30,  // 4 GB  (~28M hot accounts)
-		StorageBytes: 24 << 30, // 24 GB (~135M hot slots — covers DeFi-era working set)
-		CodeBytes:    512 << 20, // 512 MB
+		AccountBytes: 1 << 30,  // 1 GB  S3-FIFO
+		StorageBytes: 4 << 30,  // 4 GB  S3-FIFO
+		CodeBytes:    512 << 20, // 512 MB byteLRU
 	}
 }
 
@@ -138,13 +149,19 @@ type PlainStateBuffer struct {
 	// background commit.
 	inFlight atomic.Pointer[BufferSnapshot]
 
-	// Read cache: byte-budget LRU per kind so a hot storage workload
-	// can't starve the account cache. The composite storage key is
+	// Read cache: per-kind byte budget so a hot storage workload can't
+	// starve the account cache. The composite storage key is
 	// addr(20) || slot(32) = 52 bytes; we keep storage as a flat map
 	// (no per-address sub-map) to make eviction account for individual
 	// slots rather than whole-address groups.
-	readAccounts *byteLRU[types.Address]
-	readStorage  *byteLRU[[storageCompositeKeyLen]byte]
+	//
+	// Account/storage use S3-FIFO (scan-resistant 3-queue eviction)
+	// because RefreshLRUForSnapshot dumps ~770K one-touch writes per
+	// commit interval — pure LRU treated those as fresh hot entries
+	// and evicted real hot data. Code stays on byteLRU: there is no
+	// scan problem (code is hash-addressed, reused, immutable).
+	readAccounts *s3FIFO[types.Address]
+	readStorage  *s3FIFO[[storageCompositeKeyLen]byte]
 	readCode     *byteLRU[types.Hash]
 
 	hits   atomic.Uint64
@@ -185,8 +202,8 @@ func NewPlainStateBufferWithBudget(b CacheBudget) *PlainStateBuffer {
 		contractCode:   make(map[string][]byte, 64),
 		incarnationMap: make(map[types.Address][]byte),
 		wipedStorage:   make(map[types.Address]struct{}),
-		readAccounts:   newByteLRU[types.Address](b.AccountBytes),
-		readStorage:    newByteLRU[[storageCompositeKeyLen]byte](b.StorageBytes),
+		readAccounts:   newS3FIFO[types.Address](b.AccountBytes),
+		readStorage:    newS3FIFO[[storageCompositeKeyLen]byte](b.StorageBytes),
 		readCode:       newByteLRU[types.Hash](b.CodeBytes),
 	}
 }
