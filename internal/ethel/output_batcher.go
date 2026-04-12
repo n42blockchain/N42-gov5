@@ -302,22 +302,15 @@ func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 		}
 		if items < startBlock {
 			gap := startBlock - items
-			// If the gap is larger than a few commit intervals, the output
-			// freezer was likely deleted while MDBX was kept. Padding millions
-			// of empty entries would hang; fail fast so the operator can either
-			// clear MDBX too or restore the freezer.
-			const maxPadGap = 100_000
-			if gap > maxPadGap {
-				return fmt.Errorf("output table %s has %d items but MDBX expects block %d (gap %d > max %d); "+
-					"clear MDBX (rm mdbx.dat) or restore the output freezer",
-					name, items, startBlock, gap, maxPadGap)
-			}
-			log.Warn("Padding table with EMPTY entries (changesets lost on prior shutdown)",
-				"table", name, "items", items, "startBlock", startBlock, "gap", gap)
-			if err := padTableTo(tbl, startBlock, b.enc); err != nil {
-				return fmt.Errorf("pad %s: %w", name, err)
-			}
-			items = startBlock
+			// Output freezer is behind MDBX — changesets for blocks
+			// [items, startBlock) were lost (hard kill / unclean shutdown).
+			// NEVER pad with empty entries: that silently corrupts the
+			// changeset stream, causing rebuild-state to produce wrong
+			// state roots. Error out so the operator deletes the output
+			// freezer and lets the next run regenerate all changesets.
+			return fmt.Errorf("output table %s has %d items but MDBX starts at block %d (gap %d); "+
+				"changesets lost during shutdown — delete output freezer and re-run",
+				name, items, startBlock, gap)
 		}
 
 		tb := &tableBatch{
@@ -359,16 +352,11 @@ func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 					b.nextItem = batchStart
 				}
 			} else {
-				// Discard: pad from batchStart back to startBlock so
-				// the freezer index stays contiguous with the executor.
-				log.Warn("Discarding partial batch, padding gap",
-					"table", name, "batchStart", batchStart, "startBlock", startBlock)
-				if batchStart < startBlock {
-					if err := padTableTo(tbl, startBlock, b.enc); err != nil {
-						return fmt.Errorf("pad after discard %s: %w", name, err)
-					}
-				}
-				tb.existingItems = startBlock
+				// Partial batch unreadable (truncated cdat from crash).
+				// NEVER pad with empty entries — error out instead.
+				return fmt.Errorf("output table %s: partial batch at %d unrecoverable (%d of %d entries readable); "+
+					"delete output freezer and re-run",
+					name, batchStart, len(recovered), tail)
 			}
 		}
 
