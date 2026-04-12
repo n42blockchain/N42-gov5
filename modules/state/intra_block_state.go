@@ -1012,11 +1012,13 @@ func (sdb *IntraBlockState) Prepare(thash, bhash types.Hash, ti int) {
 }
 
 // clearJournalAndRefund resets per-transaction ephemeral state.
+// Reuses existing journal and transientStorage backing maps to
+// avoid ~2000 map allocations per block (1000 tx × 2 maps).
 func (sdb *IntraBlockState) clearJournalAndRefund() {
-	sdb.journal = newJournal()
+	sdb.journal.reset()
 	sdb.validRevisions = sdb.validRevisions[:0]
 	sdb.refund = 0
-	sdb.transientStorage = newTransientStorage()
+	sdb.transientStorage.reset()
 }
 
 // clearCurrentTxFlags resets per-transaction account lifecycle markers once the
