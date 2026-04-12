@@ -4,7 +4,7 @@
 // output_batcher.go — freezer append batcher for execution outputs.
 //
 // outputBatcher accumulates per-block receipts, senders, changesets and
-// leaves-journal entries in memory and flushes them to the underlying
+// changeset and witness entries in memory and flushes them to the underlying
 // freezer.Freezer in aligned batches so that segment files stay tightly
 // packed. Tables that already contain entries for the current range are
 // spot-checked on startup and skipped until nextItem passes the existing
@@ -178,7 +178,7 @@ func (b *outputBatcher) flushOneBatch(n int) error {
 		}
 
 		// Normal write — table needs all n entries.
-		// Skip tables with 0 entries (e.g. --leaves-only mode skips receipts/changesets).
+		// Skip tables with 0 entries (e.g. --no-outputs mode).
 		if len(tb.entries) == 0 {
 			continue
 		}
@@ -272,21 +272,15 @@ func padTableTo(tbl *freezer.FreezerTable, targetItems uint64, enc *zstd.Encoder
 }
 
 // alignOnResume prepares output tables for resumed execution.
-// leavesOnly=true only aligns the witness table (receipts/senders are
-// no longer produced; the leaves journal is gone too — its forward-replay
-// role is covered by the unified acctcs/storcs encoding).
-func (b *outputBatcher) alignOnResume(startBlock uint64, leavesOnly bool) error {
+// Truncates tables that ran ahead of MDBX, pads gaps, and recovers
+// partial batches so the next flush writes a complete batch-64 block.
+func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 	b.nextItem = startBlock
 
 	tables := []string{
 		freezer.TableAccountChanges,
 		freezer.TableStorageChanges,
 		freezer.TableBlockWitness,
-	}
-	if leavesOnly {
-		tables = []string{
-			freezer.TableBlockWitness,
-		}
 	}
 	for _, name := range tables {
 		tbl, err := b.freezer.EnsureTableCompressed(name, "c")
@@ -322,8 +316,11 @@ func (b *outputBatcher) alignOnResume(startBlock uint64, leavesOnly bool) error 
 		}
 
 		// Recover partial batch: if items not on batch-64 boundary,
-		// read back the incomplete batch, truncate to batch start,
-		// pre-load entries so next flush rewrites the full batch.
+		// read back the incomplete entries, validate, truncate to
+		// batch start, and pre-load so next flush rewrites the full
+		// batch. If ANY entry fails to read (truncated cdat from
+		// crash), discard and pad back to startBlock so the executor
+		// can regenerate from re-execution without an index gap.
 		tail := items % uint64(freezer.BatchSize)
 		if tail > 0 {
 			batchStart := items - tail
@@ -331,22 +328,35 @@ func (b *outputBatcher) alignOnResume(startBlock uint64, leavesOnly bool) error 
 			for i := batchStart; i < items; i++ {
 				d, err := tbl.Retrieve(i)
 				if err != nil {
+					log.Warn("Partial batch entry unreadable, discarding",
+						"table", name, "item", i, "err", err)
+					recovered = nil
 					break
 				}
 				recovered = append(recovered, d)
 			}
-			if uint64(len(recovered)) == tail {
+			if err := tbl.TruncateHead(batchStart); err != nil {
+				return fmt.Errorf("truncate partial %s: %w", name, err)
+			}
+			if recovered != nil && uint64(len(recovered)) == tail {
 				log.Info("Recovering partial batch",
 					"table", name, "batchStart", batchStart, "tail", tail)
-				if err := tbl.TruncateHead(batchStart); err != nil {
-					return fmt.Errorf("truncate partial %s: %w", name, err)
-				}
 				tb.entries = recovered
 				tb.existingItems = batchStart
-				// Adjust nextItem to batch start so batcher counts correctly.
 				if batchStart < b.nextItem {
 					b.nextItem = batchStart
 				}
+			} else {
+				// Discard: pad from batchStart back to startBlock so
+				// the freezer index stays contiguous with the executor.
+				log.Warn("Discarding partial batch, padding gap",
+					"table", name, "batchStart", batchStart, "startBlock", startBlock)
+				if batchStart < startBlock {
+					if err := padTableTo(tbl, startBlock, b.enc); err != nil {
+						return fmt.Errorf("pad after discard %s: %w", name, err)
+					}
+				}
+				tb.existingItems = startBlock
 			}
 		}
 
