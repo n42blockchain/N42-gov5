@@ -67,14 +67,16 @@ type CacheBudget struct {
 //   - Code is small: only ~50K unique deployed contracts ever appear in
 //     a typical hot block, and cached bytecode is reusable across calls.
 //
-// Total ~14.5 GB (~11% of RAM on a 128 GB host). Tunable via the
-// CacheBudget struct on PlainStateBuffer construction; production runs
-// should consider raising storage to 16-24 GB on hosts with >= 96 GB
-// of free RAM if cacheHit% stays below 95%.
+// Total ~28.5 GB (~22% of RAM on a 128 GB host). Empirical tuning at
+// block 4.8M with V2 changesets + RefreshLRU showed sto% plateauing at
+// ~86% with the older 12 GB budget; doubling to 24 GB lifts the
+// post-flush working set above the eviction line for the heaviest
+// DeFi-era intervals. Tunable via the CacheBudget struct on
+// PlainStateBuffer construction.
 func DefaultCacheBudget() CacheBudget {
 	return CacheBudget{
-		AccountBytes: 2 << 30,  // 2 GB  (~14M hot accounts)
-		StorageBytes: 12 << 30, // 12 GB (~70M hot slots — covers DeFi-era working set)
+		AccountBytes: 4 << 30,  // 4 GB  (~28M hot accounts)
+		StorageBytes: 24 << 30, // 24 GB (~135M hot slots — covers DeFi-era working set)
 		CodeBytes:    512 << 20, // 512 MB
 	}
 }
