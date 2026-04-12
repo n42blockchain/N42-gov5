@@ -232,21 +232,11 @@ func (e *Executor) Run(ctx context.Context) error {
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
 		if ctx.Err() != nil {
 			log.Info("Shutting down executor", "lastBlock", blockNum-1)
-			// Flush remaining output entries AND fsync so the freezer stays
-			// in sync with MDBX progress. Without flushAll+Sync, the commit-
-			// boundary block's changeset is either lost (in-memory) or only
-			// in the OS page cache (not on disk) — both cause corrupt data
-			// on resume.
-			if e.outBatcher != nil {
-				if err := e.outBatcher.flushAll(); err != nil {
-					log.Warn("Failed to flush output batcher on shutdown", "err", err)
-				}
-			}
-			if e.outBatcher != nil {
-				if err := e.outBatcher.sync(); err != nil {
-					log.Warn("Failed to sync output tables on shutdown", "err", err)
-				}
-			}
+			// Output is already flushed+synced at the last commit boundary.
+			// Entries for blocks since the last commit are in memory only —
+			// they will be re-generated from EVM execution on resume.
+			// We do NOT write them here: a partial batch written during
+			// shutdown risks corrupt data (partial fsync, OS page cache loss).
 			return ctx.Err()
 		}
 
@@ -277,10 +267,17 @@ func (e *Executor) Run(ctx context.Context) error {
 				lastFlushDur = dur
 			}
 
-			// 2. Flush output batches synchronously (cheap, ~ms).
+			// 2. Flush ALL output entries (including the commit-boundary
+			// block's partial batch) and fsync to disk BEFORE handing
+			// the state to the MDBX flusher. This guarantees that on
+			// resume the output freezer is at or ahead of MDBX — never
+			// behind — so no gap needs padding.
 			if e.outBatcher != nil {
-				if _, err := e.outBatcher.flushFullBatches(); err != nil {
+				if err := e.outBatcher.flushAll(); err != nil {
 					return fmt.Errorf("flush output batcher at block %d: %w", blockNum, err)
+				}
+				if err := e.outBatcher.sync(); err != nil {
+					return fmt.Errorf("sync output batcher at block %d: %w", blockNum, err)
 				}
 			}
 
@@ -419,10 +416,13 @@ func (e *Executor) Run(ctx context.Context) error {
 		return fmt.Errorf("wait final pending flush: %w", err)
 	}
 
-	// Output batcher: synchronous flush of any partial batches.
+	// Output batcher: flush all entries + fsync before final MDBX commit.
 	if e.outBatcher != nil {
 		if err := e.outBatcher.flushAll(); err != nil {
 			return fmt.Errorf("flush output batcher final: %w", err)
+		}
+		if err := e.outBatcher.sync(); err != nil {
+			return fmt.Errorf("sync output batcher final: %w", err)
 		}
 	}
 
