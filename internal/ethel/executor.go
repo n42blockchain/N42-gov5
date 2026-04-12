@@ -242,9 +242,9 @@ func (e *Executor) Run(ctx context.Context) error {
 					log.Warn("Failed to flush output batcher on shutdown", "err", err)
 				}
 			}
-			if e.outFreezer != nil {
-				if err := e.outFreezer.Sync(); err != nil {
-					log.Warn("Failed to sync output freezer on shutdown", "err", err)
+			if e.outBatcher != nil {
+				if err := e.outBatcher.sync(); err != nil {
+					log.Warn("Failed to sync output tables on shutdown", "err", err)
 				}
 			}
 			return ctx.Err()
