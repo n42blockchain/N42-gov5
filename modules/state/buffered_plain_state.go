@@ -87,7 +87,7 @@ type CacheBudget struct {
 func DefaultCacheBudget() CacheBudget {
 	return CacheBudget{
 		AccountBytes: 1 << 30,  // 1 GB  S3-FIFO
-		StorageBytes: 4 << 30,  // 4 GB  S3-FIFO
+		StorageBytes: 8 << 30,  // 8 GB  S3-FIFO
 		CodeBytes:    512 << 20, // 512 MB byteLRU
 	}
 }
