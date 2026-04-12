@@ -433,6 +433,13 @@ func (m *txsSortedMap) Flatten() []*transaction.Transaction {
 	return txs
 }
 
+// FlattenReadOnly returns the cached sorted slice WITHOUT copying.
+// The caller must NOT modify the returned slice. This avoids a
+// per-account allocation in the Pending() hot path.
+func (m *txsSortedMap) FlattenReadOnly() []*transaction.Transaction {
+	return m.flatten()
+}
+
 // LastElement returns the transaction with the highest nonce, or nil if empty.
 func (m *txsSortedMap) LastElement() *transaction.Transaction {
 	cache := m.flatten()

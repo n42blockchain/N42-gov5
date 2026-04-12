@@ -24,7 +24,6 @@ package builder
 
 import (
 	"container/heap"
-	"math/big"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -103,44 +102,35 @@ func (t *TxByPriceAndNonce) Pop() {
 }
 
 // txWithPrice wraps a transaction with its computed effective tip for sorting.
+// effectiveTip is stored as uint256.Int (stack-friendly, no heap alloc).
 type txWithPrice struct {
 	tx           *transaction.Transaction
 	from         types.Address
 	baseFee      *uint256.Int
-	effectiveTip *big.Int
+	effectiveTip uint256.Int
 }
 
 func (t *txWithPrice) computeEffectiveTip() {
-	tipCapU := t.tx.GasTipCap()
-	feeCapU := t.tx.GasFeeCap()
+	tipCap := t.tx.GasTipCap()
+	feeCap := t.tx.GasFeeCap()
+	if tipCap == nil {
+		tipCap = t.tx.GasPrice()
+	}
+	if feeCap == nil {
+		feeCap = t.tx.GasPrice()
+	}
 	if t.baseFee == nil || t.baseFee.IsZero() {
-		if tipCapU != nil {
-			t.effectiveTip = tipCapU.ToBig()
-		} else {
-			t.effectiveTip = t.tx.GasPrice().ToBig()
-		}
+		t.effectiveTip.Set(tipCap)
 		return
 	}
 	// effectiveTip = min(gasTipCap, gasFeeCap - baseFee)
-	var feeCap, tipCap *big.Int
-	if feeCapU != nil {
-		feeCap = feeCapU.ToBig()
-	} else {
-		feeCap = t.tx.GasPrice().ToBig()
+	if feeCap.Cmp(t.baseFee) <= 0 {
+		t.effectiveTip.Clear()
+		return
 	}
-	if tipCapU != nil {
-		tipCap = tipCapU.ToBig()
-	} else {
-		tipCap = t.tx.GasPrice().ToBig()
-	}
-	diff := new(big.Int).Sub(feeCap, t.baseFee.ToBig())
-	if diff.Cmp(tipCap) < 0 {
-		t.effectiveTip = diff
-	} else {
-		t.effectiveTip = tipCap
-	}
-	if t.effectiveTip.Sign() < 0 {
-		t.effectiveTip = new(big.Int)
+	t.effectiveTip.Sub(feeCap, t.baseFee) // diff = feeCap - baseFee
+	if t.effectiveTip.Cmp(tipCap) > 0 {
+		t.effectiveTip.Set(tipCap) // min(diff, tipCap)
 	}
 }
 
@@ -149,7 +139,7 @@ type txsByPrice []*txWithPrice
 
 func (s txsByPrice) Len() int { return len(s) }
 func (s txsByPrice) Less(i, j int) bool {
-	return s[i].effectiveTip.Cmp(s[j].effectiveTip) > 0 // Higher tip first
+	return s[i].effectiveTip.Cmp(&s[j].effectiveTip) > 0 // Higher tip first
 }
 func (s txsByPrice) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 

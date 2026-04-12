@@ -32,6 +32,9 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
+// priceBumpDivisor avoids a heap allocation on every price-bump check.
+var priceBumpDivisor = uint256.NewInt(100)
+
 // --- txsList: per-account transaction list ---
 
 // txsList is a "list" of transactions belonging to an account, sorted by nonce.
@@ -60,6 +63,8 @@ func (l *txsList) Overlaps(tx *transaction.Transaction) bool {
 
 // Add tries to insert a new transaction into the list, returning whether the
 // transaction was accepted, and if yes, any previous transaction it replaced.
+// All uint256 arithmetic uses stack-local variables to avoid heap allocation
+// on the per-tx-add hot path.
 func (l *txsList) Add(tx *transaction.Transaction, priceBump uint64) (bool, *transaction.Transaction) {
 	old := l.txs.Get(tx.Nonce())
 	if old != nil {
@@ -67,25 +72,30 @@ func (l *txsList) Add(tx *transaction.Transaction, priceBump uint64) (bool, *tra
 			return false, nil
 		}
 		// thresholdFeeCap = oldFC * (100 + priceBump) / 100
-		a := uint256.NewInt(100 + priceBump)
-		aFeeCap := new(uint256.Int).Mul(a, old.GasFeeCap())
-		aTip := a.Mul(a, old.GasTipCap())
-
+		var bump, threshold uint256.Int
+		bump.SetUint64(100 + priceBump)
+		threshold.Mul(&bump, old.GasFeeCap())
+		threshold.Div(&threshold, priceBumpDivisor)
+		if tx.GasFeeCapIntCmp(&threshold) < 0 {
+			return false, nil
+		}
 		// thresholdTip = oldTip * (100 + priceBump) / 100
-		b := uint256.NewInt(100)
-		thresholdFeeCap := aFeeCap.Div(aFeeCap, b)
-		thresholdTip := aTip.Div(aTip, b)
-
-		if tx.GasFeeCapIntCmp(thresholdFeeCap) < 0 || tx.GasTipCapIntCmp(thresholdTip) < 0 {
+		bump.SetUint64(100 + priceBump)
+		threshold.Mul(&bump, old.GasTipCap())
+		threshold.Div(&threshold, priceBumpDivisor)
+		if tx.GasTipCapIntCmp(&threshold) < 0 {
 			return false, nil
 		}
 	}
 
 	l.txs.Put(tx)
 
-	cost := uint256.NewInt(0).Add(new(uint256.Int).Mul(tx.GasPrice(), uint256.NewInt(tx.Gas())), tx.Value())
-	if l.costcap.Cmp(cost) < 0 {
-		l.costcap = *cost
+	var gasU, cost uint256.Int
+	gasU.SetUint64(tx.Gas())
+	cost.Mul(tx.GasPrice(), &gasU)
+	cost.Add(&cost, tx.Value())
+	if l.costcap.Cmp(&cost) < 0 {
+		l.costcap = cost
 	}
 	if gas := tx.Gas(); l.gascap < gas {
 		l.gascap = gas
@@ -161,6 +171,12 @@ func (l *txsList) Empty() bool  { return l.Len() == 0 }
 
 func (l *txsList) Flatten() []*transaction.Transaction {
 	return l.txs.Flatten()
+}
+
+// FlattenReadOnly returns the sorted tx slice without copying.
+// Caller must not modify the returned slice.
+func (l *txsList) FlattenReadOnly() []*transaction.Transaction {
+	return l.txs.FlattenReadOnly()
 }
 
 // LastElement returns the transaction with the highest nonce, or nil if empty.

@@ -160,7 +160,7 @@ func (pool *TxsPool) Pending(enforceTips bool) map[types.Address][]*transaction.
 
 	pending := make(map[types.Address][]*transaction.Transaction)
 	for addr, list := range pool.pending {
-		txs := list.Flatten()
+		txs := list.FlattenReadOnly()
 
 		if enforceTips && !pool.locals.contains(addr) {
 			for i, tx := range txs {
