@@ -232,13 +232,19 @@ func (e *Executor) Run(ctx context.Context) error {
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
 		if ctx.Err() != nil {
 			log.Info("Shutting down executor", "lastBlock", blockNum-1)
-			// Flush remaining output entries so the freezer stays in sync
-			// with MDBX progress. Without this, the commit-boundary block's
-			// changeset is lost (still in memory), and resume pads an EMPTY
-			// entry — corrupting the changeset stream for rebuild-state.
+			// Flush remaining output entries AND fsync so the freezer stays
+			// in sync with MDBX progress. Without flushAll+Sync, the commit-
+			// boundary block's changeset is either lost (in-memory) or only
+			// in the OS page cache (not on disk) — both cause corrupt data
+			// on resume.
 			if e.outBatcher != nil {
 				if err := e.outBatcher.flushAll(); err != nil {
 					log.Warn("Failed to flush output batcher on shutdown", "err", err)
+				}
+			}
+			if e.outFreezer != nil {
+				if err := e.outFreezer.Sync(); err != nil {
+					log.Warn("Failed to sync output freezer on shutdown", "err", err)
 				}
 			}
 			return ctx.Err()
