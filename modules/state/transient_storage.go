@@ -55,6 +55,13 @@ func (t transientStorage) Get(addr types.Address, key types.Hash) uint256.Int {
 	return val[key]
 }
 
+// reset clears all entries without reallocating the outer map.
+// Inner per-address Storage maps are dropped (GC'd) but the outer
+// map retains its bucket structure for reuse in the next tx.
+func (t transientStorage) reset() {
+	clear(t)
+}
+
 // Copy creates a deep copy of the transient storage.
 func (t transientStorage) Copy() transientStorage {
 	cp := make(transientStorage, len(t))

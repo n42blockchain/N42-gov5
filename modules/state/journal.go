@@ -91,6 +91,14 @@ func (j *journal) length() int {
 	return len(j.entries)
 }
 
+// reset clears the journal for reuse without allocating a new map.
+// The backing array of entries is kept (cap preserved) and the
+// dirties map is cleared in-place via Go 1.21+ clear().
+func (j *journal) reset() {
+	j.entries = j.entries[:0]
+	clear(j.dirties)
+}
+
 type (
 	// Changes to the account trie.
 	createObjectChange struct {
