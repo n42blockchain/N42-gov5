@@ -732,12 +732,9 @@ func (t *FreezerTable) Retrieve(item uint64) ([]byte, error) {
 // The first entry's offset points to zstd_compressed([len0:4][data0][len1:4][data1]...).
 // Caller must hold t.mu.
 func (t *FreezerTable) retrieveBatch(item uint64) ([]byte, error) {
-	bs := uint64(t.batchSize)
-	batchStart := (item / bs) * bs
-	batchEnd := batchStart + bs
 	total := t.items.Load()
-	if batchEnd > total {
-		batchEnd = total
+	if item >= total {
+		return nil, fmt.Errorf("freezer: item %d beyond total %d", item, total)
 	}
 
 	// Batch cache hit.
@@ -748,47 +745,70 @@ func (t *FreezerTable) retrieveBatch(item uint64) ([]byte, error) {
 		}
 	}
 
-	// Read the batch start entry's index to get cdat offset.
-	batchIdx, err := t.readIndex(batchStart)
+	// Find the actual batch boundary by cidx offset, not arithmetic.
+	// All entries in the same batch share the same (fileNum, offset).
+	// This handles mid-stream partial batches from flushAll correctly.
+	itemIdx, err := t.readIndex(item)
 	if err != nil {
 		return nil, err
 	}
 
-	// Find batch end offset in cdat.
+	// Scan backward (max batchSize steps) to find batch start.
+	bs := uint64(t.batchSize)
+	batchStart := item
+	for batchStart > 0 && (item-batchStart) < bs {
+		prev, err := t.readIndex(batchStart - 1)
+		if err != nil || prev.fileNum != itemIdx.fileNum || prev.offset != itemIdx.offset {
+			break
+		}
+		batchStart--
+	}
+
+	// Scan forward to find batch end (first entry with different offset).
+	batchEnd := item + 1
+	for batchEnd < total && (batchEnd-batchStart) < bs {
+		next, err := t.readIndex(batchEnd)
+		if err != nil || next.fileNum != itemIdx.fileNum || next.offset != itemIdx.offset {
+			break
+		}
+		batchEnd++
+	}
+
+	// Find blob end offset in cdat.
 	var compEnd uint32
 	if batchEnd < total {
 		endIdx, err := t.readIndex(batchEnd)
 		if err != nil {
 			return nil, err
 		}
-		if endIdx.fileNum == batchIdx.fileNum {
+		if endIdx.fileNum == itemIdx.fileNum {
 			compEnd = endIdx.offset
 		} else {
-			sz, err := t.getDataFileSize(batchIdx.fileNum)
+			sz, err := t.getDataFileSize(itemIdx.fileNum)
 			if err != nil {
 				return nil, err
 			}
 			compEnd = sz
 		}
 	} else {
-		sz, err := t.getDataFileSize(batchIdx.fileNum)
+		sz, err := t.getDataFileSize(itemIdx.fileNum)
 		if err != nil {
 			return nil, err
 		}
 		compEnd = sz
 	}
 
-	compSize := compEnd - batchIdx.offset
+	compSize := compEnd - itemIdx.offset
 	if compSize == 0 {
 		return []byte{}, nil
 	}
 
-	df, err := t.openDataFileRO(batchIdx.fileNum)
+	df, err := t.openDataFileRO(itemIdx.fileNum)
 	if err != nil {
 		return nil, err
 	}
 	comp := make([]byte, compSize)
-	if _, err := df.ReadAt(comp, int64(batchIdx.offset)); err != nil {
+	if _, err := df.ReadAt(comp, int64(itemIdx.offset)); err != nil {
 		return nil, fmt.Errorf("freezer: read batch at %d: %w", item, err)
 	}
 

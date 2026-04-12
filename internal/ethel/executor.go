@@ -97,20 +97,9 @@ func NewExecutor(f *freezer.Freezer, db kv.RwDB, chainCfg *params.ChainConfig, e
 		f.EnsureTable("headers", "c")
 		f.EnsureTable("bodies", "c")
 	}
-	// Snap commit interval to 64*N − 1 so that blocks 0..commitInterval
-	// produce exactly N full batches of 64 entries (no partial batch).
-	// This eliminates the "1 leftover entry" problem: at each commit
-	// boundary, flushFullBatches writes everything and nothing stays
-	// in memory. On resume, output == MDBX + 1 with no gap.
-	if bs := uint64(freezer.BatchSize); (cfg.CommitInterval+1)%bs != 0 {
-		aligned := ((cfg.CommitInterval+1)/bs)*bs - 1
-		if aligned == 0 {
-			aligned = bs - 1 // minimum: 63
-		}
-		log.Info("Aligning commit interval to batch boundary",
-			"requested", cfg.CommitInterval, "aligned", aligned, "batchSize", bs)
-		cfg.CommitInterval = aligned
-	}
+	// No commit-interval alignment needed: retrieveBatch now finds
+	// batch boundaries by scanning cidx offsets instead of assuming
+	// 64-aligned positions. Partial batches from flushAll are safe.
 	return &Executor{
 		freezer:     f,
 		outFreezer:  outFreezer,
@@ -268,11 +257,12 @@ func (e *Executor) Run(ctx context.Context) error {
 				lastFlushDur = dur
 			}
 
-			// 2. Flush output batches. With commitInterval = 64*N − 1,
-			// blocks 0..K produce exactly (K+1)/64 full batches with
-			// zero remainder — so flushFullBatches writes everything.
+			// 2. Flush ALL output entries (including partial batch) and
+			// fsync BEFORE MDBX commit. On resume output >= MDBX, no
+			// gap possible. retrieveBatch handles partial batches via
+			// cidx offset scanning (not 64-aligned arithmetic).
 			if e.outBatcher != nil {
-				if _, err := e.outBatcher.flushFullBatches(); err != nil {
+				if err := e.outBatcher.flushAll(); err != nil {
 					return fmt.Errorf("flush output batcher at block %d: %w", blockNum, err)
 				}
 				if err := e.outBatcher.sync(); err != nil {
