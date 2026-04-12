@@ -185,15 +185,13 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 		return
 	}
 	// If this address was wiped by a PRIOR transaction in the current
-	// block (via SELFDESTRUCT or CREATE/CREATE2 reset), the buffered/MDBX
-	// storage from earlier blocks is stale — the end-of-block CreateContract
-	// will drop it. Treat the slot as 0 for any reads in this and later txs
-	// of the same block. We must NOT use the live storageWipes here: pre-
-	// Cancun semantics keep a self-destructed contract readable for the
-	// rest of the same tx that destroyed it, so the wipe only takes effect
-	// across the tx boundary (FinalizeTx promotes storageWipes into
-	// priorTxWipes).
-	if so.db != nil {
+	// block, the buffered/MDBX storage from earlier blocks is stale.
+	// Live storageWipes is NOT consulted here: pre-Cancun keeps a self-
+	// destructed contract readable for the rest of the same tx, so the
+	// wipe only takes effect across the tx boundary (FinalizeTx promotes
+	// storageWipes into priorTxWipes). The len-guard short-circuits the
+	// SLOAD hot path on the common case where nothing has been wiped.
+	if len(so.db.priorTxWipes) > 0 {
 		if _, wiped := so.db.priorTxWipes[so.address]; wiped {
 			out.Clear()
 			so.originStorage[*key] = *out
