@@ -112,10 +112,12 @@ func (f *asyncFlusher) hand(blockNum uint64) error {
 			bgTx.Rollback()
 		}
 		if err == nil {
-			// Invalidate LRU for the dirty set AFTER MDBX commit so
-			// subsequent reads via the new (post-commit) tx land on
-			// fresh MDBX values, not stale cache.
-			f.buf.InvalidateLRUForSnapshot(snap)
+			// Refresh LRU with the just-flushed working set AFTER MDBX
+			// commit. The snapshot's values ARE what landed in MDBX, so
+			// they're authoritative — Put-not-Delete keeps the entire
+			// flushed set hot for the next interval instead of forcing
+			// every key back through MDBX on first re-access.
+			f.buf.RefreshLRUForSnapshot(snap)
 		}
 		f.resultCh <- asyncFlushResult{err: err, dur: time.Since(t0)}
 	}()

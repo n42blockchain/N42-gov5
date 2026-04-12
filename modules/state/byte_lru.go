@@ -80,6 +80,32 @@ func (c *byteLRU[K]) Get(key K) (value []byte, present bool) {
 func (c *byteLRU[K]) Put(key K, value []byte, cost int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.putLocked(key, value, cost)
+	c.evictLocked()
+}
+
+// PutBatch inserts/replaces a batch of entries under a single mutex
+// acquisition. Used by RefreshLRUForSnapshot to repopulate the cache
+// with the just-flushed working set after a background commit — taking
+// the lock once avoids cache-line ping-pong with concurrent Get() calls
+// and amortises the eviction sweep across the whole batch.
+//
+// keys, values and costs must have the same length; the value at index
+// i is associated with key[i] and charged costs[i].
+func (c *byteLRU[K]) PutBatch(keys []K, values [][]byte, costs []int) {
+	if len(keys) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, k := range keys {
+		c.putLocked(k, values[i], costs[i])
+	}
+	c.evictLocked()
+}
+
+// putLocked is the unsynchronised core of Put / PutBatch.
+func (c *byteLRU[K]) putLocked(key K, value []byte, cost int) {
 	if elem, ok := c.items[key]; ok {
 		entry := elem.Value.(*byteLRUEntry[K])
 		c.sizeBytes += int64(cost - entry.cost)
@@ -92,7 +118,6 @@ func (c *byteLRU[K]) Put(key K, value []byte, cost int) {
 		c.items[key] = elem
 		c.sizeBytes += int64(cost)
 	}
-	c.evictLocked()
 }
 
 // Delete removes a key from the cache. Returns true if the key existed.

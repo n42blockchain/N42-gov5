@@ -211,6 +211,10 @@ func (e *Executor) Run(ctx context.Context) error {
 	// the 11M-block scale.
 	e.asyncFlush = newAsyncFlusher(e.stateBuf, e.db, ctx)
 	var lastFlushDur time.Duration
+	// Per-interval cache stat baselines so cacheHit% reflects the LAST
+	// commit interval, not the cumulative average since startup.
+	var prevHits, prevMisses uint64
+	var prevAH, prevAM, prevSH, prevSM, prevCH, prevCM uint64
 
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
 		if ctx.Err() != nil {
@@ -255,6 +259,17 @@ func (e *Executor) Run(ctx context.Context) error {
 			// 3. Capture stats BEFORE the snapshot moves the maps.
 			bufAccs, bufStos := e.stateBuf.Stats()
 			cacheHits, cacheMisses := e.stateBuf.CacheStats()
+			ah, am, sh, sm, ch, cm := e.stateBuf.TierStats()
+			// Per-interval deltas — the bare counters are cumulative.
+			intHits := cacheHits - prevHits
+			intMisses := cacheMisses - prevMisses
+			intAH, intAM := ah-prevAH, am-prevAM
+			intSH, intSM := sh-prevSH, sm-prevSM
+			intCH, intCM := ch-prevCH, cm-prevCM
+			prevHits, prevMisses = cacheHits, cacheMisses
+			prevAH, prevAM = ah, am
+			prevSH, prevSM = sh, sm
+			prevCH, prevCM = ch, cm
 
 			// 4. Hand the buffer to the background flusher. The bg
 			// goroutine opens its OWN RwTx, applies the snapshot,
@@ -290,9 +305,11 @@ func (e *Executor) Run(ctx context.Context) error {
 			}
 			blkPerSec := float64(e.cfg.CommitInterval) / intervalSec
 			e.lastProgressTime = now
-			hitRate := float64(0)
-			if cacheHits+cacheMisses > 0 {
-				hitRate = float64(cacheHits) / float64(cacheHits+cacheMisses) * 100
+			hitPct := func(h, m uint64) string {
+				if h+m == 0 {
+					return "-"
+				}
+				return fmt.Sprintf("%.1f", float64(h)/float64(h+m)*100)
 			}
 			fields := []interface{}{
 				"block", blockNum,
@@ -300,7 +317,10 @@ func (e *Executor) Run(ctx context.Context) error {
 				"elapsed", now.Sub(startTime).Truncate(time.Second),
 				"bufFlush", lastFlushDur.Truncate(time.Millisecond),
 				"bufAccs", bufAccs, "bufStos", bufStos,
-				"cacheHit%", fmt.Sprintf("%.1f", hitRate),
+				"hit%", hitPct(intHits, intMisses),
+				"acct%", hitPct(intAH, intAM),
+				"sto%", hitPct(intSH, intSM),
+				"code%", hitPct(intCH, intCM),
 				"async", "y",
 			}
 			if e.senderMisses > 0 {
