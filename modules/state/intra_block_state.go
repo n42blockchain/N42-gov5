@@ -927,13 +927,7 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
-	// Promote any wipes that happened in this tx into priorTxWipes so the
-	// next tx in this block sees the contract's storage as empty (matches
-	// the pre-Cancun "destroyed at end of tx" rule). Within the current tx
-	// the live storageWipes still drives MakeWriteSet at end-of-block.
-	for addr := range sdb.storageWipes {
-		sdb.priorTxWipes[addr] = struct{}{}
-	}
+	sdb.promoteWipes()
 	sdb.clearCurrentTxFlags()
 	sdb.clearJournalAndRefund()
 	return nil
@@ -946,11 +940,19 @@ func (sdb *IntraBlockState) SoftFinalise() {
 		}
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
+	sdb.promoteWipes()
+	sdb.clearCurrentTxFlags()
+	sdb.clearJournalAndRefund()
+}
+
+// promoteWipes lifts wipes that happened in the just-finished tx into
+// priorTxWipes so the next tx in this block sees those addresses as
+// empty (pre-Cancun "destroyed at end of tx"). Live storageWipes still
+// drives the end-of-block CreateContract pass in MakeWriteSet.
+func (sdb *IntraBlockState) promoteWipes() {
 	for addr := range sdb.storageWipes {
 		sdb.priorTxWipes[addr] = struct{}{}
 	}
-	sdb.clearCurrentTxFlags()
-	sdb.clearJournalAndRefund()
 }
 
 // CommitBlock finalizes the state by removing the self destructed objects
