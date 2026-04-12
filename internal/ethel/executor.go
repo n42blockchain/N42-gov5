@@ -179,14 +179,16 @@ func (e *Executor) Run(ctx context.Context) error {
 		}
 		e.outBatcher = batcher
 		defer batcher.Close()
-		if err := batcher.alignOnResume(startBlock); err != nil {
+		// Read MDBX-saved remainder BEFORE alignOnResume. If present,
+		// alignOnResume skips freezer partial-batch recovery (the MDBX
+		// remainder is the authoritative source, saved atomically with
+		// state). Without this, both paths restore overlapping entries
+		// causing position misalignment.
+		csRem := ReadCSRemainder(setupTx)
+		if err := batcher.alignOnResume(startBlock, len(csRem) > 0); err != nil {
 			setupTx.Rollback()
 			return fmt.Errorf("align output tables: %w", err)
 		}
-		// Restore changeset remainder saved by the previous run's MDBX
-		// commit. These are the < 64 entries that didn't form a full
-		// batch — they were saved atomically with state + progress.
-		csRem := ReadCSRemainder(setupTx)
 		if len(csRem) > 0 {
 			batcher.preloadRemainder(csRem)
 		}

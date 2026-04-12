@@ -356,9 +356,10 @@ func padTableTo(tbl *freezer.FreezerTable, targetItems uint64, enc *zstd.Encoder
 }
 
 // alignOnResume prepares output tables for resumed execution.
-// Truncates tables that ran ahead of MDBX, pads gaps, and recovers
-// partial batches so the next flush writes a complete batch-64 block.
-func (b *outputBatcher) alignOnResume(startBlock uint64) error {
+// Truncates tables that ran ahead of MDBX and recovers partial batches.
+// If hasRemainder is true, MDBX has authoritative remainder entries —
+// skip freezer partial-batch recovery to avoid double-loading.
+func (b *outputBatcher) alignOnResume(startBlock uint64, hasRemainder bool) error {
 	b.nextItem = startBlock
 	log.Info("alignOnResume starting",
 		"startBlock", startBlock)
@@ -404,43 +405,50 @@ func (b *outputBatcher) alignOnResume(startBlock uint64) error {
 			existingItems: items,
 		}
 
-		// Recover partial batch: if items not on batch-64 boundary,
-		// read back the incomplete entries, validate, truncate to
-		// batch start, and pre-load so next flush rewrites the full
-		// batch. If ANY entry fails to read (truncated cdat from
-		// crash), discard and pad back to startBlock so the executor
-		// can regenerate from re-execution without an index gap.
 		tail := items % uint64(freezer.BatchSize)
 		if tail > 0 {
 			batchStart := items - tail
-			var recovered [][]byte
-			for i := batchStart; i < items; i++ {
-				d, err := tbl.Retrieve(i)
-				if err != nil {
-					log.Warn("Partial batch entry unreadable, discarding",
-						"table", name, "item", i, "err", err)
-					recovered = nil
-					break
-				}
-				recovered = append(recovered, d)
-			}
-			if err := tbl.TruncateHead(batchStart); err != nil {
-				return fmt.Errorf("truncate partial %s: %w", name, err)
-			}
-			if recovered != nil && uint64(len(recovered)) == tail {
-				log.Info("Recovering partial batch",
+			if hasRemainder {
+				// MDBX has authoritative remainder — just truncate to
+				// batch boundary. preloadRemainder will restore entries.
+				log.Info("Truncating to batch boundary (MDBX remainder available)",
 					"table", name, "batchStart", batchStart, "tail", tail)
-				tb.entries = recovered
+				if err := tbl.TruncateHead(batchStart); err != nil {
+					return fmt.Errorf("truncate partial %s: %w", name, err)
+				}
 				tb.existingItems = batchStart
 				if batchStart < b.nextItem {
 					b.nextItem = batchStart
 				}
 			} else {
-				// Partial batch unreadable (truncated cdat from crash).
-				// NEVER pad with empty entries — error out instead.
-				return fmt.Errorf("output table %s: partial batch at %d unrecoverable (%d of %d entries readable); "+
-					"delete output freezer and re-run",
-					name, batchStart, len(recovered), tail)
+				// No MDBX remainder — recover from freezer.
+				var recovered [][]byte
+				for i := batchStart; i < items; i++ {
+					d, err := tbl.Retrieve(i)
+					if err != nil {
+						log.Warn("Partial batch entry unreadable, discarding",
+							"table", name, "item", i, "err", err)
+						recovered = nil
+						break
+					}
+					recovered = append(recovered, d)
+				}
+				if err := tbl.TruncateHead(batchStart); err != nil {
+					return fmt.Errorf("truncate partial %s: %w", name, err)
+				}
+				if recovered != nil && uint64(len(recovered)) == tail {
+					log.Info("Recovering partial batch",
+						"table", name, "batchStart", batchStart, "tail", tail)
+					tb.entries = recovered
+					tb.existingItems = batchStart
+					if batchStart < b.nextItem {
+						b.nextItem = batchStart
+					}
+				} else {
+					return fmt.Errorf("output table %s: partial batch at %d unrecoverable (%d of %d entries readable); "+
+						"delete output freezer and re-run",
+						name, batchStart, len(recovered), tail)
+				}
 			}
 		}
 
