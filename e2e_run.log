@@ -1,0 +1,311 @@
+time="2026-04-12T17:55:56-04:00" level=info msg="Opening Geth ancient data" path="d:/geth/geth/chaindata/ancient/chain" prefix=v2
+time="2026-04-12T17:55:56-04:00" level=info msg="Freezer opened" frozen=24792852 path="d:/geth/geth/chaindata/ancient/chain" prefix=freezer
+time="2026-04-12T17:55:56-04:00" level=info msg="Freezer opened" frozen=24792852 prefix=v2
+time="2026-04-12T17:55:56-04:00" level=info msg="Opening MDBX database" path="d:/N42-ethcs2" prefix=v2
+time="2026-04-12T17:55:56-04:00" level=info msg="Loading Ethereum genesis state (built-in mainnet)" prefix=v2
+time="2026-04-12T17:55:56-04:00" level=info msg="Genesis state already initialized, skipping" prefix=main
+time="2026-04-12T17:55:56-04:00" level=info msg="Genesis state loaded" accounts=0 prefix=v2
+time="2026-04-12T17:55:56-04:00" level=info msg="Freezer opened" frozen=530001 path="d:\\N42-ethcs2\\chain\\freezer" prefix=freezer
+time="2026-04-12T17:55:56-04:00" level=info msg="Output freezer opened" path="d:\\N42-ethcs2\\chain\\freezer" prefix=v2
+time="2026-04-12T17:55:56-04:00" level=info msg="Aligning commit interval to batch boundary" aligned=9983 batchSize=64 prefix=main requested=10000
+time="2026-04-12T17:55:56-04:00" level=info msg="No pre-computed senders, using ecrecover from signatures" prefix=v2
+time="2026-04-12T17:55:56-04:00" level=info msg="Resuming execution" from=530001 lastCommitted=530000 prefix=main
+time="2026-04-12T17:55:56-04:00" level=info msg="alignOnResume starting" prefix=ethel startBlock=530001
+time="2026-04-12T17:55:56-04:00" level=info msg="Recovering partial batch" batchStart=529984 prefix=ethel table=acctcs tail=17
+time="2026-04-12T17:55:56-04:00" level=info msg="Recovering partial batch" batchStart=529984 prefix=ethel table=storcs tail=17
+time="2026-04-12T17:55:56-04:00" level=info msg="Recovering partial batch" batchStart=529984 prefix=ethel table=witness tail=17
+time="2026-04-12T17:55:57-04:00" level=info msg="EthEL progress" acct%=96.9 async=y blk/s=9949 block=539082 bufAccs=2185 bufFlush=0s bufStos=7375 code%=99.1 elapsed=1s hit%=96.6 prefix=main sto%=95.8
+time="2026-04-12T17:55:57-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=540000 gas=624.1 prefix=ethel tx=1 worst=6.3
+time="2026-04-12T17:55:58-04:00" level=info msg="EthEL progress" acct%=99.2 async=y blk/s=11857 block=549065 bufAccs=2267 bufFlush=18ms bufStos=5973 code%=99.2 elapsed=1s hit%=98.9 prefix=main sto%=97.5
+time="2026-04-12T17:55:58-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.4 P99commit=0.0 P99evm=0.0 P99out=0.0 block=550000 gas=518.4 prefix=ethel tx=1 worst=5.5
+time="2026-04-12T17:55:59-04:00" level=info msg="EthEL progress" acct%=99.2 async=y blk/s=13721 block=559048 bufAccs=2356 bufFlush=14ms bufStos=969 code%=99.3 elapsed=2s hit%=98.9 prefix=main sto%=96.0
+time="2026-04-12T17:55:59-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.3 P99commit=0.0 P99evm=1.3 P99out=0.0 block=560000 gas=487.2 prefix=ethel tx=1 worst=5.2
+time="2026-04-12T17:56:00-04:00" level=info msg="EthEL progress" acct%=99.4 async=y blk/s=11047 block=569031 bufAccs=2373 bufFlush=10ms bufStos=1479 code%=99.8 elapsed=3s hit%=99.0 prefix=main sto%=98.0
+time="2026-04-12T17:56:00-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.4 P99commit=0.0 P99evm=1.4 P99out=0.0 block=570000 gas=600.0 prefix=ethel tx=1 worst=5.0
+time="2026-04-12T17:56:00-04:00" level=info msg="EthEL progress" acct%=99.1 async=y blk/s=13622 block=579014 bufAccs=2356 bufFlush=11ms bufStos=820 code%=99.9 elapsed=4s hit%=99.1 prefix=main sto%=98.9
+time="2026-04-12T17:56:01-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.3 P99commit=0.0 P99evm=1.3 P99out=0.0 block=580000 gas=540.6 prefix=ethel tx=1 worst=4.7
+time="2026-04-12T17:56:01-04:00" level=info msg="EthEL progress" acct%=99.2 async=y blk/s=12719 block=588997 bufAccs=2372 bufFlush=12ms bufStos=869 code%=99.9 elapsed=4s hit%=99.3 prefix=main sto%=99.5
+time="2026-04-12T17:56:01-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.3 P99commit=0.0 P99evm=1.3 P99out=0.0 block=590000 gas=550.3 prefix=ethel tx=1 worst=5.0
+time="2026-04-12T17:56:02-04:00" level=info msg="EthEL progress" acct%=99.3 async=y blk/s=12509 block=598980 bufAccs=2363 bufFlush=11ms bufStos=3494 code%=100.0 elapsed=5s hit%=96.2 prefix=main sto%=84.6
+time="2026-04-12T17:56:02-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.4 P99commit=0.0 P99evm=0.0 P99out=0.0 block=600000 gas=542.3 prefix=ethel tx=1 worst=5.3
+time="2026-04-12T17:56:03-04:00" level=info msg="EthEL progress" acct%=99.7 async=y blk/s=10643 block=608963 bufAccs=2092 bufFlush=19ms bufStos=620 code%=99.9 elapsed=6s hit%=99.4 prefix=main sto%=98.7
+time="2026-04-12T17:56:03-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=610000 gas=489.4 prefix=ethel tx=1 worst=5.7
+time="2026-04-12T17:56:04-04:00" level=info msg="EthEL progress" acct%=99.6 async=y blk/s=12461 block=618946 bufAccs=2079 bufFlush=9ms bufStos=5463 code%=100.0 elapsed=7s hit%=99.6 prefix=main sto%=99.2
+time="2026-04-12T17:56:04-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.4 P99commit=0.0 P99evm=0.0 P99out=0.0 block=620000 gas=615.7 prefix=ethel tx=1 worst=5.2
+time="2026-04-12T17:56:05-04:00" level=info msg="EthEL progress" acct%=99.5 async=y blk/s=12490 block=628929 bufAccs=2203 bufFlush=21ms bufStos=1334 code%=100.0 elapsed=8s hit%=99.4 prefix=main sto%=99.0
+time="2026-04-12T17:56:05-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.3 P99commit=0.0 P99evm=0.0 P99out=0.0 block=630000 gas=604.6 prefix=ethel tx=1 worst=5.1
+time="2026-04-12T17:56:05-04:00" level=info msg="EthEL progress" acct%=99.5 async=y blk/s=12869 block=638912 bufAccs=2194 bufFlush=25ms bufStos=1520 code%=99.9 elapsed=9s hit%=98.6 prefix=main sto%=94.0
+time="2026-04-12T17:56:05-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.4 P99commit=0.0 P99evm=1.4 P99out=0.0 block=640000 gas=509.1 prefix=ethel tx=1 worst=5.7
+time="2026-04-12T17:56:06-04:00" level=info msg="EthEL progress" acct%=99.3 async=y blk/s=11542 block=648895 bufAccs=2472 bufFlush=22ms bufStos=2856 code%=99.4 elapsed=9s hit%=98.4 prefix=main sto%=96.3
+time="2026-04-12T17:56:06-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.4 P99commit=0.0 P99evm=1.4 P99out=0.0 block=650000 gas=658.5 prefix=ethel tx=1 worst=5.2
+time="2026-04-12T17:56:07-04:00" level=info msg="EthEL progress" acct%=99.2 async=y blk/s=13027 block=658878 bufAccs=2464 bufFlush=25ms bufStos=2169 code%=99.9 elapsed=10s hit%=98.8 prefix=main sto%=95.6
+time="2026-04-12T17:56:07-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.4 P99commit=0.0 P99evm=1.4 P99out=0.0 block=660000 gas=516.0 prefix=ethel tx=1 worst=4.7
+time="2026-04-12T17:56:08-04:00" level=info msg="EthEL progress" acct%=99.5 async=y blk/s=13184 block=668861 bufAccs=2213 bufFlush=22ms bufStos=968 code%=100.0 elapsed=11s hit%=98.9 prefix=main sto%=93.8
+time="2026-04-12T17:56:08-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.3 P99commit=0.0 P99evm=1.3 P99out=0.0 block=670000 gas=455.6 prefix=ethel tx=1 worst=5.2
+time="2026-04-12T17:56:09-04:00" level=info msg="EthEL progress" acct%=99.1 async=y blk/s=10936 block=678844 bufAccs=2590 bufFlush=14ms bufStos=4440 code%=100.0 elapsed=12s hit%=98.9 prefix=main sto%=97.6
+time="2026-04-12T17:56:09-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.4 P99commit=0.0 P99evm=1.4 P99out=0.0 block=680000 gas=603.6 prefix=ethel tx=1 worst=4.5
+time="2026-04-12T17:56:10-04:00" level=info msg="EthEL progress" acct%=99.4 async=y blk/s=10142 block=688827 bufAccs=2683 bufFlush=20ms bufStos=9534 code%=100.0 elapsed=13s hit%=98.6 prefix=main sto%=95.6
+time="2026-04-12T17:56:10-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=690000 gas=775.9 prefix=ethel tx=1 worst=5.2
+time="2026-04-12T17:56:13-04:00" level=info msg="EthEL progress" acct%=99.8 async=y blk/s=3374 block=698810 bufAccs=2689 bufFlush=53ms bufStos=80004 code%=100.0 elapsed=16s hit%=89.3 prefix=main sto%=77.6
+time="2026-04-12T17:56:13-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.5 P99commit=0.0 P99evm=2.5 P99out=0.0 block=700000 gas=1130.3 prefix=ethel tx=3 worst=21.6
+time="2026-04-12T17:56:14-04:00" level=info msg="EthEL progress" acct%=99.3 async=y blk/s=6427 block=708793 bufAccs=2976 bufFlush=200ms bufStos=33320 code%=100.0 elapsed=17s hit%=98.4 prefix=main sto%=96.6
+time="2026-04-12T17:56:14-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=710000 gas=914.1 prefix=ethel tx=1 worst=8.2
+time="2026-04-12T17:56:16-04:00" level=info msg="EthEL progress" acct%=99.6 async=y blk/s=7043 block=718776 bufAccs=2750 bufFlush=175ms bufStos=24767 code%=100.0 elapsed=19s hit%=86.0 prefix=main sto%=68.6
+time="2026-04-12T17:56:16-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=1.5 P99evm=0.0 P99out=0.0 block=720000 gas=796.1 prefix=ethel tx=1 worst=12.7
+time="2026-04-12T17:56:17-04:00" level=info msg="EthEL progress" acct%=99.6 async=y blk/s=6138 block=728759 bufAccs=2824 bufFlush=83ms bufStos=28214 code%=100.0 elapsed=20s hit%=84.1 prefix=main sto%=68.7
+time="2026-04-12T17:56:17-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=0.0 P99out=0.0 block=730000 gas=857.6 prefix=ethel tx=2 worst=11.7
+time="2026-04-12T17:56:20-04:00" level=info msg="EthEL progress" acct%=99.8 async=y blk/s=3131 block=738742 bufAccs=2732 bufFlush=145ms bufStos=36420 code%=100.0 elapsed=24s hit%=85.0 prefix=main sto%=71.6
+time="2026-04-12T17:56:21-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.7 P99commit=1.0 P99evm=2.7 P99out=0.0 block=740000 gas=812.4 prefix=ethel tx=4 worst=6.1
+time="2026-04-12T17:56:22-04:00" level=info msg="EthEL progress" acct%=99.8 async=y blk/s=5382 block=748725 bufAccs=2604 bufFlush=228ms bufStos=24084 code%=100.0 elapsed=25s hit%=89.1 prefix=main sto%=79.6
+time="2026-04-12T17:56:22-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=750000 gas=738.1 prefix=ethel tx=2 worst=15.7
+time="2026-04-12T17:56:25-04:00" level=info msg="EthEL progress" acct%=99.7 async=y blk/s=4118 block=758708 bufAccs=2722 bufFlush=141ms bufStos=31275 code%=100.0 elapsed=28s hit%=91.8 prefix=main sto%=85.9
+time="2026-04-12T17:56:25-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.3 P99commit=0.0 P99evm=3.3 P99out=0.0 block=760000 gas=780.4 prefix=ethel tx=3 worst=15.8
+time="2026-04-12T17:56:27-04:00" level=info msg="EthEL progress" acct%=99.6 async=y blk/s=5000 block=768691 bufAccs=2904 bufFlush=116ms bufStos=17148 code%=100.0 elapsed=30s hit%=94.8 prefix=main sto%=90.4
+time="2026-04-12T17:56:27-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=2.0 P99out=0.0 block=770000 gas=688.4 prefix=ethel tx=2 worst=8.7
+time="2026-04-12T17:56:29-04:00" level=info msg="EthEL progress" acct%=99.6 async=y blk/s=4124 block=778674 bufAccs=3012 bufFlush=77ms bufStos=21445 code%=100.0 elapsed=32s hit%=93.6 prefix=main sto%=89.0
+time="2026-04-12T17:56:29-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.0 P99commit=0.0 P99evm=3.0 P99out=0.0 block=780000 gas=717.5 prefix=ethel tx=2 worst=12.7
+time="2026-04-12T17:56:30-04:00" level=info msg="EthEL progress" acct%=99.6 async=y blk/s=7498 block=788657 bufAccs=2875 bufFlush=98ms bufStos=6155 code%=100.0 elapsed=34s hit%=96.7 prefix=main sto%=91.9
+time="2026-04-12T17:56:31-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=790000 gas=507.6 prefix=ethel tx=1 worst=5.8
+time="2026-04-12T17:56:32-04:00" level=info msg="EthEL progress" acct%=99.6 async=y blk/s=7087 block=798640 bufAccs=3018 bufFlush=52ms bufStos=7926 code%=100.0 elapsed=35s hit%=96.6 prefix=main sto%=92.3
+time="2026-04-12T17:56:32-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=800000 gas=544.9 prefix=ethel tx=1 worst=5.2
+time="2026-04-12T17:56:34-04:00" level=info msg="EthEL progress" acct%=99.6 async=y blk/s=3826 block=808623 bufAccs=3150 bufFlush=56ms bufStos=45061 code%=100.0 elapsed=38s hit%=86.9 prefix=main sto%=77.1
+time="2026-04-12T17:56:35-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.4 P99commit=0.0 P99evm=3.4 P99out=0.0 block=810000 gas=885.7 prefix=ethel tx=4 worst=23.4
+time="2026-04-12T17:56:37-04:00" level=info msg="EthEL progress" acct%=99.6 async=y blk/s=4210 block=818606 bufAccs=3273 bufFlush=191ms bufStos=26165 code%=100.0 elapsed=40s hit%=93.6 prefix=main sto%=89.2
+time="2026-04-12T17:56:37-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=0.0 P99out=0.0 block=820000 gas=697.1 prefix=ethel tx=2 worst=11.4
+time="2026-04-12T17:56:38-04:00" level=info msg="EthEL progress" acct%=99.4 async=y blk/s=5973 block=828589 bufAccs=3468 bufFlush=96ms bufStos=16769 code%=100.0 elapsed=42s hit%=94.4 prefix=main sto%=89.8
+time="2026-04-12T17:56:39-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=830000 gas=716.8 prefix=ethel tx=2 worst=8.5
+time="2026-04-12T17:56:40-04:00" level=info msg="EthEL progress" acct%=99.3 async=y blk/s=6231 block=838572 bufAccs=3800 bufFlush=72ms bufStos=8008 code%=100.0 elapsed=43s hit%=97.5 prefix=main sto%=95.1
+time="2026-04-12T17:56:40-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=0.0 P99out=0.0 block=840000 gas=586.1 prefix=ethel tx=2 worst=5.2
+time="2026-04-12T17:56:42-04:00" level=info msg="EthEL progress" acct%=99.5 async=y blk/s=4857 block=848555 bufAccs=3511 bufFlush=62ms bufStos=18793 code%=100.0 elapsed=45s hit%=94.4 prefix=main sto%=89.7
+time="2026-04-12T17:56:42-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.5 P99commit=0.0 P99evm=2.5 P99out=0.0 block=850000 gas=734.3 prefix=ethel tx=2 worst=11.5
+time="2026-04-12T17:56:43-04:00" level=info msg="EthEL progress" acct%=99.1 async=y blk/s=7908 block=858538 bufAccs=3896 bufFlush=83ms bufStos=8995 code%=100.0 elapsed=47s hit%=95.1 prefix=main sto%=90.4
+time="2026-04-12T17:56:44-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=860000 gas=666.4 prefix=ethel tx=2 worst=5.7
+time="2026-04-12T17:56:45-04:00" level=info msg="EthEL progress" acct%=99.1 async=y blk/s=8533 block=868521 bufAccs=3607 bufFlush=52ms bufStos=11604 code%=100.0 elapsed=48s hit%=91.8 prefix=main sto%=81.8
+time="2026-04-12T17:56:45-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=870000 gas=748.0 prefix=ethel tx=2 worst=5.1
+time="2026-04-12T17:56:46-04:00" level=info msg="EthEL progress" acct%=99.2 async=y blk/s=7179 block=878504 bufAccs=3788 bufFlush=46ms bufStos=16388 code%=100.0 elapsed=49s hit%=90.9 prefix=main sto%=82.2
+time="2026-04-12T17:56:46-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=0.0 P99out=0.0 block=880000 gas=755.9 prefix=ethel tx=2 worst=7.0
+time="2026-04-12T17:56:47-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=7422 block=888487 bufAccs=4393 bufFlush=53ms bufStos=7405 code%=100.0 elapsed=51s hit%=96.3 prefix=main sto%=91.8
+time="2026-04-12T17:56:48-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=890000 gas=694.8 prefix=ethel tx=2 worst=5.0
+time="2026-04-12T17:56:49-04:00" level=info msg="EthEL progress" acct%=98.4 async=y blk/s=8403 block=898470 bufAccs=4936 bufFlush=39ms bufStos=6810 code%=100.0 elapsed=52s hit%=97.0 prefix=main sto%=94.0
+time="2026-04-12T17:56:49-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=900000 gas=620.0 prefix=ethel tx=2 worst=5.2
+time="2026-04-12T17:56:50-04:00" level=info msg="EthEL progress" acct%=98.2 async=y blk/s=5965 block=908453 bufAccs=5825 bufFlush=41ms bufStos=13068 code%=100.0 elapsed=53s hit%=93.1 prefix=main sto%=87.8
+time="2026-04-12T17:56:50-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=0.5 P99out=1.0 block=910000 gas=795.6 prefix=ethel tx=3 worst=6.5
+time="2026-04-12T17:56:52-04:00" level=info msg="EthEL progress" acct%=98.5 async=y blk/s=4557 block=918436 bufAccs=6016 bufFlush=56ms bufStos=17022 code%=100.0 elapsed=56s hit%=93.3 prefix=main sto%=89.0
+time="2026-04-12T17:56:53-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=2.0 P99out=0.0 block=920000 gas=808.4 prefix=ethel tx=3 worst=9.3
+time="2026-04-12T17:56:54-04:00" level=info msg="EthEL progress" acct%=98.3 async=y blk/s=5796 block=928419 bufAccs=6184 bufFlush=73ms bufStos=8317 code%=100.0 elapsed=57s hit%=97.2 prefix=main sto%=95.9
+time="2026-04-12T17:56:54-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=0.0 P99out=1.5 block=930000 gas=703.0 prefix=ethel tx=3 worst=6.2
+time="2026-04-12T17:56:56-04:00" level=info msg="EthEL progress" acct%=98.4 async=y blk/s=6510 block=938402 bufAccs=6141 bufFlush=45ms bufStos=6843 code%=100.0 elapsed=59s hit%=97.3 prefix=main sto%=95.8
+time="2026-04-12T17:56:56-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=940000 gas=676.1 prefix=ethel tx=2 worst=5.8
+time="2026-04-12T17:56:57-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=6926 block=948385 bufAccs=5701 bufFlush=38ms bufStos=4028 code%=100.0 elapsed=1m0s hit%=98.4 prefix=main sto%=97.5
+time="2026-04-12T17:56:57-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=950000 gas=626.6 prefix=ethel tx=2 worst=5.2
+time="2026-04-12T17:56:59-04:00" level=info msg="EthEL progress" acct%=98.6 async=y blk/s=6593 block=958368 bufAccs=6144 bufFlush=33ms bufStos=6185 code%=100.0 elapsed=1m2s hit%=97.4 prefix=main sto%=95.6
+time="2026-04-12T17:56:59-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=960000 gas=673.5 prefix=ethel tx=2 worst=5.5
+time="2026-04-12T17:57:01-04:00" level=info msg="EthEL progress" acct%=99.1 async=y blk/s=3998 block=968351 bufAccs=4971 bufFlush=36ms bufStos=23357 code%=100.0 elapsed=1m4s hit%=97.9 prefix=main sto%=96.9
+time="2026-04-12T17:57:01-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.5 P99commit=0.0 P99evm=3.5 P99out=0.0 block=970000 gas=784.6 prefix=ethel tx=4 worst=15.1
+time="2026-04-12T17:57:03-04:00" level=info msg="EthEL progress" acct%=98.7 async=y blk/s=6524 block=978334 bufAccs=6239 bufFlush=49ms bufStos=5555 code%=100.0 elapsed=1m6s hit%=97.4 prefix=main sto%=94.6
+time="2026-04-12T17:57:03-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=980000 gas=601.7 prefix=ethel tx=2 worst=6.9
+time="2026-04-12T17:57:05-04:00" level=info msg="EthEL progress" acct%=97.6 async=y blk/s=5134 block=988317 bufAccs=9458 bufFlush=35ms bufStos=5665 code%=100.0 elapsed=1m8s hit%=96.9 prefix=main sto%=95.5
+time="2026-04-12T17:57:05-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=2.0 P99out=0.0 block=990000 gas=548.8 prefix=ethel tx=3 worst=7.7
+time="2026-04-12T17:57:07-04:00" level=info msg="EthEL progress" acct%=97.1 async=y blk/s=4350 block=998300 bufAccs=9875 bufFlush=39ms bufStos=5613 code%=100.0 elapsed=1m10s hit%=97.0 prefix=main sto%=96.4
+time="2026-04-12T17:57:07-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=1.0 P99out=1.0 block=1000000 gas=515.9 prefix=ethel tx=3 worst=7.8
+time="2026-04-12T17:57:09-04:00" level=info msg="EthEL progress" acct%=98.0 async=y blk/s=4800 block=1008283 bufAccs=8006 bufFlush=44ms bufStos=5462 code%=100.0 elapsed=1m12s hit%=97.4 prefix=main sto%=96.3
+time="2026-04-12T17:57:09-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=1010000 gas=521.7 prefix=ethel tx=3 worst=7.4
+time="2026-04-12T17:57:11-04:00" level=info msg="EthEL progress" acct%=98.4 async=y blk/s=4576 block=1018266 bufAccs=7919 bufFlush=45ms bufStos=7766 code%=100.0 elapsed=1m14s hit%=96.6 prefix=main sto%=93.8
+time="2026-04-12T17:57:12-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.5 P99commit=0.0 P99evm=2.5 P99out=0.0 block=1020000 gas=555.2 prefix=ethel tx=3 worst=7.5
+time="2026-04-12T17:57:13-04:00" level=info msg="EthEL progress" acct%=98.1 async=y blk/s=4282 block=1028249 bufAccs=8146 bufFlush=44ms bufStos=9067 code%=100.0 elapsed=1m17s hit%=97.5 prefix=main sto%=96.4
+time="2026-04-12T17:57:14-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=0.5 P99out=0.0 block=1030000 gas=585.1 prefix=ethel tx=3 worst=8.1
+time="2026-04-12T17:57:15-04:00" level=info msg="EthEL progress" acct%=98.0 async=y blk/s=6120 block=1038232 bufAccs=7925 bufFlush=86ms bufStos=5209 code%=100.0 elapsed=1m18s hit%=97.2 prefix=main sto%=95.2
+time="2026-04-12T17:57:15-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=1040000 gas=617.0 prefix=ethel tx=3 worst=5.7
+time="2026-04-12T17:57:17-04:00" level=info msg="EthEL progress" acct%=98.5 async=y blk/s=5734 block=1048215 bufAccs=8119 bufFlush=44ms bufStos=7599 code%=100.0 elapsed=1m20s hit%=98.0 prefix=main sto%=97.4
+time="2026-04-12T17:57:17-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=1050000 gas=1206.5 prefix=ethel tx=3 worst=5.7
+time="2026-04-12T17:57:19-04:00" level=info msg="EthEL progress" acct%=98.6 async=y blk/s=5755 block=1058198 bufAccs=8328 bufFlush=43ms bufStos=3009 code%=100.0 elapsed=1m22s hit%=98.6 prefix=main sto%=98.6
+time="2026-04-12T17:57:19-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=1060000 gas=826.8 prefix=ethel tx=3 worst=5.3
+time="2026-04-12T17:57:20-04:00" level=info msg="EthEL progress" acct%=98.2 async=y blk/s=5198 block=1068181 bufAccs=8669 bufFlush=37ms bufStos=15390 code%=100.0 elapsed=1m24s hit%=98.4 prefix=main sto%=98.9
+time="2026-04-12T17:57:21-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=2.0 P99out=0.0 block=1070000 gas=784.1 prefix=ethel tx=4 worst=7.8
+time="2026-04-12T17:57:22-04:00" level=info msg="EthEL progress" acct%=97.6 async=y blk/s=5628 block=1078164 bufAccs=9404 bufFlush=122ms bufStos=2896 code%=100.0 elapsed=1m25s hit%=97.9 prefix=main sto%=98.6
+time="2026-04-12T17:57:23-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=1080000 gas=611.3 prefix=ethel tx=3 worst=8.7
+time="2026-04-12T17:57:24-04:00" level=info msg="EthEL progress" acct%=97.5 async=y blk/s=4998 block=1088147 bufAccs=10624 bufFlush=40ms bufStos=4027 code%=100.0 elapsed=1m27s hit%=97.6 prefix=main sto%=97.5
+time="2026-04-12T17:57:25-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=1.5 P99evm=0.0 P99out=0.0 block=1090000 gas=593.2 prefix=ethel tx=4 worst=7.8
+time="2026-04-12T17:57:26-04:00" level=info msg="EthEL progress" acct%=97.0 async=y blk/s=4738 block=1098130 bufAccs=12939 bufFlush=47ms bufStos=3949 code%=100.0 elapsed=1m30s hit%=97.1 prefix=main sto%=97.4
+time="2026-04-12T17:57:27-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.7 P99commit=0.0 P99evm=1.7 P99out=0.0 block=1100000 gas=630.4 prefix=ethel tx=4 worst=8.3
+time="2026-04-12T17:57:29-04:00" level=info msg="EthEL progress" acct%=96.2 async=y blk/s=4356 block=1108113 bufAccs=14853 bufFlush=73ms bufStos=4610 code%=99.7 elapsed=1m32s hit%=95.8 prefix=main sto%=93.5
+time="2026-04-12T17:57:29-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=0.0 P99out=2.0 block=1110000 gas=678.3 prefix=ethel tx=5 worst=19.1
+time="2026-04-12T17:57:31-04:00" level=info msg="EthEL progress" acct%=96.9 async=y blk/s=4406 block=1118096 bufAccs=14022 bufFlush=68ms bufStos=7410 code%=99.9 elapsed=1m34s hit%=96.4 prefix=main sto%=94.2
+time="2026-04-12T17:57:31-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.7 P99commit=0.0 P99evm=1.7 P99out=0.0 block=1120000 gas=677.0 prefix=ethel tx=4 worst=7.8
+time="2026-04-12T17:57:33-04:00" level=info msg="EthEL progress" acct%=96.7 async=y blk/s=4940 block=1128079 bufAccs=13588 bufFlush=87ms bufStos=3542 code%=100.0 elapsed=1m36s hit%=97.0 prefix=main sto%=97.8
+time="2026-04-12T17:57:33-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=1130000 gas=670.1 prefix=ethel tx=4 worst=8.2
+time="2026-04-12T17:57:35-04:00" level=info msg="EthEL progress" acct%=97.7 async=y blk/s=4739 block=1138062 bufAccs=13274 bufFlush=50ms bufStos=3153 code%=100.0 elapsed=1m38s hit%=97.6 prefix=main sto%=96.9
+time="2026-04-12T17:57:35-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.7 P99commit=0.0 P99evm=1.7 P99out=0.0 block=1140000 gas=666.8 prefix=ethel tx=5 worst=8.7
+time="2026-04-12T17:57:37-04:00" level=info msg="EthEL progress" acct%=97.6 async=y blk/s=4270 block=1148045 bufAccs=14206 bufFlush=63ms bufStos=4435 code%=100.0 elapsed=1m41s hit%=97.8 prefix=main sto%=98.0
+time="2026-04-12T17:57:38-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.7 P99commit=0.0 P99evm=1.7 P99out=0.0 block=1150000 gas=721.1 prefix=ethel tx=5 worst=8.7
+time="2026-04-12T17:57:40-04:00" level=info msg="EthEL progress" acct%=97.8 async=y blk/s=4368 block=1158028 bufAccs=13807 bufFlush=84ms bufStos=4277 code%=100.0 elapsed=1m43s hit%=97.8 prefix=main sto%=97.4
+time="2026-04-12T17:57:40-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=1.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=1160000 gas=706.5 prefix=ethel tx=4 worst=23.3
+time="2026-04-12T17:57:42-04:00" level=info msg="EthEL progress" acct%=98.2 async=y blk/s=4258 block=1168011 bufAccs=12680 bufFlush=54ms bufStos=5511 code%=100.0 elapsed=1m45s hit%=98.2 prefix=main sto%=97.8
+time="2026-04-12T17:57:42-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.4 P99commit=0.0 P99evm=2.4 P99out=0.0 block=1170000 gas=678.0 prefix=ethel tx=5 worst=13.0
+time="2026-04-12T17:57:44-04:00" level=info msg="EthEL progress" acct%=98.2 async=y blk/s=4212 block=1177994 bufAccs=13420 bufFlush=60ms bufStos=4938 code%=100.0 elapsed=1m48s hit%=97.1 prefix=main sto%=93.6
+time="2026-04-12T17:57:45-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=0.0 P99out=2.0 block=1180000 gas=750.7 prefix=ethel tx=5 worst=29.6
+time="2026-04-12T17:57:47-04:00" level=info msg="EthEL progress" acct%=98.5 async=y blk/s=4122 block=1187977 bufAccs=12338 bufFlush=88ms bufStos=20637 code%=100.0 elapsed=1m50s hit%=88.2 prefix=main sto%=72.0
+time="2026-04-12T17:57:47-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=2.0 P99out=0.0 block=1190000 gas=778.6 prefix=ethel tx=5 worst=10.3
+time="2026-04-12T17:57:50-04:00" level=info msg="EthEL progress" acct%=98.6 async=y blk/s=3657 block=1197960 bufAccs=12648 bufFlush=195ms bufStos=7942 code%=100.0 elapsed=1m53s hit%=97.4 prefix=main sto%=94.8
+time="2026-04-12T17:57:50-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.1 P99commit=1.0 P99evm=1.1 P99out=0.0 block=1200000 gas=702.1 prefix=ethel tx=5 worst=9.8
+time="2026-04-12T17:57:52-04:00" level=info msg="EthEL progress" acct%=98.7 async=y blk/s=3572 block=1207943 bufAccs=12395 bufFlush=72ms bufStos=15421 code%=100.0 elapsed=1m56s hit%=94.1 prefix=main sto%=86.4
+time="2026-04-12T17:57:53-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.4 P99commit=0.0 P99evm=2.4 P99out=0.0 block=1210000 gas=807.0 prefix=ethel tx=5 worst=16.0
+time="2026-04-12T17:57:55-04:00" level=info msg="EthEL progress" acct%=98.9 async=y blk/s=3408 block=1217926 bufAccs=12403 bufFlush=90ms bufStos=24670 code%=100.0 elapsed=1m58s hit%=97.9 prefix=main sto%=96.5
+time="2026-04-12T17:57:56-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.3 P99commit=0.0 P99evm=2.3 P99out=0.0 block=1220000 gas=768.3 prefix=ethel tx=5 worst=13.1
+time="2026-04-12T17:57:58-04:00" level=info msg="EthEL progress" acct%=98.9 async=y blk/s=3745 block=1227909 bufAccs=12479 bufFlush=221ms bufStos=11648 code%=100.0 elapsed=2m1s hit%=98.2 prefix=main sto%=96.5
+time="2026-04-12T17:57:58-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.5 P99commit=0.0 P99evm=5.5 P99out=0.0 block=1230000 gas=674.0 prefix=ethel tx=5 worst=11.4
+time="2026-04-12T17:58:01-04:00" level=info msg="EthEL progress" acct%=98.4 async=y blk/s=3742 block=1237892 bufAccs=13967 bufFlush=86ms bufStos=5210 code%=100.0 elapsed=2m4s hit%=98.6 prefix=main sto%=98.7
+time="2026-04-12T17:58:01-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.3 P99commit=0.0 P99evm=2.3 P99out=0.0 block=1240000 gas=660.3 prefix=ethel tx=5 worst=25.0
+time="2026-04-12T17:58:03-04:00" level=info msg="EthEL progress" acct%=98.1 async=y blk/s=3623 block=1247875 bufAccs=16023 bufFlush=64ms bufStos=8937 code%=100.0 elapsed=2m7s hit%=98.5 prefix=main sto%=99.0
+time="2026-04-12T17:58:04-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.3 P99commit=0.0 P99evm=1.3 P99out=0.0 block=1250000 gas=747.0 prefix=ethel tx=5 worst=30.8
+time="2026-04-12T17:58:06-04:00" level=info msg="EthEL progress" acct%=98.3 async=y blk/s=3770 block=1257858 bufAccs=14377 bufFlush=223ms bufStos=6099 code%=100.0 elapsed=2m9s hit%=98.3 prefix=main sto%=98.1
+time="2026-04-12T17:58:06-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.3 P99commit=0.0 P99evm=2.3 P99out=0.0 block=1260000 gas=677.7 prefix=ethel tx=5 worst=9.7
+time="2026-04-12T17:58:08-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=4389 block=1267841 bufAccs=13048 bufFlush=74ms bufStos=3044 code%=100.0 elapsed=2m11s hit%=98.8 prefix=main sto%=98.4
+time="2026-04-12T17:58:09-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=0.0 P99out=2.0 block=1270000 gas=565.8 prefix=ethel tx=4 worst=18.2
+time="2026-04-12T17:58:11-04:00" level=info msg="EthEL progress" acct%=98.9 async=y blk/s=3733 block=1277824 bufAccs=13929 bufFlush=56ms bufStos=6319 code%=100.0 elapsed=2m14s hit%=98.8 prefix=main sto%=98.6
+time="2026-04-12T17:58:11-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.0 P99commit=0.0 P99evm=3.0 P99out=0.0 block=1280000 gas=666.3 prefix=ethel tx=5 worst=8.7
+time="2026-04-12T17:58:14-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=3388 block=1287807 bufAccs=14658 bufFlush=62ms bufStos=11232 code%=100.0 elapsed=2m17s hit%=97.8 prefix=main sto%=95.1
+time="2026-04-12T17:58:14-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=6.1 P99commit=0.0 P99evm=6.1 P99out=0.0 block=1290000 gas=638.6 prefix=ethel tx=5 worst=9.4
+time="2026-04-12T17:58:17-04:00" level=info msg="EthEL progress" acct%=98.9 async=y blk/s=3612 block=1297790 bufAccs=14094 bufFlush=213ms bufStos=6688 code%=100.0 elapsed=2m20s hit%=98.6 prefix=main sto%=97.9
+time="2026-04-12T17:58:17-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.7 P99commit=0.0 P99evm=2.7 P99out=0.0 block=1300000 gas=653.4 prefix=ethel tx=5 worst=12.7
+time="2026-04-12T17:58:19-04:00" level=info msg="EthEL progress" acct%=99.0 async=y blk/s=4154 block=1307773 bufAccs=14456 bufFlush=66ms bufStos=3576 code%=100.0 elapsed=2m22s hit%=99.0 prefix=main sto%=98.7
+time="2026-04-12T17:58:20-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.6 P99commit=0.0 P99evm=1.5 P99out=0.0 block=1310000 gas=583.6 prefix=ethel tx=5 worst=18.2
+time="2026-04-12T17:58:21-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=4135 block=1317756 bufAccs=15278 bufFlush=61ms bufStos=2812 code%=100.0 elapsed=2m25s hit%=98.8 prefix=main sto%=98.7
+time="2026-04-12T17:58:22-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=1.0 P99out=1.0 block=1320000 gas=609.0 prefix=ethel tx=5 worst=16.4
+time="2026-04-12T17:58:24-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=4015 block=1327739 bufAccs=15089 bufFlush=56ms bufStos=4100 code%=100.0 elapsed=2m27s hit%=98.8 prefix=main sto%=98.9
+time="2026-04-12T17:58:25-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.5 P99commit=0.0 P99evm=0.0 P99out=2.5 block=1330000 gas=632.4 prefix=ethel tx=5 worst=11.3
+time="2026-04-12T17:58:27-04:00" level=info msg="EthEL progress" acct%=98.9 async=y blk/s=3417 block=1337722 bufAccs=15658 bufFlush=63ms bufStos=19050 code%=100.0 elapsed=2m30s hit%=99.0 prefix=main sto%=99.0
+time="2026-04-12T17:58:27-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.5 P99commit=0.5 P99evm=2.0 P99out=0.0 block=1340000 gas=722.4 prefix=ethel tx=6 worst=19.9
+time="2026-04-12T17:58:29-04:00" level=info msg="EthEL progress" acct%=99.2 async=y blk/s=3876 block=1347705 bufAccs=14066 bufFlush=84ms bufStos=6302 code%=100.0 elapsed=2m33s hit%=99.1 prefix=main sto%=98.9
+time="2026-04-12T17:58:30-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=4.6 P99commit=0.0 P99evm=3.6 P99out=0.0 block=1350000 gas=614.5 prefix=ethel tx=5 worst=10.2
+time="2026-04-12T17:58:32-04:00" level=info msg="EthEL progress" acct%=99.1 async=y blk/s=4203 block=1357688 bufAccs=14659 bufFlush=75ms bufStos=2360 code%=100.0 elapsed=2m35s hit%=98.6 prefix=main sto%=95.5
+time="2026-04-12T17:58:33-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.5 P99commit=0.0 P99evm=3.5 P99out=0.0 block=1360000 gas=696.9 prefix=ethel tx=6 worst=9.2
+time="2026-04-12T17:58:35-04:00" level=info msg="EthEL progress" acct%=99.1 async=y blk/s=3673 block=1367671 bufAccs=14976 bufFlush=58ms bufStos=3889 code%=100.0 elapsed=2m38s hit%=98.7 prefix=main sto%=97.3
+time="2026-04-12T17:58:35-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.5 P99commit=0.0 P99evm=1.5 P99out=0.0 block=1370000 gas=557.0 prefix=ethel tx=5 worst=38.3
+time="2026-04-12T17:58:37-04:00" level=info msg="EthEL progress" acct%=99.0 async=y blk/s=3857 block=1377654 bufAccs=15065 bufFlush=65ms bufStos=13509 code%=100.0 elapsed=2m40s hit%=94.7 prefix=main sto%=84.3
+time="2026-04-12T17:58:38-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.0 P99commit=0.0 P99evm=0.0 P99out=3.0 block=1380000 gas=763.0 prefix=ethel tx=5 worst=9.1
+time="2026-04-12T17:58:39-04:00" level=info msg="EthEL progress" acct%=98.3 async=y blk/s=4308 block=1387637 bufAccs=16357 bufFlush=127ms bufStos=6805 code%=100.0 elapsed=2m43s hit%=96.9 prefix=main sto%=91.7
+time="2026-04-12T17:58:40-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=2.0 P99out=0.0 block=1390000 gas=650.1 prefix=ethel tx=5 worst=16.6
+time="2026-04-12T17:58:42-04:00" level=info msg="EthEL progress" acct%=98.9 async=y blk/s=3924 block=1397620 bufAccs=15269 bufFlush=138ms bufStos=5253 code%=100.0 elapsed=2m45s hit%=98.1 prefix=main sto%=95.3
+time="2026-04-12T17:58:42-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.5 P99commit=0.0 P99evm=0.0 P99out=2.5 block=1400000 gas=648.5 prefix=ethel tx=5 worst=7.8
+time="2026-04-12T17:58:45-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=3584 block=1407603 bufAccs=15886 bufFlush=74ms bufStos=7481 code%=100.0 elapsed=2m48s hit%=98.1 prefix=main sto%=95.8
+time="2026-04-12T17:58:45-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.2 P99commit=0.5 P99evm=4.7 P99out=0.0 block=1410000 gas=596.9 prefix=ethel tx=5 worst=50.2
+time="2026-04-12T17:58:47-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=4021 block=1417586 bufAccs=15988 bufFlush=78ms bufStos=5699 code%=100.0 elapsed=2m50s hit%=98.0 prefix=main sto%=95.1
+time="2026-04-12T17:58:48-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.0 P99commit=0.0 P99evm=1.0 P99out=0.0 block=1420000 gas=656.7 prefix=ethel tx=5 worst=8.3
+time="2026-04-12T17:58:50-04:00" level=info msg="EthEL progress" acct%=99.0 async=y blk/s=3695 block=1427569 bufAccs=17455 bufFlush=76ms bufStos=6468 code%=100.0 elapsed=2m53s hit%=98.0 prefix=main sto%=94.8
+time="2026-04-12T17:58:51-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.6 P99commit=0.0 P99evm=0.0 P99out=2.6 block=1430000 gas=644.7 prefix=ethel tx=6 worst=9.6
+time="2026-04-12T17:58:53-04:00" level=info msg="EthEL progress" acct%=96.3 async=y blk/s=3178 block=1437552 bufAccs=23800 bufFlush=76ms bufStos=11219 code%=100.0 elapsed=2m56s hit%=96.2 prefix=main sto%=95.4
+time="2026-04-12T17:58:54-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.1 P99commit=0.0 P99evm=1.0 P99out=2.0 block=1440000 gas=797.2 prefix=ethel tx=7 worst=11.2
+time="2026-04-12T17:58:56-04:00" level=info msg="EthEL progress" acct%=97.5 async=y blk/s=3244 block=1447535 bufAccs=20946 bufFlush=184ms bufStos=8233 code%=100.0 elapsed=2m59s hit%=97.1 prefix=main sto%=95.2
+time="2026-04-12T17:58:57-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.5 P99commit=0.0 P99evm=0.0 P99out=3.5 block=1450000 gas=616.8 prefix=ethel tx=6 worst=26.4
+time="2026-04-12T17:58:59-04:00" level=info msg="EthEL progress" acct%=98.6 async=y blk/s=3525 block=1457518 bufAccs=18385 bufFlush=82ms bufStos=8975 code%=100.0 elapsed=3m2s hit%=97.2 prefix=main sto%=93.3
+time="2026-04-12T17:59:00-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.6 P99commit=0.0 P99evm=0.5 P99out=2.1 block=1460000 gas=709.5 prefix=ethel tx=6 worst=30.9
+time="2026-04-12T17:59:02-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=2986 block=1467501 bufAccs=17688 bufFlush=95ms bufStos=16874 code%=100.0 elapsed=3m6s hit%=97.7 prefix=main sto%=95.5
+time="2026-04-12T17:59:03-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=4.5 P99commit=0.0 P99evm=4.5 P99out=0.0 block=1470000 gas=746.2 prefix=ethel tx=6 worst=15.5
+time="2026-04-12T17:59:05-04:00" level=info msg="EthEL progress" acct%=98.8 async=y blk/s=3649 block=1477484 bufAccs=17778 bufFlush=160ms bufStos=8061 code%=100.0 elapsed=3m8s hit%=97.3 prefix=main sto%=93.0
+time="2026-04-12T17:59:06-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.5 P99commit=0.0 P99evm=2.5 P99out=0.0 block=1480000 gas=645.8 prefix=ethel tx=6 worst=8.3
+time="2026-04-12T17:59:08-04:00" level=info msg="EthEL progress" acct%=98.5 async=y blk/s=3369 block=1487467 bufAccs=18866 bufFlush=91ms bufStos=10799 code%=100.0 elapsed=3m11s hit%=96.8 prefix=main sto%=92.3
+time="2026-04-12T17:59:09-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.5 P99commit=0.0 P99evm=2.5 P99out=0.0 block=1490000 gas=708.5 prefix=ethel tx=6 worst=10.1
+time="2026-04-12T17:59:11-04:00" level=info msg="EthEL progress" acct%=98.3 async=y blk/s=3231 block=1497450 bufAccs=19127 bufFlush=102ms bufStos=11406 code%=100.0 elapsed=3m14s hit%=96.7 prefix=main sto%=92.3
+time="2026-04-12T17:59:12-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.2 P99commit=0.0 P99evm=3.2 P99out=0.0 block=1500000 gas=671.3 prefix=ethel tx=6 worst=30.8
+time="2026-04-12T17:59:15-04:00" level=info msg="EthEL progress" acct%=97.9 async=y blk/s=2875 block=1507433 bufAccs=22424 bufFlush=130ms bufStos=18132 code%=100.0 elapsed=3m18s hit%=95.9 prefix=main sto%=91.4
+time="2026-04-12T17:59:15-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.6 P99commit=0.0 P99evm=1.0 P99out=1.5 block=1510000 gas=754.5 prefix=ethel tx=7 worst=22.8
+time="2026-04-12T17:59:18-04:00" level=info msg="EthEL progress" acct%=98.0 async=y blk/s=2667 block=1517416 bufAccs=23744 bufFlush=189ms bufStos=22158 code%=100.0 elapsed=3m22s hit%=95.6 prefix=main sto%=90.9
+time="2026-04-12T17:59:19-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.5 P99commit=0.0 P99evm=3.5 P99out=0.0 block=1520000 gas=732.5 prefix=ethel tx=7 worst=25.6
+time="2026-04-12T17:59:22-04:00" level=info msg="EthEL progress" acct%=98.3 async=y blk/s=2974 block=1527399 bufAccs=19593 bufFlush=157ms bufStos=20136 code%=100.0 elapsed=3m25s hit%=96.2 prefix=main sto%=91.9
+time="2026-04-12T17:59:22-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.5 P99commit=0.5 P99evm=5.0 P99out=0.0 block=1530000 gas=701.1 prefix=ethel tx=6 worst=11.5
+time="2026-04-12T17:59:25-04:00" level=info msg="EthEL progress" acct%=96.9 async=y blk/s=3165 block=1537382 bufAccs=21229 bufFlush=189ms bufStos=11356 code%=100.0 elapsed=3m28s hit%=95.7 prefix=main sto%=92.5
+time="2026-04-12T17:59:26-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.2 P99commit=0.0 P99evm=3.2 P99out=0.0 block=1540000 gas=658.1 prefix=ethel tx=7 worst=61.3
+time="2026-04-12T17:59:28-04:00" level=info msg="EthEL progress" acct%=96.9 async=y blk/s=2945 block=1547365 bufAccs=25501 bufFlush=232ms bufStos=12024 code%=100.0 elapsed=3m31s hit%=95.8 prefix=main sto%=92.0
+time="2026-04-12T17:59:29-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.5 P99commit=0.0 P99evm=2.5 P99out=0.0 block=1550000 gas=747.3 prefix=ethel tx=7 worst=13.0
+time="2026-04-12T17:59:32-04:00" level=info msg="EthEL progress" acct%=95.8 async=y blk/s=2950 block=1557348 bufAccs=27342 bufFlush=150ms bufStos=19213 code%=100.0 elapsed=3m35s hit%=92.8 prefix=main sto%=85.2
+time="2026-04-12T17:59:33-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.2 P99commit=0.0 P99evm=3.2 P99out=0.0 block=1560000 gas=854.5 prefix=ethel tx=7 worst=12.4
+time="2026-04-12T17:59:34-04:00" level=info msg="EthEL progress" acct%=97.9 async=y blk/s=3523 block=1567331 bufAccs=21245 bufFlush=252ms bufStos=10095 code%=100.0 elapsed=3m38s hit%=96.4 prefix=main sto%=90.6
+time="2026-04-12T17:59:35-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.4 P99commit=0.0 P99evm=0.0 P99out=2.4 block=1570000 gas=738.3 prefix=ethel tx=6 worst=10.8
+time="2026-04-12T17:59:37-04:00" level=info msg="EthEL progress" acct%=98.1 async=y blk/s=3377 block=1577314 bufAccs=22614 bufFlush=125ms bufStos=9656 code%=100.0 elapsed=3m41s hit%=96.5 prefix=main sto%=90.8
+time="2026-04-12T17:59:38-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.7 P99commit=0.0 P99evm=2.7 P99out=0.0 block=1580000 gas=699.3 prefix=ethel tx=7 worst=13.0
+time="2026-04-12T17:59:42-04:00" level=info msg="EthEL progress" acct%=97.8 async=y blk/s=2369 block=1587297 bufAccs=30039 bufFlush=122ms bufStos=14864 code%=100.0 elapsed=3m45s hit%=96.1 prefix=main sto%=90.4
+time="2026-04-12T17:59:43-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=6.7 P99commit=0.0 P99evm=6.7 P99out=0.0 block=1590000 gas=641.4 prefix=ethel tx=8 worst=40.9
+time="2026-04-12T17:59:45-04:00" level=info msg="EthEL progress" acct%=97.3 async=y blk/s=2993 block=1597280 bufAccs=25153 bufFlush=183ms bufStos=17920 code%=100.0 elapsed=3m48s hit%=94.6 prefix=main sto%=87.9
+time="2026-04-12T17:59:47-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.0 P99commit=0.0 P99evm=5.0 P99out=0.0 block=1600000 gas=828.9 prefix=ethel tx=9 worst=33.1
+time="2026-04-12T17:59:50-04:00" level=info msg="EthEL progress" acct%=94.6 async=y blk/s=2091 block=1607263 bufAccs=35613 bufFlush=188ms bufStos=36501 code%=100.0 elapsed=3m53s hit%=88.8 prefix=main sto%=79.4
+time="2026-04-12T17:59:51-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=4.0 P99commit=0.0 P99evm=4.0 P99out=0.0 block=1610000 gas=822.7 prefix=ethel tx=8 worst=20.0
+time="2026-04-12T17:59:53-04:00" level=info msg="EthEL progress" acct%=98.0 async=y blk/s=3220 block=1617246 bufAccs=22095 bufFlush=364ms bufStos=13201 code%=100.0 elapsed=3m56s hit%=94.9 prefix=main sto%=86.5
+time="2026-04-12T17:59:54-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.1 P99commit=0.0 P99evm=2.0 P99out=0.5 block=1620000 gas=735.6 prefix=ethel tx=7 worst=11.6
+time="2026-04-12T17:59:57-04:00" level=info msg="EthEL progress" acct%=97.9 async=y blk/s=2723 block=1627229 bufAccs=24044 bufFlush=144ms bufStos=18528 code%=100.0 elapsed=4m0s hit%=93.5 prefix=main sto%=81.7
+time="2026-04-12T17:59:57-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.2 P99commit=0.7 P99evm=2.5 P99out=0.0 block=1630000 gas=645.6 prefix=ethel tx=6 worst=86.1
+time="2026-04-12T17:59:59-04:00" level=info msg="EthEL progress" acct%=98.3 async=y blk/s=3490 block=1637212 bufAccs=21848 bufFlush=165ms bufStos=7366 code%=100.0 elapsed=4m3s hit%=96.6 prefix=main sto%=89.2
+time="2026-04-12T18:00:00-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.0 P99commit=0.0 P99evm=3.0 P99out=0.0 block=1640000 gas=679.5 prefix=ethel tx=6 worst=14.8
+time="2026-04-12T18:00:02-04:00" level=info msg="EthEL progress" acct%=98.4 async=y blk/s=3777 block=1647195 bufAccs=20628 bufFlush=124ms bufStos=8862 code%=100.0 elapsed=4m5s hit%=96.8 prefix=main sto%=90.8
+time="2026-04-12T18:00:03-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.6 P99commit=0.0 P99evm=2.6 P99out=0.0 block=1650000 gas=680.1 prefix=ethel tx=6 worst=10.2
+time="2026-04-12T18:00:05-04:00" level=info msg="EthEL progress" acct%=98.2 async=y blk/s=3659 block=1657178 bufAccs=22133 bufFlush=129ms bufStos=8103 code%=100.0 elapsed=4m8s hit%=96.3 prefix=main sto%=88.1
+time="2026-04-12T18:00:06-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.8 P99commit=0.0 P99evm=0.0 P99out=2.8 block=1660000 gas=976.7 prefix=ethel tx=6 worst=18.7
+time="2026-04-12T18:00:08-04:00" level=info msg="EthEL progress" acct%=96.4 async=y blk/s=2836 block=1667161 bufAccs=26065 bufFlush=134ms bufStos=62600 code%=100.0 elapsed=4m12s hit%=93.3 prefix=main sto%=88.8
+time="2026-04-12T18:00:09-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.6 P99commit=0.0 P99evm=3.6 P99out=0.0 block=1670000 gas=777.0 prefix=ethel tx=7 worst=19.9
+time="2026-04-12T18:00:11-04:00" level=info msg="EthEL progress" acct%=98.2 async=y blk/s=3281 block=1677144 bufAccs=22336 bufFlush=278ms bufStos=10499 code%=100.0 elapsed=4m15s hit%=96.3 prefix=main sto%=89.4
+time="2026-04-12T18:00:13-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.5 P99commit=0.0 P99evm=3.5 P99out=0.0 block=1680000 gas=620.2 prefix=ethel tx=6 worst=76.6
+time="2026-04-12T18:00:15-04:00" level=info msg="EthEL progress" acct%=97.8 async=y blk/s=2993 block=1687127 bufAccs=23105 bufFlush=838ms bufStos=16204 code%=100.0 elapsed=4m18s hit%=95.4 prefix=main sto%=88.2
+time="2026-04-12T18:00:16-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.6 P99commit=0.0 P99evm=2.6 P99out=0.0 block=1690000 gas=749.1 prefix=ethel tx=6 worst=10.9
+time="2026-04-12T18:00:18-04:00" level=info msg="EthEL progress" acct%=97.3 async=y blk/s=3204 block=1697110 bufAccs=26199 bufFlush=302ms bufStos=16629 code%=100.0 elapsed=4m21s hit%=94.6 prefix=main sto%=85.2
+time="2026-04-12T18:00:19-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.4 P99commit=0.0 P99evm=1.4 P99out=2.0 block=1700000 gas=781.4 prefix=ethel tx=7 worst=14.1
+time="2026-04-12T18:00:21-04:00" level=info msg="EthEL progress" acct%=97.3 async=y blk/s=2788 block=1707093 bufAccs=28246 bufFlush=230ms bufStos=18237 code%=100.0 elapsed=4m25s hit%=95.9 prefix=main sto%=91.6
+time="2026-04-12T18:00:22-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.8 P99commit=0.0 P99evm=0.5 P99out=1.0 block=1710000 gas=759.2 prefix=ethel tx=7 worst=13.5
+time="2026-04-12T18:00:25-04:00" level=info msg="EthEL progress" acct%=96.9 async=y blk/s=3082 block=1717076 bufAccs=27899 bufFlush=225ms bufStos=17318 code%=100.0 elapsed=4m28s hit%=95.1 prefix=main sto%=89.0
+time="2026-04-12T18:00:29-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=9.0 P99commit=0.0 P99evm=9.0 P99out=0.0 block=1720000 gas=879.9 prefix=ethel tx=7 worst=13.7
+time="2026-04-12T18:00:54-04:00" level=info msg="EthEL progress" acct%=93.0 async=y blk/s=342 block=1727059 bufAccs=49529 bufFlush=245ms bufStos=44252 code%=100.0 elapsed=4m57s hit%=90.7 prefix=main sto%=85.7
+time="2026-04-12T18:01:05-04:00" level=info msg=P50/P99 P50=4.1 P50evm=4.1 P99=10.5 P99commit=1.0 P99evm=9.5 P99out=0.0 block=1730000 gas=551.8 prefix=ethel tx=11 worst=133.3
+time="2026-04-12T18:01:08-04:00" level=info msg="EthEL progress" acct%=95.1 async=y blk/s=713 block=1737042 bufAccs=36113 bufFlush=485ms bufStos=24694 code%=100.0 elapsed=5m11s hit%=93.0 prefix=main sto%=86.4
+time="2026-04-12T18:01:09-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=6.0 P99commit=1.0 P99evm=5.0 P99out=0.0 block=1740000 gas=830.4 prefix=ethel tx=7 worst=18.6
+time="2026-04-12T18:01:13-04:00" level=info msg="EthEL progress" acct%=96.6 async=y blk/s=1765 block=1747025 bufAccs=30900 bufFlush=327ms bufStos=26404 code%=100.0 elapsed=5m17s hit%=96.8 prefix=main sto%=96.8
+time="2026-04-12T18:01:16-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=7.2 P99commit=0.0 P99evm=7.2 P99out=0.0 block=1750000 gas=749.3 prefix=ethel tx=8 worst=395.8
+time="2026-04-12T18:01:18-04:00" level=info msg="EthEL progress" acct%=96.7 async=y blk/s=2038 block=1757008 bufAccs=29794 bufFlush=1.055s bufStos=18713 code%=100.0 elapsed=5m22s hit%=97.7 prefix=main sto%=98.0
+time="2026-04-12T18:01:20-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=6.2 P99commit=0.0 P99evm=6.2 P99out=0.0 block=1760000 gas=743.4 prefix=ethel tx=7 worst=14.8
+time="2026-04-12T18:01:22-04:00" level=info msg="EthEL progress" acct%=97.1 async=y blk/s=2866 block=1766991 bufAccs=26624 bufFlush=250ms bufStos=18205 code%=100.0 elapsed=5m25s hit%=97.1 prefix=main sto%=96.8
+time="2026-04-12T18:01:23-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.5 P99commit=0.0 P99evm=1.0 P99out=4.5 block=1770000 gas=811.8 prefix=ethel tx=6 worst=13.0
+time="2026-04-12T18:01:25-04:00" level=info msg="EthEL progress" acct%=98.1 async=y blk/s=3133 block=1776974 bufAccs=27023 bufFlush=223ms bufStos=10402 code%=100.0 elapsed=5m28s hit%=97.0 prefix=main sto%=94.6
+time="2026-04-12T18:01:26-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=4.0 P99commit=0.0 P99evm=4.0 P99out=0.0 block=1780000 gas=668.0 prefix=ethel tx=6 worst=44.4
+time="2026-04-12T18:01:28-04:00" level=info msg="EthEL progress" acct%=97.8 async=y blk/s=3331 block=1786957 bufAccs=24029 bufFlush=190ms bufStos=10484 code%=100.0 elapsed=5m31s hit%=97.4 prefix=main sto%=96.7
+time="2026-04-12T18:01:29-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=4.6 P99commit=0.0 P99evm=4.6 P99out=0.0 block=1790000 gas=717.4 prefix=ethel tx=7 worst=12.7
+time="2026-04-12T18:01:32-04:00" level=info msg="EthEL progress" acct%=97.8 async=y blk/s=2213 block=1796940 bufAccs=26616 bufFlush=195ms bufStos=84909 code%=100.0 elapsed=5m36s hit%=97.6 prefix=main sto%=97.4
+time="2026-04-12T18:01:34-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.7 P99commit=0.0 P99evm=5.7 P99out=0.0 block=1800000 gas=1280.1 prefix=ethel tx=10 worst=27.5
+time="2026-04-12T18:01:39-04:00" level=info msg="EthEL progress" acct%=98.0 async=y blk/s=1629 block=1806923 bufAccs=24885 bufFlush=446ms bufStos=49000 code%=100.0 elapsed=5m42s hit%=97.4 prefix=main sto%=96.1
+time="2026-04-12T18:01:40-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=9.5 P99commit=0.0 P99evm=9.5 P99out=0.0 block=1810000 gas=528.1 prefix=ethel tx=6 worst=44.6
+time="2026-04-12T18:01:42-04:00" level=info msg="EthEL progress" acct%=97.8 async=y blk/s=3308 block=1816906 bufAccs=24196 bufFlush=354ms bufStos=9315 code%=100.0 elapsed=5m45s hit%=96.7 prefix=main sto%=93.8
+time="2026-04-12T18:01:43-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.8 P99commit=0.0 P99evm=5.8 P99out=0.0 block=1820000 gas=705.1 prefix=ethel tx=6 worst=19.0
+time="2026-04-12T18:01:45-04:00" level=info msg="EthEL progress" acct%=97.6 async=y blk/s=3359 block=1826889 bufAccs=25946 bufFlush=176ms bufStos=11692 code%=100.0 elapsed=5m48s hit%=96.2 prefix=main sto%=90.9
+time="2026-04-12T18:01:45-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.0 P99commit=0.0 P99evm=3.0 P99out=0.0 block=1830000 gas=732.0 prefix=ethel tx=6 worst=12.8
+time="2026-04-12T18:01:48-04:00" level=info msg="EthEL progress" acct%=96.9 async=y blk/s=3234 block=1836872 bufAccs=26313 bufFlush=203ms bufStos=10962 code%=100.0 elapsed=5m51s hit%=95.8 prefix=main sto%=91.4
+time="2026-04-12T18:01:49-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=6.1 P99commit=0.0 P99evm=6.1 P99out=0.0 block=1840000 gas=692.1 prefix=ethel tx=6 worst=17.1
+time="2026-04-12T18:01:51-04:00" level=info msg="EthEL progress" acct%=97.8 async=y blk/s=3352 block=1846855 bufAccs=24796 bufFlush=210ms bufStos=7866 code%=100.0 elapsed=5m54s hit%=96.6 prefix=main sto%=90.6
+time="2026-04-12T18:01:53-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=7.6 P99commit=0.5 P99evm=6.1 P99out=0.0 block=1850000 gas=656.6 prefix=ethel tx=6 worst=12.5
+time="2026-04-12T18:01:57-04:00" level=info msg="EthEL progress" acct%=97.0 async=y blk/s=1605 block=1856838 bufAccs=27501 bufFlush=238ms bufStos=14716 code%=100.0 elapsed=6m0s hit%=97.2 prefix=main sto%=97.2
+time="2026-04-12T18:01:58-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=8.7 P99commit=0.0 P99evm=8.7 P99out=0.0 block=1860000 gas=642.1 prefix=ethel tx=6 worst=18.8
+time="2026-04-12T18:02:01-04:00" level=info msg="EthEL progress" acct%=97.6 async=y blk/s=2581 block=1866821 bufAccs=24759 bufFlush=312ms bufStos=9509 code%=100.0 elapsed=6m4s hit%=97.8 prefix=main sto%=97.9
+time="2026-04-12T18:02:02-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=6.5 P99commit=0.0 P99evm=6.5 P99out=0.0 block=1870000 gas=534.2 prefix=ethel tx=6 worst=28.8
+time="2026-04-12T18:02:04-04:00" level=info msg="EthEL progress" acct%=97.4 async=y blk/s=3044 block=1876804 bufAccs=26008 bufFlush=200ms bufStos=8477 code%=100.0 elapsed=6m7s hit%=96.9 prefix=main sto%=95.2
+time="2026-04-12T18:02:05-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.3 P99commit=0.0 P99evm=5.3 P99out=0.0 block=1880000 gas=729.4 prefix=ethel tx=6 worst=12.3
+time="2026-04-12T18:02:07-04:00" level=info msg="EthEL progress" acct%=97.6 async=y blk/s=3338 block=1886787 bufAccs=25460 bufFlush=205ms bufStos=11254 code%=100.0 elapsed=6m10s hit%=96.7 prefix=main sto%=94.4
+time="2026-04-12T18:02:08-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.5 P99commit=0.5 P99evm=4.0 P99out=1.0 block=1890000 gas=744.7 prefix=ethel tx=7 worst=14.1
+time="2026-04-12T18:02:10-04:00" level=info msg="EthEL progress" acct%=97.6 async=y blk/s=3370 block=1896770 bufAccs=25765 bufFlush=224ms bufStos=10939 code%=100.0 elapsed=6m13s hit%=96.2 prefix=main sto%=92.1
+time="2026-04-12T18:02:11-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=2.6 P99commit=0.0 P99evm=2.6 P99out=0.0 block=1900000 gas=678.4 prefix=ethel tx=6 worst=13.2
+time="2026-04-12T18:02:13-04:00" level=info msg="EthEL progress" acct%=98.5 async=y blk/s=3792 block=1906753 bufAccs=20379 bufFlush=311ms bufStos=7309 code%=100.0 elapsed=6m16s hit%=96.8 prefix=main sto%=89.6
+time="2026-04-12T18:02:14-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=3.5 P99commit=0.0 P99evm=0.0 P99out=3.5 block=1910000 gas=587.0 prefix=ethel tx=5 worst=12.2
+time="2026-04-12T18:02:17-04:00" level=info msg="EthEL progress" acct%=97.7 async=y blk/s=2532 block=1916736 bufAccs=35426 bufFlush=186ms bufStos=11570 code%=100.0 elapsed=6m20s hit%=95.2 prefix=main sto%=85.9
+time="2026-04-12T18:02:18-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=8.5 P99commit=0.0 P99evm=7.0 P99out=1.5 block=1920000 gas=591.8 prefix=ethel tx=7 worst=26.9
+time="2026-04-12T18:02:26-04:00" level=info msg="EthEL progress" acct%=97.2 async=y blk/s=1026 block=1926719 bufAccs=31299 bufFlush=232ms bufStos=18525 code%=100.0 elapsed=6m30s hit%=94.5 prefix=main sto%=86.9
+time="2026-04-12T18:02:28-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=13.0 P99commit=0.0 P99evm=13.0 P99out=0.0 block=1930000 gas=467.5 prefix=ethel tx=7 worst=24.4
+time="2026-04-12T18:02:32-04:00" level=info msg="EthEL progress" acct%=96.7 async=y blk/s=1899 block=1936702 bufAccs=31033 bufFlush=405ms bufStos=16938 code%=100.0 elapsed=6m35s hit%=94.1 prefix=main sto%=86.6
+time="2026-04-12T18:02:33-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=7.1 P99commit=0.0 P99evm=7.1 P99out=0.0 block=1940000 gas=505.3 prefix=ethel tx=8 worst=103.1
+time="2026-04-12T18:02:37-04:00" level=info msg="EthEL progress" acct%=97.8 async=y blk/s=1981 block=1946685 bufAccs=32190 bufFlush=584ms bufStos=10354 code%=100.0 elapsed=6m40s hit%=96.4 prefix=main sto%=91.5
+time="2026-04-12T18:02:38-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=4.6 P99commit=0.0 P99evm=3.6 P99out=0.0 block=1950000 gas=522.2 prefix=ethel tx=9 worst=22.3
+time="2026-04-12T18:02:42-04:00" level=info msg="EthEL progress" acct%=97.4 async=y blk/s=2017 block=1956668 bufAccs=33182 bufFlush=210ms bufStos=11723 code%=100.0 elapsed=6m45s hit%=95.9 prefix=main sto%=90.1
+time="2026-04-12T18:02:44-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=7.9 P99commit=0.5 P99evm=7.4 P99out=0.0 block=1960000 gas=569.2 prefix=ethel tx=9 worst=14.8
+time="2026-04-12T18:02:47-04:00" level=info msg="EthEL progress" acct%=96.7 async=y blk/s=1910 block=1966651 bufAccs=38209 bufFlush=237ms bufStos=11061 code%=100.0 elapsed=6m50s hit%=96.1 prefix=main sto%=92.9
+time="2026-04-12T18:02:49-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=6.5 P99commit=0.0 P99evm=6.5 P99out=0.0 block=1970000 gas=667.6 prefix=ethel tx=8 worst=21.0
+time="2026-04-12T18:02:52-04:00" level=info msg="EthEL progress" acct%=97.2 async=y blk/s=1808 block=1976634 bufAccs=31269 bufFlush=274ms bufStos=11842 code%=100.0 elapsed=6m56s hit%=95.4 prefix=main sto%=90.0
+time="2026-04-12T18:02:54-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=7.2 P99commit=0.0 P99evm=7.2 P99out=0.0 block=1980000 gas=611.1 prefix=ethel tx=7 worst=15.5
+time="2026-04-12T18:02:56-04:00" level=info msg="EthEL progress" acct%=98.2 async=y blk/s=2498 block=1986617 bufAccs=25628 bufFlush=218ms bufStos=6453 code%=100.0 elapsed=7m0s hit%=97.2 prefix=main sto%=92.5
+time="2026-04-12T18:02:58-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=5.6 P99commit=0.0 P99evm=5.6 P99out=0.0 block=1990000 gas=537.2 prefix=ethel tx=8 worst=17.9
+time="2026-04-12T18:03:01-04:00" level=info msg="EthEL progress" acct%=98.0 async=y blk/s=2288 block=1996600 bufAccs=28307 bufFlush=175ms bufStos=8488 code%=100.0 elapsed=7m4s hit%=96.9 prefix=main sto%=91.3
+time="2026-04-12T18:03:02-04:00" level=info msg=P50/P99 P50=0.0 P50evm=0.0 P99=4.4 P99commit=0.0 P99evm=4.4 P99out=0.0 block=2000000 gas=565.3 prefix=ethel tx=8 worst=15.7
+time="2026-04-12T18:03:03-04:00" level=info msg="EthEL execution complete" blk/s=3448 blocks=1470000 elapsed=7m6s prefix=main

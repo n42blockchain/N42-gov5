@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/log"
 
@@ -893,13 +894,16 @@ func (t *FreezerTable) Sync() error {
 	if err := t.indexFile.Sync(); err != nil {
 		return err
 	}
-	// cdat sync: best-effort. dataBuf.Flush() already pushed data to
-	// the OS page cache. Sync only adds hard-power-failure durability.
-	// On Windows FlushFileBuffers often fails ("Access is denied") —
-	// the data still survives ctrl+c because the OS flushes page cache
-	// on normal shutdown.
+	// cdat sync with retry. On Windows, FlushFileBuffers sometimes
+	// fails transiently ("Access is denied") due to antivirus/indexer.
+	// Without sync, data stays in OS page cache and may be lost on exit.
 	if df, ok := t.dataFiles[t.headFile]; ok {
-		_ = df.Sync() // ignore error
+		for attempt := 0; attempt < 10; attempt++ {
+			if err := df.Sync(); err == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	return nil
 }
