@@ -227,15 +227,18 @@ func (e *Executor) Run(ctx context.Context) error {
 	var prevAH, prevAM, prevSH, prevSM, prevCH, prevCM uint64
 
 	lastOKBlock := startBlock - 1 // tracks last successfully executed block
+	shuttingDown := false
 	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
 		if ctx.Err() != nil {
-			log.Info("Shutting down executor", "lastBlock", blockNum-1)
-			// Output is already flushed+synced at the last commit boundary.
-			// Entries for blocks since the last commit are in memory only —
-			// they will be re-generated from EVM execution on resume.
-			// We do NOT write them here: a partial batch written during
-			// shutdown risks corrupt data (partial fsync, OS page cache loss).
-			return ctx.Err()
+			// Don't exit immediately — continue to the next commit
+			// boundary so output + MDBX are durably committed together.
+			// This avoids page-cache-only cdat data that Windows may
+			// discard on process exit.
+			if !shuttingDown {
+				shuttingDown = true
+				log.Info("Shutdown requested, finishing current interval...",
+					"lastBlock", blockNum-1, "nextCommit", (blockNum/e.cfg.CommitInterval+1)*e.cfg.CommitInterval)
+			}
 		}
 
 		// Prefetch next block's state while we execute this one.
@@ -360,7 +363,7 @@ func (e *Executor) Run(ctx context.Context) error {
 			// hashed-state tables), so we MUST wait for the in-flight
 			// bg flush to complete and then run verify under its own
 			// short-lived RwTx.
-			if e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0 {
+			if e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0 && !shuttingDown {
 				dur, err := e.asyncFlush.waitPrev()
 				if err != nil {
 					return fmt.Errorf("wait pre-verify flush at block %d: %w", blockNum, err)
@@ -405,6 +408,11 @@ func (e *Executor) Run(ctx context.Context) error {
 				}
 				log.Info("State root verified", "block", blockNum,
 					"root", hdr.Root.Hex())
+			}
+			// Exit after commit if shutdown was requested.
+			if shuttingDown {
+				log.Info("Shutdown complete after commit", "block", blockNum)
+				break
 			}
 		}
 	}

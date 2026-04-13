@@ -108,7 +108,9 @@ func (f *asyncFlusher) handWithRemainder(blockNum uint64, csRemainder map[string
 		t0 := time.Now()
 		var err error
 		var bgTx kv.RwTx
-		bgTx, err = f.db.BeginRw(f.ctx)
+		// Use Background context — the caller may be shutting down
+		// (ctx cancelled) but we must complete the MDBX commit.
+		bgTx, err = f.db.BeginRw(context.Background())
 		if err == nil {
 			err = snap.ApplyTo(bgTx)
 		}
