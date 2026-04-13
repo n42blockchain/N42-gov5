@@ -200,7 +200,7 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 		internal.NormalizeExecutionMessage(&msg, true, false)
 		vmConfig := vm.Config{}
 		txContext := internal.NewEVMTxContext(msg)
-		blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), debug.api.engine, nil)
+		blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), debug.api.engine, debug.api.GetChainConfig(), nil)
 		evm := vm.NewEVM(blockContext, txContext, ibs, debug.api.GetChainConfig(), vmConfig)
 
 		gp := new(common.GasPool).AddGas(header.GasLimit)
@@ -219,7 +219,7 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 
 	vmConfig := vm.Config{Tracer: tracer, NoBaseFee: true}
 	txContext := internal.NewEVMTxContext(msg)
-	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), debug.api.engine, nil)
+	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), debug.api.engine, debug.api.GetChainConfig(), nil)
 	evm := vm.NewEVM(blockContext, txContext, ibs, debug.api.GetChainConfig(), vmConfig)
 
 	// Set timeout
@@ -433,7 +433,7 @@ func (debug *DebugAPI) TraceCall(ctx context.Context, args TransactionArgs, bloc
 	// Set up EVM
 	vmConfig := vm.Config{Tracer: tracer, NoBaseFee: true}
 	txContext := internal.NewEVMTxContext(msg)
-	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), debug.api.engine, nil)
+	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), debug.api.engine, debug.api.GetChainConfig(), nil)
 
 	// Apply block overrides
 	if config != nil && config.BlockOverrides != nil {
@@ -578,7 +578,7 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 			NoBaseFee: true,
 		}
 		txContext := internal.NewEVMTxContext(msg)
-		blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), s.api.engine, nil)
+		blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), s.api.engine, s.api.GetChainConfig(), nil)
 		evm := vm.NewEVM(blockContext, txContext, ibs, chainConfig, vmConfig)
 
 		// Execute transaction

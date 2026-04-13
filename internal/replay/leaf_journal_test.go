@@ -25,7 +25,7 @@ func TestLeafJournalV2_RoundTrip(t *testing.T) {
 	entries := []LeafEntry{
 		{Tag: TagAccount, Address: addr1, Value: []byte{1, 2, 3}},
 		{Tag: TagAccount, Address: addr2, Value: nil}, // deletion
-		{Tag: TagStorage, Address: addr1, Incarnation: 1, Slot: slot, Value: []byte{4, 5}},
+		{Tag: TagStorage, Address: addr1, Slot: slot, Value: []byte{4, 5}},
 	}
 
 	if err := j.WriteBlock(42, entries); err != nil {
@@ -83,9 +83,6 @@ func TestLeafJournalV2_RoundTrip(t *testing.T) {
 	}
 	if e2.Address != addr1 {
 		t.Fatalf("entry 2: address mismatch")
-	}
-	if e2.Incarnation != 1 {
-		t.Fatalf("entry 2: incarnation mismatch: %d", e2.Incarnation)
 	}
 	if e2.Slot != slot {
 		t.Fatalf("entry 2: slot mismatch")

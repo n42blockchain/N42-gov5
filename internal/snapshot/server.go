@@ -35,7 +35,7 @@ type AccountEntry struct {
 
 // StorageEntry is one storage slot returned by ReadStorageRange.
 type StorageEntry struct {
-	Key   []byte // address(20) + incarnation(2) + storageKey(32)
+	Key   []byte // address(20) + storageKey(32)
 	Value []byte
 }
 

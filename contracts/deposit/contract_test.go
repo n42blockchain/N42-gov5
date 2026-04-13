@@ -24,8 +24,8 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/crypto/bls"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/params"
 )
@@ -63,7 +63,7 @@ func TestUint256(t *testing.T) {
 	t.Logf("100 N uint256 bytes:%s, hex Bytes: %s", hexutil.Encode(n100Uint256.Bytes()), hexutil.Encode(n100Hex))
 }
 
-func TestNewDeposit_GlobalEventClosed(t *testing.T) {
+func TestNewDeposit_GlobalEventReinitializesAfterClose(t *testing.T) {
 	event.GlobalEvent = event.Event{}
 	t.Cleanup(func() {
 		event.GlobalEvent = event.Event{}
@@ -71,17 +71,36 @@ func TestNewDeposit_GlobalEventClosed(t *testing.T) {
 
 	newLogsCh := make(chan common.NewLogsEvent, 1)
 	removedLogsCh := make(chan common.RemovedLogsEvent, 1)
-	if _, err := event.GlobalEvent.Subscribe(newLogsCh); err != nil {
+	newLogsSub, err := event.GlobalEvent.Subscribe(newLogsCh)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := event.GlobalEvent.Subscribe(removedLogsCh); err != nil {
+	removedLogsSub, err := event.GlobalEvent.Subscribe(removedLogsCh)
+	if err != nil {
 		t.Fatal(err)
 	}
 	event.GlobalEvent.Close()
 
+	select {
+	case _, ok := <-newLogsSub.Err():
+		if ok {
+			t.Fatal("expected new logs subscription to close after GlobalEvent.Close")
+		}
+	default:
+		t.Fatal("new logs subscription err channel was not closed")
+	}
+	select {
+	case _, ok := <-removedLogsSub.Err():
+		if ok {
+			t.Fatal("expected removed logs subscription to close after GlobalEvent.Close")
+		}
+	default:
+		t.Fatal("removed logs subscription err channel was not closed")
+	}
+
 	d := NewDeposit(context.Background(), nil, nil, nil)
-	if d.logsSub != nil || d.rmLogsSub != nil {
-		t.Fatal("expected closed event scopes to disable deposit subscriptions")
+	if d.logsSub == nil || d.rmLogsSub == nil {
+		t.Fatal("expected GlobalEvent to accept fresh subscriptions after Close")
 	}
 
 	d.Start()

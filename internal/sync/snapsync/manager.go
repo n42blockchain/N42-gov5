@@ -29,13 +29,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.org/x/sync/semaphore"
 
-	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 )
 
 // maxConcurrentDBWrites limits concurrent database transactions to avoid
@@ -75,9 +75,9 @@ type Manager struct {
 	bytesReceived uint64
 
 	mu     sync.Mutex
-	wg     sync.WaitGroup         // tracks all task goroutines
-	dbSem  *semaphore.Weighted    // limits concurrent DB writes
-	scorer *peerScorer            // peer performance tracker
+	wg     sync.WaitGroup      // tracks all task goroutines
+	dbSem  *semaphore.Weighted // limits concurrent DB writes
+	scorer *peerScorer         // peer performance tracker
 }
 
 // NewManager creates a new snap sync download manager.
@@ -681,8 +681,9 @@ func (m *Manager) removeTask(list *[]*RangeTask, task *RangeTask) {
 // protobuf-encoded account data.
 //
 // Returns valid=false if the data cannot be decoded as a protobuf StateAccount.
-// Returns incarnation > 0 if the account has storage, and codeHash (as raw bytes)
-// if it is non-empty.
+// Since incarnation is no longer encoded in StateAccount, snap sync treats
+// contract accounts as storage-bearing and returns the legacy incarnation value
+// 1 for storage range requests. codeHash is returned when it is non-empty.
 //
 // Account data in the Account table uses V2 variable-length encoding
 // (Erigon-style fieldBits+varint). DecodeForStorage auto-detects legacy protobuf.
@@ -699,9 +700,10 @@ func parseAccountForTasks(encoded []byte) (valid bool, incarnation uint16, codeH
 	if !acc.IsEmptyCodeHash() {
 		codeHash = make([]byte, 32)
 		copy(codeHash, acc.CodeHash[:])
+		incarnation = 1
 	}
 
-	return true, 0, codeHash
+	return true, incarnation, codeHash
 }
 
 // sendGetAccountRange wraps the sync package's SendGetAccountRange.

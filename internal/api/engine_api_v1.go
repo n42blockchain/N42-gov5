@@ -577,6 +577,9 @@ func (e *EngineAPIV1) resolveForkchoiceState(state *ForkchoiceStateV1) (block.IB
 	if e.stateAdapter != nil {
 		if err := e.stateAdapter.ForkchoiceUpdated(state.HeadBlockHash, state.SafeBlockHash, state.FinalizedBlockHash); err != nil {
 			log.Warn("ForkchoiceUpdated error", "err", err)
+		} else {
+			head = e.currentHead()
+			headHash = e.currentHeadHash()
 		}
 	}
 	return head, headHash, nil, nil
@@ -703,30 +706,19 @@ func (e *EngineAPIV1) executeOrValidateWithBody(blk block.IBlock, blockHash, par
 
 	// ETH EL mode: execute and persist.
 	if e.stateAdapter != nil {
-		needsPreValidation := parentBeaconRoot != nil || expectedRequests != nil || bodyWithdrawals(body) != nil
-		canPreValidate := e.api != nil && e.api.api != nil && e.api.api.BlockChain() != nil
-		if needsPreValidation && canPreValidate {
-			validationBlock, ok := cloneExecutionValidationBlock(blk)
-			if !ok {
-				return invalidPayloadResponse("unexpected block type"), nil
-			}
-			if _, _, err := e.executePayloadOnParentStateWithWithdrawals(validationBlock, parentHash, parentBeaconRoot, expectedRequests, bodyWithdrawals(body)); err != nil {
-				return e.invalidPayloadStatus(err.Error(), blk, blockHash, &parentHash, body), nil
-			}
-		}
 		concreteBlock, ok := blk.(*block.Block)
 		if !ok {
 			return invalidPayloadResponse("unexpected block type"), nil
 		}
-		valid, stateRoot, err := e.stateAdapter.ExecutePayload(concreteBlock)
+		result, err := e.stateAdapter.executePayloadDetailed(concreteBlock, parentBeaconRoot, expectedRequests, bodyWithdrawals(body))
 		if err != nil {
-			return e.invalidPayloadStatus(err.Error(), blk, blockHash, nil, body), nil
+			return e.invalidPayloadStatus(err.Error(), blk, blockHash, &parentHash, body), nil
 		}
-		if !valid {
+		if result.validationError != nil {
 			if overlay := e.overlay(); overlay != nil && blk != nil && blockHash != (types.Hash{}) {
-				overlay.stageRejectedBlockWithBody(blk, blockHash, &stateRoot, body)
+				overlay.stageRejectedBlockWithBody(blk, blockHash, &result.stateRoot, body)
 			}
-			return &PayloadStatusV1{Status: PayloadStatusInvalid, LatestValidHash: &stateRoot}, nil
+			return e.invalidPayloadStatus(result.validationError.Error(), blk, blockHash, &parentHash, body), nil
 		}
 		if overlay := e.overlay(); overlay != nil {
 			overlay.stageBlockWithBody(blk, blockHash, nil, nil, true, body)

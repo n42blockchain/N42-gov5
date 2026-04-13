@@ -17,6 +17,7 @@
 package internal
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -24,6 +25,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/params"
 )
 
 // =============================================================================
@@ -388,7 +390,7 @@ func TestNewEVMBlockContextMissingHeaderNumber(t *testing.T) {
 		Difficulty: uint256.NewInt(1),
 	}
 
-	ctx := NewEVMBlockContext(header, nil, nil, &author)
+	ctx := NewEVMBlockContext(header, nil, nil, nil, &author)
 
 	if ctx.BlockNumber != 0 {
 		t.Fatalf("BlockNumber = %d, want 0", ctx.BlockNumber)
@@ -400,7 +402,7 @@ func TestNewEVMBlockContextMissingHeaderNumber(t *testing.T) {
 
 func TestNewEVMBlockContextMissingDifficulty(t *testing.T) {
 	author := types.Address{0x42}
-	ctx := NewEVMBlockContext(&block.Header{}, nil, nil, &author)
+	ctx := NewEVMBlockContext(&block.Header{}, nil, nil, nil, &author)
 
 	if ctx.Difficulty == nil {
 		t.Fatal("Difficulty should be initialized")
@@ -416,7 +418,7 @@ func TestNewEVMBlockContextMissingDifficulty(t *testing.T) {
 func TestNewEVMBlockContextPreservesBaseFee(t *testing.T) {
 	author := types.Address{0x42}
 	baseFee := new(uint256.Int).SetAllOne()
-	ctx := NewEVMBlockContext(&block.Header{BaseFee: baseFee}, nil, nil, &author)
+	ctx := NewEVMBlockContext(&block.Header{BaseFee: baseFee}, nil, nil, nil, &author)
 
 	if ctx.BaseFee == nil {
 		t.Fatal("BaseFee should be initialized")
@@ -435,12 +437,13 @@ func TestNewEVMBlockContextPopulatesBlobFeeFields(t *testing.T) {
 		ExcessBlobGas: u64ptr(transaction.BlobTxTargetBlobGasPerBlock),
 	}
 
-	ctx := NewEVMBlockContext(header, nil, nil, &author)
+	cfg := &params.ChainConfig{PragueTime: big.NewInt(0)}
+	ctx := NewEVMBlockContext(header, nil, nil, cfg, &author)
 
 	if ctx.BlobBaseFee == nil {
 		t.Fatal("BlobBaseFee should be initialized")
 	}
-	want := transaction.CalcBlobFee(*header.ExcessBlobGas)
+	want := cfg.CalcBlobFee(*header.ExcessBlobGas, header.Time)
 	if ctx.BlobBaseFee.Cmp(want) != 0 {
 		t.Fatalf("BlobBaseFee = %v, want %v", ctx.BlobBaseFee, want)
 	}
@@ -455,7 +458,7 @@ func TestNewEVMBlockContextFallsBackToHeaderCoinbase(t *testing.T) {
 		Coinbase: coinbase,
 	}
 
-	ctx := NewEVMBlockContext(header, nil, nil, nil)
+	ctx := NewEVMBlockContext(header, nil, nil, nil, nil)
 
 	if ctx.Coinbase != coinbase {
 		t.Fatalf("Coinbase = %v, want %v", ctx.Coinbase, coinbase)

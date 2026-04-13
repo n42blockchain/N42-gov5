@@ -36,6 +36,19 @@ func syncExecutionPayloadV4OutputsFromBlock(t *testing.T, payload *ExecutionPayl
 	payload.LogsBloom = append(payload.LogsBloom[:0], header.Bloom.Bytes()...)
 }
 
+func withPragueSystemContracts(alloc conf.GenesisAlloc) conf.GenesisAlloc {
+	if alloc == nil {
+		alloc = conf.GenesisAlloc{}
+	}
+	for _, deployment := range internalcore.PragueSystemContractDeployments() {
+		if _, exists := alloc[deployment.Address]; exists {
+			continue
+		}
+		alloc[deployment.Address] = deployment.Account
+	}
+	return alloc
+}
+
 func TestEngineAPIv4AcceptsOsakaSetCodeDelegationPayload(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg
@@ -77,7 +90,7 @@ func TestEngineAPIv4AcceptsOsakaSetCodeDelegationPayload(t *testing.T) {
 	genesis := &internalcore.GenesisBlock{
 		GenesisConfig: &conf.Genesis{
 			Config: cfg,
-			Alloc: conf.GenesisAlloc{
+			Alloc: withPragueSystemContracts(conf.GenesisAlloc{
 				sender: {
 					Balance: "0x3635c9adc5dea00000",
 				},
@@ -88,7 +101,7 @@ func TestEngineAPIv4AcceptsOsakaSetCodeDelegationPayload(t *testing.T) {
 					Balance: "0x0",
 					Code:    types.Hex2Bytes("60011e60005560021e6001557001000000000000000000000000000000001e6002557f80000000000000000000000000000000000000000000000000000000000000001e60035500"),
 				},
-			},
+			}),
 			Number:     0,
 			GasLimit:   30_000_000,
 			Difficulty: uint256.NewInt(0),
@@ -242,7 +255,7 @@ func TestEngineAPIv4AcceptsSetCodeResetAuthorizationPayload(t *testing.T) {
 	genesis := &internalcore.GenesisBlock{
 		GenesisConfig: &conf.Genesis{
 			Config: cfg,
-			Alloc: conf.GenesisAlloc{
+			Alloc: withPragueSystemContracts(conf.GenesisAlloc{
 				sender: {
 					Balance: "0x3635c9adc5dea00000",
 				},
@@ -253,7 +266,7 @@ func TestEngineAPIv4AcceptsSetCodeResetAuthorizationPayload(t *testing.T) {
 					Balance: "0x0",
 					Code:    types.Hex2Bytes("600160005500"),
 				},
-			},
+			}),
 			Number:     0,
 			GasLimit:   30_000_000,
 			Difficulty: uint256.NewInt(0),
@@ -413,7 +426,7 @@ func TestEngineAPIv4AcceptsSetCodeInvalidMaxAuthorizationChainIDFixture(t *testi
 	genesis := &internalcore.GenesisBlock{
 		GenesisConfig: &conf.Genesis{
 			Config: cfg,
-			Alloc: conf.GenesisAlloc{
+			Alloc: withPragueSystemContracts(conf.GenesisAlloc{
 				sender: {
 					Balance: "0xde0b6b3a7640000",
 				},
@@ -428,7 +441,7 @@ func TestEngineAPIv4AcceptsSetCodeInvalidMaxAuthorizationChainIDFixture(t *testi
 					Balance: "0x0",
 					Code:    types.Hex2Bytes("60016001556000600060006000600073da3391248ea54e9e81bb522ea47bf4ca265960455af13d600255"),
 				},
-			},
+			}),
 			Number:     0,
 			GasLimit:   0x55d4a80,
 			Difficulty: uint256.NewInt(0),

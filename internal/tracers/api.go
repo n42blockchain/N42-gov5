@@ -232,7 +232,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 		txs       = block.Transactions()
 		blockHash = block.Hash()
 		header    = block.Header().(*types.Header)
-		blockCtx  = core.NewEVMBlockContext(header, core.GetHashFn(header, api.chainContext(ctx).GetHeader), api.chainContext(ctx).Engine(), nil)
+		blockCtx  = core.NewEVMBlockContext(header, core.GetHashFn(header, api.chainContext(ctx).GetHeader), api.chainContext(ctx).Engine(), api.backend.ChainConfig(), nil)
 		signer    = transaction.MakeSignerWithTimestamp(api.backend.ChainConfig(), blockNumber.ToBig(), block.Time())
 		results   = make([]*txTraceResult, len(txs))
 	)
@@ -340,7 +340,7 @@ func (api *API) TraceCall(ctx context.Context, args api.TransactionArgs, blockNr
 		return nil, err
 	}
 
-	vmctx := core.NewEVMBlockContext(block.Header().(*types.Header), core.GetHashFn(block.Header().(*types.Header), api.chainContext(ctx).GetHeader), api.backend.Engine(), nil)
+	vmctx := core.NewEVMBlockContext(block.Header().(*types.Header), core.GetHashFn(block.Header().(*types.Header), api.chainContext(ctx).GetHeader), api.backend.Engine(), api.backend.ChainConfig(), nil)
 	if config != nil {
 		if err := config.StateOverrides.Apply(statedb); err != nil {
 			return nil, err

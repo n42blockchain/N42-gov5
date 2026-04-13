@@ -67,14 +67,16 @@ func validateExecutionPayloadHeader(header, parent *block.Header, cfg *params.Ch
 	if len(header.Extra) > 32 {
 		return fmt.Errorf("invalid extraData: length %d exceeds 32 bytes", len(header.Extra))
 	}
+	if header.GasUsed > header.GasLimit {
+		return fmt.Errorf("invalid gasUsed: have %d, gasLimit %d", header.GasUsed, header.GasLimit)
+	}
 	if header.GasLimit < params.MinGasLimit {
-		return fmt.Errorf("invalid gas limit: have %d, min %d", header.GasLimit, params.MinGasLimit)
+		// Match geth/misc gas-limit validation wording so EEST's exception mapper
+		// classifies the payload as INVALID_GASLIMIT instead of an undefined error.
+		return fmt.Errorf("invalid gas limit below %d", params.MinGasLimit)
 	}
 	if header.GasLimit > params.MaxGasLimit {
 		return fmt.Errorf("invalid gas limit: have %v, max %v", header.GasLimit, params.MaxGasLimit)
-	}
-	if header.GasUsed > header.GasLimit {
-		return fmt.Errorf("invalid gasUsed: have %d, gasLimit %d", header.GasUsed, header.GasLimit)
 	}
 	if parent == nil {
 		return nil

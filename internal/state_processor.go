@@ -209,7 +209,7 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 
 // ApplyTransaction creates the EVM environment and applies a transaction.
 func ApplyTransaction(config *params.ChainConfig, blockHashFunc func(n uint64) types.Hash, engine consensus.Engine, author *types.Address, gp *common.GasPool, ibs *state.IntraBlockState, stateWriter state.StateWriter, header *block.Header, tx *transaction.Transaction, usedGas *uint64, cfg vm2.Config) (*block.Receipt, []byte, error) {
-	blockContext := NewEVMBlockContext(header, blockHashFunc, engine, author)
+	blockContext := NewEVMBlockContext(header, blockHashFunc, engine, config, author)
 	vmenv := vm2.NewEVM(blockContext, evmtypes.TxContext{}, ibs, config, cfg)
 
 	return applyTransaction(config, engine, gp, ibs, stateWriter, header, tx, usedGas, vmenv, cfg)

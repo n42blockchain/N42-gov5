@@ -19,11 +19,11 @@ results_dir="${EEST_RESULTS_DIR:-$repo_root/tests/results/eest-shards/$timestamp
 requested_shards=("$@")
 
 declare -a shard_rows=(
-  $'paris+shanghai\tfork_Paris or fork_Shanghai\t.*fork_(Paris|Shanghai).*\t.*/.*fork_(Paris\\|Shanghai)\t~2,600'
-  $'cancun\tfork_Cancun\t.*fork_Cancun.*\t.*/.*fork_Cancun\t~17,250'
-  $'prague\tfork_Prague\t.*fork_Prague.*\t.*/.*fork_Prague\t~20,500'
-  $'osaka\tfork_Osaka\t.*fork_Osaka.*\t.*/.*fork_Osaka\t~21,000'
-  $'rlp\teip2930_access_list\t.*eip2930_access_list.*\t.*eip2930_access_list.*\tunchanged'
+  $'paris+shanghai\tfork_Paris or fork_Shanghai\t.*fork_(Paris|Shanghai).*\t.*/.*fork_(Paris\\|Shanghai)\t~2,600\tstable@latest'
+  $'cancun\tfork_Cancun\t.*fork_Cancun.*\t.*/.*fork_Cancun\t~17,250\tstable@latest'
+  $'prague\tfork_Prague\t.*fork_Prague.*\t.*/.*fork_Prague\t~20,500\tstable@latest'
+  $'osaka\tfork_Osaka\t.*fork_Osaka.*\t.*/.*fork_Osaka\t~21,000\tdevelop@latest'
+  $'rlp\teip2930_access_list\t.*eip2930_access_list.*\t.*eip2930_access_list.*\tunchanged\tstable@latest'
 )
 
 declare -a extra_args=()
@@ -46,12 +46,32 @@ want_shard() {
   return 1
 }
 
+resolve_input_path() {
+  local shard="$1"
+  local shard_default_input="$2"
+
+  if [ -n "$input_path" ]; then
+    # Stable release fixtures currently stop at Prague, so Osaka engine tests
+    # need the develop artifact even when the rest of the matrix uses stable.
+    if [ "$shard" = "osaka" ] && [ "$input_path" = "stable@latest" ]; then
+      printf '%s\n' "${EEST_OSAKA_INPUT:-$shard_default_input}"
+      return 0
+    fi
+    printf '%s\n' "$input_path"
+    return 0
+  fi
+
+  printf '%s\n' "$shard_default_input"
+}
+
 run_shard() {
   local shard="$1"
   local fill_expr="$2"
   local sim_limit_expr="$3"
   local selector="$4"
   local target="$5"
+  local shard_default_input="$6"
+  local shard_input_path=''
   local log_path="$results_dir/$shard.log"
   local meta_path="$results_dir/$shard.meta"
   local cmd=()
@@ -65,7 +85,8 @@ run_shard() {
       cmd=(uv run --python "$python_bin" fill "$test_root" -k "$fill_expr")
       ;;
     consume-engine)
-      if [ -z "$input_path" ]; then
+      shard_input_path="$(resolve_input_path "$shard" "$shard_default_input")"
+      if [ -z "$shard_input_path" ]; then
         echo "EEST_INPUT is required when EEST_MODE=consume-engine" >&2
         return 2
       fi
@@ -73,7 +94,7 @@ run_shard() {
         echo "HIVE_SIMULATOR is required when EEST_MODE=consume-engine" >&2
         return 2
       fi
-      cmd=(uv run --python "$python_bin" consume engine --input "$input_path" --sim.limit "$sim_limit_expr")
+      cmd=(uv run --python "$python_bin" consume engine --input "$shard_input_path" --sim.limit "$sim_limit_expr")
       ;;
     *)
       echo "Unsupported EEST_MODE: $mode" >&2
@@ -96,6 +117,9 @@ run_shard() {
     printf 'mode=%s\n' "$mode"
     printf 'python=%s\n' "$python_bin"
     printf 'pytest_workers=%s\n' "$pytest_workers"
+    if [ "$mode" = "consume-engine" ]; then
+      printf 'input=%s\n' "$shard_input_path"
+    fi
     printf 'command='
     printf '%q ' "${cmd[@]}"
     printf '\n'
@@ -141,7 +165,7 @@ write_summary() {
 
     local row shard expr selector target meta_path rc duration
     for row in "${shard_rows[@]}"; do
-      IFS=$'\t' read -r shard fill_expr sim_limit_expr selector target <<<"$row"
+      IFS=$'\t' read -r shard fill_expr sim_limit_expr selector target shard_default_input <<<"$row"
       if ! want_shard "$shard"; then
         continue
       fi
@@ -159,7 +183,7 @@ declare -a pids=()
 declare -a active_shards=()
 
 for row in "${shard_rows[@]}"; do
-  IFS=$'\t' read -r shard fill_expr sim_limit_expr selector target <<<"$row"
+  IFS=$'\t' read -r shard fill_expr sim_limit_expr selector target shard_default_input <<<"$row"
   if ! want_shard "$shard"; then
     continue
   fi
@@ -170,7 +194,7 @@ for row in "${shard_rows[@]}"; do
     active_shards=("${active_shards[@]:1}")
   done
 
-  run_shard "$shard" "$fill_expr" "$sim_limit_expr" "$selector" "$target" &
+  run_shard "$shard" "$fill_expr" "$sim_limit_expr" "$selector" "$target" "$shard_default_input" &
   pids+=("$!")
   active_shards+=("$shard")
 done

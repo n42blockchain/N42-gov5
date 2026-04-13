@@ -454,6 +454,12 @@ func (snap *BufferSnapshot) ApplyTo(tx kv.RwTx) error {
 	}
 	sort.Strings(ccKeys)
 	for _, prefix := range ccKeys {
+		if len(snap.contractCode[prefix]) == 0 {
+			if err := tx.Delete(modules.PlainContractCode, []byte(prefix)); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := tx.Put(modules.PlainContractCode, []byte(prefix), snap.contractCode[prefix]); err != nil {
 			return err
 		}
@@ -792,6 +798,9 @@ func (w *BufferedPlainStateWriter) UpdateAccountData(address types.Address, orig
 		return nil
 	}
 	w.buf.accounts[address] = acct.MarshalV2()
+	if acct == nil || acct.IsEmptyCodeHash() {
+		w.buf.contractCode[string(modules.PlainGenerateStoragePrefix(address[:]))] = deletedSentinel
+	}
 	return nil
 }
 
@@ -813,6 +822,7 @@ func (w *BufferedPlainStateWriter) DeleteAccount(address types.Address, original
 		}
 	}
 	w.buf.accounts[address] = deletedSentinel
+	w.buf.contractCode[string(modules.PlainGenerateStoragePrefix(address[:]))] = deletedSentinel
 	// IncarnationMap removed — incarnation no longer used
 	return nil
 }

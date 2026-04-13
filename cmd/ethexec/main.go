@@ -327,7 +327,6 @@ func main() {
 
 					log.Info("Done. Press Ctrl+C to exit")
 					select {}
-					return nil
 				},
 			},
 			{
