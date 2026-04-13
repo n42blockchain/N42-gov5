@@ -268,21 +268,18 @@ func (e *Executor) Run(ctx context.Context) error {
 				lastFlushDur = dur
 			}
 
-			// 2. Flush only FULL batches to output freezer, then
-			// fsync to disk BEFORE MDBX commit. This ordering
-			// guarantees output is never behind MDBX on power loss.
-			// The remainder (< 64 entries) is saved to MDBX
-			// atomically with state + progress, so ctrl+c never
-			// loses entries AND cdat stays deterministic.
-			var csRemainder map[string][]byte
+			// 2. Save ALL pending entries to MDBX (the authoritative
+			// store that survives any shutdown). Then flush to cdat
+			// as best-effort (Windows may lose page-cache data on
+			// exit). On resume, any gap between cdat and MDBX is
+			// filled from the MDBX-saved entries.
+			var csEntries map[string][]byte
 			if e.outBatcher != nil {
+				csEntries = e.outBatcher.remainder() // ALL pending entries
 				if _, err := e.outBatcher.flushFullBatches(); err != nil {
 					return fmt.Errorf("flush output batcher at block %d: %w", blockNum, err)
 				}
-				if err := e.outBatcher.sync(); err != nil {
-					return fmt.Errorf("sync output batcher at block %d: %w", blockNum, err)
-				}
-				csRemainder = e.outBatcher.remainder()
+				_ = e.outBatcher.sync() // best-effort
 			}
 
 			// 3. Capture stats BEFORE the snapshot moves the maps.
@@ -307,7 +304,7 @@ func (e *Executor) Run(ctx context.Context) error {
 			// AND installs the snapshot as in-flight so the reader
 			// path can still find dirty values during the bg commit
 			// window.
-			if err := e.asyncFlush.handWithRemainder(blockNum, csRemainder); err != nil {
+			if err := e.asyncFlush.handWithRemainder(blockNum, csEntries); err != nil {
 				return fmt.Errorf("hand to async flusher at block %d: %w", blockNum, err)
 			}
 
@@ -418,30 +415,32 @@ func (e *Executor) Run(ctx context.Context) error {
 
 	// Final flush + commit.
 	//
-	// Drain the in-flight bg flush first (the one for the most-recent
-	// commit interval).
+	// Drain the in-flight bg flush (from the last commit boundary).
 	if _, err := e.asyncFlush.waitPrev(); err != nil {
 		return fmt.Errorf("wait final pending flush: %w", err)
 	}
 
-	// Output batcher: flush full batches, save remainder to MDBX.
-	var finalRemainder map[string][]byte
-	if e.outBatcher != nil {
-		if _, err := e.outBatcher.flushFullBatches(); err != nil {
-			return fmt.Errorf("flush output batcher final: %w", err)
+	if !shuttingDown {
+		// Normal termination (--end reached): save all entries to MDBX,
+		// then best-effort flush to cdat.
+		var finalEntries map[string][]byte
+		if e.outBatcher != nil {
+			finalEntries = e.outBatcher.remainder()
+			if _, err := e.outBatcher.flushFullBatches(); err != nil {
+				return fmt.Errorf("flush output batcher final: %w", err)
+			}
+			_ = e.outBatcher.sync()
 		}
-		finalRemainder = e.outBatcher.remainder()
+		if err := e.asyncFlush.handWithRemainder(lastOKBlock, finalEntries); err != nil {
+			return fmt.Errorf("hand final flush: %w", err)
+		}
+		if _, err := e.asyncFlush.waitPrev(); err != nil {
+			return fmt.Errorf("wait final flush: %w", err)
+		}
 	}
-
-	// Hand off the leftover write buffer (last partial commit window)
-	// through the same async path, then drain. Remainder is saved
-	// atomically with state + progress.
-	if err := e.asyncFlush.handWithRemainder(lastOKBlock, finalRemainder); err != nil {
-		return fmt.Errorf("hand final flush: %w", err)
-	}
-	if _, err := e.asyncFlush.waitPrev(); err != nil {
-		return fmt.Errorf("wait final flush: %w", err)
-	}
+	// Shutdown path: the commit at the break boundary already saved
+	// state + progress + remainder. Nothing more to do — waitPrev
+	// above ensured it completed.
 	e.stateBuf.ClearInFlight()
 
 	// Main RoTx is now stale; rotate so any caller using the executor

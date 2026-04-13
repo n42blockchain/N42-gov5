@@ -96,8 +96,9 @@ func (b *outputBatcher) remainder() map[string][]byte {
 	return result
 }
 
-// preloadRemainder restores entries saved by a prior run's remainder().
-// Called during alignOnResume before the executor starts processing.
+// preloadRemainder restores entries saved by a prior run to MDBX.
+// These entries fill the gap between cdat (on disk) and MDBX progress.
+// After loading, flushFullBatches at the next commit writes them to cdat.
 func (b *outputBatcher) preloadRemainder(data map[string][]byte) {
 	for name, blob := range data {
 		tb := b.tables[name]
@@ -109,30 +110,25 @@ func (b *outputBatcher) preloadRemainder(data map[string][]byte) {
 		}
 		count := int(binary.LittleEndian.Uint32(blob[:4]))
 		pos := 4
+		var entries [][]byte
 		for i := 0; i < count && pos+4 <= len(blob); i++ {
 			entryLen := int(binary.LittleEndian.Uint32(blob[pos:]))
 			pos += 4
 			if pos+entryLen > len(blob) {
 				break
 			}
-			tb.entries = append(tb.entries, blob[pos:pos+entryLen])
+			entries = append(entries, blob[pos:pos+entryLen])
 			pos += entryLen
 		}
-		if len(tb.entries) > 0 {
-			// Adjust existingItems and nextItem backward to account
-			// for the pre-loaded entries.
-			preloaded := uint64(len(tb.entries))
-			if tb.existingItems >= preloaded {
-				tb.existingItems -= preloaded
-			}
-			if b.nextItem > preloaded {
-				newNext := b.nextItem - preloaded
-				if newNext < b.nextItem {
-					b.nextItem = newNext
-				}
-			}
-			log.Info("Preloaded remainder entries",
-				"table", name, "count", len(tb.entries))
+		if len(entries) > 0 {
+			tb.entries = entries
+			// nextItem = existingItems (cdat on disk) — the preloaded
+			// entries fill [existingItems, existingItems+len(entries)).
+			b.nextItem = tb.existingItems
+			log.Info("Preloaded saved entries",
+				"table", name, "count", len(entries),
+				"cdatItems", tb.existingItems,
+				"nextItem", b.nextItem)
 		}
 	}
 }
@@ -387,13 +383,12 @@ func (b *outputBatcher) alignOnResume(startBlock uint64, hasRemainder bool) erro
 		}
 		if items < startBlock {
 			gap := startBlock - items
-			if hasRemainder && gap <= uint64(freezer.BatchSize) {
-				// Expected gap: the MDBX remainder covers these entries.
-				// They'll be restored by preloadRemainder after this loop.
-				log.Info("Output behind MDBX (covered by remainder)",
+			if hasRemainder {
+				// MDBX has saved entries that cover this gap. They'll
+				// be written to cdat by preloadRemainder after this loop.
+				log.Info("Output behind MDBX (covered by saved entries)",
 					"table", name, "items", items, "startBlock", startBlock, "gap", gap)
 			} else {
-				// Real data loss: gap too large or no remainder to fill it.
 				return fmt.Errorf("output table %s has %d items but MDBX starts at block %d (gap %d); "+
 					"changesets lost during shutdown — delete output freezer and re-run",
 					name, items, startBlock, gap)
