@@ -196,7 +196,7 @@ func (n *API) GetEvm(ctx context.Context, msg internal.Message, ibs evmtypes.Int
 	}
 
 	txContext := internal.NewEVMTxContext(msg)
-	context := internal.NewEVMBlockContext(concreteHeader, internal.GetHashFn(concreteHeader, nil), n.engine, nil)
+	context := internal.NewEVMBlockContext(concreteHeader, internal.GetHashFn(concreteHeader, nil), n.engine, n.GetChainConfig(), nil)
 
 	return vm2.NewEVM(context, txContext, ibs, n.GetChainConfig(), *vmConfig), vmError, nil
 }
@@ -365,7 +365,7 @@ func (n *API) doWeb3Call(ctx context.Context, tx kv.Tx, to types.Address, callda
 		calldata, nil, false, true)
 
 	vmCfg := vm2.Config{NoBaseFee: true}
-	blockCtx := internal.NewEVMBlockContext(concreteHeader, internal.GetHashFn(concreteHeader, nil), n.engine, nil)
+	blockCtx := internal.NewEVMBlockContext(concreteHeader, internal.GetHashFn(concreteHeader, nil), n.engine, n.chainConfig, nil)
 	txCtx := internal.NewEVMTxContext(msg)
 	evm := vm2.NewEVM(blockCtx, txCtx, ibs, n.chainConfig, vmCfg)
 

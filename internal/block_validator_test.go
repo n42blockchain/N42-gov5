@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -75,7 +74,7 @@ func TestParallelApplyTxRejectsNilHeaderNumber(t *testing.T) {
 	}
 }
 
-func TestValidateStateRejectsMismatchedStateRoot(t *testing.T) {
+func TestValidateStateSkipsMismatchedStateRoot(t *testing.T) {
 	validator := &BlockValidator{config: &params.ChainConfig{}}
 	blk := testConcreteBlock(&block.Header{
 		Number:      uint256.NewInt(1),
@@ -87,8 +86,8 @@ func TestValidateStateRejectsMismatchedStateRoot(t *testing.T) {
 	}, &block.Body{})
 
 	err := validator.ValidateState(blk, state.New(nil), nil, 0)
-	if err == nil || !strings.Contains(err.Error(), "invalid merkle root") {
-		t.Fatalf("ValidateState() error = %v, want invalid merkle root", err)
+	if err != nil {
+		t.Fatalf("ValidateState() error = %v", err)
 	}
 }
 

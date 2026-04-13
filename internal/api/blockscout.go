@@ -847,7 +847,7 @@ func (s *BlockChainAPI) simulateCall(ctx context.Context, args TransactionArgs, 
 	// Set up EVM
 	vmConfig := vm.Config{NoBaseFee: true}
 	txContext := internal.NewEVMTxContext(msg)
-	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), s.api.engine, nil)
+	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), s.api.engine, s.api.GetChainConfig(), nil)
 	evm := vm.NewEVM(blockContext, txContext, ibs, s.api.GetChainConfig(), vmConfig)
 
 	// Execute

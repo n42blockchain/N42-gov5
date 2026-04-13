@@ -28,6 +28,7 @@ import (
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -53,9 +54,9 @@ type StateStats struct {
 // the downloaded flat state against a block header's Root field.
 //
 // Instead, verification relies on:
-// 1. Basic integrity: state is non-empty, keys are properly formatted
-// 2. Block replay: re-executing blocks from pivot to HEAD validates state
-//    transitions, which implicitly verifies the downloaded base state
+//  1. Basic integrity: state is non-empty, keys are properly formatted
+//  2. Block replay: re-executing blocks from pivot to HEAD validates state
+//     transitions, which implicitly verifies the downloaded base state
 //
 // This function performs check (1). Check (2) happens during the catch-up phase.
 func VerifyDownloadedState(ctx context.Context, db kv.RoDB) (*StateStats, error) {
@@ -195,8 +196,8 @@ func VerifyCodeIntegrity(ctx context.Context, db kv.RoDB) error {
 	return nil
 }
 
-// VerifyStorageIntegrity checks that storage entries only exist for accounts
-// with Incarnation > 0, and that storage key format is correct (54 bytes).
+// VerifyStorageIntegrity checks that storage entries only exist for known
+// accounts, and that storage keys use the plain addr(20)+slot(32) format.
 func VerifyStorageIntegrity(ctx context.Context, db kv.RoDB, sampleSize int) error {
 	if sampleSize <= 0 {
 		sampleSize = 1000
@@ -215,9 +216,9 @@ func VerifyStorageIntegrity(ctx context.Context, db kv.RoDB, sampleSize int) err
 				return err
 			}
 
-			// Storage key = address(20) + incarnation(2) + storageKey(32) = 54 bytes.
-			if len(k) != 54 {
-				return fmt.Errorf("%w: storage key length %d, expected 54", ErrStateCorrupted, len(k))
+			// Storage key = address(20) + storageKey(32) = 52 bytes.
+			if len(k) != types.AddressLength+types.HashLength {
+				return fmt.Errorf("%w: storage key length %d, expected %d", ErrStateCorrupted, len(k), types.AddressLength+types.HashLength)
 			}
 
 			// Extract address and verify the account exists.

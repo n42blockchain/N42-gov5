@@ -141,7 +141,7 @@ func TestCodeHashesSkipsCreatedSelfdestructedContract(t *testing.T) {
 	}
 }
 
-func TestFinalizeTxPreCancunRetainsCreatedSelfdestructedContract(t *testing.T) {
+func TestFinalizeTxPreCancunDeletesCreatedSelfdestructedContract(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg
 	kv.ChaindataTablesCfg = modules.N42TableCfg
@@ -165,11 +165,11 @@ func TestFinalizeTxPreCancunRetainsCreatedSelfdestructedContract(t *testing.T) {
 			return err
 		}
 
-		if !statedb.Exist(addr) {
-			t.Fatal("expected pre-Cancun created+selfdestructed contract to be retained")
+		if statedb.Exist(addr) {
+			t.Fatal("expected pre-Cancun created+selfdestructed contract to be deleted at tx end")
 		}
-		if statedb.GetCodeSize(addr) == 0 {
-			t.Fatal("expected retained pre-Cancun contract code to remain")
+		if statedb.GetCodeSize(addr) != 0 {
+			t.Fatal("expected deleted pre-Cancun contract code to be cleared")
 		}
 		return nil
 	})

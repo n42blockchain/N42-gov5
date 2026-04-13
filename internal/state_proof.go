@@ -14,13 +14,11 @@ import (
 
 	"github.com/holiman/uint256"
 
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/jmt"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
@@ -301,133 +299,16 @@ func (*EthereumMPTStateProofProvider) Descriptor() StateProofDescriptor {
 }
 
 // AccountProof generates a canonical Ethereum MPT proof for an account.
-func (*EthereumMPTStateProofProvider) AccountProof(tx kv.Tx, address types.Address, _ jsonrpc.BlockNumberOrHash) ([]string, error) {
-	// Read account from HashedAccounts
-	addrHash, err := types.HashData(address[:])
-	if err != nil {
-		return nil, err
-	}
-
-	var acct account.StateAccount
-	enc, err := tx.GetOne("HashedAccount", addrHash[:])
-	if err != nil {
-		return nil, fmt.Errorf("read hashed account: %w", err)
-	}
-	if enc != nil {
-		if err := acct.DecodeForStorage(enc); err != nil {
-			return nil, fmt.Errorf("decode account: %w", err)
-		}
-		acct.Initialised = true
-	}
-
-	// Build RetainList with the target account key
-	rl := trie.NewRetainList(0)
-	pr, err := trie.NewProofRetainer(address, &acct, nil, rl)
-	if err != nil {
-		return nil, fmt.Errorf("create proof retainer: %w", err)
-	}
-
-	// Run CalcTrieRoot with ProofRetainer to collect proof nodes
-	loader := trie.NewFlatDBTrieLoader("proof", rl, nil, nil, false)
-	loader.SetProofRetainer(pr)
-	if _, err := loader.CalcTrieRoot(tx, nil); err != nil {
-		return nil, fmt.Errorf("calc trie root for proof: %w", err)
-	}
-
-	result, err := pr.ProofResult()
-	if err != nil {
-		return nil, fmt.Errorf("proof result: %w", err)
-	}
-
-	// Convert [][]byte to []string (hex-encoded)
-	proofStrings := make([]string, len(result.AccountProof))
-	for i, p := range result.AccountProof {
-		proofStrings[i] = hexutil.Encode(p)
-	}
-	return proofStrings, nil
+func (*EthereumMPTStateProofProvider) AccountProof(_ kv.Tx, _ types.Address, _ jsonrpc.BlockNumberOrHash) ([]string, error) {
+	return nil, ErrCanonicalStateProofNotImplemented
 }
 
 // StorageProof generates a canonical MPT proof for a storage slot.
-func (*EthereumMPTStateProofProvider) StorageProof(tx kv.Tx, address types.Address, slot types.Hash, _ jsonrpc.BlockNumberOrHash) ([]string, error) {
-	addrHash, err := types.HashData(address[:])
-	if err != nil {
-		return nil, err
-	}
-
-	var acct account.StateAccount
-	enc, err := tx.GetOne("HashedAccount", addrHash[:])
-	if err != nil {
-		return nil, fmt.Errorf("read hashed account: %w", err)
-	}
-	if enc != nil {
-		if err := acct.DecodeForStorage(enc); err != nil {
-			return nil, fmt.Errorf("decode account: %w", err)
-		}
-		acct.Initialised = true
-	}
-
-	rl := trie.NewRetainList(0)
-	pr, err := trie.NewProofRetainer(address, &acct, []types.Hash{slot}, rl)
-	if err != nil {
-		return nil, fmt.Errorf("create proof retainer: %w", err)
-	}
-
-	loader := trie.NewFlatDBTrieLoader("proof", rl, nil, nil, false)
-	loader.SetProofRetainer(pr)
-	if _, err := loader.CalcTrieRoot(tx, nil); err != nil {
-		return nil, fmt.Errorf("calc trie root for storage proof: %w", err)
-	}
-
-	result, err := pr.ProofResult()
-	if err != nil {
-		return nil, fmt.Errorf("proof result: %w", err)
-	}
-
-	if len(result.StorageProof) == 0 {
-		return nil, nil
-	}
-
-	proofStrings := make([]string, len(result.StorageProof[0].Proof))
-	for i, p := range result.StorageProof[0].Proof {
-		proofStrings[i] = hexutil.Encode(p)
-	}
-	return proofStrings, nil
+func (*EthereumMPTStateProofProvider) StorageProof(_ kv.Tx, _ types.Address, _ types.Hash, _ jsonrpc.BlockNumberOrHash) ([]string, error) {
+	return nil, ErrCanonicalStateProofNotImplemented
 }
 
 // StorageHash computes the canonical storage root for an account.
-func (*EthereumMPTStateProofProvider) StorageHash(tx kv.Tx, address types.Address, _ []types.Hash, _ []*uint256.Int, _ jsonrpc.BlockNumberOrHash) (types.Hash, error) {
-	addrHash, err := types.HashData(address[:])
-	if err != nil {
-		return types.Hash{}, err
-	}
-
-	var acct account.StateAccount
-	enc, err := tx.GetOne("HashedAccount", addrHash[:])
-	if err != nil {
-		return types.Hash{}, err
-	}
-	if enc != nil {
-		if err := acct.DecodeForStorage(enc); err != nil {
-			return types.Hash{}, err
-		}
-		acct.Initialised = true
-	}
-
-	rl := trie.NewRetainList(0)
-	pr, err := trie.NewProofRetainer(address, &acct, nil, rl)
-	if err != nil {
-		return types.Hash{}, err
-	}
-
-	loader := trie.NewFlatDBTrieLoader("storage-hash", rl, nil, nil, false)
-	loader.SetProofRetainer(pr)
-	if _, err := loader.CalcTrieRoot(tx, nil); err != nil {
-		return types.Hash{}, err
-	}
-
-	result, err := pr.ProofResult()
-	if err != nil {
-		return types.Hash{}, err
-	}
-	return result.StorageHash, nil
+func (*EthereumMPTStateProofProvider) StorageHash(_ kv.Tx, _ types.Address, _ []types.Hash, _ []*uint256.Int, _ jsonrpc.BlockNumberOrHash) (types.Hash, error) {
+	return types.Hash{}, ErrCanonicalStateProofNotImplemented
 }

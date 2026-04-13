@@ -145,6 +145,11 @@ func (b *API) HeaderByHash(ctx context.Context, hash types.Hash) (*block.Header,
 func (b *API) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*block.Block, error) {
 	if number < rpc.EarliestBlockNumber {
 		if blk := b.resolveForkchoiceTaggedBlock(number); blk != nil {
+			if number == rpc.LatestBlockNumber || number == rpc.PendingBlockNumber {
+				if _, err := requireUint256(blk.Number64(), "current block number unavailable"); err != nil {
+					return nil, err
+				}
+			}
 			concrete, ok := blk.(*block.Block)
 			if !ok {
 				return nil, errors.New("unexpected block type")
@@ -254,7 +259,7 @@ func (b *API) GetEVM(ctx context.Context, msg *transaction.Message, ibs *state.I
 	if !ok {
 		return nil, nil, errors.New("consensus engine not available")
 	}
-	blockCtx := internal.NewEVMBlockContext(header, internal.GetHashFn(header, getHeader), engine, nil)
+	blockCtx := internal.NewEVMBlockContext(header, internal.GetHashFn(header, getHeader), engine, b.bc.Config(), nil)
 	return vm.NewEVM(blockCtx, txContext, ibs, b.bc.Config(), *vmConfig), ibs.Error, nil
 }
 
@@ -332,7 +337,7 @@ func (eth *API) StateAtTransaction(ctx context.Context, dbTx kv.Tx, blk *block.B
 	if !ok {
 		return nil, evmtypes.BlockContext{}, nil, errors.New("unexpected block header type")
 	}
-	blockContext := internal.NewEVMBlockContext(blkHeader, internal.GetHashFn(blkHeader, getHeader), eth.Engine(), nil)
+	blockContext := internal.NewEVMBlockContext(blkHeader, internal.GetHashFn(blkHeader, getHeader), eth.Engine(), eth.BlockChain().Config(), nil)
 	vmenv := vm.NewEVM(blockContext, evmtypes.TxContext{}, statedb, eth.BlockChain().Config(), vm.Config{})
 	rules := vmenv.ChainRules()
 

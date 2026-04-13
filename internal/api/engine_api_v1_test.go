@@ -461,6 +461,9 @@ func TestNewPayloadV1ReturnsParentLatestValidHashForInvalidGasLimit(t *testing.T
 	if resp.LatestValidHash == nil || *resp.LatestValidHash != headHash {
 		t.Fatalf("NewPayloadV1().LatestValidHash = %v, want %s", resp.LatestValidHash, headHash)
 	}
+	if resp.ValidationError == nil || *resp.ValidationError != "invalid gas limit below 5000" {
+		t.Fatalf("NewPayloadV1().ValidationError = %v, want invalid gas limit below 5000", resp.ValidationError)
+	}
 }
 
 func TestNewPayloadV1AcceptsPayloadWithMissingParent(t *testing.T) {

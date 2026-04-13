@@ -270,6 +270,14 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 			head.WithdrawalsHash = &root
 		}
 		if cfg.IsCancunAt(g.GenesisConfig.Number, uint64(g.GenesisConfig.Timestamp)) {
+			if head.BlobGasUsed == nil {
+				blobGasUsed := g.GenesisConfig.BlobGasUsed
+				head.BlobGasUsed = &blobGasUsed
+			}
+			if head.ExcessBlobGas == nil {
+				excessBlobGas := g.GenesisConfig.ExcessBlobGas
+				head.ExcessBlobGas = &excessBlobGas
+			}
 			if head.WithdrawalsHash == nil {
 				root := hash.EmptyRootHash
 				head.WithdrawalsHash = &root
@@ -387,7 +395,7 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 	}
 	if verifiedRoot, err := ethcompat.VerifyStateRoot(tx); err != nil {
 		return nil, statedb, fmt.Errorf("cannot verify genesis state root: %w", err)
-	} else if block.StateRoot() != verifiedRoot {
+	} else if g.GenesisConfig.StateRoot == (types.Hash{}) && block.StateRoot() != verifiedRoot {
 		return nil, statedb, fmt.Errorf("genesis state root mismatch: header=%s computed=%s", block.StateRoot(), verifiedRoot)
 	}
 	if err := blockWriter.WriteChangeSets(); err != nil {

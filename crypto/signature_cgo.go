@@ -20,7 +20,7 @@
 // Ecrecover, EcrecoverWithContext and SigToPub for fast public
 // key recovery on the hot transaction-validation path.
 
-//go:build !nacl && !js && cgo && !gofuzz
+//go:build !nacl && !js && cgo && !gofuzz && !darwin
 
 package crypto
 

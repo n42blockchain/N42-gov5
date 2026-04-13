@@ -140,7 +140,7 @@ func (h *HistoricalState) Call(
 		h, _ := rawdb.ReadCanonicalHash(tx, n)
 		return h
 	}
-	blockContext := iinternal.NewEVMBlockContext(header, blockHashFunc, h.engine, nil)
+	blockContext := iinternal.NewEVMBlockContext(header, blockHashFunc, h.engine, h.chainCfg, nil)
 	txContext := evmtypes.TxContext{
 		Origin:   from,
 		GasPrice: uint256.NewInt(0),

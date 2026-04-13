@@ -1437,7 +1437,9 @@ func (hph *HexPatriciaHashed) toWitnessTrie(hashedKey []byte, codeReads map[type
 		// currentNode = &trie.ShortNode{Val: &trie.FullNode{}}
 		rootNode = currentNode             // use root node as the current node
 		keyPos = hph.root.hashedExtLen - 1 // start from the end of the root extension
-		fmt.Printf("[witness] root node %s, pos %d\n", hph.root.FullString(), keyPos)
+		if hph.trace {
+			fmt.Printf("[witness] root node %s, pos %d\n", hph.root.FullString(), keyPos)
+		}
 	}
 
 	pathDivergenceFound := false // indicates if the extension node has a common prefix path that diverges from what is found in the hashedKey
@@ -2539,10 +2541,13 @@ func (hph *HexPatriciaHashed) GenerateWitness(ctx context.Context, updates *Upda
 	if err != nil {
 		return nil, nil, err
 	}
+	if witnessTrie != nil {
+		witnessTrie.SetRootHash(rootHash)
+	}
 
 	// witness root hash computed from trie
 
-	return witnessTrie, witnessTrie.RootHash(), nil
+	return witnessTrie, rootHash, nil
 }
 
 func (hph *HexPatriciaHashed) Process(ctx context.Context, updates *Updates, logPrefix string, onProgress func(*CommitProgress), warmup WarmupConfig) (rootHash []byte, err error) {

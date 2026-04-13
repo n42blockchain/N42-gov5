@@ -359,7 +359,7 @@ func TestValidateExecutionPayloadHeaderRejectsGasLimitBelowMinimum(t *testing.T)
 	}
 
 	err := validateExecutionPayloadHeader(header, parent, nil)
-	require.ErrorContains(t, err, "invalid gas limit")
+	require.EqualError(t, err, "invalid gas limit below 5000")
 }
 
 func TestValidateExecutionPayloadHeaderRejectsGasUsedAboveGasLimit(t *testing.T) {

@@ -51,6 +51,9 @@ func (w *CachedStateWriter) UpdateAccountData(address types.Address, original, a
 	}
 	if w.cache != nil && acct != nil {
 		w.cache.Put(modules.Account, address.Bytes(), acct.MarshalV2())
+		if acct.IsEmptyCodeHash() {
+			w.cache.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address.Bytes()))
+		}
 	}
 	return nil
 }
@@ -71,6 +74,7 @@ func (w *CachedStateWriter) DeleteAccount(address types.Address, original *accou
 	}
 	if w.cache != nil {
 		w.cache.Delete(modules.Account, address.Bytes())
+		w.cache.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address.Bytes()))
 	}
 	return nil
 }

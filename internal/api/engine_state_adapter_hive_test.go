@@ -516,6 +516,186 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 	t.Logf("in-memory root=%s verified root=%s full root=%s receiptsRoot=%s bloom=%x", expectedRoot, verifiedRoot, fullVerifiedRoot, expectedReceiptsRoot, expectedBloom.Bytes())
 }
 
+func TestEngineStateAdapterAcceptsStableShanghaiWithdrawalsFixture(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	stateFixture := loadStableShanghaiWithdrawalFixture(t)
+	payload := loadStableShanghaiWithdrawalEnginePayloadFixture(t)
+
+	for _, tc := range []struct {
+		name    string
+		genesis *conf.Genesis
+	}{
+		{
+			name: "manual_block_forks",
+			genesis: &conf.Genesis{
+				Config: &params.ChainConfig{
+					ChainID:               big.NewInt(1),
+					Consensus:             params.Faker,
+					HomesteadBlock:        big.NewInt(0),
+					TangerineWhistleBlock: big.NewInt(0),
+					SpuriousDragonBlock:   big.NewInt(0),
+					ByzantiumBlock:        big.NewInt(0),
+					ConstantinopleBlock:   big.NewInt(0),
+					PetersburgBlock:       big.NewInt(0),
+					IstanbulBlock:         big.NewInt(0),
+					BerlinBlock:           big.NewInt(0),
+					LondonBlock:           big.NewInt(0),
+					ShanghaiBlock:         big.NewInt(0),
+				},
+				Alloc:      stateFixture.Pre,
+				Number:     0,
+				GasLimit:   uint64(payload.GasLimit),
+				Difficulty: uint256.NewInt(0),
+				Timestamp:  0,
+				BaseFee:    uint256.NewInt(uint64(payload.BaseFeePerGas)),
+				Coinbase:   types.Address{},
+				ExtraData:  stateFixture.GenesisExtraData,
+			},
+		},
+		{
+			name: "hive_timestamp_forks",
+			genesis: func() *conf.Genesis {
+				genesis := &conf.Genesis{
+					Alloc:      stateFixture.Pre,
+					Number:     0,
+					GasLimit:   uint64(payload.GasLimit),
+					Difficulty: uint256.NewInt(0),
+					Timestamp:  0,
+					BaseFee:    uint256.NewInt(uint64(payload.BaseFeePerGas)),
+					Coinbase:   types.Address{},
+					ExtraData:  stateFixture.GenesisExtraData,
+				}
+				applied := conf.ApplyHiveGenesisEnv(genesis, func(key string) (string, bool) {
+					value, ok := stableShanghaiWithdrawalHiveEnv()[key]
+					return value, ok
+				})
+				require.True(t, applied)
+				return genesis
+			}(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.genesis.Config
+			require.NotNil(t, cfg)
+
+			for _, dbtc := range []struct {
+				name   string
+				openDB func(*testing.T) kv.RwDB
+			}{
+				{
+					name: "memdb",
+					openDB: func(t *testing.T) kv.RwDB {
+						return memdb.NewTestDB(t)
+					},
+				},
+				{
+					name: "mdbx_reopen",
+					openDB: func(t *testing.T) kv.RwDB {
+						path := filepath.Join(t.TempDir(), "chaindata")
+						open := func() kv.RwDB {
+							db, err := mdbx.NewMDBX(logv3.New()).
+								Path(path).
+								Label(kv.ChainDB).
+								Open(context.Background())
+							require.NoError(t, err)
+							return db
+						}
+						db := open()
+						db.Close()
+						return open()
+					},
+				},
+			} {
+				t.Run(dbtc.name, func(t *testing.T) {
+					genesis := &internalcore.GenesisBlock{GenesisConfig: tc.genesis}
+					db := dbtc.openDB(t)
+					if closer, ok := db.(interface{ Close() }); ok {
+						t.Cleanup(func() { closer.Close() })
+					}
+
+					var genesisBlock *block.Block
+					err := db.Update(context.Background(), func(tx kv.RwTx) error {
+						blk, _, err := genesis.Write(tx)
+						if err != nil {
+							return err
+						}
+						genesisBlock = blk
+						return nil
+					})
+					require.NoError(t, err)
+					require.NotNil(t, genesisBlock)
+					require.Equal(t, stateFixture.GenesisBlockHash, ethCompatibleBlockHash(genesisBlock, cfg))
+					require.Equal(t, ethCompatibleBlockHash(genesisBlock, cfg), payload.ParentHash)
+
+					overlayBlockIface, err := executionPayloadV2ToBlock(payload)
+					require.NoError(t, err)
+					overlayBlock, ok := overlayBlockIface.(*block.Block)
+					require.True(t, ok)
+					require.Equal(t, payload.BlockHash, ethCompatibleEngineBlockHash(overlayBlock, cfg, enginePayloadHashOptions{
+						includeWithdrawals: true,
+						withdrawals:        payload.Withdrawals,
+					}))
+
+					chain := &canonicalCheckChainStub{
+						header: genesisBlock.Header().(*block.Header),
+						blk:    genesisBlock,
+						config: cfg,
+						db:     db,
+					}
+					api := &API{
+						bc:            chain,
+						db:            db,
+						engine:        &apiTestEngine{},
+						chainConfig:   cfg,
+						engineOverlay: newEngineOverlay(),
+					}
+					engine := NewEngineAPIV1(NewBlockChainAPI(api))
+
+					overlayState, receipts, err := engine.executePayloadOnParentStateAndValidateWithWithdrawals(overlayBlock, payload.ParentHash, nil, nil, payload.Withdrawals)
+					require.NoError(t, err)
+					require.NotNil(t, overlayState)
+					require.Empty(t, receipts)
+					require.Equal(t, payload.StateRoot, overlayBlock.StateRoot())
+
+					stateAdapterBlockIface, err := executionPayloadV2ToBlock(payload)
+					require.NoError(t, err)
+					stateAdapterBlock, ok := stateAdapterBlockIface.(*block.Block)
+					require.True(t, ok)
+
+					engine.SetStateAdapter(NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{}))
+					resp, err := engine.NewPayloadV2(context.Background(), payload)
+					require.NoError(t, err)
+					require.Equal(t, PayloadStatusValid, resp.Status)
+					require.NotNil(t, resp.LatestValidHash)
+					require.Equal(t, payload.BlockHash, *resp.LatestValidHash)
+
+					err = db.View(context.Background(), func(tx kv.Tx) error {
+						persisted := state.New(state.NewPlainStateReader(tx))
+						for addr, expectedAccount := range stateFixture.PostState {
+							expectedBalance := new(big.Int)
+							if expectedAccount.Balance != "" {
+								ok := false
+								expectedBalance, ok = expectedBalance.SetString(strings.TrimPrefix(expectedAccount.Balance, "0x"), 16)
+								require.Truef(t, ok, "invalid expected balance for %s", addr.Hex())
+							}
+							require.Zerof(t, persisted.GetBalance(addr).ToBig().Cmp(expectedBalance), "balance mismatch for %s", addr.Hex())
+						}
+						return nil
+					})
+					require.NoError(t, err)
+					require.Equal(t, payload.StateRoot, stateAdapterBlock.StateRoot())
+				})
+			}
+		})
+	}
+}
+
 func TestEngineAPIv4AcceptsStablePragueModexpCallcodeFixture(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg
@@ -648,6 +828,105 @@ func TestEngineAPIv4AcceptsStablePragueModexpCallcodeFixture(t *testing.T) {
 			require.Equal(t, payload.BlockHash, *resp.LatestValidHash)
 		})
 	}
+}
+
+func TestEngineAPIv4ForkchoiceUpdatedAcceptsStablePragueModexpCallcodeFixture(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	cfg := &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		Consensus:             params.Faker,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
+		ShanghaiBlock:         big.NewInt(0),
+		CancunBlock:           big.NewInt(0),
+		PragueTime:            big.NewInt(0),
+	}
+	stateFixture := loadStablePragueModexpFixture(t)
+	payloadFixture := loadStablePragueModexpEnginePayloadFixture(t)
+
+	db := memdb.NewTestDB(t)
+	genesis := &internalcore.GenesisBlock{
+		GenesisConfig: &conf.Genesis{
+			Config:     cfg,
+			Alloc:      stateFixture.Pre,
+			Number:     0,
+			GasLimit:   0x07270e00,
+			Difficulty: uint256.NewInt(0),
+			Timestamp:  0,
+			BaseFee:    uint256.NewInt(7),
+			Coinbase:   types.Address{},
+			ExtraData:  stateFixture.GenesisExtraData,
+		},
+	}
+
+	var genesisBlock *block.Block
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, _, err := genesis.Write(tx)
+		if err != nil {
+			return err
+		}
+		genesisBlock = blk
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotNil(t, genesisBlock)
+
+	payload := *payloadFixture.Payload
+	require.Equal(t, ethCompatibleBlockHash(genesisBlock, cfg), payload.ParentHash)
+
+	chain := &canonicalCheckChainStub{
+		header: genesisBlock.Header().(*block.Header),
+		blk:    genesisBlock,
+		config: cfg,
+		db:     db,
+	}
+	api := &API{
+		bc:            chain,
+		db:            db,
+		engine:        &apiTestEngine{},
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIv4(NewBlockChainAPI(api))
+	adapter := NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{})
+	engine.SetStateAdapter(adapter)
+
+	resp, err := engine.NewPayloadV4(
+		context.Background(),
+		&payload,
+		payloadFixture.ExpectedBlobVersionedHashes,
+		&payloadFixture.ParentBeaconBlockRoot,
+		cloneHexutilBytesList(payloadFixture.ExecutionRequests),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, resp.Status)
+	require.NotNil(t, resp.LatestValidHash)
+	require.Equal(t, payload.BlockHash, *resp.LatestValidHash)
+
+	fcuResp, err := engine.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{
+		HeadBlockHash:      payload.BlockHash,
+		SafeBlockHash:      payload.BlockHash,
+		FinalizedBlockHash: payload.BlockHash,
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, fcuResp)
+	require.Equal(t, PayloadStatusValid, fcuResp.PayloadStatus.Status)
+	require.NotNil(t, fcuResp.PayloadStatus.LatestValidHash)
+	require.Equal(t, payload.BlockHash, *fcuResp.PayloadStatus.LatestValidHash)
+	require.Equal(t, payload.BlockHash, adapter.CurrentHeadHash())
 }
 
 func TestEngineAPIv4AcceptsStablePragueModexpCallcodeFixtureWithHiveEnvGenesis(t *testing.T) {
@@ -1187,6 +1466,8 @@ const stablePragueModexpFixtureKey = "tests/osaka/eip7883_modexp_gas_increase/te
 const stablePragueModexpFixtureFile = "test_modexp_call_operations.json"
 const stablePragueModexpEntryPointExactGasFixtureKey = "tests/osaka/eip7883_modexp_gas_increase/test_modexp_thresholds.py::test_modexp_used_in_transaction_entry_points[fork_Prague-blockchain_test_engine_from_state_test-exact_gas]"
 const stablePragueModexpEntryPointFixtureFile = "test_modexp_used_in_transaction_entry_points.json"
+const stableShanghaiWithdrawalFixtureKey = "tests/shanghai/eip4895_withdrawals/test_withdrawals.py::test_zero_amount[fork_Shanghai-blockchain_test_engine-four_withdrawals_one_with_value_one_with_max]"
+const stableShanghaiWithdrawalFixtureFile = "test_zero_amount.json"
 
 func stablePragueModexpFixturePathForFile(t *testing.T, fileName string) string {
 	t.Helper()
@@ -1237,6 +1518,11 @@ func stablePragueModexpFixturePath(t *testing.T) string {
 	return stablePragueModexpFixturePathForFile(t, stablePragueModexpFixtureFile)
 }
 
+func stableShanghaiWithdrawalFixturePath(t *testing.T) string {
+	t.Helper()
+	return stableShanghaiWithdrawalFixturePathForFile(t, stableShanghaiWithdrawalFixtureFile)
+}
+
 func loadStablePragueModexpFixtureJSONForFileAndKey(t *testing.T, fileName, fixtureKey string) stablePragueModexpFixtureJSON {
 	t.Helper()
 
@@ -1256,9 +1542,37 @@ func loadStablePragueModexpFixtureJSON(t *testing.T) stablePragueModexpFixtureJS
 	return loadStablePragueModexpFixtureJSONForFileAndKey(t, stablePragueModexpFixtureFile, stablePragueModexpFixtureKey)
 }
 
+func loadStableShanghaiWithdrawalFixtureJSON(t *testing.T) stablePragueModexpFixtureJSON {
+	t.Helper()
+
+	raw, err := os.ReadFile(stableShanghaiWithdrawalFixturePath(t))
+	require.NoError(t, err)
+
+	var fixtures map[string]stablePragueModexpFixtureJSON
+	require.NoError(t, json.Unmarshal(raw, &fixtures))
+
+	fixtureJSON, ok := fixtures[stableShanghaiWithdrawalFixtureKey]
+	require.True(t, ok)
+	return fixtureJSON
+}
+
 func loadStablePragueModexpFixture(t *testing.T) stablePragueModexpFixture {
 	t.Helper()
 	return loadStablePragueModexpFixtureForFileAndKey(t, stablePragueModexpFixtureFile, stablePragueModexpFixtureKey)
+}
+
+func loadStableShanghaiWithdrawalFixture(t *testing.T) stablePragueModexpFixture {
+	t.Helper()
+
+	fixtureJSON := loadStableShanghaiWithdrawalFixtureJSON(t)
+	genesisExtraData, err := hexutil.Decode(fixtureJSON.GenesisBlockHeader.ExtraData)
+	require.NoError(t, err)
+	return stablePragueModexpFixture{
+		Pre:              decodeStablePragueModexpAlloc(t, fixtureJSON.Pre),
+		PostState:        decodeStablePragueModexpAlloc(t, fixtureJSON.PostState),
+		GenesisBlockHash: types.HexToHash(fixtureJSON.GenesisBlockHeader.Hash),
+		GenesisExtraData: genesisExtraData,
+	}
 }
 
 func loadStablePragueModexpEntryPointExactGasFixture(t *testing.T) stablePragueModexpFixture {
@@ -1285,6 +1599,20 @@ func loadStablePragueModexpFixtureForFileAndKey(t *testing.T, fileName, fixtureK
 func loadStablePragueModexpEnginePayloadFixture(t *testing.T) stablePragueModexpEnginePayloadFixture {
 	t.Helper()
 	return loadStablePragueModexpEnginePayloadFixtureForFileAndKey(t, stablePragueModexpFixtureFile, stablePragueModexpFixtureKey)
+}
+
+func loadStableShanghaiWithdrawalEnginePayloadFixture(t *testing.T) *ExecutionPayloadV2 {
+	t.Helper()
+
+	fixtureJSON := loadStableShanghaiWithdrawalFixtureJSON(t)
+	require.NotEmpty(t, fixtureJSON.EngineNewPayloads)
+	call := fixtureJSON.EngineNewPayloads[0]
+	require.Equal(t, "2", call.NewPayloadVersion)
+	require.Len(t, call.Params, 1)
+
+	var payload ExecutionPayloadV2
+	require.NoError(t, json.Unmarshal(call.Params[0], &payload))
+	return &payload
 }
 
 func loadStablePragueModexpEntryPointExactGasEnginePayloadFixture(t *testing.T) stablePragueModexpEnginePayloadFixture {
@@ -1341,6 +1669,56 @@ func stablePragueModexpHiveEnv() map[string]string {
 		"HIVE_CANCUN_TIMESTAMP":          "0",
 		"HIVE_PRAGUE_TIMESTAMP":          "0",
 	}
+}
+
+func stableShanghaiWithdrawalHiveEnv() map[string]string {
+	return map[string]string{
+		"HIVE_CHAIN_ID":                  "1",
+		"HIVE_NETWORK_ID":                "1",
+		"HIVE_FORK_HOMESTEAD":            "0",
+		"HIVE_FORK_DAO_VOTE":             "1",
+		"HIVE_FORK_TANGERINE":            "0",
+		"HIVE_FORK_SPURIOUS":             "0",
+		"HIVE_FORK_BYZANTIUM":            "0",
+		"HIVE_FORK_CONSTANTINOPLE":       "0",
+		"HIVE_FORK_PETERSBURG":           "0",
+		"HIVE_FORK_ISTANBUL":             "0",
+		"HIVE_FORK_BERLIN":               "0",
+		"HIVE_FORK_LONDON":               "0",
+		"HIVE_FORK_MERGE":                "0",
+		"HIVE_TERMINAL_TOTAL_DIFFICULTY": "0",
+		"HIVE_SHANGHAI_TIMESTAMP":        "0",
+	}
+}
+
+func stableShanghaiWithdrawalFixturePathForFile(t *testing.T, fileName string) string {
+	t.Helper()
+
+	var candidates []string
+	if cacheDir, err := os.UserCacheDir(); err == nil {
+		candidates = append(candidates, filepath.Join(
+			cacheDir,
+			"ethereum-execution-spec-tests",
+			"cached_downloads",
+			"ethereum",
+			"execution-spec-tests",
+			"v5.4.0",
+			"fixtures_stable",
+			"fixtures",
+			"blockchain_tests_engine",
+			"shanghai",
+			"eip4895_withdrawals",
+			fileName,
+		))
+	}
+
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	t.Skipf("stable EEST withdrawal fixture missing; checked: %s", strings.Join(candidates, ", "))
+	return ""
 }
 
 func decodeStablePragueModexpAlloc(t *testing.T, raw map[string]stablePragueModexpAccountJSON) conf.GenesisAlloc {

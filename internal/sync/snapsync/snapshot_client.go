@@ -31,14 +31,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.org/x/sync/semaphore"
 
-	"github.com/n42blockchain/N42/proto/sync_pb"
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/snapshot"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 )
 
 // SnapshotManager orchestrates snapshot-based state downloads. Unlike the
@@ -475,11 +474,10 @@ func (sm *SnapshotManager) executeSnapshotStorageTask(ctx context.Context, task 
 		if err != nil || data == nil {
 			return err
 		}
-		var acc account.StateAccount
-		if err := acc.DecodeForStorage(data); err != nil {
-			return nil
+		valid, parsedIncarnation, _ := parseAccountForTasks(data)
+		if valid {
+			incarnation = parsedIncarnation
 		}
-		incarnation = 0
 		return nil
 	})
 

@@ -803,9 +803,8 @@ func (sdb *IntraBlockState) GetRefund() uint64 {
 }
 
 type accountWritePolicy struct {
-	removeEmptyAccounts                  bool
-	preserveAuraSystemAccount            bool
-	allowLegacyCreatedSelfdestructReplay bool
+	removeEmptyAccounts       bool
+	preserveAuraSystemAccount bool
 }
 
 func newAccountWritePolicy(chainRules *params.Rules) accountWritePolicy {
@@ -813,9 +812,8 @@ func newAccountWritePolicy(chainRules *params.Rules) accountWritePolicy {
 		return accountWritePolicy{}
 	}
 	return accountWritePolicy{
-		removeEmptyAccounts:                  chainRules.IsSpuriousDragon,
-		preserveAuraSystemAccount:            chainRules.IsAura,
-		allowLegacyCreatedSelfdestructReplay: !chainRules.IsCancun,
+		removeEmptyAccounts:       chainRules.IsSpuriousDragon,
+		preserveAuraSystemAccount: chainRules.IsAura,
 	}
 }
 
@@ -825,10 +823,6 @@ func (p accountWritePolicy) shouldRemoveEmptyAccount(addr types.Address, stateOb
 
 func (p accountWritePolicy) shouldAllowWriteBack(stateObject *stateObject) bool {
 	if stateObject.selfdestructed {
-		// Selfdestructed accounts must not be written back.
-		// Pre-Cancun allowed created+selfdestructed replay, but this caused
-		// phantom empty accounts with incarnation to persist in DB, breaking
-		// Exist() parity with geth for DAO-era blocks.
 		return false
 	}
 	return true

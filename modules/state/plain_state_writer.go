@@ -68,7 +68,13 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 	if original != nil && original.Equals(account) {
 		return nil
 	}
-	return w.db.Put(modules.Account, address[:], account.MarshalV2())
+	if err := w.db.Put(modules.Account, address[:], account.MarshalV2()); err != nil {
+		return err
+	}
+	if account == nil || account.IsEmptyCodeHash() {
+		return w.db.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:]))
+	}
+	return nil
 }
 
 func (w *PlainStateWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
@@ -90,6 +96,9 @@ func (w *PlainStateWriter) DeleteAccount(address types.Address, original *accoun
 		}
 	}
 	if err := w.db.Delete(modules.Account, address[:]); err != nil {
+		return err
+	}
+	if err := w.db.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:])); err != nil {
 		return err
 	}
 	// IncarnationMap removed — incarnation no longer used

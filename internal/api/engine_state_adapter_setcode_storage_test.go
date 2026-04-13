@@ -63,7 +63,7 @@ func TestWriteEnginePayloadBlockRoundTripsSetCodeTx(t *testing.T) {
 	blk := block.NewBlock(header, []*transaction.Transaction{signedTx}).(*block.Block)
 
 	err = db.Update(context.Background(), func(tx kv.RwTx) error {
-		if err := writeEnginePayloadBlock(tx, blk); err != nil {
+		if _, err := writeEnginePayloadBlock(tx, blk); err != nil {
 			return err
 		}
 		if err := rawdb.WriteCanonicalHash(tx, blk.Hash(), 1); err != nil {

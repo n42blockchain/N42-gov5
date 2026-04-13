@@ -83,7 +83,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		return nil, nil, nil, 0, err
 	}
 	// blockContext is a value type — each goroutine's NewEVM copies it, safe to share.
-	blockContext := NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, nil)
+	blockContext := NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, chainConfig, nil)
 
 	// Per-tx result storage. Each goroutine writes to its own index (no race).
 	txResults := make([]parallelTxResult, numTxs)

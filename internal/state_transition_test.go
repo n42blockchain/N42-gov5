@@ -234,7 +234,7 @@ func TestApplyMessageExecutesDelegatedCodeForAuthorizedEOA(t *testing.T) {
 		Difficulty: uint256.NewInt(0),
 	}
 	config := testStateTransitionChainConfig()
-	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, &coinbase)
+	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, nil, &coinbase)
 	txCtx := evmtypes.TxContext{Origin: msg.From(), GasPrice: msg.GasPrice()}
 	evm := vm2.NewEVM(blockCtx, txCtx, ibs, config, vm2.Config{})
 	gp := new(common.GasPool).AddGas(header.GasLimit)
@@ -323,7 +323,7 @@ func TestApplyMessageClearsDelegationWhenAuthorizationResets(t *testing.T) {
 		Difficulty: uint256.NewInt(0),
 	}
 	config := testStateTransitionChainConfig()
-	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, &coinbase)
+	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, nil, &coinbase)
 	txCtx := evmtypes.TxContext{Origin: msg.From(), GasPrice: msg.GasPrice()}
 	evm := vm2.NewEVM(blockCtx, txCtx, ibs, config, vm2.Config{})
 	gp := new(common.GasPool).AddGas(header.GasLimit)
@@ -395,7 +395,7 @@ func TestApplyMessageIgnoresInvalidAuthorizationSignature(t *testing.T) {
 		Difficulty: uint256.NewInt(0),
 	}
 	config := testStateTransitionChainConfig()
-	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, &coinbase)
+	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, nil, &coinbase)
 	txCtx := evmtypes.TxContext{Origin: msg.From(), GasPrice: msg.GasPrice()}
 	evm := vm2.NewEVM(blockCtx, txCtx, ibs, config, vm2.Config{})
 	gp := new(common.GasPool).AddGas(header.GasLimit)
@@ -554,7 +554,7 @@ func TestApplyMessageSubtractsBlobFeeBeforeExecution(t *testing.T) {
 		Difficulty: uint256.NewInt(0),
 	}
 	config := testStateTransitionChainConfig()
-	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, &coinbase)
+	blockCtx := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, nil, &coinbase)
 	txCtx := evmtypes.TxContext{Origin: msg.From(), GasPrice: msg.GasPrice()}
 	evm := vm2.NewEVM(blockCtx, txCtx, ibs, config, vm2.Config{})
 	gp := new(common.GasPool).AddGas(header.GasLimit)

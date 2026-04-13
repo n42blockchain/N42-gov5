@@ -11,14 +11,19 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/ethel"
+	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -35,6 +40,11 @@ type EngineStateAdapter struct {
 	engine   consensus.Engine
 }
 
+type enginePayloadExecutionResult struct {
+	stateRoot       types.Hash
+	validationError error
+}
+
 // NewEngineStateAdapter creates a new adapter.
 func NewEngineStateAdapter(db kv.RwDB, f *freezer.Freezer, cfg *params.ChainConfig, engine consensus.Engine) *EngineStateAdapter {
 	return &EngineStateAdapter{db: db, freezer: f, chainCfg: cfg, engine: engine}
@@ -43,12 +53,29 @@ func NewEngineStateAdapter(db kv.RwDB, f *freezer.Freezer, cfg *params.ChainConf
 // ExecutePayload executes a block from the CL, persists state, verifies root.
 // Returns (valid bool, stateRoot, error).
 func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash, error) {
+	result, err := a.executePayloadDetailed(blk, nil, nil, nil)
+	if err != nil {
+		return false, types.Hash{}, err
+	}
+	if result.validationError != nil {
+		return false, result.stateRoot, nil
+	}
+	return true, result.stateRoot, nil
+}
+
+func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal) (*enginePayloadExecutionResult, error) {
 	header := blk.Header().(*block.Header)
+	if header == nil || header.Number == nil {
+		return nil, fmt.Errorf("payload header missing block number")
+	}
+	if parentBeaconRoot == nil {
+		parentBeaconRoot = header.ParentBeaconRoot
+	}
 	blockNum := header.Number.Uint64()
 
 	tx, err := a.db.BeginRw(context.Background())
 	if err != nil {
-		return false, types.Hash{}, err
+		return nil, err
 	}
 	defer tx.Rollback()
 
@@ -58,71 +85,122 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 	reader := state.NewPlainState(tx, blockNum)
 	writer := state.NewPlainStateWriter(tx, tx, blockNum)
 	ibs := state.New(reader)
+	ibs.BeginWriteCodes()
 	ethel.SetupStateRootComputer(tx, ibs)
 	if err := ethel.InitHashState(tx); err != nil {
-		return false, types.Hash{}, err
+		return nil, err
 	}
 
-	// Build BLOCKHASH function from DB.
-	blockHashFunc := func(n uint64) types.Hash {
-		h, err := rawdb.ReadCanonicalHash(tx, n)
-		if err != nil {
-			return types.Hash{}
+	expected := captureExpectedExecutionPayloadOutputs(header)
+	getHeader := func(_ types.Hash, number uint64) *block.Header {
+		canonicalHash, err := rawdb.ReadCanonicalHash(tx, number)
+		if err != nil || canonicalHash == (types.Hash{}) {
+			return nil
 		}
-		return h
+		return rawdb.ReadHeader(tx, canonicalHash, number)
 	}
+	blockHashFunc := internalcore.GetHashFn(header, getHeader)
 
-	// Execute using shared ProcessBlock.
-	var uncles []block.IHeader // post-merge: no uncles
-	result, err := ethel.ProcessBlock(a.chainCfg, a.engine, header, blk.Transactions(), uncles, ibs, blockHashFunc, nil)
-	if err != nil {
-		return false, types.Hash{}, fmt.Errorf("execute block %d: %w", blockNum, err)
+	gasPool := new(common.GasPool)
+	gasPool.AddGas(blk.GasLimit())
+	var usedGas uint64
+	receipts := make(block.Receipts, 0, len(blk.Transactions()))
+	if err := internalcore.ProcessExecutionBlockStart(parentBeaconRoot, a.chainCfg, ibs, header, a.engine); err != nil {
+		return nil, err
 	}
-
-	// Verify gas.
-	if result.GasUsed != header.GasUsed {
-		return false, types.Hash{}, fmt.Errorf("gas mismatch: got %d, want %d", result.GasUsed, header.GasUsed)
+	for i, txn := range blk.Transactions() {
+		ibs.Prepare(txn.Hash(), blk.Hash(), i)
+		receipt, _, err := internalcore.ApplyTransaction(a.chainCfg, blockHashFunc, a.engine, nil, gasPool, ibs, state.NewNoopWriter(), header, txn, &usedGas, vm2.Config{})
+		if err != nil {
+			return nil, err
+		}
+		if receipt != nil {
+			receipts = append(receipts, receipt)
+		}
 	}
+	if usedGas != header.GasUsed {
+		return &enginePayloadExecutionResult{
+			validationError: fmt.Errorf("gas mismatch: got %d, want %d", usedGas, header.GasUsed),
+		}, nil
+	}
+	if err := finalizeExecutionStateChanges(a.chainCfg, header, ibs); err != nil {
+		return nil, err
+	}
+	applyExecutionWithdrawals(ibs, withdrawals)
+	var actualRequests []hexutil.Bytes
+	if actualRequests, err = internalcore.ProcessExecutionBlockEnd(receipts, a.chainCfg, ibs, header, a.engine); err != nil {
+		return nil, err
+	}
+	rules := a.chainCfg.RulesWithTimestamp(blockNum, header.Time)
+	if rules != nil && rules.IsPrague {
+		if executionRequestsHash(actualRequests) != executionRequestsHash(expectedRequests) {
+			return &enginePayloadExecutionResult{
+				validationError: fmt.Errorf("invalid requests hash"),
+			}, nil
+		}
+		requestsHash := executionRequestsHash(actualRequests)
+		header.RequestsHash = &requestsHash
+	}
+	actualReceiptHash := ethel.EthReceiptHash(receipts)
+	actualBloom := block.CreateBloom(receipts)
+	if expected != nil && actualReceiptHash != expected.receiptsRoot {
+		return &enginePayloadExecutionResult{
+			validationError: fmt.Errorf("receipts root mismatch"),
+		}, nil
+	}
+	if expected != nil && !bytes.Equal(actualBloom.Bytes(), expected.logsBloom) {
+		return &enginePayloadExecutionResult{
+			validationError: fmt.Errorf("logs bloom mismatch"),
+		}, nil
+	}
+	header.ReceiptHash = actualReceiptHash
+	header.Bloom = actualBloom
+	header.Root = ibs.IntermediateRoot()
+	blk.WithSeal(header)
 
 	// Commit block state into the transaction, then verify the canonical
 	// Ethereum MPT root before exposing any changes to the database.
-	rules := a.chainCfg.Rules(blockNum)
 	if err := ibs.CommitBlock(rules, writer); err != nil {
-		return false, types.Hash{}, err
+		return nil, err
 	}
 	if err := writer.WriteChangeSets(); err != nil {
-		return false, types.Hash{}, err
+		return nil, err
 	}
 	if err := writer.WriteHistory(); err != nil {
-		return false, types.Hash{}, err
+		return nil, err
 	}
 	computedRoot, err := ethel.VerifyStateRoot(tx)
 	if err != nil {
-		return false, types.Hash{}, fmt.Errorf("verify state root: %w", err)
+		return nil, fmt.Errorf("verify state root: %w", err)
 	}
-	if computedRoot != header.Root {
+	if expected != nil && computedRoot != expected.stateRoot {
 		log.Error("State root mismatch", "block", blockNum,
-			"computed", computedRoot.Hex(), "expected", header.Root.Hex())
-		return false, computedRoot, nil
+			"computed", computedRoot.Hex(), "expected", expected.stateRoot.Hex())
+		return &enginePayloadExecutionResult{
+			stateRoot:       computedRoot,
+			validationError: fmt.Errorf("state root mismatch"),
+		}, nil
 	}
+	header.Root = computedRoot
+	blk.WithSeal(header)
 
 	// Persist the executed payload so subsequent head/header lookups can
 	// resolve Engine eth-compatible hashes back to the underlying block.
-	hash := header.Hash()
-	if err := writeEnginePayloadBlock(tx, blk); err != nil {
-		return false, types.Hash{}, err
+	storedHash, err := writeEnginePayloadBlock(tx, blk)
+	if err != nil {
+		return nil, err
 	}
-	if err := rawdb.WriteCanonicalHash(tx, hash, blockNum); err != nil {
-		return false, types.Hash{}, err
+	if err := rawdb.WriteCanonicalHash(tx, storedHash, blockNum); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return false, types.Hash{}, err
+		return nil, err
 	}
 
 	log.Info("Payload executed", "block", blockNum, "root", header.Root.Hex(),
-		"txs", len(blk.Transactions()), "gas", result.GasUsed)
-	return true, computedRoot, nil
+		"txs", len(blk.Transactions()), "gas", usedGas)
+	return &enginePayloadExecutionResult{stateRoot: computedRoot}, nil
 }
 
 // ForkchoiceUpdated updates the canonical chain head.
@@ -282,22 +360,23 @@ func (a *EngineStateAdapter) resolveCanonicalStoredHash(tx kv.Tx, engineHash typ
 	}
 }
 
-func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block) error {
+func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block) (types.Hash, error) {
 	header, ok := blk.Header().(*block.Header)
 	if !ok || header == nil {
-		return fmt.Errorf("unexpected header type")
+		return types.Hash{}, fmt.Errorf("unexpected header type")
 	}
+	hash := header.Hash()
 	rawBody := &block.RawBody{Transactions: make([][]byte, 0, len(blk.Transactions()))}
 	for _, txn := range blk.Transactions() {
 		encoded, err := transaction.EncodeEthereumTransaction(txn)
 		if err != nil {
-			return err
+			return types.Hash{}, err
 		}
 		rawBody.Transactions = append(rawBody.Transactions, encoded)
 	}
-	if _, _, err := rawdb.WriteRawBody(tx, header.Hash(), header.Number.Uint64(), rawBody); err != nil {
-		return err
+	if _, _, err := rawdb.WriteRawBody(tx, hash, header.Number.Uint64(), rawBody); err != nil {
+		return types.Hash{}, err
 	}
 	rawdb.WriteHeader(tx, header)
-	return nil
+	return hash, nil
 }

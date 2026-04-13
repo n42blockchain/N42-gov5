@@ -11,11 +11,11 @@ package node
 import (
 	"fmt"
 
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
 	n42block "github.com/n42blockchain/N42/common/block"
 	n42types "github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/devp2p"
 )
 

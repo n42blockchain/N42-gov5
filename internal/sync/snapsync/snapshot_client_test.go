@@ -9,16 +9,16 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/snapshot"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 )
 
 // TestSnapshotSyncIntegration simulates a full snapshot-based sync:
@@ -194,10 +194,10 @@ func TestSnapshotSyncIntegration(t *testing.T) {
 
 			var batch []snapshot.BatchEntry
 			for k != nil && bytes.HasPrefix(k, prefix) && len(batch) < 4096 {
-				// Extract location key (last 32 bytes).
-				if len(k) >= 54 {
+				// Extract location key from plain storage key: addr(20) + slot(32).
+				if len(k) >= 52 {
 					loc := make([]byte, 32)
-					copy(loc, k[22:54])
+					copy(loc, k[20:52])
 					val := make([]byte, len(v))
 					copy(val, v)
 					batch = append(batch, snapshot.BatchEntry{Key: loc, Value: val})
@@ -216,7 +216,7 @@ func TestSnapshotSyncIntegration(t *testing.T) {
 			resp.Data = compressed
 			if k != nil && bytes.HasPrefix(k, prefix) {
 				resp.NextStart = make([]byte, 32)
-				copy(resp.NextStart, k[22:54])
+				copy(resp.NextStart, k[20:52])
 			} else {
 				resp.Completed = true
 			}

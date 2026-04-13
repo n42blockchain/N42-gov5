@@ -87,7 +87,7 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 	policy := newExecutionChainPolicy(&chainConfig, params.ConsensusType(""))
 	author, txContext := policy.systemCallContext(header, msg)
 
-	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), engine, author)
+	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), engine, &chainConfig, author)
 	evm := vm.NewEVM(blockContext, txContext, ibs, &chainConfig, vmConfig)
 	if rules := evm.ChainRules(); rules.IsBerlin {
 		ibs.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), nil)

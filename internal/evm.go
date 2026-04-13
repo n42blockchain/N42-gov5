@@ -33,7 +33,7 @@ import (
 )
 
 // NewEVMBlockContext creates a new context for use in the EVM.
-func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types.Hash, engine consensus.Engine, author *types.Address) evmtypes.BlockContext {
+func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types.Hash, engine consensus.Engine, chainCfg *params.ChainConfig, author *types.Address) evmtypes.BlockContext {
 	// If we don't have an explicit author (i.e. not mining), extract from the header
 	var beneficiary types.Address
 	if author == nil {
@@ -55,6 +55,9 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 		excessBlobGas = *header.ExcessBlobGas
 	}
 	blobBaseFee := transaction.CalcBlobFee(excessBlobGas)
+	if chainCfg != nil {
+		blobBaseFee = chainCfg.CalcBlobFee(excessBlobGas, header.Time)
+	}
 	difficulty := new(big.Int)
 	if header.Difficulty != nil {
 		difficulty = header.Difficulty.ToBig()

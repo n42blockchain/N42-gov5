@@ -642,6 +642,12 @@ func (w *worker) workLoop(recommit time.Duration) error {
 }
 
 func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header) error {
+	header := env.header
+	headerNumber, err := requireHeaderNumber(header, "mining header number unavailable")
+	if err != nil {
+		return err
+	}
+
 	// Pre-allocate with estimated max tx count to avoid append-growth
 	// in the hot commit loop. 21000 is the minimum gas per tx.
 	estCap := int(env.gasPool.Gas() / 21000)
@@ -651,7 +657,6 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	env.txs = make([]*transaction.Transaction, 0, estCap)
 	env.receipts = make(block.Receipts, 0, estCap)
 
-	header := env.header
 	noop := state.NewNoopWriter()
 	vmConfig := vm2.Config{}
 
@@ -674,10 +679,6 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		return nil
 	}
 
-	headerNumber, err := requireHeaderNumber(header, "mining header number unavailable")
-	if err != nil {
-		return err
-	}
 	blockNumber := headerNumber.Uint64()
 
 	// Phase 1: Execute MEV bundles at block top (highest-paying first).

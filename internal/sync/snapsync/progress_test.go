@@ -8,8 +8,8 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
@@ -174,7 +174,8 @@ func TestParseAccountForTasks(t *testing.T) {
 		t.Errorf("eoa: valid=%v inc=%d code=%v", valid, inc, code)
 	}
 
-	// Contract: non-empty codeHash.
+	// Contract: non-empty codeHash should schedule a storage fetch via
+	// legacy incarnation 1 for compatibility with storage range RPCs.
 	contractCodeHash := types.BytesHash(crypto.Keccak256([]byte("contract code")))
 	contract := account.StateAccount{
 		Initialised: true,
@@ -187,8 +188,8 @@ func TestParseAccountForTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	valid, inc, code = parseAccountForTasks(contractData)
-	if !valid || inc != 0 {
-		t.Errorf("contract: valid=%v expected inc=0, got %d", valid, inc)
+	if !valid || inc != 1 {
+		t.Errorf("contract: valid=%v expected inc=1, got %d", valid, inc)
 	}
 	if code == nil || !bytes.Equal(code, contractCodeHash[:]) {
 		t.Errorf("contract: expected codeHash=%x, got %x", contractCodeHash[:], code)
