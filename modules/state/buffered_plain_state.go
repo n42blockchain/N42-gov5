@@ -86,9 +86,9 @@ type CacheBudget struct {
 // blob is hash-addressed and reused across many calls).
 func DefaultCacheBudget() CacheBudget {
 	return CacheBudget{
-		AccountBytes: 1 << 30,  // 1 GB  S3-FIFO
-		StorageBytes: 4 << 30,  // 4 GB  S3-FIFO (85% sto% ceiling is compulsory misses, not capacity)
-		CodeBytes:    512 << 20, // 512 MB byteLRU
+		AccountBytes: 2 << 30,  // 2 GB  S3-FIFO
+		StorageBytes: 16 << 30, // 16 GB S3-FIFO — 128GB machine, covers ~270M slots
+		CodeBytes:    1 << 30,  // 1 GB  byteLRU
 	}
 }
 
@@ -310,6 +310,41 @@ func nextMapCap(prev, floor int) int {
 // last bg flush has committed).
 func (b *PlainStateBuffer) ClearInFlight() {
 	b.inFlight.Store(nil)
+}
+
+// InFlightSnapshot returns the current in-flight snapshot (may be nil).
+// The snapshot is immutable and safe to read from any goroutine.
+func (b *PlainStateBuffer) InFlightSnapshot() *BufferSnapshot {
+	return b.inFlight.Load()
+}
+
+// LookupAccount returns the encoded account in the snapshot.
+// Returns (enc, true) if found, (nil, false) if not in this snapshot.
+func (s *BufferSnapshot) LookupAccount(addr types.Address) ([]byte, bool) {
+	if s == nil {
+		return nil, false
+	}
+	enc, ok := s.accounts[addr]
+	return enc, ok
+}
+
+// LookupStorage returns a storage slot from the snapshot.
+// Returns (value, true) if the slot is explicitly in the snapshot.
+// Returns (nil, true) if the address was wiped (SELFDESTRUCT) in this snapshot.
+// Returns (nil, false) if neither the slot nor a wipe is recorded.
+func (s *BufferSnapshot) LookupStorage(addr types.Address, slot types.Hash) ([]byte, bool) {
+	if s == nil {
+		return nil, false
+	}
+	if slots, ok := s.storage[addr]; ok {
+		if entry, ok2 := slots[slot]; ok2 {
+			return entry.value, true
+		}
+	}
+	if _, wiped := s.wipedStorage[addr]; wiped {
+		return nil, true // wiped — slot is gone
+	}
+	return nil, false
 }
 
 // ApplyTo writes the snapshot's contents to MDBX in the same order and
