@@ -14,6 +14,7 @@
 package ethel
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/n42blockchain/N42/lib/kv"
@@ -25,7 +26,7 @@ import (
 // Reorg rolls back PlainState to the given target block by reading
 // changesets from the output freezer and applying original values.
 func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
-	tx, err := db.BeginRw(nil)
+	tx, err := db.BeginRw(context.Background())
 	if err != nil {
 		return err
 	}
