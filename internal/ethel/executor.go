@@ -311,19 +311,18 @@ func (e *Executor) Run(ctx context.Context) error {
 				return fmt.Errorf("hand to async flusher at block %d: %w", blockNum, err)
 			}
 
-			// 5. Rotate main thread's RoTx so reads pick up the
-			// last-finished bg commit (which we waited for in step
-			// 1). The new tx's snapshot is taken AFTER that commit
-			// landed; data still being committed by the in-flight
-			// goroutine is invisible to MDBX(newTx) but the reader
-			// picks it up via the in-flight snapshot pointer.
-			tx.Rollback()
-			tx, err = e.db.BeginRo(ctx)
-			if err != nil {
-				cleanup = func() {}
-				return err
+			// 5. Rotate main thread's RoTx. Skip during shutdown —
+			// ctx is cancelled so BeginRo(ctx) would fail, and we
+			// don't need fresh reads since we're about to exit.
+			if !shuttingDown {
+				tx.Rollback()
+				tx, err = e.db.BeginRo(ctx)
+				if err != nil {
+					cleanup = func() {}
+					return err
+				}
+				cleanup = func() { tx.Rollback() }
 			}
-			cleanup = func() { tx.Rollback() }
 
 			// 6. Progress log (uses the PREVIOUS flush's duration; the
 			// current handoff is still in flight).
