@@ -187,28 +187,14 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	}
 	defer roTx.Rollback()
 
-	// Warm accounts: check inFlight snapshot first (immutable, safe from
-	// any goroutine). If found there, cache the authoritative value.
-	// Only fall through to MDBX for keys NOT in the inFlight snapshot —
-	// those MDBX values are stable (committed in an earlier interval) and
-	// safe to cache. This avoids the stale-RoTx race: keys in the
-	// inFlight snapshot get the correct value directly; keys not in it
-	// have a stable MDBX value that RefreshLRU won't overwrite (because
-	// RefreshLRU only touches keys IN the snapshot).
-	snap := p.stateBuf.InFlightSnapshot()
-	for addr := range addrs {
-		if enc, ok := snap.LookupAccount(addr); ok {
-			if len(enc) > 0 {
-				var a account.StateAccount
-				if a.DecodeForStorage(enc) == nil {
-					p.stateBuf.CacheAccount(addr, &a)
-				}
-			} else {
-				p.stateBuf.CacheAccount(addr, nil)
-			}
-			continue
-		}
-		enc, _ := roTx.GetOne(modules.Account, addr[:])
+	// Warm accounts and storage via inFlight snapshot + MDBX fallback.
+	// InFlight snapshot is immutable and safe from any goroutine. Keys
+	// found there get the authoritative value cached. Keys NOT in the
+	// snapshot fall through to MDBX — those values are stable (committed
+	// in an earlier interval) and RefreshLRU won't overwrite them, so
+	// the stale-RoTx race cannot occur.
+	snap := p.stateBuf.InFlightSnapshot() // nil-safe; Lookup methods handle nil
+	cacheAcct := func(addr types.Address, enc []byte) {
 		if len(enc) > 0 {
 			var a account.StateAccount
 			if a.DecodeForStorage(enc) == nil {
@@ -218,8 +204,15 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 			p.stateBuf.CacheAccount(addr, nil)
 		}
 	}
+	for addr := range addrs {
+		if enc, ok := snap.LookupAccount(addr); ok {
+			cacheAcct(addr, enc)
+			continue
+		}
+		enc, _ := roTx.GetOne(modules.Account, addr[:])
+		cacheAcct(addr, enc)
+	}
 
-	// Warm storage slots (post-Berlin access-list entries).
 	for _, tx := range body.Transactions {
 		for _, entry := range tx.AccessList() {
 			for _, key := range entry.StorageKeys {
