@@ -448,12 +448,6 @@ func (e *Executor) Run(ctx context.Context) error {
 	tx.Rollback()
 	cleanup = func() {} // bg already committed; nothing left to roll back
 
-	elapsed := time.Since(startTime)
-	total := endBlock - startBlock + 1
-	log.Info("EthEL execution complete",
-		"blocks", total,
-		"elapsed", elapsed.Truncate(time.Second),
-		"blk/s", fmt.Sprintf("%.0f", float64(total)/elapsed.Seconds()))
 	return nil
 }
 
