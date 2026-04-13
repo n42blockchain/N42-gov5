@@ -893,12 +893,15 @@ func (t *FreezerTable) Sync() error {
 	if err := t.indexFile.Sync(); err != nil {
 		return err
 	}
-	// Only sync the head data file (the one we write to). Other files
-	// in dataFiles may be opened read-only via openDataFileRO and
-	// cannot be synced on Windows (Access is denied on RO handles).
+	// Best-effort sync on head data file. On Windows,
+	// FlushFileBuffers sometimes returns "Access is denied" even on
+	// RDWR handles (antivirus, indexer, or NTFS quirk). Since
+	// dataBuf.Flush() already pushed data to the OS page cache, this
+	// only affects hard-power-failure durability, not ctrl+c safety.
 	if df, ok := t.dataFiles[t.headFile]; ok {
 		if err := df.Sync(); err != nil {
-			return err
+			log.Warn("cdat sync failed (data in OS cache, non-fatal)",
+				"file", t.name, "err", err)
 		}
 	}
 	return nil
