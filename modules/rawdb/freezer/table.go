@@ -893,8 +893,11 @@ func (t *FreezerTable) Sync() error {
 	if err := t.indexFile.Sync(); err != nil {
 		return err
 	}
-	for _, f := range t.dataFiles {
-		if err := f.Sync(); err != nil {
+	// Only sync the head data file (the one we write to). Other files
+	// in dataFiles may be opened read-only via openDataFileRO and
+	// cannot be synced on Windows (Access is denied on RO handles).
+	if df, ok := t.dataFiles[t.headFile]; ok {
+		if err := df.Sync(); err != nil {
 			return err
 		}
 	}
