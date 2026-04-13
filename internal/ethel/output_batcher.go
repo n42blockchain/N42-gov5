@@ -387,15 +387,17 @@ func (b *outputBatcher) alignOnResume(startBlock uint64, hasRemainder bool) erro
 		}
 		if items < startBlock {
 			gap := startBlock - items
-			// Output freezer is behind MDBX — changesets for blocks
-			// [items, startBlock) were lost (hard kill / unclean shutdown).
-			// NEVER pad with empty entries: that silently corrupts the
-			// changeset stream, causing rebuild-state to produce wrong
-			// state roots. Error out so the operator deletes the output
-			// freezer and lets the next run regenerate all changesets.
-			return fmt.Errorf("output table %s has %d items but MDBX starts at block %d (gap %d); "+
-				"changesets lost during shutdown — delete output freezer and re-run",
-				name, items, startBlock, gap)
+			if hasRemainder && gap <= uint64(freezer.BatchSize) {
+				// Expected gap: the MDBX remainder covers these entries.
+				// They'll be restored by preloadRemainder after this loop.
+				log.Info("Output behind MDBX (covered by remainder)",
+					"table", name, "items", items, "startBlock", startBlock, "gap", gap)
+			} else {
+				// Real data loss: gap too large or no remainder to fill it.
+				return fmt.Errorf("output table %s has %d items but MDBX starts at block %d (gap %d); "+
+					"changesets lost during shutdown — delete output freezer and re-run",
+					name, items, startBlock, gap)
+			}
 		}
 
 		tb := &tableBatch{
