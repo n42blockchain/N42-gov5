@@ -80,6 +80,7 @@ type Executor struct {
 
 	// Output batcher: accumulates entries, writes in batches.
 	outBatcher *outputBatcher
+	asyncOut   *asyncOutputWriter // background changeset encoder + writer
 
 	// Timing collection for P50/P99 analysis.
 	timingSamples []timingSample
@@ -214,6 +215,16 @@ func (e *Executor) Run(ctx context.Context) error {
 	e.prefetcher.start()
 	defer e.prefetcher.stop()
 
+	// Start background output writer (changeset encoding + freezer I/O).
+	if e.outBatcher != nil {
+		e.asyncOut = newAsyncOutputWriter(e.outBatcher)
+		defer func() {
+			if e.asyncOut != nil {
+				e.asyncOut.stop()
+			}
+		}()
+	}
+
 	// Start the background PlainStateBuffer flusher. At every commit
 	// interval the executor hands off the buffer snapshot and the bg
 	// goroutine opens its OWN RwTx to apply + commit. Main thread
@@ -268,11 +279,16 @@ func (e *Executor) Run(ctx context.Context) error {
 				lastFlushDur = dur
 			}
 
-			// 2. Save ALL pending entries to MDBX (the authoritative
-			// store that survives any shutdown). Then flush to cdat
-			// as best-effort (Windows may lose page-cache data on
-			// exit). On resume, any gap between cdat and MDBX is
-			// filled from the MDBX-saved entries.
+			// 2. Drain async output writer so all pending encodes land
+			// in the batcher before we touch it from the main goroutine.
+			if e.asyncOut != nil {
+				if err := e.asyncOut.waitDrain(); err != nil {
+					return fmt.Errorf("drain async output at block %d: %w", blockNum, err)
+				}
+			}
+			// Save ALL pending entries to MDBX (the authoritative store
+			// that survives any shutdown). Then flush to cdat as
+			// best-effort.
 			var csEntries map[string][]byte
 			if e.outBatcher != nil {
 				csEntries = e.outBatcher.remainder() // ALL pending entries
@@ -421,6 +437,13 @@ func (e *Executor) Run(ctx context.Context) error {
 	}
 
 	if !shuttingDown {
+		// Drain async output writer before touching the batcher.
+		if e.asyncOut != nil {
+			if err := e.asyncOut.stop(); err != nil {
+				return fmt.Errorf("stop async output: %w", err)
+			}
+			e.asyncOut = nil
+		}
 		// Normal termination (--end reached): save all entries to MDBX,
 		// then best-effort flush to cdat.
 		var finalEntries map[string][]byte
@@ -520,22 +543,24 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) 
 
 	t2 := time.Now()
 	// 6. Commit state changes to in-memory buffer.
-	// Capture wipes length BEFORE CommitBlock so we can extract per-block wipes.
-	wipesBefore := len(e.stateBuf.ContractWipes())
 	rules := e.chainCfg.Rules(header.Number.Uint64())
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return fmt.Errorf("commit block state: %w", err)
 	}
 	t3 := time.Now()
 
-	// 7. Write execution outputs to output freezer.
-	if e.outFreezer != nil && !e.cfg.NoOutputs {
-		// Extract only THIS block's wipes (not accumulated from prior blocks).
-		allWipes := e.stateBuf.ContractWipes()
-		blockWipes := allWipes[wipesBefore:]
-		if err := e.writeOutputs(blockNum, result, writer, witnessReader, tx, blockWipes); err != nil {
-			return fmt.Errorf("write outputs: %w", err)
+	// 7. Snapshot output data and enqueue for async encoding + write.
+	// The snapshot reads from stateBuf SYNCHRONOUSLY (before the next
+	// block can modify it), so the background encoder never races.
+	if e.asyncOut != nil {
+		if err := e.asyncOut.checkError(); err != nil {
+			return err
 		}
+		po, err := e.snapshotOutputs(blockNum, result, writer, witnessReader, tx)
+		if err != nil {
+			return fmt.Errorf("snapshot outputs: %w", err)
+		}
+		e.asyncOut.enqueue(po)
 	}
 
 	// 8. State root verification is handled by the main loop (Run)
@@ -754,90 +779,94 @@ func (e *Executor) reportTimings(blockNum uint64) {
 	)
 }
 
-// writeOutputs accumulates block results into the output batcher.
-// Batches are flushed automatically when full (execBatchSize entries).
-func (e *Executor) writeOutputs(blockNum uint64, result *BlockResult, writer *state.BufferedPlainStateWriter, witness *WitnessStateReader, dbTx kv.Tx, blockWipes []types.Address) error {
-	b := e.outBatcher
+// snapshotOutputs captures everything the background encoder needs from
+// the post-commit state. This runs SYNCHRONOUSLY on the main goroutine
+// so the next block's execution cannot race with stateBuf reads.
+// Cost: map iteration + map lookups in stateBuf — typically < 0.5ms.
+func (e *Executor) snapshotOutputs(blockNum uint64, result *BlockResult, writer *state.BufferedPlainStateWriter, witness *WitnessStateReader, dbTx kv.Tx) (pendingOutput, error) {
+	po := pendingOutput{blockNum: blockNum}
 
-	// 1. Receipts/senders: not written. Both tables are being deprecated;
-	// receipts can be re-derived by replaying transactions when needed,
-	// and senders are produced by the dedicated sender-recovery stage on
-	// demand. We keep the function parameter shape so callers don't need
-	// to change.
+	// Block witness (already encoded, block-scoped).
+	if witness != nil {
+		po.witnessData = witness.Encode()
+	}
 
-	// 2. Unified changesets — per-entry carries both old and new values,
-	// so forward replay (rebuild-state) and backward unwind (reorg) share
-	// a single data source and neither needs the EVM. The legacy leaves
-	// journal is no longer written; block 0 uses a dedicated genesis
-	// encoder that walks the initial PlainState and emits the V2 blobs
-	// with oldLen=0.
-	var accCSBytes, stoCSBytes []byte
+	// Block 0: genesis encoding needs dbTx iterators — encode synchronously
+	// here (one-time cost) and pass pre-encoded bytes.
 	if blockNum == 0 {
 		var err error
-		accCSBytes, err = EncodeGenesisAccounts(newGenesisAccountIterator(dbTx))
+		po.genesisAcct, err = EncodeGenesisAccounts(newGenesisAccountIterator(dbTx))
 		if err != nil {
-			return fmt.Errorf("encode genesis accounts: %w", err)
+			return po, fmt.Errorf("encode genesis accounts: %w", err)
 		}
-		stoCSBytes, err = EncodeGenesisStorages(newGenesisStorageIterator(dbTx))
+		po.genesisSto, err = EncodeGenesisStorages(newGenesisStorageIterator(dbTx))
 		if err != nil {
-			return fmt.Errorf("encode genesis storages: %w", err)
+			return po, fmt.Errorf("encode genesis storages: %w", err)
 		}
-	} else {
-		csw := writer.ChangeSetWriter()
-		if csw != nil {
-			accCS, err := csw.GetAccountChanges()
-			if err != nil {
-				return fmt.Errorf("get account changes: %w", err)
-			}
-			stoCS, err := csw.GetStorageChanges()
-			if err != nil {
-				return fmt.Errorf("get storage changes: %w", err)
-			}
+		return po, nil
+	}
 
-			// Buffered reader sees the post-block state (write buffer
-			// shadowing MDBX). new-value callbacks read through it.
-			bufReader := state.NewBufferedPlainStateReader(e.stateBuf, dbTx)
+	csw := writer.ChangeSetWriter()
+	if csw == nil {
+		return po, nil
+	}
 
-			accCSBytes = EncodeAccountChanges(accCS, func(addr types.Address) []byte {
-				a, err := bufReader.ReadAccountData(addr)
-				if err != nil || a == nil {
-					return nil
-				}
-				return a.MarshalV2()
-			})
-			stoCSBytes = EncodeStorageChanges(stoCS, func(addr types.Address, slot types.Hash) []byte {
-				v, err := bufReader.ReadAccountStorage(addr, 0, &slot)
-				if err != nil {
-					return nil
-				}
-				return v
-			})
+	accCS, err := csw.GetAccountChanges()
+	if err != nil {
+		return po, fmt.Errorf("get account changes: %w", err)
+	}
+	stoCS, err := csw.GetStorageChanges()
+	if err != nil {
+		return po, fmt.Errorf("get storage changes: %w", err)
+	}
+	po.accCS = accCS
+	po.stoCS = stoCS
+
+	// Snapshot new values by reading from BufferedPlainStateReader.
+	// This is the ONLY place that touches stateBuf — done synchronously
+	// so the next block's writes cannot interfere.
+	bufReader := state.NewBufferedPlainStateReader(e.stateBuf, dbTx)
+
+	po.accNewVals = make(map[types.Address][]byte, accCS.Len())
+	for _, c := range accCS.Changes {
+		if len(c.Key) < 20 {
+			continue
+		}
+		var addr types.Address
+		copy(addr[:], c.Key[:20])
+		a, err := bufReader.ReadAccountData(addr)
+		if err != nil || a == nil {
+			po.accNewVals[addr] = nil
+		} else {
+			po.accNewVals[addr] = a.MarshalV2()
 		}
 	}
-	if err := b.addEntry(freezer.TableAccountChanges, "c", accCSBytes); err != nil {
-		return fmt.Errorf("account changes: %w", err)
-	}
-	if err := b.addEntry(freezer.TableStorageChanges, "c", stoCSBytes); err != nil {
-		return fmt.Errorf("storage changes: %w", err)
-	}
-	_ = blockWipes // Retained for signature parity; wipes are now implicit in
-	// storcs entries (each wiped slot has oldLen>0, newLen=0).
 
-	// 3. Block witness.
-	var witnessData []byte
-	if witness != nil {
-		witnessData = witness.Encode()
-	}
-	if err := b.addEntry(freezer.TableBlockWitness, "c", witnessData); err != nil {
-		return fmt.Errorf("block witness: %w", err)
+	po.stoNewVals = make(map[[52]byte][]byte, stoCS.Len())
+	for _, c := range stoCS.Changes {
+		if len(c.Key) < 52 {
+			continue
+		}
+		var addr types.Address
+		var slot types.Hash
+		copy(addr[:], c.Key[:20])
+		copy(slot[:], c.Key[20:52])
+		v, err := bufReader.ReadAccountStorage(addr, 0, &slot)
+		if err != nil {
+			v = nil
+		}
+		var key [52]byte
+		copy(key[:], c.Key[:52])
+		if len(v) > 0 {
+			cp := make([]byte, len(v))
+			copy(cp, v)
+			po.stoNewVals[key] = cp
+		} else {
+			po.stoNewVals[key] = nil
+		}
 	}
 
-	// Flush complete batches.
-	if _, err := b.flushFullBatches(); err != nil {
-		return fmt.Errorf("flush batches: %w", err)
-	}
-
-	return nil
+	return po, nil
 }
 
 // dumpGasMismatch is a diagnostic invoked when a block's total gas used
