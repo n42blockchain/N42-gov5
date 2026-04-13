@@ -16,6 +16,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -186,26 +187,55 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	}
 	defer roTx.Rollback()
 
-	// Touch accounts in MDBX to warm the OS page cache. The read itself
-	// brings the B+-tree pages into memory; we deliberately do NOT write
-	// to the shared LRU cache here because the prefetcher's RoTx may be
-	// stale (opened before the background flusher's MDBX commit). If we
-	// cached those stale values, a late CacheAccount call could overwrite
-	// the correct entry that RefreshLRUForSnapshot just installed,
-	// causing subsequent reads to return wrong data (e.g. wrong Empty()
-	// result → 25000 gas mismatch → gas pool exhaustion).
+	// Warm accounts: check inFlight snapshot first (immutable, safe from
+	// any goroutine). If found there, cache the authoritative value.
+	// Only fall through to MDBX for keys NOT in the inFlight snapshot —
+	// those MDBX values are stable (committed in an earlier interval) and
+	// safe to cache. This avoids the stale-RoTx race: keys in the
+	// inFlight snapshot get the correct value directly; keys not in it
+	// have a stable MDBX value that RefreshLRU won't overwrite (because
+	// RefreshLRU only touches keys IN the snapshot).
+	snap := p.stateBuf.InFlightSnapshot()
 	for addr := range addrs {
-		roTx.GetOne(modules.Account, addr[:])
+		if enc, ok := snap.LookupAccount(addr); ok {
+			if len(enc) > 0 {
+				var a account.StateAccount
+				if a.DecodeForStorage(enc) == nil {
+					p.stateBuf.CacheAccount(addr, &a)
+				}
+			} else {
+				p.stateBuf.CacheAccount(addr, nil)
+			}
+			continue
+		}
+		enc, _ := roTx.GetOne(modules.Account, addr[:])
+		if len(enc) > 0 {
+			var a account.StateAccount
+			if a.DecodeForStorage(enc) == nil {
+				p.stateBuf.CacheAccount(addr, &a)
+			}
+		} else {
+			p.stateBuf.CacheAccount(addr, nil)
+		}
 	}
 
-	// Touch storage slots in MDBX to warm the page cache (post-Berlin
-	// access-list entries only). Same rationale: read for page warming,
-	// no LRU write.
+	// Warm storage slots (post-Berlin access-list entries).
 	for _, tx := range body.Transactions {
 		for _, entry := range tx.AccessList() {
 			for _, key := range entry.StorageKeys {
+				if val, ok := snap.LookupStorage(entry.Address, key); ok {
+					p.stateBuf.CacheStorage(entry.Address, key, val)
+					continue
+				}
 				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], key[:])
-				roTx.GetOne(modules.Storage, compositeKey)
+				enc, _ := roTx.GetOne(modules.Storage, compositeKey)
+				if len(enc) > 0 {
+					cached := make([]byte, len(enc))
+					copy(cached, enc)
+					p.stateBuf.CacheStorage(entry.Address, key, cached)
+				} else {
+					p.stateBuf.CacheStorage(entry.Address, key, nil)
+				}
 			}
 		}
 	}
