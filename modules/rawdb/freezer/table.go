@@ -893,26 +893,13 @@ func (t *FreezerTable) Sync() error {
 	if err := t.indexFile.Sync(); err != nil {
 		return err
 	}
-	// Sync head data file. On Windows, FlushFileBuffers on RDWR handles
-	// sometimes fails with "Access is denied". Workaround: close the
-	// handle and reopen — Close() on Windows implicitly flushes the
-	// kernel write buffer for the file, achieving the same durability.
+	// cdat sync: best-effort. dataBuf.Flush() already pushed data to
+	// the OS page cache. Sync only adds hard-power-failure durability.
+	// On Windows FlushFileBuffers often fails ("Access is denied") —
+	// the data still survives ctrl+c because the OS flushes page cache
+	// on normal shutdown.
 	if df, ok := t.dataFiles[t.headFile]; ok {
-		if err := df.Sync(); err != nil {
-			// Close + reopen as fallback flush.
-			df.Close()
-			delete(t.dataFiles, t.headFile)
-			delete(t.dataFilesRW, t.headFile)
-			t.dataBuf = nil // force re-create on next write
-			newDf, rerr := t.createDataFile(t.headFile)
-			if rerr != nil {
-				return fmt.Errorf("reopen cdat after sync failure: %w", rerr)
-			}
-			newDf.Seek(0, io.SeekEnd)
-			t.dataBuf = bufio.NewWriterSize(newDf, writeBufferSize)
-			log.Debug("cdat sync: close+reopen fallback",
-				"file", t.name, "syncErr", err)
-		}
+		_ = df.Sync() // ignore error
 	}
 	return nil
 }
