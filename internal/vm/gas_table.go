@@ -26,6 +26,8 @@ package vm
 
 import (
 	"errors"
+	"fmt"
+	"os"
 
 	"github.com/holiman/uint256"
 
@@ -219,6 +221,35 @@ func gasSStoreEIP2200(evm VMInterpreter, contract *Contract, stack *stack.Stack,
 
 	var original uint256.Int
 	evm.IntraBlockState().GetCommittedState(contract.Address(), &key, &original)
+
+	// Env-gated trace for debugging 15K SSTORE diffs on MEV bots.
+	if dbgSStore15K {
+		addr := contract.Address()
+		var path string
+		if original == current {
+			if original.IsZero() {
+				path = "2.1.1-SET"
+			} else if value.IsZero() {
+				path = "2.1.2b-CLEAR+15k"
+			} else {
+				path = "2.1.2-RESET"
+			}
+		} else {
+			path = "2.2-DIRTY"
+			if !original.IsZero() && current.IsZero() {
+				path += "/2.2.1.1-SUB15k"
+			} else if !original.IsZero() && value.IsZero() {
+				path += "/2.2.1.2-ADD15k"
+			}
+		}
+		ti := -1
+		if ibs, ok := evm.IntraBlockState().(interface{ TxIndex() int }); ok {
+			ti = ibs.TxIndex()
+		}
+		fmt.Fprintf(os.Stderr, "SSTORE ti=%d addr=%x slot=%x orig=%s cur=%s val=%s path=%s\n",
+			ti, addr[:], key, original.Hex(), current.Hex(), value.Hex(), path)
+	}
+
 	if original == current {
 		if original.IsZero() { // create slot (2.1.1)
 			return params.SstoreSetGasEIP2200, nil
@@ -244,6 +275,11 @@ func gasSStoreEIP2200(evm VMInterpreter, contract *Contract, stack *stack.Stack,
 	}
 	return params.SloadGasEIP2200, nil // dirty update (2.2)
 }
+
+// dbgSStore15K enables per-SSTORE trace on stderr. Activate with:
+//   DBG_SSTORE=1 ethexec ...
+// Produces one line per non-noop SSTORE with path/orig/cur/val.
+var dbgSStore15K = os.Getenv("DBG_SSTORE") != ""
 
 func makeGasLog(n uint64) gasFunc {
 	return func(_ VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
