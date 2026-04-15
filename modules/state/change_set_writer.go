@@ -48,7 +48,6 @@ import (
 type ChangeSetWriter struct {
 	db             kv.Tx
 	accountChanges map[types.Address][]byte
-	accountIncarns map[types.Address]uint16
 	storageChanged map[types.Address]bool
 	storageChanges map[string][]byte
 	blockNumber    uint64
@@ -57,7 +56,6 @@ type ChangeSetWriter struct {
 func NewChangeSetWriter() *ChangeSetWriter {
 	return &ChangeSetWriter{
 		accountChanges: make(map[types.Address][]byte),
-		accountIncarns: make(map[types.Address]uint16),
 		storageChanged: make(map[types.Address]bool),
 		storageChanges: make(map[string][]byte),
 	}
@@ -66,7 +64,6 @@ func NewChangeSetWriterPlain(db kv.Tx, blockNumber uint64) *ChangeSetWriter {
 	return &ChangeSetWriter{
 		db:             db,
 		accountChanges: make(map[types.Address][]byte),
-		accountIncarns: make(map[types.Address]uint16),
 		storageChanged: make(map[types.Address]bool),
 		storageChanges: make(map[string][]byte),
 		blockNumber:    blockNumber,
@@ -155,12 +152,9 @@ func (w *ChangeSetWriter) CreateContract(address types.Address) error {
 	return nil
 }
 
+// NoteOriginalIncarnation is a no-op as of Phase D — original incarnation is
+// no longer tracked because acctcs OldValue is full V2 with CodeHash inline.
 func (w *ChangeSetWriter) NoteOriginalIncarnation(address types.Address, incarnation uint16) {
-	if incarnation == 0 {
-		delete(w.accountIncarns, address)
-		return
-	}
-	w.accountIncarns[address] = incarnation
 }
 
 // recordStorageWipe adds (slot, old_value) entries to storageChanges for a

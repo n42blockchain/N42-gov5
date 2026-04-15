@@ -531,11 +531,5 @@ func clearAllState(tx kv.RwTx) error {
 	if err := tx.ClearBucket(modules.Account); err != nil {
 		return err
 	}
-	if err := tx.ClearBucket(modules.Storage); err != nil {
-		return err
-	}
-	if err := tx.ClearBucket(modules.PlainContractCode); err != nil {
-		return err
-	}
-	return tx.ClearBucket(modules.IncarnationMap)
+	return tx.ClearBucket(modules.Storage)
 }

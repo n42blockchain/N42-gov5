@@ -263,7 +263,7 @@ func TestLayeredDB_TableRouting(t *testing.T) {
 	defer db.Close()
 
 	// Verify hot tables route to stateDB.
-	hotNames := []string{"Account", "Storage", "Code", "PlainCodeHash", "IncarnationMap"}
+	hotNames := []string{"Account", "Storage", "Code"}
 	for _, name := range hotNames {
 		if IsColdTable(name) {
 			t.Errorf("%s should not be cold", name)

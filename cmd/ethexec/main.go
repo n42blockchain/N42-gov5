@@ -283,7 +283,7 @@ func main() {
 
 					// Count entries.
 					tx, _ := db.BeginRo(context.Background())
-					for _, tbl := range []string{"Account", "Storage", "PlainContractCode", "HashedAccounts", "HashedStorage"} {
+					for _, tbl := range []string{"Account", "Storage", "HashedAccounts", "HashedStorage"} {
 						cursor, err := tx.Cursor(tbl)
 						if err != nil { continue }
 						k, _, _ := cursor.First()

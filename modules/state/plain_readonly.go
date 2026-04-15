@@ -25,8 +25,6 @@ package state
 
 import (
 	"bytes"
-	"encoding/binary"
-	"errors"
 	"fmt"
 
 	"github.com/google/btree"
@@ -37,7 +35,6 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
-	"github.com/n42blockchain/N42/modules/ethdb"
 )
 
 type storageItem struct {
@@ -177,15 +174,8 @@ func (s *PlainState) ReadAccountData(address types.Address) (*account.StateAccou
 	if err = a.DecodeForStorage(enc); err != nil {
 		return nil, err
 	}
-	if a.IsEmptyCodeHash() {
-		restored, err1 := RestoreHistoricalAccountCodeHash(s.tx, address[:], enc)
-		if err1 != nil {
-			return nil, err1
-		}
-		if err = a.DecodeForStorage(restored); err != nil {
-			return nil, err
-		}
-	}
+	// Phase B made historical Account entries self-contained (CodeHash inline);
+	// no fallback to PlainContractCode is needed.
 	if s.trace {
 		fmt.Printf("ReadAccountData [%x] => [nonce: %d, balance: %d, codeHash: %x]\n", address, a.Nonce, &a.Balance, a.CodeHash)
 	}
@@ -226,37 +216,10 @@ func (s *PlainState) ReadAccountCodeSize(address types.Address, incarnation uint
 	return len(code), err
 }
 
+// ReadAccountIncarnation returns 0 as of Phase D — see
+// BufferedPlainStateReader for the rationale.
 func (s *PlainState) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	enc, err := FindByHistory(s.tx, s.accHistoryC, s.accChangesC, false /* storage */, address[:], s.blockNr+1)
-	if err != nil {
-		if !errors.Is(err, ethdb.ErrKeyNotFound) {
-			return 0, err
-		}
-		b, getErr := s.tx.GetOne(modules.IncarnationMap, address[:])
-		if getErr != nil || len(b) == 0 {
-			return 0, getErr
-		}
-		return binary.BigEndian.Uint16(b), nil
-	}
-	if len(enc) == 0 {
-		b, err := s.tx.GetOne(modules.IncarnationMap, address[:])
-		if err != nil || len(b) == 0 {
-			return 0, err
-		}
-		return binary.BigEndian.Uint16(b), nil
-	}
-	incarnation, ok, err := DecodeAccountHistoryIncarnation(enc)
-	if err != nil {
-		return 0, err
-	}
-	if ok {
-		return incarnation, nil
-	}
-	b, err := s.tx.GetOne(modules.IncarnationMap, address[:])
-	if err != nil || len(b) == 0 {
-		return 0, err
-	}
-	return binary.BigEndian.Uint16(b), nil
+	return 0, nil
 }
 
 func (s *PlainState) UpdateAccountData(address types.Address, original, account *account.StateAccount) error {

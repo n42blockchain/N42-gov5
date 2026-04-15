@@ -15,9 +15,6 @@
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 //
 // Database StateWriter that emits changesets and history indexes.
-// originalAccountData produces the pre-image bytes for account diffs,
-// optionally zeroing CodeHash/Root when omitHashes is set for
-// hash-insensitive replay.
 // writeIndex updates the bitmap-based history index buckets via
 // bitmapdb.Get64, merging per-block changes into a roaring64 index.
 
@@ -30,17 +27,12 @@ import (
 
 	"github.com/RoaringBitmap/roaring/roaring64"
 
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/changeset"
 	"github.com/n42blockchain/N42/modules/ethdb/bitmapdb"
 )
-
-func originalAccountData(original *account.StateAccount, omitHashes bool, incarnation uint16) []byte {
-	return EncodeAccountForHistory(original, omitHashes, incarnation)
-}
 
 func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, changeDb kv.RwTx) error {
 	buf := bytes.NewBuffer(nil)

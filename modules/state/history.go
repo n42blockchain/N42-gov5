@@ -101,14 +101,8 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 		return nil, ethdb.ErrKeyNotFound
 	}
 
-	// Restore codehash for account data.
-	if !storage {
-		data, err = RestoreHistoricalAccountCodeHash(tx, key, data)
-		if err != nil {
-			return nil, err
-		}
-	}
-
+	// Phase B: account changeset OldValues are self-contained (full V2 with
+	// CodeHash inline); no historical CodeHash recovery is needed.
 	return data, nil
 }
 
