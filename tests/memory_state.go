@@ -44,7 +44,7 @@ func (m *MemoryState) ReadAccountData(address types.Address) (*account.StateAcco
 	return nil, nil
 }
 
-func (m *MemoryState) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (m *MemoryState) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	if storage, ok := m.storage[address]; ok {
 		if val, ok := storage[*key]; ok {
 			return val, nil
@@ -53,22 +53,17 @@ func (m *MemoryState) ReadAccountStorage(address types.Address, incarnation uint
 	return nil, nil
 }
 
-func (m *MemoryState) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (m *MemoryState) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	if code, ok := m.code[address]; ok {
 		return code, nil
 	}
 	return nil, nil
 }
 
-func (m *MemoryState) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
+func (m *MemoryState) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	if code, ok := m.code[address]; ok {
 		return len(code), nil
 	}
-	return 0, nil
-}
-
-func (m *MemoryState) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	// incarnation removed from StateAccount — always return 0
 	return 0, nil
 }
 
@@ -83,7 +78,7 @@ func (m *MemoryState) UpdateAccountData(address types.Address, original, acc *ac
 	return nil
 }
 
-func (m *MemoryState) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (m *MemoryState) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	m.code[address] = code
 	return nil
 }
@@ -95,7 +90,7 @@ func (m *MemoryState) DeleteAccount(address types.Address, original *account.Sta
 	return nil
 }
 
-func (m *MemoryState) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (m *MemoryState) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	if m.storage[address] == nil {
 		m.storage[address] = make(map[types.Hash][]byte)
 	}
@@ -118,7 +113,7 @@ func (n *NoopWriter) UpdateAccountData(address types.Address, original, account 
 	return nil
 }
 
-func (n *NoopWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (n *NoopWriter) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	return nil
 }
 
@@ -126,7 +121,7 @@ func (n *NoopWriter) DeleteAccount(address types.Address, original *account.Stat
 	return nil
 }
 
-func (n *NoopWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (n *NoopWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	return nil
 }
 

@@ -615,7 +615,7 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 	return &a, nil
 }
 
-func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	// 1. Active write buffer.
 	if slots, ok := r.buf.storage[address]; ok {
 		if entry, ok2 := slots[*key]; ok2 {
@@ -683,7 +683,7 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, inc
 	return cached, nil
 }
 
-func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	if bytes.Equal(codeHash[:], emptyCodeHash) {
 		return nil, nil
 	}
@@ -719,18 +719,9 @@ func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, incarn
 	return cached, nil
 }
 
-func (r *BufferedPlainStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(address, incarnation, codeHash)
+func (r *BufferedPlainStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(address, codeHash)
 	return len(code), err
-}
-
-// ReadAccountIncarnation always returns 0 as of Phase D — IncarnationMap is
-// no longer maintained. Storage keys are flat (addr||slot, 52 bytes) and
-// CodeHash lives inline on the Account row, so no consumer in the reth-style
-// data path actually needs the historical incarnation. The signature is kept
-// to satisfy the StateReader interface.
-func (r *BufferedPlainStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return 0, nil
 }
 
 // -----------------------------------------------------------------------
@@ -771,9 +762,9 @@ func (w *BufferedPlainStateWriter) UpdateAccountData(address types.Address, orig
 	return nil
 }
 
-func (w *BufferedPlainStateWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (w *BufferedPlainStateWriter) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	if w.csw != nil {
-		if err := w.csw.UpdateAccountCode(address, incarnation, codeHash, code); err != nil {
+		if err := w.csw.UpdateAccountCode(address, codeHash, code); err != nil {
 			return err
 		}
 	}
@@ -793,9 +784,9 @@ func (w *BufferedPlainStateWriter) DeleteAccount(address types.Address, original
 	return nil
 }
 
-func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	if w.csw != nil {
-		if err := w.csw.WriteAccountStorage(address, incarnation, key, original, value); err != nil {
+		if err := w.csw.WriteAccountStorage(address, key, original, value); err != nil {
 			return err
 		}
 	}
@@ -980,12 +971,6 @@ func (w *BufferedPlainStateWriter) WriteHistory() error {
 
 func (w *BufferedPlainStateWriter) ChangeSetWriter() *ChangeSetWriter {
 	return w.csw
-}
-
-// NoteAccountIncarnations is preserved on the interface for binary
-// compatibility but is a no-op as of Phase D — IncarnationMap is no longer
-// maintained.
-func (w *BufferedPlainStateWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
 }
 
 var (

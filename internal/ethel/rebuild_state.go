@@ -663,7 +663,7 @@ func rebuildEVMFallback(ctx context.Context, db kv.RwDB, opts RebuildOptions, bl
 		// newValueOf reads from the MDBX tx which now has the post-commit state.
 		postReader := state.NewPlainStateReader(rwTx)
 		stoCSBytes := EncodeStorageChanges(stoCS, func(addr types.Address, slot types.Hash) []byte {
-			v, err := postReader.ReadAccountStorage(addr, 0, &slot)
+			v, err := postReader.ReadAccountStorage(addr, &slot)
 			if err != nil {
 				return nil
 			}

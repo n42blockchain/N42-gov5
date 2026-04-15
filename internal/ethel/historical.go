@@ -85,7 +85,7 @@ func (h *HistoricalState) GetStorageAt(addr types.Address, slot types.Hash, bloc
 	if acc == nil {
 		return nil, nil
 	}
-	return reader.ReadAccountStorage(addr, 0, &slot)
+	return reader.ReadAccountStorage(addr, &slot)
 }
 
 // GetAccount returns full account data at a specific block number.

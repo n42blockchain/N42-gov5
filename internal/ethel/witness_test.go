@@ -18,19 +18,18 @@ func (m *mockReader) ReadAccountData(addr types.Address) (*account.StateAccount,
 	}
 	return nil, nil // absent
 }
-func (m *mockReader) ReadAccountStorage(addr types.Address, inc uint16, key *types.Hash) ([]byte, error) {
+func (m *mockReader) ReadAccountStorage(addr types.Address, key *types.Hash) ([]byte, error) {
 	if key[0] == 0x01 {
 		return []byte{0x42, 0xAB}, nil
 	}
 	return nil, nil
 }
-func (m *mockReader) ReadAccountCode(types.Address, uint16, types.Hash) ([]byte, error) {
+func (m *mockReader) ReadAccountCode(types.Address, types.Hash) ([]byte, error) {
 	return []byte{0x60, 0x00}, nil // some code
 }
-func (m *mockReader) ReadAccountCodeSize(types.Address, uint16, types.Hash) (int, error) {
+func (m *mockReader) ReadAccountCodeSize(types.Address, types.Hash) (int, error) {
 	return 2, nil
 }
-func (m *mockReader) ReadAccountIncarnation(types.Address) (uint16, error) { return 0, nil }
 
 var _ state.StateReader = (*mockReader)(nil)
 
@@ -42,11 +41,11 @@ func TestWitnessStream(t *testing.T) {
 	// Access present account → [len][V2 data...]
 	w.ReadAccountData(types.Address{0x11})
 	// Access absent storage → [0x00]
-	w.ReadAccountStorage(types.Address{0x11}, 0, &types.Hash{0x99})
+	w.ReadAccountStorage(types.Address{0x11}, &types.Hash{0x99})
 	// Access present storage → [len][value...]
-	w.ReadAccountStorage(types.Address{0x11}, 0, &types.Hash{0x01})
+	w.ReadAccountStorage(types.Address{0x11}, &types.Hash{0x01})
 	// Code read → NOT recorded
-	w.ReadAccountCode(types.Address{0x11}, 0, types.Hash{})
+	w.ReadAccountCode(types.Address{0x11}, types.Hash{})
 
 	data := w.Encode()
 

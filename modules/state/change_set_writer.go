@@ -122,7 +122,7 @@ func (w *ChangeSetWriter) UpdateAccountData(address types.Address, original, acc
 	return nil
 }
 
-func (w *ChangeSetWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (w *ChangeSetWriter) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	return nil
 }
 
@@ -135,7 +135,7 @@ func (w *ChangeSetWriter) DeleteAccount(address types.Address, original *account
 	return nil
 }
 
-func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	if *original == *value {
 		return nil
 	}
@@ -150,11 +150,6 @@ func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, incarnation
 
 func (w *ChangeSetWriter) CreateContract(address types.Address) error {
 	return nil
-}
-
-// NoteOriginalIncarnation is a no-op as of Phase D — original incarnation is
-// no longer tracked because acctcs OldValue is full V2 with CodeHash inline.
-func (w *ChangeSetWriter) NoteOriginalIncarnation(address types.Address, incarnation uint16) {
 }
 
 // recordStorageWipe adds (slot, old_value) entries to storageChanges for a

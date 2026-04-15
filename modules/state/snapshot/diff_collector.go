@@ -64,8 +64,8 @@ func (dc *DiffCollector) UpdateAccountData(address types.Address, original, acc 
 
 // UpdateAccountCode delegates to inner. Code is not tracked in diff layers
 // since it is immutable (content-addressed by hash).
-func (dc *DiffCollector) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
-	return dc.inner.UpdateAccountCode(address, incarnation, codeHash, code)
+func (dc *DiffCollector) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
+	return dc.inner.UpdateAccountCode(address, codeHash, code)
 }
 
 // DeleteAccount records an account deletion and delegates to inner.
@@ -76,7 +76,7 @@ func (dc *DiffCollector) DeleteAccount(address types.Address, original *account.
 }
 
 // WriteAccountStorage records a storage write and delegates to inner.
-func (dc *DiffCollector) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (dc *DiffCollector) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	slots, ok := dc.storage[address]
 	if !ok {
 		slots = make(map[types.Hash][]byte)
@@ -87,7 +87,7 @@ func (dc *DiffCollector) WriteAccountStorage(address types.Address, incarnation 
 	} else {
 		slots[*key] = value.Bytes()
 	}
-	return dc.inner.WriteAccountStorage(address, incarnation, key, original, value)
+	return dc.inner.WriteAccountStorage(address, key, original, value)
 }
 
 // CreateContract delegates to inner.
@@ -103,12 +103,6 @@ func (dc *DiffCollector) WriteChangeSets() error {
 // WriteHistory delegates to inner.
 func (dc *DiffCollector) WriteHistory() error {
 	return dc.inner.WriteHistory()
-}
-
-func (dc *DiffCollector) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
-	if notifier, ok := dc.inner.(state.AccountIncarnationNotifier); ok {
-		notifier.NoteAccountIncarnations(address, originalIncarnation, currentIncarnation)
-	}
 }
 
 // Accounts returns the collected account modifications.

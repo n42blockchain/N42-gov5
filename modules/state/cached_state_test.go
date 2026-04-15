@@ -152,7 +152,7 @@ func TestCachedStateReader_ReadAccountStorage(t *testing.T) {
 		w := NewPlainStateWriter(tx, tx, 1)
 		val := uint256.NewInt(999)
 		orig := uint256.NewInt(0)
-		return w.WriteAccountStorage(addr, 1, &key, orig, val)
+		return w.WriteAccountStorage(addr, &key, orig, val)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestCachedStateReader_ReadAccountStorage(t *testing.T) {
 		inner := NewPlainStateReader(tx)
 		reader := NewCachedStateReader(inner, cache)
 
-		v, err := reader.ReadAccountStorage(addr, 1, &key)
+		v, err := reader.ReadAccountStorage(addr, &key)
 		if err != nil {
 			return err
 		}
@@ -172,7 +172,7 @@ func TestCachedStateReader_ReadAccountStorage(t *testing.T) {
 		}
 
 		// Second read — cache hit.
-		v2, err := reader.ReadAccountStorage(addr, 1, &key)
+		v2, err := reader.ReadAccountStorage(addr, &key)
 		if err != nil {
 			return err
 		}

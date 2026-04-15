@@ -96,24 +96,19 @@ func TestStateReaderMethods(t *testing.T) {
 	t.Log("✓ ReadAccountData(address) (*account.StateAccount, error)")
 
 	// ReadAccountStorage
-	_, err = reader.ReadAccountStorage(types.Address{}, 0, &types.Hash{})
+	_, err = reader.ReadAccountStorage(types.Address{}, &types.Hash{})
 	_ = err
-	t.Log("✓ ReadAccountStorage(address, incarnation, key) ([]byte, error)")
+	t.Log("✓ ReadAccountStorage(address, key) ([]byte, error)")
 
 	// ReadAccountCode
-	_, err = reader.ReadAccountCode(types.Address{}, 0, types.Hash{})
+	_, err = reader.ReadAccountCode(types.Address{}, types.Hash{})
 	_ = err
-	t.Log("✓ ReadAccountCode(address, incarnation, codeHash) ([]byte, error)")
+	t.Log("✓ ReadAccountCode(address, codeHash) ([]byte, error)")
 
 	// ReadAccountCodeSize
-	_, err = reader.ReadAccountCodeSize(types.Address{}, 0, types.Hash{})
+	_, err = reader.ReadAccountCodeSize(types.Address{}, types.Hash{})
 	_ = err
-	t.Log("✓ ReadAccountCodeSize(address, incarnation, codeHash) (int, error)")
-
-	// ReadAccountIncarnation
-	_, err = reader.ReadAccountIncarnation(types.Address{})
-	_ = err
-	t.Log("✓ ReadAccountIncarnation(address) (uint16, error)")
+	t.Log("✓ ReadAccountCodeSize(address, codeHash) (int, error)")
 }
 
 // TestStateWriterMethods verifies all StateWriter methods have correct signatures
@@ -126,9 +121,9 @@ func TestStateWriterMethods(t *testing.T) {
 	t.Log("✓ UpdateAccountData(address, original, account) error")
 
 	// UpdateAccountCode
-	err = writer.UpdateAccountCode(types.Address{}, 0, types.Hash{}, nil)
+	err = writer.UpdateAccountCode(types.Address{}, types.Hash{}, nil)
 	_ = err
-	t.Log("✓ UpdateAccountCode(address, incarnation, codeHash, code) error")
+	t.Log("✓ UpdateAccountCode(address, codeHash, code) error")
 
 	// DeleteAccount
 	err = writer.DeleteAccount(types.Address{}, nil)
@@ -136,9 +131,9 @@ func TestStateWriterMethods(t *testing.T) {
 	t.Log("✓ DeleteAccount(address, original) error")
 
 	// WriteAccountStorage
-	err = writer.WriteAccountStorage(types.Address{}, 0, &types.Hash{}, nil, nil)
+	err = writer.WriteAccountStorage(types.Address{}, &types.Hash{}, nil, nil)
 	_ = err
-	t.Log("✓ WriteAccountStorage(address, incarnation, key, original, value) error")
+	t.Log("✓ WriteAccountStorage(address, key, original, value) error")
 
 	// CreateContract
 	err = writer.CreateContract(types.Address{})
@@ -156,19 +151,15 @@ func (m *mockStateReader) ReadAccountData(address types.Address) (*account.State
 	return nil, nil
 }
 
-func (m *mockStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (m *mockStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *mockStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (m *mockStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *mockStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	return 0, nil
-}
-
-func (m *mockStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
+func (m *mockStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	return 0, nil
 }
 
@@ -178,7 +169,7 @@ func (m *mockStateWriter) UpdateAccountData(address types.Address, original, acc
 	return nil
 }
 
-func (m *mockStateWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (m *mockStateWriter) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	return nil
 }
 
@@ -186,7 +177,7 @@ func (m *mockStateWriter) DeleteAccount(address types.Address, original *account
 	return nil
 }
 
-func (m *mockStateWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (m *mockStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	return nil
 }
 

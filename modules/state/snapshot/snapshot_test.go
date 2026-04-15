@@ -480,21 +480,17 @@ func (m *mockStateReader) ReadAccountData(address types.Address) (*account.State
 	return m.accounts[address], nil
 }
 
-func (m *mockStateReader) ReadAccountStorage(address types.Address, _ uint16, key *types.Hash) ([]byte, error) {
+func (m *mockStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	if slots, ok := m.storage[address]; ok {
 		return slots[*key], nil
 	}
 	return nil, nil
 }
 
-func (m *mockStateReader) ReadAccountCode(_ types.Address, _ uint16, _ types.Hash) ([]byte, error) {
+func (m *mockStateReader) ReadAccountCode(_ types.Address, _ types.Hash) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *mockStateReader) ReadAccountCodeSize(_ types.Address, _ uint16, _ types.Hash) (int, error) {
-	return 0, nil
-}
-
-func (m *mockStateReader) ReadAccountIncarnation(_ types.Address) (uint16, error) {
+func (m *mockStateReader) ReadAccountCodeSize(_ types.Address, _ types.Hash) (int, error) {
 	return 0, nil
 }

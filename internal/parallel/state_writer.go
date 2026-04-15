@@ -50,7 +50,7 @@ func (w *ParallelStateWriter) UpdateAccountData(address types.Address, original,
 }
 
 // UpdateAccountCode records a code update.
-func (w *ParallelStateWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (w *ParallelStateWriter) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	key := LocationKey{Address: address, Field: FieldCode}
 	w.rw.RecordWrite(key, code)
 
@@ -78,7 +78,7 @@ func (w *ParallelStateWriter) DeleteAccount(address types.Address, original *acc
 }
 
 // WriteAccountStorage records a storage slot write.
-func (w *ParallelStateWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (w *ParallelStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	locKey := LocationKey{Address: address, Field: FieldStorage, Slot: *key}
 	if value.IsZero() {
 		w.rw.RecordWrite(locKey, nil) // delete
@@ -95,5 +95,3 @@ func (w *ParallelStateWriter) CreateContract(address types.Address) error {
 	return nil
 }
 
-func (w *ParallelStateWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
-}

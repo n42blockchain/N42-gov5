@@ -31,7 +31,7 @@ func (s *stubReader) ReadAccountData(addr types.Address) (*account.StateAccount,
 	return s.accounts[addr], nil
 }
 
-func (s *stubReader) ReadAccountStorage(addr types.Address, _ uint16, key *types.Hash) ([]byte, error) {
+func (s *stubReader) ReadAccountStorage(addr types.Address, key *types.Hash) ([]byte, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -41,19 +41,17 @@ func (s *stubReader) ReadAccountStorage(addr types.Address, _ uint16, key *types
 	return nil, nil
 }
 
-func (s *stubReader) ReadAccountCode(_ types.Address, _ uint16, codeHash types.Hash) ([]byte, error) {
+func (s *stubReader) ReadAccountCode(_ types.Address, codeHash types.Hash) ([]byte, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
 	return s.codes[codeHash], nil
 }
 
-func (s *stubReader) ReadAccountCodeSize(addr types.Address, inc uint16, codeHash types.Hash) (int, error) {
-	c, err := s.ReadAccountCode(addr, inc, codeHash)
+func (s *stubReader) ReadAccountCodeSize(addr types.Address, codeHash types.Hash) (int, error) {
+	c, err := s.ReadAccountCode(addr, codeHash)
 	return len(c), err
 }
-
-func (s *stubReader) ReadAccountIncarnation(types.Address) (uint16, error) { return 0, nil }
 
 // ----------------------------------------------------------------------------
 // Recorder unit tests
@@ -115,7 +113,7 @@ func TestRecorder_StorageReadCapture(t *testing.T) {
 	}
 	rec := NewReadLogRecorder(reader, nil)
 
-	v, err := rec.ReadAccountStorage(addr, 0, &key)
+	v, err := rec.ReadAccountStorage(addr, &key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +136,7 @@ func TestRecorder_BytecodeCaptureSkippedForKnown(t *testing.T) {
 	known := map[types.Hash]struct{}{codeHash: {}}
 	rec := NewReadLogRecorder(reader, known)
 
-	if _, err := rec.ReadAccountCode(types.Address{}, 0, codeHash); err != nil {
+	if _, err := rec.ReadAccountCode(types.Address{}, codeHash); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.UncachedBytecodes()) != 0 {
@@ -153,7 +151,7 @@ func TestRecorder_BytecodeCaptureIdempotent(t *testing.T) {
 
 	// Read the same hash 5 times — should appear once in captured map.
 	for i := 0; i < 5; i++ {
-		if _, err := rec.ReadAccountCode(types.Address{}, 0, codeHash); err != nil {
+		if _, err := rec.ReadAccountCode(types.Address{}, codeHash); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -165,7 +163,7 @@ func TestRecorder_BytecodeCaptureIdempotent(t *testing.T) {
 func TestRecorder_BytecodeCaptureSkipsEmpty(t *testing.T) {
 	reader := &stubReader{}
 	rec := NewReadLogRecorder(reader, nil)
-	if _, err := rec.ReadAccountCode(types.Address{}, 0, evmsdk.EmptyCodeHash); err != nil {
+	if _, err := rec.ReadAccountCode(types.Address{}, evmsdk.EmptyCodeHash); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.UncachedBytecodes()) != 0 {
@@ -183,7 +181,7 @@ func TestRecorder_Reset(t *testing.T) {
 	rec := NewReadLogRecorder(reader, nil)
 
 	_, _ = rec.ReadAccountData(addr)
-	_, _ = rec.ReadAccountCode(addr, 0, codeHash)
+	_, _ = rec.ReadAccountCode(addr, codeHash)
 	if len(rec.Log()) == 0 || len(rec.UncachedBytecodes()) == 0 {
 		t.Fatal("recorder did not capture")
 	}
@@ -276,7 +274,7 @@ func TestBuildStreamPacket_BytecodesSorted(t *testing.T) {
 	reader := &stubReader{codes: codes}
 	rec := NewReadLogRecorder(reader, nil)
 	for _, h := range hashes {
-		if _, err := rec.ReadAccountCode(types.Address{}, 0, h); err != nil {
+		if _, err := rec.ReadAccountCode(types.Address{}, h); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -387,10 +385,10 @@ func TestProducerVerifier_ReadLogRoundtrip(t *testing.T) {
 	if _, err := rec.ReadAccountData(addr1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rec.ReadAccountStorage(addr1, 0, &storageKey); err != nil {
+	if _, err := rec.ReadAccountStorage(addr1, &storageKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rec.ReadAccountCode(addr1, 0, codeHash); err != nil {
+	if _, err := rec.ReadAccountCode(addr1, codeHash); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := rec.ReadAccountData(addr2); err != nil { // missing → AccountNotFound

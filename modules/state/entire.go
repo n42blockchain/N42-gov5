@@ -141,7 +141,7 @@ func (s *Snapshot) SetGetFun(f GetOneFun) {
 	s.getOneFun = f
 }
 
-func (s *Snapshot) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (s *Snapshot) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	if s.written {
 		return nil, nil
 	}

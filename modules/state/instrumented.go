@@ -89,13 +89,13 @@ func (r *InstrumentedReader) ReadAccountData(address types.Address) (*account.St
 	return result, err
 }
 
-func (r *InstrumentedReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *InstrumentedReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	if !r.enabled {
-		return r.inner.ReadAccountStorage(address, incarnation, key)
+		return r.inner.ReadAccountStorage(address, key)
 	}
 
 	start := time.Now()
-	result, err := r.inner.ReadAccountStorage(address, incarnation, key)
+	result, err := r.inner.ReadAccountStorage(address, key)
 	elapsed := uint64(time.Since(start).Nanoseconds())
 
 	atomic.AddUint64(&r.readStorageCount, 1)
@@ -104,13 +104,13 @@ func (r *InstrumentedReader) ReadAccountStorage(address types.Address, incarnati
 	return result, err
 }
 
-func (r *InstrumentedReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *InstrumentedReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	if !r.enabled {
-		return r.inner.ReadAccountCode(address, incarnation, codeHash)
+		return r.inner.ReadAccountCode(address, codeHash)
 	}
 
 	start := time.Now()
-	result, err := r.inner.ReadAccountCode(address, incarnation, codeHash)
+	result, err := r.inner.ReadAccountCode(address, codeHash)
 	elapsed := uint64(time.Since(start).Nanoseconds())
 
 	atomic.AddUint64(&r.readCodeCount, 1)
@@ -119,32 +119,17 @@ func (r *InstrumentedReader) ReadAccountCode(address types.Address, incarnation 
 	return result, err
 }
 
-func (r *InstrumentedReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
+func (r *InstrumentedReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	if !r.enabled {
-		return r.inner.ReadAccountCodeSize(address, incarnation, codeHash)
+		return r.inner.ReadAccountCodeSize(address, codeHash)
 	}
 
 	start := time.Now()
-	result, err := r.inner.ReadAccountCodeSize(address, incarnation, codeHash)
+	result, err := r.inner.ReadAccountCodeSize(address, codeHash)
 	elapsed := uint64(time.Since(start).Nanoseconds())
 
 	atomic.AddUint64(&r.readCodeSizeCount, 1)
 	atomic.AddUint64(&r.readCodeSizeTime, elapsed)
-
-	return result, err
-}
-
-func (r *InstrumentedReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	if !r.enabled {
-		return r.inner.ReadAccountIncarnation(address)
-	}
-
-	start := time.Now()
-	result, err := r.inner.ReadAccountIncarnation(address)
-	elapsed := uint64(time.Since(start).Nanoseconds())
-
-	atomic.AddUint64(&r.readIncarnCount, 1)
-	atomic.AddUint64(&r.readIncarnTime, elapsed)
 
 	return result, err
 }
@@ -263,13 +248,13 @@ func (w *InstrumentedWriter) UpdateAccountData(address types.Address, original, 
 	return err
 }
 
-func (w *InstrumentedWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (w *InstrumentedWriter) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	if !w.enabled {
-		return w.inner.UpdateAccountCode(address, incarnation, codeHash, code)
+		return w.inner.UpdateAccountCode(address, codeHash, code)
 	}
 
 	start := time.Now()
-	err := w.inner.UpdateAccountCode(address, incarnation, codeHash, code)
+	err := w.inner.UpdateAccountCode(address, codeHash, code)
 	elapsed := uint64(time.Since(start).Nanoseconds())
 
 	atomic.AddUint64(&w.updateCodeCount, 1)
@@ -293,13 +278,13 @@ func (w *InstrumentedWriter) DeleteAccount(address types.Address, original *acco
 	return err
 }
 
-func (w *InstrumentedWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (w *InstrumentedWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	if !w.enabled {
-		return w.inner.WriteAccountStorage(address, incarnation, key, original, value)
+		return w.inner.WriteAccountStorage(address, key, original, value)
 	}
 
 	start := time.Now()
-	err := w.inner.WriteAccountStorage(address, incarnation, key, original, value)
+	err := w.inner.WriteAccountStorage(address, key, original, value)
 	elapsed := uint64(time.Since(start).Nanoseconds())
 
 	atomic.AddUint64(&w.writeStorageCount, 1)
@@ -321,12 +306,6 @@ func (w *InstrumentedWriter) CreateContract(address types.Address) error {
 	atomic.AddUint64(&w.createContractTime, elapsed)
 
 	return err
-}
-
-func (w *InstrumentedWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
-	if notifier, ok := w.inner.(AccountIncarnationNotifier); ok {
-		notifier.NoteAccountIncarnations(address, originalIncarnation, currentIncarnation)
-	}
 }
 
 // Stats returns the accumulated statistics.

@@ -42,7 +42,7 @@ func (r *witnessReplayReader) ReadAccountData(address types.Address) (*account.S
 	return acc, nil
 }
 
-func (r *witnessReplayReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *witnessReplayReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	if r.pos >= len(r.stream) {
 		return nil, nil
 	}
@@ -57,7 +57,7 @@ func (r *witnessReplayReader) ReadAccountStorage(address types.Address, incarnat
 	return val, nil
 }
 
-func (r *witnessReplayReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *witnessReplayReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	// Code from MDBX — witness doesn't record it.
 	if r.codeTx == nil {
 		return nil, nil
@@ -65,13 +65,9 @@ func (r *witnessReplayReader) ReadAccountCode(address types.Address, incarnation
 	return r.codeTx.GetOne("Code", codeHash[:])
 }
 
-func (r *witnessReplayReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(address, incarnation, codeHash)
+func (r *witnessReplayReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(address, codeHash)
 	return len(code), err
-}
-
-func (r *witnessReplayReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return 0, nil
 }
 
 // TestWitnessVerify re-executes blocks using the witness stream + MDBX code,

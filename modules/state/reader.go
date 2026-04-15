@@ -107,7 +107,7 @@ func (r *HistoryStateReader) ReadAccountData(address types.Address) (*account.St
 	return &acc, nil
 }
 
-func (r *HistoryStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *HistoryStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	v, err := r.db.GetOne(modules.Storage, compositeKey)
 	if err != nil {
@@ -119,7 +119,7 @@ func (r *HistoryStateReader) ReadAccountStorage(address types.Address, incarnati
 	return GetAsOf(r.tx, r.storageHistoryC, r.storageChangesC, true /* storage */, compositeKey, r.blockNr)
 }
 
-func (r *HistoryStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *HistoryStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	if bytes.Equal(codeHash[:], emptyCodeHash) {
 		return nil, nil
 	}
@@ -133,16 +133,10 @@ func (r *HistoryStateReader) ReadAccountCode(address types.Address, incarnation 
 	return types.CopyBytes(v), nil
 }
 
-func (r *HistoryStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(address, incarnation, codeHash)
+func (r *HistoryStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(address, codeHash)
 	if err != nil {
 		return 0, err
 	}
 	return len(code), nil
-}
-
-// ReadAccountIncarnation returns 0 as of Phase D — see
-// BufferedPlainStateReader for the rationale.
-func (r *HistoryStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return 0, nil
 }

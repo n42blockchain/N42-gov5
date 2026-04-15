@@ -86,7 +86,7 @@ func (r *CachedStateReader) ReadAccountData(address types.Address) (*account.Sta
 	return a, nil
 }
 
-func (r *CachedStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *CachedStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 
 	if r.cache != nil {
@@ -98,7 +98,7 @@ func (r *CachedStateReader) ReadAccountStorage(address types.Address, incarnatio
 		}
 	}
 
-	enc, err := r.inner.ReadAccountStorage(address, incarnation, key)
+	enc, err := r.inner.ReadAccountStorage(address, key)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func (r *CachedStateReader) ReadAccountStorage(address types.Address, incarnatio
 	return enc, nil
 }
 
-func (r *CachedStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *CachedStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	cacheKey := codeHash[:]
 
 	if r.cache != nil {
@@ -122,7 +122,7 @@ func (r *CachedStateReader) ReadAccountCode(address types.Address, incarnation u
 		}
 	}
 
-	code, err := r.inner.ReadAccountCode(address, incarnation, codeHash)
+	code, err := r.inner.ReadAccountCode(address, codeHash)
 	if err != nil {
 		return nil, err
 	}
@@ -134,14 +134,9 @@ func (r *CachedStateReader) ReadAccountCode(address types.Address, incarnation u
 	return code, nil
 }
 
-func (r *CachedStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(address, incarnation, codeHash)
+func (r *CachedStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(address, codeHash)
 	return len(code), err
-}
-
-func (r *CachedStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	// Incarnation lookups are rare — delegate directly without caching.
-	return r.inner.ReadAccountIncarnation(address)
 }
 
 // Compile-time check.

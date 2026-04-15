@@ -48,6 +48,11 @@ import (
 //
 // Thread Safety: Implementations must be safe for concurrent reads.
 // Error Handling: nil return with nil error means the data doesn't exist.
+//
+// Reth-style note: methods take only (address, slot|codeHash) — no
+// incarnation parameter. Phase D removed the IncarnationMap table; Phase E
+// removed the dead parameter from these signatures. Storage keys are flat
+// (addr||slot, 52B) and bytecode is content-addressed in modules.Code.
 type StateReader interface {
 	// ReadAccountData returns the account state for the given address.
 	// Returns nil, nil if the account doesn't exist.
@@ -55,19 +60,15 @@ type StateReader interface {
 
 	// ReadAccountStorage reads a storage slot from an account.
 	// Returns nil, nil if the storage slot is empty or account doesn't exist.
-	ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error)
+	ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error)
 
 	// ReadAccountCode returns the contract code for an account.
 	// Returns nil, nil if the account has no code (EOA or empty codeHash).
-	ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error)
+	ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error)
 
 	// ReadAccountCodeSize returns the size of the contract code.
 	// Returns 0, nil if the account has no code.
-	ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error)
-
-	// ReadAccountIncarnation returns the incarnation number for an account.
-	// Incarnation is incremented when a contract is destroyed and recreated.
-	ReadAccountIncarnation(address types.Address) (uint16, error)
+	ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error)
 }
 
 // StateWriter provides write access to blockchain state.
@@ -81,16 +82,18 @@ type StateWriter interface {
 	UpdateAccountData(address types.Address, original, account *account.StateAccount) error
 
 	// UpdateAccountCode stores contract code.
-	UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error
+	UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error
 
 	// DeleteAccount removes an account from the state.
 	DeleteAccount(address types.Address, original *account.StateAccount) error
 
 	// WriteAccountStorage writes a storage slot.
 	// original and value are the old and new values respectively.
-	WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error
+	WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error
 
-	// CreateContract marks an address as a contract (affects incarnation handling).
+	// CreateContract marks an address as a contract (legacy hook used by
+	// SELFDESTRUCT to trigger storage-wipe enumeration in the changeset
+	// writer; no incarnation is bumped).
 	CreateContract(address types.Address) error
 }
 
@@ -105,14 +108,6 @@ type WriterWithChangeSets interface {
 
 	// WriteHistory persists historical data (for state history queries).
 	WriteHistory() error
-}
-
-// AccountIncarnationNotifier is an optional writer capability used by the
-// commit path to pass both the historical and post-block incarnations of an
-// account. Changeset/history writers use this to keep CodeHash omission while
-// still restoring the correct historical code version.
-type AccountIncarnationNotifier interface {
-	NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16)
 }
 
 // StateReaderWriter combines StateReader and StateWriter interfaces.

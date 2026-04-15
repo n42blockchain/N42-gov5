@@ -56,7 +56,7 @@ func TestStreamReplay_StorageThenAccount(t *testing.T) {
 	r := NewStreamReplayStateReader(log, NewCodeCache(8))
 
 	key := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000007")
-	v, err := r.ReadAccountStorage(types.Address{0x1}, 0, &key)
+	v, err := r.ReadAccountStorage(types.Address{0x1}, &key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestStreamReplay_ZeroStorageReturnsNil(t *testing.T) {
 	}
 	r := NewStreamReplayStateReader(log, NewCodeCache(8))
 	key := types.Hash{}
-	v, err := r.ReadAccountStorage(types.Address{0x1}, 0, &key)
+	v, err := r.ReadAccountStorage(types.Address{0x1}, &key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestStreamReplay_CodeFromCache(t *testing.T) {
 	codes.Insert(codeHash, []byte{0x60, 0x00, 0xf3})
 
 	r := NewStreamReplayStateReader(nil, codes)
-	code, err := r.ReadAccountCode(types.Address{0x1}, 0, codeHash)
+	code, err := r.ReadAccountCode(types.Address{0x1}, codeHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestStreamReplay_CodeFromCache(t *testing.T) {
 	}
 
 	// EmptyCodeHash short-circuits without touching cache.
-	code, err = r.ReadAccountCode(types.Address{0x1}, 0, emptyCodeHash)
+	code, err = r.ReadAccountCode(types.Address{0x1}, emptyCodeHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,19 +138,8 @@ func TestStreamReplay_CodeFromCache(t *testing.T) {
 
 	// Missing code is an error.
 	missingHash := types.HexToHash("0xabcdef0000000000000000000000000000000000000000000000000000000000")
-	if _, err := r.ReadAccountCode(types.Address{0x1}, 0, missingHash); err == nil {
+	if _, err := r.ReadAccountCode(types.Address{0x1}, missingHash); err == nil {
 		t.Fatal("expected missing-code error")
-	}
-}
-
-func TestStreamReplay_ReadAccountIncarnationAlwaysZero(t *testing.T) {
-	r := NewStreamReplayStateReader(nil, NewCodeCache(8))
-	inc, err := r.ReadAccountIncarnation(types.Address{0x1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inc != 0 {
-		t.Fatalf("incarnation should be 0, got %d", inc)
 	}
 }
 
