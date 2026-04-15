@@ -113,7 +113,14 @@ func accountsEqual(a1, a2 *account.StateAccount) bool {
 
 func (w *ChangeSetWriter) UpdateAccountData(address types.Address, original, account *account.StateAccount) error {
 	if !accountsEqual(original, account) || w.storageChanged[address] {
-		w.accountChanges[address] = originalAccountData(original, true /*omitHashes*/, w.accountIncarns[address])
+		// Reth-style: store full V2 (with CodeHash) directly. The historical
+		// recovery via PlainContractCode lookup (Erigon omitHashes path) is no
+		// longer needed because the changeset blob is self-contained.
+		if original == nil || !original.Initialised {
+			w.accountChanges[address] = []byte{}
+		} else {
+			w.accountChanges[address] = original.MarshalV2()
+		}
 	}
 	return nil
 }
@@ -126,7 +133,8 @@ func (w *ChangeSetWriter) DeleteAccount(address types.Address, original *account
 	if original == nil || !original.Initialised {
 		return nil
 	}
-	w.accountChanges[address] = originalAccountData(original, true, w.accountIncarns[address])
+	// Reth-style: full V2 (with CodeHash). See UpdateAccountData rationale.
+	w.accountChanges[address] = original.MarshalV2()
 	return nil
 }
 

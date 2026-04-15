@@ -233,11 +233,13 @@ func decodeAcct(t *testing.T, raw []byte) *account.StateAccount {
 	return &a
 }
 
-// requireAcctEqualNonceBalance compares nonce+balance only. CodeHash
-// recovery on backward unwind is the responsibility of Codex's commit
-// 4c779428 (incarnation-versioned PlainContractCode key) and is covered
-// by modules/state/history_codehash_test.go. These tests focus on the
-// storcs forward-replay path and treat CodeHash as out-of-scope.
+// requireAcctEqualNonceBalance compares nonce+balance and (post-Phase-B)
+// also CodeHash. After the reth-style refactor's Phase B, account
+// changeset OldValues are stored as full V2 (CodeHash included), so
+// backward unwind reproduces the pre-block account byte-for-byte. The
+// helper still tolerates legacy omit-CodeHash blobs by falling back to
+// nonce+balance only when one side has empty CodeHash and the other
+// doesn't — keeping the test stable across the refactor cutover.
 func requireAcctEqualNonceBalance(t *testing.T, expectedRaw, gotRaw []byte, msg string) {
 	t.Helper()
 	exp := decodeAcct(t, expectedRaw)
@@ -249,6 +251,11 @@ func requireAcctEqualNonceBalance(t *testing.T, expectedRaw, gotRaw []byte, msg 
 	require.NotNil(t, got, msg)
 	require.Equal(t, exp.Nonce, got.Nonce, msg+" (nonce)")
 	require.Equal(t, exp.Balance.String(), got.Balance.String(), msg+" (balance)")
+	// Strict CodeHash check unless one side is empty (legacy omit-CodeHash
+	// path could not recover when PlainContractCode lacked a versioned key).
+	if !exp.IsEmptyCodeHash() && !got.IsEmptyCodeHash() {
+		require.Equal(t, exp.CodeHash, got.CodeHash, msg+" (codeHash)")
+	}
 }
 
 // freshTx opens a new memdb + tx for replay verification.

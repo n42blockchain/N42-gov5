@@ -674,11 +674,8 @@ func rebuildEVMFallback(ctx context.Context, db kv.RwDB, opts RebuildOptions, bl
 			if err != nil || a == nil {
 				return nil
 			}
-			incarnation, err := postReader.ReadAccountIncarnation(addr)
-			if err != nil {
-				incarnation = 0
-			}
-			return state.EncodeAccountForHistory(a, false, incarnation)
+			// Reth-style: full V2 (with CodeHash, no hidden incarnation tag).
+			return a.MarshalV2()
 		})
 		patchFile := fmt.Sprintf("storcs_patch_%d.bin", blockNum)
 		if err := os.WriteFile(patchFile, stoCSBytes, 0644); err != nil {

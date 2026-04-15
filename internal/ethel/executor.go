@@ -837,11 +837,8 @@ func (e *Executor) snapshotOutputs(blockNum uint64, result *BlockResult, writer 
 		if err != nil || a == nil {
 			po.accNewVals[addr] = nil
 		} else {
-			incarnation, err := bufReader.ReadAccountIncarnation(addr)
-			if err != nil {
-				incarnation = 0
-			}
-			po.accNewVals[addr] = state.EncodeAccountForHistory(a, false, incarnation)
+			// Reth-style: full V2 (with CodeHash, no hidden incarnation tag).
+			po.accNewVals[addr] = a.MarshalV2()
 		}
 	}
 
