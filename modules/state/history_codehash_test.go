@@ -34,7 +34,13 @@ func TestAccountHistoryEncodingOmitsCodeHashButKeepsIncarnation(t *testing.T) {
 	require.Equal(t, uint16(7), incarnation)
 }
 
-func TestPlainStateHistoricalReadRestoresCodeHashFromVersionedPlainContractCode(t *testing.T) {
+// TestPlainStateHistoricalReadCodeHashSelfContained verifies the Phase B
+// (reth-style) behavior: account changeset OldValues carry the historical
+// CodeHash inline as full V2, so historical reads no longer require
+// the PlainContractCode versioned-key fallback. The fallback machinery
+// (LookupPlainContractCodeHash + RestoreHistoricalAccountCodeHash) is
+// retained for legacy data compatibility but is a no-op for new entries.
+func TestPlainStateHistoricalReadCodeHashSelfContained(t *testing.T) {
 	t.Parallel()
 
 	db := memdb.NewTestDB(t)
@@ -52,6 +58,9 @@ func TestPlainStateHistoricalReadRestoresCodeHashFromVersionedPlainContractCode(
 	binary.BigEndian.PutUint16(inc1[:], 1)
 	binary.BigEndian.PutUint16(inc2[:], 2)
 
+	// Pre-state PlainContractCode write — kept for the current-state
+	// reader path (UpdateAccountCode populates it). Phase D will revisit
+	// whether this table can be removed entirely.
 	require.NoError(t, tx.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefixWithIncarnation(addr[:], 1), oldCodeHash[:]))
 	require.NoError(t, tx.Put(modules.IncarnationMap, addr[:], inc1[:]))
 
@@ -80,14 +89,20 @@ func TestPlainStateHistoricalReadRestoresCodeHashFromVersionedPlainContractCode(
 	require.NoError(t, err)
 	require.Len(t, accCS.Changes, 1)
 
+	// Phase B invariant: OldValue is full V2 with CodeHash present —
+	// no omit, no hidden incarnation tag.
 	var storedOld account.StateAccount
 	require.NoError(t, storedOld.DecodeForStorage(accCS.Changes[0].Value))
-	require.True(t, storedOld.IsEmptyCodeHash())
-	incarnation, ok, err := DecodeAccountHistoryIncarnation(accCS.Changes[0].Value)
+	require.False(t, storedOld.IsEmptyCodeHash(),
+		"Phase B: changeset OldValue must carry CodeHash inline")
+	require.Equal(t, oldCodeHash, storedOld.CodeHash)
+	_, ok, err := DecodeAccountHistoryIncarnation(accCS.Changes[0].Value)
 	require.NoError(t, err)
-	require.True(t, ok)
-	require.Equal(t, uint16(1), incarnation)
+	require.False(t, ok, "Phase B: full V2 must not carry hidden incarnation tag")
 
+	// Historical read still returns the correct (old) CodeHash — now
+	// directly from the changeset, with the legacy PlainContractCode
+	// fallback acting as a harmless no-op.
 	historical := NewPlainState(tx, 1)
 	got, err := historical.ReadAccountData(addr)
 	require.NoError(t, err)
