@@ -80,7 +80,7 @@ func (r *StateReader) ReadAccountData(address types.Address) (*account.StateAcco
 	return nil, nil
 }
 
-func (r *StateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *StateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	v, err := r.db.GetOne(modules.Storage, compositeKey)
 	if err != nil {
@@ -96,7 +96,7 @@ func (r *StateReader) ReadAccountStorage(address types.Address, incarnation uint
 	return v, nil
 }
 
-func (r *StateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *StateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	if bytes.Equal(codeHash[:], crypto.Keccak256(nil)) {
 		return nil, nil
 	}
@@ -106,14 +106,10 @@ func (r *StateReader) ReadAccountCode(address types.Address, incarnation uint16,
 	return r.codes[codeHash], nil
 }
 
-func (r *StateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(address, incarnation, codeHash)
+func (r *StateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(address, codeHash)
 	if err != nil {
 		return 0, err
 	}
 	return len(code), nil
-}
-
-func (r *StateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return 0, nil
 }

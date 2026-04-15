@@ -142,7 +142,7 @@ func (r *WitnessStateReader) ReadAccountData(address types.Address) (*account.St
 
 // ReadAccountStorage returns the value of a storage slot from the witness.
 // Returns nil, nil if the slot is proven absent (exclusion proof).
-func (r *WitnessStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *WitnessStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	if key == nil {
 		return nil, nil
 	}
@@ -163,7 +163,7 @@ func (r *WitnessStateReader) ReadAccountStorage(address types.Address, incarnati
 }
 
 // ReadAccountCode returns the contract code from the witness.
-func (r *WitnessStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *WitnessStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	emptyHash := types.Hash{}
 	if codeHash == emptyHash {
 		return nil, nil
@@ -178,16 +178,10 @@ func (r *WitnessStateReader) ReadAccountCode(address types.Address, incarnation 
 }
 
 // ReadAccountCodeSize returns the size of the contract code from the witness.
-func (r *WitnessStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(address, incarnation, codeHash)
+func (r *WitnessStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(address, codeHash)
 	if err != nil {
 		return 0, err
 	}
 	return len(code), nil
-}
-
-// ReadAccountIncarnation returns the incarnation from the decoded account.
-func (r *WitnessStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	// incarnation removed from StateAccount — always return 0
-	return 0, nil
 }

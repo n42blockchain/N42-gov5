@@ -57,19 +57,15 @@ func (r errorStateReader) ReadAccountData(types.Address) (*account.StateAccount,
 	return nil, r.err
 }
 
-func (r errorStateReader) ReadAccountStorage(types.Address, uint16, *types.Hash) ([]byte, error) {
+func (r errorStateReader) ReadAccountStorage(types.Address, *types.Hash) ([]byte, error) {
 	return nil, r.err
 }
 
-func (r errorStateReader) ReadAccountCode(types.Address, uint16, types.Hash) ([]byte, error) {
+func (r errorStateReader) ReadAccountCode(types.Address, types.Hash) ([]byte, error) {
 	return nil, r.err
 }
 
-func (r errorStateReader) ReadAccountCodeSize(types.Address, uint16, types.Hash) (int, error) {
-	return 0, r.err
-}
-
-func (r errorStateReader) ReadAccountIncarnation(types.Address) (uint16, error) {
+func (r errorStateReader) ReadAccountCodeSize(types.Address, types.Hash) (int, error) {
 	return 0, r.err
 }
 
@@ -97,7 +93,7 @@ func (tr *TracingReader) ReadAccountData(address types.Address) (*account.StateA
 }
 
 // ReadAccountStorage delegates to the inner reader and records the storage key.
-func (tr *TracingReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (tr *TracingReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	tr.mu.Lock()
 	tr.accounts[address] = true
 	if key != nil {
@@ -110,36 +106,27 @@ func (tr *TracingReader) ReadAccountStorage(address types.Address, incarnation u
 	}
 	tr.mu.Unlock()
 
-	return tr.inner.ReadAccountStorage(address, incarnation, key)
+	return tr.inner.ReadAccountStorage(address, key)
 }
 
 // ReadAccountCode delegates to the inner reader and records the code access.
-func (tr *TracingReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (tr *TracingReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	tr.mu.Lock()
 	tr.accounts[address] = true
 	tr.codes[address] = true
 	tr.mu.Unlock()
 
-	return tr.inner.ReadAccountCode(address, incarnation, codeHash)
+	return tr.inner.ReadAccountCode(address, codeHash)
 }
 
 // ReadAccountCodeSize delegates to the inner reader and records the code access.
-func (tr *TracingReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
+func (tr *TracingReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	tr.mu.Lock()
 	tr.accounts[address] = true
 	tr.codes[address] = true
 	tr.mu.Unlock()
 
-	return tr.inner.ReadAccountCodeSize(address, incarnation, codeHash)
-}
-
-// ReadAccountIncarnation delegates to the inner reader and records the account address.
-func (tr *TracingReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	tr.mu.Lock()
-	tr.accounts[address] = true
-	tr.mu.Unlock()
-
-	return tr.inner.ReadAccountIncarnation(address)
+	return tr.inner.ReadAccountCodeSize(address, codeHash)
 }
 
 // AccessedAccounts returns a deduplicated list of all account addresses

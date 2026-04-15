@@ -112,7 +112,7 @@ func (r *StreamReplayStateReader) ReadAccountData(addr types.Address) (*account.
 // The convention in N42 is that an empty storage slot returns (nil, nil).
 // We translate the log's Storage(0) to nil to match the existing
 // PlainStateReader behavior.
-func (r *StreamReplayStateReader) ReadAccountStorage(addr types.Address, _ uint16, key *types.Hash) ([]byte, error) {
+func (r *StreamReplayStateReader) ReadAccountStorage(addr types.Address, key *types.Hash) ([]byte, error) {
 	entry, ok := r.next()
 	if !ok {
 		return nil, r.lastErr
@@ -137,7 +137,7 @@ func (r *StreamReplayStateReader) ReadAccountStorage(addr types.Address, _ uint1
 // packet.Bytecodes. The orchestrator preloads those into the cache before
 // calling the EVM. If the EVM asks for a code hash the cache doesn't
 // have, the packet was malformed.
-func (r *StreamReplayStateReader) ReadAccountCode(addr types.Address, _ uint16, codeHash types.Hash) ([]byte, error) {
+func (r *StreamReplayStateReader) ReadAccountCode(addr types.Address, codeHash types.Hash) ([]byte, error) {
 	if codeHash == emptyCodeHash {
 		return nil, nil
 	}
@@ -157,18 +157,12 @@ func (r *StreamReplayStateReader) ReadAccountCode(addr types.Address, _ uint16, 
 
 // ReadAccountCodeSize delegates to ReadAccountCode for simplicity. The
 // extra map lookup is negligible compared to EVM work.
-func (r *StreamReplayStateReader) ReadAccountCodeSize(addr types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(addr, incarnation, codeHash)
+func (r *StreamReplayStateReader) ReadAccountCodeSize(addr types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(addr, codeHash)
 	if err != nil {
 		return 0, err
 	}
 	return len(code), nil
-}
-
-// ReadAccountIncarnation always returns 0. Incarnation tracking has been
-// removed from the EthEL replay path (see modules/state/buffered_plain_state.go).
-func (r *StreamReplayStateReader) ReadAccountIncarnation(types.Address) (uint16, error) {
-	return 0, nil
 }
 
 // Compile-time check.

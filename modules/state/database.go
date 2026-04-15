@@ -55,11 +55,11 @@ func (nw *NoopWriter) DeleteAccount(address types.Address, original *account.Sta
 	return nil
 }
 
-func (nw *NoopWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (nw *NoopWriter) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	return nil
 }
 
-func (nw *NoopWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (nw *NoopWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	return nil
 }
 

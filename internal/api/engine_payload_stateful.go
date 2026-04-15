@@ -487,7 +487,7 @@ func (r *overlaySnapshotStateReader) ReadAccountData(address types.Address) (*ac
 	return r.base.ReadAccountData(address)
 }
 
-func (r *overlaySnapshotStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *overlaySnapshotStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	if r.state != nil && r.state.storage != nil {
 		if slots, ok := r.state.storage[address]; ok {
 			if value, exists := slots[*key]; exists {
@@ -498,29 +498,25 @@ func (r *overlaySnapshotStateReader) ReadAccountStorage(address types.Address, i
 			}
 		}
 	}
-	return r.base.ReadAccountStorage(address, incarnation, key)
+	return r.base.ReadAccountStorage(address, key)
 }
 
-func (r *overlaySnapshotStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *overlaySnapshotStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	if r.state != nil && len(r.state.codes) > 0 {
 		if code, ok := r.state.codes[codeHash]; ok {
 			return append([]byte(nil), code...), nil
 		}
 	}
-	return r.base.ReadAccountCode(address, incarnation, codeHash)
+	return r.base.ReadAccountCode(address, codeHash)
 }
 
-func (r *overlaySnapshotStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
+func (r *overlaySnapshotStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	if r.state != nil && len(r.state.codes) > 0 {
 		if code, ok := r.state.codes[codeHash]; ok {
 			return len(code), nil
 		}
 	}
-	return r.base.ReadAccountCodeSize(address, incarnation, codeHash)
-}
-
-func (r *overlaySnapshotStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return r.base.ReadAccountIncarnation(address)
+	return r.base.ReadAccountCodeSize(address, codeHash)
 }
 
 func newOverlayStateView(db kv.RwDB, tx kv.Tx, blockNumber uint64, overlayState *engineStateOverlay) (state.StateReader, *state.IntraBlockState, error) {

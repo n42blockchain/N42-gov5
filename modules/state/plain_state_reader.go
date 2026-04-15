@@ -60,7 +60,7 @@ func (r *PlainStateReader) ReadAccountData(address types.Address) (*account.Stat
 	return &a, nil
 }
 
-func (r *PlainStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *PlainStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	enc, err := r.db.GetOne(modules.Storage, compositeKey)
 	if err != nil {
@@ -72,7 +72,7 @@ func (r *PlainStateReader) ReadAccountStorage(address types.Address, incarnation
 	return enc, nil
 }
 
-func (r *PlainStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *PlainStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	if bytes.Equal(codeHash[:], emptyCodeHash) {
 		return nil, nil
 	}
@@ -86,14 +86,7 @@ func (r *PlainStateReader) ReadAccountCode(address types.Address, incarnation ui
 	return code, nil
 }
 
-func (r *PlainStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(address, incarnation, codeHash)
+func (r *PlainStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(address, codeHash)
 	return len(code), err
-}
-
-// ReadAccountIncarnation always returns 0 as of Phase D — IncarnationMap
-// is no longer maintained. See BufferedPlainStateReader.ReadAccountIncarnation
-// for the rationale.
-func (r *PlainStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return 0, nil
 }

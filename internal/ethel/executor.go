@@ -851,7 +851,7 @@ func (e *Executor) snapshotOutputs(blockNum uint64, result *BlockResult, writer 
 		var slot types.Hash
 		copy(addr[:], c.Key[:20])
 		copy(slot[:], c.Key[20:52])
-		v, err := bufReader.ReadAccountStorage(addr, 0, &slot)
+		v, err := bufReader.ReadAccountStorage(addr, &slot)
 		if err != nil {
 			v = nil
 		}

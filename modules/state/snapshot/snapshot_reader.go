@@ -66,7 +66,7 @@ func (r *SnapshotStateReader) ReadAccountData(address types.Address) (*account.S
 
 // ReadAccountStorage reads a storage slot from the snapshot layer chain.
 // Falls back to the inner reader if the layer chain has no information.
-func (r *SnapshotStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *SnapshotStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	if r.layer != nil && !r.layer.Stale() {
 		if val, found := r.layer.Storage(address, *key); found {
 			snapshotLayerHits.Inc()
@@ -74,25 +74,19 @@ func (r *SnapshotStateReader) ReadAccountStorage(address types.Address, incarnat
 		}
 		snapshotLayerMisses.Inc()
 	}
-	return r.inner.ReadAccountStorage(address, incarnation, key)
+	return r.inner.ReadAccountStorage(address, key)
 }
 
 // ReadAccountCode reads contract code. Diff layers do not store code,
 // so this always delegates to the inner reader.
-func (r *SnapshotStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
-	return r.inner.ReadAccountCode(address, incarnation, codeHash)
+func (r *SnapshotStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
+	return r.inner.ReadAccountCode(address, codeHash)
 }
 
 // ReadAccountCodeSize returns the size of contract code.
 // Delegates to inner reader since diff layers don't store code.
-func (r *SnapshotStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	return r.inner.ReadAccountCodeSize(address, incarnation, codeHash)
-}
-
-// ReadAccountIncarnation returns the incarnation number.
-// Delegates to inner reader.
-func (r *SnapshotStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return r.inner.ReadAccountIncarnation(address)
+func (r *SnapshotStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	return r.inner.ReadAccountCodeSize(address, codeHash)
 }
 
 // Compile-time check.

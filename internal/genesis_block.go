@@ -173,9 +173,6 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 				val := uint256.NewInt(0).SetBytes(value.Bytes())
 				statedb.SetState(address, &k, *val)
 			}
-			if len(account.Code) > 0 || len(account.Storage) > 0 {
-				statedb.SetIncarnation(address, state.FirstContractIncarnation)
-			}
 		}
 
 		if err := statedb.FinalizeTx(g.GenesisConfig.Config.Rules(0), w); err != nil {
@@ -377,9 +374,6 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 			k := key
 			val := uint256.NewInt(0).SetBytes(value.Bytes())
 			statedb.SetState(address, &k, *val)
-		}
-		if len(account.Code) > 0 || len(account.Storage) > 0 {
-			statedb.SetIncarnation(address, state.FirstContractIncarnation)
 		}
 	}
 	if err := statedb.FinalizeTx(g.GenesisConfig.Config.Rules(0), blockWriter); err != nil {

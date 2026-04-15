@@ -72,9 +72,7 @@ type IntraBlockState struct {
 	stateObjects      map[types.Address]*stateObject
 	stateObjectsDirty map[types.Address]struct{}
 
-	nilAccounts          map[types.Address]struct{} // Remember non-existent account to avoid reading them again
-	accountIncarnations  map[types.Address]uint16
-	originalIncarnations map[types.Address]uint16
+	nilAccounts map[types.Address]struct{} // Remember non-existent account to avoid reading them again
 
 	// DB error.
 	// State objects are used by the consensus core and VM which are
@@ -134,13 +132,11 @@ type IntraBlockState struct {
 // New creates a new IntraBlockState with the given state reader.
 func New(stateReader StateReader) *IntraBlockState {
 	return &IntraBlockState{
-		stateReader:          stateReader,
-		stateObjects:         map[types.Address]*stateObject{},
-		stateObjectsDirty:    map[types.Address]struct{}{},
-		nilAccounts:          map[types.Address]struct{}{},
-		accountIncarnations:  map[types.Address]uint16{},
-		originalIncarnations: map[types.Address]uint16{},
-		logs:                 map[types.Hash][]*block.Log{},
+		stateReader:       stateReader,
+		stateObjects:      map[types.Address]*stateObject{},
+		stateObjectsDirty: map[types.Address]struct{}{},
+		nilAccounts:       map[types.Address]struct{}{},
+		logs:              map[types.Hash][]*block.Log{},
 		journal:              newJournal(),
 		accessList:           newAccessList(),
 		balanceInc:           map[types.Address]*BalanceIncrease{},
@@ -304,8 +300,6 @@ func (sdb *IntraBlockState) Reset() {
 	sdb.stateObjects = make(map[types.Address]*stateObject)
 	sdb.stateObjectsDirty = make(map[types.Address]struct{})
 	sdb.nilAccounts = make(map[types.Address]struct{})
-	sdb.accountIncarnations = make(map[types.Address]uint16)
-	sdb.originalIncarnations = make(map[types.Address]uint16)
 	sdb.thash = types.Hash{}
 	sdb.bhash = types.Hash{}
 	sdb.txIndex = 0
@@ -521,13 +515,13 @@ func (sdb *IntraBlockState) GetCodeSize(addr types.Address) int {
 	if stateObject.code != nil {
 		return len(stateObject.code)
 	}
-	codeSize, err := sdb.stateReader.ReadAccountCodeSize(addr, sdb.GetIncarnation(addr), stateObject.data.CodeHash)
+	codeSize, err := sdb.stateReader.ReadAccountCodeSize(addr, stateObject.data.CodeHash)
 	if err != nil {
 		sdb.setErrorUnsafe(err)
 	}
 	if codeSize > 0 && sdb.codeMap != nil {
 		codeHash := types.BytesToHash(stateObject.CodeHash())
-		code, _ := sdb.stateReader.ReadAccountCode(addr, sdb.GetIncarnation(addr), codeHash)
+		code, _ := sdb.stateReader.ReadAccountCode(addr, codeHash)
 		sdb.codeMap[codeHash] = code
 	}
 	return codeSize
@@ -657,40 +651,6 @@ func (sdb *IntraBlockState) SetStorage(addr types.Address, storage Storage) {
 	}
 }
 
-// SetIncarnation tracks the account incarnation outside StateAccount.
-func (sdb *IntraBlockState) SetIncarnation(addr types.Address, incarnation uint16) {
-	sdb.setCurrentIncarnation(addr, incarnation)
-}
-
-// GetIncarnation returns the account incarnation tracked outside StateAccount.
-func (sdb *IntraBlockState) GetIncarnation(addr types.Address) uint16 {
-	return sdb.accountIncarnations[addr]
-}
-
-func (sdb *IntraBlockState) currentIncarnation(addr types.Address) uint16 {
-	return sdb.accountIncarnations[addr]
-}
-
-func (sdb *IntraBlockState) originalIncarnation(addr types.Address) uint16 {
-	return sdb.originalIncarnations[addr]
-}
-
-func (sdb *IntraBlockState) setCurrentIncarnation(addr types.Address, incarnation uint16) {
-	if incarnation == 0 {
-		delete(sdb.accountIncarnations, addr)
-		return
-	}
-	sdb.accountIncarnations[addr] = incarnation
-}
-
-func (sdb *IntraBlockState) setOriginalIncarnation(addr types.Address, incarnation uint16) {
-	if incarnation == 0 {
-		delete(sdb.originalIncarnations, addr)
-		return
-	}
-	sdb.originalIncarnations[addr] = incarnation
-}
-
 // Suicide is a legacy alias for Selfdestruct.
 // Retained for compatibility with the common.StateDB interface.
 func (sdb *IntraBlockState) Suicide(addr types.Address) bool {
@@ -717,26 +677,11 @@ func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *sta
 	}
 	if account == nil {
 		sdb.nilAccounts[addr] = struct{}{}
-		incarnation, incErr := sdb.stateReader.ReadAccountIncarnation(addr)
-		if incErr != nil {
-			sdb.setErrorUnsafe(incErr)
-			return nil
-		}
-		sdb.setCurrentIncarnation(addr, incarnation)
-		delete(sdb.originalIncarnations, addr)
 		if bi, ok := sdb.balanceInc[addr]; ok && !bi.transferred {
 			return sdb.createObject(addr, nil)
 		}
 		return nil
 	}
-
-	incarnation, err := sdb.stateReader.ReadAccountIncarnation(addr)
-	if err != nil {
-		sdb.setErrorUnsafe(err)
-		return nil
-	}
-	sdb.setCurrentIncarnation(addr, incarnation)
-	sdb.setOriginalIncarnation(addr, incarnation)
 
 	// snap write
 	if sdb.snap != nil && sdb.snap.CanWrite() {
@@ -812,13 +757,6 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 	}
 
 	if contractCreation {
-		incarnation := sdb.GetIncarnation(addr)
-		if incarnation == 0 {
-			incarnation = FirstContractIncarnation
-		} else {
-			incarnation++
-		}
-		sdb.setCurrentIncarnation(addr, incarnation)
 		newObj.created = true
 		sdb.storageWipes[addr] = struct{}{}
 	} else {
@@ -886,9 +824,6 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 }
 
 func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool, needsWipe bool) error {
-	if notifier, ok := stateWriter.(AccountIncarnationNotifier); ok {
-		notifier.NoteAccountIncarnations(addr, stateObject.db.originalIncarnation(addr), stateObject.db.currentIncarnation(addr))
-	}
 	emptyRemoval := policy.shouldRemoveEmptyAccount(addr, stateObject)
 	shouldDelete := stateObject.selfdestructed || (isDirty && emptyRemoval)
 	if shouldDelete {
@@ -910,7 +845,7 @@ func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, a
 		stateObject.deleted = false
 		// Write any contract code associated with the state object
 		if stateObject.code != nil && stateObject.dirtyCode {
-			if err := stateWriter.UpdateAccountCode(addr, stateObject.db.currentIncarnation(addr), stateObject.data.CodeHash, stateObject.code); err != nil {
+			if err := stateWriter.UpdateAccountCode(addr, stateObject.data.CodeHash, stateObject.code); err != nil {
 				return err
 			}
 		}

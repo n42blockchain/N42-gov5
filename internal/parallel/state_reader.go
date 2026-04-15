@@ -70,7 +70,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 }
 
 // ReadAccountStorage reads a storage slot, checking MVS first.
-func (r *ParallelStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *ParallelStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	locKey := LocationKey{Address: address, Field: FieldStorage, Slot: *key}
 
 	val, writerTx, writerInc, found := r.mvs.Read(locKey, r.txIndex)
@@ -81,11 +81,11 @@ func (r *ParallelStateReader) ReadAccountStorage(address types.Address, incarnat
 
 	// Not in MVS — read from base.
 	r.rw.RecordRead(locKey, -1, 0, true)
-	return r.base.ReadAccountStorage(address, incarnation, key)
+	return r.base.ReadAccountStorage(address, key)
 }
 
 // ReadAccountCode reads contract code, checking MVS first.
-func (r *ParallelStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *ParallelStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	key := LocationKey{Address: address, Field: FieldCode}
 
 	val, writerTx, writerInc, found := r.mvs.Read(key, r.txIndex)
@@ -96,34 +96,16 @@ func (r *ParallelStateReader) ReadAccountCode(address types.Address, incarnation
 
 	// Not in MVS — read from base.
 	r.rw.RecordRead(key, -1, 0, true)
-	return r.base.ReadAccountCode(address, incarnation, codeHash)
+	return r.base.ReadAccountCode(address, codeHash)
 }
 
 // ReadAccountCodeSize reads code size. Derives from ReadAccountCode.
-func (r *ParallelStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(address, incarnation, codeHash)
+func (r *ParallelStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(address, codeHash)
 	if err != nil {
 		return 0, err
 	}
 	return len(code), nil
-}
-
-// ReadAccountIncarnation reads incarnation, checking MVS first.
-func (r *ParallelStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	key := LocationKey{Address: address, Field: FieldIncarnation}
-
-	val, writerTx, writerInc, found := r.mvs.Read(key, r.txIndex)
-	if found {
-		r.rw.RecordRead(key, writerTx, writerInc, false)
-		if val == nil || len(val) < 2 {
-			return 0, nil
-		}
-		return uint16(val[0])<<8 | uint16(val[1]), nil
-	}
-
-	// Not in MVS — read from base.
-	r.rw.RecordRead(key, -1, 0, true)
-	return r.base.ReadAccountIncarnation(address)
 }
 
 // DecodeAccount decodes a V2-encoded StateAccount.

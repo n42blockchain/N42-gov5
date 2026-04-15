@@ -55,8 +55,8 @@ func (w *CachedStateWriter) UpdateAccountData(address types.Address, original, a
 	return nil
 }
 
-func (w *CachedStateWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
-	if err := w.inner.UpdateAccountCode(address, incarnation, codeHash, code); err != nil {
+func (w *CachedStateWriter) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
+	if err := w.inner.UpdateAccountCode(address, codeHash, code); err != nil {
 		return err
 	}
 	if w.cache != nil {
@@ -75,8 +75,8 @@ func (w *CachedStateWriter) DeleteAccount(address types.Address, original *accou
 	return nil
 }
 
-func (w *CachedStateWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
-	if err := w.inner.WriteAccountStorage(address, incarnation, key, original, value); err != nil {
+func (w *CachedStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+	if err := w.inner.WriteAccountStorage(address, key, original, value); err != nil {
 		return err
 	}
 	if w.cache != nil {
@@ -101,12 +101,6 @@ func (w *CachedStateWriter) WriteChangeSets() error {
 
 func (w *CachedStateWriter) WriteHistory() error {
 	return w.inner.WriteHistory()
-}
-
-func (w *CachedStateWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
-	if notifier, ok := w.inner.(AccountIncarnationNotifier); ok {
-		notifier.NoteAccountIncarnations(address, originalIncarnation, currentIncarnation)
-	}
 }
 
 // Compile-time check.

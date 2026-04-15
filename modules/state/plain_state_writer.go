@@ -73,9 +73,9 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 	return w.db.Put(modules.Account, address[:], account.MarshalV2())
 }
 
-func (w *PlainStateWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (w *PlainStateWriter) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	if w.csw != nil {
-		if err := w.csw.UpdateAccountCode(address, incarnation, codeHash, code); err != nil {
+		if err := w.csw.UpdateAccountCode(address, codeHash, code); err != nil {
 			return err
 		}
 	}
@@ -93,9 +93,9 @@ func (w *PlainStateWriter) DeleteAccount(address types.Address, original *accoun
 	return w.db.Delete(modules.Account, address[:])
 }
 
-func (w *PlainStateWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (w *PlainStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	if w.csw != nil {
-		if err := w.csw.WriteAccountStorage(address, incarnation, key, original, value); err != nil {
+		if err := w.csw.WriteAccountStorage(address, key, original, value); err != nil {
 			return err
 		}
 	}
@@ -221,9 +221,3 @@ func (w *PlainStateWriter) ChangeSetWriter() *ChangeSetWriter {
 	return w.csw
 }
 
-// NoteAccountIncarnations is preserved on the interface for binary compatibility
-// with non-ethel call sites (parallel executor, snapshot diff collector, RPC),
-// but as of Phase D it is a no-op: PlainContractCode and IncarnationMap tables
-// are no longer maintained.
-func (w *PlainStateWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
-}

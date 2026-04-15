@@ -51,8 +51,8 @@ func (w *WitnessStateReader) ReadAccountData(address types.Address) (*account.St
 	return acc, nil
 }
 
-func (w *WitnessStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
-	val, err := w.inner.ReadAccountStorage(address, incarnation, key)
+func (w *WitnessStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
+	val, err := w.inner.ReadAccountStorage(address, key)
 	if err != nil {
 		return nil, err
 	}
@@ -65,17 +65,13 @@ func (w *WitnessStateReader) ReadAccountStorage(address types.Address, incarnati
 	return val, nil
 }
 
-func (w *WitnessStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (w *WitnessStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	// Delegate but do NOT record (witness excludes code).
-	return w.inner.ReadAccountCode(address, incarnation, codeHash)
+	return w.inner.ReadAccountCode(address, codeHash)
 }
 
-func (w *WitnessStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	return w.inner.ReadAccountCodeSize(address, incarnation, codeHash)
-}
-
-func (w *WitnessStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return w.inner.ReadAccountIncarnation(address)
+func (w *WitnessStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	return w.inner.ReadAccountCodeSize(address, codeHash)
 }
 
 // Encode returns the witness stream bytes.

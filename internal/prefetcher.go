@@ -250,14 +250,14 @@ func (p *StatePrefetcher) ioWorker(ctx context.Context, reader state.StateReader
 			acc, _ := reader.ReadAccountData(req.address)
 			if acc != nil {
 				slot := req.slot
-				_, _ = reader.ReadAccountStorage(req.address, 0, &slot)
+				_, _ = reader.ReadAccountStorage(req.address, &slot)
 				p.storagePrefetched.Add(1)
 			}
 
 		case prefetchCode:
 			acc, _ := reader.ReadAccountData(req.address)
 			if acc != nil && acc.CodeHash != (types.Hash{}) {
-				_, _ = reader.ReadAccountCode(req.address, 0, acc.CodeHash)
+				_, _ = reader.ReadAccountCode(req.address, acc.CodeHash)
 				p.codePrefetched.Add(1)
 			}
 		}

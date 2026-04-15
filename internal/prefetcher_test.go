@@ -64,7 +64,7 @@ func (m *mockStateReader) ReadAccountData(address types.Address) (*account.State
 	return acc, nil
 }
 
-func (m *mockStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (m *mockStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	m.readStorageCalls.Add(1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -75,27 +75,17 @@ func (m *mockStateReader) ReadAccountStorage(address types.Address, incarnation 
 	return slots[*key], nil
 }
 
-func (m *mockStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (m *mockStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	m.readCodeCalls.Add(1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.code[address], nil
 }
 
-func (m *mockStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
+func (m *mockStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.code[address]), nil
-}
-
-func (m *mockStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	_, ok := m.accounts[address]
-	if !ok {
-		return 0, nil
-	}
-	return 1, nil
 }
 
 // waitForAccountReads polls until the expected number of account reads is reached or timeout.

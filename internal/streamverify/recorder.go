@@ -97,8 +97,8 @@ func (r *ReadLogRecorder) ReadAccountData(addr types.Address) (*account.StateAcc
 // ReadAccountStorage captures one Storage entry. Zero values are recorded
 // with a nil Value to skip the uint256.Int allocation; EncodeReadLog
 // treats nil as zero.
-func (r *ReadLogRecorder) ReadAccountStorage(addr types.Address, inc uint16, key *types.Hash) ([]byte, error) {
-	v, err := r.inner.ReadAccountStorage(addr, inc, key)
+func (r *ReadLogRecorder) ReadAccountStorage(addr types.Address, key *types.Hash) ([]byte, error) {
+	v, err := r.inner.ReadAccountStorage(addr, key)
 	if err != nil {
 		return nil, err
 	}
@@ -115,8 +115,8 @@ func (r *ReadLogRecorder) ReadAccountStorage(addr types.Address, inc uint16, key
 // Skips emptyCodeHash and code hashes the consumer already knows about.
 // The capture is idempotent — re-reading the same code hash within a
 // block does not re-insert.
-func (r *ReadLogRecorder) ReadAccountCode(addr types.Address, inc uint16, codeHash types.Hash) ([]byte, error) {
-	code, err := r.inner.ReadAccountCode(addr, inc, codeHash)
+func (r *ReadLogRecorder) ReadAccountCode(addr types.Address, codeHash types.Hash) ([]byte, error) {
+	code, err := r.inner.ReadAccountCode(addr, codeHash)
 	if err != nil {
 		return nil, err
 	}
@@ -137,18 +137,12 @@ func (r *ReadLogRecorder) ReadAccountCode(addr types.Address, inc uint16, codeHa
 // ReadAccountCodeSize delegates to ReadAccountCode for capture, then
 // returns the length. The extra map lookup is negligible relative to
 // EVM work.
-func (r *ReadLogRecorder) ReadAccountCodeSize(addr types.Address, inc uint16, codeHash types.Hash) (int, error) {
-	code, err := r.ReadAccountCode(addr, inc, codeHash)
+func (r *ReadLogRecorder) ReadAccountCodeSize(addr types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.ReadAccountCode(addr, codeHash)
 	if err != nil {
 		return 0, err
 	}
 	return len(code), nil
-}
-
-// ReadAccountIncarnation always returns 0 — incarnation tracking is
-// removed in the EthEL replay path. No log entry generated.
-func (r *ReadLogRecorder) ReadAccountIncarnation(types.Address) (uint16, error) {
-	return 0, nil
 }
 
 // Compile-time interface check.

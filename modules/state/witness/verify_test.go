@@ -283,10 +283,10 @@ func TestTracingReader_RecordsAccess(t *testing.T) {
 	if _, err := tracer.ReadAccountData(addr2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tracer.ReadAccountStorage(addr1, 1, &slot); err != nil {
+	if _, err := tracer.ReadAccountStorage(addr1, &slot); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tracer.ReadAccountCode(addr2, 1, types.Hash{}); err != nil {
+	if _, err := tracer.ReadAccountCode(addr2, types.Hash{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -645,12 +645,12 @@ func TestWitnessStateReaderReturnsCopies(t *testing.T) {
 		t.Fatal("ReadAccountData should return a copy")
 	}
 
-	readStorage, err := reader.ReadAccountStorage(addr, 1, &slot)
+	readStorage, err := reader.ReadAccountStorage(addr, &slot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	readStorage[0] = 'X'
-	readStorageAgain, err := reader.ReadAccountStorage(addr, 1, &slot)
+	readStorageAgain, err := reader.ReadAccountStorage(addr, &slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -658,12 +658,12 @@ func TestWitnessStateReaderReturnsCopies(t *testing.T) {
 		t.Fatal("ReadAccountStorage should return a copy")
 	}
 
-	readCode, err := reader.ReadAccountCode(addr, 1, codeHash)
+	readCode, err := reader.ReadAccountCode(addr, codeHash)
 	if err != nil {
 		t.Fatal(err)
 	}
 	readCode[0] = 'X'
-	readCodeAgain, err := reader.ReadAccountCode(addr, 1, codeHash)
+	readCodeAgain, err := reader.ReadAccountCode(addr, codeHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,18 +679,14 @@ func (m *mockStateReader) ReadAccountData(address types.Address) (*account.State
 	return nil, nil
 }
 
-func (m *mockStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (m *mockStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *mockStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (m *mockStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *mockStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	return 0, nil
-}
-
-func (m *mockStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
+func (m *mockStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	return 0, nil
 }

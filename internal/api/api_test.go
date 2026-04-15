@@ -81,16 +81,13 @@ type apiStateReaderStub struct{}
 func (s *apiStateReaderStub) ReadAccountData(types.Address) (*account.StateAccount, error) {
 	return nil, nil
 }
-func (s *apiStateReaderStub) ReadAccountStorage(types.Address, uint16, *types.Hash) ([]byte, error) {
+func (s *apiStateReaderStub) ReadAccountStorage(types.Address, *types.Hash) ([]byte, error) {
 	return nil, nil
 }
-func (s *apiStateReaderStub) ReadAccountCode(types.Address, uint16, types.Hash) ([]byte, error) {
+func (s *apiStateReaderStub) ReadAccountCode(types.Address, types.Hash) ([]byte, error) {
 	return nil, nil
 }
-func (s *apiStateReaderStub) ReadAccountCodeSize(types.Address, uint16, types.Hash) (int, error) {
-	return 0, nil
-}
-func (s *apiStateReaderStub) ReadAccountIncarnation(types.Address) (uint16, error) {
+func (s *apiStateReaderStub) ReadAccountCodeSize(types.Address, types.Hash) (int, error) {
 	return 0, nil
 }
 

@@ -182,7 +182,7 @@ func (s *PlainState) ReadAccountData(address types.Address) (*account.StateAccou
 	return &a, nil
 }
 
-func (s *PlainState) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (s *PlainState) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	enc, err := GetAsOf(s.tx, s.storageHistoryC, s.storageChangesC, true /* storage */, compositeKey, s.blockNr)
 	if err != nil {
@@ -197,7 +197,7 @@ func (s *PlainState) ReadAccountStorage(address types.Address, incarnation uint1
 	return enc, nil
 }
 
-func (s *PlainState) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (s *PlainState) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	if bytes.Equal(codeHash[:], emptyCodeHash) {
 		return nil, nil
 	}
@@ -211,15 +211,9 @@ func (s *PlainState) ReadAccountCode(address types.Address, incarnation uint16, 
 	return code, err
 }
 
-func (s *PlainState) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	code, err := s.ReadAccountCode(address, incarnation, codeHash)
+func (s *PlainState) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := s.ReadAccountCode(address, codeHash)
 	return len(code), err
-}
-
-// ReadAccountIncarnation returns 0 as of Phase D — see
-// BufferedPlainStateReader for the rationale.
-func (s *PlainState) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return 0, nil
 }
 
 func (s *PlainState) UpdateAccountData(address types.Address, original, account *account.StateAccount) error {
@@ -230,11 +224,11 @@ func (s *PlainState) DeleteAccount(address types.Address, original *account.Stat
 	return nil
 }
 
-func (s *PlainState) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
+func (s *PlainState) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	return nil
 }
 
-func (s *PlainState) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
+func (s *PlainState) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
 	t, ok := s.storage[address]
 	if !ok {
 		t = btree.New(16)

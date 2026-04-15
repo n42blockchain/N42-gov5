@@ -31,10 +31,9 @@ func TestInstrumentedReaderDisabled(t *testing.T) {
 
 	// Should pass through without instrumentation
 	_, _ = reader.ReadAccountData(types.Address{})
-	_, _ = reader.ReadAccountStorage(types.Address{}, 0, &types.Hash{})
-	_, _ = reader.ReadAccountCode(types.Address{}, 0, types.Hash{})
-	_, _ = reader.ReadAccountCodeSize(types.Address{}, 0, types.Hash{})
-	_, _ = reader.ReadAccountIncarnation(types.Address{})
+	_, _ = reader.ReadAccountStorage(types.Address{}, &types.Hash{})
+	_, _ = reader.ReadAccountCode(types.Address{}, types.Hash{})
+	_, _ = reader.ReadAccountCodeSize(types.Address{}, types.Hash{})
 
 	stats := reader.Stats()
 	if stats.TotalReads() != 0 {
@@ -50,10 +49,9 @@ func TestInstrumentedReaderEnabled(t *testing.T) {
 	// Perform various reads
 	_, _ = reader.ReadAccountData(types.Address{})
 	_, _ = reader.ReadAccountData(types.Address{})
-	_, _ = reader.ReadAccountStorage(types.Address{}, 0, &types.Hash{})
-	_, _ = reader.ReadAccountCode(types.Address{}, 0, types.Hash{})
-	_, _ = reader.ReadAccountCodeSize(types.Address{}, 0, types.Hash{})
-	_, _ = reader.ReadAccountIncarnation(types.Address{})
+	_, _ = reader.ReadAccountStorage(types.Address{}, &types.Hash{})
+	_, _ = reader.ReadAccountCode(types.Address{}, types.Hash{})
+	_, _ = reader.ReadAccountCodeSize(types.Address{}, types.Hash{})
 
 	stats := reader.Stats()
 	if stats.ReadAccountCount != 2 {
@@ -62,8 +60,8 @@ func TestInstrumentedReaderEnabled(t *testing.T) {
 	if stats.ReadStorageCount != 1 {
 		t.Errorf("Expected 1 storage read, got %d", stats.ReadStorageCount)
 	}
-	if stats.TotalReads() != 6 {
-		t.Errorf("Expected 6 total reads, got %d", stats.TotalReads())
+	if stats.TotalReads() != 5 {
+		t.Errorf("Expected 5 total reads, got %d", stats.TotalReads())
 	}
 	// Note: TotalTime() may be 0 for very fast mock operations
 	t.Logf("Total time: %v", stats.TotalTime())
@@ -98,7 +96,7 @@ func TestInstrumentedReaderConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < readsPerGoroutine; j++ {
 				_, _ = reader.ReadAccountData(types.Address{})
-				_, _ = reader.ReadAccountStorage(types.Address{}, 0, &types.Hash{})
+				_, _ = reader.ReadAccountStorage(types.Address{}, &types.Hash{})
 			}
 		}()
 	}
@@ -127,9 +125,9 @@ func TestInstrumentedWriterDisabled(t *testing.T) {
 
 	// Should pass through without instrumentation
 	_ = writer.UpdateAccountData(types.Address{}, nil, nil)
-	_ = writer.UpdateAccountCode(types.Address{}, 0, types.Hash{}, nil)
+	_ = writer.UpdateAccountCode(types.Address{}, types.Hash{}, nil)
 	_ = writer.DeleteAccount(types.Address{}, nil)
-	_ = writer.WriteAccountStorage(types.Address{}, 0, &types.Hash{}, nil, nil)
+	_ = writer.WriteAccountStorage(types.Address{}, &types.Hash{}, nil, nil)
 	_ = writer.CreateContract(types.Address{})
 
 	stats := writer.Stats()
@@ -146,9 +144,9 @@ func TestInstrumentedWriterEnabled(t *testing.T) {
 	// Perform various writes
 	_ = writer.UpdateAccountData(types.Address{}, nil, nil)
 	_ = writer.UpdateAccountData(types.Address{}, nil, nil)
-	_ = writer.UpdateAccountCode(types.Address{}, 0, types.Hash{}, nil)
+	_ = writer.UpdateAccountCode(types.Address{}, types.Hash{}, nil)
 	_ = writer.DeleteAccount(types.Address{}, nil)
-	_ = writer.WriteAccountStorage(types.Address{}, 0, &types.Hash{}, nil, nil)
+	_ = writer.WriteAccountStorage(types.Address{}, &types.Hash{}, nil, nil)
 	_ = writer.CreateContract(types.Address{})
 
 	stats := writer.Stats()
@@ -177,7 +175,7 @@ func TestInstrumentedWriterConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < writesPerGoroutine; j++ {
 				_ = writer.UpdateAccountData(types.Address{}, nil, nil)
-				_ = writer.WriteAccountStorage(types.Address{}, 0, &types.Hash{}, nil, nil)
+				_ = writer.WriteAccountStorage(types.Address{}, &types.Hash{}, nil, nil)
 			}
 		}()
 	}
@@ -302,18 +300,14 @@ func (m *mockStateReaderWithData) ReadAccountData(address types.Address) (*accou
 	return m.account, nil
 }
 
-func (m *mockStateReaderWithData) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (m *mockStateReaderWithData) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *mockStateReaderWithData) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (m *mockStateReaderWithData) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *mockStateReaderWithData) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	return 0, nil
-}
-
-func (m *mockStateReaderWithData) ReadAccountIncarnation(address types.Address) (uint16, error) {
+func (m *mockStateReaderWithData) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	return 0, nil
 }

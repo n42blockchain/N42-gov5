@@ -128,7 +128,7 @@ func TestIntegration_WitnessGenerateVerifyRead(t *testing.T) {
 
 	// Access storage for account 0.
 	slot1 := storageSlots[0].slot
-	val, err := tracer.ReadAccountStorage(addresses[0].addr, 1, &slot1)
+	val, err := tracer.ReadAccountStorage(addresses[0].addr, &slot1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestIntegration_WitnessGenerateVerifyRead(t *testing.T) {
 	}
 
 	// Read storage from witness by real address and slot.
-	storageVal, err := reader.ReadAccountStorage(addresses[0].addr, 1, &slot1)
+	storageVal, err := reader.ReadAccountStorage(addresses[0].addr, &slot1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +347,7 @@ func (r *jmtStateReader) ReadAccountData(address types.Address) (*account.StateA
 	return acct, nil
 }
 
-func (r *jmtStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
+func (r *jmtStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	if key == nil {
 		return nil, nil
 	}
@@ -362,15 +362,11 @@ func (r *jmtStateReader) ReadAccountStorage(address types.Address, incarnation u
 	return val, nil
 }
 
-func (r *jmtStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
+func (r *jmtStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	return nil, nil
 }
 
-func (r *jmtStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
-	return 0, nil
-}
-
-func (r *jmtStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
+func (r *jmtStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	return 0, nil
 }
 

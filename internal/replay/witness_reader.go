@@ -57,20 +57,20 @@ func (w *WitnessStateReader) ReadAccountData(address types.Address) (*account.St
 	return acct, nil
 }
 
-func (w *WitnessStateReader) ReadAccountStorage(address types.Address, incarnation uint16, key *types.Hash) ([]byte, error) {
-	val, err := w.inner.ReadAccountStorage(address, incarnation, key)
+func (w *WitnessStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
+	val, err := w.inner.ReadAccountStorage(address, key)
 	if err != nil {
 		return nil, err
 	}
-	sk := storageWKey{addr: address, inc: incarnation, slot: *key}
+	sk := storageWKey{addr: address, slot: *key}
 	if _, recorded := w.storage[sk]; !recorded {
 		w.storage[sk] = val
 	}
 	return val, nil
 }
 
-func (w *WitnessStateReader) ReadAccountCode(address types.Address, incarnation uint16, codeHash types.Hash) ([]byte, error) {
-	code, err := w.inner.ReadAccountCode(address, incarnation, codeHash)
+func (w *WitnessStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
+	code, err := w.inner.ReadAccountCode(address, codeHash)
 	if err != nil {
 		return nil, err
 	}
@@ -80,9 +80,9 @@ func (w *WitnessStateReader) ReadAccountCode(address types.Address, incarnation 
 	return code, nil
 }
 
-func (w *WitnessStateReader) ReadAccountCodeSize(address types.Address, incarnation uint16, codeHash types.Hash) (int, error) {
+func (w *WitnessStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	// Also record code access for witness completeness.
-	code, err := w.inner.ReadAccountCode(address, incarnation, codeHash)
+	code, err := w.inner.ReadAccountCode(address, codeHash)
 	if err != nil {
 		return 0, err
 	}
@@ -90,10 +90,6 @@ func (w *WitnessStateReader) ReadAccountCodeSize(address types.Address, incarnat
 		w.code[codeHash] = code
 	}
 	return len(code), nil
-}
-
-func (w *WitnessStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return w.inner.ReadAccountIncarnation(address)
 }
 
 // Serialize encodes the collected witness as a compact byte slice.

@@ -202,7 +202,7 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 
 	if so.db != nil && so.db.snap != nil && !so.db.snap.CanWrite() {
 		// Load from DB in case it is missing.
-		enc, err := so.db.snap.ReadAccountStorage(so.address, so.db.GetIncarnation(so.address), key)
+		enc, err := so.db.snap.ReadAccountStorage(so.address, key)
 		if err != nil {
 			so.setError(err)
 			out.Clear()
@@ -218,7 +218,7 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 		return
 	}
 	// Load from DB in case it is missing.
-	enc, err := so.db.stateReader.ReadAccountStorage(so.address, so.db.GetIncarnation(so.address), key)
+	enc, err := so.db.stateReader.ReadAccountStorage(so.address, key)
 	if err != nil {
 		so.setError(err)
 		out.Clear()
@@ -290,7 +290,7 @@ func (so *stateObject) updateTrie(stateWriter StateWriter) error {
 	for key, value := range so.dirtyStorage {
 		original := so.blockOriginStorage[key]
 		so.originStorage[key] = value
-		if err := stateWriter.WriteAccountStorage(so.address, so.db.GetIncarnation(so.address), &key, &original, &value); err != nil {
+		if err := stateWriter.WriteAccountStorage(so.address, &key, &original, &value); err != nil {
 			return err
 		}
 	}
@@ -342,12 +342,6 @@ func (so *stateObject) setBalance(amount *uint256.Int) {
 // ReturnGas is a no-op retained for interface compatibility.
 func (so *stateObject) ReturnGas(_ *big.Int) {}
 
-func (so *stateObject) setIncarnation(incarnation uint16) {
-	if so.db != nil {
-		so.db.setCurrentIncarnation(so.address, incarnation)
-	}
-}
-
 // Address returns the address of the contract/account.
 func (so *stateObject) Address() types.Address {
 	return so.address
@@ -361,7 +355,7 @@ func (so *stateObject) Code() []byte {
 	if bytes.Equal(so.CodeHash(), emptyCodeHash) {
 		return nil
 	}
-	code, err := so.db.stateReader.ReadAccountCode(so.Address(), so.db.GetIncarnation(so.Address()), types.BytesToHash(so.CodeHash()))
+	code, err := so.db.stateReader.ReadAccountCode(so.Address(), types.BytesToHash(so.CodeHash()))
 	if err != nil {
 		so.setError(fmt.Errorf("can't load code hash %x: %w", so.CodeHash(), err))
 	}
