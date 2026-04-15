@@ -1,121 +1,34 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
+//
+// account_replay.go: trivial Account-table replay primitive used by the
+// freezer changeset paths (forward apply + backward unwind + reorg).
+//
+// Phase B made acctcs OldValue self-contained (full V2 with CodeHash),
+// so replay no longer needs to recover CodeHash from PlainContractCode
+// or thread an incarnation through the call site. The legacy helpers
+// valueIncarnation / revertIncarnation / readIncarnation / writeIncarnation
+// were deleted with this file's rewrite — see commit message for context.
+//
+// Auxiliary tables PlainContractCode and IncarnationMap continue to be
+// maintained by the live forward-execution write path
+// (PlainStateWriter / BufferedPlainStateWriter); they are no longer
+// consulted on the replay/unwind hot path. Phase D will remove them.
 
 package ethel
 
 import (
-	"encoding/binary"
-
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
-	statemod "github.com/n42blockchain/N42/modules/state"
 )
 
-func readIncarnation(tx kv.Getter, addr types.Address) (uint16, error) {
-	b, err := tx.GetOne(modules.IncarnationMap, addr[:])
-	if err != nil || len(b) == 0 {
-		return 0, err
-	}
-	return binary.BigEndian.Uint16(b), nil
-}
-
-func writeIncarnation(tx kv.RwTx, addr types.Address, incarnation uint16) error {
-	if incarnation == 0 {
-		return tx.Delete(modules.IncarnationMap, addr[:])
-	}
-	var enc [2]byte
-	binary.BigEndian.PutUint16(enc[:], incarnation)
-	return tx.Put(modules.IncarnationMap, addr[:], enc[:])
-}
-
-func valueIncarnation(tx kv.Getter, addr types.Address, encodedValue []byte) (uint16, error) {
+// applyAccountValue writes encodedValue to modules.Account for addr, or
+// deletes the entry when encodedValue is empty. encodedValue must be
+// full-V2 bytes (Phase B: CodeHash inline, no hidden incarnation tag).
+func applyAccountValue(tx kv.RwTx, addr types.Address, encodedValue []byte) error {
 	if len(encodedValue) == 0 {
-		return readIncarnation(tx, addr)
+		return tx.Delete(modules.Account, addr[:])
 	}
-	incarnation, ok, err := statemod.DecodeAccountHistoryIncarnation(encodedValue)
-	if err != nil {
-		return 0, err
-	}
-	if ok {
-		return incarnation, nil
-	}
-	return readIncarnation(tx, addr)
-}
-
-func valueHasCode(encodedValue []byte) (bool, error) {
-	if len(encodedValue) == 0 {
-		return false, nil
-	}
-	var acc account.StateAccount
-	if err := acc.DecodeForStorage(encodedValue); err != nil {
-		return false, err
-	}
-	return !acc.IsEmptyCodeHash(), nil
-}
-
-func revertIncarnation(tx kv.Getter, addr types.Address, oldValue, newValue []byte) (uint16, error) {
-	if len(oldValue) > 0 {
-		incarnation, ok, err := statemod.DecodeAccountHistoryIncarnation(oldValue)
-		if err != nil {
-			return 0, err
-		}
-		if ok {
-			return incarnation, nil
-		}
-		return readIncarnation(tx, addr)
-	}
-	if len(newValue) == 0 {
-		return 0, nil
-	}
-	currentIncarnation, err := valueIncarnation(tx, addr, newValue)
-	if err != nil {
-		return 0, err
-	}
-	hasCode, err := valueHasCode(newValue)
-	if err != nil {
-		return 0, err
-	}
-	if hasCode && currentIncarnation > 0 {
-		return currentIncarnation - 1, nil
-	}
-	return currentIncarnation, nil
-}
-
-func applyAccountValue(tx kv.RwTx, addr types.Address, encodedValue []byte, incarnation uint16) error {
-	if len(encodedValue) == 0 {
-		if err := tx.Delete(modules.Account, addr[:]); err != nil {
-			return err
-		}
-		if err := tx.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(addr[:])); err != nil {
-			return err
-		}
-		return writeIncarnation(tx, addr, incarnation)
-	}
-
-	restored, err := statemod.RestoreHistoricalAccountCodeHash(tx, addr[:], encodedValue)
-	if err != nil {
-		return err
-	}
-	if err := tx.Put(modules.Account, addr[:], restored); err != nil {
-		return err
-	}
-	if err := writeIncarnation(tx, addr, incarnation); err != nil {
-		return err
-	}
-
-	var acc account.StateAccount
-	if err := acc.DecodeForStorage(restored); err != nil {
-		return err
-	}
-	if acc.IsEmptyCodeHash() {
-		return tx.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(addr[:]))
-	}
-	if incarnation > 0 {
-		if err := tx.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefixWithIncarnation(addr[:], incarnation), acc.CodeHash[:]); err != nil {
-			return err
-		}
-	}
-	return tx.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(addr[:]), acc.CodeHash[:])
+	return tx.Put(modules.Account, addr[:], encodedValue)
 }
