@@ -31,7 +31,6 @@ import (
 	"github.com/RoaringBitmap/roaring/roaring64"
 
 	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
@@ -39,23 +38,8 @@ import (
 	"github.com/n42blockchain/N42/modules/ethdb/bitmapdb"
 )
 
-func originalAccountData(original *account.StateAccount, omitHashes bool) []byte {
-	var originalData []byte
-	if !original.Initialised {
-		originalData = []byte{}
-	} else if omitHashes {
-		testAcc := original.SelfCopy()
-		copy(testAcc.CodeHash[:], emptyCodeHash)
-		testAcc.Root = crypto.Keccak256Hash(nil)
-		originalDataLen := testAcc.EncodingLengthForStorage()
-		originalData = make([]byte, originalDataLen)
-		testAcc.EncodeForStorage(originalData)
-	} else {
-		originalDataLen := original.EncodingLengthForStorage()
-		originalData = make([]byte, originalDataLen)
-		original.EncodeForStorage(originalData)
-	}
-	return originalData
+func originalAccountData(original *account.StateAccount, omitHashes bool, incarnation uint16) []byte {
+	return EncodeAccountForHistory(original, omitHashes, incarnation)
 }
 
 func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, changeDb kv.RwTx) error {

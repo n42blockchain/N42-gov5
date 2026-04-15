@@ -94,3 +94,6 @@ func (w *ParallelStateWriter) CreateContract(address types.Address) error {
 	w.rw.RecordWrite(key, []byte{1})
 	return nil
 }
+
+func (w *ParallelStateWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
+}

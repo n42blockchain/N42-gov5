@@ -31,7 +31,6 @@ import (
 
 	"github.com/RoaringBitmap/roaring/roaring64"
 
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
@@ -104,20 +103,9 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 
 	// Restore codehash for account data.
 	if !storage {
-		var acc account.StateAccount
-		if err := acc.DecodeForStorage(data); err != nil {
+		data, err = RestoreHistoricalAccountCodeHash(tx, key, data)
+		if err != nil {
 			return nil, err
-		}
-		if acc.IsEmptyCodeHash() {
-			codeHash, err := tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(key))
-			if err != nil {
-				return nil, err
-			}
-			if len(codeHash) > 0 {
-				acc.CodeHash = types.BytesToHash(codeHash)
-			}
-			data = make([]byte, acc.EncodingLengthForStorage())
-			acc.EncodeForStorage(data)
 		}
 	}
 

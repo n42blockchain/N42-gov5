@@ -39,8 +39,8 @@ type pendingOutput struct {
 	stoCS *changeset.ChangeSet
 
 	// Snapshotted post-block values for the newValueOf callbacks.
-	accNewVals map[types.Address][]byte          // addr → MarshalV2 bytes (nil = deleted)
-	stoNewVals map[[52]byte][]byte               // [addr(20)||slot(32)] → raw slot bytes (nil = zero)
+	accNewVals map[types.Address][]byte // addr → full account bytes + hidden current incarnation (nil = deleted)
+	stoNewVals map[[52]byte][]byte      // [addr(20)||slot(32)] → raw slot bytes (nil = zero)
 
 	// Witness data (already encoded, block-scoped, safe to hand off).
 	witnessData []byte
@@ -49,10 +49,10 @@ type pendingOutput struct {
 // asyncOutputWriter processes pendingOutput entries on a background
 // goroutine. The channel provides ordering (FIFO) and back-pressure.
 type asyncOutputWriter struct {
-	batcher  *outputBatcher
-	ch       chan pendingOutput
-	done     chan struct{}
-	err      atomic.Pointer[error]
+	batcher *outputBatcher
+	ch      chan pendingOutput
+	done    chan struct{}
+	err     atomic.Pointer[error]
 }
 
 func newAsyncOutputWriter(batcher *outputBatcher) *asyncOutputWriter {

@@ -105,6 +105,12 @@ func (dc *DiffCollector) WriteHistory() error {
 	return dc.inner.WriteHistory()
 }
 
+func (dc *DiffCollector) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
+	if notifier, ok := dc.inner.(state.AccountIncarnationNotifier); ok {
+		notifier.NoteAccountIncarnations(address, originalIncarnation, currentIncarnation)
+	}
+}
+
 // Accounts returns the collected account modifications.
 func (dc *DiffCollector) Accounts() map[types.Address]*account.StateAccount {
 	return dc.accounts

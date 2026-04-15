@@ -16,11 +16,11 @@
 //	per entry:
 //	  ... see encoder ...
 //
-// Value conventions (same for old and new):
-//   - Account values are full V2-encoded StateAccount bytes
-//     (account.MarshalV2) — NOT the omitHashes form used by the legacy
-//     Erigon ChangeSet. This makes forward replay self-contained (the
-//     PlainContractCode table does not need to be consulted).
+// Value conventions:
+//   - Account OLD values omit CodeHash on purpose and use the reserved V2
+//     incarnation bit to carry the historical code version.
+//   - Account NEW values keep the full CodeHash and also carry the current
+//     incarnation in the reserved V2 bit slot.
 //   - Storage slot values are raw big-endian minimal bytes (0-32 bytes,
 //     leading zeros trimmed). A len=0 value means "slot is zero / absent".
 //     On forward replay or backward unwind, len=0 means DELETE the key.
@@ -37,10 +37,10 @@ import (
 	"github.com/n42blockchain/N42/modules/changeset"
 )
 
-// AccountNewValueFn resolves the post-block V2-encoded account bytes for
-// an address, given the current (post-commit) buffered-state reader. A
-// nil return means the account was deleted in this block and forward
-// replay should `delete(Account, addr)`.
+// AccountNewValueFn resolves the post-block V2-encoded account bytes for an
+// address, including the hidden current-incarnation tag. A nil return means
+// the account was deleted in this block and forward replay should
+// `delete(Account, addr)`.
 type AccountNewValueFn func(addr types.Address) []byte
 
 // StorageNewValueFn resolves the post-block raw storage value for
@@ -57,17 +57,16 @@ type StorageNewValueFn func(addr types.Address, slot types.Hash) []byte
 //	[count:2LE]
 //	per entry:
 //	  [addr:20]
-//	  [oldLen:1][oldVal:oldLen]   // V2-encoded full account, empty => deleted
-//	  [newLen:1][newVal:newLen]   // V2-encoded full account, empty => deleted
+//	  [oldLen:1][oldVal:oldLen]   // omit-CodeHash account bytes, empty => deleted
+//	  [newLen:1][newVal:newLen]   // full account bytes, empty => deleted
 func EncodeAccountChanges(cs *changeset.ChangeSet, newValueOf AccountNewValueFn) []byte {
 	if cs == nil || cs.Len() == 0 {
 		return nil
 	}
 	sort.Sort(cs)
-	// Old values come straight from the ChangeSet (omitHashes bytes from
-	// ChangeSetWriter); new values are full MarshalV2 from the post-block
-	// reader. The asymmetry is fine: backward unwind uses old + recoverCodeHash;
-	// forward replay uses new which is self-contained.
+	// Old values come straight from the ChangeSet with omit-CodeHash semantics.
+	// New values are full post-block account bytes with the hidden current
+	// incarnation tag populated by the reader snapshot.
 	buf := make([]byte, 0, 2+cs.Len()*60)
 	buf = appendUint16LE(buf, uint16(cs.Len()))
 	for _, c := range cs.Changes {
@@ -165,8 +164,8 @@ func appendUint16LE(buf []byte, v uint16) []byte {
 // AccountChange is a decoded per-account changeset entry.
 type AccountChange struct {
 	Address  types.Address
-	OldValue []byte // omitHashes bytes or empty
-	NewValue []byte // full MarshalV2 bytes or empty
+	OldValue []byte // omit-CodeHash account bytes or empty
+	NewValue []byte // full account bytes with hidden current incarnation, or empty
 }
 
 // StorageChange is a decoded per-slot changeset entry.

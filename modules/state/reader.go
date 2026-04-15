@@ -25,6 +25,7 @@ package state
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -142,5 +143,24 @@ func (r *HistoryStateReader) ReadAccountCodeSize(address types.Address, incarnat
 }
 
 func (r *HistoryStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	return 0, nil
+	enc, err := FindByHistory(r.tx, r.accHistoryC, r.accChangesC, false /* storage */, address[:], r.blockNr+1)
+	if err != nil {
+		if v, getErr := r.db.GetOne(modules.IncarnationMap, address[:]); getErr != nil || len(v) == 0 {
+			return 0, getErr
+		} else {
+			return binary.BigEndian.Uint16(v), nil
+		}
+	}
+	incarnation, ok, err := DecodeAccountHistoryIncarnation(enc)
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return incarnation, nil
+	}
+	v, err := r.db.GetOne(modules.IncarnationMap, address[:])
+	if err != nil || len(v) == 0 {
+		return 0, err
+	}
+	return binary.BigEndian.Uint16(v), nil
 }

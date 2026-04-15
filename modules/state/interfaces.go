@@ -107,6 +107,14 @@ type WriterWithChangeSets interface {
 	WriteHistory() error
 }
 
+// AccountIncarnationNotifier is an optional writer capability used by the
+// commit path to pass both the historical and post-block incarnations of an
+// account. Changeset/history writers use this to keep CodeHash omission while
+// still restoring the correct historical code version.
+type AccountIncarnationNotifier interface {
+	NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16)
+}
+
 // StateReaderWriter combines StateReader and StateWriter interfaces.
 // Use this when both read and write access is needed.
 type StateReaderWriter interface {
