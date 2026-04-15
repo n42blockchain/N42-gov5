@@ -71,11 +71,6 @@ Physical layout:
 */
 const PlainState = "PlainState"
 
-// PlainContractCode -
-// key - address+incarnation
-// value - code hash
-const PlainContractCode = "PlainCodeHash"
-
 /*
 AccountChangeSet and StorageChangeSet - of block N store values of state before block N changed them.
 Because values "after" change stored in PlainState.
@@ -169,11 +164,6 @@ const (
 	//key - addressHash+incarnation
 	//value - code hash
 	ContractCode = "HashedCodeHash"
-
-	// IncarnationMap for deleted accounts
-	//key - address
-	//value - incarnation of account when it was last deleted
-	IncarnationMap = "IncarnationMap"
 
 	//TEVMCode -
 	//key - contract code hash
@@ -568,14 +558,12 @@ var ChaindataTables = []string{
 	ConfigTable,
 	CurrentExecutionPayload,
 	DatabaseInfo,
-	IncarnationMap,
 	ContractTEVMCode,
 	CliqueSeparate,
 	CliqueLastSnapshot,
 	CliqueSnapshot,
 	SyncStageProgress,
 	PlainState,
-	PlainContractCode,
 	AccountChangeSet,
 	StorageChangeSet,
 	Senders,

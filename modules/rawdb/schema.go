@@ -181,8 +181,6 @@ var StateBuckets = []string{
 	modules.Account,
 	modules.Storage,
 	modules.Code,
-	modules.PlainContractCode,
-	modules.IncarnationMap,
 	modules.AccountChangeSet,
 	modules.AccountsHistory,
 	modules.StorageChangeSet,

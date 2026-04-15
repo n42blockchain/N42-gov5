@@ -36,11 +36,9 @@ package layered
 
 // hotTables are stored in the state DB (small, fast, cached).
 var hotTables = map[string]struct{}{
-	"Account":        {},
-	"Storage":        {},
-	"Code":           {},
-	"PlainCodeHash":  {}, // PlainContractCode
-	"IncarnationMap": {},
+	"Account": {},
+	"Storage": {},
+	"Code":    {},
 }
 
 // coldTables are stored in the history DB (large, append-heavy).
@@ -60,11 +58,9 @@ var coldTables = map[string]struct{}{
 
 // cachedTables are hot tables that benefit from the read cache.
 var cachedTables = map[string]struct{}{
-	"Account":        {},
-	"Storage":        {},
-	"Code":           {},
-	"PlainCodeHash":  {},
-	"IncarnationMap": {},
+	"Account": {},
+	"Storage": {},
+	"Code":    {},
 }
 
 // IsHotTable returns true if the table should be stored in the state DB.

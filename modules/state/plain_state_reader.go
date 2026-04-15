@@ -25,7 +25,6 @@ package state
 
 import (
 	"bytes"
-	"encoding/binary"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -92,13 +91,9 @@ func (r *PlainStateReader) ReadAccountCodeSize(address types.Address, incarnatio
 	return len(code), err
 }
 
+// ReadAccountIncarnation always returns 0 as of Phase D — IncarnationMap
+// is no longer maintained. See BufferedPlainStateReader.ReadAccountIncarnation
+// for the rationale.
 func (r *PlainStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
-	b, err := r.db.GetOne(modules.IncarnationMap, address.Bytes())
-	if err != nil {
-		return 0, err
-	}
-	if len(b) == 0 {
-		return 0, nil
-	}
-	return binary.BigEndian.Uint16(b), nil
+	return 0, nil
 }

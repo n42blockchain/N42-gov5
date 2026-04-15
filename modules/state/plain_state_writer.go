@@ -25,7 +25,6 @@ package state
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 
 	"github.com/holiman/uint256"
@@ -41,23 +40,20 @@ type putDel interface {
 	kv.Deleter
 }
 type PlainStateWriter struct {
-	db             putDel
-	csw            *ChangeSetWriter
-	accountIncarns map[types.Address]uint16
+	db  putDel
+	csw *ChangeSetWriter
 }
 
 func NewPlainStateWriter(db putDel, changeSetsDB kv.RwTx, blockNumber uint64) *PlainStateWriter {
 	return &PlainStateWriter{
-		db:             db,
-		csw:            NewChangeSetWriterPlain(changeSetsDB, blockNumber),
-		accountIncarns: make(map[types.Address]uint16),
+		db:  db,
+		csw: NewChangeSetWriterPlain(changeSetsDB, blockNumber),
 	}
 }
 
 func NewPlainStateWriterNoHistory(db putDel) *PlainStateWriter {
 	return &PlainStateWriter{
-		db:             db,
-		accountIncarns: make(map[types.Address]uint16),
+		db: db,
 	}
 }
 
@@ -72,26 +68,9 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 	if original != nil && original.Equals(account) {
 		return nil
 	}
-	if err := w.db.Put(modules.Account, address[:], account.MarshalV2()); err != nil {
-		return err
-	}
-	if incarnation, ok := w.accountIncarns[address]; ok {
-		if incarnation == 0 {
-			if err := w.db.Delete(modules.IncarnationMap, address[:]); err != nil {
-				return err
-			}
-		} else {
-			var enc [2]byte
-			binary.BigEndian.PutUint16(enc[:], incarnation)
-			if err := w.db.Put(modules.IncarnationMap, address[:], enc[:]); err != nil {
-				return err
-			}
-		}
-	}
-	if account == nil || account.IsEmptyCodeHash() {
-		return w.db.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:]))
-	}
-	return nil
+	// Reth-style: Account row carries CodeHash inline; PlainContractCode
+	// and IncarnationMap are no longer maintained (Phase D).
+	return w.db.Put(modules.Account, address[:], account.MarshalV2())
 }
 
 func (w *PlainStateWriter) UpdateAccountCode(address types.Address, incarnation uint16, codeHash types.Hash, code []byte) error {
@@ -100,20 +79,9 @@ func (w *PlainStateWriter) UpdateAccountCode(address types.Address, incarnation 
 			return err
 		}
 	}
-	if err := w.db.Put(modules.Code, codeHash[:], code); err != nil {
-		return err
-	}
-	if incarnation > 0 {
-		var enc [2]byte
-		binary.BigEndian.PutUint16(enc[:], incarnation)
-		if err := w.db.Put(modules.IncarnationMap, address[:], enc[:]); err != nil {
-			return err
-		}
-		if err := w.db.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefixWithIncarnation(address[:], incarnation), codeHash[:]); err != nil {
-			return err
-		}
-	}
-	return w.db.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:]), codeHash[:])
+	// Bytecode is content-addressed in modules.Code (codeHash → bytecode).
+	// The Account row's CodeHash field is the only address→code link.
+	return w.db.Put(modules.Code, codeHash[:], code)
 }
 
 func (w *PlainStateWriter) DeleteAccount(address types.Address, original *account.StateAccount) error {
@@ -122,21 +90,7 @@ func (w *PlainStateWriter) DeleteAccount(address types.Address, original *accoun
 			return err
 		}
 	}
-	if err := w.db.Delete(modules.Account, address[:]); err != nil {
-		return err
-	}
-	if err := w.db.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:])); err != nil {
-		return err
-	}
-	if incarnation, ok := w.accountIncarns[address]; ok {
-		if incarnation == 0 {
-			return w.db.Delete(modules.IncarnationMap, address[:])
-		}
-		var enc [2]byte
-		binary.BigEndian.PutUint16(enc[:], incarnation)
-		return w.db.Put(modules.IncarnationMap, address[:], enc[:])
-	}
-	return nil
+	return w.db.Delete(modules.Account, address[:])
 }
 
 func (w *PlainStateWriter) WriteAccountStorage(address types.Address, incarnation uint16, key *types.Hash, original, value *uint256.Int) error {
@@ -267,9 +221,9 @@ func (w *PlainStateWriter) ChangeSetWriter() *ChangeSetWriter {
 	return w.csw
 }
 
+// NoteAccountIncarnations is preserved on the interface for binary compatibility
+// with non-ethel call sites (parallel executor, snapshot diff collector, RPC),
+// but as of Phase D it is a no-op: PlainContractCode and IncarnationMap tables
+// are no longer maintained.
 func (w *PlainStateWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
-	if w.csw != nil {
-		w.csw.NoteOriginalIncarnation(address, originalIncarnation)
-	}
-	w.accountIncarns[address] = currentIncarnation
 }

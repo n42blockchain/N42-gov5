@@ -554,9 +554,6 @@ func applyEngineStateOverlayToTx(tx kv.RwTx, overlayState *engineStateOverlay) e
 			if err := tx.Delete(modules.Account, addr[:]); err != nil {
 				return err
 			}
-			if err := tx.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(addr[:])); err != nil {
-				return err
-			}
 			if err := deleteAccountStorageFromTx(tx, addr); err != nil {
 				return err
 			}
@@ -565,23 +562,19 @@ func applyEngineStateOverlayToTx(tx kv.RwTx, overlayState *engineStateOverlay) e
 		if err := tx.Put(modules.Account, addr[:], accountData); err != nil {
 			return err
 		}
+		// Phase D: PlainContractCode is no longer maintained. Account row
+		// carries CodeHash inline; bytecode is content-addressed in
+		// modules.Code (codeHash → bytecode).
 		var decoded account.StateAccount
 		if err := decoded.DecodeForStorageV2(accountData); err != nil {
 			return err
 		}
-		if decoded.IsEmptyCodeHash() {
-			if err := tx.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(addr[:])); err != nil {
-				return err
+		if !decoded.IsEmptyCodeHash() {
+			if code, ok := overlayState.codes[decoded.CodeHash]; ok && code != nil {
+				if err := tx.Put(modules.Code, decoded.CodeHash[:], code); err != nil {
+					return err
+				}
 			}
-			continue
-		}
-		if code, ok := overlayState.codes[decoded.CodeHash]; ok && code != nil {
-			if err := tx.Put(modules.Code, decoded.CodeHash[:], code); err != nil {
-				return err
-			}
-		}
-		if err := tx.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(addr[:]), decoded.CodeHash[:]); err != nil {
-			return err
 		}
 	}
 	for addr, slots := range overlayState.storage {

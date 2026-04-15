@@ -182,13 +182,10 @@ func applyStorcsReverse(t *testing.T, tx kv.RwTx, stoBlob []byte) {
 	}
 }
 
-// applyAcctcsReverse: same but for accounts. Mirrors the production
-// applyChangeset → applyAccountValue path — for current main, OldValues
-// in the changeset omit CodeHash (Erigon convention) and CodeHash is
-// recovered from PlainContractCode via RestoreHistoricalAccountCodeHash.
-// After the planned refactor (Phase B drops omit-CodeHash) this helper
-// will become a trivial Put — keeping it production-equivalent for now
-// makes these tests valid against today's encoding too.
+// applyAcctcsReverse: same but for accounts. After Phase B+C+D, account
+// changeset OldValues are full V2 (CodeHash inline) so this is a direct
+// Put — no codeHash recovery, no incarnation tracking, no auxiliary
+// PlainContractCode/IncarnationMap tables.
 func applyAcctcsReverse(t *testing.T, tx kv.RwTx, accBlob []byte) {
 	t.Helper()
 	if len(accBlob) == 0 {
@@ -201,24 +198,16 @@ func applyAcctcsReverse(t *testing.T, tx kv.RwTx, accBlob []byte) {
 			require.NoError(t, tx.Delete(modules.Account, e.Address[:]))
 			continue
 		}
-		restored, err := state.RestoreHistoricalAccountCodeHash(tx, e.Address[:], e.OldValue)
-		require.NoError(t, err)
-		require.NoError(t, tx.Put(modules.Account, e.Address[:], restored))
+		require.NoError(t, tx.Put(modules.Account, e.Address[:], e.OldValue))
 	}
 }
 
-// seedContractAccount writes (Account, PlainContractCode[addr]) so that
-// applyAcctcsReverse can recover the omitted CodeHash on unwind. Mirrors
-// what PlainStateWriter.UpdateAccountCode would do during forward
-// execution. Use this for any pre-state account that has a non-empty
-// CodeHash and will later be SELFDESTRUCT'd or rolled back across.
+// seedContractAccount writes the Account row. After Phase D the
+// PlainContractCode auxiliary table is gone — Account.CodeHash is
+// the only address→code link and is carried inline in MarshalV2.
 func seedContractAccount(t *testing.T, tx kv.RwTx, addr types.Address, acc *account.StateAccount) {
 	t.Helper()
 	require.NoError(t, tx.Put(modules.Account, addr[:], acc.MarshalV2()))
-	if !acc.IsEmptyCodeHash() {
-		require.NoError(t, tx.Put(modules.PlainContractCode,
-			modules.PlainGenerateStoragePrefix(addr[:]), acc.CodeHash[:]))
-	}
 }
 
 // decodeAcct decodes the V2-encoded bytes (omit-CodeHash form supported)

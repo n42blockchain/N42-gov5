@@ -52,11 +52,6 @@ const (
 	//key - addressHash+incarnation
 	//value - code hash
 	ContractCode = "HashedCodeHash"
-
-	PlainContractCode = "PlainCodeHash" // address+incarnation -> code hash
-
-	// IncarnationMap "incarnation" - uint16 number - how much times given account was SelfDestruct'ed
-	IncarnationMap = "IncarnationMap" // address -> incarnation of account when it was last deleted
 )
 
 // HistoryState
@@ -275,8 +270,6 @@ var n42Tables = []string{
 	Code,
 	Account,
 	Storage,
-	PlainContractCode,
-	IncarnationMap,
 
 	DatabaseInfo,
 	ChainConfig,

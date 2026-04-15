@@ -27,7 +27,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"embed"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,7 +37,6 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -354,16 +352,10 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 		return nil, nil, err
 	}
 	statedb := state.New(state.NewPlainStateReader(tx))
-	for address, account := range g.GenesisConfig.Alloc {
-		if len(account.Code) > 0 || len(account.Storage) > 0 {
-			// Special case for weird tests - inaccessible storage
-			var b [2]byte
-			binary.BigEndian.PutUint16(b[:], state.FirstContractIncarnation)
-			if err := tx.Put(modules.IncarnationMap, address[:], b[:]); err != nil {
-				return nil, nil, err
-			}
-		}
-	}
+	// Phase D: IncarnationMap is no longer maintained. Genesis used to seed
+	// FirstContractIncarnation for contract-bearing accounts; that bookkeeping
+	// is dead because the Storage table is keyed by (addr||slot) without an
+	// incarnation column.
 	blockNumber, err := requireBlockNumber(block, "genesis block number unavailable")
 	if err != nil {
 		return nil, statedb, err
