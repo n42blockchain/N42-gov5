@@ -19,7 +19,7 @@ import (
 // small block range. Requires Geth ancient data at the standard path.
 // Run with: go test -run TestJournalVerifySmall -timeout 5m
 func TestJournalVerifySmall(t *testing.T) {
-	ancientPath := `e:\geth\geth\chaindata\ancient\chain`
+	ancientPath := gethAncientPath
 	genesisPath := filepath.Join("..", "..", "params", "chainspecs", "eth_mainnet_genesis.json")
 
 	if _, err := os.Stat(ancientPath); err != nil {
