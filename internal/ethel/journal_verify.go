@@ -130,11 +130,7 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 			})
 			for _, a := range addrs {
 				e := acctBuf[a]
-				incarnation, err := valueIncarnation(tx, a, e.value)
-				if err != nil {
-					return err
-				}
-				if err := applyAccountValue(tx, a, e.value, incarnation); err != nil {
+				if err := applyAccountValue(tx, a, e.value); err != nil {
 					return err
 				}
 			}
@@ -433,11 +429,7 @@ func applyChangesetForward(tx kv.RwTx, accData, stoData []byte) error {
 			return err
 		}
 		for _, e := range entries {
-			incarnation, err := valueIncarnation(tx, e.Address, e.NewValue)
-			if err != nil {
-				return err
-			}
-			if err := applyAccountValue(tx, e.Address, e.NewValue, incarnation); err != nil {
+			if err := applyAccountValue(tx, e.Address, e.NewValue); err != nil {
 				return err
 			}
 		}
@@ -465,9 +457,8 @@ func applyChangesetForward(tx kv.RwTx, accData, stoData []byte) error {
 // applyChangeset reads account+storage changesets for blockNum and writes
 // the OLD values back to MDBX, effectively reverting that block.
 //
-// Account OLD values omit CodeHash by design. The historical incarnation is
-// carried in the reserved V2 field-bit slot so the correct code version can be
-// restored from PlainContractCode during backward unwind.
+// Phase B made account OLD values self-contained (full V2 with CodeHash
+// inline), so revert is now a direct Put with no CodeHash recovery step.
 func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum uint64) error {
 	accData, err := accTbl.Retrieve(blockNum)
 	if err != nil {
@@ -479,11 +470,7 @@ func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum u
 			return fmt.Errorf("decode acc cs: %w", err)
 		}
 		for _, e := range entries {
-			incarnation, err := revertIncarnation(tx, e.Address, e.OldValue, e.NewValue)
-			if err != nil {
-				return err
-			}
-			if err := applyAccountValue(tx, e.Address, e.OldValue, incarnation); err != nil {
+			if err := applyAccountValue(tx, e.Address, e.OldValue); err != nil {
 				return err
 			}
 		}

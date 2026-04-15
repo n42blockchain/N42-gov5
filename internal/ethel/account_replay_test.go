@@ -1,8 +1,10 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+
 package ethel
 
 import (
 	"context"
-	"encoding/binary"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,10 +13,16 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
-	statemod "github.com/n42blockchain/N42/modules/state"
 )
 
-func TestApplyAccountValueAndRevertIncarnationPreserveVersionedCodeHash(t *testing.T) {
+// TestApplyAccountValue_RoundTrip exercises the trivial Phase C
+// applyAccountValue: forward apply writes, backward apply rewrites the
+// pre-state byte-for-byte. Replaces the legacy
+// TestApplyAccountValueAndRevertIncarnationPreserveVersionedCodeHash
+// test that locked down Codex's incarnation-recovery fix; that fix is
+// no longer needed because Phase B made acctcs OldValue self-contained
+// (full V2 with CodeHash inline).
+func TestApplyAccountValue_RoundTrip(t *testing.T) {
 	t.Parallel()
 
 	db := memdb.NewTestDB(t)
@@ -25,67 +33,59 @@ func TestApplyAccountValueAndRevertIncarnationPreserveVersionedCodeHash(t *testi
 	var addr types.Address
 	addr[19] = 0xAB
 
-	oldCodeHash := ethelFilledHash(0x11)
-	newCodeHash := ethelFilledHash(0x22)
-
 	oldAcc := account.NewAccount()
 	oldAcc.Initialised = true
 	oldAcc.Nonce = 1
 	oldAcc.Balance.SetUint64(5)
-	oldAcc.CodeHash = oldCodeHash
+	oldAcc.CodeHash = ethelFilledHash(0x11)
 
 	newAcc := oldAcc
 	newAcc.Nonce = 2
-	newAcc.CodeHash = newCodeHash
+	newAcc.CodeHash = ethelFilledHash(0x22)
 
-	var inc1 [2]byte
-	binary.BigEndian.PutUint16(inc1[:], 1)
-	require.NoError(t, tx.Put(modules.Account, addr[:], oldAcc.MarshalV2()))
-	require.NoError(t, tx.Put(modules.IncarnationMap, addr[:], inc1[:]))
-	require.NoError(t, tx.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(addr[:]), oldCodeHash[:]))
-	require.NoError(t, tx.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefixWithIncarnation(addr[:], 1), oldCodeHash[:]))
+	oldBytes := oldAcc.MarshalV2()
+	newBytes := newAcc.MarshalV2()
 
-	oldValue := statemod.EncodeAccountForHistory(&oldAcc, true, 1)
-	newValue := statemod.EncodeAccountForHistory(&newAcc, false, 2)
+	require.NoError(t, tx.Put(modules.Account, addr[:], oldBytes))
 
-	forwardIncarnation, err := valueIncarnation(tx, addr, newValue)
+	// Forward: write NEW value.
+	require.NoError(t, applyAccountValue(tx, addr, newBytes))
+	gotNew, err := tx.GetOne(modules.Account, addr[:])
 	require.NoError(t, err)
-	require.Equal(t, uint16(2), forwardIncarnation)
-	require.NoError(t, applyAccountValue(tx, addr, newValue, forwardIncarnation))
+	require.Equal(t, newBytes, gotNew, "forward apply must write byte-equal NEW")
 
-	currentAcc, err := tx.GetOne(modules.Account, addr[:])
+	// Backward: write OLD value — reproduces the pre-block account.
+	require.NoError(t, applyAccountValue(tx, addr, oldBytes))
+	gotOld, err := tx.GetOne(modules.Account, addr[:])
 	require.NoError(t, err)
-	var decodedCurrent account.StateAccount
-	require.NoError(t, decodedCurrent.DecodeForStorage(currentAcc))
-	require.Equal(t, newCodeHash, decodedCurrent.CodeHash)
+	require.Equal(t, oldBytes, gotOld, "backward apply must write byte-equal OLD")
+}
 
-	currentIncarnation, err := readIncarnation(tx, addr)
-	require.NoError(t, err)
-	require.Equal(t, uint16(2), currentIncarnation)
-	currentCodeHash, err := tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(addr[:]))
-	require.NoError(t, err)
-	require.Equal(t, newCodeHash[:], currentCodeHash)
-	version1CodeHash, err := tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefixWithIncarnation(addr[:], 1))
-	require.NoError(t, err)
-	require.Equal(t, oldCodeHash[:], version1CodeHash)
+// TestApplyAccountValue_DeleteOnEmpty verifies that an empty encodedValue
+// triggers a full Account-row delete (the SELFDESTRUCT / new-account-empty
+// shape produced by acctcs entries with len(NewValue)==0 or
+// len(OldValue)==0 for previously-absent accounts).
+func TestApplyAccountValue_DeleteOnEmpty(t *testing.T) {
+	t.Parallel()
 
-	oldIncarnation, err := revertIncarnation(tx, addr, oldValue, newValue)
+	db := memdb.NewTestDB(t)
+	tx, err := db.BeginRw(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, uint16(1), oldIncarnation)
-	require.NoError(t, applyAccountValue(tx, addr, oldValue, oldIncarnation))
+	defer tx.Rollback()
 
-	restoredAcc, err := tx.GetOne(modules.Account, addr[:])
-	require.NoError(t, err)
-	var decodedRestored account.StateAccount
-	require.NoError(t, decodedRestored.DecodeForStorage(restoredAcc))
-	require.Equal(t, oldCodeHash, decodedRestored.CodeHash)
+	var addr types.Address
+	addr[19] = 0xCD
 
-	restoredIncarnation, err := readIncarnation(tx, addr)
+	acc := account.NewAccount()
+	acc.Initialised = true
+	acc.Nonce = 7
+	require.NoError(t, tx.Put(modules.Account, addr[:], acc.MarshalV2()))
+
+	require.NoError(t, applyAccountValue(tx, addr, nil))
+
+	got, err := tx.GetOne(modules.Account, addr[:])
 	require.NoError(t, err)
-	require.Equal(t, uint16(1), restoredIncarnation)
-	restoredCodeHash, err := tx.GetOne(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(addr[:]))
-	require.NoError(t, err)
-	require.Equal(t, oldCodeHash[:], restoredCodeHash)
+	require.Empty(t, got, "empty encodedValue must delete the row")
 }
 
 func ethelFilledHash(b byte) types.Hash {

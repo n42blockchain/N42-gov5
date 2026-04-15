@@ -52,11 +52,7 @@ func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
 					return fmt.Errorf("decode account changes at %d: %w", blockNum, err)
 				}
 				for _, e := range entries {
-					incarnation, err := revertIncarnation(tx, e.Address, e.OldValue, e.NewValue)
-					if err != nil {
-						return err
-					}
-					if err := applyAccountValue(tx, e.Address, e.OldValue, incarnation); err != nil {
+					if err := applyAccountValue(tx, e.Address, e.OldValue); err != nil {
 						return err
 					}
 				}
