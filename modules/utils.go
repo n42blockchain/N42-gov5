@@ -112,6 +112,15 @@ func PlainGenerateStoragePrefix(address []byte) []byte {
 	return prefix
 }
 
+// PlainGenerateStoragePrefixWithIncarnation returns the address+incarnation
+// prefix used by versioned PlainContractCode entries.
+func PlainGenerateStoragePrefixWithIncarnation(address []byte, incarnation uint16) []byte {
+	prefix := make([]byte, types.AddressLength+types.IncarnationLength)
+	copy(prefix, address)
+	binary.BigEndian.PutUint16(prefix[types.AddressLength:], incarnation)
+	return prefix
+}
+
 // PlainGenerateCompositeStorageKey builds a storage key: addr(20) + slot(32) = 52B.
 func PlainGenerateCompositeStorageKey(address []byte, key []byte) []byte {
 	compositeKey := make([]byte, types.AddressLength+types.HashLength)

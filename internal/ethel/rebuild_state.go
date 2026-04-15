@@ -56,8 +56,8 @@ type RebuildOptions struct {
 	// ChainConfig + GethFreezer enable EVM fallback: when a changeset
 	// entry is corrupt, flush in-memory state to MDBX, execute the block
 	// via EVM to produce the correct state transition, then continue.
-	ChainConfig  *params.ChainConfig
-	GethFreezer  *freezer.Freezer // input freezer for reading headers/bodies
+	ChainConfig *params.ChainConfig
+	GethFreezer *freezer.Freezer // input freezer for reading headers/bodies
 }
 
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
@@ -674,7 +674,11 @@ func rebuildEVMFallback(ctx context.Context, db kv.RwDB, opts RebuildOptions, bl
 			if err != nil || a == nil {
 				return nil
 			}
-			return a.MarshalV2()
+			incarnation, err := postReader.ReadAccountIncarnation(addr)
+			if err != nil {
+				incarnation = 0
+			}
+			return state.EncodeAccountForHistory(a, false, incarnation)
 		})
 		patchFile := fmt.Sprintf("storcs_patch_%d.bin", blockNum)
 		if err := os.WriteFile(patchFile, stoCSBytes, 0644); err != nil {

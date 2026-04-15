@@ -13,7 +13,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -131,22 +130,12 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 			})
 			for _, a := range addrs {
 				e := acctBuf[a]
-				if e.value == nil {
-					if err := tx.Delete(modules.Account, a[:]); err != nil {
-						return err
-					}
-				} else {
-					if err := tx.Put(modules.Account, a[:], e.value); err != nil {
-						return err
-					}
-					// Maintain PlainContractCode for changeset revert.
-					var acc account.StateAccount
-					if err := acc.DecodeForStorage(e.value); err == nil && !acc.IsEmptyCodeHash() {
-						key := modules.PlainGenerateStoragePrefix(a[:])
-						if err := tx.Put(modules.PlainContractCode, key, acc.CodeHash[:]); err != nil {
-							return err
-						}
-					}
+				incarnation, err := valueIncarnation(tx, a, e.value)
+				if err != nil {
+					return err
+				}
+				if err := applyAccountValue(tx, a, e.value, incarnation); err != nil {
+					return err
 				}
 			}
 			acctBuf = make(map[types.Address]acctValue, len(acctBuf))
@@ -436,9 +425,7 @@ func (v *JournalVerifier) revertTest(ctx context.Context, endBlock uint64) error
 // applyChangesetForward reads per-block V2 changesets and applies each
 // entry's NEW value to MDBX. This is the forward-replay path that
 // replaces the legacy applyJournalEntry (which decoded leaves journal
-// blobs). PlainContractCode is maintained from any non-empty codeHash in
-// the new account values, so later changeset revert via applyChangeset
-// can still recover codeHash for omitHashes old values.
+// blobs).
 func applyChangesetForward(tx kv.RwTx, accData, stoData []byte) error {
 	if len(accData) > 0 {
 		entries, err := DecodeAccountChanges(accData)
@@ -446,22 +433,12 @@ func applyChangesetForward(tx kv.RwTx, accData, stoData []byte) error {
 			return err
 		}
 		for _, e := range entries {
-			if len(e.NewValue) == 0 {
-				if err := tx.Delete(modules.Account, e.Address[:]); err != nil {
-					return err
-				}
-				continue
-			}
-			if err := tx.Put(modules.Account, e.Address[:], e.NewValue); err != nil {
+			incarnation, err := valueIncarnation(tx, e.Address, e.NewValue)
+			if err != nil {
 				return err
 			}
-			// Maintain PlainContractCode for contract accounts.
-			var acc account.StateAccount
-			if err := acc.DecodeForStorage(e.NewValue); err == nil && !acc.IsEmptyCodeHash() {
-				key := modules.PlainGenerateStoragePrefix(e.Address[:])
-				if err := tx.Put(modules.PlainContractCode, key, acc.CodeHash[:]); err != nil {
-					return err
-				}
+			if err := applyAccountValue(tx, e.Address, e.NewValue, incarnation); err != nil {
+				return err
 			}
 		}
 	}
@@ -488,9 +465,9 @@ func applyChangesetForward(tx kv.RwTx, accData, stoData []byte) error {
 // applyChangeset reads account+storage changesets for blockNum and writes
 // the OLD values back to MDBX, effectively reverting that block.
 //
-// Changeset account OLD values preserve the legacy Erigon omitHashes
-// convention (codeHash zeroed for contract accounts). recoverCodeHash
-// restores the real codeHash from PlainContractCode at apply time.
+// Account OLD values omit CodeHash by design. The historical incarnation is
+// carried in the reserved V2 field-bit slot so the correct code version can be
+// restored from PlainContractCode during backward unwind.
 func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum uint64) error {
 	accData, err := accTbl.Retrieve(blockNum)
 	if err != nil {
@@ -502,18 +479,12 @@ func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum u
 			return fmt.Errorf("decode acc cs: %w", err)
 		}
 		for _, e := range entries {
-			if len(e.OldValue) == 0 {
-				if err := tx.Delete(modules.Account, e.Address[:]); err != nil {
-					return err
-				}
-			} else {
-				restored, err := recoverCodeHash(tx, e.Address[:], e.OldValue)
-				if err != nil {
-					return err
-				}
-				if err := tx.Put(modules.Account, e.Address[:], restored); err != nil {
-					return err
-				}
+			incarnation, err := revertIncarnation(tx, e.Address, e.OldValue, e.NewValue)
+			if err != nil {
+				return err
+			}
+			if err := applyAccountValue(tx, e.Address, e.OldValue, incarnation); err != nil {
+				return err
 			}
 		}
 	}
@@ -540,31 +511,6 @@ func applyChangeset(tx kv.RwTx, accTbl, stoTbl *freezer.FreezerTable, blockNum u
 		}
 	}
 	return nil
-}
-
-// recoverCodeHash restores the codeHash in a V2-encoded account value.
-// Changeset entries use omitHashes=true (Erigon convention), which replaces
-// codeHash with emptyCodeHash. For contract accounts, the real codeHash
-// is looked up from the PlainContractCode table.
-func recoverCodeHash(tx kv.Tx, addr, encodedValue []byte) ([]byte, error) {
-	var acc account.StateAccount
-	if err := acc.DecodeForStorage(encodedValue); err != nil {
-		return encodedValue, nil // can't decode, return as-is
-	}
-	if !acc.IsEmptyCodeHash() {
-		return encodedValue, nil // codeHash already present
-	}
-	// Look up codeHash from PlainContractCode.
-	codeHash, err := tx.GetOne(modules.PlainContractCode,
-		modules.PlainGenerateStoragePrefix(addr))
-	if err != nil {
-		return nil, err
-	}
-	if len(codeHash) > 0 {
-		copy(acc.CodeHash[:], codeHash)
-		return acc.MarshalV2(), nil
-	}
-	return encodedValue, nil
 }
 
 // deleteStorageByPrefix deletes all storage entries for a given address.
@@ -598,5 +544,11 @@ func clearAllState(tx kv.RwTx) error {
 	if err := tx.ClearBucket(modules.Account); err != nil {
 		return err
 	}
-	return tx.ClearBucket(modules.Storage)
+	if err := tx.ClearBucket(modules.Storage); err != nil {
+		return err
+	}
+	if err := tx.ClearBucket(modules.PlainContractCode); err != nil {
+		return err
+	}
+	return tx.ClearBucket(modules.IncarnationMap)
 }

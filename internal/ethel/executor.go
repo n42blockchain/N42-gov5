@@ -156,7 +156,6 @@ func (e *Executor) Run(ctx context.Context) error {
 	cleanup := func() {}
 	defer func() { cleanup() }()
 
-
 	if startBlock > endBlock {
 		setupTx.Rollback()
 		log.Info("Already past target", "at", startBlock-1, "target", endBlock)
@@ -838,7 +837,11 @@ func (e *Executor) snapshotOutputs(blockNum uint64, result *BlockResult, writer 
 		if err != nil || a == nil {
 			po.accNewVals[addr] = nil
 		} else {
-			po.accNewVals[addr] = a.MarshalV2()
+			incarnation, err := bufReader.ReadAccountIncarnation(addr)
+			if err != nil {
+				incarnation = 0
+			}
+			po.accNewVals[addr] = state.EncodeAccountForHistory(a, false, incarnation)
 		}
 	}
 
@@ -936,4 +939,3 @@ func (e *Executor) dumpGasMismatch(blockNum uint64, header *block.Header, body *
 		"gethGas", header.GasUsed,
 	)
 }
-

@@ -48,6 +48,7 @@ import (
 type ChangeSetWriter struct {
 	db             kv.Tx
 	accountChanges map[types.Address][]byte
+	accountIncarns map[types.Address]uint16
 	storageChanged map[types.Address]bool
 	storageChanges map[string][]byte
 	blockNumber    uint64
@@ -56,6 +57,7 @@ type ChangeSetWriter struct {
 func NewChangeSetWriter() *ChangeSetWriter {
 	return &ChangeSetWriter{
 		accountChanges: make(map[types.Address][]byte),
+		accountIncarns: make(map[types.Address]uint16),
 		storageChanged: make(map[types.Address]bool),
 		storageChanges: make(map[string][]byte),
 	}
@@ -64,6 +66,7 @@ func NewChangeSetWriterPlain(db kv.Tx, blockNumber uint64) *ChangeSetWriter {
 	return &ChangeSetWriter{
 		db:             db,
 		accountChanges: make(map[types.Address][]byte),
+		accountIncarns: make(map[types.Address]uint16),
 		storageChanged: make(map[types.Address]bool),
 		storageChanges: make(map[string][]byte),
 		blockNumber:    blockNumber,
@@ -110,7 +113,7 @@ func accountsEqual(a1, a2 *account.StateAccount) bool {
 
 func (w *ChangeSetWriter) UpdateAccountData(address types.Address, original, account *account.StateAccount) error {
 	if !accountsEqual(original, account) || w.storageChanged[address] {
-		w.accountChanges[address] = originalAccountData(original, true /*omitHashes*/)
+		w.accountChanges[address] = originalAccountData(original, true /*omitHashes*/, w.accountIncarns[address])
 	}
 	return nil
 }
@@ -123,7 +126,7 @@ func (w *ChangeSetWriter) DeleteAccount(address types.Address, original *account
 	if original == nil || !original.Initialised {
 		return nil
 	}
-	w.accountChanges[address] = originalAccountData(original, false)
+	w.accountChanges[address] = originalAccountData(original, true, w.accountIncarns[address])
 	return nil
 }
 
@@ -142,6 +145,14 @@ func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, incarnation
 
 func (w *ChangeSetWriter) CreateContract(address types.Address) error {
 	return nil
+}
+
+func (w *ChangeSetWriter) NoteOriginalIncarnation(address types.Address, incarnation uint16) {
+	if incarnation == 0 {
+		delete(w.accountIncarns, address)
+		return
+	}
+	w.accountIncarns[address] = incarnation
 }
 
 // recordStorageWipe adds (slot, old_value) entries to storageChanges for a

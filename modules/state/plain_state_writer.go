@@ -25,6 +25,7 @@ package state
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/holiman/uint256"
@@ -40,20 +41,23 @@ type putDel interface {
 	kv.Deleter
 }
 type PlainStateWriter struct {
-	db  putDel
-	csw *ChangeSetWriter
+	db             putDel
+	csw            *ChangeSetWriter
+	accountIncarns map[types.Address]uint16
 }
 
 func NewPlainStateWriter(db putDel, changeSetsDB kv.RwTx, blockNumber uint64) *PlainStateWriter {
 	return &PlainStateWriter{
-		db:  db,
-		csw: NewChangeSetWriterPlain(changeSetsDB, blockNumber),
+		db:             db,
+		csw:            NewChangeSetWriterPlain(changeSetsDB, blockNumber),
+		accountIncarns: make(map[types.Address]uint16),
 	}
 }
 
 func NewPlainStateWriterNoHistory(db putDel) *PlainStateWriter {
 	return &PlainStateWriter{
-		db: db,
+		db:             db,
+		accountIncarns: make(map[types.Address]uint16),
 	}
 }
 
@@ -71,6 +75,19 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 	if err := w.db.Put(modules.Account, address[:], account.MarshalV2()); err != nil {
 		return err
 	}
+	if incarnation, ok := w.accountIncarns[address]; ok {
+		if incarnation == 0 {
+			if err := w.db.Delete(modules.IncarnationMap, address[:]); err != nil {
+				return err
+			}
+		} else {
+			var enc [2]byte
+			binary.BigEndian.PutUint16(enc[:], incarnation)
+			if err := w.db.Put(modules.IncarnationMap, address[:], enc[:]); err != nil {
+				return err
+			}
+		}
+	}
 	if account == nil || account.IsEmptyCodeHash() {
 		return w.db.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:]))
 	}
@@ -85,6 +102,16 @@ func (w *PlainStateWriter) UpdateAccountCode(address types.Address, incarnation 
 	}
 	if err := w.db.Put(modules.Code, codeHash[:], code); err != nil {
 		return err
+	}
+	if incarnation > 0 {
+		var enc [2]byte
+		binary.BigEndian.PutUint16(enc[:], incarnation)
+		if err := w.db.Put(modules.IncarnationMap, address[:], enc[:]); err != nil {
+			return err
+		}
+		if err := w.db.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefixWithIncarnation(address[:], incarnation), codeHash[:]); err != nil {
+			return err
+		}
 	}
 	return w.db.Put(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:]), codeHash[:])
 }
@@ -101,7 +128,14 @@ func (w *PlainStateWriter) DeleteAccount(address types.Address, original *accoun
 	if err := w.db.Delete(modules.PlainContractCode, modules.PlainGenerateStoragePrefix(address[:])); err != nil {
 		return err
 	}
-	// IncarnationMap removed — incarnation no longer used
+	if incarnation, ok := w.accountIncarns[address]; ok {
+		if incarnation == 0 {
+			return w.db.Delete(modules.IncarnationMap, address[:])
+		}
+		var enc [2]byte
+		binary.BigEndian.PutUint16(enc[:], incarnation)
+		return w.db.Put(modules.IncarnationMap, address[:], enc[:])
+	}
 	return nil
 }
 
@@ -231,4 +265,11 @@ func (w *PlainStateWriter) WriteHistory() error {
 
 func (w *PlainStateWriter) ChangeSetWriter() *ChangeSetWriter {
 	return w.csw
+}
+
+func (w *PlainStateWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
+	if w.csw != nil {
+		w.csw.NoteOriginalIncarnation(address, originalIncarnation)
+	}
+	w.accountIncarns[address] = currentIncarnation
 }

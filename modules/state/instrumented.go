@@ -323,6 +323,12 @@ func (w *InstrumentedWriter) CreateContract(address types.Address) error {
 	return err
 }
 
+func (w *InstrumentedWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
+	if notifier, ok := w.inner.(AccountIncarnationNotifier); ok {
+		notifier.NoteAccountIncarnations(address, originalIncarnation, currentIncarnation)
+	}
+}
+
 // Stats returns the accumulated statistics.
 func (w *InstrumentedWriter) Stats() WriterStats {
 	return WriterStats{

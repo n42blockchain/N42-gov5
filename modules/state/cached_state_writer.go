@@ -107,5 +107,11 @@ func (w *CachedStateWriter) WriteHistory() error {
 	return w.inner.WriteHistory()
 }
 
+func (w *CachedStateWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
+	if notifier, ok := w.inner.(AccountIncarnationNotifier); ok {
+		notifier.NoteAccountIncarnations(address, originalIncarnation, currentIncarnation)
+	}
+}
+
 // Compile-time check.
 var _ WriterWithChangeSets = (*CachedStateWriter)(nil)

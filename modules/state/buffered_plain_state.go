@@ -75,7 +75,7 @@ type CacheBudget struct {
 //
 // Sizing rationale (block 4.96M, post-Constantinople DeFi era):
 //   - Account hot working set ~500K entries (precompiles + top tokens
-//     + active wallets) → 1 GB gives ~7M-entry headroom for 99%+
+//   - active wallets) → 1 GB gives ~7M-entry headroom for 99%+
 //   - Storage hot working set ~10M slots (DeFi pool reserves, hot
 //     allowances, oracle prices) → 4 GB gives 22M-entry headroom for
 //     95-97% with S3-FIFO scan resistance
@@ -97,7 +97,7 @@ func DefaultCacheBudget() CacheBudget {
 // generous round numbers chosen to keep us well below the byte budget
 // even as runtime data structures bloat.
 const (
-	cacheOverheadPerEntry = 96 // map header + list.Element + pointer slop
+	cacheOverheadPerEntry  = 96 // map header + list.Element + pointer slop
 	storageCompositeKeyLen = 52
 	addrKeyLen             = 20
 	hashKeyLen             = 32
@@ -121,12 +121,13 @@ const (
 // the active PlainStateBuffer gets new empty ones. This makes the
 // handoff O(1).
 type BufferSnapshot struct {
-	accounts      map[types.Address][]byte
-	storage       map[types.Address]map[types.Hash]storageEntry
-	code          map[types.Hash][]byte
-	contractCode  map[string][]byte
-	contractWipes []types.Address
-	wipedStorage  map[types.Address]struct{}
+	accounts       map[types.Address][]byte
+	storage        map[types.Address]map[types.Hash]storageEntry
+	code           map[types.Hash][]byte
+	contractCode   map[string][]byte
+	incarnationMap map[types.Address][]byte
+	contractWipes  []types.Address
+	wipedStorage   map[types.Address]struct{}
 }
 
 // PlainStateBuffer holds write buffer + bounded LRU read caches.
@@ -270,12 +271,13 @@ func (b *PlainStateBuffer) CacheStorage(address types.Address, key types.Hash, v
 // committed.
 func (b *PlainStateBuffer) SnapshotForFlush() *BufferSnapshot {
 	snap := &BufferSnapshot{
-		accounts:      b.accounts,
-		storage:       b.storage,
-		code:          b.code,
-		contractCode:  b.contractCode,
-		contractWipes: b.contractWipes,
-		wipedStorage:  b.wipedStorage,
+		accounts:       b.accounts,
+		storage:        b.storage,
+		code:           b.code,
+		contractCode:   b.contractCode,
+		incarnationMap: b.incarnationMap,
+		contractWipes:  b.contractWipes,
+		wipedStorage:   b.wipedStorage,
 	}
 	// Pre-size the next interval's maps from this interval's actuals so
 	// we don't pay 8+ rehash cycles per commit-interval at the 11M-block
@@ -288,6 +290,7 @@ func (b *PlainStateBuffer) SnapshotForFlush() *BufferSnapshot {
 	b.storage = make(map[types.Address]map[types.Hash]storageEntry, nextStoAddrCap)
 	b.code = make(map[types.Hash][]byte, nextCodeCap)
 	b.contractCode = make(map[string][]byte, nextCCodeCap)
+	b.incarnationMap = make(map[types.Address][]byte, len(snap.incarnationMap))
 	b.contractWipes = nil
 	b.wipedStorage = make(map[types.Address]struct{})
 
@@ -374,6 +377,26 @@ func (snap *BufferSnapshot) ApplyTo(tx kv.RwTx) error {
 			if err := tx.Put(modules.Account, addr[:], v); err != nil {
 				return err
 			}
+		}
+	}
+
+	incAddrs := make([]types.Address, 0, len(snap.incarnationMap))
+	for addr := range snap.incarnationMap {
+		incAddrs = append(incAddrs, addr)
+	}
+	sort.Slice(incAddrs, func(i, j int) bool {
+		return bytes.Compare(incAddrs[i][:], incAddrs[j][:]) < 0
+	})
+	for _, addr := range incAddrs {
+		v := snap.incarnationMap[addr]
+		if len(v) == 0 {
+			if err := tx.Delete(modules.IncarnationMap, addr[:]); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := tx.Put(modules.IncarnationMap, addr[:], v); err != nil {
+			return err
 		}
 	}
 
@@ -751,7 +774,18 @@ func (r *BufferedPlainStateReader) ReadAccountCodeSize(address types.Address, in
 
 func (r *BufferedPlainStateReader) ReadAccountIncarnation(address types.Address) (uint16, error) {
 	if b, ok := r.buf.incarnationMap[address]; ok {
+		if len(b) < 2 {
+			return 0, nil
+		}
 		return binary.BigEndian.Uint16(b), nil
+	}
+	if snap := r.buf.inFlight.Load(); snap != nil {
+		if b, ok := snap.incarnationMap[address]; ok {
+			if len(b) < 2 {
+				return 0, nil
+			}
+			return binary.BigEndian.Uint16(b), nil
+		}
 	}
 	b, err := r.db.GetOne(modules.IncarnationMap, address[:])
 	if err != nil {
@@ -811,6 +845,12 @@ func (w *BufferedPlainStateWriter) UpdateAccountCode(address types.Address, inca
 		}
 	}
 	w.buf.code[codeHash] = code
+	if incarnation > 0 {
+		var enc [2]byte
+		binary.BigEndian.PutUint16(enc[:], incarnation)
+		w.buf.incarnationMap[address] = enc[:]
+		w.buf.contractCode[string(modules.PlainGenerateStoragePrefixWithIncarnation(address[:], incarnation))] = codeHash[:]
+	}
 	w.buf.contractCode[string(modules.PlainGenerateStoragePrefix(address[:]))] = codeHash[:]
 	return nil
 }
@@ -823,7 +863,6 @@ func (w *BufferedPlainStateWriter) DeleteAccount(address types.Address, original
 	}
 	w.buf.accounts[address] = deletedSentinel
 	w.buf.contractCode[string(modules.PlainGenerateStoragePrefix(address[:]))] = deletedSentinel
-	// IncarnationMap removed — incarnation no longer used
 	return nil
 }
 
@@ -1014,6 +1053,19 @@ func (w *BufferedPlainStateWriter) WriteHistory() error {
 
 func (w *BufferedPlainStateWriter) ChangeSetWriter() *ChangeSetWriter {
 	return w.csw
+}
+
+func (w *BufferedPlainStateWriter) NoteAccountIncarnations(address types.Address, originalIncarnation, currentIncarnation uint16) {
+	if w.csw != nil {
+		w.csw.NoteOriginalIncarnation(address, originalIncarnation)
+	}
+	if currentIncarnation == 0 {
+		w.buf.incarnationMap[address] = deletedSentinel
+		return
+	}
+	var enc [2]byte
+	binary.BigEndian.PutUint16(enc[:], currentIncarnation)
+	w.buf.incarnationMap[address] = enc[:]
 }
 
 var (
