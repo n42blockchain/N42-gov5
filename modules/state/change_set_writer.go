@@ -142,6 +142,17 @@ func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, key *types.
 
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 
+	// First-wins: if recordStorageWipe (SELFDESTRUCT+CREATE2 path) already
+	// recorded the pre-block value for this slot, don't clobber it with the
+	// post-create updateTrie's `original`, which is 0 for a newly-created
+	// stateObject's blockOriginStorage (fresh map default) and thus loses
+	// the true block-origin V_OLD. Without this guard, backward unwind past
+	// a metamorphic block writes 0 instead of V_OLD.
+	if _, exists := w.storageChanges[string(compositeKey)]; exists {
+		w.storageChanged[address] = true
+		return nil
+	}
+
 	w.storageChanges[string(compositeKey)] = original.Bytes()
 	w.storageChanged[address] = true
 
