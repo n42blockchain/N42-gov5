@@ -115,6 +115,43 @@ func (tx *MdbxTx) DropBucket(bucket string) error {
 	return tx.dropEvenIfBucketIsNotDeprecated(bucket)
 }
 
+// ForceRecreateBucket drops the bucket (del=true, invalidating its DBI) and
+// recreates it using the flags from kv.ChaindataTablesCfg. Unlike ClearBucket,
+// this resets the MDBX-level flags (e.g. DUPSORT) so a table whose on-disk
+// flags drifted from the app's current config can self-heal. Works in Accede
+// mode and bypasses the Accede short-circuit in CreateBucket.
+func (tx *MdbxTx) ForceRecreateBucket(name string) error {
+	desired, ok := kv.ChaindataTablesCfg[name]
+	if !ok {
+		return fmt.Errorf("ForceRecreateBucket: no TableCfg for %s", name)
+	}
+
+	if err := tx.dropEvenIfBucketIsNotDeprecated(name); err != nil {
+		return fmt.Errorf("drop %s: %w", name, err)
+	}
+
+	flags := desired.Flags
+	var nativeFlags uint
+	nativeFlags |= mdbx.Create
+	if flags&kv.DupSort != 0 {
+		nativeFlags |= mdbx.DupSort
+		flags ^= kv.DupSort
+	}
+	if flags != 0 {
+		return fmt.Errorf("ForceRecreateBucket: unsupported flags for %s: %x", name, flags)
+	}
+
+	dbi, err := tx.tx.OpenDBI(name, nativeFlags, nil, nil)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", name, err)
+	}
+
+	cnfCopy := desired
+	cnfCopy.DBI = kv.DBI(dbi)
+	tx.db.buckets[name] = cnfCopy
+	return nil
+}
+
 func (tx *MdbxTx) ExistsBucket(bucket string) (bool, error) {
 	if cfg, ok := tx.db.buckets[bucket]; ok {
 		return cfg.DBI != NonExistingDBI, nil

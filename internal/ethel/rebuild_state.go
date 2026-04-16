@@ -118,22 +118,32 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 	log.Info("If Task Manager shows high Commit Size, check OTHER processes (reth, etc)")
 
 	if startBlock == 0 {
-		// Clear Account/Storage tables using ClearBucket (Drop + recreate DBI).
-		// On current MDBX without WriteMap this is safe — only dirty pages use RAM.
-		log.Info("Clearing Account/Storage tables...")
+		// Drop and recreate Account/Storage tables so their MDBX-level flags
+		// (DUPSORT etc.) match the current TableCfg. ClearBucket keeps the
+		// existing DBI flags, which can leave a stale DB in a state where
+		// putDupSort fails with MDBX_INCOMPATIBLE on a non-DUPSORT DBI.
+		log.Info("Recreating Account/Storage tables...")
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		type bucketRecreator interface {
+			ForceRecreateBucket(name string) error
+		}
+		rc, ok := tx.(bucketRecreator)
+		if !ok {
+			tx.Rollback()
+			return fmt.Errorf("db does not support ForceRecreateBucket (got %T)", tx)
+		}
 		for _, tbl := range []string{modules.Account, modules.Storage} {
-			tx, err := db.BeginRw(ctx)
-			if err != nil {
-				return err
-			}
-			if err := tx.ClearBucket(tbl); err != nil {
+			if err := rc.ForceRecreateBucket(tbl); err != nil {
 				tx.Rollback()
-				return fmt.Errorf("clear %s: %w", tbl, err)
+				return fmt.Errorf("recreate %s: %w", tbl, err)
 			}
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("commit clear %s: %w", tbl, err)
-			}
-			log.Info("Table cleared", "table", tbl)
+			log.Info("Table recreated", "table", tbl)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit recreate: %w", err)
 		}
 	} else {
 		log.Info("Resume mode — preserving existing Account/Storage tables",
