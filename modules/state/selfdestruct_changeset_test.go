@@ -7,6 +7,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -152,4 +153,33 @@ func hashFromByte(b byte) types.Hash {
 	var h types.Hash
 	h[31] = b
 	return h
+}
+
+// TestWriteAccountStorage_FirstWinsAfterWipe pins the ordering that happens on
+// SELFDESTRUCT+CREATE2 metamorphic blocks: recordStorageWipe writes the
+// pre-block V_OLD into storageChanges first, then MakeWriteSet's updateTrie
+// calls WriteAccountStorage for the CREATE2-era SSTORE with original=0 (the
+// fresh stateObject's blockOriginStorage default). Without first-wins the
+// 0 clobbers V_OLD and backward unwind past the metamorphic block restores
+// 0 instead of the true block-origin value.
+func TestWriteAccountStorage_FirstWinsAfterWipe(t *testing.T) {
+	t.Parallel()
+	var addr types.Address
+	addr[19] = 0xDD
+	slot := hashFromByte(0x42)
+	compKey := modules.PlainGenerateCompositeStorageKey(addr[:], slot[:])
+
+	csw := NewChangeSetWriter()
+	vOld := []byte{0x01, 0x02, 0x03}
+	csw.storageChanges[string(compKey)] = vOld
+	csw.storageChanged[addr] = true
+
+	orig := uint256.NewInt(0)    // post-create blockOriginStorage default
+	val := uint256.NewInt(0x99) // SSTORE'd value in CREATE2-era tx
+	require.NoError(t, csw.WriteAccountStorage(addr, &slot, orig, val))
+
+	got, ok := csw.storageChanges[string(compKey)]
+	require.True(t, ok)
+	require.Equal(t, vOld, got, "first-wins must preserve recordStorageWipe's V_OLD")
+	require.True(t, csw.storageChanged[addr])
 }
