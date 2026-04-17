@@ -5,6 +5,7 @@ package ethel
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -172,5 +173,124 @@ func TestGenesisEncoders(t *testing.T) {
 	}
 	if !bytes.Equal(stoEntries[0].NewValue, []byte{0xCC}) {
 		t.Errorf("genesis sto new: %x", stoEntries[0].NewValue)
+	}
+}
+
+// TestEncodeStorageChanges_ChunksLargeGroup verifies the fix for the 10-day
+// bug where SELFDESTRUCT of a contract with >65,535 storage slots caused
+// uint16(slotCount) to silently wrap, producing freezer blobs that corrupted
+// every downstream slot on decode. With the chunking fix, a single address
+// with N slots (N > 65535) must round-trip to N entries, all under that
+// address, with the original sort order preserved.
+func TestEncodeStorageChanges_ChunksLargeGroup(t *testing.T) {
+	// Build a changeset with 80,000 slots under a single address. Pre-fix
+	// this would hit uint16(80000) = 14464 and the freezer would decode
+	// only 14464 slots, misinterpreting the remaining 65,536 slot bytes
+	// as "group 2 onward".
+	const N = 80000
+	cs := changeset.NewStorageChangeSet()
+	var addr types.Address
+	addr[0] = 0xf2
+	addr[1] = 0x44
+	newVals := make(map[string][]byte, N)
+	for i := 0; i < N; i++ {
+		key := make([]byte, 52)
+		copy(key[:20], addr[:])
+		// slot key is (i as 32-byte BE) so sort order == insertion order
+		key[51] = byte(i)
+		key[50] = byte(i >> 8)
+		key[49] = byte(i >> 16)
+		oldVal := []byte{byte(i), byte(i >> 8)}
+		if err := cs.Add(key, oldVal); err != nil {
+			t.Fatalf("add %d: %v", i, err)
+		}
+		newVals[string(key)] = []byte{byte(i ^ 0xff)}
+	}
+
+	data := EncodeStorageChanges(cs, func(a types.Address, slot types.Hash) []byte {
+		var k [52]byte
+		copy(k[:20], a[:])
+		copy(k[20:], slot[:])
+		return newVals[string(k[:])]
+	})
+	if data == nil {
+		t.Fatal("encode returned nil")
+	}
+
+	// The encoded blob's addrCount must be > 1 because chunking splits
+	// 80,000 slots into ceil(80000/65535) = 2 groups.
+	addrCount := int(data[0]) | int(data[1])<<8
+	wantGroups := (N + 65534) / 65535 // ceil(N / 65535)
+	if addrCount != wantGroups {
+		t.Fatalf("addrCount after chunking: got %d want %d", addrCount, wantGroups)
+	}
+
+	// Decode must produce exactly N entries, all with addr == ours, and
+	// old/new values preserved in insertion order.
+	entries, err := DecodeStorageChanges(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(entries) != N {
+		t.Fatalf("entries: got %d want %d", len(entries), N)
+	}
+	for i, e := range entries {
+		var entryAddr types.Address
+		copy(entryAddr[:], e.CompositeKey[:20])
+		if entryAddr != addr {
+			t.Fatalf("entry %d: addr %x != %x", i, entryAddr, addr)
+		}
+		wantSlot := [32]byte{}
+		wantSlot[31] = byte(i)
+		wantSlot[30] = byte(i >> 8)
+		wantSlot[29] = byte(i >> 16)
+		if !bytes.Equal(e.CompositeKey[20:], wantSlot[:]) {
+			t.Fatalf("entry %d: slot mismatch got %x want %x", i, e.CompositeKey[20:], wantSlot[:])
+		}
+		if !bytes.Equal(e.OldValue, []byte{byte(i), byte(i >> 8)}) {
+			t.Fatalf("entry %d: oldVal %x", i, e.OldValue)
+		}
+		if !bytes.Equal(e.NewValue, []byte{byte(i ^ 0xff)}) {
+			t.Fatalf("entry %d: newVal %x", i, e.NewValue)
+		}
+	}
+}
+
+// TestEncodeStorageChanges_ChunkBoundary specifically exercises the
+// 65,535-slot boundary where the uint16 overflow first triggers.
+func TestEncodeStorageChanges_ChunkBoundary(t *testing.T) {
+	for _, N := range []int{65534, 65535, 65536, 65537, 131070, 131071} {
+		N := N
+		t.Run(fmt.Sprintf("N=%d", N), func(t *testing.T) {
+			cs := changeset.NewStorageChangeSet()
+			var addr types.Address
+			addr[19] = 0xaa
+			for i := 0; i < N; i++ {
+				key := make([]byte, 52)
+				copy(key[:20], addr[:])
+				key[51] = byte(i)
+				key[50] = byte(i >> 8)
+				key[49] = byte(i >> 16)
+				if err := cs.Add(key, []byte{0x01}); err != nil {
+					t.Fatalf("add: %v", err)
+				}
+			}
+			data := EncodeStorageChanges(cs, nil)
+			entries, err := DecodeStorageChanges(data)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(entries) != N {
+				t.Fatalf("got %d entries, want %d", len(entries), N)
+			}
+			wantGroups := 1
+			if N > 65535 {
+				wantGroups = (N + 65534) / 65535
+			}
+			gotGroups := int(data[0]) | int(data[1])<<8
+			if gotGroups != wantGroups {
+				t.Fatalf("groups: got %d want %d", gotGroups, wantGroups)
+			}
+		})
 	}
 }
