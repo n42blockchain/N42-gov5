@@ -102,6 +102,15 @@ func EncodeAccountChanges(cs *changeset.ChangeSet, newValueOf AccountNewValueFn)
 //	    [slotKey:32]
 //	    [oldLen:1][oldVal:oldLen]   // 0-32 bytes, empty => slot was zero
 //	    [newLen:1][newVal:newLen]   // 0-32 bytes, empty => slot now zero
+// maxStorageValueLen is the uint256 max byte size for a storage slot. Any
+// value larger is a bug upstream (typically a map aliasing / wrong-table
+// lookup). The encoder must refuse to write such values because the
+// length prefix is a single byte — values over 255 silently wrap and
+// misalign every subsequent slot in the block's changeset blob, and
+// values in 33..255 range would silently corrupt forward replay by
+// putting bogus storage bytes into MDBX on `tx.Put(Storage, key, val)`.
+const maxStorageValueLen = 32
+
 func EncodeStorageChanges(cs *changeset.ChangeSet, newValueOf StorageNewValueFn) []byte {
 	if cs == nil || cs.Len() == 0 {
 		return nil
@@ -138,6 +147,15 @@ func EncodeStorageChanges(cs *changeset.ChangeSet, newValueOf StorageNewValueFn)
 		buf = append(buf, g.addr[:]...)
 		buf = appendUint16LE(buf, uint16(len(g.slots)))
 		for _, s := range g.slots {
+			// Guard against an upstream bug feeding >32B values into
+			// storageChanges — byte(len) would wrap at 256 and silently
+			// corrupt every following slot's alignment in the blob,
+			// yielding the infamous "truncated slot new value" decode
+			// error hundreds of slots downstream.
+			if len(s.old) > maxStorageValueLen {
+				panic(fmt.Sprintf("EncodeStorageChanges: oldVal %d bytes > %d (addr=%x slot=%x)",
+					len(s.old), maxStorageValueLen, g.addr, s.key))
+			}
 			buf = append(buf, s.key...)
 			buf = append(buf, byte(len(s.old)))
 			buf = append(buf, s.old...)
@@ -147,6 +165,10 @@ func EncodeStorageChanges(cs *changeset.ChangeSet, newValueOf StorageNewValueFn)
 				var slot types.Hash
 				copy(slot[:], s.key)
 				newVal = newValueOf(g.addr, slot)
+			}
+			if len(newVal) > maxStorageValueLen {
+				panic(fmt.Sprintf("EncodeStorageChanges: newVal %d bytes > %d (addr=%x slot=%x)",
+					len(newVal), maxStorageValueLen, g.addr, s.key))
 			}
 			buf = append(buf, byte(len(newVal)))
 			buf = append(buf, newVal...)
@@ -245,6 +267,14 @@ func DecodeStorageChanges(data []byte) ([]StorageChange, error) {
 
 			oldLen := int(data[pos])
 			pos++
+			// A storage slot is uint256 — any len > 32 is structural
+			// corruption. Fail fast here so EVM fallback engages at the
+			// first bad slot instead of chasing a misaligned blob for
+			// thousands of slots and surfacing a less obvious error.
+			if oldLen > maxStorageValueLen {
+				return nil, fmt.Errorf("storage changeset: oldLen %d > %d at group=%d slot=%d pos=%d",
+					oldLen, maxStorageValueLen, g, s, pos-1)
+			}
 			if pos+oldLen+1 > len(data) {
 				return nil, fmt.Errorf("storage changeset: truncated slot old value")
 			}
@@ -253,6 +283,10 @@ func DecodeStorageChanges(data []byte) ([]StorageChange, error) {
 
 			newLen := int(data[pos])
 			pos++
+			if newLen > maxStorageValueLen {
+				return nil, fmt.Errorf("storage changeset: newLen %d > %d at group=%d slot=%d pos=%d",
+					newLen, maxStorageValueLen, g, s, pos-1)
+			}
 			if pos+newLen > len(data) {
 				return nil, fmt.Errorf("storage changeset: truncated slot new value")
 			}
