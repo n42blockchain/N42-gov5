@@ -855,6 +855,14 @@ func (e *Executor) snapshotOutputs(blockNum uint64, result *BlockResult, writer 
 		if err != nil {
 			v = nil
 		}
+		if len(v) > 32 {
+			panic(fmt.Sprintf("snapshotOutputs: bufReader.ReadAccountStorage returned len=%d > 32 (block=%d addr=%x slot=%x)",
+				len(v), blockNum, addr, slot))
+		}
+		if len(c.Value) > 32 {
+			panic(fmt.Sprintf("snapshotOutputs: stoCS.Changes c.Value len=%d > 32 (block=%d addr=%x slot=%x) — csw was polluted",
+				len(c.Value), blockNum, addr, slot))
+		}
 		var key [52]byte
 		copy(key[:], c.Key[:52])
 		if len(v) > 0 {
