@@ -169,6 +169,7 @@ func main() {
 					&cli.Uint64Flag{Name: "start", Usage: "Start block (>0 = resume mode, do NOT clear existing PlainState)", Value: 0},
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all available)", Value: 0},
 					&cli.Uint64Flag{Name: "verify", Usage: "Periodic state-root verify interval (0=verify only at end)", Value: 0},
+					&cli.BoolFlag{Name: "evm-from-fallback", Usage: "After any EVM fallback, run EVM for every remaining block instead of trusting downstream freezer changesets"},
 				},
 				Action: runRebuildState,
 			},
@@ -1160,6 +1161,7 @@ func runRebuildState(c *cli.Context) error {
 	startBlock := c.Uint64("start")
 	endBlock := c.Uint64("end")
 	verifyInterval := c.Uint64("verify")
+	evmFromFallback := c.Bool("evm-from-fallback")
 
 	if leavesDir == "" {
 		leavesDir = filepath.Join(datadir, "chain", "freezer")
@@ -1200,11 +1202,12 @@ func runRebuildState(c *cli.Context) error {
 	defer inputF.Close()
 
 	opts := ethel.RebuildOptions{
-		StartBlock:     startBlock,
-		VerifyInterval: verifyInterval,
-		InputFreezer:   inputF,
-		ChainConfig:    params.EthereumMainnetChainConfig,
-		GethFreezer:    inputF,
+		StartBlock:      startBlock,
+		VerifyInterval:  verifyInterval,
+		InputFreezer:    inputF,
+		ChainConfig:     params.EthereumMainnetChainConfig,
+		GethFreezer:     inputF,
+		EVMFromFallback: evmFromFallback,
 	}
 	if err := ethel.RebuildStateWith(ctx, db, leavesDir, endBlock, opts); err != nil {
 		return err
