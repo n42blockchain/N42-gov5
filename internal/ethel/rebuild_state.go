@@ -58,6 +58,16 @@ type RebuildOptions struct {
 	// via EVM to produce the correct state transition, then continue.
 	ChainConfig *params.ChainConfig
 	GethFreezer *freezer.Freezer // input freezer for reading headers/bodies
+
+	// EVMFromFallback — once any block triggers EVM fallback (e.g. corrupt
+	// storcs), switch to EVM execution for EVERY subsequent block instead
+	// of reading the (possibly poisoned) freezer changesets. The downstream
+	// changesets produced by the same prior run that corrupted this block
+	// may encode state drift that cascades into a wrong final root; running
+	// EVM from the fallback point guarantees correct forward state at the
+	// cost of speed. Default false preserves the fast path for clean
+	// freezers.
+	EVMFromFallback bool
 }
 
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
@@ -218,9 +228,49 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		return nil
 	}
 
+	// evmOnly flips once a fallback fires with opts.EVMFromFallback set,
+	// making every subsequent block run through the EVM instead of trusting
+	// the remaining freezer changesets (which were written by the same run
+	// whose corruption triggered the fallback).
+	evmOnly := false
+
 	for blockNum := startBlock; blockNum < endBlock; blockNum++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+
+		if evmOnly {
+			// Post-fallback EVM mode: flush any pending in-memory state
+			// (usually empty after the fallback reset) so the EVM reader
+			// sees up-to-date MDBX, then execute this block via EVM.
+			if len(acctMap) > 0 || len(storMap) > 0 || len(wipeSet) > 0 {
+				if err := flushToMDBX(ctx, db, acctMap, storMap, wipeSet); err != nil {
+					return fmt.Errorf("flush before EVM at %d: %w", blockNum, err)
+				}
+				acctMap = make(map[types.Address][]byte, 1_000_000)
+				storMap = make(map[types.Address]map[types.Hash][]byte, 1_000_000)
+				wipeSet = make(map[types.Address]struct{})
+				flushCount++
+			}
+			if err := rebuildEVMFallback(ctx, db, opts, blockNum); err != nil {
+				return fmt.Errorf("EVM at block %d: %w", blockNum, err)
+			}
+			if opts.VerifyInterval > 0 && opts.InputFreezer != nil &&
+				(blockNum+1)%opts.VerifyInterval == 0 {
+				if err := doVerify(blockNum); err != nil {
+					return err
+				}
+				lastLogTime = time.Now()
+			}
+			if time.Since(lastLogTime) > 5*time.Second {
+				pct := float64(blockNum) / float64(endBlock) * 100
+				log.Info("EVM-only replay",
+					"block", blockNum,
+					"pct", fmt.Sprintf("%.1f%%", pct),
+					"elapsed", time.Since(t0).Truncate(time.Second))
+				lastLogTime = time.Now()
+			}
+			continue
 		}
 
 		// Forward replay: apply NEW values from the V2 changesets.
@@ -276,6 +326,11 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 				flushCount++
 				if err := rebuildEVMFallback(ctx, db, opts, blockNum); err != nil {
 					return fmt.Errorf("EVM fallback at block %d: %w", blockNum, err)
+				}
+				if opts.EVMFromFallback {
+					log.Warn("EVM-only mode engaged — remaining blocks will bypass freezer changesets",
+						"fromBlock", blockNum+1)
+					evmOnly = true
 				}
 				continue
 			}
