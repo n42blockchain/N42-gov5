@@ -141,15 +141,52 @@ func EncodeStorageChanges(cs *changeset.ChangeSet, newValueOf StorageNewValueFn)
 		cur.slots = append(cur.slots, slotEntry{key: c.Key[20:52], old: c.Value})
 	}
 
+	// Chunk groups with >65535 slots into multiple consecutive groups of the
+	// same address so uint16 slotCount never overflows. A SELFDESTRUCT of a
+	// contract with ~85K slots (block 6,101,999 addr f244176246168f24…739b)
+	// used to silently wrap to ~18K, truncating the changeset and corrupting
+	// every downstream slot parse. Decoder just appends entries in order and
+	// downstream consumers (rebuild_state, reorg) process each (addr,slot)
+	// pair independently, so duplicate addr entries merge naturally.
+	const maxGroupSlots = 65535
+	chunked := groups
+	needsChunk := false
+	for _, g := range groups {
+		if len(g.slots) > maxGroupSlots {
+			needsChunk = true
+			break
+		}
+	}
+	if needsChunk {
+		chunked = chunked[:0]
+		for _, g := range groups {
+			if len(g.slots) <= maxGroupSlots {
+				chunked = append(chunked, g)
+				continue
+			}
+			for start := 0; start < len(g.slots); start += maxGroupSlots {
+				end := start + maxGroupSlots
+				if end > len(g.slots) {
+					end = len(g.slots)
+				}
+				chunked = append(chunked, addrGroup{addr: g.addr, slots: g.slots[start:end]})
+			}
+		}
+	}
+	groups = chunked
+
 	buf := make([]byte, 0, 2+len(groups)*24+cs.Len()*68)
 	if len(groups) > 65535 {
-		panic(fmt.Sprintf("EncodeStorageChanges: addrCount %d overflows uint16 — freezer format needs 4-byte count", len(groups)))
+		panic(fmt.Sprintf("EncodeStorageChanges: addrCount %d overflows uint16 even after chunking — block has too many distinct storage-changing addresses", len(groups)))
 	}
 	buf = appendUint16LE(buf, uint16(len(groups)))
 	for _, g := range groups {
 		buf = append(buf, g.addr[:]...)
+		// Chunking above guarantees <= maxGroupSlots per group, so this
+		// cannot trip under normal circumstances. Left as a runtime
+		// invariant for defense in depth.
 		if len(g.slots) > 65535 {
-			panic(fmt.Sprintf("EncodeStorageChanges: slotCount %d overflows uint16 (addr=%x) — SELFDESTRUCT of >65535-slot contract; freezer format needs 4-byte count",
+			panic(fmt.Sprintf("EncodeStorageChanges: chunking failed, slotCount %d still > 65535 (addr=%x)",
 				len(g.slots), g.addr))
 		}
 		buf = appendUint16LE(buf, uint16(len(g.slots)))
