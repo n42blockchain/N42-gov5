@@ -159,6 +159,10 @@ func (w *PlainStateWriter) collectPreWipeSlots(address types.Address) (map[types
 		if len(k) != 52 || len(v) == 0 {
 			continue
 		}
+		if len(v) > 32 {
+			panic(fmt.Sprintf("PlainStateWriter.collectPreWipeSlots: MDBX cursor v len=%d > 32 (addr=%x key=%x src=mdbx_cursor)",
+				len(v), address, k))
+		}
 		var slot types.Hash
 		copy(slot[:], k[20:52])
 		out[slot] = v
