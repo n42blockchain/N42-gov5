@@ -142,9 +142,16 @@ func EncodeStorageChanges(cs *changeset.ChangeSet, newValueOf StorageNewValueFn)
 	}
 
 	buf := make([]byte, 0, 2+len(groups)*24+cs.Len()*68)
+	if len(groups) > 65535 {
+		panic(fmt.Sprintf("EncodeStorageChanges: addrCount %d overflows uint16 — freezer format needs 4-byte count", len(groups)))
+	}
 	buf = appendUint16LE(buf, uint16(len(groups)))
 	for _, g := range groups {
 		buf = append(buf, g.addr[:]...)
+		if len(g.slots) > 65535 {
+			panic(fmt.Sprintf("EncodeStorageChanges: slotCount %d overflows uint16 (addr=%x) — SELFDESTRUCT of >65535-slot contract; freezer format needs 4-byte count",
+				len(g.slots), g.addr))
+		}
 		buf = appendUint16LE(buf, uint16(len(g.slots)))
 		for _, s := range g.slots {
 			// Guard against an upstream bug feeding >32B values into

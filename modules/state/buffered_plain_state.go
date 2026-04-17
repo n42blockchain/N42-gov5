@@ -799,6 +799,10 @@ func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, ke
 		w.buf.storage[address] = slots
 	}
 	v := value.Bytes()
+	if len(v) > 32 {
+		panic(fmt.Sprintf("BufferedPlainStateWriter.WriteAccountStorage: value.Bytes() len=%d > 32 (addr=%x slot=%x)",
+			len(v), address, key))
+	}
 	if len(v) == 0 {
 		slots[*key] = storageEntry{value: deletedSentinel}
 	} else {
@@ -880,6 +884,10 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 				// that produced this buffer entry.
 				continue
 			}
+			if len(entry.value) > 32 {
+				panic(fmt.Sprintf("BufferedPlainStateWriter.collectPreWipeSlots: bufSlots[slot].value len=%d > 32 (addr=%x slot=%x src=active_buffer)",
+					len(entry.value), address, slot))
+			}
 			out[slot] = entry.value
 		}
 	}
@@ -902,6 +910,10 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 					// per-slot tombstone for that interval already
 					// went to storcs at its boundary block.
 					continue
+				}
+				if len(entry.value) > 32 {
+					panic(fmt.Sprintf("BufferedPlainStateWriter.collectPreWipeSlots: inFlight.storage[addr][slot].value len=%d > 32 (addr=%x slot=%x src=inflight_snap)",
+						len(entry.value), address, slot))
 				}
 				out[slot] = entry.value
 			}
@@ -946,6 +958,11 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 				if _, shadowed := snapSlots[slot]; shadowed {
 					continue
 				}
+			}
+			if len(v) > 32 {
+				cursor.Close()
+				panic(fmt.Sprintf("BufferedPlainStateWriter.collectPreWipeSlots: MDBX cursor v len=%d > 32 (addr=%x slot=%x src=mdbx_cursor)",
+					len(v), address, slot))
 			}
 			out[slot] = v
 		}

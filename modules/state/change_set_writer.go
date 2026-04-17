@@ -153,7 +153,12 @@ func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, key *types.
 		return nil
 	}
 
-	w.storageChanges[string(compositeKey)] = original.Bytes()
+	v := original.Bytes()
+	if len(v) > 32 {
+		panic(fmt.Sprintf("ChangeSetWriter.WriteAccountStorage: original.Bytes() len=%d > 32 (addr=%x slot=%x blockNum=%d)",
+			len(v), address, key, w.blockNumber))
+	}
+	w.storageChanges[string(compositeKey)] = v
 	w.storageChanged[address] = true
 
 	return nil
@@ -177,6 +182,10 @@ func (w *ChangeSetWriter) recordStorageWipe(address types.Address, slots map[typ
 		return
 	}
 	for slot, v := range slots {
+		if len(v) > 32 {
+			panic(fmt.Sprintf("ChangeSetWriter.recordStorageWipe: preWipe slot value len=%d > 32 (addr=%x slot=%x blockNum=%d src=collectPreWipeSlots)",
+				len(v), address, slot, w.blockNumber))
+		}
 		compositeKey := modules.PlainGenerateCompositeStorageKey(address[:], slot[:])
 		if _, exists := w.storageChanges[string(compositeKey)]; exists {
 			continue
