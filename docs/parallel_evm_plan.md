@@ -2,6 +2,20 @@
 
 **Status**: Research complete (2026-04-21). Phase 1 PoC starts next.
 
+## Backward compatibility — dual-mode execution
+
+Parallel EVM is additive, NOT a replacement. The sequential executor
+remains the default and is always available. A CLI flag
+`--parallel-evm` (default off) opts into the new path. All new code
+lives in new files / functions; existing `ProcessBlock` /
+`IntraBlockState` / `applyTransaction` are not broken or slowed down.
+
+Rationale: the sequential path is battle-tested (already verified
+through mainnet replay to 12.35M with correct state root); the parallel
+path is a multi-week engineering bet with non-trivial correctness risk.
+Until parallel is proven bit-for-bit equivalent, we must be able to fall
+back instantly — per commit, per invocation, and per datadir.
+
 ## Executive summary
 
 n42 ethexec currently runs at **~55 blk/s ≈ 0.82 Ggas/s** on ETH mainnet
