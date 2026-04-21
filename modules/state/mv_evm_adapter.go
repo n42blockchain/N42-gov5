@@ -41,6 +41,14 @@ const (
 	mvKeyTagAccount byte = 0
 	mvKeyTagStorage byte = 1
 	mvKeyTagCode    byte = 2
+	// mvKeyTagWipe marks an entire address's storage as wiped by a
+	// SELFDESTRUCT (or CREATE-on-existing-addr metamorphism). When a
+	// reader of (addr, slot) at txIdx=R encounters a wipe entry from
+	// some tx_w < R that is NEWER than the highest slot writer < R,
+	// the read returns 0 — the wipe shadows any pre-wipe slot value.
+	// Pre-Cancun semantics; post-Cancun (EIP-6780) only same-tx CREATE
+	// triggers the storage wipe path.
+	mvKeyTagWipe byte = 3
 )
 
 // EncodeAccountKey returns the MVHashMap key for an account.
@@ -65,6 +73,15 @@ func EncodeCodeKey(codeHash types.Hash) []byte {
 	b := make([]byte, 1+32)
 	b[0] = mvKeyTagCode
 	copy(b[1:], codeHash[:])
+	return b
+}
+
+// EncodeWipeKey returns the MVHashMap key for an address-level
+// storage wipe marker (SELFDESTRUCT / CREATE-on-existing-addr).
+func EncodeWipeKey(addr types.Address) []byte {
+	b := make([]byte, 1+20)
+	b[0] = mvKeyTagWipe
+	copy(b[1:], addr[:])
 	return b
 }
 
@@ -129,12 +146,58 @@ func (v *EVMStateView) WriteAccount(addr types.Address, a *account.StateAccount)
 }
 
 // ReadStorage returns the slot value at (addr, slot) as a uint256.Int,
-// zero if absent. EVM callers always get a concrete value.
+// zero if absent.
+//
+// Wipe semantics: if a SELFDESTRUCT wipe marker (mvKeyTagWipe) exists
+// for `addr` from some tx_w < readerTxIdx, AND that wipe's txIdx is
+// greater than the highest direct-slot writer's txIdx, the slot is
+// treated as zero (the wipe shadows older slot values). This avoids
+// per-slot enumeration on SELFDESTRUCT — the wipe acts as a single
+// "address invalidated at tx_w" marker.
+//
+// Both reads (slot AND wipe) enter the readSet so validation can
+// detect either being invalidated by a later commit.
 func (v *EVMStateView) ReadStorage(addr types.Address, slot types.Hash) (*uint256.Int, error) {
 	raw, err := v.view.Get(EncodeStorageKey(addr, slot))
 	if err != nil {
 		return nil, err
 	}
+	// Determine which writer (if any) provided `raw`. The view's
+	// readSet records this; the most recent entry is the slot read.
+	var slotWriter Version
+	var slotFromMV bool
+	if rs := v.view.ReadSet(); len(rs) > 0 {
+		last := rs[len(rs)-1]
+		if last.Source == ReadFromMV {
+			slotWriter = last.WriterVer
+			slotFromMV = true
+		}
+	}
+
+	// Probe wipe marker. Same Get call goes through readSet so a
+	// later commit-wipe invalidates this read.
+	wipeRaw, err := v.view.Get(EncodeWipeKey(addr))
+	if err != nil {
+		return nil, err
+	}
+	if len(wipeRaw) > 0 {
+		// A wipe is visible. Compare its txIdx to the slot writer's.
+		var wipeWriter Version
+		if rs := v.view.ReadSet(); len(rs) > 0 {
+			last := rs[len(rs)-1]
+			if last.Source == ReadFromMV {
+				wipeWriter = last.WriterVer
+			}
+		}
+		// Wipe overrides if:
+		//   - no slot writer in MV (slot came from base — definitely
+		//     pre-wipe data), OR
+		//   - wipe writer's txIdx > slot writer's txIdx.
+		if !slotFromMV || wipeWriter.TxIdx > slotWriter.TxIdx {
+			return new(uint256.Int), nil
+		}
+	}
+
 	val := new(uint256.Int)
 	if len(raw) > 0 {
 		val.SetBytes(raw)
@@ -161,6 +224,33 @@ func (v *EVMStateView) ReadCode(codeHash types.Hash) ([]byte, error) {
 // WriteCode stores bytecode (content-addressed by codeHash).
 func (v *EVMStateView) WriteCode(codeHash types.Hash, code []byte) {
 	v.view.Set(EncodeCodeKey(codeHash), code)
+}
+
+// WipeAddress marks `addr`'s entire storage as wiped at this tx's
+// (txIdx, incarnation). All concurrent / later readers of any slot of
+// `addr` whose direct-slot writer is older than this wipe will see 0
+// instead of the stale value. Use for SELFDESTRUCT (pre-Cancun) and
+// CREATE-on-existing-addr metamorphism.
+//
+// The wipe is a single MV write per addr (cheap), regardless of how
+// many slots the contract holds — avoids the per-slot enumeration
+// the sequential PlainStateBuffer.collectPreWipeSlots needs.
+//
+// Note: wiping an addr does NOT delete the account record — caller
+// is expected to also call WriteAccount(addr, nil) (or write a fresh
+// account for re-creation in the same tx).
+func (v *EVMStateView) WipeAddress(addr types.Address) {
+	// Marker value is a non-empty byte (0x01) so MVHashMap.Read
+	// returns "found"; the value content is irrelevant — its
+	// presence is what shadows storage.
+	v.view.Set(EncodeWipeKey(addr), []byte{0x01})
+}
+
+// IsAddressWiped reports whether the in-flight tx's view sees a wipe
+// for addr from any earlier committed tx_w < this tx's idx.
+func (v *EVMStateView) IsAddressWiped(addr types.Address) bool {
+	wipeRaw, _ := v.view.Get(EncodeWipeKey(addr))
+	return len(wipeRaw) > 0
 }
 
 // --- Base reader adapters ---
@@ -226,6 +316,12 @@ func (b *MVBaseFromStateReader) Get(key []byte) ([]byte, error) {
 		// we use zero addr and rely on the code lookup to be
 		// address-independent.
 		return b.r.ReadAccountCode(types.Address{}, codeHash)
+	case mvKeyTagWipe:
+		// Base store has no concept of an "address wipe" — wipes are
+		// in-block markers maintained only in MVHashMap. Return nil
+		// (no wipe visible from base) so MV.Read falls through cleanly
+		// when no in-block tx has wiped this addr.
+		return nil, nil
 	}
 	// Fall through: unknown tag. Treat as opaque passthrough (tests
 	// use raw keys without tags for simplicity).

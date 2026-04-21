@@ -190,13 +190,43 @@ type ApplyTarget interface {
 	// AddBalance adds delta to addr's balance. Used for coinbase
 	// aggregation; delta is always non-negative.
 	AddBalance(addr types.Address, delta *uint256.Int) error
+	// WipeStorage removes ALL storage entries for addr. Used to
+	// finalize SELFDESTRUCT (the in-MV wipe marker is virtual; the
+	// base store needs an explicit per-addr storage delete at commit
+	// time). Implementations typically do a Storage-table cursor
+	// scan-delete by addr prefix (same logic as the sequential
+	// PlainStateBuffer.ApplyTo contractWipes path).
+	WipeStorage(addr types.Address) error
 }
 
 // Apply writes every BlockCommit write to target, then applies the
-// coinbase tip aggregate. Writes are already sorted by key (FinalizeBlock
-// guarantees deterministic order).
+// coinbase tip aggregate.
+//
+// Order: wipes BEFORE per-slot storage writes. The MV-stored writes
+// in BlockCommit.Writes are already deduped to highest txIdx per key
+// (so any storage(addr, slot) entry is post-any-wipe-of-addr by tx
+// ordering), but the BASE store still needs the wipe applied first
+// so it doesn't keep stale pre-wipe slots. Apply sequences:
+//   1. Wipes  — clears each addr's storage in the base store.
+//   2. Other writes (accounts, post-wipe storage, code) sorted by
+//      key for B+tree locality.
+//   3. Coinbase tip aggregate.
+//
+// Within each phase the writes are already sorted by key.
 func (bc *BlockCommit) Apply(target ApplyTarget) error {
+	// Phase 1: wipes.
 	for _, e := range bc.Writes {
+		if len(e.Key) > 0 && e.Key[0] == mvKeyTagWipe {
+			if err := applyEntry(target, e); err != nil {
+				return fmt.Errorf("apply wipe %x: %w", e.Key, err)
+			}
+		}
+	}
+	// Phase 2: everything else.
+	for _, e := range bc.Writes {
+		if len(e.Key) > 0 && e.Key[0] == mvKeyTagWipe {
+			continue
+		}
 		if err := applyEntry(target, e); err != nil {
 			return fmt.Errorf("apply %x: %w", e.Key, err)
 		}
@@ -210,6 +240,17 @@ func (bc *BlockCommit) Apply(target ApplyTarget) error {
 }
 
 // applyEntry dispatches one CommitEntry by key tag.
+//
+// Order matters when the same address has BOTH a wipe and per-slot
+// writes in the same block: the slot writes that came AFTER the wipe
+// (later txIdx) must be preserved; only pre-wipe slot data should be
+// removed. FinalizeBlock's CollectHighestWrites already returns only
+// the highest-txIdx write per slot, so any slot present in Writes is
+// post-wipe (or contemporaneous with no wipe). Therefore at commit:
+//   1. WipeStorage(addr) — remove all base-store slots for addr
+//   2. PutStorage(addr, slot, val) — write the post-wipe values
+// Apply() handles ordering by sorting wipes BEFORE storage writes
+// for the same addr (see Apply implementation).
 func applyEntry(target ApplyTarget, e CommitEntry) error {
 	if len(e.Key) == 0 {
 		return fmt.Errorf("empty key")
@@ -238,6 +279,13 @@ func applyEntry(target ApplyTarget, e CommitEntry) error {
 		var codeHash types.Hash
 		copy(codeHash[:], e.Key[1:])
 		return target.PutCode(codeHash, e.Value)
+	case mvKeyTagWipe:
+		if len(e.Key) != 21 {
+			return fmt.Errorf("bad wipe key len=%d", len(e.Key))
+		}
+		var addr types.Address
+		copy(addr[:], e.Key[1:])
+		return target.WipeStorage(addr)
 	}
 	return fmt.Errorf("unknown key tag %d", e.Key[0])
 }
@@ -293,6 +341,11 @@ func (m *MapApplyTarget) PutCode(codeHash types.Hash, code []byte) error {
 		return nil // idempotent
 	}
 	m.Code[codeHash] = append([]byte(nil), code...)
+	return nil
+}
+
+func (m *MapApplyTarget) WipeStorage(addr types.Address) error {
+	delete(m.Storage, addr)
 	return nil
 }
 
