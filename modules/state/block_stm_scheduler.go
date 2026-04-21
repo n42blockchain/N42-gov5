@@ -145,13 +145,18 @@ func (s *Scheduler) NextTask() Task {
 		// Validation priority: claim Validate(vIdx) if
 		//   (a) vIdx < eIdx (execution of that slot has been claimed)
 		//   (b) vIdx < numTxs
-		//   (c) status[vIdx] == Executed (execution actually FINISHED)
-		// If (c) is false the execution is in-flight — fall through to
-		// the execute path so we claim another pending execution rather
-		// than spinning on a validation that isn't ready yet.
+		//   (c) status[vIdx] is Executed OR Committed (execution has
+		//       FINISHED at least once; already-committed txs may need
+		//       re-validation if an earlier tx's rewind invalidated
+		//       them — demotion Committed→Aborting happens inside
+		//       FinishValidationFail).
+		// If (c) is false the tx is still Executing or Aborting —
+		// fall through to the execute path so we claim another pending
+		// execution rather than spinning on a validation that isn't
+		// ready yet.
 		if vIdx < eIdx && vIdx < numTxs {
 			st, _ := s.Status(int(vIdx))
-			if st == TxStatusExecuted {
+			if st == TxStatusExecuted || st == TxStatusCommitted {
 				if s.validationIdx.CompareAndSwap(vIdx, vIdx+1) {
 					inc := s.getIncarnation(int(vIdx))
 					s.numActive.Add(1)
@@ -159,12 +164,24 @@ func (s *Scheduler) NextTask() Task {
 				}
 				continue // CAS lost — re-read and try again.
 			}
-			// Not yet Executed; fall through to execute path (or
-			// terminal check if no pending execution either).
+			// Executing / Aborting / Ready — fall through.
 		}
 
-		// Execution path: claim Execute(eIdx) if eIdx<numTxs.
+		// Execution path: claim Execute(eIdx) if eIdx<numTxs AND the
+		// tx actually needs execution (Ready or Aborting). A tx in
+		// Executed/Committed state is already past execution and only
+		// needs (re-)validation; skip past it by advancing eIdx. This
+		// is crucial after a rewind from FinishValidationFail: eIdx
+		// gets reset to the failing txIdx but later slots often hold
+		// valid Executed/Committed results that should be preserved
+		// and re-validated rather than re-executed.
 		if eIdx < numTxs {
+			st, _ := s.Status(int(eIdx))
+			if st == TxStatusExecuted || st == TxStatusCommitted {
+				// Skip past this slot — no execution needed.
+				s.executionIdx.CompareAndSwap(eIdx, eIdx+1)
+				continue
+			}
 			if s.executionIdx.CompareAndSwap(eIdx, eIdx+1) {
 				idx := int(eIdx)
 				inc := s.beginExecution(idx)
@@ -187,13 +204,45 @@ func (s *Scheduler) NextTask() Task {
 
 // FinishExecution marks tx_i as having completed its Execute(inc) task.
 // The scheduler makes it eligible for validation. Workers call this
-// after writing to MVHashMap.
+// after writing to MVHashMap. Only transitions if we are still in
+// Executing at the claimed incarnation; guards against stale callers
+// demoting a tx that has already advanced (e.g. to Committed).
 func (s *Scheduler) FinishExecution(txIdx int, inc uint32) {
 	s.txMu[txIdx].Lock()
-	if s.incarnation[txIdx] == inc {
+	if s.incarnation[txIdx] == inc && s.status[txIdx] == TxStatusExecuting {
 		s.status[txIdx] = TxStatusExecuted
 	}
 	s.txMu[txIdx].Unlock()
+	s.numActive.Add(-1)
+}
+
+// FinishExecutionAbort is called when a worker's Execute task observed
+// an MVEstimate read (the writer it depends on is still speculative /
+// re-executing). The tx's partial writes are NOT flushed to MVHashMap;
+// the tx must be re-scheduled to try again once the blocking writer
+// settles. Incarnation is NOT bumped (same read set expected); the
+// scheduler rewinds executionIdx so NextTask re-claims this slot.
+//
+// Distinguished from FinishValidationFail, which handles the
+// Executed → Aborting transition triggered by a validation mismatch.
+func (s *Scheduler) FinishExecutionAbort(txIdx int, inc uint32) {
+	s.txMu[txIdx].Lock()
+	if s.incarnation[txIdx] == inc && s.status[txIdx] == TxStatusExecuting {
+		s.status[txIdx] = TxStatusReady
+	}
+	s.txMu[txIdx].Unlock()
+	// Rewind executionIdx so this tx gets re-claimed by the next
+	// worker. Best-effort CAS: another worker may have advanced past
+	// us, in which case our rewind is a no-op.
+	for {
+		cur := s.executionIdx.Load()
+		if cur <= int64(txIdx) {
+			break
+		}
+		if s.executionIdx.CompareAndSwap(cur, int64(txIdx)) {
+			break
+		}
+	}
 	s.numActive.Add(-1)
 }
 
@@ -263,10 +312,15 @@ func (s *Scheduler) FinishValidationFail(txIdx int, inc uint32) {
 
 // beginExecution transitions tx_i from Ready/Aborting to Executing and
 // returns the current incarnation for the caller to stamp on its writes.
+// For safety, only transitions IF current status is Ready or Aborting;
+// Executed/Committed stay as-is (shouldn't happen because NextTask
+// filters, but we defend against the race).
 func (s *Scheduler) beginExecution(txIdx int) uint32 {
 	s.txMu[txIdx].Lock()
 	inc := s.incarnation[txIdx]
-	s.status[txIdx] = TxStatusExecuting
+	if s.status[txIdx] == TxStatusReady || s.status[txIdx] == TxStatusAborting {
+		s.status[txIdx] = TxStatusExecuting
+	}
 	s.txMu[txIdx].Unlock()
 	return inc
 }
