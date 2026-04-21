@@ -25,6 +25,8 @@ package internal
 import (
 	"fmt"
 	"math"
+	"os"
+	"strconv"
 
 	"github.com/holiman/uint256"
 
@@ -260,6 +262,15 @@ func NewStateTransition(evm vm2.VMInterface, msg Message, gp *common.GasPool) *S
 	}
 }
 
+var dbgRefundBlock = func() uint64 {
+	v := os.Getenv("DBG_SSTORE")
+	if v == "" {
+		return 0
+	}
+	n, _ := strconv.ParseUint(v, 10, 64)
+	return n
+}()
+
 // ApplyMessage computes the new state by applying the given message against the old state.
 // Returns the execution result and an error if the message would always fail for that state.
 // `refunds` is false when gas refunds should not be applied.
@@ -464,6 +475,13 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	}
 
 	if refunds {
+		// Dump refund state when DBG_SSTORE targets this block.
+		if dbgRefundBlock > 0 && st.evm.Context().BlockNumber == dbgRefundBlock {
+			if ti, ok := st.state.(interface{ TxIndex() int }); ok {
+				fmt.Fprintf(os.Stderr, "REFUND bn=%d ti=%d gasUsed=%d refund=%d\n",
+					st.evm.Context().BlockNumber, ti.TxIndex(), st.gasUsed(), st.state.GetRefund())
+			}
+		}
 		if rules.IsLondon {
 			st.refundGas(params.RefundQuotientEIP3529, floorDataGas)
 		} else {

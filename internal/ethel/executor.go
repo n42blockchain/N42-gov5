@@ -85,6 +85,10 @@ type Executor struct {
 	// Timing collection for P50/P99 analysis.
 	timingSamples []timingSample
 	timingWindow  int // samples per window (default 1000)
+
+	// Optional hook called instead of state-root verify at VerifyInterval
+	// boundaries. When set, the standard VerifyStateRoot path is skipped.
+	verifyHook func(blockNum uint64) error
 }
 
 // NewExecutor creates a new block executor.
@@ -111,6 +115,19 @@ func NewExecutor(f *freezer.Freezer, db kv.RwDB, chainCfg *params.ChainConfig, e
 		headerCache: make(map[uint64]*block.Header, 260),
 		stateBuf:    state.NewPlainStateBuffer(),
 	}
+}
+
+// SetCacheBudget rebuilds the PlainStateBuffer with the given cache
+// budget. Must be called before Run (the buffer is mutable state and
+// rebuilding mid-run would lose pending writes).
+func (e *Executor) SetCacheBudget(b state.CacheBudget) {
+	e.stateBuf = state.NewPlainStateBufferWithBudget(b)
+}
+
+// SetVerifyHook installs a custom verify callback that replaces the
+// standard state-root verification at VerifyInterval boundaries.
+func (e *Executor) SetVerifyHook(fn func(blockNum uint64) error) {
+	e.verifyHook = fn
 }
 
 // SetSenderFreezer sets the pre-computed senders freezer (from sender-recovery stage).
@@ -251,9 +268,24 @@ func (e *Executor) Run(ctx context.Context) error {
 			}
 		}
 
-		// Prefetch next block's state while we execute this one.
-		if e.prefetcher != nil && blockNum+1 <= endBlock {
-			e.prefetcher.prefetchBlock(blockNum + 1)
+		// Prefetch the next few blocks' state in parallel while we execute
+		// this one. Queue up to `prefetchLookahead/2` blocks so the 4
+		// prefetch workers always have work, without oversubscribing the
+		// channel or letting MDBX page cache get evicted before the
+		// executor catches up. prefetchBlock is non-blocking: it drops
+		// silently if the channel is full.
+		if e.prefetcher != nil {
+			// Queue N+1..N+8. The prefetcher channel is bounded (size 16),
+			// and prefetchBlock drops the request if the channel is full,
+			// so spamming a wider range than we can execute is harmless.
+			const prefetchAhead = 8
+			for k := uint64(1); k <= prefetchAhead; k++ {
+				next := blockNum + k
+				if next > endBlock {
+					break
+				}
+				e.prefetcher.prefetchBlock(next)
+			}
 		}
 
 		if err := e.executeBlock(ctx, tx, blockNum); err != nil {
@@ -286,15 +318,24 @@ func (e *Executor) Run(ctx context.Context) error {
 				}
 			}
 			// Save ALL pending entries to MDBX (the authoritative store
-			// that survives any shutdown). Then flush to cdat as
-			// best-effort.
+			// that survives any shutdown). Then fsync freezer.
+			//
+			// freezer fsync was previously "best-effort" (errors swallowed)
+			// on the theory that alignOnResume would heal any mismatch on
+			// restart. That masked real problems: a failing fsync left
+			// users unable to tell whether cdat was actually durable. We
+			// now surface the error — alignOnResume still runs on restart
+			// so correctness is preserved, but the operator sees the root
+			// cause immediately.
 			var csEntries map[string][]byte
 			if e.outBatcher != nil {
 				csEntries = e.outBatcher.remainder() // ALL pending entries
 				if _, err := e.outBatcher.flushFullBatches(); err != nil {
 					return fmt.Errorf("flush output batcher at block %d: %w", blockNum, err)
 				}
-				_ = e.outBatcher.sync() // best-effort
+				if err := e.outBatcher.sync(); err != nil {
+					return fmt.Errorf("fsync output freezer at block %d: %w", blockNum, err)
+				}
 			}
 
 			// 3. Capture stats BEFORE the snapshot moves the maps.
@@ -382,6 +423,13 @@ func (e *Executor) Run(ctx context.Context) error {
 				if dur > 0 {
 					lastFlushDur = dur
 				}
+
+				if e.verifyHook != nil {
+					// Custom verify hook (e.g., compare-mode CS→shadow diff).
+					if err := e.verifyHook(blockNum); err != nil {
+						return err
+					}
+				} else {
 				// Release main RoTx so we can open a RwTx for verify.
 				tx.Rollback()
 				verifyTx, vErr := e.db.BeginRw(ctx)
@@ -419,6 +467,7 @@ func (e *Executor) Run(ctx context.Context) error {
 				}
 				log.Info("State root verified", "block", blockNum,
 					"root", hdr.Root.Hex())
+				} // end else (standard verify)
 			}
 			// Exit after commit if shutdown was requested.
 			if shuttingDown {
@@ -444,14 +493,16 @@ func (e *Executor) Run(ctx context.Context) error {
 			e.asyncOut = nil
 		}
 		// Normal termination (--end reached): save all entries to MDBX,
-		// then best-effort flush to cdat.
+		// then fsync freezer.
 		var finalEntries map[string][]byte
 		if e.outBatcher != nil {
 			finalEntries = e.outBatcher.remainder()
 			if _, err := e.outBatcher.flushFullBatches(); err != nil {
 				return fmt.Errorf("flush output batcher final: %w", err)
 			}
-			_ = e.outBatcher.sync()
+			if err := e.outBatcher.sync(); err != nil {
+				return fmt.Errorf("fsync output freezer final: %w", err)
+			}
 		}
 		if err := e.asyncFlush.handWithRemainder(lastOKBlock, finalEntries); err != nil {
 			return fmt.Errorf("hand final flush: %w", err)

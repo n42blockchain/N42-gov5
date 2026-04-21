@@ -27,6 +27,26 @@ import (
 
 var deletedSentinel = []byte{}
 
+// trackedAddr, if non-nil, causes the BufferedPlainState* write/flush path
+// to emit targeted log lines whenever the tracked address is touched.
+// Intended for debugging SELFDESTRUCT + metamorphic CREATE2 bugs without
+// drowning in per-block noise.
+var trackedAddr atomic.Pointer[types.Address]
+
+// SetTrackedAddr installs the given address (20B) as the targeted trace
+// subject. Passing nil disables tracing. Safe to call from any goroutine.
+func SetTrackedAddr(addr *types.Address) {
+	trackedAddr.Store(addr)
+}
+
+func isTracked(a types.Address) bool {
+	p := trackedAddr.Load()
+	if p == nil {
+		return false
+	}
+	return *p == a
+}
+
 type storageEntry struct {
 	value []byte
 }
@@ -392,6 +412,25 @@ func (snap *BufferSnapshot) ApplyTo(tx kv.RwTx) error {
 				return err
 			}
 		}
+		if isTracked(addr) {
+			fmt.Printf("[TRACK] ApplyTo.sweep addr=%x swept_rows=%d\n", addr[:], len(keysToDelete))
+			// Post-sweep probe: any rows still present?
+			c2, err := tx.Cursor(modules.Storage)
+			if err == nil {
+				remaining := 0
+				for k, _, err := c2.Seek(prefix); k != nil; k, _, err = c2.Next() {
+					if err != nil {
+						break
+					}
+					if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
+						break
+					}
+					remaining++
+				}
+				c2.Close()
+				fmt.Printf("[TRACK] ApplyTo.sweep/after addr=%x remaining_rows=%d\n", addr[:], remaining)
+			}
+		}
 	}
 
 	// 3. Storage: sorted composite keys.
@@ -616,6 +655,7 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 }
 
 func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
+	tracked := isTracked(address)
 	// 1. Active write buffer.
 	if slots, ok := r.buf.storage[address]; ok {
 		if entry, ok2 := slots[*key]; ok2 {
@@ -632,6 +672,9 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 	// from before the wipe must not be returned.
 	if len(r.buf.wipedStorage) > 0 {
 		if _, wiped := r.buf.wipedStorage[address]; wiped {
+			if tracked {
+				fmt.Printf("[TRACK] ReadAccountStorage addr=%x slot=%x src=buf.wipedStorage return_nil\n", address[:], key)
+			}
 			return nil, nil
 		}
 	}
@@ -650,6 +693,9 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 		// Wiped contracts in the in-flight snapshot: any slot not
 		// listed in snap.storage is gone (the wipe already executed).
 		if _, wiped := snap.wipedStorage[address]; wiped {
+			if tracked {
+				fmt.Printf("[TRACK] ReadAccountStorage addr=%x slot=%x src=inFlight.wipedStorage return_nil\n", address[:], key)
+			}
 			return nil, nil
 		}
 	}
@@ -670,6 +716,11 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 	r.buf.stoMisses.Add(1)
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address[:], key[:])
 	enc, err := r.db.GetOne(modules.Storage, compositeKey)
+	if tracked && enc != nil {
+		// Only log MDBX reads that hit non-nil — these are the "actual
+		// leftover" values we care about for wipe-verification.
+		fmt.Printf("[TRACK] ReadAccountStorage addr=%x slot=%x src=MDBX val=%x\n", address[:], key, enc)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -785,14 +836,31 @@ func (w *BufferedPlainStateWriter) DeleteAccount(address types.Address, original
 }
 
 func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+	if isTracked(address) {
+		bn := uint64(0)
+		if w.csw != nil {
+			bn = w.csw.blockNumber
+		}
+		fmt.Printf("[TRACK] WriteAccountStorage blk=%d addr=%x slot=%x orig=%s val=%s\n",
+			bn, address[:], key, original.Hex(), value.Hex())
+	}
 	if w.csw != nil {
 		if err := w.csw.WriteAccountStorage(address, key, original, value); err != nil {
 			return err
 		}
 	}
-	if *original == *value {
-		return nil
-	}
+	// IMPORTANT: do NOT short-circuit on original==value here. `original` is
+	// blockOriginStorage[slot] (the value at block start). When an earlier
+	// tx in this same block wrote the slot to some intermediate V_mid and a
+	// later tx in the same block reverted it back to V_start, updateTrie
+	// calls WriteAccountStorage(V_start, V_start). Skipping the buffer
+	// write would leave the earlier tx's V_mid in w.buf, which then gets
+	// flushed to MDBX as the final block state — silently corrupting the
+	// slot to V_mid instead of the consensus-correct V_start. Observed
+	// pattern: approve/reset, DEX reserves temp-modify, etc. Always write
+	// the final `value` so the buffer reflects post-tx truth; redundant
+	// Put of the same value to MDBX is cheap compared to this correctness
+	// bug cascading across 100k+ blocks.
 	slots := w.buf.storage[address]
 	if slots == nil {
 		slots = make(map[types.Hash]storageEntry, 8)
@@ -812,6 +880,15 @@ func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, ke
 }
 
 func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
+	if isTracked(address) {
+		bn := uint64(0)
+		if w.csw != nil {
+			bn = w.csw.blockNumber
+		}
+		_, bufWiped := w.buf.wipedStorage[address]
+		fmt.Printf("[TRACK] CreateContract blk=%d addr=%x bufWiped=%v contractWipes_len=%d buf.storage_slots=%d\n",
+			bn, address[:], bufWiped, len(w.buf.contractWipes), len(w.buf.storage[address]))
+	}
 	// Before the wipe, collect pre-destruction slot values from the layered
 	// state (buffer over MDBX) and record them in the storage changeset, so
 	// backward unwind can restore them. Mirrors reth's write_state_reverts
@@ -829,23 +906,64 @@ func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
 			return err
 		}
 	}
-	// Clear buffered storage for this address.
-	delete(w.buf.storage, address)
 	// Invalidate every cached slot for this address. The flat composite-key
 	// LRU has no per-address sub-map, so we evict each known slot individually.
-	// Sources of "known slots": (a) the wipedSlots collected above (covers
-	// MDBX + write buffer), (b) any slot still in the write buffer (rare:
-	// touched after collectPreWipeSlots but before this point).
+	//
+	// CRITICAL: we must NOT rely on `wipedSlots` for the LRU purge — that
+	// set is for the storage CHANGESET (csw.recordStorageWipe) and drops
+	// slots whose current visible value is empty (`len(entry.value)==0`).
+	// But the LRU may hold a STALE non-zero value for exactly those slots:
+	// e.g. an earlier commit interval flushed buf.storage[addr][slot]=V2
+	// into MDBX and RefreshLRUForSnapshot wrote V2 into LRU; a later block
+	// in this interval issues SSTORE slot=0, which sets buf[slot] to
+	// deletedSentinel — so collectPreWipeSlots drops it and this loop
+	// would leave V2 in the LRU. On the next block's read of `slot`, the
+	// LRU returns V2 even though MDBX has been swept clean and the snap
+	// tombstone has been refreshed past. That stale V2 propagates into
+	// EVM SSTORE gas calc (orig=V2 → RESET path, 15K refund delta vs
+	// the correct SET path). See project_lru_empty_slot_leftover memory.
+	//
+	// Correct set to purge = union of every slot key known to touch this
+	// address: active buffer (incl. empty/deletedSentinel), in-flight
+	// snapshot, AND MDBX scan (delegated via wipedSlots which already
+	// merges MDBX rows). That covers every key that could sit in LRU.
+	lruKeys := make(map[types.Hash]struct{}, len(wipedSlots)+len(w.buf.storage[address]))
+	for slot := range wipedSlots {
+		lruKeys[slot] = struct{}{}
+	}
+	if slots, ok := w.buf.storage[address]; ok {
+		for slot := range slots {
+			lruKeys[slot] = struct{}{}
+		}
+	}
+	if snap := w.buf.inFlight.Load(); snap != nil {
+		if slots, ok := snap.storage[address]; ok {
+			for slot := range slots {
+				lruKeys[slot] = struct{}{}
+			}
+		}
+	}
 	var compositeKey [storageCompositeKeyLen]byte
 	copy(compositeKey[:20], address[:])
-	for slot := range wipedSlots {
+	for slot := range lruKeys {
 		copy(compositeKey[20:], slot[:])
 		w.buf.readStorage.Delete(compositeKey)
 	}
+	// Clear buffered storage for this address AFTER computing lruKeys so we
+	// don't lose the buf slot list.
+	delete(w.buf.storage, address)
 	// Mark as wiped so ReadAccountStorage returns nil for slots not in buffer.
 	w.buf.wipedStorage[address] = struct{}{}
 	// Record address for MDBX storage wipe during FlushToMDBX.
 	w.buf.contractWipes = append(w.buf.contractWipes, address)
+	if isTracked(address) {
+		bn := uint64(0)
+		if w.csw != nil {
+			bn = w.csw.blockNumber
+		}
+		fmt.Printf("[TRACK] CreateContract/done blk=%d addr=%x wipedSlots=%d contractWipes_len=%d\n",
+			bn, address[:], len(wipedSlots), len(w.buf.contractWipes))
+	}
 	return nil
 }
 
@@ -863,11 +981,26 @@ func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
 // would skip those slots in the wipe enumeration → storcs would be
 // missing tombstones → forward replay produces a wrong state root.
 func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (map[types.Hash][]byte, error) {
+	tracked := isTracked(address)
 	// snap is captured once for the entire function so the MDBX-shadowing
 	// loop sees the same snapshot we enumerated, even if the bg flush
 	// completes mid-call and clears w.buf.inFlight.
 	snap := w.buf.inFlight.Load()
 	bufSlots, hasBuf := w.buf.storage[address]
+	// If the CURRENT active buffer already wiped this address (a SELFDESTRUCT
+	// earlier in the same commit interval produced a buf.wipedStorage entry
+	// and buf.contractWipes append), MDBX still holds the pre-interval slots
+	// — but they are logically gone. If a LATER block in the same interval
+	// re-runs CreateContract (e.g. CREATE2 metamorphic pattern), we must NOT
+	// re-harvest the stale MDBX slots here: csw.recordStorageWipe would then
+	// write them to the NEW block's storcs entry as if they were pre-block
+	// values, even though the true pre-block value is 0 (wiped). Forward
+	// replay of that bogus storcs row does not currently break state root
+	// (V* → 0 collides with 0 → 0), but the changeset's old_val lies about
+	// history and downstream consumers that trust it (snapshot diffs,
+	// history v3 inverted index, gas refund reasoning that walks back
+	// storcs) silently break.
+	_, bufWiped := w.buf.wipedStorage[address]
 
 	hint := len(bufSlots)
 	if snap != nil {
@@ -927,6 +1060,17 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 		}
 	}
 
+	// 2b. Active-buffer wipe: same semantics as in-flight wipe, but for a
+	// SELFDESTRUCT earlier in the current (pre-snapshot) interval. MDBX
+	// still holds the old rows but they are logically gone.
+	if bufWiped {
+		if tracked {
+			fmt.Printf("[TRACK] collectPreWipeSlots addr=%x bufWiped=true early_return out_slots=%d\n",
+				address[:], len(out))
+		}
+		return out, nil
+	}
+
 	// 3. Slots in MDBX that are NOT shadowed by buffer or in-flight.
 	if w.csw.db != nil {
 		cursor, err := w.csw.db.Cursor(modules.Storage)
@@ -969,6 +1113,10 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 		cursor.Close()
 	}
 
+	if tracked {
+		fmt.Printf("[TRACK] collectPreWipeSlots addr=%x out_slots=%d (via MDBX scan)\n",
+			address[:], len(out))
+	}
 	return out, nil
 }
 

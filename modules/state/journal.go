@@ -171,12 +171,33 @@ type (
 		key      types.Hash
 		prevalue uint256.Int
 	}
+
+	// storageWipeChange records a NEW entry into storageWipes. Previously,
+	// storageWipes was indirectly managed by createObjectChange,
+	// resetObjectChange and selfdestructChange all inferring "did I add
+	// this?" from local predicates. When multiple operations in the same
+	// tx set storageWipes for the same address (e.g., SELFDESTRUCT then
+	// CREATE2, or CREATE + later SELFDESTRUCT), reverting ONE of them
+	// would incorrectly delete the wipe that another operation owned →
+	// subsequent blocks saw stale storage for the address → Istanbul
+	// SSTORE took the wrong refund path → 15K gas mismatch vs geth.
+	//
+	// The fix: any operation that ADDS a fresh entry to storageWipes
+	// appends this journal change. On revert, only the operation that
+	// added it removes it. Operations that found storageWipes already
+	// set don't append (no-op) and therefore their revert doesn't touch
+	// storageWipes.
+	storageWipeAddChange struct {
+		account *types.Address
+	}
 )
 
 func (ch createObjectChange) revert(s *IntraBlockState) {
 	delete(s.stateObjects, *ch.account)
 	delete(s.stateObjectsDirty, *ch.account)
-	delete(s.storageWipes, *ch.account)
+	// storageWipes is no longer implicitly managed here — see
+	// storageWipeAddChange. If this createObjectChange also added a fresh
+	// storageWipes entry, a paired storageWipeAddChange was journaled.
 }
 
 func (ch createObjectChange) dirtied() *types.Address {
@@ -185,10 +206,7 @@ func (ch createObjectChange) dirtied() *types.Address {
 
 func (ch resetObjectChange) revert(s *IntraBlockState) {
 	s.setStateObject(*ch.account, ch.prev)
-	// If the previous object wasn't created as a contract, remove storageWipes.
-	if ch.prev == nil || !ch.prev.created {
-		delete(s.storageWipes, *ch.account)
-	}
+	// storageWipes no longer inferred here — see storageWipeAddChange.
 }
 
 func (ch resetObjectChange) dirtied() *types.Address {
@@ -201,14 +219,21 @@ func (ch selfdestructChange) revert(s *IntraBlockState) {
 		obj.selfdestructed = ch.prev
 		obj.setBalance(&ch.prevbalance)
 	}
-	// Also revert storageWipes if this SELFDESTRUCT is being undone.
-	if !ch.prev {
-		delete(s.storageWipes, *ch.account)
-	}
+	// storageWipes no longer inferred here — see storageWipeAddChange.
 }
 
 func (ch selfdestructChange) dirtied() *types.Address {
 	return ch.account
+}
+
+func (ch storageWipeAddChange) revert(s *IntraBlockState) {
+	delete(s.storageWipes, *ch.account)
+}
+
+func (ch storageWipeAddChange) dirtied() *types.Address {
+	// Does not by itself dirty the account (createObjectChange or
+	// selfdestructChange, which triggered this wipe, handle dirtying).
+	return nil
 }
 
 var ripemd = types.HexToAddress("0000000000000000000000000000000000000003")

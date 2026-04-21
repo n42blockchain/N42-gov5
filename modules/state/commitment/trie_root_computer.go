@@ -34,9 +34,21 @@ import (
 //  3. Build RetainList marking dirty hashed key paths
 //  4. CalcTrieRoot reuses TrieOfAccounts/TrieOfStorage for unchanged subtrees
 //  5. HashCollector callbacks update TrieOfAccounts/TrieOfStorage
+//
+// Two modes, selected via SetIncremental:
+//
+//   - incremental=false (default, legacy): ClearBucket TrieOf* before every
+//     call, pass empty RetainList to CalcTrieRoot, HashCollectors rebuild
+//     the full trie structure. Correct but O(state_size) per call.
+//
+//   - incremental=true: trust pre-populated TrieOf*, pass populated RetainList
+//     (dirty paths) to CalcTrieRoot, HashCollectors emit put/delete only
+//     for changed subtrees. O(dirty) per call. Requires TrieOf* to be
+//     bootstrapped via a prior full-rebuild call (use BootstrapHPH).
 type TrieRootComputer struct {
-	tx     kv.RwTx
-	hasher hash256
+	tx          kv.RwTx
+	hasher      hash256
+	incremental bool
 }
 
 type hash256 interface {
@@ -54,6 +66,13 @@ func NewTrieRootComputer() *TrieRootComputer {
 // SetRwTx sets the read-write transaction for HashedAccounts/Storage updates.
 func (t *TrieRootComputer) SetRwTx(tx kv.RwTx) {
 	t.tx = tx
+}
+
+// SetIncremental toggles incremental mode. Default is false (legacy
+// full-rebuild-per-call). See TrieRootComputer doc for requirements when
+// enabling.
+func (t *TrieRootComputer) SetIncremental(v bool) {
+	t.incremental = v
 }
 
 var emptyCodeHash = crypto.Keccak256Hash(nil)
@@ -133,15 +152,19 @@ func (t *TrieRootComputer) ComputeRoot(
 		}
 	}
 
-	// Phase 3: CalcTrieRoot. Clear TrieOfAccounts/TrieOfStorage before each
-	// run — CalcTrieRoot outputs the complete trie structure, not incremental diffs.
-	// The RetainList allows it to skip unchanged subtrees (reads HashedAccounts
-	// only for dirty paths), but output must be a full replacement.
-	if err := t.tx.ClearBucket(modules.TrieOfAccounts); err != nil {
-		return types.Hash{}, err
-	}
-	if err := t.tx.ClearBucket(modules.TrieOfStorage); err != nil {
-		return types.Hash{}, err
+	// Phase 3: CalcTrieRoot. In legacy mode, ClearBucket TrieOf* so the
+	// rebuild is full (empty RetainList, every subtree recomputed from
+	// HashedAccounts/HashedStorage). In incremental mode, leave TrieOf*
+	// intact — the populated RetainList tells CalcTrieRoot which subtrees
+	// to rebuild, and HashCollector callbacks update/delete only changed
+	// nodes in TrieOf*.
+	if !t.incremental {
+		if err := t.tx.ClearBucket(modules.TrieOfAccounts); err != nil {
+			return types.Hash{}, err
+		}
+		if err := t.tx.ClearBucket(modules.TrieOfStorage); err != nil {
+			return types.Hash{}, err
+		}
 	}
 
 	// Collect intermediate hashes in memory (avoid cursor read/write conflict).
@@ -178,9 +201,15 @@ func (t *TrieRootComputer) ComputeRoot(
 		return nil
 	}
 
-	// Use empty RetainList — trie tables were just cleared, so there are
-	// no cached intermediate hashes. CalcTrieRoot must do a full rebuild.
-	loader := trie.NewFlatDBTrieLoader("trie-root", trie.NewRetainList(0), accCollector, storCollector, false)
+	// Legacy mode: trie tables were cleared above, CalcTrieRoot does a
+	// full rebuild with empty RetainList.
+	// Incremental mode: pass the populated dirty-paths RetainList so
+	// unchanged subtrees are read from TrieOf* instead of rebuilt.
+	retainer := trie.NewRetainList(0)
+	if t.incremental {
+		retainer = rl
+	}
+	loader := trie.NewFlatDBTrieLoader("trie-root", retainer, accCollector, storCollector, false)
 	root, err := loader.CalcTrieRoot(t.tx, nil)
 	if err != nil {
 		return types.Hash{}, fmt.Errorf("CalcTrieRoot: %w", err)

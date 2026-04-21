@@ -294,3 +294,93 @@ func TestEncodeStorageChanges_ChunkBoundary(t *testing.T) {
 		})
 	}
 }
+
+// TestEncodeStorageChanges_ChunkDoesNotClobberNeighbors reproduces the
+// aliasing bug that manifested as a block 6,999,999 state-root mismatch
+// during rebuild-state. When a block's changeset contained [G0, G1,
+// G_big(84K), G_other], the encoder aliased the chunked slice with the
+// original groups backing array; expanding G_big to 2 chunks overwrote
+// G_other in place, and the outer `range groups` loop then read the
+// overwritten slot and produced a changeset where G_other's storage
+// writes were silently dropped.
+//
+// The asserted invariant: every original address must appear in the
+// decoded output with ALL its slots, even when sandwiched after a group
+// that gets chunked. We also check total entry count equals the sum.
+func TestEncodeStorageChanges_ChunkDoesNotClobberNeighbors(t *testing.T) {
+	cs := changeset.NewStorageChangeSet()
+
+	// G0: 1 slot at addr 0x01..01
+	var addr0 types.Address
+	addr0[19] = 0x01
+	addr0Key := make([]byte, 52)
+	copy(addr0Key[:20], addr0[:])
+	addr0Key[51] = 0xAA
+	if err := cs.Add(addr0Key, []byte{0x10}); err != nil {
+		t.Fatalf("add G0: %v", err)
+	}
+
+	// G_big: 80000 slots at addr 0xf2..
+	var addrBig types.Address
+	addrBig[0] = 0xf2
+	addrBig[1] = 0x44
+	const bigSlots = 80000
+	for i := 0; i < bigSlots; i++ {
+		key := make([]byte, 52)
+		copy(key[:20], addrBig[:])
+		key[51] = byte(i)
+		key[50] = byte(i >> 8)
+		key[49] = byte(i >> 16)
+		if err := cs.Add(key, []byte{0x42}); err != nil {
+			t.Fatalf("add G_big %d: %v", i, err)
+		}
+	}
+
+	// G_other: 3 slots at addr 0xff..ff — lexicographically the LAST
+	// group, so it's the one that got overwritten by the G_big chunk
+	// expansion in the aliasing bug.
+	var addrOther types.Address
+	for i := range addrOther {
+		addrOther[i] = 0xFF
+	}
+	for i := 0; i < 3; i++ {
+		key := make([]byte, 52)
+		copy(key[:20], addrOther[:])
+		key[51] = byte(0xC0 + i)
+		if err := cs.Add(key, []byte{byte(0xA0 + i)}); err != nil {
+			t.Fatalf("add G_other %d: %v", i, err)
+		}
+	}
+
+	data := EncodeStorageChanges(cs, nil)
+	if data == nil {
+		t.Fatal("encode returned nil")
+	}
+	entries, err := DecodeStorageChanges(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	wantTotal := 1 + bigSlots + 3
+	if len(entries) != wantTotal {
+		t.Fatalf("total entries: got %d want %d (bug: G_other's slots were dropped)",
+			len(entries), wantTotal)
+	}
+
+	// Scan for G_other — must find all 3 slots at addrOther.
+	otherFound := 0
+	for _, e := range entries {
+		if len(e.CompositeKey) < 20 {
+			continue
+		}
+		var entryAddr types.Address
+		copy(entryAddr[:], e.CompositeKey[:20])
+		if entryAddr == addrOther {
+			otherFound++
+		}
+	}
+	if otherFound != 3 {
+		t.Fatalf("G_other slots found: %d want 3 — aliasing bug dropped G_other's entries",
+			otherFound)
+	}
+}

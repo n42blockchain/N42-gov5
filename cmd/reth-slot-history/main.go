@@ -1,0 +1,134 @@
+// reth-slot-history scans reth's StorageChangeSets for a specific
+// (addr, slot) pair across a block range and prints each matching entry.
+//
+// Reth layout:
+//   Table:  StorageChangeSets  DUPSORT
+//   Key:    28B = 8B BE block_number || 20B address
+//   Value:  variable: 32B slot || compact-encoded U256 (pre-block value)
+//
+// With --addr "" the scan matches on slot alone (any addr).
+package main
+
+import (
+	"context"
+	"encoding/binary"
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/c2h5oh/datasize"
+
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
+	log "github.com/n42blockchain/N42/lib/log/v3"
+)
+
+const tblStorCS = "StorageChangeSets"
+
+func tableCfg(defaults kv.TableCfg) kv.TableCfg {
+	defaults[tblStorCS] = kv.TableCfgItem{Flags: kv.DupSort}
+	return defaults
+}
+
+func main() {
+	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
+	fromBlock := flag.Uint64("from", 0, "start block (inclusive)")
+	toBlock := flag.Uint64("to", 0, "end block (inclusive, 0 = unbounded)")
+	addrHex := flag.String("addr", "", "20-byte address (hex, empty = any)")
+	slotHex := flag.String("slot", "", "32-byte slot (hex)")
+	flag.Parse()
+
+	var addr []byte
+	if *addrHex != "" {
+		a, err := hex.DecodeString(strings.TrimPrefix(*addrHex, "0x"))
+		if err != nil || len(a) != 20 {
+			fmt.Fprintln(os.Stderr, "bad addr:", err, "len:", len(a))
+			os.Exit(1)
+		}
+		addr = a
+	}
+	slot, err := hex.DecodeString(strings.TrimPrefix(*slotHex, "0x"))
+	if err != nil || len(slot) != 32 {
+		fmt.Fprintln(os.Stderr, "bad slot:", err, "len:", len(slot))
+		os.Exit(1)
+	}
+
+	logger := log.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(*dbPath).
+		Label(kv.ChainDB).
+		PageSize(4096).
+		MapSize(4 * datasize.TB).
+		Readonly().
+		WithTableCfg(tableCfg).
+		Open(context.Background())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open:", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tx:", err)
+		os.Exit(1)
+	}
+	defer tx.Rollback()
+
+	cursor, err := tx.Cursor(tblStorCS)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cursor:", err)
+		os.Exit(1)
+	}
+	defer cursor.Close()
+
+	// Seek by block (addr-agnostic so "any addr" works).
+	seekKey := make([]byte, 8)
+	binary.BigEndian.PutUint64(seekKey, *fromBlock)
+
+	fmt.Printf("scanning reth [%d, %d] addr=%s slot=%x\n", *fromBlock, *toBlock, *addrHex, slot)
+	matches := 0
+	var scanned int
+	for k, v, err := cursor.Seek(seekKey); k != nil; k, v, err = cursor.Next() {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "iter:", err)
+			os.Exit(1)
+		}
+		scanned++
+		if len(k) < 28 || len(v) < 32 {
+			continue
+		}
+		blk := binary.BigEndian.Uint64(k[:8])
+		if *toBlock > 0 && blk > *toBlock {
+			break
+		}
+		if addr != nil && string(k[8:28]) != string(addr) {
+			continue
+		}
+		if string(v[:32]) != string(slot) {
+			continue
+		}
+		// Decode compact value (LE u256 without leading zero bytes).
+		var preHex string
+		if len(v) > 32 {
+			raw := v[32:]
+			// reverse to BE
+			be := make([]byte, len(raw))
+			for i := 0; i < len(raw); i++ {
+				be[i] = raw[len(raw)-1-i]
+			}
+			preHex = hex.EncodeToString(be)
+			preHex = strings.TrimLeft(preHex, "0")
+			if preHex == "" {
+				preHex = "0"
+			}
+		} else {
+			preHex = "0"
+		}
+		fmt.Printf("blk=%d addr=%x preVal=0x%s (raw v=%x)\n", blk, k[8:28], preHex, v)
+		matches++
+	}
+	fmt.Printf("done: %d match(es), %d rows scanned\n", matches, scanned)
+}

@@ -18,6 +18,7 @@
 package state
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 	"unsafe"
@@ -36,6 +37,24 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 )
+
+// sortedAddresses returns the keys of the given map in lexicographic order.
+// Used anywhere map iteration feeds into operations that touch the state
+// reader (e.g., getStateObject, updateAccountWithWipe → updateTrie), so the
+// observed read sequence — and therefore the block witness stream — stays
+// deterministic across runs. Without sorting, Go's randomized map iteration
+// produces witness bytes that differ between runs of the same block, which
+// breaks witness-based replay and bit-for-bit reproducibility.
+func sortedAddresses[V any](m map[types.Address]V) []types.Address {
+	addrs := make([]types.Address, 0, len(m))
+	for addr := range m {
+		addrs = append(addrs, addr)
+	}
+	sort.Slice(addrs, func(i, j int) bool {
+		return bytes.Compare(addrs[i][:], addrs[j][:]) < 0
+	})
+	return addrs
+}
 
 // Compile-time check: IntraBlockState must implement common.StateDB
 // This ensures that IntraBlockState has all methods required by the EVM.
@@ -758,7 +777,10 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 
 	if contractCreation {
 		newObj.created = true
-		sdb.storageWipes[addr] = struct{}{}
+		if _, already := sdb.storageWipes[addr]; !already {
+			sdb.journal.append(storageWipeAddChange{account: &addr})
+			sdb.storageWipes[addr] = struct{}{}
+		}
 	} else {
 		newObj.selfdestructed = false
 	}
@@ -890,12 +912,17 @@ func printAccount(addr types.Address, stateObject *stateObject, isDirty bool) {
 // FinalizeTx should be called after every transaction.
 func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter StateWriter) error {
 	policy := newAccountWritePolicy(chainRules)
-	for addr, bi := range sdb.balanceInc {
-		if !bi.transferred {
+	// Sort addresses before iteration. getStateObject falls through to
+	// sdb.stateReader.ReadAccountData when the object isn't cached, and
+	// the reader here is the block-witness recorder (ethel). Map-order
+	// iteration would produce witness byte streams that differ between
+	// runs of the same block.
+	for _, addr := range sortedAddresses(sdb.balanceInc) {
+		if bi := sdb.balanceInc[addr]; !bi.transferred {
 			sdb.getStateObject(addr)
 		}
 	}
-	for addr := range sdb.journal.dirties {
+	for _, addr := range sortedAddresses(sdb.journal.dirties) {
 		so, exist := sdb.stateObjects[addr]
 		if !exist {
 			continue
@@ -943,8 +970,11 @@ func (sdb *IntraBlockState) promoteWipes() {
 // CommitBlock finalizes the state by removing the self destructed objects
 // and clears the journal as well as the refunds.
 func (sdb *IntraBlockState) CommitBlock(chainRules *params.Rules, stateWriter StateWriter) error {
-	for addr, bi := range sdb.balanceInc {
-		if !bi.transferred {
+	// Sorted iteration: see note on FinalizeTx — getStateObject can read
+	// through the block-witness recorder, so iteration order is visible
+	// in the witness stream.
+	for _, addr := range sortedAddresses(sdb.balanceInc) {
+		if bi := sdb.balanceInc[addr]; !bi.transferred {
 			sdb.getStateObject(addr)
 		}
 	}
@@ -963,10 +993,16 @@ func (sdb *IntraBlockState) BalanceIncreaseSet() map[types.Address]uint256.Int {
 
 func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter StateWriter) error {
 	policy := newAccountWritePolicy(chainRules)
+	// The first loop only populates the stateObjectsDirty set and doesn't
+	// read state; iteration order here is irrelevant. The second loop
+	// calls updateAccountWithWipe → stateObject.updateTrie(stateWriter),
+	// which can trigger storage reads through the block-witness recorder,
+	// so its order MUST be deterministic.
 	for addr := range sdb.journal.dirties {
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
-	for addr, stateObject := range sdb.stateObjects {
+	for _, addr := range sortedAddresses(sdb.stateObjects) {
+		stateObject := sdb.stateObjects[addr]
 		_, isDirty := sdb.stateObjectsDirty[addr]
 		_, needsWipe := sdb.storageWipes[addr]
 		if err := updateAccountWithWipe(policy, stateWriter, addr, stateObject, isDirty, needsWipe); err != nil {
@@ -1298,7 +1334,10 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 	})
 	stateObject.markSelfdestructed()
 	stateObject.data.Balance.Clear()
-	sdb.storageWipes[addr] = struct{}{}
+	if _, already := sdb.storageWipes[addr]; !already {
+		sdb.journal.append(storageWipeAddChange{account: &addr})
+		sdb.storageWipes[addr] = struct{}{}
+	}
 	return true
 }
 
