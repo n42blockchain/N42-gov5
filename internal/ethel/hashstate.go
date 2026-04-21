@@ -99,6 +99,112 @@ func FullStateRootVerify(tx kv.RwTx) (types.Hash, error) {
 	return root, nil
 }
 
+// BootstrapHPH populates all four HPH tables (HashedAccounts, HashedStorage,
+// TrieOfAccounts, TrieOfStorage) from plain state. Unlike FullStateRootVerify
+// which discards intermediate nodes after computing the root, this variant
+// PERSISTS TrieOf* so that subsequent per-block calls can skip unchanged
+// subtrees and run in O(dirty).
+//
+// Cost: one full MPT rebuild — ~5-10 minutes at the 10M-block scale.
+// Return value: the computed state root (same as FullStateRootVerify would).
+//
+// Call this after rebuild-state reaches a checkpoint to create a fully
+// bootstrapped HPH datadir usable by TrieRootComputer in incremental mode
+// (e.g. ethexec verify-incremental).
+func BootstrapHPH(tx kv.RwTx) (types.Hash, error) {
+	// Clear hashed/trie tables so result is reproducible.
+	for _, tbl := range []string{kv.HashedAccounts, kv.HashedStorage, kv.TrieOfAccounts, kv.TrieOfStorage} {
+		if err := tx.ClearBucket(tbl); err != nil {
+			return types.Hash{}, fmt.Errorf("clear %s: %w", tbl, err)
+		}
+	}
+
+	// Re-hash all accounts / storage from PlainState.
+	if err := hashAllAccounts(tx); err != nil {
+		return types.Hash{}, err
+	}
+	if err := hashAllStorage(tx); err != nil {
+		return types.Hash{}, err
+	}
+
+	// Collect intermediate hashes and write them to TrieOf* at the end
+	// (avoid cursor read/write conflict during CalcTrieRoot).
+	type kvPair struct{ k, v []byte }
+	var accTrie []kvPair
+	var storTrie []kvPair
+
+	accCollector := func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		if len(keyHex) == 0 {
+			return nil
+		}
+		k := append([]byte{}, keyHex...)
+		if hasState == 0 {
+			accTrie = append(accTrie, kvPair{k, nil})
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		accTrie = append(accTrie, kvPair{k, append([]byte{}, v...)})
+		return nil
+	}
+	storCollector := func(accWithInc []byte, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		k := append(append(make([]byte, 0, len(accWithInc)+len(keyHex)), accWithInc...), keyHex...)
+		if len(k) == 0 {
+			return nil
+		}
+		if hasState == 0 {
+			storTrie = append(storTrie, kvPair{k, nil})
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		storTrie = append(storTrie, kvPair{k, append([]byte{}, v...)})
+		return nil
+	}
+
+	loader := trie.NewFlatDBTrieLoader("bootstrap-hph", trie.NewRetainList(0), accCollector, storCollector, false)
+	root, err := loader.CalcTrieRoot(tx, nil)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("CalcTrieRoot: %w", err)
+	}
+
+	// Flush collected intermediate nodes to TrieOf*.
+	for _, kv := range accTrie {
+		if kv.v == nil {
+			_ = tx.Delete("TrieAccount", kv.k)
+		} else {
+			if err := tx.Put("TrieAccount", kv.k, kv.v); err != nil {
+				return types.Hash{}, err
+			}
+		}
+	}
+	for _, kv := range storTrie {
+		if kv.v == nil {
+			_ = tx.Delete("TrieStorage", kv.k)
+		} else {
+			if err := tx.Put("TrieStorage", kv.k, kv.v); err != nil {
+				return types.Hash{}, err
+			}
+		}
+	}
+	return root, nil
+}
+
+// IsHPHBootstrapped reports whether a datadir has TrieOfAccounts populated
+// and so can be used by TrieRootComputer in incremental mode.
+func IsHPHBootstrapped(tx kv.Tx) (bool, error) {
+	c, err := tx.Cursor("TrieAccount")
+	if err != nil {
+		return false, err
+	}
+	defer c.Close()
+	k, _, err := c.First()
+	if err != nil {
+		return false, err
+	}
+	return k != nil, nil
+}
+
 func hashAllAccounts(tx kv.RwTx) error {
 	cursor, err := tx.Cursor("Account")
 	if err != nil {

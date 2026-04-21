@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/holiman/uint256"
 
@@ -216,6 +217,15 @@ func gasSStoreEIP2200(evm VMInterpreter, contract *Contract, stack *stack.Stack,
 	evm.IntraBlockState().GetState(contract.Address(), &key, &current)
 
 	if current.Eq(value) { // noop (1)
+		if dbgSStore15K && evm.Context().BlockNumber == dbgSStoreBlock {
+			ti := -1
+			if ibs, ok := evm.IntraBlockState().(interface{ TxIndex() int }); ok {
+				ti = ibs.TxIndex()
+			}
+			addr := contract.Address()
+			fmt.Fprintf(os.Stderr, "SSTORE bn=%d ti=%d addr=%x slot=%x orig=? cur=%s val=%s path=NOOP\n",
+				dbgSStoreBlock, ti, addr[:], key, current.Hex(), value.Hex())
+		}
 		return params.SloadGasEIP2200, nil
 	}
 
@@ -223,7 +233,7 @@ func gasSStoreEIP2200(evm VMInterpreter, contract *Contract, stack *stack.Stack,
 	evm.IntraBlockState().GetCommittedState(contract.Address(), &key, &original)
 
 	// Env-gated trace for debugging 15K SSTORE diffs on MEV bots.
-	if dbgSStore15K {
+	if dbgSStore15K && evm.Context().BlockNumber == dbgSStoreBlock {
 		addr := contract.Address()
 		var path string
 		if original == current {
@@ -246,8 +256,8 @@ func gasSStoreEIP2200(evm VMInterpreter, contract *Contract, stack *stack.Stack,
 		if ibs, ok := evm.IntraBlockState().(interface{ TxIndex() int }); ok {
 			ti = ibs.TxIndex()
 		}
-		fmt.Fprintf(os.Stderr, "SSTORE ti=%d addr=%x slot=%x orig=%s cur=%s val=%s path=%s\n",
-			ti, addr[:], key, original.Hex(), current.Hex(), value.Hex(), path)
+		fmt.Fprintf(os.Stderr, "SSTORE bn=%d ti=%d addr=%x slot=%x orig=%s cur=%s val=%s path=%s\n",
+			evm.Context().BlockNumber, ti, addr[:], key, original.Hex(), current.Hex(), value.Hex(), path)
 	}
 
 	if original == current {
@@ -276,10 +286,18 @@ func gasSStoreEIP2200(evm VMInterpreter, contract *Contract, stack *stack.Stack,
 	return params.SloadGasEIP2200, nil // dirty update (2.2)
 }
 
-// dbgSStore15K enables per-SSTORE trace on stderr. Activate with:
-//   DBG_SSTORE=1 ethexec ...
+// dbgSStore15K enables per-SSTORE trace on stderr for a single block.
+//   DBG_SSTORE=10571046 ethexec ...
 // Produces one line per non-noop SSTORE with path/orig/cur/val.
 var dbgSStore15K = os.Getenv("DBG_SSTORE") != ""
+var dbgSStoreBlock uint64 = func() uint64 {
+	v := os.Getenv("DBG_SSTORE")
+	if v == "" {
+		return 0
+	}
+	n, _ := strconv.ParseUint(v, 10, 64)
+	return n
+}()
 
 func makeGasLog(n uint64) gasFunc {
 	return func(_ VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {

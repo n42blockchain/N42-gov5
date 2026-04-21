@@ -52,6 +52,7 @@ func VerifyStateRoot(tx kv.Tx) (types.Hash, error) {
 
 	stoK, stoV, stoErr := stoCursor.First()
 
+	var acctCount, stoSlotCount uint64
 	for k, v, err := accCursor.First(); k != nil; k, v, err = accCursor.Next() {
 		if err != nil {
 			return types.Hash{}, err
@@ -60,6 +61,7 @@ func VerifyStateRoot(tx kv.Tx) (types.Hash, error) {
 			continue
 		}
 
+		acctCount++
 		var acc account.StateAccount
 		if err := acc.DecodeForStorage(v); err != nil {
 			return types.Hash{}, err
@@ -84,6 +86,7 @@ func VerifyStateRoot(tx kv.Tx) (types.Hash, error) {
 				break
 			}
 			if len(stoK) >= types.AddressLength+32 && len(stoV) > 0 {
+				stoSlotCount++
 				slotHash := crypto.Keccak256(stoK[types.AddressLength : types.AddressLength+32])
 				valRLP, _ := rlp.EncodeToBytes(stoV)
 				storageTrie.Update(slotHash, valRLP)
@@ -126,6 +129,11 @@ func VerifyStateRoot(tx kv.Tx) (types.Hash, error) {
 					i, a.Nonce, a.Balance.String(), a.CodeHash[:4])
 			}
 		}
+	}
+
+	if os.Getenv("DUMP_STATE_STATS") == "1" {
+		fmt.Fprintf(os.Stderr, "STATE_STATS accts=%d stoSlots=%d root=%s\n",
+			acctCount, stoSlotCount, root.Hex())
 	}
 
 	return root, nil

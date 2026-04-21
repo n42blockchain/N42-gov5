@@ -59,6 +59,7 @@ type MdbxOpts struct {
 	pageSize        uint64
 	dirtySpace      uint64 // if exeed this space, modified pages will `spill` to disk
 	mergeThreshold  uint64
+	rpAugmentLimit  uint64 // 0 = leave MDBX default
 	verbosity       kv.DBVerbosityLvl
 	label           kv.Label // marker to distinct db instances - one process may open many databases. for example to collect metrics of only 1 database
 	inMem           bool
@@ -183,8 +184,28 @@ func (opts MdbxOpts) WriteMap() MdbxOpts {
 	opts.flags |= mdbx.WriteMap
 	return opts
 }
+
+// SafeNoSync disables the fsync on every MDBX commit — the kernel owns
+// page writeback. On crash the DB rolls back to the last implicit sync
+// (steady-state checkpoint), which can lose a handful of recent commits.
+// Safe for historical re-execution: the ethel progress marker is written
+// inside the same RwTx as the state, so on resume we restart from the
+// last durable commit with no torn state. Gives a measurable throughput
+// win on write-heavy pipelines (reth's default).
+func (opts MdbxOpts) SafeNoSync() MdbxOpts {
+	opts.flags |= mdbx.SafeNoSync
+	return opts
+}
 func (opts MdbxOpts) LifoReclaim() MdbxOpts {
 	opts.flags |= mdbx.LifoReclaim
+	return opts
+}
+
+// RpAugmentLimit caps the reclaimed-list search depth (in pages). A bounded
+// value avoids long GC pauses on large databases. Reth fixes this at 256*1024.
+// Pass 0 to keep MDBX's default (size-dependent).
+func (opts MdbxOpts) RpAugmentLimit(v uint64) MdbxOpts {
+	opts.rpAugmentLimit = v
 	return opts
 }
 
@@ -353,6 +374,12 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 		// which corresponds to the range from 8192 and to 32768 in units respectively
 		if err = env.SetOption(mdbx.OptMergeThreshold16dot16Percent, opts.mergeThreshold); err != nil {
 			return nil, err
+		}
+
+		if opts.rpAugmentLimit > 0 {
+			if err = env.SetOption(mdbx.OptRpAugmentLimit, opts.rpAugmentLimit); err != nil {
+				return nil, err
+			}
 		}
 	}
 

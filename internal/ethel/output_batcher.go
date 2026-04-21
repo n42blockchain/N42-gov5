@@ -99,6 +99,12 @@ func (b *outputBatcher) remainder() map[string][]byte {
 // preloadRemainder restores entries saved by a prior run to MDBX.
 // These entries fill the gap between cdat (on disk) and MDBX progress.
 // After loading, flushFullBatches at the next commit writes them to cdat.
+//
+// NOTE: Do NOT touch b.nextItem here. alignOnResume has already pinned it
+// to the correct batch-aligned startBlock for ALL tables. Setting nextItem
+// to a single table's existingItems inside this per-table loop breaks the
+// shared-counter invariant and causes addEntry to silently drop entries
+// for any table whose existingItems exceeds the overwritten value.
 func (b *outputBatcher) preloadRemainder(data map[string][]byte) {
 	for name, blob := range data {
 		tb := b.tables[name]
@@ -122,9 +128,6 @@ func (b *outputBatcher) preloadRemainder(data map[string][]byte) {
 		}
 		if len(entries) > 0 {
 			tb.entries = entries
-			// nextItem = existingItems (cdat on disk) — the preloaded
-			// entries fill [existingItems, existingItems+len(entries)).
-			b.nextItem = tb.existingItems
 			log.Info("Preloaded saved entries",
 				"table", name, "count", len(entries),
 				"cdatItems", tb.existingItems,
@@ -147,8 +150,13 @@ func (b *outputBatcher) sync() error {
 }
 
 // addEntry adds one block's data for a table.
-// For tables that already have data at this position, the entry is silently
-// dropped to avoid accumulating memory that will never be written.
+//
+// Invariant: b.nextItem + pendingCount must be >= tb.existingItems for every
+// table. Violating this means the shared counter is out of sync with the
+// table's on-disk state — the entry can't be positioned correctly and
+// silently dropping it would corrupt the freezer (cdat stops growing while
+// cidx/MDBX think items are accumulating). We fail loud instead so the
+// operator can reset state before more data is lost.
 func (b *outputBatcher) addEntry(name, ext string, data []byte) error {
 	tb, ok := b.tables[name]
 	if !ok {
@@ -166,11 +174,13 @@ func (b *outputBatcher) addEntry(name, ext string, data []byte) error {
 		b.order = append(b.order, name)
 	}
 
-	// Don't accumulate entries that will be skipped — avoids wasting memory
-	// when millions of blocks are already present (e.g. receipts/senders).
 	itemIdx := b.nextItem + uint64(b.pendingCount())
 	if itemIdx < tb.existingItems {
-		return nil
+		return fmt.Errorf("output batcher: %s addEntry misaligned "+
+			"(nextItem=%d + pending=%d = %d < existingItems=%d); "+
+			"resume lost the shared counter — delete output freezer or "+
+			"reset progress to a common batch boundary",
+			name, b.nextItem, b.pendingCount(), itemIdx, tb.existingItems)
 	}
 	tb.entries = append(tb.entries, data)
 	return nil
@@ -374,8 +384,18 @@ func (b *outputBatcher) alignOnResume(startBlock uint64, hasRemainder bool) erro
 
 		// Align table to startBlock.
 		if items > startBlock {
-			log.Info("Truncating table to startBlock",
-				"table", name, "items", items, "startBlock", startBlock)
+			// Freezer ran ahead of MDBX. Almost always means last run's
+			// MDBX commit failed after the cdat flush — the freezer saw
+			// data that MDBX never durably committed. We truncate the
+			// orphaned tail so freezer and MDBX agree again. Surface this
+			// loudly so the operator understands why the apparent work
+			// count regressed on restart.
+			discarded := items - startBlock
+			log.Warn("DISCARDING freezer tail — cdat ahead of MDBX (prior commit likely failed mid-pipeline)",
+				"table", name,
+				"freezerItems", items,
+				"mdbxProgress", startBlock,
+				"discardedBlocks", discarded)
 			if err := tbl.TruncateHead(startBlock); err != nil {
 				return fmt.Errorf("truncate %s: %w", name, err)
 			}
@@ -383,11 +403,20 @@ func (b *outputBatcher) alignOnResume(startBlock uint64, hasRemainder bool) erro
 		}
 		if items < startBlock {
 			gap := startBlock - items
-			if hasRemainder {
+			if hasRemainder && gap <= uint64(freezer.BatchSize) {
 				// MDBX has saved entries that cover this gap. They'll
 				// be written to cdat by preloadRemainder after this loop.
+				// Gap > BatchSize cannot be covered by remainder (capped at
+				// BatchSize-1 by design) — fall through to the error path.
 				log.Info("Output behind MDBX (covered by saved entries)",
 					"table", name, "items", items, "startBlock", startBlock, "gap", gap)
+			} else if !hasRemainder && gap <= uint64(freezer.BatchSize) {
+				log.Warn("Output behind MDBX — padding with empty entries",
+					"table", name, "items", items, "startBlock", startBlock, "gap", gap)
+				if err := padTableTo(tbl, startBlock, b.enc); err != nil {
+					return fmt.Errorf("pad %s: %w", name, err)
+				}
+				items = tbl.Items() // refresh after padding
 			} else {
 				return fmt.Errorf("output table %s has %d items but MDBX starts at block %d (gap %d); "+
 					"changesets lost during shutdown — delete output freezer and re-run",

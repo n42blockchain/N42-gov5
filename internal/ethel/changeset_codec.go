@@ -148,8 +148,17 @@ func EncodeStorageChanges(cs *changeset.ChangeSet, newValueOf StorageNewValueFn)
 	// every downstream slot parse. Decoder just appends entries in order and
 	// downstream consumers (rebuild_state, reorg) process each (addr,slot)
 	// pair independently, so duplicate addr entries merge naturally.
+	//
+	// CRITICAL: allocate chunked into a FRESH backing array. The earlier
+	// version did `chunked := groups; chunked = chunked[:0]` which aliased
+	// the groups backing store, and `append(chunked, ...)` during chunking
+	// overwrote groups[i+1] before the outer `range groups` loop read it.
+	// Concretely for a block with [G0, G1, G_SD(84K), G_other], the chunk
+	// expansion of G_SD clobbered G_other so G_other's storage writes were
+	// silently dropped from the changeset — producing structurally valid
+	// entries that still miss work, with the symptom surfacing as a state
+	// root mismatch up to 1M blocks downstream.
 	const maxGroupSlots = 65535
-	chunked := groups
 	needsChunk := false
 	for _, g := range groups {
 		if len(g.slots) > maxGroupSlots {
@@ -158,7 +167,7 @@ func EncodeStorageChanges(cs *changeset.ChangeSet, newValueOf StorageNewValueFn)
 		}
 	}
 	if needsChunk {
-		chunked = chunked[:0]
+		chunked := make([]addrGroup, 0, len(groups)+2)
 		for _, g := range groups {
 			if len(g.slots) <= maxGroupSlots {
 				chunked = append(chunked, g)
@@ -172,8 +181,8 @@ func EncodeStorageChanges(cs *changeset.ChangeSet, newValueOf StorageNewValueFn)
 				chunked = append(chunked, addrGroup{addr: g.addr, slots: g.slots[start:end]})
 			}
 		}
+		groups = chunked
 	}
-	groups = chunked
 
 	buf := make([]byte, 0, 2+len(groups)*24+cs.Len()*68)
 	if len(groups) > 65535 {

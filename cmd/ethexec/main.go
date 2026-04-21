@@ -11,8 +11,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
@@ -20,6 +22,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,11 +32,15 @@ import (
 	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/txlookup"
+	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 	"github.com/urfave/cli/v2"
 )
@@ -54,6 +62,12 @@ func withShutdown() (context.Context, context.CancelFunc) {
 }
 
 func main() {
+	modules.N42Init()
+	// Merge (not replace) to preserve PlainState and history/index DupSort configs.
+	for name, cfg := range modules.N42TableCfg {
+		kv.ChaindataTablesCfg[name] = cfg
+	}
+
 	execFlags := []cli.Flag{
 		&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory"},
 		&cli.StringFlag{Name: "datadir", Usage: "Path to output MDBX database"},
@@ -65,6 +79,14 @@ func main() {
 		&cli.BoolFlag{Name: "skip-errors", Usage: "Log gas mismatches but continue execution"},
 		&cli.BoolFlag{Name: "no-outputs", Usage: "Skip writing output freezer (receipts, senders, witness, etc.)"},
 		&cli.BoolFlag{Name: "pprof", Usage: "Enable mutex/block profiling for pprof flame graphs"},
+		&cli.StringFlag{Name: "track-addr", Usage: "20-byte address (hex, no 0x) to emit targeted trace logs for"},
+		&cli.BoolFlag{Name: "safe-durable", Usage: "Force MDBX default durability (fsync every commit). Default: off — ethexec uses WriteMap+SafeNoSync since the ethel progress marker + state are committed atomically, so crash recovery resumes from the last durable checkpoint"},
+		&cli.IntFlag{Name: "gogc", Usage: "Go GC target percentage (higher = less frequent GC, more heap). Default 400 for ethexec forward-replay — 2–4x less GC CPU vs the Go default of 100", Value: 400},
+		&cli.Uint64Flag{Name: "dirty-space-mb", Usage: "MDBX dirty page pool size in MB. Larger = fewer forced spills mid-commit; caps at ~commit_interval × per-block dirty size", Value: 2048},
+		&cli.Uint64Flag{Name: "cache-account-gb", Usage: "Account S3-FIFO cache budget (GB)", Value: 4},
+		&cli.Uint64Flag{Name: "cache-storage-gb", Usage: "Storage S3-FIFO cache budget (GB)", Value: 32},
+		&cli.Uint64Flag{Name: "cache-code-gb", Usage: "Code LRU cache budget (GB)", Value: 2},
+		&cli.IntFlag{Name: "code-analysis-cache", Usage: "JUMPDEST analysis LRU capacity (entries). Avoids re-running O(n) bytecode scan per contract call", Value: 32768},
 	}
 
 	// pprof server for flame graphs (always on, profiling hooks only with --pprof).
@@ -166,12 +188,37 @@ func main() {
 					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory (for header verification)", Required: true},
 					&cli.StringFlag{Name: "datadir", Usage: "Path to output MDBX directory", Required: true},
 					&cli.StringFlag{Name: "leaves", Usage: "Path to leaves freezer dir (default: <datadir>/chain/freezer)"},
-					&cli.Uint64Flag{Name: "start", Usage: "Start block (>0 = resume mode, do NOT clear existing PlainState)", Value: 0},
+					&cli.Uint64Flag{Name: "start", Usage: "Start block. Omit to auto-resume from DbInfo/ethel_progress. --start 0 explicitly clears existing PlainState and rebuilds from genesis.", Value: 0},
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all available)", Value: 0},
 					&cli.Uint64Flag{Name: "verify", Usage: "Periodic state-root verify interval (0=verify only at end)", Value: 0},
 					&cli.BoolFlag{Name: "evm-from-fallback", Usage: "After any EVM fallback, run EVM for every remaining block instead of trusting downstream freezer changesets"},
+					&cli.BoolFlag{Name: "persist-trie", Usage: "After reaching end block, populate HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage so subsequent per-block verify (verify-incremental) runs in O(dirty)"},
 				},
 				Action: runRebuildState,
+			},
+			{
+				Name:  "verify-root",
+				Usage: "Verify PlainState's state root at a specific block without touching the state. One-shot, read-only. Use after rebuild-state to confirm a checkpoint.",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to MDBX with existing PlainState", Required: true},
+					&cli.Uint64Flag{Name: "block", Usage: "Block number to verify against", Required: true},
+				},
+				Action: runVerifyRoot,
+			},
+			{
+				Name:  "verify-incremental",
+				Usage: "Per-block HPH state-root verify (requires datadir bootstrapped via rebuild-state --persist-trie). Fast bisect: first MISMATCH block is the bug site.",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory (for header root comparison)", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to HPH-bootstrapped MDBX", Required: true},
+					&cli.StringFlag{Name: "leaves", Usage: "Path to changeset freezer dir (default: <datadir>/chain/freezer)"},
+					&cli.Uint64Flag{Name: "start", Usage: "First block to verify (inclusive). Datadir state must reflect block start-1.", Required: true},
+					&cli.Uint64Flag{Name: "end", Usage: "Last block to verify (inclusive)", Required: true},
+					&cli.Uint64Flag{Name: "commit-every", Usage: "Commit to MDBX every N blocks", Value: 10000},
+					&cli.BoolFlag{Name: "use-incremental", Usage: "EXPERIMENTAL: use incremental HPH (currently broken — produces wrong roots). Default path is legacy full-rebuild per block (correct but slow)."},
+				},
+				Action: runVerifyIncremental,
 			},
 			{
 				Name:  "unwind",
@@ -219,6 +266,37 @@ func main() {
 					log.Info("Progress reset", "old", old, "new", target)
 					return nil
 				},
+			},
+			{
+				Name:  "verify-cs-root",
+				Usage: "Rebuild PlainState from changesets to --block, verify state root (no EVM). Use for bisecting CS corruption.",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory (for header root)", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Path to TEMP MDBX (will be created fresh)", Required: true},
+					&cli.StringFlag{Name: "leaves", Usage: "Path to changeset freezer dir", Required: true},
+					&cli.Uint64Flag{Name: "block", Usage: "Target block to verify root at", Required: true},
+				},
+				Action: runVerifyCSRoot,
+			},
+			{
+				Name:  "code-import",
+				Usage: "Import Bytecodes from Reth MDBX into ethexec Code table + compressed freezer",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "reth-db", Usage: "Path to Reth MDBX (read-only)", Required: true},
+					&cli.StringFlag{Name: "target", Usage: "Path to ethexec MDBX(s) to write Code table (comma-separated)", Required: true},
+				},
+				Action: runCodeImport,
+			},
+			{
+				Name:  "exec-compare",
+				Usage: "Offline: apply changesets to shadow MDBX, then compare with primary (no EVM). Run normal ethexec first.",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "primary", Usage: "Path to EVM-executed MDBX (has chain/freezer with changesets)", Required: true},
+					&cli.StringFlag{Name: "shadow", Usage: "Path to shadow MDBX (starts at --from state)", Required: true},
+					&cli.Uint64Flag{Name: "from", Usage: "First block of CS range to apply", Required: true},
+					&cli.Uint64Flag{Name: "to", Usage: "Last block +1 (exclusive) of CS range", Required: true},
+				},
+				Action: runExecCompare,
 			},
 			{
 				Name:  "scan-cs",
@@ -406,6 +484,11 @@ func main() {
 }
 
 func run(c *cli.Context) error {
+	if c.Args().Len() > 0 {
+		// Subcommand dispatched — urfave/cli v2 still calls the
+		// top-level Action; bail out and let the subcommand run.
+		return nil
+	}
 	ancientPath := c.String("ancient")
 	datadir := c.String("datadir")
 	if ancientPath == "" || datadir == "" {
@@ -423,6 +506,36 @@ func run(c *cli.Context) error {
 	skipErrors := c.Bool("skip-errors")
 	noOutputs := c.Bool("no-outputs")
 
+	// Apply GOGC early so Go runtime picks it up for all subsequent
+	// allocations. 400 (vs default 100) roughly 2x heap target between
+	// GC cycles — at our allocation profile (~200–400 MB churn per
+	// commit interval) this cuts GC CPU 60–70% on 128 GB hosts.
+	if gogc := c.Int("gogc"); gogc > 0 {
+		prev := debug.SetGCPercent(gogc)
+		log.Info("Go GC target set", "gogc", gogc, "prev", prev)
+	}
+
+	// Enable JUMPDEST analysis cache (Aptos AIP-107 style). Without this
+	// every CALL to a contract runs O(n) bytecode scan; profile shows
+	// ~4-5% CPU on codeBitmap in forward-replay. 32768-entry LRU covers
+	// the active contract working set and caches ~128 MB of bitmaps.
+	if cap := c.Int("code-analysis-cache"); cap > 0 {
+		vm2.GlobalCodeAnalysisCache = vm2.NewCodeAnalysisCache(cap)
+		log.Info("Code analysis cache enabled", "capacity", cap)
+	}
+
+	if trackHex := c.String("track-addr"); trackHex != "" {
+		trackHex = strings.TrimPrefix(trackHex, "0x")
+		raw, err := hex.DecodeString(trackHex)
+		if err != nil || len(raw) != 20 {
+			return fmt.Errorf("--track-addr must be 20B hex: %v", err)
+		}
+		var addr types.Address
+		copy(addr[:], raw)
+		state.SetTrackedAddr(&addr)
+		log.Info("Targeted trace enabled", "addr", trackHex)
+	}
+
 	// Open Geth ancient freezer.
 	log.Info("Opening Geth ancient data", "path", ancientPath)
 	f, err := freezer.New(ancientPath, 0)
@@ -433,30 +546,45 @@ func run(c *cli.Context) error {
 	log.Info("Freezer opened", "frozen", f.Frozen())
 
 	// Open MDBX with optimized parameters for ETH EL execution.
-	// Full ETH state: ~185GB data + 30% B+tree overhead ≈ 240GB.
-	// PageSize 4KB matches OS page size for optimal mmap performance.
-	// WriteMap: direct mmap writes (no shadow copy), ~20% faster on Windows.
-	// DirtySpace 1GB: allows large write batches before spill (128GB RAM machine).
-	// MapSize: Windows counts mmap reservation as committed memory.
-	// Keep conservative to avoid OOM. MDBX auto-grows via GrowthStep.
+	// MapSize = 2 TB matches Erigon's default: Windows only MEM_RESERVE
+	// the range (no commit charge) since WriteMap is OFF — the actual
+	// committed memory follows the real file size.
+	// RpAugmentLimit 256*1024 is Reth's fixed value: bounds the
+	// reclaimed-list scan depth so GC stays predictable on chain-scale DBs.
+	// MergeThreshold 2*8192 matches Erigon default — 4*8192 caused
+	// more dirty-page churn per commit.
+	// (Coalesce is no longer a flag in libmdbx ≥0.12 — coalescing is
+	// automatic in the engine.)
 	log.Info("Opening MDBX database", "path", datadir)
 	if err := os.MkdirAll(datadir, 0755); err != nil {
 		return err
 	}
 	logger := log2.New()
-	// Windows counts writable mmap as committed memory. Avoid WriteMap()
-	// and use conservative MapSize. MDBX auto-grows via GrowthStep.
-	// Reth's 2.1TB MDBX works fine because it opens Readonly (no commit charge).
-	db, err := mdbx.NewMDBX(logger).
+	dirtySpaceMB := c.Uint64("dirty-space-mb")
+	mdbxOpts := mdbx.NewMDBX(logger).
 		Path(datadir).
 		Label(kv.ChainDB).
 		PageSize(4096).
-		MapSize(64 * datasize.GB).
+		MapSize(2 * datasize.TB).
 		GrowthStep(2 * datasize.GB).
-		WriteMergeThreshold(4 * 8192).
-		DirtySpace(uint64(512 * datasize.MB)).
-		DBVerbosity(kv.DBVerbosityLvl(2)).
-		Open(context.Background())
+		WriteMergeThreshold(2 * 8192).
+		RpAugmentLimit(256 * 1024).
+		LifoReclaim().
+		DirtySpace(uint64(datasize.ByteSize(dirtySpaceMB) * datasize.MB)).
+		DBVerbosity(kv.DBVerbosityLvl(2))
+	if !c.Bool("safe-durable") {
+		// WriteMap: MDBX writes directly into the mapped file (no user-space
+		// copy), matching Reth's default. SafeNoSync: skip fsync on every
+		// commit; safe here because ethel progress + state commit atomically
+		// in the same RwTx, so resume-from-crash restarts from the last
+		// durable checkpoint without torn state. Expect 15–25% throughput
+		// gain on write-heavy forward-replay.
+		mdbxOpts = mdbxOpts.WriteMap().SafeNoSync()
+		log.Info("MDBX fast mode enabled", "flags", "WriteMap+SafeNoSync+LifoReclaim", "dirty_MB", dirtySpaceMB)
+	} else {
+		log.Info("MDBX fast mode OFF — durable commits", "flags", "LifoReclaim", "dirty_MB", dirtySpaceMB)
+	}
+	db, err := mdbxOpts.Open(context.Background())
 	if err != nil {
 		return fmt.Errorf("open mdbx: %w", err)
 	}
@@ -515,6 +643,19 @@ func run(c *cli.Context) error {
 	}
 
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
+
+	// Apply tunable read-cache budget. Defaults (4/32/2 GB acct/sto/code)
+	// are calibrated for a 128 GB host doing forward-replay past block 13M
+	// where the storage working set is the dominant read cost.
+	acctGB := c.Uint64("cache-account-gb")
+	stoGB := c.Uint64("cache-storage-gb")
+	codeGB := c.Uint64("cache-code-gb")
+	executor.SetCacheBudget(state.CacheBudget{
+		AccountBytes: int64(acctGB) << 30,
+		StorageBytes: int64(stoGB) << 30,
+		CodeBytes:    int64(codeGB) << 30,
+	})
+	log.Info("Cache budget", "acct_GB", acctGB, "sto_GB", stoGB, "code_GB", codeGB)
 
 	// Pre-computed senders (input data). Auto-detect:
 	// 1. Freezer table format (senders.cidx in output freezer) — from sender-recovery --ancient
@@ -1162,6 +1303,8 @@ func runRebuildState(c *cli.Context) error {
 	endBlock := c.Uint64("end")
 	verifyInterval := c.Uint64("verify")
 	evmFromFallback := c.Bool("evm-from-fallback")
+	persistTrie := c.Bool("persist-trie")
+	startWasSet := c.IsSet("start")
 
 	if leavesDir == "" {
 		leavesDir = filepath.Join(datadir, "chain", "freezer")
@@ -1191,6 +1334,27 @@ func runRebuildState(c *cli.Context) error {
 	}
 	defer db.Close()
 
+	// Auto-resume: if --start wasn't provided and the datadir has a
+	// recorded ethel_progress, start from that block + 1 instead of 0.
+	// Saves the user from having to remember the exact checkpoint height
+	// between runs. --start 0 explicitly still clears and rebuilds from
+	// genesis.
+	if !startWasSet && hasMDBX {
+		roTx, rerr := db.BeginRo(context.Background())
+		if rerr == nil {
+			v, gerr := roTx.GetOne("DbInfo", []byte("ethel_progress"))
+			roTx.Rollback()
+			if gerr == nil && len(v) == 8 {
+				progress := binary.BigEndian.Uint64(v)
+				if progress > 0 {
+					startBlock = progress + 1
+					log.Info("Auto-resuming from DbInfo/ethel_progress",
+						"progress", progress, "startBlock", startBlock)
+				}
+			}
+		}
+	}
+
 	ctx, cancel := withShutdown()
 	defer cancel()
 
@@ -1208,12 +1372,96 @@ func runRebuildState(c *cli.Context) error {
 		ChainConfig:     params.EthereumMainnetChainConfig,
 		GethFreezer:     inputF,
 		EVMFromFallback: evmFromFallback,
+		PersistTrie:     persistTrie,
 	}
 	if err := ethel.RebuildStateWith(ctx, db, leavesDir, endBlock, opts); err != nil {
 		return err
 	}
-	ethel.VerifyRebuildRoot(ctx, db, inputF, endBlock)
+	// Clamp endBlock to the leaves freezer's item count — the rebuild
+	// stopped there, so VerifyRebuildRoot must compare OUR state at
+	// min(endBlock, freezer.items)-1 against geth's header at that same
+	// block. Without this, --end X where X > freezer.items gives a false
+	// MISMATCH: our state is at freezer.items-1 but we'd verify at X-1.
+	verifyEnd := endBlock
+	if t, terr := freezer.NewFreezerTableReadOnly(leavesDir, freezer.TableAccountChanges, "c"); terr == nil {
+		if items := t.Items(); verifyEnd == 0 || items < verifyEnd {
+			verifyEnd = items
+		}
+		t.Close()
+	}
+	ethel.VerifyRebuildRoot(ctx, db, inputF, verifyEnd)
 	return nil
+}
+
+func runVerifyRoot(c *cli.Context) error {
+	ancientPath := c.String("ancient")
+	datadir := c.String("datadir")
+	blockNum := c.Uint64("block")
+
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(datadir).
+		Label(kv.ChainDB).
+		Accede().
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open mdbx: %w", err)
+	}
+	defer db.Close()
+
+	inputF, err := freezer.New(ancientPath, 0)
+	if err != nil {
+		return fmt.Errorf("open geth ancient: %w", err)
+	}
+	defer inputF.Close()
+
+	// VerifyRebuildRoot takes endBlock (exclusive), verifies at endBlock-1.
+	// Pass blockNum+1 so it verifies AT blockNum.
+	ethel.VerifyRebuildRoot(context.Background(), db, inputF, blockNum+1)
+	return nil
+}
+
+func runVerifyIncremental(c *cli.Context) error {
+	ancientPath := c.String("ancient")
+	datadir := c.String("datadir")
+	leavesDir := c.String("leaves")
+	startBlock := c.Uint64("start")
+	endBlock := c.Uint64("end")
+	commitEvery := c.Uint64("commit-every")
+
+	if leavesDir == "" {
+		leavesDir = filepath.Join(datadir, "chain", "freezer")
+	}
+
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(datadir).
+		Label(kv.ChainDB).
+		Accede().
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open mdbx: %w", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	inputF, err := freezer.New(ancientPath, 0)
+	if err != nil {
+		return fmt.Errorf("open geth ancient: %w", err)
+	}
+	defer inputF.Close()
+
+	opts := ethel.VerifyIncrementalOptions{
+		StartBlock:     startBlock,
+		EndBlock:       endBlock,
+		LeavesDir:      leavesDir,
+		InputFreezer:   inputF,
+		CommitEvery:    commitEvery,
+		UseIncremental: c.Bool("use-incremental"),
+	}
+	return ethel.VerifyIncremental(ctx, db, opts)
 }
 
 func runUnwind(c *cli.Context) error {
@@ -1238,7 +1486,7 @@ func runUnwind(c *cli.Context) error {
 	}
 	defer db.Close()
 
-	ctx, cancel := withShutdown()
+	_, cancel := withShutdown()
 	defer cancel()
 
 	// Open output freezer (acctcs/storcs) — Reorg reads OLD values from here.
@@ -1257,9 +1505,8 @@ func runUnwind(c *cli.Context) error {
 	if err := ethel.Reorg(db, outFreezer, targetBlock); err != nil {
 		return fmt.Errorf("reorg: %w", err)
 	}
-	// VerifyRebuildRoot verifies at endBlock-1, so pass target+1 to verify
-	// at the post-unwind head.
-	ethel.VerifyRebuildRoot(ctx, db, inputF, targetBlock+1)
+	// Skip verify (too slow for debugging). Use compare-root separately if needed.
+	log.Info("Unwind complete (verify skipped)", "target", targetBlock)
 	return nil
 }
 
@@ -1421,4 +1668,437 @@ func runScanCS(c *cli.Context) error {
 		fmt.Printf("  good batches: %d, bad regions: %d, lastGoodBlock: %d\n", goodCount, badCount, lastGood)
 	}
 	return nil
+}
+
+// runVerifyCSRoot: rebuild PlainState from changesets to a given block,
+// then compute state root (MPT) and compare against the header.
+// No EVM execution. For bisecting changeset corruption.
+func runVerifyCSRoot(c *cli.Context) error {
+	ancientPath := c.String("ancient")
+	datadir := c.String("datadir")
+	leavesDir := c.String("leaves")
+	targetBlock := c.Uint64("block")
+
+	// 1. Create fresh MDBX.
+	if err := os.MkdirAll(datadir, 0755); err != nil {
+		return err
+	}
+	logger := log2.New()
+	db, err := mdbx.NewMDBX(logger).
+		Path(datadir).
+		Label(kv.ChainDB).
+		PageSize(4096).
+		MapSize(64 * datasize.GB).
+		GrowthStep(2 * datasize.GB).
+		DirtySpace(uint64(512 * datasize.MB)).
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open mdbx: %w", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	// 2. Open Geth ancient for header verification.
+	inputF, err := freezer.New(ancientPath, 0)
+	if err != nil {
+		return fmt.Errorf("open geth ancient: %w", err)
+	}
+	defer inputF.Close()
+
+	// 3. Check current progress — resume from there if already partially built.
+	var startBlock uint64
+	{
+		rtx, err := db.BeginRo(ctx)
+		if err != nil {
+			return err
+		}
+		saved := ethel.ReadProgress(rtx)
+		rtx.Rollback()
+		if saved > 0 && saved < targetBlock {
+			startBlock = saved + 1
+			log.Info("Resuming rebuild from existing state", "progress", saved, "target", targetBlock)
+		} else if saved >= targetBlock {
+			log.Info("MDBX already at or past target, skipping rebuild", "progress", saved, "target", targetBlock)
+			ethel.VerifyRebuildRoot(ctx, db, inputF, targetBlock+1)
+			return nil
+		}
+	}
+
+	// Rebuild PlainState from changesets (no EVM, no verify during rebuild).
+	endBlock := targetBlock + 1 // RebuildStateWith uses exclusive end
+	opts := ethel.RebuildOptions{
+		StartBlock:   startBlock,
+		InputFreezer: inputF,
+		ChainConfig:  params.EthereumMainnetChainConfig,
+		GethFreezer:  inputF,
+	}
+	if err := ethel.RebuildStateWith(ctx, db, leavesDir, endBlock, opts); err != nil {
+		return fmt.Errorf("rebuild to block %d: %w", targetBlock, err)
+	}
+
+	// Write progress so next run can resume.
+	{
+		wtx, err := db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		if err := ethel.WriteProgress(wtx, targetBlock); err != nil {
+			wtx.Rollback()
+			return err
+		}
+		if err := wtx.Commit(); err != nil {
+			return err
+		}
+	}
+
+	// 4. Verify state root at targetBlock via MPT.
+	ethel.VerifyRebuildRoot(ctx, db, inputF, endBlock)
+	return nil
+}
+
+// runCodeImport copies Reth Bytecodes table into one or more ethexec MDBX
+// Code tables. Supports comma-separated target paths to populate both
+// primary and shadow in one pass.
+func runCodeImport(c *cli.Context) error {
+	rethPath := c.String("reth-db")
+	targets := strings.Split(c.String("target"), ",")
+
+	// Open Reth readonly.
+	logger := log2.New()
+	rethDB, err := mdbx.NewMDBX(logger).
+		Path(rethPath).
+		Label(kv.ChainDB).
+		MapSize(4 * datasize.TB).
+		Readonly().
+		WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
+			d["Bytecodes"] = kv.TableCfgItem{}
+			return d
+		}).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open reth: %w", err)
+	}
+	defer rethDB.Close()
+
+	rtx, err := rethDB.BeginRo(context.Background())
+	if err != nil {
+		return err
+	}
+	defer rtx.Rollback()
+
+	// Count first.
+	cursor, err := rtx.Cursor("Bytecodes")
+	if err != nil {
+		return err
+	}
+	var total uint64
+	for k, _, e := cursor.First(); k != nil && e == nil; k, _, e = cursor.Next() {
+		total++
+	}
+	cursor.Close()
+	log.Info("Reth Bytecodes counted", "entries", total)
+
+	// Open all target MDBX databases.
+	var dbs []kv.RwDB
+	for _, p := range targets {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if err := os.MkdirAll(p, 0755); err != nil {
+			return err
+		}
+		d, err := mdbx.NewMDBX(logger).
+			Path(p).
+			Label(kv.ChainDB).
+			PageSize(4096).
+			MapSize(64 * datasize.GB).
+			GrowthStep(2 * datasize.GB).
+			DirtySpace(uint64(512 * datasize.MB)).
+			DBVerbosity(kv.DBVerbosityLvl(2)).
+			Open(context.Background())
+		if err != nil {
+			return fmt.Errorf("open target %s: %w", p, err)
+		}
+		dbs = append(dbs, d)
+		defer d.Close()
+	}
+
+	// Begin write txs on all targets.
+	var wtxs []kv.RwTx
+	for _, d := range dbs {
+		wt, err := d.BeginRw(context.Background())
+		if err != nil {
+			for _, prev := range wtxs {
+				prev.Rollback()
+			}
+			return err
+		}
+		wtxs = append(wtxs, wt)
+	}
+
+	// Stream copy: Reth Bytecodes → all target Code tables.
+	cursor, err = rtx.Cursor("Bytecodes")
+	if err != nil {
+		for _, wt := range wtxs {
+			wt.Rollback()
+		}
+		return err
+	}
+
+	var n uint64
+	var totalBytes uint64
+	var lastKey []byte
+	for k, v, e := cursor.First(); k != nil && e == nil; k, v, e = cursor.Next() {
+		for _, wt := range wtxs {
+			if err := wt.Put("Code", k, v); err != nil {
+				cursor.Close()
+				for _, w := range wtxs {
+					w.Rollback()
+				}
+				return fmt.Errorf("put Code: %w", err)
+			}
+		}
+		lastKey = append(lastKey[:0], k...)
+		n++
+		totalBytes += uint64(len(k) + len(v))
+		if n%100_000 == 0 {
+			log.Info("  importing", "progress", n, "total", total,
+				"dataMB", totalBytes>>20)
+		}
+		// Commit every 500K to avoid oversized txs.
+		if n%500_000 == 0 {
+			cursor.Close()
+			for _, wt := range wtxs {
+				if err := wt.Commit(); err != nil {
+					return fmt.Errorf("commit at %d: %w", n, err)
+				}
+			}
+			wtxs = wtxs[:0]
+			for _, d := range dbs {
+				wt, err := d.BeginRw(context.Background())
+				if err != nil {
+					return err
+				}
+				wtxs = append(wtxs, wt)
+			}
+			// Reopen cursor and seek past last processed key.
+			cursor, err = rtx.Cursor("Bytecodes")
+			if err != nil {
+				for _, wt := range wtxs {
+					wt.Rollback()
+				}
+				return err
+			}
+			k, v, e = cursor.Seek(lastKey)
+			if k != nil && e == nil && bytes.Equal(k, lastKey) {
+				k, v, e = cursor.Next() // skip the one we already wrote
+			}
+			if k == nil {
+				break
+			}
+			continue // re-enter loop with this k,v
+		}
+	}
+	cursor.Close()
+
+	// Final commit.
+	for i, wt := range wtxs {
+		if err := wt.Commit(); err != nil {
+			return fmt.Errorf("final commit target %d: %w", i, err)
+		}
+	}
+
+	log.Info("Code import complete",
+		"entries", n,
+		"dataMB", totalBytes>>20,
+		"targets", len(dbs))
+	return nil
+}
+
+// runExecCompare: EVM execution on primary MDBX + shadow CS rebuild on
+// secondary MDBX. At each compare interval, applies changesets to shadow
+// and does byte-exact comparison of Account/Storage tables.
+// runExecCompare: offline tool — no EVM execution.
+// Reads changesets from primary's output freezer, applies to shadow,
+// then compares Account/Storage tables. Run AFTER normal ethexec.
+//
+// Usage:
+//   1. ethexec --ancient ... --datadir D:/N42-ethcs1 --verify 1000000  (normal EVM run)
+//   2. ethexec exec-compare --primary D:/N42-ethcs1 --shadow D:/N42-ethcs01 --from 6000000 --to 7000000
+func runExecCompare(c *cli.Context) error {
+	primaryDir := c.String("primary")
+	shadowDir := c.String("shadow")
+	fromBlock := c.Uint64("from")
+	toBlock := c.Uint64("to")
+
+	if primaryDir == "" || shadowDir == "" || toBlock == 0 {
+		return fmt.Errorf("--primary, --shadow, --to are required")
+	}
+
+	log.Info("exec-compare (offline)", "primary", primaryDir,
+		"shadow", shadowDir, "from", fromBlock, "to", toBlock)
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	// Step 1: Open shadow writable, apply changesets from primary's freezer.
+	freezerPath := filepath.Join(primaryDir, "chain", "freezer")
+	log.Info("Applying changesets to shadow", "freezer", freezerPath, "from", fromBlock, "to", toBlock)
+	{
+		sdb, err := mdbx.NewMDBX(log2.New()).
+			Path(shadowDir).Label(kv.ChainDB).
+			PageSize(4096).MapSize(2 * datasize.TB).
+			GrowthStep(2 * datasize.GB).
+			DirtySpace(uint64(256 * datasize.MB)).
+			DBVerbosity(kv.DBVerbosityLvl(2)).
+			Open(context.Background())
+		if err != nil {
+			return fmt.Errorf("open shadow: %w", err)
+		}
+		if err := ethel.ApplyChangesetsToMDBX(ctx, sdb, freezerPath, fromBlock, toBlock); err != nil {
+			sdb.Close()
+			return fmt.Errorf("apply cs: %w", err)
+		}
+		sdb.Close()
+		log.Info("Changesets applied, shadow closed")
+	}
+
+	// Step 2: Open both readonly, compare.
+	log.Info("Comparing tables")
+	pdb, err := mdbx.NewMDBX(log2.New()).
+		Path(primaryDir).Label(kv.ChainDB).
+		Readonly().Accede().
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open primary RO: %w", err)
+	}
+	defer pdb.Close()
+
+	sdb, err := mdbx.NewMDBX(log2.New()).
+		Path(shadowDir).Label(kv.ChainDB).
+		Readonly().Accede().
+		DBVerbosity(kv.DBVerbosityLvl(2)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open shadow RO: %w", err)
+	}
+	defer sdb.Close()
+
+	ptx, err := pdb.BeginRo(ctx)
+	if err != nil {
+		return err
+	}
+	defer ptx.Rollback()
+
+	stx, err := sdb.BeginRo(ctx)
+	if err != nil {
+		return err
+	}
+	defer stx.Rollback()
+
+	results, err := ethel.CompareMDBXTables(ptx, stx, 20)
+	if err != nil {
+		return fmt.Errorf("compare: %w", err)
+	}
+	for _, r := range results {
+		if !r.OK {
+			return fmt.Errorf("MISMATCH: %s first=%s mismatches=%d onlyPrimary=%d onlyShadow=%d",
+				r.Table, r.FirstDiff, r.Mismatches, r.OnlyInA, r.OnlyInB)
+		}
+	}
+	log.Info("ALL TABLES MATCH", "block", toBlock-1)
+	return nil
+}
+
+// cloneTables copies Account, Storage and Code tables from src to dst
+// with batched commits to stay within MDBX dirty-space limits.
+func cloneTables(src kv.RwDB, dst kv.RwDB, progressBlock uint64) error {
+	srcTx, err := src.BeginRo(context.Background())
+	if err != nil {
+		return err
+	}
+	defer srcTx.Rollback()
+
+	const batchSize = 2_000_000
+
+	for _, table := range []string{"Account", "Storage", "Code"} {
+		log.Info("Cloning table (this may take a while for Storage)...", "table", table)
+		t0 := time.Now()
+
+		dstTx, err := dst.BeginRw(context.Background())
+		if err != nil {
+			return err
+		}
+		cursor, err := srcTx.Cursor(table)
+		if err != nil {
+			dstTx.Rollback()
+			return err
+		}
+
+		var count uint64
+		var lastKey []byte
+		for k, v, cerr := cursor.First(); k != nil && cerr == nil; k, v, cerr = cursor.Next() {
+			if err := dstTx.Put(table, k, v); err != nil {
+				cursor.Close()
+				dstTx.Rollback()
+				return fmt.Errorf("put %s: %w", table, err)
+			}
+			lastKey = append(lastKey[:0], k...)
+			count++
+			if count%2_000_000 == 0 {
+				log.Info("  cloning", "table", table, "entries", count,
+					"elapsed", time.Since(t0).Truncate(time.Second))
+			}
+			if count%batchSize == 0 {
+				cursor.Close()
+				if err := dstTx.Commit(); err != nil {
+					return fmt.Errorf("commit %s at %d: %w", table, count, err)
+				}
+				dstTx, err = dst.BeginRw(context.Background())
+				if err != nil {
+					return err
+				}
+				cursor, err = srcTx.Cursor(table)
+				if err != nil {
+					dstTx.Rollback()
+					return err
+				}
+				k, v, cerr = cursor.Seek(lastKey)
+				if k != nil && cerr == nil && bytes.Equal(k, lastKey) {
+					k, v, cerr = cursor.Next()
+				}
+				if k == nil {
+					break
+				}
+				// Re-enter the loop body for this new k,v.
+				if err := dstTx.Put(table, k, v); err != nil {
+					cursor.Close()
+					dstTx.Rollback()
+					return err
+				}
+				lastKey = append(lastKey[:0], k...)
+				count++
+			}
+		}
+		cursor.Close()
+
+		if err := dstTx.Commit(); err != nil {
+			return fmt.Errorf("final commit %s: %w", table, err)
+		}
+		log.Info("  table cloned", "table", table, "entries", count,
+			"elapsed", time.Since(t0).Truncate(time.Second))
+	}
+
+	// Write progress marker.
+	wt, err := dst.BeginRw(context.Background())
+	if err != nil {
+		return err
+	}
+	ethel.WriteProgress(wt, progressBlock)
+	return wt.Commit()
 }

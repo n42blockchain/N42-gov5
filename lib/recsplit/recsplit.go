@@ -112,6 +112,7 @@ type RecSplit struct {
 	numBuf             [8]byte
 	collision          bool
 	enums              bool // Whether to build two level index with perfect hash table pointing to enumeration and enumeration pointing to offsets
+	noValues           bool // Pure MPHF mode: don't write per-key records; Lookup returns hash slot directly
 	lessFalsePositives bool
 	built              bool // Flag indicating that the hash function has been built and no more keys can be added
 	trace              bool
@@ -125,6 +126,11 @@ type RecSplitArgs struct {
 	// if Enum=false: can have unsorted and duplicated values
 	// if Enum=true:  must have sorted values (can have duplicates) - monotonically growing sequence
 	Enums              bool
+	// NoValues: pure MPHF mode. Don't write per-key value records.
+	// Lookup returns the hash slot number directly (0..KeyCount-1).
+	// Caller is responsible for mapping slot → data externally (e.g., via Elias-Fano).
+	// Incompatible with Enums (Enums requires per-key ordinals).
+	NoValues           bool
 	LessFalsePositives bool
 
 	IndexFile   string // File name where the index and the minimal perfect hash function will be written to
@@ -176,6 +182,10 @@ func NewRecSplit(args RecSplitArgs, logger log.Logger) (*RecSplit, error) {
 	rs.bucketCollector = etl.NewCollector(RecSplitLogPrefix+" "+fname, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), logger)
 	rs.bucketCollector.LogLvl(log.LvlDebug)
 	rs.enums = args.Enums
+	rs.noValues = args.NoValues
+	if args.Enums && args.NoValues {
+		return nil, fmt.Errorf("NoValues is incompatible with Enums")
+	}
 	if args.Enums {
 		rs.offsetCollector = etl.NewCollector(RecSplitLogPrefix+" "+fname, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), logger)
 		rs.offsetCollector.LogLvl(log.LvlDebug)
@@ -425,7 +435,7 @@ func (rs *RecSplit) recsplitCurrentBucket() error {
 		if rs.trace {
 			fmt.Printf("recsplitBucket(%d, %d, bitsize = %d)\n", rs.currentBucketIdx, len(rs.currentBucket), rs.gr.bitCount-bitPos)
 		}
-	} else {
+	} else if !rs.noValues {
 		for _, offset := range rs.currentBucketOffs {
 			binary.BigEndian.PutUint64(rs.numBuf[:], offset)
 			if _, err := rs.indexW.Write(rs.numBuf[8-rs.bytesPerRec:]); err != nil {
@@ -471,14 +481,16 @@ func (rs *RecSplit) recsplit(level int, bucket []uint64, offsets []uint64, unary
 			}
 			salt++
 		}
-		for i := uint16(0); i < m; i++ {
-			j := remap16(remix(bucket[i]+salt), m)
-			rs.offsetBuffer[j] = offsets[i]
-		}
-		for _, offset := range rs.offsetBuffer[:m] {
-			binary.BigEndian.PutUint64(rs.numBuf[:], offset)
-			if _, err := rs.indexW.Write(rs.numBuf[8-rs.bytesPerRec:]); err != nil {
-				return nil, err
+		if !rs.noValues {
+			for i := uint16(0); i < m; i++ {
+				j := remap16(remix(bucket[i]+salt), m)
+				rs.offsetBuffer[j] = offsets[i]
+			}
+			for _, offset := range rs.offsetBuffer[:m] {
+				binary.BigEndian.PutUint64(rs.numBuf[:], offset)
+				if _, err := rs.indexW.Write(rs.numBuf[8-rs.bytesPerRec:]); err != nil {
+					return nil, err
+				}
 			}
 		}
 		salt -= rs.startSeed[level]
@@ -537,7 +549,7 @@ func (rs *RecSplit) recsplit(level int, bucket []uint64, offsets []uint64, unary
 			if unary, err = rs.recsplit(level+1, bucket[i:], offsets[i:], unary); err != nil {
 				return nil, err
 			}
-		} else if m-i == 1 {
+		} else if m-i == 1 && !rs.noValues {
 			binary.BigEndian.PutUint64(rs.numBuf[:], offsets[i])
 			if _, err := rs.indexW.Write(rs.numBuf[8-rs.bytesPerRec:]); err != nil {
 				return nil, err
@@ -599,8 +611,15 @@ func (rs *RecSplit) Build(ctx context.Context) error {
 	if _, err = rs.indexW.Write(rs.numBuf[:]); err != nil {
 		return fmt.Errorf("write number of keys: %w", err)
 	}
-	// Write number of bytes per index record
-	rs.bytesPerRec = common.BitLenToByteLen(bits.Len64(rs.maxOffset))
+	// Write number of bytes per index record.
+	if rs.noValues {
+		// Pure MPHF: no per-key records. Lookup returns hash slot directly.
+		rs.bytesPerRec = 0
+	} else if rs.enums && rs.keysAdded > 1 {
+		rs.bytesPerRec = common.BitLenToByteLen(bits.Len64(rs.keysAdded - 1))
+	} else {
+		rs.bytesPerRec = common.BitLenToByteLen(bits.Len64(rs.maxOffset))
+	}
 	if err = rs.indexW.WriteByte(byte(rs.bytesPerRec)); err != nil {
 		return fmt.Errorf("write bytes per record: %w", err)
 	}

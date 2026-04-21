@@ -61,13 +61,20 @@ type RebuildOptions struct {
 
 	// EVMFromFallback — once any block triggers EVM fallback (e.g. corrupt
 	// storcs), switch to EVM execution for EVERY subsequent block instead
-	// of reading the (possibly poisoned) freezer changesets. The downstream
-	// changesets produced by the same prior run that corrupted this block
-	// may encode state drift that cascades into a wrong final root; running
-	// EVM from the fallback point guarantees correct forward state at the
-	// cost of speed. Default false preserves the fast path for clean
-	// freezers.
+	// of reading the (likely poisoned) freezer changesets. The freezer's
+	// changesets produced by a prior ethexec run may encode the bugs that
+	// originally caused the corruption; applying them after a fallback
+	// produces forward state that silently diverges from geth. Default
+	// false preserves the fast path for clean freezers.
 	EVMFromFallback bool
+
+	// PersistTrie — after reaching endBlock and flushing all changes to
+	// Account/Storage, populate HashedAccounts/HashedStorage/TrieOfAccounts/
+	// TrieOfStorage as well. Adds ~5-10 minutes at the 10M-block scale but
+	// leaves the datadir fully HPH-bootstrapped so that subsequent
+	// per-block verify (e.g. ethexec verify-incremental) can run in
+	// O(dirty) instead of O(state).
+	PersistTrie bool
 }
 
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
@@ -190,14 +197,11 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		flushCount++
 
 		log.Info("Computing state root", "block", blockNum)
-		if err := resetAndInitHashState(ctx, db); err != nil {
-			return fmt.Errorf("init hash state at block %d: %w", blockNum, err)
-		}
 		tx2, err := db.BeginRw(ctx)
 		if err != nil {
 			return fmt.Errorf("verify begin tx2: %w", err)
 		}
-		root, err := CalcStateRoot(tx2)
+		root, err := VerifyStateRoot(tx2)
 		tx2.Rollback()
 		if err != nil {
 			return fmt.Errorf("calc state root at block %d: %w", blockNum, err)
@@ -255,6 +259,8 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 			if err := rebuildEVMFallback(ctx, db, opts, blockNum); err != nil {
 				return fmt.Errorf("EVM at block %d: %w", blockNum, err)
 			}
+
+			// Verify boundary in EVM-only mode — no maps to flush.
 			if opts.VerifyInterval > 0 && opts.InputFreezer != nil &&
 				(blockNum+1)%opts.VerifyInterval == 0 {
 				if err := doVerify(blockNum); err != nil {
@@ -262,6 +268,7 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 				}
 				lastLogTime = time.Now()
 			}
+
 			if time.Since(lastLogTime) > 5*time.Second {
 				pct := float64(blockNum) / float64(endBlock) * 100
 				log.Info("EVM-only replay",
@@ -302,11 +309,14 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 				if opts.ChainConfig == nil || opts.GethFreezer == nil {
 					return fmt.Errorf("decode storcs block %d: %w (pass --ancient to enable EVM fallback)", blockNum, decErr)
 				}
-				// EVM fallback: revert the acctcs NEW values we just applied
-				// (use OLD values) so MDBX state is at blockNum-1, then
-				// execute blockNum via EVM.
+				// EVM fallback: revert this block's account changes
+				// (use OLD values) so the in-memory state is at
+				// blockNum-1, flush everything to MDBX, then execute
+				// blockNum via EVM against the clean MDBX state.
 				log.Warn("Corrupt storcs entry — falling back to EVM execution",
-					"block", blockNum, "err", decErr)
+					"block", blockNum, "err", decErr,
+					"batchAccts", len(acctMap),
+					"batchAddrs", len(storMap))
 				if len(accData) > 0 {
 					revert, _ := DecodeAccountChanges(accData)
 					for _, e := range revert {
@@ -419,32 +429,50 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		"blocks", endBlock,
 		"flushes", flushCount+1,
 		"elapsed", time.Since(t0).Truncate(time.Second))
+
+	// Optional: bootstrap HPH tables so the datadir is ready for
+	// per-block incremental root computation.
+	if opts.PersistTrie {
+		log.Info("Bootstrapping HPH tables (HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage)...")
+		tBootstrap := time.Now()
+		tx2, err := db.BeginRw(ctx)
+		if err != nil {
+			return fmt.Errorf("hph bootstrap begin tx: %w", err)
+		}
+		root, err := BootstrapHPH(tx2)
+		if err != nil {
+			tx2.Rollback()
+			return fmt.Errorf("hph bootstrap: %w", err)
+		}
+		if err := tx2.Commit(); err != nil {
+			return fmt.Errorf("hph bootstrap commit: %w", err)
+		}
+		log.Info("HPH bootstrap complete",
+			"root", root.Hex(),
+			"elapsed", time.Since(tBootstrap).Truncate(time.Second))
+
+		// Verify bootstrap root against header.
+		if opts.InputFreezer != nil {
+			hdrData, err := opts.InputFreezer.Ancient(freezer.TableHeaders, endBlock-1)
+			if err == nil {
+				if hdr, derr := DecodeGethHeader(hdrData); derr == nil {
+					if root == hdr.Root {
+						log.Info("HPH bootstrap root VERIFIED against header",
+							"block", endBlock-1, "root", root.Hex())
+					} else {
+						log.Error("HPH bootstrap root MISMATCH vs header",
+							"block", endBlock-1,
+							"computed", root.Hex(),
+							"expected", hdr.Root.Hex())
+						return fmt.Errorf("hph bootstrap root mismatch at block %d", endBlock-1)
+					}
+				}
+			}
+		}
+	}
 	return nil
 }
 
-// resetAndInitHashState clears HashedAccounts/HashedStorage then rebuilds
-// them from PlainState. The clear is required because InitHashState
-// short-circuits when HashedAccounts is non-empty, which would otherwise
-// leave us computing roots from stale hashed state on a second verify.
-func resetAndInitHashState(ctx context.Context, db kv.RwDB) error {
-	tx, err := db.BeginRw(ctx)
-	if err != nil {
-		return err
-	}
-	if err := tx.ClearBucket(kv.HashedAccounts); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("clear HashedAccounts: %w", err)
-	}
-	if err := tx.ClearBucket(kv.HashedStorage); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("clear HashedStorage: %w", err)
-	}
-	if err := InitHashState(tx); err != nil {
-		tx.Rollback()
-		return err
-	}
-	return tx.Commit()
-}
 
 func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]byte, storMap map[types.Address]map[types.Hash][]byte, wipeSet map[types.Address]struct{}) error {
 	totalSlots := 0
@@ -637,16 +665,11 @@ func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Fr
 		return
 	}
 
-	if err := resetAndInitHashState(ctx, db); err != nil {
-		log.Warn("resetAndInitHashState failed", "err", err)
-		return
-	}
-
 	tx2, _ := db.BeginRw(ctx)
-	root, err := CalcStateRoot(tx2)
+	root, err := VerifyStateRoot(tx2)
 	tx2.Rollback()
 	if err != nil {
-		log.Warn("CalcStateRoot failed", "err", err)
+		log.Warn("VerifyStateRoot failed", "err", err)
 		return
 	}
 	if root == header.Root {
@@ -725,6 +748,9 @@ func rebuildEVMFallback(ctx context.Context, db kv.RwDB, opts RebuildOptions, bl
 	if csw != nil {
 		stoCS, _ := csw.GetStorageChanges()
 		accCS, _ := csw.GetAccountChanges()
+		log.Info("EVM fallback changeset",
+			"stoChanges", stoCS.Len(),
+			"accChanges", accCS.Len())
 		// newValueOf reads from the MDBX tx which now has the post-commit state.
 		postReader := state.NewPlainStateReader(rwTx)
 		stoCSBytes := EncodeStorageChanges(stoCS, func(addr types.Address, slot types.Hash) []byte {
