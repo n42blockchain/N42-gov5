@@ -268,24 +268,9 @@ func (e *Executor) Run(ctx context.Context) error {
 			}
 		}
 
-		// Prefetch the next few blocks' state in parallel while we execute
-		// this one. Queue up to `prefetchLookahead/2` blocks so the 4
-		// prefetch workers always have work, without oversubscribing the
-		// channel or letting MDBX page cache get evicted before the
-		// executor catches up. prefetchBlock is non-blocking: it drops
-		// silently if the channel is full.
-		if e.prefetcher != nil {
-			// Queue N+1..N+8. The prefetcher channel is bounded (size 16),
-			// and prefetchBlock drops the request if the channel is full,
-			// so spamming a wider range than we can execute is harmless.
-			const prefetchAhead = 8
-			for k := uint64(1); k <= prefetchAhead; k++ {
-				next := blockNum + k
-				if next > endBlock {
-					break
-				}
-				e.prefetcher.prefetchBlock(next)
-			}
+		// Prefetch next block's state while we execute this one.
+		if e.prefetcher != nil && blockNum+1 <= endBlock {
+			e.prefetcher.prefetchBlock(blockNum + 1)
 		}
 
 		if err := e.executeBlock(ctx, tx, blockNum); err != nil {

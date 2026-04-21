@@ -15,7 +15,6 @@ package ethel
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -48,35 +47,10 @@ type prefetcher struct {
 	wg       sync.WaitGroup
 	blockCh  chan uint64
 
-	// numWorkers consumers drain blockCh concurrently. With 1 worker the
-	// prefetcher bottlenecks on body decode + per-addr GetOne loop for a
-	// single block at a time; with N workers, N different blocks' prewarms
-	// overlap (distinct RoTxs, independent MDBX page lookups), roughly
-	// linear scaling up to MDBX's concurrent-reader ceiling (~8–16 on
-	// NVMe). For 45–60 blk/s executor throughput, 4 workers is enough to
-	// keep the lookahead queue drained.
-	numWorkers int
-
 	// Pre-computed senders sources, shared with the executor's main path.
 	senderStore *SenderSegmentReader
 	senderTable *freezer.FreezerTable
-
-	// highestQueued tracks the highest block number successfully queued
-	// onto blockCh. prefetchBlock is called up to 8× per executor step
-	// (N+1..N+8 lookahead), but each block must only be prefetched once —
-	// without this dedup every block would be queued 8 times in steady
-	// state and workers would waste RoTx opens on redundant re-warms.
-	highestQueued atomic.Uint64
 }
-
-const (
-	// prefetchWorkers is the concurrent-prefetch worker count.
-	prefetchWorkers = 4
-	// prefetchLookahead is the blockCh buffer size. Sized so the executor
-	// can queue up to this many N+k blocks without blocking even when the
-	// workers are momentarily idle (e.g. mid-commit).
-	prefetchLookahead = 16
-)
 
 func newPrefetcher(ctx context.Context, f *freezer.Freezer, db kv.RoDB, buf *state.PlainStateBuffer, chainCfg *params.ChainConfig, senderStore *SenderSegmentReader, senderTable *freezer.FreezerTable) *prefetcher {
 	ctx, cancel := context.WithCancel(ctx)
@@ -87,18 +61,15 @@ func newPrefetcher(ctx context.Context, f *freezer.Freezer, db kv.RoDB, buf *sta
 		chainCfg:    chainCfg,
 		ctx:         ctx,
 		cancel:      cancel,
-		blockCh:     make(chan uint64, prefetchLookahead),
-		numWorkers:  prefetchWorkers,
+		blockCh:     make(chan uint64, 2),
 		senderStore: senderStore,
 		senderTable: senderTable,
 	}
 }
 
 func (p *prefetcher) start() {
-	for i := 0; i < p.numWorkers; i++ {
-		p.wg.Add(1)
-		go p.loop()
-	}
+	p.wg.Add(1)
+	go p.loop()
 }
 
 func (p *prefetcher) stop() {
@@ -107,26 +78,6 @@ func (p *prefetcher) stop() {
 }
 
 func (p *prefetcher) prefetchBlock(blockNum uint64) {
-	// Monotonic-advance dedup: a later call with blockNum <= highestQueued
-	// is always a duplicate because the executor only moves forward.
-	// The CAS loop handles concurrent callers (executor + future parallel
-	// request sources) without a mutex.
-	for {
-		prev := p.highestQueued.Load()
-		if blockNum <= prev {
-			return
-		}
-		if p.highestQueued.CompareAndSwap(prev, blockNum) {
-			break
-		}
-	}
-	// Channel send is non-blocking: if workers are swamped (channel full)
-	// we drop this request silently. The next executor tick will queue
-	// N+1..N+8 anyway, so a dropped block gets picked up by the NEXT call
-	// whose range extends past the drop — at most one block of lookahead
-	// is lost. We do NOT rollback highestQueued: doing so would let the
-	// same block be re-queued from a stale caller (not a problem today,
-	// but the monotonic invariant is simpler to reason about).
 	select {
 	case p.blockCh <- blockNum:
 	default:
