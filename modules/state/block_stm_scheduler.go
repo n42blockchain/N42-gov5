@@ -167,26 +167,51 @@ func (s *Scheduler) NextTask() Task {
 			// Executing / Aborting / Ready — fall through.
 		}
 
-		// Execution path: claim Execute(eIdx) if eIdx<numTxs AND the
-		// tx actually needs execution (Ready or Aborting). A tx in
-		// Executed/Committed state is already past execution and only
-		// needs (re-)validation; skip past it by advancing eIdx. This
-		// is crucial after a rewind from FinishValidationFail: eIdx
-		// gets reset to the failing txIdx but later slots often hold
-		// valid Executed/Committed results that should be preserved
-		// and re-validated rather than re-executed.
+		// Execution path: claim eIdx FIRST via CAS, then decide whether
+		// to actually execute based on current status. CAS-first is
+		// critical: if we read status before CAS, a concurrent
+		// FinishValidationFail can flip a Committed tx to Aborting
+		// after our read but before our CAS — we'd skip a tx that
+		// genuinely needs re-execution. With CAS-first, any status
+		// transition by FinishValidationFail either (a) happened
+		// before our CAS — we see the new status — or (b) happens
+		// after our CAS, which also rewinds eIdx past our advance,
+		// so the next NextTask iteration observes the now-Aborting
+		// tx at the rewound eIdx.
+		//
+		// Txs already Executed/Committed at the claimed eIdx don't
+		// need re-execution (validation handles verifying them); we
+		// drop the claim without starting work and loop.
 		if eIdx < numTxs {
-			st, _ := s.Status(int(eIdx))
-			if st == TxStatusExecuted || st == TxStatusCommitted {
-				// Skip past this slot — no execution needed.
-				s.executionIdx.CompareAndSwap(eIdx, eIdx+1)
-				continue
-			}
 			if s.executionIdx.CompareAndSwap(eIdx, eIdx+1) {
-				idx := int(eIdx)
-				inc := s.beginExecution(idx)
+				// Atomic read-and-transition under txMu. If we find
+				//   Executed/Committed:   no work — another worker
+				//                         already ran this tx, or
+				//                         it got committed via a
+				//                         prior incarnation.
+				//   Executing:            another worker currently
+				//                         holds this tx (possible
+				//                         after eIdx rewind races
+				//                         the prior claim's status
+				//                         transition). Skip to avoid
+				//                         double-execute.
+				//   Ready/Aborting:       transition to Executing and
+				//                         return the task.
+				// Doing this all under txMu is the only way to prevent
+				// two workers from ever running the same (txIdx, inc)
+				// concurrently; the lock is cheap and the hot path is
+				// exactly one load + one store.
+				s.txMu[eIdx].Lock()
+				st := s.status[eIdx]
+				if st == TxStatusExecuted || st == TxStatusCommitted || st == TxStatusExecuting {
+					s.txMu[eIdx].Unlock()
+					continue
+				}
+				inc := s.incarnation[eIdx]
+				s.status[eIdx] = TxStatusExecuting
+				s.txMu[eIdx].Unlock()
 				s.numActive.Add(1)
-				return Task{Kind: TaskExecute, TxIdx: idx, Incarnation: inc}
+				return Task{Kind: TaskExecute, TxIdx: int(eIdx), Incarnation: inc}
 			}
 			continue // CAS lost — re-read.
 		}

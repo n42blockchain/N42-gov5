@@ -24,7 +24,7 @@ func TestParallelExecutor_DisjointTxs(t *testing.T) {
 		}
 	}
 
-	results, mv, err := ExecuteBlockParallel(numTxs, 2, base, executor)
+	results, mv, err := ExecuteBlockParallel(numTxs, 4, base, executor)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -53,24 +53,17 @@ func TestParallelExecutor_DisjointTxs(t *testing.T) {
 	}
 }
 
-// TestParallelExecutor_AllReadAllWriteSame: all N txs read+write the
-// same key (worst case conflict). Each tx: reads counter, writes
-// counter+1. Final value MUST equal N regardless of execution order
-// (Block-STM preserves sequential semantics).
-//
-// SKIPPED in Phase 2 PoC: the simplified scheduler races on Execute-
-// path status checks vs FinishValidationFail rewinds under high
-// contention. Disjoint-tx workloads (the realistic 87%-parallel
-// mainnet case per cmd/conflict-analyze) work; fully-conflicting
-// counter increments expose the limitation. Phase 3 will adopt the
-// full Aptos Block-STM state machine (dependency waitlists + atomic
-// status-aware task claiming) to close the race.
+// TestParallelExecutor_CounterIncrement: all N txs read+write the same
+// key (worst case conflict). Each tx: reads counter, writes counter+1.
+// Final value MUST equal N regardless of execution order (Block-STM
+// preserves sequential semantics). Exercises the scheduler's
+// abort/rewind/re-execute loop because every tx after tx 0 starts with
+// a stale read until upstream commits stabilize.
 func TestParallelExecutor_CounterIncrement(t *testing.T) {
-	t.Skip("Phase 2 PoC: scheduler races on high-conflict workloads; Phase 3 fix")
 	const numTxs = 20
 	counterKey := []byte("counter")
 	base := NewMapBaseReader(map[string][]byte{
-		string(counterKey): {0}, // counter starts at 0
+		string(counterKey): {0},
 	})
 
 	executor := func(txIdx int) TxExecutor {
@@ -80,7 +73,7 @@ func TestParallelExecutor_CounterIncrement(t *testing.T) {
 				return err
 			}
 			if v.AbortPending() {
-				return nil // will be re-scheduled
+				return nil
 			}
 			cur := byte(0)
 			if len(val) > 0 {
@@ -91,7 +84,7 @@ func TestParallelExecutor_CounterIncrement(t *testing.T) {
 		}
 	}
 
-	results, mv, err := ExecuteBlockParallel(numTxs, 2, base, executor)
+	results, mv, err := ExecuteBlockParallel(numTxs, 4, base, executor)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -101,28 +94,22 @@ func TestParallelExecutor_CounterIncrement(t *testing.T) {
 		}
 	}
 
-	// Final value seen by a reader at txIdx > numTxs.
 	val, ver, st := mv.Read(counterKey, numTxs+1)
 	if st != MVOk {
 		t.Fatalf("final read: st=%d", st)
 	}
 	if len(val) != 1 || val[0] != numTxs {
-		t.Errorf("final counter: got %d want %d (value=%v)", val[0], numTxs, val)
+		t.Errorf("final counter: got %d want %d", val[0], numTxs)
 	}
 	if ver.TxIdx != numTxs-1 {
 		t.Errorf("final writer: got %d want %d", ver.TxIdx, numTxs-1)
 	}
 }
 
-// TestParallelExecutor_EquivalentToSequential: verify that parallel
-// execution produces the SAME final state as sequential execution for
-// a mixed workload (some independent, some conflicting).
-//
-// SKIPPED in Phase 2 PoC for the same reason as CounterIncrement —
-// the scheduler's Execute/Validate status races show up when conflicts
-// are present. Phase 3 fixes via full Block-STM state machine.
+// TestParallelExecutor_EquivalentToSequential: mixed workload (some
+// independent, some shared-account). Parallel result must match
+// sequential execution byte-for-byte.
 func TestParallelExecutor_EquivalentToSequential(t *testing.T) {
-	t.Skip("Phase 2 PoC: scheduler races on conflicting workloads; Phase 3 fix")
 	const numTxs = 30
 	base := NewMapBaseReader(map[string][]byte{
 		"global-counter": {0},
@@ -172,7 +159,7 @@ func TestParallelExecutor_EquivalentToSequential(t *testing.T) {
 	}
 
 	// Run parallel.
-	results, mv, err := ExecuteBlockParallel(numTxs, 2, base, executor)
+	results, mv, err := ExecuteBlockParallel(numTxs, 4, base, executor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +231,7 @@ func TestParallelExecutor_NoReexecuteOnDisjoint(t *testing.T) {
 		}
 	}
 
-	_, _, err := ExecuteBlockParallel(numTxs, 2, base, executor)
+	_, _, err := ExecuteBlockParallel(numTxs, 4, base, executor)
 	if err != nil {
 		t.Fatal(err)
 	}
