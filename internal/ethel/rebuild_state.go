@@ -573,15 +573,47 @@ func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]by
 		}
 	}
 
+	// MDBX caps dirty pages per transaction (~2M pages × 16KB ≈ 32GB);
+	// a flush of 10M+ accounts or 100M+ storage rows in a single tx
+	// will overflow and surface as MDBX_BAD_TXN mid-Put. Commit every
+	// flushBatchOps and reopen so each tx stays well under the cap.
+	// Ordering within (accounts, storage) is preserved across commits
+	// because we iterate sorted slices; the wipe phase above already
+	// committed separately via its own 2-pass cursor design.
+	const flushBatchOps = 500_000
+	ops := 0
+	maybeRotate := func() error {
+		if ops < flushBatchOps {
+			return nil
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit flush batch: %w", err)
+		}
+		var err error
+		tx, err = db.BeginRw(ctx)
+		if err != nil {
+			return fmt.Errorf("reopen flush tx: %w", err)
+		}
+		ops = 0
+		return nil
+	}
+
 	for i, addr := range acctKeys {
 		v := acctMap[addr]
 		if v == nil {
-			tx.Delete(modules.Account, addr[:])
+			if err := tx.Delete(modules.Account, addr[:]); err != nil {
+				tx.Rollback()
+				return err
+			}
 		} else {
 			if err := tx.Put(modules.Account, addr[:], v); err != nil {
 				tx.Rollback()
 				return err
 			}
+		}
+		ops++
+		if err := maybeRotate(); err != nil {
+			return err
 		}
 		if i > 0 && i%1_000_000 == 0 {
 			log.Info("  writing accounts", "progress", i, "total", len(acctKeys))
@@ -590,12 +622,19 @@ func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]by
 
 	for i, e := range storEntries {
 		if e.value == nil {
-			tx.Delete(modules.Storage, e.key)
+			if err := tx.Delete(modules.Storage, e.key); err != nil {
+				tx.Rollback()
+				return err
+			}
 		} else {
 			if err := tx.Put(modules.Storage, e.key, e.value); err != nil {
 				tx.Rollback()
 				return err
 			}
+		}
+		ops++
+		if err := maybeRotate(); err != nil {
+			return err
 		}
 		if i > 0 && i%5_000_000 == 0 {
 			log.Info("  writing storage", "progress", i, "total", len(storEntries))
