@@ -203,6 +203,53 @@ func TestSelfdestruct_CommitAppliesWipeFirst(t *testing.T) {
 	}
 }
 
+func TestSelfdestruct_CommitFiltersPreWipeStorageWrite(t *testing.T) {
+	// tx 1 writes slot_a = 111 (pre-wipe); tx 3 wipes addr; no post-wipe
+	// write for slot_a. After FinalizeBlock + Apply the target must NOT
+	// contain slot_a — the pre-wipe write must be shadowed by the wipe.
+	addr := mkAddr(0xa)
+	slotA := mkHash(0xaa)
+
+	mv := NewMVHashMap(16)
+	base := NewMapBaseReader(nil)
+
+	v1 := NewEVMStateView(NewMVStateView(mv, base, 1, 0))
+	v1.WriteStorage(addr, slotA, uint256.NewInt(111))
+	v1.Inner().FlushWrites()
+
+	v3 := NewEVMStateView(NewMVStateView(mv, base, 3, 0))
+	v3.WipeAddress(addr)
+	v3.Inner().FlushWrites()
+
+	bc, err := FinalizeBlock(mv,
+		[]TxOutput{
+			{TxIdx: 0, GasUsed: 21000, Status: 1},
+			{TxIdx: 1, GasUsed: 21000, Status: 1},
+			{TxIdx: 2, GasUsed: 21000, Status: 1},
+			{TxIdx: 3, GasUsed: 21000, Status: 1},
+		},
+		types.Address{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-populate target as if base had an older slot_a value — the
+	// Apply's WipeStorage phase should clear it, and the filtered
+	// CommitEntry must NOT resurrect the tx-1 write.
+	target := NewMapApplyTarget()
+	target.Storage[addr] = map[types.Hash][]byte{slotA: {0x01}}
+
+	if err := bc.Apply(target); err != nil {
+		t.Fatal(err)
+	}
+
+	if slots, ok := target.Storage[addr]; ok {
+		if v, present := slots[slotA]; present {
+			t.Errorf("slot_a should be wiped (not resurrected); got %x", v)
+		}
+	}
+}
+
 func TestSelfdestruct_KeyEncodingUnique(t *testing.T) {
 	addr := mkAddr(0xa)
 	slot := mkHash(0xb)

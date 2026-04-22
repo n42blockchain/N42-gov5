@@ -23,8 +23,6 @@ package ethel
 import (
 	"fmt"
 
-	"github.com/holiman/uint256"
-
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -161,11 +159,21 @@ func (e *RealParallelEVM) Execute(
 		}
 	}
 
-	// Coinbase tip = effective gas price × gas used, minus base fee.
-	// For London+ txs: tip = min(tx.Tip, tx.GasFeeCap - baseFee).
-	// For pre-London: tip = tx.GasPrice - baseFee (often == tx.GasPrice
-	//                 when baseFee is zero).
-	tip := computeCoinbaseTip(tx, e.header, usedGas)
+	// Coinbase tip is NOT returned as TxOutput.CoinbaseTip here.
+	// Rationale: internal.ApplyTransaction already credits the coinbase
+	// via st.state.AddBalance(coinbase, tip) in state_transition.go,
+	// which flows through IntraBlockState → MVStateWriter → MVHashMap
+	// as a regular account update. If we ALSO returned CoinbaseTip,
+	// FinalizeBlock's CoinbaseDelta aggregation + Apply's AddBalance
+	// would double-count the tip (2× credit per tx).
+	//
+	// Side effect: every tx writes the coinbase account, so concurrent
+	// txs will conflict on that key and effectively serialize through
+	// the validation loop. Phase 5 will add a coinbase-skipping writer
+	// adapter that drops coinbase writes from the per-tx MV writeSet
+	// and reintroduces the tip via TxOutput.CoinbaseTip → FinalizeBlock
+	// → Apply.AddBalance, restoring the "lazy coinbase" optimization
+	// the Block-STM paper prescribes.
 
 	status := uint8(1)
 	if receipt != nil {
@@ -173,51 +181,10 @@ func (e *RealParallelEVM) Execute(
 	}
 
 	return state.TxOutput{
-		GasUsed:     usedGas,
-		Status:      status,
-		Logs:        logs,
-		CoinbaseTip: tip,
+		GasUsed: usedGas,
+		Status:  status,
+		Logs:    logs,
 	}, nil
-}
-
-// computeCoinbaseTip calculates the portion of the tx's gas fee that
-// flows to the block producer. Pre-London: full gasPrice × gasUsed.
-// London+: (effectiveGasPrice - baseFee) × gasUsed where effectiveGasPrice
-// = min(tx.GasFeeCap, baseFee + tx.Tip).
-func computeCoinbaseTip(tx *transaction.Transaction, header *block.Header, gasUsed uint64) *uint256.Int {
-	if gasUsed == 0 {
-		return new(uint256.Int)
-	}
-	gasUsedU := uint256.NewInt(gasUsed)
-
-	// London+ (header has BaseFee): tip = (gasPriceEff - baseFee) × gasUsed.
-	if header.BaseFee != nil && !header.BaseFee.IsZero() {
-		baseFee := header.BaseFee
-		tipCap := tx.GasTipCap()
-		feeCap := tx.GasFeeCap()
-		if tipCap == nil {
-			tipCap = new(uint256.Int)
-		}
-		// effectiveGasPrice = min(feeCap, baseFee + tipCap)
-		priority := new(uint256.Int).Add(baseFee, tipCap)
-		if feeCap != nil && feeCap.Cmp(priority) < 0 {
-			priority.Set(feeCap)
-		}
-		// subtract baseFee
-		if priority.Cmp(baseFee) < 0 {
-			// Shouldn't happen (tx validation catches it), but defend.
-			return new(uint256.Int)
-		}
-		perGas := new(uint256.Int).Sub(priority, baseFee)
-		return new(uint256.Int).Mul(perGas, gasUsedU)
-	}
-
-	// Pre-London: full gasPrice is the producer's tip.
-	gasPrice := tx.GasPrice()
-	if gasPrice == nil {
-		return new(uint256.Int)
-	}
-	return new(uint256.Int).Mul(gasPrice, gasUsedU)
 }
 
 // Compile-time interface assertion.
