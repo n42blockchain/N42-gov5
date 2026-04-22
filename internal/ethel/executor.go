@@ -48,6 +48,13 @@ type ExecutorConfig struct {
 	// They are rebuilt as a batch stage after sync completes.
 	// NoOutputs if true, skip writing output freezer (receipts, senders, etc.).
 	NoOutputs bool
+	// ParallelEVM if true, use Block-STM parallel EVM for tx execution.
+	// EXPERIMENTAL — see docs/parallel_evm_plan.md. Default false keeps
+	// the sequential path; the parallel path is opt-in and additive.
+	ParallelEVM bool
+	// ParallelWorkers is the Block-STM worker count when ParallelEVM is on.
+	// 0 defaults to 8 (sweet spot per cmd/conflict-analyze).
+	ParallelWorkers int
 }
 
 // Executor reads blocks from a Geth-compatible Freezer and re-executes
