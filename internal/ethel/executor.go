@@ -280,12 +280,18 @@ func (e *Executor) Run(ctx context.Context) error {
 			e.prefetcher.prefetchBlock(blockNum + 1)
 		}
 
-		if err := e.executeBlock(ctx, tx, blockNum); err != nil {
+		var execErr error
+		if e.cfg.ParallelEVM {
+			execErr = e.executeBlockParallel(ctx, tx, blockNum)
+		} else {
+			execErr = e.executeBlock(ctx, tx, blockNum)
+		}
+		if execErr != nil {
 			if e.cfg.SkipErrors {
-				log.Warn("Block execution error (skipped)", "block", blockNum, "err", err)
+				log.Warn("Block execution error (skipped)", "block", blockNum, "err", execErr)
 				continue
 			}
-			return fmt.Errorf("block %d: %w", blockNum, err)
+			return fmt.Errorf("block %d: %w", blockNum, execErr)
 		}
 		lastOKBlock = blockNum
 

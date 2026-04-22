@@ -646,7 +646,9 @@ func run(c *cli.Context) error {
 		ParallelWorkers: c.Int("parallel-workers"),
 	}
 	if cfg.ParallelEVM {
-		log.Warn("EXPERIMENTAL: --parallel-evm enabled. See docs/parallel_evm_plan.md",
+		log.Warn("EXPERIMENTAL: --parallel-evm enabled (Phase 5 MVP). "+
+			"Output freezer writes (receipts/senders/changesets) are SKIPPED "+
+			"in this path. See docs/parallel_evm_plan.md",
 			"workers", cfg.ParallelWorkers)
 	}
 
