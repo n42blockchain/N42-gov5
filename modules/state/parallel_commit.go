@@ -133,9 +133,42 @@ func FinalizeBlock(
 
 	// 1. Collect the final writes from MVHashMap.
 	//    CollectHighestWrites gives us (key, value, txIdx) per key.
-	//    Sort by key for MDBX B+tree locality (same as the sequential
-	//    PlainStateBuffer.ApplyTo does).
 	entries := mv.CollectHighestWrites()
+
+	// Filter pre-wipe storage writes: if addr has a wipe at txIdx=W and
+	// a per-slot storage write at txIdx<W with no subsequent write
+	// (wipe is the highest for that (addr,slot) tuple), the stored
+	// write is invisible to any reader but would still be applied by
+	// Apply's Phase 2 (put after wipe), resurrecting the wiped value
+	// in the base store. Drop those entries so wipe shadows them at
+	// commit time too.
+	wipeTxIdxByAddr := map[types.Address]int{}
+	for _, e := range entries {
+		if len(e.Key) == 21 && e.Key[0] == mvKeyTagWipe {
+			var addr types.Address
+			copy(addr[:], e.Key[1:])
+			if cur, ok := wipeTxIdxByAddr[addr]; !ok || e.TxIdx > cur {
+				wipeTxIdxByAddr[addr] = e.TxIdx
+			}
+		}
+	}
+	if len(wipeTxIdxByAddr) > 0 {
+		filtered := entries[:0]
+		for _, e := range entries {
+			if len(e.Key) == 53 && e.Key[0] == mvKeyTagStorage {
+				var addr types.Address
+				copy(addr[:], e.Key[1:21])
+				if wipeTxIdx, ok := wipeTxIdxByAddr[addr]; ok && e.TxIdx < wipeTxIdx {
+					continue
+				}
+			}
+			filtered = append(filtered, e)
+		}
+		entries = filtered
+	}
+
+	// Sort by key for MDBX B+tree locality (same as the sequential
+	// PlainStateBuffer.ApplyTo does).
 	sort.Slice(entries, func(i, j int) bool {
 		return bytes.Compare(entries[i].Key, entries[j].Key) < 0
 	})
