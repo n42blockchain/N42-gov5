@@ -89,6 +89,7 @@ func main() {
 		&cli.IntFlag{Name: "code-analysis-cache", Usage: "JUMPDEST analysis LRU capacity (entries). Avoids re-running O(n) bytecode scan per contract call", Value: 32768},
 		&cli.BoolFlag{Name: "parallel-evm", Usage: "EXPERIMENTAL: use Block-STM parallel EVM for block tx execution. See docs/parallel_evm_plan.md. Default: off (sequential path, same as before)"},
 		&cli.IntFlag{Name: "parallel-workers", Usage: "Worker count for --parallel-evm. Default 8 (sweet spot per conflict-analyze data; values >= 16 can stall on heavy contention until Phase 5 adds condvar-based dependency blocking)", Value: 8},
+		&cli.IntFlag{Name: "timing-interval", Usage: "Blocks between P50/P99 timing log lines. Default 10000", Value: 10000},
 	}
 
 	// pprof server for flame graphs (always on, profiling hooks only with --pprof).
@@ -644,6 +645,7 @@ func run(c *cli.Context) error {
 		NoOutputs:       noOutputs,
 		ParallelEVM:     c.Bool("parallel-evm"),
 		ParallelWorkers: c.Int("parallel-workers"),
+		TimingInterval:  c.Int("timing-interval"),
 	}
 	if cfg.ParallelEVM {
 		log.Warn("EXPERIMENTAL: --parallel-evm enabled (Phase 5 MVP). "+

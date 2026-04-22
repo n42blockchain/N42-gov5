@@ -55,6 +55,10 @@ type ExecutorConfig struct {
 	// ParallelWorkers is the Block-STM worker count when ParallelEVM is on.
 	// 0 defaults to 8 (sweet spot per cmd/conflict-analyze).
 	ParallelWorkers int
+	// TimingInterval controls how often the P50/P99 log line is emitted.
+	// 0 defaults to 10000 blocks. Set higher to reduce log noise on long
+	// forward-replays; set lower for finer-grained profiling.
+	TimingInterval int
 }
 
 // Executor reads blocks from a Geth-compatible Freezer and re-executes
@@ -792,7 +796,11 @@ type timingSample struct {
 
 func (e *Executor) collectTiming(blockNum uint64, s timingSample) {
 	if e.timingWindow == 0 {
-		e.timingWindow = 10000
+		if e.cfg.TimingInterval > 0 {
+			e.timingWindow = e.cfg.TimingInterval
+		} else {
+			e.timingWindow = 10000
+		}
 	}
 	e.timingSamples = append(e.timingSamples, s)
 	if len(e.timingSamples) >= e.timingWindow {
