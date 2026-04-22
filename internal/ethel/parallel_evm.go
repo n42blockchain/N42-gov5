@@ -21,8 +21,6 @@
 package ethel
 
 import (
-	"fmt"
-
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -189,6 +187,3 @@ func (e *RealParallelEVM) Execute(
 
 // Compile-time interface assertion.
 var _ state.ParallelEVM = (*RealParallelEVM)(nil)
-
-// sanity: force "fmt" import even if unused in shipping code.
-var _ = fmt.Sprintf
