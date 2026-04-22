@@ -79,9 +79,16 @@ func (e *RealParallelEVM) Execute(
 	view *state.EVMStateView,
 	_ *state.BlockContext, // unused — we use the raw *block.Header we were constructed with
 ) (state.TxOutput, error) {
-	// Propagate the pre-recovered sender into the tx so ApplyTransaction
-	// doesn't re-ecrecover. Matches the sequential ProcessBlock path.
-	tx.SetFrom(sender)
+	// Propagate the pre-recovered sender only when it's non-zero.
+	// Zero is the "no pre-recovery available" sentinel used by callers
+	// that don't have a senderStore/senderFreezer configured. In that
+	// case, skip SetFrom so AsMessage runs ecrecover via the signer —
+	// matches ProcessBlock's "if precomputedSenders != nil { SetFrom }"
+	// guard. Silently SetFrom(zero) here previously caused every tx to
+	// execute as if sent from 0x0000...0000, corrupting state.
+	if sender != (types.Address{}) {
+		tx.SetFrom(sender)
+	}
 
 	reader := state.NewMVStateReader(view)
 	writer := state.NewMVStateWriter(view)

@@ -90,11 +90,14 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 	}
 
 	// --- Phase 2: parallel tx loop ---
+	// Pre-recovered senders from senderStore/senderFreezer, or nil if
+	// none were configured. We keep zero addresses as a "no pre-recovery"
+	// sentinel — RealParallelEVM.Execute only calls tx.SetFrom when the
+	// sender is non-zero; otherwise ApplyTransaction's AsMessage performs
+	// ecrecover. This matches the sequential ProcessBlock path, which
+	// only calls SetFrom when precomputedSenders != nil.
 	senders := e.loadSenders(blockNum, len(body.Transactions))
 	if senders == nil {
-		// No pre-recovered senders; fall back to zero addrs — ApplyTransaction
-		// will re-ecrecover via transaction.AsMessage. Logged as a miss
-		// because the pre-recovery pipeline should be feeding this.
 		senders = make([]types.Address, len(body.Transactions))
 	}
 
