@@ -87,6 +87,8 @@ func main() {
 		&cli.Uint64Flag{Name: "cache-storage-gb", Usage: "Storage S3-FIFO cache budget (GB)", Value: 32},
 		&cli.Uint64Flag{Name: "cache-code-gb", Usage: "Code LRU cache budget (GB)", Value: 2},
 		&cli.IntFlag{Name: "code-analysis-cache", Usage: "JUMPDEST analysis LRU capacity (entries). Avoids re-running O(n) bytecode scan per contract call", Value: 32768},
+		&cli.BoolFlag{Name: "parallel-evm", Usage: "EXPERIMENTAL: use Block-STM parallel EVM for block tx execution. See docs/parallel_evm_plan.md. Default: off (sequential path, same as before)"},
+		&cli.IntFlag{Name: "parallel-workers", Usage: "Worker count for --parallel-evm. Default 8 (sweet spot per conflict-analyze data; values >= 16 can stall on heavy contention until Phase 5 adds condvar-based dependency blocking)", Value: 8},
 	}
 
 	// pprof server for flame graphs (always on, profiling hooks only with --pprof).
@@ -634,12 +636,18 @@ func run(c *cli.Context) error {
 	engine := ethel.NewEthReplayEngine(chainCfg)
 
 	cfg := ethel.ExecutorConfig{
-		StartBlock:     startBlock,
-		EndBlock:       endBlock,
-		CommitInterval: commitInterval,
-		VerifyInterval: verifyInterval,
-		SkipErrors:     skipErrors,
-		NoOutputs:      noOutputs,
+		StartBlock:      startBlock,
+		EndBlock:        endBlock,
+		CommitInterval:  commitInterval,
+		VerifyInterval:  verifyInterval,
+		SkipErrors:      skipErrors,
+		NoOutputs:       noOutputs,
+		ParallelEVM:     c.Bool("parallel-evm"),
+		ParallelWorkers: c.Int("parallel-workers"),
+	}
+	if cfg.ParallelEVM {
+		log.Warn("EXPERIMENTAL: --parallel-evm enabled. See docs/parallel_evm_plan.md",
+			"workers", cfg.ParallelWorkers)
 	}
 
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
