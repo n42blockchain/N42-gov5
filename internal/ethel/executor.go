@@ -400,7 +400,24 @@ func (e *Executor) Run(ctx context.Context) error {
 			// hashed-state tables), so we MUST wait for the in-flight
 			// bg flush to complete and then run verify under its own
 			// short-lived RwTx.
-			if e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0 && !shuttingDown {
+			//
+			// WARNING: the standard-MPT verify path (internal/ethcompat/
+			// state_root.go) builds the full account trie + per-account
+			// storage tries in Go heap. At block 15M state has ~10M+
+			// active accounts and the transient allocations during
+			// construction can exceed 30 GB. Combined with MDBX dirty
+			// pages, page cache, and a GOGC=400 heap, a 128 GB host
+			// can OOM. For archive replay past block 10M: DO NOT use
+			// --verify with a periodic interval. Use the one-shot
+			// verify-root subcommand after run completion instead.
+			const verifyBlockCap = 10_000_000
+			if e.cfg.VerifyInterval > 0 && blockNum > verifyBlockCap && e.verifyHook == nil {
+				log.Warn("Skipping periodic --verify past block 10M to avoid OOM; use verify-root subcommand instead",
+					"block", blockNum, "cap", verifyBlockCap)
+			}
+			if e.cfg.VerifyInterval > 0 && blockNum%e.cfg.VerifyInterval == 0 &&
+				!shuttingDown &&
+				(blockNum <= verifyBlockCap || e.verifyHook != nil) {
 				dur, err := e.asyncFlush.waitPrev()
 				if err != nil {
 					return fmt.Errorf("wait pre-verify flush at block %d: %w", blockNum, err)
