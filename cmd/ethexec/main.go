@@ -283,6 +283,16 @@ func main() {
 				Action: runVerifyCSRoot,
 			},
 			{
+				Name:  "clone-state",
+				Usage: "Copy PlainState (Account/Storage/Code) + progress from --src datadir to a fresh --dst (2 TB MapSize). Escapes a stuck MapSize cap without rerunning the 1h+ changeset replay.",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "src", Usage: "Source datadir (read-only, inherits its existing MapSize)", Required: true},
+					&cli.StringFlag{Name: "dst", Usage: "Destination datadir (must NOT exist — will be created fresh with 2 TB MapSize)", Required: true},
+					&cli.IntFlag{Name: "batch", Usage: "Puts per dst tx commit. Default 500000", Value: 500000},
+				},
+				Action: runCloneState,
+			},
+			{
 				Name:  "code-import",
 				Usage: "Import Bytecodes from Reth MDBX into ethexec Code table + compressed freezer",
 				Flags: []cli.Flag{
@@ -1684,6 +1694,66 @@ func runScanCS(c *cli.Context) error {
 		}
 		fmt.Printf("  good batches: %d, bad regions: %d, lastGoodBlock: %d\n", goodCount, badCount, lastGood)
 	}
+	return nil
+}
+
+// runCloneState copies PlainState + progress from src to a freshly
+// created dst datadir with 2 TB MapSize. Escapes MapSize cap
+// inheritance without rerunning the multi-hour changeset replay.
+func runCloneState(c *cli.Context) error {
+	srcPath := c.String("src")
+	dstPath := c.String("dst")
+	batchN := c.Int("batch")
+	if batchN <= 0 {
+		batchN = 500_000
+	}
+
+	// Refuse to write into an existing dst — clone must land fresh so
+	// the 2 TB MapSize actually takes effect via SetGeometry.
+	if fi, err := os.Stat(filepath.Join(dstPath, "mdbx.dat")); err == nil && fi.Size() > 0 {
+		return fmt.Errorf("--dst %s already contains an mdbx.dat (size=%d); delete it first so SetGeometry(2TB) applies to a fresh file",
+			dstPath, fi.Size())
+	}
+
+	logger := log2.New()
+
+	// Open src read-only, Accede so we inherit whatever geometry it has.
+	srcDB, err := mdbx.NewMDBX(logger).
+		Path(srcPath).
+		Label(kv.ChainDB).
+		Accede().
+		Readonly().
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open src %s: %w", srcPath, err)
+	}
+	defer srcDB.Close()
+
+	// Open dst fresh with full 2 TB MapSize + matching page/growth params.
+	if err := os.MkdirAll(dstPath, 0755); err != nil {
+		return fmt.Errorf("mkdir dst: %w", err)
+	}
+	dstDB, err := mdbx.NewMDBX(logger).
+		Path(dstPath).
+		Label(kv.ChainDB).
+		PageSize(4096).
+		MapSize(2 * datasize.TB).
+		GrowthStep(4 * datasize.GB).
+		DirtySpace(uint64(2 * datasize.GB)).
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("open dst %s: %w", dstPath, err)
+	}
+	defer dstDB.Close()
+
+	ctx, cancel := withShutdown()
+	defer cancel()
+
+	log.Info("Cloning PlainState", "src", srcPath, "dst", dstPath, "batch", batchN)
+	if err := ethel.CloneState(ctx, srcDB, dstDB, ethel.CloneStateOptions{BatchN: batchN}); err != nil {
+		return err
+	}
+	log.Info("Clone complete. Next step: rebuild-state --datadir "+dstPath+" --persist-trie (auto-resume skips replay)", "dst", dstPath)
 	return nil
 }
 
