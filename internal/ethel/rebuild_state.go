@@ -120,9 +120,15 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		endBlock = items
 	}
 	startBlock := opts.StartBlock
-	if startBlock >= endBlock {
-		return fmt.Errorf("start %d >= end %d", startBlock, endBlock)
+	if startBlock > endBlock {
+		return fmt.Errorf("start %d > end %d", startBlock, endBlock)
 	}
+	// startBlock == endBlock is a legitimate "nothing to replay" case: used
+	// when auto-resume progress == --end, so we can skip replay and go
+	// straight to the optional --persist-trie BootstrapHPH step. The
+	// for-loop below iterates [startBlock, endBlock) and becomes a no-op;
+	// final flush is also empty; WriteProgress re-writes the same value
+	// (idempotent); and PersistTrie runs normally.
 	var m0 runtime.MemStats
 	runtime.ReadMemStats(&m0)
 	log.Info("Rebuild PlainState from V2 changesets",
