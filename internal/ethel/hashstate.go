@@ -14,7 +14,10 @@
 package ethel
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -188,6 +191,278 @@ func BootstrapHPH(tx kv.RwTx) (types.Hash, error) {
 		}
 	}
 	return root, nil
+}
+
+// BootstrapHPHBatched is a scalable variant of BootstrapHPH that commits
+// the hashed-table fill in multiple MDBX transactions to avoid
+// MDBX_MAP_FULL at 10M+ block scale.
+//
+// Phases (each its own RwTx):
+//   1. Clear HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage
+//   2. hashAllAccountsBatched — commit every accountBatchN entries
+//   3. hashAllStorageBatched — commit every storageBatchN entries
+//      (HashedStorage is DupSort, which inflates dirty-page cost; keep this
+//       batch size modest — a few million per commit)
+//   4. CalcTrieRoot + flush TrieOf* intermediate nodes (single RwTx; the
+//      intermediate-node set is small relative to plain state, ~1-3 GB
+//      dirty at 12.5M, well within any reasonable DirtySpace).
+//
+// Pass 0 for batch sizes to use defaults (2M accounts, 3M storage).
+func BootstrapHPHBatched(ctx context.Context, db kv.RwDB, accountBatchN, storageBatchN int) (types.Hash, error) {
+	if accountBatchN <= 0 {
+		accountBatchN = 2_000_000
+	}
+	if storageBatchN <= 0 {
+		storageBatchN = 3_000_000
+	}
+
+	// Phase 1: clear hashed/trie tables (fast, own tx).
+	{
+		log.Info("BootstrapHPH: clearing HashedAccounts/HashedStorage/TrieOf*")
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		for _, tbl := range []string{kv.HashedAccounts, kv.HashedStorage, kv.TrieOfAccounts, kv.TrieOfStorage} {
+			if err := tx.ClearBucket(tbl); err != nil {
+				tx.Rollback()
+				return types.Hash{}, fmt.Errorf("clear %s: %w", tbl, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return types.Hash{}, fmt.Errorf("commit clear: %w", err)
+		}
+	}
+
+	// Phase 2: hash all accounts, batched.
+	accTotal, err := hashAllAccountsBatched(ctx, db, accountBatchN)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("hashAllAccountsBatched: %w", err)
+	}
+
+	// Phase 3: hash all storage, batched.
+	stoTotal, err := hashAllStorageBatched(ctx, db, storageBatchN)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("hashAllStorageBatched: %w", err)
+	}
+	log.Info("BootstrapHPH: hashing complete", "accounts", accTotal, "storage", stoTotal)
+
+	// Phase 4: CalcTrieRoot + flush intermediate nodes (single RwTx).
+	log.Info("BootstrapHPH: computing trie root via FlatDBTrieLoader")
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return types.Hash{}, err
+	}
+	defer tx.Rollback()
+
+	type kvPair struct{ k, v []byte }
+	var accTrie []kvPair
+	var storTrie []kvPair
+
+	accCollector := func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		if len(keyHex) == 0 {
+			return nil
+		}
+		k := append([]byte{}, keyHex...)
+		if hasState == 0 {
+			accTrie = append(accTrie, kvPair{k, nil})
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		accTrie = append(accTrie, kvPair{k, append([]byte{}, v...)})
+		return nil
+	}
+	storCollector := func(accWithInc []byte, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		k := append(append(make([]byte, 0, len(accWithInc)+len(keyHex)), accWithInc...), keyHex...)
+		if len(k) == 0 {
+			return nil
+		}
+		if hasState == 0 {
+			storTrie = append(storTrie, kvPair{k, nil})
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		storTrie = append(storTrie, kvPair{k, append([]byte{}, v...)})
+		return nil
+	}
+
+	loader := trie.NewFlatDBTrieLoader("bootstrap-hph", trie.NewRetainList(0), accCollector, storCollector, false)
+	root, err := loader.CalcTrieRoot(tx, nil)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("CalcTrieRoot: %w", err)
+	}
+
+	log.Info("BootstrapHPH: flushing intermediate trie nodes",
+		"accTrie", len(accTrie), "storTrie", len(storTrie))
+	for _, e := range accTrie {
+		if e.v == nil {
+			_ = tx.Delete("TrieAccount", e.k)
+		} else {
+			if err := tx.Put("TrieAccount", e.k, e.v); err != nil {
+				return types.Hash{}, err
+			}
+		}
+	}
+	for _, e := range storTrie {
+		if e.v == nil {
+			_ = tx.Delete("TrieStorage", e.k)
+		} else {
+			if err := tx.Put("TrieStorage", e.k, e.v); err != nil {
+				return types.Hash{}, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return types.Hash{}, fmt.Errorf("commit trie flush: %w", err)
+	}
+	return root, nil
+}
+
+// hashAllAccountsBatched scans the Account table and writes keccak-hashed
+// entries to HashedAccounts, committing every batchN puts so the MDBX
+// dirty-page pool never overflows. Returns the total number of hashed
+// entries written.
+func hashAllAccountsBatched(ctx context.Context, db kv.RwDB, batchN int) (int, error) {
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	var lastKey []byte
+	total := 0
+	t0 := time.Now()
+	for {
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return total, err
+		}
+		cursor, err := tx.Cursor("Account")
+		if err != nil {
+			tx.Rollback()
+			return total, err
+		}
+		var k, v []byte
+		if lastKey == nil {
+			k, v, err = cursor.First()
+		} else {
+			// Seek to lastKey, advance past it.
+			k, v, err = cursor.Seek(lastKey)
+			if err == nil && k != nil && bytes.Equal(k, lastKey) {
+				k, v, err = cursor.Next()
+			}
+		}
+		if err != nil {
+			cursor.Close()
+			tx.Rollback()
+			return total, err
+		}
+
+		count := 0
+		for ; k != nil && count < batchN; k, v, err = cursor.Next() {
+			if err != nil {
+				cursor.Close()
+				tx.Rollback()
+				return total, err
+			}
+			if len(k) != 20 {
+				continue
+			}
+			hashedKey := crypto.Keccak256(k)
+			var acc account.StateAccount
+			if err := acc.DecodeForStorage(v); err != nil {
+				cursor.Close()
+				tx.Rollback()
+				return total, err
+			}
+			if acc.CodeHash == (types.Hash{}) {
+				acc.CodeHash = emptyCodeHash
+			}
+			if err := tx.Put(kv.HashedAccounts, hashedKey, acc.MarshalV2()); err != nil {
+				cursor.Close()
+				tx.Rollback()
+				return total, err
+			}
+			lastKey = append(lastKey[:0], k...)
+			count++
+		}
+		cursor.Close()
+		if err := tx.Commit(); err != nil {
+			return total, fmt.Errorf("hashAllAccountsBatched commit: %w", err)
+		}
+		total += count
+		log.Info("hashAllAccountsBatched progress",
+			"accounts", total, "batch_size", count, "elapsed", time.Since(t0).Truncate(time.Second))
+		if count < batchN {
+			break
+		}
+	}
+	return total, nil
+}
+
+// hashAllStorageBatched scans the Storage table and writes
+// keccak(addr)||inc||keccak(slot) → value to HashedStorage, committing
+// every batchN puts.
+func hashAllStorageBatched(ctx context.Context, db kv.RwDB, batchN int) (int, error) {
+	var lastKey []byte
+	total := 0
+	t0 := time.Now()
+	for {
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return total, err
+		}
+		cursor, err := tx.Cursor("Storage")
+		if err != nil {
+			tx.Rollback()
+			return total, err
+		}
+		var k, v []byte
+		if lastKey == nil {
+			k, v, err = cursor.First()
+		} else {
+			k, v, err = cursor.Seek(lastKey)
+			if err == nil && k != nil && bytes.Equal(k, lastKey) {
+				k, v, err = cursor.Next()
+			}
+		}
+		if err != nil {
+			cursor.Close()
+			tx.Rollback()
+			return total, err
+		}
+
+		count := 0
+		for ; k != nil && count < batchN; k, v, err = cursor.Next() {
+			if err != nil {
+				cursor.Close()
+				tx.Rollback()
+				return total, err
+			}
+			if len(k) < 52 {
+				continue
+			}
+			// Plain: addr(20)+slot(32)=52B → Hashed: addrHash(32)+inc0(8)+slotHash(32)=72B
+			var compositeKey [72]byte
+			copy(compositeKey[:32], crypto.Keccak256(k[:20]))
+			copy(compositeKey[40:72], crypto.Keccak256(k[20:52]))
+			if err := tx.Put(kv.HashedStorage, compositeKey[:], v); err != nil {
+				cursor.Close()
+				tx.Rollback()
+				return total, err
+			}
+			lastKey = append(lastKey[:0], k...)
+			count++
+		}
+		cursor.Close()
+		if err := tx.Commit(); err != nil {
+			return total, fmt.Errorf("hashAllStorageBatched commit: %w", err)
+		}
+		total += count
+		log.Info("hashAllStorageBatched progress",
+			"storage", total, "batch_size", count, "elapsed", time.Since(t0).Truncate(time.Second))
+		if count < batchN {
+			break
+		}
+	}
+	return total, nil
 }
 
 // IsHPHBootstrapped reports whether a datadir has TrieOfAccounts populated

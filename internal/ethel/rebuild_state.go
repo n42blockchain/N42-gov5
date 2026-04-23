@@ -441,17 +441,12 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 	if opts.PersistTrie {
 		log.Info("Bootstrapping HPH tables (HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage)...")
 		tBootstrap := time.Now()
-		tx2, err := db.BeginRw(ctx)
+		// Use the batched variant so we don't overflow MDBX's dirty-page
+		// pool on 12M+ block states (HashedStorage alone is 100M+ puts
+		// into a DupSort table, well past any reasonable single-tx limit).
+		root, err := BootstrapHPHBatched(ctx, db, 0, 0)
 		if err != nil {
-			return fmt.Errorf("hph bootstrap begin tx: %w", err)
-		}
-		root, err := BootstrapHPH(tx2)
-		if err != nil {
-			tx2.Rollback()
 			return fmt.Errorf("hph bootstrap: %w", err)
-		}
-		if err := tx2.Commit(); err != nil {
-			return fmt.Errorf("hph bootstrap commit: %w", err)
 		}
 		log.Info("HPH bootstrap complete",
 			"root", root.Hex(),
