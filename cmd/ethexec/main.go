@@ -196,6 +196,7 @@ func main() {
 					&cli.Uint64Flag{Name: "verify", Usage: "Periodic state-root verify interval (0=verify only at end)", Value: 0},
 					&cli.BoolFlag{Name: "evm-from-fallback", Usage: "After any EVM fallback, run EVM for every remaining block instead of trusting downstream freezer changesets"},
 					&cli.BoolFlag{Name: "persist-trie", Usage: "After reaching end block, populate HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage so subsequent per-block verify (verify-incremental) runs in O(dirty)"},
+					&cli.Uint64Flag{Name: "dirty-space-gb", Usage: "MDBX dirty-page pool size in GB. Default 2. Raise to 32+ for --persist-trie at 10M+ blocks; BootstrapHPH writes 100M+ rows in a single tx and the 2GB default overflows with MDBX_MAP_FULL", Value: 2},
 				},
 				Action: runRebuildState,
 			},
@@ -1317,6 +1318,10 @@ func runRebuildState(c *cli.Context) error {
 	evmFromFallback := c.Bool("evm-from-fallback")
 	persistTrie := c.Bool("persist-trie")
 	startWasSet := c.IsSet("start")
+	dirtySpaceGB := c.Uint64("dirty-space-gb")
+	if dirtySpaceGB == 0 {
+		dirtySpaceGB = 2
+	}
 
 	if leavesDir == "" {
 		leavesDir = filepath.Join(datadir, "chain", "freezer")
@@ -1335,7 +1340,7 @@ func runRebuildState(c *cli.Context) error {
 		PageSize(4096).
 		MapSize(2 * datasize.TB).
 		GrowthStep(4 * datasize.GB).
-		DirtySpace(uint64(2 * datasize.GB)).
+		DirtySpace(dirtySpaceGB * uint64(datasize.GB)).
 		DBVerbosity(kv.DBVerbosityLvl(2))
 	if hasMDBX {
 		mdbxBuilder = mdbxBuilder.Accede()
