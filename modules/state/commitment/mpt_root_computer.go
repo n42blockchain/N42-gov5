@@ -16,6 +16,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
+	"sync"
 
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
@@ -25,6 +26,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	libcommit "github.com/n42blockchain/N42/lib/commitment"
 	"github.com/n42blockchain/N42/lib/common/length"
+	"github.com/n42blockchain/N42/lib/etl"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/state"
@@ -32,7 +34,16 @@ import (
 
 // --- Branch store (memory + MDBX) ---
 
+// memBranchStore is the in-memory branch cache used by mptContext.
+//
+// Thread-safety: Get and Put are guarded by mu so multiple per-worker
+// mptContexts (created by the concurrent factory below) can read from a
+// shared store safely. The concurrent PutBranch path typically writes
+// to a per-worker etl.Collector instead of this store — see
+// concurrentMPTContextFactory — but Get still hits this shared store
+// for lookups of branches created earlier in the block.
 type memBranchStore struct {
+	mu   sync.RWMutex
 	data map[string][]byte
 }
 
@@ -41,13 +52,18 @@ func newMemBranchStore() *memBranchStore {
 }
 
 func (s *memBranchStore) Get(prefix []byte) ([]byte, error) {
-	if d, ok := s.data[string(prefix)]; ok {
+	s.mu.RLock()
+	d, ok := s.data[string(prefix)]
+	s.mu.RUnlock()
+	if ok {
 		return d, nil
 	}
 	return nil, nil
 }
 
 func (s *memBranchStore) Put(prefix []byte, data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(data) == 0 {
 		delete(s.data, string(prefix))
 	} else {
@@ -57,8 +73,16 @@ func (s *memBranchStore) Put(prefix []byte, data []byte) {
 	}
 }
 
-func (s *memBranchStore) Len() int { return len(s.data) }
+func (s *memBranchStore) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.data)
+}
 
+// mdbxBranchStore reads persisted branch data from MDBX. Like
+// PlainStateMPTReader it is NOT goroutine-safe when the underlying tx
+// is shared. The concurrent MPT context factory creates one per worker
+// via cloneWithTx.
 type mdbxBranchStore struct {
 	roTx  kv.Tx
 	table string
@@ -83,13 +107,36 @@ func (s *mdbxBranchStore) Get(prefix []byte) ([]byte, error) {
 
 func (s *mdbxBranchStore) SetReadTx(tx kv.Tx) { s.roTx = tx }
 
+// cloneWithTx returns a new mdbxBranchStore bound to a different tx,
+// preserving the table name. Used by the concurrent MPT context factory
+// so each worker goroutine reads through its own MDBX RoTx.
+// If s is nil, returns nil — matches the "no persistence" mode of
+// MPTRootComputer (see NewMPTRootComputer vs NewPersistentMPTRootComputer).
+func (s *mdbxBranchStore) cloneWithTx(tx kv.Tx) *mdbxBranchStore {
+	if s == nil {
+		return nil
+	}
+	return &mdbxBranchStore{roTx: tx, table: s.table}
+}
+
 // --- PlainState reader ---
 
+// PlainStateMPTReader reads Account/Storage rows from PlainState. It is
+// NOT goroutine-safe when backed by an MDBX kv.Tx because the erigon
+// mdbx-go binding is not thread-safe at the tx level. For concurrent
+// use, construct one reader per goroutine via Clone(newTx).
 type PlainStateMPTReader struct {
 	tx kv.Tx
 }
 
 func NewPlainStateMPTReader(tx kv.Tx) *PlainStateMPTReader {
+	return &PlainStateMPTReader{tx: tx}
+}
+
+// Clone returns a new reader with the same semantics but bound to a
+// different kv.Tx. Used by the concurrent MPT context factory so each
+// worker goroutine has its own independent MDBX RoTx.
+func (r *PlainStateMPTReader) Clone(tx kv.Tx) *PlainStateMPTReader {
 	return &PlainStateMPTReader{tx: tx}
 }
 
@@ -200,14 +247,25 @@ func ReadMPTTrieState(tx kv.Tx) (blockNum uint64, trieState []byte, err error) {
 
 // mptContext implements libcommit.PatriciaContext backed by mem/MDBX branch store
 // and PlainState account/storage reader.
+//
+// When `collector` is non-nil (set by the concurrent factory), PutBranch
+// writes go to the per-worker collector instead of the shared mem store.
+// After the parallel phase the main goroutine drains all collectors and
+// replays them into the real mem (see NewConcurrentMPTRootComputer).
+// For sequential use, `collector` is nil and PutBranch writes directly
+// to mem as before.
 type mptContext struct {
-	mem     *memBranchStore
-	persist *mdbxBranchStore
-	reader  *PlainStateMPTReader
+	mem       *memBranchStore
+	persist   *mdbxBranchStore
+	reader    *PlainStateMPTReader
+	collector *etl.Collector // non-nil only in concurrent-worker mode
 }
 
 func (c *mptContext) Branch(prefix []byte) ([]byte, kv.Step, error) {
-	if d, ok := c.mem.data[string(prefix)]; ok {
+	// Goroutine-safe read from mem (mutex-protected).
+	if d, err := c.mem.Get(prefix); err != nil {
+		return nil, 0, err
+	} else if d != nil {
 		return d, 0, nil
 	}
 	if c.persist != nil {
@@ -218,6 +276,12 @@ func (c *mptContext) Branch(prefix []byte) ([]byte, kv.Step, error) {
 }
 
 func (c *mptContext) PutBranch(prefix []byte, data []byte, prevData []byte) error {
+	// Concurrent path: write to per-worker collector. Main thread will
+	// drain and merge into mem after ParallelHashSort completes.
+	if c.collector != nil {
+		return c.collector.Collect(prefix, data)
+	}
+	// Sequential path: write directly to mem.
 	if len(data) == 0 {
 		c.mem.Put(prefix, nil)
 	} else {
@@ -306,14 +370,21 @@ func newMPTRootComputer(persist *mdbxBranchStore) *MPTRootComputer {
 		trie: libcommit.NewHexPatriciaHashed(int16(length.Addr), ctx),
 	}
 	// Reuse a single keccak hasher across calls (closure captures it).
+	m.hasher = makeSharedHasher()
+	return m
+}
+
+// makeSharedHasher returns a hasher closure suitable for libcommit.Updates.
+// The closure captures a single keccak state and rehashes; callers that
+// need goroutine-local hashers must construct their own via this helper.
+func makeSharedHasher() func([]byte) []byte {
 	keccak := sha3.NewLegacyKeccak256()
-	m.hasher = func(key []byte) []byte {
+	return func(key []byte) []byte {
 		if len(key) == length.Addr {
 			return keccakToNibbles(keccak, key)
 		}
 		return storageKeccakToNibbles(keccak, key[:length.Addr], key[length.Addr:])
 	}
-	return m
 }
 
 func (m *MPTRootComputer) SetStateReader(r *PlainStateMPTReader) {
