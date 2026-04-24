@@ -2395,7 +2395,7 @@ func (hph *HexPatriciaHashed) followAndUpdate(hashedKey, plainKey []byte, stateU
 	return nil
 }
 
-func (hph *HexPatriciaHashed) foldMounted(nib int) (cell, error) {
+func (hph *HexPatriciaHashed) foldMounted(ctx context.Context, nib int) (cell, error) {
 	if nib != hph.mountedNib {
 		panic(fmt.Sprintf("foldMounted: nib (%x)!= mountedNib (%x)", nib, hph.mountedNib))
 	}
@@ -2406,6 +2406,9 @@ func (hph *HexPatriciaHashed) foldMounted(nib int) (cell, error) {
 	}
 
 	for hph.activeRows > 0 {
+		if err := ctx.Err(); err != nil {
+			return cell{}, err
+		}
 		// fmt.Printf("===[%x] folding prefix %x (len %d)\n", hph.mountedNib, hph.currentKey[:hph.currentKeyLen], hph.currentKeyLen)
 		if hph.activeRows == 1 && hph.depths[hph.activeRows-1] == 1 {
 			if hph.trace {
