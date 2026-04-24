@@ -259,19 +259,34 @@ func (v *EVMStateView) IsAddressWiped(addr types.Address) bool {
 // in production, mock in tests) to satisfy MVBaseReader. Base reads
 // are typed: the adapter decodes the tag byte to dispatch to the
 // correct StateReader method.
+//
+// IMPORTANT thread-safety note: instances of MVBaseFromStateReader are
+// NOT designed to be shared across goroutines when the underlying
+// StateReader is backed by an MDBX RoTx — the erigon mdbx-go binding
+// is not goroutine-safe. For parallel execution, use MVBaseFactory
+// (see below) to construct one MVBaseFromStateReader per worker,
+// each with its own kv.Tx.
 type MVBaseFromStateReader struct {
 	r StateReader
 }
 
-// NewMVBaseFromStateReader creates an adapter. The underlying
-// StateReader must be safe for concurrent Get calls (the 4 prefetch
-// workers + N execute workers will call Get concurrently).
-// BufferedPlainStateReader's read path uses s3FIFO + sync.Map-backed
-// caches and a single underlying RoTx per reader, which is safe for
-// concurrent reads.
+// NewMVBaseFromStateReader creates an adapter. Single-goroutine use
+// only when backed by MDBX. Tests backed by in-memory map readers
+// (MapBaseReader) can share freely.
 func NewMVBaseFromStateReader(r StateReader) *MVBaseFromStateReader {
 	return &MVBaseFromStateReader{r: r}
 }
+
+// MVBaseFactory is a constructor + disposer pair.
+// The caller invokes the factory once per parallel worker to obtain
+// a fresh MVBaseReader (backed by that worker's own kv.Tx), and then
+// invokes the returned closer when the worker exits to release the
+// underlying MDBX RoTx.
+//
+// Mirrors erigon/execution/commitment's TrieContextFactory pattern.
+// This is the correct way to plumb per-goroutine state IO through
+// Block-STM without tripping mdbx-go's cgo goroutine-safety checks.
+type MVBaseFactory func() (MVBaseReader, func())
 
 // Get implements MVBaseReader. Dispatches on the key tag.
 func (b *MVBaseFromStateReader) Get(key []byte) ([]byte, error) {
