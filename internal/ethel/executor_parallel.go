@@ -103,7 +103,6 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 
 	totalGas := uint64(0)
 	if len(body.Transactions) > 0 {
-		mvBase := state.NewMVBaseFromStateReader(bufReader)
 		parallelEVM := NewRealParallelEVM(
 			e.chainCfg, e.engine, vm2.Config{},
 			header, e.makeBlockHashFunc(header), nil,
@@ -119,11 +118,35 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 		runnerBlock := &state.BlockContext{}
 		runner := state.ParallelTxRunner(parallelEVM, body.Transactions, senders, runnerBlock, outputs)
 
-		_, mv, err := state.ExecuteBlockParallel(
-			len(body.Transactions), numWorkers, mvBase, runner,
+		// Per-worker factory: each Block-STM worker gets its own RoTx so
+		// concurrent tx.GetOne calls don't trip the erigon mdbx-go cgo
+		// goroutine-safety check. The outer `tx` is kept for the
+		// sequential pre-/post-block IBS phases; it is NOT used by
+		// workers here. The in-memory PlainStateBuffer is shared (it is
+		// goroutine-safe for read).
+		baseFactory := func() (state.MVBaseReader, func()) {
+			workerTx, txErr := e.db.BeginRo(ctx)
+			if txErr != nil {
+				// A nil base would deref-panic in workerBase.Get; return
+				// a closer-only so the worker will fail its reads via
+				// the StateReader. Rare — BeginRo failure usually means
+				// shutdown in flight.
+				log.Warn("parallel worker BeginRo failed", "block", blockNum, "err", txErr)
+				return state.NewMVBaseFromStateReader(
+					state.NewBufferedPlainStateReader(e.stateBuf, tx),
+				), func() {}
+			}
+			workerBufReader := state.NewBufferedPlainStateReader(e.stateBuf, workerTx)
+			return state.NewMVBaseFromStateReader(workerBufReader), func() {
+				workerTx.Rollback()
+			}
+		}
+
+		_, mv, err := state.ExecuteBlockParallelWithFactory(
+			len(body.Transactions), numWorkers, baseFactory, runner,
 		)
 		if err != nil {
-			return fmt.Errorf("ExecuteBlockParallel: %w", err)
+			return fmt.Errorf("ExecuteBlockParallelWithFactory: %w", err)
 		}
 
 		for _, out := range outputs {
