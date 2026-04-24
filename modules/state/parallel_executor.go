@@ -58,6 +58,38 @@ func ExecuteBlockParallel(
 	base MVBaseReader,
 	executor func(txIdx int) TxExecutor,
 ) ([]Result, *MVHashMap, error) {
+	// Adapt the shared-base API to the per-worker-factory API by wrapping
+	// the shared base in a factory that always returns the same instance
+	// with a no-op closer. This preserves existing callers (tests,
+	// MapBaseReader users where goroutine-sharing is safe) verbatim.
+	factory := func() (MVBaseReader, func()) {
+		return base, func() {}
+	}
+	return ExecuteBlockParallelWithFactory(numTxs, numWorkers, factory, executor)
+}
+
+// ExecuteBlockParallelWithFactory is the per-worker-base variant of
+// ExecuteBlockParallel. Each worker goroutine calls baseFactory once on
+// startup to get its own MVBaseReader + closer. This is REQUIRED for
+// MDBX-backed readers because the erigon mdbx-go binding is not
+// goroutine-safe at the transaction level. Sharing a single RoTx across
+// workers trips a cgo "Go pointer to unpinned Go pointer" panic.
+//
+// The factory contract:
+//   - Each call MUST return an MVBaseReader whose underlying kv.Tx is
+//     distinct from every other concurrently-living base returned from
+//     this factory.
+//   - The returned closer MUST release the underlying tx (typically via
+//     tx.Rollback()) when invoked.
+//   - Returning the same base from multiple calls is allowed only when
+//     the reader itself is goroutine-safe (e.g. tests using
+//     MapBaseReader).
+func ExecuteBlockParallelWithFactory(
+	numTxs int,
+	numWorkers int,
+	baseFactory MVBaseFactory,
+	executor func(txIdx int) TxExecutor,
+) ([]Result, *MVHashMap, error) {
 	if numTxs == 0 {
 		return nil, NewMVHashMap(1), nil
 	}
@@ -81,6 +113,11 @@ func ExecuteBlockParallel(
 	for w := 0; w < numWorkers; w++ {
 		go func() {
 			defer wg.Done()
+			// Each worker owns its MVBaseReader (and, for MDBX-backed
+			// readers, the underlying RoTx). The closer is invoked when
+			// the worker exits.
+			workerBase, closer := baseFactory()
+			defer closer()
 			for {
 				task := sched.NextTask()
 				if task.Kind == TaskDone {
@@ -94,7 +131,7 @@ func ExecuteBlockParallel(
 				}
 				switch task.Kind {
 				case TaskExecute:
-					runExecute(sched, mv, base, executor, task.TxIdx, task.Incarnation,
+					runExecute(sched, mv, workerBase, executor, task.TxIdx, task.Incarnation,
 						txViews, txWrittenKeys, txResults, txMu)
 				case TaskValidate:
 					runValidate(sched, task.TxIdx, task.Incarnation,
