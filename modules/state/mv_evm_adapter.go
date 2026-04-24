@@ -28,7 +28,6 @@ package state
 import (
 	"encoding/binary"
 	"fmt"
-	"sync"
 
 	"github.com/holiman/uint256"
 
@@ -260,40 +259,25 @@ func (v *EVMStateView) IsAddressWiped(addr types.Address) bool {
 // in production, mock in tests) to satisfy MVBaseReader. Base reads
 // are typed: the adapter decodes the tag byte to dispatch to the
 // correct StateReader method.
-//
-// Thread-safety: the erigon mdbx-go binding's RoTx is NOT goroutine-safe.
-// Concurrent tx.GetOne calls from parallel Block-STM workers trigger
-// `cgo argument has Go pointer to unpinned Go pointer` panics. This
-// adapter serializes all Get calls behind a single mutex so the
-// underlying MDBX cursor operations never race. The serialization cost
-// is negligible because:
-//   1. Cache hits in BufferedPlainStateReader (active buf → in-flight
-//      snapshot → S3-FIFO LRU) never reach MDBX and still need the
-//      lock, but those paths are fast pure-Go lookups (~100ns).
-//   2. Cache miss paths hit MDBX which is the real serialization point
-//      at the C layer anyway.
-//   3. Mainnet cache hit rates are typically 98-99% in forward replay,
-//      so the lock is uncontended most of the time.
 type MVBaseFromStateReader struct {
-	mu sync.Mutex
-	r  StateReader
+	r StateReader
 }
 
-// NewMVBaseFromStateReader creates an adapter. Thread-safe: the
-// internal mutex serializes all Get calls so multiple Block-STM
-// workers can share one reader (and one underlying MDBX RoTx).
+// NewMVBaseFromStateReader creates an adapter. The underlying
+// StateReader must be safe for concurrent Get calls (the 4 prefetch
+// workers + N execute workers will call Get concurrently).
+// BufferedPlainStateReader's read path uses s3FIFO + sync.Map-backed
+// caches and a single underlying RoTx per reader, which is safe for
+// concurrent reads.
 func NewMVBaseFromStateReader(r StateReader) *MVBaseFromStateReader {
 	return &MVBaseFromStateReader{r: r}
 }
 
 // Get implements MVBaseReader. Dispatches on the key tag.
-// Serialized behind b.mu — see type doc for the reason.
 func (b *MVBaseFromStateReader) Get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return nil, fmt.Errorf("mv base: empty key")
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	switch key[0] {
 	case mvKeyTagAccount:
 		if len(key) != 21 {
