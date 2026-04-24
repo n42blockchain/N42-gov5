@@ -54,6 +54,12 @@ type DomainPutter = stateifs.DomainPutter
 // CommitmentWrite represents a commitment domain write that needs to be added to changesets.
 type CommitmentWrite = stateifs.CommitmentWrite
 
+// CollapseTracer is a callback invoked when a trie node collapse occurs during updates.
+// When a FullNode is reduced to a single child (updateKindPropagate), the remaining child
+// may be a HashNode that needs to be resolved for proper witness generation.
+// The callback receives the hashed key path (in nibble format) to the remaining child.
+type CollapseTracer func(hashedKeyPath []byte)
+
 // HexPatriciaHashed implements commitment based on patricia merkle tree with radix 16,
 // with keys pre-hashed by keccak256
 type HexPatriciaHashed struct {
@@ -110,6 +116,20 @@ type HexPatriciaHashed struct {
 	metrics       *Metrics
 	depthsToTxNum [129]uint64 // endTxNum of file with branch data for that depth
 	hadToLoadL    map[uint64]skipStat
+
+	// collapseTracer is called when a node collapse occurs (FullNode reduced to single child).
+	// Used by witness generation to capture paths that need resolution. Nil by default
+	// — hot-path hooks check for nil and skip detection/callback when unset, so there is
+	// no performance cost to leaving this disabled.
+	collapseTracer CollapseTracer
+}
+
+// SetCollapseTracer sets a callback that will be invoked when a node collapse occurs
+// during commitment calculation. This is used by witness generation to capture paths
+// to HashNodes that need resolution when a FullNode is reduced to a single child.
+// Pass nil to disable.
+func (hph *HexPatriciaHashed) SetCollapseTracer(tracer CollapseTracer) {
+	hph.collapseTracer = tracer
 }
 
 // Clones current trie state to allow concurrent processing.
