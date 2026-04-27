@@ -211,6 +211,21 @@ func main() {
 				Action: runVerifyRoot,
 			},
 			{
+				Name:  "db-stats",
+				Usage: "Print MDBX table + freezer segment statistics (mirrors `reth db stats`)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "datadir", Usage: "Path to N42 MDBX directory", Required: true},
+					&cli.StringFlag{Name: "freezer", Usage: "Override freezer path (default: <datadir>/chain/freezer)"},
+					&cli.BoolFlag{Name: "no-mdbx", Usage: "Skip MDBX section"},
+					&cli.BoolFlag{Name: "no-freezer", Usage: "Skip freezer section"},
+					&cli.BoolFlag{Name: "no-progress", Usage: "Skip progress markers section"},
+					&cli.BoolFlag{Name: "hide-empty", Usage: "Hide tables with 0 entries (both freezer and MDBX)"},
+					&cli.StringFlag{Name: "sort", Usage: "Sort rows by: size | items | name", Value: "size"},
+					&cli.BoolFlag{Name: "with-decoded", Usage: "Sample-estimate decoded element count for list-valued tables (e.g. senders → total tx count). Slower."},
+				},
+				Action: runDBStats,
+			},
+			{
 				Name:  "verify-incremental",
 				Usage: "Per-block HPH state-root verify (requires datadir bootstrapped via rebuild-state --persist-trie). Fast bisect: first MISMATCH block is the bug site.",
 				Flags: []cli.Flag{
