@@ -129,6 +129,25 @@ func (c *s3FIFO[K]) PutBatch(keys []K, values [][]byte, costs []int) {
 	c.evictLocked()
 }
 
+// PutIfAbsent inserts only when key is not already present. Returns true
+// if inserted, false if the key already had a value (including a nil
+// tombstone). Designed for the async prefetcher: it can stale-read MDBX
+// concurrently with the executor's flush+RefreshLRU, so blindly Putting
+// risks overwriting a fresh tombstone (or any newer value RefreshLRU
+// just wrote) with a stale snapshot read. PutIfAbsent says "only fill
+// the gap; never overwrite". This preserves prefetch warmth (fills empty
+// LRU entries) without contaminating values RefreshLRU is responsible for.
+func (c *s3FIFO[K]) PutIfAbsent(key K, value []byte, cost int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.items[key]; ok {
+		return false
+	}
+	c.putLocked(key, value, cost)
+	c.evictLocked()
+	return true
+}
+
 func (c *s3FIFO[K]) putLocked(key K, value []byte, cost int) {
 	// Update existing entry in S or M.
 	if elem, ok := c.items[key]; ok {
@@ -270,6 +289,26 @@ func (c *s3FIFO[K]) DeleteBatch(keys []K) {
 	defer c.mu.Unlock()
 	for _, k := range keys {
 		c.deleteLocked(k)
+	}
+}
+
+// Range visits every key currently in the cache (excluding ghost entries),
+// calling visit(k) once per key. The cache is held under read lock for the
+// whole walk; visit must be cheap and must not call back into Get/Put.
+// Returning false from visit halts the walk early.
+//
+// Used by SELFDESTRUCT-aware LRU invalidation: we need to evict every
+// (addr || slot) composite key whose first 20B match a wiped address,
+// but the cache has no per-prefix index. Walking c.items is O(n) — only
+// run from the post-flush LRU refresh path which fires once per commit
+// interval, not on the EVM hot path.
+func (c *s3FIFO[K]) Range(visit func(K) bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.items {
+		if !visit(k) {
+			return
+		}
 	}
 }
 
