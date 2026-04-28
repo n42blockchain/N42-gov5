@@ -154,9 +154,14 @@ func (r *prefetchStateReader) ReadAccountStorage(address types.Address, key *typ
 		// Skip negative cache — same reasoning as ReadAccountData.
 		return nil, nil
 	}
+	// We do NOT publish into r.buf.readStorage. The same wipedAtEpoch
+	// race that hit ReadAccountData applies here: the guard only fires
+	// for SELFDESTRUCT'd addresses, but ordinary SSTORE-update slots
+	// rotate value across blocks, and a stale-RoTx put can poison an
+	// evicted LRU slot. bufReader's own MDBX-miss fill (using the
+	// executor's stable RoTx) covers the warm-up.
 	cached := make([]byte, len(enc))
 	copy(cached, enc)
-	r.buf.CacheStorageIfAbsentEpoch(address, *key, cached, r.epoch)
 	return cached, nil
 }
 

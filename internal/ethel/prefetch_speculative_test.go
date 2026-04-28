@@ -152,46 +152,15 @@ func TestPrefetchStateReader_StorageRoundtrip(t *testing.T) {
 	if len(got) != 1 || got[0] != 0x42 {
 		t.Fatalf("MDBX hit: got %x", got)
 	}
-	// LRU MUST be populated by prefetcher — via tombstone-safe IfAbsent
-	// path so a stale-RoTx read can't overwrite a fresher RefreshLRU
-	// tombstone, but on cold LRU it fills the entry to give the executor
-	// a hit on the next read.
-	v, present := buf.LookupReadStorage(addr, slot)
-	if !present {
-		t.Fatalf("LRU must be populated by prefetcher (cold-fill)")
-	}
-	if len(v) != 1 || v[0] != 0x42 {
-		t.Fatalf("LRU populated with wrong value: got %x", v)
-	}
-
-	// Second prefetcher pass with a different value must NOT overwrite.
-	const differentValue byte = 0x99
-	{
-		rwTx, err := db.BeginRw(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		compositeKey := modules.PlainGenerateCompositeStorageKey(addr[:], slot[:])
-		if err := rwTx.Put(modules.Storage, compositeKey, []byte{differentValue}); err != nil {
-			rwTx.Rollback()
-			t.Fatal(err)
-		}
-		if err := rwTx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	roTx2, err := db.BeginRo(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer roTx2.Rollback()
-	r2 := newPrefetchStateReader(buf, roTx2)
-	if _, err := r2.ReadAccountStorage(addr, &slot); err != nil {
-		t.Fatal(err)
-	}
-	v2, _ := buf.LookupReadStorage(addr, slot)
-	if len(v2) != 1 || v2[0] != 0x42 {
-		t.Fatalf("PutIfAbsent must NOT overwrite existing LRU entry; got %x want 0x42", v2)
+	// LRU MUST NOT be populated by the prefetcher — same reasoning as
+	// the account read in TestPrefetchStateReader_LookupOrder. The
+	// prefetcher's RoTx can lag the latest commit, so any
+	// PutIfAbsentEpoch from this path can land a stale value into an
+	// evicted LRU slot. bufReader.ReadAccountStorage's own MDBX-miss
+	// fill (using the executor's per-interval stable RoTx) is the
+	// only authorized cache write site for storage in this commit.
+	if _, present := buf.LookupReadStorage(addr, slot); present {
+		t.Fatalf("LRU MUST NOT be populated by the prefetcher storage read")
 	}
 }
 
