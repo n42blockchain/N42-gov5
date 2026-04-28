@@ -17,10 +17,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/rlp"
@@ -59,6 +61,11 @@ type ExecutorConfig struct {
 	// 0 defaults to 10000 blocks. Set higher to reduce log noise on long
 	// forward-replays; set lower for finer-grained profiling.
 	TimingInterval int
+	// PrefetchSpeculative enables the reth-style speculative prewarm path
+	// in the prefetcher (run block N's txs through a NoopWriter to warm
+	// the LRU cache with everything internal CALL/SLOAD touches). When
+	// false the prefetcher uses the static AccessList path. Default true.
+	PrefetchSpeculative bool
 }
 
 // Executor reads blocks from a Geth-compatible Freezer and re-executes
@@ -100,6 +107,11 @@ type Executor struct {
 	// Optional hook called instead of state-root verify at VerifyInterval
 	// boundaries. When set, the standard VerifyStateRoot path is skipped.
 	verifyHook func(blockNum uint64) error
+
+	// currentBlockNum is published before each block executes so the
+	// speculative prefetcher can detect when the executor catches up and
+	// abort work on the prefetched block.
+	currentBlockNum atomic.Uint64
 }
 
 // NewExecutor creates a new block executor.
@@ -238,7 +250,7 @@ func (e *Executor) Run(ctx context.Context) error {
 	// Start background prefetcher to warm MDBX page cache. Pass the
 	// pre-computed senders sources so prefetcher doesn't waste time
 	// re-doing ecrecover that the executor already avoids.
-	e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg, e.senderStore, e.senderTable)
+	e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg, e.senderStore, e.senderTable, e.engine, &e.currentBlockNum, e.cfg.PrefetchSpeculative)
 	e.prefetcher.start()
 	defer e.prefetcher.stop()
 
@@ -278,6 +290,11 @@ func (e *Executor) Run(ctx context.Context) error {
 					"lastBlock", blockNum-1, "nextCommit", (blockNum/e.cfg.CommitInterval+1)*e.cfg.CommitInterval)
 			}
 		}
+
+		// Publish the block number we're about to execute so the
+		// speculative prefetcher can detect when we've caught up to a
+		// block it's still prewarming and abort.
+		e.currentBlockNum.Store(blockNum)
 
 		// Prefetch next block's state while we execute this one.
 		if e.prefetcher != nil && blockNum+1 <= endBlock {
@@ -354,6 +371,11 @@ func (e *Executor) Run(ctx context.Context) error {
 			prevAH, prevAM = ah, am
 			prevSH, prevSM = sh, sm
 			prevCH, prevCM = ch, cm
+
+			// Flush diagnostic logs so a crash inside the bg flusher
+			// doesn't lose recent history. No-op when not initialized.
+			state.FlushDeletesLog()
+			state.FlushAuditLog()
 
 			// 4. Hand the buffer + changeset remainder to the bg
 			// flusher. The remainder is saved to MDBX atomically
@@ -596,6 +618,16 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) 
 		return err
 	}
 
+	// reth-style per-block LRU refresh. Pushes every (addr, slot, code)
+	// this block touched into the shared read caches, so the next
+	// block's reads can hit cache instead of falling through to MDBX.
+	// Without this, recently written entries miss the LRU for the rest
+	// of the commit interval (~10K blocks) and only get bulk-promoted
+	// at the next interval boundary, dragging hit rate down with the
+	// growing buffer (sto% observed declining 78→66 across 2.2M blocks
+	// of a single interval before this change).
+	writer.RefreshLRUForBlock()
+
 	// 4. Verify gas used.
 	if result.GasUsed != header.GasUsed {
 		// Diagnostic: locate the FIRST mis-charged transaction by comparing
@@ -654,7 +686,7 @@ func (e *Executor) processBlock(header *block.Header, body *GethBodyResult, ibs 
 	for _, u := range body.Uncles {
 		uncles = append(uncles, u)
 	}
-	return ProcessBlock(e.chainCfg, e.engine, header, body.Transactions, uncles, ibs, e.makeBlockHashFunc(header), senders, writer)
+	return ProcessBlock(e.chainCfg, e.engine, header, body.Transactions, uncles, body.Withdrawals, ibs, e.makeBlockHashFunc(header), senders, writer)
 }
 
 // readHeader reads a header from compact reader or Geth freezer.
@@ -989,19 +1021,46 @@ func (e *Executor) dumpGasMismatch(blockNum uint64, header *block.Header, body *
 			totalDiffs++
 			d := int64(gethTx) - int64(n42Tx)
 			totalDiffSum += d
-			var txHash types.Hash
+			var (
+				txHash  types.Hash
+				toStr   = "create"
+				dataLen int
+				value   = "0"
+				gasLim  uint64
+				nonce   uint64
+			)
 			if i < len(body.Transactions) {
-				txHash = body.Transactions[i].Hash()
+				txn := body.Transactions[i]
+				txHash = txn.Hash()
+				if to := txn.To(); to != nil {
+					toStr = to.Hex()
+				}
+				dataLen = len(txn.Data())
+				if v := txn.Value(); v != nil {
+					value = v.String()
+				}
+				gasLim = txn.Gas()
+				nonce = txn.Nonce()
 			}
+			n42LogsHash := receiptLogsHash(result.Receipts[i])
+			gethLogsHash := receiptLogsHash(gethReceipts[i])
 			log.Error("Gas-mismatch tx",
 				"block", blockNum,
 				"txIndex", i,
 				"txHash", txHash.Hex(),
+				"to", toStr,
+				"value", value,
+				"nonce", nonce,
+				"gasLimit", gasLim,
+				"dataLen", dataLen,
 				"n42Gas", n42Tx,
 				"gethGas", gethTx,
 				"diff", d,
 				"txType", result.Receipts[i].Type,
 				"status", result.Receipts[i].Status,
+				"n42Logs", len(result.Receipts[i].Logs),
+				"gethLogs", len(gethReceipts[i].Logs),
+				"logsMatch", n42LogsHash == gethLogsHash,
 			)
 		}
 	}
@@ -1009,12 +1068,30 @@ func (e *Executor) dumpGasMismatch(blockNum uint64, header *block.Header, body *
 		"block", blockNum,
 		"diffs", totalDiffs,
 		"sumDiff", totalDiffSum,
-	)
-	log.Error("Gas-mismatch dump: per-tx gas matches in shared range; block totals still differ",
-		"block", blockNum,
 		"n42Receipts", len(result.Receipts),
 		"gethReceipts", len(gethReceipts),
 		"n42Gas", result.GasUsed,
 		"gethGas", header.GasUsed,
 	)
+}
+
+// receiptLogsHash returns a stable hash over a receipt's logs (address +
+// topics + data) so a gas-mismatch dump can flag whether the divergent
+// tx also produced different logs — a strong tell for state divergence
+// vs a pure gas-accounting issue.
+func receiptLogsHash(r *block.Receipt) types.Hash {
+	if r == nil || len(r.Logs) == 0 {
+		return types.Hash{}
+	}
+	h := crypto.NewKeccakState()
+	for _, lg := range r.Logs {
+		h.Write(lg.Address[:])
+		for _, t := range lg.Topics {
+			h.Write(t[:])
+		}
+		h.Write(lg.Data)
+	}
+	var out types.Hash
+	h.Read(out[:])
+	return out
 }

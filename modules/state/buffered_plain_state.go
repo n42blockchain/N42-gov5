@@ -1202,6 +1202,21 @@ func (r *BufferedPlainStateReader) ReadAccountCodeSize(address types.Address, co
 type BufferedPlainStateWriter struct {
 	buf *PlainStateBuffer
 	csw *ChangeSetWriter
+
+	// Per-block touched-entry tracking. Populated by every Update*/
+	// Delete*/WriteAccountStorage/CreateContract/UpdateAccountCode
+	// call; consumed by RefreshLRUForBlock at end-of-block, which
+	// PutBatches the current buffer values for those keys into the
+	// shared read LRU. This is the reth-style cross-block cache
+	// refresh — without it, recently written entries miss the LRU
+	// for the rest of the commit interval (~10K blocks) and only
+	// get promoted at the next interval boundary.
+	//
+	// All maps are nil until first write to keep allocation cost
+	// zero on read-only / empty-block paths.
+	touchedAccts map[types.Address]struct{}
+	touchedStor  map[types.Address]map[types.Hash]struct{}
+	touchedCode  map[types.Hash]struct{}
 }
 
 // NewBufferedPlainStateWriter constructs a writer for per-block use.
@@ -1218,6 +1233,124 @@ func NewBufferedPlainStateWriter(buf *PlainStateBuffer, changeSetsDB kv.Tx, bloc
 
 func NewBufferedPlainStateWriterNoHistory(buf *PlainStateBuffer) *BufferedPlainStateWriter {
 	return &BufferedPlainStateWriter{buf: buf}
+}
+
+// RefreshLRUForBlock pushes the current buffer values for every key
+// that this block's writer touched into the shared read LRU. Mirrors
+// the per-block insert_state(BundleState) path in reth's
+// CachedStateProvider — the only cross-block cache writer apart from
+// RefreshLRUForSnapshot at commit-interval boundaries. Safe to call
+// from the executor goroutine after processBlock returns; not safe
+// from any other goroutine because it reads buf.accounts/storage/code
+// (which are mutated by the executor on the same goroutine).
+//
+// Cost: O(touched entries per block); typical mainnet block has
+// ~50-200 dirty entries, so this is microseconds per block. Compared
+// to the previous LRU-touch from prefetcher writes (which were racy
+// and got removed in 49b700ae), this is single-goroutine, sees the
+// authoritative just-committed buf state, and matches reth's invariant:
+// cache is only mutated by the post-block insert_state path.
+func (w *BufferedPlainStateWriter) RefreshLRUForBlock() {
+	if w.buf == nil {
+		return
+	}
+	if n := len(w.touchedAccts); n > 0 {
+		keys := make([]types.Address, 0, n)
+		vals := make([][]byte, 0, n)
+		costs := make([]int, 0, n)
+		for addr := range w.touchedAccts {
+			v := w.buf.accounts[addr]
+			keys = append(keys, addr)
+			// deletedSentinel ([]byte{}) gets cached as nil so reads
+			// see the negative answer; identical to RefreshLRUForSnapshot's
+			// account loop semantics.
+			if len(v) == 0 {
+				vals = append(vals, nil)
+				costs = append(costs, addrKeyLen+cacheOverheadPerEntry)
+			} else {
+				vals = append(vals, v)
+				costs = append(costs, addrKeyLen+len(v)+cacheOverheadPerEntry)
+			}
+		}
+		w.buf.readAccounts.PutBatch(keys, vals, costs)
+	}
+	if len(w.touchedStor) > 0 {
+		// Two-pass: first count to size the slice, then fill.
+		stoCount := 0
+		for _, slots := range w.touchedStor {
+			stoCount += len(slots)
+		}
+		stoKeys := make([][storageCompositeKeyLen]byte, 0, stoCount)
+		stoVals := make([][]byte, 0, stoCount)
+		stoCosts := make([]int, 0, stoCount)
+		for addr, slots := range w.touchedStor {
+			bufSlots := w.buf.storage[addr]
+			for slot := range slots {
+				var ck [storageCompositeKeyLen]byte
+				copy(ck[:20], addr[:])
+				copy(ck[20:], slot[:])
+				stoKeys = append(stoKeys, ck)
+				var v []byte
+				if bufSlots != nil {
+					v = bufSlots[slot].value
+				}
+				if len(v) == 0 {
+					stoVals = append(stoVals, nil)
+					stoCosts = append(stoCosts, storageCompositeKeyLen+cacheOverheadPerEntry)
+				} else {
+					stoVals = append(stoVals, v)
+					stoCosts = append(stoCosts, storageCompositeKeyLen+len(v)+cacheOverheadPerEntry)
+				}
+			}
+		}
+		w.buf.readStorage.PutBatch(stoKeys, stoVals, stoCosts)
+	}
+	if n := len(w.touchedCode); n > 0 {
+		keys := make([]types.Hash, 0, n)
+		vals := make([][]byte, 0, n)
+		costs := make([]int, 0, n)
+		for h := range w.touchedCode {
+			code := w.buf.code[h]
+			keys = append(keys, h)
+			vals = append(vals, code)
+			costs = append(costs, hashKeyLen+len(code)+cacheOverheadPerEntry)
+		}
+		w.buf.readCode.PutBatch(keys, vals, costs)
+	}
+	// The writer is one-shot per block; clearing here is defensive in
+	// case a caller re-uses it (none currently do).
+	w.touchedAccts = nil
+	w.touchedStor = nil
+	w.touchedCode = nil
+}
+
+// markTouchedAcct / markTouchedStor / markTouchedCode are tiny helpers
+// used by every Write* method to populate the touched-entry maps.
+// Lazy allocation: empty blocks pay zero.
+func (w *BufferedPlainStateWriter) markTouchedAcct(addr types.Address) {
+	if w.touchedAccts == nil {
+		w.touchedAccts = make(map[types.Address]struct{}, 64)
+	}
+	w.touchedAccts[addr] = struct{}{}
+}
+
+func (w *BufferedPlainStateWriter) markTouchedStor(addr types.Address, slot types.Hash) {
+	if w.touchedStor == nil {
+		w.touchedStor = make(map[types.Address]map[types.Hash]struct{}, 32)
+	}
+	slots := w.touchedStor[addr]
+	if slots == nil {
+		slots = make(map[types.Hash]struct{}, 8)
+		w.touchedStor[addr] = slots
+	}
+	slots[slot] = struct{}{}
+}
+
+func (w *BufferedPlainStateWriter) markTouchedCode(h types.Hash) {
+	if w.touchedCode == nil {
+		w.touchedCode = make(map[types.Hash]struct{}, 4)
+	}
+	w.touchedCode[h] = struct{}{}
 }
 
 func (w *BufferedPlainStateWriter) UpdateAccountData(address types.Address, original, acct *account.StateAccount) error {
@@ -1283,6 +1416,7 @@ func (w *BufferedPlainStateWriter) UpdateAccountData(address types.Address, orig
 		}
 	}
 	w.buf.accounts[address] = acct.MarshalV2()
+	w.markTouchedAcct(address)
 	return nil
 }
 
@@ -1295,6 +1429,7 @@ func (w *BufferedPlainStateWriter) UpdateAccountCode(address types.Address, code
 	// Bytecode is content-addressed in modules.Code (codeHash → bytecode).
 	// Account row's CodeHash field is the only address→code link.
 	w.buf.code[codeHash] = code
+	w.markTouchedCode(codeHash)
 	return nil
 }
 
@@ -1326,6 +1461,7 @@ func (w *BufferedPlainStateWriter) DeleteAccount(address types.Address, original
 		recordContractDelete(bn, address, original.Nonce, original.CodeHash)
 	}
 	w.buf.accounts[address] = deletedSentinel
+	w.markTouchedAcct(address)
 	return nil
 }
 
@@ -1370,6 +1506,7 @@ func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, ke
 	} else {
 		slots[*key] = storageEntry{value: v}
 	}
+	w.markTouchedStor(address, *key)
 	return nil
 }
 
