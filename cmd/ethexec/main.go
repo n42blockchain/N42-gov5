@@ -90,6 +90,8 @@ func main() {
 		&cli.BoolFlag{Name: "parallel-evm", Usage: "EXPERIMENTAL: use Block-STM parallel EVM for block tx execution. See docs/parallel_evm_plan.md. Default: off (sequential path, same as before)"},
 		&cli.IntFlag{Name: "parallel-workers", Usage: "Worker count for --parallel-evm. Default 8 (sweet spot per conflict-analyze data; values >= 16 can stall on heavy contention until Phase 5 adds condvar-based dependency blocking)", Value: 8},
 		&cli.IntFlag{Name: "timing-interval", Usage: "Blocks between P50/P99 timing log lines. Default 10000", Value: 10000},
+		&cli.BoolFlag{Name: "prefetch-speculative", Usage: "Use reth-style prewarm: speculatively execute block N's txs through a NoopWriter to warm the read LRU with everything internal CALL/SLOAD touches. Falls back to static AccessList path on small blocks (<5 txs) or missing senders. Default true", Value: true},
+		&cli.BoolFlag{Name: "prefetch", Usage: "Master switch for the background prefetcher (both static-AL and speculative paths). Set to false to bisect prefetcher-induced LRU races. Default true", Value: true},
 	}
 
 	// pprof server for flame graphs (always on, profiling hooks only with --pprof).
@@ -669,9 +671,11 @@ func run(c *cli.Context) error {
 		VerifyInterval:  verifyInterval,
 		SkipErrors:      skipErrors,
 		NoOutputs:       noOutputs,
-		ParallelEVM:     c.Bool("parallel-evm"),
-		ParallelWorkers: c.Int("parallel-workers"),
-		TimingInterval:  c.Int("timing-interval"),
+		ParallelEVM:         c.Bool("parallel-evm"),
+		ParallelWorkers:     c.Int("parallel-workers"),
+		TimingInterval:      c.Int("timing-interval"),
+		PrefetchSpeculative: c.Bool("prefetch-speculative"),
+		PrefetchEnabled:     c.Bool("prefetch"),
 	}
 	if cfg.ParallelEVM {
 		log.Warn("EXPERIMENTAL: --parallel-evm enabled (Phase 5 MVP). "+

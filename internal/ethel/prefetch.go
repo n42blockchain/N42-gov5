@@ -204,7 +204,7 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 		return
 	}
 
-	// Capture flushEpoch BEFORE BeginRo. CacheXxxIfAbsentEpoch
+	// Capture flushEpoch BEFORE BeginRo. CacheStorageIfAbsentEpoch
 	// rejects the write if a flush stamps after this capture but
 	// before the write — closes the stale-RoTx race that block
 	// 2520771 hit pre-2026-04-28.
@@ -215,38 +215,31 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	}
 	defer roTx.Rollback()
 
-	// Prewarm OS page cache + LRU for upcoming blocks via Cache*IfAbsentEpoch.
+	// Account prewarming via the LRU is INTENTIONALLY OMITTED. The
+	// account race is fundamentally different from storage:
 	//
-	// This prefetcher runs concurrently with the executor + background
-	// flusher. roTx's MDBX snapshot may lag behind the latest flush —
-	// reading from it can return values older than what
-	// RefreshLRUForSnapshot just wrote into LRU. We must NEVER overwrite
-	// the LRU because the executor's flush is the canonical writer; we
-	// can only fill empty slots.
+	//   - Active buf may have a freshly-updated StateAccount (new
+	//     codeHash after CREATE, new balance after transfer), but the
+	//     bg flusher hasn't bumped flushEpoch yet. Prefetcher reads
+	//     MDBX (stale), captures pre-flush prefetcherEpoch, and the
+	//     IfAbsentEpoch guard PASSES because no flush has stamped.
+	//   - LRU now holds a stale account. Executor's next read goes
+	//     LRU-first (per readAccounts hot path), gets the stale
+	//     codeHash, and treats a fresh contract as an EOA — block
+	//     6411933 confirmed this exact failure (gas n42=23320 vs
+	//     geth=53513, 0 logs vs 1, status=1 in both — pure
+	//     "code-missing" signature).
+	//   - Storage is safe to prewarm: storageWipes / wipedStorage
+	//     intercept stale-slot LRU hits inside the bufReader before
+	//     the value is consumed, and slot writes don't carry an
+	//     EOA-vs-contract behavioral cliff like codeHash does.
 	//
-	// Cache*IfAbsent is the tombstone-safe primitive: it writes only if
-	// the key is absent, returning false (no-op) when an entry already
-	// exists. This preserves the warmth benefit of populating cold-LRU
-	// slots while making the previous data race (block 17,150,008 stale
-	// resurrection) impossible: even if our roTx is stale, our value
-	// can't displace whatever RefreshLRU has already canonicalized.
-	//
-	// MDBX GetOne also pulls the underlying B-tree pages into the OS
-	// page cache, helping subsequent reads even when the LRU write was
-	// a no-op (key already present).
+	// We still issue the MDBX GetOne for accounts (warms OS page
+	// cache, ~free) but never publish into the LRU. Hot accounts are
+	// naturally warmed by the executor itself; the LRU path is too
+	// dangerous for prefetcher writes.
 	for addr := range addrs {
-		enc, err := roTx.GetOne(modules.Account, addr[:])
-		if err != nil {
-			continue
-		}
-		// Skip negative cache: an empty MDBX entry could be pre-flush
-		// state where active buf has just created the account; caching
-		// nil here would poison the next-interval bufReader path. Only
-		// cache positive hits — the flush-epoch guard inside
-		// CacheAccountIfAbsentEpoch makes those safe.
-		if len(enc) > 0 {
-			p.stateBuf.CacheAccountIfAbsentEpoch(addr, enc, prefetcherEpoch)
-		}
+		_, _ = roTx.GetOne(modules.Account, addr[:])
 	}
 	for _, tx := range body.Transactions {
 		for _, entry := range tx.AccessList() {
@@ -256,7 +249,8 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 				if err != nil {
 					continue
 				}
-				// Same nil-skip reasoning as account.
+				// Skip negative cache — pinned RoTx may pre-date a
+				// flush whose snap created this slot.
 				if len(val) > 0 {
 					p.stateBuf.CacheStorageIfAbsentEpoch(entry.Address, key, val, prefetcherEpoch)
 				}

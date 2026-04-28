@@ -106,17 +106,19 @@ func (r *prefetchStateReader) ReadAccountData(address types.Address) (*account.S
 	if err != nil {
 		return nil, err
 	}
-	// Skip negative cache: our RoTx may pre-date a flush whose snap
-	// created this account; caching nil here poisons the next-interval
-	// bufReader read once active buf rotates out. Only cache positive
-	// hits, which are tombstone-safe via PutIfAbsentEpoch.
 	if len(enc) == 0 {
 		return nil, nil
 	}
-	// CacheAccountIfAbsentEpoch's flush-epoch guard rejects the put if
-	// any flush has stamped after r.epoch was captured — closes the
-	// stale-RoTx race that hit block 2520771 pre-2026-04-28.
-	r.buf.CacheAccountIfAbsentEpoch(address, enc, r.epoch)
+	// Account LRU writes from the prefetcher are INTENTIONALLY OMITTED.
+	// Even with the flush-epoch guard, the active buf may hold a fresher
+	// StateAccount (new codeHash after CREATE, new balance after
+	// transfer) while the bg flusher hasn't bumped flushEpoch yet. The
+	// prefetcher then reads stale MDBX, the IfAbsentEpoch guard PASSES
+	// (no flush has stamped), and the executor's next LRU-first read
+	// returns a stale codeHash — observable as "contract treated as
+	// EOA" (block 6411933 gas n42=23320 vs geth=53513, 0 logs vs 1).
+	// Storage and code prefetching stay enabled; storage has wipe
+	// interception in bufReader, code is content-addressed.
 	var a account.StateAccount
 	if err := a.DecodeForStorage(enc); err != nil {
 		return nil, err
