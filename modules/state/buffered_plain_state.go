@@ -12,9 +12,12 @@
 package state
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"os"
 	"sort"
+	"sync"
 	"sync/atomic"
 
 	"github.com/holiman/uint256"
@@ -26,6 +29,61 @@ import (
 )
 
 var deletedSentinel = []byte{}
+
+// Contract-delete diagnostic logger. Writes one line per contract
+// (non-empty CodeHash) being SELFDESTRUCT'd to ./deletes.log in the
+// process's working directory. Volume is bounded — Ethereum mainnet
+// sees a few hundred contract destructions per day. The file is
+// append-mode so multiple ethexec runs accumulate, and stdout stays
+// clean (avoiding the screen-flood that an unconditional fmt.Printf
+// would cause). Grep deletes.log after a gas-mismatch to find the
+// block + tx that destroyed the offending contract.
+var (
+	deletesLogOnce sync.Once
+	deletesLogBuf  *bufio.Writer
+	deletesLogFile *os.File
+	deletesLogMu   sync.Mutex
+)
+
+func ensureDeletesLog() {
+	deletesLogOnce.Do(func() {
+		f, err := os.OpenFile("deletes.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return
+		}
+		deletesLogFile = f
+		// 64 KiB buffer — flushed manually via FlushDeletesLog at flush
+		// boundaries. bufio.Writer is not concurrency-safe, hence the
+		// mutex around every Write.
+		deletesLogBuf = bufio.NewWriterSize(f, 64*1024)
+	})
+}
+
+func recordContractDelete(blk uint64, addr types.Address, nonce uint64, codeHash types.Hash) {
+	ensureDeletesLog()
+	if deletesLogBuf == nil {
+		return
+	}
+	deletesLogMu.Lock()
+	defer deletesLogMu.Unlock()
+	fmt.Fprintf(deletesLogBuf, "DELETE_CONTRACT blk=%d addr=%x nonce=%d codeHash=%x\n",
+		blk, addr[:], nonce, codeHash[:])
+}
+
+// FlushDeletesLog forces the buffered diagnostic file to disk. Safe to
+// call from any goroutine; no-op if logging was never initialized.
+// Hooked into the executor's commit-interval flush path so a crash
+// loses at most one interval's worth of entries.
+func FlushDeletesLog() {
+	deletesLogMu.Lock()
+	defer deletesLogMu.Unlock()
+	if deletesLogBuf != nil {
+		_ = deletesLogBuf.Flush()
+	}
+	if deletesLogFile != nil {
+		_ = deletesLogFile.Sync()
+	}
+}
 
 // trackedAddr, if non-nil, causes the BufferedPlainState* write/flush path
 // to emit targeted log lines whenever the tracked address is touched.
@@ -189,6 +247,15 @@ type PlainStateBuffer struct {
 	acctHits, acctMisses atomic.Uint64
 	stoHits, stoMisses   atomic.Uint64
 	codeHits, codeMisses atomic.Uint64
+
+	// flushEpoch increments once per fully-committed flush. Combined with
+	// wipedAtEpoch this lets the async prefetcher reject Cache*IfAbsent
+	// writes whose pinned RoTx pre-dates a SELFDESTRUCT-bearing flush —
+	// the case where the LRU prefix-sweep already cleared the slot and
+	// the prefetcher's stale value would slip into the gap. See
+	// CacheStorageIfAbsentEpoch for the full reasoning.
+	flushEpoch   atomic.Uint64
+	wipedAtEpoch sync.Map // map[types.Address]uint64
 }
 
 // NewPlainStateBuffer creates a buffer with the default cache budget.
@@ -267,6 +334,132 @@ func (b *PlainStateBuffer) CacheStorage(address types.Address, key types.Hash, v
 	copy(ck[20:], key[:])
 	cost := storageCompositeKeyLen + len(value) + cacheOverheadPerEntry
 	b.readStorage.Put(ck, value, cost)
+}
+
+// CacheCode populates the bytecode read cache. Used by speculative
+// prefetch when a contract's code is loaded from MDBX during prewarm.
+func (b *PlainStateBuffer) CacheCode(codeHash types.Hash, code []byte) {
+	cost := hashKeyLen + len(code) + cacheOverheadPerEntry
+	b.readCode.Put(codeHash, code, cost)
+}
+
+// CacheAccountIfAbsent populates the account read cache only if no entry
+// exists. Tombstone-safe: never overwrites a tombstone or fresher value
+// that RefreshLRUForSnapshot has already written. Designed for the async
+// prefetcher whose MDBX snapshot may lag behind executor writes.
+func (b *PlainStateBuffer) CacheAccountIfAbsent(address types.Address, enc []byte) bool {
+	cost := addrKeyLen + len(enc) + cacheOverheadPerEntry
+	return b.readAccounts.PutIfAbsent(address, enc, cost)
+}
+
+// CacheStorageIfAbsent populates the storage read cache only if no entry
+// exists. Tombstone-safe variant of CacheStorage.
+func (b *PlainStateBuffer) CacheStorageIfAbsent(address types.Address, key types.Hash, value []byte) bool {
+	var ck [storageCompositeKeyLen]byte
+	copy(ck[:20], address[:])
+	copy(ck[20:], key[:])
+	cost := storageCompositeKeyLen + len(value) + cacheOverheadPerEntry
+	return b.readStorage.PutIfAbsent(ck, value, cost)
+}
+
+// CacheCodeIfAbsent populates the bytecode read cache only if no entry
+// exists.
+func (b *PlainStateBuffer) CacheCodeIfAbsent(codeHash types.Hash, code []byte) bool {
+	cost := hashKeyLen + len(code) + cacheOverheadPerEntry
+	return b.readCode.PutIfAbsent(codeHash, code, cost)
+}
+
+// CurrentFlushEpoch returns the count of completed flushes. The async
+// prefetcher captures this BEFORE opening its RoTx so a later check
+// (CacheAccount/StorageIfAbsentEpoch) can detect whether an address was
+// wiped between BeginRo and the prefetcher's PutIfAbsent — a tombstone
+// race that PutIfAbsent alone cannot block (the LRU sweep in
+// RefreshLRUForSnapshot empties LRU for the wiped addr, so the
+// prefetcher's stale value would slip into the gap).
+func (b *PlainStateBuffer) CurrentFlushEpoch() uint64 {
+	return b.flushEpoch.Load()
+}
+
+// StampWipes records that the given addresses were wiped at the just-
+// committed flush epoch. Called by the flusher AFTER tx.Commit succeeds
+// — same lock-section as RefreshLRUForSnapshot — so any prefetcher
+// PutIfAbsentEpoch arriving later sees these stamps and skips. The map
+// grows monotonically; pruning is handled by a separate compaction
+// once flushEpoch advances enough that no live RoTx could be older.
+func (b *PlainStateBuffer) StampWipes(wipedAddrs []types.Address) uint64 {
+	epoch := b.flushEpoch.Add(1)
+	for _, addr := range wipedAddrs {
+		b.wipedAtEpoch.Store(addr, epoch)
+	}
+	return epoch
+}
+
+// PruneWipesBefore drops wipe records older than `cutoff`. Caller must
+// be sure no live RoTx was opened before cutoff. Called periodically
+// from the flusher to bound memory growth.
+func (b *PlainStateBuffer) PruneWipesBefore(cutoff uint64) {
+	if cutoff == 0 {
+		return
+	}
+	var stale []types.Address
+	b.wipedAtEpoch.Range(func(k, v interface{}) bool {
+		if v.(uint64) <= cutoff {
+			stale = append(stale, k.(types.Address))
+		}
+		return true
+	})
+	for _, a := range stale {
+		b.wipedAtEpoch.Delete(a)
+	}
+}
+
+// CacheAccountIfAbsentEpoch is the epoch-aware variant of
+// CacheAccountIfAbsent for the async prefetcher. It additionally skips
+// when the address was wiped at an epoch later than the prefetcher's
+// captured epoch — i.e. a flush completed between the prefetcher's
+// BeginRo and its PutIfAbsent, and our stale RoTx-derived value would
+// otherwise land in the gap RefreshLRUForSnapshot just opened.
+func (b *PlainStateBuffer) CacheAccountIfAbsentEpoch(address types.Address, enc []byte, prefetcherEpoch uint64) bool {
+	if v, ok := b.wipedAtEpoch.Load(address); ok && v.(uint64) > prefetcherEpoch {
+		return false
+	}
+	cost := addrKeyLen + len(enc) + cacheOverheadPerEntry
+	return b.readAccounts.PutIfAbsent(address, enc, cost)
+}
+
+// CacheStorageIfAbsentEpoch — see CacheAccountIfAbsentEpoch.
+func (b *PlainStateBuffer) CacheStorageIfAbsentEpoch(address types.Address, key types.Hash, value []byte, prefetcherEpoch uint64) bool {
+	if v, ok := b.wipedAtEpoch.Load(address); ok && v.(uint64) > prefetcherEpoch {
+		return false
+	}
+	var ck [storageCompositeKeyLen]byte
+	copy(ck[:20], address[:])
+	copy(ck[20:], key[:])
+	cost := storageCompositeKeyLen + len(value) + cacheOverheadPerEntry
+	return b.readStorage.PutIfAbsent(ck, value, cost)
+}
+
+// LookupReadAccount returns the v2-encoded account bytes from the read
+// LRU. (nil, true) means "negative cache hit" — known-absent. (nil,
+// false) means cache miss. Used by the speculative prefetch reader so
+// it can skip the active write-buffer tier (which is mutated by the
+// executor goroutine and unsafe to read concurrently).
+func (b *PlainStateBuffer) LookupReadAccount(address types.Address) ([]byte, bool) {
+	return b.readAccounts.Get(address)
+}
+
+// LookupReadStorage returns the storage slot value from the read LRU.
+// Same semantics as LookupReadAccount.
+func (b *PlainStateBuffer) LookupReadStorage(address types.Address, key types.Hash) ([]byte, bool) {
+	var ck [storageCompositeKeyLen]byte
+	copy(ck[:20], address[:])
+	copy(ck[20:], key[:])
+	return b.readStorage.Get(ck)
+}
+
+// LookupReadCode returns the bytecode from the read LRU.
+func (b *PlainStateBuffer) LookupReadCode(codeHash types.Hash) ([]byte, bool) {
+	return b.readCode.Get(codeHash)
 }
 
 // SnapshotForFlush moves the active write buffer maps into a fresh
@@ -546,6 +739,64 @@ func (b *PlainStateBuffer) RefreshLRUForSnapshot(snap *BufferSnapshot) {
 		codeCosts = append(codeCosts, hashKeyLen+len(code)+cacheOverheadPerEntry)
 	}
 	b.readCode.PutBatch(codeKeys, codeVals, codeCosts)
+
+	// SELFDESTRUCT-aware LRU sweep. CreateContract did `delete(buf.storage,
+	// addr)`, so snap.storage doesn't contain the wiped addresses, so the
+	// snap.storage iteration above never touched those LRU keys. But the
+	// LRU may hold non-zero entries from PRIOR-INTERVAL EVM reads of those
+	// addresses' slots — those entries are now stale (MDBX rows just got
+	// prefix-swept by ApplyTo). Without invalidation, the next interval's
+	// ReadAccountStorage hits stale LRU and propagates wrong original
+	// values into IBS, producing wipe-stale storcs entries (oldVal = stale
+	// non-zero, newVal = 0) and divergent state-root computation.
+	//
+	// Empirical confirmation: block 10,941,141 SELFDESTRUCT'd MEV proxy
+	// 00000000002bde…b8e1; LRU kept slot 8 = 0x2432 from prior reads;
+	// blocks 10,941,146 and 10,941,306 read that stale 0x2432 even though
+	// MDBX was clean — both blocks emitted (slot 8, oldVal=0x2432, newVal=0)
+	// while reth-on-mainnet has no entry at 10,941,146 and preVal=0 at
+	// 10,941,306. Same fingerprint at 17,150,008 (1ac01ebe…) and 3,180,272
+	// (8563cc86…). Single root cause across all three.
+	//
+	// Sweep is O(LRU) per snap; only fires when contractWipes is non-empty,
+	// which is rare per interval. Account/code LRUs aren't affected: the
+	// SELFDESTRUCT path WriteAccountStorage's DeleteAccount call writes
+	// snap.accounts[addr] = empty, so RefreshLRU above tombstones account
+	// LRU correctly.
+	// ORDER MATTERS — StampWipes MUST run BEFORE the LRU prefix sweep.
+	//
+	//   1. StampWipes (epoch++) ⇒ subsequent prefetcher PutIfAbsentEpoch
+	//      calls observe wipedAtEpoch[addr] > prefetcherEpoch and SKIP.
+	//   2. Range + DeleteBatch ⇒ flush any prefetcher entries that snuck
+	//      in BEFORE step 1 took effect (their epoch check used the old
+	//      wipedAtEpoch state).
+	//
+	// Reverse order leaves a window: prefetcher passes its epoch check
+	// against the OLD epoch, RefreshLRU sweeps an empty LRU (prefetcher's
+	// insert hasn't landed yet), THEN StampWipes runs but the entry is
+	// already in LRU — no one will re-sweep it. That's the leak the
+	// SELFDESTRUCT-LRU regression at block 17,150,008 originally fired
+	// through; this ordering closes it.
+	b.StampWipes(snap.contractWipes)
+
+	if len(snap.contractWipes) > 0 {
+		wipedAddrs := make(map[types.Address]struct{}, len(snap.contractWipes))
+		for _, addr := range snap.contractWipes {
+			wipedAddrs[addr] = struct{}{}
+		}
+		var stale [][storageCompositeKeyLen]byte
+		b.readStorage.Range(func(k [storageCompositeKeyLen]byte) bool {
+			var addr types.Address
+			copy(addr[:], k[:20])
+			if _, ok := wipedAddrs[addr]; ok {
+				stale = append(stale, k)
+			}
+			return true
+		})
+		if len(stale) > 0 {
+			b.readStorage.DeleteBatch(stale)
+		}
+	}
 }
 
 // Stats reports current write-buffer cardinalities (excluding any
@@ -579,6 +830,55 @@ func (b *PlainStateBuffer) Stats() (accounts, storage int) {
 // BufferedPlainStateReader: write buffer → read cache → MDBX
 // -----------------------------------------------------------------------
 
+// auditNilAccount, when set via env N42_AUDIT_NIL_ACCT=1, makes
+// bufReader.ReadAccountData cross-check every nil-or-empty-codeHash
+// account return against MDBX. If MDBX has the account with a
+// non-empty CodeHash but the cache returned nil/empty, the divergence
+// is recorded to ./audit_nil.log with which tier returned the wrong
+// answer. Default off (zero overhead). Enable to diagnose the
+// non-deterministic "contract treated as EOA" gas-mismatch bug.
+var auditNilAccount = os.Getenv("N42_AUDIT_NIL_ACCT") == "1"
+
+var (
+	auditLogOnce sync.Once
+	auditLogBuf  *bufio.Writer
+	auditLogFile *os.File
+	auditLogMu   sync.Mutex
+)
+
+func ensureAuditLog() {
+	auditLogOnce.Do(func() {
+		f, err := os.OpenFile("audit_nil.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return
+		}
+		auditLogFile = f
+		auditLogBuf = bufio.NewWriterSize(f, 64*1024)
+	})
+}
+
+func auditWrite(format string, args ...interface{}) {
+	ensureAuditLog()
+	if auditLogBuf == nil {
+		return
+	}
+	auditLogMu.Lock()
+	defer auditLogMu.Unlock()
+	fmt.Fprintf(auditLogBuf, format, args...)
+}
+
+// FlushAuditLog forces the nil-audit diagnostic file to disk.
+func FlushAuditLog() {
+	auditLogMu.Lock()
+	defer auditLogMu.Unlock()
+	if auditLogBuf != nil {
+		_ = auditLogBuf.Flush()
+	}
+	if auditLogFile != nil {
+		_ = auditLogFile.Sync()
+	}
+}
+
 type BufferedPlainStateReader struct {
 	buf *PlainStateBuffer
 	db  kv.Getter
@@ -588,17 +888,87 @@ func NewBufferedPlainStateReader(buf *PlainStateBuffer, db kv.Getter) *BufferedP
 	return &BufferedPlainStateReader{buf: buf, db: db}
 }
 
+// auditStorageLRU cross-checks a storage value returned from the LRU
+// against MDBX. The two MUST agree because LRU is fed exclusively from
+// RefreshLRUForSnapshot (post-flush canonical values) and bufReader's
+// own MDBX miss path (executor's stable RoTx). A divergence is a
+// smoking gun: either the LRU was poisoned, or some path bypassed
+// MDBX. Logs to audit_nil.log when divergence detected. No-op when
+// auditNilAccount is false.
+func (r *BufferedPlainStateReader) auditStorageLRU(addr types.Address, slot types.Hash, ck [storageCompositeKeyLen]byte, lruValue []byte) {
+	mdbxValue, err := r.db.GetOne(modules.Storage, ck[:])
+	if err != nil {
+		return
+	}
+	// Normalize: deletedSentinel ([]byte{}) and nil and (len=0) all
+	// represent "slot is zero" for our purposes.
+	lruZero := len(lruValue) == 0
+	mdbxZero := len(mdbxValue) == 0
+	if lruZero && mdbxZero {
+		return
+	}
+	if !lruZero && !mdbxZero && bytes.Equal(lruValue, mdbxValue) {
+		return
+	}
+	auditWrite("AUDIT_STO addr=%x slot=%x lru_zero=%v lru_val=%x mdbx_zero=%v mdbx_val=%x\n",
+		addr[:], slot[:], lruZero, lruValue, mdbxZero, mdbxValue)
+}
+
+// auditNilReturn cross-checks a "nil or empty-CodeHash" cache return
+// against MDBX. Logs to audit_nil.log if MDBX shows the account has
+// a non-empty CodeHash (i.e., the cache lied). Caller passes the tier
+// that produced the result (e.g. "buf.accounts/deletedSentinel",
+// "inFlight.accounts", "LRU/negative", "MDBX") for diagnostic context.
+// No-op when auditing isn't enabled.
+func (r *BufferedPlainStateReader) auditNilReturn(addr types.Address, tier string, returned *account.StateAccount) {
+	if !auditNilAccount {
+		return
+	}
+	mdbxEnc, err := r.db.GetOne(modules.Account, addr[:])
+	if err != nil || len(mdbxEnc) == 0 {
+		return
+	}
+	var mdbxAcct account.StateAccount
+	if err := mdbxAcct.DecodeForStorage(mdbxEnc); err != nil {
+		return
+	}
+	if mdbxAcct.IsEmptyCodeHash() {
+		// MDBX agrees this is EOA / no code. No divergence.
+		return
+	}
+	// MDBX has a real contract; cache returned EOA-shaped result.
+	var retNonce uint64
+	var retCH types.Hash
+	if returned != nil {
+		retNonce = returned.Nonce
+		retCH = returned.CodeHash
+	}
+	auditWrite("AUDIT_NIL addr=%x tier=%s ret_nil=%v ret_nonce=%d ret_ch=%x mdbx_nonce=%d mdbx_ch=%x\n",
+		addr[:], tier, returned == nil, retNonce, retCH[:], mdbxAcct.Nonce, mdbxAcct.CodeHash[:])
+}
+
 func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
+	tracked := isTracked(address)
 	// 1. Active write buffer.
 	if enc, ok := r.buf.accounts[address]; ok {
 		r.buf.hits.Add(1)
 		r.buf.acctHits.Add(1)
 		if len(enc) == 0 {
+			if tracked {
+				fmt.Printf("[TRACK] ReadAccountData addr=%x src=buf.accounts return_nil (deletedSentinel)\n", address[:])
+			}
+			r.auditNilReturn(address, "buf.accounts/deletedSentinel", nil)
 			return nil, nil
 		}
 		var a account.StateAccount
 		if err := a.DecodeForStorage(enc); err != nil {
 			return nil, err
+		}
+		if tracked {
+			fmt.Printf("[TRACK] ReadAccountData addr=%x src=buf.accounts nonce=%d codeHash=%x\n", address[:], a.Nonce, a.CodeHash[:])
+		}
+		if a.IsEmptyCodeHash() {
+			r.auditNilReturn(address, "buf.accounts/empty-codeHash", &a)
 		}
 		return &a, nil
 	}
@@ -609,11 +979,21 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 			r.buf.hits.Add(1)
 			r.buf.acctHits.Add(1)
 			if len(enc) == 0 {
+				if tracked {
+					fmt.Printf("[TRACK] ReadAccountData addr=%x src=inFlight.accounts return_nil (deletedSentinel)\n", address[:])
+				}
+				r.auditNilReturn(address, "inFlight.accounts/deletedSentinel", nil)
 				return nil, nil
 			}
 			var a account.StateAccount
 			if err := a.DecodeForStorage(enc); err != nil {
 				return nil, err
+			}
+			if tracked {
+				fmt.Printf("[TRACK] ReadAccountData addr=%x src=inFlight.accounts nonce=%d codeHash=%x\n", address[:], a.Nonce, a.CodeHash[:])
+			}
+			if a.IsEmptyCodeHash() {
+				r.auditNilReturn(address, "inFlight.accounts/empty-codeHash", &a)
 			}
 			return &a, nil
 		}
@@ -623,11 +1003,21 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 		r.buf.hits.Add(1)
 		r.buf.acctHits.Add(1)
 		if len(v) == 0 {
+			if tracked {
+				fmt.Printf("[TRACK] ReadAccountData addr=%x src=LRU return_nil (negative cache)\n", address[:])
+			}
+			r.auditNilReturn(address, "LRU/negative", nil)
 			return nil, nil
 		}
 		var a account.StateAccount
 		if err := a.DecodeForStorage(v); err != nil {
 			return nil, err
+		}
+		if tracked {
+			fmt.Printf("[TRACK] ReadAccountData addr=%x src=LRU nonce=%d codeHash=%x\n", address[:], a.Nonce, a.CodeHash[:])
+		}
+		if a.IsEmptyCodeHash() {
+			r.auditNilReturn(address, "LRU/empty-codeHash", &a)
 		}
 		return &a, nil
 	}
@@ -639,9 +1029,20 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 		return nil, err
 	}
 	if len(enc) == 0 {
-		// Cache the negative result so repeated lookups of an absent
-		// address don't keep hitting MDBX.
+		// Cache the negative result. SAFE here because bufReader is the
+		// executor goroutine's reader, using the executor's per-interval
+		// RoTx. Within an interval, RoTx is stable, so a nil from MDBX
+		// is the canonical "absent at start of interval" answer. If a
+		// later block in the same interval creates the address, it goes
+		// through active buf (read tier 1) and bypasses LRU. End-of-
+		// interval RefreshLRUForSnapshot's PutBatch then overwrites the
+		// nil with the new encoded account. The prefetcher's nil-filter
+		// (in prefetch.go and prefetch_speculative.go) handles the
+		// stale-RoTx race separately — that's the racy path, not this one.
 		r.buf.readAccounts.Put(address, nil, addrKeyLen+cacheOverheadPerEntry)
+		if tracked {
+			fmt.Printf("[TRACK] ReadAccountData addr=%x src=MDBX return_nil (cached negative)\n", address[:])
+		}
 		return nil, nil
 	}
 	cached := make([]byte, len(enc))
@@ -650,6 +1051,9 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 	var a account.StateAccount
 	if err = a.DecodeForStorage(cached); err != nil {
 		return nil, err
+	}
+	if tracked {
+		fmt.Printf("[TRACK] ReadAccountData addr=%x src=MDBX nonce=%d codeHash=%x cached_to_LRU\n", address[:], a.Nonce, a.CodeHash[:])
 	}
 	return &a, nil
 }
@@ -706,6 +1110,16 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 	if v, present := r.buf.readStorage.Get(ck); present {
 		r.buf.hits.Add(1)
 		r.buf.stoHits.Add(1)
+		// Audit: cross-check LRU value against MDBX. They MUST agree
+		// because LRU is fed exclusively from RefreshLRUForSnapshot
+		// (post-flush canonical snap values) and bufReader's own MDBX
+		// miss path (executor's stable RoTx). Any divergence is a
+		// smoking-gun bug — either LRU was poisoned by a stale-RoTx
+		// prefetcher write, or there's a path that overwrites LRU
+		// without going through MDBX. See ensureAuditLog comment.
+		if auditNilAccount {
+			r.auditStorageLRU(address, *key, ck, v)
+		}
 		if len(v) == 0 {
 			return nil, nil
 		}
@@ -725,6 +1139,12 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 		return nil, err
 	}
 	if len(enc) == 0 {
+		// Cache the negative result — same safety reasoning as
+		// ReadAccountData: bufReader uses executor's per-interval stable
+		// RoTx, so nil from MDBX is the canonical "absent at start of
+		// interval" answer. End-of-interval RefreshLRU overwrites if the
+		// slot becomes non-zero. Prefetcher paths handle stale-RoTx race
+		// separately via their own nil-filter.
 		r.buf.readStorage.Put(ck, nil, storageCompositeKeyLen+cacheOverheadPerEntry)
 		return nil, nil
 	}
@@ -807,7 +1227,60 @@ func (w *BufferedPlainStateWriter) UpdateAccountData(address types.Address, orig
 		}
 	}
 	if original != nil && original.Equals(acct) {
+		if isTracked(address) {
+			bn := uint64(0)
+			if w.csw != nil {
+				bn = w.csw.blockNumber
+			}
+			fmt.Printf("[TRACK] UpdateAccountData blk=%d addr=%x SHORT_CIRCUIT (orig==acct) nonce=%d codeHash=%x\n",
+				bn, address[:], acct.Nonce, acct.CodeHash[:])
+		}
 		return nil
+	}
+	if isTracked(address) {
+		bn := uint64(0)
+		if w.csw != nil {
+			bn = w.csw.blockNumber
+		}
+		var origNonce uint64
+		var origCH types.Hash
+		if original != nil {
+			origNonce = original.Nonce
+			origCH = original.CodeHash
+		}
+		fmt.Printf("[TRACK] UpdateAccountData blk=%d addr=%x orig_nonce=%d orig_ch=%x → new_nonce=%d new_ch=%x\n",
+			bn, address[:], origNonce, origCH[:], acct.Nonce, acct.CodeHash[:])
+	}
+	// WRITE-SIDE AUDIT: catch the moment a real contract gets buf-ified
+	// with empty/zero CodeHash. This is the SOURCE of the "contract
+	// treated as EOA" gas-mismatch bug — IBS computed wrong state for
+	// this addr (almost certainly because bufReader earlier returned
+	// nil for it, leading IBS to createObject with zero CodeHash data).
+	// Cross-check against MDBX (via csw.db) — if MDBX has the contract
+	// with non-empty CodeHash, this UpdateAccountData call is poisoning
+	// the buffer. Log it. Volume bounded — only fires for "writing zero
+	// codeHash" cases AND only when MDBX disagrees.
+	if auditNilAccount && acct.IsEmptyCodeHash() && w.csw != nil && w.csw.db != nil {
+		mdbxEnc, err := w.csw.db.GetOne(modules.Account, address[:])
+		if err == nil && len(mdbxEnc) > 0 {
+			var mdbxAcct account.StateAccount
+			if dErr := mdbxAcct.DecodeForStorage(mdbxEnc); dErr == nil && !mdbxAcct.IsEmptyCodeHash() {
+				bn := uint64(0)
+				if w.csw != nil {
+					bn = w.csw.blockNumber
+				}
+				var origNonce uint64
+				var origCH types.Hash
+				origNil := true
+				if original != nil {
+					origNil = false
+					origNonce = original.Nonce
+					origCH = original.CodeHash
+				}
+				auditWrite("AUDIT_WRITE blk=%d addr=%x orig_nil=%v orig_nonce=%d orig_ch=%x acct_nonce=%d acct_balance=%s acct_ch=%x mdbx_nonce=%d mdbx_ch=%x\n",
+					bn, address[:], origNil, origNonce, origCH[:], acct.Nonce, acct.Balance.String(), acct.CodeHash[:], mdbxAcct.Nonce, mdbxAcct.CodeHash[:])
+			}
+		}
 	}
 	w.buf.accounts[address] = acct.MarshalV2()
 	return nil
@@ -830,6 +1303,27 @@ func (w *BufferedPlainStateWriter) DeleteAccount(address types.Address, original
 		if err := w.csw.DeleteAccount(address, original); err != nil {
 			return err
 		}
+	}
+	bn := uint64(0)
+	if w.csw != nil {
+		bn = w.csw.blockNumber
+	}
+	if isTracked(address) {
+		var origNonce uint64
+		var origCH types.Hash
+		if original != nil {
+			origNonce = original.Nonce
+			origCH = original.CodeHash
+		}
+		fmt.Printf("[TRACK] DeleteAccount blk=%d addr=%x orig_nonce=%d orig_ch=%x → deletedSentinel\n",
+			bn, address[:], origNonce, origCH[:])
+	}
+	// Diagnostic: emit one line to ./deletes.log for every contract
+	// (non-empty CodeHash) being destroyed. EOA empty-account removals
+	// (Spurious Dragon) are skipped because they're high-volume and
+	// not the suspect path. See ensureDeletesLog comment.
+	if original != nil && !original.IsEmptyCodeHash() {
+		recordContractDelete(bn, address, original.Nonce, original.CodeHash)
 	}
 	w.buf.accounts[address] = deletedSentinel
 	return nil
