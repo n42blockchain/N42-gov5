@@ -49,10 +49,16 @@ func main() {
 		}
 		addr = a
 	}
-	slot, err := hex.DecodeString(strings.TrimPrefix(*slotHex, "0x"))
-	if err != nil || len(slot) != 32 {
-		fmt.Fprintln(os.Stderr, "bad slot:", err, "len:", len(slot))
-		os.Exit(1)
+	// Empty slot = match every slot (used for "show me everything this
+	// address touched in the range"). When set, must be exactly 32 bytes.
+	var slot []byte
+	if *slotHex != "" {
+		s, err := hex.DecodeString(strings.TrimPrefix(*slotHex, "0x"))
+		if err != nil || len(s) != 32 {
+			fmt.Fprintln(os.Stderr, "bad slot:", err, "len:", len(s))
+			os.Exit(1)
+		}
+		slot = s
 	}
 
 	logger := log.New()
@@ -88,7 +94,11 @@ func main() {
 	seekKey := make([]byte, 8)
 	binary.BigEndian.PutUint64(seekKey, *fromBlock)
 
-	fmt.Printf("scanning reth [%d, %d] addr=%s slot=%x\n", *fromBlock, *toBlock, *addrHex, slot)
+	slotLabel := "any"
+	if slot != nil {
+		slotLabel = fmt.Sprintf("%x", slot)
+	}
+	fmt.Printf("scanning reth [%d, %d] addr=%s slot=%s\n", *fromBlock, *toBlock, *addrHex, slotLabel)
 	matches := 0
 	var scanned int
 	for k, v, err := cursor.Seek(seekKey); k != nil; k, v, err = cursor.Next() {
@@ -107,27 +117,22 @@ func main() {
 		if addr != nil && string(k[8:28]) != string(addr) {
 			continue
 		}
-		if string(v[:32]) != string(slot) {
+		if slot != nil && string(v[:32]) != string(slot) {
 			continue
 		}
-		// Decode compact value (LE u256 without leading zero bytes).
+		// Reth's `Compact for U256` writes BE-minimal (the trailing N bytes
+		// of the 32-byte BE representation, leading zero bytes trimmed).
+		// Already in our canonical form — copy as-is.
 		var preHex string
 		if len(v) > 32 {
-			raw := v[32:]
-			// reverse to BE
-			be := make([]byte, len(raw))
-			for i := 0; i < len(raw); i++ {
-				be[i] = raw[len(raw)-1-i]
-			}
-			preHex = hex.EncodeToString(be)
-			preHex = strings.TrimLeft(preHex, "0")
+			preHex = strings.TrimLeft(hex.EncodeToString(v[32:]), "0")
 			if preHex == "" {
 				preHex = "0"
 			}
 		} else {
 			preHex = "0"
 		}
-		fmt.Printf("blk=%d addr=%x preVal=0x%s (raw v=%x)\n", blk, k[8:28], preHex, v)
+		fmt.Printf("blk=%d addr=%x slot=%x preVal=0x%s (raw v=%x)\n", blk, k[8:28], v[:32], preHex, v)
 		matches++
 	}
 	fmt.Printf("done: %d match(es), %d rows scanned\n", matches, scanned)
