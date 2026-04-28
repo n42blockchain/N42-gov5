@@ -15,10 +15,12 @@ package ethel
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
-	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
@@ -50,20 +52,30 @@ type prefetcher struct {
 	// Pre-computed senders sources, shared with the executor's main path.
 	senderStore *SenderSegmentReader
 	senderTable *freezer.FreezerTable
+
+	// Speculative-prefetch wiring. engine + currentBlockNum are nil when
+	// speculation is disabled, in which case doFetch falls back to the
+	// static AccessList path.
+	engine             consensus.Engine
+	currentBlockNum    *atomic.Uint64
+	speculativeEnabled bool
 }
 
-func newPrefetcher(ctx context.Context, f *freezer.Freezer, db kv.RoDB, buf *state.PlainStateBuffer, chainCfg *params.ChainConfig, senderStore *SenderSegmentReader, senderTable *freezer.FreezerTable) *prefetcher {
+func newPrefetcher(ctx context.Context, f *freezer.Freezer, db kv.RoDB, buf *state.PlainStateBuffer, chainCfg *params.ChainConfig, senderStore *SenderSegmentReader, senderTable *freezer.FreezerTable, engine consensus.Engine, currentBlockNum *atomic.Uint64, speculativeEnabled bool) *prefetcher {
 	ctx, cancel := context.WithCancel(ctx)
 	return &prefetcher{
-		freezer:     f,
-		db:          db,
-		stateBuf:    buf,
-		chainCfg:    chainCfg,
-		ctx:         ctx,
-		cancel:      cancel,
-		blockCh:     make(chan uint64, 2),
-		senderStore: senderStore,
-		senderTable: senderTable,
+		freezer:            f,
+		db:                 db,
+		stateBuf:           buf,
+		chainCfg:           chainCfg,
+		ctx:                ctx,
+		cancel:             cancel,
+		blockCh:            make(chan uint64, 2),
+		senderStore:        senderStore,
+		senderTable:        senderTable,
+		engine:             engine,
+		currentBlockNum:    currentBlockNum,
+		speculativeEnabled: speculativeEnabled,
 	}
 }
 
@@ -141,23 +153,34 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 		return
 	}
 
-	// Senders: prefer the pre-computed source the executor uses; only
-	// ecrecover (with the per-block signer) on cache miss. At ~80μs per
-	// recovery × 200+ tx/block, ecrecover is what kept the prefetcher
-	// from keeping up with exec on busy DeFi-era blocks.
 	senders := p.loadSenders(blockNum, len(body.Transactions))
+
+	// Speculative path needs the header for blockContext. Decode once and
+	// reuse for both paths so the static AL fallback keeps working when
+	// speculation is disabled or when senders are unavailable.
+	var header *block.Header
+	if p.speculativeEnabled || senders == nil {
+		headerData, hErr := p.freezer.Ancient(freezer.TableHeaders, blockNum)
+		if hErr != nil {
+			return
+		}
+		header, err = DecodeGethHeader(headerData)
+		if err != nil {
+			return
+		}
+	}
+
+	// Speculative prefetch: run the block's txs through a NoopWriter so
+	// every read warms the cache. Falls back to static AL path on
+	// missing senders (ecrecover during speculation would dominate CPU)
+	// or for small blocks where the setup overhead exceeds the benefit.
+	if p.speculativeEnabled && senders != nil && len(body.Transactions) >= SmallBlockTxThreshold {
+		p.runSpeculative(blockNum, header, body, senders)
+		return
+	}
 
 	addrs := make(map[types.Address]struct{}, len(body.Transactions)*3)
 	if senders == nil {
-		// Fallback path: full ecrecover. Build the signer once per block.
-		headerData, err := p.freezer.Ancient(freezer.TableHeaders, blockNum)
-		if err != nil {
-			return
-		}
-		header, err := DecodeGethHeader(headerData)
-		if err != nil {
-			return
-		}
 		signer := transaction.MakeSigner(p.chainCfg, header.Number.ToBig())
 		for _, tx := range body.Transactions {
 			if sender, err := transaction.Sender(signer, tx); err == nil {
@@ -181,53 +204,65 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 		return
 	}
 
+	// Capture flushEpoch BEFORE BeginRo. If a flush completes between
+	// capture and BeginRo, prefetcherEpoch underestimates (older), and
+	// CacheStorageIfAbsentEpoch will conservatively reject any value
+	// for an address wiped by that interim flush — exactly the safety
+	// invariant we need.
+	prefetcherEpoch := p.stateBuf.CurrentFlushEpoch()
 	roTx, err := p.db.BeginRo(p.ctx)
 	if err != nil {
 		return
 	}
 	defer roTx.Rollback()
 
-	// Warm accounts and storage via inFlight snapshot + MDBX fallback.
-	// InFlight snapshot is immutable and safe from any goroutine. Keys
-	// found there get the authoritative value cached. Keys NOT in the
-	// snapshot fall through to MDBX — those values are stable (committed
-	// in an earlier interval) and RefreshLRU won't overwrite them, so
-	// the stale-RoTx race cannot occur.
-	snap := p.stateBuf.InFlightSnapshot() // nil-safe; Lookup methods handle nil
-	cacheAcct := func(addr types.Address, enc []byte) {
-		if len(enc) > 0 {
-			var a account.StateAccount
-			if a.DecodeForStorage(enc) == nil {
-				p.stateBuf.CacheAccount(addr, &a)
-			}
-		} else {
-			p.stateBuf.CacheAccount(addr, nil)
-		}
-	}
+	// Prewarm OS page cache + LRU for upcoming blocks via Cache*IfAbsentEpoch.
+	//
+	// This prefetcher runs concurrently with the executor + background
+	// flusher. roTx's MDBX snapshot may lag behind the latest flush —
+	// reading from it can return values older than what
+	// RefreshLRUForSnapshot just wrote into LRU. We must NEVER overwrite
+	// the LRU because the executor's flush is the canonical writer; we
+	// can only fill empty slots.
+	//
+	// Cache*IfAbsent is the tombstone-safe primitive: it writes only if
+	// the key is absent, returning false (no-op) when an entry already
+	// exists. This preserves the warmth benefit of populating cold-LRU
+	// slots while making the previous data race (block 17,150,008 stale
+	// resurrection) impossible: even if our roTx is stale, our value
+	// can't displace whatever RefreshLRU has already canonicalized.
+	//
+	// MDBX GetOne also pulls the underlying B-tree pages into the OS
+	// page cache, helping subsequent reads even when the LRU write was
+	// a no-op (key already present).
 	for addr := range addrs {
-		if enc, ok := snap.LookupAccount(addr); ok {
-			cacheAcct(addr, enc)
+		enc, err := roTx.GetOne(modules.Account, addr[:])
+		if err != nil {
 			continue
 		}
-		enc, _ := roTx.GetOne(modules.Account, addr[:])
-		cacheAcct(addr, enc)
+		// NEVER cache nil as negative entry. Our RoTx may pre-date a flush
+		// that just created this account (active buf has it, MDBX doesn't);
+		// the nil we'd write here outlives that flush via PutIfAbsent and
+		// poisons the next interval's bufReader path → contract treated as
+		// EOA at status=1 with intrinsic-only gas. Skip the cache write
+		// entirely on miss; the OS page cache is still warmed by GetOne.
+		if len(enc) > 0 {
+			p.stateBuf.CacheAccountIfAbsentEpoch(addr, enc, prefetcherEpoch)
+		}
 	}
-
 	for _, tx := range body.Transactions {
 		for _, entry := range tx.AccessList() {
 			for _, key := range entry.StorageKeys {
-				if val, ok := snap.LookupStorage(entry.Address, key); ok {
-					p.stateBuf.CacheStorage(entry.Address, key, val)
+				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], key[:])
+				val, err := roTx.GetOne(modules.Storage, compositeKey)
+				if err != nil {
 					continue
 				}
-				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], key[:])
-				enc, _ := roTx.GetOne(modules.Storage, compositeKey)
-				if len(enc) > 0 {
-					cached := make([]byte, len(enc))
-					copy(cached, enc)
-					p.stateBuf.CacheStorage(entry.Address, key, cached)
-				} else {
-					p.stateBuf.CacheStorage(entry.Address, key, nil)
+				// Same reasoning as account: skip negative cache. A slot
+				// that's zero in our pinned MDBX RoTx may be non-zero in
+				// the in-flight or just-flushed snap.
+				if len(val) > 0 {
+					p.stateBuf.CacheStorageIfAbsentEpoch(entry.Address, key, val, prefetcherEpoch)
 				}
 			}
 		}
