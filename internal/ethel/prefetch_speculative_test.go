@@ -50,22 +50,19 @@ func TestPrefetchStateReader_LookupOrder(t *testing.T) {
 	defer roTx.Rollback()
 	r := newPrefetchStateReader(buf, roTx)
 
-	// Tier 3: MDBX hit → returns mdbxAcct, but does NOT publish into
-	// the LRU. Account caching from the prefetcher path was removed
-	// after a deterministic "insufficient funds" failure at block
-	// 2520771: the prefetcher's RoTx can lag the latest commit, so a
-	// PutIfAbsentEpoch can land a stale balance into an LRU entry that
-	// was just evicted by S3-FIFO. The fix is to never write account
-	// state from the prefetcher; bufReader's own MDBX-miss path
-	// (executor's per-interval stable RoTx) fills the LRU correctly
-	// on demand.
+	// Tier 3: MDBX hit → returns mdbxAcct AND publishes into the LRU
+	// via the flush-epoch-guarded CacheAccountIfAbsentEpoch path. The
+	// guard inside that helper rejects the put if any flush has
+	// stamped after the prefetcher captured its epoch (the race that
+	// hit block 2520771 pre-2026-04-28); for a quiescent buffer like
+	// this test the guard is a no-op and the cache fill proceeds.
 	got, err := r.ReadAccountData(addr)
 	require(t, err)
 	if got == nil || got.Nonce != 1 {
 		t.Fatalf("MDBX hit: got nonce=%v want 1", got)
 	}
-	if _, present := buf.LookupReadAccount(addr); present {
-		t.Fatalf("LRU MUST NOT be populated by the prefetcher account read — see prefetch_speculative.go ReadAccountData rationale")
+	if _, present := buf.LookupReadAccount(addr); !present {
+		t.Fatalf("LRU should be populated after MDBX hit (cold-fill via IfAbsentEpoch)")
 	}
 
 	// Externally Put lruAcct into the LRU (simulating RefreshLRU after
@@ -152,15 +149,17 @@ func TestPrefetchStateReader_StorageRoundtrip(t *testing.T) {
 	if len(got) != 1 || got[0] != 0x42 {
 		t.Fatalf("MDBX hit: got %x", got)
 	}
-	// LRU MUST NOT be populated by the prefetcher — same reasoning as
-	// the account read in TestPrefetchStateReader_LookupOrder. The
-	// prefetcher's RoTx can lag the latest commit, so any
-	// PutIfAbsentEpoch from this path can land a stale value into an
-	// evicted LRU slot. bufReader.ReadAccountStorage's own MDBX-miss
-	// fill (using the executor's per-interval stable RoTx) is the
-	// only authorized cache write site for storage in this commit.
-	if _, present := buf.LookupReadStorage(addr, slot); present {
-		t.Fatalf("LRU MUST NOT be populated by the prefetcher storage read")
+	// LRU should be populated after a cold MDBX read — the
+	// flush-epoch-guarded CacheStorageIfAbsentEpoch path lets the
+	// prefetcher fill cold slots safely. The guard rejects writes
+	// only if a flush stamped after the prefetcher captured its
+	// epoch; for this quiescent test the guard is a no-op.
+	v, present := buf.LookupReadStorage(addr, slot)
+	if !present {
+		t.Fatalf("LRU must be populated by prefetcher (cold-fill via IfAbsentEpoch)")
+	}
+	if len(v) != 1 || v[0] != 0x42 {
+		t.Fatalf("LRU populated with wrong value: got %x", v)
 	}
 }
 

@@ -113,19 +113,10 @@ func (r *prefetchStateReader) ReadAccountData(address types.Address) (*account.S
 	if len(enc) == 0 {
 		return nil, nil
 	}
-	// We deliberately do NOT publish into r.buf.readAccounts here.
-	// PutIfAbsentEpoch's wipedAtEpoch guard only fires for
-	// SELFDESTRUCT'd addresses, but EVERY block has account balance
-	// updates (transfers, coinbase, SELFDESTRUCT beneficiaries), and
-	// our RoTx may be one flush behind. If RefreshLRUForSnapshot wrote
-	// the post-flush balance into the LRU and then the entry was
-	// evicted (S3-FIFO can churn cold-tail entries even at 4 GB
-	// budget), our pre-flush value would slip back in via
-	// PutIfAbsentEpoch and the next executor read returns a stale
-	// balance. Observed deterministically at block 2520771 (sender
-	// 0xB8cc...3d7 missing 150,000 ETH). bufReader's own MDBX-miss
-	// cache fill is correct because it uses the executor's stable
-	// per-interval RoTx, never a pre-flush snapshot.
+	// CacheAccountIfAbsentEpoch's flush-epoch guard rejects the put if
+	// any flush has stamped after r.epoch was captured — closes the
+	// stale-RoTx race that hit block 2520771 pre-2026-04-28.
+	r.buf.CacheAccountIfAbsentEpoch(address, enc, r.epoch)
 	var a account.StateAccount
 	if err := a.DecodeForStorage(enc); err != nil {
 		return nil, err
@@ -154,14 +145,9 @@ func (r *prefetchStateReader) ReadAccountStorage(address types.Address, key *typ
 		// Skip negative cache — same reasoning as ReadAccountData.
 		return nil, nil
 	}
-	// We do NOT publish into r.buf.readStorage. The same wipedAtEpoch
-	// race that hit ReadAccountData applies here: the guard only fires
-	// for SELFDESTRUCT'd addresses, but ordinary SSTORE-update slots
-	// rotate value across blocks, and a stale-RoTx put can poison an
-	// evicted LRU slot. bufReader's own MDBX-miss fill (using the
-	// executor's stable RoTx) covers the warm-up.
 	cached := make([]byte, len(enc))
 	copy(cached, enc)
+	r.buf.CacheStorageIfAbsentEpoch(address, *key, cached, r.epoch)
 	return cached, nil
 }
 

@@ -204,13 +204,11 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 		return
 	}
 
-	// We no longer publish prefetcher reads into PlainStateBuffer's
-	// LRU caches (see the per-loop comments below for why each path
-	// is read-only). The previous epoch-capture handshake is therefore
-	// no longer needed in this function — kept here as a comment so
-	// the next person to add a cache-publishing prefetch sees the
-	// invariant: capture CurrentFlushEpoch() BEFORE BeginRo so that
-	// CacheXxxIfAbsentEpoch can detect an interim flush.
+	// Capture flushEpoch BEFORE BeginRo. CacheXxxIfAbsentEpoch
+	// rejects the write if a flush stamps after this capture but
+	// before the write — closes the stale-RoTx race that block
+	// 2520771 hit pre-2026-04-28.
+	prefetcherEpoch := p.stateBuf.CurrentFlushEpoch()
 	roTx, err := p.db.BeginRo(p.ctx)
 	if err != nil {
 		return
@@ -237,57 +235,31 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	// page cache, helping subsequent reads even when the LRU write was
 	// a no-op (key already present).
 	for addr := range addrs {
-		// MDBX GetOne pulls the addr's B-tree pages into the OS page
-		// cache — that's the only prefetch benefit we want. We do NOT
-		// publish the bytes into PlainStateBuffer.readAccounts here.
-		//
-		// Why not: the prefetcher RoTx is captured BEFORE the next
-		// commit interval's flush, so its read can return a stale
-		// pre-flush balance. CacheAccountIfAbsentEpoch's wipedAtEpoch
-		// guard only fires for SELFDESTRUCT'd addresses (the only ones
-		// StampWipes records). For ordinary transfers / coinbase /
-		// SELFDESTRUCT-beneficiary credits the guard is a no-op, so a
-		// stale put can land into an LRU slot that was evicted between
-		// RefreshLRUForSnapshot's overwrite and the prefetcher's
-		// arrival. The executor's next read then returns the stale
-		// pre-credit balance and reports "insufficient funds for
-		// gas * price + value" on a tx that should have succeeded —
-		// observed at block 2520771 (sender 0xB8cc0F060AAd92d4eb8B36b3B95cE9E90eb383d7,
-		// missing exactly 150,000 ETH from a prior in-flight credit).
-		// d:/N42-eth25m happened to never evict the sender's hot LRU
-		// entry so it cleared the same block; a fresh-genesis replay
-		// hits the eviction and fails deterministically.
-		//
-		// Storage caching below is left in place: StampWipes covers
-		// SELFDESTRUCT'd address slots (the original block-10941141
-		// zombie family), and slot values change far less frequently
-		// per address than balances do, so the eviction-then-stale-put
-		// race surfaces orders of magnitude less often. If a similar
-		// production divergence ever pins a storage slot to this
-		// pattern we should drop the storage put too and rely on
-		// bufReader's on-demand cache fill.
-		_, _ = roTx.GetOne(modules.Account, addr[:])
+		enc, err := roTx.GetOne(modules.Account, addr[:])
+		if err != nil {
+			continue
+		}
+		// Skip negative cache: an empty MDBX entry could be pre-flush
+		// state where active buf has just created the account; caching
+		// nil here would poison the next-interval bufReader path. Only
+		// cache positive hits — the flush-epoch guard inside
+		// CacheAccountIfAbsentEpoch makes those safe.
+		if len(enc) > 0 {
+			p.stateBuf.CacheAccountIfAbsentEpoch(addr, enc, prefetcherEpoch)
+		}
 	}
 	for _, tx := range body.Transactions {
 		for _, entry := range tx.AccessList() {
 			for _, key := range entry.StorageKeys {
-				// MDBX GetOne pulls the slot's B-tree pages into the OS
-				// page cache — the only safe prefetch benefit. We do
-				// NOT publish the bytes into PlainStateBuffer.readStorage:
-				// for the same reason the account path was removed
-				// (commit e4496062), the wipedAtEpoch guard only fires
-				// for SELFDESTRUCT'd addresses. A regular SSTORE-update
-				// rotates a slot value across blocks, so a prefetcher
-				// PutIfAbsentEpoch with a stale pre-flush value can
-				// land into an evicted LRU slot and be returned by the
-				// next executor read. bufReader.ReadAccountStorage's
-				// own MDBX-miss fill (line 1148/1153 of buffered_plain_state.go)
-				// uses the executor's per-interval stable RoTx and is
-				// shadowed by inFlight for the just-flushed window, so
-				// the LRU stays populated correctly without this
-				// prefetch publish.
 				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], key[:])
-				_, _ = roTx.GetOne(modules.Storage, compositeKey)
+				val, err := roTx.GetOne(modules.Storage, compositeKey)
+				if err != nil {
+					continue
+				}
+				// Same nil-skip reasoning as account.
+				if len(val) > 0 {
+					p.stateBuf.CacheStorageIfAbsentEpoch(entry.Address, key, val, prefetcherEpoch)
+				}
 			}
 		}
 	}

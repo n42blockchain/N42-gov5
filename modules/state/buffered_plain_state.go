@@ -420,6 +420,22 @@ func (b *PlainStateBuffer) PruneWipesBefore(cutoff uint64) {
 // BeginRo and its PutIfAbsent, and our stale RoTx-derived value would
 // otherwise land in the gap RefreshLRUForSnapshot just opened.
 func (b *PlainStateBuffer) CacheAccountIfAbsentEpoch(address types.Address, enc []byte, prefetcherEpoch uint64) bool {
+	// GLOBAL flush-epoch guard. The previous wipedAtEpoch-only check was
+	// too narrow: it only stamped SELFDESTRUCT'd addresses, so a normal
+	// balance/code/storage update in interval N could leave a stale
+	// pre-flush value writeable from a prefetcher whose RoTx still
+	// pinned interval N-1's snapshot. Observed at block 2520771 (sender
+	// 0xB8cc0F060AAd92d4eb8B36b3B95cE9E90eb383d7 missing 150,000 ETH —
+	// see commit e4496062). Rejecting any write whose captured epoch
+	// trails the current flush epoch closes that race at the cost of
+	// wasting the rare prefetch cycle that straddles a commit-interval
+	// boundary (~0.01% of cycles at CommitInterval=10000).
+	if prefetcherEpoch < b.flushEpoch.Load() {
+		return false
+	}
+	// Per-address SELFDESTRUCT epoch check (kept for the same-epoch
+	// case where prefetcherEpoch matches current but a contractWipes
+	// stamp landed at the same epoch).
 	if v, ok := b.wipedAtEpoch.Load(address); ok && v.(uint64) > prefetcherEpoch {
 		return false
 	}
@@ -427,8 +443,12 @@ func (b *PlainStateBuffer) CacheAccountIfAbsentEpoch(address types.Address, enc 
 	return b.readAccounts.PutIfAbsent(address, enc, cost)
 }
 
-// CacheStorageIfAbsentEpoch — see CacheAccountIfAbsentEpoch.
+// CacheStorageIfAbsentEpoch — see CacheAccountIfAbsentEpoch for the
+// flush-epoch guard reasoning.
 func (b *PlainStateBuffer) CacheStorageIfAbsentEpoch(address types.Address, key types.Hash, value []byte, prefetcherEpoch uint64) bool {
+	if prefetcherEpoch < b.flushEpoch.Load() {
+		return false
+	}
 	if v, ok := b.wipedAtEpoch.Load(address); ok && v.(uint64) > prefetcherEpoch {
 		return false
 	}
