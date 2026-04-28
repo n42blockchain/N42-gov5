@@ -104,6 +104,21 @@ func (c *byteLRU[K]) PutBatch(keys []K, values [][]byte, costs []int) {
 	c.evictLocked()
 }
 
+// PutIfAbsent inserts only when key is not already present. Tombstone-safe
+// counterpart used by the async prefetcher (see s3FIFO.PutIfAbsent for
+// the same rationale — never overwrite values RefreshLRUForSnapshot
+// canonicalized).
+func (c *byteLRU[K]) PutIfAbsent(key K, value []byte, cost int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.items[key]; ok {
+		return false
+	}
+	c.putLocked(key, value, cost)
+	c.evictLocked()
+	return true
+}
+
 // putLocked is the unsynchronised core of Put / PutBatch.
 func (c *byteLRU[K]) putLocked(key K, value []byte, cost int) {
 	if elem, ok := c.items[key]; ok {
