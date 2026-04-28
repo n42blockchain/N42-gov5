@@ -659,6 +659,45 @@ func TestSelfdestructWipe_LRU_NoZombieAfterRefresh(t *testing.T) {
 	require.Nil(t, v9, "post-SELFDESTRUCT read of slot 9 returned zombie %x", v9)
 }
 
+// Regression for the GLOBAL flush-epoch guard added on 2026-04-28.
+// Locks the invariant that any flush happening after the prefetcher
+// captured its epoch causes Cache{Account,Storage}IfAbsentEpoch to
+// reject the write — even if the addr was NOT in contractWipes (this
+// is the gap that hit block 2520771: a sender's balance update isn't
+// a SELFDESTRUCT, so wipedAtEpoch never stamped, and the wipedAtEpoch-
+// only check let stale prefetcher writes through).
+func TestPrefetcherFlushEpochGuard_RejectsAfterFlush(t *testing.T) {
+	t.Parallel()
+	buf := NewPlainStateBuffer()
+	addr := types.HexToAddress("0xb8cc0f060aad92d4eb8b36b3b95ce9e90eb383d7")
+	slot := hashFromByte(0x01)
+
+	// 1. Prefetcher captures epoch BEFORE BeginRo.
+	prefetcherEpoch := buf.CurrentFlushEpoch()
+
+	// 2. A flush happens between capture and the prefetcher's write.
+	//    StampWipes is what the async flusher calls — even with no
+	//    contractWipes (regular balance/storage update), it bumps
+	//    flushEpoch so subsequent IfAbsentEpoch writes can detect
+	//    the interim flush.
+	buf.StampWipes(nil)
+
+	// 3. Prefetcher tries to publish stale value with the pre-flush epoch.
+	//    Both account and storage paths must reject.
+	require.False(t, buf.CacheAccountIfAbsentEpoch(addr, []byte{0xde, 0xad}, prefetcherEpoch),
+		"CacheAccountIfAbsentEpoch must reject when prefetcherEpoch < flushEpoch.Load() — the block 2520771 bug fingerprint")
+	require.False(t, buf.CacheStorageIfAbsentEpoch(addr, slot, []byte{0xde, 0xad}, prefetcherEpoch),
+		"CacheStorageIfAbsentEpoch must reject when prefetcherEpoch < flushEpoch.Load()")
+
+	// 4. LRU should still be empty (writes were rejected).
+	if v, ok := buf.LookupReadAccount(addr); ok {
+		t.Fatalf("account LRU got polluted: %x present=%v", v, ok)
+	}
+	if v, ok := buf.LookupReadStorage(addr, slot); ok {
+		t.Fatalf("storage LRU got polluted: %x present=%v", v, ok)
+	}
+}
+
 // Regression for the prefetcher-LRU-race subroot of the same bug
 // family (project_prefetcher_lru_race.md, project_lru_empty_slot_leftover.md).
 // The scenario: between SnapshotForFlush installing the in-flight snap
