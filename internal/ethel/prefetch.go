@@ -204,12 +204,13 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 		return
 	}
 
-	// Capture flushEpoch BEFORE BeginRo. If a flush completes between
-	// capture and BeginRo, prefetcherEpoch underestimates (older), and
-	// CacheStorageIfAbsentEpoch will conservatively reject any value
-	// for an address wiped by that interim flush — exactly the safety
-	// invariant we need.
-	prefetcherEpoch := p.stateBuf.CurrentFlushEpoch()
+	// We no longer publish prefetcher reads into PlainStateBuffer's
+	// LRU caches (see the per-loop comments below for why each path
+	// is read-only). The previous epoch-capture handshake is therefore
+	// no longer needed in this function — kept here as a comment so
+	// the next person to add a cache-publishing prefetch sees the
+	// invariant: capture CurrentFlushEpoch() BEFORE BeginRo so that
+	// CacheXxxIfAbsentEpoch can detect an interim flush.
 	roTx, err := p.db.BeginRo(p.ctx)
 	if err != nil {
 		return
@@ -270,17 +271,23 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	for _, tx := range body.Transactions {
 		for _, entry := range tx.AccessList() {
 			for _, key := range entry.StorageKeys {
+				// MDBX GetOne pulls the slot's B-tree pages into the OS
+				// page cache — the only safe prefetch benefit. We do
+				// NOT publish the bytes into PlainStateBuffer.readStorage:
+				// for the same reason the account path was removed
+				// (commit e4496062), the wipedAtEpoch guard only fires
+				// for SELFDESTRUCT'd addresses. A regular SSTORE-update
+				// rotates a slot value across blocks, so a prefetcher
+				// PutIfAbsentEpoch with a stale pre-flush value can
+				// land into an evicted LRU slot and be returned by the
+				// next executor read. bufReader.ReadAccountStorage's
+				// own MDBX-miss fill (line 1148/1153 of buffered_plain_state.go)
+				// uses the executor's per-interval stable RoTx and is
+				// shadowed by inFlight for the just-flushed window, so
+				// the LRU stays populated correctly without this
+				// prefetch publish.
 				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], key[:])
-				val, err := roTx.GetOne(modules.Storage, compositeKey)
-				if err != nil {
-					continue
-				}
-				// Same reasoning as account: skip negative cache. A slot
-				// that's zero in our pinned MDBX RoTx may be non-zero in
-				// the in-flight or just-flushed snap.
-				if len(val) > 0 {
-					p.stateBuf.CacheStorageIfAbsentEpoch(entry.Address, key, val, prefetcherEpoch)
-				}
+				_, _ = roTx.GetOne(modules.Storage, compositeKey)
 			}
 		}
 	}
