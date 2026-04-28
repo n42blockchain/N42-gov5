@@ -66,6 +66,10 @@ type ExecutorConfig struct {
 	// the LRU cache with everything internal CALL/SLOAD touches). When
 	// false the prefetcher uses the static AccessList path. Default true.
 	PrefetchSpeculative bool
+	// PrefetchEnabled is the master switch for the background prefetcher
+	// (both static-AL and speculative paths). Set to false to bisect
+	// prefetcher-induced LRU races. Default true.
+	PrefetchEnabled bool
 }
 
 // Executor reads blocks from a Geth-compatible Freezer and re-executes
@@ -249,10 +253,16 @@ func (e *Executor) Run(ctx context.Context) error {
 
 	// Start background prefetcher to warm MDBX page cache. Pass the
 	// pre-computed senders sources so prefetcher doesn't waste time
-	// re-doing ecrecover that the executor already avoids.
-	e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg, e.senderStore, e.senderTable, e.engine, &e.currentBlockNum, e.cfg.PrefetchSpeculative)
-	e.prefetcher.start()
-	defer e.prefetcher.stop()
+	// re-doing ecrecover that the executor already avoids. Master switch
+	// PrefetchEnabled lets us bisect prefetcher-induced LRU races by
+	// running the executor with no background prewarm at all.
+	if e.cfg.PrefetchEnabled {
+		e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg, e.senderStore, e.senderTable, e.engine, &e.currentBlockNum, e.cfg.PrefetchSpeculative)
+		e.prefetcher.start()
+		defer e.prefetcher.stop()
+	} else {
+		log.Info("Prefetcher disabled (--prefetch=false)")
+	}
 
 	// Start background output writer (changeset encoding + freezer I/O).
 	if e.outBatcher != nil {

@@ -50,19 +50,20 @@ func TestPrefetchStateReader_LookupOrder(t *testing.T) {
 	defer roTx.Rollback()
 	r := newPrefetchStateReader(buf, roTx)
 
-	// Tier 3: MDBX hit → returns mdbxAcct AND publishes into the LRU
-	// via the flush-epoch-guarded CacheAccountIfAbsentEpoch path. The
-	// guard inside that helper rejects the put if any flush has
-	// stamped after the prefetcher captured its epoch (the race that
-	// hit block 2520771 pre-2026-04-28); for a quiescent buffer like
-	// this test the guard is a no-op and the cache fill proceeds.
+	// Tier 3: MDBX hit → returns mdbxAcct, but the prefetcher MUST NOT
+	// publish into the LRU. Even with the flush-epoch guard, active buf
+	// can hold a fresher account (new codeHash after CREATE) while the
+	// bg flusher hasn't bumped flushEpoch yet → guard passes, stale
+	// account lands in LRU, executor reads stale codeHash and treats a
+	// fresh contract as EOA. Block 6411933 confirmed this race
+	// (n42=23320 gas vs geth=53513, 0 logs vs 1, status=1 in both).
 	got, err := r.ReadAccountData(addr)
 	require(t, err)
 	if got == nil || got.Nonce != 1 {
 		t.Fatalf("MDBX hit: got nonce=%v want 1", got)
 	}
-	if _, present := buf.LookupReadAccount(addr); !present {
-		t.Fatalf("LRU should be populated after MDBX hit (cold-fill via IfAbsentEpoch)")
+	if _, present := buf.LookupReadAccount(addr); present {
+		t.Fatalf("LRU MUST NOT be populated after MDBX hit (stale-codeHash race)")
 	}
 
 	// Externally Put lruAcct into the LRU (simulating RefreshLRU after
