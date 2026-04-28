@@ -236,19 +236,36 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	// page cache, helping subsequent reads even when the LRU write was
 	// a no-op (key already present).
 	for addr := range addrs {
-		enc, err := roTx.GetOne(modules.Account, addr[:])
-		if err != nil {
-			continue
-		}
-		// NEVER cache nil as negative entry. Our RoTx may pre-date a flush
-		// that just created this account (active buf has it, MDBX doesn't);
-		// the nil we'd write here outlives that flush via PutIfAbsent and
-		// poisons the next interval's bufReader path → contract treated as
-		// EOA at status=1 with intrinsic-only gas. Skip the cache write
-		// entirely on miss; the OS page cache is still warmed by GetOne.
-		if len(enc) > 0 {
-			p.stateBuf.CacheAccountIfAbsentEpoch(addr, enc, prefetcherEpoch)
-		}
+		// MDBX GetOne pulls the addr's B-tree pages into the OS page
+		// cache — that's the only prefetch benefit we want. We do NOT
+		// publish the bytes into PlainStateBuffer.readAccounts here.
+		//
+		// Why not: the prefetcher RoTx is captured BEFORE the next
+		// commit interval's flush, so its read can return a stale
+		// pre-flush balance. CacheAccountIfAbsentEpoch's wipedAtEpoch
+		// guard only fires for SELFDESTRUCT'd addresses (the only ones
+		// StampWipes records). For ordinary transfers / coinbase /
+		// SELFDESTRUCT-beneficiary credits the guard is a no-op, so a
+		// stale put can land into an LRU slot that was evicted between
+		// RefreshLRUForSnapshot's overwrite and the prefetcher's
+		// arrival. The executor's next read then returns the stale
+		// pre-credit balance and reports "insufficient funds for
+		// gas * price + value" on a tx that should have succeeded —
+		// observed at block 2520771 (sender 0xB8cc0F060AAd92d4eb8B36b3B95cE9E90eb383d7,
+		// missing exactly 150,000 ETH from a prior in-flight credit).
+		// d:/N42-eth25m happened to never evict the sender's hot LRU
+		// entry so it cleared the same block; a fresh-genesis replay
+		// hits the eviction and fails deterministically.
+		//
+		// Storage caching below is left in place: StampWipes covers
+		// SELFDESTRUCT'd address slots (the original block-10941141
+		// zombie family), and slot values change far less frequently
+		// per address than balances do, so the eviction-then-stale-put
+		// race surfaces orders of magnitude less often. If a similar
+		// production divergence ever pins a storage slot to this
+		// pattern we should drop the storage put too and rely on
+		// bufReader's on-demand cache fill.
+		_, _ = roTx.GetOne(modules.Account, addr[:])
 	}
 	for _, tx := range body.Transactions {
 		for _, entry := range tx.AccessList() {

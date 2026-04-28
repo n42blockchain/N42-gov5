@@ -113,7 +113,19 @@ func (r *prefetchStateReader) ReadAccountData(address types.Address) (*account.S
 	if len(enc) == 0 {
 		return nil, nil
 	}
-	r.buf.CacheAccountIfAbsentEpoch(address, enc, r.epoch)
+	// We deliberately do NOT publish into r.buf.readAccounts here.
+	// PutIfAbsentEpoch's wipedAtEpoch guard only fires for
+	// SELFDESTRUCT'd addresses, but EVERY block has account balance
+	// updates (transfers, coinbase, SELFDESTRUCT beneficiaries), and
+	// our RoTx may be one flush behind. If RefreshLRUForSnapshot wrote
+	// the post-flush balance into the LRU and then the entry was
+	// evicted (S3-FIFO can churn cold-tail entries even at 4 GB
+	// budget), our pre-flush value would slip back in via
+	// PutIfAbsentEpoch and the next executor read returns a stale
+	// balance. Observed deterministically at block 2520771 (sender
+	// 0xB8cc...3d7 missing 150,000 ETH). bufReader's own MDBX-miss
+	// cache fill is correct because it uses the executor's stable
+	// per-interval RoTx, never a pre-flush snapshot.
 	var a account.StateAccount
 	if err := a.DecodeForStorage(enc); err != nil {
 		return nil, err
