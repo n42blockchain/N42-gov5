@@ -43,6 +43,7 @@ import (
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/u256"
+	"github.com/n42blockchain/N42/crypto/cryptopool"
 )
 
 // SignatureLength indicates the byte length required to carry a signature with recovery id.
@@ -71,9 +72,23 @@ type KeccakState interface {
 	Read([]byte) (int, error)
 }
 
-// NewKeccakState creates a new KeccakState
+// NewKeccakState returns a Keccak hasher from the shared pool — Reset is
+// called before hand-out. Callers SHOULD return it via ReturnKeccakState
+// when done; not returning is safe (next caller just allocates fresh)
+// but defeats the pool's allocation savings.
+//
+// pprof at 12M blocks showed bloomValues alone leaking 1.5 GB of
+// hashers because the pre-fix NewKeccakState always called
+// sha3.NewLegacyKeccak256(), making cryptopool.ReturnToPoolKeccak256
+// a put-only sink.
 func NewKeccakState() KeccakState {
-	return sha3.NewLegacyKeccak256().(KeccakState)
+	return cryptopool.NewLegacyKeccak256().(KeccakState)
+}
+
+// ReturnKeccakState returns a hasher to the shared pool. Safe to skip;
+// see NewKeccakState doc.
+func ReturnKeccakState(kh KeccakState) {
+	cryptopool.ReturnToPoolKeccak256(kh)
 }
 
 // HashData hashes the provided data using the KeccakState and returns a 32 byte hash
@@ -90,6 +105,7 @@ func HashData(kh KeccakState, data []byte) (h types.Hash) {
 func Keccak256(data ...[]byte) []byte {
 	b := make([]byte, 32)
 	d := NewKeccakState()
+	defer ReturnKeccakState(d)
 	for _, b := range data {
 		d.Write(b)
 	}
@@ -101,6 +117,7 @@ func Keccak256(data ...[]byte) []byte {
 // converting it to an internal Hash data structure.
 func Keccak256Hash(data ...[]byte) (h types.Hash) {
 	d := NewKeccakState()
+	defer ReturnKeccakState(d)
 	for _, b := range data {
 		d.Write(b)
 	}
