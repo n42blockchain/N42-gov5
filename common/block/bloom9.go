@@ -27,7 +27,6 @@ import (
 	"math/big"
 
 	"github.com/n42blockchain/N42/crypto"
-	"github.com/n42blockchain/N42/crypto/cryptopool"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/lib/common/hexutility"
 )
@@ -126,7 +125,7 @@ func bloomValues(data []byte, hashbuf []byte) (uint, byte, uint, byte, uint, byt
 	sha := crypto.NewKeccakState()
 	sha.Write(data)   //nolint:errcheck
 	sha.Read(hashbuf) //nolint:errcheck
-	cryptopool.ReturnToPoolKeccak256(sha)
+	crypto.ReturnKeccakState(sha)
 
 	v1 := byte(1 << (hashbuf[1] & 0x7))
 	v2 := byte(1 << (hashbuf[3] & 0x7))
