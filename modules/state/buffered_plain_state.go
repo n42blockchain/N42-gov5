@@ -169,12 +169,23 @@ func DefaultCacheBudget() CacheBudget {
 	}
 }
 
-// Per-entry overhead estimates for byte accounting. Real Go map +
-// container/list overhead is highly implementation-dependent; these are
-// generous round numbers chosen to keep us well below the byte budget
-// even as runtime data structures bloat.
+// Per-entry overhead estimates for byte accounting. Calibrated to
+// match Go's actual heap usage (verified via inuse_space pprof at 12M
+// blocks: 32 GB nominal storage budget was occupying 47 GB heap before
+// the 96 → 216 bump, exactly matching the per-entry overhead delta).
+//
+// Per cached storage entry:
+//   - s3Entry[[52]byte]:  ~96B  (key 52 + slice header 24 + cost 8 + freq/inMain/pad 12)
+//   - container/list.Element:  ~40B (prev,next,list,Value)
+//   - map[K]*Element bucket amortized:  ~80B
+//   - = ~216B overhead, on top of key + value bytes
+//
+// Account entries (key=[20]byte) carry slightly less map+entry
+// overhead (~150B) but we use a single uniform constant — keeping
+// the budget honest is more valuable than the ~3% account-side
+// over-charge.
 const (
-	cacheOverheadPerEntry  = 96 // map header + list.Element + pointer slop
+	cacheOverheadPerEntry  = 216 // s3Entry + list.Element + map bucket
 	storageCompositeKeyLen = 52
 	addrKeyLen             = 20
 	hashKeyLen             = 32
