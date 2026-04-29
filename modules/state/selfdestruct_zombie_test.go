@@ -780,3 +780,136 @@ func TestSelfdestructWipe_PrefetcherEpochGuard_NoZombieReintroduce(t *testing.T)
 	require.NoError(t, err)
 	require.Nil(t, v, "post-SELFDESTRUCT read after stale-prefetcher attempt returned zombie %x — epoch guard didn't hold", v)
 }
+
+// TestSelfdestructWipe_StaleRoTx_PostFlushWipe_NoPhantomChangeset
+// reproduces the block 10941306 production regression more precisely
+// than the existing CrossInterval test:
+//
+//   - Interval A SELFDESTRUCTs the contract.
+//   - Main thread opens its long-lived RoTx_B BEFORE the bg flush of A
+//     completes — RoTx_B's MDBX snapshot is pre-A-flush.
+//   - bg flush of A completes: MDBX rows deleted, wipedAtEpoch stamped,
+//     inFlight cleared.
+//   - Interval B re-CREATE2s the same address. The writer is built on
+//     RoTx_B (stale) with txOpenEpoch = pre-A-flush epoch.
+//   - collectPreWipeSlots' MDBX cursor over RoTx_B still sees pre-wipe
+//     rows. WITHOUT the wipedAtEpoch > txOpenEpoch guard, those rows
+//     end up in the new block's storcs as phantom pre-wipe values —
+//     exactly the diff-cs signature seen at 10941306 (slot 8 = 0x2432,
+//     slot 9 = 0x043e for 0x...beef...e1, neither in reth's changeset).
+//
+// With the guard active (collectPreWipeSlots line 1735 in
+// buffered_plain_state.go), the writer skips the MDBX scan entirely
+// and the changeset stays empty.
+func TestSelfdestructWipe_StaleRoTx_PostFlushWipe_NoPhantomChangeset(t *testing.T) {
+	initN42Tables(t)
+
+	db := memdb.NewTestDB(t)
+	addr := types.HexToAddress("0x00000000002bde777710c370e08fc83d61b2b8e1")
+	slot8 := hashFromByte(8)
+	slot9 := hashFromByte(9)
+	zombie8 := []byte{0x24, 0x32}
+	zombie9 := []byte{0x04, 0x3e}
+
+	// Seed MDBX with the pre-wipe slot values.
+	{
+		rwTx, err := db.BeginRw(context.Background())
+		require.NoError(t, err)
+		require.NoError(t, rwTx.Put(modules.Account, addr[:], liveAccountBytes(t)))
+		require.NoError(t, rwTx.Put(modules.Storage,
+			modules.PlainGenerateCompositeStorageKey(addr[:], slot8[:]), zombie8))
+		require.NoError(t, rwTx.Put(modules.Storage,
+			modules.PlainGenerateCompositeStorageKey(addr[:], slot9[:]), zombie9))
+		require.NoError(t, rwTx.Commit())
+	}
+
+	buf := NewPlainStateBuffer()
+
+	// Interval A: SELFDESTRUCT.
+	{
+		roTx, err := db.BeginRo(context.Background())
+		require.NoError(t, err)
+		writer := NewBufferedPlainStateWriter(buf, roTx, 10941141)
+		require.NoError(t, writer.DeleteAccount(addr, nil))
+		require.NoError(t, writer.CreateContract(addr))
+		roTx.Rollback()
+	}
+	snapA := buf.SnapshotForFlush()
+
+	// Main thread opens RoTx_B BEFORE bg applies snapA. RoTx_B's
+	// snapshot still shows the pre-A storage rows.
+	roTxB, err := db.BeginRo(context.Background())
+	require.NoError(t, err)
+	defer roTxB.Rollback()
+	txOpenEpochB := buf.CurrentFlushEpoch()
+
+	// Confirm the staleness: the cursor should still see zombie rows.
+	{
+		c, err := roTxB.Cursor(modules.Storage)
+		require.NoError(t, err)
+		seen := 0
+		for k, _, err := c.Seek(addr[:]); k != nil; k, _, err = c.Next() {
+			require.NoError(t, err)
+			if len(k) < 20 || k[19] != addr[19] {
+				break
+			}
+			seen++
+		}
+		c.Close()
+		require.Equal(t, 2, seen,
+			"RoTx_B opened before bg-A; expected to see 2 pre-A-flush storage rows (the bug's preconditions)")
+	}
+
+	// bg flush completes: MDBX rows deleted, wipedAtEpoch stamped.
+	{
+		rwTx, err := db.BeginRw(context.Background())
+		require.NoError(t, err)
+		require.NoError(t, snapA.ApplyTo(rwTx))
+		require.NoError(t, rwTx.Commit())
+		buf.RefreshLRUForSnapshot(snapA) // bumps wipedAtEpoch[addr]
+	}
+
+	// Simulate the next interval starting: a fresh empty SnapshotForFlush
+	// replaces inFlight, dropping snapA's wipedStorage visibility. After
+	// this point, collectPreWipeSlots' inFlight-snap check (line 1720)
+	// returns false for addr — only the wipedAtEpoch guard can save us
+	// from harvesting MDBX zombies via the stale RoTx.
+	_ = buf.SnapshotForFlush()
+	buf.ClearInFlight()
+
+	// Sanity: a FRESH RoTx now sees zero rows. RoTx_B is still stale.
+	{
+		freshRoTx, err := db.BeginRo(context.Background())
+		require.NoError(t, err)
+		c, err := freshRoTx.Cursor(modules.Storage)
+		require.NoError(t, err)
+		seen := 0
+		for k, _, err := c.Seek(addr[:]); k != nil; k, _, err = c.Next() {
+			require.NoError(t, err)
+			if len(k) < 20 || k[19] != addr[19] {
+				break
+			}
+			seen++
+		}
+		c.Close()
+		freshRoTx.Rollback()
+		require.Equal(t, 0, seen, "fresh RoTx should see 0 rows after bg-A wipe; staging is broken")
+	}
+
+	// Interval B: same address re-CREATE2'd. Writer is built on the
+	// STALE RoTx_B with the pre-A-flush epoch — this is the exact
+	// production geometry. The wipedAtEpoch guard at
+	// collectPreWipeSlots must skip the MDBX cursor scan.
+	writer := NewBufferedPlainStateWriterAt(buf, roTxB, 10941306, txOpenEpochB)
+	require.NoError(t, writer.DeleteAccount(addr, nil))
+	require.NoError(t, writer.CreateContract(addr))
+
+	csw := writer.ChangeSetWriter()
+	for _, slot := range []types.Hash{slot8, slot9} {
+		key := modules.PlainGenerateCompositeStorageKey(addr[:], slot[:])
+		v, exists := csw.storageChanges[string(key)]
+		require.False(t, exists,
+			"interval B's storcs has phantom pre-wipe entry for slot=%x value=%x — collectPreWipeSlots' wipedAtEpoch guard didn't fire",
+			slot[:], v)
+	}
+}

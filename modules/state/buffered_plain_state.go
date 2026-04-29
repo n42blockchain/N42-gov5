@@ -413,6 +413,17 @@ func (b *PlainStateBuffer) PruneWipesBefore(cutoff uint64) {
 	}
 }
 
+// IsWipedAfter reports whether a contract-wipe stamp for address landed
+// at a flush epoch strictly newer than `epoch` (typically the caller's
+// captured txOpenEpoch / prefetcherEpoch). Used to detect "my RoTx
+// pre-dates the wipe; MDBX still shows pre-wipe rows" — the
+// stale-RoTx race that bit prefetcher writes (block 2520771) and
+// changeset wipe-collection (block 10941306).
+func (b *PlainStateBuffer) IsWipedAfter(address types.Address, epoch uint64) bool {
+	v, ok := b.wipedAtEpoch.Load(address)
+	return ok && v.(uint64) > epoch
+}
+
 // CacheAccountIfAbsentEpoch is the epoch-aware variant of
 // CacheAccountIfAbsent for the async prefetcher. It additionally skips
 // when the address was wiped at an epoch later than the prefetcher's
@@ -436,7 +447,7 @@ func (b *PlainStateBuffer) CacheAccountIfAbsentEpoch(address types.Address, enc 
 	// Per-address SELFDESTRUCT epoch check (kept for the same-epoch
 	// case where prefetcherEpoch matches current but a contractWipes
 	// stamp landed at the same epoch).
-	if v, ok := b.wipedAtEpoch.Load(address); ok && v.(uint64) > prefetcherEpoch {
+	if b.IsWipedAfter(address, prefetcherEpoch) {
 		return false
 	}
 	cost := addrKeyLen + len(enc) + cacheOverheadPerEntry
@@ -449,7 +460,7 @@ func (b *PlainStateBuffer) CacheStorageIfAbsentEpoch(address types.Address, key 
 	if prefetcherEpoch < b.flushEpoch.Load() {
 		return false
 	}
-	if v, ok := b.wipedAtEpoch.Load(address); ok && v.(uint64) > prefetcherEpoch {
+	if b.IsWipedAfter(address, prefetcherEpoch) {
 		return false
 	}
 	var ck [storageCompositeKeyLen]byte
@@ -1223,6 +1234,31 @@ type BufferedPlainStateWriter struct {
 	buf *PlainStateBuffer
 	csw *ChangeSetWriter
 
+	// txOpenEpoch is the value of buf.flushEpoch at the moment the
+	// underlying RoTx (csw.db) was opened. collectPreWipeSlots uses it
+	// to detect "stale-RoTx + post-flush wipe" — a class of bug where
+	// the executor's long-lived RoTx still snapshots pre-flush MDBX
+	// rows for an address that an async flush has since wiped:
+	//
+	//   interval A: SELFDESTRUCT addr; commit boundary hands snap A
+	//     to bg flusher; main thread immediately rotates RoTx → new
+	//     RoTx's MDBX snapshot is taken BEFORE bg has applied A's
+	//     storage-wipe. Then bg flusher commits, deletes addr's
+	//     MDBX rows, advances flushEpoch and stamps wipedAtEpoch[addr].
+	//   interval B: same addr CREATE2'd. The active-buf wipedStorage
+	//     check is empty (B's buf is fresh). The inFlight snap was
+	//     cleared when bg finished. MDBX cursor scan, however, still
+	//     sees stale pre-A-flush rows because our RoTx is older than
+	//     the bg commit. → recordStorageWipe writes the stale rows
+	//     to the new block's storcs as "pre-wipe", a phantom history
+	//     reth doesn't have. Block 10941306 confirmed (slots 0x08=2432
+	//     and 0x09=043e for 0x...beef...e1).
+	//
+	// Mechanism: capture flushEpoch at BeginRo, compare against
+	// wipedAtEpoch[addr] in collectPreWipeSlots — anything stamped
+	// after our open is a wipe we cannot see in MDBX.
+	txOpenEpoch uint64
+
 	// Per-block touched-entry tracking. Populated by every Update*/
 	// Delete*/WriteAccountStorage/CreateContract/UpdateAccountCode
 	// call; consumed by RefreshLRUForBlock at end-of-block, which
@@ -1244,10 +1280,26 @@ type BufferedPlainStateWriter struct {
 // only reads from MDBX (e.g. cursor scans in collectPreWipeSlots).
 // All writes go to the in-memory buffer; the buffer is later flushed
 // to MDBX by the executor's commit-interval flush path (sync or async).
+//
+// Convenience wrapper that captures buf.flushEpoch at construction —
+// safe ONLY when the caller can guarantee the underlying RoTx was
+// opened at the same flushEpoch (no flush has completed between
+// BeginRo and now). For long-lived RoTx that may outlive bg flushes
+// (executor's commit-interval RoTx), use NewBufferedPlainStateWriterAt
+// with the epoch captured at BeginRo.
 func NewBufferedPlainStateWriter(buf *PlainStateBuffer, changeSetsDB kv.Tx, blockNumber uint64) *BufferedPlainStateWriter {
+	return NewBufferedPlainStateWriterAt(buf, changeSetsDB, blockNumber, buf.flushEpoch.Load())
+}
+
+// NewBufferedPlainStateWriterAt is the explicit-epoch variant. Caller
+// passes the flushEpoch captured at BeginRo time so collectPreWipeSlots
+// can detect post-RoTx-open wipes (see txOpenEpoch field doc and the
+// 10941306 forward-replay regression).
+func NewBufferedPlainStateWriterAt(buf *PlainStateBuffer, changeSetsDB kv.Tx, blockNumber uint64, txOpenEpoch uint64) *BufferedPlainStateWriter {
 	return &BufferedPlainStateWriter{
-		buf: buf,
-		csw: NewChangeSetWriterPlain(changeSetsDB, blockNumber),
+		buf:         buf,
+		csw:         NewChangeSetWriterPlain(changeSetsDB, blockNumber),
+		txOpenEpoch: txOpenEpoch,
 	}
 }
 
@@ -1718,6 +1770,29 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 		if tracked {
 			fmt.Printf("[TRACK] collectPreWipeSlots addr=%x bufWiped=true early_return out_slots=%d\n",
 				address[:], len(out))
+		}
+		return out, nil
+	}
+
+	// 2c. Post-flush wipe with stale RoTx. After bg flusher completes,
+	// inFlight is cleared and wipedAtEpoch[addr] is stamped with the new
+	// flushEpoch. But the executor's long-lived RoTx (csw.db) may have
+	// been opened BEFORE that bg commit landed, so its MDBX snapshot
+	// still shows the pre-wipe slots. Without this guard we would
+	// harvest those stale rows as "pre-wipe" values for the next
+	// CREATE2-of-same-addr block — block 10941306 confirmed this with
+	// slots 0x08=2432 and 0x09=043e for 0x...beef...e1, neither of
+	// which reth's changeset has.
+	//
+	// Compare wipedAtEpoch[addr] against w.txOpenEpoch (captured at
+	// BeginRo): any stamp newer than our open is a wipe our RoTx cannot
+	// see. Treat as fully wiped — the slots that survived the wipe (if
+	// any) are already in active buf or inFlight snap and were merged
+	// in steps 1-2 above.
+	if w.buf.IsWipedAfter(address, w.txOpenEpoch) {
+		if tracked {
+			fmt.Printf("[TRACK] collectPreWipeSlots addr=%x post-flush-wipe txOpen=%d early_return out_slots=%d\n",
+				address[:], w.txOpenEpoch, len(out))
 		}
 		return out, nil
 	}
