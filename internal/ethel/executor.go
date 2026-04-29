@@ -116,6 +116,30 @@ type Executor struct {
 	// speculative prefetcher can detect when the executor catches up and
 	// abort work on the prefetched block.
 	currentBlockNum atomic.Uint64
+
+	// txOpenEpoch is the value of stateBuf.flushEpoch at the moment the
+	// current main-loop RoTx was opened. Refreshed on every RoTx
+	// rotation (initial BeginRo + each commit-boundary rotation) so
+	// per-block writers can pin the horizon at which their MDBX snapshot
+	// is consistent with wipedAtEpoch stamps. See
+	// modules/state.NewBufferedPlainStateWriterAt and the 10941306
+	// storcs-stale-row regression for the race this closes.
+	txOpenEpoch uint64
+}
+
+// beginRoAndCaptureEpoch opens a fresh main-loop RoTx and stamps
+// e.txOpenEpoch with the current flushEpoch. Encapsulating the pair
+// makes "RoTx ↔ epoch capture" a structural invariant — a future
+// callsite that opens a RoTx by hand and forgets the capture would
+// silently re-introduce the 10941306 stale-RoTx phantom-changeset
+// regression.
+func (e *Executor) beginRoAndCaptureEpoch(ctx context.Context) (kv.Tx, error) {
+	tx, err := e.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.txOpenEpoch = e.stateBuf.CurrentFlushEpoch()
+	return tx, nil
 }
 
 // NewExecutor creates a new block executor.
@@ -242,7 +266,7 @@ func (e *Executor) Run(ctx context.Context) error {
 	if err := setupTx.Commit(); err != nil {
 		return fmt.Errorf("commit setup tx: %w", err)
 	}
-	tx, err = e.db.BeginRo(ctx)
+	tx, err = e.beginRoAndCaptureEpoch(ctx)
 	if err != nil {
 		return err
 	}
@@ -403,7 +427,7 @@ func (e *Executor) Run(ctx context.Context) error {
 			// don't need fresh reads since we're about to exit.
 			if !shuttingDown {
 				tx.Rollback()
-				tx, err = e.db.BeginRo(ctx)
+				tx, err = e.beginRoAndCaptureEpoch(ctx)
 				if err != nil {
 					cleanup = func() {}
 					return err
@@ -498,7 +522,7 @@ func (e *Executor) Run(ctx context.Context) error {
 				}
 				// Reopen main RoTx so the next exec interval sees the
 				// newly committed hashed-state tables.
-				tx, err = e.db.BeginRo(ctx)
+				tx, err = e.beginRoAndCaptureEpoch(ctx)
 				if err != nil {
 					cleanup = func() {}
 					return err
@@ -604,8 +628,12 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) 
 		witnessReader = NewWitnessStateReader(bufReader)
 		reader = witnessReader
 	}
-	// Writer goes to in-memory buffer (no MDBX Put per block).
-	writer := state.NewBufferedPlainStateWriter(e.stateBuf, tx, blockNum)
+	// Writer goes to in-memory buffer (no MDBX Put per block). Pass
+	// e.txOpenEpoch (captured at the most recent BeginRo) so
+	// collectPreWipeSlots can detect post-flush wipes that the
+	// long-lived RoTx hasn't picked up — block 10941306 storcs
+	// regression.
+	writer := state.NewBufferedPlainStateWriterAt(e.stateBuf, tx, blockNum, e.txOpenEpoch)
 	ibs := state.New(reader)
 
 	// State root verification moved to main loop (Run) for rollback support.
