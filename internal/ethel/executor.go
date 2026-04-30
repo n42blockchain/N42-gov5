@@ -330,9 +330,27 @@ func (e *Executor) Run(ctx context.Context) error {
 		// block it's still prewarming and abort.
 		e.currentBlockNum.Store(blockNum)
 
-		// Prefetch next block's state while we execute this one.
-		if e.prefetcher != nil && blockNum+1 <= endBlock {
-			e.prefetcher.prefetchBlock(blockNum + 1)
+		// Prefetch lookahead 2 blocks. Speculative prewarm runs each
+		// block's full EVM through a NoopWriter — at blk/s ≥ 80 the
+		// per-block budget is ~12 ms, uncomfortably close to the
+		// speculative EVM's own 8-10 ms cost on DeFi-era blocks.
+		// Single-block lookahead loses the race frequently (sto%
+		// capped ~93%); 2-block lookahead gives the prefetcher a full
+		// block of slack.
+		//
+		// To avoid duplicate enqueues (each iter would otherwise
+		// re-enqueue N+1, which the previous iter already enqueued as
+		// N+2), prime the pump on the first iteration with N+1, and on
+		// every iteration enqueue only N+2 — N+1 is always carried
+		// over from the previous iter's N+2. Channel capacity 3 in
+		// newPrefetcher absorbs transient pile-up.
+		if e.prefetcher != nil {
+			if blockNum == startBlock && blockNum+1 <= endBlock {
+				e.prefetcher.prefetchBlock(blockNum + 1)
+			}
+			if blockNum+2 <= endBlock {
+				e.prefetcher.prefetchBlock(blockNum + 2)
+			}
 		}
 
 		var execErr error
