@@ -70,7 +70,11 @@ func newPrefetcher(ctx context.Context, f *freezer.Freezer, db kv.RoDB, buf *sta
 		chainCfg:           chainCfg,
 		ctx:                ctx,
 		cancel:             cancel,
-		blockCh:            make(chan uint64, 2),
+		// Capacity 3: executor primes with N+1 on first iter then only
+		// N+2 each subsequent iter. Worst-case pile-up = the
+		// just-pre-fetched block + the in-flight one + a fresh
+		// enqueue. See executor.go's 2-block lookahead.
+		blockCh:            make(chan uint64, 3),
 		senderStore:        senderStore,
 		senderTable:        senderTable,
 		engine:             engine,
