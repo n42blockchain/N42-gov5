@@ -291,6 +291,93 @@ func TestSelfdestructWipe_PhantomEntryOnSecondWipe(t *testing.T) {
 	}
 }
 
+// TestSelfdestructWipe_SameInterval_NoStaleSnapEntries reproduces the
+// block-10941146 production diff: same address SELFDESTRUCT'd twice
+// in the SAME commit interval (no flush between), with the second
+// CreateContract running collectPreWipeSlots while inFlight still
+// holds a snap from a PRIOR interval that contains stale storage
+// entries for this address.
+//
+// Pre-fix: collectPreWipeSlots's step 2 (snap section) populates
+// `out` with the snap's stale entries, then step 2b (`if bufWiped {
+// return out, nil }`) returns the populated `out`, causing
+// recordStorageWipe to write phantom (slot, oldVal=stale_V) entries
+// at the second-wipe block. diff-cs flagged 11 such entries at
+// block 10941146 with the n42_old==n42_new "no-op (stale propagated
+// to PlainState)" pattern — the values match the pre-first-wipe
+// state because the constructor SSTOREs in the second incarnation
+// happen to write the same values back, and csw's first-wins guard
+// preserves the stale recorded oldVal over the constructor's fresh
+// (slot, oldVal=0) writes.
+//
+// Post-fix: bufWiped is checked at the TOP of collectPreWipeSlots,
+// before any out population. The function returns nil immediately,
+// recordStorageWipe is a no-op, and constructor SSTOREs go through
+// the normal (slot, oldVal=0) path matching reth's semantics.
+func TestSelfdestructWipe_SameInterval_NoStaleSnapEntries(t *testing.T) {
+	initN42Tables(t)
+
+	db := memdb.NewTestDB(t)
+	addr := types.HexToAddress("0x00000000002bde777710c370e08fc83d61b2b8e1")
+	slot0 := hashFromByte(0)
+	slot1 := hashFromByte(1)
+
+	buf := NewPlainStateBuffer()
+
+	// Step 1 — Set up an inFlight snap that has stale entries for the
+	// address. Simulates a previous interval (N-1) that wrote slot 0 = V0
+	// and slot 1 = V1, then committed.
+	{
+		roTx, err := db.BeginRo(context.Background())
+		require.NoError(t, err)
+		w := NewBufferedPlainStateWriter(buf, roTx, 100)
+		require.NoError(t, w.WriteAccountStorage(addr, &slot0, uint256.NewInt(0), uint256.NewInt(0x0fc0)))
+		require.NoError(t, w.WriteAccountStorage(addr, &slot1, uint256.NewInt(0), uint256.NewInt(0x5d46)))
+		roTx.Rollback()
+	}
+	// Snapshot the writes so they live in inFlight (without applying
+	// to MDBX — simulates the moment after SnapshotForFlush but before
+	// bg flush completes).
+	snap := buf.SnapshotForFlush()
+	_ = snap
+
+	// Step 2 — In the CURRENT interval (N), block 10941141: SELFDESTRUCT
+	// the address. Active buf gets contractWipes + wipedStorage[addr].
+	{
+		roTx, err := db.BeginRo(context.Background())
+		require.NoError(t, err)
+		w := NewBufferedPlainStateWriter(buf, roTx, 10941141)
+		require.NoError(t, w.DeleteAccount(addr, nil))
+		require.NoError(t, w.CreateContract(addr))
+		roTx.Rollback()
+	}
+
+	// Step 3 — Block 10941146 in the SAME interval: same address gets
+	// re-CREATE2'd. CreateContract calls collectPreWipeSlots a second
+	// time. Pre-fix: snap section populates out with V0/V1, bufWiped
+	// returns it. Post-fix: empty return, no phantom entries.
+	{
+		roTx, err := db.BeginRo(context.Background())
+		require.NoError(t, err)
+		w := NewBufferedPlainStateWriter(buf, roTx, 10941146)
+		csw := w.ChangeSetWriter()
+		require.NoError(t, w.DeleteAccount(addr, nil))
+		require.NoError(t, w.CreateContract(addr))
+
+		// recordStorageWipe MUST NOT have added stale entries for
+		// slot 0 or slot 1.
+		key0 := modules.PlainGenerateCompositeStorageKey(addr[:], slot0[:])
+		key1 := modules.PlainGenerateCompositeStorageKey(addr[:], slot1[:])
+		_, exists0 := csw.storageChanges[string(key0)]
+		_, exists1 := csw.storageChanges[string(key1)]
+		require.False(t, exists0,
+			"block 10941146 has phantom storcs entry for slot 0 — collectPreWipeSlots leaked snap value past bufWiped guard")
+		require.False(t, exists1,
+			"block 10941146 has phantom storcs entry for slot 1 — same bug")
+		roTx.Rollback()
+	}
+}
+
 // Same scenario as TestSelfdestructWipe_PhantomEntryOnSecondWipe but
 // with the two SELFDESTRUCT blocks in DIFFERENT commit intervals. In
 // production a CommitInterval=10000 separates 10941141 and 10941306 by

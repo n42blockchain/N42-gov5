@@ -1860,25 +1860,42 @@ func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
 // missing tombstones → forward replay produces a wrong state root.
 func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (map[types.Hash][]byte, error) {
 	tracked := isTracked(address)
+
+	// EARLY RETURN: active buf has already wiped this address in the
+	// current commit interval. The earlier CreateContract that set
+	// buf.wipedStorage[addr]=true ALREADY ran collectPreWipeSlots and
+	// recorded every pre-wipe slot value into csw.storageChanges via
+	// recordStorageWipe. The current call (a second SELFDESTRUCT or
+	// CREATE2 of the same address in the same interval — typical
+	// metamorphic / re-CREATE2 pattern) MUST NOT add anything: doing so
+	// would either
+	//   (a) duplicate the entries the first wipe already recorded
+	//       (first-wins skips the duplicate, no harm), OR
+	//   (b) pull STALE values from inFlight snap or MDBX that were
+	//       valid before the first wipe but logically gone after it,
+	//       and then csw's WriteAccountStorage path's first-wins guard
+	//       would PRESERVE those stale values over the constructor's
+	//       fresh (slot, oldVal=0) writes — producing the diff-cs
+	//       "no-op (stale propagated to PlainState)" pattern at
+	//       block 10941146 (slots 0..7 etc with n42_old==n42_new).
+	//
+	// Returning empty cleanly: the constructor SSTOREs that follow
+	// (re-)create the slots will go through csw.WriteAccountStorage's
+	// normal `original != value` path and record (slot, oldVal=0)
+	// matching reth's changeset semantics for fresh-contract storage.
+	if _, bufWiped := w.buf.wipedStorage[address]; bufWiped {
+		if tracked {
+			fmt.Printf("[TRACK] collectPreWipeSlots addr=%x bufWiped=true early_return (second wipe in same interval)\n",
+				address[:])
+		}
+		return nil, nil
+	}
+
 	// snap is captured once for the entire function so the MDBX-shadowing
 	// loop sees the same snapshot we enumerated, even if the bg flush
 	// completes mid-call and clears w.buf.inFlight.
 	snap := w.buf.inFlight.Load()
 	bufSlots, hasBuf := w.buf.storage[address]
-	// If the CURRENT active buffer already wiped this address (a SELFDESTRUCT
-	// earlier in the same commit interval produced a buf.wipedStorage entry
-	// and buf.contractWipes append), MDBX still holds the pre-interval slots
-	// — but they are logically gone. If a LATER block in the same interval
-	// re-runs CreateContract (e.g. CREATE2 metamorphic pattern), we must NOT
-	// re-harvest the stale MDBX slots here: csw.recordStorageWipe would then
-	// write them to the NEW block's storcs entry as if they were pre-block
-	// values, even though the true pre-block value is 0 (wiped). Forward
-	// replay of that bogus storcs row does not currently break state root
-	// (V* → 0 collides with 0 → 0), but the changeset's old_val lies about
-	// history and downstream consumers that trust it (snapshot diffs,
-	// history v3 inverted index, gas refund reasoning that walks back
-	// storcs) silently break.
-	_, bufWiped := w.buf.wipedStorage[address]
 
 	hint := len(bufSlots)
 	if snap != nil {
@@ -1938,16 +1955,8 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 		}
 	}
 
-	// 2b. Active-buffer wipe: same semantics as in-flight wipe, but for a
-	// SELFDESTRUCT earlier in the current (pre-snapshot) interval. MDBX
-	// still holds the old rows but they are logically gone.
-	if bufWiped {
-		if tracked {
-			fmt.Printf("[TRACK] collectPreWipeSlots addr=%x bufWiped=true early_return out_slots=%d\n",
-				address[:], len(out))
-		}
-		return out, nil
-	}
+	// (active-buffer wipe is handled at the top of the function via early
+	// return — see the bufWiped check before snap is loaded)
 
 	// 2c. Post-flush wipe with stale RoTx. After bg flusher completes,
 	// inFlight is cleared and wipedAtEpoch[addr] is stamped with the new
