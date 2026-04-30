@@ -145,6 +145,9 @@ func (p *prefetcher) loadSenders(blockNum uint64, txCount int) []types.Address {
 }
 
 func (p *prefetcher) doFetch(blockNum uint64) {
+	if p.cancelled(blockNum) {
+		return
+	}
 	data, err := p.freezer.Ancient(freezer.TableBodies, blockNum)
 	if err != nil {
 		return
@@ -159,9 +162,10 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 
 	senders := p.loadSenders(blockNum, len(body.Transactions))
 
-	// Speculative path needs the header for blockContext. Decode once and
-	// reuse for both paths so the static AL fallback keeps working when
-	// speculation is disabled or when senders are unavailable.
+	// Speculative path needs the header for blockContext. Static-AL
+	// fallback also needs it when senders are unavailable so we can run
+	// ecrecover with the right signer for the block height. Decode
+	// once.
 	var header *block.Header
 	if p.speculativeEnabled || senders == nil {
 		headerData, hErr := p.freezer.Ancient(freezer.TableHeaders, blockNum)
@@ -174,26 +178,62 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 		}
 	}
 
-	// Speculative prefetch: run the block's txs through a NoopWriter so
-	// every read warms the cache. Falls back to static AL path on
-	// missing senders (ecrecover during speculation would dominate CPU)
-	// or for small blocks where the setup overhead exceeds the benefit.
-	if p.speculativeEnabled && senders != nil && len(body.Transactions) >= SmallBlockTxThreshold {
-		p.runSpeculative(blockNum, header, body, senders)
+	// Phase 1 — static AL prewarm. Runs UNCONDITIONALLY when senders
+	// are available because it's cheap (~1-2 ms for typical blocks:
+	// ~150 tx × ~3 reads = ~450 cursor SeekExact + LRU IfAbsent puts)
+	// and it does two things speculative EVM does not by itself:
+	//
+	//   * Warms the OS page cache for B+tree leaves of every AL-listed
+	//     storage slot, so the speculative pass below (and the real
+	//     executor read after that) hits a warm page instead of cold
+	//     NVMe seek.
+	//   * Publishes AL-listed slot values into the readStorage LRU via
+	//     CacheStorageIfAbsentEpoch. Speculative EVM's reads on those
+	//     same slots become LRU hits (50-100 ns) instead of MDBX
+	//     cursor descents (50-200 µs), so speculative completes within
+	//     its budget more often → fewer cancellations → higher sto%.
+	//
+	// Skipped only when senders are nil (running ecrecover here would
+	// dominate the prefetcher's per-block budget and starve Phase 2)
+	// AND speculative is disabled — i.e. the legacy ecrecover-static
+	// path. In that case we still walk the AL with ecrecover-resolved
+	// senders to keep the prior fallback behaviour.
+	if senders != nil {
+		p.staticALPrewarm(blockNum, body, senders, nil)
+	} else if !p.speculativeEnabled {
+		signer := transaction.MakeSigner(p.chainCfg, header.Number.ToBig())
+		p.staticALPrewarm(blockNum, body, nil, signer)
+	}
+
+	if p.cancelled(blockNum) {
 		return
 	}
 
+	// Phase 2 — speculative EVM. Runs full block tx execution through a
+	// NoopWriter so dynamically-computed (non-AL) SLOAD slots and
+	// internal CALL targets also land in the LRU. Skipped on small
+	// blocks (setup overhead exceeds benefit), missing senders (would
+	// trigger ecrecover during speculation), or when speculative is
+	// off. Phase 1's LRU prewarm makes this loop's reads ~10× cheaper.
+	if p.speculativeEnabled && senders != nil && len(body.Transactions) >= SmallBlockTxThreshold {
+		p.runSpeculative(blockNum, header, body, senders)
+	}
+}
+
+// staticALPrewarm collects sender + to + AL addresses and runs the
+// cheap MDBX-only prewarm. signer is used for ecrecover when senders
+// are not pre-computed; pass nil when senders is non-nil.
+func (p *prefetcher) staticALPrewarm(blockNum uint64, body *GethBodyResult, senders []types.Address, signer transaction.Signer) {
 	addrs := make(map[types.Address]struct{}, len(body.Transactions)*3)
-	if senders == nil {
-		signer := transaction.MakeSigner(p.chainCfg, header.Number.ToBig())
+	if senders != nil {
+		for _, s := range senders {
+			addrs[s] = struct{}{}
+		}
+	} else if signer != nil {
 		for _, tx := range body.Transactions {
 			if sender, err := transaction.Sender(signer, tx); err == nil {
 				addrs[sender] = struct{}{}
 			}
-		}
-	} else {
-		for _, s := range senders {
-			addrs[s] = struct{}{}
 		}
 	}
 	for _, tx := range body.Transactions {
