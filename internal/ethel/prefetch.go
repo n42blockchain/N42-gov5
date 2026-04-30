@@ -178,29 +178,38 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 		}
 	}
 
-	// Phase 1 — static AL prewarm. Runs UNCONDITIONALLY when senders
-	// are available because it's cheap (~1-2 ms for typical blocks:
-	// ~150 tx × ~3 reads = ~450 cursor SeekExact + LRU IfAbsent puts)
-	// and it does two things speculative EVM does not by itself:
+	// Phase 1 — static AL prewarm. Always runs:
 	//
-	//   * Warms the OS page cache for B+tree leaves of every AL-listed
-	//     storage slot, so the speculative pass below (and the real
-	//     executor read after that) hits a warm page instead of cold
-	//     NVMe seek.
-	//   * Publishes AL-listed slot values into the readStorage LRU via
-	//     CacheStorageIfAbsentEpoch. Speculative EVM's reads on those
-	//     same slots become LRU hits (50-100 ns) instead of MDBX
-	//     cursor descents (50-200 µs), so speculative completes within
-	//     its budget more often → fewer cancellations → higher sto%.
+	//   * senders != nil (common mainnet path with sender-recovery
+	//     output present): cheap (~1-2 ms for typical blocks, ~150 tx
+	//     × ~3 reads = ~450 cursor SeekExact + LRU IfAbsent puts).
+	//     Two effects beyond cache fill:
+	//       a. Warms the OS page cache for B+tree leaves of every
+	//          AL-listed storage slot, so the speculative pass below
+	//          (and the real executor read after that) hits a warm
+	//          page instead of cold NVMe seek.
+	//       b. Publishes AL-listed slot values into the readStorage
+	//          LRU via CacheStorageIfAbsentEpoch. Speculative EVM's
+	//          reads on those same slots become LRU hits (50-100 ns)
+	//          instead of MDBX cursor descents (50-200 µs), so
+	//          speculative completes within its budget more often →
+	//          fewer cancellations → higher sto%.
 	//
-	// Skipped only when senders are nil (running ecrecover here would
-	// dominate the prefetcher's per-block budget and starve Phase 2)
-	// AND speculative is disabled — i.e. the legacy ecrecover-static
-	// path. In that case we still walk the AL with ecrecover-resolved
-	// senders to keep the prior fallback behaviour.
+	//   * senders == nil (sender-recovery has not run for this block):
+	//     fall back to ecrecover for senders. The cost is real
+	//     (~80 µs/tx × 200 tx = ~16 ms) but skipping prefetch entirely
+	//     leaves the executor with a cold cache for the whole block —
+	//     measured worse on a senders-missing run (sto% dropped from
+	//     94% → ~70%) because the speculative path also requires
+	//     senders, so it would skip too. Ecrecover here is a one-time
+	//     cost; the LRU fill it produces benefits both the prefetched
+	//     speculative pass (if eligible) and the real executor read.
+	//
+	// Mirrors the pre-2026-04-30 fallback behaviour while preserving
+	// the new "Phase 1 always primes Phase 2" property.
 	if senders != nil {
 		p.staticALPrewarm(blockNum, body, senders, nil)
-	} else if !p.speculativeEnabled {
+	} else {
 		signer := transaction.MakeSigner(p.chainCfg, header.Number.ToBig())
 		p.staticALPrewarm(blockNum, body, nil, signer)
 	}
