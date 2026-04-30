@@ -378,6 +378,78 @@ func TestSelfdestructWipe_SameInterval_NoStaleSnapEntries(t *testing.T) {
 	}
 }
 
+// TestSelfdestructWipe_CreateThenSelfdestructSameInterval pins the
+// 12496119 production diff: address is CREATE2'd at block A in the
+// current interval, then SELFDESTRUCT'd at block B (same interval).
+//
+// Pre-fix (0e6377fc): block A's CreateContract set
+// buf.wipedStorage[addr]=true as a side effect even though there was
+// nothing to wipe (fresh CREATE2). Block B's CreateContract then took
+// the early-return path and recorded NO wipe entries — but block A's
+// constructor SSTOREs had populated buf.storage[addr] with V0..V4,
+// which ARE legitimate pre-block-B values that block B's
+// recordStorageWipe must record. n42-slot-history confirmed n42 only
+// recorded the CREATE at 12496089 (oldVal=0 → V) and missed the
+// SELFDESTRUCT wipe at 12496119 (V → 0). reth records both.
+//
+// Post-fix: bufWiped no longer short-circuits step 1. Step 1 collects
+// bufSlots (block A's writes), step 2 (snap) is skipped because snap
+// is pre-current-interval and stale, MDBX scan also skipped — the
+// recorded oldVal at block B is V0..V4 from buf.storage[addr], which
+// matches reth.
+func TestSelfdestructWipe_CreateThenSelfdestructSameInterval(t *testing.T) {
+	initN42Tables(t)
+
+	db := memdb.NewTestDB(t)
+	addr := types.HexToAddress("0xe96acdf7c5c4bf706b501b5bd6f83149904a631c")
+	slot0 := hashFromByte(0)
+	slot1 := hashFromByte(1)
+	v0 := uint256.NewInt(0x3a71)
+	v1 := uint256.NewInt(0xa218)
+
+	buf := NewPlainStateBuffer()
+
+	// --- Block A: fresh CREATE2 + constructor SSTORE V0, V1 ---
+	// (UpdateAccountData omitted; not relevant to the wipe-collection
+	// path under test. CreateContract still runs with the wipe-marker
+	// side effect even on a fresh CREATE2 — that's exactly what
+	// triggers the regression.)
+	{
+		roTx, err := db.BeginRo(context.Background())
+		require.NoError(t, err)
+		w := NewBufferedPlainStateWriter(buf, roTx, 12496089)
+		require.NoError(t, w.CreateContract(addr))
+		require.NoError(t, w.WriteAccountStorage(addr, &slot0, uint256.NewInt(0), v0))
+		require.NoError(t, w.WriteAccountStorage(addr, &slot1, uint256.NewInt(0), v1))
+		roTx.Rollback()
+	}
+	// At end of block A: buf.storage[addr] = {slot0:V0, slot1:V1};
+	// buf.wipedStorage[addr] = true (CreateContract side effect).
+
+	// --- Block B (same interval): SELFDESTRUCT ---
+	{
+		roTx, err := db.BeginRo(context.Background())
+		require.NoError(t, err)
+		w := NewBufferedPlainStateWriter(buf, roTx, 12496119)
+		csw := w.ChangeSetWriter()
+		require.NoError(t, w.DeleteAccount(addr, nil))
+		require.NoError(t, w.CreateContract(addr))
+
+		// recordStorageWipe MUST have recorded slot0 and slot1 with
+		// the post-block-A values (V0, V1) — those are the legitimate
+		// pre-block-B oldVals. The pre-fix early-return missed these.
+		key0 := modules.PlainGenerateCompositeStorageKey(addr[:], slot0[:])
+		key1 := modules.PlainGenerateCompositeStorageKey(addr[:], slot1[:])
+		got0, exists0 := csw.storageChanges[string(key0)]
+		got1, exists1 := csw.storageChanges[string(key1)]
+		require.True(t, exists0, "block B missed wipe entry for slot0 — bufWiped early-return swallowed bufSlots (12496119 production regression)")
+		require.True(t, exists1, "block B missed wipe entry for slot1")
+		require.Equal(t, v0.Bytes(), got0, "slot0 oldVal mismatch")
+		require.Equal(t, v1.Bytes(), got1, "slot1 oldVal mismatch")
+		roTx.Rollback()
+	}
+}
+
 // Same scenario as TestSelfdestructWipe_PhantomEntryOnSecondWipe but
 // with the two SELFDESTRUCT blocks in DIFFERENT commit intervals. In
 // production a CommitInterval=10000 separates 10941141 and 10941306 by
