@@ -215,33 +215,37 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	}
 	defer roTx.Rollback()
 
-	// Account prewarming via the LRU is INTENTIONALLY OMITTED. The
-	// account race is fundamentally different from storage:
-	//
-	//   - Active buf may have a freshly-updated StateAccount (new
-	//     codeHash after CREATE, new balance after transfer), but the
-	//     bg flusher hasn't bumped flushEpoch yet. Prefetcher reads
-	//     MDBX (stale), captures pre-flush prefetcherEpoch, and the
-	//     IfAbsentEpoch guard PASSES because no flush has stamped.
-	//   - LRU now holds a stale account. Executor's next read goes
-	//     LRU-first (per readAccounts hot path), gets the stale
-	//     codeHash, and treats a fresh contract as an EOA — block
-	//     6411933 confirmed this exact failure (gas n42=23320 vs
-	//     geth=53513, 0 logs vs 1, status=1 in both — pure
-	//     "code-missing" signature).
-	//   - Storage is safe to prewarm: storageWipes / wipedStorage
-	//     intercept stale-slot LRU hits inside the bufReader before
-	//     the value is consumed, and slot writes don't carry an
-	//     EOA-vs-contract behavioral cliff like codeHash does.
-	//
-	// We still issue the MDBX GetOne for accounts (warms OS page
-	// cache, ~free) but never publish into the LRU. Hot accounts are
-	// naturally warmed by the executor itself; the LRU path is too
-	// dangerous for prefetcher writes.
+	prewarmFromAccessList(p.stateBuf, roTx, addrs, body.Transactions, prefetcherEpoch)
+}
+
+// prewarmFromAccessList reads the accounts in addrs and the storage slots
+// in txs' AccessLists from MDBX via roTx, populating S3-FIFO caches.
+//
+// LRU policy is asymmetric:
+//
+//   - Accounts are NEVER published. Active buf may hold a freshly-updated
+//     StateAccount (new codeHash after CREATE, new balance after transfer)
+//     while the bg flusher has not bumped flushEpoch. Prefetcher's RoTx
+//     would read pre-update MDBX, IfAbsentEpoch guard would PASS (no flush
+//     stamped), and a stale account would land in the LRU. Executor's next
+//     LRU-first read returns the stale codeHash, EVM treats a fresh
+//     contract as EOA — block 6411933 confirmed this failure mode
+//     (n42=23320 gas vs geth=53513, 0 logs vs 1, status=1 in both). The
+//     read is still issued so MDBX page-faults the leaf into OS page
+//     cache (~free); the LRU write is the dangerous part.
+//
+//   - Storage IS published via CacheStorageIfAbsentEpoch. Safe because
+//     bufReader intercepts stale slots via storageWipes / wipedStorage
+//     before any value reaches consumers, and slot reads don't carry the
+//     EOA-vs-contract behavioral cliff that codeHash does.
+//
+// This helper is the single chokepoint for the "no account LRU writes"
+// invariant — exported package-private so a focused unit test can pin it.
+func prewarmFromAccessList(buf *state.PlainStateBuffer, roTx kv.Tx, addrs map[types.Address]struct{}, txs []*transaction.Transaction, epoch uint64) {
 	for addr := range addrs {
 		_, _ = roTx.GetOne(modules.Account, addr[:])
 	}
-	for _, tx := range body.Transactions {
+	for _, tx := range txs {
 		for _, entry := range tx.AccessList() {
 			for _, key := range entry.StorageKeys {
 				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], key[:])
@@ -249,10 +253,8 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 				if err != nil {
 					continue
 				}
-				// Skip negative cache — pinned RoTx may pre-date a
-				// flush whose snap created this slot.
 				if len(val) > 0 {
-					p.stateBuf.CacheStorageIfAbsentEpoch(entry.Address, key, val, prefetcherEpoch)
+					buf.CacheStorageIfAbsentEpoch(entry.Address, key, val, epoch)
 				}
 			}
 		}
