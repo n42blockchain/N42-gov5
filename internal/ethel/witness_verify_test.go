@@ -176,7 +176,7 @@ func TestWitnessVerify(t *testing.T) {
 		for i, u := range body.Uncles {
 			uncles[i] = u
 		}
-		result, err := ProcessBlock(chainCfg, engine, header, body.Transactions, uncles, ibs, nil, nil)
+		result, err := ProcessBlock(chainCfg, engine, header, body.Transactions, uncles, body.Withdrawals, ibs, nil, nil)
 		if err != nil {
 			t.Errorf("block %d: execute: %v (witness may be incomplete for this block)", blockNum, err)
 			continue

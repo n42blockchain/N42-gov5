@@ -227,6 +227,9 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if latestValidHash, ok := e.v1.rejectedAncestorLatestValidHash(payload.ParentHash); ok {
 		return e.v1.invalidPayloadStatus(engineRejectedAncestorReason, blk, blockHash, latestValidHash, body), nil
 	}
+	if err := validateExecutionPayloadBlobHeader(blockHeader(blk), parent, e.v1.chainConfig()); err != nil {
+		return e.v1.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+	}
 	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
 		return e.v1.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}

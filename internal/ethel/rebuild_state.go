@@ -474,7 +474,6 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 	return nil
 }
 
-
 func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]byte, storMap map[types.Address]map[types.Hash][]byte, wipeSet map[types.Address]struct{}) error {
 	totalSlots := 0
 	for _, slots := range storMap {
@@ -773,7 +772,7 @@ func rebuildEVMFallback(ctx context.Context, db kv.RwDB, opts RebuildOptions, bl
 		return h.Hash()
 	}
 
-	result, err := ProcessBlock(opts.ChainConfig, engine, header, body.Transactions, uncles, ibs, blockHashFunc, nil, writer)
+	result, err := ProcessBlock(opts.ChainConfig, engine, header, body.Transactions, uncles, body.Withdrawals, ibs, blockHashFunc, nil, writer)
 	if err != nil {
 		return fmt.Errorf("execute block: %w", err)
 	}

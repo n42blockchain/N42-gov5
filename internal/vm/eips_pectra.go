@@ -460,68 +460,12 @@ func enable2537(jt *JumpTable) {
 	// No new opcodes are added
 }
 
-// enable2935 applies EIP-2935 "Historical block hashes in state"
-// Saves historical block hashes in a system contract
+// enable2935 applies EIP-2935 "Historical block hashes in state".
+// The fork deploys and updates the history contract, but the BLOCKHASH opcode
+// keeps its original 256-block lookup window. Historical hashes older than
+// that are exposed via the system contract, not by changing the opcode.
 func enable2935(jt *JumpTable) {
-	// BLOCKHASH now reads from the history storage contract
-	// for blocks older than 256 blocks
-	jt[BLOCKHASH].execute = opBlockhash2935
-}
-
-// opBlockhash2935 implements BLOCKHASH with EIP-2935 support
-// EIP-2935 extends BLOCKHASH to serve block hashes beyond the 256 block limit
-// by reading from a system contract that stores historical block hashes
-func opBlockhash2935(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	num := scope.Stack.Peek()
-	num64, overflow := num.Uint64WithOverflow()
-	if overflow {
-		num.Clear()
-		return nil, nil
-	}
-
-	currentBlock := interpreter.evm.Context().BlockNumber
-	if currentBlock < 1 {
-		num.Clear()
-		return nil, nil
-	}
-
-	// Block number must be less than current block
-	if num64 >= currentBlock {
-		num.Clear()
-		return nil, nil
-	}
-
-	// Check if within standard 256 block window (original BLOCKHASH behavior)
-	if currentBlock-num64 <= 256 {
-		hash := interpreter.evm.Context().GetHash(num64)
-		num.SetBytes(hash.Bytes())
-		return nil, nil
-	}
-
-	// EIP-2935: Check history storage for older blocks (Prague)
-	if interpreter.evm.ChainRules().IsPrague {
-		// Check if within the history serve window
-		if currentBlock-num64 > HistoryServeWindow {
-			num.Clear()
-			return nil, nil
-		}
-
-		// Read from history storage contract
-		// Slot is calculated as blockNumber % HISTORY_SERVE_WINDOW
-		slotNum := new(uint256.Int).SetUint64(num64 % HistoryServeWindow)
-		slot := types.Hash{}
-		slotNum.WriteToSlice(slot[:])
-
-		var hashVal uint256.Int
-		interpreter.evm.IntraBlockState().GetState(HistoryStorageAddress, &slot, &hashVal)
-		if !hashVal.IsZero() {
-			num.Set(&hashVal)
-			return nil, nil
-		}
-	}
-
-	num.Clear()
-	return nil, nil
+	_ = jt
 }
 
 // newPectraInstructionSet returns the Pectra instruction set

@@ -1,13 +1,14 @@
 package ethel
 
 import (
+	"context"
 	"testing"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
-	"context"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -34,7 +35,7 @@ func TestProcessBlockEmpty(t *testing.T) {
 	blockHashFunc := func(n uint64) types.Hash { return types.Hash{} }
 
 	result, err := ProcessBlock(chainCfg, engine, header,
-		[]*transaction.Transaction{}, nil, ibs, blockHashFunc, nil)
+		[]*transaction.Transaction{}, nil, nil, ibs, blockHashFunc, nil)
 	if err != nil {
 		t.Fatalf("ProcessBlock empty: %v", err)
 	}

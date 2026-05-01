@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -38,6 +40,26 @@ type BlockResult struct {
 	Senders  []types.Address
 }
 
+func applyEthelWithdrawals(chainCfg *params.ChainConfig, header *block.Header, ibs *state.IntraBlockState, withdrawals []*Withdrawal) {
+	if chainCfg == nil || header == nil || header.Number == nil || ibs == nil || len(withdrawals) == 0 {
+		return
+	}
+	if !chainCfg.IsShanghaiAt(header.Number.Uint64(), header.Time) {
+		return
+	}
+	gwei := uint256.NewInt(params.GWei)
+	for _, withdrawal := range withdrawals {
+		if withdrawal == nil || withdrawal.Amount == 0 {
+			continue
+		}
+		amount := new(uint256.Int).Mul(uint256.NewInt(withdrawal.Amount), gwei)
+		if amount.IsZero() {
+			continue
+		}
+		ibs.AddBalance(withdrawal.Address, amount)
+	}
+}
+
 // ProcessBlock executes all transactions in a block against the given state.
 // This is the shared core between the batch Executor and the Engine API adapter.
 //
@@ -47,8 +69,10 @@ type BlockResult struct {
 //   - header: block header being executed
 //   - txs: transactions to execute
 //   - uncles: uncle headers (for reward calculation, nil post-merge)
+//   - withdrawals: EIP-4895 withdrawals, nil before Shanghai
 //   - ibs: in-memory state database
 //   - blockHashFunc: BLOCKHASH opcode implementation
+//
 // ProcessBlock executes all transactions in a block.
 // If precomputedSenders is provided (non-nil), senders are injected directly
 // into transactions via SetFrom, skipping expensive ecrecover.
@@ -58,6 +82,7 @@ func ProcessBlock(
 	header *block.Header,
 	txs []*transaction.Transaction,
 	uncles []block.IHeader,
+	withdrawals []*Withdrawal,
 	ibs *state.IntraBlockState,
 	blockHashFunc func(uint64) types.Hash,
 	precomputedSenders []types.Address,
@@ -137,6 +162,8 @@ func ProcessBlock(
 		}
 
 	}
+
+	applyEthelWithdrawals(chainCfg, header, ibs, withdrawals)
 
 	// Post-block system calls depend on the receipts emitted by executed transactions.
 	if _, err := iinternal.ProcessExecutionBlockEnd(receipts, chainCfg, ibs, header, engine); err != nil {
