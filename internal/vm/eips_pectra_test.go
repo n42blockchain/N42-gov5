@@ -18,6 +18,7 @@ package vm
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -435,6 +436,17 @@ func TestPectraInstructionSetIncludesPrague(t *testing.T) {
 		if prague[i] != nil && pectra[i] == nil {
 			t.Errorf("Pectra missing Prague op 0x%x", i)
 		}
+	}
+}
+
+func TestPectraKeepsStandardBlockhashOpcode(t *testing.T) {
+	pectra := newPectraInstructionSet()
+	prague := newPragueInstructionSet()
+
+	got := reflect.ValueOf(pectra[BLOCKHASH].execute).Pointer()
+	want := reflect.ValueOf(prague[BLOCKHASH].execute).Pointer()
+	if got != want {
+		t.Fatalf("Pectra BLOCKHASH execute pointer = %#x, want %#x", got, want)
 	}
 }
 

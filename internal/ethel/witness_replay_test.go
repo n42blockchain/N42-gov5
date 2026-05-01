@@ -144,7 +144,7 @@ func TestWitnessBlockReplay(t *testing.T) {
 
 	chainCfg := params.EthereumMainnetChainConfig
 	engine := NewEthReplayEngine(chainCfg)
-	result, err := ProcessBlock(chainCfg, engine, header, body.Transactions, uncles, ibs, blockHashFunc, nil)
+	result, err := ProcessBlock(chainCfg, engine, header, body.Transactions, uncles, body.Withdrawals, ibs, blockHashFunc, nil)
 	if err != nil {
 		t.Fatalf("process block: %v", err)
 	}

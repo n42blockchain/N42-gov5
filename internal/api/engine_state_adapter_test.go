@@ -154,7 +154,7 @@ func TestEngineStateAdapterRejectsInvalidPrevRandaoOnLegacyPayload(t *testing.T)
 			}
 			return h
 		}
-		_, err := ethel.ProcessBlock(cfg, &apiTestEngine{}, validBlock.(*block.Block).Header().(*block.Header), validBlock.Transactions(), nil, ibs, blockHashFunc, nil)
+		_, err := ethel.ProcessBlock(cfg, &apiTestEngine{}, validBlock.(*block.Block).Header().(*block.Header), validBlock.Transactions(), nil, nil, ibs, blockHashFunc, nil)
 		require.NoError(t, err)
 		require.Equal(t, payload.StateRoot, ibs.IntermediateRoot())
 		return nil
