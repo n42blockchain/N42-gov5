@@ -1,6 +1,6 @@
 # JMT vs MPT Gap
 
-> 更新日期：2026-03-28
+> 更新日期：2026-04-16
 > 作用：澄清“当前通过 Hive/EEST”和“成为完整 canonical Ethereum EL”之间，MPT/state proof 侧真正还差什么。
 
 ## 一句话结论
@@ -22,7 +22,7 @@
 
 - Paris+Shanghai `3573`
 - Cancun `17783`
-- Prague `20964`
+- Prague `20878`
 - Osaka `21583`
 
 见 [README.md](../../README.md)。

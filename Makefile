@@ -169,7 +169,7 @@ open-output:
 .PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef
 .PHONY: race bench cover check install tidy help test-cover test-verbose perf-baseline
 .PHONY: version version-bump version-minor version-major maturity-smoke maturity-baseline
-.PHONY: ops-smoke interop-smoke soak-smoke release-check eest-log eest-watch eest-cycle
+.PHONY: ops-smoke interop-smoke soak-smoke release-check eest-log eest-watch eest-cycle eest-audit eest-repair
 
 # =============================================================================
 # 核心目标 (Core Targets)
@@ -207,6 +207,12 @@ eest-cycle:
 	@if [ -z "$(NAME)" ]; then echo "Usage: make eest-cycle NAME=<run-name> RUN='<command using $$EEST_LOG_FILE>' [INTERVAL=300] [STATE_DIR=/abs/path] [MAX_CYCLES=0] [ON_FAIL='cmd'] [VERIFY='cmd'] [COMMIT='cmd'] [PUSH='cmd'] [ON_PASS='cmd']"; exit 1; fi
 	@if [ -z "$(RUN)" ]; then echo "Usage: make eest-cycle NAME=<run-name> RUN='<command using $$EEST_LOG_FILE>' ..."; exit 1; fi
 	@bash ./scripts/eest_cycle.sh 		--name "$(NAME)" 		--run "$(RUN)" 		--interval "$(or $(INTERVAL),300)" 		$(if $(STATE_DIR),--state-dir "$(STATE_DIR)",) 		$(if $(LOG_DIR),--log-dir "$(LOG_DIR)",) 		$(if $(MAX_CYCLES),--max-cycles "$(MAX_CYCLES)",) 		$(if $(ON_FAIL),--on-fail "$(ON_FAIL)",) 		$(if $(VERIFY),--verify "$(VERIFY)",) 		$(if $(COMMIT),--commit "$(COMMIT)",) 		$(if $(PUSH),--push "$(PUSH)",) 		$(if $(ON_PASS),--on-pass "$(ON_PASS)",)
+
+eest-audit:
+	@bash ./scripts/audit_eest_results.sh $(if $(ROOT),--root "$(ROOT)",) $(if $(FAIL_ON_SKIP),--fail-on-skip,)
+
+eest-repair:
+	@bash ./scripts/repair_eest_results.sh $(if $(ROOT),--root "$(ROOT)",)
 
 # =============================================================================
 # Race 检测 (Race Detection)
@@ -373,6 +379,8 @@ help:
 	@echo "    interop-smoke     - RPC/Blockscout/Hive/EEST interop gate（临时 --ethdev 节点）"
 	@echo "    soak-smoke        - 重启循环 + 短压测 soak gate"
 	@echo "    release-check     - maturity-baseline + ops/interop/soak 发布 gate"
+	@echo "    eest-audit        - 审计 EEST 结果目录完整性（summary/meta/log）"
+	@echo "    eest-repair       - 回填/修复历史 EEST 结果目录（summary/meta/ignore）"
 	@echo ""
 	@echo "  基准测试:"
 	@echo "    bench         - 完整基准测试"

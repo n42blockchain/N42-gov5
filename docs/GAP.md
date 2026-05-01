@@ -138,7 +138,8 @@ N42 已经从"受控发布候选基线"推进到"生产就绪基线"形态。
 
 ### 4.1 Broad EEST 全矩阵
 
-1. 截至 2026-03-26，Paris+Shanghai / Cancun / Prague / Osaka 的 broad Hive/EEST shard rerun 已全绿：`3573 / 17783 / 20964 / 21583 passed`。
+1. 截至 2026-04-15，Paris+Shanghai / Cancun / Prague / Osaka 的最新 broad Hive/EEST shard rerun 已全绿：`3573 / 17783 / 20878 / 21583 passed`。
+   结果时间分别为：Paris+Shanghai 与 Cancun `2026-04-13`，Prague `2026-04-14`，Osaka `2026-04-15`。
 2. 当前 GAP 已从执行语义兼容收敛为持续门禁自动化，即把 broad EEST + soak 稳定接入 nightly / CI。
 3. 本轮收口覆盖的 blocker 包括 EIP-7685 request 校验、Prague 系统合约 / EIP-2935、Cancun `modexp d30`、以及 Cancun+ SELFDESTRUCT / CREATE2 交易边界。
 

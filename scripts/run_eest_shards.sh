@@ -13,6 +13,7 @@ input_path="${EEST_INPUT:-}"
 hive_simulator="${HIVE_SIMULATOR:-}"
 extra_args_raw="${EEST_EXTRA_ARGS:-}"
 dry_run="${EEST_DRY_RUN:-0}"
+test_run_shard_delay="${EEST_TEST_RUN_SHARD_DELAY:-0}"
 timestamp="$(date -u +%Y%m%d-%H%M%SZ)"
 results_dir="${EEST_RESULTS_DIR:-$repo_root/tests/results/eest-shards/$timestamp}"
 
@@ -125,6 +126,10 @@ run_shard() {
     printf '\n'
   } >"$meta_path"
 
+  if [ "$test_run_shard_delay" != "0" ]; then
+    sleep "$test_run_shard_delay"
+  fi
+
   if [ "$dry_run" = "1" ]; then
     printf '%q ' "${cmd[@]}" >"$log_path"
     printf '\n' >>"$log_path"
@@ -152,6 +157,7 @@ run_shard() {
 
 write_summary() {
   local summary_path="$results_dir/summary.md"
+  local summary_state='complete'
   {
     printf '%s\n\n' '# EEST Shard Run Summary'
     printf '%s\n' "- Generated: \`$timestamp\`"
@@ -159,7 +165,7 @@ write_summary() {
     printf '%s\n' "- Python: \`$python_bin\`"
     printf '%s\n' "- Pytest workers: \`$pytest_workers\`"
     printf '%s\n' "- Shard jobs: \`$shard_jobs\`"
-    printf '%s\n\n' "- Dry run: \`$dry_run\`"
+    printf '%s\n' "- Dry run: \`$dry_run\`"
     printf '%s\n' '| Shard | Selector | Target ~Tests | RC | Duration (s) | Log |'
     printf '%s\n' '|-------|----------|---------------|----|--------------|-----|'
 
@@ -170,17 +176,71 @@ write_summary() {
         continue
       fi
       meta_path="$results_dir/$shard.meta"
-      rc="$(awk -F= '/^rc=/{print $2}' "$meta_path")"
-      duration="$(awk -F= '/^duration_seconds=/{print $2}' "$meta_path")"
+      rc=''
+      duration=''
+      if [ -f "$meta_path" ]; then
+        rc="$(awk -F= '/^rc=/{print $2}' "$meta_path" | tail -n 1)"
+        duration="$(awk -F= '/^duration_seconds=/{print $2}' "$meta_path" | tail -n 1)"
+      fi
+      if [ -z "$rc" ]; then
+        rc='incomplete'
+        summary_state='partial'
+      fi
+      if [ -z "$duration" ]; then
+        duration='-'
+      fi
       printf '| %s | `%s` | %s | `%s` | `%s` | `%s.log` |\n' "$shard" "$selector" "$target" "$rc" "$duration" "$shard"
     done
+  } >"$summary_path.tmp"
+
+  {
+    sed -n '1,8p' "$summary_path.tmp"
+    printf '%s\n\n' "- Status: \`$summary_state\`"
+    sed -n '9,$p' "$summary_path.tmp"
   } >"$summary_path"
+  rm -f "$summary_path.tmp"
 }
 
 mkdir -p "$results_dir"
 
 declare -a pids=()
 declare -a active_shards=()
+cleanup_done=0
+
+cleanup_and_exit() {
+  local code="$1"
+  local reason="${2:-exit}"
+  local pid
+
+  if [ "$cleanup_done" = "1" ]; then
+    return
+  fi
+  cleanup_done=1
+  trap - EXIT INT TERM
+
+  if [ "$reason" != "exit" ]; then
+    overall_rc=1
+  fi
+
+  for pid in "${pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  write_summary
+
+  if [ "$reason" != "exit" ]; then
+    exit "$code"
+  fi
+}
+
+trap 'cleanup_and_exit $?' EXIT
+trap 'cleanup_and_exit 130 INT' INT
+trap 'cleanup_and_exit 143 TERM' TERM
 
 for row in "${shard_rows[@]}"; do
   IFS=$'\t' read -r shard fill_expr sim_limit_expr selector target shard_default_input <<<"$row"

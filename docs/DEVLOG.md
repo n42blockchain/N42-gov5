@@ -203,7 +203,7 @@ HotStuff-2 BLS consensus signature
 - `accounts/abi/bind/base.go`：`CallOpts` 增加 `EnableCCIPRead`、`CCIPReadMaxRedirects`、`CCIPReadClient`，`BoundContract.Call` 可自动跟随 `EIP-3668`。
 - `common/metrics/prometheus.go`、`internal/metrics/prometheus/prometheus.go`：修正 Prometheus 默认 collector 重复注册和双重输出问题，避免 metrics/pprof gate 因重复样本或注册 panic 漂移。
 - `internal/api/block_args.go`、`internal/api/engine_overlay.go`：把 `RPCMarshalHeader` 的 `withdrawals/blob gas` 字段改成按 Shanghai / Cancun 系列分叉条件输出，修正 Hive `engine-auth` 的头哈希/链头兼容问题。
-- `scripts/run_ops_smoke.sh`、`scripts/run_interop_smoke.sh`、`scripts/run_soak_smoke.sh`、`scripts/run_release_gate.sh`：形成固定的 ops / interop / soak / release gate；其中 `interop` 现在会把 Hive 基础设施 `API 500` flake 与实现语义失败分开，通过 cleanup + retry 降噪。
+- `scripts/run_ops_smoke.sh`、`scripts/run_interop_smoke.sh`、`scripts/run_soak_smoke.sh`、`scripts/run_release_gate.sh`：形成固定的 ops / interop / soak / release gate；当前 `release-check` 还会串行纳入 `eest-audit`，把历史 EEST 结果目录完整性一起纳入发布门禁。其中 `interop` 现在会把 Hive 基础设施 `API 500` flake 与实现语义失败分开，通过 cleanup + retry 降噪。
 
 ### 新增文档
 
@@ -1706,7 +1706,7 @@ prune:
 ```
 分支: main (1969908)
 版本: v5.6.772
-EEST: broad shard rerun 全绿，Paris+Shanghai 3573 / Cancun 17783 / Prague 20964 / Osaka 21583
+EEST: broad shard rerun 全绿，Paris+Shanghai 3573 / Cancun 17783 / Prague 20878 / Osaka 21583
 同步: 0→330 万块通过（receipt root 差异在 block 3304451 待 EVM trace）
 Devnet: --dev 全功能启动就绪
 压测: QUIC + TxGossip 待双节点集群验证

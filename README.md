@@ -14,7 +14,7 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 
 **Disclaimer:** This software is currently a tech preview. We will do our best to keep it stable and avoid breaking changes, but we make no guarantees.
 
-Latest validation (2026-03-26): Hive/EEST broad consume-engine shard reruns are green on latest `main` for Paris+Shanghai (`3573`), Cancun (`17783`), Prague (`20964`), and Osaka (`21583`), with no remaining blocker in the current shard matrix.
+Latest validation (2026-04-15): recorded Hive/EEST broad consume-engine shard reruns on latest `main` are green for Paris+Shanghai (`3573`, rerun dated `2026-04-13`), Cancun (`17783`, rerun dated `2026-04-13`), Prague (`20878`, rerun dated `2026-04-14`), and Osaka (`21583`, rerun dated `2026-04-15`), with no remaining blocker in the current shard matrix.
 
 ## Key Features
 
