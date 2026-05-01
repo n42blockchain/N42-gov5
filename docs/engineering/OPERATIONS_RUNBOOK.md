@@ -7,6 +7,7 @@
 
 1. `make maturity-baseline` 只跑包级 gate，不启动临时节点。
 2. `make interop-smoke` 会启动临时 `n42 --ethdev` 节点，再执行 RPC / Blockscout / Hive / EEST 互操作检查。
+3. `make release-check` 现在会额外执行一次 `make eest-audit` 等价的结果目录审计，确保历史 EEST run 产物没有残缺目录。
 
 ---
 
@@ -56,7 +57,7 @@
 2. 备份数据目录、JWT secret、keystore 和当前二进制。
 3. 停节点，替换二进制与配置。
 4. 启动节点后执行健康检查。
-5. 观察 metrics / pprof / RPC 至少一个短周期。
+5. 确认 `release-check` summary 中 `eest-audit` 为 `PASS`，再观察 metrics / pprof / RPC 至少一个短周期。
 6. 如是 Engine 对接环境，再执行一次 `make interop-smoke` 或至少跑 Hive `engine-auth`；这里的 interop gate 会临时起一条 `--ethdev` 节点，不复用线上 datadir。
 
 ## 4. 回滚步骤

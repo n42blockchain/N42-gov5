@@ -25,12 +25,14 @@
 
 1. `maturity-baseline` 只覆盖包级 gate，不启动临时节点。
 2. `interop-smoke` 会启动临时 `n42 --ethdev` 节点，并执行 RPC / Blockscout / Hive / EEST 互操作检查。
+3. `release-check` 当前包含 `eest-audit`，会额外审计 `tests/results/eest-shards/` 的结果目录完整性。
 
 最低要求：
 
 1. 所有 step `PASS`
-2. 失败原因不能是“暂时先忽略”
-3. 结果目录和 summary 要可追溯
+2. `release-check` summary 中 `eest-audit` 为 `PASS`
+3. 失败原因不能是“暂时先忽略”
+4. 结果目录和 summary 要可追溯
 
 ## 3. 配置与安全
 

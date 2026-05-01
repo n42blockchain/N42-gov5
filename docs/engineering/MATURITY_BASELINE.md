@@ -16,19 +16,21 @@
 
 1. `make maturity-smoke`
 2. `make maturity-baseline`
-3. `make ops-smoke`
-4. `make interop-smoke`
-5. `make soak-smoke`
-6. `make release-check`
+3. `make eest-audit`
+4. `make ops-smoke`
+5. `make interop-smoke`
+6. `make soak-smoke`
+7. `make release-check`
 
 其中：
 
 1. `make maturity-smoke` 只跑聚焦的外部 surface / 恢复性 smoke。
 2. `make maturity-baseline` 跑同一套 smoke，并额外执行核心基线命令，结果写入 `build/maturity-baseline/<timestamp>/summary.md`。这条命令只跑包级 gate，不启动临时节点。
-3. `make ops-smoke` 固定验证 RPC、metrics、pprof 和短压测。
-4. `make interop-smoke` 固定验证 RPC / Blockscout / Hive `engine-auth` / EEST collect-only，并使用临时 `n42 --ethdev` 节点。
-5. `make soak-smoke` 固定验证重启循环和短时负载。
-6. `make release-check` 串行执行 `maturity-baseline + ops-smoke + interop-smoke + soak-smoke`。
+3. `make eest-audit` 固定审计 `tests/results/eest-shards/` 的 `summary/meta/log` 完整性。
+4. `make ops-smoke` 固定验证 RPC、metrics、pprof 和短压测。
+5. `make interop-smoke` 固定验证 RPC / Blockscout / Hive `engine-auth` / EEST collect-only，并使用临时 `n42 --ethdev` 节点。
+6. `make soak-smoke` 固定验证重启循环和短时负载。
+7. `make release-check` 串行执行 `maturity-baseline + eest-audit + ops-smoke + interop-smoke + soak-smoke`。
 
 ## 2. Smoke 覆盖面
 

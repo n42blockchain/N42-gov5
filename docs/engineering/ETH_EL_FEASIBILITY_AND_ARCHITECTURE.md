@@ -84,7 +84,7 @@ Engine API 代码内部**零 N42 条件分支**，通过 `ethCompatibleBlockHash
 
 - Paris+Shanghai: 3573 通过
 - Cancun: 17783 通过
-- Prague: 20964 通过
+- Prague: 20878 通过
 - Osaka: 21583 通过
 
 **重要说明**：Hive/EEST 全绿仅证明**执行语义**兼容，不能证明**主网**兼容。缺口包括：

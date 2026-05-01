@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestInteropSmokeScriptPinsEthdevMode(t *testing.T) {
@@ -52,6 +54,28 @@ func TestReleaseAndMaturitySummariesExplainExecutionModel(t *testing.T) {
 	release := readRepoFile(t, "scripts", "run_release_gate.sh")
 	if !strings.Contains(release, "Interop node mode: \\`--ethdev\\`") {
 		t.Fatal("run_release_gate.sh missing interop node mode summary line")
+	}
+	if !strings.Contains(release, "EEST result audit: \\`scripts/audit_eest_results.sh\\`") {
+		t.Fatal("run_release_gate.sh missing EEST audit summary line")
+	}
+	if !strings.Contains(release, "run_step eest-audit") {
+		t.Fatal("run_release_gate.sh missing eest-audit step")
+	}
+}
+
+func TestMainWorkflowIncludesEESTResultsAudit(t *testing.T) {
+	t.Parallel()
+
+	workflow := readRepoFile(t, ".github", "workflows", "main.yml")
+	for _, needle := range []string{
+		"eest-results:",
+		"name: EEST Results Audit",
+		"bash ./scripts/audit_eest_results.sh | tee eest-audit.txt",
+		"name: eest-audit-report",
+	} {
+		if !strings.Contains(workflow, needle) {
+			t.Fatalf("main workflow missing %q", needle)
+		}
 	}
 }
 
@@ -119,6 +143,133 @@ func TestInteropSmokeScriptPropagatesStubFailureToSummary(t *testing.T) {
 	}
 }
 
+func TestReleaseGateScriptProducesSummaryInStubMode(t *testing.T) {
+	t.Parallel()
+
+	resultRoot := t.TempDir()
+	runID := "release-stub-pass"
+	output, err := runReleaseGateScript(t, resultRoot, runID, "")
+	if err != nil {
+		t.Fatalf("run_release_gate.sh failed: %v\n%s", err, output)
+	}
+
+	if !strings.Contains(output, "summary=") {
+		t.Fatalf("expected summary path in output, got:\n%s", output)
+	}
+
+	runDir := filepath.Join(resultRoot, runID)
+	summary := readFile(t, filepath.Join(runDir, "summary.md"))
+	for _, needle := range []string{
+		"# N42 Release Check",
+		"- EEST result audit: `scripts/audit_eest_results.sh`",
+		"- Overall status: `PASS`",
+		"| `maturity-baseline` | `PASS` |",
+		"| `eest-audit` | `PASS` |",
+		"| `interop-smoke` | `PASS` |",
+		"| `soak-smoke` | `PASS` |",
+	} {
+		if !strings.Contains(summary, needle) {
+			t.Fatalf("summary missing %q:\n%s", needle, summary)
+		}
+	}
+}
+
+func TestReleaseGateScriptPropagatesStubFailureToSummary(t *testing.T) {
+	t.Parallel()
+
+	resultRoot := t.TempDir()
+	runID := "release-stub-fail"
+	output, err := runReleaseGateScript(t, resultRoot, runID, "eest-audit")
+	if err == nil {
+		t.Fatalf("expected run_release_gate.sh to fail, output:\n%s", output)
+	}
+
+	runDir := filepath.Join(resultRoot, runID)
+	summary := readFile(t, filepath.Join(runDir, "summary.md"))
+	for _, needle := range []string{
+		"- Overall status: `FAIL`",
+		"| `maturity-baseline` | `PASS` |",
+		"| `eest-audit` | `FAIL` |",
+		"| `ops-smoke` | `PASS` |",
+		"| `interop-smoke` | `PASS` |",
+		"| `soak-smoke` | `PASS` |",
+	} {
+		if !strings.Contains(summary, needle) {
+			t.Fatalf("summary missing %q:\n%s", needle, summary)
+		}
+	}
+}
+
+func TestEESTShardsScriptProducesSummaryInDryRun(t *testing.T) {
+	t.Parallel()
+
+	resultDir := filepath.Join(t.TempDir(), "eest-dry-run")
+	output, err := runEESTShardsScript(t, resultDir, nil, "paris+shanghai", "prague")
+	if err != nil {
+		t.Fatalf("run_eest_shards.sh failed: %v\n%s", err, output)
+	}
+
+	if !strings.Contains(output, "results_dir=") {
+		t.Fatalf("expected results_dir in output, got:\n%s", output)
+	}
+
+	summary := readFile(t, filepath.Join(resultDir, "summary.md"))
+	for _, needle := range []string{
+		"# EEST Shard Run Summary",
+		"- Dry run: `1`",
+		"- Status: `complete`",
+		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~2,600 | `0` |",
+		"| prague | `.*/.*fork_Prague` | ~20,500 | `0` |",
+		"`paris+shanghai.log`",
+		"`prague.log`",
+	} {
+		if !strings.Contains(summary, needle) {
+			t.Fatalf("summary missing %q:\n%s", needle, summary)
+		}
+	}
+}
+
+func TestEESTShardsScriptWritesPartialSummaryOnTermination(t *testing.T) {
+	t.Parallel()
+
+	resultDir := filepath.Join(t.TempDir(), "eest-terminated")
+	scriptPath := filepath.Join(repoRoot(t), "scripts", "run_eest_shards.sh")
+	cmd := exec.Command("bash", scriptPath, "paris+shanghai", "cancun")
+	cmd.Env = append(os.Environ(),
+		"EEST_DRY_RUN=1",
+		"EEST_RESULTS_DIR="+resultDir,
+		"EEST_TEST_RUN_SHARD_DELAY=5",
+		"EEST_SHARD_JOBS=1",
+	)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start run_eest_shards.sh: %v", err)
+	}
+
+	time.Sleep(1 * time.Second)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal run_eest_shards.sh: %v", err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatalf("expected run_eest_shards.sh to terminate with error, output:\n%s", output.String())
+	}
+
+	summary := readFile(t, filepath.Join(resultDir, "summary.md"))
+	for _, needle := range []string{
+		"# EEST Shard Run Summary",
+		"- Status: `partial`",
+		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~2,600 | `incomplete` | `-` | `paris+shanghai.log` |",
+		"| cancun | `.*/.*fork_Cancun` | ~17,250 | `incomplete` | `-` | `cancun.log` |",
+	} {
+		if !strings.Contains(summary, needle) {
+			t.Fatalf("summary missing %q:\n%s", needle, summary)
+		}
+	}
+}
+
 func readRepoFile(t *testing.T, elems ...string) string {
 	t.Helper()
 
@@ -149,6 +300,42 @@ func runInteropSmokeScript(t *testing.T, resultRoot, runID, failStep string) (st
 	if failStep != "" {
 		cmd.Env = append(cmd.Env, "INTEROP_SMOKE_STUB_FAIL_STEP="+failStep)
 	}
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	return output.String(), err
+}
+
+func runReleaseGateScript(t *testing.T, resultRoot, runID, failStep string) (string, error) {
+	t.Helper()
+
+	scriptPath := filepath.Join(repoRoot(t), "scripts", "run_release_gate.sh")
+	cmd := exec.Command("bash", scriptPath, "--result-dir", resultRoot)
+	cmd.Env = append(os.Environ(),
+		"RELEASE_GATE_STUB=1",
+		"RELEASE_RUN_ID="+runID,
+	)
+	if failStep != "" {
+		cmd.Env = append(cmd.Env, "RELEASE_GATE_STUB_FAIL_STEP="+failStep)
+	}
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	return output.String(), err
+}
+
+func runEESTShardsScript(t *testing.T, resultDir string, extraEnv []string, shards ...string) (string, error) {
+	t.Helper()
+
+	scriptPath := filepath.Join(repoRoot(t), "scripts", "run_eest_shards.sh")
+	cmd := exec.Command("bash", append([]string{scriptPath}, shards...)...)
+	cmd.Env = append(os.Environ(),
+		"EEST_DRY_RUN=1",
+		"EEST_RESULTS_DIR="+resultDir,
+	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output

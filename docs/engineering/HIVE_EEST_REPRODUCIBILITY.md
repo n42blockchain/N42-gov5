@@ -14,6 +14,22 @@
 
 这些改动的目标不是“为测试写特判”，而是把 Prague/Cancun 相关的 block hook、system contract 地址、部署字节码和 devnet 初始化收成共享入口，减少今后复测时出现“代码过了，但 Hive 用的还是旧路径/旧副本”的漂移。
 
+## 当前记录状态（2026-04-16）
+
+当前仓库内可审计的结果产物显示：
+
+- Hive `engine-auth` 已绿：`8/8 pass`
+- EEST broad consume-engine shard 已绿：
+  - Paris+Shanghai：`3573 passed`（`2026-04-13`）
+  - Cancun：`17783 passed`（`2026-04-13`）
+  - Prague：`20878 passed`（`2026-04-14`）
+  - Osaka：`21583 passed`（`2026-04-15`）
+
+需要单独注意两点：
+
+- `osaka` 的当前绿测口径是脚本默认的 `develop@latest`，不是 `stable@latest`
+- `tests/results/eest-shards/` 里仍有少量不完整产物目录，说明“结果已收口”不等于“结果归档/门禁自动化已完全收口”
+
 ## 复测时必须满足的前提
 
 ### 1. 每次启动 Hive 前先同步 `n42-local`
@@ -44,6 +60,8 @@
 - `./scripts/run_eest_shards.sh`
 - `make eest-watch`
 - `make eest-cycle`
+- `make eest-audit`
+- `make eest-repair`
 
 这些入口已经把：
 
@@ -53,6 +71,32 @@
 - watcher / cycle 状态文件
 
 固定了下来。
+
+其中：
+
+```bash
+make eest-audit
+```
+
+会审计 `tests/results/eest-shards/` 下的结果目录，直接标出缺 `summary.md`、缺 `rc/duration`、缺 `.log` 的不完整 run。
+
+如果要把显式忽略的历史目录也视为失败，可以改用：
+
+```bash
+make eest-audit FAIL_ON_SKIP=1
+```
+
+这会把 `.eest-audit-ignore` 标记的 run 继续显示为 `SKIP`，但整体退出码改成失败，适合更严格的本地 gate 或临时 CI 验证。
+
+```bash
+make eest-repair
+```
+
+会对历史结果目录执行最小修复：
+
+- 缺 `summary.md` 时按现有 `.meta` 回填摘要
+- 缺 `rc/duration_seconds` 时显式补成 `incomplete` / `-`
+- 对完全空的历史目录写入 `.eest-audit-ignore`，避免后续审计反复报同一个废弃产物
 
 ### 3. 固定 Python 版本
 
