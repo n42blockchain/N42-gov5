@@ -16,6 +16,8 @@ package ethel
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/holiman/uint256"
 
@@ -122,12 +124,109 @@ func ProcessBlock(
 
 	noop := state.NewNoopWriter()
 
+	traceTxHash := strings.ToLower(strings.TrimPrefix(os.Getenv("N42_TRACE_TX"), "0x"))
+	traceBlockStr := os.Getenv("N42_TRACE_BLOCK")
+	var traceBlock uint64
+	if traceBlockStr != "" {
+		fmt.Sscanf(traceBlockStr, "%d", &traceBlock)
+	}
+	currentBlock := header.Number.Uint64()
+	// Skip-non-target only when N42_TRACE_BLOCK is explicitly set AND matches.
+	// Default (no traceBlock): run all txs normally so state evolves correctly.
+	skipNonTarget := traceTxHash != "" && traceBlock != 0 && traceBlock == currentBlock && os.Getenv("N42_TRACE_SKIP_OTHERS") == "1"
+
 	for i, txn := range txs {
+		// Trace mode: only skip non-target txs in the TARGET block (or all if
+		// N42_TRACE_BLOCK unset). For prior blocks, run all txs normally so
+		// state evolves correctly going into the target block.
+		if skipNonTarget {
+			thisH := strings.ToLower(strings.TrimPrefix(txn.Hash().Hex(), "0x"))
+			if thisH != traceTxHash {
+				continue
+			}
+		}
 		ibs.Prepare(txn.Hash(), blockHash, i)
-		receipt, _, err := iinternal.ApplyTransaction(
-			chainCfg, blockHashFunc, engine, nil, gp,
-			ibs, noop, header, txn, usedGas, cfg,
-		)
+
+		txCfg := cfg
+		var traceFile *os.File
+		var stepTracer *StepTracer
+		if traceTxHash != "" {
+			thisHash := strings.ToLower(strings.TrimPrefix(txn.Hash().Hex(), "0x"))
+			if thisHash == traceTxHash {
+				outPath := os.Getenv("N42_TRACE_OUT")
+				if outPath == "" {
+					outPath = fmt.Sprintf("n42_trace_%s.json", thisHash[:16])
+				}
+				f, err := os.Create(outPath)
+				if err != nil {
+					return nil, fmt.Errorf("create trace file %s: %w", outPath, err)
+				}
+				log.Info("EthEL tx trace ENABLED", "txHash", txn.Hash().Hex(), "outPath", outPath)
+				traceFile = f
+				stepTracer = NewStepTracer(f)
+				txCfg.Tracer = stepTracer
+				txCfg.Debug = true
+				// Probe: is the target contract considered "existing"?
+				if to := txn.To(); to != nil {
+					exists := ibs.Exist(*to)
+					log.Info("trace target Exist() probe", "addr", to.Hex(), "exists", exists)
+				}
+			}
+		}
+
+		var receipt *block.Receipt
+		var err error
+		// Trace mode: only the target tx runs (others skipped above), and we
+		// bypass nonce/balance checks since the datadir state may have drifted.
+		bypassChecks := stepTracer != nil
+		if bypassChecks {
+			// Trace path: bypass nonce + insufficient-balance checks so we
+			// can produce a trace even when the datadir state has drifted
+			// from a prior partial-replay abort. Mirrors the speculative
+			// prefetch tx-apply pattern.
+			signerNow := transaction.MakeSignerWithTimestamp(chainCfg, header.Number.ToBig(), header.Time)
+			msg, asErr := txn.AsMessage(signerNow, header.BaseFee)
+			if asErr != nil {
+				return nil, fmt.Errorf("trace tx AsMessage: %w", asErr)
+			}
+			iinternal.NormalizeExecutionMessage(&msg, false, engine != nil)
+			msg.SetCheckNonce(false)
+			txContext := iinternal.NewEVMTxContext(msg)
+			blockContext := iinternal.NewEVMBlockContext(header, blockHashFunc, engine, chainCfg, nil)
+			evm := vm2.NewEVM(blockContext, txContext, ibs, chainCfg, txCfg)
+			result, applyErr := iinternal.ApplyMessage(evm, msg, gp, true, true)
+			if applyErr == nil && result != nil {
+				_ = ibs.FinalizeTx(chainCfg.Rules(header.Number.Uint64()), noop)
+				*usedGas += result.UsedGas
+				receipt = &block.Receipt{
+					Type:              txn.Type(),
+					CumulativeGasUsed: *usedGas,
+					Status:            block.ReceiptStatusSuccessful,
+					GasUsed:           result.UsedGas,
+				}
+				if result.Failed() {
+					receipt.Status = block.ReceiptStatusFailed
+				}
+			}
+			err = applyErr
+		} else {
+			receipt, _, err = iinternal.ApplyTransaction(
+				chainCfg, blockHashFunc, engine, nil, gp,
+				ibs, noop, header, txn, usedGas, txCfg,
+			)
+		}
+		if traceFile != nil {
+			failed := err != nil || (receipt != nil && receipt.Status == 0)
+			restGas := uint64(0)
+			gasUsed := uint64(0)
+			if receipt != nil {
+				gasUsed = receipt.GasUsed
+				restGas = txn.Gas() - receipt.GasUsed
+			}
+			stepTracer.Close(failed, restGas, nil)
+			traceFile.Close()
+			log.Info("EthEL tx trace closed", "txHash", txn.Hash().Hex(), "failed", failed, "gasUsed", gasUsed, "err", fmt.Sprintf("%v", err))
+		}
 		if err != nil {
 			if errors.Is(err, common.ErrGasLimitReached) {
 				log.Error("Gas pool exhausted",
@@ -163,6 +262,9 @@ func ProcessBlock(
 
 	}
 
+	// EIP-4895 validator withdrawals (Shanghai+). Apply before the end-of-block
+	// system calls so Prague-era deposit/request processing sees the updated
+	// balances if a future fork ever couples the two.
 	applyEthelWithdrawals(chainCfg, header, ibs, withdrawals)
 
 	// Post-block system calls depend on the receipts emitted by executed transactions.
@@ -181,3 +283,4 @@ func ProcessBlock(
 
 	return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders}, nil
 }
+
