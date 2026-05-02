@@ -42,6 +42,38 @@ func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
 	accTable := outFreezer.Table(freezer.TableAccountChanges)
 	stoTable := outFreezer.Table(freezer.TableStorageChanges)
 
+	// Sanity check: storcs/acctcs MUST exist for every block in the unwind
+	// range. Without them Reorg silently no-ops the state revert and only
+	// updates the progress marker, leaving PlainState with future-block
+	// values while progress points to a past block. Subsequent forward
+	// replay reads "future" values from PlainState and diverges from
+	// mainnet (root cause of V4-class drift, observed at 12501844 / 12617540).
+	// Also catches the case where freezer was truncated independently of MDBX.
+	if accTable != nil || stoTable != nil {
+		missingStorcs := uint64(0)
+		missingAcctcs := uint64(0)
+		var firstMissing uint64
+		for blk := targetBlock + 1; blk <= currentHead; blk++ {
+			if stoTable != nil {
+				if data, err := stoTable.Retrieve(blk); err != nil || data == nil {
+					if missingStorcs == 0 {
+						firstMissing = blk
+					}
+					missingStorcs++
+				}
+			}
+			if accTable != nil {
+				if data, err := accTable.Retrieve(blk); err != nil || data == nil {
+					missingAcctcs++
+				}
+			}
+		}
+		if missingStorcs > 0 || missingAcctcs > 0 {
+			return fmt.Errorf("Reorg: storcs/acctcs incomplete in unwind range [%d, %d]: missing %d storcs and %d acctcs entries (first missing block: %d). PlainState cannot be safely reverted; would leave datadir in half-unwound state (state ahead, progress behind). Either rebuild changesets first or restart from a clean snapshot",
+				targetBlock+1, currentHead, missingStorcs, missingAcctcs, firstMissing)
+		}
+	}
+
 	for blockNum := currentHead; blockNum > targetBlock; blockNum-- {
 		// Revert account changes from freezer (apply OLD values).
 		if accTable != nil {
