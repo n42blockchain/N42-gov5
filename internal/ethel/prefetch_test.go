@@ -52,19 +52,18 @@ func TestPrewarmFromAccessList_NeverPopulatesAccountLRU(t *testing.T) {
 	defer roTx.Rollback()
 
 	addrs := map[types.Address]struct{}{addr: {}}
-	prewarmFromAccessList(buf, roTx, addrs, nil, 0)
+	prewarmFromAccessList(roTx, addrs, nil)
 
 	if _, present := buf.LookupReadAccount(addr); present {
 		t.Fatalf("static-AL prewarm MUST NOT populate readAccounts LRU (codeHash race — block 6411933)")
 	}
 }
 
-// TestPrewarmFromAccessList_StorageIsPublished confirms the asymmetric
-// policy: storage slots referenced via tx AccessList ARE published to
-// readStorage LRU. Storage prewarm is safe (storageWipes interception in
-// bufReader handles stale slots) and is the path that actually drives
-// sto% hit rate.
-func TestPrewarmFromAccessList_StorageIsPublished(t *testing.T) {
+// TestPrewarmFromAccessList_DoesNotPopulateStorageLRU pins the
+// post-race-fix invariant: prefetcher's static-AL helper warms the OS
+// page cache via MDBX GetOne but does NOT publish to readStorage LRU.
+// LRU population is the executor's job (prewarm.go).
+func TestPrewarmFromAccessList_DoesNotPopulateStorageLRU(t *testing.T) {
 	addr := types.HexToAddress("0x00000000000000000000000000000000c0ffee02")
 	slot := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000007")
 	val := []byte{0x99}
@@ -99,14 +98,10 @@ func TestPrewarmFromAccessList_StorageIsPublished(t *testing.T) {
 		AccessList: transaction.AccessList{{Address: addr, StorageKeys: []types.Hash{slot}}},
 	})
 
-	prewarmFromAccessList(buf, roTx, nil, []*transaction.Transaction{tx}, 0)
+	prewarmFromAccessList(roTx, nil, []*transaction.Transaction{tx})
 
-	v, present := buf.LookupReadStorage(addr, slot)
-	if !present {
-		t.Fatalf("static-AL prewarm MUST populate readStorage LRU for AL slots")
-	}
-	if len(v) != 1 || v[0] != 0x99 {
-		t.Fatalf("LRU populated with wrong value: got %x want 99", v)
+	if _, present := buf.LookupReadStorage(addr, slot); present {
+		t.Fatalf("prewarmFromAccessList MUST NOT populate readStorage LRU — see prefetchStateReader for race")
 	}
 }
 
@@ -154,12 +149,11 @@ func TestStaticALPrewarm_RunsWithPrecomputedSenders(t *testing.T) {
 
 	p.staticALPrewarm(0, body, senders, nil)
 
-	v, present := buf.LookupReadStorage(addr, slot)
-	if !present {
-		t.Fatalf("staticALPrewarm with senders!=nil MUST populate readStorage LRU")
-	}
-	if len(v) != 2 || v[0] != 0xab || v[1] != 0xcd {
-		t.Fatalf("LRU populated with wrong value: got %x want abcd", v)
+	// Post race-fix: staticALPrewarm reads MDBX (warming OS page cache)
+	// but does NOT write the read LRU. The executor's main-thread
+	// prewarm (prewarm.go) is now responsible for LRU population.
+	if _, present := buf.LookupReadStorage(addr, slot); present {
+		t.Fatalf("post-race-fix: staticALPrewarm MUST NOT populate readStorage LRU")
 	}
 }
 
@@ -290,12 +284,10 @@ func TestStaticALPrewarm_RunsWithSignerWhenSendersNil(t *testing.T) {
 	signer := transaction.MakeSigner(params.EthereumMainnetChainConfig, big.NewInt(15_000_000))
 	p.staticALPrewarm(0, body, nil, signer)
 
-	v, present := buf.LookupReadStorage(addr, slot)
-	if !present {
-		t.Fatalf("staticALPrewarm with senders=nil + signer!=nil MUST still warm AL slots reachable via tx.To + AL.Address")
-	}
-	if len(v) != 2 || v[0] != 0xc0 || v[1] != 0x01 {
-		t.Fatalf("LRU populated with wrong value: got %x want c001", v)
+	// Post race-fix: prefetcher path no longer writes LRU. The MDBX
+	// GetOne above warms the OS page cache only.
+	if _, present := buf.LookupReadStorage(addr, slot); present {
+		t.Fatalf("post-race-fix: staticALPrewarm with senders=nil MUST NOT populate readStorage LRU")
 	}
 }
 
@@ -335,12 +327,14 @@ func TestStaticALPrewarm_NoOpWithoutSendersOrSigner(t *testing.T) {
 	})
 	body := &GethBodyResult{Transactions: []*transaction.Transaction{tx}}
 
-	// Both nil — must not panic, must still warm AL slot via the addrs
-	// collected from `to` + AL Address fields.
+	// Both nil — must not panic. Post race-fix the prefetcher path no
+	// longer writes LRU at all, so the only invariant left is "doesn't
+	// crash with nil senders+signer" — which is itself worth pinning
+	// since the senders-fallback ecrecover path used to require a
+	// non-nil signer.
 	p.staticALPrewarm(0, body, nil, nil)
 
-	v, present := buf.LookupReadStorage(addr, slot)
-	if !present || len(v) != 1 || v[0] != 0xee {
-		t.Fatalf("staticALPrewarm with nil senders+signer MUST still warm AL slots: present=%v v=%x", present, v)
+	if _, present := buf.LookupReadStorage(addr, slot); present {
+		t.Fatalf("post-race-fix: staticALPrewarm MUST NOT populate readStorage LRU")
 	}
 }

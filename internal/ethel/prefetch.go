@@ -257,44 +257,21 @@ func (p *prefetcher) staticALPrewarm(blockNum uint64, body *GethBodyResult, send
 		return
 	}
 
-	// Capture flushEpoch BEFORE BeginRo. CacheStorageIfAbsentEpoch
-	// rejects the write if a flush stamps after this capture but
-	// before the write — closes the stale-RoTx race that block
-	// 2520771 hit pre-2026-04-28.
-	prefetcherEpoch := p.stateBuf.CurrentFlushEpoch()
 	roTx, err := p.db.BeginRo(p.ctx)
 	if err != nil {
 		return
 	}
 	defer roTx.Rollback()
 
-	prewarmFromAccessList(p.stateBuf, roTx, addrs, body.Transactions, prefetcherEpoch)
+	prewarmFromAccessList(roTx, addrs, body.Transactions)
 }
 
-// prewarmFromAccessList reads the accounts in addrs and the storage slots
-// in txs' AccessLists from MDBX via roTx, populating S3-FIFO caches.
-//
-// LRU policy is asymmetric:
-//
-//   - Accounts are NEVER published. Active buf may hold a freshly-updated
-//     StateAccount (new codeHash after CREATE, new balance after transfer)
-//     while the bg flusher has not bumped flushEpoch. Prefetcher's RoTx
-//     would read pre-update MDBX, IfAbsentEpoch guard would PASS (no flush
-//     stamped), and a stale account would land in the LRU. Executor's next
-//     LRU-first read returns the stale codeHash, EVM treats a fresh
-//     contract as EOA — block 6411933 confirmed this failure mode
-//     (n42=23320 gas vs geth=53513, 0 logs vs 1, status=1 in both). The
-//     read is still issued so MDBX page-faults the leaf into OS page
-//     cache (~free); the LRU write is the dangerous part.
-//
-//   - Storage IS published via CacheStorageIfAbsentEpoch. Safe because
-//     bufReader intercepts stale slots via storageWipes / wipedStorage
-//     before any value reaches consumers, and slot reads don't carry the
-//     EOA-vs-contract behavioral cliff that codeHash does.
-//
-// This helper is the single chokepoint for the "no account LRU writes"
-// invariant — exported package-private so a focused unit test can pin it.
-func prewarmFromAccessList(buf *state.PlainStateBuffer, roTx kv.Tx, addrs map[types.Address]struct{}, txs []*transaction.Transaction, epoch uint64) {
+// prewarmFromAccessList page-faults the MDBX leaves for every address
+// in addrs and every (entry.Address, key) pair in txs' AccessLists.
+// LRU writes are intentionally omitted — see prefetchStateReader for
+// the race that motivated removing them; main-thread prewarmStaticAL
+// is now the LRU-warming path.
+func prewarmFromAccessList(roTx kv.Tx, addrs map[types.Address]struct{}, txs []*transaction.Transaction) {
 	for addr := range addrs {
 		_, _ = roTx.GetOne(modules.Account, addr[:])
 	}
@@ -302,13 +279,7 @@ func prewarmFromAccessList(buf *state.PlainStateBuffer, roTx kv.Tx, addrs map[ty
 		for _, entry := range tx.AccessList() {
 			for _, key := range entry.StorageKeys {
 				compositeKey := modules.PlainGenerateCompositeStorageKey(entry.Address[:], key[:])
-				val, err := roTx.GetOne(modules.Storage, compositeKey)
-				if err != nil {
-					continue
-				}
-				if len(val) > 0 {
-					buf.CacheStorageIfAbsentEpoch(entry.Address, key, val, epoch)
-				}
+				_, _ = roTx.GetOne(modules.Storage, compositeKey)
 			}
 		}
 	}

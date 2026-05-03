@@ -92,6 +92,7 @@ func main() {
 		&cli.IntFlag{Name: "timing-interval", Usage: "Blocks between P50/P99 timing log lines. Default 10000", Value: 10000},
 		&cli.BoolFlag{Name: "prefetch-speculative", Usage: "Use reth-style prewarm: speculatively execute block N's txs through a NoopWriter to warm the read LRU with everything internal CALL/SLOAD touches. Falls back to static AccessList path on small blocks (<5 txs) or missing senders. Default true", Value: true},
 		&cli.BoolFlag{Name: "prefetch", Usage: "Master switch for the background prefetcher (both static-AL and speculative paths). Set to false to bisect prefetcher-induced LRU races. Default true", Value: true},
+		&cli.BoolFlag{Name: "prewarm-al", Usage: "Main-thread synchronous AccessList prewarm at start of every block. Race-free replacement for the prefetcher's removed storage LRU writes. Default true.", Value: true},
 	}
 
 	// pprof server for flame graphs (always on, profiling hooks only with --pprof).
@@ -198,7 +199,14 @@ func main() {
 					&cli.Uint64Flag{Name: "verify", Usage: "Periodic state-root verify interval (0=verify only at end)", Value: 0},
 					&cli.BoolFlag{Name: "evm-from-fallback", Usage: "After any EVM fallback, run EVM for every remaining block instead of trusting downstream freezer changesets"},
 					&cli.BoolFlag{Name: "persist-trie", Usage: "After reaching end block, populate HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage so subsequent per-block verify (verify-incremental) runs in O(dirty)"},
-					&cli.Uint64Flag{Name: "dirty-space-gb", Usage: "MDBX dirty-page pool size in GB. Default 2. Raise to 32+ for --persist-trie at 10M+ blocks; BootstrapHPH writes 100M+ rows in a single tx and the 2GB default overflows with MDBX_MAP_FULL", Value: 2},
+					&cli.Uint64Flag{Name: "dirty-space-gb", Usage: "MDBX dirty-page pool size in GB. Default 2. Raise to 32+ for --persist-trie at 10M+ blocks; BootstrapHPH writes 100B+ rows in a single tx and the 2GB default overflows with MDBX_MAP_FULL", Value: 2},
+					// --track-addr is defined at the app level (execFlags); see run()
+					// for the SetTrackedAddr wiring. urfave/cli treats app-level flags
+					// as global so subcommands can read them via c.String("track-addr")
+					// without a redeclaration here. (Note: rebuild-state's apply path
+					// goes via leaves journal → direct MDBX writes, NOT through
+					// BufferedPlainStateWriter / IBS, so [TRACK] hooks never fire.
+					// Use the top-level forward-execution path to debug zombie bugs.)
 				},
 				Action: runRebuildState,
 			},
@@ -348,6 +356,9 @@ func main() {
 					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory (for header root)", Required: true},
 					&cli.Uint64Flag{Name: "block", Usage: "Block number to verify", Required: true},
 					&cli.StringFlag{Name: "mode", Usage: "mpt | hph | both", Value: "both"},
+					&cli.BoolFlag{Name: "concurrent", Usage: "Use ConcurrentMPTRootComputer (16-way parallel HPH) for the hph path", Value: false},
+					&cli.StringFlag{Name: "tmpdir", Usage: "Directory for ETL sort-merge tmpfiles (mode=mpt). Default uses system TEMP — set this to a path on the same drive as --datadir if C:\\ has limited space (~17 GB needed at 17M-block scale)"},
+					&cli.Uint64Flag{Name: "dirty-space-gb", Usage: "MDBX dirty-page pool size in GB. Default 32 (was 2). Bulk-load via ETL writes 240M+ entries in a single tx; 2 GB overflows with MDBX_MAP_FULL.", Value: 32},
 				},
 				Action: runCompareRoot,
 			},
@@ -676,6 +687,7 @@ func run(c *cli.Context) error {
 		TimingInterval:      c.Int("timing-interval"),
 		PrefetchSpeculative: c.Bool("prefetch-speculative"),
 		PrefetchEnabled:     c.Bool("prefetch"),
+		PrewarmAccessList:   c.Bool("prewarm-al"),
 	}
 	if cfg.ParallelEVM {
 		log.Warn("EXPERIMENTAL: --parallel-evm enabled (Phase 5 MVP). "+
@@ -1352,6 +1364,23 @@ func runRebuildState(c *cli.Context) error {
 		dirtySpaceGB = 2
 	}
 
+	// Optional [TRACK] address. Forwards to modules/state which gates
+	// per-address debug prints in PlainStateBuffer / BufferedPlainState
+	// reader+writer + ApplyTo.sweep. Validated as 20-byte hex; empty
+	// flag = no tracking.
+	if rawAddr := c.String("track-addr"); rawAddr != "" {
+		s := strings.TrimPrefix(rawAddr, "0x")
+		s = strings.TrimPrefix(s, "0X")
+		raw, err := hex.DecodeString(s)
+		if err != nil || len(raw) != 20 {
+			return fmt.Errorf("--track-addr must be 20-byte hex (got len=%d, err=%v)", len(raw), err)
+		}
+		var a types.Address
+		copy(a[:], raw)
+		state.SetTrackedAddr(&a)
+		log.Info("rebuild-state: TRACK enabled", "addr", a)
+	}
+
 	if leavesDir == "" {
 		leavesDir = filepath.Join(datadir, "chain", "freezer")
 	}
@@ -1445,10 +1474,17 @@ func runVerifyRoot(c *cli.Context) error {
 	blockNum := c.Uint64("block")
 
 	logger := log2.New()
+	// MapSize 4 TB so RebuildHashedStateETL can append HashedAccounts +
+	// HashedStorage (10M+ accounts × 32M+ storage rows past block 12M)
+	// without MDBX_MAP_FULL. NOTE: Accede() short-circuits SetGeometry
+	// in lib/kv/mdbx, so MapSize would be ignored if combined; we open
+	// as exclusive primary to ensure the geometry is applied. Verify-root
+	// is single-shot read+temp-write, fine to hold the DB exclusively.
 	db, err := mdbx.NewMDBX(logger).
 		Path(datadir).
 		Label(kv.ChainDB).
-		Accede().
+		MapSize(4 * datasize.TB).
+		GrowthStep(2 * datasize.GB).
 		Open(context.Background())
 	if err != nil {
 		return fmt.Errorf("open mdbx: %w", err)
