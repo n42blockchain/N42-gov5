@@ -113,7 +113,8 @@ func TestPrefetchStateReader_NegativeMDBX(t *testing.T) {
 }
 
 // TestPrefetchStateReader_StorageRoundtrip verifies storage reads return
-// the correct MDBX value and DO NOT populate the LRU (race-safety).
+// the correct MDBX value and (per the diff-vs-reth race fix) DO NOT
+// populate the LRU. See ReadAccountStorage for the diff.txt evidence.
 func TestPrefetchStateReader_StorageRoundtrip(t *testing.T) {
 	addr := types.HexToAddress("0x00000000000000000000000000000000c0ffee01")
 	slot := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000001")
@@ -150,17 +151,10 @@ func TestPrefetchStateReader_StorageRoundtrip(t *testing.T) {
 	if len(got) != 1 || got[0] != 0x42 {
 		t.Fatalf("MDBX hit: got %x", got)
 	}
-	// LRU should be populated after a cold MDBX read — the
-	// flush-epoch-guarded CacheStorageIfAbsentEpoch path lets the
-	// prefetcher fill cold slots safely. The guard rejects writes
-	// only if a flush stamped after the prefetcher captured its
-	// epoch; for this quiescent test the guard is a no-op.
-	v, present := buf.LookupReadStorage(addr, slot)
-	if !present {
-		t.Fatalf("LRU must be populated by prefetcher (cold-fill via IfAbsentEpoch)")
-	}
-	if len(v) != 1 || v[0] != 0x42 {
-		t.Fatalf("LRU populated with wrong value: got %x", v)
+	// Pin race-fix invariant: prefetcher must not write storage LRU.
+	// See prefetchStateReader.ReadAccountStorage for the rationale.
+	if _, present := buf.LookupReadStorage(addr, slot); present {
+		t.Fatalf("LRU must NOT be populated by prefetcher: stale-LRU → SSTORE no-op race risk")
 	}
 }
 

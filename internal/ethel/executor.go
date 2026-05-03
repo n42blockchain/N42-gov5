@@ -70,6 +70,12 @@ type ExecutorConfig struct {
 	// (both static-AL and speculative paths). Set to false to bisect
 	// prefetcher-induced LRU races. Default true.
 	PrefetchEnabled bool
+	// PrewarmAccessList runs main-thread synchronous AccessList prewarm
+	// at the start of every block — the LRU-warming path that replaced
+	// the prefetcher's removed storage LRU writes. See prewarm.go for
+	// the race-safety argument and prefetchStateReader.ReadAccountStorage
+	// for the race that motivated this split. Default true.
+	PrewarmAccessList bool
 }
 
 // Executor reads blocks from a Geth-compatible Freezer and re-executes
@@ -655,6 +661,18 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) 
 	ibs := state.New(reader)
 
 	// State root verification moved to main loop (Run) for rollback support.
+
+	// 2.5 Sync staticAL prewarm — race-free single-goroutine replacement
+	// for the prefetcher's (now removed) storage LRU writes. Reads each
+	// AccessList slot through bufReader, which Put's the value into the
+	// shared read LRU on MDBX miss. Subsequent EVM SLOAD hits warm cache.
+	//
+	// Intentional overlap with the bg prefetcher's MDBX page-warm: bg
+	// covers next-block N+1 (lookahead), main covers current N (LRU
+	// fill). Repeated reads on the same warm page are <1µs.
+	if e.cfg.PrewarmAccessList {
+		prewarmStaticAL(bufReader, body.Transactions)
+	}
 
 	t1 := time.Now()
 	// 3. Process block (DAO fork, system contracts, EVM).

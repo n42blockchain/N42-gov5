@@ -54,12 +54,19 @@ const SmallBlockTxThreshold = 5
 //  2. read LRU (S3-FIFO/byteLRU) — its Put/Get are mutex-protected.
 //  3. MDBX via the supplied RoTx — independent from the executor's tx.
 //
-// On MDBX hit we publish into the LRU via *IfAbsent — never overwriting
-// an existing entry. This is tombstone-safe: even if our pinned RoTx
-// snapshot lags behind a commit + RefreshLRUForSnapshot tombstone, our
-// stale value cannot displace whatever the canonical post-flush refresh
-// just wrote. And for cold slots (LRU miss), we still get to fill them
-// with the prewarmed value, which is the whole point of speculation.
+// LRU-write policy is asymmetric:
+//   - Accounts: never published. Active buf may hold a fresher
+//     StateAccount (new codeHash after CREATE) before the bg flusher
+//     bumps flushEpoch; the IfAbsentEpoch guard would pass and a stale
+//     entry would land in the LRU, causing the executor's next
+//     LRU-first read to treat a fresh contract as an EOA. Block 6411933
+//     confirmed this race.
+//   - Storage: published via CacheStorageIfAbsentEpoch. Safe because
+//     bufReader intercepts via storageWipes / wipedStorage before any
+//     stale slot reaches consumers.
+//   - Code: published via CacheCodeIfAbsent. Safe because the LRU is
+//     keyed by codeHash (content-addressed) — any value written under
+//     a given codeHash is correct for that hash by construction.
 type prefetchStateReader struct {
 	buf   *state.PlainStateBuffer
 	tx    kv.Tx
@@ -147,9 +154,18 @@ func (r *prefetchStateReader) ReadAccountStorage(address types.Address, key *typ
 		// Skip negative cache — same reasoning as ReadAccountData.
 		return nil, nil
 	}
+	// Storage LRU writes from the prefetcher are INTENTIONALLY OMITTED.
+	// A diff vs reth across 3,810 blocks (12,629,952-12,633,791) showed
+	// the prefetcher's prefetcher-RoTx-derived value can become a stale
+	// "originalValue" for a subsequent SSTORE, hitting ChangeSetWriter's
+	// `*original == *value` short-circuit and silently dropping the
+	// storcs entry. Static analysis couldn't pinpoint the exact race
+	// window (all paths appear epoch- and inFlight-shadowed); cutting
+	// the input face is the safe fix. MDBX GetOne above still warms the
+	// OS page cache. Main-thread prewarmStaticAL is the LRU-warming
+	// path now.
 	cached := make([]byte, len(enc))
 	copy(cached, enc)
-	r.buf.CacheStorageIfAbsentEpoch(address, *key, cached, r.epoch)
 	return cached, nil
 }
 
