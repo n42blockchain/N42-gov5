@@ -148,6 +148,14 @@ func ProcessBlock(
 		ibs.Prepare(txn.Hash(), blockHash, i)
 
 		txCfg := cfg
+		// Probe: attach NoopTracer + Debug=true unconditionally to test
+		// whether the "no tracer fast path" has a divergent bug. If forward
+		// replay succeeds with this, the fix is just to keep Debug+Tracer
+		// always on. If it still fails, the bug is elsewhere.
+		if os.Getenv("N42_NOOP_TRACER") == "1" {
+			txCfg.Tracer = NoopTracer{}
+			txCfg.Debug = true
+		}
 		var traceFile *os.File
 		var stepTracer *StepTracer
 		if traceTxHash != "" {
@@ -178,7 +186,11 @@ func ProcessBlock(
 		var err error
 		// Trace mode: only the target tx runs (others skipped above), and we
 		// bypass nonce/balance checks since the datadir state may have drifted.
-		bypassChecks := stepTracer != nil
+		// EXCEPTION: N42_TRACE_PROD_PATH=1 forces the production apply path
+		// (gasBailout=false, normal nonce check) while still attaching the
+		// tracer. Used to capture the production-mode trace for diff against
+		// trace-mode trace and pinpoint where the two paths diverge.
+		bypassChecks := stepTracer != nil && os.Getenv("N42_TRACE_PROD_PATH") != "1"
 		if bypassChecks {
 			// Trace path: bypass nonce + insufficient-balance checks so we
 			// can produce a trace even when the datadir state has drifted

@@ -109,7 +109,15 @@ func accountsEqual(a1, a2 *account.StateAccount) bool {
 }
 
 func (w *ChangeSetWriter) UpdateAccountData(address types.Address, original, account *account.StateAccount) error {
-	if !accountsEqual(original, account) || w.storageChanged[address] {
+	// Emit an account changeset entry only when the account fields actually
+	// changed (nonce / balance / codeHash). Storage-only mutations get their
+	// own StorageChangeSet entries — duplicating them here as no-op
+	// (oldVal==newVal) account entries was Erigon-style "all-touched-addrs"
+	// indexing that reth dropped, and reth-style unwind works fine without
+	// it (no account fields changed → nothing to restore on rollback).
+	// Removing the duplicates roughly halves AccountChangeSets volume on
+	// post-Constantinople blocks where most touches are SLOAD/SSTORE-only.
+	if !accountsEqual(original, account) {
 		// Reth-style: store full V2 (with CodeHash) directly. The historical
 		// recovery via PlainContractCode lookup (Erigon omitHashes path) is no
 		// longer needed because the changeset blob is self-contained.

@@ -170,6 +170,22 @@ func (m *ConcurrentMPTRootComputer) FlushBranches(tx kv.RwTx) error {
 	return nil
 }
 
+// FlushAndResetMem flushes mem branches to MDBX (MPTBranch table) and
+// drops the in-memory map. Caller MUST have wired a persistent store
+// (use NewPersistentConcurrentMPTRootComputer); otherwise subsequent
+// reads will miss because there is no fall-through. Used by bulk-rebuild
+// loops to bound memory across many chunks.
+func (m *ConcurrentMPTRootComputer) FlushAndResetMem(tx kv.RwTx) error {
+	if m.persist == nil {
+		return fmt.Errorf("FlushAndResetMem requires persistent variant")
+	}
+	if err := m.FlushBranches(tx); err != nil {
+		return err
+	}
+	m.mem.Reset()
+	return nil
+}
+
 // EncodeTrieState returns the root trie's serialized state.
 func (m *ConcurrentMPTRootComputer) EncodeTrieState() ([]byte, error) {
 	return m.ctrie.RootTrie().EncodeCurrentState(nil)
@@ -309,6 +325,70 @@ func (m *ConcurrentMPTRootComputer) ComputeRoot(
 	var h types.Hash
 	copy(h[:], rootBytes)
 	return h, nil
+}
+
+// ProcessUpdates dispatches an externally-built Updates batch through
+// ConcurrentPatriciaHashed.Process and merges per-worker collector output
+// into the shared mem branch store. Used by bulk-rebuild paths that walk
+// PlainState themselves (e.g. compute-root) instead of building maps for
+// the standard ComputeRoot API.
+//
+// The caller is responsible for:
+//   - Calling SetStateReader before the first invocation.
+//   - Constructing updates with libcommit.NewUpdates(libcommit.ModeDirect, ...).
+//   - Calling updates.SetConcurrentCommitment(true) before the first call;
+//     subsequent calls may have it auto-flipped by ConcurrentPatriciaHashed
+//     based on CanDoConcurrentNext — preserve that behavior across chunks.
+//   - Reset()ing updates between chunks (sortPerNibble flag is preserved).
+func (m *ConcurrentMPTRootComputer) ProcessUpdates(ctx context.Context, updates *libcommit.Updates) ([]byte, error) {
+	if m.reader == nil {
+		return nil, fmt.Errorf("ConcurrentMPTRootComputer: reader not set")
+	}
+	if m.db == nil {
+		return nil, fmt.Errorf("ConcurrentMPTRootComputer: db not set")
+	}
+
+	if updates.Size() == 0 {
+		rh, err := m.ctrie.RootHash()
+		if err != nil {
+			return nil, err
+		}
+		return rh, nil
+	}
+
+	factory, drain := newConcurrentMPTContextFactory(ctx, m.db, m.mem, m.persist, m.reader, m.tmpdir, m.logger)
+	warmupCfg := libcommit.WarmupConfig{
+		Enabled:    false,
+		CtxFactory: factory,
+		NumWorkers: 16,
+		MaxDepth:   libcommit.WarmupMaxDepth,
+		LogPrefix:  "mpt-concurrent",
+	}
+
+	rootBytes, err := m.ctrie.Process(ctx, updates, "", nil, warmupCfg)
+
+	collectors := drain()
+	defer func() {
+		for _, c := range collectors {
+			if c != nil {
+				c.Close()
+			}
+		}
+	}()
+
+	if err != nil {
+		return nil, fmt.Errorf("concurrent MPT process: %w", err)
+	}
+
+	for _, c := range collectors {
+		if c == nil {
+			continue
+		}
+		if loadErr := c.Load(nil, "", mergeCollectorIntoMemFn(m.mem), etl.TransformArgs{}); loadErr != nil {
+			return nil, fmt.Errorf("merge collector: %w", loadErr)
+		}
+	}
+	return rootBytes, nil
 }
 
 // mergeCollectorIntoMemFn returns an etl.LoadFunc that copies each

@@ -73,6 +73,17 @@ func (s *memBranchStore) Put(prefix []byte, data []byte) {
 	}
 }
 
+// Reset drops the in-memory branch map. Caller must have already
+// flushed entries to a persistent store (via MPTRootComputer.FlushBranches
+// or ConcurrentMPTRootComputer.FlushBranches) before calling Reset, or
+// branches will be lost. Used during bulk-rebuild flows that periodically
+// drain mem to MDBX to bound memory.
+func (s *memBranchStore) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = make(map[string][]byte)
+}
+
 func (s *memBranchStore) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -241,6 +252,55 @@ func ReadMPTTrieState(tx kv.Tx) (blockNum uint64, trieState []byte, err error) {
 	trieState = make([]byte, stateLen)
 	copy(trieState, data[12:12+stateLen])
 	return blockNum, trieState, nil
+}
+
+// --- Bulk-rebuild resume checkpoint ---
+//
+// Stored under MPTRoot["bulk_resume"] as:
+//   [keyLen:4 BE][lastAccKey][stateLen:4 BE][trieState]
+//
+// "lastAccKey" is the last fully-processed Account-table key from the
+// PlainState walk; "trieState" is the serialized HPH root trie state
+// (mounts are reset between chunks, so root-only is sufficient). Used
+// by compute-root --concurrent to resume mid-walk after a crash or
+// interrupt without re-walking processed accounts.
+
+func WriteBulkCheckpoint(tx kv.RwTx, lastAccKey, trieState []byte) error {
+	keyLen := uint32(len(lastAccKey))
+	stateLen := uint32(len(trieState))
+	buf := make([]byte, 4+keyLen+4+stateLen)
+	binary.BigEndian.PutUint32(buf[0:4], keyLen)
+	copy(buf[4:4+keyLen], lastAccKey)
+	binary.BigEndian.PutUint32(buf[4+keyLen:8+keyLen], stateLen)
+	copy(buf[8+keyLen:], trieState)
+	return tx.Put(modules.MPTRoot, []byte("bulk_resume"), buf)
+}
+
+func ReadBulkCheckpoint(tx kv.Tx) (lastAccKey, trieState []byte, err error) {
+	data, err := tx.GetOne(modules.MPTRoot, []byte("bulk_resume"))
+	if err != nil || data == nil {
+		return nil, nil, err
+	}
+	if len(data) < 8 {
+		return nil, nil, fmt.Errorf("bulk checkpoint header truncated")
+	}
+	keyLen := binary.BigEndian.Uint32(data[0:4])
+	if uint32(len(data)) < 4+keyLen+4 {
+		return nil, nil, fmt.Errorf("bulk checkpoint key truncated")
+	}
+	lastAccKey = make([]byte, keyLen)
+	copy(lastAccKey, data[4:4+keyLen])
+	stateLen := binary.BigEndian.Uint32(data[4+keyLen : 8+keyLen])
+	if uint32(len(data)) < 8+keyLen+stateLen {
+		return nil, nil, fmt.Errorf("bulk checkpoint state truncated")
+	}
+	trieState = make([]byte, stateLen)
+	copy(trieState, data[8+keyLen:8+keyLen+stateLen])
+	return lastAccKey, trieState, nil
+}
+
+func DeleteBulkCheckpoint(tx kv.RwTx) error {
+	return tx.Delete(modules.MPTRoot, []byte("bulk_resume"))
 }
 
 // --- PatriciaContext implementation ---
