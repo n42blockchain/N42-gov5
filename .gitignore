@@ -131,3 +131,52 @@ tests/rpc_*.go
 # Hard-fork allocation config (contains sensitive addresses/amounts)
 hardfork_alloc.json
 hotstuff_testnet/
+
+# ===========================================
+# Runtime debug artifacts (logs, traces, patches, profiles)
+# ===========================================
+
+# Top-level log/trace/diagnostic dumps from forward-replay runs
+/*.log
+/*.trace
+/*.prof
+/*.patch
+*_trace*.json
+*_trace*.txt
+audit_*.log
+deletes.log
+diff*.txt
+diff*.log
+race*.log
+replay*.log
+sstore_*.log
+sstore_*.trace
+track*.log
+verify*.log
+*.diag.txt
+old_*_diag.txt
+n42_*.json
+n42_*.txt
+reth_*.json
+
+# Per-run patch artifacts produced by debug tooling
+acctcs_patch_*.bin
+storcs_patch_*.bin
+
+# pprof profiles directory + python ad-hoc helpers
+profiles/
+analyze_*.py
+diff_*.py
+find_divergence.py
+
+# Per-package debug logs
+internal/ethel/deletes.log
+modules/state/deletes.log
+
+# Misc debug scripts
+post_rebuild_chain*.sh
+post_rebuild_chain*.log
+trace_tx*.ps1
+
+# Python bytecode cache
+__pycache__/
