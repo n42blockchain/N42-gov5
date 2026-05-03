@@ -1,6 +1,7 @@
 package prometheus
 
 import (
+	"sync"
 	"time"
 
 	vm "github.com/VictoriaMetrics/metrics"
@@ -11,6 +12,23 @@ import (
 // UsePrometheusClient controls whether to use the native Prometheus client
 // or VictoriaMetrics for metric storage.
 const UsePrometheusClient = false
+
+// per-metric one-time registration cache. See common/metrics/register.go
+// for the goroutine-leak and stale-data analysis this prevents.
+type summaryEntry struct {
+	once sync.Once
+	sm   Summary
+}
+
+type counterEntry struct {
+	once sync.Once
+	c    Counter
+}
+
+var (
+	summaryCache sync.Map // string → *summaryEntry
+	counterCache sync.Map // string → *counterEntry
+)
 
 // Summary wraps a duration-tracking metric.
 type Summary interface {
@@ -49,15 +67,20 @@ func (c intCounter) Get() uint64 {
 // GetOrCreateCounter returns a counter registered under the given name,
 // creating it if necessary.
 func GetOrCreateCounter(s string, isGauge ...bool) Counter {
-	if UsePrometheusClient {
-		gauge := defaultSet.GetOrCreateGauge(s)
-		return intCounter{gauge}
-	}
-
-	counter := vm.GetOrCreateCounter(s, isGauge...)
-	DefaultRegistry.Register(s, counter)
-	vm.GetDefaultSet().UnregisterMetric(s)
-	return counter
+	e, _ := counterCache.LoadOrStore(s, &counterEntry{})
+	entry := e.(*counterEntry)
+	entry.once.Do(func() {
+		if UsePrometheusClient {
+			gauge := defaultSet.GetOrCreateGauge(s)
+			entry.c = intCounter{gauge}
+			return
+		}
+		counter := vm.GetOrCreateCounter(s, isGauge...)
+		DefaultRegistry.Register(s, counter)
+		vm.GetDefaultSet().UnregisterMetric(s)
+		entry.c = counter
+	})
+	return entry.c
 }
 
 // GetOrCreateGaugeFunc returns a gauge func registered under the given name.
@@ -77,15 +100,20 @@ func (sm summary) UpdateDuration(startTime time.Time) {
 // GetOrCreateSummary returns a summary registered under the given name,
 // creating it if necessary.
 func GetOrCreateSummary(s string) Summary {
-	if UsePrometheusClient {
-		sm := defaultSet.GetOrCreateSummary(s)
-		return summary{sm}
-	}
-
-	sm := vm.GetOrCreateSummary(s)
-	DefaultRegistry.Register(s, sm)
-	vm.GetDefaultSet().UnregisterMetric(s)
-	return sm
+	e, _ := summaryCache.LoadOrStore(s, &summaryEntry{})
+	entry := e.(*summaryEntry)
+	entry.once.Do(func() {
+		if UsePrometheusClient {
+			sm := defaultSet.GetOrCreateSummary(s)
+			entry.sm = summary{sm}
+			return
+		}
+		sm := vm.GetOrCreateSummary(s)
+		DefaultRegistry.Register(s, sm)
+		vm.GetDefaultSet().UnregisterMetric(s)
+		entry.sm = sm
+	})
+	return entry.sm
 }
 
 // GetOrCreateHistogram returns a histogram registered under the given name.
