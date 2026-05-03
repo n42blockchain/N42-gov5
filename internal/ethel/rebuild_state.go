@@ -425,14 +425,28 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 	wipeSet = nil
 	runtime.GC()
 
-	// Write progress.
+	// Write progress under BOTH marker keys so subsequent forward replay
+	// (which reads SyncStageProgress/ethel-last-block) and resume
+	// (which reads DbInfo/ethel_progress) see the same checkpoint.
+	// Using only DbInfo here used to silently leave forward replay
+	// thinking the datadir is at block 0 — observed twice on
+	// d:\N42-eth1177 and d:\N42-eth1456 — and ethexec then attempted
+	// a "block 0 genesis snapshot output" of the existing 169M-account
+	// PlainState, overflowing the snapshot's uint16 account counter.
 	tx, err := db.BeginRw(ctx)
 	if err != nil {
 		return err
 	}
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], endBlock-1)
-	tx.Put("DbInfo", []byte("ethel_progress"), buf[:])
+	if err := tx.Put("DbInfo", []byte("ethel_progress"), buf[:]); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := WriteProgress(tx, endBlock-1); err != nil {
+		tx.Rollback()
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}

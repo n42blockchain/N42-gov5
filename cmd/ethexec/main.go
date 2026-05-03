@@ -1881,13 +1881,23 @@ func runVerifyCSRoot(c *cli.Context) error {
 		return fmt.Errorf("rebuild to block %d: %w", targetBlock, err)
 	}
 
-	// Write progress so next run can resume.
+	// Write progress so next run can resume — under BOTH marker keys.
+	// rebuild-state's auto-resume reads DbInfo/ethel_progress; forward
+	// replay reads SyncStageProgress/ethel-last-block. Skipping either
+	// one triggered the "block 0 genesis snapshot exceeds uint16 count"
+	// crash on d:\N42-eth1456 / d:\N42-eth1177.
 	{
 		wtx, err := db.BeginRw(ctx)
 		if err != nil {
 			return err
 		}
 		if err := ethel.WriteProgress(wtx, targetBlock); err != nil {
+			wtx.Rollback()
+			return err
+		}
+		var pbuf [8]byte
+		binary.BigEndian.PutUint64(pbuf[:], targetBlock)
+		if err := wtx.Put("DbInfo", []byte("ethel_progress"), pbuf[:]); err != nil {
 			wtx.Rollback()
 			return err
 		}
