@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 )
 
 func main() {
@@ -34,7 +36,7 @@ func main() {
 	}
 	defer tx.Rollback()
 
-	tables := []string{"Account", "Storage", "HashedAccount", "HashedStorage", "TrieAccount", "TrieStorage"}
+	tables := []string{"Account", "Storage", "HashedAccount", "HashedStorage", "TrieAccount", "TrieStorage", "MPTBranch", "MPTRoot"}
 	for _, name := range tables {
 		c, err := tx.Cursor(name)
 		if err != nil {
@@ -52,6 +54,18 @@ func main() {
 			status = "populated"
 		}
 		fmt.Printf("%-16s %s\n", name, status)
+	}
+
+	fmt.Println("--- HPH markers (MPTRoot) ---")
+	if root, err := commitment.ReadMPTRoot(tx); err == nil && root != (types.Hash{}) {
+		fmt.Printf("MPTRoot/root        = %x\n", root[:])
+	} else {
+		fmt.Printf("MPTRoot/root        = <missing>\n")
+	}
+	if blockNum, trieState, err := commitment.ReadMPTTrieState(tx); err == nil && trieState != nil {
+		fmt.Printf("MPTRoot/trie_state  = block=%d, stateLen=%d\n", blockNum, len(trieState))
+	} else {
+		fmt.Printf("MPTRoot/trie_state  = <missing>\n")
 	}
 
 	// Progress markers.

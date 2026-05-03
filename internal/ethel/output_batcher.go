@@ -263,7 +263,7 @@ func (b *outputBatcher) flushOneBatch(n int) error {
 					return fmt.Errorf("output batcher: %s partial: %w", name, err)
 				}
 			}
-			tb.entries = tb.entries[writeCount:]
+			tb.entries = dropFrontEntries(tb.entries, writeCount)
 			continue
 		}
 
@@ -280,11 +280,33 @@ func (b *outputBatcher) flushOneBatch(n int) error {
 		if err := freezer.WriteBatch(tb.tbl, entries, encoded); err != nil {
 			return fmt.Errorf("output batcher: %s: %w", name, err)
 		}
-		tb.entries = tb.entries[n:]
+		tb.entries = dropFrontEntries(tb.entries, n)
 	}
 
 	b.nextItem = batchEnd
 	return nil
+}
+
+// dropFrontEntries removes the first n elements, niling the dropped
+// slots before reslicing. The slice header otherwise keeps the underlying
+// array alive, pinning the dropped []byte payloads even though they're
+// unreachable via the new slice. Without this, ~hundreds of MB of
+// changeset bytes leak per long forward replay.
+func dropFrontEntries(entries [][]byte, n int) [][]byte {
+	if n <= 0 {
+		return entries
+	}
+	if n >= len(entries) {
+		// Clear all and reset to zero-length but keep capacity for next interval.
+		for i := range entries {
+			entries[i] = nil
+		}
+		return entries[:0]
+	}
+	for i := 0; i < n; i++ {
+		entries[i] = nil
+	}
+	return entries[n:]
 }
 
 const maxMismatchWarns = 10

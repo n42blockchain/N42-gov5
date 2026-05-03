@@ -33,10 +33,19 @@ func main() {
 		os.Exit(1)
 	}
 	defer tx.Rollback()
+	// Try both progress marker locations:
+	//   - SyncStageProgress / "ethel-last-block"  (used by forward replay)
+	//   - DbInfo / "ethel_progress"               (used by rebuild-state)
 	v, err := tx.GetOne(kv.SyncStageProgress, []byte("ethel-last-block"))
-	if err != nil || v == nil || len(v) < 8 {
-		fmt.Printf("no progress marker (err=%v len=%d)\n", err, len(v))
-		os.Exit(0)
+	if err == nil && v != nil && len(v) >= 8 {
+		fmt.Printf("SyncStageProgress/ethel-last-block: %d\n", binary.BigEndian.Uint64(v))
+	} else {
+		fmt.Printf("SyncStageProgress/ethel-last-block: (none)\n")
 	}
-	fmt.Printf("progress: block %d\n", binary.BigEndian.Uint64(v))
+	v2, err2 := tx.GetOne(kv.DatabaseInfo, []byte("ethel_progress"))
+	if err2 == nil && v2 != nil && len(v2) >= 8 {
+		fmt.Printf("DbInfo/ethel_progress:               %d\n", binary.BigEndian.Uint64(v2))
+	} else {
+		fmt.Printf("DbInfo/ethel_progress:               (none)\n")
+	}
 }
