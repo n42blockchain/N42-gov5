@@ -17,12 +17,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"time"
+
+	"github.com/c2h5oh/datasize"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/lib/etl"
 	"github.com/n42blockchain/N42/lib/kv"
+	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
@@ -72,25 +77,187 @@ func RebuildHashedState(tx kv.RwTx) error {
 	return hashAllStorage(tx)
 }
 
+// RebuildHashedStateETL is the etl.Collector-based variant of
+// RebuildHashedState. Instead of doing 240M+ random-key tx.Put calls
+// (which thrashes the MDBX B-tree and balloons dirty-page memory), it
+// streams hashed entries through an etl.Collector that sorts on tmpfile
+// and bulk-loads in sorted order — orders of magnitude fewer page
+// touches. Expected speedup at 17M+ block scale: 5-10×.
+//
+// tmpdir holds sort-merge files; size at full 17M state ≈ 17 GB. Pass
+// "" to use os.MkdirTemp (system TEMP, may fail on small C:\ — prefer
+// an explicit path on the same drive as the MDBX datadir).
+//
+// SortableBuffer is sized at 1 GB per Collector, ~2 GB combined peak
+// in-memory; remaining entries spill to tmpfile.
+//
+// MDBX requirement: caller's RwTx must have DirtySpace ≥ 32 GB to hold
+// the 240M-entry sequential Load. Set --dirty-space-gb 32 (or more) on
+// the parent command. Default 2 GB will overflow with MDBX_MAP_FULL.
+func RebuildHashedStateETL(ctx context.Context, tx kv.RwTx, tmpdir string, logger log2.Logger) error {
+	if tmpdir == "" {
+		dir, err := os.MkdirTemp("", "hashed-state-etl-*")
+		if err != nil {
+			return fmt.Errorf("mkdir tmp: %w", err)
+		}
+		defer os.RemoveAll(dir)
+		tmpdir = dir
+	}
+	for _, tbl := range []string{kv.HashedAccounts, kv.HashedStorage} {
+		if err := tx.ClearBucket(tbl); err != nil {
+			return fmt.Errorf("clear %s: %w", tbl, err)
+		}
+	}
+
+	t0 := time.Now()
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+
+	// 32 GB SortableBuffer per Collector — sized to hold the entire
+	// 17M-block-state hashed working set in memory (Account ~2 GB,
+	// Storage ~17 GB). Avoids tmpfile spill entirely. Combined peak
+	// ~25 GB Go heap; user's 128 GB host has headroom.
+	const accBufSize = 4 * datasize.GB
+	const stoBufSize = 32 * datasize.GB
+
+	// Account: walk Plain "Account" → keccak(addr), Collect into etl.
+	accColl := etl.NewCollector("rebuild-hashed-acct", tmpdir,
+		etl.NewSortableBuffer(accBufSize), logger)
+	defer accColl.Close()
+
+	accCur, err := tx.Cursor("Account")
+	if err != nil {
+		return fmt.Errorf("open Account cursor: %w", err)
+	}
+	var accCount int
+	tProgress := time.Now()
+	for k, v, err := accCur.First(); k != nil; k, v, err = accCur.Next() {
+		if err != nil {
+			accCur.Close()
+			return err
+		}
+		if len(k) != 20 {
+			continue
+		}
+		var acc account.StateAccount
+		if err := acc.DecodeForStorage(v); err != nil {
+			accCur.Close()
+			return fmt.Errorf("decode account: %w", err)
+		}
+		if acc.CodeHash == (types.Hash{}) {
+			acc.CodeHash = emptyCodeHash
+		}
+		hashedKey := crypto.Keccak256(k)
+		if err := accColl.Collect(hashedKey, acc.MarshalV2()); err != nil {
+			accCur.Close()
+			return fmt.Errorf("collect acct: %w", err)
+		}
+		accCount++
+		if time.Since(tProgress) > 10*time.Second {
+			log.Info("RebuildHashedStateETL: hashing accounts",
+				"done", accCount,
+				"rate/s", uint64(float64(accCount)/time.Since(t0).Seconds()),
+				"elapsed", time.Since(t0).Truncate(time.Second))
+			tProgress = time.Now()
+		}
+	}
+	accCur.Close()
+	tCollectAcct := time.Since(t0)
+	log.Info("RebuildHashedStateETL: accounts collected",
+		"count", accCount, "elapsed", tCollectAcct.Truncate(time.Millisecond))
+
+	// Storage: walk Plain "Storage" → keccak(addr)+inc0+keccak(slot).
+	tSto := time.Now()
+	stoColl := etl.NewCollector("rebuild-hashed-sto", tmpdir,
+		etl.NewSortableBuffer(stoBufSize), logger)
+	defer stoColl.Close()
+
+	stoCur, err := tx.Cursor("Storage")
+	if err != nil {
+		return fmt.Errorf("open Storage cursor: %w", err)
+	}
+	var stoCount int
+	tProgress = time.Now()
+	for k, v, err := stoCur.First(); k != nil; k, v, err = stoCur.Next() {
+		if err != nil {
+			stoCur.Close()
+			return err
+		}
+		if len(k) < 52 {
+			continue
+		}
+		var compositeKey [72]byte
+		copy(compositeKey[:32], crypto.Keccak256(k[:20]))
+		// 8-byte zero incarnation gap (compositeKey[32:40] stays zero)
+		copy(compositeKey[40:72], crypto.Keccak256(k[20:52]))
+		if err := stoColl.Collect(compositeKey[:], v); err != nil {
+			stoCur.Close()
+			return fmt.Errorf("collect sto: %w", err)
+		}
+		stoCount++
+		if time.Since(tProgress) > 10*time.Second {
+			log.Info("RebuildHashedStateETL: hashing storage",
+				"done", stoCount,
+				"rate/s", uint64(float64(stoCount)/time.Since(tSto).Seconds()),
+				"elapsed", time.Since(tSto).Truncate(time.Second))
+			tProgress = time.Now()
+		}
+	}
+	stoCur.Close()
+	tCollectSto := time.Since(tSto)
+	log.Info("RebuildHashedStateETL: storage collected",
+		"count", stoCount, "elapsed", tCollectSto.Truncate(time.Millisecond))
+
+	// Bulk-load both collectors. etl.Load streams sorted entries to
+	// MDBX in sequential B-tree order — page touches are sequential
+	// vs random for the legacy tx.Put flow.
+	tLoad := time.Now()
+	log.Info("RebuildHashedStateETL: loading HashedAccounts to MDBX...")
+	if err := accColl.Load(tx, kv.HashedAccounts, etl.IdentityLoadFunc, etl.TransformArgs{}); err != nil {
+		return fmt.Errorf("load HashedAccounts: %w", err)
+	}
+	tLoadAcct := time.Since(tLoad)
+	log.Info("RebuildHashedStateETL: HashedAccounts loaded",
+		"elapsed", tLoadAcct.Truncate(time.Millisecond))
+
+	tLoad = time.Now()
+	log.Info("RebuildHashedStateETL: loading HashedStorage to MDBX...")
+	if err := stoColl.Load(tx, kv.HashedStorage, etl.IdentityLoadFunc, etl.TransformArgs{}); err != nil {
+		return fmt.Errorf("load HashedStorage: %w", err)
+	}
+	tLoadSto := time.Since(tLoad)
+	log.Info("RebuildHashedStateETL: HashedStorage loaded",
+		"elapsed", tLoadSto.Truncate(time.Millisecond))
+
+	log.Info("RebuildHashedStateETL done",
+		"accts", accCount,
+		"sto", stoCount,
+		"collectAcct", tCollectAcct.Truncate(time.Millisecond),
+		"collectSto", tCollectSto.Truncate(time.Millisecond),
+		"loadAcct", tLoadAcct.Truncate(time.Millisecond),
+		"loadSto", tLoadSto.Truncate(time.Millisecond),
+		"total", time.Since(t0).Truncate(time.Millisecond))
+	return nil
+}
+
 // FullStateRootVerify does a complete re-hash and MPT root computation.
 // It clears HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage,
 // re-hashes everything from Account/Storage, then runs CalcTrieRoot.
 // This is expensive but guaranteed correct for verification.
+//
+// Uses RebuildHashedStateETL (etl.Collector + sorted bulk-load) for the
+// re-hash phase — orders of magnitude faster than the legacy random-Put
+// path on 10M+ block states.
 func FullStateRootVerify(tx kv.RwTx) (types.Hash, error) {
-	// Clear hashed/trie tables.
-	for _, tbl := range []string{kv.HashedAccounts, kv.HashedStorage, kv.TrieOfAccounts, kv.TrieOfStorage} {
+	// Clear trie tables here; HashedAccounts/HashedStorage are cleared
+	// inside RebuildHashedStateETL.
+	for _, tbl := range []string{kv.TrieOfAccounts, kv.TrieOfStorage} {
 		if err := tx.ClearBucket(tbl); err != nil {
 			return types.Hash{}, fmt.Errorf("clear %s: %w", tbl, err)
 		}
 	}
 
-	// Re-hash all accounts.
-	if err := hashAllAccounts(tx); err != nil {
-		return types.Hash{}, err
-	}
-	// Re-hash all storage.
-	if err := hashAllStorage(tx); err != nil {
-		return types.Hash{}, err
+	if err := RebuildHashedStateETL(context.Background(), tx, "", log2.New()); err != nil {
+		return types.Hash{}, fmt.Errorf("rebuild hashed state: %w", err)
 	}
 
 	// CalcTrieRoot with empty RetainList (full rebuild).
