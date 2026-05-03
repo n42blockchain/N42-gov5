@@ -21,8 +21,11 @@ rsync -a --delete \
   --exclude 'conversation-*.txt' \
   --exclude 'devtest/' \
   --exclude 'mainnet/' \
+  --exclude '/n42' \
   --exclude 'n42data/' \
+  --exclude '/e2e_run.log' \
   --exclude 'tests/' \
+  --exclude '/tpsbench' \
   --exclude 'docs/' \
   --exclude 'tmp/' \
   --exclude '*.out' \
