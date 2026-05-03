@@ -207,7 +207,13 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		if err != nil {
 			return fmt.Errorf("verify begin tx2: %w", err)
 		}
-		root, err := VerifyStateRoot(tx2)
+		// Use the streaming FlatDBTrieLoader path (FullStateRootVerify)
+		// rather than the in-memory MPT (VerifyStateRoot) — the latter
+		// builds account+storage tries entirely on the heap and OOMs
+		// past ~10M blocks (32M+ accounts). FullStateRootVerify clears
+		// + repopulates HashedAccounts/HashedStorage and TrieOf* via
+		// streaming, peak ~5-10 GB regardless of state size.
+		root, err := FullStateRootVerify(tx2)
 		tx2.Rollback()
 		if err != nil {
 			return fmt.Errorf("calc state root at block %d: %w", blockNum, err)
@@ -705,10 +711,14 @@ func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Fr
 	}
 
 	tx2, _ := db.BeginRw(ctx)
-	root, err := VerifyStateRoot(tx2)
+	// Streaming MPT verify (FullStateRootVerify → FlatDBTrieLoader),
+	// not in-memory MPT (VerifyStateRoot). The in-memory path OOMs at
+	// 10M+ blocks per the comment in executor.go:verifyBlockCap; this
+	// path is bounded ~5-10 GB regardless of state size.
+	root, err := FullStateRootVerify(tx2)
 	tx2.Rollback()
 	if err != nil {
-		log.Warn("VerifyStateRoot failed", "err", err)
+		log.Warn("FullStateRootVerify failed", "err", err)
 		return
 	}
 	if root == header.Root {
