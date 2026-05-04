@@ -51,6 +51,7 @@ func main() {
 			&cli.IntFlag{Name: "workers", Value: 32, Usage: "Number of parallel replay workers"},
 			&cli.BoolFlag{Name: "no-output", Usage: "Skip cdat writes (smoke / throughput tests). Workers still verify gas per block."},
 			&cli.BoolFlag{Name: "skip-verify", Usage: "Skip per-block gas verification. Useful when the witness was recorded by a different ProcessBlock version (state-read order drift produces gas mismatches that aren't a framework bug)."},
+			&cli.BoolFlag{Name: "continue-on-error", Usage: "Keep replaying past per-block failures (logged + counted). Throughput measurement against a possibly-stale witness needs this; production runs should leave it false so any divergence halts immediately."},
 		},
 		Action: run,
 	}
@@ -103,6 +104,7 @@ func run(c *cli.Context) error {
 		Workers:           workers,
 		NoOutput:          c.Bool("no-output"),
 		SkipVerify:        c.Bool("skip-verify"),
+		ContinueOnError:   c.Bool("continue-on-error"),
 		ChainCfg:          chainCfg,
 		Engine:            engine,
 	}
