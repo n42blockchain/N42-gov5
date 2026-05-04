@@ -49,6 +49,8 @@ func main() {
 			&cli.Uint64Flag{Name: "start", Value: 0, Usage: "Start block (inclusive)"},
 			&cli.Uint64Flag{Name: "end", Value: 0, Usage: "End block (exclusive); 0 = all available witness items"},
 			&cli.IntFlag{Name: "workers", Value: 32, Usage: "Number of parallel replay workers"},
+			&cli.BoolFlag{Name: "no-output", Usage: "Skip cdat writes (smoke / throughput tests). Workers still verify gas per block."},
+			&cli.BoolFlag{Name: "skip-verify", Usage: "Skip per-block gas verification. Useful when the witness was recorded by a different ProcessBlock version (state-read order drift produces gas mismatches that aren't a framework bug)."},
 		},
 		Action: run,
 	}
@@ -99,6 +101,8 @@ func run(c *cli.Context) error {
 		StartBlock:        start,
 		EndBlock:          end,
 		Workers:           workers,
+		NoOutput:          c.Bool("no-output"),
+		SkipVerify:        c.Bool("skip-verify"),
 		ChainCfg:          chainCfg,
 		Engine:            engine,
 	}
