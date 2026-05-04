@@ -34,7 +34,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
-	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/params"
 )
