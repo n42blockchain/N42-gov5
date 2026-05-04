@@ -42,6 +42,26 @@ type BlockResult struct {
 	Senders  []types.Address
 }
 
+// Trace-mode env vars resolved once at process startup. Reading
+// os.Getenv inside the per-tx loop costs a map lookup per call;
+// hoisting saves ~24K syscalls/sec at 200 tx/block × 60 blk/s.
+var (
+	traceTxHashEnv = strings.ToLower(strings.TrimPrefix(os.Getenv("N42_TRACE_TX"), "0x"))
+	traceBlockEnv  = func() uint64 {
+		s := os.Getenv("N42_TRACE_BLOCK")
+		if s == "" {
+			return 0
+		}
+		var v uint64
+		fmt.Sscanf(s, "%d", &v)
+		return v
+	}()
+	traceSkipOthersEnv = os.Getenv("N42_TRACE_SKIP_OTHERS") == "1"
+	noopTracerEnv      = os.Getenv("N42_NOOP_TRACER") == "1"
+	traceProdPathEnv   = os.Getenv("N42_TRACE_PROD_PATH") == "1"
+	traceOutEnv        = os.Getenv("N42_TRACE_OUT")
+)
+
 func applyEthelWithdrawals(chainCfg *params.ChainConfig, header *block.Header, ibs *state.IntraBlockState, withdrawals []*Withdrawal) {
 	if chainCfg == nil || header == nil || header.Number == nil || ibs == nil || len(withdrawals) == 0 {
 		return
@@ -124,16 +144,10 @@ func ProcessBlock(
 
 	noop := state.NewNoopWriter()
 
-	traceTxHash := strings.ToLower(strings.TrimPrefix(os.Getenv("N42_TRACE_TX"), "0x"))
-	traceBlockStr := os.Getenv("N42_TRACE_BLOCK")
-	var traceBlock uint64
-	if traceBlockStr != "" {
-		fmt.Sscanf(traceBlockStr, "%d", &traceBlock)
-	}
 	currentBlock := header.Number.Uint64()
 	// Skip-non-target only when N42_TRACE_BLOCK is explicitly set AND matches.
 	// Default (no traceBlock): run all txs normally so state evolves correctly.
-	skipNonTarget := traceTxHash != "" && traceBlock != 0 && traceBlock == currentBlock && os.Getenv("N42_TRACE_SKIP_OTHERS") == "1"
+	skipNonTarget := traceTxHashEnv != "" && traceBlockEnv != 0 && traceBlockEnv == currentBlock && traceSkipOthersEnv
 
 	for i, txn := range txs {
 		// Trace mode: only skip non-target txs in the TARGET block (or all if
@@ -141,7 +155,7 @@ func ProcessBlock(
 		// state evolves correctly going into the target block.
 		if skipNonTarget {
 			thisH := strings.ToLower(strings.TrimPrefix(txn.Hash().Hex(), "0x"))
-			if thisH != traceTxHash {
+			if thisH != traceTxHashEnv {
 				continue
 			}
 		}
@@ -152,16 +166,16 @@ func ProcessBlock(
 		// whether the "no tracer fast path" has a divergent bug. If forward
 		// replay succeeds with this, the fix is just to keep Debug+Tracer
 		// always on. If it still fails, the bug is elsewhere.
-		if os.Getenv("N42_NOOP_TRACER") == "1" {
+		if noopTracerEnv {
 			txCfg.Tracer = NoopTracer{}
 			txCfg.Debug = true
 		}
 		var traceFile *os.File
 		var stepTracer *StepTracer
-		if traceTxHash != "" {
+		if traceTxHashEnv != "" {
 			thisHash := strings.ToLower(strings.TrimPrefix(txn.Hash().Hex(), "0x"))
-			if thisHash == traceTxHash {
-				outPath := os.Getenv("N42_TRACE_OUT")
+			if thisHash == traceTxHashEnv {
+				outPath := traceOutEnv
 				if outPath == "" {
 					outPath = fmt.Sprintf("n42_trace_%s.json", thisHash[:16])
 				}
@@ -190,7 +204,7 @@ func ProcessBlock(
 		// (gasBailout=false, normal nonce check) while still attaching the
 		// tracer. Used to capture the production-mode trace for diff against
 		// trace-mode trace and pinpoint where the two paths diverge.
-		bypassChecks := stepTracer != nil && os.Getenv("N42_TRACE_PROD_PATH") != "1"
+		bypassChecks := stepTracer != nil && !traceProdPathEnv
 		if bypassChecks {
 			// Trace path: bypass nonce + insufficient-balance checks so we
 			// can produce a trace even when the datadir state has drifted
