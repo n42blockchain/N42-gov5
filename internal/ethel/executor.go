@@ -50,6 +50,11 @@ type ExecutorConfig struct {
 	// They are rebuilt as a batch stage after sync completes.
 	// NoOutputs if true, skip writing output freezer (receipts, senders, etc.).
 	NoOutputs bool
+	// NoWitness if true, skip ZK witness recording while still emitting
+	// other outputs (receipts, senders, changesets). Witness wraps every
+	// state read in an extra fn call + slice append; disabling it on
+	// runs that don't need ZK proofs measurably reduces GC pressure.
+	NoWitness bool
 	// ParallelEVM if true, use Block-STM parallel EVM for tx execution.
 	// EXPERIMENTAL — see docs/parallel_evm_plan.md. Default false keeps
 	// the sequential path; the parallel path is opt-in and additive.
@@ -648,7 +653,7 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) 
 	bufReader := state.NewBufferedPlainStateReader(e.stateBuf, tx)
 	var witnessReader *WitnessStateReader
 	var reader state.StateReader = bufReader
-	if e.outFreezer != nil && !e.cfg.NoOutputs {
+	if e.outFreezer != nil && !e.cfg.NoOutputs && !e.cfg.NoWitness {
 		witnessReader = NewWitnessStateReader(bufReader)
 		reader = witnessReader
 	}
