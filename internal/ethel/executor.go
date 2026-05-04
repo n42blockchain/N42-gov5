@@ -451,6 +451,15 @@ func (e *Executor) Run(ctx context.Context) error {
 				return fmt.Errorf("hand to async flusher at block %d: %w", blockNum, err)
 			}
 
+			// 4b. Ask Windows to trim our working set. File-backed mmap
+			// pages accumulate in WS even with WriteMap off; without
+			// proactive trim the WS grows to MDBX-file-size and pushes
+			// physical RAM toward OOM. Trim sends pages to the OS
+			// standby cache (still in physical RAM, not swap), so
+			// re-fault on next access is microsecond-level.
+			// No-op on Linux/macOS where the kernel auto-trims.
+			_ = TrimMemoryWorkingSet()
+
 			// 5. Rotate main thread's RoTx. Skip during shutdown —
 			// ctx is cancelled so BeginRo(ctx) would fail, and we
 			// don't need fresh reads since we're about to exit.
