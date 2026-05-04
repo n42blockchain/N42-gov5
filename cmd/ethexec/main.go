@@ -81,7 +81,8 @@ func main() {
 		&cli.BoolFlag{Name: "no-witness", Usage: "Skip ZK witness recording while still emitting other output freezer entries (receipts, senders, changesets). Removes one wrapper layer + per-state-read slice append from the hot path."},
 		&cli.BoolFlag{Name: "pprof", Usage: "Enable mutex/block profiling for pprof flame graphs"},
 		&cli.StringFlag{Name: "track-addr", Usage: "20-byte address (hex, no 0x) to emit targeted trace logs for"},
-		&cli.BoolFlag{Name: "safe-durable", Usage: "Force MDBX default durability (fsync every commit). Default: off — ethexec uses WriteMap+SafeNoSync since the ethel progress marker + state are committed atomically, so crash recovery resumes from the last durable checkpoint"},
+		&cli.BoolFlag{Name: "safe-durable", Usage: "Force MDBX default durability (fsync every commit). Default: off — ethexec uses SafeNoSync since the ethel progress marker + state commit atomically, so crash recovery resumes from the last durable checkpoint"},
+		&cli.BoolFlag{Name: "writemap", Usage: "MDBX WriteMap mode (writes go through mmap instead of pwrite). On Linux this is ~15% faster; on Windows it forces every written page into the resident set, causing working-set growth proportional to MDBX file size (~80 GB at 16M blocks) and pagefile thrash. Default: off.", Value: false},
 		&cli.IntFlag{Name: "gogc", Usage: "Go GC target percentage (higher = less frequent GC, more heap). Default 100 keeps heap close to live size. Larger values (200-400) reduce GC CPU but inflate Private memory by (1+gogc/100)x — at 64 GB LRU and gogc=400 the runtime over-commits 320 GB, triggering pagefile thrash on 128 GB hosts. Pair with --memory-limit-gb to give the runtime a hard ceiling.", Value: 100},
 		&cli.Uint64Flag{Name: "memory-limit-gb", Usage: "Hard upper bound on Go heap (debug.SetMemoryLimit). 0 = no limit. Recommended: physical_RAM * 0.7 (e.g. 90 on 128 GB hosts). Combined with --gogc the runtime adapts: stays at gogc target normally, but tightens GC if heap approaches the limit. Prevents Private-memory blowout that GOGC alone cannot bound.", Value: 0},
 		&cli.Uint64Flag{Name: "dirty-space-mb", Usage: "MDBX dirty page pool size in MB. Larger = fewer forced spills mid-commit; caps at ~commit_interval × per-block dirty size", Value: 2048},
@@ -636,18 +637,27 @@ func run(c *cli.Context) error {
 		LifoReclaim().
 		DirtySpace(uint64(datasize.ByteSize(dirtySpaceMB) * datasize.MB)).
 		DBVerbosity(kv.DBVerbosityLvl(2))
+	flagsLog := "LifoReclaim"
 	if !c.Bool("safe-durable") {
-		// WriteMap: MDBX writes directly into the mapped file (no user-space
-		// copy), matching Reth's default. SafeNoSync: skip fsync on every
-		// commit; safe here because ethel progress + state commit atomically
-		// in the same RwTx, so resume-from-crash restarts from the last
-		// durable checkpoint without torn state. Expect 15–25% throughput
-		// gain on write-heavy forward-replay.
-		mdbxOpts = mdbxOpts.WriteMap().SafeNoSync()
-		log.Info("MDBX fast mode enabled", "flags", "WriteMap+SafeNoSync+LifoReclaim", "dirty_MB", dirtySpaceMB)
-	} else {
-		log.Info("MDBX fast mode OFF — durable commits", "flags", "LifoReclaim", "dirty_MB", dirtySpaceMB)
+		// SafeNoSync: skip fsync on every commit; safe here because ethel
+		// progress + state commit atomically in the same RwTx, so
+		// resume-from-crash restarts from the last durable checkpoint
+		// without torn state. ~10–15% throughput gain.
+		mdbxOpts = mdbxOpts.SafeNoSync()
+		flagsLog = "SafeNoSync+" + flagsLog
 	}
+	if c.Bool("writemap") {
+		// WriteMap: MDBX writes go directly into the mapped file (no
+		// user-space copy). On Linux that's ~15% faster than pwrite; on
+		// Windows every written page joins the process working set and
+		// is reluctant to be reclaimed by the OS, so for a 16M-block
+		// forward replay the WS grows to ~MDBX-file size (~80 GB) and
+		// triggers pagefile thrash on 128 GB hosts. Off by default;
+		// enable explicitly on Linux for the throughput win.
+		mdbxOpts = mdbxOpts.WriteMap()
+		flagsLog = "WriteMap+" + flagsLog
+	}
+	log.Info("MDBX flags", "flags", flagsLog, "dirty_MB", dirtySpaceMB)
 	db, err := mdbxOpts.Open(context.Background())
 	if err != nil {
 		return fmt.Errorf("open mdbx: %w", err)
