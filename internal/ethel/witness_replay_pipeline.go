@@ -60,6 +60,24 @@ type WitnessReplayConfig struct {
 	EndBlock   uint64 // exclusive; 0 means "all available witness items"
 	Workers    int    // 0 → 32
 
+	// NoOutput disables cdat writes. Workers still replay + verify
+	// gas, but no acctcs/storcs/receipts/witness cdat is written.
+	// Useful for throughput smoke tests against an arbitrary block
+	// range without having to pad the output freezer to startBlock.
+	NoOutput bool
+
+	// SkipVerify disables gas verification. Use when measuring raw
+	// pipeline throughput against a witness that may have been
+	// recorded by a different ProcessBlock version (state-read order
+	// drift produces gas mismatches that aren't a framework bug).
+	SkipVerify bool
+
+	// ContinueOnError lets the pipeline keep replaying past a per-block
+	// failure (logged + counted). Throughput measurement against a
+	// possibly-stale witness needs this; production runs should leave
+	// it false so any divergence halts immediately.
+	ContinueOnError bool
+
 	ChainCfg *params.ChainConfig
 	Engine   consensus.Engine
 }
@@ -132,19 +150,22 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		return fmt.Errorf("witnessreplay: start %d >= end %d", cfg.StartBlock, end)
 	}
 
-	// 3. Open output freezer (for cdat writes).
-	outF, err := freezer.New(cfg.OutputPath, 0)
-	if err != nil {
-		return fmt.Errorf("open output freezer: %w", err)
-	}
-	defer outF.Close()
+	// 3. Open output freezer (for cdat writes), unless caller opted out.
+	var batcher *outputBatcher
+	if !cfg.NoOutput {
+		outF, errOut := freezer.New(cfg.OutputPath, 0)
+		if errOut != nil {
+			return fmt.Errorf("open output freezer: %w", errOut)
+		}
+		defer outF.Close()
 
-	batcher, err := newOutputBatcher(outF)
-	if err != nil {
-		return fmt.Errorf("new output batcher: %w", err)
-	}
-	if err := batcher.alignOnResume(cfg.StartBlock, false); err != nil {
-		return fmt.Errorf("align on resume: %w", err)
+		batcher, err = newOutputBatcher(outF)
+		if err != nil {
+			return fmt.Errorf("new output batcher: %w", err)
+		}
+		if err := batcher.alignOnResume(cfg.StartBlock, false); err != nil {
+			return fmt.Errorf("align on resume: %w", err)
+		}
 	}
 
 	// 4. Wire up channels and worker pool.
@@ -158,7 +179,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			runWitnessWorker(ctx, id, blockCh, resultCh, codeDB, cfg.ChainCfg, cfg.Engine)
+			runWitnessWorker(ctx, id, blockCh, resultCh, codeDB, cfg.ChainCfg, cfg.Engine, cfg.SkipVerify)
 		}(i)
 	}
 
@@ -179,6 +200,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	}
 	t0 := time.Now()
 	lastLog := t0
+	var failed uint64
 
 	go func() {
 		// Wait for workers, then close result channel so aggregator can exit.
@@ -188,8 +210,13 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 
 	for r := range resultCh {
 		if r.Err != nil {
-			cancel()
-			return fmt.Errorf("witnessreplay: %w", r.Err)
+			if !cfg.ContinueOnError {
+				cancel()
+				return fmt.Errorf("witnessreplay: %w", r.Err)
+			}
+			failed++
+			// Treat as empty so aggregator's sequential counter advances.
+			r = WitnessResult{BlockNum: r.BlockNum}
 		}
 		if err := agg.absorb(r); err != nil {
 			cancel()
@@ -213,21 +240,26 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	}
 
 	// 7. Final flush.
-	if err := agg.batcher.flushAll(); err != nil {
-		return fmt.Errorf("final flushAll: %w", err)
+	if agg.batcher != nil {
+		if err := agg.batcher.flushAll(); err != nil {
+			return fmt.Errorf("final flushAll: %w", err)
+		}
+		if err := agg.batcher.sync(); err != nil {
+			return fmt.Errorf("final sync: %w", err)
+		}
 	}
-	if err := agg.batcher.sync(); err != nil {
-		return fmt.Errorf("final sync: %w", err)
-	}
+	elapsed := time.Since(t0)
 	log.Info("WitnessReplay complete",
 		"blocks", agg.next-cfg.StartBlock,
-		"elapsed", time.Since(t0).Truncate(time.Second))
+		"failed", failed,
+		"elapsed", elapsed.Truncate(time.Second),
+		"blk/s", fmt.Sprintf("%.0f", float64(agg.next-cfg.StartBlock)/elapsed.Seconds()))
 	return nil
 }
 
 // absorb takes a worker result, places it in the pending map, then
 // drains pending entries in block order, writing each to the
-// outputBatcher.
+// outputBatcher (skipped when batcher is nil — NoOutput mode).
 func (a *witnessAggregateState) absorb(r WitnessResult) error {
 	a.pending[r.BlockNum] = r
 	for {
@@ -235,24 +267,24 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 		if !ok {
 			return nil
 		}
-		if err := a.batcher.addEntry(freezer.TableReceipts, "c", res.ReceiptBytes); err != nil {
-			return fmt.Errorf("addEntry receipts block %d: %w", res.BlockNum, err)
-		}
-		if err := a.batcher.addEntry(freezer.TableAccountChanges, "c", res.AcctCSBytes); err != nil {
-			return fmt.Errorf("addEntry acctcs block %d: %w", res.BlockNum, err)
-		}
-		if err := a.batcher.addEntry(freezer.TableStorageChanges, "c", res.StoCSBytes); err != nil {
-			return fmt.Errorf("addEntry storcs block %d: %w", res.BlockNum, err)
-		}
-		// Witness is passthrough (we read it as input, write it as
-		// output unchanged — keeps the output dir self-contained).
-		if len(res.WitnessBytes) > 0 {
-			if err := a.batcher.addEntry(freezer.TableBlockWitness, "c", res.WitnessBytes); err != nil {
-				return fmt.Errorf("addEntry witness block %d: %w", res.BlockNum, err)
+		if a.batcher != nil {
+			if err := a.batcher.addEntry(freezer.TableReceipts, "c", res.ReceiptBytes); err != nil {
+				return fmt.Errorf("addEntry receipts block %d: %w", res.BlockNum, err)
 			}
-		}
-		if _, err := a.batcher.flushFullBatches(); err != nil {
-			return fmt.Errorf("flushFullBatches block %d: %w", res.BlockNum, err)
+			if err := a.batcher.addEntry(freezer.TableAccountChanges, "c", res.AcctCSBytes); err != nil {
+				return fmt.Errorf("addEntry acctcs block %d: %w", res.BlockNum, err)
+			}
+			if err := a.batcher.addEntry(freezer.TableStorageChanges, "c", res.StoCSBytes); err != nil {
+				return fmt.Errorf("addEntry storcs block %d: %w", res.BlockNum, err)
+			}
+			if len(res.WitnessBytes) > 0 {
+				if err := a.batcher.addEntry(freezer.TableBlockWitness, "c", res.WitnessBytes); err != nil {
+					return fmt.Errorf("addEntry witness block %d: %w", res.BlockNum, err)
+				}
+			}
+			if _, err := a.batcher.flushFullBatches(); err != nil {
+				return fmt.Errorf("flushFullBatches block %d: %w", res.BlockNum, err)
+			}
 		}
 		delete(a.pending, a.next)
 		a.next++

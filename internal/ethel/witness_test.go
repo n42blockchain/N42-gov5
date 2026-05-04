@@ -1,6 +1,7 @@
 package ethel
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -33,62 +34,95 @@ func (m *mockReader) ReadAccountCodeSize(types.Address, types.Hash) (int, error)
 
 var _ state.StateReader = (*mockReader)(nil)
 
-func TestWitnessStream(t *testing.T) {
+// TestWitnessV2Format verifies the sorted-map wire format: a version
+// byte, then a varint-counted list of (addr, encoded-account) pairs in
+// ascending addr order, then a varint-counted list of
+// (addr, slot, raw-value) triples in ascending (addr, slot) order. Each
+// entry's value carries an explicit varint length so deletions/empty
+// reads are encoded as len=0 in-place. Order of recording is irrelevant.
+func TestWitnessV2Format(t *testing.T) {
 	w := NewWitnessStateReader(&mockReader{})
 
-	// Access absent account → [0x00]
-	w.ReadAccountData(types.Address{0x22})
-	// Access present account → [len][V2 data...]
-	w.ReadAccountData(types.Address{0x11})
-	// Access absent storage → [0x00]
-	w.ReadAccountStorage(types.Address{0x11}, &types.Hash{0x99})
-	// Access present storage → [len][value...]
-	w.ReadAccountStorage(types.Address{0x11}, &types.Hash{0x01})
-	// Code read → NOT recorded
-	w.ReadAccountCode(types.Address{0x11}, types.Hash{})
+	// Record reads in arbitrary order — the encoded blob must come out
+	// sorted regardless.
+	w.ReadAccountStorage(types.Address{0x11}, &types.Hash{0x99}) // absent
+	w.ReadAccountStorage(types.Address{0x11}, &types.Hash{0x01}) // present
+	w.ReadAccountData(types.Address{0x22})                       // absent
+	w.ReadAccountData(types.Address{0x11})                       // present
+	w.ReadAccountCode(types.Address{0x11}, types.Hash{})         // not recorded
 
 	data := w.Encode()
 
-	// Parse stream
-	pos := 0
-	// Entry 0: absent account
-	if data[pos] != 0 {
-		t.Fatalf("entry 0: want len=0, got %d", data[pos])
+	if len(data) == 0 || data[0] != witnessFormatV2 {
+		t.Fatalf("missing/wrong version byte: %x", data[:1])
 	}
-	pos++
+	pos := 1
 
-	// Entry 1: present account
-	accLen := int(data[pos])
-	pos++
-	if accLen == 0 {
-		t.Fatal("entry 1: want non-zero account")
+	// Account section: 2 entries (0x11..., 0x22... — sorted asc).
+	accCount, n := binary.Uvarint(data[pos:])
+	pos += n
+	if accCount != 2 {
+		t.Fatalf("acc_count: want 2, got %d", accCount)
 	}
-	t.Logf("account V2: %d bytes = %x", accLen, data[pos:pos+accLen])
-	pos += accLen
 
-	// Entry 2: absent storage
-	if data[pos] != 0 {
-		t.Fatalf("entry 2: want len=0, got %d", data[pos])
+	// First account: 0x11... (present, len > 0).
+	if data[pos] != 0x11 {
+		t.Fatalf("first acc addr: want 0x11..., got %x", data[pos:pos+20])
 	}
-	pos++
+	pos += 20
+	encLen, n := binary.Uvarint(data[pos:])
+	pos += n
+	if encLen == 0 {
+		t.Fatal("first account should be present (len > 0)")
+	}
+	pos += int(encLen)
 
-	// Entry 3: present storage [0x42, 0xAB]
-	stoLen := int(data[pos])
-	pos++
-	if stoLen != 2 {
-		t.Fatalf("entry 3: want len=2, got %d", stoLen)
+	// Second account: 0x22... (absent, len == 0).
+	if data[pos] != 0x22 {
+		t.Fatalf("second acc addr: want 0x22..., got %x", data[pos:pos+20])
 	}
-	if data[pos] != 0x42 || data[pos+1] != 0xAB {
-		t.Fatalf("entry 3: want [42 AB], got %x", data[pos:pos+2])
+	pos += 20
+	encLen, n = binary.Uvarint(data[pos:])
+	pos += n
+	if encLen != 0 {
+		t.Fatalf("absent account should have len=0, got %d", encLen)
 	}
-	pos += stoLen
 
-	// Should be at end (code NOT recorded).
+	// Storage section: 2 entries for addr 0x11... — slot 0x01 then 0x99 (sorted asc).
+	stoCount, n := binary.Uvarint(data[pos:])
+	pos += n
+	if stoCount != 2 {
+		t.Fatalf("sto_count: want 2, got %d", stoCount)
+	}
+
+	// First storage entry: addr 0x11..., slot 0x01... (present, [0x42 0xAB]).
+	pos += 20 // addr
+	if data[pos] != 0x01 {
+		t.Fatalf("first sto slot: want 0x01..., got %x", data[pos:pos+32])
+	}
+	pos += 32
+	valLen, n := binary.Uvarint(data[pos:])
+	pos += n
+	if valLen != 2 || data[pos] != 0x42 || data[pos+1] != 0xAB {
+		t.Fatalf("first sto val: want [42 AB] (len=2), got len=%d %x", valLen, data[pos:pos+int(valLen)])
+	}
+	pos += int(valLen)
+
+	// Second storage entry: addr 0x11..., slot 0x99... (absent, len=0).
+	pos += 20
+	if data[pos] != 0x99 {
+		t.Fatalf("second sto slot: want 0x99..., got %x", data[pos:pos+32])
+	}
+	pos += 32
+	valLen, n = binary.Uvarint(data[pos:])
+	pos += n
+	if valLen != 0 {
+		t.Fatalf("absent storage should have len=0, got %d", valLen)
+	}
+
 	if pos != len(data) {
-		t.Errorf("stream has %d extra bytes (code leaked?)", len(data)-pos)
+		t.Errorf("stream has %d unaccounted bytes (code leaked?)", len(data)-pos)
 	}
-
-	t.Logf("Stream: %d bytes, 4 entries, no code ✓", len(data))
 }
 
 func TestWitnessReset(t *testing.T) {
