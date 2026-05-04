@@ -637,25 +637,12 @@ func run(c *cli.Context) error {
 		LifoReclaim().
 		DirtySpace(uint64(datasize.ByteSize(dirtySpaceMB) * datasize.MB)).
 		DBVerbosity(kv.DBVerbosityLvl(2))
-	flagsLog := "LifoReclaim"
-	if !c.Bool("safe-durable") {
-		// SafeNoSync: skip fsync on every commit; safe here because ethel
-		// progress + state commit atomically in the same RwTx, so
-		// resume-from-crash restarts from the last durable checkpoint
-		// without torn state. ~10–15% throughput gain.
+	useWriteMap, useSafeNoSync, flagsLog := selectMDBXFlags(c.Bool("writemap"), c.Bool("safe-durable"))
+	if useSafeNoSync {
 		mdbxOpts = mdbxOpts.SafeNoSync()
-		flagsLog = "SafeNoSync+" + flagsLog
 	}
-	if c.Bool("writemap") {
-		// WriteMap: MDBX writes go directly into the mapped file (no
-		// user-space copy). On Linux that's ~15% faster than pwrite; on
-		// Windows every written page joins the process working set and
-		// is reluctant to be reclaimed by the OS, so for a 16M-block
-		// forward replay the WS grows to ~MDBX-file size (~80 GB) and
-		// triggers pagefile thrash on 128 GB hosts. Off by default;
-		// enable explicitly on Linux for the throughput win.
+	if useWriteMap {
 		mdbxOpts = mdbxOpts.WriteMap()
-		flagsLog = "WriteMap+" + flagsLog
 	}
 	log.Info("MDBX flags", "flags", flagsLog, "dirty_MB", dirtySpaceMB)
 	db, err := mdbxOpts.Open(context.Background())
@@ -799,6 +786,25 @@ func run(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 	return executor.Run(ctx)
+}
+
+// selectMDBXFlags maps the CLI choices to the concrete MDBX flag set
+// applied at env-open time. Pure function; the goal is to pin the
+// default policy in tests so a future "let's flip WriteMap back on"
+// edit lights up the regression that caused the Windows OOM at 16M
+// blocks (mmap'd dirty pages reluctant to be reclaimed by the kernel
+// → WS grew to MDBX-file-size, ~80 GB).
+func selectMDBXFlags(writeMap, safeDurable bool) (useWriteMap, useSafeNoSync bool, label string) {
+	label = "LifoReclaim"
+	useSafeNoSync = !safeDurable
+	if useSafeNoSync {
+		label = "SafeNoSync+" + label
+	}
+	useWriteMap = writeMap
+	if useWriteMap {
+		label = "WriteMap+" + label
+	}
+	return
 }
 
 func runVerifyJournal(c *cli.Context) error {
