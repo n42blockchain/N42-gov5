@@ -78,10 +78,13 @@ func main() {
 		&cli.Uint64Flag{Name: "verify", Usage: "State root verification interval (0=disabled)", Value: 0},
 		&cli.BoolFlag{Name: "skip-errors", Usage: "Log gas mismatches but continue execution"},
 		&cli.BoolFlag{Name: "no-outputs", Usage: "Skip writing output freezer (receipts, senders, witness, etc.)"},
+		&cli.BoolFlag{Name: "no-witness", Usage: "Skip ZK witness recording while still emitting other output freezer entries (receipts, senders, changesets). Removes one wrapper layer + per-state-read slice append from the hot path."},
 		&cli.BoolFlag{Name: "pprof", Usage: "Enable mutex/block profiling for pprof flame graphs"},
 		&cli.StringFlag{Name: "track-addr", Usage: "20-byte address (hex, no 0x) to emit targeted trace logs for"},
-		&cli.BoolFlag{Name: "safe-durable", Usage: "Force MDBX default durability (fsync every commit). Default: off — ethexec uses WriteMap+SafeNoSync since the ethel progress marker + state are committed atomically, so crash recovery resumes from the last durable checkpoint"},
-		&cli.IntFlag{Name: "gogc", Usage: "Go GC target percentage (higher = less frequent GC, more heap). Default 400 for ethexec forward-replay — 2–4x less GC CPU vs the Go default of 100", Value: 400},
+		&cli.BoolFlag{Name: "safe-durable", Usage: "Force MDBX default durability (fsync every commit). Default: off — ethexec uses SafeNoSync since the ethel progress marker + state commit atomically, so crash recovery resumes from the last durable checkpoint"},
+		&cli.BoolFlag{Name: "writemap", Usage: "MDBX WriteMap mode (writes go through mmap instead of pwrite). On Linux this is ~15% faster; on Windows it forces every written page into the resident set, causing working-set growth proportional to MDBX file size (~80 GB at 16M blocks) and pagefile thrash. Default: off.", Value: false},
+		&cli.IntFlag{Name: "gogc", Usage: "Go GC target percentage (higher = less frequent GC, more heap). Default 100 keeps heap close to live size. Larger values (200-400) reduce GC CPU but inflate Private memory by (1+gogc/100)x — at 64 GB LRU and gogc=400 the runtime over-commits 320 GB, triggering pagefile thrash on 128 GB hosts. Pair with --memory-limit-gb to give the runtime a hard ceiling.", Value: 100},
+		&cli.Uint64Flag{Name: "memory-limit-gb", Usage: "Hard upper bound on Go heap (debug.SetMemoryLimit). 0 = no limit. Recommended: physical_RAM * 0.7 (e.g. 90 on 128 GB hosts). Combined with --gogc the runtime adapts: stays at gogc target normally, but tightens GC if heap approaches the limit. Prevents Private-memory blowout that GOGC alone cannot bound.", Value: 0},
 		&cli.Uint64Flag{Name: "dirty-space-mb", Usage: "MDBX dirty page pool size in MB. Larger = fewer forced spills mid-commit; caps at ~commit_interval × per-block dirty size", Value: 2048},
 		&cli.Uint64Flag{Name: "cache-account-gb", Usage: "Account S3-FIFO cache budget (GB)", Value: 4},
 		&cli.Uint64Flag{Name: "cache-storage-gb", Usage: "Storage S3-FIFO cache budget (GB)", Value: 32},
@@ -548,13 +551,33 @@ func run(c *cli.Context) error {
 	skipErrors := c.Bool("skip-errors")
 	noOutputs := c.Bool("no-outputs")
 
-	// Apply GOGC early so Go runtime picks it up for all subsequent
-	// allocations. 400 (vs default 100) roughly 2x heap target between
-	// GC cycles — at our allocation profile (~200–400 MB churn per
-	// commit interval) this cuts GC CPU 60–70% on 128 GB hosts.
+	// Apply GOGC + GOMEMLIMIT early so Go runtime picks them up for all
+	// subsequent allocations. GOGC sets the soft heap target (live × (1 +
+	// gogc/100) before GC), GOMEMLIMIT is a hard upper bound that
+	// tightens GC adaptively as heap approaches it. Use both together:
+	// GOGC for steady-state efficiency, GOMEMLIMIT for OOM safety.
 	if gogc := c.Int("gogc"); gogc > 0 {
 		prev := debug.SetGCPercent(gogc)
 		log.Info("Go GC target set", "gogc", gogc, "prev", prev)
+	}
+	if memLimitGB := c.Uint64("memory-limit-gb"); memLimitGB > 0 {
+		limit := int64(memLimitGB) << 30
+		debug.SetMemoryLimit(limit)
+		log.Info("Go memory limit set", "limit_GB", memLimitGB)
+	}
+	// Sanity-check cache budget vs effective heap target, log so the user
+	// sees what they signed up for. Heap peak ≈ cache_total × (1 + gogc/100)
+	// + ~2 GB runtime overhead. On a 128 GB host with 30-50 GB MDBX mmap
+	// allow for, target peak ≤ 80 GB to leave OS headroom.
+	{
+		cacheTotal := c.Uint64("cache-account-gb") + c.Uint64("cache-storage-gb") + c.Uint64("cache-code-gb")
+		gogc := c.Int("gogc")
+		heapPeak := float64(cacheTotal) * (1.0 + float64(gogc)/100.0)
+		log.Info("Memory budget",
+			"cache_GB", cacheTotal,
+			"gogc", gogc,
+			"heap_peak_GB", fmt.Sprintf("%.0f", heapPeak),
+			"memory_limit_GB", c.Uint64("memory-limit-gb"))
 	}
 
 	// Enable JUMPDEST analysis cache (Aptos AIP-107 style). Without this
@@ -614,18 +637,14 @@ func run(c *cli.Context) error {
 		LifoReclaim().
 		DirtySpace(uint64(datasize.ByteSize(dirtySpaceMB) * datasize.MB)).
 		DBVerbosity(kv.DBVerbosityLvl(2))
-	if !c.Bool("safe-durable") {
-		// WriteMap: MDBX writes directly into the mapped file (no user-space
-		// copy), matching Reth's default. SafeNoSync: skip fsync on every
-		// commit; safe here because ethel progress + state commit atomically
-		// in the same RwTx, so resume-from-crash restarts from the last
-		// durable checkpoint without torn state. Expect 15–25% throughput
-		// gain on write-heavy forward-replay.
-		mdbxOpts = mdbxOpts.WriteMap().SafeNoSync()
-		log.Info("MDBX fast mode enabled", "flags", "WriteMap+SafeNoSync+LifoReclaim", "dirty_MB", dirtySpaceMB)
-	} else {
-		log.Info("MDBX fast mode OFF — durable commits", "flags", "LifoReclaim", "dirty_MB", dirtySpaceMB)
+	useWriteMap, useSafeNoSync, flagsLog := selectMDBXFlags(c.Bool("writemap"), c.Bool("safe-durable"))
+	if useSafeNoSync {
+		mdbxOpts = mdbxOpts.SafeNoSync()
 	}
+	if useWriteMap {
+		mdbxOpts = mdbxOpts.WriteMap()
+	}
+	log.Info("MDBX flags", "flags", flagsLog, "dirty_MB", dirtySpaceMB)
 	db, err := mdbxOpts.Open(context.Background())
 	if err != nil {
 		return fmt.Errorf("open mdbx: %w", err)
@@ -682,6 +701,7 @@ func run(c *cli.Context) error {
 		VerifyInterval:  verifyInterval,
 		SkipErrors:      skipErrors,
 		NoOutputs:       noOutputs,
+		NoWitness:       c.Bool("no-witness"),
 		ParallelEVM:         c.Bool("parallel-evm"),
 		ParallelWorkers:     c.Int("parallel-workers"),
 		TimingInterval:      c.Int("timing-interval"),
@@ -766,6 +786,25 @@ func run(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 	return executor.Run(ctx)
+}
+
+// selectMDBXFlags maps the CLI choices to the concrete MDBX flag set
+// applied at env-open time. Pure function; the goal is to pin the
+// default policy in tests so a future "let's flip WriteMap back on"
+// edit lights up the regression that caused the Windows OOM at 16M
+// blocks (mmap'd dirty pages reluctant to be reclaimed by the kernel
+// → WS grew to MDBX-file-size, ~80 GB).
+func selectMDBXFlags(writeMap, safeDurable bool) (useWriteMap, useSafeNoSync bool, label string) {
+	label = "LifoReclaim"
+	useSafeNoSync = !safeDurable
+	if useSafeNoSync {
+		label = "SafeNoSync+" + label
+	}
+	useWriteMap = writeMap
+	if useWriteMap {
+		label = "WriteMap+" + label
+	}
+	return
 }
 
 func runVerifyJournal(c *cli.Context) error {
