@@ -14,91 +14,64 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 )
 
-// TestWitnessV2_RoundTrip records a few reads via WitnessStateReader,
-// encodes to the v2 sorted-map blob, decodes via WitnessReplayReader,
-// and confirms the read values match — order of recording is shuffled
-// vs order of replay reads to prove key-based lookup is order-
-// independent.
-func TestWitnessV2_RoundTrip(t *testing.T) {
-	addrA := types.HexToAddress("0x000000000000000000000000000000000000a000")
-	addrB := types.HexToAddress("0x000000000000000000000000000000000000b000")
-	slot1 := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000001")
-	slot2 := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000002")
+// TestWitnessReplayReader_StreamRoundtrip pins the on-wire format
+// invariants the parallel replayer depends on. Same encoding as the
+// existing WitnessStateReader writer (witness.go), reversed.
+func TestWitnessReplayReader_StreamRoundtrip(t *testing.T) {
+	addr := types.HexToAddress("0x1111111111111111111111111111111111111111")
+	slot := types.HexToHash("0x000000000000000000000000000000000000000000000000000000000000aaaa")
 
-	src := &fakeReader{
-		accounts: map[types.Address]*account.StateAccount{
-			addrA: {Initialised: true, Nonce: 7},
-		},
-		storage: map[types.Address]map[types.Hash][]byte{
-			addrA: {slot1: {0x42}},
-			addrB: {slot2: {0xab, 0xcd}},
-		},
-	}
-	src.accounts[addrA].Balance.SetUint64(123)
+	acc := &account.StateAccount{Initialised: true, Nonce: 7}
+	acc.Balance.SetUint64(100)
+	encodedAcct := acc.MarshalV2()
+	stream := []byte{}
+	stream = append(stream, byte(len(encodedAcct)))
+	stream = append(stream, encodedAcct...)
+	stream = append(stream, byte(1))
+	stream = append(stream, 0x42)
 
-	w := NewWitnessStateReader(src)
-	// Recording order: B's slot first, then A's account, then A's slot,
-	// then absent account, then absent slot. Order is intentionally not
-	// the natural sort order.
-	w.ReadAccountStorage(addrB, &slot2)
-	w.ReadAccountData(addrA)
-	w.ReadAccountStorage(addrA, &slot1)
-	w.ReadAccountData(addrB)                          // absent
-	w.ReadAccountStorage(addrA, &types.Hash{0xff})    // absent
+	r := NewWitnessReplayReader(stream, nil)
 
-	blob := w.Encode()
-	r, err := NewWitnessReplayReaderStrict(blob, nil)
+	got, err := r.ReadAccountData(addr)
 	if err != nil {
-		t.Fatalf("decode: %v", err)
+		t.Fatal(err)
+	}
+	if got == nil || got.Nonce != 7 || got.Balance.Uint64() != 100 {
+		t.Fatalf("account roundtrip lost data: %+v", got)
 	}
 
-	// Replay reads in *different* order than recording.
-	gotA, _ := r.ReadAccountData(addrA)
-	if gotA == nil || gotA.Nonce != 7 || gotA.Balance.Uint64() != 123 {
-		t.Fatalf("addrA roundtrip lost data: %+v", gotA)
+	val, err := r.ReadAccountStorage(addr, &slot)
+	if err != nil {
+		t.Fatal(err)
 	}
-	gotB, _ := r.ReadAccountData(addrB)
-	if gotB != nil {
-		t.Fatalf("addrB should be absent, got %+v", gotB)
+	if len(val) != 1 || val[0] != 0x42 {
+		t.Fatalf("storage roundtrip got %x want 42", val)
 	}
-	v1, _ := r.ReadAccountStorage(addrA, &slot1)
-	if len(v1) != 1 || v1[0] != 0x42 {
-		t.Fatalf("addrA/slot1 roundtrip: got %x", v1)
-	}
-	v2, _ := r.ReadAccountStorage(addrB, &slot2)
-	if len(v2) != 2 || v2[0] != 0xab || v2[1] != 0xcd {
-		t.Fatalf("addrB/slot2 roundtrip: got %x", v2)
-	}
-	vAbsent, _ := r.ReadAccountStorage(addrA, &types.Hash{0xff})
-	if vAbsent != nil {
-		t.Fatalf("absent slot should yield nil, got %x", vAbsent)
+
+	if v, err := r.ReadAccountStorage(addr, &slot); err != nil || v != nil {
+		t.Fatalf("past-end read should return (nil, nil): got (%x, %v)", v, err)
 	}
 }
 
-// TestWitnessV2_EmptyEncodesToNil confirms zero-recording yields a
-// zero-length blob (so the freezer entry stays tiny for empty blocks).
-func TestWitnessV2_EmptyEncodesToNil(t *testing.T) {
-	w := NewWitnessStateReader(&fakeReader{})
-	if got := w.Encode(); len(got) != 0 {
-		t.Fatalf("empty encode should be 0 bytes, got %d", len(got))
-	}
-	r, err := NewWitnessReplayReaderStrict(nil, nil)
-	if err != nil {
-		t.Fatalf("nil-blob decode: %v", err)
-	}
-	got, _ := r.ReadAccountData(types.Address{0xfe})
-	if got != nil {
-		t.Fatalf("absent in empty witness, got %+v", got)
-	}
-}
+// TestWitnessReplayReader_AbsentEntries pins zero-length encoding for
+// "absent / empty" reads. A length-0 byte means "this read returned
+// nil", keeping the stream position synchronised with the EVM access
+// pattern.
+func TestWitnessReplayReader_AbsentEntries(t *testing.T) {
+	stream := []byte{0, 0, 0}
+	r := NewWitnessReplayReader(stream, nil)
 
-// TestWitnessV2_RejectsUnknownVersion pins the upgrade contract: any
-// unknown version byte fails decoding fast, so a stale binary doesn't
-// silently misinterpret a newer-format blob.
-func TestWitnessV2_RejectsUnknownVersion(t *testing.T) {
-	bogus := []byte{99, 0, 0}
-	if _, err := NewWitnessReplayReaderStrict(bogus, nil); err == nil {
-		t.Fatal("decode of unknown-version blob should fail")
+	addr := types.Address{}
+	slot := types.Hash{}
+
+	if a, _ := r.ReadAccountData(addr); a != nil {
+		t.Fatalf("len=0 read should yield nil account, got %+v", a)
+	}
+	if v, _ := r.ReadAccountStorage(addr, &slot); v != nil {
+		t.Fatalf("len=0 read should yield nil storage, got %x", v)
+	}
+	if a, _ := r.ReadAccountData(addr); a != nil {
+		t.Fatalf("third len=0 read should still yield nil, got %+v", a)
 	}
 }
 
@@ -130,18 +103,29 @@ func TestWitnessReplayReader_CodeFromMDBX(t *testing.T) {
 	defer roTx.Rollback()
 
 	r := NewWitnessReplayReader(nil, roTx)
-	got, err := r.ReadAccountCode(types.Address{}, codeHash)
+	addr := types.Address{}
+
+	got, err := r.ReadAccountCode(addr, codeHash)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) != string(bytecode) {
 		t.Fatalf("code roundtrip got %x want %x", got, bytecode)
 	}
+
+	sz, err := r.ReadAccountCodeSize(addr, codeHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sz != len(bytecode) {
+		t.Fatalf("size got %d want %d", sz, len(bytecode))
+	}
 }
 
 // TestWitnessCapturingWriter_RecordsBothOldAndNew pins the contract
 // the parallel worker depends on: every UpdateAccountData / Storage
-// write records BOTH (old, new) values.
+// write records BOTH (old, new) values — old via inner ChangeSetWriter,
+// new via private maps fed to EncodeAccount/StorageChanges.
 func TestWitnessCapturingWriter_RecordsBothOldAndNew(t *testing.T) {
 	addr := types.HexToAddress("0x2222222222222222222222222222222222222222")
 	slot := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000005")
@@ -155,6 +139,7 @@ func TestWitnessCapturingWriter_RecordsBothOldAndNew(t *testing.T) {
 	if err := w.UpdateAccountData(addr, old, new1); err != nil {
 		t.Fatal(err)
 	}
+
 	cs, err := w.ChangeSetWriter().GetAccountChanges()
 	if err != nil {
 		t.Fatal(err)
@@ -183,20 +168,26 @@ func TestWitnessCapturingWriter_RecordsBothOldAndNew(t *testing.T) {
 	}
 }
 
-// fakeReader is a minimal in-memory state.StateReader for tests.
-type fakeReader struct {
-	accounts map[types.Address]*account.StateAccount
-	storage  map[types.Address]map[types.Hash][]byte
-}
+// TestWitnessCapturingWriter_DeleteAccount pins that DeleteAccount
+// records a nil new-value (so EncodeAccountChanges emits a deletion
+// marker), without disturbing the old-value capture path.
+func TestWitnessCapturingWriter_DeleteAccount(t *testing.T) {
+	addr := types.HexToAddress("0x3333333333333333333333333333333333333333")
+	old := &account.StateAccount{Initialised: true, Nonce: 9}
+	old.Balance.SetUint64(123)
 
-func (f *fakeReader) ReadAccountData(addr types.Address) (*account.StateAccount, error) {
-	return f.accounts[addr], nil
-}
-func (f *fakeReader) ReadAccountStorage(addr types.Address, key *types.Hash) ([]byte, error) {
-	if slots, ok := f.storage[addr]; ok {
-		return slots[*key], nil
+	w := NewWitnessCapturingWriter()
+	if err := w.DeleteAccount(addr, old); err != nil {
+		t.Fatal(err)
 	}
-	return nil, nil
+	if v := w.AccountNewValue(addr); v != nil {
+		t.Fatalf("DeleteAccount must record nil new-value, got %x", v)
+	}
+	cs, err := w.ChangeSetWriter().GetAccountChanges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Len() != 1 {
+		t.Fatalf("DeleteAccount must record a change, got %d", cs.Len())
+	}
 }
-func (f *fakeReader) ReadAccountCode(types.Address, types.Hash) ([]byte, error) { return nil, nil }
-func (f *fakeReader) ReadAccountCodeSize(types.Address, types.Hash) (int, error) { return 0, nil }
