@@ -197,19 +197,49 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		}(i)
 	}
 
-	// 5. Reader goroutine.
+	// 5a. Genesis (block 0): handled inline before the worker pool runs
+	// so we don't need to thread pre-encoded bytes through every worker.
+	// The user's chaindata MDBX is post-replay so we can't iterate it
+	// for genesis state; use the embedded mainnet alloc JSON via memdb.
+	feedStart := cfg.StartBlock
+	if cfg.StartBlock == 0 {
+		acctcsBytes, storcsBytes, err := encodeEthMainnetGenesis()
+		if err != nil {
+			return fmt.Errorf("genesis encode: %w", err)
+		}
+		if batcher != nil {
+			if err := batcher.addEntry(freezer.TableReceipts, "c", EncodeReceiptsCompact(nil)); err != nil {
+				return fmt.Errorf("addEntry receipts block 0: %w", err)
+			}
+			if err := batcher.addEntry(freezer.TableAccountChanges, "c", acctcsBytes); err != nil {
+				return fmt.Errorf("addEntry acctcs block 0: %w", err)
+			}
+			if err := batcher.addEntry(freezer.TableStorageChanges, "c", storcsBytes); err != nil {
+				return fmt.Errorf("addEntry storcs block 0: %w", err)
+			}
+			if err := batcher.addEntry(freezer.TableBlockWitness, "c", nil); err != nil {
+				return fmt.Errorf("addEntry witness block 0: %w", err)
+			}
+		}
+		log.Info("Genesis encoded",
+			"acctcs", len(acctcsBytes),
+			"storcs", len(storcsBytes))
+		feedStart = 1
+	}
+
+	// 5b. Reader goroutine (blocks 1..end, or feedStart..end).
 	readerErr := make(chan error, 1)
 	go func() {
 		defer close(blockCh)
 		readerErr <- feedBlocks(ctx, headersBodies, witnessTbl, sendersTbl,
-			cfg.ChainCfg, cfg.StartBlock, end, blockCh)
+			cfg.ChainCfg, feedStart, end, blockCh)
 	}()
 
 	// 6. Aggregator (this goroutine).
 	agg := &witnessAggregateState{
 		batcher: batcher,
 		pending: make(map[uint64]WitnessResult),
-		next:    cfg.StartBlock,
+		next:    feedStart,
 		end:     end,
 	}
 	target := end - cfg.StartBlock
