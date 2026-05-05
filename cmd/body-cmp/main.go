@@ -35,7 +35,7 @@ func main() {
 	}
 
 	// Geth side.
-	gf, err := freezer.New(*gethDir, 0)
+	gf, err := freezer.NewReadOnly(*gethDir)
 	if err != nil {
 		die("open geth: %v", err)
 	}

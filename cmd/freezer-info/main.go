@@ -76,7 +76,7 @@ func main() {
 
 	// Geth-style probe via freezer.New (for ancient dirs).
 	if !strings.HasSuffix(*dir, "freezer") {
-		gf, err := freezer.New(*dir, 0)
+		gf, err := freezer.NewReadOnly(*dir)
 		if err == nil {
 			fmt.Printf("\n  geth-style freezer.Frozen() = %d\n", gf.Frozen())
 			gf.Close()

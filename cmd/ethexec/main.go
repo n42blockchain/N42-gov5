@@ -615,8 +615,13 @@ func run(c *cli.Context) error {
 	// best-effort: if headers.cidx isn't there, freezer.New still opens
 	// available extended tables and returns; we just use compact readers
 	// for headers/bodies.
-	log.Info("Opening input data", "path", ancientPath)
-	f, err := freezer.New(ancientPath, 0)
+	// HARD RULE: --ancient is INPUT data — open read-only. Even if the
+	// dir is N42's own format, RW open triggers freezer.New's table-
+	// alignment truncate path, which wiped a 144 MB senders.cidx down
+	// to 24 KB on 2026-05-05. Anything that needs to write goes to
+	// --datadir, never --ancient.
+	log.Info("Opening input data (read-only)", "path", ancientPath)
+	f, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open freezer: %w", err)
 	}
@@ -866,7 +871,7 @@ func runVerifyJournal(c *cli.Context) error {
 	endBlock := c.Uint64("end")
 
 	// Open Geth input freezer (headers).
-	inputF, err := freezer.New(ancientPath, 0)
+	inputF, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open input freezer: %w", err)
 	}
@@ -1280,7 +1285,7 @@ func runTxLookupBuild(c *cli.Context) error {
 	if ancientPath == "" {
 		return fmt.Errorf("--ancient or --erigon-db is required")
 	}
-	f, err := freezer.New(ancientPath, 0)
+	f, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open input freezer: %w", err)
 	}
@@ -1299,7 +1304,7 @@ func runBodyCompact(c *cli.Context) error {
 	ancientPath := c.String("ancient")
 	datadir := c.String("datadir")
 
-	f, err := freezer.New(ancientPath, 0)
+	f, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open input freezer: %w", err)
 	}
@@ -1318,7 +1323,7 @@ func runHeaderCompact(c *cli.Context) error {
 	ancientPath := c.String("ancient")
 	datadir := c.String("datadir")
 
-	f, err := freezer.New(ancientPath, 0)
+	f, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open input freezer: %w", err)
 	}
@@ -1352,7 +1357,7 @@ func runReceiptCopy(c *cli.Context) error {
 	workers := c.Int("workers")
 
 	// Open Geth input freezer (read-only).
-	f, err := freezer.New(ancientPath, 0)
+	f, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open input freezer: %w", err)
 	}
@@ -1418,7 +1423,7 @@ func runSenderRecovery(c *cli.Context) error {
 		return fmt.Errorf("--ancient or --erigon-db is required")
 	}
 	workers := c.Int("workers")
-	f, err := freezer.New(ancientPath, 0)
+	f, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open input freezer: %w", err)
 	}
@@ -1524,7 +1529,7 @@ func runRebuildState(c *cli.Context) error {
 	defer cancel()
 
 	// Open Geth input freezer up front for periodic verify and final verify.
-	inputF, err := freezer.New(ancientPath, 0)
+	inputF, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open geth ancient: %w", err)
 	}
@@ -1581,7 +1586,7 @@ func runVerifyRoot(c *cli.Context) error {
 	}
 	defer db.Close()
 
-	inputF, err := freezer.New(ancientPath, 0)
+	inputF, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open geth ancient: %w", err)
 	}
@@ -1619,7 +1624,7 @@ func runVerifyIncremental(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 
-	inputF, err := freezer.New(ancientPath, 0)
+	inputF, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open geth ancient: %w", err)
 	}
@@ -1668,7 +1673,7 @@ func runUnwind(c *cli.Context) error {
 	}
 	defer outFreezer.Close()
 
-	inputF, err := freezer.New(ancientPath, 0)
+	inputF, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open geth ancient: %w", err)
 	}
@@ -1934,7 +1939,7 @@ func runVerifyCSRoot(c *cli.Context) error {
 	defer cancel()
 
 	// 2. Open Geth ancient for header verification.
-	inputF, err := freezer.New(ancientPath, 0)
+	inputF, err := freezer.NewReadOnly(ancientPath)
 	if err != nil {
 		return fmt.Errorf("open geth ancient: %w", err)
 	}
