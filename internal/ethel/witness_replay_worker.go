@@ -120,7 +120,12 @@ func replayWitnessBlock(
 			return res
 		}
 		if !mode.NoOutput {
+			// Emit empty entries so all four output tables stay aligned
+			// in the cdat 64-batch index. Witness comes from job.Witness
+			// (already set above) — may itself be empty for txless blocks.
 			res.ReceiptBytes = EncodeReceiptsCompact(nil)
+			res.AcctCSBytes = []byte{}
+			res.StoCSBytes = []byte{}
 		}
 		return res
 	}
