@@ -47,6 +47,14 @@ type WitnessResult struct {
 	Err          error
 }
 
+// ReplayMode bundles the per-worker switches that control whether to
+// verify gas / emit output cdat bytes. Bundling avoids parameter
+// sprawl through runWitnessWorker → replayWitnessBlock.
+type ReplayMode struct {
+	SkipVerify bool
+	NoOutput   bool
+}
+
 // runWitnessWorker pulls jobs from blockCh, replays each, pushes
 // WitnessResult to resultCh. Returns when blockCh closes or ctx
 // cancels.
@@ -58,8 +66,7 @@ func runWitnessWorker(
 	codeDB kv.RoDB,
 	chainCfg *params.ChainConfig,
 	engine consensus.Engine,
-	skipVerify bool,
-	noOutput bool,
+	mode ReplayMode,
 ) {
 	codeTx, err := codeDB.BeginRo(ctx)
 	if err != nil {
@@ -77,7 +84,7 @@ func runWitnessWorker(
 			return
 		default:
 		}
-		res := replayWitnessBlock(job, codeTx, chainCfg, engine, skipVerify, noOutput)
+		res := replayWitnessBlock(job, codeTx, chainCfg, engine, mode)
 		select {
 		case resultCh <- res:
 		case <-ctx.Done():
@@ -93,8 +100,7 @@ func replayWitnessBlock(
 	codeTx kv.Tx,
 	chainCfg *params.ChainConfig,
 	engine consensus.Engine,
-	skipVerify bool,
-	noOutput bool,
+	mode ReplayMode,
 ) WitnessResult {
 	res := WitnessResult{BlockNum: job.BlockNum, WitnessBytes: job.Witness}
 
@@ -104,7 +110,7 @@ func replayWitnessBlock(
 				job.BlockNum, job.Header.GasUsed)
 			return res
 		}
-		if !noOutput {
+		if !mode.NoOutput {
 			res.ReceiptBytes = EncodeReceiptsCompact(nil)
 		}
 		return res
@@ -113,13 +119,9 @@ func replayWitnessBlock(
 	reader := NewWitnessReplayReader(job.Witness, codeTx)
 	ibs := state.New(reader)
 
-	// Skip the WitnessCapturingWriter (and its ChangeSetWriter) when
-	// running pure-throughput smokes — CommitBlock + GetAccountChanges
-	// + GetStorageChanges + Encode* are ~12% of CPU per profile and
-	// pointless when we're discarding the output.
 	var writer *WitnessCapturingWriter
 	var stateWriter state.WriterWithChangeSets
-	if noOutput {
+	if mode.NoOutput {
 		stateWriter = state.NewNoopWriter()
 	} else {
 		writer = NewWitnessCapturingWriter()
@@ -141,13 +143,13 @@ func replayWitnessBlock(
 		return res
 	}
 
-	if !skipVerify && result.GasUsed != job.Header.GasUsed {
+	if !mode.SkipVerify && result.GasUsed != job.Header.GasUsed {
 		res.Err = fmt.Errorf("block %d: gas mismatch: got %d want %d",
 			job.BlockNum, result.GasUsed, job.Header.GasUsed)
 		return res
 	}
 
-	if noOutput {
+	if mode.NoOutput {
 		return res
 	}
 

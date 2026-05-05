@@ -146,14 +146,15 @@ func ProcessBlock(
 	noop := state.NewNoopWriter()
 
 	// One EVM per block, reused across all txs via EVM.Reset(txCtx, ibs).
-	// Block context is constant within a block (same header, same
-	// blockHashFunc, same engine), so we only need to rebuild the txCtx
-	// inside applyTransaction. Saves NewEVM + NewEVMInterpreter +
-	// chainConfig.RulesWithTimestamp per tx (profile: ~1.9% of CPU).
-	// Tracer-attached path still uses ApplyTransaction (per-tx EVM)
-	// because each tx may have a different tracer attached.
-	blockCtxShared := iinternal.NewEVMBlockContext(header, blockHashFunc, engine, chainCfg, nil)
-	sharedEVM := vm2.NewEVM(blockCtxShared, evmtypes.TxContext{}, ibs, chainCfg, cfg)
+	// Block context is constant within a block, so we only rebuild txCtx
+	// inside applyTransaction. Tracer-attached txs still take a per-tx
+	// EVM because vm.Config is captured at construction time. Lazy-init:
+	// empty blocks skip the alloc.
+	var sharedEVM *vm2.EVM
+	if len(txs) > 0 {
+		blockCtxShared := iinternal.NewEVMBlockContext(header, blockHashFunc, engine, chainCfg, nil)
+		sharedEVM = vm2.NewEVM(blockCtxShared, evmtypes.TxContext{}, ibs, chainCfg, cfg)
+	}
 
 	currentBlock := header.Number.Uint64()
 	// Skip-non-target only when N42_TRACE_BLOCK is explicitly set AND matches.

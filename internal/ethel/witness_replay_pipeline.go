@@ -192,7 +192,8 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			runWitnessWorker(ctx, id, blockCh, resultCh, codeDB, cfg.ChainCfg, cfg.Engine, cfg.SkipVerify, cfg.NoOutput)
+			runWitnessWorker(ctx, id, blockCh, resultCh, codeDB, cfg.ChainCfg, cfg.Engine,
+				ReplayMode{SkipVerify: cfg.SkipVerify, NoOutput: cfg.NoOutput})
 		}(i)
 	}
 
@@ -404,12 +405,17 @@ func trivialBlockHashFn(uint64) types.Hash { return types.Hash{} }
 // makeFreezerBlockHash builds a BLOCKHASH resolver bound to a specific
 // current block. EVM BLOCKHASH semantics: returns the hash of block n
 // if (currentBlock - n) is in [1, 256], else zero. Concurrent reads
-// against an immutable freezer are safe.
+// against an immutable freezer are safe. The closure caches resolved
+// hashes so a contract calling BLOCKHASH(n) repeatedly within a block
+// pays the freezer fetch + RLP decode + Keccak256 only once per n.
 func makeFreezerBlockHash(headersBodies *freezer.Freezer, currentBlock uint64) func(uint64) types.Hash {
+	var cache map[uint64]types.Hash
 	return func(n uint64) types.Hash {
-		// Out-of-window per yellow paper §H.2 BLOCKHASH spec.
 		if n >= currentBlock || currentBlock-n > 256 {
 			return types.Hash{}
+		}
+		if h, ok := cache[n]; ok {
+			return h
 		}
 		data, err := headersBodies.Ancient(freezer.TableHeaders, n)
 		if err != nil {
@@ -419,7 +425,12 @@ func makeFreezerBlockHash(headersBodies *freezer.Freezer, currentBlock uint64) f
 		if err != nil {
 			return types.Hash{}
 		}
-		return hdr.Hash()
+		h := hdr.Hash()
+		if cache == nil {
+			cache = make(map[uint64]types.Hash, 4)
+		}
+		cache[n] = h
+		return h
 	}
 }
 
