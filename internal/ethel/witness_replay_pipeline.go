@@ -192,7 +192,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			runWitnessWorker(ctx, id, blockCh, resultCh, codeDB, cfg.ChainCfg, cfg.Engine, cfg.SkipVerify)
+			runWitnessWorker(ctx, id, blockCh, resultCh, codeDB, cfg.ChainCfg, cfg.Engine, cfg.SkipVerify, cfg.NoOutput)
 		}(i)
 	}
 
@@ -370,13 +370,22 @@ func feedBlocks(
 			}
 		}
 
+		// BlockHashFn must match recording-side semantics: BLOCKHASH(n)
+		// returns the canonical hash of block n if 1 ≤ blockNum-n ≤ 256,
+		// else 0. Pull from the headers freezer (immutable, concurrent-
+		// safe). Without this, contracts using BLOCKHASH took different
+		// EVM branches in replay vs recording → gas mismatch / "Gas pool
+		// exhausted" — root cause of the 11% block-failure rate observed
+		// on 12M-12.2M.
+		blockHashFn := makeFreezerBlockHash(headersBodies, blockNum)
+
 		job := WitnessJob{
 			BlockNum:    blockNum,
 			Header:      hdr,
 			Body:        body,
 			Witness:     witnessData,
 			Senders:     senders,
-			BlockHashFn: trivialBlockHashFn,
+			BlockHashFn: blockHashFn,
 		}
 		select {
 		case out <- job:
@@ -387,11 +396,32 @@ func feedBlocks(
 	return nil
 }
 
-// trivialBlockHashFn returns zero hash for any height — BLOCKHASH
-// reads via this path are extremely rare in modern tx workloads,
-// and witness already captures any state read that depends on
-// historical hashes via EIP-2935's history contract path.
+// trivialBlockHashFn returns zero hash for any height. Used only as a
+// last-resort fallback; the production path is makeFreezerBlockHash
+// which resolves to the canonical hash via the headers freezer.
 func trivialBlockHashFn(uint64) types.Hash { return types.Hash{} }
+
+// makeFreezerBlockHash builds a BLOCKHASH resolver bound to a specific
+// current block. EVM BLOCKHASH semantics: returns the hash of block n
+// if (currentBlock - n) is in [1, 256], else zero. Concurrent reads
+// against an immutable freezer are safe.
+func makeFreezerBlockHash(headersBodies *freezer.Freezer, currentBlock uint64) func(uint64) types.Hash {
+	return func(n uint64) types.Hash {
+		// Out-of-window per yellow paper §H.2 BLOCKHASH spec.
+		if n >= currentBlock || currentBlock-n > 256 {
+			return types.Hash{}
+		}
+		data, err := headersBodies.Ancient(freezer.TableHeaders, n)
+		if err != nil {
+			return types.Hash{}
+		}
+		hdr, err := DecodeGethHeader(data)
+		if err != nil {
+			return types.Hash{}
+		}
+		return hdr.Hash()
+	}
+}
 
 // _ block.Header silence-import if needed
 var _ = block.Header{}

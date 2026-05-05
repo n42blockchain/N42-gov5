@@ -88,6 +88,12 @@ func run(c *cli.Context) error {
 	// that made this cache slower than recomputing pre-fix.
 	vm2.GlobalCodeAnalysisCache = vm2.NewCodeAnalysisCache(65536)
 
+	// Bytecode cache: skip MDBX CGo round-trip per ReadAccountCode.
+	// Profile showed cgocall + stdcall2 ~7% pre-cache; bytecodes are
+	// immutable (content-addressed by codeHash) so any cache hit is
+	// guaranteed-correct. 32K entries × ~12KB avg ≈ 400MB worst case.
+	ethel.GlobalBytecodeCache = ethel.NewBytecodeCache(32768)
+
 	logger := log2.New()
 	codeDB, err := mdbx.NewMDBX(logger).
 		Path(datadir).

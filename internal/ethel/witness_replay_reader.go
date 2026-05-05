@@ -65,7 +65,24 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 	if r.codeTx == nil {
 		return nil, nil
 	}
-	return r.codeTx.GetOne("Code", codeHash[:])
+	if GlobalBytecodeCache != nil {
+		if code, ok := GlobalBytecodeCache.Get(codeHash); ok {
+			return code, nil
+		}
+	}
+	code, err := r.codeTx.GetOne("Code", codeHash[:])
+	if err != nil {
+		return nil, err
+	}
+	if GlobalBytecodeCache != nil && len(code) > 0 {
+		// MDBX returns a slice into mmap memory; copy before
+		// caching so the slice survives RoTx rotation.
+		cached := make([]byte, len(code))
+		copy(cached, code)
+		GlobalBytecodeCache.Put(codeHash, cached)
+		return cached, nil
+	}
+	return code, nil
 }
 
 func (r *WitnessReplayReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
