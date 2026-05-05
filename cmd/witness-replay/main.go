@@ -16,6 +16,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"runtime"
 
@@ -23,6 +25,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/n42blockchain/N42/internal/ethel"
+	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
@@ -36,6 +39,9 @@ func main() {
 	for name, cfg := range modules.N42TableCfg {
 		kv.ChaindataTablesCfg[name] = cfg
 	}
+
+	// pprof on :6061 (avoids :6060 ethexec collision).
+	go func() { _ = http.ListenAndServe("localhost:6061", nil) }()
 
 	app := &cli.App{
 		Name:  "witness-replay",
@@ -76,6 +82,11 @@ func run(c *cli.Context) error {
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
+
+	// JUMPDEST analysis cache (lock-free Get path). Skipping the LRU
+	// promote-on-Get under high parallelism removed the contention
+	// that made this cache slower than recomputing pre-fix.
+	vm2.GlobalCodeAnalysisCache = vm2.NewCodeAnalysisCache(65536)
 
 	logger := log2.New()
 	codeDB, err := mdbx.NewMDBX(logger).
