@@ -28,6 +28,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -144,6 +145,16 @@ func ProcessBlock(
 
 	noop := state.NewNoopWriter()
 
+	// One EVM per block, reused across all txs via EVM.Reset(txCtx, ibs).
+	// Block context is constant within a block (same header, same
+	// blockHashFunc, same engine), so we only need to rebuild the txCtx
+	// inside applyTransaction. Saves NewEVM + NewEVMInterpreter +
+	// chainConfig.RulesWithTimestamp per tx (profile: ~1.9% of CPU).
+	// Tracer-attached path still uses ApplyTransaction (per-tx EVM)
+	// because each tx may have a different tracer attached.
+	blockCtxShared := iinternal.NewEVMBlockContext(header, blockHashFunc, engine, chainCfg, nil)
+	sharedEVM := vm2.NewEVM(blockCtxShared, evmtypes.TxContext{}, ibs, chainCfg, cfg)
+
 	currentBlock := header.Number.Uint64()
 	// Skip-non-target only when N42_TRACE_BLOCK is explicitly set AND matches.
 	// Default (no traceBlock): run all txs normally so state evolves correctly.
@@ -236,10 +247,24 @@ func ProcessBlock(
 			}
 			err = applyErr
 		} else {
-			receipt, _, err = iinternal.ApplyTransaction(
-				chainCfg, blockHashFunc, engine, nil, gp,
-				ibs, noop, header, txn, usedGas, txCfg,
-			)
+			// Hot path: reuse the shared EVM. ApplyTransaction's per-tx
+			// NewEVM allocation is the largest preventable per-tx cost
+			// outside the interpreter loop itself.
+			//
+			// Tracer-attached txs (txCfg.Tracer != nil) need a fresh EVM
+			// because the tracer is wired through vm.Config at construction
+			// time and EVM.Reset doesn't rebuild the interpreter.
+			if txCfg.Tracer != nil || txCfg.Debug {
+				receipt, _, err = iinternal.ApplyTransaction(
+					chainCfg, blockHashFunc, engine, nil, gp,
+					ibs, noop, header, txn, usedGas, txCfg,
+				)
+			} else {
+				receipt, _, err = iinternal.ApplyTransactionWithEVM(
+					sharedEVM, chainCfg, engine, gp,
+					ibs, noop, header, txn, usedGas, txCfg,
+				)
+			}
 		}
 		if traceFile != nil {
 			failed := err != nil || (receipt != nil && receipt.Status == 0)
