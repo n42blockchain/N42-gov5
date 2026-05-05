@@ -121,6 +121,11 @@ type Executor struct {
 	// Compact readers for columnar headers/bodies (alternative to Geth freezer).
 	compactHeaders *HeaderCompactReader
 	compactBodies  *BodyCompactReader
+	// Separate instances for the prefetcher (single-segment cache is
+	// not goroutine-safe; sharing with main loop forces re-decode per
+	// read).
+	prefetchCompactHeaders *HeaderCompactReader
+	prefetchCompactBodies  *BodyCompactReader
 
 	// Output batcher: accumulates entries, writes in batches.
 	outBatcher *outputBatcher
@@ -220,6 +225,16 @@ func (e *Executor) SetCompactReaders(hr *HeaderCompactReader, br *BodyCompactRea
 	e.compactBodies = br
 }
 
+// SetPrefetchCompactReaders supplies a separate pair of columnar
+// readers for the background prefetcher. Required when reading from
+// N42 columnar input — the readers cache one segment each at a time
+// and aren't goroutine-safe, so prefetcher and main executor sharing
+// instances would race and force per-read segment redecodes.
+func (e *Executor) SetPrefetchCompactReaders(hr *HeaderCompactReader, br *BodyCompactReader) {
+	e.prefetchCompactHeaders = hr
+	e.prefetchCompactBodies = br
+}
+
 // Run executes blocks from StartBlock to EndBlock.
 func (e *Executor) Run(ctx context.Context) error {
 	endBlock := e.cfg.EndBlock
@@ -310,11 +325,22 @@ func (e *Executor) Run(ctx context.Context) error {
 	// running the executor with no background prewarm at all.
 	if e.cfg.PrefetchEnabled {
 		e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg, e.senderStore, e.senderTable, e.engine, &e.currentBlockNum, e.cfg.PrefetchSpeculative)
-		if e.compactHeaders != nil {
-			e.prefetcher.SetCompactReaders(e.compactHeaders, e.compactBodies)
+		// Hand the prefetcher its OWN compact reader instances. Sharing
+		// the executor's (single-segment cache, not goroutine-safe)
+		// trashes throughput by forcing re-decompress on every read.
+		switch {
+		case e.prefetchCompactHeaders != nil:
+			e.prefetcher.SetCompactReaders(e.prefetchCompactHeaders, e.prefetchCompactBodies)
+		case e.compactHeaders != nil:
+			// No separate instance available — fall back to disabling
+			// the prefetcher rather than trashing performance.
+			log.Warn("Prefetcher disabled: no separate compact reader available (set via SetPrefetchCompactReaders)")
+			e.prefetcher = nil
 		}
-		e.prefetcher.start()
-		defer e.prefetcher.stop()
+		if e.prefetcher != nil {
+			e.prefetcher.start()
+			defer e.prefetcher.stop()
+		}
 	} else {
 		log.Info("Prefetcher disabled (--prefetch=false)")
 	}
