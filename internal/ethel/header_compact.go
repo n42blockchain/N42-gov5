@@ -51,6 +51,12 @@ const (
 	hfBeaconRoot   hdrFlags = 1 << 3 // Cancun+
 	hfRequestsHash hdrFlags = 1 << 4 // Pectra+
 	hfPostMerge    hdrFlags = 1 << 5 // difficulty=0
+	// hfStoredHash means the segment trailer carries one canonical
+	// hash per block (raw 32B × count) so readers don't need to
+	// reconstruct ParentHash + Bloom + recompute Hash() from receipts.
+	// Always set by current encoder; older segments without this flag
+	// are not produced anymore.
+	hfStoredHash hdrFlags = 1 << 6
 )
 
 func detectHdrFlags(headers []*block.Header) hdrFlags {
@@ -79,6 +85,7 @@ func detectHdrFlags(headers []*block.Header) hdrFlags {
 	if postMerge {
 		f |= hfPostMerge
 	}
+	f |= hfStoredHash
 	return f
 }
 
@@ -295,6 +302,18 @@ func encodeHeaderSegment(headers []*block.Header, enc *zstd.Encoder) []byte {
 		}
 	}
 
+	// ---- Stored canonical hashes (32B × count) ----
+	// Trailing column so older readers that stop after the nonce
+	// section still produce valid headers (just with hash=0); newer
+	// readers see hfStoredHash and consume the trailer to populate
+	// each header's hash cache.
+	if f&hfStoredHash != 0 {
+		for _, h := range headers {
+			hh := h.Hash()
+			buf = append(buf, hh[:]...)
+		}
+	}
+
 	return enc.EncodeAll(buf, make([]byte, 0, len(buf)/2))
 }
 
@@ -317,7 +336,7 @@ func encodeDeltaU64(buf []byte, values []uint64) []byte {
 // ---------- Stage ----------
 
 // HeaderCompactStage reads Geth ancient headers and writes columnar-compressed segments.
-// Output: headers.NNNN.cdat (≤2GB each) + headers.cidx (8B per segment).
+// Output: hcol.NNNN.cdat (≤2GB each) + hcol.cidx (8B per segment).
 type HeaderCompactStage struct {
 	inputFreezer *freezer.Freezer
 	outputDir    string
@@ -360,7 +379,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 	}
 
 	// Determine resume point from existing idx.
-	idxPath := filepath.Join(s.outputDir, "headers.cidx")
+	idxPath := filepath.Join(s.outputDir, "hcol.cidx")
 	idxFile, err := os.OpenFile(idxPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err
@@ -388,7 +407,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 		idxFile.ReadAt(lastEntry[:], int64(existingSegments-1)*8)
 		e := decodeHeaderIdx(lastEntry[:])
 		headFile = e.fileNum
-		datPath := filepath.Join(s.outputDir, fmt.Sprintf("headers.%04d.cdat", headFile))
+		datPath := filepath.Join(s.outputDir, fmt.Sprintf("hcol.%04d.cdat", headFile))
 		if fi, err := os.Stat(datPath); err == nil {
 			headSize = fi.Size()
 		}
@@ -410,7 +429,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 			datFile = nil
 			datBuf = nil
 		}
-		path := filepath.Join(s.outputDir, fmt.Sprintf("headers.%04d.cdat", headFile))
+		path := filepath.Join(s.outputDir, fmt.Sprintf("hcol.%04d.cdat", headFile))
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {
 			return err
@@ -542,7 +561,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 // ---------- Reader ----------
 
 // HeaderCompactReader provides random and sequential access to headers
-// stored in headers.NNNN.cdat + headers.cidx. Caches current segment.
+// stored in hcol.NNNN.cdat + hcol.cidx. Caches current segment.
 type HeaderCompactReader struct {
 	dir       string
 	idxFile   *os.File
@@ -554,9 +573,9 @@ type HeaderCompactReader struct {
 	cachedHeaders []*block.Header
 }
 
-// OpenHeaderCompact opens a headers.cidx + headers.NNNN.cdat set for reading.
+// OpenHeaderCompact opens a hcol.cidx + hcol.NNNN.cdat set for reading.
 func OpenHeaderCompact(dir string) (*HeaderCompactReader, error) {
-	idxPath := filepath.Join(dir, "headers.cidx")
+	idxPath := filepath.Join(dir, "hcol.cidx")
 	idf, err := os.Open(idxPath)
 	if err != nil {
 		return nil, fmt.Errorf("open index: %w", err)
@@ -630,7 +649,7 @@ func (r *HeaderCompactReader) loadSegment(segNum int64) error {
 	// Open/cache dat file.
 	df, ok := r.dataFiles[e.fileNum]
 	if !ok {
-		path := filepath.Join(r.dir, fmt.Sprintf("headers.%04d.cdat", e.fileNum))
+		path := filepath.Join(r.dir, fmt.Sprintf("hcol.%04d.cdat", e.fileNum))
 		f, err := os.Open(path)
 		if err != nil {
 			return fmt.Errorf("open dat %d: %w", e.fileNum, err)
@@ -851,6 +870,23 @@ func decodeHeaderSegment(data []byte) ([]*block.Header, error) {
 			}
 			copy(h.Nonce[:], data[pos:pos+8])
 			pos += 8
+		}
+	}
+
+	// ---- Stored canonical hashes (32B × count) ----
+	// Encoder writes them so the reader can return correct Hash() in
+	// O(1) without reconstructing ParentHash + Bloom. Pre-populate the
+	// Header's hash cache so callers' hdr.Hash() returns the canonical
+	// value directly.
+	if f&hfStoredHash != 0 {
+		for i, h := range headers {
+			if pos+32 > len(data) {
+				return nil, fmt.Errorf("stored hash %d: truncated", i)
+			}
+			var hh types.Hash
+			copy(hh[:], data[pos:pos+32])
+			h.SetHash(hh)
+			pos += 32
 		}
 	}
 

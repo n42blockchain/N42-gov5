@@ -124,6 +124,13 @@ func (h *Header) Hash() types.Hash {
 // columnar source.
 func (h *Header) ResetHashCache() { h.hash = atomic.Value{} }
 
+// SetHash forces Hash() to return v without recomputing. Used by
+// columnar readers that store the canonical hash alongside the
+// stripped fields (ParentHash, Bloom) — calling SetHash skips the
+// reconstruction work entirely. Caller is responsible for ensuring
+// v actually equals keccak256(rlp(header)) for the canonical form.
+func (h *Header) SetHash(v types.Hash) { h.hash.Store(v) }
+
 // rlpHash computes keccak256(rlp(header)) following Ethereum Pectra field order.
 func (h *Header) rlpHash() types.Hash {
 	// Pre-London: 15 fields, London: +baseFee, Shanghai: +withdrawalsRoot,
