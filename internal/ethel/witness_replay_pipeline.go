@@ -78,6 +78,12 @@ type WitnessReplayConfig struct {
 	// it false so any divergence halts immediately.
 	ContinueOnError bool
 
+	// NoWitnessOutput skips writing the witness.cdat table to the output
+	// freezer. Other tables (receipts, acctcs, storcs) are still written.
+	// Useful when the caller already has witness elsewhere and only wants
+	// changesets back.
+	NoWitnessOutput bool
+
 	ChainCfg *params.ChainConfig
 	Engine   consensus.Engine
 }
@@ -85,10 +91,11 @@ type WitnessReplayConfig struct {
 // witnessAggregateState owns the outputBatcher and is the only thing
 // that writes to it (sequentially, in block order).
 type witnessAggregateState struct {
-	batcher *outputBatcher
-	pending map[uint64]WitnessResult
-	next    uint64
-	end     uint64
+	batcher     *outputBatcher
+	pending     map[uint64]WitnessResult
+	next        uint64
+	end         uint64
+	skipWitness bool
 }
 
 // RunWitnessReplay drives the parallel replay end-to-end. Returns
@@ -106,28 +113,28 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		cfg.Workers = 32
 	}
 
-	// 1. Open input freezers.
-	headersBodies, err := freezer.New(cfg.HeadersBodiesPath, 0)
+	// 1. Open input source for headers + bodies. Auto-detects N42's
+	// columnar HeaderCompactReader format when headers.cidx is present;
+	// otherwise falls back to geth ancient (raw RLP per block).
+	hbSource, err := openHeadersBodiesSource(cfg.HeadersBodiesPath)
 	if err != nil {
-		return fmt.Errorf("open headers/bodies freezer: %w", err)
+		return fmt.Errorf("open headers/bodies source: %w", err)
 	}
-	defer headersBodies.Close()
+	defer hbSource.close()
+	switch hbSource.(type) {
+	case *n42CompactSource:
+		log.Info("Headers/bodies source", "format", "n42-columnar", "path", cfg.HeadersBodiesPath, "max_block", hbSource.maxBlock())
+	default:
+		log.Info("Headers/bodies source", "format", "geth-ancient", "path", cfg.HeadersBodiesPath, "frozen", hbSource.maxBlock())
+	}
 
-	var witnessTbl *freezer.FreezerTable
-	if cfg.WitnessPath == cfg.HeadersBodiesPath {
-		witnessTbl = headersBodies.Table(freezer.TableBlockWitness)
-	} else {
-		witnessTbl, err = freezer.NewFreezerTableCompressedReadOnly(
-			cfg.WitnessPath, freezer.TableBlockWitness, "c")
-		if err != nil {
-			return fmt.Errorf("open witness table: %w", err)
-		}
-		defer witnessTbl.Close()
-		witnessTbl.ForceBatchSize(freezer.BatchSize)
+	witnessTbl, err := freezer.NewFreezerTableCompressedReadOnly(
+		cfg.WitnessPath, freezer.TableBlockWitness, "c")
+	if err != nil {
+		return fmt.Errorf("open witness table at %s: %w", cfg.WitnessPath, err)
 	}
-	if witnessTbl == nil {
-		return fmt.Errorf("witness table not found in %s", cfg.WitnessPath)
-	}
+	defer witnessTbl.Close()
+	witnessTbl.ForceBatchSize(freezer.BatchSize)
 
 	// Optional pre-computed senders (avoids ecrecover, the dominant
 	// CPU cost on tx-dense blocks per pprof — single libsecp256k1 mutex
@@ -217,8 +224,10 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 			if err := batcher.addEntry(freezer.TableStorageChanges, "c", storcsBytes); err != nil {
 				return fmt.Errorf("addEntry storcs block 0: %w", err)
 			}
-			if err := batcher.addEntry(freezer.TableBlockWitness, "c", nil); err != nil {
-				return fmt.Errorf("addEntry witness block 0: %w", err)
+			if !cfg.NoWitnessOutput {
+				if err := batcher.addEntry(freezer.TableBlockWitness, "c", nil); err != nil {
+					return fmt.Errorf("addEntry witness block 0: %w", err)
+				}
 			}
 		}
 		log.Info("Genesis encoded",
@@ -231,16 +240,17 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	readerErr := make(chan error, 1)
 	go func() {
 		defer close(blockCh)
-		readerErr <- feedBlocks(ctx, headersBodies, witnessTbl, sendersTbl,
+		readerErr <- feedBlocks(ctx, hbSource, witnessTbl, sendersTbl,
 			cfg.ChainCfg, feedStart, end, blockCh)
 	}()
 
 	// 6. Aggregator (this goroutine).
 	agg := &witnessAggregateState{
-		batcher: batcher,
-		pending: make(map[uint64]WitnessResult),
-		next:    feedStart,
-		end:     end,
+		batcher:     batcher,
+		pending:     make(map[uint64]WitnessResult),
+		next:        feedStart,
+		end:         end,
+		skipWitness: cfg.NoWitnessOutput,
 	}
 	target := end - cfg.StartBlock
 	log.Info("Replay started",
@@ -362,8 +372,10 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 			// Always emit a witness entry — even an empty one for txless
 			// blocks. The cdat 64-batch index requires every table to
 			// keep the same item count; skipping breaks alignment.
-			if err := a.batcher.addEntry(freezer.TableBlockWitness, "c", res.WitnessBytes); err != nil {
-				return fmt.Errorf("addEntry witness block %d: %w", res.BlockNum, err)
+			if !a.skipWitness {
+				if err := a.batcher.addEntry(freezer.TableBlockWitness, "c", res.WitnessBytes); err != nil {
+					return fmt.Errorf("addEntry witness block %d: %w", res.BlockNum, err)
+				}
 			}
 			if _, err := a.batcher.flushFullBatches(); err != nil {
 				return fmt.Errorf("flushFullBatches block %d: %w", res.BlockNum, err)
@@ -382,7 +394,7 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 // workers don't waste CPU on sequential I/O.
 func feedBlocks(
 	ctx context.Context,
-	headersBodies *freezer.Freezer,
+	hbSource headersBodiesSource,
 	witnessTbl *freezer.FreezerTable,
 	sendersTbl *freezer.FreezerTable,
 	chainCfg *params.ChainConfig,
@@ -396,22 +408,13 @@ func feedBlocks(
 		default:
 		}
 
-		hdrData, err := headersBodies.Ancient(freezer.TableHeaders, blockNum)
+		hdr, err := hbSource.header(blockNum)
 		if err != nil {
 			return fmt.Errorf("read header %d: %w", blockNum, err)
 		}
-		hdr, err := DecodeGethHeader(hdrData)
-		if err != nil {
-			return fmt.Errorf("decode header %d: %w", blockNum, err)
-		}
-
-		bodyData, err := headersBodies.Ancient(freezer.TableBodies, blockNum)
+		body, err := hbSource.body(blockNum)
 		if err != nil {
 			return fmt.Errorf("read body %d: %w", blockNum, err)
-		}
-		body, err := DecodeGethBody(bodyData)
-		if err != nil {
-			return fmt.Errorf("decode body %d: %w", blockNum, err)
 		}
 
 		witnessData, err := witnessTbl.Retrieve(blockNum)
@@ -447,7 +450,7 @@ func feedBlocks(
 		// EVM branches in replay vs recording → gas mismatch / "Gas pool
 		// exhausted" — root cause of the 11% block-failure rate observed
 		// on 12M-12.2M.
-		blockHashFn := makeFreezerBlockHash(headersBodies, blockNum)
+		blockHashFn := makeBlockHashFromSource(hbSource, blockNum)
 
 		job := WitnessJob{
 			BlockNum:    blockNum,
@@ -464,43 +467,6 @@ func feedBlocks(
 		}
 	}
 	return nil
-}
-
-// trivialBlockHashFn returns zero hash for any height. Used only as a
-// last-resort fallback; the production path is makeFreezerBlockHash
-// which resolves to the canonical hash via the headers freezer.
-func trivialBlockHashFn(uint64) types.Hash { return types.Hash{} }
-
-// makeFreezerBlockHash builds a BLOCKHASH resolver bound to a specific
-// current block. EVM BLOCKHASH semantics: returns the hash of block n
-// if (currentBlock - n) is in [1, 256], else zero. Concurrent reads
-// against an immutable freezer are safe. The closure caches resolved
-// hashes so a contract calling BLOCKHASH(n) repeatedly within a block
-// pays the freezer fetch + RLP decode + Keccak256 only once per n.
-func makeFreezerBlockHash(headersBodies *freezer.Freezer, currentBlock uint64) func(uint64) types.Hash {
-	var cache map[uint64]types.Hash
-	return func(n uint64) types.Hash {
-		if n >= currentBlock || currentBlock-n > 256 {
-			return types.Hash{}
-		}
-		if h, ok := cache[n]; ok {
-			return h
-		}
-		data, err := headersBodies.Ancient(freezer.TableHeaders, n)
-		if err != nil {
-			return types.Hash{}
-		}
-		hdr, err := DecodeGethHeader(data)
-		if err != nil {
-			return types.Hash{}
-		}
-		h := hdr.Hash()
-		if cache == nil {
-			cache = make(map[uint64]types.Hash, 4)
-		}
-		cache[n] = h
-		return h
-	}
 }
 
 // _ block.Header silence-import if needed
