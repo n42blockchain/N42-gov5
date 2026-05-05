@@ -601,14 +601,49 @@ func run(c *cli.Context) error {
 		log.Info("Targeted trace enabled", "addr", trackHex)
 	}
 
-	// Open Geth ancient freezer.
-	log.Info("Opening Geth ancient data", "path", ancientPath)
+	// Open input source. Two layouts supported:
+	//
+	//   - Geth ancient (raw RLP, headers.NNNN.cdat / bodies.NNNN.cdat
+	//     with 64-block batches). freezer.New auto-downgrades to RO if
+	//     the dir looks like geth's chaindata.
+	//   - N42 columnar (hcol.NNNN.cdat / bcol.NNNN.cdat with 8192-block
+	//     segments). Detected by hcol.cidx; opened via compact readers
+	//     and wired into the executor as the primary header/body source.
+	//
+	// Both paths still open freezer.New so receipts.cdat can be read for
+	// the gas-mismatch diagnostic dump. With N42 columnar, the open is
+	// best-effort: if headers.cidx isn't there, freezer.New still opens
+	// available extended tables and returns; we just use compact readers
+	// for headers/bodies.
+	log.Info("Opening input data", "path", ancientPath)
 	f, err := freezer.New(ancientPath, 0)
 	if err != nil {
 		return fmt.Errorf("open freezer: %w", err)
 	}
 	defer f.Close()
-	log.Info("Freezer opened", "frozen", f.Frozen())
+
+	var compactHR *ethel.HeaderCompactReader
+	var compactBR *ethel.BodyCompactReader
+	if _, err := os.Stat(filepath.Join(ancientPath, "hcol.cidx")); err == nil {
+		hr, err := ethel.OpenHeaderCompact(ancientPath)
+		if err != nil {
+			return fmt.Errorf("open hcol: %w", err)
+		}
+		br, err := ethel.OpenBodyCompact(ancientPath)
+		if err != nil {
+			hr.Close()
+			return fmt.Errorf("open bcol: %w", err)
+		}
+		compactHR = hr
+		compactBR = br
+		defer compactHR.Close()
+		defer compactBR.Close()
+		log.Info("Input headers/bodies", "format", "n42-columnar",
+			"path", ancientPath, "max_block", compactHR.MaxBlock())
+	} else {
+		log.Info("Input headers/bodies", "format", "geth-ancient",
+			"path", ancientPath, "frozen", f.Frozen())
+	}
 
 	// Open MDBX with optimized parameters for ETH EL execution.
 	// MapSize = 2 TB matches Erigon's default: Windows only MEM_RESERVE
@@ -717,6 +752,9 @@ func run(c *cli.Context) error {
 	}
 
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
+	if compactHR != nil && compactBR != nil {
+		executor.SetCompactReaders(compactHR, compactBR)
+	}
 
 	// Apply tunable read-cache budget. Defaults (4/32/2 GB acct/sto/code)
 	// are calibrated for a 128 GB host doing forward-replay past block 13M
@@ -758,30 +796,9 @@ func run(c *cli.Context) error {
 		log.Info("No pre-computed senders, using ecrecover from signatures")
 	}
 
-	// TODO: compact body reader has signature decoding issues (V/R/S columns).
-	// Disabled until fixed. Using Geth freezer for now.
-	if false {
-	for _, dir := range []string{filepath.Join(datadir, "chain"), filepath.Join(datadir, "ancient")} {
-		idxPath := filepath.Join(dir, "headers.cidx")
-		if _, err := os.Stat(idxPath); err != nil {
-			continue
-		}
-		hr, err := ethel.OpenHeaderCompact(dir)
-		if err != nil {
-			log.Warn("Cannot open compact headers", "dir", dir, "err", err)
-			continue
-		}
-		br, err := ethel.OpenBodyCompact(dir)
-		if err != nil {
-			hr.Close()
-			log.Warn("Cannot open compact bodies", "dir", dir, "err", err)
-			continue
-		}
-		executor.SetCompactReaders(hr, br)
-		log.Info("Using compact headers/bodies", "dir", dir)
-		break
-	}
-	} // end if false
+	// (Compact reader auto-wiring moved up next to freezer.New so it
+	// runs before any code path that might depend on Frozen() / Ancient
+	// from a partial geth ancient.)
 
 	ctx, cancel := withShutdown()
 	defer cancel()
