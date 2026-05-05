@@ -224,7 +224,13 @@ func (e *Executor) SetCompactReaders(hr *HeaderCompactReader, br *BodyCompactRea
 func (e *Executor) Run(ctx context.Context) error {
 	endBlock := e.cfg.EndBlock
 	if endBlock == 0 {
-		endBlock = e.freezer.Frozen() - 1
+		// Prefer compact reader's MaxBlock when present — covers the case
+		// where the geth freezer is missing/empty but hcol/bcol have data.
+		if e.compactHeaders != nil {
+			endBlock = e.compactHeaders.MaxBlock() - 1
+		} else {
+			endBlock = e.freezer.Frozen() - 1
+		}
 	}
 
 	// One-time setup uses a write tx; the main exec loop later
@@ -304,6 +310,9 @@ func (e *Executor) Run(ctx context.Context) error {
 	// running the executor with no background prewarm at all.
 	if e.cfg.PrefetchEnabled {
 		e.prefetcher = newPrefetcher(ctx, e.freezer, e.db, e.stateBuf, e.chainCfg, e.senderStore, e.senderTable, e.engine, &e.currentBlockNum, e.cfg.PrefetchSpeculative)
+		if e.compactHeaders != nil {
+			e.prefetcher.SetCompactReaders(e.compactHeaders, e.compactBodies)
+		}
 		e.prefetcher.start()
 		defer e.prefetcher.stop()
 	} else {

@@ -49,6 +49,12 @@ type prefetcher struct {
 	wg       sync.WaitGroup
 	blockCh  chan uint64
 
+	// Optional N42 columnar readers — when non-nil, prefetch uses these
+	// instead of geth-format Ancient bytes for headers/bodies. Same
+	// precedence as Executor.readHeader/readBody.
+	compactHeaders *HeaderCompactReader
+	compactBodies  *BodyCompactReader
+
 	// Pre-computed senders sources, shared with the executor's main path.
 	senderStore *SenderSegmentReader
 	senderTable *freezer.FreezerTable
@@ -86,6 +92,43 @@ func newPrefetcher(ctx context.Context, f *freezer.Freezer, db kv.RoDB, buf *sta
 func (p *prefetcher) start() {
 	p.wg.Add(1)
 	go p.loop()
+}
+
+// SetCompactReaders mirrors Executor.SetCompactReaders so prefetch
+// reads from the same columnar archive when geth ancient is missing
+// or stale.
+func (p *prefetcher) SetCompactReaders(hr *HeaderCompactReader, br *BodyCompactReader) {
+	p.compactHeaders = hr
+	p.compactBodies = br
+}
+
+func (p *prefetcher) fetchHeader(blockNum uint64) (*block.Header, error) {
+	if p.compactHeaders != nil {
+		return p.compactHeaders.ReadHeader(blockNum)
+	}
+	data, err := p.freezer.Ancient(freezer.TableHeaders, blockNum)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeGethHeader(data)
+}
+
+func (p *prefetcher) fetchBody(blockNum uint64) (*GethBodyResult, error) {
+	if p.compactBodies != nil {
+		db, err := p.compactBodies.ReadBody(blockNum)
+		if err != nil {
+			return nil, err
+		}
+		return &GethBodyResult{
+			Transactions: db.Txs,
+			Withdrawals:  db.Withdrawals,
+		}, nil
+	}
+	data, err := p.freezer.Ancient(freezer.TableBodies, blockNum)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeGethBody(data)
 }
 
 func (p *prefetcher) stop() {
@@ -148,12 +191,8 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	if p.cancelled(blockNum) {
 		return
 	}
-	data, err := p.freezer.Ancient(freezer.TableBodies, blockNum)
-	if err != nil {
-		return
-	}
-	body, err := DecodeGethBody(data)
-	if err != nil {
+	body, err := p.fetchBody(blockNum)
+	if err != nil || body == nil {
 		return
 	}
 	if len(body.Transactions) == 0 {
@@ -168,11 +207,7 @@ func (p *prefetcher) doFetch(blockNum uint64) {
 	// once.
 	var header *block.Header
 	if p.speculativeEnabled || senders == nil {
-		headerData, hErr := p.freezer.Ancient(freezer.TableHeaders, blockNum)
-		if hErr != nil {
-			return
-		}
-		header, err = DecodeGethHeader(headerData)
+		header, err = p.fetchHeader(blockNum)
 		if err != nil {
 			return
 		}
