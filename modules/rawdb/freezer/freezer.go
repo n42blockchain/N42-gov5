@@ -305,13 +305,31 @@ func openFreezer(path string, threshold uint64, readonly bool) (*Freezer, error)
 		}
 	}
 
-	// Align all opened tables down to the canonical chain height if one was
-	// recovered. Tables ahead of the canonical minimum indicate an interrupted
-	// truncate/append cycle and must be repaired before reads resume.
+	// Align tables that are AHEAD of the canonical minimum back down —
+	// this indicates an interrupted truncate/append cycle that left an
+	// extended table (acctcs, storcs, witness, ...) ahead of state.
+	//
+	// HARD RULE: only canonical tables (headers/bodies/receipts/hashes
+	// /difficulty) participate. Senders, changesets, witness etc are
+	// computed by separate stages and may legitimately run AHEAD of the
+	// canonical height — truncating them is destructive and silently
+	// destroys minutes-to-hours of pre-computed work. The user's 144 MB
+	// senders.cidx was wiped to 24 KB by this loop on 2026-05-05 when
+	// the canonical receipts had 4001 items but senders covered 24 M.
+	//
+	// Skip entirely in readonly mode: input freezers must NEVER be
+	// mutated, regardless of any cross-table inconsistency.
 	if initialized && !readonly {
+		canonical := make(map[string]bool, len(canonicalFrozenTables))
+		for _, n := range canonicalFrozenTables {
+			canonical[n] = true
+		}
 		for name, t := range f.tables {
+			if !canonical[name] {
+				continue // never truncate extended tables here
+			}
 			if t.Items() > items {
-				log.Warn("Freezer table count mismatch, truncating",
+				log.Warn("Freezer canonical table count mismatch, truncating",
 					"table", name, "items", t.Items(), "target", items)
 				if err := t.TruncateHead(items); err != nil {
 					f.Close()

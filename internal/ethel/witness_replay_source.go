@@ -62,7 +62,7 @@ type gethFreezerSource struct {
 }
 
 func openGethFreezerSource(dir string) (*gethFreezerSource, error) {
-	f, err := freezer.New(dir, 0)
+	f, err := freezer.NewReadOnly(dir)
 	if err != nil {
 		return nil, fmt.Errorf("open geth freezer %s: %w", dir, err)
 	}

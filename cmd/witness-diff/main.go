@@ -101,7 +101,7 @@ func main() {
 		kv.ChaindataTablesCfg[name] = cfg
 	}
 
-	hb, err := freezer.New(*hbDir, 0)
+	hb, err := freezer.NewReadOnly(*hbDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open hb:", err)
 		os.Exit(1)
