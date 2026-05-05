@@ -10,6 +10,17 @@
 // mutations between commit boundaries so that MDBX only sees one
 // batch per CommitInterval. VerifyInterval toggles periodic state-root
 // verification; NoOutputs skips output writing entirely.
+//
+// HARD RULE — geth's chaindata/ancient is OWNED BY GETH. ethexec (and
+// every other N42 process) must open the input freezer read-only. Any
+// destructive write (Append, Truncate, EnsureTable in RW mode) into a
+// geth ancient destroys the data — bodies.0000.cdat got truncated to
+// 0 bytes on 2026-05-05 from the EnsureTable("bodies", "c") call below
+// before this rule was enforced. freezer.New now auto-detects the
+// geth-ancient layout and downgrades to read-only; EnsureTable/
+// EnsureTableCompressed honour Freezer.readonly. Both as belt and
+// suspenders. If you find yourself wanting to write to ancient,
+// COPY THE DATA OUT first; never operate on geth's source dir.
 
 package ethel
 

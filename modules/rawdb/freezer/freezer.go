@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -160,15 +161,35 @@ type Freezer struct {
 
 	threshold uint64 // blocks behind head before freezing
 
+	readonly bool // set by openFreezer; gates EnsureTable and friends
+
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
+// IsReadOnly reports whether this Freezer was opened read-only.
+func (f *Freezer) IsReadOnly() bool { return f.readonly }
+
 // New creates or opens a Freezer at the given path.
 // It opens all core tables (headers, bodies, receipts, hashes, diffs).
 // Extended tables (senders, changesets) are opened if their index files exist.
+// New opens a Freezer for read-write access. SAFETY: if the path looks
+// like a geth ancient (see IsLikelyGethAncient — typical markers: a
+// `geth/chaindata/ancient` path component AND a hashes.ridx file from
+// geth's per-block hash table), this function silently downgrades to
+// read-only and logs a Warn. Geth's ancient is owned by geth; allowing
+// outside processes to open it RW destroyed bodies.0000.cdat once
+// (2026-05-05). The downgrade is the cheapest safety net — callers
+// that genuinely need RW on a geth-style layout must explicitly use
+// New(...).WithoutAncientGuard() (intentionally absent — there's no
+// such API; the answer is "copy the data first").
 func New(path string, threshold uint64) (*Freezer, error) {
+	if IsLikelyGethAncient(path) {
+		log.Warn("freezer.New: path looks like geth ancient — opening read-only to protect data",
+			"path", path)
+		return openFreezer(path, threshold, true)
+	}
 	return openFreezer(path, threshold, false)
 }
 
@@ -178,6 +199,25 @@ func New(path string, threshold uint64) (*Freezer, error) {
 // Freezer (Append, TruncateHead, etc.) return errors.
 func NewReadOnly(path string) (*Freezer, error) {
 	return openFreezer(path, DefaultFreezeThreshold, true)
+}
+
+// IsLikelyGethAncient heuristically checks whether path is a geth-managed
+// ancient directory that outside processes must NOT mutate. Two markers:
+//
+//  1. The path contains a `geth` component — typical layouts look like
+//     `<datadir>/geth/chaindata/ancient/chain`.
+//  2. The directory has `hashes.ridx`, geth's per-block canonical hash
+//     index. N42 doesn't write this file; only geth does.
+//
+// Both must hold. The double-check guards against false positives from
+// users who happen to name an N42-only freezer dir "geth" by accident.
+func IsLikelyGethAncient(path string) bool {
+	abs := strings.ReplaceAll(strings.ToLower(path), "\\", "/")
+	if !strings.Contains(abs, "/geth/") && !strings.HasSuffix(abs, "/geth") {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(path, "hashes.ridx"))
+	return err == nil
 }
 
 func openFreezer(path string, threshold uint64, readonly bool) (*Freezer, error) {
@@ -193,6 +233,7 @@ func openFreezer(path string, threshold uint64, readonly bool) (*Freezer, error)
 
 	f := &Freezer{
 		path:      path,
+		readonly:  readonly,
 		tables:    make(map[string]*FreezerTable),
 		threshold: threshold,
 	}
@@ -299,6 +340,8 @@ func (f *Freezer) Table(name string) *FreezerTable {
 }
 
 // EnsureTable opens or creates an extended table that may not exist yet.
+// Read-only freezers fall through to NewFreezerTableReadOnly so the
+// underlying files are not opened RW (and thus cannot be truncated).
 func (f *Freezer) EnsureTable(name, ext string) (*FreezerTable, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -306,7 +349,15 @@ func (f *Freezer) EnsureTable(name, ext string) (*FreezerTable, error) {
 	if t, ok := f.tables[name]; ok {
 		return t, nil
 	}
-	t, err := NewFreezerTable(f.path, name, ext)
+	var (
+		t   *FreezerTable
+		err error
+	)
+	if f.readonly {
+		t, err = NewFreezerTableReadOnly(f.path, name, ext)
+	} else {
+		t, err = NewFreezerTable(f.path, name, ext)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -336,6 +387,17 @@ func (f *Freezer) EnsureTableCompressed(name, ext string) (*FreezerTable, error)
 		t.Sync()
 		t.Close()
 		delete(f.tables, name)
+	}
+	if f.readonly {
+		t, err := NewFreezerTableCompressedReadOnly(f.path, name, ext)
+		if err != nil {
+			return nil, err
+		}
+		f.tables[name] = t
+		if items := t.Items(); items > f.frozen.Load() {
+			f.frozen.Store(items)
+		}
+		return t, nil
 	}
 	t, err := NewFreezerTableCompressed(f.path, name, ext)
 	if err != nil {
