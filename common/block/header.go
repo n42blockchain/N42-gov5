@@ -118,6 +118,12 @@ func (h *Header) Hash() types.Hash {
 	return hash
 }
 
+// ResetHashCache clears the cached Hash() result. Required after
+// mutating any field that contributes to the canonical hash —
+// notably ParentHash and Bloom on a header reconstructed from a
+// columnar source.
+func (h *Header) ResetHashCache() { h.hash = atomic.Value{} }
+
 // rlpHash computes keccak256(rlp(header)) following Ethereum Pectra field order.
 func (h *Header) rlpHash() types.Hash {
 	// Pre-London: 15 fields, London: +baseFee, Shanghai: +withdrawalsRoot,

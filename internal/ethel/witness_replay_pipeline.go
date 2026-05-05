@@ -84,6 +84,13 @@ type WitnessReplayConfig struct {
 	// duplicates the input. Set when generating a fresh witness archive.
 	WriteWitness bool
 
+	// ReceiptsFromPath overrides the dir used to recompute Header.Bloom
+	// when reading from N42 columnar headers (which strip bloom). Only
+	// used when --input-headers-bodies points at a columnar archive.
+	// Default: same as HeadersBodiesPath. Override when those receipts
+	// are incomplete and you have the full geth ancient receipts handy.
+	ReceiptsFromPath string
+
 	ChainCfg *params.ChainConfig
 	Engine   consensus.Engine
 }
@@ -116,7 +123,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	// 1. Open input source for headers + bodies. Auto-detects N42's
 	// columnar HeaderCompactReader format when headers.cidx is present;
 	// otherwise falls back to geth ancient (raw RLP per block).
-	hbSource, err := openHeadersBodiesSource(cfg.HeadersBodiesPath)
+	hbSource, err := openHeadersBodiesSource(cfg.HeadersBodiesPath, cfg.ReceiptsFromPath)
 	if err != nil {
 		return fmt.Errorf("open headers/bodies source: %w", err)
 	}
@@ -402,6 +409,36 @@ func feedBlocks(
 	start, end uint64,
 	out chan<- WitnessJob,
 ) error {
+	// Sliding window of the last blockHashWindowSize canonical hashes.
+	// Populated as we read each block; passed by snapshot into each
+	// WitnessJob so workers' BLOCKHASH closures can resolve ancestors
+	// without touching the source (which is not goroutine-safe for
+	// the n42 columnar reader).
+	recent := make([]types.Hash, 0, blockHashWindowSize)
+	// Resume case: prewarm the window. The n42 columnar reader strips
+	// ParentHash, and rebuilding the chain requires sequential reads
+	// from genesis. Walk all ancestors so block `start` sees a fully-
+	// populated BLOCKHASH window.
+	if start > 0 {
+		t0 := time.Now()
+		for n := uint64(0); n < start; n++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			hdr, err := hbSource.header(n)
+			if err != nil {
+				return fmt.Errorf("prewarm header %d: %w", n, err)
+			}
+			recent = append(recent, hdr.Hash())
+			if len(recent) > blockHashWindowSize {
+				recent = recent[1:]
+			}
+		}
+		log.Info("BLOCKHASH window prewarmed",
+			"start", start,
+			"hashes", len(recent),
+			"elapsed", time.Since(t0).Truncate(time.Millisecond))
+	}
 	for blockNum := start; blockNum < end; blockNum++ {
 		select {
 		case <-ctx.Done():
@@ -451,7 +488,7 @@ func feedBlocks(
 		// EVM branches in replay vs recording → gas mismatch / "Gas pool
 		// exhausted" — root cause of the 11% block-failure rate observed
 		// on 12M-12.2M.
-		blockHashFn := makeBlockHashFromSource(hbSource, blockNum)
+		blockHashFn := makeBlockHashFn(blockNum, recent)
 
 		job := WitnessJob{
 			BlockNum:    blockNum,
@@ -460,6 +497,14 @@ func feedBlocks(
 			Witness:     witnessData,
 			Senders:     senders,
 			BlockHashFn: blockHashFn,
+		}
+
+		// Slide window forward AFTER the job is dispatched: the job
+		// is for `blockNum`, and its BLOCKHASH window covers
+		// [blockNum-256, blockNum-1] which is exactly `recent` here.
+		recent = append(recent, hdr.Hash())
+		if len(recent) > blockHashWindowSize {
+			recent = recent[1:]
 		}
 		select {
 		case out <- job:
