@@ -329,10 +329,11 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 			if err := a.batcher.addEntry(freezer.TableStorageChanges, "c", res.StoCSBytes); err != nil {
 				return fmt.Errorf("addEntry storcs block %d: %w", res.BlockNum, err)
 			}
-			if len(res.WitnessBytes) > 0 {
-				if err := a.batcher.addEntry(freezer.TableBlockWitness, "c", res.WitnessBytes); err != nil {
-					return fmt.Errorf("addEntry witness block %d: %w", res.BlockNum, err)
-				}
+			// Always emit a witness entry — even an empty one for txless
+			// blocks. The cdat 64-batch index requires every table to
+			// keep the same item count; skipping breaks alignment.
+			if err := a.batcher.addEntry(freezer.TableBlockWitness, "c", res.WitnessBytes); err != nil {
+				return fmt.Errorf("addEntry witness block %d: %w", res.BlockNum, err)
 			}
 			if _, err := a.batcher.flushFullBatches(); err != nil {
 				return fmt.Errorf("flushFullBatches block %d: %w", res.BlockNum, err)
