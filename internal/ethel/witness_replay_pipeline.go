@@ -144,7 +144,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		} else {
 			sendersTbl.ForceBatchSize(freezer.BatchSize)
 			defer sendersTbl.Close()
-			log.Info("WitnessReplay: senders precomputed", "items", sendersTbl.Items())
+			log.Info("Senders index loaded", "entries", sendersTbl.Items())
 		}
 	}
 
@@ -212,9 +212,23 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		next:    cfg.StartBlock,
 		end:     end,
 	}
+	target := end - cfg.StartBlock
+	log.Info("Replay started",
+		"range", fmt.Sprintf("%d-%d", cfg.StartBlock, end),
+		"blocks", target,
+		"workers", cfg.Workers,
+		"output", outputDescription(cfg))
+
 	t0 := time.Now()
 	lastLog := t0
-	var failed uint64
+	var (
+		failed       uint64
+		totalGas     uint64
+		totalTxs     uint64
+		windowGas    uint64
+		windowTxs    uint64
+		windowBlocks uint64
+	)
 
 	go func() {
 		// Wait for workers, then close result channel so aggregator can exit.
@@ -232,20 +246,32 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 			// Treat as empty so aggregator's sequential counter advances.
 			r = WitnessResult{BlockNum: r.BlockNum}
 		}
+		totalGas += r.GasUsed
+		totalTxs += uint64(r.TxCount)
+		windowGas += r.GasUsed
+		windowTxs += uint64(r.TxCount)
+		windowBlocks++
 		if err := agg.absorb(r); err != nil {
 			cancel()
 			return err
 		}
-		if time.Since(lastLog) > 10*time.Second {
+		if d := time.Since(lastLog); d > 10*time.Second {
 			elapsed := time.Since(t0)
 			done := agg.next - cfg.StartBlock
-			rate := float64(done) / elapsed.Seconds()
-			log.Info("WitnessReplay progress",
-				"block", agg.next, "done", done,
-				"target", end-cfg.StartBlock,
-				"blk/s", fmt.Sprintf("%.0f", rate),
-				"elapsed", elapsed.Truncate(time.Second))
+			eta := time.Duration(0)
+			if done > 0 && done < target {
+				eta = time.Duration(float64(elapsed) * float64(target-done) / float64(done)).Truncate(time.Second)
+			}
+			log.Info("Replay progress",
+				"head", agg.next-1,
+				"progress", fmt.Sprintf("%5.2f%%", 100*float64(done)/float64(target)),
+				"blk/s", fmt.Sprintf("%6.0f", float64(windowBlocks)/d.Seconds()),
+				"mgas/s", fmt.Sprintf("%6.1f", float64(windowGas)/d.Seconds()/1e6),
+				"tx/s", fmt.Sprintf("%6.0f", float64(windowTxs)/d.Seconds()),
+				"elapsed", elapsed.Truncate(time.Second),
+				"eta", eta)
 			lastLog = time.Now()
+			windowGas, windowTxs, windowBlocks = 0, 0, 0
 		}
 	}
 
@@ -263,12 +289,24 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		}
 	}
 	elapsed := time.Since(t0)
-	log.Info("WitnessReplay complete",
-		"blocks", agg.next-cfg.StartBlock,
+	done := agg.next - cfg.StartBlock
+	log.Info("Replay complete",
+		"head", agg.next-1,
+		"blocks", done,
+		"txs", totalTxs,
+		"gas", totalGas,
 		"failed", failed,
-		"elapsed", elapsed.Truncate(time.Second),
-		"blk/s", fmt.Sprintf("%.0f", float64(agg.next-cfg.StartBlock)/elapsed.Seconds()))
+		"blk/s", fmt.Sprintf("%.0f", float64(done)/elapsed.Seconds()),
+		"mgas/s", fmt.Sprintf("%.1f", float64(totalGas)/elapsed.Seconds()/1e6),
+		"elapsed", elapsed.Truncate(time.Second))
 	return nil
+}
+
+func outputDescription(cfg WitnessReplayConfig) string {
+	if cfg.NoOutput {
+		return "(none, smoke run)"
+	}
+	return cfg.OutputPath
 }
 
 // absorb takes a worker result, places it in the pending map, then

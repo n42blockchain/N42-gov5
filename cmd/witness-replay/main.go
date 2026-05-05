@@ -126,14 +126,10 @@ func run(c *cli.Context) error {
 		Engine:            engine,
 	}
 
-	log.Info("witness-replay starting",
-		"workers", workers,
-		"input_hb", hbPath,
-		"input_witness", witnessPath,
-		"output", outputPath,
-		"datadir", datadir,
-		"start", start,
-		"end", end)
+	log.Info("Witness replay configured",
+		"headers/bodies", hbPath,
+		"witness", witnessPath,
+		"datadir", datadir)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -141,9 +137,11 @@ func run(c *cli.Context) error {
 		return err
 	}
 
-	log.Info("Phase A complete. To populate PlainState in MDBX, run:",
-		"cmd", fmt.Sprintf(
-			"build/bin/ethexec.exe rebuild-state --ancient %s --datadir %s --leaves %s --verify 0",
-			hbPath, datadir, outputPath))
+	if !c.Bool("no-output") {
+		log.Info("Next: rebuild PlainState from cdat output",
+			"cmd", fmt.Sprintf(
+				"build/bin/ethexec.exe rebuild-state --ancient %s --datadir %s --leaves %s --verify 0",
+				hbPath, datadir, outputPath))
+	}
 	return nil
 }

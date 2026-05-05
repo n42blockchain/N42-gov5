@@ -37,9 +37,13 @@ type WitnessJob struct {
 
 // WitnessResult is what a worker produces per block. Output bytes are
 // ready for outputBatcher.addEntry; the encoder ran inline so the
-// aggregator only needs to sequence them.
+// aggregator only needs to sequence them. GasUsed and TxCount let the
+// aggregator log throughput in mgas/s and tx/s without re-reading
+// headers.
 type WitnessResult struct {
 	BlockNum     uint64
+	GasUsed      uint64
+	TxCount      uint32
 	ReceiptBytes []byte
 	AcctCSBytes  []byte
 	StoCSBytes   []byte
@@ -102,7 +106,12 @@ func replayWitnessBlock(
 	engine consensus.Engine,
 	mode ReplayMode,
 ) WitnessResult {
-	res := WitnessResult{BlockNum: job.BlockNum, WitnessBytes: job.Witness}
+	res := WitnessResult{
+		BlockNum:     job.BlockNum,
+		GasUsed:      job.Header.GasUsed,
+		TxCount:      uint32(len(job.Body.Transactions)),
+		WitnessBytes: job.Witness,
+	}
 
 	if len(job.Body.Transactions) == 0 {
 		if job.Header.GasUsed != 0 {
