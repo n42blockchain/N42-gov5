@@ -119,12 +119,15 @@ func replayWitnessBlock(
 		return res
 	}
 
-	// Note: empty-body blocks STILL need ProcessBlock — engine.Finalize
-	// credits the coinbase block reward and that account write must
-	// land in acctcs to match ethexec. The recording-side witness has
-	// the coinbase read for the same reason; skipping ProcessBlock
-	// would silently lose ~30-50 B per empty block (~1-2 MB across
-	// the Frontier 0-46147 range).
+	// Block 0 is handled by the pipeline (genesis encoding requires a
+	// fresh chaindata, not the user's potentially-populated MDBX); the
+	// reader skips block 0 and the aggregator injects pre-encoded
+	// bytes directly. Worker should never see block 0.
+	if job.BlockNum == 0 {
+		res.Err = fmt.Errorf("worker received block 0 — pipeline should have intercepted")
+		return res
+	}
+
 	reader := NewWitnessReplayReader(job.Witness, codeTx)
 	ibs := state.New(reader)
 
