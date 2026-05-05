@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -35,47 +34,26 @@ type headersBodiesSource interface {
 // openHeadersBodiesSource picks the reader implementation by probing
 // the input directory.
 //
-// FILENAME COLLISION WARNING. Two distinct on-disk formats both use
-// the names headers.0000.cdat / bodies.0000.cdat / headers.cidx /
-// bodies.cidx — they are NOT interchangeable:
+//   - N42 columnar (n42CompactSource, header_compact.go +
+//     body_compact.go): stored as hcol.cidx + hcol.NNNN.cdat /
+//     bcol.cidx + bcol.NNNN.cdat. Each block-field is its own column,
+//     8192-block zstd segments. The trailer of each segment carries
+//     the canonical Hash() per block so readers don't reconstruct
+//     ParentHash + Bloom from receipts.
 //
 //   - geth ancient / standard freezer (gethFreezerSource): full RLP
-//     per block, 64-block zstd batches. Decode via DecodeGethHeader
-//     gives canonical Header (all 15+ fields present, Hash() matches
-//     mainnet directly). Reading via this path "just works" with no
-//     reconstruction needed.
+//     per block, 64-block zstd batches at headers.NNNN.cdat /
+//     bodies.NNNN.cdat. DecodeGethHeader returns canonical Header
+//     directly.
 //
-//   - N42 columnar (n42CompactSource, header_compact.go): each field
-//     stored as its own column, 8192-block zstd segments. ParentHash
-//     and Bloom are eliminated entirely (header_compact.go calls them
-//     "derivable / recompute from receipts"). The reader must put
-//     them back before Hash() agrees with mainnet.
-//
-// We detect by headers.cidx size — anything under 8 MB is treated as
-// columnar. Numbers for ~25M blocks: columnar cidx ~24 KB (1 entry
-// per 8192-block segment × 8 B), freezer cidx ~150 MB (1 entry per
-// 64-block batch × ~6 B + offsets).
-//
-// receiptsFromDir is only used for n42CompactSource — gethFreezerSource
-// already has bloom in its decoded headers, so it ignores this path.
-func openHeadersBodiesSource(dir, receiptsFromDir string) (headersBodiesSource, error) {
-	if isN42ColumnarHeaders(dir) {
-		if receiptsFromDir == "" {
-			receiptsFromDir = dir
-		}
-		return openN42CompactSource(dir, receiptsFromDir)
+// The earlier shared filename layout (both formats using
+// headers.NNNN.cdat) was bug-prone — renaming the columnar archive
+// to hcol/bcol makes the two formats unambiguous.
+func openHeadersBodiesSource(dir string) (headersBodiesSource, error) {
+	if _, err := os.Stat(filepath.Join(dir, "hcol.cidx")); err == nil {
+		return openN42CompactSource(dir)
 	}
 	return openGethFreezerSource(dir)
-}
-
-const columnarHeaderIdxMaxBytes = 8 * 1024 * 1024 // 8 MB — see openHeadersBodiesSource
-
-func isN42ColumnarHeaders(dir string) bool {
-	st, err := os.Stat(filepath.Join(dir, "headers.cidx"))
-	if err != nil {
-		return false
-	}
-	return st.Size() <= columnarHeaderIdxMaxBytes
 }
 
 // gethFreezerSource adapts freezer.Freezer to headersBodiesSource.
@@ -117,37 +95,17 @@ func (s *gethFreezerSource) freezer() *freezer.Freezer { return s.f }
 
 // n42CompactSource adapts the N42 columnar readers. Each per-block
 // access decodes a segment if not cached; sequential reads stay hot.
-//
-// The columnar header format DROPS two fields that are needed to
-// recompute the canonical Header.Hash() (and thus BLOCKHASH):
-//
-//   - ParentHash: must be set to the prior block's hash
-//   - Bloom: must be recomputed from the block's receipts
-//
-// header(n) restores both: parentHash via hashCache[n-1] and bloom
-// via the receipts.cdat at the same dir. Hash() then matches
-// canonical Ethereum mainnet hashes byte-for-byte. Sequential
-// feedBlocks access builds the cache naturally.
+// The segment trailer carries the canonical Hash() per block, so
+// reading is O(1) — no parent-chain walk, no bloom recompute, no
+// external receipts dependency. ParentHash and Bloom on the returned
+// Header remain zero (the columnar format drops them); callers that
+// only need Hash() get the right value via the cached atomic.Value.
 type n42CompactSource struct {
-	hr          *HeaderCompactReader
-	br          *BodyCompactReader
-	receiptsF   *freezer.Freezer // for bloom recompute (geth-format receipts)
-	receiptsTbl *freezer.FreezerTable
-	receiptsFmt receiptsFormat
-
-	mu        sync.RWMutex
-	hashCache map[uint64]types.Hash
+	hr *HeaderCompactReader
+	br *BodyCompactReader
 }
 
-type receiptsFormat int
-
-const (
-	receiptsFormatNone receiptsFormat = iota
-	receiptsFormatN42Compact
-	receiptsFormatGethRLP
-)
-
-func openN42CompactSource(dir, receiptsDir string) (*n42CompactSource, error) {
+func openN42CompactSource(dir string) (*n42CompactSource, error) {
 	hr, err := OpenHeaderCompact(dir)
 	if err != nil {
 		return nil, fmt.Errorf("open header compact %s: %w", dir, err)
@@ -157,136 +115,16 @@ func openN42CompactSource(dir, receiptsDir string) (*n42CompactSource, error) {
 		hr.Close()
 		return nil, fmt.Errorf("open body compact %s: %w", dir, err)
 	}
-	src := &n42CompactSource{
-		hr:        hr,
-		br:        br,
-		hashCache: make(map[uint64]types.Hash, 4096),
-	}
-	// Both N42-compact and geth-ancient receipts dirs ship a
-	// receipts.cidx, so we can't tell them apart by filename alone.
-	// Probe a known-non-empty block (Frontier era: 46147 is the first
-	// txed block) with each codec; whichever decodes cleanly wins.
-	gf, err := freezer.New(receiptsDir, 0)
-	if err != nil {
-		hr.Close()
-		br.Close()
-		return nil, fmt.Errorf("open receipts dir %s: %w", receiptsDir, err)
-	}
-	const probeBlock = uint64(46147)
-	probe, perr := gf.Ancient(freezer.TableReceipts, probeBlock)
-	if perr == nil && len(probe) > 0 {
-		// Geth RLP gets first try because geth ancient is the more
-		// common fallback and DecodeReceiptsCompact happens to accept
-		// short geth blobs without erroring.
-		if _, derr := DecodeGethReceipts(probe); derr == nil {
-			src.receiptsF = gf
-			src.receiptsFmt = receiptsFormatGethRLP
-			return src, nil
-		}
-		if _, derr := DecodeReceiptsCompact(probe); derr == nil {
-			gf.Close()
-			t, terr := freezer.NewFreezerTableCompressedReadOnly(receiptsDir, freezer.TableReceipts, "c")
-			if terr == nil {
-				t.ForceBatchSize(freezer.BatchSize)
-				src.receiptsTbl = t
-				src.receiptsFmt = receiptsFormatN42Compact
-				return src, nil
-			}
-		}
-	}
-	// No probe block available or both decoders failed — keep generic
-	// freezer open and assume geth RLP. Bloom recompute will fail
-	// gracefully per-block if data is incompatible.
-	src.receiptsF = gf
-	src.receiptsFmt = receiptsFormatGethRLP
-	return src, nil
+	return &n42CompactSource{hr: hr, br: br}, nil
 }
 
 func (s *n42CompactSource) header(n uint64) (*block.Header, error) {
-	hdr, err := s.hr.ReadHeader(n)
-	if err != nil {
-		return nil, err
-	}
-	if n > 0 {
-		parent, err := s.hashOf(n - 1)
-		if err != nil {
-			return nil, fmt.Errorf("block %d: parent hash: %w", n, err)
-		}
-		hdr.ParentHash = parent
-	}
-	// Recompute bloom from receipts. The columnar format drops bloom
-	// because it's derivable from logs; we need the canonical value
-	// here so Hash() matches mainnet.
-	if err := s.fillBloom(n, hdr); err != nil {
-		return nil, fmt.Errorf("block %d: bloom: %w", n, err)
-	}
-	// The HeaderCompactReader returns a SHARED pointer into its
-	// segment cache. We just mutated parentHash + bloom on it, so the
-	// previously-cached hash atomic.Value is stale; clear it before
-	// computing the canonical Hash().
-	hdr.ResetHashCache()
-	h := hdr.Hash()
-	s.mu.Lock()
-	s.hashCache[n] = h
-	s.mu.Unlock()
-	return hdr, nil
-}
-
-// fillBloom looks up the block's receipts and rebuilds Header.Bloom.
-// The N42 columnar header reader returns zeros for Bloom; canonical
-// hash needs the real value so BLOCKHASH from contracts agrees with
-// what was recorded by ethexec.
-func (s *n42CompactSource) fillBloom(n uint64, hdr *block.Header) error {
-	var data []byte
-	var err error
-	switch s.receiptsFmt {
-	case receiptsFormatN42Compact:
-		if n >= s.receiptsTbl.Items() {
-			return fmt.Errorf("block %d beyond receipts table items %d (incomplete archive)",
-				n, s.receiptsTbl.Items())
-		}
-		data, err = s.receiptsTbl.Retrieve(n)
-	case receiptsFormatGethRLP:
-		data, err = s.receiptsF.Ancient(freezer.TableReceipts, n)
-	default:
-		return nil // no receipts source
-	}
-	if err != nil {
-		return err
-	}
-	if len(data) == 0 {
-		return nil // empty block: zero bloom is correct
-	}
-	var receipts block.Receipts
-	switch s.receiptsFmt {
-	case receiptsFormatN42Compact:
-		receipts, err = DecodeReceiptsCompact(data)
-	case receiptsFormatGethRLP:
-		receipts, err = DecodeGethReceipts(data)
-	}
-	if err != nil {
-		return fmt.Errorf("decode receipts: %w", err)
-	}
-	hdr.Bloom = block.CreateBloom(receipts)
-	return nil
-}
-
-// hashOf returns the canonical hash of block n, reading the chain
-// down from n if cache misses. Sequential feedBlocks access keeps
-// the cache populated forward, so this only recurses for the very
-// first block of a fresh source.
-func (s *n42CompactSource) hashOf(n uint64) (types.Hash, error) {
-	s.mu.RLock()
-	h, ok := s.hashCache[n]
-	s.mu.RUnlock()
-	if ok {
-		return h, nil
-	}
-	hdr, err := s.header(n) // recursive; populates cache on the way down
-	if err != nil {
-		return types.Hash{}, err
-	}
-	return hdr.Hash(), nil
+	// Reader populates Header.hash atomic.Value from the segment
+	// trailer (hfStoredHash flag), so hdr.Hash() returns canonical
+	// directly. ParentHash and Bloom remain zero on the struct —
+	// callers that need them must reconstruct externally; for
+	// witness-replay only Hash() matters (BLOCKHASH).
+	return s.hr.ReadHeader(n)
 }
 
 func (s *n42CompactSource) body(n uint64) (*GethBodyResult, error) {
@@ -326,12 +164,6 @@ func (s *n42CompactSource) maxBlock() uint64 {
 func (s *n42CompactSource) close() {
 	s.hr.Close()
 	s.br.Close()
-	if s.receiptsTbl != nil {
-		s.receiptsTbl.Close()
-	}
-	if s.receiptsF != nil {
-		s.receiptsF.Close()
-	}
 }
 
 // blockHashWindowSize is the EVM BLOCKHASH look-back window per

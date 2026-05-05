@@ -6,7 +6,7 @@
 // Architecture:
 //   - 8192 blocks per segment (matching headers.cdat)
 //   - Each segment: columnar field separation + zstd compression
-//   - Output: bodies.NNNN.cdat (≤2GB each) + bodies.cidx (8B per segment)
+//   - Output: bcol.NNNN.cdat (≤2GB each) + bcol.cidx (8B per segment)
 //   - Reader caches current segment for sequential access
 
 package ethel
@@ -558,7 +558,7 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 	}
 
 	// Determine resume point from existing idx.
-	idxPath := filepath.Join(s.outputDir, "bodies.cidx")
+	idxPath := filepath.Join(s.outputDir, "bcol.cidx")
 	idxFile, err := os.OpenFile(idxPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err
@@ -586,7 +586,7 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 		idxFile.ReadAt(lastEntry[:], int64(existingSegments-1)*8)
 		e := decodeBodyIdx(lastEntry[:])
 		headFile = e.fileNum
-		datPath := filepath.Join(s.outputDir, fmt.Sprintf("bodies.%04d.cdat", headFile))
+		datPath := filepath.Join(s.outputDir, fmt.Sprintf("bcol.%04d.cdat", headFile))
 		if fi, err := os.Stat(datPath); err == nil {
 			headSize = fi.Size()
 		}
@@ -608,7 +608,7 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 			datFile = nil
 			datBuf = nil
 		}
-		path := filepath.Join(s.outputDir, fmt.Sprintf("bodies.%04d.cdat", headFile))
+		path := filepath.Join(s.outputDir, fmt.Sprintf("bcol.%04d.cdat", headFile))
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {
 			return err
@@ -762,7 +762,7 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 // ---------- Reader ----------
 
 // BodyCompactReader provides random and sequential access to bodies
-// stored in bodies.NNNN.cdat + bodies.cidx. Caches current segment.
+// stored in bcol.NNNN.cdat + bcol.cidx. Caches current segment.
 type BodyCompactReader struct {
 	dir       string
 	idxFile   *os.File
@@ -775,7 +775,7 @@ type BodyCompactReader struct {
 }
 
 func OpenBodyCompact(dir string) (*BodyCompactReader, error) {
-	idxPath := filepath.Join(dir, "bodies.cidx")
+	idxPath := filepath.Join(dir, "bcol.cidx")
 	idf, err := os.Open(idxPath)
 	if err != nil {
 		return nil, fmt.Errorf("open index: %w", err)
@@ -842,7 +842,7 @@ func (r *BodyCompactReader) loadSegment(segNum int64) error {
 	// Open/cache dat file.
 	df, ok := r.dataFiles[e.fileNum]
 	if !ok {
-		path := filepath.Join(r.dir, fmt.Sprintf("bodies.%04d.cdat", e.fileNum))
+		path := filepath.Join(r.dir, fmt.Sprintf("bcol.%04d.cdat", e.fileNum))
 		f, err := os.Open(path)
 		if err != nil {
 			return fmt.Errorf("open dat %d: %w", e.fileNum, err)

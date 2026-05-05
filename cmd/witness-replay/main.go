@@ -59,7 +59,6 @@ func main() {
 			&cli.BoolFlag{Name: "skip-verify", Usage: "Skip per-block gas verification. Useful when the witness was recorded by a different ProcessBlock version (state-read order drift produces gas mismatches that aren't a framework bug)."},
 			&cli.BoolFlag{Name: "continue-on-error", Usage: "Keep replaying past per-block failures (logged + counted). Throughput measurement against a possibly-stale witness needs this; production runs should leave it false so any divergence halts immediately."},
 			&cli.BoolFlag{Name: "write-witness", Usage: "Write witness.cdat to the output freezer alongside receipts/acctcs/storcs. Off by default — replay typically reads existing witness, so re-emitting it is duplicate work."},
-			&cli.StringFlag{Name: "receipts-from", Usage: "Override receipts source for Header.Bloom recompute when reading N42 columnar headers (which strip bloom). Default: same dir as --input-headers-bodies. Set to geth ancient when N42 receipts are incomplete."},
 		},
 		Action: run,
 	}
@@ -125,7 +124,6 @@ func run(c *cli.Context) error {
 		SkipVerify:        c.Bool("skip-verify"),
 		ContinueOnError:   c.Bool("continue-on-error"),
 		WriteWitness:      c.Bool("write-witness"),
-		ReceiptsFromPath:  c.String("receipts-from"),
 		ChainCfg:          chainCfg,
 		Engine:            engine,
 	}
