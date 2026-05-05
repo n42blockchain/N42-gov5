@@ -792,6 +792,17 @@ func run(c *cli.Context) error {
 			break
 		}
 	}
+	// Fallback: senders as a freezer table at the input dir (the format
+	// produced by `ethexec sender-recovery --ancient`). Common when the
+	// input dir holds N42 columnar headers/bodies plus a sibling
+	// senders.cidx + senders.NNNN.cdat in standard freezer-batch format.
+	if !senderFound {
+		if tbl := f.Table("senders"); tbl != nil && tbl.Items() > 0 {
+			executor.SetSenderFreezer(f)
+			log.Info("Pre-computed senders loaded (input freezer)", "path", ancientPath, "items", tbl.Items())
+			senderFound = true
+		}
+	}
 	if !senderFound {
 		log.Info("No pre-computed senders, using ecrecover from signatures")
 	}

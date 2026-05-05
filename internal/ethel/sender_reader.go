@@ -8,6 +8,7 @@ package ethel
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -24,6 +25,13 @@ type SenderSegmentReader struct {
 }
 
 // OpenSenderStore opens a senders SegmentStore for reading.
+//
+// cscompact.OpenSegmentStore happily opens a file that LOOKS like
+// senders.cidx but is actually in the unrelated freezer-batch format
+// (geth/N42 standard 6-byte cidx) — segment count is bogus and every
+// ReadSegmentData returns EOF after a costly make([]byte, junk) +
+// failed ReadAt. Refuse the open if a probe read at segment 0 fails:
+// the caller will fall back to the freezer-table senders source.
 func OpenSenderStore(chainDir string) (*SenderSegmentReader, error) {
 	store, err := cscompact.OpenSegmentStore(chainDir, "senders")
 	if err != nil {
@@ -33,11 +41,16 @@ func OpenSenderStore(chainDir string) (*SenderSegmentReader, error) {
 		store.Close()
 		return nil, nil
 	}
+	if _, err := store.ReadSegmentData(0); err != nil {
+		store.Close()
+		return nil, fmt.Errorf("senders SegmentStore at %s: probe read failed (likely freezer-format misread as cscompact): %w",
+			chainDir, err)
+	}
 	dec, _ := zstd.NewReader(nil)
 	return &SenderSegmentReader{
 		store:       store,
 		dec:         dec,
-		cachedBatch: ^uint64(0), // invalid, forces first load
+		cachedBatch: ^uint64(0),
 	}, nil
 }
 
@@ -53,7 +66,6 @@ func (r *SenderSegmentReader) ReadBlock(blockNum uint64) ([]byte, error) {
 		return nil, nil
 	}
 
-	// Cache: if same batch, reuse decoded data.
 	if batchNum != r.cachedBatch {
 		if err := r.loadBatch(batchNum); err != nil {
 			return nil, err

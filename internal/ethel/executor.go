@@ -758,9 +758,6 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) 
 	}
 	t3 := time.Now()
 
-	// 7. Snapshot output data and enqueue for async encoding + write.
-	// The snapshot reads from stateBuf SYNCHRONOUSLY (before the next
-	// block can modify it), so the background encoder never races.
 	if e.asyncOut != nil {
 		if err := e.asyncOut.checkError(); err != nil {
 			return err
