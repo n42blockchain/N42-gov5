@@ -810,24 +810,27 @@ func (e *Executor) readHeader(blockNum uint64) (*block.Header, error) {
 }
 
 // readBody reads a body from compact reader or Geth freezer.
-// Falls back to Geth freezer if compact body looks incomplete (e.g. missing uncles).
 func (e *Executor) readBody(blockNum uint64) (*GethBodyResult, error) {
 	if e.compactBodies != nil {
 		decoded, err := e.compactBodies.ReadBody(blockNum)
-		if err == nil && (len(decoded.Txs) > 0 || len(decoded.UncleRLP) > 0 || len(decoded.Withdrawals) > 0) {
-			result := &GethBodyResult{
-				Transactions: decoded.Txs,
-				Withdrawals:  decoded.Withdrawals,
-			}
-			for _, rlpBytes := range decoded.UncleRLP {
-				var uncle block.Header
-				if err := rlp.DecodeBytes(rlpBytes, &uncle); err == nil {
-					result.Uncles = append(result.Uncles, &uncle)
-				}
-			}
-			return result, nil
+		if err != nil {
+			return nil, fmt.Errorf("read body %d (compact): %w", blockNum, err)
 		}
-		// Compact returned empty body — may be missing uncles. Fall through to Geth.
+		// Trust the compact reader. Genesis (block 0) and other empty
+		// blocks legitimately return zero txs/uncles/withdrawals.
+		// Falling through to geth freezer here used to mask "geth
+		// ancient is broken" with "block 0 empty body" errors.
+		result := &GethBodyResult{
+			Transactions: decoded.Txs,
+			Withdrawals:  decoded.Withdrawals,
+		}
+		for _, rlpBytes := range decoded.UncleRLP {
+			var uncle block.Header
+			if err := rlp.DecodeBytes(rlpBytes, &uncle); err == nil {
+				result.Uncles = append(result.Uncles, &uncle)
+			}
+		}
+		return result, nil
 	}
 	data, err := e.freezer.Ancient(freezer.TableBodies, blockNum)
 	if err != nil {
