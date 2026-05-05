@@ -78,11 +78,11 @@ type WitnessReplayConfig struct {
 	// it false so any divergence halts immediately.
 	ContinueOnError bool
 
-	// NoWitnessOutput skips writing the witness.cdat table to the output
-	// freezer. Other tables (receipts, acctcs, storcs) are still written.
-	// Useful when the caller already has witness elsewhere and only wants
-	// changesets back.
-	NoWitnessOutput bool
+	// WriteWitness writes the witness.cdat table to the output freezer
+	// alongside receipts/acctcs/storcs. Off by default — typical replay
+	// reads existing witness from --input-witness, so re-emitting it
+	// duplicates the input. Set when generating a fresh witness archive.
+	WriteWitness bool
 
 	ChainCfg *params.ChainConfig
 	Engine   consensus.Engine
@@ -91,11 +91,11 @@ type WitnessReplayConfig struct {
 // witnessAggregateState owns the outputBatcher and is the only thing
 // that writes to it (sequentially, in block order).
 type witnessAggregateState struct {
-	batcher     *outputBatcher
-	pending     map[uint64]WitnessResult
-	next        uint64
-	end         uint64
-	skipWitness bool
+	batcher      *outputBatcher
+	pending      map[uint64]WitnessResult
+	next         uint64
+	end          uint64
+	writeWitness bool
 }
 
 // RunWitnessReplay drives the parallel replay end-to-end. Returns
@@ -224,7 +224,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 			if err := batcher.addEntry(freezer.TableStorageChanges, "c", storcsBytes); err != nil {
 				return fmt.Errorf("addEntry storcs block 0: %w", err)
 			}
-			if !cfg.NoWitnessOutput {
+			if cfg.WriteWitness {
 				if err := batcher.addEntry(freezer.TableBlockWitness, "c", nil); err != nil {
 					return fmt.Errorf("addEntry witness block 0: %w", err)
 				}
@@ -246,11 +246,11 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 
 	// 6. Aggregator (this goroutine).
 	agg := &witnessAggregateState{
-		batcher:     batcher,
-		pending:     make(map[uint64]WitnessResult),
-		next:        feedStart,
-		end:         end,
-		skipWitness: cfg.NoWitnessOutput,
+		batcher:      batcher,
+		pending:      make(map[uint64]WitnessResult),
+		next:         feedStart,
+		end:          end,
+		writeWitness: cfg.WriteWitness,
 	}
 	target := end - cfg.StartBlock
 	log.Info("Replay started",
@@ -369,10 +369,11 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 			if err := a.batcher.addEntry(freezer.TableStorageChanges, "c", res.StoCSBytes); err != nil {
 				return fmt.Errorf("addEntry storcs block %d: %w", res.BlockNum, err)
 			}
-			// Always emit a witness entry — even an empty one for txless
-			// blocks. The cdat 64-batch index requires every table to
-			// keep the same item count; skipping breaks alignment.
-			if !a.skipWitness {
+			// Witness output is opt-in (WriteWitness=true). When on, the
+			// entry must always be emitted — even if empty for a txless
+			// block — so the witness table stays 64-batch-aligned with
+			// receipts/acctcs/storcs.
+			if a.writeWitness {
 				if err := a.batcher.addEntry(freezer.TableBlockWitness, "c", res.WitnessBytes); err != nil {
 					return fmt.Errorf("addEntry witness block %d: %w", res.BlockNum, err)
 				}
