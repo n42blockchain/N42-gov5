@@ -470,20 +470,34 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 			count = endBlock - segStart
 		}
 
-		// Read and decode headers.
+		// Read and decode headers. Tail-truncation tolerance: a single
+		// trailing corrupt entry (typical of geth's active head segment
+		// or a recovery-truncate) shouldn't waste 97% of the work. Log
+		// + cap + emit partial segment + break out of the outer loop.
 		headers := make([]*block.Header, 0, count)
+		var tailCorrupt bool
 		for i := uint64(0); i < count; i++ {
 			data, err := s.inputFreezer.Ancient(freezer.TableHeaders, segStart+i)
 			if err != nil {
-				return fmt.Errorf("read header %d: %w", segStart+i, err)
+				log.Warn("Header compact: trailing read error — capping range",
+					"block", segStart+i, "captured", len(headers), "err", err)
+				tailCorrupt = true
+				break
 			}
 			totalGethBytes += int64(len(data))
 
 			h, err := DecodeGethHeader(data)
 			if err != nil {
-				return fmt.Errorf("decode header %d: %w", segStart+i, err)
+				log.Warn("Header compact: trailing decode error — capping range",
+					"block", segStart+i, "captured", len(headers), "err", err)
+				tailCorrupt = true
+				break
 			}
 			headers = append(headers, h)
+		}
+		if len(headers) == 0 {
+			// Empty segment — nothing to emit. Exit outer loop.
+			break
 		}
 
 		// Encode columnar segment.
@@ -524,6 +538,14 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 		if segCount%10 == 0 {
 			idxBuf.Flush()
 			datBuf.Flush()
+		}
+
+		if tailCorrupt {
+			// Captured the partial last segment; trailing entries are
+			// lost. Stop here.
+			log.Warn("Header compact: stopped at last good block due to trailing corruption",
+				"lastBlock", segStart+uint64(len(headers))-1)
+			break
 		}
 
 		if segCount%100 == 0 {
