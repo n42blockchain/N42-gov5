@@ -59,6 +59,7 @@ func runWitnessWorker(
 	chainCfg *params.ChainConfig,
 	engine consensus.Engine,
 	skipVerify bool,
+	noOutput bool,
 ) {
 	codeTx, err := codeDB.BeginRo(ctx)
 	if err != nil {
@@ -76,7 +77,7 @@ func runWitnessWorker(
 			return
 		default:
 		}
-		res := replayWitnessBlock(job, codeTx, chainCfg, engine, skipVerify)
+		res := replayWitnessBlock(job, codeTx, chainCfg, engine, skipVerify, noOutput)
 		select {
 		case resultCh <- res:
 		case <-ctx.Done():
@@ -93,24 +94,37 @@ func replayWitnessBlock(
 	chainCfg *params.ChainConfig,
 	engine consensus.Engine,
 	skipVerify bool,
+	noOutput bool,
 ) WitnessResult {
 	res := WitnessResult{BlockNum: job.BlockNum, WitnessBytes: job.Witness}
 
 	if len(job.Body.Transactions) == 0 {
-		// Empty body: still emit empty changeset entries so cdat
-		// indices stay aligned. Verify gas == 0.
 		if job.Header.GasUsed != 0 {
 			res.Err = fmt.Errorf("block %d: empty body but header.GasUsed=%d",
 				job.BlockNum, job.Header.GasUsed)
 			return res
 		}
-		res.ReceiptBytes = EncodeReceiptsCompact(nil)
+		if !noOutput {
+			res.ReceiptBytes = EncodeReceiptsCompact(nil)
+		}
 		return res
 	}
 
 	reader := NewWitnessReplayReader(job.Witness, codeTx)
 	ibs := state.New(reader)
-	writer := NewWitnessCapturingWriter()
+
+	// Skip the WitnessCapturingWriter (and its ChangeSetWriter) when
+	// running pure-throughput smokes — CommitBlock + GetAccountChanges
+	// + GetStorageChanges + Encode* are ~12% of CPU per profile and
+	// pointless when we're discarding the output.
+	var writer *WitnessCapturingWriter
+	var stateWriter state.WriterWithChangeSets
+	if noOutput {
+		stateWriter = state.NewNoopWriter()
+	} else {
+		writer = NewWitnessCapturingWriter()
+		stateWriter = writer
+	}
 
 	uncles := make([]block.IHeader, len(job.Body.Uncles))
 	for i, u := range job.Body.Uncles {
@@ -120,28 +134,26 @@ func replayWitnessBlock(
 	result, err := ProcessBlock(
 		chainCfg, engine, job.Header,
 		job.Body.Transactions, uncles, job.Body.Withdrawals,
-		ibs, job.BlockHashFn, job.Senders, writer,
+		ibs, job.BlockHashFn, job.Senders, stateWriter,
 	)
 	if err != nil {
 		res.Err = fmt.Errorf("block %d: ProcessBlock: %w", job.BlockNum, err)
 		return res
 	}
 
-	rules := chainCfg.Rules(job.Header.Number.Uint64())
-	if err := ibs.CommitBlock(rules, writer); err != nil {
-		res.Err = fmt.Errorf("block %d: CommitBlock: %w", job.BlockNum, err)
-		return res
-	}
-
-	// Per-block gas verification: the canonical receipt-level signal
-	// that the EVM produced the same trace as the canonical chain.
-	// Cheap, and catches witness misalignment immediately. Skipped
-	// when --skip-verify is set (pure throughput measurement against
-	// a possibly-stale witness recorded by a prior ProcessBlock
-	// version).
 	if !skipVerify && result.GasUsed != job.Header.GasUsed {
 		res.Err = fmt.Errorf("block %d: gas mismatch: got %d want %d",
 			job.BlockNum, result.GasUsed, job.Header.GasUsed)
+		return res
+	}
+
+	if noOutput {
+		return res
+	}
+
+	rules := chainCfg.Rules(job.Header.Number.Uint64())
+	if err := ibs.CommitBlock(rules, writer); err != nil {
+		res.Err = fmt.Errorf("block %d: CommitBlock: %w", job.BlockNum, err)
 		return res
 	}
 
