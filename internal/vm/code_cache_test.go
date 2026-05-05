@@ -96,16 +96,20 @@ func TestCodeAnalysisCache_LRUEviction(t *testing.T) {
 		}
 	}
 
-	// Access hashes[1] to promote it, then add two more to evict hashes[2] then hashes[3].
-	cache.Get(hashes[1]) // promote hashes[1]
+	// Get no longer promotes on hit — see code_cache.go Get for the
+	// reasoning (lock-free fast path under high parallelism). Eviction
+	// follows insertion order. hashes[1] is the next-LRU after the
+	// hashes[0] eviction, so adding hashes[4] should evict hashes[1].
+	cache.Get(hashes[1]) // no-op for LRU under the new policy
 	cache.Put(hashes[4], []uint64{4})
 
-	// hashes[2] should be evicted now (was LRU after hashes[1] was promoted).
-	if _, ok := cache.Get(hashes[2]); ok {
-		t.Fatal("expected hashes[2] to be evicted after promotion of hashes[1]")
+	if _, ok := cache.Get(hashes[1]); ok {
+		t.Fatal("expected hashes[1] to be evicted (Get is non-promoting)")
 	}
-	if _, ok := cache.Get(hashes[1]); !ok {
-		t.Fatal("expected hashes[1] to survive after promotion")
+	for _, i := range []int{2, 3, 4} {
+		if _, ok := cache.Get(hashes[i]); !ok {
+			t.Fatalf("expected hashes[%d] to be present", i)
+		}
 	}
 }
 
