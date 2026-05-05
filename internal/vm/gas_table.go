@@ -213,8 +213,9 @@ func gasSStoreEIP2200(evm VMInterpreter, contract *Contract, stack *stack.Stack,
 	// Gas sentry honoured, do the actual gas calculation based on the stored value
 	value, x := stack.Back(1), stack.Back(0)
 	key := types.Hash(x.Bytes32())
+	addr := contract.Address()
 	var current uint256.Int
-	evm.IntraBlockState().GetState(contract.Address(), &key, &current)
+	evm.IntraBlockState().GetState(addr, &key, &current)
 
 	if current.Eq(value) { // noop (1)
 		if dbgSStore15K && evm.Context().BlockNumber == dbgSStoreBlock {
@@ -222,7 +223,6 @@ func gasSStoreEIP2200(evm VMInterpreter, contract *Contract, stack *stack.Stack,
 			if ibs, ok := evm.IntraBlockState().(interface{ TxIndex() int }); ok {
 				ti = ibs.TxIndex()
 			}
-			addr := contract.Address()
 			fmt.Fprintf(os.Stderr, "SSTORE bn=%d ti=%d addr=%x slot=%x orig=? cur=%s val=%s path=NOOP\n",
 				dbgSStoreBlock, ti, addr[:], key, current.Hex(), value.Hex())
 		}
@@ -230,11 +230,10 @@ func gasSStoreEIP2200(evm VMInterpreter, contract *Contract, stack *stack.Stack,
 	}
 
 	var original uint256.Int
-	evm.IntraBlockState().GetCommittedState(contract.Address(), &key, &original)
+	evm.IntraBlockState().GetCommittedState(addr, &key, &original)
 
 	// Env-gated trace for debugging 15K SSTORE diffs on MEV bots.
 	if dbgSStore15K && evm.Context().BlockNumber == dbgSStoreBlock {
-		addr := contract.Address()
 		var path string
 		if original == current {
 			if original.IsZero() {
