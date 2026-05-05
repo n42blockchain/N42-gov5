@@ -624,6 +624,8 @@ func run(c *cli.Context) error {
 
 	var compactHR *ethel.HeaderCompactReader
 	var compactBR *ethel.BodyCompactReader
+	var compactHRPrefetch *ethel.HeaderCompactReader
+	var compactBRPrefetch *ethel.BodyCompactReader
 	if _, err := os.Stat(filepath.Join(ancientPath, "hcol.cidx")); err == nil {
 		hr, err := ethel.OpenHeaderCompact(ancientPath)
 		if err != nil {
@@ -638,6 +640,24 @@ func run(c *cli.Context) error {
 		compactBR = br
 		defer compactHR.Close()
 		defer compactBR.Close()
+		// Separate reader instances for the prefetcher. The compact
+		// readers cache the most-recently-decoded segment in a single
+		// non-thread-safe field, so the executor and prefetcher fighting
+		// over the same instance triggers a decode-per-read on every
+		// access (~500 ms each → 1.6 blk/s). Two instances cost an
+		// extra fd + ~100 KB cache but eliminate the contention.
+		hr2, err := ethel.OpenHeaderCompact(ancientPath)
+		if err == nil {
+			br2, err2 := ethel.OpenBodyCompact(ancientPath)
+			if err2 == nil {
+				compactHRPrefetch = hr2
+				compactBRPrefetch = br2
+				defer compactHRPrefetch.Close()
+				defer compactBRPrefetch.Close()
+			} else {
+				hr2.Close()
+			}
+		}
 		log.Info("Input headers/bodies", "format", "n42-columnar",
 			"path", ancientPath, "max_block", compactHR.MaxBlock())
 	} else {
@@ -754,6 +774,9 @@ func run(c *cli.Context) error {
 	executor := ethel.NewExecutor(f, db, chainCfg, engine, cfg, outFreezer)
 	if compactHR != nil && compactBR != nil {
 		executor.SetCompactReaders(compactHR, compactBR)
+		if compactHRPrefetch != nil && compactBRPrefetch != nil {
+			executor.SetPrefetchCompactReaders(compactHRPrefetch, compactBRPrefetch)
+		}
 	}
 
 	// Apply tunable read-cache budget. Defaults (4/32/2 GB acct/sto/code)
