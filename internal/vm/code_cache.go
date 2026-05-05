@@ -69,26 +69,21 @@ func NewCodeAnalysisCache(capacity int) *CodeAnalysisCache {
 // The returned slice MUST NOT be mutated by callers. The bitvec is immutable
 // after creation by codeBitmap() and is shared across concurrent readers.
 func (c *CodeAnalysisCache) Get(codeHash types.Hash) ([]uint64, bool) {
+	// Read-only fast path: no LRU promotion. Promoting on every Get
+	// requires a write lock and creates severe contention under
+	// many-core parallel replay (profile: 11.6% flat CPU on
+	// codeBitmap callers, plus matching mutex traffic). We accept a
+	// dumber-LRU eviction policy in exchange for lock-free reads —
+	// hot bytecode stays in the cache anyway because Put refreshes
+	// the entry whenever a worker re-analyses an evicted hash.
 	c.mu.RLock()
 	elem, ok := c.cache[codeHash]
 	if !ok {
 		c.mu.RUnlock()
 		return nil, false
 	}
-	entry := elem.Value.(*codeEntry)
-	// Return the slice directly — bitvec is immutable after creation.
-	// All callers (isCodeFromAnalysis) only read; no mutation ever occurs.
-	result := entry.analysis
+	result := elem.Value.(*codeEntry).analysis
 	c.mu.RUnlock()
-
-	// Promote to front under write lock.
-	c.mu.Lock()
-	// Re-check in case of eviction between RUnlock and Lock.
-	if elem2, still := c.cache[codeHash]; still {
-		c.lru.MoveToFront(elem2)
-	}
-	c.mu.Unlock()
-
 	return result, true
 }
 

@@ -129,14 +129,22 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		return fmt.Errorf("witness table not found in %s", cfg.WitnessPath)
 	}
 
-	// Optional pre-computed senders (avoids ecrecover).
+	// Optional pre-computed senders (avoids ecrecover, the dominant
+	// CPU cost on tx-dense blocks per pprof — single libsecp256k1 mutex
+	// serializes 32 workers behind cgocall, killing parallelism).
 	var sendersTbl *freezer.FreezerTable
 	if cfg.SendersPath != "" {
-		sendersTbl, err = freezer.NewFreezerTable(cfg.SendersPath, freezer.TableSenders, "r")
+		// Senders cdat in N42 is compressed (.cdat batches via zstd) —
+		// use the compressed read-only opener. The previous "raw" open
+		// silently produced an empty/invalid table that fell back to
+		// ecrecover unbeknownst to the user.
+		sendersTbl, err = freezer.NewFreezerTableCompressedReadOnly(cfg.SendersPath, freezer.TableSenders, "c")
 		if err != nil {
 			log.Warn("WitnessReplay: senders table not opened, ecrecover will be used", "err", err)
 		} else {
+			sendersTbl.ForceBatchSize(freezer.BatchSize)
 			defer sendersTbl.Close()
+			log.Info("WitnessReplay: senders precomputed", "items", sendersTbl.Items())
 		}
 	}
 
@@ -169,8 +177,13 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	}
 
 	// 4. Wire up channels and worker pool.
-	blockCh := make(chan WitnessJob, 256)
-	resultCh := make(chan WitnessResult, 256)
+	// Large channel buffers (8192) amortise the runtime mutex per
+	// send/receive across many ops — profile showed runtime.lock2 +
+	// stdcall2 ~21% under cap=256 with 32 workers. Bigger buffers let
+	// the reader run ahead and workers pull in bursts without blocking.
+	const chanCap = 8192
+	blockCh := make(chan WitnessJob, chanCap)
+	resultCh := make(chan WitnessResult, chanCap)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
