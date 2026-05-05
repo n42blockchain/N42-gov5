@@ -215,6 +215,15 @@ func ApplyTransaction(config *params.ChainConfig, blockHashFunc func(n uint64) t
 	return applyTransaction(config, engine, gp, ibs, stateWriter, header, tx, usedGas, vmenv, cfg)
 }
 
+// ApplyTransactionWithEVM applies a transaction reusing a pre-built EVM.
+// The EVM's block context is left untouched (callers must build the EVM
+// with the correct block context for `header`); only txContext + ibs
+// are reset via EVM.Reset before execution. Used by witness-replay's
+// hot path to avoid one NewEVM + NewEVMInterpreter alloc per tx.
+func ApplyTransactionWithEVM(evm vm2.VMInterface, config *params.ChainConfig, engine consensus.Engine, gp *common.GasPool, ibs *state.IntraBlockState, stateWriter state.StateWriter, header *block.Header, tx *transaction.Transaction, usedGas *uint64, cfg vm2.Config) (*block.Receipt, []byte, error) {
+	return applyTransaction(config, engine, gp, ibs, stateWriter, header, tx, usedGas, evm, cfg)
+}
+
 // NewStateReaderWriter creates a new state reader and writer pair.
 // If cache is non-nil, the reader and writer are wrapped with cache-aware
 // decorators to accelerate hot-path reads across blocks.
