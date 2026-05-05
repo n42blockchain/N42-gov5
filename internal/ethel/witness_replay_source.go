@@ -33,23 +33,31 @@ type headersBodiesSource interface {
 }
 
 // openHeadersBodiesSource picks the reader implementation by probing
-// the input directory. Both formats use headers.cidx as the index
-// filename, but their layouts differ in entry size:
+// the input directory.
 //
-//   - N42 columnar (HeaderCompactStage): 8 bytes per 8192-block
-//     segment. cidx for ~25M blocks is ~24 KB.
-//   - geth ancient / freezer: 12 bytes per 64-block batch. cidx for
-//     ~25M blocks is ~150 MB.
+// FILENAME COLLISION WARNING. Two distinct on-disk formats both use
+// the names headers.0000.cdat / bodies.0000.cdat / headers.cidx /
+// bodies.cidx — they are NOT interchangeable:
 //
-// We detect by file size — anything under 8 MB is treated as
-// columnar (a wildly conservative cap; even a 5B-block columnar
-// chain at 8 bytes/segment would be ~5 MB).
+//   - geth ancient / standard freezer (gethFreezerSource): full RLP
+//     per block, 64-block zstd batches. Decode via DecodeGethHeader
+//     gives canonical Header (all 15+ fields present, Hash() matches
+//     mainnet directly). Reading via this path "just works" with no
+//     reconstruction needed.
 //
-// The N42 columnar format strips Header.Bloom (it's recomputable
-// from receipts), so the columnar reader needs a separate receipts
-// source for bloom recovery. receiptsFromDir defaults to the
-// headers/bodies dir but can be overridden when those receipts are
-// incomplete (e.g., user falls back to geth ancient).
+//   - N42 columnar (n42CompactSource, header_compact.go): each field
+//     stored as its own column, 8192-block zstd segments. ParentHash
+//     and Bloom are eliminated entirely (header_compact.go calls them
+//     "derivable / recompute from receipts"). The reader must put
+//     them back before Hash() agrees with mainnet.
+//
+// We detect by headers.cidx size — anything under 8 MB is treated as
+// columnar. Numbers for ~25M blocks: columnar cidx ~24 KB (1 entry
+// per 8192-block segment × 8 B), freezer cidx ~150 MB (1 entry per
+// 64-block batch × ~6 B + offsets).
+//
+// receiptsFromDir is only used for n42CompactSource — gethFreezerSource
+// already has bloom in its decoded headers, so it ignores this path.
 func openHeadersBodiesSource(dir, receiptsFromDir string) (headersBodiesSource, error) {
 	if isN42ColumnarHeaders(dir) {
 		if receiptsFromDir == "" {
