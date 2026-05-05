@@ -70,7 +70,7 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 			return code, nil
 		}
 	}
-	code, err := r.codeTx.GetOne("Code", codeHash[:])
+	code, err := r.codeTx.GetOne(kv.Code, codeHash[:])
 	if err != nil {
 		return nil, err
 	}

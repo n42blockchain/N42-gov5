@@ -51,50 +51,32 @@ func scanWitnessEntries(stream []byte) []int {
 // tracingReader wraps a real WitnessReplayReader and records every
 // call made to it, so we can compare against the recording-side count.
 type tracingReader struct {
-	inner   *ethel.WitnessReplayReader
-	calls   int
-	sizes   []int
-	maxLog  int
-	stream  []byte
-	pos     int
+	inner  *ethel.WitnessReplayReader
+	calls  int
+	maxLog int
 }
 
 func newTracingReader(stream []byte, codeTx kv.Tx) *tracingReader {
 	return &tracingReader{
 		inner:  ethel.NewWitnessReplayReader(stream, codeTx),
-		stream: stream,
 		maxLog: 30,
 	}
 }
 
 func (r *tracingReader) record(label string, addr types.Address, slot *types.Hash) {
-	if r.calls >= r.maxLog {
-		r.calls++
-		return
-	}
-	if r.pos >= len(r.stream) {
-		fmt.Printf("  call#%d %s addr=%x slot=%v EOF\n", r.calls, label, addr, slot)
-	} else {
-		n := int(r.stream[r.pos])
-		fmt.Printf("  call#%d %s addr=%x slot=%v witness_pos=%d witness_len=%d\n",
-			r.calls, label, addr, slot, r.pos, n)
+	if r.calls < r.maxLog {
+		fmt.Printf("  call#%d %s addr=%x slot=%v\n", r.calls, label, addr, slot)
 	}
 	r.calls++
 }
 
 func (r *tracingReader) ReadAccountData(addr types.Address) (*account.StateAccount, error) {
 	r.record("ReadAccountData", addr, nil)
-	r.sizes = append(r.sizes, 0) // placeholder
-	a, err := r.inner.ReadAccountData(addr)
-	r.pos = readerPos(r.inner)
-	return a, err
+	return r.inner.ReadAccountData(addr)
 }
 func (r *tracingReader) ReadAccountStorage(addr types.Address, key *types.Hash) ([]byte, error) {
 	r.record("ReadAccountStorage", addr, key)
-	r.sizes = append(r.sizes, 0)
-	v, err := r.inner.ReadAccountStorage(addr, key)
-	r.pos = readerPos(r.inner)
-	return v, err
+	return r.inner.ReadAccountStorage(addr, key)
 }
 func (r *tracingReader) ReadAccountCode(addr types.Address, codeHash types.Hash) ([]byte, error) {
 	return r.inner.ReadAccountCode(addr, codeHash)
@@ -102,11 +84,6 @@ func (r *tracingReader) ReadAccountCode(addr types.Address, codeHash types.Hash)
 func (r *tracingReader) ReadAccountCodeSize(addr types.Address, codeHash types.Hash) (int, error) {
 	return r.inner.ReadAccountCodeSize(addr, codeHash)
 }
-
-// readerPos peeks the WitnessReplayReader's internal cursor — added
-// because the reader doesn't expose pos. We approximate by re-counting
-// remaining stream length isn't available; just report the placeholder.
-func readerPos(_ *ethel.WitnessReplayReader) int { return 0 }
 
 func main() {
 	hbDir := flag.String("input-headers-bodies", "", "freezer dir with headers/bodies")
