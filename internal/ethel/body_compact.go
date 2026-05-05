@@ -649,12 +649,17 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 			count = endBlock - segStart
 		}
 
-		// Read and decode bodies.
+		// Read and decode bodies. Tail-truncation tolerance — see the
+		// matching block in header_compact.go for rationale.
 		blocks := make([]*DecodedBlock, 0, count)
+		var tailCorrupt bool
 		for i := uint64(0); i < count; i++ {
 			bodyData, err := s.inputFreezer.Ancient(freezer.TableBodies, segStart+i)
 			if err != nil {
-				return fmt.Errorf("read body %d: %w", segStart+i, err)
+				log.Warn("Body compact: trailing read error — capping range",
+					"block", segStart+i, "captured", len(blocks), "err", err)
+				tailCorrupt = true
+				break
 			}
 			totalGethBytes += int64(len(bodyData))
 			if rawLen, err := snappy.DecodedLen(bodyData); err == nil {
@@ -663,7 +668,10 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 
 			body, err := DecodeGethBody(bodyData)
 			if err != nil {
-				return fmt.Errorf("decode body %d: %w", segStart+i, err)
+				log.Warn("Body compact: trailing decode error — capping range",
+					"block", segStart+i, "captured", len(blocks), "err", err)
+				tailCorrupt = true
+				break
 			}
 
 			db := &DecodedBlock{
@@ -673,6 +681,9 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 			// Store uncle RLP for pre-merge.
 			// TODO: re-encode uncles to RLP if needed for reconstruction.
 			blocks = append(blocks, db)
+		}
+		if len(blocks) == 0 {
+			break
 		}
 
 		chainID := firstChainID(blocks)
@@ -714,6 +725,12 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 		if segCount%10 == 0 {
 			idxBuf.Flush()
 			datBuf.Flush()
+		}
+
+		if tailCorrupt {
+			log.Warn("Body compact: stopped at last good block due to trailing corruption",
+				"lastBlock", segStart+uint64(len(blocks))-1)
+			break
 		}
 
 		if segCount%100 == 0 {
