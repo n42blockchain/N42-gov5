@@ -113,23 +113,18 @@ func replayWitnessBlock(
 		WitnessBytes: job.Witness,
 	}
 
-	if len(job.Body.Transactions) == 0 {
-		if job.Header.GasUsed != 0 {
-			res.Err = fmt.Errorf("block %d: empty body but header.GasUsed=%d",
-				job.BlockNum, job.Header.GasUsed)
-			return res
-		}
-		if !mode.NoOutput {
-			// Emit empty entries so all four output tables stay aligned
-			// in the cdat 64-batch index. Witness comes from job.Witness
-			// (already set above) — may itself be empty for txless blocks.
-			res.ReceiptBytes = EncodeReceiptsCompact(nil)
-			res.AcctCSBytes = []byte{}
-			res.StoCSBytes = []byte{}
-		}
+	if len(job.Body.Transactions) == 0 && job.Header.GasUsed != 0 {
+		res.Err = fmt.Errorf("block %d: empty body but header.GasUsed=%d",
+			job.BlockNum, job.Header.GasUsed)
 		return res
 	}
 
+	// Note: empty-body blocks STILL need ProcessBlock — engine.Finalize
+	// credits the coinbase block reward and that account write must
+	// land in acctcs to match ethexec. The recording-side witness has
+	// the coinbase read for the same reason; skipping ProcessBlock
+	// would silently lose ~30-50 B per empty block (~1-2 MB across
+	// the Frontier 0-46147 range).
 	reader := NewWitnessReplayReader(job.Witness, codeTx)
 	ibs := state.New(reader)
 
