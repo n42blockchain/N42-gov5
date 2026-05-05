@@ -27,6 +27,7 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"sync"
 
 	"github.com/holiman/uint256"
 
@@ -242,24 +243,48 @@ func IntrinsicGas(data []byte, accessList transaction.AccessList, authList trans
 	return gas, nil
 }
 
+var stateTransitionPool = sync.Pool{
+	New: func() any {
+		return &StateTransition{
+			sharedBuyGas:        new(uint256.Int),
+			sharedBuyGasBalance: new(uint256.Int),
+		}
+	},
+}
+
 // NewStateTransition initialises and returns a new state transition object.
 func NewStateTransition(evm vm2.VMInterface, msg Message, gp *common.GasPool) *StateTransition {
-	return &StateTransition{
-		gp:        gp,
-		evm:       evm,
-		msg:       msg,
-		gasPrice:  msg.GasPrice(),
-		gasFeeCap: msg.FeeCap(),
-		tip:       msg.Tip(),
-		value:     msg.Value(),
-		data:      msg.Data(),
-		state:     evm.IntraBlockState(),
+	st := stateTransitionPool.Get().(*StateTransition)
+	st.gp = gp
+	st.evm = evm
+	st.msg = msg
+	st.gas = 0
+	st.gasPrice = msg.GasPrice()
+	st.gasFeeCap = msg.FeeCap()
+	st.tip = msg.Tip()
+	st.initialGas = 0
+	st.value = msg.Value()
+	st.data = msg.Data()
+	st.state = evm.IntraBlockState()
+	st.sharedBuyGas.Clear()
+	st.sharedBuyGasBalance.Clear()
+	st.policy = newTransitionChainPolicy(evm.ChainConfig())
+	return st
+}
 
-		sharedBuyGas:        uint256.NewInt(0),
-		sharedBuyGasBalance: uint256.NewInt(0),
-
-		policy: newTransitionChainPolicy(evm.ChainConfig()),
-	}
+// release returns the StateTransition to the pool. Safe only after
+// TransitionDb has fully completed (no remaining references).
+func (st *StateTransition) release() {
+	st.gp = nil
+	st.evm = nil
+	st.msg = nil
+	st.gasPrice = nil
+	st.gasFeeCap = nil
+	st.tip = nil
+	st.value = nil
+	st.data = nil
+	st.state = nil
+	stateTransitionPool.Put(st)
 }
 
 var dbgRefundBlock = func() uint64 {
@@ -276,7 +301,10 @@ var dbgRefundBlock = func() uint64 {
 // `refunds` is false when gas refunds should not be applied.
 // `gasBailout` is true when the transaction should not fail if balance is insufficient for gas.
 func ApplyMessage(evm vm2.VMInterface, msg Message, gp *common.GasPool, refunds bool, gasBailout bool) (*ExecutionResult, error) {
-	return NewStateTransition(evm, msg, gp).TransitionDb(refunds, gasBailout)
+	st := NewStateTransition(evm, msg, gp)
+	res, err := st.TransitionDb(refunds, gasBailout)
+	st.release()
+	return res, err
 }
 
 func (st *StateTransition) to() types.Address {

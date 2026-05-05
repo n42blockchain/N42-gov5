@@ -90,7 +90,7 @@ type Transaction struct {
 	time  time.Time
 
 	// caches
-	hash atomic.Value
+	hash atomic.Pointer[types.Hash] // typed pointer avoids interface boxing
 	size atomic.Value
 	from atomic.Value
 }
@@ -98,6 +98,17 @@ type Transaction struct {
 func NewTx(inner TxData) *Transaction {
 	tx := new(Transaction)
 	tx.setDecoded(inner.copy(), 0)
+	return tx
+}
+
+// newTxOwned is the internal constructor for decoders that just built
+// `inner` from a transient buffer (RLP, protobuf) and own the only
+// reference. Skips the defensive inner.copy() — measurably hot under
+// witness replay, where every block re-decodes its txs and the copy
+// (~2.5s/4.3% in profile) is pure waste.
+func newTxOwned(inner TxData) *Transaction {
+	tx := new(Transaction)
+	tx.setDecoded(inner, 0)
 	return tx
 }
 
@@ -506,10 +517,10 @@ func (tx *Transaction) Cost() *uint256.Int {
 
 func (tx *Transaction) Hash() types.Hash {
 	if h := tx.hash.Load(); h != nil {
-		return h.(types.Hash)
+		return *h
 	}
 	h := tx.inner.hash()
-	tx.hash.Store(h)
+	tx.hash.Store(&h)
 	return h
 }
 
