@@ -82,17 +82,24 @@ func runWitnessWorker(
 	}
 	defer codeTx.Rollback()
 
-	for job := range blockCh {
+	// Select on ctx during receive so workers exit promptly when the
+	// pipeline cancels (early error before the reader goroutine can
+	// close blockCh — without this, codeTx held here deadlocks the
+	// caller's defer codeDB.Close()).
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-		}
-		res := replayWitnessBlock(job, codeTx, chainCfg, engine, mode)
-		select {
-		case resultCh <- res:
-		case <-ctx.Done():
-			return
+		case job, ok := <-blockCh:
+			if !ok {
+				return
+			}
+			res := replayWitnessBlock(job, codeTx, chainCfg, engine, mode)
+			select {
+			case resultCh <- res:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 }
