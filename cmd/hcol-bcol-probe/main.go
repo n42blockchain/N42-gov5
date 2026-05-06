@@ -10,7 +10,13 @@ import (
 	"os"
 	"time"
 
+	"math/big"
+
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/params"
 )
 
 func main() {
@@ -35,8 +41,8 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read header %d: %v\n", *block, err)
 	} else {
-		fmt.Printf("hdr[%d]: hash=%x parent=%x gasUsed=%d txRoot=%x receiptRoot=%x bloom_first16=%x\n",
-			*block, hdr.Hash(), hdr.ParentHash, hdr.GasUsed, hdr.TxHash, hdr.ReceiptHash, hdr.Bloom[:16])
+		fmt.Printf("hdr[%d]: hash=%s coinbase=%s gasUsed=%d gasLimit=%d time=%d difficulty=%s txRoot=%s receiptRoot=%s\n",
+			*block, hdr.Hash().Hex(), hdr.Coinbase.Hex(), hdr.GasUsed, hdr.GasLimit, hdr.Time, hdr.Difficulty.String(), hdr.TxHash.Hex(), hdr.ReceiptHash.Hex())
 	}
 
 	br, err := ethel.OpenBodyCompact(*dir)
@@ -59,8 +65,25 @@ func main() {
 			fmt.Printf("  ...+%d more txs\n", len(body.Txs)-3)
 			break
 		}
-		fmt.Printf("  tx[%d] hash=%x type=%d nonce=%d gas=%d\n",
-			i, tx.Hash(), tx.Type(), tx.Nonce(), tx.Gas())
+		toStr := "nil"
+		if tx.To() != nil {
+			toStr = fmt.Sprintf("0x%x", *tx.To())
+		}
+		v, r, s := tx.RawSignatureValues()
+		fmt.Printf("  tx[%d] hash=%x\n    type=%d nonce=%d gas=%d gasPrice=%s value=%s to=%s\n    V=%s R=%s S=%s\n",
+			i, tx.Hash(), tx.Type(), tx.Nonce(), tx.Gas(),
+			tx.GasPrice().String(), tx.Value().String(), toStr,
+			v.String(), r.String(), s.String())
+		gasCost := new(uint256.Int).Mul(tx.GasPrice(), uint256.NewInt(tx.Gas()))
+		needed := new(uint256.Int).Add(gasCost, tx.Value())
+		fmt.Printf("    gasCost=%s needed(gas+value)=%s\n", gasCost.String(), needed.String())
+		signer := transaction.MakeSignerWithTimestamp(params.EthereumMainnetChainConfig, big.NewInt(int64(*block)), 0)
+		sender, err := transaction.Sender(signer, tx)
+		if err != nil {
+			fmt.Printf("    ecrecover ERR: %v\n", err)
+		} else {
+			fmt.Printf("    ecrecovered sender = 0x%x\n", sender)
+		}
 	}
 
 	if *bench > 0 {
