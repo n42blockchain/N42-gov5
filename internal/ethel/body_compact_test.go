@@ -462,3 +462,94 @@ func TestBodySegmentEmptyBlocks(t *testing.T) {
 		}
 	}
 }
+
+// TestBodySegmentUnclesRoundtrip locks in the fix for body_compact
+// silently dropping every uncle: detectBodyFlags() keys postMerge off
+// len(UncleRLP) > 0, so if the encoder feeds in nil UncleRLP for what
+// is actually a pre-merge block, the segment is flagged post-merge and
+// the decoder skips the uncle section. That kills uncle inclusion
+// rewards (1/32 of block reward per uncle) plus uncle-miner rewards
+// (5..35/32 ETH each), making every miner balance off across the chain
+// and breaking later txs that send accumulated mining rewards.
+func TestBodySegmentUnclesRoundtrip(t *testing.T) {
+	// Two synthetic uncle RLP payloads. The encoder/decoder treats them
+	// as opaque bytes (only the header decoder cares about RLP shape),
+	// so any distinguishable byte sequences exercise the path.
+	uncle0 := []byte{0xf8, 0x42, 0x01, 0x02, 0x03, 0x04}
+	uncle1 := []byte{0xf8, 0x55, 0xaa, 0xbb, 0xcc}
+	uncle2 := []byte{0xf8, 0x10, 0xde, 0xad, 0xbe, 0xef}
+	to := types.HexToAddress("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+
+	blocks := []*DecodedBlock{
+		// Block 0: pre-merge, has 2 uncles, 1 legacy tx.
+		{
+			Txs: []*transaction.Transaction{
+				transaction.NewTx(&transaction.LegacyTx{
+					Nonce:    1,
+					GasPrice: uint256.NewInt(50_000_000_000),
+					Gas:      21000,
+					To:       &to,
+					Value:    uint256.NewInt(1_000_000_000_000_000_000),
+					V:        uint256.NewInt(28),
+					R:        uint256.NewInt(11),
+					S:        uint256.NewInt(22),
+				}),
+			},
+			UncleRLP: [][]byte{uncle0, uncle1},
+		},
+		// Block 1: pre-merge, no txs but 1 uncle (the early-mainnet
+		// shape this bug actually hit — empty bodies that still earn
+		// inclusion bonus when they include uncles).
+		{
+			UncleRLP: [][]byte{uncle2},
+		},
+		// Block 2: pre-merge, no uncles, no txs (empty frontier block).
+		{},
+	}
+
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+
+	compressed := encodeBodySegment(blocks, 1, enc)
+
+	dec, err := zstd.NewReader(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dec.Close()
+
+	raw, err := dec.DecodeAll(compressed, nil)
+	if err != nil {
+		t.Fatalf("decompress: %v", err)
+	}
+
+	decoded, err := decodeBodySegment(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(decoded) != 3 {
+		t.Fatalf("block count: got %d, want 3", len(decoded))
+	}
+
+	wantUncles := [][][]byte{
+		{uncle0, uncle1},
+		{uncle2},
+		nil,
+	}
+	for bi, want := range wantUncles {
+		got := decoded[bi].UncleRLP
+		if len(got) != len(want) {
+			t.Errorf("block %d uncle count: got %d want %d", bi, len(got), len(want))
+			continue
+		}
+		for ui, w := range want {
+			if string(got[ui]) != string(w) {
+				t.Errorf("block %d uncle %d: got %x want %x", bi, ui, got[ui], w)
+			}
+		}
+	}
+}

@@ -677,9 +677,8 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 			db := &DecodedBlock{
 				Txs:         body.Transactions,
 				Withdrawals: body.Withdrawals,
+				UncleRLP:    body.UncleRaw,
 			}
-			// Store uncle RLP for pre-merge.
-			// TODO: re-encode uncles to RLP if needed for reconstruction.
 			blocks = append(blocks, db)
 		}
 		if len(blocks) == 0 {
