@@ -240,7 +240,7 @@ func (e *Executor) Run(ctx context.Context) error {
 	endBlock := e.cfg.EndBlock
 	if endBlock == 0 {
 		// Prefer compact reader's MaxBlock when present — covers the case
-		// where the geth freezer is missing/empty but hcol/bcol have data.
+		// where the geth freezer is missing/empty but headerc/bodyc have data.
 		if e.compactHeaders != nil {
 			endBlock = e.compactHeaders.MaxBlock() - 1
 		} else {
