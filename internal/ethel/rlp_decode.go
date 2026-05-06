@@ -42,10 +42,10 @@ func DecodeGethHeader(data []byte) (*block.Header, error) {
 	return decodeHeaderFields(elems)
 }
 
-// decodeUncleHeader decodes a single uncle header from raw RLP bytes.
+// DecodeUncleHeader decodes a single uncle header from raw RLP bytes.
 // Unlike DecodeGethHeader, no Snappy decompression — uncles are nested
 // inside the body's RLP list, not stored as standalone freezer entries.
-func decodeUncleHeader(raw []byte) (*block.Header, error) {
+func DecodeUncleHeader(raw []byte) (*block.Header, error) {
 	var elems []rlp.RawValue
 	if err := rlp.DecodeBytes(raw, &elems); err != nil {
 		return nil, fmt.Errorf("decode uncle list: %w", err)
@@ -246,7 +246,7 @@ func DecodeGethBody(data []byte) (*GethBodyResult, error) {
 		// uRaw aliases the body's RLP buffer which the caller may free —
 		// snapshot before stashing for body_compact's byte-identical reuse.
 		uncleRawCopy = append(uncleRawCopy, types.CopyBytes(uRaw))
-		u, err := decodeUncleHeader(uRaw)
+		u, err := DecodeUncleHeader(uRaw)
 		if err != nil {
 			return nil, fmt.Errorf("ethel: uncle %d: %w", i, err)
 		}
