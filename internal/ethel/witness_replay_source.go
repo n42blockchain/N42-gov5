@@ -136,7 +136,7 @@ func (s *n42CompactSource) body(n uint64) (*GethBodyResult, error) {
 	if len(db.UncleRLP) > 0 {
 		uncles = make([]*block.Header, len(db.UncleRLP))
 		for i, raw := range db.UncleRLP {
-			h, err := decodeUncleHeader(raw)
+			h, err := DecodeUncleHeader(raw)
 			if err != nil {
 				return nil, fmt.Errorf("uncle %d of block %d: %w", i, n, err)
 			}
