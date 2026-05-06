@@ -8,12 +8,12 @@ import (
 )
 
 // TestOpenHeadersBodiesSource_AutoDetect verifies the picker chooses
-// n42CompactSource when headers.cidx is present, gethFreezerSource
+// n42CompactSource when hcol.cidx is present, gethFreezerSource
 // otherwise. Doesn't try to read blocks — that needs real cdat files.
 func TestOpenHeadersBodiesSource_AutoDetect(t *testing.T) {
 	dir := t.TempDir()
 
-	// Without headers.cidx, picker should fall through to geth freezer
+	// Without hcol.cidx, picker should fall through to geth freezer
 	// (which will succeed at opening an empty dir).
 	src, err := openHeadersBodiesSource(dir)
 	if err != nil {
@@ -24,11 +24,11 @@ func TestOpenHeadersBodiesSource_AutoDetect(t *testing.T) {
 	}
 	src.close()
 
-	// Touch headers.cidx so the picker takes the n42 columnar branch.
+	// Touch hcol.cidx so the picker takes the n42 columnar branch.
 	// The columnar reader will fail because the file is empty / no
-	// bodies.cidx exists — but the picker logic itself is what we're
+	// bcol.cidx exists — but the picker logic itself is what we're
 	// testing (it called openN42CompactSource, not openGethFreezerSource).
-	if err := os.WriteFile(filepath.Join(dir, "headers.cidx"), []byte{}, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "hcol.cidx"), []byte{}, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	src, err = openHeadersBodiesSource(dir)
@@ -36,7 +36,7 @@ func TestOpenHeadersBodiesSource_AutoDetect(t *testing.T) {
 		// shouldn't reach here without bodies.cidx, but if it does,
 		// confirm the right backend was selected
 		if _, ok := src.(*n42CompactSource); !ok {
-			t.Errorf("with headers.cidx: got %T, want *n42CompactSource", src)
+			t.Errorf("with hcol.cidx: got %T, want *n42CompactSource", src)
 		}
 		src.close()
 	}
