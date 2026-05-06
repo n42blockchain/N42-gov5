@@ -42,6 +42,17 @@ func DecodeGethHeader(data []byte) (*block.Header, error) {
 	return decodeHeaderFields(elems)
 }
 
+// decodeUncleHeader decodes a single uncle header from raw RLP bytes.
+// Unlike DecodeGethHeader, no Snappy decompression — uncles are nested
+// inside the body's RLP list, not stored as standalone freezer entries.
+func decodeUncleHeader(raw []byte) (*block.Header, error) {
+	var elems []rlp.RawValue
+	if err := rlp.DecodeBytes(raw, &elems); err != nil {
+		return nil, fmt.Errorf("decode uncle list: %w", err)
+	}
+	return decodeHeaderFields(elems)
+}
+
 // decodeHeaderFields decodes an already-parsed RLP element list into a Header.
 func decodeHeaderFields(elems []rlp.RawValue) (*block.Header, error) {
 	n := len(elems)
@@ -171,7 +182,13 @@ type Withdrawal struct {
 type GethBodyResult struct {
 	Transactions []*transaction.Transaction
 	Uncles       []*block.Header
-	Withdrawals  []*Withdrawal // nil pre-Shanghai
+	// UncleRaw is the raw RLP bytes per uncle, in the same order as Uncles.
+	// Populated only by DecodeGethBody; nil for synthetic sources. We keep
+	// the bytes because we have no geth-compatible Header RLP encoder, so
+	// callers that need byte-identical reconstruction (body_compact) can
+	// stash these instead of re-encoding.
+	UncleRaw    [][]byte
+	Withdrawals []*Withdrawal // nil pre-Shanghai
 }
 
 // DecodeGethBody decodes a Geth-format RLP-encoded body.
@@ -224,15 +241,14 @@ func DecodeGethBody(data []byte) (*GethBodyResult, error) {
 	}
 
 	uncles := make([]*block.Header, 0, len(uncleRaws))
+	uncleRawCopy := make([][]byte, 0, len(uncleRaws))
 	for i, uRaw := range uncleRaws {
-		// Uncle headers are NOT snappy-compressed (they're nested in the body).
-		var uElems []rlp.RawValue
-		if err := rlp.DecodeBytes(uRaw, &uElems); err != nil {
-			return nil, fmt.Errorf("ethel: decode uncle %d: %w", i, err)
-		}
-		u, err := decodeHeaderFields(uElems)
+		// uRaw aliases the body's RLP buffer which the caller may free —
+		// snapshot before stashing for body_compact's byte-identical reuse.
+		uncleRawCopy = append(uncleRawCopy, types.CopyBytes(uRaw))
+		u, err := decodeUncleHeader(uRaw)
 		if err != nil {
-			return nil, fmt.Errorf("ethel: decode uncle header %d: %w", i, err)
+			return nil, fmt.Errorf("ethel: uncle %d: %w", i, err)
 		}
 		uncles = append(uncles, u)
 	}
@@ -254,7 +270,7 @@ func DecodeGethBody(data []byte) (*GethBodyResult, error) {
 		}
 	}
 
-	return &GethBodyResult{Transactions: txs, Uncles: uncles, Withdrawals: withdrawals}, nil
+	return &GethBodyResult{Transactions: txs, Uncles: uncles, UncleRaw: uncleRawCopy, Withdrawals: withdrawals}, nil
 }
 
 func decodeGethWithdrawal(data []byte) (*Withdrawal, error) {

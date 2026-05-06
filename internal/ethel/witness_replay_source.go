@@ -132,16 +132,13 @@ func (s *n42CompactSource) body(n uint64) (*GethBodyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	// DecodedBlock holds uncle RLP; witness-replay's GethBodyResult
-	// expects decoded headers. Decode now (uncles are pre-merge only,
-	// so this allocs only for the early chain).
 	var uncles []*block.Header
 	if len(db.UncleRLP) > 0 {
 		uncles = make([]*block.Header, len(db.UncleRLP))
 		for i, raw := range db.UncleRLP {
-			h, err := DecodeGethHeader(raw)
+			h, err := decodeUncleHeader(raw)
 			if err != nil {
-				return nil, fmt.Errorf("decode uncle %d of block %d: %w", i, n, err)
+				return nil, fmt.Errorf("uncle %d of block %d: %w", i, n, err)
 			}
 			uncles[i] = h
 		}
