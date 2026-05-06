@@ -336,7 +336,7 @@ func encodeDeltaU64(buf []byte, values []uint64) []byte {
 // ---------- Stage ----------
 
 // HeaderCompactStage reads Geth ancient headers and writes columnar-compressed segments.
-// Output: hcol.NNNN.cdat (≤2GB each) + hcol.cidx (8B per segment).
+// Output: headerc.NNNN.cdat (≤2GB each) + headerc.cidx (8B per segment).
 type HeaderCompactStage struct {
 	inputFreezer *freezer.Freezer
 	outputDir    string
@@ -379,7 +379,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 	}
 
 	// Determine resume point from existing idx.
-	idxPath := filepath.Join(s.outputDir, "hcol.cidx")
+	idxPath := filepath.Join(s.outputDir, "headerc.cidx")
 	idxFile, err := os.OpenFile(idxPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err
@@ -407,7 +407,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 		idxFile.ReadAt(lastEntry[:], int64(existingSegments-1)*8)
 		e := decodeHeaderIdx(lastEntry[:])
 		headFile = e.fileNum
-		datPath := filepath.Join(s.outputDir, fmt.Sprintf("hcol.%04d.cdat", headFile))
+		datPath := filepath.Join(s.outputDir, fmt.Sprintf("headerc.%04d.cdat", headFile))
 		if fi, err := os.Stat(datPath); err == nil {
 			headSize = fi.Size()
 		}
@@ -429,7 +429,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 			datFile = nil
 			datBuf = nil
 		}
-		path := filepath.Join(s.outputDir, fmt.Sprintf("hcol.%04d.cdat", headFile))
+		path := filepath.Join(s.outputDir, fmt.Sprintf("headerc.%04d.cdat", headFile))
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {
 			return err
@@ -583,7 +583,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 // ---------- Reader ----------
 
 // HeaderCompactReader provides random and sequential access to headers
-// stored in hcol.NNNN.cdat + hcol.cidx. Caches current segment.
+// stored in headerc.NNNN.cdat + headerc.cidx. Caches current segment.
 type HeaderCompactReader struct {
 	dir       string
 	idxFile   *os.File
@@ -595,9 +595,9 @@ type HeaderCompactReader struct {
 	cachedHeaders []*block.Header
 }
 
-// OpenHeaderCompact opens a hcol.cidx + hcol.NNNN.cdat set for reading.
+// OpenHeaderCompact opens a headerc.cidx + headerc.NNNN.cdat set for reading.
 func OpenHeaderCompact(dir string) (*HeaderCompactReader, error) {
-	idxPath := filepath.Join(dir, "hcol.cidx")
+	idxPath := filepath.Join(dir, "headerc.cidx")
 	idf, err := os.Open(idxPath)
 	if err != nil {
 		return nil, fmt.Errorf("open index: %w", err)
@@ -671,7 +671,7 @@ func (r *HeaderCompactReader) loadSegment(segNum int64) error {
 	// Open/cache dat file.
 	df, ok := r.dataFiles[e.fileNum]
 	if !ok {
-		path := filepath.Join(r.dir, fmt.Sprintf("hcol.%04d.cdat", e.fileNum))
+		path := filepath.Join(r.dir, fmt.Sprintf("headerc.%04d.cdat", e.fileNum))
 		f, err := os.Open(path)
 		if err != nil {
 			return fmt.Errorf("open dat %d: %w", e.fileNum, err)

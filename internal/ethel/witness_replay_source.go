@@ -35,8 +35,8 @@ type headersBodiesSource interface {
 // the input directory.
 //
 //   - N42 columnar (n42CompactSource, header_compact.go +
-//     body_compact.go): stored as hcol.cidx + hcol.NNNN.cdat /
-//     bcol.cidx + bcol.NNNN.cdat. Each block-field is its own column,
+//     body_compact.go): stored as headerc.cidx + headerc.NNNN.cdat /
+//     bodyc.cidx + bodyc.NNNN.cdat. Each block-field is its own column,
 //     8192-block zstd segments. The trailer of each segment carries
 //     the canonical Hash() per block so readers don't reconstruct
 //     ParentHash + Bloom from receipts.
@@ -48,9 +48,9 @@ type headersBodiesSource interface {
 //
 // The earlier shared filename layout (both formats using
 // headers.NNNN.cdat) was bug-prone — renaming the columnar archive
-// to hcol/bcol makes the two formats unambiguous.
+// to headerc/bodyc makes the two formats unambiguous.
 func openHeadersBodiesSource(dir string) (headersBodiesSource, error) {
-	if _, err := os.Stat(filepath.Join(dir, "hcol.cidx")); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, "headerc.cidx")); err == nil {
 		return openN42CompactSource(dir)
 	}
 	return openGethFreezerSource(dir)

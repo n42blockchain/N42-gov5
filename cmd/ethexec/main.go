@@ -606,8 +606,8 @@ func run(c *cli.Context) error {
 	//   - Geth ancient (raw RLP, headers.NNNN.cdat / bodies.NNNN.cdat
 	//     with 64-block batches). freezer.New auto-downgrades to RO if
 	//     the dir looks like geth's chaindata.
-	//   - N42 columnar (hcol.NNNN.cdat / bcol.NNNN.cdat with 8192-block
-	//     segments). Detected by hcol.cidx; opened via compact readers
+	//   - N42 columnar (headerc.NNNN.cdat / bodyc.NNNN.cdat with 8192-block
+	//     segments). Detected by headerc.cidx; opened via compact readers
 	//     and wired into the executor as the primary header/body source.
 	//
 	// Both paths still open freezer.New so receipts.cdat can be read for
@@ -631,15 +631,15 @@ func run(c *cli.Context) error {
 	var compactBR *ethel.BodyCompactReader
 	var compactHRPrefetch *ethel.HeaderCompactReader
 	var compactBRPrefetch *ethel.BodyCompactReader
-	if _, err := os.Stat(filepath.Join(ancientPath, "hcol.cidx")); err == nil {
+	if _, err := os.Stat(filepath.Join(ancientPath, "headerc.cidx")); err == nil {
 		hr, err := ethel.OpenHeaderCompact(ancientPath)
 		if err != nil {
-			return fmt.Errorf("open hcol: %w", err)
+			return fmt.Errorf("open headerc: %w", err)
 		}
 		br, err := ethel.OpenBodyCompact(ancientPath)
 		if err != nil {
 			hr.Close()
-			return fmt.Errorf("open bcol: %w", err)
+			return fmt.Errorf("open bodyc: %w", err)
 		}
 		compactHR = hr
 		compactBR = br

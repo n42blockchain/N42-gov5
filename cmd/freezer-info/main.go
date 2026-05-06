@@ -58,19 +58,19 @@ func main() {
 		}
 	}
 
-	// Also probe N42 columnar (hcol/bcol) if present.
-	hcolIdx := filepath.Join(*dir, "hcol.cidx")
-	if fileExists(hcolIdx) {
-		st, _ := os.Stat(hcolIdx)
+	// Also probe N42 columnar (headerc/bodyc) if present.
+	headercIdx := filepath.Join(*dir, "headerc.cidx")
+	if fileExists(headercIdx) {
+		st, _ := os.Stat(headercIdx)
 		segments := st.Size() / 8
-		fmt.Printf("\n  hcol.cidx: %d segments × 8192 = %d max blocks\n",
+		fmt.Printf("\n  headerc.cidx: %d segments × 8192 = %d max blocks\n",
 			segments, segments*8192)
 	}
-	bcolIdx := filepath.Join(*dir, "bcol.cidx")
-	if fileExists(bcolIdx) {
-		st, _ := os.Stat(bcolIdx)
+	bodycIdx := filepath.Join(*dir, "bodyc.cidx")
+	if fileExists(bodycIdx) {
+		st, _ := os.Stat(bodycIdx)
 		segments := st.Size() / 8
-		fmt.Printf("  bcol.cidx: %d segments × 8192 = %d max blocks\n",
+		fmt.Printf("  bodyc.cidx: %d segments × 8192 = %d max blocks\n",
 			segments, segments*8192)
 	}
 

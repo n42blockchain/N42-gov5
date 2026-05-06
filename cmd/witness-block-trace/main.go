@@ -5,7 +5,7 @@
 //
 // Inputs:
 //
-//	--hb-dir       hcol/bcol or geth headers+bodies freezer dir
+//	--hb-dir       headerc/bodyc or geth headers+bodies freezer dir
 //	--witness-dir  freezer dir holding the block_witness compact table
 //	--receipts-dir freezer dir holding receipts (for canonical compare)
 //	--datadir      MDBX datadir with the Code table
@@ -39,7 +39,7 @@ import (
 )
 
 func main() {
-	hbDir := flag.String("hb-dir", "", "headers+bodies freezer dir (hcol/bcol or geth)")
+	hbDir := flag.String("hb-dir", "", "headers+bodies freezer dir (headerc/bodyc or geth)")
 	witnessDir := flag.String("witness-dir", "", "block_witness freezer dir (defaults to hb-dir)")
 	receiptsDir := flag.String("receipts-dir", "", "canonical receipts freezer dir (optional, for compare)")
 	datadir := flag.String("datadir", "", "MDBX datadir with Code table")
@@ -59,8 +59,8 @@ func main() {
 		kv.ChaindataTablesCfg[name] = cfg
 	}
 
-	// 1. Open header+body source — auto-detect hcol/bcol vs geth by
-	// presence of hcol.cidx; the picker logic mirrors
+	// 1. Open header+body source — auto-detect headerc/bodyc vs geth by
+	// presence of headerc.cidx; the picker logic mirrors
 	// openHeadersBodiesSource in witness_replay_source.go.
 	hdr, body, err := readHeaderBody(*hbDir, *blockNum)
 	if err != nil {
@@ -186,24 +186,24 @@ func main() {
 }
 
 func readHeaderBody(dir string, n uint64) (*block.Header, *ethel.GethBodyResult, error) {
-	if _, err := os.Stat(dir + "/hcol.cidx"); err == nil {
+	if _, err := os.Stat(dir + "/headerc.cidx"); err == nil {
 		hr, err := ethel.OpenHeaderCompact(dir)
 		if err != nil {
-			return nil, nil, fmt.Errorf("open hcol: %w", err)
+			return nil, nil, fmt.Errorf("open headerc: %w", err)
 		}
 		defer hr.Close()
 		br, err := ethel.OpenBodyCompact(dir)
 		if err != nil {
-			return nil, nil, fmt.Errorf("open bcol: %w", err)
+			return nil, nil, fmt.Errorf("open bodyc: %w", err)
 		}
 		defer br.Close()
 		hdr, err := hr.ReadHeader(n)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read hcol header: %w", err)
+			return nil, nil, fmt.Errorf("read headerc header: %w", err)
 		}
 		db, err := br.ReadBody(n)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read bcol body: %w", err)
+			return nil, nil, fmt.Errorf("read bodyc body: %w", err)
 		}
 		// Decode uncle headers from raw RLP (uncles are nested in body
 		// RLP, not snappy-wrapped — match witness_replay_source.body).
