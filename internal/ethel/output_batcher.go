@@ -392,7 +392,15 @@ func (b *outputBatcher) alignOnResume(startBlock uint64, hasRemainder bool) erro
 	log.Info("alignOnResume starting",
 		"startBlock", startBlock)
 
+	// Receipts must be in this list. addEntry(receipts) at startBlock
+	// triggers EnsureTableCompressed which exposes existingItems from
+	// the on-disk cidx; if that's ahead of startBlock, addEntry
+	// fails-loud and the worker pool deadlocks waiting for jobs that
+	// never come (the reader goroutine hasn't started yet on this code
+	// path). Truncating receipts here keeps every per-block output
+	// table at the same head.
 	tables := []string{
+		freezer.TableReceipts,
 		freezer.TableAccountChanges,
 		freezer.TableStorageChanges,
 		freezer.TableBlockWitness,
