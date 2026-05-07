@@ -50,7 +50,6 @@ import (
 )
 
 const (
-	flagAlive  uint8 = 1 << 0
 	flagInMain uint8 = 1 << 1
 	freqShift        = 2
 	freqMask   uint8 = 0b1100 // bits 2-3
@@ -74,10 +73,9 @@ const nilSlot int32 = -1
 type s3FIFO[K comparable] struct {
 	mu sync.Mutex
 
-	cap     int // currently allocated slot count
-	maxCap  int // budget ceiling; cap may grow up to here
-	sCap    int // small queue cap in slots (computed against maxCap)
-	sLen    int
+	cap    int // currently allocated slot count
+	maxCap int // budget ceiling; cap may grow up to here
+	sLen   int
 	mLen    int
 	valSize int
 
@@ -106,47 +104,29 @@ type s3FIFO[K comparable] struct {
 }
 
 // perSlotBytesEstimate matches the slab footprint used to translate a
-// caller-supplied byte budget into a slot count. Includes Go map
-// bucket overhead so the cap reflects real RSS, not just slab bytes.
+// caller-supplied byte budget into a slot count. The 50 B addend is
+// the empirical Go map bucket amortised overhead per entry (bucket
+// header + tophash slot + value slot for int32) so the cap reflects
+// real RSS, not just slab bytes.
 func perSlotBytesEstimate[K comparable](valSize int) int {
 	var k K
-	keySize := len(toBytes(k))
-	if keySize == 0 {
-		// K is a [N]byte array but len() of value is 0 because we
-		// can't read len of a zero-init array via reflection-free
-		// dispatch. Estimate from sizeOf via unsafe.Sizeof analog —
-		// callers use [20]byte or [52]byte so we hard-code via the
-		// helper below.
-		keySize = sizeOfK[K]()
-	}
-	// 50B is a typical Go map bucket amortised overhead per entry
-	// (bucket header + tophash slot + value slot for int32). Empirical.
-	return keySize + valSize + 1 + 1 + 4 + 4 + 50
+	return keySize(k) + valSize + 1 + 1 + 4 + 4 + 50
 }
 
-// toBytes returns a []byte view of K when K is a byte array. Returns
-// nil if K isn't an array type. Used only for size measurement.
-func toBytes[K comparable](k K) []byte {
+// keySize returns the byte width of K, hard-coded because Go generics
+// don't expose type metadata at runtime. Supported K types are the
+// fixed-size byte arrays used by readAccounts ([20]byte) and
+// readStorage ([52]byte); anything else falls back to 32 B.
+func keySize[K comparable](k K) int {
 	switch any(k).(type) {
 	case [20]byte:
-		v := any(k).([20]byte)
-		return v[:]
+		return 20
 	case [32]byte:
-		v := any(k).([32]byte)
-		return v[:]
+		return 32
 	case [52]byte:
-		v := any(k).([52]byte)
-		return v[:]
+		return 52
 	}
-	return nil
-}
-
-// sizeOfK returns the byte size of K when K is one of the supported
-// fixed-size array types. Hard-coded because Go generics don't expose
-// type metadata at compile time.
-func sizeOfK[K comparable]() int {
-	var z K
-	return len(toBytes(z))
+	return 32
 }
 
 // initialCacheSlots is the slab size at construction. We grow on
@@ -168,13 +148,6 @@ func newS3FIFO[K comparable](capBytes int64, valSize int) *s3FIFO[K] {
 	if maxCap < initialCacheSlots {
 		maxCap = initialCacheSlots
 	}
-	sCap := maxCap / 10
-	if sCap < 16 {
-		sCap = maxCap / 4
-	}
-	if sCap < 16 {
-		sCap = 16
-	}
 
 	maxGhost := int(int64(100_000) * capBytes / (1 << 30))
 	if maxGhost < 16384 {
@@ -188,7 +161,6 @@ func newS3FIFO[K comparable](capBytes int64, valSize int) *s3FIFO[K] {
 	c := &s3FIFO[K]{
 		cap:      cap,
 		maxCap:   maxCap,
-		sCap:     sCap,
 		valSize:  valSize,
 		keys:     make([]K, cap),
 		valBuf:   make([]byte, cap*valSize),
@@ -210,7 +182,6 @@ func newS3FIFO[K comparable](capBytes int64, valSize int) *s3FIFO[K] {
 		// evict. The cache works without ghosts (first-touch keys
 		// land in S as they would on a cold cache).
 	}
-	// Chain the initial free list: 0 → 1 → ... → cap-1 → nilSlot
 	for i := int32(0); i < int32(cap)-1; i++ {
 		c.next[i] = i + 1
 	}
@@ -236,8 +207,9 @@ func (c *s3FIFO[K]) growLocked() bool {
 	c.flags = append(c.flags, make([]uint8, delta)...)
 	c.next = append(c.next, make([]int32, delta)...)
 	c.prev = append(c.prev, make([]int32, delta)...)
-	// Chain new slots [c.cap, newCap) into free list, keeping the old
-	// (currently empty) head as the tail's link.
+	// New slots become the new free-list head; the old head links the
+	// tail of the new range so any pre-existing free entries remain
+	// reachable.
 	for i := int32(c.cap); i < int32(newCap)-1; i++ {
 		c.next[i] = i + 1
 	}
@@ -283,7 +255,6 @@ func (c *s3FIFO[K]) freeSlot(idx int32) {
 	c.free = idx
 }
 
-// listPushFront adds idx to the front of the (head,tail) list.
 func (c *s3FIFO[K]) listPushFront(head, tail *int32, idx int32) {
 	c.prev[idx] = nilSlot
 	c.next[idx] = *head
@@ -295,7 +266,6 @@ func (c *s3FIFO[K]) listPushFront(head, tail *int32, idx int32) {
 	*head = idx
 }
 
-// listRemove unlinks idx from the (head,tail) list.
 func (c *s3FIFO[K]) listRemove(head, tail *int32, idx int32) {
 	p, n := c.prev[idx], c.next[idx]
 	if p != nilSlot {
@@ -413,7 +383,7 @@ func (c *s3FIFO[K]) putLocked(key K, value []byte) {
 	}
 	c.keys[idx] = key
 	c.writeValue(idx, value)
-	c.flags[idx] = flagAlive
+	c.flags[idx] = 0
 	// Re-admission from ghost: hot enough to come back, skip S.
 	if _, ok := c.ghostMap[key]; ok {
 		c.removeGhost(key)
@@ -439,9 +409,14 @@ func (c *s3FIFO[K]) evictUntilFreeLocked() {
 	if c.growLocked() {
 		return
 	}
+	// S keeps ~10% of currently-allocated capacity; recomputed each
+	// pass so growLocked doesn't leave it stale during warmup.
 	for c.free == nilSlot && (c.sLen > 0 || c.mLen > 0) {
-		// Prefer S when over its share; otherwise hit M's tail.
-		if c.sLen > c.sCap || c.mLen == 0 {
+		sCap := c.cap / 10
+		if sCap < 16 {
+			sCap = 16
+		}
+		if c.sLen > sCap || c.mLen == 0 {
 			if !c.evictSLocked() && !c.evictMLocked() {
 				return
 			}
@@ -486,7 +461,6 @@ func (c *s3FIFO[K]) evictMLocked() bool {
 		}
 		if c.freq(idx) > 0 {
 			c.setFreq(idx, c.freq(idx)-1)
-			// Move tail to front
 			c.listRemove(&c.mHead, &c.mTail, idx)
 			c.listPushFront(&c.mHead, &c.mTail, idx)
 			continue

@@ -117,28 +117,15 @@ type storageEntry struct {
 }
 
 // Bytes returns the trimmed slot value as a slice over the inline
-// array, or nil when the entry is a tombstone / zero. Callers must
-// not mutate; the returned slice aliases the entry.
+// array, or nil when the entry is a tombstone / zero. The returned
+// slice aliases the entry — production hot reads (ReadAccountStorage)
+// take an explicit make+copy to keep the entry stack-resident; this
+// helper is for non-hot consumer paths and tests.
 func (e storageEntry) Bytes() []byte {
 	if e.valLen == 0 {
 		return nil
 	}
 	return e.value[32-int(e.valLen):]
-}
-
-// storageEntryFromBytes copies up to 32 bytes from b into a fresh
-// storageEntry. Empty / nil b produces a tombstone.
-func storageEntryFromBytes(b []byte) storageEntry {
-	var e storageEntry
-	n := len(b)
-	if n > 32 {
-		n = 32
-	}
-	if n > 0 {
-		copy(e.value[32-n:], b[:n])
-	}
-	e.valLen = uint8(n)
-	return e
 }
 
 // accountCacheEntry wraps a cached account. The sync.Map stores interface{},
@@ -957,7 +944,7 @@ func (b *PlainStateBuffer) RefreshLRUForSnapshot(snap *BufferSnapshot) {
 			copy(ck[:20], addr[:])
 			copy(ck[20:], slot[:])
 			stoKeys = append(stoKeys, ck)
-			// Tombstone (deletedSentinel) → cache as nil so the LRU
+			// Tombstone (valLen=0) → cache as nil so the LRU
 			// returns the negative answer on subsequent reads instead
 			// of falling through to MDBX where the row may still exist
 			// briefly post-commit.
@@ -1311,7 +1298,15 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 			if entry.valLen == 0 {
 				return nil, nil
 			}
-			return entry.Bytes(), nil
+			// Explicit copy: returning entry.Bytes() (slice over the
+			// inline [32]byte) forces escape analysis to heap-allocate
+			// the entire entry per call. SLOAD fires ~1.6M/block, so
+			// alias-escape would dominate read-side allocs. make+copy
+			// keeps entry stack-resident; escape only the trimmed bytes.
+			n := int(entry.valLen)
+			out := make([]byte, n)
+			copy(out, entry.value[32-n:])
+			return out, nil
 		}
 	}
 	// 1b. If storage was wiped (SELFDESTRUCT/CREATE within this batch),
@@ -1334,7 +1329,10 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 				if entry.valLen == 0 {
 					return nil, nil
 				}
-				return entry.Bytes(), nil
+				n := int(entry.valLen)
+				out := make([]byte, n)
+				copy(out, entry.value[32-n:])
+				return out, nil
 			}
 		}
 		// Wiped contracts in the in-flight snapshot: any slot not
@@ -1829,16 +1827,16 @@ func (w *BufferedPlainStateWriter) CreateContract(address types.Address) error {
 	// But the LRU may hold a STALE non-zero value for exactly those slots:
 	// e.g. an earlier commit interval flushed buf.storage[addr][slot]=V2
 	// into MDBX and RefreshLRUForSnapshot wrote V2 into LRU; a later block
-	// in this interval issues SSTORE slot=0, which sets buf[slot] to
-	// deletedSentinel — so collectPreWipeSlots drops it and this loop
-	// would leave V2 in the LRU. On the next block's read of `slot`, the
+	// in this interval issues SSTORE slot=0, which sets buf[slot] to a
+	// tombstone (valLen=0) — so collectPreWipeSlots drops it and this
+	// loop would leave V2 in the LRU. On the next block's read of `slot`, the
 	// LRU returns V2 even though MDBX has been swept clean and the snap
 	// tombstone has been refreshed past. That stale V2 propagates into
 	// EVM SSTORE gas calc (orig=V2 → RESET path, 15K refund delta vs
 	// the correct SET path). See project_lru_empty_slot_leftover memory.
 	//
 	// Correct set to purge = union of every slot key known to touch this
-	// address: active buffer (incl. empty/deletedSentinel), in-flight
+	// address: active buffer (incl. tombstones, valLen=0), in-flight
 	// snapshot, AND MDBX scan (delegated via wipedSlots which already
 	// merges MDBX rows). That covers every key that could sit in LRU.
 	lruKeys := make(map[types.Hash]struct{}, len(wipedSlots)+len(w.buf.storage[address]))
