@@ -67,7 +67,7 @@ func TestCreateContract_RecordsPreWipeSlots_Buffered(t *testing.T) {
 	csw.storageChanged[addr] = true
 	// Buffer reflects the post-SSTORE value (0xFF) for slot 0x02.
 	buf.storage[addr] = map[types.Hash]storageEntry{
-		hashFromByte(0x02): {value: []byte{0xFF}},
+		hashFromByte(0x02): storageEntryFromBytes([]byte{0xFF}),
 	}
 
 	require.NoError(t, w.CreateContract(addr))

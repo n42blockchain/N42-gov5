@@ -62,7 +62,7 @@ func TestPlainStateBufferApplyTarget_StorageRoundtrip(t *testing.T) {
 	if !ok {
 		t.Fatal("slot missing")
 	}
-	got := new(uint256.Int).SetBytes(entry.value)
+	got := new(uint256.Int).SetBytes(entry.Bytes())
 	if got.Uint64() != 0x4242 {
 		t.Errorf("slot value: got %s want 0x4242", got.String())
 	}
@@ -93,9 +93,9 @@ func TestPlainStateBufferApplyTarget_StorageEmptyDeletes(t *testing.T) {
 	if !ok {
 		t.Fatal("slot missing")
 	}
-	// Deletion is encoded as deletedSentinel (zero-length value) in the buffer.
-	if len(entry.value) != 0 {
-		t.Errorf("expected deletedSentinel (empty value); got %x", entry.value)
+	// Deletion is encoded as a zero-length value (valLen=0) in the buffer.
+	if entry.valLen != 0 {
+		t.Errorf("expected tombstone (valLen=0); got valLen=%d value=%x", entry.valLen, entry.Bytes())
 	}
 }
 
@@ -191,7 +191,7 @@ func TestPlainStateBufferApplyTarget_EndToEndBlockCommit(t *testing.T) {
 	if !ok {
 		t.Fatal("slot missing after apply")
 	}
-	got := new(uint256.Int).SetBytes(entry.value)
+	got := new(uint256.Int).SetBytes(entry.Bytes())
 	if got.Uint64() != 99 {
 		t.Errorf("slot: got %s want 99", got.String())
 	}

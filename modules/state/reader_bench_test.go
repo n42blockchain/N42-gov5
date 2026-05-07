@@ -25,7 +25,7 @@ func BenchmarkReadAccountStorage_BufHit(b *testing.B) {
 
 	buf := NewPlainStateBuffer()
 	buf.storage[addr] = map[types.Hash]storageEntry{
-		slot: {value: []byte{0x42, 0x00, 0x00, 0x99}},
+		slot: storageEntryFromBytes([]byte{0x42, 0x00, 0x00, 0x99}),
 	}
 
 	db := memdb.NewTestDB(b)
