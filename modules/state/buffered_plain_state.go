@@ -286,7 +286,25 @@ type PlainStateBuffer struct {
 	// CacheStorageIfAbsentEpoch for the full reasoning.
 	flushEpoch   atomic.Uint64
 	wipedAtEpoch sync.Map // map[types.Address]uint64
+
+	// Per-flush wipe records, used by StampWipes to auto-prune
+	// wipedAtEpoch entries older than wipeRingSize flushes. Without
+	// this, sync.Map grew monotonically (heap profile showed 9.15M
+	// nodes / 38% of total live objects on a 21M-block run), which
+	// dominated GC scan time. wipeRingSize is sized large enough that
+	// every live RoTx (main executor + prefetcher) is guaranteed to
+	// have rotated past the oldest retained slot.
+	wipeRingMu sync.Mutex
+	wipeRing   [wipeRingSize][]types.Address
 }
+
+// wipeRingSize bounds how many recent flushes' worth of wipe records
+// we retain in wipedAtEpoch. Main RoTx rotates every commit interval
+// (one flush per rotation); prefetcher RoTxs are per-block. 8 covers
+// any in-flight RoTx by orders of magnitude while keeping the working
+// set tiny: at ~1-100 wipes/flush this caps wipedAtEpoch at <1k
+// entries vs the unbounded ~10M that the previous design accumulated.
+const wipeRingSize = 8
 
 // NewPlainStateBuffer creates a buffer with the default cache budget.
 // For a custom budget use NewPlainStateBufferWithBudget.
@@ -417,11 +435,43 @@ func (b *PlainStateBuffer) CurrentFlushEpoch() uint64 {
 // StampWipes records that the given addresses were wiped at the just-
 // committed flush epoch. Called by the flusher AFTER tx.Commit succeeds
 // — same lock-section as RefreshLRUForSnapshot — so any prefetcher
-// PutIfAbsentEpoch arriving later sees these stamps and skips. The map
-// grows monotonically; pruning is handled by a separate compaction
-// once flushEpoch advances enough that no live RoTx could be older.
+// PutIfAbsentEpoch arriving later sees these stamps and skips.
+//
+// Auto-prune: each call also evicts the wipe records from the slot
+// being overwritten in the ring buffer (epoch − wipeRingSize). Those
+// addresses are deleted from wipedAtEpoch unless a later flush has
+// since re-stamped the same address with a fresher epoch. wipeRingSize
+// is large enough that any live RoTx's txOpenEpoch is well above the
+// pruned slot's epoch, so no prefetcher decision can be invalidated by
+// this cleanup.
 func (b *PlainStateBuffer) StampWipes(wipedAddrs []types.Address) uint64 {
 	epoch := b.flushEpoch.Add(1)
+
+	b.wipeRingMu.Lock()
+	slot := int(epoch % wipeRingSize)
+	prunedAddrs := b.wipeRing[slot]
+	prunedEpoch := uint64(0)
+	if epoch > wipeRingSize {
+		prunedEpoch = epoch - wipeRingSize
+	}
+	// Replace the slot with a fresh copy of wipedAddrs (the caller's
+	// slice is owned by the snapshot and may be released after this
+	// call returns). Reuse backing array if cap allows.
+	b.wipeRing[slot] = append(b.wipeRing[slot][:0], wipedAddrs...)
+	b.wipeRingMu.Unlock()
+
+	// Drop the previous occupants from wipedAtEpoch, but only if their
+	// stamp hasn't been refreshed by a later wipe of the same address.
+	if prunedEpoch > 0 {
+		for _, addr := range prunedAddrs {
+			if v, ok := b.wipedAtEpoch.Load(addr); ok {
+				if v.(uint64) <= prunedEpoch {
+					b.wipedAtEpoch.Delete(addr)
+				}
+			}
+		}
+	}
+
 	for _, addr := range wipedAddrs {
 		b.wipedAtEpoch.Store(addr, epoch)
 	}
