@@ -86,7 +86,7 @@ func TestParallelPipeline_DisjointTxsMatchBuffer(t *testing.T) {
 			t.Errorf("tx %d slot missing", i)
 			continue
 		}
-		got := new(uint256.Int).SetBytes(entry.value)
+		got := new(uint256.Int).SetBytes(entry.Bytes())
 		if got.Uint64() != uint64(i+100) {
 			t.Errorf("tx %d val: got %s want %d", i, got, i+100)
 		}
@@ -142,7 +142,7 @@ func TestParallelPipeline_SelfdestructThenRewrite(t *testing.T) {
 	// Pre-populate the buffer as if slotA had an older base value.
 	// The wipe should clear it from buf.storage via CreateContract.
 	buf.storage[addr] = map[types.Hash]storageEntry{
-		slotA: {value: []byte{0x42}},
+		slotA: storageEntryFromBytes([]byte{0x42}),
 	}
 
 	if err := bc.Apply(target); err != nil {
@@ -159,7 +159,7 @@ func TestParallelPipeline_SelfdestructThenRewrite(t *testing.T) {
 		if !ok {
 			t.Errorf("slot_b missing")
 		} else {
-			got := new(uint256.Int).SetBytes(entry.value)
+			got := new(uint256.Int).SetBytes(entry.Bytes())
 			if got.Uint64() != 999 {
 				t.Errorf("slot_b: got %s want 999", got.String())
 			}

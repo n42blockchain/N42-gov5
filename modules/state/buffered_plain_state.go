@@ -105,8 +105,40 @@ func isTracked(a types.Address) bool {
 	return *p == a
 }
 
+// storageEntry stores a slot value inline. EVM storage values are
+// uint256, so 32 bytes is the upper bound; valLen tracks the trimmed
+// length (0 = absent / tombstone). Inline layout removes one heap
+// alloc per WriteAccountStorage call (the previous `[]byte` field
+// retained `uint256.(*Int).Bytes()` output, profiled at 3.9 GiB
+// inuse / 130M live objects in late-chain hot blocks).
 type storageEntry struct {
-	value []byte
+	value  [32]byte
+	valLen uint8
+}
+
+// Bytes returns the trimmed slot value as a slice over the inline
+// array, or nil when the entry is a tombstone / zero. Callers must
+// not mutate; the returned slice aliases the entry.
+func (e storageEntry) Bytes() []byte {
+	if e.valLen == 0 {
+		return nil
+	}
+	return e.value[32-int(e.valLen):]
+}
+
+// storageEntryFromBytes copies up to 32 bytes from b into a fresh
+// storageEntry. Empty / nil b produces a tombstone.
+func storageEntryFromBytes(b []byte) storageEntry {
+	var e storageEntry
+	n := len(b)
+	if n > 32 {
+		n = 32
+	}
+	if n > 0 {
+		copy(e.value[32-n:], b[:n])
+	}
+	e.valLen = uint8(n)
+	return e
 }
 
 // accountCacheEntry wraps a cached account. The sync.Map stores interface{},
@@ -294,8 +326,12 @@ func NewPlainStateBufferWithBudget(b CacheBudget) *PlainStateBuffer {
 		storage:      make(map[types.Address]map[types.Hash]storageEntry, 4096),
 		code:         make(map[types.Hash][]byte, 64),
 		wipedStorage: make(map[types.Address]struct{}),
-		readAccounts: newS3FIFO[types.Address](b.AccountBytes),
-		readStorage:  newS3FIFO[[storageCompositeKeyLen]byte](b.StorageBytes),
+		// Account V2 encoding caps at ~75 bytes (fieldBits + nonce
+		// uvarint + balLen + balance + codeHash); 80 leaves headroom.
+		// Storage values are uint256 (≤ 32 bytes). Slot widths fixed
+		// here so the s3FIFO slabs are pre-allocated and pointer-free.
+		readAccounts: newS3FIFO[types.Address](b.AccountBytes, 80),
+		readStorage:  newS3FIFO[[storageCompositeKeyLen]byte](b.StorageBytes, 32),
 		readCode:     newByteLRU[types.Hash](b.CodeBytes),
 	}
 }
@@ -584,7 +620,7 @@ func (s *BufferSnapshot) LookupStorage(addr types.Address, slot types.Hash) ([]b
 	}
 	if slots, ok := s.storage[addr]; ok {
 		if entry, ok2 := slots[slot]; ok2 {
-			return entry.value, true
+			return entry.Bytes(), true
 		}
 	}
 	if _, wiped := s.wipedStorage[addr]; wiped {
@@ -722,7 +758,7 @@ func (snap *BufferSnapshot) ApplyTo(tx kv.RwTx) error {
 				k := make([]byte, storageCompositeKeyLen)
 				copy(k[:20], addr[:])
 				copy(k[20:], hash[:])
-				stoEntries = append(stoEntries, stoKV{key: k, value: entry.value})
+				stoEntries = append(stoEntries, stoKV{key: k, value: entry.Bytes()})
 			}
 		}
 		sortStoEntriesByBucket(stoEntries)
@@ -925,12 +961,13 @@ func (b *PlainStateBuffer) RefreshLRUForSnapshot(snap *BufferSnapshot) {
 			// returns the negative answer on subsequent reads instead
 			// of falling through to MDBX where the row may still exist
 			// briefly post-commit.
-			if len(entry.value) == 0 {
+			if entry.valLen == 0 {
 				stoVals = append(stoVals, nil)
 				stoCosts = append(stoCosts, storageCompositeKeyLen+cacheOverheadPerEntry)
 			} else {
-				stoVals = append(stoVals, entry.value)
-				stoCosts = append(stoCosts, storageCompositeKeyLen+len(entry.value)+cacheOverheadPerEntry)
+				v := entry.Bytes()
+				stoVals = append(stoVals, v)
+				stoCosts = append(stoCosts, storageCompositeKeyLen+len(v)+cacheOverheadPerEntry)
 			}
 		}
 	}
@@ -1271,10 +1308,10 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 		if entry, ok2 := slots[*key]; ok2 {
 			r.buf.hits.Add(1)
 			r.buf.stoHits.Add(1)
-			if len(entry.value) == 0 {
+			if entry.valLen == 0 {
 				return nil, nil
 			}
-			return entry.value, nil
+			return entry.Bytes(), nil
 		}
 	}
 	// 1b. If storage was wiped (SELFDESTRUCT/CREATE within this batch),
@@ -1294,10 +1331,10 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 			if entry, ok2 := slots[*key]; ok2 {
 				r.buf.hits.Add(1)
 				r.buf.stoHits.Add(1)
-				if len(entry.value) == 0 {
+				if entry.valLen == 0 {
 					return nil, nil
 				}
-				return entry.value, nil
+				return entry.Bytes(), nil
 			}
 		}
 		// Wiped contracts in the in-flight snapshot: any slot not
@@ -1539,7 +1576,7 @@ func (w *BufferedPlainStateWriter) RefreshLRUForBlock() {
 				stoKeys = append(stoKeys, ck)
 				var v []byte
 				if bufSlots != nil {
-					v = bufSlots[slot].value
+					v = bufSlots[slot].Bytes()
 				}
 				if len(v) == 0 {
 					stoVals = append(stoVals, nil)
@@ -1743,16 +1780,15 @@ func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, ke
 		slots = make(map[types.Hash]storageEntry, 8)
 		w.buf.storage[address] = slots
 	}
-	v := value.Bytes()
-	if len(v) > 32 {
-		panic(fmt.Sprintf("BufferedPlainStateWriter.WriteAccountStorage: value.Bytes() len=%d > 32 (addr=%x slot=%x)",
-			len(v), address, key))
+	// Inline write: WriteToSlice into the entry's [32]byte slab — no
+	// heap alloc (compare value.Bytes() which always allocs).
+	var entry storageEntry
+	bl := value.ByteLen()
+	if bl > 0 {
+		value.WriteToSlice(entry.value[32-bl:])
+		entry.valLen = uint8(bl)
 	}
-	if len(v) == 0 {
-		slots[*key] = storageEntry{value: deletedSentinel}
-	} else {
-		slots[*key] = storageEntry{value: v}
-	}
+	slots[*key] = entry
 	w.markTouchedStor(address, *key)
 	return nil
 }
@@ -1902,17 +1938,13 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 	// 1. Slots live in the write buffer — these shadow everything.
 	if hasBuf {
 		for slot, entry := range bufSlots {
-			if len(entry.value) == 0 {
+			if entry.valLen == 0 {
 				// Deleted/empty in buffer: skip. csw already has the
 				// pre-delete value from the earlier WriteAccountStorage call
 				// that produced this buffer entry.
 				continue
 			}
-			if len(entry.value) > 32 {
-				panic(fmt.Sprintf("BufferedPlainStateWriter.collectPreWipeSlots: bufSlots[slot].value len=%d > 32 (addr=%x slot=%x src=active_buffer)",
-					len(entry.value), address, slot))
-			}
-			out[slot] = entry.value
+			out[slot] = entry.Bytes()
 		}
 	}
 
@@ -1937,17 +1969,13 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 						continue
 					}
 				}
-				if len(entry.value) == 0 {
+				if entry.valLen == 0 {
 					// Deleted in the in-flight interval: skip — the
 					// per-slot tombstone for that interval already
 					// went to storcs at its boundary block.
 					continue
 				}
-				if len(entry.value) > 32 {
-					panic(fmt.Sprintf("BufferedPlainStateWriter.collectPreWipeSlots: inFlight.storage[addr][slot].value len=%d > 32 (addr=%x slot=%x src=inflight_snap)",
-						len(entry.value), address, slot))
-				}
-				out[slot] = entry.value
+				out[slot] = entry.Bytes()
 			}
 		}
 		// If the in-flight snapshot wiped the address, MDBX may still

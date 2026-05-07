@@ -22,176 +22,426 @@
 //   - Put for a key in G → insert directly into M (it was hot enough
 //     to come back), bypass S
 //
-// Interface: identical to byteLRU so the read-cache field types in
-// PlainStateBuffer can be swapped without touching the Reader hot path.
+// Storage layout — pointer-free
+// ─────────────────────────────
+// Per-entry data lives in slab arrays indexed by a 32-bit slot id:
+//
+//	keys     []K         // K is a fixed-size byte array (e.g. [52]byte)
+//	valBuf   []byte      // valSize × cap, contiguous; entry i at [i*valSize:(i+1)*valSize]
+//	valLen   []uint8     // 0..valSize; 0 also means tombstone (caller treats nil and empty alike)
+//	flags    []uint8     // bit 0: alive, bit 1: inMain, bits 2-3: freq (0..3)
+//	next/prev []int32    // intrusive doubly-linked lists
+//
+// Doubly-linked free list reuses next[] (prev[] unused while free).
+// Map from K → int32 slot id is the only structure with internal Go
+// pointers; everything else is plain byte / int / uint slices that GC
+// scans as one allocation each.
+//
+// For 250M storage entries (8192-block segment under heavy DeFi load)
+// the previous *list.Element + *s3Entry layout pinned 700M+ live heap
+// objects and made GC dominate ~90% of CPU; the slab layout collapses
+// that to ~10 large allocations + the items map.
 
 package state
 
 import (
-	"container/list"
 	"sync"
 	"sync/atomic"
 )
 
-// s3Entry is a cache entry stored in either the S or M FIFO queue.
-type s3Entry[K comparable] struct {
-	key    K
-	value  []byte
-	cost   int
-	freq   uint8 // 0..3, increments on access, decrements on second-chance pass
-	inMain bool  // false=S queue, true=M queue
-}
+const (
+	flagAlive  uint8 = 1 << 0
+	flagInMain uint8 = 1 << 1
+	freqShift        = 2
+	freqMask   uint8 = 0b1100 // bits 2-3
+	freqMax    uint8 = 3
+)
 
-// s3FIFO is a cost-bounded scan-resistant cache.
+// nilSlot is the sentinel for an empty list pointer / no-such-slot id.
+const nilSlot int32 = -1
+
+// s3FIFO is a slot-based scan-resistant cache. Generic over K (any
+// fixed-size comparable byte array — [20]byte, [52]byte, etc.); value
+// width valSize is fixed at construction.
+//
+// Slabs are LAZY: cap starts small and grows up to maxCap on demand
+// when the free list is exhausted. This matters because the natural
+// bytes-budget for a real run (16 GiB storage) translates to ~119M
+// slots, and pre-allocating 13 GiB up-front per cache made the test
+// suite OOM-kill the host (each NewPlainStateBuffer in a test case
+// would gobble that much). The cap budget still drives eviction; we
+// just don't reserve all of it in RAM until we actually need it.
 type s3FIFO[K comparable] struct {
 	mu sync.Mutex
 
-	capBytes int64
-	sCap     int64 // small queue capacity (≈10% of capBytes)
-	sBytes   int64
-	mBytes   int64
+	cap     int // currently allocated slot count
+	maxCap  int // budget ceiling; cap may grow up to here
+	sCap    int // small queue cap in slots (computed against maxCap)
+	sLen    int
+	mLen    int
+	valSize int
 
-	items  map[K]*list.Element // entries currently in S or M
-	ghosts map[K]*list.Element // ghost-set membership; element holds the key
+	keys   []K
+	valBuf []byte
+	valLen []uint8
+	flags  []uint8
+	next   []int32
+	prev   []int32
 
-	sList *list.List // small FIFO (front=newest)
-	mList *list.List // main FIFO
-	gList *list.List // ghost FIFO
+	items map[K]int32
 
-	maxGhost int
+	sHead, sTail int32
+	mHead, mTail int32
+	free         int32
+
+	// Ghost: ring of recently-evicted keys, used to detect re-admit.
+	ghostKeys []K
+	ghostMap  map[K]int32 // key → ring index
+	ghostHead int
+	ghostFull bool
+	maxGhost  int
 
 	hits   atomic.Uint64
 	misses atomic.Uint64
 }
 
-// newS3FIFO constructs a cache with the given byte budget. The S
-// queue gets ~10% of the budget; ghost is bounded to ~100K entries
-// per GB of capacity (so ghost overhead stays below ~5% of cache).
-func newS3FIFO[K comparable](capBytes int64) *s3FIFO[K] {
-	sCap := capBytes / 10
-	if sCap < 1024 {
-		sCap = capBytes / 4 // tiny caches: bump S share
+// perSlotBytesEstimate matches the slab footprint used to translate a
+// caller-supplied byte budget into a slot count. Includes Go map
+// bucket overhead so the cap reflects real RSS, not just slab bytes.
+func perSlotBytesEstimate[K comparable](valSize int) int {
+	var k K
+	keySize := len(toBytes(k))
+	if keySize == 0 {
+		// K is a [N]byte array but len() of value is 0 because we
+		// can't read len of a zero-init array via reflection-free
+		// dispatch. Estimate from sizeOf via unsafe.Sizeof analog —
+		// callers use [20]byte or [52]byte so we hard-code via the
+		// helper below.
+		keySize = sizeOfK[K]()
 	}
-	maxGhost := int(100_000 * capBytes / (1 << 30))
+	// 50B is a typical Go map bucket amortised overhead per entry
+	// (bucket header + tophash slot + value slot for int32). Empirical.
+	return keySize + valSize + 1 + 1 + 4 + 4 + 50
+}
+
+// toBytes returns a []byte view of K when K is a byte array. Returns
+// nil if K isn't an array type. Used only for size measurement.
+func toBytes[K comparable](k K) []byte {
+	switch any(k).(type) {
+	case [20]byte:
+		v := any(k).([20]byte)
+		return v[:]
+	case [32]byte:
+		v := any(k).([32]byte)
+		return v[:]
+	case [52]byte:
+		v := any(k).([52]byte)
+		return v[:]
+	}
+	return nil
+}
+
+// sizeOfK returns the byte size of K when K is one of the supported
+// fixed-size array types. Hard-coded because Go generics don't expose
+// type metadata at compile time.
+func sizeOfK[K comparable]() int {
+	var z K
+	return len(toBytes(z))
+}
+
+// initialCacheSlots is the slab size at construction. We grow on
+// demand from here; allocating 1024 slots costs ~150 KB total which
+// is fine even for tests that build many caches.
+const initialCacheSlots = 1024
+
+// newS3FIFO constructs a cache whose budget ceiling is capBytes. The
+// initial slab size is small (initialCacheSlots) and grows up to the
+// computed maxCap as Put pressure demands. valSize is the maximum
+// value byte width per entry: 32 for storage (uint256), 80 for
+// accounts (V2 encoding).
+func newS3FIFO[K comparable](capBytes int64, valSize int) *s3FIFO[K] {
+	perSlot := int64(perSlotBytesEstimate[K](valSize))
+	if perSlot <= 0 {
+		perSlot = 144 // fallback for unrecognised K
+	}
+	maxCap := int(capBytes / perSlot)
+	if maxCap < initialCacheSlots {
+		maxCap = initialCacheSlots
+	}
+	sCap := maxCap / 10
+	if sCap < 16 {
+		sCap = maxCap / 4
+	}
+	if sCap < 16 {
+		sCap = 16
+	}
+
+	maxGhost := int(int64(100_000) * capBytes / (1 << 30))
 	if maxGhost < 16384 {
 		maxGhost = 16384
 	}
-	return &s3FIFO[K]{
-		capBytes: capBytes,
+
+	cap := initialCacheSlots
+	if cap > maxCap {
+		cap = maxCap
+	}
+	c := &s3FIFO[K]{
+		cap:      cap,
+		maxCap:   maxCap,
 		sCap:     sCap,
-		items:    make(map[K]*list.Element),
-		ghosts:   make(map[K]*list.Element),
-		sList:    list.New(),
-		mList:    list.New(),
-		gList:    list.New(),
+		valSize:  valSize,
+		keys:     make([]K, cap),
+		valBuf:   make([]byte, cap*valSize),
+		valLen:   make([]uint8, cap),
+		flags:    make([]uint8, cap),
+		next:     make([]int32, cap),
+		prev:     make([]int32, cap),
+		items:    make(map[K]int32),
+		sHead:    nilSlot,
+		sTail:    nilSlot,
+		mHead:    nilSlot,
+		mTail:    nilSlot,
+		free:     0,
+		ghostMap: make(map[K]int32),
 		maxGhost: maxGhost,
+		// ghostKeys allocated lazily on first addGhost — would be
+		// up to 1.6M × 52B = 80 MB upfront for a 16 GiB storage cache,
+		// which is wasteful for short-lived test caches that never
+		// evict. The cache works without ghosts (first-touch keys
+		// land in S as they would on a cold cache).
+	}
+	// Chain the initial free list: 0 → 1 → ... → cap-1 → nilSlot
+	for i := int32(0); i < int32(cap)-1; i++ {
+		c.next[i] = i + 1
+	}
+	c.next[cap-1] = nilSlot
+	return c
+}
+
+// growLocked extends slabs by doubling cap, capped at maxCap. Returns
+// true if growth happened (caller can retry allocSlot). Caller must
+// hold c.mu.
+func (c *s3FIFO[K]) growLocked() bool {
+	if c.cap >= c.maxCap {
+		return false
+	}
+	newCap := c.cap * 2
+	if newCap > c.maxCap {
+		newCap = c.maxCap
+	}
+	delta := newCap - c.cap
+	c.keys = append(c.keys, make([]K, delta)...)
+	c.valBuf = append(c.valBuf, make([]byte, delta*c.valSize)...)
+	c.valLen = append(c.valLen, make([]uint8, delta)...)
+	c.flags = append(c.flags, make([]uint8, delta)...)
+	c.next = append(c.next, make([]int32, delta)...)
+	c.prev = append(c.prev, make([]int32, delta)...)
+	// Chain new slots [c.cap, newCap) into free list, keeping the old
+	// (currently empty) head as the tail's link.
+	for i := int32(c.cap); i < int32(newCap)-1; i++ {
+		c.next[i] = i + 1
+	}
+	c.next[newCap-1] = c.free
+	c.free = int32(c.cap)
+	c.cap = newCap
+	return true
+}
+
+func (c *s3FIFO[K]) freq(idx int32) uint8 { return (c.flags[idx] & freqMask) >> freqShift }
+
+func (c *s3FIFO[K]) setFreq(idx int32, f uint8) {
+	if f > freqMax {
+		f = freqMax
+	}
+	c.flags[idx] = (c.flags[idx] &^ freqMask) | (f << freqShift)
+}
+
+func (c *s3FIFO[K]) bumpFreq(idx int32) {
+	if f := c.freq(idx); f < freqMax {
+		c.setFreq(idx, f+1)
 	}
 }
 
+// allocSlot pops the free list. Returns nilSlot when exhausted (caller
+// must evict first). With pre-sized cap and eviction running before
+// every Put, this only fires during a transient brief overshoot.
+func (c *s3FIFO[K]) allocSlot() int32 {
+	if c.free == nilSlot {
+		return nilSlot
+	}
+	idx := c.free
+	c.free = c.next[idx]
+	return idx
+}
+
+// freeSlot returns the slot to the free list and clears flags.
+func (c *s3FIFO[K]) freeSlot(idx int32) {
+	c.flags[idx] = 0
+	c.valLen[idx] = 0
+	c.prev[idx] = nilSlot
+	c.next[idx] = c.free
+	c.free = idx
+}
+
+// listPushFront adds idx to the front of the (head,tail) list.
+func (c *s3FIFO[K]) listPushFront(head, tail *int32, idx int32) {
+	c.prev[idx] = nilSlot
+	c.next[idx] = *head
+	if *head != nilSlot {
+		c.prev[*head] = idx
+	} else {
+		*tail = idx
+	}
+	*head = idx
+}
+
+// listRemove unlinks idx from the (head,tail) list.
+func (c *s3FIFO[K]) listRemove(head, tail *int32, idx int32) {
+	p, n := c.prev[idx], c.next[idx]
+	if p != nilSlot {
+		c.next[p] = n
+	} else {
+		*head = n
+	}
+	if n != nilSlot {
+		c.prev[n] = p
+	} else {
+		*tail = p
+	}
+	c.prev[idx] = nilSlot
+	c.next[idx] = nilSlot
+}
+
+// writeValue copies value into slot idx's slab segment, capping at
+// valSize. Stores actual length in valLen[idx]. nil/empty value stores
+// length 0 (caller treats both as "absent" / negative cache).
+func (c *s3FIFO[K]) writeValue(idx int32, value []byte) {
+	n := len(value)
+	if n > c.valSize {
+		n = c.valSize
+	}
+	if n > 0 {
+		copy(c.valBuf[int(idx)*c.valSize:int(idx)*c.valSize+n], value)
+	}
+	c.valLen[idx] = uint8(n)
+}
+
+// readValue returns a slice over the slab. Caller must not mutate.
+func (c *s3FIFO[K]) readValue(idx int32) []byte {
+	n := int(c.valLen[idx])
+	if n == 0 {
+		return nil
+	}
+	off := int(idx) * c.valSize
+	return c.valBuf[off : off+n]
+}
+
 // Get returns the value for key and bumps its frequency. The returned
-// slice is the cached storage; callers must not mutate it.
+// slice references the slab; callers must not mutate it.
 func (c *s3FIFO[K]) Get(key K) (value []byte, present bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	elem, ok := c.items[key]
+	idx, ok := c.items[key]
 	if !ok {
 		c.misses.Add(1)
 		return nil, false
 	}
-	entry := elem.Value.(*s3Entry[K])
-	if entry.freq < 3 {
-		entry.freq++
-	}
+	c.bumpFreq(idx)
 	c.hits.Add(1)
-	return entry.value, true
+	return c.readValue(idx), true
 }
 
 // Put inserts or updates key. New keys land in S; keys present in
 // the ghost set get re-admitted directly to M.
 func (c *s3FIFO[K]) Put(key K, value []byte, cost int) {
+	_ = cost // accounting now slot-based; cost arg kept for API compat
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.putLocked(key, value, cost)
-	c.evictLocked()
+	c.evictUntilFreeLocked()
+	c.putLocked(key, value)
 }
 
 // PutBatch is the batch form used by RefreshLRUForSnapshot. Single
-// mutex acquisition + amortised eviction sweep at the end.
+// mutex acquisition + amortised eviction sweep.
 func (c *s3FIFO[K]) PutBatch(keys []K, values [][]byte, costs []int) {
 	if len(keys) == 0 {
 		return
 	}
+	_ = costs
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i, k := range keys {
-		c.putLocked(k, values[i], costs[i])
+		c.evictUntilFreeLocked()
+		c.putLocked(k, values[i])
 	}
-	c.evictLocked()
 }
 
 // PutIfAbsent inserts only when key is not already present. Returns true
-// if inserted, false if the key already had a value (including a nil
-// tombstone). Designed for the async prefetcher: it can stale-read MDBX
-// concurrently with the executor's flush+RefreshLRU, so blindly Putting
-// risks overwriting a fresh tombstone (or any newer value RefreshLRU
-// just wrote) with a stale snapshot read. PutIfAbsent says "only fill
-// the gap; never overwrite". This preserves prefetch warmth (fills empty
-// LRU entries) without contaminating values RefreshLRU is responsible for.
+// if inserted, false if the key already had a value (including a
+// tombstone with valLen=0). Designed for the async prefetcher: it can
+// stale-read MDBX concurrently with the executor's flush+RefreshLRU,
+// so blindly Putting risks overwriting a fresh tombstone (or any newer
+// value RefreshLRU just wrote) with a stale snapshot read. PutIfAbsent
+// says "only fill the gap; never overwrite". This preserves prefetch
+// warmth (fills empty LRU entries) without contaminating values
+// RefreshLRU is responsible for.
 func (c *s3FIFO[K]) PutIfAbsent(key K, value []byte, cost int) bool {
+	_ = cost
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.items[key]; ok {
 		return false
 	}
-	c.putLocked(key, value, cost)
-	c.evictLocked()
+	c.evictUntilFreeLocked()
+	c.putLocked(key, value)
 	return true
 }
 
-func (c *s3FIFO[K]) putLocked(key K, value []byte, cost int) {
+func (c *s3FIFO[K]) putLocked(key K, value []byte) {
 	// Update existing entry in S or M.
-	if elem, ok := c.items[key]; ok {
-		entry := elem.Value.(*s3Entry[K])
-		if entry.inMain {
-			c.mBytes += int64(cost - entry.cost)
-		} else {
-			c.sBytes += int64(cost - entry.cost)
-		}
-		entry.value = value
-		entry.cost = cost
-		if entry.freq < 3 {
-			entry.freq++
-		}
+	if idx, ok := c.items[key]; ok {
+		c.writeValue(idx, value)
+		c.bumpFreq(idx)
 		return
 	}
-	// Re-admission from ghost: this key was here recently enough that
-	// its history is still in G — skip the S audition and go straight
-	// to M.
-	if gElem, ok := c.ghosts[key]; ok {
-		c.gList.Remove(gElem)
-		delete(c.ghosts, key)
-		entry := &s3Entry[K]{key: key, value: value, cost: cost, freq: 0, inMain: true}
-		elem := c.mList.PushFront(entry)
-		c.items[key] = elem
-		c.mBytes += int64(cost)
+	idx := c.allocSlot()
+	if idx == nilSlot {
+		// Eviction couldn't free a slot — happens only when cap=0
+		// or every entry is locked into freq>0 and queues are tiny.
+		// Safe fallback: drop the insert.
 		return
 	}
-	// Fresh key → small queue.
-	entry := &s3Entry[K]{key: key, value: value, cost: cost, freq: 0, inMain: false}
-	elem := c.sList.PushFront(entry)
-	c.items[key] = elem
-	c.sBytes += int64(cost)
+	c.keys[idx] = key
+	c.writeValue(idx, value)
+	c.flags[idx] = flagAlive
+	// Re-admission from ghost: hot enough to come back, skip S.
+	if _, ok := c.ghostMap[key]; ok {
+		c.removeGhost(key)
+		c.flags[idx] |= flagInMain
+		c.listPushFront(&c.mHead, &c.mTail, idx)
+		c.mLen++
+	} else {
+		c.listPushFront(&c.sHead, &c.sTail, idx)
+		c.sLen++
+	}
+	c.items[key] = idx
 }
 
-// evictLocked drives both queues down to capBytes. Prefers evicting
-// from S when S exceeds its share; otherwise pushes M's tail through
-// the second-chance loop.
-func (c *s3FIFO[K]) evictLocked() {
-	if c.capBytes <= 0 {
+// evictUntilFreeLocked ensures at least one free slot is available.
+// Strategy: grow slabs first (free real estate is cheaper than
+// evicting), and only fall back to eviction once we're at maxCap.
+// Steady-state past warmup, growth has stopped and this is one
+// eviction per Put.
+func (c *s3FIFO[K]) evictUntilFreeLocked() {
+	if c.free != nilSlot {
 		return
 	}
-	for c.sBytes+c.mBytes > c.capBytes {
-		if c.sBytes > c.sCap || c.mList.Len() == 0 {
+	if c.growLocked() {
+		return
+	}
+	for c.free == nilSlot && (c.sLen > 0 || c.mLen > 0) {
+		// Prefer S when over its share; otherwise hit M's tail.
+		if c.sLen > c.sCap || c.mLen == 0 {
 			if !c.evictSLocked() && !c.evictMLocked() {
 				return
 			}
@@ -206,23 +456,23 @@ func (c *s3FIFO[K]) evictLocked() {
 // evictSLocked pops S tail. Promotes to M if it earned at least one
 // access; otherwise drops the key into G.
 func (c *s3FIFO[K]) evictSLocked() bool {
-	tail := c.sList.Back()
-	if tail == nil {
+	idx := c.sTail
+	if idx == nilSlot {
 		return false
 	}
-	entry := tail.Value.(*s3Entry[K])
-	c.sList.Remove(tail)
-	c.sBytes -= int64(entry.cost)
-	if entry.freq > 0 {
-		entry.freq = 0
-		entry.inMain = true
-		elem := c.mList.PushFront(entry)
-		c.items[entry.key] = elem
-		c.mBytes += int64(entry.cost)
+	c.listRemove(&c.sHead, &c.sTail, idx)
+	c.sLen--
+	if c.freq(idx) > 0 {
+		c.setFreq(idx, 0)
+		c.flags[idx] |= flagInMain
+		c.listPushFront(&c.mHead, &c.mTail, idx)
+		c.mLen++
 		return true
 	}
-	delete(c.items, entry.key)
-	c.addGhostLocked(entry.key)
+	key := c.keys[idx]
+	delete(c.items, key)
+	c.addGhost(key)
+	c.freeSlot(idx)
 	return true
 }
 
@@ -230,46 +480,74 @@ func (c *s3FIFO[K]) evictSLocked() bool {
 // to 32 demotions per call so a fully-hot M can't deadlock eviction.
 func (c *s3FIFO[K]) evictMLocked() bool {
 	for i := 0; i < 32; i++ {
-		tail := c.mList.Back()
-		if tail == nil {
+		idx := c.mTail
+		if idx == nilSlot {
 			return false
 		}
-		entry := tail.Value.(*s3Entry[K])
-		if entry.freq > 0 {
-			entry.freq--
-			c.mList.MoveToFront(tail)
+		if c.freq(idx) > 0 {
+			c.setFreq(idx, c.freq(idx)-1)
+			// Move tail to front
+			c.listRemove(&c.mHead, &c.mTail, idx)
+			c.listPushFront(&c.mHead, &c.mTail, idx)
 			continue
 		}
-		c.mList.Remove(tail)
-		c.mBytes -= int64(entry.cost)
-		delete(c.items, entry.key)
-		c.addGhostLocked(entry.key)
+		c.listRemove(&c.mHead, &c.mTail, idx)
+		c.mLen--
+		key := c.keys[idx]
+		delete(c.items, key)
+		c.addGhost(key)
+		c.freeSlot(idx)
 		return true
 	}
-	// All 32 still had freq>0; force-evict the current tail to make
+	// All 32 still had freq>0; force-evict current tail to make
 	// progress instead of looping forever.
-	tail := c.mList.Back()
-	if tail == nil {
+	idx := c.mTail
+	if idx == nilSlot {
 		return false
 	}
-	entry := tail.Value.(*s3Entry[K])
-	c.mList.Remove(tail)
-	c.mBytes -= int64(entry.cost)
-	delete(c.items, entry.key)
-	c.addGhostLocked(entry.key)
+	c.listRemove(&c.mHead, &c.mTail, idx)
+	c.mLen--
+	key := c.keys[idx]
+	delete(c.items, key)
+	c.addGhost(key)
+	c.freeSlot(idx)
 	return true
 }
 
-func (c *s3FIFO[K]) addGhostLocked(key K) {
-	if _, ok := c.ghosts[key]; ok {
+func (c *s3FIFO[K]) addGhost(key K) {
+	if c.maxGhost == 0 {
 		return
 	}
-	elem := c.gList.PushFront(key)
-	c.ghosts[key] = elem
-	for c.gList.Len() > c.maxGhost {
-		old := c.gList.Back()
-		c.gList.Remove(old)
-		delete(c.ghosts, old.Value.(K))
+	if _, ok := c.ghostMap[key]; ok {
+		return
+	}
+	if c.ghostKeys == nil {
+		c.ghostKeys = make([]K, c.maxGhost)
+	}
+	if c.ghostFull {
+		oldKey := c.ghostKeys[c.ghostHead]
+		delete(c.ghostMap, oldKey)
+	}
+	c.ghostKeys[c.ghostHead] = key
+	c.ghostMap[key] = int32(c.ghostHead)
+	c.ghostHead++
+	if c.ghostHead >= c.maxGhost {
+		c.ghostHead = 0
+		c.ghostFull = true
+	}
+}
+
+func (c *s3FIFO[K]) removeGhost(key K) {
+	pos, ok := c.ghostMap[key]
+	if !ok {
+		return
+	}
+	delete(c.ghostMap, key)
+	if c.ghostKeys != nil {
+		// Tombstone the ring slot with a zero key; addGhost will
+		// reuse it when wrap-around hits.
+		var zero K
+		c.ghostKeys[pos] = zero
 	}
 }
 
@@ -292,16 +570,9 @@ func (c *s3FIFO[K]) DeleteBatch(keys []K) {
 	}
 }
 
-// Range visits every key currently in the cache (excluding ghost entries),
-// calling visit(k) once per key. The cache is held under read lock for the
-// whole walk; visit must be cheap and must not call back into Get/Put.
-// Returning false from visit halts the walk early.
-//
-// Used by SELFDESTRUCT-aware LRU invalidation: we need to evict every
-// (addr || slot) composite key whose first 20B match a wiped address,
-// but the cache has no per-prefix index. Walking c.items is O(n) — only
-// run from the post-flush LRU refresh path which fires once per commit
-// interval, not on the EVM hot path.
+// Range visits every key currently in the cache (excluding ghost
+// entries). Used by SELFDESTRUCT-aware LRU invalidation: walks
+// c.items O(n), only run from the post-flush LRU refresh path.
 func (c *s3FIFO[K]) Range(visit func(K) bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -313,19 +584,19 @@ func (c *s3FIFO[K]) Range(visit func(K) bool) {
 }
 
 func (c *s3FIFO[K]) deleteLocked(key K) bool {
-	elem, ok := c.items[key]
+	idx, ok := c.items[key]
 	if !ok {
 		return false
 	}
-	entry := elem.Value.(*s3Entry[K])
-	if entry.inMain {
-		c.mList.Remove(elem)
-		c.mBytes -= int64(entry.cost)
+	if c.flags[idx]&flagInMain != 0 {
+		c.listRemove(&c.mHead, &c.mTail, idx)
+		c.mLen--
 	} else {
-		c.sList.Remove(elem)
-		c.sBytes -= int64(entry.cost)
+		c.listRemove(&c.sHead, &c.sTail, idx)
+		c.sLen--
 	}
 	delete(c.items, key)
+	c.freeSlot(idx)
 	return true
 }
 
@@ -333,21 +604,34 @@ func (c *s3FIFO[K]) deleteLocked(key K) bool {
 func (c *s3FIFO[K]) Reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.items = make(map[K]*list.Element)
-	c.ghosts = make(map[K]*list.Element)
-	c.sList = list.New()
-	c.mList = list.New()
-	c.gList = list.New()
-	c.sBytes = 0
-	c.mBytes = 0
+	for i := range c.flags {
+		c.flags[i] = 0
+		c.valLen[i] = 0
+	}
+	for i := int32(0); i < int32(c.cap)-1; i++ {
+		c.next[i] = i + 1
+		c.prev[i] = nilSlot
+	}
+	c.next[c.cap-1] = nilSlot
+	c.prev[c.cap-1] = nilSlot
+	c.free = 0
+	c.sHead, c.sTail, c.mHead, c.mTail = nilSlot, nilSlot, nilSlot, nilSlot
+	c.sLen, c.mLen = 0, 0
+	c.items = make(map[K]int32)
+	c.ghostMap = make(map[K]int32)
+	c.ghostKeys = nil
+	c.ghostHead = 0
+	c.ghostFull = false
 }
 
-// Stats returns (hits, misses, currentBytes, entries) — same shape
-// as byteLRU.Stats so callers don't need to distinguish backends.
+// Stats returns (hits, misses, currentBytes, entries). currentBytes
+// approximates RSS via the per-slot estimate × live entries.
 func (c *s3FIFO[K]) Stats() (hits, misses uint64, bytes int64, entries int) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.hits.Load(), c.misses.Load(), c.sBytes + c.mBytes, len(c.items)
+	live := c.sLen + c.mLen
+	c.mu.Unlock()
+	per := int64(perSlotBytesEstimate[K](c.valSize))
+	return c.hits.Load(), c.misses.Load(), int64(live) * per, live
 }
 
 // ResetStats clears hit/miss counters without touching cache contents.
