@@ -384,27 +384,24 @@ func padTableTo(tbl *freezer.FreezerTable, targetItems uint64, enc *zstd.Encoder
 }
 
 // alignOnResume prepares output tables for resumed execution.
-// Truncates tables that ran ahead of MDBX and recovers partial batches.
-// If hasRemainder is true, MDBX has authoritative remainder entries —
-// skip freezer partial-batch recovery to avoid double-loading.
-func (b *outputBatcher) alignOnResume(startBlock uint64, hasRemainder bool) error {
+// Truncates tables that ran ahead of MDBX and recovers partial
+// batches. If hasRemainder is true, MDBX has authoritative remainder
+// entries — skip freezer partial-batch recovery to avoid double-
+// loading.
+//
+// `tables` lists the per-block output tables this pipeline writes:
+// ethexec writes [acctcs, storcs, witness]; witness-replay also
+// writes receipts. Receipts must be included for any pipeline that
+// emits it because addEntry's first call goes through
+// EnsureTableCompressed and refuses to write into a table whose
+// existingItems is ahead of nextItem (deadlocking the worker pool
+// before the reader goroutine even starts). For pipelines that
+// don't emit receipts, including it would mis-flag a correctly-empty
+// table as "behind MDBX" and abort resume.
+func (b *outputBatcher) alignOnResume(tables []string, startBlock uint64, hasRemainder bool) error {
 	b.nextItem = startBlock
 	log.Info("alignOnResume starting",
 		"startBlock", startBlock)
-
-	// Receipts must be in this list. addEntry(receipts) at startBlock
-	// triggers EnsureTableCompressed which exposes existingItems from
-	// the on-disk cidx; if that's ahead of startBlock, addEntry
-	// fails-loud and the worker pool deadlocks waiting for jobs that
-	// never come (the reader goroutine hasn't started yet on this code
-	// path). Truncating receipts here keeps every per-block output
-	// table at the same head.
-	tables := []string{
-		freezer.TableReceipts,
-		freezer.TableAccountChanges,
-		freezer.TableStorageChanges,
-		freezer.TableBlockWitness,
-	}
 	for _, name := range tables {
 		tbl, err := b.freezer.EnsureTableCompressed(name, "c")
 		if err != nil {
