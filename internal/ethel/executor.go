@@ -296,7 +296,17 @@ func (e *Executor) Run(ctx context.Context) error {
 		// state). Without this, both paths restore overlapping entries
 		// causing position misalignment.
 		csRem := ReadCSRemainder(setupTx)
-		if err := batcher.alignOnResume(startBlock, len(csRem) > 0); err != nil {
+		// ethexec writes only changesets + witness — receipts goes
+		// straight into MDBX state, never the freezer. Don't list
+		// receipts here or alignOnResume would treat the (correctly)
+		// empty receipts.cidx as a "behind MDBX" gap and refuse to
+		// resume.
+		ethexecOutputTables := []string{
+			freezer.TableAccountChanges,
+			freezer.TableStorageChanges,
+			freezer.TableBlockWitness,
+		}
+		if err := batcher.alignOnResume(ethexecOutputTables, startBlock, len(csRem) > 0); err != nil {
 			setupTx.Rollback()
 			return fmt.Errorf("align output tables: %w", err)
 		}

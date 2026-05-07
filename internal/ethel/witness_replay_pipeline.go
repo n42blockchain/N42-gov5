@@ -178,7 +178,17 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		if err != nil {
 			return fmt.Errorf("new output batcher: %w", err)
 		}
-		if err := batcher.alignOnResume(cfg.StartBlock, false); err != nil {
+		// witness-replay writes receipts in addition to per-block
+		// changesets — they all need to share a head, so receipts is
+		// in this list (unlike ethexec, which doesn't emit receipts
+		// to the freezer at all).
+		witnessReplayOutputTables := []string{
+			freezer.TableReceipts,
+			freezer.TableAccountChanges,
+			freezer.TableStorageChanges,
+			freezer.TableBlockWitness,
+		}
+		if err := batcher.alignOnResume(witnessReplayOutputTables, cfg.StartBlock, false); err != nil {
 			return fmt.Errorf("align on resume: %w", err)
 		}
 	}
