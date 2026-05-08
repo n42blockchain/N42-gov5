@@ -315,6 +315,13 @@ func (sdb *IntraBlockState) GetStateReader() StateReader {
 
 // Reset clears out all ephemeral state objects from the state db, but keeps
 // the underlying state trie to avoid reloading data for the next operations.
+//
+// IMPORTANT: this must clear *every* per-block field. SELFDESTRUCT
+// trackers (storageWipes / priorTxWipes), the saved-error sticky bit,
+// and the codeMap are all block-scoped and would silently corrupt the
+// next block if left over. The witness-replay 50303 gas mismatch was
+// stale storageWipes from an earlier block making SLOAD short-circuit
+// to nil for an address that was alive in the new block.
 func (sdb *IntraBlockState) Reset() {
 	// Return stateObjects to the pool before discarding the map.
 	// Their three Storage maps are cleared and re-bound on next Get.
@@ -324,9 +331,14 @@ func (sdb *IntraBlockState) Reset() {
 	clear(sdb.stateObjects)
 	clear(sdb.stateObjectsDirty)
 	clear(sdb.nilAccounts)
+	clear(sdb.storageWipes)
+	clear(sdb.priorTxWipes)
+	sdb.savedErr = nil
+	sdb.codeMap = nil
 	sdb.thash = types.Hash{}
 	sdb.bhash = types.Hash{}
 	sdb.txIndex = 0
+	sdb.nextRevisionID = 0
 	clear(sdb.logs)
 	sdb.logSize = 0
 	sdb.clearJournalAndRefund()
