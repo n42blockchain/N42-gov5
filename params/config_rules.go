@@ -27,14 +27,9 @@ import (
 	"sync"
 )
 
-// rulesCacheKey memoises *Rules per (config, num, timestamp). Witness-
-// replay calls RulesWithTimestamp once per EVM construction (i.e. once
-// per tx) — pprof showed it allocating ~5 GB of *Rules + nested big.Int
-// per 30 s under 32 workers. Caching collapses that to one allocation
-// per unique block on each chain config.
-//
-// Rules is documented as read-only ("one time interface, shouldn't be
-// used between transition phases" — see Rules type doc), so sharing a
+// rulesCacheKey memoises *Rules per (config, num, timestamp). Rules is
+// documented as read-only ("one time interface, shouldn't be used
+// between transition phases" — see Rules type doc), so sharing a
 // single instance across callers is safe.
 type rulesCacheKey struct {
 	cfg *ChainConfig
@@ -42,7 +37,17 @@ type rulesCacheKey struct {
 	ts  uint64
 }
 
-var rulesGlobalCache sync.Map // rulesCacheKey → *Rules
+// rulesCacheCap bounds the cache. Replay is monotone — old (num, ts)
+// keys are never queried again — so the simplest correct eviction is a
+// full clear when the map crosses the cap. Sized to comfortably hold
+// every active worker's current block plus margin: 32 workers × ~30
+// blocks of look-ahead × 4 keys per block << 4096.
+const rulesCacheCap = 4096
+
+var (
+	rulesCacheMu sync.RWMutex
+	rulesCache   = make(map[rulesCacheKey]*Rules, rulesCacheCap)
+)
 
 // Rules wraps ChainConfig and is merely syntactic sugar or can be used for functions
 // that do not have or require information about the block.
@@ -78,8 +83,11 @@ func (c *ChainConfig) Rules(num uint64) *Rules {
 // returned struct.
 func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 	key := rulesCacheKey{cfg: c, num: num, ts: timestamp}
-	if v, ok := rulesGlobalCache.Load(key); ok {
-		return v.(*Rules)
+	rulesCacheMu.RLock()
+	r, ok := rulesCache[key]
+	rulesCacheMu.RUnlock()
+	if ok {
+		return r
 	}
 	chainID := c.ChainID
 	if chainID == nil {
@@ -121,7 +129,13 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsRandomness:          c.IsRandomness(timestamp),
 	}
 	rules.applyForkInheritance()
-	rulesGlobalCache.Store(key, rules)
+	rulesCacheMu.Lock()
+	if len(rulesCache) >= rulesCacheCap {
+		// Replay is monotone; old keys won't be queried again.
+		rulesCache = make(map[rulesCacheKey]*Rules, rulesCacheCap)
+	}
+	rulesCache[key] = rules
+	rulesCacheMu.Unlock()
 	return rules
 }
 
@@ -366,17 +380,14 @@ func isForked(s *big.Int, head uint64) bool {
 	if s == nil {
 		return false
 	}
-	// Fast path: fork value fits in uint64 (true for every real-world
-	// chain config — mainnet caps at ~24M, far below 2^64). Avoids the
-	// per-call new(big.Int).SetUint64 alloc that pprof showed as the
-	// top allocator under witness-replay (17.98% of all allocs).
+	// Fast path: every real chain config's fork values fit in uint64.
+	// Avoids the per-call new(big.Int).SetUint64 alloc that previously
+	// dominated pprof under parallel witness replay.
 	if s.IsUint64() {
 		return s.Uint64() <= head
 	}
-	// Slow path: a fork scheduled at a value > 2^64 is effectively
-	// "never" relative to a uint64 head. Return false unless s ≤ 0
-	// (s.Sign() ≤ 0 covers negative or zero — the latter would have
-	// matched IsUint64 above and is included only for completeness).
+	// Slow path: s is either negative (fork retroactively active) or
+	// > 2^64 (effectively never relative to a uint64 head).
 	return s.Sign() <= 0
 }
 

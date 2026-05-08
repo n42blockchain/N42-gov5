@@ -121,9 +121,11 @@ func (w *asyncOutputWriter) process(po pendingOutput) error {
 }
 
 // enqueue sends a pendingOutput to the background goroutine.
-// Blocks if the channel is full (back-pressure). When a block is
-// observed, stallCount and stallNanos are incremented so the
-// commit-interval log line can surface back-pressure events.
+// Blocks if the channel is full (back-pressure). When the channel is
+// observed full at send time, stallCount and stallNanos accumulate
+// for the commit-interval log line. The count can over-report by one
+// if the channel drains between the failed try-send and the blocking
+// send (rare, harmless — stallNanos for that case is near zero).
 func (w *asyncOutputWriter) enqueue(po pendingOutput) {
 	select {
 	case w.ch <- po:
