@@ -176,7 +176,7 @@ func TestWriteAccountStorage_FirstWinsAfterWipe(t *testing.T) {
 
 	orig := uint256.NewInt(0)    // post-create blockOriginStorage default
 	val := uint256.NewInt(0x99) // SSTORE'd value in CREATE2-era tx
-	require.NoError(t, csw.WriteAccountStorage(addr, &slot, orig, val))
+	require.NoError(t, csw.WriteAccountStorage(addr, slot, *orig, *val))
 
 	got, ok := csw.storageChanges[[52]byte(compKey)]
 	require.True(t, ok)

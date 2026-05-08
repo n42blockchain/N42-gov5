@@ -52,7 +52,7 @@ func (t *PlainStateBufferApplyTarget) PutAccount(addr types.Address, enc []byte)
 
 // PutStorage writes a storage slot. Empty value means delete.
 func (t *PlainStateBufferApplyTarget) PutStorage(addr types.Address, slot types.Hash, value []byte) error {
-	val := new(uint256.Int)
+	var val uint256.Int
 	if len(value) > 0 {
 		val.SetBytes(value)
 	}
@@ -61,8 +61,8 @@ func (t *PlainStateBufferApplyTarget) PutStorage(addr types.Address, slot types.
 	// different pipeline. BufferedPlainStateWriter short-circuits only
 	// when csw is non-nil AND original.Equals(acct); we use the NoHistory
 	// writer here so csw is nil and no short-circuit triggers.
-	orig := new(uint256.Int)
-	return t.writer.WriteAccountStorage(addr, &slot, orig, val)
+	var orig uint256.Int
+	return t.writer.WriteAccountStorage(addr, slot, orig, val)
 }
 
 // PutCode stores bytecode keyed by content hash. Idempotent.

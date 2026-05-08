@@ -228,7 +228,7 @@ func (s *PlainState) UpdateAccountCode(address types.Address, codeHash types.Has
 	return nil
 }
 
-func (s *PlainState) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (s *PlainState) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	t, ok := s.storage[address]
 	if !ok {
 		t = btree.New(16)
@@ -241,7 +241,7 @@ func (s *PlainState) WriteAccountStorage(address types.Address, key *types.Hash,
 	if err != nil {
 		return err
 	}
-	i := &storageItem{key: *key, value: *value}
+	i := &storageItem{key: key, value: value}
 	_, err = h.Sha.Read(i.seckey[:])
 	if err != nil {
 		return err

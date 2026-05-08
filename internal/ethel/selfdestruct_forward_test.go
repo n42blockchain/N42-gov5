@@ -330,7 +330,7 @@ func TestSD_Forward_SameBlock_SSTORE_then_SD_FirstWins(t *testing.T) {
 	// Step 1: same-block SSTORE 0x42 → 0xFF.
 	orig := uint256.NewInt(0x42)
 	val := uint256.NewInt(0xFF)
-	require.NoError(t, w.WriteAccountStorage(addr, &slot, orig, val))
+	require.NoError(t, w.WriteAccountStorage(addr, slot, *orig, *val))
 	// Slot now 0xFF in MDBX.
 	require.Equal(t, []byte{0xFF}, getSlot(t, live, addr, slot))
 
@@ -387,7 +387,7 @@ func TestSD_Forward_RecreateSameContext(t *testing.T) {
 	require.NoError(t, w.UpdateAccountData(addr, originalAcc, newAcc))
 	val := uint256.NewInt(0x99)
 	zero := uint256.NewInt(0)
-	require.NoError(t, w.WriteAccountStorage(addr, &newSlot, zero, val))
+	require.NoError(t, w.WriteAccountStorage(addr, newSlot, *zero, *val))
 
 	require.Empty(t, getSlot(t, live, addr, oldSlot), "old slot wiped")
 	require.Equal(t, []byte{0x99}, getSlot(t, live, addr, newSlot), "new slot written")
@@ -441,7 +441,7 @@ func TestSD_Forward_RecreateNextBlock(t *testing.T) {
 	require.NoError(t, w2.CreateContract(addr)) // CreateContract on empty storage = no-op wipe
 	val := uint256.NewInt(0x55)
 	zero := uint256.NewInt(0)
-	require.NoError(t, w2.WriteAccountStorage(addr, &newSlot, zero, val))
+	require.NoError(t, w2.WriteAccountStorage(addr, newSlot, *zero, *val))
 	stoBlob2 := buildStoBlob(t, w2.ChangeSetWriter(), live)
 	accBlob2 := buildAccBlob(t, w2.ChangeSetWriter(), live)
 
@@ -511,7 +511,7 @@ func TestSD_Forward_RecreateLaterBlock_DifferentSlots(t *testing.T) {
 	zero := uint256.NewInt(0)
 	for _, s := range newSlots {
 		v := new(uint256.Int).SetBytes(s.v)
-		require.NoError(t, w2.WriteAccountStorage(addr, &s.slot, zero, v))
+		require.NoError(t, w2.WriteAccountStorage(addr, s.slot, *zero, *v))
 	}
 	sto2 := buildStoBlob(t, w2.ChangeSetWriter(), live)
 	acc2 := buildAccBlob(t, w2.ChangeSetWriter(), live)
@@ -562,7 +562,7 @@ func TestSD_Forward_AsyncBuffer_CrossInterval(t *testing.T) {
 	w1 := state.NewBufferedPlainStateWriter(buf, mdbxTx, 99)
 	orig := uint256.NewInt(0)
 	val := uint256.NewInt(0xA5)
-	require.NoError(t, w1.WriteAccountStorage(addr, &slot, orig, val))
+	require.NoError(t, w1.WriteAccountStorage(addr, slot, *orig, *val))
 
 	// Phase 2: handoff — buffer becomes in-flight, active buf clears.
 	snap := buf.SnapshotForFlush()
@@ -676,7 +676,7 @@ func TestSD_Forward_SSTOREToZero_SingleSlotDelete(t *testing.T) {
 
 	w := state.NewPlainStateWriter(live, live, 1)
 	orig := uint256.NewInt(0x22)
-	require.NoError(t, w.WriteAccountStorage(addr, &zeroSlot, orig, zero))
+	require.NoError(t, w.WriteAccountStorage(addr, zeroSlot, *orig, *zero))
 
 	require.Empty(t, getSlot(t, live, addr, zeroSlot))
 	require.Equal(t, []byte{0x11}, getSlot(t, live, addr, keepSlot))
@@ -844,13 +844,13 @@ func TestSD_Reorg_AcrossSelfDestruct_Depth10(t *testing.T) {
 		// block 1: SSTORE addr.slot01 := 0x11
 		func(w *state.PlainStateWriter, cur *account.StateAccount) *account.StateAccount {
 			slot := sdHash(0x01)
-			require.NoError(t, w.WriteAccountStorage(addr, &slot, uint256.NewInt(0x01), uint256.NewInt(0x11)))
+			require.NoError(t, w.WriteAccountStorage(addr, slot, *uint256.NewInt(0x01), *uint256.NewInt(0x11)))
 			return cur
 		},
 		// block 2: SSTORE addr.slot03 := 0x33 (new slot)
 		func(w *state.PlainStateWriter, cur *account.StateAccount) *account.StateAccount {
 			slot := sdHash(0x03)
-			require.NoError(t, w.WriteAccountStorage(addr, &slot, uint256.NewInt(0), uint256.NewInt(0x33)))
+			require.NoError(t, w.WriteAccountStorage(addr, slot, *uint256.NewInt(0), *uint256.NewInt(0x33)))
 			return cur
 		},
 		// block 3: nonce bump
@@ -870,7 +870,7 @@ func TestSD_Reorg_AcrossSelfDestruct_Depth10(t *testing.T) {
 		// block 5: no-op (touch other)
 		func(w *state.PlainStateWriter, cur *account.StateAccount) *account.StateAccount {
 			slot := sdHash(0xFF)
-			require.NoError(t, w.WriteAccountStorage(other, &slot, uint256.NewInt(0xFF), uint256.NewInt(0xEE)))
+			require.NoError(t, w.WriteAccountStorage(other, slot, *uint256.NewInt(0xFF), *uint256.NewInt(0xEE)))
 			return cur
 		},
 		// block 6: no-op for addr
@@ -882,13 +882,13 @@ func TestSD_Reorg_AcrossSelfDestruct_Depth10(t *testing.T) {
 			require.NoError(t, w.UpdateAccountData(addr, &emptyOrig, newAcc))
 			require.NoError(t, w.CreateContract(addr))
 			slot := sdHash(0x07)
-			require.NoError(t, w.WriteAccountStorage(addr, &slot, uint256.NewInt(0), uint256.NewInt(0x77)))
+			require.NoError(t, w.WriteAccountStorage(addr, slot, *uint256.NewInt(0), *uint256.NewInt(0x77)))
 			return newAcc
 		},
 		// block 8: SSTORE addr.slot08
 		func(w *state.PlainStateWriter, cur *account.StateAccount) *account.StateAccount {
 			slot := sdHash(0x08)
-			require.NoError(t, w.WriteAccountStorage(addr, &slot, uint256.NewInt(0), uint256.NewInt(0x88)))
+			require.NoError(t, w.WriteAccountStorage(addr, slot, *uint256.NewInt(0), *uint256.NewInt(0x88)))
 			return cur
 		},
 		// block 9: balance bump
@@ -901,7 +901,7 @@ func TestSD_Reorg_AcrossSelfDestruct_Depth10(t *testing.T) {
 		// block 10: zero out slot07
 		func(w *state.PlainStateWriter, cur *account.StateAccount) *account.StateAccount {
 			slot := sdHash(0x07)
-			require.NoError(t, w.WriteAccountStorage(addr, &slot, uint256.NewInt(0x77), uint256.NewInt(0)))
+			require.NoError(t, w.WriteAccountStorage(addr, slot, *uint256.NewInt(0x77), *uint256.NewInt(0)))
 			return cur
 		},
 	}

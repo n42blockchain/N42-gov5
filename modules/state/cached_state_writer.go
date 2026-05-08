@@ -75,7 +75,7 @@ func (w *CachedStateWriter) DeleteAccount(address types.Address, original *accou
 	return nil
 }
 
-func (w *CachedStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (w *CachedStateWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	if err := w.inner.WriteAccountStorage(address, key, original, value); err != nil {
 		return err
 	}

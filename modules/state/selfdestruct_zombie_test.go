@@ -192,7 +192,7 @@ func TestSelfdestructWipe_DestroyAndRecreate(t *testing.T) {
 	//      state_object.go GetCommittedState (line 183-186).
 	zero := uint256.NewInt(0)
 	postVal := new(uint256.Int).SetBytes(newVal6)
-	require.NoError(t, w.WriteAccountStorage(addr, &slot6, zero, postVal))
+	require.NoError(t, w.WriteAccountStorage(addr, slot6, *zero, *postVal))
 	roTx.Rollback()
 
 	snap := buf.SnapshotForFlush()
@@ -331,8 +331,8 @@ func TestSelfdestructWipe_SameInterval_NoStaleSnapEntries(t *testing.T) {
 		roTx, err := db.BeginRo(context.Background())
 		require.NoError(t, err)
 		w := NewBufferedPlainStateWriter(buf, roTx, 100)
-		require.NoError(t, w.WriteAccountStorage(addr, &slot0, uint256.NewInt(0), uint256.NewInt(0x0fc0)))
-		require.NoError(t, w.WriteAccountStorage(addr, &slot1, uint256.NewInt(0), uint256.NewInt(0x5d46)))
+		require.NoError(t, w.WriteAccountStorage(addr, slot0, *uint256.NewInt(0), *uint256.NewInt(0x0fc0)))
+		require.NoError(t, w.WriteAccountStorage(addr, slot1, *uint256.NewInt(0), *uint256.NewInt(0x5d46)))
 		roTx.Rollback()
 	}
 	// Snapshot the writes so they live in inFlight (without applying
@@ -419,8 +419,8 @@ func TestSelfdestructWipe_CreateThenSelfdestructSameInterval(t *testing.T) {
 		require.NoError(t, err)
 		w := NewBufferedPlainStateWriter(buf, roTx, 12496089)
 		require.NoError(t, w.CreateContract(addr))
-		require.NoError(t, w.WriteAccountStorage(addr, &slot0, uint256.NewInt(0), v0))
-		require.NoError(t, w.WriteAccountStorage(addr, &slot1, uint256.NewInt(0), v1))
+		require.NoError(t, w.WriteAccountStorage(addr, slot0, *uint256.NewInt(0), *v0))
+		require.NoError(t, w.WriteAccountStorage(addr, slot1, *uint256.NewInt(0), *v1))
 		roTx.Rollback()
 	}
 	// At end of block A: buf.storage[addr] = {slot0:V0, slot1:V1};

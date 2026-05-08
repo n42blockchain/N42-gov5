@@ -80,7 +80,7 @@ func TestMVStateWriter_PassesThrough(t *testing.T) {
 	}
 
 	// Write storage.
-	if err := w.WriteAccountStorage(addr, &slot, nil, uint256.NewInt(777)); err != nil {
+	if err := w.WriteAccountStorage(addr, slot, uint256.Int{}, *uint256.NewInt(777)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,7 +158,7 @@ func TestMVStateIO_EndToEnd(t *testing.T) {
 	w0.UpdateAccountData(addr, nil, &account.StateAccount{
 		Nonce: 3, Balance: *uint256.NewInt(500), Initialised: true,
 	})
-	w0.WriteAccountStorage(addr, &slot, nil, uint256.NewInt(42))
+	w0.WriteAccountStorage(addr, slot, uint256.Int{}, *uint256.NewInt(42))
 	ev0.Inner().FlushWrites()
 
 	// Tx 1 reads via StateReader interface.

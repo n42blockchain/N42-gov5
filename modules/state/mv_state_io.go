@@ -120,8 +120,8 @@ func (w *MVStateWriter) DeleteAccount(addr types.Address, _ *account.StateAccoun
 }
 
 // WriteAccountStorage writes a slot.
-func (w *MVStateWriter) WriteAccountStorage(addr types.Address, key *types.Hash, _, value *uint256.Int) error {
-	w.view.WriteStorage(addr, *key, value)
+func (w *MVStateWriter) WriteAccountStorage(addr types.Address, key types.Hash, _, value uint256.Int) error {
+	w.view.WriteStorage(addr, key, &value)
 	return nil
 }
 

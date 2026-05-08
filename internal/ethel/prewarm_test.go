@@ -233,7 +233,7 @@ func TestPrewarmStaticAL_BufShadowsLRU(t *testing.T) {
 	writer := state.NewBufferedPlainStateWriterAt(buf, roTx, 1, 0)
 	oldVal := uint256.NewInt(0xAA)
 	newVal := uint256.NewInt(0xBB)
-	if err := writer.WriteAccountStorage(addr, &slot, oldVal, newVal); err != nil {
+	if err := writer.WriteAccountStorage(addr, slot, *oldVal, *newVal); err != nil {
 		t.Fatal(err)
 	}
 

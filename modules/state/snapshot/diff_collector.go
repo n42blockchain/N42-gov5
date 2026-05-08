@@ -76,16 +76,19 @@ func (dc *DiffCollector) DeleteAccount(address types.Address, original *account.
 }
 
 // WriteAccountStorage records a storage write and delegates to inner.
-func (dc *DiffCollector) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (dc *DiffCollector) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	slots, ok := dc.storage[address]
 	if !ok {
 		slots = make(map[types.Hash][]byte)
 		dc.storage[address] = slots
 	}
-	if value == nil || value.IsZero() {
-		slots[*key] = nil
+	if value.IsZero() {
+		slots[key] = nil
 	} else {
-		slots[*key] = value.Bytes()
+		bl := value.ByteLen()
+		v := make([]byte, bl)
+		value.WriteToSlice(v)
+		slots[key] = v
 	}
 	return dc.inner.WriteAccountStorage(address, key, original, value)
 }

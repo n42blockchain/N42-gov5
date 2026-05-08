@@ -59,7 +59,7 @@ func (nw *NoopWriter) UpdateAccountCode(address types.Address, codeHash types.Ha
 	return nil
 }
 
-func (nw *NoopWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (nw *NoopWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	return nil
 }
 
