@@ -86,8 +86,14 @@ func main() {
 		&cli.IntFlag{Name: "gogc", Usage: "Go GC target percentage (higher = less frequent GC, more heap). Default 100 keeps heap close to live size. Larger values (200-400) reduce GC CPU but inflate Private memory by (1+gogc/100)x — at 64 GB LRU and gogc=400 the runtime over-commits 320 GB, triggering pagefile thrash on 128 GB hosts. Pair with --memory-limit-gb to give the runtime a hard ceiling.", Value: 100},
 		&cli.Uint64Flag{Name: "memory-limit-gb", Usage: "Hard upper bound on Go heap (debug.SetMemoryLimit). 0 = no limit. Recommended: physical_RAM * 0.7 (e.g. 90 on 128 GB hosts). Combined with --gogc the runtime adapts: stays at gogc target normally, but tightens GC if heap approaches the limit. Prevents Private-memory blowout that GOGC alone cannot bound.", Value: 0},
 		&cli.Uint64Flag{Name: "dirty-space-mb", Usage: "MDBX dirty page pool size in MB. Larger = fewer forced spills mid-commit; caps at ~commit_interval × per-block dirty size", Value: 2048},
-		&cli.Uint64Flag{Name: "cache-account-gb", Usage: "Account S3-FIFO cache budget (GB)", Value: 4},
-		&cli.Uint64Flag{Name: "cache-storage-gb", Usage: "Storage S3-FIFO cache budget (GB)", Value: 32},
+		// S3-FIFO budgets are hard caps. 2/4/2 was tuned from the
+		// 12h replay pprof: at >5 GB sto cache, hit rate plateaus at
+		// ~93% and map probe cost (mapaccess2) crowds out savings.
+		// Going beyond 4 GB sto traded MDBX cost for in-process map
+		// cost 1:1. Override via flag for memory-rich hosts that
+		// want maximum hit rate.
+		&cli.Uint64Flag{Name: "cache-account-gb", Usage: "Account S3-FIFO cache budget (GB)", Value: 2},
+		&cli.Uint64Flag{Name: "cache-storage-gb", Usage: "Storage S3-FIFO cache budget (GB)", Value: 4},
 		&cli.Uint64Flag{Name: "cache-code-gb", Usage: "Code LRU cache budget (GB)", Value: 2},
 		&cli.IntFlag{Name: "code-analysis-cache", Usage: "JUMPDEST analysis LRU capacity (entries). Avoids re-running O(n) bytecode scan per contract call", Value: 32768},
 		&cli.BoolFlag{Name: "parallel-evm", Usage: "EXPERIMENTAL: use Block-STM parallel EVM for block tx execution. See docs/parallel_evm_plan.md. Default: off (sequential path, same as before)"},

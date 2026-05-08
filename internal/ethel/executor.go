@@ -556,6 +556,13 @@ func (e *Executor) Run(ctx context.Context) error {
 				"code%", hitPct(intCH, intCM),
 				"async", "y",
 			}
+			if e.asyncOut != nil {
+				if cnt, dur := e.asyncOut.DrainStallStats(); cnt > 0 {
+					fields = append(fields,
+						"outStallN", cnt,
+						"outStall", dur.Truncate(time.Millisecond))
+				}
+			}
 			if e.senderMisses > 0 {
 				fields = append(fields, "senderMiss", e.senderMisses)
 				e.senderMisses = 0
