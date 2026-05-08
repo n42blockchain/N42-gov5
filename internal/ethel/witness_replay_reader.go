@@ -34,6 +34,14 @@ func NewWitnessReplayReader(stream []byte, codeTx kv.Tx) *WitnessReplayReader {
 	return &WitnessReplayReader{stream: stream, codeTx: codeTx}
 }
 
+// Reset rebinds the reader to a new witness stream and clears the read
+// cursor. codeTx is preserved across calls — workers reuse one RoTx for
+// the lifetime of the goroutine.
+func (r *WitnessReplayReader) Reset(stream []byte) {
+	r.stream = stream
+	r.pos = 0
+}
+
 func (r *WitnessReplayReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	if r.pos >= len(r.stream) {
 		return nil, nil
