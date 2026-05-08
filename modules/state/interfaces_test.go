@@ -131,7 +131,7 @@ func TestStateWriterMethods(t *testing.T) {
 	t.Log("✓ DeleteAccount(address, original) error")
 
 	// WriteAccountStorage
-	err = writer.WriteAccountStorage(types.Address{}, &types.Hash{}, nil, nil)
+	err = writer.WriteAccountStorage(types.Address{}, types.Hash{}, uint256.Int{}, uint256.Int{})
 	_ = err
 	t.Log("✓ WriteAccountStorage(address, key, original, value) error")
 
@@ -177,7 +177,7 @@ func (m *mockStateWriter) DeleteAccount(address types.Address, original *account
 	return nil
 }
 
-func (m *mockStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (m *mockStateWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	return nil
 }
 

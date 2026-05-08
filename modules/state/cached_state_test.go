@@ -152,7 +152,7 @@ func TestCachedStateReader_ReadAccountStorage(t *testing.T) {
 		w := NewPlainStateWriter(tx, tx, 1)
 		val := uint256.NewInt(999)
 		orig := uint256.NewInt(0)
-		return w.WriteAccountStorage(addr, &key, orig, val)
+		return w.WriteAccountStorage(addr, key, *orig, *val)
 	})
 	if err != nil {
 		t.Fatal(err)

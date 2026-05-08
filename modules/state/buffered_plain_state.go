@@ -1806,7 +1806,7 @@ func (w *BufferedPlainStateWriter) DeleteAccount(address types.Address, original
 	return nil
 }
 
-func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	if isTracked(address) {
 		bn := uint64(0)
 		if w.csw != nil {
@@ -1845,8 +1845,8 @@ func (w *BufferedPlainStateWriter) WriteAccountStorage(address types.Address, ke
 		value.WriteToSlice(entry.value[32-bl:])
 		entry.valLen = uint8(bl)
 	}
-	slots[*key] = entry
-	w.markTouchedStor(address, *key)
+	slots[key] = entry
+	w.markTouchedStor(address, key)
 	return nil
 }
 

@@ -78,12 +78,15 @@ func (w *ParallelStateWriter) DeleteAccount(address types.Address, original *acc
 }
 
 // WriteAccountStorage records a storage slot write.
-func (w *ParallelStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
-	locKey := LocationKey{Address: address, Field: FieldStorage, Slot: *key}
+func (w *ParallelStateWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
+	locKey := LocationKey{Address: address, Field: FieldStorage, Slot: key}
 	if value.IsZero() {
 		w.rw.RecordWrite(locKey, nil) // delete
 	} else {
-		w.rw.RecordWrite(locKey, value.Bytes())
+		bl := value.ByteLen()
+		v := make([]byte, bl)
+		value.WriteToSlice(v)
+		w.rw.RecordWrite(locKey, v)
 	}
 	return nil
 }

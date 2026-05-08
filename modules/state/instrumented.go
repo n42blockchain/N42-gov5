@@ -278,7 +278,7 @@ func (w *InstrumentedWriter) DeleteAccount(address types.Address, original *acco
 	return err
 }
 
-func (w *InstrumentedWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (w *InstrumentedWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	if !w.enabled {
 		return w.inner.WriteAccountStorage(address, key, original, value)
 	}

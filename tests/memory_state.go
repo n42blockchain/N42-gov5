@@ -90,14 +90,14 @@ func (m *MemoryState) DeleteAccount(address types.Address, original *account.Sta
 	return nil
 }
 
-func (m *MemoryState) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (m *MemoryState) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	if m.storage[address] == nil {
 		m.storage[address] = make(map[types.Hash][]byte)
 	}
-	if value == nil || value.IsZero() {
-		delete(m.storage[address], *key)
+	if value.IsZero() {
+		delete(m.storage[address], key)
 	} else {
-		m.storage[address][*key] = value.Bytes()
+		m.storage[address][key] = value.Bytes()
 	}
 	return nil
 }
@@ -121,7 +121,7 @@ func (n *NoopWriter) DeleteAccount(address types.Address, original *account.Stat
 	return nil
 }
 
-func (n *NoopWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (n *NoopWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	return nil
 }
 

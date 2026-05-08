@@ -64,18 +64,13 @@ func (c *WitnessCapturingWriter) UpdateAccountCode(address types.Address, codeHa
 	return c.csw.UpdateAccountCode(address, codeHash, code)
 }
 
-func (c *WitnessCapturingWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (c *WitnessCapturingWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	var k [52]byte
 	copy(k[:20], address[:])
 	copy(k[20:], key[:])
-	if value == nil || value.IsZero() {
+	if value.IsZero() {
 		c.stoNewVals[k] = nil
 	} else {
-		// ByteLen + WriteToSlice avoids the over-allocation that
-		// uint256.(*Int).Bytes() does internally (it allocates 32
-		// bytes then re-slices). On a 10K-storage-write block, this
-		// path was the top allocator alongside change_set_writer's
-		// equivalent.
 		bl := value.ByteLen()
 		v := make([]byte, bl)
 		value.WriteToSlice(v)

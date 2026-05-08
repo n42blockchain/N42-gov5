@@ -153,7 +153,7 @@ func TestWitnessCapturingWriter_RecordsBothOldAndNew(t *testing.T) {
 
 	oldSto := uint256.NewInt(0)
 	newSto := uint256.NewInt(0xDEADBEEF)
-	if err := w.WriteAccountStorage(addr, &slot, oldSto, newSto); err != nil {
+	if err := w.WriteAccountStorage(addr, slot, *oldSto, *newSto); err != nil {
 		t.Fatal(err)
 	}
 	stoCS, err := w.ChangeSetWriter().GetStorageChanges()

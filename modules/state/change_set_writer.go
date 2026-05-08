@@ -150,8 +150,8 @@ func (w *ChangeSetWriter) DeleteAccount(address types.Address, original *account
 	return nil
 }
 
-func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
-	if *original == *value {
+func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
+	if original == value {
 		return nil
 	}
 

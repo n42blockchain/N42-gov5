@@ -327,21 +327,16 @@ func (so *stateObject) setState(key *types.Hash, value uint256.Int) {
 
 // updateTrie writes cached storage modifications into the object's storage trie.
 //
-// Loop locals are declared once outside the range so they escape to
-// the heap once per call, not once per iteration: passing &range-var
-// to an interface method forces per-iteration escape because the
-// compiler can't prove the callee doesn't retain. WriteAccountStorage
-// does not retain (verified in change_set_writer.go and
-// plain_state_writer.go).
+// Args passed to WriteAccountStorage by value (was: by pointer); the
+// pointer form forced &range-vars to escape to the heap on every
+// iteration through the StateWriter interface. By-value passing copies
+// 32 B × 3 args per call — far cheaper than three heap allocs + GC
+// scan that would otherwise happen on every dirty slot.
 func (so *stateObject) updateTrie(stateWriter StateWriter) error {
-	var k types.Hash
-	var orig, val uint256.Int
 	for key, value := range so.dirtyStorage {
-		k = key
-		orig = so.blockOriginStorage[key]
-		val = value
+		original := so.blockOriginStorage[key]
 		so.originStorage[key] = value
-		if err := stateWriter.WriteAccountStorage(so.address, &k, &orig, &val); err != nil {
+		if err := stateWriter.WriteAccountStorage(so.address, key, original, value); err != nil {
 			return err
 		}
 	}

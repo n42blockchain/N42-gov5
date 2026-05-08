@@ -127,7 +127,7 @@ func TestInstrumentedWriterDisabled(t *testing.T) {
 	_ = writer.UpdateAccountData(types.Address{}, nil, nil)
 	_ = writer.UpdateAccountCode(types.Address{}, types.Hash{}, nil)
 	_ = writer.DeleteAccount(types.Address{}, nil)
-	_ = writer.WriteAccountStorage(types.Address{}, &types.Hash{}, nil, nil)
+	_ = writer.WriteAccountStorage(types.Address{}, types.Hash{}, uint256.Int{}, uint256.Int{})
 	_ = writer.CreateContract(types.Address{})
 
 	stats := writer.Stats()
@@ -146,7 +146,7 @@ func TestInstrumentedWriterEnabled(t *testing.T) {
 	_ = writer.UpdateAccountData(types.Address{}, nil, nil)
 	_ = writer.UpdateAccountCode(types.Address{}, types.Hash{}, nil)
 	_ = writer.DeleteAccount(types.Address{}, nil)
-	_ = writer.WriteAccountStorage(types.Address{}, &types.Hash{}, nil, nil)
+	_ = writer.WriteAccountStorage(types.Address{}, types.Hash{}, uint256.Int{}, uint256.Int{})
 	_ = writer.CreateContract(types.Address{})
 
 	stats := writer.Stats()
@@ -175,7 +175,7 @@ func TestInstrumentedWriterConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < writesPerGoroutine; j++ {
 				_ = writer.UpdateAccountData(types.Address{}, nil, nil)
-				_ = writer.WriteAccountStorage(types.Address{}, &types.Hash{}, nil, nil)
+				_ = writer.WriteAccountStorage(types.Address{}, types.Hash{}, uint256.Int{}, uint256.Int{})
 			}
 		}()
 	}

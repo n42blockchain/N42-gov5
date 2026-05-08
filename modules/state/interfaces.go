@@ -89,7 +89,14 @@ type StateWriter interface {
 
 	// WriteAccountStorage writes a storage slot.
 	// original and value are the old and new values respectively.
-	WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error
+	//
+	// All four args are passed by value (was: pointer for key/orig/value)
+	// because the interface dispatch made the compiler escape any
+	// stack-local args via & to the heap — pprof showed this as ~13 % of
+	// all heap allocs on long replays. types.Hash and uint256.Int are
+	// each 32 B; the 96 B argument copy is far cheaper than three heap
+	// allocations + GC scan.
+	WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error
 
 	// CreateContract marks an address as a contract (legacy hook used by
 	// SELFDESTRUCT to trigger storage-wipe enumeration in the changeset

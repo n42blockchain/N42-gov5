@@ -93,13 +93,13 @@ func (w *PlainStateWriter) DeleteAccount(address types.Address, original *accoun
 	return w.db.Delete(modules.Account, address[:])
 }
 
-func (w *PlainStateWriter) WriteAccountStorage(address types.Address, key *types.Hash, original, value *uint256.Int) error {
+func (w *PlainStateWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
 	if w.csw != nil {
 		if err := w.csw.WriteAccountStorage(address, key, original, value); err != nil {
 			return err
 		}
 	}
-	if *original == *value {
+	if original == value {
 		return nil
 	}
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
