@@ -23,6 +23,11 @@ type WitnessReplayReader struct {
 	stream []byte
 	pos    int
 	codeTx kv.Tx
+	// scratch is reused across ReadAccountData calls. All call sites
+	// in IntraBlockState do data.Copy(scratch) before the next read,
+	// so the returned pointer never aliases stale state. Saves ~5-10K
+	// StateAccount allocs per block.
+	scratch account.StateAccount
 }
 
 func NewWitnessReplayReader(stream []byte, codeTx kv.Tx) *WitnessReplayReader {
@@ -38,12 +43,12 @@ func (r *WitnessReplayReader) ReadAccountData(address types.Address) (*account.S
 	if length == 0 {
 		return nil, nil
 	}
-	acc := &account.StateAccount{}
-	if err := acc.DecodeForStorage(r.stream[r.pos : r.pos+length]); err != nil {
+	r.scratch = account.StateAccount{}
+	if err := r.scratch.DecodeForStorage(r.stream[r.pos : r.pos+length]); err != nil {
 		return nil, err
 	}
 	r.pos += length
-	return acc, nil
+	return &r.scratch, nil
 }
 
 func (r *WitnessReplayReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
@@ -55,8 +60,14 @@ func (r *WitnessReplayReader) ReadAccountStorage(address types.Address, key *typ
 	if length == 0 {
 		return nil, nil
 	}
-	val := make([]byte, length)
-	copy(val, r.stream[r.pos:r.pos+length])
+	// Slice directly into the witness stream — zero alloc on the hot
+	// SLOAD path (was the top allocator on long replays). Safety:
+	// witness-replay calls state.New(reader) per block, so IBS.snap
+	// is nil and stateObject.GetCommittedState's only retaining caller
+	// (snap.AddStorage in entire.go:240) is unreachable. The other
+	// consumer is uint256.SetBytes which copies on ingest. If snap is
+	// ever wired up here, this MUST go back to a copy.
+	val := r.stream[r.pos : r.pos+length : r.pos+length]
 	r.pos += length
 	return val, nil
 }
