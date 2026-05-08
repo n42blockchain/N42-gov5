@@ -53,9 +53,10 @@ func withShutdown() (context.Context, context.CancelFunc) {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
-		log.Info("Received shutdown signal...")
+		log.Info("Shutdown signal received — finishing in-flight commit; press Ctrl+C again to force exit")
 		cancel()
 		<-sig
+		log.Warn("Second signal received — forcing immediate exit; freezer/MDBX may be unflushed (recoverable on next start)")
 		os.Exit(1)
 	}()
 	return ctx, cancel
