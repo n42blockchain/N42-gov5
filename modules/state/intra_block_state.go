@@ -1097,7 +1097,7 @@ func (sdb *IntraBlockState) PrepareAccessList(sender types.Address, dst *types.A
 // AddAddressToAccessList adds the given address to the access list.
 func (sdb *IntraBlockState) AddAddressToAccessList(addr types.Address) {
 	if sdb.accessList.AddAddress(addr) {
-		sdb.journal.append(accessListAddAccountChange{&addr})
+		sdb.journal.append(accessListAddAccountChange{address: addr})
 	}
 }
 
@@ -1105,13 +1105,10 @@ func (sdb *IntraBlockState) AddAddressToAccessList(addr types.Address) {
 func (sdb *IntraBlockState) AddSlotToAccessList(addr types.Address, slot types.Hash) {
 	addrMod, slotMod := sdb.accessList.AddSlot(addr, slot)
 	if addrMod {
-		sdb.journal.append(accessListAddAccountChange{&addr})
+		sdb.journal.append(accessListAddAccountChange{address: addr})
 	}
 	if slotMod {
-		sdb.journal.append(accessListAddSlotChange{
-			address: &addr,
-			slot:    &slot,
-		})
+		sdb.journal.append(accessListAddSlotChange{address: addr, slot: slot})
 	}
 }
 

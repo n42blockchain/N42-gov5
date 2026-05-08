@@ -326,11 +326,24 @@ func (so *stateObject) setState(key *types.Hash, value uint256.Int) {
 }
 
 // updateTrie writes cached storage modifications into the object's storage trie.
+//
+// Loop locals (k / orig / val) are declared once outside the loop and the
+// same addresses are passed to WriteAccountStorage every iteration. Without
+// this, the compiler escapes the range vars per-iteration (StateWriter is
+// an interface so callee retention is unprovable) — profile showed the
+// per-slot alloc storm at 34% of all heap allocs. Pre-declared locals
+// escape once per call instead of N times. WriteAccountStorage does not
+// retain the pointers (verified in change_set_writer.go and
+// plain_state_writer.go).
 func (so *stateObject) updateTrie(stateWriter StateWriter) error {
+	var k types.Hash
+	var orig, val uint256.Int
 	for key, value := range so.dirtyStorage {
-		original := so.blockOriginStorage[key]
+		k = key
+		orig = so.blockOriginStorage[key]
+		val = value
 		so.originStorage[key] = value
-		if err := stateWriter.WriteAccountStorage(so.address, &key, &original, &value); err != nil {
+		if err := stateWriter.WriteAccountStorage(so.address, &k, &orig, &val); err != nil {
 			return err
 		}
 	}
