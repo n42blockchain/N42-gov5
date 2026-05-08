@@ -22,7 +22,27 @@
 
 package params
 
-import "math/big"
+import (
+	"math/big"
+	"sync"
+)
+
+// rulesCacheKey memoises *Rules per (config, num, timestamp). Witness-
+// replay calls RulesWithTimestamp once per EVM construction (i.e. once
+// per tx) — pprof showed it allocating ~5 GB of *Rules + nested big.Int
+// per 30 s under 32 workers. Caching collapses that to one allocation
+// per unique block on each chain config.
+//
+// Rules is documented as read-only ("one time interface, shouldn't be
+// used between transition phases" — see Rules type doc), so sharing a
+// single instance across callers is safe.
+type rulesCacheKey struct {
+	cfg *ChainConfig
+	num uint64
+	ts  uint64
+}
+
+var rulesGlobalCache sync.Map // rulesCacheKey → *Rules
 
 // Rules wraps ChainConfig and is merely syntactic sugar or can be used for functions
 // that do not have or require information about the block.
@@ -52,13 +72,26 @@ func (c *ChainConfig) Rules(num uint64) *Rules {
 
 // RulesWithTimestamp returns the chain rules for the given block number and timestamp.
 // This correctly handles both block-based forks (pre-Prague) and timestamp-based forks (Prague+).
+//
+// The result is memoised per (config pointer, num, timestamp). Rules is
+// read-only by contract; callers MUST NOT mutate fields on the
+// returned struct.
 func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
+	key := rulesCacheKey{cfg: c, num: num, ts: timestamp}
+	if v, ok := rulesGlobalCache.Load(key); ok {
+		return v.(*Rules)
+	}
 	chainID := c.ChainID
 	if chainID == nil {
 		chainID = new(big.Int)
 	}
 	rules := &Rules{
-		ChainID:               new(big.Int).Set(chainID),
+		// Share the chain config's ChainID pointer instead of copying.
+		// ChainConfig is treated as immutable across the codebase
+		// (only pointer receivers, no mutator methods); the previous
+		// new(big.Int).Set was a defensive copy that allocated 619 MB
+		// per 30 s of replay for no real benefit.
+		ChainID:               chainID,
 		IsHomestead:           c.IsHomestead(num),
 		IsTangerineWhistle:    c.IsTangerineWhistle(num),
 		IsSpuriousDragon:      c.IsSpuriousDragon(num),
@@ -88,6 +121,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsRandomness:          c.IsRandomness(timestamp),
 	}
 	rules.applyForkInheritance()
+	rulesGlobalCache.Store(key, rules)
 	return rules
 }
 
@@ -332,8 +366,18 @@ func isForked(s *big.Int, head uint64) bool {
 	if s == nil {
 		return false
 	}
-	// Use Cmp instead of Uint64() to avoid silent truncation for values > 2^64.
-	return s.Cmp(new(big.Int).SetUint64(head)) <= 0
+	// Fast path: fork value fits in uint64 (true for every real-world
+	// chain config — mainnet caps at ~24M, far below 2^64). Avoids the
+	// per-call new(big.Int).SetUint64 alloc that pprof showed as the
+	// top allocator under witness-replay (17.98% of all allocs).
+	if s.IsUint64() {
+		return s.Uint64() <= head
+	}
+	// Slow path: a fork scheduled at a value > 2^64 is effectively
+	// "never" relative to a uint64 head. Return false unless s ≤ 0
+	// (s.Sign() ≤ 0 covers negative or zero — the latter would have
+	// matched IsUint64 above and is included only for completeness).
+	return s.Sign() <= 0
 }
 
 // isForkIncompatible returns true if a fork scheduled at s1 cannot be rescheduled to
