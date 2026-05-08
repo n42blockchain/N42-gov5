@@ -18,6 +18,7 @@ package ethel
 import (
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/changeset"
@@ -53,6 +54,12 @@ type asyncOutputWriter struct {
 	ch      chan pendingOutput
 	done    chan struct{}
 	err     atomic.Pointer[error]
+
+	// Back-pressure instrumentation. enqueue increments
+	// stallCount/stallNanos when the channel was full at send time.
+	// Read+reset at commit-interval log time via DrainStallStats.
+	stallCount atomic.Uint64
+	stallNanos atomic.Int64
 }
 
 func newAsyncOutputWriter(batcher *outputBatcher) *asyncOutputWriter {
@@ -114,9 +121,27 @@ func (w *asyncOutputWriter) process(po pendingOutput) error {
 }
 
 // enqueue sends a pendingOutput to the background goroutine.
-// Blocks if the channel is full (back-pressure).
+// Blocks if the channel is full (back-pressure). When a block is
+// observed, stallCount and stallNanos are incremented so the
+// commit-interval log line can surface back-pressure events.
 func (w *asyncOutputWriter) enqueue(po pendingOutput) {
+	select {
+	case w.ch <- po:
+		return
+	default:
+	}
+	t0 := time.Now()
 	w.ch <- po
+	w.stallCount.Add(1)
+	w.stallNanos.Add(time.Since(t0).Nanoseconds())
+}
+
+// DrainStallStats returns and resets the accumulated channel-full stall
+// counters. Called once per commit interval from the executor's stat log.
+func (w *asyncOutputWriter) DrainStallStats() (count uint64, total time.Duration) {
+	count = w.stallCount.Swap(0)
+	total = time.Duration(w.stallNanos.Swap(0))
+	return
 }
 
 // waitDrain blocks until all enqueued items are processed.
