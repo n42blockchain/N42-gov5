@@ -71,7 +71,15 @@ func (c *WitnessCapturingWriter) WriteAccountStorage(address types.Address, key 
 	if value == nil || value.IsZero() {
 		c.stoNewVals[k] = nil
 	} else {
-		c.stoNewVals[k] = value.Bytes()
+		// ByteLen + WriteToSlice avoids the over-allocation that
+		// uint256.(*Int).Bytes() does internally (it allocates 32
+		// bytes then re-slices). On a 10K-storage-write block, this
+		// path was the top allocator alongside change_set_writer's
+		// equivalent.
+		bl := value.ByteLen()
+		v := make([]byte, bl)
+		value.WriteToSlice(v)
+		c.stoNewVals[k] = v
 	}
 	return c.csw.WriteAccountStorage(address, key, original, value)
 }
