@@ -49,7 +49,13 @@ type ChangeSetWriter struct {
 	db             kv.Tx
 	accountChanges map[types.Address][]byte
 	storageChanged map[types.Address]bool
-	storageChanges map[string][]byte
+	// storageChanges keys on the inline composite [addr(20)|slot(32)]
+	// array rather than a string to avoid the per-WriteAccountStorage
+	// alloc of string(compositeKey). EVM hot blocks call this 10K+
+	// times each — the previous string-keyed design was the top
+	// allocator in alloc profiles (21B/12h, ~30K allocs per block from
+	// just this line).
+	storageChanges map[[52]byte][]byte
 	blockNumber    uint64
 }
 
@@ -57,7 +63,7 @@ func NewChangeSetWriter() *ChangeSetWriter {
 	return &ChangeSetWriter{
 		accountChanges: make(map[types.Address][]byte),
 		storageChanged: make(map[types.Address]bool),
-		storageChanges: make(map[string][]byte),
+		storageChanges: make(map[[52]byte][]byte),
 	}
 }
 func NewChangeSetWriterPlain(db kv.Tx, blockNumber uint64) *ChangeSetWriter {
@@ -65,7 +71,7 @@ func NewChangeSetWriterPlain(db kv.Tx, blockNumber uint64) *ChangeSetWriter {
 		db:             db,
 		accountChanges: make(map[types.Address][]byte),
 		storageChanged: make(map[types.Address]bool),
-		storageChanges: make(map[string][]byte),
+		storageChanges: make(map[[52]byte][]byte),
 		blockNumber:    blockNumber,
 	}
 }
@@ -82,7 +88,8 @@ func (w *ChangeSetWriter) GetAccountChanges() (*changeset.ChangeSet, error) {
 func (w *ChangeSetWriter) GetStorageChanges() (*changeset.ChangeSet, error) {
 	cs := changeset.NewStorageChangeSet()
 	for key, val := range w.storageChanges {
-		if err := cs.Add([]byte(key), val); err != nil {
+		k := key // copy so &k[0] doesn't alias the map's iteration variable
+		if err := cs.Add(k[:], val); err != nil {
 			return nil, err
 		}
 	}
@@ -148,7 +155,11 @@ func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, key *types.
 		return nil
 	}
 
-	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
+	// Build composite key on the stack — no heap alloc for the key
+	// itself or for a derived string (the previous design did both).
+	var ck [52]byte
+	copy(ck[:20], address[:])
+	copy(ck[20:], key[:])
 
 	// First-wins: if recordStorageWipe (SELFDESTRUCT+CREATE2 path) already
 	// recorded the pre-block value for this slot, don't clobber it with the
@@ -156,17 +167,22 @@ func (w *ChangeSetWriter) WriteAccountStorage(address types.Address, key *types.
 	// stateObject's blockOriginStorage (fresh map default) and thus loses
 	// the true block-origin V_OLD. Without this guard, backward unwind past
 	// a metamorphic block writes 0 instead of V_OLD.
-	if _, exists := w.storageChanges[string(compositeKey)]; exists {
+	if _, exists := w.storageChanges[ck]; exists {
 		w.storageChanged[address] = true
 		return nil
 	}
 
-	v := original.Bytes()
-	if len(v) > 32 {
-		panic(fmt.Sprintf("ChangeSetWriter.WriteAccountStorage: original.Bytes() len=%d > 32 (addr=%x slot=%x blockNum=%d)",
-			len(v), address, key, w.blockNumber))
+	bl := original.ByteLen()
+	if bl > 32 {
+		panic(fmt.Sprintf("ChangeSetWriter.WriteAccountStorage: original.ByteLen()=%d > 32 (addr=%x slot=%x blockNum=%d)",
+			bl, address, key, w.blockNumber))
 	}
-	w.storageChanges[string(compositeKey)] = v
+	var v []byte
+	if bl > 0 {
+		v = make([]byte, bl)
+		original.WriteToSlice(v)
+	}
+	w.storageChanges[ck] = v
 	w.storageChanged[address] = true
 
 	return nil
@@ -194,14 +210,15 @@ func (w *ChangeSetWriter) recordStorageWipe(address types.Address, slots map[typ
 			panic(fmt.Sprintf("ChangeSetWriter.recordStorageWipe: preWipe slot value len=%d > 32 (addr=%x slot=%x blockNum=%d src=collectPreWipeSlots)",
 				len(v), address, slot, w.blockNumber))
 		}
-		compositeKey := modules.PlainGenerateCompositeStorageKey(address[:], slot[:])
-		if _, exists := w.storageChanges[string(compositeKey)]; exists {
+		var ck [52]byte
+		copy(ck[:20], address[:])
+		copy(ck[20:], slot[:])
+		if _, exists := w.storageChanges[ck]; exists {
 			continue
 		}
-		// Copy to decouple from caller's buffer.
 		cp := make([]byte, len(v))
 		copy(cp, v)
-		w.storageChanges[string(compositeKey)] = cp
+		w.storageChanges[ck] = cp
 	}
 	w.storageChanged[address] = true
 }

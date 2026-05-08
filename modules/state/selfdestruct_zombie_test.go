@@ -284,7 +284,7 @@ func TestSelfdestructWipe_PhantomEntryOnSecondWipe(t *testing.T) {
 		// phantom (slot 8 → 0x2432) into csw, which is the exact
 		// failure diff-cs surfaced at block 10941306 in production.
 		key := modules.PlainGenerateCompositeStorageKey(addr[:], slot8[:])
-		_, exists := csw.storageChanges[string(key)]
+		_, exists := csw.storageChanges[[52]byte(key)]
 		require.False(t, exists,
 			"block N+5 has a phantom storcs entry for slot 8 — block N's wipe didn't clear MDBX")
 		roTx.Rollback()
@@ -368,8 +368,8 @@ func TestSelfdestructWipe_SameInterval_NoStaleSnapEntries(t *testing.T) {
 		// slot 0 or slot 1.
 		key0 := modules.PlainGenerateCompositeStorageKey(addr[:], slot0[:])
 		key1 := modules.PlainGenerateCompositeStorageKey(addr[:], slot1[:])
-		_, exists0 := csw.storageChanges[string(key0)]
-		_, exists1 := csw.storageChanges[string(key1)]
+		_, exists0 := csw.storageChanges[[52]byte(key0)]
+		_, exists1 := csw.storageChanges[[52]byte(key1)]
 		require.False(t, exists0,
 			"block 10941146 has phantom storcs entry for slot 0 — collectPreWipeSlots leaked snap value past bufWiped guard")
 		require.False(t, exists1,
@@ -440,8 +440,8 @@ func TestSelfdestructWipe_CreateThenSelfdestructSameInterval(t *testing.T) {
 		// pre-block-B oldVals. The pre-fix early-return missed these.
 		key0 := modules.PlainGenerateCompositeStorageKey(addr[:], slot0[:])
 		key1 := modules.PlainGenerateCompositeStorageKey(addr[:], slot1[:])
-		got0, exists0 := csw.storageChanges[string(key0)]
-		got1, exists1 := csw.storageChanges[string(key1)]
+		got0, exists0 := csw.storageChanges[[52]byte(key0)]
+		got1, exists1 := csw.storageChanges[[52]byte(key1)]
 		require.True(t, exists0, "block B missed wipe entry for slot0 — bufWiped early-return swallowed bufSlots (12496119 production regression)")
 		require.True(t, exists1, "block B missed wipe entry for slot1")
 		require.Equal(t, v0.Bytes(), got0, "slot0 oldVal mismatch")
@@ -522,7 +522,7 @@ func TestSelfdestructWipe_CrossInterval_PhantomOnSecondWipe(t *testing.T) {
 		require.NoError(t, w.CreateContract(addr))
 
 		key := modules.PlainGenerateCompositeStorageKey(addr[:], slot8[:])
-		_, exists := csw.storageChanges[string(key)]
+		_, exists := csw.storageChanges[[52]byte(key)]
 		require.False(t, exists,
 			"interval 2 has a phantom storcs entry for slot 8 — interval 1's flush didn't clear MDBX (or LRU/inFlight re-introduced it)")
 		roTx.Rollback()
@@ -1066,7 +1066,7 @@ func TestSelfdestructWipe_StaleRoTx_PostFlushWipe_NoPhantomChangeset(t *testing.
 	csw := writer.ChangeSetWriter()
 	for _, slot := range []types.Hash{slot8, slot9} {
 		key := modules.PlainGenerateCompositeStorageKey(addr[:], slot[:])
-		v, exists := csw.storageChanges[string(key)]
+		v, exists := csw.storageChanges[[52]byte(key)]
 		require.False(t, exists,
 			"interval B's storcs has phantom pre-wipe entry for slot=%x value=%x — collectPreWipeSlots' wipedAtEpoch guard didn't fire",
 			slot[:], v)
