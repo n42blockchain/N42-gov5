@@ -82,6 +82,16 @@ func runWitnessWorker(
 	}
 	defer codeTx.Rollback()
 
+	// One IBS per worker, reused across blocks via Reset + SetStateReader.
+	// Without reuse, every block allocated a fresh IBS plus a fresh
+	// stateObject for every touched address — pprof showed the
+	// stateObjectPool.New func at 18% of all allocs because the per-block
+	// IBS was discarded with its objects, never returning them to the
+	// pool. Reset returns objects to pool before the next block touches
+	// them, so the pool actually recycles.
+	reader := NewWitnessReplayReader(nil, codeTx)
+	ibs := state.New(reader)
+
 	// Select on ctx during receive so workers exit promptly when the
 	// pipeline cancels (early error before the reader goroutine can
 	// close blockCh — without this, codeTx held here deadlocks the
@@ -94,7 +104,7 @@ func runWitnessWorker(
 			if !ok {
 				return
 			}
-			res := replayWitnessBlock(job, codeTx, chainCfg, engine, mode)
+			res := replayWitnessBlock(job, codeTx, chainCfg, engine, mode, ibs, reader)
 			select {
 			case resultCh <- res:
 			case <-ctx.Done():
@@ -104,14 +114,18 @@ func runWitnessWorker(
 	}
 }
 
-// replayWitnessBlock is the pure per-block replay path. No shared
-// state between calls; all state I/O via the supplied codeTx.
+// replayWitnessBlock is the per-block replay path. The supplied ibs +
+// reader are owned by the caller (worker); this function rebinds them
+// to the new block's witness stream and resets in-place to put the
+// previous block's stateObjects back into the pool.
 func replayWitnessBlock(
 	job WitnessJob,
 	codeTx kv.Tx,
 	chainCfg *params.ChainConfig,
 	engine consensus.Engine,
 	mode ReplayMode,
+	ibs *state.IntraBlockState,
+	reader *WitnessReplayReader,
 ) WitnessResult {
 	res := WitnessResult{
 		BlockNum:     job.BlockNum,
@@ -135,8 +149,8 @@ func replayWitnessBlock(
 		return res
 	}
 
-	reader := NewWitnessReplayReader(job.Witness, codeTx)
-	ibs := state.New(reader)
+	reader.Reset(job.Witness)
+	ibs.Reset()
 
 	var writer *WitnessCapturingWriter
 	var stateWriter state.WriterWithChangeSets
