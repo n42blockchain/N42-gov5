@@ -81,10 +81,12 @@ func (w *CachedStateWriter) WriteAccountStorage(address types.Address, key *type
 	}
 	if w.cache != nil {
 		compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
-		v := value.Bytes()
-		if len(v) == 0 {
+		bl := value.ByteLen()
+		if bl == 0 {
 			w.cache.Delete(modules.Storage, compositeKey)
 		} else {
+			v := make([]byte, bl)
+			value.WriteToSlice(v)
 			w.cache.Put(modules.Storage, compositeKey, v)
 		}
 	}

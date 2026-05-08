@@ -104,10 +104,12 @@ func (w *PlainStateWriter) WriteAccountStorage(address types.Address, key *types
 	}
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 
-	v := value.Bytes()
-	if len(v) == 0 {
+	bl := value.ByteLen()
+	if bl == 0 {
 		return w.db.Delete(modules.Storage, compositeKey)
 	}
+	v := make([]byte, bl)
+	value.WriteToSlice(v)
 	return w.db.Put(modules.Storage, compositeKey, v)
 }
 

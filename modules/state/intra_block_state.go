@@ -313,15 +313,13 @@ func (sdb *IntraBlockState) GetStateReader() StateReader {
 	return sdb.stateReader
 }
 
-// Reset clears out all ephemeral state objects from the state db, but keeps
-// the underlying state trie to avoid reloading data for the next operations.
-//
-// IMPORTANT: this must clear *every* per-block field. SELFDESTRUCT
-// trackers (storageWipes / priorTxWipes), the saved-error sticky bit,
-// and the codeMap are all block-scoped and would silently corrupt the
-// next block if left over. The witness-replay 50303 gas mismatch was
-// stale storageWipes from an earlier block making SLOAD short-circuit
-// to nil for an address that was alive in the new block.
+// Reset clears every per-block field so the IBS can be reused across
+// blocks (witness-replay holds one IBS per worker). The trie itself is
+// not reloaded — only ephemeral state. SELFDESTRUCT trackers, the
+// saved-error sticky bit, the codeMap snapshot, and any stale snap /
+// tracer pointers would silently corrupt the next block if left over.
+// rootComputer is intentionally preserved (it's a config dependency
+// set once via SetRootComputer, not block-scoped).
 func (sdb *IntraBlockState) Reset() {
 	// Return stateObjects to the pool before discarding the map.
 	// Their three Storage maps are cleared and re-bound on next Get.
@@ -335,6 +333,11 @@ func (sdb *IntraBlockState) Reset() {
 	clear(sdb.priorTxWipes)
 	sdb.savedErr = nil
 	sdb.codeMap = nil
+	sdb.snap = nil
+	sdb.tracer = nil
+	sdb.trace = false
+	sdb.height = 0
+	sdb.ltHashRoot = types.Hash{}
 	sdb.thash = types.Hash{}
 	sdb.bhash = types.Hash{}
 	sdb.txIndex = 0

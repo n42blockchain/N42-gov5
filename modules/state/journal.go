@@ -157,11 +157,9 @@ type (
 		account *types.Address
 	}
 	// Changes to the access list. Stored by value (20B addr / 32B hash)
-	// rather than pointer to avoid the per-Add{Address,Slot} escape that
-	// the pointer form forced on caller's stack vars: profile showed
-	// AddSlotToAccessList alone allocating 7.31% of all heap allocs from
-	// just &addr / &slot escape. By-value copy is cheaper than the heap
-	// alloc + GC scan it replaces.
+	// rather than pointer: the pointer form forced &addr / &slot to
+	// escape from the caller's stack frame, and a by-value copy is
+	// cheaper than the heap alloc + GC scan it would replace.
 	accessListAddAccountChange struct {
 		address types.Address
 	}
