@@ -19,7 +19,9 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/urfave/cli/v2"
@@ -135,6 +137,16 @@ func run(c *cli.Context) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		log.Info("Shutdown signal received — finishing in-flight blocks; press Ctrl+C again to force exit")
+		cancel()
+		<-sig
+		log.Warn("Second signal received — forcing immediate exit; output cdat may be partial (re-run on next start picks up where we left off)")
+		os.Exit(1)
+	}()
 	if err := ethel.RunWitnessReplay(ctx, cfg, codeDB); err != nil {
 		return err
 	}
