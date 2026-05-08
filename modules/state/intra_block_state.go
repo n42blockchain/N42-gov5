@@ -316,17 +316,26 @@ func (sdb *IntraBlockState) GetStateReader() StateReader {
 // Reset clears out all ephemeral state objects from the state db, but keeps
 // the underlying state trie to avoid reloading data for the next operations.
 func (sdb *IntraBlockState) Reset() {
-	sdb.stateObjects = make(map[types.Address]*stateObject)
-	sdb.stateObjectsDirty = make(map[types.Address]struct{})
-	sdb.nilAccounts = make(map[types.Address]struct{})
+	// Return stateObjects to the pool before discarding the map.
+	// Their three Storage maps are cleared and re-bound on next Get.
+	for _, so := range sdb.stateObjects {
+		putStateObject(so)
+	}
+	clear(sdb.stateObjects)
+	clear(sdb.stateObjectsDirty)
+	clear(sdb.nilAccounts)
 	sdb.thash = types.Hash{}
 	sdb.bhash = types.Hash{}
 	sdb.txIndex = 0
-	sdb.logs = make(map[types.Hash][]*block.Log)
+	clear(sdb.logs)
 	sdb.logSize = 0
 	sdb.clearJournalAndRefund()
-	sdb.accessList = newAccessList()
-	sdb.balanceInc = make(map[types.Address]*BalanceIncrease)
+	if sdb.accessList == nil {
+		sdb.accessList = newAccessList()
+	} else {
+		sdb.accessList.Reset()
+	}
+	clear(sdb.balanceInc)
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
@@ -1024,12 +1033,17 @@ func (sdb *IntraBlockState) Print() {
 }
 
 // Prepare sets the current transaction hash and index and block hash which is
-// used when the EVM emits new state logs.
+// used when the EVM emits new state logs. The access list is reset in place
+// so its slotmaps can be recycled across txs (see accessList.Reset for why).
 func (sdb *IntraBlockState) Prepare(thash, bhash types.Hash, ti int) {
 	sdb.thash = thash
 	sdb.bhash = bhash
 	sdb.txIndex = ti
-	sdb.accessList = newAccessList()
+	if sdb.accessList == nil {
+		sdb.accessList = newAccessList()
+	} else {
+		sdb.accessList.Reset()
+	}
 }
 
 // clearJournalAndRefund resets per-transaction ephemeral state.

@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"sync"
 
 	"github.com/holiman/uint256"
 
@@ -103,15 +104,54 @@ func (so *stateObject) empty() bool {
 	return so.data.Nonce == 0 && so.data.Balance.IsZero() && bytes.Equal(so.data.CodeHash[:], emptyCodeHash)
 }
 
-// newObject creates a state object.
-func newObject(db *IntraBlockState, address types.Address, data, original *account.StateAccount) *stateObject {
-	so := stateObject{
-		db:                 db,
-		address:            address,
-		originStorage:      make(Storage),
-		blockOriginStorage: make(Storage),
-		dirtyStorage:       make(Storage),
+// stateObjectPool recycles stateObject structs (and their three
+// Storage maps) across blocks. EVM hot blocks touch ~5K-10K addrs,
+// each one a fresh stateObject + 3 fresh maps without pooling — top
+// allocator at 3.6B/12h. Reset on each Get clears the maps in place
+// so the backing arrays survive.
+var stateObjectPool = sync.Pool{
+	New: func() interface{} {
+		// No size hint: most accounts touch 0 slots, so lazy bucket
+		// alloc avoids ~600B/object of empty-map overhead retained
+		// in the pool.
+		return &stateObject{
+			originStorage:      make(Storage),
+			blockOriginStorage: make(Storage),
+			dirtyStorage:       make(Storage),
+		}
+	},
+}
+
+// putStateObject returns so to the pool. Must be called only when
+// the IntraBlockState that owned so is being reset / discarded.
+func putStateObject(so *stateObject) {
+	if so == nil {
+		return
 	}
+	// Drop references that could pin large memory.
+	so.db = nil
+	so.code = nil
+	so.fakeStorage = nil
+	clear(so.originStorage)
+	clear(so.blockOriginStorage)
+	clear(so.dirtyStorage)
+	stateObjectPool.Put(so)
+}
+
+// newObject creates a state object, reusing a pooled struct when one
+// is available.
+func newObject(db *IntraBlockState, address types.Address, data, original *account.StateAccount) *stateObject {
+	so := stateObjectPool.Get().(*stateObject)
+	so.db = db
+	so.address = address
+	so.code = nil
+	so.fakeStorage = nil
+	so.dirtyCode = false
+	so.selfdestructed = false
+	so.deleted = false
+	so.created = false
+	so.data = account.StateAccount{}
+	so.original = account.StateAccount{}
 	so.data.Copy(data)
 	if !so.data.Initialised {
 		so.data.Balance.SetUint64(0)
@@ -122,7 +162,7 @@ func newObject(db *IntraBlockState, address types.Address, data, original *accou
 	}
 	// Empty Root is left as zero hash; storage trie is initialized lazily.
 	so.original.Copy(original)
-	return &so
+	return so
 }
 
 // EncodeRLP implements rlp.Encoder.

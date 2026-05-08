@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/crypto"
@@ -60,6 +61,43 @@ func MakeSigner(config *params.ChainConfig, blockNumber *big.Int) Signer {
 	return MakeSignerWithTimestamp(config, blockNumber, blockNum)
 }
 
+// signerCache memoises the four chainID-bound signers per chain.
+// The hot replay path calls MakeSignerWithTimestamp once per
+// transaction; without caching, each call rebuilds the EIP-155 /
+// EIP-2930 / London signer trio, allocating two new big.Int values
+// (chainId, chainIdMul). Profile showed 1.55B big.Int allocs traced
+// to MakeSignerWithTimestamp over a 12h replay. Single-chain workload
+// → single entry suffices.
+type signerCache struct {
+	mu      sync.RWMutex
+	chainID *big.Int
+	london  Signer
+	eip2930 Signer
+	eip155  EIP155Signer
+}
+
+var cachedSigners signerCache
+
+func cachedFor(chainID *big.Int) (london, eip2930 Signer, eip155 EIP155Signer) {
+	cachedSigners.mu.RLock()
+	if cachedSigners.chainID != nil && cachedSigners.chainID.Cmp(chainID) == 0 {
+		london, eip2930, eip155 = cachedSigners.london, cachedSigners.eip2930, cachedSigners.eip155
+		cachedSigners.mu.RUnlock()
+		return
+	}
+	cachedSigners.mu.RUnlock()
+
+	cachedSigners.mu.Lock()
+	defer cachedSigners.mu.Unlock()
+	if cachedSigners.chainID == nil || cachedSigners.chainID.Cmp(chainID) != 0 {
+		cachedSigners.chainID = new(big.Int).Set(chainID)
+		cachedSigners.eip155 = NewEIP155Signer(chainID)
+		cachedSigners.eip2930 = NewEIP2930Signer(chainID)
+		cachedSigners.london = NewLondonSigner(chainID)
+	}
+	return cachedSigners.london, cachedSigners.eip2930, cachedSigners.eip155
+}
+
 // MakeSignerWithTimestamp returns a Signer based on the given chain config, block
 // number, and block timestamp. This is required for Prague+ time-based forks.
 func MakeSignerWithTimestamp(config *params.ChainConfig, blockNumber *big.Int, timestamp uint64) Signer {
@@ -73,13 +111,23 @@ func MakeSignerWithTimestamp(config *params.ChainConfig, blockNumber *big.Int, t
 	rules := config.RulesWithTimestamp(blockNum, timestamp)
 	switch {
 	case rules.IsLondon:
-		return NewLondonSigner(config.ChainID)
+		if config.ChainID == nil {
+			return NewLondonSigner(nil)
+		}
+		s, _, _ := cachedFor(config.ChainID)
+		return s
 	case rules.IsBerlin:
-		return NewEIP2930Signer(config.ChainID)
-	case rules.IsSpuriousDragon:
-		return NewEIP155Signer(config.ChainID)
-	case rules.IsEip1559FeeCollector:
-		return NewEIP155Signer(config.ChainID)
+		if config.ChainID == nil {
+			return NewEIP2930Signer(nil)
+		}
+		_, s, _ := cachedFor(config.ChainID)
+		return s
+	case rules.IsSpuriousDragon, rules.IsEip1559FeeCollector:
+		if config.ChainID == nil {
+			return NewEIP155Signer(nil)
+		}
+		_, _, s := cachedFor(config.ChainID)
+		return s
 	case rules.IsHomestead:
 		return HomesteadSigner{}
 	default:

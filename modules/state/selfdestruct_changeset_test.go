@@ -63,7 +63,7 @@ func TestCreateContract_RecordsPreWipeSlots_Buffered(t *testing.T) {
 	csw := w.ChangeSetWriter()
 	slot2 := hashFromByte(0x02)
 	preOrigKey := modules.PlainGenerateCompositeStorageKey(addr[:], slot2[:])
-	csw.storageChanges[string(preOrigKey)] = []byte{0x22} // block-origin
+	csw.storageChanges[[52]byte(preOrigKey)] = []byte{0x22} // block-origin
 	csw.storageChanged[addr] = true
 	// Buffer reflects the post-SSTORE value (0xFF) for slot 0x02.
 	buf.storage[addr] = map[types.Hash]storageEntry{
@@ -77,7 +77,7 @@ func TestCreateContract_RecordsPreWipeSlots_Buffered(t *testing.T) {
 	// block-origin value for slot 0x02 must be preserved (first-wins).
 	for _, s := range seed {
 		k := modules.PlainGenerateCompositeStorageKey(addr[:], s.slot[:])
-		got, ok := csw.storageChanges[string(k)]
+		got, ok := csw.storageChanges[[52]byte(k)]
 		require.True(t, ok, "slot %x missing from storageChanges", s.slot)
 		require.Equal(t, s.v, got, "slot %x wrong value", s.slot)
 	}
@@ -85,7 +85,7 @@ func TestCreateContract_RecordsPreWipeSlots_Buffered(t *testing.T) {
 
 	// `other`'s slot must NOT appear in addr's changeset.
 	for k := range csw.storageChanges {
-		if len(k) >= 20 && string([]byte(k)[:20]) == string(other[:]) {
+		if string(k[:20]) == string(other[:]) {
 			t.Fatalf("unrelated contract slot leaked into changeset: %x", k)
 		}
 	}
@@ -125,19 +125,19 @@ func TestCreateContract_RecordsPreWipeSlots_Plain(t *testing.T) {
 
 	// Simulate an earlier block-origin entry for slot 0x10 that must survive.
 	originKey := modules.PlainGenerateCompositeStorageKey(addr[:], slots[0][:])
-	csw.storageChanges[string(originKey)] = []byte{0x00} // block-origin was 0 (slot was created earlier this block)
+	csw.storageChanges[[52]byte(originKey)] = []byte{0x00} // block-origin was 0 (slot was created earlier this block)
 	csw.storageChanged[addr] = true
 
 	require.NoError(t, w.CreateContract(addr))
 
 	// First-wins preserved the earlier block-origin 0x00 for slot 0x10.
-	got1, ok := csw.storageChanges[string(originKey)]
+	got1, ok := csw.storageChanges[[52]byte(originKey)]
 	require.True(t, ok)
 	require.Equal(t, []byte{0x00}, got1, "block-origin for slot 0x10 must be preserved")
 
 	// Slot 0x20 was enumerated via cursor and recorded with MDBX value.
 	k20 := modules.PlainGenerateCompositeStorageKey(addr[:], slots[1][:])
-	got2, ok := csw.storageChanges[string(k20)]
+	got2, ok := csw.storageChanges[[52]byte(k20)]
 	require.True(t, ok)
 	require.Equal(t, []byte{0xBB}, got2)
 
@@ -171,14 +171,14 @@ func TestWriteAccountStorage_FirstWinsAfterWipe(t *testing.T) {
 
 	csw := NewChangeSetWriter()
 	vOld := []byte{0x01, 0x02, 0x03}
-	csw.storageChanges[string(compKey)] = vOld
+	csw.storageChanges[[52]byte(compKey)] = vOld
 	csw.storageChanged[addr] = true
 
 	orig := uint256.NewInt(0)    // post-create blockOriginStorage default
 	val := uint256.NewInt(0x99) // SSTORE'd value in CREATE2-era tx
 	require.NoError(t, csw.WriteAccountStorage(addr, &slot, orig, val))
 
-	got, ok := csw.storageChanges[string(compKey)]
+	got, ok := csw.storageChanges[[52]byte(compKey)]
 	require.True(t, ok)
 	require.Equal(t, vOld, got, "first-wins must preserve recordStorageWipe's V_OLD")
 	require.True(t, csw.storageChanged[addr])

@@ -29,6 +29,13 @@ import (
 type accessList struct {
 	addresses map[types.Address]int
 	slots     []map[types.Hash]struct{}
+	// slotPool holds previously-used slotmaps that have been cleared
+	// by Reset and are ready to be re-bound to a new (addr, slot) pair
+	// in AddSlot. EVM hot path empirically allocates ~1.3K slotmap per
+	// 100 txs; pooling them across txs eliminates the per-tx
+	// map[Hash]struct{} alloc storm visible in alloc profiles
+	// (9.3B / 12h = ~13K AddSlot calls per block).
+	slotPool []map[types.Hash]struct{}
 }
 
 // ContainsAddress returns true if the address is in the access list.
@@ -95,9 +102,21 @@ func (al *accessList) AddAddress(address types.Address) bool {
 func (al *accessList) AddSlot(address types.Address, slot types.Hash) (addrChange bool, slotChange bool) {
 	idx, addrPresent := al.addresses[address]
 	if !addrPresent || idx == -1 {
-		// Address not present, or addr present but no slots there
+		// Address not present, or addr present but no slots there.
+		// Reuse a cleared slotmap from the pool when one is available;
+		// otherwise allocate. EVM heavy DEX/AMM blocks call AddSlot
+		// thousands of times per tx, and a fresh map per call was
+		// the second-biggest alloc-rate driver in CPU profiles.
 		al.addresses[address] = len(al.slots)
-		slotmap := map[types.Hash]struct{}{slot: {}}
+		var slotmap map[types.Hash]struct{}
+		if n := len(al.slotPool); n > 0 {
+			slotmap = al.slotPool[n-1]
+			al.slotPool[n-1] = nil
+			al.slotPool = al.slotPool[:n-1]
+		} else {
+			slotmap = make(map[types.Hash]struct{}, 4)
+		}
+		slotmap[slot] = struct{}{}
 		al.slots = append(al.slots, slotmap)
 		return !addrPresent, true
 	}
@@ -111,6 +130,32 @@ func (al *accessList) AddSlot(address types.Address, slot types.Hash) (addrChang
 	// No changes required
 	return false, false
 }
+
+// Reset clears the access list for reuse on the next transaction.
+// Live slotmaps are returned to slotPool so AddSlot can re-bind them
+// without going through the allocator. Caller (IntraBlockState.Prepare)
+// holds the only reference, so concurrent access isn't a concern.
+//
+// Pathologically large slotmaps (> slotmapPoolMax) are dropped instead
+// of pooled — Go map buckets never shrink on clear(), so retaining a
+// 10K-entry bucket array forever would defeat the pool's memory goal.
+func (al *accessList) Reset() {
+	clear(al.addresses)
+	for _, slotmap := range al.slots {
+		if len(slotmap) > slotmapPoolMax {
+			continue
+		}
+		clear(slotmap)
+		al.slotPool = append(al.slotPool, slotmap)
+	}
+	al.slots = al.slots[:0]
+}
+
+// slotmapPoolMax bounds the size of slotmaps returned to slotPool.
+// Picked from the long tail: typical EVM tx warms < 50 slots; > 256
+// is a heavy DEX/AMM tx and we'd rather GC the oversized bucket array
+// than retain it across the whole replay.
+const slotmapPoolMax = 256
 
 // DeleteSlot removes an (address, slot)-tuple from the access list.
 // This operation needs to be performed in the same order as the addition happened.
