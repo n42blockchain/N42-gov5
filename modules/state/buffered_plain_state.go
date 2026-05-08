@@ -284,8 +284,16 @@ type PlainStateBuffer struct {
 	// the case where the LRU prefix-sweep already cleared the slot and
 	// the prefetcher's stale value would slip into the gap. See
 	// CacheStorageIfAbsentEpoch for the full reasoning.
-	flushEpoch   atomic.Uint64
-	wipedAtEpoch sync.Map // map[types.Address]uint64
+	//
+	// We use a plain map under RWMutex rather than sync.Map because the
+	// table grows large (~1-2M entries on heavy contract-deployment
+	// blocks) and sync.Map's per-entry entryNode + indirectNode boxing
+	// added 3M+ live heap objects in a 5h replay — top GC scan-set
+	// driver. Plain map[Address]uint64 has zero internal pointers and
+	// presents to GC as a single tracked object.
+	flushEpoch     atomic.Uint64
+	wipedEpochMu   sync.RWMutex
+	wipedAtEpoch   map[types.Address]uint64
 
 	// Per-flush wipe records, used by StampWipes to auto-prune
 	// wipedAtEpoch entries older than wipeRingSize flushes. Without
@@ -331,6 +339,7 @@ func NewPlainStateBufferWithBudget(b CacheBudget) *PlainStateBuffer {
 		storage:      make(map[types.Address]map[types.Hash]storageEntry, 4096),
 		code:         make(map[types.Hash][]byte, 64),
 		wipedStorage: make(map[types.Address]struct{}),
+		wipedAtEpoch: make(map[types.Address]uint64),
 		// Account V2 encoding caps at ~75 bytes (fieldBits + nonce
 		// uvarint + balLen + balance + codeHash); 80 leaves headroom.
 		// Storage values are uint256 (≤ 32 bytes). Slot widths fixed
@@ -460,41 +469,39 @@ func (b *PlainStateBuffer) StampWipes(wipedAddrs []types.Address) uint64 {
 	b.wipeRing[slot] = append(b.wipeRing[slot][:0], wipedAddrs...)
 	b.wipeRingMu.Unlock()
 
-	// Drop the previous occupants from wipedAtEpoch, but only if their
-	// stamp hasn't been refreshed by a later wipe of the same address.
+	b.wipedEpochMu.Lock()
+	if b.wipedAtEpoch == nil {
+		b.wipedAtEpoch = make(map[types.Address]uint64)
+	}
 	if prunedEpoch > 0 {
 		for _, addr := range prunedAddrs {
-			if v, ok := b.wipedAtEpoch.Load(addr); ok {
-				if v.(uint64) <= prunedEpoch {
-					b.wipedAtEpoch.Delete(addr)
-				}
+			if v, ok := b.wipedAtEpoch[addr]; ok && v <= prunedEpoch {
+				delete(b.wipedAtEpoch, addr)
 			}
 		}
 	}
-
 	for _, addr := range wipedAddrs {
-		b.wipedAtEpoch.Store(addr, epoch)
+		b.wipedAtEpoch[addr] = epoch
 	}
+	b.wipedEpochMu.Unlock()
 	return epoch
 }
 
-// PruneWipesBefore drops wipe records older than `cutoff`. Caller must
-// be sure no live RoTx was opened before cutoff. Called periodically
-// from the flusher to bound memory growth.
+// PruneWipesBefore drops wipe records older than `cutoff`. The ring-
+// buffered StampWipes path keeps wipedAtEpoch bounded automatically;
+// this entry point remains for tests and any caller that wants more
+// aggressive trimming once a known-safe cutoff is established.
 func (b *PlainStateBuffer) PruneWipesBefore(cutoff uint64) {
 	if cutoff == 0 {
 		return
 	}
-	var stale []types.Address
-	b.wipedAtEpoch.Range(func(k, v interface{}) bool {
-		if v.(uint64) <= cutoff {
-			stale = append(stale, k.(types.Address))
+	b.wipedEpochMu.Lock()
+	for k, v := range b.wipedAtEpoch {
+		if v <= cutoff {
+			delete(b.wipedAtEpoch, k)
 		}
-		return true
-	})
-	for _, a := range stale {
-		b.wipedAtEpoch.Delete(a)
 	}
+	b.wipedEpochMu.Unlock()
 }
 
 // IsWipedAfter reports whether a contract-wipe stamp for address landed
@@ -504,8 +511,10 @@ func (b *PlainStateBuffer) PruneWipesBefore(cutoff uint64) {
 // stale-RoTx race that bit prefetcher writes (block 2520771) and
 // changeset wipe-collection (block 10941306).
 func (b *PlainStateBuffer) IsWipedAfter(address types.Address, epoch uint64) bool {
-	v, ok := b.wipedAtEpoch.Load(address)
-	return ok && v.(uint64) > epoch
+	b.wipedEpochMu.RLock()
+	v, ok := b.wipedAtEpoch[address]
+	b.wipedEpochMu.RUnlock()
+	return ok && v > epoch
 }
 
 // CacheAccountIfAbsentEpoch is the epoch-aware variant of

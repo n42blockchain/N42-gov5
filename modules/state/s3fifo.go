@@ -296,18 +296,24 @@ func (c *s3FIFO[K]) writeValue(idx int32, value []byte) {
 	c.valLen[idx] = uint8(n)
 }
 
-// readValue returns a slice over the slab. Caller must not mutate.
-func (c *s3FIFO[K]) readValue(idx int32) []byte {
+// copyValue returns a freshly allocated slice with the slot's value
+// bytes. Callers receive a stable copy so a concurrent Put of the same
+// key (which would overwrite the slab segment) cannot mutate bytes
+// they're still reading. The previous design (aliased return) tripped
+// the race detector via main↔prefetcher Put/Get on the same address.
+func (c *s3FIFO[K]) copyValue(idx int32) []byte {
 	n := int(c.valLen[idx])
 	if n == 0 {
 		return nil
 	}
 	off := int(idx) * c.valSize
-	return c.valBuf[off : off+n]
+	out := make([]byte, n)
+	copy(out, c.valBuf[off:off+n])
+	return out
 }
 
 // Get returns the value for key and bumps its frequency. The returned
-// slice references the slab; callers must not mutate it.
+// slice is a fresh copy — safe to retain across concurrent Puts.
 func (c *s3FIFO[K]) Get(key K) (value []byte, present bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -318,7 +324,7 @@ func (c *s3FIFO[K]) Get(key K) (value []byte, present bool) {
 	}
 	c.bumpFreq(idx)
 	c.hits.Add(1)
-	return c.readValue(idx), true
+	return c.copyValue(idx), true
 }
 
 // Put inserts or updates key. New keys land in S; keys present in
