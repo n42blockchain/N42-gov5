@@ -96,7 +96,14 @@ func (j *journal) length() int {
 // dirties map is cleared in-place via Go 1.21+ clear().
 func (j *journal) reset() {
 	j.entries = j.entries[:0]
-	clear(j.dirties)
+	// Reallocate dirties: it's iterated by IBS.FinalizeTx via
+	// sortedAddresses every tx, and Go's clear() leaves the bucket
+	// array sized to the historical high-water mark — pprof showed
+	// matchFull at 27% of CPU because a single heavy block had
+	// inflated buckets that every subsequent FinalizeTx scanned in
+	// full. The map alloc is one tiny header per tx; the win on
+	// iteration cost is far larger.
+	j.dirties = make(map[types.Address]int)
 }
 
 type (

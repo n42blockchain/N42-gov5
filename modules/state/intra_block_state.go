@@ -320,15 +320,24 @@ func (sdb *IntraBlockState) GetStateReader() StateReader {
 // tracer pointers would silently corrupt the next block if left over.
 // rootComputer is intentionally preserved (it's a config dependency
 // set once via SetRootComputer, not block-scoped).
+//
+// Maps that get range-iterated downstream (notably the ones consumed
+// by sortedAddresses in FinalizeTx — balanceInc, journal.dirties — and
+// the stateObjects map iterated here) are reallocated rather than
+// clear()ed. Go's clear() leaves the bucket array sized to the
+// historical high-water mark; on a 24M-block replay a single heavy
+// block (e.g. a 5K-touch AMM block) inflates buckets that subsequent
+// iterations must scan in full, even when len() drops to ~50. pprof
+// showed matchFull at 27% of CPU under the clear()-only Reset.
 func (sdb *IntraBlockState) Reset() {
 	// Return stateObjects to the pool before discarding the map.
 	// Their three Storage maps are cleared and re-bound on next Get.
 	for _, so := range sdb.stateObjects {
 		putStateObject(so)
 	}
-	clear(sdb.stateObjects)
-	clear(sdb.stateObjectsDirty)
-	clear(sdb.nilAccounts)
+	sdb.stateObjects = make(map[types.Address]*stateObject)
+	sdb.stateObjectsDirty = make(map[types.Address]struct{})
+	sdb.nilAccounts = make(map[types.Address]struct{})
 	clear(sdb.storageWipes)
 	clear(sdb.priorTxWipes)
 	sdb.savedErr = nil
@@ -342,7 +351,7 @@ func (sdb *IntraBlockState) Reset() {
 	sdb.bhash = types.Hash{}
 	sdb.txIndex = 0
 	sdb.nextRevisionID = 0
-	clear(sdb.logs)
+	sdb.logs = make(map[types.Hash][]*block.Log)
 	sdb.logSize = 0
 	sdb.clearJournalAndRefund()
 	if sdb.accessList == nil {
@@ -350,7 +359,7 @@ func (sdb *IntraBlockState) Reset() {
 	} else {
 		sdb.accessList.Reset()
 	}
-	clear(sdb.balanceInc)
+	sdb.balanceInc = make(map[types.Address]*BalanceIncrease)
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
