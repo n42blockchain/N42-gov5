@@ -82,10 +82,22 @@ func setBETrimmed(dst *[32]byte, src []byte) uint8 {
 }
 
 func main() {
+	// Always print exit reason so silent exits are diagnosable. Panics
+	// also stop here so the stack trace gets flushed before the deferred
+	// closes run.
+	exitReason := "unknown"
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "PANIC: %v\n", r)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "[exit] %s\n", exitReason)
+	}()
+	_ = exitReason
 	n42Dir := flag.String("n42", "", "n42 freezer dir (contains acctcs/storcs), e.g. d:\\N42-rerun\\chain\\freezer — REQUIRED")
 	rethDir := flag.String("reth", `d:\reth2k\db`, "reth MDBX path")
 	fromBlock := flag.Uint64("from", 0, "start block (inclusive)")
-	toBlock := flag.Uint64("to", 17860000, "end block (inclusive)")
+	toBlock := flag.Uint64("to", 0, "end block (inclusive); 0 = scan to n42 freezer's safe end")
 	showAll := flag.Bool("show-all", false, "show every diff slot, not just summary")
 	firstDiff := flag.Bool("first-diff", true, "stop at the first divergent block")
 	maxPrintPerBlock := flag.Int("max-print", 10, "max divergent slots to print per block")
@@ -136,7 +148,9 @@ func main() {
 		os.Exit(1)
 	}
 	n42LastSafeBlock := n42MaxBlock - 2 // back off by 1 from the highest written entry
-	if *toBlock > n42LastSafeBlock {
+	if *toBlock == 0 {
+		*toBlock = n42LastSafeBlock
+	} else if *toBlock > n42LastSafeBlock {
 		fmt.Fprintf(os.Stderr, "WARNING: --to=%d exceeds n42 freezer's safe last block (%d). Capping to %d (skipping the in-flight tail).\n",
 			*toBlock, n42LastSafeBlock, n42LastSafeBlock)
 		*toBlock = n42LastSafeBlock
@@ -351,9 +365,11 @@ func main() {
 			fmt.Printf("\n=== totals up to first diff ===\n")
 			fmt.Printf("n42  storage rows: %d  account rows: %d\n", totN42Sto, totN42Acct)
 			fmt.Printf("reth storage rows: %d  account rows: %d\n", totRethSto, totRethAcct)
+			exitReason = fmt.Sprintf("first-diff at block %d", b)
 			return
 		}
 	}
+	exitReason = fmt.Sprintf("loop completed (last b=%d, toBlock=%d)", *toBlock, *toBlock)
 	fmt.Printf("\n=== totals ===\n")
 	fmt.Printf("n42  storage rows: %d  account rows: %d\n", totN42Sto, totN42Acct)
 	fmt.Printf("reth storage rows: %d  account rows: %d\n", totRethSto, totRethAcct)
