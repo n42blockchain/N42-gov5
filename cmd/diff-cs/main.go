@@ -18,13 +18,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -51,9 +53,32 @@ type storKey struct {
 	slot [32]byte
 }
 
+// storEntry holds the BE-minimal old/new value bytes inline. Inline
+// fixed-size arrays avoid the per-slot heap allocs that the previous
+// []byte fields forced (n42 side: 2 / slot, reth side: 1 / slot —
+// over a 17M-block scan that's billions of allocs avoided). oldLen /
+// newLen track the leading-zero-trimmed length; valid byte range is
+// oldVal[:oldLen] / newVal[:newLen].
 type storEntry struct {
-	oldVal []byte // BE-minimal, leading zeros trimmed
-	newVal []byte // BE-minimal (n42 only — reth changesets store oldVal only)
+	oldVal [32]byte
+	newVal [32]byte
+	oldLen uint8
+	newLen uint8
+}
+
+// setBETrimmed copies src into dst, skipping leading zero bytes. Returns
+// the length written (0..32). src must already be ≤ 32 bytes.
+func setBETrimmed(dst *[32]byte, src []byte) uint8 {
+	i := 0
+	for i < len(src) && src[i] == 0 {
+		i++
+	}
+	n := len(src) - i
+	if n > 32 {
+		n = 32
+	}
+	copy(dst[:n], src[i:i+n])
+	return uint8(n)
 }
 
 func main() {
@@ -70,6 +95,9 @@ func main() {
 	skipWipeStale := flag.Bool("skip-wipe-stale", false, "ignore EXTRA entries that look like 'wipe-stale' (n42 deletes a slot mainnet never knew about — symptom of a prior incomplete SELFDESTRUCT; doesn't usually move root if MPT delete folds correctly, so suppress to find the real signal downstream)")
 	progressEvery := flag.Uint64("progress", 20000, "log progress every N blocks (0 = silent)")
 	flag.Parse()
+
+	// pprof on :6062 (avoids :6060 ethexec / :6061 witness-replay).
+	go func() { _ = http.ListenAndServe("localhost:6062", nil) }()
 
 	if *n42Dir == "" {
 		fmt.Fprintln(os.Stderr, "ERROR: --n42 is required (e.g. --n42 d:\\N42-rerun\\chain\\freezer)")
@@ -189,7 +217,7 @@ func main() {
 		var nonZeroMissing []storKey
 		zeroMissing := 0
 		for _, k := range missing {
-			if len(rethSto[k].oldVal) == 0 {
+			if rethSto[k].oldLen == 0 {
 				zeroMissing++
 				continue
 			}
@@ -205,7 +233,7 @@ func main() {
 		wipeStaleExtra := 0
 		for _, k := range extra {
 			ne := n42Sto[k]
-			if len(ne.newVal) == 0 && len(ne.oldVal) > 0 {
+			if ne.newLen == 0 && ne.oldLen > 0 {
 				wipeStaleExtra++
 				continue
 			}
@@ -257,6 +285,9 @@ func main() {
 			}
 			ne := n42Sto[k]
 			rv := rethSto[k]
+			nOld := ne.oldVal[:ne.oldLen]
+			nNew := ne.newVal[:ne.newLen]
+			rOld := rv.oldVal[:rv.oldLen]
 			// Categorize by terminal effect on PlainState:
 			//   no-op:       n42 reads stale, writes same back. Buffer write
 			//                makes our PlainState match the stale, mainnet
@@ -267,13 +298,13 @@ func main() {
 			//   real-diff:   n42 writes a new value, but our oldVal was
 			//                stale. Diverges by oldVal-vs-mainnet-pre delta.
 			tag := "real-diff"
-			if bytesEqual(ne.oldVal, ne.newVal) {
+			if bytes.Equal(nOld, nNew) {
 				tag = "no-op (stale propagated to PlainState)"
-			} else if len(ne.newVal) == 0 {
+			} else if ne.newLen == 0 {
 				tag = "wipe-stale"
 			}
 			fmt.Printf("    [VAL DIFF] addr=%x slot=%x n42_old=%x n42_new=%x reth_old=%x  (%s)\n",
-				k.addr, k.slot, ne.oldVal, ne.newVal, rv.oldVal, tag)
+				k.addr, k.slot, nOld, nNew, rOld, tag)
 			printed++
 		}
 		printed = 0
@@ -282,8 +313,9 @@ func main() {
 				fmt.Printf("    ... and %d more missing\n", len(missing)-printed)
 				break
 			}
+			rv := rethSto[k]
 			fmt.Printf("    [n42 MISSING ] addr=%x slot=%x reth_old=%x\n",
-				k.addr, k.slot, rethSto[k].oldVal)
+				k.addr, k.slot, rv.oldVal[:rv.oldLen])
 			printed++
 		}
 		printed = 0
@@ -293,6 +325,8 @@ func main() {
 				break
 			}
 			ne := n42Sto[k]
+			nOld := ne.oldVal[:ne.oldLen]
+			nNew := ne.newVal[:ne.newLen]
 			// Categorize: reth implicitly says pre==post==0 for slots not in
 			// its changeset. So:
 			//   newVal==oldVal → no-op record (root NOT affected)
@@ -302,13 +336,13 @@ func main() {
 			//                    sides logically have "no slot")
 			//   else           → genuine state divergence (root affected)
 			tag := "ROOT-AFFECTING"
-			if bytesEqual(ne.oldVal, ne.newVal) {
+			if bytes.Equal(nOld, nNew) {
 				tag = "no-op"
-			} else if len(ne.newVal) == 0 {
+			} else if ne.newLen == 0 {
 				tag = "wipe-stale"
 			}
 			fmt.Printf("    [n42 EXTRA   ] addr=%x slot=%x n42_old=%x n42_new=%x  (%s)\n",
-				k.addr, k.slot, ne.oldVal, ne.newVal, tag)
+				k.addr, k.slot, nOld, nNew, tag)
 			printed++
 		}
 
@@ -327,7 +361,9 @@ func main() {
 }
 
 // decodeN42Storage parses one block's storcs blob and returns the
-// (addr, slot) → oldVal map. oldVal is stored BE-minimal.
+// (addr, slot) → entry map. Values are stored inline (no per-slot heap
+// alloc) — the previous append([]byte(nil), …) copies were pure waste
+// since `data` is already a heap-owned buffer with the right lifetime.
 func decodeN42Storage(tbl *freezer.FreezerTable, block uint64) map[storKey]storEntry {
 	out := map[storKey]storEntry{}
 	data, err := tbl.Retrieve(block)
@@ -358,19 +394,17 @@ func decodeN42Storage(tbl *freezer.FreezerTable, block uint64) map[storKey]storE
 			if oldLen > 32 || pos+oldLen+1 > len(data) {
 				return out
 			}
-			oldVal := append([]byte(nil), data[pos:pos+oldLen]...)
+			var e storEntry
+			e.oldLen = setBETrimmed(&e.oldVal, data[pos:pos+oldLen])
 			pos += oldLen
 			newLen := int(data[pos])
 			pos++
 			if newLen > 32 || pos+newLen > len(data) {
 				return out
 			}
-			newVal := append([]byte(nil), data[pos:pos+newLen]...)
+			e.newLen = setBETrimmed(&e.newVal, data[pos:pos+newLen])
 			pos += newLen
-			out[k] = storEntry{
-				oldVal: trimLeadingZeros(oldVal),
-				newVal: trimLeadingZeros(newVal),
-			}
+			out[k] = e
 		}
 	}
 	return out
@@ -386,7 +420,9 @@ func decodeN42AccountCount(tbl *freezer.FreezerTable, block uint64) int {
 
 // drainRethStorage consumes cursor entries belonging to `block`, starting
 // from the (k, v) the caller is positioned at. Returns the (addr, slot) →
-// oldVal map for `block` and the next (k, v) past `block`.
+// oldVal map for `block` and the next (k, v) past `block`. The mmap
+// slices from the cursor are copied into the inline storEntry before
+// the next cursor advance — they would otherwise become invalid.
 func drainRethStorage(c kv.Cursor, block uint64, k, v []byte) (map[storKey]storEntry, []byte, []byte) {
 	out := map[storKey]storEntry{}
 	for k != nil {
@@ -409,14 +445,14 @@ func drainRethStorage(c kv.Cursor, block uint64, k, v []byte) (map[storKey]storE
 		var key storKey
 		copy(key.addr[:], k[8:28])
 		copy(key.slot[:], v[:32])
-		// Pre-block value: reth Compact U256 stores BE-minimal (the trailing
-		// non-zero bytes of the 32-byte BE representation). Already in our
-		// canonical form — copy as-is and trim defensively.
-		var be []byte
+		// Pre-block value: reth Compact U256 stores BE-minimal (the
+		// trailing non-zero bytes of the 32-byte BE representation).
+		// Already in canonical form — defensively trim leading zeros.
+		var e storEntry
 		if len(v) > 32 {
-			be = append([]byte(nil), v[32:]...)
+			e.oldLen = setBETrimmed(&e.oldVal, v[32:])
 		}
-		out[key] = storEntry{oldVal: trimLeadingZeros(be)}
+		out[key] = e
 		var err error
 		k, v, err = c.Next()
 		_ = err
@@ -460,7 +496,7 @@ func diffSto(n42 map[storKey]storEntry, reth map[storKey]storEntry) (missing, ex
 			missing = append(missing, k)
 			continue
 		}
-		if !bytesEqual(nv.oldVal, rv.oldVal) {
+		if !bytes.Equal(nv.oldVal[:nv.oldLen], rv.oldVal[:rv.oldLen]) {
 			valDiffs = append(valDiffs, k)
 		}
 	}
@@ -476,35 +512,8 @@ func diffSto(n42 map[storKey]storEntry, reth map[storKey]storEntry) (missing, ex
 }
 
 func lessKey(a, b storKey) bool {
-	cmp := strings.Compare(string(a.addr[:]), string(b.addr[:]))
-	if cmp != 0 {
+	if cmp := bytes.Compare(a.addr[:], b.addr[:]); cmp != 0 {
 		return cmp < 0
 	}
-	return strings.Compare(string(a.slot[:]), string(b.slot[:])) < 0
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func trimLeadingZeros(b []byte) []byte {
-	i := 0
-	for i < len(b) && b[i] == 0 {
-		i++
-	}
-	if i == 0 {
-		return b
-	}
-	if i == len(b) {
-		return nil
-	}
-	return b[i:]
+	return bytes.Compare(a.slot[:], b.slot[:]) < 0
 }
