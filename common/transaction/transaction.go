@@ -101,12 +101,12 @@ func NewTx(inner TxData) *Transaction {
 	return tx
 }
 
-// newTxOwned is the internal constructor for decoders that just built
-// `inner` from a transient buffer (RLP, protobuf) and own the only
-// reference. Skips the defensive inner.copy() — measurably hot under
-// witness replay, where every block re-decodes its txs and the copy
-// (~2.5s/4.3% in profile) is pure waste.
-func newTxOwned(inner TxData) *Transaction {
+// NewTxOwned is the constructor for decoders that just built `inner`
+// from a transient buffer (RLP, protobuf, columnar) and own the only
+// reference. Skips the defensive inner.copy() that NewTx does — under
+// witness replay every block re-decodes its txs and the copy is pure
+// waste (5× new(uint256.Int) + Data byte copy per tx).
+func NewTxOwned(inner TxData) *Transaction {
 	tx := new(Transaction)
 	tx.setDecoded(inner, 0)
 	return tx

@@ -1353,7 +1353,10 @@ func decodeBodySegment(data []byte) ([]*DecodedBlock, error) {
 			default:
 				return nil, fmt.Errorf("unknown tx type %d at index %d", txTypes[ti], ti)
 			}
-			b.Txs[j] = transaction.NewTx(inner)
+			// NewTxOwned: the columnar decoder above just built `inner`
+			// and owns the only reference, so NewTx's defensive copy
+			// would be pure waste.
+			b.Txs[j] = transaction.NewTxOwned(inner)
 		}
 	}
 

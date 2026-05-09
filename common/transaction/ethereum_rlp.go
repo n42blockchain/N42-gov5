@@ -94,7 +94,7 @@ func DecodeEthereumTransaction(data []byte) (*Transaction, error) {
 		if err := rlp.DecodeBytes(data, &dec); err != nil {
 			return nil, err
 		}
-		return newTxOwned(&LegacyTx{
+		return NewTxOwned(&LegacyTx{
 			Nonce:    dec.Nonce,
 			GasPrice: dec.GasPrice,
 			Gas:      dec.Gas,
@@ -114,7 +114,7 @@ func DecodeEthereumTransaction(data []byte) (*Transaction, error) {
 		if err := rlp.DecodeBytes(payload, &dec); err != nil {
 			return nil, err
 		}
-		return newTxOwned(&AccessListTx{
+		return NewTxOwned(&AccessListTx{
 			ChainID:    dec.ChainID,
 			Nonce:      dec.Nonce,
 			GasPrice:   dec.GasPrice,
@@ -132,7 +132,7 @@ func DecodeEthereumTransaction(data []byte) (*Transaction, error) {
 		if err := rlp.DecodeBytes(payload, &dec); err != nil {
 			return nil, err
 		}
-		return newTxOwned(&DynamicFeeTx{
+		return NewTxOwned(&DynamicFeeTx{
 			ChainID:    dec.ChainID,
 			Nonce:      dec.Nonce,
 			GasTipCap:  dec.GasTipCap,
@@ -151,7 +151,7 @@ func DecodeEthereumTransaction(data []byte) (*Transaction, error) {
 		if err := rlp.DecodeBytes(payload, &dec); err != nil {
 			return nil, err
 		}
-		return newTxOwned(&BlobTx{
+		return NewTxOwned(&BlobTx{
 			ChainID:    dec.ChainID,
 			Nonce:      dec.Nonce,
 			GasTipCap:  dec.GasTipCap,
@@ -172,7 +172,7 @@ func DecodeEthereumTransaction(data []byte) (*Transaction, error) {
 		if err := rlp.DecodeBytes(payload, &dec); err != nil {
 			return nil, err
 		}
-		return newTxOwned(&SetCodeTx{
+		return NewTxOwned(&SetCodeTx{
 			ChainID:    dec.ChainID,
 			Nonce:      dec.Nonce,
 			GasTipCap:  dec.GasTipCap,
