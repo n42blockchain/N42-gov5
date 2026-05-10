@@ -95,6 +95,22 @@ clef:
 	$(GOBUILD) -o $(BUILD_PATH)clef ./cmd/clef
 	@echo "Done building clef."
 
+## reth-tools:                       build all reth MDBX analysis tools
+reth-tools: reth-cs-head reth-cs-timeseries reth-cs-cumulative reth-history-stats
+	@echo "reth analysis tools built into $(BUILD_PATH)"
+
+reth-cs-head:
+	$(GOBUILD) -o $(BUILD_PATH)reth-cs-head ./cmd/reth-cs-head
+
+reth-cs-timeseries:
+	$(GOBUILD) -o $(BUILD_PATH)reth-cs-timeseries ./cmd/reth-cs-timeseries
+
+reth-cs-cumulative:
+	$(GOBUILD) -o $(BUILD_PATH)reth-cs-cumulative ./cmd/reth-cs-cumulative
+
+reth-history-stats:
+	$(GOBUILD) -o $(BUILD_PATH)reth-history-stats ./cmd/reth-history-stats
+
 images:
 	@echo "docker images build ..."
 	DOCKER_BUILDKIT=1 docker build -t n42/n42:local .
@@ -166,7 +182,7 @@ open-output:
 
 #== mobiles end
 
-.PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef
+.PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef reth-tools reth-cs-head reth-cs-timeseries reth-cs-cumulative reth-history-stats
 .PHONY: race bench cover check install tidy help test-cover test-verbose perf-baseline
 .PHONY: version version-bump version-minor version-major maturity-smoke maturity-baseline
 .PHONY: ops-smoke interop-smoke soak-smoke release-check eest-log eest-watch eest-cycle eest-audit eest-repair
