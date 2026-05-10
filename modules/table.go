@@ -63,6 +63,24 @@ const (
 	StorageHistory   = "StorageHistory"   // address + storage_key + shard_id_u64 -> roaring bitmap - list of block where it changed
 )
 
+// Changeset V1 dictionaries: replace 20B addr / 32B codeHash inside ethexec
+// changeset blobs with 3B big-endian ids backed by these MDBX tables. Ids are
+// monotonic (assigned at intern time, never recycled). Both forward and
+// reverse maps are stored so encoding can re-use existing ids and decoding can
+// resolve ids back to raw values.
+const (
+	// CodeHashDict: codeHashID(3B BE) -> codeHash(32B). id=0 reserved for "no code".
+	CodeHashDict = "CodeHashDict"
+	// CodeHashIndex: codeHash(32B) -> codeHashID(3B BE). Reverse lookup for intern.
+	CodeHashIndex = "CodeHashIndex"
+	// AddrDict: addrID(3B BE) -> address(20B). id=0 reserved (never assigned).
+	AddrDict = "AddrDict"
+	// AddrIndex: address(20B) -> addrID(3B BE). Reverse lookup for intern.
+	AddrIndex = "AddrIndex"
+	// DictMeta: counter_key(string) -> uint32 BE. Holds "addr_next" / "codehash_next".
+	DictMeta = "DictMeta"
+)
+
 // Block
 const (
 	Headers         = "Header"                 // block_num_u64 + hash -> header
@@ -278,6 +296,12 @@ var n42Tables = []string{
 	AccountChangeSet,
 	StorageHistory,
 	StorageChangeSet,
+
+	CodeHashDict,
+	CodeHashIndex,
+	AddrDict,
+	AddrIndex,
+	DictMeta,
 
 	Headers,
 	HeaderTD,
