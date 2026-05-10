@@ -40,12 +40,27 @@ const (
 	// cidxFlag* are bitfield flags carried in the cidx header.
 	cidxFlagCompressed = 0x01 // entries are zstd-compressed (.cdat blobs)
 	cidxFlagBatchMode  = 0x02 // entries are grouped into BatchSize-item batches
+	// CidxFlagAddrIndex marks an address-keyed cidx (per-entry layout
+	// = [addr:20][fileNum:2 BE][offset:4 BE]). Consumed by the codes
+	// freezer reader/writer (see code-import2fz, codes_freezer_reader);
+	// the standard FreezerTable API does not understand this layout
+	// today, so files with this flag must be parsed with the dedicated
+	// CodesFreezerReader.
+	CidxFlagAddrIndex = 0x08
 )
 
-// cidxMagic is the 4-byte file-format identifier at the start of every
-// N42-extended cidx file. Legacy Geth-format cidx files do NOT have this
-// prefix; the open path auto-detects format by reading the first 4 bytes.
-var cidxMagic = [4]byte{'N', 'C', 'I', 'X'}
+// CidxAddrEntrySize is the byte width of one entry in an address-
+// indexed cidx (CidxFlagAddrIndex): 20-byte address + 2-byte fileNum
+// (BE) + 4-byte offset (BE).
+const CidxAddrEntrySize = 26
+
+// CidxMagic is the 4-byte file-format identifier at the start of
+// every N42-extended cidx (whether sequential- or address-indexed).
+var CidxMagic = [4]byte{'N', 'C', 'I', 'X'}
+
+// cidxMagic is an alias for CidxMagic kept for the existing internal
+// callers (line 85 / 98 of this file). New code should use CidxMagic.
+var cidxMagic = CidxMagic
 
 // cidxHeader is the in-memory representation of the on-disk cidx header.
 //

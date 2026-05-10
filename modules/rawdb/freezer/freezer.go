@@ -58,6 +58,7 @@ const (
 	TableStorageChanges = "storcs"  // blockNum → storage changeset
 	TableLeavesJournal  = "leaves"  // blockNum → trie leaf changes per block
 	TableBlockWitness   = "witness" // blockNum → minimal state access set for replay
+	TableWipes          = "wipes"   // blockNum → SELFDESTRUCT pre-wipe entries (sidecar to fill witness-replay's storcs gaps)
 )
 
 // BatchSize is the unified batch size for all freezer tables.

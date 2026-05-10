@@ -36,17 +36,22 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
+// Format identity (magic / address-indexed flag / per-entry width) lives
+// in modules/rawdb/freezer so the reader (codes_freezer_reader.go) and
+// this writer share a single source of truth.
 const (
-	cidxMagic          = "NCIX"
 	cidxHeaderSize     = 16
 	cidxVersion        = 1
 	cidxFlagCompressed = 0x01
-	cidxFlagAddrIndex  = 0x08 // address-indexed: entry = [addr:20][fileNum:2][offset:4] = 26 bytes
-	addrEntrySize      = 26   // 20 (address) + 2 (fileNum BE) + 4 (offset BE)
+	cidxFlagAddrIndex  = freezer.CidxFlagAddrIndex
+	addrEntrySize      = freezer.CidxAddrEntrySize
 	maxFileSize        = 2_000_000_000 // 2GB per cdat file
 )
+
+var cidxMagic = string(freezer.CidxMagic[:])
 
 func main() {
 	if len(os.Args) < 5 || os.Args[1] != "--db" || os.Args[3] != "--outdir" {
