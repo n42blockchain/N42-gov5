@@ -128,8 +128,19 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 			return code, nil
 		}
 	}
-	// Fallback: MDBX Code table (codeHash → bytecode).
+	// Fallback: MDBX Code table (codeHash → bytecode). When codeTx is
+	// absent the only source was codes-freezer; if it didn't have this
+	// address the caller wants a contract that we can't deliver, and
+	// silently returning nil makes the EVM treat it as an EOA — that
+	// shifts SLOAD reads off the witness stream and surfaces miles
+	// downstream as garbage account data ("nonce too high", impossible
+	// nonce values). Fail loud here, same as the post-MDBX safety net
+	// below.
 	if r.codeTx == nil {
+		if codeHash != witnessReplayEmptyCodeHash {
+			return nil, fmt.Errorf("witness-replay: bytecode for addr=%x codeHash=%x not in codes-freezer and no MDBX fallback configured — codes-freezer is incomplete; rerun code-import2fz against a full state DB or pass --datadir for MDBX Code-table fallback",
+				address[:], codeHash[:])
+		}
 		return nil, nil
 	}
 	code, err := r.codeTx.GetOne(kv.Code, codeHash[:])
