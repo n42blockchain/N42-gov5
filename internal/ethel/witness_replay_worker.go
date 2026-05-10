@@ -181,15 +181,45 @@ func replayWitnessBlock(
 		job.Body.Transactions, uncles, job.Body.Withdrawals,
 		ibs, job.BlockHashFn, job.Senders, stateWriter,
 	)
+	// IBS swallows StateReader errors via setError → savedErr; ProcessBlock
+	// itself never checks. A failing ReadAccountCode (e.g. codes-freezer
+	// missing a contract) silently coerces a contract to EOA and shifts
+	// every subsequent SLOAD off the witness stream — manifests blocks
+	// later as garbage account data ("nonce too high"). Prefer the IBS
+	// error since it's the real root cause; the ProcessBlock err is just
+	// the downstream symptom.
+	if ibsErr := ibs.Error(); ibsErr != nil {
+		if err != nil {
+			res.Err = fmt.Errorf("block %d: state reader error (downstream symptom: %v): %w", job.BlockNum, err, ibsErr)
+		} else {
+			res.Err = fmt.Errorf("block %d: state reader error swallowed by IBS: %w", job.BlockNum, ibsErr)
+		}
+		return res
+	}
 	if err != nil {
 		res.Err = fmt.Errorf("block %d: ProcessBlock: %w", job.BlockNum, err)
 		return res
 	}
 
-	if !mode.SkipVerify && result.GasUsed != job.Header.GasUsed {
-		res.Err = fmt.Errorf("block %d: gas mismatch: got %d want %d",
-			job.BlockNum, result.GasUsed, job.Header.GasUsed)
-		return res
+	if !mode.SkipVerify {
+		if result.GasUsed != job.Header.GasUsed {
+			res.Err = fmt.Errorf("block %d: gas mismatch: got %d want %d",
+				job.BlockNum, result.GasUsed, job.Header.GasUsed)
+			return res
+		}
+		// Receipt-root verification — gas-only matched but receipts diverged
+		// would slip silently otherwise. Skipped pre-Byzantium because mainnet
+		// stored a 32-byte PostState root in the receipt's first field; we
+		// only carry Status, so EthReceiptHash can't reproduce the canonical
+		// root for those blocks (same constraint Reth has — recoverable
+		// only via re-execution against full state).
+		if chainCfg.IsByzantium(job.Header.Number.Uint64()) {
+			if got := EthReceiptHash(result.Receipts); got != job.Header.ReceiptHash {
+				res.Err = fmt.Errorf("block %d: receipt root mismatch: got %s want %s",
+					job.BlockNum, got.Hex(), job.Header.ReceiptHash.Hex())
+				return res
+			}
+		}
 	}
 
 	if mode.NoOutput {
