@@ -162,7 +162,17 @@ func main() {
 	for i, u := range body.Uncles {
 		uncles[i] = u
 	}
-	result, err := ethel.ProcessBlock(chainCfg, engine, hdr, body.Transactions, uncles, body.Withdrawals, ibs, nil, senders, nil)
+	// Build BLOCKHASH resolver from the previous 256 canonical headers —
+	// matching the parallel pipeline's behavior. Without this, BLOCKHASH(n)
+	// returns zero, which can branch the EVM down a different path and
+	// shift state-read consumption, causing apparent "nonce" mismatches
+	// that are actually witness-stream misalignment, not state errors.
+	blockHashFn, err := buildBlockHashFn(*hbDir, *blockNum)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "build BLOCKHASH window:", err)
+		os.Exit(1)
+	}
+	result, err := ethel.ProcessBlock(chainCfg, engine, hdr, body.Transactions, uncles, body.Withdrawals, ibs, blockHashFn, senders, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ProcessBlock: %v\n", err)
 		os.Exit(1)
@@ -279,4 +289,57 @@ func readHeaderBody(dir string, n uint64) (*block.Header, *ethel.GethBodyResult,
 		return nil, nil, fmt.Errorf("decode geth body: %w", err)
 	}
 	return hdr, body, nil
+}
+
+// buildBlockHashFn loads the prior min(blockNum, BlockHashWindowSize)
+// canonical header hashes from dir and constructs the BLOCKHASH(n)
+// resolver matching what the parallel pipeline builds. Returns a
+// closure that always returns Hash{} for n outside the [block-256,
+// block-1] window. For block 0 returns a closure that always returns
+// Hash{} (no ancestors).
+func buildBlockHashFn(dir string, blockNum uint64) (func(uint64) types.Hash, error) {
+	if blockNum == 0 {
+		return ethel.MakeBlockHashFn(0, nil), nil
+	}
+	window := uint64(ethel.BlockHashWindowSize)
+	if blockNum < window {
+		window = blockNum
+	}
+	start := blockNum - window
+	recent := make([]types.Hash, 0, window)
+	// Two source flavors share the same column/freezer machinery; reuse
+	// readHeaderBody's branch by reading just the header for each n.
+	if _, err := os.Stat(filepath.Join(dir, "headerc.cidx")); err == nil {
+		hr, err := ethel.OpenHeaderCompact(dir)
+		if err != nil {
+			return nil, fmt.Errorf("open headerc: %w", err)
+		}
+		defer hr.Close()
+		for n := start; n < blockNum; n++ {
+			h, err := hr.ReadHeader(n)
+			if err != nil {
+				return nil, fmt.Errorf("headerc %d: %w", n, err)
+			}
+			recent = append(recent, h.Hash())
+		}
+		return ethel.MakeBlockHashFn(blockNum, recent), nil
+	}
+	// geth ancient
+	f, err := freezer.NewReadOnly(dir)
+	if err != nil {
+		return nil, fmt.Errorf("open geth freezer: %w", err)
+	}
+	defer f.Close()
+	for n := start; n < blockNum; n++ {
+		hData, err := f.Ancient(freezer.TableHeaders, n)
+		if err != nil {
+			return nil, fmt.Errorf("geth header %d: %w", n, err)
+		}
+		hdr, err := ethel.DecodeGethHeader(hData)
+		if err != nil {
+			return nil, fmt.Errorf("decode geth header %d: %w", n, err)
+		}
+		recent = append(recent, hdr.Hash())
+	}
+	return ethel.MakeBlockHashFn(blockNum, recent), nil
 }

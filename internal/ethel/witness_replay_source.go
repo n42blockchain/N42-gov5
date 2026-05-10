@@ -163,15 +163,22 @@ func (s *n42CompactSource) close() {
 	s.br.Close()
 }
 
-// blockHashWindowSize is the EVM BLOCKHASH look-back window per
+// BlockHashWindowSize is the EVM BLOCKHASH look-back window per
 // yellow paper H.2 (1..256 ancestors only).
-const blockHashWindowSize = 256
+const BlockHashWindowSize = 256
+const blockHashWindowSize = BlockHashWindowSize // internal alias retained for existing callers
 
-// makeBlockHashFn builds a BLOCKHASH resolver from a snapshot of the
+// MakeBlockHashFn builds a BLOCKHASH resolver from a snapshot of the
 // most recent canonical hashes. recent[i] = hash of block (currentBlock
 // - len(recent) + i). The closure does pure index lookup — safe to
-// call from any goroutine, no source access. Caller (feedBlocks) is
-// expected to maintain the sliding window single-threaded.
+// call from any goroutine, no source access. Exported so single-block
+// tools (e.g. witness-block-trace) can build the same resolver shape
+// the parallel pipeline uses.
+func MakeBlockHashFn(currentBlock uint64, recent []types.Hash) func(uint64) types.Hash {
+	return makeBlockHashFn(currentBlock, recent)
+}
+
+// makeBlockHashFn — see MakeBlockHashFn doc.
 func makeBlockHashFn(currentBlock uint64, recent []types.Hash) func(uint64) types.Hash {
 	snap := make([]types.Hash, len(recent))
 	copy(snap, recent)
