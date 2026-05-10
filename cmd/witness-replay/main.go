@@ -20,6 +20,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
@@ -52,7 +53,8 @@ func main() {
 			&cli.StringFlag{Name: "input-headers-bodies", Usage: "Freezer dir with headers + bodies tables", Required: true},
 			&cli.StringFlag{Name: "input-witness", Usage: "Freezer dir with block_witness table (may equal input-headers-bodies)"},
 			&cli.StringFlag{Name: "output", Usage: "Freezer dir for acctcs/storcs/receipts/witness output", Required: true},
-			&cli.StringFlag{Name: "datadir", Usage: "MDBX datadir holding the Code table (and target for rebuild-state)", Required: true},
+			&cli.StringFlag{Name: "datadir", Usage: "MDBX datadir holding the Code table (and target for rebuild-state). Optional when --codes-freezer is provided."},
+			&cli.StringFlag{Name: "codes-freezer", Usage: "Optional dir with codes.cidx + codes.NNNN.cdat (produced by code-import2fz). Address-indexed bytecode source — works from genesis without an MDBX. Auto-detects <input-headers-bodies>/codes.cidx if not specified."},
 			&cli.StringFlag{Name: "senders", Usage: "Optional pre-computed senders freezer dir (avoids ecrecover)"},
 			&cli.Uint64Flag{Name: "start", Value: 0, Usage: "Start block (inclusive)"},
 			&cli.Uint64Flag{Name: "end", Value: 0, Usage: "End block (exclusive); 0 = all available witness items"},
@@ -97,18 +99,43 @@ func run(c *cli.Context) error {
 	// guaranteed-correct. 32K entries × ~12KB avg ≈ 400MB worst case.
 	ethel.GlobalBytecodeCache = ethel.NewBytecodeCache(32768)
 
-	logger := log2.New()
-	codeDB, err := mdbx.NewMDBX(logger).
-		Path(datadir).
-		Label(kv.ChainDB).
-		Accede().
-		Readonly().
-		MapSize(4 * datasize.TB).
-		Open(context.Background())
-	if err != nil {
-		return fmt.Errorf("open Code MDBX: %w", err)
+	// Resolve codes-freezer: explicit flag wins; otherwise auto-detect
+	// <hbPath>/codes.cidx.
+	codesDir := c.String("codes-freezer")
+	if codesDir == "" {
+		if _, err := os.Stat(filepath.Join(hbPath, "codes.cidx")); err == nil {
+			codesDir = hbPath
+			log.Info("Codes freezer auto-detected", "dir", codesDir)
+		}
 	}
-	defer codeDB.Close()
+
+	// MDBX is now optional: skip when --datadir is empty, or when the
+	// codes-freezer is set and the MDBX doesn't exist (avoids the
+	// "Accede can't create" failure mode that bit users replaying
+	// from-genesis into a fresh output dir).
+	logger := log2.New()
+	var codeDB kv.RoDB
+	if datadir != "" {
+		_, statErr := os.Stat(filepath.Join(datadir, "mdbx.dat"))
+		if statErr == nil {
+			db, err := mdbx.NewMDBX(logger).
+				Path(datadir).
+				Label(kv.ChainDB).
+				Accede().
+				Readonly().
+				MapSize(4 * datasize.TB).
+				Open(context.Background())
+			if err != nil {
+				return fmt.Errorf("open Code MDBX: %w", err)
+			}
+			defer db.Close()
+			codeDB = db
+		} else if codesDir == "" {
+			return fmt.Errorf("--datadir %q has no mdbx.dat and no --codes-freezer was provided; supply one or the other for bytecode lookup", datadir)
+		} else {
+			log.Info("MDBX absent at --datadir; using codes-freezer only", "datadir", datadir)
+		}
+	}
 
 	chainCfg := params.EthereumMainnetChainConfig
 	engine := ethel.NewEthReplayEngine(chainCfg)
@@ -128,6 +155,7 @@ func run(c *cli.Context) error {
 		WriteWitness:      c.Bool("write-witness"),
 		ChainCfg:          chainCfg,
 		Engine:            engine,
+		CodesFreezerDir:   codesDir,
 	}
 
 	log.Info("Witness replay configured",

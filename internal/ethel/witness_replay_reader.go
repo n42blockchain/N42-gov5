@@ -11,18 +11,28 @@
 package ethel
 
 import (
+	"fmt"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 )
 
 // WitnessReplayReader implements modules/state.StateReader against a
-// witness byte stream + an MDBX RoTx for the Code table. Not
-// goroutine-safe — each worker holds its own.
+// witness byte stream + a code source. The code source is either an
+// MDBX RoTx (codeHash → bytecode lookup) or a CodesFreezerReader
+// (address → bytecode lookup, address-indexed cidx). Not goroutine-
+// safe — each worker holds its own.
+//
+// codes (freezer) is preferred when set: it's address-indexed so it
+// works even when account data is incomplete, and it's self-contained
+// so witness-replay doesn't need a populated MDBX Code table.
 type WitnessReplayReader struct {
 	stream []byte
 	pos    int
-	codeTx kv.Tx
+	codeTx kv.Tx               // MDBX Code table (codeHash → code), optional
+	codes  *CodesFreezerReader // freezer codes.cidx (addr → code), optional
 	// scratch is reused across ReadAccountData calls. All call sites
 	// in IntraBlockState do data.Copy(scratch) before the next read,
 	// so the returned pointer never aliases stale state. Saves ~5-10K
@@ -32,6 +42,13 @@ type WitnessReplayReader struct {
 
 func NewWitnessReplayReader(stream []byte, codeTx kv.Tx) *WitnessReplayReader {
 	return &WitnessReplayReader{stream: stream, codeTx: codeTx}
+}
+
+// SetCodesFreezer attaches an address-indexed code source. The reader
+// then looks up bytecode via codes-freezer first, falling back to the
+// MDBX codeTx only if codes-freezer is absent.
+func (r *WitnessReplayReader) SetCodesFreezer(codes *CodesFreezerReader) {
+	r.codes = codes
 }
 
 // Reset rebinds the reader to a new witness stream and clears the read
@@ -81,13 +98,38 @@ func (r *WitnessReplayReader) ReadAccountStorage(address types.Address, key *typ
 }
 
 func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
-	if r.codeTx == nil {
-		return nil, nil
-	}
+	// Cache hit (process-wide) — codeHash key. Same key for both code
+	// sources because content-addressing is universal.
 	if GlobalBytecodeCache != nil {
 		if code, ok := GlobalBytecodeCache.Get(codeHash); ok {
 			return code, nil
 		}
+	}
+	// Codes-freezer (address-indexed) is tried first when configured.
+	// Verify keccak256(stored)==codeHash so a stale or mis-keyed entry
+	// surfaces as an error instead of being silently treated as an EOA
+	// (which would otherwise drift gas by the missing fallback cost).
+	// MDBX has the same content-addressing property by definition (key
+	// IS the codeHash) so the fallback below skips the verify.
+	if r.codes != nil {
+		code, err := r.codes.LookupByAddress(address)
+		if err != nil {
+			return nil, fmt.Errorf("codes-freezer: %w", err)
+		}
+		if len(code) > 0 {
+			if h := crypto.Keccak256Hash(code); h != codeHash {
+				return nil, fmt.Errorf("codes-freezer: stale entry for addr=%x — stored bytecode hashes to %x but witness expects %x; rerun code-import2fz against an up-to-date state DB",
+					address[:], h[:], codeHash[:])
+			}
+			if GlobalBytecodeCache != nil {
+				GlobalBytecodeCache.Put(codeHash, code)
+			}
+			return code, nil
+		}
+	}
+	// Fallback: MDBX Code table (codeHash → bytecode).
+	if r.codeTx == nil {
+		return nil, nil
 	}
 	code, err := r.codeTx.GetOne(kv.Code, codeHash[:])
 	if err != nil {

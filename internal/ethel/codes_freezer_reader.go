@@ -1,0 +1,212 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+//
+// codes_freezer_reader.go — read-only access to the codes.cidx +
+// codes.NNNN.cdat layout produced by code-import2fz. The freezer is
+// address-indexed (binary search by 20B address) with each bytecode
+// individually zstd-compressed. Use as a self-contained code source
+// for witness-replay so the worker doesn't need an MDBX with the
+// (often-incomplete) Code table populated.
+
+package ethel
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+	"sync/atomic"
+
+	"github.com/klauspost/compress/zstd"
+
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+)
+
+// maxCodesFiles caps the number of cdat segments. Each entry is a
+// fileNum (uint16, 0..65535) but in practice the writer rotates at
+// 2 GB per file so a 24M-block mainnet snapshot fits in <10 files.
+// Sized to 256 to leave headroom without blowing up the array.
+const maxCodesFiles = 256
+
+// codesCidxHeaderSize is the on-disk header size shared with the writer
+// in cmd/code-import2fz. Magic + per-entry width come from the freezer
+// package so reader and writer can't drift.
+const codesCidxHeaderSize = 16
+
+type codesEntry struct {
+	addr    [20]byte
+	fileNum uint16
+	offset  uint32
+}
+
+// CodesFreezerReader reads bytecode by address from a codes.cidx +
+// codes.NNNN.cdat layout.
+//
+// Hot-path lookups are lock-free: file handles and sizes live in
+// fixed-size atomic.Pointer / atomic.Int64 arrays indexed by fileNum
+// (writer rotates at 2 GB so 24M-block mainnet fits in <10 files).
+// openMu serialises the rare cold-open path. zstd.Decoder.DecodeAll
+// is goroutine-safe.
+type CodesFreezerReader struct {
+	dir     string
+	entries []codesEntry // sorted by addr ascending
+	files   [maxCodesFiles]atomic.Pointer[os.File]
+	sizes   [maxCodesFiles]atomic.Int64
+	openMu  sync.Mutex // guards the cold-open path only
+	zstdDec *zstd.Decoder
+}
+
+// NewCodesFreezerReader opens the codes.cidx file in dir and loads its
+// entire address index into memory (one entry = 26 B; 1M contracts ≈
+// 26 MB resident). Bytecode files codes.NNNN.cdat are opened lazily on
+// first read.
+func NewCodesFreezerReader(dir string) (*CodesFreezerReader, error) {
+	cidxPath := filepath.Join(dir, "codes.cidx")
+	f, err := os.Open(cidxPath)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", cidxPath, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() < codesCidxHeaderSize {
+		return nil, fmt.Errorf("codes.cidx too small: %d bytes", info.Size())
+	}
+	var header [codesCidxHeaderSize]byte
+	if _, err := io.ReadFull(f, header[:]); err != nil {
+		return nil, fmt.Errorf("read header: %w", err)
+	}
+	if [4]byte{header[0], header[1], header[2], header[3]} != freezer.CidxMagic {
+		return nil, fmt.Errorf("codes.cidx: bad magic %q (expected %q)", string(header[:4]), string(freezer.CidxMagic[:]))
+	}
+	body, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read entries: %w", err)
+	}
+	if len(body)%freezer.CidxAddrEntrySize != 0 {
+		return nil, fmt.Errorf("codes.cidx: body size %d not multiple of %d", len(body), freezer.CidxAddrEntrySize)
+	}
+	n := len(body) / freezer.CidxAddrEntrySize
+	entries := make([]codesEntry, n)
+	for i := 0; i < n; i++ {
+		off := i * freezer.CidxAddrEntrySize
+		copy(entries[i].addr[:], body[off:off+20])
+		entries[i].fileNum = binary.BigEndian.Uint16(body[off+20 : off+22])
+		entries[i].offset = binary.BigEndian.Uint32(body[off+22 : off+26])
+	}
+	dec, err := zstd.NewReader(nil)
+	if err != nil {
+		return nil, fmt.Errorf("zstd reader: %w", err)
+	}
+	return &CodesFreezerReader{
+		dir:     dir,
+		entries: entries,
+		zstdDec: dec,
+	}, nil
+}
+
+// Close releases all open data files and the zstd decoder.
+func (r *CodesFreezerReader) Close() {
+	for i := range r.files {
+		if f := r.files[i].Swap(nil); f != nil {
+			f.Close()
+		}
+	}
+	if r.zstdDec != nil {
+		r.zstdDec.Close()
+		r.zstdDec = nil
+	}
+}
+
+// Items returns the number of contracts in the index (for diagnostics).
+func (r *CodesFreezerReader) Items() int { return len(r.entries) }
+
+// LookupByAddress returns the bytecode for addr, or nil if not present.
+func (r *CodesFreezerReader) LookupByAddress(addr types.Address) ([]byte, error) {
+	// Binary search by address.
+	idx := sort.Search(len(r.entries), func(i int) bool {
+		return bytes.Compare(r.entries[i].addr[:], addr[:]) >= 0
+	})
+	if idx >= len(r.entries) {
+		return nil, nil
+	}
+	e := r.entries[idx]
+	if e.addr != addr {
+		return nil, nil
+	}
+	// End offset: the start of the NEXT entry IF same file, else the
+	// current file's size (this entry is the last in its file).
+	var endOffset int64
+	if idx+1 < len(r.entries) && r.entries[idx+1].fileNum == e.fileNum {
+		endOffset = int64(r.entries[idx+1].offset)
+	} else {
+		sz, err := r.fileSize(e.fileNum)
+		if err != nil {
+			return nil, err
+		}
+		endOffset = sz
+	}
+	size := endOffset - int64(e.offset)
+	if size <= 0 {
+		return nil, fmt.Errorf("codes-freezer: bad size %d for addr %x (file=%d offset=%d end=%d)",
+			size, addr[:], e.fileNum, e.offset, endOffset)
+	}
+	f, err := r.openFile(e.fileNum)
+	if err != nil {
+		return nil, err
+	}
+	compressed := make([]byte, size)
+	if _, err := f.ReadAt(compressed, int64(e.offset)); err != nil {
+		return nil, fmt.Errorf("codes-freezer: read cdat %d at %d: %w", e.fileNum, e.offset, err)
+	}
+	// Decompress. zstd.Decoder.DecodeAll is goroutine-safe.
+	decoded, err := r.zstdDec.DecodeAll(compressed, nil)
+	if err != nil {
+		return nil, fmt.Errorf("codes-freezer: decompress addr %x: %w", addr[:], err)
+	}
+	return decoded, nil
+}
+
+func (r *CodesFreezerReader) openFile(num uint16) (*os.File, error) {
+	if int(num) >= maxCodesFiles {
+		return nil, fmt.Errorf("codes-freezer: fileNum %d exceeds maxCodesFiles=%d", num, maxCodesFiles)
+	}
+	if f := r.files[num].Load(); f != nil {
+		return f, nil
+	}
+	r.openMu.Lock()
+	defer r.openMu.Unlock()
+	if f := r.files[num].Load(); f != nil {
+		return f, nil
+	}
+	name := filepath.Join(r.dir, fmt.Sprintf("codes.%04d.cdat", num))
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", name, err)
+	}
+	r.files[num].Store(f)
+	return f, nil
+}
+
+func (r *CodesFreezerReader) fileSize(num uint16) (int64, error) {
+	if int(num) >= maxCodesFiles {
+		return 0, fmt.Errorf("codes-freezer: fileNum %d exceeds maxCodesFiles=%d", num, maxCodesFiles)
+	}
+	if sz := r.sizes[num].Load(); sz > 0 {
+		return sz, nil
+	}
+	name := filepath.Join(r.dir, fmt.Sprintf("codes.%04d.cdat", num))
+	info, err := os.Stat(name)
+	if err != nil {
+		return 0, err
+	}
+	r.sizes[num].Store(info.Size())
+	return info.Size(), nil
+}
