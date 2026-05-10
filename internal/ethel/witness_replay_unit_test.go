@@ -11,6 +11,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 )
 
@@ -77,10 +78,11 @@ func TestWitnessReplayReader_AbsentEntries(t *testing.T) {
 
 // TestWitnessReplayReader_CodeFromMDBX confirms the asymmetric source
 // for code: witness omits it, the reader pulls from the supplied
-// kv.Tx's Code table.
+// kv.Tx's Code table. The reader verifies keccak256(value) matches
+// the codeHash key, so the test stores under the correct hash.
 func TestWitnessReplayReader_CodeFromMDBX(t *testing.T) {
-	codeHash := types.HexToHash("0x000000000000000000000000000000000000000000000000000000000000c0de")
 	bytecode := []byte{0x60, 0x80, 0x60, 0x40, 0x52}
+	codeHash := crypto.Keccak256Hash(bytecode)
 
 	db := memdb.New(t.TempDir())
 	t.Cleanup(db.Close)

@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/c2h5oh/datasize"
 
@@ -42,16 +43,27 @@ func main() {
 	hbDir := flag.String("hb-dir", "", "headers+bodies freezer dir (headerc/bodyc or geth)")
 	witnessDir := flag.String("witness-dir", "", "block_witness freezer dir (defaults to hb-dir)")
 	receiptsDir := flag.String("receipts-dir", "", "canonical receipts freezer dir (optional, for compare)")
-	datadir := flag.String("datadir", "", "MDBX datadir with Code table")
+	datadir := flag.String("datadir", "", "MDBX datadir with Code table (optional when --codes-freezer is set)")
+	codesDir := flag.String("codes-freezer", "", "Optional codes.cidx + codes.NNNN.cdat dir (auto-detects <hb-dir>/codes.cidx)")
 	sendersDir := flag.String("senders-dir", "", "pre-computed senders freezer (optional)")
 	blockNum := flag.Uint64("block", 0, "block to trace")
 	flag.Parse()
-	if *hbDir == "" || *datadir == "" || *blockNum == 0 {
-		fmt.Fprintln(os.Stderr, "usage: --hb-dir D --datadir D --block N [--witness-dir D] [--receipts-dir D] [--senders-dir D]")
+	if *hbDir == "" || *blockNum == 0 {
+		fmt.Fprintln(os.Stderr, "usage: --hb-dir D --block N [--datadir D] [--codes-freezer D] [--witness-dir D] [--receipts-dir D] [--senders-dir D]")
 		os.Exit(1)
 	}
 	if *witnessDir == "" {
 		*witnessDir = *hbDir
+	}
+	// Auto-detect codes.cidx in hb-dir.
+	if *codesDir == "" {
+		if _, err := os.Stat(filepath.Join(*hbDir, "codes.cidx")); err == nil {
+			*codesDir = *hbDir
+		}
+	}
+	if *datadir == "" && *codesDir == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: provide either --datadir (MDBX with Code table) or --codes-freezer (codes.cidx dir)")
+		os.Exit(1)
 	}
 
 	modules.N42Init()
@@ -85,20 +97,37 @@ func main() {
 	}
 	fmt.Printf("witness: %d bytes\n", len(witnessData))
 
-	// 3. Open Code MDBX read-only.
+	// 3. Open Code MDBX read-only (optional when --codes-freezer is set).
 	logger := log2.New()
-	codeDB, err := mdbx.NewMDBX(logger).Path(*datadir).Label(kv.ChainDB).Accede().Readonly().MapSize(4 * datasize.TB).Open(context.Background())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "open mdbx:", err)
-		os.Exit(1)
+	var codeTx kv.Tx
+	if *datadir != "" {
+		if _, statErr := os.Stat(filepath.Join(*datadir, "mdbx.dat")); statErr == nil {
+			codeDB, err := mdbx.NewMDBX(logger).Path(*datadir).Label(kv.ChainDB).Accede().Readonly().MapSize(4 * datasize.TB).Open(context.Background())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "open mdbx:", err)
+				os.Exit(1)
+			}
+			defer codeDB.Close()
+			codeTx, err = codeDB.BeginRo(context.Background())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "ro tx:", err)
+				os.Exit(1)
+			}
+			defer codeTx.Rollback()
+		}
 	}
-	defer codeDB.Close()
-	codeTx, err := codeDB.BeginRo(context.Background())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ro tx:", err)
-		os.Exit(1)
+	// 3b. Open codes-freezer (optional).
+	var codesReader *ethel.CodesFreezerReader
+	if *codesDir != "" {
+		var err error
+		codesReader, err = ethel.NewCodesFreezerReader(*codesDir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "open codes-freezer:", err)
+			os.Exit(1)
+		}
+		defer codesReader.Close()
+		fmt.Printf("codes-freezer: %d entries\n", codesReader.Items())
 	}
-	defer codeTx.Rollback()
 
 	// 4. Senders (optional).
 	var senders []types.Address
@@ -123,6 +152,9 @@ func main() {
 
 	// 5. Replay through witness.
 	r := ethel.NewWitnessReplayReader(witnessData, codeTx)
+	if codesReader != nil {
+		r.SetCodesFreezer(codesReader)
+	}
 	ibs := state.New(r)
 	chainCfg := params.EthereumMainnetChainConfig
 	engine := ethel.NewEthReplayEngine(chainCfg)
