@@ -61,26 +61,33 @@ type ReplayMode struct {
 
 // runWitnessWorker pulls jobs from blockCh, replays each, pushes
 // WitnessResult to resultCh. Returns when blockCh closes or ctx
-// cancels.
+// cancels. codeDB and codes are alternative bytecode sources;
+// pass nil for either to disable that source. At least one must be
+// non-nil for contract execution to work.
 func runWitnessWorker(
 	ctx context.Context,
 	id int,
 	blockCh <-chan WitnessJob,
 	resultCh chan<- WitnessResult,
 	codeDB kv.RoDB,
+	codes *CodesFreezerReader,
 	chainCfg *params.ChainConfig,
 	engine consensus.Engine,
 	mode ReplayMode,
 ) {
-	codeTx, err := codeDB.BeginRo(ctx)
-	if err != nil {
-		select {
-		case resultCh <- WitnessResult{Err: fmt.Errorf("worker %d: BeginRo: %w", id, err)}:
-		case <-ctx.Done():
+	var codeTx kv.Tx
+	if codeDB != nil {
+		var err error
+		codeTx, err = codeDB.BeginRo(ctx)
+		if err != nil {
+			select {
+			case resultCh <- WitnessResult{Err: fmt.Errorf("worker %d: BeginRo: %w", id, err)}:
+			case <-ctx.Done():
+			}
+			return
 		}
-		return
+		defer codeTx.Rollback()
 	}
-	defer codeTx.Rollback()
 
 	// One IBS per worker, reused across blocks via Reset + SetStateReader.
 	// Without reuse, every block allocated a fresh IBS plus a fresh
@@ -90,6 +97,9 @@ func runWitnessWorker(
 	// pool. Reset returns objects to pool before the next block touches
 	// them, so the pool actually recycles.
 	reader := NewWitnessReplayReader(nil, codeTx)
+	if codes != nil {
+		reader.SetCodesFreezer(codes)
+	}
 	ibs := state.New(reader)
 
 	// Select on ctx during receive so workers exit promptly when the

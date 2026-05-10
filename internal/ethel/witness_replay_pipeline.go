@@ -86,6 +86,13 @@ type WitnessReplayConfig struct {
 
 	ChainCfg *params.ChainConfig
 	Engine   consensus.Engine
+
+	// CodesFreezerDir, if set, points to a freezer dir containing
+	// codes.cidx + codes.NNNN.cdat (produced by code-import2fz). The
+	// reader uses it as the address-indexed bytecode source — works
+	// from genesis and doesn't require a populated MDBX Code table.
+	// When both this and codeDB are set, codes-freezer takes precedence.
+	CodesFreezerDir string
 }
 
 // witnessAggregateState owns the outputBatcher and is the only thing
@@ -204,12 +211,30 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Optional address-indexed codes source. When present, workers
+	// look up bytecode by address (binary-search the cidx) without
+	// needing the MDBX Code table — important when starting from
+	// genesis where MDBX state is empty.
+	var codesReader *CodesFreezerReader
+	if cfg.CodesFreezerDir != "" {
+		var err error
+		codesReader, err = NewCodesFreezerReader(cfg.CodesFreezerDir)
+		if err != nil {
+			return fmt.Errorf("open codes-freezer at %s: %w", cfg.CodesFreezerDir, err)
+		}
+		defer codesReader.Close()
+		log.Info("Codes freezer attached", "dir", cfg.CodesFreezerDir, "items", codesReader.Items())
+	}
+	if codesReader == nil && codeDB == nil {
+		return fmt.Errorf("witnessreplay: at least one of --codes-freezer or --datadir (with populated Code table) is required")
+	}
+
 	var wg sync.WaitGroup
 	for i := 0; i < cfg.Workers; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			runWitnessWorker(ctx, id, blockCh, resultCh, codeDB, cfg.ChainCfg, cfg.Engine,
+			runWitnessWorker(ctx, id, blockCh, resultCh, codeDB, codesReader, cfg.ChainCfg, cfg.Engine,
 				ReplayMode{SkipVerify: cfg.SkipVerify, NoOutput: cfg.NoOutput})
 		}(i)
 	}
