@@ -106,11 +106,12 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 		}
 	}
 	// Codes-freezer (address-indexed) is tried first when configured.
-	// Verify keccak256(stored)==codeHash so a stale or mis-keyed entry
-	// surfaces as an error instead of being silently treated as an EOA
-	// (which would otherwise drift gas by the missing fallback cost).
-	// MDBX has the same content-addressing property by definition (key
-	// IS the codeHash) so the fallback below skips the verify.
+	// Both sources verify keccak256(stored)==codeHash on cache miss
+	// — a corrupt or mis-keyed entry surfaces as a hard error instead
+	// of being silently treated as an EOA, which would otherwise drift
+	// gas by the missing fallback cost. The verify cost is bounded by
+	// the cache eviction rate (touched contracts × keccak256 ≈ a few
+	// seconds total over a 24M-block replay).
 	if r.codes != nil {
 		code, err := r.codes.LookupByAddress(address)
 		if err != nil {
@@ -135,6 +136,18 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 	if err != nil {
 		return nil, err
 	}
+	if len(code) > 0 {
+		// Verify even on the codeHash-keyed MDBX path. The key IS
+		// supposed to be keccak256(value), but real-world Code tables
+		// can be corrupt (a writer bug or aborted commit can leave
+		// (key=hash_X, value=code_for_hash_Y) entries — observed on
+		// block 14530048 tx 43 → 40-gas drift). Verifying here turns
+		// silent EVM-treats-contract-as-EOA into a loud failure.
+		if h := crypto.Keccak256Hash(code); h != codeHash {
+			return nil, fmt.Errorf("mdbx code: corrupt entry for codeHash=%x — stored value hashes to %x; codeDB at --datadir is corrupt and silently coercing the EVM into EOA-mode for this contract (40-gas-style drift)",
+				codeHash[:], h[:])
+		}
+	}
 	if GlobalBytecodeCache != nil && len(code) > 0 {
 		// MDBX returns a slice into mmap memory; copy before
 		// caching so the slice survives RoTx rotation.
@@ -143,8 +156,23 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 		GlobalBytecodeCache.Put(codeHash, cached)
 		return cached, nil
 	}
+	// Final safety net: caller passed a non-empty codeHash but neither
+	// source has the bytecode. The IBS Code() method already short-
+	// circuits emptyCodeHash before calling here (state_object.go:401),
+	// so reaching this point with code==nil means we'd silently treat a
+	// real contract as an EOA — exactly the failure mode that produced
+	// the 40-gas drift on block 14530048 tx 43. Fail loud instead.
+	if len(code) == 0 && codeHash != witnessReplayEmptyCodeHash {
+		return nil, fmt.Errorf("witness-replay: bytecode for codeHash=%x not found in codes-freezer or mdbx — both code sources are incomplete; populate codes-freezer (run code-import2fz against a full state DB) or fix the codeDB",
+			codeHash[:])
+	}
 	return code, nil
 }
+
+// witnessReplayEmptyCodeHash mirrors common/account.emptyCodeHash so we
+// don't have to import a private symbol just for one comparison. It is
+// keccak256(nil), the codeHash of any code-less account.
+var witnessReplayEmptyCodeHash = crypto.Keccak256Hash(nil)
 
 func (r *WitnessReplayReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	code, err := r.ReadAccountCode(address, codeHash)
