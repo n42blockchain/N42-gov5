@@ -210,6 +210,7 @@ func main() {
 					&cli.BoolFlag{Name: "evm-from-fallback", Usage: "After any EVM fallback, run EVM for every remaining block instead of trusting downstream freezer changesets"},
 					&cli.BoolFlag{Name: "persist-trie", Usage: "After reaching end block, populate HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage so subsequent per-block verify (verify-incremental) runs in O(dirty)"},
 					&cli.Uint64Flag{Name: "dirty-space-gb", Usage: "MDBX dirty-page pool size in GB. Default 2. Raise to 32+ for --persist-trie at 10M+ blocks; BootstrapHPH writes 100B+ rows in a single tx and the 2GB default overflows with MDBX_MAP_FULL", Value: 2},
+					&cli.StringFlag{Name: "wipes-sidecar", Usage: "Optional freezer dir containing a wipes.cdat sidecar produced by storcs-extract-wipes. Required when rebuilding from witness-replay output, which lacks SELFDESTRUCT pre-wipe entries. Auto-detects <leaves>/wipes.cidx if not specified."},
 					// --track-addr is defined at the app level (execFlags); see run()
 					// for the SetTrackedAddr wiring. urfave/cli treats app-level flags
 					// as global so subcommands can read them via c.String("track-addr")
@@ -1542,6 +1543,16 @@ func runRebuildState(c *cli.Context) error {
 	}
 	defer inputF.Close()
 
+	// Resolve wipes sidecar: explicit flag wins; otherwise auto-detect
+	// <leavesDir>/wipes.cidx and use that dir when present.
+	wipesSidecar := c.String("wipes-sidecar")
+	if wipesSidecar == "" {
+		if _, statErr := os.Stat(filepath.Join(leavesDir, freezer.TableWipes+".cidx")); statErr == nil {
+			wipesSidecar = leavesDir
+			log.Info("Wipes sidecar auto-detected", "dir", wipesSidecar)
+		}
+	}
+
 	opts := ethel.RebuildOptions{
 		StartBlock:      startBlock,
 		VerifyInterval:  verifyInterval,
@@ -1550,6 +1561,7 @@ func runRebuildState(c *cli.Context) error {
 		GethFreezer:     inputF,
 		EVMFromFallback: evmFromFallback,
 		PersistTrie:     persistTrie,
+		WipesSidecarDir: wipesSidecar,
 	}
 	if err := ethel.RebuildStateWith(ctx, db, leavesDir, endBlock, opts); err != nil {
 		return err
