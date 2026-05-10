@@ -75,6 +75,16 @@ type RebuildOptions struct {
 	// per-block verify (e.g. ethexec verify-incremental) can run in
 	// O(dirty) instead of O(state).
 	PersistTrie bool
+
+	// WipesSidecarDir — optional path to a freezer dir containing a "wipes"
+	// table produced by storcs-extract-wipes. Used to fill SELFDESTRUCT
+	// pre-wipe entries that witness-replay's storcs structurally lacks
+	// (its WitnessCapturingWriter has no MDBX state to enumerate slots
+	// from on CreateContract). Per-block: any (addr, slot) in the sidecar
+	// that's NOT already in this block's storcs is added with newVal=0
+	// (a tombstone). Sidecar entries duplicating storcs entries are
+	// silently skipped — storcs is authoritative for slots it knows about.
+	WipesSidecarDir string
 }
 
 func RebuildState(ctx context.Context, db kv.RwDB, ancientDir string, endBlock uint64) error {
@@ -108,6 +118,21 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 	defer stoTbl.Close()
 	stoTbl.ForceBatchSize(freezer.BatchSize)
 	stoTbl.SetCompressed(true)
+
+	// Optional wipes sidecar: parallel-indexed freezer table holding the
+	// per-block SELFDESTRUCT pre-wipe entries that witness-replay's storcs
+	// is structurally missing. When opened, we apply each block's sidecar
+	// entries AFTER its storcs (sidecar fills gaps, never overrides).
+	var wipesTbl *freezer.FreezerTable
+	if opts.WipesSidecarDir != "" {
+		wipesTbl, err = freezer.NewFreezerTableCompressedReadOnly(opts.WipesSidecarDir, freezer.TableWipes, "c")
+		if err != nil {
+			return fmt.Errorf("open wipes sidecar at %s: %w", opts.WipesSidecarDir, err)
+		}
+		defer wipesTbl.Close()
+		wipesTbl.ForceBatchSize(freezer.BatchSize)
+		log.Info("Wipes sidecar attached", "dir", opts.WipesSidecarDir, "items", wipesTbl.Items())
+	}
 
 	items := acctTbl.Items()
 	if items == 0 {
@@ -374,6 +399,10 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 				// own entry here.
 				inner[slot] = e.NewValue
 			}
+		}
+
+		if err := applyWipesSidecar(wipesTbl, blockNum, storMap); err != nil {
+			return err
 		}
 
 		// Periodic verify: at blockNum where (blockNum+1) % VerifyInterval == 0
@@ -850,5 +879,45 @@ func rebuildEVMFallback(ctx context.Context, db kv.RwDB, opts RebuildOptions, bl
 	}
 
 	log.Info("EVM fallback complete", "block", blockNum, "gasUsed", result.GasUsed, "txs", len(body.Transactions))
+	return nil
+}
+
+// applyWipesSidecar backfills SELFDESTRUCT pre-wipe entries that the
+// upstream storcs lacks (witness-replay's output omits them because
+// WitnessCapturingWriter has no MDBX state to enumerate slots from on
+// CreateContract). Each (addr, slot) in the sidecar is added as a
+// tombstone IFF storMap doesn't already have it — storcs wins ties
+// since it carries the authoritative new value for slots it knows
+// about. No-op when wipesTbl is nil or the block is past its end.
+func applyWipesSidecar(wipesTbl *freezer.FreezerTable, blockNum uint64, storMap map[types.Address]map[types.Hash][]byte) error {
+	if wipesTbl == nil || blockNum >= wipesTbl.Items() {
+		return nil
+	}
+	data, err := wipesTbl.Retrieve(blockNum)
+	if err != nil {
+		return fmt.Errorf("read wipes block %d: %w", blockNum, err)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	entries, err := DecodeStorageChanges(data)
+	if err != nil {
+		return fmt.Errorf("decode wipes block %d: %w", blockNum, err)
+	}
+	for _, e := range entries {
+		var addr types.Address
+		var slot types.Hash
+		copy(addr[:], e.CompositeKey[:20])
+		copy(slot[:], e.CompositeKey[20:])
+		inner, ok := storMap[addr]
+		if !ok {
+			inner = make(map[types.Hash][]byte, 8)
+			storMap[addr] = inner
+		}
+		if _, already := inner[slot]; already {
+			continue
+		}
+		inner[slot] = nil
+	}
 	return nil
 }
