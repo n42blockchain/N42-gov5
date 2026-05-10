@@ -96,7 +96,18 @@ func RebuildHashedState(tx kv.RwTx) error {
 // the parent command. Default 2 GB will overflow with MDBX_MAP_FULL.
 func RebuildHashedStateETL(ctx context.Context, tx kv.RwTx, tmpdir string, logger log2.Logger) error {
 	if tmpdir == "" {
-		dir, err := os.MkdirTemp("", "hashed-state-etl-*")
+		// ETL spill files for full-state hashing reach ~17 GB on a 14M-block
+		// chain; system %TEMP% on Windows is C:\ which routinely lacks space.
+		// Honor N42_ETL_TMPDIR before falling through to os.MkdirTemp so users
+		// can redirect to a roomier drive without wiring a flag through every
+		// caller (FullStateRootVerify, journal_verify, etc.).
+		base := os.Getenv("N42_ETL_TMPDIR")
+		if base != "" {
+			if err := os.MkdirAll(base, 0755); err != nil {
+				return fmt.Errorf("create N42_ETL_TMPDIR=%s: %w", base, err)
+			}
+		}
+		dir, err := os.MkdirTemp(base, "hashed-state-etl-*")
 		if err != nil {
 			return fmt.Errorf("mkdir tmp: %w", err)
 		}
