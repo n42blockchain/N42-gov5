@@ -90,7 +90,7 @@ func (f *asyncFlusher) waitPrev() (time.Duration, error) {
 // it's persisted via WriteProgress inside the same tx so recovery
 // observes a consistent (state, progress) pair.
 func (f *asyncFlusher) hand(blockNum uint64) error {
-	return f.handWithRemainder(blockNum, nil)
+	return f.handFull(blockNum, nil, nil)
 }
 
 // handWithRemainder is like hand but also persists changeset remainder
@@ -99,6 +99,13 @@ func (f *asyncFlusher) hand(blockNum uint64) error {
 // gaps — without writing partial batches to the freezer (which would
 // break cdat determinism).
 func (f *asyncFlusher) handWithRemainder(blockNum uint64, csRemainder map[string][]byte) error {
+	return f.handFull(blockNum, csRemainder, nil)
+}
+
+// handFull is the maximal handoff: also persists a captured DictPending
+// snapshot atomically with the state commit. dictPending may be nil (or
+// empty) for callers that don't use the changeset V1 dictionary path.
+func (f *asyncFlusher) handFull(blockNum uint64, csRemainder map[string][]byte, dictPending *DictPending) error {
 	if f.inFlight {
 		return errors.New("asyncFlusher: hand called while previous flush still pending — must waitPrev first")
 	}
@@ -120,6 +127,13 @@ func (f *asyncFlusher) handWithRemainder(blockNum uint64, csRemainder map[string
 		// Save changeset remainder in the same transaction.
 		if err == nil {
 			err = WriteCSRemainder(bgTx, csRemainder)
+		}
+		// Persist the dict pending snapshot in the same tx so a crash
+		// between freezer fsync (happened before this hand call) and
+		// MDBX commit can never leave a freezer entry referencing an
+		// id that hasn't landed in the dictionary yet.
+		if err == nil && !dictPending.IsEmpty() {
+			err = FlushPending(bgTx, dictPending)
 		}
 		if err == nil {
 			err = bgTx.Commit()

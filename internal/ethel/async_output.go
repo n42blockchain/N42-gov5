@@ -3,7 +3,7 @@
 //
 // async_output.go — background changeset encoder + freezer writer.
 //
-// Changeset encoding (EncodeAccountChanges / EncodeStorageChanges) and
+// Changeset encoding (EncodeAccountChangesV1 / EncodeStorageChangesV1) and
 // the subsequent zstd compression + disk write dominate per-block P99
 // latency (~16ms). This module moves that work to a dedicated background
 // goroutine so the main executor can start EVM execution of the next
@@ -12,6 +12,13 @@
 // Safety invariant: the new-value snapshot is captured SYNCHRONOUSLY on
 // the main goroutine (before the next block touches stateBuf), so the
 // background goroutine never accesses shared mutable state.
+//
+// Dict interning: dictionary id allocation also happens SYNCHRONOUSLY on
+// the main goroutine via BufferedDictWriter — id maps are frozen into the
+// pendingOutput so the async encoder needs only an in-memory lookup. New
+// dict assignments are persisted to MDBX at commit-interval flush time
+// (BufferedDictWriter.Flush), which is the same boundary at which freezer
+// segments are fsynced.
 
 package ethel
 
@@ -24,6 +31,36 @@ import (
 	"github.com/n42blockchain/N42/modules/changeset"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
+
+// frozenInterner is the read-only DictInterner the async encoder uses.
+// It is populated by snapshotOutputs from a BufferedDictWriter (or any
+// pre-resolved id map). Lookups never touch MDBX.
+type frozenInterner struct {
+	addrs      map[types.Address]uint32
+	codeHashes map[types.Hash]uint32
+}
+
+// Compile-time interface assertion.
+var _ DictInterner = (*frozenInterner)(nil)
+
+func (f *frozenInterner) InternAddr(addr types.Address) (uint32, error) {
+	id, ok := f.addrs[addr]
+	if !ok {
+		return 0, fmt.Errorf("frozenInterner: addr %x not pre-resolved", addr)
+	}
+	return id, nil
+}
+
+func (f *frozenInterner) InternCodeHash(h types.Hash) (uint32, error) {
+	if h == (types.Hash{}) {
+		return 0, nil
+	}
+	id, ok := f.codeHashes[h]
+	if !ok {
+		return 0, fmt.Errorf("frozenInterner: codeHash %x not pre-resolved", h)
+	}
+	return id, nil
+}
 
 // pendingOutput holds everything the background encoder needs, with no
 // references to shared mutable state. The new-value maps are snapshots
@@ -42,6 +79,13 @@ type pendingOutput struct {
 	// Snapshotted post-block values for the newValueOf callbacks.
 	accNewVals map[types.Address][]byte // addr → full account bytes + hidden current incarnation (nil = deleted)
 	stoNewVals map[[52]byte][]byte      // [addr(20)||slot(32)] → raw slot bytes (nil = zero)
+
+	// Pre-resolved dictionary ids. Built by snapshotOutputs from the main
+	// goroutine's BufferedDictWriter, so the encoder can avoid all MDBX
+	// access. Both maps include every address / codeHash referenced by
+	// the per-block changesets (old + new sides).
+	addrIDs     map[types.Address]uint32
+	codeHashIDs map[types.Hash]uint32
 
 	// Witness data (already encoded, block-scoped, safe to hand off).
 	witnessData []byte
@@ -89,20 +133,23 @@ func (w *asyncOutputWriter) process(po pendingOutput) error {
 	var accCSBytes, stoCSBytes []byte
 
 	if po.genesisAcct != nil || po.genesisSto != nil {
-		// Block 0: pre-encoded.
+		// Block 0 was pre-encoded synchronously on the main goroutine.
 		accCSBytes = po.genesisAcct
 		stoCSBytes = po.genesisSto
 	} else if po.accCS != nil || po.stoCS != nil {
-		// Encode changesets using the snapshotted new-value maps.
-		accCSBytes = EncodeAccountChanges(po.accCS, func(addr types.Address) []byte {
-			return po.accNewVals[addr]
-		})
-		stoCSBytes = EncodeStorageChanges(po.stoCS, func(addr types.Address, slot types.Hash) []byte {
-			var key [52]byte
-			copy(key[:20], addr[:])
-			copy(key[20:], slot[:])
-			return po.stoNewVals[key]
-		})
+		// V0 codec: per-block self-contained, no shared dictionary
+		// state between encoder and async writer. The V1 dict path
+		// is gated off until snapshotOutputs is wired up to pre-
+		// resolve every (addr, codeHash) it touches.
+		accCSBytes = EncodeAccountChanges(po.accCS,
+			func(addr types.Address) []byte { return po.accNewVals[addr] })
+		stoCSBytes = EncodeStorageChanges(po.stoCS,
+			func(addr types.Address, slot types.Hash) []byte {
+				var key [52]byte
+				copy(key[:20], addr[:])
+				copy(key[20:], slot[:])
+				return po.stoNewVals[key]
+			})
 	}
 
 	if err := w.batcher.addEntry(freezer.TableAccountChanges, "c", accCSBytes); err != nil {
