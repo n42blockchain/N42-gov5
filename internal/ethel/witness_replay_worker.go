@@ -150,6 +150,21 @@ func replayWitnessBlock(
 		return res
 	}
 
+	// Empty witness + non-empty body means the record-side archive doesn't
+	// cover this block (ethexec stopped before reaching it, or ran with
+	// --no-witness past some checkpoint). Without state-read values the
+	// EVM sees every account as absent (nonce=0, balance=0); the first tx
+	// fails preCheck with a confusing "nonce too high: state=0" that
+	// hides the real cause — witness truncation. Report it directly so
+	// the user knows where to rerun --end or re-record from.
+	// Empty body + empty witness is legitimate (uncle-only / withdrawal-
+	// only blocks pre-Cancun didn't read any state).
+	if len(job.Witness) == 0 && len(job.Body.Transactions) > 0 {
+		res.Err = fmt.Errorf("block %d: witness stream is empty but body has %d txs — record-side archive ends before this block (or was recorded with --no-witness); rerun with --end %d to stop at the last good block, or re-record witness up to your desired range",
+			job.BlockNum, len(job.Body.Transactions), job.BlockNum)
+		return res
+	}
+
 	// Block 0 is handled by the pipeline (genesis encoding requires a
 	// fresh chaindata, not the user's potentially-populated MDBX); the
 	// reader skips block 0 and the aggregator injects pre-encoded
