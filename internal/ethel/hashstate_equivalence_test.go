@@ -264,3 +264,38 @@ func TestRebuildHashedStateETLMatchesLegacy(t *testing.T) {
 func TestRebuildHashedStateETLMatchesLegacy_Large(t *testing.T) {
 	runEquivalence(t, seedPlainStateLarge)
 }
+
+// TestVerifyStateRoot_vs_FullStateRootVerify pins that the two MPT-root
+// implementations agree on the same Account+Storage population.
+//
+// fc83e221 swapped rebuild-state's periodic verify from VerifyStateRoot
+// (in-memory hash.MPTTrie) to FullStateRootVerify (streaming
+// FlatDBTrieLoader). These are two completely independent MPT codepaths;
+// equivalence of their HashedAccounts/HashedStorage byte content (proven
+// above) does NOT imply equivalence of the root they compute. A bug in
+// the rarely-exercised FlatDBTrieLoader edge case could explain a verify
+// that passes pre-fc83e221 and fails post-fc83e221.
+func TestVerifyStateRoot_vs_FullStateRootVerify(t *testing.T) {
+	ctx := context.Background()
+	db := memdb.New(t.TempDir())
+	defer db.Close()
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	seedPlainStateLarge(t, tx)
+
+	rootInMem, err := VerifyStateRoot(tx)
+	if err != nil {
+		t.Fatalf("VerifyStateRoot (in-memory MPT): %v", err)
+	}
+	rootETL, err := FullStateRootVerify(tx)
+	if err != nil {
+		t.Fatalf("FullStateRootVerify (streaming MPT): %v", err)
+	}
+	if rootInMem != rootETL {
+		t.Errorf("MPT-impl divergence on identical PlainState:\n  VerifyStateRoot (in-memory) = %s\n  FullStateRootVerify (streaming) = %s",
+			rootInMem.Hex(), rootETL.Hex())
+	}
+}
