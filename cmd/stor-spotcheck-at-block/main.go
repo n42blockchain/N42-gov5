@@ -35,7 +35,16 @@ const (
 )
 
 func n42Cfg(d kv.TableCfg) kv.TableCfg {
-	d[n42Sto] = kv.TableCfgItem{}
+	// modules.Storage is AutoDupSort 52→20 (physical key = addr 20B, dup
+	// value = slot 32B || raw value). Without these flags, GetOne(52B)
+	// silently misses every row — the failure mode that produced a fake
+	// "3.8M missing slots" alarm during the initial state-root diagnosis.
+	d[n42Sto] = kv.TableCfgItem{
+		Flags:                     kv.DupSort,
+		AutoDupSortKeysConversion: true,
+		DupFromLen:                52,
+		DupToLen:                  20,
+	}
 	return d
 }
 func rethCfg(d kv.TableCfg) kv.TableCfg {
