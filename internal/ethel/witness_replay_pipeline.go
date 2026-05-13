@@ -193,7 +193,12 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 			freezer.TableReceipts,
 			freezer.TableAccountChanges,
 			freezer.TableStorageChanges,
-			freezer.TableBlockWitness,
+		}
+		// Include witness in the align list only when re-emitting it.
+		// Otherwise resumes hit "gap too large" on the witness table
+		// (which the run never wrote) and refuse to start.
+		if cfg.WriteWitness {
+			witnessReplayOutputTables = append(witnessReplayOutputTables, freezer.TableBlockWitness)
 		}
 		if err := batcher.alignOnResume(witnessReplayOutputTables, cfg.StartBlock, false); err != nil {
 			return fmt.Errorf("align on resume: %w", err)
