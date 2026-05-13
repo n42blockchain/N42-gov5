@@ -318,6 +318,16 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		}
 
 		// Forward replay: apply NEW values from the V2 changesets.
+		// Wipes-sidecar runs FIRST: clearing storMap[addr] for each wiped
+		// address drops slots accumulated by prior blocks in this flush
+		// interval (e.g. block N wrote B[s1]=V, block N+5 SELFDESTRUCTs
+		// B). Same-block SSTOREs that happen after the wipe — like
+		// SELFDESTRUCT+CREATE2+SSTORE — are added back by the storcs
+		// parser below, so they survive cleanly.
+		if err := applyWipesSidecar(wipesTbl, blockNum, wipeSet, storMap); err != nil {
+			return err
+		}
+
 		accData, err := acctTbl.Retrieve(blockNum)
 		if err != nil {
 			return fmt.Errorf("read acctcs block %d: %w", blockNum, err)
@@ -399,10 +409,6 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 				// own entry here.
 				inner[slot] = e.NewValue
 			}
-		}
-
-		if err := applyWipesSidecar(wipesTbl, blockNum, wipeSet); err != nil {
-			return err
 		}
 
 		// Periodic verify: at blockNum where (blockNum+1) % VerifyInterval == 0
@@ -901,11 +907,25 @@ func rebuildEVMFallback(ctx context.Context, db kv.RwDB, opts RebuildOptions, bl
 // cmd/acctcs-extract-wipes from a known-good main-archive acctcs+storcs
 // (signal: acctcs newVal=empty ∪ storcs bulk-newVal=empty).
 //
+// Must be called BEFORE the per-block acctcs+storcs parser. Two effects:
+//
+//  1. wipeSet[addr] = {} so flushToMDBX phase 0 prefix-deletes every row
+//     keyed by addr from the MDBX Storage table at the next flush.
+//
+//  2. delete(storMap, addr) drops any in-memory slot entries this flush
+//     interval accumulated from prior blocks. Without this, a SSTORE in
+//     block N (storMap[addr][slot] = V) followed by SELFDESTRUCT in
+//     block N+K with no flush in between would write V back to MDBX in
+//     flush phase 1 AFTER phase 0 wiped MDBX, leaving a ghost row.
+//     Same-block SSTOREs that follow the wipe (path 2: SELFDESTRUCT +
+//     CREATE2 + SSTORE) re-populate storMap[addr] cleanly because the
+//     storcs parser runs AFTER this call.
+//
 // No-op when wipesTbl is nil or blockNum is past the sidecar's tail.
 // Fails loudly if the payload length is not a multiple of 20 — that
 // indicates an old-format sidecar pointed at by --wipes-sidecar; the
-// caller must regenerate via the addr-only extractor.
-func applyWipesSidecar(wipesTbl *freezer.FreezerTable, blockNum uint64, wipeSet map[types.Address]struct{}) error {
+// caller must regenerate via cmd/acctcs-extract-wipes.
+func applyWipesSidecar(wipesTbl *freezer.FreezerTable, blockNum uint64, wipeSet map[types.Address]struct{}, storMap map[types.Address]map[types.Hash][]byte) error {
 	if wipesTbl == nil || blockNum >= wipesTbl.Items() {
 		return nil
 	}
@@ -925,6 +945,7 @@ func applyWipesSidecar(wipesTbl *freezer.FreezerTable, blockNum uint64, wipeSet 
 		var addr types.Address
 		copy(addr[:], data[off:off+20])
 		wipeSet[addr] = struct{}{}
+		delete(storMap, addr)
 	}
 	return nil
 }
