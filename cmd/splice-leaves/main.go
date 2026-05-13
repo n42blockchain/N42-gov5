@@ -36,7 +36,10 @@ import (
 const (
 	indexEntrySize = 6
 	batchSize      = 64 // freezer.BatchSize
+	cidxHeaderSize = 16 // freezer.cidxHeaderSize — present when first 4 bytes == "NCIX"
 )
+
+var cidxMagic = [4]byte{'N', 'C', 'I', 'X'}
 
 type cidxEntry struct {
 	fileNum uint16
@@ -59,6 +62,14 @@ func openRawSource(dir, table string) (*rawSource, error) {
 	cidx, err := os.ReadFile(cidxPath)
 	if err != nil {
 		return nil, fmt.Errorf("read cidx: %w", err)
+	}
+	// Newer tables (e.g. witness/storcs/acctcs) prepend a 16-byte NCIX
+	// header in front of the 6-byte index entries. Skip it when present so
+	// indexEntry math operates on the entry array only.
+	if len(cidx) >= cidxHeaderSize &&
+		cidx[0] == cidxMagic[0] && cidx[1] == cidxMagic[1] &&
+		cidx[2] == cidxMagic[2] && cidx[3] == cidxMagic[3] {
+		cidx = cidx[cidxHeaderSize:]
 	}
 	// Floor to a multiple of indexEntrySize so that a concurrently-writing
 	// freezer with a half-written trailing entry is handled gracefully.
