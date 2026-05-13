@@ -3,6 +3,13 @@
 // freezer table. The output table has the same per-block index as the
 // source storcs, but each blob contains only the wipe subset.
 //
+// DEPRECATED. The new sidecar format (cmd/acctcs-extract-wipes) is
+// roughly 3000× smaller because it stores only the wipe ADDRESSES per
+// block; rebuild-state expands each address into the slot set via an
+// MDBX prefix-scan at apply time. Loading a sidecar produced by THIS
+// tool against current rebuild-state errors out with "payload len is
+// not a multiple of 20". Switch to acctcs-extract-wipes.
+//
 // Use case: witness-replay's WitnessCapturingWriter has no MDBX state to
 // enumerate a SELFDESTRUCT'd contract's storage, so its storcs is
 // structurally missing the pre-wipe entries that ethexec's
