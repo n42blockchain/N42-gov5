@@ -84,6 +84,14 @@ type WitnessReplayConfig struct {
 	// duplicates the input. Set when generating a fresh witness archive.
 	WriteWitness bool
 
+	// NoReceipts skips emitting the receipts.cdat output table. Useful
+	// for rebuild-state correctness tests: only acctcs+storcs are
+	// consumed when rebuilding PlainState, so skipping receipts halves
+	// I/O and makes a 0..N pilot run finish faster. The receipts root
+	// is still verified per-block (witness-replay's correctness check),
+	// it's only the persisted cdat that's suppressed.
+	NoReceipts bool
+
 	ChainCfg *params.ChainConfig
 	Engine   consensus.Engine
 
@@ -103,6 +111,7 @@ type witnessAggregateState struct {
 	next         uint64
 	end          uint64
 	writeWitness bool
+	noReceipts   bool
 }
 
 // RunWitnessReplay drives the parallel replay end-to-end. Returns
@@ -190,9 +199,11 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		// in this list (unlike ethexec, which doesn't emit receipts
 		// to the freezer at all).
 		witnessReplayOutputTables := []string{
-			freezer.TableReceipts,
 			freezer.TableAccountChanges,
 			freezer.TableStorageChanges,
+		}
+		if !cfg.NoReceipts {
+			witnessReplayOutputTables = append(witnessReplayOutputTables, freezer.TableReceipts)
 		}
 		// Include witness in the align list only when re-emitting it.
 		// Otherwise resumes hit "gap too large" on the witness table
@@ -255,8 +266,10 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 			return fmt.Errorf("genesis encode: %w", err)
 		}
 		if batcher != nil {
-			if err := batcher.addEntry(freezer.TableReceipts, "c", EncodeReceiptsCompact(nil)); err != nil {
-				return fmt.Errorf("addEntry receipts block 0: %w", err)
+			if !cfg.NoReceipts {
+				if err := batcher.addEntry(freezer.TableReceipts, "c", EncodeReceiptsCompact(nil)); err != nil {
+					return fmt.Errorf("addEntry receipts block 0: %w", err)
+				}
 			}
 			if err := batcher.addEntry(freezer.TableAccountChanges, "c", acctcsBytes); err != nil {
 				return fmt.Errorf("addEntry acctcs block 0: %w", err)
@@ -291,6 +304,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		next:         feedStart,
 		end:          end,
 		writeWitness: cfg.WriteWitness,
+		noReceipts:   cfg.NoReceipts,
 	}
 	target := end - cfg.StartBlock
 	log.Info("Replay started",
@@ -400,8 +414,10 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 			return nil
 		}
 		if a.batcher != nil {
-			if err := a.batcher.addEntry(freezer.TableReceipts, "c", res.ReceiptBytes); err != nil {
-				return fmt.Errorf("addEntry receipts block %d: %w", res.BlockNum, err)
+			if !a.noReceipts {
+				if err := a.batcher.addEntry(freezer.TableReceipts, "c", res.ReceiptBytes); err != nil {
+					return fmt.Errorf("addEntry receipts block %d: %w", res.BlockNum, err)
+				}
 			}
 			if err := a.batcher.addEntry(freezer.TableAccountChanges, "c", res.AcctCSBytes); err != nil {
 				return fmt.Errorf("addEntry acctcs block %d: %w", res.BlockNum, err)
