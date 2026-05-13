@@ -401,7 +401,7 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 			}
 		}
 
-		if err := applyWipesSidecar(wipesTbl, blockNum, storMap); err != nil {
+		if err := applyWipesSidecar(wipesTbl, blockNum, wipeSet); err != nil {
 			return err
 		}
 
@@ -882,14 +882,30 @@ func rebuildEVMFallback(ctx context.Context, db kv.RwDB, opts RebuildOptions, bl
 	return nil
 }
 
-// applyWipesSidecar backfills SELFDESTRUCT pre-wipe entries that the
-// upstream storcs lacks (witness-replay's output omits them because
-// WitnessCapturingWriter has no MDBX state to enumerate slots from on
-// CreateContract). Each (addr, slot) in the sidecar is added as a
-// tombstone IFF storMap doesn't already have it — storcs wins ties
-// since it carries the authoritative new value for slots it knows
-// about. No-op when wipesTbl is nil or the block is past its end.
-func applyWipesSidecar(wipesTbl *freezer.FreezerTable, blockNum uint64, storMap map[types.Address]map[types.Hash][]byte) error {
+// applyWipesSidecar backfills SELFDESTRUCT pre-wipe addresses that the
+// upstream storcs is missing (witness-replay's WitnessCapturingWriter has
+// no MDBX state to enumerate slots from on CreateContract; only the slots
+// the EVM actually read in the same block land in storcs).
+//
+// The sidecar payload per block is a packed `addr20 × N` stream (length
+// always a multiple of 20). For each addr we add to wipeSet — the
+// existing flush path already does an MDBX prefix-delete on Storage for
+// every address in wipeSet, which is O(slots_of_addr) and cache-friendly
+// because Storage is keyed by addr+slot (all slots for one addr are
+// physically contiguous in the B-tree).
+//
+// This format replaces the older per-slot-tombstone storcs-encoded
+// sidecar (produced by cmd/storcs-extract-wipes): it's roughly 3000×
+// smaller because the slot enumeration happens at apply time via MDBX
+// prefix scan instead of being pre-materialised on disk. Produced by
+// cmd/acctcs-extract-wipes from a known-good main-archive acctcs+storcs
+// (signal: acctcs newVal=empty ∪ storcs bulk-newVal=empty).
+//
+// No-op when wipesTbl is nil or blockNum is past the sidecar's tail.
+// Fails loudly if the payload length is not a multiple of 20 — that
+// indicates an old-format sidecar pointed at by --wipes-sidecar; the
+// caller must regenerate via the addr-only extractor.
+func applyWipesSidecar(wipesTbl *freezer.FreezerTable, blockNum uint64, wipeSet map[types.Address]struct{}) error {
 	if wipesTbl == nil || blockNum >= wipesTbl.Items() {
 		return nil
 	}
@@ -900,24 +916,15 @@ func applyWipesSidecar(wipesTbl *freezer.FreezerTable, blockNum uint64, storMap 
 	if len(data) == 0 {
 		return nil
 	}
-	entries, err := DecodeStorageChanges(data)
-	if err != nil {
-		return fmt.Errorf("decode wipes block %d: %w", blockNum, err)
+	if len(data)%20 != 0 {
+		return fmt.Errorf("wipes block %d: payload len=%d is not a multiple of 20 "+
+			"(addr-only format expected — regenerate via cmd/acctcs-extract-wipes)",
+			blockNum, len(data))
 	}
-	for _, e := range entries {
+	for off := 0; off < len(data); off += 20 {
 		var addr types.Address
-		var slot types.Hash
-		copy(addr[:], e.CompositeKey[:20])
-		copy(slot[:], e.CompositeKey[20:])
-		inner, ok := storMap[addr]
-		if !ok {
-			inner = make(map[types.Hash][]byte, 8)
-			storMap[addr] = inner
-		}
-		if _, already := inner[slot]; already {
-			continue
-		}
-		inner[slot] = nil
+		copy(addr[:], data[off:off+20])
+		wipeSet[addr] = struct{}{}
 	}
 	return nil
 }
