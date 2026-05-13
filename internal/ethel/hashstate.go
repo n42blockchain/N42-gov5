@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -33,6 +34,18 @@ import (
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
+
+// envBufSize reads `name` as an unsigned integer GB count; returns
+// `defaultGB` when the env var is unset or unparseable.
+func envBufSize(name string, defaultGB uint64) datasize.ByteSize {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
+			return datasize.ByteSize(n)
+		}
+		log.Warn("ignoring invalid env var", "name", name, "value", v, "default_GB", defaultGB)
+	}
+	return datasize.ByteSize(defaultGB)
+}
 
 // SetupStateRootComputer creates and attaches a TrieRootComputer to the
 // IntraBlockState so that state root is computed incrementally.
@@ -123,12 +136,16 @@ func RebuildHashedStateETL(ctx context.Context, tx kv.RwTx, tmpdir string, logge
 	t0 := time.Now()
 	emptyCodeHash := crypto.Keccak256Hash(nil)
 
-	// 32 GB SortableBuffer per Collector — sized to hold the entire
-	// 17M-block-state hashed working set in memory (Account ~2 GB,
-	// Storage ~17 GB). Avoids tmpfile spill entirely. Combined peak
-	// ~25 GB Go heap; user's 128 GB host has headroom.
-	const accBufSize = 4 * datasize.GB
-	const stoBufSize = 32 * datasize.GB
+	// SortableBuffer sizes — sized to hold the hashed working set in
+	// memory (Account ~2 GB, Storage ~17 GB at 14M blocks; ~29 GB at
+	// 24M). Larger = fewer tmpfile spills; too large risks OOM on hosts
+	// running ethexec alongside other heavy processes. Override via env
+	// when memory is tight: N42_ETL_BUFFER_ACCT_GB / N42_ETL_BUFFER_STO_GB.
+	accBufSize := envBufSize("N42_ETL_BUFFER_ACCT_GB", 4) * datasize.GB
+	stoBufSize := envBufSize("N42_ETL_BUFFER_STO_GB", 32) * datasize.GB
+	log.Info("RebuildHashedStateETL: buffer sizes",
+		"acct_GB", uint64(accBufSize/datasize.GB),
+		"sto_GB", uint64(stoBufSize/datasize.GB))
 
 	// Account: walk Plain "Account" → keccak(addr), Collect into etl.
 	accColl := etl.NewCollector("rebuild-hashed-acct", tmpdir,
