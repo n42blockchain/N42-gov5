@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/c2h5oh/datasize"
+	"golang.org/x/crypto/sha3"
 
 	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/internal/ethel"
@@ -2025,6 +2026,89 @@ func runVerifyCSRoot(c *cli.Context) error {
 	return nil
 }
 
+// keccak256 returns the legacy-Keccak256 hash of b (32 bytes). Code-import
+// uses it to verify codeHash == keccak(decoded_bytecode) before writing.
+func keccak256(b []byte) []byte {
+	h := sha3.NewLegacyKeccak256()
+	h.Write(b)
+	return h.Sum(nil)
+}
+
+// unwrapRethBytecode decodes reth's stored Bytecodes value into the raw
+// EVM bytecode that hashes to key (the codeHash).
+//
+// Reth stores LegacyAnalyzedBytecode for ordinary contracts; the on-disk
+// payload is [4B BE length] [N bytes bytecode + 33B revm padding] [jump
+// table bitmap]. Writing the raw stored bytes into N42's Code table
+// produces entries whose keccak256(value) != key, which witness-replay
+// catches and refuses (correctly — EVM would see EOA-mode and drift).
+//
+// Strategy mirrors cmd/code-fix: probe candidate slice lengths near the
+// length hint at v[0:4], then expand. Returns nil when no slice in v
+// hashes to key (caller should skip the entry rather than corrupt the
+// target Code table).
+func unwrapRethBytecode(v, key []byte) []byte {
+	// Fast path: value is already the raw bytecode.
+	if bytes.Equal(keccak256(v), key) {
+		return v
+	}
+	if len(v) < 4 {
+		return nil
+	}
+	l32 := int(binary.BigEndian.Uint32(v[:4]))
+	// Strategy 1: lengths within 33 bytes of the BE uint32 hint.
+	for _, off := range []int{0, -1, 1, -33, -32, -34, 33, -43, 43} {
+		n := l32 + off
+		if n > 0 && 4+n <= len(v) {
+			slice := v[4 : 4+n]
+			if bytes.Equal(keccak256(slice), key) {
+				return slice
+			}
+		}
+	}
+	// Strategy 2: expand search around l32 by ±256.
+	for off := 2; off <= 256; off++ {
+		for _, sign := range []int{-1, 1} {
+			n := l32 + off*sign
+			if n > 0 && 4+n <= len(v) {
+				slice := v[4 : 4+n]
+				if bytes.Equal(keccak256(slice), key) {
+					return slice
+				}
+			}
+		}
+	}
+	// Strategy 3: bounded full sweep at offset 4 for stragglers.
+	maxLen := len(v) - 4
+	if maxLen > 4096 {
+		maxLen = 4096
+	}
+	for n := 1; n <= maxLen; n++ {
+		diff := n - l32
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff <= 266 {
+			continue // already tried
+		}
+		slice := v[4 : 4+n]
+		if bytes.Equal(keccak256(slice), key) {
+			return slice
+		}
+	}
+	// Strategy 4: small prefix offsets when length hint isn't at v[0:4].
+	for _, prefix := range []int{1, 2, 3, 5, 8} {
+		if prefix >= len(v) {
+			continue
+		}
+		slice := v[prefix:]
+		if bytes.Equal(keccak256(slice), key) {
+			return slice
+		}
+	}
+	return nil
+}
+
 // runCodeImport copies Reth Bytecodes table into one or more ethexec MDBX
 // Code tables. Supports comma-separated target paths to populate both
 // primary and shadow in one pass.
@@ -2115,12 +2199,31 @@ func runCodeImport(c *cli.Context) error {
 		return err
 	}
 
-	var n uint64
+	var n, nUnwrapped, nSkipped uint64
 	var totalBytes uint64
 	var lastKey []byte
 	for k, v, e := cursor.First(); k != nil && e == nil; k, v, e = cursor.Next() {
+		// Reth wraps EVM bytecode in LegacyAnalyzedBytecode (4B length +
+		// bytecode + padding + jump table); writing the raw value would
+		// produce entries whose keccak(value) != key. Decode first and
+		// verify; skip rather than corrupt the target on undecodable
+		// entries (rare — typically EIP-7702 delegations or future formats).
+		bc := unwrapRethBytecode(v, k)
+		if bc == nil {
+			nSkipped++
+			if nSkipped <= 10 {
+				log.Warn("code-import: undecodable reth bytecode, skipping",
+					"key", fmt.Sprintf("%x", k), "v_len", len(v))
+			}
+			lastKey = append(lastKey[:0], k...)
+			n++
+			continue
+		}
+		if len(bc) != len(v) {
+			nUnwrapped++
+		}
 		for _, wt := range wtxs {
-			if err := wt.Put("Code", k, v); err != nil {
+			if err := wt.Put("Code", k, bc); err != nil {
 				cursor.Close()
 				for _, w := range wtxs {
 					w.Rollback()
@@ -2130,9 +2233,10 @@ func runCodeImport(c *cli.Context) error {
 		}
 		lastKey = append(lastKey[:0], k...)
 		n++
-		totalBytes += uint64(len(k) + len(v))
+		totalBytes += uint64(len(k) + len(bc))
 		if n%100_000 == 0 {
 			log.Info("  importing", "progress", n, "total", total,
+				"unwrapped", nUnwrapped, "skipped", nSkipped,
 				"dataMB", totalBytes>>20)
 		}
 		// Commit every 500K to avoid oversized txs.
@@ -2180,6 +2284,8 @@ func runCodeImport(c *cli.Context) error {
 
 	log.Info("Code import complete",
 		"entries", n,
+		"unwrapped", nUnwrapped,
+		"skipped", nSkipped,
 		"dataMB", totalBytes>>20,
 		"targets", len(dbs))
 	return nil
