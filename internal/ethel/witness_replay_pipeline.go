@@ -217,11 +217,19 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	}
 
 	// 4. Wire up channels and worker pool.
-	// Large channel buffers (8192) amortise the runtime mutex per
-	// send/receive across many ops — profile showed runtime.lock2 +
-	// stdcall2 ~21% under cap=256 with 32 workers. Bigger buffers let
-	// the reader run ahead and workers pull in bursts without blocking.
-	const chanCap = 8192
+	//
+	// Channel cap deliberately small (256). The previous 8192 was chosen
+	// to amortise runtime.lock2/stdcall2 mutex traffic seen under heavy
+	// 32-worker fanout, but it lets the aggregator's `pending` map grow
+	// unbounded when a single slow block holds back the head. On a 10M+
+	// DeFi block one worker can take seconds while the others fly; with
+	// cap=8192 the reader stuffs 8k jobs in, workers stuff up to 8k
+	// results in `pending`, heap balloons to 15+ GB, and Go GC STW
+	// stretches into the seconds — feeding back into per-worker slowdown
+	// and eventually a stall that *looks* like a deadlock. Cap=256 lets
+	// the reader run only a small batch ahead, capping pending and
+	// keeping heap below ~3 GB so GC stays in its concurrent path.
+	const chanCap = 256
 	blockCh := make(chan WitnessJob, chanCap)
 	resultCh := make(chan WitnessResult, chanCap)
 	ctx, cancel := context.WithCancel(ctx)

@@ -58,7 +58,7 @@ func main() {
 			&cli.StringFlag{Name: "senders", Usage: "Optional pre-computed senders freezer dir (avoids ecrecover)"},
 			&cli.Uint64Flag{Name: "start", Value: 0, Usage: "Start block (inclusive)"},
 			&cli.Uint64Flag{Name: "end", Value: 0, Usage: "End block (exclusive); 0 = all available witness items"},
-			&cli.IntFlag{Name: "workers", Value: 32, Usage: "Number of parallel replay workers"},
+			&cli.IntFlag{Name: "workers", Value: 8, Usage: "Number of parallel replay workers. Default 8 — values >= 16 can stall mid-run on DeFi-era blocks (~10M+) because the slowest worker holds back the aggregator, the rest pile results into the pending map, heap grows past 10 GB, GC STW stretches into seconds, and the slow worker gets even slower. Raise only on cheap pre-DeFi ranges or after profiling cgo contention."},
 			&cli.BoolFlag{Name: "no-output", Usage: "Skip cdat writes (smoke / throughput tests). Workers still verify gas per block."},
 			&cli.BoolFlag{Name: "skip-verify", Usage: "Skip per-block gas verification. Useful when the witness was recorded by a different ProcessBlock version (state-read order drift produces gas mismatches that aren't a framework bug)."},
 			&cli.BoolFlag{Name: "continue-on-error", Usage: "Keep replaying past per-block failures (logged + counted). Throughput measurement against a possibly-stale witness needs this; production runs should leave it false so any divergence halts immediately."},
