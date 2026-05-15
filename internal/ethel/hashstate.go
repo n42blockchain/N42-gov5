@@ -142,7 +142,8 @@ func RebuildHashedStateETL(ctx context.Context, tx kv.RwTx, tmpdir string, logge
 	// running ethexec alongside other heavy processes. Override via env
 	// when memory is tight: N42_ETL_BUFFER_ACCT_GB / N42_ETL_BUFFER_STO_GB.
 	accBufSize := envBufSize("N42_ETL_BUFFER_ACCT_GB", 4) * datasize.GB
-	stoBufSize := envBufSize("N42_ETL_BUFFER_STO_GB", 32) * datasize.GB
+	// 12 GB default (was 32) — 32 GB grew to ~64 GB allocated, OOM'd 128 GB hosts.
+	stoBufSize := envBufSize("N42_ETL_BUFFER_STO_GB", 12) * datasize.GB
 	log.Info("RebuildHashedStateETL: buffer sizes",
 		"acct_GB", uint64(accBufSize/datasize.GB),
 		"sto_GB", uint64(stoBufSize/datasize.GB))
