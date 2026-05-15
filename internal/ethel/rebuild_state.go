@@ -33,7 +33,7 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-const memLimitGB = 100 // flush when Go heap exceeds this
+const memLimitGB = 70 // flush threshold on Sys (was 100 + Alloc; OOM'd 128 GB hosts past 15M)
 
 // RebuildOptions controls intermediate verification during RebuildState.
 type RebuildOptions struct {
@@ -396,6 +396,10 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 				var slot types.Hash
 				copy(addr[:], e.CompositeKey[:20])
 				copy(slot[:], e.CompositeKey[20:])
+				// Skip stale pre-SELFDESTRUCT storcs entries; phase-0 wipe covers MDBX.
+				if v, ok := acctMap[addr]; ok && v == nil {
+					continue
+				}
 				inner, ok := storMap[addr]
 				if !ok {
 					inner = make(map[types.Hash][]byte, 8)
@@ -424,6 +428,8 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		if time.Since(lastLogTime) > 5*time.Second {
 			var m runtime.MemStats
 			runtime.ReadMemStats(&m)
+			// Sys ≈ Private (Alloc undercounts GOGC over-commit by ~2×).
+			sysGB := float64(m.Sys) / 1e9
 			allocGB := float64(m.Alloc) / 1e9
 			pct := float64(blockNum) / float64(endBlock) * 100
 			log.Info("Reading leaves",
@@ -432,11 +438,12 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 				"accounts", len(acctMap),
 				"addrs", len(storMap),
 				"allocGB", fmt.Sprintf("%.1f", allocGB),
+				"sysGB", fmt.Sprintf("%.1f", sysGB),
 				"elapsed", time.Since(t0).Truncate(time.Second))
 			lastLogTime = time.Now()
 
-			if allocGB > float64(memLimitGB) {
-				log.Info("Memory limit, flushing to MDBX...", "allocGB", fmt.Sprintf("%.1f", allocGB))
+			if sysGB > float64(memLimitGB) {
+				log.Info("Memory limit, flushing to MDBX...", "sysGB", fmt.Sprintf("%.1f", sysGB), "allocGB", fmt.Sprintf("%.1f", allocGB))
 				if err := flushToMDBX(ctx, db, acctMap, storMap, wipeSet); err != nil {
 					return err
 				}
@@ -592,39 +599,51 @@ func flushToMDBX(ctx context.Context, db kv.RwDB, acctMap map[types.Address][]by
 			return bytes.Compare(wipeAddrs[i][:], wipeAddrs[j][:]) < 0
 		})
 
-		// Pass 1: collect keys to delete.
-		var allKeysToDelete [][]byte
-		cursor, err := tx.Cursor(modules.Storage)
-		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf("open storage cursor for wipe: %w", err)
-		}
-		for _, addr := range wipeAddrs {
-			prefix := addr[:]
-			for k, _, err := cursor.Seek(prefix); k != nil; k, _, err = cursor.Next() {
-				if err != nil {
-					cursor.Close()
+		// 64K-addr batches cap transient key list at ~50 MB (was ~3.5 GB at
+		// 6.6M wipes). Cursor closed between batches — Delete-during-cursor
+		// produced wrong roots at 6M+.
+		const wipeBatchAddrs = 64 * 1024
+		totalWipedSlots := 0
+		for start := 0; start < len(wipeAddrs); start += wipeBatchAddrs {
+			end := start + wipeBatchAddrs
+			if end > len(wipeAddrs) {
+				end = len(wipeAddrs)
+			}
+			batch := wipeAddrs[start:end]
+
+			var keysToDelete [][]byte
+			cursor, err := tx.Cursor(modules.Storage)
+			if err != nil {
+				tx.Rollback()
+				return fmt.Errorf("open storage cursor for wipe batch: %w", err)
+			}
+			for _, addr := range batch {
+				prefix := addr[:]
+				for k, _, err := cursor.Seek(prefix); k != nil; k, _, err = cursor.Next() {
+					if err != nil {
+						cursor.Close()
+						tx.Rollback()
+						return err
+					}
+					if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
+						break
+					}
+					keysToDelete = append(keysToDelete, append([]byte{}, k...))
+				}
+			}
+			cursor.Close()
+
+			for _, k := range keysToDelete {
+				if err := tx.Delete(modules.Storage, k); err != nil {
 					tx.Rollback()
 					return err
 				}
-				if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
-					break
-				}
-				allKeysToDelete = append(allKeysToDelete, append([]byte{}, k...))
 			}
+			totalWipedSlots += len(keysToDelete)
 		}
-		cursor.Close()
-
-		// Pass 2: delete all collected keys (cursor is closed, no invalidation).
-		for _, k := range allKeysToDelete {
-			if err := tx.Delete(modules.Storage, k); err != nil {
-				tx.Rollback()
-				return err
-			}
-		}
-		if len(allKeysToDelete) > 0 {
+		if totalWipedSlots > 0 {
 			log.Info("  wiped storage entries from MDBX",
-				"addrs", len(wipeSet), "slots", len(allKeysToDelete))
+				"addrs", len(wipeSet), "slots", totalWipedSlots)
 		}
 	}
 

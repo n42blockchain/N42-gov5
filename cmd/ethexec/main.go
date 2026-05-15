@@ -37,6 +37,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/mmap"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules"
@@ -573,6 +574,11 @@ func run(c *cli.Context) error {
 		limit := int64(memLimitGB) << 30
 		debug.SetMemoryLimit(limit)
 		log.Info("Go memory limit set", "limit_GB", memLimitGB)
+	} else if phys := mmap.TotalMemory(); phys > 0 {
+		// Auto-default heap target to 70% of phys RAM (leaves headroom for MDBX + OS).
+		limit := int64(phys * 70 / 100)
+		debug.SetMemoryLimit(limit)
+		log.Info("Go memory limit auto-set", "limit_GB", uint64(limit)>>30, "phys_GB", phys>>30)
 	}
 	// Sanity-check cache budget vs effective heap target, log so the user
 	// sees what they signed up for. Heap peak ≈ cache_total × (1 + gogc/100)
