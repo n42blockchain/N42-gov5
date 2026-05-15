@@ -128,6 +128,7 @@ var extendedTableSpecs = []tableSpec{
 	{TableStorageChanges, "c"},
 	{TableLeavesJournal, "c"},
 	{TableBlockWitness, "c"},
+	{TableWipes, "c"},
 }
 
 var canonicalFrozenTables = []string{

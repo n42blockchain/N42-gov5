@@ -47,6 +47,7 @@ type WitnessResult struct {
 	ReceiptBytes []byte
 	AcctCSBytes  []byte
 	StoCSBytes   []byte
+	WipesBytes   []byte
 	WitnessBytes []byte
 	Err          error
 }
@@ -259,6 +260,7 @@ func replayWitnessBlock(
 	}
 	res.AcctCSBytes = EncodeAccountChanges(acctsCS, writer.AccountNewValue)
 	res.StoCSBytes = EncodeStorageChanges(stoCS, writer.StorageNewValue)
+	res.WipesBytes = writer.WipedAddrsBytes()
 	res.ReceiptBytes = EncodeReceiptsCompact(result.Receipts)
 	return res
 }

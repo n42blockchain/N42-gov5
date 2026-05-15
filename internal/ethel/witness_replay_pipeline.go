@@ -201,6 +201,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		witnessReplayOutputTables := []string{
 			freezer.TableAccountChanges,
 			freezer.TableStorageChanges,
+			freezer.TableWipes,
 		}
 		if !cfg.NoReceipts {
 			witnessReplayOutputTables = append(witnessReplayOutputTables, freezer.TableReceipts)
@@ -284,6 +285,9 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 			}
 			if err := batcher.addEntry(freezer.TableStorageChanges, "c", storcsBytes); err != nil {
 				return fmt.Errorf("addEntry storcs block 0: %w", err)
+			}
+			if err := batcher.addEntry(freezer.TableWipes, "c", nil); err != nil {
+				return fmt.Errorf("addEntry wipes block 0: %w", err)
 			}
 			if cfg.WriteWitness {
 				if err := batcher.addEntry(freezer.TableBlockWitness, "c", nil); err != nil {
@@ -432,6 +436,10 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 			}
 			if err := a.batcher.addEntry(freezer.TableStorageChanges, "c", res.StoCSBytes); err != nil {
 				return fmt.Errorf("addEntry storcs block %d: %w", res.BlockNum, err)
+			}
+			// Wipes column kept in 64-batch lockstep with acctcs/storcs.
+			if err := a.batcher.addEntry(freezer.TableWipes, "c", res.WipesBytes); err != nil {
+				return fmt.Errorf("addEntry wipes block %d: %w", res.BlockNum, err)
 			}
 			// Witness output is opt-in (WriteWitness=true). When on, the
 			// entry must always be emitted — even if empty for a txless
