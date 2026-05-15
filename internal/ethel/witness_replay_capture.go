@@ -1,18 +1,17 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// witness_replay_capture.go — per-block StateWriter that captures BOTH
-// the block-origin (old) values via an embedded ChangeSetWriter AND the
-// post-block (new) values into private maps. Lets a parallel worker
-// produce its own (acctcs, storcs) bytes via EncodeAccountChanges /
-// EncodeStorageChanges without touching the shared
-// BufferedPlainStateBuffer the sequential ethexec executor uses —
-// full per-block isolation, zero cross-worker locking. Mirrors the
-// existing snapshotOutputs pattern.
+// Per-worker per-block StateWriter that captures old values via an
+// embedded ChangeSetWriter and new values into private maps, so the
+// encoder closures can emit (acctcs, storcs, wipes) without touching
+// any shared buffer.
 
 package ethel
 
 import (
+	"bytes"
+	"sort"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -20,27 +19,29 @@ import (
 	"github.com/n42blockchain/N42/modules/state"
 )
 
-// WitnessCapturingWriter implements state.StateWriter (and
-// WriterWithChangeSets) by delegating to an inner ChangeSetWriter for
-// old-value collection and recording new values in private maps.
-// Single-block scope; one instance per worker per block.
 type WitnessCapturingWriter struct {
 	csw *state.ChangeSetWriter
 
-	// Post-block account encoding (omit-CodeHash format equivalent to
-	// MarshalV2). nil entry means the account was deleted in this block.
+	// nil entry = account deleted in this block.
 	accNewVals map[types.Address][]byte
 
-	// Post-block raw slot bytes (0-32 byte big-endian, leading zeros
-	// trimmed). nil/empty means the slot was zeroed.
-	stoNewVals map[[52]byte][]byte
+	// addr → slot → post-block value (nil/empty = zeroed).
+	// Keyed by addr first so CreateContract can wipe via single map delete.
+	stoNewVals map[types.Address]map[types.Hash][]byte
+
+	// Addresses that received CreateContract this block. Emitted as the
+	// per-block wipes column so rebuild-state can prefix-delete MDBX
+	// rows from prior segments — covers same-codeHash SELFDESTRUCT+CREATE2
+	// that acctcs Path A/B/C can't detect from end-of-block state alone.
+	wipedAddrs map[types.Address]struct{}
 }
 
 func NewWitnessCapturingWriter() *WitnessCapturingWriter {
 	return &WitnessCapturingWriter{
 		csw:        state.NewChangeSetWriter(),
 		accNewVals: make(map[types.Address][]byte, 64),
-		stoNewVals: make(map[[52]byte][]byte, 256),
+		stoNewVals: make(map[types.Address]map[types.Hash][]byte, 64),
+		wipedAddrs: make(map[types.Address]struct{}, 8),
 	}
 }
 
@@ -65,37 +66,61 @@ func (c *WitnessCapturingWriter) UpdateAccountCode(address types.Address, codeHa
 }
 
 func (c *WitnessCapturingWriter) WriteAccountStorage(address types.Address, key types.Hash, original, value uint256.Int) error {
-	var k [52]byte
-	copy(k[:20], address[:])
-	copy(k[20:], key[:])
+	inner, ok := c.stoNewVals[address]
+	if !ok {
+		inner = make(map[types.Hash][]byte, 8)
+		c.stoNewVals[address] = inner
+	}
 	if value.IsZero() {
-		c.stoNewVals[k] = nil
+		inner[key] = nil
 	} else {
 		bl := value.ByteLen()
 		v := make([]byte, bl)
 		value.WriteToSlice(v)
-		c.stoNewVals[k] = v
+		inner[key] = v
 	}
 	return c.csw.WriteAccountStorage(address, key, original, value)
 }
 
 func (c *WitnessCapturingWriter) CreateContract(address types.Address) error {
+	// Mirror PlainStateWriter.CreateContract wipe semantics for the
+	// witness-replay path — drop pre-wipe stoNewVals + record addr.
+	delete(c.stoNewVals, address)
+	c.wipedAddrs[address] = struct{}{}
 	return c.csw.CreateContract(address)
+}
+
+// WipedAddrsBytes packs CreateContract addresses as sorted addr20×N
+// for the per-block wipes column. Sorted so consumers do one cursor
+// seek per addr for MDBX prefix delete.
+func (c *WitnessCapturingWriter) WipedAddrsBytes() []byte {
+	if len(c.wipedAddrs) == 0 {
+		return nil
+	}
+	addrs := make([]types.Address, 0, len(c.wipedAddrs))
+	for a := range c.wipedAddrs {
+		addrs = append(addrs, a)
+	}
+	sort.Slice(addrs, func(i, j int) bool {
+		return bytes.Compare(addrs[i][:], addrs[j][:]) < 0
+	})
+	out := make([]byte, len(addrs)*20)
+	for i, a := range addrs {
+		copy(out[i*20:], a[:])
+	}
+	return out
 }
 
 func (c *WitnessCapturingWriter) WriteChangeSets() error { return nil }
 func (c *WitnessCapturingWriter) WriteHistory() error    { return nil }
 
-// AccountNewValueFn returns the closure expected by ethel's
-// EncodeAccountChanges encoder.
 func (c *WitnessCapturingWriter) AccountNewValue(addr types.Address) []byte {
 	return c.accNewVals[addr]
 }
 
-// StorageNewValue returns the closure expected by EncodeStorageChanges.
 func (c *WitnessCapturingWriter) StorageNewValue(addr types.Address, slot types.Hash) []byte {
-	var k [52]byte
-	copy(k[:20], addr[:])
-	copy(k[20:], slot[:])
-	return c.stoNewVals[k]
+	if inner, ok := c.stoNewVals[addr]; ok {
+		return inner[slot]
+	}
+	return nil
 }
