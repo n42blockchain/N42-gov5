@@ -822,9 +822,12 @@ func run(c *cli.Context) error {
 		log.Info("Pre-computed senders loaded (freezer)", "path", outFreezerPath, "items", tbl.Items())
 		senderFound = true
 	}
-	// Fallback: SegmentStore format.
+	// Fallback: SegmentStore format. Check the canonical chain/freezer/
+	// location first (commit cd0b0d87 moved all freezer-format output here),
+	// then chain/ for any legacy datadirs, then the input ancient as a final
+	// fallback.
 	if !senderFound {
-		for _, dir := range []string{filepath.Join(datadir, "chain"), ancientPath} {
+		for _, dir := range []string{filepath.Join(datadir, "chain", "freezer"), filepath.Join(datadir, "chain"), ancientPath} {
 			sr, sErr := ethel.OpenSenderStore(dir)
 			if sErr != nil || sr == nil {
 				continue
@@ -1074,7 +1077,7 @@ func runCSCompact(c *cli.Context) error {
 		log.Info("Detected end block", "endBlock", endBlock)
 	}
 
-	outputDir := filepath.Join(datadir, "chain")
+	outputDir := filepath.Join(datadir, "chain", "freezer")
 
 	ctx, cancel := withShutdown()
 	defer cancel()
@@ -1236,7 +1239,7 @@ func runHistoryBuild(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 
-	histDir := filepath.Join(datadir, "chain")
+	histDir := filepath.Join(datadir, "chain", "freezer")
 
 	fromCS := c.Bool("from-changesets")
 
@@ -1267,7 +1270,7 @@ func runTxLookupBuild(c *cli.Context) error {
 	startBlock := c.Uint64("start")
 	endBlock := c.Uint64("end")
 
-	outputDir := filepath.Join(datadir, "chain")
+	outputDir := filepath.Join(datadir, "chain", "freezer")
 	ctx, cancel := withShutdown()
 	defer cancel()
 
@@ -1326,7 +1329,7 @@ func runBodyCompact(c *cli.Context) error {
 	defer f.Close()
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
-	outputDir := filepath.Join(datadir, "chain")
+	outputDir := filepath.Join(datadir, "chain", "freezer")
 	stage := ethel.NewBodyCompactStage(f, outputDir)
 
 	ctx, cancel := withShutdown()
@@ -1345,7 +1348,7 @@ func runHeaderCompact(c *cli.Context) error {
 	defer f.Close()
 	log.Info("Input freezer opened", "frozen", f.Frozen())
 
-	outputDir := filepath.Join(datadir, "chain")
+	outputDir := filepath.Join(datadir, "chain", "freezer")
 
 	stage := ethel.NewHeaderCompactStage(f, outputDir)
 
@@ -1428,7 +1431,7 @@ func runSenderRecovery(c *cli.Context) error {
 			log.Info("Detected end block", "endBlock", endBlock)
 		}
 
-		outputDir := filepath.Join(datadir, "chain")
+		outputDir := filepath.Join(datadir, "chain", "freezer")
 		exporter := ethel.NewRethSenderExporter(db, outputDir)
 		return exporter.Export(ctx, startBlock, endBlock)
 	}
