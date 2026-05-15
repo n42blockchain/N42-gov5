@@ -1087,7 +1087,8 @@ func (t *FreezerTable) truncateHeadLocked(from uint64) error {
 	if from == 0 {
 		t.headFile = 0
 		t.headSize = 0
-		return nil
+		// Delete all .cdat — orphan bytes after kill+restart drift rotation math.
+		return t.deleteOrphanFilesLocked(0)
 	}
 
 	lastIdx, err := t.readIndex(from - 1)
