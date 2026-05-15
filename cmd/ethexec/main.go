@@ -1456,6 +1456,9 @@ func runSenderRecovery(c *cli.Context) error {
 	defer of.Close()
 
 	stage := ethel.NewSenderStage(f, of, params.EthereumMainnetChainConfig, workers)
+	if c.IsSet("start") || c.IsSet("end") {
+		stage.SetRange(startBlock, endBlock)
+	}
 	return stage.Run(ctx)
 }
 

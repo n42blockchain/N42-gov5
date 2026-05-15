@@ -36,6 +36,14 @@ type SenderStage struct {
 	outputFreezer *freezer.Freezer
 	chainCfg      *params.ChainConfig
 	workers       int
+
+	// Optional explicit range. Zero means "auto":
+	//   forceStart=0 → resume from tbl.Items()
+	//   forceEnd=0   → run until inputFreezer.Frozen()
+	// forceStart must equal tbl.Items() (no gaps allowed) — strictly a
+	// no-op assertion in the common case, useful for scripted reruns.
+	forceStart uint64
+	forceEnd   uint64
 }
 
 type senderWork struct {
@@ -64,22 +72,51 @@ func NewSenderStage(input, output *freezer.Freezer, chainCfg *params.ChainConfig
 	}
 }
 
+// SetRange overrides auto-detected [start, end). Use 0 to keep auto.
+//   - start: if non-zero, must equal current senders.Items() (no truncate, no gap).
+//   - end:   if non-zero, caps the run at this block (exclusive).
+func (s *SenderStage) SetRange(start, end uint64) {
+	s.forceStart = start
+	s.forceEnd = end
+}
+
 func (s *SenderStage) Run(ctx context.Context) error {
 	tbl, err := s.outputFreezer.EnsureTableCompressed("senders", "c")
 	if err != nil {
 		return fmt.Errorf("open senders table: %w", err)
 	}
 
-	startBlock := tbl.Items()
+	resumeAt := tbl.Items()
+	startBlock := resumeAt
+	if s.forceStart != 0 {
+		if s.forceStart != resumeAt {
+			return fmt.Errorf("sender recovery: --start=%d would create a gap or truncate (current senders.Items()=%d); delete files to redo, or omit --start to auto-resume",
+				s.forceStart, resumeAt)
+		}
+		startBlock = s.forceStart
+	}
+
 	endBlock := s.inputFreezer.Frozen()
+	if s.forceEnd != 0 {
+		if s.forceEnd > endBlock {
+			return fmt.Errorf("sender recovery: --end=%d exceeds input freezer Frozen=%d", s.forceEnd, endBlock)
+		}
+		endBlock = s.forceEnd
+	}
+
 	if startBlock >= endBlock {
-		log.Info("Sender recovery: already up to date", "at", startBlock)
+		log.Info("Sender recovery: already up to date", "at", startBlock, "endBlock", endBlock)
 		return nil
 	}
 
-	log.Info("Sender recovery starting",
+	mode := "starting"
+	if resumeAt > 0 {
+		mode = "resuming"
+	}
+	log.Info("Sender recovery "+mode,
 		"from", startBlock, "to", endBlock-1,
-		"blocks", endBlock-startBlock, "workers", s.workers)
+		"blocks", endBlock-startBlock, "workers", s.workers,
+		"already_done", resumeAt)
 
 	workCh := make(chan senderWork, s.workers*4)
 	resultCh := make(chan senderResult, s.workers*4)
@@ -126,6 +163,15 @@ func (s *SenderStage) Run(ctx context.Context) error {
 		headerData, err := s.inputFreezer.Ancient(freezer.TableHeaders, blockNum)
 		if err != nil {
 			readerErr = fmt.Errorf("read header %d: %w", blockNum, err)
+			break
+		}
+		// Geth's cidx has a trailing "next-write" sentinel entry past the
+		// last real block (extra entry whose offset equals the data file
+		// size). N42's tbl.Items() counts it as a real item, so the last
+		// loop iteration reads zero-length data. Treat as clean EOS.
+		if len(headerData) == 0 && blockNum+1 == endBlock {
+			log.Info("Sender recovery: reached geth sentinel entry — stopping cleanly",
+				"at", blockNum, "items", tbl.Items())
 			break
 		}
 		header, err := DecodeGethHeader(headerData)
@@ -237,16 +283,26 @@ func (s *SenderStage) writerLoop(
 				}
 			}
 
-			// Progress log every 100K blocks.
+			// Progress log + fsync every 100K blocks.
+			// fsync caps resume rollback to ≤100K blocks on hard kill /
+			// power loss; without it, buffered cidx/cdat writes can be
+			// lost up to the entire run.
 			done := processed.Load()
 			if done%100000 == 0 {
+				if err := flushBatch(); err != nil {
+					return err
+				}
+				if err := tbl.Sync(); err != nil {
+					log.Warn("Sender recovery: fsync failed", "err", err)
+				}
 				elapsed := time.Since(t0)
 				blkPerSec := float64(done) / elapsed.Seconds()
 				pct := float64(nextBlock-startBlock) / float64(endBlock-startBlock) * 100
 				log.Info("Sender recovery progress",
 					"block", nextBlock-1,
 					"pct", fmt.Sprintf("%.1f%%", pct),
-					"blk/s", fmt.Sprintf("%.0f", blkPerSec))
+					"blk/s", fmt.Sprintf("%.0f", blkPerSec),
+					"items", tbl.Items())
 			}
 		}
 
@@ -288,5 +344,10 @@ func (s *SenderStage) writerLoop(
 		}
 	}
 
+	// Final fsync so a clean exit makes the new tail durable; without
+	// this the OS may discard buffered writes on power loss.
+	if err := tbl.Sync(); err != nil {
+		log.Warn("Sender recovery: final fsync failed", "err", err)
+	}
 	return nil
 }
