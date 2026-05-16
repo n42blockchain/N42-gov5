@@ -59,10 +59,15 @@ type ExecutorConfig struct {
 	// Note: History bitmaps (AccountsHistory/StorageHistory) and log indices
 	// (TxLookup/LogTopicIndex/LogAddressIndex) are NOT written during sync.
 	// They are rebuilt as a batch stage after sync completes.
-	// NoOutputs if true, skip writing output freezer (receipts, senders, etc.).
+	// NoOutputs if true, skip writing the output freezer entirely. The
+	// ethexec executor's output freezer covers acctcs (account changeset),
+	// storcs (storage changeset), and witness. Receipts are NOT written
+	// here — they are re-derived in memory for verification only. Senders
+	// are read as an INPUT cache, never written by the executor. To build
+	// receipts.cidx, run the receipt-copy subcommand separately.
 	NoOutputs bool
 	// NoWitness if true, skip ZK witness recording while still emitting
-	// other outputs (receipts, senders, changesets). Witness wraps every
+	// the other freezer outputs (acctcs, storcs). Witness wraps every
 	// state read in an extra fn call + slice append; disabling it on
 	// runs that don't need ZK proofs measurably reduces GC pressure.
 	NoWitness bool
@@ -95,10 +100,12 @@ type ExecutorConfig struct {
 }
 
 // Executor reads blocks from a Geth-compatible Freezer and re-executes
-// them to produce state, changesets, and receipts.
+// them to produce PlainState + changeset/witness freezer outputs.
+// Receipts are re-derived in memory for per-block verification but not
+// persisted; receipt-copy is the separate tool that builds receipts.cidx.
 type Executor struct {
 	freezer     *freezer.Freezer // input: Geth ancient (read-only)
-	outFreezer  *freezer.Freezer // output: receipts, senders, changesets
+	outFreezer  *freezer.Freezer // output: acctcs, storcs, witness
 	db          kv.RwDB
 	chainCfg    *params.ChainConfig
 	engine      consensus.Engine
@@ -296,11 +303,13 @@ func (e *Executor) Run(ctx context.Context) error {
 		// state). Without this, both paths restore overlapping entries
 		// causing position misalignment.
 		csRem := ReadCSRemainder(setupTx)
-		// ethexec writes only changesets + witness — receipts goes
-		// straight into MDBX state, never the freezer. Don't list
-		// receipts here or alignOnResume would treat the (correctly)
-		// empty receipts.cidx as a "behind MDBX" gap and refuse to
-		// resume.
+		// ethexec writes only acctcs + storcs + witness to the freezer.
+		// Receipts are NEVER written by the executor — they are
+		// re-derived from EVM execution for in-memory verification only,
+		// then discarded. Don't list receipts here or alignOnResume
+		// would treat the (correctly) empty receipts.cidx as a gap and
+		// refuse to resume. The separate receipt-copy subcommand owns
+		// receipts.cidx in chain/freezer/.
 		ethexecOutputTables := []string{
 			freezer.TableAccountChanges,
 			freezer.TableStorageChanges,

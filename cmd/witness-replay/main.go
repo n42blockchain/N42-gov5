@@ -48,11 +48,11 @@ func main() {
 
 	app := &cli.App{
 		Name:  "witness-replay",
-		Usage: "Parallel witness-driven block replay → acctcs/storcs/receipts cdat",
+		Usage: "Parallel witness-driven block replay → acctcs/storcs cdat (+ optional witness, --receipts)",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "input-headers-bodies", Usage: "Freezer dir with headers + bodies tables", Required: true},
 			&cli.StringFlag{Name: "input-witness", Usage: "Freezer dir with block_witness table (may equal input-headers-bodies)"},
-			&cli.StringFlag{Name: "output", Usage: "Freezer dir for acctcs/storcs/receipts/witness output", Required: true},
+			&cli.StringFlag{Name: "output", Usage: "Freezer dir for acctcs + storcs (+ optional witness with --write-witness, + receipts with --receipts)", Required: true},
 			&cli.StringFlag{Name: "datadir", Usage: "MDBX datadir holding the Code table (and target for rebuild-state). Optional when --codes-freezer is provided."},
 			&cli.StringFlag{Name: "codes-freezer", Usage: "Optional dir with codes.cidx + codes.NNNN.cdat (produced by code-import2fz). Address-indexed bytecode source — works from genesis without an MDBX. Auto-detects <input-headers-bodies>/codes.cidx if not specified."},
 			&cli.StringFlag{Name: "senders", Usage: "Optional pre-computed senders freezer dir (avoids ecrecover)"},
@@ -62,8 +62,8 @@ func main() {
 			&cli.BoolFlag{Name: "no-output", Usage: "Skip cdat writes (smoke / throughput tests). Workers still verify gas per block."},
 			&cli.BoolFlag{Name: "skip-verify", Usage: "Skip per-block gas verification. Useful when the witness was recorded by a different ProcessBlock version (state-read order drift produces gas mismatches that aren't a framework bug)."},
 			&cli.BoolFlag{Name: "continue-on-error", Usage: "Keep replaying past per-block failures (logged + counted). Throughput measurement against a possibly-stale witness needs this; production runs should leave it false so any divergence halts immediately."},
-			&cli.BoolFlag{Name: "write-witness", Usage: "Write witness.cdat to the output freezer alongside receipts/acctcs/storcs. Off by default — replay typically reads existing witness, so re-emitting it is duplicate work."},
-			&cli.BoolFlag{Name: "no-receipts", Usage: "Skip emitting receipts.cdat. Useful for rebuild-state correctness pilots: only acctcs+storcs are consumed there, so suppressing receipts halves output I/O. Per-block receipt-root check still runs."},
+			&cli.BoolFlag{Name: "write-witness", Usage: "Write witness.cdat to the output freezer alongside acctcs/storcs. Off by default — replay typically reads existing witness, so re-emitting it is duplicate work."},
+			&cli.BoolFlag{Name: "receipts", Usage: "Opt in to writing receipts.cdat. Off by default — witness-replay's primary outputs are witness + acctcs + storcs; the receipt-copy subcommand owns receipts in chain/freezer/. Per-block receipt-root check still runs regardless of this flag."},
 		},
 		Action: run,
 	}
@@ -154,7 +154,7 @@ func run(c *cli.Context) error {
 		SkipVerify:        c.Bool("skip-verify"),
 		ContinueOnError:   c.Bool("continue-on-error"),
 		WriteWitness:      c.Bool("write-witness"),
-		NoReceipts:        c.Bool("no-receipts"),
+		WriteReceipts:     c.Bool("receipts"),
 		ChainCfg:          chainCfg,
 		Engine:            engine,
 		CodesFreezerDir:   codesDir,
