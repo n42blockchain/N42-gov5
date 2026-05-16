@@ -1,14 +1,18 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// indices.go — TxLookup and log-index maintenance helpers.
+// indices.go — TxLookup maintenance helpers.
 //
 // WriteBlockIndices appends a tx-hash → block-number entry to kv.TxLookup
 // for every transaction in a block, which powers eth_getTransactionByHash
 // and eth_getTransactionReceipt. LookupTransaction is the read-side
-// helper. Log topic and address bitmap indices are written elsewhere
-// (see rawdb.WriteLogIndex from executor.go); this file intentionally
-// only covers TxLookup so the dependency graph stays small.
+// helper. This file intentionally covers TxLookup only so the dependency
+// graph stays small.
+//
+// Note: the ethexec executor does NOT write log-index bitmaps — receipts
+// are re-derived per block for in-memory verification but never
+// persisted. Log bitmap maintenance lives in the live-node write path
+// (internal/blockchain_write.go).
 
 package ethel
 
@@ -34,8 +38,10 @@ func WriteBlockIndices(tx kv.RwTx, blockNum uint64, txs []*transaction.Transacti
 	return nil
 }
 
-// Log bitmap indices are written via rawdb.WriteLogIndex() called from executor.go.
-// No additional stub needed here.
+// Log bitmap indices: not maintained by ethexec. The executor re-derives
+// receipts per block for verification, then discards them. The live node
+// path (internal/blockchain_write.go) writes log indices via
+// rawdb.WriteLogIndex during insertBlock.
 
 // LookupTransaction retrieves the block number for a transaction hash.
 func LookupTransaction(tx kv.Tx, txHash types.Hash) (uint64, bool, error) {

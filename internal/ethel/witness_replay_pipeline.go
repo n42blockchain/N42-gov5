@@ -84,13 +84,13 @@ type WitnessReplayConfig struct {
 	// duplicates the input. Set when generating a fresh witness archive.
 	WriteWitness bool
 
-	// NoReceipts skips emitting the receipts.cdat output table. Useful
-	// for rebuild-state correctness tests: only acctcs+storcs are
-	// consumed when rebuilding PlainState, so skipping receipts halves
-	// I/O and makes a 0..N pilot run finish faster. The receipts root
-	// is still verified per-block (witness-replay's correctness check),
-	// it's only the persisted cdat that's suppressed.
-	NoReceipts bool
+	// WriteReceipts opts in to emitting the receipts.cdat output table.
+	// Off by default — witness-replay's primary outputs are witness +
+	// acctcs + storcs; receipts are derived separately by the receipt-copy
+	// subcommand which has its own CPU/I/O budget. The per-block receipts
+	// root is still verified in-memory either way; this flag only governs
+	// whether the persisted cdat is written.
+	WriteReceipts bool
 
 	ChainCfg *params.ChainConfig
 	Engine   consensus.Engine
@@ -111,7 +111,7 @@ type witnessAggregateState struct {
 	next         uint64
 	end          uint64
 	writeWitness bool
-	noReceipts   bool
+	writeReceipts bool
 }
 
 // RunWitnessReplay drives the parallel replay end-to-end. Returns
@@ -203,7 +203,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 			freezer.TableStorageChanges,
 			freezer.TableWipes,
 		}
-		if !cfg.NoReceipts {
+		if cfg.WriteReceipts {
 			witnessReplayOutputTables = append(witnessReplayOutputTables, freezer.TableReceipts)
 		}
 		// Include witness in the align list only when re-emitting it.
@@ -275,7 +275,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 			return fmt.Errorf("genesis encode: %w", err)
 		}
 		if batcher != nil {
-			if !cfg.NoReceipts {
+			if cfg.WriteReceipts {
 				if err := batcher.addEntry(freezer.TableReceipts, "c", EncodeReceiptsCompact(nil)); err != nil {
 					return fmt.Errorf("addEntry receipts block 0: %w", err)
 				}
@@ -316,7 +316,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		next:         feedStart,
 		end:          end,
 		writeWitness: cfg.WriteWitness,
-		noReceipts:   cfg.NoReceipts,
+		writeReceipts: cfg.WriteReceipts,
 	}
 	target := end - cfg.StartBlock
 	log.Info("Replay started",
@@ -426,7 +426,7 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 			return nil
 		}
 		if a.batcher != nil {
-			if !a.noReceipts {
+			if a.writeReceipts {
 				if err := a.batcher.addEntry(freezer.TableReceipts, "c", res.ReceiptBytes); err != nil {
 					return fmt.Errorf("addEntry receipts block %d: %w", res.BlockNum, err)
 				}
