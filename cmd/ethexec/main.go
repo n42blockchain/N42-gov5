@@ -145,6 +145,29 @@ func main() {
 				Action: runCompact,
 			},
 			{
+				Name:  "bundle-hash",
+				Usage: "Generate blake2b manifest for a minimal-client bundle (server side; publish after state-root verify)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "datadir", Usage: "Bundle root directory (e.g. dir containing chain/freezer/headerc.cidx)", Required: true},
+					&cli.StringFlag{Name: "out", Usage: "Output manifest path (.json)", Required: true},
+					&cli.Uint64Flag{Name: "chain-id", Usage: "Chain ID for manifest header", Value: 1},
+					&cli.Uint64Flag{Name: "block-start", Usage: "Block range start", Value: 0},
+					&cli.Uint64Flag{Name: "block-end", Usage: "Block range end (inclusive)", Value: 0},
+					&cli.IntFlag{Name: "workers", Usage: "Concurrent file hashers (0=GOMAXPROCS)", Value: 0},
+				},
+				Action: runBundleHash,
+			},
+			{
+				Name:  "bundle-verify",
+				Usage: "Verify a downloaded bundle against its blake2b manifest (client side)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "datadir", Usage: "Bundle root directory", Required: true},
+					&cli.StringFlag{Name: "manifest", Usage: "Path to manifest .json (typically alongside the bundle)", Required: true},
+					&cli.IntFlag{Name: "workers", Usage: "Concurrent file verifiers (0=GOMAXPROCS)", Value: 0},
+				},
+				Action: runBundleVerify,
+			},
+			{
 				Name:  "sender-recovery",
 				Usage: "Extract senders from Geth ancient, N42 columnar bodyc, or Reth MDBX",
 				Flags: []cli.Flag{
