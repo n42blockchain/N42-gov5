@@ -347,6 +347,29 @@ func openFreezer(path string, threshold uint64, readonly bool) (*Freezer, error)
 		}
 	}
 
+	// Geth's freezer cidx writer appends a "next-write" sentinel past the
+	// last real block — a trailing 6-byte cidx record whose offset marks
+	// where the next item would be written. N42 reads this as an extra
+	// item whose data length is zero, so callers iterating [0, Frozen())
+	// see a phantom empty block at the tail (executor.go:254 used to
+	// crash with "decompress header: empty data" on that last index).
+	// Probe the supposed last entry on a canonical table; if it reads
+	// back zero-length, decrement items.
+	//
+	// Only runs for paths matching IsLikelyGethAncient — our own freezers
+	// never emit this sentinel, so the probe is skipped to avoid masking
+	// genuine truncation bugs in N42-written tables.
+	if initialized && IsLikelyGethAncient(path) && items > 0 {
+		if probe, ok := f.tables[TableHeaders]; ok {
+			data, err := probe.Retrieve(items - 1)
+			if err == nil && len(data) == 0 {
+				log.Info("Freezer: detected geth cidx sentinel, stripping from items count",
+					"path", path, "rawItems", items, "real", items-1)
+				items--
+			}
+		}
+	}
+
 	f.frozen.Store(items)
 	freezerFrozenBlocks.Set(items)
 
