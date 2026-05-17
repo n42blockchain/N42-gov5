@@ -128,6 +128,14 @@ func (r *CodesFreezerReader) Close() {
 // Items returns the number of contracts in the index (for diagnostics).
 func (r *CodesFreezerReader) Items() int { return len(r.entries) }
 
+// GetCode is the modules/state.CodeSource adapter: same lookup as
+// LookupByAddress but with the interface-mandated method name. Lets
+// PlainStateReader.SetCodeSource accept *CodesFreezerReader directly
+// without an external wrapper.
+func (r *CodesFreezerReader) GetCode(addr types.Address) ([]byte, error) {
+	return r.LookupByAddress(addr)
+}
+
 // LookupByAddress returns the bytecode for addr, or nil if not present.
 func (r *CodesFreezerReader) LookupByAddress(addr types.Address) ([]byte, error) {
 	// Binary search by address.

@@ -24,6 +24,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
@@ -1169,12 +1170,20 @@ func FlushAuditLog() {
 }
 
 type BufferedPlainStateReader struct {
-	buf *PlainStateBuffer
-	db  kv.Getter
+	buf     *PlainStateBuffer
+	db      kv.Getter
+	codeSrc CodeSource // optional; see SetCodeSource
 }
 
 func NewBufferedPlainStateReader(buf *PlainStateBuffer, db kv.Getter) *BufferedPlainStateReader {
 	return &BufferedPlainStateReader{buf: buf, db: db}
+}
+
+// SetCodeSource attaches a bytecode source consulted before MDBX Code
+// (after the buffer/inflight/LRU caches). Mirrors PlainStateReader —
+// see that file's docstring for the rationale.
+func (r *BufferedPlainStateReader) SetCodeSource(src CodeSource) {
+	r.codeSrc = src
 }
 
 // auditStorageLRU cross-checks a storage value returned from the LRU
@@ -1477,6 +1486,22 @@ func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, codeHa
 	}
 	r.buf.misses.Add(1)
 	r.buf.codeMisses.Add(1)
+	// codes.cdat fast path — addr-keyed, snapshot at bundle-end. Verify
+	// keccak matches requested codeHash so SELFDESTRUCT+redeploy past
+	// bundle-end (where MDBX Code holds the new bytecode) falls through
+	// correctly. ~200ns/keccak on Ryzen — under 1% of GetCode latency.
+	if r.codeSrc != nil {
+		code, err := r.codeSrc.GetCode(address)
+		if err != nil {
+			return nil, err
+		}
+		if len(code) > 0 && crypto.Keccak256Hash(code) == codeHash {
+			cached := make([]byte, len(code))
+			copy(cached, code)
+			r.buf.readCode.Put(codeHash, cached, hashKeyLen+len(cached)+cacheOverheadPerEntry)
+			return cached, nil
+		}
+	}
 	code, err := r.db.GetOne(modules.Code, codeHash[:])
 	if err != nil {
 		return nil, err
