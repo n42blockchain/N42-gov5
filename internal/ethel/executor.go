@@ -275,9 +275,19 @@ func (e *Executor) Run(ctx context.Context) error {
 	defer func() { cleanup() }()
 
 	if startBlock > endBlock {
-		setupTx.Rollback()
-		log.Info("Already past target", "at", startBlock-1, "target", endBlock)
-		return nil
+		// If a prior terminal exit left a partial-batch remainder in
+		// MDBX (pre-flushAll fix, or any future regression), fall
+		// through so the setup + terminal-exit flushAll path can drain
+		// it into the freezer. Skipping straight back here would strand
+		// those entries in MDBX shadow forever.
+		csRem := ReadCSRemainder(setupTx)
+		if len(csRem) == 0 {
+			setupTx.Rollback()
+			log.Info("Already past target", "at", startBlock-1, "target", endBlock)
+			return nil
+		}
+		log.Info("Already past target — flushing pending remainder to freezer",
+			"at", startBlock-1, "target", endBlock, "tables", len(csRem))
 	}
 
 	// Initialize HashedAccounts from PlainState if verify enabled and not yet populated.
@@ -677,19 +687,33 @@ func (e *Executor) Run(ctx context.Context) error {
 			}
 			e.asyncOut = nil
 		}
-		// Normal termination (--end reached): save all entries to MDBX,
-		// then fsync freezer.
-		var finalEntries map[string][]byte
+		// Normal termination (--end reached): force-flush the partial
+		// last batch to freezer so the cdat items count matches MDBX
+		// progress, then fsync, then commit MDBX with NO remainder.
+		//
+		// Periodic commits use flushFullBatches+remainder-to-MDBX so the
+		// next interval can finish out the partial batch. That assumes
+		// future iterations will arrive. At terminal exit there are no
+		// more blocks — without flushAll() the partial batch (up to 48
+		// entries) sits forever in MDBX CSRemainder, freezer items lag
+		// MDBX progress, and any later "verify witness covers progress"
+		// check fails. Witness fill on 2026-05-16 stranded 40 blocks
+		// (25,101,827..25,101,866) this way before this fix.
+		//
+		// Atomicity: a crash between flushAll() and handWithRemainder()
+		// leaves freezer ahead of MDBX, which alignOnResume already
+		// detects and discards via "cdat ahead of MDBX" path. The
+		// previous order (full-batches-then-remainder-to-MDBX) was
+		// symmetric in the other direction; both recover cleanly.
 		if e.outBatcher != nil {
-			finalEntries = e.outBatcher.remainder()
-			if _, err := e.outBatcher.flushFullBatches(); err != nil {
+			if err := e.outBatcher.flushAll(); err != nil {
 				return fmt.Errorf("flush output batcher final: %w", err)
 			}
 			if err := e.outBatcher.sync(); err != nil {
 				return fmt.Errorf("fsync output freezer final: %w", err)
 			}
 		}
-		if err := e.asyncFlush.handWithRemainder(lastOKBlock, finalEntries); err != nil {
+		if err := e.asyncFlush.handWithRemainder(lastOKBlock, nil); err != nil {
 			return fmt.Errorf("hand final flush: %w", err)
 		}
 		if _, err := e.asyncFlush.waitPrev(); err != nil {
