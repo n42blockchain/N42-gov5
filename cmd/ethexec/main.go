@@ -146,12 +146,13 @@ func main() {
 			},
 			{
 				Name:  "sender-recovery",
-				Usage: "Extract senders from Geth ancient bodies or Reth MDBX",
+				Usage: "Extract senders from Geth ancient, N42 columnar bodyc, or Reth MDBX",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory"},
+					&cli.StringFlag{Name: "bodyc", Usage: "Path to N42 columnar dir (has headerc.cidx + bodyc.cidx). Use when no geth ancient available — minimal-client bundle path."},
 					&cli.StringFlag{Name: "erigon-db", Usage: "Path to Reth/Erigon MDBX (reads TransactionSenders)"},
 					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
-					&cli.IntFlag{Name: "workers", Usage: "Number of parallel workers (Geth mode only)", Value: 0},
+					&cli.IntFlag{Name: "workers", Usage: "Number of parallel workers (ecrecover mode only)", Value: 0},
 					&cli.Uint64Flag{Name: "start", Usage: "Start block", Value: 0},
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
 				},
@@ -1402,6 +1403,7 @@ func runReceiptCopy(c *cli.Context) error {
 
 func runSenderRecovery(c *cli.Context) error {
 	ancientPath := c.String("ancient")
+	bodycPath := c.String("bodyc")
 	erigonDB := c.String("erigon-db")
 	datadir := c.String("datadir")
 	startBlock := c.Uint64("start")
@@ -1436,17 +1438,26 @@ func runSenderRecovery(c *cli.Context) error {
 		return exporter.Export(ctx, startBlock, endBlock)
 	}
 
-	// Geth ancient path.
-	if ancientPath == "" {
-		return fmt.Errorf("--ancient or --erigon-db is required")
+	// Pick header/body source: geth ancient OR N42 columnar bodyc.
+	// Both routed through OpenHeadersBodiesSource which auto-detects by
+	// probing for headerc.cidx (N42 columnar marker).
+	if ancientPath == "" && bodycPath == "" {
+		return fmt.Errorf("one of --ancient, --bodyc, or --erigon-db is required")
+	}
+	if ancientPath != "" && bodycPath != "" {
+		return fmt.Errorf("--ancient and --bodyc are mutually exclusive")
+	}
+	inputPath := ancientPath
+	if bodycPath != "" {
+		inputPath = bodycPath
 	}
 	workers := c.Int("workers")
-	f, err := freezer.NewReadOnly(ancientPath)
+	inputSrc, err := ethel.OpenHeadersBodiesSource(inputPath)
 	if err != nil {
-		return fmt.Errorf("open input freezer: %w", err)
+		return fmt.Errorf("open input source %s: %w", inputPath, err)
 	}
-	defer f.Close()
-	log.Info("Input freezer opened", "frozen", f.Frozen())
+	defer inputSrc.Close()
+	log.Info("Sender recovery input source", "path", inputPath, "maxBlock", inputSrc.MaxBlock())
 
 	ancientOut := filepath.Join(datadir, "chain", "freezer")
 	if err := os.MkdirAll(ancientOut, 0755); err != nil {
@@ -1458,7 +1469,7 @@ func runSenderRecovery(c *cli.Context) error {
 	}
 	defer of.Close()
 
-	stage := ethel.NewSenderStage(f, of, params.EthereumMainnetChainConfig, workers)
+	stage := ethel.NewSenderStage(inputSrc, of, params.EthereumMainnetChainConfig, workers)
 	if c.IsSet("start") || c.IsSet("end") {
 		stage.SetRange(startBlock, endBlock)
 	}

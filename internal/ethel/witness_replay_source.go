@@ -31,6 +31,48 @@ type headersBodiesSource interface {
 	close()
 }
 
+// HeadersBodiesSource is the exported handle for cross-package callers
+// (cmd/ethexec sender-recovery, future tools). Same interface as the
+// internal one but exported method names. Constructed via
+// OpenHeadersBodiesSource.
+type HeadersBodiesSource interface {
+	Header(blockNum uint64) (*block.Header, error)
+	Body(blockNum uint64) (*GethBodyResult, error)
+	MaxBlock() uint64
+	Close()
+}
+
+// exportedSource adapts the unexported headersBodiesSource to the
+// exported interface. Keeps internal call sites untouched while giving
+// external callers a stable API.
+type exportedSource struct{ s headersBodiesSource }
+
+func (e *exportedSource) Header(n uint64) (*block.Header, error) { return e.s.header(n) }
+func (e *exportedSource) Body(n uint64) (*GethBodyResult, error) { return e.s.body(n) }
+func (e *exportedSource) MaxBlock() uint64                       { return e.s.maxBlock() }
+func (e *exportedSource) Close()                                 { e.s.close() }
+
+// internalSource adapts the exported HeadersBodiesSource back to the
+// unexported interface so SenderStage (which uses the unexported one
+// internally for shared close lifecycle) can accept either.
+type internalSource struct{ s HeadersBodiesSource }
+
+func (i *internalSource) header(n uint64) (*block.Header, error) { return i.s.Header(n) }
+func (i *internalSource) body(n uint64) (*GethBodyResult, error) { return i.s.Body(n) }
+func (i *internalSource) maxBlock() uint64                       { return i.s.MaxBlock() }
+func (i *internalSource) close()                                 { i.s.Close() }
+
+// OpenHeadersBodiesSource picks the right backend by probing dir:
+// N42 columnar (headerc.cidx present) or geth ancient (default).
+// The returned source's Close() releases all underlying handles.
+func OpenHeadersBodiesSource(dir string) (HeadersBodiesSource, error) {
+	src, err := openHeadersBodiesSource(dir)
+	if err != nil {
+		return nil, err
+	}
+	return &exportedSource{s: src}, nil
+}
+
 // openHeadersBodiesSource picks the reader implementation by probing
 // the input directory.
 //
