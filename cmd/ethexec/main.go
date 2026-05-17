@@ -214,6 +214,7 @@ func main() {
 					&cli.BoolFlag{Name: "persist-trie", Usage: "After reaching end block, populate HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage so subsequent per-block verify (verify-incremental) runs in O(dirty)"},
 					&cli.Uint64Flag{Name: "dirty-space-gb", Usage: "MDBX dirty-page pool size in GB. Default 2. Raise to 32+ for --persist-trie at 10M+ blocks; BootstrapHPH writes 100B+ rows in a single tx and the 2GB default overflows with MDBX_MAP_FULL", Value: 2},
 					&cli.StringFlag{Name: "wipes-sidecar", Usage: "Optional freezer dir containing a wipes.cdat sidecar produced by storcs-extract-wipes. Required when rebuilding from witness-replay output, which lacks SELFDESTRUCT pre-wipe entries. Auto-detects <leaves>/wipes.cidx if not specified."},
+				&cli.BoolFlag{Name: "skip-final-verify", Usage: "Skip the post-rebuild HPH state-root verify (~5h on 25M state). Trust shifts to upstream bundle hash (see minimal-client design — server runs verify once when producing bundle; multiple servers reproducing the same blake2b are the trustless anchor)."},
 					// --track-addr is defined at the app level (execFlags); see run()
 					// for the SetTrackedAddr wiring. urfave/cli treats app-level flags
 					// as global so subcommands can read them via c.String("track-addr")
@@ -1589,6 +1590,10 @@ func runRebuildState(c *cli.Context) error {
 	}
 	if err := ethel.RebuildStateWith(ctx, db, leavesDir, endBlock, opts); err != nil {
 		return err
+	}
+	if c.Bool("skip-final-verify") {
+		log.Info("Skipping post-rebuild HPH state-root verify (--skip-final-verify). Trust shifts to upstream bundle hash.")
+		return nil
 	}
 	// Clamp endBlock to the leaves freezer's item count — the rebuild
 	// stopped there, so VerifyRebuildRoot must compare OUR state at
