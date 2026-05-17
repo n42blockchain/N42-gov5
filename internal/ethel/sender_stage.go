@@ -3,8 +3,9 @@
 //
 // sender_stage.go — parallel ecrecover pipeline for block senders.
 //
-// SenderStage streams block bodies from the input freezer through a pool
-// of goroutines that run ecrecover on every transaction using a signer
+// SenderStage streams block bodies from a headersBodiesSource (either a
+// geth ancient freezer or N42 columnar headerc/bodyc) through a pool of
+// goroutines that run ecrecover on every transaction using a signer
 // built from the chain config fork rules, then writes the 20-byte
 // sender addresses (batch-64 zstd) into the output freezer's "senders"
 // table via a reorder buffer. Running senders as a standalone pass lets
@@ -32,7 +33,7 @@ import (
 )
 
 type SenderStage struct {
-	inputFreezer  *freezer.Freezer
+	inputSrc      HeadersBodiesSource
 	outputFreezer *freezer.Freezer
 	chainCfg      *params.ChainConfig
 	workers       int
@@ -57,15 +58,15 @@ type senderResult struct {
 	senders  []byte // 20B × txCount
 }
 
-func NewSenderStage(input, output *freezer.Freezer, chainCfg *params.ChainConfig, workers int) *SenderStage {
+// NewSenderStage builds a SenderStage reading from any HeadersBodiesSource
+// (geth ancient or N42 columnar — caller picks via OpenHeadersBodiesSource).
+// The caller is responsible for the source's Close lifecycle.
+func NewSenderStage(inputSrc HeadersBodiesSource, output *freezer.Freezer, chainCfg *params.ChainConfig, workers int) *SenderStage {
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
-	// Ensure input freezer has headers/bodies tables (coreTableSpecs is empty).
-	input.EnsureTable("headers", "c")
-	input.EnsureTable("bodies", "c")
 	return &SenderStage{
-		inputFreezer:  input,
+		inputSrc:      inputSrc,
 		outputFreezer: output,
 		chainCfg:      chainCfg,
 		workers:       workers,
@@ -96,10 +97,10 @@ func (s *SenderStage) Run(ctx context.Context) error {
 		startBlock = s.forceStart
 	}
 
-	endBlock := s.inputFreezer.Frozen()
+	endBlock := s.inputSrc.MaxBlock()
 	if s.forceEnd != 0 {
 		if s.forceEnd > endBlock {
-			return fmt.Errorf("sender recovery: --end=%d exceeds input freezer Frozen=%d", s.forceEnd, endBlock)
+			return fmt.Errorf("sender recovery: --end=%d exceeds input maxBlock=%d", s.forceEnd, endBlock)
 		}
 		endBlock = s.forceEnd
 	}
@@ -160,34 +161,31 @@ func (s *SenderStage) Run(ctx context.Context) error {
 			break
 		}
 
-		headerData, err := s.inputFreezer.Ancient(freezer.TableHeaders, blockNum)
+		header, err := s.inputSrc.Header(blockNum)
 		if err != nil {
+			// Tolerate read errors right at the end of input range.
+			// Two sources of phantom past-end blocks:
+			//  - Geth cidx sentinel (freezer-layer fix strips this on
+			//    open, but legacy paths/per-table readers can still see
+			//    it via direct Ancient calls).
+			//  - N42 columnar MaxBlock = segments*8192 over-reports past
+			//    the last real block when the final segment is partial.
+			if blockNum+1 == endBlock {
+				log.Info("Sender recovery: end-of-input read error — stopping cleanly",
+					"at", blockNum, "items", tbl.Items(), "err", err)
+				break
+			}
 			readerErr = fmt.Errorf("read header %d: %w", blockNum, err)
 			break
 		}
-		// Geth's cidx has a trailing "next-write" sentinel entry past the
-		// last real block (extra entry whose offset equals the data file
-		// size). N42's tbl.Items() counts it as a real item, so the last
-		// loop iteration reads zero-length data. Treat as clean EOS.
-		if len(headerData) == 0 && blockNum+1 == endBlock {
-			log.Info("Sender recovery: reached geth sentinel entry — stopping cleanly",
-				"at", blockNum, "items", tbl.Items())
-			break
-		}
-		header, err := DecodeGethHeader(headerData)
+		body, err := s.inputSrc.Body(blockNum)
 		if err != nil {
-			readerErr = fmt.Errorf("decode header %d: %w", blockNum, err)
-			break
-		}
-
-		bodyData, err := s.inputFreezer.Ancient(freezer.TableBodies, blockNum)
-		if err != nil {
+			if blockNum+1 == endBlock {
+				log.Info("Sender recovery: end-of-input body read error — stopping cleanly",
+					"at", blockNum, "items", tbl.Items(), "err", err)
+				break
+			}
 			readerErr = fmt.Errorf("read body %d: %w", blockNum, err)
-			break
-		}
-		body, err := DecodeGethBody(bodyData)
-		if err != nil {
-			readerErr = fmt.Errorf("decode body %d: %w", blockNum, err)
 			break
 		}
 
