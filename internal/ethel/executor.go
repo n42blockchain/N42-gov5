@@ -134,6 +134,10 @@ type Executor struct {
 	prefetchCompactHeaders *HeaderCompactReader
 	prefetchCompactBodies  *BodyCompactReader
 
+	// codesFreezer is an optional codes.cidx-backed bytecode source
+	// consulted before the MDBX Code table. See SetCodesFreezer.
+	codesFreezer *CodesFreezerReader
+
 	// Output batcher: accumulates entries, writes in batches.
 	outBatcher *outputBatcher
 	asyncOut   *asyncOutputWriter // background changeset encoder + writer
@@ -240,6 +244,22 @@ func (e *Executor) SetCompactReaders(hr *HeaderCompactReader, br *BodyCompactRea
 func (e *Executor) SetPrefetchCompactReaders(hr *HeaderCompactReader, br *BodyCompactReader) {
 	e.prefetchCompactHeaders = hr
 	e.prefetchCompactBodies = br
+}
+
+// SetCodesFreezer wires up a CodesFreezerReader as the EVM bytecode
+// source. ReadAccountCode tries this first (address-keyed lookup,
+// keccak-verified), falling back to MDBX Code only for bytecodes
+// deployed after the codes.cdat snapshot (e.g. forward-replay
+// catch-up past bundle-end). Pass nil to disable.
+func (e *Executor) SetCodesFreezer(r *CodesFreezerReader) {
+	if e.stateBuf == nil {
+		e.codesFreezer = r
+		return
+	}
+	// stateBuf already constructed (re-Set is allowed). The Buffered
+	// state reader is built fresh per executeBlock from the buffer, so
+	// storing on the executor is enough — executeBlock plumbs it through.
+	e.codesFreezer = r
 }
 
 // Run executes blocks from StartBlock to EndBlock.
@@ -756,6 +776,11 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) 
 	// 2. Set up state reader/writer with write buffer.
 	// Reader checks in-memory buffer first, falls through to MDBX.
 	bufReader := state.NewBufferedPlainStateReader(e.stateBuf, tx)
+	if e.codesFreezer != nil {
+		// codes.cdat fast path — keccak-verified; falls back to MDBX
+		// Code on mismatch (covers SELFDESTRUCT+redeploy past bundle-end).
+		bufReader.SetCodeSource(e.codesFreezer)
+	}
 	var witnessReader *WitnessStateReader
 	var reader state.StateReader = bufReader
 	if e.outFreezer != nil && !e.cfg.NoOutputs && !e.cfg.NoWitness {
@@ -1115,6 +1140,9 @@ func (e *Executor) snapshotOutputs(blockNum uint64, result *BlockResult, writer 
 	// This is the ONLY place that touches stateBuf — done synchronously
 	// so the next block's writes cannot interfere.
 	bufReader := state.NewBufferedPlainStateReader(e.stateBuf, dbTx)
+	if e.codesFreezer != nil {
+		bufReader.SetCodeSource(e.codesFreezer)
+	}
 
 	po.accNewVals = make(map[types.Address][]byte, accCS.Len())
 	for _, c := range accCS.Changes {

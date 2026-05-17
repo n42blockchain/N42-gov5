@@ -32,6 +32,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
@@ -55,6 +56,7 @@ type PlainState struct {
 	blockNr                      uint64
 	storage                      map[types.Address]*btree.BTree
 	trace                        bool
+	codeSrc                      CodeSource // optional; see PlainStateReader.SetCodeSource
 }
 
 func NewPlainState(tx kv.Tx, blockNr uint64) *PlainState {
@@ -85,6 +87,14 @@ func NewPlainState(tx kv.Tx, blockNr uint64) *PlainState {
 
 func (s *PlainState) SetTrace(trace bool) {
 	s.trace = trace
+}
+
+// SetCodeSource wires up a bytecode source consulted before MDBX Code.
+// Mirrors PlainStateReader.SetCodeSource — historical RPC reads (which
+// flow through PlainState rather than PlainStateReader) can also benefit
+// from the codes.cdat fast path.
+func (s *PlainState) SetCodeSource(src CodeSource) {
+	s.codeSrc = src
 }
 
 func (s *PlainState) SetBlockNr(blockNr uint64) {
@@ -200,6 +210,20 @@ func (s *PlainState) ReadAccountStorage(address types.Address, key *types.Hash) 
 func (s *PlainState) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
 	if bytes.Equal(codeHash[:], emptyCodeHash) {
 		return nil, nil
+	}
+	// codes.cdat preferred path — see PlainStateReader.ReadAccountCode
+	// for the rationale and the keccak-verify trade-off.
+	if s.codeSrc != nil {
+		code, err := s.codeSrc.GetCode(address)
+		if err != nil {
+			return nil, err
+		}
+		if len(code) > 0 && crypto.Keccak256Hash(code) == codeHash {
+			if s.trace {
+				fmt.Printf("ReadAccountCode [%x %x] => [%x] (codes.cdat)\n", address, codeHash, code)
+			}
+			return code, nil
+		}
 	}
 	code, err := s.tx.GetOne(modules.Code, codeHash[:])
 	if s.trace {

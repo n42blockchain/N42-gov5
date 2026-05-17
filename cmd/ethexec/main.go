@@ -878,6 +878,30 @@ func run(c *cli.Context) error {
 		log.Info("No pre-computed senders, using ecrecover from signatures")
 	}
 
+	// Auto-wire codes.cdat as a bytecode source. Probed in two places
+	// in preference order: the configured ancient/input dir (where a
+	// bundle ships codes.cidx alongside headerc/bodyc) and the output
+	// freezer dir (legacy: code-import2fz wrote into <datadir>/chain/
+	// freezer/codes.cidx). First hit wins.
+	codesProbes := []string{ancientPath, outFreezerPath}
+	for _, dir := range codesProbes {
+		if dir == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, "codes.cidx")); err != nil {
+			continue
+		}
+		r, err := ethel.NewCodesFreezerReader(dir)
+		if err != nil {
+			log.Warn("codes.cidx present but failed to open", "dir", dir, "err", err)
+			break
+		}
+		executor.SetCodesFreezer(r)
+		log.Info("Codes freezer loaded — MDBX Code table will be consulted only on miss",
+			"dir", dir, "contracts", r.Items())
+		break
+	}
+
 	// (Compact reader auto-wiring moved up next to freezer.New so it
 	// runs before any code path that might depend on Frozen() / Ancient
 	// from a partial geth ancient.)
