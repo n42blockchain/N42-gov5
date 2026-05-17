@@ -33,7 +33,7 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-const memLimitGB = 70 // flush threshold on Sys (was 100 + Alloc; OOM'd 128 GB hosts past 15M)
+const memLimitGB = 60 // Alloc threshold; GOMEMLIMIT (90% phys RAM, auto-set) caps Private
 
 // RebuildOptions controls intermediate verification during RebuildState.
 type RebuildOptions struct {
@@ -442,8 +442,8 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 				"elapsed", time.Since(t0).Truncate(time.Second))
 			lastLogTime = time.Now()
 
-			if sysGB > float64(memLimitGB) {
-				log.Info("Memory limit, flushing to MDBX...", "sysGB", fmt.Sprintf("%.1f", sysGB), "allocGB", fmt.Sprintf("%.1f", allocGB))
+			if allocGB > float64(memLimitGB) {
+				log.Info("Memory limit, flushing to MDBX...", "allocGB", fmt.Sprintf("%.1f", allocGB), "sysGB", fmt.Sprintf("%.1f", sysGB))
 				if err := flushToMDBX(ctx, db, acctMap, storMap, wipeSet); err != nil {
 					return err
 				}
