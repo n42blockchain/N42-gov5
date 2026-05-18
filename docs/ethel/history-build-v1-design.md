@@ -46,6 +46,44 @@ decompress) but harder to range-scan across keys for a fixed block.
 For "historical state at block N" lookups (the dominant query) this
 is the right shape.
 
+## Measured (2026-05-18)
+
+Smoke ranges on N42-eth1177:
+
+| Range | Domain | Entries | Unique keys | Total disk | B/entry | Wall |
+|-------|--------|---------|-------------|------------|---------|------|
+| 0-100K | account | 160K | 15.7K | 1.82 MB | 11.92 | 0s |
+| 0-100K | storage v1 | 6.4K | 3.4K | 116 KB | 18.41 | 0s |
+| 0-100K | storage-grouped v2 | 6.4K | 219 addrs | 106 KB | 16.84 | 0s |
+| 5M-6M (mid) | storage-grouped v2 | 179M | 2.1M addrs (77M slots) | **2.94 GB** | 17.67 | 8m23s |
+
+Verify: 1000-sample random spot-check on each — 100% match against
+ground-truth replay of CS.
+
+Sort fix landed (commit dfc28574): ETL only sorts by key, so per-key
+changes arrived in arbitrary block order. Pre-fix v2 had 5.2%
+mismatch on 100K range; v1 happened to pass because dataset had <2
+entries/key. Now both correct.
+
+**Real-archive extrapolation (25M blocks):**
+
+| Tier | Measured / Extrapolated |
+|------|------------------------|
+| snapshot accounts | 3.92 GB (measured, 386M accounts in 37m11s) |
+| snapshot storage | ~10-15 GB (pending) |
+| snapshot code | 5.93 GB (existing codes.cdat) |
+| history accounts v1 | ~30 GB (extrapolated) |
+| history storage v1/v2 | ~55-75 GB (extrapolated from mid-era smoke) |
+| **TOTAL** | **~100-130 GB** (vs 945 GB original = 7-9× reduction) |
+
+v2 (addr-grouped) saves only ~4% over v1 at scale; the big win is
+amortising per-page key overhead which zstd already captures. Real
+next wins for sub-100 GB target:
+- value dictionary (common storage patterns: 0, single-byte, addr-shaped)
+- drop history values entirely; store only EF of changed blocks +
+  read value from snapshot-at-prev-step (Erigon E3 .ef-only pattern)
+- partitioned per-step `.history.{ef,v}` for incremental updates
+
 ## Size estimate (storage, 25M blocks)
 
 Assume 300M unique slots × 4 writes avg = 1.2B (key, block, value)
