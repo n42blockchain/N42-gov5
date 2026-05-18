@@ -39,7 +39,7 @@ var logger = log.New()
 func main() {
 	frDir := flag.String("freezer", "", "freezer dir containing acctcs.cidx / storcs.cidx")
 	outDir := flag.String("out", "", "output dir for history files")
-	domain := flag.String("domain", "both", "account / storage / both")
+	domain := flag.String("domain", "both", "account / storage / storage-grouped / both")
 	startBlk := flag.Uint64("start", 0, "starting block (inclusive)")
 	endBlk := flag.Uint64("end", 0, "ending block (exclusive; 0 = head)")
 	tmpDir := flag.String("tmpdir", "", "ETL spill dir (default: <out>/etl)")
@@ -69,6 +69,8 @@ func main() {
 		buildHistory(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
 	case "storage":
 		buildHistory(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
+	case "storage-grouped":
+		buildStorageGrouped(fr, *outDir, *tmpDir, "storage-grouped", *startBlk, *endBlk, *etlBufMB)
 	case "both", "":
 		buildHistory(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
 		buildHistory(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
@@ -230,6 +232,191 @@ func buildHistory(fr *freezer.Freezer, outDir, tmpDir, prefix, tableName string,
 	fmt.Printf("    bytes / entry   : %.2f\n", bytesPerEntry)
 	fmt.Printf("    bytes / key     : %.2f\n", bytesPerKey)
 	fmt.Printf("    Total time      : %s\n", time.Since(t0).Truncate(time.Second))
+}
+
+// buildStorageGrouped writes a per-addr coldstore where the value is
+// PackGrouped(slots → history). Drops the per-entry addr prefix (20B
+// saved per (addr,slot,block) entry compared to v1).
+func buildStorageGrouped(fr *freezer.Freezer, outDir, tmpDir, prefix string, startBlk, endBlk uint64, etlBufMB uint64) {
+	fmt.Printf("\n=== storage-grouped history (table=storcs, keyLen=20 addr) ===\n")
+	t0 := time.Now()
+
+	tbl, err := fr.EnsureTableCompressed(freezer.TableStorageChanges, "c")
+	must(err, "open storcs")
+	maxItems := tbl.Items()
+	if endBlk == 0 || endBlk > maxItems {
+		endBlk = maxItems
+	}
+	fmt.Printf("  range: [%d, %d)  table.Items=%d\n", startBlk, endBlk, maxItems)
+
+	// Phase 1: stream storcs → ETL.Collect(addr, slot+blockBE+vlen+value)
+	fmt.Printf("  [phase 1] streaming storcs → ETL collector (addr-keyed)...\n")
+	t1 := time.Now()
+
+	bufSize := datasize.ByteSize(etlBufMB) * datasize.MB
+	coll := etl.NewCollector(prefix, tmpDir, etl.NewSortableBuffer(bufSize), logger)
+	defer coll.Close()
+
+	var emitted, blocksProcessed uint64
+	scratch := make([]byte, 0, 64)
+
+	for blk := startBlk; blk < endBlk; blk++ {
+		data, err := tbl.Retrieve(blk)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		blocksProcessed++
+		changes, err := ethel.DecodeStorageChanges(data)
+		if err != nil {
+			continue
+		}
+		for _, c := range changes {
+			scratch = encodeStorageGroupedValue(scratch[:0], c.CompositeKey[20:], blk, c.OldValue)
+			if err := coll.Collect(c.CompositeKey[:20], scratch); err != nil {
+				fatal("ETL.Collect storcs-grouped at blk %d: %v", blk, err)
+			}
+			emitted++
+		}
+		if blk%100_000 == 0 && blk > startBlk {
+			elapsed := time.Since(t1).Seconds()
+			rate := float64(blk-startBlk) / elapsed
+			fmt.Fprintf(os.Stderr, "    blk=%d  blocks=%d  emitted=%d  (%.0f blk/s)\n",
+				blk, blocksProcessed, emitted, rate)
+		}
+	}
+	fmt.Printf("  phase 1 done: %d emitted entries from %d blocks, %s\n",
+		emitted, blocksProcessed, time.Since(t1).Truncate(time.Second))
+
+	// Phase 2: ETL.Load → group by addr → secondary group by slot → build per-addr GroupedHistory list
+	fmt.Printf("  [phase 2] ETL.Load + group(addr) + sub-group(slot) + write coldstore...\n")
+	t2 := time.Now()
+
+	w, err := history.NewWriter(outDir, prefix, 20, 64)
+	must(err, "history.NewWriter grouped")
+
+	var (
+		curAddr    []byte
+		curSlot    []byte
+		curChanges []history.Change
+		groupBuf   []history.GroupedHistory
+		uniqAddr   uint64
+	)
+
+	flushSlot := func() {
+		if curSlot == nil || len(curChanges) == 0 {
+			return
+		}
+		groupBuf = append(groupBuf, history.GroupedHistory{
+			SubKey:  append([]byte(nil), curSlot...),
+			Changes: curChanges,
+		})
+		curSlot = curSlot[:0]
+		curChanges = nil
+	}
+	flushAddr := func() error {
+		flushSlot()
+		if curAddr == nil {
+			return nil
+		}
+		packed := history.PackGrouped(nil, 32, groupBuf)
+		if err := w.Append(curAddr, packed); err != nil {
+			return fmt.Errorf("Append %x: %w", curAddr, err)
+		}
+		uniqAddr++
+		if uniqAddr%1_000_000 == 0 {
+			elapsed := time.Since(t2).Seconds()
+			fmt.Fprintf(os.Stderr, "    written %dM addrs (%.0f addr/s)\n",
+				uniqAddr/1_000_000, float64(uniqAddr)/elapsed)
+		}
+		curAddr = curAddr[:0]
+		groupBuf = groupBuf[:0]
+		return nil
+	}
+
+	err = coll.Load(nil, "", func(k, v []byte, table etl.CurrentTableReader, next etl.LoadNextFunc) error {
+		// k = addr (20B). v = slot(32B) || blockBE(8B) || vlen(2B LE) || value
+		if curAddr == nil || !bytes.Equal(curAddr, k) {
+			if err := flushAddr(); err != nil {
+				return err
+			}
+			curAddr = append(curAddr[:0], k...)
+		}
+		slot, block, value, err := decodeStorageGroupedValue(v)
+		if err != nil {
+			return fmt.Errorf("decodeStorageGroupedValue: %w", err)
+		}
+		if curSlot == nil || !bytes.Equal(curSlot, slot) {
+			flushSlot()
+			curSlot = append(curSlot[:0], slot...)
+		}
+		curChanges = append(curChanges, history.Change{
+			Block: block,
+			Value: append([]byte(nil), value...),
+		})
+		return nil
+	}, etl.TransformArgs{})
+	if err != nil {
+		fatal("ETL.Load: %v", err)
+	}
+	if err := flushAddr(); err != nil {
+		fatal("final flush: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		fatal("history.Writer.Close: %v", err)
+	}
+
+	stats := w.Stats()
+	fmt.Printf("  phase 2 done: %d unique addrs, %d pages, %s\n",
+		stats.KeyCount, stats.PageCount, time.Since(t2).Truncate(time.Second))
+
+	idxSize := uint64(history.HeaderLen) + stats.PageCount*uint64(20+8)
+	kvSize := uint64(history.HeaderLen) + stats.TotalKvSize
+	total := idxSize + kvSize
+	bytesPerEntry := float64(0)
+	if emitted > 0 {
+		bytesPerEntry = float64(total) / float64(emitted)
+	}
+	bytesPerAddr := float64(0)
+	if stats.KeyCount > 0 {
+		bytesPerAddr = float64(total) / float64(stats.KeyCount)
+	}
+
+	fmt.Printf("\n  SUMMARY (storage-grouped history):\n")
+	fmt.Printf("    Source entries  : %d\n", emitted)
+	fmt.Printf("    Unique addrs    : %d\n", stats.KeyCount)
+	fmt.Printf("    .idx size       : %s\n", humanBytes(idxSize))
+	fmt.Printf("    .kv size        : %s (compressed)\n", humanBytes(kvSize))
+	fmt.Printf("    .val raw        : %s (uncompressed packed)\n", humanBytes(stats.TotalValSize))
+	fmt.Printf("    TOTAL on disk   : %s\n", humanBytes(total))
+	fmt.Printf("    bytes / entry   : %.2f  (v1 was 18.41 in smoke)\n", bytesPerEntry)
+	fmt.Printf("    bytes / addr    : %.2f\n", bytesPerAddr)
+	fmt.Printf("    Total time      : %s\n", time.Since(t0).Truncate(time.Second))
+}
+
+// encodeStorageGroupedValue packs slot+block+value as the ETL value.
+// Layout: 32B slot || 8B blockBE || 2B valueLen LE || value
+func encodeStorageGroupedValue(dst, slot []byte, block uint64, value []byte) []byte {
+	var buf [10]byte
+	binary.BigEndian.PutUint64(buf[0:8], block)
+	binary.LittleEndian.PutUint16(buf[8:10], uint16(len(value)))
+	dst = append(dst, slot...)
+	dst = append(dst, buf[:]...)
+	dst = append(dst, value...)
+	return dst
+}
+
+func decodeStorageGroupedValue(data []byte) (slot []byte, block uint64, value []byte, err error) {
+	if len(data) < 32+10 {
+		return nil, 0, nil, fmt.Errorf("storage-grouped entry too short: %d B", len(data))
+	}
+	slot = data[0:32]
+	block = binary.BigEndian.Uint64(data[32:40])
+	vlen := binary.LittleEndian.Uint16(data[40:42])
+	if 42+int(vlen) > len(data) {
+		return nil, 0, nil, fmt.Errorf("storage-grouped entry truncated value")
+	}
+	value = data[42 : 42+int(vlen)]
+	return
 }
 
 // encodeEntry packs (block, value) for ETL transit.
