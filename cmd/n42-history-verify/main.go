@@ -25,6 +25,7 @@ func main() {
 	frDir := flag.String("freezer", "", "freezer dir with acctcs/storcs")
 	storeDir := flag.String("store", "", "history coldstore dir")
 	prefix := flag.String("prefix", "account", "domain prefix (account/storage/storage-grouped)")
+	mphf := flag.Bool("mphf", false, "open as MPHF+fp store")
 	startBlk := flag.Uint64("start", 0, "replay start (matches build)")
 	endBlk := flag.Uint64("end", 100000, "replay end (matches build)")
 	samples := flag.Int("samples", 200, "random (key, queryBlock) samples to check")
@@ -106,10 +107,23 @@ func main() {
 		fatal("ground truth empty")
 	}
 
-	r, err := history.Open(*storeDir, *prefix)
-	must(err, "open history reader")
-	defer r.Close()
-	emit("Reader: %d pages, keyLen=%d\n", r.PageCount(), r.KeyLen())
+	var (
+		plainR *history.Reader
+		mphfR  *history.MPHFReader
+	)
+	if *mphf {
+		mr, err := history.OpenMPHF(*storeDir, *prefix)
+		must(err, "open MPHF reader")
+		defer mr.Close()
+		mphfR = mr
+		emit("Reader (MPHF): %d pages, %d keys\n", mr.PageCount(), mr.KeyCount())
+	} else {
+		r, err := history.Open(*storeDir, *prefix)
+		must(err, "open history reader")
+		defer r.Close()
+		plainR = r
+		emit("Reader: %d pages, keyLen=%d\n", r.PageCount(), r.KeyLen())
+	}
 
 	keys := make([]string, 0, len(gt))
 	for k := range gt {
@@ -123,9 +137,18 @@ func main() {
 		// Pick a random block in [start, end) and verify AsOf.
 		queryBlock := *startBlk + uint64(rng.Int63n(int64(end-*startBlk)))
 
+		var getKey []byte
+		var get func([]byte) ([]byte, bool, error)
+		if *mphf {
+			get = mphfR.Get
+		} else if plainR != nil {
+			get = plainR.Get
+		}
 		switch *prefix {
 		case "account", "storage":
-			blob, ok, err := r.Get([]byte(k))
+			getKey = []byte(k)
+			_ = getKey
+			blob, ok, err := get([]byte(k))
 			if err != nil {
 				emit("  Get %x err: %v\n", k, err)
 				mism++
@@ -161,7 +184,7 @@ func main() {
 		case "storage-grouped":
 			addr := []byte(k)[:20]
 			slot := []byte(k)[20:]
-			blob, ok, err := r.Get(addr)
+			blob, ok, err := plainR.Get(addr)
 			if err != nil {
 				emit("  Get %x err: %v\n", addr, err)
 				mism++

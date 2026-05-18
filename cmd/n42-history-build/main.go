@@ -41,6 +41,7 @@ func main() {
 	frDir := flag.String("freezer", "", "freezer dir containing acctcs.cidx / storcs.cidx")
 	outDir := flag.String("out", "", "output dir for history files")
 	domain := flag.String("domain", "both", "account / storage / storage-grouped / both")
+	useMPHF := flag.Bool("mphf", false, "use MPHF+fp mode (4B fingerprint + RecSplit MPHF for keys, smaller for storage)")
 	startBlk := flag.Uint64("start", 0, "starting block (inclusive)")
 	endBlk := flag.Uint64("end", 0, "ending block (exclusive; 0 = head)")
 	tmpDir := flag.String("tmpdir", "", "ETL spill dir (default: <out>/etl)")
@@ -67,14 +68,27 @@ func main() {
 
 	switch *domain {
 	case "account", "accounts":
-		buildHistory(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
+		if *useMPHF {
+			buildHistoryMPHF(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
+		} else {
+			buildHistory(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
+		}
 	case "storage":
-		buildHistory(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
+		if *useMPHF {
+			buildHistoryMPHF(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
+		} else {
+			buildHistory(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
+		}
 	case "storage-grouped":
 		buildStorageGrouped(fr, *outDir, *tmpDir, "storage-grouped", *startBlk, *endBlk, *etlBufMB)
 	case "both", "":
-		buildHistory(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
-		buildHistory(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
+		if *useMPHF {
+			buildHistoryMPHF(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
+			buildHistoryMPHF(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
+		} else {
+			buildHistory(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
+			buildHistory(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
+		}
 	default:
 		fatal("unknown domain: %s", *domain)
 	}
@@ -237,6 +251,186 @@ func buildHistory(fr *freezer.Freezer, outDir, tmpDir, prefix, tableName string,
 	fmt.Printf("    TOTAL on disk   : %s\n", humanBytes(total))
 	fmt.Printf("    bytes / entry   : %.2f\n", bytesPerEntry)
 	fmt.Printf("    bytes / key     : %.2f\n", bytesPerKey)
+	fmt.Printf("    Total time      : %s\n", time.Since(t0).Truncate(time.Second))
+}
+
+// buildHistoryMPHF mirrors buildHistory but writes a MPHF+fp coldstore.
+// Pipeline:
+//   Phase 1: stream CS → ETL.Collect(key, blockBE||vlen||value)        [same as plain]
+//   Phase 2a: ETL.Load grouped by key → per-key PackHistory → ETL2.Collect(key, packed_blob)
+//             AND count unique keys
+//   Phase 2b: NewMPHFWriter(KeyCount). ETL2.Load → MPHFWriter.Append → Close
+func buildHistoryMPHF(fr *freezer.Freezer, outDir, tmpDir, prefix, tableName string, keyLen int, startBlk, endBlk uint64, etlBufMB uint64) {
+	fmt.Printf("\n=== %s history MPHF+fp (table=%s, keyLen=%d) ===\n", prefix, tableName, keyLen)
+	t0 := time.Now()
+
+	tbl, err := fr.EnsureTableCompressed(tableName, "c")
+	must(err, "open table "+tableName)
+	maxItems := tbl.Items()
+	if endBlk == 0 || endBlk > maxItems {
+		endBlk = maxItems
+	}
+	fmt.Printf("  range: [%d, %d)  table.Items=%d\n", startBlk, endBlk, maxItems)
+
+	// --- Phase 1: stream CS → ETL.Collect ---
+	fmt.Printf("  [phase 1] streaming CS → ETL collector...\n")
+	t1 := time.Now()
+
+	bufSize := datasize.ByteSize(etlBufMB) * datasize.MB
+	coll := etl.NewCollector(prefix+"-mphf-pass1", tmpDir,
+		etl.NewSortableBuffer(bufSize), logger)
+	defer coll.Close()
+
+	var emitted, blocksProcessed uint64
+	scratch := make([]byte, 0, 64)
+
+	for blk := startBlk; blk < endBlk; blk++ {
+		data, err := tbl.Retrieve(blk)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		blocksProcessed++
+		switch prefix {
+		case "account":
+			changes, err := ethel.DecodeAccountChanges(data)
+			if err != nil {
+				continue
+			}
+			for _, c := range changes {
+				scratch = encodeEntry(scratch[:0], blk, c.OldValue)
+				if err := coll.Collect(c.Address[:], scratch); err != nil {
+					fatal("ETL.Collect: %v", err)
+				}
+				emitted++
+			}
+		case "storage":
+			changes, err := ethel.DecodeStorageChanges(data)
+			if err != nil {
+				continue
+			}
+			for _, c := range changes {
+				scratch = encodeEntry(scratch[:0], blk, c.OldValue)
+				if err := coll.Collect(c.CompositeKey, scratch); err != nil {
+					fatal("ETL.Collect: %v", err)
+				}
+				emitted++
+			}
+		}
+		if blk%100_000 == 0 && blk > startBlk {
+			elapsed := time.Since(t1).Seconds()
+			rate := float64(blk-startBlk) / elapsed
+			fmt.Fprintf(os.Stderr, "    blk=%d  emitted=%d  (%.0f blk/s)\n", blk, emitted, rate)
+		}
+	}
+	fmt.Printf("  phase 1 done: %d entries from %d blocks, %s\n",
+		emitted, blocksProcessed, time.Since(t1).Truncate(time.Second))
+
+	// --- Phase 2a: group by key, pack history, count unique keys, spill to ETL2 ---
+	fmt.Printf("  [phase 2a] ETL.Load + group + count + ETL2.Collect packed-blobs...\n")
+	t2a := time.Now()
+
+	etl2 := etl.NewCollector(prefix+"-mphf-pass2", tmpDir,
+		etl.NewSortableBuffer(bufSize), logger)
+	defer etl2.Close()
+
+	var (
+		curKey   []byte
+		curHist  []history.Change
+		uniqKeys uint64
+	)
+	flush := func() error {
+		if curKey == nil || len(curHist) == 0 {
+			return nil
+		}
+		sort.Slice(curHist, func(i, j int) bool { return curHist[i].Block < curHist[j].Block })
+		packed := history.PackHistory(nil, curHist)
+		if err := etl2.Collect(curKey, packed); err != nil {
+			return err
+		}
+		uniqKeys++
+		if uniqKeys%1_000_000 == 0 {
+			elapsed := time.Since(t2a).Seconds()
+			fmt.Fprintf(os.Stderr, "    grouped %dM keys (%.0f keys/s)\n",
+				uniqKeys/1_000_000, float64(uniqKeys)/elapsed)
+		}
+		curKey = curKey[:0]
+		curHist = curHist[:0]
+		return nil
+	}
+	err = coll.Load(nil, "", func(k, v []byte, _ etl.CurrentTableReader, _ etl.LoadNextFunc) error {
+		if curKey == nil || !bytes.Equal(curKey, k) {
+			if err := flush(); err != nil {
+				return err
+			}
+			curKey = append(curKey[:0], k...)
+		}
+		block, value, err := decodeEntry(v)
+		if err != nil {
+			return err
+		}
+		curHist = append(curHist, history.Change{Block: block, Value: append([]byte(nil), value...)})
+		return nil
+	}, etl.TransformArgs{})
+	if err != nil {
+		fatal("phase 2a load: %v", err)
+	}
+	if err := flush(); err != nil {
+		fatal("phase 2a final flush: %v", err)
+	}
+	fmt.Printf("  phase 2a done: %d unique keys, %s\n", uniqKeys, time.Since(t2a).Truncate(time.Second))
+
+	if uniqKeys == 0 {
+		fmt.Printf("  no entries — skipping MPHF build\n")
+		return
+	}
+
+	// --- Phase 2b: NewMPHFWriter, feed by ordinal-sorted blobs ---
+	fmt.Printf("  [phase 2b] building MPHF + writing pages...\n")
+	t2b := time.Now()
+
+	w, err := history.NewMPHFWriter(history.MPHFWriterOpts{
+		BaseDir:  outDir,
+		Prefix:   prefix,
+		PageSize: 64,
+		TmpDir:   tmpDir,
+		KeyCount: int(uniqKeys),
+		EtlBufMB: etlBufMB,
+		Logger:   logger,
+	})
+	must(err, "NewMPHFWriter")
+
+	if err := etl2.Load(nil, "", func(k, v []byte, _ etl.CurrentTableReader, _ etl.LoadNextFunc) error {
+		return w.Append(k, v)
+	}, etl.TransformArgs{}); err != nil {
+		fatal("phase 2b load: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		fatal("MPHFWriter.Close: %v", err)
+	}
+	st := w.Stats()
+	fmt.Printf("  phase 2b done: %d pages, %s\n", st.PageCount, time.Since(t2b).Truncate(time.Second))
+
+	// --- Summary ---
+	total := st.KvSize + st.IdxSize + st.MphfSize
+	bpe := float64(0)
+	if emitted > 0 {
+		bpe = float64(total) / float64(emitted)
+	}
+	bpk := float64(0)
+	if st.KeyCount > 0 {
+		bpk = float64(total) / float64(st.KeyCount)
+	}
+	mphfBitsPerKey := float64(st.MphfSize*8) / float64(st.KeyCount)
+
+	fmt.Printf("\n  SUMMARY (%s history MPHF+fp):\n", prefix)
+	fmt.Printf("    Source entries  : %d\n", emitted)
+	fmt.Printf("    Unique keys     : %d\n", st.KeyCount)
+	fmt.Printf("    .mphf size      : %s (%.2f bits/key)\n", humanBytes(st.MphfSize), mphfBitsPerKey)
+	fmt.Printf("    .idx size       : %s (page offsets, 8B/page)\n", humanBytes(st.IdxSize))
+	fmt.Printf("    .kv size        : %s (compressed)\n", humanBytes(st.KvSize))
+	fmt.Printf("    TOTAL on disk   : %s\n", humanBytes(total))
+	fmt.Printf("    bytes / entry   : %.2f\n", bpe)
+	fmt.Printf("    bytes / key     : %.2f\n", bpk)
 	fmt.Printf("    Total time      : %s\n", time.Since(t0).Truncate(time.Second))
 }
 
