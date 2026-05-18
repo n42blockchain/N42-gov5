@@ -102,25 +102,83 @@ honest-target band.
 after build. For deployment, delete `.val` and keep `.val.zst`. The
 table above assumes `.val.zst` only.
 
-## Final snapshot file inventory (D:/n42-snapshot)
+## Full file inventory
 
-```
-accounts.codedict    71.4 MB    codeHash dict (2.34M unique × 32B)
-accounts.idx         78.8 MB    RecSplit MPHF (1.71 bit/key)
-accounts.ef         351.3 MB    Elias-Fano (ordinal → byte offset)
-accounts.val.zst   3516.0 MB    zstd values (codeHash → 3B id)
-                  ────────
-                   4017.5 MB    accounts total
+### Snapshot tier (D:/n42-snapshot)
 
-storage.idx         320.2 MB    RecSplit MPHF (1.71 bit/key)
-storage.ef         1363.7 MB    Elias-Fano (ordinal → byte offset)
-storage.val.zst   18665.0 MB    zstd values
-                 ─────────
-                  20349.0 MB    storage total
-```
+| File | Size | Contents | Read API |
+|------|------|----------|----------|
+| accounts.codedict | 71.4 MB | 2.34M unique codeHash dict (sorted 32B hashes; id=position) | sequential mmap → `dict[id3B]` |
+| accounts.idx | 78.8 MB | RecSplit MPHF (1.71 bit/key) — addr → ordinal | `recsplit.IndexReader.Lookup(addr)` |
+| accounts.ef | 351.3 MB | Elias-Fano ordinal → byte offset in .val | `eliasfano32.Get(ord)` |
+| accounts.val.zst | 3,516 MB | zstd values; each entry = `[fp:4B][len:1B][V2-encoded-acct]`, codeHash replaced by 3B dict id | seek → 1B len → read len B → resolve codeHash via codedict |
+| **accounts subtotal** | **4,018 MB ≈ 3.92 GB** | | |
+| storage.idx | 320.2 MB | RecSplit MPHF for (addr,slot) 52B key | `Lookup(addr‖slot)` |
+| storage.ef | 1,364 MB | EF offsets (7.29 bit/key) | `Get(ord)` |
+| storage.val.zst | 18,665 MB | values, `[fp:4B][len:1B][1-32B val]` | same pattern as accounts |
+| **storage subtotal** | **20,349 MB ≈ 19.87 GB** | | |
+| **Snapshot total** | **23.79 GB** | | |
 
-Combined snapshot: 23.79 GB (compressed, deployable).
-With code: 29.72 GB.
+### History tier (D:/n42-history-full)
+
+| File | Size | Contents | Read API |
+|------|------|----------|----------|
+| account.mphf | 87.3 MB | RecSplit MPHF for 428M ever-touched addrs (1.71 bit/key) | `Lookup(addr)` → ord |
+| account.idx | 51.0 MB | sparse page-offset table, 8B per page × 6.69M pages | `idx[ord/64]` → page byte offset |
+| account.kv | 48.62 GB | zstd-compressed pages (64 entries/page); page-decoded entry = `[fp:4B][varint blobLen][packed-history-blob]` | seek page → zstd decode → walk to (ord%64) → verify fp → return blob |
+| **account history subtotal** | **48.75 GB** (11.32 B/entry, 122 B/key) | | |
+| storage.mphf | ~414 MB | MPHF for 2.03B ever-touched (addr,slot) | `Lookup(addr‖slot)` |
+| storage.idx | ~250 MB | page offsets | |
+| storage.kv | ~80 GB | zstd pages same format | |
+| **storage history subtotal** | **~80 GB** (in progress; see implementation status) | | |
+| **History total** | **~130 GB** | | |
+
+### Code tier (D:/N42-eth1/chain/freezer)
+
+| File | Size | Contents | Read API |
+|------|------|----------|----------|
+| codes.cidx | 55.9 MB | sorted entries `[20B addr][2B fileNum][4B offset]` × 9.77M | binary search by addr |
+| codes.0000-0003.cdat | 5,935 MB | per-entry `[4B len][zstd(bytecode)]`, 2 GB file rotation | seek to offset → zstd decode |
+| **Code total** | **5.93 GB** | | |
+
+### Block tier (D:/N42-eth1177/chain/freezer/ + geth ancient)
+
+| File | Size | Notes |
+|------|------|-------|
+| headers.{cidx,cdat} | ~5 GB | Compact RLP headers |
+| bodies.{cidx,cdat} | ~100 GB | Tx + uncles (or `bodyc` if columnar) |
+| receipts.{cidx,cdat} | ~30 GB | Optional (clients can re-execute) |
+| senders.{cidx,cdat} | ~38 GB | Optional (clients can ecrecover) |
+| **Blocks total** | **~150 GB** raw / ~80 GB without optional | |
+
+### Grand total
+
+| Tier | Compressed deployable |
+|------|----------------------|
+| Snapshot | 23.79 GB |
+| Code | 5.93 GB |
+| History | ~130 GB |
+| Blocks (full) | ~150 GB |
+| **Full archive** | **~310 GB** |
+| **State-only archive (no blocks)** | **~160 GB** |
+| **Fast (snapshot + code + recent delta)** | **~30 GB** |
+
+vs original 945 GB MDBX+freezer:
+- Full archive: **3× smaller** (clients usually have blocks anyway via eth/68)
+- State-only: **6× smaller**
+- Fast mode: **31× smaller**
+
+## Access benchmark (measured)
+
+See `history-bench-results.md` for full bench. Headlines:
+
+| Tier | Workload | µs/lookup | qps |
+|------|----------|-----------|-----|
+| Account history (428M keys, 48.75 GB) | Single-thread random | 177 | 5.7K |
+| Account history | Sequential sorted | 17 | 57K |
+| Account history | 4-8 worker concurrent | 11 | 91K |
+| Mid-era storage (77M keys, 1.6 GB) | Single-thread random | 101 | 9.9K |
+| Mid-era storage | Concurrent peak | 8.3 | 120K |
 
 ## What 34 GB would require
 
@@ -134,3 +192,50 @@ Either:
 Neither is a 2-week project. The 110 GB target is reachable in
 ~1-2 weeks with the existing snapshot + history tools and a small
 CS truncation tool.
+
+## Client/server distribution
+
+See `client-server-sync.md` for the full sync flow, including:
+- bootstrap (full archive / fast mode)
+- eth/68 catch-up and live sync
+- weekly delta publication cadence
+- blake2b manifest trust model
+- multi-mirror hash consensus
+
+## Growth projection
+
+Per-year increment (extrapolated from 25M-block density):
+
+| Tier | New per year |
+|------|-------------|
+| Snapshot | ~3 GB |
+| History | ~16 GB |
+| Code | ~1 GB |
+| Blocks | ~150 GB (raw) / ~50 GB compact |
+| **Total compressed (full archive)** | **~20 GB/year** |
+| **Total compressed (state-only)** | **~20 GB/year** |
+| **Fast mode (snapshot+delta)** | **~3-4 GB/year** |
+
+| Time | Full archive (with blocks) | State-only | Fast |
+|------|----------------------------|------------|------|
+| Now (25M) | 310 GB | 160 GB | 30 GB |
+| +6 mo | 320 GB | 168 GB | 32 GB |
+| +1 yr | 330 GB | 176 GB | 34 GB |
+| +2 yr | 360 GB | 192 GB | 38 GB |
+| +3 yr | 390 GB | 210 GB | 42 GB |
+| +5 yr | 450 GB | 240 GB | 50 GB |
+
+## Compression-scheme upgrade roadmap
+
+Step files are append-only; old data is **never re-compressed** when a
+new scheme lands. Each step file self-describes via `Version` header.
+Readers dispatch per-step. Old clients only download new-version
+files; existing files stay valid.
+
+| Phase | Time | Trigger | New scheme |
+|-------|------|---------|-----------|
+| **v1.5 (current)** | now | — | MPHF+fp ✓ done |
+| **v2 (step framework)** | +1-2 mo | first monthly merge | weekly/monthly/yearly step tiers + reader-side merge query |
+| **v3 (value dict)** | +12-18 mo | total ≥ 200 GB | top-N common-value dict per domain (-15-25%) |
+| **v4 (EF-only history)** | +24-36 mo | total ≥ 250 GB | Erigon-E3 style; needs per-step snapshot reuse (-30-40%) |
+| **v5 (domain-aware codec)** | +36-60 mo | total ≥ 300 GB | per-contract-template compression (-40-60%) |
