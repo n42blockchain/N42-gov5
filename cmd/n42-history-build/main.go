@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -166,6 +167,11 @@ func buildHistory(fr *freezer.Freezer, outDir, tmpDir, prefix, tableName string,
 		if curKey == nil {
 			return nil
 		}
+		// ETL only sorts by KEY (sortableBuffer.Less compares ki, kj).
+		// Multiple entries for the same key arrive in undefined order.
+		// PackHistory delta-encodes block deltas and AsOf assumes
+		// ascending blocks — so we must sort explicitly before packing.
+		sort.Slice(curHist, func(i, j int) bool { return curHist[i].Block < curHist[j].Block })
 		packed := history.PackHistory(nil, curHist)
 		if err := w.Append(curKey, packed); err != nil {
 			return fmt.Errorf("Append %x: %w", curKey, err)
@@ -295,28 +301,37 @@ func buildStorageGrouped(fr *freezer.Freezer, outDir, tmpDir, prefix string, sta
 	must(err, "history.NewWriter grouped")
 
 	var (
-		curAddr    []byte
-		curSlot    []byte
-		curChanges []history.Change
-		groupBuf   []history.GroupedHistory
-		uniqAddr   uint64
+		curAddr  []byte
+		uniqAddr uint64
+		// Per-addr accumulator: slot string → list of changes.
+		// ETL only sorts by KEY (addr), so entries for the same addr
+		// arrive in undefined slot/block order. We fully accumulate
+		// per addr, then sort slots + sort changes inside each slot,
+		// before PackGrouped.
+		perSlot = make(map[string][]history.Change)
 	)
 
-	flushSlot := func() {
-		if curSlot == nil || len(curChanges) == 0 {
-			return
-		}
-		groupBuf = append(groupBuf, history.GroupedHistory{
-			SubKey:  append([]byte(nil), curSlot...),
-			Changes: curChanges,
-		})
-		curSlot = curSlot[:0]
-		curChanges = nil
-	}
 	flushAddr := func() error {
-		flushSlot()
-		if curAddr == nil {
+		if curAddr == nil || len(perSlot) == 0 {
+			perSlot = make(map[string][]history.Change)
 			return nil
+		}
+		// Sort slots (PackGrouped expects ascending subKeys for
+		// linear-scan AsOfGrouped early-exit on cmp>0).
+		slots := make([]string, 0, len(perSlot))
+		for s := range perSlot {
+			slots = append(slots, s)
+		}
+		sort.Strings(slots)
+
+		groupBuf := make([]history.GroupedHistory, 0, len(slots))
+		for _, s := range slots {
+			changes := perSlot[s]
+			sort.Slice(changes, func(i, j int) bool { return changes[i].Block < changes[j].Block })
+			groupBuf = append(groupBuf, history.GroupedHistory{
+				SubKey:  []byte(s),
+				Changes: changes,
+			})
 		}
 		packed := history.PackGrouped(nil, 32, groupBuf)
 		if err := w.Append(curAddr, packed); err != nil {
@@ -329,7 +344,7 @@ func buildStorageGrouped(fr *freezer.Freezer, outDir, tmpDir, prefix string, sta
 				uniqAddr/1_000_000, float64(uniqAddr)/elapsed)
 		}
 		curAddr = curAddr[:0]
-		groupBuf = groupBuf[:0]
+		perSlot = make(map[string][]history.Change)
 		return nil
 	}
 
@@ -345,11 +360,7 @@ func buildStorageGrouped(fr *freezer.Freezer, outDir, tmpDir, prefix string, sta
 		if err != nil {
 			return fmt.Errorf("decodeStorageGroupedValue: %w", err)
 		}
-		if curSlot == nil || !bytes.Equal(curSlot, slot) {
-			flushSlot()
-			curSlot = append(curSlot[:0], slot...)
-		}
-		curChanges = append(curChanges, history.Change{
+		perSlot[string(slot)] = append(perSlot[string(slot)], history.Change{
 			Block: block,
 			Value: append([]byte(nil), value...),
 		})
