@@ -62,14 +62,37 @@ row. This is the sweet spot:
   - accounts: 3.92 GB / 386M / 37 min (measured)
   - storage: in progress (1.57B entries, ETA ~2h)
 - ✓ History writer (`cmd/n42-history-build`):
-  - v1 (per-key): 11.92 B/entry account, 18.41 B/entry storage
-  - v2 (addr-grouped): 17.67 B/entry storage at mid-era scale
-  - Both verified 100% (1000 random samples) via `cmd/n42-history-verify`
+  - v1 (per-key, plain): 11.92 B/entry account, 18.41 B/entry storage
+  - v2 (addr-grouped): 17.67 B/entry storage at mid-era 1M smoke
+  - **v1.5 (MPHF+fp)**: **9.69 B/entry storage** (-47% vs v2), 11.27 B/entry account at mid-era 1M smoke
+  - All verified 100% (1000 random samples) via `cmd/n42-history-verify`
+
+  MPHF+fp wins for storage because the 52B addr+slot key is 55% of
+  storcs raw bytes. Replacing with 4B fingerprint + ~1.71 bit/key
+  RecSplit MPHF collapses that to ~4.21 B/key. For accounts the key
+  is 20B and blob is bigger, so MPHF gains are modest (~5%).
+
 - TODO: CS warm-tier truncation (`freezer.TruncateTail` does not exist;
   needs design). Three options:
   - A. Add `TruncateTail` to freezer (general but invasive).
   - B. Atomic CS rewriter: build warm-only CS, swap. (Cleanest.)
   - C. Leave old CS, mark "history built", manually rm. (Simplest.)
+
+## Realistic full-archive total (after MPHF+fp landed)
+
+| Component | Size | Notes |
+|-----------|------|-------|
+| snapshot accounts | 3.92 GB | measured |
+| snapshot storage | ~15 GB | pending (1.57B entries) |
+| code | 5.93 GB | existing |
+| account history MPHF+fp | ~30 GB | extrapolated from 1M mid-era |
+| storage history MPHF+fp | ~41 GB | extrapolated from 1M mid-era (was 75 v2-grouped) |
+| warm CS (7 days) | ~0.1 GB | pending impl |
+| **TOTAL** | **~96 GB** | **vs 945 GB = 9.8× reduction** |
+
+This hits the "+ history index + 7-day warm CS" row of the ladder.
+The MPHF+fp drop landed storage history at -45% vs v2-grouped, closing
+most of the gap to the original 110 GB target.
 
 ## What 34 GB would require
 
