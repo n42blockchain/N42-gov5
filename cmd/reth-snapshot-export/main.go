@@ -67,17 +67,26 @@ import (
 var logger = log.New()
 
 func main() {
-	dbPath := flag.String("db", "d:/reth2k/db", "Reth MDBX path")
+	dbPath := flag.String("db", "d:/reth2k/db", "MDBX path (Reth or N42)")
 	outDir := flag.String("out", "d:/n42-snapshot", "Output directory")
 	table := flag.String("table", "", "account / storage / both (default: both)")
+	accountTable := flag.String("account-table", "PlainAccountState", "MDBX table for accounts (N42: Account)")
+	storageTable := flag.String("storage-table", "PlainStorageState", "MDBX table for storage (N42: Storage; dup-sort key=20B addr, value=slot(32B)+val)")
+	n42 := flag.Bool("n42", false, "Shortcut: sets account-table=Account, storage-table=Storage")
 	countOverride := flag.Uint64("count", 0, "Skip counting, use this entry count")
 	skipZstd := flag.Bool("skip-zstd", false, "Skip the final zstd compress step")
 	flag.Parse()
+
+	if *n42 {
+		*accountTable = "Account"
+		*storageTable = "Storage"
+	}
 
 	if err := os.MkdirAll(*outDir, 0755); err != nil {
 		fatal("mkdir: %v", err)
 	}
 
+	accTbl, stoTbl := *accountTable, *storageTable
 	db, err := mdbx.NewMDBX(logger).
 		Path(*dbPath).
 		Label(kv.ChainDB).
@@ -87,8 +96,8 @@ func main() {
 		DBVerbosity(kv.DBVerbosityLvl(2)).
 		Accede().
 		WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
-			d["PlainAccountState"] = kv.TableCfgItem{}
-			d["PlainStorageState"] = kv.TableCfgItem{}
+			d[accTbl] = kv.TableCfgItem{}
+			d[stoTbl] = kv.TableCfgItem{}
 			return d
 		}).
 		Open(context.Background())
@@ -104,10 +113,10 @@ func main() {
 	defer tx.Rollback()
 
 	if *table == "" || *table == "account" || *table == "both" {
-		dumpAccount(tx, *outDir, *countOverride, *skipZstd)
+		dumpAccount(tx, accTbl, *outDir, *countOverride, *skipZstd)
 	}
 	if *table == "" || *table == "storage" || *table == "both" {
-		dumpStorage(tx, *outDir, *countOverride, *skipZstd)
+		dumpStorage(tx, stoTbl, *outDir, *countOverride, *skipZstd)
 	}
 }
 
@@ -169,9 +178,8 @@ func rewriteAccountValue(v []byte, dict map[[32]byte]uint32, scratch []byte) []b
 	return scratch
 }
 
-func dumpAccount(tx kv.Tx, outDir string, countHint uint64, skipZstd bool) {
+func dumpAccount(tx kv.Tx, table, outDir string, countHint uint64, skipZstd bool) {
 	const prefix = "accounts"
-	const table = "PlainAccountState"
 
 	idxPath := outDir + "/" + prefix + ".idx"
 	codedictPath := outDir + "/" + prefix + ".codedict"
@@ -445,9 +453,8 @@ func dumpAccount(tx kv.Tx, outDir string, countHint uint64, skipZstd bool) {
 		time.Since(t0).Truncate(time.Second))
 }
 
-func dumpStorage(tx kv.Tx, outDir string, countHint uint64, skipZstd bool) {
+func dumpStorage(tx kv.Tx, table, outDir string, countHint uint64, skipZstd bool) {
 	const prefix = "storage"
-	const table = "PlainStorageState"
 
 	idxPath := outDir + "/" + prefix + ".idx"
 	valPath := outDir + "/" + prefix + ".val"
