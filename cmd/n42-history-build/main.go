@@ -23,7 +23,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -46,6 +49,7 @@ func main() {
 	endBlk := flag.Uint64("end", 0, "ending block (exclusive; 0 = head)")
 	tmpDir := flag.String("tmpdir", "", "ETL spill dir (default: <out>/etl)")
 	etlBufMB := flag.Uint64("etl-buf-mb", 4096, "ETL buffer size (MB)")
+	resume := flag.Bool("resume", false, "resume from last checkpoint: skip phase 1 if <tmpdir>/<prefix>-pass1.done exists, skip phase 1+2a if <prefix>-pass2.done exists")
 	flag.Parse()
 
 	if *frDir == "" || *outDir == "" {
@@ -69,13 +73,13 @@ func main() {
 	switch *domain {
 	case "account", "accounts":
 		if *useMPHF {
-			buildHistoryMPHF(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
+			buildHistoryMPHF(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB, *resume)
 		} else {
 			buildHistory(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
 		}
 	case "storage":
 		if *useMPHF {
-			buildHistoryMPHF(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
+			buildHistoryMPHF(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB, *resume)
 		} else {
 			buildHistory(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
 		}
@@ -83,8 +87,8 @@ func main() {
 		buildStorageGrouped(fr, *outDir, *tmpDir, "storage-grouped", *startBlk, *endBlk, *etlBufMB)
 	case "both", "":
 		if *useMPHF {
-			buildHistoryMPHF(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
-			buildHistoryMPHF(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
+			buildHistoryMPHF(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB, *resume)
+			buildHistoryMPHF(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB, *resume)
 		} else {
 			buildHistory(fr, *outDir, *tmpDir, "account", freezer.TableAccountChanges, 20, *startBlk, *endBlk, *etlBufMB)
 			buildHistory(fr, *outDir, *tmpDir, "storage", freezer.TableStorageChanges, 52, *startBlk, *endBlk, *etlBufMB)
@@ -260,7 +264,15 @@ func buildHistory(fr *freezer.Freezer, outDir, tmpDir, prefix, tableName string,
 //   Phase 2a: ETL.Load grouped by key → per-key PackHistory → ETL2.Collect(key, packed_blob)
 //             AND count unique keys
 //   Phase 2b: NewMPHFWriter(KeyCount). ETL2.Load → MPHFWriter.Append → Close
-func buildHistoryMPHF(fr *freezer.Freezer, outDir, tmpDir, prefix, tableName string, keyLen int, startBlk, endBlk uint64, etlBufMB uint64) {
+//
+// Resume support: each pass spills into its own subdir under tmpDir
+// (<prefix>-pass1/ and <prefix>-pass2/). When a phase completes
+// successfully a marker file (<prefix>-pass1.done, etc.) is created.
+// With --resume:
+//   - if pass2.done exists → skip phase 1 and 2a, replay phase 2b from pass2 dir
+//   - elif pass1.done exists → skip phase 1, run phase 2a from pass1 dir
+//   - else → run from scratch
+func buildHistoryMPHF(fr *freezer.Freezer, outDir, tmpDir, prefix, tableName string, keyLen int, startBlk, endBlk uint64, etlBufMB uint64, resume bool) {
 	fmt.Printf("\n=== %s history MPHF+fp (table=%s, keyLen=%d) ===\n", prefix, tableName, keyLen)
 	t0 := time.Now()
 
@@ -272,112 +284,178 @@ func buildHistoryMPHF(fr *freezer.Freezer, outDir, tmpDir, prefix, tableName str
 	}
 	fmt.Printf("  range: [%d, %d)  table.Items=%d\n", startBlk, endBlk, maxItems)
 
-	// --- Phase 1: stream CS → ETL.Collect ---
-	fmt.Printf("  [phase 1] streaming CS → ETL collector...\n")
-	t1 := time.Now()
+	pass1Dir := filepath.Join(tmpDir, prefix+"-pass1")
+	pass2Dir := filepath.Join(tmpDir, prefix+"-pass2")
+	pass1Done := filepath.Join(tmpDir, prefix+"-pass1.done")
+	pass2Done := filepath.Join(tmpDir, prefix+"-pass2.done")
+	must(os.MkdirAll(pass1Dir, 0755), "mkdir pass1")
+	must(os.MkdirAll(pass2Dir, 0755), "mkdir pass2")
+
+	skipPhase1 := false
+	skipPhase2a := false
+	if resume {
+		if _, err := os.Stat(pass2Done); err == nil {
+			fmt.Println("  [resume] pass2.done found → skipping phase 1 + 2a")
+			skipPhase1, skipPhase2a = true, true
+		} else if _, err := os.Stat(pass1Done); err == nil {
+			fmt.Println("  [resume] pass1.done found → skipping phase 1")
+			skipPhase1 = true
+		} else {
+			fmt.Println("  [resume] no checkpoint markers found, starting fresh")
+		}
+	}
 
 	bufSize := datasize.ByteSize(etlBufMB) * datasize.MB
-	coll := etl.NewCollector(prefix+"-mphf-pass1", tmpDir,
-		etl.NewSortableBuffer(bufSize), logger)
-	defer coll.Close()
 
+	// --- Phase 1: stream CS → ETL.Collect ---
+	var coll *etl.Collector
 	var emitted, blocksProcessed uint64
-	scratch := make([]byte, 0, 64)
+	if skipPhase1 {
+		// Reuse spill files from previous run. If skipPhase2a is set we
+		// won't even open coll (phase 2a is skipped).
+		if !skipPhase2a {
+			coll, err = etl.NewCollectorFromFiles(prefix+"-mphf-pass1", pass1Dir, logger)
+			must(err, "resume NewCollectorFromFiles pass1")
+			if coll == nil {
+				fatal("resume: pass1.done exists but no spill files in %s", pass1Dir)
+			}
+			defer coll.Close()
+			fmt.Printf("  [phase 1] skipped (resume from spill files)\n")
+		}
+	} else {
+		fmt.Printf("  [phase 1] streaming CS → ETL collector...\n")
+		t1 := time.Now()
+		// NewCriticalCollector = autoClean=false, so phase 2a's Load
+		// doesn't wipe pass1 spill files; we delete them explicitly only
+		// after phase 2b succeeds.
+		coll = etl.NewCriticalCollector(prefix+"-mphf-pass1", pass1Dir,
+			etl.NewSortableBuffer(bufSize), logger)
+		coll.SortAndFlushInBackground(false)
+		defer coll.Close()
 
-	for blk := startBlk; blk < endBlk; blk++ {
-		data, err := tbl.Retrieve(blk)
-		if err != nil || len(data) == 0 {
-			continue
-		}
-		blocksProcessed++
-		switch prefix {
-		case "account":
-			changes, err := ethel.DecodeAccountChanges(data)
-			if err != nil {
+		scratch := make([]byte, 0, 64)
+		for blk := startBlk; blk < endBlk; blk++ {
+			data, err := tbl.Retrieve(blk)
+			if err != nil || len(data) == 0 {
 				continue
 			}
-			for _, c := range changes {
-				scratch = encodeEntry(scratch[:0], blk, c.OldValue)
-				if err := coll.Collect(c.Address[:], scratch); err != nil {
-					fatal("ETL.Collect: %v", err)
+			blocksProcessed++
+			switch prefix {
+			case "account":
+				changes, err := ethel.DecodeAccountChanges(data)
+				if err != nil {
+					continue
 				}
-				emitted++
-			}
-		case "storage":
-			changes, err := ethel.DecodeStorageChanges(data)
-			if err != nil {
-				continue
-			}
-			for _, c := range changes {
-				scratch = encodeEntry(scratch[:0], blk, c.OldValue)
-				if err := coll.Collect(c.CompositeKey, scratch); err != nil {
-					fatal("ETL.Collect: %v", err)
+				for _, c := range changes {
+					scratch = encodeEntry(scratch[:0], blk, c.OldValue)
+					if err := coll.Collect(c.Address[:], scratch); err != nil {
+						fatal("ETL.Collect: %v", err)
+					}
+					emitted++
 				}
-				emitted++
+			case "storage":
+				changes, err := ethel.DecodeStorageChanges(data)
+				if err != nil {
+					continue
+				}
+				for _, c := range changes {
+					scratch = encodeEntry(scratch[:0], blk, c.OldValue)
+					if err := coll.Collect(c.CompositeKey, scratch); err != nil {
+						fatal("ETL.Collect: %v", err)
+					}
+					emitted++
+				}
+			}
+			if blk%100_000 == 0 && blk > startBlk {
+				elapsed := time.Since(t1).Seconds()
+				rate := float64(blk-startBlk) / elapsed
+				fmt.Fprintf(os.Stderr, "    blk=%d  emitted=%d  (%.0f blk/s)\n", blk, emitted, rate)
 			}
 		}
-		if blk%100_000 == 0 && blk > startBlk {
-			elapsed := time.Since(t1).Seconds()
-			rate := float64(blk-startBlk) / elapsed
-			fmt.Fprintf(os.Stderr, "    blk=%d  emitted=%d  (%.0f blk/s)\n", blk, emitted, rate)
-		}
+		// Force any in-memory buffer to disk so resume picks it up.
+		must(coll.Flush(), "phase 1 flush")
+		fmt.Printf("  phase 1 done: %d entries from %d blocks, %s\n",
+			emitted, blocksProcessed, time.Since(t1).Truncate(time.Second))
+		must(touchFile(pass1Done), "write pass1.done")
 	}
-	fmt.Printf("  phase 1 done: %d entries from %d blocks, %s\n",
-		emitted, blocksProcessed, time.Since(t1).Truncate(time.Second))
 
 	// --- Phase 2a: group by key, pack history, count unique keys, spill to ETL2 ---
-	fmt.Printf("  [phase 2a] ETL.Load + group + count + ETL2.Collect packed-blobs...\n")
-	t2a := time.Now()
+	var etl2 *etl.Collector
+	var uniqKeys uint64
+	if skipPhase2a {
+		etl2, err = etl.NewCollectorFromFiles(prefix+"-mphf-pass2", pass2Dir, logger)
+		must(err, "resume NewCollectorFromFiles pass2")
+		if etl2 == nil {
+			fatal("resume: pass2.done exists but no spill files in %s", pass2Dir)
+		}
+		defer etl2.Close()
+		// Recover uniqKeys from pass2.done content (written at phase 2a end).
+		// Iterating providers would consume them, breaking the subsequent
+		// phase 2b Load.
+		data, err := os.ReadFile(pass2Done)
+		must(err, "read pass2.done content")
+		n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+		must(err, "parse uniqKeys from pass2.done")
+		uniqKeys = n
+		fmt.Printf("  [phase 2a] skipped (resume from spill files, uniqKeys=%d)\n", uniqKeys)
+	} else {
+		fmt.Printf("  [phase 2a] ETL.Load + group + count + ETL2.Collect packed-blobs...\n")
+		t2a := time.Now()
 
-	etl2 := etl.NewCollector(prefix+"-mphf-pass2", tmpDir,
-		etl.NewSortableBuffer(bufSize), logger)
-	defer etl2.Close()
+		etl2 = etl.NewCriticalCollector(prefix+"-mphf-pass2", pass2Dir,
+			etl.NewSortableBuffer(bufSize), logger)
+		etl2.SortAndFlushInBackground(false)
+		defer etl2.Close()
 
-	var (
-		curKey   []byte
-		curHist  []history.Change
-		uniqKeys uint64
-	)
-	flush := func() error {
-		if curKey == nil || len(curHist) == 0 {
-			return nil
-		}
-		sort.Slice(curHist, func(i, j int) bool { return curHist[i].Block < curHist[j].Block })
-		packed := history.PackHistory(nil, curHist)
-		if err := etl2.Collect(curKey, packed); err != nil {
-			return err
-		}
-		uniqKeys++
-		if uniqKeys%1_000_000 == 0 {
-			elapsed := time.Since(t2a).Seconds()
-			fmt.Fprintf(os.Stderr, "    grouped %dM keys (%.0f keys/s)\n",
-				uniqKeys/1_000_000, float64(uniqKeys)/elapsed)
-		}
-		curKey = curKey[:0]
-		curHist = curHist[:0]
-		return nil
-	}
-	err = coll.Load(nil, "", func(k, v []byte, _ etl.CurrentTableReader, _ etl.LoadNextFunc) error {
-		if curKey == nil || !bytes.Equal(curKey, k) {
-			if err := flush(); err != nil {
+		var (
+			curKey  []byte
+			curHist []history.Change
+		)
+		flush := func() error {
+			if curKey == nil || len(curHist) == 0 {
+				return nil
+			}
+			sort.Slice(curHist, func(i, j int) bool { return curHist[i].Block < curHist[j].Block })
+			packed := history.PackHistory(nil, curHist)
+			if err := etl2.Collect(curKey, packed); err != nil {
 				return err
 			}
-			curKey = append(curKey[:0], k...)
+			uniqKeys++
+			if uniqKeys%1_000_000 == 0 {
+				elapsed := time.Since(t2a).Seconds()
+				fmt.Fprintf(os.Stderr, "    grouped %dM keys (%.0f keys/s)\n",
+					uniqKeys/1_000_000, float64(uniqKeys)/elapsed)
+			}
+			curKey = curKey[:0]
+			curHist = curHist[:0]
+			return nil
 		}
-		block, value, err := decodeEntry(v)
+		err = coll.Load(nil, "", func(k, v []byte, _ etl.CurrentTableReader, _ etl.LoadNextFunc) error {
+			if curKey == nil || !bytes.Equal(curKey, k) {
+				if err := flush(); err != nil {
+					return err
+				}
+				curKey = append(curKey[:0], k...)
+			}
+			block, value, err := decodeEntry(v)
+			if err != nil {
+				return err
+			}
+			curHist = append(curHist, history.Change{Block: block, Value: append([]byte(nil), value...)})
+			return nil
+		}, etl.TransformArgs{})
 		if err != nil {
-			return err
+			fatal("phase 2a load: %v", err)
 		}
-		curHist = append(curHist, history.Change{Block: block, Value: append([]byte(nil), value...)})
-		return nil
-	}, etl.TransformArgs{})
-	if err != nil {
-		fatal("phase 2a load: %v", err)
+		if err := flush(); err != nil {
+			fatal("phase 2a final flush: %v", err)
+		}
+		must(etl2.Flush(), "phase 2a flush")
+		fmt.Printf("  phase 2a done: %d unique keys, %s\n", uniqKeys, time.Since(t2a).Truncate(time.Second))
+		// pass2.done records the uniqKeys count so resume can skip the
+		// counting pass that would otherwise consume providers.
+		must(os.WriteFile(pass2Done, []byte(fmt.Sprintf("%d\n", uniqKeys)), 0644), "write pass2.done")
 	}
-	if err := flush(); err != nil {
-		fatal("phase 2a final flush: %v", err)
-	}
-	fmt.Printf("  phase 2a done: %d unique keys, %s\n", uniqKeys, time.Since(t2a).Truncate(time.Second))
 
 	if uniqKeys == 0 {
 		fmt.Printf("  no entries — skipping MPHF build\n")
@@ -409,6 +487,16 @@ func buildHistoryMPHF(fr *freezer.Freezer, outDir, tmpDir, prefix, tableName str
 	}
 	st := w.Stats()
 	fmt.Printf("  phase 2b done: %d pages, %s\n", st.PageCount, time.Since(t2b).Truncate(time.Second))
+
+	// Phase 2b succeeded; spill files no longer needed. Clean up.
+	if err := os.RemoveAll(pass1Dir); err != nil {
+		fmt.Fprintf(os.Stderr, "  warn: rm pass1 dir: %v\n", err)
+	}
+	if err := os.RemoveAll(pass2Dir); err != nil {
+		fmt.Fprintf(os.Stderr, "  warn: rm pass2 dir: %v\n", err)
+	}
+	_ = os.Remove(pass1Done)
+	_ = os.Remove(pass2Done)
 
 	// --- Summary ---
 	total := st.KvSize + st.IdxSize + st.MphfSize
@@ -677,3 +765,11 @@ func fatal(format string, a ...interface{}) {
 }
 
 var _ = context.Background // future use
+
+func touchFile(path string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
