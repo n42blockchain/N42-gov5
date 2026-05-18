@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/cespare/xxhash/v2"
@@ -58,6 +59,7 @@ type MPHFWriter struct {
 	baseDir, prefix string
 	pageSize        int
 	tmpDir          string
+	etlBufMB        uint64
 
 	logger log.Logger
 	rs     *recsplit.RecSplit
@@ -122,6 +124,7 @@ func NewMPHFWriter(opts MPHFWriterOpts) (*MPHFWriter, error) {
 		prefix:     opts.Prefix,
 		pageSize:   opts.PageSize,
 		tmpDir:     opts.TmpDir,
+		etlBufMB:   opts.EtlBufMB,
 		logger:     opts.Logger,
 		rs:         rs,
 		keyValColl: coll,
@@ -172,12 +175,24 @@ func (w *MPHFWriter) Close() error {
 	rdr := recsplit.NewIndexReader(idx)
 
 	// --- Step C: re-load Pass 1 entries, re-Collect by ordinal ---
+	// Use the same EtlBufMB as the first-pass collector. The default
+	// 512 MB hardcode in earlier versions was a pathological bottleneck:
+	// at 2B+ entries / 100+ GB of ord-keyed data it produced 360+ spill
+	// files, making step D's heap-merge take 8+ hours of single-threaded
+	// log(N) overhead per element. Larger buffer = fewer spills =
+	// shallower merge heap = much faster step D.
+	ordBufSize := datasize.ByteSize(w.etlBufMB) * datasize.MB
+	if ordBufSize == 0 {
+		ordBufSize = datasize.MB * 512 // legacy fallback
+	}
 	ordColl := etl.NewCollector(w.prefix+"-mphf-ord", w.tmpDir,
-		etl.NewSortableBuffer(datasize.MB*512), w.logger)
+		etl.NewSortableBuffer(ordBufSize), w.logger)
 	defer ordColl.Close()
 
 	var ordBuf [8]byte
 	var payload []byte
+	var stepCCount uint64
+	stepCT0 := time.Now()
 	if err := w.keyValColl.Load(nil, "", func(k, v []byte, _ etl.CurrentTableReader, _ etl.LoadNextFunc) error {
 		ord, ok := rdr.Lookup(k)
 		if !ok {
@@ -193,10 +208,18 @@ func (w *MPHFWriter) Close() error {
 		n := binary.PutUvarint(vlen[:], uint64(len(v)))
 		payload = append(payload, vlen[:n]...)
 		payload = append(payload, v...)
+		stepCCount++
+		if stepCCount%10_000_000 == 0 {
+			elapsed := time.Since(stepCT0).Seconds()
+			fmt.Fprintf(os.Stderr, "    step C: %dM lookups (%.0f k/s)\n",
+				stepCCount/1_000_000, float64(stepCCount)/elapsed/1000)
+		}
 		return ordColl.Collect(ordBuf[:], payload)
 	}, etl.TransformArgs{}); err != nil {
 		return fmt.Errorf("history-mphf: step C load: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "    step C done: %d lookups in %s\n",
+		stepCCount, time.Since(stepCT0).Truncate(time.Second))
 
 	// --- Step D: load by ordinal → write pages + .idx ---
 	kvPath := w.baseDir + "/" + w.prefix + ".kv"
@@ -266,10 +289,18 @@ func (w *MPHFWriter) Close() error {
 		return nil
 	}
 
+	var stepDCount uint64
+	stepDT0 := time.Now()
 	if err := ordColl.Load(nil, "", func(_, v []byte, _ etl.CurrentTableReader, _ etl.LoadNextFunc) error {
 		// v is already [4B fp][varint blobLen][blob] from step C.
 		rawPage = append(rawPage, v...)
 		entryCount++
+		stepDCount++
+		if stepDCount%10_000_000 == 0 {
+			elapsed := time.Since(stepDT0).Seconds()
+			fmt.Fprintf(os.Stderr, "    step D: %dM written (%.0f k/s), %d pages\n",
+				stepDCount/1_000_000, float64(stepDCount)/elapsed/1000, pages)
+		}
 		if entryCount >= w.pageSize {
 			return flushPage()
 		}
@@ -281,6 +312,8 @@ func (w *MPHFWriter) Close() error {
 		idxF.Close()
 		return fmt.Errorf("history-mphf: step D load: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "    step D done: %d entries / %d pages in %s\n",
+		stepDCount, pages, time.Since(stepDT0).Truncate(time.Second))
 	if err := flushPage(); err != nil {
 		return err
 	}
