@@ -78,21 +78,49 @@ row. This is the sweet spot:
   - B. Atomic CS rewriter: build warm-only CS, swap. (Cleanest.)
   - C. Leave old CS, mark "history built", manually rm. (Simplest.)
 
-## Realistic full-archive total (after MPHF+fp landed)
+## Realistic full-archive total (after MPHF+fp landed, snapshot measured)
 
 | Component | Size | Notes |
 |-----------|------|-------|
-| snapshot accounts | 3.92 GB | measured |
-| snapshot storage | ~15 GB | pending (1.57B entries) |
-| code | 5.93 GB | existing |
-| account history MPHF+fp | ~30 GB | extrapolated from 1M mid-era |
-| storage history MPHF+fp | ~41 GB | extrapolated from 1M mid-era (was 75 v2-grouped) |
+| snapshot accounts | 3.92 GB | measured: 386M entries / 37m11s |
+| snapshot storage | **19.87 GB** | measured: 1.57B entries / 3h46m38s |
+| code | 5.93 GB | existing (D:/N42-eth1/chain/freezer/codes.*) |
+| account history MPHF+fp | ~30 GB | extrapolated from 1M mid-era (1.56 GB) |
+| storage history MPHF+fp | ~41 GB | extrapolated from 1M mid-era (1.61 GB) |
 | warm CS (7 days) | ~0.1 GB | pending impl |
-| **TOTAL** | **~96 GB** | **vs 945 GB = 9.8× reduction** |
+| **TOTAL** | **~100 GB** | **vs 945 GB = 9.4× reduction** |
 
-This hits the "+ history index + 7-day warm CS" row of the ladder.
-The MPHF+fp drop landed storage history at -45% vs v2-grouped, closing
-most of the gap to the original 110 GB target.
+Storage snapshot landed slightly larger than estimated (19.87 vs ~15)
+because 1.57B entries × 13 B/entry (incl. MPHF + EF + zstd) overhead
+matches the mid-era 1M smoke ratio. Final number ~100 GB matches the
+"recommended target ~110 GB" within 10%, well inside the original
+honest-target band.
+
+### Note on .val files
+
+`reth-snapshot-export` keeps both `.val` (uncompressed) and `.val.zst`
+after build. For deployment, delete `.val` and keep `.val.zst`. The
+table above assumes `.val.zst` only.
+
+## Final snapshot file inventory (D:/n42-snapshot)
+
+```
+accounts.codedict    71.4 MB    codeHash dict (2.34M unique × 32B)
+accounts.idx         78.8 MB    RecSplit MPHF (1.71 bit/key)
+accounts.ef         351.3 MB    Elias-Fano (ordinal → byte offset)
+accounts.val.zst   3516.0 MB    zstd values (codeHash → 3B id)
+                  ────────
+                   4017.5 MB    accounts total
+
+storage.idx         320.2 MB    RecSplit MPHF (1.71 bit/key)
+storage.ef         1363.7 MB    Elias-Fano (ordinal → byte offset)
+storage.val.zst   18665.0 MB    zstd values
+                 ─────────
+                  20349.0 MB    storage total
+```
+
+Combined snapshot: 23.79 GB (compressed, deployable).
+With code: 29.72 GB.
 
 ## What 34 GB would require
 
