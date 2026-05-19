@@ -69,6 +69,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ai/training"
 	"github.com/n42blockchain/N42/internal/ai/wallet"
 	"github.com/n42blockchain/N42/internal/api"
+	"github.com/n42blockchain/N42/internal/cs"
 	"github.com/n42blockchain/N42/internal/api/graphql"
 	"github.com/n42blockchain/N42/internal/bridge"
 	"github.com/n42blockchain/N42/internal/bundler"
@@ -994,6 +995,36 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			}
 		}
 		engineStateAdapter = api.NewEngineStateAdapter(chainKv, adapterFreezer, cfg.ChainCfg, engine)
+
+		// Wire CS warm tier if configured (--cs-warm-dir).
+		// On error opening warm, log a warning and continue with
+		// live-freezer-only — Reorg still works, just without the
+		// disk-savings benefit. Failing the node startup over a
+		// missing/corrupt warm tier would be over-strict; warm is
+		// an optional optimization, the live freezer is canonical.
+		if dir := cfg.NodeCfg.CSWarmDir; dir != "" {
+			warm, err := cs.Open(dir)
+			if err != nil {
+				log.Warn("CS warm tier disabled: failed to open warm dir",
+					"dir", dir, "err", err)
+			} else {
+				var src cs.Source
+				if adapterFreezer != nil {
+					// Tiered: warm first (hot path), full freezer as fallback.
+					src = cs.NewTieredSource(
+						cs.NewWarmSource(warm),
+						cs.NewFreezerSource(adapterFreezer),
+					)
+				} else {
+					src = cs.NewWarmSource(warm)
+				}
+				engineStateAdapter.WithCSSource(src)
+				m := warm.Meta()
+				log.Info("CS warm tier enabled",
+					"dir", dir, "base_block", m.BaseBlock,
+					"head_block", m.HeadBlock, "keep_blocks", m.KeepBlocks)
+			}
+		}
 	}
 
 	node = Node{
