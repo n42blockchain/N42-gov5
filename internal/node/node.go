@@ -69,11 +69,11 @@ import (
 	"github.com/n42blockchain/N42/internal/ai/training"
 	"github.com/n42blockchain/N42/internal/ai/wallet"
 	"github.com/n42blockchain/N42/internal/api"
-	"github.com/n42blockchain/N42/internal/cs"
 	"github.com/n42blockchain/N42/internal/api/graphql"
 	"github.com/n42blockchain/N42/internal/bridge"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/cs"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -1008,15 +1008,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 				log.Warn("CS warm tier disabled: failed to open warm dir",
 					"dir", dir, "err", err)
 			} else {
-				var src cs.Source
+				var src cs.Source = warm
 				if adapterFreezer != nil {
 					// Tiered: warm first (hot path), full freezer as fallback.
-					src = cs.NewTieredSource(
-						cs.NewWarmSource(warm),
-						cs.NewFreezerSource(adapterFreezer),
-					)
-				} else {
-					src = cs.NewWarmSource(warm)
+					src = cs.NewTieredSource(warm, cs.NewFreezerSource(adapterFreezer))
 				}
 				engineStateAdapter.WithCSSource(src)
 				m := warm.Meta()

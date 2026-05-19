@@ -40,11 +40,7 @@ type EngineStateAdapter struct {
 	chainCfg *params.ChainConfig
 	engine   consensus.Engine
 
-	// csSource is the optional changeset source for Reorg. When set,
-	// Reorg uses it (typically a TieredSource = warm + freezer) instead
-	// of falling back to the legacy full-freezer-only path. nil = use
-	// freezer directly (back-compat for callers / tests that don't
-	// configure warm tier).
+	// csSource overrides Reorg's data source. nil falls back to a.freezer.
 	csSource cs.Source
 }
 
@@ -58,10 +54,8 @@ func NewEngineStateAdapter(db kv.RwDB, f *freezer.Freezer, cfg *params.ChainConf
 	return &EngineStateAdapter{db: db, freezer: f, chainCfg: cfg, engine: engine}
 }
 
-// WithCSSource attaches a changeset source for the Reorg path. Pass
-// a TieredSource (warm + freezer) or a WarmSource alone to enable
-// the CS warm tier; pass nil to fall back to direct freezer reads.
-// Chainable: returns the adapter for fluent configuration.
+// WithCSSource overrides Reorg's data source (e.g. cs.TieredSource
+// over warm + freezer). Pass nil to revert to direct freezer reads.
 func (a *EngineStateAdapter) WithCSSource(src cs.Source) *EngineStateAdapter {
 	a.csSource = src
 	return a
@@ -263,8 +257,6 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 }
 
 // Reorg rolls back state to the given block number using changesets.
-// Uses the configured cs.Source (--cs-warm-dir) if set, else falls back
-// to the legacy full-freezer-only path for back-compat.
 func (a *EngineStateAdapter) Reorg(targetBlock uint64) error {
 	if a.csSource != nil {
 		return ethel.ReorgWithSource(a.db, a.csSource, targetBlock)

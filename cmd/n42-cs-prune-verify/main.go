@@ -6,10 +6,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/n42blockchain/N42/internal/cs"
@@ -47,13 +49,13 @@ func main() {
 	fmt.Printf("Sampling %d blocks per table from [%d, %d]\n\n",
 		*samples, meta.BaseBlock, meta.HeadBlock)
 
-	overallMatch, overallMism, overallMiss := 0, 0, 0
+	overallMatch, overallMism := 0, 0
 	for _, tname := range parseTables(*tablesFlag) {
 		fmt.Printf("=== %s ===\n", tname)
 		srcTbl, err := src.EnsureTableCompressed(tname, "c")
 		must(err, "open src table "+tname)
 
-		matches, miss, mism := 0, 0, 0
+		matches, mism := 0, 0
 		for i := 0; i < *samples; i++ {
 			blk := meta.BaseBlock + uint64(rng.Int63n(int64(meta.KeepBlocks)))
 			srcData, srcErr := srcTbl.Retrieve(blk)
@@ -74,22 +76,20 @@ func main() {
 				continue
 			}
 			matches++
-			_ = miss
 		}
-		fmt.Printf("  matches=%d  mismatches=%d  missing=%d  (samples=%d)\n",
-			matches, mism, miss, *samples)
+		fmt.Printf("  matches=%d  mismatches=%d  (samples=%d)\n",
+			matches, mism, *samples)
 		overallMatch += matches
 		overallMism += mism
-		overallMiss += miss
 
-		// Also verify out-of-window queries return ErrOutOfWindow.
+		// Also verify out-of-window queries are rejected as ErrDeepReorg.
 		if meta.BaseBlock > 0 {
 			oldBlk := meta.BaseBlock - 1
 			_, err := warm.Retrieve(tname, oldBlk)
-			if err == cs.ErrOutOfWindow {
+			if errors.Is(err, cs.ErrDeepReorg) {
 				fmt.Printf("  ✓ out-of-window blk=%d correctly rejected\n", oldBlk)
 			} else {
-				fmt.Fprintf(os.Stderr, "  WARN out-of-window check returned err=%v (expected ErrOutOfWindow)\n", err)
+				fmt.Fprintf(os.Stderr, "  WARN out-of-window check returned err=%v (expected ErrDeepReorg)\n", err)
 			}
 		}
 		fmt.Println()
@@ -98,28 +98,18 @@ func main() {
 	fmt.Printf("=== Verify ===\n")
 	fmt.Printf("  total matches    : %d\n", overallMatch)
 	fmt.Printf("  total mismatches : %d\n", overallMism)
-	fmt.Printf("  total missing    : %d\n", overallMiss)
-	if overallMism > 0 || overallMiss > 0 {
+	if overallMism > 0 {
 		os.Exit(1)
 	}
 	fmt.Printf("\n  ALL SAMPLES MATCH ✓ warm freezer is byte-identical to src in [base,head]\n")
 }
 
 func parseTables(s string) []string {
-	out := []string{}
-	cur := ""
-	for _, c := range s {
-		if c == ',' {
-			if cur != "" {
-				out = append(out, cur)
-			}
-			cur = ""
-		} else {
-			cur += string(c)
+	out := make([]string, 0, 2)
+	for _, t := range strings.Split(s, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t)
 		}
-	}
-	if cur != "" {
-		out = append(out, cur)
 	}
 	return out
 }

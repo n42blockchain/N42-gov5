@@ -25,10 +25,10 @@ var ErrDeepReorg = errors.New("cs: block outside source window — deep reorg re
 // Reorg (unwind) and forward-replay paths in internal/ethel.
 //
 // Implementations:
-//   - FreezerSource: legacy, reads from the full acctcs/storcs freezer
-//     (works pre-CS-warm-tier; preserved for back-compat)
-//   - WarmSource: reads from a pruned warm tier (cs.Warm + meta.json)
-//     produced by cmd/n42-cs-prune
+//   - FreezerSource: reads from the full acctcs/storcs freezer
+//     (back-compat for callers that haven't adopted the warm tier)
+//   - *Warm: reads from a pruned warm tier (cs.Warm + meta.json)
+//     produced by cmd/n42-cs-prune; implements Source directly
 //   - TieredSource: tries each underlying source in declared order;
 //     ErrDeepReorg if none can serve the block
 //
