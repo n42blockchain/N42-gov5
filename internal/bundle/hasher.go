@@ -133,9 +133,22 @@ func Build(rootDir string, opts BuildOptions) (*Manifest, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			buf := make([]byte, 4*1024*1024)
+			whole, err := newHasher(algo)
+			if err != nil {
+				firstErr.CompareAndSwap(nil, err)
+				return
+			}
+			var seg hashAcc
+			if err := seg.init(algo); err != nil {
+				firstErr.CompareAndSwap(nil, err)
+				return
+			}
 			for idx := range jobs {
 				e := entries[idx]
-				f, err := hashFile(e.path, e.info.Size(), e.rel, algo, &bytesDone)
+				whole.Reset()
+				seg.reset()
+				f, err := hashFile(e.path, e.info.Size(), e.rel, buf, whole, &seg, &bytesDone)
 				if err != nil {
 					firstErr.CompareAndSwap(nil, err)
 					return
@@ -191,30 +204,18 @@ func Build(rootDir string, opts BuildOptions) (*Manifest, error) {
 // hashFile streams the file through the configured digest, computing
 // a per-segment hash chain on the side when Size >= SegmentThreshold.
 // The bytes counter is updated continuously so the progress goroutine
-// sees in-flight progress (not just per-file completion).
-func hashFile(path string, size int64, relPath, algo string, bytesDone *atomic.Int64) (File, error) {
+// sees in-flight progress (not just per-file completion). The buf,
+// whole, and segHasher are worker-owned and pre-reset by the caller.
+func hashFile(path string, size int64, relPath string, buf []byte, whole hash.Hash, segHasher *hashAcc, bytesDone *atomic.Int64) (File, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return File{}, fmt.Errorf("bundle: open %s: %w", path, err)
 	}
 	defer f.Close()
 
-	whole, err := newHasher(algo)
-	if err != nil {
-		return File{}, err
-	}
-	var (
-		seg       []string
-		segHasher hashAcc
-	)
+	var seg []string
 	includeSegments := size >= SegmentThreshold
-	if includeSegments {
-		if err := segHasher.reset(algo); err != nil {
-			return File{}, err
-		}
-	}
 
-	buf := make([]byte, 4*1024*1024)
 	var pos int64
 	for {
 		n, rerr := f.Read(buf)
@@ -251,20 +252,25 @@ func hashFile(path string, size int64, relPath, algo string, bytesDone *atomic.I
 // emitting a hex digest and resetting at every boundary. Crossing the
 // boundary mid-buffer requires splitting the write into two feeds.
 type hashAcc struct {
-	algo    string
 	inner   hash.Hash
 	written int64
 }
 
-func (a *hashAcc) reset(algo string) error {
+// init allocates the inner hasher once per worker. reset() between
+// files is then a cheap Reset+zero, avoiding per-file hasher allocs.
+func (a *hashAcc) init(algo string) error {
 	h, err := newHasher(algo)
 	if err != nil {
 		return err
 	}
-	a.algo = algo
 	a.inner = h
 	a.written = 0
 	return nil
+}
+
+func (a *hashAcc) reset() {
+	a.inner.Reset()
+	a.written = 0
 }
 
 // feed writes buf to the current segment hasher, flushing whenever a

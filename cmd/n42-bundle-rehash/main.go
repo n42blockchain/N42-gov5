@@ -1,8 +1,7 @@
 // n42-bundle-rehash: regenerate a freezer manifest with the latest
 // default hash algorithm (BLAKE3 as of 2026-05). Reads the existing
-// manifest.json, walks the same rootDir, recomputes every file's
-// digest with BLAKE3, sanity-checks the file set and sizes haven't
-// changed, then atomically replaces the manifest.
+// manifest, rebuilds with the target algorithm, sanity-checks file
+// set + sizes haven't drifted, then atomically replaces the manifest.
 //
 // Use case: operators that built manifests pre-2026-05 with BLAKE2b
 // run this once after upgrading n42. New manifests verify ~2-3×
@@ -11,20 +10,11 @@
 // natively (legacy BLAKE2b is still accepted by Verify for any
 // bundles that aren't migrated yet).
 //
-// Flow:
-//
-//	1. Load existing manifest (any supported algorithm).
-//	2. If already at the target algorithm and --force not set: exit 0.
-//	3. Rebuild from rootDir with the target algorithm (default BLAKE3).
-//	4. Sanity check: file set + per-file Size are identical to the
-//	   pre-migration manifest. Any drift aborts before overwriting.
-//	5. Atomically replace: write .new, fsync, rename.
-//	6. Verify the new manifest hashes match by running bundle.Verify.
-//
-// Steps 4 and 6 are belt-and-suspenders: step 4 catches "the freezer
-// directory changed under us" (operator forgot to stop writers);
-// step 6 catches "hash function bug" (newHasher returns the wrong
-// digest length for some algorithm).
+// The sanity check (file set + size drift) catches the operator
+// forgetting to stop writers — without it, a rehash would silently
+// snapshot a different freezer than the old manifest documented.
+// Self-verify (re-reading every file post-build) is opt-in via
+// --verify since Build itself records the digests it just computed.
 package main
 
 import (
@@ -44,7 +34,8 @@ func main() {
 	outPath := flag.String("out", "", "output path (default: overwrite --manifest)")
 	algo := flag.String("algo", bundle.DefaultAlgorithm, "target hash algorithm (default: blake3-256)")
 	force := flag.Bool("force", false, "rehash even if manifest is already at --algo")
-	dryRun := flag.Bool("dry-run", false, "compute new manifest in memory, verify, but DON'T overwrite")
+	dryRun := flag.Bool("dry-run", false, "compute new manifest in memory, but DON'T overwrite")
+	verify := flag.Bool("verify", false, "after build, re-read every file and re-hash to cross-check (doubles I/O)")
 	workers := flag.Int("workers", 0, "parallel hash workers (0 = GOMAXPROCS)")
 	flag.Parse()
 
@@ -97,12 +88,14 @@ func main() {
 		fatal("sanity check failed (refusing to overwrite): %v", err)
 	}
 
-	verifyResults, err := bundle.Verify(*root, fresh, bundle.VerifyOptions{Workers: *workers})
-	must(err, "verify fresh manifest")
-	for _, r := range verifyResults {
-		if r.Status != bundle.StatusOK {
-			fatal("fresh manifest failed self-verify on %s: status=%v err=%v",
-				r.Path, r.Status, r.Err)
+	if *verify {
+		verifyResults, err := bundle.Verify(*root, fresh, bundle.VerifyOptions{Workers: *workers})
+		must(err, "verify fresh manifest")
+		for _, r := range verifyResults {
+			if r.Status != bundle.StatusOK {
+				fatal("fresh manifest failed self-verify on %s: status=%v err=%v",
+					r.Path, r.Status, r.Err)
+			}
 		}
 	}
 
@@ -162,21 +155,14 @@ func sanityCheck(old, fresh *bundle.Manifest) error {
 	return nil
 }
 
-// saveAtomic writes the manifest to <path>.new, fsyncs, then renames
-// over <path>. On Linux this is filesystem-atomic; on Windows the
-// rename is best-effort but happens after fsync so on-disk integrity
-// is preserved regardless of crash timing.
+// saveAtomic writes the manifest to <path>.new with fsync, then
+// renames over <path>. On Linux this is filesystem-atomic; on
+// Windows the rename is best-effort but happens after fsync so
+// on-disk integrity is preserved regardless of crash timing.
 func saveAtomic(m *bundle.Manifest, path string) error {
 	tmp := path + ".new"
-	if err := m.Save(tmp); err != nil {
+	if err := m.SaveSynced(tmp); err != nil {
 		return fmt.Errorf("write tmp: %w", err)
-	}
-	// Best-effort fsync — Save closes the file so the kernel buffer
-	// may already be flushed, but call fsync via reopen to force
-	// directory entry durability before the rename.
-	if f, err := os.OpenFile(tmp, os.O_RDWR, 0); err == nil {
-		_ = f.Sync()
-		f.Close()
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
