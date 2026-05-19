@@ -9,8 +9,6 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/urfave/cli/v2"
@@ -18,30 +16,6 @@ import (
 	"github.com/n42blockchain/N42/internal/bundle"
 	"github.com/n42blockchain/N42/log"
 )
-
-// permissiveMatcher accepts any regular file under root that is NOT a
-// transient operator artifact (locks, staging temps, the manifest
-// being written, hidden dotfiles). Used by --include-all for archive
-// dirs that don't follow the chain/freezer layout (snapshot, history).
-func permissiveMatcher(relPath string, info os.FileInfo) bool {
-	if info.IsDir() {
-		return false
-	}
-	name := strings.ToLower(info.Name())
-	switch {
-	case name == "manifest.json":
-		return false // don't hash the output into itself
-	case strings.HasPrefix(name, "."):
-		return false
-	case strings.HasSuffix(name, ".lock"), strings.HasSuffix(name, ".lck"):
-		return false
-	case strings.HasSuffix(name, ".tmp"), strings.HasSuffix(name, ".staging"):
-		return false
-	case strings.HasSuffix(name, ".new"), strings.HasSuffix(name, ".bak"):
-		return false
-	}
-	return true
-}
 
 func runBundleHash(c *cli.Context) error {
 	root := c.String("datadir")
@@ -64,7 +38,7 @@ func runBundleHash(c *cli.Context) error {
 	}
 
 	if c.Bool("include-all") {
-		opts.Matcher = permissiveMatcher
+		opts.Matcher = bundle.PermissiveMatcher
 	}
 
 	t0 := time.Now()

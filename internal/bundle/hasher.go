@@ -56,6 +56,30 @@ func DefaultMatcher(relPath string, info os.FileInfo) bool {
 	return false
 }
 
+// PermissiveMatcher accepts any regular file under root that is NOT a
+// transient operator artifact (locks, staging temps, the manifest
+// being written, hidden dotfiles). Use for flat archive dirs that
+// don't follow the chain/freezer layout (snapshot, history, warm CS).
+func PermissiveMatcher(relPath string, info os.FileInfo) bool {
+	if info.IsDir() {
+		return false
+	}
+	name := strings.ToLower(info.Name())
+	switch {
+	case name == "manifest.json":
+		return false
+	case strings.HasPrefix(name, "."):
+		return false
+	case strings.HasSuffix(name, ".lock"), strings.HasSuffix(name, ".lck"):
+		return false
+	case strings.HasSuffix(name, ".tmp"), strings.HasSuffix(name, ".staging"):
+		return false
+	case strings.HasSuffix(name, ".new"), strings.HasSuffix(name, ".bak"):
+		return false
+	}
+	return true
+}
+
 // BuildOptions controls manifest generation.
 type BuildOptions struct {
 	ChainID    uint64
