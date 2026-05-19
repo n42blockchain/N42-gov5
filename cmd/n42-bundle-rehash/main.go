@@ -36,6 +36,7 @@ func main() {
 	force := flag.Bool("force", false, "rehash even if manifest is already at --algo")
 	dryRun := flag.Bool("dry-run", false, "compute new manifest in memory, but DON'T overwrite")
 	verify := flag.Bool("verify", false, "after build, re-read every file and re-hash to cross-check (doubles I/O)")
+	includeAll := flag.Bool("include-all", false, "use permissive matcher for flat archive dirs (snapshot, history, warm CS) — default expects chain/freezer layout")
 	workers := flag.Int("workers", 0, "parallel hash workers (0 = GOMAXPROCS)")
 	flag.Parse()
 
@@ -66,7 +67,7 @@ func main() {
 
 	t0 := time.Now()
 	log.Info("rebuilding manifest", "root", *root, "target_algorithm", *algo)
-	fresh, err := bundle.Build(*root, bundle.BuildOptions{
+	buildOpts := bundle.BuildOptions{
 		ChainID:    old.ChainID,
 		BlockRange: old.BlockRange,
 		Algorithm:  *algo,
@@ -81,7 +82,11 @@ func main() {
 				"GB", fmt.Sprintf("%.1f/%.1f", float64(bytes)/1e9, float64(totalBytes)/1e9),
 				"pct", fmt.Sprintf("%.1f%%", pct))
 		},
-	})
+	}
+	if *includeAll {
+		buildOpts.Matcher = bundle.PermissiveMatcher
+	}
+	fresh, err := bundle.Build(*root, buildOpts)
 	must(err, "build new manifest")
 
 	if err := sanityCheck(old, fresh); err != nil {
@@ -89,7 +94,21 @@ func main() {
 	}
 
 	if *verify {
-		verifyResults, err := bundle.Verify(*root, fresh, bundle.VerifyOptions{Workers: *workers})
+		tVerify := time.Now()
+		log.Info("self-verify starting (re-reading every file)", "files", len(fresh.Files))
+		verifyResults, err := bundle.Verify(*root, fresh, bundle.VerifyOptions{
+			Workers: *workers,
+			Progress: func(files, totalFiles, bytes, totalBytes int64) {
+				pct := 0.0
+				if totalBytes > 0 {
+					pct = 100 * float64(bytes) / float64(totalBytes)
+				}
+				log.Info("self-verify progress",
+					"files", fmt.Sprintf("%d/%d", files, totalFiles),
+					"GB", fmt.Sprintf("%.1f/%.1f", float64(bytes)/1e9, float64(totalBytes)/1e9),
+					"pct", fmt.Sprintf("%.1f%%", pct))
+			},
+		})
 		must(err, "verify fresh manifest")
 		for _, r := range verifyResults {
 			if r.Status != bundle.StatusOK {
@@ -97,6 +116,7 @@ func main() {
 					r.Path, r.Status, r.Err)
 			}
 		}
+		log.Info("self-verify complete", "files", len(verifyResults), "elapsed", time.Since(tVerify).Truncate(time.Second))
 	}
 
 	elapsed := time.Since(t0).Truncate(time.Second)
@@ -104,11 +124,15 @@ func main() {
 	for _, f := range fresh.Files {
 		totalBytes += f.Size
 	}
+	throughput := "n/a"
+	if elapsed > 0 {
+		throughput = fmt.Sprintf("%.2f", float64(totalBytes)/1e9/elapsed.Seconds())
+	}
 	log.Info("rehash complete",
 		"files", len(fresh.Files),
 		"GB", fmt.Sprintf("%.2f", float64(totalBytes)/1e9),
 		"elapsed", elapsed,
-		"throughput_GBs", fmt.Sprintf("%.2f", float64(totalBytes)/1e9/elapsed.Seconds()))
+		"throughput_GBs", throughput)
 
 	if *dryRun {
 		log.Info("--dry-run set, NOT overwriting manifest",
