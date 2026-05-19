@@ -146,14 +146,16 @@ func main() {
 			},
 			{
 				Name:  "bundle-hash",
-				Usage: "Generate blake2b manifest for a minimal-client bundle (server side; publish after state-root verify)",
+				Usage: "Generate manifest for a minimal-client bundle (server side; publish after state-root verify). Default hash: blake3-256.",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "datadir", Usage: "Bundle root directory (e.g. dir containing chain/freezer/headerc.cidx)", Required: true},
+					&cli.StringFlag{Name: "datadir", Usage: "Bundle root directory (e.g. dir containing chain/freezer/headerc.cidx, or a flat archive dir with --include-all)", Required: true},
 					&cli.StringFlag{Name: "out", Usage: "Output manifest path (.json)", Required: true},
 					&cli.Uint64Flag{Name: "chain-id", Usage: "Chain ID for manifest header", Value: 1},
 					&cli.Uint64Flag{Name: "block-start", Usage: "Block range start", Value: 0},
 					&cli.Uint64Flag{Name: "block-end", Usage: "Block range end (inclusive)", Value: 0},
 					&cli.IntFlag{Name: "workers", Usage: "Concurrent file hashers (0=GOMAXPROCS)", Value: 0},
+					&cli.StringFlag{Name: "algo", Usage: "Hash algorithm: blake3-256 (default) or blake2b-256 (legacy)", Value: ""},
+					&cli.BoolFlag{Name: "include-all", Usage: "Match every regular file under root (drops the chain/freezer requirement). Use for flat archive dirs (snapshot/, history/) that don't follow the freezer layout."},
 				},
 				Action: runBundleHash,
 			},

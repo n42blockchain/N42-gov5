@@ -9,6 +9,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/urfave/cli/v2"
@@ -17,6 +19,30 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
+// permissiveMatcher accepts any regular file under root that is NOT a
+// transient operator artifact (locks, staging temps, the manifest
+// being written, hidden dotfiles). Used by --include-all for archive
+// dirs that don't follow the chain/freezer layout (snapshot, history).
+func permissiveMatcher(relPath string, info os.FileInfo) bool {
+	if info.IsDir() {
+		return false
+	}
+	name := strings.ToLower(info.Name())
+	switch {
+	case name == "manifest.json":
+		return false // don't hash the output into itself
+	case strings.HasPrefix(name, "."):
+		return false
+	case strings.HasSuffix(name, ".lock"), strings.HasSuffix(name, ".lck"):
+		return false
+	case strings.HasSuffix(name, ".tmp"), strings.HasSuffix(name, ".staging"):
+		return false
+	case strings.HasSuffix(name, ".new"), strings.HasSuffix(name, ".bak"):
+		return false
+	}
+	return true
+}
+
 func runBundleHash(c *cli.Context) error {
 	root := c.String("datadir")
 	outPath := c.String("out")
@@ -24,6 +50,7 @@ func runBundleHash(c *cli.Context) error {
 		ChainID:    c.Uint64("chain-id"),
 		BlockRange: bundle.BlockRange{Start: c.Uint64("block-start"), End: c.Uint64("block-end")},
 		Workers:    c.Int("workers"),
+		Algorithm:  c.String("algo"),
 		Progress: func(files, totalFiles, bytes, totalBytes int64) {
 			pct := 0.0
 			if totalBytes > 0 {
@@ -34,6 +61,10 @@ func runBundleHash(c *cli.Context) error {
 				"GB", fmt.Sprintf("%.1f/%.1f", float64(bytes)/1e9, float64(totalBytes)/1e9),
 				"pct", fmt.Sprintf("%.1f%%", pct))
 		},
+	}
+
+	if c.Bool("include-all") {
+		opts.Matcher = permissiveMatcher
 	}
 
 	t0 := time.Now()
