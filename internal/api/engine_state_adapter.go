@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/cs"
 	"github.com/n42blockchain/N42/internal/ethel"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -38,6 +39,13 @@ type EngineStateAdapter struct {
 	freezer  *freezer.Freezer
 	chainCfg *params.ChainConfig
 	engine   consensus.Engine
+
+	// csSource is the optional changeset source for Reorg. When set,
+	// Reorg uses it (typically a TieredSource = warm + freezer) instead
+	// of falling back to the legacy full-freezer-only path. nil = use
+	// freezer directly (back-compat for callers / tests that don't
+	// configure warm tier).
+	csSource cs.Source
 }
 
 type enginePayloadExecutionResult struct {
@@ -48,6 +56,15 @@ type enginePayloadExecutionResult struct {
 // NewEngineStateAdapter creates a new adapter.
 func NewEngineStateAdapter(db kv.RwDB, f *freezer.Freezer, cfg *params.ChainConfig, engine consensus.Engine) *EngineStateAdapter {
 	return &EngineStateAdapter{db: db, freezer: f, chainCfg: cfg, engine: engine}
+}
+
+// WithCSSource attaches a changeset source for the Reorg path. Pass
+// a TieredSource (warm + freezer) or a WarmSource alone to enable
+// the CS warm tier; pass nil to fall back to direct freezer reads.
+// Chainable: returns the adapter for fluent configuration.
+func (a *EngineStateAdapter) WithCSSource(src cs.Source) *EngineStateAdapter {
+	a.csSource = src
+	return a
 }
 
 // ExecutePayload executes a block from the CL, persists state, verifies root.
@@ -246,7 +263,12 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 }
 
 // Reorg rolls back state to the given block number using changesets.
+// Uses the configured cs.Source (--cs-warm-dir) if set, else falls back
+// to the legacy full-freezer-only path for back-compat.
 func (a *EngineStateAdapter) Reorg(targetBlock uint64) error {
+	if a.csSource != nil {
+		return ethel.ReorgWithSource(a.db, a.csSource, targetBlock)
+	}
 	return ethel.Reorg(a.db, a.freezer, targetBlock)
 }
 

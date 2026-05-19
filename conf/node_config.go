@@ -93,6 +93,14 @@ type NodeConfig struct {
 	// before blocks are eligible for freezing. Default: 90000.
 	AncientFreezeThreshold uint64 `json:"ancient_freeze_threshold,omitempty" yaml:"ancient_freeze_threshold,omitempty"`
 
+	// CSWarmDir points to a "warm" CS freezer produced by
+	// cmd/n42-cs-prune. When non-empty the node opens this directory
+	// in read-only mode and uses it as the primary changeset source
+	// for Reorg (with the live freezer as fallback via a TieredSource).
+	// Leave empty to use the live freezer directly (back-compat).
+	// Pruned to keep ~7 days of changesets in <2.5 GB vs ~400 GB raw.
+	CSWarmDir string `json:"cs_warm_dir,omitempty" yaml:"cs_warm_dir,omitempty"`
+
 	// ZKProving enables ZK proof generation and/or verification.
 	ZKProving bool `json:"zk_proving" yaml:"zk_proving"`
 

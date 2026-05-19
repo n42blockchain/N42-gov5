@@ -441,6 +441,18 @@ var (
 		Category: "DATA",
 	}
 
+	// CSWarmDirFlag points to a pruned-CS "warm" freezer produced by
+	// cmd/n42-cs-prune. When set, Reorg uses warm CS first (~2.5 GB
+	// for 7 days of data) and falls back to the live freezer via a
+	// TieredSource. Leave empty to use live freezer directly.
+	CSWarmDirFlag = &cli.StringFlag{
+		Name:        "cs-warm-dir",
+		Aliases:     []string{"cs.warm.dir"},
+		Usage:       "Warm CS freezer dir (produced by n42-cs-prune); enables tiered Reorg source. Empty = use live freezer only.",
+		Category:    "DATA",
+		Destination: &DefaultConfig.NodeCfg.CSWarmDir,
+	}
+
 	ChainFlag = &cli.StringFlag{
 		Name:        "chain",
 		Usage:       "区块链网络 (mainnet, testnet, eth-mainnet, eth-testnet, private)",
@@ -561,6 +573,7 @@ var (
 		ChainFlag,
 		ProfileFlag,
 		MinFreeDiskSpaceFlag,
+		CSWarmDirFlag,
 	}
 	accountFlag = []cli.Flag{
 		PasswordFileFlag,
