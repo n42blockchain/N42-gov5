@@ -106,6 +106,34 @@ concurrency contention than account because storage blobs are
 smaller (avg 22 B vs account's 120 B) → less time inside page
 decompress holding the zstd.Decoder lock.
 
+## End-to-end correctness verification (replay)
+
+`cmd/n42-history-verify` replays storcs/acctcs from genesis to build
+ground truth, then random-samples (key, queryBlock) and compares
+history reader output vs ground truth.
+
+| Range | Domain | Unique keys (GT) | Samples | Result |
+|-------|--------|-------------------|---------|--------|
+| [0, 100K) | account | 15,755 | 5,000 | ✓ 100% |
+| [0, 100K) | storage | 3,444 | 5,000 | ✓ 100% |
+| [0, 1M) | account | 66,682 | 10,000 | ✓ 100% |
+| [0, 1M) | storage | 538,166 | 10,000 | ✓ 100% |
+| [0, 5M) | account | 44,672,714 | 20,000 | ✓ 100% |
+| [0, 5M) | storage | 48,117,043 | 20,000 | ✓ 100% |
+| **Total** | — | — | **70,000** | **100% ✓** |
+
+End-to-end paths confirmed: MPHF lookup → page decode → AsOf logic
+all correct at multi-million-key scale.
+
+**Verify tool limitation**: ground truth is built by replaying CS for
+the specified `[start, end)` range. If `start > 0`, keys with first
+change BEFORE `start` are missing from GT, causing false mismatches
+("got=value, want=empty" for keys history correctly knows about but
+GT doesn't). For end-to-end correctness, ALWAYS use `--start 0` with
+a bounded `--end` to keep GT memory manageable. Future improvement:
+seed GT with `history.AsOf(key, start-1)` as boundary value, enabling
+late-range verification.
+
 ## All three benches compared
 
 | Dataset | Single random | Sequential | Concurrent peak |
