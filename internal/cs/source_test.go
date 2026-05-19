@@ -3,6 +3,7 @@ package cs
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,7 +106,7 @@ func TestWarmSourceWindowEnforcement(t *testing.T) {
 	}
 	t.Cleanup(func() { warm.Close() })
 
-	src := NewWarmSource(warm)
+	src := warm
 
 	// In-window blocks
 	for _, blk := range []uint64{50, 75, 99} {
@@ -162,7 +163,7 @@ func TestTieredSourceFallthrough(t *testing.T) {
 	warm, _ := Open(warmDir)
 	t.Cleanup(func() { warm.Close() })
 
-	src := NewTieredSource(NewWarmSource(warm), NewFreezerSource(full))
+	src := NewTieredSource(warm, NewFreezerSource(full))
 
 	// Block 50: not in warm → falls through to full freezer
 	data, err := src.RetrieveAccount(50)
@@ -192,7 +193,7 @@ func TestTieredSourceFallthrough(t *testing.T) {
 	desc := src.WindowDescription()
 	wantParts := []string{"warm", "freezer"}
 	for _, p := range wantParts {
-		if !contains(desc, p) {
+		if !strings.Contains(desc, p) {
 			t.Errorf("WindowDescription %q missing %q", desc, p)
 		}
 	}
@@ -214,14 +215,14 @@ func TestTieredSourceWarmOnlyDeepReorg(t *testing.T) {
 	warm, _ := Open(warmDir)
 	t.Cleanup(func() { warm.Close() })
 
-	src := NewTieredSource(NewWarmSource(warm))
+	src := NewTieredSource(warm)
 
 	// Reorg to anything older than 1000 → ErrDeepReorg, descriptive
 	_, err := src.RetrieveAccount(500)
 	if !errors.Is(err, ErrDeepReorg) {
 		t.Errorf("deep reorg: want ErrDeepReorg, got %v", err)
 	}
-	if !contains(err.Error(), "warm[1000, 1009]") {
+	if !strings.Contains(err.Error(), "warm[1000, 1009]") {
 		t.Errorf("error message missing window info: %v", err)
 	}
 }
@@ -245,11 +246,3 @@ func TestFreezerSourceMissingTable(t *testing.T) {
 	_ = filepath.Base(dir) // silence unused import warning if needed
 }
 
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}

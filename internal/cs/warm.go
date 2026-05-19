@@ -83,33 +83,53 @@ func Open(dir string) (*Warm, error) {
 	return &Warm{fr: fr, meta: meta}, nil
 }
 
-func (w *Warm) Close() error          { return w.fr.Close() }
-func (w *Warm) Meta() Meta            { return w.meta }
-func (w *Warm) BaseBlock() uint64     { return w.meta.BaseBlock }
-func (w *Warm) HeadBlock() uint64     { return w.meta.HeadBlock }
-func (w *Warm) Contains(blk uint64) bool {
+func (w *Warm) Close() error      { return w.fr.Close() }
+func (w *Warm) Meta() Meta        { return w.meta }
+func (w *Warm) BaseBlock() uint64 { return w.meta.BaseBlock }
+func (w *Warm) HeadBlock() uint64 { return w.meta.HeadBlock }
+
+// Available reports whether blk is in the retained window.
+// Implements the Source interface.
+func (w *Warm) Available(blk uint64) bool {
 	return blk >= w.meta.BaseBlock && blk <= w.meta.HeadBlock
 }
 
-// Retrieve returns the CS blob for the given absolute block number.
-// Returns ErrOutOfWindow if blk is outside [BaseBlock, HeadBlock].
-func (w *Warm) Retrieve(tableName string, blk uint64) ([]byte, error) {
-	if !w.Contains(blk) {
-		return nil, ErrOutOfWindow
+// WindowDescription implements the Source interface.
+func (w *Warm) WindowDescription() string {
+	return fmt.Sprintf("warm[%d, %d] (%d blocks)", w.meta.BaseBlock, w.meta.HeadBlock, w.meta.KeepBlocks)
+}
+
+// RetrieveAccount implements the Source interface.
+func (w *Warm) RetrieveAccount(blk uint64) ([]byte, error) {
+	return w.retrieve(freezer.TableAccountChanges, blk)
+}
+
+// RetrieveStorage implements the Source interface.
+func (w *Warm) RetrieveStorage(blk uint64) ([]byte, error) {
+	return w.retrieve(freezer.TableStorageChanges, blk)
+}
+
+// retrieve is shared by the typed methods and the verifier's
+// table-name-flagged loop. Returns ErrDeepReorg for blocks outside
+// [BaseBlock, HeadBlock] — that's what callers in the Source path
+// expect; the dedicated verifier handles it the same way.
+func (w *Warm) retrieve(tableName string, blk uint64) ([]byte, error) {
+	if !w.Available(blk) {
+		return nil, ErrDeepReorg
 	}
 	tbl, err := w.fr.EnsureTableCompressed(tableName, "c")
 	if err != nil {
 		return nil, fmt.Errorf("warm-cs: ensure table %s: %w", tableName, err)
 	}
-	item := blk - w.meta.BaseBlock
-	data, err := tbl.Retrieve(item)
+	data, err := tbl.Retrieve(blk - w.meta.BaseBlock)
 	if err != nil {
-		return nil, fmt.Errorf("warm-cs: retrieve item %d (blk %d): %w", item, blk, err)
+		return nil, fmt.Errorf("warm-cs: retrieve blk %d: %w", blk, err)
 	}
 	return data, nil
 }
 
-// ErrOutOfWindow signals a block query falls outside the retained
-// warm-tier window. Callers should fall back to history (built by
-// cmd/n42-history-build) for older blocks.
-var ErrOutOfWindow = fmt.Errorf("warm-cs: block outside retention window")
+// Retrieve is the table-name-flagged form used by the verifier tool.
+// Internal callers should prefer RetrieveAccount / RetrieveStorage.
+func (w *Warm) Retrieve(tableName string, blk uint64) ([]byte, error) {
+	return w.retrieve(tableName, blk)
+}

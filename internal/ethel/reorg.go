@@ -27,10 +27,6 @@ import (
 
 // Reorg rolls back PlainState to the given target block by reading
 // changesets from the output freezer and applying original values.
-//
-// This is a back-compat wrapper that uses the full freezer as the
-// changeset source. New callers should use ReorgWithSource and pass
-// a cs.Source (FreezerSource / WarmSource / TieredSource).
 func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
 	return ReorgWithSource(db, cs.NewFreezerSource(outFreezer), targetBlock)
 }
@@ -42,11 +38,11 @@ func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
 // source's window).
 //
 // This abstraction enables the warm CS tier: after cmd/n42-cs-prune
-// drops old changesets to save disk, callers wire a WarmSource into
-// the reorg path. Deep-reorg requests beyond the warm window
-// fail-loud rather than silently mis-reverting state (the V4-class
-// drift bug observed at 12,501,844 was the original motivation for
-// the pre-flight sanity check now generalized here).
+// drops old changesets to save disk, callers wire a cs.Warm into the
+// reorg path. Deep-reorg requests beyond the warm window fail-loud
+// rather than silently mis-reverting state (the V4-class drift bug
+// at 12,501,844 was the original motivation for the pre-flight
+// sanity check now generalized here).
 func ReorgWithSource(db kv.RwDB, src cs.Source, targetBlock uint64) error {
 	tx, err := db.BeginRw(context.Background())
 	if err != nil {

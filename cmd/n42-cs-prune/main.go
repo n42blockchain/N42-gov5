@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/n42blockchain/N42/internal/cs"
@@ -298,8 +299,7 @@ func tableSizeBytes(dir, table string) uint64 {
 	}
 	var total uint64
 	for _, e := range entries {
-		name := e.Name()
-		if len(name) < len(table) || name[:len(table)] != table {
+		if !strings.HasPrefix(e.Name(), table) {
 			continue
 		}
 		info, err := e.Info()
@@ -312,20 +312,11 @@ func tableSizeBytes(dir, table string) uint64 {
 }
 
 func parseTables(s string) []string {
-	out := []string{}
-	cur := ""
-	for _, c := range s {
-		if c == ',' {
-			if cur != "" {
-				out = append(out, cur)
-			}
-			cur = ""
-		} else {
-			cur += string(c)
+	out := make([]string, 0, 2)
+	for _, t := range strings.Split(s, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t)
 		}
-	}
-	if cur != "" {
-		out = append(out, cur)
 	}
 	return out
 }
