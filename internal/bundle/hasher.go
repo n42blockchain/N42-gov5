@@ -5,6 +5,7 @@ package bundle
 import (
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,7 +17,21 @@ import (
 	"time"
 
 	"golang.org/x/crypto/blake2b"
+	"lukechampine.com/blake3"
 )
+
+// newHasher returns a fresh 32-byte hash.Hash for the named algorithm.
+// Both AlgoBlake3_256 and AlgoBlake2b256 are supported.
+func newHasher(algo string) (hash.Hash, error) {
+	switch algo {
+	case AlgoBlake3_256:
+		return blake3.New(32, nil), nil
+	case AlgoBlake2b256:
+		return blake2b.New256(nil)
+	default:
+		return nil, fmt.Errorf("bundle: unknown hash algorithm %q", algo)
+	}
+}
 
 // FileMatcher decides which files under rootDir to include in the
 // manifest. Returns true to include, false to skip. Path is rooted-
@@ -47,6 +62,8 @@ type BuildOptions struct {
 	BlockRange BlockRange
 	Matcher    FileMatcher // nil → DefaultMatcher
 	Workers    int         // 0 → GOMAXPROCS
+	// Algorithm overrides the digest. Empty → DefaultAlgorithm.
+	Algorithm string
 	// Progress is called periodically with (filesHashed, totalFiles,
 	// bytesHashed, totalBytes). nil to skip.
 	Progress func(files, totalFiles int64, bytes, totalBytes int64)
@@ -63,6 +80,13 @@ func Build(rootDir string, opts BuildOptions) (*Manifest, error) {
 	workers := opts.Workers
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
+	}
+	algo := opts.Algorithm
+	if algo == "" {
+		algo = DefaultAlgorithm
+	}
+	if !isSupportedAlgorithm(algo) {
+		return nil, fmt.Errorf("bundle: unsupported algorithm %q", algo)
 	}
 
 	type fileEntry struct {
@@ -94,8 +118,8 @@ func Build(rootDir string, opts BuildOptions) (*Manifest, error) {
 
 	// Sort for deterministic manifest output — two servers hashing the
 	// same directory must produce byte-identical manifests so the
-	// blake2b(manifest) itself is comparable (trustless via multi-server
-	// reproduction).
+	// digest of the manifest itself is comparable (trustless via
+	// multi-server reproduction).
 	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
 
 	files := make([]File, len(entries))
@@ -111,7 +135,7 @@ func Build(rootDir string, opts BuildOptions) (*Manifest, error) {
 			defer wg.Done()
 			for idx := range jobs {
 				e := entries[idx]
-				f, err := hashFile(e.path, e.info.Size(), e.rel, &bytesDone)
+				f, err := hashFile(e.path, e.info.Size(), e.rel, algo, &bytesDone)
 				if err != nil {
 					firstErr.CompareAndSwap(nil, err)
 					return
@@ -155,7 +179,7 @@ func Build(rootDir string, opts BuildOptions) (*Manifest, error) {
 
 	return &Manifest{
 		Version:     ManifestVersion,
-		Algorithm:   Algorithm,
+		Algorithm:   algo,
 		SegmentSize: SegmentSize,
 		GeneratedAt: time.Now().UTC(),
 		ChainID:     opts.ChainID,
@@ -164,25 +188,30 @@ func Build(rootDir string, opts BuildOptions) (*Manifest, error) {
 	}, nil
 }
 
-// hashFile streams the file through blake2b-256, computing a per-segment
-// hash chain on the side when Size >= SegmentThreshold. The bytes
-// counter is updated continuously so the progress goroutine sees
-// in-flight progress (not just per-file completion).
-func hashFile(path string, size int64, relPath string, bytesDone *atomic.Int64) (File, error) {
+// hashFile streams the file through the configured digest, computing
+// a per-segment hash chain on the side when Size >= SegmentThreshold.
+// The bytes counter is updated continuously so the progress goroutine
+// sees in-flight progress (not just per-file completion).
+func hashFile(path string, size int64, relPath, algo string, bytesDone *atomic.Int64) (File, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return File{}, fmt.Errorf("bundle: open %s: %w", path, err)
 	}
 	defer f.Close()
 
-	whole, _ := blake2b.New256(nil)
+	whole, err := newHasher(algo)
+	if err != nil {
+		return File{}, err
+	}
 	var (
 		seg       []string
 		segHasher hashAcc
 	)
 	includeSegments := size >= SegmentThreshold
 	if includeSegments {
-		segHasher.reset()
+		if err := segHasher.reset(algo); err != nil {
+			return File{}, err
+		}
 	}
 
 	buf := make([]byte, 4*1024*1024)
@@ -218,24 +247,24 @@ func hashFile(path string, size int64, relPath string, bytesDone *atomic.Int64) 
 	}, nil
 }
 
-// hashAcc accumulates one running blake2b across SegmentSize bytes,
+// hashAcc accumulates one running hash across SegmentSize bytes,
 // emitting a hex digest and resetting at every boundary. Crossing the
 // boundary mid-buffer requires splitting the write into two feeds.
 type hashAcc struct {
-	h     io.Writer // blake2b hash, retyped to access Sum
-	inner interface {
-		Sum(b []byte) []byte
-		Reset()
-		Write(p []byte) (int, error)
-	}
+	algo    string
+	inner   hash.Hash
 	written int64
 }
 
-func (a *hashAcc) reset() {
-	h, _ := blake2b.New256(nil)
+func (a *hashAcc) reset(algo string) error {
+	h, err := newHasher(algo)
+	if err != nil {
+		return err
+	}
+	a.algo = algo
 	a.inner = h
-	a.h = h
 	a.written = 0
+	return nil
 }
 
 // feed writes buf to the current segment hasher, flushing whenever a

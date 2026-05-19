@@ -74,6 +74,57 @@ func TestRoundTripSmallFiles(t *testing.T) {
 	}
 }
 
+// TestDefaultIsBLAKE3 pins the default Build algorithm to BLAKE3-256
+// so accidental regressions to BLAKE2b are caught immediately.
+func TestDefaultIsBLAKE3(t *testing.T) {
+	root := t.TempDir()
+	writeBundleFile(t, root, "headerc.cidx", 1024)
+	m, err := Build(root, BuildOptions{ChainID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Algorithm != AlgoBlake3_256 {
+		t.Errorf("default algorithm: got %q, want %q", m.Algorithm, AlgoBlake3_256)
+	}
+}
+
+// TestBLAKE2bBackCompat checks that a manifest explicitly built with
+// the legacy BLAKE2b-256 algorithm round-trips through Verify. Without
+// this, pre-2026-05 bundles would become unverifiable on upgrade.
+func TestBLAKE2bBackCompat(t *testing.T) {
+	root := t.TempDir()
+	writeBundleFile(t, root, "headerc.cidx", 1024)
+	writeBundleFile(t, root, "bodyc.0000.cdat", 4096)
+
+	m, err := Build(root, BuildOptions{ChainID: 1, Algorithm: AlgoBlake2b256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Algorithm != AlgoBlake2b256 {
+		t.Fatalf("expected %q, got %q", AlgoBlake2b256, m.Algorithm)
+	}
+	results, err := Verify(root, m, VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		if r.Status != StatusOK {
+			t.Errorf("file %s: status=%v err=%v", r.Path, r.Status, r.Err)
+		}
+	}
+}
+
+// TestUnknownAlgorithmRejected confirms that a hand-edited manifest
+// claiming a bogus algorithm fails to load (defense against alg-
+// downgrade or attacker-supplied gibberish).
+func TestUnknownAlgorithmRejected(t *testing.T) {
+	root := t.TempDir()
+	writeBundleFile(t, root, "headerc.cidx", 1024)
+	if _, err := Build(root, BuildOptions{ChainID: 1, Algorithm: "md5"}); err == nil {
+		t.Errorf("Build with bogus algorithm should fail")
+	}
+}
+
 // TestCorruptionDetected ensures whole-file hash mismatch is flagged.
 func TestCorruptionDetected(t *testing.T) {
 	root := t.TempDir()

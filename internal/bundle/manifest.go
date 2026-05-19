@@ -2,12 +2,17 @@
 // This file is part of the N42 library.
 //
 // internal/bundle implements the minimal-client bundle manifest:
-// blake2b-256 hashes of every freezer file under a datadir, with
-// BT-style 64 MiB segment hashes for large files. The server produces
-// the manifest once after state-root verify; clients verify downloads
-// against it. Multiple independent servers reproducing the same
-// manifest are the trustless anchor (see
+// content-addressed hashes of every freezer file under a datadir,
+// with BT-style 64 MiB segment hashes for large files. The server
+// produces the manifest once after state-root verify; clients verify
+// downloads against it. Multiple independent servers reproducing the
+// same manifest are the trustless anchor (see
 // memory/project_minimal_client_design.md).
+//
+// Hash agility: the `Algorithm` field selects between
+// AlgoBlake3_256 (default — ~3× faster than BLAKE2b on AMD64 with
+// linear core scaling) and AlgoBlake2b256 (legacy — still accepted
+// by Verify for back-compat with pre-2026-05 manifests).
 
 package bundle
 
@@ -24,10 +29,18 @@ const (
 	// incompatibly. Verify rejects unknown versions.
 	ManifestVersion = 1
 
-	// Algorithm identifies the digest. blake2b-256 chosen for speed
-	// (~3× SHA-256 on AMD64 — see golang.org/x/crypto/blake2b) with
-	// cryptographic strength comparable to SHA-256.
-	Algorithm = "blake2b-256"
+	// AlgoBlake3_256 is the current default — faster than BLAKE2b on
+	// CPU (single-thread ~3× via AVX-512, scales near-linearly with
+	// cores), same 256-bit security, well-vetted (same designer as
+	// BLAKE2/ChaCha lineage).
+	AlgoBlake3_256 = "blake3-256"
+
+	// AlgoBlake2b256 is the legacy algorithm. Accepted by Verify for
+	// back-compat; Build emits blake3-256 by default.
+	AlgoBlake2b256 = "blake2b-256"
+
+	// DefaultAlgorithm is what Build writes when caller doesn't pick.
+	DefaultAlgorithm = AlgoBlake3_256
 
 	// SegmentSize is the BT-style chunk size for per-segment hashes.
 	// 64 MiB — small enough that a single corrupt segment costs only
@@ -66,9 +79,10 @@ type BlockRange struct {
 
 // File is one bundle file. Path is relative to the bundle root, always
 // using forward slashes (Windows servers normalize at hash time). Hash
-// is the whole-file blake2b-256, lowercase hex (no 0x prefix). Segments
-// is present only when Size >= SegmentThreshold; each entry is the
-// blake2b-256 of SegmentSize bytes (last segment may be short).
+// is the whole-file digest (Manifest.Algorithm), lowercase hex (no 0x
+// prefix). Segments is present only when Size >= SegmentThreshold;
+// each entry is the digest of SegmentSize bytes (last segment may be
+// short).
 type File struct {
 	Path     string   `json:"path"`
 	Size     int64    `json:"size"`
@@ -114,11 +128,17 @@ func LoadReader(r io.Reader) (*Manifest, error) {
 	if m.Version != ManifestVersion {
 		return nil, fmt.Errorf("bundle: unsupported manifest version %d (want %d)", m.Version, ManifestVersion)
 	}
-	if m.Algorithm != Algorithm {
-		return nil, fmt.Errorf("bundle: unsupported algorithm %q (want %q)", m.Algorithm, Algorithm)
+	if !isSupportedAlgorithm(m.Algorithm) {
+		return nil, fmt.Errorf("bundle: unsupported algorithm %q (supported: %s, %s)",
+			m.Algorithm, AlgoBlake3_256, AlgoBlake2b256)
 	}
 	if m.SegmentSize <= 0 {
 		return nil, fmt.Errorf("bundle: invalid segment_size %d", m.SegmentSize)
 	}
 	return &m, nil
+}
+
+// isSupportedAlgorithm reports whether algo is one Build/Verify can handle.
+func isSupportedAlgorithm(algo string) bool {
+	return algo == AlgoBlake3_256 || algo == AlgoBlake2b256
 }
