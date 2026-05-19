@@ -158,22 +158,26 @@ table above assumes `.val.zst` only.
 | Snapshot | 23.79 GB |
 | Code | 5.93 GB |
 | History (account + storage) | **136.97 GB** ✓ |
-| Warm CS (7 days) | **~820 MB** ✓ (acctcs 280 MB + storcs 540 MB) |
+| Warm CS (7 days) | **2.44 GB** ✓ (acctcs 825 MB + storcs 1.64 GB, late-chain density) |
 | Blocks (full chain data) | ~150 GB |
 | **Full archive** | **~317 GB** |
-| **State-only archive (no blocks)** | **167.5 GB** ✓ |
+| **State-only archive (no blocks)** | **169.13 GB** ✓ |
 | **Fast (snapshot + code + recent delta)** | **~30 GB** |
 
 vs original 945 GB MDBX+freezer:
 - Full archive: **3× smaller** (clients usually have blocks anyway via eth/68)
-- State-only: **5.65× smaller** (945 → 167.5 GB measured)
+- State-only: **5.59× smaller** (945 → 169.13 GB measured)
 - Fast mode: **31× smaller**
 
 **CS warm tier impact** (commit `c61a5726`/`62436e98`):
 - Original acctcs + storcs: **397 GB**
-- After 7-day warm prune: **~820 MB** (99.8% reduction)
+- After 7-day (50,400 blocks) warm prune: **2.44 GB** (99.4% reduction)
+  - acctcs 825 MB + storcs 1.64 GB
 - Tool: `cmd/n42-cs-prune` (build) + `cmd/n42-cs-prune-verify` (round-trip)
-- 10K-block prune in 12 s wall; 2000-sample verify 100% match
+- 50,400-block prune in **64 sec wall**; 10,000-sample verify 100% match
+- Late-chain density makes per-block CS ~3× the average; the early
+  dry-run estimate of 820 MB extrapolated from src-total-size and was
+  off by 3×. Measured wins remain dominant.
 - Sidecar `meta.json` stores `{base_block, head_block}` so reader
   translates absolute block → freezer item via `blk - base_block`.
   `internal/cs.Warm` wraps the freezer with `Retrieve(table, blk)`
