@@ -15,8 +15,10 @@ package ethel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/n42blockchain/N42/internal/cs"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
@@ -25,7 +27,27 @@ import (
 
 // Reorg rolls back PlainState to the given target block by reading
 // changesets from the output freezer and applying original values.
+//
+// This is a back-compat wrapper that uses the full freezer as the
+// changeset source. New callers should use ReorgWithSource and pass
+// a cs.Source (FreezerSource / WarmSource / TieredSource).
 func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
+	return ReorgWithSource(db, cs.NewFreezerSource(outFreezer), targetBlock)
+}
+
+// ReorgWithSource rolls back PlainState to the given target block via
+// the provided changeset Source. The source decides which blocks are
+// available; sourcing a block outside the source's window aborts the
+// reorg with cs.ErrDeepReorg (descriptive message includes the
+// source's window).
+//
+// This abstraction enables the warm CS tier: after cmd/n42-cs-prune
+// drops old changesets to save disk, callers wire a WarmSource into
+// the reorg path. Deep-reorg requests beyond the warm window
+// fail-loud rather than silently mis-reverting state (the V4-class
+// drift bug observed at 12,501,844 was the original motivation for
+// the pre-flight sanity check now generalized here).
+func ReorgWithSource(db kv.RwDB, src cs.Source, targetBlock uint64) error {
 	tx, err := db.BeginRw(context.Background())
 	if err != nil {
 		return err
@@ -37,74 +59,56 @@ func Reorg(db kv.RwDB, outFreezer *freezer.Freezer, targetBlock uint64) error {
 		return nil
 	}
 
-	log.Info("Reorg: rolling back state", "from", currentHead, "to", targetBlock)
+	log.Info("Reorg: rolling back state",
+		"from", currentHead, "to", targetBlock, "source", src.WindowDescription())
 
-	accTable := outFreezer.Table(freezer.TableAccountChanges)
-	stoTable := outFreezer.Table(freezer.TableStorageChanges)
-
-	// Sanity check: storcs/acctcs MUST exist for every block in the unwind
-	// range. Without them Reorg silently no-ops the state revert and only
-	// updates the progress marker, leaving PlainState with future-block
-	// values while progress points to a past block. Subsequent forward
-	// replay reads "future" values from PlainState and diverges from
-	// mainnet (root cause of V4-class drift, observed at 12501844 / 12617540).
-	// Also catches the case where freezer was truncated independently of MDBX.
-	if accTable != nil || stoTable != nil {
-		missingStorcs := uint64(0)
-		missingAcctcs := uint64(0)
-		var firstMissing uint64
-		for blk := targetBlock + 1; blk <= currentHead; blk++ {
-			if stoTable != nil {
-				if data, err := stoTable.Retrieve(blk); err != nil || data == nil {
-					if missingStorcs == 0 {
-						firstMissing = blk
-					}
-					missingStorcs++
-				}
-			}
-			if accTable != nil {
-				if data, err := accTable.Retrieve(blk); err != nil || data == nil {
-					missingAcctcs++
-				}
-			}
-		}
-		if missingStorcs > 0 || missingAcctcs > 0 {
-			return fmt.Errorf("Reorg: storcs/acctcs incomplete in unwind range [%d, %d]: missing %d storcs and %d acctcs entries (first missing block: %d). PlainState cannot be safely reverted; would leave datadir in half-unwound state (state ahead, progress behind). Either rebuild changesets first or restart from a clean snapshot",
-				targetBlock+1, currentHead, missingStorcs, missingAcctcs, firstMissing)
+	// Pre-flight sanity check: EVERY block in the unwind range must be
+	// available from src. Generalizes the original freezer-only check —
+	// covers warm tier (out-of-window deep reorgs) and the historical
+	// V4-class drift bug (12,501,844 / 12,617,540) where missing
+	// changesets caused silent partial unwinds.
+	for blk := targetBlock + 1; blk <= currentHead; blk++ {
+		if !src.Available(blk) {
+			return fmt.Errorf("Reorg: block %d not available from source (%s). "+
+				"Unwind range [%d, %d] cannot be safely applied; would leave datadir half-reverted (state ahead, progress behind). "+
+				"Recovery: re-execute via EVM from a known snapshot, or reload full archive from a blake2b-verified bundle. %w",
+				blk, src.WindowDescription(), targetBlock+1, currentHead, cs.ErrDeepReorg)
 		}
 	}
 
 	for blockNum := currentHead; blockNum > targetBlock; blockNum-- {
-		// Revert account changes from freezer (apply OLD values).
-		if accTable != nil {
-			accData, err := accTable.Retrieve(blockNum)
-			if err == nil && len(accData) > 0 {
-				entries, err := DecodeAccountChanges(accData)
-				if err != nil {
-					return fmt.Errorf("decode account changes at %d: %w", blockNum, err)
-				}
-				for _, e := range entries {
-					if err := applyAccountValue(tx, e.Address, e.OldValue); err != nil {
-						return err
-					}
+		// Revert account changes (apply OLD values).
+		accData, err := src.RetrieveAccount(blockNum)
+		if err != nil && !errors.Is(err, cs.ErrDeepReorg) {
+			return fmt.Errorf("retrieve account changes at %d: %w", blockNum, err)
+		}
+		if len(accData) > 0 {
+			entries, err := DecodeAccountChanges(accData)
+			if err != nil {
+				return fmt.Errorf("decode account changes at %d: %w", blockNum, err)
+			}
+			for _, e := range entries {
+				if err := applyAccountValue(tx, e.Address, e.OldValue); err != nil {
+					return err
 				}
 			}
 		}
 
-		// Revert storage changes from freezer (apply OLD values).
-		if stoTable != nil {
-			stoData, err := stoTable.Retrieve(blockNum)
-			if err == nil && len(stoData) > 0 {
-				entries, err := DecodeStorageChanges(stoData)
-				if err != nil {
-					return fmt.Errorf("decode storage changes at %d: %w", blockNum, err)
-				}
-				for _, e := range entries {
-					if len(e.OldValue) == 0 {
-						tx.Delete(modules.Storage, e.CompositeKey)
-					} else {
-						tx.Put(modules.Storage, e.CompositeKey, e.OldValue)
-					}
+		// Revert storage changes (apply OLD values).
+		stoData, err := src.RetrieveStorage(blockNum)
+		if err != nil && !errors.Is(err, cs.ErrDeepReorg) {
+			return fmt.Errorf("retrieve storage changes at %d: %w", blockNum, err)
+		}
+		if len(stoData) > 0 {
+			entries, err := DecodeStorageChanges(stoData)
+			if err != nil {
+				return fmt.Errorf("decode storage changes at %d: %w", blockNum, err)
+			}
+			for _, e := range entries {
+				if len(e.OldValue) == 0 {
+					tx.Delete(modules.Storage, e.CompositeKey)
+				} else {
+					tx.Put(modules.Storage, e.CompositeKey, e.OldValue)
 				}
 			}
 		}
