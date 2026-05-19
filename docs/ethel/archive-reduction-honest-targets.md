@@ -127,11 +127,11 @@ table above assumes `.val.zst` only.
 | account.idx | 51.0 MB | sparse page-offset table, 8B per page × 6.69M pages | `idx[ord/64]` → page byte offset |
 | account.kv | 48.62 GB | zstd-compressed pages (64 entries/page); page-decoded entry = `[fp:4B][varint blobLen][packed-history-blob]` | seek page → zstd decode → walk to (ord%64) → verify fp → return blob |
 | **account history subtotal** | **48.75 GB** (11.32 B/entry, 122 B/key) | | |
-| storage.mphf | ~414 MB | MPHF for 2.03B ever-touched (addr,slot) | `Lookup(addr‖slot)` |
-| storage.idx | ~250 MB | page offsets | |
-| storage.kv | ~80 GB | zstd pages same format | |
-| **storage history subtotal** | **~80 GB** (in progress; see implementation status) | | |
-| **History total** | **~130 GB** | | |
+| storage.mphf | 414.43 MB | MPHF for 2.03B ever-touched (addr,slot) (1.71 bit/key) | `Lookup(addr‖slot)` |
+| storage.idx | 242.29 MB | page offsets, 8B per page × 31.76M pages | |
+| storage.kv | 87.58 GB | zstd pages same format | |
+| **storage history subtotal** | **88.22 GB** ✓ measured (11.23 B/entry, 46.6 B/key, build wall 7h25m) | | |
+| **History total** | **~137 GB** (measured) | | |
 
 ### Code tier (D:/N42-eth1/chain/freezer)
 
@@ -151,21 +151,21 @@ table above assumes `.val.zst` only.
 | senders.{cidx,cdat} | ~38 GB | Optional (clients can ecrecover) |
 | **Blocks total** | **~150 GB** raw / ~80 GB without optional | |
 
-### Grand total
+### Grand total (all measured 2026-05-18)
 
 | Tier | Compressed deployable |
 |------|----------------------|
 | Snapshot | 23.79 GB |
 | Code | 5.93 GB |
-| History | ~130 GB |
-| Blocks (full) | ~150 GB |
-| **Full archive** | **~310 GB** |
-| **State-only archive (no blocks)** | **~160 GB** |
+| History (account + storage) | **136.97 GB** ✓ |
+| Blocks (full chain data) | ~150 GB |
+| **Full archive** | **~317 GB** |
+| **State-only archive (no blocks)** | **166.69 GB** ✓ |
 | **Fast (snapshot + code + recent delta)** | **~30 GB** |
 
 vs original 945 GB MDBX+freezer:
 - Full archive: **3× smaller** (clients usually have blocks anyway via eth/68)
-- State-only: **6× smaller**
+- State-only: **5.7× smaller** (945 → 167 GB measured)
 - Fast mode: **31× smaller**
 
 ## Access benchmark (measured)
