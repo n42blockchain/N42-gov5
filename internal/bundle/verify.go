@@ -5,6 +5,7 @@ package bundle
 import (
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -88,9 +89,30 @@ func Verify(rootDir string, m *Manifest, opts VerifyOptions) ([]VerifyResult, er
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			buf := make([]byte, 4*1024*1024)
+			whole, err := newHasher(m.Algorithm)
+			if err != nil {
+				// Manifest already validated by Load, but fall back to
+				// per-file error reporting if a hasher init fails here.
+				for idx := range jobs {
+					results[idx] = VerifyResult{Path: m.Files[idx].Path, Size: m.Files[idx].Size, Status: StatusReadError, Err: err}
+					filesDone.Add(1)
+				}
+				return
+			}
+			var seg hashAcc
+			if err := seg.init(m.Algorithm); err != nil {
+				for idx := range jobs {
+					results[idx] = VerifyResult{Path: m.Files[idx].Path, Size: m.Files[idx].Size, Status: StatusReadError, Err: err}
+					filesDone.Add(1)
+				}
+				return
+			}
 			for idx := range jobs {
+				whole.Reset()
+				seg.reset()
 				r := verifyOne(filepath.Join(rootDir, filepath.FromSlash(m.Files[idx].Path)),
-					m.Files[idx], m.SegmentSize, m.Algorithm, &bytesDone)
+					m.Files[idx], buf, whole, &seg, &bytesDone)
 				results[idx] = r
 				filesDone.Add(1)
 			}
@@ -125,7 +147,7 @@ func Verify(rootDir string, m *Manifest, opts VerifyOptions) ([]VerifyResult, er
 	return results, nil
 }
 
-func verifyOne(absPath string, expect File, segSize int64, algo string, bytesDone *atomic.Int64) VerifyResult {
+func verifyOne(absPath string, expect File, buf []byte, whole hash.Hash, segHash *hashAcc, bytesDone *atomic.Int64) VerifyResult {
 	r := VerifyResult{Path: expect.Path, Size: expect.Size}
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -151,27 +173,12 @@ func verifyOne(absPath string, expect File, segSize int64, algo string, bytesDon
 	}
 	defer f.Close()
 
-	whole, err := newHasher(algo)
-	if err != nil {
-		r.Status = StatusReadError
-		r.Err = err
-		return r
-	}
 	var (
-		bad     []int
-		segIdx  int
-		segHash hashAcc
+		bad    []int
+		segIdx int
 	)
 	useSegs := len(expect.Segments) > 0
-	if useSegs {
-		if err := segHash.reset(algo); err != nil {
-			r.Status = StatusReadError
-			r.Err = err
-			return r
-		}
-	}
 
-	buf := make([]byte, 4*1024*1024)
 	for {
 		n, rerr := f.Read(buf)
 		if n > 0 {

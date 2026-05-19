@@ -136,7 +136,6 @@ func TestRehashFlow(t *testing.T) {
 	writeBundleFile(t, root, "bodyc.0000.cdat", 4096)
 	writeBundleFile(t, root, "storcs.cidx", 8192)
 
-	// Step 1: build legacy BLAKE2b manifest.
 	old, err := Build(root, BuildOptions{ChainID: 1, Algorithm: AlgoBlake2b256})
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +144,6 @@ func TestRehashFlow(t *testing.T) {
 		t.Fatalf("expected legacy algorithm, got %q", old.Algorithm)
 	}
 
-	// Step 2: rebuild with BLAKE3, preserving (ChainID, BlockRange).
 	fresh, err := Build(root, BuildOptions{
 		ChainID:    old.ChainID,
 		BlockRange: old.BlockRange,
@@ -158,7 +156,6 @@ func TestRehashFlow(t *testing.T) {
 		t.Fatalf("expected BLAKE3 algorithm, got %q", fresh.Algorithm)
 	}
 
-	// Step 3: sanity check — same file set, same sizes, different hashes.
 	if len(fresh.Files) != len(old.Files) {
 		t.Fatalf("file count drift: old=%d new=%d", len(old.Files), len(fresh.Files))
 	}
@@ -171,12 +168,13 @@ func TestRehashFlow(t *testing.T) {
 		if o.Size != f.Size {
 			t.Errorf("size drift for %s: old=%d new=%d", f.Path, o.Size, f.Size)
 		}
+		// Two pure hash funcs producing identical bytes for the same
+		// input would mean swap was a no-op — pin against that.
 		if o.Hash == f.Hash {
 			t.Errorf("hash identical across algorithms for %s — suspicious", f.Path)
 		}
 	}
 
-	// Step 4: verify new manifest against the on-disk files.
 	results, err := Verify(root, fresh, VerifyOptions{})
 	if err != nil {
 		t.Fatal(err)

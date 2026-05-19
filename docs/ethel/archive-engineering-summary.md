@@ -102,7 +102,6 @@ The same trick applied to account history is much smaller (~5% gain) because per
 | `n42-cs-prune` | Build warm-tier freezer with last N blocks; --swap atomic; --loop scheduler |
 | `n42-cs-prune-verify` | Round-trip warm vs full freezer for sample blocks |
 | `n42-bundle-rehash` | Migrate existing BLAKE2b manifests to BLAKE3 atomically |
-| `n42-bundle-seed-legacy` | Test helper: emit explicit-BLAKE2b manifest for QA |
 | `storcs-bytes-breakdown` | Measure CS field-byte distribution (informed MPHF design) |
 | `reth-snapshot-export --n42` | Build snapshot from N42 PlainState MDBX (pre-existing, extended) |
 | `ethexec bundle-hash --include-all --algo` | Generate manifest for non-freezer dirs / explicit algo |

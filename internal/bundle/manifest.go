@@ -107,6 +107,26 @@ func (m *Manifest) Save(path string) error {
 	return nil
 }
 
+// SaveSynced is Save plus an fsync before close so the on-disk bytes
+// are durable before the caller proceeds (e.g. before a rename).
+func (m *Manifest) SaveSynced(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("bundle: create manifest %s: %w", path, err)
+	}
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(m); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("bundle: encode manifest: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("bundle: fsync manifest: %w", err)
+	}
+	return f.Close()
+}
+
 // Load parses a manifest from path. Returns an error if version is not
 // recognized — clients should refuse to verify unknown formats rather
 // than silently treat them as a different version.
