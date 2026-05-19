@@ -12,8 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"golang.org/x/crypto/blake2b"
 )
 
 // VerifyResult is the per-file outcome of a verify pass. A whole-file
@@ -92,7 +90,7 @@ func Verify(rootDir string, m *Manifest, opts VerifyOptions) ([]VerifyResult, er
 			defer wg.Done()
 			for idx := range jobs {
 				r := verifyOne(filepath.Join(rootDir, filepath.FromSlash(m.Files[idx].Path)),
-					m.Files[idx], m.SegmentSize, &bytesDone)
+					m.Files[idx], m.SegmentSize, m.Algorithm, &bytesDone)
 				results[idx] = r
 				filesDone.Add(1)
 			}
@@ -127,7 +125,7 @@ func Verify(rootDir string, m *Manifest, opts VerifyOptions) ([]VerifyResult, er
 	return results, nil
 }
 
-func verifyOne(absPath string, expect File, segSize int64, bytesDone *atomic.Int64) VerifyResult {
+func verifyOne(absPath string, expect File, segSize int64, algo string, bytesDone *atomic.Int64) VerifyResult {
 	r := VerifyResult{Path: expect.Path, Size: expect.Size}
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -153,7 +151,12 @@ func verifyOne(absPath string, expect File, segSize int64, bytesDone *atomic.Int
 	}
 	defer f.Close()
 
-	whole, _ := blake2b.New256(nil)
+	whole, err := newHasher(algo)
+	if err != nil {
+		r.Status = StatusReadError
+		r.Err = err
+		return r
+	}
 	var (
 		bad     []int
 		segIdx  int
@@ -161,7 +164,11 @@ func verifyOne(absPath string, expect File, segSize int64, bytesDone *atomic.Int
 	)
 	useSegs := len(expect.Segments) > 0
 	if useSegs {
-		segHash.reset()
+		if err := segHash.reset(algo); err != nil {
+			r.Status = StatusReadError
+			r.Err = err
+			return r
+		}
 	}
 
 	buf := make([]byte, 4*1024*1024)
