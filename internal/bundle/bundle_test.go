@@ -125,6 +125,70 @@ func TestUnknownAlgorithmRejected(t *testing.T) {
 	}
 }
 
+// TestRehashFlow exercises the same sequence n42-bundle-rehash runs:
+// build a BLAKE2b manifest → rebuild with BLAKE3 keeping the same
+// file set → verify the new manifest. Catches regressions in the
+// hash-agility plumbing (Build's Algorithm override, Verify's
+// per-manifest dispatch, file-set drift detection).
+func TestRehashFlow(t *testing.T) {
+	root := t.TempDir()
+	writeBundleFile(t, root, "headerc.cidx", 1024)
+	writeBundleFile(t, root, "bodyc.0000.cdat", 4096)
+	writeBundleFile(t, root, "storcs.cidx", 8192)
+
+	// Step 1: build legacy BLAKE2b manifest.
+	old, err := Build(root, BuildOptions{ChainID: 1, Algorithm: AlgoBlake2b256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Algorithm != AlgoBlake2b256 {
+		t.Fatalf("expected legacy algorithm, got %q", old.Algorithm)
+	}
+
+	// Step 2: rebuild with BLAKE3, preserving (ChainID, BlockRange).
+	fresh, err := Build(root, BuildOptions{
+		ChainID:    old.ChainID,
+		BlockRange: old.BlockRange,
+		Algorithm:  AlgoBlake3_256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Algorithm != AlgoBlake3_256 {
+		t.Fatalf("expected BLAKE3 algorithm, got %q", fresh.Algorithm)
+	}
+
+	// Step 3: sanity check — same file set, same sizes, different hashes.
+	if len(fresh.Files) != len(old.Files) {
+		t.Fatalf("file count drift: old=%d new=%d", len(old.Files), len(fresh.Files))
+	}
+	oldByPath := make(map[string]File, len(old.Files))
+	for _, f := range old.Files {
+		oldByPath[f.Path] = f
+	}
+	for _, f := range fresh.Files {
+		o := oldByPath[f.Path]
+		if o.Size != f.Size {
+			t.Errorf("size drift for %s: old=%d new=%d", f.Path, o.Size, f.Size)
+		}
+		if o.Hash == f.Hash {
+			t.Errorf("hash identical across algorithms for %s — suspicious", f.Path)
+		}
+	}
+
+	// Step 4: verify new manifest against the on-disk files.
+	results, err := Verify(root, fresh, VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		if r.Status != StatusOK {
+			t.Errorf("post-rehash verify failed on %s: status=%v err=%v",
+				r.Path, r.Status, r.Err)
+		}
+	}
+}
+
 // TestCorruptionDetected ensures whole-file hash mismatch is flagged.
 func TestCorruptionDetected(t *testing.T) {
 	root := t.TempDir()
