@@ -91,15 +91,49 @@ Erigon's "1.5-2× commitment savings" from RKV is measured vs Erigon-without-RKV
 
 ---
 
+### A4 — TopCache K=4 + on-demand bottom subtree (added 2026-05-20)
+
+**Hypothesis:** Persist only top 4 levels of the MPT (~10 MB) and recompute bottom-level sibling subtrees on demand from a hashed-key-sorted snapshot. Claimed 230× compression in initial ultrathink analysis.
+
+**Phase 1 measurement (commit `c46be175`):** 100K leaves sampled from reth `PlainAccountState`, sorted by `keccak(addr)`, measured the cost of "sorted-by-hashed-key snapshot + small top-cache".
+
+| Component | Measured | Extrapolated to full |
+|---|---|---|
+| Sorted snapshot (accounts inline) | 46.56 B/leaf | 17.78 GB |
+| Sorted snapshot (delta-compressed) | 46.07 B/leaf | 17.78 GB (delta saves <2% on random hashes) |
+| TopCache K=4 (accounts) | 45.8 B/anchor | ~3 MB |
+| Storage sorted (delta) | 54.25 B/leaf | ~85 GB |
+| **Combined sorted snapshot + TopCache (compressed)** | — | **~70-80 GB** |
+
+**Verdict:** **MODEST SAVING, NOT 230×.** Critical reason: each leaf must carry its 32-byte hashed key to support range queries, and these random 32-byte hashes are **incompressible**. For 1.96B leaves: 1.96B × 32 B = **62 GB irreducible structural cost**.
+
+reth's MPT structure **amortises** hashed-key bytes via branch packing (one branch covers many leaves with shared prefix). A sorted-by-hash flat layout cannot match this: it pays 32 B per leaf directly.
+
+Realistic comparison (both variants include commitment / proof capability):
+
+| Approach | Storage | Latest proof | Historical proof |
+|---|---|---|---|
+| reth full archive subset | 189 GB | 100 µs | recompute on-demand |
+| **n42-snapshot + reth-MPT add-on** | **~58 GB** | **100 µs** | recompute via historicalstate |
+| TopCache + sorted snapshot | ~70-80 GB | ~50 ms | ~100-300 ms |
+| n42-snapshot only (no commitment) | 22 GB | N/A | N/A |
+
+→ TopCache K=4 is **15-20 GB WORSE** than reth-MPT-additive and **500× slower** on latest proofs. Not worth the engineering complexity (snapshot reshuffle + TopCache builder + new proof path).
+
+---
+
 ## A-track conclusion
 
 | Path | Predicted | Measured | Decision |
 |---|---|---|---|
 | A2 (JMT/BMT dedup) | "could be smaller" | **80× larger** | ❌ Eliminate |
 | A1 (HPH RKV refs) | "1.5-2× smaller" | **0.0% overhead** (already optimal) | ❌ Not applicable |
-| A3 (no-persist) | "saves 37 GB" | 37 GB / 2.14 TB = 1.7% | ❌ UX hit too big |
+| A3 (no-persist) | "saves 37 GB" | 1.7% of archive, UX hit | ❌ Not worth |
+| A4 (TopCache + sorted snap) | "230× compression" | **15-20 GB WORSE than A0** | ❌ Disproved by measurement |
 
-**Commitment IS the lower-bound implementation already.** No "extreme compression" path exists at the commitment layer that doesn't sacrifice query performance.
+**Commitment IS at the lower-bound implementation already.** No "extreme compression" path exists at the commitment layer that doesn't sacrifice proof performance or other resource (engineering, latency, build time).
+
+**Chosen path: A0 — reth-MPT add-on to n42-snapshot.** Combined with `internal/historicalstate` (already implemented for state-as-of queries) this yields full archive capability with the smallest verifiable storage footprint.
 
 ---
 
