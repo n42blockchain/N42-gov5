@@ -191,7 +191,51 @@ vs reth AccountsTrie MDBX: **5.29 GB vs 5.40 GB → 2% saved** via AppendDup
 ordering (~95% page fill vs reth's mixed-insert ~80%). Functional
 parity achieved with marginal storage win.
 
-Storage table (1.57B entries) building in background.
+### Phase A storage result (1.57B leaves, 2026-05-20)
+
+  leaves                1,569,829,384
+  branches              147,661,330  (vs reth 138.6M, +6.5% — see topology note)
+  bytes/leaf            11.12        (vs reth 19.0)
+  bucket used           30.48 GB     (vs reth 29.9 GB, +1.9%)
+  pass-1 (scan+sort)    1h22m08s     (~320K rows/s)
+  pass-2 (HashBuilder)  19m24s
+  pass-3 (AppendDup)    8m12s        (~300K writes/s)
+  total                 1h49m45s
+  state root            0xc44e11..dfc8 (deterministic; unified storage trie)
+
+**Topology difference** — N42 builds a UNIFIED storage trie keyed by the
+composite `keccak(addr) || keccak(slot)` 128-nibble path (one root for
+all storage). reth uses PER-ACCOUNT storage trees (one root hash per
+contract, embedded as storageRoot in the account leaf). Effect:
+
+| Aspect | reth (per-account) | N42 unified |
+|---|---|---|
+| Top-level structure | 4M independent small tries + storageRoot in account RLP | 1 single tree |
+| Branches | 138.6M | 147.6M (+6.5%) |
+| Bytes/branch | 215 B | 206 B |
+| Bucket | 29.9 GB | 30.48 GB (+1.9%) |
+| Per-account proof | direct subtree walk | walk + addr-prefix overhead |
+| Ethereum-canonical stateRoot | yes (with embedded storageRoots) | no (custom unified root) |
+
+Phase A.5 (optional, post-MVP) — migrate to per-account storage trees +
+add reth Compact → standard RLP transcoding for account values. Result
+would match reth exactly on storage size (29.9 GB) and produce the
+canonical Ethereum stateRoot, but adds 2-3 weeks of work for marginal
+storage win. Defer until eth_getProof RPC integration (Phase D) actually
+demands canonical roots.
+
+### Combined Phase A archive total
+
+  n42-snapshot (existing)              52.00 GB
+  n42-history-full (existing)         137.00 GB
+  accounts-mptcache (Phase A)           5.29 GB
+  storage-mptcache (Phase A)           30.48 GB
+  internal/historicalstate (code only)  -
+  ──────────────────────────────────────────────
+  total                                224.77 GB
+
+vs reth full archive 2.14 TB → **9.5× smaller** at equivalent functional level
+(latest proofs in 100µs, historical state-as-of via historicalstate overlay).
 
 ---
 
