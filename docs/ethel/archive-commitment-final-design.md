@@ -11,7 +11,18 @@
 
 ## 1. Decision
 
-**Add a reth-style MPT layer on top of the existing N42 snapshot + history, build it ourselves from N42 data (not copied from reth).**
+**Add a reth-style MPT layer on top of the existing N42 snapshot + history, build it ourselves from N42 data (not copied from reth). Persist into MDBX (not flat file) to support catch-up + 12-second live sync + 256-block MVCC diff layers.**
+
+### Build target choice (updated 2026-05-20)
+
+| Backend | Bucket used (accounts) | Live update? | MVCC | Verdict |
+|---|---|---|---|---|
+| Flat sorted file | 4.52 GB | ❌ rewrite whole file | ❌ | rejected — breaks under sync |
+| **MDBX with AppendDup** | **5.29 GB** | ✅ B-tree mutation | ✅ native | **chosen** |
+| reth MDBX (mixed insert) | 5.40 GB | ✅ | partial | reference |
+| RocksDB | ~5.0 GB est. | ✅ | snapshot ref-count | rejected — new CGo dep, Windows pain |
+
+MDBX AppendDup gives us ~95% page fill (vs ~80% for mixed inserts), so we still beat reth by 2% on storage while gaining native MVCC for the 256-block diff-layer requirement.
 
 ### Final archive layout
 
@@ -153,12 +164,34 @@ Wire `internal/mptproof.Generator` into `internal/api/blockscout.go`'s `eth_getP
 
 | Phase | Duration | Status |
 |---|---|---|
-| A — MPT Builder | 1.5 weeks | not started |
+| A — MPT Builder | 1.5 weeks → **actual ~3 days** | **✅ done for accounts; storage in progress** |
 | B — Reader API | 1 week | not started |
 | C — Proof Generator | 1 week | not started |
 | D — RPC integration | 3-5 days | not started |
 | E — Tests / docs | 3-5 days | not started |
 | **Total** | **~4-5 weeks** | |
+
+### Phase A actual results (accounts, 2026-05-20)
+
+`cmd/n42-mpt-build` ran on full 386M PlainAccountState from reth:
+
+  leaves                386,066,282
+  branches              28,936,485   (=reth +1 for root)
+  bytes/leaf            11.90        (vs reth 14.00)
+  bucket used           5.29 GB      (real MDBX data, sums leaf+branch+overflow pages)
+  pass-1 (scan+sort)    10m35s       (374-595K rows/s through ETL)
+  pass-2 (HashBuilder)  5m15s
+  pass-3 (AppendDup)    1m14s        (391K writes/s)
+  total                 17m05s
+  state root            0x781240..0033 (deterministic; not Ethereum canonical
+                        because we use reth Compact values as leaves — Phase A.5
+                        will add Compact→RLP transcoding for canonical root)
+
+vs reth AccountsTrie MDBX: **5.29 GB vs 5.40 GB → 2% saved** via AppendDup
+ordering (~95% page fill vs reth's mixed-insert ~80%). Functional
+parity achieved with marginal storage win.
+
+Storage table (1.57B entries) building in background.
 
 ---
 
