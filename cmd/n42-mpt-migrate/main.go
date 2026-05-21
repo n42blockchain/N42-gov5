@@ -30,6 +30,7 @@ import (
 
 	"github.com/c2h5oh/datasize"
 
+	"github.com/n42blockchain/N42/internal/mpttrie"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
@@ -37,10 +38,15 @@ import (
 
 const metaTable = "Meta"
 
+// migration describes one table copy. metaPrefix empty = don't copy
+// state_root/built_at meta (used for the optional dense tables that
+// share a state root with their compact sibling). optional = skip
+// silently if the source table is empty / has no entries.
 type migration struct {
 	srcDir, srcTable string
 	dstTable         string
 	metaPrefix       string
+	optional         bool
 }
 
 func main() {
@@ -57,12 +63,25 @@ func main() {
 	}
 
 	migrations := []migration{
+		// Required: compact MPT cache.
 		{srcDir: *srcAcct, srcTable: "AccountsTrie", dstTable: "AccountsTrie", metaPrefix: "accounts"},
 		{srcDir: *srcStor, srcTable: "StoragesTrie", dstTable: "StoragesTrie", metaPrefix: "storage"},
+		// Optional: Phase G1 dense (V1). Skip if source table empty.
+		{srcDir: *srcAcct, srcTable: mpttrie.AccountsDenseTable, dstTable: mpttrie.AccountsDenseTable, optional: true},
+		{srcDir: *srcStor, srcTable: mpttrie.StoragesDenseTable, dstTable: mpttrie.StoragesDenseTable, optional: true},
+		// Optional: Phase G2 dense V2 (plain-key referencing). Same.
+		{srcDir: *srcAcct, srcTable: mpttrie.AccountsDenseV2Table, dstTable: mpttrie.AccountsDenseV2Table, optional: true},
+		{srcDir: *srcStor, srcTable: mpttrie.StoragesDenseV2Table, dstTable: mpttrie.StoragesDenseV2Table, optional: true},
 	}
 
-	// Validate sources exist before opening dest (no half-mutation).
+	// Validate REQUIRED sources exist before opening dest (no half-mutation).
+	// Optional ones are checked per-migration during the copy loop.
+	seen := map[string]bool{}
 	for _, m := range migrations {
+		if m.optional || seen[m.srcDir] {
+			continue
+		}
+		seen[m.srcDir] = true
 		mdbxPath := filepath.Join(m.srcDir, "mdbx.dat")
 		if st, err := os.Stat(mdbxPath); err != nil {
 			fatal("source %s missing: %v", mdbxPath, err)
@@ -84,9 +103,15 @@ func main() {
 			PageSize(4096).
 			MapSize(datasize.ByteSize(*dstMapGB) * datasize.GB).
 			WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
-				for _, m := range migrations {
-					d[m.dstTable] = kv.TableCfgItem{}
-				}
+				// Declare ALL potential dst tables (compact +
+				// dense V1 + V2). Skipped migrations leave their
+				// table empty — harmless.
+				d["AccountsTrie"] = kv.TableCfgItem{}
+				d["StoragesTrie"] = kv.TableCfgItem{}
+				d[mpttrie.AccountsDenseTable] = kv.TableCfgItem{}
+				d[mpttrie.StoragesDenseTable] = kv.TableCfgItem{}
+				d[mpttrie.AccountsDenseV2Table] = kv.TableCfgItem{}
+				d[mpttrie.StoragesDenseV2Table] = kv.TableCfgItem{}
 				d[metaTable] = kv.TableCfgItem{}
 				return d
 			}).
@@ -167,6 +192,9 @@ func main() {
 //
 // Returns (entries copied, bytes written from source).
 func migrateTable(logger log.Logger, srcMapGB int, dstDB kv.RwDB, m migration, dryRun bool) (uint64, uint64, error) {
+	// Declare ALL potential tables in the src dir's TableCfg up front
+	// so consecutive migrations on the same dir don't trigger a re-open
+	// with a different schema (would force MDBX cache invalidation).
 	srcDB, err := mdbxkv.NewMDBX(logger).
 		Path(m.srcDir).
 		Label(kv.ChainDB).
@@ -174,7 +202,12 @@ func migrateTable(logger log.Logger, srcMapGB int, dstDB kv.RwDB, m migration, d
 		MapSize(datasize.ByteSize(srcMapGB) * datasize.GB).
 		Readonly().
 		WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
-			d[m.srcTable] = kv.TableCfgItem{}
+			d["AccountsTrie"] = kv.TableCfgItem{}
+			d["StoragesTrie"] = kv.TableCfgItem{}
+			d[mpttrie.AccountsDenseTable] = kv.TableCfgItem{}
+			d[mpttrie.StoragesDenseTable] = kv.TableCfgItem{}
+			d[mpttrie.AccountsDenseV2Table] = kv.TableCfgItem{}
+			d[mpttrie.StoragesDenseV2Table] = kv.TableCfgItem{}
 			d[metaTable] = kv.TableCfgItem{}
 			return d
 		}).
@@ -190,15 +223,38 @@ func migrateTable(logger log.Logger, srcMapGB int, dstDB kv.RwDB, m migration, d
 	}
 	defer srcTx.Rollback()
 
-	// Get source state_root + built_at from Meta for later transfer.
-	stateRoot, _ := srcTx.GetOne(metaTable, []byte("state_root"))
-	builtAt, _ := srcTx.GetOne(metaTable, []byte("built_at"))
+	// Get source state_root + built_at from Meta for later transfer
+	// (only used when metaPrefix is set — dense V1/V2 tables share the
+	// state root with their compact sibling, no need to re-copy).
+	var stateRoot, builtAt []byte
+	if m.metaPrefix != "" {
+		stateRoot, _ = srcTx.GetOne(metaTable, []byte("state_root"))
+		builtAt, _ = srcTx.GetOne(metaTable, []byte("built_at"))
+	}
 
 	srcCursor, err := srcTx.Cursor(m.srcTable)
 	if err != nil {
+		if m.optional {
+			return 0, 0, nil // table absent — skip silently
+		}
 		return 0, 0, fmt.Errorf("src cursor: %w", err)
 	}
 	defer srcCursor.Close()
+
+	// Optional pre-check: if optional and table empty, skip without
+	// touching dest (avoids ClearBucket overwriting good data).
+	if m.optional {
+		firstK, _, ferr := srcCursor.First()
+		if ferr != nil || firstK == nil {
+			return 0, 0, nil
+		}
+		// Reset cursor for the real iteration below.
+		srcCursor.Close()
+		srcCursor, err = srcTx.Cursor(m.srcTable)
+		if err != nil {
+			return 0, 0, fmt.Errorf("src cursor re-open: %w", err)
+		}
+	}
 
 	var (
 		copied  uint64
@@ -244,14 +300,16 @@ func migrateTable(logger log.Logger, srcMapGB int, dstDB kv.RwDB, m migration, d
 
 	if !dryRun {
 		dstCur.Close()
-		// Persist meta entries under prefix.
-		if len(stateRoot) == 32 {
+		// Persist meta entries under prefix — only for "primary"
+		// migrations (compact trie tables). Dense V1/V2 share the
+		// state root with their compact sibling.
+		if m.metaPrefix != "" && len(stateRoot) == 32 {
 			if err := dstTx.Put(metaTable, []byte(m.metaPrefix+":state_root"), stateRoot); err != nil {
 				dstTx.Rollback()
 				return copied, bytes, fmt.Errorf("put state_root: %w", err)
 			}
 		}
-		if len(builtAt) > 0 {
+		if m.metaPrefix != "" && len(builtAt) > 0 {
 			if err := dstTx.Put(metaTable, []byte(m.metaPrefix+":built_at"), builtAt); err != nil {
 				dstTx.Rollback()
 				return copied, bytes, fmt.Errorf("put built_at: %w", err)

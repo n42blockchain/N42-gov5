@@ -172,3 +172,85 @@ func encodeBigEndianLen(n int) []byte {
 
 // mptwalk aliases mpttrie.WalkResult locally for shorter signatures.
 type mptwalk = mpttrie.WalkResult
+
+// fullProofBytesDenseV2 is the G2 plain-key-referencing variant of
+// fullProofBytesDense. The dense V2 reader expands LeafMarker slots
+// on-the-fly via base.AccountLeafByPrefix / StorageLeafByPrefix
+// (each reconstruction is one keccak-keyed cursor seek + one
+// encodeLeafRLP + one keccak — sub-µs per slot when reth's hashed
+// tables are page-cached).
+func (g *Generator) fullProofBytesDenseV2(hashedKey, leafValue []byte,
+	leafFound bool, walk *mptwalk, dense *mpttrie.DenseReader,
+	isStorage bool, base mpttrie.SingleLeafLookup) (ProofBytes, error) {
+
+	keyNibbles := nibblesOf(hashedKey)
+
+	if leafFound && len(walk.Hops) == 0 {
+		return ProofBytes{encodeLeafRLP(keyNibbles, leafValue)}, nil
+	}
+	if len(walk.Hops) == 0 {
+		return nil, fmt.Errorf("dense V2 proof: empty walk")
+	}
+
+	out := make(ProofBytes, 0, len(walk.Hops)+1)
+	for hi, hop := range walk.Hops {
+		branchPath := keyNibbles[:hop.PrefixDepth]
+		branch, ok, err := dense.GetV2(branchPath, isStorage, base)
+		if err != nil {
+			return nil, fmt.Errorf("dense.GetV2(hop %d, path %x): %w", hi, branchPath, err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("dense V2 missing at hop %d path %x", hi, branchPath)
+		}
+		out = append(out, encodeBranchRLPFromDense(branch))
+	}
+
+	if !leafFound {
+		return out, nil
+	}
+
+	// Leaf-tail handling — same logic as the V1 path. After GetV2,
+	// the deepest branch's slots are FULLY expanded (markers became
+	// 33B hashes), so the discrimination is identical.
+	deepest := walk.Hops[len(walk.Hops)-1]
+	deepBranch, ok, err := dense.GetV2(keyNibbles[:deepest.PrefixDepth], isStorage, base)
+	if err != nil || !ok {
+		return nil, fmt.Errorf("dense V2 deepest: ok=%v err=%v", ok, err)
+	}
+	targetSlot := deepBranch.Slots[deepest.TargetNibble]
+	if len(targetSlot) != 33 || targetSlot[0] != 0xa0 {
+		return out, nil // inline leaf already in last branch RLP
+	}
+
+	remainder := keyNibbles[walk.LeafDepth:]
+	directLeaf := encodeLeafRLP(remainder, leafValue)
+	directHash := keccak256(directLeaf)
+	var storedHash [32]byte
+	copy(storedHash[:], targetSlot[1:])
+	if directHash == storedHash {
+		out = append(out, directLeaf)
+		return out, nil
+	}
+
+	// Sparse-keccak extension fallback (same as V1 path).
+	if g.leaves == nil {
+		return nil, fmt.Errorf("dense V2 leaf at hop deepest needs expansion but Generator.leaves is nil")
+	}
+	prefix := keyNibbles[:walk.LeafDepth]
+	var builder subtreeRootBuilder
+	if isAccountWalk(hashedKey) {
+		builder = accountSubtreeBuilder{src: g.leaves}
+	} else {
+		builder = storageSubtreeBuilder{src: g.leaves}
+	}
+	expandLeaves, err := builder.subLeavesByPrefix(prefix)
+	if err != nil {
+		return nil, fmt.Errorf("dense V2 expand prefix %x: %w", prefix, err)
+	}
+	expanded, err := expandSubtreeProofPath(expandLeaves, keyNibbles[walk.LeafDepth:])
+	if err != nil {
+		return nil, fmt.Errorf("dense V2 expand: %w", err)
+	}
+	out = append(out, expanded...)
+	return out, nil
+}
