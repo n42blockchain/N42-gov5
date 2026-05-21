@@ -50,16 +50,13 @@ func (g *Generator) FullStorageProofBytes(proof *StorageProof) (ProofBytes, erro
 }
 
 // subtreeRootBuilder is the per-domain enumerator: given a nibble
-// prefix, returns the RAW standard-MPT-node bytes representing the
-// sub-trie below that prefix. For sub-tries that hash to >= 32 bytes,
-// the caller wraps the resulting 32-byte hash; for inline sub-tries
-// (< 32 bytes), the caller embeds these raw bytes directly.
+// prefix, returns either the RAW standard-MPT-node bytes representing
+// the sub-trie below that prefix (SubtreeNodeBytes — used by sibling
+// rebuild) OR the list of leaves with effective keys relative to the
+// prefix (subLeavesByPrefix — used by target subtree expansion).
 type subtreeRootBuilder interface {
-	// SubtreeNodeBytes returns the RLP bytes of the sub-trie rooted
-	// at `prefix`. For a single leaf, returns the leaf RLP; for
-	// multiple leaves, returns the branch/extension RLP for their
-	// common ancestor.
 	SubtreeNodeBytes(prefix []byte) ([]byte, error)
+	subLeavesByPrefix(prefix []byte) ([]subLeaf, error)
 }
 
 type accountSubtreeBuilder struct{ src LeafSource }
@@ -70,10 +67,13 @@ func (a accountSubtreeBuilder) SubtreeNodeBytes(prefix []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(leaves) == 0 {
-		// No leaves under this prefix — sub-trie is empty.
 		return []byte{0x80}, nil
 	}
 	return buildSubtreeNodeBytes(leaves)
+}
+
+func (a accountSubtreeBuilder) subLeavesByPrefix(prefix []byte) ([]subLeaf, error) {
+	return collectAccountLeavesWithPrefix(a.src, prefix)
 }
 
 type storageSubtreeBuilder struct{ src LeafSource }
@@ -87,6 +87,10 @@ func (s storageSubtreeBuilder) SubtreeNodeBytes(prefix []byte) ([]byte, error) {
 		return []byte{0x80}, nil
 	}
 	return buildSubtreeNodeBytes(leaves)
+}
+
+func (s storageSubtreeBuilder) subLeavesByPrefix(prefix []byte) ([]subLeaf, error) {
+	return collectStorageLeavesWithPrefix(s.src, prefix)
 }
 
 // buildSubtreeNodeBytes builds the standard MPT root node RLP from
@@ -188,7 +192,34 @@ func (g *Generator) fullProofBytes(hashedKey, leafValue []byte, leafFound bool,
 
 	if leafFound && walk.Outcome == mpttrie.LandedOnLeaf {
 		remainder := keyNibbles[walk.LeafDepth:]
-		out = append(out, encodeLeafRLP(remainder, leafValue))
+
+		// Check whether the leaf is DIRECTLY at LeafDepth — i.e. the
+		// deepest hop's stored hash for our target slot equals the
+		// hash of the leaf node RLP. If so, simple emit.
+		deepest := walk.Hops[len(walk.Hops)-1]
+		storedHash, _ := deepest.Branch.ChildHash(deepest.TargetNibble)
+		leafHash := computeLeafHash(remainder, leafValue)
+		if leafHash == storedHash {
+			out = append(out, encodeLeafRLP(remainder, leafValue))
+			return out, nil
+		}
+
+		// The leaf is BELOW a sub-trie at this slot — expand the
+		// sub-trie to assemble extension/branch nodes between the
+		// deepest persisted branch and the leaf.
+		prefix := keyNibbles[:walk.LeafDepth] // walk path + target nibble
+		expandLeaves, err := builder.subLeavesByPrefix(prefix)
+		if err != nil {
+			return nil, fmt.Errorf("subtree expand: enumerate prefix %x: %w", prefix, err)
+		}
+		if len(expandLeaves) == 0 {
+			return nil, fmt.Errorf("subtree expand: 0 leaves under prefix %x", prefix)
+		}
+		expanded, err := expandSubtreeProofPath(expandLeaves, keyNibbles[walk.LeafDepth:])
+		if err != nil {
+			return nil, fmt.Errorf("subtree expand: %w", err)
+		}
+		out = append(out, expanded...)
 	}
 
 	return out, nil
