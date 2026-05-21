@@ -89,6 +89,24 @@ func New(cfg Config) (*Generator, error) {
 	return g, nil
 }
 
+// AccountsTrieRoot returns the latest accounts-trie state root
+// recorded by Phase A's builder.
+func (g *Generator) AccountsTrieRoot() ([32]byte, error) {
+	return g.accountsMPT.StateRoot()
+}
+
+// StorageTrieRoot returns the latest (unified) storage-trie state
+// root recorded by Phase A's builder.
+//
+// Note: this is the UNIFIED storage trie root (composite key
+// keccak(addr)||keccak(slot)), not the per-account storage root.
+// EIP-1186 strictly specifies per-account; N42 made an architectural
+// choice (documented in archive-commitment-final-design.md) for the
+// unified trie. Phase A.5 may swap if EIP-1186 strict compat needed.
+func (g *Generator) StorageTrieRoot() ([32]byte, error) {
+	return g.storageMPT.StateRoot()
+}
+
 func (g *Generator) Close() error {
 	if g.accountsMPT != nil {
 		g.accountsMPT.Close()
