@@ -165,23 +165,8 @@ func Build(ctx context.Context, opts Opts) (*Result, error) {
 		curr, succ, currVal            []byte
 		leafData                       trie.GenStructStepLeafData
 		marshalBuf                     []byte
-		// Dense-form stashing: when DenseBranchSink is set, the
-		// SetBranchEmitter callback (called from HashBuilder.branchHash)
-		// records the most recent slot data. The subsequent hc call
-		// consumes it. `set` from branchHash equals hasState in hc.
-		denseStashedData []byte
-		denseHave        bool
 	)
 	retain := func(_ []byte) bool { return false }
-
-	if opts.DenseBranchSink != nil {
-		hb.SetBranchEmitter(func(slotData []byte, _ uint16) error {
-			// Copy: hashStack may be reused after branchEmitter returns.
-			denseStashedData = append(denseStashedData[:0], slotData...)
-			denseHave = true
-			return nil
-		})
-	}
 
 	hc := func(keyHex []byte, hasState, hasTreeM, hasHashM uint16, hashes, rootHash []byte) error {
 		if hasState == 0 {
@@ -202,12 +187,17 @@ func Build(ctx context.Context, opts Opts) (*Result, error) {
 		}
 		res.Branches++
 		res.BranchBytes += int64(need)
-		// Dense sink, paired 1:1 with the compact write above.
-		if opts.DenseBranchSink != nil && denseHave {
-			if err := opts.DenseBranchSink(keyCopy, hasState, hasTreeM, denseStashedData); err != nil {
+		// Dense sink: hb.LastDenseSlots() returns the snapshot taken
+		// by gen_struct_step right after topHashes (before branchHash
+		// pops the children). The snapshot covers all bits in hasState
+		// regardless of how many made it into hasHash, so dense always
+		// has full per-child data even when the compact hc passes a
+		// trimmed `hashes` arg.
+		if opts.DenseBranchSink != nil {
+			slot := hb.LastDenseSlots()
+			if err := opts.DenseBranchSink(keyCopy, hasState, hasTreeM, slot); err != nil {
 				return err
 			}
-			denseHave = false
 		}
 		return nil
 	}

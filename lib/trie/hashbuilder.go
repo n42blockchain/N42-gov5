@@ -54,8 +54,15 @@ type HashBuilder struct {
 	//   - 33 bytes: 0x80+32 prefix + 32-byte keccak hash (slot ≥ 32 B encoded)
 	//   - variable: rlp.EmptyListCode+size prefix + size bytes inline RLP
 	// `set` is the same uint16 bitmap of which children are present.
-	// Used by Phase G1 dense commitment builder; nil disables (no overhead).
+	// Used by tests; production dense capture uses snapshotDenseSlots
+	// (called from gen_struct_step inline at the hc invocation site).
 	branchEmitter func(slotData []byte, set uint16) error
+
+	// denseStash holds the most recent dense-slot snapshot taken by
+	// snapshotDenseSlots — kept across the hc callback site so the
+	// receiver can read full per-child slot data after compact-only
+	// info has been passed via HashCollector2.
+	denseStash []byte
 }
 
 // SetBranchEmitter registers a callback that receives raw slot data
@@ -725,6 +732,38 @@ func (hb *HashBuilder) printTopHashes(prefix []byte, _, children uint16) {
 		}
 	}
 }
+
+// snapshotDenseSlots copies the full per-child slot frame for the
+// branch currently at the top of the hashStack into hb.denseStash and
+// returns the stashed slice. Called by gen_struct_step right after
+// topHashes — BEFORE any subsequent branchHash invocation pops the
+// children — so the snapshot survives across both hc call sites
+// (intermediate-level and root/level-1) within a single iteration.
+//
+// LastDenseSlots reads back the most recent snapshot.
+//
+// Phase G1 dense commitment writer pairs this with the HashCollector2
+// (hc) callback: at hc time the receiver calls LastDenseSlots() to
+// get the full per-child encoding of the branch that hc reports.
+func (hb *HashBuilder) snapshotDenseSlots(hasState uint16) []byte {
+	digits := bits.OnesCount16(hasState)
+	if digits == 0 {
+		hb.denseStash = hb.denseStash[:0]
+		return hb.denseStash
+	}
+	start := len(hb.hashStack) - hashStackStride*digits
+	if start < 0 {
+		hb.denseStash = hb.denseStash[:0]
+		return hb.denseStash
+	}
+	hb.denseStash = append(hb.denseStash[:0], hb.hashStack[start:]...)
+	return hb.denseStash
+}
+
+// LastDenseSlots returns the snapshot taken by the most recent
+// snapshotDenseSlots call. Aliases internal storage; copy if you
+// need long-lived bytes.
+func (hb *HashBuilder) LastDenseSlots() []byte { return hb.denseStash }
 
 func (hb *HashBuilder) topHashes(prefix []byte, hasHash, hasState uint16) []byte {
 	digits := bits.OnesCount16(hasState)

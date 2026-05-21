@@ -35,6 +35,15 @@ import (
 
 const metaTable = "Meta"
 
+// Phase G1 dense-form tables. Each entry: key = nibble path, value =
+// MarshalTrieNodeDense output (state_mask + tree_mask + full per-child
+// slot bytes — sufficient to reconstruct the branch RLP and serve
+// EIP-1186 proofs without any sub-tree rebuild).
+const (
+	AccountsDenseTable = "AccountsDense"
+	StoragesDenseTable = "StoragesDense"
+)
+
 // Reader opens an MPT MDBX directory for read.
 type Reader struct {
 	db    kv.RoDB
@@ -94,6 +103,10 @@ func OpenUnifiedDB(dir string) (env kv.RoDB, accounts, storage *Reader, err erro
 			d["AccountsTrie"] = kv.TableCfgItem{}
 			d["StoragesTrie"] = kv.TableCfgItem{}
 			d[metaTable] = kv.TableCfgItem{}
+			// Phase G1 dense form (full per-child slot data). Optional;
+			// readers that don't need them tolerate empty/missing tables.
+			d[AccountsDenseTable] = kv.TableCfgItem{}
+			d[StoragesDenseTable] = kv.TableCfgItem{}
 			return d
 		}).
 		Open(context.Background())
