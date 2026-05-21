@@ -46,6 +46,27 @@ type HashBuilder struct {
 	// encoding retained.  Additionally, the account root storage hash and storage
 	// values are stored into this field when set and in the relavent codepath.
 	proofElement *proofElement
+
+	// branchEmitter, when set, is invoked from branchHash IMMEDIATELY BEFORE
+	// the stack-resize that discards per-child slot data. The callback
+	// receives the full 33-byte-per-child block (hashStackStride * digits
+	// bytes) as it appears on the hashStack. Each child slot is either:
+	//   - 33 bytes: 0x80+32 prefix + 32-byte keccak hash (slot ≥ 32 B encoded)
+	//   - variable: rlp.EmptyListCode+size prefix + size bytes inline RLP
+	// `set` is the same uint16 bitmap of which children are present.
+	// Used by Phase G1 dense commitment builder; nil disables (no overhead).
+	branchEmitter func(slotData []byte, set uint16) error
+}
+
+// SetBranchEmitter registers a callback that receives raw slot data
+// for each branch emitted by branchHash. The callback fires per-branch,
+// in the order branches are finalized — same order as HashCollector
+// invocations from GenStructStep, so the caller can pair the dense
+// slot data with the masks/hashes that GenStructStep computes.
+//
+// Pass nil to clear.
+func (hb *HashBuilder) SetBranchEmitter(fn func(slotData []byte, set uint16) error) {
+	hb.branchEmitter = fn
 }
 
 // NewHashBuilder creates a new HashBuilder
@@ -582,6 +603,15 @@ func (hb *HashBuilder) branchHash(set uint16) error {
 				return err
 			}
 			//fmt.Printf("%x: empty\n", digit)
+		}
+	}
+	// Emit dense slot data BEFORE we pop the children's hashStack frames.
+	// `hashes` is the slice `hashStack[end-hashStackStride*digits : end]`,
+	// 33 bytes per child in nibble-ascending order, prefix byte indicates
+	// inline (rlp.EmptyListCode+size) vs hash (0x80+32).
+	if hb.branchEmitter != nil {
+		if err := hb.branchEmitter(hashes, set); err != nil {
+			return err
 		}
 	}
 	hb.hashStack = hb.hashStack[:len(hb.hashStack)-hashStackStride*digits+hashStackStride]
