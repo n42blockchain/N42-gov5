@@ -1,11 +1,17 @@
 // n42-dense-measure reads an existing V1 dense table and reports
-// what its V2 (G2 plain-key-referencing) size would be, without
-// actually rewriting. Useful for measuring G2 savings on the real
-// data before committing to a V2 bootstrap re-run.
+// what its V2 (G2 plain-key-referencing) size would be. With --write
+// it also TRANSCODES the V1 entries to a V2 table in the same env
+// (e.g. AccountsDense → AccountsDenseV2), so no re-bootstrap from
+// reth is needed.
 //
 // Usage:
 //
+//	# measure only (read-only)
 //	n42-dense-measure --dir D:\n42-mpt-dense\accounts-mptcache --table AccountsDense
+//
+//	# transcode V1 → V2 in place (writes new table alongside V1)
+//	n42-dense-measure --dir D:\n42-mpt-dense\accounts-mptcache `
+//	                   --table AccountsDense --write --dst-table AccountsDenseV2
 package main
 
 import (
@@ -25,31 +31,66 @@ import (
 
 func main() {
 	dir := flag.String("dir", `D:\n42-mpt-dense\accounts-mptcache`, "MDBX dir with V1 dense table")
-	table := flag.String("table", "AccountsDense", "table to measure")
+	table := flag.String("table", "AccountsDense", "source V1 table to read")
+	write := flag.Bool("write", false, "transcode mode: ALSO write V2 entries to --dst-table")
+	dstTable := flag.String("dst-table", "AccountsDenseV2", "destination V2 table (used with --write)")
 	flag.Parse()
 
-	db, err := mdbxkv.NewMDBX(log.New()).
+	// Open the env. RW when --write, RO otherwise. Single-writer
+	// MDBX so this conflicts with any in-progress bootstrap on the
+	// same dir — caller's responsibility.
+	mdbxBuilder := mdbxkv.NewMDBX(log.New()).
 		Path(*dir).Label(kv.ChainDB).PageSize(4096).
-		MapSize(2 * datasize.TB).Readonly().
+		MapSize(2 * datasize.TB).
 		WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
 			d[*table] = kv.TableCfgItem{}
+			if *write {
+				d[*dstTable] = kv.TableCfgItem{}
+			}
 			return d
-		}).Open(context.Background())
+		})
+	if !*write {
+		mdbxBuilder = mdbxBuilder.Readonly()
+	}
+	db, err := mdbxBuilder.Open(context.Background())
 	if err != nil {
 		fatal("open: %v", err)
 	}
 	defer db.Close()
 
-	tx, err := db.BeginRo(context.Background())
+	// Source read tx.
+	rtx, err := db.BeginRo(context.Background())
 	if err != nil {
-		fatal("begin: %v", err)
+		fatal("begin ro: %v", err)
 	}
-	defer tx.Rollback()
-	c, err := tx.Cursor(*table)
+	defer rtx.Rollback()
+	c, err := rtx.Cursor(*table)
 	if err != nil {
 		fatal("cursor: %v", err)
 	}
 	defer c.Close()
+
+	// Destination write tx — only when --write.
+	var (
+		wtx     kv.RwTx
+		dstCur  kv.RwCursor
+	)
+	if *write {
+		wtx, err = db.BeginRw(context.Background())
+		if err != nil {
+			fatal("begin rw: %v", err)
+		}
+		// Truncate any prior content for idempotent re-run.
+		if err := wtx.ClearBucket(*dstTable); err != nil {
+			wtx.Rollback()
+			fatal("clear %s: %v", *dstTable, err)
+		}
+		dstCur, err = wtx.RwCursor(*dstTable)
+		if err != nil {
+			wtx.Rollback()
+			fatal("dst cursor: %v", err)
+		}
+	}
 
 	var (
 		rows               int64
@@ -109,6 +150,20 @@ func main() {
 		v2EncBuf = trie.MarshalTrieNodeDenseV2(stateMask, treeMask, slotData, v2EncBuf[:0])
 		v2ValueBytes += int64(len(v2EncBuf))
 
+		if *write {
+			// Source iteration is sorted by nibble path → V2 encoding
+			// uses the same key → cursor.Append OK.
+			keyCopy := make([]byte, len(k))
+			copy(keyCopy, k)
+			valCopy := make([]byte, len(v2EncBuf))
+			copy(valCopy, v2EncBuf)
+			if err := dstCur.Append(keyCopy, valCopy); err != nil {
+				dstCur.Close()
+				wtx.Rollback()
+				fatal("dst Append row %d: %v", rows, err)
+			}
+		}
+
 		if time.Since(lastLog) > 5*time.Second {
 			fmt.Fprintf(os.Stderr, "  scanned %d rows (V1=%.2f GB → V2 so far=%.2f GB, %.1f%% saving)\n",
 				rows,
@@ -137,6 +192,14 @@ func main() {
 			100*float64(v1InlineSlots)/float64(totalSlots))
 	}
 	fmt.Printf("  elapsed               %s\n", time.Since(t0).Truncate(time.Second))
+
+	if *write {
+		dstCur.Close()
+		if err := wtx.Commit(); err != nil {
+			fatal("commit dst tx: %v", err)
+		}
+		fmt.Printf("  ✓ V2 written to %s/%s (%d rows)\n", *dir, *dstTable, rows)
+	}
 }
 
 func fatal(format string, a ...interface{}) {
