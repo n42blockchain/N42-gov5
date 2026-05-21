@@ -168,14 +168,32 @@ internal/         → Core business logic (private packages)
     extensions/schema.go     → Index schema types (TokenTransfer, ContractEvent, AddressProfile, GasMetrics)
   bundler/        → ERC-4337 account abstraction bundler (+ agent session key validation)
   peerdas/        → PeerDAS data availability sampling (EIP-7594)
+  mptbuild/       → reth-format MPT builder (3-pass: scan → ETL sort → HashBuilder → AppendDup)
+  mpttrie/        → MPT reader (Walk, sibling collection, BranchNodeCompact decode, unified-env Open)
+  mptproof/       → eth_getProof generator (latest + state-as-of, EIP-1186 wire format)
+    generator.go       → Generator entry; LatestAccountProof / LatestStorageProofs / LatestProof
+    source.go          → LeafSource interface; RethLeafSource (reth PlainState reader) + callbackSafe wrappers
+    wire_full.go       → FullAccountProofBytes / FullStorageProofBytes (rebuilds inline siblings via SubtreeNodeBytes)
+    wire_expand.go     → D.1.5 target-subtree expansion (extension/branch nodes between deepest branch and leaf)
+    wire_verify.go     → VerifyStandardProof — independent EIP-1186 oracle
+    verify_subtree.go  → Walk + subtree-rebuild self-verify (covers ExtensionInPath case)
+    historical.go      → HistoricalLeafSource overlay (historicalstate + base); HistoricalProof bundle
+  historicalstate/ → state-as-of reader (combines snapshot + MPHF+fp history)
+  history/         → MPHF+fp coldstore for per-block changes (used by historicalstate)
 modules/          → Data layer
-  state/          → State management (IntraBlockState, snapshot, witness, JMT commitment)
+  state/          → State management (IntraBlockState, snapshot, witness)
+    commitment/   → Pluggable state-root engines: MPT / JMT / BMT / Verkle / LtHash
   rawdb/          → Raw database operations (MDBX backend, freezer, log index)
   rpc/            → JSON-RPC transport (HTTP, WebSocket, IPC)
   ethdb/          → Database interface abstraction
 lib/              → Shared libraries
   kv/             → Key-value store (mdbx/, memdb/, remotedb/, remotedbserver/, layered/)
-  jmt/            → Jellyfish Merkle Tree (Blake3, sparse cache, ref-counting GC)
+  commitment/     → Erigon HexPatriciaHashed (HPH) port: Keccak / 16-ary grid, ETH-compatible stateRoot
+                     + ConcurrentMPTRootComputer (per-worker RoTx, etl.Collector), Warmuper, recording context
+  jmt/            → Jellyfish Merkle Tree (Blake3, sparse 16-ary, ref-counting GC, cold/hot layered store)
+  bmt/            → Binary Merkle Tree (Blake3, 2-ary content-addressed, 65B internal node, smallest proof ~427B)
+  verkle/         → Verkle tree (go-verkle, Bandersnatch IPA / Banderwagon, 256-ary, 64B commitment key)
+  lthash/         → Lattice Hash (Blake3 XOF, 2048B homomorphic digest, O(changes) root update, treeless)
   state/          → HistoryV3 aggregator (per-block changeset + inverted index)
 common/           → Shared types and utilities
   types/          → Address, Hash, core blockchain types
@@ -196,7 +214,12 @@ cmd/zkguest/      → ZK guest program (RISC-V64 target)
 - **Node** (`internal/node/node.go`) is the central orchestrator — it creates DB, consensus engine, miner, txpool, P2P, RPC, MCP, ZK prover, deferred executor, gRPC KV server, distributed services, then manages lifecycle (Start/Stop).
 - **Consensus is pluggable**: `apoa` (PoA), `apos` (PoS), and `hotstuff` (HotStuff-2 BFT) implement the `consensus.Engine` interface.
 - **Database**: MDBX (memory-mapped B+ tree) via `lib/kv/mdbx/`; `lib/kv/memdb/` for testing; `lib/kv/remotedb/` for RPCDaemon.
-- **State management**: `modules/state/` handles state trie with changeset tracking; `modules/state/commitment/` provides JMT Blake3 state commitment with ref-counting GC for online pruning.
+- **State management**: `modules/state/` handles state trie with changeset tracking; `modules/state/commitment/` exposes a pluggable `RootComputer` interface backed by five engines (see `docs/bench_state_report.md` for 1M-block cross-tree benchmarks):
+  - **MPT (HPH)** — `lib/commitment/` Erigon HexPatriciaHashed port, Keccak / 16-ary, **ETH stateRoot byte-compatible** (production). `ConcurrentMPTRootComputer` parallelizes via per-worker RoTx + `bulk_resume` checkpoint.
+  - **JMT** — `lib/jmt/` Blake3 / 16-ary sparse, ref-counting GC, **highest write throughput** (~3.06M blk/s @ 1M bench), supports cold/hot tier (`docs/JMT_COLD_HOT_DESIGN.md`).
+  - **BMT** — `lib/bmt/` Blake3 / binary, content-addressed, **smallest proof** (~427B). Phase 1 validated against 11.7M EVM-replay blocks.
+  - **Verkle** — `lib/verkle/` go-verkle (Bandersnatch IPA / Banderwagon), 256-ary, **smallest persistent state** (~4.8 MB full history) but ~40× slower writes than JMT — experimental, suited to verify-heavy / L2 use.
+  - **LtHash** — `lib/lthash/` Blake3 XOF homomorphic digest, O(changes) update, no tree → no proof. Experimental, runs in parallel with JMT for cross-check.
 - **P2P**: Built on `go-libp2p` with custom protocols for block/transaction/blob/witness propagation.
 - **PQ isolation**: Post-quantum precompiles (0x14-0x17) are NOT in standard fork maps; activated only via `ChainConfig.PQPrecompilesTime`.
 - **Distributed compute platform**: `internal/distributed/` provides a full distributed compute stack:
