@@ -149,6 +149,12 @@ func TestHistoricalProof_Production_USDC(t *testing.T) {
 }
 
 func TestHistoricalProof_WithStorageSlots(t *testing.T) {
+	if testing.Short() {
+		t.Skip("--short: skipping full reth scan (~15 min)")
+	}
+	if deadline, ok := t.Deadline(); ok && time.Until(deadline) < 30*time.Minute {
+		t.Skip("test deadline too short — pass -timeout 30m or longer")
+	}
 	if _, err := os.Stat(filepath.Join(productionHistoryDir, "account.mphf")); err != nil {
 		t.Skipf("%s not present", productionHistoryDir)
 	}
