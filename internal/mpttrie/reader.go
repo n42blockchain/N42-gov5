@@ -94,6 +94,12 @@ func OpenUnifiedDB(dir string) (env kv.RoDB, accounts, storage *Reader, err erro
 			d["AccountsTrie"] = kv.TableCfgItem{}
 			d["StoragesTrie"] = kv.TableCfgItem{}
 			d[metaTable] = kv.TableCfgItem{}
+			// Optional hashed-key fast-path index tables (Phase F).
+			// Declared here so HashedLeafSource can share the env via
+			// NewHashedLeafSourceFromDB without re-opening the MDBX
+			// dir (which would trigger MDBX_BUSY in the same process).
+			d["HashedAccount"] = kv.TableCfgItem{}
+			d["HashedStorageRef"] = kv.TableCfgItem{}
 			return d
 		}).
 		Open(context.Background())
