@@ -30,6 +30,10 @@ func buildDenseUnifiedTestDB(t *testing.T, nAccts int) (string, map[[20]byte][]b
 	acctEntries, acctValues := makeAccountEntriesAndValues(nAccts)
 
 	// Open destination env with both compact + dense tables declared.
+	// Declare V2 tables too so that re-opening via OpenUnifiedDB (which
+	// also declares them) doesn't trigger MDBX's "phantom DBI" quirk
+	// for tables present in TableCfg but missing on disk — see
+	// internal/mpttrie/dense_reader.go::Has for context.
 	db, err := mdbxkv.NewMDBX(logger).
 		Path(dst).
 		Label(kv.ChainDB).
@@ -41,6 +45,8 @@ func buildDenseUnifiedTestDB(t *testing.T, nAccts int) (string, map[[20]byte][]b
 			d["Meta"] = kv.TableCfgItem{}
 			d[mpttrie.AccountsDenseTable] = kv.TableCfgItem{}
 			d[mpttrie.StoragesDenseTable] = kv.TableCfgItem{}
+			d[mpttrie.AccountsDenseV2Table] = kv.TableCfgItem{}
+			d[mpttrie.StoragesDenseV2Table] = kv.TableCfgItem{}
 			return d
 		}).
 		Open(context.Background())

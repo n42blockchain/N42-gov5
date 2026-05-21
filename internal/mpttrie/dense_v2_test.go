@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/crypto/sha3"
 
+	"github.com/n42blockchain/N42/lib/rlphacks"
 	"github.com/n42blockchain/N42/lib/trie"
 )
 
@@ -48,6 +49,76 @@ func hasNibblePrefix(bytes32 []byte, nibblePrefix []byte) bool {
 		}
 	}
 	return true
+}
+
+// TestReconstructLeafHash_AgainstHashBuilder directly compares
+// reconstructLeafHash output against HashBuilder.leafHashWithKeyVal
+// for the exact same (key, value) inputs that gen_struct_step would
+// pass during a real build. This pinpoints any subtle encoding
+// divergence between V2's plain-key reconstruction and the build
+// pipeline's leaf hash.
+func TestReconstructLeafHash_AgainstHashBuilder(t *testing.T) {
+	// One synthetic account. We pick a specific keccak(addr) so the
+	// "prefix" used by V2 reconstruction can be derived deterministically.
+	var addr [20]byte
+	addr[0] = 0x42
+	keccakAddr := keccak256Bytes(addr[:])
+	value := []byte{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+
+	// Simulate a branch at depth 3 (3 nibbles of branchPath) with
+	// child slot at nibble keccakAddr-nibble[3]. The leaf below this
+	// slot has key suffix = keccakAddr nibbles 4..63 + 0x10 terminator.
+	branchPathLen := 3
+	prefix := make([]byte, branchPathLen+1)
+	for i := 0; i < branchPathLen+1; i++ {
+		bi := i / 2
+		if i%2 == 0 {
+			prefix[i] = keccakAddr[bi] >> 4
+		} else {
+			prefix[i] = keccakAddr[bi] & 0xf
+		}
+	}
+
+	// Reference: directly call HashBuilder's leafHash path (same
+	// code the build pipeline uses).
+	// keyHex = full keccakAddr nibbles + 0x10 terminator.
+	// keyLength = full nibbles past prefix + 1 (terminator).
+	keyHex := make([]byte, 0, 65)
+	for _, b := range keccakAddr {
+		keyHex = append(keyHex, b>>4, b&0xf)
+	}
+	keyHex = append(keyHex, 0x10)
+	keyLength := len(keyHex) - len(prefix) // = 64 - 4 + 1 = 61
+
+	// Reference hash via LeafHashStandalone (which uses the SAME
+	// leafHashWithKeyVal call as the build).
+	wantHash, err := trie.LeafHashStandalone(
+		keyHex[len(keyHex)-keyLength:],
+		rlphacks.RlpEncodedBytes(value),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Our V2 reconstruction path.
+	mock := &mockSingleLeafLookup{
+		keys:   [][32]byte{keccakAddr},
+		values: [][]byte{value},
+	}
+	gotHash, err := reconstructLeafHash(prefix, false, mock)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if wantHash != gotHash {
+		t.Errorf("reconstructLeafHash diverges from HashBuilder leafHashWithKeyVal\n"+
+			"  keyHex          %x\n  prefix          %x\n  keyHex[after prefix] %x\n"+
+			"  want (HashBuilder) %x\n  got  (reconstruct) %x",
+			keyHex, prefix, keyHex[len(keyHex)-keyLength:], wantHash, gotHash)
+	} else {
+		t.Logf("✓ branchDepth=%d  prefix=%x  hash=%x", branchPathLen, prefix, gotHash)
+	}
 }
 
 // TestReconstructLeafHash_ExactMatch builds a 1-leaf "branch context"

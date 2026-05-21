@@ -5,11 +5,11 @@ import (
 	"fmt"
 
 	"github.com/c2h5oh/datasize"
-	"golang.org/x/crypto/sha3"
 
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/rlphacks"
 	"github.com/n42blockchain/N42/lib/trie"
 )
 
@@ -64,6 +64,19 @@ func (r *DenseReader) Close() error {
 // Has reports whether the dense table contains any data. Used to
 // decide whether to take the dense fast path or fall back to compact
 // + leaf-source rebuild.
+//
+// IMPLEMENTATION NOTE: MDBX's RO bucket-create path leaves the DBI
+// handle as the default zero value for tables that were declared in
+// TableCfg but never actually written (the env was created without
+// the table, then re-opened with a TableCfg adding it). A subsequent
+// Cursor() against that bogus DBI silently iterates the main/META
+// bucket, returning a phantom non-nil first key — i.e. Has would
+// false-positive without further checks.
+//
+// Defense: require that the first key (if any) is a valid nibble
+// path — every byte must be 0..15. Dense table keys are always
+// nibbles. A phantom Meta key like "accounts:state_root" starts with
+// 'a' = 0x61 → instantly rejected.
 func (r *DenseReader) Has() (bool, error) {
 	tx, err := r.db.BeginRo(context.Background())
 	if err != nil {
@@ -79,7 +92,16 @@ func (r *DenseReader) Has() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return k != nil, nil
+	if k == nil {
+		return false, nil
+	}
+	for _, b := range k {
+		if b > 0x0f {
+			// Phantom key from misrouted DBI; treat table as empty.
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // DenseBranch is the decoded form of one dense entry.
@@ -230,16 +252,15 @@ func reconstructLeafHash(prefix []byte, isStorage bool, base SingleLeafLookup) (
 	}
 	suffix = append(suffix, 0x10) // leaf terminator
 
-	leafRLP := encodeLeafRLP(suffix, value)
-	h := sha3.NewLegacyKeccak256()
-	h.Write(leafRLP)
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out, nil
+	// Use HashBuilder's own leaf-hash path. Same wrapping
+	// (RlpEncodedBytes) the builder uses for mptbuild.Build, so the
+	// recovered hash matches the parent's stored 32-byte slot exactly.
+	return trie.LeafHashStandalone(suffix, rlphacks.RlpEncodedBytes(value))
 }
 
-// encodeLeafRLP — minimal copy of mptproof's leaf RLP encoder, kept
-// local to avoid an import cycle (mpttrie can't import mptproof).
+// encodeLeafRLP — kept for backward compatibility with synthetic
+// reconstruction tests; production reconstructLeafHash above calls
+// lib/trie.LeafHashStandalone instead.
 func encodeLeafRLP(hpKey, value []byte) []byte {
 	// hp-encode: leaf with even / odd nibble length + terminator.
 	// suffix already includes 0x10. Build the HP key bytes.

@@ -25,9 +25,14 @@ type Generator struct {
 	// to compact + leaf-source rebuild.
 	accountsDense *mpttrie.DenseReader
 	storagesDense *mpttrie.DenseReader
-	unifiedEnv    kv.RoDB // non-nil in unified-env mode; we close it
-	leaves        LeafSource
-	history       *historicalstate.Reader // optional; may be nil
+	// Phase G2 dense V2 readers (plain-key referencing). Preferred
+	// over V1 when both are present — far more compact, equally fast
+	// to read (one MDBX point + on-demand leaf-hash reconstruction).
+	accountsDenseV2 *mpttrie.DenseReader
+	storagesDenseV2 *mpttrie.DenseReader
+	unifiedEnv      kv.RoDB // non-nil in unified-env mode; we close it
+	leaves          LeafSource
+	history         *historicalstate.Reader // optional; may be nil
 }
 
 // Config bundles construction parameters. Use EXACTLY ONE of:
@@ -67,6 +72,15 @@ func New(cfg Config) (*Generator, error) {
 		g.accountsMPT = a
 		g.storageMPT = s
 		// Probe dense tables: keep readers only if they have data.
+		// Order: V2 first (preferred), then V1 (fallback).
+		aDenseV2 := mpttrie.OpenDenseShared(env, mpttrie.AccountsDenseV2Table)
+		if has, herr := aDenseV2.Has(); herr == nil && has {
+			g.accountsDenseV2 = aDenseV2
+		}
+		sDenseV2 := mpttrie.OpenDenseShared(env, mpttrie.StoragesDenseV2Table)
+		if has, herr := sDenseV2.Has(); herr == nil && has {
+			g.storagesDenseV2 = sDenseV2
+		}
 		aDense := mpttrie.OpenDenseShared(env, mpttrie.AccountsDenseTable)
 		if has, herr := aDense.Has(); herr == nil && has {
 			g.accountsDense = aDense
@@ -134,6 +148,12 @@ func (g *Generator) SetLeafSource(src LeafSource) { g.leaves = src }
 func (g *Generator) UnifiedEnv() kv.RoDB { return g.unifiedEnv }
 
 func (g *Generator) Close() error {
+	if g.accountsDenseV2 != nil {
+		g.accountsDenseV2.Close()
+	}
+	if g.storagesDenseV2 != nil {
+		g.storagesDenseV2.Close()
+	}
 	if g.accountsDense != nil {
 		g.accountsDense.Close()
 	}
