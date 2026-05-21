@@ -44,7 +44,8 @@ func main() {
 		outMapGB  = flag.Int("out-mapsize-gb", 64, "output DB MapSize cap")
 		verify    = flag.String("verify-root", "", "optional expected root hash (hex) to assert")
 		maxRows   = flag.Int64("max-rows", 0, "0=full table; else stop after N rows (smoke testing)")
-		emitDense = flag.Bool("emit-dense", false, "ALSO emit Phase G1 dense form to <prefix>-mptcache/AccountsDense or StoragesDense (same env)")
+		emitDense   = flag.Bool("emit-dense", false, "ALSO emit Phase G1 dense (V1) form to AccountsDense/StoragesDense")
+		emitDenseV2 = flag.Bool("emit-dense-v2", false, "ALSO emit Phase G2 dense V2 (plain-key referencing) form to AccountsDenseV2/StoragesDenseV2 — 85% smaller than V1 on real data")
 	)
 	flag.Parse()
 
@@ -82,21 +83,35 @@ func main() {
 	}
 	defer target.Close()
 
-	// Phase G1 dense ETL collector. Wired only when --emit-dense set.
+	// Phase G1 / G2 dense ETL collector. Exactly one of V1 / V2 may be
+	// active. Stored to the corresponding {Accounts,Storages}Dense or
+	// {Accounts,Storages}DenseV2 table in the same env.
 	var (
 		denseColl  *etl.Collector
 		denseTable string
 		denseRows  int64
 		denseBytes int64
+		denseV2    = *emitDenseV2
 	)
-	if *emitDense {
+	if *emitDense && *emitDenseV2 {
+		fatal("--emit-dense and --emit-dense-v2 are mutually exclusive")
+	}
+	if *emitDense || *emitDenseV2 {
 		switch outTable {
 		case "AccountsTrie":
-			denseTable = mpttrie.AccountsDenseTable
+			if denseV2 {
+				denseTable = mpttrie.AccountsDenseV2Table
+			} else {
+				denseTable = mpttrie.AccountsDenseTable
+			}
 		case "StoragesTrie":
-			denseTable = mpttrie.StoragesDenseTable
+			if denseV2 {
+				denseTable = mpttrie.StoragesDenseV2Table
+			} else {
+				denseTable = mpttrie.StoragesDenseTable
+			}
 		default:
-			fatal("--emit-dense: unknown output table %s", outTable)
+			fatal("--emit-dense{,-v2}: unknown output table %s", outTable)
 		}
 		denseColl = etl.NewCollector(
 			"mptbuild-dense-"+outTable,
@@ -135,7 +150,11 @@ func main() {
 	if denseColl != nil {
 		var encBuf []byte
 		opts.DenseBranchSink = func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error {
-			encBuf = trie.MarshalTrieNodeDense(stateMask, treeMask, slotData, encBuf[:0])
+			if denseV2 {
+				encBuf = trie.MarshalTrieNodeDenseV2(stateMask, treeMask, slotData, encBuf[:0])
+			} else {
+				encBuf = trie.MarshalTrieNodeDense(stateMask, treeMask, slotData, encBuf[:0])
+			}
 			keyCopy := make([]byte, len(keyHex))
 			copy(keyCopy, keyHex)
 			valCopy := make([]byte, len(encBuf))
