@@ -1486,6 +1486,112 @@ func MarshalTrieNode(hasState, hasTree, hasHash uint16, hashes, rootHash []byte,
 	return buf
 }
 
+// MarshalTrieNodeDense encodes a branch node with FULL slot data:
+// the variable-length RLP encoding of every present child (either a
+// 32-byte hash reference 0xa0||hash, or inline RLP starting with
+// 0xc0..0xfe). Unlike MarshalTrieNode, the dense form preserves
+// inline children's exact bytes — sufficient to reproduce the
+// parent's RLP and serve EIP-1186 proofs without any rebuild.
+//
+// Layout (big-endian where multibyte):
+//
+//	+0  state_mask    uint16   bit i set = child i exists
+//	+2  tree_mask     uint16   bit i set = child i is a deeper branch
+//	+4  for each set bit in state_mask, ascending:
+//	      first byte of the child slot's hashStack entry, followed by
+//	      its payload. Total slot length = (b0 == 0xa0 ? 33 : b0-0xc0+1).
+//
+// slotData is the raw hashStack[] block that branchHash receives
+// (hashStackStride * popcount(state_mask) bytes, 33 per slot).
+func MarshalTrieNodeDense(stateMask, treeMask uint16, slotData []byte, buf []byte) []byte {
+	// Compute output size: 4-byte header + per-slot variable bytes.
+	const stride = 33 // hashStackStride
+	size := 4
+	digits := bits.OnesCount16(stateMask)
+	for i := 0; i < digits; i++ {
+		b0 := slotData[i*stride]
+		size += slotLenFromPrefix(b0)
+	}
+	buf = ensureCap(buf, size)[:size]
+	binary.BigEndian.PutUint16(buf[0:2], stateMask)
+	binary.BigEndian.PutUint16(buf[2:4], treeMask)
+	off := 4
+	for i := 0; i < digits; i++ {
+		b0 := slotData[i*stride]
+		n := slotLenFromPrefix(b0)
+		copy(buf[off:off+n], slotData[i*stride:i*stride+n])
+		off += n
+	}
+	return buf
+}
+
+// UnmarshalTrieNodeDense parses a dense branch encoding into the
+// state mask, tree mask, and 16 per-child slot byte slices (nil for
+// empty). Slot bytes alias `buf` — do not modify; copy if you need
+// long-lived storage.
+func UnmarshalTrieNodeDense(buf []byte) (stateMask, treeMask uint16, slots [16][]byte, err error) {
+	if len(buf) < 4 {
+		err = fmt.Errorf("MarshalTrieNodeDense: too short (%d bytes)", len(buf))
+		return
+	}
+	stateMask = binary.BigEndian.Uint16(buf[0:2])
+	treeMask = binary.BigEndian.Uint16(buf[2:4])
+	off := 4
+	for digit := 0; digit < 16; digit++ {
+		if stateMask&(1<<digit) == 0 {
+			continue
+		}
+		if off >= len(buf) {
+			err = fmt.Errorf("MarshalTrieNodeDense: truncated at digit %d (off=%d len=%d)", digit, off, len(buf))
+			return
+		}
+		n := slotLenFromPrefix(buf[off])
+		if off+n > len(buf) {
+			err = fmt.Errorf("MarshalTrieNodeDense: slot %d overruns buf (need %d at off=%d len=%d)", digit, n, off, len(buf))
+			return
+		}
+		slots[digit] = buf[off : off+n]
+		off += n
+	}
+	if off != len(buf) {
+		err = fmt.Errorf("MarshalTrieNodeDense: %d trailing bytes after slots", len(buf)-off)
+		return
+	}
+	return
+}
+
+// slotLenFromPrefix returns the total byte length of one child slot
+// given its first byte. 0xa0 = hash ref (33B). 0xc0..0xfe = short
+// list (b0 - 0xc0 + 1 bytes total). 0x80 = empty (1B). We never
+// expect 0x80 in slot data (empty slots aren't pushed to hashStack)
+// but handle it defensively.
+func slotLenFromPrefix(b0 byte) int {
+	if b0 == 0xa0 {
+		return 33
+	}
+	if b0 >= 0xc0 && b0 <= 0xfe {
+		return int(b0-0xc0) + 1
+	}
+	if b0 == 0x80 {
+		return 1
+	}
+	// 0x81..0xb7 are short strings; not expected as child slots in our
+	// MPT (children are always lists or hash refs), but length is
+	// b0 - 0x80 + 1.
+	if b0 >= 0x81 && b0 <= 0xb7 {
+		return int(b0-0x80) + 1
+	}
+	// Default — treat as 1 byte to avoid runaway parse.
+	return 1
+}
+
+func ensureCap(buf []byte, n int) []byte {
+	if cap(buf) >= n {
+		return buf
+	}
+	return make([]byte, 0, n)
+}
+
 func CastTrieNodeValue(hashes, rootHash []byte) []types.Hash {
 	to := make([]types.Hash, len(hashes)/length.Hash+len(rootHash)/length.Hash)
 	i := 0

@@ -52,6 +52,20 @@ type Opts struct {
 	BufMB    uint64        // ETL buffer per collector (default 1024)
 	Logger   log.Logger    // optional; defaults to log.New()
 	Progress func(rows int64)
+
+	// DenseBranchSink, when set, is invoked once per branch with the
+	// FULL per-child slot data (33 bytes per child, prefix encodes
+	// inline-vs-hash). Pairs 1:1 with the standard compact write to
+	// Target. Used by Phase G1 to populate a dense CommitmentDomain
+	// table alongside (or instead of) the compact AccountsTrie /
+	// StoragesTrie tables.
+	//
+	//   keyHex   = nibble path of the branch (same as the compact key)
+	//   stateMask, treeMask = same masks the compact form would record
+	//   slotData = hashStackStride * popcount(stateMask) bytes
+	//
+	// Returning a non-nil error aborts the build.
+	DenseBranchSink func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error
 }
 
 // Result captures the outcome of a build.
@@ -151,8 +165,23 @@ func Build(ctx context.Context, opts Opts) (*Result, error) {
 		curr, succ, currVal            []byte
 		leafData                       trie.GenStructStepLeafData
 		marshalBuf                     []byte
+		// Dense-form stashing: when DenseBranchSink is set, the
+		// SetBranchEmitter callback (called from HashBuilder.branchHash)
+		// records the most recent slot data. The subsequent hc call
+		// consumes it. `set` from branchHash equals hasState in hc.
+		denseStashedData []byte
+		denseHave        bool
 	)
 	retain := func(_ []byte) bool { return false }
+
+	if opts.DenseBranchSink != nil {
+		hb.SetBranchEmitter(func(slotData []byte, _ uint16) error {
+			// Copy: hashStack may be reused after branchEmitter returns.
+			denseStashedData = append(denseStashedData[:0], slotData...)
+			denseHave = true
+			return nil
+		})
+	}
 
 	hc := func(keyHex []byte, hasState, hasTreeM, hasHashM uint16, hashes, rootHash []byte) error {
 		if hasState == 0 {
@@ -173,6 +202,13 @@ func Build(ctx context.Context, opts Opts) (*Result, error) {
 		}
 		res.Branches++
 		res.BranchBytes += int64(need)
+		// Dense sink, paired 1:1 with the compact write above.
+		if opts.DenseBranchSink != nil && denseHave {
+			if err := opts.DenseBranchSink(keyCopy, hasState, hasTreeM, denseStashedData); err != nil {
+				return err
+			}
+			denseHave = false
+		}
 		return nil
 	}
 
