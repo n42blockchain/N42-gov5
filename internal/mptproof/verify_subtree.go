@@ -132,11 +132,11 @@ type subLeaf struct {
 }
 
 func collectAccountLeavesWithPrefix(src LeafSource, prefix []byte) ([]subLeaf, error) {
-	// Fast path: if the source is a hashed-key index, do a cursor
-	// range scan instead of a full ScanAccounts. ~50,000x faster on
-	// production data.
-	if hashed, ok := src.(*HashedLeafSource); ok {
-		return hashed.collectAccountLeavesByPrefix(prefix)
+	// Fast path: LeafSource implementing HashedKeyScanner — the source
+	// is sorted by keccak key (e.g. reth's HashedAccounts table) and
+	// can be range-scanned by hashed prefix directly.
+	if hs, ok := src.(HashedKeyScanner); ok {
+		return hs.AccountsByHashedPrefix(prefix)
 	}
 	var out []subLeaf
 	err := src.ScanAccounts(func(addr [20]byte, value []byte) error {
@@ -155,9 +155,9 @@ func collectAccountLeavesWithPrefix(src LeafSource, prefix []byte) ([]subLeaf, e
 }
 
 func collectStorageLeavesWithPrefix(src LeafSource, prefix []byte) ([]subLeaf, error) {
-	// Fast path: cursor range scan on the hashed-key storage index.
-	if hashed, ok := src.(*HashedLeafSource); ok {
-		return hashed.collectStorageLeavesByPrefix(prefix)
+	// Fast path: HashedKeyScanner (e.g. reth's HashedStorages).
+	if hs, ok := src.(HashedKeyScanner); ok {
+		return hs.StorageByHashedPrefix(prefix)
 	}
 	var out []subLeaf
 	err := src.ScanStorage(func(addr [20]byte, slot [32]byte, value []byte) error {
