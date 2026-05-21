@@ -33,6 +33,17 @@ import (
 type LeafSource interface {
 	AccountValue(addr [20]byte) ([]byte, bool, error)
 	StorageValue(addr [20]byte, slot [32]byte) ([]byte, bool, error)
+
+	// ScanAccounts iterates all (addr, value) pairs. SLOW — full table
+	// scan. Used by Verify's subtree-rebuild fallback, not by RPC hot
+	// paths. Callback may abort iteration by returning a non-nil
+	// error which propagates as ScanAccounts's return value.
+	ScanAccounts(fn func(addr [20]byte, value []byte) error) error
+
+	// ScanStorage iterates all (addr, slot, value) tuples. Same SLOW
+	// caveat — used by Verify's subtree-rebuild for storage proofs.
+	ScanStorage(fn func(addr [20]byte, slot [32]byte, value []byte) error) error
+
 	Close() error
 }
 
@@ -64,6 +75,26 @@ func (m *MapLeafSource) StorageValue(addr [20]byte, slot [32]byte) ([]byte, bool
 	out := make([]byte, len(v))
 	copy(out, v)
 	return out, true, nil
+}
+
+func (m *MapLeafSource) ScanAccounts(fn func(addr [20]byte, value []byte) error) error {
+	for a, v := range m.Accounts {
+		if err := fn(a, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *MapLeafSource) ScanStorage(fn func(addr [20]byte, slot [32]byte, value []byte) error) error {
+	for a, slots := range m.Storage {
+		for s, v := range slots {
+			if err := fn(a, s, v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (m *MapLeafSource) Close() error { return nil }
@@ -189,6 +220,61 @@ func (r *RethLeafSource) storageValueLinear(tx kv.Tx, addr [20]byte, slot [32]by
 		}
 	}
 	return nil, false, nil
+}
+
+func (r *RethLeafSource) ScanAccounts(fn func(addr [20]byte, value []byte) error) error {
+	tx, err := r.db.BeginRo(context.Background())
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	c, err := tx.Cursor(r.acctTable)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var addr [20]byte
+	for k, v, err := c.First(); err == nil && k != nil; k, v, err = c.Next() {
+		if len(k) != 20 {
+			continue
+		}
+		copy(addr[:], k)
+		// copy value before invoking caller (cursor reuses buffer).
+		val := make([]byte, len(v))
+		copy(val, v)
+		if err := fn(addr, val); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *RethLeafSource) ScanStorage(fn func(addr [20]byte, slot [32]byte, value []byte) error) error {
+	tx, err := r.db.BeginRo(context.Background())
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	c, err := tx.Cursor(r.storTable)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var addr [20]byte
+	var slot [32]byte
+	for k, v, err := c.First(); err == nil && k != nil; k, v, err = c.Next() {
+		if len(k) != 20 || len(v) < 32 {
+			continue
+		}
+		copy(addr[:], k)
+		copy(slot[:], v[:32])
+		val := make([]byte, len(v)-32)
+		copy(val, v[32:])
+		if err := fn(addr, slot, val); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func bytesEqual(a, b []byte) bool {
