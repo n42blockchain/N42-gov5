@@ -171,12 +171,14 @@ internal/         → Core business logic (private packages)
   mptbuild/       → reth-format MPT builder (3-pass: scan → ETL sort → HashBuilder → AppendDup)
   mpttrie/        → MPT reader (Walk, sibling collection, BranchNodeCompact decode, unified-env Open)
   mptproof/       → eth_getProof generator (latest + state-as-of, EIP-1186 wire format)
-    generator.go       → Generator entry; LatestAccountProof / LatestStorageProofs / LatestProof
-    source.go          → LeafSource interface; RethLeafSource (reth PlainState reader) + callbackSafe wrappers
+    generator.go       → Generator entry; LatestAccountProof / LatestStorageProofs / LatestProof; SetLeafSource / UnifiedEnv
+    source.go          → LeafSource interface + HashedKeyScanner; RethLeafSource (PlainState fallback) + MapLeafSource
+    reth_hashed.go     → RethHashedLeafSource — reads reth HashedAccounts (29.7 GB) + HashedStorages DupSort (127.7 GB);
+                         implements HashedKeyScanner for native cursor prefix scans; **production fast path**
     wire_full.go       → FullAccountProofBytes / FullStorageProofBytes (rebuilds inline siblings via SubtreeNodeBytes)
     wire_expand.go     → D.1.5 target-subtree expansion (extension/branch nodes between deepest branch and leaf)
     wire_verify.go     → VerifyStandardProof — independent EIP-1186 oracle
-    verify_subtree.go  → Walk + subtree-rebuild self-verify (covers ExtensionInPath case)
+    verify_subtree.go  → Walk + subtree-rebuild self-verify; dispatch on HashedKeyScanner for cursor fast path
     historical.go      → HistoricalLeafSource overlay (historicalstate + base); HistoricalProof bundle
   historicalstate/ → state-as-of reader (combines snapshot + MPHF+fp history)
   history/         → MPHF+fp coldstore for per-block changes (used by historicalstate)

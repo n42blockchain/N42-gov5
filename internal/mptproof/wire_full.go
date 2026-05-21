@@ -229,6 +229,16 @@ func (g *Generator) fullProofBytes(hashedKey, leafValue []byte, leafFound bool,
 // but recovers inline siblings via the subtreeRootBuilder. Each
 // inline sibling is resolved by enumerating its leaves and getting
 // the standard sub-trie node bytes.
+//
+// Note on HasTree bit: an earlier draft tried a "single-leaf shortcut"
+// when HasTree[i]=0, on the theory that the child terminates as one
+// leaf. That broke proofs: reth's compact form sets HasTree=0 when
+// the deeper subtree's branch nodes aren't cached, NOT when there's
+// only one leaf below. The slow-but-correct path is "enumerate every
+// leaf under the prefix and build the sub-trie", and the hashed
+// index makes that enumeration acceptable for accounts. Storage
+// proofs at depths within the address-keccak portion remain the
+// dominant cost.
 func encodeStandardBranchRLPWithRebuild(b *mpttrie.BranchNode, branchPath []byte,
 	builder subtreeRootBuilder) ([]byte, error) {
 

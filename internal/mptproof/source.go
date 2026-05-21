@@ -30,7 +30,9 @@ import (
 
 // LeafSource provides latest leaf values for proof construction.
 // Implementations: RethLeafSource (reads reth PlainAccountState +
-// PlainStorageState directly), MapLeafSource (in-memory, for tests).
+// PlainStorageState directly), RethHashedLeafSource (reth
+// HashedAccounts / HashedStorages, the keccak-keyed tables — fast
+// path for proof generation), MapLeafSource (in-memory, for tests).
 type LeafSource interface {
 	AccountValue(addr [20]byte) ([]byte, bool, error)
 	StorageValue(addr [20]byte, slot [32]byte) ([]byte, bool, error)
@@ -46,6 +48,19 @@ type LeafSource interface {
 	ScanStorage(fn func(addr [20]byte, slot [32]byte, value []byte) error) error
 
 	Close() error
+}
+
+// HashedKeyScanner is an optional capability for LeafSources that
+// natively store data keyed by keccak hash and can do efficient
+// range scans by hashed-key prefix. Implementations: RethHashedLeafSource.
+//
+// When the proof generator's inline-sibling rebuild needs all leaves
+// under a hashed prefix, this interface lets the source seek+iterate
+// instead of doing a full ScanAccounts/ScanStorage over the plain
+// table.
+type HashedKeyScanner interface {
+	AccountsByHashedPrefix(prefix []byte) ([]subLeaf, error)
+	StorageByHashedPrefix(prefix []byte) ([]subLeaf, error)
 }
 
 // MapLeafSource is an in-memory implementation for tests.
@@ -104,10 +119,11 @@ func (m *MapLeafSource) Close() error { return nil }
 // PlainAccountState: key=addr20, value=Compact-encoded account.
 // PlainStorageState: DupSort, key=addr20, value=slot32 || U256 bytes.
 type RethLeafSource struct {
-	db          kv.RoDB
-	acctTable   string
-	storTable   string
+	db        kv.RoDB
+	acctTable string
+	storTable string
 }
+
 
 // NewRethLeafSource opens a reth (or N42 with same schema) MDBX
 // readonly for leaf lookups.

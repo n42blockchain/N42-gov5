@@ -124,7 +124,55 @@ Build target: stays out of n42 binary by default (no init wiring); explicitly op
 
 ---
 
-## 6. Hot-path optimization (Phase F, 2026-05-21)
+## 6. Hot-path REVISED (Phase F obsolete, 2026-05-21)
+
+**Phase F was wrong**. We built our own `HashedAccount` (38 GB) +
+`HashedStorageRef` (172 GB) tables in `D:\n42-chaindata`, then
+discovered reth already has the same data in better shape:
+
+| | reth (existing) | our Phase F |
+|---|---|---|
+| accounts | `HashedAccounts` 29.7 GB | `HashedAccount` 38 GB |
+| storage | `HashedStorages` 127.7 GB (DupSort) | `HashedStorageRef` 172 GB |
+| key shape | direct keccak | flat composite (worse) |
+
+Phase F cleared 2026-05-21: tables dropped via `cmd/n42-mpt-clear-hashed`,
+210 GB of pages freed (mdbx.dat size unchanged until offline compact).
+The bootstrap tool and `HashedLeafSource` removed.
+
+**Current LeafSource**: `RethHashedLeafSource` (`internal/mptproof/reth_hashed.go`)
+reads reth's `HashedAccounts` directly + uses `HashedStorages` DupSort
+for storage prefix scans. Implements `HashedKeyScanner` so
+`collectAccountLeavesWithPrefix` dispatches to native MDBX cursor
+scans (no full table iteration).
+
+USDC measurements (2026-05-21):
+
+| Step | Cold (PlainState scan) | RethHashedLeafSource |
+|---|---|---|
+| Account proof FullBytes | 760 s | **<1 ms** |
+| Storage proof FullBytes | minutes | 14-35 s (heavy-account overlap) |
+
+Storage proof remains seconds because the unified storage trie's
+prefix matching is intrinsically poisoned by heavy accounts (USDC,
+Uniswap) sharing `keccak(addr)` prefix bits with other accounts'
+slots. Only solvable by Phase A.5 / commitment domain (see
+[`commitment-domain-plan.md`](commitment-domain-plan.md)).
+
+To use:
+
+```go
+src, _ := mptproof.NewRethHashedLeafSource(rethDBDir, 4096)
+defer src.Close()
+g, _ := mptproof.New(mptproof.Config{
+    ChaindataDir: "D:\\n42-chaindata",
+    Leaves:       src,
+})
+```
+
+---
+
+## 6.1 Hot-path original write-up (HISTORICAL, Phase F)
 
 The 12-15 min SLOW-path latency is now solved. The hashed-key index
 (see [`mpt-proof-hot-path-design.md`](mpt-proof-hot-path-design.md))
