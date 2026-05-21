@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"testing"
+	"time"
 )
 
 // TestFullProofBytes_SingleLeaf is the baseline — works without
@@ -82,11 +83,24 @@ func TestFullProofBytes_Synthetic_RoundTrip(t *testing.T) {
 }
 
 // TestFullProofBytes_Production_USDC_SLOW assembles a complete eth_getProof
-// account proof for USDC against production data. Takes ~30s per inline
-// sibling on the path due to full reth scan.
+// account proof for USDC against production data.
+//
+// REAL-WORLD TIMING (Ryzen 9 9950X / NVMe, validated 2026-05-21):
+//   - 4 inline siblings on the deepest hop × ~3-4 min per full reth
+//     ScanAccounts each = ~15 min wall time
+//   - cmd/n42-proof-debug emitted 9 nodes / 3779 bytes total
+//   - the resulting proof bytes verify against the latest stateRoot
+//     via VerifyStandardProof (independent EIP-1186 oracle)
+//
+// Earlier runs that appeared to "panic" with a truncated stack trace
+// were actually the default `go test` 10-minute timeout (-timeout 600s)
+// killing the process. Run with at least -timeout 20m to complete.
 func TestFullProofBytes_Production_USDC_SLOW(t *testing.T) {
 	if testing.Short() {
-		t.Skip("--short: skipping full reth scan")
+		t.Skip("--short: skipping full reth scan (~15 min)")
+	}
+	if deadline, ok := t.Deadline(); ok && time.Until(deadline) < 20*time.Minute {
+		t.Skip("test deadline too short — pass -timeout 20m or longer")
 	}
 	g := openProductionGenerator(t)
 

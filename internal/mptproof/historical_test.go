@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestHistoricalLeafSource_FallbackToBase(t *testing.T) {
@@ -62,7 +63,17 @@ func TestHistoricalLeafSource_ScanOverlaysBase(t *testing.T) {
 // Production: D:\n42-history-full integration
 // =========================================================================
 
+// TestHistoricalProof_Production_USDC takes ~15-20 min on real reth
+// data due to 4 inline-sibling rebuilds on USDC's depth-6 branch.
+// Run with -timeout 30m to be safe. See cmd/n42-proof-debug for an
+// interactive runner.
 func TestHistoricalProof_Production_USDC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("--short: skipping full reth scan (~15 min)")
+	}
+	if deadline, ok := t.Deadline(); ok && time.Until(deadline) < 30*time.Minute {
+		t.Skip("test deadline too short — pass -timeout 30m or longer")
+	}
 	if _, err := os.Stat(filepath.Join(productionHistoryDir, "account.mphf")); err != nil {
 		t.Skipf("%s not present", productionHistoryDir)
 	}
