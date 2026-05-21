@@ -201,6 +201,24 @@ func (hb *HashBuilder) completeLeafHash(kp, kl, compactLen int, key []byte, comp
 	return nil
 }
 
+// LeafHashStandalone computes the keccak hash of a standard MPT leaf
+// node containing (keyHex, val). Exposed for proof-verification code
+// in internal/mptproof — outside HashBuilder, leafHashWithKeyVal is
+// inaccessible. Returns the 32-byte hash; the caller does NOT see the
+// 0xa0 RLP byte-string prefix HashBuilder uses internally.
+func LeafHashStandalone(keyHex []byte, val rlphacks.RlpSerializable) ([32]byte, error) {
+	hb := NewHashBuilder(false)
+	if err := hb.leafHashWithKeyVal(keyHex, val); err != nil {
+		return [32]byte{}, err
+	}
+	if len(hb.hashStack) < length.Hash {
+		return [32]byte{}, fmt.Errorf("hash stack underflow after leafHashWithKeyVal")
+	}
+	var out [32]byte
+	copy(out[:], hb.hashStack[len(hb.hashStack)-length.Hash:])
+	return out, nil
+}
+
 func (hb *HashBuilder) leafHash(keyLength int, keyHex []byte, val rlphacks.RlpSerializable) error {
 	if hb.trace {
 		fmt.Printf("LEAFHASH %d\n", keyLength)
