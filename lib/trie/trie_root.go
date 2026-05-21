@@ -1561,11 +1561,14 @@ func UnmarshalTrieNodeDense(buf []byte) (stateMask, treeMask uint16, slots [16][
 }
 
 // slotLenFromPrefix returns the total byte length of one child slot
-// given its first byte. 0xa0 = hash ref (33B). 0xc0..0xfe = short
-// list (b0 - 0xc0 + 1 bytes total). 0x80 = empty (1B). We never
-// expect 0x80 in slot data (empty slots aren't pushed to hashStack)
-// but handle it defensively.
+// given its first byte. 0x01 = G2 LeafMarker (1B). 0xa0 = hash ref
+// (33B). 0xc0..0xfe = short list (b0 - 0xc0 + 1 bytes total). 0x80 =
+// empty (1B). We never expect 0x80 in slot data (empty slots aren't
+// pushed to hashStack) but handle it defensively.
 func slotLenFromPrefix(b0 byte) int {
+	if b0 == LeafMarker { // 0x01 — G2 marker
+		return 1
+	}
 	if b0 == 0xa0 {
 		return 33
 	}
@@ -1590,6 +1593,109 @@ func ensureCap(buf []byte, n int) []byte {
 		return buf
 	}
 	return make([]byte, 0, n)
+}
+
+// LeafMarker is the V2 dense-encoding marker for a slot that
+// references a single LEAF resolvable by prefix-scanning a hashed
+// state table at the slot's nibble path. Distinct from any byte that
+// V1's encoding produces in slot position (0x80 empty, 0xa0 hash ref,
+// 0xc0..0xfe inline RLP).
+const LeafMarker byte = 0x01
+
+// MarshalTrieNodeDenseV2 is the G2 variant of MarshalTrieNodeDense.
+// Slots whose hash represents a single LEAF (state bit set, tree bit
+// clear, original slot prefix == 0xa0) are emitted as a 1-byte
+// LeafMarker — the reader reconstructs the 33-byte 0xa0||hash by
+// prefix-scanning the base hashed table for the unique leaf below
+// branchPath||childNibble.
+//
+// Other slots (hashed branch references, inline RLPs) are encoded
+// identically to V1.
+func MarshalTrieNodeDenseV2(stateMask, treeMask uint16, slotData []byte, buf []byte) []byte {
+	const stride = 33
+	size := 4
+	digits := bits.OnesCount16(stateMask)
+	// First pass: size calculation.
+	{
+		i := 0
+		for digit := uint(0); digit < 16; digit++ {
+			if stateMask&(1<<digit) == 0 {
+				continue
+			}
+			b0 := slotData[i*stride]
+			isLeafHash := b0 == 0xa0 && (treeMask&(1<<digit)) == 0
+			if isLeafHash {
+				size++
+			} else {
+				size += slotLenFromPrefix(b0)
+			}
+			i++
+		}
+		_ = digits
+	}
+	buf = ensureCap(buf, size)[:size]
+	binary.BigEndian.PutUint16(buf[0:2], stateMask)
+	binary.BigEndian.PutUint16(buf[2:4], treeMask)
+	off := 4
+	i := 0
+	for digit := uint(0); digit < 16; digit++ {
+		if stateMask&(1<<digit) == 0 {
+			continue
+		}
+		b0 := slotData[i*stride]
+		isLeafHash := b0 == 0xa0 && (treeMask&(1<<digit)) == 0
+		if isLeafHash {
+			buf[off] = LeafMarker
+			off++
+		} else {
+			n := slotLenFromPrefix(b0)
+			copy(buf[off:off+n], slotData[i*stride:i*stride+n])
+			off += n
+		}
+		i++
+	}
+	return buf
+}
+
+// UnmarshalTrieNodeDenseV2 parses a V2-encoded dense branch. Slots
+// marked LeafMarker (0x01) are returned with the 1-byte marker as
+// their value — the reader is responsible for expanding them via
+// the base hashed table before emitting proof bytes.
+func UnmarshalTrieNodeDenseV2(buf []byte) (stateMask, treeMask uint16, slots [16][]byte, err error) {
+	if len(buf) < 4 {
+		err = fmt.Errorf("UnmarshalTrieNodeDenseV2: too short (%d bytes)", len(buf))
+		return
+	}
+	stateMask = binary.BigEndian.Uint16(buf[0:2])
+	treeMask = binary.BigEndian.Uint16(buf[2:4])
+	off := 4
+	for digit := 0; digit < 16; digit++ {
+		if stateMask&(1<<digit) == 0 {
+			continue
+		}
+		if off >= len(buf) {
+			err = fmt.Errorf("UnmarshalTrieNodeDenseV2: truncated at digit %d", digit)
+			return
+		}
+		n := slotLenFromPrefix(buf[off])
+		if off+n > len(buf) {
+			err = fmt.Errorf("UnmarshalTrieNodeDenseV2: slot %d overruns buf", digit)
+			return
+		}
+		slots[digit] = buf[off : off+n]
+		off += n
+	}
+	if off != len(buf) {
+		err = fmt.Errorf("UnmarshalTrieNodeDenseV2: %d trailing bytes", len(buf)-off)
+		return
+	}
+	return
+}
+
+// IsLeafMarker reports whether a slot from UnmarshalTrieNodeDenseV2
+// is the V2 1-byte LeafMarker (caller must expand via the base).
+func IsLeafMarker(slot []byte) bool {
+	return len(slot) == 1 && slot[0] == LeafMarker
 }
 
 func CastTrieNodeValue(hashes, rootHash []byte) []types.Hash {

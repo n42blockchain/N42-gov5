@@ -42,6 +42,13 @@ const metaTable = "Meta"
 const (
 	AccountsDenseTable = "AccountsDense"
 	StoragesDenseTable = "StoragesDense"
+
+	// Phase G2 plain-key-referencing dense tables. Same shape as V1
+	// but slots with HasTree=0 + hashed (single-leaf below this slot)
+	// are stored as a 1-byte trie.LeafMarker. The reader expands
+	// these on-the-fly via a base hashed-key table.
+	AccountsDenseV2Table = "AccountsDenseV2"
+	StoragesDenseV2Table = "StoragesDenseV2"
 )
 
 // Reader opens an MPT MDBX directory for read.
@@ -107,6 +114,8 @@ func OpenUnifiedDB(dir string) (env kv.RoDB, accounts, storage *Reader, err erro
 			// readers that don't need them tolerate empty/missing tables.
 			d[AccountsDenseTable] = kv.TableCfgItem{}
 			d[StoragesDenseTable] = kv.TableCfgItem{}
+			d[AccountsDenseV2Table] = kv.TableCfgItem{}
+			d[StoragesDenseV2Table] = kv.TableCfgItem{}
 			return d
 		}).
 		Open(context.Background())
