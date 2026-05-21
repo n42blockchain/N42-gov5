@@ -1611,11 +1611,14 @@ const LeafMarker byte = 0x01
 //
 // Other slots (hashed branch references, inline RLPs) are encoded
 // identically to V1.
+//
+// Container header is 2 B (state_mask only) — tree_mask is NOT
+// stored. Read-side recovers tree info by inspecting slot first
+// bytes (0xa0 ⇒ HasTree=1; LeafMarker or inline ⇒ HasTree=0). See
+// docs/ethel/g2-compression-frontier.md §3.1.
 func MarshalTrieNodeDenseV2(stateMask, treeMask uint16, slotData []byte, buf []byte) []byte {
 	const stride = 33
-	size := 4
-	digits := bits.OnesCount16(stateMask)
-	// First pass: size calculation.
+	size := 2 // 2 B state_mask
 	{
 		i := 0
 		for digit := uint(0); digit < 16; digit++ {
@@ -1631,12 +1634,10 @@ func MarshalTrieNodeDenseV2(stateMask, treeMask uint16, slotData []byte, buf []b
 			}
 			i++
 		}
-		_ = digits
 	}
 	buf = ensureCap(buf, size)[:size]
 	binary.BigEndian.PutUint16(buf[0:2], stateMask)
-	binary.BigEndian.PutUint16(buf[2:4], treeMask)
-	off := 4
+	off := 2
 	i := 0
 	for digit := uint(0); digit < 16; digit++ {
 		if stateMask&(1<<digit) == 0 {
@@ -1657,18 +1658,22 @@ func MarshalTrieNodeDenseV2(stateMask, treeMask uint16, slotData []byte, buf []b
 	return buf
 }
 
-// UnmarshalTrieNodeDenseV2 parses a V2-encoded dense branch. Slots
-// marked LeafMarker (0x01) are returned with the 1-byte marker as
-// their value — the reader is responsible for expanding them via
-// the base hashed table before emitting proof bytes.
+// UnmarshalTrieNodeDenseV2 parses a V2-encoded dense branch. The
+// returned `treeMask` is INFERRED from slot first bytes: a bit is
+// set iff the corresponding slot's first byte is 0xa0 (33-byte hash
+// reference to a deeper branch). LeafMarker and inline slots leave
+// the tree bit clear.
+//
+// Slots marked LeafMarker (0x01) are returned as 1-byte slices — the
+// reader is responsible for expanding them via the base hashed table
+// before emitting proof bytes.
 func UnmarshalTrieNodeDenseV2(buf []byte) (stateMask, treeMask uint16, slots [16][]byte, err error) {
-	if len(buf) < 4 {
+	if len(buf) < 2 {
 		err = fmt.Errorf("UnmarshalTrieNodeDenseV2: too short (%d bytes)", len(buf))
 		return
 	}
 	stateMask = binary.BigEndian.Uint16(buf[0:2])
-	treeMask = binary.BigEndian.Uint16(buf[2:4])
-	off := 4
+	off := 2
 	for digit := 0; digit < 16; digit++ {
 		if stateMask&(1<<digit) == 0 {
 			continue
@@ -1677,13 +1682,19 @@ func UnmarshalTrieNodeDenseV2(buf []byte) (stateMask, treeMask uint16, slots [16
 			err = fmt.Errorf("UnmarshalTrieNodeDenseV2: truncated at digit %d", digit)
 			return
 		}
-		n := slotLenFromPrefix(buf[off])
+		b0 := buf[off]
+		n := slotLenFromPrefix(b0)
 		if off+n > len(buf) {
 			err = fmt.Errorf("UnmarshalTrieNodeDenseV2: slot %d overruns buf", digit)
 			return
 		}
 		slots[digit] = buf[off : off+n]
 		off += n
+		// Infer tree bit: only 0xa0-prefixed 33-byte slots are deeper
+		// branches. LeafMarker (0x01) and inline (0xc0..) are leaves.
+		if b0 == 0xa0 {
+			treeMask |= 1 << digit
+		}
 	}
 	if off != len(buf) {
 		err = fmt.Errorf("UnmarshalTrieNodeDenseV2: %d trailing bytes", len(buf)-off)

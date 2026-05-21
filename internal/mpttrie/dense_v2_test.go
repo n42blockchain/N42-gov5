@@ -155,8 +155,9 @@ func TestV2Marshal_MultiBranchRoundTrip(t *testing.T) {
 		t.Errorf("expected 4 branch + 4 leaf, got %d branch / %d leaf", branchHashes, leafMarkers)
 	}
 
-	// V2 size = 4 (header) + 4 * 33 (branches) + 4 * 1 (markers) = 140
-	expectedSize := 4 + 4*33 + 4
+	// V2 size = 2 (state_mask only — tree_mask inferred from slots)
+	//         + 4 * 33 (branches) + 4 * 1 (markers) = 138
+	expectedSize := 2 + 4*33 + 4
 	if len(encV2) != expectedSize {
 		t.Errorf("V2 size: got %d want %d", len(encV2), expectedSize)
 	}
