@@ -1,0 +1,10 @@
+source     D:\reth2k\db
+destination D:\n42-chaindata
+etl tmp    D:\n42-mpt\etl-hashed-tmp  (buf=4096 MB)
+
+
+phase-1 done in 1h24m48s (account: 386066282 rows 16371 MB, storage: 1569829384 rows 173664 MB)
+phase-2 loading 386066282 HashedAccount rows...
+phase-2 loading 1569829384 HashedStorageRef rows...
+
+✓ done in 3h53m24s (phase-1 1h24m48s scan+sort, phase-2 2h28m35s load)

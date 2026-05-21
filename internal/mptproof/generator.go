@@ -107,6 +107,17 @@ func (g *Generator) StorageTrieRoot() ([32]byte, error) {
 	return g.storageMPT.StateRoot()
 }
 
+// SetLeafSource swaps the active LeafSource. Used after construction
+// when the caller wants to attach a HashedLeafSource that needs the
+// Generator's already-open MDBX env (see UnifiedEnv).
+func (g *Generator) SetLeafSource(src LeafSource) { g.leaves = src }
+
+// UnifiedEnv returns the MDBX env handle when the generator was
+// opened in ChaindataDir mode. Returns nil for legacy two-env mode.
+// Lets callers attach a HashedLeafSource without re-opening the env
+// (which MDBX rejects in the same process with MDBX_BUSY).
+func (g *Generator) UnifiedEnv() kv.RoDB { return g.unifiedEnv }
+
 func (g *Generator) Close() error {
 	if g.accountsMPT != nil {
 		g.accountsMPT.Close()

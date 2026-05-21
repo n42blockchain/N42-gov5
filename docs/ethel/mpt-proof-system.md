@@ -124,31 +124,58 @@ Build target: stays out of n42 binary by default (no init wiring); explicitly op
 
 ---
 
-## 6. Limitations & future work
+## 6. Hot-path optimization (Phase F, 2026-05-21)
 
-### Inline-sibling rebuild cost dominates latency (~15 min for USDC)
+The 12-15 min SLOW-path latency is now solved. The hashed-key index
+(see [`mpt-proof-hot-path-design.md`](mpt-proof-hot-path-design.md))
+was bootstrapped on production data in 3h53m24s
+(`docs/proof-archive/bootstrap_20260521_031803.log`):
 
-reth's `BranchNodeCompact` stores 32-byte hashes for any child whose subtree RLP encodes to ≥ 32 bytes. Smaller subtrees are inline and the compact form **discards them entirely** to save space. To emit a standard EIP-1186 sibling for an inline child, we must rebuild that subtree from leaves. The current rebuilder calls `LeafSource.ScanAccounts` (full table scan), which is the bottleneck.
+| Phase | Wall | Detail |
+|---|---|---|
+| Scan + ETL sort (parallel) | 1h24m48s | 386M account rows + 1.57B storage rows |
+| AppendDup load (serial) | 2h28m35s | MDBX single-writer constraint |
+| **Total** | **3h53m24s** | |
 
-**Fix path (Phase F, sketched):**
+Resulting MDBX env grew from 36 GB → **246 GB**.
 
-```
-hashed_state_index/  <- new MDBX env or sorted segment
-  key   = keccak256(addr) || keccak256(slot)  (52 B for storage, 32 B for accounts)
-  value = leaf RLP (or pointer to plain entry)
-```
+**USDC hot-path measurement:**
 
-Then `SubtreeNodeBytes(prefix)` becomes:
+| Step | Cold (SLOW path) | Hashed (this) | Speedup |
+|---|---|---|---|
+| LatestAccountProof (walk) | 0.07 s | 2 ms | ~35× |
+| FullAccountProofBytes | 760 s | <1 ms | >700,000× |
+| VerifyStandardProof oracle | <1 ms | <1 ms | — |
+| **End-to-end** | **760 s** | **20 ms** | **~38,000×** |
+
+Same wire-format output: 9 nodes, 3779 bytes, oracle PASS. Hashed
+path is selected automatically via `LeafSource` type switch in
+`collectAccountLeavesWithPrefix` / `collectStorageLeavesWithPrefix`.
+
+To use the hot path in tests / RPC:
 
 ```go
-c.Seek(prefix)
-for ; ; c.Next() {
-    if !bytes.HasPrefix(k, prefix) { break }
-    // accumulate up to 1024 leaves, stream into HashBuilder
-}
+g, _ := mptproof.New(mptproof.Config{
+    ChaindataDir: "D:\\n42-chaindata",
+    Leaves:       base, // any LeafSource (RethLeafSource etc)
+})
+hashed, _ := mptproof.NewHashedLeafSourceFromDB(g.UnifiedEnv(), base)
+g.SetLeafSource(hashed)
+// FullAccountProofBytes / FullStorageProofBytes are now hot-path
 ```
 
-Expected: ms range scan replaces minutes-long full scan → end-to-end USDC proof should hit ~50–100 ms. Builder cost: one extra index pass during catch-up (~37 GB sorted file or ~12 GB MDBX with AppendDup).
+Bootstrap reproducer:
+
+```powershell
+n42-mpt-hashedindex `
+  --reth        D:\reth2k\db `
+  --chaindata   D:\n42-chaindata `
+  --etl-buf-mb  4096
+```
+
+---
+
+## 7. Remaining limitations & future work
 
 ### Historical proof is currently "value-as-of + latest-root anchor"
 
@@ -164,7 +191,7 @@ Production-data tests (`TestFullProofBytes_Production_USDC_SLOW`, `TestHistorica
 
 ---
 
-## 7. Operational runbook
+## 8. Operational runbook
 
 ### Initial build (one-time)
 
@@ -206,7 +233,7 @@ Archived runs: `docs/proof-archive/usdc_production_run_*.log`.
 
 ---
 
-## 8. References
+## 9. References
 
 - Design doc: [`archive-commitment-final-design.md`](archive-commitment-final-design.md)
 - reth vs Erigon HPH analysis: [`reth-mpt-vs-erigon-hph.md`](reth-mpt-vs-erigon-hph.md)

@@ -36,11 +36,15 @@ const (
 // (AccountValue / StorageValue) delegate to base too — those are
 // already hashtable-fast in plain state.
 //
-// Lifecycle: HashedLeafSource OWNS the MDBX env it opens (Close closes
-// it). It does NOT close `base` — caller manages that.
+// Lifecycle: when constructed via OpenHashedLeafSource the env is
+// owned and Close closes it; when constructed via
+// NewHashedLeafSourceFromDB the env is borrowed (the caller — usually
+// the Generator sharing its unified-env handle — owns it). It never
+// closes `base`.
 type HashedLeafSource struct {
-	env  kv.RoDB
-	base LeafSource
+	env       kv.RoDB
+	base      LeafSource
+	ownsEnv   bool
 }
 
 // OpenHashedLeafSource opens a chaindata MDBX dir for read and wires
@@ -68,14 +72,33 @@ func OpenHashedLeafSource(chaindataDir string, base LeafSource) (*HashedLeafSour
 	if err != nil {
 		return nil, fmt.Errorf("OpenHashedLeafSource: %w", err)
 	}
-	return &HashedLeafSource{env: env, base: base}, nil
+	return &HashedLeafSource{env: env, base: base, ownsEnv: true}, nil
+}
+
+// NewHashedLeafSourceFromDB wires HashedLeafSource onto an already-open
+// MDBX env (used when the caller — typically Generator — has opened
+// the unified chaindata env to also serve the MPT trie readers and
+// wants to avoid a second open of the same env in the same process,
+// which MDBX rejects with MDBX_BUSY). The env is BORROWED — Close on
+// the source does not close it.
+//
+// Caller must have configured the env with HashedAccountTable +
+// HashedStorageRefTable in its TableCfg.
+func NewHashedLeafSourceFromDB(env kv.RoDB, base LeafSource) (*HashedLeafSource, error) {
+	if env == nil {
+		return nil, fmt.Errorf("NewHashedLeafSourceFromDB: env required")
+	}
+	if base == nil {
+		return nil, fmt.Errorf("NewHashedLeafSourceFromDB: base LeafSource required")
+	}
+	return &HashedLeafSource{env: env, base: base, ownsEnv: false}, nil
 }
 
 func (h *HashedLeafSource) Close() error {
-	if h.env != nil {
+	if h.ownsEnv && h.env != nil {
 		h.env.Close()
-		h.env = nil
 	}
+	h.env = nil
 	return nil
 }
 
