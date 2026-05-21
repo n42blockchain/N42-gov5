@@ -19,6 +19,7 @@ package mptproof
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/c2h5oh/datasize"
 
@@ -233,7 +234,10 @@ func (r *RethLeafSource) ScanAccounts(fn func(addr [20]byte, value []byte) error
 		return err
 	}
 	defer c.Close()
-	var addr [20]byte
+	var (
+		addr     [20]byte
+		nScanned uint64
+	)
 	for k, v, err := c.First(); err == nil && k != nil; k, v, err = c.Next() {
 		if len(k) != 20 {
 			continue
@@ -242,11 +246,28 @@ func (r *RethLeafSource) ScanAccounts(fn func(addr [20]byte, value []byte) error
 		// copy value before invoking caller (cursor reuses buffer).
 		val := make([]byte, len(v))
 		copy(val, v)
-		if err := fn(addr, val); err != nil {
-			return err
+		// Capture row index for diagnostics if callback panics — the
+		// original USDC production runs lost the panic message in
+		// truncated test stderr. Make panic location obvious.
+		nScanned++
+		if perr := callbackSafe(fn, addr, val); perr != nil {
+			return fmt.Errorf("ScanAccounts callback at row %d (addr=%x len(v)=%d): %w",
+				nScanned, addr, len(v), perr)
 		}
 	}
 	return nil
+}
+
+// callbackSafe invokes fn and converts panics into errors with the
+// panic value preserved, so callers see a meaningful message instead
+// of a runtime crash that gets truncated by test runners.
+func callbackSafe(fn func(addr [20]byte, value []byte) error, addr [20]byte, val []byte) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("callback panic: %v", r)
+		}
+	}()
+	return fn(addr, val)
 }
 
 func (r *RethLeafSource) ScanStorage(fn func(addr [20]byte, slot [32]byte, value []byte) error) error {
@@ -260,8 +281,11 @@ func (r *RethLeafSource) ScanStorage(fn func(addr [20]byte, slot [32]byte, value
 		return err
 	}
 	defer c.Close()
-	var addr [20]byte
-	var slot [32]byte
+	var (
+		addr     [20]byte
+		slot     [32]byte
+		nScanned uint64
+	)
 	for k, v, err := c.First(); err == nil && k != nil; k, v, err = c.Next() {
 		if len(k) != 20 || len(v) < 32 {
 			continue
@@ -270,11 +294,23 @@ func (r *RethLeafSource) ScanStorage(fn func(addr [20]byte, slot [32]byte, value
 		copy(slot[:], v[:32])
 		val := make([]byte, len(v)-32)
 		copy(val, v[32:])
-		if err := fn(addr, slot, val); err != nil {
-			return err
+		nScanned++
+		if perr := callbackSafeStor(fn, addr, slot, val); perr != nil {
+			return fmt.Errorf("ScanStorage callback at row %d (addr=%x slot=%x len(v)=%d): %w",
+				nScanned, addr, slot, len(v), perr)
 		}
 	}
 	return nil
+}
+
+func callbackSafeStor(fn func(addr [20]byte, slot [32]byte, value []byte) error,
+	addr [20]byte, slot [32]byte, val []byte) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("callback panic: %v", r)
+		}
+	}()
+	return fn(addr, slot, val)
 }
 
 func bytesEqual(a, b []byte) bool {
