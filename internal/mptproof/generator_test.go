@@ -41,7 +41,14 @@ func buildSyntheticGenerator(t *testing.T, n int) (*Generator, [][20]byte, map[[
 	entries := make([][2][]byte, n)
 	for i := 0; i < n; i++ {
 		addrs[i] = mkAddrN(uint32(i))
-		v := []byte{byte(i & 0xff), byte((i >> 8) & 0xff), byte(i ^ 0x55)}
+		// Use 64-byte leaf values so the leaf RLP node is well above
+		// 32 bytes — guarantees HashBuilder will store the LEAF HASH
+		// in the parent branch's hash_mask (vs inlining the bytes,
+		// which BranchNodeCompact cannot represent).
+		v := make([]byte, 64)
+		for k := range v {
+			v[k] = byte((i + k) * 7 ^ 0x55)
+		}
 		values[addrs[i]] = v
 		entries[i] = [2][]byte{addrs[i][:], v}
 	}
