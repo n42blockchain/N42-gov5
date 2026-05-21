@@ -39,12 +39,20 @@ import (
 // Returns ProofBytes that, when passed to VerifyStandardProof against
 // the recorded StateRoot, will verify iff the proof is in MVP scope.
 func (g *Generator) FullAccountProofBytes(proof *AccountProof) (ProofBytes, error) {
+	if g.accountsDense != nil {
+		return g.fullProofBytesDense(proof.HashedAddr[:], proof.LeafValue,
+			proof.LeafFound, proof.Walk, g.accountsDense)
+	}
 	return g.fullProofBytes(proof.HashedAddr[:], proof.LeafValue, proof.LeafFound,
 		proof.Walk, accountSubtreeBuilder{src: g.leaves})
 }
 
 // FullStorageProofBytes is the storage equivalent.
 func (g *Generator) FullStorageProofBytes(proof *StorageProof) (ProofBytes, error) {
+	if g.storagesDense != nil {
+		return g.fullProofBytesDense(proof.HashedKey[:], proof.LeafValue,
+			proof.LeafFound, proof.Walk, g.storagesDense)
+	}
 	return g.fullProofBytes(proof.HashedKey[:], proof.LeafValue, proof.LeafFound,
 		proof.Walk, storageSubtreeBuilder{src: g.leaves})
 }

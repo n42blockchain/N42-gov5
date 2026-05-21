@@ -42,6 +42,12 @@ type structInfoReceiver interface {
 	topHashes(prefix []byte, branches, children uint16) []byte
 	printTopHashes(prefix []byte, branches, children uint16)
 	setProofElement(pe *proofElement)
+	// Phase G1 dense commitment hook. Captures the full per-child
+	// slot frame (33 bytes/child with prefix-encoded length) into the
+	// receiver's internal stash, BEFORE any subsequent branchHash
+	// pops the children. Called by gen_struct_step right after
+	// topHashes; the receiver's LastDenseSlots() returns the snapshot.
+	snapshotDenseSlots(hasState uint16) []byte
 }
 
 // hashCollector gets called whenever there might be a need to create intermediate hash record
@@ -274,6 +280,10 @@ func GenStructStepEx(
 				fmt.Printf("why now: %x,%b,%b,%b\n", curr[:maxLen], hasHash, hasTree, groups)
 			}
 			usefulHashes = e.topHashes(curr[:maxLen], hasHash[maxLen], groups[maxLen])
+			// Phase G1: snapshot dense slot data NOW (before any
+			// branchHash below pops the children's stack frames). The
+			// receiver (hc) consumes it via LastDenseSlots().
+			e.snapshotDenseSlots(groups[maxLen])
 			if maxLen != 0 {
 				hasTree[maxLen-1] |= 1 << curr[maxLen-1] // register myself in parent bitmap
 			}
@@ -302,6 +312,11 @@ func GenStructStepEx(
 			if trace {
 				e.printTopHashes(curr[:maxLen], 0, groups[maxLen])
 			}
+			// Phase G1: snapshot dense slot data before branchHash pops
+			// the children. This covers the line 322 hc invocation
+			// below (which fires AFTER the pop), and is a no-op
+			// duplicate when line 281's snapshot already ran.
+			e.snapshotDenseSlots(groups[maxLen])
 			proving := retainIfProving(curr[:maxLen])
 			if proving || retain(curr[:maxLen]) {
 				if err := e.branch(groups[maxLen]); err != nil {

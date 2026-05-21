@@ -22,8 +22,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/c2h5oh/datasize"
+
 	"github.com/n42blockchain/N42/internal/mptbuild"
+	"github.com/n42blockchain/N42/internal/mpttrie"
+	"github.com/n42blockchain/N42/lib/etl"
+	"github.com/n42blockchain/N42/lib/kv"
+	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/trie"
 )
 
 func main() {
@@ -37,6 +44,7 @@ func main() {
 		outMapGB  = flag.Int("out-mapsize-gb", 64, "output DB MapSize cap")
 		verify    = flag.String("verify-root", "", "optional expected root hash (hex) to assert")
 		maxRows   = flag.Int64("max-rows", 0, "0=full table; else stop after N rows (smoke testing)")
+		emitDense = flag.Bool("emit-dense", false, "ALSO emit Phase G1 dense form to <prefix>-mptcache/AccountsDense or StoragesDense (same env)")
 	)
 	flag.Parse()
 
@@ -74,6 +82,31 @@ func main() {
 	}
 	defer target.Close()
 
+	// Phase G1 dense ETL collector. Wired only when --emit-dense set.
+	var (
+		denseColl  *etl.Collector
+		denseTable string
+		denseRows  int64
+		denseBytes int64
+	)
+	if *emitDense {
+		switch outTable {
+		case "AccountsTrie":
+			denseTable = mpttrie.AccountsDenseTable
+		case "StoragesTrie":
+			denseTable = mpttrie.StoragesDenseTable
+		default:
+			fatal("--emit-dense: unknown output table %s", outTable)
+		}
+		denseColl = etl.NewCollector(
+			"mptbuild-dense-"+outTable,
+			*tmpDir,
+			etl.NewSortableBuffer(datasize.ByteSize(*bufMB)*datasize.MB),
+			logger,
+		)
+		defer denseColl.Close()
+	}
+
 	fmt.Printf("source     %s/%s\n", *srcDB, *srcTable)
 	fmt.Printf("target     %s/%s (MDBX AppendDup)\n", dbDir, outTable)
 	fmt.Printf("etl tmp    %s  (buf=%d MB)\n", *tmpDir, *bufMB)
@@ -83,7 +116,7 @@ func main() {
 	fmt.Println()
 
 	lastLog := time.Now()
-	res, err := mptbuild.Build(context.Background(), mptbuild.Opts{
+	opts := mptbuild.Opts{
 		Source:    source,
 		Target:    target,
 		Extractor: extractor,
@@ -98,9 +131,70 @@ func main() {
 				lastLog = time.Now()
 			}
 		},
-	})
+	}
+	if denseColl != nil {
+		var encBuf []byte
+		opts.DenseBranchSink = func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error {
+			encBuf = trie.MarshalTrieNodeDense(stateMask, treeMask, slotData, encBuf[:0])
+			keyCopy := make([]byte, len(keyHex))
+			copy(keyCopy, keyHex)
+			valCopy := make([]byte, len(encBuf))
+			copy(valCopy, encBuf)
+			denseRows++
+			denseBytes += int64(len(valCopy))
+			return denseColl.Collect(keyCopy, valCopy)
+		}
+	}
+	res, err := mptbuild.Build(context.Background(), opts)
 	if err != nil {
 		fatal("Build: %v", err)
+	}
+
+	// Phase G1 dense write: target must close first to release the
+	// MDBX env (single writer), then we reopen with the dense table
+	// declared and Load the collected entries.
+	if denseColl != nil {
+		fmt.Printf("\n=== Phase G1 dense write ===\n")
+		target.Close()
+		t1 := time.Now()
+		denseDB, err := mdbxkv.NewMDBX(logger).
+			Path(dbDir).
+			Label(kv.ChainDB).
+			PageSize(4096).
+			MapSize(datasize.ByteSize(*outMapGB) * datasize.GB).
+			WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
+				d[outTable] = kv.TableCfgItem{}
+				d[denseTable] = kv.TableCfgItem{}
+				d["Meta"] = kv.TableCfgItem{}
+				return d
+			}).
+			Open(context.Background())
+		if err != nil {
+			fatal("dense reopen: %v", err)
+		}
+		denseTx, err := denseDB.BeginRw(context.Background())
+		if err != nil {
+			denseDB.Close()
+			fatal("dense begin: %v", err)
+		}
+		if err := denseTx.ClearBucket(denseTable); err != nil {
+			denseTx.Rollback()
+			denseDB.Close()
+			fatal("dense clear: %v", err)
+		}
+		if err := denseColl.Load(denseTx, denseTable, etl.IdentityLoadFunc, etl.TransformArgs{}); err != nil {
+			denseTx.Rollback()
+			denseDB.Close()
+			fatal("dense load: %v", err)
+		}
+		if err := denseTx.Commit(); err != nil {
+			denseDB.Close()
+			fatal("dense commit: %v", err)
+		}
+		denseDB.Close()
+		fmt.Printf("  dense rows         %d\n", denseRows)
+		fmt.Printf("  dense bytes        %.2f GB\n", float64(denseBytes)/1e9)
+		fmt.Printf("  dense write        %s\n", time.Since(t1).Truncate(time.Second))
 	}
 
 	rootHex := hex.EncodeToString(res.StateRoot[:])

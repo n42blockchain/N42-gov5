@@ -20,9 +20,14 @@ import (
 type Generator struct {
 	accountsMPT *mpttrie.Reader
 	storageMPT  *mpttrie.Reader
-	unifiedEnv  kv.RoDB // non-nil in unified-env mode; we close it
-	leaves      LeafSource
-	history     *historicalstate.Reader // optional; may be nil
+	// Phase G1 dense readers — opened opportunistically when unified
+	// env has AccountsDense/StoragesDense populated. nil = fall back
+	// to compact + leaf-source rebuild.
+	accountsDense *mpttrie.DenseReader
+	storagesDense *mpttrie.DenseReader
+	unifiedEnv    kv.RoDB // non-nil in unified-env mode; we close it
+	leaves        LeafSource
+	history       *historicalstate.Reader // optional; may be nil
 }
 
 // Config bundles construction parameters. Use EXACTLY ONE of:
@@ -61,6 +66,15 @@ func New(cfg Config) (*Generator, error) {
 		g.unifiedEnv = env
 		g.accountsMPT = a
 		g.storageMPT = s
+		// Probe dense tables: keep readers only if they have data.
+		aDense := mpttrie.OpenDenseShared(env, mpttrie.AccountsDenseTable)
+		if has, herr := aDense.Has(); herr == nil && has {
+			g.accountsDense = aDense
+		}
+		sDense := mpttrie.OpenDenseShared(env, mpttrie.StoragesDenseTable)
+		if has, herr := sDense.Has(); herr == nil && has {
+			g.storagesDense = sDense
+		}
 	} else {
 		if cfg.AccountsTrieDir == "" || cfg.StorageTrieDir == "" {
 			return nil, errors.New("mptproof: either ChaindataDir OR (AccountsTrieDir+StorageTrieDir) must be set")
@@ -120,6 +134,12 @@ func (g *Generator) SetLeafSource(src LeafSource) { g.leaves = src }
 func (g *Generator) UnifiedEnv() kv.RoDB { return g.unifiedEnv }
 
 func (g *Generator) Close() error {
+	if g.accountsDense != nil {
+		g.accountsDense.Close()
+	}
+	if g.storagesDense != nil {
+		g.storagesDense.Close()
+	}
 	if g.accountsMPT != nil {
 		g.accountsMPT.Close()
 	}
