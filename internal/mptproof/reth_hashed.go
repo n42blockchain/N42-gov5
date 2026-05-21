@@ -302,6 +302,70 @@ func nibblesToByteSeek(prefix []byte) []byte {
 	return out
 }
 
+// --------------------------------------------------------------------
+// G2 SingleLeafLookup adapter — lets the dense V2 reader expand
+// LeafMarker slots by querying reth's keccak-sorted tables.
+// --------------------------------------------------------------------
+
+// AccountLeafByPrefix returns the unique HashedAccounts row whose
+// 32-byte key starts with the given nibble prefix. The MPT guarantees
+// uniqueness when this is called on a HasTree=0 + hashed-leaf slot.
+// Returns (keccak(addr), value, true, nil) on hit; (zero, nil, false, nil)
+// on no match; error on I/O.
+func (r *RethHashedLeafSource) AccountLeafByPrefix(prefix []byte) (hashedAddr [32]byte, value []byte, ok bool, err error) {
+	leaves, lerr := r.AccountsByHashedPrefix(prefix)
+	if lerr != nil {
+		return hashedAddr, nil, false, lerr
+	}
+	if len(leaves) == 0 {
+		return hashedAddr, nil, false, nil
+	}
+	if len(leaves) > 1 {
+		return hashedAddr, nil, false, fmt.Errorf("AccountLeafByPrefix(%x): %d matches (expected 1)", prefix, len(leaves))
+	}
+	leaf := leaves[0]
+	// effectiveKey = remaining nibbles + 0x10 terminator
+	if len(leaf.effectiveKey) == 0 {
+		return hashedAddr, nil, false, fmt.Errorf("empty effectiveKey")
+	}
+	full := append(append([]byte{}, prefix...), leaf.effectiveKey[:len(leaf.effectiveKey)-1]...)
+	if len(full) != 64 {
+		return hashedAddr, nil, false, fmt.Errorf("AccountLeafByPrefix: expected 64 nibbles, got %d", len(full))
+	}
+	for i := 0; i < 32; i++ {
+		hashedAddr[i] = (full[2*i] << 4) | full[2*i+1]
+	}
+	return hashedAddr, leaf.value, true, nil
+}
+
+// StorageLeafByPrefix returns the unique HashedStorages entry whose
+// composite (keccak(addr) || keccak(slot)) nibble representation
+// starts with the given prefix.
+func (r *RethHashedLeafSource) StorageLeafByPrefix(prefix []byte) (composite [64]byte, value []byte, ok bool, err error) {
+	leaves, lerr := r.StorageByHashedPrefix(prefix)
+	if lerr != nil {
+		return composite, nil, false, lerr
+	}
+	if len(leaves) == 0 {
+		return composite, nil, false, nil
+	}
+	if len(leaves) > 1 {
+		return composite, nil, false, fmt.Errorf("StorageLeafByPrefix(%x): %d matches (expected 1)", prefix, len(leaves))
+	}
+	leaf := leaves[0]
+	if len(leaf.effectiveKey) == 0 {
+		return composite, nil, false, fmt.Errorf("empty effectiveKey")
+	}
+	full := append(append([]byte{}, prefix...), leaf.effectiveKey[:len(leaf.effectiveKey)-1]...)
+	if len(full) != 128 {
+		return composite, nil, false, fmt.Errorf("StorageLeafByPrefix: expected 128 nibbles, got %d", len(full))
+	}
+	for i := 0; i < 64; i++ {
+		composite[i] = (full[2*i] << 4) | full[2*i+1]
+	}
+	return composite, leaf.value, true, nil
+}
+
 // isAfterPrefixNibbles reports whether hn's first len(prefix)
 // nibbles compare strictly greater than prefix.
 func isAfterPrefixNibbles(hn, prefix []byte) bool {
