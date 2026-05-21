@@ -39,10 +39,17 @@ const metaTable = "Meta"
 type Reader struct {
 	db    kv.RoDB
 	table string // AccountsTrie or StoragesTrie
+	owned bool   // true: Close() closes db; false: shared, Close() is no-op
+	// metaPrefix is non-empty when this Reader shares an env with
+	// other tries (unified-env mode). Meta keys are prefixed
+	// "accounts:" / "storage:" to disambiguate. Empty = legacy single-
+	// table env where Meta keys are "state_root" / "built_at" verbatim.
+	metaPrefix string
 }
 
-// Open mounts the MDBX directory <dir>. The table name must match what
-// Phase A built (typically "AccountsTrie" or "StoragesTrie").
+// Open mounts the MDBX directory <dir> and returns a Reader that
+// OWNS the underlying env (Close releases it). Legacy single-table
+// layout — Meta keys are "state_root" / "built_at" verbatim.
 func Open(dir, table string) (*Reader, error) {
 	logger := log.New()
 	db, err := mdbxkv.NewMDBX(logger).
@@ -60,11 +67,46 @@ func Open(dir, table string) (*Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mpttrie: open %s: %w", dir, err)
 	}
-	return &Reader{db: db, table: table}, nil
+	return &Reader{db: db, table: table, owned: true}, nil
+}
+
+// OpenUnifiedDB opens an MDBX dir that contains both AccountsTrie and
+// StoragesTrie (and Meta) buckets — the layout produced by
+// cmd/n42-mpt-migrate. Returns the env handle and table-prefixed
+// Reader constructors. The caller owns the env and must Close it
+// (Readers' Close is a no-op in this mode).
+//
+// Use the returned reader factories to walk the two tries:
+//
+//	env, acctReader, storReader, err := OpenUnifiedDB(dir)
+//	defer env.Close()
+//	rootA, _ := acctReader.StateRoot()  // returns "accounts:state_root"
+//	rootS, _ := storReader.StateRoot()  // returns "storage:state_root"
+func OpenUnifiedDB(dir string) (env kv.RoDB, accounts, storage *Reader, err error) {
+	logger := log.New()
+	env, err = mdbxkv.NewMDBX(logger).
+		Path(dir).
+		Label(kv.ChainDB).
+		PageSize(4096).
+		MapSize(128 * datasize.GB).
+		Readonly().
+		WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
+			d["AccountsTrie"] = kv.TableCfgItem{}
+			d["StoragesTrie"] = kv.TableCfgItem{}
+			d[metaTable] = kv.TableCfgItem{}
+			return d
+		}).
+		Open(context.Background())
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("mpttrie: open unified %s: %w", dir, err)
+	}
+	accounts = &Reader{db: env, table: "AccountsTrie", owned: false, metaPrefix: "accounts:"}
+	storage = &Reader{db: env, table: "StoragesTrie", owned: false, metaPrefix: "storage:"}
+	return env, accounts, storage, nil
 }
 
 func (r *Reader) Close() error {
-	if r.db != nil {
+	if r.owned && r.db != nil {
 		r.db.Close()
 		r.db = nil
 	}
@@ -79,12 +121,12 @@ func (r *Reader) StateRoot() ([32]byte, error) {
 		return out, err
 	}
 	defer tx.Rollback()
-	v, err := tx.GetOne(metaTable, []byte("state_root"))
+	v, err := tx.GetOne(metaTable, []byte(r.metaPrefix+"state_root"))
 	if err != nil {
 		return out, err
 	}
 	if len(v) != 32 {
-		return out, fmt.Errorf("mpttrie: state_root length=%d (want 32)", len(v))
+		return out, fmt.Errorf("mpttrie: %sstate_root length=%d (want 32)", r.metaPrefix, len(v))
 	}
 	copy(out[:], v)
 	return out, nil
@@ -98,7 +140,7 @@ func (r *Reader) BuiltAt() (time.Time, error) {
 		return time.Time{}, err
 	}
 	defer tx.Rollback()
-	v, err := tx.GetOne(metaTable, []byte("built_at"))
+	v, err := tx.GetOne(metaTable, []byte(r.metaPrefix+"built_at"))
 	if err != nil || len(v) == 0 {
 		return time.Time{}, err
 	}
@@ -132,10 +174,10 @@ func (r *Reader) Stats() (Stats, error) {
 	s.BranchCount = st.Entries
 	s.BranchBytes = (st.LeafPages + st.BranchPages + st.OverflowPages) * 4096
 
-	if v, err := tx.GetOne(metaTable, []byte("state_root")); err == nil && len(v) == 32 {
+	if v, err := tx.GetOne(metaTable, []byte(r.metaPrefix+"state_root")); err == nil && len(v) == 32 {
 		copy(s.Root[:], v)
 	}
-	if v, err := tx.GetOne(metaTable, []byte("built_at")); err == nil && len(v) > 0 {
+	if v, err := tx.GetOne(metaTable, []byte(r.metaPrefix+"built_at")); err == nil && len(v) > 0 {
 		s.BuiltAt, _ = time.Parse(time.RFC3339, string(v))
 	}
 	return s, nil

@@ -8,6 +8,7 @@ import (
 
 	"github.com/n42blockchain/N42/internal/historicalstate"
 	"github.com/n42blockchain/N42/internal/mpttrie"
+	"github.com/n42blockchain/N42/lib/kv"
 )
 
 // Generator stitches together MPT readers, a leaf source, and a
@@ -19,39 +20,68 @@ import (
 type Generator struct {
 	accountsMPT *mpttrie.Reader
 	storageMPT  *mpttrie.Reader
+	unifiedEnv  kv.RoDB // non-nil in unified-env mode; we close it
 	leaves      LeafSource
 	history     *historicalstate.Reader // optional; may be nil
 }
 
-// Config bundles construction parameters.
+// Config bundles construction parameters. Use EXACTLY ONE of:
+//   - ChaindataDir (preferred, post-migrate): one MDBX env with both
+//     AccountsTrie + StoragesTrie + Meta buckets
+//   - AccountsTrieDir + StorageTrieDir (legacy, pre-migrate): two
+//     separate MDBX envs
 type Config struct {
-	AccountsTrieDir string // <out>/accounts-mptcache from Phase A
-	StorageTrieDir  string // <out>/storage-mptcache from Phase A
-	HistoryDir      string // <out>/n42-history-full (optional)
-	Leaves          LeafSource
+	// Unified mode (preferred). Set this to point at a single MDBX dir
+	// produced by cmd/n42-mpt-migrate (or any future per-block updater
+	// that writes both tries to one env atomically).
+	ChaindataDir string
+
+	// Legacy two-env mode. Used when ChaindataDir is empty.
+	AccountsTrieDir string
+	StorageTrieDir  string
+
+	HistoryDir string // <out>/n42-history-full (optional)
+	Leaves     LeafSource
 }
 
-// New opens the trie readers and returns a Generator that owns them.
+// New opens the trie readers and returns a Generator.
+//
+// ChaindataDir takes precedence over the legacy two-dir layout.
 func New(cfg Config) (*Generator, error) {
 	if cfg.Leaves == nil {
 		return nil, errors.New("mptproof: Config.Leaves is required")
 	}
-	a, err := mpttrie.Open(cfg.AccountsTrieDir, "AccountsTrie")
-	if err != nil {
-		return nil, fmt.Errorf("open accounts trie: %w", err)
+	g := &Generator{leaves: cfg.Leaves}
+
+	if cfg.ChaindataDir != "" {
+		env, a, s, err := mpttrie.OpenUnifiedDB(cfg.ChaindataDir)
+		if err != nil {
+			return nil, fmt.Errorf("open unified chaindata: %w", err)
+		}
+		g.unifiedEnv = env
+		g.accountsMPT = a
+		g.storageMPT = s
+	} else {
+		if cfg.AccountsTrieDir == "" || cfg.StorageTrieDir == "" {
+			return nil, errors.New("mptproof: either ChaindataDir OR (AccountsTrieDir+StorageTrieDir) must be set")
+		}
+		a, err := mpttrie.Open(cfg.AccountsTrieDir, "AccountsTrie")
+		if err != nil {
+			return nil, fmt.Errorf("open accounts trie: %w", err)
+		}
+		s, err := mpttrie.Open(cfg.StorageTrieDir, "StoragesTrie")
+		if err != nil {
+			a.Close()
+			return nil, fmt.Errorf("open storage trie: %w", err)
+		}
+		g.accountsMPT = a
+		g.storageMPT = s
 	}
-	s, err := mpttrie.Open(cfg.StorageTrieDir, "StoragesTrie")
-	if err != nil {
-		a.Close()
-		return nil, fmt.Errorf("open storage trie: %w", err)
-	}
-	g := &Generator{accountsMPT: a, storageMPT: s, leaves: cfg.Leaves}
+
 	if cfg.HistoryDir != "" {
 		h, herr := historicalstate.Open(cfg.HistoryDir)
 		if herr != nil {
-			// history is optional; log via wrapped error but proceed
-			a.Close()
-			s.Close()
+			g.Close()
 			return nil, fmt.Errorf("open history: %w", herr)
 		}
 		g.history = h
@@ -65,6 +95,10 @@ func (g *Generator) Close() error {
 	}
 	if g.storageMPT != nil {
 		g.storageMPT.Close()
+	}
+	if g.unifiedEnv != nil {
+		g.unifiedEnv.Close()
+		g.unifiedEnv = nil
 	}
 	if g.history != nil {
 		g.history.Close()
