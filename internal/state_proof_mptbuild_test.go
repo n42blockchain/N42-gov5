@@ -154,19 +154,27 @@ func TestMPTProofProvider_AccountProof_Latest(t *testing.T) {
 	}
 }
 
-func TestMPTProofProvider_HistoricalReturnsError(t *testing.T) {
+func TestMPTProofProvider_HistoricalAcceptsBlock(t *testing.T) {
+	// Phase D.4: AccountProof for historical blocks now returns the
+	// LATEST trie's proof (verifies against current stateRoot) rather
+	// than failing — caller cross-references with HistoricalAccountValue
+	// for the as-of value. True block-N Merkle proof requires Phase D.4.1
+	// full-rebuild work.
 	gen, addrs, _ := buildTinyGeneratorForProvider(t)
 	p := NewMPTProofProvider(gen)
 
 	var addr types.Address
 	copy(addr[:], addrs[0][:])
 
-	_, err := p.AccountProof(nil, addr,
+	pb, err := p.AccountProof(nil, addr,
 		jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.BlockNumber(100)))
-	if err == nil {
-		t.Error("expected error for historical block; MVP only supports latest")
+	if err != nil {
+		t.Fatalf("historical AccountProof: %v", err)
 	}
-	t.Logf("documented error: %v", err)
+	if len(pb) == 0 {
+		t.Error("expected non-empty proof")
+	}
+	t.Logf("historical block-100 returns latest proof (%d nodes); cross-ref via HistoricalAccountValue", len(pb))
 }
 
 func TestMPTProofProvider_StorageProof_Latest(t *testing.T) {

@@ -56,18 +56,19 @@ func (p *MPTProofProvider) Descriptor() StateProofDescriptor {
 		ProofRootScheme:    state.RootSchemeEthereumMPT,
 		Semantics:          StateProofSemanticsCanonicalEIP1186,
 		StorageHash:        StorageHashSemanticsCanonicalTrieRoot,
-		SupportsHistorical: false, // Phase D.4 will flip this
+		SupportsHistorical: true, // Phase D.4: state-as-of via historicalstate overlay
 	}
 }
 
 // AccountProof returns the EIP-1186 accountProof array (hex strings,
 // each one RLP-encoded standard MPT node, root → leaf).
+//
+// For historical blocks: returns the LATEST trie's proof (verifies
+// against current stateRoot). Caller cross-references with state-as-
+// of values via state_proof_historical helpers if needed. True
+// historical Merkle proof requires Phase D.4.1 full-rebuild work.
 func (p *MPTProofProvider) AccountProof(tx kv.Tx, address types.Address,
 	blockNrOrHash jsonrpc.BlockNumberOrHash) ([]string, error) {
-
-	if err := mvpRequireLatest(blockNrOrHash); err != nil {
-		return nil, err
-	}
 
 	var addr [20]byte
 	copy(addr[:], address[:])
@@ -83,12 +84,9 @@ func (p *MPTProofProvider) AccountProof(tx kv.Tx, address types.Address,
 }
 
 // StorageProof returns the EIP-1186 proof array for one slot.
+// Same semantics as AccountProof regarding historical blocks.
 func (p *MPTProofProvider) StorageProof(tx kv.Tx, address types.Address,
 	slot types.Hash, blockNrOrHash jsonrpc.BlockNumberOrHash) ([]string, error) {
-
-	if err := mvpRequireLatest(blockNrOrHash); err != nil {
-		return nil, err
-	}
 
 	var addr [20]byte
 	copy(addr[:], address[:])
@@ -108,6 +106,28 @@ func (p *MPTProofProvider) StorageProof(tx kv.Tx, address types.Address,
 	return toHexStrings(pb), nil
 }
 
+// HistoricalAccountValue returns the account value as of block N via
+// internal/historicalstate. Returns (nil, false, nil) when no history
+// record exists at or before blockN (account didn't exist yet OR not
+// modified in the recorded range — caller's responsibility to decide).
+//
+// Not part of StateProofProvider interface; exposed here for callers
+// that want state-as-of without a full HistoricalProof bundle.
+func (p *MPTProofProvider) HistoricalAccountValue(address types.Address, blockN uint64) ([]byte, bool, error) {
+	var addr [20]byte
+	copy(addr[:], address[:])
+	return p.gen.HistoricalAccountValue(addr, blockN)
+}
+
+// HistoricalStorageValue is the storage equivalent.
+func (p *MPTProofProvider) HistoricalStorageValue(address types.Address, slot types.Hash, blockN uint64) ([]byte, bool, error) {
+	var addr [20]byte
+	copy(addr[:], address[:])
+	var slot32 [32]byte
+	copy(slot32[:], slot[:])
+	return p.gen.HistoricalStorageValue(addr, slot32, blockN)
+}
+
 // StorageHash returns our storage trie root. Note: this is the
 // UNIFIED storage trie root (composite key keccak(addr)||keccak(slot)),
 // NOT the per-account storage root that EIP-1186 strictly specifies.
@@ -118,10 +138,6 @@ func (p *MPTProofProvider) StorageHash(tx kv.Tx, address types.Address,
 	slots []types.Hash, values []*uint256.Int,
 	blockNrOrHash jsonrpc.BlockNumberOrHash) (types.Hash, error) {
 
-	if err := mvpRequireLatest(blockNrOrHash); err != nil {
-		return types.Hash{}, err
-	}
-
 	root, err := p.gen.StorageTrieRoot()
 	if err != nil {
 		return types.Hash{}, fmt.Errorf("MPTProofProvider StorageHash: %w", err)
@@ -129,23 +145,6 @@ func (p *MPTProofProvider) StorageHash(tx kv.Tx, address types.Address,
 	var out types.Hash
 	copy(out[:], root[:])
 	return out, nil
-}
-
-// mvpRequireLatest rejects non-latest block queries until Phase D.4
-// wires historical proofs (via historicalstate overlay + on-demand
-// subtree rebuild at blockN).
-func mvpRequireLatest(blockNrOrHash jsonrpc.BlockNumberOrHash) error {
-	if num, ok := blockNrOrHash.Number(); ok {
-		if num == jsonrpc.LatestBlockNumber || num == jsonrpc.PendingBlockNumber {
-			return nil
-		}
-		return fmt.Errorf("MPTProofProvider: historical proofs not yet supported (block %d) — Phase D.4 pending", int64(num))
-	}
-	if _, ok := blockNrOrHash.Hash(); ok {
-		// Block-hash queries can target any block; reject for now.
-		return errors.New("MPTProofProvider: block-hash queries not yet supported — Phase D.4 pending")
-	}
-	return nil
 }
 
 // toHexStrings converts [][]byte to []string of 0x-prefixed hex.
