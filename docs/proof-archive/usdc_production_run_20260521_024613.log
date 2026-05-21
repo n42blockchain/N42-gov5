@@ -1,0 +1,7 @@
+=== RUN   TestFullProofBytes_Production_USDC_SLOW
+    wire_full_test.go:115: USDC walk: hops=7
+    wire_full_test.go:121: full USDC proof: 9 nodes, 3779 bytes total
+    wire_full_test.go:132: ✓ USDC full proof verifies via standard oracle, value=35 bytes
+--- PASS: TestFullProofBytes_Production_USDC_SLOW (760.22s)
+PASS
+ok  	github.com/n42blockchain/N42/internal/mptproof	761.095s
