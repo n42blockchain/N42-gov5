@@ -94,21 +94,34 @@ func BuildRethStorageProof(
 		proof = append(proof, brRLP)
 	}
 
-	// 3) Leaf node — only when the walk's deepest hop's target slot
-	//    references a leaf via a 32B HASH (hash_mask bit set). When
-	//    hash_mask bit is clear the leaf is INLINE inside the
-	//    deepest branch's RLP and no separate node is emitted.
+	// 3) Sub-trie / leaf reconstruction at the deepest hop's slot.
 	//
-	// Ethereum standard storage-trie leaf: value field is the
-	// RLP-encoded BE-stripped U256 (one level of RLP). The outer
-	// leaf list wraps this RLP byte string AGAIN — net double-RLP.
+	// Reth doesn't persist sub-tries whose encoded RLP > 32 B as
+	// their own row when they are reachable via a hash reference
+	// from a parent branch — instead the parent stores the keccak
+	// directly and the sub-trie's leaves come from HashedStorages.
+	// For multi-leaf prefixes (most production cases) we have to
+	// enumerate the matching leaves and rebuild the sub-trie path
+	// using N42's existing expandSubtreeProofPath logic.
 	if walk.Outcome == mpttrie.LandedOnLeaf && walk.LeafDepth > 0 {
 		deepest := walk.Hops[len(walk.Hops)-1]
 		if deepest.Branch.HasHash&(uint16(1)<<deepest.TargetNibble) != 0 {
-			remainder := append([]byte{}, slotNibbles[walk.LeafDepth:]...)
-			remainder = append(remainder, 0x10)
-			innerRLP := encodeBytes(slotValue)
-			proof = append(proof, encodeLeafRLP(remainder, innerRLP))
+			subLeaves, lerr := enumerateUSDCStorageSubLeaves(
+				r.src, addrHash, slotNibbles[:walk.LeafDepth])
+			if lerr != nil {
+				return nil, [32]byte{}, fmt.Errorf("enumerate sub-leaves: %w", lerr)
+			}
+			if len(subLeaves) == 0 {
+				return nil, [32]byte{}, fmt.Errorf("no leaves under prefix %x — proof structurally impossible",
+					slotNibbles[:walk.LeafDepth])
+			}
+			keyTail := append([]byte{}, slotNibbles[walk.LeafDepth:]...)
+			keyTail = append(keyTail, 0x10)
+			expanded, eerr := expandSubtreeProofPath(subLeaves, keyTail)
+			if eerr != nil {
+				return nil, [32]byte{}, fmt.Errorf("expandSubtreeProofPath: %w", eerr)
+			}
+			proof = append(proof, expanded...)
 		}
 	}
 
@@ -269,6 +282,75 @@ func stripLeadingZeros(b []byte) []byte {
 		i++
 	}
 	return b[i:]
+}
+
+// enumerateUSDCStorageSubLeaves returns all reth HashedStorages
+// slots for the given account whose hashed-slot nibble path starts
+// with `slotPrefix`. Each subLeaf's effectiveKey is the remaining
+// nibbles (relative to slotPrefix) plus a 0x10 terminator —
+// exactly the shape expandSubtreeProofPath consumes.
+//
+// addrHash: 32-byte keccak(addr) (used as DupSort key).
+// slotPrefix: 0..64 nibbles, each byte 0..15 (one nibble per byte).
+func enumerateUSDCStorageSubLeaves(src *RethHashedLeafSource, addrHash, slotPrefix []byte) ([]subLeaf, error) {
+	tx, err := src.db.BeginRo(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	c, err := tx.CursorDupSort(rethHashedStoragesTable)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+
+	// Build byte-aligned lower bound for SeekBothRange.
+	seek := make([]byte, (len(slotPrefix)+1)/2)
+	for i, n := range slotPrefix {
+		if i%2 == 0 {
+			seek[i/2] |= n << 4
+		} else {
+			seek[i/2] |= n & 0x0f
+		}
+	}
+
+	v, err := c.SeekBothRange(addrHash, seek)
+	if err != nil {
+		return nil, err
+	}
+	var out []subLeaf
+	for ; v != nil; _, v, err = c.NextDup() {
+		if err != nil {
+			return nil, err
+		}
+		if len(v) < 32 {
+			continue
+		}
+		slotHash := v[:32]
+		slotNib := nibblesOf(slotHash)
+		if !hasNibblePrefix(slotNib, slotPrefix) {
+			if compareNibbles(slotNib, slotPrefix) > 0 {
+				break
+			}
+			continue
+		}
+		val := make([]byte, len(v)-32)
+		copy(val, v[32:])
+		// Ethereum storage-trie leaf convention: value field is the
+		// RLP-encoded BE-stripped U256. The leaf node's outer list
+		// wraps this byte-string AGAIN via encodeBytes. Net effect
+		// = double-RLP. We pre-encode here so the existing
+		// expandSubtreeProofPath / encodeLeafRLP code (which calls
+		// encodeBytes once on `value`) produces the correct final
+		// double-wrap.
+		val = encodeBytes(stripLeadingZeros(val))
+		// effectiveKey = remaining nibbles + 0x10 terminator.
+		eff := make([]byte, len(slotNib)-len(slotPrefix)+1)
+		copy(eff, slotNib[len(slotPrefix):])
+		eff[len(eff)-1] = 0x10
+		out = append(out, subLeaf{effectiveKey: eff, value: val})
+	}
+	return out, nil
 }
 
 // hasNibblePrefix returns true iff `nib` starts with `prefix`.
