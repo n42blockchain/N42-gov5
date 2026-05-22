@@ -134,7 +134,26 @@ func main() {
 	// --- Run HPH.Process ---
 	t2 := time.Now()
 	fmt.Println("running HPH.Process — this is the long part")
-	root, err := hph.Process(ctx, updates, "bootstrap", nil, commitment.WarmupConfig{})
+	lastReport := time.Now()
+	onProgress := func(p *commitment.CommitProgress) {
+		now := time.Now()
+		if now.Sub(lastReport) < 30*time.Second {
+			return
+		}
+		lastReport = now
+		elapsed := now.Sub(t2)
+		var pct float64
+		if p.UpdateCount > 0 {
+			pct = 100 * float64(p.KeyIndex) / float64(p.UpdateCount)
+		}
+		var eta time.Duration
+		if p.KeyIndex > 0 {
+			eta = time.Duration(float64(elapsed) * float64(p.UpdateCount-p.KeyIndex) / float64(p.KeyIndex))
+		}
+		fmt.Printf("  HPH.Process progress: %d/%d (%.1f%%) elapsed=%s ETA=%s\n",
+			p.KeyIndex, p.UpdateCount, pct, elapsed.Truncate(time.Second), eta.Truncate(time.Second))
+	}
+	root, err := hph.Process(ctx, updates, "bootstrap", onProgress, commitment.WarmupConfig{})
 	if err != nil {
 		fail("Process: %v", err)
 	}
