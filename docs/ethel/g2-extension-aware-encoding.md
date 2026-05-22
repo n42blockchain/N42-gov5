@@ -235,6 +235,74 @@ Path 2 is roughly 80% complete — remaining 20% requires identifying
 the specific opcode/condition that fires extensions outside the
 branchHash propagation chain.
 
+## 2026-05-21 night — definitive diagnose of remaining 20%
+
+`internal/mptproof/dense_v2_diagnose_test.go::TestDiagnose_V2_FailingSlots_HasExtension`
+runs a direct probe: for each of the 8 failing slots at branch [0]
+(digits 0, 2, 8, 9, 10, 11, 14, 15), count keccak matches under
+that slot's nibble prefix.
+
+Result (every failing slot has 2+ matches):
+
+| Slot | Matches under prefix [0, X] |
+|---|---|
+| 0  | 3 (005a..., 00a0..., 00d6...) |
+| 2  | 4 |
+| 8  | 4 |
+| 9  | 3 |
+| 10 | 2 |
+| 11 | 2 |
+| 14 | 2 |
+| 15 | 3 |
+
+A HasTree=0 slot with 2+ matching leaves cannot be a single direct
+leaf — its stored 33B is keccak(deeper-subtree-RLP), and V2's
+LeafMarker fast path reconstructs keccak(leafRLP(first-match))
+which differs.
+
+### Why HasTree=0 can hide a real branch (not just an extension)
+
+`lib/trie/gen_struct_step.go` registers the parent's tree bit via
+two routes:
+
+  - **line 287-288** (inside the `h()`-callback block, guarded by
+    `h != nil` at line 278 AND `maxLen != 0`): unconditionally
+    sets the bit when triggered.
+  - **line 303-306** (inside the branch-close block): always sets
+    the parent's hashMask bit, but sets the parent's treeMask bit
+    ONLY when `hasTree[maxLen] != 0` (i.e. the current node has a
+    nested branch of its own).
+
+When a sub-branch's own children are all direct leaves
+(`hasTree[maxLen] == 0`), the line 303-306 route does not register
+a parent tree bit. The line 287-288 route may or may not fire
+depending on whether `h()` is bound at that depth. The net result:
+a parent slot can hold a 33B hash referencing a real branch while
+its parent's treeMask claims "no deeper tree here."
+
+Path 2's branchHash-OR pushes `originExtension` only when an
+`extensionHash` was visible in the popped frames. It does NOT push
+`originExtension` when the popped frames are all leaves that just
+formed a real branch (branchHash without any wrapping extension),
+which is exactly case (a) above. That is why 8/12 slots at branch
+[0] still parity-fail.
+
+### Fix sketch for the remaining 20%
+
+Add a fourth `originStack` value (e.g. `originDeepSubtree=3`) and
+push it from `branchHash` whenever popped children include 2+
+leaves OR any non-leaf — i.e., whenever the resulting hash does not
+correspond to a single direct leaf. V2 encoder then treats both
+`originExtension` and `originDeepSubtree` as "not a leaf marker"
+(store 33B verbatim). That collapses cases (a)/(b)/(c) into a
+single "anything not a single direct leaf" predicate, which is the
+real intent.
+
+Defer implementation to a focused 1-2 day session — must re-run
+the full V2 storage bootstrap + USDC end-to-end after.
+
+## Current state (this commit)
+
 **Path 3**: Give up V2 LeafMarker compression for this build path.
 Accept V1's 8.45 GB accounts dense as the production size. Saves
 the engineering. Storage V1 dense ~50 GB lands shortly via the
