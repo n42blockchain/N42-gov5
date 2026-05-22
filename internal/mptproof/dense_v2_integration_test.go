@@ -276,7 +276,7 @@ func buildBothDenseUnifiedTestDB(t *testing.T, nAccts int) (string, map[[20]byte
 // extensionHash firing point needs further investigation). See
 // docs/ethel/g2-extension-aware-encoding.md for current status.
 func TestProofBytes_DenseV2FastPath_VsV1(t *testing.T) {
-	t.Skip("V2 dispatch still disabled; G2 Option A origin tracking misses extension'd children when an intermediate branchHash absorbs them — see docs/ethel/g2-extension-aware-encoding.md")
+	t.Skip("V2 dispatch still disabled; Path 2 OR propagation made oracle PASS for sampled walks but some sibling slots at branch [0] still mismatch — root cause likely a remaining subtree where mock's first-keccak-match differs from HashBuilder's hashed leaf (or a single-leaf slot where the leaf goes via extension at a deeper level we don't yet propagate). See docs/ethel/g2-extension-aware-encoding.md.")
 	dst, values, expectedRoot := buildBothDenseUnifiedTestDB(t, 500)
 
 	base := &mapLeafSourceWithLookup{

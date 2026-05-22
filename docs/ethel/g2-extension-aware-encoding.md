@@ -198,8 +198,42 @@ their bits into the new branch entry's bit. Now ANY descendant
 extension marks the slot. V2 encoder uses this to skip LeafMarker
 for compressed-prefix slots.
 
-This is the right approach but requires re-think. Path 2 is roughly
-1-2 days of careful gen_struct_step + hashbuilder editing.
+**Path 2 implementation status (2026-05-21 late evening):**
+
+Implemented in `lib/trie/hashbuilder.go::branchHash`:
+- before pop, scan top-N originStack entries for any value==originExtension
+- if found, hasExtChild=true
+- after pop, push originExtension instead of originBranch
+
+Verified via instrumentation:
+- 5 extensionHash events fire in 500-acct test
+- branchHash propagation OR works: 4 of the post-extension branchHash
+  events produce new=originExtension (vs originBranch when none of
+  children had ext)
+
+Result on V1 vs V2 cross-check test:
+- Oracle PASSES for all 5 sampled walks (✓)
+- Sibling slot parity at branch [0] still shows 8 mismatching slots
+
+Interpretation: Path 2 OR propagation works correctly within the
+hashStack lifetime, but those 8 specific slots at branch [0] STILL
+have origin=leaf at snapshot time (not extension). This means
+either:
+- The extension for these slots' content fires at a code path
+  Path 2 doesn't cover (e.g. accountLeaf+extension instead of
+  leafHash+extension)
+- OR the test's mock SingleLeafLookup returns a different leaf
+  than HashBuilder hashed for these slots (subtle distribution
+  edge case)
+
+Sampled oracle PASS means Path 2 is "good enough" for randomly-
+selected walks but a deterministic regression for proofs hitting
+the specific failing slots. V2 dispatch stays gated until parity
+is byte-for-byte.
+
+Path 2 is roughly 80% complete — remaining 20% requires identifying
+the specific opcode/condition that fires extensions outside the
+branchHash propagation chain.
 
 **Path 3**: Give up V2 LeafMarker compression for this build path.
 Accept V1's 8.45 GB accounts dense as the production size. Saves

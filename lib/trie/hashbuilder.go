@@ -85,6 +85,23 @@ type HashBuilder struct {
 	originStack []byte
 }
 
+// originStack values. Semantics per Path 2 fix (G2 Option A):
+//   - originLeaf      : entry is a direct leaf hash, no extension below
+//   - originExtension : entry contains at least one extension somewhere
+//                       in its subtree. Includes extension-wrapped nodes
+//                       (directly produced by extensionHash) AND any
+//                       branch built from children one or more of which
+//                       had this flag set (propagated via branchHash
+//                       OR'ing children's flags into the new entry).
+//   - originBranch    : entry is a branch with NO extension anywhere
+//                       in its subtree — safe for V2 encoders looking
+//                       at HasTree=0 slots, since the slot's hash is
+//                       guaranteed to be a direct leaf or branch hash
+//                       (parent's treeMask distinguishes which).
+//
+// V2 LeafMarker compression is safe iff: HasTree=0 AND origin==leaf.
+// Origin==extension means the slot's hash incorporates a compressed
+// prefix that LeafHashStandalone cannot reproduce on its own.
 const (
 	originLeaf      byte = 0
 	originExtension byte = 1
@@ -688,10 +705,30 @@ func (hb *HashBuilder) branchHash(set uint16) error {
 	if _, err := hb.sha.Read(hb.hashStack[len(hb.hashStack)-length.Hash:]); err != nil {
 		return err
 	}
-	// Pop `digits` origins (the consumed children) and push one for
-	// the new branch entry that replaces them.
+	// Path 2 fix for G2 Option A: OR children's extension flags into
+	// the new branch entry's flag. If ANY of the N consumed children
+	// had origin=extension (i.e. its subtree contains a compressed-
+	// prefix path that would invalidate V2 LeafMarker compression),
+	// the new branch entry inherits that "ext-below" mark. This
+	// preserves the information across the absorption that happens
+	// when a branchHash combines children into a single hash.
+	hasExtChild := false
+	if len(hb.originStack) >= digits {
+		start := len(hb.originStack) - digits
+		for i := 0; i < digits; i++ {
+			if hb.originStack[start+i] == originExtension {
+				hasExtChild = true
+				break
+			}
+		}
+	}
 	hb.popOrigins(digits)
-	hb.pushOrigin(originBranch)
+	if hasExtChild {
+		// Path 2 Option A: inherit ext-below flag from any child.
+		hb.pushOrigin(originExtension)
+	} else {
+		hb.pushOrigin(originBranch)
+	}
 
 	//fmt.Printf("} [%x]\n", hb.hashStack[len(hb.hashStack)-hashStackStride:])
 
