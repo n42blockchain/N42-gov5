@@ -176,7 +176,7 @@ func touchAccounts(ctx context.Context, src *mptproof.RethHashedLeafSource,
 			return count, err
 		}
 		// plainKey = 32-byte addrHash (per RethBackedReader convention).
-		updates.TouchPlainKey(string(k), nil, updates.TouchAccount)
+		updates.TouchPlainKeyNoDedup(string(k), nil, updates.TouchAccount)
 		count++
 		if limit > 0 && count >= limit {
 			break
@@ -215,7 +215,7 @@ func touchStorages(ctx context.Context, src *mptproof.RethHashedLeafSource,
 		}
 		copy(composite[:20], k)
 		copy(composite[20:], v[:32])
-		updates.TouchPlainKey(string(composite), nil, updates.TouchStorage)
+		updates.TouchPlainKeyNoDedup(string(composite), nil, updates.TouchStorage)
 		count++
 		if limit > 0 && count >= limit {
 			break

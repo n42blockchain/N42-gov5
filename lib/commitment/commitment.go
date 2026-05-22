@@ -1691,6 +1691,38 @@ func (t *Updates) TouchPlainKey(key string, val []byte, fn func(c *KeyUpdate, va
 	}
 }
 
+// TouchPlainKeyNoDedup is a memory-friendlier variant of
+// TouchPlainKey for bulk bootstrap pipelines that already know
+// every key arrives exactly once (e.g. cursor walk over a sorted
+// MDBX table). Skips the t.keys dedup map — its O(N) memory
+// footprint becomes the limiting factor at billions of leaves
+// (~80 B per entry × 1.96 B leaves = ~155 GB at full reth state).
+//
+// Only valid for ModeDirect. ModeUpdate's tree-based dedup is
+// preserved unchanged.
+//
+// In ModeDirect, fn is unused (HashSort feeds Updates by reading
+// PatriciaContext.Account/Storage). We keep the same signature as
+// TouchPlainKey for caller-site symmetry.
+func (t *Updates) TouchPlainKeyNoDedup(key string, _ []byte, _ func(c *KeyUpdate, val []byte)) {
+	if t.mode != ModeDirect {
+		// Fallback: dedup-aware in ModeUpdate to preserve correctness.
+		t.TouchPlainKey(key, nil, nil)
+		return
+	}
+	keyBytes := []byte(key)
+	hashedKey := t.hasher(keyBytes)
+	var err error
+	if !t.sortPerNibble {
+		err = t.etl.Collect(hashedKey, keyBytes)
+	} else {
+		err = t.nibbles[hashedKey[0]].Collect(hashedKey, keyBytes)
+	}
+	if err != nil {
+		log.Warn("failed to collect updated key", "key", key, "err", err)
+	}
+}
+
 func (t *Updates) TouchAccount(c *KeyUpdate, val []byte) {
 	if len(val) == 0 {
 		c.update.Flags = DeleteUpdate
