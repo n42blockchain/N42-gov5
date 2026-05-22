@@ -201,6 +201,22 @@ func (r *RethHashedLeafSource) StorageByHashedPrefix(prefix []byte) ([]subLeaf, 
 	}
 	defer c.Close()
 
+	// Hard cap on enumerated leaves for the address-portion branch
+	// only. With prefix ≤ 64 nibbles, a short prefix can match many
+	// accounts × all their slots — millions of leaves across many
+	// contracts — and OOM the caller. The cap turns those pathological
+	// proofs into a clean error so the caller can fail fast and the
+	// workload owner knows to extend the dense-recursion path (or move
+	// to per-contract storage tries).
+	//
+	// The deep-prefix branch (len > 64 nibbles, scoped to a single
+	// contract) is left uncapped: a heavy contract can legitimately
+	// own millions of slots, and the resulting subtree must be fully
+	// enumerated to compute the subtree root — capping there would
+	// reject correct proofs. Memory is bounded by that one contract's
+	// storage size.
+	const maxLeavesCap = 200_000
+
 	var out []subLeaf
 
 	if len(prefix) <= 64 {
@@ -225,6 +241,10 @@ func (r *RethHashedLeafSource) StorageByHashedPrefix(prefix []byte) ([]subLeaf, 
 					continue
 				}
 				appendStorageSubLeaf(&out, hnAddr, v[:32], v[32:], prefix)
+				if len(out) > maxLeavesCap {
+					return nil, fmt.Errorf("StorageByHashedPrefix: subtree under prefix %x (len %d nib) exceeds %d-leaf cap — proof needs dense-recursive expansion or per-contract storage trie",
+						prefix, len(prefix), maxLeavesCap)
+				}
 			}
 		}
 		return out, nil
