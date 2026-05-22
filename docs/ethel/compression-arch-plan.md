@@ -135,6 +135,54 @@ Tracked as task #75.
   format — would optimize the existing 98 GB to ~6 GB but still
   fail on USDC storage proofs. Wasted work.
 
+## Operational notes — full bootstrap (2026-05-22)
+
+### True reth scale
+
+Initial estimates assumed 28.9 M accounts (the `AccountsTrie` row
+count from earlier memory notes). The actual `PlainAccountState`
+table in `D:\reth2k\db` carries **386 M accounts**, and
+`PlainStorageState` carries **1.57 B storage entries**. Total
+leaves: ~1.96 B (≈ 4× original projection). This means:
+
+  * touch + ETL-collect phase: ~85 min (single-threaded MDBX cursor)
+  * HPH.Process phase: ~4 h (linear in leaf count)
+  * Total full bootstrap: ~5 h
+  * CommitmentBranches (raw): ~170 GB projected
+
+### Memory pitfall — `Updates.keys` dedup map
+
+The first full-bootstrap attempt (commit 2bc04232) used
+`Updates.TouchPlainKey` which maintains a `map[string]struct{}`
+dedup map over ALL touched plain keys. At 1.96 B keys that map
+projected to ~155 GB — exceeding 128 GB system RAM. The first
+attempt was killed at 360 M accounts (67 GB RSS climbing fast).
+
+Fix in commit b81d3060: `Updates.TouchPlainKeyNoDedup` bypasses
+the dedup map and writes straight to the ETL collector. Safe when
+the source cursor produces unique keys (which a sorted MDBX walk
+always does).
+
+### Don't confuse WorkingSet64 with process memory
+
+During the second full bootstrap, Windows reported `WorkingSet64
+= 75 GB` for the bootstrap process while system "Available MB"
+sat at ~4 GB. That is NOT a memory leak. WorkingSet64 includes
+file-mapped pages, and the process has two huge MDBX envs
+memory-mapped:
+
+  * D:\reth2k\db\mdbx.dat ≈ 2.1 TB (read source)
+  * D:\n42-commitment-full\mdbx.dat ≈ 512 GB (write target)
+
+`PrivateMemorySize64` was 10.5 GB — the actual heap allocations.
+Windows aggressively caches mapped pages while RAM is plentiful;
+it evicts the cache automatically when other workloads need RAM.
+No OOM risk as long as private memory stays bounded (which it
+does with the no-dedup fix).
+
+For future monitoring: look at `Get-Process | Select-Object
+PrivateMemorySize64`, not `WorkingSet64`.
+
 ## HA-3b baseline measurements (2026-05-22)
 
 Empirical results from `cmd/n42-commitment-bootstrap` against the
